@@ -7860,6 +7860,14 @@ static void DMHookAerialObfuscated(void) {
             CFPreferencesAppSynchronize(CFSTR("com.uzra.aerial"));
             return;
         }
+        // The icon of the app that is open full screen in front (a Dock tap on it): turned into a window the way the status bar's green button does
+        // it. Aerial's own tap handling made a window and the tap ALSO launched the app full screen again, so Aerial closed its window at once (M1)
+        // and on the iPad 2 the app ended up full screen in portrait (2026-09-26, in 1.0.0 too).
+        if (bundleID.length && [[DMFrontApp() bundleIdentifier] isEqualToString:bundleID] && !DMStageForBundle(bundleID) && DMFullScreenAppInFront()) {
+            DMLog([NSString stringWithFormat:@"[aerial] icon tap on %@, open full screen in front: made a window the green button's way", bundleID]);
+            DMLightAction(2);
+            return;
+        }
         extern BOOL DMAerialWarmStartIfNeeded(NSString *bundleID);
         if (DMAerialWarmStartIfNeeded(bundleID)) return;   // (WhatsApp cold start: full screen first, then a window -- see there)
         UIView *stage = bundleID.length ? DMStageForBundle(bundleID) : nil;

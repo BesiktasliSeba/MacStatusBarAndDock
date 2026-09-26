@@ -1,6 +1,6 @@
 Package: com.besiktasliseba.macstatusbaranddock
 Name: MacStatusBar&Dock
-Version: 1.0.1
+Version: 1.0.2
 Architecture: iphoneos-arm64
 Description: A macOS-style status bar, menus, windows and Dock for iPadOS. iPad only.
 Maintainer: besiktasliseba
