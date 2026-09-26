@@ -10,8 +10,6 @@ Add this repo in Sileo (or Zebra):
 https://besiktasliseba.github.io/repo/
 ```
 
-*(placeholder address — not live yet; will be filled in once the repo is published)*
-
 Then install **MacStatusBar&Dock** from the repo. The Mac look is on right after install; most features have their own switch in Settings > Status Bar and Settings > Dock.
 
 ## Compatibility
