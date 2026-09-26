@@ -1,0 +1,137 @@
+# crashmap-rules.txt -- what the crash guard's step 1b (common/CrashStep.h) turns off when a SpringBoard crash points at one of our parts.
+# Read by tools/make-crashmap.py at package time; the result (CrashMap.txt) ships next to the parts.
+#
+# target <name> pref <domain> <key> <off> <default> <row title>|<where>   a switch in Settings: set to <off> (0/1); <default> = its value when
+#                                                     never set; the row's title and where the crash was, for the guard's explanation
+# target <name> part                                  the part that crashed is not loaded in SpringBoard any more (until the guard's note is cleared)
+# image <Image> <target> [map]                        what a crash in that part turns off; "map": a function map is built (the target is then the
+#                                                     fallback for code no rule below names)
+# sym <Image> <regex> <target>                        a function whose symbol name matches (Logos hooks carry their %group: $MacBanners$...)
+# sec <Image> <regex> <target>                        a function whose first line sits under a matching section header (// ==== ... / // ---- ... /
+#                                                     %group) in its source file; an "// ===== end ..." header ends a section
+# file <Image> <regex> <target>                       a function from a matching source file
+# Order: sym rules, then sec, then file, then the image's target; the first match wins. A switch that is already off falls back to "part".
+# Every rule must match at least one function (make-crashmap.py stops the build otherwise): keep the section headers the sec rules name when
+# comments are edited, or change the rule with them.
+#
+# Whenever a crash cannot be pinned on one of these (only Apple code on the stack, an unreadable report, one of the two loaders), the guard goes on
+# to its step 2 (the whole tweak off) as before.
+
+target part part
+# transparent: a pass-through hook (-[UIApplication sendEvent:], -[UIResponder pressesBegan:withEvent:]): on nearly every touch and key stack,
+# so it never decides a crash by itself (common/CrashBlame.h): any other non-Apple code below it is blamed instead, and step 1b passes over it
+target transparent transparent
+target stock pref com.besiktasliseba.macstatusbar stockStatusBar 1 0 Status Bar Style|the status bar
+target macBanners pref com.besiktasliseba.macstatusbar macBanners 0 1 Mac-Style Banners|the Mac-style banners
+target autoHideStatusBar pref com.besiktasliseba.macstatusbar autoHideStatusBar 0 0 Automatically Hide and Show the Status Bar|the auto-hiding status bar
+target tidyKeyboardPill pref com.besiktasliseba.macstatusbar tidyKeyboardPill 0 0 Keyboard Button in Status Bar|the keyboard button
+target windowingEnabled pref com.besiktasliseba.macstatusbar windowingEnabled 0 1 Enable Windowing|the window code
+target windowsBehindApps pref com.besiktasliseba.macstatusbar windowsBehindApps 0 1 Windows Behind Full-Screen Apps|the windows behind full-screen apps
+target flexResizeWindows pref com.besiktasliseba.macstatusbar flexResizeWindows 0 1 Resize Apps to Fit Windows|the window resizing
+target hideTrafficLights pref com.besiktasliseba.macstatusbar hideTrafficLights 1 0 Turn Off Traffic Lights|the traffic lights
+target clockOpensToday pref com.besiktasliseba.macstatusbar clockOpensToday 0 1 Clock Opens Today View|the Today View
+target showMuteIcon pref com.besiktasliseba.macstatusbar showMuteIcon 0 1 Show Mute Icon|the mute icon
+target skipLockAfterRespring pref com.besiktasliseba.macstatusbar skipLockAfterRespring 0 0 Skip Lock Screen After Respring|Skip Lock Screen After Respring
+target forceQuitMenu pref com.besiktasliseba.forcequitmenu enabled 0 1 Force Quit in App Menus|the Force Quit menu item
+target appSizeMenu pref com.besiktasliseba.macappsizemenu enabled 0 1 App Size in App Menus|the App Size menu item
+target folderMenu pref com.besiktasliseba.macfoldermenu enabled 0 1 Folder Apps in Folder Menus|the folder menus
+target showDownloads pref com.besiktasliseba.dockmagnification showDownloads 0 1 Show Downloads in Dock|the Dock's Downloads
+target launchpadIcon pref com.besiktasliseba.dockmagnification launchpadIcon 0 1 Launchpad Icon|Launchpad
+target runningIndicator pref com.besiktasliseba.dockrunningindicator enabled 0 1 Show Indicators for Open Apps|the open-app indicators
+
+# The parts in words, for the guard's explanation: title <Image> <where it crashed>|<what was turned off> ("SpringBoard crashed twice in the
+# Dock, so MacDock was turned off for now."). A part without a title is named by its file name.
+title DockMagnification the Dock|MacDock
+title MacStatusBarCore the status bar|the Mac status bar
+title MixAudio the audio mixing|audio mixing
+title MacIconLabels the Home Screen icon labels|the icon labels
+title MacPageDots the Home Screen page dots|the page dots
+title MacLockStatusBar the Lock Screen status bar|the Lock Screen status bar
+title MacHomeBar the Home Bar|the Home Bar
+title MacCCGrabber the Control Center grabber|the Control Center grabber
+
+# ---- the parts SpringBoard loads (loader/Loader.c): small ones as a whole ----
+image ForceQuitMenu forceQuitMenu
+image MacAppSizeMenu appSizeMenu
+image MacFolderMenu folderMenu
+image BrightnessKeyTweak part map
+image GraveEscapeTweak part map
+image MacAppBridge part map
+image MacCCGrabber part
+image MacHomeBar part
+image MacIconLabels part
+image MacLargeTitles part
+image MacLockStatusBar part
+image MacPageDots part
+image MacSettingsBadge part
+image MixAudio part
+image TabMuteTweak part map
+image VolumeGlobeTweak part map
+# the pass-through hooks (a map is built for these parts only to find them; everything else in them is still the part)
+sym BrightnessKeyTweak \$UIApplication\$sendEvent\$$ transparent
+sym GraveEscapeTweak \$UIResponder\$pressesBegan\$withEvent\$$ transparent
+sym MacAppBridge \$UIApplication\$sendEvent\$$ transparent
+sym TabMuteTweak \$UIApplication\$sendEvent\$$ transparent
+sym VolumeGlobeTweak \$UIApplication\$sendEvent\$$ transparent
+sym DockMagnification \$(UIApplication\$sendEvent|UIResponder\$pressesBegan\$withEvent)\$$ transparent
+
+# ---- the Dock (MacDock line): by source file; the Dock itself = the part ----
+image DockMagnification part map
+file DockMagnification ^Downloads\.m$ showDownloads
+file DockMagnification ^Launchpad\.m$ launchpadIcon
+file DockMagnification ^RunningIndicator\.m$ runningIndicator
+
+# ---- the status bar (MacStatusBarCore): by feature; anything else = Stock status bar mode ----
+image MacStatusBarCore stock map
+# what Stock status bar mode keeps running (StockBar.h): no switch of its own, so the part
+sym MacStatusBarCore \$(MacContextMenus|MacContextMenus15|PreviewTargetGuard|StockCCTiles)\$ part
+sec MacStatusBarCore Haptic\sTouch\smenus part
+sec MacStatusBarCore MacPointer\sbridge part
+sec MacStatusBarCore Control\sCenter\sresource\stile part
+sec MacStatusBarCore ^//\s-+\sWelcome part
+file MacStatusBarCore ^StockBar\.h$ part
+# banners
+sym MacStatusBarCore \$MacBanners\$ macBanners
+sym MacStatusBarCore ^_?DMBanner macBanners
+sec MacStatusBarCore Mac-style\snotification\sbanners macBanners
+sec MacStatusBarCore banners\sfor\sapps\swhose\swindows macBanners
+# auto-hide
+sym MacStatusBarCore ^_?DMAutoHide autoHideStatusBar
+sec MacStatusBarCore Auto-hiding\sstatus\sbar autoHideStatusBar
+sec MacStatusBarCore only\sthe\stitle\sbar\sslides autoHideStatusBar
+# the keyboard button
+sec MacStatusBarCore keyboard\s/\smicrophone\spill tidyKeyboardPill
+# the mute icon
+sec MacStatusBarCore Mute\sicon\s\(Settings showMuteIcon
+# Skip Lock Screen after respring
+sym MacStatusBarCore \$SkipLock\$ skipLockAfterRespring
+sym MacStatusBarCore ^_?DM(SkipLock|NoPasscode|TryUnlock) skipLockAfterRespring
+# Today View from the clock
+sym MacStatusBarCore ^_?DMToday clockOpensToday
+sec MacStatusBarCore Today\sView clockOpensToday
+# traffic lights (a switch turns them off)
+sec MacStatusBarCore traffic\slights hideTrafficLights
+# windows behind full-screen apps (MilkyWay4)
+sec MacStatusBarCore MilkyWay\swindows\sbehind\sfull-screen windowsBehindApps
+# Resize Apps to Fit Windows
+sym MacStatusBarCore ^_?DMFit flexResizeWindows
+# windowing: the engines (Aerial 3.0/5.0, MilkyWay4, Zetsu) and our window work
+sym MacStatusBarCore \$(Aerial\w*|Zetsu\w*|MilkyWay\w*|WindowLaunch|EngineMedusa)\$ windowingEnabled
+sym MacStatusBarCore ^_?(DMZetsu|DMAerial|DMMilky|DMMinimize|DMSwap|DMCascade|DMRestoreWindow|DMSaveWindow|DMRememberStage|DMWindowed) windowingEnabled
+sec MacStatusBarCore which\swindow\sengine windowingEnabled
+sec MacStatusBarCore Stage\sManager\sis\sheld\soff windowingEnabled
+sec MacStatusBarCore orange\sbutton windowingEnabled
+sec MacStatusBarCore Zetsu windowingEnabled
+sec MacStatusBarCore Aerial windowingEnabled
+sec MacStatusBarCore windowed\sapp's\sscenes windowingEnabled
+sec MacStatusBarCore wake\severy\swindow's\sapp windowingEnabled
+sec MacStatusBarCore no\swindows,\sno\swindow\swork windowingEnabled
+sec MacStatusBarCore resize-corner\sgrip windowingEnabled
+sec MacStatusBarCore remembered\swindow\spositions windowingEnabled
+sec MacStatusBarCore click\sa\swindow\sto\sbring windowingEnabled
+sec MacStatusBarCore windows\ssurvive\sa\srespring windowingEnabled
+sec MacStatusBarCore launching\san\sapp\sthat\salready\shas\sa\swindow windowingEnabled
+sec MacStatusBarCore third\swindow windowingEnabled
+sec MacStatusBarCore swap\s(the\swindows|a\shalf) windowingEnabled
+sec MacStatusBarCore window\sengine\sthat\scannot\sbe\sused windowingEnabled
+sec MacStatusBarCore ^%group\s(Aerial\w*|Zetsu\w*|MilkyWay\w*|WindowLaunch|EngineMedusa)\b windowingEnabled

@@ -1,0 +1,39 @@
+#!/bin/sh
+# MacStatusBar&Dock postinst: move the settings over from the old separate packages (once), keep a line switched off in iCleaner Pro off after an
+# update, then (re)start the root helper. First of all, it decides whether this is a first install (the one-time welcome alert).
+L=/var/jb/usr/bin/launchctl
+H=/var/jb/usr/libexec/sshtoggled
+if [ "$1" = "configure" ]; then
+    # iPad only: on an iPhone (even one made to look like an iPad) nothing is changed and the helper is not started. The helper answers 0 on an
+    # iPad and 2 on anything else; any other answer means it could not run (a crash, a failed start): that is no reason to skip the setup, so it
+    # is said and the normal path goes on.
+    if [ -x "$H" ]; then
+        "$H" --is-ipad; rc=$?
+        if [ "$rc" = 2 ]; then
+            echo "MacStatusBar&Dock is made for iPad. It does nothing on this device; you can remove it."
+            exit 0
+        elif [ "$rc" != 0 ]; then
+            echo "MacStatusBar&Dock: the iPad check could not run (code $rc); setting up as on an iPad." >&2
+        fi
+    fi
+    # the old packages' helper, if its package did not stop it (it is the same program under its old name)
+    OLD=/var/jb/Library/LaunchDaemons/com.kaan.sshtoggled.plist
+    [ -f "$OLD" ] && $L unload "$OLD" 2>/dev/null
+    $L remove com.kaan.sshtoggled 2>/dev/null
+    [ -x "$H" ] && "$H" --welcome-check "$2"   # (first: before anything of ours is written; $2 = the version upgraded from, empty on a first install)
+    [ -x "$H" ] && "$H" --defaults-check "$2"   # (new defaults for new installs only: decided now, before anything of ours is written ...)
+    [ -x "$H" ] && "$H" --migrate
+    [ -x "$H" ] && "$H" --freeze-defaults   # (... and an update keeps the old defaults of untouched settings, after the move from the old packages)
+    [ -x "$H" ] && "$H" --after-install
+    $L unload /var/jb/Library/LaunchDaemons/com.besiktasliseba.sshtoggled.plist 2>/dev/null
+    $L load /var/jb/Library/LaunchDaemons/com.besiktasliseba.sshtoggled.plist 2>/dev/null
+    # the system pointer process keeps the Mac pointer code it loaded at start, and a respring does not restart it on iPadOS 16: it is stopped
+    # here (launchd starts it again at once) so an install or update reaches the pointer without a reboot. A plain kill is ignored: -9.
+    /var/jb/usr/bin/killall -9 pointeruid 2>/dev/null
+elif [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-remove" ] || [ "$1" = "abort-deconfigure" ]; then
+    # an upgrade or removal failed after the prerm stopped the helper (dpkg calls this on the version that stays): it is started again, so SSH
+    # toggling, engine exclusivity and the switch-off watcher do not stay dead until the next reboot
+    P=/var/jb/Library/LaunchDaemons/com.besiktasliseba.sshtoggled.plist
+    [ -f "$P" ] && $L load "$P" 2>/dev/null
+fi
+exit 0

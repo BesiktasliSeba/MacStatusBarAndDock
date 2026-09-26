@@ -1,0 +1,51 @@
+# MacStatusBar&Dock -- .gitignore for a Theos project (copy to the repo root as .gitignore)
+
+# Theos build output
+.theos/
+obj/
+packages/
+*.deb
+*.dylib
+*.o
+*.dSYM/
+
+# macOS / editors
+.DS_Store
+._*
+.vscode/
+.idea/
+*.swp
+*~
+
+# Logs and debugging leftovers
+*.log
+build-*.log
+probe-findings/
+scratch/
+scratchpad/
+*.png.tmp
+rawshot*/
+captures/
+
+# Old source backups
+*.bak
+*.orig
+*.old
+Tweak.v*.x
+Tweak.*-final.x
+
+# Signing material and secrets (must never be committed)
+*.p12
+*.pem
+*.key
+*.cer
+*.mobileprovision
+*.keychain*
+.env
+.env.*
+id_rsa*
+id_ed25519*
+audit-names.txt
+
+# Local-only notes
+CLAUDE.local.md

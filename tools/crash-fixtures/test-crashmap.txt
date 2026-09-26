@@ -1,0 +1,26 @@
+# A synthetic crash map for the Mac tests (tools/test-crashstep.sh): the layout of CrashMap.txt (tools/make-crashmap.py) with made-up UUIDs,
+# offsets and a test preference domain. Fixtures: tools/crash-fixtures/step1b-*.ips.
+T part part
+T stock pref com.besiktasliseba.test-crashstep stockStatusBar 1 0 Status Bar Style|the status bar
+T macBanners pref com.besiktasliseba.test-crashstep macBanners 0 1 Mac-Style Banners|the Mac-style banners
+T showDownloads pref com.besiktasliseba.test-crashstep showDownloads 0 1 Show Downloads in Dock|the Dock's Downloads
+T forceQuitMenu pref com.besiktasliseba.test-crashstep forceQuitEnabled 0 1 Force Quit in App Menus|the Force Quit menu item
+P DockMagnification part
+P ForceQuitMenu forceQuitMenu
+P MacStatusBarCore stock
+P MixAudio part
+N DockMagnification the Dock|MacDock
+N MacStatusBarCore the status bar|the Mac status bar
+U DockMagnification 22222222-2222-2222-2222-222222222222 arm64e
+R 8000 part
+R 9000 showDownloads
+R a000 part
+R b000 -
+U MacStatusBarCore 11111111-1111-1111-1111-111111111111 arm64
+R 8000 stock
+R 20000 -
+U MacStatusBarCore 11111111-1111-1111-1111-11111111111e arm64e
+R 8000 stock
+R 10000 macBanners
+R 11000 stock
+R 20000 -

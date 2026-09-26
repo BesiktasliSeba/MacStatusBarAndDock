@@ -1,0 +1,53 @@
+#!/bin/sh
+# MacStatusBar&Dock preinst: before the first install, note which of the old separate packages this replaces were installed, so their features
+# stay as they were (the postinst's migration reads the list; nothing else is done here).
+if [ "$1" = "install" ] || [ "$1" = "upgrade" ]; then
+    # Installed straight from a file (Filza: dpkg alone does not fetch dependencies): without Choicy or iCleaner Pro, or without AltList, it stops
+    # here, BEFORE anything is replaced, so the tweaks already installed stay as they are. Sileo, Zebra and the other apt-based managers fetch them in
+    # the same run, but apt usually UNPACKS every package first and configures them afterwards, so at this point a dependency from the same run is
+    # only "unpacked" (or on its way to "installed"): every state in which its files are on disk counts. Refused: not there at all, only its
+    # config files left, or half-installed (an unpack that failed or a removal half done: its files may be incomplete).
+    Q=/var/jb/usr/bin/dpkg-query
+    present() {   # present <package>...: one of them has its files on disk
+        for pkg in "$@"; do
+            case "$("$Q" -W -f='${db:Status-Status}' "$pkg" 2>/dev/null)" in
+                installed|unpacked|half-configured|triggers-awaited|triggers-pending) return 0 ;;
+            esac
+        done
+        return 1
+    }
+    if ! present com.opa334.choicy com.exile90.icleanerpro xyz.cypwn.icleanerpro; then
+        echo "MacStatusBar&Dock needs Choicy (or iCleaner Pro). Install Choicy from a package manager (Sileo, Zebra), then install this again."
+        echo "Nothing was changed."
+        exit 1
+    fi
+    if ! present com.opa334.altlist; then
+        echo "MacStatusBar&Dock needs AltList. Install AltList from a package manager (Sileo, Zebra), then install this again."
+        echo "Nothing was changed."
+        exit 1
+    fi
+    D=/var/jb/var/lib/macstatusbaranddock
+    mkdir -p "$D"
+    if [ ! -f "$D/migrated" ] && [ ! -f "$D/old-packages" ]; then
+        # apt (and Sileo through it) removes a replaced package in the same transaction BEFORE this runs; its history log already lists the
+        # removals of the transaction in progress (the entry after the last Start-Date), so they are read from there
+        H=/var/jb/var/log/apt/history.log
+        REMOVED=""
+        if [ -f "$H" ] && [ -n "$(find "$H" -mmin -30 2>/dev/null)" ]; then
+            n=$(grep -n '^Start-Date' "$H" | tail -n 1 | cut -d: -f1)
+            [ -n "$n" ] && REMOVED=$(tail -n +"$n" "$H" | grep -E '^(Remove|Purge):')
+        fi
+        : > "$D/old-packages.tmp"
+        for p in com.kaan.macstatusbar com.kaan.macsettings com.kaan.dockmagnification com.kaan.macappbridge com.kaan.mixaudio com.kaan.forcequitmenu com.kaan.graveescapetweak com.kaan.tabmutetweak com.kaan.volumeglobetweak brightnesskeytweak com.kaan.macstatusbartoggle com.kaan.dockmagnificationtoggle; do
+            s=$(/var/jb/usr/bin/dpkg-query -W -f='${db:Status-Status}' "$p" 2>/dev/null)
+            case "$s" in
+                ""|not-installed|config-files) found="" ;;
+                *) found=1 ;;
+            esac
+            case "$REMOVED" in *" $p:"*) found=1 ;; esac
+            [ -n "$found" ] && echo "$p" >> "$D/old-packages.tmp"
+        done
+        mv -f "$D/old-packages.tmp" "$D/old-packages"
+    fi
+fi
+exit 0

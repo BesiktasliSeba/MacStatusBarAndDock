@@ -1,0 +1,140 @@
+// test-crashblame.m -- Mac unit test for common/CrashBlame.h (the crash-report classifier). Run: tools/test-crashblame.sh
+#import "../common/CrashFeature.h"   // (CrashBlame.h, and the step 1b lookup of the top frame)
+static int failures = 0, total = 0;
+static const char *V(int v) { return v == kMSBDBlameOurs ? "OURS" : v == kMSBDBlameApple ? "APPLE" : v == kMSBDBlameOther ? "OTHER" : "UNKNOWN"; }
+static void Check(NSString *label, int got, NSString *blamed, int want) {
+    total++;
+    BOOL ok = got == want;
+    if (!ok) failures++;
+    printf("%s  %-48s %-7s (want %-7s) blamed: %s\n", ok ? "PASS" : "FAIL", label.UTF8String, V(got), V(want), blamed.UTF8String);
+}
+static NSData *Report(NSDictionary *body) {
+    NSMutableData *d = [[@"{\"bug_type\":\"309\",\"name\":\"SpringBoard\"}\n" dataUsingEncoding:NSUTF8StringEncoding] mutableCopy];
+    [d appendData:[NSJSONSerialization dataWithJSONObject:body options:0 error:nil]];
+    return d;
+}
+static NSDictionary *Img(NSString *path) { return @{@"path": path, @"name": path.lastPathComponent}; }
+static NSDictionary *F(int i) { return @{@"imageOffset": @1, @"imageIndex": @(i)}; }
+int main(int argc, char **argv) {
+    @autoreleasepool {
+        NSString *dir = argc > 1 ? @(argv[1]) : @"crash-fixtures";
+        NSString *b;
+        int v;
+        // The three fixtures (synthetic reports in the iOS 16 format).
+        v = MSBDBlameReportFile([dir stringByAppendingPathComponent:@"ours-in-faulting-thread.ips"], &b);        Check(@"fixture: ours in faulting thread", v, b, kMSBDBlameOurs);
+        v = MSBDBlameReportFile([dir stringByAppendingPathComponent:@"other-tweak.ips"], &b);                    Check(@"fixture: another tweak's crash", v, b, kMSBDBlameOther);
+        v = MSBDBlameReportFile([dir stringByAppendingPathComponent:@"apple-only-our-class-in-reason.ips"], &b); Check(@"fixture: Apple only, our class in reason", v, b, kMSBDBlameOurs);
+        // Edge cases.
+        NSArray *imgs = @[Img(@"/System/Library/CoreServices/SpringBoard.app/SpringBoard"), Img(@"/usr/lib/system/libsystem_kernel.dylib"),
+                          Img(@"/var/jb/Library/MobileSubstrate/DynamicLibraries/MacStatusBar.dylib"), Img(@"/var/jb/usr/lib/SomeLib.dylib"),
+                          Img(@"/private/preboot/X/jb-Y/procursus/usr/lib/libellekit.dylib"), Img(@"/var/jb/usr/lib/MacStatusBarAndDock/DockMagnification.dylib"),
+                          Img(@"/System/Library/Frameworks/Foundation.framework/Foundation")];
+        NSDictionary *(^Body)(NSArray *, id, id) = ^NSDictionary *(NSArray *fault, id exc, id asi) {
+            NSMutableDictionary *m = [@{@"faultingThread": @0, @"threads": @[@{@"triggered": @YES, @"frames": fault}], @"usedImages": imgs} mutableCopy];
+            if (exc) m[@"lastExceptionBacktrace"] = exc;
+            if (asi) m[@"asi"] = asi;
+            return m;
+        };
+        v = MSBDBlameReportData(Report(Body(@[F(1), F(0)], nil, nil)), &b);                          Check(@"Apple only, nothing of ours (counted)", v, b, kMSBDBlameApple);
+        v = MSBDBlameReportData(Report(Body(@[F(1), F(4), F(0)], nil, nil)), &b);                    Check(@"ElleKit + Apple only (platform = Apple)", v, b, kMSBDBlameApple);
+        // (the top-most non-Apple image decides, 2026-09-26: another tweak's crash with our code lower on the stack is theirs)
+        v = MSBDBlameReportData(Report(Body(@[F(1), F(3), F(2), F(0)], nil, nil)), &b);              Check(@"other tweak on top, our loader below", v, b, kMSBDBlameOther);
+        v = MSBDBlameReportData(Report(Body(@[F(1), F(0)], @[F(6), F(5), F(0)], nil)), &b);          Check(@"ours only in exception backtrace", v, b, kMSBDBlameOurs);
+        v = MSBDBlameReportData(Report(Body(@[F(1), F(3), F(0)], nil, @{@"x": @[@"-[DMStageLights update]: bad"]})), &b); Check(@"other tweak's frame, our class in reason", v, b, kMSBDBlameOurs);
+        v = MSBDBlameReportData(Report(Body(@[F(1), F(0)], nil, @{@"x": @[@"-[DMFApp bundleIdentifier]: nil; DMCProfile"]})), &b); Check(@"Apple DMF/DMC classes are not ours", v, b, kMSBDBlameApple);
+        v = MSBDBlameReportData(Report(Body(@[F(1), F(0)], nil, @{@"x": @[@"assert in com.besiktasliseba.macstatusbar"]})), &b); Check(@"our pref domain in text", v, b, kMSBDBlameOurs);
+        v = MSBDBlameReportData(Report(Body(@[F(1), F(3)], nil, @{@"x": @[@"MSBDGuardEvaluate failed"]})), &b); Check(@"MSBD function name in text", v, b, kMSBDBlameOurs);
+        v = MSBDBlameReportData(Report(Body(@[F(1), F(3)], nil, @{@"x": @[@"MSBuffer is not ours"]})), &b); Check(@"MSBuffer (MSB + lowercase) is not ours", v, b, kMSBDBlameOther);
+        v = MSBDBlameReportData(Report(Body(@[F(99), @{@"imageOffset": @1}], nil, nil)), &b);        Check(@"frames with no known image", v, b, kMSBDBlameUnknown);
+        v = MSBDBlameReportData(Report(@{@"usedImages": imgs}), &b);                                    Check(@"no threads at all", v, b, kMSBDBlameUnknown);
+        v = MSBDBlameReportData([@"{\"bug_type\":\"309\"}\n{\"threads\": [ {\"frames\": " dataUsingEncoding:NSUTF8StringEncoding], &b); Check(@"truncated report (being written)", v, b, kMSBDBlameUnknown);
+        v = MSBDBlameReportData([@"not json at all" dataUsingEncoding:NSUTF8StringEncoding], &b);     Check(@"garbage", v, b, kMSBDBlameUnknown);
+        v = MSBDBlameReportData([NSData data], &b);                                                    Check(@"empty file", v, b, kMSBDBlameUnknown);
+        v = MSBDBlameReportFile(@"/nonexistent/SpringBoard-x.ips", &b);                                Check(@"missing file", v, b, kMSBDBlameUnknown);
+        v = MSBDBlameReportData(Report(@{@"faultingThread": @"zero", @"threads": @[@"x", @{@"triggered": @YES, @"frames": @[F(5)]}], @"usedImages": @[@1, @"x"]}), &b);
+        Check(@"wrong types everywhere, no crash", v, b, kMSBDBlameUnknown);
+        // Legacy layout: names only in imageExtraInfo, images without paths.
+        v = MSBDBlameReportData(Report(@{@"threads": @[@{@"triggered": @YES, @"frames": @[F(0), F(1)]}], @"legacyInfo": @{@"imageExtraInfo": @[@{@"name": @"libsystem_kernel.dylib"}, @{@"name": @"MacStatusBarCore.dylib"}]}}), &b);
+        Check(@"legacy imageExtraInfo names", v, b, kMSBDBlameOurs);
+        v = MSBDBlameReportData(Report(@{@"threads": @[@{@"triggered": @YES, @"frames": @[F(0)]}], @"binaryImages": @[@{@"path": @"/var/jb/Library/MobileSubstrate/DynamicLibraries/Foo.dylib"}]}), &b);
+        Check(@"legacy binaryImages, other tweak", v, b, kMSBDBlameOther);
+        // Dopamine reports the tweak folder's real path (.../procursus/usr/lib/TweakInject): our loader there is ours, another tweak there is not.
+        v = MSBDBlameReportData(Report(@{@"threads": @[@{@"triggered": @YES, @"frames": @[F(0), F(1)]}], @"usedImages": @[Img(@"/private/preboot/AB/dopamine-X/procursus/usr/lib/TweakInject/SomeTweak.dylib"), Img(@"/private/preboot/AB/dopamine-X/procursus/usr/lib/TweakInject/MacDock.dylib")]}), &b);
+        Check(@"Dopamine TweakInject path, another tweak above our loader", v, b, kMSBDBlameOther);
+        v = MSBDBlameReportData(Report(@{@"threads": @[@{@"triggered": @YES, @"frames": @[F(1), F(0)]}], @"usedImages": @[Img(@"/private/preboot/AB/dopamine-X/procursus/usr/lib/TweakInject/SomeTweak.dylib"), Img(@"/private/preboot/AB/dopamine-X/procursus/usr/lib/TweakInject/MacDock.dylib")]}), &b);
+        Check(@"Dopamine TweakInject path, our loader on top", v, b, kMSBDBlameOurs);
+        v = MSBDBlameReportData(Report(@{@"threads": @[@{@"triggered": @YES, @"frames": @[F(0)]}], @"usedImages": @[Img(@"/private/preboot/AB/dopamine-X/procursus/usr/lib/TweakInject/SomeTweak.dylib")]}), &b);
+        Check(@"Dopamine TweakInject path, other tweak", v, b, kMSBDBlameOther);
+        // Trailing text after the body (seen in a copied report).
+        NSMutableData *trail = [Report(Body(@[F(5)], nil, nil)) mutableCopy]; [trail appendData:[@"\n}\nSpringBoard-2026.ips\n" dataUsingEncoding:NSUTF8StringEncoding]];
+        v = MSBDBlameReportData(trail, &b);                                                            Check(@"trailing text after the body", v, b, kMSBDBlameOurs);
+        // Top-most non-Apple image, pass-through hooks, window engines (audit 3, finding 1). The map marks DockMagnification 0x100-0x1ff (its
+        // -[UIApplication sendEvent:] hook) as transparent.
+        {
+            NSString *map = @"T transparent transparent\nT part part\nP DockMagnification part\nU DockMagnification 22222222-2222-2222-2222-222222222222 arm64e\nR 0 part\nR 100 transparent\nR 200 part\nR 300 -\n";
+            NSMutableArray *im = [imgs mutableCopy];
+            im[5] = @{@"path": @"/var/jb/usr/lib/MacStatusBarAndDock/DockMagnification.dylib", @"name": @"DockMagnification.dylib", @"uuid": @"22222222-2222-2222-2222-222222222222"};
+            [im addObject:Img(@"/var/jb/usr/lib/TweakInject/Aerial.dylib")];                                  // 7: a window engine we drive
+            [im addObject:Img(@"/System/Library/PrivateFrameworks/UIKitCore.framework/UIKitCore")];            // 8
+            NSDictionary *(^G)(int, int) = ^NSDictionary *(int i, int off) { return @{@"imageOffset": @(off), @"imageIndex": @(i)}; };
+            NSDictionary *(^B2)(NSArray *, id) = ^NSDictionary *(NSArray *fault, id exc) {
+                NSMutableDictionary *m = [@{@"faultingThread": @0, @"threads": @[@{@"triggered": @YES, @"frames": fault}], @"usedImages": im} mutableCopy];
+                if (exc) m[@"lastExceptionBacktrace"] = exc;
+                return m;
+            };
+            NSArray *tap = @[G(8, 1), G(5, 0x150), G(8, 2), G(0, 1)];   // UIKit crash <- our sendEvent hook <- UIKit <- SpringBoard
+            v = MSBDBlameReportBodyMap(B2(@[G(1, 1), G(3, 1), G(8, 1), G(5, 0x150), G(0, 1)], nil), map, &b);   Check(@"other tweak on top, our sendEvent hook below", v, b, kMSBDBlameOther);
+            v = MSBDBlameReportBodyMap(B2(@[G(1, 1), G(3, 1), G(8, 1), G(5, 0x150), G(0, 1)], nil), nil, &b);   Check(@"... the same without a map", v, b, kMSBDBlameOther);
+            v = MSBDBlameReportBodyMap(B2(@[G(8, 1), G(5, 0x150), G(3, 1), G(0, 1)], nil), map, &b);           Check(@"UIKit crash, our hook called by another tweak", v, b, kMSBDBlameOther);
+            v = MSBDBlameReportBodyMap(B2(tap, nil), map, &b);                                                   Check(@"UIKit crash, only our pass-through hook", v, b, kMSBDBlameOurs);
+            v = MSBDBlameReportBodyMap(B2(@[G(8, 1), G(5, 0x50), G(8, 2), G(0, 1)], nil), map, &b);            Check(@"crash under our real Dock code", v, b, kMSBDBlameOurs);
+            v = MSBDBlameReportBodyMap(B2(@[G(8, 1), G(5, 0x50), G(5, 0x150), G(3, 1)], nil), map, &b);        Check(@"our real code above our hook and a tweak", v, b, kMSBDBlameOurs);
+            v = MSBDBlameReportBodyMap(B2(@[G(7, 1), G(8, 1), G(5, 0x50), G(0, 1)], nil), map, &b);            Check(@"Aerial on top, our code calling it", v, b, kMSBDBlameOurs);
+            v = MSBDBlameReportBodyMap(B2(@[G(7, 1), G(8, 1), G(5, 0x150), G(0, 1)], nil), map, &b);           Check(@"Aerial on top, only our pass-through below", v, b, kMSBDBlameOther);
+            v = MSBDBlameReportBodyMap(B2(@[G(7, 1), G(8, 1), G(0, 1)], nil), map, &b);                        Check(@"Aerial on top, nothing of ours", v, b, kMSBDBlameOther);
+            v = MSBDBlameReportBodyMap(B2(@[G(1, 1), G(5, 0x50), G(0, 1)], @[G(6, 1), G(3, 1), G(8, 1)]), map, &b); Check(@"exception thrown in a tweak, ours on the thread", v, b, kMSBDBlameOther);
+            v = MSBDBlameReportBodyMap(B2(@[G(1, 1), G(3, 1), G(0, 1)], @[G(6, 1), G(8, 1)]), map, &b);         Check(@"Apple-only exception, a tweak on the thread", v, b, kMSBDBlameOther);
+            // A signal handler's frames (above "_sigtramp", e.g. the test builds' death log in MacStatusBarCore) are not the crash (finding 8).
+            NSDictionary *sigtramp = @{@"imageOffset": @1, @"imageIndex": @1, @"symbol": @"_sigtramp"};
+            v = MSBDBlameReportBodyMap(B2(@[G(1, 1), G(2, 1), sigtramp, G(3, 1), G(0, 1)], nil), map, &b);  Check(@"our signal handler above a tweak's crash", v, b, kMSBDBlameOther);
+            v = MSBDBlameReportBodyMap(B2(@[G(1, 1), G(2, 1), sigtramp, G(8, 1), G(0, 1)], nil), map, &b);  Check(@"our signal handler above an Apple crash", v, b, kMSBDBlameApple);
+            v = MSBDBlameReportBodyMap(B2(@[G(1, 1), G(3, 1), sigtramp, G(5, 0x50), G(0, 1)], nil), map, &b); Check(@"a tweak's handler above our crash", v, b, kMSBDBlameOurs);
+            NSString *image = nil, *uuid = nil, *where = nil; unsigned long long off = 0;
+            total++; BOOL got = MSBDFeatureTopFrame(B2(@[G(5, 0x250), sigtramp, G(5, 0x50)], nil), map, &image, &uuid, &off, &where);
+            if (!(got && off == 0x50)) { failures++; printf("FAIL  "); } else printf("PASS  ");
+            printf("%-48s %s+0x%llx\n", "1b: not the handler's frame", image.UTF8String, off);
+            // step 1b's place: our pass-through hook is passed over while other code of ours is there, and used when it is all there is
+            total++; got = MSBDFeatureTopFrame(B2(@[G(8, 1), G(5, 0x150), G(5, 0x50), G(0, 1)], nil), map, &image, &uuid, &off, &where);
+            if (!(got && off == 0x50)) { failures++; printf("FAIL  "); } else printf("PASS  ");
+            printf("%-48s %s+0x%llx\n", "1b: the hook is passed over", image.UTF8String, off);
+            total++; got = MSBDFeatureTopFrame(B2(tap, nil), map, &image, &uuid, &off, &where);
+            if (!(got && off == 0x150)) { failures++; printf("FAIL  "); } else printf("PASS  ");
+            printf("%-48s %s+0x%llx\n", "1b: only the hook -> the hook", image.UTF8String, off);
+        }
+        // Oversize (over the 3 MB cap): not parsed, counted.
+        NSMutableData *big = [NSMutableData dataWithLength:MSBD_BLAME_MAX_BYTES + 1];
+        v = MSBDBlameReportData(big, &b);                                                              Check(@"over the size cap", v, b, kMSBDBlameUnknown);
+        // The guard's summary: the top frames of OUR images only (symbol + offset, or the offset in the image), at most 5.
+        NSDictionary *(^Sym)(int, NSString *) = ^NSDictionary *(int i, NSString *sym) { return @{@"imageOffset": @0x4d2, @"imageIndex": @(i), @"symbol": sym, @"symbolLocation": @40}; };
+        NSArray *fr = MSBDBlameOurFrames(Body(@[F(1), Sym(5, @"-[DMStageLights update]"), F(3), F(5), Sym(2, @"(unsymbolicated)"), F(0)], nil, nil), 5);
+        total++; if (!([fr isEqual:@[@"DockMagnification.dylib -[DMStageLights update] + 40", @"DockMagnification.dylib + 0x1", @"MacStatusBar.dylib + 0x4d2"]])) { failures++; printf("FAIL  "); } else printf("PASS  ");
+        printf("%-48s %s\n", "our frames only, in order", [fr componentsJoinedByString:@" | "].UTF8String);
+        fr = MSBDBlameOurFrames(Body(@[F(1), F(0)], @[F(6), F(5), F(5), F(5), F(5), F(5), F(5)], nil), 5);
+        total++; if (fr.count != 5) { failures++; printf("FAIL  "); } else printf("PASS  ");
+        printf("%-48s %lu frames\n", "from the exception backtrace, at most 5", (unsigned long)fr.count);
+        fr = MSBDBlameOurFrames(Body(@[F(1), F(3), F(0)], nil, nil), 5);
+        total++; if (fr.count) { failures++; printf("FAIL  "); } else printf("PASS  ");
+        printf("%-48s %lu frames\n", "another tweak's crash: no frames at all", (unsigned long)fr.count);
+        // Speed on a large realistic report: 900 images, 60 threads x 40 frames.
+        NSMutableArray *many = [NSMutableArray array], *threads = [NSMutableArray array];
+        for (int i = 0; i < 900; i++) [many addObject:Img([NSString stringWithFormat:@"/System/Library/PrivateFrameworks/F%d.framework/F%d", i, i])];
+        for (int t = 0; t < 60; t++) { NSMutableArray *fr = [NSMutableArray array]; for (int k = 0; k < 40; k++) [fr addObject:@{@"imageOffset": @(k), @"symbol": @"-[SBSomething somethingWithArgument:]", @"symbolLocation": @12, @"imageIndex": @((t * 40 + k) % 900)}]; [threads addObject:@{@"id": @(t), @"frames": fr}]; }
+        NSData *large = Report(@{@"faultingThread": @3, @"threads": threads, @"usedImages": many});
+        CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
+        v = MSBDBlameReportData(large, &b);
+        printf("      large report: %lu KB classified in %.1f ms (Mac)\n", (unsigned long)large.length / 1024, (CFAbsoluteTimeGetCurrent() - t0) * 1000);
+        Check(@"large Apple-only report", v, b, kMSBDBlameApple);
+    }
+    printf("%d/%d passed\n", total - failures, total);
+    return failures ? 1 : 0;
+}

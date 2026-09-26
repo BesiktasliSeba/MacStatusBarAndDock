@@ -1,0 +1,8 @@
+#!/bin/sh
+# MacStatusBar&Dock prerm: the root helper is stopped first (so it cannot re-apply anything meanwhile). On removal (not on an upgrade) everything we
+# changed is given back: the window engines' own settings, our Choicy entries, the engines renamed for iCleaner Pro.
+/var/jb/usr/bin/launchctl unload /var/jb/Library/LaunchDaemons/com.besiktasliseba.sshtoggled.plist 2>/dev/null
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    [ -x /var/jb/usr/libexec/sshtoggled ] && /var/jb/usr/libexec/sshtoggled --uninstall
+fi
+exit 0

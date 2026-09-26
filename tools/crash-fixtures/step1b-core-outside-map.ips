@@ -1,0 +1,99 @@
+{"app_name": "SpringBoard", "timestamp": "2026-09-26 10:00:00.00 +0200", "bug_type": "309", "os_version": "iPhone OS 16.5 (20F66)", "incident_id": "SYNTHETIC-TEST-FIXTURE", "name": "SpringBoard", "bundleID": "com.apple.springboard"}
+{
+ "uptime": 100,
+ "procRole": "Foreground",
+ "incident": "SYNTHETIC-TEST-FIXTURE",
+ "note": "",
+ "exception": {
+  "type": "EXC_BAD_ACCESS",
+  "signal": "SIGSEGV"
+ },
+ "faultingThread": 1,
+ "threads": [
+  {
+   "id": 1,
+   "frames": [
+    {
+     "imageOffset": 1234,
+     "symbol": "mach_msg_trap",
+     "imageIndex": 1
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "triggered": true,
+   "queue": "com.apple.main-thread",
+   "frames": [
+    {
+     "imageOffset": 196608,
+     "imageIndex": 2
+    },
+    {
+     "imageOffset": 4000,
+     "imageIndex": 3
+    },
+    {
+     "imageOffset": 5000,
+     "imageIndex": 0
+    }
+   ]
+  }
+ ],
+ "usedImages": [
+  {
+   "source": "P",
+   "arch": "arm64e",
+   "base": 4294967296,
+   "size": 16384,
+   "uuid": "00000000-0000-0000-0000-00000000aaaa",
+   "path": "/System/Library/CoreServices/SpringBoard.app/SpringBoard",
+   "name": "SpringBoard"
+  },
+  {
+   "source": "P",
+   "arch": "arm64e",
+   "base": 6000000000,
+   "size": 200000,
+   "uuid": "00000000-0000-0000-0000-00000000bbbb",
+   "path": "/usr/lib/system/libsystem_kernel.dylib",
+   "name": "libsystem_kernel.dylib"
+  },
+  {
+   "source": "P",
+   "arch": "arm64e",
+   "base": 7000000000,
+   "size": 4000000,
+   "uuid": "11111111-1111-1111-1111-11111111111e",
+   "path": "/private/preboot/SYNTHETIC/jb-SYNTHETIC/procursus/usr/lib/MacStatusBarAndDock/MacStatusBarCore.dylib",
+   "name": "MacStatusBarCore.dylib"
+  },
+  {
+   "source": "P",
+   "arch": "arm64e",
+   "base": 6100000000,
+   "size": 30000000,
+   "uuid": "00000000-0000-0000-0000-00000000cccc",
+   "path": "/System/Library/PrivateFrameworks/UIKitCore.framework/UIKitCore",
+   "name": "UIKitCore"
+  },
+  {
+   "source": "P",
+   "arch": "arm64e",
+   "base": 6200000000,
+   "size": 5000000,
+   "uuid": "00000000-0000-0000-0000-00000000dddd",
+   "path": "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation",
+   "name": "CoreFoundation"
+  },
+  {
+   "source": "P",
+   "arch": "arm64e",
+   "base": 8000000000,
+   "size": 100000,
+   "uuid": "00000000-0000-0000-0000-00000000eeee",
+   "path": "/private/preboot/SYNTHETIC/jb-SYNTHETIC/procursus/usr/lib/TweakInject/MacStatusBar.dylib",
+   "name": "MacStatusBar.dylib"
+  }
+ ]
+}

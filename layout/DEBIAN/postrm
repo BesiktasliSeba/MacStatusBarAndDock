@@ -1,0 +1,21 @@
+#!/bin/sh
+# MacStatusBar&Dock postrm: after removal, the helper's markers go (the record of the one-time move from the old packages stays unless purged).
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    S=/var/jb/var/lib/sshtoggled-engines
+    rm -f "$S/msb-off-restored" "$S/msb-off-alert" "$S/msb-config"
+    rm -f /var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-CrashGuard.txt /var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-RecentlyOn.txt   # (crash guard)
+    P=/var/jb/var/mobile/Library/Preferences
+    rm -f "$P/MacStatusBarAndDock-CrashRecord.txt" "$P/MacStatusBarAndDock-CrashTweakName.txt" "$P/MacStatusBarAndDock-CrashVerdicts.txt" "$P/MacStatusBarAndDock-CrashStep.txt"   # (its record, the other-tweak note's name, the verdicts, step 1b's skip list)
+    # what the helper and the Settings pages left behind (the prerm's --uninstall has already given everything back from them): the copy of Choicy's
+    # settings from before our first change (only ever used to rebuild our change record: stale once we are gone), the helper's log, its SSH state
+    # (also the old copy in mobile's folder), the landscape icon-layout cache. The helper's folder goes if nothing else is left in it (a "renamed"
+    # record that could not be given back stays, so the next install can still give those engines back).
+    rm -f "$P/MacStatusBar-ChoicyBackup.plist" /var/jb/var/log/sshtoggled-engines.log /var/jb/var/log/sshtoggled-engines.log.old
+    rm -f "$S/ssh-state" "$S"/.ssh-state.* /var/jb/var/mobile/.sshtoggle-state
+    rm -f /var/mobile/Library/Caches/com.besiktasliseba.macsettings.landscapeicons.plist
+    rmdir "$S" 2>/dev/null
+    [ "$1" = "purge" ] && rm -rf /var/jb/var/lib/macstatusbaranddock
+    # the system pointer process would keep running the removed Mac pointer code until a reboot: restarted (see the postinst)
+    /var/jb/usr/bin/killall -9 pointeruid 2>/dev/null
+fi
+exit 0
