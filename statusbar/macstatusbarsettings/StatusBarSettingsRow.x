@@ -29,13 +29,16 @@
 @interface PSSpecifier : NSObject
 + (instancetype)preferenceSpecifierNamed:(NSString *)name target:(id)target set:(SEL)set get:(SEL)get detail:(Class)detail cell:(long long)cell edit:(Class)edit;
 - (void)setProperty:(id)value forKey:(NSString *)key;
+- (id)propertyForKey:(NSString *)key;
 @property (nonatomic, retain) NSString *identifier;
+@property (nonatomic, retain) NSString *name;
 @end
 
 @interface PSListController : UIViewController
 - (NSArray *)specifiers;
 - (void)reloadSpecifierID:(NSString *)identifier;
 - (void)insertSpecifier:(PSSpecifier *)specifier atIndex:(NSInteger)index animated:(BOOL)animated;
+- (void)removeSpecifier:(PSSpecifier *)specifier animated:(BOOL)animated;
 - (NSIndexPath *)indexPathForSpecifier:(PSSpecifier *)specifier;
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath;
 @end
@@ -53,6 +56,14 @@ static NSBundle *PrefsBundle(void) {
 // Where our rows go: right below General, in General's own block -- General, Status Bar, Dock, Control Center. Found by the rows' identifiers
 // (ControlCenter, General), never by a fixed index, since other tweaks (Shuffle, PreferenceLoader) change the list. Status Bar goes in front of the
 // Dock row when that is already there (both rows insert themselves, in whichever order); without Control Center and General, before Accessibility.
+// No known row found (an iPadOS whose main list we have not seen: iPadOS 17 tester, 2026-09-26, got no rows at all, so not even Enable Anyway):
+// the rows go near the top instead -- the start of the list's second block, below the Apple account -- so they always show, on any version.
+static NSInteger TopIndex(NSArray *specs) {
+    SEL cellType = NSSelectorFromString(@"cellType");
+    for (NSUInteger i = 1; i < specs.count; i++)
+        if ([specs[i] respondsToSelector:cellType] && ((long long (*)(id, SEL))objc_msgSend)(specs[i], cellType) == 0) return (NSInteger)i + 1;   // (0: PSGroupCell)
+    return specs.count ? 1 : 0;
+}
 static NSInteger AnchorIndex(NSArray *specs, NSString *before, NSString *after) {
     NSInteger cc = NSNotFound, general = NSNotFound, accessibility = NSNotFound, own = NSNotFound;
     for (NSUInteger i = 0; i < specs.count; i++) {
@@ -104,6 +115,8 @@ static void InsertRow(PSListController *list) {
     WatchRowValue(list);
     for (NSUInteger i = 0; i < specs.count; i++) if ([[specs[i] identifier] isEqualToString:kRowID]) return;   // already there
     NSInteger anchor = AnchorIndex(specs, kDockRowID, nil);
+    BOOL newOS = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17;   // (15/16: exactly as before)
+    if (anchor == NSNotFound && newOS) anchor = TopIndex(specs);   // (only ever the main list: this runs from PSUIPrefsListController alone)
     Class detail = PrefsBundle() ? NSClassFromString(@"MSBRootListController") : Nil;   // the class only exists once the bundle is loaded
     if (anchor == NSNotFound || !PrefsBundle() || !detail) return;         // not the main list, or the page is missing
 
@@ -116,6 +129,10 @@ static void InsertRow(PSListController *list) {
     UIImage *icon = [UIImage imageNamed:@"icon" inBundle:PrefsBundle() compatibleWithTraitCollection:nil];
     if (icon) [row setProperty:icon forKey:@"iconImage"];
     [list insertSpecifier:row atIndex:anchor animated:NO];
+    if (newOS) {   // (the same page listed with the other tweaks by the postinst on 17+: hidden while our own row is there)
+        for (PSSpecifier *sp in [[list specifiers] copy])
+            if (![[sp identifier] isEqualToString:kRowID] && [[sp name] isEqualToString:@"Status Bar"] && [sp propertyForKey:@"isController"]) [list removeSpecifier:sp animated:NO];
+    }
 }
 
 %hook PSUIPrefsListController

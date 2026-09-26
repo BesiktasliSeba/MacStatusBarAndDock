@@ -25,6 +25,28 @@ if [ "$1" = "configure" ]; then
     [ -x "$H" ] && "$H" --migrate
     [ -x "$H" ] && "$H" --freeze-defaults   # (... and an update keeps the old defaults of untouched settings, after the move from the old packages)
     [ -x "$H" ] && "$H" --after-install
+    # iPadOS 17 and newer (untested): our own Settings rows may not find their place in Settings' main list there, so the Status Bar and Dock
+    # pages are also listed the ordinary way, with the other tweaks (PreferenceLoader); the rows hide these entries when they do show. On 15/16
+    # nothing is added (and any left from an earlier install on a newer iPadOS goes).
+    PL=/var/jb/Library/PreferenceLoader/Preferences
+    OSMAJ=$([ -x "$H" ] && "$H" --os-major 2>/dev/null)
+    if [ -n "$OSMAJ" ] && [ "$OSMAJ" -ge 17 ] 2>/dev/null && [ -d "$PL" ]; then
+        for e in "MacStatusBarPrefs MSBRootListController Status_Bar" "DockMagnificationPrefs DMRootListController Dock"; do
+            set -- $e
+            label=$(echo "$3" | tr '_' ' ')
+            cat > "$PL/MacStatusBarAndDock-$1.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>entry</key><dict>
+<key>bundle</key><string>$1</string><key>cell</key><string>PSLinkCell</string><key>detail</key><string>$2</string>
+<key>icon</key><string>icon.png</string><key>isController</key><true/><key>label</key><string>$label</string>
+</dict></dict></plist>
+PLIST
+            chmod 644 "$PL/MacStatusBarAndDock-$1.plist"
+        done
+    else
+        rm -f "$PL/MacStatusBarAndDock-MacStatusBarPrefs.plist" "$PL/MacStatusBarAndDock-DockMagnificationPrefs.plist"
+    fi
     $L unload /var/jb/Library/LaunchDaemons/com.besiktasliseba.sshtoggled.plist 2>/dev/null
     $L load /var/jb/Library/LaunchDaemons/com.besiktasliseba.sshtoggled.plist 2>/dev/null
     # the system pointer process keeps the Mac pointer code it loaded at start, and a respring does not restart it on iPadOS 16: it is stopped

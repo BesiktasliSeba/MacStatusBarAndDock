@@ -260,6 +260,7 @@ static void DMIdleWindowBisect(NSUInteger i, NSArray<UIWindow *> *list);
 #endif
 static long DMLandscapeSide(void);   // (defined with DMRealInterfaceOrientation)
 static BOOL DMLockUp(id mgr);
+static BOOL DMCoverSheetShown(void);
 static NSArray<UIWindow *> *DMAllWindows(void);
 static int gDMSnapHits = 0, gDMSnapMisses = 0, gDMSnapWinHits = 0, gDMSnapWinMisses = 0;   // (watcher snapshot counts, for the perf summary)
 static void DMSnapInvalidate(void);
@@ -3582,7 +3583,15 @@ static void DMVetoFrameHoldStart(id scene, NSString *sid, NSString *bundle, id c
     if (!source) {   // else the window's content area on the screen, in the scene's terms (iPadOS 15 landscape scenes hold width and height swapped)
         UIView *st = DMStageForBundle(bundle), *in = DMStageInnerView(st);
         CGRect r = CGRectNull;
-        if (in.window) r = [in convertRect:in.bounds toView:nil];
+        // Where we placed the window, when we have: a window still zooming open from its Dock icon is on the screen at the icon's corner
+        // (2026-09-26, M1: Twitter's scene was held at {1110, 806}, the window opened in the bottom-right corner and distorted)
+        NSValue *intent = st ? objc_getAssociatedObject(st, kStageIntentKey) : nil;
+        if (intent && st.window && st.superview) {
+            CGRect sf = [st.superview convertRect:intent.CGRectValue toView:nil];
+            r = gAerialFlavor == 5 ? CGRectMake(sf.origin.x + 6.0, sf.origin.y + 24.0, MAX(0, sf.size.width - 12.0), MAX(0, sf.size.height - 25.0))
+                                   : CGRectMake(sf.origin.x, sf.origin.y + 24.0, sf.size.width, MAX(0, sf.size.height - 24.0));
+        }
+        else if (in.window) r = [in convertRect:in.bounds toView:nil];
         else if (st.window) {   // (a cold launch has no layer host yet: the app area worked out from the window; 5.0 puts it 6 pt in from the sides and 24 pt below the top, 1 pt above the bottom, as its own scene frames show)
             CGRect sf = [st convertRect:st.bounds toView:nil];
             r = gAerialFlavor == 5 ? CGRectMake(sf.origin.x + 6.0, sf.origin.y + 24.0, MAX(0, sf.size.width - 12.0), MAX(0, sf.size.height - 25.0))
@@ -3595,7 +3604,7 @@ static void DMVetoFrameHoldStart(id scene, NSString *sid, NSString *bundle, id c
         o = ((long (*)(id, SEL))objc_msgSend)(incoming, oriSel);
         if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 16) o = 1;   // (iPadOS 16 keeps window scenes at 1, frame as on the screen: see DMPortraitWindowSettings)
         else if (o == 3 || o == 4) r.size = CGSizeMake(r.size.height, r.size.width);
-        f = r; source = @"the window on the screen";
+        f = r; source = intent ? @"where the window was placed" : @"the window on the screen";
     }
     if (!gVetoFrameHolds) gVetoFrameHolds = [NSMutableDictionary dictionary];
     gVetoFrameHolds[sid] = @{ @"frame": [NSValue valueWithCGRect:f], @"orientation": @(o), @"until": @(CACurrentMediaTime() + 1.0), @"bundle": [bundle copy] };
@@ -3996,6 +4005,17 @@ static void DMSettleLockScreenClock(void) {
     id after = nil; @try { after = [dvc valueForKey:@"_timerToken"]; } @catch (id e) {}
     DMLog([NSString stringWithFormat:@"[lock] the Lock Screen clock was still ticking while not shown: %@", after ? @"still subscribed" : @"stopped"]);
 }
+// Locked or the Cover Sheet down: the traffic lights and menu titles of every status bar copy go at once, not only at its next layout -- a copy
+// behind the locked screen may not lay out again before it shows (iPad 2, 2026-09-26: Settings' lights on the Lock Screen after the Apple menu's
+// Lock Screen / Sleep). Unlocking brings them back with the normal layout.
+static void DMHideAppBarItemsNow(void) {
+    static const void *keys[] = { &kLightsKey, &kAppLabelKey, &kAppButtonKey, &kAppPillKey, &kEditLabelKey, &kEditButtonKey, &kEditPillKey,
+        &kGoLabelKey, &kGoButtonKey, &kGoPillKey, &kWinLabelKey, &kWinButtonKey, &kWinPillKey, &kAudioLabelKey, &kAudioButtonKey, &kAudioPillKey };
+    for (UIView *fg in gCopies.allObjects) {
+        for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) ((UIView *)objc_getAssociatedObject(fg, *(const void **)keys[i])).hidden = YES;
+        [fg setNeedsLayout];
+    }
+}
 static void DMWatchLock(void) {
     static BOOL wasLocked = NO, seenFirst = NO;
     id mgr = DMCall(objc_getClass("SBLockScreenManager"), @"sharedInstance");
@@ -4010,10 +4030,22 @@ static void DMWatchLock(void) {
         if (locked) unlockedAt = 0; else if (!unlockedAt) unlockedAt = now;
         if (!locked && now - lastSettle > 2.0 && (now - firstSeen < 60.0 || (now - unlockedAt > 2.0 && now - unlockedAt < 10.0))) { lastSettle = now; DMSettleLockScreenClock(); }
     }
+    {   // the Cover Sheet coming down or going up while unlocked: the status bars lay out again (only the Apple menu while it is down)
+        static BOOL wasCover = NO;
+        BOOL cover = DMCoverSheetShown();
+        if (cover != wasCover) {
+            wasCover = cover;
+            if (cover) DMHideAppBarItemsNow(); else for (UIView *fg in gCopies.allObjects) [fg setNeedsLayout];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ for (UIView *fg in gCopies.allObjects) [fg setNeedsLayout]; });
+        }
+    }
     if (!seenFirst) { seenFirst = YES; wasLocked = locked; return; }
     if (locked == wasLocked) return;
     wasLocked = locked;
     DMLog([NSString stringWithFormat:@"[lock] screen %@", locked ? @"locked" : @"unlocked"]);
+    // every status bar copy lays out again: locked, only the Apple menu (no traffic lights, no menu titles); unlocked, everything back
+    if (locked) DMHideAppBarItemsNow(); else for (UIView *fg in gCopies.allObjects) [fg setNeedsLayout];
+    if (!locked) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ for (UIView *fg in gCopies.allObjects) [fg setNeedsLayout]; });
     if (gStockBar) return;   // (stock status bar: the engine's windows are its own business)
     if (!locked) { extern void DMZetsuAfterUnlock(void); dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMZetsuAfterUnlock(); }); }
     if (!locked) for (NSNumber *ms in @[@600, @1600]) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(ms.intValue * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ DMWakeAllStages([NSString stringWithFormat:@"%d ms after unlock", ms.intValue]); });
@@ -4433,6 +4465,14 @@ static void DMRepairCollapsedStage(UIView *stage) {
     stage.transform = CGAffineTransformIdentity;
     DMLog([NSString stringWithFormat:@"[aerial5] %@: its transform had collapsed to zero -- set back to identity (frame now %@)", DMStageBundle(stage), NSStringFromCGRect(stage.frame)]);
 }
+// Puts a window at a frame whatever transform it has right now. Setting .frame on a view with a transform makes its size frame / scale: Aerial 5.0
+// opens a window from a Dock icon at ~0.3x and zooms it up, and a frame set then gave it a ~3.3x size (2026-09-26, M1: Twitter came up tiny
+// and distorted, told a 3139 x 2207 size). Size and centre do not depend on the transform.
+static void DMSetStageFrameSafe(UIView *stage, CGRect f) {
+    if (CGAffineTransformIsIdentity(stage.transform)) { stage.frame = f; return; }
+    stage.bounds = CGRectMake(stage.bounds.origin.x, stage.bounds.origin.y, f.size.width, f.size.height);
+    stage.center = CGPointMake(CGRectGetMidX(f), CGRectGetMidY(f));
+}
 static void DMAerialMoveStage(UIView *stage, CGRect target, void (^done)(void)) {
     DMAerial5SyncState(stage, target);   // before moving: Aerial would otherwise pull it back to its own remembered frame
     Class zetsuClass = objc_getClass("ZetsuWindow");
@@ -4441,7 +4481,7 @@ static void DMAerialMoveStage(UIView *stage, CGRect target, void (^done)(void)) 
         if (!gMoveKeepsOrder) [stage.superview bringSubviewToFront:stage];
         DMShowMilkyWayVeil(stage);   // the content re-layout that follows lags the frame change — hide the gap instead of showing it as a grey bar
         MSBAnimate(0.36, 0, 1.0, UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction, ^{
-            stage.frame = target;
+            DMSetStageFrameSafe(stage, target);
             [stage layoutIfNeeded];
         }, ^(BOOL finished) { DMRememberStageFrame(stage); if (done) done(); });
         return;
@@ -4449,7 +4489,7 @@ static void DMAerialMoveStage(UIView *stage, CGRect target, void (^done)(void)) 
     SEL front = DMAerialSel(@"_bringStageToFrontIfNeeded"), scale = DMAerialSel(@"adjustContentScaleToHost");
     if (!gMoveKeepsOrder && [stage respondsToSelector:front]) ((void (*)(id, SEL))objc_msgSend)(stage, front);
     MSBAnimate(0.36, 0, 1.0, UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction, ^{
-        stage.frame = target;
+        DMSetStageFrameSafe(stage, target);
         [stage layoutIfNeeded];
         if ([stage respondsToSelector:scale]) ((void (*)(id, SEL))objc_msgSend)(stage, scale);
     }, ^(BOOL finished) { DMRememberStageFrame(stage); if (done) done(); });
@@ -5622,6 +5662,7 @@ static void DMPromptForSide(UIView *stage, NSString *newBundle, NSString *leftBu
 // Moves every window of the group into its slot. `fresh` (the window that has just opened) appears in its slot; the others slide.
 static void DMAutoHideBeforeRetile(void);
 static void DMAutoHideAfterRetile(void);
+static void DMSetStageIntent(UIView *stage, CGRect frame);
 static void DMApplyGroupSlots(UIView *fresh) {
     DMAutoHideBeforeRetile();
     for (NSString *b in [gFitGroup copy]) {
@@ -5631,8 +5672,11 @@ static void DMApplyGroupSlots(UIView *fresh) {
         if (s == fresh && DMIsZetsuWindow(s)) DMZetsuMove((UIWindow *)s, f, NO, nil);
         else if (s == fresh) {
             gStageFrameBypass = YES;
-            [UIView performWithoutAnimation:^{ s.frame = f; [s layoutIfNeeded]; }];
+            [UIView performWithoutAnimation:^{ DMSetStageFrameSafe(s, f); [s layoutIfNeeded]; }];
             gStageFrameBypass = NO;
+            // (and remembered as its place, Aerial 5.0's own remembered state included: a window opened from its Dock icon is zoomed out to
+            // that state afterwards, so the tile was lost and the window came up at the default place, 2026-09-26 M1, Settings next to Twitter)
+            DMSetStageIntent(s, f);
         } else DMAerialMoveStage(s, f, nil);
     }
     DMAutoHideAfterRetile();
@@ -5677,6 +5721,18 @@ static void DMSetStageIntent(UIView *stage, CGRect frame);
 // placed only once the app had attached (~1.2 s later) and visibly jumped from the middle of the screen into its tile (measured on the iPad 2 with
 // Aerial 3.0: 599 -> 379 pt wide from one frame to the next). The later call (when the app has attached) then only puts it back where we put it,
 // in case the engine moved it meanwhile -- it does not tile again (that would ask "which side?" a second time).
+// A window still in its opening zoom (Aerial 5.0 opens a window from a Dock icon small at the icon, with the app's holder scaled, and zooms it up):
+// its sizes then read ~3x too big (2026-09-26, M1: Twitter was told 3139 x 2207 and laid itself out for that, then squeezed into its 943 x 676
+// window, distorted with its traffic lights until full screen and back). Such a window is left alone until it has settled.
+static BOOL DMStageStillZooming(UIView *stage) {
+    if (!stage) return NO;
+    CGAffineTransform t = stage.transform;   // (the zoom starts at ~0.3x; a window Aerial keeps scaled a few percent for good is settled: M1's StageStates has one at 1.03)
+    if (!CGAffineTransformIsIdentity(t) && (fabs(t.b) > 0.001 || fabs(t.c) > 0.001 || MIN(fabs(t.a), fabs(t.d)) < 0.9)) return YES;
+    UIView *in = DMStageInnerView(stage);   // (its own transform is not a sign: Aerial keeps apps it does not resize scaled for good)
+    CGSize screen = [UIScreen mainScreen].bounds.size;
+    CGFloat big = MAX(screen.width, screen.height) * 1.02;
+    return in && (in.bounds.size.width > big || in.bounds.size.height > big);   // (bigger than the screen: not a settled window)
+}
 static const void *kStageCascadedKey = &kStageCascadedKey;
 static void DMCascadeStage(UIView *stage) {
     extern BOOL gRestoringWindowsFlag(void);
@@ -5696,7 +5752,7 @@ static void DMCascadeStage(UIView *stage) {
     if ([objc_getAssociatedObject(stage, kStageCascadedKey) boolValue]) {
         NSValue *intent = objc_getAssociatedObject(stage, kStageIntentKey);
         CGRect want = intent ? intent.CGRectValue : CGRectNull, f = stage.frame;
-        if (!CGRectIsNull(want) && !DMStageMinimized(stage) && !DMIsZetsuWindow(stage)
+        if (!CGRectIsNull(want) && !DMStageMinimized(stage) && !DMIsZetsuWindow(stage) && !DMStageStillZooming(stage)
             && (fabs(want.origin.x - f.origin.x) > 1.0 || fabs(want.origin.y - f.origin.y) > 1.0 || fabs(want.size.width - f.size.width) > 1.0 || fabs(want.size.height - f.size.height) > 1.0)) {
             DMLog([NSString stringWithFormat:@"[cascade] %@: moved from where it was placed (%@ -> %@): put back", DMStageBundle(stage), NSStringFromCGRect(want), NSStringFromCGRect(f)]);
             DMAerialMoveStage(stage, want, nil);
@@ -5722,7 +5778,7 @@ static void DMCascadeStage(UIView *stage) {
         if (!CGRectIsNull(want) && (fabs(want.size.width - base.size.width) > 4.0 || fabs(want.size.height - base.size.height) > 4.0 || fabs(want.origin.x - base.origin.x) > 4.0 || fabs(want.origin.y - base.origin.y) > 4.0)) {
             DMLog([NSString stringWithFormat:@"[cascade] %@: Aerial 5.0 reopened it at its own remembered frame %@, moved to %@ %@", me, NSStringFromCGRect(base), remembered ? @"where we last had it" : @"the default place", NSStringFromCGRect(want)]);
             gStageFrameBypass = YES;
-            [UIView performWithoutAnimation:^{ stage.frame = want; [stage layoutIfNeeded]; }];
+            [UIView performWithoutAnimation:^{ DMSetStageFrameSafe(stage, want); [stage layoutIfNeeded]; }];
             gStageFrameBypass = NO;
             DMSetStageIntent(stage, want);
             base = want;
@@ -6823,6 +6879,10 @@ static void DMPublishWindowSizes(void) {
         for (UIView *st in DMAerialStages()) {
             NSString *b = DMStageBundle(st);
             if (!b.length || st.hidden || DMStageMinimized(st) || [objc_getAssociatedObject(st, kStageClosingKey) boolValue]) continue;
+            if (DMStageStillZooming(st)) {   // (still opening: keep whatever was sent before; the settled size goes out on a later pass)
+                if (gPublishedWindowSizes[b]) current[b] = gPublishedWindowSizes[b];
+                continue;
+            }
             CGSize content = CGSizeMake(st.bounds.size.width, MAX(0, st.bounds.size.height - kStageBarHeight));   // the app's own scene sits below the title bar
             if (gAerialFlavor == 5) {   // 5.0 keeps its own frame around the app (6 pt sides, 13 top, 20 bottom): the app's real area
                 UIView *in = DMStageInnerView(st);
@@ -14112,7 +14172,10 @@ static void DMReleaseStatusBarCopy(UIView *fg) {
     // ---- traffic lights, right after the logo, while an app is full screen; the titles move right to make room ----
     CGFloat titlesStart = CGRectGetMaxX(logo.frame) + kAppGap;
     DMLights *lights = objc_getAssociatedObject(fg, kLightsKey);
-    BOOL wantLights = gShowWindowButtons && frontApp != nil && !activeIsWindow;   // a window has its own buttons
+    // Locked (the Lock Screen, or the Cover Sheet pulled down): only the Apple menu on the left and the status icons with Control Center on the right --
+    // no traffic lights and no menu titles, whatever app was in front, windowed or full screen (2026-09-26: an app's lights stayed on the Lock Screen).
+    BOOL locked = DMLockUp(DMCall(objc_getClass("SBLockScreenManager"), @"sharedInstance")) || DMCoverSheetShown();   // (the Cover Sheet pulled down while unlocked counts too: iPad 2)
+    BOOL wantLights = gShowWindowButtons && frontApp != nil && !activeIsWindow && !locked;   // a window has its own buttons
     if (DMTestFlag("/tmp/macstatusbar-debug")) {
         static NSMutableDictionary *lastWant = nil; if (!lastWant) lastWant = [NSMutableDictionary dictionary];
         NSString *k = [NSString stringWithFormat:@"%p", fg];
@@ -14138,7 +14201,7 @@ static void DMReleaseStatusBarCopy(UIView *fg) {
         lights.hidden = YES;
     }
 
-    CGFloat titleMaxRight = fg.bounds.size.width / 2.0 - 24.0;   // stay in the left half
+    CGFloat titleMaxRight = locked ? 0.0 : fg.bounds.size.width / 2.0 - 24.0;   // stay in the left half (locked: no room, so every title hides)
     CGFloat leftEnd = wantLights ? CGRectGetMaxX(lights.frame) - 4.0 : CGRectGetMaxX(logo.frame);
     CGFloat appRight = DMLayoutTitle(fg, kAppLabelKey, kAppButtonKey, kAppPillKey, appName, UIFontWeightBold, timeFont, timeColor,
                                      timeCentre.y, titlesStart, titleMaxRight,
@@ -19813,6 +19876,52 @@ static void DMAerial5ThemeIfChanged(UIView *stage) {
     objc_setAssociatedObject(stage, kA5ThemeAtKey, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     DMAerial5Theme(stage);
 }
+// A window left shrunk: Aerial 5.0 remembers each app's window as a frame AND a transform, and brings both back when the app opens again.
+// A window moved while it still zoomed open from its Dock icon (at ~0.3x) once got ~3.3x its size, and Aerial saved that with the 0.3x
+// transform: from then on it reopened the app like that every time (2026-09-26, M1: Twitter drawn at window size but laid out for
+// 3139 x 2207, so tiny and distorted, traffic lights too; its StageStates.plist entry: 3151 x 2232 at 0.299). A settled window that is
+// bigger than the screen and scaled down to fit is given its real size at scale 1, and Aerial's remembered state is set to that too,
+// so the saved state heals itself. (Aerial's own scaled apps are scaled UP or by a few percent, never a giant size scaled down.)
+static const void *kScaledSinceKey = &kScaledSinceKey;
+static void DMRepairShrunkenStage(UIView *stage) {
+    if (gAerialFlavor != 5 || !stage || DMTestFlag("/tmp/msb-noshrunkfix")) return;
+    CGAffineTransform t = stage.transform;
+    CGSize b = stage.bounds.size, sc = [UIScreen mainScreen].bounds.size;
+    CGFloat big = MAX(sc.width, sc.height) * 1.02;
+    BOOL shrunk = !stage.hidden && fabs(t.b) < 0.001 && fabs(t.c) < 0.001 && fabs(t.a - t.d) < 0.001 && t.a > 0.05 && t.a < 0.9
+                  && (b.width > big || b.height > big) && b.width * t.a <= sc.width + 1.0 && b.height * t.a <= sc.height + 1.0
+                  && !DMStageMinimized(stage) && ![objc_getAssociatedObject(stage, kStageHiddenKey) boolValue] && ![objc_getAssociatedObject(stage, kStageClosingKey) boolValue];
+    for (NSString *busy in @[@"_isMinimized", @"_isClosing", @"_isRemovingStage"]) {   // Aerial's own minimize / close animations: not ours to touch
+        if (!shrunk) break;
+        Ivar iv = class_getInstanceVariable([stage class], busy.UTF8String);
+        const char *ty = iv ? ivar_getTypeEncoding(iv) : NULL;
+        if (ty && (ty[0] == 'B' || ty[0] == 'c') && *((uint8_t *)(__bridge void *)stage + ivar_getOffset(iv))) shrunk = NO;
+    }
+    if (!shrunk || stage.layer.animationKeys.count) { if (!shrunk) objc_setAssociatedObject(stage, kScaledSinceKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); return; }
+    CFTimeInterval now = CACurrentMediaTime();
+    NSNumber *since = objc_getAssociatedObject(stage, kScaledSinceKey);
+    if (!since) { objc_setAssociatedObject(stage, kScaledSinceKey, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC); return; }
+    if (now - since.doubleValue < 0.3) return;   // (still so, with nothing animating, a moment later: settled, not mid-zoom)
+    objc_setAssociatedObject(stage, kScaledSinceKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NSValue *intent = objc_getAssociatedObject(stage, kStageIntentKey);
+    CGPoint c = stage.center;
+    CGRect want = intent ? intent.CGRectValue : CGRectMake(c.x - b.width * t.a / 2.0, c.y - b.height * t.a / 2.0, b.width * t.a, b.height * t.a);
+    if (!intent) want = DMFitInto(CGRectIntegral(want), DMLayoutFrame(@"fill"));
+    DMLog([NSString stringWithFormat:@"[aerial5] %@: window left shrunk (size %@ at scale %.3f, Aerial's remembered state) -- set to %@ at scale 1",
+           DMStageBundle(stage), NSStringFromCGSize(b), t.a, NSStringFromCGRect(want)]);
+    DMAerial5SyncState(stage, want);   // (Aerial's remembered frame + transform: saved clean from now on)
+    gStageFrameBypass = YES;
+    [UIView performWithoutAnimation:^{
+        stage.transform = CGAffineTransformIdentity;
+        stage.frame = want;
+        [stage layoutIfNeeded];
+    }];
+    gStageFrameBypass = NO;
+    DMSetStageIntent(stage, want);
+    SEL fit = DMAerialSel(@"adjustContentScaleToHost");
+    if ([stage respondsToSelector:fit]) ((void (*)(id, SEL))objc_msgSend)(stage, fit);
+    DMRefitStageScene(stage);
+}
 static void DMAerial5Watch(void) {
     if (gAerialFlavor != 5 || DMActiveEngine() != DMEngineAerial) { gA5CatchOn = NO; return; }
     gA5ThemeOff = DMTestFlag("/tmp/msb-a5-notheme");
@@ -19835,6 +19944,7 @@ static void DMAerial5Watch(void) {
     for (UIView *st in DMAerialStages()) {
         [gA5StageCache addObject:st];
         DMRepairCollapsedStage(st);
+        DMRepairShrunkenStage(st);
         // Aerial pulls a stage that starts left of the screen back to x 0 when the screen's traits change (light/dark, a turn). With the 3.0 shape a
         // window at the left edge has its stage 6 pt off screen on purpose (the invisible margin): such a small nudge of an unchanged size is put back.
         NSValue *intent = objc_getAssociatedObject(st, kStageIntentKey);
