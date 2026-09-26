@@ -329,7 +329,10 @@ BOOL DMDockPointerHovering(void) { return gHovering; }
         if (![mt isEqualToString:lastMetrics]) { lastMetrics = mt; DMLog([@"[metrics] " stringByAppendingString:mt]); }
     }
 #endif
-    if (gShowDownloads) {
+    // iPadOS 17+ (untested versions, a tester on 18.7.2): the App Library icon's spot is 0 wide while that icon is not in the Dock, so there is no
+    // slot for Downloads -- its icon stays hidden, and widening the Dock left an empty tail on the right. No slot, no widening there (15/16: as before).
+    BOOL noSlotOnNewOS = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17 && slot.size.width < 1.0;
+    if (gShowDownloads && !noSlotOnNewOS) {
         CGFloat extra = slot.size.width + m->spacing + (divider2 ? unscaledSpacing + nativeDivider.size.width : 0.0);
         m->libraryIcon.origin.x += extra;
         m->platter.size.width += extra;

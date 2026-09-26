@@ -99,7 +99,15 @@ static void RIUpdate(UIView *iconView, NSSet<NSString *> *running) {   // (runni
         [iconView addSubview:dot];
     }
     CGFloat d = MAX(4.0, iconView.bounds.size.width * 0.045);
-    dot.frame = CGRectMake((iconView.bounds.size.width - d) / 2.0, iconView.bounds.size.height - d - 1.0, d, d);
+    CGFloat y = iconView.bounds.size.height - d - 1.0;
+    // iPadOS 17+ (untested versions, a tester on 18.7.2: the dot sat on the icon): there the icon view can be just as tall as its picture, so the
+    // bottom of the view is inside the icon -- the dot goes just below the picture instead (-[SBIconView iconImageFrame], iOS 13-18). 15/16: as before.
+    SEL imageFrameSel = NSSelectorFromString(@"iconImageFrame");
+    if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17 && [iconView respondsToSelector:imageFrameSel]) {
+        CGRect img = ((CGRect (*)(id, SEL))objc_msgSend)(iconView, imageFrameSel);
+        if (img.size.height > 1.0 && y < CGRectGetMaxY(img) + 1.0) y = CGRectGetMaxY(img) + 3.0;
+    }
+    dot.frame = CGRectMake((iconView.bounds.size.width - d) / 2.0, y, d, d);
     dot.layer.cornerRadius = d / 2.0;
     dot.hidden = NO;
     [iconView bringSubviewToFront:dot];

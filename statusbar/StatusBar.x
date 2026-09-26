@@ -3403,6 +3403,14 @@ static id DMSaneSceneSettings(id scene, id settings) {
     if (f.size.width >= 50.0 && f.size.height >= 50.0 && isfinite(f.size.width) && isfinite(f.size.height)) { gSaneSceneFrames[sid] = [NSValue valueWithCGRect:f]; return settings; }
     NSValue *good = gSaneSceneFrames[sid];
     if (!good) return settings;
+    // iPadOS 17+ (untested versions; a tester on 18.7.2 crashed with Split View & Slide Over or Stage Manager on): there iPadOS itself sends tiny or
+    // empty frames on purpose, so only the scenes of apps in one of OUR windows are corrected (15/16: as before).
+    if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17) {
+        NSString *rest = [sid substringFromIndex:8];
+        NSRange dash = [rest rangeOfString:@"-" options:NSBackwardsSearch];
+        NSString *bundle = dash.location != NSNotFound ? [rest substringToIndex:dash.location] : rest;
+        if (!DMStageForBundle(bundle)) return settings;
+    }
     id copy = [settings respondsToSelector:@selector(mutableCopy)] ? [settings mutableCopy] : nil;
     if (![copy respondsToSelector:setFrameSel]) return settings;
     ((void (*)(id, SEL, CGRect))objc_msgSend)(copy, setFrameSel, good.CGRectValue);
@@ -20739,19 +20747,31 @@ static void DMPointerPullInit(void) { static BOOL done; if (done) return; done =
 @interface _SBTopAffordanceView : UIView
 @end
 static const void *kDotsTouchOffKey = &kDotsTouchOffKey;
+// iPadOS 17+ (untested versions; a tester on 18.7.2 crashed with Split View & Slide Over on): the dots are driven by new classes there, so this hook
+// stands aside and they behave as on a stock iPad (15/16: as before).
+static BOOL DMDotsHookOff(void) { static int off = -1; if (off < 0) off = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17; return off; }
 %hook _SBTopAffordanceView
 - (void)layoutSubviews {
     %orig;
+    if (DMDotsHookOff()) return;
     UIView *v = (UIView *)self;
     gDotsAffordance = v;
     if (gHideMultitaskingDots) { gDotsOwnChange = YES; v.hidden = YES; gDotsOwnChange = NO; v.userInteractionEnabled = NO; objc_setAssociatedObject(v, kDotsTouchOffKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
     else if (objc_getAssociatedObject(v, kDotsTouchOffKey)) { v.userInteractionEnabled = YES; objc_setAssociatedObject(v, kDotsTouchOffKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }   // (switched off: tappable again)
 }
 - (void)setHidden:(BOOL)hidden {
+    if (DMDotsHookOff()) {
+        %orig;
+        return;
+    }
     if (!gDotsOwnChange) objc_setAssociatedObject(self, kDotsWantHiddenKey, @(hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (what SpringBoard asked for: given back when the switch goes off)
     %orig(gHideMultitaskingDots ? YES : hidden);
 }
 - (void)setAlpha:(CGFloat)alpha {
+    if (DMDotsHookOff()) {
+        %orig;
+        return;
+    }
     if (!gDotsOwnChange) objc_setAssociatedObject(self, kDotsWantAlphaKey, @(alpha), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     %orig(gHideMultitaskingDots ? 0.0 : alpha);
 }
