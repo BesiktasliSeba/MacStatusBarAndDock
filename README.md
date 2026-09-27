@@ -2,6 +2,8 @@
 
 A macOS-style desktop for jailbroken iPads: a menu bar with real app menus, Mac-looking windows, a magnifying Dock, Mac-style notification banners, a Mac pointer and a lot of small Mac touches. Built for **rootless jailbreaks on iPadOS 15 and 16**. It works with just your fingers or with a keyboard and trackpad or mouse, in portrait and landscape — every orientation.
 
+**What's new:** see the [changelog](./CHANGELOG.md).
+
 ## Install
 
 Add this repo in Sileo (or Zebra):
@@ -44,7 +46,7 @@ The Mac look is on right after install. A few extras start off: the auto-hiding 
 - **VPN icon** — a VPN icon shows while a VPN is connected; its menu tells you which app it runs through, opens that app, or goes to VPN & Device Management.
 - **Mac pointer** — a macOS arrow cursor and I-beam with a trackpad or mouse, with a choice of style and size.
 - **Haptic Touch menus** — long-press a Home Screen app icon for Force Quit and App Size, or a folder icon to jump straight to one of its apps.
-- **Mac windows** on the window engine you already use (Aerial 3.0 or 5.0, MilkyWay4 on iPadOS 15 only, or Zetsu 1.6.2 or 1.6.6): a title bar, traffic lights and rounded corners, with Fit to Window tiling from the Window menu.
+- **Mac windows** on the window engine you already use (Aerial 3.0 or 5.0, MilkyWay4 on iPadOS 15 only, or Zetsu 1.6.2 or 1.6.6): a title bar, traffic lights and rounded corners, with Fit to Window tiling (a third window asks which side it goes on, or No Fit to leave it untiled) and resize handles tinted in each app's color.
 - **Dock** with macOS-style magnification, recent apps (plus a suggested or Handoff app), running-app indicators, a Launchpad icon, and a Downloads stack (choose which apps' downloads appear from a link in Settings).
 - **Audio mixing per app**, with a volume for each app, set from the menu bar.
 - **Auto-hiding menu bar** (optional, off by default).
@@ -52,6 +54,7 @@ The Mac look is on right after install. A few extras start off: the auto-hiding 
 - **Lock Screen options** — hide the status bar on the Lock Screen, or skip it after a respring (no passcode set only).
 - **Settings integration** — stock-looking pages right below General (Status Bar, Dock, Control Center), plus three longer Auto-Lock times (30 min/1 h/2 h), an SSH switch and an always-visible Ethernet section.
 - **Keyboard extras** (off until you turn them on) — Cmd-Tab picks the right window, Escape closes menus, Tab to mute, Globe volume keys, brightness/keyboard-backlight keys.
+- **Typing in windows like a Mac** — only the window you're using keeps a text cursor, and Esc ends typing in a windowed app (its own switch).
 - **A one-time welcome message** after your first install, pointing you to Settings (never shown again, and never shown on an update).
 - **Reduce Motion support** — menus, windows and banners cross-fade instead of zooming or springing when you use Reduce Motion.
 - **Built-in safety** — off by default on untested iPadOS versions (unless you choose Enable Anyway), does nothing at all on an iPhone, and if a feature you just turned on is followed by two SpringBoard crashes in a row, only that feature is switched back off automatically, with a note in Settings and a Report a Problem button.

@@ -1,0 +1,76 @@
+# Changelog
+
+All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
+
+## 1.0.7
+
+### New
+- Tinted resize handles: a window's resize handles take a soft version of its app's button color or icon color (Notes yellow, Settings blue, WhatsApp and Spotify green, themed icons included). Switch: Settings > Status Bar > Windows > Tint Resize Handles.
+- Esc ends typing in windows: Esc puts away the text cursor in a windowed app, like clicking the desktop on a Mac. Terminal apps keep their Esc, and apps that use Esc themselves are left alone. Switch: Settings > Status Bar > Keyboard.
+- No Fit: the "Where should it go?" question for a third window has a No Fit button in the middle (tapping outside the sides does the same). The app opens untiled in the middle, and Fit to Window leaves it alone until it's closed.
+
+### Improvements
+- The third window's side question now comes before the app launches, so the app opens straight into its place instead of being squeezed in afterwards.
+- Only the window you're using keeps a blinking text cursor, also with a hardware keyboard: clicking another window, the desktop or the Dock ends typing in the others.
+
+### Fixes
+- Messages: tapping Send did nothing in a small window (the Return key still worked).
+- iPadOS 16: the first tap on a Dock icon after a while could be lost, or pull down Notification Center.
+- Fill Screen chosen for an app in full screen was undone by Fit to Window.
+- Reddit's Home feed could open skewed in a window.
+
+## 1.0.6
+
+### Fixes
+- In rare cases iOS kept sending a windowed app the same update over and over (about 130 times a second) until the next respring. Video stuttered, touches lagged and the battery drained about twice as fast. Seen with YouTube on an older iPad; such repeats are now stopped.
+- With Fit to Window, a side picked for a third window could be undone, leaving the window in the middle of the screen; a new window moved aside so it doesn't cover another could also be put back on top of it.
+- A window left slightly scaled down by an animation came out smaller than asked by Fill Screen, Fit to Window and tiling.
+- SpringBoard's memory could slowly grow with every Control Center open when a tweak that adds Control Center gestures was installed.
+- MilkyWay4 windows: dragging the drawn resize corner now resizes the window (it used to reach the app underneath).
+
+### Experimental (iPadOS 17/18)
+- iPadOS 18 (experimental): four more parts follow iPadOS 18's renamed internals: the App Switcher, the ringer switch, and the Dock's suggested apps.
+- iPadOS 17 and 18 (experimental): the Settings entries no longer risk hiding another tweak's entry with a similar name, and the version checks are lighter.
+
+## 1.0.5
+
+### New
+- Your notifications in the Today panel (tap the clock). They appear in their own box above the widgets, newest first, with the newest 5 shown and "Show N more" for the rest. Tap one to open it, swipe left to clear it, or use Clear for all. The box hides itself when there are none, and works with Lock Screen tweaks that group notifications. Switch: Settings > Status Bar > Notifications in Today View.
+
+### Improvements
+- Report a Problem's explanation in Settings now says what it's for and what the report contains.
+
+### Fixes
+- SpringBoard could freeze while scrolling far down the Today panel.
+
+### Experimental (iPadOS 17/18)
+- iPadOS 17 and 18 (experimental): Report a Problem now includes a short diagnostics section (which parts of the tweak don't match this iOS, and the Dock's layout), names and numbers only, so issues that don't crash can be fixed too.
+
+## 1.0.4
+
+### Experimental (iPadOS 17/18)
+- Experimental fixes for iPadOS 17 and 18 (not tested on those versions yet): the Mac status bar no longer crashes at every respring on iPadOS 18 (it asked iOS for its lock screen manager too early), the multitasking dots can be tapped again, and the Dock has no stray line or extra width at its right end. iPadOS 15 and 16 are unchanged.
+
+## 1.0.3
+
+### Experimental (iPadOS 17/18)
+- Experimental fixes for iPadOS 17 and 18 (not tested on those versions yet): the Dock background no longer extends past its edge on the right, the running-app dots sit below the icons instead of on them, and two likely causes of crashes with Split View & Slide Over or Stage Manager are removed. iPadOS 15 and 16 are unchanged.
+
+## 1.0.2
+
+### Fixes
+- Tapping the Dock icon of an app that is already open full screen now turns it into a window (with Open Apps as Windows on), like its green button. Before, the window vanished again and the app stayed full screen (on some iPads also turned to portrait).
+
+## 1.0.1
+
+### Fixes
+- With Aerial 5.0, an app opened from its Dock icon could come up tiny and distorted (with its traffic lights) and stay that way until full screen and back. Windows already affected repair themselves.
+- With Fit to Window on, a second window opened from its Dock icon lost its tile.
+- On the Lock Screen (and with it pulled down), only the Apple menu shows: no traffic lights or app menus left from the app that was open.
+
+### Experimental (iPadOS 17/18)
+- iPadOS 17 and newer (experimental): the Status Bar and Dock pages always show up in Settings now, so Enable Anyway can be reached. They are also listed with your other tweaks.
+
+## 1.0.0
+
+First public release: a macOS-style desktop for iPad (Mac menu bar with app menus, Mac-looking windows with Fit to Window tiling, a magnifying Dock, per-app audio mixing, Mac-style banners, a Mac pointer and more). iPadOS 15 and 16, rootless.

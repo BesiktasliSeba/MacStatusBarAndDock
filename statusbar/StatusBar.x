@@ -2430,6 +2430,7 @@ static void DMZetsuToFullScreen(UIWindow *w) {
 static const void *kStageGestureKey;
 static UIView *DMMakeResizeGrip(void);
 static UIColor *DMResizeGripColor(BOOL dark);
+static UIColor *DMResizeGripColorFor(NSString *bundleID, BOOL dark);
 @interface DMZetsuGripBox : UIView
 @property (nonatomic, weak) UIWindow *zwindow;
 @property (nonatomic) BOOL left;
@@ -2640,7 +2641,7 @@ static void DMZetsuMacShape(UIWindow *w, UIView *menu, UIView *toolbar) {
         CGSize rs = root.bounds.size;
         CGRect bf = CGRectMake(side == 0 ? 0 : rs.width - 32.0, rs.height - 32.0, 32.0, 32.0);
         if (fabs(box.frame.origin.x - bf.origin.x) > 0.25 || fabs(box.frame.origin.y - bf.origin.y) > 0.25) box.frame = bf;
-        UIView *g = box.subviews.firstObject; UIColor *gc = DMResizeGripColor(dark);
+        UIView *g = box.subviews.firstObject; UIColor *gc = DMResizeGripColorFor(DMZetsuWindowBundle(w), dark);
         if (![g.backgroundColor isEqual:gc]) g.backgroundColor = gc;
     }
 }
@@ -4148,6 +4149,8 @@ static void DMHideAppBarItemsNow(void) {
         [fg setNeedsLayout];
     }
 }
+static int gDMTouchWatchArm = 5;   // (debug touchwatch: the next touch sequences traced -- the first ones after SpringBoard starts and after each unlock)
+static NSString *gDMTouchWatchWhy = @"SpringBoard start";
 static void DMWatchLock(void) {
     static BOOL wasLocked = NO, seenFirst = NO;
     id mgr = DMSBManager("SBLockScreenManager");
@@ -4175,6 +4178,7 @@ static void DMWatchLock(void) {
     if (locked == wasLocked) return;
     wasLocked = locked;
     DMLog([NSString stringWithFormat:@"[lock] screen %@", locked ? @"locked" : @"unlocked"]);
+    if (!locked) { gDMTouchWatchArm = 3; gDMTouchWatchWhy = @"unlock"; }
     // every status bar copy lays out again: locked, only the Apple menu (no traffic lights, no menu titles); unlocked, everything back
     if (locked) DMHideAppBarItemsNow(); else for (UIView *fg in gCopies.allObjects) [fg setNeedsLayout];
     if (!locked) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ for (UIView *fg in gCopies.allObjects) [fg setNeedsLayout]; });
@@ -4549,9 +4553,14 @@ static UIView *DMStageForBundle(NSString *bundleID) {
     return nil;
 }
 // Whether a window counts for Fit to Window: it is there and showing -- not minimized, hidden or on its way out.
+// "No Fit" in the side question (the owner, 27 Sep): that window opens untiled in the middle and stays free -- Fit to Window leaves it out (later apps
+// tile around the tiled ones and ask again), until it closes or Fit to Window is switched off and on.
+static NSMutableSet<NSString *> *gFreeWindows;
 static BOOL DMStageTakesPartInFit(UIView *s) {
+    if (gFreeWindows.count) { NSString *b = s ? DMStageBundle(s) : nil; if (b.length && [gFreeWindows containsObject:b]) return NO; }
     return s && !s.hidden && !DMStageMinimized(s) && ![objc_getAssociatedObject(s, kStageClosingKey) boolValue];
 }
+static void DMMarkFreeWindow(NSString *bundleID);
 // Moves an Aerial stage smoothly. Aerial itself re-lays the app out for the stage's new inner size as the layout changes.
 BOOL gMoveKeepsOrderFlag(void);
 static BOOL gMoveKeepsOrder = NO;   // moving windows around (a turn of the screen) must not reshuffle which one is in front
@@ -4825,6 +4834,7 @@ static NSMutableDictionary<NSString *, NSValue *> *gLastWindowFrames;   // app -
 static BOOL gPreferRememberedFrame = NO;                                       // the status bar's green light: back to where the window was
 static NSString *DMCurrentLayoutName(void);   // defined with the Window menu
 static void DMFitRejoinAfterFullScreen(NSString *bundleID);
+static void DMFitForgetFullScreenTile(NSString *bundleID);
 static void DMWindowLayout(NSString *name) {
     CGRect target = DMLayoutFrame(name);
     SBApplication *app = DMActiveApp();
@@ -4835,6 +4845,10 @@ static void DMWindowLayout(NSString *name) {
         return;
     }
     DMFitGroupForget(bundleID);   // placed by a layout of its own: no longer part of the tiling
+    // A layout picked from the Window menu is where the user wants it: an app in full screen does not take back the tile it had before (Fill Screen
+    // on a full-screen Reddit came out as a big window and was put back into its half 0.1 s later, M1 27 Sep). Only the green light's "back to the
+    // window" (gPreferRememberedFrame) returns it to its tile.
+    if (!gPreferRememberedFrame) DMFitForgetFullScreenTile(bundleID);
     if (gPreferRememberedFrame && gLastWindowFrames[bundleID]) target = gLastWindowFrames[bundleID].CGRectValue;
     if (DMActiveEngine() == DMEngineZetsu) {   // a Zetsu window slides there; a full-screen app is turned into a window that opens there
         UIWindow *zw = DMZetsuWindowFor(bundleID);
@@ -4986,6 +5000,94 @@ static UIView *DMMakeResizeGrip(void) {
 static UIColor *DMResizeGripColor(BOOL dark) {
     return [UIColor colorWithWhite:(dark ? 1.0 : 0.0) alpha:(dark ? 0.30 : 0.24)];
 }
+// The main colour of an app's icon (Tint Resize Handles, for apps whose buttons are white, black or grey): the average of its clearly coloured pixels,
+// nil when too few of them are coloured (a black-and-white icon like X's). Worked out once per app, from a 24 x 24 copy of the icon.
+UIColor *DMIconAccent(NSString *bundleID) {
+    static NSMutableDictionary<NSString *, id> *cache;
+    if (!cache) cache = [NSMutableDictionary dictionary];
+    id hit = cache[bundleID]; if (hit) return hit == [NSNull null] ? nil : hit;
+    // The icon as it is shown (a themed icon from SnowBoard and the like counts): the app's icon view in the Dock or on the Home Screen, drawn small;
+    // the app's own icon image when it is not on screen anywhere.
+    UIView *shown = nil;
+    for (UIWindow *w in DMAllWindows()) {
+        NSString *wc = NSStringFromClass([w class]);
+        if (![wc isEqualToString:@"SBFloatingDockWindow"] && ![wc isEqualToString:@"SBHomeScreenWindow"]) continue;
+        NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:w];
+        while (stack.count && !shown) {
+            UIView *v = stack.lastObject; [stack removeLastObject];
+            if ([NSStringFromClass([v class]) isEqualToString:@"SBIconView"]) {
+                NSString *b = nil; @try { b = [[v valueForKey:@"icon"] valueForKey:@"applicationBundleID"]; } @catch (id e) {}
+                if ([b isEqualToString:bundleID]) { UIView *iv = nil; @try { iv = [v valueForKey:@"_iconImageView"]; } @catch (id e) {} shown = [iv isKindOfClass:[UIView class]] && iv.bounds.size.width > 4.0 ? iv : nil; }
+                continue;
+            }
+            [stack addObjectsFromArray:v.subviews];
+        }
+        if (shown) break;
+    }
+    UIImage *icon = nil;
+    if (!shown) {
+        SEL s = NSSelectorFromString(@"_applicationIconImageForBundleIdentifier:format:scale:");
+        if ([UIImage respondsToSelector:s]) icon = ((id (*)(id, SEL, id, int, CGFloat))objc_msgSend)([UIImage class], s, bundleID, 2, 1.0);
+    }
+    UIColor *result = nil;
+    if (shown || icon.CGImage) {
+        const int n = 24; uint8_t px[n * n * 4]; memset(px, 0, sizeof px);
+        CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+        CGContextRef ctx = CGBitmapContextCreate(px, n, n, 8, n * 4, cs, kCGImageAlphaPremultipliedLast);
+        CGColorSpaceRelease(cs);
+        if (ctx) {
+            if (shown) {   // (drawn into the small bitmap, flipped to UIKit's top-left origin)
+                CGContextTranslateCTM(ctx, 0, n); CGContextScaleCTM(ctx, n / shown.bounds.size.width, -n / shown.bounds.size.height);
+                [shown.layer renderInContext:ctx];
+            } else CGContextDrawImage(ctx, CGRectMake(0, 0, n, n), icon.CGImage);
+            CGContextRelease(ctx);
+            double sr = 0, sg = 0, sb = 0; int count = 0;
+            for (int i = 0; i < n * n; i++) {
+                double a = px[i * 4 + 3] / 255.0; if (a < 0.5) continue;
+                double r = px[i * 4] / 255.0 / a, g = px[i * 4 + 1] / 255.0 / a, b = px[i * 4 + 2] / 255.0 / a;
+                double mx = MAX(r, MAX(g, b)), mn = MIN(r, MIN(g, b));
+                if (mx < 0.25 || (mx - mn) / mx < 0.35) continue;   // (dark or washed out: not the icon's colour)
+                sr += r; sg += g; sb += b; count++;
+            }
+            if (count >= n * n * 0.08) result = [UIColor colorWithRed:sr / count green:sg / count blue:sb / count alpha:1.0];
+        }
+    }
+    cache[bundleID] = result ?: (id)[NSNull null];
+    DMLog([NSString stringWithFormat:@"[tint] %@: icon colour %@ (from the %@)", bundleID, result ?: @"none (black and white)", shown ? @"icon as shown" : @"app's own icon"]);
+    return result;
+}
+// Tint Resize Handles (Settings > Status Bar > Windows, on by default; the owner, 27 Sep): a window's resize grips take its app's accent colour (the tint
+// of its back buttons and links: Notes yellow, Settings blue, Spotify green), held back so it stays a hint. MacAppBridge publishes the app's tint as
+// notify state "com.besiktasliseba.appbridge.tint.<hash>" (bit 32 set = valid, then 8-bit R, G, B, A). An app with no tint yet, or a white, black or
+// grey one (X), keeps the neutral grip.
+static BOOL gTintGrips = YES;
+static UIColor *DMResizeGripColorFor(NSString *bundleID, BOOL dark) {
+    if (!gTintGrips || !bundleID.length) return DMResizeGripColor(dark);
+    static NSMutableDictionary<NSString *, NSNumber *> *tokens;
+    if (!tokens) tokens = [NSMutableDictionary dictionary];
+    NSNumber *tok = tokens[bundleID];
+    if (!tok) {
+        uint32_t hash = 2166136261u;
+        for (const char *c = bundleID.UTF8String; *c; c++) { hash ^= (uint8_t)*c; hash *= 16777619u; }
+        char name[80]; snprintf(name, sizeof name, "com.besiktasliseba.appbridge.tint.%08x", hash);
+        int t = 0; if (notify_register_check(name, &t) != NOTIFY_STATUS_OK) t = -1;
+        tok = @(t); tokens[bundleID] = tok;
+    }
+    uint64_t st = 0;
+    if (tok.intValue < 0 || notify_get_state(tok.intValue, &st) != NOTIFY_STATUS_OK || !(st & (1ULL << 32))) {   // (no tint reported -- Spotify never does: its icon's colour)
+        extern UIColor *DMIconAccent(NSString *bundleID);
+        UIColor *ic = DMIconAccent(bundleID);
+        return ic ? [ic colorWithAlphaComponent:(dark ? 0.62 : 0.55)] : DMResizeGripColor(dark);
+    }
+    CGFloat r = ((st >> 24) & 0xff) / 255.0, g = ((st >> 16) & 0xff) / 255.0, b = ((st >> 8) & 0xff) / 255.0;
+    CGFloat mx = MAX(r, MAX(g, b)), mn = MIN(r, MIN(g, b));
+    if (mx - mn < 0.15) {   // (white, black or grey buttons -- WhatsApp, Spotify: the main colour of the app's icon instead, if it has one)
+        extern UIColor *DMIconAccent(NSString *bundleID);
+        UIColor *ic = DMIconAccent(bundleID);
+        return ic ? [ic colorWithAlphaComponent:(dark ? 0.62 : 0.55)] : DMResizeGripColor(dark);
+    }
+    return [UIColor colorWithRed:r green:g blue:b alpha:(dark ? 0.62 : 0.55)];   // (held back: a hint of the app's colour)
+}
 static const void *kMWGripKey = &kMWGripKey;
 
 // MilkyWay4's resize handle lags the finger by its recogniser's start threshold (~11 pt), like Aerial 5.0's (see DMA5GripBox -resizeCatchUp:).
@@ -5135,7 +5237,7 @@ static void DMRestyleWindowButtons(AXWindowView *w) {
             if ([sizeChanger.layer respondsToSelector:opaque]) ((void (*)(id, SEL, BOOL))objc_msgSend)(sizeChanger.layer, opaque, YES);
             [DMMWResizeCatchUp watch:sizeChanger];
             grip.hidden = sizeChanger.hidden;
-            grip.backgroundColor = DMResizeGripColor(darkStyle);
+            grip.backgroundColor = DMResizeGripColorFor([w bundleIdentifier], darkStyle);
             grip.transform = CGAffineTransformMakeRotation(M_PI_4);   // "\" — points into the bottom-right corner
             grip.center = CGPointMake(32.0 - kMilkyWayCorner, 32.0 - kMilkyWayCorner);   // 12 pt in from the corner, like Aerial 3.0
             [sizeChanger bringSubviewToFront:grip];
@@ -5597,6 +5699,11 @@ static void DMRememberFitForFullScreen(NSString *bundleID) {
     BOOL tiled = bundleID.length && [gFitGroup containsObject:bundleID];
     gFSFitBundle = tiled ? [bundleID copy] : nil; gFSFitGroup = tiled ? [gFitGroup copy] : nil; gFSFitSlots = tiled ? [gFitSlots copy] : nil;
 }
+static void DMFitForgetFullScreenTile(NSString *bundleID) {
+    if (!bundleID.length || ![gFSFitBundle isEqualToString:bundleID]) return;
+    gFSFitBundle = nil; gFSFitGroup = nil; gFSFitSlots = nil;
+    DMLog([NSString stringWithFormat:@"[fit] %@ placed from the Window menu: it does not take back its tile from before full screen", bundleID]);
+}
 static void DMFitRejoinAfterFullScreen(NSString *bundleID) {
     if (!bundleID.length || ![gFSFitBundle isEqualToString:bundleID]) return;
     NSArray *old = gFSFitGroup; NSDictionary *oldSlots = gFSFitSlots;
@@ -5733,6 +5840,11 @@ static const void *kVeilQuickKey = &kVeilQuickKey;   // a window opened the ordi
 // which leaves a white strip along the right and bottom edges. Once it has settled (the veil still covers the window) the size is sent
 // again in two quick steps, 1 pt narrower and then exact, so the app always does one last layout at the true size.
 static void DMRefitStageScene(UIView *stage) {
+    // Apps that mishandle this quick size change: Reddit's Home pager lays its pages out for the SCREEN size on any size transition (it was told
+    // 1193 x 834 while its window was 591 x 355, M1 27 Sep: the Home feed came up skewed, 592 x 592 at x -119.5 with no posts). Its window has the
+    // right size from the start (the size is sent before the launch), so for these the re-send is left out.
+    static NSSet<NSString *> *noRefit; if (!noRefit) noRefit = [NSSet setWithObjects:@"com.reddit.Reddit", nil];
+    if ([noRefit containsObject:DMStageBundle(stage)] || DMTestFlag("/tmp/msb-norefit")) { DMLog([NSString stringWithFormat:@"[aerial] %@: re-fit left out", DMStageBundle(stage)]); return; }
     UIView *in = DMStageInnerView(stage);
     NSString *bundleID = DMStageBundle(stage);
     if (!in || !bundleID.length) return;
@@ -5809,6 +5921,10 @@ static CGFloat DMOverlapFraction(CGRect a, CGRect b) {
     return smaller > 0.0 ? (i.size.width * i.size.height) / smaller : 0.0;
 }
 static void DMPromptForSide(UIView *stage, NSString *newBundle, NSString *leftBundle, NSString *rightBundle);
+static void DMPromptBeforeLaunch(NSString *newBundle, NSString *leftBundle, NSString *rightBundle, void (^launch)(CGRect frame));
+static NSMutableDictionary *gSidePromptCtx;   // the side question being asked (DMPromptForSide)
+static NSString *gPreSideBundle, *gPreSide;   // a side picked before the app was launched: applied when its window appears ("" = default)
+static CFTimeInterval gPreSideUntil;
 // Moves every window of the group into its slot. `fresh` (the window that has just opened) appears in its slot; the others slide.
 static void DMAutoHideBeforeRetile(void);
 static void DMAutoHideAfterRetile(void);
@@ -5839,7 +5955,7 @@ static void DMApplyGroupSlots(UIView *fresh) {
 }
 // The answer to "which side?" for a third window: the chosen side is split in two (the new window on top, the window that was there below); the other
 // side keeps its window at full height. side nil = the default arrangement.
-static void DMApplySideChoice(UIView *stage, NSString *newBundle, NSString *leftBundle, NSString *rightBundle, NSString *side) {
+static void DMSetSideChoiceGroup(NSString *newBundle, NSString *leftBundle, NSString *rightBundle, NSString *side) {
     gFitGroup = [NSMutableArray arrayWithObjects:newBundle, nil];
     if ([side isEqualToString:@"left"]) {
         [gFitGroup addObjectsFromArray:@[leftBundle, rightBundle]];
@@ -5851,6 +5967,39 @@ static void DMApplySideChoice(UIView *stage, NSString *newBundle, NSString *left
         [gFitGroup addObjectsFromArray:@[leftBundle, rightBundle]];
         DMAssignDefaultSlots();
     }
+}
+// Where the new (third) window's tile will be for a side choice, without changing the tiling that is in force.
+// No Fit's window: the standard window size, made smaller if needed to fit the free area (below the status bar, above the Dock) with a margin, and
+// centred in that area (the standard "center" place is top-aligned and reached into the Dock on the iPad 2 in landscape).
+static CGRect DMNoFitFrame(void) {
+    CGRect usable = DMLayoutFrame(@"fill"), c = DMLayoutFrame(@"center");
+    if (CGRectIsNull(usable) || CGRectIsNull(c)) return c;
+    CGFloat w = MIN(c.size.width, usable.size.width - 48.0), h = MIN(c.size.height, usable.size.height - 48.0);
+    return CGRectIntegral(CGRectMake(CGRectGetMidX(usable) - w / 2.0, CGRectGetMidY(usable) - h / 2.0, w, h));
+}
+static CGRect DMSideChoiceFrame(NSString *newBundle, NSString *leftBundle, NSString *rightBundle, NSString *side) {
+    if ([side isEqualToString:@"none"]) return DMNoFitFrame();
+    NSMutableArray *g = gFitGroup; NSMutableDictionary *sl = gFitSlots;
+    DMSetSideChoiceGroup(newBundle, leftBundle, rightBundle, side);
+    CGRect f = DMSlotFrame(newBundle);
+    gFitGroup = g; gFitSlots = sl;
+    return f;
+}
+static void DMMarkFreeWindow(NSString *bundleID) {
+    if (!bundleID.length) return;
+    if (!gFreeWindows) gFreeWindows = [NSMutableSet set];
+    [gFreeWindows addObject:bundleID];
+    [gFitGroup removeObject:bundleID]; [gFitSlots removeObjectForKey:bundleID];
+    DMLog([NSString stringWithFormat:@"[fit] %@ opens free (No Fit): Fit to Window leaves it out", bundleID]);
+}
+static void DMApplySideChoice(UIView *stage, NSString *newBundle, NSString *leftBundle, NSString *rightBundle, NSString *side) {
+    if ([side isEqualToString:@"none"]) {   // No Fit: the window goes to the middle, the two tiles stay
+        DMMarkFreeWindow(newBundle);
+        CGRect c = DMNoFitFrame();
+        if (stage && !CGRectIsNull(c)) { DMSetStageIntent(stage, c); DMAerialMoveStage(stage, c, nil); }
+        return;
+    }
+    DMSetSideChoiceGroup(newBundle, leftBundle, rightBundle, side);
     DMApplyGroupSlots(nil);
     SEL front = DMAerialSel(@"_bringStageToFrontIfNeeded");
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ if (DMIsZetsuWindow(stage)) DMZetsuRaise((UIWindow *)stage); else if ([stage respondsToSelector:front]) ((void (*)(id, SEL))objc_msgSend)(stage, front); });
@@ -5858,6 +6007,7 @@ static void DMApplySideChoice(UIView *stage, NSString *newBundle, NSString *left
 }
 // Fit to Window has just been switched on: the windows that are open (up to four, the front ones) are tiled into their places.
 static void DMTileOpenWindows(void) {
+    [gFreeWindows removeAllObjects];   // (Fit to Window switched on again: every window takes part, No Fit ones too)
     NSMutableArray<UIView *> *open = [NSMutableArray array];
     for (UIView *s in DMAerialStages()) if (!s.hidden && !DMStageMinimized(s) && DMStageBundle(s).length) [open addObject:s];
     if (open.count < 2) return;
@@ -5932,7 +6082,10 @@ static void DMCascadeStage(UIView *stage) {
     // Window off, came back at the half-screen size it last had while tiled -- log: our size 841x607 sent, then Aerial's own 481x559). On 3.0 a
     // hook kept Aerial from doing that; on 5.0 nothing of Aerial's may be hooked, so the new window is moved here instead: to where we last had
     // it (kept until the app quits, like on 3.0), or else to our default place. Fit to Window and the overlap nudge below then work from that.
-    if (gAerialFlavor == 5) {
+    // (launched straight into its place after the side question: its frame is already the one we asked for -- the tile, or No Fit's centred
+    //  frame -- so Aerial 5.0's remembered frame is not "corrected" to the default place / an old tile; logic test 1.0.7)
+    BOOL preLaunched = [gPreSideBundle isEqualToString:me] && CACurrentMediaTime() < gPreSideUntil;
+    if (gAerialFlavor == 5 && !preLaunched) {
         NSValue *remembered = gLastWindowFrames[me];
         CGRect want = remembered ? DMFitInto(remembered.CGRectValue, usable) : DMLayoutFrame(@"center");
         if (!CGRectIsNull(want) && (fabs(want.size.width - base.size.width) > 4.0 || fabs(want.size.height - base.size.height) > 4.0 || fabs(want.origin.x - base.origin.x) > 4.0 || fabs(want.origin.y - base.origin.y) > 4.0)) {
@@ -5945,6 +6098,7 @@ static void DMCascadeStage(UIView *stage) {
         }
     }
 
+    if (fitOn && [gFreeWindows containsObject:me]) goto regularWindow;   // (a free window, No Fit)
     if (fitOn) {
         if (!gFitGroup) gFitGroup = [NSMutableArray array];
         // Windows that have gone, and windows that are minimized, hidden or closing: they are not on screen, so they don't take a tile. (Bug, the owner:
@@ -5962,7 +6116,7 @@ static void DMCascadeStage(UIView *stage) {
         }
         // Every window that is open takes part, also one that was dragged, resized or given a layout by hand (those are taken out of the group
         // when that happens, so a moved first window used to make the next launch open untiled), or that was open before Fit to Window went on.
-        for (UIView *o in others) { NSString *b = DMStageBundle(o); if (b.length && ![b isEqualToString:me] && ![gFitGroup containsObject:b]) [gFitGroup addObject:b]; }
+        for (UIView *o in others) { NSString *b = DMStageBundle(o); if (b.length && ![b isEqualToString:me] && ![gFitGroup containsObject:b] && ![gFreeWindows containsObject:b]) [gFitGroup addObject:b]; }
         [gFitGroup removeObject:me];
         if (gFitGroup.count > 3) [gFitGroup removeObjectsInRange:NSMakeRange(3, gFitGroup.count - 3)];   // this window and three others make four
         // Two windows each cover a side and a third opens: ask on which side it goes.
@@ -5971,7 +6125,15 @@ static void DMCascadeStage(UIView *stage) {
             NSString *sa = a ? DMSlotNameForFrame(a.frame) : nil, *sb = b ? DMSlotNameForFrame(b.frame) : nil;
             NSString *leftBundle = [sa isEqualToString:@"left"] ? gFitGroup[0] : ([sb isEqualToString:@"left"] ? gFitGroup[1] : nil);
             NSString *rightBundle = [sa isEqualToString:@"right"] ? gFitGroup[0] : ([sb isEqualToString:@"right"] ? gFitGroup[1] : nil);
-            if (leftBundle && rightBundle) { DMPromptForSide(stage, me, leftBundle, rightBundle); return; }
+            if (leftBundle && rightBundle) {
+                if ([gPreSideBundle isEqualToString:me] && CACurrentMediaTime() < gPreSideUntil) {   // (asked before the launch: the choice is applied, not asked again)
+                    NSString *side = gPreSide.length ? gPreSide : nil; gPreSideBundle = nil;
+                    if ([side isEqualToString:@"none"]) { DMMarkFreeWindow(me); if (!DMIsZetsuWindow(stage)) DMSetStageIntent(stage, base); goto regularWindow; }   // (No Fit: an ordinary window in the middle)
+                    DMApplySideChoice(stage, me, leftBundle, rightBundle, side);
+                    return;
+                }
+                DMPromptForSide(stage, me, leftBundle, rightBundle); return;
+            }
         }
         if (gFitGroup.count < 4) {
             [gFitGroup insertObject:me atIndex:0];
@@ -5991,6 +6153,7 @@ static void DMCascadeStage(UIView *stage) {
         gFitGroup = nil; gFitSlots = nil;   // Fit to Window is off: nothing is tiled any more
     }
 regularWindow:;
+    if ([gFreeWindows containsObject:me]) return;   // (No Fit: it stays in the middle, where it was opened, even over the tiles)
 
     BOOL overlaps = NO;
     for (UIView *o in others) if (DMOverlapFraction(base, o.frame) > 0.45) overlaps = YES;
@@ -6113,7 +6276,7 @@ static void DMStyleStage(UIView *stage) {
             BOOL handleLive = [handle isKindOfClass:[UIView class]] && !handle.hidden;
             grip.hidden = !handleLive;
             if (handleLive) {
-                grip.backgroundColor = DMResizeGripColor(dark);
+                grip.backgroundColor = DMResizeGripColorFor(DMStageBundle(stage), dark);
                 grip.transform = CGAffineTransformMakeRotation(side == 0 ? -M_PI_4 : M_PI_4);   // "/" bottom-left, "\" bottom-right
                 grip.center = CGPointMake(side == 0 ? kMilkyWayCorner : (W - kMilkyWayCorner), H - kMilkyWayCorner);
             }
@@ -6409,6 +6572,7 @@ static void DMFitRepairOverlappingSlots(void) {
 BOOL gFitClosureCheckDue = NO;   // set where a window is marked as closing (and when an app exits): the next tick checks for closed tiles
 static void DMWatchFitClosures(void) {
     DM_PERF("fitrepair", DMFitRepairOverlappingSlots());
+    for (NSString *b in [gFreeWindows allObjects]) if (!DMStageForBundle(b)) { [gFreeWindows removeObject:b]; DMLog([NSString stringWithFormat:@"[fit] %@ (No Fit) closed: tiled again next time", b]); }
     static NSArray<NSString *> *previous = nil;
     NSArray<NSString *> *now = gFitGroup ? [gFitGroup copy] : @[];
     NSArray<NSString *> *before = previous;
@@ -6482,6 +6646,7 @@ static void DMRelayoutForOrientation(CGSize oldSize, CGSize newSize) {
     CGRect usable = DMLayoutFrame(@"fill");
     if (CGRectIsNull(usable)) return;
     DMLog([NSString stringWithFormat:@"[orient] screen %@ -> %@ (%@): arranging %lu windows", NSStringFromCGSize(oldSize), NSStringFromCGSize(newSize), newKey, (unsigned long)DMAerialStages().count]);
+    gDMTouchWatchArm = 2; gDMTouchWatchWhy = @"a turn";   // (debug touchwatch: two corner "touches" were seen right after turns)
     NSMutableSet<NSString *> *done = [NSMutableSet set];
     NSMutableDictionary<NSString *, NSValue *> *targets = [NSMutableDictionary dictionary];   // where each shown window was put (checked again below)
     gMoveKeepsOrder = YES;
@@ -6912,20 +7077,12 @@ static void DMResignWindowedKeyboards(NSString *exceptBundle) {
         notify_post(name);
     }
 }
-static BOOL DMVirtualKeyboardMayBeUp(void) {
-    for (UIWindow *w in DMAllWindows())
-        if ([NSStringFromClass([w class]) isEqualToString:@"AerialKeyboardWindow"] && !w.hidden && w.alpha > 0.01) return YES;
-    return NO;
-}
 @interface DMOutsideTap : NSObject <UIGestureRecognizerDelegate>
 @end
 void DMOutsideTouch(void) {   // a touch on the Home Screen or the Dock (outside every window); also run by the debug trigger outsidetap
     if (DMActiveEngine() != DMEngineAerial) return;
-    if (!DMVirtualKeyboardMayBeUp()) {
-        if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[focus] a touch outside the windows, ignored (hardware keyboard %d)", DMHardwareKeyboardAttached()]);
-        return;
-    }
-    DMLog(@"[focus] a touch outside the windows: the windowed apps are told to put their keyboard away");
+    // (also with a hardware keyboard, where no on-screen keyboard is up: the text field's cursor stops and it stops taking the keys, like a Mac, the owner, 27 Sep)
+    DMLog([NSString stringWithFormat:@"[focus] a touch outside the windows: the windowed apps are told to put their keyboard away (hardware keyboard %d)", DMHardwareKeyboardAttached()]);
     DMResignWindowedKeyboards(nil);
 }
 // (A keyboard avoidance that moved/shrank the front window above the on-screen keyboard used to be here. The owner didn't like it and asked for the
@@ -6934,7 +7091,7 @@ void DMOutsideTouch(void) {   // a touch on the Home Screen or the Dock (outside
 @implementation DMOutsideTap
 - (void)tapped:(UILongPressGestureRecognizer *)g {
     if (g.state == UIGestureRecognizerStateBegan && DMTestFlag("/tmp/macstatusbar-debug"))
-        DMLog([NSString stringWithFormat:@"[focus] outside touch at %@ in %@ (screen %@)", NSStringFromCGPoint([g locationInView:g.view]), NSStringFromClass([g.view class]), NSStringFromCGPoint([g.view convertPoint:[g locationInView:g.view] toCoordinateSpace:[UIScreen mainScreen].coordinateSpace])]);
+        DMLog([NSString stringWithFormat:@"[focus] outside touch at %@ in %@ (touches %lu, screen %@)", NSStringFromCGPoint([g locationInView:g.view]), NSStringFromClass([g.view class]), (unsigned long)g.numberOfTouches, NSStringFromCGPoint([g.view convertPoint:[g locationInView:g.view] toCoordinateSpace:[UIScreen mainScreen].coordinateSpace])]);
     if (g.state != UIGestureRecognizerStateBegan) return;
     DMOutsideTouch();
 }
@@ -6964,7 +7121,7 @@ static const void *kFocusCatcherKey = &kFocusCatcherKey;
     SEL front = DMAerialSel(@"_bringStageToFrontIfNeeded");
     if (stage && [stage respondsToSelector:front]) ((void (*)(id, SEL))objc_msgSend)(stage, front);
     DMLog([NSString stringWithFormat:@"[focus] a touch on the window of %@ brought it to the front", stage ? DMStageBundle(stage) : @"?"]);
-    if (stage && DMVirtualKeyboardMayBeUp()) DMResignWindowedKeyboards(DMStageBundle(stage));   // the window that had the keyboard gives it up
+    if (stage) DMResignWindowedKeyboards(DMStageBundle(stage));   // the window that had the keyboard gives it up (a hardware keyboard's cursor too)
     self.hidden = YES;   // (the next pass puts the sheets on the windows that are behind now)
 }
 @end
@@ -6980,7 +7137,7 @@ static void DMRaiseStageForBundle(NSString *bundle) {
         SEL front = DMAerialSel(@"_bringStageToFrontIfNeeded");
         if ([stage respondsToSelector:front]) ((void (*)(id, SEL))objc_msgSend)(stage, front);
         DMLog([NSString stringWithFormat:@"[focus] a tap or click in the window of %@ brought it to the front", bundle]);
-        if (DMVirtualKeyboardMayBeUp()) DMResignWindowedKeyboards(bundle);   // the window that had the keyboard gives it up
+        DMResignWindowedKeyboards(bundle);   // the window that had the keyboard gives it up (with a hardware keyboard too: only the front window keeps a cursor)
         return;
     }
     // No stage: this is the current full-screen app, tapped through the part of it that shows around the windows in front of it. It has no window to
@@ -7321,6 +7478,7 @@ static void DMWatchFitToggle(void) {
 // empty screen at start would overwrite the state that is about to be restored).
 static BOOL gRestoringWindows = NO, gWindowSaveOn = NO;
 BOOL gRestoringWindowsFlag(void) { return gRestoringWindows; }
+BOOL gWindowSaveOnFlag(void) { return gWindowSaveOn; }
 static NSDictionary *gLastWindowState = nil;
 static NSString *DMWindowStatePath(void) { return [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Preferences/com.besiktasliseba.macstatusbar.windows.plist"]; }
 static void DMSaveWindowState(void) {
@@ -7372,6 +7530,15 @@ static void DMSaveWindowState(void) {
     dispatch_async(writer, ^{ [state writeToFile:path atomically:YES]; });
 }
 static void DMRestoreStep(NSArray *wins, NSUInteger i, NSDictionary *state, int waited);
+// Apps the user opened since SpringBoard started, before the saved windows were brought back: the restore leaves them as the user opened them
+// (iPad 2, 27 Sep: Settings opened ~3 s after a respring came up, then the restore minimized it again, as it had been saved, and a second tap was needed).
+static NSMutableSet<NSString *> *gOpenedBeforeRestore;
+void DMNoteOpenedBeforeRestore(NSString *bundleID) {
+    extern BOOL gWindowSaveOnFlag(void);
+    if (!bundleID.length || gWindowSaveOnFlag()) return;   // (the restore is over)
+    if (!gOpenedBeforeRestore) gOpenedBeforeRestore = [NSMutableSet set];
+    [gOpenedBeforeRestore addObject:bundleID];
+}
 static void DMFinishRestore(NSDictionary *state) {
     NSMutableArray *group = [NSMutableArray array];
     for (NSString *b in state[@"fitGroup"]) if (DMStageForBundle(b)) [group addObject:b];
@@ -7451,6 +7618,10 @@ static void DMRestoreStep(NSArray *wins, NSUInteger i, NSDictionary *state, int 
     if (i >= wins.count) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMFinishRestore(state); }); return; }
     NSDictionary *w = wins[i];
     NSString *bundle = w[@"bundle"];
+    if (bundle.length && [gOpenedBeforeRestore containsObject:bundle]) {   // (opened by the user meanwhile: left as it is)
+        DMLog([NSString stringWithFormat:@"[restore] %@ skipped: opened by the user before the restore", bundle]);
+        DMRestoreStep(wins, i + 1, state, 0); return;
+    }
     CGSize saved = CGSizeFromString(state[@"screen"]), now = [UIScreen mainScreen].bounds.size;
     CGRect f = CGRectFromString(w[@"frame"]);
     CGRect usable = DMLayoutFrame(@"fill");
@@ -7481,11 +7652,23 @@ static void DMRestoreStep(NSArray *wins, NSUInteger i, NSDictionary *state, int 
         return;
     }
     if (stage) {
+        // A window that was minimized is kept invisible while it is brought back and minimized again (it flashed up for a second after a respring,
+        // iPad 2, 27 Sep); it is made visible again in any case after 1.8 s -- by then it is hidden as minimized.
+        BOOL minimizedAgain = [w[@"minimized"] boolValue] && !wasChip;
+        if (minimizedAgain) stage.alpha = 0.0;
+        __weak UIView *weakStage = stage;
+        if (minimizedAgain) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ UIView *st = weakStage; if (st && st.alpha < 0.01) st.alpha = 1.0; });
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{   // let it settle, then put it exactly at its place
+            if (minimizedAgain && [gOpenedBeforeRestore containsObject:bundle]) {   // (its icon was tapped while it was being brought back: the user's window stays)
+                stage.alpha = 1.0;
+                DMLog([NSString stringWithFormat:@"[restore] %@ opened by the user while it was brought back: not minimized again", bundle]);
+                DMRestoreStep(wins, i + 1, state, 0); return;
+            }
             gMoveKeepsOrder = YES;
-            DMAerialMoveStage(stage, f, nil);
+            if (minimizedAgain) [UIView performWithoutAnimation:^{ DMSetStageFrameSafe(stage, f); [stage layoutIfNeeded]; }];
+            else DMAerialMoveStage(stage, f, nil);
             gMoveKeepsOrder = NO;
-            if ([w[@"minimized"] boolValue] && !wasChip) DMMinimizeStage(stage);
+            if (minimizedAgain) DMMinimizeStage(stage);
             DMRestoreStep(wins, i + 1, state, 0);
         });
     } else DMRestoreStep(wins, i + 1, state, 0);   // it never appeared: on to the next
@@ -8004,13 +8187,43 @@ static void DMHookAerialObfuscated(void) {
 }
 %end
 %end
+// Would opening this app make it the third window next to a left and a right tile (Fit to Window's side question)? No side effects. Aerial only.
+static BOOL DMThirdWindowSides(NSString *bundleID, NSString **leftOut, NSString **rightOut) {
+    if (!bundleID.length || DMActiveEngine() != DMEngineAerial || !DMFitEnabled() || DMStageForBundle(bundleID) || DMAppNeedsFullScreen(bundleID)) return NO;
+    if (gSidePromptCtx && ![gSidePromptCtx[@"decided"] boolValue]) return NO;   // (a question is already up)
+    NSMutableArray<UIView *> *open = [NSMutableArray array];
+    for (UIView *st in DMAerialStages()) if (DMStageTakesPartInFit(st) && ![DMStageBundle(st) isEqualToString:bundleID]) [open addObject:st];
+    if (open.count != 2) return NO;
+    NSString *sa = DMSlotNameForFrame(open[0].frame), *sb = DMSlotNameForFrame(open[1].frame);
+    NSString *l = [sa isEqualToString:@"left"] ? DMStageBundle(open[0]) : ([sb isEqualToString:@"left"] ? DMStageBundle(open[1]) : nil);
+    NSString *r = [sa isEqualToString:@"right"] ? DMStageBundle(open[0]) : ([sb isEqualToString:@"right"] ? DMStageBundle(open[1]) : nil);
+    if (!l.length || !r.length) return NO;
+    if (leftOut) *leftOut = l; if (rightOut) *rightOut = r;
+    return YES;
+}
+static void DMLaunchIntoTile(NSString *bundleID, CGRect frame);
 // SpringBoard-side hooks of the Aerial integration (no Aerial class is touched): installed for Aerial 5.0 too.
 %group AerialSpringBoard
+// Esc while the side question is up: No Fit (the same as its middle button or a tap outside the sides). Only when SpringBoard has the keys.
+%hook SpringBoard
+- (void)pressesBegan:(NSSet *)presses withEvent:(UIPressesEvent *)event {
+    if (@available(iOS 13.4, *)) {
+        NSMutableDictionary *ctx = gSidePromptCtx;
+        UIPress *p = presses.anyObject;
+        if (ctx && ![ctx[@"decided"] boolValue] && presses.count == 1 && p.key.keyCode == UIKeyboardHIDUsageKeyboardEscape) {
+            void (^choose)(NSString *, NSString *) = ctx[@"choose"];
+            if (choose) { choose(@"none", @"Esc: No Fit"); return; }
+        }
+    }
+    %orig;
+}
+%end
 // With Aerial's toggle on, tapping an icon shows that app's window (Aerial's own hook does that). A window we minimized is hidden, which
 // Aerial does not know about, so bring it back first.
 %hook SBIconView
 - (void)_handleTap {
     if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[icontap] _handleTap on %@", [[self valueForKey:@"icon"] valueForKey:@"applicationBundleID"]]);
+    { extern void DMNoteOpenedBeforeRestore(NSString *); NSString *tb = nil; @try { tb = [[self valueForKey:@"icon"] valueForKey:@"applicationBundleID"]; } @catch (id e) {} DMNoteOpenedBeforeRestore(tb); }
     if (DMAerialToggleOn()) {
         NSString *bundleID = nil;
         @try { bundleID = [[self valueForKey:@"icon"] valueForKey:@"applicationBundleID"]; } @catch (id e) {}
@@ -8032,6 +8245,13 @@ static void DMHookAerialObfuscated(void) {
             return;
         }
         extern BOOL DMAerialWarmStartIfNeeded(NSString *bundleID);
+        extern BOOL DMAerialNeedsWarmStartFlag(NSString *bundleID);
+        NSString *leftB = nil, *rightB = nil;
+        if (!DMAerialNeedsWarmStartFlag(bundleID) && DMThirdWindowSides(bundleID, &leftB, &rightB)) {   // the third window: which side first, then the launch
+            NSString *b = [bundleID copy];
+            DMPromptBeforeLaunch(b, leftB, rightB, ^(CGRect f) { DMLaunchIntoTile(b, f); });
+            return;
+        }
         if (DMAerialWarmStartIfNeeded(bundleID)) return;   // (WhatsApp cold start: full screen first, then a window -- see there)
         UIView *stage = bundleID.length ? DMStageForBundle(bundleID) : nil;
         if (stage && [objc_getAssociatedObject(stage, kStageHiddenKey) boolValue]) {
@@ -10876,6 +11096,13 @@ static BOOL DMHasHomeIcon(NSString *bundleID) {
     SEL sel = NSSelectorFromString(@"applicationIconForBundleIdentifier:");
     return [model respondsToSelector:sel] && ((id (*)(id, SEL, id))objc_msgSend)(model, sel, bundleID) != nil;
 }
+static void DMLaunchIntoTile(NSString *bundleID, CGRect frame) {   // (the side question was answered before the launch)
+    if (!gWindowLaunchUntil) gWindowLaunchUntil = [NSMutableDictionary dictionary];
+    gWindowLaunchUntil[bundleID] = @(CACurrentMediaTime() + 4.0);
+    DMLog([NSString stringWithFormat:@"[windowed] open %@ as an Aerial window, straight into its place %@", bundleID, NSStringFromCGRect(frame)]);
+    DMAerialTrigger(bundleID, CGRectIsNull(frame) ? DMLayoutFrame(@"center") : frame);
+    DMDismissLibraryForWindow(bundleID);
+}
 static BOOL DMWindowedLaunchEligible(NSString *bundleID) {   // would this launch open as a new window? (no side effects)
     if (!bundleID.length || gForceFullScreenLaunch || DMActiveEngine() == DMEngineNone || !DMWindowedLaunchOn()) return NO;
     if (DMAppNeedsFullScreen(bundleID)) return NO;   // a full-screen-only game: the normal full-screen launch
@@ -10894,6 +11121,7 @@ static BOOL DMWindowedLaunchEligible(NSString *bundleID) {   // would this launc
 }
 static BOOL DMWindowedLaunch(NSString *bundleID) {
     if (!bundleID.length || gForceFullScreenLaunch || DMActiveEngine() == DMEngineNone) return NO;
+    if (!gRestoringWindows) DMNoteOpenedBeforeRestore(bundleID);   // (not the restore's own launches)
     if (DMSurfaceWindowForApp(bundleID)) return YES;
     if (!DMWindowedLaunchEligible(bundleID)) return NO;
     if (!gWindowLaunchUntil) gWindowLaunchUntil = [NSMutableDictionary dictionary];
@@ -10908,6 +11136,14 @@ static BOOL DMWindowedLaunch(NSString *bundleID) {
     CGRect target = DMLayoutFrame(@"center");
     if (CGRectIsNull(target)) { [gWindowLaunchUntil removeObjectForKey:bundleID]; return NO; }
     extern BOOL DMAerialWarmStartIfNeeded(NSString *bundleID);
+    extern BOOL DMAerialNeedsWarmStartFlag(NSString *bundleID);
+    NSString *leftB = nil, *rightB = nil;
+    if (!DMAerialNeedsWarmStartFlag(bundleID) && DMThirdWindowSides(bundleID, &leftB, &rightB)) {   // the third window: which side first, then the launch
+        NSString *b = [bundleID copy];
+        DMPromptBeforeLaunch(b, leftB, rightB, ^(CGRect f) { DMLaunchIntoTile(b, f); });
+        DMDismissLibraryForWindow(bundleID);
+        return YES;
+    }
     if (DMAerialWarmStartIfNeeded(bundleID)) { DMDismissLibraryForWindow(bundleID); return YES; }
     DMLog([NSString stringWithFormat:@"[windowed] open %@ as an Aerial window", bundleID]);
     DMAerialTrigger(bundleID, target);
@@ -10929,6 +11165,7 @@ static BOOL DMAerialNeedsWarmStart(NSString *bundleID) {
     if (DMStageForBundle(bundleID) || [DMLiveRunningBundleIDs() containsObject:bundleID]) return NO;   // a window already, or running: the direct way works
     return YES;
 }
+BOOL DMAerialNeedsWarmStartFlag(NSString *bundleID) { return DMAerialNeedsWarmStart(bundleID); }
 BOOL DMAerialWarmStartIfNeeded(NSString *bundleID) {
     if (!DMAerialNeedsWarmStart(bundleID)) return NO;
     static NSMutableSet<NSString *> *busy;
@@ -11450,6 +11687,8 @@ static uint64_t DMTouchscreenSenderID(void *client) {
     DMLog([NSString stringWithFormat:@"[touchsys] touch screen sender ID 0x%llx", sender]);
     return sender;
 }
+static BOOL gDMSysTouchNativeZero = NO;
+static uint32_t gDMSysTouchIdentity = 2;   // (tapjump_<x>_<y>_newid: the (0, 0) report comes with another finger identity, like the 20:21 miss)
 static void DMSysTouch(CGPoint screenPoint, DMTouchPhase phase) {
     static void *(*createHand)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, double, double, double, double, double, BOOL, BOOL, uint32_t) = NULL;
     static void *(*createFinger)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, double, double, double, double, double, BOOL, BOOL, uint32_t) = NULL;
@@ -11478,6 +11717,7 @@ static void DMSysTouch(CGPoint screenPoint, DMTouchPhase phase) {
     CGSize native = CGSizeMake(MIN(screen.width, screen.height), MAX(screen.width, screen.height));
     CGPoint n = DMScreenToNative(screenPoint, DMRealInterfaceOrientation(), native);
     double nx = n.x / native.width, ny = n.y / native.height;
+    if (gDMSysTouchNativeZero) nx = ny = 0.0;   // (tapjump_: the touch screen's bogus mid-touch report at its own (0, 0))
     uint32_t mask; BOOL down;
     switch (phase) {
         case DMTouchDown: mask = 0x2 | 0x20; down = YES; break;
@@ -11488,7 +11728,7 @@ static void DMSysTouch(CGPoint screenPoint, DMTouchPhase phase) {
     void *hand = createHand(kCFAllocatorDefault, now, 3, 0, 0, mask, 0, nx, ny, 0, 0, 0, NO, down, 0);
     if (!hand) return;
     if (setInt) setInt(hand, 0xb0019, 1);   // display integrated
-    void *finger = createFinger(kCFAllocatorDefault, now, 2, 2, mask, nx, ny, 0, down ? 0.5 : 0, 0, down, down, 0);
+    void *finger = createFinger(kCFAllocatorDefault, now, 2, gDMSysTouchIdentity, mask, nx, ny, 0, down ? 0.5 : 0, 0, down, down, 0);
     if (finger) {
         if (setFloat) { setFloat(finger, 0xb0014, 0.04); setFloat(finger, 0xb0015, 0.04); }
         append(hand, finger, 0);
@@ -11897,7 +12137,8 @@ static void DMShowSidePrompt(NSMutableDictionary *ctx, BOOL rebuilt);
 static void DMPromptForSide(UIView *stage, NSString *newBundle, NSString *leftBundle, NSString *rightBundle) {
     NSMutableDictionary *ctx = [NSMutableDictionary dictionary];
     ctx[@"new"] = newBundle; ctx[@"left"] = leftBundle; ctx[@"right"] = rightBundle;
-    ctx[@"stageRef"] = stage;   // (strong: the stage stays valid until the choice is applied)
+    if (stage) ctx[@"stageRef"] = stage;   // (strong: the stage stays valid until the choice is applied; none when asked before the launch)
+    gSidePromptCtx = ctx;
     ctx[@"deadline"] = @(CACurrentMediaTime() + 12.0);
     DMShowSidePrompt(ctx, NO);
     NSTimer *t = [NSTimer timerWithTimeInterval:0.2 repeats:YES block:^(NSTimer *timer) {
@@ -11919,6 +12160,16 @@ static void DMPromptForSide(UIView *stage, NSString *newBundle, NSString *leftBu
     }];
     [[NSRunLoop mainRunLoop] addTimer:t forMode:NSRunLoopCommonModes];
 }
+// The third window asked about BEFORE its app is launched (the owner, 27 Sep): opened behind the question at the default window size and squeezed into its
+// tile after the pick, apps laid themselves out twice (Reddit's content shifted, a scroll bar sat in the middle for a second). Now the question comes
+// first, and on the pick the app is started straight into its tile (its size is published before the launch).
+static void DMPromptBeforeLaunch(NSString *newBundle, NSString *leftBundle, NSString *rightBundle, void (^launch)(CGRect frame)) {
+    DMPromptForSide(nil, newBundle, leftBundle, rightBundle);
+    NSMutableDictionary *ctx = gSidePromptCtx;
+    if (ctx && ![ctx[@"decided"] boolValue]) ctx[@"prelaunch"] = [launch copy];
+    else launch(DMLayoutFrame(@"center"));   // (the question could not be shown: an ordinary launch, tiled when it appears)
+    DMLog([NSString stringWithFormat:@"[aerial] %@: asked which side before launching it", newBundle]);
+}
 static void DMShowSidePrompt(NSMutableDictionary *ctx, BOOL rebuilt) {
     NSString *newBundle = ctx[@"new"], *leftBundle = ctx[@"left"], *rightBundle = ctx[@"right"];
     ctx[@"orientation"] = @(((long (*)(id, SEL))objc_msgSend)([UIApplication sharedApplication], NSSelectorFromString(@"activeInterfaceOrientation")));
@@ -11930,7 +12181,15 @@ static void DMShowSidePrompt(NSMutableDictionary *ctx, BOOL rebuilt) {
             c[@"decided"] = @YES;
             UIView *o = c[@"overlay"];
             if (o && gOverlay == o) DMCloseOverlay();
-            DMLog([NSString stringWithFormat:@"[aerial] %@ goes on the %@ (%@)", c[@"new"], side ?: @"default side", why]);
+            DMLog([NSString stringWithFormat:@"[aerial] %@ goes on the %@ (%@)", c[@"new"], [side isEqualToString:@"none"] ? @"middle, untiled" : (side ?: @"default side"), why]);
+            void (^launch)(CGRect) = c[@"prelaunch"];
+            if (launch) {   // (asked before the launch: the app now opens straight into its tile; DMCascadeStage applies the choice when its window appears)
+                gPreSideBundle = [c[@"new"] copy]; gPreSide = side ?: @""; gPreSideUntil = CACurrentMediaTime() + 8.0;
+                CGRect f = DMSideChoiceFrame(c[@"new"], c[@"left"], c[@"right"], side);
+                [c removeObjectForKey:@"prelaunch"]; [c removeObjectForKey:@"choose"];
+                launch(f);
+                return;
+            }
             DMApplySideChoice(c[@"stageRef"], c[@"new"], c[@"left"], c[@"right"], side);
             [c removeObjectForKey:@"stageRef"]; [c removeObjectForKey:@"choose"];
         } copy];
@@ -11943,7 +12202,7 @@ static void DMShowSidePrompt(NSMutableDictionary *ctx, BOOL rebuilt) {
     NSString *rightName = DMCall(DMProxyForBundle(rightBundle), @"localizedName") ?: rightBundle;
     UIControl *o = DMMakeOverlay(host, 0.32);
     ctx[@"overlay"] = o;
-    [o addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { choose(nil, @"a tap outside the sides"); }] forControlEvents:UIControlEventTouchUpInside];
+    [o addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { choose(@"none", @"a tap outside the sides: No Fit"); }] forControlEvents:UIControlEventTouchUpInside];
     NSMutableArray<UIView *> *panels = [NSMutableArray array];
     for (NSString *side in @[@"left", @"right"]) {
         BOOL left = [side isEqualToString:@"left"];
@@ -11951,6 +12210,23 @@ static void DMShowSidePrompt(NSMutableDictionary *ctx, BOOL rebuilt) {
         [panel addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { choose(side, @"tapped"); }] forControlEvents:UIControlEventTouchUpInside];
         [o addSubview:panel]; [panels addObject:panel];
     }
+    // "No Fit" (the owner's sketch, 27 Sep): a round button on the seam between the two sides -- the app opens untiled in the middle.
+    UIControl *noFit = [[UIControl alloc] initWithFrame:CGRectMake(0, 0, 88.0, 88.0)];
+    noFit.center = CGPointMake((CGRectGetMaxX(panels[0].frame) + CGRectGetMinX(panels[1].frame)) / 2.0, CGRectGetMidY(panels[0].frame) + 96.0);
+    noFit.layer.cornerRadius = 44.0; noFit.clipsToBounds = YES;
+    noFit.layer.borderWidth = 2.0; noFit.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.35].CGColor;
+    UIVisualEffectView *nfBlur = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial]];
+    nfBlur.frame = noFit.bounds; nfBlur.userInteractionEnabled = NO; [noFit addSubview:nfBlur];
+    UIImageView *nfGlyph = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"macwindow" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:24.0 weight:UIImageSymbolWeightMedium]]];
+    nfGlyph.tintColor = [UIColor labelColor]; nfGlyph.contentMode = UIViewContentModeCenter; nfGlyph.frame = CGRectMake(0, 16.0, 88.0, 32.0); nfGlyph.userInteractionEnabled = NO;
+    UILabel *nfLabel = [UILabel new]; nfLabel.text = @"No Fit"; nfLabel.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightSemibold]; nfLabel.textColor = [UIColor labelColor];
+    nfLabel.textAlignment = NSTextAlignmentCenter; nfLabel.frame = CGRectMake(0, 50.0, 88.0, 20.0); nfLabel.userInteractionEnabled = NO;
+    [noFit addSubview:nfGlyph]; [noFit addSubview:nfLabel];
+    __weak UIControl *wnf = noFit;
+    [noFit addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { [UIView animateWithDuration:0.12 animations:^{ wnf.transform = CGAffineTransformMakeScale(0.94, 0.94); }]; }] forControlEvents:UIControlEventTouchDown];
+    [noFit addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { [UIView animateWithDuration:0.12 animations:^{ wnf.transform = CGAffineTransformIdentity; }]; }] forControlEvents:UIControlEventTouchUpOutside | UIControlEventTouchCancel];
+    [noFit addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { choose(@"none", @"No Fit tapped"); }] forControlEvents:UIControlEventTouchUpInside];
+    [o addSubview:noFit]; [panels addObject:noFit];   // (it comes in with the panels, after them)
     UIVisualEffectView *pill = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial]];
     UILabel *q = [UILabel new]; q.text = [NSString stringWithFormat:@"Where should %@ go?", newName]; q.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold]; q.textColor = [UIColor labelColor];
     [q sizeToFit];
@@ -14648,6 +14924,21 @@ static void DMLoadPrefs(void) {
         if (pillRef) { if (CFGetTypeID(pillRef) == CFBooleanGetTypeID()) tidy = CFBooleanGetValue(pillRef); CFRelease(pillRef); }
         gTidyKeyboardPill = tidy;
     }
+    {   // Tint Resize Handles (on unless switched off)
+        BOOL tint = YES;
+        CFPropertyListRef tintRef = CFPreferencesCopyValue(CFSTR("tintResizeHandles"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        if (tintRef) { if (CFGetTypeID(tintRef) == CFBooleanGetTypeID()) tint = CFBooleanGetValue(tintRef); CFRelease(tintRef); }
+        gTintGrips = tint;
+    }
+    {   // Esc Ends Typing in Windows (on unless switched off): published for MacAppBridge in every app (apps cannot read these preferences), state 1 on / 2 off
+        BOOL esc = YES;
+        CFPropertyListRef escRef = CFPreferencesCopyValue(CFSTR("escEndsTyping"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        if (escRef) { if (CFGetTypeID(escRef) == CFBooleanGetTypeID()) esc = CFBooleanGetValue(escRef); CFRelease(escRef); }
+        static int escToken = 0; static uint64_t escPublished = 0;
+        if (!escToken) notify_register_check("com.besiktasliseba.appbridge.escends", &escToken);
+        uint64_t want = esc ? 1 : 2;
+        if (escToken && want != escPublished) { notify_set_state(escToken, want); escPublished = want; DMLog([NSString stringWithFormat:@"[prefs] Esc Ends Typing in Windows: %@", esc ? @"on" : @"off"]); }
+    }
     {
         BOOL mute = YES;   // Show Mute Icon: on unless switched off
         CFPropertyListRef muteRef = CFPreferencesCopyValue(CFSTR("showMuteIcon"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
@@ -15856,6 +16147,140 @@ static void DMEnsureLogo(int attempt) {
 
 
 
+// iPadOS 16 (iPad 2, 27 Sep): now and then the touch screen sends a report in the middle of a touch with the finger at exactly (0, 0) -- the
+// display's native top-left corner, whatever the orientation (mask 0x803, still touching; the finger itself never went there) -- and the next
+// report is the lift at the real point. UIKit takes it as a jump to the corner: the tap on a Dock icon moves off the icon and launches nothing,
+// and a jump to the top edge can start the Notification Center pull. Such a report is dropped here, before anything in SpringBoard
+// uses it (SpringBoard sendEvent:): only a finger that is already down, last seen away from both corner edges, reported at exactly (0, 0). A real finger that starts at an
+// edge or slides to one reports its path on the way, so edge gestures are left alone.
+#define DMTF_SLOTS 32
+// (per path index; main thread only) down: a real touch in progress, at x/y. badStart: a touch whose DOWN came at (0, 0) -- its events are kept
+// from SpringBoard; realX/realY: the first real point seen since; t0: when it began.
+static struct { BOOL down, badStart, hasReal; double x, y, realX, realY; CFTimeInterval t0; } gDMTFFinger[DMTF_SLOTS];
+static double (*gDMTFGetF)(void *, uint32_t);
+static long (*gDMTFGetI)(void *, uint32_t);
+static CFArrayRef (*gDMTFKids)(void *);
+static uint32_t (*gDMTFType)(void *);
+static CFTimeInterval gDMTFReinjectUntil = 0;   // (our own re-sent tap is never treated again)
+typedef enum { DMTFPass = 0, DMTFDropMove, DMTFBadStart, DMTFBadMove, DMTFBadLift } DMTFVerdict;
+static void DMTFLog(NSString *line) { if (DMTestFlag("/tmp/macstatusbar-debug")) dispatch_async(dispatch_get_main_queue(), ^{ DMLog(line); }); }
+static DMTFVerdict DMTouchFixClassify(void *e, int *slotOut) {
+    if (!e || gDMTFType(e) != 11) return DMTFPass;
+    CFArrayRef kids = gDMTFKids(e);
+    DMTFVerdict verdict = DMTFPass;
+    for (CFIndex i = 0; kids && i < CFArrayGetCount(kids); i++) {
+        void *f = (void *)CFArrayGetValueAtIndex(kids, i);
+        if (gDMTFType(f) != 11) continue;
+        // Keyed by the finger's path index (what UIKit matches a UITouch by), not its identity: the bogus report can come with a NEW identity
+        // for the same finger (iPad 2, 27 Sep 20:21, the first touch after a respring: finger 2 -> finger 3 at (0, 0), same index 1, and UIKit
+        // moved the same touch to the corner).
+        long ident = gDMTFGetI(f, 0xb0006);   // (kIOHIDEventFieldDigitizerIdentity: only logged)
+        long index = gDMTFGetI(f, 0xb0005);   // (kIOHIDEventFieldDigitizerIndex)
+        if (index < 0) continue;
+        int slot = (int)(index % DMTF_SLOTS);
+        BOOL touching = gDMTFGetI(f, 0xb0009) != 0;   // (kIOHIDEventFieldDigitizerTouch)
+        double x = gDMTFGetF(f, 0xb0000), y = gDMTFGetF(f, 0xb0001);
+        BOOL corner = x == 0.0 && y == 0.0;
+#if DEBUG
+        if (DMTestFlag("/tmp/macstatusbar-touchfixlog")) DMTFLog([NSString stringWithFormat:@"[touchfix] seen finger %ld index %ld touch %d x %.4f y %.4f mask 0x%lx children %ld", ident, index, touching, x, y, gDMTFGetI(f, 0xb0007), (long)CFArrayGetCount(kids)]);
+        if (DMTestFlag("/tmp/macstatusbar-notouchfix")) { if (!touching) gDMTFFinger[slot].down = NO; else if (!corner) { gDMTFFinger[slot].down = YES; gDMTFFinger[slot].x = x; gDMTFFinger[slot].y = y; } continue; }
+#endif
+        if (slotOut) *slotOut = slot;
+        if (gDMTFFinger[slot].badStart && CACurrentMediaTime() - gDMTFFinger[slot].t0 > 1.5) {   // (its lift never came: forgotten, so it can't hide the next touch)
+            gDMTFFinger[slot].badStart = NO; gDMTFFinger[slot].down = NO;
+            DMTFLog([NSString stringWithFormat:@"[touchfix] a held-back touch (index %ld) got no lift within 1.5 s: forgotten", index]);
+        }
+        if (gDMTFFinger[slot].badStart) {   // a touch whose down came at the corner: all of it stays away from SpringBoard; the lift decides
+            if (!touching) {
+                gDMTFFinger[slot].badStart = NO; gDMTFFinger[slot].down = NO;
+                if (!corner && !gDMTFFinger[slot].hasReal) { gDMTFFinger[slot].hasReal = YES; gDMTFFinger[slot].realX = x; gDMTFFinger[slot].realY = y; }
+                if (!corner) { gDMTFFinger[slot].x = x; gDMTFFinger[slot].y = y; }
+                verdict = DMTFBadLift;
+            } else {
+                if (!corner && !gDMTFFinger[slot].hasReal) { gDMTFFinger[slot].hasReal = YES; gDMTFFinger[slot].realX = x; gDMTFFinger[slot].realY = y; }
+                if (!corner) { gDMTFFinger[slot].x = x; gDMTFFinger[slot].y = y; }
+                if (verdict == DMTFPass) verdict = DMTFBadMove;
+            }
+            continue;
+        }
+        if (!touching) { gDMTFFinger[slot].down = NO; continue; }
+        if (corner) {
+            if (!gDMTFFinger[slot].down) {   // a DOWN at exactly the corner (no real finger lands on the display's exact (0, 0))
+                gDMTFFinger[slot].badStart = YES; gDMTFFinger[slot].hasReal = NO; gDMTFFinger[slot].x = gDMTFFinger[slot].y = 0; gDMTFFinger[slot].t0 = CACurrentMediaTime();
+                DMTFLog([NSString stringWithFormat:@"[touchfix] a touch-screen DOWN of finger %ld (index %ld) at (0, 0) (mask 0x%lx): kept from SpringBoard until the real point is known", ident, index, gDMTFGetI(f, 0xb0007)]);
+                verdict = DMTFBadStart;
+            } else if (gDMTFFinger[slot].down && gDMTFFinger[slot].x > 20.0 && gDMTFFinger[slot].y > 20.0) {
+                verdict = DMTFDropMove;
+                DMTFLog([NSString stringWithFormat:@"[touchfix] dropped a touch-screen report of finger %ld (index %ld) at (0, 0) (mask 0x%lx) -- it was at (%.1f, %.1f)", ident, index, gDMTFGetI(f, 0xb0007), gDMTFFinger[slot].x, gDMTFFinger[slot].y]);
+            }
+            continue;   // (never remembered as a position)
+        }
+        gDMTFFinger[slot].down = YES; gDMTFFinger[slot].x = x; gDMTFFinger[slot].y = y;
+    }
+    return verdict;
+}
+%group DMTouchFix
+%hook SpringBoard
+- (void)sendEvent:(UIEvent *)event {
+    BOOL fingers = event.type == UIEventTypeTouches;   // (only a finger on the touch screen: a Pencil, trackpad or mouse click at the corner is left alone)
+    if (fingers) for (UITouch *t in event.allTouches) if (t.type != UITouchTypeDirect) { fingers = NO; break; }
+    if (fingers && [event respondsToSelector:@selector(_hidEvent)]) {
+        void *e = ((void *(*)(id, SEL))objc_msgSend)(event, @selector(_hidEvent));
+        int slot = -1;
+        DMTFVerdict v = DMTouchFixClassify(e, &slot);
+        NSSet<UITouch *> *all = event.allTouches;
+        if (v == DMTFDropMove) {
+            // (UIKit has already moved the touch to (0, 0) by now: the touch goes back where it was and the event is not handled -- a lone move
+            // report, so nothing else is lost; the next report, usually the lift, carries the real point)
+            BOOL onlyMoves = YES;
+            for (UITouch *t in all) if (t.phase != UITouchPhaseMoved && t.phase != UITouchPhaseStationary) onlyMoves = NO;
+            if (onlyMoves) {
+                SEL set = NSSelectorFromString(@"_setLocationInWindow:resetPrevious:");
+                for (UITouch *t in all)   // (the corner is (0, 0) only in the display's own orientation: every moved touch goes back)
+                    if (t.phase == UITouchPhaseMoved && [t respondsToSelector:set]) ((void (*)(id, SEL, CGPoint, BOOL))objc_msgSend)(t, set, [t previousLocationInView:nil], YES);
+                return;
+            }
+        } else if ((v == DMTFBadStart || v == DMTFBadMove) && all.count == 1) {
+            // A touch whose DOWN came at the corner (iPad 2 after a respring with no window open: the Notification Center pull, a Dock tap that
+            // did nothing). backboardd already sent it to whatever is at the corner, and the edge swipe recognisers would start at once: SpringBoard
+            // never sees its down or moves (so no recogniser or view takes it), only its lift, and a short still tap is sent again at the real point.
+            return;
+        } else if (v == DMTFBadLift && all.count == 1 && slot >= 0) {
+            UITouch *t = all.anyObject;
+            CGPoint lift = [t.window convertPoint:[t locationInView:nil] toCoordinateSpace:[UIScreen mainScreen].coordinateSpace];
+            CGSize sc = [UIScreen mainScreen].bounds.size;
+            CFTimeInterval held = CACurrentMediaTime() - gDMTFFinger[slot].t0;
+            // (the real points are in this event stream's own units -- pixels or points -- so "still" is judged relative to the lift in the same units)
+            double moved = gDMTFFinger[slot].hasReal ? hypot(gDMTFFinger[slot].realX - gDMTFFinger[slot].x, gDMTFFinger[slot].realY - gDMTFFinger[slot].y) : 0;
+            BOOL away = lift.x > 20.0 && lift.y > 20.0 && lift.x < sc.width - 20.0 && lift.y < sc.height - 20.0;
+            BOOL locked = DMLockUp(DMSBManager("SBLockScreenManager")) || DMCoverSheetShown();   // (never on the Lock Screen / Cover Sheet: a re-sent tap on a notification would unlock into its app)
+            BOOL again = away && !locked && held < 0.6 && moved < 30.0 && CACurrentMediaTime() > gDMTFReinjectUntil;
+            %orig;   // (the lift: UIKit forgets the touch; nothing had it)
+            DMTFLog([NSString stringWithFormat:@"[touchfix] its lift at %@ after %.0f ms (moved %.0f): %@", NSStringFromCGPoint(lift), held * 1000.0, moved, again ? @"the tap is sent again there" : (locked ? @"Lock Screen or Cover Sheet up, nothing sent" : @"not a tap, nothing sent")]);
+            if (again) {
+                gDMTFReinjectUntil = CACurrentMediaTime() + 0.5;
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ DMSysTouch(lift, DMTouchDown); });
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(90 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ DMSysTouch(lift, DMTouchUp); });
+            }
+            return;
+        }
+    }
+    %orig;
+}
+%end
+%end
+static void DMTouchFixInit(void) {
+    if (![[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion){16, 0, 0}]) return;   // (iPadOS 15 never showed it)
+    if (![UIEvent instancesRespondToSelector:@selector(_hidEvent)]) { DMLog(@"[touchfix] UIEvent _hidEvent missing: off"); return; }
+    void *iokit = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY);
+    gDMTFGetF = dlsym(iokit, "IOHIDEventGetFloatValue"); gDMTFGetI = dlsym(iokit, "IOHIDEventGetIntegerValue");
+    gDMTFKids = dlsym(iokit, "IOHIDEventGetChildren"); gDMTFType = dlsym(iokit, "IOHIDEventGetType");
+    if (!gDMTFGetF || !gDMTFGetI || !gDMTFKids || !gDMTFType) { DMLog(@"[touchfix] IOKit functions missing: off"); return; }
+    %init(DMTouchFix);
+    DMSysTouch(CGPointZero, DMTouchWarm);   // (the touch screen's sender ID looked up now, not during the first re-sent tap)
+    DMLog(@"[touchfix] on: touch-screen reports at (0, 0) -- a jump in the middle of a touch, or a touch that begins there -- are kept from SpringBoard");
+}
+
 #if DEBUG   // ===== everything from here to the matching #endif is test machinery: never in a release (FINALPACKAGE=1) build =====
 // ---- debug aids (only while /tmp/macstatusbar-debug exists) ----
 static BOOL DMDebugOn(void) { return DMTestFlag("/tmp/macstatusbar-debug"); }
@@ -15920,6 +16345,102 @@ static void DMExtDisplayLogInit(void) {
 static NSMapTable<CADisplayLink *, NSString *> *gDMLinkTargets;   // (debug: each display link's target class and selector)
 static NSMapTable<CADisplayLink *, NSString *> *gDMLinks;   // (debug, idleprobe: every display link added to a run loop, and who added it)
 %group DMDebugHooks
+// Debug (iPad 2, 27 Sep: after a quiet while, the first tap on a Dock icon launches nothing -- our outside-touch watcher sees it already cancelled,
+// at {0, 0}): the first touch after 20 s without touches is followed for 3 s -- every phase, the window and view it is on, and each gesture
+// recognizer on it with its state after SpringBoard handled the event; an icon's touchesCancelled in that time logs who cancelled it.
+// Widened: also after 8 s idle, the first touches after SpringBoard starts / each unlock, and any touch that begins exactly on a screen edge;
+// with the raw IOHIDEvent (sender, age, normalised digitizer coordinates) and the visible windows.
+static CFTimeInterval gDMLastTouchAt = 0, gDMTouchWatchUntil = 0;
+// The raw IOHIDEvent behind a touch event: the hand event and each finger (normalised 0..1 digitizer coordinates, masks, range/touch), its sender
+// (the touch screen's registry ID for a real finger) and how old it is -- tells a real digitizer report from a synthesized one, and whether a wrong
+// location (the {0, 0} / y = 0 first touches) already came from backboardd or appeared later in UIKit.
+static NSString *DMHIDTouchDesc(UIEvent *event) {
+    static double (*getF)(void *, uint32_t); static long (*getI)(void *, uint32_t); static CFArrayRef (*kids)(void *);
+    static uint64_t (*sender)(void *); static uint64_t (*stamp)(void *); static uint32_t (*type)(void *);
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        void *iokit = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY);
+        getF = dlsym(iokit, "IOHIDEventGetFloatValue"); getI = dlsym(iokit, "IOHIDEventGetIntegerValue"); kids = dlsym(iokit, "IOHIDEventGetChildren");
+        sender = dlsym(iokit, "IOHIDEventGetSenderID"); stamp = dlsym(iokit, "IOHIDEventGetTimeStamp"); type = dlsym(iokit, "IOHIDEventGetType");
+    });
+    SEL hs = NSSelectorFromString(@"_hidEvent");
+    void *e = [event respondsToSelector:hs] ? ((void *(*)(id, SEL))objc_msgSend)(event, hs) : NULL;
+    if (!e || !getF || !getI || !kids || !sender || !stamp || !type) return @"hid none";
+    static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb);
+    double ageMs = (double)(mach_absolute_time() - stamp(e)) * tb.numer / tb.denom / 1e6;
+    NSMutableString *m = [NSMutableString stringWithFormat:@"hid type %u sender 0x%llx age %.1f ms", type(e), sender(e), ageMs];
+    if (type(e) == 11) {
+        [m appendFormat:@" hand x %.4f y %.4f mask 0x%lx range %ld touch %ld dtype %ld", getF(e, 0xb0000), getF(e, 0xb0001), getI(e, 0xb0007), getI(e, 0xb0008), getI(e, 0xb0009), getI(e, 0xb0004)];
+        CFArrayRef k = kids(e);
+        for (CFIndex i = 0; k && i < CFArrayGetCount(k) && i < 6; i++) {
+            void *c = (void *)CFArrayGetValueAtIndex(k, i);
+            if (type(c) != 11) { [m appendFormat:@" | child type %u", type(c)]; continue; }
+            [m appendFormat:@" | finger id %ld idx %ld x %.4f y %.4f mask 0x%lx range %ld touch %ld r %.3f", getI(c, 0xb0006), getI(c, 0xb0005), getF(c, 0xb0000), getF(c, 0xb0001), getI(c, 0xb0007), getI(c, 0xb0008), getI(c, 0xb0009), getF(c, 0xb0014)];
+        }
+    }
+    return m;
+}
+%hook SpringBoard
+- (void)sendEvent:(UIEvent *)event {
+    BOOL watch = NO, began = NO, edge = NO;
+    NSString *why = nil;
+    if (event.type == UIEventTypeTouches && DMTestFlag("/tmp/macstatusbar-debug")) {
+        CFTimeInterval now = CACurrentMediaTime();
+        CGSize sc = [UIScreen mainScreen].bounds.size;
+        BOOL anyDown = NO;
+        for (UITouch *t in event.allTouches) {
+            if (t.phase != UITouchPhaseBegan) { if (t.phase != UITouchPhaseEnded && t.phase != UITouchPhaseCancelled) anyDown = YES; continue; }
+            anyDown = YES; began = YES;
+            CGPoint p = [t locationInView:nil];
+            if (p.x <= 0.5 || p.y <= 0.5 || p.x >= sc.width - 0.5 || p.y >= sc.height - 0.5) edge = YES;
+        }
+        if (began && gDMLastTouchAt > 0 && now - gDMLastTouchAt > 8.0) why = [NSString stringWithFormat:@"first touch after %.0f s without touches", now - gDMLastTouchAt];
+        else if (began && gDMTouchWatchArm > 0) why = [NSString stringWithFormat:@"a first touch after %@ (%d left)", gDMTouchWatchWhy, gDMTouchWatchArm - 1];
+        else if (edge) why = @"a touch that begins exactly on the screen edge";
+        else {   // a touch cancelled outside the traced time: logged too (rate-limited), with its raw event (a digitizer cancel has mask bit 0x80)
+            static CFTimeInterval minute = 0; static int n = 0;
+            for (UITouch *t in event.allTouches) if (t.phase == UITouchPhaseCancelled) {
+                if (now - minute > 60.0) { minute = now; n = 0; }
+                if (n++ < 10) DMLog([NSString stringWithFormat:@"[touchwatch] touch cancelled at %@ in %@ (last down event %.0f ms before); event %@", NSStringFromCGPoint([t locationInView:nil]), NSStringFromClass([t.window class]), (CACurrentMediaTime() - gDMLastTouchAt) * 1000.0, DMHIDTouchDesc(event)]);
+                break;
+            }
+        }
+        if (why) {
+            if (gDMTouchWatchArm > 0 && began) gDMTouchWatchArm--;
+            gDMTouchWatchUntil = now + 3.0;
+            NSMutableString *wl = [NSMutableString string];
+            for (UIWindow *w in DMAllWindows()) if (!w.hidden && w.alpha > 0.01) [wl appendFormat:@" %@(%.0f)", NSStringFromClass([w class]), w.windowLevel];
+            DMLog([NSString stringWithFormat:@"[touchwatch] %@; windows:%@", why, wl]);
+        }
+        if (anyDown) gDMLastTouchAt = now;
+        watch = now < gDMTouchWatchUntil;
+    }
+    static int hidLines = 0;
+    if (watch) {   // before SpringBoard handles it (the gesture states below are after)
+        if (began || edge || hidLines < 4) DMLog([NSString stringWithFormat:@"[touchwatch] event %@", DMHIDTouchDesc(event)]);
+        hidLines = began ? 0 : hidLines + 1;
+    }
+    %orig;
+    if (!watch) return;
+    for (UITouch *t in event.allTouches) {
+        NSMutableString *m = [NSMutableString stringWithFormat:@"[touchwatch] phase %ld type %ld at %@ (precise %@) t-age %.1f ms tap %lu r %.1f window %@ view %@ gestures:", (long)t.phase, (long)t.type,
+            NSStringFromCGPoint([t locationInView:nil]), NSStringFromCGPoint([t preciseLocationInView:nil]), (CACurrentMediaTime() - t.timestamp) * 1000.0, (unsigned long)t.tapCount, t.majorRadius,
+            NSStringFromClass([t.window class]), NSStringFromClass([t.view class])];
+        for (UIGestureRecognizer *g in t.gestureRecognizers) [m appendFormat:@" %@(%ld)", NSStringFromClass([g class]), (long)g.state];
+        DMLog(m);
+    }
+}
+%end
+%hook SBIconView
+- (void)touchesCancelled:(NSSet *)touches withEvent:(UIEvent *)event {
+    if (CACurrentMediaTime() < gDMTouchWatchUntil) {
+        DMLog(@"[touchwatch] an icon's touches were cancelled; by:");
+        NSArray<NSNumber *> *ret = [NSThread callStackReturnAddresses];
+        for (NSUInteger i = 1; i < ret.count && i < 10; i++) DMSymbolize(ret[i].unsignedLongLongValue);
+    }
+    %orig;
+}
+%end
 %hook CADisplayLink
 + (CADisplayLink *)displayLinkWithTarget:(id)target selector:(SEL)sel {
     CADisplayLink *l = %orig;
@@ -17134,6 +17655,30 @@ static void DMRunTrigger(NSString *cmd) {
         if (c) CFRelease(c);
         DMLog(out);
     }
+    else if ([cmd hasPrefix:@"tapdown0_"]) {   // tapdown0_<x>_<y>: an injected tap whose DOWN comes at the touch screen's own (0, 0) and whose lift is at x, y (the iPadOS 16 glitch after a respring with no window open)
+        NSArray *q = [[cmd substringFromIndex:9] componentsSeparatedByString:@"_"];
+        if (q.count >= 2) {
+            CGPoint p = CGPointMake([q[0] doubleValue], [q[1] doubleValue]);
+            DMSysTouchReady(^{
+                DMLog([NSString stringWithFormat:@"[touchsys] tap with its down at (0, 0), lift at %@", NSStringFromCGPoint(p)]);
+                gDMSysTouchNativeZero = YES; DMSysTouch(p, DMTouchDown); gDMSysTouchNativeZero = NO;
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(25 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ DMSysTouch(p, DMTouchUp); DMSysTouchSecondUp(p); });
+            });
+        }
+    }
+    else if ([cmd hasPrefix:@"tapjump_"]) {   // tapjump_<x>_<y>: an injected tap with one move report at the touch screen's own (0, 0) in the middle (the iPadOS 16 glitch that [touchfix] drops)
+        NSArray *q = [[cmd substringFromIndex:8] componentsSeparatedByString:@"_"];
+        if (q.count >= 2) {
+            CGPoint p = CGPointMake([q[0] doubleValue], [q[1] doubleValue]);
+            BOOL newID = q.count >= 3 && [q[2] isEqualToString:@"newid"];
+            DMSysTouchReady(^{
+                DMLog([NSString stringWithFormat:@"[touchsys] tap with a (0, 0) jump at %@%@", NSStringFromCGPoint(p), newID ? @" (the jump with a new finger identity)" : @""]);
+                DMSysTouch(p, DMTouchDown);
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(40 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ gDMSysTouchNativeZero = YES; if (newID) gDMSysTouchIdentity = 3; DMSysTouch(p, DMTouchMove); gDMSysTouchNativeZero = NO; gDMSysTouchIdentity = 2; });
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(80 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ DMSysTouch(p, DMTouchUp); DMSysTouchSecondUp(p); });
+            });
+        }
+    }
     else if ([cmd hasPrefix:@"tapsys_"]) {   // tapsys_<x>_<y>: a system-wide injected tap (routed by backboardd to whatever app is under the point) -- see DMSysTouch
         NSArray *q = [[cmd substringFromIndex:7] componentsSeparatedByString:@"_"];
         gSysTapHoldMs = q.count >= 3 ? [q[2] doubleValue] : 80;
@@ -18099,7 +18644,7 @@ static void DMRunTrigger(NSString *cmd) {
         NSString *side = [cmd substringFromIndex:11];
         NSMutableArray<UIControl *> *panels = [NSMutableArray array];
         for (UIView *v in gOverlay.subviews) if ([v isKindOfClass:[UIControl class]]) [panels addObject:(UIControl *)v];
-        UIControl *pick = panels.count == 2 ? ([side isEqualToString:@"left"] ? panels[0] : panels[1]) : nil;
+        UIControl *pick = panels.count >= 2 ? ([side isEqualToString:@"left"] ? panels[0] : ([side isEqualToString:@"right"] ? panels[1] : (panels.count >= 3 ? panels[2] : nil))) : nil;   // (sidechoice_nofit: the No Fit button)
         [pick sendActionsForControlEvents:UIControlEventTouchUpInside];
         DMLog([NSString stringWithFormat:@"[sidechoice] %@: %@", side, pick ? @"pressed" : @"no prompt"]);
     }
@@ -19287,6 +19832,17 @@ static void DMRunTrigger(NSString *cmd) {
         UIView *st = q.count == 2 ? DMStageForBundle(q[0]) : nil; CGFloat k = [q.lastObject doubleValue];
         if (st && k > 0.1) { st.transform = CGAffineTransformMakeScale(k, k); DMLog([NSString stringWithFormat:@"[stagescale] %@ at %.2f, frame %@", q[0], k, NSStringFromCGRect(st.frame)]); }
     }
+    else if ([cmd hasPrefix:@"appnote_"]) {   // appnote_<bundle>_<action>: post MacAppBridge's "<action>" notification to that app (e.g. viewtree: its windows and view frames, class names only)
+        NSString *rest = [cmd substringFromIndex:8]; NSRange r = [rest rangeOfString:@"_" options:NSBackwardsSearch];
+        if (r.location != NSNotFound) { DMPostAppBridgeAction([rest substringToIndex:r.location], [rest substringFromIndex:r.location + 1]); DMLog([NSString stringWithFormat:@"[appnote] %@", rest]); }
+    }
+    else if ([cmd hasPrefix:@"tintof_"]) {   // tintof_<bundle>: the accent colour that app published for its resize grips (read-only)
+        NSString *b = [cmd substringFromIndex:7]; uint32_t hash = 2166136261u;
+        for (const char *c = b.UTF8String; *c; c++) { hash ^= (uint8_t)*c; hash *= 16777619u; }
+        char name[80]; snprintf(name, sizeof name, "com.besiktasliseba.appbridge.tint.%08x", hash);
+        int t = 0; uint64_t st = 0; notify_register_check(name, &t); notify_get_state(t, &st); notify_cancel(t);
+        DMLog([NSString stringWithFormat:@"[tintof] %@: valid %d rgba %llu %llu %llu %llu", b, (int)((st >> 32) & 1), (st >> 24) & 0xff, (st >> 16) & 0xff, (st >> 8) & 0xff, st & 0xff]);
+    }
     else if ([cmd hasPrefix:@"stagetf_"]) {   // stagetf_<bundle>: a window's live transform, bounds, centre, frame and presentation (read-only)
         UIView *st = DMStageForBundle([cmd substringFromIndex:8]);
         CALayer *pl = st.layer.presentationLayer;
@@ -20203,7 +20759,7 @@ static void DMAerial5Theme(UIView *stage) {
             if (box.hidden == live) box.hidden = !live;
             if (!live) continue;
             UIView *grip = box.subviews.firstObject;
-            UIColor *gc = DMResizeGripColor(dark);
+            UIColor *gc = DMResizeGripColorFor(DMStageBundle(stage), dark);
             if (![grip.backgroundColor isEqual:gc]) grip.backgroundColor = gc;
             CGRect bf = CGRectMake(side == 0 ? cf.origin.x : CGRectGetMaxX(cf) - 32.0, CGRectGetMaxY(cf) - 32.0, 32.0, 32.0);
             if (fabs(box.frame.origin.x - bf.origin.x) > 0.25 || fabs(box.frame.origin.y - bf.origin.y) > 0.25) box.frame = bf;
@@ -23633,6 +24189,7 @@ static void DMDiagHooks(void) {
 #if DEBUG
     DMTNTestInit();   // (tests: our own test notifications)
 #endif
+    if (!DMCtorSkip("touchfix")) DMTouchFixInit();
 #if DEBUG
     gSampleMainThread = mach_thread_self();   // (%ctor runs on the main thread: idlesample_ samples this thread)
     gSampleStackHi = (uintptr_t)pthread_get_stackaddr_np(pthread_self()); gSampleStackLo = gSampleStackHi - pthread_get_stacksize_np(pthread_self());

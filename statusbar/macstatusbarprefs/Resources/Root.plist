@@ -287,6 +287,20 @@
 			<string>Windows Behind Full-Screen Apps</string>
 		</dict>
 		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>key</key>
+			<string>tintResizeHandles</string>
+			<key>label</key>
+			<string>Tint Resize Handles</string>
+		</dict>
+		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
@@ -525,6 +539,8 @@
 			<string>PSGroupCell</string>
 			<key>label</key>
 			<string>Keyboard</string>
+			<key>footerText</key>
+			<string>Esc puts away the text cursor in a windowed app, like clicking the desktop. Terminal apps keep their Esc.</string>
 			<key>stockHides</key>
 			<true/>
 		</dict>
@@ -541,6 +557,20 @@
 			<string>tidyKeyboardPill</string>
 			<key>label</key>
 			<string>Keyboard Button in Status Bar (Experimental)</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>key</key>
+			<string>escEndsTyping</string>
+			<key>label</key>
+			<string>Esc Ends Typing in Windows</string>
 		</dict>
 		<dict>
 			<key>cell</key>

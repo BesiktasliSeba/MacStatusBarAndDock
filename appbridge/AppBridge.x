@@ -422,6 +422,71 @@ static void MABRegisterActions(void) {
     snprintf(name, sizeof name, "com.besiktasliseba.appbridge.redo.%08x", hash);
     notify_register_dispatch(name, &tokenRedo, dispatch_get_main_queue(), ^(int t) { [[UIApplication sharedApplication] sendAction:@selector(redo:) to:nil from:nil forEvent:nil]; });
 }
+// Esc Ends Typing in Windows (Settings > Status Bar > Keyboard, on by default; the owner, 27 Sep): Esc while typing in a windowed app puts the typing away,
+// like clicking the desktop on a Mac. Caught where hardware keys enter the app (-[UIApplication handleKeyUIEvent:]): they reach most text views
+// through the keyboard system, not through the text view's own pressesBegan: or sendEvent: (earlier versions hooked those and missed Notes, Messages, Reddit).
+// Left alone when: the app has its own Esc shortcut anywhere from the text field up (a UIKeyCommand for Esc), a composition is in progress (marked
+// text: Esc belongs to the input method), web content (pages use Esc themselves), terminal apps (Esc is a key there), full screen. The switch is
+// published by SpringBoard as notify state "com.besiktasliseba.appbridge.escends" (1 on, 2 off, 0 not yet published = on).
+static UIResponder *MABTypingResponder(void) {
+    for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
+        if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+        for (UIWindow *w in ((UIWindowScene *)sc).windows) {
+            UIResponder *r = nil; @try { r = [w valueForKey:@"firstResponder"]; } @catch (id e) {}
+            if (r.isFirstResponder && [r conformsToProtocol:@protocol(UITextInput)]) return r;
+        }
+    }
+    return nil;
+}
+static BOOL MABEscEndsTypingNow(void) {   // an Esc key-down just came in: put the typing away if all the conditions hold
+    static int token = 0; uint64_t state = 0;
+    if (!token) notify_register_check("com.besiktasliseba.appbridge.escends", &token);
+    if (token) notify_get_state(token, &state);
+    if (state == 2) return NO;
+    NSString *bundle = [NSBundle mainBundle].bundleIdentifier;
+    if ([@[@"dev.diffterm.app", @"ws.hbang.Terminal", @"com.officialscheduler.mterminal", @"com.googlecode.mobileterminal.Terminal"] containsObject:bundle]) return NO;   // (kDMTerminalApps)
+    UIResponder *r = MABTypingResponder();
+#if DEBUG
+    if (MSTestFlag("/tmp/macstatusbar-debug")) MABLog([NSString stringWithFormat:@"esc: key down, typing responder %@", r ? NSStringFromClass([r class]) : @"none"]);
+#endif
+    if (!r || ((id<UITextInput>)r).markedTextRange || [NSStringFromClass([r class]) hasPrefix:@"WK"]) return NO;
+    for (UIResponder *x = r; x; x = x.nextResponder)   // (the app's own Esc shortcut wins: cancelling a search, closing a sheet)
+        for (UIKeyCommand *c in x.keyCommands) if ([c.input isEqualToString:UIKeyInputEscape]) {
+#if DEBUG
+            MABLog([NSString stringWithFormat:@"esc: left to the app (%@ has an Esc shortcut)", NSStringFromClass([x class])]);
+#endif
+            return NO;
+        }
+    UIView *v = [r isKindOfClass:[UIView class]] ? (UIView *)r : nil;
+    UIWindowScene *scene = v.window.windowScene;
+    if (!scene) return NO;
+    CGSize sc = scene.coordinateSpace.bounds.size, screen = scene.screen.bounds.size;   // (a window: the scene is smaller than the screen either way round)
+    if (!(MIN(sc.width, sc.height) < MIN(screen.width, screen.height) - 1.0 || MAX(sc.width, sc.height) < MAX(screen.width, screen.height) - 1.0)) return NO;
+    [r resignFirstResponder];
+#if DEBUG
+    MABLog([NSString stringWithFormat:@"esc: typing in %@ put away", NSStringFromClass([r class])]);
+#endif
+    return YES;
+}
+// Hardware keys reach an app as UIPhysicalKeyboardEvent through -[UIApplication handleKeyUIEvent:] (not sendEvent:). Esc is HID 41 (GraveEscape's grave
+// key reports 41 too). A handled Esc's key-down and key-up are not passed on.
+static void (*oMABHandleKeyUIEvent)(id, SEL, id);
+static BOOL gMABEscSwallowRelease = NO;
+static void hMABHandleKeyUIEvent(id self, SEL _cmd, id ev) {
+    SEL kc = NSSelectorFromString(@"_keyCode"), down = NSSelectorFromString(@"_isKeyDown"), mods = NSSelectorFromString(@"_modifierFlags");
+    if ([ev respondsToSelector:kc] && [ev respondsToSelector:down] && ((long long (*)(id, SEL))objc_msgSend)(ev, kc) == 41) {
+        BOOL isDown = ((BOOL (*)(id, SEL))objc_msgSend)(ev, down);
+        long long m = [ev respondsToSelector:mods] ? ((long long (*)(id, SEL))objc_msgSend)(ev, mods) : 0;
+        if (!isDown && gMABEscSwallowRelease) { gMABEscSwallowRelease = NO; return; }
+        if (isDown && !(m & (UIKeyModifierCommand | UIKeyModifierControl | UIKeyModifierAlternate)) && MABEscEndsTypingNow()) { gMABEscSwallowRelease = YES; return; }
+    }
+    oMABHandleKeyUIEvent(self, _cmd, ev);
+}
+static void MABInstallEscEndsTyping(void) {
+    SEL s = NSSelectorFromString(@"handleKeyUIEvent:");
+    if (class_getInstanceMethod([UIApplication class], s)) MSHookMessageEx([UIApplication class], s, (IMP)hMABHandleKeyUIEvent, (IMP *)&oMABHandleKeyUIEvent);
+}
+
 %hook UIApplication
 - (void)sendEvent:(UIEvent *)event {
     %orig;
@@ -473,6 +538,7 @@ static BOOL MABViewIsRenamedUpdatesTab(UIView *v, int depth) {
     for (UIView *sub in v.subviews) if (MABViewIsRenamedUpdatesTab(sub, depth + 1)) return YES;
     return NO;
 }
+
 %hook UIControl
 - (void)sendAction:(SEL)action to:(id)target forEvent:(UIEvent *)event {
     if ([NSStringFromClass([self class]) isEqualToString:@"UITabBarButton"] && MABViewIsRenamedUpdatesTab((UIView *)self, 0)) {
@@ -815,6 +881,142 @@ static void MABViewTree(void) {
 #pragma clang diagnostic pop
     MABLog(out);
 }
+// Debug: "com.besiktasliseba.appbridge.kbgeo.<hash>" (M1 2026-09-27, Messages Send button dead in a small window): logs the keyboard-accessory geometry —
+// every window's frame/safe area, each CKMessageEntryView's frame, fitting sizes, vertical constraints and CGFloat "height" getters of it and its controller,
+// the Send button's layer chain, and UIKit's hit test at its centre. The first run also starts logging keyboard frame notifications and any zero-height
+// frame given to the entry view (with a short call stack). Class names, numbers and method names only.
+static void MABKbFind(UIView *v, NSString *cls, NSMutableArray *out) { if ([NSStringFromClass([v class]) isEqualToString:cls]) [out addObject:v]; for (UIView *s in v.subviews) MABKbFind(s, cls, out); }
+static void MABKbGetters(id obj, NSString *kw, NSMutableString *out) {
+    if (!obj) return;
+    for (Class c = [obj class]; c && c != [UIView class] && c != [UIViewController class] && c != [UIResponder class] && c != [NSObject class]; c = class_getSuperclass(c)) {
+        unsigned n = 0; Method *l = class_copyMethodList(c, &n);
+        for (unsigned i = 0; i < n; i++) {
+            NSString *name = NSStringFromSelector(method_getName(l[i]));
+            if ([name containsString:@":"] || ![[name lowercaseString] containsString:kw]) continue;
+            const char *t = method_getTypeEncoding(l[i]); if (!t) continue;
+            if (t[0] == 'd') [out appendFormat:@"    %@.%@ = %.1f\n", NSStringFromClass(c), name, ((double (*)(id, SEL))objc_msgSend)(obj, method_getName(l[i]))];
+            else if (t[0] == 'B') [out appendFormat:@"    %@.%@ = %d\n", NSStringFromClass(c), name, ((BOOL (*)(id, SEL))objc_msgSend)(obj, method_getName(l[i]))];
+            else [out appendFormat:@"    %@.%@ (type %.12s)\n", NSStringFromClass(c), name, t];
+        }
+        free(l);
+    }
+}
+static void (*gMABKbOrigSetFrame)(id, SEL, CGRect);
+static void MABKbSetFrame(UIView *self, SEL _cmd, CGRect f) {
+    static int logged = 0;
+    if (f.size.height < 1 && self.frame.size.height >= 1 && logged < 12) {
+        logged++;
+        NSArray *st = [NSThread callStackSymbols];
+        MABLog([NSString stringWithFormat:@"kbgeo: %@ setFrame %@ (was %@) <- %@", NSStringFromClass([self class]), NSStringFromCGRect(f), NSStringFromCGRect(self.frame), [[st subarrayWithRange:NSMakeRange(1, MIN((NSUInteger)14, st.count - 1))] componentsJoinedByString:@" | "]]);
+    }
+    gMABKbOrigSetFrame(self, _cmd, f);
+}
+static void (*gMABKbOrigSetEVF)(id, SEL, CGRect, BOOL);
+static NSString *MABKbCtlNumbers(id ctl) {
+    NSMutableString *m = [NSMutableString string];
+    id ev = [ctl respondsToSelector:@selector(entryView)] ? ((id (*)(id, SEL))objc_msgSend)(ctl, @selector(entryView)) : nil;
+    SEL s1 = NSSelectorFromString(@"messageEntryViewMaxHeight:"), s2 = NSSelectorFromString(@"_maxEntryViewHeight"), s3 = NSSelectorFromString(@"_entryViewTopInsetPadding"), s4 = NSSelectorFromString(@"_marginInsetsForEntryView");
+    if (ev && [ctl respondsToSelector:s1]) [m appendFormat:@" maxH(ev) %.1f", ((double (*)(id, SEL, id))objc_msgSend)(ctl, s1, ev)];
+    if ([ctl respondsToSelector:s2]) [m appendFormat:@" _maxEVH %.1f", ((double (*)(id, SEL))objc_msgSend)(ctl, s2)];
+    if ([ctl respondsToSelector:s3]) [m appendFormat:@" topPad %.1f", ((double (*)(id, SEL))objc_msgSend)(ctl, s3)];
+    if ([ctl respondsToSelector:s4]) [m appendFormat:@" margins %@", NSStringFromUIEdgeInsets(((UIEdgeInsets (*)(id, SEL))objc_msgSend)(ctl, s4))];
+    if ([ctl isKindOfClass:[UIViewController class]]) { UIViewController *vc = ctl; [m appendFormat:@" view %@ safe %@ additional %@ nav %@", NSStringFromCGRect(vc.view.frame), NSStringFromUIEdgeInsets(vc.view.safeAreaInsets), NSStringFromUIEdgeInsets(vc.additionalSafeAreaInsets), vc.navigationController ? NSStringFromCGRect(vc.navigationController.navigationBar.frame) : @"-"]; }
+    if (ev) [m appendFormat:@" ev.fits %@", NSStringFromCGSize([ev sizeThatFits:CGSizeMake([(UIView *)ev bounds].size.width, 2000)])];
+    return m;
+}
+static void MABKbSetEVF(id self, SEL _cmd, CGRect f, BOOL animated) {
+    static int logged = 0;
+    if (logged < 40) {
+        logged++;
+        NSArray *st = [NSThread callStackSymbols];
+        MABLog([NSString stringWithFormat:@"kbgeo: _setEntryViewFrame %@ anim %d |%@ <- %@", NSStringFromCGRect(f), animated, MABKbCtlNumbers(self), [[st subarrayWithRange:NSMakeRange(1, MIN((NSUInteger)6, st.count - 1))] componentsJoinedByString:@" | "]]);
+    }
+    gMABKbOrigSetEVF(self, _cmd, f, animated);
+}
+static void MABKbGeo(void) {
+    static BOOL installed;
+    if (!installed) {
+        installed = YES;
+        for (NSString *nn in @[UIKeyboardWillChangeFrameNotification, UIKeyboardDidChangeFrameNotification]) {
+            [[NSNotificationCenter defaultCenter] addObserverForName:nn object:nil queue:nil usingBlock:^(NSNotification *n) {
+                MABLog([NSString stringWithFormat:@"kbgeo: %@ begin %@ end %@ local %@", [n.name substringFromIndex:10], n.userInfo[UIKeyboardFrameBeginUserInfoKey], n.userInfo[UIKeyboardFrameEndUserInfoKey], n.userInfo[UIKeyboardIsLocalUserInfoKey]]);
+            }];
+        }
+        Class ev = NSClassFromString(@"CKMessageEntryView");
+        Method m = ev ? class_getInstanceMethod(ev, @selector(setFrame:)) : NULL;
+        if (m) { gMABKbOrigSetFrame = (void (*)(id, SEL, CGRect))method_getImplementation(m); class_replaceMethod(ev, @selector(setFrame:), (IMP)MABKbSetFrame, method_getTypeEncoding(m)); }
+        Class cc = NSClassFromString(@"CKChatController"); SEL sevf = NSSelectorFromString(@"_setEntryViewFrame:animated:");
+        m = cc ? class_getInstanceMethod(cc, sevf) : NULL;
+        if (m) { gMABKbOrigSetEVF = (void (*)(id, SEL, CGRect, BOOL))method_getImplementation(m); class_replaceMethod(cc, sevf, (IMP)MABKbSetEVF, method_getTypeEncoding(m)); }
+    }
+    NSMutableString *out = [NSMutableString stringWithString:@"kbgeo:\n"];
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    NSArray<UIWindow *> *windows = [UIApplication sharedApplication].windows;
+#pragma clang diagnostic pop
+    for (UIWindow *w in windows) [out appendFormat:@"  WINDOW %@ frame %@ safe %@ scene %@ iface %ld\n", NSStringFromClass([w class]), NSStringFromCGRect(w.frame), NSStringFromUIEdgeInsets(w.safeAreaInsets), w.windowScene ? NSStringFromCGRect(w.windowScene.coordinateSpace.bounds) : @"-", w.windowScene ? (long)w.windowScene.interfaceOrientation : -1L];
+    for (UIWindow *w in windows) {
+        NSMutableArray *evs = [NSMutableArray array]; MABKbFind(w, @"CKMessageEntryView", evs);
+        for (UIView *e in evs) {
+            [out appendFormat:@"  ENTRY in %@ win %@ bounds %@ intrinsic %@ fits %@ tamic %d mask %lu super %@\n", NSStringFromClass([w class]), NSStringFromCGRect([e convertRect:e.bounds toView:nil]), NSStringFromCGRect(e.bounds), NSStringFromCGSize(e.intrinsicContentSize), NSStringFromCGSize([e sizeThatFits:CGSizeMake(e.bounds.size.width, 2000)]), e.translatesAutoresizingMaskIntoConstraints, (unsigned long)e.autoresizingMask, NSStringFromClass([e.superview class])];
+            for (NSLayoutConstraint *c in [e constraintsAffectingLayoutForAxis:UILayoutConstraintAxisVertical]) [out appendFormat:@"    vc %@\n", c];
+            MABKbGetters(e, @"height", out);
+            UIResponder *r = e.nextResponder; while (r && ![r isKindOfClass:[UIViewController class]]) r = r.nextResponder;
+            [out appendFormat:@"   controller %@\n", r ? NSStringFromClass([r class]) : @"-"]; MABKbGetters(r, @"height", out);
+            if (r) [out appendFormat:@"   numbers:%@\n", MABKbCtlNumbers(r)];
+            if ([e respondsToSelector:@selector(delegate)]) { id d = ((id (*)(id, SEL))objc_msgSend)(e, @selector(delegate)); [out appendFormat:@"   delegate %@\n", d ? NSStringFromClass([d class]) : @"-"]; if (d != r) MABKbGetters(d, @"height", out); }
+            NSMutableArray *btns = [NSMutableArray array]; MABKbFind(e, @"CKEntryViewButton", btns);
+            UIView *send = nil; for (UIView *b in btns) if (!b.hidden && (!send || [b convertRect:b.bounds toView:nil].origin.x > [send convertRect:send.bounds toView:nil].origin.x)) send = b;
+            if (send) {
+                CGPoint c = [send convertPoint:CGPointMake(CGRectGetMidX(send.bounds), CGRectGetMidY(send.bounds)) toView:nil];
+                UIView *hit = [w hitTest:c withEvent:nil];
+                CALayer *lh = [w.layer hitTest:[w.layer.superlayer ?: w.layer convertPoint:c fromLayer:w.layer]];
+                [out appendFormat:@"   send at %@: UIKit hit %@, layer hit %@ (delegate %@)\n", NSStringFromCGPoint(c), hit ? NSStringFromClass([hit class]) : @"nil", lh ? NSStringFromClass([lh class]) : @"nil", lh.delegate ? NSStringFromClass([(id)lh.delegate class]) : @"-"];
+                for (CALayer *l = send.layer; l; l = l.superlayer)
+                    [out appendFormat:@"    layer %@ bounds %@ pos %@ clips %d hidden %d opaqueHT %@\n", l.delegate ? NSStringFromClass([(id)l.delegate class]) : NSStringFromClass([l class]), NSStringFromCGRect(l.bounds), NSStringFromCGPoint(l.position), l.masksToBounds, l.hidden, [l respondsToSelector:NSSelectorFromString(@"hitTestsAsOpaque")] ? @(((BOOL (*)(id, SEL))objc_msgSend)(l, NSSelectorFromString(@"hitTestsAsOpaque"))) : @"?"];
+            }
+        }
+        if ([NSStringFromClass([w class]) isEqualToString:@"UITextEffectsWindow"]) { [out appendFormat:@"  effects root %@\n", NSStringFromClass([w.rootViewController class])]; MABKbGetters(w.rootViewController, @"height", out); }
+    }
+    MABLog(out);
+}
+// Debug: "kbfake" / "kbfakelayout" (Messages bar fix test, no text involved and nothing sent): for one synchronous moment the chat's composition reports
+// "has content" (the only input of ChatKit's height formula that typing changes), and the log shows Messages' own _maxEntryViewHeight, the value after our
+// fix, and the inputs (full-screen keyboard size, etc.). kbfakelayout also lets Messages lay the bar out in that state and logs kbgeo (bar frame, UIKit hit
+// test at the right-most bar button), then restores the real answer and lays it out again.
+static double (*oMABMaxEntryHeight)(id, SEL);
+static double MABMessagesKeyboardFixedHeight(id self, double orig, NSString **why);
+static BOOL MABFakeHasContent(id s, SEL c) { return YES; }
+static void MABKbFake(BOOL layout) {
+    NSMutableArray *evs = [NSMutableArray array];
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    for (UIWindow *w in [UIApplication sharedApplication].windows) MABKbFind(w, @"CKMessageEntryView", evs);
+#pragma clang diagnostic pop
+    UIView *entry = evs.firstObject;
+    UIResponder *r = entry.nextResponder; while (r && ![r isKindOfClass:[UIViewController class]]) r = r.nextResponder;
+    SEL sMax = NSSelectorFromString(@"_maxEntryViewHeight"), sComp = NSSelectorFromString(@"composition"), sHas = NSSelectorFromString(@"hasContent");
+    id comp = [entry respondsToSelector:sComp] ? ((id (*)(id, SEL))objc_msgSend)(entry, sComp) : nil;
+    Method m = comp ? class_getInstanceMethod([comp class], sHas) : NULL;
+    if (!r || !m || ![r respondsToSelector:sMax]) { MABLog([NSString stringWithFormat:@"kbfake: missing pieces (controller %d composition %d hasContent %d)", r != nil, comp != nil, m != NULL]); return; }
+    BOOL realHas = ((BOOL (*)(id, SEL))objc_msgSend)(comp, sHas);
+    IMP real = method_setImplementation(m, (IMP)MABFakeHasContent);
+    double raw = oMABMaxEntryHeight ? oMABMaxEntryHeight(r, sMax) : -1, hooked = ((double (*)(id, SEL))objc_msgSend)(r, sMax);
+    NSString *why = @"-"; MABMessagesKeyboardFixedHeight(r, raw, &why);
+    Class kbc = NSClassFromString(@"UIKeyboard"); SEL sKb = NSSelectorFromString(@"sizeForInterfaceOrientation:ignoreInputView:");
+    CGSize kb = [kbc respondsToSelector:sKb] ? ((CGSize (*)(id, SEL, long, BOOL))objc_msgSend)(kbc, sKb, (long)entry.window.windowScene.interfaceOrientation, YES) : CGSizeZero;
+    MABLog([NSString stringWithFormat:@"kbfake: real hasContent %d; with content: Messages %.1f, after fix %.1f (%@); full-screen keyboard %@; fix off-flag %d", realHas, raw, hooked, why, NSStringFromCGSize(kb), MSTestFlag("/tmp/macappbridge-msgbar-off")]);
+    if (layout) {
+        SEL sUp = NSSelectorFromString(@"updateEntryViewHeightIncludingAppStrip:");
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(r, sUp, NO);
+        [entry.window layoutIfNeeded];
+        MABLog(@"kbfake: laid out with content ->"); MABKbGeo();
+        method_setImplementation(m, real);
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(r, sUp, NO);
+        [entry.window layoutIfNeeded];
+        MABLog(@"kbfake: restored ->"); MABKbGeo();
+    } else method_setImplementation(m, real);
+}
 // Debug: "com.besiktasliseba.appbridge.popuptrace.<hash>" traces LNPopupController (the popup/queue bar library Sileo and others use): every present/dismiss/open/
 // close of the popup bar, and hiding of LNPopupBar, with the controller's view width and its popup-related Swift ivars (M1 pipeline, Sileo queue stuck).
 static NSString *MABIvarSummary(id obj) {
@@ -945,6 +1147,35 @@ static void MABRegisterFocus(void) {
     notify_register_dispatch(n2, &tokenRuntime, dispatch_get_main_queue(), ^(int t) {
         NSArray *a = [[[NSString stringWithContentsOfFile:@"/tmp/mab-runtime" encoding:NSUTF8StringEncoding error:nil] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] componentsSeparatedByString:@" "];
         if (a.count >= 3 && [a[0] isEqualToString:@"methods"]) { MABListMethods(a[1], [a[2] lowercaseString]); MABLog(@"runtime: methods done"); }
+        // dump <Class> <selector> <bytes> / dumpat <hexaddr> <bytes>: the machine code at that method (or address) -> tmp/mab-dump.txt as "<addr> <hex>" (read-only,
+        // for disassembling system code on the Mac); peek <hexaddr>...: for each address its symbol, the 8-byte value there (as pointer, double) and, when that
+        // points into an image's strings, the C string (selector names).
+        else if (a.count >= 3 && ([a[0] isEqualToString:@"dump"] || [a[0] isEqualToString:@"dumpat"])) {
+            const uint8_t *code = NULL; NSUInteger len = 0;
+            if ([a[0] isEqualToString:@"dump"] && a.count >= 4) { Method m = class_getInstanceMethod(NSClassFromString(a[1]), NSSelectorFromString(a[2])); code = m ? (const uint8_t *)((uintptr_t)method_getImplementation(m) & 0x0000000fffffffffULL) : NULL;   /* (PAC bits stripped: reading through a signed pointer crashes) */ len = [a[3] integerValue]; }
+            else { code = (const uint8_t *)(uintptr_t)strtoull([a[1] UTF8String], NULL, 16); len = [a[2] integerValue]; }
+            Dl_info di; BOOL ok = code && dladdr(code, &di);
+            if (!ok || len == 0 || len > 16384) MABLog(@"runtime: dump refused");
+            else {
+                NSMutableString *hex = [NSMutableString stringWithFormat:@"%lx ", (unsigned long)code];
+                for (NSUInteger i = 0; i < len; i++) [hex appendFormat:@"%02x", code[i]];
+                [hex writeToFile:[NSTemporaryDirectory() stringByAppendingPathComponent:@"mab-dump.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                MABLog([NSString stringWithFormat:@"runtime: dumped %lu bytes at %p (%s + %lx)", (unsigned long)len, code, di.dli_sname ?: "?", (unsigned long)(code - (const uint8_t *)di.dli_saddr)]);
+            }
+        }
+        else if (a.count >= 2 && [a[0] isEqualToString:@"peek"]) {
+            for (NSUInteger i = 1; i < a.count; i++) {
+                const uint8_t *addr = (const uint8_t *)(uintptr_t)strtoull([a[i] UTF8String], NULL, 16);
+                Dl_info di; if (!addr || !dladdr(addr, &di)) { MABLog([NSString stringWithFormat:@"peek %@: not in an image", a[i]]); continue; }
+                uint64_t v; memcpy(&v, addr, 8); double d; memcpy(&d, addr, 8);
+                const char *p = (const char *)(uintptr_t)(v & 0x0000000fffffffffULL); Dl_info pi; NSString *str = @"";
+                if (p && dladdr(p, &pi)) {
+                    if (pi.dli_sname && pi.dli_saddr == (void *)p) str = [NSString stringWithFormat:@" -> symbol %s", pi.dli_sname];
+                    else { size_t n = strnlen(p, 120); BOOL printable = n > 0 && n < 120; for (size_t k = 0; printable && k < n; k++) if (p[k] < 32 || p[k] > 126) printable = NO; if (printable) str = [NSString stringWithFormat:@" -> \"%s\"", p]; }
+                }
+                MABLog([NSString stringWithFormat:@"peek %@: in %s (%s) value %#llx double %g%@", a[i], di.dli_fname ? strrchr(di.dli_fname, '/') + 1 : "?", di.dli_sname ?: "?", v, d, str]);
+            }
+        }
         else if (a.count >= 2 && [a[0] isEqualToString:@"classes"]) {
             unsigned n = 0; Class *all = objc_copyClassList(&n); NSMutableArray *hits = [NSMutableArray array];
             for (unsigned i = 0; i < n && hits.count < 80; i++) { NSString *cn = NSStringFromClass(all[i]); if ([cn rangeOfString:a[1] options:NSCaseInsensitiveSearch].location != NSNotFound) [hits addObject:cn]; }
@@ -954,6 +1185,30 @@ static void MABRegisterFocus(void) {
     static int tokenViewTree = 0;
     snprintf(n2, sizeof n2, "com.besiktasliseba.appbridge.viewtree.%08x", hash);
     notify_register_dispatch(n2, &tokenViewTree, dispatch_get_main_queue(), ^(int t) { MABViewTree(); });
+    static int tokenKbGeo = 0;
+    snprintf(n2, sizeof n2, "com.besiktasliseba.appbridge.kbgeo.%08x", hash);
+    notify_register_dispatch(n2, &tokenKbGeo, dispatch_get_main_queue(), ^(int t) { MABKbGeo(); });
+    static int tokenKbFake = 0, tokenKbFakeLayout = 0;
+    snprintf(n2, sizeof n2, "com.besiktasliseba.appbridge.kbfake.%08x", hash);
+    notify_register_dispatch(n2, &tokenKbFake, dispatch_get_main_queue(), ^(int t) { MABKbFake(NO); });
+    snprintf(n2, sizeof n2, "com.besiktasliseba.appbridge.kbfakelayout.%08x", hash);
+    notify_register_dispatch(n2, &tokenKbFakeLayout, dispatch_get_main_queue(), ^(int t) { MABKbFake(YES); });
+    static int tokenKbRelayout = 0;   // kbrelayout: asks Messages' chat controller to recompute its entry view height (no text involved), then logs kbgeo
+    snprintf(n2, sizeof n2, "com.besiktasliseba.appbridge.kbrelayout.%08x", hash);
+    notify_register_dispatch(n2, &tokenKbRelayout, dispatch_get_main_queue(), ^(int t) {
+        MABKbGeo();
+        NSMutableArray *evs = [NSMutableArray array];
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        for (UIWindow *w in [UIApplication sharedApplication].windows) MABKbFind(w, @"CKMessageEntryView", evs);
+#pragma clang diagnostic pop
+        for (UIView *e in evs) {
+            UIResponder *r = e.nextResponder; while (r && ![r isKindOfClass:[UIViewController class]]) r = r.nextResponder;
+            SEL s = NSSelectorFromString(@"updateEntryViewHeightIncludingAppStrip:");
+            if ([r respondsToSelector:s]) { ((void (*)(id, SEL, BOOL))objc_msgSend)(r, s, NO); MABLog(@"kbgeo: relayout requested"); }
+        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ MABKbGeo(); });
+    });
     static int tokenTraits = 0, tokenTap = 0;
     snprintf(n2, sizeof n2, "com.besiktasliseba.appbridge.traits.%08x", hash);
     notify_register_dispatch(n2, &tokenTraits, dispatch_get_main_queue(), ^(int t) { MABTraits(); });
@@ -1453,12 +1708,144 @@ static void MABInstallPopupGuard(void) {
     MSHookMessageEx(vc, ps, (IMP)hMABPresentBar, (IMP *)&oMABPresentBar);
     MSHookMessageEx(vc, ds, (IMP)hMABDismissBar, (IMP *)&oMABDismissBar);
 }
+// ===== Messages entry bar in a short window (M1 2026-09-27, "Send does nothing in a small Messages tile") =============================================
+// Root cause (ChatKit, read from its code): the message bar's height is -[CKChatController _maxEntryViewHeight], which updateEntryViewHeightIncludingAppStrip:
+// uses directly as the bar's frame height. Once the message has content it is
+//     max(0, min(fits + kb, viewHeight - navigationBarInsets - _entryViewTopInsetPadding) - kb)
+// with kb = +[UIKeyboard sizeForInterfaceOrientation:ignoreInputView:YES], the FULL-SCREEN software keyboard height. That assumes the whole keyboard lies
+// inside the chat view, true for full screen / Split View / Slide Over (always full height), but not for a short window of ours: in a ~355 pt tile the
+// result goes negative -> 0, so the bar gets a zero-height frame while its buttons are still drawn above it (laid out upward from the bottom edge). The
+// render server routes touches by layer geometry, so taps on the drawn Send button fall through to the conversation (Return still works).
+// Fix: only in a window shorter than the screen, and only when Messages' value is below the bar's own fitting height, redo the same formula with the part of
+// the keyboard that is really inside this window: the input host (the bar's superview, UIKit's UIInputSetHostView at the bottom of the window) minus the
+// bar itself (hardware keyboard: the 69 pt assistant row). The result is never smaller than Messages' own. Nothing else is touched: no layout is forced,
+// Messages asks for this value on its own schedule, and the value does not depend on the bar's current height (no feedback loop).
+static double (*oMABMaxEntryHeight)(id, SEL);
+static double MABMessagesKeyboardFixedHeight(id self, double orig, NSString **why) {
+    UIViewController *vc = [self isKindOfClass:[UIViewController class]] ? self : nil;
+    UIView *view = vc.isViewLoaded ? vc.view : nil; UIWindow *win = view.window;
+    if (!win || !win.screen) { if (why) *why = @"no window"; return orig; }
+    CGFloat viewH = view.bounds.size.height;
+    if (viewH >= win.screen.bounds.size.height - 1) { if (why) *why = @"full height"; return orig; }   // full screen, Split View, Slide Over: Apple's own case
+    SEL sEntry = NSSelectorFromString(@"entryView"), sNav = NSSelectorFromString(@"navigationBarInsets"), sPad = NSSelectorFromString(@"_entryViewTopInsetPadding");
+    if (![self respondsToSelector:sEntry] || ![self respondsToSelector:sNav] || ![self respondsToSelector:sPad]) { if (why) *why = @"no ChatKit selectors"; return orig; }
+    UIView *entry = ((id (*)(id, SEL))objc_msgSend)(self, sEntry);
+    UIView *host = entry.superview;
+    if (![entry isKindOfClass:[UIView class]] || !host || ![NSStringFromClass([host class]) containsString:@"InputSetHost"]) { if (why) *why = @"bar not in the keyboard host"; return orig; }
+    double fits = [entry sizeThatFits:CGSizeMake(entry.bounds.size.width, CGFLOAT_MAX)].height;
+    if (orig >= fits - 0.5) { if (why) *why = @"not clamped"; return orig; }
+    double avail = viewH - ((double (*)(id, SEL))objc_msgSend)(self, sNav) - ((double (*)(id, SEL))objc_msgSend)(self, sPad);
+    double kbInside = MAX(0.0, host.bounds.size.height - entry.bounds.size.height);
+    double fixed = MAX(0.0, MIN(fits, avail - kbInside));
+    if (why) *why = [NSString stringWithFormat:@"fits %.1f avail %.1f kbInside %.1f -> %.1f", fits, avail, kbInside, fixed];
+    return MAX(orig, fixed);
+}
+static double hMABMaxEntryHeight(id self, SEL _cmd) {
+    double orig = oMABMaxEntryHeight(self, _cmd);
+    if (![NSThread isMainThread] || MSTestFlag("/tmp/macappbridge-msgbar-off")) return orig;
+    NSString *why = nil;
+    double r = MABMessagesKeyboardFixedHeight(self, orig, &why);
+#if DEBUG
+    static int logged = 0;
+    if (r != orig && logged < 60) { logged++; MABLog([NSString stringWithFormat:@"msgbar: _maxEntryViewHeight %.1f -> %.1f (%@)", orig, r, why]); }
+#endif
+    return r;
+}
+static void MABInstallMessagesBarFix(void) {
+    Class c = NSClassFromString(@"CKChatController");   // ChatKit: Messages, and any app showing a Messages chat (the same bar, the same maths)
+    SEL s = NSSelectorFromString(@"_maxEntryViewHeight");
+    if (!c || !class_getInstanceMethod(c, s)) return;
+    MSHookMessageEx(c, s, (IMP)hMABMaxEntryHeight, (IMP *)&oMABMaxEntryHeight);
+}
+// Tint Resize Handles: this app's accent colour for its window's resize grips (SpringBoard draws them). The tint of its visible navigation bar (the
+// back button's colour) or else its key window's tint, resolved for the current light/dark look, published as notify state
+// "com.besiktasliseba.appbridge.tint.<hash>" (bit 32 = valid, then 8-bit R G B A) -- when it becomes active, after launch, and every 4 s while active.
+static UINavigationBar *MABVisibleNavBar(UIView *v, int depth) {
+    if (depth > 9 || v.hidden || v.alpha < 0.01) return nil;
+    if ([v isKindOfClass:[UINavigationBar class]] && v.window) return (UINavigationBar *)v;
+    for (UIView *sv in v.subviews) { UINavigationBar *b = MABVisibleNavBar(sv, depth + 1); if (b) return b; }
+    return nil;
+}
+static void MABPublishTint(void) {
+    UIApplication *app = [UIApplication sharedApplication];
+    if (!app || app.applicationState != UIApplicationStateActive) return;
+    UIWindow *key = nil, *front = nil;   // (the key window, or else the app's front visible window: Spotify's main window is not "key")
+    for (UIScene *sc in app.connectedScenes) {
+        if (![sc isKindOfClass:[UIWindowScene class]] || sc.activationState != UISceneActivationStateForegroundActive) continue;
+        for (UIWindow *w in ((UIWindowScene *)sc).windows) {
+            if (w.isKeyWindow) key = w;
+            if (!w.hidden && w.alpha > 0.01 && w.windowLevel == UIWindowLevelNormal && w.rootViewController) front = w;
+        }
+    }
+    if (!key) key = front;
+#if DEBUG
+    static int why = 0;
+    if (!key && why++ < 3 && MSTestFlag("/tmp/macstatusbar-debug")) { NSMutableString *m = [NSMutableString stringWithString:@"tint: no window to read; scenes:"]; for (UIScene *sc in app.connectedScenes) [m appendFormat:@" %@ state %ld", NSStringFromClass([sc class]), (long)sc.activationState]; MABLog(m); }
+#endif
+    if (!key) return;
+    UINavigationBar *bar = MABVisibleNavBar(key, 0);
+    UIColor *c = [(bar ?: (UIView *)key).tintColor resolvedColorWithTraitCollection:key.traitCollection];
+    CGFloat r = 0, g = 0, b = 0, a = 0;
+    if (![c getRed:&r green:&g blue:&b alpha:&a]) {   // (a colour in another space: matched to sRGB)
+        CGColorSpaceRef srgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        CGColorRef m = c.CGColor ? CGColorCreateCopyByMatchingToColorSpace(srgb, kCGRenderingIntentDefault, c.CGColor, NULL) : NULL;
+        CGColorSpaceRelease(srgb);
+        if (!m) return;
+        const CGFloat *comp = CGColorGetComponents(m); size_t nc = CGColorGetNumberOfComponents(m);
+        if (nc >= 3) { r = comp[0]; g = comp[1]; b = comp[2]; a = nc > 3 ? comp[3] : 1.0; } else if (nc >= 1) { r = g = b = comp[0]; a = nc > 1 ? comp[1] : 1.0; }
+        CGColorRelease(m);
+        if (nc < 1) return;
+    }
+    uint64_t st = (1ULL << 32) | ((uint64_t)lround(MAX(0, MIN(1, r)) * 255) << 24) | ((uint64_t)lround(MAX(0, MIN(1, g)) * 255) << 16) | ((uint64_t)lround(MAX(0, MIN(1, b)) * 255) << 8) | (uint64_t)lround(MAX(0, MIN(1, a)) * 255);
+    static int token = 0; static uint64_t last = 0;
+    if (!token) {
+        NSString *bundle = [NSBundle mainBundle].bundleIdentifier; if (!bundle.length) return;
+        uint32_t hash = 2166136261u;
+        for (const char *ch = bundle.UTF8String; *ch; ch++) { hash ^= (uint8_t)*ch; hash *= 16777619u; }
+        char name[80]; snprintf(name, sizeof name, "com.besiktasliseba.appbridge.tint.%08x", hash);
+        if (notify_register_check(name, &token) != NOTIFY_STATUS_OK) { token = 0; return; }
+    }
+    if (st != last) { notify_set_state(token, st); last = st; }
+}
+static void MABStartTintReports(void) {
+    NSString *bundle = [NSBundle mainBundle].bundleIdentifier;
+    if (!bundle.length || [bundle isEqualToString:@"com.apple.springboard"]) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (![UIApplication sharedApplication]) return;
+        [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) { MABPublishTint(); }];
+        NSTimer *t = [NSTimer timerWithTimeInterval:4.0 repeats:YES block:^(NSTimer *timer) { MABPublishTint(); }];
+        t.tolerance = 1.0;
+        [[NSRunLoop mainRunLoop] addTimer:t forMode:NSRunLoopCommonModes];
+        for (int i = 1; i <= 3; i++) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ MABPublishTint(); });
+    });
+}
 %ctor {
     // MABInstallIdiom();   // (separate experiment, off: an iPhone idiom for universal apps in a compact window; not shown to help SofaScore)
 #if DEBUG
     MABLog([NSString stringWithFormat:@"%%ctor fired, bundle=%@", [NSBundle mainBundle].bundleIdentifier]);
 #endif
     %init;   // the touch hook above
+#if DEBUG
+    {   // (debug: /tmp/mab-launchwatch-<bundle id> exists: its window scene's size, orientation and size classes from the very start, every 0.1 s
+        //  for 6 s, plus every size / trait callback -- Reddit's Home feed laid out for a portrait-shaped window at launch, M1 27 Sep)
+        NSString *flag = [NSString stringWithFormat:@"/tmp/mab-launchwatch-%@", [NSBundle mainBundle].bundleIdentifier];   // (an existence check: apps may test it, not read it)
+        if ([NSBundle mainBundle].bundleIdentifier.length && MSTestFlag(flag.UTF8String)) {
+            MABInstallTraitTrace();
+            CFTimeInterval t0 = CACurrentMediaTime();
+            for (int i = 0; i <= 60; i++) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                NSMutableString *m = [NSMutableString stringWithFormat:@"launchwatch t=%.2f:", CACurrentMediaTime() - t0];
+                for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) if ([sc isKindOfClass:[UIWindowScene class]]) {
+                    UIWindowScene *ws = (UIWindowScene *)sc;
+                    [m appendFormat:@" scene %@ orient %ld state %ld h%ld v%ld", NSStringFromCGRect(ws.coordinateSpace.bounds), (long)ws.interfaceOrientation, (long)ws.activationState, (long)ws.traitCollection.horizontalSizeClass, (long)ws.traitCollection.verticalSizeClass];
+                    for (UIWindow *w in ws.windows) if (w.rootViewController) [m appendFormat:@" | %@ %@", NSStringFromClass([w class]), NSStringFromCGRect(w.frame)];
+                }
+                MABLog(m);
+            });
+        }
+    }
+#endif
+    MABInstallEscEndsTyping();   // (Esc Ends Typing in Windows)
+    MABStartTintReports();   // (Tint Resize Handles)
     MABInstallSofaPhone();   // SofaScore only: its phone layout when it starts in a narrow window (runtime calls only, safe this early)
     if ([[NSBundle mainBundle].bundleIdentifier isEqualToString:@"com.apple.AppStore"]) %init(MABAppStoreTabs);
 #if DEBUG
@@ -1479,6 +1866,7 @@ static void MABInstallPopupGuard(void) {
         MABRegister();
         MABRegisterActions();
         MABInstallPopupGuard();   // apps with LNPopupController only (Sileo): popup bar present/dismiss one at a time
+        MABInstallMessagesBarFix();   // ChatKit only (Messages): the message bar's height in a window shorter than the screen
         MABRegisterScreenCompat();   // no-op for every app except the small allowlist (see above) — registers only, installs much later
 #if DEBUG
         MABRegisterFocus();
