@@ -2,6 +2,21 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.0.8
+
+### Improvements
+- Window sizes stay steady with Aerial 5.0: tiled windows are the same height, and new windows no longer make a small second move after they appear.
+- Windows minimized before a respring no longer flash up while they're brought back.
+- Tinted resize handles now do their work only for apps that are in a window (less background work).
+
+### Fixes
+- Fill Screen (and the other Window menu layouts) chosen for an app in full screen came out about 4% smaller than the screen with Aerial 5.0.
+- Fill Screen could leave a gap above the Dock after turning the iPad.
+- Reddit's Home feed could skew after its window was resized.
+
+### Known limitation
+- In one landscape direction, Aerial 5.0 keeps Fill Screen windows slightly inside the left and right screen edges.
+
 ## 1.0.7
 
 ### New

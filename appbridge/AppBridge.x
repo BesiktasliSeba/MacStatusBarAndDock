@@ -1766,9 +1766,23 @@ static UINavigationBar *MABVisibleNavBar(UIView *v, int depth) {
     for (UIView *sv in v.subviews) { UINavigationBar *b = MABVisibleNavBar(sv, depth + 1); if (b) return b; }
     return nil;
 }
+static BOOL MABSceneWindowed(UIWindowScene *ws) {   // (a window of ours: the scene is smaller than the screen either way round)
+    if (!ws) return NO;
+    CGSize sc = ws.coordinateSpace.bounds.size, screen = ws.screen.bounds.size;
+    return MIN(sc.width, sc.height) < MIN(screen.width, screen.height) - 1.0 || MAX(sc.width, sc.height) < MAX(screen.width, screen.height) - 1.0;
+}
 static void MABPublishTint(void) {
     UIApplication *app = [UIApplication sharedApplication];
     if (!app || app.applicationState != UIApplicationStateActive) return;
+    {   // (nothing to do with the switch off, published by SpringBoard: 2 = off; or when the app is not in a window)
+        static int sw = 0; uint64_t on = 0;
+        if (!sw) notify_register_check("com.besiktasliseba.appbridge.tintgrips", &sw);
+        if (sw) notify_get_state(sw, &on);
+        if (on == 2) return;
+        BOOL windowed = NO;
+        for (UIScene *sc in app.connectedScenes) if ([sc isKindOfClass:[UIWindowScene class]] && sc.activationState == UISceneActivationStateForegroundActive && MABSceneWindowed((UIWindowScene *)sc)) windowed = YES;
+        if (!windowed) return;
+    }
     UIWindow *key = nil, *front = nil;   // (the key window, or else the app's front visible window: Spotify's main window is not "key")
     for (UIScene *sc in app.connectedScenes) {
         if (![sc isKindOfClass:[UIWindowScene class]] || sc.activationState != UISceneActivationStateForegroundActive) continue;
@@ -1806,6 +1820,40 @@ static void MABPublishTint(void) {
         if (notify_register_check(name, &token) != NOTIFY_STATUS_OK) { token = 0; return; }
     }
     if (st != last) { notify_set_state(token, st); last = st; }
+}
+// Reddit (M1, 27 Sep): on a size change of its window, its Home screen is told the SCREEN's size (1193 x 834 while the window was 591 x 355 -- the
+// tab bar and navigation controller above it got the right size), so its page view lays the feed out for the screen and it comes up skewed. In a
+// window, a size of (almost) the whole screen is replaced by the window scene's size before Reddit's Home screen uses it.
+static void (*oMABRedditTransition)(id, SEL, CGSize, id);
+static void hMABRedditTransition(id self, SEL _cmd, CGSize size, id coordinator) {
+    UIViewController *vc = self;
+    UIWindowScene *ws = vc.isViewLoaded ? vc.view.window.windowScene : nil;
+    if (MABSceneWindowed(ws)) {   // (only the screen's own size is wrong: a real grow of the window -- a half to Fill Screen -- passes as it is)
+        CGSize screen = ws.screen.bounds.size, scene = ws.coordinateSpace.bounds.size;
+        BOOL screenSized = (size.width >= screen.width - 2.0 && size.height >= screen.height - 2.0) || (size.width >= screen.height - 2.0 && size.height >= screen.width - 2.0);
+        if (screenSized && scene.width > 1.0) {
+#if DEBUG
+            MABLog([NSString stringWithFormat:@"reddit: %@ told the screen's size %@ in a %@ window scene: given the scene's size", NSStringFromClass([self class]), NSStringFromCGSize(size), NSStringFromCGSize(scene)]);
+#endif
+            size = scene;
+        }
+    }
+    oMABRedditTransition(self, _cmd, size, coordinator);
+}
+static void MABInstallRedditFix(void) {
+    if (![[NSBundle mainBundle].bundleIdentifier isEqualToString:@"com.reddit.Reddit"]) return;
+    Class c = NSClassFromString(@"HomeViewController");
+    if (!c || ![c isSubclassOfClass:[UIViewController class]]) return;   // (missing or renamed in a Reddit update, or not a view controller: nothing)
+    SEL sel = @selector(viewWillTransitionToSize:withTransitionCoordinator:);
+    Method own = NULL; unsigned n = 0; Method *ms = class_copyMethodList(c, &n);   // (only its own implementation, not an inherited one)
+    for (unsigned i = 0; i < n; i++) if (method_getName(ms[i]) == sel) own = ms[i];
+    free(ms);
+    if (!own) {   // (the NEAREST inherited implementation -- a Reddit base class may override UIViewController's -- is the one called on)
+        Method inherited = class_getInstanceMethod(class_getSuperclass(c), sel);
+        if (!inherited) return;
+        class_addMethod(c, sel, method_getImplementation(inherited), method_getTypeEncoding(inherited));
+    }
+    MSHookMessageEx(c, sel, (IMP)hMABRedditTransition, (IMP *)&oMABRedditTransition);
 }
 static void MABStartTintReports(void) {
     NSString *bundle = [NSBundle mainBundle].bundleIdentifier;
@@ -1846,6 +1894,7 @@ static void MABStartTintReports(void) {
 #endif
     MABInstallEscEndsTyping();   // (Esc Ends Typing in Windows)
     MABStartTintReports();   // (Tint Resize Handles)
+    MABInstallRedditFix();   // (Reddit's Home screen in a resized window)
     MABInstallSofaPhone();   // SofaScore only: its phone layout when it starts in a narrow window (runtime calls only, safe this early)
     if ([[NSBundle mainBundle].bundleIdentifier isEqualToString:@"com.apple.AppStore"]) %init(MABAppStoreTabs);
 #if DEBUG

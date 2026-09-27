@@ -4625,7 +4625,43 @@ static void DMSetStageFrameSafe(UIView *stage, CGRect f) {
     stage.bounds = CGRectMake(stage.bounds.origin.x, stage.bounds.origin.y, size.width, size.height);
     stage.center = CGPointMake(CGRectGetMidX(f), CGRectGetMidY(f));
 }
+static const void *kA5EntranceTargetKey, *kA5EntranceUntilKey;   // (defined with DMA5HoldEntranceFrame)
+static void DMA5HoldStageAt(UIView *stage, CGRect target, CFTimeInterval until);   // (defined with DMA5HoldEntranceFrame)
+// Aerial 5.0 (iPad 2, iOS 16, landscape orientation 4 -- also 1.0.7, not orientation 3 or portrait): after EVERY change of a window's frame it puts
+// back its remembered frame for the orientation (_landscapeFrame), fitted into the screen inset by 20 pt (shrunk to scale, centred on the screen:
+// Fill 1036 x 645 became 984 x 613). A hold then fought it on every frame (129 put-backs and 317 scene updates in 2 s, logic test 1.0.8) and lost
+// when it ended. Once that is seen in an orientation (DMA5HoldEntranceFrame), our frames there stay inside what Aerial keeps.
+static uint8_t gA5FitsInOrientation = 0;   // bit o: Aerial fits every window into the screen inset by 20 pt in interface orientation o
+static BOOL DMA5AerialFitsHere(void) { long o = DMRealInterfaceOrientation(); return o >= 1 && o <= 4 && (gA5FitsInOrientation & (1 << o)); }
+static BOOL DMA5RectsClose(CGRect a, CGRect b) { return fabs(a.origin.x - b.origin.x) < 1.0 && fabs(a.origin.y - b.origin.y) < 1.0 && fabs(a.size.width - b.size.width) < 1.0 && fabs(a.size.height - b.size.height) < 1.0; }
+static CGRect DMA5AerialFit(CGRect f) {   // what Aerial makes of a frame then: too big for the screen inset by 20 -> shrunk to scale, centred on the screen
+    CGSize sc = [UIScreen mainScreen].bounds.size;
+    CGFloat W = sc.width - 40.0, H = sc.height - 40.0;
+    if (f.size.width <= W + 0.5 && f.size.height <= H + 0.5) return f;
+    CGFloat k = MIN(W / f.size.width, H / f.size.height);
+    return CGRectMake((sc.width - f.size.width * k) / 2.0, (sc.height - f.size.height * k) / 2.0, f.size.width * k, f.size.height * k);
+}
+static CGRect DMA5KeepableFrame(CGRect f) {   // in such an orientation: the frame no bigger than the screen inset by 20, the rest of the place kept
+    if (gAerialFlavor != 5 || !DMA5AerialFitsHere() || CGRectIsNull(f)) return f;
+    CGSize sc = [UIScreen mainScreen].bounds.size;
+    CGFloat W = sc.width - 40.0, H = sc.height - 40.0;
+    if (f.size.width > W) { f.origin.x = MIN(MAX(20.0, CGRectGetMidX(f) - W / 2.0), sc.width - 20.0 - W); f.size.width = W; }
+    if (f.size.height > H) { f.origin.y = MIN(MAX(20.0, f.origin.y), sc.height - 20.0 - H); f.size.height = H; }
+    return f;
+}
 static void DMAerialMoveStage(UIView *stage, CGRect target, void (^done)(void)) {
+    // A window opened in the last 2 s that we place (the cascade's default place, its Fit to Window tile, the tile it rejoins): Aerial 5.0 applies
+    // its own remembered frame for the app ~0.1 s after the window appears (seen: Notes put back to {0, 23, 391, 926.6}, its size from an earlier
+    // session, right after it was tiled), which the cascade's check only undid ~2 s later with a visible second move. Held like the entrance: put
+    // back before it is drawn. Any other move of ours ends a hold.
+    if (gAerialFlavor == 5) target = DMA5KeepableFrame(target);   // (see DMA5AerialFitsHere: what Aerial would not keep there is not asked for)
+    NSNumber *born = objc_getAssociatedObject(stage, kA5BornKey);
+    CFTimeInterval now = CACurrentMediaTime();
+    if (gAerialFlavor == 5 && born && now - born.doubleValue < 2.0 && !DMTestFlag("/tmp/msb-a5-nohold")) DMA5HoldStageAt(stage, target, MAX(born.doubleValue + 2.0, now + 0.6));
+    else if (objc_getAssociatedObject(stage, kA5EntranceTargetKey)) {
+        DMLog([NSString stringWithFormat:@"[aerial5] %@: placement hold ends (a move of ours to %@)", DMStageBundle(stage), NSStringFromCGRect(target)]);
+        objc_setAssociatedObject(stage, kA5EntranceTargetKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     DMAerial5SyncState(stage, target);   // before moving: Aerial would otherwise pull it back to its own remembered frame
     Class zetsuClass = objc_getClass("ZetsuWindow");
     if (zetsuClass && [stage isKindOfClass:zetsuClass]) { DMZetsuMove((UIWindow *)stage, target, YES, done); return; }
@@ -4724,11 +4760,41 @@ static CGRect DMUsableArea(void) {
                 // the Dock's real top (not a guess): tiles end right above it. While a full-screen app is in front the Dock waits BELOW the screen
                 // (y ~1035 in portrait): that is not where it will be, so then the last top it had on the screen in this shape is used (before, a
                 // re-tile behind a full-screen app made the tiles reach the bottom edge of the screen, under the Dock).
-                if (r.size.width > 100.0 && r.origin.y > screen.height * 0.6 && r.origin.y < screen.height - 10.0) { dockTop = r.origin.y; foundDock = YES; }
+                // (a Dock drawn scaled -- magnified, or mid-animation -- is not its real size: not measured)
+                if (r.size.width > 100.0 && r.origin.y > screen.height * 0.6 && r.origin.y < screen.height - 10.0 && CGAffineTransformIsIdentity(v.transform) && r.size.height < screen.height * 0.14) {
+                    dockTop = r.origin.y; foundDock = YES;
+                    static CGFloat loggedTop = -1;
+                    if (fabs(loggedTop - dockTop) > 0.25 && DMTestFlag("/tmp/macstatusbar-debug")) {   // (debug: what the Dock measured as)
+                        loggedTop = dockTop;
+                        CALayer *pl = v.layer.presentationLayer;
+                        DMLog([NSString stringWithFormat:@"[usable] Dock top %.2f: platter frame %@ in window, own frame %@ transform %@ (presentation %@), window %@ transform %@ alpha %.2f hidden %d",
+                               dockTop, NSStringFromCGRect(r), NSStringFromCGRect(v.frame), NSStringFromCGAffineTransform(v.transform), pl ? NSStringFromCGRect(pl.frame) : @"-",
+                               NSStringFromCGRect(w.frame), NSStringFromCGAffineTransform(w.transform), w.alpha, w.hidden]);
+                    }
+                }
             }
         }
     }
     static CGFloat lastDockTopP = 0, lastDockTopL = 0;
+    // The Dock's height changes with the number of icons it shows (its recents: each app opened as a window can add one; iPad 2 portrait 73.8 or
+    // 66.4 pt), so the usable area measured a moment apart gave two heights (tiles 919.2 / 926.6 tall): a window was placed with one and its
+    // place checked with the other ("put back" moves, a tile 7 pt shorter than its neighbour). The tallest Dock seen in this screen shape is used, so
+    // every layout agrees and no window ever reaches under the Dock.
+    // (A top is only taken as the standard once it is measured again 0.3 s or more later with the screen unchanged: a Dock measured right at a turn
+    //  -- iPad 2, 23:57:42: 96.9 pt tall, top 650.6 instead of 661.5 -- was kept until the next respring and every landscape layout ended 11 pt above
+    //  the Dock, logic test 1.0.8. Until then the Dock as measured now is used, so no window reaches under it.)
+    static CGFloat tallestTopP = 0, tallestTopL = 0, candTop = -1; static CFTimeInterval candAt = 0; static CGSize candScreen = {0, 0};
+    if (foundDock) {
+        CGFloat *tallest = portrait ? &tallestTopP : &tallestTopL;
+        CFTimeInterval tnow = CACurrentMediaTime();
+        if (*tallest <= 0 || dockTop < *tallest - 0.25) {
+            if (fabs(candTop - dockTop) <= 0.25 && CGSizeEqualToSize(candScreen, screen) && tnow - candAt >= 0.3) {
+                if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[usable] %@: Dock top %.2f (was %.2f) seen again: the layouts end above it from now on", portrait ? @"portrait" : @"landscape", dockTop, *tallest]);
+                *tallest = dockTop; candTop = -1;
+            } else if (fabs(candTop - dockTop) > 0.25 || !CGSizeEqualToSize(candScreen, screen)) { candTop = dockTop; candAt = tnow; candScreen = screen; }
+        }
+        if (*tallest > 0) dockTop = MIN(dockTop, *tallest);
+    }
     if (foundDock) { if (portrait) lastDockTopP = dockTop; else lastDockTopL = dockTop; }
     else if (portrait ? lastDockTopP > 0 : lastDockTopL > 0) dockTop = portrait ? lastDockTopP : lastDockTopL;   // (the Dock is away: where it last was)
     else if (portrait) dockTop = screen.height - 84.0;   // no Dock to measure: the old guess
@@ -4768,7 +4834,7 @@ static CGFloat DMDockCenterX(void) {   // where the middle of the Dock is (the s
     return centre;
 }
 static CGRect DMLayoutFrameWindow(NSString *name);
-static CGRect DMLayoutFrame(NSString *name) { return DMA5StageFromWindow(DMLayoutFrameWindow(name)); }   // (Aerial 5.0: the stage that draws that window)
+static CGRect DMLayoutFrame(NSString *name) { return DMA5KeepableFrame(DMA5StageFromWindow(DMLayoutFrameWindow(name))); }   // (Aerial 5.0: the stage that draws that window; inside what Aerial keeps, see DMA5AerialFitsHere)
 static CGRect DMLayoutFrameWindow(NSString *name) {
     CGRect u = DMUsableArea();
     CGSize screen = [UIScreen mainScreen].bounds.size;
@@ -4832,6 +4898,12 @@ static NSString *DMMirrorSlot(NSString *slot, BOOL horizontal) {
 }
 static NSMutableDictionary<NSString *, NSValue *> *gLastWindowFrames;   // app -> where its window last was (until the app quits)
 static BOOL gPreferRememberedFrame = NO;                                       // the status bar's green light: back to where the window was
+// Aerial 5.0, a full-screen app turned into a window from the Window menu (or the green light): the frame asked for. The fly-in entrance lands
+// there and holds it while Aerial's own fit-to-screen pass (a dispatched block ~0.15 s after the window appears) shrinks any window reaching past
+// the screen's edges -- Fill Screen does on purpose, by its invisible 6 pt side margins (DMAerial5BeginEntrance, DMA5HoldEntranceFrame).
+static NSString *gA5EntranceBundle = nil;
+static CGRect gA5EntranceFrame = {{0, 0}, {0, 0}};
+static CFTimeInterval gA5EntranceAt = 0;
 static NSString *DMCurrentLayoutName(void);   // defined with the Window menu
 static void DMFitRejoinAfterFullScreen(NSString *bundleID);
 static void DMFitForgetFullScreenTile(NSString *bundleID);
@@ -4867,12 +4939,17 @@ static void DMWindowLayout(NSString *name) {
     if (DMActiveEngine() == DMEngineAerial) {
         UIView *stage = DMStageForBundle(bundleID);
         DMLog([NSString stringWithFormat:@"[window] Aerial layout %@ for %@ -> %@ (%@)", name, bundleID, NSStringFromCGRect(target), stage ? @"moving its stage" : @"opening a stage"]);
-        if (stage) DMAerialMoveStage(stage, target, ^{ DMLog([NSString stringWithFormat:@"[window] Aerial layout done, stage %@", NSStringFromCGRect(stage.frame)]); });
+        if (stage) {
+            DMAerialMoveStage(stage, target, ^{ DMLog([NSString stringWithFormat:@"[window] Aerial layout done, stage %@", NSStringFromCGRect(stage.frame)]); });
+            // (held like the fly-in: Aerial's own late re-placement of a window reaching past the screen's edges is undone before it is drawn)
+            if (gAerialFlavor == 5 && !DMTestFlag("/tmp/msb-a5-nohold")) DMA5HoldStageAt(stage, DMA5KeepableFrame(target), CACurrentMediaTime() + 1.5);
+        }
         else if ([[DMFrontApp() bundleIdentifier] isEqualToString:bundleID]) {
             DMStageCoverPrepare(YES);
             // Aerial sends the app home itself and then waits a fixed half second. The Home Screen hop is hidden behind the cover, so do
             // it here and hand over the moment the app is gone (Aerial then opens the window at once).
             void (^open)(void) = ^{
+                gA5EntranceBundle = [bundleID copy]; gA5EntranceFrame = target; gA5EntranceAt = CACurrentMediaTime();
                 DMAerialTrigger(bundleID, target);
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     UIView *settled = DMStageForBundle(bundleID);
@@ -6060,6 +6137,11 @@ static void DMCascadeStage(UIView *stage) {
         return;
     }
     if ([objc_getAssociatedObject(stage, kStageCascadedKey) boolValue]) {
+        extern void DMA5HoldEntranceFrameNow(UIView *stage);
+        if (objc_getAssociatedObject(stage, kA5EntranceTargetKey)) {   // (just flown in from full screen: put back at once, no move animation)
+            DMA5HoldEntranceFrameNow(stage);
+            if (objc_getAssociatedObject(stage, kA5EntranceTargetKey)) return;   // (still held; a hold that has just ended falls through to the check below)
+        }
         NSValue *intent = objc_getAssociatedObject(stage, kStageIntentKey);
         CGRect want = intent ? intent.CGRectValue : CGRectNull, f = stage.frame;
         if (!CGRectIsNull(want) && !DMStageMinimized(stage) && !DMIsZetsuWindow(stage) && !DMStageStillZooming(stage)
@@ -6466,6 +6548,10 @@ static const void *kStageIntentSizeKey = &kStageIntentSizeKey;    // the screen 
 static const void *kStageByOrientKey = &kStageByOrientKey;        // {"L": frame, "P": frame}: where the window is in each orientation
 static NSString *DMOrientKey(void) { CGSize s = [UIScreen mainScreen].bounds.size; return s.width > s.height ? @"L" : @"P"; }
 static void DMSetStageIntent(UIView *stage, CGRect frame) {
+    // (a window opened in the last 2 s: the place we give it is held against Aerial's own late re-placements, see DMAerialMoveStage)
+    NSNumber *born = objc_getAssociatedObject(stage, kA5BornKey);
+    CFTimeInterval now = CACurrentMediaTime();
+    if (gAerialFlavor == 5 && born && now - born.doubleValue < 2.0 && !DMTestFlag("/tmp/msb-a5-nohold")) DMA5HoldStageAt(stage, frame, MAX(born.doubleValue + 2.0, now + 0.6));
     DMAerial5SyncState(stage, frame);
     objc_setAssociatedObject(stage, kStageIntentKey, [NSValue valueWithCGRect:frame], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(stage, kStageIntentSizeKey, [NSValue valueWithCGSize:[UIScreen mainScreen].bounds.size], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -6477,6 +6563,8 @@ static void DMRememberStageFrame(UIView *stage) {
     if (!stage || [objc_getAssociatedObject(stage, kStageEnteringKey) boolValue] || DMStageMinimized(stage)) return;
     if (stage.frame.size.width < 150.0 || stage.frame.size.height < 150.0) return;
     CGRect own = stage.frame; own.origin.y -= DMAutoHideShiftOf(stage);   // (a window the auto-hiding status bar has moved down for a moment: its own place)
+    NSValue *hold = objc_getAssociatedObject(stage, kA5EntranceTargetKey);
+    if (hold) own = hold.CGRectValue;   // (just flown in from full screen: where it landed, not a fit-to-screen frame Aerial set in between)
     DMSetStageIntent(stage, own);
     NSString *bundleID = DMStageBundle(stage);
     if (bundleID.length) { if (!gLastWindowFrames) gLastWindowFrames = [NSMutableDictionary dictionary]; gLastWindowFrames[bundleID] = [NSValue valueWithCGRect:own]; }
@@ -7530,6 +7618,8 @@ static void DMSaveWindowState(void) {
     dispatch_async(writer, ^{ [state writeToFile:path atomically:YES]; });
 }
 static void DMRestoreStep(NSArray *wins, NSUInteger i, NSDictionary *state, int waited);
+static NSMutableSet<NSString *> *gRestoreHidden;   // apps whose window the restore brings back minimized: invisible from its first frame
+BOOL DMRestoreWantsHidden(NSString *bundleID) { return bundleID.length && [gRestoreHidden containsObject:bundleID]; }
 // Apps the user opened since SpringBoard started, before the saved windows were brought back: the restore leaves them as the user opened them
 // (iPad 2, 27 Sep: Settings opened ~3 s after a respring came up, then the restore minimized it again, as it had been saved, and a second tap was needed).
 static NSMutableSet<NSString *> *gOpenedBeforeRestore;
@@ -7538,6 +7628,7 @@ void DMNoteOpenedBeforeRestore(NSString *bundleID) {
     if (!bundleID.length || gWindowSaveOnFlag()) return;   // (the restore is over)
     if (!gOpenedBeforeRestore) gOpenedBeforeRestore = [NSMutableSet set];
     [gOpenedBeforeRestore addObject:bundleID];
+    [gRestoreHidden removeObject:bundleID];   // (tapped while it was being brought back: its window is not kept invisible)
 }
 static void DMFinishRestore(NSDictionary *state) {
     NSMutableArray *group = [NSMutableArray array];
@@ -7591,6 +7682,7 @@ static void DMFinishRestore(NSDictionary *state) {
     }
     for (UIView *st in raiseAfter) { if (DMIsZetsuWindow(st)) DMZetsuRaise((UIWindow *)st); else if ([st respondsToSelector:front]) ((void (*)(id, SEL))objc_msgSend)(st, front); }
     gRestoringWindows = NO; gWindowSaveOn = YES;
+    gRestoreHidden = nil;   // (nothing is kept invisible after the restore)
     unlink("/tmp/macstatusbar-restore-guard");
     DMLog([NSString stringWithFormat:@"[restore] done: %lu windows, fit group %lu", (unsigned long)DMAerialStages().count, (unsigned long)group.count]);
     if (gFitGroup.count >= 2 && DMFitEnabled()) {   // the tiles exactly in their slots for the screen as it is now (saved frames can be from another shape)
@@ -7620,6 +7712,9 @@ static void DMRestoreStep(NSArray *wins, NSUInteger i, NSDictionary *state, int 
     NSString *bundle = w[@"bundle"];
     if (bundle.length && [gOpenedBeforeRestore containsObject:bundle]) {   // (opened by the user meanwhile: left as it is)
         DMLog([NSString stringWithFormat:@"[restore] %@ skipped: opened by the user before the restore", bundle]);
+        [gRestoreHidden removeObject:bundle];   // (the user's window: never kept invisible)
+        UIView *mine = DMStageForBundle(bundle);
+        if (mine && mine.alpha < 0.01 && !DMStageMinimized(mine)) mine.alpha = 1.0;
         DMRestoreStep(wins, i + 1, state, 0); return;
     }
     CGSize saved = CGSizeFromString(state[@"screen"]), now = [UIScreen mainScreen].bounds.size;
@@ -7641,6 +7736,10 @@ static void DMRestoreStep(NSArray *wins, NSUInteger i, NSDictionary *state, int 
         DMRestoreStep(wins, i + 1, state, 0); return;
     }
     UIView *stage = DMStageForBundle(bundle);
+    if (!stage && waited == 0 && [w[@"minimized"] boolValue] && !wasChip) {   // (kept invisible from its very first frame: it flashed for ~0.25 s before)
+        if (!gRestoreHidden) gRestoreHidden = [NSMutableSet set];
+        [gRestoreHidden addObject:bundle];
+    }
     if (!stage && waited == 0) {
         DMLog([NSString stringWithFormat:@"[restore] opening %@ at %@", bundle, NSStringFromCGRect(f)]);
         if (DMActiveEngine() == DMEngineMilkyWay) DMLaunchAsWindow(bundle);
@@ -7662,6 +7761,7 @@ static void DMRestoreStep(NSArray *wins, NSUInteger i, NSDictionary *state, int 
             if (minimizedAgain && [gOpenedBeforeRestore containsObject:bundle]) {   // (its icon was tapped while it was being brought back: the user's window stays)
                 stage.alpha = 1.0;
                 DMLog([NSString stringWithFormat:@"[restore] %@ opened by the user while it was brought back: not minimized again", bundle]);
+                [gRestoreHidden removeObject:bundle];
                 DMRestoreStep(wins, i + 1, state, 0); return;
             }
             gMoveKeepsOrder = YES;
@@ -7669,9 +7769,10 @@ static void DMRestoreStep(NSArray *wins, NSUInteger i, NSDictionary *state, int 
             else DMAerialMoveStage(stage, f, nil);
             gMoveKeepsOrder = NO;
             if (minimizedAgain) DMMinimizeStage(stage);
+            [gRestoreHidden removeObject:bundle];
             DMRestoreStep(wins, i + 1, state, 0);
         });
-    } else DMRestoreStep(wins, i + 1, state, 0);   // it never appeared: on to the next
+    } else { [gRestoreHidden removeObject:bundle]; DMRestoreStep(wins, i + 1, state, 0); }   // it never appeared: on to the next
 }
 static void DMRestoreWindows(int attempt) {
     if (gWindowSaveOn || gRestoringWindows) return;
@@ -14929,6 +15030,10 @@ static void DMLoadPrefs(void) {
         CFPropertyListRef tintRef = CFPreferencesCopyValue(CFSTR("tintResizeHandles"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
         if (tintRef) { if (CFGetTypeID(tintRef) == CFBooleanGetTypeID()) tint = CFBooleanGetValue(tintRef); CFRelease(tintRef); }
         gTintGrips = tint;
+        static int tintToken = 0; static uint64_t tintPublished = 0;   // (MacAppBridge skips its colour reports with it off)
+        if (!tintToken) notify_register_check("com.besiktasliseba.appbridge.tintgrips", &tintToken);
+        uint64_t want = tint ? 1 : 2;
+        if (tintToken && want != tintPublished) { notify_set_state(tintToken, want); tintPublished = want; }
     }
     {   // Esc Ends Typing in Windows (on unless switched off): published for MacAppBridge in every app (apps cannot read these preferences), state 1 on / 2 off
         BOOL esc = YES;
@@ -16491,6 +16596,16 @@ static void (*o_layerSetNeedsLayout)(id, SEL) = NULL;
 static void h_layerSetNeedsLayout(id self, SEL _cmd) { DMTraceLayerChange(self, @"setNeedsLayout"); o_layerSetNeedsLayout(self, _cmd); }
 static void (*o_layerSetTransform)(id, SEL, CATransform3D) = NULL;
 static void h_layerSetTransform(id self, SEL _cmd, CATransform3D t) { DMTraceLayerChange(self, [NSString stringWithFormat:@"transform a=%.3f b=%.3f c=%.3f d=%.3f", t.m11, t.m12, t.m21, t.m22]); o_layerSetTransform(self, _cmd, t); }
+static double gTraceNextSecs = 0;   // a5tracenext_: trace the next new window (armed), for this long
+static void DMInstallLayerTrace(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        MSHookMessageEx([CALayer class], @selector(setPosition:), (IMP)h_layerSetPosition, (IMP *)&o_layerSetPosition);
+        MSHookMessageEx([CALayer class], @selector(setBounds:), (IMP)h_layerSetBounds, (IMP *)&o_layerSetBounds);
+        MSHookMessageEx([CALayer class], @selector(setTransform:), (IMP)h_layerSetTransform, (IMP *)&o_layerSetTransform);
+        MSHookMessageEx([CALayer class], @selector(setNeedsLayout), (IMP)h_layerSetNeedsLayout, (IMP *)&o_layerSetNeedsLayout);
+    });
+}
 
 // `echo key > /tmp/macstatusbar-trigger` runs a test; compared by modification time because SpringBoard
 // cannot delete root's files in /tmp.
@@ -17438,6 +17553,32 @@ static void DMRunTrigger(NSString *cmd) {
         }
         DMLog(out);
     }
+    else if ([cmd hasPrefix:@"a5holder_"]) {   // a5holder_<bundle>[_<ivar>_<0|1>]: the app holder's margins in that stage (+ lock/trim state, minus handle); with an ivar: EXPERIMENT, set that BOOL ivar, lay out again, measure after 0.4 s
+        NSArray *parts = [[cmd substringFromIndex:9] componentsSeparatedByString:@"_"];
+        UIView *stage = DMStageForBundle(parts[0]);
+        if (!stage) { DMLog(@"[a5holder] no such window"); return; }
+        void (^measure)(NSString *) = ^(NSString *when) {
+            UIView *in = DMStageInnerView(stage); CGSize S = stage.bounds.size; CGRect h = in.frame;
+            UIView *minus = DMStageValue(stage, @[@"_minusHandle"]);
+            NSMutableString *iv = [NSMutableString string];
+            for (NSString *n in @[@"_lockMode", @"_trimMode", @"_isTrimmingActive", @"_externalFrameMode", @"_minusHandleSwipeMode"]) {
+                Ivar v = class_getInstanceVariable([stage class], n.UTF8String);
+                if (v) [iv appendFormat:@" %@=%d", n, *(BOOL *)((uint8_t *)(__bridge void *)stage + ivar_getOffset(v))];
+            }
+            DMLog([NSString stringWithFormat:@"[a5holder] %@ %@: margins %.1f/%.1f/%.1f/%.1f (holder %@ transform %@, stage bounds %@ transform %@) minus handle %@ hidden %d alpha %.2f;%@", parts[0], when,
+                   h.origin.y, h.origin.x, S.height - CGRectGetMaxY(h), S.width - CGRectGetMaxX(h), NSStringFromCGRect(h), NSStringFromCGAffineTransform(in.transform), NSStringFromCGSize(S), NSStringFromCGAffineTransform(stage.transform),
+                   [minus isKindOfClass:[UIView class]] ? NSStringFromCGRect(minus.frame) : @"-", [minus isKindOfClass:[UIView class]] ? minus.hidden : -1, [minus isKindOfClass:[UIView class]] ? minus.alpha : -1.0, iv]);
+        };
+        measure(@"now");
+        if (parts.count >= 3) {
+            Ivar v = class_getInstanceVariable([stage class], [parts[1] hasPrefix:@"_"] ? [parts[1] UTF8String] : [[@"_" stringByAppendingString:parts[1]] UTF8String]);
+            if (!v) { DMLog(@"[a5holder] no such ivar"); return; }
+            *(BOOL *)((uint8_t *)(__bridge void *)stage + ivar_getOffset(v)) = [parts[2] intValue] != 0;
+            [stage setNeedsLayout]; [stage layoutIfNeeded];
+            measure(@"right after");
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ measure(@"0.4 s later"); });
+        }
+    }
     else if ([cmd hasPrefix:@"a5ivars_"]) {   // a5ivars_<bundle>: that window's BOOL/int ivars related to minimize and the bottom handle
         UIView *stage = DMStageForBundle([cmd substringFromIndex:8]);
         NSMutableString *out = [NSMutableString string];
@@ -17515,19 +17656,25 @@ static void DMRunTrigger(NSString *cmd) {
             static BOOL dumped = NO; if (!dumped) { dumped = YES; DMLog([NSString stringWithFormat:@"[aerial] AerialStage ivars:%@", iv]); }
         }
     }
+    else if ([cmd hasPrefix:@"rmset_"]) {   // rmset_<0|1>: switch Settings > Accessibility > Motion > Reduce Motion (tests of the spring paths; give the user's value back afterwards)
+        void *ax = dlopen("/usr/lib/libAccessibility.dylib", RTLD_LAZY);
+        void (*set)(Boolean) = ax ? (void (*)(Boolean))dlsym(ax, "_AXSSetReduceMotionEnabled") : NULL;
+        BOOL was = UIAccessibilityIsReduceMotionEnabled();
+        if (set) set([[cmd substringFromIndex:6] intValue] != 0);
+        DMLog([NSString stringWithFormat:@"[rmset] Reduce Motion was %d, asked %@ (%@)", was, [cmd substringFromIndex:6], set ? @"set" : @"_AXSSetReduceMotionEnabled not found"]);
+    }
+    else if ([cmd hasPrefix:@"a5tracenext_"]) {   // a5tracenext_<seconds>: like a5trace_, for the NEXT new Aerial 5.0 window, from the moment it is first seen
+        DMInstallLayerTrace();
+        gTraceNextSecs = MAX(0.5, [[cmd substringFromIndex:12] doubleValue]);
+        DMLog([NSString stringWithFormat:@"[a5trace] armed: the next new window is traced for %.1f s", gTraceNextSecs]);
+    }
     else if ([cmd hasPrefix:@"a5trace_"]) {   // a5trace_<bundle>_<seconds>: log the call stack of every position/bounds change of that stage's layer (see DMTraceLayerChange)
         NSString *rest = [cmd substringFromIndex:8];
         NSRange us = [rest rangeOfString:@"_" options:NSBackwardsSearch];
         if (us.location == NSNotFound) return;
         UIView *stage = DMStageForBundle([rest substringToIndex:us.location]);
         if (!stage) { DMLog(@"[a5trace] no such window"); return; }
-        static dispatch_once_t once;
-        dispatch_once(&once, ^{
-            MSHookMessageEx([CALayer class], @selector(setPosition:), (IMP)h_layerSetPosition, (IMP *)&o_layerSetPosition);
-            MSHookMessageEx([CALayer class], @selector(setBounds:), (IMP)h_layerSetBounds, (IMP *)&o_layerSetBounds);
-            MSHookMessageEx([CALayer class], @selector(setTransform:), (IMP)h_layerSetTransform, (IMP *)&o_layerSetTransform);
-            MSHookMessageEx([CALayer class], @selector(setNeedsLayout), (IMP)h_layerSetNeedsLayout, (IMP *)&o_layerSetNeedsLayout);
-        });
+        DMInstallLayerTrace();
         gTraceLayer = stage.layer; gTraceCount = 0;
         gTraceUntil = CACurrentMediaTime() + [[rest substringFromIndex:us.location + 1] doubleValue];
         DMLog([NSString stringWithFormat:@"[a5trace] tracing %@ (%@) for %@ s", [rest substringToIndex:us.location], NSStringFromCGRect(stage.frame), [rest substringFromIndex:us.location + 1]]);
@@ -20556,14 +20703,108 @@ static char kA5GripDownKey, kA5GripTargetKey;
 // the app area; the picture stays until the app has drawn at its window size (DMVeilCheck). Aerial's own fade-in is stopped. Our chrome, rim, grips
 // and the veil keep their distance to the stage's edges by autoresizing, so they follow the same animation.
 static void DMAerial5Theme(UIView *stage);
+static UIEdgeInsets DMA5InsetsOf(UIView *stage);   // (defined with the theme)
+static BOOL DMAerial5GestureLive(UIView *stage);
+static const void *kA5EntranceTargetKey = &kA5EntranceTargetKey;   // where the fly-in entrance lands (NSValue CGRect)
+static const void *kA5EntranceUntilKey = &kA5EntranceUntilKey;     // held there until (CACurrentMediaTime)
+static const void *kA5EntranceSizeKey = &kA5EntranceSizeKey;       // for this screen size
+static const void *kA5PutBackTimesKey = &kA5PutBackTimesKey;       // when the hold last put it back (the last 0.25 s)
+static const void *kA5PutBackCountKey = &kA5PutBackCountKey;       // how often in this hold
+// Called before every Core Animation commit (DMA5CatchNewStages): a window flying in (or just landed) that Aerial has moved or resized away from its
+// entrance's target is put back before the change is ever drawn. The model frame goes back without an animation, so the running fly-in
+// animation (from/to values of its own) goes on undisturbed; an animation Aerial added for its change is taken off.
+static NSHashTable<UIView *> *gA5HeldStages = nil;   // the windows whose entrance frame is held (weak)
+static void DMA5HoldEntranceFrame(UIView *stage) {
+    NSValue *tv = objc_getAssociatedObject(stage, kA5EntranceTargetKey);
+    if (!tv) { [gA5HeldStages removeObject:stage]; return; }
+    NSNumber *until = objc_getAssociatedObject(stage, kA5EntranceUntilKey);
+    NSValue *forSize = objc_getAssociatedObject(stage, kA5EntranceSizeKey);
+    BOOL turned = forSize && !CGSizeEqualToSize(forSize.CGSizeValue, [UIScreen mainScreen].bounds.size);   // (the screen turned: that place was for the other shape)
+    if (!until || turned || CACurrentMediaTime() > until.doubleValue || DMStageMinimized(stage) || [objc_getAssociatedObject(stage, kStageClosingKey) boolValue] || DMAerial5GestureLive(stage)) {
+        [gA5HeldStages removeObject:stage];
+        DMLog([NSString stringWithFormat:@"[aerial5] %@: placement hold ends (%@)", DMStageBundle(stage), turned ? @"the screen turned" : (!until || CACurrentMediaTime() > until.doubleValue) ? @"time" : (DMStageMinimized(stage) ? @"minimized" : (DMAerial5GestureLive(stage) ? @"gesture" : @"closing"))]);
+        objc_setAssociatedObject(stage, kA5EntranceTargetKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(stage, kA5EntranceUntilKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return;
+    }
+    if (!CGAffineTransformIsIdentity(stage.transform)) return;   // (Aerial's opening zoom from a Dock icon runs: its frame is not its place)
+    CGRect want = tv.CGRectValue, f = stage.frame;
+    if (fabs(f.origin.x - want.origin.x) < 0.5 && fabs(f.origin.y - want.origin.y) < 0.5 && fabs(f.size.width - want.size.width) < 0.5 && fabs(f.size.height - want.size.height) < 0.5) return;
+    // Fight breaker: Aerial putting it somewhere again right after every put-back is not a one-off late pass (those come 1-4 times) -- holding on
+    // would fight it on every frame, with a scene update to the app each time.
+    CFTimeInterval tnow = CACurrentMediaTime();
+    NSMutableArray<NSNumber *> *recent = objc_getAssociatedObject(stage, kA5PutBackTimesKey);
+    if (!recent) { recent = [NSMutableArray array]; objc_setAssociatedObject(stage, kA5PutBackTimesKey, recent, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
+    [recent addObject:@(tnow)];
+    while (recent.count && tnow - recent.firstObject.doubleValue > 0.25) [recent removeObjectAtIndex:0];
+    int total = [objc_getAssociatedObject(stage, kA5PutBackCountKey) intValue] + 1;
+    objc_setAssociatedObject(stage, kA5PutBackCountKey, @(total), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    CGRect aerialFit = DMA5AerialFit(want);
+    if (recent.count >= 6 && !DMA5RectsClose(aerialFit, want) && DMA5RectsClose(f, aerialFit)) {   // (Aerial fits windows into the screen here, every time)
+        long o = DMRealInterfaceOrientation();
+        if (o >= 1 && o <= 4) gA5FitsInOrientation |= (uint8_t)(1 << o);
+        CGRect keep = DMA5KeepableFrame(want);
+        DMLog([NSString stringWithFormat:@"[aerial5] %@: Aerial fits every window into the screen inset by 20 pt in orientation %ld (after each change): held at %@ instead of %@, and the layouts keep inside it here", DMStageBundle(stage), o, NSStringFromCGRect(keep), NSStringFromCGRect(want)]);
+        want = keep;
+        objc_setAssociatedObject(stage, kA5EntranceTargetKey, [NSValue valueWithCGRect:want], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [recent removeAllObjects];
+    } else if (recent.count >= 12 || total > 40) {   // (anything else Aerial keeps doing: given up, no storm)
+        [gA5HeldStages removeObject:stage];
+        DMLog([NSString stringWithFormat:@"[aerial5] %@: placement hold ends (Aerial moved it again %lu times in 0.25 s, %d in all: not fought over)", DMStageBundle(stage), (unsigned long)recent.count, total]);
+        objc_setAssociatedObject(stage, kA5EntranceTargetKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(stage, kA5EntranceUntilKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return;
+    }
+    DMAerial5SyncState(stage, want);   // (Aerial's remembered frame for this orientation is the one it puts back)
+    BOOL entering = [objc_getAssociatedObject(stage, kStageEnteringKey) boolValue];
+    NSMutableArray *keys = [NSMutableArray array];
+    for (NSString *k in stage.layer.animationKeys ?: @[]) [keys addObject:k];
+    DMLog([NSString stringWithFormat:@"[aerial5] %@: Aerial %@ it %@ -> %@ while %@: put back before it is drawn (layer animations: %@)", DMStageBundle(stage),
+           CGSizeEqualToSize(f.size, want.size) ? @"moved" : @"resized", NSStringFromCGRect(want), NSStringFromCGRect(f), entering ? @"flying in" : @"just placed", [keys componentsJoinedByString:@","]]);
+    [UIView performWithoutAnimation:^{ stage.frame = want; [stage layoutIfNeeded]; }];
+}
+void DMA5HoldEntranceFrameNow(UIView *stage) { DMA5HoldEntranceFrame(stage); }
+static void DMA5HoldStageAt(UIView *stage, CGRect target, CFTimeInterval until) {
+    if (!stage) return;
+    objc_setAssociatedObject(stage, kA5EntranceTargetKey, [NSValue valueWithCGRect:target], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(stage, kA5EntranceUntilKey, @(until), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(stage, kA5EntranceSizeKey, [NSValue valueWithCGSize:[UIScreen mainScreen].bounds.size], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(stage, kA5PutBackTimesKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(stage, kA5PutBackCountKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!gA5HeldStages) gA5HeldStages = [NSHashTable weakObjectsHashTable];
+    [gA5HeldStages addObject:stage];
+}
 static void DMAerial5BeginEntrance(UIView *stage) {
     UIWindow *host = DMStatusBarWindow();
     UIView *snap = gVeilSnap;
     gVeilSnap = nil;
     if (!host || !snap || !gStageCover) return;
     CGRect target = stage.frame;
+    NSString *bundle = DMStageBundle(stage);
+    if (bundle.length && [gA5EntranceBundle isEqualToString:bundle] && CACurrentMediaTime() - gA5EntranceAt < 4.0 && !CGRectIsEmpty(gA5EntranceFrame)) {
+        // the frame the Window menu asked for (Aerial may open the window at a frame of its own, e.g. the one it remembers for the app)
+        if (!CGRectEqualToRect(target, gA5EntranceFrame)) DMLog([NSString stringWithFormat:@"[aerial5] %@: opened at %@, flies to the frame asked for %@", bundle, NSStringFromCGRect(target), NSStringFromCGRect(gA5EntranceFrame)]);
+        target = gA5EntranceFrame;
+    }
+    gA5EntranceBundle = nil;
+    // Held until shortly after the landing: Aerial's fit-to-screen pass comes ~0.15 s after the window appears and shrinks a window that reaches past
+    // the screen's edges (Fill: 780 x 919 became 728 x 858, centred, iPad 2), which the landing then kept. Put back before each commit (DMA5HoldEntranceFrame).
+    target = DMA5KeepableFrame(target);   // (see DMA5AerialFitsHere)
+    if (!DMTestFlag("/tmp/msb-a5-nohold")) DMA5HoldStageAt(stage, target, CACurrentMediaTime() + 1.5);   // (debug kill switch: the old behaviour)
+    if (DMTestFlag("/tmp/msb-a5-entrylog")) {   // (debug: the window's on-screen frame on every display frame of the entrance, 0.9 s)
+        DMBlockLink *rec = [DMBlockLink new];
+        __weak UIView *ws = stage; CFTimeInterval t0 = CACurrentMediaTime();
+        rec.block = ^BOOL{
+            UIView *s = ws; if (!s) return NO;
+            CALayer *pl = s.layer.presentationLayer;
+            DMLog([NSString stringWithFormat:@"[a5entry] +%.3f on screen %@ model %@", CACurrentMediaTime() - t0, pl ? NSStringFromCGRect(pl.frame) : @"-", NSStringFromCGRect(s.frame)]);
+            return CACurrentMediaTime() - t0 < 0.9;
+        };
+        [rec start];
+    }
+    DMSetStageIntent(stage, target);
     CGSize sc = host.bounds.size, ss = snap.bounds.size;
-    UIEdgeInsets m = gA5Insets;
+    UIEdgeInsets m = DMA5InsetsOf(stage);
     CGRect full = DMA5StageFromWindow(CGRectMake(0, -kStageBarHeight, sc.width, sc.height + kStageBarHeight));
     DMAerial5SyncState(stage, target);
     UIView *veil = [[UIView alloc] initWithFrame:CGRectMake(m.left, m.top, full.size.width - m.left - m.right, full.size.height - m.top - m.bottom)];
@@ -20647,6 +20888,46 @@ static void DMAerial5BeginEntrance(UIView *stage) {
     DMLog([NSString stringWithFormat:@"[aerial5] %@: window flying in from full screen to %@", DMStageBundle(stage), NSStringFromCGRect(target)]);
     DMVeilCheck(stage, veil, CACurrentMediaTime());
 }
+// Aerial 5.0's margins around the app inside a stage are NOT the same for every window: on the M1 (iOS 15) some windows measured 13/6/12/6 while
+// the rest had 13/6/20/6, and a resize in progress measures in-between values (19.6, iPad 2). The one global value used to follow whichever window
+// was themed last, so it flipped, and with it every layout's stage frame (window heights 668 / 676 on the M1), the chrome of every other window
+// (drawn 8 pt off its app) and the "put back" checks. Now each window keeps its own measured margins for drawing its chrome (DMA5InsetsOf), and
+// the standard margins that the layouts use (gA5Insets) change only when a settled measurement differs on windows of two different apps while no
+// settled window still has the old value (an Aerial update that changes its layout) -- never because of one odd window.
+static const void *kA5StageInsetsKey = &kA5StageInsetsKey;   // this window's own margins (NSValue UIEdgeInsets)
+static const void *kA5InsetsNotedKey = &kA5InsetsNotedKey;   // the odd margins already logged for it
+static BOOL DMA5InsetsSame(UIEdgeInsets a, UIEdgeInsets b) { return fabs(a.top - b.top) <= 0.25 && fabs(a.left - b.left) <= 0.25 && fabs(a.bottom - b.bottom) <= 0.25 && fabs(a.right - b.right) <= 0.25; }
+static UIEdgeInsets DMA5InsetsOf(UIView *stage) {
+    NSValue *v = stage ? objc_getAssociatedObject(stage, kA5StageInsetsKey) : nil;
+    return v ? v.UIEdgeInsetsValue : gA5Insets;
+}
+static void DMA5NoteStageInsets(UIView *stage, UIEdgeInsets m, UIView *holder) {
+    NSValue *prev = objc_getAssociatedObject(stage, kA5StageInsetsKey);
+    BOOL stable = prev && DMA5InsetsSame(prev.UIEdgeInsetsValue, m);
+    if (!stable) objc_setAssociatedObject(stage, kA5StageInsetsKey, [NSValue valueWithUIEdgeInsets:m], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!stable || DMA5InsetsSame(m, gA5Insets)) return;
+    // settled: the same on two passes, nothing moving it (no animation, gesture, entrance or opening zoom), the app not scaled inside it
+    NSNumber *born = objc_getAssociatedObject(stage, kA5BornKey);
+    if (!born || CACurrentMediaTime() - born.doubleValue < 1.0 || stage.layer.animationKeys.count || holder.layer.animationKeys.count || !CGAffineTransformIsIdentity(holder.transform)
+        || !CGAffineTransformIsIdentity(stage.transform) || DMAerial5GestureLive(stage) || [objc_getAssociatedObject(stage, kStageEnteringKey) boolValue]) return;
+    NSValue *noted = objc_getAssociatedObject(stage, kA5InsetsNotedKey);
+    if (!noted || !DMA5InsetsSame(noted.UIEdgeInsetsValue, m)) {
+        objc_setAssociatedObject(stage, kA5InsetsNotedKey, [NSValue valueWithUIEdgeInsets:m], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        DMLog([NSString stringWithFormat:@"[aerial5] %@: its own app holder margins are %.1f/%.1f/%.1f/%.1f, the standard ones %.1f/%.1f/%.1f/%.1f: its chrome follows its own, the layouts keep the standard (frame %@)",
+               DMStageBundle(stage), m.top, m.left, m.bottom, m.right, gA5Insets.top, gA5Insets.left, gA5Insets.bottom, gA5Insets.right, NSStringFromCGRect(stage.frame)]);
+    }
+    NSMutableSet<NSString *> *agree = [NSMutableSet set];
+    for (UIView *st in DMAerialStages()) {
+        NSValue *v = objc_getAssociatedObject(st, kA5StageInsetsKey);
+        if (!v || st.hidden || DMStageMinimized(st)) continue;
+        if (DMA5InsetsSame(v.UIEdgeInsetsValue, gA5Insets)) return;   // a window still has the standard margins: they stay
+        if (DMA5InsetsSame(v.UIEdgeInsetsValue, m) && DMStageBundle(st).length) [agree addObject:DMStageBundle(st)];
+    }
+    if (agree.count < 2) return;
+    DMLog([NSString stringWithFormat:@"[aerial5] app holder margins are now %.1f/%.1f/%.1f/%.1f in every window (%lu apps; were %.1f/%.1f/%.1f/%.1f): the layouts use them",
+           m.top, m.left, m.bottom, m.right, (unsigned long)agree.count, gA5Insets.top, gA5Insets.left, gA5Insets.bottom, gA5Insets.right]);
+    gA5Insets = m;
+}
 static void DMAerial5Theme(UIView *stage) {
     if (gA5ThemeOff) return;
     BOOL dark = DMSystemInterfaceStyle() == UIUserInterfaceStyleDark;
@@ -20669,10 +20950,7 @@ static void DMAerial5Theme(UIView *stage) {
         // (a brand-new stage can have its holder still filling it for a moment -- measured 0/0/0.4/0 once, and a Fit move made then used those
         // margins -- so only a real Aerial layout, with its strip and margins, counts)
         BOOL sane = m.top >= 5 && m.top <= 40 && m.left >= 1 && m.left <= 30 && m.bottom >= 5 && m.bottom <= 40 && m.right >= 1 && m.right <= 30;
-        if (sane && (fabs(m.top - gA5Insets.top) > 0.25 || fabs(m.left - gA5Insets.left) > 0.25 || fabs(m.bottom - gA5Insets.bottom) > 0.25 || fabs(m.right - gA5Insets.right) > 0.25)) {
-            DMLog([NSString stringWithFormat:@"[aerial5] app holder margins measured: top %.1f left %.1f bottom %.1f right %.1f (were %.1f %.1f %.1f %.1f)", m.top, m.left, m.bottom, m.right, gA5Insets.top, gA5Insets.left, gA5Insets.bottom, gA5Insets.right]);
-            gA5Insets = m;
-        }
+        if (sane) DMA5NoteStageInsets(stage, m, in0);
     }
     for (UIView *v in stage.subviews) if ([v isKindOfClass:[UIVisualEffectView class]] && fabs(v.bounds.size.width - S.width) < 1.5 && fabs(v.bounds.size.height - S.height) < 1.5) {   // (Aerial rounds its size: 898.5 in a 898.85 stage)
         if (!minimized && !v.hidden) { v.hidden = YES; gA5Rewrites++; }
@@ -20689,7 +20967,7 @@ static void DMAerial5Theme(UIView *stage) {
         DMLog([NSString stringWithFormat:@"[aerial5] %@: Mac window theme applied (Aerial 3.0 shape, holder margins %.0f/%.0f/%.0f/%.0f)", DMStageBundle(stage), gA5Insets.top, gA5Insets.left, gA5Insets.bottom, gA5Insets.right]);
     }
     if (chrome.superview != stage || stage.subviews.firstObject != chrome) [stage insertSubview:chrome atIndex:0];
-    UIEdgeInsets mi = gA5Insets;
+    UIEdgeInsets mi = DMA5InsetsOf(stage);   // (this window's own margins: they are not the same for every window, see DMA5NoteStageInsets)
     CGRect cf = CGRectMake(mi.left, mi.top - kStageBarHeight, S.width - mi.left - mi.right, S.height - mi.top - mi.bottom + kStageBarHeight);
     { CGRect c0 = chrome.frame; if (fabs(c0.origin.x - cf.origin.x) > 0.25 || fabs(c0.origin.y - cf.origin.y) > 0.25 || fabs(c0.size.width - cf.size.width) > 0.25 || fabs(c0.size.height - cf.size.height) > 0.25) chrome.frame = cf; }
     if (chrome.hidden != minimized) chrome.hidden = minimized;
@@ -21443,7 +21721,15 @@ static void DMAerial5AdoptNewStage(UIView *stage) {
     objc_setAssociatedObject(stage, kA5BornKey, @(CACurrentMediaTime()), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     if (bundle.length && [gFullFrameGuardBundle isEqualToString:bundle]) gFullFrameGuardBundle = nil;   // the app is being windowed again
+    { extern BOOL DMRestoreWantsHidden(NSString *); if (DMRestoreWantsHidden(bundle)) {   // (brought back minimized by the restore: never shown)
+        stage.alpha = 0.0;
+        __weak UIView *ws = stage;   // (safety: visible again after 3 s if it was not minimized meanwhile)
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ UIView *st = ws; if (st && st.alpha < 0.01 && !DMStageMinimized(st)) st.alpha = 1.0; });
+    } }
     DMLog([NSString stringWithFormat:@"[aerial5] new window: %@", bundle]);
+#if DEBUG
+    if (gTraceNextSecs > 0) { gTraceLayer = stage.layer; gTraceCount = 0; gTraceUntil = CACurrentMediaTime() + gTraceNextSecs; gTraceNextSecs = 0; DMLog(@"[a5trace] tracing this new window"); }   // (debug: a5tracenext_)
+#endif
     __weak UIView *weakNew = stage;   // a few quick passes while it fades in, so it never shows Aerial's own look first
     for (int i = 1; i <= 20; i++) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 0.03 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ UIView *st = weakNew; if (st) { DMAerial5Lights(); DMAerial5Theme(st); } });
     if (gRestoringWindowsFlag()) objc_setAssociatedObject(stage, kA5AttachedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // restored windows go back where they were
@@ -21512,6 +21798,11 @@ static void DMA5WakeFrameWatcher(void) {
 }
 static void DMA5CatchNewStages(void) {
     DMA5WakeFrameWatcher();
+    if (gA5HeldStages) {   // (nil when no window is held: nothing is allocated on the ordinary commit)
+        NSArray *held = gA5HeldStages.allObjects;
+        for (UIView *st in held) DMA5HoldEntranceFrame(st);
+        if (!gA5HeldStages.allObjects.count) gA5HeldStages = nil;
+    }   // (its own list: the stage walk below can miss a new window)
     if (!gA5CatchOn) return;
     static __weak UIWindow *aw = nil; static CFTimeInterval lookedAt = 0, switchCheckedAt = 0; static BOOL off = NO;
     CFTimeInterval now = CACurrentMediaTime();

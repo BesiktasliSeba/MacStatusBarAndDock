@@ -251,7 +251,7 @@ static inline NSString *MSBDReportCrashSummary(NSUInteger maxFrames) {
     NSDictionary *r = MSBDCrashRecord();
     long age = (long)time(NULL) - [r[@"time"] longValue];
     if (!r || age < 0 || age > 7 * 86400) return nil;
-    NSMutableString *s = [NSMutableString stringWithString:@"\n**Crash summary** (from the crash guard)\n"];
+    NSMutableString *s = [NSMutableString stringWithString:@"\n**Crash summary** (from Automatic Crash Recovery)\n"];
     NSString *when = age < 3600 ? @"less than an hour ago" : age < 86400 ? [NSString stringWithFormat:@"%ld h ago", age / 3600] : [NSString stringWithFormat:@"%ld day%@ ago", age / 86400, age / 86400 == 1 ? @"" : @"s"];
     [s appendFormat:@"- Guard: %@, %@\n", MSBDGuardActionWords(r), when];
     [s appendFormat:@"- Our part involved: %@\n", MSBDCrashPartName(r)];

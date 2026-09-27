@@ -2,7 +2,7 @@
 
 A macOS-style desktop for jailbroken iPads: a menu bar with real app menus, Mac-looking windows, a magnifying Dock, Mac-style notification banners, a Mac pointer and a lot of small Mac touches. Built for **rootless jailbreaks on iPadOS 15 and 16**. It works with just your fingers or with a keyboard and trackpad or mouse, in portrait and landscape — every orientation.
 
-**What's new:** see the [changelog](./CHANGELOG.md).
+**What's new:** see the [changelog](./CHANGELOG.md). **Checksums and source commits** of every published package: [releases](https://github.com/BesiktasliSeba/repo/blob/main/RELEASES.md).
 
 ## Install
 
@@ -57,7 +57,8 @@ The Mac look is on right after install. A few extras start off: the auto-hiding 
 - **Typing in windows like a Mac** — only the window you're using keeps a text cursor, and Esc ends typing in a windowed app (its own switch).
 - **A one-time welcome message** after your first install, pointing you to Settings (never shown again, and never shown on an update).
 - **Reduce Motion support** — menus, windows and banners cross-fade instead of zooming or springing when you use Reduce Motion.
-- **Built-in safety** — off by default on untested iPadOS versions (unless you choose Enable Anyway), does nothing at all on an iPhone, and if a feature you just turned on is followed by two SpringBoard crashes in a row, only that feature is switched back off automatically, with a note in Settings and a Report a Problem button.
+- **Automatic Crash Recovery** — if turning on a feature is followed by two SpringBoard crashes in a row, MacStatusBar&Dock switches that feature back off by itself instead of leaving your iPad in a crash loop, and tells you in Settings, with a Report a Problem button.
+- **Built-in safety** — off by default on untested iPadOS versions (unless you choose Enable Anyway), does nothing at all on an iPhone, and never contacts any server (see [SECURITY.md](./SECURITY.md)).
 
 ## Which window engine?
 
@@ -65,13 +66,56 @@ Measured on both test iPads: Aerial 5.0 is the recommended window engine on newe
 
 ## Report a Problem
 
-The Report a Problem button (Settings > Status Bar, and the crash protection's note) opens a new GitHub issue in your browser, filled in with your iPad model, iPadOS version, window engine and its version, and the tweak's version. If the crash protection switched something off in the last 7 days, it adds what it turned off and when, and a few lines naming the tweak's own code that crashed (nothing from other apps or tweaks); on an untested iPadOS version, which of the tweak's switches are on. Nothing is sent by itself: you see the whole text first, can change or delete any of it, and it's only posted if you submit the issue (a GitHub account is needed). Nothing personal is included, and the tweak collects nothing in the background.
+The Report a Problem button (Settings > Status Bar, and the Automatic Crash Recovery note) opens a new GitHub issue in your browser, filled in with your iPad model, iPadOS version, window engine and its version, and the tweak's version. If the crash protection switched something off in the last 7 days, it adds what it turned off and when, and a few lines naming the tweak's own code that crashed (nothing from other apps or tweaks); on an untested iPadOS version, which of the tweak's switches are on. Nothing is sent by itself: you see the whole text first, can change or delete any of it, and it's only posted if you submit the issue (a GitHub account is needed). Nothing personal is included, and the tweak collects nothing in the background.
 
 ## Requirements
 
 - A hooking platform: ElleKit, libhooker, or Substrate
 - **Choicy** or **iCleaner Pro** (keeps only one window engine loaded at a time)
 - Optional window engine: Aerial 3.0 or 5.0, MilkyWay4 0.1.1 (iPadOS 15 only), or Zetsu 1.6.2 or 1.6.6. Other builds run as plain, unmodified windows.
+
+## SSH switch
+
+If OpenSSH is installed, MacStatusBar&Dock adds an **SSH** switch to Settings (between Bluetooth and VPN), so you can keep the SSH service off and turn it on only when you need it, instead of leaving it running all the time. The switch is not shown when OpenSSH isn't installed.
+
+- **Your choice sticks:** when you switch SSH off, it stays off across restarts until you switch it on again. The tweak doesn't change SSH on its own, so after installing, OpenSSH is on or off exactly as it was before.
+- **Why there's a helper:** starting and stopping OpenSSH needs root rights that the Settings app doesn't have, so a small helper daemon (`com.besiktasliseba.sshtoggled`) does it. **The helper is not an SSH server and accepts no network connections.** It only reacts to a local signal from Settings, and reads what to do from a Settings preference that apps can't write, so a faked signal can at most repeat your own choice. Its code: `macsettings/sshtoggled/main.m`.
+
+Without the switch, OpenSSH typically runs all the time and SSH is reachable whenever your iPad is on a network. With it, you can keep it off and switch it on only for the moment you need it.
+
+## How it's built
+
+iOS injects only **two small loaders**, the two entries Choicy and iCleaner Pro show: `MacStatusBar.dylib` and `MacDock.dylib`. Each loader looks at the process it was loaded into and loads only the parts meant for that process, from the tweak's own folder (`/var/jb/usr/lib/MacStatusBarAndDock/`). On an iPhone nothing is loaded; on an iPadOS version that hasn't been tested, only the Settings pages are loaded (unless you choose Enable Anyway).
+
+```
+MacStatusBar&Dock
+│
+├── SpringBoard (Home Screen, windows, Dock)
+│   ├── MacStatusBarCore    menu bar, app menus, windows (Fit to Window, traffic lights), banners, Today panel
+│   ├── DockMagnification   Dock magnification, recent apps, Launchpad, Downloads
+│   ├── Home Screen parts   MacIconLabels, MacPageDots, MacFolderMenu, MacAppSizeMenu, ForceQuitMenu
+│   ├── MacLockStatusBar, MacCCGrabber, MacSettingsBadge, VolumeGlobeTweak
+│   └── Automatic Crash Recovery   switches a feature back off if it's followed by SpringBoard crashes
+│
+├── Apps (every app that uses UIKit, not app extensions for audio)
+│   ├── MacAppBridge        window interaction: menus, typing and Esc, button color for resize handles, small per-app fixes
+│   ├── MixAudio            per-app volume and audio mixing
+│   ├── GraveEscapeTweak, BrightnessKeyTweak, TabMuteTweak   keyboard keys
+│   └── MacHomeBar, MacLargeTitles
+│
+├── Settings app
+│   └── MacSettings, MacEthernetFix, the Status Bar and Dock pages
+│
+├── pointeruid (the pointer)
+│   └── MacPointer          the Mac pointer
+│
+└── Root helper (sshtoggled, a small launch daemon)
+    ├── SSH on/off from Settings
+    ├── window-engine exclusivity (Choicy's list, or iCleaner Pro's renaming without Choicy)
+    └── gives engine settings back when the tweak is removed or switched off
+```
+
+Every part can be traced to its process in `loader/Loader.c` (the `kPayloads` table).
 
 ## Building with Theos
 
