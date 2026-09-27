@@ -93,6 +93,20 @@
 			<string>Clock Opens Today View</string>
 		</dict>
 		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>key</key>
+			<string>todayNotifications</string>
+			<key>label</key>
+			<string>Notifications in Today View</string>
+		</dict>
+		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
@@ -348,7 +362,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>Some apps, like many games, can’t run in a window. If an app won’t open in a window or misbehaves, use it full screen and report it.</string>
+			<string>If something doesn’t work as it should — the menu bar, the Dock, a window or an app — tap Report a Problem. It opens a GitHub issue with your iPad model, iPadOS and tweak version already filled in; nothing is sent until you submit it. Some apps, like many games, can’t run in a window: use those full screen.</string>
 			<key>id</key>
 			<string>REPORT_GROUP</string>
 			<key>stockHides</key>

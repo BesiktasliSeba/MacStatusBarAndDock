@@ -252,6 +252,7 @@ static void DMLogWrite(NSString *line) {
 #if DEBUG
 static void DMIdleProbe(void);   // (debug, defined at the end)
 static void DMIdleSample(double seconds);   // (debug, defined at the end)
+static void DMHangWatch(double seconds);   // (debug, defined at the end)
 static NSString *DMSampleSym(uintptr_t a);
 static void DMRenderFramesLog(double seconds, NSString *what);
 static void DMIdleRenderBisect(NSUInteger i, NSArray<UIWindow *> *list);
@@ -13142,6 +13143,772 @@ static void DMApplyHomeScreenTodayPage(void) {
         DMLog(@"[today] Home Screen Today View page back");
     }
 }
+// ---- Notifications in the Today panel (2026-09-27) ----
+// A "Notifications" box at the top of our Today panel (Settings > Status Bar > Clock > Notifications in Today View, on by default): the
+// notifications iOS holds as delivered, the same ones the Cover Sheet's list holds (CSCoverSheetViewController > CSMainPageContentViewController >
+// CSCombinedListViewController > NCNotificationStructuredListViewController > NCNotificationMasterList: its section lists' allNotificationRequests),
+// in one flat list, newest first. They are read again when the panel opens and on every tick while it is open; nothing of ours is kept. The box is
+// an arranged view at the top of the borrowed Today View's widget column (a UIStackView), so it scrolls with the widgets as one page and the
+// widgets slide when it grows, shrinks, comes or goes; it leaves the column before the Today View is given back (DMTodayGiveBack). A row's tap runs
+// the notification's default action, a swipe left (or Clear in the header, for all) asks iOS to clear it -- both through NCNotificationDispatcher,
+// with the Cover Sheet's own destination (CSNotificationDispatcher), the way the Cover Sheet's list asks.
+static BOOL gTodayNotifications = YES;
+static const NSUInteger kTNCollapsedRows = 5;
+static const CGFloat kTNHeaderH = 40.0, kTNMoreH = 40.0, kTNPad = 12.0, kTNIcon = 30.0;
+@interface DMTNRow : UIView <UIGestureRecognizerDelegate>
+@property (nonatomic, strong) id request;
+@property (nonatomic, copy) NSString *key;
+@property (nonatomic, strong) NSDate *date;
+@property (nonatomic, strong) UIView *slide;        // the row's content: slides left over the Clear behind it
+@property (nonatomic, strong) UIView *clearBack;
+@property (nonatomic, strong) UILabel *timeLabel;
+@property (nonatomic, strong) UIView *separator;
+@property (nonatomic) BOOL leaving;
+@end
+@interface DMTNTarget : NSObject <UIGestureRecognizerDelegate>
++ (instancetype)shared;
+@end
+static UIView *gTNBox = nil;                 // (held while the panel is open)
+static UIView *gTNBack = nil, *gTNHeader = nil, *gTNMore = nil;
+static UILabel *gTNMoreLabel = nil;
+static NSLayoutConstraint *gTNHeight = nil;
+static NSMutableDictionary<NSString *, DMTNRow *> *gTNRows = nil;
+static __weak UIStackView *gTNStack = nil;
+static __weak UIView *gTNPanel = nil, *gTNToday = nil;
+static CGFloat gTNMaxH = 0.0, gTNSkip = 0.0;
+static BOOL gTNExpanded = NO, gTNBusy = NO, gTNAgain = NO, gTNKeepMore = NO;   // (gTNKeepMore: Show more/less keeps its row where the finger is)
+static NSString *gTNSig = nil;
+static __weak id gTNListVC = nil;   // the Cover Sheet's notification list controller (its Focus filter)
+static NSMutableDictionary<NSString *, NSDate *> *gTNGone = nil;   // cleared by us: kept out for a moment while the list catches up
+static NSString *DMTNStr(id o, NSString *k) { id v = DMCall(o, k); return ([v isKindOfClass:[NSString class]] && [(NSString *)v length]) ? v : nil; }
+static NSMapTable *gTNInfo = nil;   // request (weak) -> its key, date, whether it is one of our test notifications, shown or not, when that was decided
+static NSString *DMTNKeyFresh(id r) { return [NSString stringWithFormat:@"%@|%@", DMTNStr(r, @"sectionIdentifier") ?: @"", DMTNStr(r, @"notificationIdentifier") ?: [NSString stringWithFormat:@"%p", r]]; }
+static NSString *DMTNKey(id r) { NSArray *i = [gTNInfo objectForKey:r]; return i ? i[0] : DMTNKeyFresh(r); }
+static BOOL DMTNIsTest(id r) { return [DMTNStr(r, @"sectionIdentifier") isEqualToString:@"com.apple.Preferences"] && [DMTNStr(DMCall(r, @"content"), @"title") hasPrefix:@"MSB Test"]; }
+static id DMTNGet(id o, NSString *k) {   // a getter, or the instance variable of that name when there is no getter
+    if (!o) return nil;
+    if ([o respondsToSelector:NSSelectorFromString(k)]) return DMCall(o, k);
+    id v = nil; @try { v = [o valueForKey:k]; } @catch (id e) { v = nil; }
+    return v;
+}
+static __weak id gTNMaster = nil;   // (found once: the Cover Sheet keeps it for SpringBoard's life)
+static id DMTNMasterList(void) {
+    id have = gTNMaster;
+    if (have && gTNListVC) return have;
+    id cs = DMCall(DMSBManager("SBCoverSheetPresentationManager"), @"coverSheetViewController");
+    id list = DMTNGet(DMTNGet(DMTNGet(cs, @"mainPageContentViewController"), @"combinedListViewController"), @"structuredListViewController");
+    gTNListVC = list;
+    id ml = DMTNGet(list, @"masterList");
+    gTNMaster = ml;
+    return ml;
+}
+// Only real, delivered notifications (calls & special items): the call UI, media controls and Live Activities are not notification requests
+// at all; what could still be in the lists is held out here -- a request that presents full screen (a ringing alarm or timer), one iOS does
+// not deliver to the Notification Center / Lock Screen / Cover Sheet, one the list's own Focus filter hides, and a persistent one (it stays on
+// the Lock Screen until acted on). Missed calls, time-sensitive and critical notifications are ordinary requests: shown like any other.
+static BOOL DMTNShows(id r, id ml) {
+    id o = DMCall(r, @"options");
+    SEL fs = NSSelectorFromString(@"requestsFullScreenPresentation"), ps = NSSelectorFromString(@"lockScreenPersistence");
+    if ([o respondsToSelector:fs] && ((BOOL (*)(id, SEL))objc_msgSend)(o, fs)) return NO;
+    if ([o respondsToSelector:ps] && ((unsigned long long (*)(id, SEL))objc_msgSend)(o, ps) != 0) return NO;
+    NSSet *d = DMCall(r, @"requestDestinations");
+    if ([d isKindOfClass:[NSSet class]] && d.count && ![d containsObject:@"BulletinDestinationNotificationCenter"] && ![d containsObject:@"BulletinDestinationLockScreen"] && ![d containsObject:@"BulletinDestinationCoverSheet"]) return NO;
+    SEL filt = NSSelectorFromString(@"notificationMasterList:shouldFilterNotificationRequest:");
+    if ([gTNListVC respondsToSelector:filt] && ((BOOL (*)(id, SEL, id, id))objc_msgSend)(gTNListVC, filt, ml, r)) return NO;
+    return YES;
+}
+// (the requests are immutable -- a change is a new request -- so what is read from one is kept with it: each tick only looks it up. Whether it
+// is shown is decided again after 5 s: a Focus change can change it.)
+static NSArray *DMTNInfoFor(id r, id ml, NSDate *now) {
+    if (!gTNInfo) gTNInfo = [NSMapTable weakToStrongObjectsMapTable];
+    NSArray *i = [gTNInfo objectForKey:r];
+    if (i && [now timeIntervalSinceDate:i[4]] < 5.0) return i;
+    NSDate *d = DMCall(r, @"timestamp");
+    i = @[i ? i[0] : DMTNKeyFresh(r), [d isKindOfClass:[NSDate class]] ? d : [NSDate distantPast], @(DMTNIsTest(r)), @(DMTNShows(r, ml)), now];
+    [gTNInfo setObject:i forKey:r];
+    return i;
+}
+// THE SOURCE: the delivered notifications themselves, as SpringBoard's notification source holds them -- NCBulletinNotificationSource (the
+// bridge between the bulletin server and NCNotificationDispatcher; SpringBoard -notificationDispatcher -notificationSource) keeps every delivered
+// bulletin's notification request in -uuidsToRequests until the bulletin is withdrawn or cleared, on iOS 15 and 16 alike. It is what the Cover
+// Sheet, Notification Center and banners are all fed from, so what a Lock Screen tweak does to the Cover Sheet's own list (a grouping tweak takes
+// the requests out of it) does not change it, and it is complete from SpringBoard's start (Notification Center need not have been opened). The
+// dictionary lives on the source's own queue: it is copied there (asynchronously: nothing waits on that queue) and the copy is used on the main
+// thread. Without it (another iOS), the Cover Sheet's list is read as before.
+static NSArray *gTNSnap = nil;          // the last copy of the source's requests (nil: no source here / not read yet)
+static BOOL gTNFetching = NO, gTNFetchAgain = NO, gTNNoSource = NO;
+static void DMTNRefresh(BOOL animated);
+static id DMTNSource(dispatch_queue_t *queue) {
+    id src = DMCall(DMCall([UIApplication sharedApplication], @"notificationDispatcher"), @"notificationSource");
+    if (!src || ![src respondsToSelector:NSSelectorFromString(@"uuidsToRequests")]) return nil;
+    Ivar qi = class_getInstanceVariable([src class], "_queue");
+    id q = qi ? object_getIvar(src, qi) : nil;
+    if (!q) return nil;
+    if (queue) *queue = (dispatch_queue_t)q;
+    return src;
+}
+static void DMTNFetch(void) {   // (main thread) a fresh copy of the source's requests; the box follows when it comes
+    if (gTNFetching) { gTNFetchAgain = YES; return; }
+    dispatch_queue_t q = NULL;
+    id src = DMTNSource(&q);
+    if (!src) {
+        if (!gTNNoSource) { gTNNoSource = YES; gTNSnap = nil; DMLog(@"[tn] SpringBoard's notification source not found here: the Cover Sheet's list is read instead"); }
+        DMTNRefresh(YES);
+        return;
+    }
+    gTNFetching = YES;
+    dispatch_async(q, ^{
+        NSArray *vals = nil;
+        @try { id d = ((id (*)(id, SEL))objc_msgSend)(src, NSSelectorFromString(@"uuidsToRequests")); if ([d isKindOfClass:[NSDictionary class]]) vals = [[(NSDictionary *)d allValues] copy]; }
+        @catch (NSException *e) { vals = nil; }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            gTNFetching = NO;
+            static int told = -1;
+            if (told != (vals != nil)) { told = (vals != nil); DMLog([NSString stringWithFormat:@"[tn] notification source %@", vals ? @"read (the delivered notifications)" : @"NOT readable: the Cover Sheet's list is read instead"]); }
+            gTNSnap = vals;
+            if (gTNFetchAgain) { gTNFetchAgain = NO; DMTNFetch(); return; }
+            DMTNRefresh(YES);
+        });
+    });
+}
+static NSArray *DMTNRequests(void) {
+    id ml = DMTNMasterList();
+    static int told = -1;
+    if (told != (ml != nil)) { told = (ml != nil); DMLog([NSString stringWithFormat:@"[tn] the Cover Sheet's notification list %@", ml ? @"found" : @"NOT found"]); }
+    if (!ml && !gTNSnap) return @[];
+    NSMutableArray *lists = [NSMutableArray array];
+    if (gTNSnap) [lists addObject:gTNSnap];
+    else {
+        id secs = DMCall(ml, @"notificationSections");
+        if ([secs isKindOfClass:[NSArray class]]) [lists addObjectsFromArray:secs];
+        for (NSString *k in @[@"prominentIncomingSectionList", @"incomingSectionList", @"historySectionList", @"missedSectionList", @"persistentSectionList", @"highlightedSectionList"]) {
+            id l = DMCall(ml, k);
+            if (l && ![lists containsObject:l]) [lists addObject:l];
+        }
+    }
+    NSMutableSet *skip = [NSMutableSet set];   // (not delivered yet: a scheduled summary still to come -- known from the Cover Sheet's list, when it has one)
+    for (NSString *k in @[@"upcomingDigestSectionList", @"upcomingMissedSectionList"]) {
+        id l = DMCall(ml, k);
+        if (!l) continue;
+        [lists removeObjectIdenticalTo:l];
+        NSArray *rs = DMCall(l, @"allNotificationRequests");
+        if ([rs isKindOfClass:[NSArray class]]) for (id r in rs) [skip addObject:DMTNKey(r)];
+    }
+    NSDate *now = [NSDate date];
+    for (NSString *k in gTNGone.allKeys) if ([now timeIntervalSinceDate:gTNGone[k]] > 4.0) [gTNGone removeObjectForKey:k];
+    BOOL testOnly = DMTestFlag("/tmp/msb-tn-testonly");   // (tests: only our own test notifications, never the owner's)
+    NSMutableDictionary *byKey = [NSMutableDictionary dictionary];
+    for (id l in lists) {
+        NSArray *rs = [l isKindOfClass:[NSArray class]] ? l : DMCall(l, @"allNotificationRequests");
+        if (![rs isKindOfClass:[NSArray class]]) continue;
+        for (id r in rs) {
+            NSArray *info = DMTNInfoFor(r, ml, now);
+            NSString *k = info[0];
+            if (byKey[k] || [skip containsObject:k] || gTNGone[k]) continue;
+            if (testOnly && ![info[2] boolValue]) continue;
+            if (![info[3] boolValue]) continue;
+            byKey[k] = r;
+        }
+    }
+    return [byKey.allValues sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
+        NSDate *da = [gTNInfo objectForKey:a][1] ?: [NSDate distantPast], *db = [gTNInfo objectForKey:b][1] ?: [NSDate distantPast];
+        return [db compare:da];
+    }];
+}
+static BOOL DMTNHidesPreview(id r) {   // Settings > Notifications > Show Previews (and the app's own): 0 always, 1 when unlocked (our panel opens unlocked only), 2 never
+    id opts = DMCall(r, @"options");
+    SEL s = NSSelectorFromString(@"contentPreviewSetting");
+    return [opts respondsToSelector:s] && ((unsigned long long (*)(id, SEL))objc_msgSend)(opts, s) == 2;
+}
+static NSString *DMTNAgo(NSDate *d) {
+    if (![d isKindOfClass:[NSDate class]]) return @"";
+    NSTimeInterval s = -[d timeIntervalSinceNow];
+    if (s < 60.0) return @"now";
+    if (s < 3600.0) return [NSString stringWithFormat:@"%dm ago", (int)(s / 60.0)];
+    if (s < 86400.0) return [NSString stringWithFormat:@"%dh ago", (int)(s / 3600.0)];
+    NSCalendar *cal = [NSCalendar currentCalendar];
+    if ([cal isDateInYesterday:d]) return @"Yesterday";
+    static NSDateFormatter *f; if (!f) { f = [NSDateFormatter new]; [f setLocalizedDateFormatFromTemplate:@"dMMM"]; }
+    return [f stringFromDate:d];
+}
+static id DMTNDispatcher(void) { return DMCall(DMCall([UIApplication sharedApplication], @"notificationDispatcher"), @"dispatcher"); }
+static id DMTNDestination(id disp) {   // the Cover Sheet's own destination (what its list is to the dispatcher)
+    NSDictionary *d = DMCall(DMCall(disp, @"destinationsRegistry"), @"destinations");
+    if (![d isKindOfClass:[NSDictionary class]]) return nil;
+    for (id x in d.allValues) if ([NSStringFromClass([x class]) isEqualToString:@"CSNotificationDispatcher"]) return x;
+    for (id x in d.allValues) if ([NSStringFromClass([x class]) isEqualToString:@"SBNotificationCenterDestination"]) return x;   // (no Cover Sheet destination: Notification Center's)
+    return nil;
+}
+static void DMTNRefresh(BOOL animated);
+static void DMTNClear(NSArray *reqs, NSString *why) {
+    if (!reqs.count) return;
+    id disp = DMTNDispatcher(), dest = DMTNDestination(disp);
+    SEL s = NSSelectorFromString(@"destination:requestsClearingNotificationRequests:");
+    if (!dest || ![disp respondsToSelector:s]) { DMLog([NSString stringWithFormat:@"[tn] cannot clear here (dispatcher %@, destination %@)", NSStringFromClass([disp class]), NSStringFromClass([dest class])]); return; }
+    if (!gTNGone) gTNGone = [NSMutableDictionary dictionary];
+    for (id r in reqs) gTNGone[DMTNKey(r)] = [NSDate date];
+    @try { ((void (*)(id, SEL, id, id))objc_msgSend)(disp, s, dest, [NSSet setWithArray:reqs]); }
+    @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[tn] clearing refused (%@)", e.reason]); }
+    DMLog([NSString stringWithFormat:@"[tn] %@: %lu notification(s) cleared", why, (unsigned long)reqs.count]);
+    DMTNRefresh(YES);
+}
+static void DMTNOpen(id r) {
+    id disp = DMTNDispatcher(), dest = DMTNDestination(disp), action = DMCall(r, @"defaultAction");
+    SEL s = NSSelectorFromString(@"destination:executeAction:forNotificationRequest:requestAuthentication:withParameters:completion:");
+    BOOL ran = NO;
+    if (action && dest && [disp respondsToSelector:s]) {
+        @try { ((void (*)(id, SEL, id, id, id, BOOL, id, id))objc_msgSend)(disp, s, dest, action, r, NO, @{}, nil); ran = YES; }
+        @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[tn] the default action was refused (%@)", e.reason]); }
+    }
+    if (!ran) {   // (no action of its own, or no dispatcher: the app opens)
+        NSString *b = DMTNStr(r, @"sectionIdentifier");
+        SEL l = NSSelectorFromString(@"launchApplicationWithIdentifier:suspended:");
+        if (b && [[UIApplication sharedApplication] respondsToSelector:l]) ((BOOL (*)(id, SEL, id, BOOL))objc_msgSend)([UIApplication sharedApplication], l, b, NO);
+    }
+    DMLog([NSString stringWithFormat:@"[tn] row tapped: %@%@", ran ? @"its default action run" : @"its app opened", DMTNIsTest(r) ? [@" -- " stringByAppendingString:DMTNStr(DMCall(r, @"content"), @"title")] : @""]);
+    DMCloseOverlay();
+}
+// The box's look is the widgets' own: their material (copied from the one behind the widget column, MTMaterialView's recipe and configuration)
+// and their corner radius.
+static CGFloat gTNRadius = 20.0;
+static UIView *DMTNPlatter(UIStackView *column) {
+    UIView *src = nil;
+    for (UIView *list in column.arrangedSubviews) if ([list isKindOfClass:objc_getClass("SBIconListView")])
+        for (UIView *u in list.subviews) if ([NSStringFromClass([u class]) isEqualToString:@"MTMaterialView"]) { src = u; break; }
+    for (UIView *list in column.arrangedSubviews) if ([list isKindOfClass:objc_getClass("SBIconListView")]) {   // (a widget's corner radius)
+        NSMutableArray *st = [NSMutableArray arrayWithArray:list.subviews]; int n = 0;
+        while (st.count && n++ < 200) {
+            UIView *u = st.firstObject; [st removeObjectAtIndex:0];
+            if ([u isKindOfClass:objc_getClass("SBIconView")] || [u.superview isKindOfClass:objc_getClass("SBIconView")] || u.layer.cornerRadius > 4.0) {
+                if (u.layer.cornerRadius > 4.0 && u.bounds.size.width > 60.0) { gTNRadius = u.layer.cornerRadius; st = nil; break; }
+            }
+            [st addObjectsFromArray:u.subviews];
+        }
+    }
+    UIView *bg = nil;
+    Class mt = objc_getClass("MTMaterialView");
+    SEL make = NSSelectorFromString(@"materialViewWithRecipe:"), makeNamed = NSSelectorFromString(@"materialViewWithRecipeNamed:"), rs = NSSelectorFromString(@"recipe");
+    NSString *name = DMTNStr(src, @"recipeName");
+    long long recipe = [src respondsToSelector:rs] ? ((long long (*)(id, SEL))objc_msgSend)(src, rs) : 0;
+    @try {
+        if (src && recipe > 0 && [mt respondsToSelector:make]) bg = ((id (*)(id, SEL, long long))objc_msgSend)(mt, make, recipe);
+        else if (src && name && [mt respondsToSelector:makeNamed]) bg = ((id (*)(id, SEL, id))objc_msgSend)(mt, makeNamed, name);
+    } @catch (id e) { bg = nil; }
+    { static BOOL told = NO; if (!told && src) { told = YES; DMLog([NSString stringWithFormat:@"[tn] the widgets' material: recipe %lld, name %@, mask %d, alpha %.2f -> %@; corners %.1f", recipe, name, src.layer.mask != nil || src.maskView != nil, src.alpha, NSStringFromClass([bg class]), gTNRadius]); } }
+    if (![bg isKindOfClass:[UIView class]]) {
+        bg = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial]];
+        static BOOL told = NO; if (!told) { told = YES; DMLog([NSString stringWithFormat:@"[tn] box material: a system material (the widgets' was not found: %@), corners %.1f", NSStringFromClass([src class]), gTNRadius]); }
+    }
+    bg.userInteractionEnabled = NO;
+    return bg;
+}
+static UILabel *DMTNLabel(CGFloat size, UIFontWeight w, UIColor *c) {
+    UILabel *l = [UILabel new]; l.font = [UIFont systemFontOfSize:size weight:w]; l.textColor = c; l.lineBreakMode = NSLineBreakByTruncatingTail;
+    return l;
+}
+static NSString *DMTNAppName(NSString *bundle) {
+    id app = [DMCall(objc_getClass("SBApplicationController"), @"sharedInstance") respondsToSelector:NSSelectorFromString(@"applicationWithBundleIdentifier:")] ?
+        ((id (*)(id, SEL, id))objc_msgSend)(DMCall(objc_getClass("SBApplicationController"), @"sharedInstance"), NSSelectorFromString(@"applicationWithBundleIdentifier:"), bundle) : nil;
+    return DMTNStr(app, @"displayName") ?: bundle;
+}
+static DMTNRow *DMTNMakeRow(id r, CGFloat W) {
+    id content = DMCall(r, @"content");
+    NSString *bundle = DMTNStr(r, @"sectionIdentifier") ?: @"";
+    NSString *app = DMTNStr(content, @"header") ?: DMTNAppName(bundle);
+    BOOL hidden = DMTNHidesPreview(r);
+    // Title and subtitle both, as iOS shows them (a WhatsApp group: the group in one, the sender in the other -- with only the title it looked like
+    // a direct message): "title · subtitle" on the top line.
+    NSString *title = nil;
+    if (!hidden) {
+        NSString *t = DMTNStr(content, @"title"), *st = DMTNStr(content, @"subtitle");
+        title = (t.length && st.length && ![t isEqualToString:st]) ? [NSString stringWithFormat:@"%@ · %@", t, st] : (t.length ? t : st);
+    }
+    NSString *body = hidden ? @"Notification" : DMTNStr(content, @"message");
+    if (!title && !body) body = @"Notification";
+    id icon = DMCall(content, @"icon");
+    if (![icon isKindOfClass:[UIImage class]]) { NSArray *icons = DMCall(content, @"icons"); icon = [icons isKindOfClass:[NSArray class]] ? icons.firstObject : nil; }
+    if (![icon isKindOfClass:[UIImage class]]) icon = DMAppIcon(bundle);
+    DMTNRow *row = [[DMTNRow alloc] initWithFrame:CGRectMake(0, 0, W, 60)];
+    row.request = r; row.key = DMTNKey(r); row.date = DMCall(r, @"timestamp");
+    row.clipsToBounds = YES;
+    UIView *back = [[UIView alloc] initWithFrame:row.bounds];
+    back.backgroundColor = [UIColor systemRedColor]; back.alpha = 0.0; back.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    UILabel *cl = DMTNLabel(14, UIFontWeightSemibold, [UIColor whiteColor]); cl.text = @"Clear"; [cl sizeToFit];
+    cl.frame = CGRectMake(W - kTNPad - cl.bounds.size.width, 0, cl.bounds.size.width, 60); cl.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleHeight;
+    [back addSubview:cl];
+    [row addSubview:back]; row.clearBack = back;
+    UIView *slide = [[UIView alloc] initWithFrame:row.bounds]; slide.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [row addSubview:slide]; row.slide = slide;
+    CGFloat x0 = kTNPad + kTNIcon + 10.0, tw = W - x0 - kTNPad, y = 10.0;
+    UIImageView *iv = [[UIImageView alloc] initWithFrame:CGRectMake(kTNPad, 11.0, kTNIcon, kTNIcon)];
+    iv.image = icon; iv.contentMode = UIViewContentModeScaleAspectFit; iv.layer.cornerRadius = 7.0; iv.layer.cornerCurve = kCACornerCurveContinuous; iv.clipsToBounds = YES;
+    [slide addSubview:iv];
+    UILabel *tl = DMTNLabel(12, UIFontWeightRegular, [UIColor secondaryLabelColor]); tl.text = DMTNAgo(row.date); [tl sizeToFit];
+    CGFloat tlw = MIN(tl.bounds.size.width + 2.0, tw * 0.45);
+    tl.frame = CGRectMake(W - kTNPad - tlw, y, tlw, 16.0); tl.textAlignment = NSTextAlignmentRight;
+    [slide addSubview:tl]; row.timeLabel = tl;
+    UILabel *al = DMTNLabel(12, UIFontWeightMedium, [UIColor secondaryLabelColor]); al.text = app;
+    al.frame = CGRectMake(x0, y, tw - tlw - 6.0, 16.0);
+    [slide addSubview:al];
+    y += 17.0;
+    if (title) {
+        UILabel *ttl = DMTNLabel(14, UIFontWeightSemibold, [UIColor labelColor]); ttl.text = title;
+        ttl.frame = CGRectMake(x0, y, tw, 18.0); [slide addSubview:ttl]; y += 18.0;
+    }
+    if (body) {
+        UILabel *bl = DMTNLabel(14, UIFontWeightRegular, title ? [UIColor secondaryLabelColor] : [UIColor labelColor]); bl.text = body; bl.numberOfLines = 2;
+        CGFloat h = MIN(ceil([bl sizeThatFits:CGSizeMake(tw, CGFLOAT_MAX)].height), ceil(bl.font.lineHeight * 2.0) + 1.0);
+        bl.frame = CGRectMake(x0, y, tw, MAX(18.0, h)); [slide addSubview:bl]; y += MAX(18.0, h);
+    }
+    CGFloat h = MAX(y + 10.0, 11.0 + kTNIcon + 11.0);
+    row.frame = CGRectMake(0, 0, W, h);
+    cl.frame = CGRectMake(W - kTNPad - cl.bounds.size.width, 0, cl.bounds.size.width, h);
+    UIView *sep = [[UIView alloc] initWithFrame:CGRectMake(kTNPad, 0, W - 2.0 * kTNPad, 1.0 / [UIScreen mainScreen].scale)];
+    sep.backgroundColor = [UIColor separatorColor]; sep.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [row addSubview:sep]; row.separator = sep;
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:[DMTNTarget shared] action:NSSelectorFromString(@"rowTap:")];
+    [row addGestureRecognizer:tap];
+    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:[DMTNTarget shared] action:NSSelectorFromString(@"rowPan:")];
+    pan.delegate = row; [row addGestureRecognizer:pan];
+    return row;
+}
+// The box fits the widget column's new height into the panel (at most the room it had when it opened); called inside the animations, so the
+// panel's edge moves with the widgets.
+static void DMTNFitPanel(void) {
+    UIView *panel = gTNPanel, *v = gTNToday; UIStackView *col = gTNStack;
+    if (!panel || !v || !col) return;
+    [v layoutIfNeeded];
+    CGFloat want = col.bounds.size.height + 24.0;
+    CGRect pf = panel.frame; pf.size.height = MIN(gTNMaxH, MAX(120.0, want));
+    if (fabs(pf.size.height - panel.frame.size.height) < 0.5) return;
+    panel.frame = pf;
+    if (!(v.autoresizingMask & UIViewAutoresizingFlexibleHeight)) { CGRect vf = v.frame; vf.size.height = pf.size.height + gTNSkip; v.frame = vf; }
+    [v layoutIfNeeded];
+}
+static void DMTNRefresh(BOOL animated) {
+    UIView *box = gTNBox;
+    if (!box) return;
+    if (gTNBusy) { gTNAgain = YES; return; }
+    CFTimeInterval tr0 = CACurrentMediaTime();
+    NSArray *reqs = gTodayNotifications ? DMTNRequests() : @[];
+    if (DMTestFlag("/tmp/msb-tn-prof")) { static double sum = 0; static int n = 0; sum += CACurrentMediaTime() - tr0; if (++n == 40) { DMLog([NSString stringWithFormat:@"[tn] reading the list: %.2f ms each", sum / n * 1000.0]); sum = 0; n = 0; } }
+    NSMutableArray *keys = [NSMutableArray array];
+    for (id r in reqs) [keys addObject:DMTNKey(r)];
+    NSString *sig = [NSString stringWithFormat:@"%d|%@", gTNExpanded && reqs.count > kTNCollapsedRows, [keys componentsJoinedByString:@","]];
+    for (DMTNRow *row in gTNRows.allValues) { NSString *t = DMTNAgo(row.date); if (![row.timeLabel.text isEqualToString:t]) row.timeLabel.text = t; }
+    if ([sig isEqualToString:gTNSig]) return;
+    BOOL first = gTNSig == nil;
+    gTNSig = sig;
+    CGFloat W = box.bounds.size.width > 100.0 ? box.bounds.size.width : gTNStack.bounds.size.width;
+    if (reqs.count <= kTNCollapsedRows) gTNExpanded = NO;   // (the newest 5; more behind "Show N more")
+    NSUInteger shown = gTNExpanded ? reqs.count : MIN(reqs.count, kTNCollapsedRows);
+    NSMutableDictionary *next = [NSMutableDictionary dictionary];
+    NSMutableArray *fresh = [NSMutableArray array], *order = [NSMutableArray array];
+    for (NSUInteger i = 0; i < shown; i++) {
+        id r = reqs[i]; NSString *k = keys[i];
+        DMTNRow *row = gTNRows[k];
+        if (!row || row.leaving) { row = DMTNMakeRow(r, W); [fresh addObject:row]; }
+        next[k] = row; [order addObject:row];
+    }
+    NSMutableArray *gone = [NSMutableArray array];
+    for (NSString *k in gTNRows) if (!next[k]) [gone addObject:gTNRows[k]];
+    gTNRows = next;
+    CGFloat y = kTNHeaderH;
+    NSMutableArray *frames = [NSMutableArray array];
+    for (DMTNRow *row in order) { [frames addObject:[NSValue valueWithCGRect:CGRectMake(0, y, W, row.bounds.size.height)]]; y += row.bounds.size.height; }
+    BOOL more = reqs.count > kTNCollapsedRows;
+    gTNMoreLabel.text = gTNExpanded ? @"Show less" : [NSString stringWithFormat:@"Show %lu more", (unsigned long)(reqs.count - shown)];
+    CGRect moreFrame = CGRectMake(0, y, W, kTNMoreH);
+    CGFloat H = y + (more ? kTNMoreH : 0.0) + 4.0;
+    BOOL show = reqs.count > 0, wasShown = !box.hidden;
+    UIScrollView *list = [gTNStack.superview isKindOfClass:[UIScrollView class]] ? (UIScrollView *)gTNStack.superview : nil;
+    CGFloat newOffset = NAN;
+    if (gTNKeepMore && list && more) {   // (the list moves by what the box lost or gained above that row, within its range)
+        CGFloat was = [gTNMore convertPoint:CGPointZero toView:list].y, will = [box convertPoint:moreFrame.origin toView:list].y;
+        CGFloat top = -list.adjustedContentInset.top, grow = H - box.bounds.size.height;
+        CGFloat maxY = MAX(top, list.contentSize.height + grow + list.adjustedContentInset.bottom - list.bounds.size.height);
+        newOffset = MIN(MAX(list.contentOffset.y - (was - will), top), maxY);
+    }
+    gTNKeepMore = NO;
+    for (DMTNRow *row in fresh) {   // (new rows start where they will be, clear)
+        NSUInteger i = [order indexOfObjectIdenticalTo:row];
+        row.frame = [frames[i] CGRectValue]; row.alpha = 0.0; [box addSubview:row];
+    }
+    if (!wasShown || first) { gTNMore.frame = moreFrame; gTNMore.alpha = more ? 1.0 : 0.0; }
+    void (^apply)(void) = ^{
+        for (NSUInteger i = 0; i < order.count; i++) { DMTNRow *row = order[i]; row.frame = [frames[i] CGRectValue]; row.alpha = 1.0; row.separator.alpha = 1.0; }
+        for (DMTNRow *row in gone) row.alpha = 0.0;
+        gTNMore.frame = moreFrame; gTNMore.alpha = more ? 1.0 : 0.0; gTNMore.userInteractionEnabled = more;
+        if (show) { gTNHeight.constant = H; box.hidden = NO; box.alpha = 1.0; }
+        else { box.hidden = YES; box.alpha = 0.0; }
+        DMTNFitPanel();
+        if (!isnan(newOffset)) list.contentOffset = CGPointMake(list.contentOffset.x, newOffset);
+    };
+    void (^done)(BOOL) = ^(BOOL f) {
+        for (DMTNRow *row in gone) [row removeFromSuperview];
+        UIView *v = gTNToday; v.userInteractionEnabled = YES;
+        gTNBusy = NO;
+        if (gTNAgain) { gTNAgain = NO; dispatch_async(dispatch_get_main_queue(), ^{ DMTNRefresh(YES); }); }   // (anything that changed meanwhile, animated too)
+    };
+    DMLog([NSString stringWithFormat:@"[tn] %lu notification(s), %lu shown%@ (%lu new, %lu gone): box %@", (unsigned long)reqs.count, (unsigned long)shown, more ? (gTNExpanded ? @", expanded" : @", collapsed") : @"", (unsigned long)fresh.count, (unsigned long)gone.count, show ? [NSString stringWithFormat:@"%.0f pt", H] : @"hidden"]);
+    if (!animated || first) {
+        [UIView performWithoutAnimation:^{ apply(); [gTNToday layoutIfNeeded]; }];
+        done(YES);
+        return;
+    }
+    if (show && !wasShown) { [UIView performWithoutAnimation:^{ gTNHeight.constant = H; box.alpha = 0.0; }]; }
+    gTNBusy = YES;
+    gTNToday.userInteractionEnabled = NO;   // (no taps on a widget or row while they move)
+    if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[tn] animating (reduce motion %d, inside an animation %d)", MSBReduceMotion(), [UIView inheritedAnimationDuration] > 0.0]);
+    MSBAnimate(0.32, 0.0, 0.0, UIViewAnimationOptionCurveEaseInOut | UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionOverrideInheritedDuration | UIViewAnimationOptionOverrideInheritedCurve, ^{ apply(); [gTNToday layoutIfNeeded]; }, done);
+}
+static UIView *DMTNMakeBox(UIStackView *column, CGFloat W) {
+    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, W, 100)];
+    box.translatesAutoresizingMaskIntoConstraints = NO;
+    UIView *bg = DMTNPlatter(column);
+    box.layer.cornerRadius = gTNRadius; box.layer.cornerCurve = kCACornerCurveContinuous; box.clipsToBounds = YES;
+    bg.frame = box.bounds; bg.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [box addSubview:bg]; gTNBack = bg;
+    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, W, kTNHeaderH)]; header.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    UILabel *hl = DMTNLabel(15, UIFontWeightSemibold, [UIColor labelColor]); hl.text = @"Notifications";
+    hl.frame = CGRectMake(kTNPad, 0, W - 2.0 * kTNPad - 70.0, kTNHeaderH); [header addSubview:hl];
+    UIView *clear = [[UIView alloc] initWithFrame:CGRectMake(W - 76.0, 0, 76.0, kTNHeaderH)]; clear.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    UILabel *cl = DMTNLabel(14, UIFontWeightMedium, [UIColor secondaryLabelColor]); cl.text = @"Clear"; cl.textAlignment = NSTextAlignmentRight;
+    cl.frame = CGRectMake(0, 0, 76.0 - kTNPad, kTNHeaderH); [clear addSubview:cl];
+    [clear addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:[DMTNTarget shared] action:NSSelectorFromString(@"clearAll:")]];
+    [header addSubview:clear];
+    [box addSubview:header]; gTNHeader = header;
+    UIView *more = [[UIView alloc] initWithFrame:CGRectMake(0, 0, W, kTNMoreH)]; more.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    UIView *sep = [[UIView alloc] initWithFrame:CGRectMake(kTNPad, 0, W - 2.0 * kTNPad, 1.0 / [UIScreen mainScreen].scale)];
+    sep.backgroundColor = [UIColor separatorColor]; sep.autoresizingMask = UIViewAutoresizingFlexibleWidth; [more addSubview:sep];
+    UILabel *ml = DMTNLabel(14, UIFontWeightMedium, [UIColor systemBlueColor]); ml.frame = CGRectMake(kTNPad, 0, W - 2.0 * kTNPad, kTNMoreH);
+    [more addSubview:ml]; gTNMoreLabel = ml;
+    [more addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:[DMTNTarget shared] action:NSSelectorFromString(@"moreTap:")]];
+    more.alpha = 0.0;
+    [box addSubview:more]; gTNMore = more;
+    gTNHeight = [box.heightAnchor constraintEqualToConstant:100.0];
+    gTNHeight.priority = 999; gTNHeight.active = YES;
+    return box;
+}
+// The source is copied only when something changed -- every delivered, changed, withdrawn or cleared notification goes through
+// NCNotificationDispatcher's post/modify/withdraw (and the Cover Sheet's list's insert/modify/remove, where it has one) -- and every 2 s while the
+// panel is open anyway (the times, a Focus change). Kept up to date while the panel is closed too (only on a change: a copy costs well under
+// 1 ms), so the box is right the moment the panel opens. Without the hooks (another iOS), the panel's tick reads it every 2 s and at once when
+// the panel opens.
+static BOOL gTNDirty = YES, gTNHooked = NO, gTNSoon = NO;
+static void DMTNChanged(void) {   // (any thread) a notification came, changed or went: a fresh copy shortly (a burst -- a respring's -- is one copy)
+    gTNDirty = YES;
+    if (gTNSoon) return;
+    gTNSoon = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        gTNSoon = NO;
+        if (!gTodayNotifications || !gTNDirty) return;
+        gTNDirty = NO;
+        DMTNFetch();
+    });
+}
+%group DMTNWatch
+%hook NCNotificationMasterList
+- (void)insertNotificationRequest:(id)r {
+    %orig;
+    DMTNChanged();
+}
+- (void)removeNotificationRequest:(id)r {
+    %orig;
+    DMTNChanged();
+}
+- (void)modifyNotificationRequest:(id)r {
+    %orig;
+    DMTNChanged();
+}
+%end
+%end
+%group DMTNDispatch
+%hook NCNotificationDispatcher
+- (void)postNotificationWithRequest:(id)r {
+    %orig;
+    DMTNChanged();
+}
+- (void)modifyNotificationWithRequest:(id)r {
+    %orig;
+    DMTNChanged();
+}
+- (void)withdrawNotificationWithRequest:(id)r {
+    %orig;
+    DMTNChanged();
+}
+%end
+%end
+static BOOL DMTNHas(Class c, NSArray *names) {
+    for (NSString *m in names) { Method x = c ? class_getInstanceMethod(c, NSSelectorFromString(m)) : NULL; if (!x || method_getNumberOfArguments(x) != 3) return NO; }
+    return c != nil;
+}
+static void DMTNWatchInit(void) {
+    BOOL list = DMTNHas(objc_getClass("NCNotificationMasterList"), @[@"insertNotificationRequest:", @"removeNotificationRequest:", @"modifyNotificationRequest:"]);
+    BOOL disp = DMTNHas(objc_getClass("NCNotificationDispatcher"), @[@"postNotificationWithRequest:", @"modifyNotificationWithRequest:", @"withdrawNotificationWithRequest:"]);
+    if (list) %init(DMTNWatch);
+    if (disp) %init(DMTNDispatch);
+    gTNHooked = disp;
+    DMLog([NSString stringWithFormat:@"[tn] watching the notifications: dispatcher %@, Cover Sheet list %@", disp ? @"yes" : @"NO (read every 2 s)", list ? @"yes" : @"no"]);
+}
+static void DMTNTick(void) {   // (the Today watcher, while the panel is open)
+    static CFTimeInterval last = 0;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - last < 2.0) return;   // (a change is copied at once by DMTNChanged; this is the safety net)
+    last = now;
+    gTNDirty = NO;
+    DMTNFetch();
+}
+// Called by DMOpenTodayPanel once the Today View is in the panel, before the panel's height is measured (the box counts in it).
+static void DMTNInstall(UIView *column) {
+    if (!gTodayNotifications || gTNBox || ![column isKindOfClass:[UIStackView class]]) return;
+    UIStackView *stack = (UIStackView *)column;
+    CGFloat W = stack.bounds.size.width;
+    for (UIView *u in stack.arrangedSubviews) if ([u isKindOfClass:objc_getClass("SBIconListView")] && u.bounds.size.width > 100.0) W = MIN(W, u.bounds.size.width);
+    if (W < 100.0) return;
+    UIView *box = DMTNMakeBox(stack, W);
+    box.hidden = YES;
+    @try { [stack insertArrangedSubview:box atIndex:0]; }
+    @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[tn] the box could not join the widget column (%@)", e.reason]); return; }
+    NSLayoutConstraint *w = [box.widthAnchor constraintEqualToConstant:W]; w.priority = 999; w.active = YES;
+    gTNBox = box; gTNStack = stack; gTNRows = [NSMutableDictionary dictionary]; gTNSig = nil; gTNExpanded = NO; gTNBusy = NO; gTNAgain = NO;
+    box.frame = CGRectMake(0, 0, W, 100);
+    DMTNRefresh(NO);
+    [stack layoutIfNeeded];
+    DMTNFetch();   // (a fresh copy anyway -- the one kept may be from before the switch was turned on; the box follows in a moment if it differs)
+}
+static void DMTNAttach(UIView *panel, UIView *todayView, CGFloat maxH, CGFloat skip) {
+    if (!gTNBox) return;
+    gTNPanel = panel; gTNToday = todayView; gTNMaxH = maxH; gTNSkip = skip;
+}
+// Before the Today View goes back (DMTodayGiveBack): the box leaves SpringBoard's column, which is then exactly as it was.
+static void DMTNRemove(void) {
+    UIView *box = gTNBox;
+    if (!box) return;
+    UIStackView *s = gTNStack;
+    [box.layer removeAllAnimations];
+    @try { [s removeArrangedSubview:box]; } @catch (id e) {}
+    [box removeFromSuperview];
+    gTNBox = nil; gTNRows = nil; gTNHeader = nil; gTNMore = nil; gTNMoreLabel = nil; gTNBack = nil; gTNHeight = nil; gTNSig = nil;
+    gTNBusy = NO; gTNAgain = NO; gTNExpanded = NO;
+    UIView *v = gTNToday; v.userInteractionEnabled = YES;
+    @try { [s setNeedsLayout]; [s.superview layoutIfNeeded]; [s layoutIfNeeded]; } @catch (id e) {}   // (the column's own frames as they were, at once)
+}
+@implementation DMTNRow
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)g {   // (only a sideways swipe to the left; up and down scroll the panel)
+    if (![g isKindOfClass:[UIPanGestureRecognizer class]]) return YES;
+    if (gTNBusy || self.leaving) return NO;
+    CGPoint v = [(UIPanGestureRecognizer *)g velocityInView:self];
+    return v.x < 0.0 && fabs(v.x) > fabs(v.y) * 1.2;
+}
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)other {
+    return [g isKindOfClass:[UIPanGestureRecognizer class]] && [other.view isKindOfClass:[UIScrollView class]] && other == ((UIScrollView *)other.view).panGestureRecognizer;
+}
+@end
+@implementation DMTNTarget
++ (instancetype)shared { static DMTNTarget *t; static dispatch_once_t once; dispatch_once(&once, ^{ t = [DMTNTarget new]; }); return t; }
+- (void)rowTap:(UITapGestureRecognizer *)g {
+    DMTNRow *row = (DMTNRow *)g.view;
+    if (g.state != UIGestureRecognizerStateEnded || gTNBusy || row.leaving || ![row isKindOfClass:[DMTNRow class]]) return;
+    row.slide.backgroundColor = [[UIColor labelColor] colorWithAlphaComponent:0.08];
+    DMTNOpen(row.request);
+}
+- (void)rowPan:(UIPanGestureRecognizer *)g {
+    DMTNRow *row = (DMTNRow *)g.view;
+    if (![row isKindOfClass:[DMTNRow class]]) return;
+    CGFloat W = row.bounds.size.width, tx = MIN(0.0, [g translationInView:row].x);
+    if (g.state == UIGestureRecognizerStateBegan || g.state == UIGestureRecognizerStateChanged) {
+        row.slide.transform = CGAffineTransformMakeTranslation(tx, 0);
+        row.clearBack.alpha = MIN(1.0, -tx / 60.0);
+        row.separator.alpha = 0.0;
+        return;
+    }
+    BOOL clear = g.state == UIGestureRecognizerStateEnded && (tx < -W * 0.4 || ([g velocityInView:row].x < -700.0 && tx < -30.0));
+    if (!clear) {
+        MSBAnimate(0.3, 0.0, 0.8, 0, ^{ row.slide.transform = CGAffineTransformIdentity; row.clearBack.alpha = 0.0; row.separator.alpha = 1.0; }, nil);
+        return;
+    }
+    row.leaving = YES;
+    id r = row.request;
+    [UIView animateWithDuration:0.18 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{ row.slide.transform = CGAffineTransformMakeTranslation(-W, 0); } completion:^(BOOL f) {
+        DMTNClear(@[r], @"swiped away");
+    }];
+}
+- (void)clearAll:(UITapGestureRecognizer *)g {
+    if (g.state != UIGestureRecognizerStateEnded || gTNBusy) return;
+    DMTNClear(DMTNRequests(), @"Clear");
+}
+- (void)moreTap:(UITapGestureRecognizer *)g {
+    if (g.state != UIGestureRecognizerStateEnded || gTNBusy) return;
+    gTNExpanded = !gTNExpanded;
+    gTNKeepMore = !gTNExpanded;   // (Show more opens downwards from where it is; Show less keeps its row under the finger)
+    DMLog([NSString stringWithFormat:@"[tn] %@", gTNExpanded ? @"Show more" : @"Show less"]);
+    DMTNRefresh(YES);
+}
+@end
+#if DEBUG
+// (tests) our own test notifications: published through SpringBoard's bulletin server for Settings (com.apple.Preferences), titled "MSB Test n",
+// withdrawn again by tnwithdraw; their ids are kept in /tmp/msb-tn-testids so a respring does not strand them.
+static __weak id gTNServer = nil;
+%group DMTNServerA
+%hook BBServer
+- (id)initWithQueue:(id)q {
+    id s = %orig;
+    if (s) gTNServer = s;
+    return s;
+}
+%end
+%end
+%group DMTNServerB
+%hook BBServer
+- (id)initWithQueue:(id)q dataProviderManager:(id)a syncService:(id)b dismissalSyncCache:(id)c observerListener:(id)d conduitListener:(id)e settingsListener:(id)f {
+    id s = %orig;
+    if (s) gTNServer = s;
+    return s;
+}
+%end
+%end
+static void DMTNTestInit(void) {
+    Class c = objc_getClass("BBServer");
+    if (c && class_getInstanceMethod(c, @selector(initWithQueue:))) %init(DMTNServerA);
+    if (c && class_getInstanceMethod(c, NSSelectorFromString(@"initWithQueue:dataProviderManager:syncService:dismissalSyncCache:observerListener:conduitListener:settingsListener:"))) %init(DMTNServerB);
+}
+static dispatch_queue_t DMTNServerQueue(id srv) {
+    Ivar qi = srv ? class_getInstanceVariable([srv class], "_queue") : NULL;
+    id q = qi ? object_getIvar(srv, qi) : nil;
+    return q;
+}
+static void DMTNTestPost(int n, unsigned long long dest, long long persistence) {
+    id srv = gTNServer; dispatch_queue_t q = DMTNServerQueue(srv);
+    if (!srv || !q) { DMLog([NSString stringWithFormat:@"[tntest] no bulletin server (%@) or queue", srv]); return; }
+    static int counter = 0;
+    NSString *idsPath = @"/tmp/msb-tn-testids";
+    for (int i = 0; i < n; i++) {
+        int num = ++counter;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            id b = [objc_getClass("BBBulletin") new];
+            NSString *pid = [@"msbtest-" stringByAppendingString:[[NSUUID UUID] UUIDString]];
+            @try {
+                [b setValue:@"com.apple.Preferences" forKey:@"sectionID"];
+                [b setValue:pid forKey:@"bulletinID"]; [b setValue:pid forKey:@"recordID"]; [b setValue:pid forKey:@"publisherBulletinID"];
+                [b setValue:[NSString stringWithFormat:@"MSB Test %d", num] forKey:@"title"];
+                [b setValue:[NSString stringWithFormat:@"Test notification %d from MacStatusBar&Dock: a preview long enough to need a second line in the box.", num] forKey:@"message"];
+                [b setValue:[NSDate date] forKey:@"date"];
+                [b setValue:[NSDate date] forKey:@"lastInterruptDate"];
+                id act = ((id (*)(id, SEL, id, id))objc_msgSend)(objc_getClass("BBAction"), NSSelectorFromString(@"actionWithLaunchBundleID:callblock:"), @"com.apple.Preferences", nil);
+                if (act) [b setValue:act forKey:@"defaultAction"];
+                [b setValue:@YES forKey:@"clearable"];
+                if (persistence >= 0) [b setValue:@(persistence) forKey:@"lockScreenPersistence"];
+            } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[tntest] bulletin setup refused (%@)", e.reason]); return; }
+            NSString *old = [NSString stringWithContentsOfFile:idsPath encoding:NSUTF8StringEncoding error:nil] ?: @"";
+            [[old stringByAppendingFormat:@"%@\n", pid] writeToFile:idsPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            dispatch_async(q, ^{ ((void (*)(id, SEL, id, unsigned long long))objc_msgSend)(srv, NSSelectorFromString(@"publishBulletin:destinations:"), b, dest); });
+            DMLog([NSString stringWithFormat:@"[tntest] posted MSB Test %d (destinations %llu)", num, dest]);
+        });
+    }
+}
+static void DMTNTestWithdraw(void) {
+    id srv = gTNServer; dispatch_queue_t q = DMTNServerQueue(srv);
+    NSString *idsPath = @"/tmp/msb-tn-testids";
+    NSArray *ids = [[NSString stringWithContentsOfFile:idsPath encoding:NSUTF8StringEncoding error:nil] componentsSeparatedByString:@"\n"];
+    int n = 0;
+    SEL byID = NSSelectorFromString(@"withdrawBulletinID:");   // (iOS 15: a bulletin published straight to the server is only found by its bulletin ID)
+    if (srv && q) for (NSString *pid in ids) if (pid.length) { n++; dispatch_async(q, ^{
+        if ([srv respondsToSelector:byID]) ((void (*)(id, SEL, id))objc_msgSend)(srv, byID, pid);
+        ((void (*)(id, SEL, id, id))objc_msgSend)(srv, NSSelectorFromString(@"withdrawBulletinRequestsWithPublisherBulletinID:forSectionID:"), pid, @"com.apple.Preferences");
+    }); }
+    unlink(idsPath.UTF8String);
+    // (and any test notification still in the list, by the Cover Sheet's own clearing)
+    NSMutableArray *left = [NSMutableArray array];
+    id ml = DMTNMasterList(); (void)ml;
+    BOOL was = gTodayNotifications; gTodayNotifications = YES;
+    for (id r in DMTNRequests()) if (DMTNIsTest(r)) [left addObject:r];
+    gTodayNotifications = was;
+    DMLog([NSString stringWithFormat:@"[tntest] withdrew %d test notification(s); %lu still listed", n, (unsigned long)left.count]);
+}
+static void DMTNTestInfo(void) {
+    NSArray *all = DMTNRequests();
+    int tests = 0; for (id r in all) if (DMTNIsTest(r)) tests++;
+    NSMutableString *m = [NSMutableString stringWithFormat:@"[tninfo] %lu listed (%d ours), box %@ hidden %d alpha %.2f, panel %@, column %@, list content %.0f offset %.0f, expanded %d busy %d",
+        (unsigned long)all.count, tests, gTNBox ? NSStringFromCGRect(gTNBox.frame) : @"-", gTNBox.hidden, gTNBox.alpha, NSStringFromCGRect(gTNPanel.frame), NSStringFromCGRect(gTNStack.frame),
+        [gTNStack.superview isKindOfClass:[UIScrollView class]] ? ((UIScrollView *)gTNStack.superview).contentSize.height : -1.0, [gTNStack.superview isKindOfClass:[UIScrollView class]] ? ((UIScrollView *)gTNStack.superview).contentOffset.y : -1.0, gTNExpanded, gTNBusy];
+    NSArray *rows = [gTNRows.allValues sortedArrayUsingComparator:^NSComparisonResult(UIView *a, UIView *b) { return a.frame.origin.y < b.frame.origin.y ? NSOrderedAscending : NSOrderedDescending; }];
+    for (DMTNRow *row in rows) {
+        CGRect s = [row convertRect:row.bounds toCoordinateSpace:[UIScreen mainScreen].coordinateSpace];
+        [m appendFormat:@"\n  row %@ screen %@%@", NSStringFromCGRect(row.frame), NSStringFromCGRect(s), DMTNIsTest(row.request) ? [@" " stringByAppendingString:DMTNStr(DMCall(row.request, @"content"), @"title")] : @""];
+    }
+    if (gTNMore) [m appendFormat:@"\n  more %@ screen %@ alpha %.2f '%@'", NSStringFromCGRect(gTNMore.frame), NSStringFromCGRect([gTNMore convertRect:gTNMore.bounds toCoordinateSpace:[UIScreen mainScreen].coordinateSpace]), gTNMore.alpha, gTNMoreLabel.text];
+    if (gTNHeader) [m appendFormat:@"\n  header screen %@", NSStringFromCGRect([gTNHeader convertRect:gTNHeader.bounds toCoordinateSpace:[UIScreen mainScreen].coordinateSpace])];
+    for (UIView *u in gTNStack.arrangedSubviews) [m appendFormat:@"\n  column item %@ %@%@", NSStringFromClass([u class]), NSStringFromCGRect(u.frame), u.hidden ? @" hidden" : @""];
+    DMLog(m);
+}
+static NSString *DMTNFlags(id r) {   // (tests) a request's delivery flags -- no content
+    id o = DMCall(r, @"options");
+    BOOL (*b)(id, SEL) = (BOOL (*)(id, SEL))objc_msgSend; unsigned long long (*q)(id, SEL) = (unsigned long long (*)(id, SEL))objc_msgSend;
+    #define TNB(k) ([o respondsToSelector:NSSelectorFromString(k)] ? (int)b(o, NSSelectorFromString(k)) : -1)
+    #define TNQ(k) ([o respondsToSelector:NSSelectorFromString(k)] ? (long long)q(o, NSSelectorFromString(k)) : -1)
+    NSSet *dests = DMCall(r, @"requestDestinations");
+    NSString *f = [NSString stringWithFormat:@"fullscreen %d persist %lld prio %lld preview %lld hideClear %d dismissAuto %d addLS %d interruption %lld critical %d collapsed %d dests %@",
+        TNB(@"requestsFullScreenPresentation"), TNQ(@"lockScreenPersistence"), TNQ(@"lockScreenPriority"), TNQ(@"contentPreviewSetting"), TNB(@"hideClearActionInList"), TNB(@"dismissAutomatically"), TNB(@"addToLockScreenWhenUnlocked"),
+        [r respondsToSelector:@selector(interruptionLevel)] ? (long long)q(r, @selector(interruptionLevel)) : -1, [r respondsToSelector:NSSelectorFromString(@"isCriticalAlert")] ? (int)b(r, NSSelectorFromString(@"isCriticalAlert")) : -1,
+        [r respondsToSelector:NSSelectorFromString(@"isCollapsedNotification")] ? (int)b(r, NSSelectorFromString(@"isCollapsedNotification")) : -1,
+        [dests isKindOfClass:[NSSet class]] ? [[dests.allObjects sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@"+"] : @"-"];
+    #undef TNB
+    #undef TNQ
+    return f;
+}
+static void DMTNTestSource(void) {   // (tests) counts only: the source, what the box would show, the bulletin server, the Cover Sheet's list
+    dispatch_queue_t q = NULL; id src = DMTNSource(&q);
+    id srv = gTNServer; dispatch_queue_t sq = DMTNServerQueue(srv);
+    BOOL was = gTodayNotifications; gTodayNotifications = YES;
+    NSUInteger shown = DMTNRequests().count, tests = 0; for (id r in DMTNRequests()) if (DMTNIsTest(r)) tests++;
+    gTodayNotifications = was;
+    NSUInteger csn = 0; id ml = DMTNMasterList();
+    id secs = DMCall(ml, @"notificationSections"); if ([secs isKindOfClass:[NSArray class]]) for (id l in secs) csn += [DMCall(l, @"allNotificationRequests") count];
+    long axn = -1;   // (the Lock Screen grouping tweak Axon, when installed: how many requests it holds -- a count)
+    { Class ac = objc_getClass("AXNManager"); SEL si = NSSelectorFromString(@"sharedInstance"); id am = (ac && [ac respondsToSelector:si]) ? ((id (*)(id, SEL))objc_msgSend)(ac, si) : nil;
+      Ivar ri = am ? class_getInstanceVariable([am class], "_notificationRequests") : NULL; id d = ri ? object_getIvar(am, ri) : nil;
+      if ([d isKindOfClass:[NSDictionary class]]) { axn = 0; for (id v in [(NSDictionary *)d allValues]) if ([v respondsToSelector:@selector(count)]) axn += [v count]; } }
+    NSString *head = [NSString stringWithFormat:@"[tnsrc] copy %@, box would show %lu (%lu ours), Cover Sheet list %lu, Axon %ld", gTNSnap ? [NSString stringWithFormat:@"%lu", (unsigned long)gTNSnap.count] : @"none", (unsigned long)shown, (unsigned long)tests, (unsigned long)csn, axn];
+    if (!src || !sq) { DMLog([head stringByAppendingFormat:@"; source %@ server %@", src ? @"yes" : @"no", srv ? @"yes" : @"no"]); return; }
+    dispatch_async(q, ^{
+        NSUInteger n = [((id (*)(id, SEL))objc_msgSend)(src, NSSelectorFromString(@"uuidsToRequests")) count];
+        dispatch_async(sq, ^{
+            Ivar bi = class_getInstanceVariable([srv class], "_bulletinsByID");
+            NSUInteger b = bi ? [object_getIvar(srv, bi) count] : 0;
+            DMLog([head stringByAppendingFormat:@"; source now %lu; bulletin server %lu bulletins", (unsigned long)n, (unsigned long)b]);
+        });
+    });
+}
+static void DMTNTestProbe(void) {   // (tests) which of the master list's lists hold how many requests, the flags our own test notifications carry, and how often each flag set occurs overall (counts only)
+    id ml = DMTNMasterList();
+    NSMutableString *m = [NSMutableString stringWithString:@"[tnprobe] lists:"];
+    for (NSString *k in @[@"notificationSections", @"prominentIncomingSectionList", @"incomingSectionList", @"historySectionList", @"missedSectionList", @"persistentSectionList", @"highlightedSectionList", @"upcomingDigestSectionList", @"upcomingMissedSectionList", @"_notificationSectionListsForEnumeration"]) {
+        id l = DMTNGet(ml, k);
+        if ([l isKindOfClass:[NSArray class]]) { NSUInteger n = 0; for (id x in l) n += [DMCall(x, @"allNotificationRequests") count]; [m appendFormat:@" %@=[%lu lists, %lu]", k, (unsigned long)[l count], (unsigned long)n]; }
+        else [m appendFormat:@" %@=%@", k, l ? [NSString stringWithFormat:@"%lu", (unsigned long)[DMCall(l, @"allNotificationRequests") count]] : @"-"];
+    }
+    NSCountedSet *hist = [NSCountedSet set]; NSMutableArray *others = [NSMutableArray array]; NSString *base = @""; int hidden = 0;
+    id slvc = DMTNGet(DMTNGet(DMTNGet(DMCall(DMSBManager("SBCoverSheetPresentationManager"), @"coverSheetViewController"), @"mainPageContentViewController"), @"combinedListViewController"), @"structuredListViewController");
+    SEL fs = NSSelectorFromString(@"notificationMasterList:shouldFilterNotificationRequest:");
+    BOOL was = gTodayNotifications; gTodayNotifications = YES;
+    for (id l in [DMTNGet(ml, @"notificationSections") arrayByAddingObjectsFromArray:@[]]) for (id r in DMCall(l, @"allNotificationRequests")) {
+        NSString *f = DMTNFlags(r);
+        if ([slvc respondsToSelector:fs]) f = [f stringByAppendingFormat:@" filtered %d", ((BOOL (*)(id, SEL, id, id))objc_msgSend)(slvc, fs, ml, r)];
+        if (!DMTNShows(r, ml)) hidden++;
+        if (DMTNIsTest(r)) { [m appendFormat:@"\n  test %@: %@ -> %@", DMTNStr(DMCall(r, @"content"), @"title"), f, DMTNShows(r, ml) ? @"shown" : @"held out"]; if (!base.length) base = f; }
+        else [others addObject:f];
+    }
+    gTodayNotifications = was;
+    // the owner's notifications: only how many differ from our test notification in each flag (counts, nothing else)
+    NSArray *bt = [base componentsSeparatedByString:@" "];
+    for (NSString *f in others) { NSArray *t = [f componentsSeparatedByString:@" "]; for (NSUInteger i = 0; i + 1 < MIN(t.count, bt.count); i += 2) if (![t[i + 1] isEqualToString:bt[i + 1]]) [hist addObject:t[i]]; }
+    [m appendFormat:@"\n  held out in all: %d", hidden];
+    [m appendFormat:@"\n  others: %lu; differing from the test notification in:", (unsigned long)others.count];
+    for (NSString *k in hist) [m appendFormat:@" %@ x%lu", k, (unsigned long)[hist countForObject:k]];
+    DMLog(m);
+}
+#endif
 // ---- the Today View as a drop-down panel (requested: it drops from the clock like our menus; no Cover Sheet, no slide from the side) ----
 // Unlocked, a clock tap BORROWS SpringBoard's own Home Screen Today View (-[SBIconController homeScreenTodayViewController]: the real, live widgets,
 // nothing new is created) into a panel in our menu window, under the clock, with the menus' look and fade. Every way the panel goes (the clock again,
@@ -13208,6 +13975,7 @@ static __weak UIScrollView *gTodayList = nil;
 static void DMTodayGiveBack(NSString *why) {
     UIViewController *vc = gTodayVC;
     if (!vc) return;
+    DMTNRemove();   // (our notifications box leaves the widget column first)
     gTodayVC = nil;
     UIView *v = vc.view, *old = gTodayOldSuper;
     [vc beginAppearanceTransition:NO animated:NO];
@@ -13341,6 +14109,12 @@ static void DMInitTodayOffsetProbe(void) { static BOOL done = NO; if (done) retu
         CFTimeInterval now = CACurrentMediaTime();
         if (now - winStart > 0.05) { winStart = now; inWin = 0; }
         if (++inWin > 12) { if (inWin == 13) DMLog(@"[today] panel list: layout loop broken (SpringBoard keeps moving it)"); return; }
+        // (and a loop inside ONE layout pass -- the main thread never gets back to its run loop, each round too slow for the 50 ms count: seen on
+        // the M1 with a tall notifications box, SpringBoard putting the list back to its saved offset on every round, SpringBoard hung. The count
+        // is reset once the main queue runs again; a bounce lays the view out once a frame, i.e. once a turn, so a third put-back before that can only be such a loop, and SpringBoard gets its way.)
+        static int inTurn = 0; static BOOL turnReset = NO;
+        if (!turnReset) { turnReset = YES; dispatch_async(dispatch_get_main_queue(), ^{ inTurn = 0; turnReset = NO; }); }
+        if (++inTurn > 2) { if (inTurn == 3) DMLog(@"[today] panel list: layout loop inside one pass broken (SpringBoard keeps moving it)"); return; }
         // (layering audit #9: a slower ping-pong, one put-back a frame, never reaches 12 in 50 ms. Put-backs while the list is at rest -- not
         // dragged, tracked or decelerating/bouncing, i.e. nobody is scrolling it -- are counted over one second: more than 30 means SpringBoard
         // keeps moving it, so it gets its way for 2 s. A user's flick and its bounce are never counted.)
@@ -13356,8 +14130,24 @@ static void DMInitTodayOffsetProbe(void) { static BOOL done = NO; if (done) retu
 }
 %end
 %end
+// The date header's visibility is left alone while the Today View is in our panel (its header views are hidden there; given back, it is shown
+// again as it was). SpringBoard updates it from scrolling (-_updateHeaderVisibility), and on the M1 (15.6.1, landscape) with a tall
+// notifications box, from ~590 pt down every update relaid the view out, which put the list back to the side bar's saved offset (0), which
+// updated the header again: a layout loop inside one pass that hung SpringBoard (measured: with the update skipped the list scrolls through
+// smoothly, with it the loop broke every time).
+%group TodayKeepHeader
+%hook SBTodayViewController
+- (void)_updateHeaderVisibility {
+    if (gTodayVC && (id)self == (id)gTodayVC) return;
+    %orig;
+}
+%end
+%end
 static void DMTodayKeepOffsetInit(void) {
     Class c = objc_getClass("SBTodayViewController");
+    Method hm = c ? class_getInstanceMethod(c, NSSelectorFromString(@"_updateHeaderVisibility")) : NULL;
+    if (hm && method_getNumberOfArguments(hm) == 2) %init(TodayKeepHeader);
+    else DMLog(@"[today] -[SBTodayViewController _updateHeaderVisibility] not found here: the header is not held");
     Method m = c ? class_getInstanceMethod(c, NSSelectorFromString(@"_updateScrollViewContentInset")) : NULL;
     if (!m || method_getNumberOfArguments(m) != 2) { DMLog(@"[today] -[SBTodayViewController _updateScrollViewContentInset] not found here: the panel's list offset is not held"); return; }
     %init(TodayKeepOffset);
@@ -13482,6 +14272,8 @@ static BOOL DMOpenTodayPanel(UIButton *clockBtn) {
     if (list) {   // width: the widgets' own column plus a small even inset (no empty sides)
         UIView *column = nil;
         for (UIView *u in list.subviews) if (u.bounds.size.width > 100.0 && u.bounds.size.height > 100.0 && !u.hidden && (!column || u.bounds.size.width > column.bounds.size.width)) column = u;
+        DMTNInstall(column);   // (the notifications box, at the top of the column: measured with it below)
+        if (gTNBox) [v layoutIfNeeded];
         // The widgets' own list inside the column gives the width: the column (a stack view) can still carry the Home Screen sidebar's width
         // (467 pt, centred) until SpringBoard's next layout pass narrows it to the list's 300 pt (M1, iPadOS 15, 26 Sep: scrolled in portrait,
         // then opened in landscape -> the panel stayed 380 pt wide with empty sides). The list sits at the same place in both states.
@@ -13509,6 +14301,7 @@ static BOOL DMOpenTodayPanel(UIButton *clockBtn) {
             CGRect vf = v.frame; vf.origin.y = -skip; vf.size.height = pf.size.height + skip; v.frame = vf;
             [v layoutIfNeeded];
         }
+        DMTNAttach(panel, v, maxH, skip > 0.5 ? skip : 0.0);
     }
     UITapGestureRecognizer *wt = [[UITapGestureRecognizer alloc] initWithTarget:[DMTodayOutsideTap shared] action:@selector(widgetTap:)];
     wt.cancelsTouchesInView = NO; wt.delaysTouchesEnded = NO; wt.delegate = (id)[DMTodayOutsideTap shared];
@@ -13605,6 +14398,7 @@ static void DMWatchTodayView(void) {   // (every tick) once the Today View we op
             if ([ic respondsToSelector:present]) ((void (*)(id, SEL, id))objc_msgSend)(ic, present, im);
             DMLog(@"[today] widget editing: the Home Screen's own Today View opened for it");
         }
+        if (!why && !editing && gTodayVC) DMTNTick();   // (notifications that came or went while the panel is open)
         if (why) { DMTodayGiveBack(why); if (gOverlay == o && o) DMCloseOverlay(); }
     }
     if (!gTodayOpenedByClock) return;
@@ -13676,6 +14470,12 @@ static void DMLoadPrefs(void) {
     BOOL today = YES;
     CFPropertyListRef todayRef = CFPreferencesCopyValue(CFSTR("clockOpensToday"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     if (todayRef) { if (CFGetTypeID(todayRef) == CFBooleanGetTypeID()) today = CFBooleanGetValue(todayRef); CFRelease(todayRef); }
+    {
+        BOOL tn = YES;   // Notifications in Today View: on unless switched off
+        CFPropertyListRef tnRef = CFPreferencesCopyValue(CFSTR("todayNotifications"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        if (tnRef) { if (CFGetTypeID(tnRef) == CFBooleanGetTypeID()) tn = CFBooleanGetValue(tnRef); CFRelease(tnRef); }
+        gTodayNotifications = tn;
+    }
     gClockOpensToday = today;   // (applied to the Home Screen by the tick, never from here: DMLoadPrefs also runs in %ctor, and asking
                                 // SBIconController for its sharedInstance that early hung SpringBoard at start -- Phase 2b, build 155)
 
@@ -15119,6 +15919,7 @@ static void DMRunTrigger(NSString *cmd) {
         }
     }
     else if ([cmd isEqualToString:@"idleexp_rswindows"]) DMIdleRenderBisect(0, nil);   // each window hidden in turn, render server frames counted (debug)
+    else if ([cmd hasPrefix:@"hangwatch_"]) DMHangWatch([[cmd substringFromIndex:10] doubleValue]);   // hangwatch_<s>: a main-thread hang is sampled and logged from the background (debug)
     else if ([cmd hasPrefix:@"idlesample_"]) DMIdleSample([[cmd substringFromIndex:11] doubleValue]);   // idlesample_<s>: main-thread stack sampler (debug)
     else if ([cmd hasPrefix:@"idleexp_"]) {   // idleexp_<orientoff|orienton|timersoff|timerson>: experiments for idleprobe (debug)
         NSString *w = [cmd substringFromIndex:8];
@@ -15249,6 +16050,69 @@ static void DMRunTrigger(NSString *cmd) {
         if (gOverlay) DMCloseOverlay();
         BOOL ok = clockBtn && DMOpenTodayPanel(clockBtn);
         DMLog([NSString stringWithFormat:@"[today] (test) panel %@", ok ? @"opened" : @"NOT opened (nothing else done)"]);
+    }
+    else if ([cmd hasPrefix:@"tnpost_"]) {   // tnpost_<n>[_<destinations>]: n test notifications "MSB Test k" for Settings (default destinations 14)
+        NSArray *a = [[cmd substringFromIndex:7] componentsSeparatedByString:@"_"];
+        DMTNTestPost(MAX(1, MIN(20, [a[0] intValue])), a.count > 1 ? (unsigned long long)[a[1] longLongValue] : 14ULL, a.count > 2 ? [a[2] longLongValue] : -1);
+    }
+    else if ([cmd isEqualToString:@"tnwithdraw"]) DMTNTestWithdraw();   // tnwithdraw: every test notification of ours withdrawn
+    else if ([cmd isEqualToString:@"tninfo"]) DMTNTestInfo();
+    else if ([cmd isEqualToString:@"tnsrc"]) DMTNTestSource();          // tnsrc: counts from each source (the box's, the bulletin server, the Cover Sheet's list)
+    else if ([cmd isEqualToString:@"tnprobe"]) DMTNTestProbe();         // tnprobe: delivery flags (counts; flags of our test notifications)
+    else if ([cmd hasPrefix:@"tnrec_"]) {   // tnrec_<s>: every frame, where the box and the widgets below it really are on screen (presentation layers)
+        double secs = MAX(0.3, [[cmd substringFromIndex:6] doubleValue]);
+        CFTimeInterval t0 = CACurrentMediaTime(); __block NSString *last = nil; __block int frames = 0;
+        DMBlockLink *bl = [DMBlockLink new];
+        bl.block = ^BOOL {
+            if (CACurrentMediaTime() - t0 > secs) { DMLog([NSString stringWithFormat:@"[tnrec] done (%d frames)", frames]); return NO; }
+            frames++;
+            UIStackView *st = gTNStack; UIView *box = gTNBox, *list = nil;
+            for (UIView *u in st.arrangedSubviews) if ([u isKindOfClass:objc_getClass("SBIconListView")]) list = u;
+            CALayer *bp = box.layer.presentationLayer ?: box.layer, *lp = list.layer.presentationLayer ?: list.layer, *pp = gTNPanel.layer.presentationLayer ?: gTNPanel.layer;
+            NSMutableString *rows = [NSMutableString string];
+            for (DMTNRow *r in gTNRows.allValues) { CALayer *rp = r.layer.presentationLayer ?: r.layer; [rows appendFormat:@" %.0f/%.2f", rp.frame.origin.y, rp.opacity]; }
+            NSString *s2 = [NSString stringWithFormat:@"box h %.1f a %.2f | widgets y %.1f | panel h %.1f | rows%@", bp.bounds.size.height, bp.opacity, lp.frame.origin.y, pp.bounds.size.height, rows];
+            if (![s2 isEqualToString:last]) { last = s2; DMLog([NSString stringWithFormat:@"[tnrec] %.3f %@", CACurrentMediaTime() - t0, s2]); }
+            return YES;
+        };
+        [bl start];
+    }           // tninfo: the notifications box's geometry and counts (titles of our test notifications only)
+    else if ([cmd hasPrefix:@"kvpath_"]) {   // kvpath_<root>_<getter.getter...>: the class (and count, for a collection) at each step of a chain of zero-argument getters; roots: app, cs, or a class (its sharedInstance, or the class). Never contents.
+        NSArray *a = [[cmd substringFromIndex:7] componentsSeparatedByString:@"_"];
+        NSString *root = a.firstObject; id o = nil;
+        if ([root isEqualToString:@"app"]) o = [UIApplication sharedApplication];
+        else if ([root isEqualToString:@"cs"]) o = DMCall(DMSBManager("SBCoverSheetPresentationManager"), @"coverSheetViewController");
+        else { Class c = objc_getClass(root.UTF8String); o = DMCall(c, @"sharedInstance") ?: c; }
+        NSMutableString *m = [NSMutableString stringWithFormat:@"[kvpath] %@ = %@", root, NSStringFromClass([o class])];
+        if (a.count > 1) for (NSString *k in [a[1] componentsSeparatedByString:@"."]) {
+            if ([k hasPrefix:@"#"]) { NSArray *arr = [o isKindOfClass:[NSArray class]] ? o : ([o respondsToSelector:@selector(allObjects)] ? [o allObjects] : nil); NSUInteger i = [[k substringFromIndex:1] integerValue]; o = i < arr.count ? arr[i] : nil; }
+            else if ([o respondsToSelector:NSSelectorFromString(k)]) o = DMCall(o, k);
+            else { id v = nil; @try { v = [o valueForKey:k]; } @catch (id e) {} if (!v) { [m appendFormat:@" .%@ -> (no such getter or ivar)", k]; break; } o = v; }
+            [m appendFormat:@" .%@ -> %@", k, o ? NSStringFromClass([o class]) : @"nil"];
+            if ([o respondsToSelector:@selector(count)] && ([o isKindOfClass:[NSArray class]] || [o isKindOfClass:[NSSet class]] || [o isKindOfClass:[NSDictionary class]] || [o isKindOfClass:[NSOrderedSet class]])) {
+                id first = [o isKindOfClass:[NSDictionary class]] ? [[o allValues] firstObject] : ([o respondsToSelector:@selector(anyObject)] ? [o anyObject] : [o firstObject]);
+                [m appendFormat:@" (count %lu, first a %@)", (unsigned long)[o count], first ? NSStringFromClass([first class]) : @"-"];
+            }
+        }
+        DMLog(m);
+    }
+    else if ([cmd hasPrefix:@"cmethods_"]) {   // cmethods_<Class>: its class methods (names only)
+        Class c = objc_getClass([[cmd substringFromIndex:9] UTF8String]);
+        unsigned n = 0; Method *ms = c ? class_copyMethodList(object_getClass(c), &n) : NULL; NSMutableArray *names = [NSMutableArray array];
+        for (unsigned i = 0; i < n; i++) [names addObject:NSStringFromSelector(method_getName(ms[i]))];
+        free(ms);
+        DMLog([NSString stringWithFormat:@"[cmethods] %@: %@", c, [names componentsJoinedByString:@" "]]);
+    }
+    else if ([cmd hasPrefix:@"ivartype_"]) {   // ivartype_<Class name>: every class with an instance variable of that type (names only)
+        NSString *t = [NSString stringWithFormat:@"\"%@\"", [cmd substringFromIndex:9]];
+        unsigned n = 0; Class *cl = objc_copyClassList(&n); NSMutableArray *hits = [NSMutableArray array];
+        for (unsigned i = 0; i < n && hits.count < 40; i++) {
+            unsigned ni = 0; Ivar *iv = class_copyIvarList(cl[i], &ni);
+            for (unsigned j = 0; j < ni; j++) { const char *enc = ivar_getTypeEncoding(iv[j]); if (enc && strstr(enc, t.UTF8String)) [hits addObject:[NSString stringWithFormat:@"%s.%s", class_getName(cl[i]), ivar_getName(iv[j])]]; }
+            free(iv);
+        }
+        free(cl);
+        DMLog([NSString stringWithFormat:@"[ivartype] %@: %@", t, [hits componentsJoinedByString:@" "]]);
     }
     else if ([cmd isEqualToString:@"todayact"] || [cmd isEqualToString:@"todaydeact"]) {   // todayact / todaydeact: the Cover Sheet's own Today View switch, alone (tests)
         id cs = DMCall(DMSBManager("SBCoverSheetPresentationManager"), @"coverSheetViewController");
@@ -22291,7 +23155,24 @@ static NSString *DMSampleSym(uintptr_t a) {
     const char *img = i.dli_fname ? strrchr(i.dli_fname, '/') : NULL; img = img ? img + 1 : (i.dli_fname ?: "?");
     return [NSString stringWithFormat:@"%s`%s+%lu", img, i.dli_sname ?: "?", (unsigned long)(a - (uintptr_t)(i.dli_saddr ?: i.dli_fbase))];
 }
-static void DMIdleSample(double seconds) {
+static void DMIdleSampleEx(double seconds, BOOL fromHere);
+static void DMIdleSample(double seconds) { DMIdleSampleEx(seconds, NO); }
+// (debug, trigger hangwatch_<s>) for <s> seconds: a background watcher pings the main thread every 0.25 s; when it has not answered for 1.5 s
+// (SpringBoard hung), the main thread's stacks are sampled for 1 s and logged from the background (the main thread cannot log then). Once.
+static void DMHangWatch(double seconds) {
+    __block volatile double lastSeen = CACurrentMediaTime();
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
+        CFTimeInterval end = CACurrentMediaTime() + seconds;
+        BOOL fired = NO;
+        while (CACurrentMediaTime() < end && !fired) {
+            dispatch_async(dispatch_get_main_queue(), ^{ lastSeen = CACurrentMediaTime(); });
+            usleep(250000);
+            if (CACurrentMediaTime() - lastSeen > 1.5) { fired = YES; DMLog(@"[hangwatch] the main thread has not answered for 1.5 s: sampling it"); DMIdleSampleEx(1.0, YES); }
+        }
+        if (!fired) DMLog(@"[hangwatch] done: no hang");
+    });
+}
+static void DMIdleSampleEx(double seconds, BOOL fromHere) {
     if (!gSampleMainThread) return;
     mach_port_t main = gSampleMainThread;
     uintptr_t stackHi = gSampleStackHi, stackLo = gSampleStackLo;
@@ -22347,7 +23228,7 @@ static void DMIdleSample(double seconds) {
         NSMutableString *out = [NSMutableString stringWithFormat:@"[sample] %.1f s: %d samples, %d idle (in mach_msg), %d busy\n", seconds, total, idle, n - idle];
         for (NSUInteger k = 0; k < MIN(fnByCount.count, (NSUInteger)60); k++) [out appendFormat:@"[sample] fn %@ x%@\n", fnByCount[k], frames[fnByCount[k]]];
         for (NSUInteger k = 0; k < MIN(byCount.count, (NSUInteger)25); k++) [out appendFormat:@"[sample] stack x%@: %@\n", counts[byCount[k]], byCount[k]];
-        dispatch_async(dispatch_get_main_queue(), ^{ DMLog(out); });
+        if (fromHere) DMLog(out); else dispatch_async(dispatch_get_main_queue(), ^{ DMLog(out); });
     });
 }
 // Debug (trigger idlechanges_<seconds>): which layers change while the Home Screen sits idle. CALayer's setters are hooked once, at runtime, and
@@ -22456,7 +23337,32 @@ static void DMIdleProbe(void) {
 }
 #endif
 #include "StockBar.h"   // "Use Stock Status Bar": the start that runs instead of everything below
+// Untested iPadOS (17+ with Enable Anyway, common/Diag.h): which of our hooked methods do not exist on this iOS -- a hook on a missing method is
+// simply skipped, so these are features that silently do nothing. Only the parts running in SpringBoard (statusbar/, dock/). Names only.
+#include "../common/HookList.h"
+#include "../common/Diag.h"
+static void DMDiagHooks(void) {
+    if (!MSBDDiagEnabled()) return;
+    NSMutableArray *noClass = [NSMutableArray array], *noMethod = [NSMutableArray array];
+    NSUInteger checked = 0;
+    for (size_t i = 0; i < sizeof(kMSBDHookList) / sizeof(kMSBDHookList[0]); i++) {
+        const char *file = kMSBDHookList[i][3];
+        if (strncmp(file, "statusbar/", 10) != 0 && strncmp(file, "dock/", 5) != 0) continue;
+        checked++;
+        Class c = objc_getClass(kMSBDHookList[i][0]);
+        NSString *name = [NSString stringWithFormat:@"%s%s[%s %s]", kMSBDHookList[i][2], "", kMSBDHookList[i][0], kMSBDHookList[i][1]];
+        if (!c) { if (![noClass containsObject:@(kMSBDHookList[i][0])]) [noClass addObject:@(kMSBDHookList[i][0])]; continue; }
+        SEL sel = sel_registerName(kMSBDHookList[i][1]);
+        BOOL has = kMSBDHookList[i][2][0] == '+' ? [c respondsToSelector:sel] : [c instancesRespondToSelector:sel];
+        if (!has) [noMethod addObject:name];
+    }
+    NSOperatingSystemVersion v = [NSProcessInfo processInfo].operatingSystemVersion;
+    MSBDDiagWrite(@"Hooks", [NSString stringWithFormat:@"iPadOS %ld.%ld.%ld: %lu hooks checked\nmissing methods (%lu): %@\nmissing classes (%lu): %@",
+        (long)v.majorVersion, (long)v.minorVersion, (long)v.patchVersion, (unsigned long)checked,
+        (unsigned long)noMethod.count, [noMethod componentsJoinedByString:@", "], (unsigned long)noClass.count, [noClass componentsJoinedByString:@", "]]);
+}
 %ctor {
+    if (MSBDDiagEnabled()) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMDiagHooks(); });
     {   // Settings > Mac Status Bar (a separate, minimal entry, alongside the other installed tweaks' own on/off switches): fully off means fully off — not
         // one hook of this file runs, the same as if the tweak were not installed. Checked before %init, so nothing is even hooked yet to undo.
         CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("tweakEnabled"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
@@ -22475,6 +23381,10 @@ static void DMIdleProbe(void) {
     DMCCPresentSeenInit();   // (Control Center seen from its controller too: F13)
     DMSkipLockInit();
     if (!DMCtorSkip("todayoffset")) DMTodayKeepOffsetInit();
+    if (!DMCtorSkip("todaynotifications")) DMTNWatchInit();   // (the Today panel's notifications box: when the Cover Sheet's list changes)
+#if DEBUG
+    DMTNTestInit();   // (tests: our own test notifications)
+#endif
 #if DEBUG
     gSampleMainThread = mach_thread_self();   // (%ctor runs on the main thread: idlesample_ samples this thread)
     gSampleStackHi = (uintptr_t)pthread_get_stackaddr_np(pthread_self()); gSampleStackLo = gSampleStackHi - pthread_get_stacksize_np(pthread_self());

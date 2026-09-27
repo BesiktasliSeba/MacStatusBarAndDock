@@ -15,6 +15,7 @@ if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
     rm -f /var/mobile/Library/Caches/com.besiktasliseba.macsettings.landscapeicons.plist
     rmdir "$S" 2>/dev/null
     [ "$1" = "purge" ] && rm -rf /var/jb/var/lib/macstatusbaranddock
+    rm -f "$P/MacStatusBarAndDock-Diag-Hooks.txt" "$P/MacStatusBarAndDock-Diag-Dock.txt"   # (untested-iPadOS diagnostics, common/Diag.h)
     rm -f /var/jb/Library/PreferenceLoader/Preferences/MacStatusBarAndDock-MacStatusBarPrefs.plist /var/jb/Library/PreferenceLoader/Preferences/MacStatusBarAndDock-DockMagnificationPrefs.plist   # (the iPadOS 17+ entries, postinst)
     # the system pointer process would keep running the removed Mac pointer code until a reboot: restarted (see the postinst)
     /var/jb/usr/bin/killall -9 pointeruid 2>/dev/null

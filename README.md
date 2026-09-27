@@ -37,7 +37,7 @@ The Mac look is on right after install. A few extras start off: the auto-hiding 
 - **Status Bar Style: Mac or Stock** — Mac gives you the full menu bar, app menus, audio mixing and Mac-style windows; Stock keeps the standard iPadOS status bar while your window engine keeps running with its own settings.
 - **Menu bar with app menus** — an Apple menu (About This iPad, App Store, Force Quit, Respring, Safe Mode, Lock Screen, Sleep, Shut Down) and menus for the front app (App, Edit, Go, Window), in every orientation.
 - **Go Menu** — choose and reorder the apps in the Go menu, the same way you'd customize Control Center. New installs start with Calendar, Terminal, Maps and Reynard.
-- **Today drop-down** — tap the clock to drop your Today View widgets down like a menu.
+- **Today drop-down** — tap the clock to drop your Today View widgets down like a menu, with your notifications in their own box above them (newest first; tap to open, swipe to clear).
 - **Control Center** opens from the status bar (with BigSurCenter installed, its panel size can be set in Settings).
 - **Mac-style notification banners** in the top-right corner.
 - **Mute icon** — a small status bar icon shows while the iPad is on silent (its own switch in Settings).

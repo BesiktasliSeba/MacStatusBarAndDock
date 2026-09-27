@@ -30,6 +30,7 @@ target windowsBehindApps pref com.besiktasliseba.macstatusbar windowsBehindApps 
 target flexResizeWindows pref com.besiktasliseba.macstatusbar flexResizeWindows 0 1 Resize Apps to Fit Windows|the window resizing
 target hideTrafficLights pref com.besiktasliseba.macstatusbar hideTrafficLights 1 0 Turn Off Traffic Lights|the traffic lights
 target clockOpensToday pref com.besiktasliseba.macstatusbar clockOpensToday 0 1 Clock Opens Today View|the Today View
+target todayNotifications pref com.besiktasliseba.macstatusbar todayNotifications 0 1 Notifications in Today View|the notifications in the Today View
 target showMuteIcon pref com.besiktasliseba.macstatusbar showMuteIcon 0 1 Show Mute Icon|the mute icon
 target skipLockAfterRespring pref com.besiktasliseba.macstatusbar skipLockAfterRespring 0 0 Skip Lock Screen After Respring|Skip Lock Screen After Respring
 target forceQuitMenu pref com.besiktasliseba.forcequitmenu enabled 0 1 Force Quit in App Menus|the Force Quit menu item
@@ -107,6 +108,9 @@ sec MacStatusBarCore Mute\sicon\s\(Settings showMuteIcon
 sym MacStatusBarCore \$SkipLock\$ skipLockAfterRespring
 sym MacStatusBarCore ^_?DM(SkipLock|NoPasscode|TryUnlock) skipLockAfterRespring
 # Today View from the clock
+sym MacStatusBarCore ^_?DMTN todayNotifications
+sym MacStatusBarCore \$DMTNWatch\$ todayNotifications
+sec MacStatusBarCore Notifications\sin\sthe\sToday\spanel todayNotifications
 sym MacStatusBarCore ^_?DMToday clockOpensToday
 sec MacStatusBarCore Today\sView clockOpensToday
 # traffic lights (a switch turns them off)

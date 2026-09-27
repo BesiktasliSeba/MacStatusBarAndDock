@@ -55,6 +55,7 @@ static BOOL    gSwipeDownOpensLibrary = YES;   // a downward swipe on the Home S
 
 // ===== logging (no system log on this setup) ==============================
 #import "DMLog.h"
+#include "../common/Diag.h"
 #if DEBUG
 void DMLogWrite(NSString *line) {
     FILE *f = fopen("/tmp/dockmag.log", "a");
@@ -311,6 +312,27 @@ BOOL DMDockPointerHovering(void) { return gHovering; }
 // one and stay centred. The platter's bottom edge stays where it was (the gap above), so a smaller Dock never floats up.
 - (void)getMetrics:(DMDockMetrics *)m forBounds:(CGRect)bounds {
     %orig;
+    if (m && MSBDDiagEnabled() && bounds.size.width >= 100.0 && m->platter.size.width >= 1.0 && isfinite(m->platter.origin.x)) {   // (untested iPadOS: the Dock's
+        // own numbers as iOS gave them -- a real layout only, not the empty first pass -- and which kinds of icons it holds; names and numbers only)
+        static CFTimeInterval lastDiag = 0;
+        CFTimeInterval nowT = CACurrentMediaTime();
+        if (nowT - lastDiag > 5.0) {
+            lastDiag = nowT;
+            NSCountedSet *kinds = [NSCountedSet set];
+            NSMutableArray *stack = [NSMutableArray arrayWithObject:(UIView *)self];
+            while (stack.count) {
+                UIView *v = stack.lastObject; [stack removeLastObject];
+                if ([NSStringFromClass([v class]) hasSuffix:@"IconView"]) { id icon = nil; @try { icon = [v valueForKey:@"icon"]; } @catch (id e) {} [kinds addObject:icon ? NSStringFromClass([icon class]) : @"(no icon)"]; continue; }
+                [stack addObjectsFromArray:v.subviews];
+            }
+            NSMutableArray *k = [NSMutableArray array];
+            for (NSString *c in kinds) [k addObject:[NSString stringWithFormat:@"%@ x%lu", c, (unsigned long)[kinds countForObject:c]]];
+            #define R(r) NSStringFromCGRect(CGRectIntegral(r))
+            MSBDDiagWrite(@"Dock", [NSString stringWithFormat:@"bounds %@\nuserList %@ recents %@ library %@ divider %@ platter %@ spacing %.1f\nshowDownloads %d magnify %d iconSize %.2f\nicons: %@",
+                R(bounds), R(m->userList), R(m->recentsList), R(m->libraryIcon), R(m->divider), R(m->platter), m->spacing, gShowDownloads, gEnabled, gIconSize, [k componentsJoinedByString:@", "]]);
+            #undef R
+        }
+    }
     if (!m || bounds.size.width < 100.0 || m->platter.size.width < 1.0) return;
     // Downloads stack: one more icon slot right before the App Library icon. The slot is the App Library icon's old spot; the
     // App Library icon and the end of the platter move over by one icon + spacing.

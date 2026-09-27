@@ -8,6 +8,7 @@
 //  - the quiet note on the Status Bar page when the last SpringBoard crash (24 h) was another tweak's: its package's name from dpkg's lists.
 // Cost: none unless a guard record or a verdict of another tweak's crash exists (a failed open of a small file).
 #pragma once
+#include "Diag.h"
 #import <Foundation/Foundation.h>
 #import <sys/sysctl.h>
 #include "CrashGuard.h"
@@ -306,6 +307,8 @@ static inline NSURL *MSBDReportProblemURL(NSString *engine) {
         if (tester) [body appendString:tester];
         NSString *summary = MSBDReportCrashSummary(frames[i]);
         if (summary) [body appendString:summary];
+        NSString *diag = MSBDDiagText(chars[i]);   // (untested iPadOS only: what our parts found on this iOS, common/Diag.h)
+        if (diag) [body appendString:diag];
         NSURLComponents *c = [NSURLComponents componentsWithString:MSBD_REPORT_URL];
         c.queryItems = @[[NSURLQueryItem queryItemWithName:@"body" value:body]];
         // (NSURLComponents leaves "+" as it is, and GitHub reads a "+" in the query as a space: "1.0.0-50+debug", "MacStatusBarCore.dylib + 0x4d2")
