@@ -1057,6 +1057,10 @@ static double DMProcessAge(void) {   // seconds since this SpringBoard process s
     struct timeval now; gettimeofday(&now, NULL);
     return (now.tv_sec - kp.kp_proc.p_starttime.tv_sec) + (now.tv_usec - kp.kp_proc.p_starttime.tv_usec) / 1e6;
 }
+// iPadOS 17+ (untested versions) and "SpringBoard is still starting" (first 8 s), both asked on every scene update and layout there: cached -- the
+// version never changes, and once the start is over it stays over (the age needs a sysctl each time).
+static BOOL DMNewOS(void) { static int v = -1; if (v < 0) v = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17; return v; }
+static BOOL DMStarting(void) { static BOOL over = NO; if (over) return NO; if (DMProcessAge() >= 8.0) { over = YES; return NO; } return YES; }
 static BOOL DMAerialCompatible(void) {
     if (gAerialFlavor >= 0) return gAerialFlavor != 0;
     Class stage = objc_getClass("AerialStage");
@@ -3265,7 +3269,7 @@ static NSArray<UIView *> *DMAerialStages(void);
 static BOOL DMScreenOnAndUnlocked(void) {
     if (CACurrentMediaTime() < gLockingUntil) return NO;
     // (iPadOS 17+: not while SpringBoard is starting or off the main thread -- the lock screen manager may not be asked then; issue #1, 18.2.1)
-    if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17 && (![NSThread isMainThread] || DMProcessAge() < 8.0)) return NO;
+    if (DMNewOS() && (![NSThread isMainThread] || DMStarting())) return NO;
     id lock = DMSBManager("SBLockScreenManager");
     if (DMLockUp(lock)) return NO;   // (respondsToSelector-guarded)
     id backlight = DMSBManager("SBBacklightController");
@@ -3418,7 +3422,7 @@ static id DMSaneSceneSettings(id scene, id settings) {
     if (!good) return settings;
     // iPadOS 17+ (untested versions; a tester on 18.7.2 crashed with Split View & Slide Over or Stage Manager on): there iPadOS itself sends tiny or
     // empty frames on purpose, so only the scenes of apps in one of OUR windows are corrected (15/16: as before).
-    if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17) {
+    if (DMNewOS()) {
         BOOL ours = NO;   // (matched like the other helpers: a second window's scene ends in a UUID, not "-default")
         for (UIView *st in DMAerialStages()) { NSString *b = DMStageBundle(st); if (b.length && [sid containsString:b]) { ours = YES; break; } }
         if (!ours) return settings;
@@ -3652,12 +3656,93 @@ static id DMVetoFrameHoldApply(id scene, id settings, NSString *sid) {
     lastLog = CACurrentMediaTime();
     return copy;
 }
+#if DEBUG
+// Debug: names the Objective-C method a code address is in (nearest method start in its image; read-only). Used by symbolize_<hex> and the scene
+// update storm catcher.
+static void DMSymbolize(unsigned long long a) {
+    NSString *hex = [NSString stringWithFormat:@"%llx", a];
+    Dl_info info; if (!a || !dladdr((void *)a, &info) || !info.dli_fname) { DMLog([NSString stringWithFormat:@"[symbolize] %@: no image", hex]); return; }
+    unsigned int n = 0; const char **names = objc_copyClassNamesForImage(info.dli_fname, &n);
+    uintptr_t best = 0; NSString *bestName = nil;
+    for (unsigned int i = 0; i < n; i++) {
+        Class c = objc_getClass(names[i]); if (!c) continue;
+        for (int meta = 0; meta < 2; meta++) {
+            Class k = meta ? object_getClass((id)c) : c;
+            unsigned int mc = 0; Method *ms = class_copyMethodList(k, &mc);
+            for (unsigned int j = 0; j < mc; j++) {
+                uintptr_t imp = (uintptr_t)method_getImplementation(ms[j]);
+                imp &= 0x0000000FFFFFFFFFULL;   // (strip pointer authentication bits)
+                if (imp <= (a & 0x0000000FFFFFFFFFULL) && imp > best) { best = imp; bestName = [NSString stringWithFormat:@"%c[%s %s]", meta ? '+' : '-', names[i], sel_getName(method_getName(ms[j]))]; }
+            }
+            free(ms);
+        }
+    }
+    free(names);
+    DMLog([NSString stringWithFormat:@"[symbolize] %@ (%s) = %@ + %lu", hex, strrchr(info.dli_fname, '/') ? strrchr(info.dli_fname, '/') + 1 : info.dli_fname, bestName ?: @"?", (unsigned long)((a & 0x0000000FFFFFFFFFULL) - best)]);
+}
+#endif
+// Scene update storm brake (iPad 2, iOS 16, Aerial 5.0, 27 Sep): a windowed YouTube got ~130 scene updates a second -- every one the same settings,
+// with no transition, from SpringBoard's suspend transaction (-[SBSuspendedWorkspaceTransaction _childTransactionDidComplete:]) retrying against
+// the window's kept foreground -- until the next respring. The app relaid itself out for each one: video and touches stuttered and the iPad drew
+// about twice its normal power (1.7-2.5 A; 70% -> 52% in 12 min). An update without a transition that carries exactly the settings the scene
+// already got changes nothing for the app, so past 10 of those within a second the rest are dropped; any real change, or any update with a
+// transition, always goes through. iOS 15/16 only (17+ untested). Kill switch: /tmp/msb-nostormbrake.
+static NSMutableDictionary<NSString *, id> *gStormLastSettings;
+static NSMutableDictionary<NSString *, NSMutableArray<NSNumber *> *> *gStormSameTimes;
+static NSMutableDictionary<NSString *, NSNumber *> *gStormDropped;
+static BOOL DMStormBrakeDrops(id scene, id settings, id context) {
+    if (DMNewOS() || !settings || DMTestFlag("/tmp/msb-nostormbrake")) return NO;
+    NSString *sid = nil; @try { sid = [scene valueForKey:@"identifier"]; } @catch (id e) {}
+    if (![sid hasPrefix:@"sceneID:"]) return NO;
+    if (!gStormLastSettings) { gStormLastSettings = [NSMutableDictionary dictionary]; gStormSameTimes = [NSMutableDictionary dictionary]; gStormDropped = [NSMutableDictionary dictionary]; }
+    id last = gStormLastSettings[sid];
+    // (the scene's own current settings too: an update may reach it by another way than this hook -- the completion variant, or an engine's own
+    // updater -- so "the same as the last one seen here" alone could drop a real change back to an earlier state)
+    id current = nil; @try { current = [scene valueForKey:@"settings"]; } @catch (id e) {}
+    BOOL same = !context && last && current && current != settings && [last isEqual:settings] && [current isEqual:settings];
+    CFTimeInterval now = CACurrentMediaTime();
+    if (!same) {
+        id copy = nil; @try { copy = [settings copy]; } @catch (id e) {}
+        if (copy) gStormLastSettings[sid] = copy; else [gStormLastSettings removeObjectForKey:sid];
+        [gStormSameTimes removeObjectForKey:sid];
+        NSInteger dropped = gStormDropped[sid].integerValue;
+        if (dropped) { DMLog([NSString stringWithFormat:@"[storm] %@: brake released after %ld identical updates dropped", [sid substringFromIndex:8], (long)dropped]); [gStormDropped removeObjectForKey:sid]; }
+        return NO;
+    }
+    NSMutableArray<NSNumber *> *times = gStormSameTimes[sid]; if (!times) { times = [NSMutableArray array]; gStormSameTimes[sid] = times; }
+    [times addObject:@(now)];
+    while (times.count && now - times[0].doubleValue > 1.0) [times removeObjectAtIndex:0];
+    if (times.count <= 10) return NO;
+    NSInteger dropped = gStormDropped[sid].integerValue + 1;
+    gStormDropped[sid] = @(dropped);
+    if (dropped == 1 || dropped % 1000 == 0) DMLog([NSString stringWithFormat:@"[storm] %@: over 10 identical updates within a second: dropping them (%ld so far)", [sid substringFromIndex:8], (long)dropped]);
+    return YES;
+}
+#if DEBUG
+// Debug (iPad 2, 27 Sep: a windowed YouTube got ~130 identical scene updates a second until the next respring, and lagged): when one scene gets more
+// than 40 updates within a second, the caller of one of them is named, and the next 3 are traced with what they change (at most once every 10 s).
+static NSMutableDictionary<NSString *, NSMutableArray<NSNumber *> *> *gSceneUpdateBursts;
+static CFTimeInterval gSceneStormLogged = -100;
+static void DMWatchSceneStorm(NSString *sid) {
+    if (!sid.length) return;
+    if (!gSceneUpdateBursts) gSceneUpdateBursts = [NSMutableDictionary dictionary];
+    NSMutableArray<NSNumber *> *times = gSceneUpdateBursts[sid]; if (!times) { times = [NSMutableArray array]; gSceneUpdateBursts[sid] = times; }
+    CFTimeInterval now = CACurrentMediaTime();
+    [times addObject:@(now)];
+    while (times.count && now - times[0].doubleValue > 1.0) [times removeObjectAtIndex:0];
+    if (times.count <= 40 || now - gSceneStormLogged < 10.0) return;
+    gSceneStormLogged = now;
+    DMLog([NSString stringWithFormat:@"[storm] %@: %lu scene updates in the last second; callers:", sid, (unsigned long)times.count]);
+    NSArray<NSNumber *> *ret = [NSThread callStackReturnAddresses];
+    dispatch_async(dispatch_get_main_queue(), ^{ for (NSUInteger i = 1; i < ret.count && i < 9; i++) DMSymbolize(ret[i].unsignedLongLongValue); });
+    if (gSceneStackLogs < 3) gSceneStackLogs = 3;
+}
+#endif
 // iPadOS 17+ (untested versions): an iPad 7 on 18.2.1 crashed three times at every respring with the Mac status bar (issue #1): our scene hook below
 // asked +[SBLockScreenManager sharedInstance] (DMScreenOnAndUnlocked) while SpringBoard was still starting up, or off the main thread where iOS 18
 // may deliver scene updates. There, the hook stands aside in both cases and iOS updates the scene on its own (15/16: as before).
 static BOOL DMSceneHookStandsAside(void) {
-    static int newOS = -1; if (newOS < 0) newOS = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17;
-    return newOS && (![NSThread isMainThread] || DMProcessAge() < 8.0);
+    return DMNewOS() && (![NSThread isMainThread] || DMStarting());
 }
 %hook FBScene
 - (void)updateSettings:(id)settings withTransitionContext:(id)context completion:(id)completion {
@@ -3689,6 +3774,10 @@ static BOOL DMSceneHookStandsAside(void) {
         return;
     }
     if (!gSceneByID) gSceneByID = [NSMutableDictionary dictionary];
+    id incomingSettings = settings;   // (debug, scenestack_<n>: what SpringBoard sent, before our changes)
+#if DEBUG
+    if (DMTestFlag("/tmp/macstatusbar-debug")) { NSString *sid = nil; @try { sid = [self valueForKey:@"identifier"]; } @catch (id e) {} DMWatchSceneStorm(sid); }
+#endif
     settings = DMZetsuHoldBackWhileLocked(self, settings, context);
     settings = DMHoldBackUnwantedForeground(self, settings, context);
     settings = DMZetsuFlexSettings(self, settings);
@@ -3754,6 +3843,13 @@ static BOOL DMSceneHookStandsAside(void) {
                 NSArray *st = [NSThread callStackSymbols]; NSMutableString *tr = [NSMutableString string];
                 for (NSUInteger i = 1; i < st.count && i < 12; i++) [tr appendFormat:@"\n      %@", st[i]];
                 DMLog([NSString stringWithFormat:@"[scene-upd] called from:%@", tr]);
+                Class diffC = NSClassFromString(@"FBSSceneSettingsDiff"); SEL diffS = NSSelectorFromString(@"diffFromSettings:toSettings:");
+                id current = nil; @try { current = [self valueForKey:@"settings"]; } @catch (id e) {}
+                if ([diffC respondsToSelector:diffS]) {
+                    id d1 = current ? ((id (*)(id, SEL, id, id))objc_msgSend)(diffC, diffS, current, incomingSettings) : nil;
+                    id d2 = ((id (*)(id, SEL, id, id))objc_msgSend)(diffC, diffS, incomingSettings, settings);
+                    DMLog([NSString stringWithFormat:@"[scene-upd] same object as current %d; current -> sent: %@\n  sent -> after our changes (%@): %@", current == incomingSettings, d1 ? [d1 description] : @"-", settings == incomingSettings ? @"untouched" : @"changed", [d2 description]]);
+                }
             }
         }
     }
@@ -3779,6 +3875,7 @@ static BOOL DMSceneHookStandsAside(void) {
         ((void (*)(id, SEL, long long))objc_msgSend)(settings, setMode, 2);
         static int fixes = 0; if (fixes++ < 6) DMLog(@"[mode] legacy (100) changed to alwaysAll (2) on a scene update");
     }
+    if (DMStormBrakeDrops(self, settings, context)) return;
     %orig;
 }
 // Aerial-parity fix: the only FBScene method Aerial itself hooks (confirmed by disassembly — every other Aerial/scene interaction is a
@@ -4503,9 +4600,20 @@ static void DMRepairCollapsedStage(UIView *stage) {
 // Puts a window at a frame whatever transform it has right now. Setting .frame on a view with a transform makes its size frame / scale: Aerial 5.0
 // opens a window from a Dock icon at ~0.3x and zooms it up, and a frame set then gave it a ~3.3x size (2026-09-26, M1: Twitter came up tiny
 // and distorted, told a 3139 x 2207 size). Size and centre do not depend on the transform.
+// Only while that opening zoom runs, though (a window first seen under 2 s ago and still zooming): a window that keeps a scale once settled gets the
+// frame's size on screen, its bounds divided by the scale (iPad 2, 27 Sep: YouTube's window was left at 0.85 and every Fill / Fit / tile then came
+// out at 85% of its place, and was remembered that way).
+static BOOL DMStageStillZooming(UIView *stage);
+static const void *kA5BornKey;   // (defined below)
 static void DMSetStageFrameSafe(UIView *stage, CGRect f) {
-    if (CGAffineTransformIsIdentity(stage.transform)) { stage.frame = f; return; }
-    stage.bounds = CGRectMake(stage.bounds.origin.x, stage.bounds.origin.y, f.size.width, f.size.height);
+    CGAffineTransform t = stage.transform;
+    if (CGAffineTransformIsIdentity(t)) { stage.frame = f; return; }
+    CGFloat sx = hypot(t.a, t.b), sy = hypot(t.c, t.d);
+    NSNumber *born = objc_getAssociatedObject(stage, kA5BornKey);
+    BOOL opening = born && CACurrentMediaTime() - born.doubleValue < 2.0 && DMStageStillZooming(stage);
+    CGSize size = f.size;
+    if (!opening && sx > 0.01 && sy > 0.01) size = CGSizeMake(f.size.width / sx, f.size.height / sy);
+    stage.bounds = CGRectMake(stage.bounds.origin.x, stage.bounds.origin.y, size.width, size.height);
     stage.center = CGPointMake(CGRectGetMidX(f), CGRectGetMidY(f));
 }
 static void DMAerialMoveStage(UIView *stage, CGRect target, void (^done)(void)) {
@@ -4891,6 +4999,7 @@ static char kMWDownKey, kMWWatchedKey, kMWOffsetKey;
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldReceiveTouch:(UITouch *)touch {
     UIView *win = g.view.superview;
     if (win.superview) objc_setAssociatedObject(g.view, &kMWDownKey, [NSValue valueWithCGPoint:[touch locationInView:win.superview]], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (DMTestFlag("/tmp/msb-a5-dragtrace")) DMLog([NSString stringWithFormat:@"[mwresize] touch down on %@ at %@", NSStringFromClass([g.view class]), NSStringFromCGPoint([touch locationInView:g.view])]);
     return NO;
 }
 - (void)resized:(UIPanGestureRecognizer *)g {
@@ -5018,6 +5127,12 @@ static void DMRestyleWindowButtons(AXWindowView *w) {
             if (sizeChanger.backgroundColor && ![sizeChanger.backgroundColor isEqual:[UIColor clearColor]]) sizeChanger.backgroundColor = [UIColor clearColor];
             for (UIView *sub in sizeChanger.subviews) if (sub != grip && !sub.hidden) sub.hidden = YES;   // (MilkyWay's own diagonal bar)
             [w bringSubviewToFront:sizeChanger];
+            // The box is clear, and the render server sends a touch on a clear layer to whatever is drawn under it: the app's own
+            // content. Only the drawn grip and the window's rounded corner reached SpringBoard, so a drag started 18-22 pt in (between
+            // them, right where the grip is drawn) went to the app and did nothing (M1, injected drags). Opaque for hit-testing, the
+            // whole box takes the touch; nothing is drawn.
+            SEL opaque = NSSelectorFromString(@"setHitTestsAsOpaque:");
+            if ([sizeChanger.layer respondsToSelector:opaque]) ((void (*)(id, SEL, BOOL))objc_msgSend)(sizeChanger.layer, opaque, YES);
             [DMMWResizeCatchUp watch:sizeChanger];
             grip.hidden = sizeChanger.hidden;
             grip.backgroundColor = DMResizeGripColor(darkStyle);
@@ -5712,7 +5827,13 @@ static void DMApplyGroupSlots(UIView *fresh) {
             // (and remembered as its place, Aerial 5.0's own remembered state included: a window opened from its Dock icon is zoomed out to
             // that state afterwards, so the tile was lost and the window came up at the default place, 2026-09-26 M1, Settings next to Twitter)
             DMSetStageIntent(s, f);
-        } else DMAerialMoveStage(s, f, nil);
+        } else {
+            // (its tile is its intended place from the start of the slide, not only once the 0.36 s slide has ended: the check made when a new
+            // window's app attaches (DMCascadeStage) found a third window "moved" from the default place mid-slide and put it back there -- a side
+            // picked ~1 s after the prompt opened left the window in the middle, M1 and iPad 2, logic test 1.0.6)
+            if (!DMIsZetsuWindow(s)) DMSetStageIntent(s, f);
+            DMAerialMoveStage(s, f, nil);
+        }
     }
     DMAutoHideAfterRetile();
 }
@@ -5762,11 +5883,15 @@ static void DMSetStageIntent(UIView *stage, CGRect frame);
 static BOOL DMStageStillZooming(UIView *stage) {
     if (!stage) return NO;
     CGAffineTransform t = stage.transform;   // (the zoom starts at ~0.3x; a window Aerial keeps scaled a few percent for good is settled: M1's StageStates has one at 1.03)
-    if (!CGAffineTransformIsIdentity(t) && (fabs(t.b) > 0.001 || fabs(t.c) > 0.001 || MIN(fabs(t.a), fabs(t.d)) < 0.9)) return YES;
+    NSNumber *born = objc_getAssociatedObject(stage, kA5BornKey);   // (an Aerial 5.0 window seen over 3 s ago has finished its zoom: a scale it still has is kept for good,
+    BOOL old = born && CACurrentMediaTime() - born.doubleValue > 3.0;   //  iPad 2: YouTube left at 0.85 counted as opening forever, and its settled size never went out)
+    if (!old && !CGAffineTransformIsIdentity(t) && (fabs(t.b) > 0.001 || fabs(t.c) > 0.001 || MIN(fabs(t.a), fabs(t.d)) < 0.9)) return YES;
     UIView *in = DMStageInnerView(stage);   // (its own transform is not a sign: Aerial keeps apps it does not resize scaled for good)
     CGSize screen = [UIScreen mainScreen].bounds.size;
     CGFloat big = MAX(screen.width, screen.height) * 1.02;
-    return in && (in.bounds.size.width > big || in.bounds.size.height > big);   // (bigger than the screen: not a settled window)
+    CGFloat k = old ? MIN(hypot(t.a, t.b), hypot(t.c, t.d)) : 1.0;   // (a settled scale counts: its content is seen at that size)
+    if (k < 0.01) k = 1.0;
+    return in && (in.bounds.size.width * k > big || in.bounds.size.height * k > big);   // (bigger than the screen: not a settled window)
 }
 static const void *kStageCascadedKey = &kStageCascadedKey;
 static void DMCascadeStage(UIView *stage) {
@@ -5887,8 +6012,11 @@ regularWindow:;
     DMLog([NSString stringWithFormat:@"[aerial] new window of %@ placed at %@ (was %@) so it does not sit over another window", me, NSStringFromCGRect(pick), NSStringFromCGRect(base)]);
     if (DMIsZetsuWindow(stage)) { DMZetsuMove((UIWindow *)stage, pick, NO, nil); return; }
     gStageFrameBypass = YES;
-    [UIView performWithoutAnimation:^{ stage.frame = pick; [stage layoutIfNeeded]; }];
+    [UIView performWithoutAnimation:^{ DMSetStageFrameSafe(stage, pick); [stage layoutIfNeeded]; }];
     gStageFrameBypass = NO;
+    // (an intended place set above (Aerial 5.0: the default place) follows the nudge: the check when the app attaches otherwise put the window
+    // back over the other one, M1 logic test 1.0.6, Twitter with Fit to Window off)
+    if (objc_getAssociatedObject(stage, kStageIntentKey)) DMSetStageIntent(stage, pick);
 }
 static void DMStyleStage(UIView *stage) {
     if (!gStyleMilkyWay) return;
@@ -10103,8 +10231,21 @@ static void DMCleanStaleSwitcherCardsSoon(void) {
 }
 %end
 %end
+// iPadOS 18 name of the same moment (18.2 SpringBoard): -switcherControllerViewWillAppear:animated:. Installed only where it exists.
+%group SwitcherCoordinator18
+%hook SBMainSwitcherControllerCoordinator
+- (void)switcherControllerViewWillAppear:(id)switcherVC animated:(BOOL)animated {
+    DMCleanStaleSwitcherCards(self, @"switcher opening");
+    %orig;
+    extern void DMZetsuSwitcherCheck(BOOL appearing);
+    if (DMSwitcherVisible()) DMZetsuSwitcherCheck(YES);
+    else dispatch_async(dispatch_get_main_queue(), ^{ if (DMSwitcherVisible()) DMZetsuSwitcherCheck(YES); });
+}
+%end
+%end
 static void DMSwitcherHooksInit(void) {
     if (!objc_getClass("SBMainSwitcherViewController") && objc_getClass("SBMainSwitcherControllerCoordinator")) %init(SwitcherCoordinator16);
+    if ([objc_getClass("SBMainSwitcherControllerCoordinator") instancesRespondToSelector:NSSelectorFromString(@"switcherControllerViewWillAppear:animated:")]) %init(SwitcherCoordinator18);
 }
 
 
@@ -14780,6 +14921,20 @@ static UIColor *DMTrailingIconColor(UIView *trailing) {
     if (gShowMuteIcon) DMRingerChanged(muted, @"set");   // (switched off: left alone; the next layout reads the state again once it is on)
 }
 %end
+// iPadOS 18 name (18.2 SpringBoard): -setRingerMuted:withFeedback:reason:clientType:. Installed only where it exists (DMRinger18Init).
+%group Ringer18
+%hook SBRingerControl
+- (void)setRingerMuted:(BOOL)muted withFeedback:(BOOL)feedback reason:(id)reason clientType:(unsigned long long)clientType {
+    %orig;
+    if (!gRingerControl) gRingerControl = self;
+    if (gShowMuteIcon) DMRingerChanged(muted, @"set");
+}
+%end
+%end
+static void DMRinger18Init(void) {
+    static BOOL done = NO; if (done) return; done = YES;
+    if ([objc_getClass("SBRingerControl") instancesRespondToSelector:NSSelectorFromString(@"setRingerMuted:withFeedback:reason:clientType:")]) %init(Ringer18);
+}
 
 // ---- the time on the Lock Screen / Cover Sheet (continued) ----
 // On the Lock Screen and the Cover Sheet the stock status bar drops its whole time-and-date group (the big clock over the wallpaper shows them).
@@ -15016,7 +15171,7 @@ static void DMReleaseStatusBarCopy(UIView *fg) {
     DMLights *lights = objc_getAssociatedObject(fg, kLightsKey);
     // Locked (the Lock Screen, or the Cover Sheet pulled down): only the Apple menu on the left and the status icons with Control Center on the right --
     // no traffic lights and no menu titles, whatever app was in front, windowed or full screen (2026-09-26: an app's lights stayed on the Lock Screen).
-    BOOL earlyOnNewOS = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17 && DMProcessAge() < 8.0;   // (issue #1: not asked while starting)
+    BOOL earlyOnNewOS = DMNewOS() && DMStarting();   // (issue #1: not asked while starting)
     BOOL locked = !earlyOnNewOS && (DMLockUp(DMSBManager("SBLockScreenManager")) || DMCoverSheetShown());   // (the Cover Sheet pulled down while unlocked counts too: iPad 2)
     BOOL wantLights = gShowWindowButtons && frontApp != nil && !activeIsWindow && !locked;   // a window has its own buttons
     if (DMTestFlag("/tmp/macstatusbar-debug")) {
@@ -15546,6 +15701,30 @@ static BOOL DMPointOnMultitaskingDots(UIView *fromView, CGPoint point) {
 
 %hook _UIStatusBar
 
+// Control Center makes a new status bar every time it opens and drops it when it closes. Another tweak's gesture (PeepReborn's BindableGesture)
+// on every status bar keeps a closure that holds the bar itself: bar -> its gesture -> closure -> bar, so none of them was ever freed, each with our
+// views in it (~0.3 MB per Control Center open on the M1: SpringBoard 98 -> 108 MB in 60 cycles, 5 dead copies every 10). A bar that is still
+// out of any view 2 s after it was taken out is dead: the gestures that do not come from UIKit are taken off it, which ends the loop.
+- (void)didMoveToSuperview {
+    %orig;
+    UIView *me = (UIView *)self;
+    if (me.superview || DMTestFlag("/tmp/msb-nobarfree")) return;
+    __weak UIView *weakBar = me;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UIView *bar = weakBar;
+        if (!bar || bar.superview || bar.window) return;
+        static const void *uikit = NULL;
+        if (!uikit) { Dl_info i; if (dladdr((__bridge void *)[UIView class], &i)) uikit = i.dli_fbase; }
+        NSUInteger n = 0;
+        for (UIGestureRecognizer *g in [bar.gestureRecognizers copy]) {
+            Dl_info i;
+            if (!dladdr((__bridge void *)[g class], &i) || i.dli_fbase == uikit) continue;   // (UIKit's own recognisers stay)
+            [bar removeGestureRecognizer:g]; n++;
+        }
+        if (n) DMLog([NSString stringWithFormat:@"[barfree] a dropped status bar: %lu gesture(s) from other tweaks taken off so it can be freed", (unsigned long)n]);
+    });
+}
+
 - (void)setAlpha:(CGFloat)a {
     if (((UIView *)self).alpha != a) DMWatchLog(@"_UIStatusBar setAlpha", self, a);
     %orig;
@@ -15813,6 +15992,52 @@ static void DMCheckTrigger(void) {
 // seq:<ms>|<cmd>;<ms>|<cmd>...: several triggers from one write, each run <ms> after the write (timed measurements: start a recorder, then act)
 static NSString *DMEngineWarningText(NSString *lib, NSString *version, BOOL *needed);
 static UIWindow *gEngineWarningWindow;
+// ---- debug: who holds this object? (refs_<hex address>) -- the heap blocks that contain a pointer to it, with their class when they are objects.
+#import <malloc/malloc.h>
+typedef struct { uintptr_t target; uintptr_t hits[600][3]; int n; } DMRefScan;   // (block, size, offset); filled without allocating
+static void DMRefRanges(task_t task, void *ctx, unsigned type, vm_range_t *ranges, unsigned count) {
+    DMRefScan *scan = ctx;
+    for (unsigned i = 0; i < count && scan->n < 600; i++) {
+        uintptr_t *p = (uintptr_t *)ranges[i].address; size_t words = ranges[i].size / sizeof(uintptr_t);
+        for (size_t k = 0; k < words; k++) if ((p[k] & 0x0000000FFFFFFFFFULL) == scan->target) { scan->hits[scan->n][0] = ranges[i].address; scan->hits[scan->n][1] = ranges[i].size; scan->hits[scan->n][2] = k * sizeof(uintptr_t); scan->n++; break; }
+    }
+}
+static kern_return_t DMRefRead(task_t task, vm_address_t address, vm_size_t size, void **local) { *local = (void *)address; return KERN_SUCCESS; }
+static NSString *DMRefsTo(uintptr_t target) {
+    static DMRefScan scan; memset(&scan, 0, sizeof(scan)); scan.target = target & 0x0000000FFFFFFFFFULL;
+    vm_address_t *zones = NULL; unsigned zc = 0;
+    if (malloc_get_all_zones(mach_task_self(), DMRefRead, &zones, &zc) != KERN_SUCCESS) return @"no zones";
+    unsigned n = zc > 16 ? 16 : zc; malloc_zone_t *zs[16];
+    for (unsigned z = 0; z < n; z++) zs[z] = (malloc_zone_t *)zones[z];
+    for (unsigned z = 0; z < n; z++) {
+        malloc_zone_t *zone = zs[z];
+        if (!zone || !zone->introspect || !zone->introspect->enumerator) continue;
+        if (zone->introspect->force_lock) zone->introspect->force_lock(zone);
+        zone->introspect->enumerator(mach_task_self(), &scan, MALLOC_PTR_IN_USE_RANGE_TYPE, (vm_address_t)zone, DMRefRead, DMRefRanges);
+        if (zone->introspect->force_unlock) zone->introspect->force_unlock(zone);
+    }
+    unsigned cc = 0; Class *classes = objc_copyClassList(&cc);
+    NSMutableSet *known = [NSMutableSet setWithCapacity:cc];
+    for (unsigned i = 0; i < cc; i++) [known addObject:[NSValue valueWithPointer:(__bridge void *)classes[i]]];
+    free(classes);
+    NSMutableString *out = [NSMutableString string];
+    for (int i = 0; i < scan.n; i++) {
+        uintptr_t isa = *(uintptr_t *)scan.hits[i][0] & 0x0000000FFFFFFFF8ULL;
+        NSString *cls = [known containsObject:[NSValue valueWithPointer:(void *)isa]] ? NSStringFromClass((__bridge Class)(void *)isa) : @"?";
+        NSString *extra = @"";
+        if ([cls hasPrefix:@"_UIStatusBar"] && ([cls hasSuffix:@"Item"] || [cls hasSuffix:@"ItemState"])) continue;   // (the bar's own items and their states point back at it)
+        if ([cls hasPrefix:@"NS"] && [cls hasSuffix:@"LayoutConstraint"]) continue;
+        if ([cls hasSuffix:@"Block__"]) {   // a block: whose code it runs
+            void *invoke = *(void **)(scan.hits[i][0] + 16); Dl_info info;
+            #if __has_feature(ptrauth_calls)
+            invoke = __builtin_ptrauth_strip(invoke, 0);
+            #endif
+            if (dladdr(invoke, &info)) extra = [NSString stringWithFormat:@" runs %s+0x%lx in %s (image offset 0x%lx)", info.dli_sname ?: "?", (unsigned long)((uintptr_t)invoke - (uintptr_t)info.dli_saddr), info.dli_fname ? strrchr(info.dli_fname, '/') + 1 : "?", (unsigned long)((uintptr_t)invoke - (uintptr_t)info.dli_fbase)];
+        }
+        [out appendFormat:@"\n  0x%lx (%lu bytes, at +%lu) %@%@", (unsigned long)scan.hits[i][0], (unsigned long)scan.hits[i][1], (unsigned long)scan.hits[i][2], cls, extra];
+    }
+    return out.length ? out : @" none";
+}
 static void DMRunTrigger(NSString *cmd) {
     if ([cmd hasPrefix:@"seq:"]) {
         for (NSString *part in [[cmd substringFromIndex:4] componentsSeparatedByString:@";"]) {
@@ -16239,11 +16464,21 @@ static void DMRunTrigger(NSString *cmd) {
             DMLog(t);
         }
     }
+    else if ([cmd hasPrefix:@"refs_"]) {   // refs_<hex address>: the heap blocks pointing at that object (class when an object) -- who keeps it alive (debug)
+        uintptr_t a = (uintptr_t)strtoull([[cmd substringFromIndex:5] UTF8String], NULL, 16);
+        if (a) DMLog([NSString stringWithFormat:@"[refs] 0x%lx is referenced from:%@", (unsigned long)a, DMRefsTo(a)]);
+    }
     else if ([cmd isEqualToString:@"barinfo"]) {   // barinfo: every status bar copy: its window, where it is on screen now (model and presentation), transforms (read-only)
         for (UIView *fg in gCopies.allObjects) {
             UIView *bar = fg.superview; CALayer *pl = bar.layer.presentationLayer;
             DMLog([NSString stringWithFormat:@"[barinfo] fg %p in %@ (level %.0f, hidden %d) screen %@ | bar %@ transform ty %.1f presentation ty %.1f pos %@ | windowHidden %d alpha %.2f", fg, NSStringFromClass([fg.window class]), fg.window.windowLevel, fg.window.hidden,
                 NSStringFromCGRect([fg convertRect:fg.bounds toView:nil]), NSStringFromClass([bar class]), bar.transform.ty, pl ? CATransform3DGetAffineTransform(pl.transform).ty : -999, pl ? NSStringFromCGPoint(pl.position) : @"-", fg.window.hidden, fg.window.alpha]);
+            if (!fg.window || DMTestFlag("/tmp/msb-barchain")) {   // a copy that is not in any window (or every copy, with the flag): where it hangs (ancestors, the view controller) -- to find who keeps it
+                NSMutableString *chain = [NSMutableString string]; int n = 0;
+                for (UIView *v = bar; v && n < 12; v = v.superview, n++) [chain appendFormat:@"%@%@", n ? @" < " : @"", NSStringFromClass([v class])];
+                id vc = nil; @try { vc = ((id (*)(id, SEL))objc_msgSend)(bar, NSSelectorFromString(@"_viewControllerForAncestor")); } @catch (id e) {}
+                DMLog([NSString stringWithFormat:@"[barinfo]   bar %p detached: %@ | controller %@ (parent %@) | bar retainCount-ish %lu", bar, chain, vc ? NSStringFromClass([vc class]) : @"-", [vc parentViewController] ? NSStringFromClass([[vc parentViewController] class]) : @"-", (unsigned long)CFGetRetainCount((__bridge CFTypeRef)bar)]);
+            }
         }
     }
     else if ([cmd isEqualToString:@"ctxtree"]) {   // ctxtree: the open context menu (Haptic Touch menu) in any window: compact tree with label fonts (read-only)
@@ -16651,7 +16886,9 @@ static void DMRunTrigger(NSString *cmd) {
         BOOL *hasSlot = (BOOL *)((uint8_t *)(__bridge void *)stage + ivar_getOffset(has));
         CGRect was = *slot;
         *slot = CGRectMake([q[1] doubleValue], [q[2] doubleValue], [q[3] doubleValue], [q[4] doubleValue]); *hasSlot = YES;
-        DMLog([NSString stringWithFormat:@"[a5state] %@ %s %@ -> %@", q[0], land ? "_landscapeFrame" : "_portraitFrame", NSStringFromCGRect(was), NSStringFromCGRect(*slot)]);
+        Ivar tr = q.count > 5 ? class_getInstanceVariable([stage class], land ? "_landscapeTransform" : "_portraitTransform") : NULL;   // [_<scale>]: the remembered transform too
+        if (tr && !strncmp(ivar_getTypeEncoding(tr), "{CGAffineTransform", 18)) { CGFloat k = [q[5] doubleValue]; *(CGAffineTransform *)((uint8_t *)(__bridge void *)stage + ivar_getOffset(tr)) = CGAffineTransformMakeScale(k, k); }
+        DMLog([NSString stringWithFormat:@"[a5state] %@ %s %@ -> %@%@", q[0], land ? "_landscapeFrame" : "_portraitFrame", NSStringFromCGRect(was), NSStringFromCGRect(*slot), tr ? [NSString stringWithFormat:@" at scale %@", q[5]] : @""]);
     }
     else if ([cmd hasPrefix:@"a5allivars_"]) {   // a5allivars_<bundle>: every scalar / rect / object-class ivar of that stage (whole class chain up to UIView) -- read-only
         UIView *stage = DMStageForBundle([cmd substringFromIndex:11]);
@@ -16966,6 +17203,16 @@ static void DMRunTrigger(NSString *cmd) {
         for (UIView *v in gCopies.allObjects) if (v.window && !v.window.hidden && v.bounds.size.width > 300) { fg = v; break; }
         UIButton *b = fg ? objc_getAssociatedObject(fg, kWinButtonKey) : nil;
         if (b) DMOpenWindowMenu(b); else DMLog(@"[debug] no Window button");
+    }
+    else if ([cmd isEqualToString:@"mwgrip"]) {   // mwgrip: the top MilkyWay window's resize handle -- its recognisers (and the window's), every subview (hidden too), and what a touch hits on a 4 pt grid (debug)
+        UIView *w = DMTopWindow(), *h = nil;
+        @try { h = [w valueForKey:@"sizeChanger"]; } @catch (id e) {}
+        if (![h isKindOfClass:[UIView class]]) { DMLog(@"[mwgrip] no handle"); return; }
+        NSMutableString *s = [NSMutableString stringWithFormat:@"[mwgrip] handle %@ frame %@ uie %d", NSStringFromClass([h class]), NSStringFromCGRect(h.frame), h.userInteractionEnabled];
+        for (UIView *v = h; v; v = v.superview) for (UIGestureRecognizer *g in v.gestureRecognizers) [s appendFormat:@"\n  rec on %@: %@ enabled %d delegate %@ cancels %d delaysBegan %d", NSStringFromClass([v class]), g, g.enabled, NSStringFromClass([(NSObject *)g.delegate class]), g.cancelsTouchesInView, g.delaysTouchesBegan];
+        for (UIView *sub in h.subviews) [s appendFormat:@"\n  sub %@ frame %@ hidden %d uie %d alpha %.2f", NSStringFromClass([sub class]), NSStringFromCGRect(sub.frame), sub.hidden, sub.userInteractionEnabled, sub.alpha];
+        for (int y = 2; y < 32; y += 4) { [s appendFormat:@"\n  y %2d:", y]; for (int x = 2; x < 32; x += 4) { UIView *hit = [w.window hitTest:[h convertPoint:CGPointMake(x, y) toView:w.window] withEvent:nil]; [s appendFormat:@" %@", hit == h ? @"H" : hit == w ? @"W" : hit ? [NSStringFromClass([hit class]) substringToIndex:MIN((NSUInteger)4, NSStringFromClass([hit class]).length)] : @"-"]; } }
+        DMLog(s);
     }
     else if ([cmd isEqualToString:@"winstate"]) {   // what MilkyWay knows about the top window's geometry
         UIView *w = DMTopWindow();
@@ -19035,28 +19282,29 @@ static void DMRunTrigger(NSString *cmd) {
         }
         DMLog([NSString stringWithFormat:@"[hookedby] %d method(s) run code from %@", found, want]);
     }
+    else if ([cmd hasPrefix:@"stagescale_"]) {   // stagescale_<bundle>_<k>: give a window a lasting scale k (test for a window left scaled)
+        NSArray *q = [[cmd substringFromIndex:11] componentsSeparatedByString:@"_"];
+        UIView *st = q.count == 2 ? DMStageForBundle(q[0]) : nil; CGFloat k = [q.lastObject doubleValue];
+        if (st && k > 0.1) { st.transform = CGAffineTransformMakeScale(k, k); DMLog([NSString stringWithFormat:@"[stagescale] %@ at %.2f, frame %@", q[0], k, NSStringFromCGRect(st.frame)]); }
+    }
+    else if ([cmd hasPrefix:@"stagetf_"]) {   // stagetf_<bundle>: a window's live transform, bounds, centre, frame and presentation (read-only)
+        UIView *st = DMStageForBundle([cmd substringFromIndex:8]);
+        CALayer *pl = st.layer.presentationLayer;
+        CGAffineTransform t = st.transform;
+        DMLog([NSString stringWithFormat:@"[stagetf] %@: transform [%.3f %.3f %.3f %.3f %.1f %.1f] bounds %@ center %@ frame %@ presentation %@ zooming %d", [cmd substringFromIndex:8], t.a, t.b, t.c, t.d, t.tx, t.ty, NSStringFromCGRect(st.bounds), NSStringFromCGPoint(st.center), NSStringFromCGRect(st.frame), pl ? NSStringFromCGRect(pl.frame) : @"-", st ? DMStageStillZooming(st) : -1]);
+    }
+    else if ([cmd hasPrefix:@"stormtest_"]) {   // stormtest_<bundle>: send that app's scene its own current settings 30 times without a transition (storm brake test)
+        NSString *bundle = [cmd substringFromIndex:10]; id scene = nil;
+        for (NSString *sid in gSceneByID) if ([sid containsString:bundle]) { scene = ((DMWeakScene *)gSceneByID[sid]).scene; if (scene) break; }
+        id cur = nil; @try { cur = [scene valueForKey:@"settings"]; } @catch (id e) {}
+        id m = [cur respondsToSelector:@selector(mutableCopy)] ? [cur mutableCopy] : nil;
+        SEL up = NSSelectorFromString(@"updateSettings:withTransitionContext:");
+        DMLog([NSString stringWithFormat:@"[stormtest] %@: scene %p, settings %@, copy equal %d", bundle, scene, NSStringFromClass([cur class]), m ? [[m copy] isEqual:m] : -1]);
+        if (m && [scene respondsToSelector:up]) for (int i = 0; i < 30; i++) ((void (*)(id, SEL, id, id))objc_msgSend)(scene, up, [m mutableCopy], nil);
+        DMLog([NSString stringWithFormat:@"[stormtest] %@: 30 sent", bundle]);
+    }
     else if ([cmd hasPrefix:@"symbolize_"]) {   // symbolize_<hex>_<hex>...: name the Objective-C method each code address is in (nearest method start in its image) -- read-only
-        for (NSString *hex in [[cmd substringFromIndex:10] componentsSeparatedByString:@"_"]) {
-            unsigned long long a = strtoull(hex.UTF8String, NULL, 16);
-            Dl_info info; if (!a || !dladdr((void *)a, &info) || !info.dli_fname) { DMLog([NSString stringWithFormat:@"[symbolize] %@: no image", hex]); continue; }
-            unsigned int n = 0; const char **names = objc_copyClassNamesForImage(info.dli_fname, &n);
-            uintptr_t best = 0; NSString *bestName = nil;
-            for (unsigned int i = 0; i < n; i++) {
-                Class c = objc_getClass(names[i]); if (!c) continue;
-                for (int meta = 0; meta < 2; meta++) {
-                    Class k = meta ? object_getClass((id)c) : c;
-                    unsigned int mc = 0; Method *ms = class_copyMethodList(k, &mc);
-                    for (unsigned int j = 0; j < mc; j++) {
-                        uintptr_t imp = (uintptr_t)method_getImplementation(ms[j]);
-                        imp &= 0x0000000FFFFFFFFFULL;   // (strip pointer authentication bits)
-                        if (imp <= (a & 0x0000000FFFFFFFFFULL) && imp > best) { best = imp; bestName = [NSString stringWithFormat:@"%c[%s %s]", meta ? '+' : '-', names[i], sel_getName(method_getName(ms[j]))]; }
-                    }
-                    free(ms);
-                }
-            }
-            free(names);
-            DMLog([NSString stringWithFormat:@"[symbolize] %@ (%s) = %@ + %lu", hex, strrchr(info.dli_fname, '/') ? strrchr(info.dli_fname, '/') + 1 : info.dli_fname, bestName ?: @"?", (unsigned long)((a & 0x0000000FFFFFFFFFULL) - best)]);
-        }
+        for (NSString *hex in [[cmd substringFromIndex:10] componentsSeparatedByString:@"_"]) DMSymbolize(strtoull(hex.UTF8String, NULL, 16));
     }
     else if ([cmd hasPrefix:@"methodhunt_"]) {   // methodhunt_<Class>_<keyword>: the methods (instance and class) of a class and its superclasses whose name contains the keyword
         NSArray *q = [[cmd substringFromIndex:11] componentsSeparatedByString:@"_"];
@@ -23474,7 +23722,7 @@ static void DMDiagHooks(void) {
         [[NSRunLoop mainRunLoop] addTimer:libraryWatch forMode:NSRunLoopCommonModes];
         DMGateTimer(libraryWatch);
     });
-    if (!DMCtorSkip("switcher")) DMSwitcherHooksInit();   // iOS 16: the App Switcher coordinator (hooks only)
+    if (!DMCtorSkip("switcher")) { DMRinger18Init(); DMSwitcherHooksInit(); }   // iOS 16: the App Switcher coordinator (hooks only)
     if (!DMCtorSkip("switcher")) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMStartSwitcherGCTimer(); });
     if (!DMCtorSkip("pointer")) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMPointerBridgeStart(); });   // MacPointer (pointeruid): early, the arrow waits for it after a respring
     if (!DMCtorSkip("power")) DMScreenPowerWatch();   // battery: the screen-off gate for our timers (reads a notification state only)

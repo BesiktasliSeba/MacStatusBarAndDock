@@ -1253,6 +1253,33 @@ static unsigned long long DMRecentsMaxFor(unsigned long long stockMax) {
 // The icons themselves: the Dock's recents list (SBDockSuggestionsIconListView) has a model of its own whose capacity is the "number of recents" the
 // suggestions view controller is made with -- SpringBoard's own count (3), whatever the recents model holds. This was the real reason "4" (ours, or
 // Lynx's) showed 3: the model held 4, the list only had room for 3. Found 2026-09-25 on the M1 (list model maxNumberOfIcons 3 with the model at 4).
+// iPadOS 18 names of the two recents initialisers above (homeScreenContextProvider: instead of iconController:, and no analyticsClient:), from the
+// 18.2 SpringBoard: the same work, installed only where these methods exist (15/16 do not have them: never installed there).
+%group DMRecentsModel18
+%hook SBFloatingDockSuggestionsModel
+- (id)initWithMaximumNumberOfSuggestions:(unsigned long long)max homeScreenContextProvider:(id)hp recentsController:(id)rc recentsDataStore:(id)ds recentsDefaults:(id)rd floatingDockDefaults:(id)fd appSuggestionManager:(id)am applicationController:(id)apc {
+    gDMRecentsController = rc;
+    unsigned long long m = DMRecentsMaxFor(max);
+    id r = %orig(m, hp, rc, ds, rd, fd, am, apc);
+    gDMSuggestionsModel = r;
+    if (r && !gDMRecentsNone) DMForceRecentsMax(r, m);
+    if (r && gDMRecentsNone && [r respondsToSelector:@selector(_setRecentsEnabled:)]) [(SBFloatingDockSuggestionsModel *)r _setRecentsEnabled:NO];
+    return r;
+}
+%end
+%end
+%group DMRecentsList18
+%hook SBFloatingDockSuggestionsViewController
+- (id)initWithNumberOfRecents:(unsigned long long)n homeScreenContextProvider:(id)hp applicationController:(id)ac layoutStateTransitionCoordinator:(id)lc suggestionsModel:(id)sm iconViewProvider:(id)ivp {
+    unsigned long long places = DMRecentsPlaces();
+    unsigned long long use = places > 0 ? places : n;
+    DMLog([NSString stringWithFormat:@"[recents] (18) the Dock's recents list has room for %llu (SpringBoard asked for %llu)", use, n]);
+    id r = %orig(use, hp, ac, lc, sm, ivp);
+    gDMSuggestionsVC = r;
+    return r;
+}
+%end
+%end
 %group DMRecentsList
 %hook SBFloatingDockSuggestionsViewController
 - (id)initWithNumberOfRecents:(unsigned long long)n iconController:(id)ic applicationController:(id)ac layoutStateTransitionCoordinator:(id)lc suggestionsModel:(id)sm iconViewProvider:(id)ivp {
@@ -1321,6 +1348,8 @@ static void DMWidenRecentsGrid(UIView *list) {
     }
     if ([objc_getClass("SBFloatingDockSuggestionsViewController") instancesRespondToSelector:NSSelectorFromString(@"initWithNumberOfRecents:iconController:applicationController:layoutStateTransitionCoordinator:suggestionsModel:iconViewProvider:")]) %init(DMRecentsList);
     else DMLog(@"[recents] this iOS has no -[SBFloatingDockSuggestionsViewController initWithNumberOfRecents:...]: the list keeps SpringBoard's size");
+    if ([objc_getClass("SBFloatingDockSuggestionsModel") instancesRespondToSelector:NSSelectorFromString(@"initWithMaximumNumberOfSuggestions:homeScreenContextProvider:recentsController:recentsDataStore:recentsDefaults:floatingDockDefaults:appSuggestionManager:applicationController:")]) %init(DMRecentsModel18);
+    if ([objc_getClass("SBFloatingDockSuggestionsViewController") instancesRespondToSelector:NSSelectorFromString(@"initWithNumberOfRecents:homeScreenContextProvider:applicationController:layoutStateTransitionCoordinator:suggestionsModel:iconViewProvider:")]) %init(DMRecentsList18);
 #if DEBUG   // (the /tmp/dockmag-* test helpers exist only in debug builds)
     if (access("/tmp/dockmag-debug", F_OK) == 0) dispatch_async(dispatch_get_main_queue(), ^{
         DMDownloadsStartDebugPolling();

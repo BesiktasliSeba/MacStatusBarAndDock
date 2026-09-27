@@ -129,9 +129,14 @@ static void InsertRow(PSListController *list) {
     UIImage *icon = [UIImage imageNamed:@"icon" inBundle:PrefsBundle() compatibleWithTraitCollection:nil];
     if (icon) [row setProperty:icon forKey:@"iconImage"];
     [list insertSpecifier:row atIndex:anchor animated:NO];
-    if (newOS) {   // (the same page listed with the other tweaks by the postinst on 17+: hidden while our own row is there)
-        for (PSSpecifier *sp in [[list specifiers] copy])
-            if (![[sp identifier] isEqualToString:kRowID] && [[sp name] isEqualToString:@"Dock"] && [sp propertyForKey:@"isController"]) [list removeSpecifier:sp animated:NO];
+    if (newOS) {   // (the same page listed with the other tweaks by the postinst on 17+: hidden while our own row is there -- found by its id, or by our
+        // bundle as it was listed before it had one; never another tweak's entry of the same name)
+        for (PSSpecifier *sp in [[list specifiers] copy]) {
+            if ([[sp identifier] isEqualToString:kRowID]) continue;
+            BOOL ours = [[sp identifier] isEqualToString:@"MSBD_PL_DockMagnificationPrefs"];
+            if (!ours && [[sp name] isEqualToString:@"Dock"]) { id b = [sp propertyForKey:@"bundle"] ?: [sp propertyForKey:@"lazy-bundle"]; ours = [b isKindOfClass:[NSString class]] && [(NSString *)b containsString:@"DockMagnificationPrefs"]; }
+            if (ours) [list removeSpecifier:sp animated:NO];
+        }
     }
 }
 
