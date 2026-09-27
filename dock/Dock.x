@@ -315,13 +315,16 @@ BOOL DMDockPointerHovering(void) { return gHovering; }
     // Downloads stack: one more icon slot right before the App Library icon. The slot is the App Library icon's old spot; the
     // App Library icon and the end of the platter move over by one icon + spacing.
     CGRect slot = m->libraryIcon;
+    // iPadOS 17+ (untested versions, a tester on 18.7.2): the App Library icon's spot is 0 wide while that icon is not in the Dock, so there is no
+    // slot for Downloads -- then everything Downloads-related in this layout is left out (no widening, no second divider, no slot). 15/16: as before.
+    BOOL downloadsOn = gShowDownloads && !([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17 && slot.size.width < 1.0);
     // The second divider (see gDivider2Rect): with Downloads. After the recents (the recents list at least half an icon wide) it is a second line;
     // with no recents the Dock hides its own line and ours is the only one, between the apps and Downloads (as on macOS). Its gap is one spacing
     // + the 1 pt line; the line's own width is not scaled below, which is corrected after scaling.
     CGRect nativeDivider = m->divider;
     CGFloat unscaledSpacing = m->spacing;
     BOOL hasRecents = m->recentsList.size.width >= slot.size.width * 0.5;
-    BOOL divider2 = gShowDownloads && nativeDivider.size.width > 0.0 && nativeDivider.size.height > 1.0;
+    BOOL divider2 = downloadsOn && nativeDivider.size.width > 0.0 && nativeDivider.size.height > 1.0;
 #if DEBUG
     {   // (debug: the Dock's own numbers, whenever they change)
         static NSString *lastMetrics = nil;
@@ -329,10 +332,7 @@ BOOL DMDockPointerHovering(void) { return gHovering; }
         if (![mt isEqualToString:lastMetrics]) { lastMetrics = mt; DMLog([@"[metrics] " stringByAppendingString:mt]); }
     }
 #endif
-    // iPadOS 17+ (untested versions, a tester on 18.7.2): the App Library icon's spot is 0 wide while that icon is not in the Dock, so there is no
-    // slot for Downloads -- its icon stays hidden, and widening the Dock left an empty tail on the right. No slot, no widening there (15/16: as before).
-    BOOL noSlotOnNewOS = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17 && slot.size.width < 1.0;
-    if (gShowDownloads && !noSlotOnNewOS) {
+    if (downloadsOn) {
         CGFloat extra = slot.size.width + m->spacing + (divider2 ? unscaledSpacing + nativeDivider.size.width : 0.0);
         m->libraryIcon.origin.x += extra;
         m->platter.size.width += extra;
@@ -355,9 +355,9 @@ BOOL DMDockPointerHovering(void) { return gHovering; }
         lastF = f; lastW = bounds.size.width;
         DMLog([NSString stringWithFormat:@"[fit] screen %.0f, dock %.0f + %.0f magnification room at size 1: icon size %.3f (setting %.2f, fits up to %.3f)", bounds.size.width, m->platter.size.width, headroom, f, gIconSize, room]);
     }
-    if (!gShowDownloads && fabs(f - 1.0) < 0.001) { gDownloadsSlot = CGRectZero; gDivider2Rect = CGRectZero; return; }
+    if (!downloadsOn && fabs(f - 1.0) < 0.001) { gDownloadsSlot = CGRectZero; gDivider2Rect = CGRectZero; return; }
     CGRect (^scaled)(CGRect) = ^CGRect(CGRect r) { return CGRectMake(r.origin.x * f, r.origin.y * f, r.size.width * f, r.size.height * f); };
-    gDownloadsSlot = gShowDownloads ? scaled(slot) : CGRectZero;
+    gDownloadsSlot = downloadsOn ? scaled(slot) : CGRectZero;
     gDivider2Rect = CGRectZero;
     gDivider2Alone = !hasRecents;
     if (divider2) {

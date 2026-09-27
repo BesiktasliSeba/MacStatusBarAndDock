@@ -330,6 +330,16 @@ static id DMCall(id obj, NSString *name) {
     if (!obj || ![obj respondsToSelector:sel]) return nil;
     return ((id (*)(id, SEL))objc_msgSend)(obj, sel);
 }
+// SpringBoard's managers (lock screen, backlight, Cover Sheet). iPadOS 17+: asked the way SpringBoard itself asks, +sharedInstanceIfExists -- the first
+// +sharedInstance creates the manager and crashes on purpose when that is too early, and its -init can run our hooks again inside that same run-once
+// block (issue #1: iPad 7, 18.2.1, the Mac status bar crashed at every respring). nil = not made yet. 15/16: +sharedInstance, as before.
+static id DMSBManager(const char *cls) {
+    Class c = objc_getClass(cls);
+    if (!c) return nil;
+    static int newOS = -1; if (newOS < 0) newOS = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17;
+    if (newOS) { SEL e = NSSelectorFromString(@"sharedInstanceIfExists"); if ([c respondsToSelector:e]) return ((id (*)(id, SEL))objc_msgSend)((id)c, e); }
+    return DMCall(c, @"sharedInstance");
+}
 static NSString *DMBoolStr(id obj, NSString *name) {
     SEL sel = NSSelectorFromString(name);
     if (!obj || ![obj respondsToSelector:sel]) return @"n/a";
@@ -3253,9 +3263,11 @@ static NSString *DMStageBundle(UIView *stage);
 static NSArray<UIView *> *DMAerialStages(void);
 static BOOL DMScreenOnAndUnlocked(void) {
     if (CACurrentMediaTime() < gLockingUntil) return NO;
-    id lock = DMCall(objc_getClass("SBLockScreenManager"), @"sharedInstance");
+    // (iPadOS 17+: not while SpringBoard is starting or off the main thread -- the lock screen manager may not be asked then; issue #1, 18.2.1)
+    if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17 && (![NSThread isMainThread] || DMProcessAge() < 8.0)) return NO;
+    id lock = DMSBManager("SBLockScreenManager");
     if (DMLockUp(lock)) return NO;   // (respondsToSelector-guarded)
-    id backlight = DMCall(objc_getClass("SBBacklightController"), @"sharedInstance");
+    id backlight = DMSBManager("SBBacklightController");
     SEL on = NSSelectorFromString(@"screenIsOn");
     if ([backlight respondsToSelector:on] && !((BOOL (*)(id, SEL))objc_msgSend)(backlight, on)) return NO;
     return YES;
@@ -3406,10 +3418,9 @@ static id DMSaneSceneSettings(id scene, id settings) {
     // iPadOS 17+ (untested versions; a tester on 18.7.2 crashed with Split View & Slide Over or Stage Manager on): there iPadOS itself sends tiny or
     // empty frames on purpose, so only the scenes of apps in one of OUR windows are corrected (15/16: as before).
     if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17) {
-        NSString *rest = [sid substringFromIndex:8];
-        NSRange dash = [rest rangeOfString:@"-" options:NSBackwardsSearch];
-        NSString *bundle = dash.location != NSNotFound ? [rest substringToIndex:dash.location] : rest;
-        if (!DMStageForBundle(bundle)) return settings;
+        BOOL ours = NO;   // (matched like the other helpers: a second window's scene ends in a UUID, not "-default")
+        for (UIView *st in DMAerialStages()) { NSString *b = DMStageBundle(st); if (b.length && [sid containsString:b]) { ours = YES; break; } }
+        if (!ours) return settings;
     }
     id copy = [settings respondsToSelector:@selector(mutableCopy)] ? [settings mutableCopy] : nil;
     if (![copy respondsToSelector:setFrameSel]) return settings;
@@ -3640,8 +3651,19 @@ static id DMVetoFrameHoldApply(id scene, id settings, NSString *sid) {
     lastLog = CACurrentMediaTime();
     return copy;
 }
+// iPadOS 17+ (untested versions): an iPad 7 on 18.2.1 crashed three times at every respring with the Mac status bar (issue #1): our scene hook below
+// asked +[SBLockScreenManager sharedInstance] (DMScreenOnAndUnlocked) while SpringBoard was still starting up, or off the main thread where iOS 18
+// may deliver scene updates. There, the hook stands aside in both cases and iOS updates the scene on its own (15/16: as before).
+static BOOL DMSceneHookStandsAside(void) {
+    static int newOS = -1; if (newOS < 0) newOS = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17;
+    return newOS && (![NSThread isMainThread] || DMProcessAge() < 8.0);
+}
 %hook FBScene
 - (void)updateSettings:(id)settings withTransitionContext:(id)context completion:(id)completion {
+    if (DMSceneHookStandsAside()) {
+        %orig;
+        return;
+    }
     settings = DMHoldBackUnwantedForeground(self, settings, context);
     settings = DMZetsuFlexSettings(self, settings);
     settings = DMSaneSceneSettings(self, settings);
@@ -3661,6 +3683,10 @@ static id DMVetoFrameHoldApply(id scene, id settings, NSString *sid) {
     %orig(settings, context, completion);
 }
 - (void)updateSettings:(id)settings withTransitionContext:(id)context {
+    if (DMSceneHookStandsAside()) {
+        %orig;
+        return;
+    }
     if (!gSceneByID) gSceneByID = [NSMutableDictionary dictionary];
     settings = DMZetsuHoldBackWhileLocked(self, settings, context);
     settings = DMHoldBackUnwantedForeground(self, settings, context);
@@ -4003,7 +4029,7 @@ static void DMSkipLockAfterRespring(id mgr, BOOL locked) {
 // itself when it appears or disappears, sees it is not visible and ends the subscription; it starts again as usual when the Lock Screen shows.
 // Only a controller that is not visible but still subscribed (that stale state) is touched.
 static void DMSettleLockScreenClock(void) {
-    id dvc = DMCall(DMCall(DMCall(objc_getClass("SBLockScreenManager"), @"sharedInstance"), @"coverSheetViewController"), @"dateViewController");
+    id dvc = DMCall(DMCall(DMSBManager("SBLockScreenManager"), @"coverSheetViewController"), @"dateViewController");
     SEL update = NSSelectorFromString(@"_updateState");
     if (!dvc || ![dvc respondsToSelector:update]) return;
     id visible = nil, token = nil;
@@ -4026,7 +4052,7 @@ static void DMHideAppBarItemsNow(void) {
 }
 static void DMWatchLock(void) {
     static BOOL wasLocked = NO, seenFirst = NO;
-    id mgr = DMCall(objc_getClass("SBLockScreenManager"), @"sharedInstance");
+    id mgr = DMSBManager("SBLockScreenManager");
     SEL sel = NSSelectorFromString(@"isUILocked");
     if (![mgr respondsToSelector:sel]) return;
     BOOL locked = ((BOOL (*)(id, SEL))objc_msgSend)(mgr, sel);
@@ -6705,7 +6731,7 @@ static void DMPlaceKeyboardPill(void) {
     // Cover Sheet is showing, that window is faded out; it comes back as soon as the Cover Sheet is gone. (Only its alpha is touched, and only by us.)
     if (aerialKeyboard) {
         static BOOL faded = NO;
-        id csm = DMCall(objc_getClass("SBCoverSheetPresentationManager"), @"sharedInstance");
+        id csm = DMSBManager("SBCoverSheetPresentationManager");
         SEL vis = NSSelectorFromString(@"isVisible"), pres = NSSelectorFromString(@"isPresented");
         BOOL cover = [csm respondsToSelector:vis] ? ((BOOL (*)(id, SEL))objc_msgSend)(csm, vis) : ([csm respondsToSelector:pres] ? ((BOOL (*)(id, SEL))objc_msgSend)(csm, pres) : NO);
         if (cover && !faded) { faded = YES; aerialKeyboard.alpha = 0.0; DMLog(@"[kbfix] Cover Sheet showing: Aerial's keyboard window faded out"); }
@@ -7343,7 +7369,7 @@ static void DMRestoreWindows(int attempt) {
         return;
     }
     if (access(DMWindowStatePath().fileSystemRepresentation, F_OK) != 0) { gWindowSaveOn = YES; return; }   // (nothing saved: nothing to wait for)
-    id lockMgr = DMCall(objc_getClass("SBLockScreenManager"), @"sharedInstance");
+    id lockMgr = DMSBManager("SBLockScreenManager");
     BOOL locked = [lockMgr respondsToSelector:NSSelectorFromString(@"isUILocked")] && ((BOOL (*)(id, SEL))objc_msgSend)(lockMgr, NSSelectorFromString(@"isUILocked"));
     if (locked || gOverlay) {   // wait for the unlock (the state file is read only after it)
         // (performance audit P7: no file read while waiting, no polling with the screen off -- the lock-state and screen notifications wake it,
@@ -8428,7 +8454,7 @@ static void DMPrewarmControlCenter(int attempt) {
     const char *guard = "/tmp/macstatusbar-prewarm-guard";
     struct stat st;
     if (attempt == 0 && stat(guard, &st) == 0 && difftime(time(NULL), st.st_mtime) < 60.0) { DMLog(@"[prewarm] skipped: the previous start ended right after a pre-build"); return; }
-    id lockMgr = DMCall(objc_getClass("SBLockScreenManager"), @"sharedInstance");
+    id lockMgr = DMSBManager("SBLockScreenManager");
     BOOL locked = [lockMgr respondsToSelector:NSSelectorFromString(@"isUILocked")] && ((BOOL (*)(id, SEL))objc_msgSend)(lockMgr, NSSelectorFromString(@"isUILocked"));
     if (DMFrontApp() || locked || DMControlCenterActive() || DMTopStage() || gOverlay) {   // not a quiet moment: try again shortly
         if (attempt < 30) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMPrewarmControlCenter(attempt + 1); });
@@ -10502,8 +10528,8 @@ static id DMProxyForBundle(NSString *bundleID) {
 // Spotlight overlay from the Home Screen or over an app.
 static void DMOpenSpotlight(void) {
     {   // never over the Lock Screen or the Cover Sheet (the icon is hidden there; this also covers a tap that lands during the change)
-        id lm = DMCall(objc_getClass("SBLockScreenManager"), @"sharedInstance");
-        id csm = DMCall(objc_getClass("SBCoverSheetPresentationManager"), @"sharedInstance");
+        id lm = DMSBManager("SBLockScreenManager");
+        id csm = DMSBManager("SBCoverSheetPresentationManager");
         BOOL cover = [csm respondsToSelector:NSSelectorFromString(@"isVisible")] && ((BOOL (*)(id, SEL))objc_msgSend)(csm, NSSelectorFromString(@"isVisible"));
         if (DMLockUp(lm) || cover) { DMLog(@"[spotlight] the Lock Screen or Cover Sheet is up: not opened"); return; }
     }
@@ -10718,7 +10744,7 @@ static BOOL DMWindowedLaunchEligible(NSString *bundleID) {   // would this launc
     NSString *fromFS = [DMFrontApp() bundleIdentifier];
     if (fromFS.length && DMAppNeedsFullScreen(fromFS)) { DMLog([NSString stringWithFormat:@"[windowed] %@ opened from %@ (full screen only): full screen too", bundleID, fromFS]); return NO; }
     if ([bundleID isEqualToString:@"com.apple.springboard"] || !DMHasHomeIcon(bundleID)) return NO;   // only apps with an icon
-    id lock = DMCall(objc_getClass("SBLockScreenManager"), @"sharedInstance");
+    id lock = DMSBManager("SBLockScreenManager");
     if (DMLockUp(lock)) return NO;   // Camera from the lock screen etc.
     NSNumber *until = gWindowLaunchUntil[bundleID];
     if (until && CACurrentMediaTime() < until.doubleValue) return NO;   // the launch we started ourselves
@@ -11511,7 +11537,7 @@ static NSString *DMClipboardSummary(void) {
 static void DMPresentMenu(UIButton *btn, const void *labelKey, const void *pillKey, NSArray *items) {
     // On the Lock Screen and the Cover Sheet (iOS reports both as UI-locked) the menus stay shut (M1 pipeline 2026-09-24): the menu window sits under the Cover Sheet, so a tap on a menu title there
     // opened a menu nobody could see (it showed up after unlocking), and nothing in the menus is meant to be used before unlocking anyway.
-    { id lm = DMCall(objc_getClass("SBLockScreenManager"), @"sharedInstance"); if (DMLockUp(lm)) { DMLog(@"[menu] the Lock Screen or Cover Sheet is up: menu not opened"); return; } }
+    { id lm = DMSBManager("SBLockScreenManager"); if (DMLockUp(lm)) { DMLog(@"[menu] the Lock Screen or Cover Sheet is up: menu not opened"); return; } }
     UIView *fg = btn.superview;
     UIView *host = DMHostFor(fg);
     if (!host) return;
@@ -13497,8 +13523,8 @@ static BOOL DMOpenTodayPanel(UIButton *clockBtn) {
 static void DMToggleTodayView(void);
 static void DMToggleTodayViewFrom(UIButton *clockBtn) {
     if (gTodayVC) { DMCloseOverlay(); return; }
-    id lm = DMCall(objc_getClass("SBLockScreenManager"), @"sharedInstance");
-    id mgr = DMCall(objc_getClass("SBCoverSheetPresentationManager"), @"sharedInstance");
+    id lm = DMSBManager("SBLockScreenManager");
+    id mgr = DMSBManager("SBCoverSheetPresentationManager");
     BOOL csShown = [mgr respondsToSelector:NSSelectorFromString(@"isVisible")] && ((BOOL (*)(id, SEL))objc_msgSend)(mgr, NSSelectorFromString(@"isVisible"));
     if (!DMLockUp(lm) && !csShown && !DMTestFlag("/tmp/msb-today-stock")) {
         if (!clockBtn) for (UIView *fg in gCopies.allObjects) {   // (the trigger: the clock of the bar on screen)
@@ -13515,7 +13541,7 @@ static void DMToggleTodayViewFrom(UIButton *clockBtn) {
     DMToggleTodayView();
 }
 static void DMToggleTodayView(void) {
-    id mgr = DMCall(objc_getClass("SBCoverSheetPresentationManager"), @"sharedInstance");
+    id mgr = DMSBManager("SBCoverSheetPresentationManager");
     SEL present = NSSelectorFromString(@"setCoverSheetPresented:animated:withCompletion:");
     if (![mgr respondsToSelector:present]) return;
     BOOL shown = [mgr respondsToSelector:NSSelectorFromString(@"isVisible")] && ((BOOL (*)(id, SEL))objc_msgSend)(mgr, NSSelectorFromString(@"isVisible"));
@@ -13536,7 +13562,7 @@ static void DMToggleTodayView(void) {
     // keybag lock; bringing it down from code then counted as LOCKING the iPad (iPadOS 16: the apps went to the background and a 25 s Lock
     // Screen sleep timer started, the screen went off). A finger pull-down sets this flag first; we do the same, only while really unlocked.
     {
-        id lockMgr = DMCall(objc_getClass("SBLockScreenManager"), @"sharedInstance");
+        id lockMgr = DMSBManager("SBLockScreenManager");
         SEL hasSel = NSSelectorFromString(@"hasBeenDismissedSinceKeybagLock"), setSel = NSSelectorFromString(@"setHasBeenDismissedSinceKeybagLock:");
         BOOL uiLocked = DMLockUp(lockMgr);
         if (!uiLocked && [mgr respondsToSelector:hasSel] && [mgr respondsToSelector:setSel] && !((BOOL (*)(id, SEL))objc_msgSend)(mgr, hasSel)) {
@@ -13553,14 +13579,14 @@ static void DMToggleTodayView(void) {
     if (!overlayStyle && [cs respondsToSelector:activate]) ((void (*)(id, SEL, id))objc_msgSend)(cs, activate, nil);
     gTodayOpenedByClock = YES;
     ((void (*)(id, SEL, BOOL, BOOL, id))objc_msgSend)(mgr, present, YES, YES, !overlayStyle ? nil : ^{
-        id cs2 = DMCall(DMCall(objc_getClass("SBCoverSheetPresentationManager"), @"sharedInstance"), @"coverSheetViewController");
+        id cs2 = DMCall(DMSBManager("SBCoverSheetPresentationManager"), @"coverSheetViewController");
         if (gTodayOpenedByClock && [cs2 respondsToSelector:activate]) ((void (*)(id, SEL, id))objc_msgSend)(cs2, activate, nil);
     });
     DMLog([NSString stringWithFormat:@"[today] clock tapped: Today View brought down (today page %d)", [cs respondsToSelector:activate]]);
 }
 static void DMWatchTodayView(void) {   // (every tick) once the Today View we opened has gone, the Cover Sheet's page is turned back
     if (gTodayVC) {   // the borrowed Today View: given back when its panel has gone or anything else takes over
-        id lm = DMCall(objc_getClass("SBLockScreenManager"), @"sharedInstance");
+        id lm = DMSBManager("SBLockScreenManager");
         UIView *o = gTodayOverlay, *panel = gTodayPanel;
         NSString *why = nil;
         if (!o || gOverlay != o || !panel.window) why = @"its panel is gone";
@@ -13582,7 +13608,7 @@ static void DMWatchTodayView(void) {   // (every tick) once the Today View we op
         if (why) { DMTodayGiveBack(why); if (gOverlay == o && o) DMCloseOverlay(); }
     }
     if (!gTodayOpenedByClock) return;
-    id mgr = DMCall(objc_getClass("SBCoverSheetPresentationManager"), @"sharedInstance");
+    id mgr = DMSBManager("SBCoverSheetPresentationManager");
     if ([mgr respondsToSelector:NSSelectorFromString(@"isVisible")] && ((BOOL (*)(id, SEL))objc_msgSend)(mgr, NSSelectorFromString(@"isVisible"))) return;
     gTodayOpenedByClock = NO;
     id cs = DMCall(mgr, @"coverSheetViewController");
@@ -14190,7 +14216,8 @@ static void DMReleaseStatusBarCopy(UIView *fg) {
     DMLights *lights = objc_getAssociatedObject(fg, kLightsKey);
     // Locked (the Lock Screen, or the Cover Sheet pulled down): only the Apple menu on the left and the status icons with Control Center on the right --
     // no traffic lights and no menu titles, whatever app was in front, windowed or full screen (2026-09-26: an app's lights stayed on the Lock Screen).
-    BOOL locked = DMLockUp(DMCall(objc_getClass("SBLockScreenManager"), @"sharedInstance")) || DMCoverSheetShown();   // (the Cover Sheet pulled down while unlocked counts too: iPad 2)
+    BOOL earlyOnNewOS = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17 && DMProcessAge() < 8.0;   // (issue #1: not asked while starting)
+    BOOL locked = !earlyOnNewOS && (DMLockUp(DMSBManager("SBLockScreenManager")) || DMCoverSheetShown());   // (the Cover Sheet pulled down while unlocked counts too: iPad 2)
     BOOL wantLights = gShowWindowButtons && frontApp != nil && !activeIsWindow && !locked;   // a window has its own buttons
     if (DMTestFlag("/tmp/macstatusbar-debug")) {
         static NSMutableDictionary *lastWant = nil; if (!lastWant) lastWant = [NSMutableDictionary dictionary];
@@ -15032,12 +15059,12 @@ static void DMRunTrigger(NSString *cmd) {
     }
     else if ([cmd hasPrefix:@"datevccall_"]) {   // datevccall_<_updateState|_stopUpdateTimer|_startUpdateTimer>: call that on the Lock Screen clock's controller (debug)
         NSString *m = [cmd substringFromIndex:11];
-        id dvc = DMCall(DMCall(DMCall(objc_getClass("SBLockScreenManager"), @"sharedInstance"), @"coverSheetViewController"), @"dateViewController");
+        id dvc = DMCall(DMCall(DMSBManager("SBLockScreenManager"), @"coverSheetViewController"), @"dateViewController");
         if ([@[@"_updateState", @"_stopUpdateTimer", @"_startUpdateTimer"] containsObject:m] && [dvc respondsToSelector:NSSelectorFromString(m)]) ((void (*)(id, SEL))objc_msgSend)(dvc, NSSelectorFromString(m));
         DMLog([NSString stringWithFormat:@"[datevc] called %@ on %p", m, dvc]);
     }
     else if ([cmd isEqualToString:@"datevc"]) {   // datevc: the Lock Screen clock's controller state (its precise clock timer runs while it thinks it is visible; debug)
-        id mgr = DMCall(objc_getClass("SBLockScreenManager"), @"sharedInstance");
+        id mgr = DMSBManager("SBLockScreenManager");
         id cs = DMCall(mgr, @"coverSheetViewController");
         id dvc = DMCall(cs, @"dateViewController");
         NSMutableString *line = [NSMutableString stringWithFormat:@"[datevc] cover sheet %p, date controller %p", cs, dvc];
@@ -15224,7 +15251,7 @@ static void DMRunTrigger(NSString *cmd) {
         DMLog([NSString stringWithFormat:@"[today] (test) panel %@", ok ? @"opened" : @"NOT opened (nothing else done)"]);
     }
     else if ([cmd isEqualToString:@"todayact"] || [cmd isEqualToString:@"todaydeact"]) {   // todayact / todaydeact: the Cover Sheet's own Today View switch, alone (tests)
-        id cs = DMCall(DMCall(objc_getClass("SBCoverSheetPresentationManager"), @"sharedInstance"), @"coverSheetViewController");
+        id cs = DMCall(DMSBManager("SBCoverSheetPresentationManager"), @"coverSheetViewController");
         SEL s = NSSelectorFromString([cmd isEqualToString:@"todayact"] ? @"activateTodayViewWithCompletion:" : @"deactivateTodayViewWithCompletion:");
         if ([cs respondsToSelector:s]) ((void (*)(id, SEL, id))objc_msgSend)(cs, s, ^{ DMLog(@"[today] (test) switch completed"); });
     }
@@ -15244,7 +15271,7 @@ static void DMRunTrigger(NSString *cmd) {
         });
     }
     else if ([cmd hasPrefix:@"csopt_"]) {   // csopt_<n>: EXPERIMENT: bring the Cover Sheet down with setCoverSheetPresented:animated:options:<n>:withCompletion:
-        id mgr = DMCall(objc_getClass("SBCoverSheetPresentationManager"), @"sharedInstance");
+        id mgr = DMSBManager("SBCoverSheetPresentationManager");
         SEL s = NSSelectorFromString(@"setCoverSheetPresented:animated:options:withCompletion:");
         if ([mgr respondsToSelector:s]) ((void (*)(id, SEL, BOOL, BOOL, unsigned long long, id))objc_msgSend)(mgr, s, YES, YES, (unsigned long long)[[cmd substringFromIndex:6] longLongValue], nil);
     }
@@ -17176,7 +17203,7 @@ static void DMRunTrigger(NSString *cmd) {
     else if ([cmd isEqualToString:@"savewindows"]) { DMSaveWindowState(); DMLog(@"[restore] state saved"); }
     else if ([cmd hasPrefix:@"unlockpass_"]) {   // unlockpass_<code>: unlock with the passcode (the owner gave it for testing on the second iPad)
         NSString *code = [cmd substringFromIndex:11];
-        id mgr = DMCall(objc_getClass("SBLockScreenManager"), @"sharedInstance");
+        id mgr = DMSBManager("SBLockScreenManager");
         for (NSString *n in @[@"attemptUnlockWithPasscode:finishUIUnlock:", @"_attemptUnlockWithPasscode:finishUIUnlock:"]) {
             SEL sel = NSSelectorFromString(n);
             if (![mgr respondsToSelector:sel]) continue;
@@ -18110,7 +18137,7 @@ static void DMRunTrigger(NSString *cmd) {
     }
     else if ([cmd hasPrefix:@"unlocktry_"]) {   // unlocktry_<mode>_<source>
         NSArray *q = [[cmd substringFromIndex:10] componentsSeparatedByString:@"_"];
-        id mgr = DMCall(objc_getClass("SBLockScreenManager"), @"sharedInstance");
+        id mgr = DMSBManager("SBLockScreenManager");
         if (q.count >= 2 && mgr) {
             int mode = [q[0] intValue], n = [q[1] intValue];
             DMLog([NSString stringWithFormat:@"[lock] try mode %d source %d: locked before %d", mode, n, DMLockUp(mgr)]);
@@ -18191,7 +18218,7 @@ static void DMRunTrigger(NSString *cmd) {
     }
     else if ([cmd hasPrefix:@"cover_"]) {   // cover_<0|1>: pull the Cover Sheet down / put it away
         BOOL up = [[cmd substringFromIndex:6] boolValue];
-        id mgr = DMCall(objc_getClass("SBCoverSheetPresentationManager"), @"sharedInstance");
+        id mgr = DMSBManager("SBCoverSheetPresentationManager");
         SEL sel = NSSelectorFromString(@"setCoverSheetPresented:animated:withCompletion:");
         DMLog([NSString stringWithFormat:@"[debug] cover sheet %d: manager %@ responds %d", up, mgr, [mgr respondsToSelector:sel]]);
         if ([mgr respondsToSelector:sel]) ((void (*)(id, SEL, BOOL, BOOL, id))objc_msgSend)(mgr, sel, up, YES, nil);
@@ -19226,7 +19253,7 @@ static void DMAerial5WatchLock(void) {
             objc_setAssociatedObject(s, kA5MinSinceKey, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
     }
-    id mgr = DMCall(objc_getClass("SBLockScreenManager"), @"sharedInstance");
+    id mgr = DMSBManager("SBLockScreenManager");
     int locked = DMLockUp(mgr) ? 1 : 0;
     if (wasLocked == -1) { wasLocked = locked; return; }
     if (locked == wasLocked) return;
@@ -19269,7 +19296,7 @@ static BOOL DMA5ChipFlag(UIView *stage) {
 }
 static void DMAerial5CatchChip(UIView *stage) {
     if (DMTestFlag("/tmp/msb-a5-allowchip")) return;   // debug: leave Aerial's chip alone
-    BOOL locked = DMLockUp(DMCall(objc_getClass("SBLockScreenManager"), @"sharedInstance"));
+    BOOL locked = DMLockUp(DMSBManager("SBLockScreenManager"));
     if (!stage.hidden) stage.hidden = YES;   // first: never let the chip be seen
     objc_setAssociatedObject(stage, kStageHiddenKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // our minimized state
     objc_setAssociatedObject(stage, kA5ChipHiddenKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -20215,7 +20242,7 @@ static void DMWelcomeClose(NSString *how, BOOL putAway) {   // putAway: the aler
 }
 static void DMWelcomeDismissForLock(void) { if (gWelcomeWindow) DMWelcomeClose(@"locked (counts as dismissed)", YES); }   // (never over the Lock Screen)
 static BOOL DMCoverSheetShown(void) {
-    id cs = DMCall(objc_getClass("SBCoverSheetPresentationManager"), @"sharedInstance");
+    id cs = DMSBManager("SBCoverSheetPresentationManager");
     return [DMBoolStr(cs, @"isPresented") isEqualToString:@"Y"] || [DMBoolStr(cs, @"isVisible") isEqualToString:@"Y"];
 }
 static NSString *DMWelcomeBlocker(void) {   // why not now (nil: the Home Screen is showing, unlocked, nothing else up)
@@ -20624,7 +20651,7 @@ static void DMTickBody(void) {
         if (gOverlay) {
             if (DMSwitcherVisible()) systemUI = @"the App Switcher";
             else if (ccActive) systemUI = @"Control Center";
-            else if (DMLockUp(DMCall(objc_getClass("SBLockScreenManager"), @"sharedInstance"))) systemUI = @"the Lock Screen";
+            else if (DMLockUp(DMSBManager("SBLockScreenManager"))) systemUI = @"the Lock Screen";
             else if (DMSpotlightShown()) systemUI = @"Spotlight";   // (layering audit F11: the menu stayed open behind Spotlight and was still there after)
             else if (DMCoverSheetShown()) systemUI = @"Notification Center";   // (pulled down while unlocked: it is not "locked"; layering audit #10)
         }
@@ -20753,9 +20780,9 @@ static BOOL DMDotsHookOff(void) { static int off = -1; if (off < 0) off = [NSPro
 %hook _SBTopAffordanceView
 - (void)layoutSubviews {
     %orig;
+    gDotsAffordance = (UIView *)self;   // (recorded on every version: the status bar's hit test uses it to let taps on the dots through)
     if (DMDotsHookOff()) return;
     UIView *v = (UIView *)self;
-    gDotsAffordance = v;
     if (gHideMultitaskingDots) { gDotsOwnChange = YES; v.hidden = YES; gDotsOwnChange = NO; v.userInteractionEnabled = NO; objc_setAssociatedObject(v, kDotsTouchOffKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
     else if (objc_getAssociatedObject(v, kDotsTouchOffKey)) { v.userInteractionEnabled = YES; objc_setAssociatedObject(v, kDotsTouchOffKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }   // (switched off: tappable again)
 }
@@ -20823,11 +20850,11 @@ static void DMSkipLockTick(int n) {
             SEL s = NSSelectorFromString(name);
             if ([sb respondsToSelector:s]) { ((void (*)(id, SEL))objc_msgSend)(sb, s); break; }
         }
-        id mgr = DMCall(objc_getClass("SBLockScreenManager"), @"sharedInstance");
+        id mgr = DMSBManager("SBLockScreenManager");
         SEL lockedSel = NSSelectorFromString(@"isUILocked");
         BOOL locked = [mgr respondsToSelector:lockedSel] && ((BOOL (*)(id, SEL))objc_msgSend)(mgr, lockedSel);
         if (locked) {
-            id backlight = DMCall(objc_getClass("SBBacklightController"), @"sharedInstance");
+            id backlight = DMSBManager("SBBacklightController");
             SEL onSel = NSSelectorFromString(@"screenIsOn");
             BOOL screenOn = [backlight respondsToSelector:onSel] && ((BOOL (*)(id, SEL))objc_msgSend)(backlight, onSel);
             id auth = DMCall(objc_getClass("SBFUserAuthenticationController"), @"sharedInstance");
@@ -21240,7 +21267,7 @@ static BOOL DMAutoHidePref(void) {
 static BOOL DMAutoHideLayout(void) { return DMAutoHidePref() && (gDMPointerAttached || (gSBFakePointer.y >= 0 && DMTestFlag("/tmp/macstatusbar-debug"))); }   // (debug: a ptrfake_ stand-in pointer counts as attached, for tests without a real one)   // tiles use the top 24 pt (not tied to the Lock Screen: no re-tile at each lock/unlock)
 static BOOL DMAutoHideActive(void) {   // the bar may hide right now
     if (!DMAutoHideLayout()) return NO;
-    id lm = DMCall(objc_getClass("SBLockScreenManager"), @"sharedInstance");
+    id lm = DMSBManager("SBLockScreenManager");
     return !DMLockUp(lm);
 }
 static CGFloat DMTopLimit(void) { return DMAutoHideLayout() ? 0.0 : 23.0; }   // (tiles and the window clamps: under the status bar, or the top edge)

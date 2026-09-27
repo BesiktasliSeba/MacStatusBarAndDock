@@ -33,6 +33,9 @@ static inline BOOL MSBDAlertCallBool(id obj, NSString *name) {
 static inline id MSBDAlertShared(const char *cls) {
     Class c = objc_getClass(cls);
     SEL s = NSSelectorFromString(@"sharedInstance");
+    // (iPadOS 17+: +sharedInstanceIfExists, as SpringBoard asks -- an early +sharedInstance crashes there; issue #1. 15/16: as before)
+    SEL e = NSSelectorFromString(@"sharedInstanceIfExists");
+    if (c && [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17 && [c respondsToSelector:e]) return ((id (*)(id, SEL))objc_msgSend)((id)c, e);
     return c && [c respondsToSelector:s] ? ((id (*)(id, SEL))objc_msgSend)((id)c, s) : nil;
 }
 // Locked, screen off, or the Cover Sheet (Lock Screen / Notification Center) showing.

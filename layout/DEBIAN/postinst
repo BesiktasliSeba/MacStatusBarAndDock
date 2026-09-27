@@ -32,17 +32,16 @@ if [ "$1" = "configure" ]; then
     OSMAJ=$([ -x "$H" ] && "$H" --os-major 2>/dev/null)
     if [ -n "$OSMAJ" ] && [ "$OSMAJ" -ge 17 ] 2>/dev/null && [ -d "$PL" ]; then
         for e in "MacStatusBarPrefs MSBRootListController Status_Bar" "DockMagnificationPrefs DMRootListController Dock"; do
-            set -- $e
-            label=$(echo "$3" | tr '_' ' ')
-            cat > "$PL/MacStatusBarAndDock-$1.plist" <<PLIST
+            bundle=${e%% *}; rest=${e#* }; detail=${rest%% *}; label=$(echo "${rest#* }" | tr '_' ' ')   # (named variables: the script's own $1 and $2 stay intact)
+            cat > "$PL/MacStatusBarAndDock-$bundle.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict><key>entry</key><dict>
-<key>bundle</key><string>$1</string><key>cell</key><string>PSLinkCell</string><key>detail</key><string>$2</string>
+<key>bundle</key><string>$bundle</string><key>cell</key><string>PSLinkCell</string><key>detail</key><string>$detail</string>
 <key>icon</key><string>icon.png</string><key>isController</key><true/><key>label</key><string>$label</string>
 </dict></dict></plist>
 PLIST
-            chmod 644 "$PL/MacStatusBarAndDock-$1.plist"
+            chmod 644 "$PL/MacStatusBarAndDock-$bundle.plist"
         done
     else
         rm -f "$PL/MacStatusBarAndDock-MacStatusBarPrefs.plist" "$PL/MacStatusBarAndDock-DockMagnificationPrefs.plist"

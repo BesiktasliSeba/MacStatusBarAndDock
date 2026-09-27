@@ -54,13 +54,21 @@ static double NoticeProcessAge(void) {
     struct timeval now; gettimeofday(&now, NULL);
     return (now.tv_sec - kp.kp_proc.p_starttime.tv_sec) + (now.tv_usec - kp.kp_proc.p_starttime.tv_usec) / 1e6;
 }
+static id NoticeShared(const char *cls) {   // (iPadOS 17+: +sharedInstanceIfExists, as SpringBoard asks; issue #1. 15/16: +sharedInstance)
+    Class c = objc_getClass(cls);
+    if (c && [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17) {
+        id v = NoticeCall((id)c, @"sharedInstanceIfExists");
+        if (v || [c respondsToSelector:NSSelectorFromString(@"sharedInstanceIfExists")]) return v;
+    }
+    return NoticeCall((id)c, @"sharedInstance");
+}
 static BOOL NoticeLocked(void) {
-    if (NoticeBool(NoticeCall(objc_getClass("SBLockScreenManager"), @"sharedInstance"), @"isUILocked")) return YES;
-    id backlight = NoticeCall(objc_getClass("SBBacklightController"), @"sharedInstance");
+    if (NoticeBool(NoticeShared("SBLockScreenManager"), @"isUILocked")) return YES;
+    id backlight = NoticeShared("SBBacklightController");
     return [backlight respondsToSelector:NSSelectorFromString(@"screenIsOn")] && !NoticeBool(backlight, @"screenIsOn");
 }
 static BOOL NoticeCoverSheet(void) {
-    id cs = NoticeCall(objc_getClass("SBCoverSheetPresentationManager"), @"sharedInstance");
+    id cs = NoticeShared("SBCoverSheetPresentationManager");
     return NoticeBool(cs, @"isPresented") || NoticeBool(cs, @"isVisible");
 }
 // Why not now (nil: the Home Screen is showing, unlocked, nothing else up).
