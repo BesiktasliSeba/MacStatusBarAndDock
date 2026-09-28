@@ -15474,6 +15474,20 @@ static void DMReleaseStatusBarCopy(UIView *fg) {
     DMShowTimeProxy(fg, NO);
     UIView *dateLabel = DMDateStringView(container);
     UIView *trailing = DMTrailingContainer(fg);
+    {   // A spare time label (iOS's short-format time item) left visible next to our clock: hidden. It showed after an app was opened from a link out of a
+        // full-screen app (iPad 2, 28 Sep: Safari -> Reddit, the App Switcher's status bar copy had two "2:17 AM" labels 23 pt apart, over the date).
+        Class stringView = objc_getClass("_UIStatusBarStringView");
+        static const void *kSpareTimeKey = &kSpareTimeKey;   // (marks a label hidden here: iOS only re-sets a label's alpha when its own alpha inputs change)
+        for (UIView *s2 in container.subviews) {
+            if (![s2 isKindOfClass:stringView]) continue;
+            if (s2 != timeLabel && s2 != dateLabel && DMLooksLikeTime(((UILabel *)s2).text)) {
+                if (s2.alpha > 0.01) { s2.alpha = 0.0; objc_setAssociatedObject(s2, kSpareTimeKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
+            } else if (objc_getAssociatedObject(s2, kSpareTimeKey)) {   // hidden here earlier and now the clock (the other time item went): shown again
+                objc_setAssociatedObject(s2, kSpareTimeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                if (s2 == timeLabel) s2.alpha = 1.0;   // (the setAlpha: hook still keeps it at 0 where the other status bar copy draws the clock)
+            }
+        }
+    }
 
     // The status bar only updates the clock once a minute; show seconds ourselves.
     UIFont *currentFont = [timeLabel valueForKey:@"font"];
@@ -18673,6 +18687,7 @@ static void DMRunTrigger(NSString *cmd) {
             }
         }
     }
+    else if ([cmd isEqualToString:@"clocktree"]) { extern void DMClockTree(void); DMClockTree(); }
     else if ([cmd hasPrefix:@"wintree_"]) {   // wintree_<window class>: that window's view tree (transforms included)
         NSString *cls = [cmd substringFromIndex:8];
         for (UIWindow *w in DMAllWindows()) {
@@ -20505,6 +20520,21 @@ static void DMClockBalanceRestore(void) {   // back to a single status bar: give
     }
 }
 @end
+#if DEBUG
+void DMClockTree(void) {   // (debug, trigger clocktree: every view of each copy's clock area -- screen frame, alpha, hidden, text -- and the opacity of every ancestor)
+    for (UIView *fg in gCopies.allObjects) {
+        UIView *container = DMLeadingContainer(fg);
+        NSMutableString *m = [NSMutableString stringWithFormat:@"[clocktree] copy %p in %@ effective %.2f; ancestors:", fg, NSStringFromClass([fg.window class]), DMEffectiveAlpha(fg)];
+        for (UIView *x = fg; x; x = x.superview) { CALayer *pl = x.layer.presentationLayer ?: x.layer; [m appendFormat:@" %@(%.2f%@)", NSStringFromClass([x class]), pl.opacity, x.hidden ? @" hidden" : @""]; }
+        DMLog(m);
+        for (UIView *v in container.subviews) {
+            NSString *text = [v respondsToSelector:@selector(text)] ? [(id)v text] : nil;
+            DMLog([NSString stringWithFormat:@"[clocktree]    %@ screen %@ alpha %.2f hidden %d text %@", NSStringFromClass([v class]), NSStringFromCGRect([v convertRect:v.bounds toView:nil]), v.alpha, v.hidden, text ?: @"-"]);
+            for (UIView *w in v.subviews) { NSString *t2 = [w respondsToSelector:@selector(text)] ? [(id)w text] : nil; DMLog([NSString stringWithFormat:@"[clocktree]       %@ screen %@ alpha %.2f hidden %d text %@", NSStringFromClass([w class]), NSStringFromCGRect([w convertRect:w.bounds toView:nil]), w.alpha, w.hidden, t2 ?: @"-"]); }
+        }
+    }
+}
+#endif
 void DMClockDiag(void) {
     for (UIView *fg in gCopies.allObjects) {
         UIView *container = DMLeadingContainer(fg); UIView *timeL = container ? DMFirstStringView(container) : nil;
