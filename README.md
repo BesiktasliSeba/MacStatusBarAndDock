@@ -43,9 +43,9 @@ The Mac look is on right after install. A few extras start off: the auto-hiding 
 - **Control Center** opens from the status bar (with BigSurCenter installed, its panel size can be set in Settings).
 - **Mac-style notification banners** in the top-right corner.
 - **Mute icon** — a small status bar icon shows while the iPad is on silent (its own switch in Settings).
-- **VPN icon** — a VPN icon shows while a VPN is connected; its menu tells you which app it runs through, opens that app, or goes to VPN & Device Management.
+- **VPN menu** — while a VPN is connected, iOS's own VPN badge shows as its own item next to the status icons, like on a Mac. Its menu shows the VPN's name and has Disconnect (auto-connect goes off too), a button that opens the VPN's app and VPN & Device Management. With Aerial 5.0, respring buttons warn first while a VPN is on, because Aerial goes online as SpringBoard starts and can hang on a black screen.
 - **Mac pointer** — a macOS arrow cursor and I-beam with a trackpad or mouse, with a choice of style and size.
-- **Haptic Touch menus** — long-press a Home Screen app icon for Force Quit and App Size, or a folder icon to jump straight to one of its apps.
+- **Haptic Touch menus** — long-press a Home Screen app icon for Force Quit and App Size, or a folder icon to jump straight to one of its apps. Menus look like a Mac's (slimmer rows that adapt to a trackpad or mouse); choose Mac or Stock in Settings > Status Bar > App Menus.
 - **Mac windows** on the window engine you already use (Aerial 3.0 or 5.0, MilkyWay4 on iPadOS 15 only, or Zetsu 1.6.2 or 1.6.6): a title bar, traffic lights and rounded corners, with Fit to Window tiling (a third window asks which side it goes on, or No Fit to leave it untiled) and resize handles tinted in each app's color.
 - **Dock** with macOS-style magnification, recent apps (plus a suggested or Handoff app), running-app indicators, a Launchpad icon, and a Downloads stack (choose which apps' downloads appear from a link in Settings).
 - **Audio mixing per app**, with a volume for each app, set from the menu bar.

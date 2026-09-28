@@ -87,7 +87,7 @@ static BOOL MSBDChoicySetLine(NSString *line, BOOL on) {
 	CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), CFSTR("com.opa334.choicyprefs/ReloadPrefs"), NULL, NULL, YES);
 	return YES;
 }
-static void MSBDRespring(void) {
+static void MSBDRespringNow(void) {
 	dlopen("/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices", RTLD_NOW);
 	dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_NOW);
 	Class actionClass = objc_getClass("SBSRelaunchAction"), serviceClass = objc_getClass("FBSSystemService");
@@ -95,6 +95,9 @@ static void MSBDRespring(void) {
 	id service = serviceClass ? ((id (*)(id, SEL))objc_msgSend)(serviceClass, NSSelectorFromString(@"sharedService")) : nil;
 	if (action && service) ((void (*)(id, SEL, id, id))objc_msgSend)(service, NSSelectorFromString(@"sendActions:withResult:"), [NSSet setWithObject:action], nil);
 }
+// Every respring from our Settings pages. (The VPN check, VPNRespring.h, is SpringBoard's: its restart gate holds this request while a respring could
+// hang, and asks there.)
+static void MSBDRespring(void) { MSBDRespringNow(); }
 // The switch changed: apply it, then offer the respring that makes it real.
 static void MSBDSetLine(NSString *line, BOOL on, UIViewController *presenter, void (^refresh)(void)) {
 	NSString *title = nil, *message = nil;

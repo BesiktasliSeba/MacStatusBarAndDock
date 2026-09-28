@@ -24,6 +24,24 @@ int main(int argc, char **argv) {
         v = MSBDBlameReportFile([dir stringByAppendingPathComponent:@"ours-in-faulting-thread.ips"], &b);        Check(@"fixture: ours in faulting thread", v, b, kMSBDBlameOurs);
         v = MSBDBlameReportFile([dir stringByAppendingPathComponent:@"other-tweak.ips"], &b);                    Check(@"fixture: another tweak's crash", v, b, kMSBDBlameOther);
         v = MSBDBlameReportFile([dir stringByAppendingPathComponent:@"apple-only-our-class-in-reason.ips"], &b); Check(@"fixture: Apple only, our class in reason", v, b, kMSBDBlameOurs);
+        // Watchdog reports (SpringBoard stuck, killed by the system; stacks only in a "stackshot" with unnamed images, named here by UUID). The fixture
+        // is a real one (M1, iOS 15.6.1: our debug mainhang_ test), trimmed to SpringBoard's main thread. Image 2e3ea764... = the stuck code.
+        NSString *wd = [dir stringByAppendingPathComponent:@"watchdog-stuck-main.ips"];
+        NSString *stuck = @"2e3ea764-a57d-4cf0-a1e4-4263b5c18693";
+        gMSBDBlameUUIDOverride = @{stuck: @"/var/jb/usr/lib/MacStatusBarAndDock/MacStatusBarCore.dylib"};
+        v = MSBDBlameReportFile(wd, &b);   Check(@"watchdog: stuck in our code (counted)", v, b, kMSBDBlameOurs);
+        Check(@"watchdog: blamed says watchdog + stuck main thread", [b hasPrefix:@"watchdog:MacStatusBarCore.dylib"] && [b containsString:@"stuck main thread"] ? 1 : 0, b, 1);
+        gMSBDBlameUUIDOverride = @{stuck: @"/var/jb/usr/lib/TweakInject/Aerial.dylib"};
+        v = MSBDBlameReportFile(wd, &b);   Check(@"watchdog: stuck in another tweak (not counted)", v, b, kMSBDBlameOther);
+        gMSBDBlameUUIDOverride = @{};
+        v = MSBDBlameReportFile(wd, &b);   Check(@"watchdog: unnamed code on top (counted)", v, b, kMSBDBlameApple);
+        gMSBDBlameUUIDOverride = nil;
+        {   // no stackshot at all: unknown, still counted, and said to be a watchdog report
+            NSMutableDictionary *m = [[NSJSONSerialization JSONObjectWithData:[[NSData dataWithContentsOfFile:wd] subdataWithRange:NSMakeRange(0, 0)] options:0 error:nil] mutableCopy] ?: [NSMutableDictionary dictionary];
+            m[@"termination"] = @{@"namespace": @"WATCHDOG", @"code": @1};
+            v = MSBDBlameReportData(Report(m), &b);   Check(@"watchdog: no stacks (unknown, counted)", v, b, kMSBDBlameUnknown);
+            Check(@"watchdog: no stacks says watchdog", [b hasPrefix:@"watchdog:"] ? 1 : 0, b, 1);
+        }
         // Edge cases.
         NSArray *imgs = @[Img(@"/System/Library/CoreServices/SpringBoard.app/SpringBoard"), Img(@"/usr/lib/system/libsystem_kernel.dylib"),
                           Img(@"/var/jb/Library/MobileSubstrate/DynamicLibraries/MacStatusBar.dylib"), Img(@"/var/jb/usr/lib/SomeLib.dylib"),

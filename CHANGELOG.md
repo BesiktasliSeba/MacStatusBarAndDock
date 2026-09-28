@@ -2,6 +2,23 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.0.10
+
+### New
+- VPN menu in the status bar: while a VPN is connected, iOS's own VPN badge shows as its own item next to the status icons, like the VPN menu on a Mac. Its menu shows the VPN's name, Disconnect (auto-connect is turned off too, so it stays off), a button that opens the VPN's app and VPN & Device Management.
+- Respring warning with Aerial 5.0: Aerial 5.0 goes online while SpringBoard starts, and with a VPN on (or just turned off) that can hang on a black screen. Resprings now warn first (the Apple menu, Settings, Control Center toggles and package managers that use iOS's standard respring), with VPN Settings, Respring Anyway and Cancel.
+- Haptic Touch Menus: choose Mac or Stock in Settings > Status Bar > App Menus. Mac menus have slimmer rows and adapt to a trackpad or mouse.
+
+### Improvements
+- Dock and Home Screen Haptic Touch menus open without a pause right after a respring.
+- Long notifications show as much of the message as fits the full banner width, instead of a narrow column.
+- Mac-style banners step aside while Destra is switched on (both at once squeezed every banner); Settings says which tweak shows them.
+- Automatic Crash Recovery tells a stuck SpringBoard (restarted by the system) from a crash, and no longer turns MacStatusBar&Dock off when another tweak was the one stuck. Report a Problem explains what happened instead of "the crash report could not be read".
+
+### Fixes
+- The VPN menu's Open button opened nothing, and VPN & Device Management was missing or opened General.
+- The VPN icon could briefly overlap the Airplane Mode icon right after a VPN connected.
+
 ## 1.0.9
 
 ### Fixes

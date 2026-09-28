@@ -20,6 +20,8 @@
 // Cost: one read of at most 3 MB and one JSON parse, only for a crash report found after an early start; the verdict is cached by the caller.
 #pragma once
 #import <Foundation/Foundation.h>
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
 
 enum { kMSBDBlameUnknown = 0, kMSBDBlameOurs = 1, kMSBDBlameApple = 2, kMSBDBlameOther = 3 };
 #define MSBD_BLAME_MAX_BYTES (3 * 1024 * 1024)
@@ -149,7 +151,7 @@ static inline void MSBDBlameCollectText(id obj, NSMutableArray<NSString *> *out,
 
 // The classifier on the report body (the JSON object after the header line). `blamed` gets a short description (image or word, and where).
 // `map`: the crash map's text (CrashMap.txt), for the transparent hooks; nil = none known.
-static inline int MSBDBlameReportBodyMap(NSDictionary *body, NSString *map, NSString **blamed) {
+static inline int MSBDBlameReportBodyMapCore(NSDictionary *body, NSString *map, NSString **blamed) {
     if (blamed) *blamed = @"unreadable";
     if (![body isKindOfClass:[NSDictionary class]]) return kMSBDBlameUnknown;
     // The images: "usedImages" (iOS 15/16) or "binaryImages" (older), entries {"path","name"}; names may also sit in "imageExtraInfo" (legacy).
@@ -235,6 +237,16 @@ static inline int MSBDBlameReportBodyMap(NSDictionary *body, NSString *map, NSSt
     return kMSBDBlameApple;
 }
 
+static inline BOOL MSBDBlameIsWatchdog(NSDictionary *body);
+// A watchdog report (SpringBoard stuck, killed by the system: MSBDBlameIsWatchdog) is judged on its stuck main thread like a crash on its faulting
+// thread; what was blamed then starts with "watchdog:" (the pages and Report a Problem say "stuck" instead of "crashed", CrashExplain.h).
+static inline int MSBDBlameReportBodyMap(NSDictionary *body, NSString *map, NSString **blamed) {
+    NSString *what = nil;
+    int v = MSBDBlameReportBodyMapCore(body, map, &what);
+    if (MSBDBlameIsWatchdog(body)) what = [@"watchdog:" stringByAppendingString:[what stringByReplacingOccurrencesOfString:@"faulting thread" withString:@"stuck main thread"] ?: @""];
+    if (blamed) *blamed = what;
+    return v;
+}
 static inline int MSBDBlameReportBody(NSDictionary *body, NSString **blamed) { return MSBDBlameReportBodyMap(body, nil, blamed); }
 
 // The length of the first complete JSON object at `p` (0 if none): lets a report with something after its body still be read.
@@ -251,8 +263,125 @@ static inline NSUInteger MSBDBlameObjectLength(const char *p, NSUInteger n) {
     }
     return 0;
 }
-// A report's body from its raw bytes: header line + body (or a single JSON object); nil if unreadable.
+static inline NSDictionary *MSBDBlameBodyFromDataRaw(NSData *data);
+// ---- Watchdog reports (2026-09-28) --------------------------------------------------------------------------------------------------------------
+// When SpringBoard stops answering (its main thread stuck ~60 s), the system kills it and writes a SpringBoard-<date>.ips with termination namespace
+// WATCHDOG and NO "threads": the stacks are a "stackshot" -- processByPid.<pid>.threadById.<id>.userFrames = [[image index, offset], ...] and
+// binaryImages = [[uuid, load address, kind], ...], kind S = the shared cache (Apple), K = kernel, P/A = other images, with NO names. Seen on the M1
+// (28 Sep, 04:45): another tweak's network call at SpringBoard's start never returned, the watchdog killed it twice and the guard, reading "no crash
+// stacks", switched us off. Such a report is turned into the usual shape: SpringBoard's main thread as the triggered thread, its images named by UUID
+// from the tweak files (and the images loaded in this process). A P/A image that cannot be named ends the stack there (it could be our own code, so
+// nothing below it may clear us: the stuck thread then counts as Apple's, i.e. against us, as before).
+static NSDictionary<NSString *, NSString *> *gMSBDBlameUUIDOverride;   // (the Mac test: uuid -> path)
+static inline void MSBDBlameAddUUIDsOfFile(NSString *path, NSMutableDictionary *out) {
+    NSFileHandle *fh = [NSFileHandle fileHandleForReadingAtPath:path];
+    NSData *head = [fh readDataOfLength:65536];
+    [fh closeFile];
+    if (head.length < 32) return;
+    const uint8_t *b = (const uint8_t *)head.bytes; NSUInteger n = head.length;
+    uint32_t magic = *(const uint32_t *)b;
+    NSMutableArray<NSNumber *> *slices = [NSMutableArray array];
+    if (magic == 0xbebafecaU) {   // (FAT_CIGAM: a fat file, big-endian header)
+        uint32_t count = CFSwapInt32BigToHost(*(const uint32_t *)(b + 4));
+        for (uint32_t i = 0; i < count && i < 8 && 8 + (i + 1) * 20 <= n; i++) [slices addObject:@(CFSwapInt32BigToHost(*(const uint32_t *)(b + 8 + i * 20 + 8)))];
+    } else [slices addObject:@0];
+    for (NSNumber *off in slices) {
+        NSUInteger o = off.unsignedIntegerValue;
+        NSData *d = head;
+        if (o + 32 > n) {   // (a slice beyond the first 64 KB: read its header there)
+            NSFileHandle *f2 = [NSFileHandle fileHandleForReadingAtPath:path];
+            [f2 seekToFileOffset:o]; d = [f2 readDataOfLength:65536]; [f2 closeFile]; o = 0;
+            if (d.length < 32) continue;
+        }
+        const uint8_t *m = (const uint8_t *)d.bytes + o; NSUInteger left = d.length - o;
+        if (*(const uint32_t *)m != 0xfeedfacfU) continue;   // (MH_MAGIC_64)
+        uint32_t ncmds = *(const uint32_t *)(m + 16), size = *(const uint32_t *)(m + 20);
+        NSUInteger p = 32, end = MIN(left, 32 + (NSUInteger)size);
+        for (uint32_t c = 0; c < ncmds && p + 8 <= end; c++) {
+            uint32_t cmd = *(const uint32_t *)(m + p), len = *(const uint32_t *)(m + p + 4);
+            if (cmd == 0x1b && p + 24 <= end) {   // (LC_UUID)
+                out[[[[NSUUID alloc] initWithUUIDBytes:m + p + 8].UUIDString lowercaseString]] = path;
+                break;
+            }
+            if (len < 8) break;
+            p += len;
+        }
+    }
+}
+static inline NSDictionary<NSString *, NSString *> *MSBDBlameUUIDPaths(void) {
+    if (gMSBDBlameUUIDOverride) return gMSBDBlameUUIDOverride;
+    NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    for (NSString *dir in @[@"/var/jb/usr/lib/TweakInject", @"/var/jb/Library/MobileSubstrate/DynamicLibraries", @"/var/jb/usr/lib/MacStatusBarAndDock"]) {
+        NSString *real = [dir stringByResolvingSymlinksInPath];
+        if ([dir hasSuffix:@"DynamicLibraries"] && [real isEqualToString:[@"/var/jb/usr/lib/TweakInject" stringByResolvingSymlinksInPath]]) continue;   // (the same folder on rootless)
+        for (NSString *f in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil])
+            if ([f hasSuffix:@".dylib"]) MSBDBlameAddUUIDsOfFile([dir stringByAppendingPathComponent:f], out);
+    }
+    for (uint32_t i = 0; i < _dyld_image_count(); i++) {   // (loaded now: SpringBoard itself, frameworks outside the shared cache, ...)
+        const struct mach_header_64 *h = (const struct mach_header_64 *)_dyld_get_image_header(i);
+        const char *name = _dyld_get_image_name(i);
+        if (!h || !name || h->magic != 0xfeedfacfU) continue;
+        const uint8_t *p = (const uint8_t *)(h + 1);
+        for (uint32_t c = 0; c < h->ncmds; c++) {
+            const struct load_command *lc = (const struct load_command *)p;
+            if (lc->cmd == 0x1b) {
+                NSString *u = [[[NSUUID alloc] initWithUUIDBytes:p + 8].UUIDString lowercaseString];
+                if (!out[u]) out[u] = [NSString stringWithUTF8String:name];
+                break;
+            }
+            p += lc->cmdsize;
+        }
+    }
+    return out;
+}
+static inline NSDictionary *MSBDBlameFromStackshot(NSDictionary *body) {
+    NSDictionary *ss = body[@"stackshot"];
+    if (![ss isKindOfClass:[NSDictionary class]] || ![ss[@"processByPid"] isKindOfClass:[NSDictionary class]] || ![ss[@"binaryImages"] isKindOfClass:[NSArray class]]) return body;
+    NSDictionary *proc = nil;
+    NSString *want = [body[@"procName"] isKindOfClass:[NSString class]] ? body[@"procName"] : @"SpringBoard";
+    for (NSDictionary *p in [ss[@"processByPid"] allValues]) if ([p isKindOfClass:[NSDictionary class]] && [p[@"procname"] isEqual:want]) { proc = p; break; }
+    NSDictionary *threads = [proc[@"threadById"] isKindOfClass:[NSDictionary class]] ? proc[@"threadById"] : nil;
+    NSDictionary *main = nil;
+    for (NSDictionary *t in threads.allValues) if ([t isKindOfClass:[NSDictionary class]] && [t[@"dispatch_queue_label"] isEqual:@"com.apple.main-thread"]) { main = t; break; }
+    if (!main) for (NSDictionary *t in threads.allValues)   // (no queue label: the thread with the lowest id)
+        if ([t isKindOfClass:[NSDictionary class]] && [t[@"id"] isKindOfClass:[NSNumber class]] && (!main || [t[@"id"] compare:main[@"id"]] == NSOrderedAscending)) main = t;
+    NSArray *uf = [main[@"userFrames"] isKindOfClass:[NSArray class]] ? main[@"userFrames"] : nil;
+    if (!uf.count) return body;
+    NSArray *bin = ss[@"binaryImages"];
+    NSDictionary<NSString *, NSString *> *byUUID = MSBDBlameUUIDPaths();
+    NSMutableArray *images = [NSMutableArray array], *frames = [NSMutableArray array];
+    NSMutableDictionary<NSNumber *, NSNumber *> *indexOf = [NSMutableDictionary dictionary];
+    for (NSArray *f in uf) {
+        if (![f isKindOfClass:[NSArray class]] || f.count < 2 || ![f[0] isKindOfClass:[NSNumber class]] || ![f[1] isKindOfClass:[NSNumber class]]) continue;
+        NSUInteger bi = [f[0] unsignedIntegerValue];
+        NSArray *img = bi < bin.count && [bin[bi] isKindOfClass:[NSArray class]] ? bin[bi] : nil;
+        NSString *uuid = img.count >= 3 && [img[0] isKindOfClass:[NSString class]] ? [img[0] lowercaseString] : @"";
+        NSString *kind = img.count >= 3 && [img[2] isKindOfClass:[NSString class]] ? img[2] : @"";
+        NSString *path = [kind isEqualToString:@"S"] ? @"/System/Library/Caches/com.apple.dyld/dyld_shared_cache" : [kind isEqualToString:@"K"] ? @"/System/Library/Kernels/kernel" : byUUID[uuid];
+        if (!path) break;   // (unnamed code: nothing below it may clear us)
+        NSNumber *key = @(bi);
+        if (!indexOf[key]) { indexOf[key] = @(images.count); [images addObject:@{@"path": path, @"name": path.lastPathComponent, @"uuid": uuid}]; }
+        [frames addObject:@{@"imageIndex": indexOf[key], @"imageOffset": f[1]}];
+    }
+    NSMutableDictionary *out = [body mutableCopy];
+    out[@"usedImages"] = images;
+    out[@"threads"] = @[@{@"triggered": @YES, @"frames": frames, @"queue": @"com.apple.main-thread"}];
+    out[@"msbdStackshot"] = @YES;
+    return out;
+}
+static inline BOOL MSBDBlameIsWatchdog(NSDictionary *body) {
+    NSDictionary *t = [body isKindOfClass:[NSDictionary class]] && [body[@"termination"] isKindOfClass:[NSDictionary class]] ? body[@"termination"] : nil;
+    return [t[@"namespace"] isEqual:@"WATCHDOG"] || [body[@"msbdStackshot"] boolValue];
+}
+
+// A report's body from its raw bytes: header line + body (or a single JSON object); nil if unreadable. A watchdog report's stackshot is turned into
+// the usual shape (MSBDBlameFromStackshot).
 static inline NSDictionary *MSBDBlameBodyFromData(NSData *data) {
+    NSDictionary *body = MSBDBlameBodyFromDataRaw(data);
+    if (body && !body[@"threads"] && body[@"stackshot"]) body = MSBDBlameFromStackshot(body);
+    return body;
+}
+static inline NSDictionary *MSBDBlameBodyFromDataRaw(NSData *data) {
     if (!data.length || data.length > MSBD_BLAME_MAX_BYTES) return nil;
     const char *bytes = (const char *)data.bytes;
     const char *nl = memchr(bytes, '\n', data.length);

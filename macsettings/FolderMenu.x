@@ -23,12 +23,17 @@
 #import <objc/message.h>
 
 #define FM_DOMAIN CFSTR("com.besiktasliseba.macfoldermenu")
-static BOOL FMEnabled(void) {   // (Settings > Status Bar > App Menus; read when a menu opens, so the switch applies at once)
+// (Settings > Status Bar > App Menus.) Read once and kept; the switch's notification reads it again, so it still applies at once (it synchronized
+// with the preferences daemon on every call -- iOS asks for every icon's shortcut items, several times per menu; 2026-09-28).
+static int gFMOn = -1;
+static void FMPrefsChanged(CFNotificationCenterRef c, void *o, CFStringRef n, const void *obj, CFDictionaryRef u) { gFMOn = -1; }
+static BOOL FMEnabled(void) {
+    if (gFMOn >= 0) return gFMOn;
     CFPreferencesAppSynchronize(FM_DOMAIN);
     CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("enabled"), FM_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-    if (!v) return YES;   // default on, matching Lynx's current setting
-    BOOL on = CFGetTypeID(v) == CFBooleanGetTypeID() ? CFBooleanGetValue(v) : YES;
-    CFRelease(v);
+    BOOL on = !v || (CFGetTypeID(v) == CFBooleanGetTypeID() ? CFBooleanGetValue(v) : YES);   // default on, matching Lynx's current setting
+    if (v) CFRelease(v);
+    gFMOn = on;
     return on;
 }
 
@@ -132,4 +137,5 @@ static NSArray<NSArray<NSString *> *> *FMAppsInFolder(id folder) {
 
 %ctor {
     %init;
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, FMPrefsChanged, CFSTR("com.besiktasliseba.macfoldermenu/prefsChanged"), NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
 }

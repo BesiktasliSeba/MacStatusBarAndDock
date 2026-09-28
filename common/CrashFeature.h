@@ -33,7 +33,11 @@ static inline NSDictionary *MSBDFeatureBody(NSData *data) {
         id whole = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
         if ([whole isKindOfClass:[NSDictionary class]]) body = whole;
     }
-    return [body isKindOfClass:[NSDictionary class]] ? body : nil;
+    if (![body isKindOfClass:[NSDictionary class]]) return nil;
+    // (a watchdog report: its stacks are only in a stackshot -- turned into the usual shape as the verdict's reader does, MSBDBlameBodyFromData;
+    // without it a stuck main thread counted against us but was "not pinned on us" here, and the whole tweak went off instead of the part)
+    if (!body[@"threads"] && body[@"stackshot"]) body = MSBDBlameFromStackshot(body);
+    return body;
 }
 
 // The top-most frame in one of our images: its image name (no ".dylib"), that image's UUID (lowercase, "" if not given) and the offset. Our

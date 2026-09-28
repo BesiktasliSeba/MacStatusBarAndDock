@@ -38,6 +38,12 @@ int main(int argc, char **argv) {
         Expect(@"core, banners (exception backtrace) -> banners off", fx(@"step1b-core-banners-exception.ips"), map, [NSString stringWithFormat:@"pref MacStatusBarCore %@ macBanners 0 Mac-Style Banners|the Mac-style banners", D]);
         Expect(@"core, menu function -> Stock status bar", fx(@"step1b-core-menu.ips"), map, [NSString stringWithFormat:@"pref MacStatusBarCore %@ stockStatusBar 1 Status Bar Style|the status bar", D]);
         Expect(@"core, another build (UUID not in map) -> fallback Stock", fx(@"step1b-core-other-build.ips"), map, [NSString stringWithFormat:@"pref MacStatusBarCore %@ stockStatusBar 1 Status Bar Style|the status bar", D]);
+        // A watchdog report (stacks only in a stackshot, CrashBlame.h): stuck in our core -> its part's fallback, like a crash there.
+        gMSBDBlameUUIDOverride = @{@"2e3ea764-a57d-4cf0-a1e4-4263b5c18693": @"/var/jb/usr/lib/MacStatusBarAndDock/MacStatusBarCore.dylib"};
+        Expect(@"watchdog, stuck in the core -> fallback Stock", fx(@"watchdog-stuck-main.ips"), map, [NSString stringWithFormat:@"pref MacStatusBarCore %@ stockStatusBar 1 Status Bar Style|the status bar", D]);
+        gMSBDBlameUUIDOverride = @{@"2e3ea764-a57d-4cf0-a1e4-4263b5c18693": @"/var/jb/usr/lib/TweakInject/Aerial.dylib"};
+        Expect(@"watchdog, stuck in another tweak -> nothing", fx(@"watchdog-stuck-main.ips"), map, @"NO: not pinned on us*");
+        gMSBDBlameUUIDOverride = nil;
         Expect(@"core, offset outside the map -> fallback Stock", fx(@"step1b-core-outside-map.ips"), map, [NSString stringWithFormat:@"pref MacStatusBarCore %@ stockStatusBar 1 Status Bar Style|the status bar", D]);
         Expect(@"loader on top -> nothing (step 2)", fx(@"step1b-loader.ips"), map, @"NO: MacStatusBar cannot be turned off on its own");
         Expect(@"Apple-only report -> nothing (step 2)", fx(@"apple-only-our-class-in-reason.ips"), map, @"NO: none of our code on the crash stacks*");

@@ -94,9 +94,16 @@ static void removeFromAppSwitcher(NSString *bundleID) {
 
     // Bake red into the glyph ourselves, and mark it non-template so
     // iOS doesn't override our color with its own default tint.
-    UIImage *symbolImage = [UIImage systemImageNamed:@"xmark.circle"];
-    UIImage *redSymbolImage = [symbolImage imageWithTintColor:[UIColor systemRedColor] renderingMode:UIImageRenderingModeAlwaysOriginal];
-    NSData *imageData = UIImagePNGRepresentation(redSymbolImage);
+    // (made once per light/dark look and kept: it was encoded for every menu -- part of the Dock menu's slow first open, 2026-09-28)
+    static NSData *pngs[3];
+    UIUserInterfaceStyle style = [UITraitCollection currentTraitCollection].userInterfaceStyle;
+    NSUInteger slot = style == UIUserInterfaceStyleDark ? 2 : style == UIUserInterfaceStyleLight ? 1 : 0;
+    if (!pngs[slot]) {
+        UIImage *symbolImage = [UIImage systemImageNamed:@"xmark.circle"];
+        UIImage *redSymbolImage = [symbolImage imageWithTintColor:[UIColor systemRedColor] renderingMode:UIImageRenderingModeAlwaysOriginal];
+        pngs[slot] = UIImagePNGRepresentation(redSymbolImage);
+    }
+    NSData *imageData = pngs[slot];
     forceQuitItem.icon = [[%c(SBSApplicationShortcutCustomImageIcon) alloc] initWithImageData:imageData dataType:0 isTemplate:0];
 
     if (!orig) {

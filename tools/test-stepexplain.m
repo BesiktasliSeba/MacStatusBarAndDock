@@ -18,6 +18,17 @@ int main(void) {
         Expect(@"banners: notice title", MSBDGuardAlertTitle(4), @"Feature Turned Off");
         Expect(@"banners: Report a Problem line", MSBDGuardActionWords(MSBDCrashRecord()), @"turned off “Mac-Style Banners” (only what crashed)");
         Expect(@"banners: our part named", MSBDCrashPartName(MSBDCrashRecord()), @"MacStatusBarCore");
+        {   // the words for what a report did not tell (2026-09-28: "could not be read" was shown for a watchdog report with no stacks)
+            NSString *(^Part)(int, NSString *) = ^NSString *(int verdict, NSString *blamed) {
+                [[NSString stringWithFormat:@"time %ld\naction 2\ntested 1\nios 15.6.1\nbuild 1.0.9\nverdict %d\nblamed %@\n", (long)time(NULL), verdict, blamed] writeToFile:@MSBD_GUARD_RECORD atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                return MSBDCrashPartName(MSBDCrashRecord());
+            };
+            Expect(@"watchdog, no stacks", Part(0, @"watchdog:no_crash_stacks_in_the_report"), @"not known: SpringBoard was stuck and the system restarted it (the report shows no stacks)");
+            Expect(@"watchdog, Apple code", Part(2, @"watchdog:Apple_code_only"), @"none of ours: SpringBoard was stuck in Apple code and the system restarted it");
+            Expect(@"watchdog, ours", Part(1, @"watchdog:MacStatusBarCore.dylib_(stuck_main_thread)"), @"MacStatusBarCore");
+            Expect(@"crash without stacks", Part(0, @"no_crash_stacks_in_the_report"), @"not known (the crash report has no crash details)");
+            Expect(@"unreadable report", Part(0, @"unreadable"), @"not known (the crash report could not be read)");
+        }
         Record(@"feature com.besiktasliseba.macstatusbar stockStatusBar 1 Status Bar Style|the status bar\n");
         Expect(@"status bar: footer", MSBDGuardExplanation(4, NO, NO), @"SpringBoard crashed twice in the status bar, so the stock status bar is used for now. Set Status Bar Style back to Mac to try again, or tap Report a Problem.");
         Expect(@"status bar: notice", MSBDGuardExplanation(4, NO, YES), @"SpringBoard crashed twice in the status bar, so the stock status bar is used for now. To try again, set Status Bar Style back to Mac in Settings.");

@@ -219,8 +219,16 @@ static inline NSString *MSBDCrashPartName(NSDictionary *record) {
     int verdict = [record[@"verdict"] intValue];
     NSString *blamed = record[@"blamed"] ?: @"";
     if (verdict == -1) return @"none (a simulated crash)";
-    if (verdict == kMSBDVerdictApple) return @"none of ours on the crashing stack (Apple code only)";
-    if (verdict != kMSBDVerdictOurs) return @"not known (the crash report could not be read)";
+    // (a watchdog report: SpringBoard did not crash but stopped answering, and the system restarted it -- its stuck main thread is what was judged)
+    BOOL watchdog = [blamed hasPrefix:@"watchdog"];
+    if (verdict == kMSBDVerdictApple) return watchdog ? @"none of ours: SpringBoard was stuck in Apple code and the system restarted it" : @"none of ours on the crashing stack (Apple code only)";
+    if (verdict != kMSBDVerdictOurs) {   // (the words for what the report did not tell -- "could not be read" was shown for all of them before)
+        if (watchdog) return @"not known: SpringBoard was stuck and the system restarted it (the report shows no stacks)";
+        if ([blamed hasPrefix:@"no_crash_stacks"] || [blamed hasPrefix:@"no_named_images"]) return @"not known (the crash report has no crash details)";
+        if ([blamed hasPrefix:@"too_large"]) return @"not known (the crash report was empty or too large)";
+        return @"not known (the crash report could not be read)";
+    }
+    if (watchdog) blamed = [blamed substringFromIndex:MIN(blamed.length, (NSUInteger)9)];   // ("watchdog:" + what was on the stuck main thread)
     NSRange r = [blamed rangeOfString:@"_(" options:NSBackwardsSearch];
     NSString *name = r.location == NSNotFound ? blamed : [blamed substringToIndex:r.location];
     BOOL text = [blamed hasSuffix:@"_(crash_text)"];
@@ -321,7 +329,8 @@ static inline NSURL *MSBDReportProblemURL(NSString *engine) {
 
 // ---- The note about another tweak's crash ------------------------------------------------------------------------------------------------------
 // The latest SpringBoard crash the guard judged (its verdict file); if it is under 24 h old and was another tweak's, that tweak's name.
-static inline NSString *MSBDOtherTweakCrashName(void) {
+static inline NSString *MSBDOtherTweakCrashName(BOOL *stuck) {
+    if (stuck) *stuck = NO;
     NSString *text = [NSString stringWithContentsOfFile:@MSBD_GUARD_VERDICTS encoding:NSUTF8StringEncoding error:nil];
     if (!text.length) return nil;
     NSString *latest = nil, *latestLine = nil;
@@ -339,6 +348,8 @@ static inline NSString *MSBDOtherTweakCrashName(void) {
     NSArray *p = [latestLine componentsSeparatedByString:@" "];
     if (age < -300 || age > 86400 || [p[1] intValue] != kMSBDVerdictOther) return nil;
     NSString *blamed = [[p subarrayWithRange:NSMakeRange(2, p.count - 2)] componentsJoinedByString:@" "];
+    if (stuck) *stuck = [blamed hasPrefix:@"watchdog:"];   // (SpringBoard stuck in that tweak's code, restarted by the system -- not a crash)
+    if ([blamed hasPrefix:@"watchdog:"]) blamed = [blamed substringFromIndex:9];
     NSRange r = [blamed rangeOfString:@"_(" options:NSBackwardsSearch];
     NSString *path = r.location == NSNotFound ? blamed : [blamed substringToIndex:r.location];
     if (!path.length) return nil;
@@ -353,6 +364,8 @@ static inline NSString *MSBDOtherTweakCrashName(void) {
     return name;
 }
 static inline NSString *MSBDOtherTweakCrashNote(void) {
-    NSString *name = MSBDOtherTweakCrashName();
-    return name.length ? [NSString stringWithFormat:@"The last SpringBoard crash came from “%@”.", name] : nil;
+    BOOL stuck = NO;
+    NSString *name = MSBDOtherTweakCrashName(&stuck);
+    if (!name.length) return nil;
+    return stuck ? [NSString stringWithFormat:@"SpringBoard last got stuck in “%@” and was restarted by the system.", name] : [NSString stringWithFormat:@"The last SpringBoard crash came from “%@”.", name];
 }

@@ -1,0 +1,127 @@
+{"bundleID": "SpringBoard", "timestamp": "2026-09-28 13:16:07.00 +0200", "os_version": "iPhone OS 15.6.1 (19G82)", "bug_type": "309", "app_name": "SpringBoard", "name": "SpringBoard"}
+{
+ "procName": "SpringBoard",
+ "pid": 4707,
+ "osVersion": {
+  "train": "iPhone OS 15.6.1",
+  "build": "19G82",
+  "releaseType": "User"
+ },
+ "termination": {
+  "flags": 0,
+  "indicator": "monitoring timed out for service",
+  "code": 1,
+  "namespace": "WATCHDOG",
+  "details": [
+   "(1 monitored services unresponsive): checkin with service: SpringBoard returned not alive with context:",
+   "unresponsive dispatch queue(s): com.apple.main-thread",
+   "60 seconds since last successful checkin, 47 total successsful checkins since monitoring enabled by backboardd (530 seconds ago) (0 induced crashes)"
+  ]
+ },
+ "stackshot": {
+  "binaryImages": [
+   [
+    "33154610-b9d8-3f8d-9426-eb2f969f3dbb",
+    6442450944,
+    "S"
+   ],
+   [
+    "2e3ea764-a57d-4cf0-a1e4-4263b5c18693",
+    4446420992,
+    "P"
+   ],
+   [
+    "444f5041-322e-342e-3500-eb8b8291b5e1",
+    4332421120,
+    "P"
+   ],
+   [
+    "00000000-0000-0000-0000-000000000000",
+    0,
+    "A"
+   ]
+  ],
+  "processByPid": {
+   "4707": {
+    "pid": 4707,
+    "procname": "SpringBoard",
+    "threadById": {
+     "1": {
+      "id": 1,
+      "dispatch_queue_label": "com.apple.main-thread",
+      "userFrames": [
+       [
+        0,
+        926022188
+       ],
+       [
+        0,
+        189748104
+       ],
+       [
+        1,
+        1663320
+       ],
+       [
+        0,
+        334384
+       ],
+       [
+        0,
+        347884
+       ],
+       [
+        0,
+        426300
+       ],
+       [
+        0,
+        392860
+       ],
+       [
+        0,
+        392088
+       ],
+       [
+        0,
+        3811328
+       ],
+       [
+        0,
+        3524356
+       ],
+       [
+        0,
+        3603400
+       ],
+       [
+        0,
+        474854260
+       ],
+       [
+        0,
+        47070040
+       ],
+       [
+        0,
+        44454032
+       ],
+       [
+        0,
+        759336840
+       ],
+       [
+        2,
+        122276
+       ],
+       [
+        3,
+        0
+       ]
+      ]
+     }
+    }
+   }
+  }
+ }
+}

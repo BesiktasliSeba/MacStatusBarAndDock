@@ -8,16 +8,22 @@
 #import <objc/runtime.h>
 
 #define ASM_DOMAIN CFSTR("com.besiktasliseba.macappsizemenu")
-static BOOL ASMEnabled(void) {   // (Settings > Status Bar > App Menus; read when a menu opens, so the switch applies at once)
+// (Settings > Status Bar > App Menus.) Read once and kept; the switch's own notification reads it again, so it still applies at once. It used to
+// synchronize with the preferences daemon on every call, and iOS asks for an icon's shortcut items several times per menu (2026-09-28: part of the
+// Dock menu's slow first open after a respring).
+static int gASMOn = -1;
+static void ASMPrefsChanged(CFNotificationCenterRef c, void *o, CFStringRef n, const void *obj, CFDictionaryRef u) { gASMOn = -1; }
+static BOOL ASMEnabled(void) {
+    if (gASMOn >= 0) return gASMOn;
     CFPreferencesAppSynchronize(ASM_DOMAIN);
     CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("enabled"), ASM_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-    if (!v) return YES;   // default on, matching Lynx's current setting
-    BOOL on = CFGetTypeID(v) == CFBooleanGetTypeID() ? CFBooleanGetValue(v) : YES;
-    CFRelease(v);
+    BOOL on = !v || (CFGetTypeID(v) == CFBooleanGetTypeID() ? CFBooleanGetValue(v) : YES);   // default on, matching Lynx's current setting
+    if (v) CFRelease(v);
+    gASMOn = on;
     return on;
 }
 
-static NSString *ASMSizeText(NSString *bundleID) {
+static NSString *ASMSizeTextNow(NSString *bundleID) {
     if (!bundleID.length) return nil;
     Class proxyClass = NSClassFromString(@"LSApplicationProxy");
     SEL make = NSSelectorFromString(@"applicationProxyForIdentifier:");
@@ -29,6 +35,35 @@ static NSString *ASMSizeText(NSString *bundleID) {
     if ([proxy respondsToSelector:@selector(dynamicDiskUsage)]) total += [[proxy valueForKey:@"dynamicDiskUsage"] longLongValue];
     if (total <= 0) return nil;
     return [NSByteCountFormatter stringFromByteCount:total countStyle:NSByteCountFormatterCountStyleFile];
+}
+
+// The size shown in the menu: kept for 5 minutes per app. The disk usage is asked on a background queue (its dynamic part -- the app's data -- can
+// take a long moment right after a respring), and the menu waits for it at most 0.08 s: a slow answer is kept for the next open and this menu
+// comes up without the row, instead of the whole menu hanging.
+static NSMutableDictionary<NSString *, NSArray *> *gASMSizes;   // bundle -> @[text or NSNull, time]
+static NSMutableSet<NSString *> *gASMPending;
+static dispatch_queue_t ASMQueue(void) { static dispatch_queue_t q; static dispatch_once_t once; dispatch_once(&once, ^{ q = dispatch_queue_create("com.besiktasliseba.appsizemenu", DISPATCH_QUEUE_SERIAL); }); return q; }
+static NSString *ASMSizeText(NSString *bundleID) {
+    if (!bundleID.length) return nil;
+    __block NSArray *hit = nil;
+    dispatch_sync(ASMQueue(), ^{ if (!gASMSizes) { gASMSizes = [NSMutableDictionary dictionary]; gASMPending = [NSMutableSet set]; } hit = gASMSizes[bundleID]; });
+    if (hit && CFAbsoluteTimeGetCurrent() - [hit[1] doubleValue] < 300.0) return [hit[0] isKindOfClass:[NSString class]] ? hit[0] : nil;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    __block BOOL start = NO;
+    dispatch_sync(ASMQueue(), ^{ if (![gASMPending containsObject:bundleID]) { [gASMPending addObject:bundleID]; start = YES; } });
+    if (start) dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString *text = ASMSizeTextNow(bundleID);
+        dispatch_sync(ASMQueue(), ^{ gASMSizes[bundleID] = @[text ?: (id)[NSNull null], @(CFAbsoluteTimeGetCurrent())]; [gASMPending removeObject:bundleID]; });
+        dispatch_semaphore_signal(done);
+    });
+    if (!start || dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC))) != 0) return hit && [hit[0] isKindOfClass:[NSString class]] ? hit[0] : nil;   // (slow: an older value, else no row this time)
+    dispatch_sync(ASMQueue(), ^{ hit = gASMSizes[bundleID]; });
+    return [hit[0] isKindOfClass:[NSString class]] ? hit[0] : nil;
+}
+static NSData *ASMIconPNG(void) {   // (made once: it was encoded for every menu)
+    static NSData *png; static dispatch_once_t once;
+    dispatch_once(&once, ^{ png = UIImagePNGRepresentation([UIImage systemImageNamed:@"internaldrive"]); });
+    return png;
 }
 
 @interface SBSApplicationShortcutIcon : NSObject
@@ -70,7 +105,7 @@ static NSString * const kASMTitlePrefix = @"App Size: ";
     item.type = kASMShortcutType;
     item.localizedTitle = [kASMTitlePrefix stringByAppendingString:sizeText];
     item.bundleIdentifierToLaunch = bundleID;
-    NSData *png = UIImagePNGRepresentation([UIImage systemImageNamed:@"internaldrive"]);
+    NSData *png = ASMIconPNG();
     if (png && iconClass) item.icon = [[iconClass alloc] initWithImageData:png dataType:0 isTemplate:1];
     return [orig isKindOfClass:[NSArray class]] ? [@[item] arrayByAddingObjectsFromArray:orig] : @[item];
 }
@@ -89,4 +124,5 @@ static NSString * const kASMTitlePrefix = @"App Size: ";
 
 %ctor {
     %init;
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, ASMPrefsChanged, CFSTR("com.besiktasliseba.macappsizemenu/prefsChanged"), NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
 }

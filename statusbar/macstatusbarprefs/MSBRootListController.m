@@ -121,14 +121,7 @@ static BOOL MSBChoicyApplyEngine(NSString *engine) {
 	CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), CFSTR("com.opa334.choicyprefs/ReloadPrefs"), NULL, NULL, YES);
 	return YES;
 }
-static void MSBRespring(void) {
-	dlopen("/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices", RTLD_NOW);
-	dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_NOW);
-	Class actionClass = objc_getClass("SBSRelaunchAction"), serviceClass = objc_getClass("FBSSystemService");
-	id action = actionClass ? ((id (*)(id, SEL, id, NSUInteger, id))objc_msgSend)(actionClass, NSSelectorFromString(@"actionWithReason:options:targetURL:"), @"RestartRenderServer", 4, nil) : nil;
-	id service = serviceClass ? ((id (*)(id, SEL))objc_msgSend)(serviceClass, NSSelectorFromString(@"sharedService")) : nil;
-	if (action && service) ((void (*)(id, SEL, id, id))objc_msgSend)(service, NSSelectorFromString(@"sendActions:withResult:"), [NSSet setWithObject:action], nil);
-}
+static void MSBRespring(void) { MSBDRespring(); }   // (LineSwitch.h: with the VPN check first)
 
 // ---- Window Engine list (2026-09-24): every engine this iOS supports is listed; one that is not installed is shown greyed out and cannot be
 // picked (stock-looking disabled row), and an installed build our integration has not been tested with is greyed with a short note (it would run on
@@ -428,6 +421,10 @@ static void MSBFitValueLabels(UIView *v) {
 		NSString *muteBy = MSBDOtherTweakDoing(kMSBDDupMuteIcon, NO);
 		if (muteBy) for (PSSpecifier *spec in _specifiers) if ([spec.identifier isEqualToString:@"AUDIO_GROUP"])
 			[spec setProperty:[NSString stringWithFormat:@"%@ is showing the mute icon.", muteBy] forKey:@"footerText"];
+		// Destra showing Mac-style banners: ours steps aside (both at once squeezed every banner), so the group says who does it.
+		NSString *bannersBy = MSBDOtherTweakDoing(kMSBDDupBanners, NO);
+		if (bannersBy) for (PSSpecifier *spec in _specifiers) if ([spec.identifier isEqualToString:@"BANNERS_GROUP"])
+			[spec setProperty:[NSString stringWithFormat:@"%@ is showing Mac-style banners.", bannersBy] forKey:@"footerText"];
 		// Lynx hiding the Lock Screen status bar: ours steps aside (LockStatusBar.x), so the group says who does it.
 		NSString *lockBy = MSBDOtherTweakDoing(kMSBDDupLockStatusBar, NO);
 		if (lockBy) for (PSSpecifier *spec in _specifiers) if ([spec.identifier isEqualToString:@"LOCK_GROUP"])

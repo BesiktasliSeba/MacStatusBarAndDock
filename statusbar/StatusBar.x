@@ -40,6 +40,7 @@
 #import "../common/AlertQueue.h"   // (MSBDMakeAlertWindow / MSBDAlertBusy / MSBDAlertCloseOnLock: our alerts one at a time, never over the Lock Screen)
 #import "../common/ReduceMotion.h"  // (MSBReduceMotion / MSBAnimate: Reduce Motion turns our zooms and springs into short cross-fades)
 #import "../common/OtherTweaks.h"   // (MSBDOtherTweakDoing: Single Mute already shows the mute icon -> ours steps aside)
+#import "../common/VPNRespring.h"  // (no respring into Aerial 5.0's start-up hang while a VPN reconnects: the warning, and the VPN state for Settings)
 
 extern int proc_pid_rusage(int pid, int flavor, rusage_info_t *buffer);
 
@@ -165,6 +166,7 @@ static const void *kClockSuppressedKey = &kClockSuppressedKey;   // set on a sta
 static void DMStartClockBalanceIfNeeded(void);
 static void DMHoldStatusBarCopy(UIView *fg);
 static void DMReleaseStatusBarCopy(UIView *fg);
+static void DMStockVPNRecheck(UIView *fg);
 static const void *kSpotButtonKey = &kSpotButtonKey;
 static const void *kEditLabelKey = &kEditLabelKey;
 static const void *kEditButtonKey = &kEditButtonKey;
@@ -253,6 +255,7 @@ static void DMLogWrite(NSString *line) {
 static void DMIdleProbe(void);   // (debug, defined at the end)
 static void DMIdleSample(double seconds);   // (debug, defined at the end)
 static void DMHangWatch(double seconds);   // (debug, defined at the end)
+static double gHangWatchLimit = 1.5;   // (stallwatch_: a lower limit for the next watch)
 static NSString *DMSampleSym(uintptr_t a);
 static void DMRenderFramesLog(double seconds, NSString *what);
 static void DMIdleRenderBisect(NSUInteger i, NSArray<UIWindow *> *list);
@@ -475,6 +478,28 @@ static void DMEnterSafeMode(void) {
     DMLog([NSString stringWithFormat:@"[action] enter safe mode, marker written=%d", ok]);
     if (ok) DMRespring();
 }
+
+// Our Respring buttons (the Apple menu's, the engine switch's): the VPN warning first when a respring could hang (VPNRespring.h). Safe Mode's
+// respring needs none (no tweak loads there, Aerial included).
+static UIWindow *gVPNWarnWindow = nil;
+static void DMOpenURL(NSString *urlString, NSString *tag);   // (defined below)
+// (Safe Mode's marker written: no tweak loads after this respring, Aerial included -- DMEnterSafeMode's respring, which goes through sbreload and
+// so through the restart gate, is never held; a held one left the marker behind for whatever respring came next.)
+static BOOL DMRespringNeedsVPNWarning(void) { return access("/var/mobile/.eksafemode", F_OK) != 0 && MSBDVPNRisk() && MSBDAerial5WillLoad(); }
+static CFTimeInterval gOwnRespringAt = 0;   // (our own respring, already asked about: the restart request sbreload makes for it passes the gate)
+static void DMRespringWarnThen(dispatch_block_t go) {   // go: the respring itself (ours, or another's held one)
+    void (^close)(void) = ^{ gVPNWarnWindow.hidden = YES; gVPNWarnWindow = nil; };
+    UIAlertController *a = gVPNWarnWindow ? nil : MSBDVPNRespringAlert(^{ close(); DMLog(@"[vpnwarn] respring anyway"); go(); },
+                                                                       ^{ close(); DMOpenURL(MSBD_VPN_SETTINGS_URL, @"vpn settings (respring warning)"); },
+                                                                       ^{ close(); DMLog(@"[vpnwarn] cancelled"); });
+    if (!a) { if (!gVPNWarnWindow) go(); return; }
+    DMLog([NSString stringWithFormat:@"[vpnwarn] respring held: a VPN %@ and Aerial 5.0 loads", MSBDVPNRisk() == 1 ? @"is on" : @"just went off"]);
+    UIWindow *w = MSBDMakeAlertWindow(UIWindowLevelAlert + 10.0);
+    gVPNWarnWindow = w;
+    [w.rootViewController presentViewController:a animated:YES completion:nil];
+    MSBDAlertCloseOnLock(w, ^{ if (gVPNWarnWindow == w) gVPNWarnWindow = nil; });
+}
+static void DMRespringChecked(void) { DMRespringWarnThen(^{ gOwnRespringAt = CACurrentMediaTime(); DMRespring(); }); }
 
 // Every private call below is checked with respondsToSelector on the CLASS as well as the instance: calling a
 // method that does not exist on this iPadOS makes SpringBoard abort (an unguarded +sharedUserAgent did exactly that).
@@ -854,7 +879,14 @@ static BOOL gSSHActive = NO;   // the SSH icon is shown in the status bar
 static const void *kSSHIconKey = &kSSHIconKey, *kSSHButtonKey = &kSSHButtonKey;
 static BOOL gVPNActive = NO;   // the VPN icon is shown in the status bar (bundled with Control Center otherwise, like the WiFi icon)
 static NSString *gVPNAppBundleID = nil, *gVPNAppName = nil;   // the app whose tunnel is connected, if it says so (nil: open Settings > VPN instead)
+static NSString *gVPNConfigName = nil;   // the connected VPN's own name, as Settings > VPN lists it (the menu's second line)
+static NEVPNManager *gVPNManager = nil;   // its configuration (the menu's Disconnect: on demand off, then the connection stopped)
 static const void *kVPNIconKey = &kVPNIconKey, *kVPNButtonKey = &kVPNButtonKey;
+static void DMRefreshVPNState(void);   // (defined with the watcher)
+static void DMVPNDisconnect(NEVPNManager *m);   // (defined with the VPN menu)
+#if DEBUG
+static NSString *gVPNFakeProvider = nil;   // (tests: vpnfake_<provider id> -- a VPN counts as connected through that provider; vpnfake_off ends it)
+#endif
 static BOOL gShowMuteIcon = YES;   // Settings > Status Bar > Audio > Show Mute Icon (on by default)
 static BOOL gRingerMuted = NO;     // the ringer is muted (Silent Mode): the mute icon shows (see DMMuteIconWanted)
 static BOOL gMuteIconShown = NO;   // the visible status bar shows it (the keyboard pill then sits left of it, as of the SSH icon)
@@ -5459,10 +5491,13 @@ static UIMenu *DMMenuEngineItems(UIMenu *m, BOOL dropZetsu, BOOL greyEngines) {
     return changed ? [m menuByReplacingChildren:kept] : m;
 }
 static const void *kZetsuMenuWrappedKey = &kZetsuMenuWrappedKey;
+static CFTimeInterval gCtxAskedAt = 0;   // (debug: when the last icon menu was asked for, for [ctxperf])
 %group ZetsuIconItems
 %hook SBIconView
 - (id)contextMenuInteraction:(id)interaction configurationForMenuAtLocation:(CGPoint)location {
+    CFTimeInterval t0 = CACurrentMediaTime();
     id cfg = %orig;
+    if (DMTestFlag("/tmp/macstatusbar-debug")) { gCtxAskedAt = t0; DMLog([NSString stringWithFormat:@"[ctxperf] menu asked (the configuration took %.0f ms)", (CACurrentMediaTime() - t0) * 1000.0]); }
     BOOL dropZetsu = DMActiveEngine() == DMEngineZetsu && !DMTestFlag("/tmp/msb-zetsu-keepitems");
     NSString *bid = nil; @try { bid = [[self valueForKey:@"icon"] valueForKey:@"applicationBundleID"]; } @catch (id e) {}
     BOOL greyEngines = [bid isKindOfClass:[NSString class]] && DMAppNeedsFullScreen(bid);
@@ -11124,8 +11159,9 @@ static void DMOpenMenu(UIButton *btn) {
         }],
         [NSNull null],
         [[DMRow alloc] initWithTitle:@"Respring…" enabled:YES handler:^{
+            if (DMRespringNeedsVPNWarning()) { DMCloseThen(^{ DMRespringChecked(); })(); return; }   // (the menu closes; the VPN warning instead of the usual question)
             DMShowConfirm(host, @"Respring?", @"SpringBoard will restart and your tweaks will reload.",
-                          @"Respring", NO, ^{ DMRespring(); });
+                          @"Respring", NO, ^{ DMRespringChecked(); });
         }],
         [[DMRow alloc] initWithTitle:@"Safe Mode…" enabled:YES handler:^{
             DMShowConfirm(host, @"Enter Safe Mode?",
@@ -13171,23 +13207,98 @@ static void DMOpenSSHMenu(UIButton *btn) {
 // The VPN icon: like the Wi-Fi menu on a Mac, but for a VPN — it only shows while a tunnel is actually connected (Control Center still has its own icon
 // for turning one on or off; this is only about knowing one is on, and reaching the app behind it).
 static const void *kVPNMenuLabelKey = &kVPNMenuLabelKey, *kVPNMenuPillKey = &kVPNMenuPillKey;
+// The icon is iOS's own VPN badge (28 Sep: the native VPN sign), from UIKit's status bar artwork ("Black_VPN", the template the stock
+// VPN item draws, tinted like the other icons). If a later iPadOS renames it: the same badge drawn -- a rounded box with "VPN" in it.
+static UIImage *DMVPNGlyph(CGFloat textSize) {
+    static UIImage *glyph = nil;
+    static BOOL tried = NO;
+    if (tried) return glyph;
+    tried = YES;
+    NSBundle *artwork = [NSBundle bundleWithPath:@"/System/Library/PrivateFrameworks/UIKitCore.framework/Artwork.bundle"];
+    SEL kit = NSSelectorFromString(@"kitImageNamed:");
+    for (NSString *name in @[@"Black_VPN", @"VPN"]) {
+        if ([UIImage respondsToSelector:kit]) glyph = ((UIImage *(*)(id, SEL, NSString *))objc_msgSend)([UIImage class], kit, name);
+        if (!glyph && artwork) glyph = [UIImage imageNamed:name inBundle:artwork compatibleWithTraitCollection:nil];
+        if (glyph) { DMLog([NSString stringWithFormat:@"[vpn] icon: iOS's %@ (%.1f x %.1f)", name, glyph.size.width, glyph.size.height]); break; }
+    }
+    if (!glyph) {
+        UIFont *font = [UIFont systemFontOfSize:MAX(8.0, textSize - 4.0) weight:UIFontWeightBold];
+        NSDictionary *attrs = @{NSFontAttributeName: font, NSForegroundColorAttributeName: UIColor.blackColor};
+        CGSize ts = [@"VPN" sizeWithAttributes:attrs];
+        CGSize size = CGSizeMake(ceil(ts.width) + 6.0, ceil(font.capHeight) + 6.0);
+        glyph = [[[UIGraphicsImageRenderer alloc] initWithSize:size] imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+            UIBezierPath *box = [UIBezierPath bezierPathWithRoundedRect:CGRectInset((CGRect){CGPointZero, size}, 0.75, 0.75) cornerRadius:2.5];
+            box.lineWidth = 1.5;
+            [UIColor.blackColor setStroke]; [box stroke];
+            [@"VPN" drawAtPoint:CGPointMake((size.width - ts.width) / 2.0, (size.height - ts.height) / 2.0) withAttributes:attrs];
+        }];
+        DMLog(@"[vpn] icon: iOS's VPN artwork not found, drawn badge");
+    }
+    glyph = [glyph imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    return glyph;
+}
 static void DMOpenVPNMenu(UIButton *btn) {
     if (DMTitleTapWithMenuOpen(btn)) return;
     NSString *name = gVPNAppName.length ? gVPNAppName : @"a VPN";
     DMRow *state = [[DMRow alloc] initWithTitle:@"VPN: Connected" enabled:NO handler:nil];
-    DMRow *detail = [[DMRow alloc] initWithTitle:[NSString stringWithFormat:@"Through %@", name] enabled:NO handler:nil];
+    // (the second line: just the connected VPN's name, as Settings > VPN lists it)
+    DMRow *detail = [[DMRow alloc] initWithTitle:gVPNConfigName.length ? gVPNConfigName : name enabled:NO handler:nil];
     NSMutableArray *items = [NSMutableArray arrayWithObjects:state, detail, [NSNull null], nil];
-    if (gVPNAppBundleID.length) {
-        [items addObject:[[DMRow alloc] initWithTitle:[NSString stringWithFormat:@"Open %@", name] enabled:YES handler:DMCloseThen(^{
-            DMOpenApp(gVPNAppBundleID);
-            DMLog([NSString stringWithFormat:@"[vpn] opened %@ from the status bar", gVPNAppBundleID]);
+    id manager = gVPNManager;
+#if DEBUG
+    if (gVPNFakeProvider) manager = [NSNull null];   // (tests: the row is shown; tapping it only logs)
+#endif
+    if (manager) {   // Disconnect, the same as the switch in Settings > VPN (no Connect here: the icon shows only while connected)
+        [items addObject:[[DMRow alloc] initWithTitle:@"Disconnect" enabled:YES handler:DMCloseThen(^{
+            if (![manager isKindOfClass:[NEVPNManager class]]) { DMLog(@"[vpn] disconnect asked from the status bar -- test, nothing stopped"); return; }
+            DMVPNDisconnect(manager);
         })]];
-    } else {
-        [items addObject:[[DMRow alloc] initWithTitle:@"VPN & Device Management…" enabled:YES handler:DMCloseThen(^{
-            DMOpenURL(@"prefs:root=General&path=VPN", @"vpn settings");
+        [items addObject:[NSNull null]];
+    }
+    if (gVPNAppBundleID.length) {   // (the app itself, not its tunnel extension: DMVPNAppForProvider)
+        NSString *app = gVPNAppBundleID;
+        [items addObject:[[DMRow alloc] initWithTitle:[NSString stringWithFormat:@"Open %@", name] enabled:YES handler:DMCloseThen(^{
+            DMOpenApp(app);
+            DMLog([NSString stringWithFormat:@"[vpn] opened %@ from the status bar", app]);
         })]];
     }
+    [items addObject:[[DMRow alloc] initWithTitle:@"VPN & Device Management…" enabled:YES handler:DMCloseThen(^{   // (always, like macOS's "Open VPN Settings…")
+        DMOpenURL(@"prefs:root=General&path=ManagedConfigurationList", @"vpn settings");   // (path=VPN only reaches General on 15: checked on the M1)
+    })]];
     DMPresentMenu(btn, kVPNMenuLabelKey, kVPNMenuPillKey, items);
+}
+// Disconnect from the VPN menu. A VPN with Connect On Demand (a VPN app's auto-connect) comes straight back when only its connection is stopped
+// (0.4 s on the M1), and the public NEVPNManager cannot save another app's configuration ("configuration type is wrong"). Settings' own
+// configuration store (NEConfigurationManager, private; SpringBoard can load it -- checked on the iPad 2) is used to turn On Demand off first, as
+// the switch in the VPN's own app does; if that is refused, the VPN's app is opened to switch it off there (the only way that keeps it off).
+static void DMVPNDisconnect(NEVPNManager *m) {
+    NSString *name = gVPNConfigName ?: @"the VPN";
+    if (!m.isOnDemandEnabled) { [m.connection stopVPNTunnel]; DMLog([NSString stringWithFormat:@"[vpn] disconnected from the status bar (%@)", name]); return; }
+    void (^fallback)(NSString *) = ^(NSString *why) {
+        DMLog([NSString stringWithFormat:@"[vpn] %@: auto-connect could not be turned off (%@) -- opening its app", name, why]);
+        [m.connection stopVPNTunnel];
+        if (gVPNAppBundleID.length) DMOpenApp(gVPNAppBundleID); else DMOpenURL(MSBD_VPN_SETTINGS_URL, @"vpn settings (disconnect)");
+    };
+    id cfg = nil;
+    @try { cfg = [m valueForKey:@"configuration"]; } @catch (id e) { cfg = nil; }   // (the manager's own NEConfiguration)
+    Class cm = objc_getClass("NEConfigurationManager");
+    id store = [cm respondsToSelector:@selector(sharedManager)] ? ((id (*)(id, SEL))objc_msgSend)(cm, @selector(sharedManager)) : nil;
+    SEL load = NSSelectorFromString(@"loadConfigurationsWithCompletionQueue:handler:"), save = NSSelectorFromString(@"saveConfiguration:withCompletionQueue:handler:");
+    NSUUID *want = [DMCall(cfg, @"identifier") isKindOfClass:[NSUUID class]] ? DMCall(cfg, @"identifier") : nil;
+    if (!want || ![store respondsToSelector:load] || ![store respondsToSelector:save]) { fallback(@"no configuration store"); return; }
+    ((void (*)(id, SEL, id, id))objc_msgSend)(store, load, dispatch_get_main_queue(), ^(NSArray *configs, NSError *error) {
+        id mine = nil;
+        for (id c in configs) if ([DMCall(c, @"identifier") isEqual:want]) { mine = c; break; }
+        id vpn = DMCall(mine, @"VPN") ?: DMCall(mine, @"appVPN");
+        SEL setOD = NSSelectorFromString(@"setOnDemandEnabled:");
+        if (![vpn respondsToSelector:setOD]) { fallback(error ? error.localizedDescription : @"not found"); return; }
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(vpn, setOD, NO);
+        ((void (*)(id, SEL, id, id, id))objc_msgSend)(store, save, mine, dispatch_get_main_queue(), ^(NSError *e) {
+            if (e) { fallback(e.localizedDescription); return; }
+            [m.connection stopVPNTunnel];
+            DMLog([NSString stringWithFormat:@"[vpn] disconnected from the status bar (%@): auto-connect turned off first", name]);
+        });
+    });
 }
 // Minimize the app you are working in: a window in front minimizes its window; anything else (a full-screen app, even when other windows
 // exist behind it) goes home, exactly like the orange status bar button.
@@ -14296,6 +14407,7 @@ static dispatch_queue_t DMTNServerQueue(id srv) {
     id q = qi ? object_getIvar(srv, qi) : nil;
     return q;
 }
+static BOOL gTNTestLong = NO;   // (tnpost_..._long: a long message, as long chat messages or mails bring)
 static void DMTNTestPost(int n, unsigned long long dest, long long persistence) {
     id srv = gTNServer; dispatch_queue_t q = DMTNServerQueue(srv);
     if (!srv || !q) { DMLog([NSString stringWithFormat:@"[tntest] no bulletin server (%@) or queue", srv]); return; }
@@ -14310,7 +14422,8 @@ static void DMTNTestPost(int n, unsigned long long dest, long long persistence) 
                 [b setValue:@"com.apple.Preferences" forKey:@"sectionID"];
                 [b setValue:pid forKey:@"bulletinID"]; [b setValue:pid forKey:@"recordID"]; [b setValue:pid forKey:@"publisherBulletinID"];
                 [b setValue:[NSString stringWithFormat:@"MSB Test %d", num] forKey:@"title"];
-                [b setValue:[NSString stringWithFormat:@"Test notification %d from MacStatusBar&Dock: a preview long enough to need a second line in the box.", num] forKey:@"message"];
+                [b setValue:gTNTestLong ? [NSString stringWithFormat:@"Test notification %d from MacStatusBar&Dock with a long message. It goes on for several sentences, the way a long chat message or the start of a mail does, so the banner has far more text than fits in it. Every word here is only test text. The end of the message comes here, after many lines.", num]
+                                        : [NSString stringWithFormat:@"Test notification %d from MacStatusBar&Dock: a preview long enough to need a second line in the box.", num] forKey:@"message"];
                 [b setValue:[NSDate date] forKey:@"date"];
                 [b setValue:[NSDate date] forKey:@"lastInterruptDate"];
                 id act = ((id (*)(id, SEL, id, id))objc_msgSend)(objc_getClass("BBAction"), NSSelectorFromString(@"actionWithLaunchBundleID:callblock:"), @"com.apple.Preferences", nil);
@@ -15353,13 +15466,21 @@ static void DMLayoutWithoutClock(UIView *fg) {
     UIView *prevTrail = objc_getAssociatedObject(fg, kTrailShiftKey);
     if (prevTrail && prevTrail != trailing) prevTrail.transform = CGAffineTransformIdentity;
     objc_setAssociatedObject(fg, kTrailShiftKey, trailing, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    // the SSH and VPN icons (ours) go just left of the status icons, as elsewhere
-    CGFloat left = CGFLOAT_MAX;
+    // the VPN, mute and SSH icons (ours) go just left of the status icons, as elsewhere
+    __block CGFloat left = CGFLOAT_MAX;
     for (UIView *sub in trailing.subviews) {
         if (sub.hidden || sub.alpha < 0.05 || sub.bounds.size.width < 1.0) continue;
         left = MIN(left, [trailing convertRect:sub.frame toView:fg].origin.x - trailing.transform.tx + shift);
     }
-    {   // the mute icon (ours) nearest the status icons, as elsewhere (DMMuteIconWanted)
+    // our own icons (VPN, then later SSH) keep their size and height and only move along to close up; the VPN icon sits nearest the status icons
+    void (^closeUp)(const void *, const void *) = ^(const void *iconKey, const void *btnKey) {
+        UIView *icon = objc_getAssociatedObject(fg, iconKey), *btn = objc_getAssociatedObject(fg, btnKey);
+        if (left == CGFLOAT_MAX || !icon || icon.hidden) return;
+        CGRect f = icon.frame; left -= 8.0 + f.size.width; f.origin.x = left; icon.frame = f;
+        CGRect b = btn.frame; b.origin.x = left - 6.0; btn.frame = b;
+    };
+    closeUp(kVPNIconKey, kVPNButtonKey);
+    {   // the mute icon (ours) after the VPN icon, as elsewhere (DMMuteIconWanted)
         DMReadRingerState();
         UIImageView *muteIcon = DMMuteIcon(fg, 12.0);   // (12 pt: the status bar's time size, for a copy that never had a time label)
         BOOL show = DMMuteIconWanted() && left < CGFLOAT_MAX && muteIcon.image;
@@ -15374,12 +15495,7 @@ static void DMLayoutWithoutClock(UIView *fg) {
             [fg bringSubviewToFront:muteIcon];
         }
     }
-    if (left < CGFLOAT_MAX) for (NSArray *pair in @[@[[NSValue valueWithPointer:kSSHIconKey], [NSValue valueWithPointer:kSSHButtonKey]], @[[NSValue valueWithPointer:kVPNIconKey], [NSValue valueWithPointer:kVPNButtonKey]]]) {
-        UIView *icon = objc_getAssociatedObject(fg, [pair[0] pointerValue]), *btn = objc_getAssociatedObject(fg, [pair[1] pointerValue]);
-        if (!icon || icon.hidden) continue;
-        CGRect f = icon.frame; left -= 8.0 + f.size.width; f.origin.x = left; icon.frame = f;
-        CGRect b = btn.frame; b.origin.x = left - 6.0; btn.frame = b;
-    }
+    closeUp(kSSHIconKey, kSSHButtonKey);
     if (fabs(trailing.transform.tx - shift) < 0.5) return;
     BOOL onScreen = fg.window && !fg.window.hidden;
     void (^apply)(void) = ^{ trailing.transform = CGAffineTransformMakeTranslation(shift, 0); };
@@ -15422,6 +15538,85 @@ static void DMReleaseStatusBarCopy(UIView *fg) {
     if (![objc_getAssociatedObject(fg, kHoldKey) boolValue]) return;
     objc_setAssociatedObject(fg, kHoldKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     fg.alpha = 1.0;
+    if (gVPNActive) {   // (now ours: iOS's VPN badge is asked again, after this layout pass)
+        __weak UIView *weakFg = fg;
+        dispatch_async(dispatch_get_main_queue(), ^{ if (weakFg) DMStockVPNRecheck(weakFg); });
+    }
+}
+
+// iOS's own VPN badge sits inside the status icons group, which opens Control Center. In our bars (every copy the Mac look lays out) it is left
+// out, and our VPN icon is its own item next to the group instead. The stock item is asked whether its badge may show; for our copies
+// the answer is no, so the group closes up with no gap. A copy becomes ours at its first layout (kHoldKey at once, kLogoKey after): the items are
+// asked again then (DMStockVPNRecheck). Control Center's own status bar and the stock-bar mode keep iOS's badge. Kill switch /tmp/msb-stockvpn.
+static BOOL DMHideStockVPN(id item) {
+    UIView *fg = DMCall(DMCall(item, @"statusBar"), @"foregroundView");
+    if (![fg isKindOfClass:[UIView class]] || DMTestFlag("/tmp/msb-stockvpn")) return NO;
+    // (only while our own VPN icon is there to replace it: a VPN we do not see -- an IKEv2 / L2TP one from Settings or a profile, another app's
+    // personal VPN -- keeps iOS's badge, the only sign of it; DMRefreshVPNState asks again when our icon comes)
+    if (!gVPNActive) return NO;
+    return objc_getAssociatedObject(fg, kLogoKey) || [objc_getAssociatedObject(fg, kHoldKey) boolValue];
+}
+static void DMStockVPNRecheck(UIView *fg) {   // (a copy that has just become ours, while a VPN is on: its items are asked again)
+    if (!gVPNActive) return;
+    id bar = fg.superview;
+    while (bar && ![bar isKindOfClass:objc_getClass("_UIStatusBar")]) bar = [bar superview];
+    SEL upd = NSSelectorFromString(@"_updateWithAggregatedData:");
+    id data = DMCall(bar, @"currentAggregatedData");
+    if (data && [bar respondsToSelector:upd]) ((void (*)(id, SEL, id))objc_msgSend)(bar, upd, data);
+}
+// Our icons beside the status icons (VPN, mute, SSH) are placed from where the status icons start, in our layout pass. iOS updates its icons without
+// one (the Wi-Fi icon coming back seconds after a VPN connects moved the Airplane icon under our VPN badge for about a second, 28 Sep), so right
+// after each of its data updates our copy is laid out again (and once more after its icon animations).
+static void DMStatusIconsUpdated(id bar) {
+    if (!(gVPNActive || gSSHActive || gMuteIconShown)) return;   // (nothing of ours beside them)
+    UIView *fg = DMCall(bar, @"foregroundView");
+    if (![fg isKindOfClass:[UIView class]] || !objc_getAssociatedObject(fg, kLogoKey)) return;
+    [fg setNeedsLayout];
+    __weak UIView *weakFg = fg;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [weakFg setNeedsLayout]; });
+}
+// Anyone else's respring (Control Center respring buttons such as CCToggles', Settings, other tweaks, our Settings pages) reaches SpringBoard as a
+// restart request to SBRestartManager (SBSRelaunchAction from another process ends there too). While a respring could hang (VPNRespring.h) the
+// request is held and the same warning shown; Respring Anyway lets it through. sbreload (Sileo, our own Apple menu) sends an SBSRelaunchAction too
+// and comes here ("requester: anon<sbreload>", iPad 2, logic test 1.0.10); our own respring has asked already (gOwnRespringAt) and passes.
+// Resprings that kill SpringBoard directly (killall) never come here. Kill switch /tmp/msb-norestartgate.
+static BOOL gRestartGateOpen = NO;
+%group VPNRestartGate
+%hook SBRestartManager
+- (void)restartWithTransitionRequest:(id)request {
+    BOOL ours = gOwnRespringAt > 0 && CACurrentMediaTime() - gOwnRespringAt < 10.0;
+    if (gRestartGateOpen || ours || DMTestFlag("/tmp/msb-norestartgate") || !DMRespringNeedsVPNWarning()) {
+        gRestartGateOpen = NO; gOwnRespringAt = 0;
+        %orig;
+        return;
+    }
+    DMLog([NSString stringWithFormat:@"[vpnwarn] a restart request held (%@)", [[request description] substringToIndex:MIN((NSUInteger)160, [request description].length)]]);
+    id manager = self, held = request;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        DMRespringWarnThen(^{ gRestartGateOpen = YES; ((void (*)(id, SEL, id))objc_msgSend)(manager, @selector(restartWithTransitionRequest:), held); });
+    });
+}
+%end
+%end
+%group StockVPNItem
+%hook _UIStatusBar
+- (void)_updateWithAggregatedData:(id)data {
+    %orig;
+    DMStatusIconsUpdated(self);
+}
+%end
+%hook _UIStatusBarIndicatorVPNItem
+- (BOOL)canEnableDisplayItem:(id)displayItem fromData:(id)data {
+    if (DMHideStockVPN(self)) return NO;
+    return %orig;
+}
+%end
+%end
+static void DMStockVPNInit(void) {
+    if ([objc_getClass("SBRestartManager") instancesRespondToSelector:@selector(restartWithTransitionRequest:)]) { %init(VPNRestartGate); DMLog(@"[vpnwarn] restart requests are checked (VPN + Aerial 5.0)"); }
+    Class c = objc_getClass("_UIStatusBarIndicatorVPNItem");
+    if (c && [c instancesRespondToSelector:@selector(canEnableDisplayItem:fromData:)] && [objc_getClass("_UIStatusBar") instancesRespondToSelector:NSSelectorFromString(@"_updateWithAggregatedData:")]) { %init(StockVPNItem); DMLog(@"[vpn] iOS's own VPN badge left out of our status bars"); }
+    else DMLog(@"[vpn] iOS's VPN item not found: its badge stays in the status icons");
 }
 
 %hook _UIStatusBarForegroundView
@@ -15840,7 +16035,34 @@ static void DMReleaseStatusBarCopy(UIView *fg) {
                 });
             }
         }
-        {   // Mute icon: right next to the status icons (nearest them: it is the ringer's state, like Apple's own icons), only while muted
+        // VPN icon: its own item right next to the status icons, like a Mac's VPN menu extra next to Control Center, only while a
+        // tunnel is connected; iOS's own VPN badge is taken out of the status icons group in our bars (DMHideStockVPN). Tapping it opens its menu.
+        UIImageView *vpnIcon = objc_getAssociatedObject(fg, kVPNIconKey);
+        if (!vpnIcon) {
+            vpnIcon = [UIImageView new];
+            vpnIcon.contentMode = UIViewContentModeScaleAspectFit;
+            vpnIcon.userInteractionEnabled = NO;
+            vpnIcon.image = DMVPNGlyph(timeFont.pointSize);
+            [fg addSubview:vpnIcon];
+            objc_setAssociatedObject(fg, kVPNIconKey, vpnIcon, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            UIButton *vpnButton = [UIButton buttonWithType:UIButtonTypeCustom];
+            vpnButton.pointerInteractionEnabled = YES;
+            __weak UIButton *weakVPNButton = vpnButton;
+            [vpnButton addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { if (weakVPNButton) DMOpenVPNMenu(weakVPNButton); }] forControlEvents:UIControlEventTouchUpInside];
+            [fg addSubview:vpnButton];
+            objc_setAssociatedObject(fg, kVPNButtonKey, vpnButton, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        UIButton *vpnButton = objc_getAssociatedObject(fg, kVPNButtonKey);
+        vpnIcon.hidden = vpnButton.hidden = !gVPNActive;
+        if (timeColor) vpnIcon.tintColor = timeColor;
+        if (gVPNActive && left < CGFLOAT_MAX && vpnIcon.image) {
+            CGFloat w = ceil(vpnIcon.image.size.width), h = ceil(vpnIcon.image.size.height);
+            left -= 8.0 + w;
+            vpnIcon.frame = CGRectMake(left, timeCentre.y - h / 2.0, w, h);
+            vpnButton.frame = CGRectMake(left - 6.0, 0, w + 12.0, fg.bounds.size.height);
+            [fg bringSubviewToFront:vpnIcon]; [fg bringSubviewToFront:vpnButton];
+        }
+        {   // Mute icon: next to the status icons (after the VPN icon), only while muted
             DMReadRingerState();
             UIImageView *muteIcon = DMMuteIcon(fg, timeFont.pointSize);
             if (timeColor) muteIcon.tintColor = timeColor;
@@ -15880,34 +16102,6 @@ static void DMReleaseStatusBarCopy(UIView *fg) {
             sshIcon.frame = CGRectMake(left, timeCentre.y - h / 2.0, w, h);
             sshButton.frame = CGRectMake(left - 6.0, 0, w + 12.0, fg.bounds.size.height);
             [fg bringSubviewToFront:sshIcon]; [fg bringSubviewToFront:sshButton];
-        }
-        // VPN icon: just left of the SSH icon (or the status icons, if SSH is not shown), only while a tunnel is actually connected. Control Center
-        // keeps its own VPN icon for turning one on or off; this is only for knowing one is already on, and a quick way to the app behind it.
-        UIImageView *vpnIcon = objc_getAssociatedObject(fg, kVPNIconKey);
-        if (!vpnIcon) {
-            vpnIcon = [UIImageView new];
-            vpnIcon.contentMode = UIViewContentModeScaleAspectFit;
-            vpnIcon.userInteractionEnabled = NO;
-            UIImage *g = [UIImage systemImageNamed:@"lock.shield" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:timeFont.pointSize + 0.5 weight:UIImageSymbolWeightSemibold]];
-            vpnIcon.image = [g imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-            [fg addSubview:vpnIcon];
-            objc_setAssociatedObject(fg, kVPNIconKey, vpnIcon, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            UIButton *vpnButton = [UIButton buttonWithType:UIButtonTypeCustom];
-            vpnButton.pointerInteractionEnabled = YES;
-            __weak UIButton *weakVPNButton = vpnButton;
-            [vpnButton addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { if (weakVPNButton) DMOpenVPNMenu(weakVPNButton); }] forControlEvents:UIControlEventTouchUpInside];
-            [fg addSubview:vpnButton];
-            objc_setAssociatedObject(fg, kVPNButtonKey, vpnButton, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-        UIButton *vpnButton = objc_getAssociatedObject(fg, kVPNButtonKey);
-        vpnIcon.hidden = vpnButton.hidden = !gVPNActive;
-        if (timeColor) vpnIcon.tintColor = timeColor;
-        if (gVPNActive && left < CGFLOAT_MAX && vpnIcon.image) {
-            CGFloat w = ceil(vpnIcon.image.size.width), h = ceil(vpnIcon.image.size.height);
-            left -= 8.0 + w;
-            vpnIcon.frame = CGRectMake(left, timeCentre.y - h / 2.0, w, h);
-            vpnButton.frame = CGRectMake(left - 6.0, 0, w + 12.0, fg.bounds.size.height);
-            [fg bringSubviewToFront:vpnIcon]; [fg bringSubviewToFront:vpnButton];
         }
         if (left < CGFLOAT_MAX && fg.window && !fg.window.hidden && fg.bounds.size.width > 300.0) { gStatusIconsLeft = left; if (timeColor) gStatusTextColor = timeColor; }
     }
@@ -16012,6 +16206,7 @@ static void DMReleaseStatusBarCopy(UIView *fg) {
 - (void)didMoveToWindow {
     %orig;
     UIWindow *w = ((UIView *)self).window;
+    if (w && gCtxAskedAt > 0) { DMLog([NSString stringWithFormat:@"[ctxperf] menu on screen %.0f ms after it was asked (%@)", (CACurrentMediaTime() - gCtxAskedAt) * 1000.0, NSStringFromClass([w class])]); gCtxAskedAt = 0; }
     if (w && [NSStringFromClass([w class]) isEqualToString:@"SBFloatingDockWindow"]) {
         if (!gDockMenuOpen) { gDockMenuOpen = YES; DMLog(@"[lights] dock menu opened: windows go under the Dock"); }
         DMApplyWindowLevel();
@@ -16503,7 +16698,7 @@ static NSString *DMHIDTouchDesc(UIEvent *event) {
 - (void)sendEvent:(UIEvent *)event {
     BOOL watch = NO, began = NO, edge = NO;
     NSString *why = nil;
-    if (event.type == UIEventTypeTouches && DMTestFlag("/tmp/macstatusbar-debug")) {
+    if (event.type == UIEventTypeTouches && DMTestFlag("/tmp/macstatusbar-debug") && !DMTestFlag("/tmp/msb-notouchwatch")) {   // (/tmp/msb-notouchwatch: off, for timing tests)
         CFTimeInterval now = CACurrentMediaTime();
         CGSize sc = [UIScreen mainScreen].bounds.size;
         BOOL anyDown = NO;
@@ -16794,7 +16989,12 @@ static void DMRunTrigger(NSString *cmd) {
         }
     }
     else if ([cmd isEqualToString:@"idleexp_rswindows"]) DMIdleRenderBisect(0, nil);   // each window hidden in turn, render server frames counted (debug)
-    else if ([cmd hasPrefix:@"hangwatch_"]) DMHangWatch([[cmd substringFromIndex:10] doubleValue]);   // hangwatch_<s>: a main-thread hang is sampled and logged from the background (debug)
+    else if ([cmd hasPrefix:@"hangwatch_"]) DMHangWatch([[cmd substringFromIndex:10] doubleValue]);
+    else if ([cmd hasPrefix:@"stallwatch_"]) {   // stallwatch_<s>_<ms>: like hangwatch_, sampling the first main-thread stall longer than <ms> (debug)
+        NSArray *q = [[cmd substringFromIndex:11] componentsSeparatedByString:@"_"];
+        gHangWatchLimit = q.count > 1 ? MAX(0.1, [q[1] doubleValue] / 1000.0) : 0.3;
+        DMHangWatch([q[0] doubleValue]);
+    }   // hangwatch_<s>: a main-thread hang is sampled and logged from the background (debug)
     else if ([cmd hasPrefix:@"idlesample_"]) DMIdleSample([[cmd substringFromIndex:11] doubleValue]);   // idlesample_<s>: main-thread stack sampler (debug)
     else if ([cmd hasPrefix:@"idleexp_"]) {   // idleexp_<orientoff|orienton|timersoff|timerson>: experiments for idleprobe (debug)
         NSString *w = [cmd substringFromIndex:8];
@@ -16928,7 +17128,8 @@ static void DMRunTrigger(NSString *cmd) {
     }
     else if ([cmd hasPrefix:@"tnpost_"]) {   // tnpost_<n>[_<destinations>]: n test notifications "MSB Test k" for Settings (default destinations 14)
         NSArray *a = [[cmd substringFromIndex:7] componentsSeparatedByString:@"_"];
-        DMTNTestPost(MAX(1, MIN(20, [a[0] intValue])), a.count > 1 ? (unsigned long long)[a[1] longLongValue] : 14ULL, a.count > 2 ? [a[2] longLongValue] : -1);
+        gTNTestLong = [a.lastObject isEqualToString:@"long"];
+        DMTNTestPost(MAX(1, MIN(20, [a[0] intValue])), a.count > 1 ? (unsigned long long)[a[1] longLongValue] : 14ULL, a.count > 2 && ![a[2] isEqualToString:@"long"] ? [a[2] longLongValue] : -1);
     }
     else if ([cmd isEqualToString:@"tnwithdraw"]) DMTNTestWithdraw();   // tnwithdraw: every test notification of ours withdrawn
     else if ([cmd isEqualToString:@"tninfo"]) DMTNTestInfo();
@@ -17098,6 +17299,49 @@ static void DMRunTrigger(NSString *cmd) {
         id t = [mon respondsToSelector:@selector(autoLockTimeout)] ? ((id (*)(id, SEL))objc_msgSend)(mon, @selector(autoLockTimeout)) : nil;   // (an NSNumber of seconds)
         BOOL never = [mon respondsToSelector:NSSelectorFromString(@"dontLockEver")] ? ((BOOL (*)(id, SEL))objc_msgSend)(mon, NSSelectorFromString(@"dontLockEver")) : NO;
         DMLog([NSString stringWithFormat:@"[idle] coordinator %@ monitor %@: autoLockTimeout %@ s, dontLockEver %d", coord ? @"yes" : @"no", mon ? @"yes" : @"no", t, never]);
+    }
+    else if ([cmd hasPrefix:@"mainhang_"]) {   // mainhang_<seconds>: SpringBoard's main thread sleeps (a stuck SpringBoard: the system watchdog kills it after ~50 s) -- for a real watchdog report
+        int secs = MAX(1, MIN(120, [[cmd substringFromIndex:9] intValue]));
+        DMLog([NSString stringWithFormat:@"[hang] main thread sleeping %d s (test)", secs]);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ sleep(secs); DMLog(@"[hang] main thread awake again"); });
+    }
+    else if ([cmd hasPrefix:@"vpnconfigtest_"]) {   // vpnconfigtest_<name part>: can SpringBoard change a VPN's Connect On Demand the way Settings does (NEConfigurationManager)? Loads the configurations, logs each VPN's name / on demand, and saves the one whose name contains <name part> back UNCHANGED (read-only test of the permission)
+        NSString *want = [[cmd substringFromIndex:14] lowercaseString];
+        Class cm = objc_getClass("NEConfigurationManager");
+        id mgr = [cm respondsToSelector:@selector(sharedManager)] ? ((id (*)(id, SEL))objc_msgSend)(cm, @selector(sharedManager)) : nil;
+        SEL load = NSSelectorFromString(@"loadConfigurationsWithCompletionQueue:handler:");
+        DMLog([NSString stringWithFormat:@"[vpncfg] manager %@, load %d", mgr ? @"yes" : @"no", [mgr respondsToSelector:load]]);
+        if ([mgr respondsToSelector:load]) ((void (*)(id, SEL, id, id))objc_msgSend)(mgr, load, dispatch_get_main_queue(), ^(NSArray *configs, NSError *error) {
+            DMLog([NSString stringWithFormat:@"[vpncfg] %lu configurations, error %@", (unsigned long)configs.count, error]);
+            for (id c in configs) {
+                id vpn = DMCall(c, @"VPN") ?: DMCall(c, @"appVPN");
+                if (!vpn) continue;
+                NSString *name = DMCall(c, @"name");
+                BOOL od = [vpn respondsToSelector:NSSelectorFromString(@"isOnDemandEnabled")] && ((BOOL (*)(id, SEL))objc_msgSend)(vpn, NSSelectorFromString(@"isOnDemandEnabled"));
+                DMLog([NSString stringWithFormat:@"[vpncfg] %@: %@ on demand %d", name, NSStringFromClass([vpn class]), od]);
+                if (!want.length || ![name.lowercaseString containsString:want]) continue;
+                SEL save = NSSelectorFromString(@"saveConfiguration:withCompletionQueue:handler:");
+                if (![mgr respondsToSelector:save]) { DMLog(@"[vpncfg] no save method"); continue; }
+                ((void (*)(id, SEL, id, id, id))objc_msgSend)(mgr, save, c, dispatch_get_main_queue(), ^(NSError *e) {
+                    DMLog([NSString stringWithFormat:@"[vpncfg] save back unchanged: %@", e ? [NSString stringWithFormat:@"REFUSED (%@)", e] : @"ALLOWED"]);
+                });
+            }
+        });
+    }
+    else if ([cmd isEqualToString:@"relaunchreq"]) {   // relaunchreq: a respring asked the way Control Center toggles and Settings ask (SBSRelaunchAction through FBSSystemService) -- the restart gate's test
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            Class actionClass = objc_getClass("SBSRelaunchAction"), serviceClass = objc_getClass("FBSSystemService");
+            id action = actionClass ? ((id (*)(id, SEL, id, NSUInteger, id))objc_msgSend)(actionClass, NSSelectorFromString(@"actionWithReason:options:targetURL:"), @"RestartRenderServer", 4, nil) : nil;
+            id service = serviceClass ? ((id (*)(id, SEL))objc_msgSend)(serviceClass, NSSelectorFromString(@"sharedService")) : nil;
+            DMLog([NSString stringWithFormat:@"[vpnwarn] test: relaunch action %@ sent", action && service ? @"" : @"NOT"]);
+            if (action && service) ((void (*)(id, SEL, id, id))objc_msgSend)(service, NSSelectorFromString(@"sendActions:withResult:"), [NSSet setWithObject:action], nil);
+        });
+    }
+    else if ([cmd hasPrefix:@"vpnfake_"]) {   // vpnfake_<provider bundle id> / vpnfake_off: a VPN counts as connected through that tunnel provider (our icon, its menu, iOS's badge left out)
+        NSString *provider = [cmd substringFromIndex:8];
+        gVPNFakeProvider = [provider isEqualToString:@"off"] ? nil : provider;
+        DMLog([NSString stringWithFormat:@"[vpn] test: %@", gVPNFakeProvider ? [@"connected through " stringByAppendingString:provider] : @"fake VPN off"]);
+        DMRefreshVPNState();
     }
     else if ([cmd isEqualToString:@"trailtree"]) {   // trailtree: the status icons' container in every status bar copy: its shift and each icon view (class, frame, hidden, alpha), read-only
         for (UIView *fg in gCopies.allObjects) {
@@ -20582,24 +20826,66 @@ static BOOL DMSSHOn(void) {
 // A VPN app (almost every one) sets itself up as a Network Extension tunnel provider, a separate config from Apple's own "Personal
 // VPN" (NEVPNManager on its own only sees that classic kind). Asking every configured tunnel provider for its own connection status is how the real
 // status bar's VPN glyph itself knows, and it also gives the provider's app: what "the connected VPN app" tapping the icon opens.
+// The app behind a VPN tunnel. The tunnel config names its provider EXTENSION (e.g. com.example.vpn.PacketTunnel), which cannot be
+// opened: "Open <app>" did nothing (28 Sep). The extension's containing app; else the longest prefix of the id that is an installed app
+// (com.example.vpn); else nil (the menu then offers only VPN & Device Management). Cached per provider.
+static NSString *DMVPNAppForProvider(NSString *provider) {
+    if (!provider.length) return nil;
+    static NSMutableDictionary<NSString *, NSString *> *cache = nil;
+    @synchronized ([NSNull null]) {
+        if (!cache) cache = [NSMutableDictionary dictionary];
+        NSString *hit = cache[provider];
+        if (hit) return hit.length ? hit : nil;
+    }
+    NSString *app = nil;
+    Class pk = objc_getClass("LSPlugInKitProxy");
+    SEL sel = NSSelectorFromString(@"pluginKitProxyForIdentifier:");
+    id plugin = [pk respondsToSelector:sel] ? ((id (*)(id, SEL, id))objc_msgSend)(pk, sel, provider) : nil;
+    id container = DMCall(plugin, @"containingBundle");
+    if ([DMCall(container, @"bundleIdentifier") isKindOfClass:[NSString class]]) app = DMCall(container, @"bundleIdentifier");
+    if (!app) {
+        NSArray<NSString *> *parts = [provider componentsSeparatedByString:@"."];
+        for (NSUInteger n = parts.count; n >= 2 && !app; n--) {
+            NSString *candidate = [[parts subarrayWithRange:NSMakeRange(0, n)] componentsJoinedByString:@"."];
+            if (DMCall(DMProxyForBundle(candidate), @"bundleURL")) app = candidate;   // (installed: an app proxy with a bundle)
+        }
+    }
+    DMLog([NSString stringWithFormat:@"[vpn] tunnel provider %@ -> app %@", provider, app ?: @"none found"]);
+    @synchronized ([NSNull null]) { cache[provider] = app ?: @""; }
+    return app;
+}
+static void DMVPNRiskUpdate(BOOL busy) {
+#if DEBUG
+    if (gVPNFakeProvider) busy = YES;   // (tests: the fake VPN counts for the respring warning too)
+#endif
+    static BOOL last = NO; static long offAt = 0;
+    if (last && !busy) offAt = (long)time(NULL);
+    if (last != busy) DMLog([NSString stringWithFormat:@"[vpnwarn] VPN %@ (respring warning %@)", busy ? @"on / connecting / on demand" : @"off", busy ? @"armed" : @"for 2 more minutes"]);
+    last = busy;
+    MSBDVPNRiskPublish(busy, offAt);
+}
 static void DMRefreshVPNState(void) {
-    void (^apply)(BOOL, NSString *, NSString *) = ^(BOOL active, NSString *bundleID, NSString *name) {
+    void (^apply)(BOOL, NSString *, NSString *, NSString *, NEVPNManager *) = ^(BOOL active, NSString *bundleID, NSString *name, NSString *configName, NEVPNManager *manager) {
+#if DEBUG
+        if (gVPNFakeProvider) { active = YES; bundleID = DMVPNAppForProvider(gVPNFakeProvider); name = bundleID ? (DMCall(DMProxyForBundle(bundleID), @"localizedName") ?: bundleID) : nil; configName = name; manager = nil; }
+#endif
         dispatch_async(dispatch_get_main_queue(), ^{
             // (nil-safe: with no VPN app both are nil, and [nil isEqualToString:nil] is NO -- that counted as a change every refresh, logging a line
             // and re-laying out every status bar copy every few seconds)
             BOOL sameApp = (gVPNAppBundleID == nil && bundleID == nil) || [gVPNAppBundleID isEqualToString:bundleID];
-            BOOL changed = active != gVPNActive || !sameApp;
-            gVPNActive = active; gVPNAppBundleID = bundleID; gVPNAppName = name;
+            BOOL changed = active != gVPNActive || !sameApp, was = gVPNActive;
+            gVPNActive = active; gVPNAppBundleID = bundleID; gVPNAppName = name; gVPNConfigName = configName; gVPNManager = active ? manager : nil;
             if (changed) {
                 DMLog([NSString stringWithFormat:@"[vpn] status bar icon %@ (%@)", active ? @"on" : @"off", bundleID ?: @"no app found"]);
                 for (UIView *fg in gCopies.allObjects) if (fg.window && !fg.window.hidden) [fg setNeedsLayout];
+                if (active && !was) for (UIView *fg in gCopies.allObjects) if (objc_getAssociatedObject(fg, kLogoKey)) DMStockVPNRecheck(fg);   // (iOS's badge out now that ours shows)
             }
         });
     };
     Class mgrClass = NSClassFromString(@"NETunnelProviderManager");
     if (![mgrClass respondsToSelector:@selector(loadAllFromPreferencesWithCompletionHandler:)]) {
-        BOOL classic = [NEVPNManager sharedManager].connection.status == NEVPNStatusConnected;
-        apply(classic, nil, nil);
+        NEVPNManager *m = [NEVPNManager sharedManager];
+        apply(m.connection.status == NEVPNStatusConnected, nil, nil, m.localizedDescription, m);
         return;
     }
     // (performance audit P3) The configured tunnel providers are loaded once (an XPC round trip to nehelper) and kept; their connections' status is
@@ -20609,14 +20895,23 @@ static void DMRefreshVPNState(void) {
     static BOOL loading = NO, observing = NO;
     static CFTimeInterval loadedAt = -1000;
     void (^evaluate)(NSArray<NETunnelProviderManager *> *) = ^(NSArray<NETunnelProviderManager *> *managers) {
+        // (for the respring warning, VPNRespring.h: any VPN on, on its way up or down, or on demand -- it reconnects at the respring)
+        BOOL busy = NO;
+        NSMutableArray<NEVPNManager *> *all = [NSMutableArray arrayWithArray:managers ?: @[]];
+        [all addObject:[NEVPNManager sharedManager]];
+        for (NEVPNManager *m in all) {
+            NEVPNStatus st = m.connection.status;
+            if (st == NEVPNStatusConnected || st == NEVPNStatusConnecting || st == NEVPNStatusReasserting || st == NEVPNStatusDisconnecting || (m.isEnabled && m.isOnDemandEnabled)) busy = YES;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{ DMVPNRiskUpdate(busy); });
         NETunnelProviderManager *connected = nil;
         for (NETunnelProviderManager *m in managers) if (m.connection.status == NEVPNStatusConnected || m.connection.status == NEVPNStatusConnecting) { connected = m; break; }
-        if (!connected) { BOOL classic = [NEVPNManager sharedManager].connection.status == NEVPNStatusConnected; apply(classic, nil, nil); return; }
+        if (!connected) { NEVPNManager *m = [NEVPNManager sharedManager]; apply(m.connection.status == NEVPNStatusConnected, nil, nil, m.localizedDescription, m); return; }
         NSString *bundleID = nil;
         if ([connected.protocolConfiguration respondsToSelector:@selector(providerBundleIdentifier)])
-            bundleID = ((NETunnelProviderProtocol *)connected.protocolConfiguration).providerBundleIdentifier;
+            bundleID = DMVPNAppForProvider(((NETunnelProviderProtocol *)connected.protocolConfiguration).providerBundleIdentifier);
         NSString *name = bundleID.length ? (DMCall(DMProxyForBundle(bundleID), @"localizedName") ?: connected.localizedDescription) : connected.localizedDescription;
-        apply(connected.connection.status == NEVPNStatusConnected, bundleID, name);
+        apply(connected.connection.status == NEVPNStatusConnected, bundleID, name, connected.localizedDescription, connected);
     };
     if (!observing) {
         observing = YES;
@@ -22151,7 +22446,7 @@ static void DMCheckEngineWarnings(void) {
                                              : [NSString stringWithFormat:@"Windowing is off, so the window engines are now switched off in %@ and stop loading after a respring.", choicy ? @"Choicy" : @"iCleaner Pro"];
         UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Respring to Finish Switching Engines" message:msg preferredStyle:UIAlertControllerStyleAlert];
         [a addAction:[UIAlertAction actionWithTitle:@"Later" style:UIAlertActionStyleCancel handler:^(UIAlertAction *act) { gEngineWarningWindow.hidden = YES; gEngineWarningWindow = nil; }]];
-        [a addAction:[UIAlertAction actionWithTitle:@"Respring" style:UIAlertActionStyleDefault handler:^(UIAlertAction *act) { gEngineWarningWindow.hidden = YES; gEngineWarningWindow = nil; DMRespring(); }]];
+        [a addAction:[UIAlertAction actionWithTitle:@"Respring" style:UIAlertActionStyleDefault handler:^(UIAlertAction *act) { gEngineWarningWindow.hidden = YES; gEngineWarningWindow = nil; DMRespringChecked(); }]];
         [w.rootViewController presentViewController:a animated:YES completion:nil];
         MSBDAlertCloseOnLock(w, ^{   // (its Respring button must never work over the Lock Screen: put away, and asked again after the unlock)
             if (gEngineWarningWindow == w) gEngineWarningWindow = nil;
@@ -22900,6 +23195,7 @@ static BOOL DMBannersOn(void) {
         readAt = CACurrentMediaTime(); on = YES;
         CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("macBanners"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
         if (v) { if (CFGetTypeID(v) == CFBooleanGetTypeID()) on = CFBooleanGetValue(v); CFRelease(v); }
+        if (on && MSBDOtherTweakDoing(kMSBDDupBanners, YES)) on = NO;   // (Destra is showing Mac-style banners: ours steps aside, OtherTweaks.h)
     }
     return on;
 }
@@ -23866,7 +24162,17 @@ static const DMCtxMetrics kCtxCompact = { 30.0, 14.0, 11.0, 13.0, 20.0, -9.5, 12
 static const DMCtxMetrics kCtxFinger  = { 40.0, 15.0, 12.0, 15.0, 25.5, -14.5, 14.0, -25.0 };
 static const CGFloat kCtxMaxRowH = 40.0;   // (the taller of the two: rows at or under it may be ours)
 static const void *kCtxCompactKey = &kCtxCompactKey;
-static BOOL DMContextMenuTheme(void) { return !DMTestFlag("/tmp/msb-ctx-stock"); }   // (debug: /tmp/msb-ctx-stock = the stock look, to compare)
+// Settings > Status Bar > App Menus > Haptic Touch Menus: Mac (the default) or Stock (iPadOS's own menus, 28 Sep). Read at most every 2 s, so a
+// change applies to the next menu. (debug: /tmp/msb-ctx-stock = the stock look, to compare)
+static BOOL DMContextMenuTheme(void) {
+    static BOOL on = YES; static CFTimeInterval readAt = -10;
+    if (CACurrentMediaTime() - readAt > 2.0) {
+        readAt = CACurrentMediaTime(); on = YES;
+        CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("contextMenuStyle"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        if (v) { if (CFGetTypeID(v) == CFStringGetTypeID()) on = CFStringCompare((CFStringRef)v, CFSTR("stock"), 0) != kCFCompareEqualTo; CFRelease(v); }
+    }
+    return on && !DMTestFlag("/tmp/msb-ctx-stock");
+}
 static BOOL DMCtxPointerNow(void) {
     if (DMTestFlag("/tmp/msb-fakeptr")) return YES;
     id mgr = DMCall([UIApplication sharedApplication], @"mousePointerManager");   // (the same answer as the Pointer row / DMPointerDeviceCheck)
@@ -24286,13 +24592,14 @@ static void DMIdleSample(double seconds) { DMIdleSampleEx(seconds, NO); }
 // (SpringBoard hung), the main thread's stacks are sampled for 1 s and logged from the background (the main thread cannot log then). Once.
 static void DMHangWatch(double seconds) {
     __block volatile double lastSeen = CACurrentMediaTime();
+    double limit = gHangWatchLimit; gHangWatchLimit = 1.5;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
         CFTimeInterval end = CACurrentMediaTime() + seconds;
         BOOL fired = NO;
         while (CACurrentMediaTime() < end && !fired) {
             dispatch_async(dispatch_get_main_queue(), ^{ lastSeen = CACurrentMediaTime(); });
-            usleep(250000);
-            if (CACurrentMediaTime() - lastSeen > 1.5) { fired = YES; DMLog(@"[hangwatch] the main thread has not answered for 1.5 s: sampling it"); DMIdleSampleEx(1.0, YES); }
+            usleep(limit < 1.0 ? 50000 : 250000);
+            if (CACurrentMediaTime() - lastSeen > limit) { fired = YES; DMLog([NSString stringWithFormat:@"[hangwatch] the main thread has not answered for %.2f s: sampling it", limit]); DMIdleSampleEx(1.0, YES); }
         }
         if (!fired) DMLog(@"[hangwatch] done: no hang");
     });
@@ -24502,6 +24809,7 @@ static void DMDiagHooks(void) {
     DMStockPublish();
     if (gStockBar) { DMSkipLockInit(); DMStockBarStart(); return; }   // only the parts that stay (StockBar.h); the rest below never runs
     %init;
+    if (!DMCtorSkip("stockvpn")) DMStockVPNInit();
     DMPointerPullInit();
     DMCCPresentSeenInit();   // (Control Center seen from its controller too: F13)
     DMSkipLockInit();
