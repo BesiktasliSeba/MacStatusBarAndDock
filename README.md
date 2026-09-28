@@ -29,6 +29,8 @@ Then install **MacStatusBar&Dock** from the repo. The Mac look is on right after
   - The camera only works full screen: iPadOS pauses it for apps in a window. The Camera app always opens full screen; for other apps, switch to full screen while you use the camera.
   - Photos opened from inside the Camera opens full screen. Keep it full screen: turning it into a window then closes Photos (Photos can't change its layout while showing a single photo).
   - Aerial 5.0 has to be activated in its own settings before it can open windows. Until then, apps open full screen, and a note leads you to Aerial's settings.
+  - With Aerial 5.0, don't respring while a VPN is on or was just turned off: Aerial goes online as SpringBoard starts and can hang on a black screen until you restart the iPad. MacStatusBar&Dock warns before a respring that goes through iOS (the Apple menu, Settings, Control Center toggles, package managers), not before one that ends SpringBoard directly.
+  - While Destra is switched on, it shows the notification banners instead of MacStatusBar&Dock (both at once squeeze every banner).
 - **iPadOS 17 and other versions (experimental):** the tweak installs but keeps itself off until you turn on Enable Anyway in Settings. It hasn't been tested there, so use it at your own risk. The crash protection still works, and Report a Problem in Settings fills in a short summary for you — reports from iPadOS 17 users are very welcome.
 - **Both parts switched off?** If you turn off both MacStatusBar and MacDock in Settings, their Settings pages go away too. Turn them back on in Choicy (or iCleaner Pro), then respring.
 
@@ -57,7 +59,7 @@ The Mac look is on right after install. A few extras start off: the auto-hiding 
 - **Typing in windows like a Mac** — only the window you're using keeps a text cursor, and Esc ends typing in a windowed app (its own switch).
 - **A one-time welcome message** after your first install, pointing you to Settings (never shown again, and never shown on an update).
 - **Reduce Motion support** — menus, windows and banners cross-fade instead of zooming or springing when you use Reduce Motion.
-- **Automatic Crash Recovery** — if turning on a feature is followed by two SpringBoard crashes in a row, MacStatusBar&Dock switches that feature back off by itself instead of leaving your iPad in a crash loop, and tells you in Settings, with a Report a Problem button.
+- **Automatic Crash Recovery** — if turning on a feature is followed by two SpringBoard crashes in a row, MacStatusBar&Dock switches that feature back off by itself instead of leaving your iPad in a crash loop, and tells you in Settings, with a Report a Problem button. It also tells a stuck SpringBoard (restarted by the system) from a crash, and only counts problems in its own code: another tweak's crash or hang never switches MacStatusBar&Dock off.
 - **Built-in safety** — off by default on untested iPadOS versions (unless you choose Enable Anyway), does nothing at all on an iPhone, and never contacts any server (see [SECURITY.md](./SECURITY.md)).
 
 ## Which window engine?
