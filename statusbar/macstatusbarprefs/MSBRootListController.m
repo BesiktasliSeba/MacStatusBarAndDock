@@ -361,7 +361,7 @@ static void MSBFitValueLabels(UIView *v) {
 			NSDictionary *td = ((id (*)(id, SEL))objc_msgSend)(spec, NSSelectorFromString(@"titleDictionary"));
 			NSDictionary *sd = ((id (*)(id, SEL))objc_msgSend)(spec, NSSelectorFromString(@"shortTitleDictionary"));
 			NSMutableArray *values = [NSMutableArray array], *titles = [NSMutableArray array], *shorts = [NSMutableArray array];
-			for (NSString *x in v) { if ([x isEqual:@"stagemanager"]) continue; [values addObject:x]; [titles addObject:td[x] ?: x]; [shorts addObject:sd[x] ?: td[x] ?: x]; }
+			for (NSString *x in v) { if ([x isEqual:@"stagemanager"]) continue; [values addObject:x]; [titles addObject:[x isEqual:@"aerial"] ? [NSString stringWithFormat:@"%@ (Recommended)", td[x] ?: @"Aerial"] : (td[x] ?: x)]; [shorts addObject:sd[x] ?: td[x] ?: x]; }
 			((void (*)(id, SEL, id, id, id))objc_msgSend)(spec, NSSelectorFromString(@"setValues:titles:shortTitles:"), values, titles, shorts);
 		}
 		// MilkyWay4 does not run on iPadOS 16, so there it is not offered as an engine and not named in the notes.
@@ -381,9 +381,9 @@ static void MSBFitValueLabels(UIView *v) {
 				for (NSUInteger i = 0; i < v.count; i++) {
 					if ([v[i] isEqual:@"milkyway"]) continue;
 					[values addObject:v[i]];
-					// (1.1.0: Apple's own Stage Manager is the recommended engine where this iPad has it -- the default on a first install there)
-					BOOL rec = [v[i] isEqual:@"stagemanager"] && MSBStageManagerAvailable();
-					[titles addObject:rec ? [NSString stringWithFormat:@"%@ (Recommended)", td[v[i]] ?: @"Stage Manager"] : (td[v[i]] ?: v[i])];
+					// (1.1.3: Aerial 5.0 is the recommended engine on every iPad again -- Stage Manager is an option, not the default)
+					BOOL rec = [v[i] isEqual:@"aerial"];
+					[titles addObject:rec ? [NSString stringWithFormat:@"%@ (Recommended)", td[v[i]] ?: @"Aerial"] : (td[v[i]] ?: v[i])];
 					[shorts addObject:sd[v[i]] ?: td[v[i]] ?: v[i]];
 				}
 				((void (*)(id, SEL, id, id, id))objc_msgSend)(spec, NSSelectorFromString(@"setValues:titles:shortTitles:"), values, titles, shorts);

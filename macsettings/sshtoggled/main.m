@@ -1069,11 +1069,8 @@ static void FreezeOldDefaults(void) {
         [[before stringByAppendingString:list] writeToFile:@MIGDIR "/defaults-frozen" atomically:YES encoding:NSUTF8StringEncoding error:nil];
     }
     if (fresh) {
-        // 1.1.0: on a first install, Stage Manager is the window engine where this iPad can run it (iPadOS 16+, a model with Stage Manager or TrollPad)
-        // -- the recommended engine there. Updates keep their engine and get a one-time notice in SpringBoard instead, which a first install never
-        // needs (marked as shown here).
-        if (MSBDStageManagerAvailable() && WriteMobilePrefsKey(@"com.besiktasliseba.macstatusbar", @"windowEngine", @"stagemanager", YES))
-            ELog(@"defaults: first install on iPadOS 16 with Stage Manager -- Stage Manager is the window engine");
+        // (1.1.0-1.1.2 made Stage Manager the engine here on iPads that can run it; 1.1.3: Aerial 5.0 is the recommended engine for everyone again
+        //  -- a first install keeps the normal default. The update notice about Stage Manager is still never shown after a first install.)
         WriteMobilePrefsKey(@"com.besiktasliseba.macstatusbaranddock", @"stageManagerEngineNoticeShown", @YES, YES);
     }
     if (fresh) ELog(@"defaults: first install -- the new defaults apply");

@@ -12602,9 +12602,13 @@ static UIControl *DMSidePanel(NSString *side, NSString *title, NSString *subtitl
 // elsewhere or the deadline (the default arrangement), and closing it for any other reason (another menu, a lock...) applies the default too, so the
 // third window is never left un-tiled. One 0.2 s timer per prompt watches all of that.
 static void DMShowSidePrompt(NSMutableDictionary *ctx, BOOL rebuilt);
-static void DMPromptForSide(UIView *stage, NSString *newBundle, NSString *leftBundle, NSString *rightBundle) {
+static void DMPromptForSideApply(UIView *stage, NSString *newBundle, NSString *leftBundle, NSString *rightBundle, void (^apply)(NSString *side));
+static void DMPromptForSide(UIView *stage, NSString *newBundle, NSString *leftBundle, NSString *rightBundle) { DMPromptForSideApply(stage, newBundle, leftBundle, rightBundle, nil); }
+// apply: the engine's own way of placing the choice (the Stage Manager engine's layouts); nil: the Aerial/MilkyWay/Zetsu path below.
+static void DMPromptForSideApply(UIView *stage, NSString *newBundle, NSString *leftBundle, NSString *rightBundle, void (^apply)(NSString *side)) {
     NSMutableDictionary *ctx = [NSMutableDictionary dictionary];
     ctx[@"new"] = newBundle; ctx[@"left"] = leftBundle; ctx[@"right"] = rightBundle;
+    if (apply) ctx[@"apply"] = [apply copy];
     if (stage) ctx[@"stageRef"] = stage;   // (strong: the stage stays valid until the choice is applied; none when asked before the launch)
     gSidePromptCtx = ctx;
     ctx[@"deadline"] = @(CACurrentMediaTime() + 12.0);
@@ -12650,6 +12654,8 @@ static void DMShowSidePrompt(NSMutableDictionary *ctx, BOOL rebuilt) {
             UIView *o = c[@"overlay"];
             if (o && gOverlay == o) DMCloseOverlay();
             DMLog([NSString stringWithFormat:@"[aerial] %@ goes on the %@ (%@)", c[@"new"], [side isEqualToString:@"none"] ? @"middle, untiled" : (side ?: @"default side"), why]);
+            void (^apply)(NSString *) = c[@"apply"];
+            if (apply) { [c removeObjectForKey:@"apply"]; [c removeObjectForKey:@"choose"]; apply(side); return; }
             void (^launch)(CGRect) = c[@"prelaunch"];
             if (launch) {   // (asked before the launch: the app now opens straight into its tile; DMCascadeStage applies the choice when its window appears)
                 gPreSideBundle = [c[@"new"] copy]; gPreSide = side ?: @""; gPreSideUntil = CACurrentMediaTime() + 8.0;
@@ -23422,7 +23428,7 @@ static void DMCheckSMEngineNotice(void) {
     gSMEngineNoticeWindow = w;
     UIAlertController *a = [UIAlertController alertControllerWithTitle:@"New: Stage Manager Window Engine"
         message:available
-            ? @"MacStatusBar&Dock can now use iPadOS's own Stage Manager as its window engine, with Mac-style windows, traffic lights and window menus. It's the recommended engine on this iPad."
+            ? @"MacStatusBar&Dock can now use iPadOS's own Stage Manager as its window engine, with Mac-style windows, traffic lights and window menus."
             : @"MacStatusBar&Dock can now use iPadOS's own Stage Manager as its window engine. This iPad doesn't have Stage Manager: TrollPad can turn it on, and then Stage Manager appears in Settings > Status Bar > Window Engine."
         preferredStyle:UIAlertControllerStyleAlert];
     void (^close)(NSString *) = ^(NSString *how) {
@@ -26353,13 +26359,28 @@ static BOOL DMSMApplyLayoutsIn(NSDictionary<NSString *, NSString *> *bundleToLay
         });
     } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[sm] layouts refused: %@", e.reason]); return NO; }
     DMLog([NSString stringWithFormat:@"[sm] layouts applied to %lu windows", (unsigned long)bundleToLayout.count]);
+#if DEBUG
+    if (DMTestFlag("/tmp/msb-sm-animsample")) {   // (debug: does a layout request glide or jump? the first window's on-screen frame every 50 ms)
+        NSString *b0 = bundleToLayout.allKeys.firstObject;
+        for (int i = 0; i <= 16; i++) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            UIView *card = DMSMCardFor(b0);
+            CALayer *pl = card.layer.presentationLayer ?: card.layer;
+            CGRect f = card ? [card.superview.layer convertRect:pl.frame toLayer:card.window.layer] : CGRectNull;
+            DMLog([NSString stringWithFormat:@"[animsample] %@ t=%.2f %@ anims %lu", b0, i * 0.05, NSStringFromCGRect(f), (unsigned long)card.layer.animationKeys.count]);
+        });
+    }
+#endif
     return YES;
 }
 // Fit to Window: the desktop's windows tiled like our other engines' (2: halves, 3: a half and two quarters, 4: quarters; newest first) -- again
 // whenever the set of windows changes (one opens, closes, is minimized), not while the user moves one. force: now (the switch was turned on).
+// The arrangement Fit to Window keeps (app -> layout slot) and the windows left out of it (No Fit), like the other engines' gFitSlots/gFreeWindows.
+static NSMutableDictionary<NSString *, NSString *> *gSMFitSlots;
+static NSMutableSet<NSString *> *gSMFreeWindows;
 static void DMSMFitTick(BOOL force) {
     static NSArray *lastSet = nil;
     if (!DMSMEngine() || !DMFitEnabled() || DMSMFrontIsFullScreen()) { lastSet = nil; return; }
+    if (gSidePromptCtx && ![gSidePromptCtx[@"decided"] boolValue]) return;   // (the side question is up: nothing moves until it is answered)
     NSDictionary *map = DMCall(DMSMFrontStage(), @"itemsToLayoutAttributesMap");
     NSSet *onScreen = [NSSet setWithArray:DMSMWindowBundles()];
     NSMutableArray *items = [NSMutableArray array];
@@ -26369,16 +26390,47 @@ static void DMSMFitTick(BOOL force) {
         return ta > tb ? NSOrderedAscending : (ta < tb ? NSOrderedDescending : NSOrderedSame);
     }];
     NSMutableArray *bundles = [NSMutableArray array];
-    for (id it in items) [bundles addObject:DMCall(it, @"bundleIdentifier")];
+    for (id it in items) { NSString *b = DMCall(it, @"bundleIdentifier"); if (b && ![gSMFreeWindows containsObject:b]) [bundles addObject:b]; }
+    for (NSString *b in [gSMFreeWindows allObjects]) if (![onScreen containsObject:b]) [gSMFreeWindows removeObject:b];   // (closed: forgotten)
     // (the screen's shape is part of the set: the iPad turned, the tiles are laid out again -- logic review R1)
     NSArray *set = [[bundles sortedArrayUsingSelector:@selector(compare:)] arrayByAddingObject:NSStringFromCGSize([UIScreen mainScreen].bounds.size)];
     if (!force && [set isEqualToArray:lastSet ?: @[]]) return;
+    NSArray *before = lastSet;
     lastSet = set;
-    if (bundles.count < 2) return;
-    NSArray *slots = DMDefaultSlotNames(MIN((NSUInteger)4, bundles.count));
+    if (bundles.count < 2) { gSMFitSlots = nil; return; }
+    // A third window joining two tiles: asked where it goes, as with the other engines (Where should ... go? left / right / No Fit)
+    if (bundles.count == 3 && gSMFitSlots.count == 2 && !force) {
+        NSString *newB = nil, *leftB = nil, *rightB = nil;
+        for (NSString *b in bundles) { NSString *slot = gSMFitSlots[b]; if (!slot) newB = b; else if ([slot isEqualToString:@"left"]) leftB = b; else if ([slot isEqualToString:@"right"]) rightB = b; }
+        if (newB && leftB && rightB && ![before containsObject:newB]) {
+            DMLog([NSString stringWithFormat:@"[sm] Fit to Window: asking where %@ goes", newB]);
+            DMPromptForSideApply(nil, newB, leftB, rightB, ^(NSString *side) {
+                if ([side isEqualToString:@"none"]) {   // No Fit: in the middle, left out of Fit to Window; the two tiles stay
+                    if (!gSMFreeWindows) gSMFreeWindows = [NSMutableSet set];
+                    [gSMFreeWindows addObject:newB];
+                    DMSMApplyLayoutsIn(@{newB: @"center"}, DMSMFrontStage());
+                    DMLog([NSString stringWithFormat:@"[sm] Fit to Window: %@ free in the middle (No Fit)", newB]);
+                    return;
+                }
+                if ([side isEqualToString:@"left"]) gSMFitSlots = [@{newB: @"topleft", leftB: @"bottomleft", rightB: @"right"} mutableCopy];
+                else if ([side isEqualToString:@"right"]) gSMFitSlots = [@{newB: @"topright", rightB: @"bottomright", leftB: @"left"} mutableCopy];
+                else gSMFitSlots = nil;   // (no choice: the default arrangement, newest first)
+                DMSMFitTick(YES);
+            });
+            return;
+        }
+    }
+    // Keep the chosen arrangement while it covers exactly these windows; otherwise the default one, newest first.
     NSMutableDictionary *plan = [NSMutableDictionary dictionary];
-    for (NSUInteger i = 0; i < bundles.count && i < slots.count; i++) plan[bundles[i]] = slots[i];
-    DMLog([NSString stringWithFormat:@"[sm] Fit to Window: %lu windows tiled", (unsigned long)plan.count]);
+    BOOL keep = gSMFitSlots.count == bundles.count;
+    for (NSString *b in bundles) if (!gSMFitSlots[b]) keep = NO;
+    if (keep) [plan addEntriesFromDictionary:gSMFitSlots];
+    else {
+        NSArray *slots = DMDefaultSlotNames(MIN((NSUInteger)4, bundles.count));
+        for (NSUInteger i = 0; i < bundles.count && i < slots.count; i++) plan[bundles[i]] = slots[i];
+        gSMFitSlots = [plan mutableCopy];
+    }
+    DMLog([NSString stringWithFormat:@"[sm] Fit to Window: %lu windows tiled%@", (unsigned long)plan.count, keep ? @" (the chosen arrangement)" : @""]);
     DMSMApplyLayoutsIn(plan, DMSMFrontStage());   // (the iPad's desktop, the one counted above)
 }
 static void DMSMLogCorners(void) {

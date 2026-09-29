@@ -70,9 +70,9 @@ The Mac look is on right after install. A few extras start off: the auto-hiding 
 
 ## Which window engine?
 
-**iPadOS 16 with Stage Manager** (iPads that have it, or older iPads with TrollPad): Stage Manager is the recommended window engine — Apple's own windowing with our Mac look, and the only engine whose windows move to an external display. New installs on those iPads start with it.
+Measured on both test iPads: **Aerial 5.0 is the recommended window engine** on newer and older iPads alike — every window test passed, memory use was the same as the others, and on the older iPad Pro 9.7" it opened windows about twice as fast as Zetsu from a cold start. Zetsu works well too and is a good alternative. MilkyWay4 runs on iPadOS 15 only.
 
-**Other iPads and iPadOS 15:** measured on both test iPads, Aerial 5.0 is the recommended window engine on newer and older iPads alike — every window test passed, memory use was the same as the others, and on the older iPad Pro 9.7" it opened windows about twice as fast as Zetsu from a cold start. Zetsu works well too and is a good alternative. MilkyWay4 runs on iPadOS 15 only.
+**Stage Manager (iPadOS 16)** is an option on iPads that have it (or older iPads with TrollPad): Apple's own windowing with our Mac look, and the only engine whose windows move to an external display. It has been tested on iPadOS 16.7.7; on earlier iPadOS 16 versions it may not work yet.
 
 ## Report a Problem
 
