@@ -56,6 +56,7 @@ static BOOL    gSwipeDownOpensLibrary = YES;   // a downward swipe on the Home S
 // ===== logging (no system log on this setup) ==============================
 #import "DMLog.h"
 #include "../common/Diag.h"
+#define DM_FEATURE_MARK(name) do { static const char *const dmFeatureMark = "msbd-feature:" name; __asm__ volatile("" :: "r"(dmFeatureMark)); } while (0)   // (release-build feature marker, see statusbar/StatusBar.x)
 #if DEBUG
 void DMLogWrite(NSString *line) {
     FILE *f = fopen("/tmp/dockmag.log", "a");
@@ -409,6 +410,10 @@ BOOL DMDockPointerHovering(void) { return gHovering; }
     m->platter = CGRectMake(p.origin.x + (p.size.width - w) / 2.0, p.origin.y + p.size.height - h, w, h);
     m->iconScale *= f;
     m->spacing *= f;
+    // Gap to Screen Edge: the platter's bottom this many points above the Dock view's bottom (= the screen's bottom edge), whatever iPadOS chose --
+    // the platter margin hook below only ever lowered iPadOS's own margin, and on iPadOS 16 it had no effect at all (0 and 24 pt gave the same
+    // Dock, iPad 2, 29 Sep). The icons are placed relative to the platter, so they move with it. Taken on every layout: a change shows at once.
+    if (gEnabled && isfinite(gBottomGap)) { DM_FEATURE_MARK("dock-bottom-gap"); m->platter.origin.y = CGRectGetMaxY(bounds) - gBottomGap - m->platter.size.height; }
 }
 %end
 

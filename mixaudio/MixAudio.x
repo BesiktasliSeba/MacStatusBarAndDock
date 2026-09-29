@@ -26,6 +26,7 @@
 #import <objc/message.h>
 #import <AudioToolbox/AudioToolbox.h>
 #import <pthread.h>
+#define DM_FEATURE_MARK(name) do { static const char *const dmFeatureMark = "msbd-feature:" name; __asm__ volatile("" :: "r"(dmFeatureMark)); } while (0)   // (release-build feature marker, see statusbar/StatusBar.x)
 #if __has_feature(ptrauth_calls)
 #import <ptrauth.h>
 #endif
@@ -217,6 +218,7 @@ static void MATrackPlayer(id player) {
 // touched, without waiting for the app itself to call setVolume: again (a paused-on-the-slider video would otherwise stay wrong
 // until the app next set its own volume, which for many players is "never, while just sitting there playing").
 static volatile float gMAOutputMult = 1.0f;   // the multiplier as the audio render thread reads it (refreshed on every change, never read via notify there)
+static void MAReapplyQueues(void);
 static void MAReapplyAll(void) {
     gMAOutputMult = MAOwnVolumeMultiplier();
     MAEnsureTracking();
@@ -232,6 +234,7 @@ static void MAReapplyAll(void) {
         NSNumber *req = objc_getAssociatedObject(p, kMARequestedVolumeKey) ?: @1.0f;   // tracked without ever being set = still at the default, full volume
         if ([p respondsToSelector:@selector(setVolume:)]) ((void (*)(id, SEL, float))objc_msgSend)(p, @selector(setVolume:), req.floatValue);
     }
+    MAReapplyQueues();
 }
 static void MARegisterVolumeNotify(void) {
     NSString *bid = [NSBundle mainBundle].bundleIdentifier;
@@ -702,6 +705,74 @@ static OSStatus MARenderNotify(void *ref, AudioUnitRenderActionFlags *flags, con
 }
 %end
 
+// ---- AudioQueue output (Twitch, Kick and other apps with their own player engine) ----
+// Traced live in Twitch (issue #3): its player (AmazonIVSPlayer, shipped inside the app) plays the stream through an AudioQueue, which is mixed
+// outside the app, so neither the player-class hooks nor the RemoteIO render notify above ever see it. Same requested x multiplier scheme as the
+// players: the app's own kAudioQueueParam_Volume is kept per queue, and the queue gets requested x multiplier. Only queues created by the app's
+// own code or the frameworks it ships are taken: Apple's frameworks that use AudioQueue internally are already covered by their class hooks,
+// and scaling them here too would apply the multiplier twice.
+#define MA_MAX_QUEUES 16
+typedef struct { AudioQueueRef queue; float requested; } MAQueueState;
+static MAQueueState gMAQueues[MA_MAX_QUEUES];
+static pthread_mutex_t gMAQueuesLock = PTHREAD_MUTEX_INITIALIZER;
+static BOOL MACallerIsApp(const void *ret) {   // the caller's image is inside the app, not the system
+    Dl_info info;
+    if (!ret || !dladdr(ret, &info) || !info.dli_fname) return NO;
+    return strncmp(info.dli_fname, "/System/", 8) != 0 && strncmp(info.dli_fname, "/usr/lib/", 9) != 0;
+}
+static void MATrackQueue(AudioQueueRef q) {
+    DM_FEATURE_MARK("mixaudio-audioqueue");
+    pthread_mutex_lock(&gMAQueuesLock);
+    for (int i = 0; i < MA_MAX_QUEUES; i++) if (!gMAQueues[i].queue) { gMAQueues[i] = (MAQueueState){ q, 1.0f }; break; }
+    pthread_mutex_unlock(&gMAQueuesLock);
+    if (MAOwnVolumeMultiplier() < 0.999f) AudioQueueSetParameter(q, kAudioQueueParam_Volume, 1.0f);   // (the hook below applies the multiplier)
+#if DEBUG
+    MATraceLog([NSString stringWithFormat:@"[%@] audio queue %p created by the app: volume scaled (multiplier %.3f)", [NSBundle mainBundle].bundleIdentifier, q, gMAOutputMult]);
+#endif
+}
+static void MAReapplyQueues(void) {
+    MAQueueState copy[MA_MAX_QUEUES];
+    pthread_mutex_lock(&gMAQueuesLock);
+    memcpy(copy, gMAQueues, sizeof copy);
+    pthread_mutex_unlock(&gMAQueuesLock);
+    for (int i = 0; i < MA_MAX_QUEUES; i++) if (copy[i].queue) AudioQueueSetParameter(copy[i].queue, kAudioQueueParam_Volume, copy[i].requested);
+}
+%group MAQueue
+%hookf(OSStatus, AudioQueueNewOutput, const AudioStreamBasicDescription *fmt, AudioQueueOutputCallback cb, void *ud, CFRunLoopRef rl, CFStringRef mode, UInt32 flags, AudioQueueRef *outQ) {
+    const void *ret = __builtin_return_address(0);
+    OSStatus r = %orig;
+    if (r == noErr && outQ && *outQ && MACallerIsApp(ret)) MATrackQueue(*outQ);
+    return r;
+}
+%hookf(OSStatus, AudioQueueNewOutputWithDispatchQueue, AudioQueueRef *outQ, const AudioStreamBasicDescription *fmt, UInt32 flags, dispatch_queue_t dq, AudioQueueOutputCallbackBlock block) {
+    const void *ret = __builtin_return_address(0);
+    OSStatus r = %orig;
+    if (r == noErr && outQ && *outQ && MACallerIsApp(ret)) MATrackQueue(*outQ);
+    return r;
+}
+%hookf(OSStatus, AudioQueueSetParameter, AudioQueueRef q, AudioQueueParameterID param, AudioQueueParameterValue value) {
+    if (param != kAudioQueueParam_Volume) return %orig;
+    BOOL tracked = NO;
+    pthread_mutex_lock(&gMAQueuesLock);
+    for (int i = 0; i < MA_MAX_QUEUES; i++) if (gMAQueues[i].queue == q) { gMAQueues[i].requested = value; tracked = YES; break; }
+    pthread_mutex_unlock(&gMAQueuesLock);
+    return %orig(q, param, tracked ? value * MAOwnVolumeMultiplier() : value);
+}
+%hookf(OSStatus, AudioQueueGetParameter, AudioQueueRef q, AudioQueueParameterID param, AudioQueueParameterValue *outValue) {
+    OSStatus r = %orig;
+    if (r != noErr || param != kAudioQueueParam_Volume || !outValue) return r;
+    pthread_mutex_lock(&gMAQueuesLock);
+    for (int i = 0; i < MA_MAX_QUEUES; i++) if (gMAQueues[i].queue == q) { *outValue = gMAQueues[i].requested; break; }   // the app reads back what it set
+    pthread_mutex_unlock(&gMAQueuesLock);
+    return r;
+}
+%hookf(OSStatus, AudioQueueDispose, AudioQueueRef q, Boolean immediate) {
+    pthread_mutex_lock(&gMAQueuesLock);
+    for (int i = 0; i < MA_MAX_QUEUES; i++) if (gMAQueues[i].queue == q) { memset(&gMAQueues[i], 0, sizeof gMAQueues[i]); break; }
+    pthread_mutex_unlock(&gMAQueuesLock);
+    return %orig;
+}
+%end
 %ctor {
     dlopen("/System/Library/Frameworks/AVFAudio.framework/AVFAudio", RTLD_LAZY);      // AVAudioSession, AVAudioPlayer, AVAudioEngine/AVAudioMixerNode live here
     dlopen("/System/Library/Frameworks/AVFoundation.framework/AVFoundation", RTLD_LAZY);   // AVPlayer lives in the umbrella framework itself, not AVFAudio -- both must be loaded before %init installs the hooks below
@@ -720,7 +791,7 @@ static OSStatus MARenderNotify(void *ref, AudioUnitRenderActionFlags *flags, con
         [[NSNotificationCenter defaultCenter] addObserverForName:AVAudioSessionInterruptionNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
             if ([n.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue] == AVAudioSessionInterruptionTypeBegan) gMAActive = NO;
         }];
-    if (!MAExcludedProcess()) %init(MAOutput);   // "com.besiktasliseba.mixaudio.setvolume.<hash of this app's own bundle id>" -- Mac Status Bar's per-app bridge, same pattern as MacAppBridge
+    if (!MAExcludedProcess()) { %init(MAOutput); %init(MAQueue); }   // "com.besiktasliseba.mixaudio.setvolume.<hash of this app's own bundle id>" -- Mac Status Bar's per-app bridge, same pattern as MacAppBridge
 #if DEBUG
     MAObserve();
     %init(MADebugEngine);

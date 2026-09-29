@@ -19059,6 +19059,11 @@ static void DMRunTrigger(NSString *cmd) {
         }
         DMLog(out);
     }
+    else if ([cmd hasPrefix:@"appvol_"]) {   // appvol_<bundle>_<0..1>: that app's volume in the Audio menu, as its slider sets it (MixAudio tests)
+        NSString *rest = [cmd substringFromIndex:7]; NSRange u = [rest rangeOfString:@"_" options:NSBackwardsSearch];
+        if (u.location != NSNotFound) { NSString *b = [rest substringToIndex:u.location]; float v = [[rest substringFromIndex:u.location + 1] floatValue];
+            DMSetAudioVolumeAndNotify(b, v, YES); DMLog([NSString stringWithFormat:@"[appvol] %@ -> %.2f", b, v]); }
+    }
     else if ([cmd hasPrefix:@"smwin_"]) {   // smwin_<bundle>_<close|removeFromSet>: OUR window action, as a traffic-light tap runs it (DMSMWindowAction)
         NSArray *q = [[cmd substringFromIndex:6] componentsSeparatedByString:@"_"];
         if (q.count >= 2) DMLog([NSString stringWithFormat:@"[smwin] %@ %@: %@", q[0], q[1], DMSMWindowAction(q[0], q[1]) ? @"done" : @"not available"]);

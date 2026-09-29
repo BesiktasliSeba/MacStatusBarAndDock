@@ -2,10 +2,16 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.1.5
+
+### Fixes
+- Dock: Gap to Screen Edge now works on iPadOS 16, and the Dock moves as soon as you change it, without a respring.
+- Audio menu: per-app volume now works for Twitch and other apps built on the same video player, like Kick (#3). Their sound goes through a different part of iOS than most apps, which the volume slider didn't reach before.
+
 ## 1.1.4
 
 ### Improvements
-- Stage Manager engine (experimental): safer on iPadOS versions it hasn't been tested on. At startup it checks everything it needs from iPadOS; if anything is missing or different, it stays off, the default engine runs instead, and Settings > Status Bar > Window Engine shows it as "Not Supported Yet" with the reason -- instead of SpringBoard crashing.
+- Stage Manager engine (experimental): safer on iPadOS versions it hasn't been tested on. At startup it checks everything it needs from iPadOS; if anything is missing or different, it stays off, the default engine runs instead, and Settings > Status Bar > Window Engine shows it as "Not Supported Yet" with the reason, instead of SpringBoard crashing.
 - Stage Manager engine: app launches are only changed when every step checks out; otherwise iPadOS's own launch runs untouched.
 - Stage Manager engine: Stage Manager is no longer switched on during startup, and follows Apple's own first-time path.
 - The Window Engine picker marks Stage Manager as "Experimental".
