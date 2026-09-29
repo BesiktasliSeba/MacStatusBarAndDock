@@ -155,7 +155,8 @@ static void InsertRow(PSListController *list) {
 // Settings then opens this page, once, the way a tap on the row does -- when it becomes active (a cold launch, or back from the background) or, when
 // it is active already, on the notification. A request older than 20 s is ignored. (Our page is a row added to the main list, not a PreferenceLoader
 // entry, so a prefs:root= link cannot be relied on to find it.) Nothing else sets the state: otherwise one notify read per activation of Settings.
-// The state's high 32 bits name a place on the page (0 the page itself, 1 Go Menu > Apps: the Go menu's "Edit Go Menu…"); the low 32 bits the time.
+// The state's high 32 bits name a place on the page (0 the page itself, 1 Go Menu > Apps: the Go menu's "Edit Go Menu…", 2 the Window Engine
+// picker: the 1.1.0 Stage Manager engine notice's "Choose Engine"); the low 32 bits the time.
 #define kOpenPageState "com.besiktasliseba.macstatusbaranddock.openstatusbarpage"
 static BOOL ShowsPage(UIViewController *vc, Class page) {
     if (!vc || !page) return NO;
@@ -182,43 +183,48 @@ static NSString *StackText(UINavigationController *nav) {
     for (UIViewController *vc in nav.viewControllers) [names addObject:NSStringFromClass([vc class])];
     return [names componentsJoinedByString:@" > "];
 }
-// YES when Go Menu > Apps is on the stack: shown (the page under it popped to when needed), and only once (a second copy is taken out)
-static BOOL DedupeGoApps(UINavigationController *nav) {
-    Class c = NSClassFromString(@"MSBGoAppsController");
+// A row of our page opened the way a tap does (its list pushed on the page's navigation stack): 1 = Go Menu > Apps, 2 = Window Engine.
+static Class InnerClass(uint32_t target) { return NSClassFromString(target == 2 ? @"MSBEngineListController" : @"MSBGoAppsController"); }
+static BOOL InnerRowMatches(PSSpecifier *sp, uint32_t target) {
+    if (target == 2) return [[sp propertyForKey:@"key"] isEqual:@"windowEngine"];
+    return [[sp identifier] isEqualToString:@"GO_APPS"];
+}
+// YES when the row's list is on the stack: shown (the page under it popped to when needed), and only once (a second copy is taken out)
+static BOOL DedupeInner(UINavigationController *nav, uint32_t target) {
+    Class c = InnerClass(target);
     NSArray<UIViewController *> *vcs = nav.viewControllers;
     UIViewController *first = nil; NSMutableArray *kept = [NSMutableArray array];
     for (UIViewController *vc in vcs) {
         if ([vc isKindOfClass:c]) { if (first) continue; first = vc; }
         [kept addObject:vc];
     }
-    SBRowLog([NSString stringWithFormat:@"go apps check: %@", StackText(nav)]);
+    SBRowLog([NSString stringWithFormat:@"row %u check: %@", target, StackText(nav)]);
     if (!first) return NO;
-    if (kept.count != vcs.count) { SBRowLog(@"a second Go Apps page taken out"); [nav setViewControllers:kept animated:NO]; }
+    if (kept.count != vcs.count) { SBRowLog(@"a second copy taken out"); [nav setViewControllers:kept animated:NO]; }
     if (nav.topViewController != first) [nav popToViewController:first animated:NO];
     return YES;
 }
-// Go Menu > Apps: once the page is up, its Apps row is opened the way a tap does (its list is pushed on the page's navigation stack)
-static void OpenGoApps(int attempt) {
+static void OpenInnerRow(int attempt, uint32_t target) {
     PSListController *list = gRowList;
     UIViewController *top = list.splitViewController ?: list.navigationController;
     PSListController *page = (PSListController *)FindController(top, NSClassFromString(@"MSBRootListController"));
     UINavigationController *nav = page.navigationController;
     PSSpecifier *row = nil;
-    for (PSSpecifier *sp in [page specifiers]) if ([[sp identifier] isEqualToString:@"GO_APPS"]) { row = sp; break; }
+    for (PSSpecifier *sp in [page specifiers]) if (InnerRowMatches(sp, target)) { row = sp; break; }
     NSIndexPath *ip = row ? [page indexPathForSpecifier:row] : nil;
     UITableView *t = nil; @try { t = [page valueForKey:@"table"]; } @catch (NSException *e) {}
     if (!page.view.window || !ip || ![t isKindOfClass:[UITableView class]]) {   // (the page is still being pushed)
-        if (attempt < 16) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ OpenGoApps(attempt + 1); });
+        if (attempt < 16) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ OpenInnerRow(attempt + 1, target); });
         return;
     }
-    if (DedupeGoApps(nav)) return;   // (already there)
+    if (DedupeInner(nav, target)) return;   // (already there)
     if (nav.topViewController != page) [nav popToViewController:page animated:NO];
     [t scrollToRowAtIndexPath:ip atScrollPosition:UITableViewScrollPositionMiddle animated:NO];
     [page tableView:t didSelectRowAtIndexPath:ip];
-    // a cold launch: Settings may still put back the page it showed last (Go Menu > Apps too), on top of ours -- two Apps pages, and the first
+    // a cold launch: Settings may still put back the page it showed last (that same list too), on top of ours -- two copies, and the first
     // Back only led to the other one. Looked at for 5 s.
-    SBRowLog([NSString stringWithFormat:@"go apps opened: %@", StackText(nav)]);
-    for (double at = 0.5; at <= 5.0; at += 0.5) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(at * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DedupeGoApps(nav); });
+    SBRowLog([NSString stringWithFormat:@"row %u opened: %@", target, StackText(nav)]);
+    for (double at = 0.5; at <= 5.0; at += 0.5) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(at * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DedupeInner(nav, target); });
 }
 static void OpenPage(int attempt, uint32_t target) {
     PSListController *list = gRowList;
@@ -234,8 +240,8 @@ static void OpenPage(int attempt, uint32_t target) {
     if (!ShowsPage(top, NSClassFromString(@"MSBRootListController"))) {
         [t selectRowAtIndexPath:ip animated:NO scrollPosition:UITableViewScrollPositionMiddle];
         [list tableView:t didSelectRowAtIndexPath:ip];
-    } else if (target != 1) return;   // (already there)
-    if (target == 1) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ OpenGoApps(0); });
+    } else if (target != 1 && target != 2) return;   // (already there)
+    if (target == 1 || target == 2) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ OpenInnerRow(0, target); });
     // Settings may put back the page it last showed right after launching: checked once more a moment later
     if (attempt < 100) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ OpenPage(100, target); });
 }

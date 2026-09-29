@@ -2,6 +2,49 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.1.0
+
+### New
+- **Stage Manager window engine (iPadOS 16).** Pick Stage Manager in Settings > Status Bar > Window Engine, and iPadOS's own Stage Manager runs your windows with a Mac look: title bars with traffic lights, native full screen, the Window menu and resize handles. It works on iPads with Stage Manager, and on older iPads with TrollPad. It's the recommended engine where it's available, and new installs on those iPads start with it.
+  - Windows open on the desktop together, from the Home Screen, the Dock, Spotlight, notifications, links and our menus. A fifth window minimizes only the oldest one.
+  - Full screen stays on the desktop: other windows can come in front of or behind a full-screen app, as with the other engines. The green button toggles back to the window.
+  - Window menu: layouts, Fit to Window, Swap rows, Minimize All, Bring All to Front / Send All to Back, and Move to Other Display.
+  - Resize Handles: choose ours or Stage Manager's, and tint either one.
+  - A window in the background comes forward when you lift your finger, so scrolling in it doesn't turn into a tap.
+- **External display with the Stage Manager engine (iPadOS 16).** The external display gets its own Mac desktop, with a menu bar, Dock and wallpaper. See "External display" below for what it can and can't do yet.
+- **Traffic lights everywhere:** grey on inactive windows, with symbols on hover or press, for every window engine.
+- **Use Pointer Control Style** (Settings > Pointer): the Mac pointer can take the Color, Border Width and Increase Contrast from Accessibility > Pointer Control. It's off by default, so the pointer starts as the classic black-and-white arrow.
+- One-time notice after updating on iPadOS 16: Stage Manager is now a window engine, with a button that opens the Window Engine picker. iPads without Stage Manager get a note that TrollPad turns it on.
+
+### Improvements
+- Resize handles start untinted. Turn on Tint Resize Handles in Settings > Status Bar to give them each app's color; if you had already switched it on yourself, it stays on.
+- The traffic lights look up the active app once per change instead of on every frame.
+
+### Fixes
+- With an external display, the Mac pointer no longer stays behind on the iPad's menu bar after the pointer moves to the other screen, and it points the right way after the iPad is turned.
+
+### External display (iPadOS 16, Stage Manager engine)
+Works:
+- Its own desktop: menu bar (Apple menu, app menus, status items), Dock, wallpaper.
+- Windows with title bars and traffic lights; the front window on the display drives its menu bar.
+- Window > Move to Other Display, in both directions.
+- Window menu layouts use that display's own size, above its Dock.
+- Full screen on the display (its Dock hides), independent of the iPad.
+- Apps opened from the display's Dock open there.
+
+Doesn't work yet:
+- Opening an app from the display's Dock brings that app's whole group of windows to the display (Stage Manager's own rule).
+- After a respring, windows on the display come back only when they're opened again.
+- A window moved to the other screen keeps its size relative to the screen it came from.
+- The Window menu doesn't check-mark the current layout for windows on the display.
+- Up to 4 windows per desktop (Stage Manager).
+- Tested with a wired display (Lightning to HDMI); AirPlay is untested.
+
+### In the works
+![An early iPadOS 15 second desktop on a TV](./images/ios15-tv-desktop-teaser.jpg)
+
+- A second desktop on external displays for iPadOS 15. An early version already runs its own menu bar, Dock and apps on the TV, separate from the iPad. It isn't in this update: it still has to handle the pointer on the TV.
+
 ## 1.0.10
 
 ### New

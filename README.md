@@ -21,10 +21,15 @@ Then install **MacStatusBar&Dock** from the repo. The Mac look is on right after
 - Other iPads on iPadOS 15.x / 16.x will likely work but haven't been tested.
 - Rootless jailbreaks only.
 - **Known limitations:**
-  - External displays on iPadOS 16 (used as a separate screen through Stage Manager or TrollPad): to use windowed apps on the external display, open them from the App Library on that display. Apps opened from its Dock or from Spotlight open on the iPad, and windows can't be moved between displays yet. For apps anywhere on the external display, turn off Enable Windowing and use Stage Manager. On iPadOS 15 the external display mirrors the iPad, windows included.
+  - External displays on iPadOS 16: with the Stage Manager window engine the display gets its own Mac desktop (menu bar, Dock, windows, full screen, Window > Move to Other Display). Not yet: opening an app from the display's Dock brings that app's whole group of windows along (Stage Manager's own rule); after a respring, windows on the display come back only when opened again; a moved window keeps its size relative to the screen it came from; the Window menu doesn't check-mark the layout of windows on the display; up to 4 windows per desktop. With the other engines, windows stay on the iPad: open apps from the display's App Library to use them there.
+  - On iPadOS 15 the external display mirrors the iPad for now. A real second desktop for iPadOS 15 is in the works, and an early version already runs its own menu bar, Dock and apps on a TV.
+
+    ![An early iPadOS 15 second desktop on a TV: its own menu bar, a Clock window and a Dock](./images/ios15-tv-desktop-teaser.jpg)
+
   - On iPadOS 15, Safari's sound can stop another app that's playing alone — it plays on its own, as on a stock iPad.
   - Control Center's Now Playing controls only ever show one app at a time — usually whichever started playing most recently — even while several apps are playing together with Mix Audio.
-  - Stage Manager (iPadOS 16) stays off while windowing runs with a window engine, because two window systems would fight over the same apps. To use Stage Manager, turn off Enable Windowing in Settings > Status Bar; it comes back on by itself.
+  - Apple's Stage Manager (iPadOS 16) stays off while windowing runs with another window engine, because two window systems would fight over the same apps. To use it, pick Stage Manager as the window engine in Settings > Status Bar > Window Engine.
+  - With the Stage Manager engine, going to the Home Screen hides the windows (Stage Manager's own behaviour), and a desktop holds up to 4 windows.
   - Some apps, like many games, can't run in a window. Open those full screen.
   - The camera only works full screen: iPadOS pauses it for apps in a window. The Camera app always opens full screen; for other apps, switch to full screen while you use the camera.
   - Photos opened from inside the Camera opens full screen. Keep it full screen: turning it into a window then closes Photos (Photos can't change its layout while showing a single photo).
@@ -46,9 +51,10 @@ The Mac look is on right after install. A few extras start off: the auto-hiding 
 - **Mac-style notification banners** in the top-right corner.
 - **Mute icon** — a small status bar icon shows while the iPad is on silent (its own switch in Settings).
 - **VPN menu** — while a VPN is connected, iOS's own VPN badge shows as its own item next to the status icons, like on a Mac. Its menu shows the VPN's name and has Disconnect (auto-connect goes off too), a button that opens the VPN's app and VPN & Device Management. With Aerial 5.0, respring buttons warn first while a VPN is on, because Aerial goes online as SpringBoard starts and can hang on a black screen.
-- **Mac pointer** — a macOS arrow cursor and I-beam with a trackpad or mouse, with a choice of style and size.
+- **Mac pointer** — a macOS arrow cursor and I-beam with a trackpad or mouse, with a choice of style and size. Optionally it takes the Color, Border Width and Increase Contrast from Accessibility > Pointer Control (Use Pointer Control Style, off by default).
 - **Haptic Touch menus** — long-press a Home Screen app icon for Force Quit and App Size, or a folder icon to jump straight to one of its apps. Menus look like a Mac's (slimmer rows that adapt to a trackpad or mouse); choose Mac or Stock in Settings > Status Bar > App Menus.
-- **Mac windows** on the window engine you already use (Aerial 3.0 or 5.0, MilkyWay4 on iPadOS 15 only, or Zetsu 1.6.2 or 1.6.6): a title bar, traffic lights and rounded corners, with Fit to Window tiling (a third window asks which side it goes on, or No Fit to leave it untiled) and resize handles tinted in each app's color.
+- **Stage Manager window engine (iPadOS 16)** — iPadOS's own Stage Manager runs your windows with a Mac look: title bars with traffic lights, native full screen that other windows can come over, the Window menu (layouts, Fit to Window, Swap, Move to Other Display) and a choice of resize handles. On iPads with Stage Manager, or older iPads with TrollPad; with an external display it gets its own Mac desktop.
+- **Mac windows** on the window engine you already use (Aerial 3.0 or 5.0, MilkyWay4 on iPadOS 15 only, or Zetsu 1.6.2 or 1.6.6): a title bar, traffic lights and rounded corners, with Fit to Window tiling (a third window asks which side it goes on, or No Fit to leave it untiled) and resize handles that can be tinted in each app's color (Tint Resize Handles, off by default).
 - **Dock** with macOS-style magnification, recent apps (plus a suggested or Handoff app), running-app indicators, a Launchpad icon, and a Downloads stack (choose which apps' downloads appear from a link in Settings).
 - **Audio mixing per app**, with a volume for each app, set from the menu bar.
 - **Auto-hiding menu bar** (optional, off by default).
@@ -64,7 +70,9 @@ The Mac look is on right after install. A few extras start off: the auto-hiding 
 
 ## Which window engine?
 
-Measured on both test iPads: Aerial 5.0 is the recommended window engine on newer and older iPads alike — every window test passed, memory use was the same as the others, and on the older iPad Pro 9.7" it opened windows about twice as fast as Zetsu from a cold start. Zetsu works well too and is a good alternative. MilkyWay4 runs on iPadOS 15 only.
+**iPadOS 16 with Stage Manager** (iPads that have it, or older iPads with TrollPad): Stage Manager is the recommended window engine — Apple's own windowing with our Mac look, and the only engine whose windows move to an external display. New installs on those iPads start with it.
+
+**Other iPads and iPadOS 15:** measured on both test iPads, Aerial 5.0 is the recommended window engine on newer and older iPads alike — every window test passed, memory use was the same as the others, and on the older iPad Pro 9.7" it opened windows about twice as fast as Zetsu from a cold start. Zetsu works well too and is a good alternative. MilkyWay4 runs on iPadOS 15 only.
 
 ## Report a Problem
 

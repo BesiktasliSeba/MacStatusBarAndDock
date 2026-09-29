@@ -43,6 +43,7 @@
 #include "../../common/DeviceGate.h"
 #include "../../common/EngineBuilds.h"
 #include "../../common/VersionGate.h"
+#include "../../common/StageManagerAvailable.h"
 
 extern char **environ;
 
@@ -215,10 +216,17 @@ static NSString *ChosenEngine(BOOL *windowing) {   // read from Mac Status Bar's
     NSString *engine = (e && CFGetTypeID(e) == CFStringGetTypeID()) ? [(__bridge NSString *)e copy] : nil;
     *windowing = !(w && CFGetTypeID(w) == CFBooleanGetTypeID() && !CFBooleanGetValue(w));
     if (!w && [engine isEqualToString:@"off"]) *windowing = NO;   // (the old picker's "Off", before the switch existed: SpringBoard honours it too)
+    // Stage Manager as the engine (iPadOS 16+): Apple's own windowing, so none of the third-party engines may load -- the same as windowing off here
+    // (SpringBoard keeps Stage Manager on itself: StatusBar.x DMSMEngine). On iPadOS 15 it is not offered; a stored pick there counts as none.
+    // (logic test F6: Stage Manager picked where it can't run -- TrollPad removed -- counts as not picked: the default engine, not "no windows")
+    if ([engine isEqualToString:@"stagemanager"] && !MSBDStageManagerAvailable()) { ELog(@"engines: Stage Manager is picked but can't run on this iPad -- the default engine instead"); engine = nil; }
+    BOOL stageManager = [engine isEqualToString:@"stagemanager"] && [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 16;
+    if (stageManager) *windowing = NO;
     // Stock status bar: the chosen engine always runs on its own (Settings > Status Bar Style says so, and the Enable Windowing switch is hidden
     // there), so a windowing switch left off from Mac mode does not stop it. Back in Mac mode the switch counts again.
     CFPropertyListRef st = CFPreferencesCopyValue(CFSTR("stockStatusBar"), CFSTR("com.besiktasliseba.macstatusbar"), CFSTR("mobile"), kCFPreferencesAnyHost);
-    if (st && CFGetTypeID(st) == CFBooleanGetTypeID() && CFBooleanGetValue(st)) *windowing = YES;
+    // (not with Stage Manager as the engine, logic test F3: in stock mode this undid the rule above and Aerial loaded next to Stage Manager)
+    if (!stageManager && st && CFGetTypeID(st) == CFBooleanGetTypeID() && CFBooleanGetValue(st)) *windowing = YES;
     if (st) CFRelease(st);
     if (e) CFRelease(e);
     if (w) CFRelease(w);
@@ -593,10 +601,20 @@ static void OfferRespring(NSString *how) {
 static void GiveBackStageManager(NSString *why) {
     CFStringRef ours = CFSTR("com.besiktasliseba.macstatusbar"), sb = CFSTR("com.apple.springboard");
     CFPreferencesSynchronize(ours, CFSTR("mobile"), kCFPreferencesAnyHost);
+    BOOL trollPad = Exists(@TWEAKDIR "/TrollPadSB.dylib");
+    // (on only because Stage Manager was OUR engine: given back OFF -- logic test F5; this could only ever write "on")
+    CFPropertyListRef mine = CFPreferencesCopyValue(CFSTR("stageManagerOnForEngine"), ours, CFSTR("mobile"), kCFPreferencesAnyHost);
+    if (mine) {
+        CFRelease(mine);
+        CFPreferencesSetValue(trollPad ? CFSTR("TPSBChamoisWindowingEnabled") : CFSTR("SBChamoisWindowingEnabled"), kCFBooleanFalse, sb, CFSTR("mobile"), kCFPreferencesAnyHost);
+        CFPreferencesSynchronize(sb, CFSTR("mobile"), kCFPreferencesAnyHost);
+        CFPreferencesSetValue(CFSTR("stageManagerOnForEngine"), NULL, ours, CFSTR("mobile"), kCFPreferencesAnyHost);
+        CFPreferencesSynchronize(ours, CFSTR("mobile"), kCFPreferencesAnyHost);
+        ELog(@"%@: Stage Manager was on only as the window engine -- switched back off%@", why, trollPad ? @" (TrollPad's key)" : @"");
+    }
     CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("stageManagerUserOn"), ours, CFSTR("mobile"), kCFPreferencesAnyHost);
     if (!v) return;
     CFRelease(v);
-    BOOL trollPad = Exists(@TWEAKDIR "/TrollPadSB.dylib");
     CFPreferencesSetValue(trollPad ? CFSTR("TPSBChamoisWindowingEnabled") : CFSTR("SBChamoisWindowingEnabled"), kCFBooleanTrue, sb, CFSTR("mobile"), kCFPreferencesAnyHost);
     CFPreferencesSynchronize(sb, CFSTR("mobile"), kCFPreferencesAnyHost);
     CFPreferencesSetValue(CFSTR("stageManagerUserOn"), NULL, ours, CFSTR("mobile"), kCFPreferencesAnyHost);
@@ -1047,6 +1065,14 @@ static void FreezeOldDefaults(void) {
     if (frozen.count) {   // (added to the list of earlier versions)
         NSString *before = [NSString stringWithContentsOfFile:@MIGDIR "/defaults-frozen" encoding:NSUTF8StringEncoding error:nil] ?: @"";
         [[before stringByAppendingString:list] writeToFile:@MIGDIR "/defaults-frozen" atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    }
+    if (fresh) {
+        // 1.1.0: on a first install, Stage Manager is the window engine where this iPad can run it (iPadOS 16+, a model with Stage Manager or TrollPad)
+        // -- the recommended engine there. Updates keep their engine and get a one-time notice in SpringBoard instead, which a first install never
+        // needs (marked as shown here).
+        if (MSBDStageManagerAvailable() && WriteMobilePrefsKey(@"com.besiktasliseba.macstatusbar", @"windowEngine", @"stagemanager", YES))
+            ELog(@"defaults: first install on iPadOS 16 with Stage Manager -- Stage Manager is the window engine");
+        WriteMobilePrefsKey(@"com.besiktasliseba.macstatusbaranddock", @"stageManagerEngineNoticeShown", @YES, YES);
     }
     if (fresh) ELog(@"defaults: first install -- the new defaults apply");
     else ELog(@"defaults: %@ (from v%ld) -- the old defaults kept for %lu untouched setting(s): %@", decision, (long)done, (unsigned long)frozen.count, frozen.count ? [frozen componentsJoinedByString:@", "] : @"none");

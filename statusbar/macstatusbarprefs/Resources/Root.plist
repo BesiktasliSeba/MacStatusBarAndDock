@@ -250,18 +250,21 @@
 				<string>Aerial</string>
 				<string>MilkyWay4</string>
 				<string>Zetsu</string>
+				<string>Stage Manager</string>
 			</array>
 			<key>validTitles</key>
 			<array>
 				<string>Aerial (v3.0 or v5.0)</string>
 				<string>MilkyWay4</string>
 				<string>Zetsu</string>
+				<string>Stage Manager</string>
 			</array>
 			<key>validValues</key>
 			<array>
 				<string>aerial</string>
 				<string>milkyway</string>
 				<string>zetsu</string>
+				<string>stagemanager</string>
 			</array>
 		</dict>
 		<dict>
@@ -292,9 +295,35 @@
 			<key>PostNotification</key>
 			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
 			<key>cell</key>
+			<string>PSLinkListCell</string>
+			<key>detail</key>
+			<string>PSListItemsController</string>
+			<key>default</key>
+			<string>ours</string>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>key</key>
+			<string>resizeHandleStyle</string>
+			<key>label</key>
+			<string>Resize Handles</string>
+			<key>validTitles</key>
+			<array>
+				<string>Mac</string>
+				<string>Stage Manager</string>
+			</array>
+			<key>validValues</key>
+			<array>
+				<string>ours</string>
+				<string>stagemanager</string>
+			</array>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
 			<string>PSSwitchCell</string>
 			<key>default</key>
-			<true/>
+			<false/>
 			<key>defaults</key>
 			<string>com.besiktasliseba.macstatusbar</string>
 			<key>key</key>

@@ -12,6 +12,7 @@
 #import "MSBRootListController.h"
 #import "../../common/LineSwitch.h"
 #import "../../common/EngineBuilds.h"
+#import "../../common/StageManagerAvailable.h"
 #import "../../common/OtherTweaks.h"   // (Single Mute showing the mute icon: said under the Audio group)
 
 // The "Apps" row in the plist uses AltList's app picker (ATLApplicationListMultiSelectionController). That
@@ -133,7 +134,11 @@ static NSString *MSBEngineLibraryPath(NSString *lib) {   // (its .dylib, or iCle
 	if (![[NSFileManager defaultManager] fileExistsAtPath:path]) path = [[kMSBTweakDir stringByAppendingPathComponent:lib] stringByAppendingPathExtension:@"disabled"];
 	return path;
 }
+// Stage Manager as the engine (iPadOS 16+): usable where Stage Manager runs -- natively (iPad Pro 2018 and later, M1/M2 iPads: iPad8/13/14,x) or
+// through TrollPad on older iPads.
+static BOOL MSBStageManagerAvailable(void) { return MSBDStageManagerAvailable(); }   // (common/StageManagerAvailable.h)
 static int MSBEngineState(NSString *engine) {
+	if ([engine isEqualToString:@"stagemanager"]) return MSBStageManagerAvailable() ? 2 : 0;
 	NSDictionary *mainLib = @{@"aerial": @"Aerial", @"milkyway": @"MilkyWay4", @"zetsu": @"Zetsu"};
 	NSString *lib = mainLib[engine];
 	if (!lib) return 2;
@@ -349,6 +354,16 @@ static void MSBFitValueLabels(UIView *v) {
 			large = [large imageWithTintColor:[UIColor secondaryLabelColor] renderingMode:UIImageRenderingModeAlwaysOriginal];
 			if (small && large) { [spec setProperty:small forKey:@"leftImage"]; [spec setProperty:large forKey:@"rightImage"]; }
 		}
+		// Stage Manager as an engine only exists on iPadOS 16+ (and only where Stage Manager runs, MSBEngineState greys it out elsewhere).
+		if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion < 16) for (PSSpecifier *spec in _specifiers) {
+			if (![[spec propertyForKey:@"key"] isEqual:@"windowEngine"] || ![spec respondsToSelector:NSSelectorFromString(@"values")] || ![spec respondsToSelector:NSSelectorFromString(@"setValues:titles:shortTitles:")]) continue;
+			NSArray *v = ((id (*)(id, SEL))objc_msgSend)(spec, NSSelectorFromString(@"values"));
+			NSDictionary *td = ((id (*)(id, SEL))objc_msgSend)(spec, NSSelectorFromString(@"titleDictionary"));
+			NSDictionary *sd = ((id (*)(id, SEL))objc_msgSend)(spec, NSSelectorFromString(@"shortTitleDictionary"));
+			NSMutableArray *values = [NSMutableArray array], *titles = [NSMutableArray array], *shorts = [NSMutableArray array];
+			for (NSString *x in v) { if ([x isEqual:@"stagemanager"]) continue; [values addObject:x]; [titles addObject:td[x] ?: x]; [shorts addObject:sd[x] ?: td[x] ?: x]; }
+			((void (*)(id, SEL, id, id, id))objc_msgSend)(spec, NSSelectorFromString(@"setValues:titles:shortTitles:"), values, titles, shorts);
+		}
 		// MilkyWay4 does not run on iPadOS 16, so there it is not offered as an engine and not named in the notes.
 		if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 16) {
 			for (PSSpecifier *spec in _specifiers) {
@@ -366,7 +381,9 @@ static void MSBFitValueLabels(UIView *v) {
 				for (NSUInteger i = 0; i < v.count; i++) {
 					if ([v[i] isEqual:@"milkyway"]) continue;
 					[values addObject:v[i]];
-					[titles addObject:td[v[i]] ?: v[i]];
+					// (1.1.0: Apple's own Stage Manager is the recommended engine where this iPad has it -- the default on a first install there)
+					BOOL rec = [v[i] isEqual:@"stagemanager"] && MSBStageManagerAvailable();
+					[titles addObject:rec ? [NSString stringWithFormat:@"%@ (Recommended)", td[v[i]] ?: @"Stage Manager"] : (td[v[i]] ?: v[i])];
 					[shorts addObject:sd[v[i]] ?: td[v[i]] ?: v[i]];
 				}
 				((void (*)(id, SEL, id, id, id))objc_msgSend)(spec, NSSelectorFromString(@"setValues:titles:shortTitles:"), values, titles, shorts);
@@ -402,7 +419,35 @@ static void MSBFitValueLabels(UIView *v) {
 			_specifiers = kept;
 			break;
 		}
-		// "Resize Apps to Fit Windows" only works with MilkyWay4 (Zetsu always fits apps to its windows itself, Aerial never does): with any
+		// Stage Manager as the engine: the Windows group's switches work through a third-party engine's windows, so it is left out.
+		for (PSSpecifier *spec in [_specifiers copy]) {
+			if (![[spec propertyForKey:@"key"] isEqual:@"windowEngine"]) continue;
+			NSString *engine = [self readPreferenceValue:spec];
+			if (![engine isKindOfClass:[NSString class]] || ![engine isEqualToString:@"stagemanager"]) break;
+			NSMutableArray *kept = [NSMutableArray array];
+			BOOL hiding = NO;
+			for (PSSpecifier *sp in _specifiers) {
+				if (sp.cellType == PSGroupCell) hiding = [sp.identifier isEqualToString:@"WINDOWS_GROUP"];
+				if ([sp.identifier isEqualToString:@"ENGINE_GROUP"]) [sp setProperty:@"Apple's Stage Manager does the windowing, with the Mac look on top. Other engines are not loaded." forKey:@"footerText"];
+				// (the window handles are Stage Manager's own windows' too: their style and tint stay)
+				NSString *key = [sp propertyForKey:@"key"];
+				BOOL handles = [key isEqual:@"resizeHandleStyle"] || [key isEqual:@"tintResizeHandles"];
+				if (!hiding || handles || (sp.cellType == PSGroupCell && [sp.identifier isEqualToString:@"WINDOWS_GROUP"])) [kept addObject:sp];
+			}
+			_specifiers = kept;
+			break;
+		}
+		// "Resize Handles" (ours or Stage Manager's) is only a choice with Stage Manager as the engine: the other engines always have ours.
+		for (PSSpecifier *spec in [_specifiers copy]) {
+			if (![[spec propertyForKey:@"key"] isEqual:@"windowEngine"]) continue;
+			NSString *engine = [self readPreferenceValue:spec];
+			if ([engine isKindOfClass:[NSString class]] && [engine isEqualToString:@"stagemanager"]) break;
+			NSMutableArray *kept = [NSMutableArray array];
+			for (PSSpecifier *sp in _specifiers) if (![[sp propertyForKey:@"key"] isEqual:@"resizeHandleStyle"]) [kept addObject:sp];
+			_specifiers = kept;
+			break;
+		}
+				// "Resize Apps to Fit Windows" only works with MilkyWay4 (Zetsu always fits apps to its windows itself, Aerial never does): with any
 		// other engine, or none, its group and switch are left out.
 		for (PSSpecifier *spec in [_specifiers copy]) {
 			if (![[spec propertyForKey:@"key"] isEqual:@"windowEngine"]) continue;
@@ -512,7 +557,7 @@ static void MSBFitValueLabels(UIView *v) {
 	if (w) CFRelease(w);
 	if (windowingOff) return;
 	NSString *engine = value;
-	NSDictionary *names = @{@"aerial": @"Aerial", @"milkyway": @"MilkyWay4", @"zetsu": @"Zetsu"};
+	NSDictionary *names = @{@"aerial": @"Aerial", @"milkyway": @"MilkyWay4", @"zetsu": @"Zetsu", @"stagemanager": @"Stage Manager"};
 	NSString *title = nil, *message = nil; BOOL offerRespring = NO, offerICleaner = NO;
 	if (MSBChoicyInstalled()) {
 		if (MSBChoicyApplyEngine(engine)) {

@@ -50,6 +50,7 @@ static inline BOOL MSBDAerial5WillLoad(void) {
     NSString *pick = (__bridge_transfer NSString *)v;
     if (![pick isKindOfClass:[NSString class]]) return YES;
     if ([pick isEqualToString:@"off"]) return NO;   // (no windows: the engines are switched off)
+    if ([pick isEqualToString:@"stagemanager"] && [[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion){16, 0, 0}]) return NO;   // (Stage Manager as the engine: no third-party engine loads)
     if ([pick isEqualToString:@"zetsu"]) return !MSBDVPNRiskEngineFile(@"Zetsu");
     if ([pick isEqualToString:@"milkyway"])
         return !(MSBDVPNRiskEngineFile(@"MilkyWay4") && ![[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion){16, 0, 0}]);

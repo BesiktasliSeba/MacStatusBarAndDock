@@ -93,6 +93,16 @@ static UIImage *MSPointerIcon(void) {
             [vm setProperty:@YES forKey:@"default"];
             [vm setProperty:MP_NOTIFY forKey:@"PostNotification"];
             [s addObject:vm];
+            // (off by default: the Mac pointer starts as the classic black-and-white arrow, whatever Pointer Control is set to)
+            PSSpecifier *ga = [PSSpecifier groupSpecifierWithName:nil];
+            [ga setProperty:@"Color, Border Width and Increase Contrast in Pointer Control below also change the Mac pointer. Off: the classic Mac pointer." forKey:@"footerText"];
+            [s addObject:ga];
+            PSSpecifier *ax = [PSSpecifier preferenceSpecifierNamed:@"Use Pointer Control Style" target:self set:@selector(setPreferenceValue:specifier:) get:@selector(readPreferenceValue:) detail:nil cell:kCellSwitch edit:nil];
+            [ax setProperty:@"macPointerUseAXStyle" forKey:@"key"];
+            [ax setProperty:MP_DOMAIN forKey:@"defaults"];
+            [ax setProperty:@NO forKey:@"default"];
+            [ax setProperty:MP_NOTIFY forKey:@"PostNotification"];
+            [s addObject:ax];
         }
         PSSpecifier *gp = [PSSpecifier groupSpecifierWithName:nil];
         [gp setProperty:@"Stops the pointer at the top edge from pulling down the Lock Screen." forKey:@"footerText"];

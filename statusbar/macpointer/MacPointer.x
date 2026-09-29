@@ -210,6 +210,48 @@ static CAShapeLayer *MPCursorLayer(UIView *view) {
     objc_setAssociatedObject(view, kMPCursorKey, a, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return a;
 }
+// Settings > Accessibility > Pointer Control on the Mac pointer (as macOS's pointer outline color): Color becomes the arrow's outline, Border Width its
+// thickness, Increase Contrast a stronger edge. The colour is taken from the system's own colour ring (_axColorStroke, which the Mac pointer hides)
+// rather than from the setting's number, so it is exactly the colour Apple draws, whatever the choice; the width and contrast come from the settings.
+static CGColorRef MPRingColor(CALayer *l, int depth) {
+    if (!l || depth > 4) return NULL;
+    if ([l isKindOfClass:[CAShapeLayer class]] && ((CAShapeLayer *)l).path && ((CAShapeLayer *)l).strokeColor && CGColorGetAlpha(((CAShapeLayer *)l).strokeColor) > 0.05) return ((CAShapeLayer *)l).strokeColor;
+    if (l.borderWidth > 0 && l.borderColor && CGColorGetAlpha(l.borderColor) > 0.05) return l.borderColor;
+    for (CALayer *sub in l.sublayers) { CGColorRef c = MPRingColor(sub, depth + 1); if (c) return c; }
+    if (l.backgroundColor && CGColorGetAlpha(l.backgroundColor) > 0.05) return l.backgroundColor;
+    return NULL;
+}
+static double gMPAXWidth = 0; static BOOL gMPAXContrast = NO; static CFTimeInterval gMPAXRead = -10;
+static void MPReadAXStyle(void) {
+    if (CACurrentMediaTime() - gMPAXRead < 2.0) return;
+    gMPAXRead = CACurrentMediaTime();
+    CFPreferencesAppSynchronize(CFSTR("com.apple.Accessibility"));
+    double w = 0; CFPropertyListRef v = CFPreferencesCopyAppValue(CFSTR("PointerStrokeColorWidth"), CFSTR("com.apple.Accessibility"));
+    if (v) { if (CFGetTypeID(v) == CFNumberGetTypeID()) CFNumberGetValue((CFNumberRef)v, kCFNumberDoubleType, &w); CFRelease(v); }
+    gMPAXWidth = w;
+    BOOL c = NO; v = CFPreferencesCopyAppValue(CFSTR("PointerIncreasedContrastEnabled"), CFSTR("com.apple.Accessibility"));
+    if (v) { if (CFGetTypeID(v) == CFBooleanGetTypeID()) c = CFBooleanGetValue(v); else if (CFGetTypeID(v) == CFNumberGetTypeID()) { int i = 0; CFNumberGetValue((CFNumberRef)v, kCFNumberIntType, &i); c = i != 0; } CFRelease(v); }
+    gMPAXContrast = c;
+}
+static void MPApplyAXStyle(UIView *view, CAShapeLayer *a, BOOL ringHiddenByUs) {
+    BOOL use = (MPState(gMPConfigToken) & 8) != 0;   // (Settings > Pointer > Use Pointer Control Style; off: the classic arrow)
+    if (use) MPReadAXStyle();
+    UIView *ring = nil; @try { ring = [view valueForKey:@"_axColorStroke"]; } @catch (id e) {}
+    // (a ring the system itself hides -- Color: None -- gives no colour; one hidden by us for the Mac pointer still has its colour set)
+    CGColorRef c = (use && [ring isKindOfClass:[UIView class]] && (!ring.layer.hidden || ringHiddenByUs)) ? MPRingColor(ring.layer, 0) : NULL;
+    CGFloat line = 1.25, shadow = 0.35;
+    if (c) line = MAX(1.25, MIN(3.0, (gMPAXWidth > 0 ? gMPAXWidth : 2.0) * 0.5));   // (the ring's width is around a 19 pt circle; the arrow's edge is in its own 20 pt drawing)
+    if (use && gMPAXContrast) { line += 0.5; shadow = 0.6; }
+    if (!c) c = [UIColor whiteColor].CGColor;
+    if (!CGColorEqualToColor(a.strokeColor, c)) {
+#if DEBUG
+        MPLog([NSString stringWithFormat:@"%.3f outline %@ width %.2f contrast %d", CACurrentMediaTime(), [UIColor colorWithCGColor:c], line, gMPAXContrast]);
+#endif
+        a.strokeColor = c;
+    }
+    if (a.lineWidth != line) a.lineWidth = line;
+    if (a.shadowOpacity != shadow) a.shadowOpacity = shadow;
+}
 static CGFloat MPRotation(void) {   // interface orientation -> turn of the Mac pointer in pointeruid's portrait space
     switch (MPState(gMPOrientToken)) { case 3: return M_PI_2; case 4: return -M_PI_2; case 2: return M_PI; default: return 0; }
 }
@@ -255,6 +297,27 @@ static CGFloat MPRotationFor(UIView *view) {
 //    behind the Mac pointer.
 // Auto-hide: when the system hides the pointer (idle, a touch on the screen, typing), the Mac pointer fades out with it, completely, and comes back at once.
 static BOOL gMPAutoHidden = NO;
+// Another display: each display has its own rendering controller and pointer view. When the pointer moves to the other display, the system hides
+// the pointer on the one it left (the controller's hidePointer: its visibility state changes and the pointer's content fades to alpha 0); the Mac
+// pointer is a layer of its own beside that content, so it stayed on the iPad's status bar while the pointer was on the TV (iPad 2 + TV, 29 Sep).
+// So the Mac pointer follows its controller: hidden from hidePointer until that controller's visibility state changes again (the pointer is back).
+static const void *kMPSysHidKey = &kMPSysHidKey;
+static UIViewController *MPControllerOf(UIView *v) {
+    for (UIResponder *r = v; r; r = r.nextResponder) if ([r isKindOfClass:objc_getClass("PUIDPointerRenderingRootViewController")]) return (UIViewController *)r;
+    return nil;
+}
+static long long MPVisibilityState(UIViewController *c) {
+    Ivar iv = c ? class_getInstanceVariable([c class], "_visibilityState") : NULL;
+    return iv ? *(long long *)((uint8_t *)(__bridge void *)c + ivar_getOffset(iv)) : -1;
+}
+static BOOL MPHiddenBySystem(UIView *view) {
+    UIViewController *c = MPControllerOf(view);
+    NSNumber *hidState = c ? objc_getAssociatedObject(c, kMPSysHidKey) : nil;
+    if (!hidState) return NO;
+    if (MPVisibilityState(c) == hidState.longLongValue) return YES;
+    objc_setAssociatedObject(c, kMPSysHidKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (shown again)
+    return NO;
+}
 static void MPUpdate(PUIDPointerShapeView *view) {
     if (!view) return;
     PSPointerShape *shape = nil; @try { shape = [view valueForKey:@"pointerShape"]; } @catch (id e) {}
@@ -262,7 +325,7 @@ static void MPUpdate(PUIDPointerShapeView *view) {
     CGRect sb = shape ? shape.bounds : CGRectZero;
     BOOL beam = type == 3 || (!CGRectIsEmpty(sb) && MIN(sb.size.width, sb.size.height) <= 4.0);
     BOOL round = type == 1;
-    BOOL want = MPEnabled() && !beam;
+    BOOL want = MPEnabled() && !beam && !MPHiddenBySystem(view);
     BOOL hideNative = want && round;
     CAShapeLayer *a = want ? MPCursorLayer(view) : objc_getAssociatedObject(view, kMPCursorKey);
     [CATransaction begin];
@@ -276,7 +339,12 @@ static void MPUpdate(PUIDPointerShapeView *view) {
         a.affineTransform = CGAffineTransformScale(CGAffineTransformMakeRotation(MPRotationFor(view)), k, k);
         a.hidden = NO;
         [view.layer insertSublayer:a atIndex:(unsigned)view.layer.sublayers.count];   // (on top of a highlight shape)
-    } else a.hidden = YES;
+    } else {
+        a.hidden = YES;
+        // (kept turned while hidden -- the iPad turned while the pointer was on the TV left the hidden arrow at the old angle, 29 Sep dump:
+        //  final rot 0.00, cursor layer turn 1.57 -- and it came back pointing the old way until the next shape change)
+        if (a) { CGFloat k = MPSize(view) * 1.12; a.affineTransform = CGAffineTransformScale(CGAffineTransformMakeRotation(MPRotationFor(view)), k, k); }
+    }
     // the system's round pointer and its accessibility ring/dot (Settings > Accessibility > Pointer Control) hidden only while the Mac pointer replaces it
     NSMutableArray *hid = objc_getAssociatedObject(view, kMPHidNativeKey) ?: [NSMutableArray array];
     if (hideNative) {
@@ -288,6 +356,11 @@ static void MPUpdate(PUIDPointerShapeView *view) {
     } else if (hid.count) {   // give the system pointer back: only what we hid
         for (UIView *v in hid) v.layer.hidden = NO;
         objc_setAssociatedObject(view, kMPHidNativeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (a && !a.hidden) {
+        UIView *ring = nil; @try { ring = [view valueForKey:@"_axColorStroke"]; } @catch (id e) {}
+        NSArray *hidNow = objc_getAssociatedObject(view, kMPHidNativeKey);
+        MPApplyAXStyle(view, a, ring && [hidNow containsObject:ring]);
     }
     [CATransaction commit];
     // auto-hide: fade out completely with the system (0.35 s), back at once
@@ -339,6 +412,19 @@ static void MPApplyVisibility(void) {
 }
 %end
 %hook PUIDPointerRenderingRootViewController
+- (void)hidePointer {
+    long long before = MPVisibilityState((UIViewController *)self);
+    %orig;
+    long long after = MPVisibilityState((UIViewController *)self);
+#if DEBUG
+    MPLog([NSString stringWithFormat:@"%.3f hidePointer on %p: visibility %lld -> %lld", CACurrentMediaTime(), self, before, after]);
+#endif
+    // (only when the system really changed this display's pointer visibility -- logic test F10: a hidePointer that changes nothing must not
+    //  leave the Mac pointer hidden with the pointer still on this display)
+    if (after != before) objc_setAssociatedObject(self, kMPSysHidKey, @(after), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    PUIDPointerShapeView *own = nil; @try { own = [(id)self valueForKey:@"_pointerShapeView"]; } @catch (id e) {}
+    if ([own isKindOfClass:[UIView class]]) MPUpdate(own);
+}
 - (BOOL)setPointerState:(id)state options:(unsigned long long)options updateHandlerCollection:(id)collection error:(id *)error {
     CGRect content = CGRectZero; @try { content = [[state valueForKey:@"contentBounds"] CGRectValue]; } @catch (id e) {}
     gMPHovering = !CGRectIsEmpty(content);
@@ -351,6 +437,11 @@ static void MPApplyVisibility(void) {
     if (![sig isEqualToString:last]) { last = sig; MPLog([NSString stringWithFormat:@"%.3f state %@", CACurrentMediaTime(), sig]); }
 #endif
     BOOL r = %orig;
+#if DEBUG
+    { static NSMutableDictionary *lastVis; if (!lastVis) lastVis = [NSMutableDictionary dictionary]; NSString *k = [NSString stringWithFormat:@"%p", self];
+      long long v = MPVisibilityState((UIViewController *)self);
+      if (![lastVis[k] isEqual:@(v)]) { lastVis[k] = @(v); MPLog([NSString stringWithFormat:@"%.3f controller %p visibility %lld", CACurrentMediaTime(), self, v]); } }
+#endif
     gMPController = (UIViewController *)self;
     MPUpdate(gMPShapeView);
     // (with an external display each display has its own controller and pointer view: update this controller's own view too)
