@@ -381,6 +381,9 @@ static BOOL DMSMWindowsBehindFullScreen(void);
 static void DMSMWindowsForward(BOOL forward);
 static void DMSMBringToFront(NSString *bundle);
 static void DMSMActivateOnTouch(UIEvent *event);
+static BOOL gSMKeyboardShown = NO;   // (a DOCKED on-screen keyboard is up: set by -[SBFluidSwitcherViewController _keyboardWillShow:])
+static CGRect gSMKeyboardFrame;      // (its frame on the screen, while up)
+static NSMutableSet<NSString *> *gSMBehindDock;   // (windows the user dragged down behind the Dock -- recorded at the drag's end, logic review R2)
 static const CGFloat kSMBarH = 24.0;   // (our title bar on Stage Manager windows)
 static const CGFloat kSMCornerR = 10.0;   // (window corners: our Mac look, as with every engine; Stage Manager's own are 20)
 typedef struct { CGSize normalizedSize; CGRect referenceBounds; long long type; } DMSMAttributedSize;   // (SBDisplayItemAttributedSize, from its type encoding)
@@ -17147,7 +17150,6 @@ static NSString *DMHIDTouchDesc(UIEvent *event) {
 }
 %hook SpringBoard
 - (void)sendEvent:(UIEvent *)event {
-    if (event.type == UIEventTypeTouches && DMSMEngine()) DMSMActivateOnTouch(event);   // (Stage Manager engine: a finger down in a background window brings it forward)
     BOOL watch = NO, began = NO, edge = NO;
     NSString *why = nil;
     if (event.type == UIEventTypeTouches && DMTestFlag("/tmp/macstatusbar-debug") && !DMTestFlag("/tmp/msb-notouchwatch")) {   // (/tmp/msb-notouchwatch: off, for timing tests)
@@ -25918,28 +25920,58 @@ static BOOL DMSMFrontIsFullScreen(void) {   // (the front window is the full-scr
 }
 static BOOL DMSMWindowsBehindFullScreen(void) { return DMSMFrontIsFullScreen(); }
 // Bring All to Front / Send All to Back: the full-screen app's place in the stage's order -- behind every window, or in front of them all.
+static BOOL DMSMRequestStageOrder(id stage, NSDictionary *timeByItem, id frontItem);
 static void DMSMWindowsForward(BOOL forward) {
+    // One request that names every window of the stage with its new place in the order (logic review L1: a model change plus one window asked
+    // for again moved nothing, or only that one window, over the full-screen app).
     id stage = DMSMFrontStage();
     NSString *full = DMSMFullScreenBundle();
     NSDictionary *map = DMCall(stage, @"itemsToLayoutAttributesMap");
     if (!full.length || map.count < 2) return;
-    long lo = LONG_MAX, hi = 0; id fullItem = nil; NSString *topWindow = nil; long topT = -1;
+    long lo = LONG_MAX, hi = 0; id fullItem = nil, topItem = nil; long topT = -1;
     for (id it in map) {
         long t = ((long (*)(id, SEL))objc_msgSend)(map[it], NSSelectorFromString(@"lastInteractionTime"));
         lo = MIN(lo, t); hi = MAX(hi, t);
-        NSString *b = DMCall(it, @"bundleIdentifier");
-        if ([b isEqualToString:full]) fullItem = it;
-        else if (t > topT) { topT = t; topWindow = b; }
+        if ([DMCall(it, @"bundleIdentifier") isEqualToString:full]) fullItem = it;
+        else if (t > topT) { topT = t; topItem = it; }
     }
     if (!fullItem) return;
-    if (!forward) { DMSMBringToFront(full); return; }   // (the full-screen app over the windows)
-    id a = ((id (*)(id, SEL, long))objc_msgSend)(map[fullItem], NSSelectorFromString(@"attributesByModifyingLastInteractionTime:"), MAX(0L, lo - 1));
-    id coord = DMCall(objc_getClass("SBMainSwitcherControllerCoordinator"), @"sharedInstance");
-    id model = nil; @try { model = [coord valueForKey:@"_mainSwitcherModel"]; } @catch (id e) {}
-    id newStage = ((id (*)(id, SEL, id, id))objc_msgSend)(stage, NSSelectorFromString(@"appLayoutByModifyingLayoutAttributes:forItem:"), a, fullItem);
-    SEL replace = NSSelectorFromString(@"replaceAppLayout:withAppLayout:");
-    if (newStage && [model respondsToSelector:replace]) ((void (*)(id, SEL, id, id))objc_msgSend)(model, replace, stage, newStage);
-    if (topWindow) DMSMBringToFront(topWindow);   // (asks for the stage again, the top window in front and focused)
+    NSMutableDictionary *times = [NSMutableDictionary dictionary];
+    if (forward) {   // Bring All to Front: the full-screen app behind every window, the top window in front
+        times[fullItem] = @(MAX(0L, lo - 1));
+        if (topItem) times[topItem] = @(hi + 1);
+    } else times[fullItem] = @(hi + 1);   // Send All to Back: the full-screen app over them all
+    DMSMRequestStageOrder(stage, times, forward ? topItem : fullItem);
+}
+// Every window of the stage asked for in one transition, in its role with its attributes -- interaction times changed where given -- and the
+// front one marked frontmost.
+static BOOL DMSMRequestStageOrder(id stage, NSDictionary *timeByItem, id frontItem) {
+    NSDictionary *map = DMCall(stage, @"itemsToLayoutAttributesMap");
+    SEL roleSel = NSSelectorFromString(@"layoutRoleForItem:");
+    NSMutableArray *entries = [NSMutableArray array]; id frontEntity = nil;
+    for (id it in map) {
+        id a = map[it];
+        NSNumber *t = timeByItem[it];
+        if (t) a = ((id (*)(id, SEL, long))objc_msgSend)(a, NSSelectorFromString(@"attributesByModifyingLastInteractionTime:"), t.longValue);
+        long role = [stage respondsToSelector:roleSel] ? ((long (*)(id, SEL, id))objc_msgSend)(stage, roleSel, it) : 0;
+        id e = DMSMEntityIn(stage, DMCall(it, @"bundleIdentifier"));
+        if (!e || role <= 0) return NO;
+        [entries addObject:@[e, @(role), a]];
+        if (it == frontItem) frontEntity = e;
+    }
+    @try {
+        DMSMRequestOn(DMCall(stage, @"preferredDisplayIdentity"), ^(id req) {
+            ((void (*)(id, SEL, id))objc_msgSend)(req, NSSelectorFromString(@"modifyApplicationContext:"), ^(id ctx) {
+                for (NSArray *en in entries) {
+                    ((void (*)(id, SEL, id, long))objc_msgSend)(ctx, NSSelectorFromString(@"setEntity:forLayoutRole:"), en[0], [en[1] longValue]);
+                    ((void (*)(id, SEL, id, id))objc_msgSend)(ctx, NSSelectorFromString(@"setRequestedLayoutAttributes:forEntity:"), en[2], en[0]);
+                }
+                if (frontEntity) DMSMMarkFrontmost(ctx, frontEntity);
+            });
+        });
+    } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[sm] order refused: %@", e.reason]); return NO; }
+    DMLog([NSString stringWithFormat:@"[sm] order of %lu windows requested", (unsigned long)entries.count]);
+    return YES;
 }
 static BOOL DMSMToggleZoom(NSString *bundle) {
     id stage = DMSMStageOf(bundle), attrs = nil;   // (its own stage, on whichever display)
@@ -25965,6 +25997,12 @@ static BOOL DMSMToggleZoom(NSString *bundle) {
     SEL replace = NSSelectorFromString(@"replaceAppLayout:withAppLayout:");
     if (newStage && [model respondsToSelector:replace]) ((void (*)(id, SEL, id, id))objc_msgSend)(model, replace, stage, newStage);
     [gSMPreZoom removeObjectForKey:bundle];
+    {   // (in front, where the user is: the attributes from before full screen carried their old interaction time, so the window came back behind
+        //  windows opened meanwhile while keeping the keyboard focus -- logic review L2)
+        NSDictionary *m = DMCall(stage, @"itemsToLayoutAttributesMap");
+        long newest = 0; for (id it in m) newest = MAX(newest, ((long (*)(id, SEL))objc_msgSend)(m[it], NSSelectorFromString(@"lastInteractionTime")));
+        back = ((id (*)(id, SEL, long))objc_msgSend)(back, NSSelectorFromString(@"attributesByModifyingLastInteractionTime:"), newest + 1);
+    }
     DMLog([NSString stringWithFormat:@"[smengine] zoom back on %@: model %@ replaced", bundle, model ? @"" : @"NOT"]);
     DMSMRequestWindow(bundle, back, -1);
     return YES;
@@ -26066,9 +26104,8 @@ static CFTimeInterval gSMDragUntil = 0;   // (a title-bar drag in progress, and 
     [super layoutSubviews];
     CGFloat w = self.bounds.size.width;
     for (UIButton *b in _lights) b.frame = CGRectMake(8.0 + b.tag * 20.0, (kSMBarH - 20.0) / 2.0, 20.0, 20.0);
-    _title.frame = CGRectMake(72.0, 0, MAX(0, w - 144.0), kSMBarH);
-    [self dm_updateLights];
-}
+    _title.frame = CGRectMake(72.0, 0, MAX(0, w - 144.0), kSMBarH);   // (no light refresh here: every frame of a resize, logic review P1 -- the
+}                                                                     //  lights follow front changes and card changes, DMSMChrome)
 - (void)dm_updateLights {
     BOOL front = [_bundle isEqualToString:DMSMFrontWindowBundle()];
     [objc_getAssociatedObject(self, kLightGroupKey) apply];
@@ -26082,6 +26119,10 @@ static CFTimeInterval gSMDragUntil = 0;   // (a title-bar drag in progress, and 
 }
 - (void)dm_tap:(UITapGestureRecognizer *)g { DMSMBringToFront(_bundle); }
 - (void)dm_pan:(UIPanGestureRecognizer *)g {
+    // (the drag's end is handled first, whatever became of the window: a failed drag, or one whose window went away meanwhile, left the area at
+    //  full height for an hour -- logic review L4)
+    if (g.state == UIGestureRecognizerStateFailed || ((g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) && (!_card || !_card.superview)))
+        gSMDragUntil = 0;
     UIView *card = _card; UIView *sup = card.superview;
     if (!card || !sup) return;
     CGPoint t = [g translationInView:sup];
@@ -26089,6 +26130,14 @@ static CFTimeInterval gSMDragUntil = 0;   // (a title-bar drag in progress, and 
     if (g.state == UIGestureRecognizerStateChanged) card.transform = CGAffineTransformMakeTranslation(t.x, t.y);
     if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) {
         gSMDragUntil = CACurrentMediaTime() + 1.0;
+        {   // (put behind the Dock by hand, or not: recorded now, not guessed later from sizes -- logic review R2)
+            UIScreen *scn = card.window.screen ?: [UIScreen mainScreen];
+            CGRect onScreen = [card convertRect:card.bounds toCoordinateSpace:scn.coordinateSpace];
+            NSNumber *dock = gSMDockHeightBySize[NSStringFromCGSize(scn.bounds.size)];
+            CGFloat line = scn.bounds.size.height - (dock ? dock.doubleValue : 117.0) - 2.0;
+            if (!gSMBehindDock) gSMBehindDock = [NSMutableSet set];
+            if (_bundle.length) { if (CGRectGetMaxY(onScreen) + t.y > line + 4.0) [gSMBehindDock addObject:_bundle]; else [gSMBehindDock removeObject:_bundle]; }
+        }
         CGPoint c = CGPointMake(card.center.x + t.x, card.center.y + t.y);
         CGSize b = sup.bounds.size;
         card.transform = CGAffineTransformIdentity;
@@ -26176,13 +26225,24 @@ static void DMSMActivateOnTouch(UIEvent *event) {
             if (!gSMBars.count) return;
             UIScreen *screen = x.window.screen ?: [UIScreen mainScreen];
             CGPoint p = [x.window convertPoint:[x locationInView:x.window] toCoordinateSpace:screen.coordinateSpace];
+            // (a key tap is never a touch in the window under the keyboard -- the keyboard is drawn by the app, so SpringBoard's hit test found the
+            //  card below it: that window came forward and the keyboard closed, logic test K2)
+            if (gSMKeyboardShown && screen == [UIScreen mainScreen] && CGRectContainsPoint(gSMKeyboardFrame, p)) continue;
+            // (not in the App Switcher, and not a Home Screen swipe from the bottom edge: a card swiped away or a stage left for Home came back,
+            //  logic review L7)
+            if (DMSwitcherVisible() || p.y > screen.bounds.size.height - 24.0) continue;
             NSArray *wins = [DMAllWindows() sortedArrayUsingComparator:^NSComparisonResult(UIWindow *a, UIWindow *b) { return a.windowLevel > b.windowLevel ? NSOrderedAscending : (a.windowLevel < b.windowLevel ? NSOrderedDescending : NSOrderedSame); }];
             UIView *hit = nil;
             for (UIWindow *w in wins) {
                 if (w.hidden || w.alpha < 0.01 || !w.userInteractionEnabled || [NSStringFromClass([w class]) isEqualToString:@"_UISystemGestureWindow"]) continue;
+                if ((w.screen ?: [UIScreen mainScreen]) != screen) continue;   // (only the touched screen's windows, logic review L3)
                 hit = [w hitTest:[w convertPoint:p fromCoordinateSpace:screen.coordinateSpace] withEvent:nil];
                 if (hit) break;
             }
+            // (a touch on our own title bar is the title bar's: its lights close or minimize the window, its tap and drag bring it forward
+            //  themselves -- activating it here as well brought a closed or minimized window straight back, logic review L8)
+            BOOL onBar = NO; for (UIView *v = hit; v; v = v.superview) if ([v isKindOfClass:[DMSMTitleBar class]]) { onBar = YES; break; }
+            if (onBar) continue;
             UIView *card = DMSMCardOfView(hit);
             NSString *bundle = card ? DMSMCardBundle(card) : nil;
             if (!bundle.length || [bundle isEqualToString:DMSMFrontWindowBundle()]) continue;
@@ -26191,6 +26251,7 @@ static void DMSMActivateOnTouch(UIEvent *event) {
             NSString *bundle = gSMPendingBundle;
             gSMPendingTouch = nil; gSMPendingBundle = nil;
             if (x.phase == UITouchPhaseCancelled || [bundle isEqualToString:DMSMFrontWindowBundle()]) continue;   // (a tap Stage Manager already took, or a cancelled touch)
+            if (DMSwitcherVisible() || !DMFrontApp()) continue;   // (the App Switcher or the Home Screen came up meanwhile, L7)
             dispatch_async(dispatch_get_main_queue(), ^{ DMSMBringToFront(bundle); DMLog([NSString stringWithFormat:@"[smengine] %@ brought forward by a touch in it", bundle]); });
         }
     }
@@ -26262,6 +26323,7 @@ static id DMSMAttrsForLayoutIn(id attrs, NSString *name, id stage) {
 // attributes are what places a window -- -appLayoutByModifyingLayoutAttributes:forItem: returned the stage unchanged): the windows move together.
 static BOOL DMSMApplyLayouts(NSDictionary<NSString *, NSString *> *bundleToLayout) { return DMSMApplyLayoutsIn(bundleToLayout, DMSMWorkingStage()); }
 static BOOL DMSMApplyLayoutsIn(NSDictionary<NSString *, NSString *> *bundleToLayout, id stage) {
+    for (NSString *b in bundleToLayout) [gSMBehindDock removeObject:b];   // (placed by a layout: no longer behind the Dock)
     NSDictionary *map = DMCall(stage, @"itemsToLayoutAttributesMap");
     if (!map.count || !bundleToLayout.count) return NO;
     SEL roleSel = NSSelectorFromString(@"layoutRoleForItem:");
@@ -26308,7 +26370,8 @@ static void DMSMFitTick(BOOL force) {
     }];
     NSMutableArray *bundles = [NSMutableArray array];
     for (id it in items) [bundles addObject:DMCall(it, @"bundleIdentifier")];
-    NSArray *set = [bundles sortedArrayUsingSelector:@selector(compare:)];
+    // (the screen's shape is part of the set: the iPad turned, the tiles are laid out again -- logic review R1)
+    NSArray *set = [[bundles sortedArrayUsingSelector:@selector(compare:)] arrayByAddingObject:NSStringFromCGSize([UIScreen mainScreen].bounds.size)];
     if (!force && [set isEqualToArray:lastSet ?: @[]]) return;
     lastSet = set;
     if (bundles.count < 2) return;
@@ -26477,6 +26540,14 @@ static void DMSMJoinDesktop(id ctx) {
     DMLog([NSString stringWithFormat:@"[smengine] %@ joins the desktop (role %ld, %lu window(s) kept%@)%@", bundle, mine, (unsigned long)kept.count, map.count > 3 ? @", the oldest left out" : @"", windowed ? @"" : @" full screen"]);
 }
 %group SMEngine
+// A background window comes forward when the finger lifts (DMSMActivateOnTouch). In the release build too: it was only called from the debug
+// build's own sendEvent: hook, so the feature never shipped in 1.1.0/1.1.1 (logic test K1).
+%hook SpringBoard
+- (void)sendEvent:(UIEvent *)event {
+    if (event.type == UIEventTypeTouches && DMSMEngine()) DMSMActivateOnTouch(event);
+    %orig;
+}
+%end
 %hook SBIconView
 - (void)_handleTap {
     NSString *bundle = nil; @try { bundle = [[self valueForKey:@"icon"] valueForKey:@"applicationBundleID"]; } @catch (id e) {}
@@ -26538,17 +26609,23 @@ static BOOL DMSMStageHasFullScreenWindow(void) {
 // posts that when a window gets focus after a respring with no keyboard at all, and before a real keyboard's willShow (10 ms later); the flag then
 // stayed set until some keyboard showed and hid. Our engine: the flag is set only once a keyboard really announced itself (willShow) and cleared by
 // willHide -- the willShow sets it itself, so SpringBoard's own change handling decides the Dock again.
-static BOOL gSMKeyboardShown = NO;
+// Only a DOCKED on-screen keyboard counts (logic test K3): the full width of the screen, down to its bottom edge and taller than the bar that is
+// all that shows with a hardware keyboard -- that bar, a floating or a split keyboard leave the Dock alone, as Apple does.
 - (void)_keyboardWillShow:(id)n {
-    gSMKeyboardShown = YES;
-    if (DMTestFlag("/tmp/macstatusbar-debug") && [n isKindOfClass:[NSNotification class]]) DMLog([NSString stringWithFormat:@"[sm] keyboard will show: %@", ((NSNotification *)n).userInfo[UIKeyboardFrameEndUserInfoKey]]);
+    CGRect f = CGRectZero;
+    if ([n isKindOfClass:[NSNotification class]]) { NSValue *v = ((NSNotification *)n).userInfo[UIKeyboardFrameEndUserInfoKey]; if ([v isKindOfClass:[NSValue class]]) f = v.CGRectValue; }
+    CGSize scr = [UIScreen mainScreen].bounds.size;
+    BOOL docked = f.size.width >= scr.width - 1.0 && CGRectGetMaxY(f) >= scr.height - 1.0 && f.size.height > 150.0;
+    gSMKeyboardShown = docked;
+    gSMKeyboardFrame = docked ? f : CGRectZero;
+    if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[sm] keyboard will show: %@ (docked %d)", NSStringFromCGRect(f), docked]);
     %orig;
     SEL upd = NSSelectorFromString(@"_updateSoftwareKeyboardVisibleWithKeyboardShowing:");
     id me = self;
-    if (DMSMFree() && [me respondsToSelector:upd]) ((void (*)(id, SEL, BOOL))objc_msgSend)(me, upd, YES);
+    if (DMSMFree() && docked && [me respondsToSelector:upd]) ((void (*)(id, SEL, BOOL))objc_msgSend)(me, upd, YES);
 }
 - (void)_keyboardWillHide:(id)n {
-    gSMKeyboardShown = NO;
+    gSMKeyboardShown = NO; gSMKeyboardFrame = CGRectZero;
     if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog(@"[sm] keyboard will hide");
     %orig;
 }
@@ -26632,35 +26709,20 @@ static NSArray<NSNumber *> *DMSMFineGrid(NSArray *orig, CGFloat full) {
     if (DMSMFree() && !fullScreenLayout && !CGRectIsEmpty(r) && !CGRectIsEmpty(b)) {
         BOOL dragging = CACurrentMediaTime() < gSMDragUntil;
         CGFloat line = CGRectGetMaxY(b) - dock - 2.0;
-        // (a window already put behind the Dock by hand keeps its place: the next layout pass kept every window inside the area and pulled it up)
+        // (a window put behind the Dock by hand keeps its place: the next layout pass kept every window inside the area and pulled it up.
+        //  Which windows those are is recorded when a title-bar drag ends -- guessing it from sizes misfired after a turn, logic review R2)
         BOOL behind = NO;
-        if (!dragging && !dh && dock > 0) {
-            id st = nil;
+        if (!dragging && !dh && dock > 0 && gSMBehindDock.count) {
             for (id al in DMCall(DMCall(objc_getClass("SBMainSwitcherControllerCoordinator"), @"sharedInstance"), @"recentAppLayouts")) {
-                id i = DMCall(al, @"preferredDisplayIdentity");
-                BOOL onThis = DMSMIsMainIdentity(i) ? CGSizeEqualToSize(b.size, [UIScreen mainScreen].bounds.size) : !CGSizeEqualToSize(b.size, [UIScreen mainScreen].bounds.size);
-                if (onThis) { st = al; break; }
-            }
-            NSDictionary *map = DMCall(st, @"itemsToLayoutAttributesMap");
-            for (id it in map) {
-                id a = map[it];
-                if (DMSMPolicyOf(a) == 2) continue;   // (full screen: its own rule hides the Dock)
-                DMSMAttributedSize sz = ((DMSMAttributedSize (*)(id, SEL))objc_msgSend)(a, NSSelectorFromString(@"attributedSize"));
-                CGPoint c = ((CGPoint (*)(id, SEL))objc_msgSend)(a, NSSelectorFromString(@"normalizedCenter"));
-                if (sz.type != 0 || sz.normalizedSize.height <= 0) continue;
-                if ((c.y + sz.normalizedSize.height / 2.0) * CGRectGetHeight(b) > line + 4.0) { behind = YES; break; }
+                BOOL onThis = DMSMIsMainIdentity(DMCall(al, @"preferredDisplayIdentity")) == CGSizeEqualToSize(b.size, [UIScreen mainScreen].bounds.size);
+                if (!onThis) continue;
+                for (id it in DMCall(al, @"itemsToLayoutAttributesMap")) if ([gSMBehindDock containsObject:DMCall(it, @"bundleIdentifier")]) { behind = YES; break; }
+                break;
             }
         }
         CGFloat bottom = (dh || dock <= 0 || dragging || behind) ? CGRectGetMaxY(b) : line;
         r = CGRectMake(CGRectGetMinX(b), CGRectGetMinY(r), CGRectGetWidth(b), MAX(100.0, bottom - CGRectGetMinY(r)));
     }
-    // (while the keyboard is up the area stays as it was: the Dock hides for the keyboard, and an area that followed it re-laid the window out
-    //  under the text field -- typing in a Safari window closed the keyboard again and again, 1.1.0, 29 Sep 08:10)
-    static NSMutableDictionary<NSString *, NSValue *> *areaBySize;
-    if (!areaBySize) areaBySize = [NSMutableDictionary dictionary];
-    NSString *sizeKey = NSStringFromCGSize(b.size);
-    if (DMSMFree() && !fullScreenLayout && gSMKeyboardShown && areaBySize[sizeKey]) r = areaBySize[sizeKey].CGRectValue;
-    else if (!fullScreenLayout) areaBySize[sizeKey] = [NSValue valueWithCGRect:r];
     static NSString *last;
     NSString *line = [NSString stringWithFormat:@"[sm] stage area %@ (Apple's %@, bounds %@, dock %.0f, strip hidden %d, dock hidden %d)", NSStringFromCGRect(r), NSStringFromCGRect(apple), NSStringFromCGRect(b), dock, strip, dh];
     if (![line isEqualToString:last]) { last = line; DMLog(line); }

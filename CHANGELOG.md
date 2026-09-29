@@ -2,6 +2,18 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.1.2
+
+### Fixes
+- Stage Manager engine: touching a window behind another one brings it to the front when you lift your finger. This was missing from 1.1.0 and 1.1.1, so a scroll or tap in a background window left the other window active.
+- Stage Manager engine: pressing the red or yellow button on a window behind another one no longer brings it straight back.
+- Stage Manager engine: typing on the on-screen keyboard over another window no longer brings that window to the front.
+- Stage Manager engine: with a hardware keyboard, a floating or a split keyboard, the Dock no longer hides as if the full keyboard were up.
+- Stage Manager engine: Fit to Window tiles the windows again when the iPad is turned.
+- Stage Manager engine: Bring All to Front and Send All to Back move every window at once.
+- Stage Manager engine: a window leaving full screen comes back in front.
+- Stage Manager engine: swiping up to the Home Screen or using the App Switcher over a window no longer brings that window back.
+
 ## 1.1.1
 
 ### Fixes
