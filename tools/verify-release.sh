@@ -81,6 +81,12 @@ while IFS= read -r f; do
     [ -n "$hits" ] && while IFS= read -r h; do bad "${f##*/}: $h"; done <<< "$hits"
 done < <(find d -type f | sort)
 
+echo "== release features (tools/verify-release-features.sh)"
+# every DM_FEATURE_MARK in the source must be in these binaries: a feature compiled only into debug builds never ships silently (1.1.0/1.1.1)
+fout=$(MSBD_TREE="$TREE" bash "$TREE/tools/verify-release-features.sh" d 2>&1); frc=$?
+echo "$fout" | grep -v '^FEATURES:' | sed 's/^  */  /'
+[ $frc = 0 ] && ok "$(echo "$fout" | grep '^FEATURES:')" || bad "feature markers missing from the release binaries (listed above)"
+
 echo "== personal name"
 # Allowed: the old package IDs (com.kaan.*) in the control's Conflicts/Replaces/Provides and in the maintainer scripts (the migration from the old
 # packages), and the string "kaan." in sshtoggled (MigOldPrefix: the old preference domains' prefix, only read for the one-time migration).

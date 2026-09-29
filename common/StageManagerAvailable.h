@@ -5,6 +5,7 @@
 #import <Foundation/Foundation.h>
 #include <sys/sysctl.h>
 #include <stdio.h>
+#include <unistd.h>
 // iPadOS 16 or later, and either TrollPad (which switches Stage Manager on for older iPads) or a model Apple ships it on.
 static inline BOOL MSBDStageManagerTrollPad(void) {
     return [[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb/usr/lib/TweakInject/TrollPadSB.dylib"];
@@ -26,4 +27,38 @@ static inline BOOL MSBDStageManagerHardware(void) {
 static inline BOOL MSBDStageManagerAvailable(void) {
     if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion < 16) return NO;
     return MSBDStageManagerTrollPad() || MSBDStageManagerHardware();
+}
+// ---- the Stage Manager engine's self-check verdict (2026-09-29) ----
+// SpringBoard checks, once at every start, that every private class, method and signature the engine uses is there as on the versions it was
+// built on (statusbar/SMEngineAPI.h, DMSMSelfCheck), and publishes the result here, for this iPadOS build. The root helper (which engine loads)
+// and Settings (the Window Engine list) read it: a failed check means the engine is not offered, and the default engine runs instead -- the
+// same as an iPad without Stage Manager. Not checked yet on this build (e.g. right after an iPadOS update): trusted until SpringBoard has looked.
+#define MSBD_SM_CHECK_KEY CFSTR("stageManagerEngineCheck")
+static inline NSString *MSBDOSBuild(void) {   // (e.g. "20H330")
+    char b[64] = ""; size_t n = sizeof(b);
+    if (sysctlbyname("kern.osversion", b, &n, NULL, 0) != 0) return nil;
+    return [NSString stringWithUTF8String:b];
+}
+// 1 = the engine's API was verified on this iPadOS build, 0 = it failed here (*reason: why, *os: the iPadOS version), -1 = not checked on this build.
+static inline int MSBDStageManagerVerdict(NSString **reason, NSString **os) {
+    CFStringRef domain = CFSTR("com.besiktasliseba.macstatusbar");
+    CFStringRef user = getuid() == 0 ? CFSTR("mobile") : kCFPreferencesCurrentUser;   // (the root helper reads mobile's preferences)
+    CFPreferencesSynchronize(domain, user, kCFPreferencesAnyHost);
+    id v = (__bridge_transfer id)CFPreferencesCopyValue(MSBD_SM_CHECK_KEY, domain, user, kCFPreferencesAnyHost);
+    if (![v isKindOfClass:[NSDictionary class]]) return -1;
+    NSDictionary *d = v;
+    NSString *build = MSBDOSBuild();
+    if (!build.length || ![d[@"build"] isKindOfClass:[NSString class]] || ![d[@"build"] isEqualToString:build]) return -1;
+    if ([d[@"ok"] boolValue]) return 1;
+    if (reason) *reason = [d[@"reason"] isKindOfClass:[NSString class]] ? d[@"reason"] : nil;
+    if (os) {
+        NSOperatingSystemVersion ov = [NSProcessInfo processInfo].operatingSystemVersion;
+        *os = ov.patchVersion ? [NSString stringWithFormat:@"%ld.%ld.%ld", (long)ov.majorVersion, (long)ov.minorVersion, (long)ov.patchVersion]
+                              : [NSString stringWithFormat:@"%ld.%ld", (long)ov.majorVersion, (long)ov.minorVersion];
+    }
+    return 0;
+}
+// Stage Manager can be the window engine here: the iPad has it (or TrollPad), and the self-check did not fail on this iPadOS build.
+static inline BOOL MSBDStageManagerEngineUsable(void) {
+    return MSBDStageManagerAvailable() && MSBDStageManagerVerdict(NULL, NULL) != 0;
 }

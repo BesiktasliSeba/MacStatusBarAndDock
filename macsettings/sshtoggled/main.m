@@ -220,6 +220,10 @@ static NSString *ChosenEngine(BOOL *windowing) {   // read from Mac Status Bar's
     // (SpringBoard keeps Stage Manager on itself: StatusBar.x DMSMEngine). On iPadOS 15 it is not offered; a stored pick there counts as none.
     // (logic test F6: Stage Manager picked where it can't run -- TrollPad removed -- counts as not picked: the default engine, not "no windows")
     if ([engine isEqualToString:@"stagemanager"] && !MSBDStageManagerAvailable()) { ELog(@"engines: Stage Manager is picked but can't run on this iPad -- the default engine instead"); engine = nil; }
+    // (and where SpringBoard's self-check of the engine's private API failed on this iPadOS build -- the same verdict SpringBoard and Settings go
+    //  by, common/StageManagerAvailable.h: SpringBoard keeps the engine off, so the default engine must load, as if Stage Manager were not there)
+    NSString *why = nil;
+    if ([engine isEqualToString:@"stagemanager"] && MSBDStageManagerVerdict(&why, NULL) == 0) { ELog(@"engines: Stage Manager is picked but not supported on this iPadOS version (%@) -- the default engine instead", why ?: @"self-check failed"); engine = nil; }
     BOOL stageManager = [engine isEqualToString:@"stagemanager"] && [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 16;
     if (stageManager) *windowing = NO;
     // Stock status bar: the chosen engine always runs on its own (Settings > Status Bar Style says so, and the Enable Windowing switch is hidden

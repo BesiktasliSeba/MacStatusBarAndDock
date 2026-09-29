@@ -136,7 +136,12 @@ static NSString *MSBEngineLibraryPath(NSString *lib) {   // (its .dylib, or iCle
 }
 // Stage Manager as the engine (iPadOS 16+): usable where Stage Manager runs -- natively (iPad Pro 2018 and later, M1/M2 iPads: iPad8/13/14,x) or
 // through TrollPad on older iPads.
-static BOOL MSBStageManagerAvailable(void) { return MSBDStageManagerAvailable(); }   // (common/StageManagerAvailable.h)
+// (and where SpringBoard's self-check of the engine found the system methods it uses missing or different on this iPadOS version, it is not
+// offered either: the row greyed, "Not Supported Yet" -- the same verdict as SpringBoard and the root helper, common/StageManagerAvailable.h)
+static BOOL MSBStageManagerAvailable(void) { return MSBDStageManagerEngineUsable(); }   // (common/StageManagerAvailable.h)
+static BOOL MSBStageManagerUnsupported(NSString **os) {   // (Stage Manager is here, but the engine's self-check failed on this iPadOS build)
+	return MSBDStageManagerAvailable() && MSBDStageManagerVerdict(NULL, os) == 0;
+}
 static int MSBEngineState(NSString *engine) {
 	if ([engine isEqualToString:@"stagemanager"]) return MSBStageManagerAvailable() ? 2 : 0;
 	NSDictionary *mainLib = @{@"aerial": @"Aerial", @"milkyway": @"MilkyWay4", @"zetsu": @"Zetsu"};
@@ -186,6 +191,13 @@ static int MSBEngineState(NSString *engine) {
 			[[UIApplication sharedApplication] openURL:[NSURL URLWithString:url] options:@{} completionHandler:nil];
 		}] forControlEvents:UIControlEventTouchUpInside];
 		cell.accessoryView = get;
+	} else if ([v isEqualToString:@"stagemanager"] && MSBStageManagerUnsupported(NULL)) {   // (greyed, and why, where the checkmark would be)
+		UILabel *why = [UILabel new];
+		why.text = @"Not Supported Yet";
+		why.font = [UIFont systemFontOfSize:15.0];
+		why.textColor = [UIColor secondaryLabelColor];
+		[why sizeToFit];
+		cell.accessoryView = why;
 	} else cell.accessoryView = nil;
 	return cell;
 }
@@ -435,6 +447,16 @@ static void MSBFitValueLabels(UIView *v) {
 				if (!hiding || handles || (sp.cellType == PSGroupCell && [sp.identifier isEqualToString:@"WINDOWS_GROUP"])) [kept addObject:sp];
 			}
 			_specifiers = kept;
+			break;
+		}
+		// Stage Manager picked, but not supported on this iPadOS version (the engine's self-check failed): the default engine runs, and the footer says why.
+		for (PSSpecifier *spec in [_specifiers copy]) {
+			if (![[spec propertyForKey:@"key"] isEqual:@"windowEngine"]) continue;
+			id stored = [super readPreferenceValue:spec];
+			NSString *os = nil;
+			if (![stored isKindOfClass:[NSString class]] || ![stored isEqualToString:@"stagemanager"] || !MSBStageManagerUnsupported(&os)) break;
+			for (PSSpecifier *sp in _specifiers) if ([sp.identifier isEqualToString:@"ENGINE_GROUP"])
+				[sp setProperty:[NSString stringWithFormat:@"Stage Manager isn't supported as a window engine on iPadOS %@ yet, so the default engine is used.", os ?: @"(this version)"] forKey:@"footerText"];
 			break;
 		}
 		// "Resize Handles" (ours or Stage Manager's) is only a choice with Stage Manager as the engine: the other engines always have ours.
