@@ -364,6 +364,7 @@ static void DMSMReapplyGrabbers(UIView *card);
 static id DMSMFrontStage(void);
 static void DMSMDismissOtherFullScreen(id stage, NSString *keep);
 static BOOL DMSMEngine(void);
+static void DMWatchDockChanges(void);
 static BOOL DMSMWindowAction(NSString *bundleID, NSString *name);
 static void DMSMSetMinimized(NSString *bundle, BOOL on);
 static id DMSMStageOf(NSString *bundle);
@@ -2015,6 +2016,7 @@ static BOOL DMStageManagerHeldNow(void) {
 }
 static void DMSyncWindowsForLibraryBody(void) {
     DM_PERF("stagemgr", DMStageManagerWatch());
+    DMWatchDockChanges();   // (the Dock changed for good: windows follow its new height, every engine)
     DM_PERF("switcher", DMWatchSwitcher());
     DM_PERF("lock", DMWatchLock());
     if (!DMTestFlag("/tmp/macstatusbar-nobsc")) DM_PERF("ccscale", DMApplyControlCenterScale());
@@ -3125,6 +3127,8 @@ void DMZetsuAfterUnlock(void) {
 // there, at that window's full size, so the keyboard spans the screen's bottom edge and covers the windows like on Aerial 3.0 (the rule: no
 // keyboard avoidance). Nothing of Zetsu's is called; only the existing view is moved. Kill switch: /tmp/msb-zkb-off.
 static CGRect DMUsableArea(void);
+static void DMApplyGroupSlots(UIView *fresh);
+static unsigned gDMDockGen = 0;   // (bumped when the Dock itself changes: its own apps, its size or gap -- DMWatchDockChanges)
 static BOOL DMDockOnScreen(void);
 static CGFloat DMDockCenterX(void);
 static CGPoint DMScreenToNative(CGPoint s, long orientation, CGSize native);
@@ -5119,6 +5123,56 @@ static CGFloat DMSpringBoardDockHeight(void) {
     if (![ctrl respondsToSelector:sel]) return 0;
     return ((double (*)(id, SEL))objc_msgSend)(ctrl, sel);
 }
+// The Dock changed for good (not its recents coming and going): its own apps were added or removed, or its size or gap setting changed. The
+// usable area forgets the Dock height it kept (DMUsableArea), and once the Dock has settled at its new size the Fit to Window tiles are laid out
+// again, so the windows reach the new Dock line without a respring.
+// Stage Manager engine: which layout each window of the desktop is in now (fill, a half, a quarter...), measured against the usable area as it is
+// before the Dock changes, so each can be put back into the same layout against the new one -- a lone window filling the desktop too, which
+// Fit to Window (two or more windows) never re-tiles.
+static NSDictionary<NSString *, NSString *> *DMSMLayoutsNow(void) {
+    NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    NSDictionary<NSString *, NSValue *> *frames = DMSMOpenWindowFrames();
+    for (NSString *b in frames) {
+        CGRect f = frames[b].CGRectValue;
+        for (NSString *name in @[@"fill", @"left", @"right", @"top", @"bottom", @"topleft", @"topright", @"bottomleft", @"bottomright"]) {
+            CGRect t = DMLayoutFrame(name);
+            if (CGRectIsNull(t)) continue;
+            if (fabs(t.origin.x - f.origin.x) < 6.0 && fabs(t.origin.y - f.origin.y) < 6.0 && fabs(t.size.width - f.size.width) < 6.0 && fabs(t.size.height - f.size.height) < 6.0) { out[b] = name; break; }
+        }
+    }
+    return out;
+}
+static void DMDockChangedRelayout(NSString *why) {
+    NSDictionary *layouts = DMSMEngine() ? DMSMLayoutsNow() : nil;   // (before the usable area forgets the old Dock)
+    gDMDockGen++;
+    DM_FEATURE_MARK("dock-change-relayout");
+    DMLog([NSString stringWithFormat:@"[usable] the Dock changed (%@): its height is measured again; windows in a layout follow it %@", why, layouts]);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{   // (after the Dock's own resize animation)
+        (void)DMUsableArea();   // (a first measurement of the new Dock; it counts once seen again 0.3 s later)
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            (void)DMUsableArea();
+            if (DMSMEngine()) { if (layouts.count) DMSMApplyLayouts(layouts); }
+            else if (DMFitEnabled()) DMApplyGroupSlots(nil);
+        });
+    });
+}
+static void DMWatchDockChanges(void) {
+    static BOOL registered = NO;
+    if (!registered) {   // (the Dock's size and gap settings: Dock.x posts this on every change)
+        registered = YES;
+        int token;
+        notify_register_dispatch("com.besiktasliseba.dockmagnification/prefsChanged", &token, dispatch_get_main_queue(), ^(int t) { DMDockChangedRelayout(@"Dock settings"); });
+    }
+    static NSInteger lastCount = -1;
+    id mgr = DMCall(DMCall(objc_getClass("SBIconController"), @"sharedInstance"), @"iconManager");
+    id root = DMCall(DMCall(mgr, @"iconModel"), @"rootFolder");
+    id dock = [root respondsToSelector:NSSelectorFromString(@"dock")] ? DMCall(root, @"dock") : nil;
+    NSArray *icons = [dock respondsToSelector:NSSelectorFromString(@"icons")] ? DMCall(dock, @"icons") : nil;
+    if (![icons isKindOfClass:[NSArray class]]) return;
+    NSInteger n = (NSInteger)icons.count;
+    if (lastCount >= 0 && n != lastCount) DMDockChangedRelayout([NSString stringWithFormat:@"%ld -> %ld apps", (long)lastCount, (long)n]);
+    lastCount = n;
+}
 static CGRect DMUsableArea(void) {
     CGSize screen = [UIScreen mainScreen].bounds.size;
     // Landscape assumes the Dock's top is at most 84 pt above the bottom edge (and moves up if it is higher). In portrait the Dock is
@@ -5161,6 +5215,10 @@ static CGRect DMUsableArea(void) {
     //  -- iPad 2, 23:57:42: 96.9 pt tall, top 650.6 instead of 661.5 -- was kept until the next respring and every landscape layout ended 11 pt above
     //  the Dock, logic test 1.0.8. Until then the Dock as measured now is used, so no window reaches under it.)
     static CGFloat tallestTopP = 0, tallestTopL = 0, candTop = -1; static CFTimeInterval candAt = 0; static CGSize candScreen = {0, 0};
+    // (the tallest Dock is only kept while the Dock is the same Dock: adding or removing its own apps, or changing its size or gap, makes it a new
+    //  height for good -- iPad 2, 29 Sep: apps added to the Dock made it smaller, and the windows kept ending above the old, taller Dock until a respring)
+    static unsigned seenGen = 0;
+    if (seenGen != gDMDockGen) { seenGen = gDMDockGen; tallestTopP = tallestTopL = 0; candTop = -1; lastDockTopP = lastDockTopL = 0; }
     if (foundDock) {
         CGFloat *tallest = portrait ? &tallestTopP : &tallestTopL;
         CFTimeInterval tnow = CACurrentMediaTime();
@@ -26760,9 +26818,27 @@ static BOOL DMSMStageHasFullScreenWindow(void) {
     return DMSMFree() ? YES : %orig;
 }
 %end
-@interface SBSwitcherChamoisLayoutAttributes : NSObject
-- (CGRect)containerBounds;
-@end
+// The container the attributes lay out in. Never through -containerBounds: on iPadOS 16.0 (20A8372, the M2 iPad Pro's factory build, Stage Manager
+// switched on by hand) SpringBoard crashed inside it when our getter hooks below called it during a layout pass (issue #2, 1.1.3 frames
+// symbolicated: the call in -maximumWindowWidthForOverlapping). Its backing ivar is read instead, only where it is a CGRect (16.5 and later);
+// otherwise the largest connected screen -- these values only raise Stage Manager's caps, and each window is still kept inside its own screen
+// by the stage area (_stageAreaForModel) and the size rounding (_nearestGridSizeForSize, capped to the bounds it is given).
+static CGRect DMSMContainerBoundsOf(id attrs) {
+    static Ivar iv; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        Class c = objc_getClass("SBSwitcherChamoisLayoutAttributes");
+        Ivar i = c ? class_getInstanceVariable(c, "_containerBounds") : NULL;
+        const char *t = i ? ivar_getTypeEncoding(i) : NULL;
+        if (t && strncmp(t, "{CGRect=", 8) == 0) iv = i;
+    });
+    if (attrs && iv && [attrs isKindOfClass:objc_getClass("SBSwitcherChamoisLayoutAttributes")]) {
+        CGRect r; memcpy(&r, (const char *)(__bridge const void *)attrs + ivar_getOffset(iv), sizeof r);
+        if (isfinite(r.size.width) && isfinite(r.size.height) && r.size.width >= 100.0 && r.size.height >= 100.0 && r.size.width < 20000.0 && r.size.height < 20000.0) return r;
+    }
+    CGRect best = [UIScreen mainScreen].bounds;
+    for (UIScreen *sc in [UIScreen screens]) if (sc.bounds.size.width * sc.bounds.size.height > best.size.width * best.size.height) best = sc.bounds;
+    return best;
+}
 %hook SBSwitcherChamoisLayoutAttributes
 // (the window sizes Stage Manager allows, a list of widths and one of heights ~10 pt apart up to 48 pt short of the edges; a size is rounded to them.
 //  Our engine: every whole point up to the screen size -- one cached list per length, so exact sizes cost nothing)
@@ -26787,12 +26863,12 @@ static NSArray<NSNumber *> *DMSMFineGrid(NSArray *orig, CGFloat full) {
 - (id)gridWidths {
     id v = %orig;
     if (!DMSMFree()) return v;
-    return DMSMFineGrid(v, CGRectGetWidth([self containerBounds]));
+    return DMSMFineGrid(v, CGRectGetWidth(DMSMContainerBoundsOf(self)));
 }
 - (id)gridHeights {
     id v = %orig;
     if (!DMSMFree()) return v;
-    return DMSMFineGrid(v, CGRectGetHeight([self containerBounds]));
+    return DMSMFineGrid(v, CGRectGetHeight(DMSMContainerBoundsOf(self)));
 }
 - (double)stageOccludedAppScale {   // (a covered background window shrank: on a Mac windows keep their size)
     return DMSMFree() ? 1.0 : %orig;
@@ -26806,13 +26882,13 @@ static NSArray<NSNumber *> *DMSMFineGrid(NSArray *orig, CGFloat full) {
 - (double)maximumWindowWidthForOverlapping {
     double v = %orig;
     if (!DMSMFree()) return v;
-    CGRect b = [self containerBounds];
+    CGRect b = DMSMContainerBoundsOf(self);
     return MAX(v, CGRectGetWidth(b));
 }
 - (double)maximumWindowHeightWithDock {
     double v = %orig;
     if (!DMSMFree()) return v;
-    CGRect b = [self containerBounds];
+    CGRect b = DMSMContainerBoundsOf(self);
     return MAX(v, CGRectGetHeight(b));
 }
 %end
@@ -27048,6 +27124,11 @@ static void DMSMReapplyGrabbers(UIView *card) {   // (Settings > Resize Handles 
     if (!DMSMFree() || size.width <= 0 || size.height <= 0) return o;
     CGFloat maxW = CGRectGetWidth(b) > 0 ? CGRectGetWidth(b) : size.width;
     CGFloat maxH = CGRectGetHeight(b) > 0 ? CGRectGetHeight(b) : size.height;
+    // (and no taller than the stage area, which ends above this screen's Dock: a new window at Stage Manager's own size, 672 pt in landscape, is
+    //  taller than the area once the Dock is up, and Stage Manager kept its bottom above the Dock by pushing its top under the menu bar -- the
+    //  title bar and traffic lights hidden, iPad 2 29 Sep 21:12, Reynard)
+    NSNumber *dock = gSMDockHeightBySize[NSStringFromCGSize(b.size)];
+    if (dock.doubleValue > 0 && CGRectGetHeight(b) > 0) maxH = MIN(maxH, CGRectGetHeight(b) - dock.doubleValue - 2.0 - (24.0 + kSMBarH));
     CGSize r = CGSizeMake(MIN(size.width, maxW), MIN(size.height, maxH));
     static int logged = 0;
     if (logged < 3) {
@@ -27112,6 +27193,22 @@ static void DMSMSelfCheck(void) {
 }
 static void DMSMEngineInit(void) {
     DMSMSelfCheck();
+}
+// Where SpringBoard starts without the engine's part (the stock status bar -- also what Automatic Crash Recovery switches to after a crash) the
+// verdict was never written, and "not checked" counted as usable: Settings still offered Stage Manager on a build where it crashed (issue #2,
+// iPadOS 16.0, stock bar after the crash). The same check, read-only (nothing hooked), so Settings and the root helper know this build.
+static void DMSMCheckReadOnly(void) {
+    DM_FEATURE_MARK("sm-check-readonly");
+    if (gSMCheckDone) return;
+    gSMCheckDone = YES;
+    if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion < 16 || !objc_getClass("SBSwitcherChamoisSettings") || !MSBDStageManagerAvailable()) return;
+    NSUInteger checked = 0;
+    NSArray<NSString *> *bad = DMSMCheckAPI(nil, &checked);
+    NSOperatingSystemVersion ov = [NSProcessInfo processInfo].operatingSystemVersion;
+    NSString *reason = bad.count ? [NSString stringWithFormat:@"iPadOS %ld.%ld.%ld (%@): %lu of the system methods the engine uses are missing or different",
+        (long)ov.majorVersion, (long)ov.minorVersion, (long)ov.patchVersion, MSBDOSBuild() ?: @"?", (unsigned long)bad.count] : nil;
+    DMSMPublishVerdict(bad.count == 0, reason, bad);
+    DMLog([NSString stringWithFormat:@"[smcheck] read-only check (engine not started here): %@", reason ?: [NSString stringWithFormat:@"%lu verified", (unsigned long)checked]]);
 }
 
 // Leaving Stage Manager (another engine takes over): a stage of several windows is a multi-app layout, which iPadOS shows as Split View without
@@ -27206,7 +27303,7 @@ void DMSMRunAction(UIAction *action, id sender) {
     }
     gStockStored = gStockBar = DMStockBarSwitch();   // "Use Stock Status Bar": decided once, before anything is hooked
     DMStockPublish();
-    if (gStockBar) { DMSkipLockInit(); DMStockBarStart(); return; }   // only the parts that stay (StockBar.h); the rest below never runs
+    if (gStockBar) { DMSMCheckReadOnly(); DMSkipLockInit(); DMStockBarStart(); return; }   // only the parts that stay (StockBar.h); the rest below never runs
     %init;
     if (!DMCtorSkip("stockvpn")) DMStockVPNInit();
     if (!DMCtorSkip("smengine")) DMSMEngineInit();

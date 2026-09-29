@@ -191,9 +191,9 @@ static int MSBEngineState(NSString *engine) {
 			[[UIApplication sharedApplication] openURL:[NSURL URLWithString:url] options:@{} completionHandler:nil];
 		}] forControlEvents:UIControlEventTouchUpInside];
 		cell.accessoryView = get;
-	} else if ([v isEqualToString:@"stagemanager"] && MSBStageManagerUnsupported(NULL)) {   // (greyed, and why, where the checkmark would be)
+	} else if ([v isEqualToString:@"stagemanager"] && MSBDStageManagerAvailable() && MSBDStageManagerVerdict(NULL, NULL) != 1) {   // (greyed, and why, where the checkmark would be)
 		UILabel *why = [UILabel new];
-		why.text = @"Not Supported Yet";
+		why.text = MSBStageManagerUnsupported(NULL) ? @"Not Supported Yet" : @"Respring to Check";   // (not checked on this build: SpringBoard checks at its start)
 		why.font = [UIFont systemFontOfSize:15.0];
 		why.textColor = [UIColor secondaryLabelColor];
 		[why sizeToFit];

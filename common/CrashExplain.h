@@ -12,6 +12,7 @@
 #import <Foundation/Foundation.h>
 #import <sys/sysctl.h>
 #include "CrashGuard.h"
+#include "StageManagerAvailable.h"
 
 #ifndef MSBD_DPKG_DIR   // (overridable for the Mac test, tools/test-crashexplain.m)
 #define MSBD_DPKG_DIR "/var/jb/var/lib/dpkg"
@@ -305,7 +306,12 @@ static inline NSURL *MSBDReportProblemURL(NSString *engine) {
     NSString *enginePkg = names[engine] ? MSBDPackageOwning([NSString stringWithFormat:@"/var/jb/Library/MobileSubstrate/DynamicLibraries/%@.dylib", name]) : nil;
     NSString *engineVersion = enginePkg ? MSBDPackageVersion(enginePkg) : nil;
     NSString *base = [NSString stringWithFormat:@"**What happened** (which app, and what it did):\n\n\n**Steps to reproduce:**\n1. \n\n---\n- Device: %@\n- iPadOS: %@\n- Window engine: %@ %@\n- MacStatusBar&Dock: %@\n",
-        MSBDExplainMachine(), MSBDExplainOSVersion(), name, engineVersion ?: @"(version unknown)", MSBDPackageVersion(@"com.besiktasliseba.macstatusbaranddock") ?: @"(unknown)"];
+        MSBDExplainMachine(), MSBDExplainOSVersion(), name, engineVersion ?: ([engine isEqualToString:@"stagemanager"] ? [NSString stringWithFormat:@"(build %@)", MSBDOSBuild() ?: @"?"] : @"(version unknown)"),
+        MSBDPackageVersion(@"com.besiktasliseba.macstatusbaranddock") ?: @"(unknown)"];
+    if ([engine isEqualToString:@"stagemanager"]) {   // (the engine's self-check on this iPadOS build: a report from an untested build says at once whether it ran and passed, issue #2)
+        NSString *why = nil; int verdict = MSBDStageManagerVerdict(&why, NULL);
+        base = [base stringByAppendingFormat:@"- Stage Manager engine check: %@\n", verdict == 1 ? @"passed" : verdict == 0 ? [@"failed, " stringByAppendingString:why ?: @"no reason"] : @"not run on this build"];
+    }
     // GitHub's new-issue link must stay a few KB: the longest parts shrink until it fits.
     NSURL *url = nil;
     NSUInteger frames[] = {5, 3, 0}, chars[] = {900, 300, 80};

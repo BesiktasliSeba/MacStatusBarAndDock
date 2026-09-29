@@ -12,6 +12,7 @@
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import <stdio.h>
 #import <unistd.h>
 #import <sys/stat.h>
@@ -1342,6 +1343,83 @@ static void DMWidenRecentsGrid(UIView *list) {
 %end
 
 #import "../common/OffAlert.h"
+// ---- "Remove from Dock" in a Dock app's Haptic Touch menu (2026-09-29) ----
+// Like a Mac's Dock: an app kept in the Dock can be taken out of it from its own menu, without the Home Screen in view (windows up, Stage
+// Manager). The app goes to the first free place on the Home Screen, the same place iPadOS gives an app it adds itself. Only apps kept in
+// the Dock (the root folder's Dock list), not its recent/suggested apps and not a folder.
+static NSString * const kDMRemoveFromDockType = @"com.besiktasliseba.dock.removefromdock";
+static id DMObj(id o, NSString *sel) { SEL s = NSSelectorFromString(sel); return [o respondsToSelector:s] ? ((id (*)(id, SEL))objc_msgSend)(o, s) : nil; }
+static id DMIconModelRoot(id *mgrOut, id *modelOut) {
+    id mgr = DMObj(DMObj((id)objc_getClass("SBIconController"), @"sharedInstance"), @"iconManager");
+    id model = DMObj(mgr, @"iconModel");
+    if (mgrOut) *mgrOut = mgr;
+    if (modelOut) *modelOut = model;
+    return DMObj(model, @"rootFolder");
+}
+static BOOL DMIconKeptInDock(id icon) {   // (in the Dock list itself: a kept app, not a recent)
+    id dock = DMObj(DMIconModelRoot(NULL, NULL), @"dock");
+    SEL has = NSSelectorFromString(@"directlyContainsIcon:");
+    return icon && [dock respondsToSelector:has] && ((BOOL (*)(id, SEL, id))objc_msgSend)(dock, has, icon);
+}
+static void DMRemoveFromDock(id icon) {
+    DM_FEATURE_MARK("dock-remove-from-dock");
+    id mgr = nil, model = nil;
+    id root = DMIconModelRoot(&mgr, &model);
+    id dock = DMObj(root, @"dock");
+    NSArray *icons = DMObj(dock, @"icons");
+    if (!root || !dock || ![icons isKindOfClass:[NSArray class]] || ![icons containsObject:icon]) return;
+    NSUInteger oldIndex = [icons indexOfObject:icon];
+    SEL optsSel = NSSelectorFromString(@"gridCellInfoOptions"), freeSel = NSSelectorFromString(@"gridPathForFirstFreeSlotAvoidingFirstList:listGridCellInfoOptions:");
+    SEL insertSel = NSSelectorFromString(@"insertIcon:atGridPath:options:"), addSel = NSSelectorFromString(@"addIcon:options:listGridCellInfoOptions:");
+    SEL removeSel = NSSelectorFromString(@"removeIcons:"), putBackSel = NSSelectorFromString(@"insertIcons:atIndex:options:");
+    if (![dock respondsToSelector:removeSel]) return;
+    unsigned long long opts = [mgr respondsToSelector:optsSel] ? ((unsigned long long (*)(id, SEL))objc_msgSend)(mgr, optsSel) : 0;
+    id path = [root respondsToSelector:freeSel] ? ((id (*)(id, SEL, BOOL, unsigned long long))objc_msgSend)(root, freeSel, NO, opts) : nil;
+    ((void (*)(id, SEL, id))objc_msgSend)(dock, removeSel, @[icon]);
+    id placed = nil;
+    @try {
+        if (path && [root respondsToSelector:insertSel]) placed = ((id (*)(id, SEL, id, id, unsigned long long))objc_msgSend)(root, insertSel, icon, path, 0);
+        if (!placed && [root respondsToSelector:addSel]) placed = ((id (*)(id, SEL, id, unsigned long long, unsigned long long))objc_msgSend)(root, addSel, icon, 0, opts);
+    } @catch (NSException *e) { placed = nil; }
+    if (!placed) {   // (nowhere to put it: it stays in the Dock where it was, nothing lost)
+        if ([dock respondsToSelector:putBackSel]) ((void (*)(id, SEL, id, NSUInteger, unsigned long long))objc_msgSend)(dock, putBackSel, @[icon], oldIndex, 0);
+        DMLog(@"[dock] Remove from Dock: no free place on the Home Screen, kept in the Dock");
+        return;
+    }
+    if ([model respondsToSelector:NSSelectorFromString(@"markIconStateDirty")]) ((void (*)(id, SEL))objc_msgSend)(model, NSSelectorFromString(@"markIconStateDirty"));
+    if ([model respondsToSelector:NSSelectorFromString(@"saveIconStateIfNeeded")]) ((BOOL (*)(id, SEL))objc_msgSend)(model, NSSelectorFromString(@"saveIconStateIfNeeded"));
+    DMLog([NSString stringWithFormat:@"[dock] Remove from Dock: %@ moved to the Home Screen at %@", DMObj(icon, @"applicationBundleID"), path]);
+}
+%hook SBIconView
+- (NSArray *)applicationShortcutItems {
+    NSArray *orig = %orig;
+    Class itemClass = objc_getClass("SBSApplicationShortcutItem");
+    id icon = DMObj(self, @"icon");
+    NSString *location = DMObj(self, @"location");
+    if (!gEnabled || !itemClass || ![location isKindOfClass:[NSString class]] || ![location containsString:@"Dock"] || [location containsString:@"Suggestions"]) return orig;
+    if (!DMIconKeptInDock(icon) || ![DMObj(icon, @"applicationBundleID") isKindOfClass:[NSString class]]) return orig;
+    id item = [[itemClass alloc] init];
+    [item setValue:kDMRemoveFromDockType forKey:@"type"];
+    [item setValue:@"Remove from Dock" forKey:@"localizedTitle"];
+    [item setValue:DMObj(icon, @"applicationBundleID") forKey:@"bundleIdentifierToLaunch"];
+    static NSData *png;
+    if (!png) png = UIImagePNGRepresentation([UIImage systemImageNamed:@"minus.circle"]);
+    Class iconClass = objc_getClass("SBSApplicationShortcutCustomImageIcon");
+    SEL initSel = NSSelectorFromString(@"initWithImageData:dataType:isTemplate:");
+    if (png && iconClass && [iconClass instancesRespondToSelector:initSel])
+        [item setValue:((id (*)(id, SEL, id, long long, BOOL))objc_msgSend)([iconClass alloc], initSel, png, 0, YES) forKey:@"icon"];
+    return [orig isKindOfClass:[NSArray class]] ? [orig arrayByAddingObject:item] : @[item];
+}
++ (void)activateShortcut:(id)item withBundleIdentifier:(NSString *)bundleID forIconView:(id)iconView {
+    if ([DMObj(item, @"type") isEqual:kDMRemoveFromDockType]) {
+        id icon = DMObj(iconView, @"icon");
+        dispatch_async(dispatch_get_main_queue(), ^{ DMRemoveFromDock(icon); });   // (after the menu has closed)
+        return;
+    }
+    %orig;
+}
+%end
+
 %ctor {
     %init;
     MSBDWatchMacStatusBarOff();   // ("MacStatusBar Is Off": this line runs while MacStatusBar is off, see OffAlert.h)

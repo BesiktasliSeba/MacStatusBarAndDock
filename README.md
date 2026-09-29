@@ -23,7 +23,7 @@ Then install **MacStatusBar&Dock** from the repo. The Mac look is on right after
 | iPad Pro 11" (M1, 2021) | 15.6.1 | Dopamine | Aerial 5.0, Zetsu, MilkyWay4 | ✅ Tested by the developer |
 | iPad Pro 9.7" | 16.7.7 | palera1n | Aerial 5.0, Zetsu, Stage Manager (with TrollPad) | ✅ Tested by the developer |
 | iPad Pro 10.5" | 16.6.1 | — | — | ✅ Reported working by a user |
-| iPad Pro (M2, 2022) | 16.1 – 16.6 | Dopamine | Stage Manager | ⚠️ A user reports SpringBoard crashes with the Stage Manager engine. Use Aerial 5.0 there |
+| iPad Pro (M2, 2022) | 16.0 – 16.6 | Dopamine | Stage Manager | ⚠️ On 16.0 the Stage Manager engine isn't offered (it needs 16.1). On 16.1 – 16.6 a user reports SpringBoard crashes with it. Use Aerial 5.0 there |
 | Other iPads | 15.x, 16.x | rootless | — | Likely to work, not tested |
 | Any iPad | 17 and later | — | — | Off by default; **Enable Anyway** in Settings turns it on at your own risk |
 
@@ -67,7 +67,7 @@ The Mac look is on right after install. A few extras start off: the auto-hiding 
 - **VPN menu**: while a VPN is connected, iOS's own VPN badge shows as its own item next to the status icons, like on a Mac. Its menu shows the VPN's name and has Disconnect (auto-connect goes off too), a button that opens the VPN's app and VPN & Device Management.
 - **Mac pointer**: a macOS arrow cursor and I-beam with a trackpad or mouse, with a choice of style and size. Optionally it takes the Color, Border Width and Increase Contrast from Accessibility > Pointer Control (Use Pointer Control Style, off by default).
 - **Haptic Touch menus**: long-press a Home Screen app icon for Force Quit and App Size, or a folder icon to jump straight to one of its apps. Menus look like a Mac's (slimmer rows that adapt to a trackpad or mouse); choose Mac or Stock in Settings > Status Bar > App Menus.
-- **Stage Manager window engine (iPadOS 16, experimental)**: iPadOS's own Stage Manager runs your windows with a Mac look: title bars with traffic lights, native full screen that other windows can come over, the Window menu (layouts, Fit to Window, Swap, Move to Other Display) and a choice of resize handles. On iPads with Stage Manager, or older iPads with TrollPad; with an external display it gets its own Mac desktop.
+- **Stage Manager window engine (iPadOS 16.1 and later, experimental)**: iPadOS's own Stage Manager runs your windows with a Mac look: title bars with traffic lights, native full screen that other windows can come over, the Window menu (layouts, Fit to Window, Swap, Move to Other Display) and a choice of resize handles. On iPads with Stage Manager, or older iPads with TrollPad; with an external display it gets its own Mac desktop.
 - **Mac windows** on the window engine you already use (Aerial 3.0 or 5.0, MilkyWay4 on iPadOS 15 only, or Zetsu 1.6.2 or 1.6.6): a title bar, traffic lights and rounded corners, with Fit to Window tiling (a third window asks which side it goes on, or No Fit to leave it untiled) and resize handles that can be tinted in each app's color (Tint Resize Handles, off by default).
 - **Dock** with macOS-style magnification, recent apps (plus a suggested or Handoff app), running-app indicators, a Launchpad icon, and a Downloads stack (choose which apps' downloads appear from a link in Settings).
 - **Audio mixing per app**, with a volume for each app, set from the menu bar.
@@ -85,7 +85,7 @@ The Mac look is on right after install. A few extras start off: the auto-hiding 
 
 Measured on both test iPads: **Aerial 5.0 is the recommended window engine** on newer and older iPads alike: every window test passed, memory use was the same as the others, and on the older iPad Pro 9.7" it opened windows about twice as fast as Zetsu from a cold start. Zetsu works well too and is a good alternative. MilkyWay4 runs on iPadOS 15 only.
 
-**Stage Manager (iPadOS 16)** is an option on iPads that have it (or older iPads with TrollPad): Apple's own windowing with our Mac look, and the only engine whose windows move to an external display. It has been tested on iPadOS 16.7.7; on earlier iPadOS 16 versions it may not work yet.
+**Stage Manager (iPadOS 16.1 and later)** is an option on iPads that have it (or older iPads with TrollPad): Apple's own windowing with our Mac look, and the only engine whose windows move to an external display. It has been tested on iPadOS 16.7.7; on earlier iPadOS 16 versions it may not work yet.
 
 ## Report a Problem
 

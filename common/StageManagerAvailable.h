@@ -25,14 +25,18 @@ static inline BOOL MSBDStageManagerHardware(void) {
     return major >= 15;
 }
 static inline BOOL MSBDStageManagerAvailable(void) {
-    if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion < 16) return NO;
+    // (iPadOS 16.1 or later on every iPad, TrollPad too: 16.0 -- 20A8372, the M2 iPad Pro and iPad 10 factory build -- has Stage Manager switched
+    //  off by Apple, and where it was switched on by hand the engine crashed SpringBoard; its API differs from 16.1 on, issue #2)
+    NSOperatingSystemVersion ov = [NSProcessInfo processInfo].operatingSystemVersion;
+    if (ov.majorVersion < 16 || (ov.majorVersion == 16 && ov.minorVersion < 1)) return NO;
     return MSBDStageManagerTrollPad() || MSBDStageManagerHardware();
 }
 // ---- the Stage Manager engine's self-check verdict (2026-09-29) ----
 // SpringBoard checks, once at every start, that every private class, method and signature the engine uses is there as on the versions it was
 // built on (statusbar/SMEngineAPI.h, DMSMSelfCheck), and publishes the result here, for this iPadOS build. The root helper (which engine loads)
 // and Settings (the Window Engine list) read it: a failed check means the engine is not offered, and the default engine runs instead -- the
-// same as an iPad without Stage Manager. Not checked yet on this build (e.g. right after an iPadOS update): trusted until SpringBoard has looked.
+// same as an iPad without Stage Manager. Not checked yet on this build (e.g. right after an iPadOS update): not offered until SpringBoard has looked
+// (it checks at every start, with the stock status bar too) -- "not checked" counted as usable until 1.1.6, issue #2.
 #define MSBD_SM_CHECK_KEY CFSTR("stageManagerEngineCheck")
 static inline NSString *MSBDOSBuild(void) {   // (e.g. "20H330")
     char b[64] = ""; size_t n = sizeof(b);
@@ -58,7 +62,7 @@ static inline int MSBDStageManagerVerdict(NSString **reason, NSString **os) {
     }
     return 0;
 }
-// Stage Manager can be the window engine here: the iPad has it (or TrollPad), and the self-check did not fail on this iPadOS build.
+// Stage Manager can be the window engine here: the iPad has it (or TrollPad), and the self-check passed on this iPadOS build.
 static inline BOOL MSBDStageManagerEngineUsable(void) {
-    return MSBDStageManagerAvailable() && MSBDStageManagerVerdict(NULL, NULL) != 0;
+    return MSBDStageManagerAvailable() && MSBDStageManagerVerdict(NULL, NULL) == 1;
 }
