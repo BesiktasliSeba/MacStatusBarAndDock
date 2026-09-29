@@ -221,7 +221,7 @@ static CGColorRef MPRingColor(CALayer *l, int depth) {
     if (l.backgroundColor && CGColorGetAlpha(l.backgroundColor) > 0.05) return l.backgroundColor;
     return NULL;
 }
-static double gMPAXWidth = 0; static BOOL gMPAXContrast = NO; static CFTimeInterval gMPAXRead = -10;
+static double gMPAXWidth = 0; static BOOL gMPAXContrast = NO; static CFTimeInterval gMPAXRead = -10; static long gMPAXColor = -1;   // (-1 unknown)
 static void MPReadAXStyle(void) {
     if (CACurrentMediaTime() - gMPAXRead < 2.0) return;
     gMPAXRead = CACurrentMediaTime();
@@ -229,6 +229,9 @@ static void MPReadAXStyle(void) {
     double w = 0; CFPropertyListRef v = CFPreferencesCopyAppValue(CFSTR("PointerStrokeColorWidth"), CFSTR("com.apple.Accessibility"));
     if (v) { if (CFGetTypeID(v) == CFNumberGetTypeID()) CFNumberGetValue((CFNumberRef)v, kCFNumberDoubleType, &w); CFRelease(v); }
     gMPAXWidth = w;
+    long ci = -1; v = CFPreferencesCopyAppValue(CFSTR("PointerStrokeColor"), CFSTR("com.apple.Accessibility"));   // (0 = None; 1 white, ...)
+    if (v) { if (CFGetTypeID(v) == CFNumberGetTypeID()) CFNumberGetValue((CFNumberRef)v, kCFNumberLongType, &ci); CFRelease(v); }
+    gMPAXColor = ci;
     BOOL c = NO; v = CFPreferencesCopyAppValue(CFSTR("PointerIncreasedContrastEnabled"), CFSTR("com.apple.Accessibility"));
     if (v) { if (CFGetTypeID(v) == CFBooleanGetTypeID()) c = CFBooleanGetValue(v); else if (CFGetTypeID(v) == CFNumberGetTypeID()) { int i = 0; CFNumberGetValue((CFNumberRef)v, kCFNumberIntType, &i); c = i != 0; } CFRelease(v); }
     gMPAXContrast = c;
@@ -238,7 +241,8 @@ static void MPApplyAXStyle(UIView *view, CAShapeLayer *a, BOOL ringHiddenByUs) {
     if (use) MPReadAXStyle();
     UIView *ring = nil; @try { ring = [view valueForKey:@"_axColorStroke"]; } @catch (id e) {}
     // (a ring the system itself hides -- Color: None -- gives no colour; one hidden by us for the Mac pointer still has its colour set)
-    CGColorRef c = (use && [ring isKindOfClass:[UIView class]] && (!ring.layer.hidden || ringHiddenByUs)) ? MPRingColor(ring.layer, 0) : NULL;
+    // (Color: None -- the setting, not the ring: a ring we hid keeps its last colour when None is picked, logic test F11)
+    CGColorRef c = (use && gMPAXColor != 0 && [ring isKindOfClass:[UIView class]] && (!ring.layer.hidden || ringHiddenByUs)) ? MPRingColor(ring.layer, 0) : NULL;
     CGFloat line = 1.25, shadow = 0.35;
     if (c) line = MAX(1.25, MIN(3.0, (gMPAXWidth > 0 ? gMPAXWidth : 2.0) * 0.5));   // (the ring's width is around a 19 pt circle; the arrow's edge is in its own 20 pt drawing)
     if (use && gMPAXContrast) { line += 0.5; shadow = 0.6; }

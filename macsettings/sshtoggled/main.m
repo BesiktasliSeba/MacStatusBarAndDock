@@ -1051,7 +1051,9 @@ static void DefaultsCheck(const char *oldVersion) {
 }
 static void FreezeOldDefaults(void) {
     NSInteger done = DefaultsDone();
-    if (done >= DEFAULTSVERSION) { ELog(@"defaults: v%d settled before -- nothing to do", DEFAULTSVERSION); return; }
+    // (a reinstall after a removal lands here too: defaultsVersion survives a purge, so it gets no Stage Manager default and, on iPadOS 16,
+    //  the "update" notice instead of the first-install welcome -- intended: that iPad had the tweak before, logic test F12)
+    if (done >= DEFAULTSVERSION) { ELog(@"defaults: v%d settled before (an update, or a reinstall after removal) -- nothing to do", DEFAULTSVERSION); return; }
     NSString *decision = [NSString stringWithContentsOfFile:@DEFAULTSDECISION encoding:NSUTF8StringEncoding error:nil];
     unlink(DEFAULTSDECISION);
     if (!decision) decision = @"freeze: no decision recorded";   // (when in doubt, the user keeps what they had)

@@ -2,6 +2,15 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.1.1
+
+### Fixes
+- Stage Manager engine: full-screen apps (Safari and others) were drawn shorter than the screen, with their top cut off.
+- Stage Manager engine: typing in a window could make the keyboard close again and again.
+- Stage Manager engine: with Open Apps as Windows on, an app opened from the Home Screen onto an empty desktop opens as a window again, instead of coming back full screen.
+- Stage Manager engine with an external display: the Window menu's swap rows and layouts work on the active window's own screen, and new windows on the display are placed within the display's desktop.
+- Mac pointer: Use Pointer Control Style follows Pointer Control's Color when it's set to None.
+
 ## 1.1.0
 
 ### New

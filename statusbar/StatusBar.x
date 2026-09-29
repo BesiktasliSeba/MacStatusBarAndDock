@@ -369,8 +369,11 @@ static CGRect DMSMUsableAreaForStage(id stage, CGSize *screenOut);
 static NSDictionary<NSString *, NSValue *> *DMSMOpenWindowFrames(void);
 static NSString *DMOtherHalfQuarter(NSString *halfSlot, BOOL first);
 static BOOL DMSMApplyLayouts(NSDictionary<NSString *, NSString *> *bundleToLayout);
+static BOOL DMSMApplyLayoutsIn(NSDictionary<NSString *, NSString *> *bundleToLayout, id stage);
+static id DMSMWorkingStage(void);
+static NSString *DMSMSlotNameForFrameIn(CGRect f, id stage);
 static void DMSMFitTick(BOOL force);
-static id DMSMJoinAttributes(NSString *bundle, id frontAttrs, BOOL windowed, long newest);
+static id DMSMJoinAttributes(NSString *bundle, id frontAttrs, BOOL windowed, long newest, id stage);
 static BOOL DMSMSetFullScreenInStage(NSString *bundle, BOOL front);
 static BOOL DMSMFrontIsFullScreen(void);
 static NSString *DMSMFullScreenBundle(void);
@@ -12742,12 +12745,13 @@ static BOOL DMSwapPlan(BOOL horizontal, NSMutableArray<UIView *> *stagesOut, NSM
 }
 // (Stage Manager as the engine: the same plans from each window's frame on the screen, applied to the stage in one go)
 static BOOL DMSMSwapPlan(BOOL horizontal, NSMutableDictionary<NSString *, NSString *> *out) {
+    id work = DMSMWorkingStage();
     NSDictionary<NSString *, NSValue *> *open = DMSMOpenWindowFrames();
     if (open.count < 2) return NO;
     NSMutableSet *used = [NSMutableSet set];
     BOOL changes = NO;
     for (NSString *b in open) {
-        NSString *slot = DMSlotNameForFrame(open[b].CGRectValue);
+        NSString *slot = DMSMSlotNameForFrameIn(open[b].CGRectValue, work);
         if (!slot) return NO;
         NSString *target = DMMirrorSlot(slot, horizontal);
         if ([used containsObject:target]) return NO;
@@ -12758,11 +12762,12 @@ static BOOL DMSMSwapPlan(BOOL horizontal, NSMutableDictionary<NSString *, NSStri
     return changes;
 }
 static BOOL DMSMHalfQuarterPlan(NSString **halfB, NSString **halfSlot, NSArray<NSString *> **quarterBs, NSArray<NSString *> **quarterSlots) {
+    id work = DMSMWorkingStage();
     NSDictionary<NSString *, NSValue *> *open = DMSMOpenWindowFrames();
     if (open.count != 3) return NO;
     NSString *half = nil, *halfName = nil; NSMutableDictionary<NSString *, NSString *> *bySlot = [NSMutableDictionary dictionary];
     for (NSString *b in open) {
-        NSString *slot = DMSlotNameForFrame(open[b].CGRectValue);
+        NSString *slot = DMSMSlotNameForFrameIn(open[b].CGRectValue, work);
         if (!slot) return NO;
         bySlot[slot] = b;
         if ([@[@"left", @"right", @"top", @"bottom"] containsObject:slot]) { if (half) return NO; half = b; halfName = slot; }
@@ -25750,7 +25755,7 @@ static BOOL DMSMAddToStage(NSString *bundle, UIView *from) {   // from: the icon
         long t = ((long (*)(id, SEL))objc_msgSend)(map[item], NSSelectorFromString(@"lastInteractionTime"));
         if (t >= newest) { newest = t; frontAttrs = map[item]; }
     }
-    id attrs = DMSMJoinAttributes(bundle, frontAttrs, windowed, newest);   // (its own last place, or cascaded above the Dock; full screen when apps do not open as windows)
+    id attrs = DMSMJoinAttributes(bundle, frontAttrs, windowed, newest, al);   // (its own last place, or cascaded above the Dock; full screen when apps do not open as windows)
     @try {
         DMSMRequestOn(identity, ^(id req) {
             if ([req respondsToSelector:NSSelectorFromString(@"setEventLabel:")]) ((void (*)(id, SEL, id))objc_msgSend)(req, NSSelectorFromString(@"setEventLabel:"), @"MSBDStageAdd");
@@ -25814,12 +25819,18 @@ static void DMSMForgetApp(NSString *bundle) { if (bundle.length) [gSMPreZoom rem
 // The attributes a window joining the desktop gets: its own last window size/place if it has one (a window restored from minimize came back at
 // the front window's size, logic test SM-8), else cascaded from the front window, kept ABOVE the Dock (new windows reached under it, SM-2);
 // full screen when apps do not open as windows. newest: the stage's newest interaction time (the window goes in front).
-static id DMSMJoinAttributes(NSString *bundle, id frontAttrs, BOOL windowed, long newest) {
+static id DMSMJoinAttributes(NSString *bundle, id frontAttrs, BOOL windowed, long newest, id stage) {   // stage: the one it joins (its screen and Dock)
     id own = nil;
     id ownStage = DMSMStageOf(bundle);
     NSDictionary *om = DMCall(ownStage, @"itemsToLayoutAttributesMap");
     for (id it in om) if ([DMCall(it, @"bundleIdentifier") isEqual:bundle]) own = om[it];
-    id base = (own && (DMSMPolicyOf(own) != 2 || !windowed)) ? own : frontAttrs;
+    if (own && DMSMPolicyOf(own) == 2 && windowed && gSMPreZoom[bundle]) own = gSMPreZoom[bundle];   // (full screen by our green button: its window size from before)
+    id base = (own && (DMSMPolicyOf(own) != 2 || !windowed)) ? own : (frontAttrs ?: own);   // (no front window: its own attributes, re-made a window below)
+    if (!base) {   // (nothing to start from -- an app with no stage left, on an empty desktop: new attributes, the default window below)
+        Class ac = objc_getClass("SBDisplayItemLayoutAttributes");
+        @try { base = ac ? [[ac alloc] init] : nil; } @catch (id e) { base = nil; }
+        if (base) DMLog([NSString stringWithFormat:@"[smjoin] %@: new window attributes (no earlier window)", bundle]);
+    }
     if (!base) return nil;
     DMSMAttributedSize sz = ((DMSMAttributedSize (*)(id, SEL))objc_msgSend)(base, NSSelectorFromString(@"attributedSize"));
     CGPoint c = ((CGPoint (*)(id, SEL))objc_msgSend)(base, NSSelectorFromString(@"normalizedCenter"));
@@ -25827,11 +25838,13 @@ static id DMSMJoinAttributes(NSString *bundle, id frontAttrs, BOOL windowed, lon
     if (!windowed) { sz.normalizedSize = CGSizeMake(1.0, 1.0); sz.type = 3; c = CGPointMake(0.5, 0.5); }
     else {
         if (base != own) c = CGPointMake(c.x + 0.05, c.y + 0.06);   // (cascaded from the front window)
-        if (DMSMPolicyOf(base) == 2 || sz.type == 3 || sz.normalizedSize.width <= 0) { sz.normalizedSize = CGSizeMake(0.6, 0.72); sz.type = 0; c = CGPointMake(0.5, 0.48); }
+        if (DMSMPolicyOf(base) == 2 || sz.type == 3 || sz.normalizedSize.width <= 0 || sz.normalizedSize.height <= 0) { sz.normalizedSize = CGSizeMake(0.6, 0.72); sz.type = 0; c = CGPointMake(0.5, 0.48); }
         sz.type = 0;
-        // (inside the usable desktop: under the menu bar and title bar, above the Dock)
-        CGSize scr = [UIScreen mainScreen].bounds.size;
-        CGRect u = DMUsableArea();
+        // (inside the usable desktop of the screen it joins: under the menu bar and title bar, above that screen's Dock -- logic test F8: a
+        //  window joining a TV stage was clamped with the iPad's Dock and menu bar)
+        CGSize scr = CGSizeZero;
+        CGRect u = DMSMUsableAreaForStage(stage, &scr);
+        if (CGRectIsEmpty(sz.referenceBounds) && scr.width > 0) sz.referenceBounds = CGRectMake(0, 0, scr.width, scr.height);   // (fractions of this screen)
         if (scr.width > 0 && scr.height > 0) {
             CGFloat top = (CGRectGetMinY(u) + kSMBarH) / scr.height, bottom = CGRectGetMaxY(u) / scr.height;
             CGFloat left = CGRectGetMinX(u) / scr.width, right = CGRectGetMaxX(u) / scr.width;
@@ -25942,7 +25955,7 @@ static BOOL DMSMToggleZoom(NSString *bundle) {
                                     //  SofaScore a 1024 x 283 strip, logic test SM-5)
     if (!back) {   // (a window size of its own, between the menu bar and the Dock -- the same rule as every window joining the desktop)
         long t = ((long (*)(id, SEL))objc_msgSend)(attrs, NSSelectorFromString(@"lastInteractionTime"));
-        back = DMSMJoinAttributes(bundle, attrs, YES, t - 1);
+        back = DMSMJoinAttributes(bundle, attrs, YES, t - 1, stage);
         DMLog([NSString stringWithFormat:@"[smengine] zoom back on %@: no size of its own known, a default window", bundle]);
     }
     if (!back) return NO;
@@ -26184,9 +26197,29 @@ static void DMSMActivateOnTouch(UIEvent *event) {
 }
 // ---- several windows at once: the Window menu's Fit to Window and Swap rows, with Stage Manager as the engine ----------------------------------------
 // Each open window's frame on the screen (the card and our title bar), by app: the same frames the layouts are compared with (DMSlotNameForFrame).
-static NSDictionary<NSString *, NSValue *> *DMSMOpenWindowFrames(void) {
+// The stage the Window menu acts on: the active window's (on the iPad or the TV) -- logic test F7: swap rows counted every screen's windows and
+// then acted on the iPad's stage only.
+static id DMSMWorkingStage(void) {
+    NSString *front = DMSMFrontWindowBundle();
+    return front.length ? DMSMStageOf(front) : DMSMFrontStage();
+}
+// A window frame's layout slot on its stage's own screen (DMSlotNameForFrame measures against the iPad).
+static NSString *DMSMSlotNameForFrameIn(CGRect f, id stage) {
+    CGSize scr = CGSizeZero;
+    CGRect u = DMSMUsableAreaForStage(stage, &scr);
+    for (NSString *name in @[@"left", @"right", @"top", @"bottom", @"topleft", @"topright", @"bottomleft", @"bottomright"]) {
+        CGRect t = DMLayoutFrameInArea(name, u, scr);
+        if (CGRectIsNull(t)) continue;
+        if (fabs(t.origin.x - f.origin.x) < 16.0 && fabs(t.origin.y - f.origin.y) < 16.0 && fabs(t.size.width - f.size.width) < 16.0 && fabs(t.size.height - f.size.height) < 16.0) return name;
+    }
+    return nil;
+}
+static NSDictionary<NSString *, NSValue *> *DMSMOpenWindowFrames(void) {   // (the working stage's windows only)
     NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    NSMutableSet *inStage = [NSMutableSet set];
+    for (id it in DMCall(DMSMWorkingStage(), @"itemsToLayoutAttributesMap")) { NSString *b = DMCall(it, @"bundleIdentifier"); if (b) [inStage addObject:b]; }
     for (NSString *b in DMSMWindowBundles()) {
+        if (![inStage containsObject:b]) continue;
         UIView *card = DMSMCardFor(b);
         if (!card) continue;
         CGRect c = [card convertRect:card.bounds toCoordinateSpace:(card.window.screen ?: [UIScreen mainScreen]).coordinateSpace];
@@ -26227,9 +26260,8 @@ static id DMSMAttrsForLayoutIn(id attrs, NSString *name, id stage) {
 }
 // Every window of the stage to its layout in ONE workspace transition that names each window in its role with its new attributes (the requested
 // attributes are what places a window -- -appLayoutByModifyingLayoutAttributes:forItem: returned the stage unchanged): the windows move together.
-static id DMSMAttrsForLayout(id attrs, NSString *name) { return DMSMAttrsForLayoutIn(attrs, name, DMSMFrontStage()); }
-static BOOL DMSMApplyLayouts(NSDictionary<NSString *, NSString *> *bundleToLayout) {
-    id stage = DMSMFrontStage();
+static BOOL DMSMApplyLayouts(NSDictionary<NSString *, NSString *> *bundleToLayout) { return DMSMApplyLayoutsIn(bundleToLayout, DMSMWorkingStage()); }
+static BOOL DMSMApplyLayoutsIn(NSDictionary<NSString *, NSString *> *bundleToLayout, id stage) {
     NSDictionary *map = DMCall(stage, @"itemsToLayoutAttributesMap");
     if (!map.count || !bundleToLayout.count) return NO;
     SEL roleSel = NSSelectorFromString(@"layoutRoleForItem:");
@@ -26239,7 +26271,7 @@ static BOOL DMSMApplyLayouts(NSDictionary<NSString *, NSString *> *bundleToLayou
         NSString *b = DMCall(it, @"bundleIdentifier");
         id a = map[it];
         NSString *name = bundleToLayout[b];
-        if (name) { id na = DMSMAttrsForLayout(a, name); if (na) a = na; }
+        if (name) { id na = DMSMAttrsForLayoutIn(a, name, stage); if (na) a = na; }
         long role = [stage respondsToSelector:roleSel] ? ((long (*)(id, SEL, id))objc_msgSend)(stage, roleSel, it) : 0;
         id e = DMSMEntityIn(stage, b);
         if (!e || role <= 0) return NO;
@@ -26284,7 +26316,7 @@ static void DMSMFitTick(BOOL force) {
     NSMutableDictionary *plan = [NSMutableDictionary dictionary];
     for (NSUInteger i = 0; i < bundles.count && i < slots.count; i++) plan[bundles[i]] = slots[i];
     DMLog([NSString stringWithFormat:@"[sm] Fit to Window: %lu windows tiled", (unsigned long)plan.count]);
-    DMSMApplyLayouts(plan);
+    DMSMApplyLayoutsIn(plan, DMSMFrontStage());   // (the iPad's desktop, the one counted above)
 }
 static void DMSMLogCorners(void) {
         for (DMSMTitleBar *bar in gSMBars) {
@@ -26394,7 +26426,17 @@ static void DMSMJoinDesktop(id ctx) {
         for (id it in all) if (!DMSMIsMinimized(DMCall(it, @"bundleIdentifier"))) shown[it] = all[it];
         if (shown.count) { desk = al; map = shown; break; }
     }
-    if (!map.count) { DMLog([NSString stringWithFormat:@"[smjoin] %@: no desktop to join (a new stage)", bundle]); return; }
+    if (!map.count) {
+        // An empty desktop: the app still opens as a WINDOW when apps open as windows -- its own last window size, else the default window -- not
+        // at whatever Stage Manager remembered (1.1.0: an app once in full screen, like Safari, came back full screen from then on)
+        id attrs = DMWindowedLaunchOn() ? DMSMJoinAttributes(bundle, nil, YES, 0, nil) : nil;
+        if (!attrs) { DMLog([NSString stringWithFormat:@"[smjoin] %@: no desktop to join (a new stage, Stage Manager's own size)", bundle]); return; }
+        ((void (*)(id, SEL, id, long))objc_msgSend)(ctx, NSSelectorFromString(@"setEntity:forLayoutRole:"), act, 1L);
+        ((void (*)(id, SEL, id, id))objc_msgSend)(ctx, NSSelectorFromString(@"setRequestedLayoutAttributes:forEntity:"), attrs, act);
+        DMSMMarkFrontmost(ctx, act);
+        DMLog([NSString stringWithFormat:@"[smjoin] %@: a new desktop, opened as a window", bundle]);
+        return;
+    }
     for (id it in map) if ([DMCall(it, @"bundleIdentifier") isEqual:bundle]) { DMLog([NSString stringWithFormat:@"[smjoin] %@: already on the desktop", bundle]); return; }   // (already on the desktop: Stage Manager brings it forward)
     BOOL windowed = DMWindowedLaunchOn();
     NSArray *items = [map.allKeys sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {   // (newest first)
@@ -26404,7 +26446,7 @@ static void DMSMJoinDesktop(id ctx) {
     if (items.count > 3) items = [items subarrayWithRange:NSMakeRange(0, 3)];   // (a 5th app: the oldest window is left out)
     id front = items.firstObject;
     long newest = ((long (*)(id, SEL))objc_msgSend)(map[front], NSSelectorFromString(@"lastInteractionTime"));
-    id attrs = DMSMJoinAttributes(bundle, map[front], windowed, newest);
+    id attrs = DMSMJoinAttributes(bundle, map[front], windowed, newest, desk);
     if (!attrs) return;
     SEL layRole = NSSelectorFromString(@"layoutRoleForItem:");
     NSMutableSet *used = [NSMutableSet set];
@@ -26584,7 +26626,10 @@ static NSArray<NSNumber *> *DMSMFineGrid(NSArray *orig, CGFloat full) {
     // a window is being dragged by its title bar (and a moment after, while its new place is laid out) the area reaches the screen's bottom edge:
     // a window can be put behind the Dock by hand, as on a Mac.
     CGRect apple = r;
-    if (DMSMFree() && !CGRectIsEmpty(r) && !CGRectIsEmpty(b)) {
+    // (a full-screen layout -- Apple gives it the whole screen -- is left exactly as Apple has it: 1.1.0 shortened it to end above the Dock too,
+    //  and a full-screen Safari came up 648 pt tall with its top cut off, iPad 2 29 Sep 08:09)
+    BOOL fullScreenLayout = CGRectEqualToRect(CGRectIntegral(r), CGRectIntegral(b));
+    if (DMSMFree() && !fullScreenLayout && !CGRectIsEmpty(r) && !CGRectIsEmpty(b)) {
         BOOL dragging = CACurrentMediaTime() < gSMDragUntil;
         CGFloat line = CGRectGetMaxY(b) - dock - 2.0;
         // (a window already put behind the Dock by hand keeps its place: the next layout pass kept every window inside the area and pulled it up)
@@ -26609,6 +26654,13 @@ static NSArray<NSNumber *> *DMSMFineGrid(NSArray *orig, CGFloat full) {
         CGFloat bottom = (dh || dock <= 0 || dragging || behind) ? CGRectGetMaxY(b) : line;
         r = CGRectMake(CGRectGetMinX(b), CGRectGetMinY(r), CGRectGetWidth(b), MAX(100.0, bottom - CGRectGetMinY(r)));
     }
+    // (while the keyboard is up the area stays as it was: the Dock hides for the keyboard, and an area that followed it re-laid the window out
+    //  under the text field -- typing in a Safari window closed the keyboard again and again, 1.1.0, 29 Sep 08:10)
+    static NSMutableDictionary<NSString *, NSValue *> *areaBySize;
+    if (!areaBySize) areaBySize = [NSMutableDictionary dictionary];
+    NSString *sizeKey = NSStringFromCGSize(b.size);
+    if (DMSMFree() && !fullScreenLayout && gSMKeyboardShown && areaBySize[sizeKey]) r = areaBySize[sizeKey].CGRectValue;
+    else if (!fullScreenLayout) areaBySize[sizeKey] = [NSValue valueWithCGRect:r];
     static NSString *last;
     NSString *line = [NSString stringWithFormat:@"[sm] stage area %@ (Apple's %@, bounds %@, dock %.0f, strip hidden %d, dock hidden %d)", NSStringFromCGRect(r), NSStringFromCGRect(apple), NSStringFromCGRect(b), dock, strip, dh];
     if (![line isEqualToString:last]) { last = line; DMLog(line); }
