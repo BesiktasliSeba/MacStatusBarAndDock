@@ -308,7 +308,9 @@ static inline NSURL *MSBDReportProblemURL(NSString *engine) {
     NSString *base = [NSString stringWithFormat:@"**What happened** (which app, and what it did):\n\n\n**Steps to reproduce:**\n1. \n\n---\n- Device: %@\n- iPadOS: %@\n- Window engine: %@ %@\n- MacStatusBar&Dock: %@\n",
         MSBDExplainMachine(), MSBDExplainOSVersion(), name, engineVersion ?: ([engine isEqualToString:@"stagemanager"] ? [NSString stringWithFormat:@"(build %@)", MSBDOSBuild() ?: @"?"] : @"(version unknown)"),
         MSBDPackageVersion(@"com.besiktasliseba.macstatusbaranddock") ?: @"(unknown)"];
-    if ([engine isEqualToString:@"stagemanager"]) {   // (the engine's self-check on this iPadOS build: a report from an untested build says at once whether it ran and passed, issue #2)
+    // (the engine's self-check on this iPadOS build: a report from an untested build says at once whether it ran and passed, issue #2 -- on an
+    //  untested iPadOS always, whatever the engine: where the check failed, Stage Manager can't be picked, and that is what a 17 tester reports)
+    if ([engine isEqualToString:@"stagemanager"] || !MSBDVersionTested()) {
         NSString *why = nil; int verdict = MSBDStageManagerVerdict(&why, NULL);
         base = [base stringByAppendingFormat:@"- Stage Manager engine check: %@\n", verdict == 1 ? @"passed" : verdict == 0 ? [@"failed, " stringByAppendingString:why ?: @"no reason"] : @"not run on this build"];
     }

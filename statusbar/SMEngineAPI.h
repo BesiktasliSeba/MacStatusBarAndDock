@@ -19,6 +19,8 @@ static BOOL gSMCheckOK = NO;          // (DMSelfCheck passed: the engine may run
 static BOOL gSMCheckDone = NO;
 static NSString *gSMCheckReason;      // (why not, for the log and Settings)
 static void DMSMRecordRuntimeFailure(NSString *line);
+static void DMSM17DiagSoon(void);   // (iPadOS 17 layout engine only: the diagnostics record for Report a Problem, StatusBar.x)
+static int DMSMLayoutGen(void);
 static void DMSMAPIFail(NSString *what, NSString *why) {
     NSString *line = [NSString stringWithFormat:@"%@: %@", what, why];
     if (!gSMAPIFailures) gSMAPIFailures = [NSMutableOrderedSet orderedSet];
@@ -26,6 +28,7 @@ static void DMSMAPIFail(NSString *what, NSString *why) {
     [gSMAPIFailures addObject:line];
     DMLog([NSString stringWithFormat:@"[smapi] REFUSED %@", line]);
     DMSMRecordRuntimeFailure(line);
+    if (DMSMLayoutGen() == 17) DMSM17DiagSoon();
 }
 
 // ---- method signatures -------------------------------------------------------------------------------------------------------------------------
@@ -63,7 +66,7 @@ static NSString *DMSMExpect(const char *ret, ...) {
 static NSString *DMSMSigOfMethod(Method m) { return m ? DMSMNormEncoding(method_getTypeEncoding(m)) : nil; }
 // Does obj answer sel with exactly this signature? Cached per class and selector (a handful of pairs, main thread; elsewhere uncached).
 typedef struct { Class cls; SEL sel; const void *want; BOOL ok; } DMSMSigCacheEntry;
-static DMSMSigCacheEntry gSMSigCache[96];
+static DMSMSigCacheEntry gSMSigCache[128];
 static int gSMSigCacheN = 0;
 static BOOL DMSMSigOK(id obj, SEL sel, NSString *want, const char *what) {
     if (!obj) return NO;
@@ -407,7 +410,9 @@ static BOOL DMSMRequestPlan(id identity, BOOL onMain, NSString *label, NSArray<N
 // ---- the start-up self-check ---------------------------------------------------------------------------------------------------------------------
 // One row per class / method the engine needs: the signature we call it with (nil = only that it exists; hooks: the signature our hook is written
 // for -- a hook of a method whose arguments changed would pass garbage on even to %orig). Keep in step with %group SMEngine and the wrappers above.
-typedef struct { const char *cls; const char *sel; BOOL classMethod; BOOL hooked; NSString *(*sig)(void); } DMSMNeed;
+// alt: another name the same method has on some iPadOS (hooked under whichever exists); layout: 0 = both layout engines, 16 = only with iPadOS 16's
+// SBChamoisOverlappingController, 17 = only with iPadOS 17's SBContinuousExposeAutoLayoutController (DMSMLayoutGen).
+typedef struct { const char *cls; const char *sel; BOOL classMethod; BOOL hooked; NSString *(*sig)(void); const char *alt; int layout; } DMSMNeed;
 DMSM_SIG(DMSMSigVoid, @encode(void))
 DMSM_SIG(DMSMSigDouble, @encode(double))
 DMSM_SIG(DMSMSigVoidBool, @encode(void), @encode(BOOL))
@@ -428,6 +433,13 @@ DMSM_SIG(DMSMSigPointInside, @encode(BOOL), @encode(CGPoint), @encode(id))
 DMSM_SIG(DMSMSigHitTest, @encode(id), @encode(CGPoint), @encode(id))
 DMSM_SIG(DMSMSigGridSize, @encode(CGSize), @encode(CGSize), @encode(id), @encode(id), @encode(CGRect))
 DMSM_SIG(DMSMSigStripHidden, @encode(BOOL), @encode(id), @encode(long long))
+// (iPadOS 17 layout engine, SBContinuousExposeAutoLayout*: signatures as in the 17.0.3 runtime headers, MTACS/iOS-17-Runtime-Headers)
+DMSM_SIG(DMSMSigCGSize, @encode(CGSize))                                                                 // -[SBContinuousExposeAutoLayoutItem size]
+DMSM_SIG(DMSMSigVoidPoint, @encode(void), @encode(CGPoint))                                              // -setPosition:
+DMSM_SIG(DMSMSigStageArea17, @encode(CGRect), @encode(id), @encode(id))                                  // -stageAreaForSpace:configuration:
+DMSM_SIG(DMSMSigAutoLayout17, @encode(id), @encode(id), @encode(id), @encode(id), @encode(unsigned long long))   // -spaceByPerformingAutoLayoutWithSpace:previousSpace:configuration:options:
+DMSM_SIG(DMSMSigPerform17, @encode(CGRect), @encode(id), @encode(id), @encode(UIEdgeInsets))             // -_performAutoLayoutWithSpace:configuration:stageInset:
+DMSM_SIG(DMSMSigSnap17, @encode(void), @encode(id), @encode(CGRect), @encode(id))                        // -snapPositionToNearestEdgesIfNecessaryForSpace:stageArea:configuration:
 static const DMSMNeed kSMNeeds[] = {
     // the stage model: a window's attributes, the stage, its items
     {"SBDisplayItemLayoutAttributes", "init", NO, NO, NULL},
@@ -462,7 +474,7 @@ static const DMSMNeed kSMNeeds[] = {
     {"SBApplicationController", "sharedInstance", YES, NO, NULL},
     {"SBApplicationController", "applicationWithBundleIdentifier:", NO, NO, DMSMSigObjObj},
     {"SBSwitcherChamoisLayoutAttributes", "containerBounds", NO, NO, DMSMSigRect},
-    {"SBMutableChamoisOverlappingModel", "centerForItem:", NO, NO, DMSMSigCenterFor},
+    {"SBMutableChamoisOverlappingModel", "centerForItem:", NO, NO, DMSMSigCenterFor, NULL, 16},
     {"SBTopAffordanceViewController", "closeAction", NO, NO, DMSMSigObj},
     {"SBTopAffordanceViewController", "removeFromSetAction", NO, NO, DMSMSigObj},
     // what our hooks replace (%group SMEngine)
@@ -477,20 +489,20 @@ static const DMSMNeed kSMNeeds[] = {
     {"SBSwitcherChamoisLayoutAttributes", "gridHeights", NO, YES, DMSMSigObj},
     {"SBSwitcherChamoisLayoutAttributes", "stageOccludedAppScale", NO, YES, DMSMSigDouble},
     {"SBSwitcherChamoisLayoutAttributes", "stageOcclusionDodgingPeekScale", NO, YES, DMSMSigDouble},
-    {"SBSwitcherChamoisLayoutAttributes", "stageCornerRaddii", NO, YES, DMSMSigDouble},
+    {"SBSwitcherChamoisLayoutAttributes", "stageCornerRaddii", NO, YES, DMSMSigDouble, "stageCornerRadii", 0},   // (renamed stageCornerRadii in 18.2)
     {"SBSwitcherChamoisLayoutAttributes", "maximumWindowWidthForOverlapping", NO, YES, DMSMSigDouble},
     {"SBSwitcherChamoisLayoutAttributes", "maximumWindowHeightWithDock", NO, YES, DMSMSigDouble},
-    {"SBChamoisOverlappingController", "_stageAreaForModel:chamoisLayoutAttributes:floatingDockHeight:bounds:prefersStripHidden:prefersDockHidden:widthThresholdToHideContinuousExposeStrip:", NO, YES, DMSMSigStageArea},
-    {"SBChamoisOverlappingController", "_modelByPerformingAutoLayoutForModel:chamoisLayoutAttributes:draggingItem:modelBeforeDragging:floatingDockHeight:bounds:screenScale:prefersStripHidden:prefersDockHidden:stageInset:", NO, YES, DMSMSigAutoLayout},
-    {"SBChamoisOverlappingController", "_compactSpacingHorizontallyForModel:withColumns:chamoisLayoutAttributes:", NO, YES, DMSMSigVoid3},
-    {"SBChamoisOverlappingController", "_compactSpacingVerticallyForModel:withColumns:chamoisLayoutAttributes:", NO, YES, DMSMSigVoid3},
-    {"SBChamoisOverlappingController", "_expandSpacingHorizontallyForModel:withColumns:modelBeforeDragging:chamoisLayoutAttributes:draggingItem:stageArea:", NO, YES, DMSMSigExpandH},
-    {"SBChamoisOverlappingController", "_expandSpacingVerticallyForModel:withColumns:chamoisLayoutAttributes:stageArea:", NO, YES, DMSMSigExpandV},
-    {"SBChamoisOverlappingController", "_horizontallyCenterModel:stageArea:", NO, YES, DMSMSigCenterH},
-    {"SBChamoisOverlappingController", "_verticallyCenterModel:withColumns:stageArea:", NO, YES, DMSMSigCenterV},
-    {"SBChamoisOverlappingController", "_dodgeFullyOccludedWindowsToNearestVisibleEdgeInModel:chamoisLayoutAttributes:draggingItem:bounds:", NO, YES, DMSMSigDodge},
-    {"SBChamoisOverlappingController", "_snapPositionToNearestEdgesIfNecessary:draggingItem:", NO, YES, DMSMSigVoidObjObj},
-    {"SBMutableChamoisOverlappingModel", "setCenter:forItem:", NO, YES, DMSMSigSetCenter},
+    {"SBChamoisOverlappingController", "_stageAreaForModel:chamoisLayoutAttributes:floatingDockHeight:bounds:prefersStripHidden:prefersDockHidden:widthThresholdToHideContinuousExposeStrip:", NO, YES, DMSMSigStageArea, NULL, 16},
+    {"SBChamoisOverlappingController", "_modelByPerformingAutoLayoutForModel:chamoisLayoutAttributes:draggingItem:modelBeforeDragging:floatingDockHeight:bounds:screenScale:prefersStripHidden:prefersDockHidden:stageInset:", NO, YES, DMSMSigAutoLayout, NULL, 16},
+    {"SBChamoisOverlappingController", "_compactSpacingHorizontallyForModel:withColumns:chamoisLayoutAttributes:", NO, YES, DMSMSigVoid3, NULL, 16},
+    {"SBChamoisOverlappingController", "_compactSpacingVerticallyForModel:withColumns:chamoisLayoutAttributes:", NO, YES, DMSMSigVoid3, NULL, 16},
+    {"SBChamoisOverlappingController", "_expandSpacingHorizontallyForModel:withColumns:modelBeforeDragging:chamoisLayoutAttributes:draggingItem:stageArea:", NO, YES, DMSMSigExpandH, NULL, 16},
+    {"SBChamoisOverlappingController", "_expandSpacingVerticallyForModel:withColumns:chamoisLayoutAttributes:stageArea:", NO, YES, DMSMSigExpandV, NULL, 16},
+    {"SBChamoisOverlappingController", "_horizontallyCenterModel:stageArea:", NO, YES, DMSMSigCenterH, NULL, 16},
+    {"SBChamoisOverlappingController", "_verticallyCenterModel:withColumns:stageArea:", NO, YES, DMSMSigCenterV, NULL, 16},
+    {"SBChamoisOverlappingController", "_dodgeFullyOccludedWindowsToNearestVisibleEdgeInModel:chamoisLayoutAttributes:draggingItem:bounds:", NO, YES, DMSMSigDodge, NULL, 16},
+    {"SBChamoisOverlappingController", "_snapPositionToNearestEdgesIfNecessary:draggingItem:", NO, YES, DMSMSigVoidObjObj, NULL, 16},
+    {"SBMutableChamoisOverlappingModel", "setCenter:forItem:", NO, YES, DMSMSigSetCenter, NULL, 16},
     {"SBWorkspaceApplicationSceneTransitionContext", "finalize", NO, YES, DMSMSigVoid},
     {"SBAppResizeGrabberView", "setAlpha:", NO, YES, DMSMSigVoidDouble},
     {"SBAppResizeGrabberView", "layoutSubviews", NO, YES, DMSMSigVoid},
@@ -507,24 +519,69 @@ static const DMSMNeed kSMNeeds[] = {
     {"SBSwitcherChamoisSettings", "_nearestGridSizeForSize:gridWidths:gridHeights:bounds:", NO, YES, DMSMSigGridSize},
     {"SBSwitcherChamoisSettings", "_statusBarHeight", NO, YES, DMSMSigDouble},
     {"SBSwitcherChamoisSettings", "_shouldPreferStripHiddenForWindowScene:interfaceOrientation:", NO, YES, DMSMSigStripHidden},
+    // iPadOS 17's layout engine (%group SMLayout17): the objects our hooks read and write, then the hooks. Read from the 17.0.3 headers and the
+    // 17.6.1 decompile (SuperChaoM/iPhone15-3_17.6.1_21G101_Restore); never run on a device by us.
+    {"SBContinuousExposeAutoLayoutConfiguration", "containerBounds", NO, NO, DMSMSigRect, NULL, 17},
+    {"SBContinuousExposeAutoLayoutConfiguration", "dockHeightWithBottomEdgePadding", NO, NO, DMSMSigDouble, NULL, 17},
+    {"SBContinuousExposeAutoLayoutConfiguration", "chamoisLayoutAttributes", NO, NO, DMSMSigObj, NULL, 17},
+    {"SBContinuousExposeAutoLayoutSpace", "items", NO, NO, DMSMSigObj, NULL, 17},
+    {"SBContinuousExposeAutoLayoutItem", "position", NO, NO, DMSMSigCenter, NULL, 17},
+    {"SBContinuousExposeAutoLayoutItem", "setPosition:", NO, NO, DMSMSigVoidPoint, NULL, 17},
+    {"SBContinuousExposeAutoLayoutItem", "size", NO, NO, DMSMSigCGSize, NULL, 17},
+    {"SBContinuousExposeAutoLayoutItem", "isInDefaultPosition", NO, NO, DMSMSigBool, NULL, 17},
+    {"SBContinuousExposeAutoLayoutItem", "setInDefaultPosition:", NO, NO, DMSMSigVoidBool, NULL, 17},
+    {"SBContinuousExposeAutoLayoutController", "stageAreaForSpace:configuration:", NO, YES, DMSMSigStageArea17, NULL, 17},
+    {"SBContinuousExposeAutoLayoutController", "spaceByPerformingAutoLayoutWithSpace:previousSpace:configuration:options:", NO, YES, DMSMSigAutoLayout17, NULL, 17},
+    {"SBContinuousExposeAutoLayoutController", "_performAutoLayoutWithSpace:configuration:stageInset:", NO, YES, DMSMSigPerform17, NULL, 17},
+    {"SBContinuousExposeAutoLayoutController", "_compactSpacingBetweenItemsInSpace:configuration:", NO, YES, DMSMSigVoidObjObj, NULL, 17},
+    {"SBContinuousExposeAutoLayoutController", "dodgeFullyOccludedWindowsToNearestVisibleEdgeForSpace:configuration:", NO, YES, DMSMSigVoidObjObj, NULL, 17},
+    {"SBContinuousExposeAutoLayoutController", "snapPositionToNearestEdgesIfNecessaryForSpace:stageArea:configuration:", NO, YES, DMSMSigSnap17, NULL, 17},
 };
 static const size_t kSMNeedsCount = sizeof(kSMNeeds) / sizeof(kSMNeeds[0]);
-// Checks every row: the classes and methods are there, with the signatures we use. Returns the list of what is missing or different (empty = all
-// there). simulate (debug): "selector" / "encoding" pretend one row is missing / different.
+// Which layout engine this iPadOS has, so which rows count: 16 = SBChamoisOverlappingController (iPadOS 16, where the engine was built and is
+// tested), 17 = SBContinuousExposeAutoLayoutController (iPadOS 17 replaced the whole layout engine; the rest of Stage Manager's API is the same).
+// Chosen by the iPadOS major version, not by which classes exist (a build with both, or neither, is judged by its own version's table, and a
+// missing class then fails that table's check). simulate (debug): "layout16" / "layout17" pick that table instead.
+static int gSMLayoutGen = 0;   // (0 = not chosen yet)
+static int DMSMLayoutGenFor(NSString *simulate) {
+    if ([simulate isEqualToString:@"layout17"]) return 17;
+    if ([simulate isEqualToString:@"layout16"]) return 16;
+    return [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17 ? 17 : 16;
+}
+static int DMSMLayoutGen(void) { return gSMLayoutGen ?: DMSMLayoutGenFor(nil); }
+static NSString *DMSMLayoutName(int gen) { return gen == 17 ? @"17 (SBContinuousExposeAutoLayoutController)" : @"16 (SBChamoisOverlappingController)"; }
+static BOOL DMSMRowActive(const DMSMNeed *n, int gen) { return n->layout == 0 || n->layout == gen; }
+// The row's method, under its own name or its other one (alt); *name: the name found (or the row's own when neither exists).
+static Method DMSMRowMethod(const DMSMNeed *n, const char **name) {
+    Class c = objc_getClass(n->cls);
+    if (name) *name = n->sel;
+    if (!c) return NULL;
+    Method m = n->classMethod ? class_getClassMethod(c, sel_registerName(n->sel)) : class_getInstanceMethod(c, sel_registerName(n->sel));
+    if (!m && n->alt) {
+        m = n->classMethod ? class_getClassMethod(c, sel_registerName(n->alt)) : class_getInstanceMethod(c, sel_registerName(n->alt));
+        if (m && name) *name = n->alt;
+    }
+    return m;
+}
+// Checks every row of this iPadOS's layout engine (and the rows both share): the classes and methods are there, with the signatures we use.
+// Returns the list of what is missing or different (empty = all there). simulate (debug): "selector" / "encoding" pretend one row is missing /
+// different; "layout16" / "layout17" check that layout engine's table.
 static NSArray<NSString *> *DMSMCheckAPI(NSString *simulate, NSUInteger *checked) {
     NSMutableArray *bad = [NSMutableArray array];
+    int gen = [simulate hasPrefix:@"layout"] ? DMSMLayoutGenFor(simulate) : DMSMLayoutGen();
     for (size_t i = 0; i < kSMNeedsCount; i++) {
         DMSMNeed n = kSMNeeds[i];
+        if (!DMSMRowActive(&n, gen)) continue;
         Class c = objc_getClass(n.cls);
         if (!c) { NSString *s = [NSString stringWithFormat:@"class %s missing", n.cls]; if (![bad containsObject:s]) [bad addObject:s]; continue; }
-        SEL sel = sel_registerName(n.sel);
-        if (!strcmp(n.sel, "attributesByModifyingAttributedSize:") && [simulate isEqualToString:@"selector"]) sel = sel_registerName("attributesByModifyingAttributedSize_simulatedMissing:");
-        Method m = n.classMethod ? class_getClassMethod(c, sel) : class_getInstanceMethod(c, sel);
-        if (!m) { [bad addObject:[NSString stringWithFormat:@"%c[%s %s] missing", n.classMethod ? '+' : '-', n.cls, sel_getName(sel)]]; continue; }
+        const char *name = n.sel;
+        Method m = DMSMRowMethod(&n, &name);
+        if (!strcmp(n.sel, "attributesByModifyingAttributedSize:") && [simulate isEqualToString:@"selector"]) { m = NULL; name = "attributesByModifyingAttributedSize_simulatedMissing:"; }
+        if (!m) { [bad addObject:[NSString stringWithFormat:@"%c[%s %s] missing", n.classMethod ? '+' : '-', n.cls, name]]; continue; }
         if (n.sig) {
             NSString *have = DMSMSigOfMethod(m), *want = n.sig();
             if (!strcmp(n.sel, "attributedSize") && [simulate isEqualToString:@"encoding"]) have = DMSMNormEncoding("{SBDisplayItemAttributedSize={CGSize=dd}q}16@0:8");   // (a layout without referenceBounds, review S3)
-            if (![have isEqualToString:want]) [bad addObject:[NSString stringWithFormat:@"-[%s %s] is %@, we use %@", n.cls, n.sel, have, want]];
+            if (![have isEqualToString:want]) [bad addObject:[NSString stringWithFormat:@"-[%s %s] is %@, we use %@", n.cls, name, have, want]];
         }
         if (checked) (*checked)++;
     }
@@ -539,13 +596,13 @@ static NSArray<NSString *> *DMSMCheckAPI(NSString *simulate, NSUInteger *checked
     }
     return bad;
 }
-// The hooked methods' current implementations (to see afterwards that our hooks really went in).
+// The hooked methods' current implementations (to see afterwards that our hooks really went in): this layout engine's rows.
 static NSArray<NSValue *> *DMSMHookedIMPs(void) {
     NSMutableArray *a = [NSMutableArray array];
+    int gen = DMSMLayoutGen();
     for (size_t i = 0; i < kSMNeedsCount; i++) {
-        if (!kSMNeeds[i].hooked) continue;
-        Class c = objc_getClass(kSMNeeds[i].cls);
-        Method m = c ? class_getInstanceMethod(c, sel_registerName(kSMNeeds[i].sel)) : NULL;
+        if (!kSMNeeds[i].hooked || !DMSMRowActive(&kSMNeeds[i], gen)) continue;
+        Method m = DMSMRowMethod(&kSMNeeds[i], NULL);
         [a addObject:[NSValue valueWithPointer:m ? (const void *)method_getImplementation(m) : NULL]];
     }
     return a;
@@ -554,13 +611,24 @@ static NSArray<NSString *> *DMSMHooksNotInstalled(NSArray<NSValue *> *before, BO
     NSArray *after = DMSMHookedIMPs();
     NSMutableArray *bad = [NSMutableArray array];
     NSUInteger k = 0;
+    int gen = DMSMLayoutGen();
     for (size_t i = 0; i < kSMNeedsCount; i++) {
-        if (!kSMNeeds[i].hooked) continue;
+        if (!kSMNeeds[i].hooked || !DMSMRowActive(&kSMNeeds[i], gen)) continue;
+        const char *name = kSMNeeds[i].sel;
+        DMSMRowMethod(&kSMNeeds[i], &name);
         BOOL same = k < before.count && k < after.count && [before[k] isEqual:after[k]];
-        if (same || (simulate && k == 0)) [bad addObject:[NSString stringWithFormat:@"hook on -[%s %s] not installed", kSMNeeds[i].cls, kSMNeeds[i].sel]];
+        if (same || (simulate && k == 0)) [bad addObject:[NSString stringWithFormat:@"hook on -[%s %s] not installed", kSMNeeds[i].cls, name]];
         k++;
     }
     return bad;
+}
+// The name the windows' corner radius getter has here (stageCornerRaddii, sic, through 17; stageCornerRadii in 18.2), or NULL.
+static const char *DMSMCornerRadiusSelector(void) {
+    for (size_t i = 0; i < kSMNeedsCount; i++) if (kSMNeeds[i].alt && !strcmp(kSMNeeds[i].sel, "stageCornerRaddii")) {
+        const char *name = NULL;
+        return DMSMRowMethod(&kSMNeeds[i], &name) ? name : NULL;
+    }
+    return NULL;
 }
 // The verdict for the other processes (common/StageManagerAvailable.h): this iPadOS build, passed or not, a short reason, the list.
 static void DMSMPublishVerdict(BOOL ok, NSString *reason, NSArray<NSString *> *details) {
@@ -568,6 +636,7 @@ static void DMSMPublishVerdict(BOOL ok, NSString *reason, NSArray<NSString *> *d
     v[@"build"] = MSBDOSBuild() ?: @"";
     v[@"os"] = [[NSProcessInfo processInfo] operatingSystemVersionString] ?: @"";
     v[@"ok"] = @(ok);
+    v[@"layout"] = @(DMSMLayoutGen());   // (which layout engine's table was checked: 16 or 17)
     if (reason) v[@"reason"] = reason;
     if (details.count) v[@"details"] = details.count > 16 ? [details subarrayWithRange:NSMakeRange(0, 16)] : details;
     CFPreferencesSetValue(MSBD_SM_CHECK_KEY, (__bridge CFPropertyListRef)v, MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
@@ -590,3 +659,96 @@ static void DMSMRecordRuntimeFailure(NSString *line) {
 }
 static long long DMSMRoleOr(id stage, id item, long long dflt) { long long r = dflt; return DMSMStageRoleOfItem(stage, item, &r) ? r : dflt; }
 static long long DMSMPolicyOr(id attrs, long long dflt) { long long p = dflt; return DMSMAttrSizingPolicy(attrs, &p) ? p : dflt; }
+
+// ---- iPadOS 17: the auto-layout engine's objects (SBContinuousExposeAutoLayout*, %group SMLayout17) ---------------------------------------------
+// A layout pass (SBContinuousExposeAutoLayoutController) works on a SPACE (the stage's windows as ITEMS: a center "position" and a "size" in points
+// of the container, and whether the item is in its default, system-managed place) with a CONFIGURATION (the container bounds, the Dock's height
+// with its bottom padding, the stage's SBSwitcherChamoisLayoutAttributes). Read with the same checks as everything above: class, selector and
+// signature first; values that make no sense are refused (nil / NO), and a refused read makes the hook leave Apple's result as it is.
+static BOOL DMSMIsKind(id o, const char *cls) { Class c = objc_getClass(cls); return o && c && [o isKindOfClass:c]; }
+static BOOL DMSMRectSane(CGRect r) {
+    return isfinite(r.origin.x) && isfinite(r.origin.y) && isfinite(r.size.width) && isfinite(r.size.height)
+        && r.size.width >= 100.0 && r.size.height >= 100.0 && r.size.width < 20000.0 && r.size.height < 20000.0
+        && fabs(r.origin.x) < 20000.0 && fabs(r.origin.y) < 20000.0;
+}
+static BOOL DMSMCfgBounds(id cfg, CGRect *out) {
+    if (!DMSMIsKind(cfg, "SBContinuousExposeAutoLayoutConfiguration")) return NO;
+    SEL sel = NSSelectorFromString(@"containerBounds");
+    if (!DMSMSigOK(cfg, sel, DMSMSigRect(), "auto-layout configuration containerBounds")) return NO;
+    CGRect r = ((CGRect (*)(id, SEL))objc_msgSend)(cfg, sel);
+    if (!DMSMRectSane(r)) { DMSMAPIFail(@"auto-layout configuration containerBounds", [@"not a container: " stringByAppendingString:NSStringFromCGRect(r)]); return NO; }
+    if (out) *out = r;
+    return YES;
+}
+static BOOL DMSMCfgDock(id cfg, double *out) {
+    if (!DMSMIsKind(cfg, "SBContinuousExposeAutoLayoutConfiguration")) return NO;
+    SEL sel = NSSelectorFromString(@"dockHeightWithBottomEdgePadding");
+    if (!DMSMSigOK(cfg, sel, DMSMSigDouble(), "dockHeightWithBottomEdgePadding")) return NO;
+    double d = ((double (*)(id, SEL))objc_msgSend)(cfg, sel);
+    if (!isfinite(d) || d < 0 || d > 1000.0) { DMSMAPIFail(@"dockHeightWithBottomEdgePadding", [NSString stringWithFormat:@"not a height: %g", d]); return NO; }
+    if (out) *out = d;
+    return YES;
+}
+// A BOOL of the configuration's Stage Manager attributes (prefersDockHidden / prefersStripHidden: in the 17.0.3 headers; optional, NO when not there).
+static BOOL DMSMCfgChamoisFlag(id cfg, NSString *name) {
+    if (!DMSMIsKind(cfg, "SBContinuousExposeAutoLayoutConfiguration")) return NO;
+    SEL get = NSSelectorFromString(@"chamoisLayoutAttributes");
+    if (!DMSMSigOK(cfg, get, DMSMSigObj(), "auto-layout configuration chamoisLayoutAttributes")) return NO;
+    id a = ((id (*)(id, SEL))objc_msgSend)(cfg, get);
+    SEL sel = NSSelectorFromString(name);
+    if (!DMSMIsKind(a, "SBSwitcherChamoisLayoutAttributes") || ![a respondsToSelector:sel] || !DMSMSigOK(a, sel, DMSMSigBool(), name.UTF8String)) return NO;
+    return ((BOOL (*)(id, SEL))objc_msgSend)(a, sel);
+}
+// The space's items (nil when anything is not what the headers say: then nothing is changed).
+static NSArray *DMSMSpaceItems(id space) {
+    if (!DMSMIsKind(space, "SBContinuousExposeAutoLayoutSpace")) return nil;
+    SEL sel = NSSelectorFromString(@"items");
+    if (!DMSMSigOK(space, sel, DMSMSigObj(), "auto-layout space items")) return nil;
+    id items = ((id (*)(id, SEL))objc_msgSend)(space, sel);
+    if (![items isKindOfClass:[NSArray class]]) return nil;
+    for (id it in items) if (!DMSMIsKind(it, "SBContinuousExposeAutoLayoutItem")) { DMSMAPIFail(@"auto-layout space items", [NSString stringWithFormat:@"an item of class %@", NSStringFromClass([it class])]); return nil; }
+    return items;
+}
+static BOOL DMSMItemPosition(id item, CGPoint *out) {
+    SEL sel = NSSelectorFromString(@"position");
+    if (!DMSMIsKind(item, "SBContinuousExposeAutoLayoutItem") || !DMSMSigOK(item, sel, DMSMSigCenter(), "auto-layout item position")) return NO;
+    CGPoint p = ((CGPoint (*)(id, SEL))objc_msgSend)(item, sel);
+    if (!isfinite(p.x) || !isfinite(p.y) || fabs(p.x) > 40000.0 || fabs(p.y) > 40000.0) return NO;
+    if (out) *out = p;
+    return YES;
+}
+static BOOL DMSMItemSize(id item, CGSize *out) {
+    SEL sel = NSSelectorFromString(@"size");
+    if (!DMSMIsKind(item, "SBContinuousExposeAutoLayoutItem") || !DMSMSigOK(item, sel, DMSMSigCGSize(), "auto-layout item size")) return NO;
+    CGSize z = ((CGSize (*)(id, SEL))objc_msgSend)(item, sel);
+    if (!isfinite(z.width) || !isfinite(z.height) || z.width < 1.0 || z.height < 1.0 || z.width > 20000.0 || z.height > 20000.0) return NO;
+    if (out) *out = z;
+    return YES;
+}
+static BOOL DMSMItemSetPosition(id item, CGPoint p) {
+    SEL sel = NSSelectorFromString(@"setPosition:");
+    if (!isfinite(p.x) || !isfinite(p.y) || fabs(p.x) > 40000.0 || fabs(p.y) > 40000.0) { DMSMAPIFail(@"auto-layout item setPosition:", [@"refused to hand over " stringByAppendingString:NSStringFromCGPoint(p)]); return NO; }
+    if (!DMSMIsKind(item, "SBContinuousExposeAutoLayoutItem") || !DMSMSigOK(item, sel, DMSMSigVoidPoint(), "auto-layout item setPosition:")) return NO;
+    ((void (*)(id, SEL, CGPoint))objc_msgSend)(item, sel, p);
+    return YES;
+}
+static BOOL DMSMItemInDefaultPosition(id item, BOOL *out) {
+    SEL sel = NSSelectorFromString(@"isInDefaultPosition");
+    if (!DMSMIsKind(item, "SBContinuousExposeAutoLayoutItem") || !DMSMSigOK(item, sel, DMSMSigBool(), "auto-layout item isInDefaultPosition")) return NO;
+    if (out) *out = ((BOOL (*)(id, SEL))objc_msgSend)(item, sel);
+    return YES;
+}
+static BOOL DMSMItemSetInDefaultPosition(id item, BOOL on) {
+    SEL sel = NSSelectorFromString(@"setInDefaultPosition:");
+    if (!DMSMIsKind(item, "SBContinuousExposeAutoLayoutItem") || !DMSMSigOK(item, sel, DMSMSigVoidBool(), "auto-layout item setInDefaultPosition:")) return NO;
+    ((void (*)(id, SEL, BOOL))objc_msgSend)(item, sel, on);
+    return YES;
+}
+// A window's center kept inside `area`: its whole frame in the area; where the window is larger than the area, its top and left edges win (the
+// title bar and traffic lights stay reachable, like a Mac; Apple's own clamp lets the bottom/right win).
+static CGPoint DMSMClampCenter(CGPoint c, CGSize s, CGRect area) {
+    CGFloat x = c.x, y = c.y;
+    x = MIN(x, CGRectGetMaxX(area) - s.width / 2.0);  x = MAX(x, CGRectGetMinX(area) + s.width / 2.0);
+    y = MIN(y, CGRectGetMaxY(area) - s.height / 2.0); y = MAX(y, CGRectGetMinY(area) + s.height / 2.0);
+    return CGPointMake(x, y);
+}

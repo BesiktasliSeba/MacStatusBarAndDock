@@ -8,7 +8,7 @@
 #include <unistd.h>
 
 #define MSBD_DIAG_PATH(name) [NSString stringWithFormat:@"/var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-Diag-%@.txt", (name)]
-#define MSBD_DIAG_NAMES @[@"Hooks", @"Dock"]
+#define MSBD_DIAG_NAMES @[@"Hooks", @"Dock", @"StageManager"]   // (StageManager: the engine's check and its iPadOS 17 layout hooks, StatusBar.x DMSM17DiagWrite)
 
 static inline BOOL MSBDDiagEnabled(void) {
     static int on = -1;

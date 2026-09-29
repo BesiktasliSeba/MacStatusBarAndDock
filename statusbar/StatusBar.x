@@ -365,6 +365,10 @@ static id DMSMFrontStage(void);
 static void DMSMDismissOtherFullScreen(id stage, NSString *keep);
 static BOOL DMSMEngine(void);
 static void DMWatchDockChanges(void);
+static void DMSMWatchTurn(void);
+static NSMutableDictionary *gSidePromptCtx;   // the side question being asked (DMPromptForSide)
+static NSMutableDictionary<NSString *, NSString *> *gSMFitSlots;   // (Fit to Window's arrangement for the Stage Manager engine, see DMSMFitTick)
+static NSMutableSet<NSString *> *gSMFreeWindows;
 static BOOL DMSMWindowAction(NSString *bundleID, NSString *name);
 static void DMSMSetMinimized(NSString *bundle, BOOL on);
 static id DMSMStageOf(NSString *bundle);
@@ -2017,6 +2021,7 @@ static BOOL DMStageManagerHeldNow(void) {
 static void DMSyncWindowsForLibraryBody(void) {
     DM_PERF("stagemgr", DMStageManagerWatch());
     DMWatchDockChanges();   // (the Dock changed for good: windows follow its new height, every engine)
+    DMSMWatchTurn();   // (Stage Manager engine: windows keep their layouts, and stay reachable, when the iPad turns)
     DM_PERF("switcher", DMWatchSwitcher());
     DM_PERF("lock", DMWatchLock());
     if (!DMTestFlag("/tmp/macstatusbar-nobsc")) DM_PERF("ccscale", DMApplyControlCenterScale());
@@ -5156,6 +5161,47 @@ static void DMDockChangedRelayout(NSString *why) {
         });
     });
 }
+// The iPad turned (Stage Manager engine): Stage Manager keeps each window's size in proportion to the old shape, so a window in the right half of
+// portrait (917 pt tall) stood 274 pt taller than landscape's desktop, its title bar above the screen, out of reach (iPad 2, 29 Sep). Fit to Window
+// only re-tiles two or more windows. Now each window goes back into the layout it was in (the layouts as they were, taken while the iPad was
+// still), and any other window is made to fit inside the new desktop.
+static void DMSMWatchTurn(void) {
+    static CGSize lastScreen; static NSDictionary *lastLayouts; static CFTimeInterval lastSnap = 0;
+    if (!DMSMEngine()) { lastScreen = CGSizeZero; lastLayouts = nil; return; }
+    CGSize scr = [UIScreen mainScreen].bounds.size;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (CGSizeEqualToSize(scr, lastScreen)) {
+        if (now - lastSnap >= 1.0 && !(gSidePromptCtx && ![gSidePromptCtx[@"decided"] boolValue])) { lastSnap = now; lastLayouts = DMSMLayoutsNow(); }
+        return;
+    }
+    BOOL first = CGSizeEqualToSize(lastScreen, CGSizeZero);
+    lastScreen = scr;
+    NSDictionary *layouts = lastLayouts; lastLayouts = nil; lastSnap = now + 1.5;   // (no new snapshot until the turn has settled)
+    if (first) return;
+    DM_FEATURE_MARK("sm-turn-relayout");
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{   // (after the turn and the Dock have settled)
+        if (!DMSMEngine() || !CGSizeEqualToSize([UIScreen mainScreen].bounds.size, scr)) return;
+        (void)DMUsableArea();
+        NSMutableDictionary *put = [NSMutableDictionary dictionary];
+        NSUInteger tiled = 0; for (NSString *b in gSMFitSlots) if (![gSMFreeWindows containsObject:b]) tiled++;
+        BOOL fitRetiles = DMFitEnabled() && tiled >= 2;   // (Fit to Window lays its tiles out again itself, DMSMFitTick)
+        for (NSString *b in layouts) if (!(fitRetiles && gSMFitSlots[b])) put[b] = layouts[b];
+        if (put.count) DMSMApplyLayouts(put);
+        CGRect area = DMUsableArea();
+        NSDictionary<NSString *, NSValue *> *frames = DMSMOpenWindowFrames();
+        for (NSString *b in frames) {
+            if (layouts[b]) continue;
+            CGRect f = frames[b].CGRectValue;   // (the whole window: our title bar and the card below it)
+            if (CGRectEqualToRect(CGRectIntegral(f), CGRectIntegral(CGRectMake(0, -kSMBarH, scr.width, scr.height + kSMBarH)))) continue;   // (full screen)
+            if (CGRectContainsRect(CGRectInset(area, -1.0, -1.0), f)) continue;
+            CGFloat w = MIN(f.size.width, area.size.width), h = MIN(f.size.height, area.size.height);
+            CGFloat x = MIN(MAX(f.origin.x, CGRectGetMinX(area)), CGRectGetMaxX(area) - w), y = MIN(MAX(f.origin.y, CGRectGetMinY(area)), CGRectGetMaxY(area) - h);
+            CGRect card = CGRectMake(x, y + kSMBarH, w, h - kSMBarH);
+            DMSMSetWindowGeometry(b, CGPointMake(CGRectGetMidX(card) / scr.width, CGRectGetMidY(card) / scr.height), CGSizeMake(card.size.width / scr.width, card.size.height / scr.height));
+        }
+        DMLog([NSString stringWithFormat:@"[sm] the iPad turned: windows back in their layouts %@, the others kept inside the desktop", put]);
+    });
+}
 static void DMWatchDockChanges(void) {
     static BOOL registered = NO;
     if (!registered) {   // (the Dock's size and gap settings: Dock.x posts this on every change)
@@ -6469,7 +6515,6 @@ static CGFloat DMOverlapFraction(CGRect a, CGRect b) {
 }
 static void DMPromptForSide(UIView *stage, NSString *newBundle, NSString *leftBundle, NSString *rightBundle);
 static void DMPromptBeforeLaunch(NSString *newBundle, NSString *leftBundle, NSString *rightBundle, void (^launch)(CGRect frame));
-static NSMutableDictionary *gSidePromptCtx;   // the side question being asked (DMPromptForSide)
 static NSString *gPreSideBundle, *gPreSide;   // a side picked before the app was launched: applied when its window appears ("" = default)
 static CFTimeInterval gPreSideUntil;
 // Moves every window of the group into its slot. `fresh` (the window that has just opened) appears in its slot; the others slide.
@@ -17261,8 +17306,52 @@ static NSString *DMHIDTouchDesc(UIEvent *event) {
     }
     return m;
 }
+// (debug /tmp/msb-cornerwatch: a touch near a Stage Manager window's bottom corner -- which view it hits and which gesture recognizers see it, as it
+//  begins, moves and ends: the left resize corner did nothing while the right one resized, iPad 2 29 Sep)
+#if DEBUG
+@class SBAppSwitcherPageView;
+static SBAppSwitcherPageView *DMSMPageViewOf(UIView *card);
+static void DMCornerWatch(UIEvent *event) {
+    for (UITouch *t in event.allTouches) {
+        static char kCornerKey;
+        NSString *corner = objc_getAssociatedObject(t, &kCornerKey);
+        if (t.phase == UITouchPhaseBegan) {
+            CGPoint p = [t locationInView:nil];
+            NSDictionary<NSString *, NSValue *> *frames = DMSMOpenWindowFrames();
+            for (NSString *b in frames) {
+                CGRect f = frames[b].CGRectValue;
+                if (fabs(p.y - CGRectGetMaxY(f)) > 40.0) continue;
+                if (fabs(p.x - CGRectGetMinX(f)) <= 40.0) corner = [b stringByAppendingString:@" LEFT"];
+                else if (fabs(p.x - CGRectGetMaxX(f)) <= 40.0) corner = [b stringByAppendingString:@" RIGHT"];
+            }
+            if (!corner) continue;
+            objc_setAssociatedObject(t, &kCornerKey, corner, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            NSMutableString *chain = [NSMutableString string];
+            int n = 0; for (UIView *v = t.view; v && n < 6; v = v.superview, n++) [chain appendFormat:@"%@%@ ", NSStringFromClass([v class]), v.userInteractionEnabled ? @"" : @"(no-ui)"];
+            DMLog([NSString stringWithFormat:@"[corner] %@ began at %@, window %@, view chain: %@", corner, NSStringFromCGPoint(p), NSStringFromClass([t.window class]), chain]);
+            UIView *card = DMSMCardFor([corner componentsSeparatedByString:@" "].firstObject);
+            UIView *page = card ? (UIView *)DMSMPageViewOf(card) : nil;
+            for (UIView *g in page.subviews) {
+                if (![NSStringFromClass([g class]) isEqualToString:@"SBAppResizeGrabberView"]) continue;
+                Ivar ci = class_getInstanceVariable([g class], "_corner");
+                long long cv = ci ? *(long long *)((char *)(__bridge void *)g + ivar_getOffset(ci)) : -1;
+                DMLog([NSString stringWithFormat:@"[corner]   grabber corner %lld frame %@ in page %@ alpha %.2f hidden %d ui %d", cv, NSStringFromCGRect(g.frame), NSStringFromCGRect(page.bounds), g.alpha, g.hidden, g.userInteractionEnabled]);
+            }
+        }
+        if (!corner) continue;
+        if (t.phase == UITouchPhaseBegan || t.phase == UITouchPhaseEnded || t.phase == UITouchPhaseCancelled || (t.phase == UITouchPhaseMoved && arc4random_uniform(8) == 0)) {
+            NSMutableString *g = [NSMutableString string];
+            for (UIGestureRecognizer *r in t.gestureRecognizers) [g appendFormat:@"%@%@(%ld on %@) ", NSStringFromClass([r class]), r.name ? [NSString stringWithFormat:@"'%@'", r.name] : @"", (long)r.state, NSStringFromClass([r.view class])];
+            DMLog([NSString stringWithFormat:@"[corner] %@ phase %ld at %@: %@", corner, (long)t.phase, NSStringFromCGPoint([t locationInView:nil]), g]);
+        }
+    }
+}
+#endif
 %hook SpringBoard
 - (void)sendEvent:(UIEvent *)event {
+#if DEBUG
+    if (event.type == UIEventTypeTouches && DMTestFlag("/tmp/msb-cornerwatch") && DMSMEngine()) DMCornerWatch(event);
+#endif
     BOOL watch = NO, began = NO, edge = NO;
     NSString *why = nil;
     if (event.type == UIEventTypeTouches && DMTestFlag("/tmp/macstatusbar-debug") && !DMTestFlag("/tmp/msb-notouchwatch")) {   // (/tmp/msb-notouchwatch: off, for timing tests)
@@ -21124,12 +21213,13 @@ static void DMRunTrigger(NSString *cmd) {
         DMSetWindowedLaunch([v boolValue]);
         DMLog([NSString stringWithFormat:@"[debug] windowed launch set to %@", v]);
     }
-    else if ([cmd hasPrefix:@"smcheck_"]) {   // smcheck_<none|selector|encoding|hook>: the engine's self-check run again with that simulated difference -- read-only, nothing changes
+    else if ([cmd hasPrefix:@"smcheck_"]) {   // smcheck_<none|selector|encoding|hook|layout16|layout17>: the engine's self-check run again with that simulated difference (layoutNN: that layout engine's table) -- read-only, nothing changes
         NSString *sim = [cmd substringFromIndex:8];
         NSUInteger checked = 0;
         NSArray *bad = DMSMCheckAPI([sim isEqualToString:@"none"] ? nil : sim, &checked);
         NSArray *hooks = DMSMHooksNotInstalled(DMSMHookedIMPs(), [sim isEqualToString:@"hook"]);   // (the current IMPs against themselves: every hook "not installed" -- shows the comparison works)
-        DMLog([NSString stringWithFormat:@"[smcheck] (trigger, simulating %@) API: %lu checked, %lu different: %@ | hooks compared with themselves: %lu of %lu flagged", sim, (unsigned long)checked,
+        int gen = [sim hasPrefix:@"layout"] ? DMSMLayoutGenFor(sim) : DMSMLayoutGen();
+        DMLog([NSString stringWithFormat:@"[smcheck] (trigger, simulating %@; layout engine table %@, the running engine's: %@) API: %lu checked, %lu different: %@ | hooks compared with themselves: %lu of %lu flagged", sim, DMSMLayoutName(gen), DMSMLayoutName(DMSMLayoutGen()), (unsigned long)checked,
                (unsigned long)bad.count, [bad componentsJoinedByString:@"; "], (unsigned long)hooks.count, (unsigned long)DMSMHookedIMPs().count]);
     }
     else if ([cmd hasPrefix:@"sbsettings_"]) DMOpenStatusBarSettings((uint32_t)[[cmd substringFromIndex:11] intValue]);   // sbsettings_<0|1|2>: Settings on our Status Bar page / Go apps / the Window Engine picker
@@ -25824,6 +25914,7 @@ static BOOL DMSMOpenFullScreenStage(NSString *bundle, id template, id identity) 
 // NO (the normal launch) when no stage is on screen, the app is already on the stage (the tap brings it forward), or the stage is full.
 static const long kSMNewWindowRoles[] = {1, 2, 5, 6};   // (the roles a window joining a stage takes, first free first -- read on 16.7.7)
 static NSSet<NSNumber *> *DMSMNewWindowRoles(void) { return [NSSet setWithObjects:@1, @2, @5, @6, nil]; }
+static BOOL gSMSkipFitAsk = NO;   // (the launch after the Fit question: not asked again)
 static BOOL DMSMAddToStage(NSString *bundle, UIView *from) {   // from: the icon tapped (its display: the iPad or the TV)
     DM_FEATURE_MARK("sm-add-to-stage");
     if (!DMSMEngine() || !bundle.length || DMTestFlag("/tmp/msb-sm-noadd")) return NO;
@@ -25853,6 +25944,45 @@ static BOOL DMSMAddToStage(NSString *bundle, UIView *from) {   // from: the icon
     if ([inStage containsObject:bundle]) {   // (already in the stage: forward; full screen it stays)
         DMSMBringToFront(bundle);
         return YES;
+    }
+    // Fit to Window with two tiles: the third window is asked about BEFORE its app starts (the other engines' order, DMPromptBeforeLaunch). Launched
+    // first, it opened while the question was up and could end up behind the two tiles, needing another tap in the Dock (iPad 2, 29 Sep).
+    if (main && windowed && !gSMSkipFitAsk && DMFitEnabled() && map.count == 2 && gSMFitSlots.count == 2 && ![gSMFreeWindows containsObject:bundle]
+        && !(gSidePromptCtx && ![gSidePromptCtx[@"decided"] boolValue])) {
+        NSString *leftB = nil, *rightB = nil;
+        for (NSString *b in inStage) { NSString *slot = gSMFitSlots[b]; if ([slot isEqualToString:@"left"]) leftB = b; else if ([slot isEqualToString:@"right"]) rightB = b; }
+        if (leftB && rightB) {
+            DM_FEATURE_MARK("sm-fit-ask-before-launch");
+            DMLog([NSString stringWithFormat:@"[sm] Fit to Window: asking where %@ goes before launching it", bundle]);
+            NSString *newB = [bundle copy];
+            DMPromptForSideApply(nil, newB, leftB, rightB, ^(NSString *side) {
+                if ([side isEqualToString:@"none"]) {   // No Fit: it opens free, in the middle; the two tiles stay
+                    if (!gSMFreeWindows) gSMFreeWindows = [NSMutableSet set];
+                    [gSMFreeWindows addObject:newB];
+                } else if ([side isEqualToString:@"left"]) gSMFitSlots = [@{newB: @"topleft", leftB: @"bottomleft", rightB: @"right"} mutableCopy];
+                else if ([side isEqualToString:@"right"]) gSMFitSlots = [@{newB: @"topright", rightB: @"bottomright", leftB: @"left"} mutableCopy];
+                else gSMFitSlots = nil;   // (no choice: the default arrangement, newest first)
+                gSMSkipFitAsk = YES;
+                BOOL added = DMSMAddToStage(newB, from);
+                gSMSkipFitAsk = NO;
+                if (!added) DMOpenApp(newB);   // (not added to the stage: the normal launch, joined by DMSMJoinDesktop)
+                // (once its window is there: tiled with the others, or centred when it is free)
+                __block int tries = 0;
+                __block void (^wait)(void);
+                void (^w)(void) = ^{
+                    if ([DMSMWindowBundles() containsObject:newB]) {
+                        if ([gSMFreeWindows containsObject:newB]) DMSMApplyLayoutsIn(@{newB: @"center"}, DMSMFrontStage());
+                        else DMSMFitTick(YES);
+                        wait = nil; return;
+                    }
+                    if (++tries > 40) { wait = nil; return; }
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), wait);
+                };
+                wait = w;
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), wait);
+            });
+            return YES;
+        }
     }
     // (layout roles read from a stage: 1 primary, 2 side, 5 "additional side 0", 6 the next; 4 is the centre window -- turned into an additional side)
     // (the first role no window of the stage has -- a table indexed by the window count assumed Stage Manager's roles are contiguous, C7)
@@ -26462,8 +26592,6 @@ static BOOL DMSMApplyLayoutsIn(NSDictionary<NSString *, NSString *> *bundleToLay
 // Fit to Window: the desktop's windows tiled like our other engines' (2: halves, 3: a half and two quarters, 4: quarters; newest first) -- again
 // whenever the set of windows changes (one opens, closes, is minimized), not while the user moves one. force: now (the switch was turned on).
 // The arrangement Fit to Window keeps (app -> layout slot) and the windows left out of it (No Fit), like the other engines' gFitSlots/gFreeWindows.
-static NSMutableDictionary<NSString *, NSString *> *gSMFitSlots;
-static NSMutableSet<NSString *> *gSMFreeWindows;
 // Windows that went full screen, and the arrangement they left: coming back from full screen is not a new window (it was asked about as a
 // third window again), it takes its tile back.
 static NSMutableSet<NSString *> *gSMFitWentFull;
@@ -26517,6 +26645,7 @@ static void DMSMFitTick(BOOL force) {
         if (newB && leftB && rightB && ![before containsObject:newB]) {
             DM_FEATURE_MARK("sm-fit-third-window-question");
             DMLog([NSString stringWithFormat:@"[sm] Fit to Window: asking where %@ goes", newB]);
+            DMSMBringToFront(newB);   // (opened some other way -- Spotlight, a link: in front while the question is up, not behind the two tiles)
             DMPromptForSideApply(nil, newB, leftB, rightB, ^(NSString *side) {
                 if ([side isEqualToString:@"none"]) {   // No Fit: in the middle, left out of Fit to Window; the two tiles stay
                     if (!gSMFreeWindows) gSMFreeWindows = [NSMutableSet set];
@@ -26839,62 +26968,9 @@ static CGRect DMSMContainerBoundsOf(id attrs) {
     for (UIScreen *sc in [UIScreen screens]) if (sc.bounds.size.width * sc.bounds.size.height > best.size.width * best.size.height) best = sc.bounds;
     return best;
 }
-%hook SBSwitcherChamoisLayoutAttributes
-// (the window sizes Stage Manager allows, a list of widths and one of heights ~10 pt apart up to 48 pt short of the edges; a size is rounded to them.
-//  Our engine: every whole point up to the screen size -- one cached list per length, so exact sizes cost nothing)
-static NSArray<NSNumber *> *DMSMFineGrid(NSArray *orig, CGFloat full) {
-    static NSMutableDictionary<NSString *, NSArray *> *cache;
-    if (![orig isKindOfClass:[NSArray class]] || orig.count == 0 || !isfinite(full) || full < 100.0 || full > 20000.0) return orig;
-    // (only a list of numbers, as on 16.7.7: anything else -- boxed values, objects of another kind -- is Apple's as it is; a KVC @min over it
-    //  threw inside Stage Manager's layout pass, review S6)
-    CGFloat lo = CGFLOAT_MAX;
-    for (id x in orig) { if (![x isKindOfClass:[NSNumber class]]) return orig; lo = MIN(lo, [x doubleValue]); }
-    if (!isfinite(lo) || lo < 1.0 || lo > full) return orig;
-    NSString *key = [NSString stringWithFormat:@"%.0f-%.0f", lo, full];
-    NSArray *hit = cache[key];
-    if (hit) return hit;
-    NSMutableArray *a = [NSMutableArray arrayWithCapacity:(NSUInteger)(full - lo + 1)];
-    for (CGFloat v = ceil(lo); v <= full; v += 1.0) [a addObject:@(v)];
-    if (!cache) cache = [NSMutableDictionary dictionary];
-    cache[key] = a;
-    DMLog([NSString stringWithFormat:@"[sm] size grid %.0f..%.0f (Apple's: %lu sizes, %@ .. %@)", lo, full, (unsigned long)orig.count, orig.firstObject, orig.lastObject]);
-    return a;
-}
-- (id)gridWidths {
-    id v = %orig;
-    if (!DMSMFree()) return v;
-    return DMSMFineGrid(v, CGRectGetWidth(DMSMContainerBoundsOf(self)));
-}
-- (id)gridHeights {
-    id v = %orig;
-    if (!DMSMFree()) return v;
-    return DMSMFineGrid(v, CGRectGetHeight(DMSMContainerBoundsOf(self)));
-}
-- (double)stageOccludedAppScale {   // (a covered background window shrank: on a Mac windows keep their size)
-    return DMSMFree() ? 1.0 : %orig;
-}
-- (double)stageOcclusionDodgingPeekScale {
-    return DMSMFree() ? 1.0 : %orig;
-}
-- (double)stageCornerRaddii {   // (sic) the windows' corner radius
-    return DMSMFree() ? kSMCornerR : %orig;
-}
-- (double)maximumWindowWidthForOverlapping {
-    double v = %orig;
-    if (!DMSMFree()) return v;
-    CGRect b = DMSMContainerBoundsOf(self);
-    return MAX(v, CGRectGetWidth(b));
-}
-- (double)maximumWindowHeightWithDock {
-    double v = %orig;
-    if (!DMSMFree()) return v;
-    CGRect b = DMSMContainerBoundsOf(self);
-    return MAX(v, CGRectGetHeight(b));
-}
-%end
-%hook SBChamoisOverlappingController
-- (CGRect)_stageAreaForModel:(id)m chamoisLayoutAttributes:(id)a floatingDockHeight:(double)dock bounds:(CGRect)b prefersStripHidden:(BOOL)strip prefersDockHidden:(BOOL)dh widthThresholdToHideContinuousExposeStrip:(double)w {
-    CGRect r = %orig;
+// Our engine's stage area, from Apple's (r) for a screen of `b` with this Dock height: one rule for both layout engines (iPadOS 16's
+// -_stageAreaForModel:..., 17's -stageAreaForSpace:configuration:). Also records each screen's Dock height (gSMDockHeightBySize).
+static CGRect DMSMOurStageArea(CGRect r, CGRect b, double dock, BOOL strip, BOOL dh) {
     if (dock > 0 && !CGRectIsEmpty(b)) {   // (each display's Dock height as Stage Manager lays out with it: the TV's layouts end above the TV's Dock)
         if (!gSMDockHeightBySize) gSMDockHeightBySize = [NSMutableDictionary dictionary];
         gSMDockHeightBySize[NSStringFromCGSize(b.size)] = @(dock);
@@ -26932,57 +27008,54 @@ static NSArray<NSNumber *> *DMSMFineGrid(NSArray *orig, CGFloat full) {
     if (![line isEqualToString:last]) { last = line; DMLog(line); }
     return r;
 }
-// Apple's auto-layout (-_modelByPerformingAutoLayoutForModel:...stageInset:, SpringBoard.framework 0x12ad90, iPad 2 16.7.7): after the two
-// centering steps, when nothing is being dragged, a stage with ONE window gets that window's center y set to the middle of the stage area
-// (inline code: items.count == 1 -> centerForItem: -> setCenter:{x, midY(stage area)} forItem:). That is why a lone window never kept the height it
-// was put at (Left Half 60 pt low). Our engine: that one setCenter keeps the window's own y. The flag is set by the horizontal-centering step, which
-// runs right before it, and cleared when the pass ends.
-static BOOL gSMLoneCenterNext = NO;
-- (id)_modelByPerformingAutoLayoutForModel:(id)m chamoisLayoutAttributes:(id)a draggingItem:(id)d modelBeforeDragging:(id)b floatingDockHeight:(double)dock bounds:(CGRect)r screenScale:(double)sc prefersStripHidden:(BOOL)sh prefersDockHidden:(BOOL)dh stageInset:(UIEdgeInsets)inset {
-    gSMLoneCenterNext = NO;
-    id out = %orig;
-    gSMLoneCenterNext = NO;
-    return out;
+%hook SBSwitcherChamoisLayoutAttributes
+// (the window sizes Stage Manager allows, a list of widths and one of heights ~10 pt apart up to 48 pt short of the edges; a size is rounded to them.
+//  Our engine: every whole point up to the screen size -- one cached list per length, so exact sizes cost nothing)
+static NSArray<NSNumber *> *DMSMFineGrid(NSArray *orig, CGFloat full) {
+    static NSMutableDictionary<NSString *, NSArray *> *cache;
+    if (![orig isKindOfClass:[NSArray class]] || orig.count == 0 || !isfinite(full) || full < 100.0 || full > 20000.0) return orig;
+    // (only a list of numbers, as on 16.7.7: anything else -- boxed values, objects of another kind -- is Apple's as it is; a KVC @min over it
+    //  threw inside Stage Manager's layout pass, review S6)
+    CGFloat lo = CGFLOAT_MAX;
+    for (id x in orig) { if (![x isKindOfClass:[NSNumber class]]) return orig; lo = MIN(lo, [x doubleValue]); }
+    if (!isfinite(lo) || lo < 1.0 || lo > full) return orig;
+    NSString *key = [NSString stringWithFormat:@"%.0f-%.0f", lo, full];
+    NSArray *hit = cache[key];
+    if (hit) return hit;
+    NSMutableArray *a = [NSMutableArray arrayWithCapacity:(NSUInteger)(full - lo + 1)];
+    for (CGFloat v = ceil(lo); v <= full; v += 1.0) [a addObject:@(v)];
+    if (!cache) cache = [NSMutableDictionary dictionary];
+    cache[key] = a;
+    DMLog([NSString stringWithFormat:@"[sm] size grid %.0f..%.0f (Apple's: %lu sizes, %@ .. %@)", lo, full, (unsigned long)orig.count, orig.firstObject, orig.lastObject]);
+    return a;
 }
-- (void)_compactSpacingHorizontallyForModel:(id)m withColumns:(id)c chamoisLayoutAttributes:(id)a {
-    if (!DMSMFree()) %orig;
+- (id)gridWidths {
+    id v = %orig;
+    if (!DMSMFree()) return v;
+    return DMSMFineGrid(v, CGRectGetWidth(DMSMContainerBoundsOf(self)));
 }
-- (void)_compactSpacingVerticallyForModel:(id)m withColumns:(id)c chamoisLayoutAttributes:(id)a {
-    if (!DMSMFree()) %orig;
+- (id)gridHeights {
+    id v = %orig;
+    if (!DMSMFree()) return v;
+    return DMSMFineGrid(v, CGRectGetHeight(DMSMContainerBoundsOf(self)));
 }
-- (void)_expandSpacingHorizontallyForModel:(id)m withColumns:(id)c modelBeforeDragging:(id)b chamoisLayoutAttributes:(id)a draggingItem:(id)d stageArea:(CGRect)r {
-    if (!DMSMFree()) %orig;
+- (double)stageOccludedAppScale {   // (a covered background window shrank: on a Mac windows keep their size)
+    return DMSMFree() ? 1.0 : %orig;
 }
-- (void)_expandSpacingVerticallyForModel:(id)m withColumns:(id)c chamoisLayoutAttributes:(id)a stageArea:(CGRect)r {
-    if (!DMSMFree()) %orig;
+- (double)stageOcclusionDodgingPeekScale {
+    return DMSMFree() ? 1.0 : %orig;
 }
-- (void)_horizontallyCenterModel:(id)m stageArea:(CGRect)r {
-    if (!DMSMFree()) %orig;
-    else gSMLoneCenterNext = YES;
+- (double)maximumWindowWidthForOverlapping {
+    double v = %orig;
+    if (!DMSMFree()) return v;
+    CGRect b = DMSMContainerBoundsOf(self);
+    return MAX(v, CGRectGetWidth(b));
 }
-- (void)_verticallyCenterModel:(id)m withColumns:(id)c stageArea:(CGRect)r {
-    if (!DMSMFree()) %orig;
-}
-- (void)_dodgeFullyOccludedWindowsToNearestVisibleEdgeInModel:(id)m chamoisLayoutAttributes:(id)a draggingItem:(id)d bounds:(CGRect)r {
-    if (!DMSMFree()) %orig;
-}
-- (void)_snapPositionToNearestEdgesIfNecessary:(id)m draggingItem:(id)d {
-    if (!DMSMFree()) %orig;
-}
-%end
-@interface SBMutableChamoisOverlappingModel : NSObject
-@end
-%hook SBMutableChamoisOverlappingModel
-- (void)setCenter:(CGPoint)c forItem:(id)item {
-    if (gSMLoneCenterNext && DMSMFree()) {   // (the lone-window re-centering, see above: keep the y the window has)
-        gSMLoneCenterNext = NO;
-        SEL get = NSSelectorFromString(@"centerForItem:");
-        if (DMSMSigOK(self, get, DMSMSigCenterFor(), "centerForItem:")) {   // (checked at start too; a y that is not a number is not kept)
-            CGFloat y = ((CGPoint (*)(id, SEL, id))objc_msgSend)(self, get, item).y;
-            if (isfinite(y)) c.y = y;
-        }
-    }
-    %orig(c, item);
+- (double)maximumWindowHeightWithDock {
+    double v = %orig;
+    if (!DMSMFree()) return v;
+    CGRect b = DMSMContainerBoundsOf(self);
+    return MAX(v, CGRectGetHeight(b));
 }
 %end
 // Stage Manager's own resize grabbers (a luma-dodge pill in each corner, shown at the bottom and popping up on a touch): with our handles never
@@ -27014,6 +27087,17 @@ static void DMSMReapplyGrabbers(UIView *card) {   // (Settings > Resize Handles 
         @try { DMSMJoinDesktop(me); } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[smengine] joining the desktop failed: %@", e.reason]); }
     }
     %orig;
+}
+%end
+// Which corners a FINGER may resize a window from: Stage Manager allows only the trailing bottom corner for touch (the pointer may use any), and its
+// live-resize gesture refuses a touch anywhere else (-[SBFluidSwitcherGestureManager _shouldLiveResizeItemContainerGestureWithTouch:receiveTouch:]
+// reads this, SpringBoard.framework +0x605a20, 16.7.7). Our resize handles are drawn in BOTH bottom corners, like our other engines', so the left
+// one did nothing (iPad 2, 29 Sep): with our handles, both bottom corners take a touch.
+%hook SBFluidSwitcherItemContainer
+- (unsigned long long)allowedTouchResizeCorners {
+    unsigned long long c = %orig;
+    if (DMSMFree() && !gSMAppleHandles && c) { DM_FEATURE_MARK("sm-resize-both-corners"); c |= UIRectCornerBottomLeft | UIRectCornerBottomRight; }
+    return c;
 }
 %end
 %hook SBAppResizeGrabberView
@@ -27149,6 +27233,213 @@ static void DMSMReapplyGrabbers(UIView *card) {   // (Settings > Resize Handles 
 }
 %end
 %end
+// iPadOS 16's layout engine (SBChamoisOverlappingController): installed with SMEngine when the self-check picked the 16 table (DMSMLayoutGen).
+%group SMLayout16
+%hook SBChamoisOverlappingController
+- (CGRect)_stageAreaForModel:(id)m chamoisLayoutAttributes:(id)a floatingDockHeight:(double)dock bounds:(CGRect)b prefersStripHidden:(BOOL)strip prefersDockHidden:(BOOL)dh widthThresholdToHideContinuousExposeStrip:(double)w {
+    CGRect r = %orig;
+    return DMSMOurStageArea(r, b, dock, strip, dh);
+}
+// Apple's auto-layout (-_modelByPerformingAutoLayoutForModel:...stageInset:, SpringBoard.framework 0x12ad90, iPad 2 16.7.7): after the two
+// centering steps, when nothing is being dragged, a stage with ONE window gets that window's center y set to the middle of the stage area
+// (inline code: items.count == 1 -> centerForItem: -> setCenter:{x, midY(stage area)} forItem:). That is why a lone window never kept the height it
+// was put at (Left Half 60 pt low). Our engine: that one setCenter keeps the window's own y. The flag is set by the horizontal-centering step, which
+// runs right before it, and cleared when the pass ends.
+static BOOL gSMLoneCenterNext = NO;
+- (id)_modelByPerformingAutoLayoutForModel:(id)m chamoisLayoutAttributes:(id)a draggingItem:(id)d modelBeforeDragging:(id)b floatingDockHeight:(double)dock bounds:(CGRect)r screenScale:(double)sc prefersStripHidden:(BOOL)sh prefersDockHidden:(BOOL)dh stageInset:(UIEdgeInsets)inset {
+    gSMLoneCenterNext = NO;
+    id out = %orig;
+    gSMLoneCenterNext = NO;
+    return out;
+}
+- (void)_compactSpacingHorizontallyForModel:(id)m withColumns:(id)c chamoisLayoutAttributes:(id)a {
+    if (!DMSMFree()) %orig;
+}
+- (void)_compactSpacingVerticallyForModel:(id)m withColumns:(id)c chamoisLayoutAttributes:(id)a {
+    if (!DMSMFree()) %orig;
+}
+- (void)_expandSpacingHorizontallyForModel:(id)m withColumns:(id)c modelBeforeDragging:(id)b chamoisLayoutAttributes:(id)a draggingItem:(id)d stageArea:(CGRect)r {
+    if (!DMSMFree()) %orig;
+}
+- (void)_expandSpacingVerticallyForModel:(id)m withColumns:(id)c chamoisLayoutAttributes:(id)a stageArea:(CGRect)r {
+    if (!DMSMFree()) %orig;
+}
+- (void)_horizontallyCenterModel:(id)m stageArea:(CGRect)r {
+    if (!DMSMFree()) %orig;
+    else gSMLoneCenterNext = YES;
+}
+- (void)_verticallyCenterModel:(id)m withColumns:(id)c stageArea:(CGRect)r {
+    if (!DMSMFree()) %orig;
+}
+- (void)_dodgeFullyOccludedWindowsToNearestVisibleEdgeInModel:(id)m chamoisLayoutAttributes:(id)a draggingItem:(id)d bounds:(CGRect)r {
+    if (!DMSMFree()) %orig;
+}
+- (void)_snapPositionToNearestEdgesIfNecessary:(id)m draggingItem:(id)d {
+    if (!DMSMFree()) %orig;
+}
+%end
+@interface SBMutableChamoisOverlappingModel : NSObject
+@end
+%hook SBMutableChamoisOverlappingModel
+- (void)setCenter:(CGPoint)c forItem:(id)item {
+    if (gSMLoneCenterNext && DMSMFree()) {   // (the lone-window re-centering, see above: keep the y the window has)
+        gSMLoneCenterNext = NO;
+        SEL get = NSSelectorFromString(@"centerForItem:");
+        if (DMSMSigOK(self, get, DMSMSigCenterFor(), "centerForItem:")) {   // (checked at start too; a y that is not a number is not kept)
+            CGFloat y = ((CGPoint (*)(id, SEL, id))objc_msgSend)(self, get, item).y;
+            if (isfinite(y)) c.y = y;
+        }
+    }
+    %orig(c, item);
+}
+%end
+%end
+// The windows' corner radius (Stage Manager's own: rounder than a Mac window): under whichever name this iPadOS has (stageCornerRaddii, sic,
+// through 17; stageCornerRadii from 18.2 -- kSMNeeds' alt name, DMSMCornerRadiusSelector).
+%group SMCornerRaddii
+%hook SBSwitcherChamoisLayoutAttributes
+- (double)stageCornerRaddii {   // (sic) the windows' corner radius
+    return DMSMFree() ? kSMCornerR : %orig;
+}
+%end
+%end
+%group SMCornerRadii
+%hook SBSwitcherChamoisLayoutAttributes
+- (double)stageCornerRadii {
+    return DMSMFree() ? kSMCornerR : %orig;
+}
+%end
+%end
+// ---- iPadOS 17's layout engine (SBContinuousExposeAutoLayoutController) -------------------------------------------------------------------------
+// iPadOS 17 replaced SBChamoisOverlappingController / SBMutableChamoisOverlappingModel (the hooks of SMLayout16) with an auto-layout controller
+// working on a "space" of "items" (SMEngineAPI.h). NOT RUN ON A DEVICE BY US: written from the 17.0.3 runtime headers (MTACS) and the 17.6.1
+// decompile (SuperChaoM/iPhone15-3_17.6.1_21G101_Restore, SpringBoard.framework). What that decompile shows the 17 pass does:
+//  -spaceByPerformingAutoLayoutWithSpace:previousSpace:configuration:options: -- with a previous space: (options & 1) new windows go to the stage's
+//   left edge, vertically centred, and the whole group is re-centred; or, one window fewer than before (3+), the rest is compacted, dodged and the
+//   group re-centred. Then -_performAutoLayoutWithSpace:configuration:stageInset: and bookkeeping (stage area, bounding box, strip visibility,
+//   compacted frames for the switcher, peeking items).
+//  -_performAutoLayoutWithSpace:... -- every window's center kept inside the container inset by the screen edge padding; windows with no place
+//   (0,0) centred; ONE window "in its default position" centred in the stage area (the 16 lone-window re-centring, now x and y); otherwise snap to
+//   edges and centre, dodge fully covered windows, scale anchors, and (covered windows peeking) the pass again with insets.
+// Our engine keeps windows where they were put, like a Mac (as SMLayout16 does on 16):
+//  - the stage area: the same rule as 16 (DMSMOurStageArea), with the bounds and Dock height from the configuration;
+//  - no previous space handed to the pass (both of its re-arranging branches are skipped; nil is what Apple's own window-drag modifier passes);
+//  - compaction, dodging and snapping skipped;
+//  - the lone window keeps its place (its "default position" flag hidden from that one pass, then put back as it was);
+//  - windows kept inside OUR stage area instead of the padded container (as 16 kept them inside the stage area): full-width windows, the top below
+//    the menu bar and our title bar. A full-screen-sized window, a new window with no place yet, and anything unreadable: Apple's result as it is.
+// Everything read or written through SMEngineAPI.h's checked wrappers; a refusal leaves Apple's pass alone. Diagnostics: DMSM17DiagSoon.
+static unsigned gSM17Count[8];   // (how often each part acted, for the diagnostics record: 0 stage area, 1 no previous space, 2 compaction skipped,
+                                 //  3 dodge skipped, 4 snap skipped, 5 lone window kept, 6 windows kept inside our stage area, 7 passes)
+static NSString *gSM17LastArea;
+static void DMSM17Note(int k) { if (k >= 0 && k < 8 && gSM17Count[k] < 1000) { gSM17Count[k]++; if (gSM17Count[k] == 1 || gSM17Count[k] == 50) DMSM17DiagSoon(); } }
+static __thread int gSM17Depth = 0;   // (_performAutoLayout... runs itself again for peeking windows: only the outer pass is adjusted)
+%group SMLayout17
+%hook SBContinuousExposeAutoLayoutController
+- (CGRect)stageAreaForSpace:(id)space configuration:(id)cfg {
+    CGRect r = %orig;
+    CGRect b; double dock = 0;
+    // (the configuration unreadable, or Apple's area not a rectangle: Apple's area as it is)
+    if (!DMSMRectSane(r) || !DMSMCfgBounds(cfg, &b) || !DMSMCfgDock(cfg, &dock)) return r;
+    BOOL strip = DMSMCfgChamoisFlag(cfg, @"prefersStripHidden"), dh = DMSMCfgChamoisFlag(cfg, @"prefersDockHidden");
+    CGRect o = DMSMOurStageArea(r, b, dock, strip, dh);
+    if (!DMSMRectSane(o)) return r;
+    if (!CGRectEqualToRect(o, r)) DMSM17Note(0);
+    if (gSM17Count[0] < 20) {
+        NSString *l = [NSString stringWithFormat:@"stage area %@ (Apple's %@, bounds %@, dock %.1f, strip hidden %d, dock hidden %d)", NSStringFromCGRect(o), NSStringFromCGRect(r), NSStringFromCGRect(b), dock, strip, dh];
+        if (![l isEqualToString:gSM17LastArea]) { gSM17LastArea = l; DMSM17DiagSoon(); }
+    }
+    return o;
+}
+- (id)spaceByPerformingAutoLayoutWithSpace:(id)space previousSpace:(id)prev configuration:(id)cfg options:(unsigned long long)opt {
+    if (!DMSMFree() || !prev) return %orig;
+    DMSM17Note(1);
+    if (DMTestFlag("/tmp/macstatusbar-debug") && gSM17Count[1] <= 3) DMLog([NSString stringWithFormat:@"[sm17] auto-layout without the previous space (options %llu): no re-centring of the group", opt]);
+    return %orig(space, nil, cfg, opt);
+}
+- (CGRect)_performAutoLayoutWithSpace:(id)space configuration:(id)cfg stageInset:(UIEdgeInsets)inset {
+    if (!DMSMFree() || gSM17Depth > 0) {
+        gSM17Depth++;
+        CGRect inner = %orig;
+        gSM17Depth--;
+        return inner;
+    }
+    DMSM17Note(7);
+    NSArray *items = DMSMSpaceItems(space);
+    CGRect container = CGRectZero;
+    BOOL haveContainer = DMSMCfgBounds(cfg, &container);
+    // (each window's place and size before Apple's pass; none for a window with no place yet (0,0), or a full-screen-sized one)
+    NSMutableArray *before = [NSMutableArray array];
+    for (id it in items) {
+        CGPoint p; CGSize z;
+        BOOL keep = haveContainer && DMSMItemPosition(it, &p) && DMSMItemSize(it, &z) && !(p.x == 0 && p.y == 0)
+                 && !(z.width >= container.size.width - 1.0 && z.height >= container.size.height - 1.0);
+        [before addObject:keep ? @[it, [NSValue valueWithCGPoint:p], [NSValue valueWithCGSize:z]] : [NSNull null]];
+    }
+    // the lone window keeps its place: Apple centres ONE window that is "in its default position"; hidden from this pass only
+    id lone = nil;
+    if (items.count == 1 && before.firstObject != [NSNull null]) {
+        BOOL def = NO;
+        if (DMSMItemInDefaultPosition(items.firstObject, &def) && def && DMSMItemSetInDefaultPosition(items.firstObject, NO)) lone = items.firstObject;
+    }
+    gSM17Depth++;
+    CGRect area = %orig;
+    gSM17Depth--;
+    if (lone) { DMSMItemSetInDefaultPosition(lone, YES); DMSM17Note(5); }
+    // every window inside our stage area (what Apple's pass returns: the area of -stageAreaForSpace:, ours), not the padded container
+    if (DMSMRectSane(area)) {
+        int moved = 0;
+        for (id e in before) {
+            if (e == [NSNull null]) continue;
+            NSArray *en = e;
+            CGPoint want = DMSMClampCenter([en[1] CGPointValue], [en[2] CGSizeValue], area), now;
+            if (!DMSMItemPosition(en[0], &now) || (fabs(now.x - want.x) < 0.5 && fabs(now.y - want.y) < 0.5)) continue;
+            if (DMSMItemSetPosition(en[0], want)) moved++;
+        }
+        if (moved) DMSM17Note(6);
+        if (DMTestFlag("/tmp/macstatusbar-debug") && moved && gSM17Count[6] <= 10) DMLog([NSString stringWithFormat:@"[sm17] %d window(s) kept at their place inside the stage area %@", moved, NSStringFromCGRect(area)]);
+    }
+    return area;
+}
+- (void)_compactSpacingBetweenItemsInSpace:(id)space configuration:(id)cfg {
+    if (DMSMFree()) { DMSM17Note(2); return; }
+    %orig;
+}
+- (void)dodgeFullyOccludedWindowsToNearestVisibleEdgeForSpace:(id)space configuration:(id)cfg {
+    if (DMSMFree()) { DMSM17Note(3); return; }
+    %orig;
+}
+- (void)snapPositionToNearestEdgesIfNecessaryForSpace:(id)space stageArea:(CGRect)area configuration:(id)cfg {
+    if (DMSMFree()) { DMSM17Note(4); return; }
+    %orig;
+}
+%end
+%end
+// iPadOS 17 (untested, "Enable Anyway" on): what the engine's check found and what the 17 layout hooks did, as a diagnostics record for Report a
+// Problem (common/Diag.h, "StageManager"; names and numbers only). A release build writes no log, so this is how a tester's report tells us whether
+// the 17 port works. Written 2 s after a change (at most every 2 s); counts stop at 1000, so the record settles.
+static NSUInteger gSMChecked;
+static NSArray<NSString *> *gSMCheckBad;
+static void DMSM17DiagWrite(void) {
+    if (!MSBDDiagEnabled() || DMSMLayoutGen() != 17) return;
+    NSOperatingSystemVersion v = [NSProcessInfo processInfo].operatingSystemVersion;
+    NSMutableString *t = [NSMutableString stringWithFormat:@"iPadOS %ld.%ld.%ld (%@), layout engine table %@\n", (long)v.majorVersion, (long)v.minorVersion, (long)v.patchVersion, MSBDOSBuild() ?: @"?", DMSMLayoutName(17)];
+    [t appendFormat:@"check: %@, %lu checked\n", gSMCheckOK ? @"passed" : gSMCheckDone ? @"FAILED" : @"not run", (unsigned long)gSMChecked];
+    if (gSMCheckBad.count) [t appendFormat:@"missing/different (%lu): %@\n", (unsigned long)gSMCheckBad.count, [[gSMCheckBad subarrayWithRange:NSMakeRange(0, MIN(gSMCheckBad.count, (NSUInteger)12))] componentsJoinedByString:@"; "]];
+    [t appendFormat:@"engine on %d, free placement %d\n", DMSMEngine(), DMSMFree()];
+    [t appendFormat:@"acted: stage area %u, no previous space %u, compaction skipped %u, dodge skipped %u, snap skipped %u, lone window kept %u, kept inside area %u, passes %u\n",
+        gSM17Count[0], gSM17Count[1], gSM17Count[2], gSM17Count[3], gSM17Count[4], gSM17Count[5], gSM17Count[6], gSM17Count[7]];
+    if (gSM17LastArea) [t appendFormat:@"last %@\n", gSM17LastArea];
+    if (gSMAPIFailures.count) [t appendFormat:@"refused (%lu): %@\n", (unsigned long)gSMAPIFailures.count, [[gSMAPIFailures.array subarrayWithRange:NSMakeRange(0, MIN(gSMAPIFailures.count, (NSUInteger)8))] componentsJoinedByString:@"; "]];
+    MSBDDiagWrite(@"StageManager", t);
+}
+static void DMSM17DiagSoon(void) {
+    if (DMSMLayoutGen() != 17 || !MSBDDiagEnabled()) return;
+    static BOOL pending;
+    if (pending) return;
+    pending = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ pending = NO; DMSM17DiagWrite(); });
+}
 // The start-up self-check (SMEngineAPI.h): once, in %ctor, before anything of the engine runs. Every class, method and signature the engine and its
 // hooks use (kSMNeeds); only if all are there as expected are the hooks installed, and then checked to have gone in. Otherwise the engine stays
 // off for this run (DMSMEngine() NO: the default engine, Stage Manager not switched on for us), and the verdict tells the root helper and Settings.
@@ -27171,14 +27462,26 @@ static void DMSMSelfCheck(void) {
     }
 #endif
     CFTimeInterval t0 = CACurrentMediaTime();
+    // (which layout engine's rows count: iPadOS 16's SBChamoisOverlappingController or 17's SBContinuousExposeAutoLayoutController, SMEngineAPI.h)
+    gSMLayoutGen = DMSMLayoutGenFor(simulate);
+    DMLog([NSString stringWithFormat:@"[smcheck] layout engine table: %@", DMSMLayoutName(gSMLayoutGen)]);
     NSUInteger checked = 0;
     NSArray<NSString *> *bad = DMSMCheckAPI(simulate, &checked);
     if (!bad.count) {
         NSArray *before = DMSMHookedIMPs();
         %init(SMEngine);
+        if (gSMLayoutGen == 17) {
+            DM_FEATURE_MARK("sm-layout-17");
+            %init(SMLayout17);
+        } else %init(SMLayout16);
+        const char *corner = DMSMCornerRadiusSelector();   // (checked above: one of the two names exists with our signature)
+        if (corner && !strcmp(corner, "stageCornerRaddii")) %init(SMCornerRaddii);
+        else if (corner) %init(SMCornerRadii);
         bad = DMSMHooksNotInstalled(before, [simulate isEqualToString:@"hook"]);
         if (bad.count) DMLog(@"[smcheck] hooks installed but not all took: the engine stays off (its hooks only ever act for the engine)");
     }
+    gSMChecked = checked;
+    gSMCheckBad = bad;
     gSMCheckOK = bad.count == 0;
     NSOperatingSystemVersion ov = [NSProcessInfo processInfo].operatingSystemVersion;
     gSMCheckReason = gSMCheckOK ? nil : [NSString stringWithFormat:@"iPadOS %ld.%ld.%ld (%@): %lu of the system methods the engine uses are missing or different",
@@ -27190,6 +27493,7 @@ static void DMSMSelfCheck(void) {
         DMLog([NSString stringWithFormat:@"[smcheck] Stage Manager engine NOT available: %@", gSMCheckReason]);
         for (NSString *l in bad) DMLog([@"[smcheck]   " stringByAppendingString:l]);
     }
+    DMSM17DiagSoon();   // (iPadOS 17 with Enable Anyway: the check's result for Report a Problem)
 }
 static void DMSMEngineInit(void) {
     DMSMSelfCheck();
@@ -27202,13 +27506,16 @@ static void DMSMCheckReadOnly(void) {
     if (gSMCheckDone) return;
     gSMCheckDone = YES;
     if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion < 16 || !objc_getClass("SBSwitcherChamoisSettings") || !MSBDStageManagerAvailable()) return;
+    gSMLayoutGen = DMSMLayoutGenFor(nil);
     NSUInteger checked = 0;
     NSArray<NSString *> *bad = DMSMCheckAPI(nil, &checked);
+    gSMChecked = checked; gSMCheckBad = bad;
     NSOperatingSystemVersion ov = [NSProcessInfo processInfo].operatingSystemVersion;
     NSString *reason = bad.count ? [NSString stringWithFormat:@"iPadOS %ld.%ld.%ld (%@): %lu of the system methods the engine uses are missing or different",
         (long)ov.majorVersion, (long)ov.minorVersion, (long)ov.patchVersion, MSBDOSBuild() ?: @"?", (unsigned long)bad.count] : nil;
     DMSMPublishVerdict(bad.count == 0, reason, bad);
-    DMLog([NSString stringWithFormat:@"[smcheck] read-only check (engine not started here): %@", reason ?: [NSString stringWithFormat:@"%lu verified", (unsigned long)checked]]);
+    DMLog([NSString stringWithFormat:@"[smcheck] read-only check (engine not started here, layout engine table %@): %@", DMSMLayoutName(gSMLayoutGen), reason ?: [NSString stringWithFormat:@"%lu verified", (unsigned long)checked]]);
+    DMSM17DiagSoon();
 }
 
 // Leaving Stage Manager (another engine takes over): a stage of several windows is a multi-app layout, which iPadOS shows as Split View without
