@@ -84,7 +84,7 @@ All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo:
 - Stage Manager engine: typing in a window could make the keyboard close again and again.
 - Stage Manager engine: with Open Apps as Windows on, an app opened from the Home Screen onto an empty desktop opens as a window again, instead of coming back full screen.
 - Stage Manager engine with an external display: the Window menu's swap rows and layouts work on the active window's own screen, and new windows on the display are placed within the display's desktop.
-- Mac pointer: Use Pointer Control Style follows Pointer Control's Color when it's set to None.
+- Mac pointer: Use Pointer Control Style follows the pointer Color when it's set to None.
 
 ## 1.1.0
 
@@ -97,7 +97,7 @@ All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo:
   - A window in the background comes forward when you lift your finger, so scrolling in it doesn't turn into a tap.
 - **External display with the Stage Manager engine (iPadOS 16).** The external display gets its own Mac desktop, with a menu bar, Dock and wallpaper. See "External display" below for what it can and can't do yet.
 - **Traffic lights everywhere:** grey on inactive windows, with symbols on hover or press, for every window engine.
-- **Use Pointer Control Style** (Settings > Pointer): the Mac pointer can take the Color, Border Width and Increase Contrast from Accessibility > Pointer Control. It's off by default, so the pointer starts as the classic black-and-white arrow.
+- **Use Pointer Control Style** (Settings > Pointer): the Mac pointer can take the Color, Border Width and Increase Contrast from the Pointer Control settings on the same page. It's off by default, so the pointer starts as the classic black-and-white arrow.
 - One-time notice after updating on iPadOS 16: Stage Manager is now a window engine, with a button that opens the Window Engine picker. iPads without Stage Manager get a note that TrollPad turns it on.
 
 ### Improvements
