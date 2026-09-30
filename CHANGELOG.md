@@ -2,6 +2,31 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.2
+
+### New
+- **Finder**: a Mac Finder window of its own, on every window engine. A sidebar with your places (On My iPad, Documents, App Documents, Applications, Home, iPad, Jailbreak, Trash), list and icon views with thumbnails, Search, Quick Look, Get Info, and the Finder, File, Edit, View, Go and Window menus in the menu bar while it's in front. Open it from Finder in the Dock or from the Go menu.
+- Finder in the Dock: the first Dock item, like on a Mac, with a dot while a window is open. Settings > Dock > Show Finder in Dock hides it.
+- Drag and drop: hold a file or folder for a moment and move it. Drop it on a folder, the sidebar or another Finder window to move it (hold Option to copy), or on an app window to hand the app a copy. Folders open when you rest a dragged item on them. Folders dropped on an app arrive as a zip.
+- Share menu in Finder: send a file to Notes, Mail, Messages, Files or an app window that's open.
+- Select several items: Command-click, Shift-click, Command-A, a selection rectangle with the pointer, or the Select button on touch.
+- Undo (Command-Z) for moves, renames, new folders, duplicates and the Trash, and Put Back from the Trash.
+- Rename in place (Return, like on a Mac), Go to Folder (Shift-Command-G), folders that update by themselves, and Mac keyboard shortcuts.
+- Settings > Status Bar > Finder turns Finder off completely.
+
+### Safety
+- Finder only changes files in your own places: On My iPad and its Documents, app Documents folders and Finder's own Trash. Everything else, including system folders, other app data and the jailbreak's files, can be opened and copied from, but not moved, renamed, deleted or written to. This can't be switched off, so Finder can't be used to break the iPad by accident.
+- Empty Trash and Delete Immediately ask first and only ever act inside Finder's Trash.
+- Apps receive their own copy of a dropped file, never your original. Copies are removed a minute later.
+
+### Fixes
+- Stage Manager engine: SofaScore opened as a window no longer closes itself right after launch.
+
+### Known limitations
+- External drives (USB drives, SD cards) don't show in Finder yet. Use the Files app for them.
+- iCloud Drive can't be opened from Finder, because iPadOS doesn't allow it there. Use the Files app.
+- Drag and drop goes from Finder to apps, not from apps into Finder yet.
+
 ## 1.1.9
 
 ### Fixes

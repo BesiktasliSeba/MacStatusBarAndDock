@@ -7,7 +7,7 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = DockMagnification
 
-DockMagnification_FILES = Dock.x Downloads.m Launchpad.m RunningIndicator.m
+DockMagnification_FILES = Dock.x Downloads.m Launchpad.m RunningIndicator.m FinderIcon.m
 DockMagnification_FRAMEWORKS = UIKit AVFoundation ImageIO
 DockMagnification_CFLAGS = -fobjc-arc
 

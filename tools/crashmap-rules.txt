@@ -38,6 +38,8 @@ target appSizeMenu pref com.besiktasliseba.macappsizemenu enabled 0 1 App Size i
 target folderMenu pref com.besiktasliseba.macfoldermenu enabled 0 1 Folder Apps in Folder Menus|the folder menus
 target showDownloads pref com.besiktasliseba.dockmagnification showDownloads 0 1 Show Downloads in Dock|the Dock's Downloads
 target launchpadIcon pref com.besiktasliseba.dockmagnification launchpadIcon 0 1 Launchpad Icon|Launchpad
+target finder pref com.besiktasliseba.macstatusbar finderEnabled 0 1 Finder|Finder
+target showFinder pref com.besiktasliseba.dockmagnification showFinder 0 1 Show Finder in Dock|Finder in the Dock
 target runningIndicator pref com.besiktasliseba.dockrunningindicator enabled 0 1 Show Indicators for Open Apps|the open-app indicators
 
 # The parts in words, for the guard's explanation: title <Image> <where it crashed>|<what was turned off> ("SpringBoard crashed twice in the
@@ -81,9 +83,17 @@ image DockMagnification part map
 file DockMagnification ^Downloads\.m$ showDownloads
 file DockMagnification ^Launchpad\.m$ launchpadIcon
 file DockMagnification ^RunningIndicator\.m$ runningIndicator
+file DockMagnification ^FinderIcon\.m$ showFinder
 
 # ---- the status bar (MacStatusBarCore): by feature; anything else = Stock status bar mode ----
 image MacStatusBarCore stock map
+# Finder (Finder.h, NativeWindow.h, and its glue in StatusBar.x): Finder's own switch -- not the whole status bar. Its SpringBoard pass-through hooks
+# (sendEvent: / pressesBegan:) are transparent like the others'; its icon-tap hook is Finder's.
+sym MacStatusBarCore \$DMNativeHooks\$SpringBoard\$(sendEvent|pressesBegan) transparent
+sym MacStatusBarCore \$DMNativeHooks\$ finder
+sym MacStatusBarCore \$DMNativeSysGestures\$ finder
+sym MacStatusBarCore ^_?DM(Finder|Native|OpenFinder|OpenNativeWindow)[A-Z] finder
+file MacStatusBarCore ^(Finder|NativeWindow)\.h$ finder
 # what Stock status bar mode keeps running (StockBar.h): no switch of its own, so the part
 sym MacStatusBarCore \$(MacContextMenus|MacContextMenus15|PreviewTargetGuard|StockCCTiles)\$ part
 sec MacStatusBarCore Haptic\sTouch\smenus part

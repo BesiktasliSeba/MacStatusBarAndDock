@@ -259,6 +259,30 @@
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
+			<key>id</key>
+			<string>FINDER_GROUP</string>
+			<key>label</key>
+			<string>Finder</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.dockmagnification/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.dockmagnification</string>
+			<key>id</key>
+			<string>FINDER</string>
+			<key>key</key>
+			<string>showFinder</string>
+			<key>label</key>
+			<string>Show Finder in Dock</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
 			<key>label</key>
 			<string>Downloads</string>
 		</dict>

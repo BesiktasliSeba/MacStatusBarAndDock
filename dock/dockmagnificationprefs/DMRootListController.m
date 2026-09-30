@@ -28,13 +28,15 @@ MSBD_LINE_SWITCH_METHODS
 // opens scrolled down to Show Downloads in Dock, with Downloads From (Safari, Other Apps) under it. A switch row is not a page Settings can push,
 // so the scroll is ours; any other path goes on as before.
 - (void)handleURL:(NSDictionary *)url withCompletion:(id)completion {
-	if ([url isKindOfClass:[NSDictionary class]] && [url[@"path"] isEqual:@"DOWNLOADS"]) {
+	// (also Show Finder in Dock: prefs:root=DOCK_MAGNIFICATION&path=FINDER, from the Finder icon's "Remove from Dock" question)
+	NSString *path = [url isKindOfClass:[NSDictionary class]] ? url[@"path"] : nil;
+	if ([path isEqual:@"DOWNLOADS"] || [path isEqual:@"FINDER"]) {
 		__weak DMRootListController *weakSelf = self;
 		void (^scroll)(void) = ^{
 			DMRootListController *me = weakSelf;
 			UITableView *table = [me respondsToSelector:@selector(table)] ? [me table] : nil;
 			if (!me || !table) return;
-			NSInteger i = [me indexOfSpecifierID:@"DOWNLOADS"];
+			NSInteger i = [me indexOfSpecifierID:path];
 			NSIndexPath *ip = i == NSNotFound ? nil : [me indexPathForIndex:i];
 			if (ip && ip.section < table.numberOfSections && ip.row < [table numberOfRowsInSection:ip.section])
 				[table scrollToRowAtIndexPath:ip atScrollPosition:UITableViewScrollPositionTop animated:NO];
@@ -72,6 +74,12 @@ MSBD_LINE_SWITCH_METHODS
 				break;
 			}
 		}
+		// (Finder switched off in Mac Status Bar's settings: no Finder in the Dock, so no row for it)
+		CFPreferencesAppSynchronize(CFSTR("com.besiktasliseba.macstatusbar"));
+		CFPropertyListRef fe = CFPreferencesCopyValue(CFSTR("finderEnabled"), CFSTR("com.besiktasliseba.macstatusbar"), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+		BOOL finderOff = fe && CFGetTypeID(fe) == CFBooleanGetTypeID() && !CFBooleanGetValue(fe);
+		if (fe) CFRelease(fe);
+		if (finderOff) for (PSSpecifier *sp in [specs copy]) if ([sp.identifier isEqual:@"FINDER"] || [sp.identifier isEqual:@"FINDER_GROUP"]) [specs removeObject:sp];
 		_specifiers = [self msbd_hideRowsWhenLineOff:specs offFooter:@"The Dock features are off. Turn them on to change their settings. Takes effect after a respring."];
 	}
 	return _specifiers;

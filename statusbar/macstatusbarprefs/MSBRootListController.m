@@ -555,6 +555,7 @@ static void MSBFitValueLabels(UIView *v) {
 		return;
 	}
 	[super setPreferenceValue:value specifier:specifier];
+	if ([[specifier propertyForKey:@"key"] isEqual:@"finderEnabled"]) { notify_post("com.besiktasliseba.dockmagnification/prefsChanged"); return; }   // (the Dock shows or hides its Finder icon too)
 	// Enable Windowing off = no window engine loads at all (MacSettings' root helper denies them all in Choicy / renames them for iCleaner Pro; on
 	// again, only the chosen one comes back). Its footer says it takes effect after a respring. An engine picked while windowing is off is only
 	// saved; the helper applies it when windowing is on again.

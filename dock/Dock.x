@@ -47,6 +47,7 @@ static CGFloat gMagnification = 1.22;   // scale of the icon at the cursor
 static CGFloat gIconSize = 0.85;        // multiplier on the Dock's own icon size (1.0 = as the system/other tweaks set it)
 static CGFloat gBottomGap = 6.0;        // points between the Dock and the bottom screen edge (stock is 20.5)
 static BOOL    gShowDownloads = YES;    // the Downloads stack in the Dock
+static BOOL    gShowFinder = YES;       // Finder as the Dock's first item, like a Mac (FinderIcon.m)
 static BOOL    gEscapeClosesLibrary = YES;   // pressing Escape closes the App Library
 static BOOL    gLaunchpadIcon = YES;    // the App Library icon drawn like macOS Launchpad
 static BOOL    gLaunchpadClassic = YES; // round rocket (YES) or the silver grid tile (NO)
@@ -166,6 +167,23 @@ static void DMLoadPrefs(void) {
         CFRelease(dl);
     }
     gShowDownloads = downloads;
+    BOOL finder = YES;
+    CFPropertyListRef fi = DMCopyPref(CFSTR("showFinder"));
+    if (fi) { if (CFGetTypeID(fi) == CFBooleanGetTypeID()) finder = CFBooleanGetValue(fi); CFRelease(fi); }
+    {   // (Finder itself lives in Mac Status Bar: no icon while Finder is switched off there, Mac Status Bar is off, or the stock status bar runs --
+        //  the icon did nothing then, review M8)
+        CFStringRef msb = CFSTR("com.besiktasliseba.macstatusbar");
+        CFPreferencesAppSynchronize(msb);
+        const CFStringRef keys[] = { CFSTR("finderEnabled"), CFSTR("tweakEnabled"), CFSTR("stockStatusBar") };
+        const BOOL want[] = { YES, YES, NO }, dflt[] = { YES, YES, NO };
+        for (int k = 0; k < 3; k++) {
+            CFPropertyListRef v = CFPreferencesCopyValue(keys[k], msb, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+            BOOL b = dflt[k];
+            if (v) { if (CFGetTypeID(v) == CFBooleanGetTypeID()) b = CFBooleanGetValue(v); CFRelease(v); }
+            if (b != want[k]) finder = NO;
+        }
+    }
+    gShowFinder = finder;
     BOOL launchpad = YES;
     CFPropertyListRef lp = DMCopyPref(CFSTR("launchpadIcon"));
     if (lp) {
@@ -206,6 +224,9 @@ static void DMLoadPrefs(void) {
 // (rather than scaling icon views) keeps the platter, spacing and hit areas consistent, and the hover magnification is
 // unaffected (it only adds transforms on top).
 static CGRect gDownloadsSlot = {{0, 0}, {0, 0}};   // where the Downloads icon goes, in the platter's coordinates (set by getMetrics)
+static CGRect gFinderSlot = {{0, 0}, {0, 0}};      // where the Finder icon goes: the Dock's first place (set by getMetrics)
+extern void DMFinderIconAttach(UIView *platter, CGRect slot, BOOL show);
+extern UIView *DMFinderIcon(UIView *platter);
 extern void DMDownloadsAttach(UIView *platter, CGRect slot, BOOL show);
 extern UIView *DMDownloadsIcon(UIView *platter);
 
@@ -304,6 +325,7 @@ BOOL DMDockPointerHovering(void) { return gHovering; }
     UIView *platter = nil; @try { platter = [self valueForKey:@"mainPlatterView"]; } @catch (id e) {}   // (KVC on a private class, every layout: guarded)
     if (![platter isKindOfClass:[UIView class]]) platter = nil;
     if (platter) DMDownloadsAttach(platter, gDownloadsSlot, gShowDownloads);
+    if (platter) DMFinderIconAttach(platter, gFinderSlot, gShowFinder && gFinderSlot.size.width > 0);
     DMSecondDividerAttach((UIView *)self);
 }
 - (void)updateDividerVisualStyling {   // (light / dark and material changes restyle the Dock's own divider: the second one follows)
@@ -349,6 +371,26 @@ BOOL DMDockPointerHovering(void) { return gHovering; }
         }
     }
     if (!m || bounds.size.width < 100.0 || m->platter.size.width < 1.0) return;
+    // Finder: the Dock's first place, like a Mac -- one icon + one spacing in front of the apps; everything after it moves over and the platter
+    // grows by as much (worked out first, so Downloads and the fit below see the Dock with Finder in it). The slot is an icon of the Dock's own
+    // size (the App Library icon's, or the first app's), at the apps' start and height.
+    CGRect finderSlot = CGRectZero;
+    {
+        CGSize icon = m->libraryIcon.size.width >= 1.0 ? m->libraryIcon.size : CGSizeMake(m->userList.size.height, m->userList.size.height);
+        if (gShowFinder && icon.width >= 8.0 && m->userList.size.height >= 8.0) {
+            DM_FEATURE_MARK("dock-finder-icon");
+            CGFloat extra = icon.width + m->spacing;
+            // (the app list starts with a leading inset of one spacing before its first icon (iPad 2: list x 0, spacing 10, first app at 10): Finder
+            //  takes the first app's old place, and the apps move on by one icon + one spacing -- at x 0 the gap after Finder was two spacings)
+            finderSlot = CGRectMake(m->userList.origin.x + m->spacing, m->userList.origin.y + (m->userList.size.height - icon.height) / 2.0, icon.width, icon.height);
+            m->userList.origin.x += extra;
+            m->divider.origin.x += extra;
+            m->recentsList.origin.x += extra;
+            m->libraryIcon.origin.x += extra;
+            m->platter.size.width += extra;
+            m->platter.origin.x -= extra / 2.0;
+        }
+    }
     // Downloads stack: one more icon slot right before the App Library icon. The slot is the App Library icon's old spot; the
     // App Library icon and the end of the platter move over by one icon + spacing.
     CGRect slot = m->libraryIcon;
@@ -392,6 +434,7 @@ BOOL DMDockPointerHovering(void) { return gHovering; }
         lastF = f; lastW = bounds.size.width;
         DMLog([NSString stringWithFormat:@"[fit] screen %.0f, dock %.0f + %.0f magnification room at size 1: icon size %.3f (setting %.2f, fits up to %.3f)", bounds.size.width, m->platter.size.width, headroom, f, gIconSize, room]);
     }
+    gFinderSlot = CGRectMake(finderSlot.origin.x * f, finderSlot.origin.y * f, finderSlot.size.width * f, finderSlot.size.height * f);
     if (!downloadsOn && fabs(f - 1.0) < 0.001) { gDownloadsSlot = CGRectZero; gDivider2Rect = CGRectZero; return; }
     CGRect (^scaled)(CGRect) = ^CGRect(CGRect r) { return CGRectMake(r.origin.x * f, r.origin.y * f, r.size.width * f, r.size.height * f); };
     gDownloadsSlot = downloadsOn ? scaled(slot) : CGRectZero;
@@ -789,6 +832,8 @@ static BOOL DMIsDockIcon(UIView *icon) {
         DMCollectIcons(self, objc_getClass("SBIconView"), icons);
         UIView *downloads = DMDownloadsIcon(self);   // the Downloads stack magnifies like the app icons
         if (downloads) [icons addObject:downloads];
+        UIView *finderIcon = DMFinderIcon(self);     // (and Finder)
+        if (finderIcon) [icons addObject:finderIcon];
         gIcons = icons;
         gFramesSinceRefresh = 0;
     }

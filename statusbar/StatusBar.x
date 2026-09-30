@@ -262,6 +262,12 @@ static const void *kWinButtonKey = &kWinButtonKey;
 static const void *kWinPillKey = &kWinPillKey;
 static const void *kAudioLabelKey = &kAudioLabelKey;
 static const void *kAudioButtonKey = &kAudioButtonKey;
+static const void *kFileLabelKey = &kFileLabelKey;   // (File and View: only while our Finder window is the active app, like a Mac's Finder)
+static const void *kFileButtonKey = &kFileButtonKey;
+static const void *kFilePillKey = &kFilePillKey;
+static const void *kViewLabelKey = &kViewLabelKey;
+static const void *kViewButtonKey = &kViewButtonKey;
+static const void *kViewPillKey = &kViewPillKey;
 static const void *kAudioPillKey = &kAudioPillKey;
 static const void *kHoverHandlerKey = &kHoverHandlerKey;
 static const void *kBackgroundKey = &kBackgroundKey;
@@ -366,6 +372,14 @@ static id DMSMFrontStage(void);
 static void DMSMDismissOtherFullScreen(id stage, NSString *keep);
 static BOOL DMSMEngine(void);
 static void DMWatchDockChanges(void);
+@class DMNativeWindow;
+static DMNativeWindow *DMNativeActiveApp(void);           // (NativeWindow.h: a native window acting as the front app, or nil)
+static NSString *DMNativeActiveAppName(void);
+static void DMFinderOpen(NSString *path, BOOL newWindow);  // (Finder.h)
+static void DMNativeTick(void);
+static void DMOpenFinderFileMenu(UIButton *btn);
+static void DMOpenFinderViewMenu(UIButton *btn);
+static void DMOpenNativeWindowMenu(UIButton *btn);
 static void DMSMWatchTurn(void);
 static NSMutableDictionary *gSidePromptCtx;   // the side question being asked (DMPromptForSide)
 static NSMutableDictionary<NSString *, NSString *> *gSMFitSlots;   // (Fit to Window's arrangement for the Stage Manager engine, see DMSMFitTick)
@@ -1757,7 +1771,9 @@ static CGFloat DMDesiredWindowLevel(void) {
 static UIWindow *DMWindowLayer(void) { return DMActiveEngine() == DMEngineAerial ? DMAerialWindow() : DMMilkyWayLayer(); }
 static void DMZetsuApplyLevels(void);
 static CGFloat gLayerLevelWant = -1;   // the level last decided for the window layer (Aerial 5.0's pre-commit check compares with it, DMA5CatchNewStages)
+static void DMNativeApplyLevel(void);
 static void DMApplyWindowLevel(void) {
+    DMNativeApplyLevel();   // (our native windows follow the same rules: under an open menu's window -- called when a menu opens and closes)
     if (DMActiveEngine() == DMEngineZetsu) { DMZetsuApplyLevels(); return; }   // Zetsu: one UIWindow per app, each given its level in turn
     UIWindow *layer = DMWindowLayer();
     if (!layer) return;
@@ -2022,6 +2038,7 @@ static BOOL DMStageManagerHeldNow(void) {
 static void DMSyncWindowsForLibraryBody(void) {
     DM_PERF("stagemgr", DMStageManagerWatch());
     DMWatchDockChanges();   // (the Dock changed for good: windows follow its new height, every engine)
+    DMNativeTick();   // (native windows: their level follows the engine's windows; kept on screen after a turn)
     DMSMWatchTurn();   // (Stage Manager engine: windows keep their layouts, and stay reachable, when the iPad turns)
     DM_PERF("switcher", DMWatchSwitcher());
     DM_PERF("lock", DMWatchLock());
@@ -4494,7 +4511,8 @@ static void DMSettleLockScreenClock(void) {
 // Lock Screen / Sleep). Unlocking brings them back with the normal layout.
 static void DMHideAppBarItemsNow(void) {
     static const void *keys[] = { &kLightsKey, &kAppLabelKey, &kAppButtonKey, &kAppPillKey, &kEditLabelKey, &kEditButtonKey, &kEditPillKey,
-        &kGoLabelKey, &kGoButtonKey, &kGoPillKey, &kWinLabelKey, &kWinButtonKey, &kWinPillKey, &kAudioLabelKey, &kAudioButtonKey, &kAudioPillKey };
+        &kGoLabelKey, &kGoButtonKey, &kGoPillKey, &kWinLabelKey, &kWinButtonKey, &kWinPillKey, &kAudioLabelKey, &kAudioButtonKey, &kAudioPillKey,
+        &kFileLabelKey, &kFileButtonKey, &kFilePillKey, &kViewLabelKey, &kViewButtonKey, &kViewPillKey };
     for (UIView *fg in gCopies.allObjects) {
         for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) ((UIView *)objc_getAssociatedObject(fg, *(const void **)keys[i])).hidden = YES;
         [fg setNeedsLayout];
@@ -5533,7 +5551,9 @@ static void DMOpenFullScreen(NSString *bundleID) {
 }
 
 static SBApplication *DMActiveApp(void);
-static NSString *DMActiveBundleForLights(void) { return [DMActiveApp() bundleIdentifier]; }
+// (a native window that is active is the active window: every app window's lights go grey -- two windows showed colored lights, iPad 2 30 Sep)
+static NSString *DMNativeLightsToken(void);   // (NativeWindow.h)
+static NSString *DMActiveBundleForLights(void) { return DMNativeLightsToken() ?: [DMActiveApp() bundleIdentifier]; }
 static BOOL DMSMWindowAction(NSString *bundleID, NSString *name);   // (Stage Manager engine, below)
 static BOOL DMSMToggleZoom(NSString *bundle);
 static void DMLightAction(NSInteger which) {
@@ -7974,7 +7994,10 @@ static void DMWatchSofaScore(void) {   // every 0.2 s
         // layout, since only windows were watched). SofaScore in front, full screen, still phone for 0.8 s -> quit and reopened full screen; with no
         // window size published MacAppBridge decides from the full-screen scene (iPad).
         CFTimeInterval fullPhoneSince = gSofaFullPhoneSince;
-        BOOL fullPhone = [[DMFrontApp() bundleIdentifier] isEqualToString:kSofaBundle] && !DMHasWindowFor(kSofaBundle) && DMSofaLayout() == 1 && DMScreenOnAndUnlocked();
+        // (Stage Manager engine: DMHasWindowFor knows only Aerial / Zetsu / MilkyWay windows, so a SofaScore WINDOW looked full screen here and was
+        //  force-quit and reopened over and over -- it seemed to crash at launch, iPad 2 30 Sep. Stage Manager itself says which app is full screen.)
+        BOOL fullScreenNow = DMSMEngine() ? [DMSMFullScreenBundle() isEqualToString:kSofaBundle] : !DMHasWindowFor(kSofaBundle);
+        BOOL fullPhone = [[DMFrontApp() bundleIdentifier] isEqualToString:kSofaBundle] && fullScreenNow && DMSofaLayout() == 1 && DMScreenOnAndUnlocked();
         if (!fullPhone) { gSofaFullPhoneSince = 0; return; }
         if (!fullPhoneSince) { gSofaFullPhoneSince = now; return; }
         if (now - fullPhoneSince < 0.8 || now - gSofaRelaunchAt < 8.0) return;
@@ -10470,6 +10493,9 @@ static void DMRemoveOverlayNow(void) {
     DMTodayGiveBack(@"another menu or dialog");
     UIView *o = gOverlay;
     if (o) DMLog(@"[overlay] removed immediately");
+#if DEBUG
+    if (o && DMTestFlag("/tmp/msb-grwatch")) { NSArray<NSNumber *> *ret = [NSThread callStackReturnAddresses]; for (NSUInteger i = 1; i < ret.count && i < 8; i++) DMSymbolize(ret[i].unsignedLongLongValue); }
+#endif
     gOverlay = nil;
     gPill.hidden = YES;
     [o removeFromSuperview];
@@ -12435,6 +12461,7 @@ static void DMSysTap(CGPoint p) {
     DMSysTouch(p, DMTouchDown);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(gSysTapHoldMs * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ DMSysTouch(p, DMTouchUp); DMSysTouchSecondUp(p); });
 }
+static double gSysDragEndHoldMs = 0;   // (dragsys_'s 7th value: the finger rests at the end before it lifts -- spring-loaded folders, hovering)
 static void DMSysDrag(CGPoint from, CGPoint to, double ms, double holdMs) {   // holdMs: the finger rests first (a table's grab handle, a long press)
     int steps = MAX(4, (int)(ms / 16.0));
     DMLog([NSString stringWithFormat:@"[touchsys] drag (%.0f,%.0f) -> (%.0f,%.0f) in %.0f ms after a %.0f ms hold", from.x, from.y, to.x, to.y, ms, holdMs]);
@@ -12443,7 +12470,10 @@ static void DMSysDrag(CGPoint from, CGPoint to, double ms, double holdMs) {   //
         CGPoint q = CGPointMake(from.x + (to.x - from.x) * i / steps, from.y + (to.y - from.y) * i / steps);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((holdMs + ms / steps * i) * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ DMSysTouch(q, DMTouchMove); });
     }
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((holdMs + ms + 30) * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ DMSysTouch(to, DMTouchUp); DMSysTouchSecondUp(to); });
+    double endHold = gSysDragEndHoldMs; gSysDragEndHoldMs = 0;
+    for (double t = 100; t < endHold; t += 100)   // (resting: small still moves keep the touch alive, as a finger's do)
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((holdMs + ms + t) * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ DMSysTouch(to, DMTouchMove); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((holdMs + ms + 30 + endHold) * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ DMSysTouch(to, DMTouchUp); DMSysTouchSecondUp(to); });
 }
 
 #define HID_KEY_A 0x04
@@ -12597,7 +12627,121 @@ static void DMPresentMenu(UIButton *btn, const void *labelKey, const void *pillK
                                 (long)o.traitCollection.userInterfaceStyle]);
 }
 
+static BOOL gNativeAway = NO;   // (the native windows are faded out for the App Library / App Switcher, DMNativeTick)
+// Finder's switch (com.besiktasliseba.macstatusbar finderEnabled, on unless set; Settings > Mac Status Bar > Finder): DMFinderApplyPref. Off -- by
+// the user, or by the crash guard after a crash in Finder's code (tools/crashmap-rules.txt, target finder) --: no Finder windows, and Finder's rows
+// leave the menus; its hooks are only installed once it is on.
+static BOOL gFinderOn = NO;
+#include "NativeWindow.h"   // (our own Mac windows in SpringBoard, 2026-09-30)
+#include "Finder.h"         // (the first one: Finder)
+static void DMNativeMenuBarChanged(void) { for (UIView *fg in gCopies.allObjects) [fg setNeedsLayout]; }
+static DMRow *DMFinderRow(NSString *title, NSString *keys, BOOL enabled, void (^h)(DMFinderWindow *f)) {
+    DMRow *r = [[DMRow alloc] initWithTitle:title enabled:enabled handler:DMCloseThen(^{ DMFinderWindow *f = DMFinderFront(); if (f) h(f); })];
+    r.hint = keys;
+    return r;
+}
+static void DMOpenFinderFileMenu(UIButton *btn) {
+    if (DMTitleTapWithMenuOpen(btn)) return;
+    DMFinderWindow *f = DMFinderFront(); BOOL sel = [f dm_selectedItem] != nil;
+    BOOL change = sel && [f dm_canChangeSelection], here = f && [f dm_canWriteHere], inTrash = f && DMFinderInOwnTrash(f.path);   // (read-only places: greyed, as on a Mac)
+    NSArray *items = @[
+        [[DMRow alloc] initWithTitle:@"New Finder Window" enabled:YES handler:DMCloseThen(^{ DMFinderOpen(nil, YES); })],
+        DMFinderRow(@"New Folder", @"⇧⌘N", here, ^(DMFinderWindow *w) { [w dm_newFolder]; }),
+        [NSNull null],
+        DMFinderRow(@"Open", @"⌘O", sel, ^(DMFinderWindow *w) { [w dm_openSelected]; }),
+        DMFinderRow(@"Quick Look", @"Space", sel, ^(DMFinderWindow *w) { [w dm_quickLookSelected]; }),
+        DMFinderRow(@"Get Info", @"⌘I", sel, ^(DMFinderWindow *w) { [w dm_infoSelected]; }),
+        DMFinderRow(@"Rename", @"\u21A9\uFE0E", change && [f dm_selectedItems].count == 1, ^(DMFinderWindow *w) { [w dm_renameSelected]; }),
+        DMFinderRow(@"Duplicate", @"⌘D", sel && here, ^(DMFinderWindow *w) { [w dm_duplicateSelected]; }),
+        [NSNull null],
+        inTrash ? DMFinderRow(@"Put Back", @"⌘⌫", sel, ^(DMFinderWindow *w) { [w dm_trashSelected]; })
+                : DMFinderRow(@"Move to Trash", @"⌘⌫", change, ^(DMFinderWindow *w) { [w dm_trashSelected]; }),
+        [NSNull null],
+        DMFinderRow(@"Close Window", @"⌘W", f != nil, ^(DMFinderWindow *w) { [w close]; }),
+    ];
+    DMPresentMenu(btn, kFileLabelKey, kFilePillKey, items);
+}
+// The Window menu while a native window is active: Minimize / Zoom, the same layouts as for app windows (placed in the desktop above the Dock),
+// and the native windows by name -- a minimized one comes back from here.
+static void DMOpenNativeWindowMenu(UIButton *btn) {
+    DMNativeWindow *w = DMNativeActiveApp();
+    NSMutableArray *items = [NSMutableArray array];
+    DMRow *(^R)(NSString *, NSString *, dispatch_block_t) = ^DMRow *(NSString *t, NSString *k, dispatch_block_t h) { DMRow *r = [[DMRow alloc] initWithTitle:t enabled:w != nil handler:DMCloseThen(h)]; r.hint = k; return r; };
+    [items addObject:R(@"Minimize", @"⌘M", ^{ [w minimize]; })];
+    [items addObject:R(@"Zoom", nil, ^{ [w zoom]; })];
+    [items addObject:[NSNull null]];
+    NSArray *sections = @[ @[ @[@"Fill Screen", @"fill"], @[@"Center", @"center"] ],
+                           @[ @[@"Left Half", @"left"], @[@"Right Half", @"right"], @[@"Top Half", @"top"], @[@"Bottom Half", @"bottom"] ],
+                           @[ @[@"Top Left", @"topleft"], @[@"Top Right", @"topright"], @[@"Bottom Left", @"bottomleft"], @[@"Bottom Right", @"bottomright"] ] ];
+    for (NSArray *sec in sections) {
+        for (NSArray *e in sec) {
+            NSString *name = e[1];
+            [items addObject:R(e[0], nil, ^{
+                CGRect f = DMLayoutFrameInArea(name, DMNativeDesktop(), [UIScreen mainScreen].bounds.size);
+                if (CGRectIsNull(f) || CGRectIsEmpty(f)) return;
+                w.restoreFrame = CGRectNull;
+                w.layoutName = [name isEqualToString:@"center"] ? nil : name;   // (kept for a turn: DMNativeRelayoutForTurn)
+                MSBAnimate(0.2, 0, 0, UIViewAnimationOptionCurveEaseOut, ^{ w.frame = f; }, nil);
+            })];
+        }
+        [items addObject:[NSNull null]];
+    }
+    [items addObject:R(@"Bring All to Front", nil, ^{ for (DMNativeWindow *x in [gNativeWindows copy]) if (!x.hidden) [x.superview bringSubviewToFront:x]; [w activate]; })];
+    [items addObject:[NSNull null]];
+    for (DMNativeWindow *x in [gNativeWindows copy]) {
+        DMRow *r = [[DMRow alloc] initWithTitle:x.title ?: @"Finder" enabled:YES handler:DMCloseThen(^{ [x show]; })];
+        r.checked = x == w;
+        [items addObject:r];
+    }
+    DMPresentMenu(btn, kWinLabelKey, kWinPillKey, items);
+}
+static void DMOpenFinderViewMenu(UIButton *btn) {
+    if (DMTitleTapWithMenuOpen(btn)) return;
+    DMFinderWindow *f = DMFinderFront();
+    NSArray *items = @[
+        DMFinderRow(@"as Icons", @"⌘1", f != nil, ^(DMFinderWindow *w) { [w dm_setIcons:YES]; }),
+        DMFinderRow(@"as List", @"⌘2", f != nil, ^(DMFinderWindow *w) { [w dm_setIcons:NO]; }),
+        [NSNull null],
+        DMFinderRow([f dm_showsHidden] ? @"Hide Hidden Files" : @"Show Hidden Files", @"⇧⌘.", f != nil, ^(DMFinderWindow *w) { [w dm_toggleHidden]; }),
+    ];
+    DMPresentMenu(btn, kViewLabelKey, kViewPillKey, items);
+}
+static NSString *DMNativeActiveAppName(void) { return DMNativeActiveApp().appName; }
+// (every tick: the native windows' level follows the engine's window layer, which moves; after a turn they are kept inside the new desktop)
+static void DMNativeTick(void) {
+    if (gNativeFocusLock && !DMNativeActiveApp()) DMNativeFocus(NO);   // (safety net: the keyboard lock is only ever held while a native window is active)
+    if (!gNativeLayer || gNativeLayer.hidden) return;
+    {   // (the App Library, a Home Screen icon menu or the App Switcher takes over the screen: the native windows fade out of its way, like the
+        //  engines' windows (DMSyncWindowFade) -- Finder stayed over the App Library, 30 Sep -- and come back when it is gone)
+        BOOL away = DMLibraryVisible() || gHomeMenuOpen || DMSwitcherVisible();
+        if (away != gNativeAway) {
+            gNativeAway = away;
+            if (away && gNativeActive) DMNativeSetActive(nil);
+            gNativeRotator.userInteractionEnabled = !away;
+            [UIView animateWithDuration:away ? 0.16 : 0.22 delay:0 options:UIViewAnimationOptionCurveEaseInOut | UIViewAnimationOptionBeginFromCurrentState
+                             animations:^{ gNativeRotator.alpha = away ? 0.0 : 1.0; } completion:nil];
+            DMLog([NSString stringWithFormat:@"[native] %@", away ? @"App Library / App Switcher up: native windows faded out" : @"back: native windows shown"]);
+        }
+    }
+    // (an app came to the front some other way than a touch -- opened from the Dock, a menu, a link --: the native windows step back, as on a Mac.
+    //  Only an app OTHER than the one in front when the native window became active counts: the watcher's first look took the app that was
+    //  already in front for a new one and sent Finder back 55 ms after it opened -- M1 30 Sep 13:33; a front app flickering through nil and back
+    //  (the Dock, the App Switcher) is no change either)
+    SBApplication *fa = DMActiveApp();
+    NSString *front = [fa bundleIdentifier];
+    if (gNativeActive && front.length && gNativeFrontAtActivation && ![front isEqualToString:gNativeFrontAtActivation] && CACurrentMediaTime() - gNativeActivatedAt > 0.4) {
+        DMLog([NSString stringWithFormat:@"[native] %@ came to the front (was %@): native windows inactive", front, gNativeFrontAtActivation]);
+        DMNativeSetActive(nil);
+    }
+    static CGSize last;
+    CGSize now = [UIScreen mainScreen].bounds.size;
+    if (!CGSizeEqualToSize(now, last)) { last = now; [gNativeLayer setNeedsLayout]; }   // (backup: the layer's own layout pass does the turn)
+    DMNativeApplyLevel();
+}
 static void DMOpenFinderMenu(UIButton *btn) {
+    NSMutableArray *finder = [NSMutableArray array];
+    if (gFinderOn) [finder addObject:[[DMRow alloc] initWithTitle:@"New Finder Window" enabled:YES handler:DMCloseThen(^{ DMFinderOpen(nil, YES); })]];
+    if (DMFinderFront()) [finder addObject:[[DMRow alloc] initWithTitle:@"Empty Trash…" enabled:YES handler:DMCloseThen(^{ DMFinderWindow *f = DMFinderFront(); [f go:kFinderTrash]; [f emptyTrash]; })]];
     NSMutableArray *apps = [NSMutableArray array];
     for (NSString *bid in @[@"com.tigisoftware.Filza", @"com.apple.DocumentsApp"]) {
         if (!DMAppInstalled(bid)) continue;   // only what is really on this iPad
@@ -12613,7 +12757,9 @@ static void DMOpenFinderMenu(UIButton *btn) {
         [jailbreak addObject:[[DMRow alloc] initWithTitle:DMCall(DMProxyForBundle(@"com.opa334.TrollStore"), @"localizedName") enabled:YES
                                                   handler:DMCloseThen(^{ DMOpenApp(@"com.opa334.TrollStore"); })]];
     }
-    NSMutableArray *items = [NSMutableArray arrayWithArray:apps];
+    NSMutableArray *items = [NSMutableArray arrayWithArray:finder];
+    if (apps.count || jailbreak.count) [items addObject:[NSNull null]];
+    [items addObjectsFromArray:apps];
     if (apps.count && jailbreak.count) [items addObject:[NSNull null]];
     [items addObjectsFromArray:jailbreak];
     if (!items.count) [items addObject:[[DMRow alloc] initWithTitle:@"Nothing to open" enabled:NO handler:nil]];
@@ -12628,8 +12774,24 @@ static DMRow *DMShortcutRow(NSString *title, NSString *hint, BOOL enabled, uint3
     return row;
 }
 
+// The Edit menu while a Finder window is active: Finder's own Undo, Copy and Paste of files (a Mac Finder's Edit menu), not the app behind it.
+static void DMOpenFinderEditMenu(UIButton *btn, DMFinderWindow *f) {
+    NSArray *items = @[
+        DMFinderRow([f dm_undoTitle], @"⌘Z", [f dm_canUndo], ^(DMFinderWindow *w) { [w dm_undo]; }),
+        [[DMRow alloc] initWithTitle:@"Redo" enabled:NO handler:nil],
+        [NSNull null],
+        [[DMRow alloc] initWithTitle:@"Cut" enabled:NO handler:nil],
+        DMFinderRow(@"Copy", @"⌘C", [f dm_selectedItem] != nil, ^(DMFinderWindow *w) { [w dm_keyCopy:nil]; }),
+        DMFinderRow(gFinderClipboard.count > 1 ? [NSString stringWithFormat:@"Paste %lu Items", (unsigned long)gFinderClipboard.count] : @"Paste Item", @"⌘V", gFinderClipboard.count && [f dm_canWriteHere], ^(DMFinderWindow *w) { [w dm_keyPaste:nil]; }),
+        [NSNull null],
+        DMFinderRow(@"Find…", @"⌘F", YES, ^(DMFinderWindow *w) { [w dm_keyFind:nil]; }),
+    ];
+    DMPresentMenu(btn, kEditLabelKey, kEditPillKey, items);
+    DMLog(@"[edit] Finder's Edit menu opened");
+}
 static void DMOpenEditMenu(UIButton *btn) {
     if (DMTitleTapWithMenuOpen(btn)) return;
+    { DMNativeWindow *nw = DMNativeActiveApp(); if ([nw isKindOfClass:[DMFinderWindow class]]) { DMOpenFinderEditMenu(btn, (DMFinderWindow *)nw); return; } }
     UIPasteboard *pb = [UIPasteboard generalPasteboard];
     BOOL hasClip = pb.numberOfItems > 0;
     NSString *activeBundle = [DMActiveApp() bundleIdentifier];
@@ -12713,12 +12875,28 @@ static void DMOpenStatusBarSettings(uint32_t target) {
 // "Go": Settings pages, then the apps chosen in Settings (installed ones; Reynard not installed: GET), then "Edit Go Menu…".
 static void DMOpenGoMenu(UIButton *btn) {
     if (DMTitleTapWithMenuOpen(btn)) return;
-    NSMutableArray *items = [NSMutableArray arrayWithObjects:
+    NSMutableArray *places = [NSMutableArray array];   // (Finder's places, as on a Mac's Go menu: each opens in the front Finder window)
+    for (NSDictionary *sec in gFinderOn ? DMFinderSidebar() : @[]) for (NSDictionary *r in sec[@"rows"]) {   // (Finder switched off: none)
+        if ([r[@"t"] isEqualToString:@"Trash"] || [r[@"t"] isEqualToString:@"Jailbreak"]) continue;
+        NSString *p = r[@"p"];
+        [places addObject:[[DMRow alloc] initWithTitle:r[@"t"] enabled:YES handler:DMCloseThen(^{ DMFinderOpen(p, NO); })]];
+    }
+    NSMutableArray *items = [NSMutableArray array];
+    if (DMNativeActiveApp()) {
+        [items addObject:DMFinderRow(@"Back", @"⌘[", YES, ^(DMFinderWindow *w) { [w goBack]; })];
+        [items addObject:DMFinderRow(@"Forward", @"⌘]", YES, ^(DMFinderWindow *w) { [w goForward]; })];
+        [items addObject:DMFinderRow(@"Enclosing Folder", @"⌘↑", YES, ^(DMFinderWindow *w) { [w goUp]; })];
+        [items addObject:[NSNull null]];
+        [items addObject:DMFinderRow(@"Go to Folder…", @"⇧⌘G", YES, ^(DMFinderWindow *w) { [w dm_goToFolder]; })];
+        [items addObject:[NSNull null]];
+    }
+    [items addObjectsFromArray:places];
+    if (places.count) [items addObject:[NSNull null]];
+    [items addObjectsFromArray:@[
         [[DMRow alloc] initWithTitle:@"Battery" enabled:YES
                              handler:DMCloseThen(^{ DMOpenURL(@"prefs:root=BATTERY_USAGE", @"go: battery"); })],
         [[DMRow alloc] initWithTitle:@"iPad Storage" enabled:YES
-                             handler:DMCloseThen(^{ DMOpenURL(@"prefs:root=General&path=STORAGE_MGMT", @"go: storage"); })],
-        nil];
+                             handler:DMCloseThen(^{ DMOpenURL(@"prefs:root=General&path=STORAGE_MGMT", @"go: storage"); })]]];
     NSMutableArray *apps = [NSMutableArray array];
     NSArray<NSString *> *list = DMGoAppBundleIDs();
     for (NSString *entry in list) {
@@ -13167,6 +13345,7 @@ static void DMMinimizeAllWindows(void) {
 }
 static void DMOpenWindowMenu(UIButton *btn) {
     if (DMTitleTapWithMenuOpen(btn)) return;
+    if (DMNativeActiveApp()) { DMOpenNativeWindowMenu(btn); return; }   // (our Finder window in front: the Window menu is about it)
     BOOL enabled = (DMActiveEngine() != DMEngineNone || DMSMEngine()) && DMActiveApp() != nil;
     if (enabled && DMAppNeedsFullScreen([DMActiveApp() bundleIdentifier])) enabled = NO;   // a full-screen-only app: its window layouts are greyed out
     NSArray *sections = @[
@@ -13928,8 +14107,8 @@ static void DMOpenAppMenu(UIButton *btn) {
     UIView *host = DMHostFor(fg);
     if (!host) return;
     if (DMTitleTapWithMenuOpen(btn)) return;
-    SBApplication *app = DMActiveApp();
-    if (!app) { DMOpenFinderMenu(btn); return; }   // no app open: this title is "Finder"
+    SBApplication *app = DMNativeActiveApp() ? nil : DMActiveApp();
+    if (!app) { DMOpenFinderMenu(btn); return; }   // no app open (or our Finder window in front): this title is "Finder"
     NSString *name = [app displayName] ?: [app bundleIdentifier];
 
     NSMutableArray *items = [NSMutableArray arrayWithObjects:
@@ -13987,6 +14166,8 @@ static void DMOpenMenuForButton(UIButton *b) {
     else if (b == objc_getAssociatedObject(fg, kGoButtonKey)) DMOpenGoMenu(b);
     else if (b == objc_getAssociatedObject(fg, kWinButtonKey)) DMOpenWindowMenu(b);
     else if (b == objc_getAssociatedObject(fg, kAudioButtonKey)) DMOpenAudioMenu(b);
+    else if (b == objc_getAssociatedObject(fg, kFileButtonKey)) DMOpenFinderFileMenu(b);
+    else if (b == objc_getAssociatedObject(fg, kViewButtonKey)) DMOpenFinderViewMenu(b);
 }
 
 // A finger (or a click) on another title while a menu is open opens that title's menu at once, like macOS; before, the catch-all took the tap and
@@ -14002,7 +14183,7 @@ static void DMOpenMenuForButton(UIButton *b) {
 - (UIButton *)titleAt:(CGPoint)p {
     UIView *fg = self.fg, *host = self.host;
     if (!fg || !host) return nil;
-    const void *keys[] = { kButtonKey, kAppButtonKey, kEditButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, kSSHButtonKey, kVPNButtonKey };
+    const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, kSSHButtonKey, kVPNButtonKey };
     for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
         UIButton *b = objc_getAssociatedObject(fg, keys[i]);
         if (!b || b.hidden || b == self.current || b.frame.size.width < 1.0) continue;
@@ -14062,7 +14243,7 @@ static void DMAttachMenuHover(UIControl *overlay, UIView *fg, UIView *host, UIBu
         UIView *fg = weakFg, *host = weakHost;
         if (!fg || !host) return;
         CGPoint p = [g locationInView:host];
-        const void *keys[] = { kButtonKey, kAppButtonKey, kEditButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey };
+        const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey };
         for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
             UIButton *b = objc_getAssociatedObject(fg, keys[i]);
             if (!b || b.hidden || b == weakCurrent) continue;
@@ -16299,7 +16480,7 @@ static void DMStockVPNInit(void) {
     if (fg.bounds.size.width < 300.0) {
         // A copy that has collapsed (an app card being dismissed, say) must not leave our
         // views behind at their old positions, or a stale app name lingers that nobody updates.
-        const void *keys[] = { kSSHIconKey, kSSHButtonKey, kVPNIconKey, kVPNButtonKey, kMuteIconKey, kLogoKey, kButtonKey, kPillKey, kAppLabelKey, kAppButtonKey, kAppPillKey, kDateProxyKey, kClockButtonKey, kSpotIconKey, kSpotButtonKey, kEditLabelKey, kEditButtonKey, kEditPillKey, kGoLabelKey, kGoButtonKey, kGoPillKey, kWinLabelKey, kWinButtonKey, kWinPillKey, kAudioLabelKey, kAudioButtonKey, kAudioPillKey, kBackgroundKey, kLightsKey };
+        const void *keys[] = { kSSHIconKey, kSSHButtonKey, kVPNIconKey, kVPNButtonKey, kMuteIconKey, kLogoKey, kButtonKey, kPillKey, kAppLabelKey, kAppButtonKey, kAppPillKey, kDateProxyKey, kClockButtonKey, kSpotIconKey, kSpotButtonKey, kEditLabelKey, kEditButtonKey, kEditPillKey, kGoLabelKey, kGoButtonKey, kGoPillKey, kWinLabelKey, kWinButtonKey, kWinPillKey, kAudioLabelKey, kAudioButtonKey, kAudioPillKey, kBackgroundKey, kLightsKey , kFileLabelKey, kFileButtonKey, kFilePillKey, kViewLabelKey, kViewButtonKey, kViewPillKey };
         for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
             ((UIView *)objc_getAssociatedObject(fg, keys[i])).hidden = YES;
         return;
@@ -16408,9 +16589,9 @@ static void DMStockVPNInit(void) {
     if (!gCopies) gCopies = [NSHashTable weakObjectsHashTable];
     [gCopies addObject:fg];
     DMStartClockBalanceIfNeeded();   // a second status bar copy has just appeared (an app opening over another)
-    SBApplication *frontApp = DMActiveApp();   // whichever app is frontmost, windowed or full screen
+    SBApplication *frontApp = DMNativeActiveApp() ? nil : DMActiveApp();   // whichever app is frontmost, windowed or full screen (a native window: none)
     BOOL activeIsWindow = DMWindowsOwnStatusBar();
-    NSString *appName = frontApp ? ([frontApp displayName] ?: [frontApp bundleIdentifier]) : @"Finder";
+    NSString *appName = frontApp ? ([frontApp displayName] ?: [frontApp bundleIdentifier]) : (DMNativeActiveAppName() ?: @"Finder");
 
     // ---- traffic lights, right after the logo, while an app is full screen; the titles move right to make room ----
     CGFloat titlesStart = CGRectGetMaxX(logo.frame) + kAppGap;
@@ -16450,11 +16631,25 @@ static void DMStockVPNInit(void) {
     CGFloat appRight = DMLayoutTitle(fg, kAppLabelKey, kAppButtonKey, kAppPillKey, appName, UIFontWeightBold, timeFont, timeColor,
                                      timeCentre.y, titlesStart, titleMaxRight,
                                      ^(UIButton *b) { DMLog(@"[appbutton] tapped"); DMOpenAppMenu(b); });
+    BOOL finderTitles = DMNativeActiveApp() != nil && appRight > 0;   // (our Finder in front: File and View too, like a Mac's Finder)
+    if (!finderTitles) for (NSValue *k in @[[NSValue valueWithPointer:kFileLabelKey], [NSValue valueWithPointer:kFileButtonKey], [NSValue valueWithPointer:kViewLabelKey], [NSValue valueWithPointer:kViewButtonKey]])
+        ((UIView *)objc_getAssociatedObject(fg, k.pointerValue)).hidden = YES;
     if (appRight > 0) {
         leftEnd = appRight;
+        CGFloat editStart = appRight + kTitleGap;
+        if (finderTitles) {
+            CGFloat fileRight = DMLayoutTitle(fg, kFileLabelKey, kFileButtonKey, kFilePillKey, @"File", UIFontWeightRegular, timeFont, timeColor,
+                                              timeCentre.y, appRight + kTitleGap, titleMaxRight, ^(UIButton *b) { DMOpenFinderFileMenu(b); });
+            if (fileRight > 0) editStart = fileRight + kTitleGap;
+        }
         CGFloat editRight = DMLayoutTitle(fg, kEditLabelKey, kEditButtonKey, kEditPillKey, @"Edit", UIFontWeightRegular, timeFont, timeColor,
-                                          timeCentre.y, appRight + kTitleGap, titleMaxRight,
+                                          timeCentre.y, editStart, titleMaxRight,
                                           ^(UIButton *b) { DMLog(@"[editbutton] tapped"); DMOpenEditMenu(b); });
+        if (editRight > 0 && finderTitles) {
+            CGFloat viewRight = DMLayoutTitle(fg, kViewLabelKey, kViewButtonKey, kViewPillKey, @"View", UIFontWeightRegular, timeFont, timeColor,
+                                              timeCentre.y, editRight + kTitleGap, titleMaxRight, ^(UIButton *b) { DMOpenFinderViewMenu(b); });
+            if (viewRight > 0) editRight = viewRight;
+        }
         if (editRight > 0) {
             leftEnd = editRight;
             CGFloat goRight = DMLayoutTitle(fg, kGoLabelKey, kGoButtonKey, kGoPillKey, @"Go", UIFontWeightRegular, timeFont, timeColor,
@@ -16463,7 +16658,7 @@ static void DMStockVPNInit(void) {
             if (goRight > 0) {
                 leftEnd = goRight;
                 CGFloat audioStart = goRight + kTitleGap;   // Window is only shown while windowing is active; Audio always follows whichever of the two actually laid out
-                if (DMActiveEngine() != DMEngineNone || DMSMEngine()) {   // (Stage Manager as the engine is windowing too, with no engine library)
+                if (DMActiveEngine() != DMEngineNone || DMSMEngine() || DMNativeActiveApp()) {   // (Stage Manager as the engine is windowing too, with no engine library; our native windows always are)
                     CGFloat winRight = DMLayoutTitle(fg, kWinLabelKey, kWinButtonKey, kWinPillKey, @"Window", UIFontWeightRegular, timeFont, timeColor,
                                                      timeCentre.y, goRight + kTitleGap, titleMaxRight,
                                                      ^(UIButton *b) { DMLog(@"[winbutton] tapped"); DMOpenWindowMenu(b); });
@@ -16819,6 +17014,8 @@ static void DMStockVPNInit(void) {
     ((UILabel *)objc_getAssociatedObject(fg, kAppLabelKey)).textColor = final;
     ((UILabel *)objc_getAssociatedObject(fg, kEditLabelKey)).textColor = final;
     ((UILabel *)objc_getAssociatedObject(fg, kGoLabelKey)).textColor = final;
+    ((UILabel *)objc_getAssociatedObject(fg, kFileLabelKey)).textColor = final;
+    ((UILabel *)objc_getAssociatedObject(fg, kViewLabelKey)).textColor = final;
     ((UILabel *)objc_getAssociatedObject(fg, kWinLabelKey)).textColor = final;
     ((UILabel *)objc_getAssociatedObject(fg, kDateProxyKey)).textColor = final;
     ((UIImageView *)objc_getAssociatedObject(fg, kSpotIconKey)).tintColor = final;
@@ -16982,7 +17179,9 @@ static BOOL DMPointOnMultitaskingDots(UIView *fromView, CGPoint point) {
 
 // A touch on the multitasking dots (when shown) goes to them: the app's status bar sits above them in the same switcher page.
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    if (point.y >= 0.0 && point.y < 40.0 && !gHideMultitaskingDots && DMPointOnMultitaskingDots((UIView *)self, point)) {
+    // (not while a native window is active: the menu bar is its menu bar then, and the dots belong to an app window behind it -- "Window" and the
+    //  Wi-Fi icon over an app's dots did nothing with Finder in front, iPad 2 30 Sep)
+    if (point.y >= 0.0 && point.y < 40.0 && !gHideMultitaskingDots && !DMNativeActiveApp() && DMPointOnMultitaskingDots((UIView *)self, point)) {
         static int n = 0;
         if (n++ < 20) DMLog([NSString stringWithFormat:@"[dots] touch at %@ left to the multitasking dots", NSStringFromCGPoint(point)]);
         return nil;
@@ -17427,6 +17626,12 @@ static void DMCornerWatch(UIEvent *event) {
             NSStringFromClass([t.window class]), NSStringFromClass([t.view class])];
         for (UIGestureRecognizer *g in t.gestureRecognizers) [m appendFormat:@" %@(%ld)", NSStringFromClass([g class]), (long)g.state];
         DMLog(m);
+        // (the system gesture window's recognisers: who they belong to -- delegate, name, action -- for the Stage Manager conflicts)
+        if (t.phase == UITouchPhaseBegan && [NSStringFromClass([t.window class]) isEqualToString:@"_UISystemGestureWindow"] && DMTestFlag("/tmp/msb-grwatch"))
+            for (UIGestureRecognizer *g in t.gestureRecognizers) {
+                NSString *d = [g description]; NSRange r = [d rangeOfString:@"target="];
+                DMLog([NSString stringWithFormat:@"[grwatch] %@ name %@ delegate %@ view %@ %@", NSStringFromClass([g class]), g.name, NSStringFromClass([(id)g.delegate class]), NSStringFromClass([g.view class]), r.location != NSNotFound ? [d substringFromIndex:r.location] : @""]);
+            }
     }
 }
 %end
@@ -18373,10 +18578,17 @@ static void DMRunTrigger(NSString *cmd) {
     }
     else if ([cmd isEqualToString:@"tvshot"]) DMCaptureExternalDisplay();   // tvshot: what the external display (TV) shows -> /tmp/macstatusbar-tv.png (half size)
     else if ([cmd isEqualToString:@"rawshot"]) {   // the framebuffer as it really is (UIKit's own screen capture, native orientation) -> /tmp/macstatusbar-raw.png
-        UIImage *(*grab)(void) = (UIImage *(*)(void))dlsym(RTLD_DEFAULT, "_UICreateScreenUIImage");
-        UIImage *img = grab ? grab() : nil;
-        BOOL ok = img && [UIImagePNGRepresentation(img) writeToFile:@"/tmp/macstatusbar-raw.png" atomically:NO];
-        DMLog([NSString stringWithFormat:@"[debug] raw screen capture %@ (%@)", ok ? @"written" : @"FAILED", img ? NSStringFromCGSize(img.size) : @"no image"]);
+        // (_UICreateScreenUIImage is a Create function: the caller owns the image. Called through a plain UIImage-returning pointer, ARC retained it
+        //  once more and it was never freed -- about 15 MB of SpringBoard memory per capture (904 MB on the M1 after a test run, 30 Sep). Taken as a
+        //  CF object and handed to ARC exactly once.)
+        CFTypeRef (*grab)(void) = (CFTypeRef (*)(void))dlsym(RTLD_DEFAULT, "_UICreateScreenUIImage");
+        BOOL ok = NO; CGSize sz = CGSizeZero; BOOL got = NO;
+        @autoreleasepool {
+            UIImage *img = grab ? (UIImage *)CFBridgingRelease(grab()) : nil;
+            got = img != nil; if (img) sz = img.size;
+            ok = img && [UIImagePNGRepresentation(img) writeToFile:@"/tmp/macstatusbar-raw.png" atomically:NO];
+        }
+        DMLog([NSString stringWithFormat:@"[debug] raw screen capture %@ (%@)", ok ? @"written" : @"FAILED", got ? NSStringFromCGSize(sz) : @"no image"]);
     }
     else if ([cmd isEqualToString:@"dylibs"]) {   // dylibs: every tweak library loaded into SpringBoard (read-only) -- which window engines really load
         NSMutableArray *names = [NSMutableArray array];
@@ -18849,9 +19061,14 @@ static void DMRunTrigger(NSString *cmd) {
         gSysTapHoldMs = q.count >= 3 ? [q[2] doubleValue] : 80;
         if (q.count >= 2) { CGPoint p = CGPointMake([q[0] doubleValue], [q[1] doubleValue]); DMSysTouchReady(^{ DMSysTap(p); }); }
     }
+    else if ([cmd hasPrefix:@"tapsys2_"]) {   // tapsys2_<x>_<y>: two injected taps 220 ms apart (a double tap / double click, which two triggers can't send)
+        NSArray *q = [[cmd substringFromIndex:8] componentsSeparatedByString:@"_"];
+        gSysTapHoldMs = 60;
+        if (q.count >= 2) { CGPoint p = CGPointMake([q[0] doubleValue], [q[1] doubleValue]); DMSysTouchReady(^{ DMSysTap(p); dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(220 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ DMSysTap(p); }); }); }
+    }
     else if ([cmd hasPrefix:@"dragsys_"]) {   // dragsys_<x1>_<y1>_<x2>_<y2>_<ms>[_<hold ms>]: a system-wide injected drag
         NSArray *q = [[cmd substringFromIndex:8] componentsSeparatedByString:@"_"];
-        if (q.count >= 5) { CGPoint a = CGPointMake([q[0] doubleValue], [q[1] doubleValue]), b = CGPointMake([q[2] doubleValue], [q[3] doubleValue]); double ms = [q[4] doubleValue], hold = q.count >= 6 ? [q[5] doubleValue] : 0; DMSysTouchReady(^{ DMSysDrag(a, b, ms, hold); }); }
+        if (q.count >= 5) { CGPoint a = CGPointMake([q[0] doubleValue], [q[1] doubleValue]), b = CGPointMake([q[2] doubleValue], [q[3] doubleValue]); double ms = [q[4] doubleValue], hold = q.count >= 6 ? [q[5] doubleValue] : 0, endHold = q.count >= 7 ? [q[6] doubleValue] : 0; DMSysTouchReady(^{ gSysDragEndHoldMs = endHold; DMSysDrag(a, b, ms, hold); }); }
     }
     else if ([cmd hasPrefix:@"tap_"]) {   // tap_<x>_<y>: inject a real digitizer touch-down+up at a screen point (UIScreen.mainScreen coordinates)
         NSArray *q = [[cmd substringFromIndex:4] componentsSeparatedByString:@"_"];
@@ -20097,15 +20314,17 @@ static void DMRunTrigger(NSString *cmd) {
     else if ([cmd isEqualToString:@"sbmem"]) DMLog([NSString stringWithFormat:@"[sbmem] SpringBoard footprint %.1f MB", DMFootprintBytes(getpid()) / 1048576.0]);   // sbmem: SpringBoard's memory now
     else if ([cmd isEqualToString:@"menutitles"]) {   // menutitles: every menu title on the screen, as "name x y" centres in screen points (for finger-tap stress tests)
         NSMutableString *o = [NSMutableString stringWithString:@"[menutitles]"];
-        const void *keys[] = { kButtonKey, kAppButtonKey, kEditButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, kSSHButtonKey, kVPNButtonKey, kClockButtonKey };
-        NSArray *names = @[@"apple", @"app", @"edit", @"go", @"window", @"audio", @"ssh", @"vpn", @"clock"];
+        const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, kSSHButtonKey, kVPNButtonKey, kClockButtonKey };
+        // (one name per key, in the same order: the list once had 9 names for 11 keys and read past its end -- an exception in SpringBoard)
+        static const char *names[] = { "apple", "app", "file", "edit", "view", "go", "window", "audio", "ssh", "vpn", "clock" };
+        _Static_assert(sizeof(names) / sizeof(names[0]) == sizeof(keys) / sizeof(keys[0]), "menutitles: one name per key");
         for (UIView *fg in gCopies.allObjects) {
             if (!fg.window || fg.window.hidden || fg.hidden || DMEffectiveAlpha(fg) < 0.5) continue;
             for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
                 UIButton *b = objc_getAssociatedObject(fg, keys[i]);
                 if (!b || b.hidden || b.frame.size.width < 1.0) continue;
                 CGRect r = DMTitleRectOnScreen(fg, b.frame);
-                [o appendFormat:@" %@=%.0f,%.0f", names[i], CGRectGetMidX(r), CGRectGetMidY(r)];
+                [o appendFormat:@" %s=%.0f,%.0f", names[i], CGRectGetMidX(r), CGRectGetMidY(r)];
             }
             break;
         }
@@ -20114,7 +20333,7 @@ static void DMRunTrigger(NSString *cmd) {
     else if ([cmd isEqualToString:@"menucheck"]) {   // menucheck: regression check -- opens every status bar menu from every visible status bar copy, one after another
         // (0.5 s apart), and [menugeo] asserts each menu hangs directly under its title on the screen; ends with a PASS/FAIL count and the menu closed.
         NSMutableArray *jobs = [NSMutableArray array];
-        const void *keys[] = { kButtonKey, kAppButtonKey, kEditButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, kSSHButtonKey, kVPNButtonKey };
+        const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, kSSHButtonKey, kVPNButtonKey };
         for (UIView *fg in gCopies.allObjects) {
             if (!fg.window || fg.window.hidden || fg.hidden || fg.alpha < 0.01) continue;
             for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
@@ -20894,6 +21113,18 @@ static void DMRunTrigger(NSString *cmd) {
             DMLog([NSString stringWithFormat:@"[iconmenu] running \"%@\": %@", title, handler ? @"found" : @"NOT found"]);
             if (handler) handler(hit);
         }
+    }
+    else if ([cmd hasPrefix:@"openapp_"]) DMOpenApp([cmd substringFromIndex:8]);   // openapp_<bundle>: open an app the way our menus do (debug)
+    else if ([cmd hasPrefix:@"fopen_"]) [DMFinderFront() dm_openNamed:[cmd substringFromIndex:6]];   // fopen_<name>: open that item in the front Finder window, as a double click (debug)
+    else if ([cmd isEqualToString:@"fview"]) [DMFinderFront() dm_toggleView];
+    else if ([cmd hasPrefix:@"fdo_"]) [DMFinderFront() dm_debugDo:[cmd substringFromIndex:4]];   // fdo_<action>[:<arg>]: a file operation in the front Finder window (Finder.h -dm_debugDo:)
+    else if ([cmd isEqualToString:@"fdump"]) [DMFinderFront() dm_dump];
+    else if ([cmd hasPrefix:@"fshare_"]) [DMFinderFront() dm_shareNamed:[cmd substringFromIndex:7]];   // fshare_<name>: Share… for that item in the front Finder window (debug)
+    else if ([cmd isEqualToString:@"fdismiss"]) [gNativeLayer.rootViewController dismissViewControllerAnimated:YES completion:nil];   // fdismiss: close what is presented over Finder (debug)   // fview: List <-> Icons in the front Finder window (debug)
+    else if ([cmd hasPrefix:@"fnew_"]) DMFinderOpen([cmd substringFromIndex:5], YES);   // fnew_<path>: a new Finder window (debug)
+    else if ([cmd hasPrefix:@"fwin"]) {   // fwin / fwin_<path>: a Finder window (debug)
+        NSString *p = cmd.length > 5 ? [cmd substringFromIndex:5] : nil;
+        DMFinderOpen(p, NO);
     }
     else if ([cmd hasPrefix:@"memdump_"]) {   // memdump_<image name suffix>_<hex offset>_<len> or memdump_@_<hex address>_<len>: copy loaded bytes to /tmp/msb-mem.bin (read-only; for offline disassembly)
         NSArray *q = [[cmd substringFromIndex:8] componentsSeparatedByString:@"_"];
@@ -25799,6 +26030,137 @@ static void DMIdleProbe(void) {
     });
 }
 #endif
+// Native windows (NativeWindow.h): a touch in one makes it active, one in an app makes them inactive; the active one has the hardware keys first.
+%group DMNativeHooks
+%hook SpringBoard
+- (void)sendEvent:(UIEvent *)event {
+    if (event.type == UIEventTypeTouches && gNativeLayer && !gNativeLayer.hidden)
+        for (UITouch *t in event.allTouches) if (t.phase == UITouchPhaseBegan) { DMNativeTouchBegan(t); break; }
+    %orig;
+}
+- (void)pressesBegan:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
+    if (gNativeActive) for (UIPress *p in presses) if (DMNativeHandlePress(p)) return;
+    %orig;
+}
+%end
+// An app icon tapped (the Dock, the Home Screen) while a native window is active: that app comes forward, as a Dock click does on a Mac -- also the
+// app that was already in front when Finder became active, which the front-app watcher (DMNativeTick) can't see change (M1 30 Sep: Notes' Dock
+// icon left Finder in front).
+%hook SBIconView
+- (void)_handleTap {
+    if (gNativeActive) {
+        NSString *b = nil; @try { b = [[self valueForKey:@"icon"] valueForKey:@"applicationBundleID"]; } @catch (id e) {}
+        if ([b isKindOfClass:[NSString class]] && b.length) { DMLog([NSString stringWithFormat:@"[native] app icon tapped (%@): native windows inactive", b]); DMNativeSetActive(nil); }
+    }
+    %orig;
+}
+%end
+%end
+// Native windows and Stage Manager (iPadOS 16). SpringBoard's system gestures see every touch -- also the ones UIKit gives our layer -- through
+// the system gesture window, and Stage Manager's window gestures (SBFluidSwitcherGestureManager) only ask what window CARD lies under the
+// finger, knowing nothing of a window above the cards: a tap in Finder brought the app under it forward (tapToBringItemContainerForward),
+// a drag in Finder over an app's top edge moved that app (_unpinSplitViewApplicationGestureRecognizer) and cancelled Finder's touch, a
+// corner resize resized the app below (iPad 2, 30 Sep). A touch that starts on a native window is that window's: those gestures never receive
+// it. The multi-finger pinch to Home stays (it works anywhere). The Home / App Switcher swipes start at the screen's bottom edge, which a native
+// window never covers (it stays above the Dock) -- a swipe starting on Finder next to the Dock opened the App Switcher, so they are left out too.
+static BOOL DMNativeSystemGestureStays(id manager, UIGestureRecognizer *g) {
+    static const char *keep[] = { "_fluidScrunchGestureRecognizer", "_indirectFloatingAppScrunchGestureRecognizer" };
+    for (size_t i = 0; i < sizeof(keep) / sizeof(keep[0]); i++) {
+        Ivar iv = class_getInstanceVariable(object_getClass(manager), keep[i]);
+        if (iv && object_getIvar(manager, iv) == g) return YES;
+    }
+    return NO;
+}
+%group DMNativeSysGestures   // (only where SpringBoard has these: see %ctor)
+%hook SBFluidSwitcherGestureManager
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldReceiveTouch:(UITouch *)touch {
+    DMNativeWindow *w = DMNativeWindowForTouch(touch, NULL);
+    if (w && !DMNativeSystemGestureStays(self, g)) {
+        static __weak UITouch *told;
+        if (told != touch && DMTestFlag("/tmp/macstatusbar-debug")) { told = touch; DMLog([NSString stringWithFormat:@"[native] a touch on %@: Stage Manager's window gestures (%@...) left out", w.title, g.name ?: NSStringFromClass([g class])]); }
+        return NO;
+    }
+    return %orig;
+}
+// The screen-edge pulls (the Stage Manager strip on the left, Slide Over on the right, Home at the bottom) near a native window's title bar or
+// resize corner: that drag is the window's -- a zoomed Finder's left resize corner lies 10 pt from the screen edge, and the edge pull took the
+// drag (iPad 2 30 Sep). Elsewhere in a native window the edge pulls stay as they are.
+- (BOOL)grabberTongue:(id)tongue shouldReceiveTouch:(UITouch *)touch {
+    BOOL chrome = NO;
+    if (DMNativeWindowForTouch(touch, &chrome) && chrome) {
+        if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog(@"[native] a drag on a native window's title bar / corner: the screen-edge pull left out");
+        return NO;
+    }
+    return %orig;
+}
+%end
+// An inactive native window sits behind the app windows; where no app window covers it, the switcher's full-screen content view still answered the
+// hit test (it lies above the layer): the first touch on Finder only made it active, the tap / drag / button itself went nowhere (iPad 2 30 Sep).
+// There the switcher window lets the touch through to the native window, as a Mac's first click on a window both activates it and acts.
+%hook SBMainSwitcherWindow
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *h = %orig;
+    static BOOL inside = NO;
+    UIWindow *me = (UIWindow *)self;
+    if (!h || !event || inside || !gNativeLayer || gNativeLayer.hidden || gNativeLayer.windowLevel >= me.windowLevel) return h;
+    if (h != me && h != me.rootViewController.view && ![NSStringFromClass([h class]) isEqualToString:@"SBFluidSwitcherContentView"]) return h;   // (an app window: its own)
+    inside = YES;
+    DMNativeWindow *w = DMNativeWindowAtScreenPoint([me convertPoint:point toCoordinateSpace:(me.screen ?: [UIScreen mainScreen]).coordinateSpace]);
+    inside = NO;
+    return w ? nil : h;
+}
+%end
+// The Dock's window answers touches in a band ~18 pt ABOVE its platter (its swipe-up area): a resize from Finder's bottom corner next to the Dock
+// went to the Dock and opened the App Switcher, and the bottom of a Finder window reaching the Dock could not be tapped (iPad 2 30 Sep). Above the
+// platter, where an active native window is, the touch is the window's; the Dock keeps its platter, its icons (magnified ones reach higher) and
+// the Downloads panel (the Dock window is raised over everything while it is open).
+%hook SBFloatingDockWindow
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *h = %orig;
+    UIWindow *me = (UIWindow *)self;
+    if (!h || !event || !gNativeActive || me.windowLevel > 1000.0) return h;
+    for (UIView *v = h; v && v != me; v = v.superview) if ([NSStringFromClass([v class]) containsString:@"IconView"]) return h;
+    UIView *platter = nil;
+    NSMutableArray<UIView *> *todo = [NSMutableArray arrayWithObject:me];
+    Class pc = objc_getClass("SBFloatingDockPlatterView");
+    for (int depth = 0; depth < 6 && todo.count && !platter && pc; depth++) {
+        NSMutableArray *next = [NSMutableArray array];
+        for (UIView *v in todo) { if ([v isKindOfClass:pc]) { platter = v; break; } [next addObjectsFromArray:v.subviews]; }
+        todo = next;
+    }
+    if (!platter || platter.hidden) return h;
+    id<UICoordinateSpace> scr = (me.screen ?: [UIScreen mainScreen]).coordinateSpace;
+    CGPoint sp = [me convertPoint:point toCoordinateSpace:scr];
+    if (sp.y >= CGRectGetMinY([platter convertRect:platter.bounds toCoordinateSpace:scr])) return h;
+    return DMNativeWindowAtScreenPoint(sp) ? nil : h;
+}
+%end
+%end
+// Settings > Mac Status Bar > Finder: on, Finder's windows, menus, Go menu places and Dock icon are there and its hooks are installed (once, at
+// the start or when switched on -- no respring either way); off, every Finder window closes and nothing opens one (the hooks, if installed, only
+// look at native windows: with none they do nothing). The Dock hides its Finder icon itself (it reads the same switch).
+static BOOL DMFinderPrefOn(void) {
+    CFPreferencesAppSynchronize(MSB_DOMAIN);
+    CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("finderEnabled"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    BOOL on = !v || (CFGetTypeID(v) == CFBooleanGetTypeID() ? CFBooleanGetValue(v) : (CFGetTypeID(v) == CFNumberGetTypeID() ? [(__bridge NSNumber *)v boolValue] : YES));
+    if (v) CFRelease(v);
+    return on;
+}
+static void DMFinderApplyPref(void) {
+    static BOOL hooked = NO;
+    BOOL on = DMFinderPrefOn() && !DMCtorSkip("finder");
+    if (on && !hooked) {
+        hooked = YES;
+        %init(DMNativeHooks);   // (native windows: touches and keys, NativeWindow.h)
+        if ([objc_getClass("SBFluidSwitcherGestureManager") instancesRespondToSelector:@selector(gestureRecognizer:shouldReceiveTouch:)]) %init(DMNativeSysGestures);
+        DMFinderDockInit();     // (the Dock's Finder icon: its taps, and Finder's window count for its dot)
+    }
+    if (on == gFinderOn) return;
+    gFinderOn = on;
+    DMLog([NSString stringWithFormat:@"[finder] Finder %@", on ? @"on" : @"off: its windows close"]);
+    if (!on) for (DMNativeWindow *w in [gNativeWindows copy]) { [w close]; [gNativeWindows removeObjectIdenticalTo:w]; }
+    if (!on) DMNativeApplyLevel();
+}
 #include "StockBar.h"   // "Use Stock Status Bar": the start that runs instead of everything below
 // Untested iPadOS (17+ with Enable Anyway, common/Diag.h): which of our hooked methods do not exist on this iOS -- a hook on a missing method is
 // simply skipped, so these are features that silently do nothing. Only the parts running in SpringBoard (statusbar/, dock/). Names only.
@@ -27643,6 +28005,8 @@ void DMSMRunAction(UIAction *action, id sender) {
     %init;
     if (!DMCtorSkip("stockvpn")) DMStockVPNInit();
     if (!DMCtorSkip("smengine")) DMSMEngineInit();
+    DMFinderApplyPref();    // (Finder: its hooks, the Dock's Finder icon -- only while switched on)
+    { static int finderPrefToken; notify_register_dispatch("com.besiktasliseba.macstatusbar.finder.pref", &finderPrefToken, dispatch_get_main_queue(), ^(int t) { DMFinderApplyPref(); }); }
     DMPointerPullInit();
     DMCCPresentSeenInit();   // (Control Center seen from its controller too: F13)
     DMSkipLockInit();

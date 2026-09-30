@@ -10,7 +10,7 @@ TWEAK_NAME = MacStatusBarCore
 MacStatusBarCore_FILES = StatusBar.x
 MacStatusBarCore_CFLAGS = -fobjc-arc
 MacStatusBarCore_PRIVATE_FRAMEWORKS = BackBoardServices
-MacStatusBarCore_FRAMEWORKS = NetworkExtension
+MacStatusBarCore_FRAMEWORKS = NetworkExtension UniformTypeIdentifiers ImageIO   # (PDFKit, AVKit, AVFoundation: opened by Finder at first use, Finder.h DMFinderClass)
 
 SUBPROJECTS += macstatusbarprefs macstatusbarsettings macpointer
 

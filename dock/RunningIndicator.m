@@ -65,6 +65,9 @@ static NSSet<NSString *> *RIRunningBundleIDs(void) {
 }
 
 static const void *kDotKey = &kDotKey;
+// Where a running dot sits below a Dock app's picture (its top, from the picture's bottom edge), as last measured on a real Dock icon: our own
+// Dock icons (Finder) are only as tall as their picture, so they put their dot at this distance below themselves, where the apps' dots are.
+CGFloat gDMDotGapBelowImage = 3.0;
 
 // Called from Tweak.x's EXISTING `%hook SBIconView -layoutSubviews` (which already exists there for the Launchpad icon overlay) —
 // deliberately NOT a second %hook of the same method in this file: Logos generates its hook scaffolding per class+selector, and two
@@ -106,6 +109,13 @@ static void RIUpdate(UIView *iconView, NSSet<NSString *> *running) {   // (runni
     if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17 && [iconView respondsToSelector:imageFrameSel]) {
         CGRect img = ((CGRect (*)(id, SEL))objc_msgSend)(iconView, imageFrameSel);
         if (img.size.height > 1.0 && y < CGRectGetMaxY(img) + 1.0) y = CGRectGetMaxY(img) + 3.0;
+    }
+    {   // (measured for our own Dock icons, see gDMDotGapBelowImage)
+        SEL imgSel = NSSelectorFromString(@"iconImageFrame");
+        if ([iconView respondsToSelector:imgSel]) {
+            CGRect img = ((CGRect (*)(id, SEL))objc_msgSend)(iconView, imgSel);
+            if (img.size.height > 1.0) { CGFloat g = y - CGRectGetMaxY(img); if (g > -2.0 && g < 40.0) gDMDotGapBelowImage = g; }
+        }
     }
     dot.frame = CGRectMake((iconView.bounds.size.width - d) / 2.0, y, d, d);
     dot.layer.cornerRadius = d / 2.0;

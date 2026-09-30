@@ -1933,6 +1933,331 @@ static void MABStartTintReports(void) {
         for (int i = 1; i <= 3; i++) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ MABPublishTint(); });
     });
 }
+// ---- Finder drops: files handed to this app by SpringBoard's Finder (statusbar/Finder.h, DMFDHandOver) ----------------------------------------
+// SpringBoard stages the files in this app's own container (tmp/msb-drop/<token>/, only once they are dropped) and describes them in
+// tmp/msb-drop.plist: the drag's token, the SCENE (window) under the finger, and the files (names and types while the finger passes over;
+// staged paths once dropped). It then posts "com.besiktasliseba.appbridge.tvtap.<hash of this bundle id>" with the point in that scene in the
+// notify state (x*4 bits 0-23, y*4 bits 24-47, kind bits 48-55: 6 over, 7 drop, 8 left; a sequence number in bits 56-63). Here the files become
+// real UIDragItems in a drop session of ours (the public UIDropSession protocol), and the app's own UIDropInteraction at that point is asked and
+// given the drop exactly as UIKit would: canHandleSession -> sessionDidEnter -> sessionDidUpdate (its proposal decides the badge on the finger)
+// -> performDrop -> the drop animation's completions -> concludeDrop / sessionDidEnd. Answers go back on "com.besiktasliseba.appbridge.report"
+// (kind 10 the proposal, kind 11 the result), with the drag's token.
+// Only the named scene is searched: an app with several windows (Aerial keeps several Notes scenes in the foreground) once took a drop in a
+// window nobody saw. Only kinds 6-8 are accepted here: nothing in this handler can make touches (any process can post a Darwin notification).
+#ifndef DM_FEATURE_MARK
+#define DM_FEATURE_MARK(name) do { static const char *const dmFeatureMark = "msbd-feature:" name; __asm__ volatile("" :: "r"(dmFeatureMark)); } while (0)   // (release-build feature marker, see statusbar/StatusBar.x)
+#endif
+#if DEBUG
+#define MABDropLog(...) MABLog(__VA_ARGS__)
+#else
+#define MABDropLog(...) do { } while (0)
+#endif
+// Report back to SpringBoard (a sandbox-proof channel: some apps, Clock among them, cannot create a log file): notify state of
+// "com.besiktasliseba.appbridge.report" = bundle hash << 32 | kind << 24 | value.
+static void MABReport(uint32_t kind, uint32_t value) {
+    static int t = 0; static uint32_t hash = 0;
+    if (!t) notify_register_check("com.besiktasliseba.appbridge.report", &t);
+    if (!hash) { hash = 2166136261u; for (const char *c = [NSBundle mainBundle].bundleIdentifier.UTF8String ?: ""; *c; c++) { hash ^= (uint8_t)*c; hash *= 16777619u; } }
+    notify_set_state(t, ((uint64_t)hash << 32) | ((uint64_t)(kind & 0xFF) << 24) | (value & 0xFFFFFF));
+    notify_post("com.besiktasliseba.appbridge.report");
+}
+static uint32_t gMABDropToken;   // (the token of the drag being dropped: in bits 12-23 of every answer)
+static void MABDropReport(uint32_t kind, uint32_t value) { MABReport(kind, (value & 0xFFF) | ((gMABDropToken & 0xFFF) << 12)); }
+@interface MABDropSession : NSObject <UIDropSession>
+@property (nonatomic, strong) NSArray<UIDragItem *> *items;
+@property (nonatomic) CGPoint windowPoint;
+@property (nonatomic, weak) UIWindow *window;
+@property (nonatomic, strong) NSProgress *progress;
+@property (nonatomic, copy) NSString *key;   // (token, ready: the same files keep the same session)
+@end
+@implementation MABDropSession
+- (CGPoint)locationInView:(UIView *)view { return [view convertPoint:self.windowPoint fromView:self.window]; }
+- (BOOL)allowsMoveOperation { return NO; }
+- (BOOL)isRestrictedToDraggingApplication { return NO; }
+- (BOOL)hasItemsConformingToTypeIdentifiers:(NSArray<NSString *> *)ids {
+    for (UIDragItem *it in self.items) for (NSString *t in it.itemProvider.registeredTypeIdentifiers) for (NSString *want in ids) {
+        if ([t isEqualToString:want]) return YES;
+        Class U = NSClassFromString(@"UTType"); SEL mk = NSSelectorFromString(@"typeWithIdentifier:"), conf = NSSelectorFromString(@"conformsToType:");
+        id a = U ? ((id (*)(id, SEL, id))objc_msgSend)(U, mk, t) : nil, b = U ? ((id (*)(id, SEL, id))objc_msgSend)(U, mk, want) : nil;
+        if (a && b && ((BOOL (*)(id, SEL, id))objc_msgSend)(a, conf, b)) return YES;
+    }
+    return NO;
+}
+- (BOOL)canLoadObjectsOfClass:(Class<NSItemProviderReading>)c { for (UIDragItem *it in self.items) if ([it.itemProvider canLoadObjectOfClass:c]) return YES; return NO; }
+- (id<UIDragSession>)localDragSession { return nil; }
+- (UIDropSessionProgressIndicatorStyle)progressIndicatorStyle { return UIDropSessionProgressIndicatorStyleNone; }
+- (void)setProgressIndicatorStyle:(UIDropSessionProgressIndicatorStyle)s {}
+- (NSProgress *)loadObjectsOfClass:(Class<NSItemProviderReading>)c completion:(void (^)(NSArray<__kindof id<NSItemProviderReading>> *))completion {
+    NSProgress *all = [NSProgress progressWithTotalUnitCount:self.items.count];
+    NSMutableArray *out = [NSMutableArray array]; dispatch_group_t g = dispatch_group_create();
+    for (UIDragItem *it in self.items) {
+        if (![it.itemProvider canLoadObjectOfClass:c]) continue;
+        dispatch_group_enter(g);
+        NSProgress *p = [it.itemProvider loadObjectOfClass:c completionHandler:^(id o, NSError *e) { if (o) @synchronized (out) { [out addObject:o]; } dispatch_group_leave(g); }];
+        if (p) [all addChild:p withPendingUnitCount:1];
+    }
+    dispatch_group_notify(g, dispatch_get_main_queue(), ^{ if (completion) completion(out); });
+    return all;
+}
+// (anything else the app's drop code asks a UIKit session for: answered with nil / 0, logged in debug builds -- shows what a given app needs)
+- (NSMethodSignature *)methodSignatureForSelector:(SEL)sel { return [super methodSignatureForSelector:sel] ?: [NSMethodSignature signatureWithObjCTypes:"@@:"]; }
+- (void)forwardInvocation:(NSInvocation *)inv { MABDropLog([NSString stringWithFormat:@"tvdrop: the app asked the session for %@ (not implemented: nil)", NSStringFromSelector(inv.selector)]); id nilObj = nil; [inv setReturnValue:&nilObj]; }
+@end
+// The drop animation step of a real drop: UIKit calls dropInteraction:item:willAnimateDropWithAnimator: for every item and runs the animator's
+// animations and completions before concludeDrop:. UITextDragAssistant finalises the text placeholder it inserted for a loading item in that
+// completion (without it Notes kept an unfinished placeholder and crashed later laying out the note's preview in its list).
+@interface MABDropAnimator : NSObject <UIDragAnimating>
+@property (nonatomic, strong) NSMutableArray *animations, *completions;
+@end
+@implementation MABDropAnimator
+- (instancetype)init { if ((self = [super init])) { _animations = [NSMutableArray array]; _completions = [NSMutableArray array]; } return self; }
+- (void)addAnimations:(void (^)(void))a { if (a) [self.animations addObject:[a copy]]; }
+- (void)addCompletion:(void (^)(UIViewAnimatingPosition))c { if (c) [self.completions addObject:[c copy]]; }
+@end
+// A scene's identifier as SpringBoard names it ("sceneID:<bundle id>-<UUID>" / "...-default").
+static NSString *MABSceneIdent(UIScene *sc) {
+    id v = nil;
+    @try { v = [sc valueForKey:@"_sceneIdentifier"]; } @catch (id e) { v = nil; }
+    if ([v isKindOfClass:[NSString class]]) return v;
+    id fbs = nil; @try { fbs = [sc valueForKey:@"_FBSScene"]; } @catch (id e) { fbs = nil; }
+    @try { v = [fbs valueForKey:@"identifier"]; } @catch (id e) { v = nil; }
+    return [v isKindOfClass:[NSString class]] ? v : nil;
+}
+static UIWindowScene *MABDropScene(NSString *ident) {
+    for (UIScene *sc in [UIApplication sharedApplication].connectedScenes)
+        if ([sc isKindOfClass:[UIWindowScene class]] && [MABSceneIdent(sc) isEqualToString:ident]) return (UIWindowScene *)sc;
+    return nil;
+}
+// The window at a point of one scene (the named one), front-most first. No scene named (an older sender): every scene on screen.
+static UIWindow *MABDropWindowAt(UIWindowScene *only, CGPoint p, UIView **hitOut) {
+    NSMutableArray<UIWindow *> *ws = [NSMutableArray array];
+    if (only) [ws addObjectsFromArray:only.windows];
+    else for (UIScene *sc in [UIApplication sharedApplication].connectedScenes)
+        if ([sc isKindOfClass:[UIWindowScene class]] && sc.activationState != UISceneActivationStateBackground) [ws addObjectsFromArray:((UIWindowScene *)sc).windows];
+    [ws sortUsingComparator:^NSComparisonResult(UIWindow *a, UIWindow *b) { return a.windowLevel > b.windowLevel ? NSOrderedAscending : a.windowLevel < b.windowLevel ? NSOrderedDescending : NSOrderedSame; }];
+    for (UIWindow *w in ws) {
+        if (w.hidden || w.alpha < 0.01 || !w.userInteractionEnabled) continue;
+        CGPoint wp = [w convertPoint:p fromCoordinateSpace:w.windowScene.coordinateSpace];
+        UIView *hit = [w hitTest:wp withEvent:nil];
+        if (hit) { if (hitOut) *hitOut = hit; return w; }
+    }
+    return nil;
+}
+static MABDropSession *gMABDrop; static __weak UIDropInteraction *gMABDropTarget;
+// The files as drag items: the staged file itself once dropped (ready); before that, only its name and type (nothing is staged while the finger
+// passes over -- the app can see what it would get and propose, but not load it).
+static BOOL MABDropReady(NSDictionary *d) { return d[@"ready"] ? [d[@"ready"] boolValue] : d[@"path"] != nil; }   // (a descriptor without "ready" -- the TV desktop's -- names a staged file)
+static MABDropSession *MABDropSessionMake(NSDictionary *d) {
+    BOOL ready = MABDropReady(d);
+    NSArray *list = [d[@"items"] isKindOfClass:[NSArray class]] ? d[@"items"] : (d[@"path"] ? @[@{@"path": d[@"path"], @"name": d[@"name"] ?: [d[@"path"] lastPathComponent]}] : @[]);
+    NSString *key = [NSString stringWithFormat:@"%@|%d|%@", d[@"token"], ready, d[@"path"]];
+    if (gMABDrop && [gMABDrop.key isEqualToString:key]) return gMABDrop;
+    NSMutableArray *items = [NSMutableArray array];
+    NSString *tmp = NSTemporaryDirectory().stringByStandardizingPath;
+    for (NSDictionary *e in list) {
+        if (![e isKindOfClass:[NSDictionary class]]) continue;
+        NSString *name = e[@"name"], *path = e[@"path"], *uti = e[@"uti"];
+        NSItemProvider *ip = nil;
+        if (path.length) {
+            // (only a file staged inside this app's own tmp folder, and never a folder: SpringBoard zips folders)
+            BOOL isDir = NO;
+            if (![path.stringByStandardizingPath hasPrefix:tmp] || ![[NSFileManager defaultManager] fileExistsAtPath:path isDirectory:&isDir] || isDir) { MABDropLog([NSString stringWithFormat:@"tvdrop: staged file refused (%@)", path.lastPathComponent]); return nil; }
+            ip = [[NSItemProvider alloc] initWithContentsOfURL:[NSURL fileURLWithPath:path]];
+        } else if (!ready && uti.length) {
+            ip = [NSItemProvider new];
+            [ip registerFileRepresentationForTypeIdentifier:uti fileOptions:0 visibility:NSItemProviderRepresentationVisibilityAll loadHandler:^NSProgress *(void (^c)(NSURL *, BOOL, NSError *)) {
+                c(nil, NO, [NSError errorWithDomain:@"MacAppBridge" code:1 userInfo:@{NSLocalizedDescriptionKey: @"not dropped yet"}]); return nil; }];
+        }
+        if (!ip || !ip.registeredTypeIdentifiers.count) { MABDropLog([NSString stringWithFormat:@"tvdrop: no content type for %@: not offered", name]); return nil; }
+        ip.suggestedName = [name stringByDeletingPathExtension];
+        [items addObject:[[UIDragItem alloc] initWithItemProvider:ip]];
+    }
+    if (!items.count) return nil;
+    MABDropSession *s = [MABDropSession new]; s.items = items; s.progress = [NSProgress progressWithTotalUnitCount:items.count]; s.key = key;
+    MABDropLog([NSString stringWithFormat:@"tvdrop: session for %lu item(s), %@ (types %@)", (unsigned long)items.count, ready ? @"dropped" : @"passing over", [items.firstObject itemProvider].registeredTypeIdentifiers]);
+    return s;
+}
+static void MABDropEnd(void) {
+    UIDropInteraction *di = gMABDropTarget; id<UIDropInteractionDelegate> dd = di.delegate;
+    if (di && gMABDrop) {
+        @try { if ([dd respondsToSelector:@selector(dropInteraction:sessionDidExit:)]) [dd dropInteraction:di sessionDidExit:gMABDrop];
+               if ([dd respondsToSelector:@selector(dropInteraction:sessionDidEnd:)]) [dd dropInteraction:di sessionDidEnd:gMABDrop]; } @catch (id e) {}
+    }
+    gMABDropTarget = nil;
+}
+static BOOL gMABDropTapped;   // (the text view under the drop was put into editing: the drop comes next)
+static void MABDropAt(CGPoint scenePoint, int kind) {   // kind 6 over, 7 drop, 8 left / cancelled
+    DM_FEATURE_MARK("appbridge-drop");
+    if (kind == 8) { MABDropEnd(); gMABDrop = nil; return; }
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:[NSTemporaryDirectory() stringByAppendingPathComponent:@"msb-drop.plist"]];
+    gMABDropToken = [d[@"token"] unsignedIntValue];
+    if (!d) { MABDropLog(@"tvdrop: no descriptor"); MABDropReport(10, 0x100); if (kind == 7) MABDropReport(11, 0); return; }
+    NSString *sceneId = [d[@"scene"] isKindOfClass:[NSString class]] ? d[@"scene"] : nil;
+    UIWindowScene *only = nil;
+    if (sceneId.length) {
+        only = MABDropScene(sceneId);
+        if (!only) {   // (the window SpringBoard saw under the finger is not one of ours now: nothing is dropped anywhere else)
+            MABDropLog(@"tvdrop: the scene named is not connected here: not taken");
+            MABDropEnd(); MABDropReport(10, 0x100); if (kind == 7) MABDropReport(11, 0); return;
+        }
+    }
+    MABDropSession *s = MABDropSessionMake(d);
+    if (!s) { MABDropReport(10, 0x100); if (kind == 7) MABDropReport(11, 0); return; }
+    if (gMABDrop && s != gMABDrop) MABDropEnd();   // (new files -- the dropped ones after the passing-over ones: the target sees a new session)
+    gMABDrop = s;
+    UIView *hit = nil; UIWindow *w = MABDropWindowAt(only, scenePoint, &hit);
+    if (!w) { MABDropEnd(); MABDropReport(10, 0x100); if (kind == 7) MABDropReport(11, 0); return; }
+    s.window = w; s.windowPoint = [w convertPoint:scenePoint fromCoordinateSpace:w.windowScene.coordinateSpace];
+    UIDropInteraction *target = nil;
+    for (UIView *v = hit; v && !target; v = v.superview)
+        for (id<UIInteraction> ia in v.interactions) {
+            if (![ia isKindOfClass:[UIDropInteraction class]]) continue;
+            UIDropInteraction *di = (UIDropInteraction *)ia; id<UIDropInteractionDelegate> dd = di.delegate;
+            BOOL can = YES;
+            @try { if ([dd respondsToSelector:@selector(dropInteraction:canHandleSession:)]) can = [dd dropInteraction:di canHandleSession:s]; } @catch (NSException *e) { can = NO; MABDropLog([NSString stringWithFormat:@"tvdrop: canHandle threw %@", e]); }
+            if (can) { target = di; break; }
+        }
+    // (Share… with nothing that takes files right under the window's middle -- Files: an empty area over its item view --: the biggest view in the
+    //  window that takes them, at a spot in it with no item under it (so nothing is dropped into a subfolder by chance))
+    if (!target && [d[@"share"] boolValue]) {
+        CGFloat bestArea = 0; NSMutableArray<UIView *> *todo = [NSMutableArray arrayWithObject:w]; NSUInteger seen = 0;
+        while (todo.count && seen++ < 4000) {
+            UIView *v = todo.firstObject; [todo removeObjectAtIndex:0];
+            if (v.hidden || v.alpha < 0.05) continue;
+            for (id<UIInteraction> ia in v.interactions) {
+                if (![ia isKindOfClass:[UIDropInteraction class]]) continue;
+                UIDropInteraction *di = (UIDropInteraction *)ia; BOOL can = NO;
+                @try { can = ![di.delegate respondsToSelector:@selector(dropInteraction:canHandleSession:)] || [di.delegate dropInteraction:di canHandleSession:s]; } @catch (NSException *e) { can = NO; }
+                CGRect r = CGRectIntersection([v convertRect:v.bounds toView:w], w.bounds);
+                if (can && !CGRectIsNull(r) && r.size.width * r.size.height > bestArea) { bestArea = r.size.width * r.size.height; target = di; }
+            }
+            [todo addObjectsFromArray:v.subviews];
+        }
+        if (target) {
+            UIView *tvw = target.view; CGRect vis = CGRectIntersection([tvw convertRect:tvw.bounds toView:w], w.bounds);
+            CGPoint pt = CGPointMake(CGRectGetMidX(vis), CGRectGetMidY(vis));
+            if ([tvw isKindOfClass:[UICollectionView class]]) {   // (an empty spot: from the bottom up, the first point with no item)
+                UICollectionView *cv = (UICollectionView *)tvw; BOOL found = NO;
+                for (CGFloat y = CGRectGetMaxY(vis) - 12.0; y > CGRectGetMinY(vis) && !found; y -= 24.0)
+                    for (CGFloat x = CGRectGetMaxX(vis) - 12.0; x > CGRectGetMinX(vis) && !found; x -= 40.0)
+                        if (![cv indexPathForItemAtPoint:[cv convertPoint:CGPointMake(x, y) fromView:w]]) { pt = CGPointMake(x, y); found = YES; }
+            }
+            s.windowPoint = pt;
+            MABDropLog([NSString stringWithFormat:@"tvdrop: share: nothing under the middle -- %@ takes it", NSStringFromClass([tvw class])]);
+        }
+    }
+    if (target != gMABDropTarget) {
+        MABDropEnd();
+        gMABDropTarget = target;
+        @try { if (target && [target.delegate respondsToSelector:@selector(dropInteraction:sessionDidEnter:)]) [target.delegate dropInteraction:target sessionDidEnter:s]; } @catch (id e) {}
+    }
+    if (!target) {
+#if DEBUG
+        if (kind == 7) { NSMutableString *m = [NSMutableString stringWithString:@"tvdrop: no drop target here; under the point:"];   // (classes only)
+            int n = 0; for (UIView *v = hit; v && n < 14; v = v.superview, n++) { [m appendFormat:@" %@", NSStringFromClass([v class])];
+                for (id<UIInteraction> ia in v.interactions) if ([ia isKindOfClass:[UIDropInteraction class]]) [m appendFormat:@"[drop %@]", NSStringFromClass([(id)((UIDropInteraction *)ia).delegate class])]; }
+            MABDropLog(m); }
+#endif
+        MABDropReport(10, 0x100 | 1); if (kind == 7) MABDropReport(11, 0); return;
+    }
+    // (Share… hands the files to the window, not to a point in it: into text they go where its typing is -- the cursor when the text is being
+    //  edited, else the end -- not at the window's middle, which put a shared file mid-line in a note, iPad 2 30 Sep)
+    if ([d[@"share"] boolValue] && [target.view conformsToProtocol:@protocol(UITextInput)]) {
+        UIView<UITextInput> *ti = (UIView<UITextInput> *)target.view;
+        UITextPosition *pos = (ti.isFirstResponder && ti.selectedTextRange) ? ti.selectedTextRange.end : ti.endOfDocument;
+        CGRect cr = pos ? [ti caretRectForPosition:pos] : CGRectNull;
+        if (!CGRectIsNull(cr) && !CGRectIsInfinite(cr) && isfinite(cr.origin.x) && isfinite(cr.origin.y)) {
+            s.windowPoint = [w convertPoint:CGPointMake(CGRectGetMidX(cr), CGRectGetMidY(cr)) fromView:ti];
+            static NSString *told; NSString *why = ti.isFirstResponder ? @"at the cursor" : @"at the end of the text";
+            if (![told isEqualToString:why]) { told = why; MABDropLog([NSString stringWithFormat:@"tvdrop: share: %@", why]); }
+        }
+    }
+    UIDropOperation op = UIDropOperationCopy;
+    @try { if ([target.delegate respondsToSelector:@selector(dropInteraction:sessionDidUpdate:)]) op = [target.delegate dropInteraction:target sessionDidUpdate:s].operation; } @catch (NSException *e) { op = UIDropOperationForbidden; MABDropLog([NSString stringWithFormat:@"tvdrop: sessionDidUpdate threw %@", e]); }
+    static long lastOp = -1; if (op != lastOp) { lastOp = op; MABDropLog([NSString stringWithFormat:@"tvdrop: %@ (delegate %@ on %@, %@) proposes %ld", kind == 7 ? @"drop" : @"over", NSStringFromClass([target.delegate class]), NSStringFromClass([target.view class]), only ? @"the named scene" : @"no scene named", (long)op]); }
+    MABDropReport(10, (uint32_t)op);
+    if (kind != 7) return;
+    if (!MABDropReady(d)) { MABDropLog(@"tvdrop: a drop before the files were staged: not taken"); MABDropReport(11, 0); return; }
+    // A text view not being edited takes the drop only on screen: the app (Notes) saves what is typed or dropped only while the note is being
+    // edited, and a real drop puts it into editing first. Here too, the way UIKit does it for a tap: editable, first responder (the app's own
+    // "did begin editing" runs -- Notes' editor then saves what arrives), the cursor at the drop point; then the drop. If the text view refuses
+    // to become first responder, nothing is dropped into it.
+    UIView *tv = target.view;
+    if (!gMABDropTapped && [tv isKindOfClass:[UITextView class]] && !tv.isFirstResponder) {
+        UITextView *t = (UITextView *)tv;
+        if (!t.window || t.window.windowScene != w.windowScene || t.window.hidden) { MABDropReport(11, 0); return; }
+        BOOL was = t.editable;
+        if (!t.editable) t.editable = YES;
+        BOOL first = [t becomeFirstResponder];
+        MABDropLog([NSString stringWithFormat:@"tvdrop: the text view was not being edited: editable %d->%d, first responder %d", was, t.editable, first]);
+        if (!first) { if (!was) t.editable = NO; MABDropEnd(); gMABDrop = nil; MABDropReport(11, 0); return; }
+        UITextPosition *pos = [t closestPositionToPoint:[s locationInView:t]];
+        if (pos) t.selectedTextRange = [t textRangeFromPosition:pos toPosition:pos];
+        gMABDropTapped = YES;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(250 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ MABDropAt(scenePoint, 7); gMABDropTapped = NO; });
+        return;
+    }
+    BOOL done = NO;
+    if (op >= UIDropOperationCopy) {
+        id<UIDropInteractionDelegate> dd = target.delegate;
+        @try {
+#if DEBUG
+            NSUInteger before = [tv isKindOfClass:[UITextView class]] ? ((UITextView *)tv).attributedText.length : NSNotFound;   // (did a text view change? only its LENGTH is logged, never its text)
+#endif
+            [dd dropInteraction:target performDrop:s]; done = YES;
+#if DEBUG
+            if (before != NSNotFound) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                MABDropLog([NSString stringWithFormat:@"tvdrop: %@ length %lu -> %lu after the drop (first responder %d, editable %d)", NSStringFromClass([tv class]), (unsigned long)before, (unsigned long)((UITextView *)tv).attributedText.length, tv.isFirstResponder, ((UITextView *)tv).editable]);
+            });
+#endif
+            // (the rest of a real drop, in UIKit's order: a preview per item, the drop animation with its completions, then conclude)
+            MABDropAnimator *an = [MABDropAnimator new];
+            for (UIDragItem *it in s.items) {
+                if ([dd respondsToSelector:@selector(dropInteraction:previewForDroppingItem:withDefault:)] && target.view.window) {
+                    UIView *pv = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 44, 44)];
+                    UIPreviewTarget *pt = [[UIPreviewTarget alloc] initWithContainer:target.view center:[s locationInView:target.view]];
+                    UITargetedDragPreview *def = [[UITargetedDragPreview alloc] initWithView:pv parameters:[UIDragPreviewParameters new] target:pt];
+                    (void)[dd dropInteraction:target previewForDroppingItem:it withDefault:def];
+                }
+                if ([dd respondsToSelector:@selector(dropInteraction:item:willAnimateDropWithAnimator:)]) [dd dropInteraction:target item:it willAnimateDropWithAnimator:an];
+            }
+            for (void (^a)(void) in an.animations) a();
+            UIDropInteraction *tgt = target;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                @try {
+                    for (void (^c)(UIViewAnimatingPosition) in an.completions) c(UIViewAnimatingPositionEnd);
+                    if ([dd respondsToSelector:@selector(dropInteraction:concludeDrop:)]) [dd dropInteraction:tgt concludeDrop:s];
+                    if ([dd respondsToSelector:@selector(dropInteraction:sessionDidEnd:)]) [dd dropInteraction:tgt sessionDidEnd:s];
+                } @catch (NSException *e) { MABDropLog([NSString stringWithFormat:@"tvdrop: drop completion threw %@ (aborted)", e]); }
+            });
+        } @catch (NSException *e) { MABDropLog([NSString stringWithFormat:@"tvdrop: performDrop threw %@ (aborted)", e]); }
+    }
+    if (!done) { @try { if ([target.delegate respondsToSelector:@selector(dropInteraction:sessionDidEnd:)]) [target.delegate dropInteraction:target sessionDidEnd:s]; } @catch (id e) {} }
+    gMABDropTarget = nil; gMABDrop = nil;
+    MABDropLog([NSString stringWithFormat:@"tvdrop: drop %@", done ? @"performed" : @"not performed"]);
+    MABDropReport(11, done ? 1 : 0);
+}
+static void MABRegisterFinderDrops(void) {
+    NSString *bundle = [NSBundle mainBundle].bundleIdentifier;
+    if (!bundle.length || [bundle isEqualToString:@"com.apple.springboard"]) return;
+    uint32_t hash = 2166136261u;
+    for (const char *c = bundle.UTF8String; *c; c++) { hash ^= (uint8_t)*c; hash *= 16777619u; }
+    char name[80]; snprintf(name, sizeof name, "com.besiktasliseba.appbridge.tvtap.%08x", hash);
+    static int token = 0;
+    notify_register_dispatch(name, &token, dispatch_get_main_queue(), ^(int t) {
+        uint64_t st = 0; notify_get_state(t, &st);
+        int kind = (int)((st >> 48) & 0xFF);
+        if (kind < 6 || kind > 8) return;   // (drops only: kinds 1-5 make touches and belong to the debug TV desktop, never here)
+        // (a message read twice -- two posts coalesced into one state -- never drops twice. The WHOLE message is compared, not only its sequence
+        //  number: SpringBoard counts 1-255 across every app, so after 255 messages to other apps this app's next one could carry the number of
+        //  its last one, and a drop (or a "left") that was new was ignored)
+        static uint64_t lastState = 0; int seq = (int)((st >> 56) & 0xFF);
+        if (seq && st == lastState) return;
+        lastState = st;
+        CGPoint p = CGPointMake((double)(st & 0xFFFFFF) / 4.0, (double)((st >> 24) & 0xFFFFFF) / 4.0);
+        MABDropAt(p, kind);
+    });
+}
 %ctor {
     // MABInstallIdiom();   // (separate experiment, off: an iPhone idiom for universal apps in a compact window; not shown to help SofaScore)
 #if DEBUG
@@ -1983,6 +2308,7 @@ static void MABStartTintReports(void) {
         MABInstallPopupGuard();   // apps with LNPopupController only (Sileo): popup bar present/dismiss one at a time
         MABInstallMessagesBarFix();   // ChatKit only (Messages): the message bar's height in a window shorter than the screen
         MABRegisterScreenCompat();   // no-op for every app except the small allowlist (see above) — registers only, installs much later
+        MABRegisterFinderDrops();   // files dropped on this app's window from Finder (SpringBoard), and Finder's Share
 #if DEBUG
         MABRegisterFocus();
 #endif
