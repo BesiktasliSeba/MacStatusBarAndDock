@@ -87,6 +87,25 @@ Measured on both test iPads: **Aerial 5.0 is the recommended window engine** on 
 
 **Stage Manager (iPadOS 16.1 and later)** is an option on iPads that have it (or older iPads with TrollPad): Apple's own windowing with our Mac look, and the only engine whose windows move to an external display. It has been tested on iPadOS 16.7.7; on earlier iPadOS 16 versions it may not work yet.
 
+## Memory use
+
+Measured with Apple's `footprint` tool on both test iPads:
+
+- The tweak's own code uses about 1 MB of private memory inside SpringBoard, and under 1 MB inside each app (the small helpers behind features like per-app volume and the app menu).
+- On the iPad Pro 9.7" (2 GB of RAM, iPadOS 16.7.7, Stage Manager engine), SpringBoard used 63 MB with the tweak running, and it stayed flat over a 30 minute check.
+- On the iPad Pro 11" (M1, 16 GB, Aerial 5.0 and about 90 other tweaks), SpringBoard used about 100 MB, also flat.
+- Picture caches, like the Downloads thumbnails, have a fixed size limit, and iOS empties them when memory runs low.
+
+Most of the memory in use on an iPad belongs to Apple's own background services. On the 2 GB iPad, about 250 of them used 1.1 GB together.
+
+### Tips for older iPads with 2 or 3 GB of RAM
+
+- Use **Aerial 5.0** as the window engine (see above).
+- Keep only one window engine loaded, with Choicy or iCleaner Pro.
+- Work with 2 or 3 windows at a time. Every window is a running app, and when memory runs short iPadOS closes apps in the background, so they reload when you go back to them.
+- Turn off what you don't use: Siri Suggestions (Settings > Siri & Search), Handoff (Settings > General > AirPlay & Handoff) and extra widgets. On the 2 GB test iPad the services behind these features used about 100 MB together.
+- Restart the iPad now and then. It had been up for 62 days during these measurements and was busy moving memory in and out of storage.
+
 ## Report a Problem
 
 The **Report a Problem** button (Settings > Status Bar) opens a new GitHub issue with your iPad model, iPadOS version, window engine and tweak version filled in, plus, if the crash protection switched something off recently, what and when, and a few lines naming the tweak's own code that crashed. You see the whole text first and can edit it; nothing is sent unless you submit the issue. Nothing personal is included, and the tweak never collects anything in the background.
