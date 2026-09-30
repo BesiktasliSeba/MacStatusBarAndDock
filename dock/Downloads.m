@@ -28,6 +28,7 @@
 
 #import "DMLog.h"
 #import "../common/ReduceMotion.h"   // (Reduce Motion: the panel fades instead of popping up)
+#define DM_FEATURE_MARK(name) do { static const char *const dmFeatureMark = "msbd-feature:" name; __asm__ volatile("" :: "r"(dmFeatureMark)); } while (0)   // (release-build feature marker, see statusbar/StatusBar.x)
 
 #pragma mark - model
 
@@ -38,6 +39,7 @@
 @property (nonatomic) long long size;
 @property (nonatomic) BOOL directory;
 @property (nonatomic) BOOL viaFiles;   // open with Files (Safari) rather than Filza
+@property (nonatomic, copy) NSString *folded;   // (search) the name without case, accents or width, made once off the main thread
 @end
 @implementation DMDownload
 @end
@@ -173,6 +175,54 @@ static NSArray<DMDownload *> *DMScan(NSArray<DMDownloadSource *> *sources, NSUIn
     }
     [all sortUsingComparator:^NSComparisonResult(DMDownload *a, DMDownload *b) { return [b.date compare:a.date]; }];
     if (all.count > limit) [all removeObjectsInRange:NSMakeRange(limit, all.count - limit)];
+    return all;
+}
+
+// Search (the owner, 30 Sep): what the search field looks through -- every item of every source (not only the 40 newest the panel shows), and the
+// items one level inside the folders there (a zip unpacked into a folder, a folder of downloads). No deeper: a big tree must not make the
+// panel wait. Built off the main thread when the panel opens: the newest kSearchPerFolderCap items of each of the newest kSearchFolders
+// folders, at most kSearchCap items in all, newest first; names are folded once here.
+static const NSUInteger kSearchCap = 3000, kSearchPerFolderCap = 400, kSearchFolders = 100, kSearchReadCap = 5000, kSearchShown = 60;
+static const CGFloat kSearchRowH = 48.0;   // (the search field's part of the footer, with its lines)
+static NSString *DMFold(NSString *s) {
+    return [s stringByFoldingWithOptions:NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch | NSWidthInsensitiveSearch locale:nil] ?: @"";
+}
+static NSArray<DMDownload *> *DMSearchIndex(NSArray<DMDownloadSource *> *sources) {
+    NSMutableArray<DMDownload *> *all = [NSMutableArray array];
+    NSArray *keys = @[NSURLContentModificationDateKey, NSURLCreationDateKey, NSURLFileSizeKey, NSURLIsDirectoryKey, NSURLIsPackageKey];
+    NSArray *partial = @[@"icloud", @"part", @"crdownload", @"download", @"tmp"];
+    // one folder's items, the newest `cap` of them (the listing brings the dates along, so reading them all before choosing costs little)
+    NSArray<DMDownload *> *(^read)(NSURL *, DMDownloadSource *, NSString *, NSUInteger) = ^NSArray<DMDownload *> *(NSURL *folder, DMDownloadSource *src, NSString *where, NSUInteger cap) {
+        NSArray<NSURL *> *urls = [[NSFileManager defaultManager] contentsOfDirectoryAtURL:folder includingPropertiesForKeys:keys
+                                                                                  options:NSDirectoryEnumerationSkipsHiddenFiles error:nil];
+        if (urls.count > kSearchReadCap) urls = [urls subarrayWithRange:NSMakeRange(0, kSearchReadCap)];   // (a folder of many thousands: not all of it)
+        NSMutableArray<DMDownload *> *mine = [NSMutableArray array];
+        for (NSURL *u in urls) {
+            if ([partial containsObject:u.pathExtension.lowercaseString]) continue;
+            NSDictionary *v = [u resourceValuesForKeys:keys error:nil];
+            DMDownload *d = [DMDownload new];
+            d.url = u; d.source = where; d.viaFiles = src.viaFiles;
+            d.date = v[NSURLContentModificationDateKey] ?: v[NSURLCreationDateKey] ?: [NSDate distantPast];
+            d.size = [v[NSURLFileSizeKey] longLongValue];
+            d.directory = [v[NSURLIsDirectoryKey] boolValue] && ![v[NSURLIsPackageKey] boolValue];
+            [mine addObject:d];
+        }
+        [mine sortUsingComparator:^NSComparisonResult(DMDownload *x, DMDownload *y) { return [y.date compare:x.date]; }];
+        if (mine.count > cap) [mine removeObjectsInRange:NSMakeRange(cap, mine.count - cap)];
+        for (DMDownload *d in mine) d.folded = DMFold(d.url.lastPathComponent);
+        return mine;
+    };
+    for (DMDownloadSource *src in sources) {
+        NSArray<DMDownload *> *top = read(src.folder, src, src.name, kSearchCap);
+        [all addObjectsFromArray:top];
+        NSUInteger folders = 0;
+        for (DMDownload *dir in top) {   // (the newest folders first; ("Safari › Folder") names where a match is)
+            if (!dir.directory || ++folders > kSearchFolders) continue;
+            [all addObjectsFromArray:read(dir.url, src, [NSString stringWithFormat:@"%@ \u203A %@", src.name, dir.url.lastPathComponent], kSearchPerFolderCap)];
+        }
+    }
+    [all sortUsingComparator:^NSComparisonResult(DMDownload *x, DMDownload *y) { return [y.date compare:x.date]; }];
+    if (all.count > kSearchCap) [all removeObjectsInRange:NSMakeRange(kSearchCap, all.count - kSearchCap)];
     return all;
 }
 
@@ -389,7 +439,10 @@ static NSString *DMAgeText(NSDate *date) {
 }
 @end
 
-@interface DMDownloadsPanel : NSObject <UIGestureRecognizerDelegate>
+@interface DMDownloadsSearchField : UISearchTextField
+@end
+
+@interface DMDownloadsPanel : NSObject <UIGestureRecognizerDelegate, UITextFieldDelegate>
 + (instancetype)shared;
 @property (nonatomic, strong) UIView *shield;
 @property (nonatomic, strong) UITapGestureRecognizer *outsideTap;
@@ -404,6 +457,43 @@ static NSString *DMAgeText(NSDate *date) {
 - (void)debugTapFolder:(NSInteger)index;
 - (void)startDockWatch;
 - (void)touchBeganOnView:(UIView *)v;
+// search
+@property (nonatomic, strong) NSArray<DMDownload *> *items;        // what the panel opened with (shown while the field is empty)
+@property (nonatomic, strong) NSArray<DMDownload *> *searchIndex;  // everything searchable (DMSearchIndex), nil until built
+@property (nonatomic, strong) NSArray<DMDownload *> *results;      // what the list shows now, newest first
+@property (nonatomic, strong) DMDownloadsSearchField *searchField;
+@property (nonatomic, strong) UIScrollView *list;
+@property (nonatomic, strong) UILabel *emptyLabel;
+@property (nonatomic) CGFloat openListH, openBottom, keyboardTop;  // (layout: the list height and panel bottom it opened with, the keyboard's top edge)
+@property (nonatomic) CGRect keyboardFrame;                         // (the on-screen keyboard in the panel window's coordinates, empty when none)
+@property (nonatomic, strong) id focusLock;                         // SpringBoard's keyboard focus, held while the field is being typed in
+@property (nonatomic, weak) UIWindow *keyWindowBefore;
+- (BOOL)searchFieldWillFocus;
+- (void)searchFieldDidUnfocus;
+- (void)searchEscape;
+- (void)searchChanged;
+- (NSArray<UIView *> *)fillList:(NSArray<DMDownload *> *)items;
+@end
+
+@implementation DMDownloadsSearchField
+// Esc (hardware keyboard): clears the field, or closes the panel when it is already empty. Ahead of the system's own Esc handling.
+- (NSArray<UIKeyCommand *> *)keyCommands {
+    UIKeyCommand *esc = [UIKeyCommand keyCommandWithInput:UIKeyInputEscape modifierFlags:0 action:@selector(dmEscape)];
+    if (@available(iOS 15.0, *)) esc.wantsPriorityOverSystemBehavior = YES;
+    return @[esc];
+}
+- (void)dmEscape { [[DMDownloadsPanel shared] searchEscape]; }
+- (BOOL)becomeFirstResponder {
+    if (![[DMDownloadsPanel shared] searchFieldWillFocus]) return NO;
+    BOOL ok = [super becomeFirstResponder];
+    if (!ok) [[DMDownloadsPanel shared] searchFieldDidUnfocus];
+    return ok;
+}
+- (BOOL)resignFirstResponder {
+    BOOL ok = [super resignFirstResponder];
+    if (ok) [[DMDownloadsPanel shared] searchFieldDidUnfocus];
+    return ok;
+}
 @end
 
 @implementation DMDownloadsPanel
@@ -588,6 +678,11 @@ static BOOL DMDownloadsSwitcherVisible(void) {
     [[NSRunLoop mainRunLoop] addTimer:t forMode:NSRunLoopCommonModes];
 }
 - (void)dismissAnimated:(BOOL)animated {
+    // (search: the keyboard goes and SpringBoard's keyboard focus goes back first; the search is gone with the panel, the next one opens empty)
+    DMDownloadsSearchField *field = self.searchField;
+    if (field.isFirstResponder) [field resignFirstResponder];
+    [self searchFieldDidUnfocus];
+    self.searchField = nil; self.list = nil; self.emptyLabel = nil; self.items = nil; self.searchIndex = nil; self.results = nil;
     UIView *panel = self.panel, *shield = self.shield;
     UITapGestureRecognizer *outsideTap = self.outsideTap;
     self.panel = nil; self.shield = nil; self.outsideTap = nil;
@@ -616,7 +711,20 @@ static BOOL DMDownloadsSwitcherVisible(void) {
         DMLog([NSString stringWithFormat:@"[downloads] scan took %.2f s", CFAbsoluteTimeGetCurrent() - started]);
         dispatch_async(dispatch_get_main_queue(), ^{
             UIView *strongIcon = weakIcon;
-            if (strongIcon.window && ![self isOpen]) [self presentItems:items sources:sources fromIcon:strongIcon];
+            if (!strongIcon.window || [self isOpen]) return;
+            [self presentItems:items sources:sources fromIcon:strongIcon];
+            // the search index, built while the panel is opening (typing before it is ready searches what the panel shows)
+            UIView *panel = self.panel;
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
+                NSArray<DMDownload *> *index = DMSearchIndex(sources);
+                DMLog([NSString stringWithFormat:@"[downloads] search index: %lu items in %.2f s", (unsigned long)index.count, CFAbsoluteTimeGetCurrent() - t0]);
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (self.panel != panel || !panel) return;   // (closed, or another panel since)
+                    self.searchIndex = index;
+                    if (self.searchField.text.length) [self searchChanged];
+                });
+            });
         });
     });
 }
@@ -646,19 +754,22 @@ static BOOL DMDownloadsSwitcherVisible(void) {
 
     // A list that grows upward from the icon: newest at the bottom (closest to the icon), older ones above it, scrollable.
     // It gets as tall as the room above the Dock allows (never under the status bar), at most 10 rows before it scrolls.
-    const CGFloat width = 360.0, pad = 8.0, rowH = 56.0, headerH = 42.0, gap = 14.0, footerH = 30.0;
+    const CGFloat width = 360.0, pad = 8.0, rowH = 56.0, headerH = 42.0, gap = 14.0, footerH = 30.0, searchH = kSearchRowH;
     CGRect iconFrame = [icon.superview convertRect:icon.frame toView:window];
     CGFloat room = iconFrame.origin.y - gap - 54.0;   // 54: keeps clear of the status bar
-    NSUInteger fit = (NSUInteger)MAX(1.0, floor((room - headerH - footerH - 2 * pad) / rowH));
+    NSUInteger fit = (NSUInteger)MAX(1.0, floor((room - headerH - footerH - searchH - 2 * pad) / rowH));
     NSUInteger visible = items.count ? MIN(MIN(items.count, fit), 10) : 0;
     CGFloat listH = items.count ? visible * rowH : 64.0;
-    CGFloat height = headerH + pad + listH + pad + footerH;
+    CGFloat height = headerH + pad + listH + pad + footerH + searchH;
     CGFloat x = MIN(MAX(CGRectGetMidX(iconFrame) - width / 2.0, 12.0), window.bounds.size.width - width - 12.0);
     CGFloat y = iconFrame.origin.y - gap - height;
+    self.items = items; self.results = items; self.searchIndex = nil;
+    self.openListH = listH; self.openBottom = y + height; self.keyboardTop = CGFLOAT_MAX;
 
     UIVisualEffectView *panel = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThickMaterial]];
     panel.layer.cornerRadius = 18.0; panel.layer.cornerCurve = kCACornerCurveContinuous; panel.clipsToBounds = YES;
     panel.layer.borderWidth = 0.5; panel.layer.borderColor = [UIColor colorWithWhite:0.5 alpha:0.35].CGColor;
+    panel.frame = CGRectMake(x, y, width, height);   // (the parts below follow its height when a search grows or shrinks the list)
     UIView *content = panel.contentView;
 
     // header: one button per download folder (Safari, Reynard, ...)
@@ -678,47 +789,63 @@ static BOOL DMDownloadsSwitcherVisible(void) {
     line.backgroundColor = [UIColor colorWithWhite:0.5 alpha:0.35];
     [content addSubview:line];
 
-    NSMutableArray<UIView *> *rows = [NSMutableArray array];
-    if (!items.count) {
-        UILabel *empty = [[UILabel alloc] initWithFrame:CGRectMake(0, headerH + pad, width, 64)];
-        empty.text = @"No recent downloads"; empty.textAlignment = NSTextAlignmentCenter;
-        empty.font = [UIFont systemFontOfSize:14]; empty.textColor = [UIColor secondaryLabelColor];
-        [content addSubview:empty];
-    } else {
-        UIScrollView *scroll = [[UIScrollView alloc] initWithFrame:CGRectMake(pad, headerH + pad, width - 2 * pad, listH)];
-        scroll.showsVerticalScrollIndicator = YES; scroll.alwaysBounceVertical = YES;
-        CGFloat rowW = width - 2 * pad;
-        for (NSUInteger k = 0; k < items.count; k++) {
-            // items are newest first; the newest goes at the bottom, next to the icon
-            DMDownloadRow *row = [[DMDownloadRow alloc] initWithDownload:items[k] width:rowW];
-            row.frame = CGRectMake(0, (items.count - 1 - k) * rowH, rowW, rowH);
-            [row addTarget:self action:@selector(rowTapped:) forControlEvents:UIControlEventTouchUpInside];
-            [scroll addSubview:row];
-            if (k < visible) [rows addObject:row];
-        }
-        scroll.contentSize = CGSizeMake(rowW, items.count * rowH);
-        scroll.contentOffset = CGPointMake(0, MAX(0.0, scroll.contentSize.height - listH));   // start at the newest
-        [content addSubview:scroll];
-    }
+    UILabel *empty = [[UILabel alloc] initWithFrame:CGRectMake(0, headerH + pad, width, listH)];
+    empty.text = @"No recent downloads"; empty.textAlignment = NSTextAlignmentCenter;
+    empty.font = [UIFont systemFontOfSize:14]; empty.textColor = [UIColor secondaryLabelColor];
+    empty.autoresizingMask = UIViewAutoresizingFlexibleHeight;
+    empty.hidden = items.count > 0;
+    [content addSubview:empty];
+    self.emptyLabel = empty;
+    UIScrollView *scroll = [[UIScrollView alloc] initWithFrame:CGRectMake(pad, headerH + pad, width - 2 * pad, listH)];
+    scroll.showsVerticalScrollIndicator = YES; scroll.alwaysBounceVertical = YES;
+    scroll.autoresizingMask = UIViewAutoresizingFlexibleHeight;
+    scroll.hidden = !items.count;
+    [content addSubview:scroll];
+    self.list = scroll;
+    NSArray<UIView *> *built = [self fillList:items];
+    NSArray<UIView *> *rows = [built subarrayWithRange:NSMakeRange(0, visible)];   // (the ones on the screen pop up below)
 
-    // footer: a quiet "Downloads From..." link to the browser picker in Settings (like "Open in Finder" under a macOS stack)
-    UIView *footLine = [[UIView alloc] initWithFrame:CGRectMake(pad, height - footerH, width - 2 * pad, 0.5)];
+    // footer: a quiet "Downloads From..." link to the browser picker in Settings (like "Open in Finder" under a macOS stack), and under it,
+    // between its own lines, the search field. Both stay at the bottom (flexible top margin) when a search changes the list's height.
+    UIView *foot = [[UIView alloc] initWithFrame:CGRectMake(0, height - footerH - searchH, width, footerH + searchH)];
+    foot.autoresizingMask = UIViewAutoresizingFlexibleTopMargin;
+    [content addSubview:foot];
+    UIView *footLine = [[UIView alloc] initWithFrame:CGRectMake(pad, 0, width - 2 * pad, 0.5)];
     footLine.backgroundColor = [UIColor colorWithWhite:0.5 alpha:0.35];
-    [content addSubview:footLine];
+    [foot addSubview:footLine];
     UIButton *from = [UIButton buttonWithType:UIButtonTypeSystem];
-    [from setTitle:@"Downloads From\u2026" forState:UIControlStateNormal];
+    [from setTitle:@"Downloads From…" forState:UIControlStateNormal];
     from.titleLabel.font = [UIFont systemFontOfSize:13];
     [from setTitleColor:[UIColor secondaryLabelColor] forState:UIControlStateNormal];
     [from setTitleColor:[UIColor tertiaryLabelColor] forState:UIControlStateHighlighted];
     UIImage *gear = [UIImage systemImageNamed:@"gearshape" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:12 weight:UIImageSymbolWeightRegular]];   // (a small gear on the left: it opens Settings)
-    if (gear) { [from setImage:gear forState:UIControlStateNormal]; from.tintColor = [UIColor secondaryLabelColor]; [from setTitle:@" Downloads From\u2026" forState:UIControlStateNormal]; }   // (a space between gear and text)
+    if (gear) { [from setImage:gear forState:UIControlStateNormal]; from.tintColor = [UIColor secondaryLabelColor]; [from setTitle:@" Downloads From…" forState:UIControlStateNormal]; }   // (a space between gear and text)
     [from sizeToFit];
     CGFloat fw = from.bounds.size.width + 16.0 + (gear ? 4.0 : 0.0);
-    from.frame = CGRectMake(width - pad - fw, height - footerH + 1.0, fw, footerH - 2.0);
+    from.frame = CGRectMake(width - pad - fw, 1.0, fw, footerH - 2.0);
     from.pointerInteractionEnabled = YES;
     from.accessibilityIdentifier = @"DMDownloadsFrom";
     [from addTarget:self action:@selector(sourcesTapped:) forControlEvents:UIControlEventTouchUpInside];
-    [content addSubview:from];
+    [foot addSubview:from];
+    // the search field: the Mac's rounded field with a magnifying glass, "Search" and a clear button, between a line above and one below
+    UIView *searchLine = [[UIView alloc] initWithFrame:CGRectMake(pad, footerH, width - 2 * pad, 0.5)];
+    searchLine.backgroundColor = footLine.backgroundColor;
+    [foot addSubview:searchLine];
+    DMDownloadsSearchField *field = [[DMDownloadsSearchField alloc] initWithFrame:CGRectMake(pad + 2.0, footerH + 7.0, width - 2 * pad - 4.0, 28.0)];
+    field.placeholder = @"Search";
+    field.font = [UIFont systemFontOfSize:14];
+    field.clearButtonMode = UITextFieldViewModeAlways;   // (like the Mac: the x shows whenever there is text)
+    field.autocorrectionType = UITextAutocorrectionTypeNo; field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    field.spellCheckingType = UITextSpellCheckingTypeNo; field.smartQuotesType = UITextSmartQuotesTypeNo; field.smartDashesType = UITextSmartDashesTypeNo;
+    field.returnKeyType = UIReturnKeySearch; field.enablesReturnKeyAutomatically = YES;
+    field.accessibilityIdentifier = @"DMDownloadsSearch";
+    field.delegate = self;
+    [field addTarget:self action:@selector(searchChanged) forControlEvents:UIControlEventEditingChanged];
+    [foot addSubview:field];
+    self.searchField = field;
+    UIView *searchLine2 = [[UIView alloc] initWithFrame:CGRectMake(pad, footerH + searchH - 6.5, width - 2 * pad, 0.5)];
+    searchLine2.backgroundColor = footLine.backgroundColor;
+    [foot addSubview:searchLine2];
 
     panel.frame = CGRectMake(x, y, width, height);
     panel.alpha = 0.0;
@@ -754,6 +881,12 @@ static BOOL DMDownloadsSwitcherVisible(void) {
     if (found) [(UIControl *)found sendActionsForControlEvents:UIControlEventTouchUpInside];
 }
 - (void)shieldTapped { DMLog(@"[downloads] closes: a tap outside (the window's tap recogniser)"); [self dismissAnimated:YES]; }
+// The on-screen keyboard's windows (SpringBoard's own while the search field is typed in): a touch there is typing, not a touch outside.
+static BOOL DMIsTypingInKeyboard(UIWindow *w) {
+    if (!w || ![[DMDownloadsPanel shared].searchField isFirstResponder]) return NO;
+    NSString *c = NSStringFromClass([w class]);
+    return [c containsString:@"Keyboard"] || [c isEqualToString:@"UITextEffectsWindow"];
+}
 - (void)touchBeganOnView:(UIView *)v {   // any touch in SpringBoard's own windows (Home Screen, other windows): outside the panel and its icon = close
     if (![self isOpen] || !v) return;
     if ([v isDescendantOfView:self.panel]) return;
@@ -761,6 +894,7 @@ static BOOL DMDownloadsSwitcherVisible(void) {
     // touch is really for: it said nothing about where the touch was, and closed the panel on a scroll inside it or a trackpad touch (M1).
     // Only touches in SpringBoard's own content windows count; touches in apps are reported by MacAppBridge.
     if ([NSStringFromClass([v.window class]) isEqualToString:@"_UISystemGestureWindow"]) return;
+    if (DMIsTypingInKeyboard(v.window)) return;   // (typing on the on-screen keyboard into the search field)
     for (UIView *x = v; x; x = x.superview) if ([NSStringFromClass([x class]) containsString:@"FloatingDock"]) return;   // (the Dock itself: its own icon toggles)
     DMLog([NSString stringWithFormat:@"[downloads] closes: a touch began on %@ in %@", NSStringFromClass([v class]), NSStringFromClass([v.window class])]);
     [self dismissAnimated:YES];
@@ -774,6 +908,156 @@ static BOOL DMDownloadsSwitcherVisible(void) {
     DMLog(@"[downloads] closes: a file was picked");
     [self dismissAnimated:YES];
     DMOpenPath(row.download.url, row.download.viaFiles);
+}
+
+#pragma mark search
+
+// The list's rows for these items (newest first; the newest at the bottom, next to the icon). Returns the rows in the items' order.
+- (NSArray<UIView *> *)fillList:(NSArray<DMDownload *> *)items {
+    UIScrollView *scroll = self.list;
+    for (UIView *v in [scroll.subviews copy]) if ([v isKindOfClass:[DMDownloadRow class]]) [v removeFromSuperview];
+    const CGFloat rowH = 56.0, rowW = scroll.bounds.size.width;
+    NSMutableArray<UIView *> *rows = [NSMutableArray array];
+    for (NSUInteger k = 0; k < items.count; k++) {
+        DMDownloadRow *row = [[DMDownloadRow alloc] initWithDownload:items[k] width:rowW];
+        row.frame = CGRectMake(0, (items.count - 1 - k) * rowH, rowW, rowH);
+        [row addTarget:self action:@selector(rowTapped:) forControlEvents:UIControlEventTouchUpInside];
+        [scroll addSubview:row];
+        [rows addObject:row];
+    }
+    scroll.contentSize = CGSizeMake(rowW, items.count * rowH);
+    [self pinListToBottom];
+    return rows;
+}
+// Fewer rows than the list has room for (a search): they sit at its bottom, next to the field, like the list itself sits next to the icon.
+- (void)pinListToBottom {
+    UIScrollView *scroll = self.list;
+    CGFloat h = scroll.bounds.size.height, content = scroll.contentSize.height;
+    scroll.contentInset = UIEdgeInsetsMake(MAX(0.0, h - content), 0, 0, 0);
+    scroll.contentOffset = CGPointMake(0, MAX(-scroll.contentInset.top, content - h));   // start at the newest
+}
+// The panel's height for what it shows now: the list as tall as the results need (never shorter than it opened, at most 10 rows), the bottom
+// where it opened -- or above the on-screen keyboard while that covers it -- and the top never under the status bar.
+- (void)relayoutAnimated:(BOOL)animated {
+    UIView *panel = self.panel;
+    if (!panel) return;
+    const CGFloat rowH = 56.0, chrome = 42.0 + 8.0 + 8.0 + 30.0 + kSearchRowH;
+    BOOL searching = self.searchField.text.length > 0;
+    CGFloat want = searching ? MAX(self.openListH, (self.results.count ? MIN(self.results.count, (NSUInteger)10) * rowH : 64.0)) : self.openListH;
+    CGFloat bottom = MIN(self.openBottom, self.keyboardTop - 10.0);
+    CGFloat listH = MAX(rowH, MIN(want, bottom - 54.0 - chrome));
+    CGFloat height = listH + chrome;
+    // (the anchor point is at the bottom edge: the frame is set through bounds and position so the pop-up transform stays untouched)
+    CGRect b = panel.bounds; b.size.height = height;
+    CGPoint pos = panel.layer.position; pos.y = bottom;
+    if (CGRectEqualToRect(b, panel.bounds) && CGPointEqualToPoint(pos, panel.layer.position)) { [self pinListToBottom]; return; }
+    void (^apply)(void) = ^{ panel.bounds = b; panel.layer.position = pos; [panel layoutIfNeeded]; [self pinListToBottom]; };
+    if (animated && !MSBReduceMotion()) [UIView animateWithDuration:0.18 delay:0 options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionCurveEaseOut animations:apply completion:nil];
+    else apply();
+}
+// Every change of the text: the items whose name contains it, case, accents and width ignored (a search for "cafe" finds "Café"), newest
+// first, at most kSearchShown of them. Searches the index once it is built, before that what the panel shows.
+- (void)searchChanged {
+    NSString *q = [self.searchField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] ?: @"";
+    NSArray<DMDownload *> *results;
+    if (!q.length) results = self.items;
+    else {
+        DM_FEATURE_MARK("dock-downloads-search");
+        NSString *fq = DMFold(q);
+        NSMutableArray<DMDownload *> *found = [NSMutableArray array];
+        for (DMDownload *d in self.searchIndex ?: self.items) {
+            NSString *name = d.folded ?: (d.folded = DMFold(d.url.lastPathComponent));
+            if ([name containsString:fq]) { [found addObject:d]; if (found.count >= kSearchShown) break; }
+        }
+        results = found;
+    }
+    self.results = results;
+    [self fillList:results];
+    self.list.hidden = !results.count;
+    self.emptyLabel.hidden = results.count > 0;
+    self.emptyLabel.text = q.length ? @"No Results" : @"No recent downloads";
+    [self relayoutAnimated:YES];
+    DMLog([NSString stringWithFormat:@"[downloads] search: %lu characters -> %lu results (%@)", (unsigned long)q.length, (unsigned long)results.count, self.searchIndex ? @"index" : @"shown items"]);
+}
+// Return opens the first result (the newest match), as a tap on it would.
+- (BOOL)textFieldShouldReturn:(UITextField *)textField {
+    DMDownload *d = textField.text.length ? self.results.firstObject : nil;
+    DMLog([NSString stringWithFormat:@"[downloads] search: Return -> %@", d ? @"opens the first result" : @"nothing to open"]);
+    if (!d) return NO;
+    [self dismissAnimated:YES];
+    DMOpenPath(d.url, d.viaFiles);
+    return NO;
+}
+- (void)searchEscape {
+    if (self.searchField.text.length) { DMLog(@"[downloads] search: Esc clears the field"); self.searchField.text = @""; [self searchChanged]; return; }
+    DMLog(@"[downloads] closes: Esc in the empty search field");
+    [self dismissAnimated:YES];
+}
+// The panel lives in the Dock's window, in SpringBoard. For the field to get the keys (on-screen or hardware keyboard), SpringBoard has to hold the
+// keyboard focus -- normally it is the front app's -- and the Dock's window has to be SpringBoard's key window (it was not: the key window was the
+// Home Screen's or the switcher's, so the field never got the keys). While the field is typed in, the Dock's window is key, and the window that
+// was key before is made key again afterwards. The focus: on iPadOS 16 SpringBoard already holds it itself while the Dock is up over apps (its
+// "FloatingDock" focus lock, seen in SBWorkspaceKeyboardFocusController, and the panel always brings the Dock up), so the keys come to SpringBoard
+// with nothing more; where the controller has -lockFocusToSpringBoardForReason: (iPadOS 15) that lock is held too, and released when the field
+// lets go (the app that had the focus gets it back).
+- (BOOL)searchFieldWillFocus {
+    if (![self isOpen]) return NO;
+    UIWindow *window = self.panel.window;
+    if (!self.focusLock) {
+        id ws = nil; Class wsClass = objc_getClass("SBMainWorkspace");
+        if (wsClass && [(id)wsClass respondsToSelector:@selector(sharedInstance)]) ws = ((id (*)(id, SEL))objc_msgSend)((id)wsClass, @selector(sharedInstance));
+        SEL kfcSel = NSSelectorFromString(@"keyboardFocusController"), lockSel = NSSelectorFromString(@"lockFocusToSpringBoardForReason:");
+        id kfc = [ws respondsToSelector:kfcSel] ? ((id (*)(id, SEL))objc_msgSend)(ws, kfcSel) : nil;
+        @try {
+            if ([kfc respondsToSelector:lockSel]) self.focusLock = ((id (*)(id, SEL, id))objc_msgSend)(kfc, lockSel, @"MacDock Downloads search");
+        } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[downloads] search: the focus lock threw %@", e]); }
+        DMLog([NSString stringWithFormat:@"[downloads] search: keyboard focus controller %@, lock %@", kfc ? NSStringFromClass([kfc class]) : @"none", self.focusLock ? NSStringFromClass([self.focusLock class]) : @"none"]);
+    }
+    if (window && !window.isKeyWindow) {
+        UIWindow *key = nil;
+        for (UIWindow *w in window.windowScene.windows) if (w.isKeyWindow) key = w;
+        self.keyWindowBefore = key;
+        [window makeKeyWindow];
+        DMLog([NSString stringWithFormat:@"[downloads] search: %@ made key (was %@), key now %d", NSStringFromClass([window class]), key ? NSStringFromClass([key class]) : @"none", window.isKeyWindow]);
+    }
+    [self watchKeyboard:YES];
+    return YES;
+}
+- (void)searchFieldDidUnfocus {
+    [self watchKeyboard:NO];
+    id lock = self.focusLock;
+    self.focusLock = nil;
+    if (lock && [lock respondsToSelector:@selector(invalidate)]) { ((void (*)(id, SEL))objc_msgSend)(lock, @selector(invalidate)); DMLog(@"[downloads] search: keyboard focus given back"); }
+    UIWindow *before = self.keyWindowBefore;
+    self.keyWindowBefore = nil;
+    if (before && !before.hidden && before.windowScene) [before makeKeyWindow];
+    self.keyboardFrame = CGRectZero;
+    if (self.keyboardTop < CGFLOAT_MAX) { self.keyboardTop = CGFLOAT_MAX; [self relayoutAnimated:YES]; }
+}
+// The on-screen keyboard covers the bottom of the screen, the Dock and the field with it: while it is up the panel stands above it.
+- (void)watchKeyboard:(BOOL)on {
+    NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
+    [nc removeObserver:self name:UIKeyboardWillChangeFrameNotification object:nil];
+    [nc removeObserver:self name:UIKeyboardWillHideNotification object:nil];
+    if (!on) return;
+    [nc addObserver:self selector:@selector(keyboardWillChange:) name:UIKeyboardWillChangeFrameNotification object:nil];
+    [nc addObserver:self selector:@selector(keyboardWillChange:) name:UIKeyboardWillHideNotification object:nil];
+}
+- (void)keyboardWillChange:(NSNotification *)n {
+    UIWindow *window = self.panel.window;
+    if (!window) return;
+    CGRect end = [n.userInfo[UIKeyboardFrameEndUserInfoKey] CGRectValue];
+    // (SpringBoard itself stays portrait -- only its windows turn -- so its keyboard frames come in the screen's fixed, portrait space: seen in landscape
+    // as {360, 0, 408, 1024} for a keyboard across the bottom. Read as interface space, that put the panel above the top of the screen.)
+    CGRect k = [window convertRect:end fromCoordinateSpace:window.screen.fixedCoordinateSpace];
+    BOOL gone = [n.name isEqualToString:UIKeyboardWillHideNotification] || CGRectIsEmpty(k) || CGRectGetMinY(k) >= CGRectGetMaxY(window.bounds) - 1.0
+             || !CGRectIntersectsRect(k, window.bounds);
+    CGFloat top = gone ? CGFLOAT_MAX : CGRectGetMinY(k);
+    DMLog([NSString stringWithFormat:@"[downloads] search: keyboard %@ (top %.0f; end frame %@ -> %@ in the panel's window)", gone ? @"gone" : @"up", gone ? -1.0 : top, NSStringFromCGRect(end), NSStringFromCGRect(k)]);
+    self.keyboardFrame = gone ? CGRectZero : k;
+    if (top == self.keyboardTop) return;
+    self.keyboardTop = top;
+    [self relayoutAnimated:YES];
 }
 // "Downloads From...": closes the panel the way picking a file does, then Settings opens on Dock > Downloads From (the browser picker). The
 // link is handled by our Dock row in Settings (DockSettingsRow.x), also when Settings is not running yet. Never while the screen is locked.
@@ -907,6 +1191,62 @@ void DMDownloadsStartDebugPolling(void) {
         [[DMDownloadsPanel shared] debugTapFolder:n];
     });
     dispatch_resume(folderTimer);
+    // `echo <cmd> > /tmp/dockmag-search` drives the search of the open panel: focus, q:<text>, return, esc, resign, state (counts only, no names)
+    static dispatch_source_t searchTimer;
+    static struct timespec lastSearch;
+    searchTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(searchTimer, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), 300 * NSEC_PER_MSEC, 50 * NSEC_PER_MSEC);
+    dispatch_source_set_event_handler(searchTimer, ^{
+        struct stat st;
+        if (stat("/tmp/dockmag-search", &st) != 0 || (st.st_mtimespec.tv_sec == lastSearch.tv_sec && st.st_mtimespec.tv_nsec == lastSearch.tv_nsec)) return;
+        lastSearch = st.st_mtimespec;
+        NSString *cmd = [[NSString stringWithContentsOfFile:@"/tmp/dockmag-search" encoding:NSUTF8StringEncoding error:nil] stringByTrimmingCharactersInSet:[NSCharacterSet newlineCharacterSet]] ?: @"";
+        DMDownloadsPanel *p = [DMDownloadsPanel shared];
+        DMDownloadsSearchField *f = p.searchField;
+        if (!f) { DMLog(@"[downloads] debug search: no panel"); return; }
+        if ([cmd isEqualToString:@"focus"]) DMLog([NSString stringWithFormat:@"[downloads] debug search: becomeFirstResponder %d", [f becomeFirstResponder]]);
+        else if ([cmd hasPrefix:@"q:"]) { f.text = [cmd substringFromIndex:2]; [p searchChanged]; }
+        else if ([cmd isEqualToString:@"return"]) [p textFieldShouldReturn:f];
+        else if ([cmd isEqualToString:@"esc"]) [p searchEscape];
+        else if ([cmd isEqualToString:@"resign"]) [f resignFirstResponder];
+        else if ([cmd isEqualToString:@"light"] || [cmd isEqualToString:@"dark"] || [cmd isEqualToString:@"system"])   // (the panel's look in the other mode, no setting changed)
+            p.panel.overrideUserInterfaceStyle = [cmd isEqualToString:@"light"] ? UIUserInterfaceStyleLight : [cmd isEqualToString:@"dark"] ? UIUserInterfaceStyleDark : UIUserInterfaceStyleUnspecified;
+        else if ([cmd isEqualToString:@"hit"]) {   // where a tap on the field goes: the Dock window's own hit test, and the render server's context there
+            UIWindow *w = f.window;
+            CGPoint c = [f convertPoint:CGPointMake(CGRectGetMidX(f.bounds), CGRectGetMidY(f.bounds)) toView:w];
+            UIView *hit = [w hitTest:c withEvent:nil];
+            unsigned mine = 0; @try { mine = ((unsigned (*)(id, SEL))objc_msgSend)(w, NSSelectorFromString(@"_contextId")); } @catch (id e) {}
+            NSMutableString *out = [NSMutableString stringWithFormat:@"[downloads] debug hit: field centre %@ in %@ (context %u, level %.0f) -> %@", NSStringFromCGPoint(c), NSStringFromClass([w class]), mine, w.windowLevel, hit ? NSStringFromClass([hit class]) : @"nil"];
+            Class serverClass = objc_getClass("CAWindowServer");
+            id server = [serverClass respondsToSelector:NSSelectorFromString(@"serverIfRunning")] ? ((id (*)(id, SEL))objc_msgSend)((id)serverClass, NSSelectorFromString(@"serverIfRunning")) : nil;
+            id display = [[server valueForKey:@"displays"] firstObject];
+            SEL at = NSSelectorFromString(@"contextIdAtPosition:");
+            if ([display respondsToSelector:at]) for (NSNumber *k in @[@1, @2]) {
+                CGPoint q = CGPointMake(c.x * k.doubleValue, c.y * k.doubleValue);
+                [out appendFormat:@"; server context at %@ = %u", NSStringFromCGPoint(q), ((unsigned (*)(id, SEL, CGPoint))objc_msgSend)(display, at, q)];
+            } else [out appendString:@"; no window server here"];
+            for (UIWindow *x in [UIWindow allWindowsIncludingInternalWindows:YES onlyVisibleWindows:YES]) {
+                unsigned cid = 0; @try { cid = ((unsigned (*)(id, SEL))objc_msgSend)(x, NSSelectorFromString(@"_contextId")); } @catch (id e) {}
+                if (!x.hidden && cid) [out appendFormat:@"\n  %@=%u level %.0f", NSStringFromClass([x class]), cid, x.windowLevel];
+                if (![NSStringFromClass([x class]) isEqualToString:@"_UISystemGestureWindow"]) continue;
+                NSMutableArray *all = [NSMutableArray array], *stack = [NSMutableArray arrayWithObject:x];
+                while (stack.count) { UIView *v = stack.lastObject; [stack removeLastObject]; [all addObjectsFromArray:v.gestureRecognizers ?: @[]]; [stack addObjectsFromArray:v.subviews]; }
+                for (UIGestureRecognizer *g in all) {   // (the system gestures: who decides for each, and what it calls)
+                    NSString *targets = @"";
+                    @try { targets = [[g valueForKey:@"_targets"] description] ?: @""; } @catch (id e) {}
+                    [out appendFormat:@"\n    gesture %@ name %@ enabled %d delegate %@ targets %@", NSStringFromClass([g class]), g.name, g.enabled,
+                           g.delegate ? NSStringFromClass([(NSObject *)g.delegate class]) : @"-", [[targets stringByReplacingOccurrencesOfString:@"\n" withString:@" "] substringToIndex:MIN(targets.length, (NSUInteger)220)]];
+                }
+            }
+            DMLog(out);
+        }
+        UIWindow *key = nil;
+        for (UIWindow *w in p.panel.window.windowScene.windows) if (w.isKeyWindow) key = w;
+        DMLog([NSString stringWithFormat:@"[downloads] debug search state: open %d, chars %lu, results %lu, index %ld, first responder %d, key window %@, lock %d, keyboard top %.0f, panel %@",
+               [p isOpen], (unsigned long)f.text.length, (unsigned long)p.results.count, p.searchIndex ? (long)p.searchIndex.count : -1L, f.isFirstResponder,
+               key ? NSStringFromClass([key class]) : @"none", p.focusLock != nil, p.keyboardTop == CGFLOAT_MAX ? -1.0 : p.keyboardTop, NSStringFromCGRect(p.panel.frame)]);
+    });
+    dispatch_resume(searchTimer);
 }
 #endif
 
@@ -914,8 +1254,12 @@ BOOL DMDownloadsPanelContainsTouch(UITouch *touch) {
     DMDownloadsPanel *p = [DMDownloadsPanel shared];
     if (![p isOpen] || !touch) return NO;
     UIView *panel = p.panel;
+    if (DMIsTypingInKeyboard(touch.window)) return YES;   // (typing into the search field: the Dock does not go, and the panel with it)
     CGPoint s = [touch locationInView:nil];   // (the touch's own window coordinates)
-    CGPoint inPanel = [panel convertPoint:[touch.window convertPoint:s toCoordinateSpace:touch.window.screen.coordinateSpace] fromCoordinateSpace:panel.window.screen.coordinateSpace];
+    CGPoint onScreen = [touch.window convertPoint:s toCoordinateSpace:touch.window.screen.coordinateSpace];
+    // (the Dock's dismiss gesture sees the touch in SpringBoard's system gesture window, not in the keyboard's: where the keyboard is, it is typing)
+    if (p.searchField.isFirstResponder && CGRectContainsPoint(p.keyboardFrame, [panel.window convertPoint:onScreen fromCoordinateSpace:panel.window.screen.coordinateSpace])) return YES;
+    CGPoint inPanel = [panel convertPoint:onScreen fromCoordinateSpace:panel.window.screen.coordinateSpace];
     return CGRectContainsPoint(CGRectInset(panel.bounds, -8.0, -8.0), inPanel);
 }
 void DMDownloadsTouchBegan(UIView *view) { [[DMDownloadsPanel shared] touchBeganOnView:view]; }

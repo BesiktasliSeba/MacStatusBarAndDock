@@ -41,6 +41,7 @@
 #import "../common/AlertQueue.h"   // (MSBDMakeAlertWindow / MSBDAlertBusy / MSBDAlertCloseOnLock: our alerts one at a time, never over the Lock Screen)
 #import "../common/ReduceMotion.h"  // (MSBReduceMotion / MSBAnimate: Reduce Motion turns our zooms and springs into short cross-fades)
 #import "../common/OtherTweaks.h"   // (MSBDOtherTweakDoing: Single Mute already shows the mute icon -> ours steps aside)
+#import "../common/UpdateCheck.h"   // (the Apple menu's update row: a newer version in the package managers' own downloaded lists)
 #import "../common/VPNRespring.h"  // (no respring into Aerial 5.0's start-up hang while a VPN reconnects: the warning, and the VPN state for Settings)
 
 extern int proc_pid_rusage(int pid, int flavor, rusage_info_t *buffer);
@@ -11626,8 +11627,36 @@ static void DMOpenMenu(UIButton *btn) {
                               : @"Force Quit";
     NSArray *runningApps = DMUserRunningApps();   // the apps "Force Quit All Apps…" would quit
 
-    NSArray *items = @[
-        [[DMRow alloc] initWithTitle:@"About This iPad" enabled:YES handler:^{ DMShowAbout(host); }],
+    // A newer MacStatusBar&Dock waiting in Sileo's or Zebra's downloaded package list: its own row, right under About This iPad, like a Mac's
+    // "1 update" (nothing is fetched by us: common/UpdateCheck.h). Only while there is one.
+    NSString *installedVersion = MSBDPackageVersion(MSBD_PACKAGE_ID);
+#if DEBUG
+    {   // (debug /tmp/msb-fake-installed: the version written there counts as installed, to see the row without an older package)
+        NSString *fake = [[NSString stringWithContentsOfFile:@"/tmp/msb-fake-installed" encoding:NSUTF8StringEncoding error:nil] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (fake.length) installedVersion = fake;
+    }
+#endif
+    NSString *update = MSBDUpdateAvailable(installedVersion);
+    DMLog([NSString stringWithFormat:@"[update] installed %@, newest in the package managers' lists %@ (%lu list files) -> %@", installedVersion, MSBDNewestListedVersion(), (unsigned long)MSBDRepoListFiles().count, update ?: @"no update"]);
+    NSString *managerID = nil;
+    NSURL *updateURL = update ? MSBDPackageManagerURL(^BOOL(NSString *bid) {
+        return ((id (*)(id, SEL, id))objc_msgSend)(DMCall(objc_getClass("SBApplicationController"), @"sharedInstance"), NSSelectorFromString(@"applicationWithBundleIdentifier:"), bid) != nil;
+    }, &managerID) : nil;
+    NSMutableArray *updateRows = [NSMutableArray array];
+    if (update && updateURL) {
+        DM_FEATURE_MARK("apple-menu-update");
+        [updateRows addObject:[[DMRow alloc] initWithTitle:[NSString stringWithFormat:@"Update Available (%@)…", update] enabled:YES handler:DMCloseThen(^{
+            // (a package manager started by the link drops it while it starts up -- Sileo opened on Featured: once it runs, the link again)
+            id mgrApp = ((id (*)(id, SEL, id))objc_msgSend)(DMCall(objc_getClass("SBApplicationController"), @"sharedInstance"), NSSelectorFromString(@"applicationWithBundleIdentifier:"), managerID);
+            BOOL running = [mgrApp respondsToSelector:NSSelectorFromString(@"isRunning")] && ((BOOL (*)(id, SEL))objc_msgSend)(mgrApp, NSSelectorFromString(@"isRunning"));
+            [[UIApplication sharedApplication] openURL:updateURL options:@{} completionHandler:nil];
+            if (!running) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [[UIApplication sharedApplication] openURL:updateURL options:@{} completionHandler:nil];
+            });
+        })]];
+    }
+    NSArray *items = [@[
+        [[DMRow alloc] initWithTitle:@"About This iPad" enabled:YES handler:^{ DMShowAbout(host); }]] arrayByAddingObjectsFromArray:[updateRows arrayByAddingObjectsFromArray:@[
         [NSNull null],
         [[DMRow alloc] initWithTitle:@"App Store…" enabled:YES handler:DMCloseThen(^{ DMAppStoreUpdates(); })],
         [NSNull null],
@@ -11658,7 +11687,7 @@ static void DMOpenMenu(UIButton *btn) {
                           @"You will need to run Dopamine again after turning it back on.",
                           @"Shut Down", YES, ^{ DMShutDown(); });
         }],
-    ];
+    ]]];
 
     UIControl *o = DMMakeOverlay(host, 0.0);
     [o addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { DMCloseOverlay(); }]

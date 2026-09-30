@@ -285,6 +285,19 @@ BOOL DMDockPointerHovering(void) { return gHovering; }
     %orig;
 }
 %end
+// With windows on the screen (Stage Manager), a tap brings the window under it forward (SpringBoard's "tap to bring item container forward"
+// system gesture, SBFluidSwitcherGestureManager). It knows nothing of the Downloads panel above the Dock: a tap on the panel's search field
+// brought the window under the field forward (iPad 2, iOS 16, 30 Sep), so the wrong app got the keyboard back after the search. The panel is
+// part of the Dock, where that gesture never starts: a touch on it -- or on the on-screen keyboard while its search is typed in -- is left out.
+%group DMPanelNoBringForward   // (only where SpringBoard has this method: see %ctor)
+%hook SBFluidSwitcherGestureManager
+- (BOOL)_shouldTapToBringItemContainerForward:(UIGestureRecognizer *)g receiveTouch:(UITouch *)touch {
+    extern BOOL DMDownloadsPanelContainsTouch(UITouch *touch);
+    if (gKeepDockVisible && DMDownloadsPanelContainsTouch(touch)) return NO;
+    return %orig;
+}
+%end
+%end
 %hook SBFloatingDockView
 - (void)layoutSubviews {
     %orig;
@@ -1431,6 +1444,7 @@ static void DMRemoveFromDock(id icon) {
     }
     if ([objc_getClass("SBFloatingDockSuggestionsViewController") instancesRespondToSelector:NSSelectorFromString(@"initWithNumberOfRecents:iconController:applicationController:layoutStateTransitionCoordinator:suggestionsModel:iconViewProvider:")]) %init(DMRecentsList);
     else DMLog(@"[recents] this iOS has no -[SBFloatingDockSuggestionsViewController initWithNumberOfRecents:...]: the list keeps SpringBoard's size");
+    if ([objc_getClass("SBFluidSwitcherGestureManager") instancesRespondToSelector:NSSelectorFromString(@"_shouldTapToBringItemContainerForward:receiveTouch:")]) %init(DMPanelNoBringForward);
     if ([objc_getClass("SBFloatingDockSuggestionsModel") instancesRespondToSelector:NSSelectorFromString(@"initWithMaximumNumberOfSuggestions:homeScreenContextProvider:recentsController:recentsDataStore:recentsDefaults:floatingDockDefaults:appSuggestionManager:applicationController:")]) %init(DMRecentsModel18);
     if ([objc_getClass("SBFloatingDockSuggestionsViewController") instancesRespondToSelector:NSSelectorFromString(@"initWithNumberOfRecents:homeScreenContextProvider:applicationController:layoutStateTransitionCoordinator:suggestionsModel:iconViewProvider:")]) %init(DMRecentsList18);
 #if DEBUG   // (the /tmp/dockmag-* test helpers exist only in debug builds)

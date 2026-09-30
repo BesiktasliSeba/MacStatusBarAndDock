@@ -170,7 +170,47 @@ static UIView *MABFindSymbolView(UIView *v, NSString *symbol, int depth) {
     for (UIView *sub in v.subviews.reverseObjectEnumerator) { UIView *f = MABFindSymbolView(sub, symbol, depth + 1); if (f) return f; }
     return nil;
 }
+// A toolbar / navigation bar button (UIBarButtonItem, drawn as a private _UIButtonBarButton) does not act on a touch-up-inside sent to its view: Notes'
+// Share button was found and "tapped", and nothing opened (iPad 2, 30 Sep). Its item is found instead (the bar item whose view holds it) and its own
+// action runs, as a real tap on it would: its primary action, else its target/action with the item as the sender (a share sheet anchors to it).
+static UIBarButtonItem *MABBarItemForView(UIView *v) {
+    NSMutableArray<UIViewController *> *todo = [NSMutableArray array];
+    UIViewController *root = v.window.rootViewController; if (root) [todo addObject:root];
+    while (todo.count) {
+        UIViewController *vc = todo.lastObject; [todo removeLastObject];
+        NSMutableArray *items = [NSMutableArray array];
+        UINavigationItem *ni = vc.navigationItem;
+        if (ni.leftBarButtonItems) [items addObjectsFromArray:ni.leftBarButtonItems];
+        if (ni.rightBarButtonItems) [items addObjectsFromArray:ni.rightBarButtonItems];
+        if (vc.toolbarItems) [items addObjectsFromArray:vc.toolbarItems];
+        for (UIBarButtonItem *it in items) {
+            UIView *iv = nil; @try { iv = [it valueForKey:@"view"]; } @catch (id e) {}
+            if ([iv isKindOfClass:[UIView class]] && (v == iv || [v isDescendantOfView:iv])) return it;
+        }
+        [todo addObjectsFromArray:vc.childViewControllers];
+        if (vc.presentedViewController) [todo addObject:vc.presentedViewController];
+    }
+    return nil;
+}
+static BOOL MABPerformBarItem(UIBarButtonItem *it) {
+#if DEBUG
+    MABLog([NSString stringWithFormat:@"bar item: enabled %d, target %@, responds %d", it.enabled, it.target ? NSStringFromClass([it.target class]) : @"nil", it.action && [it.target respondsToSelector:it.action]]);
+#endif
+    if (!it.enabled) return NO;
+    UIAction *pa = it.primaryAction;
+    if (pa) {
+        void (^h)(UIAction *) = nil; @try { h = [pa valueForKey:@"handler"]; } @catch (id e) {}
+        if (h) { h(pa); return YES; }
+    }
+    if (it.action) return [[UIApplication sharedApplication] sendAction:it.action to:it.target from:it forEvent:nil];
+    return NO;
+}
 static BOOL MABTapView(UIView *v) {   // the nearest control around it gets a real touch-up-inside; else it is activated like VoiceOver would
+    UIBarButtonItem *bar = MABBarItemForView(v);
+#if DEBUG
+    MABLog([NSString stringWithFormat:@"tap: bar item %@ (primary action %d, action %@)", bar, bar.primaryAction != nil, bar.action ? NSStringFromSelector(bar.action) : @"none"]);
+#endif
+    if (bar && MABPerformBarItem(bar)) return YES;
     for (UIView *x = v; x; x = x.superview) {
         if ([x isKindOfClass:[UIControl class]] && ((UIControl *)x).enabled) { [(UIControl *)x sendActionsForControlEvents:UIControlEventTouchUpInside]; return YES; }
         if ([x isKindOfClass:[UIWindow class]]) break;
@@ -241,8 +281,12 @@ static void MABPrintContent(void) {
     [pic presentFromRect:anchor inView:key animated:YES completionHandler:nil];
 }
 static void MABShareContent(void) {
-    UIViewController *top = MABTopController(); if (!top || top.isBeingPresented) return;
+    UIViewController *top = MABTopController();
     UIView *content = MABMainContentView();
+#if DEBUG
+    MABLog([NSString stringWithFormat:@"share sheet: top %@ (being presented %d), content %@, key window %@", top ? NSStringFromClass([top class]) : @"none", top.isBeingPresented, content ? NSStringFromClass([content class]) : @"none", MABKeyWindow()]);
+#endif
+    if (!top || top.isBeingPresented) return;
     NSMutableArray *items = [NSMutableArray array];
     if (content && [content respondsToSelector:NSSelectorFromString(@"URL")]) { id url = ((id (*)(id, SEL))objc_msgSend)(content, NSSelectorFromString(@"URL")); if ([url isKindOfClass:[NSURL class]]) [items addObject:url]; }
     if (!items.count && [content isKindOfClass:[UITextView class]]) [items addObject:((UITextView *)content).text];
@@ -262,11 +306,30 @@ static BOOL MABLabelIs(NSString *label, NSString *word) {   // "Share" or "Share
 static void MABShareOrPrint(BOOL print) {
     if (print) {
         if (MABTapSymbol(@"printer")) return;
-        id l = MABFindAnywhere(@"print"); if (l && MABLabelIs([l accessibilityLabel], @"print")) { MABAccessibilityTap(l); return; }
+        id l = MABFindAnywhere(@"print");
+        if ([l isKindOfClass:[UIBarButtonItem class]]) { if (MABPerformBarItem(l)) return; }
+        else if (l && MABLabelIs([l accessibilityLabel], @"print")) { MABAccessibilityTap(l); return; }
         MABPrintContent();
     } else {
-        if (MABTapSymbol(@"square.and.arrow.up")) return;
-        id l = MABFindAnywhere(@"share"); if (l && MABLabelIs([l accessibilityLabel], @"share")) { MABAccessibilityTap(l); return; }
+        UIViewController *before = MABTopController();
+        if (MABTapSymbol(@"square.and.arrow.up")) {   // (and if nothing opened after all: the share sheet of our own, so the row never does nothing)
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                if (MABTopController() == before) {
+#if DEBUG
+                    MABLog(@"share: the app's Share button opened nothing -- our share sheet");
+#endif
+                    MABShareContent();
+                }
+            });
+            return;
+        }
+        id l = MABFindAnywhere(@"share");
+#if DEBUG
+        MABLog([NSString stringWithFormat:@"share: no share symbol; label search -> %@ '%@'", l ? NSStringFromClass([l class]) : @"nothing", [l accessibilityLabel]]);
+#endif
+        if ([l isKindOfClass:[UIBarButtonItem class]]) {   // (a bar item is never VoiceOver-activated: that left Notes behind a half-open sheet, frozen)
+            if (MABPerformBarItem(l)) return;
+        } else if (l && MABLabelIs([l accessibilityLabel], @"share")) { MABAccessibilityTap(l); return; }
         MABShareContent();
     }
 }
