@@ -645,6 +645,9 @@ static NSString *DMFDFolderIn(DMFinderWindow *w, CGPoint sp) { return [w dm_fold
 // The picture on the finger shows a green "+" where the drop copies or is taken and a "no" sign where it is not.
 @interface DMFDrag : NSObject
 @property (nonatomic, strong) NSArray<DMFinderItem *> *items;
+@property (nonatomic, copy) NSString *checkedDest;   // (the folder the checks below were made for, with checkedOption: the per-item checks run once per
+@property (nonatomic) BOOL checkedOption, checkedInto;   //  target, not on every finger move -- thousands of items stuttered the drag, logic test 30 Sep)
+@property (nonatomic) int checkedBadge;
 @property (nonatomic, weak) DMFinderWindow *from;
 @property (nonatomic) uint16_t token;
 @property (nonatomic, strong) UIView *tile;
@@ -886,9 +889,16 @@ __attribute__((noinline)) static void DMFinderDragMove(CGPoint sp, BOOL option) 
     if (fw) {   // (over a Finder window: its folder takes it, unless that is where the items already are, or an item itself)
         NSString *dest = DMFDFolderIn(fw, sp);
         if (d.app) { DMFDSend(d.app, CGPointZero, 8); d.app = nil; d.scene = nil; }
-        BOOL copy = DMFDCopies(d, dest), none = DMFDNothingToDo(d, dest, copy), into = NO;
-        for (DMFinderItem *it in d.items) if (DMFinderIntoItself(it.path, dest)) into = YES;
-        DMFDBadge(d, into || !DMFDMayDrop(d, dest, copy) ? 0 : none ? -1 : copy ? 2 : -1);
+        BOOL into;
+        if ([d.checkedDest isEqualToString:dest ?: @""] && d.checkedOption == option) into = d.checkedInto;
+        else {
+            BOOL copy = DMFDCopies(d, dest), none = DMFDNothingToDo(d, dest, copy);
+            into = NO;
+            for (DMFinderItem *it in d.items) if (DMFinderIntoItself(it.path, dest)) { into = YES; break; }
+            d.checkedDest = dest ?: @""; d.checkedOption = option; d.checkedInto = into;
+            d.checkedBadge = into || !DMFDMayDrop(d, dest, copy) ? 0 : none ? -1 : copy ? 2 : -1;
+        }
+        DMFDBadge(d, d.checkedBadge);
         // spring-loaded folders: RESTING on a folder for a second opens it in that window, as on a Mac (a slow pass over a row or a sidebar place
         // opened it: the finger has to stay within 24 pt); the Trash place never opens (it is a drop target)
         if (!into && dest.length && ![DMFinderNorm(dest) isEqualToString:DMFinderNorm(fw.path)] && ![DMFinderReal(dest) isEqualToString:kFinderTrash]) {
@@ -912,7 +922,7 @@ __attribute__((noinline)) static void DMFinderDragMove(CGPoint sp, BOOL option) 
         } else d.springFolder = nil;
         return;
     }
-    d.springFolder = nil;
+    d.springFolder = nil; d.checkedDest = nil;
     CGPoint scene = CGPointZero; NSString *sceneId = nil;
     NSString *app = DMFDAppAt(sp, &scene, &sceneId);
     if (app && DMFinderAppRefusesFiles(app)) app = nil;

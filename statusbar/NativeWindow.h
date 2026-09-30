@@ -628,6 +628,7 @@ __attribute__((noinline)) static BOOL DMNativeHandlePress(UIPress *p) {   // (ke
 @property (nonatomic, strong) UITextField *field;
 @property (nonatomic, copy) void (^then)(NSString *text);
 @property (nonatomic, copy) void (^cancelled)(void);   // (Cancel, Esc, or the window closed with the sheet up)
+@property (nonatomic, weak) UIResponder *restoreFocus;   // (what was being typed in when the sheet came: it gets the typing back, like a Mac)
 @end
 @implementation DMNativeSheet
 - (void)dm_done:(BOOL)ok {
@@ -636,8 +637,17 @@ __attribute__((noinline)) static BOOL DMNativeHandlePress(UIPress *p) {   // (ke
     self.then = nil; self.cancelled = nil;
     if (c) c();
     [self.field resignFirstResponder];
+    UIResponder *back = self.restoreFocus; self.restoreFocus = nil;
     MSBAnimate(0.15, 0, 0, UIViewAnimationOptionCurveEaseIn, ^{ self.alpha = 0; self.panel.transform = CGAffineTransformMakeTranslation(0, -20); }, ^(BOOL f) { [self removeFromSuperview]; });
     if (h) h(text);
+    // (Search typed on after a sheet over it, 30 Sep: the typing goes back -- after the sheet's own action, only into the ACTIVE native window, and
+    //  only if the field and everything around it is still shown; logic test L3)
+    if ([back isKindOfClass:[UIView class]] && ((UIView *)back).window) {
+        BOOL shown = YES; DMNativeWindow *owner = nil;
+        for (UIView *v = (UIView *)back; v; v = v.superview) { if (v.hidden || v.alpha < 0.01) shown = NO; if (!owner && [v isKindOfClass:[DMNativeWindow class]]) owner = (DMNativeWindow *)v; }
+        BOOL otherSheet = NO; for (UIView *v in owner.subviews) if ([v isKindOfClass:[DMNativeSheet class]] && v != self) otherSheet = YES;   // (a sheet opened by the action keeps its own field)
+        if (shown && owner && owner == gNativeActive && !otherSheet && !back.isFirstResponder) [back becomeFirstResponder];
+    }
 }
 - (void)dm_ok { [self dm_done:YES]; }
 - (void)dm_cancel { [self dm_done:NO]; }
@@ -654,6 +664,14 @@ __attribute__((noinline)) static BOOL DMNativeHandlePress(UIPress *p) {   // (ke
     sh.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     sh.backgroundColor = [UIColor colorWithWhite:0 alpha:0.18];
     sh.then = then; sh.cancelled = onCancel;
+    {   // (the text field that has the typing now, if any: it gets it back when the sheet goes)
+        NSMutableArray<UIView *> *q = [NSMutableArray arrayWithObject:self];
+        while (q.count && !sh.restoreFocus) {
+            UIView *v = q.firstObject; [q removeObjectAtIndex:0];
+            if (([v isKindOfClass:[UITextField class]] || [v isKindOfClass:[UITextView class]]) && v.isFirstResponder) { sh.restoreFocus = v; break; }
+            if (![v isKindOfClass:[DMNativeSheet class]]) [q addObjectsFromArray:v.subviews];
+        }
+    }
     CGFloat w = MIN(380.0, self.bounds.size.width - 40.0);
     UIVisualEffectView *panel = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThickMaterial]];
     panel.layer.cornerRadius = 12.0; panel.layer.cornerCurve = kCACornerCurveContinuous; panel.clipsToBounds = YES;

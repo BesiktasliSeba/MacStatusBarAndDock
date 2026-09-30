@@ -412,6 +412,7 @@ static const CGFloat kSMBarH = 24.0;   // (our title bar on Stage Manager window
 static const CGFloat kSMCornerR = 10.0;   // (window corners: our Mac look, as with every engine; Stage Manager's own are 20)
 typedef struct { CGSize normalizedSize; CGRect referenceBounds; long long type; } DMSMAttributedSize;   // (SBDisplayItemAttributedSize, from its type encoding)
 static long DMSMPolicyOf(id attrs);
+static id DMSMItemFor(id stage, NSString *bundle, id *attrsOut);
 static NSString *DMSMCardBundle(UIView *card);
 static const void *kSMBarKey = &kSMBarKey;
 static int gDMSnapHits = 0, gDMSnapMisses = 0, gDMSnapWinHits = 0, gDMSnapWinMisses = 0;   // (watcher snapshot counts, for the perf summary)
@@ -7981,10 +7982,11 @@ void DMSofaRelaunchNow(void) { CGFloat w = 0; UIView *win = DMSofaWindow(&w); if
 static BOOL DMHasWindowFor(NSString *bundleID);
 static long DMRealInterfaceOrientation(void);   // defined below
 static CFTimeInterval gSofaFullPhoneSince = 0;
+static int gSofaFullReopens = 0;   // (full-screen reopens since SofaScore last closed)
 static void DMWatchSofaScore(void) {   // every 0.2 s
     static CGFloat lastWidth = 0; static CFTimeInterval stableSince = 0;
     // (watcher plan step 4: nothing to watch while SofaScore has no live scene -- neither full screen nor in a window; both branches below need one)
-    if (![[DMFrontApp() bundleIdentifier] isEqualToString:kSofaBundle] && !DMSceneForBundle(kSofaBundle)) { lastWidth = 0; stableSince = 0; gSofaFullPhoneSince = 0; return; }
+    if (![[DMFrontApp() bundleIdentifier] isEqualToString:kSofaBundle] && !DMSceneForBundle(kSofaBundle)) { lastWidth = 0; stableSince = 0; gSofaFullPhoneSince = 0; if (CACurrentMediaTime() - gSofaRelaunchAt > 20.0) gSofaFullReopens = 0; return; }
     CGFloat width = 0;
     UIView *window = DMSofaWindow(&width);
     CFTimeInterval now = CACurrentMediaTime();
@@ -7997,10 +7999,14 @@ static void DMWatchSofaScore(void) {   // every 0.2 s
         // (Stage Manager engine: DMHasWindowFor knows only Aerial / Zetsu / MilkyWay windows, so a SofaScore WINDOW looked full screen here and was
         //  force-quit and reopened over and over -- it seemed to crash at launch, iPad 2 30 Sep. Stage Manager itself says which app is full screen.)
         BOOL fullScreenNow = DMSMEngine() ? [DMSMFullScreenBundle() isEqualToString:kSofaBundle] : !DMHasWindowFor(kSofaBundle);
+        if (fullScreenNow && DMSofaLayout() == 2) gSofaFullReopens = 0;   // (full screen in the iPad layout: any earlier reopen worked, the count starts over)
         BOOL fullPhone = [[DMFrontApp() bundleIdentifier] isEqualToString:kSofaBundle] && fullScreenNow && DMSofaLayout() == 1 && DMScreenOnAndUnlocked();
         if (!fullPhone) { gSofaFullPhoneSince = 0; return; }
         if (!fullPhoneSince) { gSofaFullPhoneSince = now; return; }
         if (now - fullPhoneSince < 0.8 || now - gSofaRelaunchAt < 8.0) return;
+        // (at most 2 full-screen reopens while SofaScore stays open: if the layout still comes back phone, it is left as it is -- logic test M1)
+        if (gSofaFullReopens >= 2) { gSofaFullPhoneSince = 0; gSofaRelaunchAt = now; if (gSofaFullReopens++ == 2) DMLog(@"[sofa] relaunch: full screen still in the phone layout after 2 reopens -- left as it is until SofaScore closes"); return; }
+        gSofaFullReopens++;
         gSofaRelaunchAt = now; gSofaFullPhoneSince = 0;
         DMLog(@"[sofa] relaunch: full screen in the phone layout -> reopening it full screen (iPad layout)");
         DMForceQuitBundle(kSofaBundle);
@@ -8011,6 +8017,34 @@ static void DMWatchSofaScore(void) {   // every 0.2 s
             int pid = ps ? ((int (*)(id, SEL))objc_msgSend)(ps, NSSelectorFromString(@"pid")) : 0;
             if (pid > 0 && ++tries < 40) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), waitGone); return; }
             waitGone = nil;
+            if (DMSMEngine()) {
+                // Stage Manager engine: a launch opens it as a window, and SofaScore picks its layout once, from its first size. So it is told the
+                // full-screen width first (read synchronously at its start), launched, and its window made full screen as soon as it exists; the
+                // width goes back to "none" afterwards so a later windowed launch decides from its window again. (Review note, 30 Sep: the plain
+                // full-screen open came back as a window, still in the phone layout.)
+                CGSize sc = [UIScreen mainScreen].bounds.size;
+                DMSendWindowSize(kSofaBundle, CGSizeMake(MAX(sc.width, sc.height), MIN(sc.width, sc.height)));
+                DMOpenFullScreen(kSofaBundle);
+                __block int polls = 0; __block void (^waitItem)(void) = nil;
+                waitItem = ^{
+                    id attrs = nil;
+                    if (!DMSMItemFor(DMSMStageOf(kSofaBundle), kSofaBundle, &attrs) && ++polls < 40) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), waitItem); return; }
+                    waitItem = nil;
+                    BOOL ok = attrs && DMSMPolicyOf(attrs) != 2 ? DMSMSetFullScreenInStage(kSofaBundle, YES) : (attrs != nil);
+                    DMLog([NSString stringWithFormat:@"[sofa] relaunch (Stage Manager): full screen -> %d after %d polls", ok, polls]);
+                };
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), waitItem);
+                // (the width goes back to "none" once the new process has decided its layout -- up to 15 s: a slow cold start on the 2 GB iPad
+                //  read 0 after a fixed 6 s and picked the phone layout again, logic test M1)
+                __block int waits = 0; __block void (^waitDecided)(void) = nil;
+                waitDecided = ^{
+                    if (DMSofaLayout() <= 0 && ++waits < 75) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), waitDecided); return; }
+                    waitDecided = nil;
+                    DMSendWindowSize(kSofaBundle, CGSizeZero);
+                };
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), waitDecided);
+                return;
+            }
             DMOpenFullScreen(kSofaBundle);
         };
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), waitGone);
@@ -26031,9 +26065,59 @@ static void DMIdleProbe(void) {
 }
 #endif
 // Native windows (NativeWindow.h): a touch in one makes it active, one in an app makes them inactive; the active one has the hardware keys first.
+// Pointer scrolling over a native window (iPad 2, iPadOS 16, 1 Oct): the scroll events reach SpringBoard's -sendEvent:, but the window server
+// names SpringBoard's system gesture window (above our layer) as the one under the pointer, so UIKit gave the scroll to that window and Finder's
+// list never scrolled with a mouse. Here the event is taken to the scroll view under the pointer directly, with the event's own delta (the
+// user's scroll direction applied), turned from the screen's fixed orientation into the list's, kept within its content.
+static BOOL DMNativeScrollEvent(UIEvent *event) {
+    UIWindow *layer = gNativeLayer;
+    SEL locSel = @selector(locationInView:), adjSel = NSSelectorFromString(@"_adjustedAcceleratedDeltaInView:");
+    if (!layer || layer.alpha < 0.01 || ![event respondsToSelector:locSel] || ![event respondsToSelector:adjSel]) return NO;
+    // (faded out for the App Switcher / App Library / an icon menu: the scroll is theirs -- logic test H1, 1 Oct)
+    if (gNativeAway || !gNativeRotator || gNativeRotator.alpha < 0.01 || !gNativeRotator.userInteractionEnabled) return NO;
+    // (only when UIKit won't deliver it itself, and only in the one case seen: the window server named SpringBoard's system gesture window (iPad 2).
+    //  Where it names our layer -- the M1's trackpad on iOS 15 scrolled Finder fine -- UIKit's own scrolling, with its momentum, is left alone; where
+    //  it names anything else (Notification Center, Control Center, the switcher, a menu window) the scroll is that window's.)
+    SEL wsSel = NSSelectorFromString(@"_windowServerHitTestWindow");
+    if (![event respondsToSelector:wsSel]) return NO;
+    UIWindow *named = ((id (*)(id, SEL))objc_msgSend)(event, wsSel);
+    if (named == layer || (named && ![NSStringFromClass([named class]) isEqualToString:@"_UISystemGestureWindow"])) return NO;
+    CGPoint p = ((CGPoint (*)(id, SEL, id))objc_msgSend)(event, locSel, layer);
+    CGPoint sp = [layer convertPoint:p toCoordinateSpace:layer.screen.coordinateSpace];
+    if (DMNativeWindowTaking(sp, layer.windowLevel)) return NO;   // (a window of SpringBoard's above the layer takes that point: the Dock, a menu, an alert)
+    UIView *hit = DMNativeLayerHitTest(layer, @selector(hitTest:withEvent:), p, nil);
+    if (!hit) return NO;
+    BOOL inWindow = NO;
+    for (UIView *v = hit; v && v != layer; v = v.superview) if ([v isKindOfClass:[DMNativeWindow class]]) { inWindow = YES; break; }
+    if (!inWindow && !(gOverlay && [gOverlay isDescendantOfView:layer]) && !layer.rootViewController.presentedViewController) return NO;   // (a Finder item menu in the layer, or its modal)
+    UIScrollView *sv = nil;
+    for (UIView *v = hit; v && v != layer; v = v.superview) if ([v isKindOfClass:[UIScrollView class]] && ((UIScrollView *)v).scrollEnabled) { sv = (UIScrollView *)v; break; }
+    if (!sv) return YES;   // (over a native window (or its modal) but nothing scrollable there: the scroll is ours, nothing moves)
+    // (the delta in the LAYER's space, turned into the scroll view's by UIKit's own point conversion: the layer keeps its portrait bounds and the
+    //  content is turned inside it, and a delta asked for the scroll view itself came out sideways -- 3,0 for a wheel turn, iPad 2 1 Oct)
+    CGVector dl = ((CGVector (*)(id, SEL, id))objc_msgSend)(event, adjSel, layer);
+    // (the delta comes in the screen's FIXED (hardware, portrait) orientation: a vertical wheel turn read 9.7,0 in landscape on the iPad 2, the
+    //  layer and the list sharing one space -- so it is turned from the fixed coordinate space into the list's)
+    id<UICoordinateSpace> fixed = layer.screen.fixedCoordinateSpace;
+    CGPoint a = [sv convertPoint:CGPointZero fromCoordinateSpace:fixed], b = [sv convertPoint:CGPointMake(dl.dx, dl.dy) fromCoordinateSpace:fixed];
+    CGVector d = CGVectorMake(b.x - a.x, b.y - a.y);
+    if (!isfinite(d.dx) || !isfinite(d.dy)) return YES;   // (a NaN offset would throw in CALayer: SpringBoard -- logic test L1)
+    UIEdgeInsets in = sv.adjustedContentInset;
+    CGFloat maxY = MAX(-in.top, sv.contentSize.height + in.bottom - sv.bounds.size.height), maxX = MAX(-in.left, sv.contentSize.width + in.right - sv.bounds.size.width);
+    CGPoint o = sv.contentOffset;
+    o.y = MIN(maxY, MAX(-in.top, o.y - d.dy));
+    o.x = MIN(maxX, MAX(-in.left, o.x - d.dx));
+    if (!CGPointEqualToPoint(o, sv.contentOffset)) [sv setContentOffset:o animated:NO];
+#if DEBUG
+    { static CFTimeInterval last = 0; if (DMTestFlag("/tmp/macstatusbar-debug") && CACurrentMediaTime() - last > 0.5) { last = CACurrentMediaTime();
+        DMLog([NSString stringWithFormat:@"[scroll] %@ delta %.1f,%.1f (layer %.1f,%.1f) -> offset %@", NSStringFromClass([sv class]), d.dx, d.dy, dl.dx, dl.dy, NSStringFromCGPoint(o)]); } }
+#endif
+    return YES;
+}
 %group DMNativeHooks
 %hook SpringBoard
 - (void)sendEvent:(UIEvent *)event {
+    if ((long)event.type == 10 && gNativeLayer && !gNativeLayer.hidden && DMNativeScrollEvent(event)) return;   // (UIEventTypeScroll: a mouse wheel / trackpad over a native window)
     if (event.type == UIEventTypeTouches && gNativeLayer && !gNativeLayer.hidden)
         for (UITouch *t in event.allTouches) if (t.phase == UITouchPhaseBegan) { DMNativeTouchBegan(t); break; }
     %orig;

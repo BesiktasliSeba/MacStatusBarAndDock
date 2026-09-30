@@ -2,6 +2,14 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.2.1
+
+### Fixes
+- Finder: scrolling with a mouse wheel over a Finder window now scrolls its list (on iPadOS 16 it did nothing).
+- Finder: after a message box over Finder closes, typing goes back to Search if you were typing there.
+- Finder: dragging a large selection is smoother.
+- Stage Manager engine: when SofaScore in full screen has to reopen in its iPad layout, it now comes back full screen instead of as a window.
+
 ## 1.2
 
 ### New
