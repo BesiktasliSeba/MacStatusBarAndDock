@@ -1,3 +1,5 @@
+#include <unistd.h>
+#include <stdio.h>
 // VolumeGlobeTweak (SpringBoard) -- Globe + Option raises and Globe + Control lowers the volume, and the Globe key's shortcut overlay is kept from
 // appearing while it is held. The Settings switch (Settings > Keyboard, shown while a hardware keyboard is attached) is off for a new install.
 #import <UIKit/UIKit.h>
@@ -19,6 +21,8 @@ static void ReadSwitch(void) {
 - (UIKeyModifierFlags)modifierFlags;
 - (unsigned short)_keyCode;
 @end
+@interface SpringBoard : UIApplication
+@end
 
 @interface AVSystemController : NSObject
 + (id)sharedAVSystemController;
@@ -30,37 +34,32 @@ static void ReadSwitch(void) {
 #define CONTROL_KEYCODE 224
 #define VOLUME_STEP 0.0625
 
-static unsigned short lastKeyCode = 0;
-static unsigned long long lastFlags = 0;
 
-%hook UIApplication
-
-- (void)sendEvent:(UIEvent *)event {
-    if (gEnabled && [event isKindOfClass:%c(UIPhysicalKeyboardEvent)]) {
-        UIPhysicalKeyboardEvent *kbEvent = (UIPhysicalKeyboardEvent *)event;
-        unsigned long long flags = (unsigned long long)[kbEvent _modifierFlags];
-        unsigned short keyCode = [kbEvent _keyCode];
-
-        BOOL isDuplicate = (keyCode == lastKeyCode && flags == lastFlags);
-        lastKeyCode = keyCode;
-        lastFlags = flags;
-
-        if (!isDuplicate && (flags & GLOBE_FLAG)) {
-            AVSystemController *avc = [%c(AVSystemController) sharedAVSystemController];
-
-            if (keyCode == OPTION_KEYCODE) {
-                [avc changeVolumeBy:VOLUME_STEP forCategory:@"Audio/Video"];
-                return; // swallow event, don't call %orig
-            }
-            if (keyCode == CONTROL_KEYCODE) {
-                [avc changeVolumeBy:-VOLUME_STEP forCategory:@"Audio/Video"];
-                return; // swallow event, don't call %orig
-            }
-        }
+// The keys come as presses (-[SpringBoard pressesBegan:withEvent:], UIPress.key) on iPadOS 15 and 16 alike: the Globe key is bit 0x800000 of the
+// key's modifier flags while it is held. The old path (-[UIApplication sendEvent:] with a UIPhysicalKeyboardEvent) only ever saw them on iPadOS 16:
+// on the M1's iPadOS 15 SpringBoard received Globe + Option / Control only as presses, so the volume never moved (30 Sep; its debug log stayed empty).
+static BOOL DMGlobeVolumePress(UIPress *p) {
+    UIKey *key = p.key;
+    if (!key || !((unsigned long long)key.modifierFlags & GLOBE_FLAG)) return NO;
+    float step = 0;
+    if (key.keyCode == OPTION_KEYCODE) step = VOLUME_STEP;
+    else if (key.keyCode == CONTROL_KEYCODE) step = -VOLUME_STEP;
+    else return NO;
+    [[%c(AVSystemController) sharedAVSystemController] changeVolumeBy:step forCategory:@"Audio/Video"];
+#if DEBUG
+    if (access("/tmp/macstatusbar-debug", F_OK) == 0) { FILE *f = fopen("/tmp/volumeglobe.log", "a"); if (f) { fprintf(f, "volume %+.4f (key %ld)\n", step, (long)key.keyCode); fclose(f); } }
+#endif
+    return YES;
+}
+%hook SpringBoard
+- (void)pressesBegan:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
+    if (gEnabled) {
+        BOOL all = presses.count > 0;
+        for (UIPress *p in presses) if (!DMGlobeVolumePress(p)) all = NO;
+        if (all) return;   // (only Globe + Option / Control: swallowed, like before)
     }
     %orig;
 }
-
 %end
 
 %hook UIKeyShortcutHUDService

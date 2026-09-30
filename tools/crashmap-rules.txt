@@ -73,7 +73,7 @@ sym BrightnessKeyTweak \$UIApplication\$sendEvent\$$ transparent
 sym GraveEscapeTweak \$UIResponder\$pressesBegan\$withEvent\$$ transparent
 sym MacAppBridge \$UIApplication\$sendEvent\$$ transparent
 sym TabMuteTweak \$UIApplication\$sendEvent\$$ transparent
-sym VolumeGlobeTweak \$UIApplication\$sendEvent\$$ transparent
+sym VolumeGlobeTweak \$SpringBoard\$pressesBegan\$withEvent\$$ transparent
 sym DockMagnification \$(UIApplication\$sendEvent|UIResponder\$pressesBegan\$withEvent)\$$ transparent
 
 # ---- the Dock (MacDock line): by source file; the Dock itself = the part ----

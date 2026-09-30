@@ -513,13 +513,16 @@ static BOOL MABEscEndsTypingNow(void) {   // an Esc key-down just came in: put t
     if (MSTestFlag("/tmp/macstatusbar-debug")) MABLog([NSString stringWithFormat:@"esc: key down, typing responder %@", r ? NSStringFromClass([r class]) : @"none"]);
 #endif
     if (!r || ((id<UITextInput>)r).markedTextRange || [NSStringFromClass([r class]) hasPrefix:@"WK"]) return NO;
-    for (UIResponder *x = r; x; x = x.nextResponder)   // (the app's own Esc shortcut wins: cancelling a search, closing a sheet)
+    for (UIResponder *x = r; x; x = x.nextResponder) {   // (the app's own Esc shortcut wins: cancelling a search, closing a sheet)
+        if ([x isKindOfClass:[UIApplication class]]) break;   // (iPadOS 16 puts a system Esc command on UIApplication itself -- not the app's: it made every
+                                                              //  app look as if it used Esc, and Esc stopped ending the typing, iPad 2 30 Sep)
         for (UIKeyCommand *c in x.keyCommands) if ([c.input isEqualToString:UIKeyInputEscape]) {
 #if DEBUG
             MABLog([NSString stringWithFormat:@"esc: left to the app (%@ has an Esc shortcut)", NSStringFromClass([x class])]);
 #endif
             return NO;
         }
+    }
     UIView *v = [r isKindOfClass:[UIView class]] ? (UIView *)r : nil;
     UIWindowScene *scene = v.window.windowScene;
     if (!scene) return NO;
