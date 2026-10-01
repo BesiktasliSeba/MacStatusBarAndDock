@@ -54,7 +54,8 @@ Tried it on another setup? A short note in an issue (works / doesn't) helps fill
 - While Destra is on, it shows the notification banners instead of MacStatusBar&Dock.
 
 **Finder**
-- External drives and iCloud Drive don't show in Finder yet (iPadOS doesn't give Finder access to iCloud Drive); use the Files app for them.
+- iCloud Drive doesn't show in Finder (iPadOS doesn't give Finder access to it); use the Files app for it.
+- USB drives and SD cards were tested on iPadOS 15; on iPadOS 16 they haven't been tested with a real drive yet.
 - Drag and drop goes from Finder to apps, not from apps into Finder yet.
 
 ## Features
@@ -73,7 +74,7 @@ The Mac look is on right after install. A few extras start off: the auto-hiding 
 - **Haptic Touch menus**: long-press a Home Screen app icon for Force Quit and App Size, or a folder icon to jump straight to one of its apps. Menus look like a Mac's (slimmer rows that adapt to a trackpad or mouse); choose Mac or Stock in Settings > Status Bar > App Menus.
 - **Stage Manager window engine (iPadOS 16.1 and later, experimental)**: iPadOS's own Stage Manager runs your windows with a Mac look: title bars with traffic lights, native full screen that other windows can come over, the Window menu (layouts, Fit to Window, Swap, Move to Other Display) and a choice of resize handles. On iPads with Stage Manager, or older iPads with TrollPad; with an external display it gets its own Mac desktop.
 - **Mac windows** on the window engine you already use (Aerial 3.0 or 5.0, MilkyWay4 on iPadOS 15 only, or Zetsu 1.6.2 or 1.6.6): a title bar, traffic lights and rounded corners, with Fit to Window tiling (a third window asks which side it goes on, or No Fit to leave it untiled) and resize handles that can be tinted in each app's color (Tint Resize Handles, off by default).
-- **Finder**: a Mac Finder window on every window engine, with a sidebar, list and icon views, Quick Look, Search, Undo and Put Back, several-item selection, and drag and drop between Finder windows and into apps. It only changes files in your own places, so it can't be used to break the iPad by accident. Finder and its Dock icon each have their own switch in Settings.
+- **Finder**: a Mac Finder window on every window engine, with a sidebar, list and icon views, Quick Look, Search, Undo and Put Back, several-item selection, USB drives and SD cards, and drag and drop between Finder windows and into apps. It only changes files in your own places, so it can't be used to break the iPad by accident. Finder and its Dock icon each have their own switch in Settings.
 - **Dock** with macOS-style magnification, recent apps (plus a suggested or Handoff app), running-app indicators, a Launchpad icon, and a Downloads stack (choose which apps' downloads appear from a link in Settings).
 - **Audio mixing per app**, with a volume for each app, set from the menu bar.
 - **Auto-hiding menu bar** (optional, off by default).

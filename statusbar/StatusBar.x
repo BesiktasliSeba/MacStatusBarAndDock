@@ -16423,7 +16423,8 @@ static void DMReleaseStatusBarCopy(UIView *fg) {
     if (![objc_getAssociatedObject(fg, kHoldKey) boolValue]) return;
     objc_setAssociatedObject(fg, kHoldKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     fg.alpha = 1.0;
-    if (gVPNActive) {   // (now ours: iOS's VPN badge is asked again, after this layout pass)
+    {   // (now ours: iOS's items are asked again, after this layout pass -- the VPN badge, the activity spinner and the background-activity pill
+        //  that were already showing; a copy made during a FaceTime call kept the full capsule, logic test 1.2.3)
         __weak UIView *weakFg = fg;
         dispatch_async(dispatch_get_main_queue(), ^{ if (weakFg) DMStockVPNRecheck(weakFg); });
     }
@@ -16441,8 +16442,16 @@ static BOOL DMHideStockVPN(id item) {
     if (!gVPNActive) return NO;
     return objc_getAssociatedObject(fg, kLogoKey) || [objc_getAssociatedObject(fg, kHoldKey) boolValue];
 }
-static void DMStockVPNRecheck(UIView *fg) {   // (a copy that has just become ours, while a VPN is on: its items are asked again)
-    if (!gVPNActive) return;
+// iOS's activity spinner (network / sync activity) in OUR menu bar (the background-activity pill below is made compact instead): a Mac menu bar has none, and
+// coming and going between Control Center and the
+// mute icon it pushed the icons beside it back and forth (iPad 2, 1 Oct). Kept off only on a bar that is ours (dressed, or being set up), like the
+// VPN badge above; Apple's own bar (Stock style, Lock Screen) keeps it.
+static BOOL DMHideStockActivity(id item) {
+    UIView *fg = DMCall(DMCall(item, @"statusBar"), @"foregroundView");
+    if (![fg isKindOfClass:[UIView class]] || DMTestFlag("/tmp/msb-stockactivity")) return NO;
+    return objc_getAssociatedObject(fg, kLogoKey) || [objc_getAssociatedObject(fg, kHoldKey) boolValue];
+}
+static void DMStockVPNRecheck(UIView *fg) {   // (a copy that has just become ours: its items are asked again -- VPN badge, spinner, activity pill)
     id bar = fg.superview;
     while (bar && ![bar isKindOfClass:objc_getClass("_UIStatusBar")]) bar = [bar superview];
     SEL upd = NSSelectorFromString(@"_updateWithAggregatedData:");
@@ -16497,11 +16506,41 @@ static BOOL gRestartGateOpen = NO;
 }
 %end
 %end
+%group StockActivityItem
+%hook _UIStatusBarActivityItem
+- (BOOL)canEnableDisplayItem:(id)displayItem fromData:(id)data {
+    if (DMHideStockActivity(self)) return NO;
+    return %orig;
+}
+%end
+%end
+// The background-activity pill (an app's capsule -- a FaceTime call, screen sharing, Handoff) between Control Center and the mute icon: in our
+// menu bar its 44 pt coloured capsule left a lot of room around a small icon (iPad 2, 1 Oct). The owner likes the icon itself, so iOS's own icon
+// stays and only the capsule goes: the pill is made just as wide as its icon, with no colour behind it -- like a Mac's menu bar icon for a call.
+%group StockPillItem
+%hook _UIStatusBarPillBackgroundActivityItem
+- (CGSize)pillSize {
+    CGSize s = %orig;
+    if (DMHideStockActivity(self)) return CGSizeMake(MIN(s.width, 20.0), MIN(s.height > 0 ? s.height : 16.0, 16.0));
+    return s;
+}
+- (id)_backgroundColorForActivityType:(long long)type {
+    if (DMHideStockActivity(self)) return [UIColor clearColor];
+    return %orig;
+}
+%end
+%end
 static void DMStockVPNInit(void) {
     if ([objc_getClass("SBRestartManager") instancesRespondToSelector:@selector(restartWithTransitionRequest:)]) { %init(VPNRestartGate); DMLog(@"[vpnwarn] restart requests are checked (VPN + Aerial 5.0)"); }
     Class c = objc_getClass("_UIStatusBarIndicatorVPNItem");
     if (c && [c instancesRespondToSelector:@selector(canEnableDisplayItem:fromData:)] && [objc_getClass("_UIStatusBar") instancesRespondToSelector:NSSelectorFromString(@"_updateWithAggregatedData:")]) { %init(StockVPNItem); DMLog(@"[vpn] iOS's own VPN badge left out of our status bars"); }
     else DMLog(@"[vpn] iOS's VPN item not found: its badge stays in the status icons");
+    Class act = objc_getClass("_UIStatusBarActivityItem");
+    if (act && [act instancesRespondToSelector:@selector(canEnableDisplayItem:fromData:)]) %init(StockActivityItem);
+    else DMLog(@"[activity] iOS's activity item not found: its spinner stays in the status icons");
+    Class pill = objc_getClass("_UIStatusBarPillBackgroundActivityItem");
+    if (pill && [pill instancesRespondToSelector:@selector(pillSize)] && [pill instancesRespondToSelector:NSSelectorFromString(@"_backgroundColorForActivityType:")]) %init(StockPillItem);
+    else DMLog(@"[activity] iOS's background activity pill item not found: it stays in the status icons");
 }
 
 %hook _UIStatusBarForegroundView

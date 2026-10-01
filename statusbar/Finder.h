@@ -13,8 +13,11 @@
 #include <sys/stat.h>
 #include <copyfile.h>
 #include <os/lock.h>
+#include <sys/mount.h>
+#include <sys/event.h>
 
 static NSString *const kFinderTrash = @"/var/mobile/.Trash";
+static NSString *const kFinderLiveFiles = @"/var/mobile/Library/LiveFiles";   // (external drives: <LiveFiles>/<provider>/<volume>, see DMFinderDrives)
 static NSString *const kFinderICloud = @"/var/mobile/Library/Mobile Documents/com~apple~CloudDocs";
 // A class of a framework Finder needs only for some files (PDFKit, AVKit, AVFoundation): the framework is opened the first time.
 static Class DMFinderClass(NSString *name) {
@@ -68,6 +71,106 @@ static BOOL DMFinderInside(NSString *p, NSString *root) {   // p is root or insi
 static BOOL DMFinderIntoItself(NSString *item, NSString *destDir) {
     return DMFinderInside(DMFinderReal(destDir), DMFinderRealItem(item));
 }
+
+// ---- external drives ------------------------------------------------------------------------------------------------------------------------
+// iPadOS mounts a USB drive's volumes through UserFS under LiveFiles: "fat://disk2s1/NO NAME on /private/var/mobile/Library/LiveFiles/
+// com.apple.filesystems.userfsd/NO NAME (lifs, ..., mounted by mobile)" (M1, iPadOS 15.6.1). A drive is a volume the MOUNT TABLE (getfsstat) has
+// exactly at <LiveFiles>/<provider>/<volume>, from a local disk ("<scheme>://diskN...", or /dev/diskN): any provider folder, not only userfsd, and
+// a folder there that is not itself a mount point is never one (a leftover folder named like a volume stays read-only). Network shares
+// (smb://...) are not drives. Read from any thread; the list is kept for half a second (the policy asks it for every check).
+static os_unfair_lock gFinderDrivesLock = OS_UNFAIR_LOCK_INIT;
+static NSArray<NSDictionary *> *gFinderDrivesCache; static CFTimeInterval gFinderDrivesAt = -100;
+static BOOL DMFinderFromLocalDisk(NSString *from) {   // "fat://disk2s1/NO NAME", "exfat://disk3s1/X", "/dev/disk4s1"
+    if ([from hasPrefix:@"/dev/disk"]) return YES;
+    NSRange r = [from rangeOfString:@"://"];
+    return r.location != NSNotFound && r.location > 0 && [[from substringFromIndex:r.location + 3] hasPrefix:@"disk"];
+}
+static NSArray<NSDictionary *> *DMFinderDrivesScan(void) {   // @[{t: volume name, p: mount point (normalised), fat: FAT12/16/32, from, type}]
+    int n = getfsstat(NULL, 0, MNT_NOWAIT);
+    if (n <= 0) return @[];
+    n += 8;
+    struct statfs *fs = calloc((size_t)n, sizeof *fs);
+    if (!fs) return @[];
+    n = getfsstat(fs, (int)(n * sizeof *fs), MNT_NOWAIT);
+    NSMutableArray *out = [NSMutableArray array];
+    NSString *lf = DMFinderNorm(kFinderLiveFiles);
+    for (int i = 0; i < n; i++) {
+        NSString *on = DMFinderNorm([NSString stringWithUTF8String:fs[i].f_mntonname] ?: @"");
+        if (![on hasPrefix:[lf stringByAppendingString:@"/"]]) continue;
+        NSArray *rest = [[on substringFromIndex:lf.length + 1] pathComponents];
+        NSString *from = [NSString stringWithUTF8String:fs[i].f_mntfromname] ?: @"", *type = [NSString stringWithUTF8String:fs[i].f_fstypename] ?: @"";
+        if (rest.count != 2 || !DMFinderFromLocalDisk(from)) continue;
+#if DEBUG
+        if (DMTestFlag("/tmp/msb-fdrive-hide")) continue;   // (tests: the drives look unplugged -- the windows' unplug handling, without touching the drive)
+#endif
+        NSString *scheme = [from containsString:@"://"] ? [from substringToIndex:[from rangeOfString:@"://"].location].lowercaseString : @"";
+        BOOL fat = [@[@"fat", @"msdos", @"vfat", @"fat32"] containsObject:scheme] || [type isEqualToString:@"msdos"];   // (exFAT: "exfat", no 4 GB limit)
+        [out addObject:@{@"t": on.lastPathComponent, @"p": on, @"fat": @(fat), @"from": from, @"type": type}];
+    }
+    free(fs);
+    [out sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) { return [a[@"t"] localizedStandardCompare:b[@"t"]]; }];
+    return out;
+}
+static NSArray<NSDictionary *> *DMFinderDrives(void) {
+    os_unfair_lock_lock(&gFinderDrivesLock);
+    NSArray *have = gFinderDrivesCache; BOOL fresh = have && CACurrentMediaTime() - gFinderDrivesAt < 0.5;
+    os_unfair_lock_unlock(&gFinderDrivesLock);
+    if (fresh) return have;
+    NSArray *now = DMFinderDrivesScan();
+    os_unfair_lock_lock(&gFinderDrivesLock);
+    gFinderDrivesCache = now; gFinderDrivesAt = CACurrentMediaTime();
+    os_unfair_lock_unlock(&gFinderDrivesLock);
+    return now;
+}
+static void DMFinderDrivesForget(void) { os_unfair_lock_lock(&gFinderDrivesLock); gFinderDrivesCache = nil; os_unfair_lock_unlock(&gFinderDrivesLock); }
+// The drive a REAL path is on (its mount point), or nil.
+static NSString *DMFinderDriveRoot(NSString *real) {
+    if (!DMFinderInside(real, DMFinderNorm(kFinderLiveFiles))) return nil;
+    for (NSDictionary *d in DMFinderDrives()) if (DMFinderInside(real, d[@"p"])) return d[@"p"];
+    return nil;
+}
+static NSDictionary *DMFinderDriveInfo(NSString *root) { for (NSDictionary *d in DMFinderDrives()) if ([d[@"p"] isEqualToString:root]) return d; return nil; }
+// A drive's Trash, as a Mac keeps it: <volume>/.Trashes/<uid> (501, mobile). Items moved to the Trash on a drive stay on it (a rename, instant).
+static NSString *DMFinderDriveTrash(NSString *root) { return [root stringByAppendingPathComponent:[NSString stringWithFormat:@".Trashes/%u", getuid()]]; }
+static NSArray<NSString *> *DMFinderDriveTrashes(void) { NSMutableArray *a = [NSMutableArray array]; for (NSDictionary *d in DMFinderDrives()) [a addObject:DMFinderDriveTrash(d[@"p"])]; return a; }
+// A REAL path inside a drive's Trash folder (or that folder itself): the drive's own Trash -- the item's folder resolved, as for Finder's Trash.
+static NSString *DMFinderDriveTrashOf(NSString *real) {
+    NSString *root = DMFinderDriveRoot(real);
+    if (!root) return nil;
+    NSString *t = DMFinderDriveTrash(root);
+    return DMFinderInside(real, t) ? t : nil;
+}
+// A drive's Trash is a real folder of its own (no link: Empty Trash must never erase where a link points).
+static BOOL DMFinderDriveTrashIsSound(NSString *t) {
+    struct stat st;
+    // (not there yet: fine only if .Trashes is itself missing or a real folder ON the drive -- a .Trashes that is a link let a crafted drive
+    //  have the trash made somewhere else, logic test 1.2.3)
+    if (lstat(t.fileSystemRepresentation, &st) != 0) {
+        if (errno != ENOENT) return NO;
+        NSString *parent = t.stringByDeletingLastPathComponent;
+        struct stat pst;
+        if (lstat(parent.fileSystemRepresentation, &pst) != 0) return errno == ENOENT;
+        return S_ISDIR(pst.st_mode) && [DMFinderReal(parent) isEqualToString:parent];
+    }
+    struct stat pst;   // (.Trashes, its folder, a real folder too)
+    if (lstat(t.stringByDeletingLastPathComponent.fileSystemRepresentation, &pst) != 0 || !S_ISDIR(pst.st_mode)) return NO;
+    return S_ISDIR(st.st_mode) && [DMFinderReal(t) isEqualToString:t];
+}
+// Files over 4 GB can't be stored on a FAT32 drive (its size field is 32 bits): the first such file in src (a file, or anything in a folder).
+static const unsigned long long kFinderFATMax = 0xFFFFFFFFULL;
+static NSString *DMFinderTooBigForFAT(NSString *src) {
+    struct stat st;
+    if (lstat(src.fileSystemRepresentation, &st) != 0) return nil;
+    if (!S_ISDIR(st.st_mode)) return S_ISREG(st.st_mode) && (unsigned long long)st.st_size > kFinderFATMax ? src.lastPathComponent : nil;
+    NSDirectoryEnumerator *en = [[NSFileManager defaultManager] enumeratorAtURL:[NSURL fileURLWithPath:src] includingPropertiesForKeys:@[NSURLFileSizeKey, NSURLIsRegularFileKey] options:0 errorHandler:nil];
+    for (NSURL *u in en) {
+        NSNumber *reg = nil, *size = nil; [u getResourceValue:&reg forKey:NSURLIsRegularFileKey error:nil]; [u getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
+        if (reg.boolValue && size.unsignedLongLongValue > kFinderFATMax) return u.lastPathComponent;
+    }
+    return nil;
+}
+// The FAT drive a folder is on (its info), or nil: the 4 GB rule applies there.
+static NSDictionary *DMFinderFATDriveOf(NSString *dir) { NSString *root = DMFinderDriveRoot(DMFinderReal(dir)); NSDictionary *d = root ? DMFinderDriveInfo(root) : nil; return [d[@"fat"] boolValue] ? d : nil; }
 
 // ---- places ---------------------------------------------------------------------------------------------------------------------------------
 // On My iPad: the File Provider storage of the app group group.com.apple.FileProvider.LocalStorage (its container's metadata names it).
@@ -154,6 +257,7 @@ static NSArray<NSDictionary *> *DMFinderSidebar(void) {
     [favs addObject:@{@"t": @"Applications", @"p": @"/var/containers/Bundle/Application", @"i": @"square.grid.3x3"}];
     [locs addObject:@{@"t": @"Home", @"p": @"/var/mobile", @"i": @"house"}];
     [locs addObject:@{@"t": @"iPad", @"p": @"/", @"i": @"internaldrive"}];
+    for (NSDictionary *d in DMFinderDrives()) [locs addObject:@{@"t": d[@"t"], @"p": d[@"p"], @"i": @"externaldrive", @"drive": @YES}];   // (connected drives, live)
     if ([[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb"]) [locs addObject:@{@"t": @"Jailbreak", @"p": @"/var/jb", @"i": @"lock.open"}];
     [locs addObject:@{@"t": @"Trash", @"p": kFinderTrash, @"i": @"trash"}];
     return @[@{@"h": @"Favorites", @"rows": favs}, @{@"h": @"Locations", @"rows": locs}];
@@ -168,6 +272,9 @@ static NSArray<NSDictionary *> *DMFinderSidebar(void) {
 // real place (links followed, /private/var spelled /var, ".." resolved) lies inside one of those places, so an alias, another spelling or a
 // case difference can only ever make Finder more careful, never less. Also refused: items owned by root, folders Finder can't write to.
 //  - free: inside the user's places;
+//  - a connected drive (DMFinderDrives): everything INSIDE the mounted volume is free too -- the drive is the user's own, as on a Mac. Only
+//    inside it: the volume's own folder (the mount point), its .Trashes structure, LiveFiles and every provider folder stay read-only, and the
+//    real place decides (an alias on the drive pointing at the iPad's system is the system);
 //  - critical: the places themselves and the folders above them, containers, app bundles (named apart only for tests and messages);
 //  - system: everything else outside the user's places. Critical and system are both read-only.
 typedef NS_ENUM(int, DMFinderZone) { DMFinderZoneFree = 0, DMFinderZoneSystem = 1, DMFinderZoneCritical = 2 };
@@ -187,6 +294,13 @@ static BOOL DMFinderIsContainerDir(NSString *p) {   // a container folder: <...>
 // What an operation may do with an ITEM at path p (moving it away, renaming it, trashing it). p: DMFinderRealItem of it.
 static DMFinderZone DMFinderItemZone(NSString *p) {
     if (!p.length || [p isEqualToString:@"/"]) return DMFinderZoneCritical;
+    for (NSDictionary *d in DMFinderDrives()) {   // (a connected drive: inside it free; the volume itself, the folders above it, its Trash folders not)
+        NSString *r = d[@"p"], *t = DMFinderDriveTrash(r);
+        if (DMFinderInside(r, p)) return DMFinderZoneCritical;
+        if (!DMFinderInside(p, r)) continue;
+        if (DMFinderInside(p, t.stringByDeletingLastPathComponent) && (!DMFinderInside(p, t) || [p isEqualToString:t])) return DMFinderZoneCritical;   // (.Trashes, other users' Trash)
+        return DMFinderZoneFree;
+    }
     for (NSString *r in DMFinderFreeRoots()) {
         if (DMFinderInside(r, p)) return DMFinderZoneCritical;    // (a place itself, or a folder above one)
         if (DMFinderInside(p, r)) return DMFinderZoneFree;
@@ -206,6 +320,7 @@ static DMFinderZone DMFinderItemZone(NSString *p) {
 static DMFinderZone DMFinderDestZone(NSString *dir) {
     NSString *d = DMFinderReal(dir);
     for (NSString *r in DMFinderFreeRoots()) if (DMFinderInside(d, r)) return DMFinderZoneFree;
+    if (DMFinderDriveRoot(d)) return DMFinderZoneFree;   // (inside a connected drive, its own folder included)
     NSArray *c = d.pathComponents;
     if (c.count > 7 && [d hasPrefix:@"/var/mobile/Containers/Data/Application/"] && [c[7] isEqualToString:@"Documents"]) return DMFinderZoneFree;
     if (c.count > 6 && [d hasPrefix:@"/var/mobile/Library/Mobile Documents/"] && [c[6] isEqualToString:@"Documents"]) return DMFinderZoneFree;
@@ -220,7 +335,8 @@ static BOOL DMFinderCoordinated(NSString *p) {
 }
 // (the item's own place, its folder resolved: an alias in the Trash is in the Trash -- it was Delete Immediately refused "not in the Trash" for a
 //  link pointing outside, and Command-Delete moved it within the Trash; a folder path is the same either way)
-static BOOL DMFinderInOwnTrash(NSString *p) { return DMFinderInside(DMFinderRealItem(p), kFinderTrash); }
+// (a drive's Trash, <volume>/.Trashes/501, is Finder's Trash too: its items are shown in the Trash, deleted by Empty Trash / Delete Immediately)
+static BOOL DMFinderInOwnTrash(NSString *p) { NSString *r = DMFinderRealItem(p); return DMFinderInside(r, kFinderTrash) || DMFinderDriveTrashOf(r) != nil; }
 // Finder may change this item (move it away, rename it, trash it): in the user's places, not owned by root, its folder writable.
 static BOOL DMFinderCanChange(NSString *path) {
     if (!path.length) return NO;
@@ -235,6 +351,8 @@ static BOOL DMFinderCanWriteInto(NSString *dir) {
     if (!dir.length || DMFinderDestZone(dir) != DMFinderZoneFree) return NO;
     NSString *r = DMFinderReal(dir);
     if (DMFinderInside(r, kFinderTrash) || DMFinderInside(r, [kFinderICloud stringByAppendingPathComponent:@".Trash"])) return NO;
+    NSString *drive = DMFinderDriveRoot(r);   // (a drive's .Trashes, every user's: only Move to Trash puts things there)
+    if (drive && DMFinderInside(r, [drive stringByAppendingPathComponent:@".Trashes"])) return NO;
     struct stat st; if (lstat(r.fileSystemRepresentation, &st) == 0 && st.st_uid == 0) return NO;
     return access(r.fileSystemRepresentation, W_OK) == 0;
 }
@@ -282,8 +400,12 @@ static NSArray<DMFinderItem *> *DMFinderList(NSString *path, BOOL hidden, NSErro
     NSString *rn = DMFinderReal(path);
     BOOL containers = [rn hasPrefix:@"/var/mobile/Containers/"] || [rn isEqualToString:@"/var/containers/Bundle/Application"];
     NSSet *hiddenApps = containers ? DMFinderHiddenApps() : nil;
+    // (a drive's top folder: Windows' system folders are hidden files there, as a Mac's Finder shows the drive; dot files -- .Spotlight-V100,
+    //  .Trashes, .fseventsd, "._" AppleDouble files -- are hidden files everywhere)
+    BOOL driveTop = !hidden && [DMFinderDriveRoot(rn) isEqualToString:rn];
     NSMutableArray *out = [NSMutableArray arrayWithCapacity:urls.count];
     for (NSURL *u in urls) {
+        if (driveTop && [@[@"System Volume Information", @"$RECYCLE.BIN", @"$Recycle.Bin", @"RECYCLER"] containsObject:u.lastPathComponent]) continue;
         NSString *stubName = icloud ? DMFinderStubName(u.lastPathComponent) : nil;
         if (icloud && !hidden && !stubName && [u.lastPathComponent hasPrefix:@"."]) continue;
         if (containers && u.lastPathComponent.length == 36 && hiddenApps.count && [hiddenApps containsObject:DMFinderContainerInfo(DMFinderNorm(u.path))[1]]) continue;
@@ -314,6 +436,8 @@ static NSArray<DMFinderItem *> *DMFinderList(NSString *path, BOOL hidden, NSErro
         if (it.dir) it.locked = access(it.path.fileSystemRepresentation, R_OK | X_OK) != 0;
         [out addObject:it];
     }
+    if ([path isEqualToString:kFinderTrash])   // (the Trash shows the connected drives' Trashes too, as a Mac's does; each item keeps its place on the drive)
+        for (NSString *t in DMFinderDriveTrashes()) { if (!DMFinderDriveTrashIsSound(t)) continue; NSArray *more = DMFinderList(t, hidden, NULL); if (more) [out addObjectsFromArray:more]; }
     [out sortUsingComparator:^NSComparisonResult(DMFinderItem *a, DMFinderItem *b) { return [a.display localizedStandardCompare:b.display]; }];
     return out;
 }
@@ -865,6 +989,9 @@ static BOOL DMFDCopies(DMFDrag *d, NSString *dest) {
     if ([DMFinderReal(dest) isEqualToString:kFinderTrash]) return NO;
     if (d.option) return YES;
     for (DMFinderItem *it in d.items) if (!DMFinderCanChange(it.path)) return YES;
+    // (to another volume -- the iPad and a drive, or two drives --: a copy, as a Mac's Finder does; the original stays where it was)
+    NSString *to = DMFinderDriveRoot(DMFinderReal(dest)) ?: @"";
+    for (DMFinderItem *it in d.items) if (![(DMFinderDriveRoot(DMFinderRealItem(it.path)) ?: @"") isEqualToString:to]) return YES;
     return NO;
 }
 static BOOL DMFDMayDrop(DMFDrag *d, NSString *dest, BOOL copy) {   // (the policy, for the badge: into the user's places only; onto the Trash only what may be trashed)
@@ -1235,16 +1362,30 @@ static dispatch_queue_t DMFinderFileQueue(void) {
 }
 static const char *const kFinderOriginAttr = "com.besiktasliseba.finder.origin";
 static NSString *DMFinderICloudTrash(void) { return [kFinderICloud stringByAppendingPathComponent:@".Trash"]; }
-static BOOL DMFinderInTrash(NSString *p) { NSString *n = DMFinderNorm(p); return DMFinderInside(n, kFinderTrash) || DMFinderInside(n, DMFinderICloudTrash()); }
-static NSString *DMFinderTrashFor(NSString *p) { return DMFinderInICloud(p) ? DMFinderICloudTrash() : kFinderTrash; }
+static BOOL DMFinderInTrash(NSString *p) { NSString *n = DMFinderNorm(p); return DMFinderInside(n, kFinderTrash) || DMFinderInside(n, DMFinderICloudTrash()) || DMFinderDriveTrashOf(DMFinderRealItem(n)) != nil; }
+// Where Move to Trash puts an item: a drive's own Trash for an item on a drive (it never leaves the drive), iCloud Drive's for iCloud, else Finder's.
+static NSString *DMFinderTrashFor(NSString *p) {
+    NSString *drive = DMFinderDriveRoot(DMFinderRealItem(p));
+    if (drive) return DMFinderDriveTrash(drive);
+    return DMFinderInICloud(p) ? DMFinderICloudTrash() : kFinderTrash;
+}
+// (an item in a drive's Trash notes where it came from relative to its volume -- "volume:/folder/name" --: the drive may be mounted under another
+//  name next time, e.g. "NO NAME 1"; Put Back finds the place on the volume the item is on now)
+static NSString *const kFinderVolumeOrigin = @"volume:";
 static void DMFinderSetOrigin(NSString *p, NSString *origin) {
+    NSString *drive = origin.length ? DMFinderDriveRoot(DMFinderRealItem(p)) : nil;
+    NSString *ro = drive ? DMFinderRealItem(origin) : nil;
+    if (drive && DMFinderInside(ro, drive) && ![ro isEqualToString:drive]) origin = [kFinderVolumeOrigin stringByAppendingString:[ro substringFromIndex:drive.length]];
     if (origin.length) setxattr(p.fileSystemRepresentation, kFinderOriginAttr, origin.UTF8String, strlen(origin.UTF8String), 0, XATTR_NOFOLLOW);
     else removexattr(p.fileSystemRepresentation, kFinderOriginAttr, XATTR_NOFOLLOW);
 }
 static NSString *DMFinderOrigin(NSString *p) {
     char buf[4096]; ssize_t n = getxattr(p.fileSystemRepresentation, kFinderOriginAttr, buf, sizeof buf - 1, 0, XATTR_NOFOLLOW);
     if (n <= 0) return nil;
-    buf[n] = 0; return [NSString stringWithUTF8String:buf];
+    buf[n] = 0; NSString *o = [NSString stringWithUTF8String:buf];
+    if (![o hasPrefix:kFinderVolumeOrigin]) return o;
+    NSString *drive = DMFinderDriveRoot(DMFinderRealItem(p)), *rest = [o substringFromIndex:kFinderVolumeOrigin.length];
+    return drive && [rest hasPrefix:@"/"] ? DMFinderNorm([drive stringByAppendingString:rest]) : nil;   // (".." is resolved: the policy checks where it really leads)
 }
 static NSError *DMFinderError(NSString *text) { return [NSError errorWithDomain:@"Finder" code:1 userInfo:@{NSLocalizedDescriptionKey: text}]; }
 // One move or copy (dst: a free name, worked out on this queue).
@@ -1269,10 +1410,48 @@ static BOOL DMFinderTrashIsSound(void) {
     if (lstat(kFinderTrash.fileSystemRepresentation, &st) != 0) return errno == ENOENT;   // (not there yet: made as a folder when first needed)
     return S_ISDIR(st.st_mode) && [DMFinderReal(kFinderTrash) isEqualToString:kFinderTrash];
 }
+// The Trash folder t made ready for Move to Trash (Finder's own or a drive's is made when first needed, and must be a real folder): nil or why not.
+static NSError *DMFinderPrepareTrash(NSString *t) {
+    BOOL drive = DMFinderDriveTrashOf(t) != nil;
+    if (!drive && ![t isEqualToString:kFinderTrash]) return nil;   // (iCloud Drive's: kept by iCloud)
+    if (drive ? !DMFinderDriveTrashIsSound(t) : !DMFinderTrashIsSound()) return DMFinderError(@"The Trash is not a folder of its own here.");
+    if (drive) {   // (one level at a time with mkdir, each checked: never through a link -- logic test 1.2.3)
+        NSString *parent = t.stringByDeletingLastPathComponent;
+        struct stat pst;
+        if (lstat(parent.fileSystemRepresentation, &pst) != 0) mkdir(parent.fileSystemRepresentation, 0755);
+        if (lstat(parent.fileSystemRepresentation, &pst) != 0 || !S_ISDIR(pst.st_mode) || ![DMFinderReal(parent) isEqualToString:parent]) return DMFinderError(@"The Trash is not a folder of its own here.");
+        struct stat tst;
+        if (lstat(t.fileSystemRepresentation, &tst) != 0) mkdir(t.fileSystemRepresentation, 0700);
+    } else [[NSFileManager defaultManager] createDirectoryAtPath:t withIntermediateDirectories:YES attributes:nil error:nil];
+    if (drive ? !DMFinderDriveTrashIsSound(t) : !DMFinderTrashIsSound()) return DMFinderError(@"The Trash is not a folder of its own here.");
+    return nil;
+}
+// A path on a drive that is no longer connected: inside LiveFiles at least as deep as a volume (<LiveFiles>/<provider>/<volume>...), and on no
+// mounted drive. LiveFiles itself and a provider folder are not "a gone drive" (a window browsing them was sent away at every plug, logic test 1.2.3).
+static BOOL DMFinderOnGoneDrive(NSString *p) {
+    if (!p.length) return NO;
+    NSString *n = DMFinderNorm(p), *lf = DMFinderNorm(kFinderLiveFiles);
+    if (!DMFinderInside(n, lf) || n.pathComponents.count < lf.pathComponents.count + 2) return NO;
+    return !DMFinderDriveRoot(DMFinderReal(p));
+}
+// After an error on a drive: was it unplugged meanwhile? Then that is the reason given (not the file system's own words).
+static NSError *DMFinderDriveGoneError(NSError *e, NSArray<NSString *> *paths) {
+    if (!e) return nil;
+    DMFinderDrivesForget();
+    for (NSString *p in paths) {
+        if (!DMFinderInside(DMFinderNorm(p), DMFinderNorm(kFinderLiveFiles))) continue;
+        NSArray *c = DMFinderNorm(p).pathComponents, *lf = DMFinderNorm(kFinderLiveFiles).pathComponents;
+        if (c.count < lf.count + 2) continue;
+        NSString *root = [NSString pathWithComponents:[c subarrayWithRange:NSMakeRange(0, lf.count + 2)]];
+        if (!DMFinderDriveInfo(root)) return [NSError errorWithDomain:@"Finder" code:2 userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"The drive “%@” was disconnected.", root.lastPathComponent]}];
+    }
+    return e;
+}
 static NSError *DMFinderRemove(NSString *p) {   // (deletes ONLY inside Finder's own Trash: Empty Trash and Delete Immediately, nothing else)
     // (the item's own place: an alias in the Trash is deleted itself -- never followed to what it points at, and never refused for pointing outside)
-    NSString *r = DMFinderRealItem(p);
-    if (!DMFinderTrashIsSound() || !DMFinderInside(r, kFinderTrash) || [r isEqualToString:kFinderTrash]) return DMFinderError([NSString stringWithFormat:@"“%@” is not in the Trash.", p.lastPathComponent]);
+    NSString *r = DMFinderRealItem(p), *dt = DMFinderDriveTrashOf(r);   // (or a drive's Trash: <volume>/.Trashes/501, a real folder, not the folder itself)
+    BOOL ok = dt ? DMFinderDriveTrashIsSound(dt) && ![r isEqualToString:dt] : DMFinderTrashIsSound() && DMFinderInside(r, kFinderTrash) && ![r isEqualToString:kFinderTrash];
+    if (!ok) return DMFinderError([NSString stringWithFormat:@"“%@” is not in the Trash.", p.lastPathComponent]);
     NSFileManager *fm = [NSFileManager defaultManager];
     __block NSError *e = nil; NSError *ce = nil;
     if (!DMFinderCoordinated(p)) { [fm removeItemAtPath:p error:&e]; return e; }
@@ -1282,7 +1461,7 @@ static NSError *DMFinderRemove(NSString *p) {   // (deletes ONLY inside Finder's
 // Every Finder window showing one of these folders reads it again.
 static void DMFinderRefreshFolders(NSSet<NSString *> *dirs) {
     NSMutableSet *want = [NSMutableSet set];
-    for (NSString *d in dirs) { [want addObject:DMFinderNorm(d)]; [want addObject:DMFinderReal(d)]; }
+    for (NSString *d in dirs) { [want addObject:DMFinderNorm(d)]; [want addObject:DMFinderReal(d)]; if (DMFinderDriveTrashOf(DMFinderReal(d))) [want addObject:kFinderTrash]; }   // (a drive's Trash: the Trash shows it)
     for (DMNativeWindow *w in [gNativeWindows copy]) {
         if (![w isKindOfClass:NSClassFromString(@"DMFinderWindow")]) continue;
         NSString *p = [(id)w path];
@@ -1304,6 +1483,8 @@ static NSString *DMFinderNames(NSArray<NSString *> *paths) {   // "“a.txt”",
 }
 
 
+static void DMFinderWatchDrives(void);
+static void DMFinderDrivesCheck(NSString *why);
 @implementation DMFinderWindow {
     UITableView *_sidebar, *_list;
     UICollectionView *_grid;
@@ -1325,6 +1506,8 @@ static NSString *DMFinderNames(NSArray<NSString *> *paths) {   // "“a.txt”",
     UITextField *_renameField; NSString *_renamePath, *_renameWhenListed;   // (a name being edited in place, -dm_beginInlineRename:)
     NSArray<NSString *> *_selectWhenListed;
     dispatch_source_t _watch; BOOL _watchPending;   // (the open folder is watched: a change in it shows at once, whoever made it)
+    NSMutableArray *_watchMore;   // (the Trash: the connected drives' Trashes are watched too)
+    unsigned long long _free;     // (the free space where the open folder is, for the status line; ULLONG_MAX: unknown)
 }
 - (instancetype)initWithTitle:(NSString *)title frame:(CGRect)frame {
     self = [super initWithTitle:title frame:frame];
@@ -1332,6 +1515,7 @@ static NSString *DMFinderNames(NSArray<NSString *> *paths) {   // "“a.txt”",
     self.minSize = CGSizeMake(520.0, 320.0);
     self.titleBarHeight = 52.0; self.fullSizeContent = YES; self.showsTitle = NO;   // (a Mac Finder: one unified toolbar, the sidebar up to the top)
     _history = [NSMutableArray array]; _hpos = -1;
+    DMFinderWatchDrives();
     _places = DMFinderSidebar();
     UIView *c = self.contentView;
     c.backgroundColor = [UIColor clearColor];
@@ -1507,8 +1691,10 @@ static NSString *DMFinderNames(NSArray<NSString *> *paths) {   // "“a.txt”",
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSError *err = nil;
         NSArray *items = DMFinderList(path, hidden, &err);
+        unsigned long long free = items ? DMFinderFreeSpace(path) : ULLONG_MAX;
         dispatch_async(dispatch_get_main_queue(), ^{
             DMFinderWindow *s = ws; if (!s || ![s.path isEqualToString:path]) return;
+            s->_free = free;
             [s setItems:items error:err];
         });
     });
@@ -1517,27 +1703,75 @@ static NSString *DMFinderNames(NSArray<NSString *> *paths) {   // "“a.txt”",
 // another window or Undo show without a refresh. Several changes in a row are read once.
 - (void)dm_watch:(NSString *)path {
     if (_watch) { dispatch_source_cancel(_watch); _watch = nil; }
-    int fd = path.length ? open(path.fileSystemRepresentation, O_EVTONLY) : -1;
-    if (fd < 0) return;
-    dispatch_source_t src = dispatch_source_create(DISPATCH_SOURCE_TYPE_VNODE, (uintptr_t)fd, DISPATCH_VNODE_WRITE | DISPATCH_VNODE_DELETE | DISPATCH_VNODE_RENAME | DISPATCH_VNODE_LINK | DISPATCH_VNODE_EXTEND, dispatch_get_main_queue());
-    if (!src) { close(fd); return; }
+    for (dispatch_source_t m in _watchMore) dispatch_source_cancel(m);
+    _watchMore = [NSMutableArray array];
+    // (a drive unplugged: its folders' sources see REVOKE -- the open folder is then gone, see -dm_folderGone:)
+    unsigned long mask = DISPATCH_VNODE_WRITE | DISPATCH_VNODE_DELETE | DISPATCH_VNODE_RENAME | DISPATCH_VNODE_LINK | DISPATCH_VNODE_EXTEND | DISPATCH_VNODE_REVOKE;
     __weak DMFinderWindow *ws = self;
-    dispatch_source_set_event_handler(src, ^{
-        DMFinderWindow *s = ws; if (!s || s->_watchPending) return;
-        s->_watchPending = YES;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            DMFinderWindow *s2 = ws; if (!s2) return;
-            s2->_watchPending = NO;
-            if (![s2.path isEqualToString:path]) return;
-            if (![[NSFileManager defaultManager] fileExistsAtPath:path]) { DMLog(@"[finder] the open folder is gone: showing its enclosing folder"); [s2 go:path.stringByDeletingLastPathComponent]; return; }
-            [s2 dm_list];
+    dispatch_source_t (^watch)(NSString *) = ^dispatch_source_t(NSString *dir) {
+        int fd = dir.length ? open(dir.fileSystemRepresentation, O_EVTONLY) : -1;
+        if (fd < 0) return nil;
+        dispatch_source_t src = dispatch_source_create(DISPATCH_SOURCE_TYPE_VNODE, (uintptr_t)fd, mask, dispatch_get_main_queue());
+        if (!src) { close(fd); return nil; }
+        dispatch_source_set_event_handler(src, ^{
+            DMFinderWindow *s = ws; if (!s || s->_watchPending) return;
+            s->_watchPending = YES;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                DMFinderWindow *s2 = ws; if (!s2) return;
+                s2->_watchPending = NO;
+                if (![s2.path isEqualToString:path]) return;
+                if (![[NSFileManager defaultManager] fileExistsAtPath:path]) { [s2 dm_folderGone]; return; }
+                if (![dir isEqualToString:path]) [s2 dm_watch:path];   // (a drive's Trash changed: watched again -- it may have been made just now)
+                [s2 dm_list];
+            });
         });
-    });
-    dispatch_source_set_cancel_handler(src, ^{ close(fd); });
-    _watch = src;
-    dispatch_resume(src);
+        dispatch_source_set_cancel_handler(src, ^{ close(fd); });
+        dispatch_resume(src);
+        return src;
+    };
+    _watch = watch(path);
+    if ([path isEqualToString:kFinderTrash]) {   // (the Trash: each connected drive's Trash, or its .Trashes / the volume while it isn't made yet)
+        for (NSString *t in DMFinderDriveTrashes()) {
+            NSString *w = t;
+            while (w.length > 1 && ![[NSFileManager defaultManager] fileExistsAtPath:w]) w = w.stringByDeletingLastPathComponent;
+            dispatch_source_t m = DMFinderDriveRoot(w) ? watch(w) : nil;
+            if (m) [_watchMore addObject:m];
+        }
+    }
 }
-- (void)close { [self dm_endRename:NO]; if (_watch) { dispatch_source_cancel(_watch); _watch = nil; } [super close]; }
+// The open folder is no longer there: its enclosing folder, as on a Mac -- or, when it was on a drive that is no longer connected, On My iPad (never
+// the folders the drive was mounted in, never an error loop).
+- (void)dm_folderGone {
+    DMFinderDrivesForget();   // (the mount table now, not the list kept for half a second)
+    NSString *path = self.path;
+    if (DMFinderOnGoneDrive(path)) { [self dm_driveGone]; return; }
+    DMLog(@"[finder] the open folder is gone: showing its enclosing folder");
+    [self go:path.stringByDeletingLastPathComponent];
+}
+- (void)dm_driveGone {
+    DMLog(@"[finder] drive: the folder shown was on a drive that is no longer connected: showing On My iPad");
+    [self dm_endRename:NO];
+    NSMutableArray *keep = [NSMutableArray array];   // (Back / Forward never lead to the drive's folders again)
+    NSInteger pos = _hpos;
+    for (NSInteger i = 0; i < (NSInteger)_history.count; i++) {
+        NSString *h = _history[i];
+        if (DMFinderOnGoneDrive(h)) { if (i <= _hpos) pos--; continue; }
+        [keep addObject:h];
+    }
+    _history = keep; _hpos = MIN(MAX(pos, -1), (NSInteger)_history.count - 1);
+    NSString *safe = DMFinderOnMyIPad() ?: @"/var/mobile/Documents";
+    [self go:safe];
+}
+// The connected drives changed (DMFinderWatchDrives): the sidebar shows them; a window showing a drive that is gone goes to a safe place; the Trash
+// is read again (its drive items come and go with their drives).
+- (void)dm_drivesChanged {
+    _places = DMFinderSidebar();
+    [_sidebar reloadData];
+    NSString *p = self.path;
+    if (DMFinderOnGoneDrive(p)) { [self dm_driveGone]; return; }
+    if ([p isEqualToString:kFinderTrash]) { [self dm_watch:p]; [self dm_list]; }
+}
+- (void)close { [self dm_endRename:NO]; if (_watch) { dispatch_source_cancel(_watch); _watch = nil; } for (dispatch_source_t m in _watchMore) dispatch_source_cancel(m); _watchMore = nil; [super close]; }
 - (void)setItems:(NSArray *)items error:(NSError *)err {
     _all = items ?: @[];
     _empty.text = items ? (items.count ? nil : @"This folder is empty.") : [NSString stringWithFormat:@"The iPad doesn't let Finder open this folder.\n%@", err.localizedDescription ?: @""];
@@ -1562,7 +1796,8 @@ static NSString *DMFinderNames(NSArray<NSString *> *paths) {   // "“a.txt”",
         _items = m;
     } else _items = _all;
     _empty.hidden = _empty.text == nil || q.length;
-    _status.text = [NSString stringWithFormat:@"%lu item%@%@%@", (unsigned long)_items.count, _items.count == 1 ? @"" : @"s", q.length ? [NSString stringWithFormat:@" matching “%@”", q] : @"",
+    NSString *avail = _free && _free != ULLONG_MAX ? [NSString stringWithFormat:@", %@ available", [NSByteCountFormatter stringFromByteCount:(long long)_free countStyle:NSByteCountFormatterCountStyleFile]] : @"";   // (as on a Mac: "12 items, 93 GB available")
+    _status.text = [NSString stringWithFormat:@"%lu item%@%@%@%@", (unsigned long)_items.count, _items.count == 1 ? @"" : @"s", avail, q.length ? [NSString stringWithFormat:@" matching “%@”", q] : @"",
                     self.path && !DMFinderCanWriteInto(self.path) && !DMFinderInOwnTrash(self.path) ? @" — Read Only" : @""];   // (a place Finder doesn't change, like a Mac's status bar says)
     _statusBase = _status.text;
     [self reload];
@@ -1949,6 +2184,17 @@ static NSString *DMFinderNames(NSArray<NSString *> *paths) {   // "“a.txt”",
     else if ([act isEqualToString:@"delete"]) [self dm_deleteItems:sel];
     else if ([act isEqualToString:@"empty"]) [self emptyTrash];
     else if ([act isEqualToString:@"hidden"]) [self dm_toggleHidden];
+    else if ([act isEqualToString:@"drives"]) {   // (the drives now, the sidebar's Locations, and the policy for this folder -- names of drives only)
+        DMFinderDrivesForget();
+        for (NSDictionary *d in DMFinderDrives()) DMLog([NSString stringWithFormat:@"[finder] test drive: %@ at %@ from %@ type %@ fat %@ trash %@", d[@"t"], d[@"p"], d[@"from"], d[@"type"], d[@"fat"], DMFinderDriveTrash(d[@"p"])]);
+        NSMutableArray *locs = [NSMutableArray array]; for (NSDictionary *r in _places.lastObject[@"rows"]) [locs addObject:[NSString stringWithFormat:@"%@%@", r[@"t"], r[@"drive"] ? @"(drive)" : @""]];
+        DMLog([NSString stringWithFormat:@"[finder] test sidebar Locations: %@; here writable %d", [locs componentsJoinedByString:@", "], [self dm_canWriteHere]]);
+    }
+    else if ([act isEqualToString:@"policy"]) {   // policy:<path>: what the policy says about a path (item may change / folder may be written into / in a Trash)
+        DMLog([NSString stringWithFormat:@"[finder] test policy %@: change %d writeinto %d intrash %d owntrash %d zone %d dest %d", arg, DMFinderCanChange(arg), DMFinderCanWriteInto(arg), DMFinderInTrash(arg), DMFinderInOwnTrash(arg), DMFinderItemZone(DMFinderRealItem(arg)), DMFinderDestZone(arg)]);
+    }
+    else if ([act isEqualToString:@"drivescheck"]) DMFinderDrivesCheck(@"test");   // (the check a mount event runs; with /tmp/msb-fdrive-hide the drives look unplugged)
+    else if ([act isEqualToString:@"origin"]) { if (sel.count) DMLog([NSString stringWithFormat:@"[finder] test origin of %@: %@", [sel[0] lastPathComponent], DMFinderOrigin(sel[0]) ?: @"-"]); }
     else if ([act isEqualToString:@"closeothers"]) { for (DMNativeWindow *w in [gNativeWindows copy]) if (w != self) [w close]; }
     else if ([act isEqualToString:@"frame"]) { NSArray *n = [arg componentsSeparatedByString:@","]; if (n.count == 4) { self.layoutName = nil; self.restoreFrame = CGRectNull; self.frame = DMNativeClamp(CGRectMake([n[0] doubleValue], [n[1] doubleValue], [n[2] doubleValue], [n[3] doubleValue]), self.minSize); } }
     else if ([act isEqualToString:@"sheetok"] || [act isEqualToString:@"sheetcancel"]) {
@@ -2003,7 +2249,8 @@ static NSString *DMFinderNames(NSArray<NSString *> *paths) {   // "“a.txt”",
 }
 - (void)fail:(NSError *)e what:(NSString *)what {
     if (!e) return;
-    [self alertTitle:[NSString stringWithFormat:@"%@ didn't work", what] message:e.localizedDescription field:nil action:@"OK" destructive:NO then:^(NSString *t) {}];
+    NSString *title = [e.userInfo[@"title"] isKindOfClass:[NSString class]] ? e.userInfo[@"title"] : [NSString stringWithFormat:@"%@ didn't work", what];
+    [self alertTitle:title message:e.localizedDescription field:nil action:@"OK" destructive:NO then:^(NSString *t) {}];
 }
 // The protected-path policy, before an operation (verb: trash, move, copy, rename, duplicate, newfolder): outside the user's own places a sheet
 // says no and nothing happens (no sheet can override it); an item into itself or an iCloud file not downloaded is refused too; iCloud Drive's
@@ -2071,9 +2318,8 @@ static NSString *DMFinderNames(NSArray<NSString *> *paths) {   // "“a.txt”",
             } else if ([kind isEqualToString:@"duplicate"]) { dst = DMFinderFreeName(src.stringByDeletingLastPathComponent, name, @"copy"); copy = YES; }
             else if ([kind isEqualToString:@"trash"]) {
                 NSString *t = DMFinderTrashFor(src);
-                if ([t isEqualToString:kFinderTrash]) [fm createDirectoryAtPath:kFinderTrash withIntermediateDirectories:YES attributes:nil error:nil];
-                if ([t isEqualToString:kFinderTrash] && !DMFinderTrashIsSound()) e = DMFinderError(@"The Trash is not a folder of its own here.");
-                else dst = DMFinderFreeName(t, name, @"");
+                e = DMFinderPrepareTrash(t);
+                if (!e) dst = DMFinderFreeName(t, name, @"");
             } else if ([kind isEqualToString:@"putback"]) {
                 NSString *origin = DMFinderOrigin(src);
                 if (!DMFinderCanChange(src)) e = DMFinderError([NSString stringWithFormat:@"“%@” can't be moved: it is outside your own files.", name]);   // (reached through an alias in the Trash)
@@ -2083,12 +2329,27 @@ static NSString *DMFinderNames(NSArray<NSString *> *paths) {   // "“a.txt”",
             }
             if (!e && dst && [kind isEqualToString:@"putback"] && !DMFinderCanWriteInto(dst.stringByDeletingLastPathComponent))   // (the origin is only a note on the item: it never leads outside the user's places)
                 e = DMFinderError([NSString stringWithFormat:@"“%@” can't be put back there: that place is outside your own files.", name]);
-            if (!e && dst && copy) {   // (room for it, before a copy starts -- a clone takes none, but a copy to another volume does)
+            // (a move to another volume -- the iPad and a drive -- is a copy and a delete: it needs the room and the size rules of a copy)
+            BOOL otherVolume = NO;
+            if (!e && dst && !copy && [@[@"move", @"putback"] containsObject:kind]) {
+                struct stat a, b; otherVolume = lstat(src.fileSystemRepresentation, &a) == 0 && stat(dst.stringByDeletingLastPathComponent.fileSystemRepresentation, &b) == 0 && a.st_dev != b.st_dev;
+            }
+            NSDictionary *fat = !e && dst && (copy || otherVolume) ? DMFinderFATDriveOf(dst.stringByDeletingLastPathComponent) : nil;
+            NSString *big = fat ? DMFinderTooBigForFAT(src) : nil;
+            if (big) {   // (FAT32 stores no file over 4 GB: refused before anything is written, never a half-written file on the drive)
+                DMLog(@"[finder] drive: refused, a file over 4 GB onto a FAT32 drive");
+                e = [NSError errorWithDomain:@"Finder" code:3 userInfo:@{@"title": [NSString stringWithFormat:@"“%@” can't be %@ to “%@”", name, copy ? @"copied" : @"moved", fat[@"t"]],
+                     NSLocalizedDescriptionKey: [NSString stringWithFormat:@"%@ is larger than 4 GB. The drive is formatted as FAT32, which can't store files larger than 4 GB.", [big isEqualToString:name] ? @"It" : [NSString stringWithFormat:@"“%@” in it", big]]}];
+            }
+            if (!e && dst && (copy || otherVolume)) {   // (room for it, before a copy starts -- a clone takes none, but a copy to another volume does)
                 struct stat st; BOOL isDir = lstat(src.fileSystemRepresentation, &st) == 0 && S_ISDIR(st.st_mode);
                 unsigned long long need = isDir ? (unsigned long long)MAX(0LL, DMFDFolderSize(src, DMFinderFreeSpace(dst.stringByDeletingLastPathComponent))) : (unsigned long long)st.st_size;
-                if (need + 200ULL * 1024 * 1024 > DMFinderFreeSpace(dst.stringByDeletingLastPathComponent)) e = DMFinderError([NSString stringWithFormat:@"There isn't enough free space for “%@”.", name]);
+                // (the 200 MB margin protects the iPad's own storage; a drive may be filled to the brim -- a 1 KB copy onto a small stick was
+                //  refused, logic test 1.2.3)
+                unsigned long long margin = DMFinderDriveRoot(DMFinderReal(dst.stringByDeletingLastPathComponent)) ? 0 : 200ULL * 1024 * 1024;
+                if (need + margin > DMFinderFreeSpace(dst.stringByDeletingLastPathComponent)) e = DMFinderError([NSString stringWithFormat:@"There isn't enough free space for “%@”.", name]);
             }
-            if (!e && dst) e = DMFinderTransfer(src, dst, copy);
+            if (!e && dst) e = DMFinderDriveGoneError(DMFinderTransfer(src, dst, copy), @[src, dst]);
             if (!e && dst) {
                 if ([kind isEqualToString:@"trash"]) DMFinderSetOrigin(dst, DMFinderNorm(src));
                 if ([kind isEqualToString:@"putback"]) DMFinderSetOrigin(dst, nil);
@@ -2165,7 +2426,7 @@ static NSString *DMFinderNames(NSArray<NSString *> *paths) {   // "“a.txt”",
             return;
         }
         dispatch_async(DMFinderFileQueue(), ^{
-            NSError *e = DMFinderTransfer(path, dst, NO);
+            NSError *e = DMFinderDriveGoneError(DMFinderTransfer(path, dst, NO), @[path]);
             dispatch_async(dispatch_get_main_queue(), ^{
                 DMFinderWindow *s = ws;
                 if (e) { [s fail:e what:@"Rename"]; return; }
@@ -2207,11 +2468,11 @@ static NSString *DMFinderNames(NSArray<NSString *> *paths) {   // "“a.txt”",
                 to = DMFinderTaken(src) ? DMFinderFreeName(src.stringByDeletingLastPathComponent, src.lastPathComponent, @"") : src;
             } else {      // (what the operation made goes to the Trash)
                 NSString *t = DMFinderTrashFor(dst);
-                if ([t isEqualToString:kFinderTrash]) [[NSFileManager defaultManager] createDirectoryAtPath:kFinderTrash withIntermediateDirectories:YES attributes:nil error:nil];
-                if ([t isEqualToString:kFinderTrash] && !DMFinderTrashIsSound()) { if (!first) first = DMFinderError(@"The Trash is not a folder of its own here."); continue; }
+                NSError *te = DMFinderPrepareTrash(t);
+                if (te) { if (!first) first = te; continue; }
                 to = DMFinderFreeName(t, dst.lastPathComponent, @"");
             }
-            e = DMFinderTransfer(dst, to, NO);
+            e = DMFinderDriveGoneError(DMFinderTransfer(dst, to, NO), @[dst, to]);
             if (e) { if (!first) first = e; continue; }
             if ([kind isEqualToString:@"trash"]) DMFinderSetOrigin(to, nil);
             else if ([kind isEqualToString:@"putback"]) DMFinderSetOrigin(to, dst);
@@ -2345,8 +2606,13 @@ static NSString *DMFinderResolveTyped(NSString *p) {
         [self fileWork:@"Empty Trash" work:^NSError *{
             NSError *first = nil; NSUInteger failed = 0;
             if (!DMFinderTrashIsSound()) return DMFinderError(@"The Trash is not a folder of its own here: nothing was erased.");
-            for (NSString *f in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:kFinderTrash error:nil]) {
-                NSError *e = DMFinderRemove([kFinderTrash stringByAppendingPathComponent:f]);   // (the same rule as Delete Immediately)
+            // (Finder's Trash and every connected drive's Trash, <volume>/.Trashes/501 -- only what is inside those folders, as on a Mac)
+            NSMutableArray *trashes = [NSMutableArray arrayWithObject:kFinderTrash];
+            for (NSString *t in DMFinderDriveTrashes()) if (DMFinderDriveTrashIsSound(t)) [trashes addObject:t];
+            for (NSString *t in trashes) for (NSString *f in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:t error:nil]) {
+                NSString *x = [t stringByAppendingPathComponent:f];
+                if (!DMFinderTaken(x)) continue;   // (a "._" file on a drive goes with its item)
+                NSError *e = DMFinderDriveGoneError(DMFinderRemove(x), @[x]);   // (the same rule as Delete Immediately)
                 if (e) { failed++; if (!first) first = e; }
             }
             return failed ? DMFinderError([NSString stringWithFormat:@"%lu item%@ could not be erased: %@", (unsigned long)failed, failed == 1 ? @"" : @"s", first.localizedDescription ?: @"?"]) : nil;
@@ -2633,6 +2899,81 @@ static NSString *DMFinderResolveTyped(NSString *p) {
 
 // ---- opening Finder -------------------------------------------------------------------------------------------------------------------------
 // A new Finder window (File > New Finder Window, the Go menu with nothing open), or the front one showing `path`.
+// Drives plugged in or out: the kernel's file system events (a kqueue EVFILT_FS: VQ_MOUNT / VQ_UNMOUNT, what the Mac's disk arbitration listens
+// to) -- no polling. Every Finder window then shows the drives connected now (DMFinderSidebar), at once, without a respring.
+static NSArray<NSString *> *gFinderDrivesShown;
+static void DMFinderDrivesCheck(NSString *why) {
+    DMFinderDrivesForget();
+    NSArray *drives = DMFinderDrives();
+    NSArray *paths = [drives valueForKey:@"p"];
+    if (gFinderDrivesShown && [paths isEqualToArray:gFinderDrivesShown]) return;
+    BOOL first = gFinderDrivesShown == nil;
+    gFinderDrivesShown = paths;
+    NSMutableArray *desc = [NSMutableArray array];
+    for (NSDictionary *d in drives) [desc addObject:[NSString stringWithFormat:@"%@/%@ (%@ via %@%@)", [d[@"p"] stringByDeletingLastPathComponent].lastPathComponent, d[@"t"], [d[@"from"] componentsSeparatedByString:@"/"].firstObject, d[@"type"], [d[@"fat"] boolValue] ? @", FAT: 4 GB file limit" : @""]];
+    DMLog([NSString stringWithFormat:@"[finder] drives (%@): %lu connected%@%@", why, (unsigned long)drives.count, drives.count ? @": " : @"", [desc componentsJoinedByString:@"; "]]);
+    if (first) return;
+    for (DMNativeWindow *w in [gNativeWindows copy]) if ([w isKindOfClass:[DMFinderWindow class]]) [(DMFinderWindow *)w dm_drivesChanged];
+}
+// The second signal: LiveFiles and its provider folders are watched too (a volume's folder appears there when a drive is mounted, and goes when
+// it is unmounted). Either signal leads to the same check, which only acts on a real change.
+static NSMutableDictionary<NSString *, dispatch_source_t> *gFinderLiveWatch;
+static void DMFinderWatchLiveFolders(void) {
+    if (!gFinderLiveWatch) gFinderLiveWatch = [NSMutableDictionary dictionary];
+    NSMutableArray *dirs = [NSMutableArray arrayWithObject:kFinderLiveFiles];
+    for (NSString *f in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:kFinderLiveFiles error:nil]) {
+        NSString *d = [kFinderLiveFiles stringByAppendingPathComponent:f]; BOOL isDir = NO;
+        if ([[NSFileManager defaultManager] fileExistsAtPath:d isDirectory:&isDir] && isDir) [dirs addObject:d];
+    }
+    for (NSString *d in gFinderLiveWatch.allKeys) if (![dirs containsObject:d]) { dispatch_source_cancel(gFinderLiveWatch[d]); [gFinderLiveWatch removeObjectForKey:d]; }
+    for (NSString *d in dirs) {
+        if (gFinderLiveWatch[d]) continue;
+        int fd = open(d.fileSystemRepresentation, O_EVTONLY);
+        if (fd < 0) continue;
+        dispatch_source_t src = dispatch_source_create(DISPATCH_SOURCE_TYPE_VNODE, (uintptr_t)fd, DISPATCH_VNODE_WRITE | DISPATCH_VNODE_DELETE | DISPATCH_VNODE_RENAME | DISPATCH_VNODE_LINK | DISPATCH_VNODE_REVOKE, dispatch_get_main_queue());
+        if (!src) { close(fd); continue; }
+        dispatch_source_set_event_handler(src, ^{
+            static BOOL pending; if (pending) return; pending = YES;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                pending = NO;
+                DMFinderWatchLiveFolders();   // (a provider folder may have come or gone)
+                DMFinderDrivesCheck(@"LiveFiles changed");
+            });
+        });
+        dispatch_source_set_cancel_handler(src, ^{ close(fd); });
+        dispatch_resume(src);
+        gFinderLiveWatch[d] = src;
+    }
+}
+static void DMFinderWatchDrives(void) {
+    static dispatch_source_t src; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        DMFinderDrivesCheck(@"start");
+        DMFinderWatchLiveFolders();
+        int kq = kqueue();
+        if (kq < 0) { DMLog(@"[finder] drives: no kqueue -- drives show when a Finder window opens"); return; }
+        struct kevent ev; EV_SET(&ev, 0, EVFILT_FS, EV_ADD | EV_CLEAR, 0, 0, NULL);
+        if (kevent(kq, &ev, 1, NULL, 0, NULL) < 0) { DMLog([NSString stringWithFormat:@"[finder] drives: file system events unavailable (%d)", errno]); close(kq); return; }
+        src = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, (uintptr_t)kq, 0, dispatch_get_main_queue());
+        static BOOL pending;
+        dispatch_source_set_event_handler(src, ^{
+            struct kevent got[8]; struct timespec zero = {0, 0}; uint32_t flags = 0;
+            int n = kevent(kq, NULL, 0, got, 8, &zero);
+            for (int i = 0; i < n; i++) flags |= (uint32_t)got[i].fflags;
+            DMLog([NSString stringWithFormat:@"[finder] drives: file system event 0x%x", flags]);   // (rare: a mount or unmount anywhere)
+            DMFinderWatchLiveFolders();
+            if (!(flags & (VQ_MOUNT | VQ_UNMOUNT | VQ_DEAD | VQ_NOTRESP | VQ_UPDATE)) || pending) return;
+            pending = YES;   // (a plug-in mounts in steps: read once things settle, and again a little later)
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                pending = NO;
+                DMFinderDrivesCheck(flags & VQ_MOUNT ? @"mounted" : flags & VQ_UNMOUNT ? @"unmounted" : @"changed");
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMFinderDrivesCheck(@"settled"); });
+            });
+        });
+        dispatch_source_set_cancel_handler(src, ^{ close(kq); });
+        dispatch_resume(src);
+    });
+}
 static DMFinderWindow *DMFinderFront(void) {
     for (DMNativeWindow *w in [gNativeWindows reverseObjectEnumerator]) if ([w isKindOfClass:[DMFinderWindow class]]) return (DMFinderWindow *)w;
     return nil;

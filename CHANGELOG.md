@@ -2,6 +2,20 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.2.3
+
+### New
+- Finder: USB drives and SD cards show up under Locations as soon as you connect them, and leave when you unplug them. You can copy, move, rename and organize files on them like anywhere else in your own places. Moving something to the Trash on a drive keeps it on that drive (instant, and Put Back works), like on a Mac, and the Trash shows those items together with the iPad's.
+- Finder: the window's status line shows how much space is free.
+
+### Improvements
+- Menu bar: iOS's loading spinner no longer appears next to Control Center, so the icons beside it stay still.
+- Menu bar: the icon for an app's background activity (a FaceTime call, screen sharing) keeps its look but drops the large colored capsule around it.
+
+### Known limitations
+- Copying a file larger than 4 GB onto a drive formatted as FAT32 isn't possible (a limit of that format); Finder says so before copying.
+- Drives were tested on iPadOS 15. On iPadOS 16 they use the same system support, but haven't been tested with a real drive yet.
+
 ## 1.2.2
 
 ### Improvements
