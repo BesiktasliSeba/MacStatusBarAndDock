@@ -14365,6 +14365,44 @@ static char kLightsInwardKey;
 - (void)dm_layoutLogo;
 @end
 
+// ---- Status bar diagnostics (untested iPadOS only, common/Diag.h; 1 Oct, issue #5: on iPadOS 17.0 only Apple's own status bar showed, so a step
+// of dressing it quietly gave up there). Counts which step of -dm_layoutLogo each layout pass reached, and a sketch of the status bar window's views:
+// class names, frames and hidden/alpha flags only -- no text, nothing personal. Written about 35 s and 105 s after SpringBoard starts (20 s and
+// 90 s after the hook check, DMDiagHooks, which itself runs 15 s in), and on request.
+static NSMutableDictionary<NSString *, NSNumber *> *gSBDiagSteps;
+static void DMSBDiagStep(NSString *step) {
+    if (!MSBDDiagEnabled()) return;
+    if (!gSBDiagSteps) gSBDiagSteps = [NSMutableDictionary dictionary];
+    gSBDiagSteps[step] = @(gSBDiagSteps[step].integerValue + 1);
+}
+static void DMSBDiagTree(UIView *v, int depth, NSMutableString *out, int *lines) {
+    if (!v || depth > 7 || *lines >= 40) return;
+    CGRect f = v.frame;   // (compact: the depth as a number, no braces -- spaces and braces triple in the report's link, logic test 1.2.2)
+    [out appendFormat:@"%d %@ %.0f,%.0f,%.0f,%.0f%@%@ %lu\n", depth, NSStringFromClass([v class]), f.origin.x, f.origin.y, f.size.width, f.size.height,
+        v.hidden ? @" hidden" : @"", v.alpha < 0.01 ? @" a0" : @"", (unsigned long)v.subviews.count];
+    (*lines)++;
+    for (UIView *sub in v.subviews) DMSBDiagTree(sub, depth + 1, out, lines);
+}
+static void DMSBDiagFlush(void) {
+    if (!MSBDDiagEnabled()) return;
+    NSMutableString *t = [NSMutableString string];
+    CFPropertyListRef st = CFPreferencesCopyAppValue(CFSTR("stockStatusBar"), CFSTR("com.besiktasliseba.macstatusbar"));
+    [t appendFormat:@"style %@; classes: foreground %d, string %d, modern %d\n", st && CFGetTypeID(st) == CFBooleanGetTypeID() && CFBooleanGetValue((CFBooleanRef)st) ? @"Stock" : @"Mac",
+        objc_getClass("_UIStatusBarForegroundView") != nil, objc_getClass("_UIStatusBarStringView") != nil, objc_getClass("UIStatusBar_Modern") != nil];
+    if (st) CFRelease(st);
+    NSMutableArray *steps = [NSMutableArray array];
+    for (NSString *k in [gSBDiagSteps.allKeys sortedArrayUsingSelector:@selector(compare:)]) [steps addObject:[NSString stringWithFormat:@"%@ %@", k, gSBDiagSteps[k]]];
+    [t appendFormat:@"layout steps: %@\n", steps.count ? [steps componentsJoinedByString:@", "] : @"none (the foreground view never laid out)"];
+    int lines = 0;
+    for (UIWindow *w in DMAllWindows()) {
+        if (![NSStringFromClass([w class]) isEqualToString:@"UIStatusBarWindow"]) continue;
+        [t appendFormat:@"UIStatusBarWindow level %.0f%@%@\n", w.windowLevel, w.hidden ? @" hidden" : @"", w.alpha < 0.01 ? @" a0" : @""];
+        for (UIView *sub in w.subviews) DMSBDiagTree(sub, 1, t, &lines);
+        break;
+    }
+    MSBDDiagWrite(@"StatusBar", t);
+}
+
 // The leading region container: a plain UIView in the left half of the foreground
 // view that holds _UIStatusBarStringViews (the time and date).
 static UIView *DMLeadingContainer(UIView *fg) {
@@ -16501,6 +16539,7 @@ static void DMStockVPNInit(void) {
 %new
 - (void)dm_layoutLogo {
     UIView *fg = (UIView *)self;
+    DMSBDiagStep(@"a-layout");
     // Stage Manager as the engine: a status bar copy inside a window card (SBMainSwitcherWindow: a window that was maximized keeps its app's status
     // bar strip) is not ours to dress -- a Mac window has no menu bar of its own; the one menu bar is at the top of the screen. Hidden.
     // (A window in native full screen is the exception: SpringBoard then fades the main bar out and this strip IS the top bar -- it gets our menu
@@ -16512,6 +16551,7 @@ static void DMStockVPNInit(void) {
     // While a status bar copy is being created (e.g. when an app opens) it can briefly be
     // zero-width, and the regions sit at meaningless positions. Wait for a real layout.
     if (fg.bounds.size.width < 300.0) {
+        DMSBDiagStep(@"b-narrow");
         // A copy that has collapsed (an app card being dismissed, say) must not leave our
         // views behind at their old positions, or a stale app name lingers that nobody updates.
         const void *keys[] = { kSSHIconKey, kSSHButtonKey, kVPNIconKey, kVPNButtonKey, kMuteIconKey, kLogoKey, kButtonKey, kPillKey, kAppLabelKey, kAppButtonKey, kAppPillKey, kDateProxyKey, kClockButtonKey, kSpotIconKey, kSpotButtonKey, kEditLabelKey, kEditButtonKey, kEditPillKey, kGoLabelKey, kGoButtonKey, kGoPillKey, kWinLabelKey, kWinButtonKey, kWinPillKey, kAudioLabelKey, kAudioButtonKey, kAudioPillKey, kBackgroundKey, kLightsKey , kFileLabelKey, kFileButtonKey, kFilePillKey, kViewLabelKey, kViewButtonKey, kViewPillKey };
@@ -16521,10 +16561,11 @@ static void DMStockVPNInit(void) {
     }
     UIView *container = DMLeadingContainer(fg);
     UIView *timeLabel = container ? DMFirstStringView(container) : nil;
-    if (!container || !timeLabel) { DMLayoutWithoutClock(fg); return; }   // (the Lock Screen / Cover Sheet drop the time and date: the icons close up)
+    if (!container || !timeLabel) { DMSBDiagStep(container ? @"c-no-time-label" : @"c-no-leading-region"); DMLayoutWithoutClock(fg); return; }   // (the Lock Screen / Cover Sheet drop the time and date: the icons close up)
+    UIView *trailing = DMTrailingContainer(fg);
+    DMSBDiagStep(trailing ? @"d-regions-found" : @"d-no-trailing-region");
     DMShowTimeProxy(fg, NO);
     UIView *dateLabel = DMDateStringView(container);
-    UIView *trailing = DMTrailingContainer(fg);
     {   // A spare time label (iOS's short-format time item) left visible next to our clock: hidden. It showed after an app was opened from a link out of a
         // full-screen app (iPad 2, 28 Sep: Safari -> Reddit, the App Switcher's status bar copy had two "2:17 AM" labels 23 pt apart, over the date).
         Class stringView = objc_getClass("_UIStatusBarStringView");
@@ -18611,6 +18652,7 @@ static void DMRunTrigger(NSString *cmd) {
         DMRecordStages([[cmd substringFromIndex:8] doubleValue]);
     }
     else if ([cmd isEqualToString:@"tvshot"]) DMCaptureExternalDisplay();   // tvshot: what the external display (TV) shows -> /tmp/macstatusbar-tv.png (half size)
+    else if ([cmd isEqualToString:@"sbdiag"]) DMSBDiagFlush();   // sbdiag: write the status bar diagnostic record now (untested iPadOS, or debug with /tmp/msb-diag-test)
     else if ([cmd isEqualToString:@"rawshot"]) {   // the framebuffer as it really is (UIKit's own screen capture, native orientation) -> /tmp/macstatusbar-raw.png
         // (_UICreateScreenUIImage is a Create function: the caller owns the image. Called through a plain UIImage-returning pointer, ARC retained it
         //  once more and it was never freed -- about 15 MB of SpringBoard memory per capture (904 MB on the M1 after a test run, 30 Sep). Taken as a
@@ -26269,6 +26311,9 @@ static void DMDiagHooks(void) {
     MSBDDiagWrite(@"Hooks", [NSString stringWithFormat:@"iPadOS %ld.%ld.%ld: %lu hooks checked\nmissing methods (%lu): %@\nmissing classes (%lu): %@",
         (long)v.majorVersion, (long)v.minorVersion, (long)v.patchVersion, (unsigned long)checked,
         (unsigned long)noMethod.count, [noMethod componentsJoinedByString:@", "], (unsigned long)noClass.count, [noClass componentsJoinedByString:@", "]]);
+    // (the status bar's own record: once the bar has had time to lay out, and once more later -- DMSBDiagFlush)
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMSBDiagFlush(); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(90.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMSBDiagFlush(); });
 }
 // ---- Stage Manager as the engine: the parts that act (DMSMEngine) ----
 // The window's own "..." menu action (SBTopAffordanceViewController: closeAction, removeFromSetAction = Minimize, maximizationAction = Enter Full

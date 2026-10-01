@@ -316,8 +316,8 @@ static inline NSURL *MSBDReportProblemURL(NSString *engine) {
     }
     // GitHub's new-issue link must stay a few KB: the longest parts shrink until it fits.
     NSURL *url = nil;
-    NSUInteger frames[] = {5, 3, 0}, chars[] = {900, 300, 80};
-    for (int i = 0; i < 3; i++) {
+    NSUInteger frames[] = {5, 3, 3, 0}, chars[] = {900, 600, 300, 80};   // (a middle step: the diagnostics no longer drop straight to 300, logic test 1.2.2)
+    for (int i = 0; i < 4; i++) {
         NSMutableString *body = [base mutableCopy];
         NSString *tester = MSBDReportTesterInfo(chars[i]);
         if (tester) [body appendString:tester];

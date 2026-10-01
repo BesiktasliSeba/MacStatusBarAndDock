@@ -2,6 +2,11 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.2.2
+
+### Improvements
+- Report a Problem on untested iPadOS versions (iPadOS 17 and later with Enable Anyway on): the report now includes a short record of how far the menu bar got while setting itself up, and the whole list of system methods the tweak couldn't find, so problems like a menu bar that doesn't appear can be tracked down.
+
 ## 1.2.1
 
 ### Fixes

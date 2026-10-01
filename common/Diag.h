@@ -8,7 +8,8 @@
 #include <unistd.h>
 
 #define MSBD_DIAG_PATH(name) [NSString stringWithFormat:@"/var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-Diag-%@.txt", (name)]
-#define MSBD_DIAG_NAMES @[@"Hooks", @"Dock", @"StageManager"]   // (StageManager: the engine's check and its iPadOS 17 layout hooks, StatusBar.x DMSM17DiagWrite)
+#define MSBD_DIAG_NAMES @[@"Hooks", @"StatusBar", @"Dock", @"StageManager"]   // (StatusBar: how far the menu bar got, StatusBar.x DMSBDiagFlush; StageManager: the
+                                                                                 //  engine's check and its iPadOS 17 layout hooks, StatusBar.x DMSM17DiagWrite)
 
 static inline BOOL MSBDDiagEnabled(void) {
     static int on = -1;
@@ -39,7 +40,14 @@ static inline NSString *MSBDDiagText(NSUInteger maxChars) {
     for (NSString *n in MSBD_DIAG_NAMES) {
         NSString *t = [NSString stringWithContentsOfFile:MSBD_DIAG_PATH(n) encoding:NSUTF8StringEncoding error:nil];
         if (!t.length) continue;
-        if (t.length > maxChars) t = [[t substringToIndex:maxChars] stringByAppendingString:@"…"];
+        // (the missing methods: each long selector shortened to its first part -- the full list stays in the file -- so the list fits the report;
+        //  it was cut off after 6 of 9 on iPadOS 17.0, issue #5)
+        if ([n isEqualToString:@"Hooks"]) {
+            NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"([-+]\\[[^ \\]]+ [A-Za-z0-9_]+:)(?:[A-Za-z0-9_]*:)+\\]" options:0 error:nil];
+            if (re) t = [re stringByReplacingMatchesInString:t options:0 range:NSMakeRange(0, t.length) withTemplate:@"$1…]"];
+        }
+        NSUInteger budget = [n isEqualToString:@"Hooks"] || [n isEqualToString:@"StatusBar"] ? maxChars * 2 : maxChars;   // (the two that matter most get more room)
+        if (t.length > budget) t = [[t substringToIndex:budget] stringByAppendingString:@"…"];
         [s appendFormat:@"- %@:\n```\n%@\n```\n", n, t];
     }
     return s.length ? [@"\n**Diagnostics** (untested iPadOS; names and numbers only)\n" stringByAppendingString:s] : nil;
