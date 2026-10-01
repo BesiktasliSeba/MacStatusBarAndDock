@@ -87,6 +87,16 @@ The Mac look is on right after install. A few extras start off: the auto-hiding 
 - **Automatic Crash Recovery**: if turning on a feature is followed by two SpringBoard crashes in a row, MacStatusBar&Dock switches that feature back off by itself instead of leaving your iPad in a crash loop, and tells you in Settings, with a Report a Problem button. It also tells a stuck SpringBoard (restarted by the system) from a crash, and only counts problems in its own code: another tweak's crash or hang never switches MacStatusBar&Dock off.
 - **Built-in safety**: off by default on untested iPadOS versions (unless you choose Enable Anyway), does nothing at all on an iPhone, and never contacts any server (see [SECURITY.md](./SECURITY.md)).
 
+## Drives in Finder
+
+USB sticks, SSDs and SD card readers show up in Finder under Locations as soon as you connect them.
+
+- **Formats:** exFAT and FAT32 work (tested with a FAT32 USB stick). APFS and Mac OS Extended drives use the same iPadOS support and should work too, but haven't been tested with a real drive yet. NTFS (common on Windows drives) isn't supported by iPadOS itself.
+- **FAT32** can't hold files larger than 4 GB; Finder says so before copying. exFAT has no such limit.
+- **Power:** SSDs often need more power than a USB stick. Connect them straight to the iPad's USB-C port, or use a powered hub.
+- **Trash:** items moved to the Trash stay on the drive (in its own hidden Trash), and Put Back works.
+- To disconnect, just unplug the drive when no copy is running.
+
 ## Which window engine?
 
 Measured on both test iPads: **Aerial 5.0 is the recommended window engine** on newer and older iPads alike: every window test passed, memory use was the same as the others, and on the older iPad Pro 9.7" it opened windows about twice as fast as Zetsu from a cold start. Zetsu works well too and is a good alternative. MilkyWay4 runs on iPadOS 15 only.
