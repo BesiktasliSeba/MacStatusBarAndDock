@@ -62,30 +62,28 @@ Tried it on another setup? A short note in an issue (works / doesn't) helps fill
 
 The Mac look is on right after install. A few extras start off: the auto-hiding menu bar, seconds in the clock, the keyboard extras, the experimental keyboard button and the Lock Screen options.
 
-- **Status Bar Style: Mac or Stock**: Mac gives you the full menu bar, app menus, audio mixing and Mac-style windows; Stock keeps the standard iPadOS status bar while your window engine keeps running with its own settings.
-- **Menu bar with app menus**: an Apple menu (About This iPad, App Store, Force Quit, Respring, Safe Mode, Lock Screen, Sleep, Shut Down) and menus for the front app (App, Edit, Go, Window), in every orientation.
-- **Go Menu**: choose and reorder the apps in the Go menu, the same way you'd customize Control Center. New installs start with Calendar, Terminal, Maps and Reynard.
-- **Today drop-down**: tap the clock to drop your Today View widgets down like a menu, with your notifications in their own box above them (newest first; tap to open, swipe to clear).
-- **Control Center** opens from the status bar (with BigSurCenter installed, its panel size can be set in Settings).
-- **Mac-style notification banners** in the top-right corner.
-- **Mute icon**: a small status bar icon shows while the iPad is on silent (its own switch in Settings).
-- **VPN menu**: while a VPN is connected, iOS's own VPN badge shows as its own item next to the status icons, like on a Mac. Its menu shows the VPN's name and has Disconnect (auto-connect goes off too), a button that opens the VPN's app and VPN & Device Management.
-- **Mac pointer**: a macOS arrow cursor and I-beam with a trackpad or mouse, with a choice of style and size. Optionally it takes the Color, Border Width and Increase Contrast set on the same Settings > Pointer page (Use Pointer Control Style, off by default).
-- **Haptic Touch menus**: long-press a Home Screen app icon for Force Quit and App Size, or a folder icon to jump straight to one of its apps. Menus look like a Mac's (slimmer rows that adapt to a trackpad or mouse); choose Mac or Stock in Settings > Status Bar > App Menus.
-- **Stage Manager window engine (iPadOS 16.1 and later, experimental)**: iPadOS's own Stage Manager runs your windows with a Mac look: title bars with traffic lights, native full screen that other windows can come over, the Window menu (layouts, Fit to Window, Swap, Move to Other Display) and a choice of resize handles. On iPads with Stage Manager, or older iPads with TrollPad; with an external display it gets its own Mac desktop.
-- **Mac windows** on the window engine you already use (Aerial 3.0 or 5.0, MilkyWay4 on iPadOS 15 only, or Zetsu 1.6.2 or 1.6.6): a title bar, traffic lights and rounded corners, with Fit to Window tiling (a third window asks which side it goes on, or No Fit to leave it untiled) and resize handles that can be tinted in each app's color (Tint Resize Handles, off by default).
-- **Finder**: a Mac Finder window on every window engine, with a sidebar, list and icon views, Quick Look, Search, Undo and Put Back, several-item selection, USB drives and SD cards, and drag and drop between Finder windows and into apps. It only changes files in your own places, so it can't be used to break the iPad by accident. Finder and its Dock icon each have their own switch in Settings.
-- **Dock** with macOS-style magnification, recent apps (plus a suggested or Handoff app), running-app indicators, a Launchpad icon, and a Downloads stack (choose which apps' downloads appear from a link in Settings).
-- **Audio mixing per app**, with a volume for each app, set from the menu bar.
-- **Auto-hiding menu bar** (optional, off by default).
-- **Home Screen switches**: hide the page dots or the icon labels, added right on Apple's own Home Screen settings page, and the Home Bar (the line at the bottom edge) is hidden, with its own switch.
-- **Lock Screen options**: hide the status bar on the Lock Screen, or skip it after a respring (no passcode set only).
-- **Settings integration**: stock-looking pages right below General (Status Bar, Dock, Control Center), plus three longer Auto-Lock times (30 min/1 h/2 h), an SSH switch and an always-visible Ethernet section.
-- **Keyboard extras** (off until you turn them on): Cmd-Tab picks the right window, Escape closes menus, Tab to mute, Globe volume keys, brightness/keyboard-backlight keys.
-- **Typing in windows like a Mac**: only the window you're using keeps a text cursor, and Esc ends typing in a windowed app (its own switch).
-- **Reduce Motion support**: menus, windows and banners cross-fade instead of zooming or springing when you use Reduce Motion.
-- **Automatic Crash Recovery**: if turning on a feature is followed by two SpringBoard crashes in a row, MacStatusBar&Dock switches that feature back off by itself instead of leaving your iPad in a crash loop, and tells you in Settings, with a Report a Problem button. It also tells a stuck SpringBoard (restarted by the system) from a crash, and only counts problems in its own code: another tweak's crash or hang never switches MacStatusBar&Dock off.
-- **Built-in safety**: off by default on untested iPadOS versions (unless you choose Enable Anyway), does nothing at all on an iPhone, and never contacts any server (see [SECURITY.md](./SECURITY.md)).
+### Menu bar
+- **A real Mac menu bar**: an Apple menu (About This iPad, App Store, Force Quit, Respring, Safe Mode, Lock Screen, Sleep, Shut Down) and menus for the app in front (App, Edit, Go, Window), in every orientation. Status Bar Style switches between Mac and the stock iPadOS bar.
+- **Today drop-down**: tap the clock to drop your Today View widgets down like a menu, with your notifications in their own box above them.
+- **Audio mixing per app**, with a volume for each app, right from the menu bar.
+- **VPN menu**: the VPN badge becomes its own menu bar item with the VPN's name, Disconnect and a button to its app.
+
+### Windows
+- **Mac windows on the engine you already use** (Aerial 3.0 or 5.0, Zetsu 1.6.2 or 1.6.6, MilkyWay4 on iPadOS 15): title bars, traffic lights, rounded corners, resize handles, and Fit to Window tiling.
+- **Stage Manager as a window engine** (iPadOS 16.1 and later, experimental): Apple's own windowing with the Mac look, native full screen that other windows can come over, and its own Mac desktop on an external display.
+- **Typing like on a Mac**: only the window you're using keeps a text cursor, and Esc ends typing.
+
+### Finder
+- **A Mac Finder window** on every window engine: sidebar, list and icon views, Quick Look, Search, Undo and Put Back, several-item selection, USB drives and SD cards, and drag and drop into apps. It only changes files in your own places, so it can't be used to break the iPad by accident.
+
+### Dock
+- **A macOS Dock**: magnification, recent apps, running-app dots, Finder and a Launchpad icon, and a Downloads stack with search.
+
+### Built to be safe
+- **Automatic Crash Recovery**: if a feature is followed by two SpringBoard crashes in a row, it switches itself off instead of leaving you in a crash loop, tells you in Settings, and offers Report a Problem. Another tweak's crash never switches MacStatusBar&Dock off.
+- **Off by default on untested iPadOS versions** (unless you choose Enable Anyway), does nothing on an iPhone, and never contacts any server (see [SECURITY.md](./SECURITY.md)).
+
+**Also included:** a Mac pointer (arrow and I-beam, with Pointer Control colors as an option), Mac-style notification banners, Mac-style Haptic Touch menus (Force Quit and App Size on app icons, folder shortcuts), a mute icon, Control Center from the menu bar, a customizable Go menu, an auto-hiding menu bar, Home Screen options (page dots, icon labels, Home Bar), Lock Screen options, keyboard extras (Cmd-Tab to the right window, Esc closes menus, Tab to mute, Globe volume and brightness keys), longer Auto-Lock times, an SSH switch, Ethernet settings, and Reduce Motion support. Every feature has its own switch in Settings, on stock-looking pages right below General.
 
 ## Drives in Finder
 
