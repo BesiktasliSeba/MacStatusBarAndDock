@@ -271,7 +271,7 @@ static UIWindow *DMNativeWindowTaking(CGPoint p, CGFloat aboveLevel) {
     for (UIWindow *w in DMAllWindows()) {
         if (w.hidden || w == gNativeLayer || w.windowLevel <= aboveLevel || w.alpha < 0.01) continue;
         NSString *c = NSStringFromClass([w class]);
-        if ([c isEqualToString:@"UIStatusBarWindow"] || [c isEqualToString:@"_UISystemGestureWindow"] || [c containsString:@"Recording"] || [c containsString:@"TextEffects"]
+        if (DMSBIsBarWindowName(c) || [c isEqualToString:@"_UISystemGestureWindow"] || [c containsString:@"Recording"] || [c containsString:@"TextEffects"]
             || [c containsString:@"RemoteKeyboard"] || [c containsString:@"InputWindow"]) continue;
         UIView *h = [w hitTest:[w convertPoint:p fromCoordinateSpace:w.screen.coordinateSpace] withEvent:nil];   // (p: the SCREEN's point)
         if (!h || h == w || h == w.rootViewController.view || [NSStringFromClass([h class]) containsString:@"PassThrough"] || [NSStringFromClass([h class]) isEqualToString:@"SBFluidSwitcherContentView"]) continue;

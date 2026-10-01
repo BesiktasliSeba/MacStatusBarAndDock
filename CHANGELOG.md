@@ -2,6 +2,11 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.2.4
+
+### Experimental (iPadOS 17)
+- iPadOS 17 (with Enable Anyway): the Mac menu bar now uses iPadOS 17's new status bar, which SpringBoard draws differently from iPadOS 15 and 16. Until now only Apple's own status bar showed there. Not tested on an iPadOS 17 device yet: if the menu bar still doesn't appear, Report a Problem now includes exactly what it found, which helps a lot.
+
 ## 1.2.3
 
 ### New

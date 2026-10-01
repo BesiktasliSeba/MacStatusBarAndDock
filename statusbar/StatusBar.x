@@ -1253,6 +1253,49 @@ static double DMProcessAge(void) {   // seconds since this SpringBoard process s
 // iPadOS 17+ (untested versions) and "SpringBoard is still starting" (first 8 s), both asked on every scene update and layout there: cached -- the
 // version never changes, and once the start is over it stays over (the age needs a sysctl each time).
 static BOOL DMNewOS(void) { static int v = -1; if (v < 0) v = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17; return v; }
+// ---- The status bar's classes (1.2.4, issue #5). iPadOS 15/16: SpringBoard's status bar is UIKit's (UIStatusBarWindow > UIStatusBar_Modern >
+// _UIStatusBar > _UIStatusBarForegroundView > _UIStatusBarStringView). iPadOS 17 moved it into SystemStatusUI.framework: SBStatusBarWindow >
+// STUIStatusBar_Wrapper > STUIStatusBar > STUIStatusBarForegroundView > STUIStatusBarStringView, same shape (UIKit's classes stay, for apps).
+// Every status bar class is named here by its UIKit name; DMSBClass gives the class SpringBoard uses. 15/16: always the UIKit class, exactly as
+// before -- the SystemStatusUI path only exists on 17+ and only when its classes are there.
+static const char *const kDMSBNames[][2] = {
+    {"_UIStatusBarForegroundView", "STUIStatusBarForegroundView"},
+    {"_UIStatusBarStringView", "STUIStatusBarStringView"},
+    {"UIStatusBar_Modern", "STUIStatusBar_Wrapper"},
+    {"_UIStatusBar", "STUIStatusBar"},
+    {"UIStatusBarWindow", "SBStatusBarWindow"},
+    {"_UIStatusBarIndicatorVPNItem", "STUIStatusBarVPNItem"},
+    {"_UIStatusBarActivityItem", "STUIStatusBarActivityItem"},
+    {"_UIStatusBarPillBackgroundActivityItem", "STUIStatusBarPillBackgroundActivityItem"},
+};
+static BOOL DMSBUseSTUI(void) {   // iPadOS 17+ with SystemStatusUI's bar classes present
+    static int v = -1;
+    if (v >= 0) return v;
+    v = 0;
+    if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion < 17) return v;
+    if (!objc_getClass("STUIStatusBarForegroundView")) dlopen("/System/Library/PrivateFrameworks/SystemStatusUI.framework/SystemStatusUI", RTLD_LAZY);
+    v = objc_getClass("STUIStatusBarForegroundView") && objc_getClass("STUIStatusBar") && objc_getClass("STUIStatusBarStringView") && objc_getClass("STUIStatusBar_Wrapper");
+    return v;
+}
+// The name SpringBoard's bar uses for `uikitName` (the UIKit name itself on 15/16, or when the new class is missing).
+static const char *DMSBNameC(const char *uikitName) {
+    if (!DMSBUseSTUI()) return uikitName;
+    for (size_t i = 0; i < sizeof(kDMSBNames) / sizeof(kDMSBNames[0]); i++)
+        if (strcmp(kDMSBNames[i][0], uikitName) == 0) return objc_getClass(kDMSBNames[i][1]) ? kDMSBNames[i][1] : uikitName;
+    return uikitName;
+}
+static Class DMSBClass(const char *uikitName) { return objc_getClass(DMSBNameC(uikitName)); }
+static NSString *DMSBName(const char *uikitName) {   // (cached per table entry, no allocation: asked for every view in some layout passes)
+    static NSString *cache[sizeof(kDMSBNames) / sizeof(kDMSBNames[0])];
+    for (size_t i = 0; i < sizeof(kDMSBNames) / sizeof(kDMSBNames[0]); i++)
+        if (strcmp(kDMSBNames[i][0], uikitName) == 0) { if (!cache[i]) cache[i] = @(DMSBNameC(uikitName)); return cache[i]; }
+    return @(uikitName);
+}
+// A class name check: `name` is the class SpringBoard's bar uses for `uikitName` (15/16: exactly the old isEqualToString: test).
+static BOOL DMSBIs(NSString *name, const char *uikitName) { return [name isEqualToString:DMSBName(uikitName)]; }
+static unsigned gSBItemHooks;   // (diagnostics: which item hook groups went on -- 1 VPN badge, 2 activity spinner, 4 pill, 8 pill 17+)
+// For windows only (nothing of ours is called on them): either family's status bar window.
+static BOOL DMSBIsBarWindowName(NSString *name) { return [name isEqualToString:@"UIStatusBarWindow"] || (DMSBUseSTUI() && [name isEqualToString:DMSBName("UIStatusBarWindow")]); }
 static BOOL DMStarting(void) { static BOOL over = NO; if (over) return NO; if (DMProcessAge() >= 8.0) { over = YES; return NO; } return YES; }
 static BOOL DMAerialCompatible(void) {
     if (gAerialFlavor >= 0) return gAerialFlavor != 0;
@@ -1628,7 +1671,7 @@ static UIView *gCover = nil;
 // comes out turned a quarter turn.
 static UIWindow *DMStatusBarWindow(void) {
     for (UIWindow *w in DMAllWindows())
-        if ([NSStringFromClass([w class]) isEqualToString:@"UIStatusBarWindow"] && !w.hidden) return w;
+        if (DMSBIs(NSStringFromClass([w class]), "UIStatusBarWindow") && !w.hidden) return w;
     return nil;
 }
 static void DMCoverRemove(void) {
@@ -14383,22 +14426,66 @@ static void DMSBDiagTree(UIView *v, int depth, NSMutableString *out, int *lines)
     (*lines)++;
     for (UIView *sub in v.subviews) DMSBDiagTree(sub, depth + 1, out, lines);
 }
+// (the first view of class `c` under `v`, depth-first)
+static UIView *DMSBDiagFind(UIView *v, Class c) {
+    if (!v || !c) return nil;
+    if ([v isKindOfClass:c]) return v;
+    for (UIView *s in v.subviews) { UIView *r = DMSBDiagFind(s, c); if (r) return r; }
+    return nil;
+}
+// Compact on purpose (the report's link: every space costs 3 characters): the most telling lines first, the sketch last (it is what gets cut).
 static void DMSBDiagFlush(void) {
     if (!MSBDDiagEnabled()) return;
     NSMutableString *t = [NSMutableString string];
     CFPropertyListRef st = CFPreferencesCopyAppValue(CFSTR("stockStatusBar"), CFSTR("com.besiktasliseba.macstatusbar"));
-    [t appendFormat:@"style %@; classes: foreground %d, string %d, modern %d\n", st && CFGetTypeID(st) == CFBooleanGetTypeID() && CFBooleanGetValue((CFBooleanRef)st) ? @"Stock" : @"Mac",
-        objc_getClass("_UIStatusBarForegroundView") != nil, objc_getClass("_UIStatusBarStringView") != nil, objc_getClass("UIStatusBar_Modern") != nil];
+    BOOL stock = st && CFGetTypeID(st) == CFBooleanGetTypeID() && CFBooleanGetValue((CFBooleanRef)st);
     if (st) CFRelease(st);
+    // which family is in use, and which classes of both families exist (1/0 per class: fg,str,modern,bar,window,vpn,act,pill)
+    NSMutableString *uk = [NSMutableString string], *nu = [NSMutableString string];
+    for (size_t i = 0; i < sizeof(kDMSBNames) / sizeof(kDMSBNames[0]); i++) {
+        [uk appendString:objc_getClass(kDMSBNames[i][0]) ? @"1" : @"0"];
+        [nu appendString:objc_getClass(kDMSBNames[i][1]) ? @"1" : @"0"];
+    }
+    [t appendFormat:@"style %@;bar %@;UIKit %@;STUI %@ (fg,str,mod,bar,win,vpn,act,pill)\n", stock ? @"Stock" : @"Mac", DMSBUseSTUI() ? @"STUI" : @"UIKit", uk, nu];
+    // hooks: the classes the core hooks went on, and the item groups
+    if (!stock) [t appendFormat:@"hooks on %@,%@,%@,%@,%@;items %u\n", DMSBName("_UIStatusBarForegroundView"), DMSBName("_UIStatusBarStringView"),
+        DMSBName("UIStatusBar_Modern"), DMSBName("_UIStatusBar"), DMSBName("UIStatusBarWindow"), gSBItemHooks];
+    // SystemStatusUI's classes (17+): how many, and the ones that look like a window, wrapper or the bar's main views
+    Class stui = objc_getClass("STUIStatusBar");
+    Dl_info di;
+    if (stui && dladdr((__bridge void *)stui, &di) && di.dli_fname) {
+        unsigned n = 0;
+        const char **names = objc_copyClassNamesForImage(di.dli_fname, &n);
+        NSMutableArray *keep = [NSMutableArray array];
+        for (unsigned i = 0; i < n; i++) {
+            NSString *c = @(names[i]);
+            if ([c containsString:@"Window"] || [c containsString:@"Wrapper"] || [c hasSuffix:@"ForegroundView"] || [c hasSuffix:@"_Modern"] || [c isEqualToString:@"STUIStatusBar"]) [keep addObject:c];
+        }
+        free(names);
+        [keep sortUsingSelector:@selector(compare:)];
+        [t appendFormat:@"STUI classes %u:%@\n", n, [keep componentsJoinedByString:@","]];
+    }
     NSMutableArray *steps = [NSMutableArray array];
     for (NSString *k in [gSBDiagSteps.allKeys sortedArrayUsingSelector:@selector(compare:)]) [steps addObject:[NSString stringWithFormat:@"%@ %@", k, gSBDiagSteps[k]]];
-    [t appendFormat:@"layout steps: %@\n", steps.count ? [steps componentsJoinedByString:@", "] : @"none (the foreground view never laid out)"];
-    int lines = 0;
+    [t appendFormat:@"layout steps: %@\n", steps.count ? [steps componentsJoinedByString:@","] : @"none (the foreground view never laid out)"];
+    // where the foreground views are (either family), and every window (class without "Window", level, h = hidden)
+    Class fgUIKit = objc_getClass("_UIStatusBarForegroundView"), fgNew = objc_getClass("STUIStatusBarForegroundView");
+    NSMutableArray *wins = [NSMutableArray array], *fgs = [NSMutableArray array];
+    UIWindow *host = nil;
     for (UIWindow *w in DMAllWindows()) {
-        if (![NSStringFromClass([w class]) isEqualToString:@"UIStatusBarWindow"]) continue;
-        [t appendFormat:@"UIStatusBarWindow level %.0f%@%@\n", w.windowLevel, w.hidden ? @" hidden" : @"", w.alpha < 0.01 ? @" a0" : @""];
-        for (UIView *sub in w.subviews) DMSBDiagTree(sub, 1, t, &lines);
-        break;
+        NSString *c = [NSStringFromClass([w class]) stringByReplacingOccurrencesOfString:@"Window" withString:@""];
+        [wins addObject:[NSString stringWithFormat:@"%@:%.0f%@", c.length ? c : @"UI", w.windowLevel, w.hidden ? @"h" : @""]];
+        UIView *a = DMSBDiagFind(w, fgNew), *b = DMSBDiagFind(w, fgUIKit);
+        if (a) [fgs addObject:[@"STUI:" stringByAppendingString:c.length ? c : @"UI"]];
+        if (b) [fgs addObject:[@"UIKit:" stringByAppendingString:c.length ? c : @"UI"]];
+        if (!host && (a || b) && !w.hidden && DMSBIsBarWindowName(NSStringFromClass([w class]))) host = w;
+    }
+    if (!host) for (UIWindow *w in DMAllWindows()) if (!w.hidden && (DMSBDiagFind(w, fgNew) || DMSBDiagFind(w, fgUIKit))) { host = w; break; }
+    [t appendFormat:@"fg in %@\nwindows %@\n", fgs.count ? [fgs componentsJoinedByString:@","] : @"none", [wins componentsJoinedByString:@","]];
+    if (host) {
+        [t appendFormat:@"sketch %@ %.0f%@\n", NSStringFromClass([host class]), host.windowLevel, host.alpha < 0.01 ? @" a0" : @""];
+        int lines = 0;
+        for (UIView *sub in host.subviews) DMSBDiagTree(sub, 1, t, &lines);
     }
     MSBDDiagWrite(@"StatusBar", t);
 }
@@ -14406,7 +14493,7 @@ static void DMSBDiagFlush(void) {
 // The leading region container: a plain UIView in the left half of the foreground
 // view that holds _UIStatusBarStringViews (the time and date).
 static UIView *DMLeadingContainer(UIView *fg) {
-    Class stringView = objc_getClass("_UIStatusBarStringView");
+    Class stringView = DMSBClass("_UIStatusBarStringView");
     UIView *best = nil;
     for (UIView *v in fg.subviews) {
         if (![NSStringFromClass([v class]) isEqualToString:@"UIView"]) continue;
@@ -14420,7 +14507,7 @@ static UIView *DMLeadingContainer(UIView *fg) {
 }
 
 static UIView *DMFirstStringView(UIView *container) {
-    Class stringView = objc_getClass("_UIStatusBarStringView");
+    Class stringView = DMSBClass("_UIStatusBarStringView");
     UIView *first = nil;
     for (UIView *s in container.subviews) {
         if (![s isKindOfClass:stringView]) continue;
@@ -14445,7 +14532,7 @@ static BOOL DMLooksLikeTime(NSString *t) {
 }
 
 static UIView *DMDateStringView(UIView *container) {
-    Class stringView = objc_getClass("_UIStatusBarStringView");
+    Class stringView = DMSBClass("_UIStatusBarStringView");
     UIView *time = DMFirstStringView(container);
     UIView *best = nil, *blank = nil;
     for (UIView *s in container.subviews) {
@@ -16453,7 +16540,7 @@ static BOOL DMHideStockActivity(id item) {
 }
 static void DMStockVPNRecheck(UIView *fg) {   // (a copy that has just become ours: its items are asked again -- VPN badge, spinner, activity pill)
     id bar = fg.superview;
-    while (bar && ![bar isKindOfClass:objc_getClass("_UIStatusBar")]) bar = [bar superview];
+    while (bar && ![bar isKindOfClass:DMSBClass("_UIStatusBar")]) bar = [bar superview];
     SEL upd = NSSelectorFromString(@"_updateWithAggregatedData:");
     id data = DMCall(bar, @"currentAggregatedData");
     if (data && [bar respondsToSelector:upd]) ((void (*)(id, SEL, id))objc_msgSend)(bar, upd, data);
@@ -16530,16 +16617,30 @@ static BOOL gRestartGateOpen = NO;
 }
 %end
 %end
+%group StockPillItem17
+%hook _UIStatusBarPillBackgroundActivityItem
+- (CGSize)pillSize {
+    CGSize s = %orig;
+    if (DMHideStockActivity(self)) return CGSizeMake(MIN(s.width, 20.0), MIN(s.height > 0 ? s.height : 16.0, 16.0));
+    return s;
+}
+- (id)_backgroundColorForActivityWithIdentifier:(id)identifier {
+    if (DMHideStockActivity(self)) return [UIColor clearColor];
+    return %orig;
+}
+%end
+%end
 static void DMStockVPNInit(void) {
     if ([objc_getClass("SBRestartManager") instancesRespondToSelector:@selector(restartWithTransitionRequest:)]) { %init(VPNRestartGate); DMLog(@"[vpnwarn] restart requests are checked (VPN + Aerial 5.0)"); }
-    Class c = objc_getClass("_UIStatusBarIndicatorVPNItem");
-    if (c && [c instancesRespondToSelector:@selector(canEnableDisplayItem:fromData:)] && [objc_getClass("_UIStatusBar") instancesRespondToSelector:NSSelectorFromString(@"_updateWithAggregatedData:")]) { %init(StockVPNItem); DMLog(@"[vpn] iOS's own VPN badge left out of our status bars"); }
+    Class c = DMSBClass("_UIStatusBarIndicatorVPNItem");
+    if (c && [c instancesRespondToSelector:@selector(canEnableDisplayItem:fromData:)] && [DMSBClass("_UIStatusBar") instancesRespondToSelector:NSSelectorFromString(@"_updateWithAggregatedData:")]) { %init(StockVPNItem, _UIStatusBar = DMSBClass("_UIStatusBar"), _UIStatusBarIndicatorVPNItem = c); gSBItemHooks |= 1; DMLog(@"[vpn] iOS's own VPN badge left out of our status bars"); }
     else DMLog(@"[vpn] iOS's VPN item not found: its badge stays in the status icons");
-    Class act = objc_getClass("_UIStatusBarActivityItem");
-    if (act && [act instancesRespondToSelector:@selector(canEnableDisplayItem:fromData:)]) %init(StockActivityItem);
+    Class act = DMSBClass("_UIStatusBarActivityItem");
+    if (act && [act instancesRespondToSelector:@selector(canEnableDisplayItem:fromData:)]) { %init(StockActivityItem, _UIStatusBarActivityItem = act); gSBItemHooks |= 2; }
     else DMLog(@"[activity] iOS's activity item not found: its spinner stays in the status icons");
-    Class pill = objc_getClass("_UIStatusBarPillBackgroundActivityItem");
-    if (pill && [pill instancesRespondToSelector:@selector(pillSize)] && [pill instancesRespondToSelector:NSSelectorFromString(@"_backgroundColorForActivityType:")]) %init(StockPillItem);
+    Class pill = DMSBClass("_UIStatusBarPillBackgroundActivityItem");
+    if (pill && [pill instancesRespondToSelector:@selector(pillSize)] && [pill instancesRespondToSelector:NSSelectorFromString(@"_backgroundColorForActivityType:")]) { %init(StockPillItem, _UIStatusBarPillBackgroundActivityItem = pill); gSBItemHooks |= 4; }
+    else if (DMSBUseSTUI() && pill && [pill instancesRespondToSelector:@selector(pillSize)] && [pill instancesRespondToSelector:NSSelectorFromString(@"_backgroundColorForActivityWithIdentifier:")]) { %init(StockPillItem17, _UIStatusBarPillBackgroundActivityItem = pill); gSBItemHooks |= 8; }   // (17+: the colour is asked per activity identifier)
     else DMLog(@"[activity] iOS's background activity pill item not found: it stays in the status icons");
 }
 
@@ -16607,7 +16708,7 @@ static void DMStockVPNInit(void) {
     UIView *dateLabel = DMDateStringView(container);
     {   // A spare time label (iOS's short-format time item) left visible next to our clock: hidden. It showed after an app was opened from a link out of a
         // full-screen app (iPad 2, 28 Sep: Safari -> Reddit, the App Switcher's status bar copy had two "2:17 AM" labels 23 pt apart, over the date).
-        Class stringView = objc_getClass("_UIStatusBarStringView");
+        Class stringView = DMSBClass("_UIStatusBarStringView");
         static const void *kSpareTimeKey = &kSpareTimeKey;   // (marks a label hidden here: iOS only re-sets a label's alpha when its own alpha inputs change)
         for (UIView *s2 in container.subviews) {
             if (![s2 isKindOfClass:stringView]) continue;
@@ -17272,10 +17373,12 @@ static BOOL DMPointOnMultitaskingDots(UIView *fromView, CGPoint point) {
         if (!bar || bar.superview || bar.window) return;
         static const void *uikit = NULL;
         if (!uikit) { Dl_info i; if (dladdr((__bridge void *)[UIView class], &i)) uikit = i.dli_fbase; }
+        const void *own = NULL;   // (the bar's own framework: UIKit on 15/16; 17+: SystemStatusUI, whose recognisers stay too)
+        if (DMSBUseSTUI()) { Dl_info i; if (dladdr((__bridge void *)[bar class], &i)) own = i.dli_fbase; }
         NSUInteger n = 0;
         for (UIGestureRecognizer *g in [bar.gestureRecognizers copy]) {
             Dl_info i;
-            if (!dladdr((__bridge void *)[g class], &i) || i.dli_fbase == uikit) continue;   // (UIKit's own recognisers stay)
+            if (!dladdr((__bridge void *)[g class], &i) || i.dli_fbase == uikit || i.dli_fbase == own) continue;   // (UIKit's own recognisers stay)
             [bar removeGestureRecognizer:g]; n++;
         }
         if (n) DMLog([NSString stringWithFormat:@"[barfree] a dropped status bar: %lu gesture(s) from other tweaks taken off so it can be freed", (unsigned long)n]);
@@ -17353,7 +17456,7 @@ static BOOL DMPointOnMultitaskingDots(UIView *fromView, CGPoint point) {
 @end
 
 static UIView *DMFindForegroundView(UIView *v) {
-    if ([NSStringFromClass([v class]) isEqualToString:@"_UIStatusBarForegroundView"]) return v;
+    if (DMSBIs(NSStringFromClass([v class]), "_UIStatusBarForegroundView")) return v;
     for (UIView *s in v.subviews) {
         UIView *r = DMFindForegroundView(s);
         if (r) return r;
@@ -17374,7 +17477,7 @@ static CFTimeInterval gStartupBegan = 0.0;
     if (!gStartupBegan) gStartupBegan = link.timestamp;
     BOOL done = NO;
     for (UIWindow *w in DMAllWindows()) {
-        if (![NSStringFromClass([w class]) isEqualToString:@"UIStatusBarWindow"]) continue;
+        if (!DMSBIs(NSStringFromClass([w class]), "UIStatusBarWindow")) continue;
         UIView *fg = DMFindForegroundView(w);
         if (!fg) continue;
         DMHoldStatusBarCopy(fg);
@@ -17396,7 +17499,7 @@ static void DMStartStartupWatcher(void) {
 
 static void DMEnsureLogo(int attempt) {
     for (UIWindow *w in DMAllWindows()) {
-        if (![NSStringFromClass([w class]) isEqualToString:@"UIStatusBarWindow"]) continue;
+        if (!DMSBIs(NSStringFromClass([w class]), "UIStatusBarWindow")) continue;
         UIView *fg = DMFindForegroundView(w);
         if (!fg) continue;
         [(_UIStatusBarForegroundView *)fg dm_layoutLogo];
@@ -17881,7 +17984,7 @@ static NSString *DMRefsTo(uintptr_t target) {
         uintptr_t isa = *(uintptr_t *)scan.hits[i][0] & 0x0000000FFFFFFFF8ULL;
         NSString *cls = [known containsObject:[NSValue valueWithPointer:(void *)isa]] ? NSStringFromClass((__bridge Class)(void *)isa) : @"?";
         NSString *extra = @"";
-        if ([cls hasPrefix:@"_UIStatusBar"] && ([cls hasSuffix:@"Item"] || [cls hasSuffix:@"ItemState"])) continue;   // (the bar's own items and their states point back at it)
+        if (([cls hasPrefix:@"_UIStatusBar"] || (DMSBUseSTUI() && [cls hasPrefix:@"STUIStatusBar"])) && ([cls hasSuffix:@"Item"] || [cls hasSuffix:@"ItemState"])) continue;   // (the bar's own items and their states point back at it)
         if ([cls hasPrefix:@"NS"] && [cls hasSuffix:@"LayoutConstraint"]) continue;
         if ([cls hasSuffix:@"Block__"]) {   // a block: whose code it runs
             void *invoke = *(void **)(scan.hits[i][0] + 16); Dl_info info;
@@ -19983,7 +20086,7 @@ static void DMRunTrigger(NSString *cmd) {
         {   // Keyboard Phase: the other readings of the interface orientation, to find one that is right after a respring in landscape
             long aio = [[UIApplication sharedApplication] respondsToSelector:NSSelectorFromString(@"activeInterfaceOrientation")] ? ((long (*)(id, SEL))objc_msgSend)([UIApplication sharedApplication], NSSelectorFromString(@"activeInterfaceOrientation")) : -1;
             NSMutableString *ws = [NSMutableString string];
-            for (UIWindow *w in DMAllWindows()) { NSString *c = NSStringFromClass([w class]); if (([c isEqualToString:@"SBHomeScreenWindow"] || [c isEqualToString:@"UIStatusBarWindow"] || [c isEqualToString:@"SBFloatingDockWindow"]) && w.windowScene) [ws appendFormat:@" %@ scene %ld;", c, (long)w.windowScene.interfaceOrientation]; }
+            for (UIWindow *w in DMAllWindows()) { NSString *c = NSStringFromClass([w class]); if (([c isEqualToString:@"SBHomeScreenWindow"] || DMSBIsBarWindowName(c) || [c isEqualToString:@"SBFloatingDockWindow"]) && w.windowScene) [ws appendFormat:@" %@ scene %ld;", c, (long)w.windowScene.interfaceOrientation]; }
             DMLog([NSString stringWithFormat:@"[orientstate] activeInterfaceOrientation %ld, device %ld,%@", aio, (long)[UIDevice currentDevice].orientation, ws]);
         }
     }
@@ -21889,7 +21992,7 @@ static void DMWatchState(void) {
         UIView *bar = fg.superview, *modern = bar.superview;
         NSMutableString *strs = [NSMutableString string];
         for (UIView *s in container.subviews)
-            if ([s isKindOfClass:objc_getClass("_UIStatusBarStringView")])
+            if ([s isKindOfClass:DMSBClass("_UIStatusBarStringView")])
                 [strs appendFormat:@"%@[\"%@\" a%.2f h%d x%.0f w%.0f]", s == timeL ? @"T" : (s == dateL ? @"D" : @"?"),
                  [(UILabel *)s text], s.alpha, s.hidden, s.center.x, s.bounds.size.width];
         NSString *sig = [NSString stringWithFormat:@"strs{%@} %@ win(h%d a%.2f) fgW=%.0f fgA=%.2f/h%d barA=%.2f/h%d modernA=%.2f/h%d date(a%.2f h%d \"%@\") proxy(h%d \"%@\") app(h%d \"%@\")",
@@ -24944,7 +25047,7 @@ static NSArray<UIView *> *DMStatusBarsToMove(void) {
     NSMutableArray *out = [NSMutableArray array];
     for (UIView *fg in gCopies.allObjects) {
         UIView *modern = fg.superview.superview;
-        if (!modern || ![NSStringFromClass([modern class]) hasPrefix:@"UIStatusBar"]) modern = fg.superview;
+        if (!modern || !([NSStringFromClass([modern class]) hasPrefix:@"UIStatusBar"] || (DMSBUseSTUI() && DMSBIs(NSStringFromClass([modern class]), "UIStatusBar_Modern")))) modern = fg.superview;
         if (modern && modern.window && ![out containsObject:modern]) [out addObject:modern];
     }
     return out;
@@ -25166,7 +25269,7 @@ static void DMAutoHideKeepBarAbove(BOOL on) {
     CGFloat above = MAX(layer ? layer.windowLevel : 0.0, DMActiveEngine() == DMEngineZetsu ? kZetsuFrontLevel : 0.0) + 0.5;
     for (UIView *b in DMStatusBarsToMove()) {
         UIWindow *w = b.window;
-        if (!w || ![NSStringFromClass([w class]) isEqualToString:@"UIStatusBarWindow"]) continue;
+        if (!w || !DMSBIs(NSStringFromClass([w class]), "UIStatusBarWindow")) continue;
         NSNumber *from = objc_getAssociatedObject(w, kSBRaisedFromKey);
         if (on && w.windowLevel < above) {
             if (!from) objc_setAssociatedObject(w, kSBRaisedFromKey, @(w.windowLevel), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -26339,9 +26442,10 @@ static void DMDiagHooks(void) {
         const char *file = kMSBDHookList[i][3];
         if (strncmp(file, "statusbar/", 10) != 0 && strncmp(file, "dock/", 5) != 0) continue;
         checked++;
-        Class c = objc_getClass(kMSBDHookList[i][0]);
-        NSString *name = [NSString stringWithFormat:@"%s%s[%s %s]", kMSBDHookList[i][2], "", kMSBDHookList[i][0], kMSBDHookList[i][1]];
-        if (!c) { if (![noClass containsObject:@(kMSBDHookList[i][0])]) [noClass addObject:@(kMSBDHookList[i][0])]; continue; }
+        const char *cn = DMSBNameC(kMSBDHookList[i][0]);   // (a status bar hook: the class it really went on -- 17+: SystemStatusUI's)
+        Class c = objc_getClass(cn);
+        NSString *name = [NSString stringWithFormat:@"%s%s[%s %s]", kMSBDHookList[i][2], "", cn, kMSBDHookList[i][1]];
+        if (!c) { if (![noClass containsObject:@(cn)]) [noClass addObject:@(cn)]; continue; }
         SEL sel = sel_registerName(kMSBDHookList[i][1]);
         BOOL has = kMSBDHookList[i][2][0] == '+' ? [c respondsToSelector:sel] : [c instancesRespondToSelector:sel];
         if (!has) [noMethod addObject:name];
@@ -27002,6 +27106,7 @@ static UIView *DMSMTouchTarget(UITouch *x, UIEvent *event, UIScreen *screen, CGP
     static NSSet<NSString *> *known;
     if (!known) known = [NSSet setWithObjects:@"SBMainSwitcherWindow", @"SBFloatingDockWindow", @"UIStatusBarWindow", @"SBControlCenterWindow", @"SBCoverSheetWindow",
                          @"SBBannerWindow", @"SBMedusaHostedKeyboardWindow", @"SBHomeScreenWindow", @"SBSwitcherWindow", @"UITextEffectsWindow", @"UIRemoteKeyboardWindow", nil];
+    if (DMSBUseSTUI() && ![known containsObject:DMSBName("UIStatusBarWindow")]) known = [known setByAddingObject:DMSBName("UIStatusBarWindow")];   // (iPadOS 17+: SBStatusBarWindow)
     NSMutableArray<UIWindow *> *wins = [NSMutableArray array];
     for (UIWindow *w in DMAllWindows()) {
         if (w.hidden || w.alpha < 0.01 || !w.userInteractionEnabled || (w.screen ?: [UIScreen mainScreen]) != screen) continue;   // (the touched screen's, L3)
@@ -27274,7 +27379,7 @@ static void DMSMChrome(UIView *card) {
         if (!was || was.boolValue != fullNow) {
             objc_setAssociatedObject(card, &kFullKey, @(fullNow), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             if (was) {
-                Class fgc = objc_getClass("_UIStatusBarForegroundView");
+                Class fgc = DMSBClass("_UIStatusBarForegroundView");
                 NSMutableArray<UIView *> *todo = [NSMutableArray arrayWithObject:card];
                 while (todo.count) {
                     UIView *v = todo.lastObject; [todo removeLastObject];
@@ -28170,7 +28275,9 @@ void DMSMRunAction(UIAction *action, id sender) {
     gStockStored = gStockBar = DMStockBarSwitch();   // "Use Stock Status Bar": decided once, before anything is hooked
     DMStockPublish();
     if (gStockBar) { DMSMCheckReadOnly(); DMSkipLockInit(); DMStockBarStart(); return; }   // only the parts that stay (StockBar.h); the rest below never runs
-    %init;
+    // (the status bar hooks go on the classes SpringBoard's bar uses: 15/16 UIKit's, the same as a plain %init; 17+ SystemStatusUI's, DMSBClass)
+    %init(_UIStatusBarForegroundView = DMSBClass("_UIStatusBarForegroundView"), _UIStatusBarStringView = DMSBClass("_UIStatusBarStringView"),
+          UIStatusBar_Modern = DMSBClass("UIStatusBar_Modern"), _UIStatusBar = DMSBClass("_UIStatusBar"), UIStatusBarWindow = DMSBClass("UIStatusBarWindow"));
     if (!DMCtorSkip("stockvpn")) DMStockVPNInit();
     if (!DMCtorSkip("smengine")) DMSMEngineInit();
     DMFinderApplyPref();    // (Finder: its hooks, the Dock's Finder icon -- only while switched on)
