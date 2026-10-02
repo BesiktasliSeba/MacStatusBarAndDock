@@ -9,6 +9,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <notify.h>
+#import <dlfcn.h>
 #import "../common/OtherTweaks.h"   // (Lynx 2 drawing its own Dock indicators: ours steps aside)
 
 @interface UIWindow (DMPrivate)
@@ -61,6 +62,12 @@ static NSSet<NSString *> *RIRunningBundleIDs(void) {
             if (bid.length) [ids addObject:bid];
         }
     }
+    // Stage Manager engine: an app whose window is back on screen after a respring counts as running before iPadOS has restarted it (MacStatusBar's
+    // StatusBar.x; nil when that engine is not in use or MacStatusBar is not loaded).
+    static NSSet *(*withWindows)(void) = NULL; static int tries = 0;
+    if (!withWindows && tries < 40) { tries++; withWindows = (NSSet *(*)(void))dlsym(RTLD_DEFAULT, "MSBDAppsWithWindows"); }   // (MacStatusBar may load after the Dock)
+    NSSet *shown = withWindows ? withWindows() : nil;
+    if (shown.count) [ids unionSet:shown];
     return ids;
 }
 
@@ -103,18 +110,33 @@ static void RIUpdate(UIView *iconView, NSSet<NSString *> *running) {   // (runni
     }
     CGFloat d = MAX(4.0, iconView.bounds.size.width * 0.045);
     CGFloat y = iconView.bounds.size.height - d - 1.0;
-    // iPadOS 17+ (untested versions, a tester on 18.7.2: the dot sat on the icon): there the icon view can be just as tall as its picture, so the
-    // bottom of the view is inside the icon -- the dot goes just below the picture instead (-[SBIconView iconImageFrame], iOS 13-18). 15/16: as before.
-    SEL imageFrameSel = NSSelectorFromString(@"iconImageFrame");
-    if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17 && [iconView respondsToSelector:imageFrameSel]) {
-        CGRect img = ((CGRect (*)(id, SEL))objc_msgSend)(iconView, imageFrameSel);
-        if (img.size.height > 1.0 && y < CGRectGetMaxY(img) + 1.0) y = CGRectGetMaxY(img) + 3.0;
-    }
-    {   // (measured for our own Dock icons, see gDMDotGapBelowImage)
-        SEL imgSel = NSSelectorFromString(@"iconImageFrame");
-        if ([iconView respondsToSelector:imgSel]) {
-            CGRect img = ((CGRect (*)(id, SEL))objc_msgSend)(iconView, imgSel);
-            if (img.size.height > 1.0) { CGFloat g = y - CGRectGetMaxY(img); if (g > -2.0 && g < 40.0) gDMDotGapBelowImage = g; }
+    // The dot goes a fixed share of the picture below the picture itself, like macOS, not at the bottom of the icon view. The picture is
+    // -[SBIconView iconImageFrame] (iOS 13-18) shrunk about its centre by the Dock's icon content scale: the Dock draws a smaller picture in the
+    // same view, and iconImageFrame does not show that (iPad 2, 2 Oct: view and iconImageFrame 76 pt, picture 41.65 pt at scale 0.548 -- the
+    // view's bottom put the dots 12 pt under the picture, under the Dock's background). On 17+ the view can be as tall as the picture (a tester
+    // on 18.7.2: the dot sat on the icon). Without iconImageFrame: the view's bottom, as before.
+    SEL imgSel = NSSelectorFromString(@"iconImageFrame");
+    if ([iconView respondsToSelector:imgSel]) {
+        CGRect img = ((CGRect (*)(id, SEL))objc_msgSend)(iconView, imgSel);
+        CGFloat scale = 1.0;
+        SEL scaleSel = NSSelectorFromString(@"iconContentScale");
+        for (UIView *v = iconView; v; v = v.superview) {   // (the icon view's own, else the Dock view's that sets it)
+            if (![v respondsToSelector:scaleSel]) continue;
+            CGFloat sc = ((CGFloat (*)(id, SEL))objc_msgSend)(v, scaleSel);
+            if (isfinite(sc) && sc > 0.1 && sc <= 1.5) { scale = sc; break; }
+        }
+        if (img.size.height > 1.0 && isfinite(img.origin.y)) {
+            CGFloat h = img.size.height * scale;
+            CGFloat bottom = CGRectGetMidY(img) + h / 2.0;
+            CGFloat g = round(MAX(3.0, h * 0.09));
+            y = bottom + g;
+            // The dot stays inside the icon view: outside it the Dock does not show it (iPad 2, 2 Oct: a dot 7 pt under the view was gone). With a
+            // large Icon Size the picture nearly fills the view, so the gap shrinks, down to the view's bottom (where 1.2.4 always put it).
+            CGFloat lowest = iconView.bounds.size.height - d - 0.5;
+            // (17+, a view as tall as its picture (the 18.7.2 tester): no room inside, the dot stays under the picture as in 1.2.4)
+            BOOL before17 = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion < 17;
+            if (y > lowest && lowest > 0.0 && (lowest >= bottom || before17)) y = lowest;
+            gDMDotGapBelowImage = y - bottom;   // (our own Dock icons, Finder, are only their picture: the same gap, so their dot lines up)
         }
     }
     dot.frame = CGRectMake((iconView.bounds.size.width - d) / 2.0, y, d, d);

@@ -77,7 +77,7 @@ The Mac look is on right after install. A few extras start off: the auto-hiding 
 - **A Mac Finder window** on every window engine: sidebar, list and icon views, Quick Look, Search, Undo and Put Back, several-item selection, USB drives and SD cards, and drag and drop into apps. It only changes files in your own places, so it can't be used to break the iPad by accident.
 
 ### Dock
-- **A macOS Dock**: magnification, recent apps, running-app dots, Finder and a Launchpad icon, and a Downloads stack with search.
+- **A macOS Dock**: magnification, recent apps, running-app dots, Finder and Launchpad at its start like on a Mac, and a Downloads stack with search.
 
 ### Built to be safe
 - **Automatic Crash Recovery**: if a feature is followed by two SpringBoard crashes in a row, it switches itself off instead of leaving you in a crash loop, tells you in Settings, and offers Report a Problem. Another tweak's crash never switches MacStatusBar&Dock off.

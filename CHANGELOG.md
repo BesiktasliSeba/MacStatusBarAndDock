@@ -2,6 +2,15 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.2.5
+
+### New
+- Dock: Launchpad now sits next to Finder at the start of the Dock, like on a Mac, and Downloads moves to the end. On by default; Settings > Dock > Next to Finder puts it back at the end.
+
+### Fixes
+- Dock: the dots under running apps sit right below the icon again, inside the Dock, at every Icon Size. With a smaller Dock they had slipped below its background.
+- Dock (Stage Manager engine): windows that come back after a respring show their dot right away, before iPadOS has restarted the app.
+
 ## 1.2.4
 
 ### Experimental (iPadOS 17)

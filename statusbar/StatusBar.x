@@ -27035,6 +27035,19 @@ static NSArray<NSString *> *DMSMWindowBundles(void) {
     }
     return out.array;
 }
+// For the Dock's running dots (RunningIndicator.m, via dlsym): the apps with a window or a full-screen card showing in the Stage Manager engine.
+// After a respring Stage Manager puts the windows back before iPadOS has started their apps again (iPad 2, 2 Oct: Messages and Sileo on screen,
+// no process), so "running" alone left those Dock icons without a dot. Other engines: nil (their windows are the running apps').
+__attribute__((visibility("default"))) NSSet<NSString *> *MSBDAppsWithWindows(void) {
+    if (!DMSMEngine()) return nil;
+    NSMutableSet<NSString *> *out = [NSMutableSet set];
+    for (DMSMTitleBar *bar in gSMBars.allObjects) {
+        UIView *card = bar.card;
+        NSString *b = card ? DMSMCardBundle(card) : nil;
+        if (b && card.window && !card.window.hidden && card.alpha > 0.01) [out addObject:b];
+    }
+    return out;
+}
 void DMSMRefreshBars(void) {
     DMLightGroupsRefresh();   // (the active app as the lights see it, first: every bar's lights from it)
     for (DMSMTitleBar *b in gSMBars.allObjects) { [b dm_updateLights]; [b.card setNeedsLayout]; if (b.card) DMSMReapplyGrabbers(b.card); }

@@ -252,6 +252,20 @@
 			<key>defaults</key>
 			<string>com.besiktasliseba.dockmagnification</string>
 			<key>key</key>
+			<string>launchpadLeft</string>
+			<key>label</key>
+			<string>Next to Finder</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.dockmagnification/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.dockmagnification</string>
+			<key>key</key>
 			<string>escapeClosesLibrary</string>
 			<key>label</key>
 			<string>Escape Closes App Library</string>

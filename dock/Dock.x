@@ -51,6 +51,7 @@ static BOOL    gShowFinder = YES;       // Finder as the Dock's first item, like
 static BOOL    gEscapeClosesLibrary = YES;   // pressing Escape closes the App Library
 static BOOL    gLaunchpadIcon = YES;    // the App Library icon drawn like macOS Launchpad
 static BOOL    gLaunchpadClassic = YES; // round rocket (YES) or the silver grid tile (NO)
+static BOOL    gLaunchpadLeft = YES;    // Launchpad at the Dock's start, next to Finder, like macOS (default on for everyone, owner 2 Oct; off: at the end, as iPadOS puts the App Library)
 static BOOL    gBlockSwipeUp  = YES;    // stop an upward swipe on the Home Screen from opening the App Library
 static BOOL    gPortraitLarger = YES;   // in portrait the (shrunk) Dock grows to the widest size that fits the screen
 static BOOL    gSwipeDownOpensLibrary = YES;   // a downward swipe on the Home Screen opens the App Library (our own replacement for Lynx's "replace Spotlight")
@@ -191,6 +192,11 @@ static void DMLoadPrefs(void) {
         CFRelease(lp);
     }
     gLaunchpadIcon = launchpad;
+    {
+        CFPropertyListRef ll = DMCopyPref(CFSTR("launchpadLeft"));
+        gLaunchpadLeft = !(ll && CFGetTypeID(ll) == CFBooleanGetTypeID()) || CFBooleanGetValue(ll);   // (not set yet: on, new installs and updates alike)
+        if (ll) CFRelease(ll);
+    }
     BOOL escapeCloses = YES;
     CFPropertyListRef es = DMCopyPref(CFSTR("escapeClosesLibrary"));
     if (es) {
@@ -391,9 +397,25 @@ BOOL DMDockPointerHovering(void) { return gHovering; }
             m->platter.origin.x -= extra / 2.0;
         }
     }
+    // Launchpad next to Finder (owner, 2 Oct): the App Library / Launchpad icon moves from the Dock's end to its start -- right after Finder, or
+    // at the apps' start without Finder -- and the apps, the divider and the recents move on by one icon + one spacing. The Dock keeps its width
+    // (the icon only changes ends); Downloads then takes the end, where the App Library icon used to be.
+    BOOL lpLeft = NO; CGRect libEnd = m->libraryIcon;
+    if (gLaunchpadLeft && m->libraryIcon.size.width >= 8.0 && m->userList.size.height >= 8.0) {
+        DM_FEATURE_MARK("dock-launchpad-left");
+        lpLeft = YES;
+        CGFloat extra = m->libraryIcon.size.width + m->spacing;
+        CGFloat startX = finderSlot.size.width >= 1.0 ? CGRectGetMaxX(finderSlot) + m->spacing : m->userList.origin.x + m->spacing;
+        libEnd = m->libraryIcon;
+        libEnd.origin.x += extra;   // (the end moves on with the recents: Downloads sat on the last recent app, iPad 2 2 Oct)
+        m->libraryIcon.origin.x = startX;
+        m->userList.origin.x += extra;
+        m->divider.origin.x += extra;
+        m->recentsList.origin.x += extra;
+    }
     // Downloads stack: one more icon slot right before the App Library icon. The slot is the App Library icon's old spot; the
-    // App Library icon and the end of the platter move over by one icon + spacing.
-    CGRect slot = m->libraryIcon;
+    // App Library icon and the end of the platter move over by one icon + spacing. (Launchpad at the start: the slot is the end, the icon stays.)
+    CGRect slot = lpLeft ? libEnd : m->libraryIcon;
     // iPadOS 17+ (untested versions, a tester on 18.7.2): the App Library icon's spot is 0 wide while that icon is not in the Dock, so there is no
     // slot for Downloads -- then everything Downloads-related in this layout is left out (no widening, no second divider, no slot). 15/16: as before.
     BOOL downloadsOn = gShowDownloads && !([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17 && slot.size.width < 1.0);
@@ -413,7 +435,7 @@ BOOL DMDockPointerHovering(void) { return gHovering; }
 #endif
     if (downloadsOn) {
         CGFloat extra = slot.size.width + m->spacing + (divider2 ? unscaledSpacing + nativeDivider.size.width : 0.0);
-        m->libraryIcon.origin.x += extra;
+        if (!lpLeft) m->libraryIcon.origin.x += extra;
         m->platter.size.width += extra;
         m->platter.origin.x -= extra / 2.0;
     }
@@ -452,7 +474,7 @@ BOOL DMDockPointerHovering(void) { return gHovering; }
         CGFloat pull = lineW - lineW * f + off;
         gDivider2Rect = CGRectMake(slot.origin.x * f, nativeDivider.origin.y * f, lineW, nativeDivider.size.height * f);
         gDownloadsSlot.origin.x += unscaledSpacing * f + lineW + off;
-        m->libraryIcon.origin.x += pull / f;   // (in unscaled units: scaled below)
+        if (!lpLeft) m->libraryIcon.origin.x += pull / f;   // (in unscaled units: scaled below; Launchpad at the start stays next to Finder)
         m->platter.size.width += pull / f;
         m->platter.origin.x -= pull / f / 2.0;
     }
