@@ -2,6 +2,14 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.2.6
+
+### Fixes
+- Menu bar (iPadOS 16.0): the first menu opened after a respring in landscape no longer opens laid out as if the iPad were in portrait.
+
+### Compatibility
+- iPadOS 17.0 is reported working since 1.2.4 (iPad Pro 12.9", Zetsu 1.6.6, with Enable Anyway). Thanks to the testers who sent reports.
+
 ## 1.2.5
 
 ### New

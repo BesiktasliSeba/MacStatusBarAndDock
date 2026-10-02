@@ -10339,7 +10339,11 @@ static UIView *DMMenuHost(void) {
     }
     gMenuRotatorBuiltForOrientation = orientation;
     gMenuBuiltForScreen = screen;
-    if (!turned) { if (gMenuRotator && !gMenuRotator.subviews.count) [gMenuRotator removeFromSuperview]; return gMenuWindow; }
+    if (!turned) {
+        if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[menuhost] screen %@ win %@ orientation %ld: window not turned, used as it is", NSStringFromCGSize(screen), NSStringFromCGSize(win), orientation]);
+        if (gMenuRotator && !gMenuRotator.subviews.count) [gMenuRotator removeFromSuperview];
+        return gMenuWindow;
+    }
     if (!gMenuRotator) { gMenuRotator = [UIView new]; gMenuRotator.backgroundColor = [UIColor clearColor]; }
     if (gMenuRotator.superview != gMenuWindow) [gMenuWindow addSubview:gMenuRotator];
     gMenuRotator.transform = CGAffineTransformIdentity;
@@ -10468,6 +10472,14 @@ static void DMCreateMenuWindow(void) {
         w.backgroundColor = [UIColor clearColor];
         w.hidden = YES;   // shown only while a menu is open
         gMenuWindow = w;
+        // Shown once right away, then hidden again: SpringBoard gives this window the screen's orientation only once it has been shown. Until then
+        // a landscape iPad's first menu after a respring was measured in an unturned window and laid out as in portrait, and only the menus after
+        // it were right (GitHub #6, iPad Pro 11" on iPadOS 16.0). Empty, it takes no touches (DMMenuWindowHitTest) and draws nothing.
+        if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 16 && !DMTestFlag("/tmp/msb-menuwin-noprime")) {
+            w.hidden = NO;
+            // (0.3 s, not one turn of the main queue: long enough for SpringBoard to turn it; kept shown only while a menu is in it)
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ if (gMenuWindow == w && !(gOverlay && gOverlay.window == w)) w.hidden = YES; });
+        }
         DMLog([NSString stringWithFormat:@"[menuwindow] created %@ frame %@ level %.0f", NSStringFromClass([w class]), NSStringFromCGRect(w.frame), w.windowLevel]);
     } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[menuwindow] exception %@", e]); }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ unlink(guardPath); DMLog(@"[menuwindow] stable, guard cleared"); });
