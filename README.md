@@ -18,7 +18,7 @@ Then install **MacStatusBar&Dock** from the repo. The Mac look is on right after
 
 **iPad only, rootless jailbreaks, iPadOS 15 and 16.** On an iPhone the tweak does nothing, even on one made to look like an iPad.
 
-| iPad | iPadOS | Jailbreak | Window engines | Status |
+| iPad | iPadOS | Jailbreak | Tested window engines | Status |
 |---|---|---|---|---|
 | iPad Pro 11" (M1, 2021) | 15.6.1 | Dopamine | Aerial 5.0, Zetsu, MilkyWay4 | ✅ Tested by the developer |
 | iPad Pro 9.7" | 16.7.7 | palera1n | Aerial 5.0, Zetsu, Stage Manager (with TrollPad) | ✅ Tested by the developer |
