@@ -23,7 +23,7 @@ Then install **MacStatusBar&Dock** from the repo. The Mac look is on right after
 | iPad Pro 11" (M1, 2021) | 15.6.1 | Dopamine | Aerial 5.0, Zetsu, MilkyWay4 | ✅ Tested by the developer |
 | iPad Pro 9.7" | 16.7.7 | palera1n | Aerial 5.0, Zetsu, Stage Manager (with TrollPad) | ✅ Tested by the developer |
 | iPad Pro 10.5" | 16.6.1 | rootless | — | ✅ Reported working by a user |
-| iPad Pro (M2, 2022) | 16.0 – 16.6 | Dopamine | Stage Manager | ⚠️ On 16.0 the Stage Manager engine isn't offered (it needs 16.1). On 16.1 – 16.6 a user reports SpringBoard crashes with it. Use Aerial 5.0 there |
+| iPad Pro (M2, 2022) | 16.0 – 16.6 | Dopamine | Zetsu or Aerial | ⚠️ On 16.0 the Stage Manager engine isn't offered (it needs 16.1). On 16.1 – 16.6 a user reports SpringBoard crashes with it. Use Aerial 5.0 there |
 | Other iPads | 15.x, 16.x | rootless | — | Likely to work, not tested |
 | iPad Pro 12.9" (M1, 2021) | 17.0 | rootless | Zetsu 1.6.6 | ✅ Reported working by a user since 1.2.4, with **Enable Anyway** |
 | Other iPads | 17 and later | — | — | Off by default; **Enable Anyway** in Settings turns it on at your own risk. The Stage Manager engine has an iPadOS 17 version that hasn't been tested on a device yet: testers welcome |
