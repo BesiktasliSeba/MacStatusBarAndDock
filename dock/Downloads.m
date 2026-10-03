@@ -21,6 +21,8 @@
 #import <sys/stat.h>
 #import <notify.h>
 #import <unistd.h>
+#import <dirent.h>
+#import <dlfcn.h>
 
 @interface UIWindow (DMPrivateDL)
 + (NSArray *)allWindowsIncludingInternalWindows:(BOOL)internal onlyVisibleWindows:(BOOL)visible;
@@ -473,6 +475,11 @@ static NSString *DMAgeText(NSDate *date) {
 - (void)searchEscape;
 - (void)searchChanged;
 - (NSArray<UIView *> *)fillList:(NSArray<DMDownload *> *)items;
+// dragging an item out (Finder's own drag, see -rowPress:)
+@property (nonatomic, weak) DMDownloadRow *dragRow;   // the row held (armed), or nil
+@property (nonatomic) CGPoint dragStart;
+@property (nonatomic) BOOL dragLifted;                // the item is on the finger: the panel waits, faded out, until it is dropped
+@property (nonatomic) BOOL dismissAfterDrag;
 @end
 
 @implementation DMDownloadsSearchField
@@ -655,6 +662,7 @@ static BOOL DMDownloadsSwitcherVisible(void) {
     NSTimer *t = [NSTimer timerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *timer) {
         DMDownloadsPanel *me = weakSelf;
         if (!me || !me.panel) { [timer invalidate]; return; }
+        if (me.dragLifted) { misses = 0; switcherTicks = 0; return; }   // (an item on the finger: the panel goes when it is dropped)
         CGSize now = (me.hostWindow ?: me.panel.window).bounds.size;
         if (!CGSizeEqualToSize(now, openedIn)) {   // turned: the Dock re-lays out and the panel would point at the wrong place
             DMLog(@"[downloads] the screen turned: the panel closes");
@@ -678,6 +686,8 @@ static BOOL DMDownloadsSwitcherVisible(void) {
     [[NSRunLoop mainRunLoop] addTimer:t forMode:NSRunLoopCommonModes];
 }
 - (void)dismissAnimated:(BOOL)animated {
+    // (an item being dragged out: the panel's row carries the touch, so the panel stays -- faded out -- until the drop, then goes)
+    if (self.dragLifted) { self.dismissAfterDrag = YES; return; }
     // (search: the keyboard goes and SpringBoard's keyboard focus goes back first; the search is gone with the panel, the next one opens empty)
     DMDownloadsSearchField *field = self.searchField;
     if (field.isFirstResponder) [field resignFirstResponder];
@@ -907,7 +917,69 @@ static BOOL DMIsTypingInKeyboard(UIWindow *w) {
 - (void)rowTapped:(DMDownloadRow *)row {
     DMLog(@"[downloads] closes: a file was picked");
     [self dismissAnimated:YES];
-    DMOpenPath(row.download.url, row.download.viaFiles);
+    // (a plain text file opens in Mac Status Bar's TextEdit-style window, statusbar/TextWindow.h, found with dlsym; anything else as before)
+    // (the file is read off the main thread there; not plain text, it opens as before)
+    BOOL (*openText)(NSString *, dispatch_block_t) = (BOOL (*)(NSString *, dispatch_block_t))dlsym(RTLD_DEFAULT, "MSBDOpenTextFileElse");
+    NSURL *url = row.download.url; BOOL viaFiles = row.download.viaFiles;
+    BOOL taken = NO;
+    @try { taken = openText && !row.download.directory && openText(url.path, ^{ DMOpenPath(url, viaFiles); }); } @catch (NSException *e) {}
+    if (taken) { DMLog(@"[downloads] handed to the text window"); return; }
+    DMOpenPath(url, viaFiles);
+}
+
+// Dragging an item out of the stack (2026-10-03): press a row and move -- the item rides on Finder's own drag (Mac Status Bar's Finder.h, found
+// with dlsym: MSBDFinderDragBeginPaths and friends) into a Finder window, onto the desktop or onto an app's window, by Finder's rules (moved within
+// your own places, Option copies, an app gets a copy, Undo). The panel fades while the item is on the finger (its row carries the touch) and
+// closes at the drop. A press that never moves opens the item, as a tap does. Finder switched off: the press does nothing more than a tap.
+- (void)rowPress:(UILongPressGestureRecognizer *)g {
+    DMDownloadRow *row = (DMDownloadRow *)g.view;
+    UIWindow *w = row.window;
+    id<UICoordinateSpace> scr = (w.screen ?: [UIScreen mainScreen]).coordinateSpace;
+    CGPoint sp = [row convertPoint:[g locationInView:row] toCoordinateSpace:scr];
+    BOOL option = (g.modifierFlags & UIKeyModifierAlternate) != 0;
+#if DEBUG
+    option = option || access("/tmp/msb-fdrag-option", F_OK) == 0;
+#endif
+    if (g.state == UIGestureRecognizerStateBegan) {
+        UIScrollView *sv = self.list;
+        if (sv.isDecelerating || sv.isDragging) { self.dragRow = nil; DMLog(@"[downloads] press during a scroll: no drag"); return; }
+        self.dragRow = row; self.dragStart = sp; self.dragLifted = NO;
+        sv.panGestureRecognizer.enabled = NO; sv.panGestureRecognizer.enabled = YES;   // (the item is held: moving now drags it, the list stays)
+        row.highlighted = YES;
+        [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
+        return;
+    }
+    if (g.state == UIGestureRecognizerStateChanged) {
+        if (!self.dragRow) return;
+        if (!self.dragLifted && hypot(sp.x - self.dragStart.x, sp.y - self.dragStart.y) > 10.0) {
+            DM_FEATURE_MARK("downloads-drag-out");
+            BOOL (*begin)(NSArray *, CGPoint, CGRect) = (BOOL (*)(NSArray *, CGPoint, CGRect))dlsym(RTLD_DEFAULT, "MSBDFinderDragBeginPaths");
+            CGRect from = [row convertRect:row.bounds toCoordinateSpace:scr];
+            BOOL ok = NO;
+            @try { ok = begin && row.download.url.path.length && begin(@[row.download.url.path], sp, from); } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[downloads] drag: %@", e.reason]); }
+            if (!ok) { DMLog(@"[downloads] drag: Finder can't carry it (Finder off, or the item is gone)"); row.highlighted = NO; self.dragRow = nil; return; }
+            self.dragLifted = YES;
+            row.highlighted = NO;
+            DMLog(@"[downloads] an item is dragged out of the stack: the panel fades until the drop");
+            UIView *panel = self.panel;
+            [UIView animateWithDuration:0.15 animations:^{ panel.alpha = 0.0; }];
+        }
+        if (self.dragLifted) {
+            void (*move)(CGPoint, BOOL) = (void (*)(CGPoint, BOOL))dlsym(RTLD_DEFAULT, "MSBDFinderDragMoveTo");
+            if (move) move(sp, option);
+        }
+        return;
+    }
+    BOOL lifted = self.dragLifted, drop = g.state == UIGestureRecognizerStateEnded;
+    DMDownloadRow *held = self.dragRow;
+    self.dragRow = nil; held.highlighted = NO;
+    if (lifted) {
+        void (*end)(CGPoint, BOOL, BOOL) = (void (*)(CGPoint, BOOL, BOOL))dlsym(RTLD_DEFAULT, "MSBDFinderDragEndAt");
+        if (end) end(sp, drop, option);
+        self.dragLifted = NO; self.dismissAfterDrag = NO;
+        DMLog([NSString stringWithFormat:@"[downloads] the dragged item was %@: the panel closes", drop ? @"dropped" : @"let go"]);
+        [self dismissAnimated:NO];
+    } else if (held && drop) [self rowTapped:held];   // (held without moving: opened, as a tap)
 }
 
 #pragma mark search
@@ -922,6 +994,9 @@ static BOOL DMIsTypingInKeyboard(UIWindow *w) {
         DMDownloadRow *row = [[DMDownloadRow alloc] initWithDownload:items[k] width:rowW];
         row.frame = CGRectMake(0, (items.count - 1 - k) * rowH, rowW, rowH);
         [row addTarget:self action:@selector(rowTapped:) forControlEvents:UIControlEventTouchUpInside];
+        UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(rowPress:)];
+        lp.minimumPressDuration = 0.25; lp.allowableMovement = CGFLOAT_MAX;   // (press and move: the item comes out of the stack, as on a Mac)
+        [row addGestureRecognizer:lp];
         [scroll addSubview:row];
         [rows addObject:row];
     }
@@ -1107,6 +1182,44 @@ static BOOL DMIsTypingInKeyboard(UIWindow *w) {
     if (!self.image.image || !CGSizeEqualToSize(self.image.image.size, self.bounds.size)) self.image.image = DMFolderImage(self.bounds.size);
 }
 - (void)tapped { [[DMDownloadsPanel shared] toggleFromIcon:self]; }
+// A drop target for Finder's drag (statusbar/Finder.h finds this view by its class): the folder a drop goes into -- the stack's first folder that
+// SpringBoard can open and write (iCloud Drive's Downloads with Safari's downloads on, else the first browser's; iCloud Drive can be closed to
+// SpringBoard, M1 3 Oct: then the browser's folder the stack shows) --, and the look while a drag is over it.
+- (NSString *)dm_dropFolder {
+    // (asked on every move of a drag: the sources are read again at most every 2 s, off the main thread -- the last answer is used meanwhile;
+    //  only the very first answer is read here. A folder counts when it can be opened: opendir, not a listing of everything in it)
+    static NSString *folder; static CFTimeInterval at = -100; static BOOL known, reading;
+    NSString *(^find)(void) = ^NSString *{
+        for (DMDownloadSource *src in DMSources()) {
+            NSString *p = src.folder.path; BOOL isDir = NO;
+            if (!p.length || ![[NSFileManager defaultManager] fileExistsAtPath:p isDirectory:&isDir] || !isDir) continue;
+            if (access(p.fileSystemRepresentation, R_OK | W_OK | X_OK) != 0) continue;
+            DIR *dir = opendir(p.fileSystemRepresentation);
+            if (!dir) continue;
+            closedir(dir);
+            return p;
+        }
+        return nil;
+    };
+    CFTimeInterval now = CACurrentMediaTime();
+    if (!known) { known = YES; at = now; folder = find(); return folder; }
+    if (now - at > 2.0 && !reading) {
+        reading = YES; at = now;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            NSString *f = find();
+            dispatch_async(dispatch_get_main_queue(), ^{ folder = f; reading = NO; });
+        });
+    }
+    return folder;
+}
+- (void)dm_setDropHover:(BOOL)on {
+    DM_FEATURE_MARK("downloads-drop-target");
+    DMLog([NSString stringWithFormat:@"[downloads] a Finder drag is %@ the stack", on ? @"over" : @"no longer over"]);
+    [UIView animateWithDuration:0.15 animations:^{
+        self.image.transform = on ? CGAffineTransformMakeScale(1.12, 1.12) : CGAffineTransformIdentity;
+        self.image.alpha = on ? 0.7 : 1.0;   // (darkened, like a Mac's Dock folder taking a drop)
+    }];
+}
 - (UIPointerStyle *)pointerInteraction:(UIPointerInteraction *)interaction styleForRegion:(UIPointerRegion *)region {
     UITargetedPreview *preview = [[UITargetedPreview alloc] initWithView:self];
     return [UIPointerStyle styleWithEffect:[UIPointerLiftEffect effectWithPreview:preview] shape:nil];

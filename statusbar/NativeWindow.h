@@ -82,6 +82,7 @@ static DMNativeKeyView *gNativeKeys;
 // SpringBoard holds the keyboard focus while a native window is active (normally the front app has it), and gives it back when it is not:
 // -lockFocusToSpringBoardWindowScene:forReason: on iPadOS 16, -lockFocusToSpringBoardForReason: on iPadOS 15.
 static id gNativeFocusLock;
+static void DMKeyboardDockWatch(void);   // (Desktop.h: the Dock goes under while our own on-screen keyboard is up)
 static void DMNativeFocus(BOOL take) {
     if (!take) {
         id l = gNativeFocusLock; gNativeFocusLock = nil;
@@ -92,6 +93,7 @@ static void DMNativeFocus(BOOL take) {
     }
     if (gNativeFocusLock) return;
     DM_FEATURE_MARK("native-focus-lock");
+    DMKeyboardDockWatch();
     id ws = nil; Class wsc = objc_getClass("SBMainWorkspace");
     if (wsc && [(id)wsc respondsToSelector:@selector(sharedInstance)]) ws = ((id (*)(id, SEL))objc_msgSend)((id)wsc, @selector(sharedInstance));
     SEL kfcSel = NSSelectorFromString(@"keyboardFocusController");
@@ -252,7 +254,11 @@ static void DMNativeSetActive(DMNativeWindow *w) {
         [w setNeedsLayout]; if (w.onActiveChanged) w.onActiveChanged(w, YES);
         DMNativeFocus(YES);
         if (!gNativeLayer.isKeyWindow) [gNativeLayer makeKeyWindow];
-        if (!gNativeLayer.rootViewController.presentedViewController && ![UIResponder dm_currentFirstResponderIsIn:gNativeLayer]) [gNativeKeys becomeFirstResponder];
+        // (typing goes to the active window only: a text field / view of another native window lets go -- the text window's keyboard stayed up
+        //  and kept the keys after a tap brought Finder in front of it, iPad 2 3 Oct)
+        UIResponder *fr = nil; @try { fr = [gNativeLayer valueForKey:@"firstResponder"]; } @catch (id e) {}
+        BOOL typingHere = [UIResponder dm_currentFirstResponderIsIn:gNativeLayer] && [fr isKindOfClass:[UIView class]] && [(UIView *)fr isDescendantOfView:w];
+        if (!gNativeLayer.rootViewController.presentedViewController && !typingHere) [gNativeKeys becomeFirstResponder];
     } else {
         if ([gNativeLayer isKeyWindow]) [gNativeLayer endEditing:YES];
         [gNativeKeys resignFirstResponder];
@@ -309,6 +315,35 @@ static DMNativeWindow *DMNativeWindowForTouch(UITouch *t, BOOL *onChrome) {
     if (onChrome) *onChrome = lastChrome;
     return w;
 }
+// Is this SCREEN point on SpringBoard's own keyboard (shown for one of our fields)? Its windows answer hit tests over the whole screen, so only the
+// keyboard's own visible part counts (UIInputSetHostView, the view the keyboard is shown in). A key press must not count as a click outside:
+// it sent a native window back, and ended a name being edited on the desktop -- the keyboard went away with the first key (iPad 2, iPadOS 16).
+// (only while it is really up: gOwnKeyboardFrame, from the keyboard's own show / hide notifications -- the host view keeps its frame and stays
+//  unhidden after the keyboard went, and a later tap there on an app window left Finder active in front of it)
+static CGRect gOwnKeyboardFrame;           // (our own keyboard on the screen, screen points; zero when none -- Desktop.h's keyboard watch)
+static BOOL DMPointOnOwnKeyboard(CGPoint p) {
+    if (CGRectIsEmpty(gOwnKeyboardFrame)) return NO;
+    Class host = objc_getClass("UIInputSetHostView");
+    if (!host) return NO;
+    for (UIWindow *w in DMAllWindows()) {
+        if (w.hidden || w.alpha < 0.01) continue;
+        NSString *c = NSStringFromClass([w class]);
+        if (![c containsString:@"RemoteKeyboard"] && ![c containsString:@"TextEffects"]) continue;
+        NSMutableArray<UIView *> *todo = [NSMutableArray arrayWithObject:w];
+        for (int depth = 0; depth < 4 && todo.count; depth++) {
+            NSMutableArray<UIView *> *next = [NSMutableArray array];
+            for (UIView *v in todo) for (UIView *sub in v.subviews) {
+                if (sub.hidden || sub.alpha < 0.01) continue;
+                if ([sub isKindOfClass:host]) {
+                    CGPoint lp = [sub convertPoint:p fromCoordinateSpace:(w.screen ?: [UIScreen mainScreen]).coordinateSpace];
+                    if (sub.bounds.size.height > 1.0 && CGRectContainsPoint(sub.bounds, lp)) return YES;
+                } else [next addObject:sub];
+            }
+            todo = next;
+        }
+    }
+    return NO;
+}
 __attribute__((noinline)) static void DMNativeTouchBegan(UITouch *t) {   // (kept a symbol of its own: the crash guard names it -- tools/test-crashstep.sh)
     if (!gNativeLayer || gNativeLayer.hidden || !gNativeWindows.count) return;
     DM_FEATURE_MARK("native-touch-activation");
@@ -316,7 +351,12 @@ __attribute__((noinline)) static void DMNativeTouchBegan(UITouch *t) {   // (kep
     //  arrives as an INDIRECT touch (type 1) -- one of those, 288 ms after a Dock tap and away from the Dock, sent Finder back, M1 30 Sep 13:49)
     if (t.type == UITouchTypeIndirect) return;
 
-    if (gNativeLayer.rootViewController.presentedViewController) return;   // (something presented over Finder: it keeps Finder active)
+    if (gNativeLayer.rootViewController.presentedViewController) {   // (something presented over Finder: it keeps Finder active)
+#if DEBUG
+        if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[native] touch: %@ presented over the native windows, nothing changes", NSStringFromClass([gNativeLayer.rootViewController.presentedViewController class])]);
+#endif
+        return;
+    }
     // (every point here is the SCREEN's: a touch's window point is in THAT window's space -- on iPadOS 15 in landscape the system gesture
     //  window is still portrait, and a tap on Finder's sidebar came as {640, 1091}: it missed Finder and went through to the window behind, M1 30 Sep)
     CGPoint wp = [t locationInView:nil];
@@ -327,6 +367,9 @@ __attribute__((noinline)) static void DMNativeTouchBegan(UITouch *t) {   // (kep
     if (hit && !gNativeActive && DMTestFlag("/tmp/macstatusbar-debug")) { UIWindow *cov = DMNativeWindowTaking(p, gNativeLayer.windowLevel);
         DMLog([NSString stringWithFormat:@"[native] touch at %@ on an inactive native window (touch window %@, layer level %.1f): %@", NSStringFromCGPoint(p), NSStringFromClass([t.window class]), gNativeLayer.windowLevel,
                cov ? [NSString stringWithFormat:@"covered by %@ (%.1f) -> %@", NSStringFromClass([cov class]), cov.windowLevel, NSStringFromClass([[cov hitTest:[cov convertPoint:p fromCoordinateSpace:cov.screen.coordinateSpace] withEvent:nil] class])] : @"not covered"]); }
+#endif
+#if DEBUG
+    if (gNativeActive && DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[native] touch began at %@ (window %@ point %@): hit %@", NSStringFromCGPoint(p), NSStringFromClass([t.window class]), NSStringFromCGPoint(wp), hit ? NSStringFromClass([hit class]) : @"none"]);
 #endif
     if (hit && !gNativeActive && DMNativeWindowTaking(p, gNativeLayer.windowLevel)) hit = nil;   // (behind the apps: an app window above covers it there)
     // (the system gestures' copy of a touch on an inactive native window comes first: raising the layer now put it above the window the touch was
@@ -341,11 +384,17 @@ __attribute__((noinline)) static void DMNativeTouchBegan(UITouch *t) {   // (kep
     // (the menu bar: judged on the SCREEN's coordinates -- the touch's window point is in that window's own space, which on iPadOS 15 in landscape
     //  is still portrait: the top of the screen came as {833, 66}, and a tap on the menu bar's "Finder" title sent Finder back, M1 30 Sep 14:04)
     if (p.y < 26.0) return;
-    if (gOverlay) return;     // (a menu or dialog is open: that touch is its -- choosing a row, or closing it -- not a click on another window)
+    if (gOverlay) {     // (a menu or dialog is open: that touch is its -- choosing a row, or closing it -- not a click on another window)
+#if DEBUG
+        if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[native] touch at %@: a menu or dialog is open (%@ in %@), nothing changes", NSStringFromCGPoint(p), NSStringFromClass([gOverlay class]), NSStringFromClass([gOverlay.window class])]);
+#endif
+        return;
+    }
     if (CACurrentMediaTime() - gNativeActivatedAt < 0.5) {   // (the rest of the tap that made it active -- a Dock icon tap is recognised as its touch ends)
         DMLog([NSString stringWithFormat:@"[native] a touch %.0f ms after activation at %@ (type %ld): not a new click, Finder stays active", (CACurrentMediaTime() - gNativeActivatedAt) * 1000.0, NSStringFromCGPoint(p), (long)t.type]);
         return;
     }
+    if (gNativeFocusLock && DMPointOnOwnKeyboard(p)) return;   // (typing on the on-screen keyboard: the window stays active)
     UIWindow *taker = DMNativeWindowTaking(p, gNativeLayer.windowLevel);   // (our menus, the Dock, alerts: Finder stays active)
     // (the desktop's own chrome keeps Finder active at ANY level: with Aerial the active layer sits at 1034, above the Dock's window (25), so the
     //  Dock was never "above" it -- a tap on the Dock's Finder icon made Finder active and the same touch sent it back, M1 30 Sep 13:27)

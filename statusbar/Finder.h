@@ -242,8 +242,25 @@ static NSSet<NSString *> *DMFinderHiddenApps(void) {
     os_unfair_lock_unlock(&gFinderNamesLock);
     return set;
 }
+// The desktop's folder: "Desktop" in On My iPad (the Files app's own storage, one of the user's places), made when it is missing and `make` is set
+// (as SpringBoard, the user's own: the Files app shows it like a folder made there). nil when On My iPad isn't there or it can't be made.
+static NSString *DMFinderDesktopFolder(BOOL make) {
+    NSString *mine = DMFinderOnMyIPad();
+    if (!mine) return nil;
+    NSString *d = DMFinderNorm([mine stringByAppendingPathComponent:@"Desktop"]);
+    struct stat st;
+    if (lstat(d.fileSystemRepresentation, &st) == 0) return S_ISDIR(st.st_mode) ? d : nil;   // (a file or a link named Desktop: not used, never replaced)
+    if (!make) return nil;
+    DM_FEATURE_MARK("finder-desktop-folder");
+    NSError *e = nil;
+    if (![[NSFileManager defaultManager] createDirectoryAtPath:d withIntermediateDirectories:NO attributes:nil error:&e]) { DMLog([NSString stringWithFormat:@"[desktop] the Desktop folder could not be made: %@", e.localizedDescription]); return nil; }
+    DMLog(@"[desktop] the Desktop folder was made in On My iPad");
+    return d;
+}
 static NSArray<NSDictionary *> *DMFinderSidebar(void) {
     NSMutableArray *favs = [NSMutableArray array], *locs = [NSMutableArray array];
+    NSString *desk = DMFinderDesktopFolder(YES);   // (Desktop first, as on a Mac: the folder whose files the Home Screen's first page shows, Desktop.h)
+    if (desk) [favs addObject:@{@"t": @"Desktop", @"p": desk, @"i": @"menubar.dock.rectangle", @"desktop": @YES}];
     NSString *mine = DMFinderOnMyIPad();
     if (mine) [favs addObject:@{@"t": @"On My iPad", @"p": mine, @"i": @"ipad"}];
     NSString *icloud = @"/var/mobile/Library/Mobile Documents/com~apple~CloudDocs";
@@ -275,7 +292,8 @@ static NSArray<NSDictionary *> *DMFinderSidebar(void) {
 //  - a connected drive (DMFinderDrives): everything INSIDE the mounted volume is free too -- the drive is the user's own, as on a Mac. Only
 //    inside it: the volume's own folder (the mount point), its .Trashes structure, LiveFiles and every provider folder stay read-only, and the
 //    real place decides (an alias on the drive pointing at the iPad's system is the system);
-//  - critical: the places themselves and the folders above them, containers, app bundles (named apart only for tests and messages);
+//  - critical: the places themselves and the folders above them, the desktop's folder (On My iPad's Desktop, as on a Mac), containers, app
+//    bundles (named apart only for tests and messages);
 //  - system: everything else outside the user's places. Critical and system are both read-only.
 typedef NS_ENUM(int, DMFinderZone) { DMFinderZoneFree = 0, DMFinderZoneSystem = 1, DMFinderZoneCritical = 2 };
 static NSArray<NSString *> *DMFinderFreeRoots(void) {
@@ -301,6 +319,10 @@ static DMFinderZone DMFinderItemZone(NSString *p) {
         if (DMFinderInside(p, t.stringByDeletingLastPathComponent) && (!DMFinderInside(p, t) || [p isEqualToString:t])) return DMFinderZoneCritical;   // (.Trashes, other users' Trash)
         return DMFinderZoneFree;
     }
+    // (the desktop's folder, On My iPad's Desktop, as a Mac's: it can't be trashed, renamed or moved -- the Home Screen's first page shows it --,
+    //  what is in it is free; any spelling of its name, the file system ignores case)
+    NSString *mine = DMFinderOnMyIPad();
+    if (mine && [p caseInsensitiveCompare:[DMFinderNorm(mine) stringByAppendingPathComponent:@"Desktop"]] == NSOrderedSame) return DMFinderZoneCritical;
     for (NSString *r in DMFinderFreeRoots()) {
         if (DMFinderInside(r, p)) return DMFinderZoneCritical;    // (a place itself, or a folder above one)
         if (DMFinderInside(p, r)) return DMFinderZoneFree;
@@ -440,6 +462,23 @@ static NSArray<DMFinderItem *> *DMFinderList(NSString *path, BOOL hidden, NSErro
         for (NSString *t in DMFinderDriveTrashes()) { if (!DMFinderDriveTrashIsSound(t)) continue; NSArray *more = DMFinderList(t, hidden, NULL); if (more) [out addObjectsFromArray:more]; }
     [out sortUsingComparator:^NSComparisonResult(DMFinderItem *a, DMFinderItem *b) { return [a.display localizedStandardCompare:b.display]; }];
     return out;
+}
+// One item from its path, as a listing makes it (a drag that starts outside a Finder window: the Dock's Downloads stack), or nil when it is gone.
+static DMFinderItem *DMFinderItemFor(NSString *path) {
+    path = DMFinderNorm(path);
+    struct stat lst; if (!path.length || lstat(path.fileSystemRepresentation, &lst) != 0) return nil;
+    NSURL *u = [NSURL fileURLWithPath:path];
+    NSDictionary *v = [u resourceValuesForKeys:@[NSURLIsDirectoryKey, NSURLFileSizeKey, NSURLContentModificationDateKey, NSURLIsPackageKey] error:nil];
+    DMFinderItem *it = [DMFinderItem new];
+    it.path = path; it.name = path.lastPathComponent; it.display = it.name;
+    it.alias = S_ISLNK(lst.st_mode);
+    BOOL d = NO; it.dir = [[NSFileManager defaultManager] fileExistsAtPath:path isDirectory:&d] && d;   // (follows a link, as the listing does)
+    it.package = [v[NSURLIsPackageKey] boolValue];
+    it.size = [v[NSURLFileSizeKey] unsignedLongLongValue];
+    it.date = v[NSURLContentModificationDateKey];
+    it.kind = DMFinderKind(path, it.dir);
+    if (it.dir) it.locked = access(path.fileSystemRepresentation, R_OK | X_OK) != 0;
+    return it;
 }
 static UIImage *DMFinderIcon(DMFinderItem *it, CGFloat side);
 static UIImage *DMFinderAppIcon(DMFinderItem *it, CGFloat side) {
@@ -725,6 +764,7 @@ static void DMQuickLookOpen(NSString *path) {
 - (void)dm_goToFolder;                                      // (Go > Go to Folder…, Shift-Command-G)
 - (void)dm_selectPathsWhenListed:(NSArray<NSString *> *)paths;   // (these items become the selection once the folder shows them)
 - (void)dm_newFolder; - (void)dm_openSelected; - (void)dm_quickLookSelected; - (void)dm_infoSelected;
+- (void)open:(DMFinderItem *)it; - (void)getInfo:(DMFinderItem *)it; - (void)newFolder; - (void)dm_newTextFile;   // (one item; New Folder in this window's folder)
 - (void)dm_renameSelected; - (void)dm_duplicateSelected; - (void)dm_trashSelected;
 - (void)dm_setIcons:(BOOL)icons; - (BOOL)dm_showsHidden; - (void)dm_toggleHidden;
 - (NSArray<UIKeyCommand *> *)dm_keyCommands;
@@ -749,6 +789,9 @@ static void DMQuickLookOpen(NSString *path) {
 #endif
 @end
 static NSString *DMFDFolderIn(DMFinderWindow *w, CGPoint sp) { return [w dm_folderAtScreenPoint:sp]; }
+static DMFinderWindow *DMFinderOps(void);   // (Finder's file operations for drops outside a Finder window, see DMFinderOpsHost)
+static BOOL DMTextWindowOpen(NSString *path, dispatch_block_t otherwise);   // (TextWindow.h: a plain text file opens in a TextEdit-style window)
+static void DMFinderOpen(NSString *path, BOOL newWindow);
 
 // ---- dragging files (our own drag, see -dm_dragPress:) --------------------------------------------------------------------------------------
 // Targets: a Finder window (the folder under the point, else its own folder) -> the items are moved there, like a drag between folders on a Mac
@@ -788,11 +831,17 @@ static NSString *DMFDFolderIn(DMFinderWindow *w, CGPoint sp) { return [w dm_fold
 @property (nonatomic, copy) NSString *springFolder;
 @property (nonatomic, weak) DMFinderWindow *springWindow;
 @property (nonatomic, strong) NSMutableSet<NSString *> *containers;   // the app containers written into (cleaned after the answer)
+@property (nonatomic, weak) UIView *hoverIcon;   // the Dock's Downloads stack under the finger (lit as a drop target), or nil
+@property (nonatomic) CFTimeInterval iconAt;     // (since when it rests on that icon: a second opens the folder in a Finder window, spring-loaded)
+@property (nonatomic) BOOL iconSprung, iconTimed;
+@property (nonatomic) CGPoint grab;              // (a picture of the items themselves -- the desktop's icons --: where the finger holds it, from its centre)
+@property (nonatomic) BOOL hasGrab;
 @end
 @implementation DMFDrag
 @end
 static DMFDrag *gFD;          // the drag under way, or the last one while it waits for its app's answer
 static CGRect gFDFromRect;    // (the held row / icon on screen: the tile grows out of it instead of appearing under the finger)
+static UIView *gFDCustomTile; static CGPoint gFDCustomGrab;   // (the next drag's picture, when its source draws its own: the desktop's icons, Desktop.h)
 static uint8_t gFDSeq;
 static uint16_t gFDTokens;
 static const unsigned long long kFDCopyCap = 1024ULL * 1024 * 1024;        // a real copy (not a clone) to an app: at most 1 GB
@@ -888,10 +937,88 @@ static void DMFDWatchReports(void) {
         else if (kind == 11 && d.answered) { void (^a)(BOOL) = d.answered; d.answered = nil; a((value & 1) != 0); }
     });
 }
+// Where the picture rides: a drag from a Finder window in the native layer, as always (above the app windows while Finder is active); a drag that
+// starts anywhere else -- the Dock's Downloads stack, the desktop -- in our menu window, above every window and the Dock (the native layer may be
+// behind the apps then, just above the Home Screen). The menu window lets every touch through unless a menu's catch-all is in it.
+@class DMFinderOpsHost;
+static BOOL DMFDFromFinderWindow(DMFDrag *d) { return d.from && ![d.from isKindOfClass:NSClassFromString(@"DMFinderOpsHost")]; }
+// The menu window takes touches only through its own catch-all (DMMenuWindowHitTest), but for the render server a touch over it is SpringBoard's
+// while its layer is flagged to hit-test as opaque (DMMakeOverlay sets that for a menu, and it stayed set): with the picture up, taps meant for
+// the apps below went to SpringBoard -- up to ~2 s after a hand-over, while the picture waited for the app's answer. So for a picture the flag is
+// cleared (the next menu sets it again), the picture itself is never hit-tested, and it leaves the menu window the moment it is dropped.
+static void DMFDHitTestsOpaque(CALayer *layer, BOOL opaque) {
+    SEL s = NSSelectorFromString(@"setHitTestsAsOpaque:");
+    if ([layer respondsToSelector:s]) ((void (*)(id, SEL, BOOL))objc_msgSend)(layer, s, opaque);
+}
+static UIView *DMFDTileHost(DMFDrag *d) {
+    if (DMFDFromFinderWindow(d)) return gNativeRotator;
+    UIView *host = DMMenuHost();
+    if (host && gMenuWindow.hidden) gMenuWindow.hidden = NO;
+    if (!gOverlay) DMFDHitTestsOpaque(gMenuWindow.layer, NO);
+    return host;
+}
+static void DMFDNoTouches(UIView *tile) {   // (the picture: no hit testing of its own, in UIKit or in the render server)
+    tile.userInteractionEnabled = NO;
+    SEL s = NSSelectorFromString(@"setAllowsHitTesting:");
+    if ([tile.layer respondsToSelector:s]) ((void (*)(id, SEL, BOOL))objc_msgSend)(tile.layer, s, NO);
+    DMFDHitTestsOpaque(tile.layer, NO);
+}
+// The dropped picture leaves the menu window at once (a hand-over to an app goes on without it): the window is hidden again unless a menu is in it.
+static void DMFDReleasePicture(DMFDrag *d) {
+    UIView *tile = d.tile;
+    if (!tile || tile.window != gMenuWindow) return;
+    d.tile = nil; d.badge = nil;
+    [UIView animateWithDuration:0.15 animations:^{ tile.alpha = 0; tile.transform = CGAffineTransformMakeScale(0.6, 0.6); } completion:^(BOOL f) { [tile removeFromSuperview]; }];
+    if (!gOverlay && gMenuWindow) gMenuWindow.hidden = YES;
+    DMLog(@"[finder] drop: the picture leaves the menu window at once (the window is hidden again)");
+}
+static CGPoint DMFDHostPoint(UIView *host, CGPoint sp) {
+    if (host == gMenuRotator) return sp;   // (its space is the screen's, see DMMenuHost)
+    return [host convertPoint:sp fromCoordinateSpace:(host.window.screen ?: [UIScreen mainScreen]).coordinateSpace];
+}
 static void DMFDPlaceTile(DMFDrag *d, CGPoint sp) {
-    if (!d.tile || !gNativeRotator) return;
-    CGPoint p = [gNativeRotator convertPoint:sp fromCoordinateSpace:gNativeRotator.window.screen.coordinateSpace];
-    d.tile.center = CGPointMake(p.x + d.tile.bounds.size.width / 2.0 - 16.0, p.y + d.tile.bounds.size.height / 2.0 - 16.0);
+    UIView *host = d.tile.superview;
+    if (!d.tile || !host) return;
+    CGPoint p = DMFDHostPoint(host, sp);
+    CGSize t = d.tile.bounds.size, b = host.bounds.size;
+    CGFloat x = p.x + t.width / 2.0 - 16.0, y = p.y + t.height / 2.0 - 16.0;
+    if (d.hasGrab) { x = p.x - d.grab.x; y = p.y - d.grab.y; }
+    if (b.width > t.width + 8.0) x = MIN(x, b.width - t.width / 2.0 - 4.0);   // (kept on the screen: at the Dock's right end -- the Downloads stack -- it was cut off)
+    if (b.height > t.height + 8.0) y = MIN(y, b.height - t.height / 2.0 - 4.0);
+    d.tile.center = CGPointMake(x, y);
+}
+// The Dock's Downloads stack as a drop target (dock/Downloads.m's icon, found by its class like Finder's own Dock icon): its view when the point
+// is on it and it takes drops (it names its folder), else nil.
+static UIView *DMFDDownloadsIconAt(CGPoint sp) {
+    Class c = NSClassFromString(@"DMDownloadsIconView");
+    if (!c || ![c instancesRespondToSelector:NSSelectorFromString(@"dm_dropFolder")]) return nil;
+    for (UIWindow *w in DMAllWindows()) {
+        if (w.hidden || w.alpha < 0.01 || ![NSStringFromClass([w class]) isEqualToString:@"SBFloatingDockWindow"]) continue;
+        NSMutableArray *todo = [NSMutableArray arrayWithObject:w];
+        while (todo.count) {
+            UIView *v = todo.lastObject; [todo removeLastObject];
+            if (v.hidden || v.alpha < 0.01) continue;
+            if ([v isKindOfClass:c]) {
+                CGRect r = CGRectInset([v convertRect:v.bounds toCoordinateSpace:w.screen.coordinateSpace], -4.0, -4.0);
+                return CGRectContainsPoint(r, sp) ? v : nil;
+            }
+            [todo addObjectsFromArray:v.subviews];
+        }
+    }
+    return nil;
+}
+static NSString *DMFDIconFolder(UIView *icon) {
+    NSString *f = nil;
+    @try { f = ((id (*)(id, SEL))objc_msgSend)(icon, NSSelectorFromString(@"dm_dropFolder")); } @catch (NSException *e) {}
+    return [f isKindOfClass:[NSString class]] && f.length ? f : nil;
+}
+static void DMFDIconHover(DMFDrag *d, UIView *icon) {   // (the stack lights up while a drag is over it, like a Mac's Dock folder)
+    if (d.hoverIcon == icon) return;
+    UIView *was = d.hoverIcon;
+    SEL lit = NSSelectorFromString(@"dm_setDropHover:");
+    if (was && [was respondsToSelector:lit]) ((void (*)(id, SEL, BOOL))objc_msgSend)(was, lit, NO);
+    d.hoverIcon = icon; d.iconAt = CACurrentMediaTime(); d.iconSprung = NO; d.iconTimed = NO;
+    if (icon && [icon respondsToSelector:lit]) ((void (*)(id, SEL, BOOL))objc_msgSend)(icon, lit, YES);
 }
 // Staged copies are removed a minute after the app answered (it may still be loading the file then); anything a respring left behind goes at
 // the next start (DMFDSweep).
@@ -924,8 +1051,13 @@ static void DMFDSweep(void) {
 static void DMFDFinish(DMFDrag *d, BOOL ok) {
     if (!d || d.finished) return;
     d.finished = YES; d.cancelled = YES; [d.zipper cancel];
+    DMFDIconHover(d, nil);
     UIView *tile = d.tile; d.tile = nil; d.badge = nil;
-    [UIView animateWithDuration:ok ? 0.18 : 0.25 animations:^{ tile.alpha = 0; tile.transform = CGAffineTransformMakeScale(ok ? 0.4 : 0.8, ok ? 0.4 : 0.8); } completion:^(BOOL f) { [tile removeFromSuperview]; }];
+    BOOL inMenuWindow = tile.window && tile.window == gMenuWindow;
+    [UIView animateWithDuration:ok ? 0.18 : 0.25 animations:^{ tile.alpha = 0; tile.transform = CGAffineTransformMakeScale(ok ? 0.4 : 0.8, ok ? 0.4 : 0.8); } completion:^(BOOL f) {
+        [tile removeFromSuperview];
+        if (inMenuWindow && !gOverlay && gMenuWindow && !(gFD && gFD.tile.window == gMenuWindow)) gMenuWindow.hidden = YES;   // (shown for the picture only: hidden again, as after a menu)
+    }];
     d.answered = nil;
     DMFDCleanLater(d);
     if (gFD == d) gFD = nil;
@@ -946,8 +1078,21 @@ static void DMFinderDragBegin(DMFinderWindow *from, NSArray<DMFinderItem *> *ite
     gFDTokens = (uint16_t)(gFDTokens % 4095 + 1); d.token = gFDTokens;
     gFD = d;
     DMFinderItem *it = items.firstObject;
-    UIView *tile = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 210, 44)];
+    UIView *custom = gFDCustomTile; gFDCustomTile = nil;
+    UIView *tile = custom ?: [[UIView alloc] initWithFrame:CGRectMake(0, 0, 210, 44)];
     tile.userInteractionEnabled = NO;
+    if (custom) {   // (the source's own picture -- the desktop's icons, lifted where they are: no growing in, it is already under the finger)
+        d.grab = gFDCustomGrab; d.hasGrab = YES;
+        d.badge = [[UIImageView alloc] initWithFrame:CGRectMake(-8, -8, 22, 22)]; d.badge.hidden = YES; [tile addSubview:d.badge];
+        d.tile = tile;
+        [DMFDTileHost(d) addSubview:tile];
+        DMFDNoTouches(tile);
+        DMFDPlaceTile(d, sp);
+        gFDFromRect = CGRectZero;
+        [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
+        DMLog([NSString stringWithFormat:@"[finder] our drag began: %@ (%@), %lu item(s), token %u, its own picture", it.kind, it.dir ? @"folder" : @"file", (unsigned long)items.count, d.token]);
+        return;
+    }
     tile.backgroundColor = [[UIColor systemBackgroundColor] colorWithAlphaComponent:0.85];
     tile.layer.cornerRadius = 10.0; tile.layer.borderWidth = 0.5; tile.layer.borderColor = [UIColor separatorColor].CGColor;
     tile.layer.shadowColor = [UIColor blackColor].CGColor; tile.layer.shadowOpacity = 0.3; tile.layer.shadowRadius = 10; tile.layer.shadowOffset = CGSizeMake(0, 4);
@@ -958,10 +1103,12 @@ static void DMFinderDragBegin(DMFinderWindow *from, NSArray<DMFinderItem *> *ite
     l.font = [UIFont systemFontOfSize:13.0]; l.lineBreakMode = NSLineBreakByTruncatingMiddle; [tile addSubview:l];
     d.badge = [[UIImageView alloc] initWithFrame:CGRectMake(-8, -8, 22, 22)]; d.badge.hidden = YES; [tile addSubview:d.badge];
     d.tile = tile;
-    [gNativeRotator addSubview:tile];
+    UIView *host = DMFDTileHost(d);
+    [host addSubview:tile];
+    DMFDNoTouches(tile);
     DMFDPlaceTile(d, sp);
-    if (!CGRectIsEmpty(gFDFromRect)) {   // (it comes out of the held row / icon and glides to the finger: the pick-up is seen, not guessed)
-        CGPoint f = [gNativeRotator convertPoint:CGPointMake(CGRectGetMidX(gFDFromRect), CGRectGetMidY(gFDFromRect)) fromCoordinateSpace:gNativeRotator.window.screen.coordinateSpace];
+    if (!CGRectIsEmpty(gFDFromRect) && host) {   // (it comes out of the held row / icon and glides to the finger: the pick-up is seen, not guessed)
+        CGPoint f = DMFDHostPoint(host, CGPointMake(CGRectGetMidX(gFDFromRect), CGRectGetMidY(gFDFromRect)));
         CGFloat k = MAX(0.5, MIN(1.3, gFDFromRect.size.height / tile.bounds.size.height));
         tile.transform = CGAffineTransformScale(CGAffineTransformMakeTranslation(f.x - tile.center.x, f.y - tile.center.y), k, k);
         tile.alpha = 0.6;
@@ -1007,25 +1154,60 @@ static BOOL DMFDNothingToDo(DMFDrag *d, NSString *dest, BOOL copy) {   // every 
     }
     return YES;
 }
+// The badge for a drop into that folder (checked once per folder and Option state); YES when an item would go into itself.
+static BOOL DMFDCheckDest(DMFDrag *d, NSString *dest, BOOL option) {
+    if (![d.checkedDest isEqualToString:dest ?: @""] || d.checkedOption != option) {
+        BOOL copy = DMFDCopies(d, dest), none = DMFDNothingToDo(d, dest, copy), into = NO;
+        for (DMFinderItem *it in d.items) if (DMFinderIntoItself(it.path, dest)) { into = YES; break; }
+        d.checkedDest = dest ?: @""; d.checkedOption = option; d.checkedInto = into;
+        d.checkedBadge = into || !DMFDMayDrop(d, dest, copy) ? 0 : none ? -1 : copy ? 2 : -1;
+    }
+    DMFDBadge(d, d.checkedBadge);
+    return d.checkedInto;
+}
+// The desktop (Desktop.h) as a drop target: the folder a drop at that screen point goes into -- a folder icon there (*icon), or the desktop's
+// own folder -- or nil where the desktop isn't under the point; and the drop itself (repositions icons moved on the desktop, places dropped ones).
+static NSString *DMDesktopFolderAt(CGPoint sp, UIView **icon);
+static void DMDesktopTakeDrop(DMFDrag *d, CGPoint sp, NSString *dest, BOOL ontoFolderIcon);
+// Resting a second on a folder outside a Finder window -- the Dock's Downloads stack, a folder icon on the desktop -- opens it in a new Finder
+// window (spring-loaded), and the drag goes on into it. Timed, not only checked on the next move: a finger resting still sends no more moves.
+static void DMFDSpringIcon(DMFDrag *d, UIView *icon, NSString *dir, NSString *what) {
+    if (d.iconSprung || d.iconTimed || !icon || !dir.length) return;
+    d.iconTimed = YES;
+    CFTimeInterval at = d.iconAt; __weak DMFDrag *wd = d; __weak UIView *wicon = icon;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        DMFDrag *dd = wd;
+        if (!dd || dd.finished || dd != gFD || dd.iconSprung || dd.iconAt != at || !wicon || dd.hoverIcon != wicon) return;
+        dd.iconSprung = YES;
+        DMLog([NSString stringWithFormat:@"[finder] drag: rested on %@ -- its folder opens in a Finder window (spring-loaded)", what]);
+        DMFinderOpen(dir, YES);
+        if (dd.tile.superview) [dd.tile.superview bringSubviewToFront:dd.tile];   // (the new window must not cover the picture)
+        [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
+    });
+}
 __attribute__((noinline)) static void DMFinderDragMove(CGPoint sp, BOOL option) {   // (kept a symbol of its own: the crash guard names it)
     DMFDrag *d = gFD;
     if (!d || d.finished || !d.tile) return;
     d.option = option;
     DMFDPlaceTile(d, sp);
+    // (over the Dock's Downloads stack: its folder takes it, like a folder in the Dock on a Mac; resting on it a second opens that folder)
+    UIView *icon = DMFDDownloadsIconAt(sp);
+    NSString *iconDir = icon ? DMFDIconFolder(icon) : nil;
+    if (iconDir) {
+        DM_FEATURE_MARK("finder-drag-downloads-stack");
+        DMFDIconHover(d, icon);
+        if (d.app) { DMFDSend(d.app, CGPointZero, 8); d.app = nil; d.scene = nil; }
+        d.springFolder = nil;
+        DMFDCheckDest(d, iconDir, option);
+        DMFDSpringIcon(d, icon, iconDir, @"the Downloads stack");
+        return;
+    }
     DMFinderWindow *fw = DMFDFinderAt(sp);
     if (fw) {   // (over a Finder window: its folder takes it, unless that is where the items already are, or an item itself)
+        DMFDIconHover(d, nil);
         NSString *dest = DMFDFolderIn(fw, sp);
         if (d.app) { DMFDSend(d.app, CGPointZero, 8); d.app = nil; d.scene = nil; }
-        BOOL into;
-        if ([d.checkedDest isEqualToString:dest ?: @""] && d.checkedOption == option) into = d.checkedInto;
-        else {
-            BOOL copy = DMFDCopies(d, dest), none = DMFDNothingToDo(d, dest, copy);
-            into = NO;
-            for (DMFinderItem *it in d.items) if (DMFinderIntoItself(it.path, dest)) { into = YES; break; }
-            d.checkedDest = dest ?: @""; d.checkedOption = option; d.checkedInto = into;
-            d.checkedBadge = into || !DMFDMayDrop(d, dest, copy) ? 0 : none ? -1 : copy ? 2 : -1;
-        }
-        DMFDBadge(d, d.checkedBadge);
+        BOOL into = DMFDCheckDest(d, dest, option);
         // spring-loaded folders: RESTING on a folder for a second opens it in that window, as on a Mac (a slow pass over a row or a sidebar place
         // opened it: the finger has to stay within 24 pt); the Trash place never opens (it is a drop target)
         if (!into && dest.length && ![DMFinderNorm(dest) isEqualToString:DMFinderNorm(fw.path)] && ![DMFinderReal(dest) isEqualToString:kFinderTrash]) {
@@ -1049,9 +1231,21 @@ __attribute__((noinline)) static void DMFinderDragMove(CGPoint sp, BOOL option) 
         } else d.springFolder = nil;
         return;
     }
-    d.springFolder = nil; d.checkedDest = nil;
+    d.springFolder = nil;
     CGPoint scene = CGPointZero; NSString *sceneId = nil;
     NSString *app = DMFDAppAt(sp, &scene, &sceneId);
+    // (no app window there: the desktop, when the Home Screen's first page is under the point -- a folder icon on it takes the drop, else the
+    //  desktop's own folder; icons already on the desktop just move)
+    UIView *deskIcon = nil;
+    NSString *deskDir = app ? nil : DMDesktopFolderAt(sp, &deskIcon);
+    DMFDIconHover(d, deskIcon);
+    if (deskDir) {
+        if (d.app) { DMFDSend(d.app, CGPointZero, 8); d.app = nil; d.scene = nil; }
+        DMFDCheckDest(d, deskDir, option);
+        if (deskIcon) DMFDSpringIcon(d, deskIcon, deskDir, @"a folder on the desktop");
+        return;
+    }
+    d.checkedDest = nil;
     if (app && DMFinderAppRefusesFiles(app)) app = nil;
     if (![app ?: @"" isEqualToString:d.app ?: @""] || ![sceneId ?: @"" isEqualToString:d.scene ?: @""]) {
         if (d.app) DMFDSend(d.app, CGPointZero, 8);
@@ -1115,6 +1309,7 @@ static NSDictionary *DMFDStageItem(DMFDrag *d, DMFinderItem *it, NSString *dir, 
 // in that scene. done(ok) runs once the app answered (NO: not taken, no answer, or nothing could be handed over).
 static void DMFDHandOver(DMFDrag *d, NSString *bundle, NSString *scene, CGPoint pt, DMFinderWindow *w, NSTimeInterval wait, void (^done)(BOOL ok)) {
     d.app = bundle; d.scene = scene;
+    DMFDReleasePicture(d);   // (independent of the app's answer: nothing of ours stays over the app)
     void (^fail)(NSString *) = ^(NSString *why) {   // (a sheet only for what the user can act on: too large, not downloaded; an app that takes no files just doesn't, as on a Mac)
         DMLog([NSString stringWithFormat:@"[finder] drop into %@: not handed over (%@)", bundle, why]);
         DMFDSend(bundle, CGPointZero, 8);
@@ -1172,24 +1367,34 @@ static void DMFDHandOver(DMFDrag *d, NSString *bundle, NSString *scene, CGPoint 
         });
     });
 }
+// A drop into a folder (a Finder window's, the Dock's Downloads stack, the desktop): moved there, or copied (Option, or from a read-only place),
+// through `host`'s file operations -- the policy, Undo, and its sheets for what goes wrong.
+static void DMFDDropInto(DMFDrag *d, NSString *dest, DMFinderWindow *host, NSString *where) {
+    BOOL copy = DMFDCopies(d, dest);
+    if (!dest.length || DMFDNothingToDo(d, dest, copy)) { DMLog(@"[finder] drop: nothing to do there (already in that folder, or into itself)"); DMFDFinish(d, NO); return; }
+    if (!DMFDMayDrop(d, dest, copy)) { DMLog(@"[finder] drop: refused (the folder, or an item, is outside the user's places)"); DMFDFinish(d, NO); return; }   // (the "no" badge showed it: the picture just goes back)
+    if (!host) { DMLog(@"[finder] drop: no Finder to do it"); DMFDFinish(d, NO); return; }
+    DMLog([NSString stringWithFormat:@"[finder] drop: %@ into %@", copy ? @"copied" : @"moved", where]);
+    DMFDFinish(d, YES);
+    [host dm_moveItems:[d.items valueForKey:@"path"] to:dest copy:copy];
+}
 static void DMFinderDragEnd(CGPoint sp, BOOL drop, BOOL option) {
     DMFDrag *d = gFD;
     if (!d || d.finished || !d.tile || d.answered) return;
     d.option = option;
     if (!drop) { if (d.app) DMFDSend(d.app, CGPointZero, 8); DMFDFinish(d, NO); return; }
+    UIView *icon = DMFDDownloadsIconAt(sp);
+    NSString *iconDir = icon ? DMFDIconFolder(icon) : nil;
+    if (iconDir) { DMFDDropInto(d, iconDir, DMFDFromFinderWindow(d) ? d.from : DMFinderOps(), @"the Dock's Downloads stack"); return; }
     DMFinderWindow *fw = DMFDFinderAt(sp);
-    if (fw) {
-        NSString *dest = DMFDFolderIn(fw, sp);
-        BOOL copy = DMFDCopies(d, dest);
-        if (!dest.length || DMFDNothingToDo(d, dest, copy)) { DMLog(@"[finder] drop: nothing to do there (already in that folder, or into itself)"); DMFDFinish(d, NO); return; }
-        if (!DMFDMayDrop(d, dest, copy)) { DMLog(@"[finder] drop: refused (the folder, or an item, is outside the user's places)"); DMFDFinish(d, NO); return; }   // (the "no" badge showed it: the picture just goes back)
-        DMLog([NSString stringWithFormat:@"[finder] drop: %@ into a Finder folder (%@)", copy ? @"copied" : @"moved", fw.title]);
-        DMFDFinish(d, YES);
-        [fw dm_moveItems:[d.items valueForKey:@"path"] to:dest copy:copy];
-        return;
-    }
+    if (fw) { DMFDDropInto(d, DMFDFolderIn(fw, sp), fw, [NSString stringWithFormat:@"a Finder folder (%@)", fw.title]); return; }
     CGPoint scene = CGPointZero; NSString *sceneId = nil;
     NSString *app = DMFDAppAt(sp, &scene, &sceneId);
+    if (!app) {   // (the desktop: a folder icon there, or the desktop itself)
+        UIView *deskIcon = nil;
+        NSString *deskDir = DMDesktopFolderAt(sp, &deskIcon);
+        if (deskDir) { if (d.app) DMFDSend(d.app, CGPointZero, 8); DMDesktopTakeDrop(d, sp, deskDir, deskIcon != nil); return; }
+    }
     if (app && DMFinderAppRefusesFiles(app)) { DMLog(@"[finder] drop: Safari doesn't take files (it would open them as a local page)"); app = nil; }
     if (!app) { DMLog(@"[finder] drop: nothing takes it here"); if (d.app) DMFDSend(d.app, CGPointZero, 8); DMFDFinish(d, NO); return; }
     if (d.app && (![d.app isEqualToString:app] || ![d.scene ?: @"" isEqualToString:sceneId ?: @""])) DMFDSend(d.app, CGPointZero, 8);
@@ -1338,16 +1543,16 @@ static NSArray *DMFinderMenuRows(UIMenu *menu, UIControl *o) {
     }
     return rows;
 }
-static void DMFinderShowMenu(UIMenu *menu, CGPoint screenPoint) {
-    UIView *host = gNativeRotator;
+static void DMFinderShowMenuIn(UIView *host, UIMenu *menu, CGPoint screenPoint) {   // (host: the native layer's, or the menu window's for the desktop)
     if (!host || !menu) return;
     UIControl *o = DMMakeOverlay(host, 0.0);
     [o addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { DMCloseOverlay(); }] forControlEvents:UIControlEventTouchUpInside];
     NSArray *rows = DMFinderMenuRows(menu, o);
     if (!rows.count) { DMCloseOverlay(); return; }
-    CGPoint p = [host convertPoint:screenPoint fromCoordinateSpace:host.window.screen.coordinateSpace];
+    CGPoint p = host == gMenuRotator ? screenPoint : [host convertPoint:screenPoint fromCoordinateSpace:(host.window.screen ?: [UIScreen mainScreen]).coordinateSpace];
     DMFinderMenuPanel(o, rows, CGRectMake(p.x, p.y, 0, 0), NO, 1);
 }
+static void DMFinderShowMenu(UIMenu *menu, CGPoint screenPoint) { DMFinderShowMenuIn(gNativeRotator, menu, screenPoint); }
 static NSMutableArray<NSString *> *gFinderClipboard;   // Copy / Paste of files between folders
 
 // ---- file operations ------------------------------------------------------------------------------------------------------------------------
@@ -1386,6 +1591,15 @@ static NSString *DMFinderOrigin(NSString *p) {
     if (![o hasPrefix:kFinderVolumeOrigin]) return o;
     NSString *drive = DMFinderDriveRoot(DMFinderRealItem(p)), *rest = [o substringFromIndex:kFinderVolumeOrigin.length];
     return drive && [rest hasPrefix:@"/"] ? DMFinderNorm([drive stringByAppendingString:rest]) : nil;   // (".." is resolved: the policy checks where it really leads)
+}
+// An item moved to the Trash from the desktop carries its place there (an extended attribute, "fx,fy" as fractions of the desktop's free area):
+// Undo and Put Back bring it to the same spot (Desktop.h reads and removes it when the item is listed again). Asked of the desktop on the main
+// thread when the operation starts (gFinderDesktopPlaceFor, set by Desktop.h; nil: not on the desktop).
+static const char *const kFinderDesktopPlaceAttr = "com.besiktasliseba.desktop.place";
+static NSString *(*gFinderDesktopPlaceFor)(NSString *path);
+static void DMFinderSetDesktopPlace(NSString *p, NSString *place) {
+    if (place.length) setxattr(p.fileSystemRepresentation, kFinderDesktopPlaceAttr, place.UTF8String, strlen(place.UTF8String), 0, XATTR_NOFOLLOW);
+    else removexattr(p.fileSystemRepresentation, kFinderDesktopPlaceAttr, XATTR_NOFOLLOW);
 }
 static NSError *DMFinderError(NSString *text) { return [NSError errorWithDomain:@"Finder" code:1 userInfo:@{NSLocalizedDescriptionKey: text}]; }
 // One move or copy (dst: a free name, worked out on this queue).
@@ -2038,7 +2252,7 @@ static void DMFinderDrivesCheck(NSString *why);
         };
         K(@"n", UIKeyModifierCommand, @"dm_keyNewWindow:"); K(@"n", UIKeyModifierCommand | UIKeyModifierShift, @"dm_keyNewFolder:");
         K(@"o", UIKeyModifierCommand, @"dm_keyOpen:"); K(UIKeyInputDownArrow, UIKeyModifierCommand, @"dm_keyOpen:"); K(@"\r", 0, @"dm_keyRename:");
-        K(@"g", UIKeyModifierCommand | UIKeyModifierShift, @"dm_keyGoToFolder:");
+        K(@"g", UIKeyModifierCommand | UIKeyModifierShift, @"dm_keyGoToFolder:"); K(@"d", UIKeyModifierCommand | UIKeyModifierShift, @"dm_keyDesktop:");
         K(@" ", 0, @"dm_keyQuickLook:"); K(@"y", UIKeyModifierCommand, @"dm_keyQuickLook:");
         K(@"i", UIKeyModifierCommand, @"dm_keyInfo:"); K(@"d", UIKeyModifierCommand, @"dm_keyDuplicate:");
         K(@"\b", UIKeyModifierCommand, @"dm_keyTrash:");
@@ -2086,7 +2300,7 @@ static void DMFinderDrivesCheck(NSString *why);
         long k = (long)key.keyCode;
         BOOL windowKey = (cmd && (k == UIKeyboardHIDUsageKeyboardN || k == UIKeyboardHIDUsageKeyboard1 || k == UIKeyboardHIDUsageKeyboard2 || k == UIKeyboardHIDUsageKeyboardOpenBracket
                                   || k == UIKeyboardHIDUsageKeyboardCloseBracket || k == UIKeyboardHIDUsageKeyboardM))
-                      || (cmdShift && (k == UIKeyboardHIDUsageKeyboardG || k == UIKeyboardHIDUsageKeyboardN || k == UIKeyboardHIDUsageKeyboardPeriod));
+                      || (cmdShift && (k == UIKeyboardHIDUsageKeyboardG || k == UIKeyboardHIDUsageKeyboardD || k == UIKeyboardHIDUsageKeyboardN || k == UIKeyboardHIDUsageKeyboardPeriod));
         if (!windowKey) return NO;
     }
     switch ((long)key.keyCode) {
@@ -2097,7 +2311,7 @@ static void DMFinderDrivesCheck(NSString *why);
         case UIKeyboardHIDUsageKeyboardSpacebar: if (none) { [self dm_quickLookSelected]; return YES; } break;
         case UIKeyboardHIDUsageKeyboardY: if (cmd) { [self dm_quickLookSelected]; return YES; } break;
         case UIKeyboardHIDUsageKeyboardI: if (cmd) { [self dm_infoSelected]; return YES; } break;
-        case UIKeyboardHIDUsageKeyboardD: if (cmd) { [self dm_duplicateSelected]; return YES; } break;
+        case UIKeyboardHIDUsageKeyboardD: if (cmd) { [self dm_duplicateSelected]; return YES; } if (cmdShift) { [self dm_keyDesktop:nil]; return YES; } break;
         case UIKeyboardHIDUsageKeyboardDeleteOrBackspace: if (cmd) { [self dm_trashSelected]; return YES; } break;
         case UIKeyboardHIDUsageKeyboardOpenBracket: if (cmd) { [self goBack]; return YES; } break;
         case UIKeyboardHIDUsageKeyboardCloseBracket: if (cmd) { [self goForward]; return YES; } break;
@@ -2151,6 +2365,7 @@ static void DMFinderDrivesCheck(NSString *why);
 - (void)dm_keySelectAll:(id)k { [self dm_selectAll]; }
 - (void)dm_keyRename:(id)k { [self dm_renameSelected]; }
 - (void)dm_keyGoToFolder:(id)k { [self dm_goToFolder]; }
+- (void)dm_keyDesktop:(id)k { NSString *d = DMFinderDesktopFolder(YES); if (d) [self go:d]; }   // (Go > Desktop, Shift-Command-D)
 - (void)dm_shareNamed:(NSString *)name {   // (debug trigger fshare_<name>[|<bundle>]: Share to that app, or the list of apps in the log)
     NSArray *parts = [name componentsSeparatedByString:@"|"];
     for (DMFinderItem *it in _items) if ([it.name isEqualToString:parts[0]]) {
@@ -2178,6 +2393,7 @@ static void DMFinderDrivesCheck(NSString *why);
     else if ([act isEqualToString:@"paste"]) [self dm_keyPaste:nil];
     else if ([act isEqualToString:@"undo"]) [self dm_undo];
     else if ([act isEqualToString:@"newfolder"]) [self newFolder];
+    else if ([act isEqualToString:@"newtext"]) [self dm_newTextFile];
     else if ([act isEqualToString:@"rename"]) { if (sel.count) [self dm_renameItem:sel[0] to:arg]; }
     else if ([act isEqualToString:@"move"]) [self dm_moveItems:sel to:arg copy:NO];
     else if ([act isEqualToString:@"copyto"]) [self dm_moveItems:sel to:arg copy:YES];
@@ -2225,6 +2441,7 @@ static void DMFinderDrivesCheck(NSString *why);
         NSString *bid = [NSDictionary dictionaryWithContentsOfFile:[it.path stringByAppendingPathComponent:@"Info.plist"]][@"CFBundleIdentifier"];
         if (bid) { DMOpenApp(bid); return; }
     }
+    if (!it.dir && !it.cloud && DMTextWindowOpen(it.path, ^{ [self quickLook:it]; })) return;   // (plain text: TextEdit's window; anything else Quick Look)
     [self quickLook:it];
 }
 // An iCloud file that is not downloaded: iCloud is asked to download it (the folder watch shows it when it is there).
@@ -2257,8 +2474,8 @@ static void DMFinderDrivesCheck(NSString *why);
 // Trash is asked about (it removes the item from iCloud Drive on every device); otherwise `go` runs at once.
 - (void)dm_guard:(NSString *)verb paths:(NSArray<NSString *> *)paths into:(NSString *)dir then:(void (^)(void))go {
     DM_FEATURE_MARK("finder-file-safety");
-    BOOL itemsMatter = [@[@"trash", @"move", @"rename"] containsObject:verb], destMatters = [@[@"move", @"copy", @"duplicate", @"newfolder"] containsObject:verb];
-    NSString *verbPast = @{@"trash": @"moved to the Trash", @"move": @"moved", @"copy": @"copied", @"rename": @"renamed", @"duplicate": @"duplicated", @"newfolder": @"made"}[verb] ?: verb;
+    BOOL itemsMatter = [@[@"trash", @"move", @"rename"] containsObject:verb], destMatters = [@[@"move", @"copy", @"duplicate", @"newfolder", @"newfile"] containsObject:verb];
+    NSString *verbPast = @{@"trash": @"moved to the Trash", @"move": @"moved", @"copy": @"copied", @"rename": @"renamed", @"duplicate": @"duplicated", @"newfolder": @"made", @"newfile": @"made"}[verb] ?: verb;
     NSString *own = @"Finder only changes your own files: On My iPad, Documents, iCloud Drive and each app's Documents folder. You can still copy from here into them.";
     BOOL icloudTrash = NO;
     for (NSString *p in paths) {
@@ -2282,6 +2499,7 @@ static void DMFinderDrivesCheck(NSString *why);
     if (destMatters && !DMFinderCanWriteInto(dir)) {
         DMLog([NSString stringWithFormat:@"[finder] policy: %@ refused (the folder is outside the user's places)", verb]);
         NSString *title = [verb isEqualToString:@"newfolder"] ? [NSString stringWithFormat:@"A folder can't be made in “%@”", dir.lastPathComponent]
+                        : [verb isEqualToString:@"newfile"] ? [NSString stringWithFormat:@"A file can't be made in “%@”", dir.lastPathComponent]
                         : [NSString stringWithFormat:@"%@ can't be %@ into “%@”", paths.count == 1 ? [NSString stringWithFormat:@"“%@”", [paths.firstObject lastPathComponent]] : @"Items", verbPast, dir.lastPathComponent];
         [self sheetTitle:title message:DMFinderInOwnTrash(dir) ? @"Only Move to Trash puts items into the Trash." : own field:nil action:@"OK" destructive:NO then:^(NSString *t) {}];
         return;
@@ -2306,6 +2524,8 @@ static void DMFinderDrivesCheck(NSString *why);
     DM_FEATURE_MARK("finder-file-ops");
     __weak DMFinderWindow *ws = self;
     NSString *here = self.path;
+    NSMutableDictionary<NSString *, NSString *> *deskPlaces = [NSMutableDictionary dictionary];   // (Move to Trash: where each item was on the desktop)
+    if ([kind isEqualToString:@"trash"] && gFinderDesktopPlaceFor) for (NSString *src in paths) { NSString *pl = gFinderDesktopPlaceFor(src); if (pl) deskPlaces[src] = pl; }
     dispatch_async(DMFinderFileQueue(), ^{
         NSMutableArray *pairs = [NSMutableArray array]; NSMutableSet *touched = [NSMutableSet set]; NSError *first = nil;
         NSFileManager *fm = [NSFileManager defaultManager];
@@ -2351,7 +2571,7 @@ static void DMFinderDrivesCheck(NSString *why);
             }
             if (!e && dst) e = DMFinderDriveGoneError(DMFinderTransfer(src, dst, copy), @[src, dst]);
             if (!e && dst) {
-                if ([kind isEqualToString:@"trash"]) DMFinderSetOrigin(dst, DMFinderNorm(src));
+                if ([kind isEqualToString:@"trash"]) { DMFinderSetOrigin(dst, DMFinderNorm(src)); DMFinderSetDesktopPlace(dst, deskPlaces[src]); }
                 if ([kind isEqualToString:@"putback"]) DMFinderSetOrigin(dst, nil);
                 [pairs addObject:@[DMFinderNorm(src), DMFinderNorm(dst)]];
                 [touched addObject:src.stringByDeletingLastPathComponent]; [touched addObject:dst.stringByDeletingLastPathComponent];
@@ -2497,6 +2717,20 @@ static void DMFinderDrivesCheck(NSString *why);
     NSError *e = nil;
     if (![[NSFileManager defaultManager] createDirectoryAtPath:p withIntermediateDirectories:NO attributes:nil error:&e]) { [self fail:e what:@"New Folder"]; return; }
     DMFinderPushUndo(@"new", @"New Folder", @[@[@"", DMFinderNorm(p)]]);
+    [self dm_selectPathsWhenListed:@[DMFinderNorm(p)]];
+    [self refresh];
+    DMFinderItem *it = [DMFinderItem new]; it.path = DMFinderNorm(p); it.name = p.lastPathComponent;
+    [self dm_rename:it];
+}
+// File > New Text File (and the folder's menu, the desktop's): an empty "untitled.txt" ("untitled 2.txt"...) in this folder -- only in the user's own
+// places --, selected and named in place (the name without ".txt" selected); Undo moves it to the Trash, as for New Folder.
+- (void)dm_newTextFile {
+    DM_FEATURE_MARK("finder-new-text-file");
+    if (!DMFinderCanWriteInto(self.path)) { [self dm_guard:@"newfile" paths:@[] into:self.path then:^{}]; return; }
+    NSString *p = DMFinderFreeName(self.path, @"untitled.txt", @"");
+    if (![[NSFileManager defaultManager] createFileAtPath:p contents:[NSData data] attributes:nil]) { [self fail:DMFinderError(@"The file could not be made.") what:@"New Text File"]; return; }
+    DMFinderPushUndo(@"new", @"New Text File", @[@[@"", DMFinderNorm(p)]]);
+    DMLog(@"[finder] new text file");
     [self dm_selectPathsWhenListed:@[DMFinderNorm(p)]];
     [self refresh];
     DMFinderItem *it = [DMFinderItem new]; it.path = DMFinderNorm(p); it.name = p.lastPathComponent;
@@ -2713,6 +2947,7 @@ static NSString *DMFinderResolveTyped(NSString *p) {
         } else {
             BOOL writable = [w dm_canWriteHere];
             UIAction *nf = A(@"New Folder", @"folder.badge.plus", ^{ [w newFolder]; }); if (!writable) nf.attributes = UIMenuElementAttributesDisabled; [top addObject:nf];
+            UIAction *nt = A(@"New Text File", @"doc.badge.plus", ^{ [w dm_newTextFile]; }); if (!writable) nt.attributes = UIMenuElementAttributesDisabled; [top addObject:nt];
             UIAction *p = A(gFinderClipboard.count > 1 ? [NSString stringWithFormat:@"Paste %lu Items", (unsigned long)gFinderClipboard.count] : @"Paste Item", @"doc.on.clipboard", ^{ [w paste]; });
             if (!gFinderClipboard.count || !writable) p.attributes = UIMenuElementAttributesDisabled;
             [top addObject:p];
@@ -2896,6 +3131,84 @@ static NSString *DMFinderResolveTyped(NSString *p) {
 - (UITargetedPreview *)contextMenuInteraction:(UIContextMenuInteraction *)i previewForHighlightingMenuWithConfiguration:(UIContextMenuConfiguration *)c { return [self dm_previewFor:i config:c]; }
 - (UITargetedPreview *)contextMenuInteraction:(UIContextMenuInteraction *)i previewForDismissingMenuWithConfiguration:(UIContextMenuConfiguration *)c { return [self dm_previewFor:i config:c]; }
 @end
+
+// ---- Finder's file operations outside a Finder window ---------------------------------------------------------------------------------------
+// A drag out of the Dock's Downloads stack, a drop on that stack, the desktop's own files (DMDesktop): the same operations as in a Finder window
+// -- the policy (DMFinderCanChange / DMFinderCanWriteInto, a sheet says no), Undo, free names, every window showing a changed folder refreshed --
+// run by one Finder window that is never shown. Its questions and errors come as a dialog of our own over everything, like the menus' questions.
+static void DMFinderLooseSheet(NSString *title, NSString *message, NSString *action, BOOL destructive, void (^then)(NSString *text), void (^cancel)(void)) {
+    UIView *host = DMMenuHost();
+    if (!host) { DMLog([NSString stringWithFormat:@"[finder] no place for the question \"%@\"", title]); if (cancel) cancel(); return; }
+    BOOL single = !action.length || [action isEqualToString:@"OK"];
+    UIControl *o = DMMakeOverlay(host, 0.30);
+    const CGFloat W = 300.0, pad = 20.0, buttonH = 46.0;
+    UILabel *t = [UILabel new];
+    t.text = title; t.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold]; t.textColor = [UIColor labelColor];
+    t.textAlignment = NSTextAlignmentCenter; t.numberOfLines = 0;
+    UILabel *m = [UILabel new];
+    m.text = message; m.font = [UIFont systemFontOfSize:13.0]; m.textColor = [UIColor secondaryLabelColor];
+    m.textAlignment = NSTextAlignmentCenter; m.numberOfLines = 0;
+    CGSize ts = [t sizeThatFits:CGSizeMake(W - 2 * pad, CGFLOAT_MAX)], ms = message.length ? [m sizeThatFits:CGSizeMake(W - 2 * pad, CGFLOAT_MAX)] : CGSizeZero;
+    CGFloat y = 20.0;
+    t.frame = CGRectMake(pad, y, W - 2 * pad, ts.height); y += ts.height + 6.0;
+    m.frame = CGRectMake(pad, y, W - 2 * pad, ms.height); y += ms.height + 14.0;
+    UIVisualEffectView *box = DMMakeBlur(14.0);
+    box.frame = CGRectMake(0, 0, W, y + buttonH);
+    box.center = CGPointMake(CGRectGetMidX(o.bounds), CGRectGetMidY(o.bounds));
+    box.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin | UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin;
+    [box.contentView addSubview:t]; [box.contentView addSubview:m];
+    UIView *hLine = [[UIView alloc] initWithFrame:CGRectMake(0, y, W, 0.5)]; hLine.backgroundColor = [UIColor separatorColor]; [box.contentView addSubview:hLine];
+    void (^ok)(void) = ^{ DMCloseOverlay(); if (then) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ then(nil); }); };
+    void (^no)(void) = ^{ DMCloseOverlay(); if (cancel) cancel(); };
+    UIColor *actionColor = destructive ? [UIColor systemRedColor] : [UIColor systemBlueColor];
+    if (single) [box.contentView addSubview:DMDialogButton(action.length ? action : @"OK", YES, actionColor, CGRectMake(0, y, W, buttonH), ok)];
+    else {
+        UIView *vLine = [[UIView alloc] initWithFrame:CGRectMake(W / 2.0, y, 0.5, buttonH)]; vLine.backgroundColor = [UIColor separatorColor]; [box.contentView addSubview:vLine];
+        [box.contentView addSubview:DMDialogButton(@"Cancel", NO, [UIColor systemBlueColor], CGRectMake(0, y, W / 2.0, buttonH), no)];
+        [box.contentView addSubview:DMDialogButton(action, YES, actionColor, CGRectMake(W / 2.0, y, W / 2.0, buttonH), ok)];
+    }
+    [o addSubview:box];
+    box.alpha = 0.0;
+    [UIView animateWithDuration:0.12 animations:^{ box.alpha = 1.0; }];
+    DMLog([NSString stringWithFormat:@"[finder] question outside a window: \"%@\"", title]);
+}
+@interface DMFinderOpsHost : DMFinderWindow
+@property (nonatomic, copy) void (^madeItems)(NSArray<NSString *> *paths);   // (what an operation made: the desktop selects it, see DMDesktop)
+@end
+@implementation DMFinderOpsHost
+- (void)sheetTitle:(NSString *)title message:(NSString *)message field:(NSString *)field action:(NSString *)action destructive:(BOOL)destructive then:(void (^)(NSString *text))then {
+    [self sheetTitle:title message:message field:field action:action destructive:destructive then:then cancel:nil];
+}
+- (void)sheetTitle:(NSString *)title message:(NSString *)message field:(NSString *)field action:(NSString *)action destructive:(BOOL)destructive then:(void (^)(NSString *text))then cancel:(void (^)(void))cancel {
+    if (field) DMLog(@"[finder] a question with a text field outside a window: shown without the field");   // (none of the operations used here asks for text)
+    DMFinderLooseSheet(title, message, action, destructive, then, cancel);
+}
+- (BOOL)hasSheet { return NO; }
+- (void)refresh {}   // (no list of its own: DMFinderRefreshFolders refreshes the windows, the desktop watches its folder)
+- (void)dm_selectPathsWhenListed:(NSArray<NSString *> *)paths { if (self.madeItems) self.madeItems(paths); }
+- (void)show {}      // (never on the screen)
+- (void)activate {}
+@end
+static DMFinderWindow *DMFinderOps(void) {
+    static DMFinderOpsHost *host;
+    if (!host) { host = [[DMFinderOpsHost alloc] initWithTitle:@"Finder" frame:CGRectMake(0, 0, 600, 400)]; host.path = DMFinderOnMyIPad() ?: @"/var/mobile/Documents"; }
+    return host;
+}
+
+// ---- drags that start in the Dock's Downloads stack (dock/Downloads.m, the Dock's library: it finds these with dlsym) ----------------------------
+// The stack's items are carried by Finder's own drag: into a Finder window (moved, or copied with Option / from a read-only place), onto an app's
+// window (handed over, a copy), onto the desktop. Begin answers NO when Finder is off or an item is gone: the stack then keeps the touch.
+__attribute__((visibility("default"))) BOOL MSBDFinderDragBeginPaths(NSArray<NSString *> *paths, CGPoint sp, CGRect from) {
+    if (!gFinderOn || ![paths isKindOfClass:[NSArray class]] || !paths.count) return NO;
+    DM_FEATURE_MARK("finder-drag-from-downloads-stack");
+    NSMutableArray *items = [NSMutableArray array];
+    for (NSString *p in paths) { DMFinderItem *it = [p isKindOfClass:[NSString class]] ? DMFinderItemFor(p) : nil; if (!it) return NO; [items addObject:it]; }
+    gFDFromRect = from;
+    DMFinderDragBegin(DMFinderOps(), items, sp);
+    return gFD != nil && !gFD.finished;
+}
+__attribute__((visibility("default"))) void MSBDFinderDragMoveTo(CGPoint sp, BOOL option) { DMFinderDragMove(sp, option); }
+__attribute__((visibility("default"))) void MSBDFinderDragEndAt(CGPoint sp, BOOL drop, BOOL option) { DMFinderDragEnd(sp, drop, option); }
 
 // ---- opening Finder -------------------------------------------------------------------------------------------------------------------------
 // A new Finder window (File > New Finder Window, the Go menu with nothing open), or the front one showing `path`.

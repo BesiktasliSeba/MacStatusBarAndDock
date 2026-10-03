@@ -1048,6 +1048,10 @@ static void DMVPNDisconnect(NEVPNManager *m);   // (defined with the VPN menu)
 #if DEBUG
 static NSString *gVPNFakeProvider = nil;   // (tests: vpnfake_<provider id> -- a VPN counts as connected through that provider; vpnfake_off ends it)
 #endif
+static BOOL gWiFiMenuOn = NO;   // Settings > Status Bar > Wi-Fi Menu (pref wifiMenu; on unless switched off where supported, iPadOS 15/16 only): our own Wi-Fi icon and its menu (WiFiMenu.h)
+static const void *kWiFiIconKey = &kWiFiIconKey, *kWiFiButtonKey = &kWiFiButtonKey;
+static void DMOpenWiFiMenu(UIButton *btn);   // (defined in WiFiMenu.h)
+static void DMWiFiMenuGone(NSString *why);   // (WiFiMenu.h: a menu closed -- its scan stops if it was ours)
 static BOOL gShowMuteIcon = YES;   // Settings > Status Bar > Audio > Show Mute Icon (on by default)
 static BOOL gRingerMuted = NO;     // the ringer is muted (Silent Mode): the mute icon shows (see DMMuteIconWanted)
 static BOOL gMuteIconShown = NO;   // the visible status bar shows it (the keyboard pill then sits left of it, as of the SSH icon)
@@ -1267,6 +1271,7 @@ static const char *const kDMSBNames[][2] = {
     {"_UIStatusBarIndicatorVPNItem", "STUIStatusBarVPNItem"},
     {"_UIStatusBarActivityItem", "STUIStatusBarActivityItem"},
     {"_UIStatusBarPillBackgroundActivityItem", "STUIStatusBarPillBackgroundActivityItem"},
+    {"_UIStatusBarWifiItem", "STUIStatusBarWifiItem"},
 };
 static BOOL DMSBUseSTUI(void) {   // iPadOS 17+ with SystemStatusUI's bar classes present
     static int v = -1;
@@ -1293,7 +1298,7 @@ static NSString *DMSBName(const char *uikitName) {   // (cached per table entry,
 }
 // A class name check: `name` is the class SpringBoard's bar uses for `uikitName` (15/16: exactly the old isEqualToString: test).
 static BOOL DMSBIs(NSString *name, const char *uikitName) { return [name isEqualToString:DMSBName(uikitName)]; }
-static unsigned gSBItemHooks;   // (diagnostics: which item hook groups went on -- 1 VPN badge, 2 activity spinner, 4 pill, 8 pill 17+)
+static unsigned gSBItemHooks;   // (diagnostics: which item hook groups went on -- 1 VPN badge, 2 activity spinner, 4 pill, 8 pill 17+, 16 Wi-Fi item)
 // For windows only (nothing of ours is called on them): either family's status bar window.
 static BOOL DMSBIsBarWindowName(NSString *name) { return [name isEqualToString:@"UIStatusBarWindow"] || (DMSBUseSTUI() && [name isEqualToString:DMSBName("UIStatusBarWindow")]); }
 static BOOL DMStarting(void) { static BOOL over = NO; if (over) return NO; if (DMProcessAge() >= 8.0) { over = YES; return NO; } return YES; }
@@ -10580,6 +10585,7 @@ static void DMMenuKeyboardOrder(void) {
 static void DMTodayGiveBack(NSString *why);
 static void DMRemoveOverlayNow(void) {
     DMTodayGiveBack(@"another menu or dialog");
+    DMWiFiMenuGone(@"removed");   // (the Wi-Fi menu's scan stops with it)
     UIView *o = gOverlay;
     if (o) DMLog(@"[overlay] removed immediately");
 #if DEBUG
@@ -10596,6 +10602,7 @@ static void DMRemoveOverlayNow(void) {
 
 static void DMCloseOverlay(void) {
     DMTodayGiveBack(@"closed");
+    DMWiFiMenuGone(@"closed");   // (the Wi-Fi menu's scan stops with it; also the screen going off, DMCloseOverlaysForScreenOff)
     UIView *o = gOverlay;
     DMLog([NSString stringWithFormat:@"[overlay] close requested (overlay %@)", o ? @"present" : @"already gone"]);
     gOverlay = nil;
@@ -10683,6 +10690,7 @@ static UIColor *DMMenuDividerColor(void) {
 static CGFloat DMPanelItemHeight(id it) {
     if (it == [NSNull null]) return kSepH;
     if ([it isKindOfClass:[DMSliderRow class]]) return kSliderRowH;
+    { SEL h = NSSelectorFromString(@"dmRowHeight"); if ([it respondsToSelector:h]) return ((CGFloat (*)(id, SEL))objc_msgSend)(it, h); }   // (a row with a height of its own: the Wi-Fi menu's heading and switch rows)
     return kRowH;
 }
 static UIView *DMMakePanel(NSArray *items) {
@@ -12723,6 +12731,9 @@ static BOOL gNativeAway = NO;   // (the native windows are faded out for the App
 static BOOL gFinderOn = NO;
 #include "NativeWindow.h"   // (our own Mac windows in SpringBoard, 2026-09-30)
 #include "Finder.h"         // (the first one: Finder)
+#include "WiFiMenu.h"       // (the Wi-Fi menu: Settings > Status Bar > Wi-Fi Menu, 2 Oct 2026)
+#include "TextWindow.h"     // (plain text files: a TextEdit-style window)
+#include "Desktop.h"        // (Finder's desktop: the Desktop folder's icons on the Home Screen's first page)
 static void DMNativeMenuBarChanged(void) { for (UIView *fg in gCopies.allObjects) [fg setNeedsLayout]; }
 static DMRow *DMFinderRow(NSString *title, NSString *keys, BOOL enabled, void (^h)(DMFinderWindow *f)) {
     DMRow *r = [[DMRow alloc] initWithTitle:title enabled:enabled handler:DMCloseThen(^{ DMFinderWindow *f = DMFinderFront(); if (f) h(f); })];
@@ -12736,6 +12747,7 @@ static void DMOpenFinderFileMenu(UIButton *btn) {
     NSArray *items = @[
         [[DMRow alloc] initWithTitle:@"New Finder Window" enabled:YES handler:DMCloseThen(^{ DMFinderOpen(nil, YES); })],
         DMFinderRow(@"New Folder", @"⇧⌘N", here, ^(DMFinderWindow *w) { [w dm_newFolder]; }),
+        DMFinderRow(@"New Text File", nil, here, ^(DMFinderWindow *w) { [w dm_newTextFile]; }),
         [NSNull null],
         DMFinderRow(@"Open", @"⌘O", sel, ^(DMFinderWindow *w) { [w dm_openSelected]; }),
         DMFinderRow(@"Quick Look", @"Space", sel, ^(DMFinderWindow *w) { [w dm_quickLookSelected]; }),
@@ -12798,6 +12810,7 @@ static void DMOpenFinderViewMenu(UIButton *btn) {
 static NSString *DMNativeActiveAppName(void) { return DMNativeActiveApp().appName; }
 // (every tick: the native windows' level follows the engine's window layer, which moves; after a turn they are kept inside the new desktop)
 static void DMNativeTick(void) {
+    DMDesktopTick();   // (the desktop: on page 1 while wanted, out of the way in jiggle mode)
     if (gNativeFocusLock && !DMNativeActiveApp()) DMNativeFocus(NO);   // (safety net: the keyboard lock is only ever held while a native window is active)
     if (!gNativeLayer || gNativeLayer.hidden) return;
     {   // (the App Library, a Home Screen icon menu or the App Switcher takes over the screen: the native windows fade out of its way, like the
@@ -12968,7 +12981,9 @@ static void DMOpenGoMenu(UIButton *btn) {
     for (NSDictionary *sec in gFinderOn ? DMFinderSidebar() : @[]) for (NSDictionary *r in sec[@"rows"]) {   // (Finder switched off: none)
         if ([r[@"t"] isEqualToString:@"Trash"] || [r[@"t"] isEqualToString:@"Jailbreak"]) continue;
         NSString *p = r[@"p"];
-        [places addObject:[[DMRow alloc] initWithTitle:r[@"t"] enabled:YES handler:DMCloseThen(^{ DMFinderOpen(p, NO); })]];
+        DMRow *row = [[DMRow alloc] initWithTitle:r[@"t"] enabled:YES handler:DMCloseThen(^{ DMFinderOpen(p, NO); })];
+        if ([r[@"desktop"] boolValue]) row.hint = @"⇧⌘D";   // (Go > Desktop, as on a Mac)
+        [places addObject:row];
     }
     NSMutableArray *items = [NSMutableArray array];
     if (DMNativeActiveApp()) {
@@ -14272,7 +14287,7 @@ static void DMOpenMenuForButton(UIButton *b) {
 - (UIButton *)titleAt:(CGPoint)p {
     UIView *fg = self.fg, *host = self.host;
     if (!fg || !host) return nil;
-    const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, kSSHButtonKey, kVPNButtonKey };
+    const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, kSSHButtonKey, kVPNButtonKey, kWiFiButtonKey };
     for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
         UIButton *b = objc_getAssociatedObject(fg, keys[i]);
         if (!b || b.hidden || b == self.current || b.frame.size.width < 1.0) continue;
@@ -14296,6 +14311,7 @@ static void DMOpenMenuForButton(UIButton *b) {
         DMRemoveOverlayNow();
         if (b == objc_getAssociatedObject(bfg, kSSHButtonKey)) DMOpenSSHMenu(b);
         else if (b == objc_getAssociatedObject(bfg, kVPNButtonKey)) DMOpenVPNMenu(b);
+        else if (b == objc_getAssociatedObject(bfg, kWiFiButtonKey)) DMOpenWiFiMenu(b);
         else DMOpenMenuForButton(b);
     });
     else if (onCurrent) dispatch_async(dispatch_get_main_queue(), ^{ DMLog(@"[menu] touch on its own title: closed"); DMCloseOverlay(); });
@@ -14310,6 +14326,7 @@ static void DMOpenMenuForButton(UIButton *b) {
     DMRemoveOverlayNow();
     if (b == objc_getAssociatedObject(fg, kSSHButtonKey)) DMOpenSSHMenu(b);
     else if (b == objc_getAssociatedObject(fg, kVPNButtonKey)) DMOpenVPNMenu(b);
+    else if (b == objc_getAssociatedObject(fg, kWiFiButtonKey)) DMOpenWiFiMenu(b);
     else DMOpenMenuForButton(b);
 }
 @end
@@ -16147,6 +16164,13 @@ static void DMLoadPrefs(void) {
         if (muteRef) { if (CFGetTypeID(muteRef) == CFBooleanGetTypeID()) mute = CFBooleanGetValue(muteRef); CFRelease(muteRef); }
         gShowMuteIcon = mute;
     }
+    {   // Wi-Fi Menu: on unless switched off, where this iPad has what it needs (DMWiFiSupported; DMWiFiApplyPref: iPadOS 15/16 only, and only once
+        // iOS's Wi-Fi item could be left out)
+        BOOL wifi = YES;
+        CFPropertyListRef wifiRef = CFPreferencesCopyValue(CFSTR("wifiMenu"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        if (wifiRef) { if (CFGetTypeID(wifiRef) == CFBooleanGetTypeID()) wifi = CFBooleanGetValue(wifiRef); CFRelease(wifiRef); }
+        DMWiFiApplyPref(wifi && (gSBItemHooks & 16) && DMWiFiSupported());
+    }
     {
         CGFloat scale = 0.82;
         CFPropertyListRef ccRef = CFPreferencesCopyValue(CFSTR("controlCenterScale"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
@@ -16463,6 +16487,8 @@ static void DMLayoutWithoutClock(UIView *fg) {
         CGRect f = icon.frame; left -= 8.0 + f.size.width; f.origin.x = left; icon.frame = f;
         CGRect b = btn.frame; b.origin.x = left - 6.0; btn.frame = b;
     };
+    DMWiFiRefreshIcon(fg, DMTrailingIconColor(trailing));
+    closeUp(kWiFiIconKey, kWiFiButtonKey);   // (the Wi-Fi icon nearest the status icons, as elsewhere)
     closeUp(kVPNIconKey, kVPNButtonKey);
     {   // the mute icon (ours) after the VPN icon, as elsewhere (DMMuteIconWanted)
         DMReadRingerState();
@@ -16550,6 +16576,34 @@ static BOOL DMHideStockActivity(id item) {
     if (![fg isKindOfClass:[UIView class]] || DMTestFlag("/tmp/msb-stockactivity")) return NO;
     return objc_getAssociatedObject(fg, kLogoKey) || [objc_getAssociatedObject(fg, kHoldKey) boolValue];
 }
+// iOS's own Wi-Fi item, while the Wi-Fi Menu switch is on: left out of our bars the same way (our Wi-Fi icon replaces it; Control Center's own
+// bar and the stock-bar mode keep it). _UIStatusBarWifiItem does not answer -canEnableDisplayItem:fromData: itself (its superclass does), so the
+// method is added to it, calling the superclass's own. Kill switch /tmp/msb-stockwifi.
+static BOOL DMHideStockWiFi(id item) {
+    if (!gWiFiMenuOn) return NO;
+    UIView *fg = DMCall(DMCall(item, @"statusBar"), @"foregroundView");
+    if (![fg isKindOfClass:[UIView class]] || DMTestFlag("/tmp/msb-stockwifi")) return NO;
+    return objc_getAssociatedObject(fg, kLogoKey) || [objc_getAssociatedObject(fg, kHoldKey) boolValue];
+}
+static BOOL DMWiFiItemCanEnable(id self, SEL _cmd, id displayItem, id data) {
+    if (DMHideStockWiFi(self)) return NO;
+    Class sup = class_getSuperclass(DMSBClass("_UIStatusBarWifiItem"));
+    BOOL (*orig)(id, SEL, id, id) = (BOOL (*)(id, SEL, id, id))class_getMethodImplementation(sup, _cmd);
+    return orig ? orig(self, _cmd, displayItem, data) : YES;
+}
+static void DMStockWiFiInit(void) {
+    if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17) return;   // (the Wi-Fi menu is for iPadOS 15/16)
+    Class c = DMSBClass("_UIStatusBarWifiItem");
+    SEL sel = @selector(canEnableDisplayItem:fromData:);
+    Method m = c ? class_getInstanceMethod(c, sel) : NULL;
+    if (!m) { DMLog(@"[wifi] iOS's Wi-Fi item not found: the Wi-Fi Menu stays off"); return; }
+    Method own = NULL; unsigned n = 0; Method *ms = class_copyMethodList(c, &n);
+    for (unsigned i = 0; i < n; i++) if (method_getName(ms[i]) == sel) own = ms[i];
+    free(ms);
+    if (own) { DMLog(@"[wifi] iOS's Wi-Fi item answers canEnableDisplayItem itself here: left alone, the Wi-Fi Menu stays off"); return; }   // (not this iPadOS's shape)
+    class_addMethod(c, sel, (IMP)DMWiFiItemCanEnable, method_getTypeEncoding(m));
+    gSBItemHooks |= 16;
+}
 static void DMStockVPNRecheck(UIView *fg) {   // (a copy that has just become ours: its items are asked again -- VPN badge, spinner, activity pill)
     id bar = fg.superview;
     while (bar && ![bar isKindOfClass:DMSBClass("_UIStatusBar")]) bar = [bar superview];
@@ -16561,7 +16615,7 @@ static void DMStockVPNRecheck(UIView *fg) {   // (a copy that has just become ou
 // one (the Wi-Fi icon coming back seconds after a VPN connects moved the Airplane icon under our VPN badge for about a second, 28 Sep), so right
 // after each of its data updates our copy is laid out again (and once more after its icon animations).
 static void DMStatusIconsUpdated(id bar) {
-    if (!(gVPNActive || gSSHActive || gMuteIconShown)) return;   // (nothing of ours beside them)
+    if (!(gVPNActive || gSSHActive || gMuteIconShown || gWiFiMenuOn)) return;   // (nothing of ours beside them; the Wi-Fi icon also follows the bars from here)
     UIView *fg = DMCall(bar, @"foregroundView");
     if (![fg isKindOfClass:[UIView class]] || !objc_getAssociatedObject(fg, kLogoKey)) return;
     [fg setNeedsLayout];
@@ -16706,7 +16760,7 @@ static void DMStockVPNInit(void) {
         DMSBDiagStep(@"b-narrow");
         // A copy that has collapsed (an app card being dismissed, say) must not leave our
         // views behind at their old positions, or a stale app name lingers that nobody updates.
-        const void *keys[] = { kSSHIconKey, kSSHButtonKey, kVPNIconKey, kVPNButtonKey, kMuteIconKey, kLogoKey, kButtonKey, kPillKey, kAppLabelKey, kAppButtonKey, kAppPillKey, kDateProxyKey, kClockButtonKey, kSpotIconKey, kSpotButtonKey, kEditLabelKey, kEditButtonKey, kEditPillKey, kGoLabelKey, kGoButtonKey, kGoPillKey, kWinLabelKey, kWinButtonKey, kWinPillKey, kAudioLabelKey, kAudioButtonKey, kAudioPillKey, kBackgroundKey, kLightsKey , kFileLabelKey, kFileButtonKey, kFilePillKey, kViewLabelKey, kViewButtonKey, kViewPillKey };
+        const void *keys[] = { kSSHIconKey, kSSHButtonKey, kVPNIconKey, kVPNButtonKey, kWiFiIconKey, kWiFiButtonKey, kMuteIconKey, kLogoKey, kButtonKey, kPillKey, kAppLabelKey, kAppButtonKey, kAppPillKey, kDateProxyKey, kClockButtonKey, kSpotIconKey, kSpotButtonKey, kEditLabelKey, kEditButtonKey, kEditPillKey, kGoLabelKey, kGoButtonKey, kGoPillKey, kWinLabelKey, kWinButtonKey, kWinPillKey, kAudioLabelKey, kAudioButtonKey, kAudioPillKey, kBackgroundKey, kLightsKey , kFileLabelKey, kFileButtonKey, kFilePillKey, kViewLabelKey, kViewButtonKey, kViewPillKey };
         for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
             ((UIView *)objc_getAssociatedObject(fg, keys[i])).hidden = YES;
         return;
@@ -17098,6 +17152,9 @@ static void DMStockVPNInit(void) {
                 });
             }
         }
+        // Wi-Fi icon (Settings > Status Bar > Wi-Fi Menu): our own item nearest the status icons, like a Mac's Wi-Fi menu extra beside Control
+        // Center; iOS's own Wi-Fi item is left out of our bars then (DMHideStockWiFi). It stays with Wi-Fi off (the empty fan). Tapping it opens its menu.
+        left = DMWiFiLayoutIcon(fg, left, timeCentre.y, timeColor);
         // VPN icon: its own item right next to the status icons, like a Mac's VPN menu extra next to Control Center, only while a
         // tunnel is connected; iOS's own VPN badge is taken out of the status icons group in our bars (DMHideStockVPN). Tapping it opens its menu.
         UIImageView *vpnIcon = objc_getAssociatedObject(fg, kVPNIconKey);
@@ -20544,9 +20601,9 @@ static void DMRunTrigger(NSString *cmd) {
     else if ([cmd isEqualToString:@"sbmem"]) DMLog([NSString stringWithFormat:@"[sbmem] SpringBoard footprint %.1f MB", DMFootprintBytes(getpid()) / 1048576.0]);   // sbmem: SpringBoard's memory now
     else if ([cmd isEqualToString:@"menutitles"]) {   // menutitles: every menu title on the screen, as "name x y" centres in screen points (for finger-tap stress tests)
         NSMutableString *o = [NSMutableString stringWithString:@"[menutitles]"];
-        const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, kSSHButtonKey, kVPNButtonKey, kClockButtonKey };
+        const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, kSSHButtonKey, kVPNButtonKey, kWiFiButtonKey, kClockButtonKey };
         // (one name per key, in the same order: the list once had 9 names for 11 keys and read past its end -- an exception in SpringBoard)
-        static const char *names[] = { "apple", "app", "file", "edit", "view", "go", "window", "audio", "ssh", "vpn", "clock" };
+        static const char *names[] = { "apple", "app", "file", "edit", "view", "go", "window", "audio", "ssh", "vpn", "wifi", "clock" };
         _Static_assert(sizeof(names) / sizeof(names[0]) == sizeof(keys) / sizeof(keys[0]), "menutitles: one name per key");
         for (UIView *fg in gCopies.allObjects) {
             if (!fg.window || fg.window.hidden || fg.hidden || DMEffectiveAlpha(fg) < 0.5) continue;
@@ -20563,7 +20620,7 @@ static void DMRunTrigger(NSString *cmd) {
     else if ([cmd isEqualToString:@"menucheck"]) {   // menucheck: regression check -- opens every status bar menu from every visible status bar copy, one after another
         // (0.5 s apart), and [menugeo] asserts each menu hangs directly under its title on the screen; ends with a PASS/FAIL count and the menu closed.
         NSMutableArray *jobs = [NSMutableArray array];
-        const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, kSSHButtonKey, kVPNButtonKey };
+        const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, kSSHButtonKey, kVPNButtonKey, kWiFiButtonKey };
         for (UIView *fg in gCopies.allObjects) {
             if (!fg.window || fg.window.hidden || fg.hidden || fg.alpha < 0.01) continue;
             for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
@@ -20581,10 +20638,14 @@ static void DMRunTrigger(NSString *cmd) {
                 if (!fg) return;
                 if (b == objc_getAssociatedObject(fg, kSSHButtonKey)) DMOpenSSHMenu(b);
                 else if (b == objc_getAssociatedObject(fg, kVPNButtonKey)) DMOpenVPNMenu(b);
+                else if (b == objc_getAssociatedObject(fg, kWiFiButtonKey)) DMOpenWiFiMenu(b);
                 else DMOpenMenuForButton(b);
             });
         }
     }
+#if DEBUG
+    else if ([cmd hasPrefix:@"wifi"] && DMWiFiTrigger(cmd)) {}   // the Wi-Fi menu's tests (WiFiMenu.h)
+#endif
     else if ([cmd isEqualToString:@"sshmenu"]) {   // sshmenu: open the menu of the SSH icon in the status bar
         for (UIView *fg in gCopies.allObjects) {
             UIButton *b = objc_getAssociatedObject(fg, kSSHButtonKey);
@@ -21352,6 +21413,35 @@ static void DMRunTrigger(NSString *cmd) {
     else if ([cmd hasPrefix:@"fshare_"]) [DMFinderFront() dm_shareNamed:[cmd substringFromIndex:7]];   // fshare_<name>: Share… for that item in the front Finder window (debug)
     else if ([cmd isEqualToString:@"fdismiss"]) [gNativeLayer.rootViewController dismissViewControllerAnimated:YES completion:nil];   // fdismiss: close what is presented over Finder (debug)   // fview: List <-> Icons in the front Finder window (debug)
     else if ([cmd hasPrefix:@"fnew_"]) DMFinderOpen([cmd substringFromIndex:5], YES);   // fnew_<path>: a new Finder window (debug)
+#if DEBUG
+    else if ([cmd hasPrefix:@"deskpref_"]) {   // deskpref_<0|1>: Show Desktop Icons off / on, as the Settings switch does
+        CFPreferencesSetValue(CFSTR("desktopIcons"), [[cmd substringFromIndex:9] boolValue] ? kCFBooleanTrue : kCFBooleanFalse, MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        CFPreferencesSynchronize(MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        notify_post("com.besiktasliseba.macstatusbar.finder.pref");
+    }
+    else if ([cmd hasPrefix:@"text_"]) {   // text_open:<path> | text_type:<text> | text_save | text_state | text_close: the front text window (debug)
+        NSString *a = [cmd substringFromIndex:5]; DMTextWindow *tw = nil;
+        for (DMNativeWindow *w in [gNativeWindows reverseObjectEnumerator]) if ([w isKindOfClass:[DMTextWindow class]]) { tw = (DMTextWindow *)w; break; }
+        if ([a hasPrefix:@"open:"]) DMLog([NSString stringWithFormat:@"[text] test open: %d", DMTextWindowOpen([a substringFromIndex:5], ^{ DMLog(@"[text] test open: not a text file for the window"); })]);
+        else if ([a hasPrefix:@"type:"]) [tw dm_debugType:[a substringFromIndex:5]];
+        else if ([a isEqualToString:@"save"]) [tw dm_save];
+        else if ([a isEqualToString:@"close"]) [tw close];
+        else DMLog([NSString stringWithFormat:@"[text] test state: %@", tw ? [tw dm_debugState] : @"no text window"]);
+    }
+    else if ([cmd hasPrefix:@"desk_"]) { if (gDesktop) [gDesktop dm_debug:[cmd substringFromIndex:5]]; else DMLog(@"[desktop] test: no desktop"); }   // desk_<what>[:<arg>]: Desktop.h -dm_debug:
+    else if ([cmd hasPrefix:@"fdlicon_"]) {   // fdlicon_<x>_<y>: is the Dock's Downloads stack a drop target at that screen point (Finder.h DMFDDownloadsIconAt)
+        NSArray *q = [[cmd substringFromIndex:8] componentsSeparatedByString:@"_"];
+        CGPoint sp = q.count >= 2 ? CGPointMake([q[0] doubleValue], [q[1] doubleValue]) : CGPointZero;
+        Class c = NSClassFromString(@"DMDownloadsIconView");
+        for (UIWindow *w in DMAllWindows()) {
+            NSMutableArray *todo = [NSMutableArray arrayWithObject:w];
+            while (todo.count) { UIView *v = todo.lastObject; [todo removeLastObject]; [todo addObjectsFromArray:v.subviews];
+                if (c && [v isKindOfClass:c]) DMLog([NSString stringWithFormat:@"[finder] test: stack icon in %@ (hidden %d alpha %.2f, window hidden %d) at %@", NSStringFromClass([w class]), v.hidden, v.alpha, w.hidden, NSStringFromCGRect([v convertRect:v.bounds toCoordinateSpace:w.screen.coordinateSpace])]); }
+        }
+        UIView *icon = DMFDDownloadsIconAt(sp);
+        DMLog([NSString stringWithFormat:@"[finder] test: Downloads stack at %@: %@, folder %@", NSStringFromCGPoint(sp), icon ? @"yes" : @"no", icon ? (DMFDIconFolder(icon) ? @"named" : @"none") : @"-"]);
+    }
+#endif
     else if ([cmd hasPrefix:@"fwin"]) {   // fwin / fwin_<path>: a Finder window (debug)
         NSString *p = cmd.length > 5 ? [cmd substringFromIndex:5] : nil;
         DMFinderOpen(p, NO);
@@ -26314,12 +26404,18 @@ static BOOL DMNativeScrollEvent(UIEvent *event) {
 %hook SpringBoard
 - (void)sendEvent:(UIEvent *)event {
     if ((long)event.type == 10 && gNativeLayer && !gNativeLayer.hidden && DMNativeScrollEvent(event)) return;   // (UIEventTypeScroll: a mouse wheel / trackpad over a native window)
-    if (event.type == UIEventTypeTouches && gNativeLayer && !gNativeLayer.hidden)
-        for (UITouch *t in event.allTouches) if (t.phase == UITouchPhaseBegan) { DMNativeTouchBegan(t); break; }
+    if (event.type == UIEventTypeTouches && ((gNativeLayer && !gNativeLayer.hidden) || gDesktop))
+        for (UITouch *t in event.allTouches) if (t.phase == UITouchPhaseBegan) {
+            if (gNativeLayer && !gNativeLayer.hidden) DMNativeTouchBegan(t);
+            if (gDesktop) [gDesktop dm_touchBegan:t];   // (a touch away from the desktop's icons ends its selection, as a click elsewhere on a Mac)
+            break;
+        }
+    if (event.type == UIEventTypeTouches && gDesktop) [gDesktop dm_event:event];   // (a finger that opened a desktop icon's menu and moves on: the icon's drag)
     %orig;
 }
 - (void)pressesBegan:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
     if (gNativeActive) for (UIPress *p in presses) if (DMNativeHandlePress(p)) return;
+    if (!gNativeActive && gDesktop && [gDesktop dm_hasKeys]) for (UIPress *p in presses) if (p.key && [gDesktop dm_handleKey:p.key]) return;   // (the desktop was clicked last)
     %orig;
 }
 %end
@@ -26435,6 +26531,7 @@ static void DMFinderApplyPref(void) {
         if ([objc_getClass("SBFluidSwitcherGestureManager") instancesRespondToSelector:@selector(gestureRecognizer:shouldReceiveTouch:)]) %init(DMNativeSysGestures);
         DMFinderDockInit();     // (the Dock's Finder icon: its taps, and Finder's window count for its dot)
     }
+    DMDesktopApplyPref();   // (Show Desktop Icons: the same notification -- the tick puts the desktop up or takes it away)
     if (on == gFinderOn) return;
     gFinderOn = on;
     DMLog([NSString stringWithFormat:@"[finder] Finder %@", on ? @"on" : @"off: its windows close"]);
@@ -28304,6 +28401,7 @@ void DMSMRunAction(UIAction *action, id sender) {
     %init(_UIStatusBarForegroundView = DMSBClass("_UIStatusBarForegroundView"), _UIStatusBarStringView = DMSBClass("_UIStatusBarStringView"),
           UIStatusBar_Modern = DMSBClass("UIStatusBar_Modern"), _UIStatusBar = DMSBClass("_UIStatusBar"), UIStatusBarWindow = DMSBClass("UIStatusBarWindow"));
     if (!DMCtorSkip("stockvpn")) DMStockVPNInit();
+    if (!DMCtorSkip("stockwifi")) DMStockWiFiInit();   // (the Wi-Fi Menu: iOS's own Wi-Fi item can be left out of our bars; before the prefs are read)
     if (!DMCtorSkip("smengine")) DMSMEngineInit();
     DMFinderApplyPref();    // (Finder: its hooks, the Dock's Finder icon -- only while switched on)
     { static int finderPrefToken; notify_register_dispatch("com.besiktasliseba.macstatusbar.finder.pref", &finderPrefToken, dispatch_get_main_queue(), ^(int t) { DMFinderApplyPref(); }); }

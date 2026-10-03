@@ -40,6 +40,8 @@ target showDownloads pref com.besiktasliseba.dockmagnification showDownloads 0 1
 target launchpadIcon pref com.besiktasliseba.dockmagnification launchpadIcon 0 1 Launchpad Icon|Launchpad
 target finder pref com.besiktasliseba.macstatusbar finderEnabled 0 1 Finder|Finder
 target showFinder pref com.besiktasliseba.dockmagnification showFinder 0 1 Show Finder in Dock|Finder in the Dock
+target wifiMenu pref com.besiktasliseba.macstatusbar wifiMenu 0 1 Wi-Fi Menu|the Wi-Fi menu
+target desktopIcons pref com.besiktasliseba.macstatusbar desktopIcons 0 1 Show Desktop Icons|the desktop
 target runningIndicator pref com.besiktasliseba.dockrunningindicator enabled 0 1 Show Indicators for Open Apps|the open-app indicators
 
 # The parts in words, for the guard's explanation: title <Image> <where it crashed>|<what was turned off> ("SpringBoard crashed twice in the
@@ -94,6 +96,13 @@ sym MacStatusBarCore \$DMNativeHooks\$ finder
 sym MacStatusBarCore \$DMNativeSysGestures\$ finder
 sym MacStatusBarCore ^_?DM(Finder|Native|OpenFinder|OpenNativeWindow)[A-Z] finder
 file MacStatusBarCore ^(Finder|NativeWindow)\.h$ finder
+# the text window (TextWindow.h) is Finder's; the desktop (Desktop.h, DesktopPlace.h) and the Wi-Fi menu (WiFiMenu.h) have their own switches
+file MacStatusBarCore ^TextWindow\.h$ finder
+sym MacStatusBarCore ^_?DMDesktop[A-Z] desktopIcons
+file MacStatusBarCore ^Desktop\.h$ desktopIcons
+file MacStatusBarCore ^DesktopPlace\.h$ desktopIcons
+sym MacStatusBarCore ^_?DMWiFi[A-Z] wifiMenu
+file MacStatusBarCore ^WiFiMenu\.h$ wifiMenu
 # what Stock status bar mode keeps running (StockBar.h): no switch of its own, so the part
 sym MacStatusBarCore \$(MacContextMenus|MacContextMenus15|PreviewTargetGuard|StockCCTiles)\$ part
 sec MacStatusBarCore Haptic\sTouch\smenus part

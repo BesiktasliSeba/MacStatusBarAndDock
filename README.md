@@ -68,6 +68,7 @@ The Mac look is on right after install. A few extras start off: the auto-hiding 
 - **Today drop-down**: tap the clock to drop your Today View widgets down like a menu, with your notifications in their own box above them.
 - **Audio mixing per app**, with a volume for each app, right from the menu bar.
 - **VPN menu**: the VPN badge becomes its own menu bar item with the VPN's name, Disconnect and a button to its app.
+- **Wi-Fi menu**: tap the Wi-Fi icon to turn Wi-Fi on or off, see nearby networks and join one, with the password asked right there. No trip to Control Center.
 
 ### Windows
 - **Mac windows on the engine you already use** (Aerial 3.0 or 5.0, Zetsu 1.6.2 or 1.6.6, MilkyWay4 on iPadOS 15): title bars, traffic lights, rounded corners, resize handles, and Fit to Window tiling.
@@ -76,9 +77,11 @@ The Mac look is on right after install. A few extras start off: the auto-hiding 
 
 ### Finder
 - **A Mac Finder window** on every window engine: sidebar, list and icon views, Quick Look, Search, Undo and Put Back, several-item selection, USB drives and SD cards, and drag and drop into apps. It only changes files in your own places, so it can't be used to break the iPad by accident.
+- **A desktop** on the first Home Screen page: files and folders from On My iPad > Desktop, placed anywhere and never over your apps. Folders use your Files icon. Select several with a box, drag them anywhere, and long press or right click for Mac actions.
+- **Text files** open in a small TextEdit window where you can edit them; changes save by themselves.
 
 ### Dock
-- **A macOS Dock**: magnification, recent apps, running-app dots, Finder and Launchpad at its start like on a Mac, and a Downloads stack with search.
+- **A macOS Dock**: magnification, recent apps, running-app dots, Finder and Launchpad at its start like on a Mac, and a Downloads stack with search that you can drag files into and out of.
 
 ### Built to be safe
 - **Automatic Crash Recovery**: if a feature is followed by two SpringBoard crashes in a row, it switches itself off instead of leaving you in a crash loop, tells you in Settings, and offers Report a Problem. Another tweak's crash never switches MacStatusBar&Dock off.

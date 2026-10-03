@@ -219,6 +219,22 @@
 			<string>Finder</string>
 		</dict>
 		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar.finder.pref</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>DESKTOP_ICONS</string>
+			<key>key</key>
+			<string>desktopIcons</string>
+			<key>label</key>
+			<string>Show Desktop Icons</string>
+		</dict>
+		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
@@ -431,7 +447,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>If something doesn’t work as it should — the menu bar, the Dock, a window or an app — tap Report a Problem. It opens a GitHub issue with your iPad model, iPadOS and tweak version already filled in; nothing is sent until you submit it. Some apps, like many games, can’t run in a window: use those full screen.</string>
+			<string>If something doesn’t work as it should (the menu bar, the Dock, a window or an app), tap Report a Problem. It opens a GitHub issue with your iPad model, iPadOS and tweak version already filled in; nothing is sent until you submit it. Some apps, like many games, can’t run in a window: use those full screen.</string>
 			<key>id</key>
 			<string>REPORT_GROUP</string>
 			<key>stockHides</key>
@@ -694,6 +710,32 @@
 			<string>showMuteIcon</string>
 			<key>label</key>
 			<string>Show Mute Icon</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>The Wi-Fi icon in the status bar opens a Wi-Fi menu, like on a Mac.</string>
+			<key>id</key>
+			<string>WIFI_GROUP</string>
+			<key>stockHides</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>WIFI_MENU</string>
+			<key>key</key>
+			<string>wifiMenu</string>
+			<key>label</key>
+			<string>Wi-Fi Menu</string>
 		</dict>
 		<dict>
 			<key>cell</key>

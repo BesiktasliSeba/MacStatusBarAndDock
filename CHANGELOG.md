@@ -2,6 +2,18 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.3
+
+### New
+- **Desktop**: a Mac desktop on the first Home Screen page. Files and folders in On My iPad > Desktop show up there as icons that you can place anywhere on the page; they stay out from under your apps and widgets. Folders use your Files app icon. Select several with a selection box (drag with the pointer, or hold and drag with a finger), drag them into Finder, into a folder, onto the Dock's Downloads stack or into an app, and long press or right click for Open, Quick Look, Get Info, Rename, Duplicate, Share and Move to Trash. On the empty desktop: New Folder, New Text File, Clean Up and Show in Finder. Finder has Desktop at the top of its sidebar and in the Go menu (Shift-Command-D). Settings > Status Bar > Show Desktop Icons turns it off.
+- **Wi-Fi menu**: tap the Wi-Fi icon in the menu bar for a Mac Wi-Fi menu: turn Wi-Fi on or off, see your network and the ones nearby with their signal, and join one. New networks ask for the password right there, and open networks join with one tap. On by default where your iPad supports it; Settings > Status Bar > Wi-Fi Menu.
+- **Text files**: plain text files open in a small TextEdit window where you can edit them. Changes save by themselves. New Text File is in Finder's File menu and on the desktop.
+- **Downloads in drag and drop**: drop files from Finder or the desktop onto the Dock's Downloads stack to put them in Downloads, and drag items out of the stack into Finder, onto the desktop or into apps.
+
+### Notes
+- Networks that need a username and certificate (802.1X, for example at work or school) still open Settings.
+- The desktop, the Wi-Fi menu and the text window are off on iPadOS 17 and later for now.
+
 ## 1.2.6
 
 ### Fixes

@@ -366,6 +366,12 @@ static void MSBFitValueLabels(UIView *v) {
 			large = [large imageWithTintColor:[UIColor secondaryLabelColor] renderingMode:UIImageRenderingModeAlwaysOriginal];
 			if (small && large) { [spec setProperty:small forKey:@"leftImage"]; [spec setProperty:large forKey:@"rightImage"]; }
 		}
+		// The desktop's icons are not offered on iPadOS 17+ (not tested there: they stay off).
+		if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17) {
+			NSMutableArray *kept = [_specifiers mutableCopy];
+			for (PSSpecifier *spec in _specifiers) if ([[spec propertyForKey:@"key"] isEqual:@"desktopIcons"]) [kept removeObject:spec];
+			_specifiers = kept;
+		}
 		// Stage Manager as an engine only exists on iPadOS 16+ (and only where Stage Manager runs, MSBEngineState greys it out elsewhere).
 		if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion < 16) for (PSSpecifier *spec in _specifiers) {
 			if (![[spec propertyForKey:@"key"] isEqual:@"windowEngine"] || ![spec respondsToSelector:NSSelectorFromString(@"values")] || ![spec respondsToSelector:NSSelectorFromString(@"setValues:titles:shortTitles:")]) continue;
@@ -483,6 +489,16 @@ static void MSBFitValueLabels(UIView *v) {
 			}
 			_specifiers = kept;
 			break;
+		}
+		// The Wi-Fi Menu is for iPadOS 15/16 (StatusBar.x, DMWiFiApplyPref): on 17+ its switch is not offered.
+		if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17) {
+			NSMutableArray *kept = [NSMutableArray array];
+			BOOL hiding = NO;
+			for (PSSpecifier *sp in _specifiers) {
+				if (sp.cellType == PSGroupCell) hiding = [sp.identifier isEqualToString:@"WIFI_GROUP"];
+				if (!hiding) [kept addObject:sp];
+			}
+			_specifiers = kept;
 		}
 		// Single Mute installed and switched on: it shows the mute icon and ours steps aside (OtherTweaks.h), so the switch says who does it.
 		NSString *muteBy = MSBDOtherTweakDoing(kMSBDDupMuteIcon, NO);

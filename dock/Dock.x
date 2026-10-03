@@ -1060,8 +1060,18 @@ static BOOL DMSpotlightButtonShown(void) {
     notify_get_state(token, &state);
     return state != 0 && state == (uint64_t)getpid();
 }
+// A drag that started on an icon of the desktop (Mac Status Bar's, statusbar/Desktop.h, found by its class) is the icon's, never a swipe down.
+static BOOL DMPanStartedOnDesktopIcon(UIGestureRecognizer *gesture) {
+    Class c = NSClassFromString(@"DMDesktopItemView");
+    UIWindow *w = gesture.view.window;
+    if (!c || !w || ![gesture isKindOfClass:[UIPanGestureRecognizer class]]) return NO;
+    CGPoint p = [gesture locationInView:w], t = [(UIPanGestureRecognizer *)gesture translationInView:w];
+    for (UIView *v = [w hitTest:CGPointMake(p.x - t.x, p.y - t.y) withEvent:nil]; v; v = v.superview) if ([v isKindOfClass:c]) return YES;
+    return NO;
+}
 %hook SBSearchScrollView
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gesture {
+    if (DMPanStartedOnDesktopIcon(gesture)) { DMLog(@"[swipe-down] a drag from a desktop icon: not a swipe"); return NO; }
     if (gSwipeDownOpensLibrary && DMSpotlightButtonShown() && [gesture isKindOfClass:[UIPanGestureRecognizer class]] &&
         DMSwipeIsDownward((UIPanGestureRecognizer *)gesture, (UIView *)self)) {
         static int logged = 0;
