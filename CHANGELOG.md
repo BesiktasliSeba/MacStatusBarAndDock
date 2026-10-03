@@ -2,6 +2,12 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.3.1
+
+### Fixes
+- Desktop: dragging an icon right after holding it no longer opens its menu (on iPadOS 15 the menu could pick an item, such as Move to Trash, when you let go).
+- Automatic Crash Recovery: after a crash that loops (a stack overflow), the feature that really caused it is the one switched off, not an unrelated one.
+
 ## 1.3
 
 ### New

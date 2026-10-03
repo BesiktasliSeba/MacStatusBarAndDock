@@ -41,8 +41,14 @@ static inline NSDictionary *MSBDFeatureBody(NSData *data) {
 }
 
 // The top-most frame in one of our images: its image name (no ".dylib"), that image's UUID (lowercase, "" if not given) and the offset. Our
-// pass-through hooks (the map's "transparent" functions) are passed over while any other frame of ours is there.
+// pass-through hooks (the map's "transparent" functions) are passed over while any other frame of ours is there. In a stack overflow the top-most
+// frame of ours IN THE CYCLE (MSBDBlameRecursion, CrashBlame.h): the very top is only where the stack ran out -- the desktop's hit-test recursion
+// ran out in a window-layout helper and Windowing was switched off instead of the desktop (iPad 2, 3 Oct). A cycle with no frame of ours: as before.
+static inline BOOL MSBDFeatureTopFrameIn(NSDictionary *body, NSString *map, NSString **image, NSString **uuid, unsigned long long *offset, NSString **where, BOOL cycleOnly);
 static inline BOOL MSBDFeatureTopFrame(NSDictionary *body, NSString *map, NSString **image, NSString **uuid, unsigned long long *offset, NSString **where) {
+    return MSBDFeatureTopFrameIn(body, map, image, uuid, offset, where, YES) || MSBDFeatureTopFrameIn(body, map, image, uuid, offset, where, NO);
+}
+static inline BOOL MSBDFeatureTopFrameIn(NSDictionary *body, NSString *map, NSString **image, NSString **uuid, unsigned long long *offset, NSString **where, BOOL cycleOnly) {
     NSArray *images = [body[@"usedImages"] isKindOfClass:[NSArray class]] ? body[@"usedImages"] : ([body[@"binaryImages"] isKindOfClass:[NSArray class]] ? body[@"binaryImages"] : nil);
     NSArray *threads = [body[@"threads"] isKindOfClass:[NSArray class]] ? body[@"threads"] : nil;
     NSArray *faultFrames = nil;
@@ -58,9 +64,12 @@ static inline BOOL MSBDFeatureTopFrame(NSDictionary *body, NSString *map, NSStri
     NSArray *fallback = nil;   // (a pass-through hook of ours: only when no other frame of ours is there)
     for (int pass = 0; pass < 2; pass++) {   // (the exception backtrace first: where the exception was thrown)
         NSArray *frames = pass == 0 ? excFrames : faultFrames;
+        NSSet<NSString *> *cycle = cycleOnly ? MSBDBlameRecursion(frames) : nil;
+        if (cycleOnly && !cycle) continue;   // (no overflow here: the plain scan, cycleOnly NO)
         for (NSUInteger k = MSBDBlameFirstFrame(frames); k < frames.count; k++) {   // (not a signal handler's frames)
             NSDictionary *f = frames[k];
             if (![f isKindOfClass:[NSDictionary class]] || ![f[@"imageIndex"] isKindOfClass:[NSNumber class]] || ![f[@"imageOffset"] isKindOfClass:[NSNumber class]]) continue;
+            if (cycle && ![cycle containsObject:MSBDBlameFrameKey(f) ?: @""]) continue;   // (where the stack ran out: not the cause)
             NSUInteger i = [f[@"imageIndex"] unsignedIntegerValue];
             if (i >= images.count || ![images[i] isKindOfClass:[NSDictionary class]]) continue;
             NSDictionary *img = images[i];
@@ -71,13 +80,14 @@ static inline BOOL MSBDFeatureTopFrame(NSDictionary *body, NSString *map, NSStri
             if (through && fallback) continue;
             if ([name hasSuffix:@".dylib"]) name = [name substringToIndex:name.length - 6];
             NSString *u = [img[@"uuid"] isKindOfClass:[NSString class]] ? [img[@"uuid"] lowercaseString] : @"";
-            NSString *w = pass == 0 ? @"exception backtrace" : @"faulting thread";
+            NSString *w = [(pass == 0 ? @"exception backtrace" : @"faulting thread") stringByAppendingString:cycle ? @", recursion" : @""];
             if (through) { fallback = @[name, u, f[@"imageOffset"], w]; continue; }   // (used only if nothing else of ours is there)
             *image = name; *uuid = u; *offset = [f[@"imageOffset"] unsignedLongLongValue]; *where = w;
             return YES;
         }
     }
-    if (fallback) { *image = fallback[0]; *uuid = fallback[1]; *offset = [fallback[2] unsignedLongLongValue]; *where = fallback[3]; return YES; }
+    // (a cycle whose only frame of ours is a pass-through hook says nothing about which part of ours: the plain scan decides, as before)
+    if (fallback && !cycleOnly) { *image = fallback[0]; *uuid = fallback[1]; *offset = [fallback[2] unsignedLongLongValue]; *where = fallback[3]; return YES; }
     return NO;
 }
 

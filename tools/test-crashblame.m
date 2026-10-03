@@ -152,6 +152,66 @@ int main(int argc, char **argv) {
         v = MSBDBlameReportData(large, &b);
         printf("      large report: %lu KB classified in %.1f ms (Mac)\n", (unsigned long)large.length / 1024, (CFAbsoluteTimeGetCurrent() - t0) * 1000);
         Check(@"large Apple-only report", v, b, kMSBDBlameApple);
+
+        // Stack overflows (3 Oct 2026, iPad 2): the desktop's hit-test recursion (DMFocusGuideHitTest -> -[SBHomeScreenWindow hitTest:] -> ... ->
+        // DMFocusGuideHitTest) ran out of stack inside DMUsableArea (+0x15bbb4), a window-layout helper the desktop's -dm_area had just called; step 1b
+        // took that top-most frame of ours and switched Windowing off instead of the desktop. The fixture is the real report (13:28:33), trimmed to its
+        // faulting thread (511 frames, symbols kept, device paths replaced). The map is that build's arm64 slice as its rules place these functions
+        // (DMUsableArea: windowing; DMFocusGuideHitTest and -[DMDesktop ...]: the desktop; DMNativeDesktop: Finder) -- the build's own map file is
+        // not kept, so the ranges are drawn around the report's symbolicated offsets.
+        {
+            NSString *so = [dir stringByAppendingPathComponent:@"stack-overflow-desktop-recursion.ips"];
+            v = MSBDBlameReportFile(so, &b);   Check(@"overflow: ours (the cycle is ours)", v, b, kMSBDBlameOurs);
+            Check(@"overflow: blamed names the recursion", [b containsString:@"recursion"] ? 1 : 0, b, 1);
+            NSString *map = @"T windowingEnabled pref com.besiktasliseba.macstatusbar windowingEnabled 0 1 Enable Windowing|the window code\n"
+                             "T desktopIcons pref com.besiktasliseba.macstatusbar desktopIcons 0 1 Show Desktop Icons|the desktop\n"
+                             "T finder pref com.besiktasliseba.macstatusbar finderEnabled 0 1 Finder|Finder\n"
+                             "T stock pref com.besiktasliseba.macstatusbar stockStatusBar 1 0 Status Bar Style|the status bar\n"
+                             "T part part\nP MacStatusBarCore stock\n"
+                             "U MacStatusBarCore 340bf5af-e8fb-4ed7-ac7d-06055d0e91d9 arm64\n"
+                             "R 0 stock\nR 2a000 finder\nR 2b000 stock\nR 77000 desktopIcons\nR 82000 stock\nR 15b000 windowingEnabled\nR 15c000 stock\n"
+                             "R 273000 desktopIcons\nR 274000 stock\nR 340000 -\n";
+            NSDictionary *body = MSBDFeatureBody([NSData dataWithContentsOfFile:so]);
+            NSString *image = nil, *uuid = nil, *where = nil; unsigned long long off = 0;
+            total++; BOOL got = MSBDFeatureTopFrame(body, map, &image, &uuid, &off, &where);
+            BOOL okTop = got && off == 0x2736bc && [where containsString:@"recursion"];
+            if (!okTop) failures++;
+            printf("%s  %-48s %s+0x%llx (%s)\n", okTop ? "PASS" : "FAIL", "overflow 1b: the cycle's frame, not 0x15bbb4", image.UTF8String, off, where.UTF8String);
+            NSString *action = nil, *detail = nil;
+            total++; got = MSBDFeatureForReport([NSData dataWithContentsOfFile:so], map, &action, &detail);
+            BOOL okAct = got && [action hasPrefix:@"pref MacStatusBarCore com.besiktasliseba.macstatusbar desktopIcons 0"];
+            if (!okAct) failures++;
+            printf("%s  %-48s %s | %s\n", okAct ? "PASS" : "FAIL", "overflow 1b: the desktop off, not Windowing", action.UTF8String, detail.UTF8String);
+            NSArray *ours = MSBDBlameOurFrames(body, 5);
+            total++; BOOL okSum = ours.count == 2 && [ours[0] containsString:@"DMFocusGuideHitTest"] && [ours[1] containsString:@"dm_shownAt:"];
+            if (!okSum) failures++;
+            printf("%s  %-48s %s\n", okSum ? "PASS" : "FAIL", "overflow summary: the cycle's frames, once each", [ours componentsJoinedByString:@" | "].UTF8String);
+        }
+        {   // Synthetic overflows: the frames that repeat decide; where the stack ran out does not; a cycle of Apple code only, or a short stack, as before.
+            NSDictionary *(^G)(int, int) = ^NSDictionary *(int i, int off) { return @{@"imageOffset": @(off), @"imageIndex": @(i)}; };
+            NSArray *(^Stack)(NSArray *, NSArray *, int) = ^NSArray *(NSArray *top, NSArray *cycle, int times) {
+                NSMutableArray *s = [top mutableCopy];
+                for (int t = 0; t < times; t++) [s addObjectsFromArray:cycle];
+                return s;
+            };
+            v = MSBDBlameReportData(Report(Body(Stack(@[G(3, 0x10)], @[G(6, 1), G(5, 0x50), G(0, 2)], 120), nil, nil)), &b);
+            Check(@"overflow: a tweak where it ran out, the cycle ours", v, b, kMSBDBlameOurs);
+            v = MSBDBlameReportData(Report(Body(Stack(@[G(5, 0x50)], @[G(6, 1), G(3, 0x20), G(0, 2)], 120), nil, nil)), &b);
+            Check(@"overflow: ours where it ran out, a tweak's cycle", v, b, kMSBDBlameOther);
+            v = MSBDBlameReportData(Report(Body(Stack(@[G(5, 0x50)], @[G(6, 1), G(0, 2)], 150), nil, nil)), &b);
+            Check(@"overflow: Apple-only cycle, ours on top (as before)", v, b, kMSBDBlameOurs);
+            v = MSBDBlameReportData(Report(Body(Stack(@[G(3, 0x10)], @[G(6, 1), G(5, 0x50), G(0, 2)], 5), nil, nil)), &b);
+            Check(@"short stack, ours repeated: no overflow (as before)", v, b, kMSBDBlameOther);
+            NSString *image = nil, *uuid = nil, *where = nil; unsigned long long off = 0;
+            total++; BOOL got = MSBDFeatureTopFrame(Body(Stack(@[G(5, 0x250)], @[G(6, 1), G(5, 0x50), G(0, 2)], 120), nil, nil), nil, &image, &uuid, &off, &where);
+            BOOL ok = got && off == 0x50;
+            if (!ok) failures++;
+            printf("%s  %-48s %s+0x%llx\n", ok ? "PASS" : "FAIL", "overflow 1b: ours in the cycle over ours on top", image.UTF8String, off);
+            total++; got = MSBDFeatureTopFrame(Body(Stack(@[G(5, 0x250)], @[G(6, 1), G(0, 2)], 150), nil, nil), nil, &image, &uuid, &off, &where);
+            ok = got && off == 0x250;
+            if (!ok) failures++;
+            printf("%s  %-48s %s+0x%llx\n", ok ? "PASS" : "FAIL", "overflow 1b: none of ours in the cycle: the top", image.UTF8String, off);
+        }
     }
     printf("%d/%d passed\n", total - failures, total);
     return failures ? 1 : 0;

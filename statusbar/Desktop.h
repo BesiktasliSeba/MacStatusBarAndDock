@@ -712,6 +712,19 @@ static BOOL DMDesktopEditing(void) {
     [v addInteraction:i];
     for (UIGestureRecognizer *g in v.gestureRecognizers) if (![before containsObject:g]) [_menuGRs addObject:g];
 }
+// A Haptic Touch menu that has not opened yet must never open over a drag or a selection rectangle. Switching its gestures off and on does not stop
+// UIKit's own presentation on iPadOS 15 (M1, 3 Oct: a finger held 0.72 s, just short of the menu's time, then moved; the icon lifted, the menu
+// opened 40 ms later over the drag, and the finger's lift chose the row under it -- Move to Trash). Taking the interaction off its view is what
+// calls that press off in UIKit; it goes straight back on for the next press. v: the icon's view, or nil for the empty desktop's menu.
+- (void)dm_menuLetsGo:(UIView *)v {
+    UIContextMenuInteraction *mi = nil;
+    if (v) { for (id<UIInteraction> x in v.interactions) if ([x isKindOfClass:[UIContextMenuInteraction class]]) { mi = (UIContextMenuInteraction *)x; break; } }
+    else mi = _bgMenu;
+    UIView *host = mi.view;
+    if (!mi || !host || mi == _menuOpen) return;
+    [host removeInteraction:mi];
+    [self dm_addMenu:mi to:host];
+}
 - (void)dm_liftAt:(CGPoint)sp held:(DMDesktopItemView *)held option:(BOOL)option {
     DM_FEATURE_MARK("desktop-drag");
     _lifted = YES;
@@ -1048,6 +1061,7 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
                 BOOL menuUp = _menuOpen != nil;
                 [_menuOpen dismissMenu];   // (an open menu closes the way UIKit closes it; one not open yet never opens: its gestures let go below)
                 for (UIGestureRecognizer *o in [t.gestureRecognizers copy]) if (![o.name hasPrefix:@"dm."] && o.enabled && !(menuUp && [_menuGRs containsObject:o])) { o.enabled = NO; o.enabled = YES; }   // (it is ours now)
+                if (!menuUp) [self dm_menuLetsGo:_trackView];   // (and the menu of this press, not open yet, is called off in UIKit itself)
                 for (UIView *v = self.superview; v; v = v.superview) if ([v isKindOfClass:[UIScrollView class]]) { UIPanGestureRecognizer *pan = ((UIScrollView *)v).panGestureRecognizer; pan.enabled = NO; pan.enabled = YES; }
                 DMDesktopItemView *v = _trackView;
                 if (v && v.window) {

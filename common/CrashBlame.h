@@ -117,6 +117,26 @@ static inline NSUInteger MSBDBlameFirstFrame(NSArray *frames) {
         if ([frames[i] isKindOfClass:[NSDictionary class]] && [frames[i][@"symbol"] isEqual:@"_sigtramp"]) first = i + 1;
     return first < frames.count ? first : 0;
 }
+// A stack overflow (a recursion that never ends): the crashing stack fills the report's frame limit (511 frames) with the same few frames over and
+// over, and its top-most frames are only where the stack happened to run out -- any function the recursion calls on its way round. The cause is the
+// cycle, so in such a stack only the frames that repeat decide whose crash it is and which feature (CrashFeature.h). Seen on 3 Oct 2026 (iPad 2):
+// the desktop's hit-test recursion (DMFocusGuideHitTest -> -[SBHomeScreenWindow hitTest:] -> ... -> DMFocusGuideHitTest) ran out inside DMUsableArea,
+// a window-layout helper the desktop's -dm_area had just called, and step 1b switched Windowing off instead of the desktop.
+// Returns the keys ("<image index>:<offset>", MSBDBlameFrameKey) of the frames that repeat, or nil when the stack is not an overflow.
+#define MSBD_BLAME_OVERFLOW_FRAMES 256   // (a SpringBoard stack is well under 150 frames; the reporter cuts an overflow at 511)
+#define MSBD_BLAME_CYCLE_REPEATS 4
+static inline NSString *MSBDBlameFrameKey(id f) {
+    if (![f isKindOfClass:[NSDictionary class]] || ![f[@"imageIndex"] isKindOfClass:[NSNumber class]] || ![f[@"imageOffset"] isKindOfClass:[NSNumber class]]) return nil;
+    return [NSString stringWithFormat:@"%@:%@", f[@"imageIndex"], f[@"imageOffset"]];
+}
+static inline NSSet<NSString *> *MSBDBlameRecursion(NSArray *frames) {
+    if (![frames isKindOfClass:[NSArray class]] || frames.count < MSBD_BLAME_OVERFLOW_FRAMES) return nil;
+    NSCountedSet *seen = [NSCountedSet set];
+    for (id f in frames) { NSString *k = MSBDBlameFrameKey(f); if (k) [seen addObject:k]; }
+    NSMutableSet *cycle = [NSMutableSet set];
+    for (NSString *k in seen) if ([seen countForObject:k] >= MSBD_BLAME_CYCLE_REPEATS) [cycle addObject:k];
+    return cycle.count ? cycle : nil;
+}
 
 // Our names in free text (exception reason, "asi" messages): identifier-like words starting MSB/MSBD + capital, DM + capital + lowercase (DMStageLights,
 // DMLog; not Apple's DMF/DMC/DMD... classes, which go on in capitals), the few MS... settings classes, and our domains.
@@ -191,15 +211,21 @@ static inline int MSBDBlameReportBodyMapCore(NSDictionary *body, NSString *map, 
     if (!faultFrames && !excFrames) { if (blamed) *blamed = @"no crash stacks in the report"; return kMSBDBlameUnknown; }
     NSString *ourImage = nil, *otherImage = nil;
     int known = 0;
-    // The top-most frame that is not Apple's decides, on the exception backtrace first (where it was thrown), else on the faulting thread.
-    for (int pass = 0; pass < 2 && !ourImage && !otherImage; pass++) {
+    // The top-most frame that is not Apple's decides, on the exception backtrace first (where it was thrown), else on the faulting thread. In a stack
+    // overflow only the frames of the cycle count (MSBDBlameRecursion); a cycle of nothing but Apple code leaves it to the top-most frame, as before.
+    for (int scan = 0; scan < 4 && !ourImage && !otherImage; scan++) {
+        int pass = scan / 2;
         NSArray *frames = pass == 0 ? excFrames : faultFrames;
+        NSSet<NSString *> *cycle = scan % 2 == 0 ? MSBDBlameRecursion(frames) : nil;
+        if (scan % 2 == 0 && !cycle) continue;   // (no overflow: the plain scan below)
         NSString *where = pass == 0 ? @"exception backtrace" : @"faulting thread";
+        if (cycle) where = [where stringByAppendingString:@", recursion"];
         NSString *engine = nil;   // (a window engine on top: ours only if our own code called it)
         NSString *passThrough = nil;   // (one of our pass-through hooks: ours only if no other non-Apple code is below it)
         for (NSUInteger k = MSBDBlameFirstFrame(frames); k < frames.count; k++) {
             NSDictionary *f = frames[k];
             if (![f isKindOfClass:[NSDictionary class]] || ![f[@"imageIndex"] isKindOfClass:[NSNumber class]]) continue;
+            if (cycle && ![cycle containsObject:MSBDBlameFrameKey(f) ?: @""]) continue;   // (where the stack ran out: not the cause)
             NSUInteger i = [f[@"imageIndex"] unsignedIntegerValue];
             if (i >= imageCount) continue;
             NSString *path = nil, *name = imageName(i, &path);
@@ -220,7 +246,7 @@ static inline int MSBDBlameReportBodyMapCore(NSDictionary *body, NSString *map, 
         }
         if (!ourImage && !otherImage) {
             if (engine) otherImage = [NSString stringWithFormat:@"%@ (%@)", engine, where];   // (only our pass-through hooks, or nothing of ours, below it)
-            else if (passThrough) ourImage = passThrough;   // (nothing but Apple code besides it: as before, ours)
+            else if (passThrough && !cycle) ourImage = passThrough;   // (nothing but Apple code besides it: as before, ours; in a cycle: the plain scan decides)
         }
     }
     if (ourImage) { if (blamed) *blamed = ourImage; return kMSBDBlameOurs; }
@@ -429,10 +455,30 @@ static inline NSArray<NSString *> *MSBDBlameOurFrames(NSDictionary *body, NSUInt
     }
     NSArray *exc = [body[@"lastExceptionBacktrace"] isKindOfClass:[NSArray class]] ? body[@"lastExceptionBacktrace"] : nil;
     for (NSArray *frames in @[fault ?: @[], exc ?: @[]]) {
+        // (a stack overflow: the frames of ours in the cycle, once each -- not where the stack ran out, MSBDBlameRecursion; a cycle with none of ours:
+        //  as before)
+        NSSet<NSString *> *cycle = MSBDBlameRecursion(frames);
+        if (cycle) {
+            BOOL oursInCycle = NO;
+            for (id f in frames) {
+                if (![cycle containsObject:MSBDBlameFrameKey(f) ?: @""]) continue;
+                NSUInteger i = [f[@"imageIndex"] unsignedIntegerValue];
+                NSDictionary *img = i < images.count && [images[i] isKindOfClass:[NSDictionary class]] ? images[i] : nil;
+                NSString *p = [img[@"path"] isKindOfClass:[NSString class]] ? img[@"path"] : nil;
+                if (MSBDBlameImageKind(p, [img[@"name"] isKindOfClass:[NSString class]] ? img[@"name"] : p.lastPathComponent) == kMSBDImgOurs) { oursInCycle = YES; break; }
+            }
+            if (!oursInCycle) cycle = nil;
+        }
+        NSMutableSet<NSString *> *listed = [NSMutableSet set];
         for (NSUInteger k = MSBDBlameFirstFrame(frames); k < frames.count; k++) {
             NSDictionary *f = frames[k];
             if (out.count >= max) break;
             if (![f isKindOfClass:[NSDictionary class]] || ![f[@"imageIndex"] isKindOfClass:[NSNumber class]]) continue;
+            if (cycle) {
+                NSString *key = MSBDBlameFrameKey(f) ?: @"";
+                if (![cycle containsObject:key] || [listed containsObject:key]) continue;
+                [listed addObject:key];
+            }
             NSUInteger i = [f[@"imageIndex"] unsignedIntegerValue];
             NSDictionary *img = i < images.count && [images[i] isKindOfClass:[NSDictionary class]] ? images[i] : nil;
             NSString *path = [img[@"path"] isKindOfClass:[NSString class]] ? img[@"path"] : nil, *name = [img[@"name"] isKindOfClass:[NSString class]] ? img[@"name"] : path.lastPathComponent;
