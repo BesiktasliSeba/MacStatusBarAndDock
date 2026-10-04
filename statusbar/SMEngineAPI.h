@@ -103,6 +103,7 @@ DMSM_SIG(DMSMSigSetRole, @encode(void), @encode(id), @encode(long long))        
 DMSM_SIG(DMSMSigObjLong, @encode(id), @encode(long long))                              // -entityForLayoutRole:
 DMSM_SIG(DMSMSigBool, @encode(BOOL))
 DMSM_SIG(DMSMSigRect, @encode(CGRect))                                                 // -[SBSwitcherChamoisLayoutAttributes containerBounds]
+DMSM_SIG(DMSMSigInBounds, @encode(CGSize), @encode(CGRect))                            // -sizeInBounds:, -centerInBounds: (16.0 / 16.1; {dd} either way)
 DMSM_SIG(DMSMSigRequestOnDisplay, @encode(BOOL), @encode(unsigned long long), @encode(id), @encode(id))   // -requestTransitionWithOptions:displayConfiguration:builder: (YES = taken)
 DMSM_SIG(DMSMSigRequest, @encode(BOOL), @encode(id))                                  // -requestTransitionWithBuilder: (YES = taken; B@:@? on 16.7.7)
 
@@ -147,8 +148,106 @@ static BOOL DMSMAttrLastInteractionTime(id attrs, long long *out) { return DMSMA
 static long long DMSMAttrTimeOr(id attrs, long long dflt) { long long t = dflt; return DMSMAttrLastInteractionTime(attrs, &t) ? t : dflt; }
 // 0 snap-to-grid, 1 free, 2 maximized (full screen).
 static BOOL DMSMAttrSizingPolicy(id attrs, long long *out) { return DMSMAttrLong(attrs, @"sizingPolicy", out); }
+// ---- iPadOS 16.0 / 16.1: the "sized" window model (sm-160) ----
+// There a window's attributes hold a plain size and centre (no attributed size, no reference rectangle): -sizeInBounds: / -centerInBounds: hand a
+// value back as a FRACTION of the bounds asked for while both parts are small enough (16.0: up to 1; 16.1: up to 10 -- DMSMProbeSizedThreshold), else
+// as POINTS (decompiled from 20A371 and 20B82). The engine keeps its one model (DMSMAttributedSize, fractions of a reference rectangle) and these
+// wrappers translate: a value read in a 1 x 1 rectangle comes back as stored either way and is turned into fractions of the screen as it is now (the
+// bounds Apple's layout reads it in); a value handed over is the fraction itself while both parts are at most 1 -- a fraction in either reading --
+// else points (one part is then longer than the screen, never taken for a fraction). Which model the iPad has is the check's finding
+// (DMSMVariantIs "window model"), never the version number.
+static BOOL DMSMSizedModel(void);
+static double DMSMSizedReadThreshold(void);
+#if defined(__x86_64__)
+#define DMSM_MSG_STRET objc_msgSend_stret   // (the Mac tests run on Intel: a struct over 16 bytes comes back through this entry point there; arm64 has one)
+#else
+#define DMSM_MSG_STRET objc_msgSend
+#endif
+static CGRect DMSMMainScreenBounds(void) {   // (looked up at run time: also builds where UIScreen is only a stand-in)
+    Class c = objc_getClass("UIScreen");
+    SEL ms = sel_registerName("mainScreen"), bs = sel_registerName("bounds");
+    id scr = c && [c respondsToSelector:ms] ? ((id (*)(id, SEL))objc_msgSend)(c, ms) : nil;
+    CGRect r = scr && [scr respondsToSelector:bs] ? ((CGRect (*)(id, SEL))DMSM_MSG_STRET)(scr, bs) : CGRectZero;
+    return isfinite(r.size.width) && isfinite(r.size.height) && r.size.width >= 100.0 && r.size.height >= 100.0 ? r : CGRectZero;
+}
+static CGSize DMSMSizedFraction(CGSize raw, CGSize scr) {   // (a stored value -> a fraction of the screen)
+    double t = MAX(1.0, DMSMSizedReadThreshold());
+    return raw.width <= t && raw.height <= t ? raw : CGSizeMake(raw.width / scr.width, raw.height / scr.height);
+}
+static CGSize DMSMSizedValue(CGSize f, CGSize scr) {        // (a fraction of the screen -> the value to store)
+    return f.width <= 1.0 && f.height <= 1.0 ? f : CGSizeMake(f.width * scr.width, f.height * scr.height);
+}
+// ---- Stage Manager switched back off after being the engine (1.3.4 logic test, the 11:58 abort) ----
+// When the engine changes (or Mac Status Bar goes off) Stage Manager, on only for our engine, goes back off. SpringBoard's own reaction to that switch
+// (-[SBFluidSwitcherViewController _chamoisWindowingUIEnabledDefaultChangeHandler], 16.7.7 disassembled): with an app in front it makes a transition
+// that keeps the windows of roles 1-2 and empties 5-9, and its Dosido modifier looks the stage up among the switcher's app layouts (-visibleAppLayouts:
+// -indexOfObject: of the from and to layouts, then -subarrayWithRange:) -- a stage of three windows is not among them, NSNotFound, NSRangeException,
+// SpringBoard aborted (iPad 2, 4 Oct 11:58: engine set to Aerial, no respring, three Fit windows; our watcher switched Stage Manager off 10 s later;
+// the same code since 1.1.x). With no app in front (Home Screen, App Library, App Switcher) the handler makes no transition. So the switch-off waits
+// until no app is in front or the stage in front has one window, and every multi-window stage is cut back to its primary window first
+// (DMSMFlattenStages), as the other switch-off already did afterwards. What DMStageManagerWatch does now, from what it sees (Mac test:
+// tools/test-smcheck16.m): sinceSeen = seconds since Stage Manager was first seen not to be the engine (< 0: not yet seen), msbOff = Mac Status Bar
+// switched off or removed (no 10 s start-up wait), smOn = Stage Manager is on, appInFront / frontWindows = an app in front and the windows of the
+// iPad's stage in front.
+enum { DMSMOffWait = 0, DMSMOffNow = 1, DMSMOffForget = 2 };   // (wait; cut back + switch off now; already off: only forget that it was ours)
+static int DMSMEngineOffStep(double sinceSeen, BOOL msbOff, BOOL smOn, BOOL appInFront, NSUInteger frontWindows) {
+    if (!msbOff && (sinceSeen < 0 || sinceSeen < 10.0)) return DMSMOffWait;   // (not during start-up, before the engine is known)
+    if (!smOn) return DMSMOffForget;
+    if (appInFront && frontWindows > 1) return DMSMOffWait;   // (SpringBoard's switch-off transition would have to drop windows: not now)
+    return DMSMOffNow;
+}
+// SpringBoard's own handler of the switch (DMSMDefaultChangeHook, StatusBar.x) with our engine's ownership: 0 run Apple's handler, 1 wait (a switch-off
+// that would drop windows: an app in front with more than one window), 2 nothing to switch (the setting is back as SpringBoard shows it).
+// known = the switcher's state could be read; ours = Stage Manager's UI went on for our engine in this SpringBoard (DMSMOwnsStageUI).
+enum { DMSMHandlerRun = 0, DMSMHandlerWait = 1, DMSMHandlerSkip = 2 };
+static int DMSMHandlerStep(BOOL known, BOOL ours, BOOL settingOn, BOOL uiOn, BOOL appMode, NSUInteger windows) {
+    if (!known || !ours) return DMSMHandlerRun;
+    if (!settingOn && uiOn) return DMSMEngineOffStep(10, YES, YES, appMode, windows) == DMSMOffWait ? DMSMHandlerWait : DMSMHandlerRun;
+    if (settingOn == uiOn) return DMSMHandlerSkip;
+    return DMSMHandlerRun;
+}
+// Whose Stage Manager UI it is (1.3.4 re-check F1): SpringBoard runs its handler as a later main-queue block, after the new value is readable -- the
+// watcher's 0.4 s tick can come in between and read the setting as off: then our engine counted as off (it needs the setting on) and the watcher had
+// already dropped its ownership key, so the hook let Apple's handler run with three windows in front (the abort again, about 1 in 6 tries for an
+// outside writer: Mac Status Bar switched off or removed, the engine changed and Stage Manager switched off). Ownership is a flag of this SpringBoard
+// now: noted whenever the engine runs or the key says Stage Manager was on for it, and kept until the respring -- never hung on the watcher's latest
+// reading of the setting that just changed. Keeping it longer costs nothing: it only lets a switch-off that would drop windows wait for a safe moment.
+static BOOL gSMOwnsStageUI = NO;
+static void DMSMNoteOwnStageUI(void) { gSMOwnsStageUI = YES; }
+static BOOL DMSMOwnsStageUIWith(BOOL engineNow, BOOL keyPresent) {
+    if (engineNow || keyPresent) gSMOwnsStageUI = YES;
+    return gSMOwnsStageUI;
+}
+// ---- iPadOS 16.0: the group shift after the layout pass (sm-160 follow-up, 1.3.4 logic test) ----
+// Right after its layout pass (-modelForPreferredModel:...), iPadOS 16.0's calculator (-[SBDisplayItemLayoutAttributesCalculator
+// _appLayoutByPerformingAutoLayoutIfNeededInAppLayout:...], a block run through -modelByModifyingModelWithBlock:, decompiled from 20A371 / 20A5349b)
+// moves the whole group of windows sideways: left-to-right by min(0, max(stage x, container centre - group width / 2) - group x), right-to-left by
+// max(0, min(stage max x, container centre + group width / 2) - group max x), through -setBoundingBox: and every window's -setCenter:forItem:. With
+// our full-width stage frame that pulls a group lying right of the centred place back to the middle (a lone window in the right half: 208 pt on an
+// 11" iPad in portrait). 16.1+ has no such block. Our engine keeps windows where they are put: while that block runs (the calculator running, its
+// pass over) a centre keeps its x and so does the bounding box. SMLayout160's hooks and SMLayout16's -setCenter:forItem: call these; the Mac test
+// (tools/test-smcheck16.m) plays the calculator's decoded order on stand-ins.
+static int gSMCalc160Depth = 0;     // (the 16.0 calculator's auto layout is running)
+static BOOL gSMPostPass160 = NO;    // (... and its layout pass is over: what moves now is the group shift)
+static void DMSMCalc160Enter(void) { gSMCalc160Depth++; gSMPostPass160 = NO; }
+static void DMSMCalc160Exit(void) { if (gSMCalc160Depth > 0) gSMCalc160Depth--; gSMPostPass160 = NO; }
+static void DMSMPass160Begin(void) { gSMPostPass160 = NO; }
+static void DMSMPass160End(void) { gSMPostPass160 = gSMCalc160Depth > 0; }
+// The x a centre or the bounding box gets: its own while the group shift runs and our engine places windows freely, else the one asked for.
+static CGFloat DMSMShift160X(BOOL freePlacement, CGFloat asked, CGFloat own) { return gSMPostPass160 && freePlacement && isfinite(own) ? own : asked; }
 static BOOL DMSMAttrAttributedSize(id attrs, DMSMAttributedSize *out) {
     if (!DMSMIsAttrs(attrs)) return NO;
+    if (DMSMSizedModel()) {
+        SEL get = NSSelectorFromString(@"sizeInBounds:");
+        if (!DMSMSigOK(attrs, get, DMSMSigInBounds(), "sizeInBounds:")) return NO;
+        CGRect scr = DMSMMainScreenBounds();
+        if (CGRectIsEmpty(scr)) { DMSMAPIFail(@"sizeInBounds:", @"no screen to read it in"); return NO; }
+        CGSize raw = ((CGSize (*)(id, SEL, CGRect))objc_msgSend)(attrs, get, CGRectMake(0, 0, 1, 1));
+        DMSMAttributedSize s = { DMSMSizedFraction(raw, scr.size), CGRectMake(0, 0, scr.size.width, scr.size.height), 0 };
+        if (!DMSMSizeReadSane(s)) { DMSMAPIFail(@"sizeInBounds:", [@"not a size: " stringByAppendingString:DMSMSizeText(s)]); return NO; }
+        if (out) *out = s;
+        return YES;
+    }
     SEL sel = NSSelectorFromString(@"attributedSize");
     if (!DMSMSigOK(attrs, sel, DMSMSigSize(), "attributedSize")) return NO;
     DMSMAttributedSize s = ((DMSMAttributedSize (*)(id, SEL))objc_msgSend)(attrs, sel);
@@ -158,6 +257,18 @@ static BOOL DMSMAttrAttributedSize(id attrs, DMSMAttributedSize *out) {
 }
 static BOOL DMSMAttrCenter(id attrs, CGPoint *out) {
     if (!DMSMIsAttrs(attrs)) return NO;
+    if (DMSMSizedModel()) {
+        SEL get = NSSelectorFromString(@"centerInBounds:");
+        if (!DMSMSigOK(attrs, get, DMSMSigInBounds(), "centerInBounds:")) return NO;
+        CGRect scr = DMSMMainScreenBounds();
+        if (CGRectIsEmpty(scr)) { DMSMAPIFail(@"centerInBounds:", @"no screen to read it in"); return NO; }
+        CGPoint raw = ((CGPoint (*)(id, SEL, CGRect))objc_msgSend)(attrs, get, CGRectMake(0, 0, 1, 1));
+        CGSize f = DMSMSizedFraction(CGSizeMake(raw.x, raw.y), scr.size);
+        CGPoint c = CGPointMake(f.width, f.height);
+        if (!DMSMCenterSane(c, NO)) { DMSMAPIFail(@"centerInBounds:", [@"not a center: " stringByAppendingString:NSStringFromCGPoint(c)]); return NO; }
+        if (out) *out = c;
+        return YES;
+    }
     SEL sel = NSSelectorFromString(@"normalizedCenter");
     if (!DMSMSigOK(attrs, sel, DMSMSigCenter(), "normalizedCenter")) return NO;
     CGPoint c = ((CGPoint (*)(id, SEL))objc_msgSend)(attrs, sel);
@@ -169,6 +280,18 @@ static BOOL DMSMAttrCenter(id attrs, CGPoint *out) {
 static id DMSMAttrWithSize(id attrs, DMSMAttributedSize s) {
     if (!DMSMIsAttrs(attrs)) return nil;
     if (!DMSMSizeWriteSane(s)) { DMSMAPIFail(@"attributesByModifyingAttributedSize:", [@"refused to hand over " stringByAppendingString:DMSMSizeText(s)]); return nil; }
+    if (DMSMSizedModel()) {   // (fractions of the screen as it is now: full width and height (type 3) = 1 x 1, a size of another reference rescaled)
+        CGRect scr = DMSMMainScreenBounds();
+        if (CGRectIsEmpty(scr)) { DMSMAPIFail(@"attributesByModifyingSize:", @"no screen to measure it in"); return nil; }
+        CGSize f = s.normalizedSize;
+        if (s.type == 3) f = CGSizeMake(1.0, 1.0);
+        else if (s.referenceBounds.size.width > 0 && s.referenceBounds.size.height > 0)
+            f = CGSizeMake(s.normalizedSize.width * s.referenceBounds.size.width / scr.size.width, s.normalizedSize.height * s.referenceBounds.size.height / scr.size.height);
+        SEL put = NSSelectorFromString(@"attributesByModifyingSize:");
+        if (!DMSMSigOK(attrs, put, DMSMSigWithCenter(), "attributesByModifyingSize:")) return nil;
+        id r = ((id (*)(id, SEL, CGSize))objc_msgSend)(attrs, put, DMSMSizedValue(f, scr.size));
+        return DMSMIsAttrs(r) ? r : nil;
+    }
     SEL sel = NSSelectorFromString(@"attributesByModifyingAttributedSize:");
     if (!DMSMSigOK(attrs, sel, DMSMSigWithSize(), "attributesByModifyingAttributedSize:")) return nil;
     id r = ((id (*)(id, SEL, DMSMAttributedSize))objc_msgSend)(attrs, sel, s);
@@ -177,6 +300,15 @@ static id DMSMAttrWithSize(id attrs, DMSMAttributedSize s) {
 static id DMSMAttrWithCenter(id attrs, CGPoint c) {
     if (!DMSMIsAttrs(attrs)) return nil;
     if (!DMSMCenterSane(c, YES)) { DMSMAPIFail(@"attributesByModifyingNormalizedCenter:", [@"refused to hand over " stringByAppendingString:NSStringFromCGPoint(c)]); return nil; }
+    if (DMSMSizedModel()) {
+        CGRect scr = DMSMMainScreenBounds();
+        if (CGRectIsEmpty(scr)) { DMSMAPIFail(@"attributesByModifyingCenter:", @"no screen to measure it in"); return nil; }
+        CGSize v = DMSMSizedValue(CGSizeMake(c.x, c.y), scr.size);
+        SEL put = NSSelectorFromString(@"attributesByModifyingCenter:");
+        if (!DMSMSigOK(attrs, put, DMSMSigWithCenter(), "attributesByModifyingCenter:")) return nil;
+        id r = ((id (*)(id, SEL, CGPoint))objc_msgSend)(attrs, put, CGPointMake(v.width, v.height));
+        return DMSMIsAttrs(r) ? r : nil;
+    }
     SEL sel = NSSelectorFromString(@"attributesByModifyingNormalizedCenter:");
     if (!DMSMSigOK(attrs, sel, DMSMSigWithCenter(), "attributesByModifyingNormalizedCenter:")) return nil;
     id r = ((id (*)(id, SEL, CGPoint))objc_msgSend)(attrs, sel, c);
@@ -430,8 +562,13 @@ static BOOL DMSMRequestPlan(id identity, BOOL onMain, NSString *label, NSArray<N
 // engine runs without it -- rows with the same feature are alternatives (one is enough; the code asks DMSMRowPassed which one to use), and a
 // missing optional row is logged once and listed in the verdict ("optional") and in Report a Problem. ivar: the row is an instance variable
 // (sel = its name) whose type encoding must start with this.
+// variant: "<group>/<name>" -- the same job done by another set of methods on other iPadOS versions (sm-160: iPadOS 16.0 and 16.1 keep a window's
+// size and centre as plain values, and 16.0 has its own layout pass and size grid). A group is there when ALL rows of one of its variants are; the
+// first variant in table order that is there is the one used (the one built and tested on 16.7.7 comes first, so 16.2+ always use it), the others
+// are adapters. No variant there = the first variant's rows are the core problems. The code asks DMSMVariantIs which variant the check chose --
+// never the iPadOS version; and only the chosen variant's hooks are installed and checked to have gone in.
 enum { DMSMNeedCore = 0, DMSMNeedOptional = 1 };
-typedef struct { const char *cls; const char *sel; BOOL classMethod; BOOL hooked; NSString *(*sig)(void); const char *alt; int layout; int need; const char *feature; const char *ivar; } DMSMNeed;
+typedef struct { const char *cls; const char *sel; BOOL classMethod; BOOL hooked; NSString *(*sig)(void); const char *alt; int layout; int need; const char *feature; const char *ivar; const char *variant; } DMSMNeed;
 DMSM_SIG(DMSMSigVoid, @encode(void))
 DMSM_SIG(DMSMSigDouble, @encode(double))
 DMSM_SIG(DMSMSigVoidBool, @encode(void), @encode(BOOL))
@@ -453,6 +590,14 @@ DMSM_SIG(DMSMSigPointInside, @encode(BOOL), @encode(CGPoint), @encode(id))
 DMSM_SIG(DMSMSigHitTest, @encode(id), @encode(CGPoint), @encode(id))
 DMSM_SIG(DMSMSigGridSize, @encode(CGSize), @encode(CGSize), @encode(id), @encode(id), @encode(CGRect))
 DMSM_SIG(DMSMSigStripHidden, @encode(BOOL), @encode(id), @encode(long long))
+// (iPadOS 16.0 / 16.1, from their dyld_shared_caches: 20A371 and 20A5349b for 16.0, 20B82 for 16.1 -- sm-160)
+DMSM_SIG(DMSMSigInitialStageFrame, @encode(CGRect), @encode(id), @encode(long long), @encode(id), @encode(double), @encode(double), @encode(CGRect), @encode(BOOL), @encode(BOOL))
+DMSM_SIG(DMSMSigPreferredModel, @encode(id), @encode(id), @encode(CGRect), @encode(id), @encode(id), @encode(id))   // -modelForPreferredModel:initialStageFrame:...
+DMSM_SIG(DMSMSigVoid5, @encode(void), @encode(id), @encode(id), @encode(id), @encode(id), @encode(id))
+DMSM_SIG(DMSMSigGridObject, @encode(CGSize), @encode(CGSize), @encode(CGRect), @encode(long long), @encode(id), @encode(double), @encode(id))   // -[SBDisplayItemLayoutGrid nearestGridSizeForProposedSize:...]
+DMSM_SIG(DMSMSigMinGrid, @encode(CGSize), @encode(CGRect), @encode(long long), @encode(id), @encode(double), @encode(id))   // -[SBDisplayItemLayoutGrid minGridSizeForBounds:...]
+DMSM_SIG(DMSMSigAutoLayoutIfNeeded, @encode(id), @encode(id), @encode(long long), @encode(id), @encode(double), @encode(double), @encode(id), @encode(id), @encode(CGRect), @encode(BOOL), @encode(BOOL))   // -[SBDisplayItemLayoutAttributesCalculator _appLayoutByPerformingAutoLayoutIfNeededInAppLayout:...]
+DMSM_SIG(DMSMSigVoidRect, @encode(void), @encode(CGRect))                              // -[SBChamoisOverlappingModel setBoundingBox:]
 // (iPadOS 17 layout engine, SBContinuousExposeAutoLayout*: signatures as in the 17.0.3 runtime headers, MTACS/iOS-17-Runtime-Headers)
 DMSM_SIG(DMSMSigCGSize, @encode(CGSize))                                                                 // -[SBContinuousExposeAutoLayoutItem size]
 DMSM_SIG(DMSMSigVoidPoint, @encode(void), @encode(CGPoint))                                              // -setPosition:
@@ -465,10 +610,15 @@ static const DMSMNeed kSMNeeds[] = {
     {"SBDisplayItemLayoutAttributes", "init", NO, NO, NULL},
     {"SBDisplayItemLayoutAttributes", "lastInteractionTime", NO, NO, DMSMSigTime},
     {"SBDisplayItemLayoutAttributes", "sizingPolicy", NO, NO, DMSMSigTime},
-    {"SBDisplayItemLayoutAttributes", "attributedSize", NO, NO, DMSMSigSize},
-    {"SBDisplayItemLayoutAttributes", "normalizedCenter", NO, NO, DMSMSigCenter},
-    {"SBDisplayItemLayoutAttributes", "attributesByModifyingAttributedSize:", NO, NO, DMSMSigWithSize},
-    {"SBDisplayItemLayoutAttributes", "attributesByModifyingNormalizedCenter:", NO, NO, DMSMSigWithCenter},
+    {"SBDisplayItemLayoutAttributes", "attributedSize", NO, NO, DMSMSigSize, NULL, 0, 0, NULL, NULL, "window model/attributed"},
+    {"SBDisplayItemLayoutAttributes", "normalizedCenter", NO, NO, DMSMSigCenter, NULL, 0, 0, NULL, NULL, "window model/attributed"},
+    {"SBDisplayItemLayoutAttributes", "attributesByModifyingAttributedSize:", NO, NO, DMSMSigWithSize, NULL, 0, 0, NULL, NULL, "window model/attributed"},
+    {"SBDisplayItemLayoutAttributes", "attributesByModifyingNormalizedCenter:", NO, NO, DMSMSigWithCenter, NULL, 0, 0, NULL, NULL, "window model/attributed"},
+    // (iPadOS 16.0 / 16.1: a plain size and centre, each a fraction of the bounds it is read in when small enough, else points -- DMSMAttr*)
+    {"SBDisplayItemLayoutAttributes", "sizeInBounds:", NO, NO, DMSMSigInBounds, NULL, 0, 0, NULL, NULL, "window model/sized"},
+    {"SBDisplayItemLayoutAttributes", "centerInBounds:", NO, NO, DMSMSigInBounds, NULL, 0, 0, NULL, NULL, "window model/sized"},
+    {"SBDisplayItemLayoutAttributes", "attributesByModifyingSize:", NO, NO, DMSMSigWithCenter, NULL, 0, 0, NULL, NULL, "window model/sized"},
+    {"SBDisplayItemLayoutAttributes", "attributesByModifyingCenter:", NO, NO, DMSMSigWithCenter, NULL, 0, 0, NULL, NULL, "window model/sized"},
     {"SBDisplayItemLayoutAttributes", "attributesByModifyingSizingPolicy:", NO, NO, DMSMSigWithLong},
     {"SBDisplayItemLayoutAttributes", "attributesByModifyingLastInteractionTime:", NO, NO, DMSMSigWithLong},
     {"SBAppLayout", "itemsToLayoutAttributesMap", NO, NO, DMSMSigObj},
@@ -509,24 +659,38 @@ static const DMSMNeed kSMNeeds[] = {
     {"SBFluidSwitcherViewController", "_keyboardWillHide:", NO, YES, DMSMSigVoidObj},
     {"SBFluidSwitcherViewController", "_updateSoftwareKeyboardVisibleWithKeyboardShowing:", NO, YES, DMSMSigVoidBool},
     {"SBFluidSwitcherViewController", "prefersStripHidden", NO, YES, DMSMSigBool},
-    {"SBSwitcherChamoisLayoutAttributes", "gridWidths", NO, YES, DMSMSigObj},
-    {"SBSwitcherChamoisLayoutAttributes", "gridHeights", NO, YES, DMSMSigObj},
+    {"SBSwitcherChamoisLayoutAttributes", "gridWidths", NO, YES, DMSMSigObj, NULL, 0, 0, NULL, NULL, "size grid/lists"},
+    {"SBSwitcherChamoisLayoutAttributes", "gridHeights", NO, YES, DMSMSigObj, NULL, 0, 0, NULL, NULL, "size grid/lists"},
     {"SBSwitcherChamoisLayoutAttributes", "stageOccludedAppScale", NO, YES, DMSMSigDouble},
     {"SBSwitcherChamoisLayoutAttributes", "stageOcclusionDodgingPeekScale", NO, YES, DMSMSigDouble},
     {"SBSwitcherChamoisLayoutAttributes", "stageCornerRaddii", NO, YES, DMSMSigDouble, "stageCornerRadii", 0},   // (renamed stageCornerRadii in 18.2)
     {"SBSwitcherChamoisLayoutAttributes", "maximumWindowWidthForOverlapping", NO, YES, DMSMSigDouble},
     {"SBSwitcherChamoisLayoutAttributes", "maximumWindowHeightWithDock", NO, YES, DMSMSigDouble},
-    {"SBChamoisOverlappingController", "_stageAreaForModel:chamoisLayoutAttributes:floatingDockHeight:bounds:prefersStripHidden:prefersDockHidden:widthThresholdToHideContinuousExposeStrip:", NO, YES, DMSMSigStageArea, NULL, 16},
-    {"SBChamoisOverlappingController", "_modelByPerformingAutoLayoutForModel:chamoisLayoutAttributes:draggingItem:modelBeforeDragging:floatingDockHeight:bounds:screenScale:prefersStripHidden:prefersDockHidden:stageInset:", NO, YES, DMSMSigAutoLayout, NULL, 16},
-    {"SBChamoisOverlappingController", "_compactSpacingHorizontallyForModel:withColumns:chamoisLayoutAttributes:", NO, YES, DMSMSigVoid3, NULL, 16},
-    {"SBChamoisOverlappingController", "_compactSpacingVerticallyForModel:withColumns:chamoisLayoutAttributes:", NO, YES, DMSMSigVoid3, NULL, 16},
-    {"SBChamoisOverlappingController", "_expandSpacingHorizontallyForModel:withColumns:modelBeforeDragging:chamoisLayoutAttributes:draggingItem:stageArea:", NO, YES, DMSMSigExpandH, NULL, 16},
-    {"SBChamoisOverlappingController", "_expandSpacingVerticallyForModel:withColumns:chamoisLayoutAttributes:stageArea:", NO, YES, DMSMSigExpandV, NULL, 16},
-    {"SBChamoisOverlappingController", "_horizontallyCenterModel:stageArea:", NO, YES, DMSMSigCenterH, NULL, 16},
-    {"SBChamoisOverlappingController", "_verticallyCenterModel:withColumns:stageArea:", NO, YES, DMSMSigCenterV, NULL, 16},
-    {"SBChamoisOverlappingController", "_dodgeFullyOccludedWindowsToNearestVisibleEdgeInModel:chamoisLayoutAttributes:draggingItem:bounds:", NO, YES, DMSMSigDodge, NULL, 16},
+    {"SBChamoisOverlappingController", "_stageAreaForModel:chamoisLayoutAttributes:floatingDockHeight:bounds:prefersStripHidden:prefersDockHidden:widthThresholdToHideContinuousExposeStrip:", NO, YES, DMSMSigStageArea, NULL, 16, 0, NULL, NULL, "auto layout/16.1"},
+    {"SBChamoisOverlappingController", "_modelByPerformingAutoLayoutForModel:chamoisLayoutAttributes:draggingItem:modelBeforeDragging:floatingDockHeight:bounds:screenScale:prefersStripHidden:prefersDockHidden:stageInset:", NO, YES, DMSMSigAutoLayout, NULL, 16, 0, NULL, NULL, "auto layout/16.1"},
+    {"SBChamoisOverlappingController", "_compactSpacingHorizontallyForModel:withColumns:chamoisLayoutAttributes:", NO, YES, DMSMSigVoid3, NULL, 16, 0, NULL, NULL, "auto layout/16.1"},
+    {"SBChamoisOverlappingController", "_compactSpacingVerticallyForModel:withColumns:chamoisLayoutAttributes:", NO, YES, DMSMSigVoid3, NULL, 16, 0, NULL, NULL, "auto layout/16.1"},
+    {"SBChamoisOverlappingController", "_expandSpacingHorizontallyForModel:withColumns:modelBeforeDragging:chamoisLayoutAttributes:draggingItem:stageArea:", NO, YES, DMSMSigExpandH, NULL, 16, 0, NULL, NULL, "auto layout/16.1"},
+    {"SBChamoisOverlappingController", "_expandSpacingVerticallyForModel:withColumns:chamoisLayoutAttributes:stageArea:", NO, YES, DMSMSigExpandV, NULL, 16, 0, NULL, NULL, "auto layout/16.1"},
+    {"SBChamoisOverlappingController", "_horizontallyCenterModel:stageArea:", NO, YES, DMSMSigCenterH, NULL, 16, 0, NULL, NULL, "auto layout/16.1"},
+    {"SBChamoisOverlappingController", "_verticallyCenterModel:withColumns:stageArea:", NO, YES, DMSMSigCenterV, NULL, 16, 0, NULL, NULL, "auto layout/16.1"},
+    {"SBChamoisOverlappingController", "_dodgeFullyOccludedWindowsToNearestVisibleEdgeInModel:chamoisLayoutAttributes:draggingItem:bounds:", NO, YES, DMSMSigDodge, NULL, 16, 0, NULL, NULL, "auto layout/16.1"},
     {"SBChamoisOverlappingController", "_snapPositionToNearestEdgesIfNecessary:draggingItem:", NO, YES, DMSMSigVoidObjObj, NULL, 16},
     {"SBMutableChamoisOverlappingModel", "setCenter:forItem:", NO, YES, DMSMSigSetCenter, NULL, 16},
+    // (iPadOS 16.0's layout pass, %group SMLayout160: the same steps under other names and argument lists, the stage frame from the calculator)
+    {"SBDisplayItemLayoutAttributesCalculator", "initialStageFrameForAppLayout:containerOrientation:chamoisLayoutAttributes:floatingDockHeight:screenScale:bounds:prefersStripHidden:prefersDockHidden:", NO, YES, DMSMSigInitialStageFrame, NULL, 16, 0, NULL, NULL, "auto layout/16.0"},
+    {"SBChamoisOverlappingController", "modelForPreferredModel:initialStageFrame:layoutAttributes:draggingItem:modelBeforeDragging:", NO, YES, DMSMSigPreferredModel, NULL, 16, 0, NULL, NULL, "auto layout/16.0"},
+    {"SBChamoisOverlappingController", "_compactSpacingHorizontallyForModel:withColumns:layoutAttributes:", NO, YES, DMSMSigVoid3, NULL, 16, 0, NULL, NULL, "auto layout/16.0"},
+    {"SBChamoisOverlappingController", "_compactSpacingVerticallyForModel:withColumns:layoutAttributes:", NO, YES, DMSMSigVoid3, NULL, 16, 0, NULL, NULL, "auto layout/16.0"},
+    {"SBChamoisOverlappingController", "_expandSpacingHorizontallyForModel:withColumns:previousResolvedModelIfAny:layoutAttributes:draggingItem:", NO, YES, DMSMSigVoid5, NULL, 16, 0, NULL, NULL, "auto layout/16.0"},
+    {"SBChamoisOverlappingController", "_expandSpacingVerticallyForModel:withColumns:layoutAttributes:", NO, YES, DMSMSigVoid3, NULL, 16, 0, NULL, NULL, "auto layout/16.0"},
+    {"SBChamoisOverlappingController", "_horizontallyCenterModel:", NO, YES, DMSMSigVoidObj, NULL, 16, 0, NULL, NULL, "auto layout/16.0"},
+    {"SBChamoisOverlappingController", "_verticallyCenterModel:withColumns:", NO, YES, DMSMSigVoidObjObj, NULL, 16, 0, NULL, NULL, "auto layout/16.0"},
+    {"SBChamoisOverlappingController", "_dodgeFullyOccludedWindowsToNearestVisibleEdgeInModel:layoutAttributes:draggingItem:", NO, YES, DMSMSigVoid3, NULL, 16, 0, NULL, NULL, "auto layout/16.0"},
+    // (... and 16.0's group shift after that pass: the calculator's run, the bounding box it moves -- DMSMShift160X)
+    {"SBDisplayItemLayoutAttributesCalculator", "_appLayoutByPerformingAutoLayoutIfNeededInAppLayout:containerOrientation:chamoisLayoutAttributes:floatingDockHeight:screenScale:draggingItem:overlappingModelBeforeDragging:bounds:prefersStripHidden:prefersDockHidden:", NO, YES, DMSMSigAutoLayoutIfNeeded, NULL, 16, 0, NULL, NULL, "auto layout/16.0"},
+    {"SBChamoisOverlappingModel", "setBoundingBox:", NO, YES, DMSMSigVoidRect, NULL, 16, 0, NULL, NULL, "auto layout/16.0"},
+    {"SBChamoisOverlappingModel", "boundingBox", NO, NO, DMSMSigRect, NULL, 16, 0, NULL, NULL, "auto layout/16.0"},
     {"SBWorkspaceApplicationSceneTransitionContext", "finalize", NO, YES, DMSMSigVoid},
     {"SBAppResizeGrabberView", "setAlpha:", NO, YES, DMSMSigVoidDouble},
     {"SBAppResizeGrabberView", "layoutSubviews", NO, YES, DMSMSigVoid},
@@ -534,13 +698,18 @@ static const DMSMNeed kSMNeeds[] = {
     {"SBAppSwitcherPageView", "maskedCorners", NO, NO, DMSMSigULL},
     {"SBAppSwitcherPageView", "layoutSubviews", NO, YES, DMSMSigVoid},
     {"SBFluidSwitcherItemContainer", "layoutSubviews", NO, YES, DMSMSigVoid},
+    // (both bottom corners take a touch with our resize handles: hooked in SMEngine since 1.1.7, a row since 1.3.4 -- 16.0-16.7.7 all have it, 1.3.4 re-check F3)
+    {"SBFluidSwitcherItemContainer", "allowedTouchResizeCorners", NO, YES, DMSMSigULL, NULL, 16},
     {"SBReusableSnapshotItemContainer", "layoutSubviews", NO, YES, DMSMSigVoid},
     {"SBReusableSnapshotItemContainer", "setAccessibilityIdentifier:", NO, YES, DMSMSigVoidObj},
     {"SBReusableSnapshotItemContainer", "didMoveToWindow", NO, YES, DMSMSigVoid},
     {"SBReusableSnapshotItemContainer", "pointInside:withEvent:", NO, YES, DMSMSigPointInside},
     {"SBReusableSnapshotItemContainer", "hitTest:withEvent:", NO, YES, DMSMSigHitTest},
     {"SBTopAffordanceDotsView", "setAlpha:", NO, YES, DMSMSigVoidDouble},
-    {"SBSwitcherChamoisSettings", "_nearestGridSizeForSize:gridWidths:gridHeights:bounds:", NO, YES, DMSMSigGridSize},
+    {"SBSwitcherChamoisSettings", "_nearestGridSizeForSize:gridWidths:gridHeights:bounds:", NO, YES, DMSMSigGridSize, NULL, 0, 0, NULL, NULL, "size grid/lists"},
+    // (iPadOS 16.0: the window sizes are rounded by a grid object instead -- %group SMGrid160)
+    {"SBDisplayItemLayoutGrid", "nearestGridSizeForProposedSize:inBounds:contentOrientation:layoutRestrictionInfo:screenScale:chamoisLayoutAttributes:", NO, YES, DMSMSigGridObject, NULL, 0, 0, NULL, NULL, "size grid/grid object"},
+    {"SBDisplayItemLayoutGrid", "minGridSizeForBounds:contentOrientation:layoutRestrictionInfo:screenScale:chamoisLayoutAttributes:", NO, NO, DMSMSigMinGrid, NULL, 0, 0, NULL, NULL, "size grid/grid object"},
     {"SBSwitcherChamoisSettings", "_statusBarHeight", NO, YES, DMSMSigDouble},
     {"SBSwitcherChamoisSettings", "_shouldPreferStripHiddenForWindowScene:interfaceOrientation:", NO, YES, DMSMSigStripHidden},
     // iPadOS 17's layout engine (%group SMLayout17): the objects our hooks read and write, then the hooks. Read from the 17.0.3 headers and the
@@ -593,6 +762,54 @@ static BOOL gSMRowPassed[sizeof(kSMNeeds) / sizeof(kSMNeeds[0])];
 static BOOL gSMRowsKnown = NO;
 static NSArray<NSString *> *gSMCheckOptional;   // (the live check's optional rows that are missing or different, each "<row problem> (<feature>)")
 static NSArray<NSString *> *gSMFeaturesOff;     // (optional features none of whose alternatives is here)
+static NSDictionary<NSString *, NSString *> *gSMVariants;   // (group -> the variant the live check chose; before it ran: each group's first variant)
+static double gSMSizedThreshold = 0;   // (window model "sized": the largest value Apple reads as a fraction of its bounds -- 1 on 16.0, 10 on 16.1; probed)
+// "<group>/<name>" -> its parts.
+static NSString *DMSMVariantGroup(const char *v) { const char *sl = strchr(v, '/'); return sl ? [[NSString alloc] initWithBytes:v length:(NSUInteger)(sl - v) encoding:NSUTF8StringEncoding] : @(v); }
+static NSString *DMSMVariantName(const char *v) { const char *sl = strchr(v, '/'); return sl ? @(sl + 1) : @""; }
+// The group's first variant in table order: the one built and tested on 16.7.7.
+static NSString *DMSMFirstVariant(NSString *group) {
+    for (size_t i = 0; i < kSMNeedsCount; i++) if (kSMNeeds[i].variant && [DMSMVariantGroup(kSMNeeds[i].variant) isEqualToString:group]) return DMSMVariantName(kSMNeeds[i].variant);
+    return nil;
+}
+// The variant the check chose for this group (before the live check: the group's first one).
+static NSString *DMSMVariantOf(NSString *group) { return gSMVariants[group] ?: DMSMFirstVariant(group); }
+static BOOL DMSMVariantIs(const char *group, const char *name) { return [DMSMVariantOf(@(group)) isEqualToString:@(name)]; }
+static BOOL gSMSizedChosen = NO;   // (DMSMVariantIs "window model" "sized", kept by the live check: the wrappers ask on every size and centre)
+static BOOL DMSMSizedModel(void) { return gSMSizedChosen; }
+static double DMSMSizedReadThreshold(void) { return gSMSizedThreshold; }
+// A row of this layout engine that is in use: not one of a group's variants the check did not choose.
+static BOOL DMSMRowInUse(const DMSMNeed *n, int gen) {
+    if (!DMSMRowActive(n, gen)) return NO;
+    return !n->variant || [DMSMVariantOf(DMSMVariantGroup(n->variant)) isEqualToString:DMSMVariantName(n->variant)];
+}
+// Window model "sized" (iPadOS 16.0 / 16.1): what Apple's own methods make of a value, asked of a fresh attributes object (no other effect). A size
+// of 0.5 x 0.25 read in 100 x 100 bounds must give 50 x 25 (a fraction), 200 x 300 must stay 200 x 300 (points), and 5 x 5 tells the edge: 500 x 500
+// when 5 still counts as a fraction (16.1 reads up to 10 so), 5 x 5 when it counts as points (16.0: up to 1). The centre the same way. Anything
+// else: 0, and the variant is not used.
+static double DMSMProbeSizedThreshold(void) {
+    Class c = objc_getClass("SBDisplayItemLayoutAttributes");
+    SEL ws = sel_registerName("attributesByModifyingSize:"), wc = sel_registerName("attributesByModifyingCenter:");
+    SEL gs = sel_registerName("sizeInBounds:"), gc = sel_registerName("centerInBounds:");
+    if (!c || ![c instancesRespondToSelector:ws] || ![c instancesRespondToSelector:wc] || ![c instancesRespondToSelector:gs] || ![c instancesRespondToSelector:gc]) return 0;
+    double t = 0;
+    @try {
+        id a = [[c alloc] init];
+        if (!a) return 0;
+        CGRect b = CGRectMake(0, 0, 100, 100);
+        id (*withSize)(id, SEL, CGSize) = (id (*)(id, SEL, CGSize))objc_msgSend;
+        id (*withCenter)(id, SEL, CGPoint) = (id (*)(id, SEL, CGPoint))objc_msgSend;
+        CGSize (*sizeIn)(id, SEL, CGRect) = (CGSize (*)(id, SEL, CGRect))objc_msgSend;
+        CGPoint (*centerIn)(id, SEL, CGRect) = (CGPoint (*)(id, SEL, CGRect))objc_msgSend;
+        BOOL (^near)(double, double) = ^BOOL(double x, double want) { return isfinite(x) && fabs(x - want) < 0.001; };
+        CGSize sf = sizeIn(withSize(a, ws, CGSizeMake(0.5, 0.25)), gs, b), sp = sizeIn(withSize(a, ws, CGSizeMake(200, 300)), gs, b), s5 = sizeIn(withSize(a, ws, CGSizeMake(5, 5)), gs, b);
+        CGPoint cf = centerIn(withCenter(a, wc, CGPointMake(0.5, 0.25)), gc, b), cp = centerIn(withCenter(a, wc, CGPointMake(200, 300)), gc, b), c5 = centerIn(withCenter(a, wc, CGPointMake(5, 5)), gc, b);
+        BOOL plain = near(sf.width, 50) && near(sf.height, 25) && near(sp.width, 200) && near(sp.height, 300) && near(cf.x, 50) && near(cf.y, 25) && near(cp.x, 200) && near(cp.y, 300);
+        if (plain && near(s5.width, 500) && near(s5.height, 500) && near(c5.x, 500) && near(c5.y, 500)) t = 10;
+        else if (plain && near(s5.width, 5) && near(s5.height, 5) && near(c5.x, 5) && near(c5.y, 5)) t = 1;
+    } @catch (id e) { t = 0; }
+    return t;
+}
 // One row: nil when it is there as we use it, else what is wrong ("-[cls sel] missing", "... is X, we use Y", "ivar ... missing").
 // *compared: the row's method (or ivar) was found and its type looked at (what the "verified" count has always counted).
 static NSString *DMSMRowProblem(const DMSMNeed *n, NSString *simulate, BOOL *compared) {
@@ -625,30 +842,84 @@ static NSString *DMSMRowProblem(const DMSMNeed *n, NSString *simulate, BOOL *com
 // features left with none of their alternatives to *featuresOff, each row's answer to rowPassed (NULL: not wanted). simulate (debug):
 // "selector" / "encoding" pretend one core row is missing / different, "optional" that -appLayoutByRemovingItemInLayoutRole: is missing (as on
 // iPadOS 16.2-16.3); "layout16" / "layout17" check that layout engine's table.
-static NSArray<NSString *> *DMSMCheckAPIFull(NSString *simulate, NSUInteger *checked, NSArray<NSString *> **optional, NSArray<NSString *> **featuresOff, BOOL *rowPassed) {
+static NSArray<NSString *> *DMSMCheckAPIFull(NSString *simulate, NSUInteger *checked, NSArray<NSString *> **optional, NSArray<NSString *> **featuresOff, BOOL *rowPassed,
+                                             NSDictionary<NSString *, NSString *> **variants, double *sizedThreshold) {
     NSMutableArray *bad = [NSMutableArray array], *opt = [NSMutableArray array];
     NSMutableDictionary<NSString *, NSNumber *> *feature = [NSMutableDictionary dictionary];   // (feature -> one of its alternatives passed)
     NSMutableArray<NSString *> *featureOrder = [NSMutableArray array];
+    NSMutableDictionary<NSString *, NSMutableArray<NSString *> *> *groupVariants = [NSMutableDictionary dictionary];   // (group -> its variants, table order)
+    NSMutableArray<NSString *> *groupOrder = [NSMutableArray array];
+    NSMutableDictionary<NSString *, NSNumber *> *variantOK = [NSMutableDictionary dictionary];   // ("group/variant" -> all its rows there so far)
+    NSMutableDictionary<NSString *, NSMutableArray<NSString *> *> *variantProblems = [NSMutableDictionary dictionary];
+    if (sizedThreshold) *sizedThreshold = 0;
     int gen = [simulate hasPrefix:@"layout"] ? DMSMLayoutGenFor(simulate) : DMSMLayoutGen();
+    BOOL comparedRow[sizeof(kSMNeeds) / sizeof(kSMNeeds[0])];   // (each row found and its type looked at: counted below for the ways in use only)
     for (size_t i = 0; i < kSMNeedsCount; i++) {
         DMSMNeed n = kSMNeeds[i];
+        comparedRow[i] = NO;
         if (rowPassed) rowPassed[i] = NO;
         if (!DMSMRowActive(&n, gen)) continue;
         BOOL compared = NO;
         NSString *problem = DMSMRowProblem(&n, simulate, &compared);
+        comparedRow[i] = compared;
         if (rowPassed) rowPassed[i] = problem == nil;
-        if (n.need == DMSMNeedOptional) {
+        if (n.variant) {   // (one of a group's variants: judged as a whole below)
+            NSString *key = @(n.variant), *g = DMSMVariantGroup(n.variant), *vn = DMSMVariantName(n.variant);
+            if (!groupVariants[g]) { groupVariants[g] = [NSMutableArray array]; [groupOrder addObject:g]; }
+            if (![groupVariants[g] containsObject:vn]) [groupVariants[g] addObject:vn];
+            if (!variantOK[key]) variantOK[key] = @YES;
+            if (problem) {
+                variantOK[key] = @NO;
+                if (!variantProblems[key]) variantProblems[key] = [NSMutableArray array];
+                [variantProblems[key] addObject:problem];
+            }
+        } else if (n.need == DMSMNeedOptional) {
             NSString *f = n.feature ? @(n.feature) : @(n.sel);
             if (!feature[f]) [featureOrder addObject:f];
             feature[f] = @(feature[f].boolValue || problem == nil);
             if (problem) [opt addObject:[NSString stringWithFormat:@"%@ (%@)", problem, f]];
         } else if (problem && ![bad containsObject:problem]) [bad addObject:problem];
-        if (checked && compared) (*checked)++;
     }
     NSMutableArray *off = [NSMutableArray array];
     for (NSString *f in featureOrder) if (!feature[f].boolValue) [off addObject:f];
     if (optional) *optional = opt;
     if (featuresOff) *featuresOff = off;
+    // each group: the first variant (table order) whose rows are all there -- for the "sized" window model also Apple's reading of its values; none:
+    // the first variant's problems are core problems
+    NSMutableDictionary<NSString *, NSString *> *chosen = [NSMutableDictionary dictionary];
+    for (NSString *g in groupOrder) {
+        NSString *pick = nil;
+        for (NSString *vn in groupVariants[g]) {
+            NSString *key = [NSString stringWithFormat:@"%@/%@", g, vn];
+            BOOL ok = [variantOK[key] boolValue];
+            if (ok && [key isEqualToString:@"window model/sized"]) {
+                double t = DMSMProbeSizedThreshold();
+                if (sizedThreshold) *sizedThreshold = t;
+                if (t <= 0) { ok = NO; variantProblems[key] = [NSMutableArray arrayWithObject:@"window model sized: Apple's size and centre do not read back as expected"]; }
+            }
+            if (ok) { pick = vn; break; }
+        }
+        if (pick) { chosen[g] = pick; continue; }
+        NSString *first = [NSString stringWithFormat:@"%@/%@", g, groupVariants[g].firstObject];
+        for (NSString *p in variantProblems[first]) if (![bad containsObject:p]) [bad addObject:p];
+    }
+    if (variants) *variants = chosen;
+    // (the count: the rows of the ways this iPad's engine uses -- every row without variants, the chosen variant's, or the first variant's where none
+    //  is complete -- found and their type looked at. Rows of the other ways are checked but not counted, so the number keeps its meaning whatever
+    //  other ways the table knows: 16.7.7 counts 76 as in 1.3.3; the first 1.3.4 builds counted 78 and 81 there through 16.0's rows 16.7.7 also has)
+    if (checked) {
+        NSUInteger c = 0;
+        for (size_t i = 0; i < kSMNeedsCount; i++) {
+            if (!comparedRow[i]) continue;
+            const char *v = kSMNeeds[i].variant;
+            if (v) {
+                NSString *g = DMSMVariantGroup(v), *use = chosen[g] ?: groupVariants[g].firstObject;
+                if (![use isEqualToString:DMSMVariantName(v)]) continue;
+            }
+            c++;
+        }
+        *checked = c;
+    }
     // (the struct we read and hand back by value: its size in the method signature matches ours -- the byte count, on top of the shape above)
     Class ac = objc_getClass("SBDisplayItemLayoutAttributes");
     Method sm = ac ? class_getInstanceMethod(ac, sel_registerName("attributedSize")) : NULL;
@@ -661,14 +932,48 @@ static NSArray<NSString *> *DMSMCheckAPIFull(NSString *simulate, NSUInteger *che
     return bad;
 }
 // The core rows' problems only, nothing recorded (the debug trigger's re-runs, the Mac tests).
-static __attribute__((unused)) NSArray<NSString *> *DMSMCheckAPI(NSString *simulate, NSUInteger *checked) { return DMSMCheckAPIFull(simulate, checked, NULL, NULL, NULL); }
+static __attribute__((unused)) NSArray<NSString *> *DMSMCheckAPI(NSString *simulate, NSUInteger *checked) { return DMSMCheckAPIFull(simulate, checked, NULL, NULL, NULL, NULL, NULL); }
+// The groups where the check chose another variant than the first (the tested) one: "group: variant", e.g. "window model: sized" (iPadOS 16.0 /
+// 16.1). Empty on 16.2 and later. None of these ways has run on a device; Report a Problem names them (sm-160).
+static NSArray<NSString *> *DMSMOtherWays(NSDictionary<NSString *, NSString *> *variants) {
+    NSMutableArray *a = [NSMutableArray array];
+    for (NSString *g in [variants.allKeys sortedArrayUsingSelector:@selector(compare:)]) if (![variants[g] isEqualToString:DMSMFirstVariant(g)]) [a addObject:[NSString stringWithFormat:@"%@: %@", g, variants[g]]];
+    return a;
+}
+// The other ways Settings offers like the tested ones, without the "(Untested)" label and its note: iPadOS 16.1, whose only other way is its window
+// model, is offered like 16.2 and 16.3 (the owner's decision, 4 Oct 2026). Any other way -- 16.0's layout pass and size grid -- marks Stage Manager
+// untested, and so would a way added later until it is decided otherwise.
+static const char *const kSMWaysOfferedNormally[] = {"window model/sized"};
+// YES when the check chose a way Settings must offer as untested (iPadOS 16.0).
+static BOOL DMSMWaysUntested(NSDictionary<NSString *, NSString *> *variants) {
+    for (NSString *g in variants) {
+        if ([variants[g] isEqualToString:DMSMFirstVariant(g)]) continue;
+        NSString *way = [NSString stringWithFormat:@"%@/%@", g, variants[g]];
+        BOOL normal = NO;
+        for (size_t i = 0; i < sizeof(kSMWaysOfferedNormally) / sizeof(kSMWaysOfferedNormally[0]); i++) if ([way isEqualToString:@(kSMWaysOfferedNormally[i])]) normal = YES;
+        if (!normal) return YES;
+    }
+    return NO;
+}
+// The chosen ways in the verdict record (common/StageManagerAvailable.h): "paths" = the jobs done another iPadOS's way (iPadOS 16.0 / 16.1; Report a
+// Problem names them), "untested" = one of them is not offered normally (iPadOS 16.0: Settings' "Stage Manager (Untested)" and its note).
+static void DMSMRecordWays(NSMutableDictionary *v, NSDictionary<NSString *, NSString *> *variants) {
+    NSArray *paths = DMSMOtherWays(variants);
+    if (paths.count) v[@"paths"] = paths;
+    if (DMSMWaysUntested(variants)) v[@"untested"] = @YES;
+}
 // The start-up check (self-check or read-only): also records each row's answer and the optional rows' state for the code and the verdict.
 static NSArray<NSString *> *DMSMCheckAPILive(NSString *simulate, NSUInteger *checked) {
-    NSArray *opt = nil, *off = nil;
-    NSArray *bad = DMSMCheckAPIFull(simulate, checked, &opt, &off, gSMRowPassed);
-    gSMRowsKnown = YES; gSMCheckOptional = opt; gSMFeaturesOff = off;
+    NSArray *opt = nil, *off = nil; NSDictionary *vars = nil; double t = 0;
+    NSArray *bad = DMSMCheckAPIFull(simulate, checked, &opt, &off, gSMRowPassed, &vars, &t);
+    gSMRowsKnown = YES; gSMCheckOptional = opt; gSMFeaturesOff = off; gSMVariants = vars; gSMSizedThreshold = t;
+    gSMSizedChosen = DMSMVariantIs("window model", "sized");
     for (NSString *l in opt) DMLog([@"[smcheck] optional, not here: " stringByAppendingString:l]);
     for (NSString *f in off) DMLog([NSString stringWithFormat:@"[smcheck] without it: %@ is off on this iPadOS", f]);
+    NSArray *paths = DMSMOtherWays(vars);
+    if (paths.count) DMLog([NSString stringWithFormat:@"[smcheck] another iPadOS's way here (never run on a device): %@%@; Settings offers Stage Manager %@", [paths componentsJoinedByString:@"; "],
+                            DMSMVariantIs("window model", "sized") ? [NSString stringWithFormat:@" (values up to %.0f read as fractions)", t] : @"",
+                            DMSMWaysUntested(vars) ? @"as untested" : @"normally"]);
     return bad;
 }
 // Whether one row (by class and name) is there as we use it: the start-up check's answer; before any check ran (where none runs: no Stage Manager)
@@ -687,7 +992,7 @@ static NSArray<NSValue *> *DMSMHookedIMPs(void) {
     NSMutableArray *a = [NSMutableArray array];
     int gen = DMSMLayoutGen();
     for (size_t i = 0; i < kSMNeedsCount; i++) {
-        if (!kSMNeeds[i].hooked || !DMSMRowActive(&kSMNeeds[i], gen)) continue;
+        if (!kSMNeeds[i].hooked || !DMSMRowInUse(&kSMNeeds[i], gen)) continue;
         Method m = DMSMRowMethod(&kSMNeeds[i], NULL);
         [a addObject:[NSValue valueWithPointer:m ? (const void *)method_getImplementation(m) : NULL]];
     }
@@ -699,7 +1004,7 @@ static NSArray<NSString *> *DMSMHooksNotInstalled(NSArray<NSValue *> *before, BO
     NSUInteger k = 0;
     int gen = DMSMLayoutGen();
     for (size_t i = 0; i < kSMNeedsCount; i++) {
-        if (!kSMNeeds[i].hooked || !DMSMRowActive(&kSMNeeds[i], gen)) continue;
+        if (!kSMNeeds[i].hooked || !DMSMRowInUse(&kSMNeeds[i], gen)) continue;
         const char *name = kSMNeeds[i].sel;
         DMSMRowMethod(&kSMNeeds[i], &name);
         BOOL same = k < before.count && k < after.count && [before[k] isEqual:after[k]];
@@ -728,6 +1033,7 @@ static void DMSMPublishVerdict(BOOL ok, NSString *reason, NSArray<NSString *> *d
     // (optional rows not here, and features left without any of their alternatives: Report a Problem shows them, nothing is greyed for them)
     if (gSMCheckOptional.count) v[@"optional"] = gSMCheckOptional.count > 8 ? [gSMCheckOptional subarrayWithRange:NSMakeRange(0, 8)] : gSMCheckOptional;
     if (gSMFeaturesOff.count) v[@"featuresOff"] = gSMFeaturesOff;
+    DMSMRecordWays(v, gSMVariants);
     CFPreferencesSetValue(MSBD_SM_CHECK_KEY, (__bridge CFPropertyListRef)v, MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     CFPreferencesSynchronize(MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
 }

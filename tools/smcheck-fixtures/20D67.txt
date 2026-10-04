@@ -12,6 +12,8 @@ class	SBChamoisOverlappingModel	NSObject
 class	SBDeviceApplicationSceneEntity	SBApplicationSceneEntity
 class	SBDisplayItem	NSObject
 class	SBDisplayItemLayoutAttributes	NSObject
+class	SBDisplayItemLayoutAttributesCalculator	NSObject
+class	SBDisplayItemLayoutGrid	NSObject
 class	SBFTouchPassThroughClippingView	SBFTouchPassThroughView
 class	SBFTouchPassThroughView	UIView
 class	SBFluidSwitcherItemContainer	SBFTouchPassThroughClippingView
@@ -65,7 +67,9 @@ method	SBChamoisOverlappingController	-	_modelByPerformingAutoLayoutForModel:cha
 method	SBChamoisOverlappingController	-	_snapPositionToNearestEdgesIfNecessary:draggingItem:	v@:@@
 method	SBChamoisOverlappingController	-	_stageAreaForModel:chamoisLayoutAttributes:floatingDockHeight:bounds:prefersStripHidden:prefersDockHidden:widthThresholdToHideContinuousExposeStrip:	{CGRect={CGPoint=dd}{CGSize=dd}}@:@@d{CGRect={CGPoint=dd}{CGSize=dd}}BBd
 method	SBChamoisOverlappingController	-	_verticallyCenterModel:withColumns:stageArea:	v@:@@{CGRect={CGPoint=dd}{CGSize=dd}}
+method	SBChamoisOverlappingModel	-	boundingBox	{CGRect={CGPoint=dd}{CGSize=dd}}@:
 method	SBChamoisOverlappingModel	-	centerForItem:	{CGPoint=dd}@:@
+method	SBChamoisOverlappingModel	-	setBoundingBox:	v@:{CGRect={CGPoint=dd}{CGSize=dd}}
 method	SBDeviceApplicationSceneEntity	-	initWithApplicationForMainDisplay:	@@:@
 method	SBDisplayItem	-	bundleIdentifier	@@:
 method	SBDisplayItemLayoutAttributes	-	attributedSize	{SBDisplayItemAttributedSize={CGSize=dd}{CGRect={CGPoint=dd}{CGSize=dd}}q}@:
@@ -73,11 +77,15 @@ method	SBDisplayItemLayoutAttributes	-	attributesByModifyingAttributedSize:	@@:{
 method	SBDisplayItemLayoutAttributes	-	attributesByModifyingLastInteractionTime:	@@:q
 method	SBDisplayItemLayoutAttributes	-	attributesByModifyingNormalizedCenter:	@@:{CGPoint=dd}
 method	SBDisplayItemLayoutAttributes	-	attributesByModifyingSizingPolicy:	@@:q
+method	SBDisplayItemLayoutAttributes	-	centerInBounds:	{CGPoint=dd}@:{CGRect={CGPoint=dd}{CGSize=dd}}
 method	SBDisplayItemLayoutAttributes	-	init	@@:
 method	SBDisplayItemLayoutAttributes	-	lastInteractionTime	q@:
 method	SBDisplayItemLayoutAttributes	-	normalizedCenter	{CGPoint=dd}@:
 method	SBDisplayItemLayoutAttributes	-	sizingPolicy	q@:
+method	SBDisplayItemLayoutAttributesCalculator	-	_appLayoutByPerformingAutoLayoutIfNeededInAppLayout:containerOrientation:chamoisLayoutAttributes:floatingDockHeight:screenScale:draggingItem:overlappingModelBeforeDragging:bounds:prefersStripHidden:prefersDockHidden:	@@:@q@dd@@{CGRect={CGPoint=dd}{CGSize=dd}}BB
+method	SBDisplayItemLayoutGrid	-	minGridSizeForBounds:contentOrientation:layoutRestrictionInfo:screenScale:chamoisLayoutAttributes:	{CGSize=dd}@:{CGRect={CGPoint=dd}{CGSize=dd}}q@d@
 method	SBFTouchPassThroughView	-	hitTest:withEvent:	@@:{CGPoint=dd}@
+method	SBFluidSwitcherItemContainer	-	allowedTouchResizeCorners	Q@:
 method	SBFluidSwitcherItemContainer	-	layoutSubviews	v@:
 method	SBFluidSwitcherItemContainer	-	pointInside:withEvent:	B@:{CGPoint=dd}@
 method	SBFluidSwitcherViewController	-	_keyboardWillHide:	v@:@

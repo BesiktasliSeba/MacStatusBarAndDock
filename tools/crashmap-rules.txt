@@ -145,7 +145,13 @@ sym MacStatusBarCore ^_?(DMZetsu|DMAerial|DMMilky|DMMinimize|DMSwap|DMCascade|DM
 # (unnamed, it fell to the image's target: Stock status bar mode, which stopped the engine too but also took the menu bar; iPadOS 17 runs the
 # engine's 17 layout code untested, so a crash there must cost the engine, not the bar)
 sym MacStatusBarCore ^_?DMSM[A-Z0-9] windowingEnabled
-sym MacStatusBarCore \$(SMEngine|SMLayout16|SMLayout17|SMCornerRaddii|SMCornerRadii)\$ windowingEnabled
+# (every %group named SM...: SMEngine, SMLayout16 / 160 / 17, SMGrid160, SMCornerRaddii / Radii -- one pattern, so a new SM group cannot fall to the
+#  image's target as 16.0's SMLayout160 / SMGrid160 did in the first 1.3.4 build; test-crashstep checks every SM group of the built map)
+sym MacStatusBarCore \$SM[A-Z][A-Za-z0-9]*\$ windowingEnabled
+# (Stage Manager held off / given back: Control Center's button, its installer, SpringBoard's switch handler waiting -- 1.3.4 re-check F2)
+sym MacStatusBarCore \$StageManagerButton\$ windowingEnabled
+sym MacStatusBarCore ^_?DMInitStageManagerButtonHook$ windowingEnabled
+sec MacStatusBarCore Stage\sManager\sswitched\soff windowingEnabled
 sec MacStatusBarCore Stage\sManager\s(as\sthe\sengine|engine) windowingEnabled
 sec MacStatusBarCore iPadOS\s17's\slayout\sengine windowingEnabled
 sec MacStatusBarCore which\swindow\sengine windowingEnabled

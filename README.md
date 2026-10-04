@@ -23,7 +23,7 @@ Then install **MacStatusBar&Dock** from the repo. The Mac look is on right after
 | iPad Pro 11" (M1, 2021) | 15.6.1 | Dopamine | Aerial 5.0, Zetsu, MilkyWay4 | ✅ Tested by the developer |
 | iPad Pro 9.7" | 16.7.7 | palera1n | Aerial 5.0, Zetsu, Stage Manager (with TrollPad) | ✅ Tested by the developer |
 | iPad Pro 10.5" | 16.6.1 | rootless | — | ✅ Reported working by a user |
-| iPad Pro (M2, 2022) | 16.0 – 16.6 | Dopamine | Zetsu or Aerial | ⚠️ The Stage Manager engine is offered from 16.2 on (tested on 16.7.7; 16.2 and 16.3 untested). On 16.1 – 16.6 a user reports SpringBoard crashes with it. Use Aerial 5.0 there |
+| iPad Pro (M2, 2022) | 16.0 – 16.6 | Dopamine | Zetsu or Aerial | ⚠️ The Stage Manager engine is offered on 16.1 and later, and as "Untested" on 16.0 (tested on 16.7.7 only). On 16.1 – 16.6 a user reports SpringBoard crashes with it. Use Aerial 5.0 there |
 | Other iPads | 15.x, 16.x | rootless | — | Likely to work, not tested |
 | iPad Pro 12.9" (M1, 2021) | 17.0 | rootless | Zetsu 1.6.6 | ✅ Reported working by a user since 1.2.4, with **Enable Anyway** |
 | Other iPads | 17 and later | — | — | Off by default; **Enable Anyway** in Settings turns it on at your own risk. The Stage Manager engine has an iPadOS 17 version that hasn't been tested on a device yet: testers welcome |
@@ -72,7 +72,7 @@ The Mac look is on right after install. A few extras start off: the auto-hiding 
 
 ### Windows
 - **Mac windows on the engine you already use** (Aerial 3.0 or 5.0, Zetsu 1.6.2 or 1.6.6, MilkyWay4 on iPadOS 15): title bars, traffic lights, rounded corners, resize handles, and Fit to Window tiling.
-- **Stage Manager as a window engine** (iPadOS 16.2 and later, experimental): Apple's own windowing with the Mac look, native full screen that other windows can come over, and its own Mac desktop on an external display.
+- **Stage Manager as a window engine** (iPadOS 16, experimental): Apple's own windowing with the Mac look, native full screen that other windows can come over, and its own Mac desktop on an external display.
 - **Typing like on a Mac**: only the window you're using keeps a text cursor, and Esc ends typing.
 
 ### Finder
@@ -103,7 +103,7 @@ USB sticks, SSDs and SD card readers show up in Finder under Locations as soon a
 
 Measured on both test iPads: **Aerial 5.0 is the recommended window engine** on newer and older iPads alike: every window test passed, memory use was the same as the others, and on the older iPad Pro 9.7" it opened windows about twice as fast as Zetsu from a cold start. Zetsu works well too and is a good alternative. MilkyWay4 runs on iPadOS 15 only.
 
-**Stage Manager (iPadOS 16.2 and later)** is an option on iPads that have it (or older iPads with TrollPad): Apple's own windowing with our Mac look, and the only engine whose windows move to an external display. It has been tested on iPadOS 16.7.7; on earlier iPadOS 16 versions it may not work yet.
+**Stage Manager (iPadOS 16)** is an option on iPads that have it (or older iPads with TrollPad): Apple's own windowing with our Mac look, and the only engine whose windows move to an external display. It has been tested on iPadOS 16.7.7; on earlier iPadOS 16 versions it may not work yet.
 
 ## Memory use
 

@@ -2003,6 +2003,23 @@ static BOOL DMSMStageManagerOnNow(void) {
     }
     return gSMOnNow == 1;
 }
+// SpringBoard's own test in its Stage Manager switch handler (-[SBFluidSwitcherViewController _chamoisWindowingUIEnabledDefaultChangeHandler], 16.7.7):
+// the iPad switcher's layout state is "application" (unlockedEnvironmentMode 3) -- only then does a switch make a transition. 1 yes, 0 no, -1 not
+// readable (the caller asks SpringBoard's front app instead).
+static int DMSMSwitcherShowsApp(void) {
+    @try {
+        id coord = DMSMCoordinator();
+        UIWindowScene *scene = MSBDMainWindowScene();
+        SEL forScene = NSSelectorFromString(@"switcherControllerForWindowScene:");
+        id sc = scene && [coord respondsToSelector:forScene] ? ((id (*)(id, SEL, id))objc_msgSend)(coord, forScene, scene) : DMCall(coord, @"_activeDisplaySwitcherController");
+        id state = DMCall(DMCall(DMCall(sc, @"contentViewController"), @"layoutContext"), @"layoutState");
+        SEL m = NSSelectorFromString(@"unlockedEnvironmentMode");
+        if (state && DMSMSigOK(state, m, DMSMSigTime(), "unlockedEnvironmentMode")) return ((long long (*)(id, SEL))objc_msgSend)(state, m) == 3 ? 1 : 0;
+    } @catch (NSException *e) {}
+    return -1;
+}
+static void DMSMInstallOffWait(void);   // (SpringBoard's Stage Manager switch waits while windows would be dropped: below, after the hooks' declarations)
+static void DMSMRunWaitingOff(void);
 void DMInitStageManagerButtonHook(void);
 static void DMStageManagerWatch(void) {
     static CFTimeInterval last = 0, notSince = 0;
@@ -2010,14 +2027,21 @@ static void DMStageManagerWatch(void) {
     if (now - last < 0.4) return;
     last = now;
     DMInitStageManagerButtonHook();
+    DMSMInstallOffWait();
+    DMSMRunWaitingOff();
     if (DMTestFlag("/tmp/msb-nosmguard")) return;   // (test: Stage Manager together with our engine, the guard down; debug builds only)
     id sd = DMSwitcherDefaults();
     SEL get = NSSelectorFromString(@"chamoisWindowingEnabled"), set = NSSelectorFromString(@"setChamoisWindowingEnabled:");
     if (![sd respondsToSelector:get] || ![sd respondsToSelector:set]) return;
     BOOL on = ((BOOL (*)(id, SEL))objc_msgSend)(sd, get);
     if (gSMOnNow != (int)on) { gSMOnNow = on; DMLog([NSString stringWithFormat:@"[stagemgr] Stage Manager is %@", on ? @"on" : @"off"]); }
-    if (DMSMEnginePicked()) {   // (Stage Manager IS the engine: kept on; turning it off in Control Center / Settings is undone like the hold below)
+    BOOL off = access("/var/jb/var/lib/sshtoggled-engines/msb-off-restored", F_OK) == 0   // (switched off or being removed: given back now, no 10 s wait)
+            || access("/var/jb/Library/MobileSubstrate/DynamicLibraries/MacStatusBar.dylib", F_OK) != 0;   // (removed: the postrm deletes that marker, so
+                                                      //  the loader's absence says it, as in the engine holds -- the helper's give-back is never undone)
+    if (DMSMEnginePicked() && !off) {   // (Stage Manager IS the engine: kept on; turning it off in Control Center / Settings is undone like the hold below.
+                                        //  Switched off or removed: not the engine any more -- the give-back below; it was undone here until 1.3.4)
         notSince = 0;
+        if (on) DMSMNoteOwnStageUI();   // (its UI is ours for this SpringBoard: SpringBoard's own switch-off of it waits for a safe moment, SMEngineAPI.h)
         // (switched on only once SpringBoard is well up -- never in its first seconds, the review's likeliest Safe Mode cause on a first install --
         //  and only after the self-check passed, which DMSMEnginePicked() includes)
         if (!on && DMProcessAge() < 12.0) return;
@@ -2036,17 +2060,32 @@ static void DMStageManagerWatch(void) {
                 ((void (*)(id, SEL, BOOL))objc_msgSend)(sd, everSet, YES);
                 CFPreferencesSetValue(CFSTR("stageManagerOnForEngine"), kCFBooleanTrue, MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);   // (on for the engine, as below)
                 CFPreferencesSynchronize(MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+                DMSMNoteOwnStageUI();
                 DMLog(@"[smengine] Stage Manager was never on here: Apple's first-time path (its introduction; Continue switches it on)");
                 return;
             }
             if (everAskedAt && now - everAskedAt < 45.0) return;   // (Apple's introduction may be up: Stage Manager comes on from its Continue)
+            // (a setting that does not stay on -- iPadOS 16.0 keeps Stage Manager off where Apple's feature flag says so -- is written again after a
+            //  pause that grows to a minute, not every 0.4 s; 1.3.4 logic test)
+            static int notStaying = 0; static CFTimeInterval retryAt = 0;
+            if (now < retryAt) return;
             ((void (*)(id, SEL, BOOL))objc_msgSend)(sd, set, YES);
             gSMOnNow = ((BOOL (*)(id, SEL))objc_msgSend)(sd, get) ? 1 : 0;
-            // (switched on BY US: remembered, so it goes back off when the engine changes, windowing goes off, or we're switched off/removed --
-            //  logic test F5: the hold below took our own "on" for the user's wish and brought Stage Manager back after the engine)
+            if (gSMOnNow != 1) {
+                notStaying++;
+                retryAt = now + MIN(60.0, 2.0 * notStaying);
+                if (notStaying == 3) {
+                    DMLog(@"[smengine] Stage Manager does not stay on here: tried again less often now (recorded with the Stage Manager check)");
+                    DMSMRecordRuntimeFailure(@"Stage Manager does not stay on (setting written, read back off)");
+                }
+            } else notStaying = 0;
+            // (switched on BY US -- or written, if it did not stay: remembered, so it goes back off when the engine changes, windowing goes off, or we're
+            //  switched off/removed -- logic test F5: the hold below took our own "on" for the user's wish and brought Stage Manager back after the engine)
             CFPreferencesSetValue(CFSTR("stageManagerOnForEngine"), kCFBooleanTrue, MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
             CFPreferencesSynchronize(MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-            DMLog(@"[smengine] Stage Manager is the window engine: switched on");
+            DMSMNoteOwnStageUI();
+            if (gSMOnNow == 1) DMLog(@"[smengine] Stage Manager is the window engine: switched on");
+            else if (notStaying < 3) DMLog([NSString stringWithFormat:@"[smengine] Stage Manager is the window engine: switched on, but it reads back off (try %d)", notStaying]);
         }
         // the menu bar follows the front window: laid out again when another window of the stage comes to the front
         DMSMFitTick(NO);   // (Fit to Window: re-tiles only when the set of windows changed)
@@ -2059,20 +2098,36 @@ static void DMStageManagerWatch(void) {
         }
         return;
     }
-    BOOL off = access("/var/jb/var/lib/sshtoggled-engines/msb-off-restored", F_OK) == 0   // (switched off or being removed: given back now, no 10 s wait)
-            || access("/var/jb/Library/MobileSubstrate/DynamicLibraries/MacStatusBar.dylib", F_OK) != 0;   // (removed: the postrm deletes that marker, so
-                                                      //  the loader's absence says it, as in the engine holds -- the helper's give-back is never undone)
-    {   // Stage Manager was on only because it was our engine: back off now (whatever comes next), and never taken for the user's wish
+    {   // Stage Manager was on only because it was our engine: back off (whatever comes next), and never taken for the user's wish
         CFPropertyListRef mine = CFPreferencesCopyValue(CFSTR("stageManagerOnForEngine"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
         if (mine) {
             CFRelease(mine);
-            if (!notSince && !off) { notSince = now; return; }
-            if (now - notSince < 10.0 && !off) return;   // (not during start-up, before the engine is known)
-            notSince = 0;
-            if (on) { ((void (*)(id, SEL, BOOL))objc_msgSend)(sd, set, NO); on = NO; }
+            DMSMNoteOwnStageUI();   // (on only for the engine: its UI stays ours after the key goes -- SpringBoard's own switch may still be on its way)
+            if (!notSince && !off) notSince = now;
+            // (only where SpringBoard's own switch-off makes no transition that drops windows -- SMEngineAPI.h, DMSMEngineOffStep: with three windows in
+            //  front it aborted SpringBoard, iPad 2 4 Oct 11:58 -- and the multi-window stages cut back first)
+            int shows = DMSMSwitcherShowsApp();
+            BOOL appInFront = shows >= 0 ? shows == 1 : DMFrontApp() != nil;
+            NSUInteger frontWindows = appInFront ? DMSMStageItemsMap(DMSMFrontStage()).count : 0;
+            int step = DMSMEngineOffStep(notSince ? now - notSince : -1, off, on, appInFront, frontWindows);
+            static BOOL waitLogged = NO;
+            if (step == DMSMOffWait) {
+                if (on && appInFront && frontWindows > 1 && (off || now - notSince >= 10.0) && !waitLogged) {
+                    waitLogged = YES;
+                    DMLog([NSString stringWithFormat:@"[stagemgr] Stage Manager is not the engine any more: it goes off once no app is in front or the stage in front has one window (%lu windows in front now)", (unsigned long)frontWindows]);
+                }
+                return;
+            }
+            notSince = 0; waitLogged = NO;
+            if (step == DMSMOffNow) {
+                DMSMFlattenStages(@"Stage Manager goes back off after being the engine");
+                ((void (*)(id, SEL, BOOL))objc_msgSend)(sd, set, NO); on = NO;
+                DM_FEATURE_MARK("sm-off-when-safe");
+            }
             CFPreferencesSetValue(CFSTR("stageManagerOnForEngine"), NULL, MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
             CFPreferencesSynchronize(MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-            DMLog(@"[stagemgr] Stage Manager is not the engine any more: switched back off (it was on only for the engine)");
+            DMLog([NSString stringWithFormat:@"[stagemgr] Stage Manager is not the engine any more: %@ (it was on only for the engine; %@, %lu window(s) in front)", step == DMSMOffNow ? @"switched back off" : @"already off",
+                   appInFront ? @"an app in front" : @"no app in front", (unsigned long)frontWindows]);
         }
     }
     BOOL engine = !off && DMWindowingEnabled() && DMActiveEngine() != DMEngineNone;
@@ -22067,12 +22122,12 @@ static void DMRunTrigger(NSString *cmd) {
     else if ([cmd hasPrefix:@"smcheck_"]) {   // smcheck_<none|selector|encoding|optional|hook|layout16|layout17>: the engine's self-check run again with that simulated difference (layoutNN: that layout engine's table; optional: -appLayoutByRemovingItemInLayoutRole: missing, as on 16.2-16.3) -- read-only, nothing changes
         NSString *sim = [cmd substringFromIndex:8];
         NSUInteger checked = 0;
-        NSArray *opt = nil, *off = nil;   // (optional rows: reported, never recorded -- smcheck_optional shows the iPadOS 16.2-16.3 case)
-        NSArray *bad = DMSMCheckAPIFull([sim isEqualToString:@"none"] ? nil : sim, &checked, &opt, &off, NULL);
+        NSArray *opt = nil, *off = nil; NSDictionary *vars = nil; double sizedT = 0;   // (optional rows and variants: reported, never recorded -- smcheck_optional shows the iPadOS 16.2-16.3 case)
+        NSArray *bad = DMSMCheckAPIFull([sim isEqualToString:@"none"] ? nil : sim, &checked, &opt, &off, NULL, &vars, &sizedT);
         NSArray *hooks = DMSMHooksNotInstalled(DMSMHookedIMPs(), [sim isEqualToString:@"hook"]);   // (the current IMPs against themselves: every hook "not installed" -- shows the comparison works)
         int gen = [sim hasPrefix:@"layout"] ? DMSMLayoutGenFor(sim) : DMSMLayoutGen();
-        DMLog([NSString stringWithFormat:@"[smcheck] (trigger, simulating %@; layout engine table %@, the running engine's: %@) API: %lu checked, %lu different: %@ | optional not here: %@, features off: %@ | hooks compared with themselves: %lu of %lu flagged", sim, DMSMLayoutName(gen), DMSMLayoutName(DMSMLayoutGen()), (unsigned long)checked,
-               (unsigned long)bad.count, [bad componentsJoinedByString:@"; "], [opt componentsJoinedByString:@"; "] ?: @"", [off componentsJoinedByString:@"; "] ?: @"", (unsigned long)hooks.count, (unsigned long)DMSMHookedIMPs().count]);
+        DMLog([NSString stringWithFormat:@"[smcheck] (trigger, simulating %@; layout engine table %@, the running engine's: %@) API: %lu checked, %lu different: %@ | optional not here: %@, features off: %@ | another iPadOS's way: %@ | hooks compared with themselves: %lu of %lu flagged", sim, DMSMLayoutName(gen), DMSMLayoutName(DMSMLayoutGen()), (unsigned long)checked,
+               (unsigned long)bad.count, [bad componentsJoinedByString:@"; "], [opt componentsJoinedByString:@"; "] ?: @"", [off componentsJoinedByString:@"; "] ?: @"", [DMSMOtherWays(vars) componentsJoinedByString:@"; "] ?: @"", (unsigned long)hooks.count, (unsigned long)DMSMHookedIMPs().count]);
     }
     else if ([cmd hasPrefix:@"sbsettings_"]) DMOpenStatusBarSettings((uint32_t)[[cmd substringFromIndex:11] intValue]);   // sbsettings_<0|1|2>: Settings on our Status Bar page / Go apps / the Window Engine picker
     else if ([cmd hasPrefix:@"opennorm_"]) DMOpenApp([cmd substringFromIndex:9]);   // opennorm_<bundle>: the normal open path (unlike iconlaunch_, which bypasses windowed-launch entirely)
@@ -24955,6 +25010,77 @@ static BOOL DMDotsHookOff(void) { static int off = -1; if (off < 0) off = [NSPro
 %end
 %end
 // Control Center's module bundle may load after us (Control Center is built a while after a respring): hooked as soon as its class exists
+// ---- Stage Manager switched off with windows in front: SpringBoard's own reaction waits (1.3.4, the 11:58 abort) ----
+// Whoever writes the switch-off -- our watcher, the root helper when Mac Status Bar is switched off or removed, Control Center's button, iPadOS
+// Settings -- SpringBoard's handler (-[SBFluidSwitcherViewController _chamoisWindowingUIEnabledDefaultChangeHandler]) reacts at once: with an app in
+// front it makes a transition that keeps roles 1-2 and empties 5-9, and with a stage of three windows its Dosido modifier does not find the stage
+// among the app layouts and SpringBoard aborts (reproduced on the iPad 2, 16.7.7: the published 1.3.3's engine switch, 13:18:56; a write of the
+// key by another process, as the root helper does, 13:24:50). While Stage Manager is or was our engine, that handler waits when it would switch
+// off with more than one window in front, and runs when it is safe -- no app in front (the Home Screen: no transition) or one window -- from the
+// watcher's tick; if the setting is back on by then (our engine switched it on again), there is nothing left to do. Elsewhere it runs as Apple's.
+static void (*o_SMDefaultChange)(id, SEL);
+static NSHashTable *gSMOffWaiting;   // (switcher view controllers whose switch-off waits; weak)
+// The switcher's state for the handler: the setting now, its windowing UI now, its layout state's environment (3 = an app in front) and windows.
+static BOOL DMSMSwitcherState(id vc, BOOL *settingOn, BOOL *uiOn, BOOL *appMode, NSUInteger *windows) {
+    @try {
+        id sd = DMSwitcherDefaults();
+        id sc = DMCall(vc, @"switcherController");
+        id state = DMCall(DMCall(vc, @"layoutContext"), @"layoutState");
+        SEL get = NSSelectorFromString(@"chamoisWindowingEnabled"), ui = NSSelectorFromString(@"isChamoisWindowingUIEnabled"), mode = NSSelectorFromString(@"unlockedEnvironmentMode");
+        if (!sd || !sc || !state || !DMSMSigOK(sd, get, DMSMSigBool(), "chamoisWindowingEnabled") || !DMSMSigOK(sc, ui, DMSMSigBool(), "isChamoisWindowingUIEnabled") || !DMSMSigOK(state, mode, DMSMSigTime(), "unlockedEnvironmentMode")) return NO;
+        *settingOn = ((BOOL (*)(id, SEL))objc_msgSend)(sd, get);
+        *uiOn = ((BOOL (*)(id, SEL))objc_msgSend)(sc, ui);
+        *appMode = ((long long (*)(id, SEL))objc_msgSend)(state, mode) == 3;
+        id els = DMCall(state, @"elements");
+        *windows = [els respondsToSelector:@selector(count)] ? [els count] : 0;
+        return YES;
+    } @catch (NSException *e) { return NO; }
+}
+static BOOL DMSMOursForSwitchOff(void) {   // (Stage Manager's UI went on for our engine in this SpringBoard: SMEngineAPI.h, DMSMOwnsStageUIWith)
+    if (gSMOwnsStageUI) return YES;
+    CFPropertyListRef mine = CFPreferencesCopyValue(CFSTR("stageManagerOnForEngine"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    if (mine) CFRelease(mine);
+    return DMSMOwnsStageUIWith(DMSMEngine(), mine != NULL);
+}
+static void DMSMDefaultChangeHook(id self, SEL _cmd) {
+    BOOL settingOn = YES, uiOn = YES, appMode = NO; NSUInteger windows = 0;
+    BOOL known = DMSMSwitcherState(self, &settingOn, &uiOn, &appMode, &windows);
+    BOOL waiting = [gSMOffWaiting containsObject:self];
+    int step = DMSMHandlerStep(known, waiting || DMSMOursForSwitchOff(), settingOn, uiOn, appMode, windows);
+    if (step == DMSMHandlerWait) {
+        if (!gSMOffWaiting) gSMOffWaiting = [NSHashTable weakObjectsHashTable];
+        if (!waiting) DMLog([NSString stringWithFormat:@"[stagemgr] Stage Manager switched off with %lu windows in front: SpringBoard's own switch waits until no app is in front or one window is", (unsigned long)windows]);
+        [gSMOffWaiting addObject:self];
+        DM_FEATURE_MARK("sm-off-waits");
+        return;
+    }
+    [gSMOffWaiting removeObject:self];
+    if (step == DMSMHandlerSkip) { DMLog(@"[stagemgr] Stage Manager's setting is as SpringBoard shows it: nothing to switch"); return; }   // (a switch-off undone before it ran)
+    if (known && !settingOn && uiOn && DMSMOursForSwitchOff()) DMSMFlattenStages(@"Stage Manager is switched off");   // (no stage of several windows left behind for the switcher without Stage Manager)
+    o_SMDefaultChange(self, _cmd);
+}
+static void DMSMInstallOffWait(void) {
+    static BOOL done = NO;
+    if (done) return;
+    done = YES;
+    if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion < 16 || !objc_getClass("SBSwitcherChamoisSettings")) return;   // (no Stage Manager here)
+    Class c = objc_getClass("SBFluidSwitcherViewController");
+    SEL s = NSSelectorFromString(@"_chamoisWindowingUIEnabledDefaultChangeHandler");
+    Method m = c ? class_getInstanceMethod(c, s) : NULL;
+    if (!m || ![DMSMSigOfMethod(m) isEqualToString:DMSMSigVoid()]) { DMLog(@"[stagemgr] SpringBoard's Stage Manager switch handler is not as expected here: left as Apple has it"); return; }
+    MSHookMessageEx(c, s, (IMP)DMSMDefaultChangeHook, (IMP *)&o_SMDefaultChange);
+    DMLog(@"[stagemgr] SpringBoard's Stage Manager switch waits while windows would be dropped (Stage Manager as our engine)");
+}
+// The watcher's tick: a waiting switch-off runs once it is safe (or is dropped when the setting is on again: the hook sees nothing to switch).
+static void DMSMRunWaitingOff(void) {
+    if (!gSMOffWaiting.count) return;
+    for (id vc in [gSMOffWaiting allObjects]) {
+        BOOL settingOn = YES, uiOn = YES, appMode = NO; NSUInteger windows = 0;
+        if (DMSMSwitcherState(vc, &settingOn, &uiOn, &appMode, &windows) && !settingOn && uiOn && DMSMEngineOffStep(10, YES, YES, appMode, windows) == DMSMOffWait) continue;
+        DMLog([NSString stringWithFormat:@"[stagemgr] the waiting Stage Manager switch runs now (setting %d, %@, %lu window(s))", settingOn, appMode ? @"an app in front" : @"no app in front", (unsigned long)windows]);
+        ((void (*)(id, SEL))objc_msgSend)(vc, NSSelectorFromString(@"_chamoisWindowingUIEnabledDefaultChangeHandler"));   // (through the hook: runs or drops)
+    }
+}
 void DMInitStageManagerButtonHook(void) {
     static BOOL done = NO;
     if (done || !objc_getClass("SBContinuousExposeModuleViewController")) return;
@@ -28201,16 +28327,6 @@ static NSArray<NSNumber *> *DMSMFineGrid(NSArray *orig, CGFloat full) {
     DMLog([NSString stringWithFormat:@"[sm] size grid %.0f..%.0f (Apple's: %lu sizes, %@ .. %@)", lo, full, (unsigned long)orig.count, orig.firstObject, orig.lastObject]);
     return a;
 }
-- (id)gridWidths {
-    id v = %orig;
-    if (!DMSMFree()) return v;
-    return DMSMFineGrid(v, CGRectGetWidth(DMSMContainerBoundsOf(self)));
-}
-- (id)gridHeights {
-    id v = %orig;
-    if (!DMSMFree()) return v;
-    return DMSMFineGrid(v, CGRectGetHeight(DMSMContainerBoundsOf(self)));
-}
 - (double)stageOccludedAppScale {   // (a covered background window shrank: on a Mac windows keep their size)
     return DMSMFree() ? 1.0 : %orig;
 }
@@ -28374,6 +28490,34 @@ static void DMSMReapplyGrabbers(UIView *card) {   // (Settings > Resize Handles 
 }
 %end
 %hook SBSwitcherChamoisSettings
+// the stage starts below the top bar: ours is 24 pt (iPadOS's is 20), so windows at the top edge are not under it
+- (CGFloat)_statusBarHeight {
+    CGFloat h = %orig;
+    static BOOL logged; if (!logged) { logged = YES; DMLog([NSString stringWithFormat:@"[smengine] Stage Manager's status bar height %.1f", h]); }
+    return DMSMEngine() ? MAX(h, 24.0) + (DMTestFlag("/tmp/msb-sm-nochrome") ? 0.0 : kSMBarH) : h;   // (+ our title bar above each window)
+}
+// no recent-stages strip on the left: like a Mac, other apps are in the Dock (minimized windows too)
+- (BOOL)_shouldPreferStripHiddenForWindowScene:(id)scene interfaceOrientation:(long long)o {
+    return DMSMEngine() && !DMTestFlag("/tmp/msb-sm-strip") ? YES : %orig;
+}
+%end
+%end
+// The size grid of 16.1 and later (the "size grid" group's lists variant): the window size lists and the snap to them -- installed only where the
+// self-check chose it (16.0 rounds sizes with a grid object instead: SMGrid160; 1.3.4 logic test L3).
+%group SMGridLists
+%hook SBSwitcherChamoisLayoutAttributes
+- (id)gridWidths {
+    id v = %orig;
+    if (!DMSMFree()) return v;
+    return DMSMFineGrid(v, CGRectGetWidth(DMSMContainerBoundsOf(self)));
+}
+- (id)gridHeights {
+    id v = %orig;
+    if (!DMSMFree()) return v;
+    return DMSMFineGrid(v, CGRectGetHeight(DMSMContainerBoundsOf(self)));
+}
+%end
+%hook SBSwitcherChamoisSettings
 // (sizes snap to Stage Manager's grid of window sizes; with our engine a window keeps the size it is given, like a Mac window -- inside the screen)
 - (CGSize)_nearestGridSizeForSize:(CGSize)size gridWidths:(id)gw gridHeights:(id)gh bounds:(CGRect)b {
     CGSize o = %orig;
@@ -28393,31 +28537,24 @@ static void DMSMReapplyGrabbers(UIView *card) {   // (Settings > Resize Handles 
     }
     return r;
 }
-// the stage starts below the top bar: ours is 24 pt (iPadOS's is 20), so windows at the top edge are not under it
-- (CGFloat)_statusBarHeight {
-    CGFloat h = %orig;
-    static BOOL logged; if (!logged) { logged = YES; DMLog([NSString stringWithFormat:@"[smengine] Stage Manager's status bar height %.1f", h]); }
-    return DMSMEngine() ? MAX(h, 24.0) + (DMTestFlag("/tmp/msb-sm-nochrome") ? 0.0 : kSMBarH) : h;   // (+ our title bar above each window)
-}
-// no recent-stages strip on the left: like a Mac, other apps are in the Dock (minimized windows too)
-- (BOOL)_shouldPreferStripHiddenForWindowScene:(id)scene interfaceOrientation:(long long)o {
-    return DMSMEngine() && !DMTestFlag("/tmp/msb-sm-strip") ? YES : %orig;
-}
 %end
 %end
-// iPadOS 16's layout engine (SBChamoisOverlappingController): installed with SMEngine when the self-check picked the 16 table (DMSMLayoutGen).
-%group SMLayout16
-%hook SBChamoisOverlappingController
-- (CGRect)_stageAreaForModel:(id)m chamoisLayoutAttributes:(id)a floatingDockHeight:(double)dock bounds:(CGRect)b prefersStripHidden:(BOOL)strip prefersDockHidden:(BOOL)dh widthThresholdToHideContinuousExposeStrip:(double)w {
-    CGRect r = %orig;
-    return DMSMOurStageArea(r, b, dock, strip, dh);
-}
+// iPadOS 16's layout engine (SBChamoisOverlappingController): SMLayout161 (16.1+'s pass) and SMLayout16 (what every 16.x shares), below.
 // Apple's auto-layout (-_modelByPerformingAutoLayoutForModel:...stageInset:, SpringBoard.framework 0x12ad90, iPad 2 16.7.7): after the two
 // centering steps, when nothing is being dragged, a stage with ONE window gets that window's center y set to the middle of the stage area
 // (inline code: items.count == 1 -> centerForItem: -> setCenter:{x, midY(stage area)} forItem:). That is why a lone window never kept the height it
 // was put at (Left Half 60 pt low). Our engine: that one setCenter keeps the window's own y. The flag is set by the horizontal-centering step, which
 // runs right before it, and cleared when the pass ends.
 static BOOL gSMLoneCenterNext = NO;
+static BOOL gSMLoneCenterBoth = NO;   // (iPadOS 16.0's pass centres the lone window's x too: then both are kept -- %group SMLayout160)
+// iPadOS 16.1+'s layout pass (the "auto layout" group's 16.1 variant: the tested one, always chosen on 16.1 and later): installed only where the
+// self-check chose it, so on 16.0 nothing is hooked that is not there (16.0's own pass: SMLayout160; 1.3.4 logic test L3).
+%group SMLayout161
+%hook SBChamoisOverlappingController
+- (CGRect)_stageAreaForModel:(id)m chamoisLayoutAttributes:(id)a floatingDockHeight:(double)dock bounds:(CGRect)b prefersStripHidden:(BOOL)strip prefersDockHidden:(BOOL)dh widthThresholdToHideContinuousExposeStrip:(double)w {
+    CGRect r = %orig;
+    return DMSMOurStageArea(r, b, dock, strip, dh);
+}
 - (id)_modelByPerformingAutoLayoutForModel:(id)m chamoisLayoutAttributes:(id)a draggingItem:(id)d modelBeforeDragging:(id)b floatingDockHeight:(double)dock bounds:(CGRect)r screenScale:(double)sc prefersStripHidden:(BOOL)sh prefersDockHidden:(BOOL)dh stageInset:(UIEdgeInsets)inset {
     gSMLoneCenterNext = NO;
     id out = %orig;
@@ -28446,6 +28583,12 @@ static BOOL gSMLoneCenterNext = NO;
 - (void)_dodgeFullyOccludedWindowsToNearestVisibleEdgeInModel:(id)m chamoisLayoutAttributes:(id)a draggingItem:(id)d bounds:(CGRect)r {
     if (!DMSMFree()) %orig;
 }
+%end
+%end
+// iPadOS 16's layout engine, the parts every 16.x has under these names (snap, the lone window's centre): installed with SMEngine when the
+// self-check picked the 16 table (DMSMLayoutGen).
+%group SMLayout16
+%hook SBChamoisOverlappingController
 - (void)_snapPositionToNearestEdgesIfNecessary:(id)m draggingItem:(id)d {
     if (!DMSMFree()) %orig;
 }
@@ -28454,12 +28597,18 @@ static BOOL gSMLoneCenterNext = NO;
 @end
 %hook SBMutableChamoisOverlappingModel
 - (void)setCenter:(CGPoint)c forItem:(id)item {
-    if (gSMLoneCenterNext && DMSMFree()) {   // (the lone-window re-centering, see above: keep the y the window has)
-        gSMLoneCenterNext = NO;
+    if (gSMPostPass160 && DMSMFree()) {   // (iPadOS 16.0's group shift after its layout pass -- SMEngineAPI.h, DMSMShift160X: the window keeps its x)
         SEL get = NSSelectorFromString(@"centerForItem:");
-        if (DMSMSigOK(self, get, DMSMSigCenterFor(), "centerForItem:")) {   // (checked at start too; a y that is not a number is not kept)
-            CGFloat y = ((CGPoint (*)(id, SEL, id))objc_msgSend)(self, get, item).y;
-            if (isfinite(y)) c.y = y;
+        if (DMSMSigOK(self, get, DMSMSigCenterFor(), "centerForItem:")) c.x = DMSMShift160X(YES, c.x, ((CGPoint (*)(id, SEL, id))objc_msgSend)(self, get, item).x);
+    }
+    if (gSMLoneCenterNext && DMSMFree()) {   // (the lone-window re-centering, see above: keep the y the window has -- and on iPadOS 16.0 the x too)
+        BOOL both = gSMLoneCenterBoth;
+        gSMLoneCenterNext = NO; gSMLoneCenterBoth = NO;
+        SEL get = NSSelectorFromString(@"centerForItem:");
+        if (DMSMSigOK(self, get, DMSMSigCenterFor(), "centerForItem:")) {   // (checked at start too; a coordinate that is not a number is not kept)
+            CGPoint own = ((CGPoint (*)(id, SEL, id))objc_msgSend)(self, get, item);
+            if (isfinite(own.y)) c.y = own.y;
+            if (both && isfinite(own.x)) c.x = own.x;
         }
     }
     %orig(c, item);
@@ -28537,6 +28686,98 @@ static void DMSMHookConstrain16(void) {
 %hook SBSwitcherChamoisLayoutAttributes
 - (double)stageCornerRadii {
     return DMSMFree() ? kSMCornerR : %orig;
+}
+%end
+%end
+// iPadOS 16.0's layout pass (sm-160; installed only where the check chose the "auto layout" group's 16.0 variant). The same steps as 16.1's under other
+// names and argument lists -- decompiled from 20A371 and 20A5349b, -[SBChamoisOverlappingController modelForPreferredModel:initialStageFrame:
+// layoutAttributes:draggingItem:modelBeforeDragging:]: snap, keep inside the stage frame, compact and expand the spacing, centre vertically and
+// horizontally, a lone window centred on the stage frame (x and y here, 16.1+ only y), dodge. The stage frame is -[SBDisplayItemLayoutAttributesCalculator
+// initialStageFrameForAppLayout:...] (16.1+: -_stageAreaForModel:...): ours, full width under the menu bar, above this screen's Dock. After the pass
+// the 16.0 calculator moves the whole group sideways toward the middle when it lies right of the centred place (not zero with a full-width frame:
+// 1.3.4 logic test, decoded from its block) -- held off for our engine, the windows keep their x (SMEngineAPI.h, DMSMShift160X; the bounding box
+// here, the centres in SMLayout16's -setCenter:forItem:). Snap and the lone window's centre are hooked in SMLayout16 (same names on 16.0). Never run
+// on a device: Settings says "untested".
+%group SMLayout160
+%hook SBDisplayItemLayoutAttributesCalculator
+- (CGRect)initialStageFrameForAppLayout:(id)al containerOrientation:(long long)o chamoisLayoutAttributes:(id)a floatingDockHeight:(double)dock screenScale:(double)sc bounds:(CGRect)b prefersStripHidden:(BOOL)strip prefersDockHidden:(BOOL)dh {
+    CGRect r = %orig;
+    return DMSMOurStageArea(r, b, dock, strip, dh);
+}
+- (id)_appLayoutByPerformingAutoLayoutIfNeededInAppLayout:(id)al containerOrientation:(long long)o chamoisLayoutAttributes:(id)a floatingDockHeight:(double)dock screenScale:(double)sc draggingItem:(id)d overlappingModelBeforeDragging:(id)b bounds:(CGRect)r prefersStripHidden:(BOOL)strip prefersDockHidden:(BOOL)dh {
+    DMSMCalc160Enter();   // (its layout pass, then the group shift: DMSMPass160End marks the pass over)
+    id out = %orig;
+    DMSMCalc160Exit();
+    return out;
+}
+%end
+%hook SBChamoisOverlappingModel
+- (void)setBoundingBox:(CGRect)box {
+    if (gSMPostPass160 && DMSMFree()) {   // (16.0's group shift: the bounding box keeps its x, as its windows do)
+        SEL get = NSSelectorFromString(@"boundingBox");
+        if (DMSMSigOK(self, get, DMSMSigRect(), "boundingBox")) {
+            CGRect cur = ((CGRect (*)(id, SEL))objc_msgSend)(self, get);
+            CGFloat x = DMSMShift160X(YES, box.origin.x, cur.origin.x);
+            static int logged = 0;
+            if (x != box.origin.x && logged < 3) { logged++; DMLog([NSString stringWithFormat:@"[sm] iPadOS 16.0's group shift held off: the windows keep their x (%.1f pt asked)", box.origin.x - x]); }
+            box.origin.x = x;
+        }
+    }
+    %orig(box);
+}
+%end
+%hook SBChamoisOverlappingController
+- (id)modelForPreferredModel:(id)m initialStageFrame:(CGRect)f layoutAttributes:(id)a draggingItem:(id)d modelBeforeDragging:(id)b {
+    gSMLoneCenterNext = NO; gSMLoneCenterBoth = NO;
+    DMSMPass160Begin();
+    id out = %orig;
+    gSMLoneCenterNext = NO; gSMLoneCenterBoth = NO;
+    DMSMPass160End();   // (inside the calculator: its group shift comes next)
+    return out;
+}
+- (void)_compactSpacingHorizontallyForModel:(id)m withColumns:(id)c layoutAttributes:(id)a {
+    if (!DMSMFree()) %orig;
+}
+- (void)_compactSpacingVerticallyForModel:(id)m withColumns:(id)c layoutAttributes:(id)a {
+    if (!DMSMFree()) %orig;
+}
+- (void)_expandSpacingHorizontallyForModel:(id)m withColumns:(id)c previousResolvedModelIfAny:(id)p layoutAttributes:(id)a draggingItem:(id)d {
+    if (!DMSMFree()) %orig;
+}
+- (void)_expandSpacingVerticallyForModel:(id)m withColumns:(id)c layoutAttributes:(id)a {
+    if (!DMSMFree()) %orig;
+}
+- (void)_horizontallyCenterModel:(id)m {
+    if (!DMSMFree()) %orig;
+    else { gSMLoneCenterNext = YES; gSMLoneCenterBoth = YES; }   // (the lone window's centring right after: keep its own place)
+}
+- (void)_verticallyCenterModel:(id)m withColumns:(id)c {
+    if (!DMSMFree()) %orig;
+}
+- (void)_dodgeFullyOccludedWindowsToNearestVisibleEdgeInModel:(id)m layoutAttributes:(id)a draggingItem:(id)d {
+    if (!DMSMFree()) %orig;
+}
+%end
+%end
+// iPadOS 16.0's size grid (sm-160; "size grid" chose its 16.0 variant): sizes are rounded by -[SBDisplayItemLayoutGrid nearestGridSizeForProposedSize:...]
+// (16.1+: the gridWidths / gridHeights lists and -_nearestGridSizeForSize:..., hooked in SMEngine). Our engine: a window keeps the size it is given,
+// from Apple's smallest grid size up to the bounds, and no taller than the stage area above this screen's Dock -- as on 16.1+.
+%group SMGrid160
+%hook SBDisplayItemLayoutGrid
+- (CGSize)nearestGridSizeForProposedSize:(CGSize)size inBounds:(CGRect)b contentOrientation:(long long)o layoutRestrictionInfo:(id)info screenScale:(double)sc chamoisLayoutAttributes:(id)a {
+    CGSize g = %orig;
+    if (!DMSMFree() || !isfinite(size.width) || !isfinite(size.height) || size.width <= 0 || size.height <= 0) return g;
+    CGSize mn = CGSizeZero;
+    SEL minSel = NSSelectorFromString(@"minGridSizeForBounds:contentOrientation:layoutRestrictionInfo:screenScale:chamoisLayoutAttributes:");
+    if (DMSMSigOK(self, minSel, DMSMSigMinGrid(), "minGridSizeForBounds:")) mn = ((CGSize (*)(id, SEL, CGRect, long long, id, double, id))objc_msgSend)(self, minSel, b, o, info, sc, a);
+    CGFloat maxW = CGRectGetWidth(b) > 0 ? CGRectGetWidth(b) : size.width, maxH = CGRectGetHeight(b) > 0 ? CGRectGetHeight(b) : size.height;
+    NSNumber *dock = gSMDockHeightBySize[NSStringFromCGSize(b.size)];
+    if (dock.doubleValue > 0 && CGRectGetHeight(b) > 0) maxH = MIN(maxH, CGRectGetHeight(b) - dock.doubleValue - 2.0 - (24.0 + kSMBarH));
+    CGSize r = CGSizeMake(MIN(size.width, maxW), MIN(size.height, maxH));
+    if (isfinite(mn.width) && isfinite(mn.height)) r = CGSizeMake(MAX(r.width, mn.width), MAX(r.height, mn.height));
+    static int logged = 0;
+    if (logged < 3) { logged++; DMLog([NSString stringWithFormat:@"[sm] grid size %@ -> kept %@ (16.0's grid: %@)", NSStringFromCGSize(size), NSStringFromCGSize(r), NSStringFromCGSize(g)]); }
+    return r;
 }
 %end
 %end
@@ -28700,11 +28941,15 @@ static void DMSMSelfCheck(void) {
     NSArray<NSString *> *bad = DMSMCheckAPILive(simulate, &checked);   // (also records the optional rows: DMSMRowPassed, the verdict)
     if (!bad.count) {
         NSArray *before = DMSMHookedIMPs();
+        if (DMSMVariantIs("auto layout", "16.0")) %init(SMLayout160);     // (iPadOS 16.0's layout pass and size grid, where the check chose them -- sm-160)
+        if (DMSMVariantIs("size grid", "grid object")) %init(SMGrid160);
+        if (DMSMVariantIs("size grid", "lists")) %init(SMGridLists);      // (16.1+'s size lists: only where chosen, nothing hooked that is not there)
         %init(SMEngine);
         if (gSMLayoutGen == 17) {
             DM_FEATURE_MARK("sm-layout-17");
             %init(SMLayout17);
         } else {
+            if (DMSMVariantIs("auto layout", "16.1")) %init(SMLayout161);   // (16.1+'s layout pass: only where chosen)
             %init(SMLayout16);
             DMSMHookConstrain16();   // (optional: a window bigger than the stage area keeps its top and left edges inside)
         }

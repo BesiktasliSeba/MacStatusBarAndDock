@@ -2,6 +2,14 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.3.4
+
+### New
+- Stage Manager engine on iPadOS 16.0 and 16.1: it is offered there too now. These versions keep a window's size and position in another form, and 16.0 also lays out windows its own way, so the engine now uses each version's own way. It hasn't run on a 16.0 or 16.1 iPad yet. On 16.0 it shows as "Stage Manager (Untested)" in Settings > Status Bar > Window Engine. If you try it there, please send a report with Report a Problem in Settings.
+
+### Fixes
+- Stage Manager engine: with several windows open, picking another window engine and not respringing right away could crash SpringBoard, and so could switching MacStatusBar&Dock off or removing it. Stage Manager now switches off once no app is in front, for example on the Home Screen.
+
 ## 1.3.3
 
 ### New

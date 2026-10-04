@@ -34,24 +34,25 @@ static inline BOOL MSBDStageManagerHardware(void) {
     int major = 0, minor = 0;
     if (sscanf(m, "iPad%d,%d", &major, &minor) != 2) return NO;
     NSOperatingSystemVersion v = [NSProcessInfo processInfo].operatingSystemVersion;
-    if (major == 8) return v.majorVersion > 16 || v.minorVersion >= 1;
+    if (major == 8) return v.majorVersion > 16 || v.minorVersion >= 1;   // (Apple added these in 16.1)
     if (major == 13) return (minor >= 4 && minor <= 11) || minor == 16 || minor == 17;
     if (major == 14) return (minor >= 3 && minor <= 6) || (minor >= 8 && minor <= 11);
     return major >= 15;
 }
 static inline BOOL MSBDStageManagerAvailable(void) {
-    // (iPadOS 16.1 or later on every iPad, TrollPad too: 16.0 -- 20A8372, the M2 iPad Pro and iPad 10 factory build -- has Stage Manager switched
-    //  off by Apple, and where it was switched on by hand the engine crashed SpringBoard; its API differs from 16.1 on, issue #2)
+    // (iPadOS 16 on an iPad that has Stage Manager. 16.0 -- 20A8372, the M2 iPad Pro and iPad 10 factory build, where Apple keeps Stage Manager off
+    //  and users switched it on by restoring a later backup -- was left out from 1.1.6 to sm-160: its API differs (issue #2: 18 rows), and 1.1.3 crashed
+    //  there calling -containerBounds, which 16.0 does not have. sm-160: the check finds 16.0's own way for each of those jobs (SMEngineAPI.h variants)
+    //  and the engine never calls -containerBounds; whether it can run is the check's answer, as on every other build.)
     NSOperatingSystemVersion ov = [NSProcessInfo processInfo].operatingSystemVersion;
-    if (ov.majorVersion < 16 || (ov.majorVersion == 16 && ov.minorVersion < 1)) return NO;
+    if (ov.majorVersion < 16) return NO;
     return MSBDStageManagerTrollPad() || MSBDStageManagerHardware() || MSBDStageManagerGestalt();
 }
-// Why Stage Manager can't be the engine on this iPad at all, before any check: 0 = it can (or iPadOS 15, where it is not offered), 1 = iPadOS 16.0
-// (Apple switched it off there), 2 = this iPad has no Stage Manager (not a model with it, no TrollPad, MobileGestalt says no).
+// Why Stage Manager can't be the engine on this iPad at all, before any check: 0 = it can (or iPadOS 15, where it is not offered), 2 = this iPad has
+// no Stage Manager (not a model with it, no TrollPad, MobileGestalt says no). (1 was iPadOS 16.0 until sm-160.)
 static inline int MSBDStageManagerUnavailableReason(void) {
     NSOperatingSystemVersion ov = [NSProcessInfo processInfo].operatingSystemVersion;
     if (ov.majorVersion < 16) return 0;
-    if (ov.majorVersion == 16 && ov.minorVersion < 1) return 1;
     return MSBDStageManagerAvailable() ? 0 : 2;
 }
 static inline NSString *MSBDOSVersionString(void) {   // (e.g. "16.3.1", "16.4")
@@ -97,21 +98,37 @@ static inline int MSBDStageManagerVerdict(NSString **reason, NSString **os) {
 static inline BOOL MSBDStageManagerEngineUsable(void) {
     return MSBDStageManagerAvailable() && MSBDStageManagerVerdict(NULL, NULL) == 1;
 }
+// The check passed through another iPadOS's way that Settings offers as untested (iPadOS 16.0: its layout pass and size grid, SMEngineAPI.h variants,
+// sm-160; never run on a device): "Stage Manager (Untested)" with a note. iPadOS 16.1's own window model is offered normally (the owner, 4 Oct 2026),
+// so its record names the way ("paths") without "untested". *paths: the other ways ("window model: sized", ...). From a given record, so it can be
+// tested; MSBDStageManagerUntested reads the real one.
+static inline BOOL MSBDStageManagerUntestedIn(NSDictionary *d, NSArray **paths) {
+    if (![d isKindOfClass:[NSDictionary class]] || ![d[@"ok"] boolValue] || ![d[@"untested"] boolValue]) return NO;
+    if (paths) *paths = [d[@"paths"] isKindOfClass:[NSArray class]] ? d[@"paths"] : nil;
+    return YES;
+}
+static inline BOOL MSBDStageManagerUntested(NSArray **paths) { return MSBDStageManagerUntestedIn(MSBDStageManagerCheckRecord(), paths); }
 // ---- why the Window Engine list greys Stage Manager, and what Report a Problem says about it (sm-163, 4 Oct 2026: a Reddit tester on iPadOS 16.3.1
 // saw the row greyed with nothing telling him why, and his report would not have said either) ----
 // The list's footer: the reason in a few words, nil when Stage Manager can be picked. unavailable: MSBDStageManagerUnavailableReason; verdict:
 // MSBDStageManagerVerdict; os: the iPadOS version shown.
+// verdict 2 = passed through an untested way (MSBDStageManagerUntested): offered, with this note.
 static inline NSString *MSBDStageManagerWhyText(int unavailable, int verdict, NSString *os) {
-    if (unavailable == 1) return @"Stage Manager needs iPadOS 16.1 or later.";
     if (unavailable == 2) return @"This iPad doesn't have Stage Manager (TrollPad can add it).";
     if (verdict == -1) return @"Respring once to check Stage Manager on this iPadOS version.";
     if (verdict == 0) return [NSString stringWithFormat:@"Stage Manager isn't supported on iPadOS %@ yet.", os.length ? os : @"(this version)"];
+    if (verdict == 2) return [NSString stringWithFormat:@"Stage Manager hasn't been tested on iPadOS %@ yet. If you try it, Report a Problem helps.", os.length ? os : @"(this version)"];
     return nil;
+}
+// The footer for a given state and check record (verdict 1 + an untested way in the record = the untested note), so it can be tested.
+static inline NSString *MSBDStageManagerFooterFor(int unavailable, int verdict, NSDictionary *record, NSString *os) {
+    if (verdict == 1 && MSBDStageManagerUntestedIn(record, NULL)) verdict = 2;
+    return MSBDStageManagerWhyText(unavailable, verdict, os);
 }
 static inline NSString *MSBDStageManagerFooter(void) {
     if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion < 16) return nil;   // (not offered on 15)
     int unavailable = MSBDStageManagerUnavailableReason();
-    return MSBDStageManagerWhyText(unavailable, unavailable ? 1 : MSBDStageManagerVerdict(NULL, NULL), MSBDOSVersionString());
+    return MSBDStageManagerFooterFor(unavailable, unavailable ? 1 : MSBDStageManagerVerdict(NULL, NULL), MSBDStageManagerCheckRecord(), MSBDOSVersionString());
 }
 // A list of the record's lines, joined, at most maxChars (cut with "...").
 static inline NSString *MSBDStageManagerJoin(id list, NSUInteger maxChars) {
@@ -125,12 +142,15 @@ static inline NSString *MSBDStageManagerJoin(id list, NSUInteger maxChars) {
 // The Report a Problem line (iPadOS 16 and later): can this iPad run Stage Manager (and why it can), and the engine check on this build with the
 // exact rows that failed or are missing. From the given state, so it can be tested (MSBDStageManagerReportLine reads the real one).
 static inline NSString *MSBDStageManagerReportLineFor(int unavailable, NSString *source, int verdict, NSDictionary *record, NSString *os, NSString *build, NSUInteger maxChars) {
-    if (unavailable == 1) return [NSString stringWithFormat:@"- Stage Manager: off on iPadOS %@ (Apple switched it off on 16.0)\n", os ?: @"?"];
     if (unavailable == 2) return [NSString stringWithFormat:@"- Stage Manager: not on this iPad (%@)\n", source ?: @"no Stage Manager model, no TrollPad, MobileGestalt no"];
     NSString *where = [NSString stringWithFormat:@"%@ %@, %@", os ?: @"?", build ?: @"?", source ?: @"?"];
     if (verdict == -1) return [NSString stringWithFormat:@"- Stage Manager engine check: not run yet (%@)\n", where];
     NSString *failed = MSBDStageManagerJoin(record[@"details"], maxChars), *optional = MSBDStageManagerJoin(record[@"optional"], maxChars / 2);
-    NSMutableString *line = [NSMutableString stringWithFormat:@"- Stage Manager engine check: %@ (%@)", verdict == 1 ? @"passed" : @"failed", where];
+    // (iPadOS 16.0 / 16.1: which other ways; "untested" only where Settings offers it so -- 16.0)
+    NSString *paths = verdict == 1 ? MSBDStageManagerJoin(record[@"paths"], maxChars / 2) : nil;
+    BOOL untested = verdict == 1 && [record[@"untested"] boolValue];
+    NSMutableString *line = [NSMutableString stringWithFormat:@"- Stage Manager engine check: %@ (%@)", verdict == 1 ? (untested ? @"passed, untested way" : @"passed") : @"failed", where];
+    if (paths) [line appendFormat:@": %@", paths];
     if (verdict != 1) [line appendFormat:@": %@", failed ?: ([record[@"reason"] isKindOfClass:[NSString class]] ? record[@"reason"] : @"no details")];
     if (optional) [line appendFormat:@"; optional, not here: %@", optional];
     [line appendString:@"\n"];

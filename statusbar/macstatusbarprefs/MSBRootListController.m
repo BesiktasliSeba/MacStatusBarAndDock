@@ -403,7 +403,9 @@ static void MSBFitValueLabels(UIView *v) {
 					[values addObject:v[i]];
 					// (1.1.3: Aerial 5.0 is the recommended engine on every iPad again -- Stage Manager is an option, not the default)
 					BOOL rec = [v[i] isEqual:@"aerial"];
-					[titles addObject:rec ? [NSString stringWithFormat:@"%@ (Recommended)", td[v[i]] ?: @"Aerial"] : (td[v[i]] ?: v[i])];
+					// (sm-160: where the engine's check passed through a way Settings offers as untested -- iPadOS 16.0 -- the row says so; 16.1 is offered normally)
+					BOOL untested = [v[i] isEqual:@"stagemanager"] && MSBDStageManagerUntested(NULL);
+					[titles addObject:rec ? [NSString stringWithFormat:@"%@ (Recommended)", td[v[i]] ?: @"Aerial"] : untested ? @"Stage Manager (Untested)" : (td[v[i]] ?: v[i])];
 					[shorts addObject:sd[v[i]] ?: td[v[i]] ?: v[i]];
 				}
 				((void (*)(id, SEL, id, id, id))objc_msgSend)(spec, NSSelectorFromString(@"setValues:titles:shortTitles:"), values, titles, shorts);
