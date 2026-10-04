@@ -141,6 +141,13 @@ static void DMDesktopDockUnder(NSString *reason, BOOL on, CGFloat low) {
     UIWindow *w = gDockLowered; gDockLowered = nil;
     if (w && fabs(w.windowLevel - gDockLevelLow) < 0.01) { w.windowLevel = gDockLevelWas; DMLog([NSString stringWithFormat:@"[desktop] %@ gone: the Dock's window back to level %.0f", reason, gDockLevelWas]); }
 }
+// A context menu in this window, open or still closing (UIKit's container stays until its close has played).
+static BOOL DMDesktopMenuShown(UIWindow *w) {
+    if (!w) return NO;
+    NSMutableArray *names = [NSMutableArray array];
+    DMCollectClassNames(w, 0, names);
+    return [names containsObject:@"_UIContextMenuContainerView"];
+}
 // SpringBoard's own keyboard (a text window, Finder's fields, a name edited on the desktop) is put just above the window being typed in, so for
 // our windows -- the Home Screen's (-2), the native windows' (6 when active) -- it was UNDER the Dock (25): the Dock's icons covered the
 // keyboard's bottom row, its space bar included (iPad 2, iPadOS 16, measured with winlist: keyboard windows at 7 / 8). When an app shows its
@@ -206,6 +213,7 @@ static void DMKeyboardDockWatch(void) {
     UIContextMenuInteraction *_bgMenu; UIView *_bgAnchor;
     NSHashTable<UIGestureRecognizer *> *_menuGRs;           // (the menus' own gestures: never held up or cancelled by ours)
     __weak UIContextMenuInteraction *_menuOpen;
+    __weak UIContextMenuInteraction *_menuClosing; CFTimeInterval _menuClosingAt;   // (a menu whose close is still playing, since when: -dm_menuLetsGo:)
     // icons that arrive soon after a drop or New Folder: placed where it happened
     CGPoint _arrivePoint; CFTimeInterval _arriveUntil; NSInteger _arriveLeft;
     NSArray<NSString *> *_selectWhenListed; NSString *_renameWhenListed;
@@ -306,6 +314,10 @@ static BOOL DMDesktopEditing(void) {
         [UIView animateWithDuration:0.2 animations:^{ self.alpha = editing ? 0.0 : 1.0; }];
         DMLog([NSString stringWithFormat:@"[desktop] Home Screen editing %@: icons %@", editing ? @"began" : @"ended", editing ? @"hidden" : @"back"]);
     }
+    // (never left under the Home Screen for a menu that is gone: a close whose completion never came -- an interaction taken off its view while its
+    //  menu closed, -dm_detach -- kept the Dock's window low until the next desktop menu closed; the same safety as the Home Screen icon menus')
+    if (!_menuOpen && self.window && [gDockUnderReasons containsObject:@"menu"] && !(_menuClosing && CACurrentMediaTime() - _menuClosingAt < 1.0)
+        && !DMDesktopMenuShown(self.window)) { DMDesktopDockUnder(@"menu", NO, 0); DMLog(@"[desktop] a menu went without its close finishing: the Dock back (safety reset)"); }
     if (!CGRectEqualToRect(self.frame, _list.bounds)) self.frame = _list.bounds;
     if (!_folderFromHome && CACurrentMediaTime() - _folderTriedAt > MAX(20.0, _folderRetry)) {   // (the Files app's picture, once its icon view is there)
         [self dm_folderImage];
@@ -722,6 +734,9 @@ static BOOL DMDesktopEditing(void) {
     else mi = _bgMenu;
     UIView *host = mi.view;
     if (!mi || !host || mi == _menuOpen) return;
+    // (its menu still closing -- a pointer drag can start at once after the click that closed it: no press of it can be pending then, and taking it
+    //  off its view could cut UIKit's close short, whose completion is what puts the Dock back, 1.3.1 logic test; bounded: a close never lasts 1 s)
+    if (mi == _menuClosing && CACurrentMediaTime() - _menuClosingAt < 1.0 && DMDesktopMenuShown(self.window)) return;   // (its close really still playing)
     [host removeInteraction:mi];
     [self dm_addMenu:mi to:host];
 }
@@ -976,8 +991,11 @@ static BOOL DMDesktopEditing(void) {
     // (the menu stops counting as a Home Screen menu over everything now that it is going, not when its fade has ended: a window its own row
     //  opened -- Quick Look -- became active and the next tick sent it away for the still-fading menu, so it showed grey and took no keys)
     if (gHomeMenuOpen) { gHomeMenuOpen = NO; DMLog(@"[desktop] menu going: no longer a Home Screen menu over the windows"); DMSyncWindowFade(); }
-    __weak DMDesktop *wd = self;
-    if (a) [a addCompletion:^{ DMDesktop *d = wd; if (!d || !d->_menuOpen) DMDesktopDockUnder(@"menu", NO, 0); }]; else [self dm_dockUnderMenu:NO];   // (the desktop gone meanwhile: the Dock back all the same)
+    __weak DMDesktop *wd = self; __weak UIContextMenuInteraction *wi = i;
+    if (a) {
+        _menuClosing = i; _menuClosingAt = CACurrentMediaTime();   // (its close plays until the completion: -dm_menuLetsGo: leaves it alone meanwhile)
+        [a addCompletion:^{ DMDesktop *d = wd; if (d && d->_menuClosing == wi) d->_menuClosing = nil; if (!d || !d->_menuOpen) DMDesktopDockUnder(@"menu", NO, 0); }];
+    } else [self dm_dockUnderMenu:NO];   // (the desktop gone meanwhile: the Dock back all the same)
     if (i == _bgMenu) { UIView *anchor = _bgAnchor; if (a) [a addCompletion:^{ [anchor removeFromSuperview]; }]; else [anchor removeFromSuperview]; }
 }
 // Which finger a touch is (-[UITouch _pathIndex], the same for every window's copy of one finger), or -1.

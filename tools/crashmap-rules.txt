@@ -141,6 +141,13 @@ sym MacStatusBarCore ^_?DMFit flexResizeWindows
 # windowing: the engines (Aerial 3.0/5.0, MilkyWay4, Zetsu) and our window work
 sym MacStatusBarCore \$(Aerial\w*|Zetsu\w*|MilkyWay\w*|WindowLaunch|EngineMedusa)\$ windowingEnabled
 sym MacStatusBarCore ^_?(DMZetsu|DMAerial|DMMilky|DMMinimize|DMSwap|DMCascade|DMRestoreWindow|DMSaveWindow|DMRememberStage|DMWindowed) windowingEnabled
+# the Stage Manager engine (its functions, its hook groups, its source sections): windowing off -- the engine stops, the Mac status bar stays
+# (unnamed, it fell to the image's target: Stock status bar mode, which stopped the engine too but also took the menu bar; iPadOS 17 runs the
+# engine's 17 layout code untested, so a crash there must cost the engine, not the bar)
+sym MacStatusBarCore ^_?DMSM[A-Z0-9] windowingEnabled
+sym MacStatusBarCore \$(SMEngine|SMLayout16|SMLayout17|SMCornerRaddii|SMCornerRadii)\$ windowingEnabled
+sec MacStatusBarCore Stage\sManager\s(as\sthe\sengine|engine) windowingEnabled
+sec MacStatusBarCore iPadOS\s17's\slayout\sengine windowingEnabled
 sec MacStatusBarCore which\swindow\sengine windowingEnabled
 sec MacStatusBarCore Stage\sManager\sis\sheld\soff windowingEnabled
 sec MacStatusBarCore orange\sbutton windowingEnabled

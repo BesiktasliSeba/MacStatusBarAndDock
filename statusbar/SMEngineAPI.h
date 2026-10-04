@@ -429,6 +429,7 @@ DMSM_SIG(DMSMSigCenterV, @encode(void), @encode(id), @encode(id), @encode(CGRect
 DMSM_SIG(DMSMSigDodge, @encode(void), @encode(id), @encode(id), @encode(id), @encode(CGRect))
 DMSM_SIG(DMSMSigSetCenter, @encode(void), @encode(CGPoint), @encode(id))
 DMSM_SIG(DMSMSigCenterFor, @encode(CGPoint), @encode(id))
+DMSM_SIG(DMSMSigSizeFor, @encode(CGSize), @encode(id))                                     // -[SBChamoisOverlappingModel sizeForItem:] (optional edge rule, DMSMHookConstrain16)
 DMSM_SIG(DMSMSigPointInside, @encode(BOOL), @encode(CGPoint), @encode(id))
 DMSM_SIG(DMSMSigHitTest, @encode(id), @encode(CGPoint), @encode(id))
 DMSM_SIG(DMSMSigGridSize, @encode(CGSize), @encode(CGSize), @encode(id), @encode(id), @encode(CGRect))

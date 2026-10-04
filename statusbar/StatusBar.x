@@ -381,6 +381,7 @@ static void DMOpenFinderFileMenu(UIButton *btn);
 static void DMOpenFinderViewMenu(UIButton *btn);
 static void DMOpenNativeWindowMenu(UIButton *btn);
 static void DMSMWatchTurn(void);
+static void DMSMFitHiddenStages(id onScreen);
 static NSMutableDictionary *gSidePromptCtx;   // the side question being asked (DMPromptForSide)
 static NSMutableDictionary<NSString *, NSString *> *gSMFitSlots;   // (Fit to Window's arrangement for the Stage Manager engine, see DMSMFitTick)
 static NSMutableSet<NSString *> *gSMFreeWindows;
@@ -390,6 +391,7 @@ static id DMSMStageOf(NSString *bundle);
 static void DMSMForgetApp(NSString *bundle);
 static NSMutableDictionary<NSString *, NSNumber *> *gSMDockHeightBySize;
 static CGRect DMSMUsableAreaForStage(id stage, CGSize *screenOut);
+static CGRect DMSMUsableAreaForIdentity(id identity, CGSize *screenOut);
 static NSDictionary<NSString *, NSValue *> *DMSMOpenWindowFrames(void);
 static NSString *DMOtherHalfQuarter(NSString *halfSlot, BOOL first);
 static BOOL DMSMApplyLayouts(NSDictionary<NSString *, NSString *> *bundleToLayout);
@@ -1456,6 +1458,7 @@ static DMEngine DMActiveEngine(void) {
     return e;
 }
 #include "SMEngineAPI.h"   // (the Stage Manager engine's private API: checked wrappers + the start-up self-check, 2026-09-29)
+#include "SMFit.h"         // (where a Stage Manager window may go: sizes in points of their own reference, fitted into the desktop, 3 Oct; Mac test tools/test-smfit.sh)
 // ---- Stage Manager as the engine (iPadOS 16+, 2026-09-28, branch stage-manager) ----
 // Picked as "stagemanager" in Settings > Window Engine: Apple's own Stage Manager does the windowing (natively on M1/M2 iPads, through TrollPad on
 // older ones). None of the third-party engines is loaded (the root helper treats it like windowing off), and for all of their code paths there is NO
@@ -5255,7 +5258,7 @@ static void DMSMWatchTurn(void) {
         BOOL fitRetiles = DMFitEnabled() && tiled >= 2;   // (Fit to Window lays its tiles out again itself, DMSMFitTick)
         for (NSString *b in layouts) if (!(fitRetiles && gSMFitSlots[b])) put[b] = layouts[b];
         if (put.count) DMSMApplyLayouts(put);
-        CGRect area = DMUsableArea();
+        CGRect area = DMSMUsableAreaForIdentity(nil, NULL);   // (the iPad's desktop as Stage Manager's stage area has it: under the menu bar at 24)
         NSDictionary<NSString *, NSValue *> *frames = DMSMOpenWindowFrames();
         for (NSString *b in frames) {
             if (layouts[b]) continue;
@@ -5268,6 +5271,7 @@ static void DMSMWatchTurn(void) {
             DMSMSetWindowGeometry(b, CGPointMake(CGRectGetMidX(card) / scr.width, CGRectGetMidY(card) / scr.height), CGSizeMake(card.size.width / scr.width, card.size.height / scr.height));
         }
         DMLog([NSString stringWithFormat:@"[sm] the iPad turned: windows back in their layouts %@, the others kept inside the desktop", put]);
+        DMSMFitHiddenStages(frames.count ? DMSMWorkingStage() : nil);   // (and every stage not on screen, in the model)
     });
 }
 static void DMWatchDockChanges(void) {
@@ -25744,6 +25748,8 @@ static const DMCtxMetrics kCtxCompact = { 30.0, 14.0, 11.0, 13.0, 20.0, -9.5, 12
 static const DMCtxMetrics kCtxFinger  = { 40.0, 15.0, 12.0, 15.0, 25.5, -14.5, 14.0, -25.0 };
 static const CGFloat kCtxMaxRowH = 40.0;   // (the taller of the two: rows at or under it may be ours)
 static const void *kCtxCompactKey = &kCtxCompactKey;
+static const void *kCtxLeadKey = &kCtxLeadKey;   // (on a row's title-stack leading constraint: @[UIKit's own constant, the one set here])
+static const CGFloat kCtxSignedLead = 20.0;      // (UIKit's title inset past this leaves room for a sign before the title; a plain row's is under it)
 // Settings > Status Bar > App Menus > Haptic Touch Menus: Mac (the default) or Stock (iPadOS's own menus, 28 Sep). Read at most every 2 s, so a
 // change applies to the next menu. (debug: /tmp/msb-ctx-stock = the stock look, to compare)
 static BOOL DMContextMenuTheme(void) {
@@ -25835,7 +25841,15 @@ static BOOL DMCtxHasSubtitle(UIView *cell) {   // a row showing a subtitle under
             CGFloat want = k.constant;
             if (stack && k.firstAttribute == NSLayoutAttributeFirstBaseline && k.secondAttribute == NSLayoutAttributeTop) want = m.top;
             else if (stack && k.firstAttribute == NSLayoutAttributeLastBaseline && k.secondAttribute == NSLayoutAttributeBottom) want = m.bottom;
-            else if (stack && k.firstAttribute == NSLayoutAttributeLeading && k.secondAttribute == NSLayoutAttributeLeading) want = m.leading;
+            else if (stack && k.firstAttribute == NSLayoutAttributeLeading && k.secondAttribute == NSLayoutAttributeLeading) {
+                // (a row with a sign before its title -- iPadOS 15 puts a submenu's chevron there: Share… on a desktop icon -- has a wider inset of
+                //  UIKit's, kept: the title went over the sign, 1.3.1 logic test. UIKit's own value is the one it set, unless it is still ours)
+                NSArray *rec = objc_getAssociatedObject(k, kCtxLeadKey);
+                CGFloat stock = (rec.count == 2 && fabs(k.constant - [rec[1] doubleValue]) < 0.01) ? [rec[0] doubleValue] : k.constant;
+                want = stock > kCtxSignedLead ? stock : m.leading;
+                if (want == stock && rec.count != 2) DMLog([NSString stringWithFormat:@"[ctxmenu] a row with a sign before its title keeps UIKit's inset (%.1f)", stock]);
+                objc_setAssociatedObject(k, kCtxLeadKey, @[@(stock), @(want)], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
             else if (image && k.firstAttribute == NSLayoutAttributeCenterX && k.secondAttribute == NSLayoutAttributeTrailing) want = m.iconX;
             if (fabs(k.constant - want) > 0.01) k.constant = want;
         }
@@ -26662,9 +26676,84 @@ static id DMSMEntityIn(id stage, NSString *bundle) {   // (the entity of that ap
             if ([DMSMItemBundle(it) isEqual:bundle]) { id e = DMSMEntityForItem(it, identity); if (e) return e; }
     return DMSMNewEntity(bundle, identity);
 }
+// ---- a window's place as Stage Manager reads it, fitted into the desktop of its screen (SMFit.h, Mac test tools/test-smfit.sh) ------------------------
+// The card area of a screen's desktop (u: DMSMUsableAreaFor..., the window area under the menu bar, above the Dock): under our title bar as well;
+// behindDock: down to the screen's bottom edge (a window the user dragged behind the Dock keeps that place, gSMBehindDock).
+static CGRect DMSMCardDesk(CGRect u, CGSize scr, BOOL behindDock) {
+    CGFloat top = CGRectGetMinY(u) + kSMBarH, bottom = behindDock ? scr.height : CGRectGetMaxY(u);
+    return CGRectMake(CGRectGetMinX(u), top, CGRectGetWidth(u), bottom - top);
+}
+// A window's attributes made to fit the screen of `identity` as it is NOW: the size read in points of its OWN reference rectangle (Stage Manager reads
+// a size as a fraction of the reference kept with the attributes, not of the screen -- a window made in portrait keeps portrait's after a turn, so
+// it came back 737 pt tall into the 649 pt landscape desktop and Stage Manager kept its bottom above the Dock by pushing its top 40 pt above the
+// screen: no title bar, no traffic lights, iPad 2 3 Oct), at most the desktop, all of it inside (DMSMFitInDesk: when too big, top and left edges
+// win), handed over as fractions of THIS screen. Full-screen attributes (policy 2), sizes Stage Manager works out itself and attributes that fit
+// already are returned as they are (no rewrite). bundle: for the log.
+static id DMSMAttrsFitScreen(id attrs, id identity, BOOL behindDock, NSString *bundle) {
+    if (!DMSMIsAttrs(attrs) || DMSMPolicyOf(attrs) == 2) return attrs;
+    DMSMAttributedSize sz; CGPoint c;
+    if (!DMSMAttrAttributedSize(attrs, &sz) || !DMSMAttrCenter(attrs, &c)) return attrs;
+    CGSize scr = CGSizeZero;
+    CGRect u = DMSMUsableAreaForIdentity(identity, &scr);
+    if (scr.width < 1.0 || scr.height < 1.0 || CGRectIsEmpty(u) || CGRectIsNull(u)) return attrs;
+    CGSize pts = DMSMFitSizeInPoints(sz.normalizedSize, sz.referenceBounds, sz.type, scr), was = pts;
+    if (pts.width <= 0 || pts.height <= 0) return attrs;   // (a size Stage Manager works out itself: its grid caps it, _nearestGridSizeForSize)
+    CGPoint cp = CGPointMake(c.x * scr.width, c.y * scr.height), wasC = cp;
+    if (!DMSMFitInDesk(&pts, &cp, DMSMCardDesk(u, scr, behindDock))) return attrs;
+    DMSMAttributedSize ns = sz;
+    ns.normalizedSize = CGSizeMake(pts.width / scr.width, pts.height / scr.height); ns.type = 0;
+    ns.referenceBounds = CGRectMake(0, 0, scr.width, scr.height);
+    id a = DMSMAttrWith(attrs, ns, CGPointMake(cp.x / scr.width, cp.y / scr.height), DMSMPolicyOf(attrs), -1);
+    if (!a) return attrs;   // (refused: as it was -- Stage Manager's constraint still keeps the top edge inside, DMSMConstrainEdges16)
+    DM_FEATURE_MARK("sm-fit-screen");
+    DMLog([NSString stringWithFormat:@"[sm] %@: window fitted to the screen as it is now: %.0f x %.0f pt at %.0f, %.0f (size %@ of reference %@) -> %.0f x %.0f pt at %.0f, %.0f",
+        bundle ?: @"?", was.width, was.height, wasC.x - was.width / 2.0, wasC.y - was.height / 2.0, NSStringFromCGSize(sz.normalizedSize), NSStringFromCGRect(sz.referenceBounds),
+        pts.width, pts.height, cp.x - pts.width / 2.0, cp.y - pts.height / 2.0]);
+    return a;
+}
+// Every window a plan names (@[entity, role, attributes] each) fitted to the screen it is asked on -- the one place where our requests and launch
+// plans hand windows to Stage Manager (DMSMRequestOn below and the launch plans of DMSMJoinDesktop): a
+// window coming back from full screen, from another desktop or from a hidden stage after a turn is never asked for bigger than the desktop.
+static NSArray<NSArray *> *DMSMPlanFitted(id identity, NSArray<NSArray *> *plan) {
+    NSMutableArray *out = nil;
+    for (NSUInteger i = 0; i < plan.count; i++) {
+        NSArray *row = plan[i];
+        if (![row isKindOfClass:[NSArray class]] || row.count != 3) return plan;   // (malformed: the plan check refuses it as it is)
+        id b = DMCall(DMCall(row[0], @"application"), @"bundleIdentifier");
+        NSString *bundle = [b isKindOfClass:[NSString class]] ? b : nil;
+        id a = DMSMAttrsFitScreen(row[2], identity, bundle && [gSMBehindDock containsObject:bundle], bundle);
+        if (a == row[2]) continue;
+        if (!out) out = [plan mutableCopy];
+        out[i] = @[row[0], row[1], a];
+    }
+    return out ?: plan;
+}
+// The iPad turned: the stages NOT on screen (minimized windows, the stage left for the Home Screen) keep the other shape's sizes too, and Stage
+// Manager brings them back by itself later -- a minimized Settings opened again in landscape came back at portrait's 461 x 870 pt, its bottom and
+// resize corners past the screen's edge. Their windows are fitted to the new shape now, in the app switcher's model only (no request): iPadOS
+// 16.7.7 changes the stage in place and hands the same object back; a new object is put in its place (replaceAppLayout:withAppLayout:, as when
+// another engine takes over, DMSMFlattenStages). onScreen: the stage whose windows the turn handler asked for itself.
+static void DMSMFitHiddenStages(id onScreen) {
+    if (!DMSMEngine()) return;
+    int n = 0;
+    for (id al in [DMSMRecentStages() copy]) {
+        if ((onScreen && [al isEqual:onScreen]) || !DMSMIsMainIdentity(DMSMStageDisplayIdentity(al))) continue;
+        NSDictionary *m = DMSMStageItemsMap(al);
+        id st = al; BOOL fitted = NO;
+        for (id it in m) {
+            NSString *b = DMSMItemBundle(it);
+            id f = DMSMAttrsFitScreen(m[it], nil, b && [gSMBehindDock containsObject:b], b);
+            if (f == m[it]) continue;
+            id ns = DMSMStageWithAttrs(st, f, it);
+            if (ns) { st = ns; fitted = YES; }
+        }
+        if (fitted && (st == al || DMSMReplaceStage(al, st))) n++;   // (the same object: changed in place, nothing to replace)
+    }
+    if (n) { DM_FEATURE_MARK("sm-turn-fit-hidden"); DMLog([NSString stringWithFormat:@"[sm] the iPad turned: %d stage(s) not on screen fitted to the new shape (in the model)", n]); }
+}
 // A workspace transition on the display of `identity` naming these windows (DMSMRequestPlan, SMEngineAPI.h: the whole plan checked first).
 static BOOL DMSMRequestOn(id identity, NSString *label, NSArray<NSArray *> *plan, NSSet<NSNumber *> *allowed, id frontEntity) {
-    return DMSMRequestPlan(identity, DMSMIsMainIdentity(identity), label, plan, allowed, frontEntity);
+    return DMSMRequestPlan(identity, DMSMIsMainIdentity(identity), label, DMSMPlanFitted(identity, plan), allowed, frontEntity);
 }
 // The window a transition brings forward is also the stage's frontmost -- the one with keyboard focus, which Stage Manager credits the next
 // touches to. Only the order (lastInteractionTime) was set before: after a return from full screen Settings was in front but Clock kept the focus,
@@ -26839,24 +26928,25 @@ static id DMSMJoinAttributes(NSString *bundle, id frontAttrs, BOOL windowed, lon
     long policy = windowed ? 0 : 2;
     if (!windowed) { sz.normalizedSize = CGSizeMake(1.0, 1.0); sz.type = 3; c = CGPointMake(0.5, 0.5); }
     else {
-        if (base != own && haveCenter) c = CGPointMake(c.x + 0.05, c.y + 0.06);   // (cascaded from the front window)
-        if (!haveSize || DMSMPolicyOf(base) == 2 || sz.type == 3 || sz.normalizedSize.width <= 0 || sz.normalizedSize.height <= 0) { sz.normalizedSize = CGSizeMake(0.6, 0.72); sz.type = 0; c = CGPointMake(0.5, 0.48); }
-        sz.type = 0;
-        // (inside the usable desktop of the screen it joins: under the menu bar and title bar, above that screen's Dock -- logic test F8: a
-        //  window joining a TV stage was clamped with the iPad's Dock and menu bar)
+        BOOL dflt = !haveSize || DMSMPolicyOf(base) == 2 || sz.type == 3 || sz.normalizedSize.width <= 0 || sz.normalizedSize.height <= 0;
+        if (!dflt && base != own && haveCenter) c = CGPointMake(c.x + 0.05, c.y + 0.06);   // (cascaded from the front window)
+        // Worked out in points of the screen it joins and handed over as fractions of THAT screen, its reference set to it. Stage Manager reads a size
+        // as a fraction of the reference rectangle kept WITH the attributes, and this used to set the reference only when there was none: the 0.6 x 0.72
+        // default, meant for the screen as it is, kept the full-screen attributes' portrait reference in landscape and came out 461 x 737 pt in the
+        // 649 pt desktop -- its top 40 pt above the screen, no title bar or traffic lights (iPad 2, 3 Oct: Settings back from full screen with green).
+        // Its own size and a front window's (cascade) are read through their own reference (SMFit.h). Inside the usable desktop of the screen it joins:
+        // under the menu bar and title bar, above that screen's Dock (logic test F8: a window joining a TV stage was clamped with the iPad's).
         CGSize scr = CGSizeZero;
         CGRect u = DMSMUsableAreaForStage(stage, &scr);
-        if (CGRectIsEmpty(sz.referenceBounds) && scr.width > 0) sz.referenceBounds = CGRectMake(0, 0, scr.width, scr.height);   // (fractions of this screen)
-        if (scr.width > 0 && scr.height > 0 && !CGRectIsEmpty(u) && !CGRectIsNull(u)) {
-            CGFloat top = (CGRectGetMinY(u) + kSMBarH) / scr.height, bottom = CGRectGetMaxY(u) / scr.height;
-            CGFloat left = CGRectGetMinX(u) / scr.width, right = CGRectGetMaxX(u) / scr.width;
-            CGFloat w = MIN(sz.normalizedSize.width, right - left), h = MIN(sz.normalizedSize.height, bottom - top);
-            if (w > 0.05 && h > 0.05) {   // (a usable area too small to hold a window -- never seen -- leaves the size as it is)
-                sz.normalizedSize = CGSizeMake(w, h);
-                c.x = MIN(MAX(c.x, left + w / 2.0), right - w / 2.0);
-                c.y = MIN(MAX(c.y, top + h / 2.0), bottom - h / 2.0);
-            }
-        }
+        if (scr.width > 0 && scr.height > 0) {
+            CGSize pts = dflt ? CGSizeMake(0.6 * scr.width, 0.72 * scr.height) : DMSMFitSizeInPoints(sz.normalizedSize, sz.referenceBounds, 0, scr);
+            CGPoint cp = dflt ? CGPointMake(0.5 * scr.width, 0.48 * scr.height) : CGPointMake(c.x * scr.width, c.y * scr.height);
+            if (!CGRectIsEmpty(u) && !CGRectIsNull(u)) DMSMFitInDesk(&pts, &cp, DMSMCardDesk(u, scr, NO));   // (a desktop too small to hold a window -- never seen -- leaves it as it is)
+            sz.normalizedSize = CGSizeMake(pts.width / scr.width, pts.height / scr.height);
+            sz.referenceBounds = CGRectMake(0, 0, scr.width, scr.height);
+            c = CGPointMake(cp.x / scr.width, cp.y / scr.height);
+        } else if (dflt) { sz.normalizedSize = CGSizeMake(0.6, 0.72); c = CGPointMake(0.5, 0.48); }
+        sz.type = 0;
     }
     return DMSMAttrWith(base, sz, c, policy, MAX(0L, newest + 1));   // (nil if any part is refused: never half-made attributes)
 }
@@ -26968,6 +27058,9 @@ static BOOL DMSMToggleZoom(NSString *bundle) {
     }
     id back = gSMPreZoom[bundle];   // (its own size before full screen; none known: the default below -- copying another window's size made
                                     //  SofaScore a 1024 x 283 strip, logic test SM-5)
+    // (its place from before full screen made to fit the screen as it is NOW: the iPad may have turned while it was full screen -- a window made in
+    //  portrait came back 737 pt tall into landscape, its title bar above the screen, iPad 2 3 Oct)
+    if (back) back = DMSMAttrsFitScreen(back, DMSMStageDisplayIdentity(stage), [gSMBehindDock containsObject:bundle], bundle);
     if (!back) {   // (a window size of its own, between the menu bar and the Dock -- the same rule as every window joining the desktop)
         long t = (long)DMSMAttrTimeOr(attrs, 1);
         back = DMSMJoinAttributes(bundle, attrs, YES, t - 1, stage);
@@ -27312,8 +27405,9 @@ static NSDictionary<NSString *, NSValue *> *DMSMOpenWindowFrames(void) {   // (t
 }
 // The usable desktop of the screen a stage is on: the iPad's (DMUsableArea), or the TV's -- under its menu bar, above ITS Dock (Stage Manager's own
 // Dock height for that screen size, from the stage-area pass), so TV windows no longer reach under the TV's Dock.
-static CGRect DMSMUsableAreaForStage(id stage, CGSize *screenOut) {
-    id identity = DMSMStageDisplayIdentity(stage);
+static CGRect DMSMUsableAreaForIdentity(id identity, CGSize *screenOut);
+static CGRect DMSMUsableAreaForStage(id stage, CGSize *screenOut) { return DMSMUsableAreaForIdentity(DMSMStageDisplayIdentity(stage), screenOut); }
+static CGRect DMSMUsableAreaForIdentity(id identity, CGSize *screenOut) {   // (the same for the display a plan is asked on)
     if (!DMSMIsMainIdentity(identity)) {
         for (UIScreen *sc in [UIScreen screens]) {
             if (![DMSMIdentityOfScreen(sc) isEqual:identity]) continue;
@@ -27325,7 +27419,12 @@ static CGRect DMSMUsableAreaForStage(id stage, CGSize *screenOut) {
         }
     }
     if (screenOut) *screenOut = [UIScreen mainScreen].bounds.size;
-    return DMUsableArea();
+    // (the top where Stage Manager's stage area has it: its status bar height raised to our menu bar's 24 pt, our title bar below that -- the
+    //  _statusBarHeight hook, also while the bar hides itself. DMUsableArea starts at 23 for the other engines' tiles: Fit tiles and windows placed
+    //  from there stood 1 pt above the stage area, their title bars a point under the menu bar, and Stage Manager's constraint moved them again)
+    CGRect u = DMUsableArea();
+    if (CGRectGetMinY(u) < 24.0) u = CGRectMake(u.origin.x, 24.0, u.size.width, MAX(100.0, CGRectGetMaxY(u) - 24.0));
+    return u;
 }
 // Attributes placing a window at a layout on its stage's screen (the whole window; the card is under our title bar).
 static id DMSMAttrsForLayoutIn(id attrs, NSString *name, id stage) {
@@ -27581,12 +27680,16 @@ static void DMSMJoinDesktop(id ctx) {
     NSString *what = nil;
     id dismissFullIn = nil;   // (full screen launch: the stage whose previous full-screen app then leaves -- only once the plan is written)
     if (!map.count) {
-        // An empty desktop: the app still opens as a WINDOW when apps open as windows -- its own last window size, else the default window -- not
-        // at whatever Stage Manager remembered (1.1.0: an app once in full screen, like Safari, came back full screen from then on)
-        id attrs = DMWindowedLaunchOn() ? DMSMJoinAttributes(bundle, nil, YES, 0, nil) : nil;
+        // An empty desktop: the app opens as Open Apps as Windows says, never at whatever Stage Manager remembered -- as a WINDOW (its own last window
+        // size, else the default window; 1.1.0: an app once in full screen, like Safari, came back full screen from then on), or FULL SCREEN, as from
+        // the Home Screen while a stage is on record (DMSMOpenFullScreenStage, which needs a window to copy and so never covered this case): a window
+        // Stage Manager remembered from the other orientation came back 379 x 921 pt in the 649 pt landscape desktop, 200 pt past the screen's bottom
+        // edge, its resize corners out of reach (iPad 2, 1.3.2 logic test)
+        BOOL windowed = DMWindowedLaunchOn();
+        id attrs = DMSMJoinAttributes(bundle, nil, windowed, 0, nil);
         if (!attrs) { DMLog([NSString stringWithFormat:@"[smjoin] %@: no desktop to join (a new stage, Stage Manager's own size)", bundle]); return; }
         [plan addObject:@[act, @1, attrs]];
-        what = [NSString stringWithFormat:@"[smjoin] %@: a new desktop, opened as a window", bundle];
+        what = [NSString stringWithFormat:@"[smjoin] %@: a new desktop, opened %@", bundle, windowed ? @"as a window" : @"full screen (apps do not open as windows)"];
     } else {
         for (id it in map) if ([DMSMItemBundle(it) isEqual:bundle]) { DMLog([NSString stringWithFormat:@"[smjoin] %@: already on the desktop", bundle]); return; }   // (already on the desktop: Stage Manager brings it forward)
         BOOL windowed = DMWindowedLaunchOn();
@@ -27624,12 +27727,15 @@ static void DMSMJoinDesktop(id ctx) {
         dismissFullIn = windowed ? nil : desk;
         what = [NSString stringWithFormat:@"[smengine] %@ joins the desktop (role %ld, %lu window(s) kept%@)%@", bundle, mine, (unsigned long)kept.count, map.count > 3 ? @", the oldest left out" : @"", windowed ? @"" : @" full screen"];
     }
+    // (every window of the plan inside the desktop as it is now -- the desktop's own windows too: a stage left while the iPad turned kept the other
+    //  shape's sizes, SMFit.h)
+    NSArray<NSArray *> *toWrite = DMSMPlanFitted(identity, plan);
     NSString *why = nil;
-    if (!DMSMPlanValid(plan, DMSMNewWindowRoles(), &why)) { DMSMAPIFail(@"joining the desktop", [NSString stringWithFormat:@"%@: plan refused, context left as it was (%@)", bundle, why]); return; }
+    if (!DMSMPlanValid(toWrite, DMSMNewWindowRoles(), &why)) { DMSMAPIFail(@"joining the desktop", [NSString stringWithFormat:@"%@: plan refused, context left as it was (%@)", bundle, why]); return; }
 #if DEBUG
-    gSMSimulateWriteFail = DMTestFlag("/tmp/msb-sm-simulate-writefail") ? (int)plan.count - 1 : -1;   // (debug: the last write throws -- the roll-back)
+    gSMSimulateWriteFail = DMTestFlag("/tmp/msb-sm-simulate-writefail") ? (int)toWrite.count - 1 : -1;   // (debug: the last write throws -- the roll-back)
 #endif
-    BOOL ok = DMSMWritePlan(ctx, plan, act);
+    BOOL ok = DMSMWritePlan(ctx, toWrite, act);
 #if DEBUG
     gSMSimulateWriteFail = -1;
 #endif
@@ -28080,6 +28186,64 @@ static BOOL gSMLoneCenterNext = NO;
 }
 %end
 %end
+// iPadOS 16: Stage Manager's own step that keeps every window inside the stage area (-[SBChamoisOverlappingController _constrainModelVertically:
+// toStageArea:] / ...Horizontally:) keeps a window TALLER than the area with its bottom on the area's bottom: its top goes above the area, under the
+// menu bar, our title bar and traffic lights out of reach (iPad 2, 3 Oct: Settings back from full screen, 737 pt tall in the 649 pt landscape area,
+// its top at -40). Our engine's rule, as in the iPadOS 17 pass (DMSMClampCenter): the TOP edge wins -- such a window starts at the area's top and
+// reaches down behind the Dock; too wide, its LEFT edge (the traffic lights) wins. Our own requests never ask for a window bigger than the desktop
+// (DMSMPlanFitted); this rule is for the windows Stage Manager brings back by itself (a stage kept from the other shape: one left hidden while the
+// iPad turned, the App Switcher). Full-screen-sized windows are Apple's (SMFit.h DMSMFitEdgesWin). Optional (not in the start-up check): another
+// name or signature on another iPadOS leaves Apple's step as it is, and says so.
+static void (*o_SMConstrainV)(id, SEL, id, CGRect), (*o_SMConstrainH)(id, SEL, id, CGRect);
+static void DMSMConstrainEdges16(id m, CGRect area, int vertical) {
+    if (!DMSMFree() || !DMSMRectSane(area)) return;
+    SEL itemsS = NSSelectorFromString(@"items"), sizeS = NSSelectorFromString(@"sizeForItem:"), centerS = NSSelectorFromString(@"centerForItem:");
+    SEL setS = NSSelectorFromString(@"setCenter:forItem:"), contS = NSSelectorFromString(@"containerBounds");
+    if (!DMSMSigOK(m, itemsS, DMSMSigObj(), "items") || !DMSMSigOK(m, sizeS, DMSMSigSizeFor(), "sizeForItem:") || !DMSMSigOK(m, centerS, DMSMSigCenterFor(), "centerForItem:")
+        || !DMSMSigOK(m, setS, DMSMSigSetCenter(), "setCenter:forItem:")) return;
+    CGSize container = CGSizeZero;
+    if (DMSMSigOK(m, contS, DMSMSigRect(), "containerBounds")) { CGRect cb = ((CGRect (*)(id, SEL))objc_msgSend)(m, contS); if (DMSMRectSane(cb)) container = cb.size; }
+    if (!(container.width > 0) || !(container.height > 0)) return;   // (no container known: a full-screen window can't be told apart -- Apple's step as it is)
+    id items = ((id (*)(id, SEL))objc_msgSend)(m, itemsS);
+    NSArray *list = [items isKindOfClass:[NSArray class]] ? [(NSArray *)items copy] : [items isKindOfClass:[NSOrderedSet class]] ? [(NSOrderedSet *)items array]
+                  : [items isKindOfClass:[NSSet class]] ? [(NSSet *)items allObjects] : nil;   // (a copy: the centers change while we go through them)
+    for (id it in list) {
+        CGSize s = ((CGSize (*)(id, SEL, id))objc_msgSend)(m, sizeS, it);
+        CGPoint c = ((CGPoint (*)(id, SEL, id))objc_msgSend)(m, centerS, it), was = c;
+        if (!DMSMFitEdgesWin(&c, s, area, container, vertical)) continue;
+        BOOL lone = gSMLoneCenterNext; gSMLoneCenterNext = NO;   // (our move is not the lone window's re-centring, which our setCenter: hook keeps out)
+        ((void (*)(id, SEL, CGPoint, id))objc_msgSend)(m, setS, c, it);
+        gSMLoneCenterNext = lone;
+        DM_FEATURE_MARK("sm-top-edge-wins");
+        static int logged = 0;
+        if (logged < 30) { logged++; DMLog([NSString stringWithFormat:@"[sm] %@ (%.0f x %.0f pt) bigger than the stage area %@: %@ edge kept inside, center %@ -> %@", DMSMItemBundle(it) ?: @"a window", s.width, s.height, NSStringFromCGRect(area), vertical ? @"top" : @"left", NSStringFromCGPoint(was), NSStringFromCGPoint(c)]); }
+    }
+}
+static void DMSMConstrainV16(id self, SEL _cmd, id m, CGRect area) { o_SMConstrainV(self, _cmd, m, area); DMSMConstrainEdges16(m, area, 1); }
+static void DMSMConstrainH16(id self, SEL _cmd, id m, CGRect area) { o_SMConstrainH(self, _cmd, m, area); DMSMConstrainEdges16(m, area, 0); }
+static void DMSMHookConstrain16(void) {
+    static BOOL done = NO;
+    if (done) return;
+    done = YES;
+    Class oc = objc_getClass("SBChamoisOverlappingController"), mc = objc_getClass("SBMutableChamoisOverlappingModel");
+    SEL v = NSSelectorFromString(@"_constrainModelVertically:toStageArea:"), h = NSSelectorFromString(@"_constrainModelHorizontally:toStageArea:");
+    NSString *want = DMSMExpect(@encode(void), @encode(id), @encode(CGRect), NULL);
+    Method mv = oc ? class_getInstanceMethod(oc, v) : NULL, mh = oc ? class_getInstanceMethod(oc, h) : NULL;
+    // (the model's readers and writer as the rule uses them, on the mutable model Apple's pass works on)
+    Method ms = mc ? class_getInstanceMethod(mc, NSSelectorFromString(@"sizeForItem:")) : NULL, mcf = mc ? class_getInstanceMethod(mc, NSSelectorFromString(@"centerForItem:")) : NULL;
+    Method mset = mc ? class_getInstanceMethod(mc, NSSelectorFromString(@"setCenter:forItem:")) : NULL, mit = mc ? class_getInstanceMethod(mc, NSSelectorFromString(@"items")) : NULL;
+    Method mcb = mc ? class_getInstanceMethod(mc, NSSelectorFromString(@"containerBounds")) : NULL;   // (tells a full-screen window, which the rule leaves alone)
+    BOOL model = ms && mcf && mset && mit && mcb && [DMSMSigOfMethod(ms) isEqualToString:DMSMSigSizeFor()] && [DMSMSigOfMethod(mcf) isEqualToString:DMSMSigCenterFor()]
+              && [DMSMSigOfMethod(mset) isEqualToString:DMSMSigSetCenter()] && [DMSMSigOfMethod(mit) isEqualToString:DMSMSigObj()]
+              && [DMSMSigOfMethod(mcb) isEqualToString:DMSMSigRect()];
+    if (!model || !mv || !mh || ![DMSMSigOfMethod(mv) isEqualToString:want] || ![DMSMSigOfMethod(mh) isEqualToString:want]) {
+        DMLog(@"[smengine] Stage Manager's stage-area constraint is not as expected here: windows bigger than the stage area are kept as Apple keeps them");
+        return;
+    }
+    MSHookMessageEx(oc, v, (IMP)DMSMConstrainV16, (IMP *)&o_SMConstrainV);
+    MSHookMessageEx(oc, h, (IMP)DMSMConstrainH16, (IMP *)&o_SMConstrainH);
+    DMLog(@"[smengine] a window bigger than the stage area keeps its top and left edges inside (title bar and traffic lights on the screen)");
+}
 // The windows' corner radius (Stage Manager's own: rounder than a Mac window): under whichever name this iPadOS has (stageCornerRaddii, sic,
 // through 17; stageCornerRadii from 18.2 -- kSMNeeds' alt name, DMSMCornerRadiusSelector).
 %group SMCornerRaddii
@@ -28259,7 +28423,10 @@ static void DMSMSelfCheck(void) {
         if (gSMLayoutGen == 17) {
             DM_FEATURE_MARK("sm-layout-17");
             %init(SMLayout17);
-        } else %init(SMLayout16);
+        } else {
+            %init(SMLayout16);
+            DMSMHookConstrain16();   // (optional: a window bigger than the stage area keeps its top and left edges inside)
+        }
         const char *corner = DMSMCornerRadiusSelector();   // (checked above: one of the two names exists with our signature)
         if (corner && !strcmp(corner, "stageCornerRaddii")) %init(SMCornerRaddii);
         else if (corner) %init(SMCornerRadii);

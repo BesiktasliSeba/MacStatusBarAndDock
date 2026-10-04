@@ -69,6 +69,11 @@ if [ -f "$MAP" ] && [ -n "$DSYM" ]; then
   # (auto-hide is off on this Mac, as for a new user: a crash in its code can't be the switch, so Stock status bar mode instead)
   real core-autohide "pref MacStatusBarCore $D stockStatusBar 1 *" --symbol "$DSYM" MacStatusBarCore '^_DMAutoHide'
   real core-aerial "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore 'logos_method\$AerialStyle\$'
+  # the Stage Manager engine (its functions, its hook groups, the window fit and the stage-area hook, 1.3.2): Windowing off, the Mac status bar stays
+  real core-sm-zoom "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMToggleZoom$'
+  real core-sm-fit "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMAttrsFitScreen'
+  real core-sm-hook16 "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMConstrainEdges16'
+  real core-sm-group "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore 'logos_method\$SMLayout16\$'
   real core-context "part MacStatusBarCore - - 0 the status bar|the Mac status bar" --symbol "$DSYM" MacStatusBarCore 'logos_method\$MacContextMenus\$'
   real core-today "pref MacStatusBarCore $D clockOpensToday 0 *" --map "$MAP" MacStatusBarCore arm64 clockOpensToday
   real dock-downloads "pref DockMagnification com.besiktasliseba.dockmagnification showDownloads 0 *" --map "$MAP" DockMagnification arm64e showDownloads

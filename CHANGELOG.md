@@ -2,6 +2,16 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.3.2
+
+### Fixes
+- Stage Manager engine: a window coming back from full screen now always lands below the menu bar, with its title bar and traffic lights on the screen, in every orientation. The same goes for windows brought back after you turn the iPad, minimized ones included.
+- Stage Manager engine: with Open Apps as Windows off, an app opened when no windows are open now opens full screen like every other app, instead of at an old window size that could reach past the bottom of the screen.
+- Stage Manager engine: Fit to Window tiles and Window menu layouts line up exactly under the menu bar.
+- Desktop: the Dock reliably comes back in front after a desktop menu closes.
+- Haptic Touch menus (iPadOS 15): the arrow of a submenu, such as Share, no longer covers the first letter of its name.
+- Automatic Crash Recovery: a crash in the Stage Manager window engine now turns off only Windowing, and the Mac menu bar stays on.
+
 ## 1.3.1
 
 ### Fixes
