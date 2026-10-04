@@ -78,6 +78,13 @@ if [ -f "$MAP" ] && [ -n "$DSYM" ]; then
   real core-forcequit "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMForceQuitBundle$'
   real core-forcequit-export "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?MSBDForceQuitApp$'
   real core-appswithwindows "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?MSBDAppsWithWindows$'
+  # (its blocks -- the kill and the switcher clean-up after the window closed -- fell to their section before, 1.3.5 round 2 R3-L3; a DMSM function's
+  #  block in StatusBar.x the same way)
+  real core-forcequit-block "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^___DMForceQuitBundle_block_invoke'
+  real core-sm-block "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^___DMSMWindowAction_block_invoke'
+  # (the menu-closing wait of window changes and its poll's block, which closes SpringBoard's icon menu after 2 s: Windowing, not "part" -- L-3)
+  real core-ctxwait "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMWaitForMenuToClose$'
+  real core-ctxpoll "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^___DMContextMenuPoll_block_invoke'
   # (sm-desktop: the Home Screen behind the windows, the desktop join of SpringBoard's own transitions and its rule's blocks, the strip gate)
   real core-sm-desk "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMDeskHomeBehind$'
   real core-sm-joinasked "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMJoinStageAsked$'
@@ -88,6 +95,13 @@ if [ -f "$MAP" ] && [ -n "$DSYM" ]; then
   real core-sm-button "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore 'logos_method\$StageManagerButton\$'
   real core-sm-buttonhook "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMInitStageManagerButtonHook$'
   real core-sm-offwait "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMDefaultChangeHook$'
+  # (sm-nolimit: Apple's window limit answered by us, the role table, the Fit plan for more than four windows)
+  real core-sm-limit "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMMaxAppsOnStage$'
+  real core-sm-roles "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMRolesDerive$'
+  real core-sm-fitplan "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMFitPlanDecide$'
+  # (1.3.6: one window, one role -- the context put right before SpringBoard reads it, and its rule)
+  real core-sm-rolerepair "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMRepairRoles$'
+  real core-sm-rolerepairplan "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMRoleRepairPlan$'
   # every Stage Manager hook group of this build (%group SM...): Windowing off -- 16.0's SMLayout160 / SMGrid160 fell to the image's target in the
   # first 1.3.4 build (the stock status bar instead, logic test); a new SM group must not
   smgroups=$(nm -s __TEXT __text "$DSYM" | grep -oE 'logos_method\$SM[A-Za-z0-9]*\$' | sed 's/^logos_method\$//; s/\$$//' | sort -u)

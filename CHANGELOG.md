@@ -2,6 +2,21 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.3.6
+
+### Improvements
+- Stage Manager engine: a desktop now holds up to 7 windows instead of 4. With Fit to Window, four windows stay tiled and the ones after them open as regular windows over the tiles, as with the other engines.
+- Desktop icons now show up together with the app icons after a respring. Before, they came a few seconds later, along with the windows.
+
+### Fixes
+- Stage Manager engine: closing a window of an app that has several windows, like Safari, now closes only that window. Before, when it was the only window on screen, the app's other windows closed too, together with the windows next to them.
+- Stage Manager engine: minimizing a window no longer hides another window along with it. On a desktop of four windows, minimizing the last one opened could also hide the one opened before it.
+- Stage Manager engine: switching to another window engine and back without a respring no longer leaves the Home Screen hidden behind the windows until a window is tapped.
+- Force Quit in an app icon's menu, on the Home Screen or in the Dock, now lets the menu finish closing before the app's window closes.
+
+### Compatibility
+- iPadOS 16.0: a user confirmed the basics of the Stage Manager engine (apps open as windows, resizing and the traffic lights work) and that the menu bar works with Apple's own Stage Manager since 1.3.3. Settings keeps calling it "Untested" on 16.0 until a longer test is done. Thanks for the report.
+
 ## 1.3.5
 
 ### Improvements

@@ -111,7 +111,7 @@ int main(void) {
             Check([NSString stringWithFormat:@"17.0.3 signature: %s", sigs[i].what], [a isEqualToString:o], [NSString stringWithFormat:@"%@ / %@", a, o]);
         }
         // 2. the table choice
-        Check(@"layout16: 16 rows in (12 of 16.1+, 12 of 16.0: its pass, the calculator, the bounding box; the resize corners), 17 rows out", Rows(16, 16) == 25 && Rows(16, 17) == 0, [NSString stringWithFormat:@"%lu / %lu", (unsigned long)Rows(16, 16), (unsigned long)Rows(16, 17)]);
+        Check(@"layout16: 16 rows in (12 of 16.1+, 12 of 16.0: its pass, the calculator, the bounding box), 17 rows out", Rows(16, 16) == 24 && Rows(16, 17) == 0, [NSString stringWithFormat:@"%lu / %lu", (unsigned long)Rows(16, 16), (unsigned long)Rows(16, 17)]);
         Check(@"layout17: 17 rows in, 16 rows out", Rows(17, 17) == 15 && Rows(17, 16) == 0, [NSString stringWithFormat:@"%lu / %lu", (unsigned long)Rows(17, 17), (unsigned long)Rows(17, 16)]);
         Check(@"shared rows in both tables", Rows(16, 0) == Rows(17, 0) && Rows(16, 0) > 50, [NSString stringWithFormat:@"%lu", (unsigned long)Rows(16, 0)]);
         Check(@"this Mac (macOS major >= 17 counts as 17) picks by version", DMSMLayoutGenFor(nil) == ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17 ? 17 : 16), @"");

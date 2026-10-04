@@ -401,11 +401,14 @@ static void DMOpenFinderFileMenu(UIButton *btn);
 static void DMOpenFinderViewMenu(UIButton *btn);
 static void DMOpenNativeWindowMenu(UIButton *btn);
 static void DMSMWatchTurn(void);
+static void DMSMLimitTick(void);   // (SMLimit.h)
+static void DMSMDeskWatchEngine(void);   // (SMDesktop.h: the switcher's style updated when the engine changes without a respring)
 static void DMSMFitHiddenStages(id onScreen);
 static NSMutableDictionary *gSidePromptCtx;   // the side question being asked (DMPromptForSide)
 static NSMutableDictionary<NSString *, NSString *> *gSMFitSlots;   // (Fit to Window's arrangement for the Stage Manager engine, see DMSMFitTick)
 static NSMutableSet<NSString *> *gSMFreeWindows;
 static BOOL DMSMWindowAction(NSString *bundleID, NSString *name);
+static void DMSMNoteRemoving(NSString *bundle, id stage);   // (SMLimit.h: the window our Minimize takes out)
 static int DMSMTakeOutOfHiddenStages(NSString *bundle);   // (Stage Manager engine: a force-quit app's item out of the stages not on screen, below)
 static void DMSMSetMinimized(NSString *bundle, BOOL on);
 static id DMSMStageOf(NSString *bundle);
@@ -901,16 +904,43 @@ static UIViewController *DMAnyContextMenuVC(UIWindow **inWindow) {
 static NSMutableDictionary<NSString *, dispatch_block_t> *gCtxWaiting = nil;
 static NSMutableArray<NSString *> *gCtxWaitOrder = nil;
 static BOOL gCtxPolling = NO, gCtxFlushing = NO;
+static BOOL gCtxIconMenus = NO;   // (a waiting change also waits for SpringBoard's own icon menus: every window change; not the desktop's folder read)
+// A Home Screen or Dock icon's own Haptic Touch menu is SpringBoard's: no presented view controller to find, its container view sits in the Home
+// Screen's or the Dock's window until its dismissal has finished (gHomeMenuOpen / gDockMenuOpen, set from that view). The same wait applies -- the
+// icon's Force Quit ran while its menu was still closing (1.3.5 round 2 R3-L1).
+static BOOL DMIconMenuOpen(void);
+static BOOL DMDockIconMenuOpen(void);
+// After 2 s: SpringBoard's own icon menu closed by SpringBoard (-[SBHIconManager dismissIconContextMenu], as the Escape key does).
+static void DMDismissIconMenuNow(void) {
+    id im = DMCall(DMCall(objc_getClass("SBIconController"), @"sharedInstance"), @"iconManager");
+    SEL showing = NSSelectorFromString(@"isShowingIconContextMenu"), dismiss = NSSelectorFromString(@"dismissIconContextMenu");
+    if (![im respondsToSelector:showing] || ![im respondsToSelector:dismiss]) return;
+    if (((BOOL (*)(id, SEL))objc_msgSend)(im, showing)) ((void (*)(id, SEL))objc_msgSend)(im, dismiss);
+}
 static void DMContextMenuPoll(int n) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UIWindow *in = nil;
         UIViewController *menu = DMAnyContextMenuVC(&in);
-        if (menu && n < 20) { DMContextMenuPoll(n + 1); return; }
-        if (menu) {
-            DMLog([NSString stringWithFormat:@"[ctxmenu] a menu (%@ in %@) is still up after 2 s: closed without animation first", NSStringFromClass([menu class]), NSStringFromClass([in class])]);
-            if (!menu.isBeingDismissed) [menu.presentingViewController dismissViewControllerAnimated:NO completion:nil];
+        BOOL iconMenu = gCtxIconMenus && DMIconMenuOpen();
+        if ((menu || iconMenu) && n < 20) { DMContextMenuPoll(n + 1); return; }
+        if (n == 20) {   // (after 2 s: the menu is closed first)
+            if (menu) {
+                DMLog([NSString stringWithFormat:@"[ctxmenu] a menu (%@ in %@) is still up after 2 s: closed without animation first", NSStringFromClass([menu class]), NSStringFromClass([in class])]);
+                if (!menu.isBeingDismissed) [menu.presentingViewController dismissViewControllerAnimated:NO completion:nil];
+            } else if (iconMenu) {
+                DMLog(@"[ctxmenu] an icon menu of SpringBoard's is still up after 2 s: closed by SpringBoard first");
+                DMDismissIconMenuNow();
+            }
+            // (SpringBoard's own icon menus -- presented controller or not (the Dock's is one on 15 and 16) -- leave their window only when their
+            //  container view goes, 0.2-0.7 s after a dismissal: the waiting changes run then, not during the dismissal the wait is there for --
+            //  1.3.6 logic test L-2 / L-8. At most 1.2 s more)
+            if (menu || iconMenu) { DMContextMenuPoll(n + 1); return; }
         }
-        gCtxPolling = NO;
+        if (n > 20 && (menu || iconMenu)) {
+            if (n < 32) { DMContextMenuPoll(n + 1); return; }
+            DMLog(@"[ctxmenu] a menu is still there 1.2 s after it was closed: going on");
+        }
+        gCtxPolling = NO; gCtxIconMenus = NO;
         NSArray<NSString *> *keys = [gCtxWaitOrder copy]; NSDictionary<NSString *, dispatch_block_t> *blocks = [gCtxWaiting copy];
         [gCtxWaitOrder removeAllObjects]; [gCtxWaiting removeAllObjects];
         DMLog([NSString stringWithFormat:@"[ctxmenu] menu gone after %.1f s: %@ now", (n + 1) * 0.1, [keys componentsJoinedByString:@", "]]);
@@ -919,19 +949,25 @@ static void DMContextMenuPoll(int n) {
         gCtxFlushing = NO;
     });
 }
-// YES = held back (`again` runs once the menu is gone; a newer call with the same key replaces a waiting one).
-static BOOL DMWaitForContextMenu(NSString *key, dispatch_block_t again) {
+// YES = held back (`again` runs once the menu is gone; a newer call with the same key replaces a waiting one). iconMenus: SpringBoard's own icon
+// menus count too (a window change can rebuild the Dock under a Dock icon's menu); the desktop's folder read only touches its own icons.
+__attribute__((noinline)) static BOOL DMWaitForMenuToClose(NSString *key, dispatch_block_t again, BOOL iconMenus) {   // (noinline: its own range in the release crash map)
     if (gCtxFlushing || !again || DMTestFlag("/tmp/msb-noctxwait")) return NO;
     UIWindow *in = nil;
     UIViewController *menu = DMAnyContextMenuVC(&in);
-    if (!menu) return NO;
+    BOOL iconMenu = !menu && iconMenus && DMIconMenuOpen();
+    if (!menu && !iconMenu) return NO;
     if (!gCtxWaiting) { gCtxWaiting = [NSMutableDictionary dictionary]; gCtxWaitOrder = [NSMutableArray array]; }
     if (!gCtxWaiting[key]) [gCtxWaitOrder addObject:key];
     gCtxWaiting[key] = [again copy];
-    DMLog([NSString stringWithFormat:@"[ctxmenu] %@ waits: a menu is %@ (%@ in %@)", key, menu.isBeingDismissed ? @"fading out" : @"up", NSStringFromClass([menu class]), NSStringFromClass([in class])]);
+    if (iconMenus) gCtxIconMenus = YES;
+    if (iconMenu) DMLog([NSString stringWithFormat:@"[ctxmenu] %@ waits: a %@ icon menu of SpringBoard's is up or closing", key, DMDockIconMenuOpen() ? @"Dock" : @"Home Screen"]);
+    else DMLog([NSString stringWithFormat:@"[ctxmenu] %@ waits: a menu is %@ (%@ in %@)", key, menu.isBeingDismissed ? @"fading out" : @"up", NSStringFromClass([menu class]), NSStringFromClass([in class])]);
     if (!gCtxPolling) { gCtxPolling = YES; DMContextMenuPoll(0); }
     return YES;
 }
+static BOOL DMWaitForContextMenu(NSString *key, dispatch_block_t again) { return DMWaitForMenuToClose(key, again, YES); }   // (window changes)
+static BOOL DMWaitForOwnMenus(NSString *key, dispatch_block_t again) { return DMWaitForMenuToClose(key, again, NO); }      // (the desktop's folder read)
 static NSSet<NSString *> *DMSwitcherBundleIDs(id sw);
 static NSSet<NSString *> *DMLiveRunningBundleIDs(void);
 static void DMForceQuitBundle(NSString *bundleID) {
@@ -1482,6 +1518,8 @@ static DMEngine DMActiveEngine(void) {
     lastSeen = (int)e;
     return e;
 }
+#include "SMRoles.h"       // (the window roles a stage has, so how many windows a desktop holds: SpringBoard's own role space, sm-nolimit 4 Oct; Mac test tools/test-smroles.sh)
+#include "SMFitPlan.h"     // (Fit to Window on a Stage Manager desktop of more than four windows: four tiles keep their places, sm-nolimit)
 #include "SMEngineAPI.h"   // (the Stage Manager engine's private API: checked wrappers + the start-up self-check, 2026-09-29)
 #include "SMFit.h"         // (where a Stage Manager window may go: sizes in points of their own reference, fitted into the desktop, 3 Oct; Mac test tools/test-smfit.sh)
 // ---- Stage Manager as the engine (iPadOS 16+, 2026-09-28, branch stage-manager) ----
@@ -1762,6 +1800,8 @@ static BOOL gWindowsBehindApps = YES;                // Settings > Mac Status Ba
 static BOOL gWindowsPinnedForward = NO;              // brought over the current full-screen app on purpose
 static BOOL gDockMenuOpen = NO;                      // a Dock icon's Haptic Touch menu is showing
 static BOOL gHomeMenuOpen = NO;                      // a Home Screen icon's Haptic Touch menu is showing (the windows fade like for the App Library)
+static BOOL DMIconMenuOpen(void) { return gDockMenuOpen || gHomeMenuOpen; }   // (the menu-closing wait, DMWaitForContextMenu)
+static BOOL DMDockIconMenuOpen(void) { return gDockMenuOpen; }
 // A full-screen app sitting behind windows still shows through around them; tapping that visible part reclaims the status bar's name and traffic lights
 // for it, the same way clicking a partly-covered window's visible edge focuses it on a Mac, even though the windows stay exactly where they are (on
 // top). A tap on a window (DMRaiseStageForBundle) gives it back; so does the front app itself changing (a fresh value here is only ever meaningful for
@@ -1920,7 +1960,9 @@ static void DMPerfReport(void) {
 #if DEBUG
 static CFTimeInterval gIdleQuietUntil;
 #endif
+static BOOL gDMWatcherStarted = NO;   // (the 0.2 s watcher has run once: the desktop's start-up look hands over to it, Desktop.h)
 static void DMSyncWindowsForLibrary(void) {
+    gDMWatcherStarted = YES;
 #if DEBUG
     if (CACurrentMediaTime() < gIdleQuietUntil) return;
 #endif
@@ -2090,6 +2132,7 @@ static void DMStageManagerWatch(void) {
             else if (notStaying < 3) DMLog([NSString stringWithFormat:@"[smengine] Stage Manager is the window engine: switched on, but it reads back off (try %d)", notStaying]);
         }
         // the menu bar follows the front window: laid out again when another window of the stage comes to the front
+        DMSMLimitTick();   // (more than four windows per desktop: ours still answers Apple's limit -- TrollPad loads after us, SMLimit.h)
         DMSMFitTick(NO);   // (Fit to Window: re-tiles only when the set of windows changed)
         static NSString *lastFront = nil;
         NSString *front = DMSMFrontWindowBundle();
@@ -2169,6 +2212,7 @@ static BOOL DMStageManagerHeldNow(void) {
 }
 static void DMSyncWindowsForLibraryBody(void) {
     DM_PERF("stagemgr", DMStageManagerWatch());
+    if (gSMCheckOK) DM_PERF("smrestyle", DMSMDeskWatchEngine());   // (Stage Manager engine on or off without a respring: the Home Screen behind the windows follows at once)
     DM_PERF("dock", DMWatchDockChanges());   // (the Dock changed for good: windows follow its new height, every engine)
     DM_PERF("native", DMNativeTick());   // (native windows: their level follows the engine's windows; kept on screen after a turn)
     DM_PERF("smturn", DMSMWatchTurn());   // (Stage Manager engine: windows keep their layouts, and stay reachable, when the iPad turns)
@@ -7863,6 +7907,7 @@ static void DMResignWindowedKeyboards(NSString *exceptBundle) {
 static void DMSMDeskOutsideTouch(void);   // (Stage Manager engine, SMDesktop.h)
 #if DEBUG
 static void DMSMDeskDebugFloor(void);     // (debug trigger smfloor, SMDesktop.h)
+static void DMSMLimitDebug(void);         // (debug trigger smlimit, SMLimit.h)
 #endif
 void DMOutsideTouch(void) {   // a touch on the Home Screen or the Dock (outside every window); also run by the debug trigger outsidetap
     if (DMSMEngine()) { DMSMDeskOutsideTouch(); return; }   // (Stage Manager: its windows over the Home Screen, the same rule)
@@ -20166,6 +20211,7 @@ static void DMRunTrigger(NSString *cmd) {
     }
 #if DEBUG
     else if ([cmd isEqualToString:@"smfloor"]) DMSMDeskDebugFloor();   // smfloor: the switcher's Home Screen answers, content reasons, pass-through (read-only, SMDesktop.h)
+    else if ([cmd isEqualToString:@"smlimit"]) DMSMLimitDebug();   // smlimit: the window roles, Apple's limit as asked now, the stage on screen's windows and roles (read-only, SMLimit.h)
 #endif
     else if ([cmd hasPrefix:@"smdump"]) {   // smdump[_<n>]: Stage Manager study -- the first n (default 3) recent app layouts (stages) with their items' layout attributes and display ordinal (read-only)
         int n = [cmd hasPrefix:@"smdump_"] ? MAX(1, [[cmd substringFromIndex:7] intValue]) : 3;
@@ -25091,7 +25137,11 @@ static void DMSMDefaultChangeHook(id self, SEL _cmd) {
         return;
     }
     [gSMOffWaiting removeObject:self];
-    if (step == DMSMHandlerSkip) { DMLog(@"[stagemgr] Stage Manager's setting is as SpringBoard shows it: nothing to switch"); return; }   // (a switch-off undone before it ran)
+    if (step == DMSMHandlerSkip) {   // (a switch-off undone before it ran)
+        DMLog(waiting ? @"[stagemgr] the waiting Stage Manager switch-off is dropped: the setting is on again, so there is nothing to switch"
+                      : @"[stagemgr] Stage Manager's setting is as SpringBoard shows it: nothing to switch");
+        return;
+    }
     if (known && !settingOn && uiOn && DMSMOursForSwitchOff()) DMSMFlattenStages(@"Stage Manager is switched off");   // (no stage of several windows left behind for the switcher without Stage Manager)
     o_SMDefaultChange(self, _cmd);
 }
@@ -27048,27 +27098,38 @@ static BOOL DMSMWindowAction(NSString *bundleID, NSString *name) {
     }
     if (![action isKindOfClass:[UIAction class]]) return NO;
     if (last && close) {
+        // (the window being closed -- its display item, the only one in its stage: later exactly that window is taken out, never every stage of
+        //  its app. -_deleteAppLayoutsMatchingBundleIdentifier: deleted each layout holding ANY window of the app and quit every app in them: an app
+        //  with a second window on the desktop (Safari, a new window from App Exposé) took the whole desktop with it -- 1.3.6 logic test H-1)
+        id closing = nil;
+        for (id it in DMSMStageItemsMap(own)) if ([DMSMItemBundle(it) isEqualToString:bundleID]) closing = it;
         DMLog([NSString stringWithFormat:@"[smengine] %@: the desktop's last window closes -- the Home Screen first", bundleID]);
         DMMinimize();
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             DMSMSetMinimized(bundleID, NO);
             // (a window's own Close does nothing once its stage is no longer shown -- tested 07:10: the stage stayed and came back with the next
-            // app. Its stage holds only this window: it is taken out of the switcher, the way a close ends; the app is left running, as with Close)
-            id st = DMSMStageOf(bundleID);
-            BOOL alone = NO; NSDictionary *m = DMSMStageItemsMap(st);
-            for (id it in m) if ([DMSMItemBundle(it) isEqual:bundleID]) alone = m.count == 1;
-            id sw = DMSwitcherController();
-            if (alone && [sw respondsToSelector:@selector(_deleteAppLayoutsMatchingBundleIdentifier:)]) {
-                ((void (*)(id, SEL, id))objc_msgSend)(sw, @selector(_deleteAppLayoutsMatchingBundleIdentifier:), bundleID);
-                DMLog([NSString stringWithFormat:@"[smengine] %@ closed from the Home Screen (its stage taken out)", bundleID]);
+            // app. Its stage holds only this window: that stage is taken out the way the App Switcher closes one window -- SpringBoard's
+            // -[SBMainSwitcherControllerCoordinator deleteAppLayoutForDisplayItem:] for this window's display item: its stage removed, its scene
+            // destroyed; the app's other windows and stages stay)
+            id st = nil; NSDictionary *m = nil;
+            if (closing) for (id al in DMSMRecentStages()) { NSDictionary *mm = DMSMStageItemsMap(al); if (mm[closing]) { st = al; m = mm; break; } }
+            id coord = DMSMCoordinator();
+            SEL del = NSSelectorFromString(@"deleteAppLayoutForDisplayItem:");
+            BOOL can = st && m.count == 1 && [coord respondsToSelector:del] && DMSMSigOK(coord, del, DMSMExpect(@encode(BOOL), @encode(id), NULL), "deleteAppLayoutForDisplayItem:");
+            BOOL done = NO;
+            if (can) { @try { done = ((BOOL (*)(id, SEL, id))objc_msgSend)(coord, del, closing); } @catch (NSException *x) { DMSMAPIFail(@"deleteAppLayoutForDisplayItem:", x.reason ?: @"exception"); } }
+            if (done) {
+                DM_FEATURE_MARK("sm-close-one-window");
+                DMLog([NSString stringWithFormat:@"[smengine] %@ closed from the Home Screen (its own stage taken out, the app's other windows stay)", bundleID]);
             } else {
                 DMSMRunAction(action, vc);
-                DMLog([NSString stringWithFormat:@"[smengine] %@ closed from the Home Screen (its own Close)", bundleID]);
+                DMLog([NSString stringWithFormat:@"[smengine] %@ closed from the Home Screen (its own Close%@)", bundleID, can ? @"; SpringBoard took nothing out" : (st ? @"; its stage holds other windows now" : @"; its stage is not in the switcher")]);
             }
         });
         return YES;
     }
     DMSMSetMinimized(bundleID, minimize);
+    if (minimize) DMSMNoteRemoving(bundleID, own);   // (its role: the transition must not keep it there -- SMLimit.h DMSMRepairRoles)
     DMSMRunAction(action, vc);
     return YES;
 }
@@ -27243,10 +27304,11 @@ static BOOL DMSMOpenFullScreenStage(NSString *bundle, id template, id identity) 
     return YES;
 }
 // An app opened from the Home Screen or the Dock while a stage is on screen joins that stage as another window (like opening an app on a Mac),
-// instead of Stage Manager's own "a new stage for every app". Layout roles: 1 primary, 2 side, 5 "additional side 0", 6 the next (study notes).
+// instead of Stage Manager's own "a new stage for every app". Layout roles: 1 primary, 2 side, 5 "additional side 0", 6.. the next ones.
 // NO (the normal launch) when no stage is on screen, the app is already on the stage (the tap brings it forward), or the stage is full.
-static const long kSMNewWindowRoles[] = {1, 2, 5, 6};   // (the roles a window joining a stage takes, first free first -- read on 16.7.7)
-static NSSet<NSNumber *> *DMSMNewWindowRoles(void) { return [NSSet setWithObjects:@1, @2, @5, @6, nil]; }
+// (the roles a window joining a stage takes, first free first: SMRoles.h's table -- SpringBoard's own window roles, 1, 2, 5-9 on 16.7.7; until
+//  sm-nolimit the engine had its own copy of Apple's 4: 1, 2, 5, 6)
+static NSSet<NSNumber *> *DMSMNewWindowRoles(void) { return DMSMWindowRoleSet(); }
 static BOOL gSMSkipFitAsk = NO;   // (the launch after the Fit question: not asked again)
 static BOOL DMSMAddToStage(NSString *bundle, UIView *from) {   // from: the icon tapped (its display: the iPad or the TV)
     DM_FEATURE_MARK("sm-add-to-stage");
@@ -27317,15 +27379,16 @@ static BOOL DMSMAddToStage(NSString *bundle, UIView *from) {   // from: the icon
             return YES;
         }
     }
-    // (layout roles read from a stage: 1 primary, 2 side, 5 "additional side 0", 6 the next; 4 is the centre window -- turned into an additional side)
+    // (layout roles read from a stage: 1 primary, 2 side, 5 "additional side 0", 6.. the next; 4 is the centre window -- turned into an additional side)
     // (the first role no window of the stage has -- a table indexed by the window count assumed Stage Manager's roles are contiguous, C7)
     long role = 0;
-    if (map.count < 4) {
+    if (map.count < DMSMWindowCap()) {
         NSMutableSet *used = [NSMutableSet set];
         for (id it in map) { long long r = 0; if (!DMSMStageRoleOfItem(al, it, &r)) return NO; [used addObject:@(r)]; }   // (roles unreadable: the normal launch)
-        for (size_t i = 0; i < sizeof(kSMNewWindowRoles) / sizeof(kSMNewWindowRoles[0]); i++) if (![used containsObject:@(kSMNewWindowRoles[i])]) { role = kSMNewWindowRoles[i]; break; }
+        role = (long)DMSMFirstFreeRole(used);
     }
-    if (!role) return NO;   // (full: the launch joins the desktop in DMSMJoinDesktop, the oldest window left out)
+    if (!role) return NO;   // (full -- every window role SpringBoard has is taken: the launch joins the desktop in DMSMJoinDesktop, the oldest window left out)
+    if (map.count >= 4) DM_FEATURE_MARK("sm-windows-beyond-four");
     id entity = DMSMNewEntity(bundle, identity);
     if (!entity) return NO;
     // In front, like a new window on a Mac: the newest interaction time of the stage + 1 (Stage Manager orders windows by it), cascaded down and
@@ -28012,7 +28075,7 @@ static void DMSMFitTick(BOOL force) {
     if (!force && [set isEqualToArray:lastSet ?: @[]]) return;
     NSArray *before = lastSet;
     lastSet = set;
-    if (bundles.count < 2) { gSMFitSlots = nil; return; }
+    if (bundles.count < 2) return;   // (one window: nothing to tile -- the desktop's arrangement is kept for when its windows are on screen again, L-7)
     // A third window joining two tiles: asked where it goes, as with the other engines (Where should ... go? left / right / No Fit)
     // Back from full screen: its old arrangement again when it covers these windows, and never the third-window question for it
     NSString *returning = nil;
@@ -28047,17 +28110,32 @@ static void DMSMFitTick(BOOL force) {
             return;
         }
     }
-    // Keep the chosen arrangement while it covers exactly these windows; otherwise the default one, newest first.
-    NSMutableDictionary *plan = [NSMutableDictionary dictionary];
-    BOOL keep = gSMFitSlots.count == bundles.count;
-    for (NSString *b in bundles) if (!gSMFitSlots[b]) keep = NO;
-    if (keep) [plan addEntriesFromDictionary:gSMFitSlots];
-    else {
-        NSArray *slots = DMDefaultSlotNames(MIN((NSUInteger)4, bundles.count));
-        for (NSUInteger i = 0; i < bundles.count && i < slots.count; i++) plan[bundles[i]] = slots[i];
-        gSMFitSlots = [plan mutableCopy];
+    // Keep the chosen arrangement while it covers exactly these windows; four tiles all still open keep their places and the windows past them are
+    // regular windows over them (the other engines' rule, SMFitPlan.h); otherwise the default one for the newest, at most four.
+    // (another stage on screen in between -- a window of its own, a leftover stage -- had replaced the arrangement: the one remembered for exactly
+    //  these windows comes back, SMFitPlan.h DMSMFitSlotsFor, L-7)
+    static NSMutableDictionary<NSString *, NSDictionary *> *byDesk;
+    static NSMutableArray<NSString *> *byDeskOrder;
+    NSDictionary *slotsNow = DMSMFitSlotsFor(gSMFitSlots, byDesk, bundles);
+    if (slotsNow != gSMFitSlots) { gSMFitSlots = [slotsNow mutableCopy]; DMLog(@"[sm] Fit to Window: these windows' arrangement from before"); }
+    int how = DMSMFitDefault;
+    NSDictionary *plan = DMSMFitPlanDecide(gSMFitSlots, bundles, DMDefaultSlotNames(MIN((NSUInteger)4, bundles.count)), &how);
+    {   // (remembered for these windows: at most 8 desktops' worth)
+        NSString *key = DMSMFitDeskKey(bundles);
+        if (!byDesk) { byDesk = [NSMutableDictionary dictionary]; byDeskOrder = [NSMutableArray array]; }
+        byDesk[key] = how == DMSMFitDefault ? [plan copy] : [gSMFitSlots copy];
+        [byDeskOrder removeObject:key]; [byDeskOrder addObject:key];
+        while (byDeskOrder.count > 8) { [byDesk removeObjectForKey:byDeskOrder.firstObject]; [byDeskOrder removeObjectAtIndex:0]; }
     }
-    DMLog([NSString stringWithFormat:@"[sm] Fit to Window: %lu windows tiled%@", (unsigned long)plan.count, keep ? @" (the chosen arrangement)" : @""]);
+    if (how == DMSMFitFourKept) {   // (nothing moves: a tile moved by hand stays where it was put, as with the other engines)
+        DM_FEATURE_MARK("sm-fit-four-kept");
+        NSMutableArray *extra = [NSMutableArray array];
+        for (NSString *b in bundles) if (!gSMFitSlots[b]) [extra addObject:b];
+        DMLog([NSString stringWithFormat:@"[sm] Fit to Window: four windows are already tiled, %@ open%@ as regular window%@ over them", [extra componentsJoinedByString:@", "], extra.count == 1 ? @"s" : @"", extra.count == 1 ? @"" : @"s"]);
+        return;
+    }
+    if (how == DMSMFitDefault) gSMFitSlots = [plan mutableCopy];
+    DMLog([NSString stringWithFormat:@"[sm] Fit to Window: %lu windows tiled%@", (unsigned long)plan.count, how == DMSMFitKept ? @" (the chosen arrangement)" : @""]);
     DMSMApplyLayoutsIn(plan, DMSMFrontStage());   // (the iPad's desktop, the one counted above)
 }
 static void DMSMLogCorners(void) {
@@ -28150,16 +28228,33 @@ static void DMSMChrome(UIView *card) {
     if (!wasShown || bundleChanged) [bar dm_updateLights];
 }
 static void DMSMJoinStageAsked(id ctx, NSArray<NSArray *> *asked);   // (SMDesktop.h: SpringBoard's own transitions with roles set)
+static void DMSMRepairRoles(id ctx);   // (SMLimit.h: one window, one role -- a window never in two roles of one layout state)
 static void DMSMJoinDesktop(id ctx) {
     DM_FEATURE_MARK("sm-join-desktop");
     // Atomic (review S2): the whole rewrite -- every window's entity, role and attributes -- is planned and checked first (DMSMPlanValid), and only
     // then written into Apple's context (DMSMWritePlan, which empties what it wrote if a write fails). Any refusal on the way returns with the
     // context untouched: the launch goes on as Stage Manager's own (a new stage).
     if (DMSMCtxIsOurs(ctx)) return;   // (our own plan, or a request of ours: as we wrote it)
+    // A background activation -- an app launched or woken without being shown (background refresh, SpringBoard's auto-launch, a VoIP wake, a
+    // suspended launch: -[SBWorkspaceApplicationSceneTransitionContext isBackground]) -- is no launch: SpringBoard's layout builder keeps the layout
+    // state as it is for these and drops any roles written. The join took them for launches: a minimized window lost its "minimized" mark (the next
+    // app opened could bring it back) and the log said "opened as a window" (iPad 2, 4 Oct: Stocks woken every ~8.5 min with the screen off).
+    {
+        SEL bg = NSSelectorFromString(@"isBackground");
+        if ([ctx respondsToSelector:bg] && DMSMSigOK(ctx, bg, DMSMSigBool(), "isBackground") && ((BOOL (*)(id, SEL))objc_msgSend)(ctx, bg)) {
+#if DEBUG
+            static NSMutableSet *seen; if (!seen) seen = [NSMutableSet set];
+            id act0 = [ctx respondsToSelector:NSSelectorFromString(@"activatingEntity")] ? DMCall(ctx, @"activatingEntity") : nil;
+            NSString *b0 = DMSMIsEntity(act0) ? DMCall(DMCall(act0, @"application"), @"bundleIdentifier") : nil;
+            if (b0 && ![seen containsObject:b0]) { [seen addObject:b0]; DMLog([NSString stringWithFormat:@"[smjoin] %@: a background activation (not shown) -- left as SpringBoard built it", b0]); }
+#endif
+            return;
+        }
+    }
     // Roles set by SpringBoard itself (the App Switcher's card of a minimized window, Cmd-Tab, Stage Manager's drag and drop, the strip): another
     // stage is being asked for -- it joins the desktop instead of showing alone, where that is what it is (SMDesktop.h, SMDeskJoin.h).
     NSMutableArray<NSArray *> *asked = [NSMutableArray array];
-    for (long r = 1; r <= 6; r++) {
+    for (long r = 1; r <= (long)DMSMRoleTop(); r++) {   // (every window role, and 3 / 4 among them: SMRoles.h)
         BOOL readable = NO;
         id e = DMSMCtxEntityForRole(ctx, r, &readable);
         if (!readable) return;   // (refused: DMSMAPIFail said why)
@@ -28203,7 +28298,8 @@ static void DMSMJoinDesktop(id ctx) {
             long long ta = DMSMAttrTimeOr(map[a], 0), tb = DMSMAttrTimeOr(map[b], 0);
             return ta > tb ? NSOrderedAscending : (ta < tb ? NSOrderedDescending : NSOrderedSame);
         }];
-        if (items.count > 3) items = [items subarrayWithRange:NSMakeRange(0, 3)];   // (a 5th app: the oldest window is left out)
+        NSUInteger keep = DMSMWindowCap() - 1;   // (room for the app: a stage holds one window per window role, SMRoles.h -- 7 on 16.7.7)
+        if (items.count > keep) items = [items subarrayWithRange:NSMakeRange(0, keep)];   // (the desktop full: its oldest window is left out)
         id front = items.firstObject;
         long long newest = 0;
         if (!DMSMAttrLastInteractionTime(map[front], &newest)) return;
@@ -28221,7 +28317,7 @@ static void DMSMJoinDesktop(id ctx) {
             [kept addObject:@[e, @(role), map[it]]];
             if (role > 0) [used addObject:@(role)];
         }
-        long (^freeRole)(void) = ^long { for (size_t i = 0; i < sizeof(kSMNewWindowRoles) / sizeof(kSMNewWindowRoles[0]); i++) if (![used containsObject:@(kSMNewWindowRoles[i])]) { [used addObject:@(kSMNewWindowRoles[i])]; return kSMNewWindowRoles[i]; } return 0; };
+        long (^freeRole)(void) = ^long { return (long)DMSMFirstFreeRole(used); };
         for (NSArray *k in kept) {
             long role = [k[1] longValue] ?: freeRole();
             if (!role) return;
@@ -28231,7 +28327,8 @@ static void DMSMJoinDesktop(id ctx) {
         if (!mine) return;
         [plan addObject:@[act, @(mine), attrs]];
         dismissFullIn = windowed ? nil : desk;
-        what = [NSString stringWithFormat:@"[smengine] %@ joins the desktop (role %ld, %lu window(s) kept%@)%@", bundle, mine, (unsigned long)kept.count, map.count > 3 ? @", the oldest left out" : @"", windowed ? @"" : @" full screen"];
+        if (kept.count >= 4) DM_FEATURE_MARK("sm-windows-beyond-four");
+        what = [NSString stringWithFormat:@"[smengine] %@ joins the desktop (role %ld, %lu window(s) kept%@)%@", bundle, mine, (unsigned long)kept.count, map.count > keep ? @", the oldest left out" : @"", windowed ? @"" : @" full screen"];
     }
     // (every window of the plan inside the desktop as it is now -- the desktop's own windows too: a stage left while the iPad turned kept the other
     //  shape's sizes, SMFit.h)
@@ -28530,7 +28627,8 @@ static void DMSMReapplyGrabbers(UIView *card) {   // (Settings > Resize Handles 
 // window came in as the transition's "activating" app with no layout roles, and Stage Manager made it a stage of its own -- every open window
 // vanished into the (hidden) strip. Here, as the transition is finalized: an app activated on the iPad's screen, with no roles set, while the
 // desktop (the most recent stage there) has windows and not this app, is added to that desktop instead -- the windows keep their roles and places
-// (at most three kept: the oldest of four is left out, minimized as it were), the app joins as a window (DMSMJoinAttributes) in front.
+// (on a full desktop -- every window role taken, SMRoles.h -- the oldest is left out, minimized as it were), the app joins as a window
+// (DMSMJoinAttributes) in front.
 // Our own requests set roles, so they pass untouched. debug /tmp/msb-sm-ctxlog: each context logged.
 %hook SBWorkspaceApplicationSceneTransitionContext
 - (void)finalize {
@@ -28538,6 +28636,8 @@ static void DMSMReapplyGrabbers(UIView *card) {   // (Settings > Resize Handles 
     if (DMSMFree()) {
         @try { DMSMJoinDesktop(me); } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[smengine] joining the desktop failed: %@", e.reason]); }
     }
+    // (then one window, one role -- whoever built the context, the join included: SMRoleRepair.h, SMLimit.h DMSMRepairRoles)
+    @try { DMSMRepairRoles(me); } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[smroles] checking the roles failed: %@", e.reason]); }
     %orig;
 }
 %end
@@ -28838,6 +28938,7 @@ static void DMSMHookConstrain16(void) {
     DMLog(@"[smengine] a window bigger than the stage area keeps its top and left edges inside (title bar and traffic lights on the screen)");
 }
 #include "SMDesktop.h"   // (the Home Screen behind the windows, one desktop for SpringBoard's own transitions: 4 Oct, sm-desktop)
+#include "SMLimit.h"     // (more than four windows per desktop: Apple's limit answered with SpringBoard's own window-role count, 4 Oct, sm-nolimit)
 // The windows' corner radius (Stage Manager's own: rounder than a Mac window): under whichever name this iPadOS has (stageCornerRaddii, sic,
 // through 17; stageCornerRadii from 18.2 -- kSMNeeds' alt name, DMSMCornerRadiusSelector).
 %group SMCornerRaddii
@@ -29112,6 +29213,10 @@ static void DMSMSelfCheck(void) {
         %init(SMEngine);
         DMSMHookStripReveal();   // (optional: the recent-stages strip's reveal gesture, held off while our engine runs)
         DMSMDeskInstall();       // (optional: the Home Screen behind the windows, SMDesktop.h -- its own rows; missing = Apple's way, the engine runs)
+        DMSMLimitInstall();      // (optional: more than four windows per desktop, SMLimit.h -- SpringBoard's own role functions + one row; else four, as 1.3.5)
+#if DEBUG
+        DMSMHookOrientCheckDebug();   // (debug: a layout state whose elements and traits participants do not match is logged before Apple's check aborts)
+#endif
         if (gSMLayoutGen == 17) {
             DM_FEATURE_MARK("sm-layout-17");
             %init(SMLayout17);
@@ -29267,6 +29372,7 @@ void DMSMRunAction(UIAction *action, id sender) {
     if (!DMCtorSkip("smengine")) DMSMEngineInit();
     DMFinderApplyPref();    // (Finder: its hooks, the Dock's Finder icon -- only while switched on)
     { static int finderPrefToken; notify_register_dispatch("com.besiktasliseba.macstatusbar.finder.pref", &finderPrefToken, dispatch_get_main_queue(), ^(int t) { DMFinderApplyPref(); }); }
+    dispatch_async(dispatch_get_main_queue(), ^{ DMDesktopStartEarly(); });   // (the desktop as soon as page 1 of the Home Screen is on screen, Desktop.h)
     DMPointerPullInit();
     DMCCPresentSeenInit();   // (Control Center seen from its controller too: F13)
     DMSkipLockInit();

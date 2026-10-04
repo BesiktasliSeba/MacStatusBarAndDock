@@ -149,6 +149,37 @@ static void DMSMDeskInstall(void) {
 }
 
 static UIWindow *DMSMDeskSwitcherWindow(void);
+// The engine switched on or off without a respring (Settings > Window Engine and back, Windowing off and on): the floor's answers above change at
+// once, but SpringBoard asks for them again only at its next style update (-[SBFluidSwitcherViewController _updateStyleWithCompletion:], run with
+// a window's activation). Switched away and back within a few seconds, the Home Screen stayed torn down behind the windows until a window was next
+// brought forward (1.3.5 round 2 R3-L2). The watcher notices the change (DMSMDeskWatchEngine) and asks the iPad's switcher for that update once.
+static void DMSMDeskRestyle(NSString *why) {
+    @try {
+        id coord = DMSMCoordinator();
+        id scene = MSBDMainWindowScene();
+        SEL forScene = NSSelectorFromString(@"switcherControllerForWindowScene:");
+        id sc = scene && [coord respondsToSelector:forScene] && DMSMSigOK(coord, forScene, DMSMSigObjObj(), "switcherControllerForWindowScene:") ? ((id (*)(id, SEL, id))objc_msgSend)(coord, forScene, scene) : nil;
+        id content = DMCall(sc, @"contentViewController");
+        SEL up = NSSelectorFromString(@"_updateStyleWithCompletion:");
+        Class fluid = objc_getClass("SBFluidSwitcherViewController");
+        if (!content || !fluid || ![content isKindOfClass:fluid] || ![content respondsToSelector:up] || !DMSMSigOK(content, up, DMSMSigVoidObj(), "_updateStyleWithCompletion:")) {
+            DMLog([NSString stringWithFormat:@"[smdesk] %@: the switcher's style is left for its next update (its switcher was not found as expected)", why]);
+            return;
+        }
+        ((void (*)(id, SEL, id))objc_msgSend)(content, up, nil);
+        DM_FEATURE_MARK("sm-desk-restyle");
+        DMLog([NSString stringWithFormat:@"[smdesk] %@: the switcher's style updated now (the Home Screen %@ behind the windows)", why, DMSMFree() ? @"shown" : @"Apple's way"]);
+    } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[smdesk] updating the switcher's style failed: %@", e.reason]); }
+}
+static void DMSMDeskWatchEngine(void) {   // (every watcher tick: cheap -- one comparison unless the engine changed)
+    static int last = -1;
+    int now = DMSMFree() ? 1 : 0;
+    if (now == last) return;
+    BOOL first = last < 0;
+    last = now;
+    if (first || !gSMDeskHooked || gSMDeskOff) return;   // (at start the switcher asks for itself; without the feature nothing of ours changed)
+    dispatch_async(dispatch_get_main_queue(), ^{ DMSMDeskRestyle(now ? @"the Stage Manager engine is back" : @"the Stage Manager engine stopped"); });
+}
 #if DEBUG
 // debug trigger smfloor: what the iPad's switcher answers and does right now -- its root modifier's Home Screen answers (the ones the floor gives
 // with a stage on screen), SBUIController's Home Screen content reasons and whether its icon lists are torn down, the content view's pass-through,
@@ -257,7 +288,8 @@ static long long DMSMCtxLong(id ctx, NSString *name, long long dflt) {
     if (![ctx respondsToSelector:s] || !DMSMSigOK(ctx, s, DMSMSigTime(), name.UTF8String)) return dflt;
     return ((long long (*)(id, SEL))objc_msgSend)(ctx, s);
 }
-// asked: @[role, entity] of every role the context has set (roles 1-6, read by DMSMJoinDesktop). Stage Manager is about to show another stage than
+// asked: @[role, entity] of every role the context has set (roles 1 up to the highest window role -- 1-9 on 16.7.7, SMRoles.h -- read by
+// DMSMJoinDesktop). Stage Manager is about to show another stage than
 // the desktop (DMSMDeskJoinPlan decides): instead the desktop's windows and the new ones, the new ones in front -- as a launch joins it. The plan
 // is built and checked first; then SpringBoard's roles are unset (the context becomes a plain activation, whose unset roles Stage Manager keeps "as
 // they were" -- emptying them instead drops a window the plan moves to another role, 1.4 finding) and the plan is written. A write that fails

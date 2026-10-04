@@ -12,6 +12,7 @@
 //    MSBDStageManagerVerdict) for the root helper (which engine loads) and Settings (the greyed row).
 // Included once by StatusBar.x (after DMLog / DMCall / MSB_DOMAIN / DMTestFlag and the DMSMAttributedSize typedef).
 #pragma once
+#include "SMRoles.h"   // (the window roles a stage has: DMSMPlanValid reads the highest, sm-nolimit)
 
 // ---- one place for refusals -------------------------------------------------------------------------------------------------------------------
 static NSMutableOrderedSet<NSString *> *gSMAPIFailures;   // (each kind once: "<what>: <why>")
@@ -365,7 +366,7 @@ static NSString *DMSMItemBundle(id item) {
     id b = DMCall(item, @"bundleIdentifier");
     return [b isKindOfClass:[NSString class]] ? b : nil;
 }
-// The window's layout role in its stage (1 primary, 2 side, 4 centre, 5/6 additional sides -- read on 16.7.7).
+// The window's layout role in its stage (1 primary, 2 side, 4 centre, 5-9 additional sides 0-4 -- read on 16.7.7; SMRoles.h).
 static BOOL DMSMStageRoleOfItem(id stage, id item, long long *out) {
     if (!DMSMIsStage(stage) || !item) return NO;
     SEL sel = NSSelectorFromString(@"layoutRoleForItem:");
@@ -469,7 +470,8 @@ static void DMSMCtxMarkFrontmost(id ctx, id entity) {
 // A PLAN = every window a transition names: @[entity, role, attributes] each. Checked as a whole BEFORE anything is written (review S2): entities of
 // the entity class, roles in range and each used once, attributes of the attributes class with a sane size and center. Then written in one go;
 // if a write throws anyway, the roles already written are emptied again, so Apple's context is left as it was (the roles we write into were empty
-// or are rewritten by the same plan). allowed: the roles a NEW window may take (nil = any role 1..8, for windows asked for again in their own).
+// or are rewritten by the same plan). allowed: the roles a NEW window may take (nil = any role up to the highest window role, at least 8 as before
+// sm-nolimit: 1..9 on 16.7.7 -- for windows asked for again in their own).
 #if DEBUG
 static int gSMSimulateWriteFail = -1;   // (debug /tmp/msb-sm-simulate-writefail: the Nth write throws, to test the roll-back)
 #endif
@@ -492,7 +494,7 @@ static BOOL DMSMPlanValid(NSArray<NSArray *> *plan, NSSet<NSNumber *> *allowed, 
         if (![en isKindOfClass:[NSArray class]] || en.count != 3) { if (why) *why = @"malformed entry"; return NO; }
         id e = en[0]; long long role = [en[1] longLongValue]; id a = en[2];
         if (!DMSMIsEntity(e)) { if (why) *why = [NSString stringWithFormat:@"not an app entity: %@", NSStringFromClass([e class])]; return NO; }
-        if (role < 1 || role > 8 || (allowed && ![allowed containsObject:@(role)])) { if (why) *why = [NSString stringWithFormat:@"role %lld not allowed", role]; return NO; }
+        if (role < 1 || role > MAX(8LL, DMSMRoleTop()) || (allowed && ![allowed containsObject:@(role)])) { if (why) *why = [NSString stringWithFormat:@"role %lld not allowed", role]; return NO; }
         if ([roles containsObject:@(role)]) { if (why) *why = [NSString stringWithFormat:@"role %lld twice", role]; return NO; }
         if ([entities containsObject:[NSValue valueWithNonretainedObject:e]]) { if (why) *why = @"one entity twice"; return NO; }
         [roles addObject:@(role)]; [entities addObject:[NSValue valueWithNonretainedObject:e]];
@@ -714,8 +716,9 @@ static const DMSMNeed kSMNeeds[] = {
     {"SBAppSwitcherPageView", "maskedCorners", NO, NO, DMSMSigULL},
     {"SBAppSwitcherPageView", "layoutSubviews", NO, YES, DMSMSigVoid},
     {"SBFluidSwitcherItemContainer", "layoutSubviews", NO, YES, DMSMSigVoid},
-    // (both bottom corners take a touch with our resize handles: hooked in SMEngine since 1.1.7, a row since 1.3.4 -- 16.0-16.7.7 all have it, 1.3.4 re-check F3)
-    {"SBFluidSwitcherItemContainer", "allowedTouchResizeCorners", NO, YES, DMSMSigULL, NULL, 16},
+    // (both bottom corners take a touch with our resize handles: hooked in SMEngine since 1.1.7, a row since 1.3.4 -- 16.0-16.7.7 all have it, 1.3.4 re-check F3;
+    //  a row of both layout tables since 1.3.6: SMEngine hooks it on iPadOS 17 too, where the 17.0.3 headers have it with the same type)
+    {"SBFluidSwitcherItemContainer", "allowedTouchResizeCorners", NO, YES, DMSMSigULL},
     {"SBReusableSnapshotItemContainer", "layoutSubviews", NO, YES, DMSMSigVoid},
     {"SBReusableSnapshotItemContainer", "setAccessibilityIdentifier:", NO, YES, DMSMSigVoidObj},
     {"SBReusableSnapshotItemContainer", "didMoveToWindow", NO, YES, DMSMSigVoid},
@@ -1080,7 +1083,7 @@ static id DMSMStageCutToPrimary(id stage, BOOL *unsupported) {
     if (DMSMStageItemsMap(stage).count < 2) return nil;
     if (DMSMRowPassed("SBAppLayout", "appLayoutByRemovingItemInLayoutRole:")) {
         id single = stage;
-        for (int guard = 0; guard < 8; guard++) {
+        for (int guard = 0; guard < DMSM_ROLES_MAX + 2; guard++) {   // (one removal per window: covers a desktop as large as the role table allows, not just the old four)
             NSDictionary *left = DMSMStageItemsMap(single);
             if (left.count < 2) break;
             long drop = 0;

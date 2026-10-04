@@ -509,8 +509,8 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
             DMDesktop *s = ws; if (!s) return;
             s->_listing = NO;
             // (a Haptic Touch menu up or fading: its icon must stay in the window until it is gone -- UIKit raises otherwise, see
-            //  DMWaitForContextMenu; the folder is read again then)
-            if (DMWaitForContextMenu(@"desktop-list", ^{ [ws dm_list]; })) return;
+            //  DMWaitForContextMenu; the folder is read again then. SpringBoard's own app icon menus don't count: their icons are not ours)
+            if (DMWaitForOwnMenus(@"desktop-list", ^{ [ws dm_list]; })) return;
             if (missing != s->_folderMissing) DMLog(missing ? @"[desktop] the Desktop folder is missing: no icons, their places kept" : @"[desktop] the Desktop folder is back");
             s->_folderMissing = missing;
             [s dm_setItems:items inodes:inodes returned:returned];
@@ -1346,6 +1346,64 @@ static void DMDesktopTick(void) {
         ops.madeItems = ^(NSArray<NSString *> *paths) { [wd dm_made:paths]; };
     }
     [gDesktop dm_tick];
+}
+// ---- the desktop right after a respring (1.3.6) ----
+// The desktop was made by the 0.2 s watcher's tick (DMNativeTick), which starts 8 s after SpringBoard does (with the windows' restore): page 1's
+// app icons had been on screen for seconds before the desktop's came. From the start a light look -- every 0.1 s, the windows only: no SpringBoard
+// object is asked for or made -- waits for page 1's icon list in the Home Screen's window; the desktop is then made and put there at once (the
+// tick's own call, DMDesktopTick), the same moment as the app icons. It stops once the desktop is there (or after 20 s: the watcher's tick goes on
+// trying as before). debug /tmp/msb-desk-late: the old timing (only the moment page 1 shows is logged), to compare.
+static NSTimer *gDeskEarlyTimer;
+static CFTimeInterval gDeskEarlyStart = 0;
+static BOOL DMDesktopPageOneOnScreen(void) {   // (an icon list laid out in the Home Screen's scroll view, in a window)
+    Class sc = objc_getClass("SBIconScrollView"), lc = objc_getClass("SBIconListView");
+    if (!sc || !lc) return NO;
+    for (UIWindow *w in DMAllWindows()) {
+        if (![NSStringFromClass([w class]) isEqualToString:@"SBHomeScreenWindow"]) continue;
+        NSMutableArray *todo = [NSMutableArray arrayWithObject:w];
+        for (int depth = 0; depth < 12 && todo.count; depth++) {
+            NSMutableArray *next = [NSMutableArray array];
+            for (UIView *v in todo) {
+                if ([v isKindOfClass:sc]) { for (UIView *l in v.subviews) if ([l isKindOfClass:lc] && !l.hidden && l.window && !CGRectIsEmpty(l.bounds)) return YES; continue; }
+                [next addObjectsFromArray:v.subviews];
+            }
+            todo = next;
+        }
+    }
+    return NO;
+}
+static void DMDesktopEarlyStop(NSString *why) {
+    [gDeskEarlyTimer invalidate];
+    gDeskEarlyTimer = nil;
+    DMLog([NSString stringWithFormat:@"[desktop] start-up look stopped %.2f s after it began: %@", CACurrentMediaTime() - gDeskEarlyStart, why]);
+}
+static void DMDesktopEarlyTick(void) {
+    static BOOL pageSeen = NO, upLogged = NO;
+    CFTimeInterval since = CACurrentMediaTime() - gDeskEarlyStart;
+    if (gDesktop.window) {   // (kept in place -- page 1 may still be laid out again while SpringBoard starts -- until the watcher's tick takes over)
+        if (!upLogged) { upLogged = YES; DMLog([NSString stringWithFormat:@"[desktop] icons up %.2f s after the start-up look began", since]); }
+        if (gDMWatcherStarted || since > 20.0) { DMDesktopEarlyStop(@"the desktop is on page 1, the watcher keeps it there"); return; }
+        DMDesktopTick();
+        return;
+    }
+    if (since > 20.0) { DMDesktopEarlyStop(@"page 1 not found yet (the watcher goes on)"); return; }
+    if (!gFinderOn || !gDesktopOn || DMCtorSkip("desktop")) { DMDesktopEarlyStop(@"Show Desktop Icons or Finder is off"); return; }
+    if (!DMDesktopPageOneOnScreen()) return;
+    BOOL late = NO;
+#if DEBUG
+    late = DMTestFlag("/tmp/msb-desk-late");
+#endif
+    if (!pageSeen) { pageSeen = YES; DMLog([NSString stringWithFormat:@"[desktop] page 1 of the Home Screen is on screen %.2f s after the start-up look began%@", since, late ? @" (debug /tmp/msb-desk-late: the desktop waits for the watcher, as before)" : @": the desktop now"]); }
+    if (late) { DMDesktopEarlyStop(@"debug /tmp/msb-desk-late"); return; }
+    DM_FEATURE_MARK("desktop-at-start");
+    DMDesktopTick();   // (made and put on page 1 -- or tried again on the next look)
+}
+// From the start (MacStatusBar's %ctor, on the first main-queue turn): only while Show Desktop Icons and Finder are on.
+static void DMDesktopStartEarly(void) {
+    if (gDeskEarlyTimer || gDesktop || !gFinderOn || !gDesktopOn || DMCtorSkip("desktop")) return;
+    gDeskEarlyStart = CACurrentMediaTime();
+    gDeskEarlyTimer = [NSTimer timerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *t) { DMDesktopEarlyTick(); }];
+    [[NSRunLoop mainRunLoop] addTimer:gDeskEarlyTimer forMode:NSRunLoopCommonModes];
 }
 static void DMDesktopKeyboardMoved(void) { [gDesktop dm_fitRenameField]; }
 static NSString *DMDesktopPlaceFor(NSString *path) { return [gDesktop dm_placeStringFor:path]; }   // (Finder.h gFinderDesktopPlaceFor)

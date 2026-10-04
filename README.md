@@ -23,7 +23,7 @@ Then install **MacStatusBar&Dock** from the repo. The Mac look is on right after
 | iPad Pro 11" (M1, 2021) | 15.6.1 | Dopamine | Aerial 5.0, Zetsu, MilkyWay4 | ✅ Tested by the developer |
 | iPad Pro 9.7" | 16.7.7 | palera1n | Aerial 5.0, Zetsu, Stage Manager (with TrollPad) | ✅ Tested by the developer |
 | iPad Pro 10.5" | 16.6.1 | rootless | — | ✅ Reported working by a user |
-| iPad Pro (M2, 2022) | 16.0 – 16.6 | Dopamine | Zetsu or Aerial | ⚠️ The Stage Manager engine is offered on 16.1 and later, and as "Untested" on 16.0 (tested on 16.7.7 only). On 16.1 – 16.6 a user reports SpringBoard crashes with it. Use Aerial 5.0 there |
+| iPad Pro (M2, 2022) | 16.0 – 16.6 | Dopamine | Zetsu or Aerial | ⚠️ The Stage Manager engine is offered on 16.1 and later, and as "Untested" on 16.0, where a user confirmed the basics (windows, resizing, traffic lights). On 16.3.1 a user confirmed it can be picked and runs. On 16.1 – 16.6 another user reports SpringBoard crashes with it. Use Aerial 5.0 there |
 | Other iPads | 15.x, 16.x | rootless | — | Likely to work, not tested |
 | iPad Pro 12.9" (M1, 2021) | 17.0 | rootless | Zetsu 1.6.6 | ✅ Reported working by a user since 1.2.4, with **Enable Anyway** |
 | Other iPads | 17 and later | — | — | Off by default; **Enable Anyway** in Settings turns it on at your own risk. The Stage Manager engine has an iPadOS 17 version that hasn't been tested on a device yet: testers welcome |
@@ -34,7 +34,7 @@ Tried it on another setup? A short note in an issue (works / doesn't) helps fill
 
 **Window engines**
 - Apple's Stage Manager stays off while another window engine runs (two window systems would fight over the same apps). To use it, pick Stage Manager in Settings > Status Bar > Window Engine. It's tested on iPadOS 16.7.7 only.
-- With the Stage Manager engine, a desktop holds up to 4 windows, and going to the Home Screen puts the windows aside until you open an app (like Show Desktop on a Mac).
+- With the Stage Manager engine, a desktop holds up to 7 windows, and going to the Home Screen puts the windows aside until you open an app (like Show Desktop on a Mac).
 - Aerial 5.0 has to be activated in its own settings before it can open windows; until then apps open full screen, and a note leads you there.
 - With Aerial 5.0, don't respring while a VPN is on or was just turned off: Aerial goes online as SpringBoard starts and can hang on a black screen until you restart the iPad. MacStatusBar&Dock warns before resprings that go through iOS (the Apple menu, Settings, Control Center, package managers).
 
@@ -113,6 +113,8 @@ Measured with Apple's `footprint` tool on both test iPads:
 - On the iPad Pro 9.7" (2 GB of RAM, iPadOS 16.7.7, Stage Manager engine), SpringBoard used 63 MB with the tweak running, and it stayed flat over a 30 minute check.
 - On the iPad Pro 11" (M1, 16 GB, Aerial 5.0 and about 90 other tweaks), SpringBoard used about 100 MB, also flat.
 - Picture caches, like the Downloads thumbnails, have a fixed size limit, and iOS empties them when memory runs low.
+
+On iPads with 2 GB of memory, iPadOS may close apps in the background when many windows are open, for example 7 with the Stage Manager engine.
 
 Most of the memory in use on an iPad belongs to Apple's own background services. On the 2 GB iPad, about 250 of them used 1.1 GB together.
 
