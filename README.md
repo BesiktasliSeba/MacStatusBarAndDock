@@ -34,7 +34,7 @@ Tried it on another setup? A short note in an issue (works / doesn't) helps fill
 
 **Window engines**
 - Apple's Stage Manager stays off while another window engine runs (two window systems would fight over the same apps). To use it, pick Stage Manager in Settings > Status Bar > Window Engine. It's tested on iPadOS 16.7.7 only.
-- With the Stage Manager engine, going to the Home Screen hides the windows (Stage Manager's own behaviour), and a desktop holds up to 4 windows.
+- With the Stage Manager engine, a desktop holds up to 4 windows, and going to the Home Screen puts the windows aside until you open an app (like Show Desktop on a Mac).
 - Aerial 5.0 has to be activated in its own settings before it can open windows; until then apps open full screen, and a note leads you there.
 - With Aerial 5.0, don't respring while a VPN is on or was just turned off: Aerial goes online as SpringBoard starts and can hang on a black screen until you restart the iPad. MacStatusBar&Dock warns before resprings that go through iOS (the Apple menu, Settings, Control Center, package managers).
 
@@ -72,7 +72,7 @@ The Mac look is on right after install. A few extras start off: the auto-hiding 
 
 ### Windows
 - **Mac windows on the engine you already use** (Aerial 3.0 or 5.0, Zetsu 1.6.2 or 1.6.6, MilkyWay4 on iPadOS 15): title bars, traffic lights, rounded corners, resize handles, and Fit to Window tiling.
-- **Stage Manager as a window engine** (iPadOS 16, experimental): Apple's own windowing with the Mac look, native full screen that other windows can come over, and its own Mac desktop on an external display.
+- **Stage Manager as a window engine** (iPadOS 16, experimental): Apple's own windowing with the Mac look, over your Home Screen and desktop, native full screen that other windows can come over, and its own Mac desktop on an external display.
 - **Typing like on a Mac**: only the window you're using keeps a text cursor, and Esc ends typing.
 
 ### Finder

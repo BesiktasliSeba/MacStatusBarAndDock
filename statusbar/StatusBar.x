@@ -406,6 +406,7 @@ static NSMutableDictionary *gSidePromptCtx;   // the side question being asked (
 static NSMutableDictionary<NSString *, NSString *> *gSMFitSlots;   // (Fit to Window's arrangement for the Stage Manager engine, see DMSMFitTick)
 static NSMutableSet<NSString *> *gSMFreeWindows;
 static BOOL DMSMWindowAction(NSString *bundleID, NSString *name);
+static int DMSMTakeOutOfHiddenStages(NSString *bundle);   // (Stage Manager engine: a force-quit app's item out of the stages not on screen, below)
 static void DMSMSetMinimized(NSString *bundle, BOOL on);
 static id DMSMStageOf(NSString *bundle);
 static void DMSMForgetApp(NSString *bundle);
@@ -959,6 +960,7 @@ static void DMForceQuitBundle(NSString *bundleID) {
     // layouts took every other window of the stage with it, logic test SM-4) -- and the switcher clean-up below leaves multi-window stages alone.
     BOOL sm = DMSMEngine();
     if (sm && DMSMWindowAction(bundleID, @"close")) windowed = YES;
+    else if (sm && DMSMTakeOutOfHiddenStages(bundleID)) windowed = YES;   // (its stage not on screen: its own Close needs the window shown)
     if (sm) DMSMForgetApp(bundleID);   // (its size from before full screen: not brought back after a quit, logic test C5)
     void (^kill)(void) = ^{
     BKSTerminateApplicationForReasonAndReportWithDescription(bundleID, 5, false, @"MacStatusBar - force quit");
@@ -2192,7 +2194,13 @@ static void DMSyncWindowsForLibraryBody(void) {
 // the windows below it would put them under the wallpaper, so they step out of the way the App Library's way instead and come back when it closes).
 extern BOOL gZetsuHiddenForSwitcherFlag;
 static BOOL gMilkyWayHiddenForSwitcher = NO;   // (DMZetsuSwitcherCheck: MilkyWay's layer is faded out for the App Switcher)
+static void DMSMDeskSyncFade(void);   // (Stage Manager engine: its windows over the Home Screen, SMDesktop.h)
+static BOOL DMSMDeskIsFaded(void);
 static void DMSyncWindowFade(void) {
+    if (DMSMEngine() || DMSMDeskIsFaded()) {   // (Stage Manager: its window cards, the same triggers; a fade still on when the engine stopped -- an engine
+        DMSMDeskSyncFade();                     //  change while the App Library was up -- is given back, 1.3.5 logic test L1)
+        if (DMSMEngine()) return;
+    }
     BOOL zetsu = DMActiveEngine() == DMEngineZetsu;
     UIWindow *layer = DMWindowLayer();
     if (!layer && !zetsu) return;
@@ -3222,6 +3230,10 @@ extern BOOL gZetsuHiddenForSwitcherFlag;
 BOOL gZetsuHiddenForSwitcherFlag = NO;
 static UIWindow *DMMilkyWayLayer(void);
 void DMZetsuSwitcherCheck(BOOL appearing) {
+    if (DMSMEngine() || DMSMDeskIsFaded()) {   // (Stage Manager: the App Switcher is drawn in the window its windows faded with -- given back at once)
+        DMSMDeskSyncFade();
+        if (DMSMEngine()) return;
+    }
     if (DMActiveEngine() == DMEngineMilkyWay) {   // MilkyWay (M1, Phase 2b): its window layer (level 1033) stayed over the App Switcher, hiding it
         static CFTimeInterval mwAppearedAt = 0;
         if (appearing) mwAppearedAt = CACurrentMediaTime();
@@ -5397,7 +5409,11 @@ static CGRect DMUsableArea(void) {
                 // (y ~1035 in portrait): that is not where it will be, so then the last top it had on the screen in this shape is used (before, a
                 // re-tile behind a full-screen app made the tiles reach the bottom edge of the screen, under the Dock).
                 // (a Dock drawn scaled -- magnified, or mid-animation -- is not its real size: not measured)
-                if (r.size.width > 100.0 && r.origin.y > screen.height * 0.6 && r.origin.y < screen.height - 10.0 && CGAffineTransformIsIdentity(v.transform) && r.size.height < screen.height * 0.14) {
+                // (and laid out for this screen shape: right after a turn the platter can still have the other shape's frame -- 939 pt wide, its top at 699
+                //  in a 768 x 1024 portrait screen, iPad 2 4 Oct 11:48 -- and that top was learnt as portrait's tallest Dock: the Fit tiles stopped 270 pt
+                //  above the real Dock until a respring; 1.3.5 logic test M2)
+                BOOL thisShape = r.size.width <= screen.width + 0.5 && CGRectGetMinX(r) >= -0.5 && CGRectGetMaxX(r) <= screen.width + 0.5 && fabs(w.bounds.size.width - screen.width) < 0.5 && fabs(w.bounds.size.height - screen.height) < 0.5;
+                if (thisShape && r.size.width > 100.0 && r.origin.y > screen.height * 0.6 && r.origin.y < screen.height - 10.0 && CGAffineTransformIsIdentity(v.transform) && r.size.height < screen.height * 0.14) {
                     dockTop = r.origin.y; foundDock = YES;
                     static CGFloat loggedTop = -1;
                     if (fabs(loggedTop - dockTop) > 0.25 && DMTestFlag("/tmp/macstatusbar-debug")) {   // (debug: what the Dock measured as)
@@ -5453,6 +5469,7 @@ static BOOL DMDockOnScreen(void) {
             [stack addObjectsFromArray:v.subviews];
             if (![NSStringFromClass([v class]) isEqualToString:@"SBFloatingDockPlatterView"] || v.hidden || v.alpha < 0.01) continue;
             CGRect r = [v.superview convertRect:v.frame toView:w];
+            if (r.size.width > screen.width + 0.5 || CGRectGetMaxX(r) > screen.width + 0.5) continue;   // (the other screen shape's frame, mid-turn: DMUsableArea)
             if (r.size.width > 100.0 && r.origin.y > screen.height * 0.6 && r.origin.y < screen.height - 10.0) return YES;
         }
     }
@@ -7843,7 +7860,12 @@ static void DMResignWindowedKeyboards(NSString *exceptBundle) {
 }
 @interface DMOutsideTap : NSObject <UIGestureRecognizerDelegate>
 @end
+static void DMSMDeskOutsideTouch(void);   // (Stage Manager engine, SMDesktop.h)
+#if DEBUG
+static void DMSMDeskDebugFloor(void);     // (debug trigger smfloor, SMDesktop.h)
+#endif
 void DMOutsideTouch(void) {   // a touch on the Home Screen or the Dock (outside every window); also run by the debug trigger outsidetap
+    if (DMSMEngine()) { DMSMDeskOutsideTouch(); return; }   // (Stage Manager: its windows over the Home Screen, the same rule)
     if (DMActiveEngine() != DMEngineAerial) return;
     // (also with a hardware keyboard, where no on-screen keyboard is up: the text field's cursor stops and it stops taking the keys, like a Mac, the owner, 27 Sep)
     DMLog([NSString stringWithFormat:@"[focus] a touch outside the windows: the windowed apps are told to put their keyboard away (hardware keyboard %d)", DMHardwareKeyboardAttached()]);
@@ -8234,6 +8256,7 @@ static void DMWatchSofaScore(void) {   // every 0.2 s
 
 static void DMUpdateFocusCatchers(void) {
     if (DMActiveEngine() == DMEngineAerial) { static int n = 0; if (n++ % 10 == 0) DMAttachOutsideTaps(); }   // (watcher plan step 4: the two windows stay for SpringBoard's lifetime: every 2 s is plenty)
+    else if (DMSMEngine()) { static int n = 0; if (n++ % 10 == 0) DMAttachOutsideTaps(); }   // (Stage Manager: the Home Screen behind its windows takes touches too, SMDesktop.h)
     if (!DMWindowWorkNeeded()) return;   // (no window: the listeners and the published sizes follow on the tick a window appears)
     if (DMActiveEngine() == DMEngineZetsu) {   // Zetsu raises its own windows; the taps are only listened for so a tap on the full-screen app behind them
         static NSString *lastSig = nil;         // takes the focus back (the status bar returns to it) and a tap in a window gives it to the windows again
@@ -17622,7 +17645,9 @@ static BOOL DMPointOnMultitaskingDots(UIView *fromView, CGPoint point) {
     for (UIView *sup = aff.superview; sup; sup = sup.superview) if (sup.hidden || sup.alpha < 0.01) return DMDotsNo([NSString stringWithFormat:@"%@ hidden", NSStringFromClass([sup class])]);
     UIView *dots = nil;
     for (UIView *sv in aff.subviews) if ([NSStringFromClass([sv class]) isEqualToString:@"SBTopAffordanceDotsView"]) { dots = sv; break; }
-    if (!dots || dots.hidden) return DMDotsNo(@"no dots subview");
+    // (dots kept invisible -- our engines' title bars and traffic lights take their place: SMEngine's -[SBTopAffordanceDotsView setAlpha:] -- take no
+    //  touches: a tap on the Window menu's title over them was left to them and no menu opened, 1.3.4 logic test P2)
+    if (!dots || dots.hidden || dots.alpha < 0.01) return DMDotsNo(dots ? @"dots invisible" : @"no dots subview");
     CGRect f = [dots convertRect:dots.bounds toCoordinateSpace:[UIScreen mainScreen].coordinateSpace];
     CGRect area = CGRectMake(CGRectGetMidX(f) - 36.0, 0.0, 72.0, MAX(34.0, CGRectGetMaxY(f)));
     CGPoint p = [fromView convertPoint:point toCoordinateSpace:[UIScreen mainScreen].coordinateSpace];
@@ -19000,6 +19025,14 @@ static void DMRunTrigger(NSString *cmd) {
         }
         DMLog(out);
     }
+    else if ([cmd hasPrefix:@"axreducemotion_"]) {   // axreducemotion_<0|1>: Settings > Accessibility > Motion > Reduce Motion (the system setting itself, libAccessibility) -- for gesture tests; put it back
+        void (*set)(BOOL) = (void (*)(BOOL))dlsym(RTLD_DEFAULT, "_AXSSetReduceMotionEnabled");
+        BOOL (*get)(void) = (BOOL (*)(void))dlsym(RTLD_DEFAULT, "_AXSReduceMotionEnabled");
+        if (!set) { void *ax = dlopen("/usr/lib/libAccessibility.dylib", RTLD_LAZY); set = ax ? (void (*)(BOOL))dlsym(ax, "_AXSSetReduceMotionEnabled") : NULL; get = ax ? (BOOL (*)(void))dlsym(ax, "_AXSReduceMotionEnabled") : NULL; }
+        BOOL want = [[cmd substringFromIndex:15] boolValue];
+        if (set) set(want);
+        DMLog([NSString stringWithFormat:@"[debug] Reduce Motion %@ (%@)", want ? @"on" : @"off", set ? (get ? (get() ? @"reads on" : @"reads off") : @"set") : @"no setter"]);
+    }
     else if ([cmd isEqualToString:@"winlist"]) {   // winlist: every visible SpringBoard window (class, level, frame, alpha) and its root view controller (read-only)
         NSMutableString *out = [NSMutableString stringWithString:@"[winlist]"];
         for (UIWindow *w in DMAllWindows()) if (!w.hidden)
@@ -20131,6 +20164,9 @@ static void DMRunTrigger(NSString *cmd) {
             DMLog(@"[smmove] request submitted");
         } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[smmove] refused: %@", e.reason]); }
     }
+#if DEBUG
+    else if ([cmd isEqualToString:@"smfloor"]) DMSMDeskDebugFloor();   // smfloor: the switcher's Home Screen answers, content reasons, pass-through (read-only, SMDesktop.h)
+#endif
     else if ([cmd hasPrefix:@"smdump"]) {   // smdump[_<n>]: Stage Manager study -- the first n (default 3) recent app layouts (stages) with their items' layout attributes and display ordinal (read-only)
         int n = [cmd hasPrefix:@"smdump_"] ? MAX(1, [[cmd substringFromIndex:7] intValue]) : 3;
         id coord = DMCall(objc_getClass("SBMainSwitcherControllerCoordinator"), @"sharedInstance");
@@ -27046,6 +27082,42 @@ static id DMSMIdentityOfScreen(UIScreen *sc) {
 static BOOL DMSMIsMainIdentity(id identity) {
     return !identity || [identity isEqual:DMSMIdentityOfScreen([UIScreen mainScreen])];
 }
+// Force quit of an app whose window is in a stage NOT on screen (another Mac Switcher desktop, the stage left for the Home Screen): its own Close
+// needs the window shown (no affordance: "close ... not available"), and killing the process left its item in that stage -- Stage Manager brought
+// the window back, the app started again, when the stage came (iPad 2, 4 Oct). Its item is taken out of each such stage in the switcher's model
+// (Apple's -appLayoutByRemovingItemInLayoutRole:, the model's replaceAppLayout:withAppLayout:, as DMSMFlattenStages does) -- only on the iPad's own
+// display, never the stage on screen, and only when Stage Manager's result is whole (one window fewer, it gone, a primary kept); a stage where it
+// is alone is deleted by the force quit's own clean-up. Returns how many stages lost it.
+static int DMSMTakeOutOfHiddenStages(NSString *bundle) {
+    if (!DMSMEngine() || !bundle.length) return 0;
+    // (iPadOS 16.0-16.3 have no -appLayoutByRemovingItemInLayoutRole: -- new in 16.4, an optional check row since 1.3.3: the item stays in its hidden
+    //  stage there, as before; asking anyway would only record the missing method as a runtime failure in the verdict)
+    if (!DMSMRowPassed("SBAppLayout", "appLayoutByRemovingItemInLayoutRole:")) {
+        DMLog([NSString stringWithFormat:@"[smengine] force quit %@: stages not on screen are left as they are here (no -appLayoutByRemovingItemInLayoutRole: before iPadOS 16.4)", bundle]);
+        return 0;
+    }
+    id shown = DMFrontApp() ? DMSMFrontStage() : nil;
+    int n = 0;
+    for (id al in [DMSMRecentStages() copy]) {
+        if ((shown && [al isEqual:shown]) || !DMSMIsMainIdentity(DMSMStageDisplayIdentity(al))) continue;
+        NSDictionary *m = DMSMStageItemsMap(al);
+        if (m.count < 2) continue;
+        id mine = nil;
+        for (id it in m) if ([DMSMItemBundle(it) isEqualToString:bundle]) mine = it;
+        long long role = 0;
+        if (!mine || !DMSMStageRoleOfItem(al, mine, &role) || role <= 0) continue;
+        id next = DMSMStageWithoutRole(al, role);
+        NSDictionary *nm = next ? DMSMStageItemsMap(next) : nil;
+        BOOL primary = NO, still = NO;
+        for (id it in nm) { long long r = 0; if (DMSMStageRoleOfItem(next, it, &r) && r == 1) primary = YES; if ([DMSMItemBundle(it) isEqualToString:bundle]) still = YES; }
+        if (!next || next == al || nm.count + 1 != m.count || still || !primary) {
+            DMLog([NSString stringWithFormat:@"[smengine] force quit %@: left in its hidden stage (Stage Manager's stage without it was not whole: %lu of %lu windows, primary %d)", bundle, (unsigned long)nm.count, (unsigned long)m.count, primary]);
+            continue;
+        }
+        if (DMSMReplaceStage(al, next)) { n++; DM_FEATURE_MARK("sm-force-quit-hidden-stage"); DMLog([NSString stringWithFormat:@"[smengine] force quit %@: taken out of a stage not on screen (role %lld; %lu window(s) stay in it)", bundle, role, (unsigned long)nm.count]); }
+    }
+    return n;
+}
 static id DMSMStageOf(NSString *bundle) {   // (the most recent stage holding that app, on whichever display)
     for (id al in DMSMRecentStages())
         for (id it in DMSMStageItemsMap(al)) if ([DMSMItemBundle(it) isEqual:bundle]) return al;
@@ -27329,7 +27401,9 @@ static id DMSMJoinAttributes(NSString *bundle, id frontAttrs, BOOL windowed, lon
     if (!windowed) { sz.normalizedSize = CGSizeMake(1.0, 1.0); sz.type = 3; c = CGPointMake(0.5, 0.5); }
     else {
         BOOL dflt = !haveSize || DMSMPolicyOf(base) == 2 || sz.type == 3 || sz.normalizedSize.width <= 0 || sz.normalizedSize.height <= 0;
-        if (!dflt && base != own && haveCenter) c = CGPointMake(c.x + 0.05, c.y + 0.06);   // (cascaded from the front window)
+        BOOL cascaded = !dflt && base != own && haveCenter;
+        CGPoint from = c;   // (the front window's center, before the cascade)
+        if (cascaded) c = CGPointMake(c.x + 0.05, c.y + 0.06);   // (cascaded from the front window)
         // Worked out in points of the screen it joins and handed over as fractions of THAT screen, its reference set to it. Stage Manager reads a size
         // as a fraction of the reference rectangle kept WITH the attributes, and this used to set the reference only when there was none: the 0.6 x 0.72
         // default, meant for the screen as it is, kept the full-screen attributes' portrait reference in landscape and came out 461 x 737 pt in the
@@ -27342,6 +27416,21 @@ static id DMSMJoinAttributes(NSString *bundle, id frontAttrs, BOOL windowed, lon
             CGSize pts = dflt ? CGSizeMake(0.6 * scr.width, 0.72 * scr.height) : DMSMFitSizeInPoints(sz.normalizedSize, sz.referenceBounds, 0, scr);
             CGPoint cp = dflt ? CGPointMake(0.5 * scr.width, 0.48 * scr.height) : CGPointMake(c.x * scr.width, c.y * scr.height);
             if (!CGRectIsEmpty(u) && !CGRectIsNull(u)) DMSMFitInDesk(&pts, &cp, DMSMCardDesk(u, scr, NO));   // (a desktop too small to hold a window -- never seen -- leaves it as it is)
+            // The cascade steps on until the new window is clear of every window of the desktop, not only the front one (SMFit.h DMSMCascadeClear):
+            // a front window in the bottom-right corner sent the cascade back onto it (Clock, Books and Maps on one spot), and a window at the cascade
+            // spot was covered exactly (App Store on Settings, 1.3.5 logic test M1).
+            CGPoint fromPt = CGPointMake(from.x * scr.width, from.y * scr.height);
+            if (cascaded && !CGRectIsEmpty(u) && !CGRectIsNull(u)) {
+                CGPoint taken[16]; int nTaken = 0;
+                taken[nTaken++] = fromPt;
+                NSDictionary *sm = DMSMStageItemsMap(stage);
+                for (id it in sm) {
+                    CGPoint oc;
+                    if (nTaken < 16 && ![DMSMItemBundle(it) isEqual:bundle] && DMSMAttrCenter(sm[it], &oc)) taken[nTaken++] = CGPointMake(oc.x * scr.width, oc.y * scr.height);
+                }
+                int stepTaken = DMSMCascadeClear(fromPt, CGSizeMake(0.05 * scr.width, 0.06 * scr.height), DMSMCardDesk(u, scr, NO), taken, nTaken, &pts, &cp);
+                if (stepTaken != 0) DMLog([NSString stringWithFormat:@"[smjoin] %@: the cascade spot was taken -- %@", bundle, stepTaken == 99 ? @"no clear spot, left at the first one" : [NSString stringWithFormat:@"step %d (%@)", abs(stepTaken), stepTaken > 0 ? @"down and right" : @"up and left"]]);
+            }
             sz.normalizedSize = CGSizeMake(pts.width / scr.width, pts.height / scr.height);
             sz.referenceBounds = CGRectMake(0, 0, scr.width, scr.height);
             c = CGPointMake(cp.x / scr.width, cp.y / scr.height);
@@ -27640,6 +27729,11 @@ static NSArray<NSString *> *DMSMWindowBundles(void) {
 // For the Dock's running dots (RunningIndicator.m, via dlsym): the apps with a window or a full-screen card showing in the Stage Manager engine.
 // After a respring Stage Manager puts the windows back before iPadOS has started their apps again (iPad 2, 2 Oct: Messages and Sileo on screen,
 // no process), so "running" alone left those Dock icons without a dot. Other engines: nil (their windows are the running apps').
+// The one force quit, for ForceQuitMenu's row in the app icons' menus too (it finds this with dlsym): the app's window closed the way its window engine
+// does it first -- with the Stage Manager engine only that window leaves its stage, also from a stage not on screen -- then the app killed and its
+// switcher card removed where it is alone. ForceQuitMenu killed the app and deleted every layout holding it: every other window of the Stage
+// Manager desktop went with it (1.3.5 logic test H1, iPad 2: Maps and Clock lost with a Settings force quit from its icon).
+__attribute__((visibility("default"))) void MSBDForceQuitApp(NSString *bundleID) { DM_FEATURE_MARK("force-quit-one-path"); DMForceQuitBundle(bundleID); }
 __attribute__((visibility("default"))) NSSet<NSString *> *MSBDAppsWithWindows(void) {
     if (!DMSMEngine()) return nil;
     NSMutableSet<NSString *> *out = [NSMutableSet set];
@@ -28055,17 +28149,23 @@ static void DMSMChrome(UIView *card) {
     if (card.subviews.lastObject != bar && card.subviews.lastObject != objc_getAssociatedObject(card, &kSMGripRKey)) [card bringSubviewToFront:bar];
     if (!wasShown || bundleChanged) [bar dm_updateLights];
 }
+static void DMSMJoinStageAsked(id ctx, NSArray<NSArray *> *asked);   // (SMDesktop.h: SpringBoard's own transitions with roles set)
 static void DMSMJoinDesktop(id ctx) {
     DM_FEATURE_MARK("sm-join-desktop");
     // Atomic (review S2): the whole rewrite -- every window's entity, role and attributes -- is planned and checked first (DMSMPlanValid), and only
     // then written into Apple's context (DMSMWritePlan, which empties what it wrote if a write fails). Any refusal on the way returns with the
     // context untouched: the launch goes on as Stage Manager's own (a new stage).
+    if (DMSMCtxIsOurs(ctx)) return;   // (our own plan, or a request of ours: as we wrote it)
+    // Roles set by SpringBoard itself (the App Switcher's card of a minimized window, Cmd-Tab, Stage Manager's drag and drop, the strip): another
+    // stage is being asked for -- it joins the desktop instead of showing alone, where that is what it is (SMDesktop.h, SMDeskJoin.h).
+    NSMutableArray<NSArray *> *asked = [NSMutableArray array];
     for (long r = 1; r <= 6; r++) {
         BOOL readable = NO;
         id e = DMSMCtxEntityForRole(ctx, r, &readable);
         if (!readable) return;   // (refused: DMSMAPIFail said why)
-        if (e) { DMLog([NSString stringWithFormat:@"[smjoin] roles already set (role %ld): not a plain launch", r]); return; }   // (roles set: our own request, a stage chosen, split...)
+        if (e) [asked addObject:@[@(r), e]];
     }
+    if (asked.count) { DMSMJoinStageAsked(ctx, asked); return; }
     id act = [ctx respondsToSelector:NSSelectorFromString(@"activatingEntity")] ? DMCall(ctx, @"activatingEntity") : nil;
     if (!DMSMIsEntity(act)) return;   // (the Home Screen, nothing -- or not an app's entity)
     NSString *bundle = DMCall(DMCall(act, @"application"), @"bundleIdentifier");
@@ -28168,6 +28268,70 @@ static void DMSMJoinDesktop(id ctx) {
 // visible edge -- a window put somewhere (by us or a drag) did not stay there. Only its first step stays: windows are kept inside the stage area
 // (_constrainModel...). debug: /tmp/msb-sm-applelayout = Apple's full layout, to compare.
 static BOOL DMSMFree(void) { return DMSMEngine() && !DMTestFlag("/tmp/msb-sm-applelayout"); }
+// Stage Manager's recent-stages strip: our engine has none (the Dock is where apps are; prefersStripHidden keeps it hidden) -- but a swipe in from the
+// left edge still revealed it (iPad 2, 3 Oct: every recent stage, the other Mac Switcher desktops' windows too, and the stage on screen squeezed
+// aside for it). The gesture's own gate answers NO while our engine runs. Optional (not in the start-up check): a gate of another name or signature
+// on another iPadOS leaves the strip's gesture as Apple has it, and says so.
+static BOOL (*o_SMStripRevealBegin)(id, SEL, id);
+static BOOL DMSMStripRevealBegin(id self, SEL _cmd, id g) {
+    if (DMSMFree()) { DM_FEATURE_MARK("sm-no-strip-reveal"); return NO; }
+    return o_SMStripRevealBegin(self, _cmd, g);
+}
+// With the strip's gesture held off, the same swipe in from the left edge went on to Stage Manager's window drag (the split-view "unpin" recognizer,
+// which is also how every window is moved by its title bar, so it stays): a window touching the left edge -- ours may, Fit's left tile does;
+// Apple's keep 48 pt away -- was dragged off by the swipe (iPad 2: App Store's tile ended behind Books). A drag that STARTS in the strip's edge
+// zone (20 pt) is refused while our engine runs: the edge swipe does nothing, as on a Mac.
+// (1.3.x port of the 1.4 branch's strip gate, without its Mac Switcher parts: the tap-forward / live-resize gates under the Mac Switcher's view)
+static BOOL (*o_SMUnpinBegin)(id, SEL, id);
+static BOOL DMSMUnpinBegin(id self, SEL _cmd, id g) {
+    if (DMSMFree() && [g isKindOfClass:[UIPanGestureRecognizer class]] && ((UIGestureRecognizer *)g).view) {
+        UIPanGestureRecognizer *pan = g;
+        CGPoint now = [pan locationInView:pan.view], moved = [pan translationInView:pan.view];
+        UIScreen *scr = pan.view.window.screen ?: [UIScreen mainScreen];
+        CGPoint start = [pan.view convertPoint:CGPointMake(now.x - moved.x, now.y - moved.y) toCoordinateSpace:scr.coordinateSpace];
+        if (start.x <= 20.0) { DM_FEATURE_MARK("sm-no-edge-window-drag"); return NO; }
+    }
+    return o_SMUnpinBegin(self, _cmd, g);
+}
+// While one of our menus is open, Stage Manager's tap that brings a window forward does not begin: a tap on a Window menu row over another window
+// also brought that window forward first, and the menu's layout then went to it (1.3.4 logic test P1, iPad 2: "Bottom Left" for Settings moved
+// Clock). The menu takes the touch, as a Mac menu does. (1.4's gate here also holds it under the Mac Switcher's view: combine them on merge.)
+static BOOL DMSMOurMenuOpen(void) { return (gMenuWindow && !gMenuWindow.hidden && gOverlay) || DMExtMenuVisible(); }
+static BOOL (*o_SMTapForwardBegin)(id, SEL, id);
+static BOOL DMSMTapForwardBegin(id self, SEL _cmd, id g) {
+    if (DMSMFree() && DMSMOurMenuOpen()) { DM_FEATURE_MARK("sm-menu-tap-not-forward"); return NO; }
+    return o_SMTapForwardBegin(self, _cmd, g);
+}
+// (the same at touch-down: the recogniser is asked whether it begins only when the tap ends -- by then a row's action may have closed the menu; a
+//  touch that starts while one of our menus is open never reaches it. 1.3.5 logic test R2-N1)
+static BOOL (*o_SMTapForwardTouch)(id, SEL, id, id);
+static BOOL DMSMTapForwardTouch(id self, SEL _cmd, id g, id touch) {
+    if (DMSMFree() && DMSMOurMenuOpen()) return NO;
+    return o_SMTapForwardTouch(self, _cmd, g, touch);
+}
+static void DMSMHookStripReveal(void) {
+    static BOOL done = NO;
+    if (done) return;
+    done = YES;
+    Class gm = objc_getClass("SBFluidSwitcherGestureManager");
+    {   // (the tap-forward gate: on its own, a signature of another kind leaves Apple's gesture as it is)
+        SEL tf = NSSelectorFromString(@"_shouldBeginTapToBringItemContainerForwardGesture:");
+        Method mtf = gm ? class_getInstanceMethod(gm, tf) : NULL;
+        if (mtf && [DMSMSigOfMethod(mtf) isEqualToString:DMSMExpect(@encode(BOOL), @encode(id), NULL)]) MSHookMessageEx(gm, tf, (IMP)DMSMTapForwardBegin, (IMP *)&o_SMTapForwardBegin);
+        else DMLog(@"[smengine] Stage Manager's tap-to-front gesture is not as expected here: menus over windows leave it as Apple has it");
+        SEL tt = NSSelectorFromString(@"_shouldTapToBringItemContainerForward:receiveTouch:");
+        Method mtt = gm ? class_getInstanceMethod(gm, tt) : NULL;
+        if (mtt && [DMSMSigOfMethod(mtt) isEqualToString:DMSMExpect(@encode(BOOL), @encode(id), @encode(id), NULL)]) MSHookMessageEx(gm, tt, (IMP)DMSMTapForwardTouch, (IMP *)&o_SMTapForwardTouch);
+    }
+    SEL s = NSSelectorFromString(@"_shouldBeginContinuousExposeStripRevealGesture:"), u = NSSelectorFromString(@"_shouldBeginSplitViewApplicationUnpinGesture:");
+    NSString *want = DMSMExpect(@encode(BOOL), @encode(id), NULL);
+    Method m = gm ? class_getInstanceMethod(gm, s) : NULL, mu = gm ? class_getInstanceMethod(gm, u) : NULL;
+    // (each gate on its own: iPadOS 16.0 has the window drag's but not the strip's selector -- the drag gate was skipped with it, 1.3.5 logic test L5)
+    if (mu && [DMSMSigOfMethod(mu) isEqualToString:want]) MSHookMessageEx(gm, u, (IMP)DMSMUnpinBegin, (IMP *)&o_SMUnpinBegin);
+    if (!m || ![DMSMSigOfMethod(m) isEqualToString:want]) { DMLog([NSString stringWithFormat:@"[smengine] the strip's reveal gesture is not as expected here: left as Apple has it%@", o_SMUnpinBegin ? @" (no window drag starts in its edge zone)" : @""]); return; }
+    MSHookMessageEx(gm, s, (IMP)DMSMStripRevealBegin, (IMP *)&o_SMStripRevealBegin);
+    DMLog([NSString stringWithFormat:@"[smengine] the strip's reveal gesture is held off while Stage Manager is the engine%@", o_SMUnpinBegin ? @" (and no window drag starts in its edge zone)" : @""]);
+}
 // Stage Manager keeps overlapping windows 48 pt short of each screen edge (and above its Dock): with our engine a window may be as big as the screen
 // (Fill Screen, a window dragged to the edges), like a Mac window.
 // The "recent stages" strip on the left: every Stage Manager layout pass asks the switcher (SBSwitcherModifier -prefersStripHidden forwards to
@@ -28673,6 +28837,7 @@ static void DMSMHookConstrain16(void) {
     MSHookMessageEx(oc, h, (IMP)DMSMConstrainH16, (IMP *)&o_SMConstrainH);
     DMLog(@"[smengine] a window bigger than the stage area keeps its top and left edges inside (title bar and traffic lights on the screen)");
 }
+#include "SMDesktop.h"   // (the Home Screen behind the windows, one desktop for SpringBoard's own transitions: 4 Oct, sm-desktop)
 // The windows' corner radius (Stage Manager's own: rounder than a Mac window): under whichever name this iPadOS has (stageCornerRaddii, sic,
 // through 17; stageCornerRadii from 18.2 -- kSMNeeds' alt name, DMSMCornerRadiusSelector).
 %group SMCornerRaddii
@@ -28945,6 +29110,8 @@ static void DMSMSelfCheck(void) {
         if (DMSMVariantIs("size grid", "grid object")) %init(SMGrid160);
         if (DMSMVariantIs("size grid", "lists")) %init(SMGridLists);      // (16.1+'s size lists: only where chosen, nothing hooked that is not there)
         %init(SMEngine);
+        DMSMHookStripReveal();   // (optional: the recent-stages strip's reveal gesture, held off while our engine runs)
+        DMSMDeskInstall();       // (optional: the Home Screen behind the windows, SMDesktop.h -- its own rows; missing = Apple's way, the engine runs)
         if (gSMLayoutGen == 17) {
             DM_FEATURE_MARK("sm-layout-17");
             %init(SMLayout17);

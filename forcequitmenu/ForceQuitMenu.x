@@ -2,6 +2,7 @@
 // App Menus.
 #import <UIKit/UIKit.h>
 #include <notify.h>
+#include <dlfcn.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 
@@ -114,6 +115,12 @@ static void removeFromAppSwitcher(NSString *bundleID) {
 
 + (void)activateShortcut:(SBSApplicationShortcutItem *)item withBundleIdentifier:(NSString *)bundleID forIconView:(id)iconView {
     if ([item.type isEqualToString:kForceQuitShortcutType]) {
+        // (the one force quit, MacStatusBarCore's MSBDForceQuitApp: the app's window closed by its window engine first -- with the Stage Manager engine
+        //  only that window leaves its stage -- then the kill and the card. Killing here and deleting every layout that holds the app took the whole
+        //  Stage Manager desktop with it, 1.3.5 logic test H1. Without MacStatusBarCore loaded: the plain kill below.)
+        static void (*forceQuit)(NSString *) = NULL;
+        if (!forceQuit) forceQuit = (void (*)(NSString *))dlsym(RTLD_DEFAULT, "MSBDForceQuitApp");
+        if (forceQuit) { forceQuit(bundleID); return; }
         BKSTerminateApplicationForReasonAndReportWithDescription(bundleID, 5, false, @"ForceQuitMenu - force touch, killed");
         removeFromAppSwitcher(bundleID);
         return;

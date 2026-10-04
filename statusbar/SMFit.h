@@ -45,6 +45,28 @@ static inline int DMSMFitInDesk(CGSize *size, CGPoint *center, CGRect desk) {
     return changed;
 }
 
+// Where a window cascaded from the front window goes (1.3.5 logic test M1): the cascade steps on from the front window's centre fromPt by `step`
+// points -- down and right, then up and left where that runs out of room (the bottom-right corner) -- until the window, fitted into `desk`, has its
+// centre at least 8 pt from every window's centre in `taken` (points; the front window's included). Before, only the front window was looked at, and a
+// window added while another one sat at the cascade spot landed exactly on it (iPad 2, 4 Oct: App Store on Settings, same centre and size).
+// *size / *center: in = the first cascade step, fitted; out = the place chosen (unchanged when no step is clear). Returns the step taken: 0 the first
+// one, k > 1 the k-th down-right step, -k the k-th up-left step, 99 none clear.
+static inline int DMSMCascadeClear(CGPoint fromPt, CGSize step, CGRect desk, const CGPoint *taken, int nTaken, CGSize *size, CGPoint *center) {
+    if (!size || !center) return 99;
+    for (int k = 0, dir = 1; ; ) {
+        CGSize s2 = *size; CGPoint c2 = *center;
+        if (k > 0) { c2 = CGPointMake(fromPt.x + dir * k * step.width, fromPt.y + dir * k * step.height); DMSMFitInDesk(&s2, &c2, desk); }
+        int clear = 1;
+        for (int i = 0; i < nTaken && clear; i++) if (fabs(c2.x - taken[i].x) < 8.0 && fabs(c2.y - taken[i].y) < 8.0) clear = 0;
+        if (clear) { *size = s2; *center = c2; return k == 0 ? 0 : dir * k; }
+        if (k == 0) { k = 2; dir = 1; }            // (the first step is k = 1 down-right: the one handed in)
+        else if (dir == 1 && k < 8) k++;
+        else if (dir == 1) { dir = -1; k = 1; }    // (no room down and right: up and left)
+        else if (k < 8) k++;
+        else return 99;
+    }
+}
+
 // After Stage Manager has kept a window inside its stage area (-_constrainModelVertically:/Horizontally:toStageArea:, iPadOS 16): where its center
 // goes so its top edge (vertical) or left edge (horizontal) is not outside the area -- a window bigger than the area starts at the area's top / left
 // edge. A full-screen-sized window (as big as the container) is left as it is: Apple's whole screen. Returns 1 when the center has to move.

@@ -473,6 +473,18 @@ static void DMSMCtxMarkFrontmost(id ctx, id entity) {
 #if DEBUG
 static int gSMSimulateWriteFail = -1;   // (debug /tmp/msb-sm-simulate-writefail: the Nth write throws, to test the roll-back)
 #endif
+// A context our plan was written into is marked (and so is a request of ours by its "MSBD..." event label): the desktop join in its -finalize
+// leaves those alone and takes every other context with roles set as SpringBoard's own (SMDesktop.h DMSMJoinStageAsked).
+static char kSMOwnCtxKey;
+static void DMSMCtxMarkOurs(id ctx) { if (ctx) objc_setAssociatedObject(ctx, &kSMOwnCtxKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
+static BOOL DMSMCtxIsOurs(id ctx) {
+    if (!ctx) return NO;
+    if (objc_getAssociatedObject(ctx, &kSMOwnCtxKey)) return YES;
+    SEL rq = NSSelectorFromString(@"request"), lb = NSSelectorFromString(@"eventLabel");
+    id req = [ctx respondsToSelector:rq] && DMSMSigOK(ctx, rq, DMSMSigObj(), "request") ? ((id (*)(id, SEL))objc_msgSend)(ctx, rq) : nil;
+    id label = [req respondsToSelector:lb] && DMSMSigOK(req, lb, DMSMSigObj(), "eventLabel") ? ((id (*)(id, SEL))objc_msgSend)(req, lb) : nil;
+    return [label isKindOfClass:[NSString class]] && [label hasPrefix:@"MSBD"];
+}
 static BOOL DMSMPlanValid(NSArray<NSArray *> *plan, NSSet<NSNumber *> *allowed, NSString **why) {
     NSMutableSet *roles = [NSMutableSet set], *entities = [NSMutableSet set];
     if (!plan.count) { if (why) *why = @"empty plan"; return NO; }
@@ -506,6 +518,7 @@ static BOOL DMSMWritePlan(id ctx, NSArray<NSArray *> *plan, id frontEntity) {
             ((void (*)(id, SEL, id, long long))objc_msgSend)(ctx, setE, en[0], [en[1] longLongValue]);
             ((void (*)(id, SEL, id, id))objc_msgSend)(ctx, setA, en[2], en[0]);
         }
+        DMSMCtxMarkOurs(ctx);   // (our plan: the desktop join leaves this context alone)
         if (frontEntity) DMSMCtxMarkFrontmost(ctx, frontEntity);
     } @catch (NSException *x) {
         for (NSNumber *r in written) @try { ((void (*)(id, SEL, id, long long))objc_msgSend)(ctx, setE, nil, r.longLongValue); } @catch (id y) {}
@@ -525,7 +538,10 @@ static BOOL DMSMRequestPlan(id identity, BOOL onMain, NSString *label, NSArray<N
     void (^builder)(id) = ^(id req) {
         built = YES;
         SEL lab = NSSelectorFromString(@"setEventLabel:");
-        if (label && [req respondsToSelector:lab] && DMSMSigOK(req, lab, DMSMSigVoidObj(), "setEventLabel:")) ((void (*)(id, SEL, id))objc_msgSend)(req, lab, label);
+        // (always a label of ours: the desktop join recognises our own transitions by it when the context mark does not reach SpringBoard's final
+        //  context -- unlabelled Fit requests showed up there as "no label", 1.3.5 logic test L3)
+        NSString *ourLabel = label.length ? label : @"MSBDRequest";
+        if ([req respondsToSelector:lab] && DMSMSigOK(req, lab, DMSMSigVoidObj(), "setEventLabel:")) ((void (*)(id, SEL, id))objc_msgSend)(req, lab, ourLabel);
         SEL mod = NSSelectorFromString(@"modifyApplicationContext:");
         if (!DMSMSigOK(req, mod, DMSMSigVoidObj(), "modifyApplicationContext:")) return;
         ((void (*)(id, SEL, id))objc_msgSend)(req, mod, ^(id ctx) { @try { wrote = DMSMWritePlan(ctx, plan, frontEntity); } @catch (id e) {} });

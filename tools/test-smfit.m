@@ -55,6 +55,40 @@ int main(void) {
         DMSMFitInDesk(&wz, &wzc, portDesk);
         CHECK(near(wz.width, 768) && near(wzc.x - wz.width / 2.0, 0), "wide window fitted: width %.1f left %.1f", wz.width, wzc.x - wz.width / 2.0);
 
+        // 2b. The cascade clear of every window (1.3.5 logic test M1, DMSMCascadeClear): App Store added while Clock was in front landed exactly on
+        //     Settings (same centre, same size) -- the cascade looked at the front window only.
+        {
+            CGSize step = CGSizeMake(0.05 * kLand.width, 0.06 * kLand.height);
+            CGSize ws = CGSizeMake(0.45 * kLand.width, 0.6 * kLand.height);
+            CGPoint front = CGPointMake(0.5 * kLand.width, 0.48 * kLand.height);
+            CGPoint first = CGPointMake(front.x + step.width, front.y + step.height); CGSize fs = ws;
+            DMSMFitInDesk(&fs, &first, landDesk);
+            CGPoint free1[1] = {front};   // (only the front window: the first step is clear)
+            CGSize s1 = fs; CGPoint c1 = first;
+            CHECK(DMSMCascadeClear(front, step, landDesk, free1, 1, &s1, &c1) == 0 && near(c1.x, first.x) && near(c1.y, first.y), "cascade: the first step is clear, kept");
+            CGPoint sameX[2] = {front, CGPointMake(first.x, first.y + 100.0)};   // (a window on the first spot's x only, 100 pt lower: not in the way -- R2-L2)
+            CGSize s1b = fs; CGPoint c1b = first;
+            CHECK(DMSMCascadeClear(front, step, landDesk, sameX, 2, &s1b, &c1b) == 0 && near(c1b.x, first.x) && near(c1b.y, first.y), "cascade: a window sharing only the x is not in the way");
+            CGPoint busy[2] = {front, first};   // (Settings sits on the first cascade spot)
+            CGSize s2 = fs; CGPoint c2 = first;
+            int k2 = DMSMCascadeClear(front, step, landDesk, busy, 2, &s2, &c2);
+            CHECK(k2 == 2 && fabs(c2.x - first.x) >= 8.0 && fabs(c2.x - front.x) >= 8.0, "cascade: the first spot taken -> the second step down and right (step %d, x %.1f)", k2, c2.x);
+            // the front window in the bottom-right corner (a Fit tile): every step down and right is fitted back onto it -> up and left
+            CGSize cs = ws; CGPoint corner = CGPointMake(CGRectGetMaxX(landDesk) - cs.width / 2.0, CGRectGetMaxY(landDesk) - cs.height / 2.0);
+            CGPoint cf = CGPointMake(corner.x + step.width, corner.y + step.height); CGSize cfs = cs;
+            DMSMFitInDesk(&cfs, &cf, landDesk);
+            CGPoint inCorner[1] = {corner};
+            int k3 = DMSMCascadeClear(corner, step, landDesk, inCorner, 1, &cfs, &cf);
+            CHECK(k3 == -1 && cf.x < corner.x - 8.0 && cf.y < corner.y - 8.0, "cascade: front window in the corner -> up and left (step %d, %.1f, %.1f)", k3, cf.x, cf.y);
+            CGRect card = CGRectMake(cf.x - cfs.width / 2.0, cf.y - cfs.height / 2.0, cfs.width, cfs.height);
+            CHECK(CGRectContainsRect(CGRectInset(landDesk, -0.01, -0.01), card), "cascade: the chosen spot is inside the desktop");
+            // every spot taken: nothing chosen, the first step kept
+            CGPoint all[17]; int n = 0; all[n++] = front; all[n++] = first;
+            for (int dir = 1; dir >= -1; dir -= 2) for (int k = 1; k <= 8 && n < 17; k++) { CGSize t = ws; CGPoint p = CGPointMake(front.x + dir * k * step.width, front.y + dir * k * step.height); DMSMFitInDesk(&t, &p, landDesk); all[n++] = p; }
+            CGSize s4 = fs; CGPoint c4 = first;
+            CHECK(DMSMCascadeClear(front, step, landDesk, all, n, &s4, &c4) == 99 && near(c4.x, first.x) && near(c4.y, first.y), "cascade: no clear spot -> the first step kept");
+        }
+
         // 3. A window the user put behind the Dock keeps that (its desk reaches the screen's bottom edge), and keeps its title bar on the screen.
         CGRect behind = desk(kLand, kLandDockTop, YES);
         CGSize bs = CGSizeMake(600, 600); CGPoint bc = CGPointMake(500, 150 + 300);   // (top 150, bottom 750: under the Dock line 697)

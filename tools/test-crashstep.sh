@@ -74,6 +74,16 @@ if [ -f "$MAP" ] && [ -n "$DSYM" ]; then
   real core-sm-fit "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMAttrsFitScreen'
   real core-sm-hook16 "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMConstrainEdges16'
   real core-sm-group "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore 'logos_method\$SMLayout16\$'
+  # force quit: the Apple menu's and the app icons' (MSBDForceQuitApp, 1.3.5): Windowing off, not the traffic lights or the whole part (R2-L1)
+  real core-forcequit "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMForceQuitBundle$'
+  real core-forcequit-export "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?MSBDForceQuitApp$'
+  real core-appswithwindows "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?MSBDAppsWithWindows$'
+  # (sm-desktop: the Home Screen behind the windows, the desktop join of SpringBoard's own transitions and its rule's blocks, the strip gate)
+  real core-sm-desk "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMDeskHomeBehind$'
+  real core-sm-joinasked "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMJoinStageAsked$'
+  real core-sm-joinblock "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^___DMSMDeskJoinPlan_block_invoke'
+  real core-sm-apiblock "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^___DMSMRequestPlan_block_invoke'
+  real core-sm-strip "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMStripRevealBegin$'
   # Stage Manager held off / given back (1.3.4): Control Center's button and its installer, SpringBoard's switch handler that waits
   real core-sm-button "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore 'logos_method\$StageManagerButton\$'
   real core-sm-buttonhook "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMInitStageManagerButtonHook$'

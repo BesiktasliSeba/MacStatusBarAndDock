@@ -145,6 +145,9 @@ sym MacStatusBarCore ^_?(DMZetsu|DMAerial|DMMilky|DMMinimize|DMSwap|DMCascade|DM
 # (unnamed, it fell to the image's target: Stock status bar mode, which stopped the engine too but also took the menu bar; iPadOS 17 runs the
 # engine's 17 layout code untested, so a crash there must cost the engine, not the bar)
 sym MacStatusBarCore ^_?DMSM[A-Z0-9] windowingEnabled
+# (force quit: the window engines close the app's window first -- the Apple menu's Force Quit and, since 1.3.5, the app icons' menus through
+#  MSBDForceQuitApp; and the windowed apps the Dock asks about. Their sections fell to "part" / "traffic lights" before, 1.3.5 logic test R2-L1)
+sym MacStatusBarCore ^_?(DMForceQuitBundle|MSBDForceQuitApp|MSBDAppsWithWindows)$ windowingEnabled
 # (every %group named SM...: SMEngine, SMLayout16 / 160 / 17, SMGrid160, SMCornerRaddii / Radii -- one pattern, so a new SM group cannot fall to the
 #  image's target as 16.0's SMLayout160 / SMGrid160 did in the first 1.3.4 build; test-crashstep checks every SM group of the built map)
 sym MacStatusBarCore \$SM[A-Z][A-Za-z0-9]*\$ windowingEnabled
@@ -153,6 +156,9 @@ sym MacStatusBarCore \$StageManagerButton\$ windowingEnabled
 sym MacStatusBarCore ^_?DMInitStageManagerButtonHook$ windowingEnabled
 sec MacStatusBarCore Stage\sManager\sswitched\soff windowingEnabled
 sec MacStatusBarCore Stage\sManager\s(as\sthe\sengine|engine) windowingEnabled
+# (the engine's own headers: the checked API, the window fit, the Home Screen behind the windows and the desktop join -- their blocks too, whose
+#  names start with ___DMSM and so pass the sym rule above)
+file MacStatusBarCore ^(SMEngineAPI|SMFit|SMDesktop|SMDeskJoin)\.h$ windowingEnabled
 sec MacStatusBarCore iPadOS\s17's\slayout\sengine windowingEnabled
 sec MacStatusBarCore which\swindow\sengine windowingEnabled
 sec MacStatusBarCore Stage\sManager\sis\sheld\soff windowingEnabled

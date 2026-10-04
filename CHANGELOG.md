@@ -2,6 +2,20 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.3.5
+
+### Improvements
+- Stage Manager engine: windows now float over your Home Screen, like with the other engines. App icons, widgets and desktop icons stay visible and usable behind the windows.
+- Stage Manager engine: all windows stay on one desktop. A window opened from the App Switcher, such as a minimized one, joins the open windows instead of hiding them, and a swipe in from the left edge no longer brings up Stage Manager's list of window groups.
+
+### Fixes
+- Stage Manager engine: Force Quit in an app icon's menu now closes only that app's window. Before, every other window on the desktop went with it.
+- Stage Manager engine: an app you force quit while the windows were put aside (after going to the Home Screen) no longer comes back with the other windows (iPadOS 16.4 and later).
+- Stage Manager engine: a new window no longer opens exactly on top of another window.
+- Stage Manager engine with Fit to Window: after you turn the iPad, the tiles now end right above the Dock. Before, they could stop far above it until a respring.
+- Stage Manager engine: a layout picked in the Window menu now goes to the app in front, even when another window is under the menu. Before, that window could move instead.
+- Stage Manager engine: tapping Window in the menu bar now opens the menu when a window's top edge sits right under it. Before, the tap could do nothing.
+
 ## 1.3.4
 
 ### New
