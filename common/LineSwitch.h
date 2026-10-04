@@ -14,6 +14,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <dlfcn.h>
+#import <unistd.h>
 #import "VersionGate.h"
 #import "CrashGuard.h"
 #import "CrashExplain.h"
@@ -60,7 +61,10 @@ static void MSBDRecord(NSMutableDictionary *record, NSString *listKey, NSString 
 }
 // Choicy: returns YES if its configuration changed
 static BOOL MSBDChoicySetLine(NSString *line, BOOL on) {
-	NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:MSBD_CHOICY] mutableCopy] ?: [NSMutableDictionary new];
+	NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:MSBD_CHOICY] mutableCopy];
+	// (a Choicy file that is there but cannot be read -- damaged, half written, not a dictionary -- is left alone: writing a new one would replace the
+	//  user's whole Choicy setup with this one line, 1.3.3 audit L-17; only a missing file starts empty, as the root helper does)
+	if (!prefs) { if (access(MSBD_CHOICY.fileSystemRepresentation, F_OK) == 0) return NO; prefs = [NSMutableDictionary new]; }
 	NSMutableDictionary *record = [[NSDictionary dictionaryWithContentsOfFile:MSBD_LINERECORD] mutableCopy] ?: [NSMutableDictionary new];
 	BOOL changed = NO;
 	NSMutableArray *global = [prefs[@"globalDeniedTweaks"] isKindOfClass:[NSArray class]] ? [prefs[@"globalDeniedTweaks"] mutableCopy] : [NSMutableArray new];

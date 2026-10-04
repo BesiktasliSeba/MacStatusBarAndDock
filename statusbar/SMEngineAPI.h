@@ -258,12 +258,25 @@ static id DMSMStageWithoutRole(id stage, long long role) {
     id r = ((id (*)(id, SEL, long long))objc_msgSend)(stage, sel, role);
     return DMSMIsStage(r) ? r : nil;
 }
+// The window in that role as a stage of its own: Apple's leaf app layout (that item with its attributes, configuration full, the stage's
+// environment, hidden state and display). iPadOS 16.2 and 16.3 have no -appLayoutByRemovingItemInLayoutRole: (it came in 16.4); this gives the
+// same single-window stage in one step (DMSMStageCutToPrimary).
+static id DMSMStageLeaf(id stage, long long role) {
+    if (!DMSMIsStage(stage)) return nil;
+    SEL sel = NSSelectorFromString(@"leafAppLayoutForRole:");
+    if (!DMSMSigOK(stage, sel, DMSMSigWithLong(), "leafAppLayoutForRole:")) return nil;
+    id r = ((id (*)(id, SEL, long long))objc_msgSend)(stage, sel, role);
+    return DMSMIsStage(r) ? r : nil;
+}
 // The switcher's model of stages, and a stage replaced in it (a window's attributes changed in place).
 static id DMSMSwitcherModel(void) {
     id m = nil; @try { m = [DMSMCoordinator() valueForKey:@"_mainSwitcherModel"]; } @catch (id e) { m = nil; }
     return m;
 }
+// (StatusBar.x keeps the front window for one tick: told here whenever our code changes the stage model or asks for a transition)
+static void (*gDMSMModelChanged)(void) = NULL;
 static BOOL DMSMReplaceStage(id stage, id newStage) {
+    if (gDMSMModelChanged) gDMSMModelChanged();
     id model = DMSMSwitcherModel();
     SEL sel = NSSelectorFromString(@"replaceAppLayout:withAppLayout:");
     if (!DMSMIsStage(stage) || !DMSMIsStage(newStage) || !DMSMSigOK(model, sel, DMSMSigVoidObjObj(), "replaceAppLayout:withAppLayout:")) return NO;
@@ -372,6 +385,7 @@ static BOOL DMSMWritePlan(id ctx, NSArray<NSArray *> *plan, id frontEntity) {
 // A workspace transition on a display (the iPad: nil identity) that names the plan's windows. YES when SpringBoard took the request. The plan is
 // checked before the request is made: a refused plan asks for nothing (no half request).
 static BOOL DMSMRequestPlan(id identity, BOOL onMain, NSString *label, NSArray<NSArray *> *plan, NSSet<NSNumber *> *allowed, id frontEntity) {
+    if (gDMSMModelChanged) gDMSMModelChanged();
     NSString *why = nil;
     if (!DMSMPlanValid(plan, allowed, &why)) { DMSMAPIFail(@"transition plan", [NSString stringWithFormat:@"%@ refused before asking: %@", label, why]); return NO; }
     id ws = DMCall(objc_getClass("SBMainWorkspace"), @"sharedInstance");
@@ -412,7 +426,12 @@ static BOOL DMSMRequestPlan(id identity, BOOL onMain, NSString *label, NSArray<N
 // for -- a hook of a method whose arguments changed would pass garbage on even to %orig). Keep in step with %group SMEngine and the wrappers above.
 // alt: another name the same method has on some iPadOS (hooked under whichever exists); layout: 0 = both layout engines, 16 = only with iPadOS 16's
 // SBChamoisOverlappingController, 17 = only with iPadOS 17's SBContinuousExposeAutoLayoutController (DMSMLayoutGen).
-typedef struct { const char *cls; const char *sel; BOOL classMethod; BOOL hooked; NSString *(*sig)(void); const char *alt; int layout; } DMSMNeed;
+// need: core (every row that does not say otherwise) = missing or different keeps the engine off; optional = only `feature` depends on it, the
+// engine runs without it -- rows with the same feature are alternatives (one is enough; the code asks DMSMRowPassed which one to use), and a
+// missing optional row is logged once and listed in the verdict ("optional") and in Report a Problem. ivar: the row is an instance variable
+// (sel = its name) whose type encoding must start with this.
+enum { DMSMNeedCore = 0, DMSMNeedOptional = 1 };
+typedef struct { const char *cls; const char *sel; BOOL classMethod; BOOL hooked; NSString *(*sig)(void); const char *alt; int layout; int need; const char *feature; const char *ivar; } DMSMNeed;
 DMSM_SIG(DMSMSigVoid, @encode(void))
 DMSM_SIG(DMSMSigDouble, @encode(double))
 DMSM_SIG(DMSMSigVoidBool, @encode(void), @encode(BOOL))
@@ -456,7 +475,9 @@ static const DMSMNeed kSMNeeds[] = {
     {"SBAppLayout", "layoutRoleForItem:", NO, NO, DMSMSigRole},
     {"SBAppLayout", "preferredDisplayIdentity", NO, NO, DMSMSigObj},
     {"SBAppLayout", "appLayoutByModifyingLayoutAttributes:forItem:", NO, NO, DMSMSigObjObjObj},
-    {"SBAppLayout", "appLayoutByRemovingItemInLayoutRole:", NO, NO, DMSMSigWithLong},
+    // (leaving Stage Manager, a stage of several windows is cut back to its primary window: 16.4+ removes the others, 16.2-16.3 take the leaf)
+    {"SBAppLayout", "appLayoutByRemovingItemInLayoutRole:", NO, NO, DMSMSigWithLong, NULL, 0, DMSMNeedOptional, "multi-window stages cut back when another engine takes over"},
+    {"SBAppLayout", "leafAppLayoutForRole:", NO, NO, DMSMSigWithLong, NULL, 0, DMSMNeedOptional, "multi-window stages cut back when another engine takes over"},
     {"SBDisplayItem", "bundleIdentifier", NO, NO, DMSMSigObj},
     {"SBMainSwitcherControllerCoordinator", "sharedInstance", YES, NO, NULL},
     {"SBMainSwitcherControllerCoordinator", "recentAppLayouts", NO, NO, DMSMSigObj},
@@ -474,7 +495,9 @@ static const DMSMNeed kSMNeeds[] = {
     {"SBDeviceApplicationSceneEntity", "application", NO, NO, DMSMSigObj},
     {"SBApplicationController", "sharedInstance", YES, NO, NULL},
     {"SBApplicationController", "applicationWithBundleIdentifier:", NO, NO, DMSMSigObjObj},
-    {"SBSwitcherChamoisLayoutAttributes", "containerBounds", NO, NO, DMSMSigRect},
+    // (the size grid's and the caps' container: read from this ivar, never through -containerBounds, issue #2 -- without it the largest screen,
+    //  DMSMContainerBoundsOf in StatusBar.x; the -containerBounds row checked a method the engine stopped calling in 1.1.6)
+    {"SBSwitcherChamoisLayoutAttributes", "_containerBounds", NO, NO, NULL, NULL, 0, DMSMNeedOptional, "window size caps from the stage's own container (else the largest screen)", "{CGRect="},
     {"SBMutableChamoisOverlappingModel", "centerForItem:", NO, NO, DMSMSigCenterFor, NULL, 16},
     {"SBTopAffordanceViewController", "closeAction", NO, NO, DMSMSigObj},
     {"SBTopAffordanceViewController", "removeFromSetAction", NO, NO, DMSMSigObj},
@@ -564,28 +587,68 @@ static Method DMSMRowMethod(const DMSMNeed *n, const char **name) {
     }
     return m;
 }
+// The start-up check's answer per row, for the code that has to choose between optional alternatives (DMSMRowPassed). Filled by the live check
+// only (DMSMCheckAPILive: the self-check, the read-only check); the debug trigger's re-runs with a simulated difference leave it alone.
+static BOOL gSMRowPassed[sizeof(kSMNeeds) / sizeof(kSMNeeds[0])];
+static BOOL gSMRowsKnown = NO;
+static NSArray<NSString *> *gSMCheckOptional;   // (the live check's optional rows that are missing or different, each "<row problem> (<feature>)")
+static NSArray<NSString *> *gSMFeaturesOff;     // (optional features none of whose alternatives is here)
+// One row: nil when it is there as we use it, else what is wrong ("-[cls sel] missing", "... is X, we use Y", "ivar ... missing").
+// *compared: the row's method (or ivar) was found and its type looked at (what the "verified" count has always counted).
+static NSString *DMSMRowProblem(const DMSMNeed *n, NSString *simulate, BOOL *compared) {
+    if (compared) *compared = NO;
+    Class c = objc_getClass(n->cls);
+    if (!c) return [NSString stringWithFormat:@"class %s missing", n->cls];
+    if (n->ivar) {
+        Ivar iv = class_getInstanceVariable(c, n->sel);
+        const char *t = iv ? ivar_getTypeEncoding(iv) : NULL;
+        if (!t) return [NSString stringWithFormat:@"ivar %s.%s missing", n->cls, n->sel];
+        if (compared) *compared = YES;
+        if (strncmp(t, n->ivar, strlen(n->ivar))) return [NSString stringWithFormat:@"ivar %s.%s is %s, we read %s...", n->cls, n->sel, t, n->ivar];
+        return nil;
+    }
+    const char *name = n->sel;
+    Method m = DMSMRowMethod(n, &name);
+    if (!strcmp(n->sel, "attributesByModifyingAttributedSize:") && [simulate isEqualToString:@"selector"]) { m = NULL; name = "attributesByModifyingAttributedSize_simulatedMissing:"; }
+    if (!strcmp(n->sel, "appLayoutByRemovingItemInLayoutRole:") && [simulate isEqualToString:@"optional"]) m = NULL;   // (as on iPadOS 16.2-16.3)
+    if (!m) return [NSString stringWithFormat:@"%c[%s %s] missing", n->classMethod ? '+' : '-', n->cls, name];
+    if (compared) *compared = YES;
+    if (n->sig) {
+        NSString *have = DMSMSigOfMethod(m), *want = n->sig();
+        if (!strcmp(n->sel, "attributedSize") && [simulate isEqualToString:@"encoding"]) have = DMSMNormEncoding("{SBDisplayItemAttributedSize={CGSize=dd}q}16@0:8");   // (a layout without referenceBounds, review S3)
+        if (![have isEqualToString:want]) return [NSString stringWithFormat:@"-[%s %s] is %@, we use %@", n->cls, name, have, want];
+    }
+    return nil;
+}
 // Checks every row of this iPadOS's layout engine (and the rows both share): the classes and methods are there, with the signatures we use.
-// Returns the list of what is missing or different (empty = all there). simulate (debug): "selector" / "encoding" pretend one row is missing /
-// different; "layout16" / "layout17" check that layout engine's table.
-static NSArray<NSString *> *DMSMCheckAPI(NSString *simulate, NSUInteger *checked) {
-    NSMutableArray *bad = [NSMutableArray array];
+// Returns the CORE rows that are missing or different (empty = the engine can run); optional rows go to *optional (with the feature they serve),
+// features left with none of their alternatives to *featuresOff, each row's answer to rowPassed (NULL: not wanted). simulate (debug):
+// "selector" / "encoding" pretend one core row is missing / different, "optional" that -appLayoutByRemovingItemInLayoutRole: is missing (as on
+// iPadOS 16.2-16.3); "layout16" / "layout17" check that layout engine's table.
+static NSArray<NSString *> *DMSMCheckAPIFull(NSString *simulate, NSUInteger *checked, NSArray<NSString *> **optional, NSArray<NSString *> **featuresOff, BOOL *rowPassed) {
+    NSMutableArray *bad = [NSMutableArray array], *opt = [NSMutableArray array];
+    NSMutableDictionary<NSString *, NSNumber *> *feature = [NSMutableDictionary dictionary];   // (feature -> one of its alternatives passed)
+    NSMutableArray<NSString *> *featureOrder = [NSMutableArray array];
     int gen = [simulate hasPrefix:@"layout"] ? DMSMLayoutGenFor(simulate) : DMSMLayoutGen();
     for (size_t i = 0; i < kSMNeedsCount; i++) {
         DMSMNeed n = kSMNeeds[i];
+        if (rowPassed) rowPassed[i] = NO;
         if (!DMSMRowActive(&n, gen)) continue;
-        Class c = objc_getClass(n.cls);
-        if (!c) { NSString *s = [NSString stringWithFormat:@"class %s missing", n.cls]; if (![bad containsObject:s]) [bad addObject:s]; continue; }
-        const char *name = n.sel;
-        Method m = DMSMRowMethod(&n, &name);
-        if (!strcmp(n.sel, "attributesByModifyingAttributedSize:") && [simulate isEqualToString:@"selector"]) { m = NULL; name = "attributesByModifyingAttributedSize_simulatedMissing:"; }
-        if (!m) { [bad addObject:[NSString stringWithFormat:@"%c[%s %s] missing", n.classMethod ? '+' : '-', n.cls, name]]; continue; }
-        if (n.sig) {
-            NSString *have = DMSMSigOfMethod(m), *want = n.sig();
-            if (!strcmp(n.sel, "attributedSize") && [simulate isEqualToString:@"encoding"]) have = DMSMNormEncoding("{SBDisplayItemAttributedSize={CGSize=dd}q}16@0:8");   // (a layout without referenceBounds, review S3)
-            if (![have isEqualToString:want]) [bad addObject:[NSString stringWithFormat:@"-[%s %s] is %@, we use %@", n.cls, name, have, want]];
-        }
-        if (checked) (*checked)++;
+        BOOL compared = NO;
+        NSString *problem = DMSMRowProblem(&n, simulate, &compared);
+        if (rowPassed) rowPassed[i] = problem == nil;
+        if (n.need == DMSMNeedOptional) {
+            NSString *f = n.feature ? @(n.feature) : @(n.sel);
+            if (!feature[f]) [featureOrder addObject:f];
+            feature[f] = @(feature[f].boolValue || problem == nil);
+            if (problem) [opt addObject:[NSString stringWithFormat:@"%@ (%@)", problem, f]];
+        } else if (problem && ![bad containsObject:problem]) [bad addObject:problem];
+        if (checked && compared) (*checked)++;
     }
+    NSMutableArray *off = [NSMutableArray array];
+    for (NSString *f in featureOrder) if (!feature[f].boolValue) [off addObject:f];
+    if (optional) *optional = opt;
+    if (featuresOff) *featuresOff = off;
     // (the struct we read and hand back by value: its size in the method signature matches ours -- the byte count, on top of the shape above)
     Class ac = objc_getClass("SBDisplayItemLayoutAttributes");
     Method sm = ac ? class_getInstanceMethod(ac, sel_registerName("attributedSize")) : NULL;
@@ -596,6 +659,28 @@ static NSArray<NSString *> *DMSMCheckAPI(NSString *simulate, NSUInteger *checked
         if (size != sizeof(DMSMAttributedSize)) [bad addObject:[NSString stringWithFormat:@"attributedSize is %lu bytes, ours %lu", (unsigned long)size, (unsigned long)sizeof(DMSMAttributedSize)]];
     }
     return bad;
+}
+// The core rows' problems only, nothing recorded (the debug trigger's re-runs, the Mac tests).
+static __attribute__((unused)) NSArray<NSString *> *DMSMCheckAPI(NSString *simulate, NSUInteger *checked) { return DMSMCheckAPIFull(simulate, checked, NULL, NULL, NULL); }
+// The start-up check (self-check or read-only): also records each row's answer and the optional rows' state for the code and the verdict.
+static NSArray<NSString *> *DMSMCheckAPILive(NSString *simulate, NSUInteger *checked) {
+    NSArray *opt = nil, *off = nil;
+    NSArray *bad = DMSMCheckAPIFull(simulate, checked, &opt, &off, gSMRowPassed);
+    gSMRowsKnown = YES; gSMCheckOptional = opt; gSMFeaturesOff = off;
+    for (NSString *l in opt) DMLog([@"[smcheck] optional, not here: " stringByAppendingString:l]);
+    for (NSString *f in off) DMLog([NSString stringWithFormat:@"[smcheck] without it: %@ is off on this iPadOS", f]);
+    return bad;
+}
+// Whether one row (by class and name) is there as we use it: the start-up check's answer; before any check ran (where none runs: no Stage Manager)
+// the row is looked up now, without a log line.
+static BOOL DMSMRowPassed(const char *cls, const char *sel) {
+    for (size_t i = 0; i < kSMNeedsCount; i++) {
+        if (strcmp(kSMNeeds[i].cls, cls) || strcmp(kSMNeeds[i].sel, sel)) continue;
+        if (gSMRowsKnown) return gSMRowPassed[i];
+        BOOL compared = NO;
+        return DMSMRowProblem(&kSMNeeds[i], nil, &compared) == nil;
+    }
+    return NO;
 }
 // The hooked methods' current implementations (to see afterwards that our hooks really went in): this layout engine's rows.
 static NSArray<NSValue *> *DMSMHookedIMPs(void) {
@@ -640,6 +725,9 @@ static void DMSMPublishVerdict(BOOL ok, NSString *reason, NSArray<NSString *> *d
     v[@"layout"] = @(DMSMLayoutGen());   // (which layout engine's table was checked: 16 or 17)
     if (reason) v[@"reason"] = reason;
     if (details.count) v[@"details"] = details.count > 16 ? [details subarrayWithRange:NSMakeRange(0, 16)] : details;
+    // (optional rows not here, and features left without any of their alternatives: Report a Problem shows them, nothing is greyed for them)
+    if (gSMCheckOptional.count) v[@"optional"] = gSMCheckOptional.count > 8 ? [gSMCheckOptional subarrayWithRange:NSMakeRange(0, 8)] : gSMCheckOptional;
+    if (gSMFeaturesOff.count) v[@"featuresOff"] = gSMFeaturesOff;
     CFPreferencesSetValue(MSBD_SM_CHECK_KEY, (__bridge CFPropertyListRef)v, MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     CFPreferencesSynchronize(MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
 }
@@ -660,6 +748,35 @@ static void DMSMRecordRuntimeFailure(NSString *line) {
 }
 static long long DMSMRoleOr(id stage, id item, long long dflt) { long long r = dflt; return DMSMStageRoleOfItem(stage, item, &r) ? r : dflt; }
 static long long DMSMPolicyOr(id attrs, long long dflt) { long long p = dflt; return DMSMAttrSizingPolicy(attrs, &p) ? p : dflt; }
+// A stage of several windows cut back to its primary window (another engine takes over: without Stage Manager a multi-window stage is a multi-app
+// layout, which iPadOS shows as Split View). iPadOS 16.4 and later: the other windows taken out one by one (roles re-read after each removal:
+// Stage Manager renumbers them -- reading them from the original stage left a two-app layout behind, logic test SM-6). 16.2-16.3 have no
+// -appLayoutByRemovingItemInLayoutRole:, so the primary window's leaf stage, the same single-window stage in one step. nil: nothing to cut (one
+// window), or neither way is here (*unsupported then YES).
+static id DMSMStageCutToPrimary(id stage, BOOL *unsupported) {
+    if (unsupported) *unsupported = NO;
+    if (DMSMStageItemsMap(stage).count < 2) return nil;
+    if (DMSMRowPassed("SBAppLayout", "appLayoutByRemovingItemInLayoutRole:")) {
+        id single = stage;
+        for (int guard = 0; guard < 8; guard++) {
+            NSDictionary *left = DMSMStageItemsMap(single);
+            if (left.count < 2) break;
+            long drop = 0;
+            for (id item in left) { long role = (long)DMSMRoleOr(single, item, 0); if (role > 1) { drop = role; break; } }
+            if (!drop) break;
+            id next = DMSMStageWithoutRole(single, drop);
+            if (!next || next == single) break;
+            single = next;
+        }
+        return single != stage ? single : nil;
+    }
+    if (DMSMRowPassed("SBAppLayout", "leafAppLayoutForRole:")) {
+        id leaf = DMSMStageLeaf(stage, 1);
+        return leaf && leaf != stage && DMSMStageItemsMap(leaf).count == 1 ? leaf : nil;
+    }
+    if (unsupported) *unsupported = YES;
+    return nil;
+}
 
 // ---- iPadOS 17: the auto-layout engine's objects (SBContinuousExposeAutoLayout*, %group SMLayout17) ---------------------------------------------
 // A layout pass (SBContinuousExposeAutoLayoutController) works on a SPACE (the stage's windows as ITEMS: a center "position" and a "size" in points

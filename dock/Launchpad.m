@@ -188,6 +188,7 @@ void DMLaunchpadRefresh(UIView *iconView, BOOL enabled, BOOL classic) {
     }
     if (!overlay) {
         overlay = [[UIImageView alloc] initWithFrame:bounds];
+        overlay.accessibilityIgnoresInvertColors = YES;   // (Smart Invert leaves pictures as they are, like Apple's own icons: 1.3.3, audit L-3)
         overlay.userInteractionEnabled = NO;
         overlay.clipsToBounds = YES;
         objc_setAssociatedObject(imageView, kOverlayKey, overlay, OBJC_ASSOCIATION_RETAIN_NONATOMIC);

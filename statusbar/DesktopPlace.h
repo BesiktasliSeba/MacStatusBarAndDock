@@ -31,7 +31,13 @@ typedef struct {
     CGPoint last; int hasLast;
     CGPoint pile; int hasPile;
     long tests;                                   // (rect tests and raster cells looked at, for the Mac test)
+    int mirror;                                   // (right-to-left: everything mirrored in the area, DMPlacerInitDir)
 } DMPlacer;
+// Right-to-left languages (1.3.3): a Mac in Hebrew or Arabic fills its desktop from the top LEFT. The placer itself works as always; the public
+// calls turn x around the area's middle on the way in and back on the way out, so the grid, the nearest-spot search and the pile are mirrored.
+static inline CGFloat DMPlacerFlipX(const DMPlacer *p, CGFloat x) { return CGRectGetMinX(p->area) + CGRectGetMaxX(p->area) - x; }
+static inline CGRect DMPlacerFlipRect(const DMPlacer *p, CGRect r) { r = CGRectStandardize(r); r.origin.x = CGRectGetMinX(p->area) + CGRectGetMaxX(p->area) - CGRectGetMaxX(r); return r; }
+static inline CGPoint DMPlacerFlipPoint(const DMPlacer *p, CGPoint c) { return p->mirror ? CGPointMake(DMPlacerFlipX(p, c.x), c.y) : c; }
 
 static CGRect DMPlacerCellRect(const DMPlacer *p, CGPoint c) { return CGRectMake(c.x - p->cw / 2.0, c.y - p->ch / 2.0, p->cw, p->ch); }
 static CGPoint DMPlacerCell(const DMPlacer *p, int idx) { int i = idx / p->grows, j = idx % p->grows; return CGPointMake(p->gx0 - i * p->gdx, p->gy0 + j * p->gdy); }
@@ -40,8 +46,8 @@ static CGPoint DMPlacerRasterPoint(const DMPlacer *p, long k) { return CGPointMa
 static inline int DMPlacerOver(const DMPlacer *p, CGFloat cx, CGFloat cy, CGRect r) {
     return cx - p->cw / 2.0 < CGRectGetMaxX(r) && cx + p->cw / 2.0 > CGRectGetMinX(r) && cy - p->ch / 2.0 < CGRectGetMaxY(r) && cy + p->ch / 2.0 > CGRectGetMinY(r);
 }
-// Something covers r now: kept, and the raster centres and grid spots it touches are no longer free.
-static void DMPlacerTake(DMPlacer *p, CGRect r) {
+// Something covers r now: kept, and the raster centres and grid spots it touches are no longer free. (Raw: in the placer's own coordinates.)
+static void DMPlacerTakeRaw(DMPlacer *p, CGRect r) {
     r = CGRectStandardize(r);
     if (CGRectIsNull(r) || r.size.width <= 0 || r.size.height <= 0 || !CGRectIntersectsRect(r, p->area)) return;   // (outside the area: no spot there)
     if (p->nRects == p->capRects) { p->capRects = p->capRects ? p->capRects * 2 : 64; p->rects = realloc(p->rects, sizeof(CGRect) * (size_t)p->capRects); }
@@ -57,8 +63,10 @@ static void DMPlacerTake(DMPlacer *p, CGRect r) {
     for (int i = i0; i <= i1; i++) for (int j = j0; j <= j1; j++)
         if (DMPlacerOver(p, p->gx0 - i * p->gdx, p->gy0 + j * p->gdy, r)) p->cellTaken[i * p->grows + j] = 1;
 }
-static void DMPlacerInit(DMPlacer *p, CGRect area, CGFloat cw, CGFloat ch, const CGRect *occupied, int n) {
+static void DMPlacerTake(DMPlacer *p, CGRect r) { DMPlacerTakeRaw(p, p->mirror && !CGRectIsNull(r) ? DMPlacerFlipRect(p, r) : r); }
+static void DMPlacerInitDir(DMPlacer *p, CGRect area, CGFloat cw, CGFloat ch, const CGRect *occupied, int n, int mirror) {
     memset(p, 0, sizeof *p);
+    p->mirror = mirror;
     p->area = area; p->cw = cw; p->ch = ch;
     // the raster: every centre whose icon lies inside the area (exactly as CGRectContainsRect sees it)
     p->fx0 = CGRectGetMinX(area) + cw / 2.0; p->fy0 = CGRectGetMinY(area) + ch / 2.0;
@@ -79,6 +87,7 @@ static void DMPlacerInit(DMPlacer *p, CGRect area, CGFloat cw, CGFloat ch, const
     for (int k = 0; k < p->gcols * p->grows; k++) if (!CGRectContainsRect(area, DMPlacerCellRect(p, DMPlacerCell(p, k)))) p->cellTaken[k] = 1;
     for (int k = 0; k < n; k++) DMPlacerTake(p, occupied[k]);
 }
+__attribute__((unused)) static void DMPlacerInit(DMPlacer *p, CGRect area, CGFloat cw, CGFloat ch, const CGRect *occupied, int n) { DMPlacerInitDir(p, area, cw, ch, occupied, n, 0); }
 static void DMPlacerFree(DMPlacer *p) { free(p->rects); free(p->free); free(p->cellTaken); free(p->corner); memset(p, 0, sizeof *p); }
 // Is an icon centred at c free: inside the area, over nothing taken?
 static int DMPlacerFreeAt(DMPlacer *p, CGPoint c) {
@@ -127,9 +136,9 @@ static CGPoint DMPlacerPile(DMPlacer *p) {
     p->pile = at; p->hasPile = 1;
     return at;
 }
-static CGPoint DMPlacerPut(DMPlacer *p, CGPoint c) { DMPlacerTake(p, DMPlacerCellRect(p, c)); p->last = c; p->hasLast = 1; return c; }
+static CGPoint DMPlacerPut(DMPlacer *p, CGPoint c) { DMPlacerTakeRaw(p, DMPlacerCellRect(p, c)); p->last = c; p->hasLast = 1; return c; }
 // An icon wanted at c (its saved place, a drop): there if free, else the nearest free spot. *fits = 0: no room, the pile's spot (not taken).
-static CGPoint DMPlacerPlaceNear(DMPlacer *p, CGPoint c, int *fits) {
+static CGPoint DMPlacerPlaceNearRaw(DMPlacer *p, CGPoint c, int *fits) {
     if (fits) *fits = 1;
     CGRect a = p->area;
     CGPoint cc = CGPointMake(MAX(CGRectGetMinX(a) + p->cw / 2.0, MIN(c.x, CGRectGetMaxX(a) - p->cw / 2.0)), MAX(CGRectGetMinY(a) + p->ch / 2.0, MIN(c.y, CGRectGetMaxY(a) - p->ch / 2.0)));
@@ -139,8 +148,10 @@ static CGPoint DMPlacerPlaceNear(DMPlacer *p, CGPoint c, int *fits) {
     if (fits) *fits = 0;
     return DMPlacerPile(p);
 }
-// A new icon: the next free grid spot, as a Mac fills its desktop; then the free spot nearest the top right. *fits = 0: no room (the pile's spot).
-static CGPoint DMPlacerPlaceNext(DMPlacer *p, int *fits) {
+static CGPoint DMPlacerPlaceNear(DMPlacer *p, CGPoint c, int *fits) { return DMPlacerFlipPoint(p, DMPlacerPlaceNearRaw(p, DMPlacerFlipPoint(p, c), fits)); }
+// A new icon: the next free grid spot, as a Mac fills its desktop; then the free spot nearest the top right (top left, mirrored). *fits = 0: no
+// room (the pile's spot).
+static CGPoint DMPlacerPlaceNextRaw(DMPlacer *p, int *fits) {
     while (p->cursor < p->gcols * p->grows && p->cellTaken[p->cursor]) p->cursor++;
     if (p->cursor < p->gcols * p->grows) { if (fits) *fits = 1; return DMPlacerPut(p, DMPlacerCell(p, p->cursor)); }
     // (the grid is full: the gaps, nearest the top right first -- the raster sorted once by that distance, in 4 pt steps, and a cursor that never
@@ -169,4 +180,5 @@ static CGPoint DMPlacerPlaceNext(DMPlacer *p, int *fits) {
     if (fits) *fits = 0;
     return DMPlacerPile(p);
 }
+static CGPoint DMPlacerPlaceNext(DMPlacer *p, int *fits) { return DMPlacerFlipPoint(p, DMPlacerPlaceNextRaw(p, fits)); }
 #endif

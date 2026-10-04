@@ -13,6 +13,7 @@
 #import <sys/sysctl.h>
 #include "CrashGuard.h"
 #include "StageManagerAvailable.h"
+#include <sys/stat.h>
 
 #ifndef MSBD_DPKG_DIR   // (overridable for the Mac test, tools/test-crashexplain.m)
 #define MSBD_DPKG_DIR "/var/jb/var/lib/dpkg"
@@ -178,17 +179,89 @@ static inline NSString *MSBDExplainMachine(void) {   // (hw.machine, e.g. iPad13
     if (sysctlbyname("hw.machine", m, &n, NULL, 0) != 0 || !m[0]) return @"unknown";
     return @(m);
 }
-static inline NSString *MSBDPackageField(NSString *package, NSString *field) {   // from dpkg's status file (readable by everyone)
-    NSString *status = [NSString stringWithContentsOfFile:@MSBD_DPKG_DIR "/status" encoding:NSUTF8StringEncoding error:nil];
-    NSString *head = [NSString stringWithFormat:@"Package: %@\n", package], *want = [field stringByAppendingString:@": "];
-    for (NSString *block in [status componentsSeparatedByString:@"\n\n"]) {
-        NSString *b = [block stringByTrimmingCharactersInSet:[NSCharacterSet newlineCharacterSet]];
-        if (![[b stringByAppendingString:@"\n"] hasPrefix:head]) continue;
-        for (NSString *line in [b componentsSeparatedByString:@"\n"]) if ([line hasPrefix:want]) return [line substringFromIndex:want.length];
+// One field of one package in dpkg's status text: the block that starts with "Package: <package>" (a line of its own at a block's start), the
+// field's own line in it ("<field>: " at a line's start, so Depends never matches Pre-Depends). Searched, not split: the file has a few thousand blocks.
+static inline NSString *MSBDPackageFieldIn(NSString *status, NSString *package, NSString *field) {
+    if (!status.length || !package.length || !field.length) return nil;
+    NSString *head = [NSString stringWithFormat:@"Package: %@\n", package];
+    NSUInteger start = NSNotFound;
+    if ([status hasPrefix:head]) start = 0;
+    else {
+        NSRange r = [status rangeOfString:[@"\n" stringByAppendingString:head]];
+        while (r.location != NSNotFound) {   // (a block's first line: the line before it is empty, or it is the file's first line)
+            if (r.location == 0 || [status characterAtIndex:r.location - 1] == '\n') { start = r.location + 1; break; }
+            NSUInteger from = NSMaxRange(r) - 1;
+            r = [status rangeOfString:[@"\n" stringByAppendingString:head] options:0 range:NSMakeRange(from, status.length - from)];
+        }
     }
+    if (start == NSNotFound) return nil;
+    NSRange end = [status rangeOfString:@"\n\n" options:0 range:NSMakeRange(start, status.length - start)];
+    NSString *block = [status substringWithRange:NSMakeRange(start, (end.location == NSNotFound ? status.length : end.location) - start)];
+    NSString *want = [field stringByAppendingString:@": "];
+    for (NSString *line in [block componentsSeparatedByString:@"\n"]) if ([line hasPrefix:want]) return [line substringFromIndex:want.length];
     return nil;
 }
+// dpkg's status file (1-3 MB with a few thousand packages) is read only when it changed: its modification time and size are the key (S-2, 4 Oct:
+// the Apple menu asks for our installed version every time it opens, and SpringBoard's main thread read and split the whole file each time).
+// The answers are kept per package and field until the file changes; any thread may ask.
+#ifndef MSBD_DPKG_STATUS
+#define MSBD_DPKG_STATUS MSBD_DPKG_DIR "/status"
+#endif
+typedef struct { long long sec, nsec, size; } MSBDFileStamp;
+static inline BOOL MSBDFileStampOf(const char *path, MSBDFileStamp *out) {
+    struct stat st;
+    *out = (MSBDFileStamp){0, 0, -1};
+    if (stat(path, &st) != 0) return NO;
+    *out = (MSBDFileStamp){(long long)st.st_mtimespec.tv_sec, (long long)st.st_mtimespec.tv_nsec, (long long)st.st_size};
+    return YES;
+}
+static NSMutableDictionary *gMSBDDpkgAnswers;   // "<package>\n<field>" -> value or NSNull, for the file as stamped below
+static MSBDFileStamp gMSBDDpkgStamp = {0, 0, -2};
+static int gMSBDDpkgReads;                      // (how often the file was really read: the Mac test counts it)
+static inline NSString *MSBDPackageFieldCached(NSString *package, NSString *field, BOOL readIfNeeded, BOOL *known) {
+    static NSObject *lock; static dispatch_once_t once; dispatch_once(&once, ^{ lock = [NSObject new]; });
+    if (known) *known = NO;
+    if (!package.length || !field.length) { if (known) *known = YES; return nil; }
+    MSBDFileStamp now; MSBDFileStampOf(MSBD_DPKG_STATUS, &now);
+    NSString *key = [NSString stringWithFormat:@"%@\n%@", package, field];
+    @synchronized (lock) {
+        if (memcmp(&now, &gMSBDDpkgStamp, sizeof now) != 0) { gMSBDDpkgAnswers = [NSMutableDictionary dictionary]; gMSBDDpkgStamp = now; }
+        id hit = gMSBDDpkgAnswers[key];
+        if (hit) { if (known) *known = YES; return hit == [NSNull null] ? nil : hit; }
+    }
+    if (!readIfNeeded) return nil;
+    NSString *status = [NSString stringWithContentsOfFile:@MSBD_DPKG_STATUS encoding:NSUTF8StringEncoding error:nil];   // (outside the lock)
+    NSString *value = MSBDPackageFieldIn(status, package, field);
+    @synchronized (lock) {
+        gMSBDDpkgReads++;
+        MSBDFileStamp after; MSBDFileStampOf(MSBD_DPKG_STATUS, &after);
+        if (memcmp(&after, &now, sizeof now) == 0 && memcmp(&now, &gMSBDDpkgStamp, sizeof now) == 0) gMSBDDpkgAnswers[key] = value ?: (id)[NSNull null];   // (not if it changed meanwhile)
+    }
+    if (known) *known = YES;
+    return value;
+}
+static inline NSString *MSBDPackageField(NSString *package, NSString *field) { return MSBDPackageFieldCached(package, field, YES, NULL); }   // from dpkg's status file (readable by everyone)
 static inline NSString *MSBDPackageVersion(NSString *package) { return MSBDPackageField(package, @"Version"); }
+// For the main thread: the answer if it is known for the file as it is now; otherwise the last answer given (or nil), and the file is read on a
+// background queue for the next time. A package's version only changes when dpkg rewrites the file, and installing ours restarts SpringBoard.
+static inline NSString *MSBDPackageVersionNoWait(NSString *package) {
+    static NSMutableDictionary *lastGiven; static dispatch_once_t once; dispatch_once(&once, ^{ lastGiven = [NSMutableDictionary dictionary]; });
+    BOOL known = NO;
+    NSString *v = MSBDPackageFieldCached(package, @"Version", NO, &known);
+    @synchronized (lastGiven) {
+        if (known) { if (v) lastGiven[package] = v; else [lastGiven removeObjectForKey:package]; return v; }
+        v = lastGiven[package];
+    }
+    static NSMutableSet *reading; static dispatch_once_t once2; dispatch_once(&once2, ^{ reading = [NSMutableSet set]; });
+    NSString *pkg = [package copy];
+    @synchronized (reading) { if ([reading containsObject:pkg]) return v; [reading addObject:pkg]; }   // (one read at a time per package)
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSString *read = MSBDPackageVersion(pkg);
+        @synchronized (lastGiven) { if (read) lastGiven[pkg] = read; else [lastGiven removeObjectForKey:pkg]; }
+        @synchronized (reading) { [reading removeObject:pkg]; }
+    });
+    return v;
+}
 // The package whose file list has this file: the exact path first (rootless paths are normalized to /var/jb/...), else a file of that name.
 static inline NSString *MSBDPackageOwning(NSString *path) {
     if (!path.length) return nil;
@@ -308,17 +381,15 @@ static inline NSURL *MSBDReportProblemURL(NSString *engine) {
     NSString *base = [NSString stringWithFormat:@"**What happened** (which app, and what it did):\n\n\n**Steps to reproduce:**\n1. \n\n---\n- Device: %@\n- iPadOS: %@\n- Window engine: %@ %@\n- MacStatusBar&Dock: %@\n",
         MSBDExplainMachine(), MSBDExplainOSVersion(), name, engineVersion ?: ([engine isEqualToString:@"stagemanager"] ? [NSString stringWithFormat:@"(build %@)", MSBDOSBuild() ?: @"?"] : @"(version unknown)"),
         MSBDPackageVersion(@"com.besiktasliseba.macstatusbaranddock") ?: @"(unknown)"];
-    // (the engine's self-check on this iPadOS build: a report from an untested build says at once whether it ran and passed, issue #2 -- on an
-    //  untested iPadOS always, whatever the engine: where the check failed, Stage Manager can't be picked, and that is what a 17 tester reports)
-    if ([engine isEqualToString:@"stagemanager"] || !MSBDVersionTested()) {
-        NSString *why = nil; int verdict = MSBDStageManagerVerdict(&why, NULL);
-        base = [base stringByAppendingFormat:@"- Stage Manager engine check: %@\n", verdict == 1 ? @"passed" : verdict == 0 ? [@"failed, " stringByAppendingString:why ?: @"no reason"] : @"not run on this build"];
-    }
     // GitHub's new-issue link must stay a few KB: the longest parts shrink until it fits.
     NSURL *url = nil;
     NSUInteger frames[] = {5, 3, 3, 0}, chars[] = {900, 600, 300, 80};   // (a middle step: the diagnostics no longer drop straight to 300, logic test 1.2.2)
     for (int i = 0; i < 4; i++) {
         NSMutableString *body = [base mutableCopy];
+        // (Stage Manager on every iPadOS 16+ iPad, whatever the engine: whether this iPad has it and, if so, the engine's check on this build with the
+        //  exact rows that failed -- a report then says why the Window Engine list greys it; issue #2 asked for the verdict, a 16.3.1 report for the why)
+        NSString *sm = MSBDStageManagerReportLine(chars[i]);
+        if (sm) [body appendString:sm];
         NSString *tester = MSBDReportTesterInfo(chars[i]);
         if (tester) [body appendString:tester];
         NSString *summary = MSBDReportCrashSummary(frames[i]);

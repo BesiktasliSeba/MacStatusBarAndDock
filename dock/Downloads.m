@@ -409,6 +409,7 @@ static NSString *DMAgeText(NSDate *date) {
     self.download = d;
     self.layer.cornerRadius = 10.0;
     self.thumb = [[UIImageView alloc] initWithFrame:CGRectMake(10, 6, 44, 44)];
+    self.thumb.accessibilityIgnoresInvertColors = YES;   // (Smart Invert leaves pictures as they are, like Apple's own icons: 1.3.3, audit L-3)
     self.thumb.contentMode = UIViewContentModeScaleAspectFill;
     self.thumb.layer.cornerRadius = 7.0; self.thumb.clipsToBounds = YES;
     self.thumb.userInteractionEnabled = NO;
@@ -470,6 +471,7 @@ static NSString *DMAgeText(NSDate *date) {
 @property (nonatomic) CGRect keyboardFrame;                         // (the on-screen keyboard in the panel window's coordinates, empty when none)
 @property (nonatomic, strong) id focusLock;                         // SpringBoard's keyboard focus, held while the field is being typed in
 @property (nonatomic, weak) UIWindow *keyWindowBefore;
+@property (nonatomic, weak) NSTimer *dockWatch;                      // (the watch below: one at a time, stopped when the panel goes -- audit L-19)
 - (BOOL)searchFieldWillFocus;
 - (void)searchFieldDidUnfocus;
 - (void)searchEscape;
@@ -655,6 +657,7 @@ static BOOL DMDownloadsSwitcherVisible(void) {
     return NO;
 }
 - (void)startDockWatch {
+    [self.dockWatch invalidate];   // (a panel closed and opened again within a tick: the old watch, with the old front app and size, stops now)
     __weak DMDownloadsPanel *weakSelf = self;
     __block int misses = 0, switcherTicks = 0;
     CGSize openedIn = (self.hostWindow ?: self.panel.window).bounds.size;
@@ -684,6 +687,7 @@ static BOOL DMDownloadsSwitcherVisible(void) {
         [me dismissAnimated:YES];
     }];
     [[NSRunLoop mainRunLoop] addTimer:t forMode:NSRunLoopCommonModes];
+    self.dockWatch = t;
 }
 - (void)dismissAnimated:(BOOL)animated {
     // (an item being dragged out: the panel's row carries the touch, so the panel stays -- faded out -- until the drop, then goes)
@@ -695,6 +699,7 @@ static BOOL DMDownloadsSwitcherVisible(void) {
     self.searchField = nil; self.list = nil; self.emptyLabel = nil; self.items = nil; self.searchIndex = nil; self.results = nil;
     UIView *panel = self.panel, *shield = self.shield;
     UITapGestureRecognizer *outsideTap = self.outsideTap;
+    [self.dockWatch invalidate]; self.dockWatch = nil;
     self.panel = nil; self.shield = nil; self.outsideTap = nil;
     [shield removeFromSuperview];
     [outsideTap.view removeGestureRecognizer:outsideTap];
@@ -1169,6 +1174,7 @@ static BOOL DMIsTypingInKeyboard(UIWindow *w) {
 - (instancetype)initWithFrame:(CGRect)frame {
     if (!(self = [super initWithFrame:frame])) return nil;
     self.image = [[UIImageView alloc] initWithFrame:self.bounds];
+    self.image.accessibilityIgnoresInvertColors = YES;   // (Smart Invert leaves pictures as they are, like Apple's own icons: 1.3.3, audit L-3)
     self.image.contentMode = UIViewContentModeScaleAspectFit;
     self.image.userInteractionEnabled = NO;
     [self addSubview:self.image];

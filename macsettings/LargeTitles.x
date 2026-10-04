@@ -3,6 +3,28 @@
 // title bar in its place, with the same buttons, the same back button, just without the oversized title row above them. Runs in every app; only Apple's
 // own apps are touched, so a third-party app's own choice of look is left alone. The same idea as Mac Settings' own large "Settings" title being hidden.
 #import <UIKit/UIKit.h>
+#import <notify.h>
+
+// Settings > Status Bar > Apple Apps > Hide Large Titles (on unless switched off: 1.3.3, audit L-1). The apps cannot read our preferences (sandbox),
+// so SpringBoard reads the switch and publishes it as notify state "com.besiktasliseba.maclargetitles.state" (1 on, 2 off; 0, not published yet,
+// counts as on, as before the switch existed). An app decides once, when it starts: switching it takes effect the next time an app opens.
+#define LT_DOMAIN CFSTR("com.besiktasliseba.maclargetitles")
+#define LT_STATE "com.besiktasliseba.maclargetitles.state"
+static BOOL LTSwitchOn(void) {
+    static int token = 0; uint64_t state = 0;
+    if (!token && notify_register_check(LT_STATE, &token) != NOTIFY_STATUS_OK) token = 0;
+    if (token) notify_get_state(token, &state);
+    return state != 2;
+}
+static void LTPublish(void) {   // (SpringBoard only)
+    CFPreferencesAppSynchronize(LT_DOMAIN);
+    CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("enabled"), LT_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    BOOL on = !v || CFGetTypeID(v) != CFBooleanGetTypeID() || CFBooleanGetValue(v);
+    if (v) CFRelease(v);
+    static int token = 0;
+    if (!token && notify_register_check(LT_STATE, &token) != NOTIFY_STATUS_OK) token = 0;
+    if (token) notify_set_state(token, on ? 1 : 2);
+}
 
 static BOOL DMIsStockApp(void) {
     static int cached = -1;
@@ -11,7 +33,7 @@ static BOOL DMIsStockApp(void) {
         // Notes builds its back button and toolbar into its own custom large-title view; forcing the large title off there loses the back button
         // entirely instead of shrinking to an ordinary bar, so it is left as it is (a fix waits until that can be worked around, not shipped broken).
         NSArray *exceptions = @[@"com.apple.mobilenotes"];
-        cached = (bid.length && [bid hasPrefix:@"com.apple."] && ![bid isEqualToString:@"com.apple.springboard"] && ![exceptions containsObject:bid]) ? 1 : 0;
+        cached = (bid.length && [bid hasPrefix:@"com.apple."] && ![bid isEqualToString:@"com.apple.springboard"] && ![exceptions containsObject:bid] && LTSwitchOn()) ? 1 : 0;
     }
     return cached;
 }
@@ -42,4 +64,9 @@ static const void *kUnifiedAppearanceKey = &kUnifiedAppearanceKey;
 
 %ctor {
     %init;
+    if ([[NSBundle mainBundle].bundleIdentifier isEqualToString:@"com.apple.springboard"]) {   // (publishes the switch for the apps)
+        LTPublish();
+        int token = 0;
+        notify_register_dispatch("com.besiktasliseba.maclargetitles/prefsChanged", &token, dispatch_get_main_queue(), ^(int t) { LTPublish(); });
+    }
 }

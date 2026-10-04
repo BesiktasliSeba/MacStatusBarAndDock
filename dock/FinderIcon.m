@@ -73,6 +73,7 @@ static UIImage *DMFinderFaceImage(CGSize size) {
 - (instancetype)initWithFrame:(CGRect)frame {
     if (!(self = [super initWithFrame:frame])) return nil;
     self.image = [[UIImageView alloc] initWithFrame:self.bounds];
+    self.image.accessibilityIgnoresInvertColors = YES;   // (Smart Invert leaves pictures as they are, like Apple's own icons: 1.3.3, audit L-3)
     self.image.contentMode = UIViewContentModeScaleAspectFit;
     self.image.userInteractionEnabled = NO;
     [self addSubview:self.image];

@@ -187,6 +187,31 @@ int main(void) { @autoreleasepool {
             CHECK(ms < 5.0, "%s full page %d files: a layout pass took %.2f ms", s.name, files, ms);
         }
     }
+    // right-to-left (1.3.3): a mirrored placer gives the mirror image of an unmirrored one fed the mirrored page -- new icons from the top left,
+    // nearest spots and the pile mirrored too -- on every screen, with app icons on one side only and with a full page
+    for (int si = 0; si < 4; si++) for (int apps = 0; apps <= 24; apps += 12) {
+        Screen s = screens[si]; CGRect area; NSMutableArray<NSValue *> *occ = occupied(s, apps, &area);
+        CGFloat flip = CGRectGetMinX(area) + CGRectGetMaxX(area);
+        NSMutableArray<NSValue *> *mocc = [NSMutableArray array];
+        for (NSValue *v in occ) { CGRect r = v.rectValue; r.origin.x = flip - CGRectGetMaxX(r); [mocc addObject:[NSValue valueWithRect:r]]; }
+        CGRect *ra = malloc(sizeof(CGRect) * MAX(1, occ.count)), *rb = malloc(sizeof(CGRect) * MAX(1, occ.count));
+        for (NSUInteger k = 0; k < occ.count; k++) { ra[k] = occ[k].rectValue; rb[k] = mocc[k].rectValue; }
+        DMPlacer a, b; DMPlacerInitDir(&a, area, cw, ch, ra, (int)occ.count, 1); DMPlacerInit(&b, area, cw, ch, rb, (int)occ.count);
+        int same = 1, firstLeft = 1;
+        for (int k = 0; k < 60; k++) {
+            int fa = 1, fb = 1;
+            CGPoint pa = DMPlacerPlaceNext(&a, &fa), pb = DMPlacerPlaceNext(&b, &fb);
+            if (fa != fb || fabs(pa.x - (flip - pb.x)) > 0.01 || fabs(pa.y - pb.y) > 0.01) same = 0;
+            if (k == 0 && apps == 0) firstLeft = pa.x < CGRectGetMidX(area);
+        }
+        CGPoint want = CGPointMake(CGRectGetMinX(area) + 0.3 * area.size.width, CGRectGetMinY(area) + 0.4 * area.size.height);
+        int fa = 1, fb = 1;
+        CGPoint na = DMPlacerPlaceNear(&a, want, &fa), nb = DMPlacerPlaceNear(&b, CGPointMake(flip - want.x, want.y), &fb);
+        if (fa != fb || fabs(na.x - (flip - nb.x)) > 0.01 || fabs(na.y - nb.y) > 0.01) same = 0;
+        CHECK(same, "%s, %d apps: the mirrored placer is not the mirror image", s.name, apps);
+        CHECK(firstLeft, "%s, empty page: the first new icon is not at the left (right-to-left)", s.name);
+        DMPlacerFree(&a); DMPlacerFree(&b); free(ra); free(rb);
+    }
     // the old search on the worst case, for the record
     {
         Screen s = screens[0]; CGRect area; NSMutableArray *taken = occupied(s, 24, &area);

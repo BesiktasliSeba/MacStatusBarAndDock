@@ -83,11 +83,19 @@ static BOOL KeyEventAPIPresent(void) {
     return ok;
 }
 
+// Full Keyboard Access (Settings > Accessibility > Keyboards) moves around with Tab: while it is on, Tab is left to it (1.3.3, audit L-10). Asked
+// through the accessibility library's own switch; where that is not there, nothing changes.
+static BOOL FullKeyboardAccessOn(void) {
+    static Boolean (*fn)(void);
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ void *h = dlopen("/usr/lib/libAccessibility.dylib", RTLD_LAZY); if (h) fn = (Boolean (*)(void))dlsym(h, "_AXSFullKeyboardAccessEnabled"); });
+    return fn && fn();
+}
 %hook UIApplication
 - (void)sendEvent:(UIEvent *)event {
     if ([event isKindOfClass:%c(UIPhysicalKeyboardEvent)] && KeyEventAPIPresent() && !AppIsExcluded() && !TabMuteSwitchedOff()) {
         UIPhysicalKeyboardEvent *key = (UIPhysicalKeyboardEvent *)event;
-        if ([key _keyCode] == kHIDTab && ([key _modifierFlags] & kBlockingModifiers) == 0) {
+        if ([key _keyCode] == kHIDTab && ([key _modifierFlags] & kBlockingModifiers) == 0 && !FullKeyboardAccessOn()) {
             if ([key _isKeyDown] && ![key _isARepeat]) notify_post(kToggleNotification);
             return;   // swallowed: the app never sees this Tab
         }

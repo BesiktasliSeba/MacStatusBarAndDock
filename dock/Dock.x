@@ -325,6 +325,27 @@ BOOL DMDockPointerHovering(void) { return gHovering; }
 }
 %end
 %end
+// Show App Library in Dock off (Settings > Home Screen & Multitasking): iOS still hands out the App Library icon's spot in the layout numbers, 0 wide
+// but as tall as the Dock's icons and level with them (iPadOS 16.7.7: library {784, 11, 0 x 39} with the lists 61 tall; 17.6.1 the same; 17.0: lists
+// 83 pt for 53 pt icons). That height is then the Dock's icon size, or 0 when it does not look like one (as tall as the lists: the platter's). Every
+// version (1.3.3, audit M-2: before, only 17+ was measured, and 15/16 sized Finder from the list height -- a Finder icon bigger than the apps -- and
+// widened the Dock for a Downloads stack that never showed: an empty tail and a stray second divider at the end).
+static CGFloat DMDockHiddenLibrarySide(const DMDockMetrics *m) {
+    if (m->libraryIcon.size.width >= 1.0) return 0.0;
+    CGFloat h = m->libraryIcon.size.height;
+    return isfinite(h) && h >= 8.0 && h < m->userList.size.height - 1.0 ? h : 0.0;
+}
+static BOOL gDownloadsOwnSlot;   // (the last layout gave Downloads a slot of its own -- no App Library icon in the Dock; for the diagnostics)
+// Right-to-left languages (1.3.3): iPadOS mirrors the Dock -- the apps from the right end, the recents and the App Library icon at the left -- and so
+// does macOS (Finder at the right end, Downloads at the left). Our layout below is worked out left-to-right: the Dock's numbers are mirrored inside the
+// platter first, and the result (with our slots) is mirrored back at the end. The rects are in the platter's own coordinates.
+static CGRect DMDockMirrorRect(CGRect r, CGFloat w) { if (!CGRectIsEmpty(r) || r.size.height > 0.0) r.origin.x = w - r.origin.x - r.size.width; return r; }
+static void DMDockMirrorMetrics(DMDockMetrics *m) {
+    CGFloat w = m->platter.size.width;
+    m->userList = DMDockMirrorRect(m->userList, w); m->recentsList = DMDockMirrorRect(m->recentsList, w);
+    m->libraryIcon = DMDockMirrorRect(m->libraryIcon, w); m->divider = DMDockMirrorRect(m->divider, w);
+    CGFloat l = m->padding.left; m->padding.left = m->padding.right; m->padding.right = l;
+}
 %hook SBFloatingDockView
 - (void)layoutSubviews {
     %orig;
@@ -371,18 +392,22 @@ BOOL DMDockPointerHovering(void) { return gHovering; }
             NSMutableArray *k = [NSMutableArray array];
             for (NSString *c in kinds) [k addObject:[NSString stringWithFormat:@"%@ x%lu", c, (unsigned long)[kinds countForObject:c]]];
             #define R(r) NSStringFromCGRect(CGRectIntegral(r))
-            MSBDDiagWrite(@"Dock", [NSString stringWithFormat:@"bounds %@\nuserList %@ recents %@ library %@ divider %@ platter %@ spacing %.1f\nshowDownloads %d magnify %d iconSize %.2f\nicons: %@",
-                R(bounds), R(m->userList), R(m->recentsList), R(m->libraryIcon), R(m->divider), R(m->platter), m->spacing, gShowDownloads, gEnabled, gIconSize, [k componentsJoinedByString:@", "]]);
+            MSBDDiagWrite(@"Dock", [NSString stringWithFormat:@"bounds %@\nuserList %@ recents %@ library %@ divider %@ platter %@ spacing %.1f\nshowDownloads %d magnify %d iconSize %.2f\nicons: %@\ndownloads %@ own %d, finder %@",
+                R(bounds), R(m->userList), R(m->recentsList), R(m->libraryIcon), R(m->divider), R(m->platter), m->spacing, gShowDownloads, gEnabled, gIconSize, [k componentsJoinedByString:@", "],
+                R(gDownloadsSlot), gDownloadsOwnSlot, R(gFinderSlot)]);   // (our slots from the last layout)
             #undef R
         }
     }
     if (!m || bounds.size.width < 100.0 || m->platter.size.width < 1.0) return;
+    BOOL rtl = ((UIView *)self).effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft;
+    if (rtl) { DM_FEATURE_MARK("dock-rtl"); DMDockMirrorMetrics(m); }   // (worked out left-to-right below, mirrored back at the end)
     // Finder: the Dock's first place, like a Mac -- one icon + one spacing in front of the apps; everything after it moves over and the platter
     // grows by as much (worked out first, so Downloads and the fit below see the Dock with Finder in it). The slot is an icon of the Dock's own
     // size (the App Library icon's, or the first app's), at the apps' start and height.
     CGRect finderSlot = CGRectZero;
+    CGFloat hiddenSide = DMDockHiddenLibrarySide(m);   // (no App Library icon in the Dock: the Dock's icon size, else 0)
     {
-        CGSize icon = m->libraryIcon.size.width >= 1.0 ? m->libraryIcon.size : CGSizeMake(m->userList.size.height, m->userList.size.height);
+        CGSize icon = m->libraryIcon.size.width >= 1.0 ? m->libraryIcon.size : hiddenSide > 0.0 ? CGSizeMake(hiddenSide, hiddenSide) : CGSizeMake(m->userList.size.height, m->userList.size.height);
         if (gShowFinder && icon.width >= 8.0 && m->userList.size.height >= 8.0) {
             DM_FEATURE_MARK("dock-finder-icon");
             CGFloat extra = icon.width + m->spacing;
@@ -416,9 +441,24 @@ BOOL DMDockPointerHovering(void) { return gHovering; }
     // Downloads stack: one more icon slot right before the App Library icon. The slot is the App Library icon's old spot; the
     // App Library icon and the end of the platter move over by one icon + spacing. (Launchpad at the start: the slot is the end, the icon stays.)
     CGRect slot = lpLeft ? libEnd : m->libraryIcon;
-    // iPadOS 17+ (untested versions, a tester on 18.7.2): the App Library icon's spot is 0 wide while that icon is not in the Dock, so there is no
-    // slot for Downloads -- then everything Downloads-related in this layout is left out (no widening, no second divider, no slot). 15/16: as before.
-    BOOL downloadsOn = gShowDownloads && !([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17 && slot.size.width < 1.0);
+    // Without the App Library icon (its spot 0 wide) Downloads takes a whole icon's spot of the Dock's size (DMDockHiddenLibrarySide) at the end of the
+    // lists, level with the apps, as the App Library icon sits when it is there. Without it iOS ends the lists at the platter's end (18.2's class
+    // method: the lists carry a spacing on both sides, the platter is the icons plus a spacing at each end), so the platter grows by the icon plus the
+    // one spacing after it -- iOS's own margin after the lists, if any, is taken off: measured, not assumed. Where that height is not there either,
+    // everything Downloads-related in this layout is left out (no widening, no second divider, no slot): the Dock only grows for a stack it shows.
+    CGFloat ownExtra = -1.0;   // (>= 0: the platter's growth for a Downloads slot of its own, instead of one icon + one spacing)
+    gDownloadsOwnSlot = NO;
+    if (!lpLeft && gShowDownloads && hiddenSide > 0.0 && slot.size.width < 1.0) {
+        CGFloat listsEnd = MAX(CGRectGetMaxX(m->userList), m->recentsList.size.width >= 1.0 ? CGRectGetMaxX(m->recentsList) : 0.0);
+        CGFloat after = m->platter.size.width - listsEnd;
+        if (isfinite(listsEnd) && listsEnd > 0.0 && isfinite(after) && after > -1.0) {
+            DM_FEATURE_MARK("dock-downloads-own-slot");
+            slot = CGRectMake(listsEnd, m->userList.origin.y + (m->userList.size.height - hiddenSide) / 2.0, hiddenSide, hiddenSide);
+            ownExtra = MAX(hiddenSide, hiddenSide + m->spacing - MAX(0.0, after));
+            gDownloadsOwnSlot = YES;
+        }
+    }
+    BOOL downloadsOn = gShowDownloads && slot.size.width >= 1.0;
     // The second divider (see gDivider2Rect): with Downloads. After the recents (the recents list at least half an icon wide) it is a second line;
     // with no recents the Dock hides its own line and ours is the only one, between the apps and Downloads (as on macOS). Its gap is one spacing
     // + the 1 pt line; the line's own width is not scaled below, which is corrected after scaling.
@@ -434,7 +474,7 @@ BOOL DMDockPointerHovering(void) { return gHovering; }
     }
 #endif
     if (downloadsOn) {
-        CGFloat extra = slot.size.width + m->spacing + (divider2 ? unscaledSpacing + nativeDivider.size.width : 0.0);
+        CGFloat extra = (ownExtra >= 0.0 ? ownExtra : slot.size.width + m->spacing) + (divider2 ? unscaledSpacing + nativeDivider.size.width : 0.0);
         if (!lpLeft) m->libraryIcon.origin.x += extra;
         m->platter.size.width += extra;
         m->platter.origin.x -= extra / 2.0;
@@ -444,7 +484,7 @@ BOOL DMDockPointerHovering(void) { return gHovering; }
     // Library) would not fit the screen minus the side margins, it gets just small enough to fit -- in both orientations, re-worked out at every
     // layout (apps or recents added or removed, a turn). Room is kept at both ends for the magnification: the end icons grow in place by
     // (magnification - 1) x their width, half on each side, and must stay on the screen.
-    CGFloat headroom = gEnabled ? MAX(0.0, gMagnification - 1.0) * slot.size.width : 0.0;
+    CGFloat headroom = gEnabled ? MAX(0.0, gMagnification - 1.0) * (slot.size.width >= 1.0 ? slot.size.width : hiddenSide) : 0.0;   // (no end icon: the icon size)
     CGFloat room = (bounds.size.width - 50.0) / (m->platter.size.width + headroom);
     // Portrait: the screen is narrower, so a Dock this tweak has shrunk looks small. It grows to the widest size that still fits (at most
     // 1.2 times the stock size). Only while the tweak is shrinking the Dock at all; a size of 1.0 or more is left alone.
@@ -457,7 +497,11 @@ BOOL DMDockPointerHovering(void) { return gHovering; }
         DMLog([NSString stringWithFormat:@"[fit] screen %.0f, dock %.0f + %.0f magnification room at size 1: icon size %.3f (setting %.2f, fits up to %.3f)", bounds.size.width, m->platter.size.width, headroom, f, gIconSize, room]);
     }
     gFinderSlot = CGRectMake(finderSlot.origin.x * f, finderSlot.origin.y * f, finderSlot.size.width * f, finderSlot.size.height * f);
-    if (!downloadsOn && fabs(f - 1.0) < 0.001) { gDownloadsSlot = CGRectZero; gDivider2Rect = CGRectZero; return; }
+    if (!downloadsOn && fabs(f - 1.0) < 0.001) {
+        gDownloadsSlot = CGRectZero; gDivider2Rect = CGRectZero;
+        if (rtl) { DMDockMirrorMetrics(m); if (gFinderSlot.size.width > 0.0) gFinderSlot = DMDockMirrorRect(gFinderSlot, m->platter.size.width); }
+        return;
+    }
     CGRect (^scaled)(CGRect) = ^CGRect(CGRect r) { return CGRectMake(r.origin.x * f, r.origin.y * f, r.size.width * f, r.size.height * f); };
     gDownloadsSlot = downloadsOn ? scaled(slot) : CGRectZero;
     gDivider2Rect = CGRectZero;
@@ -489,6 +533,13 @@ BOOL DMDockPointerHovering(void) { return gHovering; }
     m->platter = CGRectMake(p.origin.x + (p.size.width - w) / 2.0, p.origin.y + p.size.height - h, w, h);
     m->iconScale *= f;
     m->spacing *= f;
+    if (rtl) {   // (back to the mirrored Dock: the lists, the divider and our slots inside the final platter)
+        CGFloat pw = m->platter.size.width;
+        DMDockMirrorMetrics(m);
+        if (gFinderSlot.size.width > 0.0) gFinderSlot = DMDockMirrorRect(gFinderSlot, pw);
+        if (gDownloadsSlot.size.width > 0.0) gDownloadsSlot = DMDockMirrorRect(gDownloadsSlot, pw);
+        if (gDivider2Rect.size.height > 0.0) gDivider2Rect = DMDockMirrorRect(gDivider2Rect, pw);
+    }
     // Gap to Screen Edge: the platter's bottom this many points above the Dock view's bottom (= the screen's bottom edge), whatever iPadOS chose --
     // the platter margin hook below only ever lowered iPadOS's own margin, and on iPadOS 16 it had no effect at all (0 and 24 pt gave the same
     // Dock, iPad 2, 29 Sep). The icons are placed relative to the platter, so they move with it. Taken on every layout: a change shows at once.

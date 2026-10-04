@@ -2,6 +2,32 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.3.3
+
+### New
+- Right-to-left languages: with Arabic, Hebrew, Persian or Urdu as the iPad's language, the menu bar is mirrored the way a Mac's is in those languages. The Apple menu and the app's menus sit at the right end, the clock and the status icons at the left, and each menu opens from the right edge of its title. Notification banners come in at the top left. The Dock follows iPadOS's mirrored Dock, with Finder at the right end and Downloads at the left, and the desktop stays on the first Home Screen page, filling from the top left. Before, the status bar could come out garbled, or disappear for about 30 seconds whenever an app opened or closed.
+- Stage Manager engine on iPadOS 16.2 and 16.3: it is offered there too now (not tested on a device yet). iPadOS 16.1 still isn't supported.
+- Switches in Settings > Status Bar for three things that were always on: Control Center > Hide Grabber, and under Apple Apps, Updates Tab in App Store and Hide Large Titles. They stay on after the update. Turn one off to get Apple's own look back: the line at the top of Control Center, the Arcade tab, large titles.
+
+### Improvements
+- Desktop: folders have a Mac folder icon, the same on every iPad, instead of a copy of the Files app's icon.
+- Settings > Window Engine says why Stage Manager can't be picked on your iPad, and Report a Problem includes the Stage Manager check.
+- Smoother on older iPads: the menu bar's checks and its layout do less work while apps open and close, and the Apple menu no longer reads the whole package list each time it opens.
+- Smart Invert leaves the Dock's Finder and Launchpad icons, the Downloads stack, desktop and Finder icons and thumbnails, and app icons in menus as they are.
+- Reduce Motion also covers dragging in Finder, swiping a banner away and the Wi-Fi password shake.
+- Switching between 12-hour and 24-hour time shows in the menu bar right away.
+
+### Fixes
+- Dock with Show App Library in Dock turned off: the Finder icon is the same size as your apps, the Downloads stack shows at the end, and there is no empty space or extra divider.
+- Stage Manager engine with Fit to Window: going to the Home Screen keeps the tile arrangement, and a swipe up from the bottom edge on the Home Screen no longer brings the windows back over it.
+- Home Bar: with the Home Bar switched on, it no longer fades away in apps.
+- Esc Ends Typing in Windows: terminal, virtual machine and remote desktop apps get their Esc key back.
+- Force Quit Apps and the Audio menu no longer list apps you hide with AppHider.
+- Globe + Option/Control for Volume: holding Command shows the app's keyboard shortcuts again.
+- Tab Key Toggles Mute: Tab works as usual while Full Keyboard Access is on.
+- Settings never replaces a Choicy setup it can't read.
+- Window Engine: after another package restarted iOS's settings service, the helper could set Choicy up for the engine you had picked before. It now always goes by your current choice.
+
 ## 1.3.2
 
 ### Fixes

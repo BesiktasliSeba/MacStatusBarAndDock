@@ -344,16 +344,18 @@ static void MSBFitValueLabels(UIView *v) {
 		_specifiers = [self loadSpecifiersFromPlistName:@"Root" target:self];
 		NSArray *untested = [self msbd_untestedSpecifiers];   // (on top: "Enable Anyway" on an untested iPadOS version, or the crash guard's note)
 		if (untested.count) { NSMutableArray *all = [untested mutableCopy]; [all addObjectsFromArray:_specifiers]; _specifiers = all; }
-		// The Control Center size only resizes BigSurCenter's own drop-down panel; with the stock Control Center it does nothing, so without
-		// BigSurCenter installed its whole section (the group and its slider) is left out.
+		// The Control Center size only resizes BigSurCenter's own drop-down panel opened from our status bar; with the stock Control Center, or the
+		// stock status bar, it does nothing, so then its slider and its footer are left out of the Control Center group (Hide Grabber stays).
 		BOOL bigSur = NO;
 		for (NSString *dir in @[@"/var/jb/usr/lib/TweakInject", @"/var/jb/Library/MobileSubstrate/DynamicLibraries"])
 			if ([[NSFileManager defaultManager] fileExistsAtPath:[dir stringByAppendingPathComponent:@"BigSurCenter.dylib"]]) bigSur = YES;
-		if (!bigSur) {
+		if (!bigSur || MSBStockBarStored()) {
 			NSMutableArray *kept = [_specifiers mutableCopy];
 			for (PSSpecifier *spec in _specifiers) {
-				BOOL ccGroup = [spec.identifier isEqualToString:@"CC_SIZE_GROUP"];
-				if (ccGroup || [[spec propertyForKey:@"key"] isEqual:@"controlCenterScale"]) [kept removeObject:spec];
+				if ([[spec propertyForKey:@"key"] isEqual:@"controlCenterScale"]) [kept removeObject:spec];
+				if ([spec.identifier isEqualToString:@"CC_GROUP"]) {
+					if ([spec respondsToSelector:@selector(removePropertyForKey:)]) [spec removePropertyForKey:@"footerText"]; else [spec setProperty:@"" forKey:@"footerText"];
+				}
 			}
 			_specifiers = kept;
 		}
@@ -405,6 +407,11 @@ static void MSBFitValueLabels(UIView *v) {
 					[shorts addObject:sd[v[i]] ?: td[v[i]] ?: v[i]];
 				}
 				((void (*)(id, SEL, id, id, id))objc_msgSend)(spec, NSSelectorFromString(@"setValues:titles:shortTitles:"), values, titles, shorts);
+				// (the picker page's footer says why Stage Manager is greyed there: no Stage Manager on this iPad, iPadOS 16.0, not checked yet, or not
+				//  supported on this iPadOS version -- the row alone said nothing in the first case; staticTextMessage = the list's footer, as on the
+				//  Status Bar Style page)
+				NSString *why = MSBDStageManagerFooter();
+				if (why) [spec setProperty:why forKey:@"staticTextMessage"];
 			}
 		}
 		// No working engine (none installed, or the one that would run is an untested build, which runs on its own): the Window Engine row says

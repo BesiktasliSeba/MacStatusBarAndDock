@@ -281,7 +281,7 @@ static CGSize DMWiFiApplyIconState(UIView *icon, UIColor *tint) {
     return img.size;
 }
 // Places our Wi-Fi icon just left of `left` (where the status icons start) in a status bar copy, and returns the new left edge. Hidden while
-// the Wi-Fi Menu switch is off: the bar is then exactly as before.
+// the Wi-Fi Menu switch is off: the bar is then exactly as before. (`left` in leading coordinates, DMBarRTL: right of the icons right-to-left.)
 static CGFloat DMWiFiLayoutIcon(UIView *fg, CGFloat left, CGFloat midY, UIColor *tint) {
     UIView *icon = objc_getAssociatedObject(fg, kWiFiIconKey);
     UIButton *btn = objc_getAssociatedObject(fg, kWiFiButtonKey);
@@ -300,8 +300,9 @@ static CGFloat DMWiFiLayoutIcon(UIView *fg, CGFloat left, CGFloat midY, UIColor 
     CGSize s = DMWiFiApplyIconState(icon, tint);
     CGFloat w = ceil(s.width), h = ceil(s.height);
     left -= 8.0 + w;
-    icon.frame = CGRectMake(left, round(midY - h / 2.0), w, h);
-    btn.frame = CGRectMake(left - 6.0, 0, w + 12.0, fg.bounds.size.height);
+    BOOL rtl = DMBarRTL(fg);
+    icon.frame = DMBarRect(fg, rtl, CGRectMake(left, round(midY - h / 2.0), w, h));
+    btn.frame = DMBarRect(fg, rtl, CGRectMake(left - 6.0, 0, w + 12.0, fg.bounds.size.height));
     icon.hidden = btn.hidden = NO;
     [fg bringSubviewToFront:icon]; [fg bringSubviewToFront:btn];
     return left;
@@ -562,7 +563,7 @@ static BOOL DMWiFiMenuWindowKeyable(id self, SEL _cmd) { return gWiFiSheet != ni
     // (a little shake, like a Mac's password field)
     CAKeyframeAnimation *shake = [CAKeyframeAnimation animationWithKeyPath:@"transform.translation.x"];
     shake.values = @[@0, @-8, @8, @-6, @6, @-3, @3, @0]; shake.duration = 0.35;
-    if (text.length) [self.box.layer addAnimation:shake forKey:@"shake"];
+    if (text.length && !MSBReduceMotion()) [self.box.layer addAnimation:shake forKey:@"shake"];   // (Reduce Motion: no shake, the message says it -- 1.3.3, audit L-5)
 }
 - (void)dm_toggleShow {
     BOOL show = self.field.secureTextEntry;
@@ -968,7 +969,9 @@ static void DMWiFiRebuildOpenMenu(void) {
     if ([sig isEqualToString:gWiFiMenuSignature]) return;
     gWiFiMenuSignature = sig;
     UIView *panel = DMMakePanel(items);
-    CGRect f = panel.frame; f.origin = old.frame.origin; panel.frame = f;
+    CGRect f = panel.frame; f.origin = old.frame.origin;
+    if ([UIApplication sharedApplication].userInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft) f.origin.x = CGRectGetMaxX(old.frame) - f.size.width;   // (hung from its title's right edge: that edge stays)
+    panel.frame = f;
     [old.superview insertSubview:panel aboveSubview:old];
     [old removeFromSuperview];
     gWiFiPanel = panel;

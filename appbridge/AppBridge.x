@@ -489,7 +489,8 @@ static void MABRegisterActions(void) {
 // like clicking the desktop on a Mac. Caught where hardware keys enter the app (-[UIApplication handleKeyUIEvent:]): they reach most text views
 // through the keyboard system, not through the text view's own pressesBegan: or sendEvent: (earlier versions hooked those and missed Notes, Messages, Reddit).
 // Left alone when: the app has its own Esc shortcut anywhere from the text field up (a UIKeyCommand for Esc), a composition is in progress (marked
-// text: Esc belongs to the input method), web content (pages use Esc themselves), terminal apps (Esc is a key there), full screen. The switch is
+// text: Esc belongs to the input method), web content (pages use Esc themselves), terminal apps (Esc is a key there), a text view of the app's own
+// rather than UIKit's (terminals, virtual machines, remote desktops), full screen. The switch is
 // published by SpringBoard as notify state "com.besiktasliseba.appbridge.escends" (1 on, 2 off, 0 not yet published = on).
 static UIResponder *MABTypingResponder(void) {
     for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
@@ -513,6 +514,9 @@ static BOOL MABEscEndsTypingNow(void) {   // an Esc key-down just came in: put t
     if (MSTestFlag("/tmp/macstatusbar-debug")) MABLog([NSString stringWithFormat:@"esc: key down, typing responder %@", r ? NSStringFromClass([r class]) : @"none"]);
 #endif
     if (!r || ((id<UITextInput>)r).markedTextRange || [NSStringFromClass([r class]) hasPrefix:@"WK"]) return NO;
+    // (only UIKit's own text views and fields, and their subclasses: terminal, virtual machine and remote desktop apps draw their own text input
+    //  views and need Esc themselves -- in a window it ended the typing there and never reached the session; 1.3.3, audit M-9)
+    if (![r isKindOfClass:[UITextField class]] && ![r isKindOfClass:[UITextView class]]) return NO;
     for (UIResponder *x = r; x; x = x.nextResponder) {   // (the app's own Esc shortcut wins: cancelling a search, closing a sheet)
         if ([x isKindOfClass:[UIApplication class]]) break;   // (iPadOS 16 puts a system Esc command on UIApplication itself -- not the app's: it made every
                                                               //  app look as if it used Esc, and Esc stopped ending the typing, iPad 2 30 Sep)
@@ -580,6 +584,29 @@ static void MABInstallEscEndsTyping(void) {
     }
 }
 %end
+
+// Settings > Status Bar > Apple Apps > Updates Tab in App Store (on unless switched off: 1.3.3, audit M-1). The App Store cannot read our preferences
+// (sandbox), so SpringBoard reads the switch (com.besiktasliseba.macstatusbar appStoreUpdatesTab) and publishes it as notify state
+// "com.besiktasliseba.appbridge.storeupdates" (1 on, 2 off; 0, not published yet, counts as on, as before the switch existed). The App Store decides
+// when it starts: off, nothing below is installed and Arcade is Apple's own tab.
+#define MAB_STORE_STATE "com.besiktasliseba.appbridge.storeupdates"
+static BOOL MABStoreUpdatesTabOn(void) {
+    int token = 0; uint64_t state = 0;
+    if (notify_register_check(MAB_STORE_STATE, &token) != NOTIFY_STATUS_OK) return YES;
+    notify_get_state(token, &state);
+    notify_cancel(token);
+    return state != 2;
+}
+static void MABPublishStoreUpdatesTab(void) {   // (SpringBoard only)
+    CFStringRef domain = CFSTR("com.besiktasliseba.macstatusbar");
+    CFPreferencesAppSynchronize(domain);
+    CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("appStoreUpdatesTab"), domain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    BOOL on = !v || CFGetTypeID(v) != CFBooleanGetTypeID() || CFBooleanGetValue(v);
+    if (v) CFRelease(v);
+    static int token = 0;
+    if (!token && notify_register_check(MAB_STORE_STATE, &token) != NOTIFY_STATUS_OK) token = 0;
+    if (token) notify_set_state(token, on ? 1 : 2);
+}
 
 // The Arcade tab, relabelled Updates — the same idea as Lynx's own "useArcadeUpdates" feature (Arcade is the tab App Store itself makes least use
 // of, so it is repointed at Updates instead of adding a sixth tab), done here so it also works in windowed App Store, where Lynx's own replacement
@@ -2287,7 +2314,12 @@ static void MABRegisterFinderDrops(void) {
     MABStartTintReports();   // (Tint Resize Handles)
     MABInstallRedditFix();   // (Reddit's Home screen in a resized window)
     MABInstallSofaPhone();   // SofaScore only: its phone layout when it starts in a narrow window (runtime calls only, safe this early)
-    if ([[NSBundle mainBundle].bundleIdentifier isEqualToString:@"com.apple.AppStore"]) %init(MABAppStoreTabs);
+    if ([[NSBundle mainBundle].bundleIdentifier isEqualToString:@"com.apple.AppStore"] && MABStoreUpdatesTabOn()) %init(MABAppStoreTabs);
+    if ([[NSBundle mainBundle].bundleIdentifier isEqualToString:@"com.apple.springboard"]) {   // (publishes the App Store switch for the App Store)
+        MABPublishStoreUpdatesTab();
+        int token = 0;
+        notify_register_dispatch("com.besiktasliseba.macstatusbar/prefsChanged", &token, dispatch_get_main_queue(), ^(int t) { MABPublishStoreUpdatesTab(); });
+    }
 #if DEBUG
     MABInstallDebugHooks();   // a software keyboard on demand
 #endif

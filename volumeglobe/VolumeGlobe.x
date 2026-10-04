@@ -65,7 +65,9 @@ static BOOL DMGlobeVolumePress(UIPress *p) {
 %hook UIKeyShortcutHUDService
 
 - (BOOL)_canSummonHUDWithModifierFlag:(unsigned long long)flag {
-    return gEnabled ? NO : %orig;
+    // (only the Globe key's overlay is kept away: holding Command still shows the app's keyboard shortcuts -- 1.3.3, audit L-9: every modifier's
+    //  overlay was refused while the switch was on)
+    return (gEnabled && (flag & GLOBE_FLAG)) ? NO : %orig;
 }
 
 %end

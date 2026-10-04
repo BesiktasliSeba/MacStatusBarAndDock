@@ -532,14 +532,26 @@
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
+			<key>id</key>
+			<string>CC_GROUP</string>
+			<key>label</key>
+			<string>Control Center</string>
 			<key>footerText</key>
 			<string>How large Control Center appears when you open it from the status bar.</string>
-			<key>id</key>
-			<string>CC_SIZE_GROUP</string>
-			<key>label</key>
-			<string>Control Center Size</string>
-			<key>stockHides</key>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
 			<true/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macccgrabber</string>
+			<key>key</key>
+			<string>enabled</string>
+			<key>label</key>
+			<string>Hide Grabber</string>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macccgrabber/prefsChanged</string>
 		</dict>
 		<dict>
 			<key>PostNotification</key>
@@ -632,6 +644,44 @@
 			<string>enabled</string>
 			<key>label</key>
 			<string>Folder Apps in Folder Menus</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>id</key>
+			<string>APPLE_APPS_GROUP</string>
+			<key>label</key>
+			<string>Apple Apps</string>
+			<key>footerText</key>
+			<string>The Updates tab replaces the Arcade tab.</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>key</key>
+			<string>appStoreUpdatesTab</string>
+			<key>label</key>
+			<string>Updates Tab in App Store</string>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.maclargetitles</string>
+			<key>key</key>
+			<string>enabled</string>
+			<key>label</key>
+			<string>Hide Large Titles</string>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.maclargetitles/prefsChanged</string>
 		</dict>
 		<dict>
 			<key>cell</key>

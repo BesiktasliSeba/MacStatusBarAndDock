@@ -26,13 +26,33 @@
 // A separate key from an earlier "enabled means hide" version of this switch, deliberately: reinterpreting the same stored value under
 // flipped semantics would have silently inverted anyone who had already set it. Read live, not cached, so switching it in Settings takes
 // effect on the next natural re-check (a rotation, a view controller transition, ...) with no respring needed.
+// Apps are sandboxed and cannot read our preferences (1.3.3, audit M-6: with the switch on, every app still said "auto-hide" and the pill faded away
+// in third-party apps): SpringBoard reads the switch and publishes it as notify state "com.besiktasliseba.machomebar.show" (1 showing, 2 hidden;
+// 0, not published yet, counts as hidden, the default), then posts "com.besiktasliseba.machomebar.show.changed", on which the apps read it again.
 #define HB_DOMAIN CFSTR("com.besiktasliseba.machomebar")
+#define HB_SHOW_STATE "com.besiktasliseba.machomebar.show"
+static BOOL gHBSpringBoard = NO;
+static int gHBAppShowing = -1;   // (an app: the published state, read once and again after each change)
 static BOOL HBShowing(void) {
+    if (!gHBSpringBoard) {
+        if (gHBAppShowing < 0) {
+            int t = 0; uint64_t state = 0;
+            if (notify_register_check(HB_SHOW_STATE, &t) == NOTIFY_STATUS_OK) { notify_get_state(t, &state); notify_cancel(t); }
+            gHBAppShowing = state == 1;
+        }
+        return gHBAppShowing == 1;
+    }
     CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("showHomeBar"), HB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     if (!v) return NO;   // default off (hidden), matching Trim's own default
     BOOL on = CFGetTypeID(v) == CFBooleanGetTypeID() ? CFBooleanGetValue(v) : NO;
     CFRelease(v);
     return on;
+}
+static void HBPublishShowing(void) {   // (SpringBoard only)
+    static int token = 0;
+    if (!token && notify_register_check(HB_SHOW_STATE, &token) != NOTIFY_STATUS_OK) token = 0;
+    if (token) notify_set_state(token, HBShowing() ? 1 : 2);
+    notify_post(HB_SHOW_STATE ".changed");
 }
 
 %hook UIViewController
@@ -131,6 +151,8 @@ static void HBRefresh(UIViewController *vc) {
 %ctor {
     %init;
     BOOL springboard = [[NSBundle mainBundle].bundleIdentifier isEqualToString:@"com.apple.springboard"];
+    gHBSpringBoard = springboard;
+    if (springboard) HBPublishShowing();
     if (springboard && objc_getClass("MTLumaDodgePillView")) %init(HBSpringBoard);
     if (springboard) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         void *mg = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_LAZY);
@@ -149,10 +171,13 @@ static void HBRefresh(UIViewController *vc) {
         else if (type >= 0) HBPublishPill(1, [NSString stringWithFormat:@"HomeButtonType %d, no pill view", type]);
     });
     int token = 0;
-    notify_register_dispatch("com.besiktasliseba.machomebar/changed", &token, dispatch_get_main_queue(), ^(int t) {
+    // (SpringBoard: the switch's own notification, then the state is published; the apps follow the published state's own notification, which
+    //  comes after it -- reacting to the switch's notification they could read the state before SpringBoard had changed it)
+    notify_register_dispatch(springboard ? "com.besiktasliseba.machomebar/changed" : HB_SHOW_STATE ".changed", &token, dispatch_get_main_queue(), ^(int t) {
         UIApplication *app = [UIApplication sharedApplication];
         if (!app) return;
-        CFPreferencesSynchronize(HB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);   // (the new value, not this process's cached one)
+        if (springboard) { CFPreferencesSynchronize(HB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost); HBPublishShowing(); }   // (the new value, not this process's cached one)
+        else gHBAppShowing = -1;
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
         for (UIWindow *w in app.windows) HBRefresh(w.rootViewController);

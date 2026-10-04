@@ -31,7 +31,7 @@
 - (instancetype)initWithFrame:(CGRect)frame {
     if (!(self = [super initWithFrame:frame])) return nil;
     _back = [UIView new]; _back.backgroundColor = [UIColor colorWithWhite:0 alpha:0.28]; _back.layer.cornerRadius = 8.0; _back.layer.cornerCurve = kCACornerCurveContinuous; _back.hidden = YES;
-    _icon = [UIImageView new]; _icon.contentMode = UIViewContentModeScaleAspectFit;
+    _icon = [UIImageView new]; _icon.contentMode = UIViewContentModeScaleAspectFit; _icon.accessibilityIgnoresInvertColors = YES;   // (Smart Invert leaves pictures as they are, like Apple's own icons: 1.3.3, audit L-3)
     _labelBack = [UIView new]; _labelBack.backgroundColor = [UIColor systemBlueColor]; _labelBack.hidden = YES;
     _label = [UILabel new]; _label.textAlignment = NSTextAlignmentCenter; _label.lineBreakMode = NSLineBreakByTruncatingTail; _label.numberOfLines = 1;
     for (UIView *v in @[_back, _icon, _labelBack, _label]) { v.userInteractionEnabled = NO; [self addSubview:v]; }
@@ -193,12 +193,11 @@ static void DMKeyboardDockWatch(void) {
     NSMutableOrderedSet<NSString *> *_sel;                 // selected paths
     dispatch_source_t _watch; BOOL _watchPending, _listing, _relist;
     CGFloat _side, _cellW, _cellH; UIFont *_font; UIColor *_textColor, *_shadowColor;
-    UIImage *_folderImage; CGFloat _folderImageSide; BOOL _folderFromHome; CFTimeInterval _folderTriedAt;
+    UIImage *_folderImage; CGFloat _folderImageSide;
     NSString *_iconSig; CFTimeInterval _sigAt, _listAt;
     BOOL _placeDirty; CGRect _placedArea; CGSize _placedCell; NSInteger _piled;   // (a layout pass only when what it depends on changed, see -dm_placeAgain)
     BOOL _syncPending; NSUInteger _saveGen;
     BOOL _folderMissing; dev_t _watchDev; ino_t _watchIno; CFTimeInterval _watchCheckedAt;   // (the folder watched: which one, see -dm_tick)
-    CFTimeInterval _folderRetry;                           // (the Files app's icon looked for again after this long: doubles while not found)
     BOOL _editing, _hasKeys, _renameNew;
     NSString *_lastTapPath; CFTimeInterval _lastTapAt; BOOL _lastTapPointer;
     // an icon lifted by a drag (see -dm_event:)
@@ -247,14 +246,22 @@ static void DMKeyboardDockWatch(void) {
 }
 
 // ---- where it is: page 1 of the Home Screen ----
-// Page 1's icon list: in the root folder's scroll view (SBIconScrollView), the icon list (SBIconListView) furthest left -- the Today View page, when
-// it is a page, is no icon list. Found once, checked on every tick (cheap), looked for again when it is gone.
+// Page 1's icon list: the root folder view's own first icon list (-iconListViewAtIndex:0; the Today View page, when it is a page, is no icon list).
+// Where that is not answered, the icon list (SBIconListView) in the root folder's scroll view (SBIconScrollView) nearest the start: the leftmost, the
+// rightmost in a right-to-left language, where iPadOS lays the pages out from the right (iPad 2, Hebrew: page 1 at x 3072, page 4 at x 768 -- before
+// 1.3.3 the desktop went on the last page there). Found once, checked on every tick (cheap), looked for again when it is gone.
 static UIView *DMDesktopFindPageOne(void) {
     id ic = DMCall(objc_getClass("SBIconController"), @"sharedInstance");
     UIViewController *rfc = DMCall(DMCall(ic, @"iconManager"), @"rootFolderController");
     if (![rfc isKindOfClass:[UIViewController class]] || !rfc.isViewLoaded) return nil;
     Class sc = objc_getClass("SBIconScrollView"), lc = objc_getClass("SBIconListView");
     if (!sc || !lc) return nil;
+    {
+        SEL rootView = NSSelectorFromString(@"rootFolderView"), folderView = NSSelectorFromString(@"folderView"), atIndex = NSSelectorFromString(@"iconListViewAtIndex:");
+        id rfv = [rfc respondsToSelector:rootView] ? ((id (*)(id, SEL))objc_msgSend)(rfc, rootView) : [rfc respondsToSelector:folderView] ? ((id (*)(id, SEL))objc_msgSend)(rfc, folderView) : nil;
+        UIView *first = [rfv respondsToSelector:atIndex] ? ((id (*)(id, SEL, unsigned long long))objc_msgSend)(rfv, atIndex, 0) : nil;
+        if ([first isKindOfClass:lc] && !first.hidden && [first.superview isKindOfClass:sc]) return first;
+    }
     NSMutableArray *todo = [NSMutableArray arrayWithObject:rfc.view];
     UIView *scroll = nil;
     for (int depth = 0; depth < 8 && todo.count && !scroll; depth++) {
@@ -263,7 +270,8 @@ static UIView *DMDesktopFindPageOne(void) {
         todo = next;
     }
     UIView *first = nil;
-    for (UIView *l in scroll.subviews) if ([l isKindOfClass:lc] && !l.hidden && (!first || l.frame.origin.x < first.frame.origin.x)) first = l;
+    BOOL rtl = scroll.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft;
+    for (UIView *l in scroll.subviews) if ([l isKindOfClass:lc] && !l.hidden && (!first || (rtl ? l.frame.origin.x > first.frame.origin.x : l.frame.origin.x < first.frame.origin.x))) first = l;
     return first;
 }
 static BOOL DMDesktopEditing(void) {
@@ -319,14 +327,10 @@ static BOOL DMDesktopEditing(void) {
     if (!_menuOpen && self.window && [gDockUnderReasons containsObject:@"menu"] && !(_menuClosing && CACurrentMediaTime() - _menuClosingAt < 1.0)
         && !DMDesktopMenuShown(self.window)) { DMDesktopDockUnder(@"menu", NO, 0); DMLog(@"[desktop] a menu went without its close finishing: the Dock back (safety reset)"); }
     if (!CGRectEqualToRect(self.frame, _list.bounds)) self.frame = _list.bounds;
-    if (!_folderFromHome && CACurrentMediaTime() - _folderTriedAt > MAX(20.0, _folderRetry)) {   // (the Files app's picture, once its icon view is there)
-        [self dm_folderImage];
-        if (_folderFromHome) for (NSString *n in _views) { DMDesktopItemView *v = _views[n]; if (v.item.dir && !v.item.package && ![v.item.name hasSuffix:@".app"]) v.icon.image = _folderImage; }
-    }
     if (CACurrentMediaTime() - _sigAt > 1.0) {   // (an app icon or widget added, moved or removed on page 1: icons that would be under it move)
         _sigAt = CACurrentMediaTime();
         NSString *sig = [self dm_iconSignature];
-        if (![sig isEqualToString:_iconSig]) { _iconSig = sig; _folderRetry = 0; [self dm_placeAgain]; }
+        if (![sig isEqualToString:_iconSig]) { _iconSig = sig; [self dm_placeAgain]; }
     }
     if (_placeDirty && !_editing && [self dm_pageShowing]) [self setNeedsLayout];   // (a pass held back while page 1 wasn't showing, or in jiggle mode)
     if (CACurrentMediaTime() - _watchCheckedAt > 2.0) {   // (the folder made again -- by the Files app, after it was removed elsewhere: watched and read again)
@@ -406,70 +410,58 @@ static BOOL DMDesktopEditing(void) {
     _cellW = MAX(_side + 30.0, 84.0);
     _cellH = 2.0 + _side + 4.0 + ceil(_font.lineHeight) + 2.0 + 4.0;
 }
-// A folder's icon: the Files app's icon as it is on the Home Screen now (a theme's too) -- read from its icon view there, else iOS's own.
-- (UIImage *)dm_folderImage {
-    // (from the Home Screen once found there; iOS's own picture until then -- the other pages' icon views may not be made yet right after a
-    //  respring: looked for again after 20 s, then 40, 80 ... up to every 10 min while it isn't there -- the search walks the Home Screen's
-    //  views --, and after 20 s again whenever page 1's icons change)
-    if (_folderImage && fabs(_folderImageSide - _side) < 0.5 && (_folderFromHome || CACurrentMediaTime() - _folderTriedAt < MAX(20.0, _folderRetry))) return _folderImage;
-    _folderTriedAt = CACurrentMediaTime();
-    UIImage *img = nil;
-    Class iv = objc_getClass("SBIconView");
-    // (its icon view as SpringBoard itself finds it -- -[SBHIconManager firstIconViewForIcon:] --, its picture as it is drawn now)
-    UIImage *(^pictureOf)(UIView *) = ^UIImage *(UIView *iconView) {
-        NSMutableArray *q = [NSMutableArray arrayWithArray:iconView.subviews];
-        for (NSUInteger k = 0; k < q.count && k < 60; k++) {
-            UIView *c = q[k];
-            if (![NSStringFromClass([c class]) containsString:@"IconImageView"]) { [q addObjectsFromArray:c.subviews]; continue; }
-            for (NSString *key in @[@"displayedImage", @"contentsImage"]) { id x = nil; @try { x = DMCall(c, key); } @catch (NSException *e) {} if ([x isKindOfClass:[UIImage class]]) return x; }
-            if (c.bounds.size.width <= 4.0) return nil;
-            UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:c.bounds.size];
-            return [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) { [c.layer renderInContext:ctx.CGContext]; }];
-        }
-        return nil;
-    };
-    @try {
-        id im = DMCall(DMCall(objc_getClass("SBIconController"), @"sharedInstance"), @"iconManager");
-        id model = DMCall(im, @"iconModel");
-        SEL byID = NSSelectorFromString(@"applicationIconForBundleIdentifier:"), first = NSSelectorFromString(@"firstIconViewForIcon:");
-        id icon = [model respondsToSelector:byID] ? ((id (*)(id, SEL, id))objc_msgSend)(model, byID, @"com.apple.DocumentsApp") : nil;
-        UIView *view = icon && [im respondsToSelector:first] ? ((id (*)(id, SEL, id))objc_msgSend)(im, first, icon) : nil;
-        if ([view isKindOfClass:[UIView class]]) img = pictureOf(view);
-        static int told = 0; if (told++ < 3) DMLog([NSString stringWithFormat:@"[desktop] folder icon: Files' icon %@, its icon view %@, picture %@", icon ? @"found" : @"not found", view ? NSStringFromClass([view class]) : @"none", img ? @"read" : @"not read"]);
-    } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[desktop] folder icon: SpringBoard's icon view lookup threw %@", e.reason]); }
-    // (else wherever SpringBoard shows it: a page, a folder, the Dock, the App Library -- each draws the same, themed, picture)
-    // (the pages first -- cheap --, then the Dock, then the rest of the Home Screen's window: folders, the App Library)
-    NSMutableArray *roots = [NSMutableArray array];
-    Class lc = objc_getClass("SBIconListView");
-    if (_list.superview) for (UIView *l in _list.superview.subviews) if (lc && [l isKindOfClass:lc]) [roots addObject:l];
-    for (UIWindow *w in DMAllWindows()) if ([NSStringFromClass([w class]) isEqualToString:@"SBFloatingDockWindow"]) [roots addObject:w];
-    if (self.window) [roots addObject:self.window];
-    for (NSUInteger i = 0; i < roots.count && !img; i++) {
-        NSMutableArray *todo = [NSMutableArray arrayWithObject:roots[i]];   // (only when the lookup above found nothing)
-        NSUInteger seen = 0;
-        while (todo.count && !img && seen++ < 60000) {
-            UIView *v = todo.firstObject; [todo removeObjectAtIndex:0];   // (breadth first: icon views are near the top of every list)
-            if (v == self) continue;
-            if (iv && [v isKindOfClass:iv]) {
-                id bid = nil; @try { bid = DMCall(DMCall(v, @"icon"), @"applicationBundleID"); } @catch (NSException *e) {}
-                if ([bid isEqual:@"com.apple.DocumentsApp"]) img = pictureOf(v);
-                continue;
-            }
-            [todo addObjectsFromArray:v.subviews];
-        }
+// A folder's icon on the desktop, drawn the same on every iPad (not the Files app's icon, which a theme or iOS itself changes): a macOS folder,
+// light blue, its darker tab and back behind, two folds near the bottom (y down, s = the icon's side, laid out on a 256 grid)
+static void DMDesktopFolderFill(CGContextRef c, CGPathRef p, CGFloat k, int n, const CGFloat *ys, const unsigned *rgbs) {
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGFloat comps[24], locs[6];
+    for (int i = 0; i < n; i++) {
+        comps[i * 4] = (rgbs[i] >> 16 & 0xFF) / 255.0; comps[i * 4 + 1] = (rgbs[i] >> 8 & 0xFF) / 255.0; comps[i * 4 + 2] = (rgbs[i] & 0xFF) / 255.0; comps[i * 4 + 3] = 1;
+        locs[i] = (ys[i] - ys[0]) / (ys[n - 1] - ys[0]);
     }
-    if (!img) {
-        SEL s = NSSelectorFromString(@"_applicationIconImageForBundleIdentifier:format:scale:");
-        if ([UIImage respondsToSelector:s]) img = ((id (*)(id, SEL, id, int, CGFloat))objc_msgSend)([UIImage class], s, @"com.apple.DocumentsApp", 2, [UIScreen mainScreen].scale);
-        _folderRetry = MIN(600.0, MAX(20.0, _folderRetry) * 2.0);
-        DMLog([NSString stringWithFormat:@"[desktop] folder icon: the Files app's icon view isn't there (yet) -- iOS's own icon (%@); looked for again in %.0f s", img ? @"found" : @"none", _folderRetry]);
-        _folderFromHome = NO;
-    } else { DMLog(@"[desktop] folder icon: the Files app's Home Screen icon"); _folderFromHome = YES; }
-    _folderImage = img; _folderImageSide = _side;
-    return img;
+    CGGradientRef g = CGGradientCreateWithColorComponents(cs, comps, locs, n);
+    CGContextSaveGState(c); CGContextAddPath(c, p); CGContextClip(c);
+    CGContextDrawLinearGradient(c, g, CGPointMake(0, ys[0] * k), CGPointMake(0, ys[n - 1] * k), kCGGradientDrawsBeforeStartLocation | kCGGradientDrawsAfterEndLocation);
+    CGContextRestoreGState(c); CGGradientRelease(g); CGColorSpaceRelease(cs);
+}
+static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
+    CGFloat k = s / 256.0;
+    CGPathRef front = CGPathCreateWithRoundedRect(CGRectMake(26 * k, 68 * k, 209 * k, 145.5 * k), 12.5 * k, 12.5 * k, NULL);
+    // back: the tab and the panel behind the front
+    CGMutablePathRef back = CGPathCreateMutable();
+    CGPathMoveToPoint(back, NULL, 26 * k, 80 * k);
+    CGPathAddLineToPoint(back, NULL, 26 * k, 49 * k);
+    CGPathAddArcToPoint(back, NULL, 26 * k, 37.5 * k, 37.5 * k, 37.5 * k, 11.5 * k);
+    CGPathAddLineToPoint(back, NULL, 85 * k, 37.5 * k);
+    CGPathAddCurveToPoint(back, NULL, 98 * k, 37.5 * k, 103 * k, 54.3 * k, 117 * k, 54.3 * k);
+    CGPathAddLineToPoint(back, NULL, 223.5 * k, 54.3 * k);
+    CGPathAddArcToPoint(back, NULL, 235 * k, 54.3 * k, 235 * k, 66 * k, 11.5 * k);
+    CGPathAddLineToPoint(back, NULL, 235 * k, 80 * k);
+    CGPathCloseSubpath(back);
+    DMDesktopFolderFill(c, back, k, 3, (const CGFloat[]){ 38, 52, 68 }, (const unsigned[]){ 0x41A2D6, 0x2F96D2, 0x007AC9 });
+    // (its soft shadow all around -- no offset, which UIKit and Core Graphics turn opposite ways --, then its colours over it)
+    CGContextSaveGState(c); CGContextSetShadowWithColor(c, CGSizeZero, 5 * k, [UIColor colorWithWhite:0 alpha:0.6].CGColor);
+    CGContextAddPath(c, front); CGContextSetRGBFillColor(c, 0.31, 0.71, 0.91, 1); CGContextFillPath(c); CGContextRestoreGState(c);
+    DMDesktopFolderFill(c, front, k, 5, (const CGFloat[]){ 68, 76, 188, 194, 213 }, (const unsigned[]){ 0x6CC9F6, 0x74CFFB, 0x70CDF9, 0x64C4F0, 0x50B6E8 });
+    // the two folds near the bottom
+    CGContextSaveGState(c); CGContextAddPath(c, front); CGContextClip(c);
+    CGContextSetRGBFillColor(c, 0, 0.3, 0.55, 0.08);
+    CGContextFillRect(c, CGRectMake(26 * k, 195 * k, 209 * k, 1.5 * k)); CGContextFillRect(c, CGRectMake(26 * k, 203.5 * k, 209 * k, 1.5 * k));
+    CGContextSetRGBFillColor(c, 1, 1, 1, 0.14);
+    CGContextFillRect(c, CGRectMake(26 * k, 193.5 * k, 209 * k, 1.5 * k)); CGContextFillRect(c, CGRectMake(26 * k, 202 * k, 209 * k, 1.5 * k));
+    CGContextRestoreGState(c);
+    CGPathRelease(front); CGPathRelease(back);
+}
+- (UIImage *)dm_folderImage {   // (made once per icon size)
+    if (_folderImage && fabs(_folderImageSide - _side) < 0.5) return _folderImage;
+    CGFloat s = _side;
+    UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(s, s)];
+    _folderImage = [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) { DMDesktopDrawFolder(ctx.CGContext, s); }];
+    _folderImageSide = s;
+    return _folderImage;
 }
 - (UIImage *)dm_imageFor:(DMFinderItem *)it view:(DMDesktopItemView *)v {
-    if (it.dir && !it.package && ![it.name hasSuffix:@".app"]) return [self dm_folderImage] ?: DMFinderIcon(it, _side);
+    if (it.dir && !it.package && ![it.name hasSuffix:@".app"]) return [self dm_folderImage];
     __weak DMDesktopItemView *wv = v; DMFinderItem *wit = it; CGFloat side = _side;
     UIImage *thumb = DMFinderThumb(it, side, ^{ DMDesktopItemView *x = wv; if (x && x.item == wit) x.icon.image = DMFinderThumb(wit, side, nil) ?: x.icon.image; });
     return thumb ?: DMFinderIconWithAlias(it, side);
@@ -588,7 +580,8 @@ static BOOL DMDesktopEditing(void) {
     NSArray<NSValue *> *occ = [self dm_occupied];
     CGRect *r = malloc(sizeof(CGRect) * MAX(1, occ.count));
     for (NSUInteger k = 0; k < occ.count; k++) r[k] = occ[k].CGRectValue;
-    DMPlacerInit(pl, area, _cellW, _cellH, r, (int)occ.count);
+    // (a right-to-left language: placed as a Mac does then, new icons from the top left -- the Home Screen's own icons start at the right there)
+    DMPlacerInitDir(pl, area, _cellW, _cellH, r, (int)occ.count, self.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft);
     free(r);
 }
 - (CGPoint)dm_pointFor:(NSArray<NSNumber *> *)f area:(CGRect)a { return CGPointMake(a.origin.x + f[0].doubleValue * a.size.width, a.origin.y + f[1].doubleValue * a.size.height); }
@@ -881,14 +874,16 @@ static BOOL DMDesktopEditing(void) {
     if (_renameNew && paths.count == 1) _renameWhenListed = paths.firstObject;
     _renameNew = NO;
 }
-// Clean Up: every icon into the grid of free spots, from the top right, in the order they are now (column by column), never over an app icon or
-// widget -- as a Mac's desktop Clean Up.
+// Clean Up: every icon into the grid of free spots, from the top right (the top left in a right-to-left language), in the order they are now
+// (column by column), never over an app icon or widget -- as a Mac's desktop Clean Up.
 - (void)dm_cleanUp {
     DM_FEATURE_MARK("desktop-clean-up");
     CGRect area = [self dm_area];
     DMPlacer pl; [self dm_placer:&pl area:area];
+    BOOL rtl = self.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft;   // (mirrored: columns left to right)
     NSArray<DMDesktopItemView *> *views = [[_views allValues] sortedArrayUsingComparator:^NSComparisonResult(DMDesktopItemView *a, DMDesktopItemView *b) {
         CGFloat ca = round(a.center.x / 40.0), cb = round(b.center.x / 40.0);   // (columns right to left, then top to bottom)
+        if (rtl) { ca = -ca; cb = -cb; }
         if (ca != cb) return ca > cb ? NSOrderedAscending : NSOrderedDescending;
         return a.center.y < b.center.y ? NSOrderedAscending : a.center.y > b.center.y ? NSOrderedDescending : NSOrderedSame;
     }];
@@ -1251,7 +1246,7 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
         CGPoint p = [self convertPoint:sp fromCoordinateSpace:(self.window.screen ?: [UIScreen mainScreen]).coordinateSpace];
         DMLog([NSString stringWithFormat:@"[desktop] test at %@: local %@ in area %d, shown %d, hit %@", NSStringFromCGPoint(sp), NSStringFromCGPoint(p), CGRectContainsPoint([self dm_area], p), [self dm_shownAt:sp], chain]);
     }
-    else if ([act isEqualToString:@"files"]) {   // where the Files app's icon view is (its Home Screen icon is the folders' picture)
+    else if ([act isEqualToString:@"files"]) {   // where the Files app's icon view is
         Class iv = objc_getClass("SBIconView");
         for (UIWindow *w in DMAllWindows()) { NSMutableArray *todo = [NSMutableArray arrayWithObject:w];
             while (todo.count) { UIView *x = todo.lastObject; [todo removeLastObject]; [todo addObjectsFromArray:x.subviews];

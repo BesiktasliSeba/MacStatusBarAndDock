@@ -275,6 +275,26 @@ static const void *kAppLabelKey = &kAppLabelKey;
 static const void *kAppButtonKey = &kAppButtonKey;
 static const void *kAppPillKey = &kAppPillKey;
 static const void *kShotKey = &kShotKey;
+// ---- right-to-left system languages (1.3.3, audit H-1) ----
+// With Arabic, Hebrew, Persian or Urdu as the iPad's language, iPadOS mirrors its status bar: the time and date region sits at the right end and the
+// status icons at the left. A Mac's menu bar is mirrored the same way in those languages: the Apple menu at the right end with the menus going left
+// from it, the clock and the menu extras at the left end. So our bar is worked out in leading coordinates -- x measured from the leading edge, the
+// left in English and the right in Hebrew -- and each frame and sideways shift is turned into the view's own through these helpers (before 1.3.3
+// the bar looked for the clock in the left half only: with a right-to-left language it took the battery percentage for the clock, or found nothing
+// and kept every new status bar copy invisible for 30 s). Left-to-right languages: each helper hands back its input.
+static inline BOOL DMBarRTL(UIView *v) { return v.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft; }
+static inline CGRect DMBarRect(UIView *fg, BOOL rtl, CGRect r) {   // leading coordinates <-> the view's own (the same turn both ways)
+    if (rtl) r.origin.x = fg.bounds.size.width - r.origin.x - r.size.width;
+    return r;
+}
+static inline CGFloat DMBarLead(UIView *fg, BOOL rtl, CGRect r) { return DMBarRect(fg, rtl, r).origin.x; }          // a rect's edge nearest the leading end
+static inline CGFloat DMBarTrail(UIView *fg, BOOL rtl, CGRect r) { return CGRectGetMaxX(DMBarRect(fg, rtl, r)); }   // its edge nearest the trailing end
+static inline CGAffineTransform DMBarShift(BOOL rtl, CGFloat dx) { return CGAffineTransformMakeTranslation(rtl ? -dx : dx, 0); }   // dx toward the trailing end
+static inline CGFloat DMBarShiftOf(BOOL rtl, CGAffineTransform t) { return rtl ? -t.tx : t.tx; }
+static unsigned gDMLocaleGen = 0;   // (+1 whenever the region, language or 12/24-hour setting changes: NSCurrentLocaleDidChangeNotification, %ctor)
+static inline CGRect DMBarUntransformed(UIView *v) {   // where a view was laid out (centre and bounds ignore its transform)
+    return CGRectMake(v.center.x - v.bounds.size.width / 2.0, v.center.y - v.bounds.size.height / 2.0, v.bounds.size.width, v.bounds.size.height);
+}
 
 #if !DEBUG
 // Release (FINALPACKAGE=1): the test machinery is compiled out (#if DEBUG blocks, DMLog, DMTestFlag). Helpers only it used are then unused; the
@@ -518,8 +538,11 @@ static BOOL DMControlCenterActive(void) {
 static NSString *DMDateString(void) {
     static NSDateFormatter *formatter = nil;
     static NSString *format = nil;
-    NSString *want = [[NSDateFormatter dateFormatFromTemplate:@"EEEMMMd" options:0 locale:[NSLocale autoupdatingCurrentLocale]]
-                      stringByReplacingOccurrencesOfString:@"," withString:@""];
+    static NSString *want = nil; static unsigned wantGen = 0;   // (the format from the template: worked out again only when the region / language changes)
+    if (!want || wantGen != gDMLocaleGen) {
+        wantGen = gDMLocaleGen;
+        want = [[NSDateFormatter dateFormatFromTemplate:@"EEEMMMd" options:0 locale:[NSLocale autoupdatingCurrentLocale]] stringByReplacingOccurrencesOfString:@"," withString:@""];
+    }
     if (!formatter || ![want isEqualToString:format]) {
         formatter = [NSDateFormatter new];
         formatter.locale = [NSLocale autoupdatingCurrentLocale];
@@ -2089,9 +2112,9 @@ static BOOL DMStageManagerHeldNow(void) {
 }
 static void DMSyncWindowsForLibraryBody(void) {
     DM_PERF("stagemgr", DMStageManagerWatch());
-    DMWatchDockChanges();   // (the Dock changed for good: windows follow its new height, every engine)
-    DMNativeTick();   // (native windows: their level follows the engine's windows; kept on screen after a turn)
-    DMSMWatchTurn();   // (Stage Manager engine: windows keep their layouts, and stay reachable, when the iPad turns)
+    DM_PERF("dock", DMWatchDockChanges());   // (the Dock changed for good: windows follow its new height, every engine)
+    DM_PERF("native", DMNativeTick());   // (native windows: their level follows the engine's windows; kept on screen after a turn)
+    DM_PERF("smturn", DMSMWatchTurn());   // (Stage Manager engine: windows keep their layouts, and stay reachable, when the iPad turns)
     DM_PERF("switcher", DMWatchSwitcher());
     DM_PERF("lock", DMWatchLock());
     if (!DMTestFlag("/tmp/macstatusbar-nobsc")) DM_PERF("ccscale", DMApplyControlCenterScale());
@@ -2107,7 +2130,7 @@ static void DMSyncWindowsForLibraryBody(void) {
     DM_PERF("kbfollow", DMKeyboardFocusFollowsFrontWindow());
     DM_PERF("zetsu", DMWatchZetsu());
     DM_PERF("gamebar", DMWatchBarOverHidingApp());
-    DMSyncWindowFade();
+    DM_PERF("fade", DMSyncWindowFade());
 }
 // The windows fade away while the App Library shows, and while a Home Screen icon's Haptic Touch menu is open (layering audit F8: that menu lives in
 // the Home Screen's own window, level -2, under every window; raising that window would put the whole Home Screen over the windows, and lowering
@@ -2558,6 +2581,7 @@ static NSString *DMZetsuDescribe(UIWindow *w) {
 //    tap on the pill can undo);
 //  - close: Zetsu's own -CloseAppWindow: on the controller Zetsu created.
 static CGRect DMLayoutFrame(NSString *name);
+static CGRect DMLayoutFrameInArea(NSString *name, CGRect u, CGSize screen);
 static void DMCascadeStage(UIView *stage);
 static UIView *DMMakeStageLightsFor(UIView *stage);
 static NSMutableDictionary<NSString *, NSValue *> *gLastWindowFrames;   // (defined with the Window menu)
@@ -4849,7 +4873,8 @@ static int gDMSnapDepth = 0;
 static NSArray<UIWindow *> *gDMSnapWindows = nil;
 static NSArray<UIView *> *gDMSnapStages = nil;
 static NSArray<NSArray *> *gDMSnapStageParents = nil;   // [parent, its subviews then]
-static void DMSnapInvalidate(void) { gDMSnapWindows = nil; gDMSnapStages = nil; gDMSnapStageParents = nil; }
+static void DMSnapForgetSMFront(void);
+static void DMSnapInvalidate(void) { gDMSnapWindows = nil; gDMSnapStages = nil; gDMSnapStageParents = nil; DMSnapForgetSMFront(); }
 static void DMSnapBegin(void) { gDMSnapDepth++; }
 static void DMSnapEnd(void) { if (--gDMSnapDepth <= 0) { gDMSnapDepth = 0; DMSnapInvalidate(); } }
 static NSArray<UIWindow *> *DMAllWindows(void) {
@@ -5208,10 +5233,17 @@ static CGFloat DMSpringBoardDockHeight(void) {
 static NSDictionary<NSString *, NSString *> *DMSMLayoutsNow(void) {
     NSMutableDictionary *out = [NSMutableDictionary dictionary];
     NSDictionary<NSString *, NSValue *> *frames = DMSMOpenWindowFrames();
+    if (!frames.count) return out;
+    // (the nine layouts are worked out once per call, from ONE measurement of the usable area: DMLayoutFrame measures it again each time, walking
+    //  the Dock's views, and DMSMWatchTurn asks for these layouts every second -- 0.78 ms per 0.2 s tick with one window open, iPad 2, S-1)
+    NSArray<NSString *> *names = @[@"fill", @"left", @"right", @"top", @"bottom", @"topleft", @"topright", @"bottomleft", @"bottomright"];
+    CGRect u = DMUsableArea(); CGSize scr = [UIScreen mainScreen].bounds.size;
+    CGRect targets[9];
+    for (NSUInteger i = 0; i < 9; i++) targets[i] = DMA5KeepableFrame(DMA5StageFromWindow(DMLayoutFrameInArea(names[i], u, scr)));   // (= DMLayoutFrame)
     for (NSString *b in frames) {
         CGRect f = frames[b].CGRectValue;
-        for (NSString *name in @[@"fill", @"left", @"right", @"top", @"bottom", @"topleft", @"topright", @"bottomleft", @"bottomright"]) {
-            CGRect t = DMLayoutFrame(name);
+        for (NSUInteger i = 0; i < 9; i++) {
+            NSString *name = names[i]; CGRect t = targets[i];
             if (CGRectIsNull(t)) continue;
             if (fabs(t.origin.x - f.origin.x) < 6.0 && fabs(t.origin.y - f.origin.y) < 6.0 && fabs(t.size.width - f.size.width) < 6.0 && fabs(t.size.height - f.size.height) < 6.0) { out[b] = name; break; }
         }
@@ -8037,6 +8069,12 @@ static CFTimeInterval gSofaFullPhoneSince = 0;
 static int gSofaFullReopens = 0;   // (full-screen reopens since SofaScore last closed)
 static void DMWatchSofaScore(void) {   // every 0.2 s
     static CGFloat lastWidth = 0; static CFTimeInterval stableSince = 0;
+    {   // (S-1, 1.3.3: SofaScore not installed -- most iPads --: nothing to watch, not even its scene looked for; asked again every 30 s)
+        static CFTimeInterval askedAt = -100; static BOOL installed = NO;
+        CFTimeInterval t = CACurrentMediaTime();
+        if (t - askedAt > 30.0) { askedAt = t; installed = DMAppForBundle(kSofaBundle) != nil; }
+        if (!installed) return;
+    }
     // (watcher plan step 4: nothing to watch while SofaScore has no live scene -- neither full screen nor in a window; both branches below need one)
     if (![[DMFrontApp() bundleIdentifier] isEqualToString:kSofaBundle] && !DMSceneForBundle(kSofaBundle)) { lastWidth = 0; stableSince = 0; gSofaFullPhoneSince = 0; if (CACurrentMediaTime() - gSofaRelaunchAt > 20.0) gSofaFullReopens = 0; return; }
     CGFloat width = 0;
@@ -10318,6 +10356,19 @@ static CGFloat DMMenuHostWidth(UIView *host) {
     if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion < 16) return [UIScreen mainScreen].bounds.size.width;
     return host.bounds.size.width;
 }
+static BOOL DMIsMenuWindowHost(UIView *host) { return host == gMenuRotator || host == gMenuWindow || DMIsExtMenuHost(host); }   // (our menu windows: a menu is kept on the screen)
+// Where a menu of width w hangs under its title (`anchor`, in the host's coordinates): its left edge 4 pt in from the title's, kept 6 pt inside the
+// screen. In a right-to-left language (the bar mirrored, DMBarRTL) a Mac's menus hang from their title's right edge instead: the right edges line up.
+static CGFloat DMMenuOriginX(UIView *fg, UIView *host, CGRect anchor, CGFloat w) {
+    BOOL clamp = DMIsMenuWindowHost(host);
+    if (DMBarRTL(fg)) {
+        CGFloat hostW = clamp ? DMMenuHostWidth(host) : host.bounds.size.width;
+        return MAX(6.0, MIN(CGRectGetMaxX(anchor) - 4.0 - w, hostW - w - 6.0));
+    }
+    CGFloat x = MAX(6.0, anchor.origin.x + 4.0);
+    if (clamp) x = MAX(6.0, MIN(x, DMMenuHostWidth(host) - w - 6.0));   // (a title near the right end: the menu stays on the screen, like macOS)
+    return x;
+}
 // The view menus are built in. On iPadOS 15 the menu window turns with the screen (its bounds become 1194 x 834 in landscape) and is used as it is.
 // On iPadOS 16 it stays portrait-sized while the scene is turned: its content is shown turned, and positions converted from the screen come out in
 // its portrait space, but a menu built in it would be sideways and mostly off the screen. So there menus are built inside a container that has the
@@ -10416,7 +10467,7 @@ static CGRect DMConvertToHost(UIView *view, CGRect rect, UIView *host) {
 }
 // One line per opened menu (debug flag only): where the title and the menu really are on the screen, which status bar copy and host were used, and
 // every orientation reading -- the evidence line for menu placement. The menu must hang directly under its title: menu.x == title.x + 4 (or 6 at the
-// left edge), menu.y == title.maxY + 2, fully on the screen.
+// left edge; in a right-to-left language menu.maxX == title.maxX - 4), menu.y == title.maxY + 2, fully on the screen.
 static int gMenuCheckPass = 0, gMenuCheckFail = 0;   // counted by the menucheck trigger
 static void DMLogMenuGeometry(NSString *what, UIView *fg, UIButton *btn, UIView *host, UIView *panel) {
     if (!DMTestFlag("/tmp/macstatusbar-debug") || !panel) return;
@@ -10436,6 +10487,7 @@ static void DMLogMenuGeometry(NSString *what, UIView *fg, UIButton *btn, UIView 
     long active = [app respondsToSelector:aio] ? ((long (*)(id, SEL))objc_msgSend)(app, aio) : -1;
     long sbo = ((long (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"statusBarOrientation"));
     CGFloat ex = MAX(6.0, MIN(MAX(6.0, title.origin.x + 4.0), scrB.size.width - menu.size.width - 6.0)), ey = CGRectGetMaxY(title) + 2.0;
+    if (DMBarRTL(fg)) ex = MAX(6.0, MIN(CGRectGetMaxX(title) - 4.0 - menu.size.width, scrB.size.width - menu.size.width - 6.0));   // (right-to-left: the right edges line up, DMMenuOriginX)
     BOOL ok = fabs(menu.origin.x - ex) < 1.5 && fabs(menu.origin.y - ey) < 1.5 && CGRectContainsRect(CGRectInset(scrB, -0.5, -0.5), menu) && title.origin.y < 40.0;
     DMLog([NSString stringWithFormat:@"[menugeo] %@ %@: title %@ menu %@ expected origin {%.1f, %.1f} screen %@ | copy in %@ (frame %@ bounds %@) host %@ | orientation resolved %ld built %ld active %ld statusBar %ld device %ld | old anchor %@ | fg ty %.1f",
            ok ? @"PASS" : @"FAIL", what, NSStringFromCGRect(title), NSStringFromCGRect(menu), ex, ey, NSStringFromCGSize(scrB.size),
@@ -10697,6 +10749,14 @@ static CGFloat DMPanelItemHeight(id it) {
     { SEL h = NSSelectorFromString(@"dmRowHeight"); if ([it respondsToSelector:h]) return ((CGFloat (*)(id, SEL))objc_msgSend)(it, h); }   // (a row with a height of its own: the Wi-Fi menu's heading and switch rows)
     return kRowH;
 }
+// Our menus are English and keep their left-to-right layout in a right-to-left language too (only where they hang is mirrored, DMMenuOriginX): every
+// view of a menu is set to left-to-right, so a row's title stays left-aligned and an Audio row's slider runs from the left (a right-to-left app
+// aligns natural text right and turns sliders round). semanticContentAttribute is not inherited, so it is set on each view.
+static void DMForceLeftToRight(UIView *v, int depth) {
+    if (!v || depth > 8) return;
+    v.semanticContentAttribute = UISemanticContentAttributeForceLeftToRight;
+    for (UIView *s in v.subviews) DMForceLeftToRight(s, depth + 1);
+}
 static UIView *DMMakePanel(NSArray *items) {
     CGFloat h = kPanelPad * 2.0;
     for (id it in items) h += DMPanelItemHeight(it);
@@ -10725,6 +10785,7 @@ static UIView *DMMakePanel(NSArray *items) {
         }
         y += rh;
     }
+    if ([UIApplication sharedApplication].userInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft) DMForceLeftToRight(host, 0);
     return host;
 }
 
@@ -10819,8 +10880,10 @@ static BOOL DMLooksLikeService(NSString *bundleID) {
            [bundleID isEqualToString:@"com.apple.Spotlight"];
 }
 
+static NSSet<NSString *> *DMFinderHiddenApps(void);   // (Finder.h: the apps hidden with AppHider)
 static NSArray *DMUserRunningApps(void) {
     id controller = DMCall(objc_getClass("SBApplicationController"), @"sharedInstance");
+    NSSet *hidden = DMFinderHiddenApps();   // (1.3.3, audit L-24: an app hidden with AppHider is not named in Force Quit Apps, as Finder already does)
     NSArray *running = DMCall(controller, @"runningApplications") ?: @[];
     BOOL iconLookupWorks = DMCall(DMCall(objc_getClass("SBIconController"), @"sharedInstance"), @"iconManager") != nil;
 
@@ -10829,17 +10892,18 @@ static NSArray *DMUserRunningApps(void) {
     for (SBApplication *app in running) {
         NSString *bid = [app bundleIdentifier];
         if (!bid) continue;
-        BOOL visible = iconLookupWorks ? DMHasHomeScreenIcon(bid) : !DMLooksLikeService(bid);
+        BOOL visible = (iconLookupWorks ? DMHasHomeScreenIcon(bid) : !DMLooksLikeService(bid)) && ![hidden containsObject:bid];
         [(visible ? keep : dropped) addObject:app];
     }
     [keep sortUsingComparator:^NSComparisonResult(SBApplication *a, SBApplication *b) {
         return [[a displayName] localizedCaseInsensitiveCompare:[b displayName]];
     }];
     NSMutableArray *k = [NSMutableArray array], *d = [NSMutableArray array];
+    NSUInteger hiddenN = 0;
     for (SBApplication *a in keep) [k addObject:[a bundleIdentifier]];
-    for (SBApplication *a in dropped) [d addObject:[a bundleIdentifier]];
-    DMLog([NSString stringWithFormat:@"[fqlist] %@ | filtered out (no Home Screen icon): %@ | icon lookup %@",
-           [k componentsJoinedByString:@", "], [d componentsJoinedByString:@", "],
+    for (SBApplication *a in dropped) { if ([hidden containsObject:[a bundleIdentifier]]) hiddenN++; else [d addObject:[a bundleIdentifier]]; }   // (hidden apps are not named, even in the debug log)
+    DMLog([NSString stringWithFormat:@"[fqlist] %@ | filtered out (no Home Screen icon): %@ | hidden with AppHider: %lu | icon lookup %@",
+           [k componentsJoinedByString:@", "], [d componentsJoinedByString:@", "], (unsigned long)hiddenN,
            iconLookupWorks ? @"used" : @"UNAVAILABLE, used name fallback"]);
     return keep;
 }
@@ -10951,6 +11015,7 @@ static const NSUInteger kListMaxRows = 7;
     NSString *bid = [app bundleIdentifier];
 
     row.iconView = [UIImageView new];
+    row.iconView.accessibilityIgnoresInvertColors = YES;   // (Smart Invert leaves pictures as they are, like Apple's own icons: 1.3.3, audit L-3)
     row.iconView.image = DMAppIcon(bid);
     row.iconView.backgroundColor = row.iconView.image ? nil : [UIColor tertiarySystemFillColor];
     row.iconView.layer.cornerRadius = 30.0 * 0.225;
@@ -11230,21 +11295,7 @@ static id DMMG(NSString *key) {
     return v ? CFBridgingRelease(v) : nil;
 }
 
-static NSString *DMPackageVersion(NSString *package) {
-    NSString *status = [NSString stringWithContentsOfFile:@"/var/jb/var/lib/dpkg/status"
-                                                 encoding:NSUTF8StringEncoding error:nil];
-    if (!status) return nil;
-    NSRange r = [status rangeOfString:[NSString stringWithFormat:@"Package: %@\n", package]];
-    if (r.location == NSNotFound) return nil;
-    NSRange endOfBlock = [status rangeOfString:@"\n\n" options:0
-                                         range:NSMakeRange(r.location, status.length - r.location)];
-    NSString *block = [status substringWithRange:NSMakeRange(r.location,
-        (endOfBlock.location == NSNotFound ? status.length : endOfBlock.location) - r.location)];
-    for (NSString *line in [block componentsSeparatedByString:@"\n"]) {
-        if ([line hasPrefix:@"Version: "]) return [line substringFromIndex:9];
-    }
-    return nil;
-}
+static NSString *DMPackageVersion(NSString *package) { return MSBDPackageVersion(package); }   // (dpkg's status file: read once per change, CrashExplain.h)
 
 static NSString *DMChipName(void) {
     switch ([DMMG(@"ChipID") intValue]) {      // 0x8103 = 33027; the iPads that run iPadOS 15/16 (the iPad 2 cross-test showed "Apple silicon" for its A9X)
@@ -11699,6 +11750,7 @@ static void DMShowAppAbout(UIView *host, SBApplication *app) {
     DMLog([NSString stringWithFormat:@"[appabout] %@: %lu rows, proxy %@", bid, (unsigned long)rows.count, proxy ? @"ok" : @"MISSING"]);
 
     UIImageView *icon = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, 72.0, 72.0)];
+    icon.accessibilityIgnoresInvertColors = YES;
     icon.image = DMAppIcon(bid);
     icon.backgroundColor = icon.image ? nil : [UIColor tertiarySystemFillColor];
     icon.layer.cornerRadius = 72.0 * 0.225;
@@ -11756,7 +11808,7 @@ static void DMOpenMenu(UIButton *btn) {
 
     // A newer MacStatusBar&Dock waiting in Sileo's or Zebra's downloaded package list: its own row, right under About This iPad, like a Mac's
     // "1 update" (nothing is fetched by us: common/UpdateCheck.h). Only while there is one.
-    NSString *installedVersion = MSBDPackageVersion(MSBD_PACKAGE_ID);
+    NSString *installedVersion = MSBDPackageVersionNoWait(MSBD_PACKAGE_ID);   // (never reads dpkg's status file here: cached, refreshed off the main thread)
 #if DEBUG
     {   // (debug /tmp/msb-fake-installed: the version written there counts as installed, to see the row without an older package)
         NSString *fake = [[NSString stringWithContentsOfFile:@"/tmp/msb-fake-installed" encoding:NSUTF8StringEncoding error:nil] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
@@ -11824,8 +11876,7 @@ static void DMOpenMenu(UIButton *btn) {
     UIView *panel = DMMakePanel(items);
     CGRect anchor = DMConvertToHost(fg, btn.frame, host);
     CGRect pf = panel.frame;
-    pf.origin = CGPointMake(MAX(6.0, anchor.origin.x + 4.0), CGRectGetMaxY(anchor) + 2.0);
-    if (host == gMenuRotator || host == gMenuWindow || DMIsExtMenuHost(host)) pf.origin.x = MAX(6.0, MIN(pf.origin.x, DMMenuHostWidth(host) - pf.size.width - 6.0));   // (a title near the right end: the menu stays on the screen, like macOS)
+    pf.origin = CGPointMake(DMMenuOriginX(fg, host, anchor, pf.size.width), CGRectGetMaxY(anchor) + 2.0);
     panel.frame = pf;
     [o addSubview:panel];
 
@@ -12710,8 +12761,7 @@ static void DMPresentMenu(UIButton *btn, const void *labelKey, const void *pillK
     UIView *panel = DMMakePanel(items);
     CGRect anchor = DMConvertToHost(fg, btn.frame, host);
     CGRect pf = panel.frame;
-    pf.origin = CGPointMake(MAX(6.0, anchor.origin.x + 4.0), CGRectGetMaxY(anchor) + 2.0);
-    if (host == gMenuRotator || host == gMenuWindow || DMIsExtMenuHost(host)) pf.origin.x = MAX(6.0, MIN(pf.origin.x, DMMenuHostWidth(host) - pf.size.width - 6.0));   // (a title near the right end: the menu stays on the screen, like macOS)
+    pf.origin = CGPointMake(DMMenuOriginX(fg, host, anchor, pf.size.width), CGRectGetMaxY(anchor) + 2.0);
     panel.frame = pf;
     [o addSubview:panel];
 
@@ -13985,7 +14035,16 @@ static void DMAudioSingleSourceUpdate(NSArray<NSString *> *playing, BOOL mixingJ
 // the saved-multiplier fallback added every bundle EVER given a slider position, with no check that the app was even still running --
 // "worth still showing even if quiet right now" was meant for a running-but-currently-paused app, not one closed entirely. Fixed by
 // intersecting with DMUserRunningApps() the same way the nowplaying check already does, instead of taking the saved-multiplier list as-is.
-static NSArray<NSString *> *DMAudioCandidateBundleIDs(void) {
+static NSArray<NSString *> *DMAudioCandidateBundleIDsAll(void);
+static NSArray<NSString *> *DMAudioCandidateBundleIDs(void) {   // (1.3.3, audit L-24: apps hidden with AppHider get no row of their own -- not named on screen)
+    NSArray<NSString *> *all = DMAudioCandidateBundleIDsAll();
+    NSSet *hidden = DMFinderHiddenApps();
+    if (!hidden.count) return all;
+    NSMutableArray *shown = [NSMutableArray array];
+    for (NSString *b in all) if (![hidden containsObject:b]) [shown addObject:b];
+    return shown;
+}
+static NSArray<NSString *> *DMAudioCandidateBundleIDsAll(void) {
     if (gAudioPlayingBundleIDs) return gAudioPlayingBundleIDs;   // the system's own list (see DMWatchAudioPlaying); below is the old guess, kept only as a fallback
     NSMutableOrderedSet<NSString *> *ids = [NSMutableOrderedSet orderedSet];
     NSArray<SBApplication *> *running = DMUserRunningApps();
@@ -14419,8 +14478,10 @@ static char kLightsInwardKey;
         objc_setAssociatedObject(self, &kLightsInwardKey, @(inward), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         green.glyph.image = [UIImage systemImageNamed:DMLightSymbolName(2, inward) withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:7.0 weight:UIImageSymbolWeightHeavy]];
     }
+    BOOL rtl = DMBarRTL(self);   // (a right-to-left language: mirrored, red nearest the logo at the right, like a Mac's window buttons then)
+    NSInteger shown = self.greenHidden ? 2 : 3;
     for (DMLightCell *c in self.cells) {
-        c.frame = CGRectMake(c.tag * kLightCell, 0, kLightCell, self.bounds.size.height);
+        c.frame = CGRectMake((rtl ? MAX(0, shown - 1 - c.tag) : c.tag) * kLightCell, 0, kLightCell, self.bounds.size.height);
         c.dot.center = CGPointMake(kLightCell / 2.0, self.dotCenterY);
         c.hidden = (c.tag == 2 && self.greenHidden);
         if (c.tag == 2) {   // greyed out and inert for a full-screen-only app (macOS shows a disabled green button the same way)
@@ -14523,28 +14584,33 @@ static void DMSBDiagFlush(void) {
     MSBDDiagWrite(@"StatusBar", t);
 }
 
-// The leading region container: a plain UIView in the left half of the foreground
-// view that holds _UIStatusBarStringViews (the time and date).
+// The leading region container: a plain UIView in the leading half of the foreground view (the left half; the right one in a right-to-left
+// language, DMBarRTL) that holds _UIStatusBarStringViews (the time and date).
 static UIView *DMLeadingContainer(UIView *fg) {
     Class stringView = DMSBClass("_UIStatusBarStringView");
+    BOOL rtl = DMBarRTL(fg);
+    CGFloat W = fg.bounds.size.width, bestLead = CGFLOAT_MAX;
     UIView *best = nil;
     for (UIView *v in fg.subviews) {
         if (![NSStringFromClass([v class]) isEqualToString:@"UIView"]) continue;
-        if (v.center.x >= fg.bounds.size.width / 2.0) continue;   // centre ignores transforms
+        CGFloat lead = rtl ? W - v.center.x : v.center.x;   // (its centre from the leading end; centre ignores transforms)
+        if (lead >= W / 2.0) continue;
         BOOL hasString = NO;
         for (UIView *s in v.subviews) if ([s isKindOfClass:stringView]) { hasString = YES; break; }
         if (!hasString) continue;
-        if (!best || v.center.x < best.center.x) best = v;
+        if (!best || lead < bestLead) { best = v; bestLead = lead; }
     }
     return best;
 }
 
+// (the string view nearest the leading end: the time; in a right-to-left language the rightmost)
 static UIView *DMFirstStringView(UIView *container) {
     Class stringView = DMSBClass("_UIStatusBarStringView");
+    BOOL rtl = DMBarRTL(container);
     UIView *first = nil;
     for (UIView *s in container.subviews) {
         if (![s isKindOfClass:stringView]) continue;
-        if (!first || s.center.x < first.center.x) first = s;
+        if (!first || (rtl ? s.center.x > first.center.x : s.center.x < first.center.x)) first = s;
     }
     return first;
 }
@@ -14555,25 +14621,29 @@ static UIView *DMFirstStringView(UIView *container) {
 static BOOL DMLooksLikeTime(NSString *t) {
     if (t.length == 0) return NO;
     if ([t containsString:@":"]) return YES;
-    static NSString *shortTime = nil;
-    static NSDate *stamp = nil;
-    if (!shortTime || [[NSDate date] timeIntervalSinceDate:stamp] > 30.0) {
+    // (time separators other than ":" -- Finnish "12.30", French Canadian "12 h 30": compared with the short time of this minute and the one before,
+    //  worked out again at every minute and region change; 1.3.3, audit L-7: a string kept for 30 s across a minute change missed the new time)
+    static NSString *shortTime = nil, *previous = nil; static long minute = -1; static unsigned gen = 0;
+    long nowMinute = (long)floor([[NSDate date] timeIntervalSince1970] / 60.0);
+    if (!shortTime || nowMinute != minute || gen != gDMLocaleGen) {
+        if (gen == gDMLocaleGen && nowMinute == minute + 1) previous = shortTime; else previous = nil;
         shortTime = [NSDateFormatter localizedStringFromDate:[NSDate date] dateStyle:NSDateFormatterNoStyle timeStyle:NSDateFormatterShortStyle];
-        stamp = [NSDate date];
+        minute = nowMinute; gen = gDMLocaleGen;
     }
-    return [t isEqualToString:shortTime];
+    return [t isEqualToString:shortTime] || (previous && [t isEqualToString:previous]);
 }
 
 static UIView *DMDateStringView(UIView *container) {
     Class stringView = DMSBClass("_UIStatusBarStringView");
     UIView *time = DMFirstStringView(container);
+    CGFloat dir = DMBarRTL(container) ? -1.0 : 1.0;   // (the one furthest toward the trailing end: the rightmost; the leftmost right-to-left)
     UIView *best = nil, *blank = nil;
     for (UIView *s in container.subviews) {
         if (![s isKindOfClass:stringView] || s == time) continue;
         NSString *text = ((UILabel *)s).text;
-        if (text.length == 0) { if (!blank || s.center.x > blank.center.x) blank = s; continue; }
+        if (text.length == 0) { if (!blank || dir * s.center.x > dir * blank.center.x) blank = s; continue; }
         if (DMLooksLikeTime(text)) continue;
-        if (!best || s.center.x > best.center.x) best = s;
+        if (!best || dir * s.center.x > dir * best.center.x) best = s;
     }
     return best ?: blank;
 }
@@ -14581,7 +14651,8 @@ static UIView *DMDateStringView(UIView *container) {
 
 // Creates (once) and lays out one menu title in the status bar: a label, a transparent tap button over it,
 // and a highlight pill for while its menu is open. Returns the title's right edge, or -1 if there is no room.
-static CGFloat DMLayoutTitle(UIView *fg, const void *labelKey, const void *buttonKey, const void *pillKey,
+// (x and maxRight in leading coordinates, DMBarRTL: in a right-to-left language the titles go left from the logo)
+static CGFloat DMLayoutTitle(UIView *fg, BOOL rtl, const void *labelKey, const void *buttonKey, const void *pillKey,
                              NSString *text, UIFontWeight weight, UIFont *baseFont, UIColor *color,
                              CGFloat centreY, CGFloat x, CGFloat maxRight, void (^onTap)(UIButton *)) {
     UILabel *label = objc_getAssociatedObject(fg, labelKey);
@@ -14613,13 +14684,25 @@ static CGFloat DMLayoutTitle(UIView *fg, const void *labelKey, const void *butto
     BOOL show = text.length && maxW >= 30.0;
     label.hidden = btn.hidden = !show;
     if (!show) { pill.hidden = YES; return -1.0; }
-    label.text = text;
-    label.font = [UIFont systemFontOfSize:baseFont.pointSize weight:weight];
-    if (color) label.textColor = color;
-    [label sizeToFit];
-    CGFloat w = MIN(label.bounds.size.width, maxW), h = label.bounds.size.height;
-    label.frame = CGRectMake(x, centreY + kTitleDrop - h / 2.0, w, h);
-    btn.frame = CGRectMake(x - 8.0, 0, w + 16.0, fg.bounds.size.height);
+    // (S-5, 1.3.3: the bar is laid out again many times while an app opens or closes -- the title's font, text and measured size are only made
+    //  again when they change; before, each pass made a font and measured every title)
+    static NSMutableDictionary<NSString *, UIFont *> *fonts; if (!fonts) fonts = [NSMutableDictionary dictionary];
+    NSString *fontKey = [NSString stringWithFormat:@"%.2f/%.2f", baseFont.pointSize, weight];
+    UIFont *font = fonts[fontKey];
+    if (!font) { font = [UIFont systemFontOfSize:baseFont.pointSize weight:weight]; if (font) fonts[fontKey] = font; }
+    static const void *kTitleSizeKey = &kTitleSizeKey;   // (the label's natural size for its current text and font)
+    NSValue *natural = objc_getAssociatedObject(label, kTitleSizeKey);
+    if (!natural || label.font != font || ![label.text isEqualToString:text]) {
+        if (![label.text isEqualToString:text]) label.text = text;
+        if (label.font != font) label.font = font;
+        [label sizeToFit];
+        natural = [NSValue valueWithCGSize:label.bounds.size];
+        objc_setAssociatedObject(label, kTitleSizeKey, natural, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (color && ![label.textColor isEqual:color]) label.textColor = color;
+    CGFloat w = MIN(natural.CGSizeValue.width, maxW), h = natural.CGSizeValue.height;
+    label.frame = DMBarRect(fg, rtl, CGRectMake(x, centreY + kTitleDrop - h / 2.0, w, h));
+    btn.frame = DMBarRect(fg, rtl, CGRectMake(x - 8.0, 0, w + 16.0, fg.bounds.size.height));
     pill.frame = CGRectInset(btn.frame, 3.0, 3.0);
     [fg bringSubviewToFront:label];
     [fg bringSubviewToFront:btn];
@@ -14713,12 +14796,14 @@ static void DMApplyBackground(UIView *fg, UIColor *textColor) {
     if (bg.superview != bar || (fi != NSNotFound && (fi == 0 || subs[fi - 1] != bg))) [bar insertSubview:bg belowSubview:fg];
 }
 
-// The trailing region container: a plain UIView in the right half holding the status icons.
+// The trailing region container: a plain UIView in the trailing half (the right half; the left one in a right-to-left language) holding the status icons.
 static UIView *DMTrailingContainer(UIView *fg) {
+    BOOL rtl = DMBarRTL(fg);
+    CGFloat W = fg.bounds.size.width;
     UIView *best = nil;
     for (UIView *v in fg.subviews) {
         if (![NSStringFromClass([v class]) isEqualToString:@"UIView"]) continue;
-        if (v.center.x <= fg.bounds.size.width / 2.0) continue;
+        if ((rtl ? W - v.center.x : v.center.x) <= W / 2.0) continue;
         if (v.subviews.count == 0) continue;
         if (!best || v.subviews.count > best.subviews.count) best = v;
     }
@@ -15068,6 +15153,7 @@ static DMTNRow *DMTNMakeRow(id r, CGFloat W) {
     [row addSubview:slide]; row.slide = slide;
     CGFloat x0 = kTNPad + kTNIcon + 10.0, tw = W - x0 - kTNPad, y = 10.0;
     UIImageView *iv = [[UIImageView alloc] initWithFrame:CGRectMake(kTNPad, 11.0, kTNIcon, kTNIcon)];
+    iv.accessibilityIgnoresInvertColors = YES;
     iv.image = icon; iv.contentMode = UIViewContentModeScaleAspectFit; iv.layer.cornerRadius = 7.0; iv.layer.cornerCurve = kCACornerCurveContinuous; iv.clipsToBounds = YES;
     [slide addSubview:iv];
     UILabel *tl = DMTNLabel(12, UIFontWeightRegular, [UIColor secondaryLabelColor]); tl.text = DMTNAgo(row.date); [tl sizeToFit];
@@ -15804,6 +15890,7 @@ static BOOL DMOpenTodayPanel(UIButton *clockBtn) {
     if (DMIsExtMenuHost(host)) dockTop = host.bounds.size.height - 96.0;   // (on an external display: that display's height, not the iPad's Dock)
     CGFloat maxH = MIN(dockTop - top - 10.0, host.bounds.size.height * 0.72);   // (clear of the Dock, with a margin; a bit smaller than all the room: the owner)
     CGFloat x = MIN(CGRectGetMaxX(anchor) + 4.0, host.bounds.size.width - 6.0) - W;
+    if (DMBarRTL(fg)) x = MIN(anchor.origin.x - 4.0, host.bounds.size.width - 6.0 - W);   // (a right-to-left language: the clock is at the left end, the panel hangs from its left edge)
     UIView *panel = [[DMTouchSinkView alloc] initWithFrame:CGRectMake(MAX(6.0, x), top, W, maxH)];
     panel.layer.shadowColor = [[UIColor blackColor] CGColor]; panel.layer.shadowOpacity = 0.35; panel.layer.shadowRadius = 16.0; panel.layer.shadowOffset = CGSizeMake(0, 8);
     // The look of our Control Center panel: its thin dark blur with a dark tint in Dark Mode (light in Light Mode), 14 pt corners, a hairline
@@ -15914,7 +16001,8 @@ static BOOL DMOpenTodayPanel(UIButton *clockBtn) {
             // clips it: the column then sits in the panel with the inset on both sides)
             CGFloat colX = [widgets.superview convertPoint:widgets.frame.origin toView:v].x;
             CGRect pf = panel.frame; CGFloat right = CGRectGetMaxX(pf);
-            pf.size.width = colW + 2.0 * inset; pf.origin.x = MAX(6.0, right - pf.size.width);
+            pf.size.width = colW + 2.0 * inset;
+            if (!DMBarRTL(fg)) pf.origin.x = MAX(6.0, right - pf.size.width);   // (it hangs from the clock: its right edge stays; right-to-left the clock is at the left end and the left edge stays)
             v.autoresizingMask = UIViewAutoresizingFlexibleHeight;
             panel.frame = pf;
             CGRect vf = v.frame; vf.origin.x = inset - colX; v.frame = vf;
@@ -16283,10 +16371,11 @@ static void DMPrefsChanged(CFNotificationCenterRef c, void *o, CFNotificationNam
 static NSString *DMTimeString(void) {
     static NSDateFormatter *formatter = nil;
     static NSString *format = nil;
-    // (perf: working the format out from the template is the slow part; it is done again only when the seconds setting changes, or once a
-    // minute for a changed region / 12-24 hour setting)
-    static NSString *want = nil; static BOOL wantSeconds = NO; static CFTimeInterval wantAt = -100;
-    if (!want || wantSeconds != gShowSeconds || CACurrentMediaTime() - wantAt > 60.0) {
+    // (perf: working the format out from the template is the slow part; it is done again only when the seconds setting changes or the region /
+    // 12-24 hour setting does -- 1.3.3, audit L-8: that took up to a minute before -- and once a minute as a backstop)
+    static NSString *want = nil; static BOOL wantSeconds = NO; static CFTimeInterval wantAt = -100; static unsigned wantGen = 0;
+    if (!want || wantSeconds != gShowSeconds || wantGen != gDMLocaleGen || CACurrentMediaTime() - wantAt > 60.0) {
+        wantGen = gDMLocaleGen;
         want = [NSDateFormatter dateFormatFromTemplate:(gShowSeconds ? @"jmmss" : @"jmm") options:0 locale:[NSLocale autoupdatingCurrentLocale]];
         wantSeconds = gShowSeconds; wantAt = CACurrentMediaTime();
     }
@@ -16463,12 +16552,15 @@ static void DMRinger18Init(void) {
 // their right) close up to the right edge, with the same spacing as elsewhere. Going back (unlocking) the icons slide back left as the clock returns.
 // (The earlier time stand-in, DMShowTimeProxy, is no longer shown: it needed the time's place seen before in the same status bar copy, and the
 // Lock Screen's copy had never had one, so on the M1 it never appeared.)
-static void DMLayoutWithoutClock(UIView *fg) {
+// Returns whether it laid the copy out (a copy with no status icons region is left alone). (x in leading coordinates, DMBarRTL: in a right-to-left
+// language the icons close up to the left edge, ours on their right.)
+static BOOL DMLayoutWithoutClock(UIView *fg) {
     DMShowTimeProxy(fg, NO);
     ((UIView *)objc_getAssociatedObject(fg, kDateProxyKey)).hidden = YES;
     ((UIView *)objc_getAssociatedObject(fg, kClockButtonKey)).hidden = YES;
     UIView *trailing = DMTrailingContainer(fg);
-    if (!trailing) return;
+    if (!trailing) return NO;
+    BOOL rtl = DMBarRTL(fg);
     UIImageView *spotIcon = objc_getAssociatedObject(fg, kSpotIconKey);
     UIButton *spotBtn = objc_getAssociatedObject(fg, kSpotButtonKey);
     CGFloat shift = 0.0;
@@ -16482,14 +16574,14 @@ static void DMLayoutWithoutClock(UIView *fg) {
     __block CGFloat left = CGFLOAT_MAX;
     for (UIView *sub in trailing.subviews) {
         if (sub.hidden || sub.alpha < 0.05 || sub.bounds.size.width < 1.0) continue;
-        left = MIN(left, [trailing convertRect:sub.frame toView:fg].origin.x - trailing.transform.tx + shift);
+        left = MIN(left, DMBarLead(fg, rtl, CGRectOffset([trailing convertRect:sub.frame toView:fg], -trailing.transform.tx, 0)) + shift);   // (where it is with the shift below)
     }
     // our own icons (VPN, then later SSH) keep their size and height and only move along to close up; the VPN icon sits nearest the status icons
     void (^closeUp)(const void *, const void *) = ^(const void *iconKey, const void *btnKey) {
         UIView *icon = objc_getAssociatedObject(fg, iconKey), *btn = objc_getAssociatedObject(fg, btnKey);
         if (left == CGFLOAT_MAX || !icon || icon.hidden) return;
-        CGRect f = icon.frame; left -= 8.0 + f.size.width; f.origin.x = left; icon.frame = f;
-        CGRect b = btn.frame; b.origin.x = left - 6.0; btn.frame = b;
+        CGRect f = DMBarRect(fg, rtl, icon.frame); left -= 8.0 + f.size.width; f.origin.x = left; icon.frame = DMBarRect(fg, rtl, f);
+        CGRect b = DMBarRect(fg, rtl, btn.frame); b.origin.x = left - 6.0; btn.frame = DMBarRect(fg, rtl, b);
     };
     DMWiFiRefreshIcon(fg, DMTrailingIconColor(trailing));
     closeUp(kWiFiIconKey, kWiFiButtonKey);   // (the Wi-Fi icon nearest the status icons, as elsewhere)
@@ -16505,15 +16597,16 @@ static void DMLayoutWithoutClock(UIView *fg) {
             CGFloat w = ceil(muteIcon.image.size.width), h = ceil(muteIcon.image.size.height);
             left -= 8.0 + w;
             CGFloat midY = [trailing convertPoint:CGPointMake(0, CGRectGetMidY(trailing.bounds)) toView:fg].y;
-            muteIcon.frame = CGRectMake(left, round(midY - h / 2.0), w, h);
+            muteIcon.frame = DMBarRect(fg, rtl, CGRectMake(left, round(midY - h / 2.0), w, h));
             [fg bringSubviewToFront:muteIcon];
         }
     }
     closeUp(kSSHIconKey, kSSHButtonKey);
-    if (fabs(trailing.transform.tx - shift) < 0.5) return;
+    if (fabs(DMBarShiftOf(rtl, trailing.transform) - shift) < 0.5) return YES;
     BOOL onScreen = fg.window && !fg.window.hidden;
-    void (^apply)(void) = ^{ trailing.transform = CGAffineTransformMakeTranslation(shift, 0); };
+    void (^apply)(void) = ^{ trailing.transform = DMBarShift(rtl, shift); };
     if (onScreen) [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionBeginFromCurrentState animations:apply completion:nil]; else apply();
+    return YES;
 }
 static BOOL DMIsTimeLabel(UIView *v) {
     UIView *container = v.superview;
@@ -16527,31 +16620,58 @@ static BOOL DMIsTimeLabel(UIView *v) {
 // shows (after a respring the copy could otherwise sit there for seconds until a retry found it). A safety release makes sure a copy
 // our layout cannot handle is never left invisible.
 static void DMHoldSafetyCheck(UIView *fg, int checks);
+static const void *kHoldGaveUpKey = &kHoldGaveUpKey;      // (the safety release let this copy go: never held again, see DMHoldSafetyCheck)
+static const void *kNoClockLayoutKey = &kNoClockLayoutKey;  // (our Lock Screen layout -- no clock, the icons closed up -- is on this copy)
+// While a copy is held, the opacity iOS asks for is remembered and given back on release, so the hold only delays iOS's choice and never overrides
+// it (1.3.3: with plain Stage Manager and Windowing off, iPadOS hides SpringBoard's bar while a window fills the screen and the app's own bar in the
+// window becomes the top bar; a release that always set 1.0 could show a bar iOS had hidden, or keep one invisible).
+static const void *kHoldWantAlphaKey = &kHoldWantAlphaKey;
+static BOOL gDMHoldOwnAlpha = NO;   // (our own setAlpha: of the hold itself -- not iOS's wish)
 static void DMHoldStatusBarCopy(UIView *fg) {
-    if (objc_getAssociatedObject(fg, kLogoKey) || objc_getAssociatedObject(fg, kHoldKey)) return;   // already ours, or already held
+    if (objc_getAssociatedObject(fg, kLogoKey) || objc_getAssociatedObject(fg, kHoldKey) || objc_getAssociatedObject(fg, kHoldGaveUpKey)) return;   // already ours, already held, or given up on
+    // (iOS's choice when the hold starts -- unless the copy is a Stage Manager window card's, whose opacity is ours: setAlpha: below; then iOS's
+    //  last word is not known and 1.0 is kept, as before)
+    BOOL oursNow = DMSMEngine() && [NSStringFromClass([fg.window class]) isEqualToString:@"SBMainSwitcherWindow"] && !DMSMInFullScreenCard(fg);
+    objc_setAssociatedObject(fg, kHoldWantAlphaKey, @(oursNow ? 1.0 : fg.alpha), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(fg, kHoldKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    fg.alpha = 0.0;
+    gDMHoldOwnAlpha = YES; fg.alpha = 0.0; gDMHoldOwnAlpha = NO;
     DMHoldSafetyCheck(fg, 0);
 }
+// iOS has filled this copy with its text items (the time, the date, the battery percentage), whichever region they are in and whatever our layout
+// makes of them. (Not our own clock lookup: before 1.3.3 the check used the same lookup that had failed -- with a right-to-left language it found
+// no clock and kept each new copy invisible for 30 s.)
+static BOOL DMCopyHasStockText(UIView *fg) {
+    Class stringView = DMSBClass("_UIStatusBarStringView");
+    for (UIView *region in fg.subviews) {
+        if (![NSStringFromClass([region class]) isEqualToString:@"UIView"]) continue;
+        for (UIView *s in region.subviews) if ([s isKindOfClass:stringView] && s.bounds.size.width > 0.5) return YES;
+    }
+    return NO;
+}
 // An empty copy (SpringBoard fills the real bar seconds after launch) has nothing to flash, so it is simply kept hidden. Only when the
-// stock items exist but our layout still cannot attach (or after a long time) is the copy released, so it can never stay invisible.
+// stock items exist but our layout still cannot attach (or after a long time) is the copy released, so it can never stay invisible; such a copy
+// is then left to iOS for good (each app opening or closing moves a copy to another window: holding it again there hid the bar each time).
 static void DMHoldSafetyCheck(UIView *fg, int checks) {
     __weak UIView *weakFg = fg;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UIView *v = weakFg;
         if (!v || ![objc_getAssociatedObject(v, kHoldKey) boolValue]) return;
-        UIView *container = DMLeadingContainer(v);
-        BOOL hasItems = container && DMFirstStringView(container);
+        BOOL hasItems = DMCopyHasStockText(v);
         if ((hasItems && checks >= 1) || checks >= 30) {
-            DMLog([NSString stringWithFormat:@"[hold] safety release: a status bar copy was not attached (%@)", hasItems ? @"its items exist but the layout would not attach" : @"still empty after 30 s"]);
+            DMLog([NSString stringWithFormat:@"[hold] safety release: a status bar copy was not attached (%@); left to iOS from now on", hasItems ? @"its items exist but the layout would not attach" : @"still empty after 30 s"]);
+            DMSBDiagStep(@"z-hold-gave-up");
+            objc_setAssociatedObject(v, kHoldGaveUpKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             DMReleaseStatusBarCopy(v);
         } else DMHoldSafetyCheck(v, checks + 1);
     });
 }
 static void DMReleaseStatusBarCopy(UIView *fg) {
     if (![objc_getAssociatedObject(fg, kHoldKey) boolValue]) return;
+    NSNumber *want = objc_getAssociatedObject(fg, kHoldWantAlphaKey);
     objc_setAssociatedObject(fg, kHoldKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    fg.alpha = 1.0;
+    objc_setAssociatedObject(fg, kHoldWantAlphaKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    fg.alpha = want ? want.doubleValue : 1.0;   // (the opacity iOS last asked for while it was held)
+    if (want && want.doubleValue < 0.99) DMLog([NSString stringWithFormat:@"[hold] released at the opacity iOS asked for: %.2f (%@)", want.doubleValue, NSStringFromClass([fg.window class])]);
     {   // (now ours: iOS's items are asked again, after this layout pass -- the VPN badge, the activity spinner and the background-activity pill
         //  that were already showing; a copy made during a FaceTime call kept the full capsule, logic test 1.2.3)
         __weak UIView *weakFg = fg;
@@ -16718,7 +16838,10 @@ static void DMStockVPNInit(void) {
 
 - (void)setAlpha:(CGFloat)a {
     if (((UIView *)self).alpha != a) DMWatchLog(@"_UIStatusBarForegroundView setAlpha", self, a);
-    if ([objc_getAssociatedObject(self, kHoldKey) boolValue]) a = 0.0;   // still being set up: the stock bar must not show
+    if ([objc_getAssociatedObject(self, kHoldKey) boolValue]) {   // still being set up: the stock bar must not show -- iOS's wish is kept for the release
+        if (!gDMHoldOwnAlpha) objc_setAssociatedObject(self, kHoldWantAlphaKey, @(a), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        a = 0.0;
+    }
     if (DMSMEngine() && [NSStringFromClass([((UIView *)self).window class]) isEqualToString:@"SBMainSwitcherWindow"] && !DMSMInFullScreenCard((UIView *)self)) a = 0.0;   // (Stage Manager engine: no menu bar inside a window card unless it is full screen, see dm_layoutLogo)
     %orig(a);
 }
@@ -16736,8 +16859,10 @@ static void DMStockVPNInit(void) {
     %orig;
     CFTimeInterval began = CACurrentMediaTime();
     DMHoldStatusBarCopy((UIView *)self);
+    DMSnapBegin();   // (S-1: one look at the windows, stages and front window for the whole pass, as in the watchers' ticks)
     [self dm_layoutLogo];
-    if (objc_getAssociatedObject(self, kLogoKey)) DMReleaseStatusBarCopy((UIView *)self);
+    DMSnapEnd();
+    if (objc_getAssociatedObject(self, kLogoKey) || objc_getAssociatedObject(self, kNoClockLayoutKey)) DMReleaseStatusBarCopy((UIView *)self);
     double ms = (CACurrentMediaTime() - began) * 1000.0;
     if (DMPerfOn()) {   // (perf summary: the whole status bar layout pass, the system's part included)
         DMPerfSlot *ps = DMPerfSlotFor("barlayout"); double all = (CACurrentMediaTime() - origBegan) * 1000.0;
@@ -16755,7 +16880,7 @@ static void DMStockVPNInit(void) {
     // (A window in native full screen is the exception: SpringBoard then fades the main bar out and this strip IS the top bar -- it gets our menu
     //  bar with the traffic lights, whose green takes it back to a window, as with every engine.)
     if (DMSMEngine() && [NSStringFromClass([fg.window class]) isEqualToString:@"SBMainSwitcherWindow"] && !DMSMInFullScreenCard(fg)) {
-        if (fg.alpha > 0.0) fg.alpha = 0.0;
+        if (fg.alpha > 0.0) { gDMHoldOwnAlpha = YES; fg.alpha = 0.0; gDMHoldOwnAlpha = NO; }   // (ours, not iOS's wish: a hold keeps iOS's own)
         return;
     }
     // While a status bar copy is being created (e.g. when an app opens) it can briefly be
@@ -16771,9 +16896,27 @@ static void DMStockVPNInit(void) {
     }
     UIView *container = DMLeadingContainer(fg);
     UIView *timeLabel = container ? DMFirstStringView(container) : nil;
-    if (!container || !timeLabel) { DMSBDiagStep(container ? @"c-no-time-label" : @"c-no-leading-region"); DMLayoutWithoutClock(fg); return; }   // (the Lock Screen / Cover Sheet drop the time and date: the icons close up)
+    if (!container || !timeLabel) {   // (the Lock Screen / Cover Sheet drop the time and date: the icons close up)
+        DMSBDiagStep(container ? @"c-no-time-label" : @"c-no-leading-region");
+        // That layout is ours too: on the Lock Screen or the Cover Sheet the copy is released as soon as it is applied, like a copy with the clock
+        // (it waited for a clock that never comes there). Anywhere else a copy without a clock is one still being built: held as before.
+        BOOL lockedNow = !(DMNewOS() && DMStarting()) && (DMLockUp(DMSBManager("SBLockScreenManager")) || DMCoverSheetShown());
+        BOOL laidOut = DMLayoutWithoutClock(fg);
+        objc_setAssociatedObject(fg, kNoClockLayoutKey, (laidOut && lockedNow) ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return;
+    }
+    objc_setAssociatedObject(fg, kNoClockLayoutKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     UIView *trailing = DMTrailingContainer(fg);
     DMSBDiagStep(trailing ? @"d-regions-found" : @"d-no-trailing-region");
+    // Every x below is in leading coordinates (DMBarRTL: from the left in English, from the right in a right-to-left language, where the bar is
+    // laid out as a Mac's menu bar is then: the Apple menu at the right end, the clock at the left end); frames go through DMBarRect.
+    BOOL rtl = DMBarRTL(fg);
+    if (rtl) { DMSBDiagStep(@"e-right-to-left"); DM_FEATURE_MARK("statusbar-rtl"); }
+    // (right-to-left: the time sits at the time region's right end, so where it is depends on the region's width. When the iPad turns, this pass
+    //  runs as the region takes its new width but before the region has moved its labels for it; the time's shift was measured from where it had
+    //  been and put it past the region's edge, and iOS then dropped the time and the date for good -- portrait to landscape in Hebrew, iPad 2
+    //  16.7.7, 4 Oct. The region lays its labels out first. Left-to-right the time is at the region's left end, whatever its width.)
+    if (rtl) [container layoutIfNeeded];
     DMShowTimeProxy(fg, NO);
     UIView *dateLabel = DMDateStringView(container);
     {   // A spare time label (iOS's short-format time item) left visible next to our clock: hidden. It showed after an app was opened from a link out of a
@@ -16827,19 +16970,20 @@ static void DMStockVPNInit(void) {
     DMApplyBackground(fg, timeColor);
     [logo sizeToFit];
 
-    // Untransformed left edge of the leading container (centre/bounds ignore transforms).
-    CGFloat baseLeft = container.center.x - container.bounds.size.width / 2.0;
+    // Untransformed leading edge of the leading container (centre/bounds ignore transforms), from the leading end.
+    CGFloat baseLeft = DMBarLead(fg, rtl, DMBarUntransformed(container));
     CGPoint timeCentre = [timeLabel.superview convertPoint:timeLabel.center toView:fg];   // only y is used
+    CGRect lf;   // the logo, in leading coordinates
     if (measured) {
         // baseline sits `ascender` below the top of the label; the ink spans minY..maxY around the baseline
         CGFloat scale = logoSize / 100.0;
         CGFloat inkMid = (ink100.origin.y + ink100.size.height / 2.0) * scale;
         CGFloat inkMidFromTop = logo.font.ascender - inkMid;
-        logo.frame = CGRectMake(baseLeft, fg.bounds.size.height / 2.0 - inkMidFromTop,
-                                logo.bounds.size.width, logo.bounds.size.height);
+        lf = CGRectMake(baseLeft, fg.bounds.size.height / 2.0 - inkMidFromTop, logo.bounds.size.width, logo.bounds.size.height);
     } else {
-        logo.center = CGPointMake(baseLeft + logo.bounds.size.width / 2.0, timeCentre.y);
+        lf = CGRectMake(baseLeft, timeCentre.y - logo.bounds.size.height / 2.0, logo.bounds.size.width, logo.bounds.size.height);
     }
+    logo.frame = DMBarRect(fg, rtl, lf);
     logo.hidden = NO;
     [fg bringSubviewToFront:logo];
 
@@ -16864,8 +17008,7 @@ static void DMStockVPNInit(void) {
         objc_setAssociatedObject(fg, kButtonKey, btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     btn.hidden = NO;
-    CGRect lf = logo.frame;
-    btn.frame = CGRectMake(MAX(0.0, lf.origin.x - kLogoHitSlop), 0, lf.size.width + 2.0 * kLogoHitSlop, fg.bounds.size.height);
+    btn.frame = DMBarRect(fg, rtl, CGRectMake(MAX(0.0, lf.origin.x - kLogoHitSlop), 0, lf.size.width + 2.0 * kLogoHitSlop, fg.bounds.size.height));
     UIView *pillView = objc_getAssociatedObject(fg, kPillKey);
     pillView.frame = CGRectInset(btn.frame, 3.0, 3.0);
     [fg bringSubviewToFront:btn];
@@ -16879,8 +17022,9 @@ static void DMStockVPNInit(void) {
     NSString *appName = frontApp ? ([frontApp displayName] ?: [frontApp bundleIdentifier]) : (DMNativeActiveAppName() ?: @"Finder");
 
     // ---- traffic lights, right after the logo, while an app is full screen; the titles move right to make room ----
-    CGFloat titlesStart = CGRectGetMaxX(logo.frame) + kAppGap;
+    CGFloat titlesStart = CGRectGetMaxX(lf) + kAppGap;
     DMLights *lights = objc_getAssociatedObject(fg, kLightsKey);
+    CGRect lightsL = CGRectZero;   // (the traffic lights, in leading coordinates)
     // Locked (the Lock Screen, or the Cover Sheet pulled down): only the Apple menu on the left and the status icons with Control Center on the right --
     // no traffic lights and no menu titles, whatever app was in front, windowed or full screen (2026-09-26: an app's lights stayed on the Lock Screen).
     BOOL earlyOnNewOS = DMNewOS() && DMStarting();   // (issue #1: not asked while starting)
@@ -16901,19 +17045,20 @@ static void DMStockVPNInit(void) {
         BOOL noWindows = DMActiveEngine() == DMEngineNone && !DMSMEngine();
         lights.greenHidden = noWindows;
         lights.greenDisabled = DMAppNeedsFullScreen([frontApp bundleIdentifier]);
-        lights.frame = CGRectMake(CGRectGetMaxX(logo.frame) + kAppGap - 4.0, 0, kLightCell * (noWindows ? 2.0 : 3.0), fg.bounds.size.height);
+        lightsL = CGRectMake(CGRectGetMaxX(lf) + kAppGap - 4.0, 0, kLightCell * (noWindows ? 2.0 : 3.0), fg.bounds.size.height);
+        lights.frame = DMBarRect(fg, rtl, lightsL);
         lights.hidden = NO;
         gStatusLightsFrame = lights.frame; gStatusLightsDotY = lights.dotCenterY; gStatusLightsTime = CACurrentMediaTime();
         [lights setNeedsLayout];
         [fg bringSubviewToFront:lights];
-        titlesStart = CGRectGetMaxX(lights.frame) - 4.0 + kAppGap;   // 4 pt of each end cell is empty padding
+        titlesStart = CGRectGetMaxX(lightsL) - 4.0 + kAppGap;   // 4 pt of each end cell is empty padding
     } else {
         lights.hidden = YES;
     }
 
     CGFloat titleMaxRight = locked ? 0.0 : fg.bounds.size.width / 2.0 - 24.0;   // stay in the left half (locked: no room, so every title hides)
-    CGFloat leftEnd = wantLights ? CGRectGetMaxX(lights.frame) - 4.0 : CGRectGetMaxX(logo.frame);
-    CGFloat appRight = DMLayoutTitle(fg, kAppLabelKey, kAppButtonKey, kAppPillKey, appName, UIFontWeightBold, timeFont, timeColor,
+    CGFloat leftEnd = wantLights ? CGRectGetMaxX(lightsL) - 4.0 : CGRectGetMaxX(lf);
+    CGFloat appRight = DMLayoutTitle(fg, rtl, kAppLabelKey, kAppButtonKey, kAppPillKey, appName, UIFontWeightBold, timeFont, timeColor,
                                      timeCentre.y, titlesStart, titleMaxRight,
                                      ^(UIButton *b) { DMLog(@"[appbutton] tapped"); DMOpenAppMenu(b); });
     BOOL finderTitles = DMNativeActiveApp() != nil && appRight > 0;   // (our Finder in front: File and View too, like a Mac's Finder)
@@ -16923,28 +17068,28 @@ static void DMStockVPNInit(void) {
         leftEnd = appRight;
         CGFloat editStart = appRight + kTitleGap;
         if (finderTitles) {
-            CGFloat fileRight = DMLayoutTitle(fg, kFileLabelKey, kFileButtonKey, kFilePillKey, @"File", UIFontWeightRegular, timeFont, timeColor,
+            CGFloat fileRight = DMLayoutTitle(fg, rtl, kFileLabelKey, kFileButtonKey, kFilePillKey, @"File", UIFontWeightRegular, timeFont, timeColor,
                                               timeCentre.y, appRight + kTitleGap, titleMaxRight, ^(UIButton *b) { DMOpenFinderFileMenu(b); });
             if (fileRight > 0) editStart = fileRight + kTitleGap;
         }
-        CGFloat editRight = DMLayoutTitle(fg, kEditLabelKey, kEditButtonKey, kEditPillKey, @"Edit", UIFontWeightRegular, timeFont, timeColor,
+        CGFloat editRight = DMLayoutTitle(fg, rtl, kEditLabelKey, kEditButtonKey, kEditPillKey, @"Edit", UIFontWeightRegular, timeFont, timeColor,
                                           timeCentre.y, editStart, titleMaxRight,
                                           ^(UIButton *b) { DMLog(@"[editbutton] tapped"); DMOpenEditMenu(b); });
         if (editRight > 0 && finderTitles) {
-            CGFloat viewRight = DMLayoutTitle(fg, kViewLabelKey, kViewButtonKey, kViewPillKey, @"View", UIFontWeightRegular, timeFont, timeColor,
+            CGFloat viewRight = DMLayoutTitle(fg, rtl, kViewLabelKey, kViewButtonKey, kViewPillKey, @"View", UIFontWeightRegular, timeFont, timeColor,
                                               timeCentre.y, editRight + kTitleGap, titleMaxRight, ^(UIButton *b) { DMOpenFinderViewMenu(b); });
             if (viewRight > 0) editRight = viewRight;
         }
         if (editRight > 0) {
             leftEnd = editRight;
-            CGFloat goRight = DMLayoutTitle(fg, kGoLabelKey, kGoButtonKey, kGoPillKey, @"Go", UIFontWeightRegular, timeFont, timeColor,
+            CGFloat goRight = DMLayoutTitle(fg, rtl, kGoLabelKey, kGoButtonKey, kGoPillKey, @"Go", UIFontWeightRegular, timeFont, timeColor,
                                             timeCentre.y, editRight + kTitleGap, titleMaxRight,
                                             ^(UIButton *b) { DMLog(@"[gobutton] tapped"); DMOpenGoMenu(b); });
             if (goRight > 0) {
                 leftEnd = goRight;
                 CGFloat audioStart = goRight + kTitleGap;   // Window is only shown while windowing is active; Audio always follows whichever of the two actually laid out
                 if (DMActiveEngine() != DMEngineNone || DMSMEngine() || DMNativeActiveApp()) {   // (Stage Manager as the engine is windowing too, with no engine library; our native windows always are)
-                    CGFloat winRight = DMLayoutTitle(fg, kWinLabelKey, kWinButtonKey, kWinPillKey, @"Window", UIFontWeightRegular, timeFont, timeColor,
+                    CGFloat winRight = DMLayoutTitle(fg, rtl, kWinLabelKey, kWinButtonKey, kWinPillKey, @"Window", UIFontWeightRegular, timeFont, timeColor,
                                                      timeCentre.y, goRight + kTitleGap, titleMaxRight,
                                                      ^(UIButton *b) { DMLog(@"[winbutton] tapped"); DMOpenWindowMenu(b); });
                     if (winRight > 0) { leftEnd = winRight; audioStart = winRight + kTitleGap; }
@@ -16953,7 +17098,7 @@ static void DMStockVPNInit(void) {
                     ((UIView *)objc_getAssociatedObject(fg, kWinButtonKey)).hidden = YES;
                 }
                 if (gAudioTabShown) {   // only while some app is playing audio (see DMWatchAudioPlaying)
-                    CGFloat audioRight = DMLayoutTitle(fg, kAudioLabelKey, kAudioButtonKey, kAudioPillKey, @"Audio", UIFontWeightRegular, timeFont, timeColor,
+                    CGFloat audioRight = DMLayoutTitle(fg, rtl, kAudioLabelKey, kAudioButtonKey, kAudioPillKey, @"Audio", UIFontWeightRegular, timeFont, timeColor,
                                                        timeCentre.y, audioStart, titleMaxRight,
                                                        ^(UIButton *b) { DMLog(@"[audiobutton] tapped"); DMOpenAudioMenu(b); });
                     if (audioRight > 0) leftEnd = audioRight;
@@ -17018,15 +17163,14 @@ static void DMStockVPNInit(void) {
     CGFloat tw = DMLabelShown(timeLabel) ? timeLabel.bounds.size.width : 0.0;
     CGFloat dw = needProxy ? proxyW : (DMLabelShown(dateLabel) ? dateLabel.bounds.size.width : 0.0);
     CGFloat clockW = tw + dw + ((tw > 0 && dw > 0) ? kClockGap : 0.0);
-    CGFloat rightEdge = trailing ? (trailing.center.x + trailing.bounds.size.width / 2.0)
+    CGFloat rightEdge = trailing ? DMBarTrail(fg, rtl, DMBarUntransformed(trailing))   // (the trailing end of the status icons, before any shift)
                                  : (fg.bounds.size.width - baseLeft);
     CGFloat clockLeft = rightEdge - clockW;
     UIView *prevLead = objc_getAssociatedObject(fg, kShiftedKey);
     if (prevLead && prevLead != container) prevLead.transform = CGAffineTransformIdentity;
     objc_setAssociatedObject(fg, kShiftedKey, container, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     // container's left edge at the clock's left edge; with no clock, park it after the app name
-    container.transform = CGAffineTransformMakeTranslation(
-        (clockW > 0 ? clockLeft : leftEnd + kLeftGroupGap) - baseLeft, 0);
+    container.transform = DMBarShift(rtl, (clockW > 0 ? clockLeft : leftEnd + kLeftGroupGap) - baseLeft);
     // ---- Spotlight search icon, between the status icons and the clock ----
     UIImageView *spotIcon = objc_getAssociatedObject(fg, kSpotIconKey);
     UIButton *spotBtn = objc_getAssociatedObject(fg, kSpotButtonKey);
@@ -17060,19 +17204,19 @@ static void DMStockVPNInit(void) {
     CGFloat clockEdge = clockLeft;
     for (UIView *extra in container.subviews) {
         if (extra == timeLabel || extra == dateLabel || extra.hidden || extra.alpha < 0.05 || extra.bounds.size.width < 1.0) continue;
-        clockEdge = MIN(clockEdge, [container convertRect:extra.frame toView:fg].origin.x);
+        clockEdge = MIN(clockEdge, DMBarLead(fg, rtl, [container convertRect:extra.frame toView:fg]));
     }
     CGFloat spotLeft = clockEdge - kSpotClockGap - spotW;   // with the icon off, the status icons end right before the clock instead
     if (gShowSpotlight) {
-        spotIcon.frame = CGRectMake(spotLeft, timeCentre.y - spotH / 2.0, spotW, spotH);
-        spotBtn.frame = CGRectMake(spotLeft - kSpotHitSlop, 0, spotW + 2.0 * kSpotHitSlop, fg.bounds.size.height);
+        spotIcon.frame = DMBarRect(fg, rtl, CGRectMake(spotLeft, timeCentre.y - spotH / 2.0, spotW, spotH));
+        spotBtn.frame = DMBarRect(fg, rtl, CGRectMake(spotLeft - kSpotHitSlop, 0, spotW + 2.0 * kSpotHitSlop, fg.bounds.size.height));
         [fg bringSubviewToFront:spotIcon];
         [fg bringSubviewToFront:spotBtn];
     }
     CGFloat iconsEnd = gShowSpotlight ? spotLeft : clockEdge;
 
     if (needProxy) {
-        dateProxy.frame = CGRectMake(clockLeft, timeCentre.y - proxyH / 2.0, proxyW, proxyH);
+        dateProxy.frame = DMBarRect(fg, rtl, CGRectMake(clockLeft, timeCentre.y - proxyH / 2.0, proxyW, proxyH));
         [fg bringSubviewToFront:dateProxy];
     }
     {   // the clock (date + time) opens the Today View (DMToggleTodayView)
@@ -17086,10 +17230,10 @@ static void DMStockVPNInit(void) {
             objc_setAssociatedObject(fg, kClockButtonKey, clockBtn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
         clockBtn.hidden = !gClockOpensToday || clockW <= 0;
-        if (!clockBtn.hidden) { clockBtn.frame = CGRectMake(clockLeft - 4.0, 0, clockW + 8.0, fg.bounds.size.height); [fg bringSubviewToFront:clockBtn]; }
+        if (!clockBtn.hidden) { clockBtn.frame = DMBarRect(fg, rtl, CGRectMake(clockLeft - 4.0, 0, clockW + 8.0, fg.bounds.size.height)); [fg bringSubviewToFront:clockBtn]; }
     }
     if (dateLabel && dateLabel.alpha != 0.0) dateLabel.alpha = 0.0;   // ours is the one drawn
-    if (tw > 0) DMShiftLabel(fg, timeLabel, clockLeft + (dw > 0 ? dw + kClockGap : 0.0));
+    if (tw > 0) DMShiftLabel(fg, timeLabel, DMBarRect(fg, rtl, CGRectMake(clockLeft + (dw > 0 ? dw + kClockGap : 0.0), 0, tw, 1)).origin.x);   // (its place, as the label's own left edge)
     for (UIView *v in container.subviews) {   // anything else in there stays where the engine put it
         if (v == timeLabel || v == dateLabel) continue;
         if (objc_getAssociatedObject(v, kClockShiftKey)) {
@@ -17105,15 +17249,15 @@ static void DMStockVPNInit(void) {
     {
         CGFloat want = -((rightEdge - iconsEnd) + kClockIconsGap);
         // (a big change -- the clock coming back after the Lock Screen -- slides; the everyday small ones, a second digit changing width, do not)
-        if (fabs(trailing.transform.tx - want) > 20.0 && fg.window && !fg.window.hidden && ![trailing.layer animationForKey:@"transform"])
-            [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionBeginFromCurrentState animations:^{ trailing.transform = CGAffineTransformMakeTranslation(want, 0); } completion:nil];
-        else trailing.transform = CGAffineTransformMakeTranslation(want, 0);
+        if (fabs(DMBarShiftOf(rtl, trailing.transform) - want) > 20.0 && fg.window && !fg.window.hidden && ![trailing.layer animationForKey:@"transform"])
+            [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionBeginFromCurrentState animations:^{ trailing.transform = DMBarShift(rtl, want); } completion:nil];
+        else trailing.transform = DMBarShift(rtl, want);
     }
     {   // where the Control Center icons start (for the keyboard pill, which sits just left of them)
         CGFloat left = CGFLOAT_MAX;
         for (UIView *sub in trailing.subviews) {
             if (sub.hidden || sub.alpha < 0.05 || sub.bounds.size.width < 1.0) continue;
-            CGFloat x = [trailing convertRect:sub.frame toView:fg].origin.x;
+            CGFloat x = DMBarLead(fg, rtl, [trailing convertRect:sub.frame toView:fg]);
             if (x < left) left = x;
         }
         // Temporary items the status bar may put in its other region containers (the right half): they count as status icons too.
@@ -17123,7 +17267,7 @@ static void DMStockVPNInit(void) {
             while (pending.count) {
                 UIView *v = pending.lastObject; [pending removeLastObject]; [pending addObjectsFromArray:v.subviews];
                 if (v.hidden || v.alpha < 0.05 || v.bounds.size.width < 1.0) continue;
-                CGFloat x = [v.superview convertRect:v.frame toView:fg].origin.x;
+                CGFloat x = DMBarLead(fg, rtl, [v.superview convertRect:v.frame toView:fg]);
                 if (x > fg.bounds.size.width / 2.0 && x < left) left = x;
             }
         }
@@ -17182,8 +17326,8 @@ static void DMStockVPNInit(void) {
         if (gVPNActive && left < CGFLOAT_MAX && vpnIcon.image) {
             CGFloat w = ceil(vpnIcon.image.size.width), h = ceil(vpnIcon.image.size.height);
             left -= 8.0 + w;
-            vpnIcon.frame = CGRectMake(left, timeCentre.y - h / 2.0, w, h);
-            vpnButton.frame = CGRectMake(left - 6.0, 0, w + 12.0, fg.bounds.size.height);
+            vpnIcon.frame = DMBarRect(fg, rtl, CGRectMake(left, timeCentre.y - h / 2.0, w, h));
+            vpnButton.frame = DMBarRect(fg, rtl, CGRectMake(left - 6.0, 0, w + 12.0, fg.bounds.size.height));
             [fg bringSubviewToFront:vpnIcon]; [fg bringSubviewToFront:vpnButton];
         }
         {   // Mute icon: next to the status icons (after the VPN icon), only while muted
@@ -17196,7 +17340,7 @@ static void DMStockVPNInit(void) {
             if (show) {
                 CGFloat w = ceil(muteIcon.image.size.width), h = ceil(muteIcon.image.size.height);
                 left -= 8.0 + w;
-                muteIcon.frame = CGRectMake(left, timeCentre.y - h / 2.0, w, h);
+                muteIcon.frame = DMBarRect(fg, rtl, CGRectMake(left, timeCentre.y - h / 2.0, w, h));
                 [fg bringSubviewToFront:muteIcon];
             }
         }
@@ -17223,11 +17367,11 @@ static void DMStockVPNInit(void) {
         if (gSSHActive && left < CGFLOAT_MAX && sshIcon.image) {
             CGFloat w = ceil(sshIcon.image.size.width), h = ceil(sshIcon.image.size.height);
             left -= 8.0 + w;
-            sshIcon.frame = CGRectMake(left, timeCentre.y - h / 2.0, w, h);
-            sshButton.frame = CGRectMake(left - 6.0, 0, w + 12.0, fg.bounds.size.height);
+            sshIcon.frame = DMBarRect(fg, rtl, CGRectMake(left, timeCentre.y - h / 2.0, w, h));
+            sshButton.frame = DMBarRect(fg, rtl, CGRectMake(left - 6.0, 0, w + 12.0, fg.bounds.size.height));
             [fg bringSubviewToFront:sshIcon]; [fg bringSubviewToFront:sshButton];
         }
-        if (left < CGFLOAT_MAX && fg.window && !fg.window.hidden && fg.bounds.size.width > 300.0) { gStatusIconsLeft = left; if (timeColor) gStatusTextColor = timeColor; }
+        if (left < CGFLOAT_MAX && fg.window && !fg.window.hidden && fg.bounds.size.width > 300.0) { gStatusIconsLeft = rtl ? 0.0 : left; if (timeColor) gStatusTextColor = timeColor; }   // (the keyboard button's place: left-to-right only, see DMPlaceKeyboardPill)
     }
 
     if (DMLabelShown(timeLabel) && timeLabel.bounds.size.width > 1.0) {   // where the time is drawn, for the Lock Screen (see DMShowTimeProxy)
@@ -18124,6 +18268,129 @@ static void DMRunTrigger(NSString *cmd) {
         return;
     }
     if ([cmd isEqualToString:@"key"]) DMSendShortcut(HID_KEY_F, NO);
+    else if ([cmd isEqualToString:@"sbregions"]) {   // sbregions: (debug) the main status bar's own regions and display item states -- which item iOS shows, and why not (read-only)
+        UIView *fg = DMFindForegroundView(DMStatusBarWindow());
+        id bar = fg.superview;
+        NSDictionary *regions = nil; @try { regions = [bar valueForKey:@"regions"]; } @catch (id e) {}
+        if (![regions isKindOfClass:[NSDictionary class]]) { DMLog([NSString stringWithFormat:@"[sbregions] no regions on %@", NSStringFromClass([bar class])]); return; }
+        for (id rid in regions) {
+            id r = regions[rid];
+            id en = nil, items = nil, lay = nil, guide = nil, view = nil;
+            @try { en = [r valueForKey:@"enabled"]; } @catch (id e) {}
+            @try { items = [r valueForKey:@"displayItems"]; } @catch (id e) {}
+            @try { lay = [r valueForKey:@"layout"]; } @catch (id e) {}
+            @try { guide = [r valueForKey:@"layoutItem"]; } @catch (id e) {}
+            @try { view = [r valueForKey:@"contentView"]; } @catch (id e) {}
+            NSMutableString *m = [NSMutableString stringWithFormat:@"[sbregions] %@ enabled %@ layout %@ guide %@ view %p %@ transform tx %.1f:", rid, en, lay ? NSStringFromClass([lay class]) : @"-",
+                [guide isKindOfClass:[UILayoutGuide class]] ? NSStringFromCGRect(((UILayoutGuide *)guide).layoutFrame) : @"-", view, [view isKindOfClass:[UIView class]] ? NSStringFromCGRect(((UIView *)view).frame) : @"-",
+                [view isKindOfClass:[UIView class]] ? ((UIView *)view).transform.tx : 0.0];
+            for (id it in ([items respondsToSelector:@selector(countByEnumeratingWithState:objects:count:)] ? items : @[])) {
+                id iid = nil, ien = nil, ifl = nil, iv = nil;
+                @try { iid = [it valueForKey:@"identifier"]; } @catch (id e) {}
+                @try { ien = [it valueForKey:@"enabled"]; } @catch (id e) {}
+                @try { ifl = [it valueForKey:@"floating"]; } @catch (id e) {}
+                @try { iv = [it valueForKey:@"view"]; } @catch (id e) {}
+                [m appendFormat:@" %@(enabled %@ floating %@ view %@ in %p)", iid, ien, ifl, iv ? NSStringFromClass([iv class]) : @"-", [iv isKindOfClass:[UIView class]] ? ((UIView *)iv).superview : nil];
+            }
+            DMLog(m);
+        }
+        id states = nil; @try { states = [bar valueForKey:@"displayItemStates"]; } @catch (id e) {}
+        if ([states isKindOfClass:[NSDictionary class]]) for (id k in states) {
+            NSString *d = [states[k] description];
+            if ([[k description] rangeOfString:@"Time" options:NSCaseInsensitiveSearch].location != NSNotFound || [[k description] rangeOfString:@"Date" options:NSCaseInsensitiveSearch].location != NSNotFound)
+                DMLog([NSString stringWithFormat:@"[sbregions] state %@: %@", k, [d stringByReplacingOccurrencesOfString:@"\n" withString:@" "]]);
+        }
+    }
+    else if ([cmd isEqualToString:@"rtlinfo"]) {   // rtlinfo: right-to-left evidence (1.3.3, H-1) -- the layout direction, each status bar copy's regions, the Home Screen's icon lists and the Dock's icons (read-only)
+        UIApplication *app = [UIApplication sharedApplication];
+        DMLog([NSString stringWithFormat:@"[rtlinfo] app direction %ld (1 = right-to-left), languages %@, locale %@", (long)app.userInterfaceLayoutDirection,
+               [[NSLocale preferredLanguages] componentsJoinedByString:@","], [NSLocale currentLocale].localeIdentifier]);
+        NSMutableArray *fgs = [NSMutableArray arrayWithArray:gCopies.allObjects ?: @[]];
+        UIView *mainFg = DMFindForegroundView(DMStatusBarWindow());
+        if (mainFg && ![fgs containsObject:mainFg]) [fgs addObject:mainFg];
+        Class sv = DMSBClass("_UIStatusBarStringView");
+        for (UIView *fg in fgs) {
+            NSMutableString *m = [NSMutableString stringWithFormat:@"[rtlinfo] copy %p in %@ (hidden %d) width %.0f direction %ld alpha %.2f logo %d hold %d gaveup %d noclock %d; regions:", fg, NSStringFromClass([fg.window class]), fg.window.hidden, fg.bounds.size.width,
+                (long)fg.effectiveUserInterfaceLayoutDirection, fg.alpha, objc_getAssociatedObject(fg, kLogoKey) != nil, [objc_getAssociatedObject(fg, kHoldKey) boolValue], objc_getAssociatedObject(fg, kHoldGaveUpKey) != nil, objc_getAssociatedObject(fg, kNoClockLayoutKey) != nil];
+            UIView *lead = DMLeadingContainer(fg), *trail = DMTrailingContainer(fg);
+            for (UIView *r in fg.subviews) {
+                if (![NSStringFromClass([r class]) isEqualToString:@"UIView"]) continue;
+                [m appendFormat:@"\n   region %@ laid out %@ shift %.1f%@%@:", NSStringFromCGRect(r.frame), NSStringFromCGRect(DMBarUntransformed(r)), r.transform.tx, r == lead ? @" LEADING" : @"", r == trail ? @" TRAILING" : @""];
+                for (UIView *x in r.subviews) {
+                    NSString *t = [x isKindOfClass:sv] ? [NSString stringWithFormat:@" \"%@\"", [(UILabel *)x text]] : @"";
+                    [m appendFormat:@" %@%@ x %.0f..%.0f a %.2f%@;", NSStringFromClass([x class]), t, CGRectGetMinX([r convertRect:x.frame toView:fg]), CGRectGetMaxX([r convertRect:x.frame toView:fg]), x.alpha, x.hidden ? @" hidden" : @""];
+                }
+            }
+            DMLog(m);
+        }
+        UIView *page1 = DMDesktopFindPageOne();
+        UIView *scroll = page1.superview;
+        NSMutableString *h = [NSMutableString stringWithFormat:@"[rtlinfo] home: page one %@ in %@ (offset %@, direction %ld, transform %@); lists:", page1 ? NSStringFromCGRect(page1.frame) : @"none",
+            NSStringFromClass([scroll class]), scroll ? NSStringFromCGPoint(((UIScrollView *)scroll).contentOffset) : @"-", (long)scroll.effectiveUserInterfaceLayoutDirection, NSStringFromCGAffineTransform(scroll.transform)];
+        id rfc = DMCall(DMCall(DMCall(objc_getClass("SBIconController"), @"sharedInstance"), @"iconManager"), @"rootFolderController");
+        NSArray *lists = DMCall(DMCall(rfc, @"folder"), @"lists");   // (the root folder's pages, in order: index 0 is page 1)
+        for (UIView *l in scroll.subviews) {
+            if (![l isKindOfClass:objc_getClass("SBIconListView")]) continue;
+            id model = DMCall(l, @"model");
+            NSUInteger idx = [lists isKindOfClass:[NSArray class]] && model ? [lists indexOfObjectIdenticalTo:model] : NSNotFound;
+            [h appendFormat:@" %@ x %.0f%@ (page %@);", NSStringFromClass([l class]), l.frame.origin.x, l.hidden ? @" hidden" : @"", idx == NSNotFound ? @"?" : @(idx + 1)];
+        }
+        id rfv = DMCall(rfc, @"rootFolderView") ?: DMCall(rfc, @"folderView");
+        for (NSString *selName in @[@"currentPageIndex", @"firstIconPageIndex", @"defaultPageIndex", @"leadingCustomViewPageIndex"]) {
+            SEL q = NSSelectorFromString(selName);
+            if ([rfv respondsToSelector:q]) [h appendFormat:@" %@ %ld;", selName, ((long (*)(id, SEL))objc_msgSend)(rfv, q)];
+        }
+        SEL atIdx = NSSelectorFromString(@"iconListViewAtIndex:");
+        if ([rfv respondsToSelector:atIdx]) { UIView *l0 = ((id (*)(id, SEL, long))objc_msgSend)(rfv, atIdx, 0); [h appendFormat:@" iconListViewAtIndex:0 = %@ x %.0f;", NSStringFromClass([l0 class]), l0.frame.origin.x]; }
+        DMLog(h);
+        Class dockList = objc_getClass("SBFloatingDockIconListView");
+        for (UIWindow *w in DMAllWindows()) {
+            if (![NSStringFromClass([w class]) containsString:@"FloatingDock"]) continue;
+            NSMutableArray *todo = [NSMutableArray arrayWithObject:w];
+            while (todo.count) {
+                UIView *v = todo.lastObject; [todo removeLastObject];
+                if (dockList && [v isKindOfClass:dockList]) {
+                    NSMutableString *d = [NSMutableString stringWithFormat:@"[rtlinfo] dock list %@ direction %ld (icon: its place in the Dock's list, then x on the screen):", NSStringFromCGRect([v convertRect:v.bounds toView:nil]), (long)v.effectiveUserInterfaceLayoutDirection];
+                    NSArray *icons = DMCall(DMCall(v, @"model"), @"icons");
+                    for (UIView *iv in v.subviews) {
+                        id icon = nil; @try { icon = [iv valueForKey:@"icon"]; } @catch (id e) {}
+                        NSUInteger idx = icon && [icons isKindOfClass:[NSArray class]] ? [icons indexOfObjectIdenticalTo:icon] : NSNotFound;
+                        [d appendFormat:@" %@ x %.0f;", idx == NSNotFound ? @"?" : @(idx), [iv convertRect:iv.bounds toView:nil].origin.x];
+                    }
+                    DMLog(d);
+                    continue;
+                }
+                [todo addObjectsFromArray:v.subviews];
+            }
+        }
+    }
+    else if ([cmd isEqualToString:@"ccgrabber"]) {   // ccgrabber: Control Center's header line (Hide Grabber, MacCCGrabber) in the views CC keeps built -- laid out again, then read (CC not opened)
+        Class hc = objc_getClass("CCUIHeaderPocketView");
+        int n = 0;
+        for (UIWindow *w in DMAllWindows()) {
+            NSMutableArray *todo = [NSMutableArray arrayWithObject:w];
+            while (todo.count) {
+                UIView *v = todo.lastObject; [todo removeLastObject];
+                if (hc && [v isKindOfClass:hc]) {
+                    [v setNeedsLayout]; [v layoutIfNeeded];
+                    UIView *line = nil; @try { line = [v valueForKey:@"_headerLineView"]; } @catch (id e) {}
+                    DMLog([NSString stringWithFormat:@"[ccgrabber] header in %@ (hidden window %d): line %@ hidden %d", NSStringFromClass([w class]), w.hidden, line ? NSStringFromClass([line class]) : @"none", line.hidden]);
+                    n++; continue;
+                }
+                [todo addObjectsFromArray:v.subviews];
+            }
+        }
+        if (!n) DMLog(@"[ccgrabber] no Control Center header built yet");
+    }
+    else if ([cmd hasPrefix:@"dockapplib_"]) {   // dockapplib_<0|1>: Settings' "Show App Library in Dock", the way its switch sets it (SBFloatingDockDefaults appLibraryEnabled; iPadOS 15 keeps it under another key than 16's SBAppLibraryInDockEnabled)
+        id d = DMCall(DMCall(objc_getClass("SBDefaults"), @"localDefaults"), @"floatingDockDefaults");
+        SEL get = NSSelectorFromString(@"appLibraryEnabled"), set = NSSelectorFromString(@"setAppLibraryEnabled:");
+        if ([d respondsToSelector:get] && [d respondsToSelector:set]) {
+            BOOL before = ((BOOL (*)(id, SEL))objc_msgSend)(d, get);
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(d, set, [[cmd substringFromIndex:11] boolValue]);
+            DMLog([NSString stringWithFormat:@"[debug] App Library in Dock: %d -> %d", before, ((BOOL (*)(id, SEL))objc_msgSend)(d, get)]);
+        } else DMLog(@"[debug] App Library in Dock: no floating Dock defaults here");
+    }
     else if ([cmd isEqualToString:@"folder"]) DMOpenJailbreakFolder();
     else if ([cmd isEqualToString:@"home"]) DMMinimize();
     else if ([cmd isEqualToString:@"idleprobe"]) DMIdleProbe();
@@ -21797,14 +22064,15 @@ static void DMRunTrigger(NSString *cmd) {
         DMSetWindowedLaunch([v boolValue]);
         DMLog([NSString stringWithFormat:@"[debug] windowed launch set to %@", v]);
     }
-    else if ([cmd hasPrefix:@"smcheck_"]) {   // smcheck_<none|selector|encoding|hook|layout16|layout17>: the engine's self-check run again with that simulated difference (layoutNN: that layout engine's table) -- read-only, nothing changes
+    else if ([cmd hasPrefix:@"smcheck_"]) {   // smcheck_<none|selector|encoding|optional|hook|layout16|layout17>: the engine's self-check run again with that simulated difference (layoutNN: that layout engine's table; optional: -appLayoutByRemovingItemInLayoutRole: missing, as on 16.2-16.3) -- read-only, nothing changes
         NSString *sim = [cmd substringFromIndex:8];
         NSUInteger checked = 0;
-        NSArray *bad = DMSMCheckAPI([sim isEqualToString:@"none"] ? nil : sim, &checked);
+        NSArray *opt = nil, *off = nil;   // (optional rows: reported, never recorded -- smcheck_optional shows the iPadOS 16.2-16.3 case)
+        NSArray *bad = DMSMCheckAPIFull([sim isEqualToString:@"none"] ? nil : sim, &checked, &opt, &off, NULL);
         NSArray *hooks = DMSMHooksNotInstalled(DMSMHookedIMPs(), [sim isEqualToString:@"hook"]);   // (the current IMPs against themselves: every hook "not installed" -- shows the comparison works)
         int gen = [sim hasPrefix:@"layout"] ? DMSMLayoutGenFor(sim) : DMSMLayoutGen();
-        DMLog([NSString stringWithFormat:@"[smcheck] (trigger, simulating %@; layout engine table %@, the running engine's: %@) API: %lu checked, %lu different: %@ | hooks compared with themselves: %lu of %lu flagged", sim, DMSMLayoutName(gen), DMSMLayoutName(DMSMLayoutGen()), (unsigned long)checked,
-               (unsigned long)bad.count, [bad componentsJoinedByString:@"; "], (unsigned long)hooks.count, (unsigned long)DMSMHookedIMPs().count]);
+        DMLog([NSString stringWithFormat:@"[smcheck] (trigger, simulating %@; layout engine table %@, the running engine's: %@) API: %lu checked, %lu different: %@ | optional not here: %@, features off: %@ | hooks compared with themselves: %lu of %lu flagged", sim, DMSMLayoutName(gen), DMSMLayoutName(DMSMLayoutGen()), (unsigned long)checked,
+               (unsigned long)bad.count, [bad componentsJoinedByString:@"; "], [opt componentsJoinedByString:@"; "] ?: @"", [off componentsJoinedByString:@"; "] ?: @"", (unsigned long)hooks.count, (unsigned long)DMSMHookedIMPs().count]);
     }
     else if ([cmd hasPrefix:@"sbsettings_"]) DMOpenStatusBarSettings((uint32_t)[[cmd substringFromIndex:11] intValue]);   // sbsettings_<0|1|2>: Settings on our Status Bar page / Go apps / the Window Engine picker
     else if ([cmd hasPrefix:@"opennorm_"]) DMOpenApp([cmd substringFromIndex:9]);   // opennorm_<bundle>: the normal open path (unlike iconlaunch_, which bypasses windowed-launch entirely)
@@ -24790,13 +25058,17 @@ static BOOL DMIsNotificationBannerVC(id vc) {
     return [NSStringFromClass([vc class]) hasPrefix:@"NCNotification"];
 }
 static const CGFloat kDMBannerWidth = 360, kDMBannerRight = 10, kDMBannerTop = 24 + 8;   // (24 = our status bar)
+// (a right-to-left language: mirrored -- top left, in from and out to the left, a leftward swipe, the Close button at the top right -- as the
+//  clock and its Today panel are at the left end of the menu bar there, 1.3.3)
+static BOOL DMBannerRTL(void) { static int v = -1; if (v < 0) v = [UIApplication sharedApplication].userInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft; return v == 1; }
 static CGRect DMBannerPresentedFrame(CGRect stock, CGRect cb) {
     CGFloat w = MIN(kDMBannerWidth, cb.size.width - 2 * kDMBannerRight);
-    return CGRectMake(CGRectGetMaxX(cb) - w - kDMBannerRight, CGRectGetMinY(cb) + kDMBannerTop, w, stock.size.height);
+    CGFloat x = DMBannerRTL() ? CGRectGetMinX(cb) + kDMBannerRight : CGRectGetMaxX(cb) - w - kDMBannerRight;
+    return CGRectMake(x, CGRectGetMinY(cb) + kDMBannerTop, w, stock.size.height);
 }
 static CGRect DMBannerDismissedFrame(CGRect stock, CGRect cb) {
     CGRect p = DMBannerPresentedFrame(stock, cb);
-    p.origin.x = CGRectGetMaxX(cb) + 24;   // off the right edge (the shadow too)
+    p.origin.x = DMBannerRTL() ? CGRectGetMinX(cb) - p.size.width - 24 : CGRectGetMaxX(cb) + 24;   // off the right edge (the shadow too); the left one mirrored
     return p;
 }
 static BNContentViewController *DMBannerContentController(UIView *v) {
@@ -24851,11 +25123,11 @@ static BOOL DMInBannerWindow(UIView *v) { return [NSStringFromClass([v.window cl
 }
 - (void)layout {
     UIView *b = self.banner; if (!b) return;
-    self.closeButton.frame = CGRectMake(-7, -7, 20, 20);
+    self.closeButton.frame = CGRectMake(DMBannerRTL() ? b.bounds.size.width - 13 : -7, -7, 20, 20);
     for (UIView *sv in self.closeButton.subviews) sv.frame = self.closeButton.bounds;
     self.closeButton.layer.cornerRadius = 10; ((UIView *)self.closeButton.subviews.firstObject).layer.cornerRadius = 10;
     CGSize t = [self.optionsButton.titleLabel sizeThatFits:CGSizeMake(200, 20)];
-    self.optionsButton.frame = CGRectMake(b.bounds.size.width - t.width - 20 - 8, 8, t.width + 20, 22);
+    self.optionsButton.frame = CGRectMake(DMBannerRTL() ? 8 : b.bounds.size.width - t.width - 20 - 8, 8, t.width + 20, 22);
     self.optionsButton.layer.cornerRadius = 11; for (UIView *v in self.optionsButton.subviews) if ([v isKindOfClass:[UIVisualEffectView class]]) v.layer.cornerRadius = 11;
     [b bringSubviewToFront:self.closeButton]; [b bringSubviewToFront:self.optionsButton];
 }
@@ -24875,16 +25147,18 @@ static BOOL DMInBannerWindow(UIView *v) { return [NSStringFromClass([v.window cl
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)g {
     if (![g isKindOfClass:[UIPanGestureRecognizer class]] || !DMBannersOn()) return NO;
     CGPoint v = [(UIPanGestureRecognizer *)g velocityInView:self.banner];
-    return v.x > 0 && fabs(v.x) > fabs(v.y) * 1.2;   // rightward swipes only; vertical drags stay the system's
+    return (DMBannerRTL() ? v.x < 0 : v.x > 0) && fabs(v.x) > fabs(v.y) * 1.2;   // rightward swipes only (leftward, right-to-left); vertical drags stay the system's
 }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)o { return NO; }
 - (void)pan:(UIPanGestureRecognizer *)g {
     UIView *b = self.banner; if (!b) return;
-    CGFloat tx = MAX(0, [g translationInView:b.superview].x);
-    if (g.state == UIGestureRecognizerStateBegan || g.state == UIGestureRecognizerStateChanged) { b.transform = CGAffineTransformMakeTranslation(tx, 0); b.alpha = MAX(0.3, 1 - tx / 400.0); return; }
-    CGFloat vx = [g velocityInView:b.superview].x;
+    CGFloat dir = DMBannerRTL() ? -1.0 : 1.0;   // (the way out: right, or left in a right-to-left language)
+    CGFloat tx = MAX(0, dir * [g translationInView:b.superview].x);
+    if (g.state == UIGestureRecognizerStateBegan || g.state == UIGestureRecognizerStateChanged) { b.transform = CGAffineTransformMakeTranslation(dir * tx, 0); b.alpha = MAX(0.3, 1 - tx / 400.0); return; }
+    CGFloat vx = dir * [g velocityInView:b.superview].x;
     if (g.state == UIGestureRecognizerStateEnded && (tx > 90 || vx > 600)) {
-        [UIView animateWithDuration:0.2 delay:0 options:UIViewAnimationOptionCurveEaseIn animations:^{ b.transform = CGAffineTransformMakeTranslation(b.bounds.size.width + 60, 0); b.alpha = 0; }
+        BOOL rm = MSBReduceMotion();   // (Reduce Motion: it fades where the finger left it instead of sliding out -- 1.3.3, audit L-5)
+        [UIView animateWithDuration:rm ? kMSBRMDuration : 0.2 delay:0 options:rm ? UIViewAnimationOptionCurveEaseInOut : UIViewAnimationOptionCurveEaseIn animations:^{ if (!rm) b.transform = CGAffineTransformMakeTranslation(dir * (b.bounds.size.width + 60), 0); b.alpha = 0; }
                          completion:^(BOOL f) { DMBannerDismiss(b, NO); dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ b.transform = CGAffineTransformIdentity; b.alpha = 1; }); }];
     } else {
         MSBAnimate(0.3, 0, 0.8, 0, ^{ b.transform = CGAffineTransformIdentity; b.alpha = 1; }, nil);   // (Reduce Motion: eases back, no bounce)
@@ -27257,7 +27531,7 @@ void DMSMRefreshBars(void) {
     for (UIView *fg in gCopies.allObjects) {
         if (![NSStringFromClass([fg.window class]) isEqualToString:@"SBMainSwitcherWindow"]) continue;
         [(_UIStatusBarForegroundView *)fg dm_layoutLogo];
-        if (DMSMInFullScreenCard(fg) && fg.alpha < 1.0) fg.alpha = 1.0;
+        if (DMSMInFullScreenCard(fg) && fg.alpha < 1.0) { gDMHoldOwnAlpha = YES; fg.alpha = 1.0; gDMHoldOwnAlpha = NO; }
     }
 }
 // ---- one piece: our title bar and Apple's window card --------------------------------------------------------------------------------------------
@@ -27484,6 +27758,12 @@ static NSDictionary<NSString *, NSString *> *gSMFitSlotsBeforeFull;
 static void DMSMFitTick(BOOL force) {
     static NSArray *lastSet = nil;
     if (!DMSMEngine() || !DMFitEnabled()) { lastSet = nil; return; }
+    // (the Home Screen in front: no stage is shown -- the most recent one is only kept, hidden. Nothing is read or asked then: the arrangement
+    //  stays for when its windows come back, and a layout request for the hidden stage brought it to the front over the Home Screen -- iPad 2,
+    //  4 Oct: on the Home Screen a swipe up from the bottom edge, which SpringBoard answers by showing the stage's cards for the gesture, had the
+    //  hidden stage tiled again in the default arrangement (its chosen one was dropped when the Home Screen came: no windows on screen) and its
+    //  windows came up; mac-switcher-sm 72241a7)
+    if (!DMFrontApp()) return;
     {   // (which windows are full screen now: their tiles are kept for their return)
         NSDictionary *fm = DMSMStageItemsMap(DMSMFrontStage());
         for (id it in fm) if (DMSMPolicyOf(fm[it]) == 2) {
@@ -27604,7 +27884,7 @@ static void DMSMChrome(UIView *card) {
                 NSMutableArray<UIView *> *todo = [NSMutableArray arrayWithObject:card];
                 while (todo.count) {
                     UIView *v = todo.lastObject; [todo removeLastObject];
-                    if (fgc && [v isKindOfClass:fgc]) { [(_UIStatusBarForegroundView *)v dm_layoutLogo]; if (fullNow && v.alpha < 1.0) v.alpha = 1.0; continue; }
+                    if (fgc && [v isKindOfClass:fgc]) { [(_UIStatusBarForegroundView *)v dm_layoutLogo]; if (fullNow && v.alpha < 1.0) { gDMHoldOwnAlpha = YES; v.alpha = 1.0; gDMHoldOwnAlpha = NO; } continue; }
                     [todo addObjectsFromArray:v.subviews];
                 }
             }
@@ -28394,7 +28674,8 @@ static void DMSM17DiagSoon(void) {
 // hooks use (kSMNeeds); only if all are there as expected are the hooks installed, and then checked to have gone in. Otherwise the engine stays
 // off for this run (DMSMEngine() NO: the default engine, Stage Manager not switched on for us), and the verdict tells the root helper and Settings.
 // Where Stage Manager can't run at all (iPadOS 15, no Stage Manager, no TrollPad) nothing is checked and nothing is hooked, as before.
-// debug /tmp/msb-sm-simulate-missing: its text "selector" (default), "encoding" or "hook" pretends that kind of difference.
+// debug /tmp/msb-sm-simulate-missing: its text "selector" (default), "encoding" or "hook" pretends that kind of difference; "optional": an optional
+// row missing (-appLayoutByRemovingItemInLayoutRole:, as on iPadOS 16.2-16.3): the engine stays on and cuts stages back with the leaf instead.
 static void DMSMSelfCheck(void) {
     DM_FEATURE_MARK("sm-self-check");
     if (gSMCheckDone) return;
@@ -28416,7 +28697,7 @@ static void DMSMSelfCheck(void) {
     gSMLayoutGen = DMSMLayoutGenFor(simulate);
     DMLog([NSString stringWithFormat:@"[smcheck] layout engine table: %@", DMSMLayoutName(gSMLayoutGen)]);
     NSUInteger checked = 0;
-    NSArray<NSString *> *bad = DMSMCheckAPI(simulate, &checked);
+    NSArray<NSString *> *bad = DMSMCheckAPILive(simulate, &checked);   // (also records the optional rows: DMSMRowPassed, the verdict)
     if (!bad.count) {
         NSArray *before = DMSMHookedIMPs();
         %init(SMEngine);
@@ -28461,7 +28742,7 @@ static void DMSMCheckReadOnly(void) {
     if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion < 16 || !objc_getClass("SBSwitcherChamoisSettings") || !MSBDStageManagerAvailable()) return;
     gSMLayoutGen = DMSMLayoutGenFor(nil);
     NSUInteger checked = 0;
-    NSArray<NSString *> *bad = DMSMCheckAPI(nil, &checked);
+    NSArray<NSString *> *bad = DMSMCheckAPILive(nil, &checked);
     gSMChecked = checked; gSMCheckBad = bad;
     NSOperatingSystemVersion ov = [NSProcessInfo processInfo].operatingSystemVersion;
     NSString *reason = bad.count ? [NSString stringWithFormat:@"iPadOS %ld.%ld.%ld (%@): %lu of the system methods the engine uses are missing or different",
@@ -28475,30 +28756,32 @@ static void DMSMCheckReadOnly(void) {
 // Stage Manager (Clock opened next to Settings after switching back to Aerial, iPad 2, 28 Sep). Each such stage is cut back to its primary app
 // (the switcher model's replaceAppLayout:withAppLayout:), so every app opens on its own again.
 void DMSMFlattenStages(NSString *why) {
-    // (every call through the checked wrappers: this runs when ANOTHER engine takes over, also where the Stage Manager engine's check failed)
+    // (every call through the checked wrappers: this runs when ANOTHER engine takes over, also where the Stage Manager engine's check failed;
+    //  the cut itself, iPadOS 16.4+ or 16.2-16.3: DMSMStageCutToPrimary, SMEngineAPI.h)
     int n = 0;
     for (id al in [DMSMRecentStages() copy]) {
-        NSDictionary *map = DMSMStageItemsMap(al);
-        if (map.count < 2) continue;
-        // (roles re-read from what is left after each removal: Stage Manager renumbers them -- reading them from the original stage left a
-        //  two-app layout behind, logic test SM-6)
-        id single = al;
-        for (int guard = 0; guard < 8; guard++) {
-            NSDictionary *left = DMSMStageItemsMap(single);
-            if (left.count < 2) break;
-            long drop = 0;
-            for (id item in left) { long role = (long)DMSMRoleOr(single, item, 0); if (role > 1) { drop = role; break; } }
-            if (!drop) break;
-            id next = DMSMStageWithoutRole(single, drop);
-            if (!next || next == single) break;
-            single = next;
-        }
+        BOOL unsupported = NO;
+        id single = DMSMStageCutToPrimary(al, &unsupported);
         if (single && single != al && DMSMReplaceStage(al, single)) n++;
+        static BOOL told;
+        if (unsupported && !told) { told = YES; DMLog(@"[smengine] a multi-window stage stays as it is: this iPadOS has no way to cut it back that we know"); }
     }
     if (n) DMLog([NSString stringWithFormat:@"[smengine] %d multi-window stage(s) cut back to single apps (%@)", n, why]);
 }
 // The app of the front window of the stage on screen (the newest lastInteractionTime); nil on the Home Screen or with no stage.
+// (S-1, 1.3.3: inside a tick scope -- the 0.2 s watcher, DMTick, a status bar layout pass -- the answer is worked out once and shared: the
+//  Stage Manager engine asked SpringBoard's switcher model for its recent stages several times per tick, from the active app's every caller.
+//  Our own changes to the model drop it at once, gDMSMModelChanged; outside a scope it is asked each time as before.)
+static NSString *DMSMFrontWindowBundleNow(void);
+static BOOL gDMSnapSMFrontKnown = NO; static NSString *gDMSnapSMFront = nil;
+static void DMSnapForgetSMFront(void) { gDMSnapSMFrontKnown = NO; gDMSnapSMFront = nil; }
 NSString *DMSMFrontWindowBundle(void) {
+    if (gDMSnapDepth && gDMSnapSMFrontKnown) return gDMSnapSMFront;
+    NSString *b = DMSMFrontWindowBundleNow();
+    if (gDMSnapDepth) { gDMSnapSMFront = b; gDMSnapSMFrontKnown = YES; if (!gDMSMModelChanged) gDMSMModelChanged = DMSnapForgetSMFront; }
+    return b;
+}
+static NSString *DMSMFrontWindowBundleNow(void) {
     // (the ACTIVE window: the most recently used stage on any screen -- a window clicked on the TV is the active app, as on a Mac, where every
     //  display's menu bar shows the one active app; iPad-only checks -- Dock, full screen -- use DMSMFrontStage, the iPad's own stage)
     id stage = [DMSMRecentStages() firstObject];
@@ -28648,6 +28931,7 @@ void DMSMRunAction(UIAction *action, id sender) {
     if (!DMCtorSkip("cc")) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(14 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMPrewarmControlCenter(0); });
     if (!DMCtorSkip("restore")) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(9 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMRestoreWindows(0); });
     if (!DMCtorSkip("menuwin")) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMCreateMenuWindow(); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ MSBDPackageVersion(MSBD_PACKAGE_ID); });   // (S-2: the Apple menu's installed version, read once off the main thread)
 #if DM_LOCK_BYPASS
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMSkipLockTick(0); });
 #endif
@@ -28676,6 +28960,11 @@ void DMSMRunAction(UIAction *action, id sender) {
     if (!DMCtorSkip("power")) DMScreenPowerWatch();   // battery: the screen-off gate for our timers (reads a notification state only)
     // Reduce Motion is read live on every animation (MSBReduceMotion); a change is logged here so a test run shows which mode each animation used.
     DMLog([NSString stringWithFormat:@"[motion] Reduce Motion is %@ at start", MSBReduceMotion() ? @"ON: cross-fades" : @"off"]);
+    [[NSNotificationCenter defaultCenter] addObserverForName:NSCurrentLocaleDidChangeNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) {
+        gDMLocaleGen++;   // (the clock and date formats are worked out again: 12/24 hour, region -- at once, not up to a minute later)
+        for (UIView *fg in gCopies.allObjects) [fg setNeedsLayout];
+        DMLog(@"[clock] region / 12-24 hour setting changed: the clock format is worked out again");
+    }];
     [[NSNotificationCenter defaultCenter] addObserverForName:UIAccessibilityReduceMotionStatusDidChangeNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) {
         DMLog([NSString stringWithFormat:@"[motion] Reduce Motion turned %@: the next animations %@", MSBReduceMotion() ? @"ON" : @"off", MSBReduceMotion() ? @"cross-fade" : @"move and zoom again"]);
     }];

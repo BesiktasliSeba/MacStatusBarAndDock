@@ -679,7 +679,7 @@ static NSString *DMQLText(NSString *path) {
     UTType *t = [UTType typeWithFilenameExtension:path.pathExtension];
     UIView *v = nil;
     if ([t conformsToType:UTTypeImage]) {
-        UIImageView *iv = [UIImageView new]; iv.contentMode = UIViewContentModeScaleAspectFit; iv.backgroundColor = [UIColor systemBackgroundColor];
+        UIImageView *iv = [UIImageView new]; iv.contentMode = UIViewContentModeScaleAspectFit; iv.backgroundColor = [UIColor systemBackgroundColor]; iv.accessibilityIgnoresInvertColors = YES;
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{   // (a thumbnail of at most 2048 px: a big photo never loads whole)
             CGImageSourceRef src = CGImageSourceCreateWithURL((__bridge CFURLRef)[NSURL fileURLWithPath:path], NULL);
             CGImageRef cg = src ? CGImageSourceCreateThumbnailAtIndex(src, 0, (__bridge CFDictionaryRef)@{(id)kCGImageSourceCreateThumbnailFromImageAlways: @YES, (id)kCGImageSourceThumbnailMaxPixelSize: @2048, (id)kCGImageSourceCreateThumbnailWithTransform: @YES}) : NULL;
@@ -717,7 +717,7 @@ static NSString *DMQLText(NSString *path) {
         DMFinderItem *it = [DMFinderItem new]; it.path = path; it.name = path.lastPathComponent;
         NSDictionary *a = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil];
         it.size = [a fileSize]; it.kind = DMFinderKind(path, NO);
-        UIImageView *iv = [[UIImageView alloc] initWithImage:DMFinderIcon(it, 128.0)]; iv.contentMode = UIViewContentModeScaleAspectFit; iv.tag = 1;
+        UIImageView *iv = [[UIImageView alloc] initWithImage:DMFinderIcon(it, 128.0)]; iv.contentMode = UIViewContentModeScaleAspectFit; iv.tag = 1; iv.accessibilityIgnoresInvertColors = YES;
         UILabel *l = [UILabel new]; l.numberOfLines = 0; l.textAlignment = NSTextAlignmentCenter; l.tag = 2;
         l.text = [NSString stringWithFormat:@"%@\n%@ – %@", it.name, it.kind, DMFinderSize(it)]; l.font = [UIFont systemFontOfSize:13.0];
         [box addSubview:iv]; [box addSubview:l];
@@ -1096,7 +1096,7 @@ static void DMFinderDragBegin(DMFinderWindow *from, NSArray<DMFinderItem *> *ite
     tile.backgroundColor = [[UIColor systemBackgroundColor] colorWithAlphaComponent:0.85];
     tile.layer.cornerRadius = 10.0; tile.layer.borderWidth = 0.5; tile.layer.borderColor = [UIColor separatorColor].CGColor;
     tile.layer.shadowColor = [UIColor blackColor].CGColor; tile.layer.shadowOpacity = 0.3; tile.layer.shadowRadius = 10; tile.layer.shadowOffset = CGSizeMake(0, 4);
-    UIImageView *icon = [[UIImageView alloc] initWithFrame:CGRectMake(8, 6, 32, 32)]; icon.contentMode = UIViewContentModeScaleAspectFit;
+    UIImageView *icon = [[UIImageView alloc] initWithFrame:CGRectMake(8, 6, 32, 32)]; icon.contentMode = UIViewContentModeScaleAspectFit; icon.accessibilityIgnoresInvertColors = YES;
     icon.image = DMFinderIcon(it, 32.0); [tile addSubview:icon];
     UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(46, 0, 156, 44)]; l.tag = 2;
     l.text = items.count > 1 ? [NSString stringWithFormat:@"%lu items", (unsigned long)items.count] : it.display;
@@ -1112,9 +1112,10 @@ static void DMFinderDragBegin(DMFinderWindow *from, NSArray<DMFinderItem *> *ite
         CGFloat k = MAX(0.5, MIN(1.3, gFDFromRect.size.height / tile.bounds.size.height));
         tile.transform = CGAffineTransformScale(CGAffineTransformMakeTranslation(f.x - tile.center.x, f.y - tile.center.y), k, k);
         tile.alpha = 0.6;
-        [UIView animateWithDuration:0.28 delay:0 usingSpringWithDamping:0.8 initialSpringVelocity:0 options:UIViewAnimationOptionAllowUserInteraction animations:^{ tile.transform = CGAffineTransformIdentity; tile.alpha = 1; } completion:nil];
+        if (MSBReduceMotion()) { tile.transform = CGAffineTransformIdentity; tile.alpha = 0; }   // (Reduce Motion: it fades in under the finger, no glide -- 1.3.3, audit L-5)
+        MSBAnimate(0.28, 0, 0.8, UIViewAnimationOptionAllowUserInteraction, ^{ tile.transform = CGAffineTransformIdentity; tile.alpha = 1; }, nil);
     } else {
-        tile.transform = CGAffineTransformMakeScale(0.6, 0.6); tile.alpha = 0;
+        tile.transform = MSBReduceMotion() ? CGAffineTransformIdentity : CGAffineTransformMakeScale(0.6, 0.6); tile.alpha = 0;
         [UIView animateWithDuration:0.15 animations:^{ tile.transform = CGAffineTransformIdentity; tile.alpha = 1; }];
     }
     gFDFromRect = CGRectZero;
@@ -2053,7 +2054,7 @@ static void DMFinderDrivesCheck(NSString *why);
     CGFloat w = tv.bounds.size.width;
     UIImageView *iv = [cell.contentView viewWithTag:10];
     if (!iv) {
-        iv = [UIImageView new]; iv.tag = 10; iv.contentMode = UIViewContentModeScaleAspectFit; [cell.contentView addSubview:iv];
+        iv = [UIImageView new]; iv.tag = 10; iv.contentMode = UIViewContentModeScaleAspectFit; iv.accessibilityIgnoresInvertColors = YES; [cell.contentView addSubview:iv];   // (Smart Invert leaves pictures as they are, like Apple's own icons: 1.3.3, audit L-3)
         for (NSInteger t = 11; t <= 14; t++) { UILabel *l = [UILabel new]; l.tag = t; l.font = [UIFont systemFontOfSize:t == 11 ? 13.0 : 11.5]; l.lineBreakMode = NSLineBreakByTruncatingMiddle; [cell.contentView addSubview:l]; }
     }
     CGFloat h = tv.rowHeight;
@@ -2099,7 +2100,7 @@ static void DMFinderDrivesCheck(NSString *why);
     UICollectionViewCell *cell = [cv dequeueReusableCellWithReuseIdentifier:@"i" forIndexPath:ip];
     UIImageView *iv = [cell.contentView viewWithTag:1]; UILabel *l = [cell.contentView viewWithTag:2];
     if (!iv) {
-        iv = [[UIImageView alloc] initWithFrame:CGRectMake(20, 4, 56, 56)]; iv.tag = 1; iv.contentMode = UIViewContentModeScaleAspectFit; [cell.contentView addSubview:iv];
+        iv = [[UIImageView alloc] initWithFrame:CGRectMake(20, 4, 56, 56)]; iv.tag = 1; iv.contentMode = UIViewContentModeScaleAspectFit; iv.accessibilityIgnoresInvertColors = YES; [cell.contentView addSubview:iv];
         l = [[UILabel alloc] initWithFrame:CGRectMake(0, 62, 96, 32)]; l.tag = 2; l.font = [UIFont systemFontOfSize:11.0]; l.numberOfLines = 2; l.textAlignment = NSTextAlignmentCenter; l.lineBreakMode = NSLineBreakByTruncatingMiddle; [cell.contentView addSubview:l];
         UIView *sel = [UIView new]; sel.backgroundColor = [[UIColor systemBlueColor] colorWithAlphaComponent:0.25]; sel.layer.cornerRadius = 8.0; cell.selectedBackgroundView = sel;
     }
@@ -3058,7 +3059,7 @@ static NSString *DMFinderResolveTyped(NSString *p) {
             _dragCell = cell;
             if (cell) {
                 [cell.superview bringSubviewToFront:cell];
-                [UIView animateWithDuration:0.22 delay:0 usingSpringWithDamping:0.6 initialSpringVelocity:0 options:UIViewAnimationOptionAllowUserInteraction animations:^{ cell.transform = CGAffineTransformMakeScale(1.04, 1.04); } completion:nil];
+                MSBAnimate(0.22, 0, 0.6, UIViewAnimationOptionAllowUserInteraction, ^{ cell.transform = CGAffineTransformMakeScale(1.04, 1.04); }, nil);   // (Reduce Motion: no bounce, 1.3.3 audit L-5)
             }
             [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
         }

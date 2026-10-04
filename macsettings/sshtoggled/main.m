@@ -109,6 +109,55 @@ static int SSHWanted(int legacy) {   // 1/0 from the preference; `legacy` (1/0, 
     if (v) CFRelease(v);
     return wanted;
 }
+// ---- a fresh copy of mobile's settings after cfprefsd restarts (1.3.3, logic test) ----
+// This helper reads mobile's settings as root (CFPreferencesCopyValue with user "mobile"), and its process keeps its own copy of them. After cfprefsd
+// restarted (killall cfprefsd: a step of the test restore, and what many package scripts run) that copy was never refreshed: the engine picked before
+// the restart went on being applied to Choicy at every SpringBoard start -- also after the choice was changed again through cfprefsd -- until the
+// helper itself restarted (iPad 2, 16.7.7: "Choicy set to load only aerial" while SpringBoard ran Stage Manager). Reading the files instead is no
+// answer: cfprefsd writes a change to its file only seconds later. So the helper notes the cfprefsd processes it started with, and when they are
+// not the same any more it starts over as a fresh process (exec: same pid, launchd keeps it) and does again what it was asked, with settings read
+// fresh. (This works around CoreFoundation, which does not refresh another user's settings in a long-running process after such a restart.)
+static void ELog(NSString *fmt, ...) NS_FORMAT_FUNCTION(1, 2);
+static NSString *PrefsDaemonSignature(void) {   // every running cfprefsd as "pid@start/uid", sorted; nil when the process list cannot be read
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0 };
+    size_t len = 0;
+    if (sysctl(mib, 3, NULL, &len, NULL, 0) != 0 || len == 0) return nil;
+    len += 32 * sizeof(struct kinfo_proc);   // (room for processes started in between)
+    struct kinfo_proc *procs = malloc(len);
+    if (!procs) return nil;
+    NSMutableArray<NSString *> *found = [NSMutableArray array];
+    BOOL ok = sysctl(mib, 3, procs, &len, NULL, 0) == 0;
+    if (ok) for (size_t i = 0; i < len / sizeof(struct kinfo_proc); i++) {
+        if (strcmp(procs[i].kp_proc.p_comm, "cfprefsd") != 0) continue;
+        [found addObject:[NSString stringWithFormat:@"%d@%ld/%u", procs[i].kp_proc.p_pid, (long)procs[i].kp_proc.p_starttime.tv_sec, procs[i].kp_eproc.e_pcred.p_ruid]];
+    }
+    free(procs);
+    if (!ok) return nil;
+    [found sortUsingSelector:@selector(compare:)];
+    return [found componentsJoinedByString:@","];
+}
+static NSString *gPrefsDaemons = nil;   // (the cfprefsd processes this helper's settings copy belongs to; set when the daemon starts)
+static char gSelfPath[PATH_MAX] = "/var/jb/usr/libexec/sshtoggled";
+// The work that can be asked for, and is still to be done (a request waiting out its 2 s burst limit, or a package transaction): it is done again
+// after starting over too, whoever notices the restart first (the 10 s check included).
+enum { kWorkEngines = 1, kWorkLines = 2, kWorkSSH = 4 };
+static unsigned gPendingWork = 0;
+static void StartOverIfPrefsDaemonRestarted(unsigned work) {
+    if (!gPrefsDaemons.length) return;   // (not the daemon, or its start could not read the process list)
+    NSString *now = PrefsDaemonSignature();
+    if (!now.length || [now isEqualToString:gPrefsDaemons]) return;
+    work |= gPendingWork;
+    NSMutableArray *kinds = [NSMutableArray array];
+    if (work & kWorkEngines) [kinds addObject:@"engines"];
+    if (work & kWorkLines) [kinds addObject:@"lines"];
+    if (work & kWorkSSH) [kinds addObject:@"ssh"];
+    NSString *resume = kinds.count ? [kinds componentsJoinedByString:@","] : @"none";
+    ELog(@"settings: cfprefsd restarted since this helper started (%@ -> %@) -- starting over as a fresh process so mobile's settings are read anew, then: %@", gPrefsDaemons, now, resume);
+    char *args[] = { gSelfPath, "--resume", (char *)resume.UTF8String, NULL };
+    execv(gSelfPath, args);
+    ELog(@"settings: starting over failed (%s) -- carrying on with the settings as this process has them", strerror(errno));
+    gPrefsDaemons = now;   // (not tried again for this restart)
+}
 // Hardening (release plan 3d-5): a burst of posts runs the work at most once per 2 s (the last request wins; later ones are coalesced into one run).
 static void Debounced(CFAbsoluteTime *last, BOOL *pending, void (^work)(void)) {
     if (*pending) return;
@@ -120,7 +169,8 @@ static void Debounced(CFAbsoluteTime *last, BOOL *pending, void (^work)(void)) {
 static void SSHRequest(int legacy) {
     static CFAbsoluteTime last = 0; static BOOL pending = NO; static int lastLegacy = -1;
     if (legacy >= 0) lastLegacy = legacy;
-    Debounced(&last, &pending, ^{ int w = SSHWanted(lastLegacy); lastLegacy = -1; if (w >= 0) apply(w); else writeState(sshdLoaded()); });
+    gPendingWork |= kWorkSSH;
+    Debounced(&last, &pending, ^{ StartOverIfPrefsDaemonRestarted(kWorkSSH); gPendingWork &= ~kWorkSSH; int w = SSHWanted(lastLegacy); lastLegacy = -1; if (w >= 0) apply(w); else writeState(sshdLoaded()); });
 }
 
 // ---- 2. window-engine exclusivity (iCleaner Pro without Choicy) -----------------------------------------------------------------------------------
@@ -310,7 +360,10 @@ static BOOL TweakMeantToRun(void) {
 }
 static void ApplyEngines(NSString *reason) {
     static BOOL retryPending = NO, logged = NO;
+    BOOL asked = [reason isEqualToString:@"request"] || [reason isEqualToString:@"manual"];
+    StartOverIfPrefsDaemonRestarted(asked ? kWorkEngines : 0);   // (also for a retry after a package transaction, which can restart cfprefsd itself)
     if (DpkgBusy()) {   // (mid-transaction our own package looks "not installed": decided once it is over)
+        if (asked) gPendingWork |= kWorkEngines;
         if (!logged) ELog(@"%@: a package transaction is running -- looked at again once it is over", reason);
         logged = YES;
         if (!retryPending) {
@@ -320,6 +373,7 @@ static void ApplyEngines(NSString *reason) {
         return;
     }
     logged = NO;
+    if (asked) gPendingWork &= ~kWorkEngines;
     NSString *status = DpkgStatus();
     if (!PackageInstalled(status, @"com.besiktasliseba.macstatusbaranddock")) { GiveBackAll(@"Mac Status Bar is not installed"); ELog(@"%@: Mac Status Bar not installed -- nothing to do", reason); return; }
     if (!TweakMeantToRun()) { GiveBackAll(@"MacStatusBar&Dock is off (untested iPadOS or safe mode)"); ELog(@"%@: MacStatusBar&Dock is off (untested iPadOS without Enable Anyway, or the crash guard's safe mode) -- no engine kept from loading", reason); return; }
@@ -707,7 +761,7 @@ static void EvaluateMacStatusBarConfig(NSString *source) {
     }
 }
 static dispatch_source_t WatchPath(const char *path, unsigned long mask, NSString *name, void (^rearm)(void)) {
-    int fd = open(path, O_EVTONLY);
+    int fd = open(path, O_EVTONLY | O_CLOEXEC);   // (CLOEXEC: starting over after a cfprefsd restart runs no cancel handler -- not carried into the fresh process)
     if (fd < 0) return nil;
     dispatch_source_t src = dispatch_source_create(DISPATCH_SOURCE_TYPE_VNODE, fd, mask, dispatch_get_main_queue());
     dispatch_source_set_event_handler(src, ^{
@@ -742,6 +796,7 @@ static void WatchForMacStatusBarOff(void) {   // SpringBoard's pid is looked at 
     dispatch_source_set_timer(t, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), 10 * NSEC_PER_SEC, 2 * NSEC_PER_SEC);
     dispatch_source_set_event_handler(t, ^{
         @autoreleasepool {
+            StartOverIfPrefsDaemonRestarted(0);   // (a cfprefsd restart noticed while nothing was asked: a fresh process before the next request; pending work is resumed)
             time_t started = 0; int pid = SpringBoardPid(&started);
             if (!pid) return;
             if (pid != lastPid && time(NULL) - started >= 25 && !DpkgBusy()) { lastPid = pid; CheckMacStatusBarOff(@"SpringBoard started"); }
@@ -789,6 +844,8 @@ static void ForgetLineWanted(NSString *line) {   // (done: a later spoofed post 
     CFPreferencesSynchronize(OURDOMAIN, CFSTR("mobile"), kCFPreferencesAnyHost);
 }
 static void ApplyLines(NSString *why) {
+    StartOverIfPrefsDaemonRestarted(kWorkLines);
+    gPendingWork &= ~kWorkLines;
     if (DpkgBusy()) { ELog(@"lines (%@): a package transaction is running -- nothing done", why); return; }
     NSString *status = DpkgStatus();
     if (!PackageInstalled(status, OURPKG) || ChoicyInstalled(status) || !ICleanerInstalled(status)) return;   // (with Choicy, Settings edits Choicy itself)
@@ -1168,18 +1225,30 @@ int main(int argc, char **argv) {
         if (argc > 1 && strcmp(argv[1], "--migrate") == 0) { Migrate(); return 0; }                      // (postinst, once: from the old separate packages)
         if (argc > 1 && strcmp(argv[1], "--after-install") == 0) { KeepLinesDisabledAfterUpdate(); return 0; }   // (postinst, every install/upgrade)
         if (argc > 1 && strcmp(argv[1], "--uninstall") == 0) { Uninstall(); return 0; }                    // (prerm, on removal only)
+        // (--resume <what>: this daemon started over after a cfprefsd restart, StartOverIfPrefsDaemonRestarted -- the same start, then that work again)
+        const char *resume = (argc > 2 && strcmp(argv[1], "--resume") == 0) ? argv[2] : NULL;
+        if (argc > 0 && argv[0] && argv[0][0] == '/' && strlen(argv[0]) < sizeof(gSelfPath)) strcpy(gSelfPath, argv[0]);
+        gPrefsDaemons = PrefsDaemonSignature();
+        if (resume) ELog(@"settings: started over as a fresh process (cfprefsd %@); doing again: %s", gPrefsDaemons ?: @"?", resume);
+#if DEBUG
+        if (resume) { int open_fds = 0; for (int fd = 0; fd < 1024; fd++) if (fcntl(fd, F_GETFD) != -1) open_fds++; ELog(@"settings: (debug) %d file descriptors open at the fresh start", open_fds); }
+#endif
         writeState(sshdLoaded());
         int t3, t4, t5;
         notify_register_dispatch("com.besiktasliseba.sshtoggle.changed", &t4, dispatch_get_main_queue(), ^(int t) { SSHRequest(-1); });
         notify_register_dispatch("com.besiktasliseba.msb.engines.apply", &t3, dispatch_get_main_queue(), ^(int t) {
             static CFAbsoluteTime last = 0; static BOOL pending = NO;
+            gPendingWork |= kWorkEngines;
             Debounced(&last, &pending, ^{ @autoreleasepool { ApplyEngines(@"request"); } });
         });
         notify_register_dispatch("com.besiktasliseba.lines.apply", &t5, dispatch_get_main_queue(), ^(int t) {
             static CFAbsoluteTime last = 0; static BOOL pending = NO;
+            gPendingWork |= kWorkLines;
             Debounced(&last, &pending, ^{ @autoreleasepool { ApplyLines(@"Settings"); } });
         });
-        ApplyEngines(@"daemon start");   // (waits by itself while a package transaction is running)
+        ApplyEngines(resume && strstr(resume, "engines") ? @"request" : @"daemon start");   // (waits by itself while a package transaction is running)
+        if (resume && strstr(resume, "lines")) ApplyLines(@"Settings");
+        if (resume && strstr(resume, "ssh")) SSHRequest(-1);
         WatchForMacStatusBarOff();
         WatchMacStatusBarConfig();
         WatchScreen();
