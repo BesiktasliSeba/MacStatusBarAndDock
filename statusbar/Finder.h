@@ -680,6 +680,7 @@ static NSString *DMQLText(NSString *path) {
     UIView *v = nil;
     if ([t conformsToType:UTTypeImage]) {
         UIImageView *iv = [UIImageView new]; iv.contentMode = UIViewContentModeScaleAspectFit; iv.backgroundColor = [UIColor systemBackgroundColor]; iv.accessibilityIgnoresInvertColors = YES;
+        iv.isAccessibilityElement = YES; iv.accessibilityLabel = path.lastPathComponent; iv.accessibilityTraits = UIAccessibilityTraitImage;   // (1.3.7, audit M-3)
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{   // (a thumbnail of at most 2048 px: a big photo never loads whole)
             CGImageSourceRef src = CGImageSourceCreateWithURL((__bridge CFURLRef)[NSURL fileURLWithPath:path], NULL);
             CGImageRef cg = src ? CGImageSourceCreateThumbnailAtIndex(src, 0, (__bridge CFDictionaryRef)@{(id)kCGImageSourceCreateThumbnailFromImageAlways: @YES, (id)kCGImageSourceThumbnailMaxPixelSize: @2048, (id)kCGImageSourceCreateThumbnailWithTransform: @YES}) : NULL;
@@ -1757,7 +1758,9 @@ static void DMFinderDrivesCheck(NSString *why);
     _fwd = [UIButton buttonWithType:UIButtonTypeSystem]; [_fwd setImage:[UIImage systemImageNamed:@"chevron.right" withConfiguration:tc] forState:UIControlStateNormal];
     [_back addTarget:self action:@selector(goBack) forControlEvents:UIControlEventTouchUpInside];
     [_fwd addTarget:self action:@selector(goForward) forControlEvents:UIControlEventTouchUpInside];
+    _back.accessibilityLabel = @"Back"; _fwd.accessibilityLabel = @"Forward";   // (symbols only on screen: 1.3.7, audit M-3)
     _folderLabel = [UILabel new]; _folderLabel.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightBold];
+    _folderLabel.accessibilityTraits = UIAccessibilityTraitHeader;
     _viewSwitch = [UIButton buttonWithType:UIButtonTypeSystem];
     [_viewSwitch addTarget:self action:@selector(toggleView) forControlEvents:UIControlEventTouchUpInside];
     _search = [UISearchBar new]; _search.searchBarStyle = UISearchBarStyleMinimal; _search.placeholder = @"Search"; _search.delegate = self;
@@ -1872,6 +1875,7 @@ static void DMFinderDrivesCheck(NSString *why);
 - (void)updateViewSwitch {
     UIImageSymbolConfiguration *tc = [UIImageSymbolConfiguration configurationWithPointSize:14.0 weight:UIImageSymbolWeightMedium];
     [_viewSwitch setImage:[UIImage systemImageNamed:_icons ? @"list.bullet" : @"square.grid.2x2" withConfiguration:tc] forState:UIControlStateNormal];
+    _viewSwitch.accessibilityLabel = _icons ? @"View as List" : @"View as Icons";   // (what it does, as its symbol shows)
 }
 - (void)toggleView { _icons = !_icons; [self updateViewSwitch]; [self setNeedsLayout]; [self reload]; }
 - (void)go:(NSString *)path {
@@ -2028,8 +2032,9 @@ static void DMFinderDrivesCheck(NSString *why);
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s { return tv == _sidebar ? [_places[s][@"rows"] count] : _items.count; }
 - (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)s {
     if (tv != _sidebar) return nil;
-    UILabel *l = [UILabel new]; l.text = [@"  " stringByAppendingString:_places[s][@"h"]];
+    UILabel *l = [UILabel new]; l.text = [@"  " stringByAppendingString:_places[s][@"h"]]; l.accessibilityLabel = _places[s][@"h"];
     l.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightSemibold]; l.textColor = [UIColor tertiaryLabelColor];
+    l.accessibilityTraits = UIAccessibilityTraitHeader;   // (the sidebar's sections: headings, 1.3.7 audit M-3)
     return l;
 }
 - (CGFloat)tableView:(UITableView *)tv heightForHeaderInSection:(NSInteger)s { return tv == _sidebar ? 26.0 : 0.0; }
@@ -2047,6 +2052,9 @@ static void DMFinderDrivesCheck(NSString *why);
         cell.detailTextLabel.text = nil;
         BOOL here = [self.path isEqualToString:r[@"p"]];
         cell.backgroundColor = here ? [[UIColor labelColor] colorWithAlphaComponent:0.08] : [UIColor clearColor];
+        // (assistive features: a place to go, one element -- a button, selected where this window is; its labels were read as text: 1.3.7)
+        cell.isAccessibilityElement = YES; cell.accessibilityLabel = r[@"t"];
+        cell.accessibilityTraits = UIAccessibilityTraitButton | (here ? UIAccessibilityTraitSelected : UIAccessibilityTraitNone);
         return cell;
     }
     DMFinderItem *it = _items[ip.row];
@@ -2071,6 +2079,7 @@ static void DMFinderDrivesCheck(NSString *why);
     for (UILabel *l in @[d, z, k]) l.textColor = [UIColor secondaryLabelColor];
     cell.textLabel.text = nil; cell.detailTextLabel.text = nil; cell.imageView.image = nil;
     cell.backgroundColor = (ip.row % 2) ? [[UIColor labelColor] colorWithAlphaComponent:0.03] : [UIColor clearColor];
+    [self dm_axItemCell:cell item:it];
     return cell;
 }
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
@@ -2108,7 +2117,24 @@ static void DMFinderDrivesCheck(NSString *why);
     __weak UICollectionView *wcv = cv;
     iv.image = DMFinderThumb(it, 56.0, ^{ if (ip.item < [wcv numberOfItemsInSection:0]) [wcv reloadItemsAtIndexPaths:@[ip]]; }) ?: DMFinderIconWithAlias(it, 56.0); l.text = it.display;
     l.textColor = it.locked ? [UIColor secondaryLabelColor] : [UIColor labelColor];
+    [self dm_axItemCell:cell item:it];
     return cell;
+}
+// Assistive features (1.3.7, audit M-3): a list row or an icon is one element -- the name, then its kind, size and date --; selected is UIKit's own
+// trait (the list's and the grid's selection follow ours, -dm_showSelection). Using it selects it, as a tap does; "Open" (an action, as on a Mac
+// where opening is a double click or Command-O) opens it.
+- (void)dm_axItemCell:(UIView *)cell item:(DMFinderItem *)it {
+    cell.isAccessibilityElement = YES;
+    cell.accessibilityLabel = it.display;
+    cell.accessibilityValue = MSBDAXItemValue(it.kind, DMFinderSize(it), DMFinderDate(it.date));
+    __weak DMFinderWindow *weakSelf = self; DMFinderItem *item = it;
+    cell.accessibilityCustomActions = @[[[UIAccessibilityCustomAction alloc] initWithName:@"Open" actionHandler:^BOOL(UIAccessibilityCustomAction *a) {
+        DMFinderWindow *w = weakSelf; if (!w) return NO;
+        [w dm_setSelection:@[item.path] anchor:item.path];
+        DMLog(@"[finder] item opened by an assistive feature");
+        [w open:item];
+        return YES;
+    }]];
 }
 // ---- the selection ---------------------------------------------------------------------------------------------------------------------------
 // A click (tap or pointer click, -dm_click:): on an item it selects only that item, and a second one on it within the double-click time opens it;
@@ -3146,6 +3172,7 @@ static void DMFinderLooseSheet(NSString *title, NSString *message, NSString *act
     UILabel *t = [UILabel new];
     t.text = title; t.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold]; t.textColor = [UIColor labelColor];
     t.textAlignment = NSTextAlignmentCenter; t.numberOfLines = 0;
+    t.accessibilityTraits = UIAccessibilityTraitHeader;   // (read first; the escape gesture answers as Cancel does -- OK when it is the only button: 1.3.7)
     UILabel *m = [UILabel new];
     m.text = message; m.font = [UIFont systemFontOfSize:13.0]; m.textColor = [UIColor secondaryLabelColor];
     m.textAlignment = NSTextAlignmentCenter; m.numberOfLines = 0;
@@ -3161,6 +3188,7 @@ static void DMFinderLooseSheet(NSString *title, NSString *message, NSString *act
     UIView *hLine = [[UIView alloc] initWithFrame:CGRectMake(0, y, W, 0.5)]; hLine.backgroundColor = [UIColor separatorColor]; [box.contentView addSubview:hLine];
     void (^ok)(void) = ^{ DMCloseOverlay(); if (then) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ then(nil); }); };
     void (^no)(void) = ^{ DMCloseOverlay(); if (cancel) cancel(); };
+    objc_setAssociatedObject(o, kOverlayEscapeKey, single ? ok : no, OBJC_ASSOCIATION_COPY_NONATOMIC);
     UIColor *actionColor = destructive ? [UIColor systemRedColor] : [UIColor systemBlueColor];
     if (single) [box.contentView addSubview:DMDialogButton(action.length ? action : @"OK", YES, actionColor, CGRectMake(0, y, W, buttonH), ok)];
     else {
@@ -3295,6 +3323,7 @@ static DMFinderWindow *DMFinderFront(void) {
 static void DMFinderOpen(NSString *path, BOOL newWindow) {
     DM_FEATURE_MARK("finder-window");
     if (!gFinderOn) { DMLog(@"[finder] Finder is switched off in Settings: no window"); return; }
+    if (DMGARefuses(@"Finder window")) return;   // (its files open other apps; Guided Access does not know our windows: 1.3.7, audit M-7)
     DMFinderWindow *f = newWindow ? nil : DMFinderFront();
     if (!f) {
         CGRect d = DMNativeDesktop();
@@ -3312,7 +3341,7 @@ static void DMFinderOpen(NSString *path, BOOL newWindow) {
 // last one comes back; none at all -> a new window. The long-press menu's New Finder Window is its own notification. How many Finder windows
 // exist (open or minimized) is published as the state of ...finder.windows, for the Dock's running dot.
 static void DMFinderDockTapped(void) {
-    if (!gFinderOn) return;
+    if (!gFinderOn || DMGARefuses(@"Finder (Dock icon)")) return;   // (no Finder while a Guided Access session runs: 1.3.7, audit M-7)
     DM_FEATURE_MARK("finder-dock-tap");
     NSMutableArray<DMNativeWindow *> *open = [NSMutableArray array], *mini = [NSMutableArray array];
     for (DMNativeWindow *w in gNativeWindows) if ([w isKindOfClass:[DMFinderWindow class]]) [w.hidden ? mini : open addObject:w];
@@ -3334,6 +3363,7 @@ static void DMOpenSettingsLinkFullScreen(NSString *link, int attempt);   // (Sta
 // The Finder icon's "Remove from Dock": Finder never leaves the Dock (as on a Mac); a question says where it can be hidden instead.
 static void DMFinderRemoveFromDockAsked(void) {
     DM_FEATURE_MARK("finder-remove-from-dock");
+    if (DMGARefuses(@"Finder's Remove from Dock question")) return;
     UIView *host = DMMenuHost();
     if (!host) return;
     DMShowConfirm(host, @"Finder always stays in the Dock", @"You can hide it in Settings > Dock.", @"Open Settings", NO, ^{

@@ -27,7 +27,15 @@
 @property (nonatomic, strong) UIColor *textColor;   // (the name's colour when not selected: the Home Screen's label colour)
 - (void)dm_setDropHover:(BOOL)on;   // (Finder's drag over a folder here, Finder.h DMFDIconHover)
 @end
+static void DMDesktopAXOpen(DMDesktopItemView *v);   // (below, with DMDesktop)
 @implementation DMDesktopItemView
+// Assistive features (1.3.7, audit M-3): an icon is one element -- its name, its kind ("Folder", "PDF document"), a button, selected when it is in the
+// desktop's selection --; using it opens it, as a double tap does (a single tap only selects, which VoiceOver's double tap would otherwise do).
+- (BOOL)isAccessibilityElement { return YES; }
+- (NSString *)accessibilityLabel { return self.item.display.length ? self.item.display : self.label.text; }
+- (NSString *)accessibilityValue { return MSBDAXItemValue(self.item.kind, nil, nil); }
+- (UIAccessibilityTraits)accessibilityTraits { return UIAccessibilityTraitButton | (self.selected ? UIAccessibilityTraitSelected : 0); }
+- (BOOL)accessibilityActivate { DM_FEATURE_MARK("ax-desktop-icons"); DMDesktopAXOpen(self); return YES; }
 - (instancetype)initWithFrame:(CGRect)frame {
     if (!(self = [super initWithFrame:frame])) return nil;
     _back = [UIView new]; _back.backgroundColor = [UIColor colorWithWhite:0 alpha:0.28]; _back.layer.cornerRadius = 8.0; _back.layer.cornerCurve = kCACornerCurveContinuous; _back.hidden = YES;
@@ -98,6 +106,7 @@ static BOOL gDesktopOn = YES;   // (Settings > Mac Status Bar > Show Desktop Ico
 - (void)dm_made:(NSArray<NSString *> *)paths;
 - (void)dm_fitRenameField;
 - (NSString *)dm_placeStringFor:(NSString *)path;
+- (void)dm_axOpen:(DMDesktopItemView *)v;
 #if DEBUG
 - (void)dm_debug:(NSString *)spec;
 #endif
@@ -313,14 +322,18 @@ static BOOL DMDesktopEditing(void) {
         }
         if (!found) return;
     }
-    BOOL editing = DMDesktopEditing();   // (jiggle mode: the desktop steps aside, the Home Screen is being arranged)
+    // (jiggle mode: the desktop steps aside, the Home Screen is being arranged; the same while a Guided Access session keeps the iPad in one app --
+    //  the files would open in other apps, and Guided Access does not know our icons: 1.3.7, audit M-7)
+    BOOL guided = MSBDGuidedAccessActive();
+    BOOL editing = DMDesktopEditing() || guided;
     if (editing != _editing) {
         _editing = editing;
         if (editing) { [self dm_endRename:YES]; [_sel removeAllObjects]; [self dm_showSelection]; }
         self.userInteractionEnabled = !editing;
         for (UIGestureRecognizer *m in _menuGRs) if (m.view == _list) m.enabled = !editing;   // (jiggle mode: the empty page's long press is the Home Screen's again)
         [UIView animateWithDuration:0.2 animations:^{ self.alpha = editing ? 0.0 : 1.0; }];
-        DMLog([NSString stringWithFormat:@"[desktop] Home Screen editing %@: icons %@", editing ? @"began" : @"ended", editing ? @"hidden" : @"back"]);
+        static BOOL asideForGuided = NO; if (editing) asideForGuided = guided;   // (the reason it began, for the line that says it ended)
+        DMLog([NSString stringWithFormat:@"[desktop] %@ %@: icons %@", asideForGuided ? @"Guided Access" : @"stepping aside (Home Screen editing)", editing ? @"began" : @"ended", editing ? @"hidden" : @"back"]);
     }
     // (never left under the Home Screen for a menu that is gone: a close whose completion never came -- an interaction taken off its view while its
     //  menu closed, -dm_detach -- kept the Dock's window low until the next desktop menu closed; the same safety as the Home Screen icon menus')
@@ -695,6 +708,10 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
 - (void)dm_tap:(UITapGestureRecognizer *)g {
     DMDesktopItemView *v = [self dm_viewAt:[g locationInView:self]];
     if (!v) return;
+    // (VoiceOver: a tap that reaches an icon is VoiceOver's double tap -- a finger's own touches are VoiceOver's -- and that means "open". It comes
+    //  as a tap, not through accessibilityActivate, since SpringBoard's accessibility finds Home Screen icons through its icon model, which ours are
+    //  not part of; read as a tap it only selected the icon: logic test 6 Oct, both iPads)
+    if (UIAccessibilityIsVoiceOverRunning()) { [self dm_axOpen:v]; return; }
     [self dm_endRename:YES];
     _hasKeys = YES;
     UIKeyModifierFlags m = [self dm_flags:g];
@@ -847,6 +864,13 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
     }
 }
 - (void)dm_openItems:(NSArray<DMFinderItem *> *)items { [self dm_openItems:items newWindow:NO]; }
+- (void)dm_axOpen:(DMDesktopItemView *)v {   // (an assistive feature used an icon: it becomes the selection and opens, as a double tap does)
+    if (!v.item || _editing || !self.userInteractionEnabled) return;
+    [self dm_endRename:YES];
+    [_sel removeAllObjects]; [_sel addObject:v.item.path]; [self dm_showSelection];
+    DMLog(@"[desktop] icon opened by an assistive feature");
+    [self dm_openItems:@[v.item]];
+}
 - (void)dm_trash:(NSArray<DMFinderItem *> *)items { if (!items.count) return; DMFinderOps().path = _folder; [DMFinderOps() dm_trashItems:[items valueForKey:@"path"]]; }
 - (void)dm_arriveAt:(CGPoint)p count:(NSInteger)n { _arrivePoint = p; _arriveUntil = CACurrentMediaTime() + 6.0; _arriveLeft = n; }   // (self's coordinates)
 - (void)dm_duplicate:(NSArray<DMFinderItem *> *)items {   // (the copies appear next to the originals and become the selection, as on a Mac)
@@ -1406,4 +1430,5 @@ static void DMDesktopStartEarly(void) {
     [[NSRunLoop mainRunLoop] addTimer:gDeskEarlyTimer forMode:NSRunLoopCommonModes];
 }
 static void DMDesktopKeyboardMoved(void) { [gDesktop dm_fitRenameField]; }
+static void DMDesktopAXOpen(DMDesktopItemView *v) { DMDesktop *d = (DMDesktop *)v.superview; if ([d isKindOfClass:[DMDesktop class]]) [d dm_axOpen:v]; }
 static NSString *DMDesktopPlaceFor(NSString *path) { return [gDesktop dm_placeStringFor:path]; }   // (Finder.h gFinderDesktopPlaceFor)

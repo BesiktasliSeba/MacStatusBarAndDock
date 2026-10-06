@@ -290,8 +290,17 @@ static CGFloat DMWiFiLayoutIcon(UIView *fg, CGFloat left, CGFloat midY, UIColor 
         icon = DMWiFiMakeIcon();
         [fg addSubview:icon];
         objc_setAssociatedObject(fg, kWiFiIconKey, icon, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        btn = [UIButton buttonWithType:UIButtonTypeCustom];
-        btn.pointerInteractionEnabled = YES;
+        DMAXButton *wb = [DMAXButton buttonWithType:UIButtonTypeCustom];
+        wb.pointerInteractionEnabled = YES;
+        // (assistive features, 1.3.7 audit M-3: "Wi-Fi, <network>, signal strength 2 of 3 bars" -- or Off / Not connected --, read when asked)
+        wb.accessibilityLabel = @"Wi-Fi";
+        wb.axValue = ^NSString *{
+            if (!DMWiFiPowered()) return @"Off";
+            if (!DMWiFiAssociated()) return @"Not connected";
+            return MSBDAXJoin(@[DMWiFiCurrentName() ?: @"", MSBDAXWiFiDetails(NO, DMWiFiBars(), 3) ?: @""]) ?: @"Connected";
+        };
+        wb.accessibilityHint = @"Opens the Wi-Fi menu.";
+        btn = wb;
         __weak UIButton *weakBtn = btn;
         [btn addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { if (weakBtn) DMOpenWiFiMenu(weakBtn); }] forControlEvents:UIControlEventTouchUpInside];
         [fg addSubview:btn];
@@ -331,6 +340,7 @@ static void DMWiFiRefreshIcon(UIView *fg, UIColor *tint) {
 }
 - (CGFloat)dmRowHeight { return kWiFiHeaderH; }
 - (void)refresh { [super refresh]; self.label.textColor = [UIColor secondaryLabelColor]; }
+- (UIAccessibilityTraits)accessibilityTraits { return UIAccessibilityTraitHeader; }   // (a heading, not a dimmed button: 1.3.7, audit M-3)
 @end
 // "Wi-Fi" with its switch, like the first row of a Mac's Wi-Fi menu.
 @interface DMWiFiSwitchRow : UIView
@@ -345,8 +355,10 @@ static void DMWiFiRefreshIcon(UIView *fg, UIColor *tint) {
     _label.text = @"Wi-Fi";
     _label.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightSemibold];
     _label.textColor = [UIColor labelColor];
+    _label.isAccessibilityElement = NO;   // (the switch carries the name: "Wi-Fi, switch button, on" -- 1.3.7, audit M-3)
     [self addSubview:_label];
     _toggle = [UISwitch new];
+    _toggle.accessibilityLabel = @"Wi-Fi";
     _toggle.on = on;
     _toggle.enabled = enabled;   // (off when a profile or restriction locks Wi-Fi: WFClient -isPowerModificationDisabled)
     _toggle.onTintColor = [UIColor systemBlueColor];
@@ -369,6 +381,8 @@ static void DMWiFiRefreshIcon(UIView *fg, UIColor *tint) {
 @interface DMWiFiNetworkRow : DMRow
 @property (nonatomic, strong) UIImageView *lockView, *barsView;
 @property (nonatomic, copy) NSString *logTag;
+@property (nonatomic) BOOL axSecure;
+@property (nonatomic) NSInteger axBars;
 @end
 @implementation DMWiFiNetworkRow
 - (instancetype)initWithName:(NSString *)name secure:(BOOL)secure bars:(NSInteger)bars handler:(dispatch_block_t)handler {
@@ -376,6 +390,7 @@ static void DMWiFiRefreshIcon(UIView *fg, UIColor *tint) {
     if (!self) return nil;
     self.label.lineBreakMode = NSLineBreakByTruncatingTail;
     _logTag = DMWiFiTag(name);
+    _axSecure = secure; _axBars = bars;   // (read aloud with the name: "Secure network, signal strength 2 of 3 bars" -- 1.3.7, audit M-3)
     if (secure) {
         UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:9.0 weight:UIImageSymbolWeightSemibold];
         _lockView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"lock.fill" withConfiguration:cfg]];
@@ -390,6 +405,7 @@ static void DMWiFiRefreshIcon(UIView *fg, UIColor *tint) {
     [self refresh];
     return self;
 }
+- (NSString *)accessibilityValue { return MSBDAXWiFiDetails(self.axSecure, self.axBars, 3); }
 // (DMRow logs the tapped row's title; a network's name never goes to the log)
 - (void)fire:(id)sender forEvent:(UIEvent *)event {
     DMLog([NSString stringWithFormat:@"[wifi] network row tapped %@", self.logTag]);
@@ -690,6 +706,7 @@ static void DMWiFiShowPasswordSheet(id record, BOOL fake) {
     UIView *host = DMWiFiSheetHost();
     if (!host) { DMLog(@"[wifi] password sheet: no menu bar on the screen, Settings opened"); DMWiFiOpenSettings(DMWiFiRecSSID(record)); return; }
     { id lm = DMSBManager("SBLockScreenManager"); if (DMLockUp(lm)) { DMLog(@"[wifi] password sheet: locked, not shown"); return; } }
+    if (DMGARefuses(@"Wi-Fi password sheet")) return;   // (the request is cancelled, as when locked: 1.3.7, audit M-7)
     DMWiFiSheetClose(@"replaced", YES);
 #if DEBUG
     if ([record isKindOfClass:[DMWiFiFakeRecord class]]) fake = YES;   // (a test network from wififake_: nothing is ever sent)
@@ -699,6 +716,7 @@ static void DMWiFiShowPasswordSheet(id record, BOOL fake) {
     sh.credentials = [DMWiFiCredentials new];
     UIControl *o = DMMakeOverlay(host, 0.30);   // (dimmed; a tap outside does nothing, like the confirm dialogs)
     sh.overlay = o;
+    { __weak DMWiFiPasswordSheet *weakSh = sh; objc_setAssociatedObject(o, kOverlayEscapeKey, ^{ [weakSh dm_cancel]; }, OBJC_ASSOCIATION_COPY_NONATOMIC); }   // (the escape gesture = Cancel, as Esc)
 
     const CGFloat W = 320.0, pad = 20.0;
     UIVisualEffectView *box = DMMakeBlur(14.0);
@@ -972,6 +990,7 @@ static void DMWiFiRebuildOpenMenu(void) {
     CGRect f = panel.frame; f.origin = old.frame.origin;
     if ([UIApplication sharedApplication].userInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft) f.origin.x = CGRectGetMaxX(old.frame) - f.size.width;   // (hung from its title's right edge: that edge stays)
     panel.frame = f;
+    panel.accessibilityLabel = old.accessibilityLabel; panel.accessibilityContainerType = old.accessibilityContainerType;   // (assistive features: still the "Wi-Fi menu" group)
     [old.superview insertSubview:panel aboveSubview:old];
     [old removeFromSuperview];
     gWiFiPanel = panel;

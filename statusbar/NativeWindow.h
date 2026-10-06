@@ -450,6 +450,7 @@ __attribute__((noinline)) static void DMNativeTouchBegan(UITouch *t) {   // (kep
     _titleLabel.textColor = [UIColor labelColor];
     _titleLabel.textAlignment = NSTextAlignmentCenter;
     _titleLabel.text = title;
+    _titleLabel.accessibilityTraits = UIAccessibilityTraitHeader;   // (the window's name: a heading for assistive features, 1.3.7 audit M-3)
     [_titleBar addSubview:_titleLabel];
     // traffic lights: our shared dots (hover / press symbols through the shared light group)
     _lights = [UIView new];
@@ -466,6 +467,7 @@ __attribute__((noinline)) static void DMNativeTouchBegan(UITouch *t) {   // (kep
     }
     _dots = dots;
     __weak DMNativeWindow *weakSelf = self;
+    ((UIButton *)buttons[2]).accessibilityLabel = @"Zoom";   // (green zooms our windows; red and yellow are named by the light group)
     DMLightGroupAttach(_lights, buttons, dots, ^NSString *{ return DMNativeLightsTokenFor(weakSelf); });
     [_titleBar addSubview:_lights];
     UIPanGestureRecognizer *move = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(dm_move:)];
@@ -518,6 +520,7 @@ __attribute__((noinline)) static void DMNativeTouchBegan(UITouch *t) {   // (kep
     for (UIView *g in @[_gripL, _gripR]) { UIView *grip = g.subviews.firstObject; grip.backgroundColor = DMResizeGripColor(self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark); }
 }
 - (void)dm_light:(UIButton *)b {
+    if (DMGARefuses(@"window traffic light")) return;   // (Guided Access: also when an assistive feature presses it -- the windows are away then anyway)
     if (b.tag == 0) [self close];
     else if (b.tag == 1) [self minimize];
     else [self zoom];
@@ -678,8 +681,12 @@ __attribute__((noinline)) static BOOL DMNativeHandlePress(UIPress *p) {   // (ke
 @property (nonatomic, copy) void (^then)(NSString *text);
 @property (nonatomic, copy) void (^cancelled)(void);   // (Cancel, Esc, or the window closed with the sheet up)
 @property (nonatomic, weak) UIResponder *restoreFocus;   // (what was being typed in when the sheet came: it gets the typing back, like a Mac)
+@property (nonatomic) BOOL axSingle;                       // (only one button, the action: the escape gesture answers with it)
 @end
 @implementation DMNativeSheet
+// Assistive features (1.3.7, audit M-3): while the sheet is up they stay in it (accessibilityViewIsModal, set when it is made), and their escape
+// gesture is Cancel -- or the action, when that is the sheet's only button -- as Esc is.
+- (BOOL)accessibilityPerformEscape { [self dm_done:self.axSingle]; return YES; }
 - (void)dm_done:(BOOL)ok {
     void (^h)(NSString *) = ok ? self.then : nil; NSString *text = self.field.text;
     void (^c)(void) = ok ? nil : self.cancelled;
@@ -728,6 +735,7 @@ __attribute__((noinline)) static BOOL DMNativeHandlePress(UIPress *p) {   // (ke
     UIView *c = panel.contentView;
     CGFloat y = 18.0;
     UILabel *t = [UILabel new]; t.text = title; t.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightSemibold]; t.numberOfLines = 0; t.textAlignment = NSTextAlignmentCenter;
+    t.accessibilityTraits = UIAccessibilityTraitHeader;
     t.frame = CGRectMake(18, y, w - 36, 0); [t sizeToFit]; t.frame = CGRectMake(18, y, w - 36, t.frame.size.height); [c addSubview:t]; y = CGRectGetMaxY(t.frame) + 8.0;
     if (message.length) {
         UILabel *m = [UILabel new]; m.text = message; m.font = [UIFont systemFontOfSize:12.0]; m.textColor = [UIColor secondaryLabelColor]; m.numberOfLines = 0; m.textAlignment = NSTextAlignmentCenter;
@@ -746,7 +754,7 @@ __attribute__((noinline)) static BOOL DMNativeHandlePress(UIPress *p) {   // (ke
     for (UIButton *b in @[cancel, ok]) { b.titleLabel.font = [UIFont systemFontOfSize:13.0 weight:b == ok ? UIFontWeightSemibold : UIFontWeightRegular]; b.layer.cornerRadius = 6.0; b.clipsToBounds = YES; [c addSubview:b]; }
     cancel.backgroundColor = [UIColor tertiarySystemFillColor]; [cancel setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
     ok.backgroundColor = destructive ? [UIColor systemRedColor] : [UIColor systemBlueColor]; [ok setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    if (!action.length || [action isEqualToString:@"OK"]) { cancel.hidden = YES; ok.frame = CGRectMake(w - 18 - bw, y, bw, 28); }
+    if (!action.length || [action isEqualToString:@"OK"]) { cancel.hidden = YES; sh.axSingle = YES; ok.frame = CGRectMake(w - 18 - bw, y, bw, 28); }
     else { cancel.frame = CGRectMake(18, y, bw, 28); ok.frame = CGRectMake(18 + bw + 10, y, bw, 28); }
     [cancel addTarget:sh action:@selector(dm_cancel) forControlEvents:UIControlEventTouchUpInside];
     [ok addTarget:sh action:@selector(dm_ok) forControlEvents:UIControlEventTouchUpInside];
@@ -755,8 +763,10 @@ __attribute__((noinline)) static BOOL DMNativeHandlePress(UIPress *p) {   // (ke
     panel.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
     sh.panel = panel;
     [sh addSubview:panel];
+    sh.accessibilityViewIsModal = YES;
     [self addSubview:sh];
     DMNativeSetActive(self);
+    if (!sh.field) DMAXScreenChanged(t);   // (the question is read first; with a text field, the typing focus takes VoiceOver there by itself)
     sh.alpha = 0; panel.transform = CGAffineTransformMakeTranslation(0, -panel.bounds.size.height);
     MSBAnimate(0.22, 0, 0.9, UIViewAnimationOptionCurveEaseOut, ^{ sh.alpha = 1; panel.transform = CGAffineTransformIdentity; }, nil);
     if (sh.field) { if (!gNativeLayer.isKeyWindow) [gNativeLayer makeKeyWindow]; [sh.field becomeFirstResponder]; [sh.field selectAll:nil]; }

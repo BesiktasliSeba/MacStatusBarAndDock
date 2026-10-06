@@ -86,8 +86,13 @@ static UIImage *DMFinderFaceImage(CGSize size) {
     [self addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tapped)]];
     [self addInteraction:[[UIPointerInteraction alloc] initWithDelegate:self]];
     [self addInteraction:[[UIContextMenuInteraction alloc] initWithDelegate:self]];
+    // (assistive features, 1.3.7 audit M-3: "Finder, button", used as a tap is -- its menu through the context menu action, as for Apple's icons)
+    self.isAccessibilityElement = YES;
+    self.accessibilityLabel = @"Finder";
+    self.accessibilityTraits = UIAccessibilityTraitButton;
     return self;
 }
+- (BOOL)accessibilityActivate { [self tapped]; return YES; }
 - (void)layoutSubviews {
     [super layoutSubviews];
     self.image.frame = self.bounds;

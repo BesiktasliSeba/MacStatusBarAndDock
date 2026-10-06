@@ -43,6 +43,8 @@
 #import "../common/OtherTweaks.h"   // (MSBDOtherTweakDoing: Single Mute already shows the mute icon -> ours steps aside)
 #import "../common/UpdateCheck.h"   // (the Apple menu's update row: a newer version in the package managers' own downloaded lists)
 #import "../common/VPNRespring.h"  // (no respring into Aerial 5.0's start-up hang while a VPN reconnects: the warning, and the VPN state for Settings)
+#import "../common/GuidedAccess.h"   // (MSBDGuidedAccessActive: while a Guided Access session runs, our own UI steps aside -- DMGuidedAccessChanged)
+#import "../common/AXText.h"         // (the words VoiceOver and the other assistive features get for our UI: menu shortcuts, Wi-Fi, items)
 
 extern int proc_pid_rusage(int pid, int flavor, rusage_info_t *buffer);
 
@@ -169,6 +171,24 @@ static const void *kLightDisabledKey = &kLightDisabledKey;   // (a dot shown gre
 - (void)hover:(UIHoverGestureRecognizer *)g;
 @end
 static NSHashTable<DMLightGroup *> *gLightGroups;
+// Guided Access (1.3.7, audit M-7): while a session runs every set of lights takes no touches -- red would close or force quit the one app the iPad
+// is kept in, yellow would send it home. The container (the lights' view, or the title bar they sit in) is switched off and what it was is kept,
+// so the end of the session gives exactly that back (DMGuidedAccessChanged); a set made during the session starts off. It is also hidden from
+// assistive features for the session: VoiceOver and Switch Control use a button without a touch, which a switched-off view does not stop (the
+// iPad 2's device test, 5 Oct: a played session, red on the session app's Stage Manager title bar used that way closed its window).
+static BOOL gGALightsInert = NO;
+static const void *kGALightsWasKey = &kGALightsWasKey, *kGALightsAXWasKey = &kGALightsAXWasKey;
+static void DMGALightsContainerInert(UIView *c, BOOL inert) {
+    if (!c) return;
+    NSNumber *was = objc_getAssociatedObject(c, kGALightsWasKey);
+    if (inert && !was) {
+        objc_setAssociatedObject(c, kGALightsWasKey, @(c.userInteractionEnabled), OBJC_ASSOCIATION_RETAIN_NONATOMIC); c.userInteractionEnabled = NO;
+        objc_setAssociatedObject(c, kGALightsAXWasKey, @(c.accessibilityElementsHidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC); c.accessibilityElementsHidden = YES;
+    } else if (!inert && was) {
+        c.userInteractionEnabled = was.boolValue; objc_setAssociatedObject(c, kGALightsWasKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        c.accessibilityElementsHidden = [objc_getAssociatedObject(c, kGALightsAXWasKey) boolValue]; objc_setAssociatedObject(c, kGALightsAXWasKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
 // (the active app, as the lights last saw it: refreshed with every group when it changes -- MilkyWay's per-frame window layout asked for it every
 //  frame, logic test P3)
 static NSString *gLightsActiveBundle = nil;
@@ -216,8 +236,17 @@ static DMLightGroup *DMLightGroupAttach(UIView *container, NSArray<UIControl *> 
         [container addGestureRecognizer:[[UIHoverGestureRecognizer alloc] initWithTarget:g action:@selector(hover:)]];
         if (!gLightGroups) gLightGroups = [NSHashTable weakObjectsHashTable];
         [gLightGroups addObject:g];
+        if (gGALightsInert) DMGALightsContainerInert(container, YES);
     }
     for (UIControl *b in buttons) {
+        // (VoiceOver, Switch Control, Voice Control, Full Keyboard Access: each light says what it does -- 1.3.7, audit M-3. Which light it is comes
+        //  from its dot's tag; a label already there -- one of ours set by the caller, or an engine's own -- is kept)
+        if (!b.accessibilityLabel.length) {
+            NSInteger which = -1;
+            for (UIView *sub in b.subviews) if (sub.tag >= 300 && sub.tag <= 302) { which = sub.tag - 300; break; }
+            if (which < 0) { NSUInteger i = [buttons indexOfObjectIdenticalTo:b]; if (i < dots.count && dots[i].tag >= 300 && dots[i].tag <= 302) which = dots[i].tag - 300; }
+            if (which >= 0) b.accessibilityLabel = which == 0 ? @"Close" : (which == 1 ? @"Minimize" : @"Full Screen");
+        }
         if ([[b actionsForTarget:g forControlEvent:UIControlEventTouchDown] count]) continue;
         [b addTarget:g action:@selector(down) forControlEvents:UIControlEventTouchDown | UIControlEventTouchDragEnter];
         [b addTarget:g action:@selector(up) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel | UIControlEventTouchDragExit];
@@ -634,6 +663,14 @@ static void DMWatchLog(NSString *what, id view, double value) {
 @end
 
 // ===== actions ==========================================================
+// Guided Access (1.3.7, audit M-7): while a session keeps the iPad in one app, nothing of ours opens, closes, quits or switches anything -- the menus,
+// the Today View, Spotlight, the traffic lights, Finder, and the actions they lead to (force quit, minimize). Guided Access stops SpringBoard's own
+// ways out, not ours (common/GuidedAccess.h); what is already open steps aside when the session starts (DMGuidedAccessChanged).
+static BOOL DMGARefuses(NSString *what) {
+    if (!MSBDGuidedAccessActive()) return NO;
+    DMLog([NSString stringWithFormat:@"[guided] %@: not while Guided Access runs", what]);
+    return YES;
+}
 static void DMSaveWindowState(void);
 static void DMRespring(void) {
     DMLog(@"[action] respring");
@@ -972,6 +1009,7 @@ static NSSet<NSString *> *DMSwitcherBundleIDs(id sw);
 static NSSet<NSString *> *DMLiveRunningBundleIDs(void);
 static void DMForceQuitBundle(NSString *bundleID) {
     if (!bundleID.length) return;
+    if (DMGARefuses([@"force quit " stringByAppendingString:bundleID])) return;   // (the app Guided Access keeps the iPad in, or any other)
     if (DMWaitForContextMenu([@"force quit " stringByAppendingString:bundleID], ^{ DMForceQuitBundle(bundleID); })) return;
     BOOL windowed = DMStageForBundle(bundleID) != nil;
     // Zetsu parity: without this, a Zetsu-windowed app's process would be killed with nothing telling Zetsu's own window to go away first --
@@ -1030,6 +1068,7 @@ static SBApplication *DMFrontApp(void) {
 
 // "Minimize": send the app to the background (the same as pressing Home) without killing it.
 static void DMMinimize(void) {
+    if (DMGARefuses(@"minimize")) return;   // (Home is Guided Access's to refuse; SBUIController's own handler below would not ask it)
     SpringBoard *sb = (SpringBoard *)[UIApplication sharedApplication];
     SEL home = NSSelectorFromString(@"_simulateHomeButtonPress");
     if ([sb respondsToSelector:home]) {
@@ -2210,7 +2249,9 @@ static BOOL DMStageManagerHeldNow(void) {
     SEL get = NSSelectorFromString(@"chamoisWindowingEnabled");
     return [sd respondsToSelector:get] && !((BOOL (*)(id, SEL))objc_msgSend)(sd, get);
 }
+static void DMWatchGuidedAccess(void);   // (Guided Access: our UI steps aside while a session runs -- defined with DMNativeTick)
 static void DMSyncWindowsForLibraryBody(void) {
+    DM_PERF("guided", DMWatchGuidedAccess());
     DM_PERF("stagemgr", DMStageManagerWatch());
     if (gSMCheckOK) DM_PERF("smrestyle", DMSMDeskWatchEngine());   // (Stage Manager engine on or off without a respring: the Home Screen behind the windows follows at once)
     DM_PERF("dock", DMWatchDockChanges());   // (the Dock changed for good: windows follow its new height, every engine)
@@ -5758,6 +5799,7 @@ static NSString *DMActiveBundleForLights(void) { return DMNativeLightsToken() ?:
 static BOOL DMSMWindowAction(NSString *bundleID, NSString *name);   // (Stage Manager engine, below)
 static BOOL DMSMToggleZoom(NSString *bundle);
 static void DMLightAction(NSInteger which) {
+    if (DMGARefuses(@"traffic light")) return;
     SBApplication *app = DMActiveApp() ?: DMFrontApp();
     NSString *bundleID = [app bundleIdentifier];
     DMLog([NSString stringWithFormat:@"[lights] tap %ld, front app %@", (long)which, bundleID]);
@@ -6546,6 +6588,7 @@ static void DMFitRejoinAfterFullScreen(NSString *bundleID) {
     DMLog([NSString stringWithFormat:@"[fit] %@ is back from full screen: it takes its tile again (%lu windows tiled)", bundleID, (unsigned long)g.count]);
 }
 static void DMStageLightAction(UIView *stage, NSInteger which) {
+    if (DMGARefuses(@"window traffic light")) return;   // (Guided Access: the lights also refuse, whatever pressed them -- an assistive feature does without a touch)
     NSString *bundleID = DMStageBundle(stage);
     DMLog([NSString stringWithFormat:@"[aerial] stage light %ld for %@", (long)which, bundleID]);
     Class core = objc_getClass("AerialCore");
@@ -10151,6 +10194,47 @@ static const CGFloat kSliderRowH = 46.0;   // taller than a plain DMRow: an app 
 
 static UIView *gOverlay = nil;   // non-nil while the menu or a dialog is showing
 static UIView *gPill = nil;      // highlight behind the logo while the menu is open
+static __weak UIButton *gOverlayTitle = nil;   // the title (or status item) whose menu is open (DMAttachMenuHover, DMTitleTapWithMenuOpen)
+
+// Assistive features (1.3.7, audit M-3). VoiceOver, Switch Control, Voice Control and Full Keyboard Access move through our UI by its accessibility elements, so each button of ours says
+// what it is (label), what it shows now (value) and what it does (hint) -- the standard UIAccessibility properties only; nothing changes on the
+// screen. A button whose words change while it stays on screen (the clock, Wi-Fi, VPN, SSH) is asked for them when they are read.
+@interface DMAXButton : UIButton
+@property (nonatomic, copy) NSString *(^axLabel)(void);
+@property (nonatomic, copy) NSString *(^axValue)(void);
+@end
+static BOOL DMOverlayEscape(UIWindow *inWindow);   // (with the menu window, below: the escape gesture closes the open menu or dialog)
+// A button of ours used by an assistive feature (VoiceOver's double tap, Switch Control's select, Full Keyboard Access's Space, Voice Control's
+// tap): its own action, as a tap runs it. Without this UIKit makes up a touch at the button's middle instead: on iPadOS 16.7.7 that touch reached
+// the status bar's window at {0, 0} and ended at {nan, nan}, so no menu opened (iPad 2, logic test 6 Oct); Full Keyboard Access makes none at all.
+static BOOL DMAXActivateControl(UIControl *c) {
+    if (!c.enabled || c.hidden || !c.window) return NO;
+    DMLog([NSString stringWithFormat:@"[button] %@ used by an assistive feature", c.accessibilityLabel ?: NSStringFromClass([c class])]);
+    [c sendActionsForControlEvents:UIControlEventTouchUpInside];
+    return YES;
+}
+@implementation DMAXButton
+- (NSString *)accessibilityLabel { NSString *l = self.axLabel ? self.axLabel() : nil; return l.length ? l : [super accessibilityLabel]; }
+- (NSString *)accessibilityValue { NSString *v = self.axValue ? self.axValue() : nil; return v.length ? v : [super accessibilityValue]; }
+- (BOOL)accessibilityActivate { return DMAXActivateControl(self); }
+- (BOOL)accessibilityPerformEscape { return DMOverlayEscape(nil); }   // (the focus on the bar while a menu is open: the escape gesture closes it)
+@end
+// An assistive feature that moves through the elements is running (VoiceOver, Switch Control, Full Keyboard Access): only then is focus moved.
+static BOOL DMAXRunning(void) {
+    if (UIAccessibilityIsVoiceOverRunning() || UIAccessibilityIsSwitchControlRunning()) return YES;
+    static Boolean (*fka)(void) = NULL;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ void *h = dlopen("/usr/lib/libAccessibility.dylib", RTLD_LAZY); if (h) fka = (Boolean (*)(void))dlsym(h, "_AXSFullKeyboardAccessEnabled"); });
+    return fka && fka();
+}
+// A new screen of ours came or went (a menu or dialog opened, or closed): the focus goes to `element`, or to the new screen's first element (nil).
+static void DMAXScreenChanged(id element) { if (DMAXRunning()) UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, element); }
+// An open menu is one group named after its title ("Edit menu"): VoiceOver says the name as it moves into it.
+static void DMAXMenuPanel(UIView *panel, NSString *title) {
+    if (!panel || !title.length) return;
+    panel.accessibilityLabel = [title stringByAppendingString:@" menu"];
+    panel.accessibilityContainerType = UIAccessibilityContainerTypeSemanticGroup;
+}
 
 @interface DMRow : UIControl
 @property (nonatomic, copy) NSString *hint;                 // shortcut shown on the right, like macOS
@@ -10244,6 +10328,26 @@ static UIView *gPill = nil;      // highlight behind the logo while the menu is 
     }
     self.tickView.tintColor = lit ? [UIColor whiteColor] : [UIColor labelColor];
 }
+// Assistive features (1.3.7, audit M-3): a row is one element -- its title, its shortcut in words as the value ("Command O", like a Mac's menu read
+// aloud), a button that can be used (dimmed when greyed out), plain text when it only shows something (no action), selected when it has the tick.
+// Using it runs the row's own action, as a tap does.
+- (BOOL)isAccessibilityElement { return YES; }
+- (NSString *)accessibilityLabel { return self.label.text; }
+- (NSString *)accessibilityValue { return MSBDAXShortcutSpoken(self.hint); }
+- (UIAccessibilityTraits)accessibilityTraits {
+    DM_FEATURE_MARK("ax-menu-rows");
+    UIAccessibilityTraits t = self.handler ? UIAccessibilityTraitButton : UIAccessibilityTraitStaticText;
+    if (self.handler && !self.enabled) t |= UIAccessibilityTraitNotEnabled;
+    if (self.checked) t |= UIAccessibilityTraitSelected;
+    return t;
+}
+- (BOOL)accessibilityPerformEscape { return DMOverlayEscape(nil); }
+- (BOOL)accessibilityActivate {
+    if (!self.enabled || !self.handler) return NO;
+    DMLog(@"[row] used by an assistive feature");
+    [self sendActionsForControlEvents:UIControlEventTouchUpInside];   // (the row's own action, as a tap -- subclasses' -fire:forEvent: included)
+    return YES;
+}
 - (void)layoutSubviews {
     [super layoutSubviews];
     self.highlightView.frame = CGRectInset(self.bounds, 5.0, 0.0);
@@ -10309,7 +10413,11 @@ static UIView *gPill = nil;      // highlight behind the logo while the menu is 
     // Keyboard Access/Switch Control features actually enabled (checked com.apple.Accessibility.plist directly), so this is coming purely
     // from the pointer-interaction side, not an assistive-technology setting. Turning the slider itself off as an accessibility element
     // removes it from that pointer-menu path entirely (this is a personal single-user utility, not something needing VoiceOver support).
-    _slider.isAccessibilityElement = NO;
+    // 1.3.7 (audit M-3): with VoiceOver, Switch Control or Full Keyboard Access running the slider IS an element (adjustable, "<app> Volume"):
+    // those users set the level with it, and the pointer's "Enter Value" is a fair extra then. Without them it stays out, as above. (The row is
+    // made each time the Audio menu opens, so the answer is fresh.)
+    _slider.isAccessibilityElement = DMAXRunning();
+    _slider.accessibilityLabel = [NSString stringWithFormat:@"%@ Volume", title ?: @"App"];
     [_slider addTarget:self action:@selector(sliderChanged) forControlEvents:UIControlEventValueChanged];
     [_slider addTarget:self action:@selector(sliderCommitted) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel];
     [self addSubview:_slider];
@@ -10334,7 +10442,8 @@ static UIView *gPill = nil;      // highlight behind the logo while the menu is 
     BOOL muted = self.slider.value <= 0.001 || self.sourceMuted;
     UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:14.0 weight:UIImageSymbolWeightRegular];
     [self.muteButton setImage:[UIImage systemImageNamed:muted ? @"speaker.slash.fill" : @"speaker.wave.2.fill" withConfiguration:cfg] forState:UIControlStateNormal];
-    self.muteButton.accessibilityLabel = muted ? @"Unmute" : @"Mute";
+    NSString *verb = muted ? @"Unmute" : @"Mute";   // (with the app's name: every row of the Audio menu has such a button)
+    self.muteButton.accessibilityLabel = self.baseTitle.length ? [NSString stringWithFormat:@"%@ %@", verb, self.baseTitle] : verb;
 }
 - (void)muteTapped {
     if (self.sourceMuted) { if (self.onMakeSource) self.onMakeSource(); self.sourceMuted = NO; return; }
@@ -10402,6 +10511,19 @@ static UIWindow *gMenuWindow = nil;
 static UIView *gMenuRotator = nil;   // iPadOS 16: the container menus are built in when the menu window is not turned with the screen (see DMMenuHost)
 static long gMenuRotatorBuiltForOrientation = 0;   // the orientation DMMenuHost() last hosted a menu for, turned window or not; 0 when none (see DMCloseMenuIfOrientationStale)
 static CGSize gMenuBuiltForScreen = {0, 0};         // the screen size at that same moment
+// The escape gesture of assistive features (VoiceOver's two-finger scrub, Full Keyboard Access's Escape, Switch Control's): the open menu or dialog
+// closes as a tap outside or Esc closes it -- a dialog's own answer to Esc when it has one (kOverlayEscapeKey). Asked of the focused element and then
+// of everything above it, so the menu windows (here) and the rows (DMRow) both answer. NO when nothing of ours is open there. (1.3.7, audit M-3)
+static const void *kOverlayEscapeKey = &kOverlayEscapeKey;
+static BOOL DMOverlayEscape(UIWindow *inWindow) {
+    UIView *o = gOverlay;
+    if (!o || (inWindow && o.window != inWindow)) return NO;
+    dispatch_block_t esc = objc_getAssociatedObject(o, kOverlayEscapeKey);
+    DMLog([NSString stringWithFormat:@"[overlay] escape from an assistive feature (%@)", esc ? @"the dialog's own answer" : @"closed"]);
+    if (esc) esc(); else DMCloseOverlay();
+    return YES;
+}
+static BOOL DMMenuWindowAXEscape(id self, SEL _cmd) { return DMOverlayEscape((UIWindow *)self); }
 static UIView *DMMenuWindowHitTest(id self, SEL _cmd, CGPoint point, UIEvent *event) {
     UIWindow *w = (UIWindow *)self;
     NSMutableArray<UIView *> *candidates = [NSMutableArray array];
@@ -10649,6 +10771,7 @@ static void DMCreateMenuWindow(void) {
         if (!sub) {
             sub = objc_allocateClassPair(base, "MSBMenuWindow", 0);
             class_addMethod(sub, @selector(hitTest:withEvent:), (IMP)DMMenuWindowHitTest, "@@:{CGPoint=dd}@");
+            class_addMethod(sub, @selector(accessibilityPerformEscape), (IMP)DMMenuWindowAXEscape, "B@:");
             objc_registerClassPair(sub);
         }
         UIWindow *w = ((id (*)(id, SEL, id, id))objc_msgSend)([sub alloc], initRole, @"SBFTraitsParticipantRoleRecordingIndicator", @"MacStatusBarMenus"); DMSnapInvalidate();
@@ -10711,6 +10834,7 @@ static UIWindow *DMExtMenuWindowFor(UIView *fg) {
             sub = objc_allocateClassPair([UIWindow class], "MSBExtMenuWindow", 0);
             if (!sub) return nil;
             class_addMethod(sub, @selector(hitTest:withEvent:), (IMP)DMMenuWindowHitTest, "@@:{CGPoint=dd}@");
+            class_addMethod(sub, @selector(accessibilityPerformEscape), (IMP)DMMenuWindowAXEscape, "B@:");
             objc_registerClassPair(sub);
         }
         w = [(UIWindow *)[sub alloc] initWithWindowScene:scene];
@@ -10788,6 +10912,10 @@ static void DMCloseOverlay(void) {
     gPill.hidden = YES;
     if (!o) return;
     o.userInteractionEnabled = NO;   // stop intercepting touches immediately
+    // (assistive features: out of the fading menu at once; VoiceOver then picks the screen's element itself -- the app's, or the Home Screen's. A
+    //  focus request for the menu title in the status bar is not taken there, as the menu closes or after its window is gone: iPadOS 15, VoiceOver
+    //  on, device test 5 Oct; the bar is reached by touch. 1.3.7, audit M-3)
+    o.accessibilityViewIsModal = NO; o.accessibilityElementsHidden = YES;
     [UIView animateWithDuration:0.12 animations:^{ o.alpha = 0.0; }
                      completion:^(BOOL finished) { [o removeFromSuperview]; if (!gOverlay && gMenuWindow) gMenuWindow.hidden = YES; if (!gOverlay) DMHideExtMenuWindows(); DMApplyWindowLevel(); }];
     DMMenuKeyboardOrder();   // (a windowed app's keyboard lowered under the menu goes back up at once)
@@ -10839,6 +10967,12 @@ static UIControl *DMMakeOverlay(UIView *host, CGFloat dimAlpha) {
     // (portrait) area: touches right of x 834 in landscape went through to the windows below (seen with the Today View panel under the clock).
     if (host == gMenuWindow && [NSProcessInfo processInfo].operatingSystemVersion.majorVersion < 16) o.frame = [UIScreen mainScreen].bounds;
     gOverlay = o;
+    // Assistive features (1.3.7, audit M-3): the open menu or dialog is modal for VoiceOver and Switch Control (what lies beside it is not read), and
+    // their focus is asked to move to its first element once the caller has filled it (the next turn of the main queue; VoiceOver went there on
+    // the M1, 5 Oct); the escape gesture closes it (DMOverlayEscape). Nothing changes on the screen.
+    o.accessibilityViewIsModal = YES;
+    DM_FEATURE_MARK("ax-menus-modal");
+    { __weak UIControl *wo = o; dispatch_async(dispatch_get_main_queue(), ^{ UIControl *x = wo; if (x && gOverlay == x) DMAXScreenChanged(nil); }); }
     DMApplyWindowLevel();   // MilkyWay's windows drop below the menu's window (not needed for the menu window itself: it is above them)
     DMMenuKeyboardOrder();   // (a windowed app's keyboard steps under the menu while it is open)
     return o;
@@ -10934,6 +11068,7 @@ static void DMShowConfirm(UIView *host, NSString *title, NSString *message,
     t.textColor = [UIColor labelColor];
     t.textAlignment = NSTextAlignmentCenter;
     t.numberOfLines = 0;
+    t.accessibilityTraits = UIAccessibilityTraitHeader;   // (read first when the dialog opens; escape = Cancel -- 1.3.7, audit M-3)
     UILabel *m = [UILabel new];
     m.text = message;
     m.font = [UIFont systemFontOfSize:13.0];
@@ -11096,6 +11231,7 @@ static const NSUInteger kListMaxRows = 7;
 
     _titleLabel = [UILabel new];
     _titleLabel.text = @"Force Quit Applications";
+    _titleLabel.accessibilityTraits = UIAccessibilityTraitHeader;
     _titleLabel.font = [UIFont systemFontOfSize:16.0 weight:UIFontWeightSemibold];
     _titleLabel.textColor = [UIColor labelColor];
     _titleLabel.textAlignment = NSTextAlignmentCenter;
@@ -11151,10 +11287,12 @@ static const NSUInteger kListMaxRows = 7;
     row.nameLabel.text = [app displayName] ?: bid;
     row.nameLabel.font = [UIFont systemFontOfSize:15.0];
     row.nameLabel.textColor = [UIColor labelColor];
+    row.nameLabel.isAccessibilityElement = NO;   // (the row's button says it: "Force Quit Safari, button" -- 1.3.7, audit M-3)
     [row addSubview:row.nameLabel];
 
     row.quitButton = [UIButton buttonWithType:UIButtonTypeSystem];
     [row.quitButton setTitle:@"Force Quit" forState:UIControlStateNormal];
+    row.quitButton.accessibilityLabel = [NSString stringWithFormat:@"Force Quit %@", row.nameLabel.text ?: @""];
     row.quitButton.titleLabel.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold];
     [row.quitButton setTitleColor:[UIColor systemRedColor] forState:UIControlStateNormal];
     row.quitButton.backgroundColor = [[UIColor systemRedColor] colorWithAlphaComponent:0.16];
@@ -11179,6 +11317,7 @@ static const NSUInteger kListMaxRows = 7;
     DMLog([NSString stringWithFormat:@"[fqlist] force quit tapped for %@", [row.app bundleIdentifier]]);
     row.quitButton.enabled = NO;
     [row.quitButton setTitle:@"Quitting…" forState:UIControlStateNormal];
+    row.quitButton.accessibilityLabel = [NSString stringWithFormat:@"Quitting %@", row.nameLabel.text ?: @""];
     DMForceQuit(row.app);
     __weak DMForceQuitPanel *weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -11619,6 +11758,7 @@ static void DMShowInfoPanel(UIView *host, UIView *icon, NSString *title, NSStrin
 
     UILabel *t = [UILabel new];
     t.text = title;
+    t.accessibilityTraits = UIAccessibilityTraitHeader;   // (1.3.7, audit M-3)
     t.font = [UIFont systemFontOfSize:26.0 weight:UIFontWeightSemibold];
     t.textColor = [UIColor labelColor];
     t.textAlignment = NSTextAlignmentCenter;
@@ -11673,6 +11813,7 @@ static void DMShowInfoPanel(UIView *host, UIView *icon, NSString *title, NSStrin
             v.adjustsFontSizeToFitWidth = YES;
             v.minimumScaleFactor = 0.8;
             v.frame = CGRectMake(kAboutLabelW + 12.0, y, kAboutW - kAboutLabelW - 12.0 - 20.0, kAboutRowH);
+            l.accessibilityValue = pair[1]; v.isAccessibilityElement = NO;   // (one element per row, "Chip, A12Z": 1.3.7, audit M-3)
             [scroll addSubview:l];
             [scroll addSubview:v];
             y += kAboutRowH;
@@ -11809,6 +11950,7 @@ static id DMProxyForBundle(NSString *bundleID) {
 // Spotlight needs its own way in. -[SpringBoard _toggleSearch] exists on 15.6.1 and presents the
 // Spotlight overlay from the Home Screen or over an app.
 static void DMOpenSpotlight(void) {
+    if (DMGARefuses(@"Spotlight")) return;
     {   // never over the Lock Screen or the Cover Sheet (the icon is hidden there; this also covers a tap that lands during the change)
         id lm = DMSBManager("SBLockScreenManager");
         id csm = DMSBManager("SBCoverSheetPresentationManager");
@@ -11905,7 +12047,7 @@ static void DMAttachMenuHover(UIControl *overlay, UIView *fg, UIView *host, UIBu
 // A title tapped while a menu is open: its own menu closes (like before); another title's menu takes over at once (like macOS). Returns YES when
 // nothing more is to be done. (In portrait on the iPad 2 a tap on a title reached the status bar's own button instead of our catch-all, and the
 // button only closed the open menu: switching took two taps.)
-static __weak UIButton *gOverlayTitle = nil;
+// (gOverlayTitle: the title or status item whose menu is open, with gOverlay above)
 static BOOL DMTitleTapWithMenuOpen(UIButton *btn) {
     if (!gOverlay) return NO;
     UIButton *cur = gOverlayTitle;
@@ -11916,6 +12058,11 @@ static BOOL DMTitleTapWithMenuOpen(UIButton *btn) {
 }
 
 static void DMOpenMenu(UIButton *btn) {
+    // (the Lock Screen and the Cover Sheet: shut, like every other menu -- DMPresentMenu. Opened there, it was under the Cover Sheet, unseen, and the
+    //  tick closed it within half a second: only the logo's highlight flashed. 1.3.7, audit L-16. The Cover Sheet pulled down while unlocked counts
+    //  too -- iPadOS 16 does not report it as locked --, as for the logo's "dimmed" and the hidden titles: logic test 6 Oct)
+    { id lm = DMSBManager("SBLockScreenManager"); if (DMLockUp(lm) || DMCoverSheetShown()) { DMLog(@"[menu] the Lock Screen or Cover Sheet is up: Apple menu not opened"); return; } }
+    if (DMGARefuses(@"Apple menu")) return;
     UIView *fg = btn.superview;
     UIView *host = DMHostFor(fg);
     if (!host) return;
@@ -12002,6 +12149,7 @@ static void DMOpenMenu(UIButton *btn) {
     pf.origin = CGPointMake(DMMenuOriginX(fg, host, anchor, pf.size.width), CGRectGetMaxY(anchor) + 2.0);
     panel.frame = pf;
     [o addSubview:panel];
+    DMAXMenuPanel(panel, @"Apple");
 
     gPill = objc_getAssociatedObject(fg, kPillKey);
     gPill.backgroundColor = [[(UILabel *)objc_getAssociatedObject(fg, kLogoKey) textColor] colorWithAlphaComponent:0.25];
@@ -12872,7 +13020,8 @@ static NSString *DMClipboardSummary(void) {
 static void DMPresentMenu(UIButton *btn, const void *labelKey, const void *pillKey, NSArray *items) {
     // On the Lock Screen and the Cover Sheet (iOS reports both as UI-locked) the menus stay shut (M1 pipeline 2026-09-24): the menu window sits under the Cover Sheet, so a tap on a menu title there
     // opened a menu nobody could see (it showed up after unlocking), and nothing in the menus is meant to be used before unlocking anyway.
-    { id lm = DMSBManager("SBLockScreenManager"); if (DMLockUp(lm)) { DMLog(@"[menu] the Lock Screen or Cover Sheet is up: menu not opened"); return; } }
+    { id lm = DMSBManager("SBLockScreenManager"); if (DMLockUp(lm) || DMCoverSheetShown()) { DMLog(@"[menu] the Lock Screen or Cover Sheet is up: menu not opened"); return; } }   // (pulled down while unlocked too: DMOpenMenu)
+    if (DMGARefuses(@"menu")) return;
     UIView *fg = btn.superview;
     UIView *host = DMHostFor(fg);
     if (!host) return;
@@ -12887,6 +13036,7 @@ static void DMPresentMenu(UIButton *btn, const void *labelKey, const void *pillK
     pf.origin = CGPointMake(DMMenuOriginX(fg, host, anchor, pf.size.width), CGRectGetMaxY(anchor) + 2.0);
     panel.frame = pf;
     [o addSubview:panel];
+    DMAXMenuPanel(panel, btn.accessibilityLabel);
 
     gPill = objc_getAssociatedObject(fg, pillKey);
     gPill.backgroundColor = [[(UILabel *)objc_getAssociatedObject(fg, labelKey) textColor] colorWithAlphaComponent:0.25];
@@ -12992,14 +13142,14 @@ static void DMNativeTick(void) {
     if (!gNativeLayer || gNativeLayer.hidden) return;
     {   // (the App Library, a Home Screen icon menu or the App Switcher takes over the screen: the native windows fade out of its way, like the
         //  engines' windows (DMSyncWindowFade) -- Finder stayed over the App Library, 30 Sep -- and come back when it is gone)
-        BOOL away = DMLibraryVisible() || gHomeMenuOpen || DMSwitcherVisible();
+        BOOL away = DMLibraryVisible() || gHomeMenuOpen || DMSwitcherVisible() || MSBDGuidedAccessActive();   // (and a Guided Access session: 1.3.7, audit M-7)
         if (away != gNativeAway) {
             gNativeAway = away;
             if (away && gNativeActive) DMNativeSetActive(nil);
             gNativeRotator.userInteractionEnabled = !away;
             [UIView animateWithDuration:away ? 0.16 : 0.22 delay:0 options:UIViewAnimationOptionCurveEaseInOut | UIViewAnimationOptionBeginFromCurrentState
                              animations:^{ gNativeRotator.alpha = away ? 0.0 : 1.0; } completion:nil];
-            DMLog([NSString stringWithFormat:@"[native] %@", away ? @"App Library / App Switcher up: native windows faded out" : @"back: native windows shown"]);
+            DMLog([NSString stringWithFormat:@"[native] %@", away ? (MSBDGuidedAccessActive() ? @"Guided Access: native windows faded out" : @"App Library / App Switcher up: native windows faded out") : @"back: native windows shown"]);
         }
     }
     // (an app came to the front some other way than a touch -- opened from the Dock, a menu, a link --: the native windows step back, as on a Mac.
@@ -13016,6 +13166,73 @@ static void DMNativeTick(void) {
     CGSize now = [UIScreen mainScreen].bounds.size;
     if (!CGSizeEqualToSize(now, last)) { last = now; [gNativeLayer setNeedsLayout]; }   // (backup: the layer's own layout pass does the turn)
     DMNativeApplyLevel();
+}
+// Guided Access (1.3.7, audit M-7). A session keeps the iPad in one app. SpringBoard's own ways out are Guided Access's to stop (GAXSpringboardServer: app and URL opens, Spotlight, the
+// Dock, the switcher, icon launches...), ours are not, so while a session runs: an open menu, dialog or panel closes and no other opens (DMGARefuses),
+// every set of traffic lights takes no touches, the native windows (Finder) and the desktop step aside as for the App Library (DMNativeTick,
+// -[DMDesktop dm_tick]), the Downloads panel goes (dock/Downloads.m), alerts wait (common/AlertQueue.h), and the windows of the window engines that
+// are not the session's app are put away -- Guided Access limits SpringBoard's own layout to that app in the same way, but knows nothing of Aerial,
+// MilkyWay or Zetsu windows, whose apps a touch would reach. Everything is given back as it was when the session ends. The state is SpringBoard's own
+// (common/GuidedAccess.h), seen by its notification at once and by the watcher (5 Hz) as a safety net.
+static BOOL gGAApplied = NO;
+static NSString *gGASessionBundle = nil;   // the app the session keeps the iPad in (the active app when it started)
+static const void *kGAWindowAlphaKey = &kGAWindowAlphaKey, *kGAWindowTouchKey = &kGAWindowTouchKey;   // (a window put away: what it was before)
+static void DMGAWindowsApply(BOOL active) {
+    for (UIView *st in DMAerialStages()) {   // (every engine's windows: Aerial's stages, MilkyWay's and Zetsu's windows)
+        NSString *b = DMStageBundle(st);
+        BOOL away = active && gGASessionBundle.length && b.length && ![b isEqualToString:gGASessionBundle];
+        NSNumber *alphaWas = objc_getAssociatedObject(st, kGAWindowAlphaKey);
+        if (away && !alphaWas) {
+            objc_setAssociatedObject(st, kGAWindowAlphaKey, @(st.alpha), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(st, kGAWindowTouchKey, @(st.userInteractionEnabled), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            st.alpha = 0.0; st.userInteractionEnabled = NO;   // (fully transparent: the render server sends it no touches either)
+            DMLog([NSString stringWithFormat:@"[guided] the window of %@ is put away for the session", b]);
+        } else if (away && (st.alpha > 0.0 || st.userInteractionEnabled)) {
+            st.alpha = 0.0; st.userInteractionEnabled = NO;   // (its engine showed it again meanwhile: away while the session runs)
+        } else if (!away && alphaWas) {
+            st.alpha = alphaWas.doubleValue; st.userInteractionEnabled = [objc_getAssociatedObject(st, kGAWindowTouchKey) boolValue];
+            objc_setAssociatedObject(st, kGAWindowAlphaKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(st, kGAWindowTouchKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            DMLog([NSString stringWithFormat:@"[guided] the window of %@ is back", b]);
+        }
+    }
+}
+// The app the session keeps the iPad in: Guided Access's own answer (GAXSpringboard, SpringBoard's part of it, told by backboardd), else SpringBoard's
+// frontmost app (the one accessibility asks for), else the active app as our menu bar sees it.
+static NSString *DMGASessionApp(void) {
+    Class g = objc_getClass("GAXSpringboard");
+    SEL shared = NSSelectorFromString(@"sharedInstanceIfExists"), front = NSSelectorFromString(@"frontmostAppIdentifier");
+    id gax = (g && [g respondsToSelector:shared]) ? ((id (*)(id, SEL))objc_msgSend)((id)g, shared) : nil;
+    id b = (gax && [gax respondsToSelector:front]) ? ((id (*)(id, SEL))objc_msgSend)(gax, front) : nil;
+    if ([b isKindOfClass:[NSString class]] && [(NSString *)b length]) return b;
+    return [DMFrontApp() bundleIdentifier] ?: [DMActiveApp() bundleIdentifier];
+}
+static void DMGuidedAccessChanged(BOOL active) {
+    if (active == gGAApplied) {   // (the session goes on: its app as Guided Access knows it by now, and windows the engine showed again put back away)
+        if (!active) return;
+        NSString *app = DMGASessionApp();
+        if (app.length && ![app isEqualToString:gGASessionBundle]) { DMLog([NSString stringWithFormat:@"[guided] the session's app is %@", app]); gGASessionBundle = [app copy]; }
+        if (DMActiveEngine() != DMEngineNone) DMGAWindowsApply(YES);
+        return;
+    }
+    DM_FEATURE_MARK("guided-access-stand-aside");
+    gGAApplied = active;
+    if (active) {
+        gGASessionBundle = [DMGASessionApp() copy];
+        DMLog([NSString stringWithFormat:@"[guided] Guided Access started (%@): our menus, windows, desktop and traffic lights step aside", gGASessionBundle ?: @"no app known"]);
+        if (gOverlay) DMOverlayEscape(nil);   // (a menu, dialog, panel or the Today View: closed, a question answered as its Cancel / Esc answers)
+    } else DMLog(@"[guided] Guided Access ended: everything is given back");
+    gGALightsInert = active;
+    for (DMLightGroup *g in gLightGroups.allObjects) DMGALightsContainerInert(g.container, active);
+    if (DMActiveEngine() != DMEngineNone || !active) DMGAWindowsApply(active);
+    if (!active) gGASessionBundle = nil;
+    DMNativeTick();   // (the native windows and the desktop follow at once: they read the state themselves)
+}
+static void DMWatchGuidedAccess(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ MSBDGuidedAccessObserve(^{ DMGuidedAccessChanged(MSBDGuidedAccessActive()); }); });
+    BOOL active = MSBDGuidedAccessActive();
+    if (active || gGAApplied) DMGuidedAccessChanged(active);
 }
 static void DMOpenFinderMenu(UIButton *btn) {
     NSMutableArray *finder = [NSMutableArray array];
@@ -13230,6 +13447,8 @@ static UIControl *DMSidePanel(NSString *side, NSString *title, NSString *subtitl
     UILabel *st = [UILabel new]; st.text = subtitle; st.font = [UIFont systemFontOfSize:15.0]; st.textColor = [UIColor secondaryLabelColor]; st.textAlignment = NSTextAlignmentCenter;
     st.frame = CGRectMake(16.0, f.size.height / 2.0 + 38.0, f.size.width - 32.0, 22.0);
     for (UIView *v in @[glyph, t, st]) { v.userInteractionEnabled = NO; [panel addSubview:v]; }
+    panel.isAccessibilityElement = YES;   // ("Left, Shares this side with Notes, button": one element per side -- 1.3.7, audit M-3)
+    panel.accessibilityLabel = title; panel.accessibilityValue = subtitle; panel.accessibilityTraits = UIAccessibilityTraitButton;
     __weak UIControl *wp = panel;
     [panel addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { [UIView animateWithDuration:0.12 animations:^{ wp.transform = CGAffineTransformMakeScale(0.97, 0.97); wp.layer.borderColor = [UIColor systemBlueColor].CGColor; }]; }] forControlEvents:UIControlEventTouchDown];
     UIAction *reset = [UIAction actionWithHandler:^(__kindof UIAction *a) { [UIView animateWithDuration:0.12 animations:^{ wp.transform = CGAffineTransformIdentity; wp.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.35].CGColor; }]; }];
@@ -13317,6 +13536,7 @@ static void DMShowSidePrompt(NSMutableDictionary *ctx, BOOL rebuilt) {
     UIControl *o = DMMakeOverlay(host, 0.32);
     ctx[@"overlay"] = o;
     [o addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { choose(@"none", @"a tap outside the sides: No Fit"); }] forControlEvents:UIControlEventTouchUpInside];
+    objc_setAssociatedObject(o, kOverlayEscapeKey, ^{ choose(@"none", @"escape (assistive feature): No Fit"); }, OBJC_ASSOCIATION_COPY_NONATOMIC);   // (as Esc does)
     NSMutableArray<UIView *> *panels = [NSMutableArray array];
     for (NSString *side in @[@"left", @"right"]) {
         BOOL left = [side isEqualToString:@"left"];
@@ -13336,6 +13556,8 @@ static void DMShowSidePrompt(NSMutableDictionary *ctx, BOOL rebuilt) {
     UILabel *nfLabel = [UILabel new]; nfLabel.text = @"No Fit"; nfLabel.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightSemibold]; nfLabel.textColor = [UIColor labelColor];
     nfLabel.textAlignment = NSTextAlignmentCenter; nfLabel.frame = CGRectMake(0, 50.0, 88.0, 20.0); nfLabel.userInteractionEnabled = NO;
     [noFit addSubview:nfGlyph]; [noFit addSubview:nfLabel];
+    noFit.isAccessibilityElement = YES; noFit.accessibilityLabel = @"No Fit"; noFit.accessibilityTraits = UIAccessibilityTraitButton;
+    noFit.accessibilityHint = @"Opens the window in the middle, untiled.";
     __weak UIControl *wnf = noFit;
     [noFit addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { [UIView animateWithDuration:0.12 animations:^{ wnf.transform = CGAffineTransformMakeScale(0.94, 0.94); }]; }] forControlEvents:UIControlEventTouchDown];
     [noFit addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { [UIView animateWithDuration:0.12 animations:^{ wnf.transform = CGAffineTransformIdentity; }]; }] forControlEvents:UIControlEventTouchUpOutside | UIControlEventTouchCancel];
@@ -13343,6 +13565,7 @@ static void DMShowSidePrompt(NSMutableDictionary *ctx, BOOL rebuilt) {
     [o addSubview:noFit]; [panels addObject:noFit];   // (it comes in with the panels, after them)
     UIVisualEffectView *pill = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial]];
     UILabel *q = [UILabel new]; q.text = [NSString stringWithFormat:@"Where should %@ go?", newName]; q.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold]; q.textColor = [UIColor labelColor];
+    q.accessibilityTraits = UIAccessibilityTraitHeader;
     [q sizeToFit];
     CGRect usable = DMLayoutFrame(@"fill");
     pill.frame = CGRectMake((host.bounds.size.width - q.bounds.size.width - 44.0) / 2.0, usable.origin.y + 16.0, q.bounds.size.width + 44.0, 40.0);
@@ -13548,6 +13771,7 @@ static void DMSwapHalfWithQuarter(void) {
         if (index >= 0) apply(index);
     };
     [o addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { choose(-1); }] forControlEvents:UIControlEventTouchUpInside];
+    objc_setAssociatedObject(o, kOverlayEscapeKey, ^{ choose(-1); }, OBJC_ASSOCIATION_COPY_NONATOMIC);   // (the escape gesture: as a tap outside, nothing traded)
     NSMutableArray<UIView *> *panels = [NSMutableArray array];
     for (NSInteger i = 0; i < 2; i++) {
         NSString *qName = DMCall(DMProxyForBundle(quarterBs[i]), @"localizedName") ?: quarterBs[i];
@@ -13557,6 +13781,7 @@ static void DMSwapHalfWithQuarter(void) {
     }
     UIVisualEffectView *pill = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial]];
     UILabel *q = [UILabel new]; q.text = [NSString stringWithFormat:@"Which app should trade places with %@?", halfName]; q.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold]; q.textColor = [UIColor labelColor];
+    q.accessibilityTraits = UIAccessibilityTraitHeader;
     [q sizeToFit];
     CGRect usable = DMLayoutFrame(@"fill");
     pill.frame = CGRectMake((host.bounds.size.width - q.bounds.size.width - 44.0) / 2.0, usable.origin.y + 16.0, q.bounds.size.width + 44.0, 40.0);
@@ -14560,6 +14785,8 @@ static void DMAttachMenuHover(UIControl *overlay, UIView *fg, UIView *host, UIBu
     [super setHighlighted:highlighted];
     self.dot.alpha = highlighted ? 0.7 : 1.0;
 }
+- (BOOL)accessibilityActivate { return DMAXActivateControl(self); }   // (in the status bar's window, as the bar's buttons: DMAXButton)
+- (BOOL)accessibilityPerformEscape { return DMOverlayEscape(nil); }
 @end
 
 @interface DMLights : UIView
@@ -14600,6 +14827,7 @@ static char kLightsInwardKey;
     if (green && green.tag == 2 && [objc_getAssociatedObject(self, &kLightsInwardKey) boolValue] != inward) {
         objc_setAssociatedObject(self, &kLightsInwardKey, @(inward), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         green.glyph.image = [UIImage systemImageNamed:DMLightSymbolName(2, inward) withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:7.0 weight:UIImageSymbolWeightHeavy]];
+        green.accessibilityLabel = inward ? @"Exit Full Screen" : @"Full Screen";   // (what VoiceOver says follows the arrows: 1.3.7, audit M-3)
     }
     BOOL rtl = DMBarRTL(self);   // (a right-to-left language: mirrored, red nearest the logo at the right, like a Mac's window buttons then)
     NSInteger shown = self.greenHidden ? 2 : 3;
@@ -14792,10 +15020,11 @@ static CGFloat DMLayoutTitle(UIView *fg, BOOL rtl, const void *labelKey, const v
         label = [UILabel new];
         label.userInteractionEnabled = NO;
         label.lineBreakMode = NSLineBreakByTruncatingTail;
+        label.isAccessibilityElement = NO;   // (its button reads it: one element per title, 1.3.7 audit M-3)
         [fg addSubview:label];
         objc_setAssociatedObject(fg, labelKey, label, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-        btn = [UIButton buttonWithType:UIButtonTypeCustom];
+        btn = [DMAXButton buttonWithType:UIButtonTypeCustom];   // (an assistive feature uses its action itself: DMAXActivateControl)
         btn.pointerInteractionEnabled = YES;
         __weak UIButton *weakBtn = btn;
         [btn addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { if (weakBtn) onTap(weakBtn); }]
@@ -14818,6 +15047,8 @@ static CGFloat DMLayoutTitle(UIView *fg, BOOL rtl, const void *labelKey, const v
     if (!natural || label.font != font || ![label.text isEqualToString:text]) {
         if (![label.text isEqualToString:text]) label.text = text;
         if (label.font != font) label.font = font;
+        btn.accessibilityLabel = text;   // ("Edit, button, opens the Edit menu" -- the full name even when the title is cut short: 1.3.7, audit M-3)
+        btn.accessibilityHint = [NSString stringWithFormat:@"Opens the %@ menu.", text];
         [label sizeToFit];
         natural = [NSValue valueWithCGSize:label.bounds.size];
         objc_setAssociatedObject(label, kTitleSizeKey, natural, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -15306,6 +15537,7 @@ static DMTNRow *DMTNMakeRow(id r, CGFloat W) {
     [row addGestureRecognizer:tap];
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:[DMTNTarget shared] action:NSSelectorFromString(@"rowPan:")];
     pan.delegate = row; [row addGestureRecognizer:pan];
+    row.accessibilityLabel = MSBDAXJoin(@[app ?: @"", title ?: @"", body ?: @""]);   // (the row as one element: what it shows; its age is the value -- 1.3.7)
     return row;
 }
 // The box fits the widget column's new height into the panel (at most the room it had when it opened); called inside the animations, so the
@@ -15407,9 +15639,11 @@ static UIView *DMTNMakeBox(UIStackView *column, CGFloat W) {
     [box addSubview:bg]; gTNBack = bg;
     UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, W, kTNHeaderH)]; header.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     UILabel *hl = DMTNLabel(15, UIFontWeightSemibold, [UIColor labelColor]); hl.text = @"Notifications";
+    hl.accessibilityTraits = UIAccessibilityTraitHeader;   // (1.3.7, audit M-3: a heading; Clear and Show more read as buttons)
     hl.frame = CGRectMake(kTNPad, 0, W - 2.0 * kTNPad - 70.0, kTNHeaderH); [header addSubview:hl];
     UIView *clear = [[UIView alloc] initWithFrame:CGRectMake(W - 76.0, 0, 76.0, kTNHeaderH)]; clear.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
     UILabel *cl = DMTNLabel(14, UIFontWeightMedium, [UIColor secondaryLabelColor]); cl.text = @"Clear"; cl.textAlignment = NSTextAlignmentRight;
+    cl.accessibilityTraits = UIAccessibilityTraitButton; cl.accessibilityHint = @"Clears all notifications.";
     cl.frame = CGRectMake(0, 0, 76.0 - kTNPad, kTNHeaderH); [clear addSubview:cl];
     [clear addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:[DMTNTarget shared] action:NSSelectorFromString(@"clearAll:")]];
     [header addSubview:clear];
@@ -15418,6 +15652,7 @@ static UIView *DMTNMakeBox(UIStackView *column, CGFloat W) {
     UIView *sep = [[UIView alloc] initWithFrame:CGRectMake(kTNPad, 0, W - 2.0 * kTNPad, 1.0 / [UIScreen mainScreen].scale)];
     sep.backgroundColor = [UIColor separatorColor]; sep.autoresizingMask = UIViewAutoresizingFlexibleWidth; [more addSubview:sep];
     UILabel *ml = DMTNLabel(14, UIFontWeightMedium, [UIColor systemBlueColor]); ml.frame = CGRectMake(kTNPad, 0, W - 2.0 * kTNPad, kTNMoreH);
+    ml.accessibilityTraits = UIAccessibilityTraitButton;
     [more addSubview:ml]; gTNMoreLabel = ml;
     [more addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:[DMTNTarget shared] action:NSSelectorFromString(@"moreTap:")]];
     more.alpha = 0.0;
@@ -15531,6 +15766,27 @@ static void DMTNRemove(void) {
     @try { [s setNeedsLayout]; [s.superview layoutIfNeeded]; [s layoutIfNeeded]; } @catch (id e) {}   // (the column's own frames as they were, at once)
 }
 @implementation DMTNRow
+// Assistive features (1.3.7, audit M-3): a notification is one element -- app, title and text as the label, its age as the value --; using it opens
+// it, as a tap does, and its action "Clear" is the swipe to the left.
+- (BOOL)isAccessibilityElement { return YES; }
+- (NSString *)accessibilityValue { return self.timeLabel.text; }
+- (UIAccessibilityTraits)accessibilityTraits { return UIAccessibilityTraitButton; }
+- (BOOL)accessibilityActivate {
+    if (gTNBusy || self.leaving || !self.request) return NO;
+    self.slide.backgroundColor = [[UIColor labelColor] colorWithAlphaComponent:0.08];
+    DMTNOpen(self.request);
+    return YES;
+}
+- (NSArray<UIAccessibilityCustomAction *> *)accessibilityCustomActions {
+    __weak DMTNRow *weakSelf = self;
+    return @[[[UIAccessibilityCustomAction alloc] initWithName:@"Clear" actionHandler:^BOOL(UIAccessibilityCustomAction *a) {
+        DMTNRow *row = weakSelf; id r = row.request;
+        if (!row || !r || gTNBusy || row.leaving) return NO;
+        row.leaving = YES;
+        DMTNClear(@[r], @"cleared (assistive feature)");
+        return YES;
+    }]];
+}
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)g {   // (only a sideways swipe to the left; up and down scroll the panel)
     if (![g isKindOfClass:[UIPanGestureRecognizer class]]) return YES;
     if (gTNBusy || self.leaving) return NO;
@@ -16015,6 +16271,7 @@ static BOOL DMOpenTodayPanel(UIButton *clockBtn) {
     CGFloat x = MIN(CGRectGetMaxX(anchor) + 4.0, host.bounds.size.width - 6.0) - W;
     if (DMBarRTL(fg)) x = MIN(anchor.origin.x - 4.0, host.bounds.size.width - 6.0 - W);   // (a right-to-left language: the clock is at the left end, the panel hangs from its left edge)
     UIView *panel = [[DMTouchSinkView alloc] initWithFrame:CGRectMake(MAX(6.0, x), top, W, maxH)];
+    panel.accessibilityLabel = @"Notifications and widgets"; panel.accessibilityContainerType = UIAccessibilityContainerTypeSemanticGroup;   // (assistive features: the group's name, as the clock's hint says)
     panel.layer.shadowColor = [[UIColor blackColor] CGColor]; panel.layer.shadowOpacity = 0.35; panel.layer.shadowRadius = 16.0; panel.layer.shadowOffset = CGSizeMake(0, 8);
     // The look of our Control Center panel: its thin dark blur with a dark tint in Dark Mode (light in Light Mode), 14 pt corners, a hairline
     // edge; the widgets' own tiles sit on it like Control Center's modules.
@@ -16156,6 +16413,7 @@ static BOOL DMOpenTodayPanel(UIButton *clockBtn) {
 static void DMToggleTodayView(void);
 static void DMToggleTodayViewFrom(UIButton *clockBtn) {
     if (gTodayVC) { DMCloseOverlay(); return; }
+    if (DMGARefuses(@"Today View")) return;   // (notifications and widgets: not while Guided Access keeps the iPad in one app)
     id lm = DMSBManager("SBLockScreenManager");
     id mgr = DMSBManager("SBCoverSheetPresentationManager");
     BOOL csShown = [mgr respondsToSelector:NSSelectorFromString(@"isVisible")] && ((BOOL (*)(id, SEL))objc_msgSend)(mgr, NSSelectorFromString(@"isVisible"));
@@ -16174,6 +16432,7 @@ static void DMToggleTodayViewFrom(UIButton *clockBtn) {
     DMToggleTodayView();
 }
 static void DMToggleTodayView(void) {
+    if (DMGARefuses(@"Today View (Cover Sheet)")) return;
     id mgr = DMSBManager("SBCoverSheetPresentationManager");
     SEL present = NSSelectorFromString(@"setCoverSheetPresented:animated:withCompletion:");
     if (![mgr respondsToSelector:present]) return;
@@ -16586,6 +16845,7 @@ static void DMShowTimeProxy(UIView *fg, BOOL show) {
     tp.textColor = dateProxy.textColor;
     tp.alpha = dateProxy.alpha;
     tp.text = DMTimeString();
+    { UIView *cb = objc_getAssociatedObject(fg, kClockButtonKey); tp.isAccessibilityElement = !cb || cb.hidden; }   // (the clock button reads the time while it is there)
     CGFloat w = MAX(r.size.width, ceil([tp sizeThatFits:CGSizeMake(CGFLOAT_MAX, CGFLOAT_MAX)].width));
     tp.frame = CGRectMake(CGRectGetMaxX(r) - w, r.origin.y, w, r.size.height);
     tp.hidden = NO;
@@ -16622,6 +16882,10 @@ static UIImageView *DMMuteIcon(UIView *fg, CGFloat pointSize) {
         icon = [UIImageView new];
         icon.contentMode = UIViewContentModeScaleAspectFit;
         icon.userInteractionEnabled = NO;   // (only a sign, like Apple's own status icons)
+        icon.isAccessibilityElement = YES;   // (read like Apple's own status icons: 1.3.7, audit M-3)
+        icon.accessibilityLabel = @"Silent Mode";
+        icon.accessibilityValue = @"On";
+        icon.accessibilityTraits = UIAccessibilityTraitStaticText;
         icon.hidden = YES;
         [fg addSubview:icon];
         objc_setAssociatedObject(fg, kMuteIconKey, icon, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -17075,6 +17339,7 @@ static void DMStockVPNInit(void) {
         logo = [UILabel new];
         logo.text = [NSString stringWithFormat:@"%C", (unichar)0xF8FF];   // Apple logo in SF fonts
         logo.userInteractionEnabled = NO;
+        logo.isAccessibilityElement = NO;   // (the button over it speaks for it: a private-use glyph reads as nothing)
         [fg addSubview:logo];
         objc_setAssociatedObject(fg, kLogoKey, logo, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         created = YES;
@@ -17120,8 +17385,13 @@ static void DMStockVPNInit(void) {
         [fg insertSubview:pill belowSubview:logo];
         objc_setAssociatedObject(fg, kPillKey, pill, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-        btn = [UIButton buttonWithType:UIButtonTypeCustom];
+        btn = [DMAXButton buttonWithType:UIButtonTypeCustom];   // (an assistive feature uses its action itself: DMAXActivateControl)
         btn.pointerInteractionEnabled = YES;
+        // (assistive features, 1.3.7 audit M-3: "Apple, button, opens the Apple menu"; Voice Control answers "Apple" and "Apple menu")
+        DM_FEATURE_MARK("ax-menu-bar-labels");
+        btn.accessibilityLabel = @"Apple";
+        btn.accessibilityHint = @"Opens the Apple menu.";
+        btn.accessibilityUserInputLabels = @[@"Apple", @"Apple menu"];
         __weak UIButton *weakBtn = btn;
         [btn addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) {
             DMLog(@"[button] tapped");
@@ -17152,6 +17422,7 @@ static void DMStockVPNInit(void) {
     // no traffic lights and no menu titles, whatever app was in front, windowed or full screen (2026-09-26: an app's lights stayed on the Lock Screen).
     BOOL earlyOnNewOS = DMNewOS() && DMStarting();   // (issue #1: not asked while starting)
     BOOL locked = !earlyOnNewOS && (DMLockUp(DMSBManager("SBLockScreenManager")) || DMCoverSheetShown());   // (the Cover Sheet pulled down while unlocked counts too: iPad 2)
+    btn.accessibilityTraits = UIAccessibilityTraitButton | (locked ? UIAccessibilityTraitNotEnabled : 0);   // (locked, the Apple menu stays shut: VoiceOver says dimmed)
     BOOL wantLights = gShowWindowButtons && frontApp != nil && !activeIsWindow && !locked;   // a window has its own buttons
     if (DMTestFlag("/tmp/macstatusbar-debug")) {
         static NSMutableDictionary *lastWant = nil; if (!lastWant) lastWant = [NSMutableDictionary dictionary];
@@ -17304,8 +17575,11 @@ static void DMStockVPNInit(void) {
         [fg addSubview:spotIcon];
         objc_setAssociatedObject(fg, kSpotIconKey, spotIcon, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-        spotBtn = [UIButton buttonWithType:UIButtonTypeCustom];
+        spotBtn = [DMAXButton buttonWithType:UIButtonTypeCustom];   // (an assistive feature uses its action itself: DMAXActivateControl)
         spotBtn.pointerInteractionEnabled = YES;
+        spotBtn.accessibilityLabel = @"Spotlight";   // (1.3.7, audit M-3)
+        spotBtn.accessibilityHint = @"Searches this iPad.";
+        spotBtn.accessibilityUserInputLabels = @[@"Spotlight", @"Search"];
         [spotBtn addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { DMOpenSpotlight(); }]
           forControlEvents:UIControlEventTouchUpInside];
         [fg addSubview:spotBtn];
@@ -17345,14 +17619,23 @@ static void DMStockVPNInit(void) {
     {   // the clock (date + time) opens the Today View (DMToggleTodayView)
         UIButton *clockBtn = objc_getAssociatedObject(fg, kClockButtonKey);
         if (!clockBtn) {
-            clockBtn = [UIButton buttonWithType:UIButtonTypeCustom];
-            clockBtn.pointerInteractionEnabled = YES;
+            DMAXButton *cb = [DMAXButton buttonWithType:UIButtonTypeCustom];
+            cb.pointerInteractionEnabled = YES;
+            // (assistive features, 1.3.7 audit M-3: the date and time as shown, read when asked -- the seconds tick -- and what the clock does)
+            __weak UILabel *weakDate = dateProxy;
+            cb.axLabel = ^NSString *{ UILabel *d = weakDate; return MSBDAXJoin(@[d.hidden ? @"" : (d.text ?: @""), DMTimeString() ?: @""]); };
+            cb.accessibilityHint = @"Shows notifications and widgets.";
+            clockBtn = cb;
             __weak UIButton *weakClock = clockBtn;
             [clockBtn addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { DMToggleTodayViewFrom(weakClock); }] forControlEvents:UIControlEventTouchUpInside];
             [fg addSubview:clockBtn];
             objc_setAssociatedObject(fg, kClockButtonKey, clockBtn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
         clockBtn.hidden = !gClockOpensToday || clockW <= 0;
+        // (read once: as the clock button while that is there -- date and time --, as text otherwise; the status bar's own time label and our time
+        //  proxy show the time under the button and were read a second time -- the device test, 5 Oct)
+        dateProxy.isAccessibilityElement = clockBtn.hidden;
+        if (timeLabel) timeLabel.isAccessibilityElement = clockBtn.hidden;
         if (!clockBtn.hidden) { clockBtn.frame = DMBarRect(fg, rtl, CGRectMake(clockLeft - 4.0, 0, clockW + 8.0, fg.bounds.size.height)); [fg bringSubviewToFront:clockBtn]; }
     }
     if (dateLabel && dateLabel.alpha != 0.0) dateLabel.alpha = 0.0;   // ours is the one drawn
@@ -17436,8 +17719,11 @@ static void DMStockVPNInit(void) {
             vpnIcon.image = DMVPNGlyph(timeFont.pointSize);
             [fg addSubview:vpnIcon];
             objc_setAssociatedObject(fg, kVPNIconKey, vpnIcon, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            UIButton *vpnButton = [UIButton buttonWithType:UIButtonTypeCustom];
+            DMAXButton *vpnButton = [DMAXButton buttonWithType:UIButtonTypeCustom];
             vpnButton.pointerInteractionEnabled = YES;
+            vpnButton.accessibilityLabel = @"VPN";   // (1.3.7, audit M-3: the connection it shows, read when asked)
+            vpnButton.axValue = ^NSString *{ return gVPNConfigName.length ? [@"Connected, " stringByAppendingString:gVPNConfigName] : @"Connected"; };
+            vpnButton.accessibilityHint = @"Opens the VPN menu.";
             __weak UIButton *weakVPNButton = vpnButton;
             [vpnButton addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { if (weakVPNButton) DMOpenVPNMenu(weakVPNButton); }] forControlEvents:UIControlEventTouchUpInside];
             [fg addSubview:vpnButton];
@@ -17477,8 +17763,11 @@ static void DMStockVPNInit(void) {
             sshIcon.image = [g imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
             [fg addSubview:sshIcon];
             objc_setAssociatedObject(fg, kSSHIconKey, sshIcon, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            UIButton *sshButton = [UIButton buttonWithType:UIButtonTypeCustom];
+            DMAXButton *sshButton = [DMAXButton buttonWithType:UIButtonTypeCustom];
             sshButton.pointerInteractionEnabled = YES;
+            sshButton.accessibilityLabel = @"SSH";   // (1.3.7, audit M-3)
+            sshButton.axValue = ^NSString *{ return DMSSHSessionActive() ? @"On, someone is connected" : @"On"; };
+            sshButton.accessibilityHint = @"Opens the SSH menu.";
             __weak UIButton *weakButton = sshButton;
             [sshButton addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { if (weakButton) DMOpenSSHMenu(weakButton); }] forControlEvents:UIControlEventTouchUpInside];
             [fg addSubview:sshButton];
@@ -19069,6 +19358,96 @@ static void DMRunTrigger(NSString *cmd) {
                 NSStringFromCGRect(w.frame), ws ? NSStringFromClass([ws class]) : @"-", ws.session.persistentIdentifier ?: @"", ws ? (long)ws.interfaceOrientation : 0L];
         }
         DMLog(out);
+    }
+    // ---- assistive features and Guided Access, for the device tests (1.3.7, audit M-3 / M-7; debug builds only, like every trigger) ----
+    // axdump: every accessibility element of our UI on the screen (the visible status bar copies, an open menu or dialog, the Dock's Finder and
+    //   Downloads icons, the desktop's icons, every set of traffic lights) with its label, value, hint, traits and screen frame;
+    // axactivate_<label>: uses the element with that label as VoiceOver's double tap does; axescape: VoiceOver's escape gesture, asked of the open
+    //   menu's first element and then of everything above it; axfocus: the element VoiceOver (or Switch Control) has in focus now;
+    // axvo_<0|1> / axfka_<0|1>: VoiceOver / Full Keyboard Access on or off (the system settings themselves: put them back);
+    // fakeguided_<0|1>: a Guided Access session played (MSBDGuidedAccessActive answers YES in debug builds, the change notification is posted).
+    else if ([cmd isEqualToString:@"axdump"] || [cmd hasPrefix:@"axactivate_"] || [cmd isEqualToString:@"axescape"] || [cmd isEqualToString:@"axfocus"]) {
+        NSMutableArray<UIView *> *found = [NSMutableArray array];
+        NSMutableArray<NSString *> *where = [NSMutableArray array];
+        __block void (^walk)(UIView *, NSString *, int);
+        void (^walkBody)(UIView *, NSString *, int) = ^(UIView *v, NSString *w, int depth) {
+            if (!v || v.hidden || v.alpha < 0.01 || v.accessibilityElementsHidden || depth > 14) return;
+            if (v.isAccessibilityElement) { [found addObject:v]; [where addObject:w]; return; }
+            for (UIView *sub in v.subviews) walk(sub, w, depth + 1);
+        };
+        walk = walkBody;
+        for (UIView *fg in gCopies.allObjects) if (fg.window && !fg.window.hidden && DMEffectiveAlpha(fg) > 0.5) walk(fg, [NSString stringWithFormat:@"bar %@", NSStringFromClass([fg.window class])], 0);
+        if (gOverlay) walk(gOverlay, @"menu", 0);
+        for (UIWindow *w in DMAllWindows()) {
+            if (w.hidden || ![NSStringFromClass([w class]) isEqualToString:@"SBFloatingDockWindow"]) continue;
+            NSMutableArray<UIView *> *q = [NSMutableArray arrayWithObject:w];
+            for (NSUInteger k = 0; k < q.count && k < 4000; k++) {
+                UIView *x = q[k]; NSString *cn = NSStringFromClass([x class]);
+                if (([cn isEqualToString:@"DMFinderIconView"] || [cn isEqualToString:@"DMDownloadsIconView"]) && !x.hidden) { [found addObject:x]; [where addObject:@"dock"]; continue; }
+                if ([cn isEqualToString:@"DMDownloadsPanelView"]) { walk(x, @"downloads", 0); continue; }
+                [q addObjectsFromArray:x.subviews];
+            }
+        }
+        if (gDesktop && gDesktop.window && gDesktop.alpha > 0.01) walk(gDesktop, @"desktop", 0);
+        if (gNativeLayer && !gNativeLayer.hidden) walk(gNativeLayer, @"native", 0);
+        for (DMLightGroup *g in gLightGroups.allObjects) {
+            UIView *c = g.container; if (!c.window || c.window.hidden) continue;
+            NSMutableArray *names = [NSMutableArray array];
+            for (UIView *dot in g.dots) { UIView *b = dot.superview; [names addObject:[NSString stringWithFormat:@"%@%@", b.accessibilityLabel ?: @"(none)", c.userInteractionEnabled ? @"" : @" (inert)"]]; }
+            if (!names.count) continue;
+            if ([cmd isEqualToString:@"axdump"]) DMLog([NSString stringWithFormat:@"[ax] lights in %@: %@", NSStringFromClass([c class]), [names componentsJoinedByString:@", "]]);
+        }
+        NSString *(^traits)(UIView *) = ^NSString *(UIView *v) {
+            UIAccessibilityTraits t = v.accessibilityTraits; NSMutableArray *n = [NSMutableArray array];
+            if (t & UIAccessibilityTraitButton) [n addObject:@"button"];
+            if (t & UIAccessibilityTraitHeader) [n addObject:@"header"];
+            if (t & UIAccessibilityTraitSelected) [n addObject:@"selected"];
+            if (t & UIAccessibilityTraitNotEnabled) [n addObject:@"dimmed"];
+            if (t & UIAccessibilityTraitStaticText) [n addObject:@"text"];
+            if (t & UIAccessibilityTraitImage) [n addObject:@"image"];
+            if (t & UIAccessibilityTraitAdjustable) [n addObject:@"adjustable"];
+            return n.count ? [n componentsJoinedByString:@","] : @"-";
+        };
+        if ([cmd isEqualToString:@"axdump"]) {
+            NSMutableString *out = [NSMutableString stringWithFormat:@"[ax] %lu elements%@", (unsigned long)found.count, DMAXRunning() ? @" (an assistive feature is running)" : @""];
+            for (NSUInteger i = 0; i < found.count; i++) {
+                UIView *v = found[i];
+                [out appendFormat:@"\n  %@ | %@ | \"%@\" value \"%@\" hint \"%@\" [%@] %@%@", where[i], NSStringFromClass([v class]), v.accessibilityLabel ?: @"", v.accessibilityValue ?: @"", v.accessibilityHint ?: @"",
+                    traits(v), NSStringFromCGRect(v.accessibilityFrame), v.accessibilityCustomActions.count ? [NSString stringWithFormat:@" actions %@", [[v.accessibilityCustomActions valueForKey:@"name"] componentsJoinedByString:@"/"]] : @""];
+            }
+            if (gOverlay) [out appendFormat:@"\n  menu modal %d, group \"%@\"", gOverlay.accessibilityViewIsModal, gOverlay.subviews.lastObject.accessibilityLabel ?: @""];
+            DMLog(out);
+        } else if ([cmd hasPrefix:@"axactivate_"]) {
+            NSString *want = [cmd substringFromIndex:11];
+            UIView *hit = nil; for (UIView *v in found) if ([v.accessibilityLabel isEqualToString:want]) { hit = v; break; }
+            if (!hit) for (DMLightGroup *g in gLightGroups.allObjects) for (UIView *dot in g.dots) if (!hit && g.container.window && [dot.superview.accessibilityLabel isEqualToString:want]) hit = dot.superview;
+            BOOL done = hit ? [hit accessibilityActivate] : NO;
+            if (hit && !done && [hit isKindOfClass:[UIControl class]] && ((UIControl *)hit).enabled) { [(UIControl *)hit sendActionsForControlEvents:UIControlEventTouchUpInside]; done = YES; }   // (UIKit's own activation of a button: its action)
+            DMLog([NSString stringWithFormat:@"[ax] activate \"%@\": %@", want, hit ? (done ? [NSString stringWithFormat:@"done (%@)", NSStringFromClass([hit class])] : @"refused") : @"no such element"]);
+        } else if ([cmd isEqualToString:@"axescape"]) {
+            UIView *start = nil; for (NSUInteger i = 0; i < found.count; i++) if ([where[i] isEqualToString:@"menu"] || [where[i] isEqualToString:@"downloads"]) { start = found[i]; break; }
+            NSString *answered = @"nothing open";
+            for (UIView *v = start; v; v = v.superview) if ([v accessibilityPerformEscape]) { answered = NSStringFromClass([v class]); break; }
+            DMLog([NSString stringWithFormat:@"[ax] escape from %@: answered by %@", start ? NSStringFromClass([start class]) : @"-", answered]);
+        } else {
+            id f = UIAccessibilityFocusedElement(UIAccessibilityNotificationVoiceOverIdentifier) ?: UIAccessibilityFocusedElement(UIAccessibilityNotificationSwitchControlIdentifier);
+            DMLog([NSString stringWithFormat:@"[ax] focus: %@ \"%@\"", f ? NSStringFromClass([f class]) : @"none", [f respondsToSelector:@selector(accessibilityLabel)] ? [f accessibilityLabel] : @""]);
+        }
+    }
+    else if ([cmd hasPrefix:@"axvo_"] || [cmd hasPrefix:@"axfka_"]) {
+        BOOL vo = [cmd hasPrefix:@"axvo_"];
+        BOOL want = [[cmd substringFromIndex:vo ? 5 : 6] boolValue];
+        void *ax = dlopen("/usr/lib/libAccessibility.dylib", RTLD_LAZY);
+        void (*set)(BOOL) = ax ? (void (*)(BOOL))dlsym(ax, vo ? "_AXSVoiceOverTouchSetEnabled" : "_AXSFullKeyboardAccessSetEnabled") : NULL;
+        Boolean (*get)(void) = ax ? (Boolean (*)(void))dlsym(ax, vo ? "_AXSVoiceOverTouchEnabled" : "_AXSFullKeyboardAccessEnabled") : NULL;
+        if (set) set(want);
+        DMLog([NSString stringWithFormat:@"[debug] %@ %@ (%@)", vo ? @"VoiceOver" : @"Full Keyboard Access", want ? @"on" : @"off", set ? (get ? (get() ? @"reads on" : @"reads off") : @"set") : @"no setter"]);
+    }
+    else if ([cmd hasPrefix:@"fakeguided_"]) {
+        BOOL want = [[cmd substringFromIndex:11] boolValue];
+        if (want) close(open("/tmp/msb-fake-guided", O_CREAT | O_WRONLY, 0644)); else unlink("/tmp/msb-fake-guided");
+        [[NSNotificationCenter defaultCenter] postNotificationName:UIAccessibilityGuidedAccessStatusDidChangeNotification object:nil];
+        DMLog([NSString stringWithFormat:@"[debug] Guided Access session played: %@ (answer now %d)", want ? @"on" : @"off", MSBDGuidedAccessActive()]);
     }
     else if ([cmd hasPrefix:@"axreducemotion_"]) {   // axreducemotion_<0|1>: Settings > Accessibility > Motion > Reduce Motion (the system setting itself, libAccessibility) -- for gesture tests; put it back
         void (*set)(BOOL) = (void (*)(BOOL))dlsym(RTLD_DEFAULT, "_AXSSetReduceMotionEnabled");
@@ -27674,6 +28053,7 @@ static NSString *DMSMCardBundle(UIView *card) {   // "card:<bundle id>:<scene id
     return p.count > 1 ? p[1] : nil;
 }
 static void DMSMBringToFront(NSString *bundle) {   // (newest interaction time in the stage -> in front, keyboard focus with it)
+    if (DMGARefuses(@"a window brought forward")) return;   // (Guided Access keeps the iPad in one app: logic test 6 Oct, a played session)
     id stage = DMSMStageOf(bundle), attrs = nil;   // (its own stage, on whichever display)
     if (!DMSMItemFor(stage, bundle, &attrs)) return;
     NSDictionary *map = DMSMStageItemsMap(stage);
@@ -27737,6 +28117,7 @@ static CFTimeInterval gSMDragUntil = 0;   // (a title-bar drag in progress, and 
     _title.textColor = front ? [UIColor labelColor] : [UIColor secondaryLabelColor];
 }
 - (void)dm_light:(UIButton *)b {
+    if (DMGARefuses(@"window traffic light")) return;   // (Guided Access: see DMGALightsContainerInert -- also when an assistive feature presses it)
     DMLog([NSString stringWithFormat:@"[smchrome] %@ light %ld", _bundle, (long)b.tag]);
     if (b.tag == 0) DMSMWindowAction(_bundle, @"close");
     else if (b.tag == 1) DMSMWindowAction(_bundle, @"removeFromSet");
@@ -27898,6 +28279,7 @@ static UIView *DMSMTouchTarget(UITouch *x, UIEvent *event, UIScreen *screen, CGP
 }
 static void DMSMActivateOnTouch(UIEvent *event) {
     DM_FEATURE_MARK("sm-activate-on-touch");
+    if (MSBDGuidedAccessActive()) { gSMPendingTouch = nil; gSMPendingBundle = nil; return; }   // (Guided Access: no other window comes forward, 1.3.7 audit M-7)
     for (UITouch *x in event.allTouches) {
         if (x.type != UITouchTypeDirect) continue;
         if (x.phase == UITouchPhaseBegan && !gSMPendingTouch) {
@@ -28231,6 +28613,9 @@ static void DMSMJoinStageAsked(id ctx, NSArray<NSArray *> *asked);   // (SMDeskt
 static void DMSMRepairRoles(id ctx);   // (SMLimit.h: one window, one role -- a window never in two roles of one layout state)
 static void DMSMJoinDesktop(id ctx) {
     DM_FEATURE_MARK("sm-join-desktop");
+    // (a Guided Access session: SpringBoard's transitions stay as Guided Access has them -- it limits the layout to the session's app, and joining
+    //  the desktop's other windows in would bring them back: 1.3.7, audit M-7)
+    if (MSBDGuidedAccessActive()) return;
     // Atomic (review S2): the whole rewrite -- every window's entity, role and attributes -- is planned and checked first (DMSMPlanValid), and only
     // then written into Apple's context (DMSMWritePlan, which empties what it wrote if a write fails). Any refusal on the way returns with the
     // context untouched: the launch goes on as Stage Manager's own (a new stage).
@@ -28397,13 +28782,14 @@ static BOOL DMSMOurMenuOpen(void) { return (gMenuWindow && !gMenuWindow.hidden &
 static BOOL (*o_SMTapForwardBegin)(id, SEL, id);
 static BOOL DMSMTapForwardBegin(id self, SEL _cmd, id g) {
     if (DMSMFree() && DMSMOurMenuOpen()) { DM_FEATURE_MARK("sm-menu-tap-not-forward"); return NO; }
+    if (DMSMFree() && MSBDGuidedAccessActive()) return NO;   // (a Guided Access session: no other window comes forward -- 1.3.7, audit M-7)
     return o_SMTapForwardBegin(self, _cmd, g);
 }
 // (the same at touch-down: the recogniser is asked whether it begins only when the tap ends -- by then a row's action may have closed the menu; a
 //  touch that starts while one of our menus is open never reaches it. 1.3.5 logic test R2-N1)
 static BOOL (*o_SMTapForwardTouch)(id, SEL, id, id);
 static BOOL DMSMTapForwardTouch(id self, SEL _cmd, id g, id touch) {
-    if (DMSMFree() && DMSMOurMenuOpen()) return NO;
+    if (DMSMFree() && (DMSMOurMenuOpen() || MSBDGuidedAccessActive())) return NO;
     return o_SMTapForwardTouch(self, _cmd, g, touch);
 }
 static void DMSMHookStripReveal(void) {
@@ -28735,15 +29121,16 @@ static void DMSMReapplyGrabbers(UIView *card) {   // (Settings > Resize Handles 
     %orig;
     if (((UIView *)self).window) DMSMChrome((UIView *)self);
 }
-// the card's touch area includes our title bar above it
+// the card's touch area includes our title bar above it -- while the bar takes touches: during a Guided Access session it takes none
+// (DMGALightsContainerInert), and handing it the touch anyway (the "?: bar") let its tap and drag bring the window forward (logic test 6 Oct)
 - (BOOL)pointInside:(CGPoint)p withEvent:(UIEvent *)e {
     UIView *bar = objc_getAssociatedObject(self, kSMBarKey);
-    if (bar && !bar.hidden && CGRectContainsPoint(bar.frame, p)) return YES;
+    if (bar && !bar.hidden && bar.userInteractionEnabled && CGRectContainsPoint(bar.frame, p)) return YES;
     return %orig;
 }
 - (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)e {
     UIView *bar = objc_getAssociatedObject(self, kSMBarKey);
-    if (bar && !bar.hidden && CGRectContainsPoint(bar.frame, p)) return [bar hitTest:[self convertPoint:p toView:bar] withEvent:e] ?: bar;
+    if (bar && !bar.hidden && bar.userInteractionEnabled && CGRectContainsPoint(bar.frame, p)) return [bar hitTest:[self convertPoint:p toView:bar] withEvent:e] ?: bar;
     return %orig;
 }
 %end

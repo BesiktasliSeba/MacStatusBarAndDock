@@ -120,20 +120,50 @@ static NSString *KBState(void) {
     return [NSString stringWithFormat:@"brightness=%.4f auto=%d dimmed=%d suppressed=%d", b, a, d, s];
 }
 
+@interface NSObject (BKKeyboardClient)
+- (id)copyKeyboardBacklightIDs;   // (declared so ARC knows the copy rule: the array is handed over owned, not leaked)
+@end
 static BOOL EnsureKeyboardClient(void) {
-    if (gKBClient) return gKBID != 0;
-    dlopen("/System/Library/PrivateFrameworks/CoreBrightness.framework/CoreBrightness", RTLD_LAZY);
-    Class c = NSClassFromString(@"KeyboardBrightnessClient");
-    // Hardening: every private call the backlight keys make is checked once; if one is missing, the client is never created.
-    if (!c) return NO;
-    for (NSString *n in @[@"copyKeyboardBacklightIDs", @"brightnessForKeyboard:", @"enableAutoBrightness:forKeyboard:", @"setBrightness:forKeyboard:"])
-        if (![c instancesRespondToSelector:NSSelectorFromString(n)]) return NO;
-    gKBClient = [[c alloc] init];
-    if (!gKBClient) return NO;
-    id ids = ((id (*)(id, SEL))objc_msgSend)(gKBClient, NSSelectorFromString(@"copyKeyboardBacklightIDs"));
-    if ([ids isKindOfClass:[NSArray class]] && [ids count]) gKBID = [[ids firstObject] unsignedLongLongValue];
-    Debug([NSString stringWithFormat:@"[kb] client ready, keyboard id %llu", gKBID]);
+    if (!gKBClient) {
+        dlopen("/System/Library/PrivateFrameworks/CoreBrightness.framework/CoreBrightness", RTLD_LAZY);
+        Class c = NSClassFromString(@"KeyboardBrightnessClient");
+        // Hardening: every private call the backlight keys make is checked once; if one is missing, the client is never created.
+        if (!c) return NO;
+        for (NSString *n in @[@"copyKeyboardBacklightIDs", @"brightnessForKeyboard:", @"enableAutoBrightness:forKeyboard:", @"setBrightness:forKeyboard:"])
+            if (![c instancesRespondToSelector:NSSelectorFromString(n)]) return NO;
+        gKBClient = [[c alloc] init];
+        if (!gKBClient) return NO;
+    }
+    if (gKBID == 0) {   // (asked again while no keyboard with a backlight was found: one attached after the first ask is used, 1.3.7)
+        id ids = [gKBClient copyKeyboardBacklightIDs];
+        if ([ids isKindOfClass:[NSArray class]] && [ids count]) gKBID = [[ids firstObject] unsignedLongLongValue];
+        Debug([NSString stringWithFormat:@"[kb] client ready, keyboard id %llu", gKBID]);
+    }
     return gKBID != 0;
+}
+// Automatic keyboard brightness, given back (1.3.7, audit L-12): the backlight keys switch it off at their first use (manual levels need that),
+// which used to last for good -- switching the keys off in Settings left the Magic Keyboard on manual. Now the switch-off is noted (only when it
+// was on), and when the keys are off -- switched off, or at SpringBoard's start -- it is switched back on and the note cleared. (Removing the
+// package cannot give it back: nothing of ours runs then.)
+#define kAutoTakenOffKey CFSTR("autoBrightnessTakenOff")
+static BOOL AutoTakenOff(void) {
+    CFPreferencesAppSynchronize(kPrefsDomain);
+    CFPropertyListRef v = CFPreferencesCopyValue(kAutoTakenOffKey, kPrefsDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    BOOL on = v && CFGetTypeID(v) == CFBooleanGetTypeID() && CFBooleanGetValue(v);
+    if (v) CFRelease(v);
+    return on;
+}
+static void SetAutoTakenOff(BOOL taken) {
+    CFPreferencesSetValue(kAutoTakenOffKey, taken ? kCFBooleanTrue : NULL, kPrefsDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    CFPreferencesSynchronize(kPrefsDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+}
+static void GiveBackAutoBrightness(void) {
+    if (!AutoTakenOff()) return;
+    if (!EnsureKeyboardClient()) { Debug(@"[kb] automatic brightness to give back, but no keyboard with a backlight now: later"); return; }
+    BOOL ok = ((BOOL (*)(id, SEL, BOOL, unsigned long long))objc_msgSend)(gKBClient, NSSelectorFromString(@"enableAutoBrightness:forKeyboard:"), YES, gKBID);
+    gKBAutoOff = NO; gKBLevel = -1.0f;
+    if (ok) SetAutoTakenOff(NO);
+    Debug([NSString stringWithFormat:@"[kb] backlight keys off: automatic keyboard brightness given back (ok=%d) | %@", ok, KBState()]);
 }
 
 // The strategy while I find out what works: /tmp/brightnesskey-mode says "manual" (turn auto-brightness off the first
@@ -153,8 +183,11 @@ static void AdjustKeyboardBacklight(float delta) {
         Debug([NSString stringWithFormat:@"[kb] starting level read as %.4f", gKBLevel]);
     }
     if (WantManualMode() && !gKBAutoOff) {
+        SEL isAuto = NSSelectorFromString(@"isAutoBrightnessEnabledForKeyboard:");
+        BOOL wasAuto = [gKBClient respondsToSelector:isAuto] ? ((BOOL (*)(id, SEL, unsigned long long))objc_msgSend)(gKBClient, isAuto, gKBID) : YES;
         ((void (*)(id, SEL, BOOL, unsigned long long))objc_msgSend)(gKBClient, NSSelectorFromString(@"enableAutoBrightness:forKeyboard:"), NO, gKBID);
         gKBAutoOff = YES;
+        if (wasAuto) SetAutoTakenOff(YES);   // (given back when the keys are switched off: GiveBackAutoBrightness)
     }
     float target = gKBLevel + delta;
     if (target < 0.0f) target = 0.0f;
@@ -266,8 +299,11 @@ static void PublishSwitches(void) {
     %init;
     if (!InSpringBoard()) return;
     static int upToken = 0, downToken = 0, prefsToken = 0;
-    notify_register_dispatch(kPrefsChanged, &prefsToken, dispatch_get_main_queue(), ^(int t) { PublishSwitches(); });
+    notify_register_dispatch(kPrefsChanged, &prefsToken, dispatch_get_main_queue(), ^(int t) { PublishSwitches(); if (BacklightKeysOff()) GiveBackAutoBrightness(); });
     PublishSwitches();
+    // (automatic keyboard brightness still to give back from before -- the keys switched off while SpringBoard was not running, or no keyboard was
+    //  there --: a little after the start, not from the constructor)
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ if (BacklightKeysOff()) GiveBackAutoBrightness(); });
     notify_register_dispatch(kScreenUp, &upToken, dispatch_get_main_queue(), ^(int t) { AdjustScreenBrightness(BRIGHTNESS_STEP); });
     notify_register_dispatch(kScreenDown, &downToken, dispatch_get_main_queue(), ^(int t) { AdjustScreenBrightness(-BRIGHTNESS_STEP); });
     dlopen("/System/Library/PrivateFrameworks/CoreBrightness.framework/CoreBrightness", RTLD_LAZY);

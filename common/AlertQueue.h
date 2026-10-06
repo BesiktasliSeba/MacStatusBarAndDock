@@ -5,11 +5,14 @@
 //    libraries, so the shared state is SpringBoard's own window list, not a variable.
 //  - never over the Lock Screen: an alert is not shown while locked, and one that is up closes as soon as the iPad locks, the screen goes off or
 //    the Cover Sheet (Lock Screen / Notification Center) comes down; the caller decides whether it comes back after the unlock.
+//  - never during Guided Access (1.3.7, audit M-7): the same as locked -- an alert waits until the session ends, one that is up is put away, and
+//    the caller decides whether it comes back (a Respring button must never work while the iPad is kept in one app).
 #pragma once
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
 #include <notify.h>
+#import "GuidedAccess.h"
 
 #define MSBD_ALERT_ID @"MSBDAlertWindow"
 
@@ -38,8 +41,9 @@ static inline id MSBDAlertShared(const char *cls) {
     if (c && [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17 && [c respondsToSelector:e]) return ((id (*)(id, SEL))objc_msgSend)((id)c, e);
     return c && [c respondsToSelector:s] ? ((id (*)(id, SEL))objc_msgSend)((id)c, s) : nil;
 }
-// Locked, screen off, or the Cover Sheet (Lock Screen / Notification Center) showing.
+// Locked, screen off, the Cover Sheet (Lock Screen / Notification Center) showing, or a Guided Access session running.
 static inline BOOL MSBDAlertLockedOrCovered(void) {
+    if (MSBDGuidedAccessActive()) return YES;
     static int lockToken = 0, blankToken = 0;
     if (!lockToken) notify_register_check("com.apple.springboard.lockstate", &lockToken);
     if (!blankToken) notify_register_check("com.apple.springboard.hasBlankedScreen", &blankToken);

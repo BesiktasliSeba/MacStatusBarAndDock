@@ -54,6 +54,16 @@ static void MSAddLongAutoLockTimes(NSArray *specifiers) {
             if ([s respondsToSelector:@selector(setShortTitleDictionary:)]) [s setShortTitleDictionary:sd];
             return;
         }
+        // (1.3.7, audit L-21) Only where the system allows them: a device management profile that caps Auto-Lock leaves Never out of the list (the cap
+        // is the list's end), and Low Power Mode holds Auto-Lock at 30 seconds -- our longer times would show a tick the system does not keep.
+        BOOL neverAllowed = NO;
+        for (NSNumber *v in values) { NSInteger x = [v integerValue]; if (x < 0 || x >= INT_MAX) { neverAllowed = YES; break; } }
+        if (!neverAllowed || [NSProcessInfo processInfo].isLowPowerModeEnabled) {
+#if DEBUG
+            if (MSTestFlag("/tmp/macsettings-debug")) { FILE *f = fopen("/tmp/macsettings.log", "a"); if (f) { fprintf(f, "autolock: longer times not added (%s)\n", [NSProcessInfo processInfo].isLowPowerModeEnabled ? "Low Power Mode" : "Auto-Lock is capped: no Never"); fclose(f); } }
+#endif
+            return;
+        }
         NSDictionary *titles = [s titleDictionary], *shortTitles = [s shortTitleDictionary];
 #if DEBUG
         if (MSTestFlag("/tmp/macsettings-debug")) {

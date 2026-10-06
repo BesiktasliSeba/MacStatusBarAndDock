@@ -23,6 +23,8 @@
 #import <unistd.h>
 #import <dirent.h>
 #import <dlfcn.h>
+#import "../common/GuidedAccess.h"   // (MSBDGuidedAccessActive: no panel while a Guided Access session keeps the iPad in one app, 1.3.7)
+#import "../common/AXText.h"         // (MSBDAXJoin: a row read as one element, 1.3.7)
 
 @interface UIWindow (DMPrivateDL)
 + (NSArray *)allWindowsIncludingInternalWindows:(BOOL)internal onlyVisibleWindows:(BOOL)visible;
@@ -440,6 +442,16 @@ static NSString *DMAgeText(NSDate *date) {
     [super setHighlighted:highlighted];
     self.backgroundColor = highlighted ? [UIColor colorWithWhite:0.5 alpha:0.28] : [UIColor clearColor];
 }
+// Assistive features (1.3.7, audit M-3): a download is one element -- its name, then where it came from, its size and age --; using it opens it,
+// as a tap does; the escape gesture closes the panel.
+- (BOOL)isAccessibilityElement { return YES; }
+- (NSString *)accessibilityLabel { return self.download.url.lastPathComponent; }
+- (NSString *)accessibilityValue { return MSBDAXJoin(@[self.download.source ?: @"", DMSizeText(self.download) ?: @"", DMAgeText(self.download.date) ?: @""]); }
+- (UIAccessibilityTraits)accessibilityTraits { return UIAccessibilityTraitButton; }
+- (BOOL)accessibilityActivate { [self sendActionsForControlEvents:UIControlEventTouchUpInside]; return YES; }
+@end
+// The panel itself: the escape gesture of assistive features closes it, as Esc and a tap outside do; while it is open they stay inside it.
+@interface DMDownloadsPanelView : UIVisualEffectView
 @end
 
 @interface DMDownloadsSearchField : UISearchTextField
@@ -505,6 +517,9 @@ static NSString *DMAgeText(NSDate *date) {
 }
 @end
 
+@implementation DMDownloadsPanelView
+- (BOOL)accessibilityPerformEscape { DMLog(@"[downloads] closes: escape (assistive feature)"); [[DMDownloadsPanel shared] dismissAnimated:YES]; return YES; }
+@end
 @implementation DMDownloadsPanel
 static void DMFrontAppChangedCallback(CFNotificationCenterRef c, void *observer, CFNotificationName name, const void *object, CFDictionaryRef info) {
     DMDownloadsPanel *p = (__bridge DMDownloadsPanel *)observer;
@@ -521,6 +536,10 @@ static void DMFrontAppChangedCallback(CFNotificationCenterRef c, void *observer,
         // a tap or click in any app (MacAppBridge tells us; an app's own touches never pass through SpringBoard) closes the panel too, like a menu
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), (__bridge const void *)p, DMFrontAppChangedCallback,
                                          CFSTR("com.besiktasliseba.appbridge.anytouch"), NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+        // a Guided Access session starting (1.3.7, audit M-7): the panel goes -- its files open other apps, and it is ours, not SpringBoard's, so
+        // Guided Access would not stop it
+        __weak DMDownloadsPanel *wp = p;
+        MSBDGuidedAccessObserve(^{ DMDownloadsPanel *x = wp; if (x && [x isOpen] && MSBDGuidedAccessActive()) { DMLog(@"[downloads] closes: Guided Access started"); [x dismissAnimated:NO]; } });
     });
     return p;
 }
@@ -713,6 +732,7 @@ static BOOL DMDownloadsSwitcherVisible(void) {
 
 - (void)toggleFromIcon:(UIView *)icon {
     if ([self isOpen]) { DMLog(@"[downloads] closes: its icon was tapped again"); [self dismissAnimated:YES]; return; }
+    if (MSBDGuidedAccessActive()) { DM_FEATURE_MARK("downloads-guided-access"); DMLog(@"[downloads] not opened: Guided Access runs"); return; }   // (1.3.7, audit M-7)
     UIWindow *window = icon.window;
     if (!window) return;
     __weak UIView *weakIcon = icon;
@@ -726,7 +746,7 @@ static BOOL DMDownloadsSwitcherVisible(void) {
         DMLog([NSString stringWithFormat:@"[downloads] scan took %.2f s", CFAbsoluteTimeGetCurrent() - started]);
         dispatch_async(dispatch_get_main_queue(), ^{
             UIView *strongIcon = weakIcon;
-            if (!strongIcon.window || [self isOpen]) return;
+            if (!strongIcon.window || [self isOpen] || MSBDGuidedAccessActive()) return;   // (a session that started during the scan: not opened)
             [self presentItems:items sources:sources fromIcon:strongIcon];
             // the search index, built while the panel is opening (typing before it is ready searches what the panel shows)
             UIView *panel = self.panel;
@@ -781,7 +801,8 @@ static BOOL DMDownloadsSwitcherVisible(void) {
     self.items = items; self.results = items; self.searchIndex = nil;
     self.openListH = listH; self.openBottom = y + height; self.keyboardTop = CGFLOAT_MAX;
 
-    UIVisualEffectView *panel = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThickMaterial]];
+    UIVisualEffectView *panel = [[DMDownloadsPanelView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThickMaterial]];
+    panel.accessibilityViewIsModal = YES;   // (assistive features stay in the panel while it is open; the escape gesture closes it)
     panel.layer.cornerRadius = 18.0; panel.layer.cornerCurve = kCACornerCurveContinuous; panel.clipsToBounds = YES;
     panel.layer.borderWidth = 0.5; panel.layer.borderColor = [UIColor colorWithWhite:0.5 alpha:0.35].CGColor;
     panel.frame = CGRectMake(x, y, width, height);   // (the parts below follow its height when a search grows or shrinks the list)
@@ -793,6 +814,7 @@ static BOOL DMDownloadsSwitcherVisible(void) {
         UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
         b.frame = CGRectMake(pad + k * bw, 4, bw, headerH - 8);
         [b setTitle:[@" " stringByAppendingString:((DMDownloadSource *)sources[k]).name] forState:UIControlStateNormal];   // folder symbol + browser name
+        b.accessibilityLabel = [NSString stringWithFormat:@"%@ Downloads", ((DMDownloadSource *)sources[k]).name ?: @""];   // (the folder it opens)
         [b setImage:[UIImage systemImageNamed:@"folder" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:13 weight:UIImageSymbolWeightMedium]] forState:UIControlStateNormal];
         b.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
         b.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -834,7 +856,8 @@ static BOOL DMDownloadsSwitcherVisible(void) {
     [from setTitleColor:[UIColor secondaryLabelColor] forState:UIControlStateNormal];
     [from setTitleColor:[UIColor tertiaryLabelColor] forState:UIControlStateHighlighted];
     UIImage *gear = [UIImage systemImageNamed:@"gearshape" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:12 weight:UIImageSymbolWeightRegular]];   // (a small gear on the left: it opens Settings)
-    if (gear) { [from setImage:gear forState:UIControlStateNormal]; from.tintColor = [UIColor secondaryLabelColor]; [from setTitle:@" Downloads From…" forState:UIControlStateNormal]; }   // (a space between gear and text)
+    if (gear) { [from setImage:gear forState:UIControlStateNormal]; from.tintColor = [UIColor secondaryLabelColor]; [from setTitle:@" Downloads From…" forState:UIControlStateNormal]; }
+    from.accessibilityLabel = @"Downloads From…"; from.accessibilityHint = @"Opens Settings to choose the apps whose downloads are shown.";   // (assistive features, 1.3.7)   // (a space between gear and text)
     [from sizeToFit];
     CGFloat fw = from.bounds.size.width + 16.0 + (gear ? 4.0 : 0.0);
     from.frame = CGRectMake(width - pad - fw, 1.0, fw, footerH - 2.0);
@@ -871,6 +894,10 @@ static BOOL DMDownloadsSwitcherVisible(void) {
     [window addSubview:panel];
     self.panel = panel;
     [self startDockWatch];
+    {   // (assistive features: the focus goes into the panel -- its first element -- once it is up)
+        __weak UIView *wp = panel;
+        dispatch_async(dispatch_get_main_queue(), ^{ if (wp && wp == self.panel && (UIAccessibilityIsVoiceOverRunning() || UIAccessibilityIsSwitchControlRunning())) UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, nil); });
+    }
     MSBAnimate(0.24, 0, 0.86, 0, ^{
         panel.alpha = 1.0; panel.transform = CGAffineTransformIdentity;
     }, nil);
@@ -1180,8 +1207,12 @@ static BOOL DMIsTypingInKeyboard(UIWindow *w) {
     [self addSubview:self.image];
     [self addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tapped)]];
     [self addInteraction:[[UIPointerInteraction alloc] initWithDelegate:self]];
+    self.isAccessibilityElement = YES;   // ("Downloads, button", used as a tap is: 1.3.7, audit M-3)
+    self.accessibilityLabel = @"Downloads";
+    self.accessibilityTraits = UIAccessibilityTraitButton;
     return self;
 }
+- (BOOL)accessibilityActivate { DM_FEATURE_MARK("ax-dock-items"); [self tapped]; return YES; }
 - (void)layoutSubviews {
     [super layoutSubviews];
     self.image.frame = self.bounds;

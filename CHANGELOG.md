@@ -2,6 +2,15 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.3.7
+
+### Improvements
+- VoiceOver now reads the menu bar and its menus, the traffic lights, desktop icons and Finder items.
+
+### Fixes
+- Guided Access: while a session runs, the menus, the Today View, Finder windows, the desktop, the Downloads stack and the traffic lights stay out of the way, and the windows of other apps are hidden until it ends.
+- Auto-Lock: the 30 minute, 1 hour and 2 hour options are no longer offered in Low Power Mode, since iPadOS would not keep them.
+
 ## 1.3.6
 
 ### Improvements
