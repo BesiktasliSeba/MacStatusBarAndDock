@@ -255,7 +255,7 @@ int main(int argc, const char **argv) {
         // the "verified" count: the rows of the ways in use only -- 16.2 and later keep 1.3.3's 76, minus the optional rows not there (1.3.4 logic test L1:
         // the first 1.3.4 builds counted rows of the other ways too, 78 and 81 on 16.7.7)
         Check([NSString stringWithFormat:@"verified count: %lu (the rows of the ways in use found here)", (unsigned long)wantVerified], checked == wantVerified, [NSString stringWithFormat:@"%lu", (unsigned long)checked]);
-        if (!paths.count) Check(@"16.2 and later: 102 rows (77 + sm-free's 17 Home rows + 1.3.8's 8 logic-test rows) minus the optional rows not here", checked == 102 - gSMCheckOptional.count, [NSString stringWithFormat:@"%lu", (unsigned long)checked]);
+        if (!paths.count) Check(@"16.2 and later: 108 rows (77 + sm-free's 17 Home rows + 1.3.8's 8 logic-test rows + 1.3.9's 6 Home-gesture rows) minus the optional rows not here", checked == 108 - gSMCheckOptional.count, [NSString stringWithFormat:@"%lu", (unsigned long)checked]);
         if (edge > 0) Check([NSString stringWithFormat:@"16.0/16.1 window model: Apple's fraction edge found (%.0f)", edge], DMSMSizedModel() && Near(gSMSizedThreshold, edge), [NSString stringWithFormat:@"sized %d edge %.1f", DMSMSizedModel(), gSMSizedThreshold]);
         else Check(@"the tested window model (attributed size) is used", !DMSMSizedModel(), @"");
         // hooks: only the chosen ways' rows are counted for "the hooks went in" (a hook of the other way is never installed)

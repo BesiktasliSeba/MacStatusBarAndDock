@@ -102,8 +102,11 @@ method	SBFluidSwitcherViewController	-	_keyboardWillShow:	v@:@
 method	SBFluidSwitcherViewController	-	_updateSoftwareKeyboardVisibleWithKeyboardShowing:	v@:B
 method	SBFluidSwitcherViewController	-	prefersStripHidden	B@:
 method	SBFullScreenContinuousExposeSwitcherModifier	-	shouldConfigureInAppDockHiddenAssertion	B@:
+method	SBHomeGestureSwitcherModifier	-	_isSelectedAppLayoutAtIndex:	B@:Q
+method	SBHomeGestureSwitcherModifier	-	frameForIndex:	{CGRect={CGPoint=dd}{CGSize=dd}}@:Q
 method	SBHomeGestureSwitcherModifier	-	homeScreenBackdropBlurProgress	d@:
 method	SBHomeGestureSwitcherModifier	-	homeScreenBackdropBlurType	q@:
+method	SBHomeGestureSwitcherModifier	-	scaleForIndex:	d@:Q
 method	SBIconController	+	sharedInstance	@@:
 method	SBIconController	-	handleHomeButtonTap	v@:
 method	SBIconView	-	_handleTap	v@:
@@ -151,5 +154,8 @@ method	SBWorkspaceTransitionRequest	-	setEventLabel:	v@:@
 method	SpringBoard	-	sendEvent:	v@:@
 method	UIView	-	didMoveToWindow	v@:
 method	UIView	-	setAlpha:	v@:d
+ivar	SBHomeGestureSwitcherModifier	_gestureHoldTimer	q
+ivar	SBHomeGestureSwitcherModifier	_selectedAppLayout	@
 ivar	SBHomeGestureSwitcherModifier	_startingEnvironmentMode	q
+ivar	SBHomeGestureSwitcherModifier	_translation	{CGPoint=dd}
 ivar	SBReduceMotionHomeGestureSwitcherModifier	_startingEnvironmentMode	q

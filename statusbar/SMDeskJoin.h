@@ -10,6 +10,7 @@
 #pragma once
 #import <Foundation/Foundation.h>
 #include "SMRoles.h"
+#include "SMWindowKey.h"
 
 // What the transition is besides its roles (any of these: left as SpringBoard built it).
 enum {
@@ -22,9 +23,12 @@ enum {
     DMSMJoinNonApp      = 1 << 6,   // a role holds something that is not an app's window (kept / emptied / the Home Screen)
     DMSMJoinOtherDesk   = 1 << 7,   // a window asked for lives on another Mac Switcher desktop (1.4): showing its stage is that desktop's switch
 };
-// desktop: the desktop's windows, @{@"b": bundle, @"r": role, @"t": last interaction time}; asked: what the transition names, @{@"b": bundle,
-// @"r": role}. Returns nil (leave it; *why says why), or the plan: @[bundle, role, isNew] for each window -- the kept desktop windows first
-// (their own role when it is one of the window roles, else a free one), then the new windows (free roles; the caller puts them in front).
+// desktop: the desktop's windows, @{@"w": window key (SMWindowKey.h), @"b": bundle, @"r": role, @"t": last interaction time}; asked: what the
+// transition names, @{@"w": window key, @"b": bundle, @"r": role}. Windows are compared by their keys -- two windows of one app are two windows
+// (M-2: a second window of an app on the desktop counted as "already there", and SpringBoard showed it alone); when any entry has no window key of
+// its own (its scene's identifier could not be read), all of them are compared by app, as before. Returns nil (leave it; *why says why), or the
+// plan: @[key, role, isNew] for each window (key: what it was compared by -- its "w", or its "b" by app) -- the kept desktop windows first (their
+// own role when it is one of the window roles, else a free one), then the new windows (free roles; the caller puts them in front).
 static NSArray<NSArray *> *DMSMDeskJoinPlan(NSArray<NSDictionary *> *desktop, NSArray<NSDictionary *> *asked, int flags, NSString **why) {
     #define DMSM_LEAVE(text) do { if (why) *why = (text); return nil; } while (0)
     if (flags & DMSMJoinOurs) DMSM_LEAVE(@"our own request");
@@ -37,13 +41,25 @@ static NSArray<NSArray *> *DMSMDeskJoinPlan(NSArray<NSDictionary *> *desktop, NS
     if (flags & DMSMJoinOtherDesk) DMSM_LEAVE(@"a window of another desktop (that desktop's switch)");
     if (!asked.count) DMSM_LEAVE(@"no window asked for");
     if (!desktop.count) DMSM_LEAVE(@"no desktop to keep");
-    NSMutableOrderedSet<NSString *> *deskB = [NSMutableOrderedSet orderedSet], *askedB = [NSMutableOrderedSet orderedSet];
-    for (NSDictionary *w in desktop) { NSString *b = w[@"b"]; if (![b isKindOfClass:[NSString class]] || !b.length) DMSM_LEAVE(@"a desktop window without an app"); [deskB addObject:b]; }
-    for (NSDictionary *w in asked) { NSString *b = w[@"b"]; if (![b isKindOfClass:[NSString class]] || !b.length) DMSM_LEAVE(@"an asked window without an app"); [askedB addObject:b]; }
+    BOOL byApp = NO;
+    for (NSDictionary *w in desktop) {
+        NSString *b = w[@"b"], *k = w[@"w"];
+        if (![b isKindOfClass:[NSString class]] || !b.length) DMSM_LEAVE(@"a desktop window without an app");
+        if (DMSMKeyIsApp(k) || !DMSMKeyCovers(b, k)) byApp = YES;
+    }
+    for (NSDictionary *w in asked) {
+        NSString *b = w[@"b"], *k = w[@"w"];
+        if (![b isKindOfClass:[NSString class]] || !b.length) DMSM_LEAVE(@"an asked window without an app");
+        if (DMSMKeyIsApp(k) || !DMSMKeyCovers(b, k)) byApp = YES;
+    }
+    #define DMSM_ID(w) ((NSString *)(byApp ? (w)[@"b"] : (w)[@"w"]))
+    NSMutableOrderedSet<NSString *> *deskK = [NSMutableOrderedSet orderedSet], *askedK = [NSMutableOrderedSet orderedSet];
+    for (NSDictionary *w in desktop) [deskK addObject:DMSM_ID(w)];
+    for (NSDictionary *w in asked) [askedK addObject:DMSM_ID(w)];
     NSMutableArray<NSString *> *fresh = [NSMutableArray array];   // (asked, not on the desktop: in the order SpringBoard named them)
-    for (NSString *b in askedB) if (![deskB containsObject:b]) [fresh addObject:b];
+    for (NSString *k in askedK) if (![deskK containsObject:k]) [fresh addObject:k];
     BOOL leavesOut = NO;
-    for (NSString *b in deskB) if (![askedB containsObject:b]) { leavesOut = YES; break; }
+    for (NSString *k in deskK) if (![askedK containsObject:k]) { leavesOut = YES; break; }
     if (!fresh.count) DMSM_LEAVE(@"only the desktop's own windows");      // (the desktop itself, or some of its windows: SpringBoard's own arrangement)
     if (!leavesOut) DMSM_LEAVE(@"it keeps every desktop window");        // (a window added to the desktop by Stage Manager itself)
     size_t cap = DMSMWindowCap();
@@ -56,19 +72,20 @@ static NSArray<NSArray *> *DMSMDeskJoinPlan(NSArray<NSDictionary *> *desktop, NS
     }];
     NSUInteger room = cap - fresh.count;
     NSMutableArray<NSDictionary *> *kept = [NSMutableArray array];
-    NSMutableSet<NSString *> *keptB = [NSMutableSet set];
-    for (NSDictionary *w in byTime) { if (kept.count >= room) break; if ([keptB containsObject:w[@"b"]]) continue; [kept addObject:w]; [keptB addObject:w[@"b"]]; }
+    NSMutableSet<NSString *> *keptK = [NSMutableSet set];
+    for (NSDictionary *w in byTime) { if (kept.count >= room) break; if ([keptK containsObject:DMSM_ID(w)]) continue; [kept addObject:w]; [keptK addObject:DMSM_ID(w)]; }
     NSMutableSet<NSNumber *> *used = [NSMutableSet set];
     NSMutableArray<NSArray *> *plan = [NSMutableArray array];
     NSMutableArray<NSString *> *needRole = [NSMutableArray array];
     for (NSDictionary *w in kept) {
         long long r = [w[@"r"] longLongValue];
-        if (DMSMIsWindowRole(r) && ![used containsObject:@(r)]) { [used addObject:@(r)]; [plan addObject:@[w[@"b"], @(r), @NO]]; }
-        else [needRole addObject:w[@"b"]];
+        if (DMSMIsWindowRole(r) && ![used containsObject:@(r)]) { [used addObject:@(r)]; [plan addObject:@[DMSM_ID(w), @(r), @NO]]; }
+        else [needRole addObject:DMSM_ID(w)];
     }
-    for (NSString *b in needRole) { long long r = DMSMFirstFreeRole(used); if (!r) DMSM_LEAVE(@"no free role"); [plan addObject:@[b, @(r), @NO]]; }
-    for (NSString *b in fresh) { long long r = DMSMFirstFreeRole(used); if (!r) DMSM_LEAVE(@"no free role"); [plan addObject:@[b, @(r), @YES]]; }
-    if (why) *why = [NSString stringWithFormat:@"%lu desktop window(s) kept%@, %lu joining", (unsigned long)kept.count, kept.count < desktop.count ? @" (the oldest left out)" : @"", (unsigned long)fresh.count];
+    for (NSString *k in needRole) { long long r = DMSMFirstFreeRole(used); if (!r) DMSM_LEAVE(@"no free role"); [plan addObject:@[k, @(r), @NO]]; }
+    for (NSString *k in fresh) { long long r = DMSMFirstFreeRole(used); if (!r) DMSM_LEAVE(@"no free role"); [plan addObject:@[k, @(r), @YES]]; }
+    if (why) *why = [NSString stringWithFormat:@"%lu desktop window(s) kept%@, %lu joining%@", (unsigned long)kept.count, kept.count < desktop.count ? @" (the oldest left out)" : @"", (unsigned long)fresh.count, byApp ? @" (windows told apart by app)" : @""];
     return plan;
+    #undef DMSM_ID
     #undef DMSM_LEAVE
 }

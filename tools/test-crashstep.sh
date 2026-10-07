@@ -110,6 +110,15 @@ if [ -f "$MAP" ] && [ -n "$DSYM" ]; then
   real core-sm-homenote "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMHomeNoteResult$'
   real core-sm-realhome "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMRequestRealHome$'
   real core-sm-desktopfor "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMDesktopFor$'
+  # (1.3.9: the windows keep still during a Home gesture with Reduce Motion off -- the decision the gesture's frame and scale answers read)
+  real core-sm-homestill "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMHGStill$'
+  # (sm-multiwin, M-2: each window known by its own scene -- the window's entity, its lookup by key, a card's key on every card layout, the window
+  #  keys' own header, force quit's later closes of the app's other windows)
+  real core-sm-winentity "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMEntityForStageItem$'
+  real core-sm-winitem "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMItemFor$'
+  real core-sm-cardkey "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMCardKey$'
+  real core-sm-keyset "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMKeySetHas$'
+  real core-sm-fqblock "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^___DMSMForceQuitWindows_block_invoke'
   # every Stage Manager hook group of this build (%group SM...): Windowing off -- 16.0's SMLayout160 / SMGrid160 fell to the image's target in the
   # first 1.3.4 build (the stock status bar instead, logic test); a new SM group must not
   smgroups=$(nm -s __TEXT __text "$DSYM" | grep -oE 'logos_method\$SM[A-Za-z0-9]*\$' | sed 's/^logos_method\$//; s/\$$//' | sort -u)

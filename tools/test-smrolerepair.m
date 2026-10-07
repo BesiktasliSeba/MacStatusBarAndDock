@@ -4,7 +4,7 @@
 // moved into the role before; the last target never written. SpringBoard reads it (Resolve below): a role left unset keeps its previous window;
 // a previous entity naming a role gives that role's previous window; "as it was" keeps its window only in the primary and side roles -- in an
 // additional side (5+) it gives nothing (the window leaves the desktop: seen on the iPad 2 with four windows, Tips of role 5 went with the
-// minimized Weather of role 6). Run by test-smrolerepair.sh.
+// minimized Weather of role 6). Section 9: two and three windows of one app (M-2). Run by test-smrolerepair.sh.
 #import <Foundation/Foundation.h>
 #include "../statusbar/SMRoleRepair.h"
 
@@ -209,6 +209,31 @@ int main(void) {
             CHECK(![f2[@"empty"] containsObject:@8] && [f2[@"empty"] containsObject:@9], "the role that names the window (8) is never emptied");
             NSMutableSet *both = [NSMutableSet setWithArray:f2[@"keep"]]; [both intersectSet:[NSSet setWithArray:f2[@"empty"]]];
             CHECK(both.count == 0, "keep and empty never overlap");
+        }
+        // 9. Two (three) windows of one app on the desktop (M-2: two scenes of Freeform, each its own identifier): Minimize of any of them keeps the
+        //    app's other windows, each once; the note of our own Minimize names THAT window (SMLimit.h DMSMNoteRemoving by window key) -- named by
+        //    its app (the first item of the bundle, before M-2) it could name the app's other window: on a full desktop the window of role 9 then
+        //    stayed where it was (Minimize did nothing), the other window's role was never touched.
+        {
+            NSString *fA = @"sceneID:com.apple.freeform-1D6E1C0B", *fB = @"sceneID:com.apple.freeform-7B3F0A11", *fC = @"sceneID:com.apple.freeform-0C5D3E2F";
+            NSMutableDictionary *was = Was(7);
+            was[@5] = fA; was[@9] = fB; was[@2] = fC;   // (Freeform's windows in roles 2, 5 and 9 of a full desktop)
+            for (int i = 0; i < 7; i++) {
+                NSArray *ctx = AppleMinimize(kRoles[i], was);
+                NSString *mine = was[@(kRoles[i])];
+                NSMutableSet *want = [NSMutableSet setWithArray:was.allValues]; [want removeObject:mine];
+                NSDictionary *fix = DMSMRoleRepairPlan(ctx, 5, kRoles[i], mine, &why);
+                NSDictionary *after = Resolve(ctx, fix);
+                CHECK(Distinct(after) && [[NSSet setWithArray:after.allValues] isEqualToSet:want], "Freeform x3 on 7, minimize role %lld (%s): every other window once, the app's other windows among them (got %s; %s)",
+                      kRoles[i], mine.UTF8String, after.description.UTF8String, why.UTF8String);
+            }
+            NSArray *ctx9 = AppleMinimize(9, was);
+            NSDictionary *own = DMSMRoleRepairPlan(ctx9, 5, 9, fB, &why);
+            CHECK([own[@"empty"] isEqualToArray:@[@9]] && ![[Resolve(ctx9, own) allValues] containsObject:fB], "the window of role 9 minimized, the note naming it: role 9 emptied, it leaves (%s)", why.UTF8String);
+            NSDictionary *other = DMSMRoleRepairPlan(ctx9, 5, 5, fA, &why);   // (the note naming the app's other window, in role 5)
+            NSDictionary *res = Resolve(ctx9, other);
+            CHECK(![other[@"empty"] containsObject:@5] && [res[@5] isEqualToString:fA], "the note naming the app's other window: its role 5 is not emptied, it stays there (got %s)", [res[@5] UTF8String] ?: "nothing");
+            CHECK([[res allValues] containsObject:fB], "... and the window of role 9 stays -- why the note must name the window itself, not its app");
         }
         printf("test-smrolerepair: %d passed, %d failed\n", passes, fails);
         return fails ? 1 : 0;

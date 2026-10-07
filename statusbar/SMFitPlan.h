@@ -9,8 +9,9 @@
 #import <Foundation/Foundation.h>
 
 enum { DMSMFitDefault = 0, DMSMFitKept = 1, DMSMFitFourKept = 2 };
-// slots: the arrangement kept (bundle -> slot name), or nil; bundles: the desktop's windows that take part, newest first; defaults: the default
-// slot names for MIN(4, bundles.count) windows (StatusBar.x DMDefaultSlotNames). Returns the plan (bundle -> slot); *how: DMSMFitKept = the
+// slots: the arrangement kept (window key -> slot name, SMWindowKey.h: two windows of one app are two tiles), or nil; bundles: the desktop's
+// windows that take part (their keys), newest first; defaults: the default slot names for MIN(4, bundles.count) windows (StatusBar.x
+// DMDefaultSlotNames). Returns the plan (window key -> slot); *how: DMSMFitKept = the
 // arrangement as it is (it covers exactly these windows), DMSMFitFourKept = four tiles kept and the windows past them left as they are (nothing
 // to lay out), DMSMFitDefault = the default arrangement for the newest windows (the caller keeps it as the new arrangement).
 static NSDictionary<NSString *, NSString *> *DMSMFitPlanDecide(NSDictionary<NSString *, NSString *> *slots, NSArray<NSString *> *bundles, NSArray<NSString *> *defaults, int *how) {
@@ -27,7 +28,7 @@ static NSDictionary<NSString *, NSString *> *DMSMFitPlanDecide(NSDictionary<NSSt
     if (how) *how = DMSMFitDefault;
     return plan;
 }
-// The arrangement remembered for a desktop -- keyed by its windows (bundles, sorted): another stage on screen in between (a window of its own, a
+// The arrangement remembered for a desktop -- keyed by its windows (their keys, sorted): another stage on screen in between (a window of its own, a
 // leftover stage) used to replace or drop the one global arrangement, and back on the desktop the default arrangement was laid out again for the
 // four newest -- with seven windows the three tiled before were then buried under the new tiles (1.3.6 logic test L-7). memory: key -> slots.
 static NSString *DMSMFitDeskKey(NSArray<NSString *> *bundles) { return [[bundles sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@"\n"]; }

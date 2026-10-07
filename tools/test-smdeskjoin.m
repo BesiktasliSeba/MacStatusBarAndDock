@@ -4,7 +4,9 @@
 // leaves the oldest out, and a random sweep: a rewritten plan always keeps the newest desktop windows, names every new window once, uses each
 // window role at most once, never more windows than the stage's window roles, and planning the result again leaves it alone. Run by
 // test-smdeskjoin.sh -- twice: with the engine's four window roles (1, 2, 5, 6: no role table from SpringBoard) and with 16.7.7's seven
-// (1, 2, 5-9, SMRoles.h, sm-nolimit).
+// (1, 2, 5-9, SMRoles.h, sm-nolimit). Entries without a window key ("w") are compared by app: the fallback, exactly as before M-2. SuiteWindows:
+// entries with window keys (SMWindowKey.h, M-2) -- a second window of an app on the desktop is a window of its own: it joins instead of showing
+// alone, two windows of one app both stay; one entry without a key turns the decision back to "by app"; a sweep over multi-window apps.
 #import <Foundation/Foundation.h>
 #include "../statusbar/SMDeskJoin.h"
 static BOOL SB1677(long long r) { unsigned long long x8 = (unsigned long long)(r - 1); unsigned int w9 = 1u << ((unsigned int)r & 31); return ((w9 & 0xfffffc19u) == 0) && x8 < 10; }
@@ -86,9 +88,9 @@ static void Suite(void) {
         CHECK(p.count == 3 && RolesValid(p) && RoleOf(p, @"x") == 1 && RoleOf(p, @"y") == 2 && RoleOf(p, @"z") == 5, "centre-role window re-roled: x %lld y %lld z %lld", RoleOf(p, @"x"), RoleOf(p, @"y"), RoleOf(p, @"z"));
         p = DMSMDeskJoinPlan(@[W(@"x", 2, 5), W(@"y", 2, 6)], @[A(@"z", 1)], 0, &why);
         CHECK(p.count == 3 && RolesValid(p), "a role claimed twice: roles stay unique");
-        //    One app with two windows on the desktop (two scenes, one bundle): kept once (the engine knows windows by app).
+        //    One app with two windows on the desktop (two scenes, one bundle) known by app only (no window keys -- the fallback): kept once.
         p = DMSMDeskJoinPlan(@[W(@"x", 1, 5), W(@"x", 2, 7), W(@"y", 5, 6)], @[A(@"z", 1)], 0, &why);
-        CHECK(p.count == 3 && RolesValid(p) && RoleOf(p, @"x") == 2, "two windows of one app kept once (its newest, role 2): %lld", RoleOf(p, @"x"));
+        CHECK(p.count == 3 && RolesValid(p) && RoleOf(p, @"x") == 2, "by app: two windows of one app kept once (its newest, role 2): %lld", RoleOf(p, @"x"));
 
         // 6. Random sweep.
         srandom(42);
@@ -135,11 +137,105 @@ static void Suite(void) {
     }
 }
 
+// ---- M-2: windows with their own keys ----------------------------------------------------------------------------------------------------------
+static NSDictionary *WK(NSString *b, NSString *u, long long r, long long t) { return @{@"w": DMSMKeyMake(b, u), @"b": b, @"r": @(r), @"t": @(t)}; }
+static NSDictionary *AK(NSString *b, NSString *u, long long r) { return @{@"w": DMSMKeyMake(b, u), @"b": b, @"r": @(r)}; }
+static NSArray *KeysOf(NSArray<NSArray *> *plan, BOOL isNew) { NSMutableArray *o = [NSMutableArray array]; for (NSArray *p in plan) if ([p[2] boolValue] == isNew) [o addObject:p[0]]; return o; }
+static void SuiteWindows(void) {
+    @autoreleasepool {
+        NSString *why = nil;
+        const NSUInteger cap = DMSMWindowCap();
+        printf("-- windows with keys, %zu window roles\n", DMSMWindowCap());
+        NSString *ff = @"com.apple.freeform", *clk = @"com.apple.mobiletimer", *set = @"com.apple.Preferences";
+        NSString *A1 = @"sceneID:com.apple.freeform-A", *B1 = @"sceneID:com.apple.freeform-B";
+        NSString *kA = DMSMKeyMake(ff, A1), *kB = DMSMKeyMake(ff, B1), *kC = DMSMKeyMake(clk, @"sceneID:com.apple.mobiletimer-default"), *kS = DMSMKeyMake(set, @"sceneID:com.apple.Preferences-default");
+        NSArray *desk = @[WK(clk, @"sceneID:com.apple.mobiletimer-default", 1, 10), WK(ff, A1, 2, 12), WK(set, @"sceneID:com.apple.Preferences-default", 5, 11)];
+
+        // 1. A second Freeform window, shown by SpringBoard as a stage of its own (its "+" / an app asking for a new window): it joins the desktop.
+        NSArray *p = DMSMDeskJoinPlan(desk, @[AK(ff, B1, 1)], 0, &why);
+        CHECK(p != nil, "a second window of a desktop app joins (%s)", why.UTF8String);
+        CHECK([KeysOf(p, YES) isEqualToArray:@[kB]], "Freeform B is the new window");
+        CHECK(KeysOf(p, NO).count == 3 && RoleOf(p, kC) == 1 && RoleOf(p, kA) == 2 && RoleOf(p, kS) == 5, "the desktop's three windows keep their roles (Freeform A among them)");
+        CHECK(RoleOf(p, kB) == 6 && RolesValid(p), "Freeform B takes the free role 6 (%lld)", RoleOf(p, kB));
+        CHECK(![why containsString:@"by app"], "decided by window: %s", why.UTF8String);
+        //    ... what the same transition did by app (the M-2 bug, still the fallback where windows can't be told apart): left alone.
+        CHECK(!DMSMDeskJoinPlan(@[W(clk, 1, 10), W(ff, 2, 12), W(set, 5, 11)], @[A(ff, 1)], 0, &why) && [why containsString:@"desktop's own"], "by app: 'only the desktop's own windows' (%s)", why.UTF8String);
+        //    One entry without its own key turns the whole decision back to "by app" (a window by scene and the same window by app would be two).
+        NSMutableArray *mixed = [desk mutableCopy]; mixed[2] = W(set, 5, 11);
+        CHECK(!DMSMDeskJoinPlan(mixed, @[AK(ff, B1, 1)], 0, &why) && [why containsString:@"desktop's own"], "one window without a key: by app (%s)", why.UTF8String);
+        CHECK(!DMSMDeskJoinPlan(desk, @[@{@"w": ff, @"b": ff, @"r": @1}], 0, &why) && [why containsString:@"desktop's own"], "an asked app key: by app (%s)", why.UTF8String);
+        CHECK(!DMSMDeskJoinPlan(desk, @[@{@"w": DMSMKeyMake(clk, B1), @"b": ff, @"r": @1}], 0, &why), "a key of another app than its bundle: by app (%s)", why.UTF8String);
+
+        // 2. Two windows of one app on the desktop: both stay, each in its role, when another stage joins.
+        NSArray *desk2 = @[WK(ff, A1, 1, 20), WK(ff, B1, 2, 21), WK(clk, @"sceneID:com.apple.mobiletimer-default", 5, 19)];
+        p = DMSMDeskJoinPlan(desk2, @[AK(@"com.apple.weather", @"sceneID:com.apple.weather-default", 1)], 0, &why);
+        CHECK(p.count == 4 && RolesValid(p) && RoleOf(p, kA) == 1 && RoleOf(p, kB) == 2 && RoleOf(p, kC) == 5, "both Freeform windows kept in their roles (A %lld, B %lld)", RoleOf(p, kA), RoleOf(p, kB));
+
+        // 3. Passes untouched: the desktop itself (both windows of the app), one of its two windows minimized away, Stage Manager adding B to it.
+        CHECK(!DMSMDeskJoinPlan(desk2, @[AK(ff, A1, 1), AK(ff, B1, 2), AK(clk, @"sceneID:com.apple.mobiletimer-default", 5)], 0, &why) && [why containsString:@"desktop's own"], "the desktop itself: %s", why.UTF8String);
+        CHECK(!DMSMDeskJoinPlan(desk2, @[AK(ff, A1, 1), AK(clk, @"sceneID:com.apple.mobiletimer-default", 2)], 0, &why) && [why containsString:@"desktop's own"], "Freeform B minimized away: %s", why.UTF8String);
+        CHECK(!DMSMDeskJoinPlan(desk, @[AK(clk, @"sceneID:com.apple.mobiletimer-default", 1), AK(ff, A1, 2), AK(set, @"sceneID:com.apple.Preferences-default", 5), AK(ff, B1, 6)], 0, &why) && [why containsString:@"keeps every"], "B added by Stage Manager itself: %s", why.UTF8String);
+        //    The App Switcher's card of Freeform A while only B is on the desktop (A minimized): A joins, B stays.
+        NSArray *deskB = @[WK(ff, B1, 1, 30), WK(clk, @"sceneID:com.apple.mobiletimer-default", 2, 29)];
+        p = DMSMDeskJoinPlan(deskB, @[AK(ff, A1, 1)], 0, &why);
+        CHECK(p.count == 3 && RoleOf(p, kB) == 1 && RoleOf(p, kC) == 2 && RoleOf(p, kA) == 5 && [KeysOf(p, YES) isEqualToArray:@[kA]], "A's card: A joins next to B (A %lld)", RoleOf(p, kA));
+
+        // 4. A full desktop of one app's windows: the oldest window is left out for the new one, never a window counted twice.
+        NSMutableArray *full = [NSMutableArray array];
+        for (size_t i = 0; i < cap; i++) [full addObject:WK(ff, [NSString stringWithFormat:@"sceneID:com.apple.freeform-%zu", i], gDMSMRoles[i], 100 + (long long)i)];
+        p = DMSMDeskJoinPlan(full, @[AK(ff, @"sceneID:com.apple.freeform-new", 1)], 0, &why);
+        CHECK(p.count == cap && RolesValid(p) && RoleOf(p, DMSMKeyMake(ff, @"sceneID:com.apple.freeform-0")) == -1 && RoleOf(p, DMSMKeyMake(ff, @"sceneID:com.apple.freeform-new")) == gDMSMRoles[0], "a full desktop of Freeform windows: the oldest out, the new one in its role (%s)", why.UTF8String);
+
+        // 5. Random sweep over apps with several windows: rewritten exactly when the rule applies (by window), every window at most once, each
+        //    new window once, the newest kept, roles unique, at most `cap`; planning the result again leaves it alone.
+        srandom(4242);
+        NSArray *apps = @[ff, clk, set, @"com.apple.Maps", @"com.apple.weather"];
+        int rewritten = 0, twoOfOne = 0;
+        for (int n = 0; n < 20000; n++) {
+            NSMutableArray *pool = [NSMutableArray array];   // (windows: an app and one of three scenes of it)
+            for (NSString *a in apps) for (int s = 0; s < 3; s++) [pool addObject:@[a, [NSString stringWithFormat:@"sceneID:%@-%d", a, s]]];
+            NSMutableArray *dk = [NSMutableArray array], *ask = [NSMutableArray array];
+            NSMutableArray *dpool = [pool mutableCopy], *apool = [pool mutableCopy];
+            int nd = (int)(random() % (cap + 1)), na = 1 + (int)(random() % cap);
+            long long roles[] = {1, 2, 4, 5, 6, 7, 8, 9};
+            int nroles = cap > 4 ? 8 : 5;
+            for (int i = 0; i < nd && dpool.count; i++) { NSUInteger k = (NSUInteger)random() % dpool.count; NSArray *w = dpool[k]; [dk addObject:WK(w[0], w[1], roles[random() % nroles], random() % 100)]; [dpool removeObjectAtIndex:k]; }
+            for (int i = 0; i < na && apool.count; i++) { NSUInteger k = (NSUInteger)random() % apool.count; NSArray *w = apool[k]; [ask addObject:AK(w[0], w[1], gDMSMRoles[i % cap])]; [apool removeObjectAtIndex:k]; }
+            NSMutableSet *dK = [NSMutableSet set], *aK = [NSMutableSet set], *dApps = [NSMutableSet set];
+            BOOL two = NO;
+            for (NSDictionary *w in dk) { [dK addObject:w[@"w"]]; if ([dApps containsObject:w[@"b"]]) two = YES; [dApps addObject:w[@"b"]]; }
+            for (NSDictionary *a in ask) [aK addObject:a[@"w"]];
+            NSMutableSet *newK = [aK mutableCopy]; [newK minusSet:dK];
+            NSMutableSet *leftOut = [dK mutableCopy]; [leftOut minusSet:aK];
+            BOOL applies = dK.count > 0 && newK.count >= 1 && newK.count <= cap - 1 && leftOut.count > 0;
+            NSArray *plan = DMSMDeskJoinPlan(dk, ask, 0, &why);
+            CHECK((plan != nil) == applies, "windows sweep %d: rewritten exactly when the rule applies (plan %d, applies %d: %s)", n, plan != nil, applies, why.UTF8String);
+            if (!plan) continue;
+            rewritten++; if (two) twoOfOne++;
+            CHECK(plan.count <= cap && RolesValid(plan), "windows sweep %d: at most %lu windows, roles unique", n, (unsigned long)cap);
+            NSMutableSet *seen = [NSMutableSet set];
+            for (NSArray *q in plan) { CHECK(![seen containsObject:q[0]] && !DMSMKeyIsApp(q[0]), "windows sweep %d: each window once, by its key", n); [seen addObject:q[0]]; }
+            CHECK([[NSSet setWithArray:KeysOf(plan, YES)] isEqualToSet:newK], "windows sweep %d: every new window once", n);
+            NSArray *kept = KeysOf(plan, NO);
+            CHECK(kept.count == MIN(dK.count, cap - newK.count), "windows sweep %d: as many desktop windows as fit (%lu)", n, (unsigned long)kept.count);
+            long long minKept = LLONG_MAX, maxDropped = LLONG_MIN;
+            for (NSDictionary *w in dk) { long long t = [w[@"t"] longLongValue]; if ([kept containsObject:w[@"w"]]) minKept = MIN(minKept, t); else maxDropped = MAX(maxDropped, t); }
+            CHECK(maxDropped == LLONG_MIN || maxDropped <= minKept, "windows sweep %d: the newest are kept", n);
+            NSMutableArray *after = [NSMutableArray array], *again = [NSMutableArray array];
+            for (NSArray *q in plan) { [after addObject:@{@"w": q[0], @"b": DMSMKeyBundle(q[0]), @"r": q[1], @"t": @([q[2] boolValue] ? 1000 : 1)}]; [again addObject:@{@"w": q[0], @"b": DMSMKeyBundle(q[0]), @"r": q[1]}]; }
+            CHECK(!DMSMDeskJoinPlan(after, again, 0, &why), "windows sweep %d: the joined desktop passes untouched", n);
+        }
+        CHECK(rewritten > 1000 && twoOfOne > 200, "the windows sweep rewrote enough cases: %d (%d with two windows of one app on the desktop)", rewritten, twoOfOne);
+    }
+}
+
 int main(void) {
     @autoreleasepool {
         Suite();   // (the engine's four: no role table from SpringBoard)
+        SuiteWindows();
         CHECK(DMSMRolesSetFrom(SB1677, 1, 2, 5, 25, 10, NULL) && DMSMWindowCap() == 7, "16.7.7's seven window roles set");
         Suite();   // (16.7.7: seven windows per desktop)
+        SuiteWindows();
         printf("test-smdeskjoin: %d passed, %d failed\n", passes, fails);
     }
     return fails ? 1 : 0;

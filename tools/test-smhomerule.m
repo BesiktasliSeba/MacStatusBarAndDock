@@ -3,7 +3,8 @@
 // order, and everything that is not "leaving the desktop for the Home Screen" is left as SpringBoard built it. A random sweep checks the plan's
 // invariants: each window role at most once, every role either kept or emptied, exactly the windowed windows kept, the newest in front, a plan
 // planned again changes nothing. Run with the engine's four roles (1, 2, 5, 6) and with 16.7.7's seven (1, 2, 5-9). Also the App Switcher's
-// bookkeeping (DMSMSwitcherNote) and the desktop choice (DMSMStageIsDesktop) of the 1.3.8 logic test fixes.
+// bookkeeping (DMSMSwitcherNote) and the desktop choice (DMSMStageIsDesktop) of the 1.3.8 logic test fixes, the Home gesture's keep-still rule
+// (DMSMHGKeepStill, 1.3.9).
 #import <Foundation/Foundation.h>
 #include "../statusbar/SMHomeRule.h"
 
@@ -175,11 +176,15 @@ static void SwitcherNote(void) {
         if (res == 2) want = prev == 2 ? 0 : ((prev == 3 && w) ? 1 : -1);
         else if (res == 0) want = 0;
         else want = -1;
-        int got = DMSMSwitcherNote(res, prev, (BOOL)w);
-        CHECK(got == want, "switcher note: went to %lld from %lld (window %d): %d, want %d", res, prev, w, got, want);
+        for (NSString *label in @[@"FinalFluidSwitcherGestureAction", @"DismissSwitcherNoninteractive", @"SBSwitcherControllerEventLabelFollowupRotation-0", @"ActivateSpringBoard", @"SBFluidSwitcherGestureX", @"sbfluidswitchergesture", @""]) {
+            int got = DMSMSwitcherNote(res, prev, (BOOL)w, label);
+            CHECK(got == want, "switcher note: went to %lld from %lld (window %d, %s): %d, want %d", res, prev, w, label.UTF8String, got, want);
+        }
+        CHECK(DMSMSwitcherNote(res, prev, (BOOL)w, nil) == want, "switcher note: no label (%lld from %lld, window %d) as before", res, prev, w);
+        CHECK(DMSMSwitcherNote(res, prev, (BOOL)w, @"SBFluidSwitcherGesture") == 0, "switcher note: a switcher gesture's first transition (%lld from %lld, window %d) keeps what is remembered", res, prev, w);
     }
     // sequences: 1 = remembered desk, applied as SMHome.h DMSMHomeNoteResult does
-    struct { const char *name; long long steps[6][2]; int n; BOOL window; BOOL want; } seq[] = {
+    struct { const char *name; long long steps[6][3]; int n; BOOL window; BOOL want; } seq[] = {   // (step: result, start, provisional)
         {"gesture into the switcher, then its follow-ups (FollowupRotation: no environment asked, still the switcher)", {{2, 3}, {2, 2}, {2, 2}}, 3, YES, YES},
         {"switcher toggle from the desktop", {{2, 3}}, 1, YES, YES},
         {"switcher from the desktop, then a card (application mode)", {{2, 3}, {3, 2}}, 2, YES, NO},
@@ -188,15 +193,38 @@ static void SwitcherNote(void) {
         {"switcher from a lone full-screen app (no window)", {{2, 3}, {2, 2}}, 2, NO, NO},
         {"switcher from the desktop, a result not readable in between", {{2, 3}, {0, 2}, {2, 2}}, 3, YES, YES},
         {"switcher from the desktop, then the Home Screen (the Home rule read it first), then a new switcher from Home", {{2, 3}, {1, 2}, {2, 1}}, 3, YES, NO},
+        // (1.3.9 device pass: a swipe up inside the App Switcher -- SpringBoard's gesture transaction starts with a transition of its own, "3 from 2",
+        //  label SBFluidSwitcherGesture; the Home the swipe ends in still starts from the App Switcher and must find the desktop remembered)
+        {"switcher from the desktop, then a swipe up inside it (the gesture's first transition)", {{2, 3}, {3, 2, 1}}, 2, YES, YES},
+        {"switcher from the desktop, a swipe inside it that ends on a card (application mode)", {{2, 3}, {3, 2, 1}, {3, 2}}, 3, YES, NO},
+        {"Home gesture from the desktop: its first transition, then into the switcher", {{3, 3, 1}, {2, 3}}, 2, YES, YES},
     };
     for (size_t k = 0; k < sizeof seq / sizeof seq[0]; k++) {
         BOOL desk = NO;
         for (int st = 0; st < seq[k].n; st++) {
-            int note = DMSMSwitcherNote(seq[k].steps[st][0], seq[k].steps[st][1], seq[k].window);
+            int note = DMSMSwitcherNote(seq[k].steps[st][0], seq[k].steps[st][1], seq[k].window, seq[k].steps[st][2] ? @"SBFluidSwitcherGesture" : @"FinalFluidSwitcherGestureAction");
             if (note > 0) desk = YES; else if (note < 0) desk = NO;
         }
         CHECK(desk == seq[k].want, "switcher sequence: %s -> desk %d, want %d", seq[k].name, desk, seq[k].want);
     }
+}
+
+// The Home gesture's keep-still rule (DMSMHGKeepStill, 1.3.9): exhaustive over its yes/no inputs, the 0.3 s hold threshold at 60 and 120 frames a
+// second (and an unknown rate), and the sideways test (|x| > |y| releases; equal or more vertical keeps).
+static void HGKeepStill(void) {
+    for (int o = 0; o < 2; o++) for (int sel = 0; sel < 2; sel++) for (int d = 0; d < 2; d++) {
+        BOOL want = o && sel && d;
+        CHECK(DMSMHGKeepStill((BOOL)o, (BOOL)sel, (BOOL)d, 0, 60, 0, -200) == want, "keep still: over %d, selected %d, the desktop %d -> %d", o, sel, d, want);
+    }
+    CHECK(DMSMHGKeepStill(YES, YES, YES, 18, 60, 0, -300), "60 fps: 18 hold frames (0.3 s) still keeps");
+    CHECK(!DMSMHGKeepStill(YES, YES, YES, 19, 60, 0, -300), "60 fps: 19 hold frames releases (the App Switcher)");
+    CHECK(DMSMHGKeepStill(YES, YES, YES, 36, 120, 0, -300) && !DMSMHGKeepStill(YES, YES, YES, 37, 120, 0, -300), "120 fps: 36 keeps, 37 releases");
+    CHECK(DMSMHGKeepStill(YES, YES, YES, 18, 0, 0, -300) && !DMSMHGKeepStill(YES, YES, YES, 19, -1, 0, -300), "an unknown frame rate counts as 60");
+    CHECK(DMSMHGKeepStill(YES, YES, YES, -5, 60, 0, -300), "a negative count (never seen) keeps");
+    CHECK(DMSMHGKeepStill(YES, YES, YES, 0, 60, 0, 0), "no movement yet keeps");
+    CHECK(DMSMHGKeepStill(YES, YES, YES, 0, 60, 40, -40) && DMSMHGKeepStill(YES, YES, YES, 0, 60, -39, -40), "diagonal, vertical part as large or larger: keeps");
+    CHECK(!DMSMHGKeepStill(YES, YES, YES, 0, 60, 41, -40) && !DMSMHGKeepStill(YES, YES, YES, 0, 60, -300, -10), "sideways along the bottom (|x| > |y|): Apple's");
+    CHECK(DMSMHGKeepStill(YES, YES, YES, 0, 60, 0, 120), "a swipe back down keeps");
 }
 
 // The desktop choice (DMSMStageIsDesktop): exhaustive over its inputs, and the cases of 1.3.8 logic test H-3.
@@ -232,6 +260,7 @@ int main(void) {
     Suite(four, 4);
     Suite(seven, 7);
     SwitcherNote();
+    HGKeepStill();
     StageIsDesktop();
     RuleEdges();
     printf("test-smhomerule: %d checks, %d failed\n", passes + fails, fails);

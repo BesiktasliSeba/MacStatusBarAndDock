@@ -2,6 +2,17 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.3.9
+
+### Improvements
+- Stage Manager engine: two windows of the same app now work like any other windows. A new window of an app, for example a second Freeform window, opens on your desktop next to the others, and each window's traffic lights, Minimize and full screen act on that window only.
+- Stage Manager engine: with Reduce Motion off, the Home gesture no longer shrinks your windows while you swipe. They go into the App Switcher only when it opens.
+
+### Fixes
+- Stage Manager engine: going Home with a swipe up from the App Switcher now keeps your windows too.
+- Stage Manager engine: Force Quit now closes every window of the app.
+- iPadOS 15: Force Quit in an app's menu in the App Library now quits the app instead of opening it.
+
 ## 1.3.8
 
 ### Improvements

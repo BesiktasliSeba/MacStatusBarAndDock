@@ -4,12 +4,12 @@
 //     it is finalized, into the desktop's windows in their roles; a full-screen window goes to the background. A person already on the Home Screen
 //     behind the windows gets the Home Screen's own Home press (SBIconController -handleHomeButtonTap: an open folder, the App Library, jiggle mode,
 //     Spotlight or the Today View close; the first page) and the windowed apps put their keyboard away -- as when the Home Screen is tapped (Aerial).
-//  B. The Home Screen keeps its look behind the windows during a Home gesture (SpringBoard's gesture blurred it as if an app covered it). With Reduce
-//     Motion off the gesture still shrinks the windows with the finger and they come back when it ends (the rule keeps them): open, for 1.3.9 --
-//     plans/sm-free.md "Home gesture shrink" (the per-index frame / scale answers of SBHomeGestureSwitcherModifier were tried: no effect).
+//  B. The Home Screen keeps its look behind the windows during a Home gesture (SpringBoard's gesture blurred it as if an app covered it), and (B2,
+//     1.3.9) with Reduce Motion off the windows keep still during the gesture until it becomes the App Switcher -- they shrank with the finger.
 //  C. After a respring the desktop comes back by itself.
-// Optional rows (kSMNeeds, "windows stay at Home ...", "the Home Screen's own Home press ...", "the Home Screen stays sharp under a Home gesture ..."): a row
-// missing or of another signature leaves that part as Apple has it (logged once, listed in the verdict); nothing else depends on them.
+// Optional rows (kSMNeeds, "windows stay at Home ...", "the Home Screen's own Home press ...", "the Home Screen stays sharp under a Home gesture ...",
+// "windows keep still in a Home gesture ..."): a row missing or of another signature leaves that part as Apple has it (logged once, listed in the
+// verdict); nothing else depends on them.
 #pragma once
 #include "SMHomeRule.h"
 
@@ -130,7 +130,20 @@ __attribute__((noinline)) static void DMSMHomeNoteResult(id ctx) {   // (noinlin
         NSDictionary *map = DMSMStageItemsMap(prevStage);
         for (id it in map) { NSString *i = DMSMHomeItemIdent(it); if (i) [ids addObject:i]; if (DMSMPolicyOf(map[it]) != 2) window = YES; }
     }
-    int note = DMSMSwitcherNote(env, prevEnv, window);
+    // (a switcher gesture's own first transition is no destination: its event label -- SMHomeRule.h DMSMSwitcherNote)
+    id req = [ctx respondsToSelector:NSSelectorFromString(@"request")] && DMSMSigOK(ctx, NSSelectorFromString(@"request"), DMSMSigObj(), "request") ? DMCall(ctx, @"request") : nil;
+    id label = [req respondsToSelector:NSSelectorFromString(@"eventLabel")] ? DMCall(req, @"eventLabel") : nil;
+    if (![label isKindOfClass:[NSString class]]) label = nil;
+    int note = DMSMSwitcherNote(env, prevEnv, window, label);
+#if DEBUG
+    BOOL provisional = note == 0 && [label isEqualToString:@"SBFluidSwitcherGesture"];
+#endif
+#if DEBUG
+    if (DMTestFlag("/tmp/macstatusbar-debug") && (note > 0 || (note < 0 && gSMSwitcherDesk.count) || env == 2 || prevEnv == 2)) {
+        DMLog([NSString stringWithFormat:@"[smhome] App Switcher bookkeeping: %lld from %lld (%@): %@", env, prevEnv, label ?: @"no label",
+               note > 0 ? [NSString stringWithFormat:@"remembers the desktop's %lu window(s)", (unsigned long)ids.count] : (note < 0 ? (gSMSwitcherDesk.count ? @"forgets the desktop" : @"nothing remembered") : (provisional ? @"a gesture's first transition: keeps what it had" : @"keeps what it had"))]);
+    }
+#endif
     if (note > 0) gSMSwitcherDesk = ids;
     else if (note < 0) gSMSwitcherDesk = nil;
 }
@@ -250,8 +263,8 @@ __attribute__((noinline)) static void DMSMHomeKeepsDesktop(id ctx) {   // (noinl
     }
     NSMutableArray<NSString *> *awayNames = [NSMutableArray array];
     for (NSString *ident in plan[@"away"]) {   // (the full-screen app went to the background: a minimized window to the joins, back with its app)
-        NSString *b = DMSMItemBundle(byId[ident]);
-        if (b.length) { DMSMSetMinimized(b, YES); [awayNames addObject:b]; }
+        NSString *k = DMSMItemKey(byId[ident]);   // (that window: the app's other windows stay windows, M-2)
+        if (k.length) { DMSMSetMinimized(k, YES); [awayNames addObject:DMSMKeyText(k)]; }
     }
     DM_FEATURE_MARK("sm-home-keeps-windows");
     BOOL atHome = [plan[@"atHome"] boolValue];
@@ -299,8 +312,14 @@ static long long DMSMHGBlurType(id self, SEL _cmd) {
     struct objc_super su = { self, gSMHGSuper };
     return ((long long (*)(struct objc_super *, SEL))objc_msgSendSuper)(&su, _cmd);
 }
+#if DEBUG
+static void DMSMHGProbeKick(id mod);
+#endif
 static double DMSMHGBlurProgress(id self, SEL _cmd) {
     if (!DMSMHGOverDesk(self, gSMHGStart)) return o_SMHGBlurProgress(self, _cmd);
+#if DEBUG
+    DMSMHGProbeKick(self);   // (also without B2's hooks: the debug A/B /tmp/msb-sm-applegestureshrink shows Apple's numbers -- logic test L-5)
+#endif
     struct objc_super su = { self, gSMHGSuper };
     return ((double (*)(struct objc_super *, SEL))objc_msgSendSuper)(&su, _cmd);
 }
@@ -309,6 +328,129 @@ static long long DMSMRMBlurType(id self, SEL _cmd) {
     struct objc_super su = { self, gSMRMSuper };
     return ((long long (*)(struct objc_super *, SEL))objc_msgSendSuper)(&su, _cmd);
 }
+
+// ---- B2. the windows keep still during a Home gesture (Reduce Motion off) until it becomes the App Switcher ---------------------------------------
+// With Reduce Motion off, a Home swipe over the desktop shrank the windows with the finger and moved them up; they came back when it ended (the rule
+// keeps them). Root cause (16.7.7, measured on the iPad 2 with a probe of the root modifier's answers, 7 Oct): SpringBoard's Home gesture takes the
+// stage under the finger as the app going Home (-[SBDeckSwitcherPanGestureWorkspaceTransaction selectedAppLayoutForGestureRecognizer:] -> the item
+// container at the touch). When a window of the desktop lies under the finger's path (a window across the bottom middle of the screen), the whole
+// stage is that "selected app": -[SBHomeGestureSwitcherModifier scaleForIndex:] answers -_scaleForTranslation: (1.0 -> 0.48 over a slow swipe) and
+// -frameForIndex: the rest frame offset by -_frameOffsetForTranslation:, as for an app going Home, and every window scales with its stage. With no
+// window under the finger (Fit's tiles leave a gap in the middle), nothing is selected and nothing moves. sm-free answered these two queries already
+// but only until the gesture modifier's _inMultitasking, which turns on after about 90 pt of every swipe -- so the windows shrank for the rest of
+// it (its fly-in flag and its App Switcher haptic turn on at the same moment, they are no pause either). Now the desktop's stage keeps its rest
+// answers -- the floor's, read through the gesture modifier's own super, as the blur answers above -- until the finger has held still in the App
+// Switcher's range for 0.3 s: SpringBoard counts those frames itself (-_displayLinkFired: -> _gestureHoldTimer, frames whose average velocity is under
+// its fly-in limit while lifting would open the App Switcher). From then on Apple's answers take the desktop into its App Switcher card with
+// SpringBoard's own springs. (SpringBoard's -_hasPausedEnoughForFlyIn also counts an "acceleration dip", which every injected swipe on the iPad 2
+// tripped mid-way at full speed: not used.) A Home swipe therefore moves no window, fast or slow; a swipe that ends in the App Switcher without a hold
+// animates into it as it ends. A sideways swipe along the bottom edge (switching stages: |x| > |y|), a full-screen window in front, Reduce Motion on
+// (its own modifier moves nothing), the Home Screen with no windows: Apple's. The rule itself: SMHomeRule.h DMSMHGKeepStill (Mac-tested).
+static double (*o_SMHGScale)(id, SEL, unsigned long long);
+static CGRect (*o_SMHGFrame)(id, SEL, unsigned long long);
+static Ivar gSMHGSelIv, gSMHGHoldIv, gSMHGTransIv;
+static SEL gSMHGIsSelected;
+static long long DMSMHGHoldFrames(id mod) {   // (SpringBoard's own count of the frames the finger held still in the App Switcher's range)
+    long long frames = 0;
+    memcpy(&frames, (const char *)(__bridge const void *)mod + ivar_getOffset(gSMHGHoldIv), sizeof frames);
+    return frames;
+}
+static BOOL gSMHomeStillOn = NO;            // (B2: the gesture's two answers replaced)
+static char kSMHGStillKey;
+// The gesture's stage keeps still at this index now: the gesture runs over a desktop of windows (DMSMHGOverDesk), the index is the stage the
+// gesture took (its selected app layout) and that stage is the desktop on screen, and the finger has not held still for the App Switcher.
+__attribute__((noinline)) static BOOL DMSMHGStill(id mod, unsigned long long index) {   // (noinline: its own range in the release crash map)
+    if (!gSMHomeStillOn || !DMSMHGOverDesk(mod, gSMHGStart)) return NO;   // (cheap ways out first: every other gesture, every other mode)
+    BOOL selected = ((BOOL (*)(id, SEL, unsigned long long))objc_msgSend)(mod, gSMHGIsSelected, index);
+    if (!selected) return NO;
+    NSNumber *cached = objc_getAssociatedObject(mod, &kSMHGStillKey);   // (the stage it took is the desktop: once per gesture, it does not change)
+    if (!cached) {
+        id taken = object_getIvar(mod, gSMHGSelIv);
+        id desk = DMSMFrontStageOnDisplay(DMSMIdentityOfScreen([UIScreen mainScreen]));
+        BOOL yes = taken && desk && [taken isEqual:desk];
+        cached = @(yes);
+        objc_setAssociatedObject(mod, &kSMHGStillKey, cached, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (yes) DM_FEATURE_MARK("sm-home-gesture-still");
+        if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[smhome] Home gesture over a window of the desktop: %@", yes ? @"the windows keep still until the App Switcher is asked for" : @"the stage it took is not the desktop -- Apple's movement"]);
+    }
+    CGPoint t = CGPointZero;
+    memcpy(&t, (const char *)(__bridge const void *)mod + ivar_getOffset(gSMHGTransIv), sizeof t);
+    NSInteger fps = [UIScreen mainScreen].maximumFramesPerSecond;
+    return DMSMHGKeepStill(YES, selected, cached.boolValue, DMSMHGHoldFrames(mod), fps, t.x, t.y);   // (the rule: SMHomeRule.h, Mac test test-smhomerule)
+}
+static double DMSMHGScale(id self, SEL _cmd, unsigned long long index) {
+#if DEBUG
+    DMSMHGProbeKick(self);
+#endif
+    if (!DMSMHGStill(self, index)) return o_SMHGScale(self, _cmd, index);
+    struct objc_super su = { self, gSMHGSuper };
+    return ((double (*)(struct objc_super *, SEL, unsigned long long))objc_msgSendSuper)(&su, _cmd, index);
+}
+static CGRect DMSMHGFrame(id self, SEL _cmd, unsigned long long index) {
+    if (!DMSMHGStill(self, index)) return o_SMHGFrame(self, _cmd, index);
+    struct objc_super su = { self, gSMHGSuper };
+    return ((CGRect (*)(struct objc_super *, SEL, unsigned long long))objc_msgSendSuper)(&su, _cmd, index);
+}
+#if DEBUG
+// debug /tmp/msb-sm-hgprobe: during a Home gesture over the desktop, every ~120 ms (outside the layout pass), what the switcher's ROOT modifier answers
+// for each of its app layouts (what -[SBFluidSwitcherViewController _layoutAppLayout:roleMask:completion:] reads), the gesture modifier's own and its
+// super's answers, whether it took the desktop and the App Switcher's flags, and the desktop's windows' item containers on screen. Read-only.
+static __weak id gSMHGProbeMod;
+static CFTimeInterval gSMHGProbeLast = 0;
+static void DMSMHGProbeRun(void) {
+    id mod = gSMHGProbeMod;
+    if (!mod) return;
+    @try {
+        id coord = DMSMCoordinator();
+        id scene = MSBDMainWindowScene();
+        SEL forScene = NSSelectorFromString(@"switcherControllerForWindowScene:");
+        id sc = scene && [coord respondsToSelector:forScene] ? ((id (*)(id, SEL, id))objc_msgSend)(coord, forScene, scene) : nil;
+        id vc = DMCall(sc, @"contentViewController");
+        id root = [vc respondsToSelector:NSSelectorFromString(@"rootModifier")] ? DMCall(vc, @"rootModifier") : nil;
+        if (!root) { DMLog(@"[hgprobe] no root modifier"); return; }
+        id als = DMCall(root, @"appLayouts");
+        Ivar multiIv = class_getInstanceVariable(object_getClass(mod), "_inMultitasking"), transIv = class_getInstanceVariable(object_getClass(mod), "_translation");
+        BOOL multi = NO; CGPoint tr = CGPointZero; long long hold = -1;
+        if (multiIv) memcpy(&multi, (const char *)(__bridge const void *)mod + ivar_getOffset(multiIv), sizeof multi);
+        if (gSMHGHoldIv) hold = DMSMHGHoldFrames(mod);
+        SEL pausedSel = NSSelectorFromString(@"_hasPausedEnoughForFlyIn");
+        BOOL paused = [mod respondsToSelector:pausedSel] && ((BOOL (*)(id, SEL))objc_msgSend)(mod, pausedSel);
+        if (transIv) memcpy(&tr, (const char *)(__bridge const void *)mod + ivar_getOffset(transIv), sizeof tr);
+        id taken = gSMHGSelIv ? object_getIvar(mod, gSMHGSelIv) : nil;
+        id desk = DMSMFrontStageOnDisplay(DMSMIdentityOfScreen([UIScreen mainScreen]));
+        NSUInteger count = [als isKindOfClass:[NSArray class]] ? [(NSArray *)als count] : 0;
+        NSMutableString *o = [NSMutableString stringWithFormat:@"[hgprobe] %lu app layouts, took %@, multitasking %d, Apple's paused-enough %d, hold frames %lld (held %d), translation %@, still on %d",
+                              (unsigned long)count, !taken ? @"none" : ([taken isEqual:desk] ? @"the desktop" : @"another stage"), multi, paused, hold,
+                              hold > (long long)(0.3 * (double)MAX((NSInteger)1, [UIScreen mainScreen].maximumFramesPerSecond)), NSStringFromCGPoint(tr), gSMHomeStillOn];
+        SEL scaleSel = NSSelectorFromString(@"scaleForIndex:"), frameSel = NSSelectorFromString(@"frameForIndex:");
+        for (NSUInteger j = 0; j < count && j < 4; j++) {
+            id a = ((NSArray *)als)[j];
+            double S = ((double (*)(id, SEL, unsigned long long))objc_msgSend)(root, scaleSel, (unsigned long long)j);
+            CGRect F = ((CGRect (*)(id, SEL, unsigned long long))objc_msgSend)(root, frameSel, (unsigned long long)j);
+            struct objc_super su = { mod, gSMHGSuper };
+            double sup = ((double (*)(struct objc_super *, SEL, unsigned long long))objc_msgSendSuper)(&su, scaleSel, (unsigned long long)j);
+            [o appendFormat:@" || %lu%@: root scale %.3f frame %@ (the floor's %.3f)", (unsigned long)j, [a isEqual:desk] ? @" (the desktop)" : @"", S, NSStringFromCGRect(F), sup];
+            if (![a isEqual:desk]) continue;
+            id leaves = DMCall(a, @"leafAppLayouts");
+            SEL icSel = NSSelectorFromString(@"_itemContainerForAppLayoutIfExists:");
+            for (id leaf in ([leaves isKindOfClass:[NSArray class]] ? leaves : @[])) {
+                UIView *cont = [vc respondsToSelector:icSel] ? ((id (*)(id, SEL, id))objc_msgSend)(vc, icSel, leaf) : nil;
+                CALayer *pl = cont.layer.presentationLayer;
+                [o appendFormat:@" | %@ on screen %.3f %@", DMSMItemBundle([DMCall(leaf, @"allItems") firstObject]) ?: @"?", pl ? pl.transform.m11 : -1, pl ? NSStringFromCGRect(pl.frame) : @"-"];
+            }
+        }
+        DMLog(o);
+    } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[hgprobe] failed: %@", e.reason]); }
+}
+static void DMSMHGProbeKick(id mod) {
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - gSMHGProbeLast < 0.12) return;
+    gSMHGProbeLast = now;
+    if (!DMTestFlag("/tmp/msb-sm-hgprobe") || !DMSMHGOverDesk(mod, gSMHGStart)) return;
+    gSMHGProbeMod = mod;
+    dispatch_async(dispatch_get_main_queue(), ^{ DMSMHGProbeRun(); });
+}
+#endif
 
 // ---- C. after a respring the desktop comes back by itself ----------------------------------------------------------------------------------------
 // The other engines' windows come back after a respring (DMRestoreWindows, our own restore). Stage Manager keeps the desktop's stage among its
@@ -335,6 +477,17 @@ static void DMSMRestoreDesktopTick(void) {
     long long env = 0; id shown = nil;
     if (!DMSMHomeStateOf(DMSMHomeCurrentState(), &env, &shown)) return;   // (not readable yet)
     gSMRestoreDone = YES;
+    {   // (the saved minimized marks of windows that are gone -- their stage removed, e.g. the app quit from the App Switcher: a window's scene ends
+        //  with it -- leave the saved set now that SpringBoard's stages are read; the set only grew, 1.3.9 logic test L-3. SMWindowKey.h DMSMKeysGone)
+        NSArray *stages = DMSMRecentStages();
+        NSMutableSet<NSString *> *present = [NSMutableSet set];
+        for (id al in stages) for (id it in DMSMStageItemsMap(al)) { NSString *k = DMSMItemKey(it); if (k) [present addObject:k]; }
+        NSSet<NSString *> *gone = stages && DMSMPerWindow() ? DMSMKeysGone(DMSMMinimizedSet(), present) : nil;   // (window keys compare only per window)
+        if (gone.count) {
+            DMSMMinimizedDrop(gone);
+            DMLog([NSString stringWithFormat:@"[smhome] after the start: %lu minimized mark(s) of windows that no longer exist dropped", (unsigned long)gone.count]);
+        }
+    }
     if (env != 1) { DMLog([NSString stringWithFormat:@"[smhome] after the start: not on the Home Screen (environment %lld) -- the desktop is as it was opened", env]); return; }
 #if DEBUG
     if (DMTestFlag("/tmp/msb-sm-norestore")) { DMLog(@"[smhome] debug /tmp/msb-sm-norestore: the desktop is not brought back"); return; }
@@ -346,7 +499,7 @@ static void DMSMRestoreDesktopTick(void) {
     struct stat st;
     if (stat(guard, &st) == 0) { unlink(guard); DMLog(@"[smhome] the desktop is not brought back: the last start ended while it was being brought back"); return; }
     // The desktop: the most recent stage on the iPad with a window that is not minimized, not an app in full screen sent to the background (as the
-    // joins have it: StatusBar.x DMSMDesktopFor; minimized windows are known across a respring: DMSMMinimizedSet).
+    // joins have it: StatusBar.x DMSMDesktopFor; minimized windows are known across a respring: DMSMMinimizedSet, one entry per window).
     id desk = DMSMDesktopFor(nil, nil, NULL);
     if (!desk) { DMLog(@"[smhome] after the start: no desktop with windows to bring back"); return; }
     NSDictionary *map = DMSMStageItemsMap(desk);
@@ -361,12 +514,14 @@ static void DMSMRestoreDesktopTick(void) {
     for (NSDictionary *w in [all sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) { return [a[@"r"] compare:b[@"r"]]; }]) {
         id item = byId[w[@"id"]];
         NSString *b = DMSMItemBundle(item);
-        if (DMSMIsMinimized(b)) continue;   // (a minimized window stays minimized)
+        if (DMSMIsMinimized(DMSMItemKey(item))) continue;   // (a minimized window stays minimized -- that window, not its app's others)
         long long r = DMSMFirstFreeRole(used);   // (closed up in role order, as SpringBoard does: a stage always has its primary window)
         id e = DMSMEntityForItem(item, identity);
         if (!r || !e || !map[item]) { DMLog([NSString stringWithFormat:@"[smhome] after the start: %@ could not be planned -- the desktop comes back with the first app opened", b ?: @"a window"]); return; }
         [rows addObject:@[e, @(r), map[item]]];
-        if (b) { [names addObject:b]; if ([w[@"p"] longLongValue] != 2) [tiled addObject:b]; }
+        NSString *k = DMSMItemKey(item);   // (Fit to Window knows the windows by their keys: two windows of one app are two tiles, M-2)
+        if (b) [names addObject:DMSMKeyText(k ?: b)];
+        if (k && [w[@"p"] longLongValue] != 2) [tiled addObject:k];
         if ([w[@"t"] longLongValue] > newest) { newest = [w[@"t"] longLongValue]; front = e; }
     }
     if (!rows.count) return;
@@ -432,6 +587,30 @@ static void DMSMHomeInstall(void) {
     gSMHomeGestureOn = o_SMHGBlurType && o_SMHGBlurProgress && o_SMRMBlurType && m1 && m2 && m3 && method_getImplementation(m1) == (IMP)DMSMHGBlurType
                     && method_getImplementation(m2) == (IMP)DMSMHGBlurProgress && method_getImplementation(m3) == (IMP)DMSMRMBlurType;
     DMLog(gSMHomeGestureOn ? @"[smhome] the Home Screen keeps its look behind the windows during a Home gesture" : @"[smhome] the Home gesture's blur answers could not all be replaced: Apple's look");
+    if (!gSMHomeGestureOn) return;   // (B2 reads B's per-gesture decision and super class)
+#if DEBUG
+    if (DMTestFlag("/tmp/msb-sm-applegestureshrink")) { DMLog(@"[smhome] debug /tmp/msb-sm-applegestureshrink: the Home gesture moves the windows as Apple has it"); return; }
+#endif
+    static const char *const stillRows[] = {
+        "SBHomeGestureSwitcherModifier", "frameForIndex:", "SBHomeGestureSwitcherModifier", "scaleForIndex:", "SBHomeGestureSwitcherModifier", "_isSelectedAppLayoutAtIndex:",
+        "SBHomeGestureSwitcherModifier", "_selectedAppLayout", "SBHomeGestureSwitcherModifier", "_gestureHoldTimer", "SBHomeGestureSwitcherModifier", "_translation",
+    };
+    [missing removeAllObjects];
+    if (!DMSMHomeRowsPassed(stillRows, sizeof stillRows / sizeof stillRows[0], missing)) {
+        DMLog([NSString stringWithFormat:@"[smhome] the Home gesture moves the windows as Apple has it here: %@", [missing componentsJoinedByString:@"; "]]);
+        return;
+    }
+    gSMHGSelIv = class_getInstanceVariable(c, "_selectedAppLayout");
+    gSMHGHoldIv = class_getInstanceVariable(c, "_gestureHoldTimer");
+    gSMHGTransIv = class_getInstanceVariable(c, "_translation");
+    gSMHGIsSelected = sel_registerName("_isSelectedAppLayoutAtIndex:");
+    if (!gSMHGSelIv || !gSMHGHoldIv || !gSMHGTransIv) return;   // (checked as rows above; kept as a guard)
+    MSHookMessageEx(c, sel_registerName("scaleForIndex:"), (IMP)DMSMHGScale, (IMP *)&o_SMHGScale);
+    MSHookMessageEx(c, sel_registerName("frameForIndex:"), (IMP)DMSMHGFrame, (IMP *)&o_SMHGFrame);
+    Method ms = class_getInstanceMethod(c, sel_registerName("scaleForIndex:")), mf = class_getInstanceMethod(c, sel_registerName("frameForIndex:"));
+    // (both or neither: a half-replaced gesture would keep the size but move the windows, or the other way round)
+    gSMHomeStillOn = o_SMHGScale && o_SMHGFrame && ms && mf && method_getImplementation(ms) == (IMP)DMSMHGScale && method_getImplementation(mf) == (IMP)DMSMHGFrame;
+    DMLog(gSMHomeStillOn ? @"[smhome] the windows keep still during a Home gesture (until the App Switcher is asked for)" : @"[smhome] the Home gesture's frame and scale answers could not both be replaced: the windows move as Apple has it");
 }
 
 #if DEBUG

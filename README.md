@@ -72,7 +72,7 @@ The Mac look is on right after install. A few extras start off: the auto-hiding 
 
 ### Windows
 - **Mac windows on the engine you already use** (Aerial 3.0 or 5.0, Zetsu 1.6.2 or 1.6.6, MilkyWay4 on iPadOS 15): title bars, traffic lights, rounded corners, resize handles, and Fit to Window tiling.
-- **Stage Manager as a window engine** (iPadOS 16, experimental): Apple's own windowing with the Mac look, over your Home Screen and desktop, windows that stay where you put them and at the size you give them, also when you go Home, native full screen that other windows can come over, and its own Mac desktop on an external display.
+- **Stage Manager as a window engine** (iPadOS 16, experimental): Apple's own windowing with the Mac look, over your Home Screen and desktop, windows that stay where you put them and at the size you give them, also when you go Home, more than one window of the same app, native full screen that other windows can come over, and its own Mac desktop on an external display.
 - **Typing like on a Mac**: only the window you're using keeps a text cursor, and Esc ends typing.
 
 ### Finder

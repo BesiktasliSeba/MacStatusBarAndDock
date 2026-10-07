@@ -13,6 +13,7 @@
 // SpringBoard built it.
 #pragma once
 #import <Foundation/Foundation.h>
+#include <math.h>
 
 // What the transition is besides "the Home Screen" (any of these: left as SpringBoard built it).
 enum {
@@ -108,12 +109,28 @@ __attribute__((noinline)) static NSDictionary *DMSMHomePlan(NSArray<NSDictionary
 // forgot the desktop -- Home from that switcher then dropped the windows (1.3.8 logic test H-1). resultEnv / prevEnv: 1 Home, 2 App Switcher,
 // 3 application, 0 not known. Returns 1 = remember the stage it left (the App Switcher opened from the desktop: application mode with a window that is
 // not full screen), 0 = keep what is remembered (still in the App Switcher; or where it went is not known), -1 = forget.
-static int DMSMSwitcherNote(long long resultEnv, long long prevEnv, BOOL prevHasWindow) {
+// label: the transition request's event label. The transition SpringBoard starts as a switcher gesture begins ("SBFluidSwitcherGesture",
+// -[SBFluidSwitcherGestureManager _startFluidSwitcherTransactionForGestureRecognizer:]) is provisional -- its layout state is the gesture's own, not a
+// destination: a swipe up INSIDE the App Switcher made one ("3 from 2") 30 ms in, the desktop was forgotten, and the Home it ended in (whose previous
+// layout state is still the App Switcher) dropped the windows (1.3.9 device pass). Kept: the gesture's final transition decides.
+static int DMSMSwitcherNote(long long resultEnv, long long prevEnv, BOOL prevHasWindow, NSString *label) {
+    if ([label isKindOfClass:[NSString class]] && [label isEqualToString:@"SBFluidSwitcherGesture"]) return 0;
     if (resultEnv == 2) {
         if (prevEnv == 2) return 0;
         return (prevEnv == 3 && prevHasWindow) ? 1 : -1;
     }
     return resultEnv == 0 ? 0 : -1;
+}
+
+// The Home gesture keeps the desktop still (SMHome.h B2, Reduce Motion off): the gesture runs over a desktop of windows (overDesk), the index it asks
+// about is the stage it took -- the one under the finger (selectedIndex) -- and that stage is the desktop (takenIsDesk); not once the finger has
+// held still in the App Switcher's range for 0.3 s (holdFrames: SpringBoard's own count, at fps frames a second), and not on a sideways swipe along
+// the bottom edge (|x| > |y| of the gesture's translation: switching to a neighbouring stage moves the stage sideways with the finger as Apple has
+// it -- 1.3.9 logic test L-2).
+static BOOL DMSMHGKeepStill(BOOL overDesk, BOOL selectedIndex, BOOL takenIsDesk, long long holdFrames, long long fps, double tx, double ty) {
+    if (!overDesk || !selectedIndex || !takenIsDesk) return NO;
+    if (fabs(tx) > fabs(ty)) return NO;
+    return holdFrames <= (long long)(0.3 * (double)(fps > 0 ? fps : 60));
 }
 
 // Is a recent stage "the desktop" that a launch joins, SpringBoard's own stage request merges with, or the restore brings back after a respring?

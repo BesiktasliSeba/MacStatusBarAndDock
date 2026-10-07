@@ -13,6 +13,7 @@
 // Included once by StatusBar.x (after DMLog / DMCall / MSB_DOMAIN / DMTestFlag and the DMSMAttributedSize typedef).
 #pragma once
 #include "SMRoles.h"   // (the window roles a stage has: DMSMPlanValid reads the highest, sm-nolimit)
+#include "SMWindowKey.h"   // (one window, one key: its own scene -- M-2, sm-multiwin)
 
 // ---- one place for refusals -------------------------------------------------------------------------------------------------------------------
 static NSMutableOrderedSet<NSString *> *gSMAPIFailures;   // (each kind once: "<what>: <why>")
@@ -366,6 +367,13 @@ static NSString *DMSMItemBundle(id item) {
     id b = DMCall(item, @"bundleIdentifier");
     return [b isKindOfClass:[NSString class]] ? b : nil;
 }
+// The window's own identifier: its scene's ("sceneID:<bundle>-<suffix>"; SMWindowKey.h). nil when it can't be read as expected.
+static NSString *DMSMItemUid(id item) {
+    SEL u = NSSelectorFromString(@"uniqueIdentifier");
+    if (!item || ![item respondsToSelector:u] || !DMSMSigOK(item, u, DMSMSigObj(), "uniqueIdentifier")) return nil;
+    id s = ((id (*)(id, SEL))objc_msgSend)(item, u);
+    return [s isKindOfClass:[NSString class]] && [s length] ? s : nil;
+}
 // The window's layout role in its stage (1 primary, 2 side, 4 centre, 5-9 additional sides 0-4 -- read on 16.7.7; SMRoles.h).
 static BOOL DMSMStageRoleOfItem(id stage, id item, long long *out) {
     if (!DMSMIsStage(stage) || !item) return NO;
@@ -443,6 +451,13 @@ static id DMSMEntityNew(id app, id provider, id identity) {
     } @catch (NSException *x) { DMSMAPIFail(@"SBDeviceApplicationSceneEntity init", x.reason ?: @"exception"); e = nil; }
     return DMSMIsEntity(e) ? e : nil;
 }
+// A workspace entity's window: its scene's identifier (-[SBWorkspaceEntity uniqueIdentifier], the same string as its display item's). nil when none.
+static NSString *DMSMEntityUid(id e) {
+    SEL u = NSSelectorFromString(@"uniqueIdentifier");
+    if (!e || ![e respondsToSelector:u] || !DMSMSigOK(e, u, DMSMSigObj(), "uniqueIdentifier")) return nil;
+    id s = ((id (*)(id, SEL))objc_msgSend)(e, u);
+    return [s isKindOfClass:[NSString class]] && [s length] ? s : nil;
+}
 static id DMSMEntityForItem(id item, id identity) {   // (Apple's own: the entity of that window on that display)
     id coord = DMSMCoordinator();
     SEL sel = NSSelectorFromString(@"_entityForDisplayItem:displayIdentity:");
@@ -487,8 +502,10 @@ static BOOL DMSMCtxIsOurs(id ctx) {
     id label = [req respondsToSelector:lb] && DMSMSigOK(req, lb, DMSMSigObj(), "eventLabel") ? ((id (*)(id, SEL))objc_msgSend)(req, lb) : nil;
     return [label isKindOfClass:[NSString class]] && [label hasPrefix:@"MSBD"];
 }
+// (M-2: also each WINDOW once -- two entities of one scene are one window in two roles, the layout state SpringBoard's orientation check aborts on
+//  as "out of sync", 1.3.6's crash class; the engine named the app's default scene for each of an app's windows)
 static BOOL DMSMPlanValid(NSArray<NSArray *> *plan, NSSet<NSNumber *> *allowed, NSString **why) {
-    NSMutableSet *roles = [NSMutableSet set], *entities = [NSMutableSet set];
+    NSMutableSet *roles = [NSMutableSet set], *entities = [NSMutableSet set], *windows = [NSMutableSet set];
     if (!plan.count) { if (why) *why = @"empty plan"; return NO; }
     for (NSArray *en in plan) {
         if (![en isKindOfClass:[NSArray class]] || en.count != 3) { if (why) *why = @"malformed entry"; return NO; }
@@ -498,6 +515,9 @@ static BOOL DMSMPlanValid(NSArray<NSArray *> *plan, NSSet<NSNumber *> *allowed, 
         if ([roles containsObject:@(role)]) { if (why) *why = [NSString stringWithFormat:@"role %lld twice", role]; return NO; }
         if ([entities containsObject:[NSValue valueWithNonretainedObject:e]]) { if (why) *why = @"one entity twice"; return NO; }
         [roles addObject:@(role)]; [entities addObject:[NSValue valueWithNonretainedObject:e]];
+        NSString *w = DMSMEntityUid(e);
+        if (w && [windows containsObject:w]) { if (why) *why = [NSString stringWithFormat:@"one window twice (%@)", w]; return NO; }
+        if (w) [windows addObject:w];
         if (!DMSMIsAttrs(a)) { if (why) *why = [NSString stringWithFormat:@"not attributes: %@", NSStringFromClass([a class])]; return NO; }
         DMSMAttributedSize s; CGPoint c; long long t = 0, p = 0;
         if (!DMSMAttrAttributedSize(a, &s) || !DMSMAttrCenter(a, &c) || !DMSMAttrLastInteractionTime(a, &t) || !DMSMAttrSizingPolicy(a, &p)) { if (why) *why = @"attributes unreadable"; return NO; }
@@ -625,6 +645,10 @@ DMSM_SIG(DMSMSigPerform17, @encode(CGRect), @encode(id), @encode(id), @encode(UI
 DMSM_SIG(DMSMSigSnap17, @encode(void), @encode(id), @encode(CGRect), @encode(id))                        // -snapPositionToNearestEdgesIfNecessaryForSpace:stageArea:configuration:
 // (sm-free: the Home rule and the Home gesture)
 DMSM_SIG(DMSMSigVoidLong, @encode(void), @encode(long long))                                             // -setRequestedUnlockedEnvironmentMode:
+// (1.3.9: the windows keep still during a Home gesture with Reduce Motion off)
+DMSM_SIG(DMSMSigRectIndex, @encode(CGRect), @encode(unsigned long long))                                 // -[SBHomeGestureSwitcherModifier frameForIndex:]
+DMSM_SIG(DMSMSigDoubleIndex, @encode(double), @encode(unsigned long long))                               // -scaleForIndex:
+DMSM_SIG(DMSMSigBoolIndex, @encode(BOOL), @encode(unsigned long long))                                   // -_isSelectedAppLayoutAtIndex:
 static const DMSMNeed kSMNeeds[] = {
     // the stage model: a window's attributes, the stage, its items
     {"SBDisplayItemLayoutAttributes", "init", NO, NO, NULL},
@@ -701,6 +725,13 @@ static const DMSMNeed kSMNeeds[] = {
     {"SBHomeGestureSwitcherModifier", "_startingEnvironmentMode", NO, NO, NULL, NULL, 0, DMSMNeedOptional, "the Home Screen stays sharp under a Home gesture (where it starts)", "q"},
     {"SBReduceMotionHomeGestureSwitcherModifier", "homeScreenBackdropBlurType", NO, NO, DMSMSigTime, NULL, 0, DMSMNeedOptional, "the Home Screen stays sharp under a Home gesture (Reduce Motion's blur kind)"},
     {"SBReduceMotionHomeGestureSwitcherModifier", "_startingEnvironmentMode", NO, NO, NULL, NULL, 0, DMSMNeedOptional, "the Home Screen stays sharp under a Home gesture (Reduce Motion's start)", "q"},
+    // (... and, with Reduce Motion off, the windows keep still during a Home gesture until it becomes the App Switcher: 1.3.9, SMHome.h B2)
+    {"SBHomeGestureSwitcherModifier", "frameForIndex:", NO, NO, DMSMSigRectIndex, NULL, 0, DMSMNeedOptional, "windows keep still in a Home gesture (frame)"},
+    {"SBHomeGestureSwitcherModifier", "scaleForIndex:", NO, NO, DMSMSigDoubleIndex, NULL, 0, DMSMNeedOptional, "windows keep still in a Home gesture (scale)"},
+    {"SBHomeGestureSwitcherModifier", "_isSelectedAppLayoutAtIndex:", NO, NO, DMSMSigBoolIndex, NULL, 0, DMSMNeedOptional, "windows keep still in a Home gesture (the stage it took)"},
+    {"SBHomeGestureSwitcherModifier", "_selectedAppLayout", NO, NO, NULL, NULL, 0, DMSMNeedOptional, "windows keep still in a Home gesture (its stage)", "@"},
+    {"SBHomeGestureSwitcherModifier", "_gestureHoldTimer", NO, NO, NULL, NULL, 0, DMSMNeedOptional, "windows keep still in a Home gesture (App Switcher asked for)", "q"},
+    {"SBHomeGestureSwitcherModifier", "_translation", NO, NO, NULL, NULL, 0, DMSMNeedOptional, "windows keep still in a Home gesture (the finger's way)", "{CGPoint="},
     // what our hooks replace (%group SMEngine)
     {"SpringBoard", "sendEvent:", NO, YES, DMSMSigVoidObj},
     {"SBIconView", "_handleTap", NO, YES, DMSMSigVoid},
@@ -1037,6 +1068,22 @@ static BOOL DMSMRowPassed(const char *cls, const char *sel) {
         return DMSMRowProblem(&kSMNeeds[i], nil, &compared) == nil;
     }
     return NO;
+}
+// Windows told apart by their own scene (M-2, SMWindowKey.h): the window's identifier and Apple's entity for one window are there as we use them
+// (optional rows, on every 16.x build read and the 17.0.3 headers). Else every key is an app key: the engine works by app, as before. Worked out
+// once the start-up check has run (the same answer for the whole SpringBoard run: keys made earlier stay comparable). debug: /tmp/msb-sm-bybundle.
+static int gSMPerWindow = -1;
+static BOOL DMSMPerWindow(void) {
+    if (gSMPerWindow >= 0) return gSMPerWindow == 1;
+    BOOL on = DMSMRowPassed("SBDisplayItem", "uniqueIdentifier") && DMSMRowPassed("SBMainSwitcherControllerCoordinator", "_entityForDisplayItem:displayIdentity:");
+#if DEBUG
+    if (on && DMTestFlag("/tmp/msb-sm-bybundle")) on = NO;
+#endif
+    if (gSMRowsKnown) {
+        gSMPerWindow = on ? 1 : 0;
+        DMLog(on ? @"[smwin] windows are told apart by their own scene (two windows of one app are two windows)" : @"[smwin] windows are told apart by app here (as before): the window identifier rows are not as expected");
+    }
+    return on;
 }
 // The hooked methods' current implementations (to see afterwards that our hooks really went in): this layout engine's rows.
 static NSArray<NSValue *> *DMSMHookedIMPs(void) {

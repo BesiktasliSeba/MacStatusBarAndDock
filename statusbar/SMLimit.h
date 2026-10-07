@@ -144,7 +144,7 @@ static void DMSMLimitDebug(void) {
         id stage = DMSMFrontStage();
         NSDictionary *map = DMSMStageItemsMap(stage);
         NSMutableArray *w = [NSMutableArray array];
-        for (id it in map) [w addObject:[NSString stringWithFormat:@"%@ %lld", DMSMItemBundle(it) ?: @"?", DMSMRoleOr(stage, it, -1)]];
+        for (id it in map) [w addObject:[NSString stringWithFormat:@"%@ %lld", DMSMKeyText(DMSMItemKey(it)), DMSMRoleOr(stage, it, -1)]];
         [o appendFormat:@"; stage on screen: %lu window(s) [%@]; engine %d", (unsigned long)map.count, [w componentsJoinedByString:@", "], DMSMEngine()];
         DMLog(o);
     } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[smlimit] failed: %@", e.reason]); }
@@ -163,19 +163,17 @@ static CFTimeInterval gSMRemovingAt = 0;
 // DMSMWindowAction, right before it runs a window's own Minimize: which window (its scene identifier, as SpringBoard's layout elements name it),
 // in which role of its stage (the context comes at once, or once the workspace's queue gets to it -- taken by the first context that shows it,
 // or dropped after 2 s).
-static void DMSMNoteRemoving(NSString *bundle, id stage) {
+static void DMSMNoteRemoving(NSString *key, id stage) {   // (key: the window -- SMWindowKey.h; an app key: the app's newest window there)
     gSMRemovingId = nil; gSMRemovingRole = 0;
-    if (!bundle.length || !DMSMEngine()) return;
-    for (id it in DMSMStageItemsMap(stage)) {
-        if (![DMSMItemBundle(it) isEqualToString:bundle]) continue;
-        id u = DMCall(it, @"uniqueIdentifier");
-        if (![u isKindOfClass:[NSString class]] || ![u length]) return;
-        gSMRemovingRole = DMSMRoleOr(stage, it, 0);
-        if (gSMRemovingRole <= 0) return;
-        gSMRemovingId = [u copy];
-        gSMRemovingAt = CACurrentMediaTime();
-        return;
-    }
+    if (!key.length || !DMSMEngine()) return;
+    id it = DMSMItemFor(stage, key, nil);   // (that very window: the app's other windows keep their roles, M-2)
+    if (!it) return;
+    id u = DMCall(it, @"uniqueIdentifier");
+    if (![u isKindOfClass:[NSString class]] || ![u length]) return;
+    gSMRemovingRole = DMSMRoleOr(stage, it, 0);
+    if (gSMRemovingRole <= 0) return;
+    gSMRemovingId = [u copy];
+    gSMRemovingAt = CACurrentMediaTime();
 }
 // The window a layout state has in a role (its element's identifier), nil when none; NO when it could not be read.
 static BOOL DMSMStateWindowInRole(id state, long long role, NSString **out) {

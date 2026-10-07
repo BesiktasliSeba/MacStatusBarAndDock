@@ -408,17 +408,19 @@ static long DMLandscapeSide(void);   // (defined with DMRealInterfaceOrientation
 static BOOL DMLockUp(id mgr);
 static BOOL DMCoverSheetShown(void);
 static NSArray<UIWindow *> *DMAllWindows(void);
-id DMSMTopAffordanceFor(NSString *bundle);   // (Stage Manager engine, defined before %ctor)
+// (Stage Manager engine: a window is named by its KEY -- "<bundle>|<scene identifier>", or the bundle alone for "the app's newest window"; SMWindowKey.h)
+id DMSMTopAffordanceFor(NSString *key);   // (Stage Manager engine, defined before %ctor)
 void DMSMRunAction(UIAction *action, id sender);
-static BOOL DMSMRequestWindow(NSString *bundle, id attrs, long policy);   // (Stage Manager engine)
-static BOOL DMSMSetWindowGeometry(NSString *bundle, CGPoint center, CGSize size);
+static BOOL DMSMRequestWindow(NSString *key, id attrs, long policy);   // (Stage Manager engine)
+static BOOL DMSMSetWindowGeometry(NSString *key, CGPoint center, CGSize size);
 static void DMSMChrome(UIView *card);
 static NSArray<NSString *> *DMSMWindowBundles(void);   // (Stage Manager engine: the apps whose windows are on screen, below)
-static UIView *DMSMCardFor(NSString *bundle);
+static NSArray<NSString *> *DMSMWindowKeys(void);      // (... and those windows themselves, one key each)
+static UIView *DMSMCardFor(NSString *key);
 static void DMSMLogCorners(void);
 static void DMSMReapplyGrabbers(UIView *card);
 static id DMSMFrontStage(void);
-static void DMSMDismissOtherFullScreen(id stage, NSString *keep);
+static void DMSMDismissOtherFullScreen(id stage, NSString *keepKey);
 static BOOL DMSMEngine(void);
 static void DMWatchDockChanges(void);
 @class DMNativeWindow;
@@ -435,46 +437,57 @@ static void DMSMDeskWatchEngine(void);   // (SMDesktop.h: the switcher's style u
 static void DMSMRestoreDesktopTick(void);   // (SMHome.h: once after a respring, the desktop comes back by itself on the Home Screen)
 static void DMSMFitHiddenStages(id onScreen);
 static NSMutableDictionary *gSidePromptCtx;   // the side question being asked (DMPromptForSide)
-static NSMutableDictionary<NSString *, NSString *> *gSMFitSlots;   // (Fit to Window's arrangement for the Stage Manager engine, see DMSMFitTick)
+static NSMutableDictionary<NSString *, NSString *> *gSMFitSlots;   // (Fit to Window's arrangement for the Stage Manager engine, see DMSMFitTick; window keys)
 static NSMutableSet<NSString *> *gSMFreeWindows;
-static BOOL DMSMWindowAction(NSString *bundleID, NSString *name);
-static void DMSMNoteRemoving(NSString *bundle, id stage);   // (SMLimit.h: the window our Minimize takes out)
+// (an app asked about before its window exists -- Fit's question before a launch -- is in the arrangement by its app key until the window is there and
+//  takes it over, SMWindowKey.h DMSMKeysAdopt; noted here so DMSMFitTick's "closed: forgotten" does not take it for a window that closed)
+static NSMutableDictionary<NSString *, NSNumber *> *gSMFitPending;
+static BOOL DMSMWindowAction(NSString *key, NSString *name);
+static void DMSMNoteRemoving(NSString *key, id stage);   // (SMLimit.h: the window our Minimize takes out)
 static void DMSMGoHomeForReal(NSString *why);   // (SMHome.h: a Home of ours that puts the windows away -- the desktop's last window)
 static void DMSMHomeKeepsDesktop(id ctx);      // (SMHome.h: SpringBoard's Home keeps the desktop's windows on screen)
 __attribute__((noinline)) static void DMSMHomeNoteResult(id ctx);        // (SMHome.h: the App Switcher's bookkeeping, from where SpringBoard went)
 static id DMSMHomePrevState(id ctx);           // (SMHome.h: the layout state a transition starts from)
 static BOOL DMSMHomeStateOf(id state, long long *env, id *stage);   // (SMHome.h: a layout state's environment and stage)
 static int DMSMTakeOutOfHiddenStages(NSString *bundle);   // (Stage Manager engine: a force-quit app's item out of the stages not on screen, below)
-static void DMSMSetMinimized(NSString *bundle, BOOL on);
-static id DMSMStageOf(NSString *bundle);
+static double DMSMForceQuitWindows(NSString *bundleID, BOOL *windowed);   // (Stage Manager engine: force quit closes every window of the app, below)
+static void DMSMSetMinimized(NSString *key, BOOL on);
+static id DMSMStageOf(NSString *key);
 static void DMSMForgetApp(NSString *bundle);
 static NSMutableDictionary<NSString *, NSNumber *> *gSMDockHeightBySize;
 static CGRect DMSMUsableAreaForStage(id stage, CGSize *screenOut);
 static CGRect DMSMUsableAreaForIdentity(id identity, CGSize *screenOut);
 static NSDictionary<NSString *, NSValue *> *DMSMOpenWindowFrames(void);
 static NSString *DMOtherHalfQuarter(NSString *halfSlot, BOOL first);
-static BOOL DMSMApplyLayouts(NSDictionary<NSString *, NSString *> *bundleToLayout);
-static BOOL DMSMApplyLayoutsIn(NSDictionary<NSString *, NSString *> *bundleToLayout, id stage);
+static BOOL DMSMApplyLayouts(NSDictionary<NSString *, NSString *> *keyToLayout);
+static BOOL DMSMApplyLayoutsIn(NSDictionary<NSString *, NSString *> *keyToLayout, id stage);
 static id DMSMWorkingStage(void);
 static NSString *DMSMSlotNameForFrameIn(CGRect f, id stage);
 static void DMSMFitTick(BOOL force);
-static id DMSMJoinAttributes(NSString *bundle, id frontAttrs, BOOL windowed, long newest, id stage);
-static BOOL DMSMSetFullScreenInStage(NSString *bundle, BOOL front);
+static id DMSMJoinAttributes(NSString *key, id frontAttrs, BOOL windowed, long newest, id stage);
+static BOOL DMSMSetFullScreenInStage(NSString *key, BOOL front);
 static BOOL DMSMFrontIsFullScreen(void);
 static NSString *DMSMFullScreenBundle(void);
+static NSString *DMSMFullScreenKey(void);
 static BOOL DMSMWindowsBehindFullScreen(void);
 static void DMSMWindowsForward(BOOL forward);
-static void DMSMBringToFront(NSString *bundle);
+static void DMSMBringToFront(NSString *key);
 static void DMSMActivateOnTouch(UIEvent *event);
 static BOOL gSMKeyboardShown = NO;   // (a DOCKED on-screen keyboard is up: set by -[SBFluidSwitcherViewController _keyboardWillShow:])
 static CGRect gSMKeyboardFrame;      // (its frame on the screen, while up)
-static NSMutableSet<NSString *> *gSMBehindDock;   // (windows the user dragged down behind the Dock -- recorded at the drag's end, logic review R2)
+static NSMutableSet<NSString *> *gSMBehindDock;   // (windows the user dragged down behind the Dock -- recorded at the drag's end, logic review R2; window keys)
 static const CGFloat kSMBarH = 24.0;   // (our title bar on Stage Manager windows)
 static const CGFloat kSMCornerR = 10.0;   // (window corners: our Mac look, as with every engine; Stage Manager's own are 20)
 typedef struct { CGSize normalizedSize; CGRect referenceBounds; long long type; } DMSMAttributedSize;   // (SBDisplayItemAttributedSize, from its type encoding)
 static long DMSMPolicyOf(id attrs);
-static id DMSMItemFor(id stage, NSString *bundle, id *attrsOut);
+static id DMSMItemFor(id stage, NSString *key, id *attrsOut);
 static NSString *DMSMCardBundle(UIView *card);
+static NSString *DMSMCardKey(UIView *card);
+static NSString *DMSMItemKey(id item);
+static NSString *DMSMEntityKey(id entity);
+static id DMSMEntityForStageItem(id stage, id item);
+static NSMutableSet<NSString *> *DMSMMinimizedSet(void);
+static BOOL DMSMIsMainIdentity(id identity);
 static const void *kSMBarKey = &kSMBarKey;
 static int gDMSnapHits = 0, gDMSnapMisses = 0, gDMSnapWinHits = 0, gDMSnapWinMisses = 0;   // (watcher snapshot counts, for the perf summary)
 static void DMSnapInvalidate(void);
@@ -1030,7 +1043,8 @@ static void DMForceQuitBundle(NSString *bundleID) {
         DMLog([NSString stringWithFormat:@"[action] force quit %@: closing its Zetsu window first", bundleID]);
         DMZetsuClose(zetsuWindow);
     }
-    DMLog([NSString stringWithFormat:@"[action] force quit %@ (%@)", bundleID, windowed ? @"windowed" : @"full screen"]);
+    BOOL sm = DMSMEngine();
+    if (!sm) DMLog([NSString stringWithFormat:@"[action] force quit %@ (%@)", bundleID, windowed ? @"windowed" : @"full screen"]);   // (Stage Manager: below, once its windows are known)
     if (zetsuWindow) {   // already handled above
     } else if (windowed && DMActiveEngine() == DMEngineMilkyWay) {   // MilkyWay: its own close (the red button is redirected to this function, so this is the plain close)
         UIView *w = DMStageForBundle(bundleID);
@@ -1038,10 +1052,11 @@ static void DMForceQuitBundle(NSString *bundleID) {
     } else if (windowed) DMAerialClose(bundleID);
     // Stage Manager as the engine: the app's window closed with its own action first -- only that item leaves its stage (deleting the app's
     // layouts took every other window of the stage with it, logic test SM-4) -- and the switcher clean-up below leaves multi-window stages alone.
-    BOOL sm = DMSMEngine();
-    if (sm && DMSMWindowAction(bundleID, @"close")) windowed = YES;
-    else if (sm && DMSMTakeOutOfHiddenStages(bundleID)) windowed = YES;   // (its stage not on screen: its own Close needs the window shown)
-    if (sm) DMSMForgetApp(bundleID);   // (its size from before full screen: not brought back after a quit, logic test C5)
+    double smWait = 0;   // (Stage Manager: the app's windows close one after the other -- the kill waits for the last)
+    if (sm) {
+        smWait = DMSMForceQuitWindows(bundleID, &windowed);   // (every window of the app, Stage Manager engine: below)
+        DMLog([NSString stringWithFormat:@"[action] force quit %@ (%@)", bundleID, windowed ? @"windowed" : @"full screen"]);   // (logic test L-4: read after the windows closed)
+    }
     void (^kill)(void) = ^{
     BKSTerminateApplicationForReasonAndReportWithDescription(bundleID, 5, false, @"MacStatusBar - force quit");
     // Same two-step cleanup ForceQuitMenu does: killing the process leaves the
@@ -1061,7 +1076,7 @@ static void DMForceQuitBundle(NSString *bundleID) {
     dispatch_async(dispatch_get_main_queue(), remove);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), remove);
     };
-    if (windowed) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((sm ? 0.45 : 0.15) * NSEC_PER_SEC)), dispatch_get_main_queue(), kill); else kill();
+    if (windowed) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((sm ? 0.45 + smWait : 0.15) * NSEC_PER_SEC)), dispatch_get_main_queue(), kill); else kill();
 }
 static void DMForceQuit(SBApplication *app) { DMForceQuitBundle([app bundleIdentifier]); }
 
@@ -1575,6 +1590,7 @@ static DMEngine DMActiveEngine(void) {
 // Dock added to the current stage, the traffic lights running the window's own Close / Minimize / Enter Full Screen, the stage below our status bar,
 // the recent-stages strip hidden. Notes: Release/docs/stage-manager-engine.md.
 NSString *DMSMFrontWindowBundle(void);   // (Stage Manager engine, defined before %ctor)
+NSString *DMSMFrontWindowKey(void);      // (... the front window itself: SMWindowKey.h)
 // A status bar copy inside a Stage Manager window card that fills the screen (native full screen): there it is the top bar.
 static BOOL DMSMCardIsFullSize(UIView *card) {   // (a window card as big as the screen: a full-screen app)
     if (!card || !card.window) return NO;
@@ -1871,7 +1887,7 @@ static NSUInteger DMMilkyWayWindowCount(void) {   // windows on screen, not the 
 static NSUInteger DMVisibleWindowCount(void) {   // windowed apps on screen (not minimized), whichever engine, PLUS any Zetsu windows (a
     // separate, independent engine that can have windows open alongside/instead of either of the two above -- counted unconditionally,
     // not gated on DMActiveEngine(), the same reasoning as DMMinimizeAllWindows just above).
-    if (DMSMEngine()) return DMSMWindowBundles().count;
+    if (DMSMEngine()) return DMSMWindowKeys().count;   // (windows, not apps)
     if (DMActiveEngine() == DMEngineZetsu) { NSUInteger z = 0; for (UIView *s in DMAerialStages()) if (!s.hidden && !DMStageMinimized(s)) z++; return z; }
     NSUInteger n = DMZetsuWindows().count;
     if (DMActiveEngine() == DMEngineAerial) { for (UIView *s in DMAerialStages()) if (!s.hidden && !DMStageMinimized(s)) n++; return n; }
@@ -2181,7 +2197,7 @@ static void DMStageManagerWatch(void) {
         DMSMLimitTick();   // (more than four windows per desktop: ours still answers Apple's limit -- TrollPad loads after us, SMLimit.h)
         DMSMFitTick(NO);   // (Fit to Window: re-tiles only when the set of windows changed)
         static NSString *lastFront = nil;
-        NSString *front = DMSMFrontWindowBundle();
+        NSString *front = DMSMFrontWindowKey();   // (the window: another window of the same app coming forward changes the lights too, M-2)
         if (!(front == lastFront || [front isEqualToString:lastFront])) {
             lastFront = front;
             for (UIView *fg in gCopies.allObjects) if (fg.window && !fg.window.hidden) [fg setNeedsLayout];
@@ -5668,11 +5684,13 @@ static void DMWindowLayout(NSString *name) {
         return;
     }
     if (DMSMEngine()) {   // Stage Manager: the window's place in the stage (the frame is the whole window; the card is below our title bar)
+        NSString *smKey = DMSMFrontWindowKey();   // (the active app's front window: that window, M-2)
+        if (![DMSMKeyBundle(smKey) isEqualToString:bundleID]) smKey = bundleID;
         CGSize scr = CGSizeZero;
-        CGRect w = DMLayoutFrameInArea(name, DMSMUsableAreaForStage(DMSMStageOf(bundleID), &scr), scr);   // (on the screen its stage is on: the iPad or the TV)
+        CGRect w = DMLayoutFrameInArea(name, DMSMUsableAreaForStage(DMSMStageOf(smKey), &scr), scr);   // (on the screen its stage is on: the iPad or the TV)
         if (CGRectIsNull(w) || scr.width < 1.0 || scr.height < 1.0) return;
         CGRect c = CGRectMake(w.origin.x, w.origin.y + kSMBarH, w.size.width, w.size.height - kSMBarH);
-        BOOL ok = DMSMSetWindowGeometry(bundleID, CGPointMake(CGRectGetMidX(c) / scr.width, CGRectGetMidY(c) / scr.height), CGSizeMake(c.size.width / scr.width, c.size.height / scr.height));
+        BOOL ok = DMSMSetWindowGeometry(smKey, CGPointMake(CGRectGetMidX(c) / scr.width, CGRectGetMidY(c) / scr.height), CGSizeMake(c.size.width / scr.width, c.size.height / scr.height));
         DMLog([NSString stringWithFormat:@"[sm] layout %@ for %@ -> window %@ (%@)", name, bundleID, NSStringFromCGRect(w), ok ? @"done" : @"not in the stage"]);
         return;
     }
@@ -5803,7 +5821,9 @@ static void DMOpenFullScreen(NSString *bundleID) {
 static SBApplication *DMActiveApp(void);
 // (a native window that is active is the active window: every app window's lights go grey -- two windows showed colored lights, iPad 2 30 Sep)
 static NSString *DMNativeLightsToken(void);   // (NativeWindow.h)
-static NSString *DMActiveBundleForLights(void) { return DMNativeLightsToken() ?: [DMActiveApp() bundleIdentifier]; }
+// (Stage Manager engine: the front WINDOW -- its title bar's lights are keyed by window, so another window of the active app shows grey ones, as on
+//  a Mac: two windows of one app both had colored lights, M-2)
+static NSString *DMActiveBundleForLights(void) { return DMNativeLightsToken() ?: (DMSMEngine() ? DMSMFrontWindowKey() : nil) ?: [DMActiveApp() bundleIdentifier]; }
 static BOOL DMSMWindowAction(NSString *bundleID, NSString *name);   // (Stage Manager engine, below)
 static BOOL DMSMToggleZoom(NSString *bundle);
 static void DMLightAction(NSInteger which) {
@@ -5813,7 +5833,9 @@ static void DMLightAction(NSInteger which) {
     DMLog([NSString stringWithFormat:@"[lights] tap %ld, front app %@", (long)which, bundleID]);
     if (!bundleID.length) return;
     // Stage Manager as the engine: the window's own actions (its "..." menu): red Close, yellow Minimize, green Enter Full Screen
-    if (DMSMEngine() && (which == 2 ? DMSMToggleZoom(bundleID) : DMSMWindowAction(bundleID, which == 0 ? @"close" : @"removeFromSet"))) return;
+    NSString *smKey = DMSMEngine() ? DMSMFrontWindowKey() : nil;   // (the front window when it is the active app's: that window, M-2)
+    if (![DMSMKeyBundle(smKey) isEqualToString:bundleID]) smKey = bundleID;
+    if (DMSMEngine() && (which == 2 ? DMSMToggleZoom(smKey) : DMSMWindowAction(smKey, which == 0 ? @"close" : @"removeFromSet"))) return;
     if (which == 0) DMForceQuit(app);
     else if (which == 1) DMMinimize();
     else if (DMAppNeedsFullScreen(bundleID)) DMLog([NSString stringWithFormat:@"[fullscreenonly] green on %@: it cannot live in a window (the button is greyed out)", bundleID]);
@@ -13539,9 +13561,10 @@ static void DMShowSidePrompt(NSMutableDictionary *ctx, BOOL rebuilt) {
     void (^choose)(NSString *, NSString *) = ctx[@"choose"];
     UIView *host = DMMenuHost();
     if (!host) { choose(nil, @"no place to ask"); return; }
-    NSString *newName = DMCall(DMProxyForBundle(newBundle), @"localizedName") ?: newBundle;
-    NSString *leftName = DMCall(DMProxyForBundle(leftBundle), @"localizedName") ?: leftBundle;
-    NSString *rightName = DMCall(DMProxyForBundle(rightBundle), @"localizedName") ?: rightBundle;
+    // (the Stage Manager engine asks about windows: a window key names its app, SMWindowKey.h)
+    NSString *newName = DMCall(DMProxyForBundle(DMSMKeyBundle(newBundle) ?: newBundle), @"localizedName") ?: DMSMKeyBundle(newBundle) ?: newBundle;
+    NSString *leftName = DMCall(DMProxyForBundle(DMSMKeyBundle(leftBundle) ?: leftBundle), @"localizedName") ?: DMSMKeyBundle(leftBundle) ?: leftBundle;
+    NSString *rightName = DMCall(DMProxyForBundle(DMSMKeyBundle(rightBundle) ?: rightBundle), @"localizedName") ?: DMSMKeyBundle(rightBundle) ?: rightBundle;
     UIControl *o = DMMakeOverlay(host, 0.32);
     ctx[@"overlay"] = o;
     [o addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { choose(@"none", @"a tap outside the sides: No Fit"); }] forControlEvents:UIControlEventTouchUpInside];
@@ -13696,8 +13719,10 @@ static NSString *DMCurrentLayoutName(void) {
     } else if (DMActiveEngine() == DMEngineMilkyWay) {
         UIView *window = DMFindMilkyWayWindow(bundleID);
         if (window && !DMWindowMinimized(window)) f = window.frame;
-    } else if (DMSMEngine()) {   // (the whole window: the card and our title bar above it)
-        UIView *card = DMSMCardFor(bundleID);
+    } else if (DMSMEngine()) {   // (the whole window: the card and our title bar above it -- the active app's front window, M-2)
+        NSString *smKey = DMSMFrontWindowKey();
+        if (![DMSMKeyBundle(smKey) isEqualToString:bundleID]) smKey = bundleID;
+        UIView *card = DMSMCardFor(smKey);
         if (card) { CGRect c = [card convertRect:card.bounds toCoordinateSpace:(card.window.screen ?: [UIScreen mainScreen]).coordinateSpace]; f = CGRectMake(c.origin.x, c.origin.y - kSMBarH, c.size.width, c.size.height + kSMBarH); }   // (the switcher window is in the native portrait space of the screen)
         if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[sm] layout name for %@: card %@, window frame %@, left would be %@", bundleID, card, NSStringFromCGRect(f), NSStringFromCGRect(DMLayoutFrame(@"left"))]);
     }
@@ -13771,7 +13796,7 @@ static void DMSwapHalfWithQuarter(void) {
     }
     UIView *host = DMMenuHost();
     if (!host) { apply(0); return; }
-    NSString *halfName = DMCall(DMProxyForBundle(halfB), @"localizedName") ?: halfB;
+    NSString *halfName = DMCall(DMProxyForBundle(DMSMKeyBundle(halfB) ?: halfB), @"localizedName") ?: DMSMKeyBundle(halfB) ?: halfB;   // (a window key: its app's name)
     UIControl *o = DMMakeOverlay(host, 0.32);
     __block BOOL decided = NO;
     void (^choose)(NSInteger) = ^(NSInteger index) {
@@ -13783,7 +13808,7 @@ static void DMSwapHalfWithQuarter(void) {
     objc_setAssociatedObject(o, kOverlayEscapeKey, ^{ choose(-1); }, OBJC_ASSOCIATION_COPY_NONATOMIC);   // (the escape gesture: as a tap outside, nothing traded)
     NSMutableArray<UIView *> *panels = [NSMutableArray array];
     for (NSInteger i = 0; i < 2; i++) {
-        NSString *qName = DMCall(DMProxyForBundle(quarterBs[i]), @"localizedName") ?: quarterBs[i];
+        NSString *qName = DMCall(DMProxyForBundle(DMSMKeyBundle(quarterBs[i]) ?: quarterBs[i]), @"localizedName") ?: DMSMKeyBundle(quarterBs[i]) ?: quarterBs[i];
         UIControl *panel = DMSidePanel(slots[i], qName, [NSString stringWithFormat:@"Trades places with %@", halfName]);
         [panel addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { choose(i); }] forControlEvents:UIControlEventTouchUpInside];
         [o addSubview:panel]; [panels addObject:panel];
@@ -13825,8 +13850,8 @@ static void DMSwapHalfWithQuarter(void) {
 // concept of its own, just DMMinimizeStage/DMMinimizeWindow called once per window currently on screen. Already-minimized or hidden
 // windows are skipped (nothing to do, and re-minimizing would just restart their own animation pointlessly).
 static void DMMinimizeAllWindows(void) {
-    if (DMSMEngine()) {   // Stage Manager: each window's own Minimize, a moment apart (one stage transition at a time)
-        NSArray<NSString *> *bundles = DMSMWindowBundles();
+    if (DMSMEngine()) {   // Stage Manager: each window's own Minimize, a moment apart (one stage transition at a time) -- every window, two of one app too
+        NSArray<NSString *> *bundles = DMSMWindowKeys();
         for (NSUInteger i = 0; i < bundles.count; i++) {
             NSString *b = bundles[i];
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMSMWindowAction(b, @"removeFromSet"); });
@@ -13910,7 +13935,10 @@ static void DMOpenWindowMenu(UIButton *btn) {
         [items addObject:[[DMRow alloc] initWithTitle:@"Minimize All Windows" enabled:DMVisibleWindowCount() > 0 handler:DMCloseThen(^{ DMMinimizeAllWindows(); })]];
         NSString *active = [DMActiveApp() bundleIdentifier];
         if ([UIScreen screens].count > 1 && active.length)   // (a TV or monitor connected: the active app's window to the other screen -- Stage Manager's own move)
-            [items addObject:[[DMRow alloc] initWithTitle:@"Move to Other Display" enabled:YES handler:DMCloseThen(^{ DMSMWindowAction(active, @"moveToDisplay"); })]];
+            [items addObject:[[DMRow alloc] initWithTitle:@"Move to Other Display" enabled:YES handler:DMCloseThen(^{
+                NSString *k = DMSMFrontWindowKey();   // (the active app's front window, M-2)
+                DMSMWindowAction([DMSMKeyBundle(k) isEqualToString:active] ? k : active, @"moveToDisplay");
+            })]];
         if (DMSMFullScreenBundle().length && DMVisibleWindowCount() > 0) {   // (a full-screen app with windows: which of them is in front)
             BOOL behind = DMSMWindowsBehindFullScreen();
             [items addObject:[[DMRow alloc] initWithTitle:(behind ? @"Bring All to Front" : @"Send All to Back") enabled:YES handler:DMCloseThen(^{ DMSMWindowsForward(behind); })]];
@@ -14623,8 +14651,8 @@ static void DMMinimizeActiveApp(void) {
     // with Home = Show Desktop (1.3.5) every window went aside, and with the windows staying at Home (sm-free) nothing would happen. The front
     // window minimizes, a full-screen one too (as its yellow light does); with no window in front, Home as before.
     if (DMSMEngine()) {
-        NSString *front = DMSMFrontWindowBundle();
-        DMLog([NSString stringWithFormat:@"[action] minimize active app (Stage Manager): front window %@", front.length ? front : @"none"]);
+        NSString *front = DMSMFrontWindowKey();   // (that very window: the app's other windows stay, M-2)
+        DMLog([NSString stringWithFormat:@"[action] minimize active app (Stage Manager): front window %@", front.length ? DMSMKeyText(front) : @"none"]);
         if (front.length && DMSMWindowAction(front, @"removeFromSet")) { DM_FEATURE_MARK("sm-minimize-front-window"); return; }
         DMMinimize();
         return;
@@ -18689,6 +18717,42 @@ static void DMCaptureExternalDisplay(void) {
     CGColorSpaceRelease(cs); CFRelease(surf);
     DMLog([NSString stringWithFormat:@"[tvshot] %@ (%ld x %ld): %@", name, w, h, ok ? @"written /tmp/macstatusbar-tv.png" : @"FAILED"]);
 }
+// (Stage Manager engine, M-2) a window named in a trigger: "<bundle>" (the app's newest window, as a caller that knows only the app) or
+// "<bundle>@<n>" -- the app's n-th newest window over every recent stage (1 = its newest; smwins lists them).
+static NSString *DMSMDebugKey(NSString *arg) {
+    NSRange at = [arg rangeOfString:@"@"];
+    if (at.location == NSNotFound) return arg;
+    NSString *b = [arg substringToIndex:at.location];
+    NSInteger n = [[arg substringFromIndex:at.location + 1] integerValue];
+    NSMutableArray<NSDictionary *> *mine = [NSMutableArray array];
+    NSMutableSet *seen = [NSMutableSet set];
+    for (id al in DMSMRecentStages()) {
+        NSDictionary *m = DMSMStageItemsMap(al);
+        for (id it in m) {
+            NSString *k = DMSMItemKey(it);
+            if (!k || ![DMSMItemBundle(it) isEqualToString:b] || [seen containsObject:k]) continue;
+            [seen addObject:k]; [mine addObject:@{@"k": k, @"t": @(DMSMAttrTimeOr(m[it], 0))}];
+        }
+    }
+    [mine sortUsingComparator:^NSComparisonResult(NSDictionary *x, NSDictionary *y) { return [y[@"t"] compare:x[@"t"]]; }];
+    if (n < 1 || n > (NSInteger)mine.count) { DMLog([NSString stringWithFormat:@"[smwin] %@: no window %ld of %@ (%lu)", arg, (long)n, b, (unsigned long)mine.count]); return [b stringByAppendingString:@"|none"]; }
+    return mine[n - 1][@"k"];
+}
+// smwins: every recent stage's windows (key, role, interaction time, sizing policy) and which is in front, the minimized ones (read-only, M-2)
+static void DMSMDebugWindows(void) {
+    NSMutableString *o = [NSMutableString stringWithFormat:@"[smwins] per window %d; front %@; full screen %@; on screen %@; minimized %@", DMSMPerWindow(),
+                          DMSMKeyText(DMSMFrontWindowKey()), DMSMKeyText(DMSMFullScreenKey()), [DMSMWindowKeys() componentsJoinedByString:@", "] ?: @"-",
+                          [[[DMSMMinimizedSet() allObjects] sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@", "]];
+    NSUInteger i = 0;
+    for (id al in DMSMRecentStages()) {
+        if (i++ >= 8) break;
+        NSDictionary *m = DMSMStageItemsMap(al);
+        NSMutableArray *w = [NSMutableArray array];
+        for (id it in m) [w addObject:[NSString stringWithFormat:@"%@ (role %lld, t %lld, policy %ld)", DMSMItemKey(it) ?: @"?", DMSMRoleOr(al, it, -1), DMSMAttrTimeOr(m[it], -1), DMSMPolicyOf(m[it])]];
+        [o appendFormat:@"\n  stage %lu%@: %@", (unsigned long)i, DMSMIsMainIdentity(DMSMStageDisplayIdentity(al)) ? @"" : @" (other display)", [w componentsJoinedByString:@"; "]];
+    }
+    DMLog(o);
+}
 static void DMRunTrigger(NSString *cmd) {
     if ([cmd hasPrefix:@"seq:"]) {
         for (NSString *part in [[cmd substringFromIndex:4] componentsSeparatedByString:@";"]) {
@@ -20499,7 +20563,7 @@ static void DMRunTrigger(NSString *cmd) {
     else if ([cmd hasPrefix:@"smgeo_"]) {   // smgeo_<bundle>_<cx>_<cy>[_<w>_<h>]: Stage Manager -- move (and size) that window: normalized center / size
         NSArray *q = [[cmd substringFromIndex:6] componentsSeparatedByString:@"_"];
         if (q.count < 3) return;
-        DMSMSetWindowGeometry(q[0], CGPointMake([q[1] doubleValue], [q[2] doubleValue]), q.count >= 5 ? CGSizeMake([q[3] doubleValue], [q[4] doubleValue]) : CGSizeZero);
+        DMSMSetWindowGeometry(DMSMDebugKey(q[0]), CGPointMake([q[1] doubleValue], [q[2] doubleValue]), q.count >= 5 ? CGSizeMake([q[3] doubleValue], [q[4] doubleValue]) : CGSizeZero);
     }
     else if ([cmd isEqualToString:@"smchrome"]) {   // smchrome: the title bar pass on every window card now, with why (debug)
         Class cc = objc_getClass("SBFluidSwitcherItemContainer");
@@ -20516,14 +20580,22 @@ static void DMRunTrigger(NSString *cmd) {
             }
         }
     }
-    else if ([cmd hasPrefix:@"smzoom_"]) DMSMToggleZoom([cmd substringFromIndex:7]);   // smzoom_<bundle>: the green button's Zoom toggle on that window
+    else if ([cmd hasPrefix:@"smzoom_"]) DMSMToggleZoom(DMSMDebugKey([cmd substringFromIndex:7]));   // smzoom_<bundle>[@<n>]: the green button's Zoom toggle on that window
+    else if ([cmd isEqualToString:@"smwins"]) DMSMDebugWindows();   // smwins: every recent stage's windows by key (M-2), front, full screen, minimized
+    else if ([cmd hasPrefix:@"smnewwin_"]) {   // smnewwin_<bundle>: that app asks for a new window of its own (MacAppBridge, debug: what "Open in New Window" asks)
+        NSString *b = [cmd substringFromIndex:9];
+        uint32_t hash = 2166136261u; for (const char *c = b.UTF8String; *c; c++) { hash ^= (uint8_t)*c; hash *= 16777619u; }
+        char name[80]; snprintf(name, sizeof name, "com.besiktasliseba.appbridge.newwindow.%08x", hash);
+        notify_post(name);
+        DMLog([NSString stringWithFormat:@"[smwin] %@ asked for a new window of its own (%s)", b, name]);
+    }
     else if ([cmd hasPrefix:@"smpolicy_"]) {   // smpolicy_<bundle>_<policy>: Stage Manager study -- request that window again with its attributes' sizing policy set to <policy> (2 = maximized) and size of a snap-to-grid window
         NSArray *q = [[cmd substringFromIndex:9] componentsSeparatedByString:@"_"];
         if (q.count < 2) return;
-        DMSMRequestWindow(q[0], nil, [q[1] integerValue]);
+        DMSMRequestWindow(DMSMDebugKey(q[0]), nil, [q[1] integerValue]);
     }
-    else if ([cmd hasPrefix:@"smmenu_"]) {   // smmenu_<bundle>: Stage Manager study -- that window's "..." menu as it is now (titles, action selectors that are set)
-        id vc = DMSMTopAffordanceFor([cmd substringFromIndex:7]);
+    else if ([cmd hasPrefix:@"smmenu_"]) {   // smmenu_<bundle>[@<n>]: Stage Manager study -- that window's "..." menu as it is now (titles, action selectors that are set)
+        id vc = DMSMTopAffordanceFor(DMSMDebugKey([cmd substringFromIndex:7]));
         UIMenu *m = DMCall(vc, @"menu");
         NSMutableString *out = [NSMutableString stringWithFormat:@"[smmenu] %@: %@", [cmd substringFromIndex:7], vc ? @"" : @"no controller"];
         NSMutableArray *todo = [NSMutableArray array];
@@ -20548,12 +20620,12 @@ static void DMRunTrigger(NSString *cmd) {
     }
     else if ([cmd hasPrefix:@"smwin_"]) {   // smwin_<bundle>_<close|removeFromSet>: OUR window action, as a traffic-light tap runs it (DMSMWindowAction)
         NSArray *q = [[cmd substringFromIndex:6] componentsSeparatedByString:@"_"];
-        if (q.count >= 2) DMLog([NSString stringWithFormat:@"[smwin] %@ %@: %@", q[0], q[1], DMSMWindowAction(q[0], q[1]) ? @"done" : @"not available"]);
+        if (q.count >= 2) { NSString *k = DMSMDebugKey(q[0]); DMLog([NSString stringWithFormat:@"[smwin] %@ %@: %@", DMSMKeyText(k), q[1], DMSMWindowAction(k, q[1]) ? @"done" : @"not available"]); }
     }
     else if ([cmd hasPrefix:@"smaction_"]) {   // smaction_<bundle>_<close|fullScreen|maximization|removeFromSet|addToSet|moveToDisplay>: Stage Manager study -- run that window's own "..." menu action
         NSArray *q = [[cmd substringFromIndex:9] componentsSeparatedByString:@"_"];
         if (q.count < 2) return;
-        id vc = DMSMTopAffordanceFor(q[0]);
+        id vc = DMSMTopAffordanceFor(DMSMDebugKey(q[0]));
         id action = vc ? DMCall(vc, [q[1] stringByAppendingString:@"Action"]) : nil;
         DMLog([NSString stringWithFormat:@"[smaction] %@ %@: controller %@ action %@", q[0], q[1], vc ? @"found" : @"NOT found", action]);
         if ([action isKindOfClass:[UIAction class]]) DMSMRunAction(action, vc);
@@ -22672,7 +22744,7 @@ static void DMRunTrigger(NSString *cmd) {
             DMLog([NSString stringWithFormat:@"[smdisplays] stage %@ ordinal %ld identity %@", [bs componentsJoinedByString:@","], ((long (*)(id, SEL))objc_msgSend)(al, NSSelectorFromString(@"preferredDisplayOrdinal")), DMCall(al, @"preferredDisplayIdentity")]);
         }
     }
-    else if ([cmd hasPrefix:@"smfull_"]) DMSMSetFullScreenInStage([cmd substringFromIndex:7], YES);   // smfull_<bundle>: that window full screen inside its stage (test)
+    else if ([cmd hasPrefix:@"smfull_"]) DMSMSetFullScreenInStage(DMSMDebugKey([cmd substringFromIndex:7]), YES);   // smfull_<bundle>: that window full screen inside its stage (test)
     else if ([cmd hasPrefix:@"selhunt_"]) {   // selhunt_<keyword>: every method (instance and class) of every class in SpringBoard.framework whose name contains <keyword> -- read-only
         NSString *kw = [cmd substringFromIndex:8];
         NSMutableString *out = [NSMutableString stringWithFormat:@"[selhunt] %@:", kw];
@@ -25301,7 +25373,7 @@ static void DMTickBody(void) {
         }
         if (frontChanged) DMLog([NSString stringWithFormat:@"[front] now \"%@\"", bid.length ? bid : @"(home screen)"]);
     }
-    if (frontChanged && bid.length) DMSMSetMinimized(bid, NO);   // (Stage Manager engine: a minimized window in front again, by any path, is a window again)
+    if (frontChanged && bid.length) DMSMSetMinimized(DMSMEngine() ? (DMSMFrontWindowKey() ?: bid) : bid, NO);   // (Stage Manager engine: a minimized window in front again, by any path, is a window again -- that window, M-2)
     if (frontChanged) DMLightGroupsRefresh();   // (window lights: colored on the active app's window only)
     static BOOL ccWasActive = NO;
     BOOL ccActive = DMControlCenterActive();
@@ -27482,6 +27554,8 @@ static NSMutableSet<NSString *> *gSMMinimized;
 // Saved across a respring: nothing in Apple's model says a stage is a minimized window (it is a hidden stage like any other), so after a respring
 // the minimized windows counted as windows again -- the next launch could join a minimized window's stage (it is the most recent one right after a
 // minimize) and the Mac Switcher showed them again with their desktop. Read once, written only when the set changes.
+// (M-2: one entry per WINDOW -- its key, SMWindowKey.h; an entry by app, as older versions saved them, covers the app's windows until one of
+//  them is opened again)
 static NSString *DMSMStatePath(void) { return [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Preferences/com.besiktasliseba.macstatusbar.stagemanager.plist"]; }
 static NSMutableSet<NSString *> *DMSMMinimizedSet(void) {
     if (!gSMMinimized) {
@@ -27493,19 +27567,31 @@ static NSMutableSet<NSString *> *DMSMMinimizedSet(void) {
     }
     return gSMMinimized;
 }
-static BOOL DMSMIsMinimized(NSString *bundle) { return bundle && [DMSMMinimizedSet() containsObject:bundle]; }
-static void DMSMSetMinimized(NSString *bundle, BOOL on) {
-    if (!bundle.length) return;
+static BOOL DMSMIsMinimized(NSString *key) { return DMSMKeySetHas(DMSMMinimizedSet(), key); }
+// Takes exactly these entries out of the saved minimized set (no app-wide removal: an older version's entry for an app stays) and saves it.
+static void DMSMMinimizedDrop(NSSet<NSString *> *keys) {
     NSMutableSet *s = DMSMMinimizedSet();
-    if (on == [s containsObject:bundle]) return;
-    if (on) [s addObject:bundle]; else [s removeObject:bundle];
+    NSUInteger before = s.count;
+    [s minusSet:keys];
+    if (s.count == before) return;
+    [@{@"minimized": [[s allObjects] sortedArrayUsingSelector:@selector(compare:)]} writeToFile:DMSMStatePath() atomically:YES];
+}
+static void DMSMSetMinimized(NSString *key, BOOL on) {
+    if (!key.length) return;
+    NSMutableSet *s = DMSMMinimizedSet();
+    BOOL changed = NO;
+    if (on) { if (![s containsObject:key]) { [s addObject:key]; changed = YES; } }
+    else changed = DMSMKeySetRemove(s, key);   // (the window, and an entry for its app: one of its windows is open again)
+    if (!changed) return;
     [@{@"minimized": [[s allObjects] sortedArrayUsingSelector:@selector(compare:)]} writeToFile:DMSMStatePath() atomically:YES];
 }
 // The desktop: the most recent stage on the iPad that still has a window which is not minimized (logic test F2a: the most recent stage was a
 // minimized window's hidden stage, and it came back with the app) -- and not an app in full screen sent to the background: a stage of full-screen
 // windows only, not on screen, is passed over unless it holds what is asked for (SMHomeRule.h DMSMStageIsDesktop; 1.3.8 logic test H-3: after a
 // Home from a lone full-screen Tips, the next app opened brought Tips back full screen behind it, and the respring restore brought it back by
-// itself). onScreen: the stage on screen now (nil: none); asked: the apps being opened or asked for. *windows: its windows that are not minimized.
+// itself). onScreen: the stage on screen now (nil: none); asked: the windows being opened or asked for, by key (SMWindowKey.h: a window's own key,
+// or an app key -- the app's windows). *windows: its windows that are not minimized (each window by its own key: one of two windows of an app
+// minimized leaves the other on the desktop, M-2).
 // Used by the launch join (DMSMJoinDesktop), SpringBoard's own stage requests (SMDesktop.h DMSMJoinStageAsked) and the restore (SMHome.h).
 static BOOL DMSMIsMainIdentity(id identity);
 __attribute__((noinline)) static id DMSMDesktopFor(id onScreen, NSSet<NSString *> *asked, NSMutableDictionary **windows) {   // (noinline: test-crashstep)
@@ -27516,12 +27602,12 @@ __attribute__((noinline)) static id DMSMDesktopFor(id onScreen, NSSet<NSString *
         BOOL window = NO, holds = NO;
         NSMutableArray<NSString *> *names = [NSMutableArray array];
         for (id it in all) {
-            NSString *b = DMSMItemBundle(it);
-            if (DMSMIsMinimized(b)) continue;
+            NSString *k = DMSMItemKey(it);
+            if (DMSMIsMinimized(k)) continue;
             shown[it] = all[it];
-            if (b) [names addObject:b];
+            if (k) [names addObject:DMSMKeyText(k)];
             if (DMSMPolicyOf(all[it]) != 2) window = YES;
-            if (b && [asked containsObject:b]) holds = YES;
+            if (k && DMSMKeysHold(asked, k)) holds = YES;   // (that window, or its app: SMWindowKey.h, Mac test test-smwindowkey)
         }
         if (!shown.count) continue;
         BOOL here = onScreen && (al == onScreen || [al isEqual:onScreen]);
@@ -27541,20 +27627,25 @@ static id DMSMStageShownBefore(id ctx) {
     if (!DMSMHomeStateOf(DMSMHomePrevState(ctx), &env, &stage) || env != 3) return nil;
     return stage;
 }
-static BOOL DMSMWindowAction(NSString *bundleID, NSString *name) {
+static BOOL DMSMWindowAction(NSString *key, NSString *name) {
     BOOL close = [name isEqualToString:@"close"], minimize = [name isEqualToString:@"removeFromSet"];
-    id own = (close || minimize) ? DMSMStageOf(bundleID) : nil;
-    BOOL last = own && [DMSMStageItemsMap(own) count] == 1 && own == DMSMFrontStage() && DMFrontApp();
-    id vc = DMSMTopAffordanceFor(bundleID);
+    // (the window itself: a key that names the app -- the menu bar's lights, the Window menu, force quit -- means the app's newest window; all
+    //  below acts on that one window and its own controller, never on whichever window of the app came first, M-2)
+    id own = DMSMStageOf(key);
+    id ownItem = DMSMItemFor(own, key, nil);
+    NSString *wk = ownItem ? DMSMItemKey(ownItem) : key;
+    if (!(close || minimize)) own = nil;
+    BOOL last = own && ownItem && [DMSMStageItemsMap(own) count] == 1 && own == DMSMFrontStage() && DMFrontApp();
+    id vc = DMSMTopAffordanceFor(wk);
     id action = vc ? DMCall(vc, [name stringByAppendingString:@"Action"]) : nil;
-    DMLog([NSString stringWithFormat:@"[smengine] %@ on %@: %@%@", name, bundleID, [action isKindOfClass:[UIAction class]] ? [(UIAction *)action title] : @"not available", last ? @" (the desktop's last window)" : @""]);
+    DMLog([NSString stringWithFormat:@"[smengine] %@ on %@: %@%@", name, DMSMKeyText(wk), [action isKindOfClass:[UIAction class]] ? [(UIAction *)action title] : @"not available", last ? @" (the desktop's last window)" : @""]);
     // The desktop's last window: the Home Screen FIRST, as on a Mac. Closing or minimizing it while it was shown made Stage Manager bring up an
     // older hidden stage (a minimized window, a full-screen app sent away), which we then joined and sent home 0.35 s later -- a visible flash,
     // and the closed window stayed a hidden one (logic test SM-7 / F2b). Minimizing the last window IS going Home (its stage stays, hidden); a
     // close runs once the Home Screen is up, on a stage no longer shown, so Stage Manager has nothing to bring up.
     if (last && minimize) {
-        DMSMSetMinimized(bundleID, YES);
-        DMLog([NSString stringWithFormat:@"[smengine] %@: the desktop's last window minimized -- the Home Screen", bundleID]);
+        DMSMSetMinimized(wk, YES);
+        DMLog([NSString stringWithFormat:@"[smengine] %@: the desktop's last window minimized -- the Home Screen", DMSMKeyText(wk)]);
         DMSMGoHomeForReal(@"the desktop's last window minimized");   // (a real Home: the Home rule keeps windows on screen, this one goes -- SMHome.h)
         return YES;
     }
@@ -27563,12 +27654,11 @@ static BOOL DMSMWindowAction(NSString *bundleID, NSString *name) {
         // (the window being closed -- its display item, the only one in its stage: later exactly that window is taken out, never every stage of
         //  its app. -_deleteAppLayoutsMatchingBundleIdentifier: deleted each layout holding ANY window of the app and quit every app in them: an app
         //  with a second window on the desktop (Safari, a new window from App Exposé) took the whole desktop with it -- 1.3.6 logic test H-1)
-        id closing = nil;
-        for (id it in DMSMStageItemsMap(own)) if ([DMSMItemBundle(it) isEqualToString:bundleID]) closing = it;
-        DMLog([NSString stringWithFormat:@"[smengine] %@: the desktop's last window closes -- the Home Screen first", bundleID]);
+        id closing = ownItem;   // (this very window: the stage's only one)
+        DMLog([NSString stringWithFormat:@"[smengine] %@: the desktop's last window closes -- the Home Screen first", DMSMKeyText(wk)]);
         DMSMGoHomeForReal(@"the desktop's last window closes");   // (a real Home: the Home rule keeps windows on screen, this one goes -- SMHome.h)
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            DMSMSetMinimized(bundleID, NO);
+            DMSMSetMinimized(wk, NO);
             // (a window's own Close does nothing once its stage is no longer shown -- tested 07:10: the stage stayed and came back with the next
             // app. Its stage holds only this window: that stage is taken out the way the App Switcher closes one window -- SpringBoard's
             // -[SBMainSwitcherControllerCoordinator deleteAppLayoutForDisplayItem:] for this window's display item: its stage removed, its scene
@@ -27582,16 +27672,16 @@ static BOOL DMSMWindowAction(NSString *bundleID, NSString *name) {
             if (can) { @try { done = ((BOOL (*)(id, SEL, id))objc_msgSend)(coord, del, closing); } @catch (NSException *x) { DMSMAPIFail(@"deleteAppLayoutForDisplayItem:", x.reason ?: @"exception"); } }
             if (done) {
                 DM_FEATURE_MARK("sm-close-one-window");
-                DMLog([NSString stringWithFormat:@"[smengine] %@ closed from the Home Screen (its own stage taken out, the app's other windows stay)", bundleID]);
+                DMLog([NSString stringWithFormat:@"[smengine] %@ closed from the Home Screen (its own stage taken out, the app's other windows stay)", DMSMKeyText(wk)]);
             } else {
                 DMSMRunAction(action, vc);
-                DMLog([NSString stringWithFormat:@"[smengine] %@ closed from the Home Screen (its own Close%@)", bundleID, can ? @"; SpringBoard took nothing out" : (st ? @"; its stage holds other windows now" : @"; its stage is not in the switcher")]);
+                DMLog([NSString stringWithFormat:@"[smengine] %@ closed from the Home Screen (its own Close%@)", DMSMKeyText(wk), can ? @"; SpringBoard took nothing out" : (st ? @"; its stage holds other windows now" : @"; its stage is not in the switcher")]);
             }
         });
         return YES;
     }
-    DMSMSetMinimized(bundleID, minimize);
-    if (minimize) DMSMNoteRemoving(bundleID, own);   // (its role: the transition must not keep it there -- SMLimit.h DMSMRepairRoles)
+    DMSMSetMinimized(wk, minimize);
+    if (minimize) DMSMNoteRemoving(wk, own);   // (its role: the transition must not keep it there -- SMLimit.h DMSMRepairRoles)
     DMSMRunAction(action, vc);
     return YES;
 }
@@ -27612,6 +27702,7 @@ static BOOL DMSMIsMainIdentity(id identity) {
 // display, never the stage on screen, and only when Stage Manager's result is whole (one window fewer, it gone, a primary kept); a stage where it
 // is alone is deleted by the force quit's own clean-up. Returns how many stages lost it.
 static int DMSMTakeOutOfHiddenStages(NSString *bundle) {
+    bundle = DMSMKeyBundle(bundle);   // (the app: every window of it -- a force quit ends the app)
     if (!DMSMEngine() || !bundle.length) return 0;
     // (iPadOS 16.0-16.3 have no -appLayoutByRemovingItemInLayoutRole: -- new in 16.4, an optional check row since 1.3.3: the item stays in its hidden
     //  stage there, as before; asking anyway would only record the missing method as a runtime failure in the verdict)
@@ -27621,29 +27712,62 @@ static int DMSMTakeOutOfHiddenStages(NSString *bundle) {
     }
     id shown = DMFrontApp() ? DMSMFrontStage() : nil;
     int n = 0;
-    for (id al in [DMSMRecentStages() copy]) {
-        if ((shown && [al isEqual:shown]) || !DMSMIsMainIdentity(DMSMStageDisplayIdentity(al))) continue;
-        NSDictionary *m = DMSMStageItemsMap(al);
-        if (m.count < 2) continue;
-        id mine = nil;
-        for (id it in m) if ([DMSMItemBundle(it) isEqualToString:bundle]) mine = it;
-        long long role = 0;
-        if (!mine || !DMSMStageRoleOfItem(al, mine, &role) || role <= 0) continue;
-        id next = DMSMStageWithoutRole(al, role);
-        NSDictionary *nm = next ? DMSMStageItemsMap(next) : nil;
-        BOOL primary = NO, still = NO;
-        for (id it in nm) { long long r = 0; if (DMSMStageRoleOfItem(next, it, &r) && r == 1) primary = YES; if ([DMSMItemBundle(it) isEqualToString:bundle]) still = YES; }
-        if (!next || next == al || nm.count + 1 != m.count || still || !primary) {
-            DMLog([NSString stringWithFormat:@"[smengine] force quit %@: left in its hidden stage (Stage Manager's stage without it was not whole: %lu of %lu windows, primary %d)", bundle, (unsigned long)nm.count, (unsigned long)m.count, primary]);
-            continue;
+    for (id al0 in [DMSMRecentStages() copy]) {
+        if ((shown && [al0 isEqual:shown]) || !DMSMIsMainIdentity(DMSMStageDisplayIdentity(al0))) continue;
+        // (each window of the app in that stage, one at a time -- each step a whole stage again; an app with several windows there kept them all:
+        //  the check below counted "the app still in it" as a failed step, M-2)
+        id al = al0; NSDictionary *m = DMSMStageItemsMap(al); int taken = 0;
+        for (int step = 0; step < 16 && m.count >= 2; step++) {
+            id mine = nil;
+            for (id it in m) if ([DMSMItemBundle(it) isEqualToString:bundle]) { mine = it; break; }
+            long long role = 0;
+            if (!mine || !DMSMStageRoleOfItem(al, mine, &role) || role <= 0) break;
+            id next = DMSMStageWithoutRole(al, role);
+            NSDictionary *nm = next ? DMSMStageItemsMap(next) : nil;
+            BOOL primary = NO, still = NO;
+            for (id it in nm) { long long r = 0; if (DMSMStageRoleOfItem(next, it, &r) && r == 1) primary = YES; if ([it isEqual:mine]) still = YES; }
+            if (!next || next == al || nm.count + 1 != m.count || still || !primary) {
+                DMLog([NSString stringWithFormat:@"[smengine] force quit %@: left in its hidden stage (Stage Manager's stage without it was not whole: %lu of %lu windows, primary %d)", bundle, (unsigned long)nm.count, (unsigned long)m.count, primary]);
+                break;
+            }
+            if (!DMSMReplaceStage(al, next)) break;
+            taken++;
+            DMLog([NSString stringWithFormat:@"[smengine] force quit %@: taken out of a stage not on screen (role %lld; %lu window(s) stay in it)", DMSMKeyText(DMSMItemKey(mine)), role, (unsigned long)nm.count]);
+            al = next; m = nm;
         }
-        if (DMSMReplaceStage(al, next)) { n++; DM_FEATURE_MARK("sm-force-quit-hidden-stage"); DMLog([NSString stringWithFormat:@"[smengine] force quit %@: taken out of a stage not on screen (role %lld; %lu window(s) stay in it)", bundle, role, (unsigned long)nm.count]); }
+        if (taken) { n++; DM_FEATURE_MARK("sm-force-quit-hidden-stage"); }
     }
     return n;
 }
-static id DMSMStageOf(NSString *bundle) {   // (the most recent stage holding that app, on whichever display)
-    for (id al in DMSMRecentStages())
-        for (id it in DMSMStageItemsMap(al)) if ([DMSMItemBundle(it) isEqual:bundle]) return al;
+// Force quit with the Stage Manager engine (DMForceQuitBundle): every window of the app (M-2: one closed and the app's other windows stayed on the
+// desktop, their app gone) -- first its windows in stages not on screen are taken out of them (while the stage on screen is still the one it was:
+// their own Close needs the window shown), then the ones on the stage on screen close with their own Close, newest first, a moment apart (one
+// stage transition at a time, as Minimize All Windows does). An app with one window: its Close, as before. *windowed: something was closed; returns
+// how much longer than one window's close the kill waits.
+static double DMSMForceQuitWindows(NSString *bundleID, BOOL *windowed) {
+    NSMutableArray<NSString *> *keys = [NSMutableArray array];
+    id shownStage = DMFrontApp() ? DMSMFrontStage() : nil;
+    NSDictionary *shownMap = DMSMStageItemsMap(shownStage);
+    NSArray *byTime = [shownMap.allKeys sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
+        long long ta = DMSMAttrTimeOr(shownMap[a], 0), tb = DMSMAttrTimeOr(shownMap[b], 0);
+        return ta > tb ? NSOrderedAscending : (ta < tb ? NSOrderedDescending : NSOrderedSame);
+    }];
+    for (id it in byTime) if ([DMSMItemBundle(it) isEqualToString:bundleID]) { NSString *k = DMSMItemKey(it); if (k && ![keys containsObject:k]) [keys addObject:k]; }
+    if (!keys.count) [keys addObject:bundleID];   // (none on the stage on screen: the app's own window wherever it is, as before)
+    if (DMSMTakeOutOfHiddenStages(bundleID) && windowed) *windowed = YES;
+    BOOL closed = DMSMWindowAction(keys[0], @"close");
+    for (NSUInteger i = 1; i < keys.count; i++) {
+        NSString *k = keys[i];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMSMWindowAction(k, @"close"); });
+    }
+    if (keys.count > 1) { DM_FEATURE_MARK("sm-force-quit-every-window"); DMLog([NSString stringWithFormat:@"[action] force quit %@: its %lu windows on the desktop close one after the other", bundleID, (unsigned long)keys.count]); }
+    DMSMForgetApp(bundleID);   // (its windows' sizes from before full screen: not brought back after a quit, logic test C5)
+    if (!closed) return 0;
+    if (windowed) *windowed = YES;
+    return (double)(keys.count - 1) * 0.35;
+}
+static id DMSMStageOf(NSString *key) {   // (the most recent stage holding that window -- an app key: one of the app's windows -- on whichever display)
+    if (key.length) for (id al in DMSMRecentStages()) if (DMSMItemFor(al, key, nil)) return al;
     return DMSMFrontStage();
 }
 static id DMSMFrontStageOnDisplay(id identity) {   // (the most recent stage on that display)
@@ -27664,12 +27788,65 @@ static id DMSMNewEntity(NSString *bundle, id identity) {   // (an app entity for
     }
     return DMSMEntityNew(app, nil, nil);
 }
-static id DMSMEntityIn(id stage, NSString *bundle) {   // (the entity of that app's window in its stage, on the stage's display -- Apple's own helper)
+static id DMSMEntityIn(id stage, NSString *bundle) {   // (the entity of that app's window in its stage, on the stage's display -- by app: the fallback)
     id identity = DMSMStageDisplayIdentity(stage);
     if (!DMSMIsMainIdentity(identity))
         for (id it in DMSMStageItemsMap(stage))
             if ([DMSMItemBundle(it) isEqual:bundle]) { id e = DMSMEntityForItem(it, identity); if (e) return e; }
     return DMSMNewEntity(bundle, identity);
+}
+// ---- one window, one key (SMWindowKey.h: "<bundle>|<scene identifier>", or the bundle alone -- M-2) ------------------------------------------
+static NSString *DMSMItemKey(id item) {
+    if (!DMSMPerWindow()) return DMSMKeyMake(DMSMItemBundle(item), nil);   // (windows by app, as before)
+    DM_FEATURE_MARK("sm-per-window");
+    return DMSMKeyMake(DMSMItemBundle(item), DMSMItemUid(item));
+}
+static NSString *DMSMEntityKey(id entity) {
+    id b = DMSMIsEntity(entity) ? DMCall(DMCall(entity, @"application"), @"bundleIdentifier") : nil;
+    return DMSMKeyMake([b isKindOfClass:[NSString class]] ? b : nil, DMSMPerWindow() ? DMSMEntityUid(entity) : nil);
+}
+static char kSMCardKeyKey;
+static NSString *DMSMCardKey(UIView *card) {   // (the window a card shows, from its name; worked out once per name -- this runs on every layout of a card)
+    NSString *name = card.accessibilityIdentifier;
+    if (![name hasPrefix:@"card:"]) return nil;
+    NSArray *cached = objc_getAssociatedObject(card, &kSMCardKeyKey);
+    if (cached.count == 2 && [cached[0] isEqualToString:name]) return cached[1];
+    NSString *k = DMSMKeyFromCardName(name, DMSMPerWindow());
+    if (k) objc_setAssociatedObject(card, &kSMCardKeyKey, @[[name copy], k], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return k;
+}
+// The window a key names in a stage, and its attributes: that very window; an app key -- the app's newest window there. nil when none.
+static id DMSMItemFor(id stage, NSString *key, id *attrsOut) {
+    NSDictionary *map = DMSMStageItemsMap(stage);
+    if (!map.count || !key.length) return nil;
+    NSMutableArray *wins = [NSMutableArray array], *items = [NSMutableArray array];
+    for (id it in map) {
+        NSString *k = DMSMItemKey(it);
+        if (!k) continue;
+        [wins addObject:@{@"k": k, @"t": @(DMSMAttrTimeOr(map[it], 0))}]; [items addObject:it];
+    }
+    NSUInteger i = DMSMKeyPick(wins, key);
+    if (i == NSNotFound) return nil;
+    if (attrsOut) *attrsOut = map[items[i]];
+    return items[i];
+}
+// The entity of one window of a stage, on the stage's display: Apple's own for that very window (-[SBMainSwitcherControllerCoordinator
+// _entityForDisplayItem:displayIdentity:] -> -initWithApplication:uniqueIdentifier:<the item's>sceneHandleProvider:displayIdentity:, 16.7.7
+// disassembled). The iPad's windows used to be asked for by app (-initWithApplicationForMainDisplay: = SpringBoard's default scene of the app):
+// every window of an app with several became that one scene, in two roles. Windows told apart by app (the rows missing), or Apple's answer not
+// naming this very window: the entity by app, as before (for an app with one window both name its only scene).
+static id DMSMEntityForStageItem(id stage, id item) {
+    if (!item) return nil;
+    NSString *b = DMSMItemBundle(item);
+    if (DMSMPerWindow()) {
+        id identity = DMSMStageDisplayIdentity(stage) ?: DMSMIdentityOfScreen([UIScreen mainScreen]);
+        id e = identity ? DMSMEntityForItem(item, identity) : nil;
+        NSString *want = DMSMItemUid(item), *got = DMSMEntityUid(e);
+        if (e && want.length && [got isEqualToString:want]) { DM_FEATURE_MARK("sm-window-own-entity"); return e; }
+        static int told = 0;
+        if (told < 5) { told++; DMLog([NSString stringWithFormat:@"[smwin] %@: Apple's entity for the window names %@ -- the app's own entity instead", b ?: @"?", e ? (got ?: @"no window") : @"nothing"]); }
+    }
+    return DMSMEntityIn(stage, b);
 }
 // ---- a window's place as Stage Manager reads it, fitted into the desktop of its screen (SMFit.h, Mac test tools/test-smfit.sh) ------------------------
 // The card area of a screen's desktop (u: DMSMUsableAreaFor..., the window area under the menu bar, above the Dock): under our title bar as well;
@@ -27714,9 +27891,8 @@ static NSArray<NSArray *> *DMSMPlanFitted(id identity, NSArray<NSArray *> *plan)
     for (NSUInteger i = 0; i < plan.count; i++) {
         NSArray *row = plan[i];
         if (![row isKindOfClass:[NSArray class]] || row.count != 3) return plan;   // (malformed: the plan check refuses it as it is)
-        id b = DMCall(DMCall(row[0], @"application"), @"bundleIdentifier");
-        NSString *bundle = [b isKindOfClass:[NSString class]] ? b : nil;
-        id a = DMSMAttrsFitScreen(row[2], identity, bundle && [gSMBehindDock containsObject:bundle], bundle);
+        NSString *key = DMSMEntityKey(row[0]);   // (the window: behind the Dock is a window's place, M-2)
+        id a = DMSMAttrsFitScreen(row[2], identity, DMSMKeySetHas(gSMBehindDock, key), key ? DMSMKeyText(key) : nil);
         if (a == row[2]) continue;
         if (!out) out = [plan mutableCopy];
         out[i] = @[row[0], row[1], a];
@@ -27736,8 +27912,8 @@ static void DMSMFitHiddenStages(id onScreen) {
         NSDictionary *m = DMSMStageItemsMap(al);
         id st = al; BOOL fitted = NO;
         for (id it in m) {
-            NSString *b = DMSMItemBundle(it);
-            id f = DMSMAttrsFitScreen(m[it], nil, b && [gSMBehindDock containsObject:b], b);
+            NSString *k = DMSMItemKey(it);
+            id f = DMSMAttrsFitScreen(m[it], nil, DMSMKeySetHas(gSMBehindDock, k), k ? DMSMKeyText(k) : nil);
             if (f == m[it]) continue;
             id ns = DMSMStageWithAttrs(st, f, it);
             if (ns) { st = ns; fitted = YES; }
@@ -27781,14 +27957,15 @@ static BOOL DMSMAddToStage(NSString *bundle, UIView *from) {   // from: the icon
     SBApplication *front = DMFrontApp();
     id al = DMSMFrontStageOnDisplay(identity);   // (the stage on the display the icon was tapped on)
     NSDictionary *map = DMSMStageItemsMap(al);
-    NSMutableSet *inStage = [NSMutableSet set];
-    for (id item in map) { NSString *b = DMSMItemBundle(item); if (b) [inStage addObject:b]; }
+    NSMutableSet *inStage = [NSMutableSet set];   // (its apps)
+    NSMutableArray<NSString *> *stageKeys = [NSMutableArray array];   // (its windows: two of one app are two)
+    for (id item in map) { NSString *b = DMSMItemBundle(item), *k = DMSMItemKey(item); if (b) [inStage addObject:b]; if (k) [stageKeys addObject:k]; }
     if (!main && !al) return NO;   // (nothing on the TV yet: Stage Manager opens the app there itself)
     if (!main) {   // (the TV's stage only when it is on the TV now -- after a respring the TV desktop is empty while the old stage is still on record, and an
                    //  app added to that stage never appeared: then Stage Manager opens the app on the TV itself)
         BOOL shown = NO;
         for (id it in map) {
-            UIView *card = DMSMCardFor(DMSMItemBundle(it));
+            UIView *card = DMSMCardFor(DMSMItemKey(it));
             if (card && [DMSMIdentityOfScreen(card.window.screen) isEqual:identity]) { shown = YES; break; }
         }
         if (!shown) return NO;
@@ -27798,21 +27975,24 @@ static BOOL DMSMAddToStage(NSString *bundle, UIView *from) {   // from: the icon
         return DMSMOpenFullScreenStage(bundle, map[map.allKeys.firstObject], identity);
     }
     if (main && ![inStage containsObject:[front bundleIdentifier]]) return NO;
-    if ([inStage containsObject:bundle]) {   // (already in the stage: forward; full screen it stays)
+    if ([inStage containsObject:bundle]) {   // (already in the stage: forward -- its newest window, when it has several; full screen it stays)
         DMSMBringToFront(bundle);
         return YES;
     }
     // Fit to Window with two tiles: the third window is asked about BEFORE its app starts (the other engines' order, DMPromptBeforeLaunch). Launched
     // first, it opened while the question was up and could end up behind the two tiles, needing another tap in the Dock (iPad 2, 29 Sep).
-    if (main && windowed && !gSMSkipFitAsk && DMFitEnabled() && map.count == 2 && gSMFitSlots.count == 2 && ![gSMFreeWindows containsObject:bundle]
+    if (main && windowed && !gSMSkipFitAsk && DMFitEnabled() && map.count == 2 && gSMFitSlots.count == 2 && !DMSMKeySetHas(gSMFreeWindows, bundle)
         && !(gSidePromptCtx && ![gSidePromptCtx[@"decided"] boolValue])) {
-        NSString *leftB = nil, *rightB = nil;
-        for (NSString *b in inStage) { NSString *slot = gSMFitSlots[b]; if ([slot isEqualToString:@"left"]) leftB = b; else if ([slot isEqualToString:@"right"]) rightB = b; }
+        NSString *leftB = nil, *rightB = nil;   // (the two tiled windows' keys)
+        for (NSString *k in stageKeys) { NSString *slot = gSMFitSlots[k]; if ([slot isEqualToString:@"left"]) leftB = k; else if ([slot isEqualToString:@"right"]) rightB = k; }
         if (leftB && rightB) {
             DM_FEATURE_MARK("sm-fit-ask-before-launch");
             DMLog([NSString stringWithFormat:@"[sm] Fit to Window: asking where %@ goes before launching it", bundle]);
             NSString *newB = [bundle copy];
             DMPromptForSideApply(nil, newB, leftB, rightB, ^(NSString *side) {
+                // (newB is the app: its window does not exist yet -- it takes the app's entry over when it comes, DMSMFitTick)
+                if (!gSMFitPending) gSMFitPending = [NSMutableDictionary dictionary];
+                gSMFitPending[newB] = @(CACurrentMediaTime());
                 if ([side isEqualToString:@"none"]) {   // No Fit: it opens free, in the middle; the two tiles stay
                     if (!gSMFreeWindows) gSMFreeWindows = [NSMutableSet set];
                     [gSMFreeWindows addObject:newB];
@@ -27828,7 +28008,7 @@ static BOOL DMSMAddToStage(NSString *bundle, UIView *from) {   // from: the icon
                 __block void (^wait)(void);
                 void (^w)(void) = ^{
                     if ([DMSMWindowBundles() containsObject:newB]) {
-                        if ([gSMFreeWindows containsObject:newB]) DMSMApplyLayoutsIn(@{newB: @"center"}, DMSMFrontStage());
+                        if (DMSMKeySetHas(gSMFreeWindows, newB)) DMSMApplyLayoutsIn(@{newB: @"center"}, DMSMFrontStage());   // (newB: the app's newest window = the new one)
                         else DMSMFitTick(YES);
                         wait = nil; return;
                     }
@@ -27853,6 +28033,7 @@ static BOOL DMSMAddToStage(NSString *bundle, UIView *from) {   // from: the icon
     if (map.count >= 4) DM_FEATURE_MARK("sm-windows-beyond-four");
     id entity = DMSMNewEntity(bundle, identity);
     if (!entity) return NO;
+    NSString *newKey = DMSMEntityKey(entity) ?: bundle;   // (the window SpringBoard opens for the app: its place is that window's own, M-2)
     // In front, like a new window on a Mac: the newest interaction time of the stage + 1 (Stage Manager orders windows by it), cascaded down and
     // right from the front window (Stage Manager's auto-layout still has the last word on the exact spot).
     id frontAttrs = nil; long newest = 0;
@@ -27860,10 +28041,11 @@ static BOOL DMSMAddToStage(NSString *bundle, UIView *from) {   // from: the icon
         long t = DMSMAttrTimeOr(map[item], 0);
         if (t >= newest) { newest = t; frontAttrs = map[item]; }
     }
-    id attrs = DMSMJoinAttributes(bundle, frontAttrs, windowed, newest, al);   // (its own last place, or cascaded above the Dock; full screen when apps do not open as windows)
+    id attrs = DMSMJoinAttributes(newKey, frontAttrs, windowed, newest, al);   // (its own last place, or cascaded above the Dock; full screen when apps do not open as windows)
     if (!attrs) return NO;   // (refused: the normal launch -- DMSMJoinDesktop then decides)
     if (!DMSMRequestOn(identity, @"MSBDStageAdd", @[@[entity, @(role), attrs]], DMSMNewWindowRoles(), entity)) { DMLog([NSString stringWithFormat:@"[smengine] adding %@ refused", bundle]); return NO; }
-    if (!windowed) DMSMDismissOtherFullScreen(al, bundle);
+    DMSMSetMinimized(newKey, NO);   // (a minimized window opened again from the Dock or the Home Screen is a window again)
+    if (!windowed) DMSMDismissOtherFullScreen(al, newKey);
     DMLog([NSString stringWithFormat:@"[smengine] %@ added to the stage of %@ (role %ld, %lu window(s) there before)%@", bundle, main ? [front bundleIdentifier] : @"the TV", role, (unsigned long)map.count, main ? @"" : @" [external display]"]);
     return YES;
 }
@@ -27873,44 +28055,50 @@ static id DMSMFrontStage(void) {
     id main = DMSMFrontStageOnDisplay(DMSMIdentityOfScreen([UIScreen mainScreen]));
     return main ?: [DMSMRecentStages() firstObject];
 }
-static id DMSMItemFor(id stage, NSString *bundle, id *attrsOut) {
-    NSDictionary *map = DMSMStageItemsMap(stage);
-    for (id item in map) if ([DMSMItemBundle(item) isEqual:bundle]) { if (attrsOut) *attrsOut = map[item]; return item; }
-    return nil;
-}
 // Asks for a window of the stage on screen again, with these attributes (attrs), or with its current ones given sizing policy `policy` (>= 0), through
 // the workspace transition an app launch uses (the app in its layout role; setRequestedLayoutAttributes:forEntity:). YES when requested.
-static BOOL DMSMRequestWindow(NSString *bundle, id attrs, long policy) {
-    id stage = DMSMStageOf(bundle), current = nil;
-    id item = DMSMItemFor(stage, bundle, &current);
+static BOOL DMSMRequestWindow(NSString *key, id attrs, long policy) {
+    id stage = DMSMStageOf(key), current = nil;
+    id item = DMSMItemFor(stage, key, &current);
     if (!item) return NO;
     long long role = DMSMRoleOr(stage, item, 0);
     if (role <= 0) role = 1;
     if (!attrs) attrs = current;
     if (policy >= 0) attrs = DMSMAttrWithSizingPolicy(attrs, policy);
-    id entity = DMSMEntityIn(stage, bundle);   // (on the display the stage is on: the TV's windows stay there)
+    id entity = DMSMEntityForStageItem(stage, item);   // (this very window, on the display the stage is on: the TV's windows stay there)
+    NSString *wk = DMSMItemKey(item);
     if (!entity || !attrs) return NO;
-    if (!DMSMRequestOn(DMSMStageDisplayIdentity(stage), nil, @[@[entity, @(role), attrs]], nil, entity)) { DMLog([NSString stringWithFormat:@"[smengine] request for %@ refused", bundle]); return NO; }
-    DMLog([NSString stringWithFormat:@"[smengine] %@ requested again (role %lld): %@", bundle, role, [[attrs description] stringByReplacingOccurrencesOfString:@"\n" withString:@" "]]);
+    if (!DMSMRequestOn(DMSMStageDisplayIdentity(stage), nil, @[@[entity, @(role), attrs]], nil, entity)) { DMLog([NSString stringWithFormat:@"[smengine] request for %@ refused", DMSMKeyText(wk)]); return NO; }
+    DMLog([NSString stringWithFormat:@"[smengine] %@ requested again (role %lld): %@", DMSMKeyText(wk), role, [[attrs description] stringByReplacingOccurrencesOfString:@"\n" withString:@" "]]);
     return YES;
 }
 // Zoom that toggles, like a Mac's green button: Stage Manager's own Zoom (maximizationAction) only maximizes, and a maximized window asked for again
 // keeps its size. So the attributes a window had before Zoom are kept, and the second press puts them back into the stage (the switcher model's
 // replaceAppLayout:withAppLayout:) and asks for the window again. A window maximized before we saw it gets the size of another, un-maximized window.
-static NSMutableDictionary<NSString *, id> *gSMPreZoom;
-static void DMSMForgetApp(NSString *bundle) { if (bundle.length) [gSMPreZoom removeObjectForKey:bundle]; }
+static NSMutableDictionary<NSString *, id> *gSMPreZoom;   // (window key -> its attributes before full screen)
+static void DMSMForgetApp(NSString *bundle) {   // (the app quit: its windows' places from before full screen go -- every window of it)
+    bundle = DMSMKeyBundle(bundle);
+    if (!bundle.length) return;
+    for (NSString *k in [gSMPreZoom allKeys]) if ([DMSMKeyBundle(k) isEqualToString:bundle]) [gSMPreZoom removeObjectForKey:k];
+    // (and its minimized marks: none of its windows is left anywhere. With windows told apart, a minimized window's mark is that window's scene, and
+    //  the app's next launch may open another scene -- the old mark stayed in the saved set for good, 1.3.9 device pass)
+    DMSMSetMinimized(bundle, NO);
+}
 // Full screen INSIDE the stage (as with our other engines: the full-screen app is one of the stage's items, maximized over the whole screen; the
 // other windows stay in the stage, in front of or behind it by interaction order) -- not Stage Manager's "Enter Full Screen", which moved the app
 // into a stage of its own where no window could come over it.
 // The attributes a window joining the desktop gets: its own last window size/place if it has one (a window restored from minimize came back at
 // the front window's size, logic test SM-8), else cascaded from the front window, kept ABOVE the Dock (new windows reached under it, SM-2);
 // full screen when apps do not open as windows. newest: the stage's newest interaction time (the window goes in front).
-static id DMSMJoinAttributes(NSString *bundle, id frontAttrs, BOOL windowed, long newest, id stage) {   // stage: the one it joins (its screen and Dock)
+static id DMSMJoinAttributes(NSString *key, id frontAttrs, BOOL windowed, long newest, id stage) {   // stage: the one it joins (its screen and Dock)
+    // (key: the joining window -- its own last place is that window's; a NEW window of an app (a second scene) has none and is cascaded, it no
+    //  longer opens exactly on the app's other window; an app key: the app's newest window's, as before)
+    NSString *bundle = DMSMKeyBundle(key) ?: key;
     id own = nil;
-    id ownStage = DMSMStageOf(bundle);
-    NSDictionary *om = DMSMStageItemsMap(ownStage);
-    for (id it in om) if ([DMSMItemBundle(it) isEqual:bundle]) own = om[it];
-    if (own && DMSMPolicyOf(own) == 2 && windowed && gSMPreZoom[bundle]) own = gSMPreZoom[bundle];   // (full screen by our green button: its window size from before)
+    id ownStage = DMSMStageOf(key);
+    id ownItem = DMSMItemFor(ownStage, key, &own);
+    NSString *preKey = DMSMKeyLookup(gSMPreZoom, ownItem ? DMSMItemKey(ownItem) : key);
+    if (own && DMSMPolicyOf(own) == 2 && windowed && preKey) own = gSMPreZoom[preKey];   // (full screen by our green button: its window size from before)
     id base = (own && (DMSMPolicyOf(own) != 2 || !windowed)) ? own : (frontAttrs ?: own);   // (no front window: its own attributes, re-made a window below)
     if (!base) {   // (nothing to start from -- an app with no stage left, on an empty desktop: new attributes, the default window below)
         base = DMSMAttrNew();
@@ -27950,8 +28138,8 @@ static id DMSMJoinAttributes(NSString *bundle, id frontAttrs, BOOL windowed, lon
                 taken[nTaken++] = fromPt;
                 NSDictionary *sm = DMSMStageItemsMap(stage);
                 for (id it in sm) {
-                    CGPoint oc;
-                    if (nTaken < 16 && ![DMSMItemBundle(it) isEqual:bundle] && DMSMAttrCenter(sm[it], &oc)) taken[nTaken++] = CGPointMake(oc.x * scr.width, oc.y * scr.height);
+                    CGPoint oc;   // (every other window -- the app's other windows too: a second window no longer lands on the first)
+                    if (nTaken < 16 && it != ownItem && !DMSMKeyCovers(key, DMSMItemKey(it)) && DMSMAttrCenter(sm[it], &oc)) taken[nTaken++] = CGPointMake(oc.x * scr.width, oc.y * scr.height);
                 }
                 int stepTaken = DMSMCascadeClear(fromPt, CGSizeMake(0.05 * scr.width, 0.06 * scr.height), DMSMCardDesk(u, scr, NO), taken, nTaken, &pts, &cp);
                 if (stepTaken != 0) DMLog([NSString stringWithFormat:@"[smjoin] %@: the cascade spot was taken -- %@", bundle, stepTaken == 99 ? @"no clear spot, left at the first one" : [NSString stringWithFormat:@"step %d (%@)", abs(stepTaken), stepTaken > 0 ? @"down and right" : @"up and left"]]);
@@ -27966,21 +28154,22 @@ static id DMSMJoinAttributes(NSString *bundle, id frontAttrs, BOOL windowed, lon
 }
 // One full-screen app at a time, as with our other engines (iOS): another app going full screen in the stage sends the previous one away
 // (minimized out of the stage, like a full-screen app left for another).
-static void DMSMDismissOtherFullScreen(id stage, NSString *keep) {
+static void DMSMDismissOtherFullScreen(id stage, NSString *keep) {   // keep: the window going full screen (its key; an app key keeps every window of that app, as before)
     NSDictionary *map = DMSMStageItemsMap(stage);
     for (id it in map) {
-        NSString *b = DMSMItemBundle(it);
-        if (b.length && ![b isEqualToString:keep] && DMSMPolicyOf(map[it]) == 2) {
-            DMLog([NSString stringWithFormat:@"[smengine] %@ goes full screen: the previous full-screen app %@ leaves the stage", keep, b]);
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMSMWindowAction(b, @"removeFromSet"); });
+        NSString *k = DMSMItemKey(it);
+        if (k.length && !DMSMKeyCovers(keep, k) && DMSMPolicyOf(map[it]) == 2) {
+            DMLog([NSString stringWithFormat:@"[smengine] %@ goes full screen: the previous full-screen window %@ leaves the stage", DMSMKeyText(keep), DMSMKeyText(k)]);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMSMWindowAction(k, @"removeFromSet"); });
         }
     }
 }
-static BOOL DMSMSetFullScreenInStage(NSString *bundle, BOOL front) {
-    id stage = DMSMStageOf(bundle), attrs = nil;   // (its own stage, on whichever display)
-    id item = DMSMItemFor(stage, bundle, &attrs);
+static BOOL DMSMSetFullScreenInStage(NSString *key, BOOL front) {
+    id stage = DMSMStageOf(key), attrs = nil;   // (its own stage, on whichever display)
+    id item = DMSMItemFor(stage, key, &attrs);
     DMSMAttributedSize sz;
     if (!item || !attrs || !DMSMAttrAttributedSize(attrs, &sz)) return NO;
+    NSString *wk = DMSMItemKey(item);   // (this very window from here on: an app key named the app's newest)
     sz.normalizedSize = CGSizeMake(1.0, 1.0); sz.type = 3;   // (3 = full width and height)
     long newest = 0;
     if (front) for (id it in DMSMStageItemsMap(stage)) newest = MAX(newest, (long)DMSMAttrTimeOr(DMSMStageItemsMap(stage)[it], 0));
@@ -27988,14 +28177,14 @@ static BOOL DMSMSetFullScreenInStage(NSString *bundle, BOOL front) {
     if (!a) return NO;
     id newStage = DMSMStageWithAttrs(stage, a, item);
     if (newStage) DMSMReplaceStage(stage, newStage);
-    DMSMDismissOtherFullScreen(stage, bundle);
-    BOOL ok = DMSMRequestWindow(bundle, a, -1);
+    DMSMDismissOtherFullScreen(stage, wk);
+    BOOL ok = DMSMRequestWindow(wk, a, -1);
     // (seen once on the iPad 2 with the TV on: the request asked for maximized and Stage Manager kept the window at snap-to-grid; not reproduced
     //  since -- if it comes back, the log has the state it happened in)
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        id st = DMSMStageOf(bundle), now = nil;
-        if (!DMSMItemFor(st, bundle, &now) || DMSMPolicyOf(now) == 2) return;
-        DMLog([NSString stringWithFormat:@"[smengine] full screen for %@ NOT taken: now %@ on %@ (%lu windows), most recent stage on %@", bundle,
+        id st = DMSMStageOf(wk), now = nil;
+        if (!DMSMItemFor(st, wk, &now) || DMSMPolicyOf(now) == 2) return;
+        DMLog([NSString stringWithFormat:@"[smengine] full screen for %@ NOT taken: now %@ on %@ (%lu windows), most recent stage on %@", DMSMKeyText(wk),
             [[now description] stringByReplacingOccurrencesOfString:@"\n" withString:@" "], DMSMStageDisplayIdentity(st),
             (unsigned long)[DMSMStageItemsMap(st) count], DMSMStageDisplayIdentity([DMSMRecentStages() firstObject])]);
     });
@@ -28004,13 +28193,15 @@ static BOOL DMSMSetFullScreenInStage(NSString *bundle, BOOL front) {
 static long DMSMPolicyOf(id attrs) {
     return (long)DMSMPolicyOr(attrs, 0);
 }
-static NSString *DMSMFullScreenBundle(void) {   // (the stage's full-screen app, if it has one)
+static NSString *DMSMFullScreenKey(void) {   // (the stage's full-screen window, if it has one)
     NSDictionary *map = DMSMStageItemsMap(DMSMFrontStage());
-    for (id it in map) if (DMSMPolicyOf(map[it]) == 2) return DMSMItemBundle(it);
+    for (id it in map) if (DMSMPolicyOf(map[it]) == 2) return DMSMItemKey(it);
     return nil;
 }
-static BOOL DMSMFrontIsFullScreen(void) {   // (the front window is the full-screen app: its menu bar lights, inward green arrows)
-    NSString *front = DMSMFrontWindowBundle(), *full = DMSMFullScreenBundle();
+static NSString *DMSMFullScreenBundle(void) { return DMSMKeyBundle(DMSMFullScreenKey()); }   // (... and its app)
+static BOOL DMSMFrontIsFullScreen(void) {   // (the front window is the full-screen one: its menu bar lights, inward green arrows)
+    // (the window, not its app: with two windows of one app -- one full screen, the other a window in front -- the front one is a window, M-2)
+    NSString *front = DMSMFrontWindowKey(), *full = DMSMFullScreenKey();
     return front.length && [front isEqualToString:full];
 }
 static BOOL DMSMWindowsBehindFullScreen(void) { return DMSMFrontIsFullScreen(); }
@@ -28021,14 +28212,14 @@ static void DMSMWindowsForward(BOOL forward) {
     // One request that names every window of the stage with its new place in the order (logic review L1: a model change plus one window asked
     // for again moved nothing, or only that one window, over the full-screen app).
     id stage = DMSMFrontStage();
-    NSString *full = DMSMFullScreenBundle();
+    NSString *full = DMSMFullScreenKey();
     NSDictionary *map = DMSMStageItemsMap(stage);
     if (!full.length || map.count < 2) return;
     long lo = LONG_MAX, hi = 0; id fullItem = nil, topItem = nil; long topT = -1;
     for (id it in map) {
         long t = DMSMAttrTimeOr(map[it], 0);
         lo = MIN(lo, t); hi = MAX(hi, t);
-        if ([DMSMItemBundle(it) isEqualToString:full]) fullItem = it;
+        if (!fullItem && DMSMPolicyOf(map[it]) == 2) fullItem = it;   // (the full-screen window itself, not its app: the app's other windows are windows, M-2)
         else if (t > topT) { topT = t; topItem = it; }
     }
     if (!fullItem) return;
@@ -28049,7 +28240,7 @@ static BOOL DMSMRequestStageOrder(id stage, NSDictionary *timeByItem, id frontIt
         NSNumber *t = timeByItem[it];
         if (t) a = DMSMAttrWithLastInteractionTime(a, t.longLongValue);
         long long role = DMSMRoleOr(stage, it, 0);
-        id e = DMSMEntityIn(stage, DMSMItemBundle(it));
+        id e = DMSMEntityForStageItem(stage, it);   // (each window's own: two windows of one app are two scenes)
         if (!e || !a || role <= 0) return NO;
         [plan addObject:@[e, @(role), a]];
         if (it == frontItem) frontEntity = e;
@@ -28058,27 +28249,29 @@ static BOOL DMSMRequestStageOrder(id stage, NSDictionary *timeByItem, id frontIt
     DMLog([NSString stringWithFormat:@"[sm] order of %lu windows requested", (unsigned long)plan.count]);
     return YES;
 }
-static BOOL DMSMToggleZoom(NSString *bundle) {
+static BOOL DMSMToggleZoom(NSString *key) {
     DM_FEATURE_MARK("sm-zoom-toggle");
-    id stage = DMSMStageOf(bundle), attrs = nil;   // (its own stage, on whichever display)
-    id item = DMSMItemFor(stage, bundle, &attrs);
+    id stage = DMSMStageOf(key), attrs = nil;   // (its own stage, on whichever display)
+    id item = DMSMItemFor(stage, key, &attrs);
     if (!item || !attrs) return NO;
+    NSString *wk = DMSMItemKey(item);   // (this very window: its place before full screen is its own, M-2)
     long long policy = 0;
     if (!DMSMAttrSizingPolicy(attrs, &policy)) return NO;
     if (!gSMPreZoom) gSMPreZoom = [NSMutableDictionary dictionary];
     if (policy != 2) {   // (2 = maximized) green = native full screen (our standard); its old place and size are kept for the way back
-        gSMPreZoom[bundle] = attrs;
-        return DMSMSetFullScreenInStage(bundle, YES);   // (full screen inside the stage: the other windows can come over it, as with our other engines)
+        gSMPreZoom[wk] = attrs;
+        return DMSMSetFullScreenInStage(wk, YES);   // (full screen inside the stage: the other windows can come over it, as with our other engines)
     }
-    id back = gSMPreZoom[bundle];   // (its own size before full screen; none known: the default below -- copying another window's size made
-                                    //  SofaScore a 1024 x 283 strip, logic test SM-5)
+    NSString *preKey = DMSMKeyLookup(gSMPreZoom, wk);
+    id back = preKey ? gSMPreZoom[preKey] : nil;   // (its own size before full screen; none known: the default below -- copying another window's size made
+                                                    //  SofaScore a 1024 x 283 strip, logic test SM-5)
     // (its place from before full screen made to fit the screen as it is NOW: the iPad may have turned while it was full screen -- a window made in
     //  portrait came back 737 pt tall into landscape, its title bar above the screen, iPad 2 3 Oct)
-    if (back) back = DMSMAttrsFitScreen(back, DMSMStageDisplayIdentity(stage), [gSMBehindDock containsObject:bundle], bundle);
+    if (back) back = DMSMAttrsFitScreen(back, DMSMStageDisplayIdentity(stage), DMSMKeySetHas(gSMBehindDock, wk), DMSMKeyText(wk));
     if (!back) {   // (a window size of its own, between the menu bar and the Dock -- the same rule as every window joining the desktop)
         long t = (long)DMSMAttrTimeOr(attrs, 1);
-        back = DMSMJoinAttributes(bundle, attrs, YES, t - 1, stage);
-        DMLog([NSString stringWithFormat:@"[smengine] zoom back on %@: no size of its own known, a default window", bundle]);
+        back = DMSMJoinAttributes(wk, attrs, YES, t - 1, stage);
+        DMLog([NSString stringWithFormat:@"[smengine] zoom back on %@: no size of its own known, a default window", DMSMKeyText(wk)]);
     }
     if (!back) return NO;
     {   // (in front, where the user is: the attributes from before full screen carried their old interaction time, so the window came back behind
@@ -28090,16 +28283,16 @@ static BOOL DMSMToggleZoom(NSString *bundle) {
     if (!back) return NO;
     id newStage = DMSMStageWithAttrs(stage, back, item);
     BOOL replaced = newStage && DMSMReplaceStage(stage, newStage);
-    [gSMPreZoom removeObjectForKey:bundle];
-    DMLog([NSString stringWithFormat:@"[smengine] zoom back on %@: model %@ replaced", bundle, replaced ? @"" : @"NOT"]);
-    DMSMRequestWindow(bundle, back, -1);
+    if (preKey) [gSMPreZoom removeObjectForKey:preKey];
+    DMLog([NSString stringWithFormat:@"[smengine] zoom back on %@: model %@ replaced", DMSMKeyText(wk), replaced ? @"" : @"NOT"]);
+    DMSMRequestWindow(wk, back, -1);
     return YES;
 }
 // Moves / resizes a window of the stage on screen: its attributes changed in the stage model (replaceAppLayout:withAppLayout:), then the window
 // asked for again (DMSMRequestWindow) so the stage lays itself out with it. center: normalized (NaN = keep); size: normalized (0 = keep).
-static BOOL DMSMSetWindowGeometry(NSString *bundle, CGPoint center, CGSize size) {
-    id stage = DMSMStageOf(bundle), attrs = nil;   // (its own stage, on whichever display)
-    id item = DMSMItemFor(stage, bundle, &attrs);
+static BOOL DMSMSetWindowGeometry(NSString *key, CGPoint center, CGSize size) {
+    id stage = DMSMStageOf(key), attrs = nil;   // (its own stage, on whichever display)
+    id item = DMSMItemFor(stage, key, &attrs);
     if (!item || !attrs) return NO;
     id a = attrs;
     if (!isnan(center.x)) a = DMSMAttrWithCenter(a, center);   // (refused when not finite / far outside the screen: nothing moves)
@@ -28117,7 +28310,7 @@ static BOOL DMSMSetWindowGeometry(NSString *bundle, CGPoint center, CGSize size)
     if (!a) return NO;
     id newStage = DMSMStageWithAttrs(stage, a, item);
     if (!newStage || !DMSMReplaceStage(stage, newStage)) return NO;
-    return DMSMRequestWindow(bundle, a, -1);
+    return DMSMRequestWindow(DMSMItemKey(item), a, -1);   // (this very window)
 }
 // ---- Stage Manager engine: our Mac window chrome on every window (title bar, traffic lights, drag to move) ----
 // A Stage Manager window is a card (SBFluidSwitcherItemContainer) in SBMainSwitcherWindow. Our title bar is a plain view added to the card ABOVE its
@@ -28135,19 +28328,21 @@ static NSString *DMSMCardBundle(UIView *card) {   // "card:<bundle id>:<scene id
     NSArray *p = [ident componentsSeparatedByString:@":"];
     return p.count > 1 ? p[1] : nil;
 }
-static void DMSMBringToFront(NSString *bundle) {   // (newest interaction time in the stage -> in front, keyboard focus with it)
+static void DMSMBringToFront(NSString *key) {   // (newest interaction time in the stage -> in front, keyboard focus with it)
     if (DMGARefuses(@"a window brought forward")) return;   // (Guided Access keeps the iPad in one app: logic test 6 Oct, a played session)
-    id stage = DMSMStageOf(bundle), attrs = nil;   // (its own stage, on whichever display)
-    if (!DMSMItemFor(stage, bundle, &attrs)) return;
+    id stage = DMSMStageOf(key), attrs = nil;   // (its own stage, on whichever display)
+    id item = DMSMItemFor(stage, key, &attrs);
+    if (!item) return;
     NSDictionary *map = DMSMStageItemsMap(stage);
-    long long newest = 0; for (id item in map) newest = MAX(newest, DMSMAttrTimeOr(map[item], 0));
+    long long newest = 0; for (id it in map) newest = MAX(newest, DMSMAttrTimeOr(map[it], 0));
     long long mine = 0;
     if (!DMSMAttrLastInteractionTime(attrs, &mine) || mine >= newest) return;
     id a = DMSMAttrWithLastInteractionTime(attrs, newest + 1);
-    if (a) DMSMRequestWindow(bundle, a, -1);
+    if (a) DMSMRequestWindow(DMSMItemKey(item), a, -1);   // (this very window: another window of its app stays where it is in the order, M-2)
 }
 @interface DMSMTitleBar : UIView
 @property (nonatomic, copy) NSString *bundle;
+@property (nonatomic, copy) NSString *key;   // (its window: SMWindowKey.h -- the lights, the drag and the tap act on this window, M-2)
 @property (nonatomic, strong) UILabel *title;
 @property (nonatomic, strong) NSArray<UIButton *> *lights;
 @property (nonatomic, weak) UIView *card;
@@ -28184,7 +28379,7 @@ static CFTimeInterval gSMDragUntil = 0;   // (a title-bar drag in progress, and 
         __weak DMSMTitleBar *weakSelf = self;   // (grey on an inactive window, symbols on hover or press: the shared light behaviour)
         NSMutableArray *dots = [NSMutableArray array];
         for (UIButton *b in ls) [dots addObject:b.subviews.firstObject];
-        DMLightGroupAttach(self, ls, dots, ^NSString *{ return weakSelf.bundle; });
+        DMLightGroupAttach(self, ls, dots, ^NSString *{ return weakSelf.key ?: weakSelf.bundle; });   // (colored on the front WINDOW only: DMActiveBundleForLights)
     }
     return self;
 }
@@ -28195,18 +28390,19 @@ static CFTimeInterval gSMDragUntil = 0;   // (a title-bar drag in progress, and 
     _title.frame = CGRectMake(72.0, 0, MAX(0, w - 144.0), kSMBarH);   // (no light refresh here: every frame of a resize, logic review P1 -- the
 }                                                                     //  lights follow front changes and card changes, DMSMChrome)
 - (void)dm_updateLights {
-    BOOL front = [_bundle isEqualToString:DMSMFrontWindowBundle()];
+    BOOL front = [(_key ?: _bundle) isEqualToString:DMSMFrontWindowKey()];
     [objc_getAssociatedObject(self, kLightGroupKey) apply];
     _title.textColor = front ? [UIColor labelColor] : [UIColor secondaryLabelColor];
 }
 - (void)dm_light:(UIButton *)b {
     if (DMGARefuses(@"window traffic light")) return;   // (Guided Access: see DMGALightsContainerInert -- also when an assistive feature presses it)
-    DMLog([NSString stringWithFormat:@"[smchrome] %@ light %ld", _bundle, (long)b.tag]);
-    if (b.tag == 0) DMSMWindowAction(_bundle, @"close");
-    else if (b.tag == 1) DMSMWindowAction(_bundle, @"removeFromSet");
-    else DMSMToggleZoom(_bundle);
+    NSString *w = _key ?: _bundle;
+    DMLog([NSString stringWithFormat:@"[smchrome] %@ light %ld", DMSMKeyText(w), (long)b.tag]);
+    if (b.tag == 0) DMSMWindowAction(w, @"close");
+    else if (b.tag == 1) DMSMWindowAction(w, @"removeFromSet");
+    else DMSMToggleZoom(w);
 }
-- (void)dm_tap:(UITapGestureRecognizer *)g { DMSMBringToFront(_bundle); }
+- (void)dm_tap:(UITapGestureRecognizer *)g { DMSMBringToFront(_key ?: _bundle); }
 - (void)dm_pan:(UIPanGestureRecognizer *)g {
     // (the drag's end is handled first, whatever became of the window: a failed drag, or one whose window went away meanwhile, left the area at
     //  full height for an hour -- logic review L4)
@@ -28215,7 +28411,8 @@ static CFTimeInterval gSMDragUntil = 0;   // (a title-bar drag in progress, and 
     UIView *card = _card; UIView *sup = card.superview;
     if (!card || !sup) return;
     CGPoint t = [g translationInView:sup];
-    if (g.state == UIGestureRecognizerStateBegan) { gSMDragUntil = CACurrentMediaTime() + 3600.0; DMSMBringToFront(_bundle); }
+    NSString *w = _key ?: _bundle;
+    if (g.state == UIGestureRecognizerStateBegan) { gSMDragUntil = CACurrentMediaTime() + 3600.0; DMSMBringToFront(w); }
     if (g.state == UIGestureRecognizerStateChanged) card.transform = CGAffineTransformMakeTranslation(t.x, t.y);
     if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) {
         gSMDragUntil = CACurrentMediaTime() + 1.0;
@@ -28225,32 +28422,46 @@ static CFTimeInterval gSMDragUntil = 0;   // (a title-bar drag in progress, and 
             NSNumber *dock = gSMDockHeightBySize[NSStringFromCGSize(scn.bounds.size)];
             CGFloat line = scn.bounds.size.height - (dock ? dock.doubleValue : 117.0) - 2.0;
             if (!gSMBehindDock) gSMBehindDock = [NSMutableSet set];
-            if (_bundle.length) { if (CGRectGetMaxY(onScreen) + t.y > line + 4.0) [gSMBehindDock addObject:_bundle]; else [gSMBehindDock removeObject:_bundle]; }
+            if (w.length) { if (CGRectGetMaxY(onScreen) + t.y > line + 4.0) [gSMBehindDock addObject:w]; else DMSMKeySetRemove(gSMBehindDock, w); }
         }
         CGPoint c = CGPointMake(card.center.x + t.x, card.center.y + t.y);
         CGSize b = sup.bounds.size;
         card.transform = CGAffineTransformIdentity;
         card.center = c;   // (in place at once; the stage then lays itself out there)
-        if (b.width > 0 && b.height > 0) DMSMSetWindowGeometry(_bundle, CGPointMake(c.x / b.width, c.y / b.height), CGSizeZero);
-        DMLog([NSString stringWithFormat:@"[smchrome] %@ moved by %@", _bundle, NSStringFromCGPoint(t)]);
+        if (b.width > 0 && b.height > 0) DMSMSetWindowGeometry(w, CGPointMake(c.x / b.width, c.y / b.height), CGSizeZero);
+        DMLog([NSString stringWithFormat:@"[smchrome] %@ moved by %@", DMSMKeyText(w), NSStringFromCGPoint(t)]);
     }
 }
 @end
 static NSHashTable *gSMBars;   // (our title bars: their lights follow the front window)
-static UIView *DMSMCardFor(NSString *bundle) {   // (the card of that app's window on screen, from our title bars: no view walk)
+// The card of a window on screen, from our title bars (no view walk): that very window's; for an app key the app's newest window's (by the stage
+// model), else any of the app's cards (as before).
+static UIView *DMSMCardFor(NSString *key) {
+    if (!key.length) return nil;
+    NSString *want = key;
+    if (DMSMKeyIsApp(key) && DMSMPerWindow()) { id it = DMSMItemFor(DMSMStageOf(key), key, nil); NSString *wk = it ? DMSMItemKey(it) : nil; if (wk) want = wk; }
+    UIView *anyOfApp = nil;
     for (DMSMTitleBar *bar in gSMBars) {
         UIView *card = bar.card;
-        if (card.window && !card.window.hidden && card.alpha > 0.01 && [DMSMCardBundle(card) isEqualToString:bundle]) return card;
+        if (!(card.window && !card.window.hidden && card.alpha > 0.01)) continue;
+        NSString *ck = DMSMCardKey(card);
+        if ([ck isEqualToString:want]) return card;
+        if (!anyOfApp && DMSMKeyIsApp(key) && DMSMKeyCovers(key, ck)) anyOfApp = card;
     }
-    return nil;
+    return anyOfApp;
 }
-static NSArray<NSString *> *DMSMWindowBundles(void) {
+static NSArray<NSString *> *DMSMWindowKeys(void) {   // (the windows on screen, one key each -- windows only: not a full-screen app)
     NSMutableOrderedSet<NSString *> *out = [NSMutableOrderedSet orderedSet];
     for (DMSMTitleBar *bar in gSMBars) {
         UIView *card = bar.card;
-        NSString *b = card ? DMSMCardBundle(card) : nil;
-        if (b && card.window && !card.window.hidden && card.alpha > 0.01 && !DMSMCardIsFullSize(card)) [out addObject:b];   // (windows only: not a full-screen app)
+        NSString *k = card ? DMSMCardKey(card) : nil;
+        if (k && card.window && !card.window.hidden && card.alpha > 0.01 && !DMSMCardIsFullSize(card)) [out addObject:k];
     }
+    return out.array;
+}
+static NSArray<NSString *> *DMSMWindowBundles(void) {   // (... and their apps, each once)
+    NSMutableOrderedSet<NSString *> *out = [NSMutableOrderedSet orderedSet];
+    for (NSString *k in DMSMWindowKeys()) { NSString *b = DMSMKeyBundle(k); if (b) [out addObject:b]; }
     return out.array;
 }
 // For the Dock's running dots (RunningIndicator.m, via dlsym): the apps with a window or a full-screen card showing in the Stage Manager engine.
@@ -28324,7 +28535,7 @@ static void DMSMShapeCard(UIView *card, UIView *bar) {   // (on a change of the 
 // alarm). A pointer's scroll does not activate (a Mac's doesn't either).
 // Which window the touch is for is SpringBoard's own hit test, top window first -- the Dock, the menu bar or a menu above a window keep theirs.
 static __weak UITouch *gSMPendingTouch;
-static NSString *gSMPendingBundle;
+static NSString *gSMPendingBundle;   // (the window touched: its key)
 // The view a touch is for, top window first. UIKit's own choice when it made one in a real window: the touch's window and view (a touch UIKit gave
 // the Dock, the menu bar, a menu or Control Center stays theirs). Only when it went to the system gesture window (or none): OUR hit test, over the
 // windows that can hold a window card or sit above one -- with the touch's real event. It used to hit-test EVERY SpringBoard window with no event
@@ -28381,15 +28592,15 @@ static void DMSMActivateOnTouch(UIEvent *event) {
             BOOL onBar = NO; for (UIView *v = hit; v; v = v.superview) if ([v isKindOfClass:[DMSMTitleBar class]]) { onBar = YES; break; }
             if (onBar) continue;
             UIView *card = DMSMCardOfView(hit);
-            NSString *bundle = card ? DMSMCardBundle(card) : nil;
-            if (!bundle.length || [bundle isEqualToString:DMSMFrontWindowBundle()]) continue;
+            NSString *bundle = card ? DMSMCardKey(card) : nil;   // (the window: a touch in another window of the front app brings that one forward, M-2)
+            if (!bundle.length || [bundle isEqualToString:DMSMFrontWindowKey()]) continue;
             gSMPendingTouch = x; gSMPendingBundle = bundle;
         } else if (x == gSMPendingTouch && (x.phase == UITouchPhaseEnded || x.phase == UITouchPhaseCancelled)) {
             NSString *bundle = gSMPendingBundle;
             gSMPendingTouch = nil; gSMPendingBundle = nil;
-            if (x.phase == UITouchPhaseCancelled || [bundle isEqualToString:DMSMFrontWindowBundle()]) continue;   // (a tap Stage Manager already took, or a cancelled touch)
+            if (x.phase == UITouchPhaseCancelled || [bundle isEqualToString:DMSMFrontWindowKey()]) continue;   // (a tap Stage Manager already took, or a cancelled touch)
             if (DMSwitcherVisible() || !DMFrontApp()) continue;   // (the App Switcher or the Home Screen came up meanwhile, L7)
-            dispatch_async(dispatch_get_main_queue(), ^{ DMSMBringToFront(bundle); DMLog([NSString stringWithFormat:@"[smengine] %@ brought forward by a touch in it", bundle]); });
+            dispatch_async(dispatch_get_main_queue(), ^{ DMSMBringToFront(bundle); DMLog([NSString stringWithFormat:@"[smengine] %@ brought forward by a touch in it", DMSMKeyText(bundle)]); });
         }
     }
 }
@@ -28398,7 +28609,7 @@ static void DMSMActivateOnTouch(UIEvent *event) {
 // The stage the Window menu acts on: the active window's (on the iPad or the TV) -- logic test F7: swap rows counted every screen's windows and
 // then acted on the iPad's stage only.
 static id DMSMWorkingStage(void) {
-    NSString *front = DMSMFrontWindowBundle();
+    NSString *front = DMSMFrontWindowKey();
     return front.length ? DMSMStageOf(front) : DMSMFrontStage();
 }
 // A window frame's layout slot on its stage's own screen (DMSlotNameForFrame measures against the iPad).
@@ -28412,11 +28623,11 @@ static NSString *DMSMSlotNameForFrameIn(CGRect f, id stage) {
     }
     return nil;
 }
-static NSDictionary<NSString *, NSValue *> *DMSMOpenWindowFrames(void) {   // (the working stage's windows only)
+static NSDictionary<NSString *, NSValue *> *DMSMOpenWindowFrames(void) {   // (the working stage's windows only; by window key: two of one app are two)
     NSMutableDictionary *out = [NSMutableDictionary dictionary];
     NSMutableSet *inStage = [NSMutableSet set];
-    for (id it in DMSMStageItemsMap(DMSMWorkingStage())) { NSString *b = DMSMItemBundle(it); if (b) [inStage addObject:b]; }
-    for (NSString *b in DMSMWindowBundles()) {
+    for (id it in DMSMStageItemsMap(DMSMWorkingStage())) { NSString *k = DMSMItemKey(it); if (k) [inStage addObject:k]; }
+    for (NSString *b in DMSMWindowKeys()) {
         if (![inStage containsObject:b]) continue;
         UIView *card = DMSMCardFor(b);
         if (!card) continue;
@@ -28462,20 +28673,25 @@ static id DMSMAttrsForLayoutIn(id attrs, NSString *name, id stage) {
 }
 // Every window of the stage to its layout in ONE workspace transition that names each window in its role with its new attributes (the requested
 // attributes are what places a window -- -appLayoutByModifyingLayoutAttributes:forItem: returned the stage unchanged): the windows move together.
-static BOOL DMSMApplyLayouts(NSDictionary<NSString *, NSString *> *bundleToLayout) { return DMSMApplyLayoutsIn(bundleToLayout, DMSMWorkingStage()); }
-static BOOL DMSMApplyLayoutsIn(NSDictionary<NSString *, NSString *> *bundleToLayout, id stage) {
-    for (NSString *b in bundleToLayout) [gSMBehindDock removeObject:b];   // (placed by a layout: no longer behind the Dock)
+static BOOL DMSMApplyLayouts(NSDictionary<NSString *, NSString *> *keyToLayout) { return DMSMApplyLayoutsIn(keyToLayout, DMSMWorkingStage()); }
+static BOOL DMSMApplyLayoutsIn(NSDictionary<NSString *, NSString *> *bundleToLayout, id stage) {   // (window key -> layout; an app key: the app's newest window)
     NSDictionary *map = DMSMStageItemsMap(stage);
     if (!map.count || !bundleToLayout.count) return NO;
+    // (which window each key names -- each window gets its own layout: two windows of one app took the same tile, M-2)
+    NSMutableDictionary *layoutOf = [NSMutableDictionary dictionary];   // (item -> layout)
+    for (NSString *k in [bundleToLayout.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+        id it = DMSMItemFor(stage, k, nil);
+        if (it && !layoutOf[it]) layoutOf[it] = bundleToLayout[k];
+        if (it) DMSMKeySetRemove(gSMBehindDock, DMSMItemKey(it));   // (placed by a layout: no longer behind the Dock)
+    }
     NSMutableArray *plan = [NSMutableArray array];   // [entity, role, attrs]
     id frontEntity = nil; long long newest = LLONG_MIN;
     for (id it in map) {
-        NSString *b = DMSMItemBundle(it);
         id a = map[it];
-        NSString *name = bundleToLayout[b];
+        NSString *name = layoutOf[it];
         if (name) { id na = DMSMAttrsForLayoutIn(a, name, stage); if (na) a = na; }
         long long role = DMSMRoleOr(stage, it, 0);
-        id e = DMSMEntityIn(stage, b);
+        id e = DMSMEntityForStageItem(stage, it);   // (each window's own scene)
         if (!e || role <= 0) return NO;
         [plan addObject:@[e, @(role), a]];
         long long t = DMSMAttrTimeOr(a, 0);
@@ -28510,8 +28726,8 @@ static NSDictionary<NSString *, NSString *> *gSMFitSlotsBeforeFull;
 // or closed is tiled as always. Not kept across a respring still: a chosen arrangement's names (the third window's side) and No Fit.
 static NSArray<NSString *> *gSMFitAdopt;
 static CFTimeInterval gSMFitAdoptUntil;
-static void DMSMFitAdoptRestored(NSArray<NSString *> *bundles) {
-    gSMFitAdopt = bundles.count ? [bundles sortedArrayUsingSelector:@selector(compare:)] : nil;
+static void DMSMFitAdoptRestored(NSArray<NSString *> *keys) {   // (the windows by key, M-2)
+    gSMFitAdopt = keys.count ? [keys sortedArrayUsingSelector:@selector(compare:)] : nil;
     gSMFitAdoptUntil = CACurrentMediaTime() + 15.0;
 }
 static void DMSMFitTick(BOOL force) {
@@ -28526,7 +28742,7 @@ static void DMSMFitTick(BOOL force) {
     {   // (which windows are full screen now: their tiles are kept for their return)
         NSDictionary *fm = DMSMStageItemsMap(DMSMFrontStage());
         for (id it in fm) if (DMSMPolicyOf(fm[it]) == 2) {
-            NSString *b = DMSMItemBundle(it);
+            NSString *b = DMSMItemKey(it);
             if (!b || [gSMFitWentFull containsObject:b]) continue;
             if (!gSMFitWentFull) gSMFitWentFull = [NSMutableSet set];
             [gSMFitWentFull addObject:b];
@@ -28535,17 +28751,29 @@ static void DMSMFitTick(BOOL force) {
     }
     if (DMSMFrontIsFullScreen()) { lastSet = nil; return; }
     if (gSidePromptCtx && ![gSidePromptCtx[@"decided"] boolValue]) return;   // (the side question is up: nothing moves until it is answered)
+    // (every window by its own key: two windows of one app are two tiles -- they shared one, M-2)
     NSDictionary *map = DMSMStageItemsMap(DMSMFrontStage());
-    NSSet *onScreen = [NSSet setWithArray:DMSMWindowBundles()];
+    NSSet *onScreen = [NSSet setWithArray:DMSMWindowKeys()];
     NSMutableArray *items = [NSMutableArray array];
-    for (id it in map) if ([onScreen containsObject:DMSMItemBundle(it)] && DMSMPolicyOf(map[it]) != 2) [items addObject:it];
+    for (id it in map) if ([onScreen containsObject:DMSMItemKey(it)] && DMSMPolicyOf(map[it]) != 2) [items addObject:it];
     [items sortUsingComparator:^NSComparisonResult(id a, id b) {
         long ta = DMSMAttrTimeOr(map[a], 0), tb = DMSMAttrTimeOr(map[b], 0);
         return ta > tb ? NSOrderedAscending : (ta < tb ? NSOrderedDescending : NSOrderedSame);
     }];
-    NSMutableArray *bundles = [NSMutableArray array];
-    for (id it in items) { NSString *b = DMSMItemBundle(it); if (b && ![gSMFreeWindows containsObject:b]) [bundles addObject:b]; }
-    for (NSString *b in [gSMFreeWindows allObjects]) if (![onScreen containsObject:b]) [gSMFreeWindows removeObject:b];   // (closed: forgotten)
+    NSMutableArray<NSString *> *keysNow = [NSMutableArray array];   // (newest first)
+    for (id it in items) { NSString *k = DMSMItemKey(it); if (k) [keysNow addObject:k]; }
+    {   // (an arrangement or a No Fit chosen before its window existed -- Fit's question before a launch, by app: the app's new window takes it over)
+        NSDictionary *adopted = gSMFitSlots.count ? DMSMKeysAdopt(gSMFitSlots, keysNow) : gSMFitSlots;
+        if (adopted != gSMFitSlots) { gSMFitSlots = [adopted mutableCopy]; DMLog(@"[sm] Fit to Window: the window asked about before its launch takes its tile"); }
+        NSSet *freeNow = gSMFreeWindows.count ? DMSMKeySetAdopt(gSMFreeWindows, keysNow) : gSMFreeWindows;
+        if (freeNow != gSMFreeWindows) gSMFreeWindows = [freeNow mutableCopy];
+        CFTimeInterval now = CACurrentMediaTime();
+        for (NSString *k in [gSMFitPending allKeys]) if (now - [gSMFitPending[k] doubleValue] > 10.0 || (!gSMFitSlots[k] && ![gSMFreeWindows containsObject:k])) [gSMFitPending removeObjectForKey:k];
+    }
+    NSMutableArray *bundles = [NSMutableArray array];   // (the windows taking part: their keys, newest first)
+    for (NSString *k in keysNow) if (![gSMFreeWindows containsObject:k]) [bundles addObject:k];
+    // (closed: forgotten -- not an app asked about a moment ago whose window is not open yet: its No Fit was dropped before the window came)
+    for (NSString *b in [gSMFreeWindows allObjects]) if (![onScreen containsObject:b] && !gSMFitPending[b]) [gSMFreeWindows removeObject:b];
     // (the screen's shape is part of the set: the iPad turned, the tiles are laid out again -- logic review R1)
     NSArray *sorted = [bundles sortedArrayUsingSelector:@selector(compare:)];
     NSArray *set = [sorted arrayByAddingObject:NSStringFromCGSize([UIScreen mainScreen].bounds.size)];
@@ -28700,8 +28928,9 @@ static void DMSMChrome(UIView *card) {
     }
     // (this runs on every layout of the card -- every frame of a drag or an animation: only what changed is redone; the lights follow the front
     //  window through DMSMRefreshBars, logic test 29 Sep P2)
-    BOOL bundleChanged = ![bar.bundle isEqualToString:bundle];
-    bar.card = card; bar.bundle = bundle; bar.hidden = NO;
+    NSString *key = DMSMCardKey(card);   // (its window: a card shown again for another window of the same app is another window, M-2)
+    BOOL bundleChanged = ![bar.bundle isEqualToString:bundle] || !(key == bar.key || [key isEqualToString:bar.key]);
+    bar.card = card; bar.bundle = bundle; bar.key = key; bar.hidden = NO;
     if (!wasShown || !objc_getAssociatedObject(card, &kSMShapedKey)) DMSMShapeCard(card, bar);
     static char kSMLaidSizeKey;
     NSValue *laid = objc_getAssociatedObject(card, &kSMLaidSizeKey);
@@ -28755,11 +28984,14 @@ static void DMSMJoinDesktop(id ctx) {
     NSString *bundle = DMCall(DMCall(act, @"application"), @"bundleIdentifier");
     id identity = DMCall(ctx, @"displayIdentity");
     if (![bundle isKindOfClass:[NSString class]] || !bundle.length || !DMSMIsMainIdentity(identity)) return;
-    DMSMSetMinimized(bundle, NO);   // (opened again: no longer a minimized window)
+    // (the window SpringBoard is opening: its scene -- an app's second window is a window of its own, which joins the desktop like any other; it
+    //  counted as "already on the desktop" and SpringBoard showed it alone, the desktop's windows put away, M-2)
+    NSString *key = DMSMEntityKey(act) ?: bundle;
+    DMSMSetMinimized(key, NO);   // (opened again: no longer a minimized window)
     // The desktop (DMSMDesktopFor): the most recent stage on the iPad with a window that is not minimized, not an app in full screen sent to the
     // background; minimized windows are left out of what joins.
     NSMutableDictionary *map = nil;
-    id desk = DMSMDesktopFor(DMSMStageShownBefore(ctx), [NSSet setWithObject:bundle], &map);
+    id desk = DMSMDesktopFor(DMSMStageShownBefore(ctx), [NSSet setWithObject:key], &map);
     NSMutableArray *plan = [NSMutableArray array];   // [entity, role, attrs], the launching app last
     NSString *what = nil;
     id dismissFullIn = nil;   // (full screen launch: the stage whose previous full-screen app then leaves -- only once the plan is written)
@@ -28770,12 +29002,18 @@ static void DMSMJoinDesktop(id ctx) {
         // Stage Manager remembered from the other orientation came back 379 x 921 pt in the 649 pt landscape desktop, 200 pt past the screen's bottom
         // edge, its resize corners out of reach (iPad 2, 1.3.2 logic test)
         BOOL windowed = DMWindowedLaunchOn();
-        id attrs = DMSMJoinAttributes(bundle, nil, windowed, 0, nil);
+        id attrs = DMSMJoinAttributes(key, nil, windowed, 0, nil);
         if (!attrs) { DMLog([NSString stringWithFormat:@"[smjoin] %@: no desktop to join (a new stage, Stage Manager's own size)", bundle]); return; }
         [plan addObject:@[act, @1, attrs]];
         what = [NSString stringWithFormat:@"[smjoin] %@: a new desktop, opened %@", bundle, windowed ? @"as a window" : @"full screen (apps do not open as windows)"];
     } else {
-        for (id it in map) if ([DMSMItemBundle(it) isEqual:bundle]) { DMLog([NSString stringWithFormat:@"[smjoin] %@: already on the desktop", bundle]); return; }   // (already on the desktop: Stage Manager brings it forward)
+        BOOL appThere = NO;
+        for (id it in map) {   // (already on the desktop -- that very window, or the app when windows are told apart by app: Stage Manager brings it forward)
+            NSString *k = DMSMItemKey(it);
+            if (DMSMKeyCovers(key, k) || DMSMKeyCovers(k, key)) { DMLog([NSString stringWithFormat:@"[smjoin] %@: already on the desktop", DMSMKeyText(key)]); return; }
+            if ([DMSMItemBundle(it) isEqualToString:bundle]) appThere = YES;
+        }
+        if (appThere) DM_FEATURE_MARK("sm-second-window-joins");   // (another window of an app on the desktop: it joins, M-2)
         BOOL windowed = DMWindowedLaunchOn();
         NSArray *items = [map.allKeys sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {   // (newest first)
             long long ta = DMSMAttrTimeOr(map[a], 0), tb = DMSMAttrTimeOr(map[b], 0);
@@ -28786,7 +29024,7 @@ static void DMSMJoinDesktop(id ctx) {
         id front = items.firstObject;
         long long newest = 0;
         if (!DMSMAttrLastInteractionTime(map[front], &newest)) return;
-        id attrs = DMSMJoinAttributes(bundle, map[front], windowed, (long)newest, desk);
+        id attrs = DMSMJoinAttributes(key, map[front], windowed, (long)newest, desk);
         if (!attrs) return;
         NSSet<NSNumber *> *allowed = DMSMNewWindowRoles();
         NSMutableSet *used = [NSMutableSet set];
@@ -28795,7 +29033,7 @@ static void DMSMJoinDesktop(id ctx) {
             long long role = 0;
             if (!DMSMStageRoleOfItem(desk, it, &role)) return;
             if (role == 4 || ![allowed containsObject:@(role)]) role = 0;   // (the centre role, or one we never give: a side role below)
-            id e = DMSMEntityIn(desk, DMSMItemBundle(it));
+            id e = DMSMEntityForStageItem(desk, it);   // (each window's own scene: two windows of one app were named as one, twice)
             if (!e) return;
             [kept addObject:@[e, @(role), map[it]]];
             if (role > 0) [used addObject:@(role)];
@@ -28811,7 +29049,7 @@ static void DMSMJoinDesktop(id ctx) {
         [plan addObject:@[act, @(mine), attrs]];
         dismissFullIn = windowed ? nil : desk;
         if (kept.count >= 4) DM_FEATURE_MARK("sm-windows-beyond-four");
-        what = [NSString stringWithFormat:@"[smengine] %@ joins the desktop (role %ld, %lu window(s) kept%@)%@", bundle, mine, (unsigned long)kept.count, map.count > keep ? @", the oldest left out" : @"", windowed ? @"" : @" full screen"];
+        what = [NSString stringWithFormat:@"[smengine] %@ joins the desktop (role %ld, %lu window(s) kept%@)%@", DMSMKeyText(key), mine, (unsigned long)kept.count, map.count > keep ? @", the oldest left out" : @"", windowed ? @"" : @" full screen"];
     }
     // (every window of the plan inside the desktop as it is now -- the desktop's own windows too: a stage left while the iPad turned kept the other
     //  shape's sizes, SMFit.h)
@@ -28825,7 +29063,7 @@ static void DMSMJoinDesktop(id ctx) {
 #if DEBUG
     gSMSimulateWriteFail = -1;
 #endif
-    if (ok && dismissFullIn) DMSMDismissOtherFullScreen(dismissFullIn, bundle);
+    if (ok && dismissFullIn) DMSMDismissOtherFullScreen(dismissFullIn, key);
     DMLog(ok ? what : [NSString stringWithFormat:@"[smjoin] %@: writing the plan failed, context emptied again (a new stage)", bundle]);
 }
 %group SMEngine
@@ -29039,7 +29277,7 @@ static CGRect DMSMOurStageArea(CGRect r, CGRect b, double dock, BOOL strip, BOOL
             for (id al in DMSMRecentStages()) {
                 BOOL onThis = DMSMIsMainIdentity(DMSMStageDisplayIdentity(al)) == CGSizeEqualToSize(b.size, [UIScreen mainScreen].bounds.size);
                 if (!onThis) continue;
-                for (id it in DMSMStageItemsMap(al)) if ([gSMBehindDock containsObject:DMSMItemBundle(it)]) { behind = YES; break; }
+                for (id it in DMSMStageItemsMap(al)) if (DMSMKeySetHas(gSMBehindDock, DMSMItemKey(it))) { behind = YES; break; }
                 break;
             }
         }
@@ -29780,43 +30018,67 @@ void DMSMFlattenStages(NSString *why) {
 // (S-1, 1.3.3: inside a tick scope -- the 0.2 s watcher, DMTick, a status bar layout pass -- the answer is worked out once and shared: the
 //  Stage Manager engine asked SpringBoard's switcher model for its recent stages several times per tick, from the active app's every caller.
 //  Our own changes to the model drop it at once, gDMSMModelChanged; outside a scope it is asked each time as before.)
-static NSString *DMSMFrontWindowBundleNow(void);
+// (M-2: the front WINDOW is what is worked out -- its key, SMWindowKey.h; its app is the menu bar's. The traffic lights, the touch that brings a
+//  window forward and the full-screen checks compare windows: two windows of one app are two)
+static NSString *DMSMFrontWindowKeyNow(void);
 static BOOL gDMSnapSMFrontKnown = NO; static NSString *gDMSnapSMFront = nil;
 static void DMSnapForgetSMFront(void) { gDMSnapSMFrontKnown = NO; gDMSnapSMFront = nil; }
-NSString *DMSMFrontWindowBundle(void) {
+NSString *DMSMFrontWindowKey(void) {
     if (gDMSnapDepth && gDMSnapSMFrontKnown) return gDMSnapSMFront;
-    NSString *b = DMSMFrontWindowBundleNow();
-    if (gDMSnapDepth) { gDMSnapSMFront = b; gDMSnapSMFrontKnown = YES; if (!gDMSMModelChanged) gDMSMModelChanged = DMSnapForgetSMFront; }
-    return b;
+    NSString *k = DMSMFrontWindowKeyNow();
+    if (gDMSnapDepth) { gDMSnapSMFront = k; gDMSnapSMFrontKnown = YES; if (!gDMSMModelChanged) gDMSMModelChanged = DMSnapForgetSMFront; }
+    return k;
 }
-static NSString *DMSMFrontWindowBundleNow(void) {
+NSString *DMSMFrontWindowBundle(void) { return DMSMKeyBundle(DMSMFrontWindowKey()); }
+static NSString *DMSMFrontWindowKeyNow(void) {
     // (the ACTIVE window: the most recently used stage on any screen -- a window clicked on the TV is the active app, as on a Mac, where every
     //  display's menu bar shows the one active app; iPad-only checks -- Dock, full screen -- use DMSMFrontStage, the iPad's own stage)
     id stage = [DMSMRecentStages() firstObject];
     if (DMSMIsMainIdentity(DMSMStageDisplayIdentity(stage)) && !DMFrontApp()) return nil;   // (the iPad's Home Screen, no TV stage in use)
     NSDictionary *map = DMSMStageItemsMap(stage);
-    NSString *best = nil; long newest = LONG_MIN;
+    id best = nil; long newest = LONG_MIN;
     for (id item in map) {
         long t = DMSMAttrTimeOr(map[item], 0);
-        if (t > newest) { newest = t; best = DMSMItemBundle(item); }
+        if (t > newest) { newest = t; best = item; }
     }
-    return best;
+    return best ? DMSMItemKey(best) : nil;
 }
 // ---- Stage Manager engine helpers (study, 28 Sep) ----
-// The window's own "..." menu controller (SBTopAffordanceViewController), found through the view tree of the switcher window by its scene's app.
-id DMSMTopAffordanceFor(NSString *bundle) {
+// The window's own "..." menu controller (SBTopAffordanceViewController), found inside that window's card (its name says which window it shows), or
+// through the view tree of the switcher window by its scene's app.
+id DMSMTopAffordanceFor(NSString *bundle) {   // (bundle: a window key -- that very window -- or an app key, SMWindowKey.h)
     Class c = objc_getClass("SBTopAffordanceViewController");
     if (!c) return nil;
-    // (inside the app's own window card first: exact and cheap -- the walk over every window gave up at 4000 views with the TV's second desktop
-    //  connected and missed a window behind the front one; it stays only as the fallback)
-    UIView *card = bundle ? DMSMCardFor(bundle) : nil;
-    if (card) {
-        NSMutableArray *todo = [NSMutableArray arrayWithObject:card];
+    id (^inside)(UIView *) = ^id(UIView *root) {
+        NSMutableArray *todo = [NSMutableArray arrayWithObject:root];
         for (NSUInteger i = 0; i < todo.count && i < 1500; i++) {
             UIView *v = todo[i];
             if ([v.nextResponder isKindOfClass:c]) return v.nextResponder;
             [todo addObjectsFromArray:v.subviews];
         }
+        return nil;
+    };
+    // (inside the window's own card first: exact and cheap -- the walk over every window gave up at 4000 views with the TV's second desktop
+    //  connected and missed a window behind the front one; it stays only as the fallback)
+    UIView *card = bundle ? DMSMCardFor(bundle) : nil;
+    if (card) { id r = inside(card); if (r) return r; }
+    if (bundle.length && !DMSMKeyIsApp(bundle)) {   // (a window: its card by name -- a full-screen card has no title bar of ours to find it by; never
+                                                     //  another window's controller of the same app, M-2)
+        Class cc = objc_getClass("SBFluidSwitcherItemContainer");
+        for (UIWindow *w in DMAllWindows()) {
+            NSMutableArray *todo = [NSMutableArray arrayWithObject:w];
+            for (NSUInteger i = 0; i < todo.count && i < 4000; i++) {
+                UIView *v = todo[i];
+                if (cc && [v isKindOfClass:cc] && [DMSMCardKey(v) isEqualToString:bundle]) { id r = inside(v); if (r) return r; continue; }
+                [todo addObjectsFromArray:v.subviews];
+            }
+        }
+        // (its card not found: by its app only when the app has this one window -- then "the app's window" is this one, as before)
+        NSString *app = DMSMKeyBundle(bundle);
+        NSUInteger n = 0;
+        for (id al in DMSMRecentStages()) for (id it in DMSMStageItemsMap(al)) if ([DMSMItemBundle(it) isEqualToString:app]) n++;
+        if (n != 1) return nil;
+        bundle = app;
     }
     for (UIWindow *w in DMAllWindows()) {
         NSMutableArray *todo = [NSMutableArray arrayWithObject:w];

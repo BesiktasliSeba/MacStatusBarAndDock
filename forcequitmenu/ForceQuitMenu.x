@@ -32,6 +32,9 @@ extern void BKSTerminateApplicationForReasonAndReportWithDescription(NSString *b
 - (NSString *)applicationBundleIdentifierForShortcuts;
 @end
 
+@interface SBHLibraryCategoryPodIconView : SBIconView
+@end
+
 static NSString * const kForceQuitShortcutType = @"com.besiktasliseba.forcequitmenu.forcequit";
 static NSString * const kForceQuitTitle = @"Force Quit";
 
@@ -67,6 +70,17 @@ static void removeFromAppSwitcher(NSString *bundleID) {
     };
     dispatch_async(dispatch_get_main_queue(), remove);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), remove);
+}
+
+// The Force Quit row was tapped: the one force quit, MacStatusBarCore's MSBDForceQuitApp -- the app's window closed by its window engine first
+// (with the Stage Manager engine only that window leaves its stage), then the kill and the card. Killing here and deleting every layout that holds
+// the app took the whole Stage Manager desktop with it, 1.3.5 logic test H1. Without MacStatusBarCore loaded: the plain kill.
+static void FQForceQuit(NSString *bundleID) {
+    static void (*forceQuit)(NSString *) = NULL;
+    if (!forceQuit) forceQuit = (void (*)(NSString *))dlsym(RTLD_DEFAULT, "MSBDForceQuitApp");
+    if (forceQuit) { forceQuit(bundleID); return; }
+    BKSTerminateApplicationForReasonAndReportWithDescription(bundleID, 5, false, @"ForceQuitMenu - force touch, killed");
+    removeFromAppSwitcher(bundleID);
 }
 
 %hook SBIconView
@@ -114,21 +128,22 @@ static void removeFromAppSwitcher(NSString *bundleID) {
 }
 
 + (void)activateShortcut:(SBSApplicationShortcutItem *)item withBundleIdentifier:(NSString *)bundleID forIconView:(id)iconView {
-    if ([item.type isEqualToString:kForceQuitShortcutType]) {
-        // (the one force quit, MacStatusBarCore's MSBDForceQuitApp: the app's window closed by its window engine first -- with the Stage Manager engine
-        //  only that window leaves its stage -- then the kill and the card. Killing here and deleting every layout that holds the app took the whole
-        //  Stage Manager desktop with it, 1.3.5 logic test H1. Without MacStatusBarCore loaded: the plain kill below.)
-        static void (*forceQuit)(NSString *) = NULL;
-        if (!forceQuit) forceQuit = (void (*)(NSString *))dlsym(RTLD_DEFAULT, "MSBDForceQuitApp");
-        if (forceQuit) { forceQuit(bundleID); return; }
-        BKSTerminateApplicationForReasonAndReportWithDescription(bundleID, 5, false, @"ForceQuitMenu - force touch, killed");
-        removeFromAppSwitcher(bundleID);
-        return;
-    }
-
+    if ([item.type isEqualToString:kForceQuitShortcutType]) { FQForceQuit(bundleID); return; }
     %orig;
 }
 
+%end
+
+// The App Library's icons (SBHLibraryCategoryPodIconView) have their own +activateShortcut:withBundleIdentifier:forIconView:, so the hook above
+// never saw them: Force Quit in an App Library icon's menu opened the app instead (SpringBoard launched it with a shortcut it did not know; M1,
+// iPadOS 15.6.1, 7 Oct). The same answer there; installed only where the class exists.
+%group LibraryPods
+%hook SBHLibraryCategoryPodIconView
++ (void)activateShortcut:(SBSApplicationShortcutItem *)item withBundleIdentifier:(NSString *)bundleID forIconView:(id)iconView {
+    if ([item.type isEqualToString:kForceQuitShortcutType]) { FQForceQuit(bundleID); return; }
+    %orig;
+}
+%end
 %end
 
 // On iOS 15 the icon menu is a regular UIKit context menu, and UIKit draws
@@ -149,6 +164,7 @@ static void removeFromAppSwitcher(NSString *bundleID) {
 
 %ctor {
     %init;
+    if (objc_getClass("SBHLibraryCategoryPodIconView")) %init(LibraryPods);
     ReadSwitch();
     static int token = 0;
     notify_register_dispatch(kPrefsChanged, &token, dispatch_get_main_queue(), ^(int t) { ReadSwitch(); });

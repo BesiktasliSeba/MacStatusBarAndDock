@@ -401,6 +401,16 @@ static void MABRegisterActions(void) {
     static int tokenDumpCls = 0;
     snprintf(name, sizeof name, "com.besiktasliseba.appbridge.dumpcls.%08x", hash);
     notify_register_dispatch(name, &tokenDumpCls, dispatch_get_main_queue(), ^(int t) { MABDumpClasses(); });
+    // newwindow (tests of the Stage Manager engine's windows, M-2): the app asks for a new window of its own -- what "Open in New Window" asks
+    // (-[UIApplication requestSceneSessionActivation:userActivity:options:errorHandler:] with no session: a new scene of its default configuration)
+    static int tokenNewWindow = 0;
+    snprintf(name, sizeof name, "com.besiktasliseba.appbridge.newwindow.%08x", hash);
+    notify_register_dispatch(name, &tokenNewWindow, dispatch_get_main_queue(), ^(int t) {
+        UIApplication *app = [UIApplication sharedApplication];
+        if (!app.supportsMultipleScenes) { MABLog(@"newwindow: this app has one window only (no multiple scenes)"); return; }
+        [app requestSceneSessionActivation:nil userActivity:nil options:nil errorHandler:^(NSError *e) { MABLog([NSString stringWithFormat:@"newwindow: refused: %@", e]); }];
+        MABLog([NSString stringWithFormat:@"newwindow: a new window asked for (%lu scene(s) before)", (unsigned long)app.connectedScenes.count]);
+    });
     // taptabbutton: one-off test helper for the Arcade->Updates tab rename — finds the actual on-screen UITabBarButton whose label now reads
     // "Updates" and fires its own touch-up-inside, exercising the exact same path a finger tap on it would (through the real UITabBarController
     // delegate callback), not the account button directly.
