@@ -41,6 +41,20 @@ static NSMutableArray<NSString *> *gLog;
 #define MSB_DOMAIN CFSTR("com.besiktasliseba.test-smcheck16")
 static id DMCall(id obj, NSString *name) { SEL s = NSSelectorFromString(name); return obj && [obj respondsToSelector:s] ? ((id (*)(id, SEL))objc_msgSend)(obj, s) : nil; }
 typedef struct { CGSize normalizedSize; CGRect referenceBounds; long long type; } DMSMAttributedSize;
+// (UIKit's NSValue additions, which SMEngineAPI.h uses on the device -- the iPadOS 17 layout pass, DMSM17PassBegin/End; macOS has the NSPoint/NSSize
+//  ones. The same stand-in as test-smlayout17.m.)
+@interface NSValue (DMTestCG)
++ (NSValue *)valueWithCGPoint:(CGPoint)p;
++ (NSValue *)valueWithCGSize:(CGSize)z;
+- (CGPoint)CGPointValue;
+- (CGSize)CGSizeValue;
+@end
+@implementation NSValue (DMTestCG)
++ (NSValue *)valueWithCGPoint:(CGPoint)p { return [NSValue valueWithPoint:NSPointFromCGPoint(p)]; }
++ (NSValue *)valueWithCGSize:(CGSize)z { return [NSValue valueWithSize:NSSizeFromCGSize(z)]; }
+- (CGPoint)CGPointValue { return NSPointToCGPoint(self.pointValue); }
+- (CGSize)CGSizeValue { return NSSizeToCGSize(self.sizeValue); }
+@end
 #include "../common/StageManagerAvailable.h"
 #include "../statusbar/SMEngineAPI.h"
 static void DMSM17DiagSoon(void) {}

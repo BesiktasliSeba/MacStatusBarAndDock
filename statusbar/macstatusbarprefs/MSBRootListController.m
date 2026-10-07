@@ -13,6 +13,7 @@
 #import "../../common/LineSwitch.h"
 #import "../../common/EngineBuilds.h"
 #import "../../common/StageManagerAvailable.h"
+#import "../../common/DesktopCheck.h"   // (Show Desktop Icons on iPadOS 17+: SpringBoard's check of the Home Screen parts the desktop uses)
 #import "../../common/OtherTweaks.h"   // (Single Mute showing the mute icon: said under the Audio group)
 
 // The "Apps" row in the plist uses AltList's app picker (ATLApplicationListMultiSelectionController). That
@@ -368,10 +369,13 @@ static void MSBFitValueLabels(UIView *v) {
 			large = [large imageWithTintColor:[UIColor secondaryLabelColor] renderingMode:UIImageRenderingModeAlwaysOriginal];
 			if (small && large) { [spec setProperty:small forKey:@"leftImage"]; [spec setProperty:large forKey:@"rightImage"]; }
 		}
-		// The desktop's icons are not offered on iPadOS 17+ (not tested there: they stay off).
+		// The desktop's icons on iPadOS 17 (untested versions): offered, unless SpringBoard's check of the Home Screen parts they use failed on this
+		// iPadOS build (common/DesktopCheck.h) -- then they stay off there and the switch is left out. The Mac Switcher is offered on 17 (off unless
+		// switched on, as everywhere). On 18+ neither is offered (MacSwitcher.h DMMSWOSOK, Desktop.h DMDesktopPrefOn: only 17 was ported).
 		if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17) {
+			BOOL is18 = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 18, desktopFailed = is18 || MSBDDesktopVerdict(NULL) == 0;
 			NSMutableArray *kept = [_specifiers mutableCopy];
-			for (PSSpecifier *spec in _specifiers) if ([[spec propertyForKey:@"key"] isEqual:@"desktopIcons"]) [kept removeObject:spec];
+			for (PSSpecifier *spec in _specifiers) if ((desktopFailed && [[spec propertyForKey:@"key"] isEqual:@"desktopIcons"]) || (is18 && [[spec propertyForKey:@"key"] isEqual:@"macSwitcher"])) [kept removeObject:spec];
 			_specifiers = kept;
 		}
 		// Stage Manager as an engine only exists on iPadOS 16+ (and only where Stage Manager runs, MSBEngineState greys it out elsewhere).
@@ -499,8 +503,8 @@ static void MSBFitValueLabels(UIView *v) {
 			_specifiers = kept;
 			break;
 		}
-		// The Wi-Fi Menu is for iPadOS 15/16 (StatusBar.x, DMWiFiApplyPref): on 17+ its switch is not offered.
-		if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17) {
+		// The Wi-Fi Menu is for iPadOS 15/16 and 17 (WiFiMenu.h, DMWiFiOSOK): on 18+ its switch is not offered.
+		if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 18) {
 			NSMutableArray *kept = [NSMutableArray array];
 			BOOL hiding = NO;
 			for (PSSpecifier *sp in _specifiers) {

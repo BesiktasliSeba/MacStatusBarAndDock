@@ -35,6 +35,8 @@ enum {
 // @"front": id (the window in front: keyboard focus), @"away": @[ids] (full-screen windows that leave), @"atHome": @YES when nothing leaves -- the
 // person was on the Home Screen already, behind the windows (the Home Screen's own Home press applies: close a folder, the App Library...)}.
 // (noinline: its own range in the release crash map, tools/test-crashstep.sh)
+// (the one refusal SMHome.h acts on besides leaving it: a desktop of full-screen windows alone -- with Mac Switcher desktops they go to the background)
+static NSString *const kDMSMHomeOnlyFullScreen = @"only a full-screen window: it goes Home as Apple has it";
 __attribute__((noinline)) static NSDictionary *DMSMHomePlan(NSArray<NSDictionary *> *desk, const long long *roles, size_t nRoles, int flags, long long requestedEnv,
                                   long long prevEnv, BOOL prevShowsDesk, NSString **why) {
     #define DMSM_HOME_LEAVE(text) do { if (why) *why = (text); return nil; } while (0)
@@ -63,7 +65,7 @@ __attribute__((noinline)) static NSDictionary *DMSMHomePlan(NSArray<NSDictionary
         if (![w[@"r"] isKindOfClass:[NSNumber class]] || ![w[@"t"] isKindOfClass:[NSNumber class]] || ![w[@"p"] isKindOfClass:[NSNumber class]]) DMSM_HOME_LEAVE(@"a window not read whole");
         if ([w[@"p"] longLongValue] == 2) [away addObject:ident]; else [kept addObject:w];
     }
-    if (!kept.count) DMSM_HOME_LEAVE(@"only a full-screen window: it goes Home as Apple has it");
+    if (!kept.count) DMSM_HOME_LEAVE(kDMSMHomeOnlyFullScreen);
     if (kept.count > nRoles) DMSM_HOME_LEAVE(@"more windows than window roles");
     // The roles: nothing leaves -- each window keeps its own role (the same layout as on screen: no window moves); a full-screen window leaves --
     // the rest closes up in role order, as SpringBoard's own Minimize does (a stage always has its primary window).
@@ -125,12 +127,21 @@ static int DMSMSwitcherNote(long long resultEnv, long long prevEnv, BOOL prevHas
 // The Home gesture keeps the desktop still (SMHome.h B2, Reduce Motion off): the gesture runs over a desktop of windows (overDesk), the index it asks
 // about is the stage it took -- the one under the finger (selectedIndex) -- and that stage is the desktop (takenIsDesk); not once the finger has
 // held still in the App Switcher's range for 0.3 s (holdFrames: SpringBoard's own count, at fps frames a second), and not on a sideways swipe along
-// the bottom edge (|x| > |y| of the gesture's translation: switching to a neighbouring stage moves the stage sideways with the finger as Apple has
-// it -- 1.3.9 logic test L-2).
-static BOOL DMSMHGKeepStill(BOOL overDesk, BOOL selectedIndex, BOOL takenIsDesk, long long holdFrames, long long fps, double tx, double ty) {
+// the bottom edge (way 2, DMSMHGSwipeWay: switching to a neighbouring stage moves the stage sideways with the finger as Apple has it -- 1.3.9 logic
+// test L-2).
+static BOOL DMSMHGKeepStill(BOOL overDesk, BOOL selectedIndex, BOOL takenIsDesk, long long holdFrames, long long fps, int way) {
     if (!overDesk || !selectedIndex || !takenIsDesk) return NO;
-    if (fabs(tx) > fabs(ty)) return NO;
+    if (way == 2) return NO;
     return holdFrames <= (long long)(0.3 * (double)(fps > 0 ? fps : 60));
+}
+// Which way the Home gesture goes, decided ONCE per gesture: 0 not yet (under kDMSMHGWayTravel pt of the gesture's translation), 1 up (or down), 2
+// sideways along the bottom edge (|x| > |y| at that moment); a way decided stays (decided: what was decided before, 0 none). Decided on every frame,
+// a curved swipe crossed |x| = |y| and the windows jumped between kept still and Apple's movement (1.4, the 1.3.9 tester's L-2 note).
+static const double kDMSMHGWayTravel = 25.0;
+static int DMSMHGSwipeWay(double tx, double ty, int decided) {
+    if (decided == 1 || decided == 2) return decided;
+    if (!(tx == tx) || !(ty == ty) || hypot(tx, ty) < kDMSMHGWayTravel) return 0;   // (not a number: not decided)
+    return fabs(tx) > fabs(ty) ? 2 : 1;
 }
 
 // Is a recent stage "the desktop" that a launch joins, SpringBoard's own stage request merges with, or the restore brings back after a respring?

@@ -2,6 +2,18 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.4
+
+### New
+- Mac Switcher: desktops and Mission Control like on a Mac, in place of the App Switcher. Switch it on in Settings > Status Bar > Mac Switcher. Swipe up and hold, double press the Home button or press Control-Up on a keyboard to see your desktops and the windows of the one you are on.
+- Desktops: tap + in the Mac Switcher to add one (up to 8), and drag a window onto a desktop to move it there. Swipe sideways with four fingers or along the bottom edge (three fingers on a trackpad) and the desktops slide with your fingers, as Spaces do on a Mac. Control-Left and Control-Right switch desktops from a keyboard. To remove a desktop, hold it and tap its remove button; its windows move to the desktop next to it.
+- Desktops work with every window engine (Aerial, Zetsu, MilkyWay4 and the Stage Manager engine; tested with Zetsu 1.6.6), Fit to Window keeps its own arrangement on each desktop, and your desktops are still there after a respring.
+- Stage Manager engine with the Mac Switcher: an app opened on a full desktop (7 windows) opens on a new desktop, and a short note says so. With 8 desktops already, that desktop's oldest window is minimized instead.
+- The other ways to open the App Switcher (Globe-Up on a keyboard, and the App Switcher actions of AssistiveTouch and Back Tap) open the Mac Switcher too. Show App Switcher in the Apple menu opens the iPadOS App Switcher once when you need it.
+
+### Experimental (iPadOS 17)
+- iPadOS 17 (with Enable Anyway): the desktop, the Wi-Fi menu and the Mac Switcher (off until you switch it on) are now offered there too. None of this has been tested on an iPadOS 17 device yet, so reports are very welcome.
+
 ## 1.3.9
 
 ### Improvements

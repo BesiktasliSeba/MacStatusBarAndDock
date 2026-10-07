@@ -1,5 +1,5 @@
 // WiFiMenu.h -- the Wi-Fi menu (2 Oct 2026), included into StatusBar.x. Settings > Status Bar > Wi-Fi Menu (pref wifiMenu, on unless switched off where the iPad supports it (DMWiFiSupported);
-// iPadOS 15/16 only): our own Wi-Fi icon in the menu bar, nearest the status icons (iOS's own Wi-Fi item is left out of our bars then, see
+// iPadOS 15/16, and 17 (DMWiFiOSOK)): our own Wi-Fi icon in the menu bar, nearest the status icons (iOS's own Wi-Fi item is left out of our bars then, see
 // DMHideStockWiFi), and a Mac-style drop-down: the Wi-Fi switch, the current network (tick, lock, bars), the networks nearby (a known one is
 // joined; an unknown secured one opens its page in Settings), Other Networks… and Wi-Fi Settings….
 // The list comes from WiFiKit's WFNetworkListController, the same list Control Center's own Wi-Fi module drives (CCUIWiFiMenuModuleViewController):
@@ -10,6 +10,29 @@ static const void *kWiFiMenuLabelKey = &kWiFiMenuLabelKey, *kWiFiMenuPillKey = &
 static const CGFloat kWiFiHeaderH = 24.0, kWiFiSwitchRowH = 34.0;
 static NSMutableArray<NSString *> *gWiFiMenuOrder = nil;   // (the nearby networks in the order the open menu shows them, DMWiFiMenuItems)
 static NSArray<NSString *> *gWiFiLastOrder = nil;          // (the order the last menu built showed them)
+
+// Where the Wi-Fi menu runs: iPadOS 15/16 (tested), and 17 (untested there; every class and call below is in iPadOS 17's own WiFiKit and
+// SpringBoard with the same types, the stock Wi-Fi item is SystemStatusUI's STUIStatusBarWifiItem through DMSBClass -- it still takes
+// -canEnableDisplayItem:fromData: from its superclass --, and the password sheet's keyboard focus lock is the iPadOS 16 call). 18+: not yet --
+// that focus lock is renamed there and takes a typed reason object (asserting on a string), and nothing of it was checked on a device.
+static BOOL DMWiFiOSOK(void) { return [NSProcessInfo processInfo].operatingSystemVersion.majorVersion <= 17; }
+
+// ---- untested iPadOS (17): what the Wi-Fi menu found, for the StatusBar diagnostic record (StatusBar.x DMSBDiagFlush, common/Diag.h) -- so a
+// tester's Report a Problem says how far the menu got without a debug build. Numbers, booleans and Apple's own selector names only, never a
+// network's name. 15/16: nothing is recorded (DMNewOS). ----
+static struct { int scans, sheets, sheetField, sheetKey, sheetLock, errors, joins; long lastErrorCode; } gWiFiDiag;
+static NSMutableArray<NSString *> *gWiFiDiagUnanswered;   // (what WiFiKit sent that we do not answer -- how its protocols changed on this iOS)
+static void DMSBDiagFlush(void);   // (StatusBar.x)
+static void DMWiFiDiagUnanswered(SEL sel) {
+    if (!DMNewOS() || !sel) return;
+    NSString *s = NSStringFromSelector(sel);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!gWiFiDiagUnanswered) gWiFiDiagUnanswered = [NSMutableArray array];
+        if ([gWiFiDiagUnanswered containsObject:s]) return;
+        if (gWiFiDiagUnanswered.count >= 6) [gWiFiDiagUnanswered removeObjectAtIndex:0];
+        [gWiFiDiagUnanswered addObject:s];
+    });
+}
 
 // A short hash of a network's name, for the log (FNV-1a, 32 bits).
 static NSString *DMWiFiTag(NSString *ssid) {
@@ -173,6 +196,7 @@ static void DMWiFiListChanged(void);
 }
 - (void)forwardInvocation:(NSInvocation *)inv {
     DMLog([NSString stringWithFormat:@"[wifi] the list sent %@, not answered", NSStringFromSelector(inv.selector)]);
+    DMWiFiDiagUnanswered(inv.selector);   // (17+: for the diagnostic record)
     NSUInteger n = inv.methodSignature.methodReturnLength;
     if (n) { void *zero = calloc(1, n); [inv setReturnValue:zero]; free(zero); }
 }
@@ -215,6 +239,7 @@ static void DMWiFiStartScanning(void) {
     if (!gWiFiScanning && [list respondsToSelector:@selector(startScanning)] && DMWiFiPowered()) {
         ((void (*)(id, SEL))objc_msgSend)(list, @selector(startScanning));
         gWiFiScanning = YES;
+        if (DMNewOS()) gWiFiDiag.scans++;
         DMLog(@"[wifi] scanning started");
     }
     // the watchdog: a scan never outlives its menu (a close path missed), and never runs longer than 30 s after the menu was opened
@@ -235,6 +260,7 @@ static void DMWiFiMenuGone(NSString *why) {
     if (!gWiFiPanel && !gWiFiScanning) return;
     gWiFiPanel = nil;
     DMWiFiStopScanning([@"menu " stringByAppendingString:why]);
+    if (DMNewOS()) dispatch_async(dispatch_get_main_queue(), ^{ DMSBDiagFlush(); });   // (untested iPadOS: the record says how far this menu got)
 }
 
 // ---- the glyphs ----
@@ -447,6 +473,7 @@ static void DMWiFiJoin(id record) {
     id list = DMWiFiListController();
     if (![list respondsToSelector:tap]) { DMLog(@"[wifi] join: the list controller cannot join here, Settings opened"); DMWiFiOpenSettings(DMWiFiRecSSID(record)); return; }
     DMLog([NSString stringWithFormat:@"[wifi] joining %@ (known %d, secure %d)", DMWiFiTag(DMWiFiRecSSID(record)), DMWiFiRecKnown(record), DMWiFiRecSecure(record)]);
+    if (DMNewOS()) gWiFiDiag.joins++;
     ((void (*)(id, SEL, id, id))objc_msgSend)(list, tap, gWiFiListing, record);
 }
 // The switch: the list's own power switch (the one Settings' Wi-Fi switch uses -- real on/off, not Control Center's "disconnect until tomorrow").
@@ -502,6 +529,7 @@ static NSString *DMWiFiRouteName(DMWiFiRoute k) { return @[@"nothing (current)",
 - (NSMethodSignature *)methodSignatureForSelector:(SEL)sel { return [super methodSignatureForSelector:sel] ?: [NSMethodSignature signatureWithObjCTypes:"v@:"]; }
 - (void)forwardInvocation:(NSInvocation *)inv {
     DMLog([NSString stringWithFormat:@"[wifi] the password request sent %@, not answered", NSStringFromSelector(inv.selector)]);
+    DMWiFiDiagUnanswered(inv.selector);   // (17+: for the diagnostic record)
     NSUInteger n = inv.methodSignature.methodReturnLength;
     if (n) { void *zero = calloc(1, n); [inv setReturnValue:zero]; free(zero); }
 }
@@ -801,6 +829,7 @@ static void DMWiFiShowPasswordSheet(id record, BOOL fake) {
     DMWiFiRefitMenuRotator();
     DMWiFiSheetFocus(sh, win, YES);
     BOOL focused = [f becomeFirstResponder];
+    if (DMNewOS() && !fake) { gWiFiDiag.sheets++; gWiFiDiag.sheetField = focused; gWiFiDiag.sheetKey = win.isKeyWindow; gWiFiDiag.sheetLock = sh.focusLock != nil; }
     DMLog([NSString stringWithFormat:@"[wifi] password sheet shown for %@ (field focused %d, key window %d, focus lock %@, hardware keyboard %d)%@", DMWiFiTag(sh.ssid), focused, win.isKeyWindow,
            sh.focusLock ? NSStringFromClass([sh.focusLock class]) : @"none", DMHardwareKeyboardAttached(), fake ? @" -- test" : @""]);
 }
@@ -845,6 +874,7 @@ static void DMWiFiErrorReported(id ctx) {
         NSError *e = DMCall(ctx, @"error");
         NSString *ssid = DMWiFiRecSSID(DMCall(ctx, @"network"));
         DMLog([NSString stringWithFormat:@"[wifi] join error for %@: domain %@ code %ld", DMWiFiTag(ssid), [e isKindOfClass:[NSError class]] ? e.domain : @"?", [e isKindOfClass:[NSError class]] ? (long)e.code : 0L]);
+        if (DMNewOS()) { gWiFiDiag.errors++; gWiFiDiag.lastErrorCode = [e isKindOfClass:[NSError class]] ? (long)e.code : 0L; }
         DMWiFiPasswordSheet *sh = gWiFiSheet;
         if (sh && (!ssid.length || [sh.ssid isEqualToString:ssid])) {
             NSString *text = [e isKindOfClass:[NSError class]] && e.localizedDescription.length < 80 ? e.localizedDescription : nil;
@@ -980,6 +1010,7 @@ static void DMWiFiRebuildOpenMenu(void) {
     if (!gWiFiScanning && DMWiFiPowered() && CACurrentMediaTime() - gWiFiOpenedAt < 30.0 && [gWiFiList respondsToSelector:@selector(startScanning)]) {
         ((void (*)(id, SEL))objc_msgSend)(gWiFiList, @selector(startScanning));
         gWiFiScanning = YES;
+        if (DMNewOS()) gWiFiDiag.scans++;
         DMLog(@"[wifi] scanning started (Wi-Fi on)");
     }
     NSString *sig = nil;
@@ -1028,6 +1059,9 @@ static void DMOpenWiFiMenu(UIButton *btn) {
 static BOOL DMWiFiSupported(void) {
     static BOOL supported = NO;   // (only a yes is kept: a no is asked again, in case WiFiKit was not loaded yet)
     if (supported) return YES;
+    // (iPadOS 17+: WiFiKit is opened here if SpringBoard has not loaded it yet -- the order SpringBoard loads it in was only seen on 15/16;
+    //  the same call Control Center's own Wi-Fi module makes when it loads; 15/16 unchanged)
+    if (DMNewOS() && !objc_getClass("WFNetworkListController")) dlopen("/System/Library/PrivateFrameworks/WiFiKit.framework/WiFiKit", RTLD_LAZY);
     Class sb = objc_getClass("SBWiFiManager"), lc = objc_getClass("WFNetworkListController");
     BOOL ok = sb && [sb respondsToSelector:@selector(sharedInstance)] && lc && objc_getClass("WFClient");
     for (NSString *sel in @[@"initWithViewController:viewProvider:client:", @"startScanning", @"stopScanning", @"networkListViewController:didTapRecord:", @"networkListViewController:userDidChangePower:"])
@@ -1037,7 +1071,7 @@ static BOOL DMWiFiSupported(void) {
     return ok;
 }
 static void DMWiFiApplyPref(BOOL want) {
-    BOOL on = want && [NSProcessInfo processInfo].operatingSystemVersion.majorVersion < 17;   // (iPadOS 17+: not checked there, stock behaviour)
+    BOOL on = want && DMWiFiOSOK();   // (iPadOS 15/16, and 17; 18+: stock behaviour)
     if (on == gWiFiMenuOn) return;
     gWiFiMenuOn = on;
     DMLog([NSString stringWithFormat:@"[wifi] Wi-Fi Menu %@", on ? @"on" : @"off"]);
@@ -1058,6 +1092,19 @@ static void DMWiFiApplyPref(BOOL want) {
             [fg setNeedsLayout];
         }
     });
+}
+// The StatusBar diagnostic record's Wi-Fi line (untested iPadOS: StatusBar.x DMSBDiagFlush). Compact, no spaces (the report's link):
+// on/supported/stock item left out (the hook went on), list controller made, scans started, the last scan's networks (secure, known: counts only),
+// joined now, password sheets shown (field focused, window key, keyboard focus lock -- the last one), joins asked, join errors (the last code),
+// and the selectors WiFiKit sent unanswered.
+static NSString *DMWiFiDiagLine(void) {
+    NSArray *recs = gWiFiListing.records ?: @[];
+    NSUInteger secure = 0, known = 0;
+    for (id r in recs) { if (DMWiFiRecSecure(r)) secure++; if (DMWiFiRecKnown(r)) known++; }
+    return [NSString stringWithFormat:@"wifi on%d,sup%d,item%d,list%d,scans%d,nets%lu/%lu/%lu,joined%d,sheets%d(f%dk%dl%d),joins%d,err%d(%ld),unans:%@",
+            gWiFiMenuOn, DMWiFiSupported(), (gSBItemHooks & 16) != 0, gWiFiList != nil, gWiFiDiag.scans, (unsigned long)recs.count, (unsigned long)secure,
+            (unsigned long)known, DMWiFiAssociated(), gWiFiDiag.sheets, gWiFiDiag.sheetField, gWiFiDiag.sheetKey, gWiFiDiag.sheetLock, gWiFiDiag.joins,
+            gWiFiDiag.errors, gWiFiDiag.lastErrorCode, gWiFiDiagUnanswered.count ? [gWiFiDiagUnanswered componentsJoinedByString:@","] : @"-"];
 }
 
 #if DEBUG

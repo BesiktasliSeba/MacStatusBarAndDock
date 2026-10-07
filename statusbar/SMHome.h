@@ -216,7 +216,20 @@ __attribute__((noinline)) static void DMSMHomeKeepsDesktop(id ctx) {   // (noinl
     if (!windows) { DMLog([NSString stringWithFormat:@"[smhome] Home (%@): the desktop could not be read -- Home as SpringBoard built it", what]); return; }
     NSString *why = nil;
     NSDictionary *plan = DMSMHomePlan(windows, roles, nRoles, flags, requested, prevEnv, showsDesk, &why);
-    if (!plan) { DMLog([NSString stringWithFormat:@"[smhome] Home (%@): as SpringBoard built it -- %@", what, why]); return; }
+    if (!plan) {
+        DMLog([NSString stringWithFormat:@"[smhome] Home (%@): as SpringBoard built it -- %@", what, why]);
+        // (Mac Switcher desktops: a desktop of a full-screen window alone goes Home as Apple has it, and that window goes to the background as a
+        //  full-screen window does from a desktop with windows below (marked minimized for the joins, back with its app). The desktop's records still
+        //  named it: the next app opened there joined it and brought it back full screen behind the new window, and so did a switch back to that
+        //  desktop and the restore after a respring -- the 1.3.8 logic test's H-3 on the Mac Switcher's own path, which joins by its records, not by
+        //  StatusBar.x DMSMDesktopFor. As with Aerial's Mac Switcher, Home takes a full-screen app off its desktop.)
+        if ([why isEqualToString:kDMSMHomeOnlyFullScreen] && DMMSWMulti()) {
+            NSMutableArray<NSString *> *away = [NSMutableArray array];
+            for (NSDictionary *w in windows) { NSString *k = DMSMItemKey(byId[w[@"id"]]); if (k.length) { DMSMSetMinimized(k, YES); [away addObject:DMSMKeyText(k)]; } }   // (each window by its key, as below)
+            if (away.count) DMLog([NSString stringWithFormat:@"[smhome] Home: %@ to the background (Mac Switcher desktops: no longer one of %@'s windows)", [away componentsJoinedByString:@", "], DMMSWDeskName(gMSWCur)]);
+        }
+        return;
+    }
     // The plan in SpringBoard's terms: each window's own entity (its scene -- two windows of one app are two), its attributes as they are on screen.
     id mainIdentity = identity ?: DMSMIdentityOfScreen([UIScreen mainScreen]);
     NSMutableArray<NSArray *> *rows = [NSMutableArray array];
@@ -356,7 +369,7 @@ static long long DMSMHGHoldFrames(id mod) {   // (SpringBoard's own count of the
     return frames;
 }
 static BOOL gSMHomeStillOn = NO;            // (B2: the gesture's two answers replaced)
-static char kSMHGStillKey;
+static char kSMHGStillKey, kSMHGWayKey;
 // The gesture's stage keeps still at this index now: the gesture runs over a desktop of windows (DMSMHGOverDesk), the index is the stage the
 // gesture took (its selected app layout) and that stage is the desktop on screen, and the finger has not held still for the App Switcher.
 __attribute__((noinline)) static BOOL DMSMHGStill(id mod, unsigned long long index) {   // (noinline: its own range in the release crash map)
@@ -375,8 +388,15 @@ __attribute__((noinline)) static BOOL DMSMHGStill(id mod, unsigned long long ind
     }
     CGPoint t = CGPointZero;
     memcpy(&t, (const char *)(__bridge const void *)mod + ivar_getOffset(gSMHGTransIv), sizeof t);
+    // (up or sideways: decided once per gesture, after kDMSMHGWayTravel pt, and kept -- SMHomeRule.h DMSMHGSwipeWay)
+    NSNumber *wayWas = objc_getAssociatedObject(mod, &kSMHGWayKey);
+    int way = DMSMHGSwipeWay(t.x, t.y, wayWas.intValue);
+    if (way && !wayWas) {
+        objc_setAssociatedObject(mod, &kSMHGWayKey, @(way), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[smhome] Home gesture: %@ (decided at %.0f, %.0f)", way == 2 ? @"sideways along the bottom -- Apple's movement" : @"up -- the windows keep still", t.x, t.y]);
+    }
     NSInteger fps = [UIScreen mainScreen].maximumFramesPerSecond;
-    return DMSMHGKeepStill(YES, selected, cached.boolValue, DMSMHGHoldFrames(mod), fps, t.x, t.y);   // (the rule: SMHomeRule.h, Mac test test-smhomerule)
+    return DMSMHGKeepStill(YES, selected, cached.boolValue, DMSMHGHoldFrames(mod), fps, way);   // (the rule: SMHomeRule.h, Mac test test-smhomerule)
 }
 static double DMSMHGScale(id self, SEL _cmd, unsigned long long index) {
 #if DEBUG
@@ -482,7 +502,9 @@ static void DMSMRestoreDesktopTick(void) {
         NSArray *stages = DMSMRecentStages();
         NSMutableSet<NSString *> *present = [NSMutableSet set];
         for (id al in stages) for (id it in DMSMStageItemsMap(al)) { NSString *k = DMSMItemKey(it); if (k) [present addObject:k]; }
-        NSSet<NSString *> *gone = stages && DMSMPerWindow() ? DMSMKeysGone(DMSMMinimizedSet(), present) : nil;   // (window keys compare only per window)
+        // (every recent stage counts, the hidden ones too: a window minimized, or one on another Mac Switcher desktop, waits in a hidden stage that
+        //  Stage Manager keeps across a respring. No stage read at all -- SpringBoard's model not there yet -- drops nothing.)
+        NSSet<NSString *> *gone = stages.count && present.count && DMSMPerWindow() ? DMSMKeysGone(DMSMMinimizedSet(), present) : nil;   // (window keys compare only per window)
         if (gone.count) {
             DMSMMinimizedDrop(gone);
             DMLog([NSString stringWithFormat:@"[smhome] after the start: %lu minimized mark(s) of windows that no longer exist dropped", (unsigned long)gone.count]);
@@ -498,6 +520,21 @@ static void DMSMRestoreDesktopTick(void) {
     static const char *guard = "/tmp/macstatusbar-smrestore-guard";
     struct stat st;
     if (stat(guard, &st) == 0) { unlink(guard); DMLog(@"[smhome] the desktop is not brought back: the last start ended while it was being brought back"); return; }
+    // Mac Switcher desktops: the CURRENT desktop's windows (its records, saved with the desktops), asked for together as a switch asks for them
+    // (MacSwitcherSM.h DMMSWSMShowDesk: every stage they are in, at most a full desktop) -- the engine's desktop below is the most recent stage with
+    // a window, which can be another desktop's (the one left last before the respring) or only part of the current one (after a remove).
+    if (DMMSWMulti()) {
+        NSArray<NSArray *> *cw = DMMSWSMDeskWindows(DMMSWCurId());
+        if (!cw.count) { DMLog([NSString stringWithFormat:@"[smhome] after the start: %@ has no window to bring back", DMMSWDeskName(gMSWCur)]); return; }
+        NSMutableArray<NSString *> *tiled = [NSMutableArray array];
+        for (NSArray *w in cw) if (DMSMPolicyOf(w[2]) != 2) [tiled addObject:w[3]];
+        FILE *g = fopen(guard, "w"); if (g) fclose(g);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ unlink(guard); });
+        NSString *front = DMMSWSMShowDesk(DMMSWCurId(), @"after the start");
+        if (front) { DM_FEATURE_MARK("sm-desktop-back-after-respring"); DMSMFitAdoptRestored(tiled); }
+        DMLog([NSString stringWithFormat:@"[smhome] after the start: %@'s %lu window(s) %@", DMMSWDeskName(gMSWCur), (unsigned long)cw.count, front ? @"come back by themselves" : @"could not be asked for -- they come back with the first app opened"]);
+        return;
+    }
     // The desktop: the most recent stage on the iPad with a window that is not minimized, not an app in full screen sent to the background (as the
     // joins have it: StatusBar.x DMSMDesktopFor; minimized windows are known across a respring: DMSMMinimizedSet, one entry per window).
     id desk = DMSMDesktopFor(nil, nil, NULL);

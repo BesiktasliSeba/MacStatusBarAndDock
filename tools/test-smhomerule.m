@@ -214,17 +214,39 @@ static void SwitcherNote(void) {
 static void HGKeepStill(void) {
     for (int o = 0; o < 2; o++) for (int sel = 0; sel < 2; sel++) for (int d = 0; d < 2; d++) {
         BOOL want = o && sel && d;
-        CHECK(DMSMHGKeepStill((BOOL)o, (BOOL)sel, (BOOL)d, 0, 60, 0, -200) == want, "keep still: over %d, selected %d, the desktop %d -> %d", o, sel, d, want);
+        CHECK(DMSMHGKeepStill((BOOL)o, (BOOL)sel, (BOOL)d, 0, 60, 1) == want, "keep still: over %d, selected %d, the desktop %d -> %d", o, sel, d, want);
     }
-    CHECK(DMSMHGKeepStill(YES, YES, YES, 18, 60, 0, -300), "60 fps: 18 hold frames (0.3 s) still keeps");
-    CHECK(!DMSMHGKeepStill(YES, YES, YES, 19, 60, 0, -300), "60 fps: 19 hold frames releases (the App Switcher)");
-    CHECK(DMSMHGKeepStill(YES, YES, YES, 36, 120, 0, -300) && !DMSMHGKeepStill(YES, YES, YES, 37, 120, 0, -300), "120 fps: 36 keeps, 37 releases");
-    CHECK(DMSMHGKeepStill(YES, YES, YES, 18, 0, 0, -300) && !DMSMHGKeepStill(YES, YES, YES, 19, -1, 0, -300), "an unknown frame rate counts as 60");
-    CHECK(DMSMHGKeepStill(YES, YES, YES, -5, 60, 0, -300), "a negative count (never seen) keeps");
-    CHECK(DMSMHGKeepStill(YES, YES, YES, 0, 60, 0, 0), "no movement yet keeps");
-    CHECK(DMSMHGKeepStill(YES, YES, YES, 0, 60, 40, -40) && DMSMHGKeepStill(YES, YES, YES, 0, 60, -39, -40), "diagonal, vertical part as large or larger: keeps");
-    CHECK(!DMSMHGKeepStill(YES, YES, YES, 0, 60, 41, -40) && !DMSMHGKeepStill(YES, YES, YES, 0, 60, -300, -10), "sideways along the bottom (|x| > |y|): Apple's");
-    CHECK(DMSMHGKeepStill(YES, YES, YES, 0, 60, 0, 120), "a swipe back down keeps");
+    CHECK(DMSMHGKeepStill(YES, YES, YES, 18, 60, 1), "60 fps: 18 hold frames (0.3 s) still keeps");
+    CHECK(!DMSMHGKeepStill(YES, YES, YES, 19, 60, 1), "60 fps: 19 hold frames releases (the App Switcher)");
+    CHECK(DMSMHGKeepStill(YES, YES, YES, 36, 120, 1) && !DMSMHGKeepStill(YES, YES, YES, 37, 120, 1), "120 fps: 36 keeps, 37 releases");
+    CHECK(DMSMHGKeepStill(YES, YES, YES, 18, 0, 1) && !DMSMHGKeepStill(YES, YES, YES, 19, -1, 1), "an unknown frame rate counts as 60");
+    CHECK(DMSMHGKeepStill(YES, YES, YES, -5, 60, 1), "a negative count (never seen) keeps");
+    CHECK(DMSMHGKeepStill(YES, YES, YES, 0, 60, 0), "no way decided yet keeps");
+    CHECK(DMSMHGKeepStill(YES, YES, YES, 0, 60, 1), "up keeps");
+    CHECK(!DMSMHGKeepStill(YES, YES, YES, 0, 60, 2), "sideways along the bottom: Apple's");
+    // (the way: decided once, after 25 pt of travel, and kept -- 1.4)
+    CHECK(DMSMHGSwipeWay(0, 0, 0) == 0 && DMSMHGSwipeWay(15, -15, 0) == 0 && DMSMHGSwipeWay(-24.9, 0, 0) == 0, "under 25 pt: not decided");
+    CHECK(DMSMHGSwipeWay(0, -25, 0) == 1 && DMSMHGSwipeWay(0, 120, 0) == 1, "up (or back down) from 25 pt");
+    CHECK(DMSMHGSwipeWay(25, 0, 0) == 2 && DMSMHGSwipeWay(-300, -10, 0) == 2 && DMSMHGSwipeWay(41, -40, 0) == 2, "sideways (|x| > |y|) from 25 pt");
+    CHECK(DMSMHGSwipeWay(40, -40, 0) == 1 && DMSMHGSwipeWay(-39, -40, 0) == 1, "diagonal, the vertical part as large or larger: up");
+    CHECK(DMSMHGSwipeWay(-300, -10, 1) == 1 && DMSMHGSwipeWay(0, -400, 2) == 2, "a decided way stays, however the swipe curves");
+    CHECK(DMSMHGSwipeWay(NAN, -100, 0) == 0 && DMSMHGSwipeWay(50, INFINITY, 0) == 1, "not a number: not decided; an infinite vertical part: up");
+    {   // a curved swipe: up first, then far to the side -- kept still all the way (per frame it jumped to Apple's once |x| > |y|)
+        int way = 0; BOOL jumped = NO;
+        for (int i = 0; i <= 60; i++) {
+            double ty = -10.0 * i, tx = i < 20 ? 0.0 : 30.0 * (i - 20);
+            way = DMSMHGSwipeWay(tx, ty, way);
+            if (!DMSMHGKeepStill(YES, YES, YES, 0, 60, way)) jumped = YES;
+        }
+        CHECK(way == 1 && !jumped, "a swipe that starts up and curves sideways keeps the windows still all the way");
+        way = 0; BOOL kept = NO;
+        for (int i = 0; i <= 60; i++) {
+            double tx = 12.0 * i, ty = i < 10 ? 0.0 : -20.0 * (i - 10);
+            way = DMSMHGSwipeWay(tx, ty, way);
+            if (way && DMSMHGKeepStill(YES, YES, YES, 0, 60, way)) kept = YES;
+        }
+        CHECK(way == 2 && !kept, "a swipe that starts sideways and curves up stays Apple's all the way");
+    }
 }
 
 // The desktop choice (DMSMStageIsDesktop): exhaustive over its inputs, and the cases of 1.3.8 logic test H-3.

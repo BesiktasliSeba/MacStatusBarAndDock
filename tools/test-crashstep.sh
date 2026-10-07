@@ -6,8 +6,8 @@ set -e
 cd "$(dirname "$0")"
 FIXDIR="$PWD/crash-fixtures"
 W=$(mktemp -d); export FIX="$FIXDIR" REPORTS="$W/reports"
-cleanup() {   # (the domains go, and their empty files)
-  for d in com.besiktasliseba.macstatusbaranddock com.besiktasliseba.test-crashstep; do
+cleanup() {   # (the domains go, and their empty files -- com.besiktasliseba.macstatusbar only when this script made it, for the Mac Switcher lines)
+  for d in com.besiktasliseba.macstatusbaranddock com.besiktasliseba.test-crashstep ${MSW_DOMAIN_MADE:+com.besiktasliseba.macstatusbar}; do
     defaults delete $d >/dev/null 2>&1 || true
     defaults read $d >/dev/null 2>&1 || rm -f ~/Library/Preferences/$d.plist
   done
@@ -119,6 +119,16 @@ if [ -f "$MAP" ] && [ -n "$DSYM" ]; then
   real core-sm-cardkey "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMCardKey$'
   real core-sm-keyset "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMKeySetHas$'
   real core-sm-fqblock "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^___DMSMForceQuitWindows_block_invoke'
+  # (the Mac Switcher, 1.4: its Stage Manager desktops' functions and blocks, the Home button's blocks -> its own switch; the blocks fell to Stock
+  #  status bar mode in the 1.4~int6 map. Its switch is off by default -- a crash then falls to Stock status bar mode -- so it is on for these lines,
+  #  in this Mac's com.besiktasliseba.macstatusbar domain, which is removed again; skipped when the Mac has that domain already)
+  if ! defaults read $D >/dev/null 2>&1; then
+    MSW_DOMAIN_MADE=1; defaults write $D macSwitcher -bool YES
+    real core-msw-sm "pref MacStatusBarCore $D macSwitcher 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMMSWSMJoin$'
+    real core-msw-sm-block "pref MacStatusBarCore $D macSwitcher 0 *" --symbol "$DSYM" MacStatusBarCore '^___DMMSWSMSwitch_block_invoke'
+    real core-msw-button-block "pref MacStatusBarCore $D macSwitcher 0 *" --symbol "$DSYM" MacStatusBarCore '^___DMMSWHomeDoubleTakesOver_block_invoke'
+    defaults delete $D >/dev/null 2>&1 || true
+  else echo "SKIP  the Mac Switcher lines: this Mac has a $D domain (not touched)"; fi
   # every Stage Manager hook group of this build (%group SM...): Windowing off -- 16.0's SMLayout160 / SMGrid160 fell to the image's target in the
   # first 1.3.4 build (the stock status bar instead, logic test); a new SM group must not
   smgroups=$(nm -s __TEXT __text "$DSYM" | grep -oE 'logos_method\$SM[A-Za-z0-9]*\$' | sed 's/^logos_method\$//; s/\$$//' | sort -u)

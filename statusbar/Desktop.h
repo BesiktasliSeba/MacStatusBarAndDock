@@ -15,6 +15,7 @@
 //    Finder windows, onto folders here, the Dock's Downloads stack, app windows; and from them onto the desktop).
 // One DMDesktop is one desktop -- its folder, its places, its view -- so a later Spaces feature can keep one per desktop.
 #define kDesktopDomain CFSTR("com.besiktasliseba.macstatusbar.desktop")
+#include "../common/DesktopCheck.h"   // (iPadOS 17+: the check's verdict, read by Settings -- DMDesktopNewOSReady)
 #include "DesktopPlace.h"   // (where the icons go: the free spots, the grid, no room -- plain C, tested on the Mac)
 
 @interface DMDesktopItemView : UIView
@@ -90,6 +91,10 @@ static BOOL DMDesktopPointerTouch(UITouch *t, UIEvent *e) {
 @class DMDesktop;
 static DMDesktop *gDesktop;
 static BOOL gDesktopOn = YES;   // (Settings > Mac Status Bar > Show Desktop Icons; with Finder on)
+// (for the untested-iPadOS diagnostics, DMDesktopDiag: what the last measure read from the Home Screen -- 1 the names' font, 2 their colours,
+//  4 an app icon view to read them from, 8 the picture size from an icon view -- and where the folders' picture came from: 4 drawn, the folder
+//  icon of 1.4 (1-3 were the Files app's Home Screen icon, iOS's own Files icon, none, before it was drawn))
+static int gDesktopLookRead, gDesktopFolderFrom;
 @interface DMDesktop : UIView <UIGestureRecognizerDelegate, UITextFieldDelegate, UIContextMenuInteractionDelegate>
 @property (nonatomic, copy) NSString *folder;
 - (instancetype)initWithFolder:(NSString *)folder;
@@ -106,6 +111,7 @@ static BOOL gDesktopOn = YES;   // (Settings > Mac Status Bar > Show Desktop Ico
 - (void)dm_made:(NSArray<NSString *> *)paths;
 - (void)dm_fitRenameField;
 - (NSString *)dm_placeStringFor:(NSString *)path;
+- (NSString *)dm_diagLine;   // (untested iPadOS diagnostics, DMDesktopDiag: where it sits and what it found there; names and numbers only)
 - (void)dm_axOpen:(DMDesktopItemView *)v;
 #if DEBUG
 - (void)dm_debug:(NSString *)spec;
@@ -259,8 +265,10 @@ static void DMKeyboardDockWatch(void) {
 // Where that is not answered, the icon list (SBIconListView) in the root folder's scroll view (SBIconScrollView) nearest the start: the leftmost, the
 // rightmost in a right-to-left language, where iPadOS lays the pages out from the right (iPad 2, Hebrew: page 1 at x 3072, page 4 at x 768 -- before
 // 1.3.3 the desktop went on the last page there). Found once, checked on every tick (cheap), looked for again when it is gone.
+// (SBIconController through DMSBManager: +sharedInstance on 15/16, as before; iPadOS 17+ only once SpringBoard has made it, +sharedInstanceIfExists
+//  -- nil until then, and the next tick looks again)
 static UIView *DMDesktopFindPageOne(void) {
-    id ic = DMCall(objc_getClass("SBIconController"), @"sharedInstance");
+    id ic = DMSBManager("SBIconController");
     UIViewController *rfc = DMCall(DMCall(ic, @"iconManager"), @"rootFolderController");
     if (![rfc isKindOfClass:[UIViewController class]] || !rfc.isViewLoaded) return nil;
     Class sc = objc_getClass("SBIconScrollView"), lc = objc_getClass("SBIconListView");
@@ -284,7 +292,7 @@ static UIView *DMDesktopFindPageOne(void) {
     return first;
 }
 static BOOL DMDesktopEditing(void) {
-    id im = DMCall(DMCall(objc_getClass("SBIconController"), @"sharedInstance"), @"iconManager");
+    id im = DMCall(DMSBManager("SBIconController"), @"iconManager");
     return [im respondsToSelector:@selector(isEditing)] && ((BOOL (*)(id, SEL))objc_msgSend)(im, @selector(isEditing));
 }
 - (void)dm_detach {
@@ -417,6 +425,7 @@ static BOOL DMDesktopEditing(void) {
         id sc = DMCall(leg, @"shadowColor"); if ([sc isKindOfClass:[UIColor class]]) shadow = sc;
     } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[desktop] the app names' look could not be read: %@", e.reason]); }
     { static BOOL told; if (!told && sample) { told = YES; DMLog([NSString stringWithFormat:@"[desktop] the app names' look: font %@, colours %@", font ? @"read" : @"not readable (a stand-in)", text ? @"read" : @"stand-ins"]); } }
+    if (sample) gDesktopLookRead = (font ? 1 : 0) | (text ? 2 : 0) | 4 | (best > 20.0 ? 8 : 0);
     _font = font ?: _font ?: [UIFont systemFontOfSize:12.0 weight:UIFontWeightMedium];
     _textColor = text ?: _textColor ?: [UIColor whiteColor];
     _shadowColor = shadow ?: _shadowColor ?: [UIColor colorWithWhite:0 alpha:0.5];
@@ -471,6 +480,7 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
     UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(s, s)];
     _folderImage = [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) { DMDesktopDrawFolder(ctx.CGContext, s); }];
     _folderImageSide = s;
+    gDesktopFolderFrom = 4;   // (drawn: for the untested-iPadOS diagnostics, DMDesktopDiag)
     return _folderImage;
 }
 - (UIImage *)dm_imageFor:(DMFinderItem *)it view:(DMDesktopItemView *)v {
@@ -1218,6 +1228,25 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
     return NO;
 }
 
+// One line for the untested-iPadOS diagnostics (DMDesktopDiag): page 1's list (class, size), whether page 1 shows, jiggle mode, how many of our
+// icons, and what lies on the page (app icons / widgets kept free, the list's focus guides, the page dots) -- the facts that tell, from a report,
+// whether the Home Screen still has the shape this desktop expects. Names and numbers only (no file names).
+- (NSString *)dm_diagLine {
+    UIView *list = _list;
+    NSUInteger icons = 0, widgets = 0, guides = 0;
+    Class iv = objc_getClass("SBIconView"), fg = objc_getClass("SBHFocusGuideView");
+    for (UIView *v in list.subviews) {
+        if (v == self) continue;
+        if (iv && [v isKindOfClass:iv]) { if ([NSStringFromClass([v class]) containsString:@"Widget"]) widgets++; else icons++; }
+        else if ([NSStringFromClass([v class]) containsString:@"Widget"]) widgets++;
+        else if (fg && [v isKindOfClass:fg]) guides++;
+    }
+    NSUInteger occupied = [self dm_occupied].count;
+    return [NSString stringWithFormat:@"page1 %@ %.0fx%.0f shown %d editing %d alpha %.1f; items %lu; on page: icons %lu widgets %lu guides %lu, kept free %lu",
+            list ? NSStringFromClass([list class]) : @"none", list.bounds.size.width, list.bounds.size.height, [self dm_pageShowing], _editing, self.alpha,
+            (unsigned long)_items.count, (unsigned long)icons, (unsigned long)widgets, (unsigned long)guides, (unsigned long)occupied];
+}
+
 #if DEBUG
 // desk_<what>[:<arg>] (StatusBar.x trigger): the desktop's state and actions for tests -- names only of the test items.
 - (void)dm_debug:(NSString *)spec {
@@ -1236,7 +1265,7 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
     else if ([act isEqualToString:@"select"] && v) [self dm_select:@[v.item.path]];
     else if ([act isEqualToString:@"selectall"]) [self dm_select:[_items valueForKey:@"path"]];
     else if ([act isEqualToString:@"edit"]) {   // edit:<0|1>: the Home Screen's jiggle mode on / off (the icon manager's own switch)
-        id im = DMCall(DMCall(objc_getClass("SBIconController"), @"sharedInstance"), @"iconManager");
+        id im = DMCall(DMSBManager("SBIconController"), @"iconManager");
         if ([im respondsToSelector:@selector(setEditing:)]) ((void (*)(id, SEL, BOOL))objc_msgSend)(im, @selector(setEditing:), [arg boolValue]);
     }
     else if ([act isEqualToString:@"open"] && v) [self dm_openItems:@[v.item]];
@@ -1277,7 +1306,7 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
                 if (iv && [x isKindOfClass:iv]) { id bid = nil; @try { bid = DMCall(DMCall(x, @"icon"), @"applicationBundleID"); } @catch (NSException *e) {}
                     if ([bid isEqual:@"com.apple.DocumentsApp"]) { NSMutableString *ch = [NSMutableString string]; for (UIView *y = x.superview; y && ch.length < 500; y = y.superview) [ch appendFormat:@"%@%@ < ", NSStringFromClass([y class]), y.hidden ? @"(hidden)" : @""];
                         DMLog([NSString stringWithFormat:@"[desktop] test: Files icon view in %@: %@", NSStringFromClass([w class]), ch]); } } } }
-        { id im = DMCall(DMCall(objc_getClass("SBIconController"), @"sharedInstance"), @"iconManager"); unsigned n = 0; Method *ms = class_copyMethodList([im class], &n); NSMutableArray *hits = [NSMutableArray array];
+        { id im = DMCall(DMSBManager("SBIconController"), @"iconManager"); unsigned n = 0; Method *ms = class_copyMethodList([im class], &n); NSMutableArray *hits = [NSMutableArray array];
           for (unsigned i = 0; i < n; i++) { NSString *m = NSStringFromSelector(method_getName(ms[i])); if ([m containsString:@"iconViewFor"] || [m containsString:@"IconViewFor"]) [hits addObject:m]; } free(ms);
           DMLog([NSString stringWithFormat:@"[desktop] test: icon manager %@: %@", NSStringFromClass([im class]), [hits componentsJoinedByString:@" "]]); }
         id label = nil; for (UIView *x in _list.subviews) if ([x isKindOfClass:iv]) { label = DMCall(x, @"labelView"); break; }
@@ -1309,9 +1338,11 @@ static void DMDesktopTakeDrop(DMFDrag *d, CGPoint sp, NSString *dest, BOOL ontoF
 }
 
 // ---- switched on and off ----
-// Settings > Mac Status Bar > Show Desktop Icons (desktopIcons, on unless set; with Finder on). iPadOS 17+: off (not tested there).
+// Settings > Mac Status Bar > Show Desktop Icons (desktopIcons, on unless set; with Finder on). iPadOS 17 (untested, "Enable Anyway"): the same
+// switch, and the desktop goes up only once its check of the Home Screen parts it uses has passed (DMDesktopNewOSReady, in DMDesktopTick).
+// iPadOS 18+: off, as before 1.4 (only 17 was ported and read; the Wi-Fi menu and the Mac Switcher stop at 17 the same way).
 static BOOL DMDesktopPrefOn(void) {
-    if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17) return NO;
+    if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 18) return NO;
     CFPreferencesAppSynchronize(MSB_DOMAIN);
     CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("desktopIcons"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     BOOL on = !v || (CFGetTypeID(v) == CFBooleanGetTypeID() ? CFBooleanGetValue(v) : (CFGetTypeID(v) == CFNumberGetTypeID() ? [(__bridge NSNumber *)v boolValue] : YES));
@@ -1353,9 +1384,72 @@ static void DMDesktopHookFocusGuides(void) {
     if (class_addMethod(c, @selector(hitTest:withEvent:), (IMP)DMFocusGuideHitTest, method_getTypeEncoding(m))) gFocusGuideHitTestOrig = (void *)method_getImplementation(m);
     else gFocusGuideHitTestOrig = (void *)method_setImplementation(m, (IMP)DMFocusGuideHitTest);
 }
+// ---- iPadOS 17+ (untested versions, "Enable Anyway"; 2026-10-03) ----
+// 1.3 left the desktop off on 17+ only because it had not been tried there. Every class and method it uses was checked against iPadOS 17.0.3's
+// runtime headers and 17.6.1's SpringBoardHome (also 18.2's): the same shapes as on 16 -- page 1 is the leftmost SBIconListView in the root
+// folder's SBIconScrollView, the list itself only acts on the icon views added to it (-didAddSubview:), the focus guides still inherit UIView's hit
+// test, the names' font and legibility come from the icon view as on 16. On the iPad it is checked again, once, when the desktop is first wanted
+// (SpringBoard is up by then; runtime lookups only -- nothing is messaged or made): the parts it cannot do without, and the extras that only cost
+// a look (a stand-in font or colour, the focus-guide fix; the folders' picture is drawn and needs nothing of SpringBoard's). A part it needs
+// missing: the desktop stays off, Settings leaves its switch out on this iPadOS build (common/DesktopCheck.h) and the diagnostics say which part
+// (Report a Problem). 15/16: never asked.
+typedef struct { const char *cls, *sel; BOOL meta, must; } DMDesktopNeed;
+static const DMDesktopNeed kDMDesktopNeeds[] = {
+    {"SBIconController", "sharedInstance", YES, YES}, {"SBIconController", "iconManager", NO, YES},
+    {"SBHIconManager", "rootFolderController", NO, YES}, {"SBHIconManager", "isEditing", NO, YES},
+    {"SBIconScrollView", NULL, NO, YES}, {"SBIconListView", NULL, NO, YES}, {"SBIconView", "icon", NO, YES},
+    {"SBIconView", "displayedLabelFont", NO, NO}, {"SBIconView", "_labelImageParameters", NO, NO}, {"SBIconView", "_legibilitySettingsWithParameters:", NO, NO},
+    {"SBIconListView", "iconImageSize", NO, NO},
+    {"SBHFocusGuideView", NULL, NO, NO}, {"SBFolderScrollAccessoryView", NULL, NO, NO},
+};
+static int gDesktopCheck = -1;                         // (17+: 1 ready, 0 a part it needs is missing, -1 not checked yet)
+static NSString *gDesktopCheckWhy, *gDesktopCheckSoft;  // (17+: the parts it needs that are missing; the extras that are missing)
+static BOOL DMDesktopNewOSReady(void) {
+    if (gDesktopCheck >= 0) return gDesktopCheck == 1;
+    NSMutableArray *hard = [NSMutableArray array], *soft = [NSMutableArray array];
+    for (size_t i = 0; i < sizeof(kDMDesktopNeeds) / sizeof(kDMDesktopNeeds[0]); i++) {
+        const DMDesktopNeed *n = &kDMDesktopNeeds[i];
+        Class c = objc_getClass(n->cls);
+        if (c && (!n->sel || class_respondsToSelector(n->meta ? object_getClass(c) : c, sel_registerName(n->sel)))) continue;   // (no +initialize run)
+        [n->must ? hard : soft addObject:n->sel ? [NSString stringWithFormat:@"%s[%s %s]", n->meta ? "+" : "-", n->cls, n->sel] : @(n->cls)];
+    }
+    gDesktopCheck = hard.count ? 0 : 1;
+    gDesktopCheckWhy = hard.count ? [hard componentsJoinedByString:@", "] : nil;
+    gDesktopCheckSoft = soft.count ? [soft componentsJoinedByString:@", "] : nil;
+    DMLog([NSString stringWithFormat:@"[desktop] iPadOS %ld: %@%@", (long)[NSProcessInfo processInfo].operatingSystemVersion.majorVersion,
+           hard.count ? [@"not on, missing " stringByAppendingString:gDesktopCheckWhy] : @"the Home Screen has everything the desktop needs",
+           soft.count ? [@"; extras missing " stringByAppendingString:gDesktopCheckSoft] : @""]);
+    // (the verdict for Settings, per iPadOS build, as the Stage Manager engine's: written once per start)
+    NSMutableDictionary *v = [NSMutableDictionary dictionary];
+    v[@"build"] = MSBDOSBuild() ?: @"";
+    v[@"ok"] = @(gDesktopCheck == 1);
+    if (gDesktopCheckWhy) v[@"reason"] = gDesktopCheckWhy;
+    CFPreferencesSetValue(MSBD_DESKTOP_CHECK_KEY, (__bridge CFPropertyListRef)v, MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    CFPreferencesSynchronize(MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    return gDesktopCheck == 1;
+}
+// The "Finder" record of the untested-iPadOS diagnostics (common/Diag.h; 17+ with Enable Anyway): the desktop's check and where it sits, and the
+// native windows' layer (Finder's windows, the text window, the desktop's menus' keyboard). At most every 10 s, written only when it changed.
+// Names and numbers only: no file or folder names, no app names.
+static void DMDesktopDiag(void) {
+    if (!MSBDDiagEnabled()) return;
+    static CFTimeInterval last = -100; if (CACurrentMediaTime() - last < 10.0) return; last = CACurrentMediaTime();
+    NSMutableString *t = [NSMutableString string];
+    [t appendFormat:@"desktop: check %@%@%@; finder %d switch %d folder %d\n", gDesktopCheck < 0 ? @"not run" : gDesktopCheck ? @"ok" : @"failed",
+        gDesktopCheckWhy ? [@", missing " stringByAppendingString:gDesktopCheckWhy] : @"", gDesktopCheckSoft ? [@"; extras missing " stringByAppendingString:gDesktopCheckSoft] : @"",
+        gFinderOn, gDesktopOn, DMFinderDesktopFolder(NO) != nil];
+    if (gDesktop) [t appendFormat:@"%@; look %d folder icon %d guides %d rename lock %@\n", [gDesktop dm_diagLine], gDesktopLookRead, gDesktopFolderFrom,
+        gFocusGuideHitTestOrig != NULL, gDesktopFocusLock ? NSStringFromClass([gDesktopFocusLock class]) : @"-"];
+    UIWindow *l = gNativeLayer;
+    [t appendFormat:@"windows: layer %@ level %.1f scene %d key %d, %lu open, active %d, focus lock %@", l ? NSStringFromClass([l class]) : @"none", l.windowLevel,
+        l.windowScene != nil, l.isKeyWindow, (unsigned long)gNativeWindows.count, gNativeActive != nil, gNativeFocusLock ? NSStringFromClass([gNativeFocusLock class]) : @"-"];
+    MSBDDiagWrite(@"Finder", t);
+}
 // Every tick (DMNativeTick): made when wanted (and its folder with it), kept on page 1, gone when switched off.
 static void DMDesktopTick(void) {
+    DMDesktopDiag();
     BOOL want = gFinderOn && gDesktopOn && !DMCtorSkip("desktop");
+    if (want && DMNewOS() && !DMDesktopNewOSReady()) want = NO;   // (iPadOS 17+: only with every Home Screen part it needs, checked once)
     if (!want) { if (gDesktop) { [gDesktop dm_teardown]; gDesktop = nil; DMLog(@"[desktop] off: icons removed"); } return; }
     if (!gDesktop) {
         static CFTimeInterval tried; if (CACurrentMediaTime() - tried < 5.0) return; tried = CACurrentMediaTime();

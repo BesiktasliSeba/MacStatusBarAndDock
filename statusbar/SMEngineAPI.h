@@ -12,6 +12,7 @@
 //    MSBDStageManagerVerdict) for the root helper (which engine loads) and Settings (the greyed row).
 // Included once by StatusBar.x (after DMLog / DMCall / MSB_DOMAIN / DMTestFlag and the DMSMAttributedSize typedef).
 #pragma once
+#include <dlfcn.h>   // (dlsym: SpringBoard's exported layout-role functions and constants, iPadOS 17 check)
 #include "SMRoles.h"   // (the window roles a stage has: DMSMPlanValid reads the highest, sm-nolimit)
 #include "SMWindowKey.h"   // (one window, one key: its own scene -- M-2, sm-multiwin)
 
@@ -108,6 +109,7 @@ DMSM_SIG(DMSMSigRect, @encode(CGRect))                                          
 DMSM_SIG(DMSMSigInBounds, @encode(CGSize), @encode(CGRect))                            // -sizeInBounds:, -centerInBounds: (16.0 / 16.1; {dd} either way)
 DMSM_SIG(DMSMSigRequestOnDisplay, @encode(BOOL), @encode(unsigned long long), @encode(id), @encode(id))   // -requestTransitionWithOptions:displayConfiguration:builder: (YES = taken)
 DMSM_SIG(DMSMSigRequest, @encode(BOOL), @encode(id))                                  // -requestTransitionWithBuilder: (YES = taken; B@:@? on 16.7.7)
+DMSM_SIG(DMSMSigWithBool, @encode(id), @encode(BOOL))                                  // -attributesByModifyingPositionIsSystemManaged: (iPadOS 17+)
 
 // ---- sense checks ------------------------------------------------------------------------------------------------------------------------------
 static BOOL DMSMFinite(double v) { return isfinite(v); }
@@ -326,6 +328,38 @@ static id DMSMAttrWithLong(id attrs, NSString *name, long long v, long long lo, 
 }
 static id DMSMAttrWithSizingPolicy(id attrs, long long p) { return DMSMAttrWithLong(attrs, @"attributesByModifyingSizingPolicy:", p, 0, 8); }
 static id DMSMAttrWithLastInteractionTime(id attrs, long long t) { return DMSMAttrWithLong(attrs, @"attributesByModifyingLastInteractionTime:", t, 0, LLONG_MAX / 2); }
+// iPadOS 17+: who decides a window's place. A window Stage Manager opened at its default place is "system managed" (SBDisplayItemLayoutAttributes
+// -isPositionSystemManaged, new in 17: ivar _positionIsSystemManaged in every 17.0-18.6 SpringBoard.tbd); a window the user dragged is not
+// (-[SBContinuousExposeWindowDragDestinationSwitcherModifier ...] sets NO when a lone window is put down, 17.6.1). 17's auto-layout only moves
+// system-managed windows on its own: it re-centres a lone one and, with the window set unchanged, folds them back towards the middle
+// (-[SBContinuousExposeAutoLayoutController _performAutoLayoutWithSpace:...] / -spaceByPerformingAutoLayoutWithSpace:..., 17.6.1). Every window our
+// engine places is a window the user placed, so it is handed over as such (DMSMAttrWith, DMSMSetWindowGeometry): Stage Manager itself then leaves
+// it where it is -- the cause, not the effect (the SMLayout17 hooks stay for the windows Stage Manager places itself). Only on the 17 table.
+static unsigned gSMPlacedByUser = 0;   // (how many attributes went out marked "placed by the user": the diagnostics record)
+static BOOL DMSMAttrSystemManaged(id attrs, BOOL *out) {
+    SEL sel = NSSelectorFromString(@"isPositionSystemManaged");
+    if (!DMSMIsAttrs(attrs) || !DMSMSigOK(attrs, sel, DMSMSigBool(), "isPositionSystemManaged")) return NO;
+    BOOL v = ((BOOL (*)(id, SEL))objc_msgSend)(attrs, sel);
+    if (out) *out = v;
+    return YES;
+}
+static id DMSMAttrWithSystemManaged(id attrs, BOOL managed) {
+    SEL sel = NSSelectorFromString(@"attributesByModifyingPositionIsSystemManaged:");
+    if (!DMSMIsAttrs(attrs) || !DMSMSigOK(attrs, sel, DMSMSigWithBool(), "attributesByModifyingPositionIsSystemManaged:")) return nil;
+    id r = ((id (*)(id, SEL, BOOL))objc_msgSend)(attrs, sel, managed);
+    return DMSMIsAttrs(r) ? r : nil;
+}
+// The window as placed by the user (17 table only; 16 has no such flag). Never fatal: refused, the attributes go out as they were.
+static id DMSMAttrPlacedByUser(id attrs) {
+    if (!attrs || DMSMLayoutGen() != 17) return attrs;
+    BOOL managed = NO;
+    if (DMSMAttrSystemManaged(attrs, &managed) && !managed) return attrs;   // (already the user's)
+    id a = DMSMAttrWithSystemManaged(attrs, NO);
+    if (!a) return attrs;
+    if (gSMPlacedByUser < 100000) gSMPlacedByUser++;
+    if (gSMPlacedByUser == 1 || gSMPlacedByUser == 50) DMSM17DiagSoon();   // (the diagnostics record says it happens)
+    return a;
+}
 // New, empty attributes (a window with no earlier place).
 static id DMSMAttrNew(void) {
     Class c = DMSMAttrClass();
@@ -340,12 +374,16 @@ static id DMSMAttrWith(id attrs, DMSMAttributedSize s, CGPoint c, long long poli
     a = a ? DMSMAttrWithCenter(a, c) : nil;
     a = a ? DMSMAttrWithSizingPolicy(a, policy) : nil;
     if (a && time >= 0) a = DMSMAttrWithLastInteractionTime(a, time);
-    return a;
+    return DMSMAttrPlacedByUser(a);   // (iPadOS 17+: placed by the user, Stage Manager keeps it there; 16: unchanged)
 }
 
 // ---- SBAppLayout (a stage), its items (SBDisplayItem), the switcher's list of stages ---------------------------------------------------------------
 static id DMSMCoordinator(void) {
     Class c = objc_getClass("SBMainSwitcherControllerCoordinator");
+    // (iPadOS 17+: only the coordinator that already exists -- +sharedInstance makes it when it is not there yet, and our hooks that read the stages
+    //  run inside SpringBoard's switcher set-up: making it from in there is the recursive-singleton crash of the 18 audit (issue #1, Lock Screen
+    //  manager). +sharedInstanceIfExists is on 17.0.3 and 18.2; not there yet = no stages, every caller handles nil. 16: unchanged.)
+    if (c && DMSMLayoutGen() == 17 && [(id)c respondsToSelector:NSSelectorFromString(@"sharedInstanceIfExists")]) return DMCall(c, @"sharedInstanceIfExists");
     return c ? DMCall(c, @"sharedInstance") : nil;
 }
 static NSArray *DMSMRecentStages(void) {
@@ -551,7 +589,46 @@ static BOOL DMSMWritePlan(id ctx, NSArray<NSArray *> *plan, id frontEntity) {
 }
 // A workspace transition on a display (the iPad: nil identity) that names the plan's windows. YES when SpringBoard took the request. The plan is
 // checked before the request is made: a refused plan asks for nothing (no half request).
-static BOOL DMSMRequestPlan(id identity, BOOL onMain, NSString *label, NSArray<NSArray *> *plan, NSSet<NSNumber *> *allowed, id frontEntity) {
+// A plan that names a WHOLE stage (a Mac Switcher desktop: whole = YES). A role a transition's context leaves unset means "as it was": Stage Manager
+// lays the requested windows over the stage on screen (and over the launched app's own stage) and keeps the windows in every other role -- a
+// desktop asked for from a fuller one took the extra windows along (iPad 2, 3 Oct: Tips and Books went with Desktop 2, then back, each switch;
+// emptying the context's roles with nil did nothing: they were already unset). SpringBoard empties a role with an SBEmptyWorkspaceEntity (+entity,
+// read on 16.7.7), so every window role the plan does not name gets one (the side role 2, the centre role 4 and every additional side SpringBoard
+// has -- 5 to 9 on 16.7.7 since 1.3.6's seven windows per desktop (SMRoles.h): with only 2 4 5 6 emptied, a desktop asked for from one of seven
+// kept the left desktop's windows of roles 7-9; role 1 is always in a plan; role 3, the floating app, is not a window of a stage and stays). The
+// engine's own requests add to the stage on screen and rely on the kept roles: whole = NO. (An emptied role whose window in the stage on screen the
+// same plan names in another role takes that window out of the new stage: iPad 2, 4 Oct -- see DMMSWSMPlan.)
+static id DMSMEmptyEntity(void) {
+    Class c = objc_getClass("SBEmptyWorkspaceEntity");
+    SEL s = NSSelectorFromString(@"entity");
+    if (!c || ![c respondsToSelector:s] || !DMSMSigOK(c, s, DMSMSigObj(), "+entity")) return nil;
+    id e = nil;
+    @try { e = ((id (*)(id, SEL))objc_msgSend)(c, s); } @catch (NSException *x) { e = nil; }
+    return [e isKindOfClass:c] ? e : nil;
+}
+static void DMSMCtxClearOtherRoles(id ctx, NSArray<NSArray *> *plan) {
+    NSMutableSet *mine = [NSMutableSet set];
+    for (NSArray *en in plan) [mine addObject:@([en[1] longLongValue])];
+    SEL setE = NSSelectorFromString(@"setEntity:forLayoutRole:");
+    if (!DMSMCtxCanWrite(ctx)) return;
+    NSMutableArray *cleared = [NSMutableArray array];
+    // (SpringBoard's own window roles when they were read -- also after the engine's table fell back to four, while a desktop of seven may still be
+    //  on screen, as the role repair reads them -- else the engine's table; with the centre role 4)
+    size_t nRoles = 0;
+    const long long *list = DMSMRepairRoleList(&nRoles);
+    NSMutableArray<NSNumber *> *roles = [NSMutableArray arrayWithObject:@4];
+    for (size_t i = 0; i < nRoles; i++) if (list[i] != 1 && ![roles containsObject:@(list[i])]) [roles addObject:@(list[i])];
+    [roles sortUsingSelector:@selector(compare:)];
+    for (NSNumber *r in roles) {
+        if ([mine containsObject:r]) continue;
+        id empty = DMSMEmptyEntity();
+        if (!empty) { DMSMAPIFail(@"SBEmptyWorkspaceEntity +entity", @"missing: the roles a whole stage does not name keep their windows"); return; }
+        @try { ((void (*)(id, SEL, id, long long))objc_msgSend)(ctx, setE, empty, r.longLongValue); [cleared addObject:r]; }
+        @catch (NSException *x) { DMSMAPIFail(@"setEntity:<empty> forLayoutRole:", x.reason ?: @"exception"); return; }
+    }
+    if (cleared.count && DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[smapi] whole stage: roles %@ set empty", [cleared componentsJoinedByString:@", "]]);
+}
+static BOOL DMSMRequestPlan(id identity, BOOL onMain, NSString *label, NSArray<NSArray *> *plan, NSSet<NSNumber *> *allowed, id frontEntity, BOOL whole) {
     if (gDMSMModelChanged) gDMSMModelChanged();
     NSString *why = nil;
     if (!DMSMPlanValid(plan, allowed, &why)) { DMSMAPIFail(@"transition plan", [NSString stringWithFormat:@"%@ refused before asking: %@", label, why]); return NO; }
@@ -566,7 +643,7 @@ static BOOL DMSMRequestPlan(id identity, BOOL onMain, NSString *label, NSArray<N
         if ([req respondsToSelector:lab] && DMSMSigOK(req, lab, DMSMSigVoidObj(), "setEventLabel:")) ((void (*)(id, SEL, id))objc_msgSend)(req, lab, ourLabel);
         SEL mod = NSSelectorFromString(@"modifyApplicationContext:");
         if (!DMSMSigOK(req, mod, DMSMSigVoidObj(), "modifyApplicationContext:")) return;
-        ((void (*)(id, SEL, id))objc_msgSend)(req, mod, ^(id ctx) { @try { wrote = DMSMWritePlan(ctx, plan, frontEntity); } @catch (id e) {} });
+        ((void (*)(id, SEL, id))objc_msgSend)(req, mod, ^(id ctx) { @try { wrote = DMSMWritePlan(ctx, plan, frontEntity); if (wrote && whole) DMSMCtxClearOtherRoles(ctx, plan); } @catch (id e) {} });
     };
     @try {
         if (!onMain) {
@@ -811,6 +888,10 @@ static const DMSMNeed kSMNeeds[] = {
     {"SBContinuousExposeAutoLayoutController", "_compactSpacingBetweenItemsInSpace:configuration:", NO, YES, DMSMSigVoidObjObj, NULL, 17},
     {"SBContinuousExposeAutoLayoutController", "dodgeFullyOccludedWindowsToNearestVisibleEdgeForSpace:configuration:", NO, YES, DMSMSigVoidObjObj, NULL, 17},
     {"SBContinuousExposeAutoLayoutController", "snapPositionToNearestEdgesIfNecessaryForSpace:stageArea:configuration:", NO, YES, DMSMSigSnap17, NULL, 17},
+    // iPadOS 17's "position is system managed" flag of a window's attributes: our windows go out as placed by the user (DMSMAttrPlacedByUser).
+    // 17.0.3 headers: -(bool)isPositionSystemManaged, -(id)attributesByModifyingPositionIsSystemManaged:(bool); 17.6.1 and 18.2 decompiles too.
+    {"SBDisplayItemLayoutAttributes", "isPositionSystemManaged", NO, NO, DMSMSigBool, NULL, 17},
+    {"SBDisplayItemLayoutAttributes", "attributesByModifyingPositionIsSystemManaged:", NO, NO, DMSMSigWithBool, NULL, 17},
 };
 static const size_t kSMNeedsCount = sizeof(kSMNeeds) / sizeof(kSMNeeds[0]);
 // Which layout engine this iPadOS has, so which rows count: 16 = SBChamoisOverlappingController (iPadOS 16, where the engine was built and is
@@ -919,11 +1000,43 @@ static NSString *DMSMRowProblem(const DMSMNeed *n, NSString *simulate, BOOL *com
     }
     return nil;
 }
+// iPadOS 17+: the layout roles the engine writes -- 1 primary, 2 side, 5 and 6 the next windows ("additional side" 0 and 1) -- asked of SpringBoard
+// itself. They were read on 16.7.7, and 17.6.1's -[SBAppLayout layoutRoleForItem:] gives the same (item 0 -> SBLayoutRolePrimary, 1 ->
+// SBLayoutRoleSide, item n >= 2 -> n + 3); here SpringBoard's exported SBLayoutRoleIsValid() and its role constants (in every 16.5-18.6 tbd) are
+// asked on the device. A role SpringBoard does not take, or a constant with another value: the check fails (the engine stays off on that build,
+// as for a missing method). A symbol that is not exported: noted only (the roles are 17.6.1's own). The values go into the diagnostics record.
+static NSString *gSMRolesNote;   // (what the roles check saw, for the diagnostics record)
+static void DMSMCheckRoles17(NSMutableArray *bad, NSString *simulate) {
+    BOOL (*isValid)(long long) = (BOOL (*)(long long))dlsym(RTLD_DEFAULT, "SBLayoutRoleIsValid");
+    const long long *primary = (const long long *)dlsym(RTLD_DEFAULT, "SBLayoutRolePrimary");
+    const long long *side = (const long long *)dlsym(RTLD_DEFAULT, "SBLayoutRoleSide");
+    const long long *center = (const long long *)dlsym(RTLD_DEFAULT, "SBLayoutRoleCenter");
+    const long long *addMin = (const long long *)dlsym(RTLD_DEFAULT, "SBLayoutRoleAdditionalSideRangeMin");
+    const long long *addMax = (const long long *)dlsym(RTLD_DEFAULT, "SBLayoutRoleAdditionalSideRangeMax");
+    NSMutableArray<NSString *> *note = [NSMutableArray array];
+    BOOL ok = YES;
+    if (isValid) {
+        NSMutableArray *refused = [NSMutableArray array];
+        for (long long r = 1; r <= 6; r++) {
+            if (r == 3 || r == 4) continue;   // (floating and centre: never written by us)
+            BOOL valid = isValid(r);
+            if ([simulate isEqualToString:@"roles"] && r == 6) valid = NO;   // (debug: a role SpringBoard would not take)
+            if (!valid) [refused addObject:@(r)];
+        }
+        if (refused.count) { ok = NO; [bad addObject:[NSString stringWithFormat:@"layout roles %@ not valid for SpringBoard", [refused componentsJoinedByString:@","]]]; }
+        [note addObject:refused.count ? @"roles refused" : @"roles 1,2,5,6 valid"];
+    } else [note addObject:@"SBLayoutRoleIsValid not exported"];
+    if (primary && *primary != 1) { ok = NO; [bad addObject:[NSString stringWithFormat:@"SBLayoutRolePrimary is %lld, we use 1", *primary]]; }
+    if (side && *side != 2) { ok = NO; [bad addObject:[NSString stringWithFormat:@"SBLayoutRoleSide is %lld, we use 2", *side]]; }
+    [note addObject:[NSString stringWithFormat:@"primary %@, side %@, centre %@, additional %@..%@", primary ? @(*primary) : @"-", side ? @(*side) : @"-",
+        center ? @(*center) : @"-", addMin ? @(*addMin) : @"-", addMax ? @(*addMax) : @"-"]];
+    gSMRolesNote = [NSString stringWithFormat:@"%@: %@", ok ? @"ok" : @"DIFFERENT", [note componentsJoinedByString:@"; "]];
+}
 // Checks every row of this iPadOS's layout engine (and the rows both share): the classes and methods are there, with the signatures we use.
 // Returns the CORE rows that are missing or different (empty = the engine can run); optional rows go to *optional (with the feature they serve),
 // features left with none of their alternatives to *featuresOff, each row's answer to rowPassed (NULL: not wanted). simulate (debug):
 // "selector" / "encoding" pretend one core row is missing / different, "optional" that -appLayoutByRemovingItemInLayoutRole: is missing (as on
-// iPadOS 16.2-16.3); "layout16" / "layout17" check that layout engine's table.
+// iPadOS 16.2-16.3); "layout16" / "layout17" check that layout engine's table; "roles" pretends role 6 is refused (17 table, DMSMCheckRoles17).
 static NSArray<NSString *> *DMSMCheckAPIFull(NSString *simulate, NSUInteger *checked, NSArray<NSString *> **optional, NSArray<NSString *> **featuresOff, BOOL *rowPassed,
                                              NSDictionary<NSString *, NSString *> **variants, double *sizedThreshold) {
     NSMutableArray *bad = [NSMutableArray array], *opt = [NSMutableArray array];
@@ -1011,6 +1124,7 @@ static NSArray<NSString *> *DMSMCheckAPIFull(NSString *simulate, NSUInteger *che
         @try { NSGetSizeAndAlignment(ret, &size, &align); } @catch (id e) { size = 0; }
         if (size != sizeof(DMSMAttributedSize)) [bad addObject:[NSString stringWithFormat:@"attributedSize is %lu bytes, ours %lu", (unsigned long)size, (unsigned long)sizeof(DMSMAttributedSize)]];
     }
+    if (gen == 17) DMSMCheckRoles17(bad, simulate);   // (iPadOS 17+: the roles' meaning too, not only the methods' names)
     return bad;
 }
 // The core rows' problems only, nothing recorded (the debug trigger's re-runs, the Mac tests).
@@ -1150,6 +1264,20 @@ static void DMSMRecordRuntimeFailure(NSString *line) {
     CFPreferencesSetValue(MSBD_SM_CHECK_KEY, (__bridge CFPropertyListRef)v, MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     CFPreferencesSynchronize(MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
 }
+// The diagnostics' hook list (StatusBar.x DMDiagHooks, iPadOS 17+): the engine's hooks written for the OTHER layout engine (iPadOS 16's
+// SBChamoisOverlappingController / SBMutableChamoisOverlappingModel on 17) and the corner radius under the name this iPadOS does not use
+// (stageCornerRaddii through 17, stageCornerRadii from 18) are missing by design, not news: left out of the "missing" lists.
+static BOOL DMSMHookNotForThisOS(const char *cls, const char *sel) {
+    if (!cls || !sel) return NO;
+    int gen = DMSMLayoutGen();
+    if (gen == 17 && (!strcmp(cls, "SBChamoisOverlappingController") || !strcmp(cls, "SBMutableChamoisOverlappingModel"))) return YES;
+    if (gen == 16 && !strcmp(cls, "SBContinuousExposeAutoLayoutController")) return YES;
+    if (!strcmp(cls, "SBSwitcherChamoisLayoutAttributes") && (!strcmp(sel, "stageCornerRaddii") || !strcmp(sel, "stageCornerRadii"))) {
+        Class c = objc_getClass(cls);
+        return c && ![c instancesRespondToSelector:sel_registerName(sel)];   // (the name that is not here: the other one is hooked)
+    }
+    return NO;
+}
 static long long DMSMRoleOr(id stage, id item, long long dflt) { long long r = dflt; return DMSMStageRoleOfItem(stage, item, &r) ? r : dflt; }
 static long long DMSMPolicyOr(id attrs, long long dflt) { long long p = dflt; return DMSMAttrSizingPolicy(attrs, &p) ? p : dflt; }
 // A stage of several windows cut back to its primary window (another engine takes over: without Stage Manager a multi-window stage is a multi-app
@@ -1273,4 +1401,81 @@ static CGPoint DMSMClampCenter(CGPoint c, CGSize s, CGRect area) {
     x = MIN(x, CGRectGetMaxX(area) - s.width / 2.0);  x = MAX(x, CGRectGetMinX(area) + s.width / 2.0);
     y = MIN(y, CGRectGetMaxY(area) - s.height / 2.0); y = MAX(y, CGRectGetMinY(area) + s.height / 2.0);
     return CGPointMake(x, y);
+}
+// One iPadOS 17 layout pass, around Apple's -_performAutoLayoutWithSpace:configuration:stageInset: (%group SMLayout17, StatusBar.x). Kept here
+// (checked wrappers only, no Logos) so the Mac test can run it around a stand-in of 17.6.1's own pass (tools/test-smlayout17.m).
+//  begin: each window's place and size before Apple's pass -- none for a window with no place yet ((0,0): Apple centres it) -- and a LONE window's
+//         "default position" flag hidden from this pass (Apple centres a lone system-managed window; our windows are not system managed anyway,
+//         DMSMAttrPlacedByUser);
+//  end:   the lone window's flag put back, and every remembered window at its own place again, kept inside `area` (our stage area, what Apple's
+//         pass returns: -stageAreaForSpace:configuration:, hooked) instead of Apple's container inset by its screen edge padding.
+// A window as big as the container (our full screen inside the stage, sizing policy 2) goes back to the container's centre: Apple's padding clamp
+// pushes a window bigger than the padded container to its far edges (17.6.1: x = min(max(x, minX + w/2), maxX - w/2) of the container inset by
+// the screen edge padding -- a 1194 pt window ends 48 pt left and up), and only re-centres it when it is the stage's only window. Apple's own full
+// screen is a stage of its own; ours shares the stage with the windows (they can come in front of it), so with windows around it ours was moved.
+// Anything unreadable is left out (Apple's result stays for that window).
+typedef struct { NSArray *before; id lone; BOOL loneHidden; } DMSM17Pass;
+static DMSM17Pass DMSM17PassBegin(id space, BOOL haveContainer, CGRect container) {
+    DMSM17Pass pass = { nil, nil, NO };
+    NSArray *items = DMSMSpaceItems(space);
+    NSMutableArray *before = [NSMutableArray array];
+    for (id it in items) {
+        CGPoint p; CGSize z;
+        BOOL keep = haveContainer && DMSMItemPosition(it, &p) && DMSMItemSize(it, &z) && !(p.x == 0 && p.y == 0);
+        BOOL full = keep && z.width >= container.size.width - 1.0 && z.height >= container.size.height - 1.0;
+        if (full) p = CGPointMake(CGRectGetMidX(container), CGRectGetMidY(container));
+        [before addObject:keep ? @[it, [NSValue valueWithCGPoint:p], [NSValue valueWithCGSize:z], @(full)] : [NSNull null]];
+    }
+    pass.before = before;
+    if (items.count == 1 && before.firstObject != [NSNull null] && ![before.firstObject[3] boolValue]) {
+        BOOL def = NO;
+        if (DMSMItemInDefaultPosition(items.firstObject, &def) && def && DMSMItemSetInDefaultPosition(items.firstObject, NO)) { pass.lone = items.firstObject; pass.loneHidden = YES; }
+    }
+    return pass;
+}
+// Returns how many windows were put back at their place (-1: the area was not a rectangle, nothing moved).
+static int DMSM17PassEnd(DMSM17Pass *pass, CGRect area) {
+    if (pass->loneHidden) { DMSMItemSetInDefaultPosition(pass->lone, YES); pass->loneHidden = NO; }
+    if (!DMSMRectSane(area)) return -1;
+    int moved = 0;
+    for (id e in pass->before) {
+        if (e == [NSNull null]) continue;
+        NSArray *en = e;
+        CGPoint p = [en[1] CGPointValue], want = [en[3] boolValue] ? p : DMSMClampCenter(p, [en[2] CGSizeValue], area), now;   // (full screen: the container's centre, not clamped into the stage area)
+        if (!DMSMItemPosition(en[0], &now) || (fabs(now.x - want.x) < 0.5 && fabs(now.y - want.y) < 0.5)) continue;
+        if (DMSMItemSetPosition(en[0], want)) moved++;
+    }
+    return moved;
+}
+
+// ---- the window sizes Stage Manager allows (-[SBSwitcherChamoisLayoutAttributes gridWidths / gridHeights], %group SMEngine) ----------------------------
+// (the window sizes Stage Manager allows, a list of widths and one of heights ~10 pt apart up to 48 pt short of the edges; a size is rounded to them.
+//  Our engine: every whole point up to the screen size -- one cached list per length, so exact sizes cost nothing)
+// iPadOS 17+: the shortest window. 17.6.1 builds the height list from 480 pt up (-[SBSwitcherChamoisSettings layoutAttributesForContainerBounds:...]:
+// _gridHeightsForSafeHeight:minimumHeight:480.0 ...; widths from 320), and its flexible grid (_SBDisplayItemFlexibleGrid) only ever picks a height
+// from that list -- so a window was never shorter than 480 pt: Fit to Window's quarters and the Top/Bottom Half layouts in landscape (an 11" iPad's
+// quarter is 321 pt, an iPad Air's 314) came out 480 pt tall and overlapped. On 16.7.7 the engine ran with TrollPad's list (from 150: TrollPad
+// -setGridHeights:), which hid this. 17+: the height list starts at 300 pt (every iPad with Stage Manager has quarters of at least 314 pt); Apple's
+// own list is kept where it starts lower (TrollPad's 150). 16: Apple's minimum, as before. The diagnostics record shows Apple's first sizes.
+static const CGFloat kSM17MinWindowHeight = 300.0;
+static double gSMAppleGridLo[2];   // (the smallest width / height in Apple's lists, as last seen: the iPadOS 17 diagnostics record)
+static NSArray<NSNumber *> *DMSMFineGrid(NSArray *orig, CGFloat full, int axis) {   // axis: 0 widths, 1 heights
+    static NSMutableDictionary<NSString *, NSArray *> *cache;
+    if (![orig isKindOfClass:[NSArray class]] || orig.count == 0 || !isfinite(full) || full < 100.0 || full > 20000.0) return orig;
+    // (only a list of numbers, as on 16.7.7: anything else -- boxed values, objects of another kind -- is Apple's as it is; a KVC @min over it
+    //  threw inside Stage Manager's layout pass, review S6)
+    CGFloat lo = CGFLOAT_MAX;
+    for (id x in orig) { if (![x isKindOfClass:[NSNumber class]]) return orig; lo = MIN(lo, [x doubleValue]); }
+    if (!isfinite(lo) || lo < 1.0 || lo > full) return orig;
+    if (axis >= 0 && axis < 2) gSMAppleGridLo[axis] = lo;
+    if (axis == 1 && DMSMLayoutGen() == 17 && lo > kSM17MinWindowHeight && kSM17MinWindowHeight < full) lo = kSM17MinWindowHeight;   // (iPadOS 17+, see above)
+    NSString *key = [NSString stringWithFormat:@"%.0f-%.0f", lo, full];
+    NSArray *hit = cache[key];
+    if (hit) return hit;
+    NSMutableArray *a = [NSMutableArray arrayWithCapacity:(NSUInteger)(full - lo + 1)];
+    for (CGFloat v = ceil(lo); v <= full; v += 1.0) [a addObject:@(v)];
+    if (!cache) cache = [NSMutableDictionary dictionary];
+    cache[key] = a;
+    DMLog([NSString stringWithFormat:@"[sm] size grid %.0f..%.0f (Apple's: %lu sizes, %@ .. %@)", lo, full, (unsigned long)orig.count, orig.firstObject, orig.lastObject]);
+    return a;
 }

@@ -89,3 +89,18 @@ static NSArray<NSArray *> *DMSMDeskJoinPlan(NSArray<NSDictionary *> *desktop, NS
     #undef DMSM_ID
     #undef DMSM_LEAVE
 }
+// The desktop's windows a plan of DMSMDeskJoinPlan leaves out -- what a FULL desktop gives up for the new windows (none while it has room) -- in
+// the desktop's order, each window once, by its key ("w"; its app where it has none). A plan made by app names the app: every window of it is
+// kept then. With the Mac Switcher on, a full desktop is its decision first (MacSwitcherSM.h DMMSWSMAtCap): the new windows on a new desktop, or
+// these minimized and said.
+static NSArray<NSString *> *DMSMDeskJoinLeftOut(NSArray<NSDictionary *> *desktop, NSArray<NSArray *> *plan) {
+    NSMutableSet<NSString *> *named = [NSMutableSet set];
+    for (NSArray *p in plan) if (p.count) [named addObject:p[0]];
+    NSMutableOrderedSet<NSString *> *out = [NSMutableOrderedSet orderedSet];
+    for (NSDictionary *w in desktop) {
+        NSString *b = w[@"b"], *k = [w[@"w"] isKindOfClass:[NSString class]] && [w[@"w"] length] ? w[@"w"] : b;
+        if (![b isKindOfClass:[NSString class]] || !b.length || [named containsObject:k] || [named containsObject:b]) continue;
+        [out addObject:k];
+    }
+    return out.array;
+}

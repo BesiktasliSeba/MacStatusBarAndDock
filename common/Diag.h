@@ -8,8 +8,9 @@
 #include <unistd.h>
 
 #define MSBD_DIAG_PATH(name) [NSString stringWithFormat:@"/var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-Diag-%@.txt", (name)]
-#define MSBD_DIAG_NAMES @[@"Hooks", @"StatusBar", @"Dock", @"StageManager"]   // (StatusBar: how far the menu bar got, StatusBar.x DMSBDiagFlush; StageManager: the
-                                                                                 //  engine's check and its iPadOS 17 layout hooks, StatusBar.x DMSM17DiagWrite)
+#define MSBD_DIAG_NAMES @[@"Hooks", @"StatusBar", @"Dock", @"StageManager", @"Finder"]   // (StatusBar: how far the menu bar got, StatusBar.x DMSBDiagFlush;
+    // StageManager: the engine's check and its iPadOS 17 layout hooks, StatusBar.x DMSM17DiagWrite; Finder: the desktop's iPadOS 17+ check and where
+    // it sits, and the native windows' layer, statusbar/Desktop.h DMDesktopDiag)
 
 static inline BOOL MSBDDiagEnabled(void) {
     static int on = -1;

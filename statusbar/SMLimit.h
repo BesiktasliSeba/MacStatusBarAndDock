@@ -75,6 +75,37 @@ static void *DMSMSBSymbol(const char *name) {
     return p ?: dlsym(RTLD_DEFAULT, name);
 }
 static long long DMSMSBConstant(const char *name) { const long long *p = (const long long *)DMSMSBSymbol(name); return p ? *p : -1; }
+// More than four windows are only safe where the role repair below can run: Apple's own Minimize keeps the window of the highest role in two roles
+// of a desktop of seven, and SpringBoard aborts (SMRoleRepair.h; the same shift in 16.7.7's disassembly and in the 17.6.1 decompile, 1.4). A
+// repair that can't read its context leaves it as SpringBoard built it -- so every class, method and type it reads is checked once here, before
+// Apple's limit is answered: anything missing or different keeps the four of 1.3.5 on that build. (All 15 16.x builds' class dumps have them,
+// checked; iPadOS 17 runs the engine's untested 17 layout code.) nil = all there.
+static NSString *DMSMRepairMissing(void) {
+    static const struct { const char *cls, *sel; BOOL meta; } need[] = {
+        {"SBWorkspaceApplicationSceneTransitionContext", "previousLayoutState", NO},
+        {"SBWorkspaceApplicationSceneTransitionContext", "entityForLayoutRole:", NO},
+        {"SBWorkspaceApplicationSceneTransitionContext", "setEntity:forLayoutRole:", NO},
+        {"SBMainDisplayLayoutState", "elementWithRole:", NO},
+        {"SBPreviousWorkspaceEntity", "entityWithPreviousLayoutRole:", YES},
+        {"SBPreviousWorkspaceEntity", "previousLayoutRole", NO},
+        {"SBPreviousWorkspaceEntity", "isPreviousWorkspaceEntity", NO},
+        {"SBEmptyWorkspaceEntity", "entity", YES},
+        {"SBEmptyWorkspaceEntity", "isEmptyWorkspaceEntity", NO},
+        {"SBLayoutElement", "uniqueIdentifier", NO},     // (a layout state's window, as the repair names it)
+        {"SBWorkspaceEntity", "uniqueIdentifier", NO},   // (a context's window: the same name)
+    };
+    NSString *(*sigs[])(void) = {DMSMSigObj, DMSMSigObjLong, DMSMSigSetRole, DMSMSigObjLong, DMSMSigWithLong, DMSMSigTime, DMSMSigBool, DMSMSigObj, DMSMSigBool, DMSMSigObj, DMSMSigObj};
+    _Static_assert(sizeof(sigs) / sizeof(sigs[0]) == sizeof(need) / sizeof(need[0]), "one signature per row");
+    for (size_t i = 0; i < sizeof(need) / sizeof(need[0]); i++) {
+        Class c = objc_getClass(need[i].cls);
+        SEL s = sel_registerName(need[i].sel);
+        Method m = !c ? NULL : (need[i].meta ? class_getClassMethod(c, s) : class_getInstanceMethod(c, s));
+        if (!m) return [NSString stringWithFormat:@"%c[%s %s] missing", need[i].meta ? '+' : '-', need[i].cls, need[i].sel];
+        NSString *have = DMSMSigOfMethod(m), *want = sigs[i]();
+        if (![have isEqualToString:want]) return [NSString stringWithFormat:@"%c[%s %s] is %@, the repair reads %@", need[i].meta ? '+' : '-', need[i].cls, need[i].sel, have, want];
+    }
+    return nil;
+}
 static void DMSMLimitInstall(void) {
     static BOOL done = NO;
     if (done) return;
@@ -99,6 +130,13 @@ static void DMSMLimitInstall(void) {
     if (!roles || row) {
         if (row) DMSMRolesReset();   // (Apple's limit can't be answered: the engine keeps its four, as in 1.3.5)
         gSMLimitOff = row ?: [@"SpringBoard's role functions: " stringByAppendingString:why ?: @"?"];
+        DMLog([NSString stringWithFormat:@"[smlimit] four windows per desktop here (as in 1.3.5): %@", gSMLimitOff]);
+        return;
+    }
+    NSString *repair = DMSMRepairMissing();
+    if (repair) {   // (seven windows without the repair: SpringBoard would abort on the first Minimize of a full desktop)
+        DMSMRolesReset();
+        gSMLimitOff = [@"the role repair can't run here: " stringByAppendingString:repair];
         DMLog([NSString stringWithFormat:@"[smlimit] four windows per desktop here (as in 1.3.5): %@", gSMLimitOff]);
         return;
     }

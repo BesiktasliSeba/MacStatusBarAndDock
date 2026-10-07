@@ -444,6 +444,20 @@
 			<string>Hide Multitasking Dots</string>
 		</dict>
 		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>key</key>
+			<string>macSwitcher</string>
+			<key>label</key>
+			<string>Mac Switcher</string>
+		</dict>
+		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>

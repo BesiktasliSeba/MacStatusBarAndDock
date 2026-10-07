@@ -26,7 +26,7 @@ Then install **MacStatusBar&Dock** from the repo. The Mac look is on right after
 | iPad Pro (M2, 2022) | 16.0 – 16.6 | Dopamine | Zetsu or Aerial | ⚠️ The Stage Manager engine is offered on 16.1 and later, and as "Untested" on 16.0, where a user confirmed the basics (windows, resizing, traffic lights). On 16.3.1 a user confirmed it can be picked and runs. On 16.1 – 16.6 another user reports SpringBoard crashes with it. Use Aerial 5.0 there |
 | Other iPads | 15.x, 16.x | rootless | — | Likely to work, not tested |
 | iPad Pro 12.9" (M1, 2021) | 17.0 | rootless | Zetsu 1.6.6 | ✅ Reported working by a user since 1.2.4, with **Enable Anyway** |
-| Other iPads | 17 and later | — | — | Off by default; **Enable Anyway** in Settings turns it on at your own risk. The Stage Manager engine has an iPadOS 17 version that hasn't been tested on a device yet: testers welcome |
+| Other iPads | 17 and later | — | — | Off by default; **Enable Anyway** in Settings turns it on at your own risk. The desktop, the Wi-Fi menu, the Mac Switcher and the Stage Manager engine have iPadOS 17 versions that haven't been tested on a device yet: testers welcome |
 
 Tried it on another setup? A short note in an issue (works / doesn't) helps fill in this table.
 
@@ -74,6 +74,11 @@ The Mac look is on right after install. A few extras start off: the auto-hiding 
 - **Mac windows on the engine you already use** (Aerial 3.0 or 5.0, Zetsu 1.6.2 or 1.6.6, MilkyWay4 on iPadOS 15): title bars, traffic lights, rounded corners, resize handles, and Fit to Window tiling.
 - **Stage Manager as a window engine** (iPadOS 16, experimental): Apple's own windowing with the Mac look, over your Home Screen and desktop, windows that stay where you put them and at the size you give them, also when you go Home, more than one window of the same app, native full screen that other windows can come over, and its own Mac desktop on an external display.
 - **Typing like on a Mac**: only the window you're using keeps a text cursor, and Esc ends typing.
+
+### Mac Switcher
+- **Desktops and Mission Control, like on a Mac** (Settings > Status Bar > Mac Switcher, off until you switch it on): the Mac Switcher takes the place of the App Switcher. Swipe up and hold, double press the Home button or press Control-Up on a keyboard to see your desktops at the top and the windows of the one you're on below.
+- **Desktops that slide with your fingers**: tap + to add one (up to 8), swipe sideways with four fingers or along the bottom edge (three fingers on a trackpad), or press Control-Left and Control-Right. Drag a window onto another desktop to move it there, and hold a desktop for its remove button.
+- Desktops work with every window engine (Aerial, Zetsu, MilkyWay4 and the Stage Manager engine; tested with Zetsu 1.6.6), with Fit to Window on each desktop. Show App Switcher in the Apple menu opens the iPadOS App Switcher once.
 
 ### Finder
 - **A Mac Finder window** on every window engine: sidebar, list and icon views, Quick Look, Search, Undo and Put Back, several-item selection, USB drives and SD cards, and drag and drop into apps. It only changes files in your own places, so it can't be used to break the iPad by accident.

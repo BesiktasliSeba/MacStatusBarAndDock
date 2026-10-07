@@ -43,6 +43,7 @@ target showFinder pref com.besiktasliseba.dockmagnification showFinder 0 1 Show 
 target wifiMenu pref com.besiktasliseba.macstatusbar wifiMenu 0 1 Wi-Fi Menu|the Wi-Fi menu
 target desktopIcons pref com.besiktasliseba.macstatusbar desktopIcons 0 1 Show Desktop Icons|the desktop
 target runningIndicator pref com.besiktasliseba.dockrunningindicator enabled 0 1 Show Indicators for Open Apps|the open-app indicators
+target macSwitcher pref com.besiktasliseba.macstatusbar macSwitcher 0 0 Mac Switcher|the Mac Switcher
 
 # The parts in words, for the guard's explanation: title <Image> <where it crashed>|<what was turned off> ("SpringBoard crashed twice in the
 # Dock, so MacDock was turned off for now."). A part without a title is named by its file name.
@@ -103,6 +104,13 @@ file MacStatusBarCore ^Desktop\.h$ desktopIcons
 file MacStatusBarCore ^DesktopPlace\.h$ desktopIcons
 sym MacStatusBarCore ^_?DMWiFi[A-Z] wifiMenu
 file MacStatusBarCore ^WiFiMenu\.h$ wifiMenu
+# the Mac Switcher (MacSwitcher.h, 1.4; its Stage Manager desktops MacSwitcherSM.h and Home button MacSwitcherButton.h): its own switch -- the
+# functions and their blocks (a block's symbol is the function's name with "___" before it, as in 1.3.6 R3-L3: in the 1.4~int6 release map every
+# block of MacSwitcherSM.h and MacSwitcherButton.h -- the desktop switch's, the notice's, the drag's move, the Home double press -- fell to Stock
+# status bar mode, the whole Mac status bar; MacSwitcher.h's were caught by its file rule)
+sym MacStatusBarCore ^_?DMMSWPressesBegan$ transparent   # (its key pass-through is on every key press stack)
+sym MacStatusBarCore ^_*DMMSW[A-Z] macSwitcher
+file MacStatusBarCore ^MacSwitcher(SM|Button)?\.h$ macSwitcher
 # what Stock status bar mode keeps running (StockBar.h): no switch of its own, so the part
 sym MacStatusBarCore \$(MacContextMenus|MacContextMenus15|PreviewTargetGuard|StockCCTiles)\$ part
 sec MacStatusBarCore Haptic\sTouch\smenus part

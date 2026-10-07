@@ -54,10 +54,12 @@ static void Suite(void) {
         CHECK(RoleOf(p, @"com.apple.iBooks") == -1, "the oldest (Books, t 9) left out");
         CHECK(RoleOf(p, @"com.apple.Notes") == gDMSMRoles[cap - 1], "Notes takes Books' role %lld (%lld)", gDMSMRoles[cap - 1], RoleOf(p, @"com.apple.Notes"));
         CHECK([why containsString:@"left out"], "said: %s", why.UTF8String);
+        CHECK([DMSMDeskJoinLeftOut(deskFull, p) isEqualToArray:@[@"com.apple.iBooks"]], "left out (the Mac Switcher's full-desktop decision): Books only (%s)", [[DMSMDeskJoinLeftOut(deskFull, p) componentsJoinedByString:@","] UTF8String]);
         //    One window short of full: nothing left out (with seven roles this is the old "fifth window" case: it simply joins).
         NSArray *deskAlmost = [deskFull subarrayWithRange:NSMakeRange(0, cap - 1)];
         p = DMSMDeskJoinPlan(deskAlmost, @[A(@"com.apple.Notes", 1)], 0, &why);
         CHECK(p.count == cap && RolesValid(p) && ![why containsString:@"left out"], "one short of full: all %lu kept, Notes joins (%s)", (unsigned long)(cap - 1), why.UTF8String);
+        CHECK(DMSMDeskJoinLeftOut(deskAlmost, p).count == 0, "one short of full: nothing left out");
 
         // 3. A stale stage of two windows (from before the engine) picked in the App Switcher: both join; with four roles two desktop windows are
         //    kept (the newest), with seven all three.
@@ -125,6 +127,12 @@ static void Suite(void) {
             CHECK([[NSSet setWithArray:Bundles(plan, YES)] isEqualToSet:fresh], "sweep %d: every new window once", n);
             NSArray *keptB = Bundles(plan, NO);
             CHECK(keptB.count == MIN(deskB.count, cap - fresh.count), "sweep %d: as many desktop windows as fit (%lu)", n, (unsigned long)keptB.count);
+            // what a full desktop gives up (the Mac Switcher decides about it first, MacSwitcherSM.h DMMSWSMAtCap): exactly the desktop windows the
+            // plan does not keep, and none at all while the desktop has room for the new windows
+            NSArray *lo = DMSMDeskJoinLeftOut(desk, plan);
+            NSMutableSet *loWant = [deskB mutableCopy]; [loWant minusSet:[NSSet setWithArray:keptB]];
+            CHECK([[NSSet setWithArray:lo] isEqualToSet:loWant] && lo.count == loWant.count, "sweep %d: left out = the desktop windows not kept", n);
+            CHECK(lo.count == (deskB.count + fresh.count > cap ? deskB.count + fresh.count - cap : 0), "sweep %d: left out only past the cap (%lu of %lu + %lu, cap %lu)", n, (unsigned long)lo.count, (unsigned long)deskB.count, (unsigned long)fresh.count, (unsigned long)cap);
             long long minKept = LLONG_MAX, maxDropped = LLONG_MIN;
             for (NSDictionary *w in desk) { long long t = [w[@"t"] longLongValue]; if ([keptB containsObject:w[@"b"]]) minKept = MIN(minKept, t); else maxDropped = MAX(maxDropped, t); }
             CHECK(maxDropped == LLONG_MIN || maxDropped <= minKept, "sweep %d: the newest are kept (dropped %lld, kept from %lld)", n, maxDropped, minKept);
@@ -170,6 +178,26 @@ static void SuiteWindows(void) {
         NSArray *desk2 = @[WK(ff, A1, 1, 20), WK(ff, B1, 2, 21), WK(clk, @"sceneID:com.apple.mobiletimer-default", 5, 19)];
         p = DMSMDeskJoinPlan(desk2, @[AK(@"com.apple.weather", @"sceneID:com.apple.weather-default", 1)], 0, &why);
         CHECK(p.count == 4 && RolesValid(p) && RoleOf(p, kA) == 1 && RoleOf(p, kB) == 2 && RoleOf(p, kC) == 5, "both Freeform windows kept in their roles (A %lld, B %lld)", RoleOf(p, kA), RoleOf(p, kB));
+
+        // 2b. A FULL desktop holding two windows of one app (1.4, the Mac Switcher's full-desktop decision reads DMSMDeskJoinLeftOut): the left-out
+        //     list names the oldest WINDOW by its key -- not the app, whose newer window stays; a plan made by app keeps every window of that app.
+        {
+            NSMutableArray *full = [NSMutableArray arrayWithObjects:WK(ff, A1, gDMSMRoles[0], 5), WK(ff, B1, gDMSMRoles[1], 30), nil];   // (A the oldest)
+            for (size_t i = 2; i < cap; i++) [full addObject:WK([NSString stringWithFormat:@"app%zu", i], [NSString stringWithFormat:@"sceneID:app%zu-default", i], gDMSMRoles[i], 20 + (long long)i)];
+            NSArray *pf = DMSMDeskJoinPlan(full, @[AK(@"com.apple.weather", @"sceneID:com.apple.weather-default", 1)], 0, &why);
+            NSArray *lo = DMSMDeskJoinLeftOut(full, pf);
+            CHECK(pf.count == cap && RolesValid(pf) && RoleOf(pf, kA) == -1 && RoleOf(pf, kB) > 0, "full desktop with two Freeform windows: the older one (A) left out, B kept (%s)", why.UTF8String);
+            CHECK([lo isEqualToArray:@[kA]], "left out: Freeform A by its window key, not the app (%s)", [[lo componentsJoinedByString:@","] UTF8String]);
+            NSMutableArray *byApp = [NSMutableArray array]; for (NSDictionary *w in full) [byApp addObject:W(w[@"b"], [w[@"r"] longLongValue], [w[@"t"] longLongValue])];
+            NSArray *pa = DMSMDeskJoinPlan(byApp, @[A(@"com.apple.weather", 1)], 0, &why);
+            CHECK(pa && DMSMDeskJoinLeftOut(byApp, pa).count == 0 && RoleOf(pa, ff) > 0, "by app (no keys): the app counts once -- nothing of Freeform left out (%s)", why.UTF8String);
+            CHECK(DMSMDeskJoinLeftOut(full, @[]).count == full.count && [DMSMDeskJoinLeftOut(full, @[]).firstObject isEqualToString:kA], "an empty plan: every window, by key, in the desktop's order");
+            //  Desktop windows WITH keys, asked by app (an entity without a scene identifier): the plan compares apps, so it names Freeform once and
+            //  keeps both its windows -- the left-out list must not name them (1.4 logic test: a mutant dropping the app check survived here).
+            NSArray *pm = DMSMDeskJoinPlan(full, @[@{@"w": @"com.apple.weather", @"b": @"com.apple.weather", @"r": @1}], 0, &why);
+            CHECK(pm && [why containsString:@"by app"], "keys on the desktop, an app key asked: the plan compares apps (%s)", why.UTF8String);
+            CHECK(pm && DMSMDeskJoinLeftOut(full, pm).count == 0, "... and leaves no window out: Freeform counted once, both its windows kept (%s)", [[DMSMDeskJoinLeftOut(full, pm) componentsJoinedByString:@","] UTF8String]);
+        }
 
         // 3. Passes untouched: the desktop itself (both windows of the app), one of its two windows minimized away, Stage Manager adding B to it.
         CHECK(!DMSMDeskJoinPlan(desk2, @[AK(ff, A1, 1), AK(ff, B1, 2), AK(clk, @"sceneID:com.apple.mobiletimer-default", 5)], 0, &why) && [why containsString:@"desktop's own"], "the desktop itself: %s", why.UTF8String);

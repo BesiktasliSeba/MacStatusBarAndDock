@@ -272,11 +272,10 @@ static void DMSMDeskSyncFade(void) {
 // ---- B. one desktop for the transitions SpringBoard builds itself -----------------------------------------------------------------------------------
 // (our own plans mark the context they are written into, and our requests carry an "MSBD..." label: DMSMCtxIsOurs, SMEngineAPI.h -- the join
 //  in DMSMJoinDesktop leaves those alone before it gets here)
-// Whether that app's window lives on another desktop than the one on screen. 1.3.x has one desktop: never. (1.4, Mac Switcher desktops: on merge,
-// MacSwitcherSM.h's records answer it -- an app recorded on another desktop means SpringBoard's stage request IS that desktop's switch, which the
-// Mac Switcher follows; it must not be folded into the desktop on screen.)
-// (M-2: asked with the window's key -- SMWindowKey.h; 1.4's records must answer per window: two windows of one app can be on two desktops)
-static BOOL DMSMDeskOnOtherDesktop(NSString *key) { (void)key; return NO; }
+// Whether that window lives on another desktop than the one on screen: MacSwitcherSM.h's records answer it, per window (SMWindowKey.h: two windows
+// of one app can be on two desktops) -- a window recorded on another desktop means SpringBoard's stage request IS that desktop's switch, which the
+// Mac Switcher follows; it must not be folded into the desktop on screen. (One desktop, or the Mac Switcher off: never.)
+static BOOL DMSMDeskOnOtherDesktop(NSString *key) { return DMMSWSMElsewhere(key); }   // (MacSwitcherSM.h: recorded on another desktop)
 // A BOOL answer of a workspace entity (-isEmptyWorkspaceEntity, -isHomeScreenEntity...), typed and checked: never through DMCall, which takes the
 // result for an object -- YES (0x1) was retained as one and crashed SpringBoard in its start-up transition to the Home Screen, whose roles hold
 // empty entities (iPad 2, 4 Oct, 1.3.2-11+debug: EXC_BAD_ACCESS at 0x1 in objc_retain from DMCall, DMSMJoinStageAsked).
@@ -346,21 +345,31 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
         DMLog([NSString stringWithFormat:@"[smjoin] roles already set (%@; %@): left as SpringBoard built it -- %@", [seen componentsJoinedByString:@", "], [label0 isKindOfClass:[NSString class]] ? label0 : @"no label", early]);
         return;
     }
-    // The desktop: the most recent stage on the iPad with a window that is not minimized, not an app in full screen sent to the background unless
-    // that is what is asked for (as DMSMJoinDesktop has it: StatusBar.x DMSMDesktopFor).
+    // The desktop: with Mac Switcher desktops the CURRENT one's windows (MacSwitcherSM.h DMMSWSMAskedDeskWindows: recorded on it, or in the stage on
+    // screen and recorded nowhere yet -- the most recent stage can be another desktop's), else the most recent stage on the iPad with a window that is
+    // not minimized, not an app in full screen sent to the background unless that is what is asked for (as DMSMJoinDesktop has it: StatusBar.x
+    // DMSMDesktopFor). Each window @[stage, item, attributes, its key] (SMWindowKey.h): after a Mac Switcher remove a desktop's windows are in two
+    // stages until it is shown.
     NSMutableSet<NSString *> *askedK = [NSMutableSet set];   // (the windows asked for: their keys -- an app key where windows are told apart by app, M-2)
     for (NSDictionary *w in askedW) [askedK addObject:w[@"w"]];
-    NSMutableDictionary *map = nil;
-    id desk = DMSMDesktopFor(DMSMStageShownBefore(ctx), askedK, &map);
+    NSArray<NSArray *> *mswWins = DMMSWSMAskedDeskWindows();
+    NSMutableArray<NSArray *> *wins = [NSMutableArray array];
+    id desk = nil;   // (the stage of the desktop's newest window: its screen, and where new windows cascade from)
+    if (mswWins) { [wins addObjectsFromArray:mswWins]; desk = mswWins.firstObject[0]; }
+    else {
+        NSMutableDictionary *map = nil;
+        desk = DMSMDesktopFor(DMSMStageShownBefore(ctx), askedK, &map);
+        for (id it in map) { NSString *k = DMSMItemKey(it); if (k) [wins addObject:@[desk, it, map[it], k]]; }
+    }
     NSMutableArray<NSDictionary *> *deskW = [NSMutableArray array];
-    NSMutableDictionary<NSString *, id> *deskItem = [NSMutableDictionary dictionary];   // (window key -> its item; bundle -> the app's newest, by app)
-    for (id it in map) {
-        NSString *b = DMSMItemBundle(it), *k = DMSMItemKey(it);
+    NSMutableDictionary<NSString *, NSArray *> *deskItem = [NSMutableDictionary dictionary];   // (window key -> its window; bundle -> the app's newest, by app)
+    for (NSArray *w in wins) {
+        NSString *b = DMSMItemBundle(w[1]), *k = w[3];
         long long r = 0, t = 0;
-        if (!b.length || !k.length || !DMSMStageRoleOfItem(desk, it, &r) || !DMSMAttrLastInteractionTime(map[it], &t)) return;   // (unreadable: SpringBoard's as built)
+        if (!b.length || !k.length || !DMSMStageRoleOfItem(w[0], w[1], &r) || !DMSMAttrLastInteractionTime(w[2], &t)) return;   // (unreadable: SpringBoard's as built)
         [deskW addObject:@{@"w": k, @"b": b, @"r": @(r), @"t": @(t)}];
-        if (![k isEqualToString:b]) deskItem[k] = it;   // (by app -- the key is the bundle -- only the app's newest, below)
-        if (!deskItem[b] || t > DMSMAttrTimeOr(map[deskItem[b]], 0)) deskItem[b] = it;
+        if (![k isEqualToString:b]) deskItem[k] = w;   // (by app -- the key is the bundle -- only the app's newest, below)
+        if (!deskItem[b] || t > DMSMAttrTimeOr(deskItem[b][2], 0)) deskItem[b] = w;
     }
     NSString *why = nil;
     NSArray<NSArray *> *decision = DMSMDeskJoinPlan(deskW, askedW, flags, &why);
@@ -370,13 +379,21 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
     id label = [req respondsToSelector:NSSelectorFromString(@"eventLabel")] ? DMCall(req, @"eventLabel") : nil;
     long long source = [req respondsToSelector:NSSelectorFromString(@"source")] ? DMSMCtxLong(req, @"source", -1) : -1;
     NSString *askedText = [NSString stringWithFormat:@"%@; %@ source %lld env %lld", [seen componentsJoinedByString:@", "], [label isKindOfClass:[NSString class]] ? label : @"no label", source, env];
-    if (!decision) { DMLog([NSString stringWithFormat:@"[smjoin] roles already set (%@): left as SpringBoard built it -- %@", askedText, why]); return; }
+    if (!decision) {
+        DMLog([NSString stringWithFormat:@"[smjoin] roles already set (%@): left as SpringBoard built it -- %@", askedText, why]);
+        if (mswWins && !deskW.count && [why isEqualToString:@"no desktop to keep"]) {   // (the current Mac Switcher desktop is empty: that stage is it now)
+            NSMutableOrderedSet<NSString *> *bs = [NSMutableOrderedSet orderedSet];
+            for (NSDictionary *a in askedW) [bs addObject:a[@"w"]];   // (each window by its key)
+            DMMSWSMAskedOnEmpty(bs.array);
+        }
+        return;
+    }
     // The plan in entities and attributes: the desktop's windows as they are, the new ones in front (newest interaction times) at their own last
     // place (DMSMJoinAttributes: their own window attributes, fitted to the desktop as it is now). The one in front -- with the keyboard focus --
     // is the app SpringBoard is activating, else the first new one; it gets the newest time (Stage Manager orders windows by it).
     BOOL windowed = DMWindowedLaunchOn();
     long long newest = 0; id frontAttrs = nil;
-    for (id it in map) { long long t = DMSMAttrTimeOr(map[it], 0); if (t >= newest) { newest = t; frontAttrs = map[it]; } }
+    for (NSArray *w in wins) { long long t = DMSMAttrTimeOr(w[2], 0); if (t >= newest) { newest = t; frontAttrs = w[2]; } }
     NSMutableArray<NSString *> *freshB = [NSMutableArray array];   // (the new windows: their keys -- the bundles when the decision compared apps)
     for (NSArray *d in decision) if ([d[2] boolValue]) [freshB addObject:d[0]];
     id act = [ctx respondsToSelector:NSSelectorFromString(@"activatingEntity")] ? DMCall(ctx, @"activatingEntity") : nil;
@@ -384,6 +401,10 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
     NSString *frontB = [actK isKindOfClass:[NSString class]] && [freshB containsObject:actK] ? actK : ([actB isKindOfClass:[NSString class]] && [freshB containsObject:actB] ? actB : freshB.firstObject);
     // (apps opening full screen -- Open Apps as Windows off: one full-screen app at a time, so two new ones at once stay Stage Manager's)
     if (!windowed && freshB.count > 1) { DMLog([NSString stringWithFormat:@"[smjoin] another stage asked for (%@): %lu new windows while apps open full screen -- left as SpringBoard built it", askedText, (unsigned long)freshB.count]); return; }
+    // (a full desktop: the plan keeps its newest windows and leaves the oldest out -- with the Mac Switcher on, what it answers for a full desktop
+    //  comes first: today the new windows open on a new desktop instead, MacSwitcherSM.h DMMSWSMAtCap)
+    NSArray<NSString *> *leftOut = DMSMDeskJoinLeftOut(deskW, decision);
+    if (leftOut.count && DMMSWSMAskedFull(ctx, asked, freshB, askedEntity, identity, frontB)) return;
     NSMutableArray<NSArray *> *plan = [NSMutableArray array];
     NSMutableArray<NSString *> *fresh = [NSMutableArray array];
     id frontEntity = nil; long k = 0;
@@ -399,8 +420,8 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
             if (front) frontEntity = e;
             [fresh addObject:b];
         } else {
-            e = DMSMEntityForStageItem(desk, deskItem[b]);   // (that window's own scene)
-            a = map[deskItem[b]];
+            e = DMSMEntityForStageItem(deskItem[b][0], deskItem[b][1]);   // (that window's own scene, in its own stage)
+            a = deskItem[b][2];
         }
         if (!e || !a) { DMLog([NSString stringWithFormat:@"[smjoin] another stage asked for (%@): %@ could not be planned, left as SpringBoard built it", askedText, DMSMKeyText(b)]); return; }
         [plan addObject:@[e, @(r), a]];
@@ -423,6 +444,7 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
     NSMutableArray<NSString *> *freshText = [NSMutableArray array];
     for (NSString *b in fresh) { DMSMSetMinimized(b, NO); [freshText addObject:DMSMKeyText(b)]; }   // (opened again: no longer a minimized window)
     if (!windowed && desk) for (NSString *b in fresh) DMSMDismissOtherFullScreen(desk, b);   // (full screen: one full-screen app at a time, as a launch)
+    DMMSWSMAskedJoined(fresh, leftOut);   // (Mac Switcher: recorded on the current desktop; a full desktop's left-out windows minimized and said)
     DM_FEATURE_MARK("sm-join-asked-stage");
     for (NSString *b in fresh) {   // (a window of an app already on the desktop joined it: M-2's case)
         if (DMSMKeyIsApp(b)) continue;
