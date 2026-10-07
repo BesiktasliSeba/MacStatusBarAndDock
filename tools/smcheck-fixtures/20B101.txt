@@ -14,17 +14,25 @@ class	SBDisplayItem	NSObject
 class	SBDisplayItemLayoutAttributes	NSObject
 class	SBDisplayItemLayoutAttributesCalculator	NSObject
 class	SBDisplayItemLayoutGrid	NSObject
+class	SBEmptyWorkspaceEntity	SBWorkspaceEntity
 class	SBFTouchPassThroughClippingView	SBFTouchPassThroughView
 class	SBFTouchPassThroughView	UIView
 class	SBFluidSwitcherItemContainer	SBFTouchPassThroughClippingView
 class	SBFluidSwitcherViewController	UIViewController
 class	SBFullScreenContinuousExposeSwitcherModifier	SBSwitcherModifier
+class	SBGestureSwitcherModifier	SBSwitcherModifier
 class	SBHitTestExtendedView	UIView
+class	SBHomeGestureSwitcherModifier	SBGestureSwitcherModifier
+class	SBHomeScreenEntity	SBWorkspaceEntity
+class	SBIconController	UIViewController
 class	SBIconView	UIView
+class	SBLayoutState	NSObject
+class	SBMainDisplayLayoutState	SBLayoutState
 class	SBMainSwitcherControllerCoordinator	NSObject
 class	SBMainWorkspace	SBWorkspace
 class	SBMainWorkspaceTransitionRequest	SBWorkspaceTransitionRequest
 class	SBMutableChamoisOverlappingModel	SBChamoisOverlappingModel
+class	SBReduceMotionHomeGestureSwitcherModifier	SBGestureSwitcherModifier
 class	SBReusableSnapshotItemContainer	SBFluidSwitcherItemContainer
 class	SBSwitcherChamoisLayoutAttributes	NSObject
 class	SBSwitcherChamoisSettings	NSObject
@@ -72,6 +80,7 @@ method	SBChamoisOverlappingModel	-	centerForItem:	{CGPoint=dd}@:@
 method	SBChamoisOverlappingModel	-	setBoundingBox:	v@:{CGRect={CGPoint=dd}{CGSize=dd}}
 method	SBDeviceApplicationSceneEntity	-	initWithApplicationForMainDisplay:	@@:@
 method	SBDisplayItem	-	bundleIdentifier	@@:
+method	SBDisplayItem	-	uniqueIdentifier	@@:
 method	SBDisplayItemLayoutAttributes	-	attributesByModifyingCenter:	@@:{CGPoint=dd}
 method	SBDisplayItemLayoutAttributes	-	attributesByModifyingLastInteractionTime:	@@:q
 method	SBDisplayItemLayoutAttributes	-	attributesByModifyingSize:	@@:{CGSize=dd}
@@ -93,12 +102,20 @@ method	SBFluidSwitcherViewController	-	_keyboardWillShow:	v@:@
 method	SBFluidSwitcherViewController	-	_updateSoftwareKeyboardVisibleWithKeyboardShowing:	v@:B
 method	SBFluidSwitcherViewController	-	prefersStripHidden	B@:
 method	SBFullScreenContinuousExposeSwitcherModifier	-	shouldConfigureInAppDockHiddenAssertion	B@:
+method	SBHomeGestureSwitcherModifier	-	homeScreenBackdropBlurProgress	d@:
+method	SBHomeGestureSwitcherModifier	-	homeScreenBackdropBlurType	q@:
+method	SBIconController	+	sharedInstance	@@:
+method	SBIconController	-	handleHomeButtonTap	v@:
 method	SBIconView	-	_handleTap	v@:
+method	SBMainDisplayLayoutState	-	appLayout	@@:
+method	SBMainDisplayLayoutState	-	unlockedEnvironmentMode	q@:
 method	SBMainSwitcherControllerCoordinator	+	sharedInstance	@@:
+method	SBMainSwitcherControllerCoordinator	-	_entityForDisplayItem:displayIdentity:	@@:@@
 method	SBMainSwitcherControllerCoordinator	-	recentAppLayouts	@@:
 method	SBMainWorkspace	+	sharedInstance	@@:
 method	SBMainWorkspace	-	requestTransitionWithBuilder:	B@:@?
 method	SBMutableChamoisOverlappingModel	-	setCenter:forItem:	v@:{CGPoint=dd}@
+method	SBReduceMotionHomeGestureSwitcherModifier	-	homeScreenBackdropBlurType	q@:
 method	SBSwitcherChamoisLayoutAttributes	-	gridHeights	@@:
 method	SBSwitcherChamoisLayoutAttributes	-	gridWidths	@@:
 method	SBSwitcherChamoisLayoutAttributes	-	maximumWindowHeightWithDock	d@:
@@ -111,13 +128,28 @@ method	SBSwitcherChamoisSettings	-	_shouldPreferStripHiddenForWindowScene:interf
 method	SBSwitcherChamoisSettings	-	_statusBarHeight	d@:
 method	SBTopAffordanceViewController	-	closeAction	@@:
 method	SBTopAffordanceViewController	-	removeFromSetAction	@@:
+method	SBWorkspaceApplicationSceneTransitionContext	-	_setRequestedFrontmostEntity:	v@:@
 method	SBWorkspaceApplicationSceneTransitionContext	-	activatingEntity	@@:
 method	SBWorkspaceApplicationSceneTransitionContext	-	displayIdentity	@@:
+method	SBWorkspaceApplicationSceneTransitionContext	-	entitiesWithRemovalContexts	@@:
 method	SBWorkspaceApplicationSceneTransitionContext	-	entityForLayoutRole:	@@:q
 method	SBWorkspaceApplicationSceneTransitionContext	-	finalize	v@:
+method	SBWorkspaceApplicationSceneTransitionContext	-	isBackground	B@:
+method	SBWorkspaceApplicationSceneTransitionContext	-	layoutState	@@:
+method	SBWorkspaceApplicationSceneTransitionContext	-	previousLayoutState	@@:
+method	SBWorkspaceApplicationSceneTransitionContext	-	requestedUnlockedEnvironmentMode	q@:
+method	SBWorkspaceApplicationSceneTransitionContext	-	setActivatingEntity:	v@:@
 method	SBWorkspaceApplicationSceneTransitionContext	-	setEntity:forLayoutRole:	v@:@q
 method	SBWorkspaceApplicationSceneTransitionContext	-	setRequestedLayoutAttributes:forEntity:	v@:@@
+method	SBWorkspaceApplicationSceneTransitionContext	-	setRequestedUnlockedEnvironmentMode:	v@:q
+method	SBWorkspaceEntity	+	entity	@@:
+method	SBWorkspaceEntity	-	isHomeScreenEntity	B@:
+method	SBWorkspaceTransitionContext	-	request	@@:
+method	SBWorkspaceTransitionRequest	-	eventLabel	@@:
 method	SBWorkspaceTransitionRequest	-	modifyApplicationContext:	v@:@?
+method	SBWorkspaceTransitionRequest	-	setEventLabel:	v@:@
 method	SpringBoard	-	sendEvent:	v@:@
 method	UIView	-	didMoveToWindow	v@:
 method	UIView	-	setAlpha:	v@:d
+ivar	SBHomeGestureSwitcherModifier	_startingEnvironmentMode	q
+ivar	SBReduceMotionHomeGestureSwitcherModifier	_startingEnvironmentMode	q

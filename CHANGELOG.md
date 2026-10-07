@@ -2,6 +2,16 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.3.8
+
+### Improvements
+- Stage Manager engine: your windows now stay on screen when you go Home, with the Home button, the Home gesture, Command-H or from the App Switcher, like with the other engines. A full-screen app goes to the background and the other windows stay. Opening an app only adds its own window.
+- Stage Manager engine: after a respring your windows come back by themselves, like with the other engines.
+- Stage Manager engine: pressing Home while you are on the Home Screen behind your windows works as it does on the Home Screen, for example going back to the first page. The Home Screen behind your windows also stays sharp during the Home gesture.
+
+### Fixes
+- Stage Manager engine: Minimize in the app menu now minimizes the window in front instead of putting every window aside.
+
 ## 1.3.7
 
 ### Improvements

@@ -623,6 +623,8 @@ DMSM_SIG(DMSMSigStageArea17, @encode(CGRect), @encode(id), @encode(id))         
 DMSM_SIG(DMSMSigAutoLayout17, @encode(id), @encode(id), @encode(id), @encode(id), @encode(unsigned long long))   // -spaceByPerformingAutoLayoutWithSpace:previousSpace:configuration:options:
 DMSM_SIG(DMSMSigPerform17, @encode(CGRect), @encode(id), @encode(id), @encode(UIEdgeInsets))             // -_performAutoLayoutWithSpace:configuration:stageInset:
 DMSM_SIG(DMSMSigSnap17, @encode(void), @encode(id), @encode(CGRect), @encode(id))                        // -snapPositionToNearestEdgesIfNecessaryForSpace:stageArea:configuration:
+// (sm-free: the Home rule and the Home gesture)
+DMSM_SIG(DMSMSigVoidLong, @encode(void), @encode(long long))                                             // -setRequestedUnlockedEnvironmentMode:
 static const DMSMNeed kSMNeeds[] = {
     // the stage model: a window's attributes, the stage, its items
     {"SBDisplayItemLayoutAttributes", "init", NO, NO, NULL},
@@ -669,6 +671,36 @@ static const DMSMNeed kSMNeeds[] = {
     {"SBMutableChamoisOverlappingModel", "centerForItem:", NO, NO, DMSMSigCenterFor, NULL, 16},
     {"SBTopAffordanceViewController", "closeAction", NO, NO, DMSMSigObj},
     {"SBTopAffordanceViewController", "removeFromSetAction", NO, NO, DMSMSigObj},
+    // (sm-free: the windows stay on screen at Home -- SMHome.h rewrites SpringBoard's Home transition into the desktop's windows. Every row is needed,
+    //  so each has its own feature name: rows of one feature name are alternatives to the check. All 15 16.x builds have them, the 17.0.3 headers too.)
+    {"SBWorkspaceApplicationSceneTransitionContext", "setActivatingEntity:", NO, NO, DMSMSigVoidObj, NULL, 0, DMSMNeedOptional, "windows stay at Home (the context's front app)"},
+    {"SBWorkspaceApplicationSceneTransitionContext", "requestedUnlockedEnvironmentMode", NO, NO, DMSMSigTime, NULL, 0, DMSMNeedOptional, "windows stay at Home (the mode asked for)"},
+    {"SBWorkspaceApplicationSceneTransitionContext", "setRequestedUnlockedEnvironmentMode:", NO, NO, DMSMSigVoidLong, NULL, 0, DMSMNeedOptional, "windows stay at Home (asking for the windows)"},
+    {"SBWorkspaceApplicationSceneTransitionContext", "previousLayoutState", NO, NO, DMSMSigObj, NULL, 0, DMSMNeedOptional, "windows stay at Home (where Home starts)"},
+    {"SBMainDisplayLayoutState", "unlockedEnvironmentMode", NO, NO, DMSMSigTime, NULL, 0, DMSMNeedOptional, "windows stay at Home (what is on screen)"},
+    {"SBMainDisplayLayoutState", "appLayout", NO, NO, DMSMSigObj, NULL, 0, DMSMNeedOptional, "windows stay at Home (the stage on screen)"},
+    {"SBWorkspaceEntity", "isHomeScreenEntity", NO, NO, DMSMSigBool, NULL, 0, DMSMNeedOptional, "windows stay at Home (the Home Screen asked for)"},
+    {"SBEmptyWorkspaceEntity", "entity", YES, NO, DMSMSigObj, NULL, 0, DMSMNeedOptional, "windows stay at Home (an emptied role)"},
+    {"SBMainSwitcherControllerCoordinator", "_entityForDisplayItem:displayIdentity:", NO, NO, DMSMSigObjObjObj, NULL, 0, DMSMNeedOptional, "windows stay at Home (each window's own scene)"},
+    {"SBDisplayItem", "uniqueIdentifier", NO, NO, DMSMSigObj, NULL, 0, DMSMNeedOptional, "windows stay at Home (each window's identifier)"},
+    // (1.3.8 logic test fixes: where SpringBoard went -- the App Switcher's bookkeeping; a real Home of our own; the gates the rule reads)
+    {"SBWorkspaceApplicationSceneTransitionContext", "layoutState", NO, NO, DMSMSigObj, NULL, 0, DMSMNeedOptional, "windows stay at Home (where SpringBoard went)"},
+    {"SBHomeScreenEntity", "entity", YES, NO, DMSMSigObj, NULL, 0, DMSMNeedOptional, "windows stay at Home (a real Home of our own)"},
+    {"SBWorkspaceApplicationSceneTransitionContext", "request", NO, NO, DMSMSigObj, NULL, 0, DMSMNeedOptional, "windows stay at Home (whose transition it is)"},
+    {"SBWorkspaceTransitionRequest", "eventLabel", NO, NO, DMSMSigObj, NULL, 0, DMSMNeedOptional, "windows stay at Home (our own transitions' label)"},
+    {"SBWorkspaceTransitionRequest", "setEventLabel:", NO, NO, DMSMSigVoidObj, NULL, 0, DMSMNeedOptional, "windows stay at Home (labelling our real Home)"},
+    {"SBWorkspaceApplicationSceneTransitionContext", "isBackground", NO, NO, DMSMSigBool, NULL, 0, DMSMNeedOptional, "windows stay at Home (a background activation)"},
+    {"SBWorkspaceApplicationSceneTransitionContext", "entitiesWithRemovalContexts", NO, NO, DMSMSigObj, NULL, 0, DMSMNeedOptional, "windows stay at Home (a window being closed)"},
+    {"SBWorkspaceApplicationSceneTransitionContext", "_setRequestedFrontmostEntity:", NO, NO, DMSMSigVoidObj, NULL, 0, DMSMNeedOptional, "windows stay at Home (the front window)"},
+    // (... the Home Screen's own Home press for a person already on the Home Screen behind the windows: close a folder, the App Library, jiggle mode)
+    {"SBIconController", "sharedInstance", YES, NO, DMSMSigObj, NULL, 0, DMSMNeedOptional, "the Home Screen's own Home press under the windows"},
+    {"SBIconController", "handleHomeButtonTap", NO, NO, DMSMSigVoid, NULL, 0, DMSMNeedOptional, "the Home Screen's own Home press under the windows (its action)"},
+    // (... and the Home Screen keeps its look behind the windows during a Home gesture: SpringBoard's gesture blurs it as if an app had covered it)
+    {"SBHomeGestureSwitcherModifier", "homeScreenBackdropBlurType", NO, NO, DMSMSigTime, NULL, 0, DMSMNeedOptional, "the Home Screen stays sharp under a Home gesture (blur kind)"},
+    {"SBHomeGestureSwitcherModifier", "homeScreenBackdropBlurProgress", NO, NO, DMSMSigDouble, NULL, 0, DMSMNeedOptional, "the Home Screen stays sharp under a Home gesture (blur amount)"},
+    {"SBHomeGestureSwitcherModifier", "_startingEnvironmentMode", NO, NO, NULL, NULL, 0, DMSMNeedOptional, "the Home Screen stays sharp under a Home gesture (where it starts)", "q"},
+    {"SBReduceMotionHomeGestureSwitcherModifier", "homeScreenBackdropBlurType", NO, NO, DMSMSigTime, NULL, 0, DMSMNeedOptional, "the Home Screen stays sharp under a Home gesture (Reduce Motion's blur kind)"},
+    {"SBReduceMotionHomeGestureSwitcherModifier", "_startingEnvironmentMode", NO, NO, NULL, NULL, 0, DMSMNeedOptional, "the Home Screen stays sharp under a Home gesture (Reduce Motion's start)", "q"},
     // what our hooks replace (%group SMEngine)
     {"SpringBoard", "sendEvent:", NO, YES, DMSMSigVoidObj},
     {"SBIconView", "_handleTap", NO, YES, DMSMSigVoid},

@@ -294,7 +294,8 @@ static long long DMSMCtxLong(id ctx, NSString *name, long long dflt) {
 // is built and checked first; then SpringBoard's roles are unset (the context becomes a plain activation, whose unset roles Stage Manager keeps "as
 // they were" -- emptying them instead drops a window the plan moves to another role, 1.4 finding) and the plan is written. A write that fails
 // puts SpringBoard's own roles back.
-static void DMSMJoinStageAsked(id ctx, NSArray<NSArray *> *asked) {
+__attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray *> *asked) {   // (noinline: its own range in the release crash map --
+    // inlined into DMSMJoinDesktop after the 1.3.8 RC2 edits, test-crashstep's line for it had no symbol on the release build: logic test N-1)
 #if DEBUG
     if (DMTestFlag("/tmp/msb-sm-nojoinasked")) { DMLog(@"[smjoin] roles already set: left as SpringBoard built it (debug /tmp/msb-sm-nojoinasked)"); return; }
 #endif
@@ -342,15 +343,12 @@ static void DMSMJoinStageAsked(id ctx, NSArray<NSArray *> *asked) {
         DMLog([NSString stringWithFormat:@"[smjoin] roles already set (%@; %@): left as SpringBoard built it -- %@", [seen componentsJoinedByString:@", "], [label0 isKindOfClass:[NSString class]] ? label0 : @"no label", early]);
         return;
     }
-    // The desktop: the most recent stage on the iPad with a window that is not minimized (as DMSMJoinDesktop has it).
-    id desk = nil; NSMutableDictionary *map = nil;
-    for (id al in DMSMRecentStages()) {
-        if (!DMSMIsMainIdentity(DMSMStageDisplayIdentity(al))) continue;
-        NSDictionary *all = DMSMStageItemsMap(al);
-        NSMutableDictionary *shown = [NSMutableDictionary dictionary];
-        for (id it in all) if (!DMSMIsMinimized(DMSMItemBundle(it))) shown[it] = all[it];
-        if (shown.count) { desk = al; map = shown; break; }
-    }
+    // The desktop: the most recent stage on the iPad with a window that is not minimized, not an app in full screen sent to the background unless
+    // that is what is asked for (as DMSMJoinDesktop has it: StatusBar.x DMSMDesktopFor).
+    NSMutableSet<NSString *> *askedB = [NSMutableSet set];
+    for (NSDictionary *w in askedW) [askedB addObject:w[@"b"]];
+    NSMutableDictionary *map = nil;
+    id desk = DMSMDesktopFor(DMSMStageShownBefore(ctx), askedB, &map);
     NSMutableArray<NSDictionary *> *deskW = [NSMutableArray array];
     NSMutableDictionary<NSString *, id> *deskItem = [NSMutableDictionary dictionary];
     for (id it in map) {

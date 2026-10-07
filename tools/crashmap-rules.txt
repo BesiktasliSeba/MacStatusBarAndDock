@@ -166,8 +166,8 @@ sym MacStatusBarCore ^_?DMInitStageManagerButtonHook$ windowingEnabled
 sec MacStatusBarCore Stage\sManager\sswitched\soff windowingEnabled
 sec MacStatusBarCore Stage\sManager\s(as\sthe\sengine|engine) windowingEnabled
 # (the engine's own headers: the checked API, the window fit, the Home Screen behind the windows, the desktop join, the window roles and one window
-#  per role -- every function and block in them, whatever its name)
-file MacStatusBarCore ^(SMEngineAPI|SMFit|SMDesktop|SMDeskJoin|SMRoles|SMLimit|SMFitPlan|SMRoleRepair)\.h$ windowingEnabled
+#  per role, the windows staying at Home and its rule -- every function and block in them, whatever its name)
+file MacStatusBarCore ^(SMEngineAPI|SMFit|SMDesktop|SMDeskJoin|SMRoles|SMLimit|SMFitPlan|SMRoleRepair|SMHome|SMHomeRule)\.h$ windowingEnabled
 sec MacStatusBarCore iPadOS\s17's\slayout\sengine windowingEnabled
 sec MacStatusBarCore which\swindow\sengine windowingEnabled
 sec MacStatusBarCore Stage\sManager\sis\sheld\soff windowingEnabled

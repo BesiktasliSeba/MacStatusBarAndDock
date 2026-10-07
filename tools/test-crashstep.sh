@@ -102,6 +102,14 @@ if [ -f "$MAP" ] && [ -n "$DSYM" ]; then
   # (1.3.6: one window, one role -- the context put right before SpringBoard reads it, and its rule)
   real core-sm-rolerepair "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMRepairRoles$'
   real core-sm-rolerepairplan "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMRoleRepairPlan$'
+  # (sm-free: the windows stay at Home -- the rewrite, its rule, the Home gesture's blur answer)
+  real core-sm-home "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMHomeKeepsDesktop$'
+  real core-sm-homeplan "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMHomePlan$'
+  real core-sm-homeblur "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMHGBlurProgress$'
+  # (1.3.8 logic test fixes: the App Switcher's bookkeeping after finalize, our own real Home request, the desktop choice of the joins and the restore)
+  real core-sm-homenote "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMHomeNoteResult$'
+  real core-sm-realhome "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMRequestRealHome$'
+  real core-sm-desktopfor "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMDesktopFor$'
   # every Stage Manager hook group of this build (%group SM...): Windowing off -- 16.0's SMLayout160 / SMGrid160 fell to the image's target in the
   # first 1.3.4 build (the stock status bar instead, logic test); a new SM group must not
   smgroups=$(nm -s __TEXT __text "$DSYM" | grep -oE 'logos_method\$SM[A-Za-z0-9]*\$' | sed 's/^logos_method\$//; s/\$$//' | sort -u)
