@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report from your iPad instead
+    url: https://github.com/BesiktasliSeba/MacStatusBarAndDock#report-a-bug
+    about: Settings > Status Bar > Report a Problem opens an issue with your iPad, iPadOS version, window engine and tweak version filled in.
+  - name: Security problem
+    url: https://github.com/BesiktasliSeba/MacStatusBarAndDock/security/advisories/new
+    about: Please report security problems privately, not in a public issue.

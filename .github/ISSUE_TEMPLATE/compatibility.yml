@@ -1,0 +1,56 @@
+name: Compatibility report
+description: Tell us whether MacStatusBar&Dock works on your iPad. It helps fill in the compatibility table.
+labels: ["compatibility"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A short report is enough. If something is broken, a bug report (or Report a Problem in Settings > Status Bar) gets it fixed faster.
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      options:
+        - Works
+        - Works, with some problems
+        - Doesn't work
+    validations:
+      required: true
+  - type: input
+    id: ipad
+    attributes:
+      label: iPad model
+      placeholder: 'iPad Pro 10.5"'
+    validations:
+      required: true
+  - type: input
+    id: ipados
+    attributes:
+      label: iPadOS version
+      placeholder: "16.6.1"
+    validations:
+      required: true
+  - type: input
+    id: jailbreak
+    attributes:
+      label: Jailbreak and its version
+      placeholder: "palera1n (rootless)"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: MacStatusBar&Dock version
+      placeholder: "1.4.2"
+    validations:
+      required: true
+  - type: input
+    id: engines
+    attributes:
+      label: Window engines you tried
+      placeholder: "Aerial 5.0, Zetsu 1.6.6"
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: What works, what doesn't, and screenshots if you have them. On iPadOS 17 or later, say whether you turned on Enable Anyway.

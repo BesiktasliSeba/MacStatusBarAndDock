@@ -1,0 +1,103 @@
+name: Bug report
+description: Something in MacStatusBar&Dock doesn't work as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The quickest way to report is on the iPad: **Settings > Status Bar > Report a Problem**. It opens an issue with your iPad, iPadOS version, window engine and tweak version already filled in. Use this form when you're on a computer.
+
+        Please report security problems privately instead, as described in SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: MacStatusBar&Dock version
+      description: Shown in Sileo under Installed.
+      placeholder: "1.4.2"
+    validations:
+      required: true
+  - type: input
+    id: ipad
+    attributes:
+      label: iPad model
+      description: About This iPad in the Apple menu shows it. If you attach a screenshot of that window, cover the serial number.
+      placeholder: 'iPad Pro 11" (M1, 2021)'
+    validations:
+      required: true
+  - type: input
+    id: ipados
+    attributes:
+      label: iPadOS version
+      placeholder: "16.7.7"
+    validations:
+      required: true
+  - type: input
+    id: jailbreak
+    attributes:
+      label: Jailbreak and its version
+      placeholder: "Dopamine"
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Window engine
+      description: Settings > Status Bar > Window Engine
+      options:
+        - Aerial 5.0
+        - Aerial 3.0
+        - Zetsu 1.6.6
+        - Zetsu 1.6.2
+        - MilkyWay4 0.1.1
+        - Stage Manager
+        - None, or windowing off
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: mac-switcher
+    attributes:
+      label: Mac Switcher
+      description: Settings > Status Bar > Mac Switcher
+      options:
+        - "Off"
+        - "On"
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Which app, what you did, and what went wrong.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      value: |
+        1.
+        2.
+        3.
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+  - type: textarea
+    id: media
+    attributes:
+      label: Screenshot or screen recording
+      description: Drag files here. A short recording helps a lot with window and gesture problems.
+  - type: textarea
+    id: log
+    attributes:
+      label: Crash report or Report a Problem text
+      description: If SpringBoard crashed, paste the newest SpringBoard report from Settings > Privacy & Security > Analytics & Improvements > Analytics Data (on iPadOS 15, Settings > Privacy > Analytics & Improvements > Analytics Data). The text from Report a Problem is welcome too.
+      render: text
+  - type: textarea
+    id: other-tweaks
+    attributes:
+      label: Other tweaks that change the Home Screen, Dock, status bar or windows
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you submit
+      options:
+        - label: I'm on the newest version from the Sileo repo.
+        - label: I looked for an existing issue about this.
