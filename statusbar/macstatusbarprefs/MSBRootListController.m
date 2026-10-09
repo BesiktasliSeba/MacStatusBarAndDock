@@ -549,8 +549,24 @@ static void MSBFitValueLabels(UIView *v) {
 			[note setProperty:other forKey:@"footerText"];
 			_specifiers = [[_specifiers arrayByAddingObject:note] mutableCopy];
 		}
+		[self msb_updateSearchTweaksRow:NO];
 	}
 	return _specifiers;
+}
+// "Include Tweak Settings" adds to the search field's results: greyed while "Search Field in Settings" is off (as Apple greys a row that depends on
+// another switch), live when that switch changes.
+- (void)msb_updateSearchTweaksRow:(BOOL)reload {
+	CFPreferencesAppSynchronize(CFSTR("com.besiktasliseba.macsettings"));
+	CFPropertyListRef v = CFPreferencesCopyAppValue(CFSTR("sidebarSearch"), CFSTR("com.besiktasliseba.macsettings"));
+	BOOL field = !(v && CFGetTypeID(v) == CFBooleanGetTypeID() && !CFBooleanGetValue(v));   // (never set: on)
+	if (v) CFRelease(v);
+	if (!MSBDGateWanted()) field = NO;   // (untested iPadOS / safe mode: every row greyed, LineSwitch.h -- this one stays so)
+	for (PSSpecifier *spec in _specifiers) {
+		if (![spec.identifier isEqualToString:@"SEARCH_TWEAK_SETTINGS"]) continue;
+		[spec setProperty:@(field) forKey:@"enabled"];
+		if (reload) [self reloadSpecifier:spec animated:YES];
+		break;
+	}
 }
 
 // The saved engine can name one this device does not offer (MilkyWay4 saved before an update to iPadOS 16, or an engine since removed): the tweak
@@ -585,6 +601,7 @@ static void MSBFitValueLabels(UIView *v) {
 	}
 	[super setPreferenceValue:value specifier:specifier];
 	if ([[specifier propertyForKey:@"key"] isEqual:@"finderEnabled"]) { notify_post("com.besiktasliseba.dockmagnification/prefsChanged"); return; }   // (the Dock shows or hides its Finder icon too)
+	if ([[specifier propertyForKey:@"key"] isEqual:@"sidebarSearch"]) { [self msb_updateSearchTweaksRow:YES]; return; }
 	// Enable Windowing off = no window engine loads at all (MacSettings' root helper denies them all in Choicy / renames them for iCleaner Pro; on
 	// again, only the chosen one comes back). Its footer says it takes effect after a respring. An engine picked while windowing is off is only
 	// saved; the helper applies it when windowing is on again.

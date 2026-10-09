@@ -25,7 +25,8 @@
 
 #define MSBD_PAYLOAD_DIR "/var/jb/usr/lib/MacStatusBarAndDock/"
 
-enum { kSpringBoard = 1, kSettings = 2, kUIKit = 4, kPointerUID = 8, kRow = 16 };   // kRow: a Settings row, loaded on untested versions too
+enum { kSpringBoard = 1, kSettings = 2, kUIKit = 4, kPointerUID = 8, kRow = 16, kSpotlight = 32 };   // kRow: a Settings row, loaded on untested versions too
+                                                                                                    // kSpotlight: the Spotlight app (com.apple.Spotlight) only
 typedef struct { const char *name; unsigned where; } Payload;
 
 #if MSBD_LINE_DOCK
@@ -57,6 +58,7 @@ static const Payload kPayloads[] = {
     { "MacPointer", kPointerUID },
     { "MacSettings", kSettings },
     { "MacSettingsBadge", kSpringBoard },
+    { "MacSpotlight", kSpotlight },
     { "MacStatusBarCore", kSpringBoard },
     { "MacStatusBarSettings", kSettings | kRow },
     { "MixAudio", kUIKit },
@@ -111,10 +113,11 @@ __attribute__((constructor)) static void MSBDLoad(void) {
     if (EndsWith(path, "/SpringBoard.app/SpringBoard")) kind = kSpringBoard;
     else if (EndsWith(path, "/Preferences.app/Preferences")) kind = kSettings;
     else if (EndsWith(path, "/pointeruid")) kind = kPointerUID;
+    else if (EndsWith(path, "/Spotlight.app/Spotlight")) kind = kSpotlight;   // (and kUIKit below: the app-side parts load there as before)
     // (the Bundles filter com.apple.UIKit means "UIKit is loaded", as the tweak loader checks it; RTLD_NOLOAD only looks, it never loads anything)
     void *uikit = dlopen("/System/Library/Frameworks/UIKit.framework/UIKit", RTLD_LAZY | RTLD_NOLOAD);
     if (uikit) { kind |= kUIKit; dlclose(uikit); }
-    if (kind == kUIKit && MSBDRecoveryApp(path)) kind = 0;   // (nothing of ours in the recovery apps)
+    if ((kind & ~kSpotlight) == kUIKit && MSBDRecoveryApp(path)) kind = 0;   // (nothing of ours in the recovery apps)
     int noIPad = kind && !MSBDIsIPad();   // (an iPhone made to look like an iPad: nothing at all, not even the rows)
     if (noIPad) kind = 0;
 #if DEBUG

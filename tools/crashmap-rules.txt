@@ -44,6 +44,10 @@ target wifiMenu pref com.besiktasliseba.macstatusbar wifiMenu 0 1 Wi-Fi Menu|the
 target desktopIcons pref com.besiktasliseba.macstatusbar desktopIcons 0 1 Show Desktop Icons|the desktop
 target runningIndicator pref com.besiktasliseba.dockrunningindicator enabled 0 1 Show Indicators for Open Apps|the open-app indicators
 target macSwitcher pref com.besiktasliseba.macstatusbar macSwitcher 0 0 Mac Switcher|the Mac Switcher
+target spotlightFiles pref com.besiktasliseba.macstatusbar spotlightFiles 0 0 Desktop and Downloads|Spotlight's Desktop and Downloads
+target spotlightTweakSettings pref com.besiktasliseba.macstatusbar spotlightTweakSettings 0 0 Tweak Settings|Spotlight's tweak settings
+target spotlightActions pref com.besiktasliseba.macstatusbar spotlightActions 0 0 Actions|our actions in Spotlight
+target spotlightWindows pref com.besiktasliseba.macstatusbar spotlightWindows 0 0 Windows|our windows in Spotlight
 
 # The parts in words, for the guard's explanation: title <Image> <where it crashed>|<what was turned off> ("SpringBoard crashed twice in the
 # Dock, so MacDock was turned off for now."). A part without a title is named by its file name.
@@ -104,6 +108,13 @@ file MacStatusBarCore ^Desktop\.h$ desktopIcons
 file MacStatusBarCore ^DesktopPlace\.h$ desktopIcons
 sym MacStatusBarCore ^_?DMWiFi[A-Z] wifiMenu
 file MacStatusBarCore ^WiFiMenu\.h$ wifiMenu
+# Spotlight (statusbar/SpotlightFiles.x): the tweak settings part (its own functions, its PreferenceLoader watcher, the shared index / donation headers), then the files part
+sym MacStatusBarCore ^_*SF(Tweak|WatchTweaks) spotlightTweakSettings
+file MacStatusBarCore ^Tweak(Index|Spotlight)\.h$ spotlightTweakSettings
+file MacStatusBarCore ^SpotlightFiles\.x$ spotlightFiles
+# our sections in Spotlight (SpotlightBridge.h, 1.4.3): the window list has its own switch, everything else is the actions'
+sym MacStatusBarCore ^_*DMSpot(WindowRows|Where|OnDesktopThen) spotlightWindows
+file MacStatusBarCore ^SpotlightBridge\.h$ spotlightActions
 # the Mac Switcher (MacSwitcher.h, 1.4; its Stage Manager desktops MacSwitcherSM.h and Home button MacSwitcherButton.h): its own switch -- the
 # functions and their blocks (a block's symbol is the function's name with "___" before it, as in 1.3.6 R3-L3: in the 1.4~int6 release map every
 # block of MacSwitcherSM.h and MacSwitcherButton.h -- the desktop switch's, the notice's, the drag's move, the Home double press -- fell to Stock

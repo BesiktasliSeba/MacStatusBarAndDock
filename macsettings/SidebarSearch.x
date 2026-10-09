@@ -40,6 +40,7 @@
 
 BOOL MSSidebarBarCanGo(UIViewController *vc);   // MacSettings.x: the sidebar is shown next to the page (its bar is hidden then)
 void MSSearchSidebarChanged(UIViewController *list);
+BOOL MTSTestCommand(NSString *cmd);              // TweakSearch.x: its test commands ("tweaks ...", debug builds)
 
 #define kMSSDomain CFSTR("com.besiktasliseba.macsettings")
 #define kMSSChanged "com.besiktasliseba.macsettings/searchChanged"
@@ -494,7 +495,7 @@ static void MSSTestCommand(NSString *cmd) {
         CFPreferencesAppSynchronize(kMSSDomain);
         notify_post(kMSSChanged);
     }
-    else MSSLog(@"test: unknown command");
+    else if (!MTSTestCommand(cmd)) MSSLog(@"test: unknown command");
 }
 static void MSSTestPoll(void) {
     static time_t last = -1;   // (-1: the first look adopts a leftover command without running it)

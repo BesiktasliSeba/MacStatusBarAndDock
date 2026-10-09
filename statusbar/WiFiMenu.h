@@ -293,6 +293,7 @@ static UIImage *DMWiFiFanImage(NSInteger bars, CGFloat height) {
 // ---- the menu bar icon: the Wi-Fi fan, drawn (DMWiFiFanImage) at the stock icon's size (14 x 10 pt on the iPad's bar), tinted like the other
 // icons: the lit bars when joined, every bar faint when Wi-Fi is off or not joined (the Mac's empty fan). (iOS's own _UIStatusBarWifiSignalView
 // was tried first: outside a status bar item it never redrew after its bars or colours changed -- seen on the M1.) ----
+static const CGFloat kWiFiIconH = 10.0;   // (the fan's height in the bar; its ink is 1 pt less: DMWiFiFanImage keeps half a point above and below)
 static UIView *DMWiFiMakeIcon(void) {
     UIImageView *iv = [UIImageView new];
     iv.contentMode = UIViewContentModeScaleAspectFit;
@@ -301,7 +302,7 @@ static UIView *DMWiFiMakeIcon(void) {
 }
 static CGSize DMWiFiApplyIconState(UIView *icon, UIColor *tint) {
     UIImageView *iv = (UIImageView *)icon;
-    UIImage *img = DMWiFiFanImage(DMWiFiAssociated() ? DMWiFiBars() : 0, 10.0);
+    UIImage *img = DMWiFiFanImage(DMWiFiAssociated() ? DMWiFiBars() : 0, kWiFiIconH);
     if (iv.image != img) iv.image = img;
     if (tint && ![iv.tintColor isEqual:tint]) iv.tintColor = tint;
     return img.size;

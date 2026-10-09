@@ -86,7 +86,7 @@ Off until you turn it on in Settings > Status Bar > Mac Switcher. It takes the p
 ### Settings
 
 - The Status Bar and Dock pages sit right below General and look like Apple's own pages.
-- A search field at the top of the Settings sidebar finds Apple's settings, like the search in System Settings on a Mac.
+- A search field at the top of the Settings sidebar finds Apple's settings, like the search in System Settings on a Mac, and can find your tweaks' settings too.
 
 ### Also included
 
@@ -95,6 +95,7 @@ Off until you turn it on in Settings > Status Bar > Mac Switcher. It takes the p
 - A Go menu with the apps you choose, and an auto-hiding menu bar
 - Home Screen options: page dots, app names and the Home Bar
 - Keyboard extras for keyboards without a function row
+- Spotlight extras you can turn on: tweak settings, actions, your windows, and your Desktop and Downloads files
 - Longer Auto-Lock times, an SSH switch and Ethernet settings
 - VoiceOver labels for the menu bar, the traffic lights and Finder, and Reduce Motion support
 
@@ -134,7 +135,7 @@ Which one? Start with Aerial 5.0, the one marked Recommended. If you already use
 | Other iPads | 17 and later | | | Off until you turn on Enable Anyway, at your own risk |
 
 - iPad Pro (M2) with the Stage Manager engine: offered on 16.1 and later, and as "Untested" on 16.0, where a user confirmed the basics (windows, resizing, traffic lights). On 16.3.1 a user confirmed it runs. On 16.1 to 16.6 another user reports SpringBoard crashes with it, so use Aerial 5.0 there.
-- iPadOS 17: the desktop, the Wi-Fi menu, the Mac Switcher, the Stage Manager engine and the search field in the Settings sidebar are offered there, but haven't run on an iPadOS 17 device yet. Testers are welcome.
+- iPadOS 17: the desktop, the Wi-Fi menu, the Mac Switcher, the Stage Manager engine, the search field in the Settings sidebar and the Spotlight extras are offered there, but haven't run on an iPadOS 17 device yet. Testers are welcome.
 - iPadOS 18: the Mac Switcher, the desktop and the Wi-Fi menu are not offered.
 
 Tried it on another setup? A [compatibility report](https://github.com/BesiktasliSeba/MacStatusBarAndDock/issues/new?template=compatibility.yml) (works or doesn't) helps fill in this table.

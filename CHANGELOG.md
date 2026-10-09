@@ -2,6 +2,27 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.4.3
+
+### New
+- Spotlight: four new switches in Settings > Status Bar > Spotlight, all off until you turn them on. Apple's own results always come first, and ours follow in sections of their own. Actions and Windows don't show on the Lock Screen or in the Today view.
+- Spotlight > Tweak Settings: your tweaks' settings show up in Spotlight, in a Tweak Settings section. Picking one opens Settings at that row.
+- Spotlight > Actions: Show Desktop, your desktops, Downloads, New Finder Window, Lock Screen and Force Quit, when what you type matches one of them.
+- Spotlight > Windows: your open windows, Finder windows too, when what you type matches. Picking one brings it to the front, also from another desktop.
+- Spotlight > Desktop and Downloads: files in On My iPad > Desktop and Downloads show up in Spotlight. On iPadOS 15 they show up right away. On iPadOS 16 they show up once iPadOS indexes them, which can take a while. Files has to be allowed in Settings > Siri & Search; while it isn't, nothing is added.
+- Settings: turn on Settings > Status Bar > Include Tweak Settings (off at first), and the search field in the Settings sidebar also finds your tweaks' settings, including the ones Shuffle keeps in its Tweaks list.
+
+### Improvements
+- Menu bar: the mute icon is now as tall as the Wi-Fi icon next to it.
+- About This iPad names the jailbreak you use (palera1n, for example, instead of always Dopamine), and the Shut Down question says what to run again after turning the iPad back on.
+
+### Fixes
+- Stage Manager engine: Force Quit in the Apple menu names the app in front. Before, it could name the app of another window, such as Settings while Clock was in front.
+- Windows: a Spotlight result for an app that already has a window now opens that result in the window. Before, with Aerial, Zetsu and MilkyWay4, only the window came to the front.
+
+### Experimental (iPadOS 17)
+- iPadOS 17: the Spotlight switches and Include Tweak Settings are offered there too. They haven't been tested on an iPadOS 17 device yet.
+
 ## 1.4.2
 
 ### New

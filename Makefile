@@ -30,7 +30,7 @@ MacCrashNotice_FRAMEWORKS = Foundation UIKit
 MacCrashNotice_INSTALL_PATH = /usr/lib/MacStatusBarAndDock
 
 # Each part keeps its own project (it used to be a tweak of its own); they are moved out of the tweak folder when packaged.
-SUBPROJECTS += statusbar macsettings dock appbridge mixaudio forcequitmenu graveescape tabmute volumeglobe brightnesskey
+SUBPROJECTS += statusbar macsettings dock appbridge mixaudio forcequitmenu graveescape tabmute volumeglobe brightnesskey spotlight
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 include $(THEOS_MAKE_PATH)/library.mk
@@ -38,7 +38,7 @@ include $(THEOS_MAKE_PATH)/aggregate.mk
 
 PAYLOADS = BrightnessKeyTweak DockMagnification DockMagnificationSettings ForceQuitMenu GraveEscapeTweak MacAppBridge MacAppSizeMenu MacCCGrabber \
            MacEthernetFix MacFolderMenu MacHomeBar MacIconLabels MacLargeTitles MacLockStatusBar MacPageDots MacPointer MacSettings MacSettingsBadge \
-           MacStatusBarCore MacStatusBarSettings MixAudio TabMuteTweak VolumeGlobeTweak
+           MacSpotlight MacStatusBarCore MacStatusBarSettings MixAudio TabMuteTweak VolumeGlobeTweak
 
 # BuildInfo.txt (next to the parts): the commit this package was built from, whether the tree had uncommitted changes, whether it is a debug build.
 # tools/verify-release.sh compares it with the tree, so a stale or debug package is never published by mistake.

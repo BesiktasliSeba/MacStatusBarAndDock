@@ -1630,6 +1630,7 @@ static DMEngine DMActiveEngine(void) {
 #include "SMEngineAPI.h"   // (the Stage Manager engine's private API: checked wrappers + the start-up self-check, 2026-09-29)
 #include "SMFit.h"         // (where a Stage Manager window may go: sizes in points of their own reference, fitted into the desktop, 3 Oct; Mac test tools/test-smfit.sh)
 #include "SMHomeRule.h"    // (the Home rule and the desktop choice, plain Foundation: sm-free 4 Oct, 1.3.8 logic test fixes; Mac test tools/test-smhomerule.sh)
+#include "JailbreakInfo.h"   // (which jailbreak runs, from its marker: About This iPad, the Shut Down question; plain Foundation, Mac test tools/test-jbinfo.sh)
 // ---- Stage Manager as the engine (iPadOS 16+, 2026-09-28, branch stage-manager) ----
 // Picked as "stagemanager" in Settings > Window Engine: Apple's own Stage Manager does the windowing (natively on M1/M2 iPads, through TrollPad on
 // older ones). None of the third-party engines is loaded (the root helper treats it like windowing off), and for all of their code paths there is NO
@@ -3801,6 +3802,14 @@ static SBApplication *DMActiveApp(void) {
         if (windowed) return windowed;
     }
     return DMFrontApp();
+}
+// The app "Force Quit <app>" means (the Apple menu, Spotlight's Force Quit row): the one the menu bar names (DMActiveApp: on the Stage Manager
+// engine the front window's, on Aerial / Zetsu / MilkyWay4 the top window's while the windows own the bar, else the full-screen app), never
+// another window's. (1.4.3: on the iPad 2's Stage Manager the Apple menu offered "Force Quit Settings" while Clock's window was in front and the
+// menu bar said Clock -- -_accessibilityFrontMostApplication names the stage's first app.) A Finder window in front: none (Finder is not an app).
+static SBApplication *DMForceQuitTargetApp(void) {
+    if (DMNativeActiveApp()) return nil;
+    return DMActiveApp();
 }
 
 // Test helper: a pan recogniser with a scripted state and translation, to drive MilkyWay's own resize handler.
@@ -10423,6 +10432,37 @@ static void DMDeliverURLToWindow(NSString *bundleID, NSURL *url, int attempt) {
     ((void (*)(id, SEL, id))objc_msgSend)(scene, send, [NSSet setWithObject:action]);
     DMLog([NSString stringWithFormat:@"[openurl] %@: URL (%@) handed to its window's scene after %.1f s", bundleID, url.scheme, attempt * 0.1]);
 }
+// The open request's own actions (FrontBoard's "__Actions": a Spotlight result's user activity, a shortcut item and the like), handed to the
+// window's scene the way the system gives them to the app it opens. The redirect to the window used to keep only the URL: a Spotlight result for
+// an app that already has a window brought the window forward without the result (Settings stayed on its last page; M1 Aerial, 9 Oct, 1.4.3).
+static NSArray *DMPayloadActions(id options) {
+    id dict = [options respondsToSelector:NSSelectorFromString(@"dictionary")] ? ((id (*)(id, SEL))objc_msgSend)(options, NSSelectorFromString(@"dictionary")) : options;
+    if (![dict isKindOfClass:[NSDictionary class]]) return nil;
+    if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[openactions] request keys %@", [[(NSDictionary *)dict allKeys] componentsJoinedByString:@","]]);
+    id a = [(NSDictionary *)dict objectForKey:@"__Actions"];
+    if ([a isKindOfClass:[NSSet class]]) a = [(NSSet *)a allObjects];
+    if (![a isKindOfClass:[NSArray class]]) return nil;
+    Class action = objc_getClass("BSAction");
+    NSMutableArray *out = [NSMutableArray array];
+    for (id x in (NSArray *)a) if (!action || [x isKindOfClass:action]) [out addObject:x];
+    return out.count ? out : nil;
+}
+static void DMDeliverActionsToWindow(NSString *bundleID, NSArray *actions, int attempt) {
+    id scene = DMSceneForBundle(bundleID);
+    id settings = scene ? DMCall(scene, @"settings") : nil;
+    BOOL fg = [settings respondsToSelector:NSSelectorFromString(@"isForeground")] && ((BOOL (*)(id, SEL))objc_msgSend)(settings, NSSelectorFromString(@"isForeground"));
+    long long content = [scene respondsToSelector:NSSelectorFromString(@"contentState")] ? ((long long (*)(id, SEL))objc_msgSend)(scene, NSSelectorFromString(@"contentState")) : 2;
+    if (!scene || !fg || content < 2) {   // (a window coming up: its scene and content within a second or two)
+        if (attempt < 100) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMDeliverActionsToWindow(bundleID, actions, attempt + 1); });
+        else DMLog([NSString stringWithFormat:@"[openactions] %@: gave up handing over %lu action(s)", bundleID, (unsigned long)actions.count]);
+        return;
+    }
+    SEL send = NSSelectorFromString(@"sendActions:");
+    if (![scene respondsToSelector:send]) { DMLog(@"[openactions] no way to hand actions to a scene on this iOS"); return; }
+    ((void (*)(id, SEL, id))objc_msgSend)(scene, send, [NSSet setWithArray:actions]);
+    NSMutableArray *names = [NSMutableArray array]; for (id x in actions) [names addObject:NSStringFromClass([x class])];
+    DMLog([NSString stringWithFormat:@"[openactions] %@: %@ handed to its window's scene after %.1f s", bundleID, [names componentsJoinedByString:@","], attempt * 0.1]);
+}
 // Spotlight is shown by SpringBoard in an SBTransientOverlayWindow whose root is SBSpotlightTransientOverlayViewController (level 1057, above the windows).
 static BOOL DMSpotlightShown(void) {
     for (UIWindow *w in DMAllWindows())
@@ -10518,6 +10558,8 @@ static NSMutableDictionary<NSString *, NSNumber *> *gWindowLaunchUntil;   // (de
         if ([originName isEqualToString:@"com.apple.Spotlight"] || [originName isEqualToString:@"Spotlight"]) DMDismissSpotlightSoon();
         NSURL *url = DMPayloadURL(options);
         if (url) DMDeliverURLToWindow(bundleID, url, 0);
+        NSArray *actions = DMPayloadActions(options);
+        if (actions) DMDeliverActionsToWindow(bundleID, actions, 0);
         return;
     }
     %orig;
@@ -12178,14 +12220,33 @@ static NSString *DMUptimeString(void) {
     return [NSString stringWithFormat:@"%ld min", m];
 }
 
-static NSString *DMDopamineVersion(void) {
+// The jailbreak this iPad runs, from the marker it leaves in its root (JailbreakInfo.h, 1.4.3 S-4): About This iPad > Jailbreak and the Shut Down
+// question. Read once (the jailbreak cannot change without a restart). Debug: /tmp/msb-about-jb holds a root to look in instead of the iPad's own
+// (read again each time, so a test can switch between fake markers).
+static NSString *DMJBAppVersion(NSString *bundleID) {   // (installed apps only: LaunchServices hands out a proxy for any identifier)
     Class proxyClass = objc_getClass("LSApplicationProxy");
     SEL sel = NSSelectorFromString(@"applicationProxyForIdentifier:");
-    id proxy = [proxyClass respondsToSelector:sel]
-        ? ((id (*)(id, SEL, id))objc_msgSend)(proxyClass, sel, @"com.opa334.Dopamine") : nil;
-    NSString *v = DMCall(proxy, @"shortVersionString");
-    return v ? [@"Dopamine " stringByAppendingString:v] : @"Dopamine";
+    id proxy = [proxyClass respondsToSelector:sel] ? ((id (*)(id, SEL, id))objc_msgSend)(proxyClass, sel, bundleID) : nil;
+    SEL inst = NSSelectorFromString(@"isInstalled");
+    if (!proxy || ![proxy respondsToSelector:inst] || !((BOOL (*)(id, SEL))objc_msgSend)(proxy, inst)) return nil;
+    id v = DMCall(proxy, @"shortVersionString");
+    return [v isKindOfClass:[NSString class]] ? v : nil;
 }
+static MSBDJailbreak DMJailbreakInfo(void) {
+    static MSBDJailbreak jb; static BOOL done = NO;
+    NSString *root = @"";
+#if DEBUG
+    NSString *fake = [[NSString stringWithContentsOfFile:@"/tmp/msb-about-jb" encoding:NSUTF8StringEncoding error:nil] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (fake.length) { root = fake; done = NO; }
+#endif
+    if (done) return jb;
+    done = YES;
+    jb = MSBDJailbreakAt(root, root.length ? nil : ^NSString *(NSString *bid) { return DMJBAppVersion(bid); });
+    DMLog([NSString stringWithFormat:@"[about] jailbreak%@: %@ -- Shut Down says \"%@\"", root.length ? [NSString stringWithFormat:@" (test root %@)", root] : @"", MSBDJailbreakTitle(jb), MSBDJailbreakAfterRestart(jb)]);
+    return jb;
+}
+static NSString *DMJailbreakTitle(void) { return MSBDJailbreakTitle(DMJailbreakInfo()); }
+static NSString *DMJailbreakAfterRestart(void) { return MSBDJailbreakAfterRestart(DMJailbreakInfo()); }
 
 // Hypervisor: iPadOS ships no Hypervisor.framework of its own (not on iOS 15 or 16), but VirtualMac brings one (taken from macOS) and a jailbreak can
 // place one in the usual framework folders; any of those counts. Whether the chip and kernel can actually run virtual machines is the kernel's own
@@ -12260,7 +12321,7 @@ static NSArray *DMAboutJailbreakRows(void) {
     struct utsname u; uname(&u);
     NSMutableArray *rows = [NSMutableArray array];
     struct { NSString *label; NSString *value; } items[] = {
-        {@"Jailbreak",       DMDopamineVersion()},
+        {@"Jailbreak",       DMJailbreakTitle()},
         {@"Type",            @"Rootless"},
         {@"Injection",       ellekit ? [@"ElleKit " stringByAppendingString:ellekit] : @"ElleKit"},
         {@"Package Manager", sileo ? [@"Sileo " stringByAppendingString:sileo] : nil},
@@ -12608,10 +12669,8 @@ static void DMOpenMenu(UIButton *btn) {
     if (!host) return;
     if (DMTitleTapWithMenuOpen(btn)) return;
 
-    // Built each time so "Force Quit" reflects the app in front right now.
-    SpringBoard *sb = (SpringBoard *)[UIApplication sharedApplication];
-    SBApplication *front = [sb respondsToSelector:@selector(_accessibilityFrontMostApplication)]
-                               ? [sb _accessibilityFrontMostApplication] : nil;
+    // Built each time so "Force Quit" reflects the app in front right now: the one the menu bar names (DMForceQuitTargetApp).
+    SBApplication *front = DMForceQuitTargetApp();
     NSString *fqTitle = front ? [NSString stringWithFormat:@"Force Quit %@", [front displayName] ?: @"App"]
                               : @"Force Quit";
     NSArray *runningApps = DMUserRunningApps();   // the apps "Force Quit All Apps…" would quit
@@ -12679,8 +12738,7 @@ static void DMOpenMenu(UIButton *btn) {
         [[DMRow alloc] initWithTitle:@"Lock Screen" enabled:YES handler:DMCloseThen(^{ DMLock(); })],
         [[DMRow alloc] initWithTitle:@"Sleep" enabled:YES handler:DMCloseThen(^{ DMSleep(); })],
         [[DMRow alloc] initWithTitle:@"Shut Down…" enabled:YES handler:^{
-            DMShowConfirm(host, @"Shut down this iPad?",
-                          @"You will need to run Dopamine again after turning it back on.",
+            DMShowConfirm(host, @"Shut down this iPad?", DMJailbreakAfterRestart(),   // (names the jailbreak in use: DMJailbreakInfo, 1.4.3 S-4)
                           @"Shut Down", YES, ^{ DMShutDown(); });
         }],
     ]];
@@ -17143,8 +17201,10 @@ static void DMReadBlockPointerPull(void) {   // Settings > Pointer > Block Point
 }
 // Strict lookup of only our own domain (CFPreferencesCopyAppValue also walks the global search list
 // and once returned a stray value for a generic key on this device).
+static void DMSpotReadPrefs(void);   // (SpotlightBridge.h: Settings > Status Bar > Spotlight)
 static void DMLoadPrefs(void) {
     CFPreferencesAppSynchronize(MSB_DOMAIN);
+    DMSpotReadPrefs();
     BOOL show = NO;
     CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("showSeconds"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     if (v) {
@@ -17466,7 +17526,12 @@ static void DMShowTimeProxy(UIView *fg, BOOL show) {
 // the status bars when the state changes; each layout also reads the ringer control's own answer, so nothing can leave it stale. No polling.
 // Single Mute (82Flex) installed and switched on: it shows its own icon, so ours steps aside (OtherTweaks.h).
 static id gRingerControl = nil;   // SBRingerControl (SpringBoard keeps exactly one for its whole life)
-static BOOL DMMuteIconWanted(void) { return gShowMuteIcon && gRingerMuted && !MSBDOtherTweakDoing(kMSBDDupMuteIcon, YES); }
+#if DEBUG
+static BOOL DMMuteOursAnyway(void) { return access("/tmp/msb-mute-ours", F_OK) == 0; }   // (tests: ours shows even beside Single Mute, to measure it on the M1)
+#else
+static BOOL DMMuteOursAnyway(void) { return NO; }
+#endif
+static BOOL DMMuteIconWanted(void) { return gShowMuteIcon && gRingerMuted && (DMMuteOursAnyway() || !MSBDOtherTweakDoing(kMSBDDupMuteIcon, YES)); }
 static void DMRingerChanged(BOOL muted, NSString *why) {
     if (![NSThread isMainThread]) { dispatch_async(dispatch_get_main_queue(), ^{ DMRingerChanged(muted, why); }); return; }   // (views: main thread only)
     if (muted == gRingerMuted) return;
@@ -17484,7 +17549,58 @@ static void DMReadRingerState(void) {   // (from each status bar layout: one get
     SEL get = NSSelectorFromString(@"isRingerMuted");
     if ([gRingerControl respondsToSelector:get]) DMRingerChanged(((BOOL (*)(id, SEL))objc_msgSend)(gRingerControl, get), @"read");
 }
-static UIImageView *DMMuteIcon(UIView *fg, CGFloat pointSize) {
+// The mute icon's picture (1.4.3, S-2): the bell with a slash at our Wi-Fi icon's size. Its ink is exactly as tall as the Wi-Fi fan's (the fan's
+// height less its half-point margins) and sits centred in a picture of the fan's height, so both icons share their top, middle and bottom in the
+// bar. It used to be the symbol at the time's point size + 0.5, whose ink came out about 13 pt tall beside the fan's 9 (too big beside it).
+// The ink is measured, not assumed: the symbol font is iPadOS's own and differs between versions. Semibold, like the VPN and SSH icons.
+static CGRect DMImageInkRect(UIImage *img) {   // (in points: the part of the picture that is drawn, alpha above 40 of 255 as in the fan's own edges)
+    CGFloat sc = img.scale > 0 ? img.scale : 2.0;
+    size_t w = (size_t)ceil(img.size.width * sc), h = (size_t)ceil(img.size.height * sc);
+    if (!w || !h || w > 4096 || h > 4096) return CGRectNull;
+    uint8_t *buf = calloc(w * h, 4);
+    if (!buf) return CGRectNull;
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef c = CGBitmapContextCreate(buf, w, h, 8, w * 4, cs, kCGImageAlphaPremultipliedLast);
+    CGColorSpaceRelease(cs);
+    if (!c) { free(buf); return CGRectNull; }
+    UIGraphicsPushContext(c);
+    CGContextTranslateCTM(c, 0, h); CGContextScaleCTM(c, sc, -sc);   // (UIKit's coordinates, at the picture's scale)
+    [img drawAtPoint:CGPointZero];
+    UIGraphicsPopContext();
+    size_t minx = w, miny = h, maxx = 0, maxy = 0;
+    for (size_t y = 0; y < h; y++) for (size_t x = 0; x < w; x++)
+        if (buf[(y * w + x) * 4 + 3] > 40) { if (x < minx) minx = x; if (x > maxx) maxx = x; if (y < miny) miny = y; if (y > maxy) maxy = y; }
+    CGContextRelease(c); free(buf);
+    if (maxx < minx) return CGRectNull;
+    return CGRectMake(minx / sc, miny / sc, (maxx - minx + 1) / sc, (maxy - miny + 1) / sc);
+}
+static UIImage *DMMuteGlyph(void) {
+    static UIImage *glyph;
+    if (glyph) return glyph;
+    UIImage *(^symbol)(CGFloat) = ^UIImage *(CGFloat pt) {
+        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:pt weight:UIImageSymbolWeightSemibold];
+        return [UIImage systemImageNamed:@"bell.slash.fill" withConfiguration:cfg] ?: [UIImage systemImageNamed:@"bell.slash" withConfiguration:cfg];
+    };
+    const CGFloat probe = 40.0, inkH = kWiFiIconH - 1.0;
+    CGRect big = DMImageInkRect(symbol(probe));
+    if (CGRectIsNull(big) || big.size.height < 1.0) return nil;
+    UIImage *g = symbol(probe * inkH / big.size.height);
+    CGRect ink = DMImageInkRect(g);   // (again at the size drawn: small sizes round)
+    if (CGRectIsNull(ink)) return nil;
+    CGSize size = CGSizeMake(ceil(ink.size.width) + 2.0, kWiFiIconH);
+    UIImage *out = [[[UIGraphicsImageRenderer alloc] initWithSize:size] imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        [g drawAtPoint:CGPointMake((size.width - ink.size.width) / 2.0 - ink.origin.x, (size.height - ink.size.height) / 2.0 - ink.origin.y)];
+    }];
+    glyph = [out imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+#if DEBUG
+    CGRect fan = DMImageInkRect(DMWiFiFanImage(3, kWiFiIconH)), drawn = DMImageInkRect(glyph);   // (the measurement S-2 is checked by)
+    DMLog([NSString stringWithFormat:@"[mute] icon %.1fx%.1f pt (symbol %.2f pt): ink %.2fx%.2f pt at y %.2f; Wi-Fi fan %.1fx%.1f pt: ink %.2fx%.2f pt at y %.2f",
+           size.width, size.height, probe * inkH / big.size.height, drawn.size.width, drawn.size.height, drawn.origin.y,
+           DMWiFiFanImage(3, kWiFiIconH).size.width, kWiFiIconH, fan.size.width, fan.size.height, fan.origin.y]);
+#endif
+    return glyph;
+}
+static UIImageView *DMMuteIcon(UIView *fg) {
     UIImageView *icon = objc_getAssociatedObject(fg, kMuteIconKey);
     if (!icon) {
         icon = [UIImageView new];
@@ -17498,11 +17614,7 @@ static UIImageView *DMMuteIcon(UIView *fg, CGFloat pointSize) {
         [fg addSubview:icon];
         objc_setAssociatedObject(fg, kMuteIconKey, icon, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    if (!icon.image && pointSize > 1.0) {
-        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:pointSize + 0.5 weight:UIImageSymbolWeightSemibold];
-        UIImage *g = [UIImage systemImageNamed:@"bell.slash.fill" withConfiguration:cfg] ?: [UIImage systemImageNamed:@"bell.slash" withConfiguration:cfg];
-        icon.image = [g imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-    }
+    if (!icon.image) icon.image = DMMuteGlyph();
     return icon;
 }
 // The colour the status icons are drawn in, for a status bar copy that has no time label to take it from (the Lock Screen's).
@@ -17583,7 +17695,7 @@ static BOOL DMLayoutWithoutClock(UIView *fg) {
     closeUp(kVPNIconKey, kVPNButtonKey);
     {   // the mute icon (ours) after the VPN icon, as elsewhere (DMMuteIconWanted)
         DMReadRingerState();
-        UIImageView *muteIcon = DMMuteIcon(fg, 12.0);   // (12 pt: the status bar's time size, for a copy that never had a time label)
+        UIImageView *muteIcon = DMMuteIcon(fg);
         BOOL show = DMMuteIconWanted() && left < CGFLOAT_MAX && muteIcon.image;
         muteIcon.hidden = !show;
         if (show) {
@@ -18357,7 +18469,16 @@ static void DMStockVPNInit(void) {
         }
         {   // Mute icon: next to the status icons (after the VPN icon), only while muted
             DMReadRingerState();
-            UIImageView *muteIcon = DMMuteIcon(fg, timeFont.pointSize);
+            UIImageView *muteIcon = DMMuteIcon(fg);
+#if DEBUG
+            static BOOL toldOld = NO;   // (S-2's "before": the picture this bar used to make, the symbol at the time's size + 0.5)
+            if (!toldOld && timeFont.pointSize > 1.0) {
+                toldOld = YES;
+                UIImage *old = [UIImage systemImageNamed:@"bell.slash.fill" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:timeFont.pointSize + 0.5 weight:UIImageSymbolWeightSemibold]];
+                CGRect oi = DMImageInkRect(old);
+                DMLog([NSString stringWithFormat:@"[mute] before 1.4.3: symbol %.1f pt (time %.1f + 0.5), picture %.1fx%.1f pt, ink %.2fx%.2f pt", timeFont.pointSize + 0.5, timeFont.pointSize, old.size.width, old.size.height, oi.size.width, oi.size.height]);
+            }
+#endif
             if (timeColor) muteIcon.tintColor = timeColor;
             BOOL show = DMMuteIconWanted() && left < CGFLOAT_MAX && muteIcon.image;
             muteIcon.hidden = !show;
@@ -18365,7 +18486,7 @@ static void DMStockVPNInit(void) {
             if (show) {
                 CGFloat w = ceil(muteIcon.image.size.width), h = ceil(muteIcon.image.size.height);
                 left -= 8.0 + w;
-                muteIcon.frame = DMBarRect(fg, rtl, CGRectMake(left, timeCentre.y - h / 2.0, w, h));
+                muteIcon.frame = DMBarRect(fg, rtl, CGRectMake(left, round(timeCentre.y - h / 2.0), w, h));   // (rounded like the Wi-Fi icon's: the same line)
                 [fg bringSubviewToFront:muteIcon];
             }
         }
@@ -19180,6 +19301,11 @@ static BOOL DMSafeRead(uintptr_t addr, void *out, size_t len) {
     return vm_read_overwrite(mach_task_self(), (vm_address_t)addr, (vm_size_t)len, (vm_address_t)out, &got) == KERN_SUCCESS && got == len;
 }
 static void DMRunTrigger(NSString *cmd);
+static NSArray<NSDictionary *> *gSpotItems;   // (SpotlightBridge.h, for the spot* triggers)
+static uint64_t gSpotGen;
+static CFTimeInterval gSpotWrittenAt;
+static void DMSpotWrite(NSString *why);
+static void DMSpotPicked(uint64_t st);
 static const void *kA5GripBLKey, *kA5GripBRKey;
 static time_t gLastTrigger = -1;   // -1: first poll adopts any leftover trigger file without running it
 static void DMCheckTrigger(void) {
@@ -21993,6 +22119,29 @@ static void DMRunTrigger(NSString *cmd) {
         SpringBoard *sbApp = (SpringBoard *)[UIApplication sharedApplication];
         SEL s = NSSelectorFromString(@"_toggleSearch");
         if ([sbApp respondsToSelector:s]) ((void (*)(id, SEL))objc_msgSend)(sbApp, s);
+    }
+    else if ([cmd hasPrefix:@"spotpref_"]) {   // spotpref_<actions|windows|tweaks>_<0|1>: a Spotlight switch, as Settings sets it (SpotlightBridge.h)
+        NSArray *q = [[cmd substringFromIndex:9] componentsSeparatedByString:@"_"];
+        NSDictionary *keys = @{@"actions": @"spotlightActions", @"windows": @"spotlightWindows", @"tweaks": @"spotlightTweakSettings"};
+        if (q.count == 2 && keys[q[0]]) {
+            CFPreferencesSetValue((__bridge CFStringRef)keys[q[0]], [q[1] boolValue] ? kCFBooleanTrue : kCFBooleanFalse, MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+            CFPreferencesSynchronize(MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+            notify_post("com.besiktasliseba.macstatusbar/prefsChanged");
+            DMLog([NSString stringWithFormat:@"[debug] %@ = %d", keys[q[0]], [q[1] boolValue]]);
+        }
+    }
+    else if ([cmd isEqualToString:@"spotwrite"]) DMSpotWrite(@"trigger");   // spotwrite: the list for the Spotlight app written now
+    else if ([cmd isEqualToString:@"spotrows"]) {   // spotrows: the last list's rows (titles and lines under them; names only)
+        NSMutableString *o = [NSMutableString stringWithFormat:@"[spotlight] list %llu (%@): %lu rows, Spotlight %@", (unsigned long long)gSpotGen,
+                              gSpotItems ? [NSString stringWithFormat:@"%.0f s old", CACurrentMediaTime() - gSpotWrittenAt] : @"none", (unsigned long)gSpotItems.count, DMSpotlightShown() ? @"up" : @"not up"];
+        for (NSUInteger i = 0; i < gSpotItems.count; i++) [o appendFormat:@"\n  %lu %@ \"%@\" -- %@%@", (unsigned long)i, gSpotItems[i][@"g"], gSpotItems[i][@"t"], gSpotItems[i][@"d"], gSpotItems[i][@"b"] ? [@" app " stringByAppendingString:gSpotItems[i][@"b"]] : @""];
+        DMLog(o);
+    }
+    else if ([cmd hasPrefix:@"spotpick_"]) {   // spotpick_<row>: as if that row of the last list were picked in Spotlight (Spotlight must be up)
+        DMSpotPicked((gSpotGen << 32) | (uint64_t)[[cmd substringFromIndex:9] longLongValue]);
+    }
+    else if ([cmd isEqualToString:@"jbinfo"]) {   // jbinfo: what About This iPad and the Shut Down question say about the jailbreak (JailbreakInfo.h)
+        DMLog([NSString stringWithFormat:@"[about] jailbreak: %@ / Shut Down: %@", DMJailbreakTitle(), DMJailbreakAfterRestart()]);
     }
     else if ([cmd hasPrefix:@"cc_"]) {   // cc_1 / cc_0: Control Center down / up
         BOOL up = [[cmd substringFromIndex:3] boolValue];
@@ -30796,6 +30945,7 @@ static void DMSMHookConstrain16(void) {
 #include "SMDesktop.h"   // (the Home Screen behind the windows, one desktop for SpringBoard's own transitions: 4 Oct, sm-desktop)
 #include "SMLimit.h"     // (more than four windows per desktop: Apple's limit answered with SpringBoard's own window-role count, 4 Oct, sm-nolimit)
 #include "SMHome.h"      // (the windows stay on screen at Home, like Aerial and Zetsu; still during a Home gesture: 4 Oct, sm-free)
+#include "SpotlightBridge.h"   // (our sections in Apple's Spotlight -- Actions, Windows -- SpringBoard's half: 1.4.3, S-3)
 // The windows' corner radius (Stage Manager's own: rounder than a Mac window): under whichever name this iPadOS has (stageCornerRaddii, sic,
 // through 17; stageCornerRadii from 18.2 -- kSMNeeds' alt name, DMSMCornerRadiusSelector).
 %group SMCornerRaddii
@@ -31226,13 +31376,14 @@ void DMSMRunAction(UIAction *action, id sender) {
         BOOL enabled = !v || (CFGetTypeID(v) == CFBooleanGetTypeID() && CFBooleanGetValue(v));
         if (v) CFRelease(v);
         if (!enabled) {   // switched off: Aerial 5.0's own settings (held while it was our engine) go back to the user's
+            DMSpotPublishOff();   // (nothing of ours in Spotlight either)
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMAerial5GiveBackPrefs(@"Mac Status Bar is switched off"); });
             return;
         }
     }
     gStockStored = gStockBar = DMStockBarSwitch();   // "Use Stock Status Bar": decided once, before anything is hooked
     DMStockPublish();
-    if (gStockBar) { DMSMCheckReadOnly(); DMSkipLockInit(); DMStockBarStart(); return; }   // only the parts that stay (StockBar.h); the rest below never runs
+    if (gStockBar) { DMSpotPublishOff(); DMSMCheckReadOnly(); DMSkipLockInit(); DMStockBarStart(); return; }   // only the parts that stay (StockBar.h); the rest below never runs
     // (the status bar hooks go on the classes SpringBoard's bar uses: 15/16 UIKit's, the same as a plain %init; 17+ SystemStatusUI's, DMSBClass)
     %init(_UIStatusBarForegroundView = DMSBClass("_UIStatusBarForegroundView"), _UIStatusBarStringView = DMSBClass("_UIStatusBarStringView"),
           UIStatusBar_Modern = DMSBClass("UIStatusBar_Modern"), _UIStatusBar = DMSBClass("_UIStatusBar"), UIStatusBarWindow = DMSBClass("UIStatusBarWindow"));
@@ -31295,6 +31446,7 @@ void DMSMRunAction(UIAction *action, id sender) {
     }
 #endif
     if (!DMCtorSkip("loadprefs")) DMLoadPrefs();
+    if (!DMCtorSkip("spotlight")) DMSpotInit();   // (the Spotlight app's requests and picks: SpotlightBridge.h)
     // DMRealInterfaceOrientation()'s UIDevice fallback (used by the menu/keyboard orientation fixes) needs a genuinely live reading, not whatever
     // SpringBoard's own unrelated subsystems happen to leave [UIDevice currentDevice].orientation at -- without this, that property can return
     // UIDeviceOrientationUnknown depending on what else in-process has (or hasn't) turned the accelerometer feed on. Explicitly starting it

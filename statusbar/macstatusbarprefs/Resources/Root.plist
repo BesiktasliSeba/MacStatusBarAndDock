@@ -132,6 +132,82 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
+			<string>Adds these to Spotlight. Apple's own results stay first. Desktop and Downloads needs Files allowed in Settings &gt; Siri &amp; Search.</string>
+			<key>id</key>
+			<string>SPOTLIGHT_GROUP</string>
+			<key>label</key>
+			<string>Spotlight</string>
+			<key>stockHides</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>SPOTLIGHT_TWEAK_SETTINGS</string>
+			<key>key</key>
+			<string>spotlightTweakSettings</string>
+			<key>label</key>
+			<string>Tweak Settings</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>SPOTLIGHT_ACTIONS</string>
+			<key>key</key>
+			<string>spotlightActions</string>
+			<key>label</key>
+			<string>Actions</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>SPOTLIGHT_WINDOWS</string>
+			<key>key</key>
+			<string>spotlightWindows</string>
+			<key>label</key>
+			<string>Windows</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>SPOTLIGHT_FILES</string>
+			<key>key</key>
+			<string>spotlightFiles</string>
+			<key>label</key>
+			<string>Desktop and Downloads</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
 			<string>Move the pointer to the top edge to show it.</string>
 			<key>label</key>
 			<string>Status Bar</string>
@@ -710,6 +786,22 @@
 			<string>Search Field in Settings</string>
 			<key>PostNotification</key>
 			<string>com.besiktasliseba.macsettings/searchChanged</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macsettings/searchChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macsettings</string>
+			<key>id</key>
+			<string>SEARCH_TWEAK_SETTINGS</string>
+			<key>key</key>
+			<string>sidebarTweaks</string>
+			<key>label</key>
+			<string>Include Tweak Settings</string>
 		</dict>
 		<dict>
 			<key>cell</key>

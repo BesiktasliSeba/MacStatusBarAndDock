@@ -7,10 +7,10 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = MacStatusBarCore
 
-MacStatusBarCore_FILES = StatusBar.x
+MacStatusBarCore_FILES = StatusBar.x SpotlightFiles.x
 MacStatusBarCore_CFLAGS = -fobjc-arc
 MacStatusBarCore_PRIVATE_FRAMEWORKS = BackBoardServices
-MacStatusBarCore_FRAMEWORKS = NetworkExtension UniformTypeIdentifiers ImageIO   # (PDFKit, AVKit, AVFoundation: opened by Finder at first use, Finder.h DMFinderClass)
+MacStatusBarCore_FRAMEWORKS = NetworkExtension UniformTypeIdentifiers ImageIO CoreSpotlight   # (PDFKit, AVKit, AVFoundation: opened by Finder at first use, Finder.h DMFinderClass)
 
 SUBPROJECTS += macstatusbarprefs macstatusbarsettings macpointer
 

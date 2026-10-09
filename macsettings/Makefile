@@ -17,12 +17,13 @@ include $(THEOS)/makefiles/common.mk
 # MacCCGrabber: hides the small grabber/handle line in the top-right corner of Control Center — replicates Lynx's "hideCCGrabber".
 TWEAK_NAME = MacSettings MacSettingsBadge MacLargeTitles MacHomeBar MacPageDots MacIconLabels MacEthernetFix MacAppSizeMenu MacLockStatusBar MacFolderMenu MacCCGrabber
 
-MacSettings_FILES = MacSettings.x PointerSettings.x KeyboardSettings.x AutoLock.x NativeRows.x SidebarSearch.x
+MacSettings_FILES = MacSettings.x PointerSettings.x KeyboardSettings.x AutoLock.x NativeRows.x SidebarSearch.x TweakSearch.x
 ifneq ($(FINALPACKAGE),1)
 MacSettings_FILES += SpecDump.x
 endif
 MacSettings_CFLAGS = -fobjc-arc
 MacSettings_PRIVATE_FRAMEWORKS = Preferences
+MacSettings_FRAMEWORKS = CoreSpotlight
 
 MacSettingsBadge_FILES = Badge.x
 MacSettingsBadge_CFLAGS = -fobjc-arc

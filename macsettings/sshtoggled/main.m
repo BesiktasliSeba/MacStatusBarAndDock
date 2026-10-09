@@ -1180,6 +1180,10 @@ static void FreezeOldDefaults(void) {
 // for the lines, the engines we renamed for iCleaner Pro -- and our lines' own .disabled files go (dpkg does not know them).
 static void Uninstall(void) {
     ELog(@"removal: giving everything back");
+    // Spotlight: the rows of tweak settings we donated into Settings' index are deleted by the running SpringBoard (statusbar/SpotlightFiles.x,
+    // common/TweakSpotlight.h kMTSRemoveAllNote); a moment for it before the files go.
+    notify_post("com.besiktasliseba.msbd.spotlight.removeall");
+    usleep(800000);
     mkdir(ESTATEDIR, 0755);
     { FILE *m = fopen(OFFMARKER, "w"); if (m) { fputs("removal", m); fclose(m); } chmod(OFFMARKER, 0644); }   // (the running SpringBoard stops holding the engines)
     GiveBackEngineSettings();

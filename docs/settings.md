@@ -14,6 +14,10 @@ On an iPadOS version that hasn't been tested, the top of the Status Bar and Dock
 | Clock Opens Today View | Tapping the clock drops down your Today View widgets. | On |
 | Notifications in Today View | Your notifications in a box above the widgets. | On |
 | Show Spotlight Search | A magnifying glass next to the clock that opens Spotlight. | On |
+| Tweak Settings | Your tweaks' settings in Spotlight, in a section after Apple's results. | Off |
+| Actions | Show Desktop, your desktops, Downloads, New Finder Window, Lock Screen and Force Quit in Spotlight, when what you type matches. | Off |
+| Windows | Your open windows in Spotlight, when what you type matches. | Off |
+| Desktop and Downloads | Files in On My iPad > Desktop and Downloads in Spotlight: right away on iPadOS 15, once iPadOS indexes them on 16. Needs Files allowed in Settings > Siri & Search. | Off |
 | Automatically Hide and Show the Status Bar | Hides the menu bar until the pointer reaches the top edge. | Off |
 | Mac-Style Banners | Notification banners come in at the top right, like on a Mac. | On |
 | Go Menu > Apps | Choose and order the apps in the Go menu. | |
@@ -40,6 +44,7 @@ On an iPadOS version that hasn't been tested, the top of the Status Bar and Dock
 | Updates Tab in App Store | The Updates tab in place of Arcade. | On |
 | Hide Large Titles | Compact titles in Apple's own apps, like Mac apps. Applies the next time an app opens. | On |
 | Search Field in Settings | A search field at the top of the Settings sidebar, with Apple's own results. | On |
+| Include Tweak Settings | The search field also finds your tweaks' settings. | Off |
 | Keyboard Button in Status Bar (Experimental) | iPadOS 15 with a hardware keyboard: the floating keyboard and dictation button moves into the menu bar. | Off |
 | Esc Ends Typing in Windows | Esc puts away the text cursor in a window. Terminal apps keep their Esc. | On |
 | Mix Audio Between Apps | Apps can play at the same time, each with its own volume in the Audio menu. | On |
