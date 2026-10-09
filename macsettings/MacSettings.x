@@ -133,7 +133,10 @@ static NSInteger AdjustedIndex(id controller, NSArray *insertedSpecs, NSInteger 
 
 // The Settings sidebar is a column of a split view. With a wide window it stays on screen next to the detail pane, so its bar can go; in a narrow
 // (collapsed) window the same navigation controller also pushes the detail pages and its bar holds the Back button, so it stays.
-static BOOL SidebarBarCanGo(UIViewController *vc) {
+// (SidebarSearch.x shows its search field exactly where this hides the bar: Apple's own search field lives in that bar.)
+void MSSearchSidebarChanged(UIViewController *list);
+static const void *kBarCanGoKey = &kBarCanGoKey;   // (what the rule said when last applied, while the sidebar is shown)
+BOOL MSSidebarBarCanGo(UIViewController *vc) {
     UISplitViewController *split = vc.splitViewController;
     return split && !split.isCollapsed && vc.navigationController.viewControllers.firstObject == vc;
 }
@@ -273,7 +276,9 @@ static void DMRegisterSSHSync(void) {
     NSArray *builtSpecs = objc_getAssociatedObject(self, kSpecsKey);
     for (id s in builtSpecs) if ([[s identifier] isEqualToString:kSwitchID]) { gVisibleSSHList = (PSListController *)self; DMRegisterSSHSync(); break; }
     if (builtSpecs) { MSPointerWatchSidebar((PSListController *)self); MSKeyboardWatchSidebar((PSListController *)self); }
-    if (SidebarBarCanGo(vc)) [vc.navigationController setNavigationBarHidden:YES animated:NO];
+    if (MSSidebarBarCanGo(vc)) [vc.navigationController setNavigationBarHidden:YES animated:NO];
+    objc_setAssociatedObject(self, kBarCanGoKey, @(MSSidebarBarCanGo(vc)), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    MSSearchSidebarChanged(vc);   // (the search field where the bar was)
     // Reported bug (predates any of our own tweaks): on a cold launch, the sidebar sometimes opens already scrolled part way down,
     // cutting a row in half at the very top instead of starting at Wi-Fi/Bluetooth. Looks like a restored scroll offset from an earlier
     // session that no longer lines up with the current row layout (Shuffle reorders/adds rows, which would explain why an old raw pixel
@@ -309,6 +314,23 @@ static void DMRegisterSSHSync(void) {
     %orig;
     UIViewController *vc = (UIViewController *)self;
     if (vc.navigationController.isNavigationBarHidden) [vc.navigationController setNavigationBarHidden:NO animated:NO];
+    objc_setAssociatedObject(self, kBarCanGoKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    MSSearchSidebarChanged(vc);   // (the bar is back, with Apple's own field: ours goes)
+}
+// The window changing size while the sidebar is shown (a Stage Manager window or Split View made narrower or wider): the sidebar collapses into the
+// page or comes out of it without appearing again, so the rule above is applied once more when that changes -- before, a narrow window made wide
+// again kept its bar ("Settings" title, no search field) next to the page.
+- (void)viewDidLayoutSubviews {
+    %orig;
+    UIViewController *vc = (UIViewController *)self;
+    NSNumber *before = objc_getAssociatedObject(self, kBarCanGoKey);
+    if (!before || !vc.view.window) return;   // (not shown: -viewWillAppear: decides)
+    BOOL can = MSSidebarBarCanGo(vc);
+    if (before.boolValue == can) return;
+    objc_setAssociatedObject(self, kBarCanGoKey, @(can), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (vc.navigationController.isNavigationBarHidden != can) [vc.navigationController setNavigationBarHidden:can animated:NO];
+    MLog([NSString stringWithFormat:@"sidebar %@ the page: bar %@", can ? @"beside" : @"collapsed into", can ? @"hidden" : @"shown"]);
+    MSSearchSidebarChanged(vc);
 }
 - (void)insertContiguousSpecifiers:(NSArray *)specs atIndex:(NSInteger)index animated:(BOOL)animated {
     if (MSTestFlag("/tmp/macsettings-debug")) { Dl_info di; const char *img = dladdr(__builtin_return_address(0), &di) ? di.dli_fname : "?"; NSMutableString *ids = [NSMutableString string]; for (id sp in specs) [ids appendFormat:@" %@", [sp identifier]]; MLog([NSString stringWithFormat:@"insert contiguous%@ at %ld from %s", ids, (long)index, img]); }

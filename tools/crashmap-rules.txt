@@ -127,8 +127,11 @@ sec MacStatusBarCore banners\sfor\sapps\swhose\swindows macBanners
 sym MacStatusBarCore ^_?DMAutoHide autoHideStatusBar
 sec MacStatusBarCore Auto-hiding\sstatus\sbar autoHideStatusBar
 sec MacStatusBarCore only\sthe\stitle\sbar\sslides autoHideStatusBar
-# the keyboard button
-sec MacStatusBarCore keyboard\s/\smicrophone\spill tidyKeyboardPill
+# the keyboard section (its header names the keyboard button, but the code under it runs for the window engines whether the button is on or not:
+# the keyboard turned for a window app's side, the Dock's level while a keyboard is up, MilkyWay's and Aerial's keyboard windows, the Fit to Window
+# spread): Windowing. The button's switch is off for new users, so a crash there fell to Stock status bar mode, which keeps the engines running
+# (1.4.2). The button's own picture code is inlined into these functions in a release build (no symbols of its own), so it goes with them.
+sec MacStatusBarCore keyboard\s/\smicrophone\spill windowingEnabled
 # the mute icon
 sec MacStatusBarCore Mute\sicon\s\(Settings showMuteIcon
 # Skip Lock Screen after respring
@@ -147,8 +150,9 @@ sec MacStatusBarCore MilkyWay\swindows\sbehind\sfull-screen windowsBehindApps
 # Resize Apps to Fit Windows
 sym MacStatusBarCore ^_?DMFit flexResizeWindows
 # windowing: the engines (Aerial 3.0/5.0, MilkyWay4, Zetsu) and our window work
-sym MacStatusBarCore \$(Aerial\w*|Zetsu\w*|MilkyWay\w*|WindowLaunch|EngineMedusa)\$ windowingEnabled
-sym MacStatusBarCore ^_?(DMZetsu|DMAerial|DMMilky|DMMinimize|DMSwap|DMCascade|DMRestoreWindow|DMSaveWindow|DMRememberStage|DMWindowed) windowingEnabled
+sym MacStatusBarCore \$(Aerial\w*|Zetsu\w*|MilkyWay\w*|WindowLaunch|EngineMedusa|AppExitForget)\$ windowingEnabled
+# (AppExitForget: the app exit hook that forgets where a quit app's window was, out of the Aerial-only group since 1.4.2 so every engine has it)
+sym MacStatusBarCore ^_?(DMZetsu|DMAerial|DMMilky|DMMinimize|DMSwap|DMCascade|DMRestoreWindow|DMSaveWindow|DMRememberStage|DMWindowed|DMInstallAppExitForget) windowingEnabled
 # the Stage Manager engine (its functions, its hook groups, its source sections): windowing off -- the engine stops, the Mac status bar stays
 # (unnamed, it fell to the image's target: Stock status bar mode, which stopped the engine too but also took the menu bar; iPadOS 17 runs the
 # engine's 17 layout code untested, so a crash there must cost the engine, not the bar)
@@ -193,4 +197,4 @@ sec MacStatusBarCore launching\san\sapp\sthat\salready\shas\sa\swindow windowing
 sec MacStatusBarCore third\swindow windowingEnabled
 sec MacStatusBarCore swap\s(the\swindows|a\shalf) windowingEnabled
 sec MacStatusBarCore window\sengine\sthat\scannot\sbe\sused windowingEnabled
-sec MacStatusBarCore ^%group\s(Aerial\w*|Zetsu\w*|MilkyWay\w*|WindowLaunch|EngineMedusa)\b windowingEnabled
+sec MacStatusBarCore ^%group\s(Aerial\w*|Zetsu\w*|MilkyWay\w*|WindowLaunch|EngineMedusa|AppExitForget)\b windowingEnabled

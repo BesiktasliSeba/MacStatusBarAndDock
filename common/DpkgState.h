@@ -31,8 +31,10 @@ static inline NSString *MSBDPackageFieldIn(NSString *status, NSString *package, 
 // deinstall / purge) or broken (reinstreq, half-installed) does not count. The engine helper's choice at the postinst runs INSIDE the dpkg run, so
 // an engine (or Choicy) installed or upgraded in the same run (a Sileo queue) is only "unpacked" then; counted as not installed, the choice could
 // keep another engine loading next to the picked one or leave the picked one out (1.4.1 logic test M-1).
+// The want state may also be "hold": a package the user keeps at its version (apt-mark hold, a package manager's "ignore updates") is installed
+// all the same, and dpkg -i still sets it up in a run of its own; counted as not installed, the engine helper left the picked engine out.
 static inline BOOL MSBDPackageOnDisk(NSString *status, NSString *package) {
     NSArray<NSString *> *w = [MSBDPackageFieldIn(status, package, @"Status") componentsSeparatedByString:@" "];
-    if (w.count != 3 || ![w[0] isEqualToString:@"install"] || ![w[1] isEqualToString:@"ok"]) return NO;
+    if (w.count != 3 || ![@[@"install", @"hold"] containsObject:w[0]] || ![w[1] isEqualToString:@"ok"]) return NO;
     return [@[@"installed", @"unpacked", @"half-configured", @"triggers-awaited", @"triggers-pending"] containsObject:w[2]];
 }

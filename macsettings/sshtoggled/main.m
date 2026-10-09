@@ -264,6 +264,8 @@ static void SaveRecord(NSOrderedSet<NSString *> *set) {
     [[[set array] componentsJoinedByString:@"\n"] writeToFile:tmp atomically:NO encoding:NSUTF8StringEncoding error:nil];
     rename(tmp.fileSystemRepresentation, ESTATEFILE);
 }
+static BOOL gStageManagerChosen = NO;   // (set by ChosenEngine: Stage Manager is the engine -- no third-party engine loads, as with windowing off)
+static NSString *OffWhy(void) { return gStageManagerChosen ? @"Stage Manager is the engine" : @"windowing off"; }   // (the log's words for "no engine loads")
 static NSString *ChosenEngine(BOOL *windowing) {   // read from Mac Status Bar's own preferences, never from the request
     CFPreferencesSynchronize(CFSTR("com.besiktasliseba.macstatusbar"), CFSTR("mobile"), kCFPreferencesAnyHost);
     CFPropertyListRef e = CFPreferencesCopyValue(CFSTR("windowEngine"), CFSTR("com.besiktasliseba.macstatusbar"), CFSTR("mobile"), kCFPreferencesAnyHost);
@@ -282,6 +284,7 @@ static NSString *ChosenEngine(BOOL *windowing) {   // read from Mac Status Bar's
     if (smVerdict == -1) why = @"not checked on this iPadOS build yet";   // (SpringBoard checks at its next start; until then the default engine)
     if ([engine isEqualToString:@"stagemanager"] && smVerdict != 1) { ELog(@"engines: Stage Manager is picked but not supported on this iPadOS version (%@) -- the default engine instead", why ?: @"self-check failed"); engine = nil; }
     BOOL stageManager = [engine isEqualToString:@"stagemanager"] && [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 16;
+    gStageManagerChosen = stageManager;
     if (stageManager) *windowing = NO;
     // Stock status bar: the chosen engine always runs on its own (Settings > Status Bar Style says so, and the Enable Windowing switch is hidden
     // there), so a windowing switch left off from Mac mode does not stop it. Back in Mac mode the switch counts again.
@@ -416,7 +419,7 @@ static void ApplyEngineRenames(NSString *reason, NSString *status) {
         if (![LoadRecord() isEqual:before]) TellSpringBoardEnginesChanged();
         ELog(@"%@: no engine installed -- nothing kept from loading", reason); return;
     }
-    if (!windowing) ELog(@"%@: windowing off -- every installed engine is kept from loading", reason);
+    if (!windowing) ELog(@"%@: %@ -- every installed engine is kept from loading", reason, OffWhy());
     else if (!picked) ELog(@"%@: no engine picked -- %@ is the default, as in SpringBoard", reason, chosen);
     NSMutableOrderedSet *record = LoadRecord();
     if (chosen) for (NSString *n in libs[chosen]) EnableOurs(n, record, [NSString stringWithFormat:@"%@ is the chosen engine", chosen]);
@@ -431,7 +434,7 @@ static void ApplyEngineRenames(NSString *reason, NSString *status) {
             BOOL stale = Exists(disabled);
             if (rename(dylib.fileSystemRepresentation, disabled.fileSystemRepresentation) != 0) { ELog(@"%@: rename failed (%s) -- left alone", name, strerror(errno)); continue; }
             [record addObject:name];
-            ELog(@"%@: disabled (%@; %@)%@", name, chosen ? [chosen stringByAppendingString:@" is the chosen engine"] : @"windowing off", reason, stale ? @" -- an update had brought it back: the new build replaced the stale .disabled copy" : @"");
+            ELog(@"%@: disabled (%@; %@)%@", name, chosen ? [chosen stringByAppendingString:@" is the chosen engine"] : OffWhy(), reason, stale ? @" -- an update had brought it back: the new build replaced the stale .disabled copy" : @"");
         }
     }
     SaveRecord(record);
@@ -629,7 +632,7 @@ static void ChoicyApplyChosenEngine(NSString *why) {
     NSDictionary *libs = EngineLibs();
     if (!windowing) chosen = nil;   // (Enable Windowing off: every installed engine is denied, so every app opens full screen)
     if (windowing && (!chosen || !libs[chosen])) { ELog(@"MSB on (%@): no engine installed -- Choicy left as it is", why); return; }
-    if (!windowing) ELog(@"MSB on (%@): windowing off -- every installed engine kept from loading", why);
+    if (!windowing) ELog(@"MSB on (%@): %@ -- every installed engine kept from loading", why, OffWhy());
     else if (!picked) ELog(@"MSB on (%@): no engine picked -- %@ is the default, as in SpringBoard", why, chosen);
     NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:@CHOICYPREFS] mutableCopy];
     if (!prefs) { ELog(@"MSB on (%@): Choicy's settings unreadable -- left as they are", why); return; }

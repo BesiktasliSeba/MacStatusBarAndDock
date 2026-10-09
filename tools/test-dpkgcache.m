@@ -51,7 +51,15 @@ int main(void) {
                        "Package: e.purge\nStatus: purge ok not-installed\n\n"
                        "Package: e.broken\nStatus: install reinstreq half-installed\n\n"
                        "Package: e.hinst\nStatus: install ok half-installed\n\n"
-                       "Package: e.inst2\nVersion: 1\nStatus: install ok installed\nDescription: Status: purge ok not-installed\n";
+                       "Package: e.inst2\nVersion: 1\nStatus: install ok installed\nDescription: Status: purge ok not-installed\n\n"
+                       "Package: e.held\nStatus: hold ok installed\n\n"
+                       "Package: e.heldunp\nStatus: hold ok unpacked\n\n"
+                       "Package: e.heldcfg\nStatus: hold ok config-files\n\n"
+                       "Package: e.heldbroken\nStatus: hold reinstreq half-installed\n\n"
+                       "Package: e.heldnot\nStatus: hold ok not-installed\n\n"
+                       "Package: e.unknown\nStatus: unknown ok installed\n\n"
+                       "Package: e.holdx\nStatus: holdx ok installed\n\n"
+                       "Package: e.heldlast\nStatus: hold ok installed";
         Check(@"installed counts", MSBDPackageOnDisk(q, @"e.inst"), @"NO");
         Check(@"unpacked (same dpkg run) counts", MSBDPackageOnDisk(q, @"e.unp"), @"NO");
         Check(@"half-configured counts", MSBDPackageOnDisk(q, @"e.half"), @"NO");
@@ -66,6 +74,15 @@ int main(void) {
         Check(@"a name that starts another's does not count for it", !MSBDPackageOnDisk(q, @"e.in"), @"YES");
         Check(@"the field's own line, not one inside another field", MSBDPackageOnDisk(q, @"e.inst2"), @"NO");
         Check(@"nil text does not count", !MSBDPackageOnDisk(nil, @"e.inst"), @"YES");
+        // (a held package, apt-mark hold / "ignore updates": installed all the same, 1.4.2)
+        Check(@"held and installed counts", MSBDPackageOnDisk(q, @"e.held"), @"NO");
+        Check(@"held and unpacked (its own dpkg -i run) counts", MSBDPackageOnDisk(q, @"e.heldunp"), @"NO");
+        Check(@"held with only its config files does not count", !MSBDPackageOnDisk(q, @"e.heldcfg"), @"YES");
+        Check(@"held and reinstreq does not count", !MSBDPackageOnDisk(q, @"e.heldbroken"), @"YES");
+        Check(@"held but not installed does not count", !MSBDPackageOnDisk(q, @"e.heldnot"), @"YES");
+        Check(@"want unknown does not count", !MSBDPackageOnDisk(q, @"e.unknown"), @"YES");
+        Check(@"a want word that only starts with hold does not count", !MSBDPackageOnDisk(q, @"e.holdx"), @"YES");
+        Check(@"held in the file's last block (no line end after it) counts", MSBDPackageOnDisk(q, @"e.heldlast"), @"NO");
         // ---- the cache: read once per change of the file ----
         time_t base = time(NULL) - 1000;
         WriteStatus(@"Package: com.besiktasliseba.macstatusbaranddock\nVersion: 1.3.2\n\nPackage: ellekit\nVersion: 1.1.3\n", base);

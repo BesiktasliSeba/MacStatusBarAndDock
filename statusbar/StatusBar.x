@@ -1815,10 +1815,27 @@ static void DMDismissLibraryForWindow(NSString *bundleID) {
 // reacts to a shortcut item of type "jp.yuri.milkyway3.launchinwindow" (its Home Screen long-press "Launch As Window"), so
 // we hand it the same kind of item. Without MilkyWay the stock method would reject it and abort, so it is only called
 // when MilkyWay's window class exists. The app must not be in front any more.
+static BOOL DMSurfaceWindowForApp(NSString *bundleID);
+static UIView *DMFindMilkyWayWindow(NSString *bundleID);
+static BOOL DMWindowMinimized(UIView *window);
+static const void *kFitSizeKey;   // (defined below)
 static void DMLaunchAsWindow(NSString *bundleID) {
     if (DMAppNeedsFullScreen(bundleID)) {
         DMLog([NSString stringWithFormat:@"[fullscreenonly] %@ cannot live in a window: opened full screen instead of a MilkyWay window", bundleID]);
         dispatch_async(dispatch_get_main_queue(), ^{ DMOpenFullScreen(bundleID); });
+        return;
+    }
+    // Never a second window for an app that has one (one on its way out does not count): MilkyWay makes a new window at every launch into a window,
+    // also when the app already has one, and the two then show the app's one scene -- the Window menu moved one of them while the app was laid out
+    // for the other (1.4.2: green on Stocks while its window was there, then Left and Fill). Aerial keeps one stage per app and our Zetsu launch asks
+    // for no second window either: its window is shown instead (un-minimized, brought to the front), and its size is sent to the app again at the
+    // next layout (the app may have been full screen meanwhile).
+    UIView *existing = DMFindMilkyWayWindow(bundleID);
+    if (existing) {
+        DMLog([NSString stringWithFormat:@"[lights] launch %@ as window: it has a window already (%@, minimized %d): that window is shown, no second one", bundleID, NSStringFromCGRect(existing.frame), DMWindowMinimized(existing)]);
+        DMSurfaceWindowForApp(bundleID);
+        objc_setAssociatedObject(existing, kFitSizeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [existing setNeedsLayout];
         return;
     }
     Class itemClass = objc_getClass("SBSApplicationShortcutItem");
@@ -1889,13 +1906,22 @@ static void DMCoverFadeOut(NSTimeInterval delay) {
                      completion:^(BOOL done) { if (gCover == cover) DMCoverRemove(); }];
 }
 
+// The app's MilkyWay window: never one on its way out (MilkyWay keeps a closed window in its layer for its animation), and of two windows of one
+// app the front-most one shown (1.4.2: the Window menu took the back-most one, a second window of the same app that MilkyWay had made -- both show
+// the app's one scene -- and DMWindowLayout's bring-to-front then made every other layout pick the other window: a layout to the frame that window
+// already had changed nothing and sent the app no size, so its content stayed at the size of the last layout).
 static UIView *DMFindMilkyWayWindow(NSString *bundleID) {
     Class layerClass = objc_getClass("AXPassthroughWindow");
     Class viewClass = objc_getClass("AXWindowView");
     UIWindow *layer = [layerClass respondsToSelector:@selector(sharedInstance)] ? ((id (*)(id, SEL))objc_msgSend)((id)layerClass, @selector(sharedInstance)) : nil;
-    for (UIView *v in layer.subviews)
-        if (viewClass && [v isKindOfClass:viewClass] && [[(AXWindowView *)v bundleIdentifier] isEqualToString:bundleID]) return v;
-    return nil;
+    UIView *found = nil, *shown = nil;
+    for (UIView *v in layer.subviews) {   // (back to front)
+        if (!viewClass || ![v isKindOfClass:viewClass] || ![[(AXWindowView *)v bundleIdentifier] isEqualToString:bundleID]) continue;
+        if ([objc_getAssociatedObject(v, kStageClosingKey) boolValue]) continue;
+        found = v;
+        if (!v.hidden && !DMWindowMinimized(v)) shown = v;
+    }
+    return shown ?: found;
 }
 static void DMWaitFor(BOOL (^condition)(void), int tries, void (^done)(BOOL ok)) {
     if (condition()) { done(YES); return; }
@@ -2549,6 +2575,9 @@ static BOOL DMWindowedLaunchEligible(NSString *bundleID);
 // Set by the Window menu when a full-screen app is turned into a window: the new window is opened at this frame instead of the
 // default large one. CGRectNull when unused.
 static CGRect gPendingWindowFrame = {{INFINITY, INFINITY}, {0, 0}};
+static NSMutableDictionary<NSString *, NSValue *> *gLastWindowFrames;   // (defined with the Window menu)
+static CGRect DMFitInto(CGRect f, CGRect usable);
+static CGRect DMLayoutFrame(NSString *name);
 static BOOL DMEnlargeNewWindow(UIView *window) {
     CGSize screen = [UIScreen mainScreen].bounds.size;
     BOOL pending = !CGRectIsNull(gPendingWindowFrame);
@@ -2557,8 +2586,17 @@ static BOOL DMEnlargeNewWindow(UIView *window) {
     BOOL atDefault = fabs(window.frame.origin.x) < 1.0 && fabs(window.frame.origin.y - 100.0) < 1.0;
     if (!window || screen.width < 300.0 || (!pending && !atDefault && window.frame.size.width >= screen.width * 0.6)) return NO;
     if (pending && CGRectEqualToRect(window.frame, gPendingWindowFrame)) return NO;
-    CGRect big = pending ? gPendingWindowFrame : CGRectMake(round(screen.width * 0.11), 36.0, round(screen.width * 0.78), round(screen.height * 0.80));
-    DMLog([NSString stringWithFormat:@"[lights] window enlarged from %@ to %@", NSStringFromCGRect(window.frame), NSStringFromCGRect(big)]);
+    // (no place asked for: where the app's window last was, as Zetsu's new windows (DMZetsuAdopt) and Aerial 5.0's (DMCascadeStage) open -- also the
+    //  place the Mac Switcher gives a window it opens again (DMMSWRelaunchClosed) --, else the default place; MilkyWay4 opened every window at the
+    //  default place, 1.4.2)
+    NSString *bundle = nil; @try { bundle = [(AXWindowView *)window bundleIdentifier]; } @catch (id e) {}
+    NSValue *remembered = (!pending && [bundle isKindOfClass:[NSString class]]) ? gLastWindowFrames[bundle] : nil;
+    CGRect usable = remembered ? DMLayoutFrame(@"fill") : CGRectNull;
+    CGRect big = pending ? gPendingWindowFrame
+               : (remembered && !CGRectIsNull(usable)) ? DMFitInto(remembered.CGRectValue, usable)
+               : CGRectMake(round(screen.width * 0.11), 36.0, round(screen.width * 0.78), round(screen.height * 0.80));
+    if (CGRectEqualToRect(window.frame, big)) return NO;
+    DMLog([NSString stringWithFormat:@"[lights] window enlarged from %@ to %@%@", NSStringFromCGRect(window.frame), NSStringFromCGRect(big), remembered && !pending ? @" (where its window last was)" : @""]);
     window.frame = big;
     [window setNeedsLayout];
     [window layoutIfNeeded];
@@ -2596,6 +2634,7 @@ static void DMShrinkCoverInto(UIView *window) {
 // window is closed and the app is launched underneath; when the app is up, the snapshot fades away.
 static void DMExpandWindowToFullScreen(AXWindowView *window, NSString *bundleID, id sender) {
     if (DMWaitForContextMenu([NSString stringWithFormat:@"full screen %p", window], ^{ DMExpandWindowToFullScreen(window, bundleID, sender); })) return;
+    DMRememberStageFrame((UIView *)window);   // (where it was is where green on the full-screen app brings it back, whatever moved it last: 1.4.2)
     UIWindow *host = DMStatusBarWindow();
     UIView *snap = host ? [[UIScreen mainScreen] snapshotViewAfterScreenUpdates:NO] : nil;
     if (!snap || !bundleID.length) {   // no way to animate: just swap
@@ -4948,15 +4987,31 @@ static void DMSettleLockScreenClock(void) {
     id after = nil; @try { after = [dvc valueForKey:@"_timerToken"]; } @catch (id e) {}
     DMLog([NSString stringWithFormat:@"[lock] the Lock Screen clock was still ticking while not shown: %@", after ? @"still subscribed" : @"stopped"]);
 }
+// K-5 (iPad mini 4, 15.8.8, Touch ID: the Home Screen with only the Apple menu after an unlock): every status bar copy remembers whether its last
+// layout was the locked one (the Lock Screen or the Cover Sheet down: only the Apple menu, no lights, no titles), and the 0.2 s watcher compares
+// that with the state now on every tick, laying the copy out again when they differ -- not only when it sees isUILocked or the Cover Sheet change.
+// A lock and its unlock can both fall outside the watcher's ticks (it is parked while the screen is off, and a Touch ID wake can unlock before its
+// first tick), and then it sees no change: a copy laid out during the Lock Screen moment kept its locked look on the Home Screen. "Locked" is the
+// layout's own test (DMBarLockedNow), so the real Lock Screen and the Cover Sheet never show more than before.
+static const void *kBarLaidOutLockedKey = &kBarLaidOutLockedKey;   // @YES / @NO: the copy's last full layout was / was not the locked one
+#if DEBUG
+static BOOL gDMBarForceLockedOnce = NO;   // (debug, "k5lockonce": the next layouts take the locked look although unlocked -- a Lock Screen moment's layout)
+#endif
+static BOOL DMBarLockedNow(void) {   // (issue #1: not asked while SpringBoard starts on 17+)
+    return !(DMNewOS() && DMStarting()) && (DMLockUp(DMSBManager("SBLockScreenManager")) || DMCoverSheetShown());
+}
 // Locked or the Cover Sheet down: the traffic lights and menu titles of every status bar copy go at once, not only at its next layout -- a copy
 // behind the locked screen may not lay out again before it shows (iPad 2, 2026-09-26: Settings' lights on the Lock Screen after the Apple menu's
 // Lock Screen / Sleep). Unlocking brings them back with the normal layout.
-static void DMHideAppBarItemsNow(void) {
+static void DMHideAppBarItemsOf(UIView *fg) {   // (one copy: its traffic lights and menu titles hidden)
     static const void *keys[] = { &kLightsKey, &kAppLabelKey, &kAppButtonKey, &kAppPillKey, &kEditLabelKey, &kEditButtonKey, &kEditPillKey,
         &kGoLabelKey, &kGoButtonKey, &kGoPillKey, &kWinLabelKey, &kWinButtonKey, &kWinPillKey, &kAudioLabelKey, &kAudioButtonKey, &kAudioPillKey,
         &kFileLabelKey, &kFileButtonKey, &kFilePillKey, &kViewLabelKey, &kViewButtonKey, &kViewPillKey };
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) ((UIView *)objc_getAssociatedObject(fg, *(const void **)keys[i])).hidden = YES;
+}
+static void DMHideAppBarItemsNow(void) {
     for (UIView *fg in gCopies.allObjects) {
-        for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) ((UIView *)objc_getAssociatedObject(fg, *(const void **)keys[i])).hidden = YES;
+        DMHideAppBarItemsOf(fg);
         [fg setNeedsLayout];
     }
 }
@@ -5007,6 +5062,22 @@ static void DMWatchLock(void) {
         DMLog(@"[lock] back after the screen was off (no lock reported): the unlock's window follow-ups run");
         DMBackAfterScreenOff(@"the screen was off", 0);
     }
+    {   // K-5: each copy's last layout against the state now (kBarLaidOutLockedKey) -- whatever was or was not seen changing
+        BOOL barLocked = DMBarLockedNow(), hid = NO;
+        NSArray *copies = gCopies.allObjects;
+#if DEBUG
+        if (DMTestFlag("/tmp/msb-nok5")) copies = @[];   // (debug kill switch: the re-check off, for the before/after test)
+#endif
+        for (UIView *fg in copies) {
+            NSNumber *laid = objc_getAssociatedObject(fg, kBarLaidOutLockedKey);
+            if (!laid || laid.boolValue == barLocked) continue;
+            if (barLocked && !hid) { hid = YES; DMHideAppBarItemsNow(); }   // (locked: the titles go at once, as on a reported lock)
+            objc_setAssociatedObject(fg, kBarLaidOutLockedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (asked once; its layout records it again)
+            [fg setNeedsLayout];
+            static CFTimeInterval lastLog = 0;
+            if (CACurrentMediaTime() - lastLog > 2.0) { lastLog = CACurrentMediaTime(); DMLog([NSString stringWithFormat:@"[lock] a status bar laid out %@ while the screen is %@ (isUILocked %d, Cover Sheet %d): laid out again", laid.boolValue ? @"locked" : @"unlocked", barLocked ? @"locked or covered" : @"unlocked", DMLockUp(mgr), DMCoverSheetShown()]); }
+        }
+    }
     if (!seenFirst) { seenFirst = YES; wasLocked = locked; return; }
     if (locked == wasLocked) return;
     wasLocked = locked;
@@ -5025,7 +5096,7 @@ static void DMShowMilkyWayVeil(UIView *window);
 // Called from the window's layout: when the content area is a new size, make the app re-lay out for it (after a short pause, so a
 // drag or an animation sends a handful of updates rather than one per frame).
 static void DMFitIfNeeded(UIView *window) {
-    if (!gFlexResize) return;
+    if (!gFlexResize || [objc_getAssociatedObject(window, kStageClosingKey) boolValue]) return;   // (a window on its way out: no size commits)
     UIView *main = nil; @try { main = [window valueForKey:@"mainView"]; } @catch (id e) {}
     if (![main isKindOfClass:[UIView class]]) return;
     // LIVE-CONFIRMED BUG (2026-09-23, seen on Settings under MilkyWay: over 1000 repeated [fit] sends across more than two
@@ -5051,7 +5122,7 @@ static void DMFitIfNeeded(UIView *window) {
     objc_setAssociatedObject(window, kFitPendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         objc_setAssociatedObject(window, kFitPendingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        if (!window.superview) return;
+        if (!window.superview || [objc_getAssociatedObject(window, kStageClosingKey) boolValue]) return;   // (closed meanwhile: the app has the full screen back)
         DMFitWindowContent(window, YES);
         DMFitIfNeeded(window);   // it changed again meanwhile
     });
@@ -5174,7 +5245,7 @@ static void DMSettleWindowContent(UIView *window) {
     __weak UIView *weakWindow = window;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UIView *w = weakWindow;
-        if (!w || !w.superview || [objc_getAssociatedObject(w, kSettleGenKey) integerValue] != gen) return;   // superseded by a newer resize
+        if (!w || !w.superview || [objc_getAssociatedObject(w, kSettleGenKey) integerValue] != gen || [objc_getAssociatedObject(w, kStageClosingKey) boolValue]) return;   // superseded by a newer resize (or closed: no size commits)
         @try {
             UIView *main = [w valueForKey:@"mainView"];
             id scene = [w valueForKey:@"scene"];
@@ -5195,7 +5266,7 @@ static void DMSettleWindowContent(UIView *window) {
             __weak UIView *weakWindow2 = w;
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 UIView *w2 = weakWindow2;
-                if (!w2 || !w2.superview || [objc_getAssociatedObject(w2, kSettleGenKey) integerValue] != gen) return;
+                if (!w2 || !w2.superview || [objc_getAssociatedObject(w2, kSettleGenKey) integerValue] != gen || [objc_getAssociatedObject(w2, kStageClosingKey) boolValue]) return;
                 BOOL toggled2 = windowedID.length && [layerClass respondsToSelector:NSSelectorFromString(@"removeWindowedId:")] && [layerClass respondsToSelector:NSSelectorFromString(@"addWindowedId:")];
                 if (toggled2) ((void (*)(id, SEL, id))objc_msgSend)((id)layerClass, NSSelectorFromString(@"removeWindowedId:"), windowedID);
                 DMSetSceneFrame(scene, exact);
@@ -6043,6 +6114,16 @@ static void DMWindowLayout(NSString *name) {
     }
     UIView *window = DMFindMilkyWayWindow(bundleID);
     DMLog([NSString stringWithFormat:@"[window] layout %@ for %@ -> %@ (%@)", name, bundleID, NSStringFromCGRect(target), window ? @"already a window" : @"full screen"]);
+#if DEBUG
+    if (DMTestFlag("/tmp/macstatusbar-debug")) {   // (1.4.2 MW4 Fill: which windows of the app are in MilkyWay's layer)
+        Class layerClass = objc_getClass("AXPassthroughWindow"), viewClass = objc_getClass("AXWindowView");
+        UIWindow *layer = [layerClass respondsToSelector:@selector(sharedInstance)] ? ((id (*)(id, SEL))objc_msgSend)((id)layerClass, @selector(sharedInstance)) : nil;
+        NSMutableString *s = [NSMutableString string];
+        for (UIView *v in layer.subviews) if (viewClass && [v isKindOfClass:viewClass] && [[(AXWindowView *)v bundleIdentifier] isEqualToString:bundleID])
+            [s appendFormat:@" %p%@ %@ h%d a%.2f t%d;", v, v == window ? @"(picked)" : @"", NSStringFromCGRect(v.frame), v.hidden, v.alpha, !CGAffineTransformIsIdentity(v.transform)];
+        DMLog([NSString stringWithFormat:@"[window]   %@'s MilkyWay windows (back to front):%@", bundleID, s]);
+    }
+#endif
     if (window && !DMWindowMinimized(window)) {
         [window.superview bringSubviewToFront:window];
         if (DMFrontApp()) { gWindowsPinnedForward = YES; DMApplyWindowLevel(); }
@@ -6052,6 +6133,7 @@ static void DMWindowLayout(NSString *name) {
             [window layoutIfNeeded];
         }, ^(BOOL finished) {
             DMLog([NSString stringWithFormat:@"[window] layout done, frame %@", NSStringFromCGRect(window.frame)]);
+            DMRememberStageFrame(window);   // (where it was put is where it comes back, as Aerial's and Zetsu's moves keep it: green, full screen and back)
         });
     } else if ([[DMFrontApp() bundleIdentifier] isEqualToString:bundleID]) {
         gPendingWindowFrame = target;
@@ -6127,7 +6209,10 @@ static void DMLightAction(NSInteger which) {
     if (which == 0) DMForceQuit(app);
     else if (which == 1) DMMinimize();
     else if (DMAppNeedsFullScreen(bundleID)) DMLog([NSString stringWithFormat:@"[fullscreenonly] green on %@: it cannot live in a window (the button is greyed out)", bundleID]);
-    else if (DMActiveEngine() == DMEngineAerial || DMActiveEngine() == DMEngineZetsu) { gPreferRememberedFrame = YES; DMWindowLayout(@"center"); gPreferRememberedFrame = NO; }
+    // (every engine the same way, MilkyWay4 too since 1.4.2: the app's window where it last was, else in the middle -- a window that is there moves
+    //  there, a full-screen app opens its window there. MilkyWay took the full-screen path whatever was in front, and with the app's window there
+    //  it made a second window of the app: DMLaunchAsWindow)
+    else if (DMActiveEngine() == DMEngineAerial || DMActiveEngine() == DMEngineZetsu || DMActiveEngine() == DMEngineMilkyWay) { gPreferRememberedFrame = YES; DMWindowLayout(@"center"); gPreferRememberedFrame = NO; }
     else DMSendToWindow(bundleID);
 }
 
@@ -6247,6 +6332,15 @@ static UIColor *DMResizeGripColorFor(NSString *bundleID, BOOL dark) {
 static const void *kMWGripKey = &kMWGripKey;
 
 // MilkyWay4's resize handle lags the finger by its recogniser's start threshold (~11 pt), like Aerial 5.0's (see DMA5GripBox -resizeCatchUp:).
+// A MilkyWay window moved or resized by hand is kept where it ends up (gLastWindowFrames, as Aerial's stages after a drag: DMAerialGestureAfter), once
+// MilkyWay's own end of the gesture has run: green on the full-screen app brings it back there, as on the other engines (1.4.2).
+static void DMMWRememberSoon(UIView *win) {
+    __weak UIView *w = win;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UIView *s = w;
+        if (s && s.superview && ![objc_getAssociatedObject(s, kStageClosingKey) boolValue]) DMRememberStageFrame(s);
+    });
+}
 // A recogniser of ours notes where the finger went down on the handle; our target on MilkyWay's recogniser then adds the missed distance.
 @interface DMMWResizeCatchUp : NSObject <UIGestureRecognizerDelegate>
 + (instancetype)shared;
@@ -6271,6 +6365,7 @@ static char kMWDownKey, kMWWatchedKey, kMWOffsetKey;
     }
     NSValue *dv = objc_getAssociatedObject(g, &kMWOffsetKey);
     if (DMTestFlag("/tmp/msb-a5-dragtrace")) DMLog([NSString stringWithFormat:@"[mwresize] state %ld location %@ window %@ catch-up %@", (long)g.state, NSStringFromCGPoint([g locationInView:win.superview]), NSStringFromCGRect(win.frame), dv ? NSStringFromCGPoint(dv.CGPointValue) : @"-"]);
+    if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) DMMWRememberSoon(win);   // (resized by hand: kept as its place)
     if (!dv || g.state == UIGestureRecognizerStateBegan) return;
     if (g.state == UIGestureRecognizerStateChanged || g.state == UIGestureRecognizerStateEnded) {   // (MilkyWay sizes from where its recogniser started)
         CGRect f = win.frame; f.size.width += dv.CGPointValue.x; f.size.height += dv.CGPointValue.y;
@@ -6298,6 +6393,7 @@ static char kMWDownKey, kMWWatchedKey, kMWOffsetKey;
         if (!CGRectEqualToRect(f, win.frame)) win.frame = f;
     }
     if (g.state != UIGestureRecognizerStateChanged && g.state != UIGestureRecognizerStateBegan) objc_setAssociatedObject(g, &kMWOffsetKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) DMMWRememberSoon(win);   // (moved by hand: kept as its place)
 }
 + (void)watchTitleBar:(UIView *)bar {
     if (!bar || objc_getAssociatedObject(bar, &kMWWatchedKey)) return;
@@ -6671,11 +6767,13 @@ static void DMZetsuAdoptContent(UIView *host, UIView *v) {
 }
 %end
 %end
+static void DMInstallAppExitForget(void);   // (with the Aerial hooks: an app that quits forgets where its window was, every engine)
 static void DMTryHookZetsu(int attempt) {
     if (gZetsuHooked) return;
     if (objc_getClass("ZetsuWindow")) {
         gZetsuHooked = YES;
         %init(ZetsuStyle);
+        DMInstallAppExitForget();
         DMLog(@"[zetsu-style] ZetsuWindow hook installed");
         if (objc_getClass("_UIKeyboardLayerHostView")) { %init(ZetsuKeyboardHost); DMLog(@"[zetsu] keyboard host hook installed (moved out at once)"); }
         if (objc_getClass("ZetsuHost") && class_getInstanceMethod(objc_getClass("ZetsuHost"), @selector(didAddSubview:))) { %init(ZetsuHostContent); DMLog(@"[zflex] ZetsuHost hook installed (the app picture keeps the window's size)"); }
@@ -7677,6 +7775,9 @@ static void DMSetStageIntent(UIView *stage, CGRect frame) {
 }
 static void DMRememberStageFrame(UIView *stage) {
     if (!stage || [objc_getAssociatedObject(stage, kStageEnteringKey) boolValue] || DMStageMinimized(stage)) return;
+    // (a window being closed has no place to keep: a move or layout finishing after the close began -- its app's exit forgets the place,
+    //  AppExitForget -- would bring the frame back, as would a window growing to full screen; 1.4.2)
+    if ([objc_getAssociatedObject(stage, kStageClosingKey) boolValue]) return;
     if (stage.frame.size.width < 150.0 || stage.frame.size.height < 150.0) return;
     CGRect own = stage.frame; own.origin.y -= DMAutoHideShiftOf(stage);   // (a window the auto-hiding status bar has moved down for a moment: its own place)
     NSValue *hold = objc_getAssociatedObject(stage, kA5EntranceTargetKey);
@@ -9616,18 +9717,32 @@ static void DMLaunchIntoTile(NSString *bundleID, CGRect frame);
     %orig;
 }
 %end
+%end
 // Force quitting (or any exit of) an app forgets where its window was. Its Fit to Window tile is NOT dropped here: DMWatchFitClosures does that
 // when the window itself goes, and re-tiles the others -- dropping it here first (the red light force-quits the app while its window is still
 // fading out) hid the closure from that watcher, so the other tiles never grew back (iPad 2, Aerial 3.0: a closed tile left an empty half).
+// On every window engine (Aerial, Zetsu, MilkyWay4: DMInstallAppExitForget from each engine's hook set-up). It sat in the Aerial-only group, so
+// under Zetsu and MilkyWay4 a force-quit app's next window opened where the old one was, under Aerial in the middle (1.4.2, engine parity).
+%group AppExitForget
 %hook SBApplication
 - (void)_didExitWithContext:(id)context {
     NSString *bundleID = [(SBApplication *)self bundleIdentifier];
-    if (bundleID.length) [gLastWindowFrames removeObjectForKey:bundleID];
+    if (bundleID.length && gLastWindowFrames[bundleID]) {
+        DMLog([NSString stringWithFormat:@"[exit] %@ exited: where its window was (%@) is forgotten", bundleID, NSStringFromCGRect(gLastWindowFrames[bundleID].CGRectValue)]);
+        [gLastWindowFrames removeObjectForKey:bundleID];
+    }
     { extern BOOL gFitClosureCheckDue; gFitClosureCheckDue = YES; }
     %orig;
 }
 %end
 %end
+static void DMInstallAppExitForget(void) {
+    static BOOL done = NO;
+    if (done) return;
+    done = YES;
+    %init(AppExitForget);
+    DMLog(@"[engine] app exit hook installed (an app that quits forgets where its window was)");
+}
 %group AerialStyleTail
 // However a stage is closed (red button, Aerial's own menu, our Window menu), the app gets the whole screen back.
 %hook AerialCore
@@ -9738,6 +9853,7 @@ static void DMTryHookAerial(int attempt) {
         }
         else { %init(AerialStyleNamed); %init(AerialStyle); %init(AerialStyleTail); DMInitTurnProbe(); }   // 3.0: unchanged (+ the upside-down probe)
         %init(AerialSpringBoard);   // SpringBoard classes only: safe on 5.0 as well
+        DMInstallAppExitForget();   // (SpringBoard's SBApplication, as before: in AerialSpringBoard until 1.4.2)
         if (objc_getClass("SBTransitionSwitcherModifierEvent")) %init(SwitcherLog);
         DMLog(@"[engine] Aerial stage styling installed");
         return;
@@ -10196,6 +10312,10 @@ static void DMPrewarmControlCenter(int attempt) {
     DMLog([NSString stringWithFormat:@"[mw]   after: contentView frame %@ transform %@", cv ? NSStringFromCGRect(cv.frame) : @"-", cv ? NSStringFromCGAffineTransform(cv.transform) : @"-"]);
 }
 - (void)closeButtonAction:(id)sender {
+    // (marked closing first, as our other closes do -- MilkyWay keeps a closed window in its layer for its animation --: from now on it is no window of
+    //  the app's any more (DMFindMilkyWayWindow: a launch into a window right after makes a new one, 1.4.2), it gets no size commits, and Fit's
+    //  closure check runs)
+    objc_setAssociatedObject(self, kStageClosingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC); { extern BOOL gFitClosureCheckDue; gFitClosureCheckDue = YES; }
     DMResetSceneFrame((UIView *)self);   // the app gets the whole screen back before the window goes
     %orig;
 }
@@ -10237,6 +10357,10 @@ static void DMPrewarmControlCenter(int attempt) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMEnlargeNewWindow(created); });   // in case MilkyWay set its own frame afterwards
     __weak UIView *weakCreated = created;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ UIView *w = weakCreated; if (w && w.superview && !DMWindowMinimized(w)) DMCascadeStage(w); });   // Fit to Window tiles it, a prompt asks for a side, otherwise it is kept off the others
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{   // its first settled place is the one to keep (as Aerial's new stages)
+        UIView *w = weakCreated;
+        if (w && w.superview && !objc_getAssociatedObject(w, kStageIntentKey) && ![objc_getAssociatedObject(w, kStageClosingKey) boolValue]) DMRememberStageFrame(w);
+    });
     if (DMFrontApp()) { gWindowsPinnedForward = YES; DMApplyWindowLevel(); DMLog(@"[lights] a new window opened over a full-screen app: windows brought forward"); }
     return me;
 }
@@ -10566,6 +10690,7 @@ static void DMTryHookMilkyWay(int attempt) {
     } else if (DMMilkyWayInstalled()) {
         gMilkyWayHooked = YES;
         %init(MilkyWayGreen);
+        DMInstallAppExitForget();
         DMLog(@"[lights] MilkyWay window hook installed");
         return;
     }
@@ -17770,9 +17895,13 @@ static void DMStockVPNInit(void) {
         DMSBDiagStep(container ? @"c-no-time-label" : @"c-no-leading-region");
         // That layout is ours too: on the Lock Screen or the Cover Sheet the copy is released as soon as it is applied, like a copy with the clock
         // (it waited for a clock that never comes there). Anywhere else a copy without a clock is one still being built: held as before.
-        BOOL lockedNow = !(DMNewOS() && DMStarting()) && (DMLockUp(DMSBManager("SBLockScreenManager")) || DMCoverSheetShown());
+        BOOL lockedNow = DMBarLockedNow();
         BOOL laidOut = DMLayoutWithoutClock(fg);
         objc_setAssociatedObject(fg, kNoClockLayoutKey, (laidOut && lockedNow) ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        // (K-5: locked, this layout itself hides the copy's lights and titles -- before, only the reported lock did, so a lock the watcher did not see
+        //  left them on the Lock Screen -- and the watcher checks the record)
+        if (laidOut && lockedNow) DMHideAppBarItemsOf(fg);
+        if (laidOut) objc_setAssociatedObject(fg, kBarLaidOutLockedKey, @(lockedNow), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return;
     }
     objc_setAssociatedObject(fg, kNoClockLayoutKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -17904,7 +18033,11 @@ static void DMStockVPNInit(void) {
     // Locked (the Lock Screen, or the Cover Sheet pulled down): only the Apple menu on the left and the status icons with Control Center on the right --
     // no traffic lights and no menu titles, whatever app was in front, windowed or full screen (2026-09-26: an app's lights stayed on the Lock Screen).
     BOOL earlyOnNewOS = DMNewOS() && DMStarting();   // (issue #1: not asked while starting)
-    BOOL locked = !earlyOnNewOS && (DMLockUp(DMSBManager("SBLockScreenManager")) || DMCoverSheetShown());   // (the Cover Sheet pulled down while unlocked counts too: iPad 2)
+    BOOL locked = !earlyOnNewOS && DMBarLockedNow();   // (the Cover Sheet pulled down while unlocked counts too: iPad 2)
+#if DEBUG
+    if (gDMBarForceLockedOnce) locked = YES;
+#endif
+    objc_setAssociatedObject(fg, kBarLaidOutLockedKey, @(locked), OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (K-5: the watcher lays the copy out again if this stops being true)
     btn.accessibilityTraits = UIAccessibilityTraitButton | (locked ? UIAccessibilityTraitNotEnabled : 0);   // (locked, the Apple menu stays shut: VoiceOver says dimmed)
     BOOL wantLights = gShowWindowButtons && frontApp != nil && !activeIsWindow && !locked;   // a window has its own buttons
     if (DMTestFlag("/tmp/macstatusbar-debug")) {
@@ -19910,6 +20043,24 @@ static void DMRunTrigger(NSString *cmd) {
         uintptr_t a = (uintptr_t)strtoull([[cmd substringFromIndex:5] UTF8String], NULL, 16);
         if (a) DMLog([NSString stringWithFormat:@"[refs] 0x%lx is referenced from:%@", (unsigned long)a, DMRefsTo(a)]);
     }
+    else if ([cmd isEqualToString:@"fsbar"]) {   // fsbar: the front full-screen app's scene view and every status bar copy -- their ancestors, which copy is inside it, and where (1.4.2 item 5, debug)
+        NSString *fb = [DMFrontApp() bundleIdentifier];
+        UIView *fsv = fb ? DMMSWFullScreenView(fb, NO) : nil;
+        NSString *(^chain)(UIView *) = ^NSString *(UIView *v) {
+            NSMutableArray *a = [NSMutableArray array];
+            for (UIView *x = v; x && a.count < 40; x = x.superview) [a addObject:[NSString stringWithFormat:@"%@%@", NSStringFromClass([x class]), x.hidden ? @"(h)" : (x.alpha < 0.01 ? @"(a0)" : @"")]];
+            return [a componentsJoinedByString:@" < "];
+        };
+        DMLog([NSString stringWithFormat:@"[fsbar] front %@ scene view %p %@ on screen %@: %@", fb ?: @"-", fsv, fsv ? NSStringFromCGRect(fsv.frame) : @"-",
+            fsv ? NSStringFromCGRect([fsv convertRect:fsv.bounds toCoordinateSpace:[UIScreen mainScreen].coordinateSpace]) : @"-", fsv ? chain(fsv) : @"-"]);
+        for (UIView *fg in gCopies.allObjects) {
+            UIView *common = nil;
+            for (UIView *x = fg; x && !common; x = x.superview) if (fsv && [fsv isDescendantOfView:x]) common = x;
+            DMLog([NSString stringWithFormat:@"[fsbar] copy %p in %@: inside the scene view %d, common ancestor %@ %p, on screen %@, chain %@", fg, NSStringFromClass([fg.window class]),
+                fsv ? [fg isDescendantOfView:fsv] : 0, common ? NSStringFromClass([common class]) : @"-", common,
+                NSStringFromCGRect([fg convertRect:fg.bounds toCoordinateSpace:[UIScreen mainScreen].coordinateSpace]), chain(fg)]);
+        }
+    }
     else if ([cmd isEqualToString:@"barinfo"]) {   // barinfo: every status bar copy: its window, where it is on screen now (model and presentation), transforms (read-only)
         for (UIView *fg in gCopies.allObjects) {
             UIView *bar = fg.superview; CALayer *pl = bar.layer.presentationLayer;
@@ -20840,6 +20991,22 @@ static void DMRunTrigger(NSString *cmd) {
         for (UIView *v in gCopies.allObjects) if (v.window && !v.window.hidden && v.bounds.size.width > 300 && DMEffectiveAlpha(v) > 0.01) { fg = v; break; }
         UIButton *b = fg ? objc_getAssociatedObject(fg, kWinButtonKey) : nil;
         if (b) DMOpenWindowMenu(b); else DMLog(@"[debug] no Window button");
+    }
+    else if ([cmd isEqualToString:@"mwwins"]) {   // mwwins: every MilkyWay window in its layer, back to front (bundle, frame, hidden, alpha, our marks, the content size fitted, the scene) (debug)
+        Class layerClass = objc_getClass("AXPassthroughWindow"), viewClass = objc_getClass("AXWindowView");
+        UIWindow *layer = [layerClass respondsToSelector:@selector(sharedInstance)] ? ((id (*)(id, SEL))objc_msgSend)((id)layerClass, @selector(sharedInstance)) : nil;
+        NSMutableString *s = [NSMutableString stringWithFormat:@"[mwwins] layer %p, %lu subviews", layer, (unsigned long)layer.subviews.count];
+        NSUInteger i = 0;
+        for (UIView *v in layer.subviews) {
+            i++;
+            if (!viewClass || ![v isKindOfClass:viewClass]) { [s appendFormat:@"\n  %lu %@", (unsigned long)i, NSStringFromClass([v class])]; continue; }
+            UIView *m = nil; id sc = nil; @try { m = [v valueForKey:@"mainView"]; sc = [v valueForKey:@"scene"]; } @catch (id e) {}
+            NSValue *fit = objc_getAssociatedObject(v, kFitSizeKey);
+            [s appendFormat:@"\n  %lu %@ %p frame %@ hidden %d alpha %.2f min %d away %d closing %d fit %@ main %@ scene %@", (unsigned long)i, [(AXWindowView *)v bundleIdentifier], v,
+                NSStringFromCGRect(v.frame), v.hidden, v.alpha, DMWindowMinimized(v), [objc_getAssociatedObject(v, kMSWAwayKey) boolValue], [objc_getAssociatedObject(v, kStageClosingKey) boolValue],
+                fit ? NSStringFromCGSize(fit.CGSizeValue) : @"-", [m isKindOfClass:[UIView class]] ? NSStringFromCGRect(m.frame) : @"-", [sc respondsToSelector:@selector(identifier)] ? [sc identifier] : @"-"];
+        }
+        DMLog(s);
     }
     else if ([cmd isEqualToString:@"mwgrip"]) {   // mwgrip: the top MilkyWay window's resize handle -- its recognisers (and the window's), every subview (hidden too), and what a touch hits on a 4 pt grid (debug)
         UIView *w = DMTopWindow(), *h = nil;
@@ -23241,6 +23408,7 @@ static void DMRunTrigger(NSString *cmd) {
             for (NSNumber *ms in @[@200, @450, @700, @950, @1200]) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(ms.intValue * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ DMWhiteHuntAll([NSString stringWithFormat:@"%d ms after the tap", ms.intValue]); });
         if ([iv respondsToSelector:NSSelectorFromString(@"_handleTap")]) ((void (*)(id, SEL))objc_msgSend)(iv, NSSelectorFromString(@"_handleTap"));
     }
+    else if ([cmd hasPrefix:@"fsapp_"]) DMOpenAppFullScreen([cmd substringFromIndex:6]);   // fsapp_<bundle id>: the app full screen the way its window's green light does it, on every engine (debug)
     else if ([cmd hasPrefix:@"awindow_"]) {   // awindow_<bundle id>: our menus' windowed launch
         NSString *bid = [cmd substringFromIndex:8];
         BOOL opened;
@@ -23483,6 +23651,23 @@ static void DMRunTrigger(NSString *cmd) {
         }
         DMLog(o);
     }
+#if DEBUG   // (K-5 test triggers: debug builds only)
+    else if ([cmd isEqualToString:@"k5lockonce"]) {   // K-5 test: every status bar copy lays out once with the locked look although unlocked (as one laid out in a Lock Screen moment), then the flag goes
+        gDMBarForceLockedOnce = YES;
+        for (UIView *fg in gCopies.allObjects) { [fg setNeedsLayout]; [fg layoutIfNeeded]; }
+        gDMBarForceLockedOnce = NO;
+        DMLog([NSString stringWithFormat:@"[k5] %lu status bar copies laid out locked while isUILocked %d, Cover Sheet %d", (unsigned long)gCopies.count, DMLockUp(DMSBManager("SBLockScreenManager")), DMCoverSheetShown()]);
+    }
+    else if ([cmd isEqualToString:@"k5bars"]) {   // K-5 test: each status bar copy on screen -- its last layout locked or not, and whether its menu titles / lights show
+        NSMutableString *o = [NSMutableString stringWithFormat:@"[k5] isUILocked %d, Cover Sheet %d, barLockedNow %d:", DMLockUp(DMSBManager("SBLockScreenManager")), DMCoverSheetShown(), DMBarLockedNow()];
+        for (UIView *fg in gCopies.allObjects) {
+            if (!fg.window || fg.window.hidden || fg.alpha < 0.01) continue;
+            UIView *app = objc_getAssociatedObject(fg, kAppLabelKey), *lights = objc_getAssociatedObject(fg, kLightsKey);
+            [o appendFormat:@" | %@ laid %@, app title %@, lights %@", NSStringFromClass([fg.window class]), objc_getAssociatedObject(fg, kBarLaidOutLockedKey) ?: @"-", !app ? @"none" : app.hidden ? @"hidden" : @"shown", !lights ? @"none" : lights.hidden ? @"hidden" : @"shown"];
+        }
+        DMLog(o);
+    }
+#endif
     else if ([cmd isEqualToString:@"dumpwindows"]) {   // every real window (not internal ones like keyboards/effects): class, level, frame, hidden, alpha — for studying what keeps the Dock forward
         NSMutableString *out = [NSMutableString stringWithString:@"windows:"];
         for (UIWindow *w in DMAllWindows()) {

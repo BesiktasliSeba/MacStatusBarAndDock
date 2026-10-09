@@ -14,16 +14,18 @@
 
 // The Finder face, drawn (no picture file), in the current macOS style: a vivid blue left half and a pale grey-white right half, split by the
 // nose line (down from the top, a notch for the nose, then on to the bottom), two thin dark eyes and one thin smile across both halves.
+// K-4: the face fills the whole slot, as an app's picture fills its own (it used to be drawn 6% in from every side: 88% of the apps' size, measured
+// 76 vs 85 px on the iPad 2 and 74 vs 82 px on the M1). Its corners are cut by the view's layer with SpringBoard's own app icon corner (below).
 static UIImage *DMFinderFaceImage(CGSize size) {
     if (size.width < 4 || size.height < 4) return nil;
     UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:size];
     return [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
         CGContextRef c = ctx.CGContext;
         CGFloat w = size.width, h = size.height, s = MIN(w, h), ox = (w - s) / 2.0, oy = (h - s) / 2.0;
-        CGRect tile = CGRectMake(ox + s * 0.06, oy + s * 0.06, s * 0.88, s * 0.88);
+        CGRect tile = CGRectMake(ox, oy, s, s);
         CGFloat tx = CGRectGetMinX(tile), ty = CGRectGetMinY(tile), tw = tile.size.width, th = tile.size.height;
         CGPoint (^P)(CGFloat, CGFloat) = ^CGPoint(CGFloat x, CGFloat y) { return CGPointMake(tx + tw * x, ty + th * y); };   // (tile-relative 0..1)
-        UIBezierPath *clip = [UIBezierPath bezierPathWithRoundedRect:tile cornerRadius:tw * 0.225];
+        UIBezierPath *clip = [UIBezierPath bezierPathWithRect:tile];
         CGContextSaveGState(c);
         [clip addClip];
         CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
@@ -63,6 +65,42 @@ static UIImage *DMFinderFaceImage(CGSize size) {
     }];
 }
 
+// SpringBoard's own app icon corner: its continuous corner radius as a share of the icon's width, from the Dock's icon image info (Dock.x sets it at
+// every Dock layout; iPad 2 / M1: 17.12 / 76 = 0.225). The Finder picture's corners are cut with it, as continuous corners, like the apps' pictures.
+CGFloat gDMIconCornerRatio = 0.2253;
+
+// An icon theme's Finder picture, when an active SnowBoard theme has one: IconBundles/com.apple.finder-large.png (the macOS Finder's id, as icon
+// themes name their pictures) or com.besiktasliseba.finder-large.png, checked in SnowBoard's own order (its active themes list), then SnowBoard's
+// per-icon overrides for those ids. It is cut with the same corners as the apps' themed pictures. Looked up again only when SnowBoard's settings
+// file changes (a theme switched on or off); nil = no theme has one: the drawn face.
+static UIImage *DMFinderThemedImage(void) {
+    static NSDate *seenDate = nil; static UIImage *cached = nil; static BOOL looked = NO;
+    NSString *prefs = @"/var/jb/var/mobile/Library/Preferences/com.spark.snowboardprefs.plist";
+    if (![[NSFileManager defaultManager] fileExistsAtPath:prefs]) prefs = @"/var/mobile/Library/Preferences/com.spark.snowboardprefs.plist";
+    NSDate *date = [[[NSFileManager defaultManager] attributesOfItemAtPath:prefs error:nil] fileModificationDate];
+    if (looked && ((!date && !seenDate) || [date isEqualToDate:seenDate])) return cached;
+    looked = YES; seenDate = date; cached = nil;
+    NSDictionary *d = date ? [NSDictionary dictionaryWithContentsOfFile:prefs] : nil;
+    NSArray *ids = @[@"com.besiktasliseba.finder", @"com.apple.finder"];
+    NSArray *themes = [d[@"ActiveMenuItems"] isKindOfClass:[NSArray class]] ? d[@"ActiveMenuItems"] : @[];
+    for (NSString *theme in themes) {
+        if (![theme isKindOfClass:[NSString class]]) continue;
+        // (themes ship the plain name, or only scale variants: -large@2x.png, -large@3x.png)
+        for (NSString *ident in ids) for (NSString *suffix in @[@"-large.png", @"-large@3x.png", @"-large@2x.png", @".png", @"@3x.png", @"@2x.png"]) {
+            NSString *path = [[theme stringByAppendingPathComponent:@"IconBundles"] stringByAppendingPathComponent:[ident stringByAppendingString:suffix]];
+            UIImage *img = [[NSFileManager defaultManager] fileExistsAtPath:path] ? [UIImage imageWithContentsOfFile:path] : nil;
+            if (img.size.width >= 8.0) { cached = img; return cached; }
+        }
+    }
+    NSDictionary *overrides = [d[@"IconOverrides"] isKindOfClass:[NSDictionary class]] ? d[@"IconOverrides"] : nil;
+    for (NSString *ident in ids) {
+        NSString *path = [overrides[ident] isKindOfClass:[NSString class]] ? overrides[ident] : nil;
+        UIImage *img = path ? [UIImage imageWithContentsOfFile:path] : nil;
+        if (img.size.width >= 8.0) { cached = img; return cached; }
+    }
+    return nil;
+}
+
 @interface DMFinderIconView : UIView <UIPointerInteractionDelegate, UIContextMenuInteractionDelegate>
 @property (nonatomic, strong) UIImageView *image;
 @property (nonatomic, strong) UIView *dot;
@@ -96,7 +134,18 @@ static UIImage *DMFinderFaceImage(CGSize size) {
 - (void)layoutSubviews {
     [super layoutSubviews];
     self.image.frame = self.bounds;
-    if (!self.image.image || !CGSizeEqualToSize(self.image.image.size, self.bounds.size)) self.image.image = DMFinderFaceImage(self.bounds.size);
+    // (the corners: SpringBoard's own app icon corner for this size, continuous, cut by the layer -- the face fills the slot, K-4)
+    CALayer *l = self.image.layer;
+    l.cornerRadius = gDMIconCornerRatio * MIN(self.bounds.size.width, self.bounds.size.height);
+    l.cornerCurve = kCACornerCurveContinuous;
+    l.masksToBounds = YES;
+    UIImage *themed = DMFinderThemedImage();
+    if (themed) {
+        if (self.image.image != themed) { self.image.contentMode = UIViewContentModeScaleAspectFill; self.image.image = themed; }
+    } else if (!self.image.image || self.image.contentMode != UIViewContentModeScaleAspectFit || !CGSizeEqualToSize(self.image.image.size, self.bounds.size)) {
+        self.image.contentMode = UIViewContentModeScaleAspectFit;
+        self.image.image = DMFinderFaceImage(self.bounds.size);
+    }
     [self updateDot];
 }
 - (void)updateDot {   // (the running dot: Finder has a window open -- Finder publishes the count)

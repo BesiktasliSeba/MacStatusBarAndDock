@@ -2,6 +2,30 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.4.2
+
+### New
+- Settings: a search field at the top of the Settings sidebar, as on a Mac. It uses Apple's own Settings search, so you get the usual results, and it works from a keyboard too (Command-F, the arrow keys, Return and Esc). You can turn it off in Settings > Status Bar > Search Field in Settings.
+
+### Improvements
+- MilkyWay4: a new window of an app opens where that app's window last was, and the green button on a full-screen app brings its window back there, as with Aerial and Zetsu.
+
+### Fixes
+- Dock: app icons no longer end up past the ends of the Dock when the apps in the Dock change (seen on iPadOS 15 with many apps in the Dock).
+- Dock: after you turn the iPad from portrait to landscape, the Dock keeps your Icon Size instead of staying at the larger portrait size.
+- Dock: the Finder icon is now the same size as the app icons next to it, with the same rounded corners. An icon theme can give it its own picture (SnowBoard: com.apple.finder or com.besiktasliseba.finder in the theme's IconBundles).
+- Dock: Gap to Screen Edge now always applies. Before, it was skipped with Magnify Icons off, and with Icon Size at 100% and Downloads off. If your Dock was set up like that, it moves closer to the bottom edge after this update, to your Gap to Screen Edge setting (6 pt unless you changed it).
+- Menu bar: the menu titles always come back after you unlock. Before, they could stay hidden after an unlock, with only the Apple menu left on the Home Screen (reported with Touch ID on iPadOS 15).
+- MilkyWay4: Fill and the other Window menu layouts always resize the app to its new window. Before, the app could keep its old size until you picked the layout a second time.
+- Windows: after you force quit an app, its next window opens where a new window normally opens (the middle of the screen when no other windows are open), with every window engine. Before, Zetsu and MilkyWay4 opened it where the old window was.
+- Mac Switcher: while a full-screen app is in front, the menu bar is now part of the desktops sliding in and out, instead of appearing only when the slide ends.
+- Mac Switcher: a desktop that a window was dropped on now slides in with its Home Screen, Dock and menu bar, and so does a desktop on the Stage Manager engine when no picture of the Home Screen is kept.
+- Settings: a Settings window that was made narrow and then wide again no longer shows the iPadOS title bar above the sidebar.
+- A window engine whose updates you set to be ignored in Sileo is now recognized as installed when the window engine is picked.
+
+### Experimental (iPadOS 17)
+- iPadOS 17: the search field in the Settings sidebar is offered there too. It hasn't been tested on an iPadOS 17 device yet.
+
 ## 1.4.1
 
 ### Improvements

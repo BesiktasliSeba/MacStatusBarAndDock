@@ -69,6 +69,8 @@ if [ -f "$MAP" ] && [ -n "$DSYM" ]; then
   # (auto-hide is off on this Mac, as for a new user: a crash in its code can't be the switch, so Stock status bar mode instead)
   real core-autohide "pref MacStatusBarCore $D stockStatusBar 1 *" --symbol "$DSYM" MacStatusBarCore '^_DMAutoHide'
   real core-aerial "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore 'logos_method\$AerialStyle\$'
+  # (the app exit hook, on every engine since 1.4.2 -- its own group, no longer AerialSpringBoard: Windowing, not Stock status bar mode)
+  real core-appexit "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore 'logos_method\$AppExitForget\$'
   # the Stage Manager engine (its functions, its hook groups, the window fit and the stage-area hook, 1.3.2): Windowing off, the Mac status bar stays
   real core-sm-zoom "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMToggleZoom$'
   real core-sm-fit "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMAttrsFitScreen'
@@ -137,6 +139,13 @@ if [ -f "$MAP" ] && [ -n "$DSYM" ]; then
   for g in $smgroups; do
     real "core-sm-group-$g" "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore "logos_method\\\$${g}\\\$"
   done
+  # the keyboard section (its header names the keyboard button; the code runs for the window engines): Windowing, not the keyboard button -- off
+  # for new users, so a crash there fell to Stock status bar mode, which keeps the engines running (1.4.2). Symbols kept in a release build too.
+  real core-kb-pillin "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMPlaceKeyboardPillIn$'
+  real core-kb-hostscene "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMKeyboardHostOwningScene$'
+  real core-kb-sceneside "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSceneSide$'
+  real core-kb-orientblock "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^___DMFixKeyboardOrientation_block_invoke'
+  real core-fit-spreadblock "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^___DMSpreadFitGroup_block_invoke'
   real core-context "part MacStatusBarCore - - 0 the status bar|the Mac status bar" --symbol "$DSYM" MacStatusBarCore 'logos_method\$MacContextMenus\$'
   real core-today "pref MacStatusBarCore $D clockOpensToday 0 *" --map "$MAP" MacStatusBarCore arm64 clockOpensToday
   real dock-downloads "pref DockMagnification com.besiktasliseba.dockmagnification showDownloads 0 *" --map "$MAP" DockMagnification arm64e showDownloads

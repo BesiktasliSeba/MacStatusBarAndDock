@@ -23,6 +23,7 @@ Then install **MacStatusBar&Dock** from the repo. The Mac look is on right after
 | iPad Pro 11" (M1, 2021) | 15.6.1 | Dopamine | Aerial 5.0, Zetsu, MilkyWay4 | ✅ Tested by the developer |
 | iPad Pro 9.7" | 16.7.7 | palera1n | Aerial 5.0, Zetsu, Stage Manager (with TrollPad) | ✅ Tested by the developer |
 | iPad Pro 10.5" | 16.6.1 | rootless | — | ✅ Reported working by a user |
+| iPad mini 4 | 15.8.8 | rootless | not reported | ✅ Reported running by a user. The Dock problem seen there (app icons past the ends of the Dock) is fixed in 1.4.2, awaiting confirmation |
 | iPad Pro (M2, 2022) | 16.0 – 16.6 | Dopamine | Zetsu or Aerial | ⚠️ The Stage Manager engine is offered on 16.1 and later, and as "Untested" on 16.0, where a user confirmed the basics (windows, resizing, traffic lights). On 16.3.1 a user confirmed it can be picked and runs. On 16.1 – 16.6 another user reports SpringBoard crashes with it. Use Aerial 5.0 there |
 | Other iPads | 15.x, 16.x | rootless | — | Likely to work, not tested |
 | iPad Pro 12.9" (M1, 2021) | 17.0 | rootless | Zetsu 1.6.6 | ✅ Reported working by a user since 1.2.4, with **Enable Anyway** |
@@ -92,7 +93,7 @@ The Mac look is on right after install. A few extras start off: the auto-hiding 
 - **Automatic Crash Recovery**: if a feature is followed by two SpringBoard crashes in a row, it switches itself off instead of leaving you in a crash loop, tells you in Settings, and offers Report a Problem. Another tweak's crash never switches MacStatusBar&Dock off.
 - **Off by default on untested iPadOS versions** (unless you choose Enable Anyway), does nothing on an iPhone, and never contacts any server (see [SECURITY.md](./SECURITY.md)).
 
-**Also included:** a Mac pointer (arrow and I-beam, with Pointer Control colors as an option), Mac-style notification banners, Mac-style Haptic Touch menus (Force Quit and App Size on app icons, folder shortcuts), a mute icon, Control Center from the menu bar, a customizable Go menu, an auto-hiding menu bar, Home Screen options (page dots, icon labels, Home Bar), Control Center without its grabber line, the App Store's Updates tab, Apple's apps without large titles, Lock Screen options, keyboard extras (Cmd-Tab to the right window, Esc closes menus, Tab to mute, Globe volume and brightness keys), longer Auto-Lock times, an SSH switch, Ethernet settings, and Reduce Motion support. Every feature has its own switch in Settings, on stock-looking pages right below General.
+**Also included:** a Mac pointer (arrow and I-beam, with Pointer Control colors as an option), Mac-style notification banners, Mac-style Haptic Touch menus (Force Quit and App Size on app icons, folder shortcuts), a mute icon, Control Center from the menu bar, a customizable Go menu, an auto-hiding menu bar, Home Screen options (page dots, icon labels, Home Bar), Control Center without its grabber line, the App Store's Updates tab, Apple's apps without large titles, Lock Screen options, keyboard extras (Cmd-Tab to the right window, Esc closes menus, Tab to mute, Globe volume and brightness keys), longer Auto-Lock times, a search field in the Settings sidebar, an SSH switch, Ethernet settings, and Reduce Motion support. Every feature has its own switch in Settings, on stock-looking pages right below General.
 
 ## Drives in Finder
 

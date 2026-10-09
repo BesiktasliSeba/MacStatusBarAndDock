@@ -231,6 +231,33 @@ static UIView *DMMSWFullScreenView(NSString *bundle, BOOL logAll) {
     }
     return best;
 }
+// The full-screen app as it shows, for its picture in a desktop drawn from its parts (DMMSWLeftFromParts): its scene view and the menu bar beside it.
+// With an app full screen the menu bar on the screen is the status bar SpringBoard draws for that app inside its switcher page, NEXT TO the scene
+// view (one container holds both: SBDeviceApplicationSceneView and the status bar's orientation wrapper), while UIStatusBarWindow's status bar is
+// transparent (alpha 0) meanwhile -- so the scene view's picture had no menu bar and the shared windows' portal of UIStatusBarWindow showed none
+// either (M1, landscape, fsbar probe 9 Oct; 1.4.1 logic test L-2's note). That container is pictured instead when it is the scene's own (the same
+// place on the screen) and holds a status bar outside the scene view. Debug /tmp/msw-fsbar-old = the scene view alone.
+static UIView *DMMSWFullScreenWithBar(UIView *fsv) {
+    UIView *up = fsv.superview;
+    if (!up || DMTestFlag("/tmp/msw-fsbar-old")) return fsv;
+    id<UICoordinateSpace> sp = [UIScreen mainScreen].coordinateSpace;
+    CGRect a = CGRectIntegral([fsv convertRect:fsv.bounds toCoordinateSpace:sp]), b = CGRectIntegral([up convertRect:up.bounds toCoordinateSpace:sp]);
+    if (!CGRectEqualToRect(a, b)) return fsv;   // (not the scene's own container)
+    Class barClass = NSClassFromString(DMSBName("UIStatusBar_Modern"));
+    if (!barClass) return fsv;
+    NSMutableArray<UIView *> *todo = [NSMutableArray array];
+    for (UIView *x in up.subviews) if (x != fsv) [todo addObject:x];
+    for (int depth = 0; depth < 6 && todo.count; depth++) {
+        NSMutableArray *next = [NSMutableArray array];
+        for (UIView *v in todo) {
+            if (v.hidden || v.alpha < 0.01) continue;
+            if ([v isKindOfClass:barClass]) return up;
+            [next addObjectsFromArray:v.subviews];
+        }
+        todo = next;
+    }
+    return fsv;
+}
 // The windows of the current desktop, back to front: the full-screen app, the engine's windows, the native windows.
 static NSArray<DMMSWTile *> *DMMSWCollect(UIView *root) {
     if (DMSMEngine()) return DMMSWSMCollect(root);   // (Stage Manager: its window cards, MacSwitcherSM.h)
@@ -1214,6 +1241,7 @@ static CGFloat gMSWSlW = 0;           // how far one desktop is from the next on
 static NSUInteger gMSWSlGen = 0, gMSWSlFinGen = 0;   // which slide / which ending a late completion belongs to
 static UIView *gMSWOpenShot;          // the screen as it was when the Mac Switcher opened: the left desktop's picture for a switch from its strip
 static const void *kMSWSharedKey = &kMSWSharedKey;   // (a picture that wants the shared windows' portals)
+static const void *kMSWDrawnKey = &kMSWDrawnKey;     // (a desktop's kept picture drawn from its parts: wants the shared windows again at every slide)
 static const void *kMSWNotKeptKey = &kMSWNotKeptKey;   // (a left picture never kept as its desktop's thumbnail: drawn from parts, DMMSWLeftFromParts / DMMSWSwEnd)
 static NSInteger gMSWOpenShotId = 0;
 static NSUInteger gMSWOpenShotGen = 0; // (which opening a picture on its way belongs to: a late one of an earlier opening, or one taken before a drop, is dropped)
@@ -1780,6 +1808,7 @@ static void DMMSWSwitchRun(NSUInteger to, NSString *why, CGFloat v, void (^done)
         NSString *fb = front && DMFullScreenAppInFront() ? [front bundleIdentifier] : nil;
         if (fb && [[gMSWFullScreen allValues] containsObject:fb]) fb = nil;   // (dragged to another desktop in the view: it goes Home when it lands)
         UIView *fsv = fb ? DMMSWFullScreenView(fb, NO) : nil;
+        if (fsv) fsv = DMMSWFullScreenWithBar(fsv);   // (with the menu bar SpringBoard draws beside the app's scene)
         void (^go)(UIView *, NSString *) = ^(UIView *fsPic, NSString *how) {
             if (went) return;
             went = YES;
@@ -2206,6 +2235,7 @@ static UIView *DMMSWComposedDesktop(NSInteger did, CGRect b) {
             [pic removeFromSuperview];
             pic.transform = CGAffineTransformIdentity;
             pic.frame = f;
+            pic.tag = 0x4D53;   // (a window's picture: over the shared windows' portals, DMMSWSlShared)
             [c addSubview:pic];
             n++;
             continue;
@@ -2214,9 +2244,11 @@ static UIView *DMMSWComposedDesktop(NSInteger did, CGRect b) {
         //  icon, as the Stage Manager desktops draw it; a desktop that a window was dropped on showed that window alone)
         UIView *card = DMMSWIconCard(b2, f);
         if (!card) continue;
+        card.tag = 0x4D53;
         [c addSubview:card];
         icons++;
     }
+    objc_setAssociatedObject(c, kMSWDrawnKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (kept as its thumbnail: DMMSWDeskPicture asks for the shared windows at each slide)
     DMLog([NSString stringWithFormat:@"[macswitcher] desktop %ld's thumbnail drawn from its wallpaper, %lu window pictures and %lu app icons (its picture was out of date)", (long)did, (unsigned long)n, (unsigned long)icons]);
     return c;
 }
@@ -2233,6 +2265,10 @@ static UIView *DMMSWDeskPicture(NSUInteger i, CGRect b) {
     if (!DMSMEngine()) {
         UIView *shot = gMSWShots[@(did)];
         if (shot && sameShape && CGSizeEqualToSize(shot.bounds.size, b.size) && [gMSWShotSet[@(did)] isEqualToArray:DMMSWWindowSet(did)]) pic = shot;
+        // (kept but drawn from its parts -- a window dropped on it in the view, moved onto it by a remove, closed while it was away
+        //  (DMMSWComposedDesktop) --: the Home Screen, the Dock and the menu bar come live on every slide, under its windows, as on a desktop drawn
+        //  from its parts here below; they were missing in the slide and popped in at the reveal, 1.4.2 -- the same as Stage Manager's, item 2)
+        if (pic && [objc_getAssociatedObject(pic, kMSWDrawnKey) boolValue] && !DMTestFlag("/tmp/msw-drawnshared-old")) objc_setAssociatedObject(pic, kMSWSharedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     if (pic) return pic;
     DMMSWWallLazy();
@@ -2340,6 +2376,7 @@ static UIView *DMMSWLeftFromParts(UIView *fsPic, UIView *fsSrc) {
 static void DMMSWSlShared(UIView *pic) {
     if (![objc_getAssociatedObject(pic, kMSWSharedKey) boolValue] || !gMSWSlRoot) return;
     objc_setAssociatedObject(pic, kMSWSharedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    for (UIView *v in [pic.subviews copy]) if (v.tag == 0x4D55) [v removeFromSuperview];   // (a kept picture drawn from parts: the last slide's holders, their portals let go)
     UIView *firstWin = nil, *fsApp = nil;
     for (UIView *v in pic.subviews) { if (v.tag == 0x4D53 && !firstWin) firstWin = v; if (v.tag == 0x4D54 && !fsApp) fsApp = v; }
     CGRect b = gMSWSlRoot.bounds;
@@ -2348,11 +2385,23 @@ static void DMMSWSlShared(UIView *pic) {
         if (DMMSWOurOrEngineWindow(w) || [cn isEqualToString:@"SBMainSwitcherWindow"] || ([cn hasPrefix:@"_SBWallpaper"] && gMSWWallContents)) continue;
         UIView *holder = [[UIView alloc] initWithFrame:b];
         holder.userInteractionEnabled = NO;
+        holder.tag = 0x4D55;   // (a shared window's place in the picture)
         CGRect r = CGRectNull;
-        UIView *p = DMMSWPortalInPlace(w, gMSWSlRoot, holder, &r);
+        // (SpringBoard's own status bar while a full-screen app is in front: transparent (alpha 0) -- the menu bar on the screen is the one drawn in
+        //  that app's switcher page --, so a desktop drawn from its parts had no menu bar in the slide and it popped in at the reveal (M1 9 Oct, an
+        //  arriving desktop drawn from its parts after Tips full screen). Such a picture gets the bar itself, whose portal does not take its alpha.
+        //  Not a picture with a full-screen app's own picture in it: that one carries the app's menu bar, DMMSWFullScreenWithBar. Debug
+        //  /tmp/msw-sharedbar-old = before.)
+        UIView *src = w, *bar = nil;
+        if (!fsApp && DMSBIsBarWindowName(cn) && !DMTestFlag("/tmp/msw-sharedbar-old")) {
+            Class barClass = NSClassFromString(DMSBName("UIStatusBar_Modern"));
+            for (UIView *v in w.subviews) if (barClass && [v isKindOfClass:barClass]) { bar = v; break; }
+            if (bar && !bar.hidden && bar.alpha < 0.01) src = bar; else bar = nil;
+        }
+        UIView *p = DMMSWPortalInPlace(src, gMSWSlRoot, holder, &r);
         if (!p) continue;
         [gMSWPortals removeObjectIdenticalTo:p];
-        if (!CGRectEqualToRect(CGRectIntegral(CGRectInset(r, 0.5, 0.5)), CGRectIntegral(CGRectInset(b, 0.5, 0.5)))) {
+        if (bar ? !CGRectContainsRect(CGRectInset(b, -0.5, -0.5), r) : !CGRectEqualToRect(CGRectIntegral(CGRectInset(r, 0.5, 0.5)), CGRectIntegral(CGRectInset(b, 0.5, 0.5)))) {
 #if DEBUG
             if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[mswshared] %@ (level %.0f) left out: it lands at %@", cn, w.windowLevel, NSStringFromCGRect(r)]);
 #endif
@@ -2364,7 +2413,7 @@ static void DMMSWSlShared(UIView *pic) {
         if (underApp) [pic insertSubview:holder belowSubview:fsApp];   // (behind apps: under the full-screen app)
         else if (firstWin) [pic insertSubview:holder belowSubview:firstWin]; else [pic addSubview:holder];
 #if DEBUG
-        if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[mswshared] %@ (level %.0f): %@", cn, w.windowLevel,
+        if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[mswshared] %@ (level %.0f)%@: %@", cn, w.windowLevel, bar ? @" -- its status bar, transparent on the screen (a full-screen app in front), opaque here" : @"",
             underApp ? @"under the full-screen app's picture" : (fsApp ? @"over the full-screen app's picture" : (firstWin ? @"under the window pictures" : @"on top"))]);
 #endif
     }
@@ -3125,6 +3174,13 @@ static void DMMSWDeskTakesWindow(NSInteger toId, UIView *pic, DMMSWMoveInfo info
     if (!gMSWShots) gMSWShots = [NSMutableDictionary dictionary];
     if (!gMSWShotSet) gMSWShotSet = [NSMutableDictionary dictionary];
     UIView *base = info.shotOK ? gMSWShots[key] : DMMSWComposedDesktop(toId, bounds);
+    if (!info.shotOK && base && !DMTestFlag("/tmp/msw-drawnshared-old")) {
+        // (drawn from its parts: the window goes in among its windows' pictures, and that picture itself is kept -- marked drawn, its window pictures
+        //  tagged --, so a slide to the desktop puts the Home Screen, the Dock and the menu bar under them, live: DMMSWDeskPicture / DMMSWSlShared)
+        if (pic && !info.drawnHasIt) { [pic removeFromSuperview]; pic.tag = 0x4D53; [base addSubview:pic]; }
+        gMSWShots[key] = base; gMSWShotSet[key] = DMMSWWindowSet(toId);
+        return;
+    }
     UIView *c = [[UIView alloc] initWithFrame:bounds];
     c.clipsToBounds = YES; c.userInteractionEnabled = NO; c.backgroundColor = [UIColor blackColor];
     if (base) {

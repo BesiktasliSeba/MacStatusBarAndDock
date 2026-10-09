@@ -46,6 +46,7 @@ static BOOL    gEnabled       = YES;
 static CGFloat gMagnification = 1.22;   // scale of the icon at the cursor
 static CGFloat gIconSize = 0.85;        // multiplier on the Dock's own icon size (1.0 = as the system/other tweaks set it)
 static CGFloat gBottomGap = 6.0;        // points between the Dock and the bottom screen edge (stock is 20.5)
+static BOOL    gTweakOn = YES;          // the Dock part's own switch (Settings > Dock Magnification): off = the Dock exactly as iPadOS draws it
 static BOOL    gShowDownloads = YES;    // the Downloads stack in the Dock
 static BOOL    gShowFinder = YES;       // Finder as the Dock's first item, like a Mac (FinderIcon.m)
 static BOOL    gEscapeClosesLibrary = YES;   // pressing Escape closes the App Library
@@ -72,6 +73,7 @@ void DMLogWrite(NSString *line) {
 static CGFloat gInfluence = 0.0;     // 0...1: how much of the magnification is applied right now
 #if DEBUG
 static CFTimeInterval gDMMetricsLogUntil = 0;   // (debug, K-2: every -getMetrics:forBounds: call is logged until then -- "metricslog" in /tmp/dockmag-escape)
+static BOOL gDMStockMetricsOnly = NO;           // (debug, K-2 "k2" dump: one -getMetrics:forBounds: call with SpringBoard's own numbers, none of ours)
 #endif
 
 // ===== curves ============================================================
@@ -123,6 +125,7 @@ static void DMLoadPrefs(void) {
         CFRelease(e);
     }
     enabled = enabled && tweakOn;
+    gTweakOn = tweakOn;
 
     CGFloat mag = 1.22;
     CFPropertyListRef m = DMCopyPref(CFSTR("magnification"));
@@ -227,6 +230,7 @@ static void DMLoadPrefs(void) {
 @interface SBFloatingDockView : UIView
 - (void)setIconContentScale:(CGFloat)scale;
 - (CGFloat)iconContentScale;
+- (void)getMetrics:(DMDockMetrics *)metrics forBounds:(CGRect)bounds;
 @end
 
 // The Dock's size and distance from the screen edge come from SBFloatingDockView's own layout numbers, so changing those
@@ -236,6 +240,22 @@ static CGRect gDownloadsSlot = {{0, 0}, {0, 0}};   // where the Downloads icon g
 static CGRect gFinderSlot = {{0, 0}, {0, 0}};      // where the Finder icon goes: the Dock's first place (set by getMetrics)
 extern void DMFinderIconAttach(UIView *platter, CGRect slot, BOOL show);
 extern UIView *DMFinderIcon(UIView *platter);
+extern CGFloat gDMIconCornerRatio;   // (FinderIcon.m: SpringBoard's app icon corner as a share of the icon's width)
+// SpringBoard's app icon corner for the Dock (K-4): -[SBFloatingDockView _iconImageInfo] (15-18: {size, scale, continuous corner radius}) -- the
+// Finder picture's corners follow it. Read only when the method returns exactly that structure.
+typedef struct { CGSize size; CGFloat scale; CGFloat continuousCornerRadius; } DMIconImageInfo;
+static void DMReadIconCornerRatio(UIView *dockView) {
+    SEL sel = NSSelectorFromString(@"_iconImageInfo");
+    Method m = class_getInstanceMethod(object_getClass(dockView), sel);
+    if (!m || method_getNumberOfArguments(m) != 2) return;
+    char t[128] = {0}; method_getReturnType(m, t, sizeof(t));
+    static BOOL told = NO;
+    if (!told) { told = YES; DMLog([NSString stringWithFormat:@"[finder] the Dock's icon image info returns %s", t]); }
+    if (strcmp(t, "{SBIconImageInfo={CGSize=dd}dd}") != 0) return;
+    DMIconImageInfo i = ((DMIconImageInfo (*)(id, SEL))objc_msgSend)(dockView, sel);
+    if (isfinite(i.size.width) && i.size.width >= 8.0 && isfinite(i.continuousCornerRadius) && i.continuousCornerRadius > 0.0 && i.continuousCornerRadius < i.size.width / 2.0)
+        gDMIconCornerRatio = i.continuousCornerRadius / i.size.width;
+}
 extern void DMDownloadsAttach(UIView *platter, CGRect slot, BOOL show);
 extern UIView *DMDownloadsIcon(UIView *platter);
 
@@ -339,6 +359,32 @@ static CGFloat DMDockHiddenLibrarySide(const DMDockMetrics *m) {
     return isfinite(h) && h >= 8.0 && h < m->userList.size.height - 1.0 ? h : 0.0;
 }
 static BOOL gDownloadsOwnSlot;   // (the last layout gave Downloads a slot of its own -- no App Library icon in the Dock; for the diagnostics)
+// K-2 (iPad mini 4, 15.8.8: app icons outside the Dock): the platter and the lists' frames, spacing and content scale all come from one
+// -getMetrics:forBounds: answer, worked out for the icon counts the Dock's lists had at that moment; each list places its own icons for the count
+// it has. SpringBoard keeps both on the same count through its Dock controller (a list change -> a coalesced resize -> the Dock view's layout).
+// The counts are read here exactly as SpringBoard's -getMetrics:forBounds: reads them (15/16: the list's model; 17+: its displayed model; the
+// user list never fewer than -minimumUserIconSpaces, which a drag over the Dock raises to make room), recorded per Dock view for the layout's own
+// bounds, and checked again whenever a Dock list has just placed its icons (DMDockCheckSizedFor below).
+static const void *kDMDockSizedForKey = &kDMDockSizedForKey;   // @[user count, recents count] the platter of that Dock view was last sized for
+static __unsafe_unretained UIView *gDMDockInLayout = nil;   // the Dock view whose own -layoutSubviews is running: only the answer asked there sizes the
+                                                            // platter (SpringBoard also asks for -contentHeight, e.g. inside its resize, before laying out)
+static NSUInteger DMDockListCount(UIView *list) {
+    if (![list isKindOfClass:[UIView class]]) return 0;
+    id model = nil;
+    @try { model = [list respondsToSelector:NSSelectorFromString(@"displayedModel")] ? [list valueForKey:@"displayedModel"] : [list valueForKey:@"model"]; } @catch (id e) { model = nil; }
+    SEL n = NSSelectorFromString(@"numberOfIcons");
+    return [model respondsToSelector:n] ? ((NSUInteger (*)(id, SEL))objc_msgSend)(model, n) : 0;
+}
+static BOOL DMDockIconCounts(UIView *dockView, NSUInteger *user, NSUInteger *recents) {
+    UIView *u = nil, *r = nil;
+    @try { u = [dockView valueForKey:@"userIconListView"]; r = [dockView valueForKey:@"recentIconListView"]; } @catch (id e) { return NO; }   // (KVC on a private class: guarded)
+    NSUInteger uc = DMDockListCount(u);
+    SEL minSel = NSSelectorFromString(@"minimumUserIconSpaces");
+    if ([dockView respondsToSelector:minSel]) uc = MAX(uc, ((NSUInteger (*)(id, SEL))objc_msgSend)(dockView, minSel));
+    if (user) *user = uc;
+    if (recents) *recents = DMDockListCount(r);
+    return YES;
+}
 // Right-to-left languages (1.3.3): iPadOS mirrors the Dock -- the apps from the right end, the recents and the App Library icon at the left -- and so
 // does macOS (Finder at the right end, Downloads at the left). Our layout below is worked out left-to-right: the Dock's numbers are mirrored inside the
 // platter first, and the result (with our slots) is mirrored back at the end. The rects are in the platter's own coordinates.
@@ -351,10 +397,18 @@ static void DMDockMirrorMetrics(DMDockMetrics *m) {
 }
 %hook SBFloatingDockView
 - (void)layoutSubviews {
+    UIView *outerLayout = gDMDockInLayout;
+    gDMDockInLayout = (UIView *)self;   // (K-2: the counts recorded by the answer SpringBoard asks for in this layout are the platter's)
     %orig;
+    gDMDockInLayout = outerLayout;
     UIView *platter = nil; @try { platter = [self valueForKey:@"mainPlatterView"]; } @catch (id e) {}   // (KVC on a private class, every layout: guarded)
     if (![platter isKindOfClass:[UIView class]]) platter = nil;
+    // Our own items (Finder, Downloads, the second divider) are placed from the slots of the latest -getMetrics:forBounds: answer -- and SpringBoard
+    // also asks for other bounds (-contentHeightForBounds:, -platterShadowOutsetsForBounds:), whose answers set the slots too. They are worked out
+    // again here for this view's own bounds, the ones the layout above just used (K-2: a slot from another answer sits off the platter).
+    { DMDockMetrics own; memset(&own, 0, sizeof(own)); [(SBFloatingDockView *)self getMetrics:&own forBounds:((UIView *)self).bounds]; }
     if (platter) DMDownloadsAttach(platter, gDownloadsSlot, gShowDownloads);
+    DMReadIconCornerRatio((UIView *)self);
     if (platter) DMFinderIconAttach(platter, gFinderSlot, gShowFinder && gFinderSlot.size.width > 0);
     DMSecondDividerAttach((UIView *)self);
 }
@@ -379,6 +433,9 @@ static void DMDockMirrorMetrics(DMDockMetrics *m) {
 // one and stay centred. The platter's bottom edge stays where it was (the gap above), so a smaller Dock never floats up.
 - (void)getMetrics:(DMDockMetrics *)m forBounds:(CGRect)bounds {
     %orig;
+#if DEBUG
+    if (gDMStockMetricsOnly) return;
+#endif
     if (m && MSBDDiagEnabled() && bounds.size.width >= 100.0 && m->platter.size.width >= 1.0 && isfinite(m->platter.origin.x)) {   // (untested iPadOS: the Dock's
         // own numbers as iOS gave them -- a real layout only, not the empty first pass -- and which kinds of icons it holds; names and numbers only)
         static CFTimeInterval lastDiag = 0;
@@ -402,6 +459,10 @@ static void DMDockMirrorMetrics(DMDockMetrics *m) {
         }
     }
     if (!m || bounds.size.width < 100.0 || m->platter.size.width < 1.0) return;
+    if (gDMDockInLayout == (UIView *)self && CGRectEqualToRect(bounds, ((UIView *)self).bounds)) {   // (K-2: the counts the platter is sized for; see kDMDockSizedForKey)
+        NSUInteger uc = 0, rc = 0;
+        if (DMDockIconCounts((UIView *)self, &uc, &rc)) objc_setAssociatedObject(self, kDMDockSizedForKey, @[@(uc), @(rc)], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     BOOL rtl = ((UIView *)self).effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft;
     if (rtl) { DM_FEATURE_MARK("dock-rtl"); DMDockMirrorMetrics(m); }   // (worked out left-to-right below, mirrored back at the end)
     // Finder: the Dock's first place, like a Mac -- one icon + one spacing in front of the apps; everything after it moves over and the platter
@@ -491,8 +552,12 @@ static void DMDockMirrorMetrics(DMDockMetrics *m) {
     CGFloat room = (bounds.size.width - 50.0) / (m->platter.size.width + headroom);
     // Portrait: the screen is narrower, so a Dock this tweak has shrunk looks small. It grows to the widest size that still fits (at most
     // 1.2 times the stock size). Only while the tweak is shrinking the Dock at all; a size of 1.0 or more is left alone.
-    CGSize screen = [UIScreen mainScreen].bounds.size;
-    if (gPortraitLarger && f < 1.0 && screen.width < screen.height) f = MIN(room, 1.2);
+    // Portrait is read from the bounds asked about (the Dock spans its screen's width: narrower than the screen's long side = portrait), never from
+    // the screen's current orientation: during a turn SpringBoard lays the Dock out for the new bounds while the screen still reports the old side,
+    // and the same bounds must always get the same answer (K-2: the portrait size stayed on in landscape after a turn, iPad 2: 974 pt instead of 831).
+    UIScreen *dockScreen = ((UIView *)self).window.windowScene.screen ?: [UIScreen mainScreen];
+    BOOL portraitBounds = bounds.size.width < MAX(dockScreen.bounds.size.width, dockScreen.bounds.size.height) - 1.0;
+    if (gPortraitLarger && f < 1.0 && portraitBounds) f = MIN(room, 1.2);
     if (f > room) f = room;
     static CGFloat lastF = -1; static CGFloat lastW = -1;
     if (fabs(f - lastF) > 0.001 || fabs(bounds.size.width - lastW) > 0.5) {
@@ -501,6 +566,7 @@ static void DMDockMirrorMetrics(DMDockMetrics *m) {
     }
     gFinderSlot = CGRectMake(finderSlot.origin.x * f, finderSlot.origin.y * f, finderSlot.size.width * f, finderSlot.size.height * f);
     if (!downloadsOn && fabs(f - 1.0) < 0.001) {
+        if (gTweakOn && isfinite(gBottomGap)) m->platter.origin.y = CGRectGetMaxY(bounds) - gBottomGap - m->platter.size.height;   // (Gap to Screen Edge, below)
 #if DEBUG
         if (CACurrentMediaTime() < gDMMetricsLogUntil) DMLog([NSString stringWithFormat:@"[metricslog] view %p bounds %@: f 1 (no Downloads), platter %@", self, NSStringFromCGRect(bounds), NSStringFromCGRect(m->platter)]);
 #endif
@@ -549,7 +615,9 @@ static void DMDockMirrorMetrics(DMDockMetrics *m) {
     // Gap to Screen Edge: the platter's bottom this many points above the Dock view's bottom (= the screen's bottom edge), whatever iPadOS chose --
     // the platter margin hook below only ever lowered iPadOS's own margin, and on iPadOS 16 it had no effect at all (0 and 24 pt gave the same
     // Dock, iPad 2, 29 Sep). The icons are placed relative to the platter, so they move with it. Taken on every layout: a change shows at once.
-    if (gEnabled && isfinite(gBottomGap)) { DM_FEATURE_MARK("dock-bottom-gap"); m->platter.origin.y = CGRectGetMaxY(bounds) - gBottomGap - m->platter.size.height; }
+    // It is its own setting (Settings: its own group, not under Magnification): applied whenever the Dock part is on, with Magnify Icons on or off -- it
+    // used to wait for magnification, so with Magnify Icons off the Dock stayed at iPadOS's own height whatever the slider said (K-2 report: 18.5 pt).
+    if (gTweakOn && isfinite(gBottomGap)) { DM_FEATURE_MARK("dock-bottom-gap"); m->platter.origin.y = CGRectGetMaxY(bounds) - gBottomGap - m->platter.size.height; }
 #if DEBUG
     if (CACurrentMediaTime() < gDMMetricsLogUntil) {
         NSArray *st = [NSThread callStackSymbols];
@@ -558,6 +626,42 @@ static void DMDockMirrorMetrics(DMDockMetrics *m) {
     }
 #endif
 }
+%end
+
+// K-2: a Dock list has just placed its icons (for the count it has now). If the platter around it was sized for other counts (see
+// kDMDockSizedForKey), the Dock view lays out again: SpringBoard's own -setNeedsLayout, which its Dock controller also sends after a list change
+// (a pending flag: when the controller's own animated resize follows, as it normally does, nothing extra happens). The platter, the lists' frames
+// and the icons then always come from the same counts, whichever path changed a list. At most a few requests a second per Dock view (a guard
+// against an endless loop if a count were ever read differently), and only for a Dock list in a Dock view on screen.
+static void DMDockCheckSizedFor(UIView *list) {
+    if (!list.window || list.hidden) return;
+#if DEBUG
+    if (access("/tmp/msb-nok2check", F_OK) == 0) return;   // (debug kill switch: the check off, for the before/after test)
+#endif
+    Class dockClass = objc_getClass("SBFloatingDockView");
+    UIView *dock = list.superview;
+    while (dock && !(dockClass && [dock isKindOfClass:dockClass])) dock = dock.superview;
+    if (!dock) return;
+    NSArray *sized = objc_getAssociatedObject(dock, kDMDockSizedForKey);
+    NSUInteger uc = 0, rc = 0;
+    if (sized.count != 2 || !DMDockIconCounts(dock, &uc, &rc)) return;
+    if (uc == [sized[0] unsignedIntegerValue] && rc == [sized[1] unsignedIntegerValue]) return;
+    static CFTimeInterval windowStart = 0; static int asked = 0;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - windowStart > 1.0) { windowStart = now; asked = 0; }
+    if (++asked > 4) return;
+    DM_FEATURE_MARK("dock-sized-for-check");
+    [dock setNeedsLayout];
+    DMLog([NSString stringWithFormat:@"[dock] a Dock list placed its icons for %lu + %lu, the platter was sized for %@ + %@: the Dock lays out again",
+        (unsigned long)uc, (unsigned long)rc, sized[0], sized[1]]);
+}
+%group DMDockListLayout   // (only where Dock lists lay out through this method: see %ctor)
+%hook SBDockIconListView
+- (void)layoutIconsIfNeededUsingAnimator:(id)animator options:(unsigned long long)options {
+    %orig;
+    DMDockCheckSizedFor((UIView *)self);
+}
+%end
 %end
 
 // DOCK BUG #2: a full-screen app converted to a window can extend past the Dock's own borders and gets drawn OVER it,
@@ -1574,6 +1678,171 @@ static void DMRemoveFromDock(id icon) {
 }
 %end
 
+#if DEBUG
+// ---- debug (K-2): "k2" in /tmp/dockmag-escape -- the whole Dock layout in one dump: SpringBoard's own layout numbers (our changes bypassed for that
+// one call) and ours, the Dock view's own sizes, and per icon list its model (count / maximum), columns, insets mode, spacing, content scale, metrics
+// and every icon view (frame, picture, hidden, alpha, the icon's place in the model). Names of apps are never written (index and class only).
+typedef struct { CGSize size; CGFloat scale; CGFloat continuousCornerRadius; } DMK2IconImageInfo;
+static char DMK2Ret(id o, SEL s) {   // the return type's first character of an instance method, 0 if none
+    Method m = o ? class_getInstanceMethod(object_getClass(o), s) : NULL;
+    if (!m) return 0;
+    char t[64] = {0}; method_getReturnType(m, t, sizeof(t));
+    return t[0] == 'r' || t[0] == 'n' || t[0] == 'N' || t[0] == 'o' || t[0] == 'O' || t[0] == 'R' || t[0] == 'V' ? t[1] : t[0];
+}
+static BOOL DMK2RetIs(id o, SEL s, const char *prefix) {
+    Method m = o ? class_getInstanceMethod(object_getClass(o), s) : NULL;
+    if (!m) return NO;
+    char t[256] = {0}; method_getReturnType(m, t, sizeof(t));
+    return strncmp(t, prefix, strlen(prefix)) == 0;
+}
+static NSString *DMK2Num(id o, NSString *name) {   // a number/BOOL getter, as text ("-" when missing)
+    SEL s = NSSelectorFromString(name); char r = DMK2Ret(o, s);
+    if (!r || method_getNumberOfArguments(class_getInstanceMethod(object_getClass(o), s)) != 2) return @"-";
+    switch (r) {
+        case 'd': return [NSString stringWithFormat:@"%.3f", ((double (*)(id, SEL))objc_msgSend)(o, s)];
+        case 'f': return [NSString stringWithFormat:@"%.3f", ((float (*)(id, SEL))objc_msgSend)(o, s)];
+        case 'q': case 'l': case 'i': return [NSString stringWithFormat:@"%lld", (long long)((long long (*)(id, SEL))objc_msgSend)(o, s)];
+        case 'Q': case 'L': case 'I': return [NSString stringWithFormat:@"%llu", (unsigned long long)((unsigned long long (*)(id, SEL))objc_msgSend)(o, s)];
+        case 'B': case 'c': case 'C': return ((BOOL (*)(id, SEL))objc_msgSend)(o, s) ? @"Y" : @"N";
+        case '@': { id v = ((id (*)(id, SEL))objc_msgSend)(o, s); return v ? [[v description] stringByReplacingOccurrencesOfString:@"\n" withString:@" "] : @"nil"; }
+        case '{': {
+            if (DMK2RetIs(o, s, "{CGSize=")) return NSStringFromCGSize(((CGSize (*)(id, SEL))objc_msgSend)(o, s));
+            if (DMK2RetIs(o, s, "{CGRect=")) return NSStringFromCGRect(((CGRect (*)(id, SEL))objc_msgSend)(o, s));
+            if (DMK2RetIs(o, s, "{UIEdgeInsets=")) return NSStringFromUIEdgeInsets(((UIEdgeInsets (*)(id, SEL))objc_msgSend)(o, s));
+            if (DMK2RetIs(o, s, "{SBIconImageInfo=")) { DMK2IconImageInfo i = ((DMK2IconImageInfo (*)(id, SEL))objc_msgSend)(o, s); return [NSString stringWithFormat:@"{%@ scale %.1f radius %.2f}", NSStringFromCGSize(i.size), i.scale, i.continuousCornerRadius]; }
+            char t[96] = {0}; method_getReturnType(class_getInstanceMethod(object_getClass(o), s), t, sizeof(t)); return [NSString stringWithFormat:@"(struct %s)", t];
+        }
+    }
+    return [NSString stringWithFormat:@"(type %c)", r];
+}
+static NSString *DMK2Metrics(DMDockMetrics m) {
+    return [NSString stringWithFormat:@"user %@ pad %@ recents %@ library %@ divider %@ platter %@ scale %.4f spacing %.3f", NSStringFromCGRect(m.userList), NSStringFromUIEdgeInsets(m.padding),
+        NSStringFromCGRect(m.recentsList), NSStringFromCGRect(m.libraryIcon), NSStringFromCGRect(m.divider), NSStringFromCGRect(m.platter), m.iconScale, m.spacing];
+}
+static void DMK2Dump(void) {
+    Class dockClass = objc_getClass("SBFloatingDockView");
+    long long orient = 0;
+    for (UIScene *s in [UIApplication sharedApplication].connectedScenes) if ([s isKindOfClass:[UIWindowScene class]]) { orient = (long long)((UIWindowScene *)s).interfaceOrientation; break; }
+    DMLog([NSString stringWithFormat:@"[k2] ==== dump: screen %@, orientation %lld, iOS %@, prefs: iconSize %.2f magnify %d (%.2f) finder %d launchpad %d left %d downloads %d portraitLarger %d gap %.1f recents %ld",
+        NSStringFromCGSize([UIScreen mainScreen].bounds.size), orient, [UIDevice currentDevice].systemVersion, gIconSize, gEnabled, gMagnification, gShowFinder, gLaunchpadIcon, gLaunchpadLeft, gShowDownloads, gPortraitLarger, gBottomGap, DMRecentsCount()]);
+    @try {
+        id ic = DMObj((id)objc_getClass("SBIconController"), @"sharedInstance");
+        id dockList = [[[ic valueForKey:@"iconManager"] valueForKey:@"rootFolder"] valueForKey:@"dock"];
+        DMLog([NSString stringWithFormat:@"[k2] root folder Dock list %@: %@ icons, max %@", NSStringFromClass([dockList class]), DMK2Num(dockList, @"numberOfIcons"), DMK2Num(dockList, @"maxNumberOfIcons")]);
+    } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[k2] root folder Dock list: %@", e.reason]); }
+    for (UIWindow *w in [UIWindow allWindowsIncludingInternalWindows:YES onlyVisibleWindows:NO]) {
+        if (![NSStringFromClass([w class]) containsString:@"FloatingDock"]) continue;
+        DMLog([NSString stringWithFormat:@"[k2] window %@ %@ level %.0f hidden %d alpha %.2f", NSStringFromClass([w class]), NSStringFromCGRect(w.frame), w.windowLevel, w.hidden, w.alpha]);
+        NSMutableArray *todo = [NSMutableArray arrayWithObject:w];
+        while (todo.count) {
+            UIView *v = todo.lastObject; [todo removeLastObject];
+            [todo addObjectsFromArray:v.subviews];
+            NSString *cn = NSStringFromClass([v class]);
+            if (dockClass && [v isKindOfClass:dockClass]) {
+                DMLog([NSString stringWithFormat:@"[k2] dock view %@ bounds %@ frame-in-window %@ transform %@ hidden %d alpha %.2f", cn, NSStringFromCGRect(v.bounds), NSStringFromCGRect([v.superview convertRect:v.frame toView:w]), NSStringFromCGAffineTransform(v.transform), v.hidden, v.alpha]);
+                NSMutableString *sz = [NSMutableString string];
+                for (NSString *k in @[@"iconContentScale", @"minimumUserIconSpaces", @"paddingEdgeInsets", @"isEditing", @"platterVerticalMargin", @"maximumIconSize", @"_referenceIconSize", @"_referenceInterIconSpacing", @"maximumInterIconSpacing", @"interIconSpacing", @"maximumPlatterHeight", @"maximumEditingIconSize", @"_shouldDisplayAccessoryIconView", @"isAccessoryIconViewVisible", @"contentHeight", @"platterFrame"])
+                    [sz appendFormat:@" %@=%@", k, DMK2Num(v, k)];
+                DMLog([NSString stringWithFormat:@"[k2] dock sizes:%@", sz]);
+                SEL gm = @selector(getMetrics:forBounds:);
+                if ([v respondsToSelector:gm]) {
+                    DMDockMetrics stock = {0}, ours = {0};
+                    gDMStockMetricsOnly = YES;
+                    @try { ((void (*)(id, SEL, DMDockMetrics *, CGRect))objc_msgSend)(v, gm, &stock, v.bounds); } @finally { gDMStockMetricsOnly = NO; }
+                    ((void (*)(id, SEL, DMDockMetrics *, CGRect))objc_msgSend)(v, gm, &ours, v.bounds);
+                    DMLog([@"[k2] SpringBoard's metrics: " stringByAppendingString:DMK2Metrics(stock)]);
+                    DMLog([@"[k2] our metrics:          " stringByAppendingString:DMK2Metrics(ours)]);
+                    DMLog([NSString stringWithFormat:@"[k2] our slots: finder %@ downloads %@ (own %d) divider2 %@", NSStringFromCGRect(gFinderSlot), NSStringFromCGRect(gDownloadsSlot), gDownloadsOwnSlot, NSStringFromCGRect(gDivider2Rect)]);
+                }
+                SEL cs = NSSelectorFromString(@"iconContentScaleForNumberOfUserIcons:");
+                if ([v respondsToSelector:cs] && DMK2Ret(v, cs) == 'd') {
+                    NSMutableString *o = [NSMutableString string];
+                    for (unsigned long n = 8; n <= 18; n++) [o appendFormat:@" %lu:%.3f", n, ((double (*)(id, SEL, unsigned long))objc_msgSend)(v, cs, n)];
+                    DMLog([NSString stringWithFormat:@"[k2] SpringBoard's content scale for n user icons (its own numbers, not ours):%@", o]);
+                }
+            }
+            if ([cn isEqualToString:@"SBFloatingDockPlatterView"]) {
+                NSMutableString *ours = [NSMutableString string];
+                for (UIView *sv in v.subviews) [ours appendFormat:@" %@ %@%@ a%.2f", NSStringFromClass([sv class]), NSStringFromCGRect([v convertRect:sv.frame toView:w]), sv.hidden ? @"(hidden)" : @"", sv.alpha];
+                DMLog([NSString stringWithFormat:@"[k2] platter %@ in window (presentation %@); subviews:%@", NSStringFromCGRect([v.superview convertRect:v.frame toView:w]), NSStringFromCGRect([v.superview convertRect:(v.layer.presentationLayer ?: v.layer).frame toView:w]), ours]);
+            }
+            if ([cn hasSuffix:@"IconListView"]) {
+                id model = nil, shown = nil; @try { model = [v valueForKey:@"model"]; } @catch (NSException *e) {}
+                if ([v respondsToSelector:NSSelectorFromString(@"displayedModel")]) @try { shown = [v valueForKey:@"displayedModel"]; } @catch (NSException *e) {}
+                NSMutableString *p = [NSMutableString string];
+                for (NSString *k in @[@"iconLocation", @"iconContentScale", @"iconSpacing", @"effectiveIconSpacing", @"layoutInsetsMode", @"automaticallyAdjustsLayoutMetricsToFit", @"allowsGaps", @"isLayoutReversed", @"layoutOrientation", @"orientation", @"iconColumnsForCurrentOrientation", @"iconRowsForCurrentOrientation", @"maximumIconCount", @"alignmentIconSize", @"iconImageSize", @"additionalLayoutInsets", @"isEditing", @"layoutScale", @"numberOfDisplayedIconViews"])
+                    [p appendFormat:@" %@=%@", k, DMK2Num(v, k)];
+                DMLog([NSString stringWithFormat:@"[k2] list %@ frame-in-window %@ bounds %@ model %@ %@/%@ displayed %@ %@:%@", cn, NSStringFromCGRect([v.superview convertRect:v.frame toView:w]), NSStringFromCGRect(v.bounds),
+                    NSStringFromClass([model class]), DMK2Num(model, @"numberOfIcons"), DMK2Num(model, @"maxNumberOfIcons"), shown == model ? @"(same)" : NSStringFromClass([shown class]), shown && shown != model ? DMK2Num(shown, @"numberOfIcons") : @"", p]);
+                @try {
+                    id prov = [v valueForKey:@"layoutProvider"], loc = [v valueForKey:@"iconLocation"];
+                    SEL lf = NSSelectorFromString(@"layoutForIconLocation:");
+                    id layout = [prov respondsToSelector:lf] ? ((id (*)(id, SEL, id))objc_msgSend)(prov, lf, loc) : nil;
+                    NSMutableString *l = [NSMutableString string];
+                    for (NSNumber *o in @[@1, @3]) {
+                        SEL cols = NSSelectorFromString(@"numberOfColumnsForOrientation:"), rows = NSSelectorFromString(@"numberOfRowsForOrientation:"), ins = NSSelectorFromString(@"layoutInsetsForOrientation:");
+                        if ([layout respondsToSelector:cols]) [l appendFormat:@" o%@ cols %llu", o, ((unsigned long long (*)(id, SEL, long long))objc_msgSend)(layout, cols, o.longLongValue)];
+                        if ([layout respondsToSelector:rows]) [l appendFormat:@" rows %llu", ((unsigned long long (*)(id, SEL, long long))objc_msgSend)(layout, rows, o.longLongValue)];
+                        if ([layout respondsToSelector:ins] && DMK2RetIs(layout, ins, "{UIEdgeInsets=")) [l appendFormat:@" insets %@", NSStringFromUIEdgeInsets(((UIEdgeInsets (*)(id, SEL, long long))objc_msgSend)(layout, ins, o.longLongValue))];
+                    }
+                    DMLog([NSString stringWithFormat:@"[k2]   layout %@ (provider %@ screenType %@ options %@): iconImageInfo %@%@", NSStringFromClass([layout class]), NSStringFromClass([prov class]), DMK2Num(prov, @"screenType"), DMK2Num(prov, @"layoutOptions"), DMK2Num(layout, @"iconImageInfo"), l]);
+                    SEL lm = NSSelectorFromString(@"layoutMetrics");
+                    if (DMK2Ret(v, lm) == '@') DMLog([NSString stringWithFormat:@"[k2]   layoutMetrics %@", [[((id (*)(id, SEL))objc_msgSend)(v, lm) description] stringByReplacingOccurrencesOfString:@"\n" withString:@" "]]);
+                    else DMLog([NSString stringWithFormat:@"[k2]   layoutMetrics: return type %c", DMK2Ret(v, lm) ?: '-']);
+                } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[k2]   layout: %@", e.reason]); }
+                SEL idxSel = NSSelectorFromString(@"indexForIcon:"), imgSel = NSSelectorFromString(@"iconImageFrame");
+                NSMutableString *icons = [NSMutableString string];
+                for (UIView *iv in v.subviews) {
+                    if (![NSStringFromClass([iv class]) hasSuffix:@"IconView"]) continue;
+                    id icon = DMObj(iv, @"icon");
+                    long long idx = -1; if (model && icon && [model respondsToSelector:idxSel]) idx = (long long)((unsigned long long (*)(id, SEL, id))objc_msgSend)(model, idxSel, icon);
+                    CGRect img = [iv respondsToSelector:imgSel] ? ((CGRect (*)(id, SEL))objc_msgSend)(iv, imgSel) : CGRectZero;
+                    [icons appendFormat:@"\n[k2]     #%lld %@ frame %@ img %@ hidden %d alpha %.2f t %.2f%@", idx, NSStringFromClass([icon class]), NSStringFromCGRect([v convertRect:iv.frame toView:w]), NSStringFromCGRect([iv convertRect:img toView:w]), iv.hidden, iv.alpha, iv.transform.a, iv.superview == v ? @"" : @" (other parent)"];
+                }
+                DMLog([NSString stringWithFormat:@"[k2]   icon views:%@", icons]);
+            }
+        }
+    }
+    DMLog(@"[k2] ==== end");
+}
+// The verdict alone: per Dock icon list, its model count, the columns its layout used, its frame and the platter's, and whether every icon's picture
+// (the view's centre, the list's content scale) lies inside the platter -- "INSIDE" or "OUTSIDE" with the worst overhang in points.
+static NSString *DMK2Verdict(void) {
+    NSMutableString *out = [NSMutableString string];
+    for (UIWindow *w in [UIWindow allWindowsIncludingInternalWindows:YES onlyVisibleWindows:NO]) {
+        if (![NSStringFromClass([w class]) isEqualToString:@"SBFloatingDockWindow"] || w.hidden) continue;
+        UIView *platter = nil; NSMutableArray *lists = [NSMutableArray array], *todo = [NSMutableArray arrayWithObject:w];
+        while (todo.count) {
+            UIView *v = todo.lastObject; [todo removeLastObject]; [todo addObjectsFromArray:v.subviews];
+            NSString *cn = NSStringFromClass([v class]);
+            if ([cn isEqualToString:@"SBFloatingDockPlatterView"]) platter = v;
+            else if ([cn hasSuffix:@"IconListView"]) [lists addObject:v];
+        }
+        if (!platter) continue;
+        CGRect pr = [platter.superview convertRect:platter.frame toView:w];
+        [out appendFormat:@"platter %.1f..%.1f (w %.1f)", CGRectGetMinX(pr), CGRectGetMaxX(pr), pr.size.width];
+        for (UIView *l in lists) {
+            id model = nil; @try { model = [l valueForKey:@"model"]; } @catch (NSException *e) {}
+            NSString *used = @"?";
+            SEL lm = NSSelectorFromString(@"layoutMetrics");
+            if (DMK2Ret(l, lm) == '@') { id m = ((id (*)(id, SEL))objc_msgSend)(l, lm); used = DMK2Num(m, @"columnsUsedForLayout"); }
+            CGFloat scale = 1.0; SEL cs = NSSelectorFromString(@"iconContentScale"); if (DMK2Ret(l, cs) == 'd') scale = ((double (*)(id, SEL))objc_msgSend)(l, cs);
+            CGFloat worst = 0.0, minX = CGFLOAT_MAX, maxX = -CGFLOAT_MAX; int n = 0;
+            for (UIView *iv in l.subviews) {
+                if (![NSStringFromClass([iv class]) hasSuffix:@"IconView"] || iv.hidden || iv.alpha < 0.05) continue;
+                CGPoint c = [l convertPoint:iv.center toView:w]; CGFloat half = iv.bounds.size.width * scale / 2.0;
+                minX = MIN(minX, c.x - half); maxX = MAX(maxX, c.x + half); n++;
+                worst = MAX(worst, MAX(CGRectGetMinX(pr) - (c.x - half), (c.x + half) - CGRectGetMaxX(pr)));
+            }
+            CGRect lr = [l.superview convertRect:l.frame toView:w];
+            [out appendFormat:@" | %@ model %@ used %@ views %d frame %.1f..%.1f icons %.1f..%.1f %@", [NSStringFromClass([l class]) hasPrefix:@"SBDockSuggestions"] ? @"recents" : @"user", DMK2Num(model, @"numberOfIcons"), used, n,
+                CGRectGetMinX(lr), CGRectGetMaxX(lr), n ? minX : 0, n ? maxX : 0, !n ? @"-" : worst > 1.0 ? [NSString stringWithFormat:@"OUTSIDE by %.1f", worst] : @"INSIDE"];
+        }
+    }
+    return out.length ? out : @"(no Dock window)";
+}
+#endif
+
 %ctor {
     %init;
     MSBDWatchMacStatusBarOff();   // ("MacStatusBar Is Off": this line runs while MacStatusBar is off, see OffAlert.h)
@@ -1586,6 +1855,8 @@ static void DMRemoveFromDock(id icon) {
     if ([objc_getClass("SBFloatingDockSuggestionsViewController") instancesRespondToSelector:NSSelectorFromString(@"initWithNumberOfRecents:iconController:applicationController:layoutStateTransitionCoordinator:suggestionsModel:iconViewProvider:")]) %init(DMRecentsList);
     else DMLog(@"[recents] this iOS has no -[SBFloatingDockSuggestionsViewController initWithNumberOfRecents:...]: the list keeps SpringBoard's size");
     if ([objc_getClass("SBFluidSwitcherGestureManager") instancesRespondToSelector:NSSelectorFromString(@"_shouldTapToBringItemContainerForward:receiveTouch:")]) %init(DMPanelNoBringForward);
+    if ([objc_getClass("SBDockIconListView") instancesRespondToSelector:NSSelectorFromString(@"layoutIconsIfNeededUsingAnimator:options:")]) %init(DMDockListLayout);   // (K-2, every version with that method: 15-18)
+    else DMLog(@"[dock] this iOS has no -[SBDockIconListView layoutIconsIfNeededUsingAnimator:options:]: the Dock's count check is off");
     if ([objc_getClass("SBFloatingDockSuggestionsModel") instancesRespondToSelector:NSSelectorFromString(@"initWithMaximumNumberOfSuggestions:homeScreenContextProvider:recentsController:recentsDataStore:recentsDefaults:floatingDockDefaults:appSuggestionManager:applicationController:")]) %init(DMRecentsModel18);
     if ([objc_getClass("SBFloatingDockSuggestionsViewController") instancesRespondToSelector:NSSelectorFromString(@"initWithNumberOfRecents:homeScreenContextProvider:applicationController:layoutStateTransitionCoordinator:suggestionsModel:iconViewProvider:")]) %init(DMRecentsList18);
 #if DEBUG   // (the /tmp/dockmag-* test helpers exist only in debug builds)
@@ -1610,6 +1881,53 @@ static void DMRemoveFromDock(id icon) {
                 if (!strcmp(word + 5, "off")) DMLoadPrefs(); else gIconSize = atof(word + 5);
                 DMLog([NSString stringWithFormat:@"[fit] debug: icon size setting %.2f", gIconSize]);
                 DMRelayoutDock();
+            } else if (!strcmp(word, "k2")) {   // debug (K-2): the whole Dock layout in one dump (DMK2Dump)
+                DMK2Dump();
+                DMLog([@"[k2] verdict: " stringByAppendingString:DMK2Verdict()]);
+            } else if (!strcmp(word, "k2v")) {   // debug (K-2): the verdict line only
+                DMLog([@"[k2] verdict: " stringByAppendingString:DMK2Verdict()]);
+            } else if (!strcmp(word, "k2move") || !strcmp(word, "k2back")) {   // debug (K-2): an icon into the Dock through the icon model (what a drop does), or the last moved one back
+                static NSMutableArray *moved = nil; if (!moved) moved = [NSMutableArray array];   // (entries: @[icon, page, index])
+                id root = DMIconModelRoot(NULL, NULL), dock = DMObj(root, @"dock");
+                SEL rm = NSSelectorFromString(@"removeIcons:"), ins = NSSelectorFromString(@"insertIcons:atIndex:options:");
+                @try {
+                    if (!strcmp(word, "k2move")) {
+                        NSArray *lists = DMObj(root, @"lists"); id page = [lists lastObject]; NSArray *icons = DMObj(page, @"icons"); id icon = [icons lastObject];
+                        if (icon && [page respondsToSelector:rm] && [dock respondsToSelector:ins]) {
+                            NSUInteger idx = icons.count - 1, at = [DMObj(dock, @"icons") count];
+                            ((void (*)(id, SEL, id))objc_msgSend)(page, rm, @[icon]);
+                            ((void (*)(id, SEL, id, NSUInteger, unsigned long long))objc_msgSend)(dock, ins, @[icon], at, 0);
+                            [moved addObject:@[icon, page, @(idx)]];
+                            DMLog([NSString stringWithFormat:@"[k2] moved the last icon of the last page (index %lu) into the Dock at %lu: Dock %@ icons", (unsigned long)idx, (unsigned long)at, DMK2Num(dock, @"numberOfIcons")]);
+                        } else DMLog(@"[k2] move: no icon / methods missing");
+                    } else if (moved.count) {
+                        NSArray *e = moved.lastObject; [moved removeLastObject];
+                        ((void (*)(id, SEL, id))objc_msgSend)(dock, rm, @[e[0]]);
+                        ((void (*)(id, SEL, id, NSUInteger, unsigned long long))objc_msgSend)(e[1], ins, @[e[0]], [e[2] unsignedIntegerValue], 0);
+                        DMLog([NSString stringWithFormat:@"[k2] moved back to index %@ of its page: Dock %@ icons", e[2], DMK2Num(dock, @"numberOfIcons")]);
+                    } else DMLog(@"[k2] back: nothing moved");
+                } @catch (NSException *ex) { DMLog([NSString stringWithFormat:@"[k2] move: %@", ex.reason]); }
+            } else if (!strcmp(word, "k2unobs") || !strcmp(word, "k2reobs")) {   // debug (K-2): SpringBoard's Dock controller stops / starts watching its Dock list (a list change it then misses = no resize)
+                Class vcClass = objc_getClass("SBFloatingDockViewController"), dockClass = objc_getClass("SBFloatingDockView");
+                id vc = nil;
+                for (UIWindow *w in [UIWindow allWindowsIncludingInternalWindows:YES onlyVisibleWindows:NO]) {
+                    if (![NSStringFromClass([w class]) isEqualToString:@"SBFloatingDockWindow"]) continue;
+                    NSMutableArray *todo = [NSMutableArray arrayWithObject:w];
+                    while (todo.count && !vc) {
+                        UIView *v = todo.lastObject; [todo removeLastObject]; [todo addObjectsFromArray:v.subviews];
+                        if (!(dockClass && [v isKindOfClass:dockClass])) continue;
+                        for (UIResponder *r = v; r && !vc; r = r.nextResponder) if (vcClass && [r isKindOfClass:vcClass]) vc = r;
+                    }
+                }
+                id model = nil; @try { model = [vc valueForKey:@"dockListModel"]; } @catch (NSException *e) {}
+                SEL sel = NSSelectorFromString(word[2] == 'u' ? @"removeListObserver:" : @"addListObserver:");
+                if (vc && [model respondsToSelector:sel]) ((void (*)(id, SEL, id))objc_msgSend)(model, sel, vc);
+                DMLog([NSString stringWithFormat:@"[k2] Dock controller %@ (%@) %s its Dock list %@", vc ? @"found" : @"missing", NSStringFromClass([vc class]), word[2] == 'u' ? "stopped watching" : "watches again", NSStringFromClass([model class])]);
+            } else if (!strcmp(word, "k2edit1") || !strcmp(word, "k2edit0")) {   // debug (K-2): the Home Screen's edit mode on / off (the Dock's editing size changes with it)
+                id mgr = DMObj(DMObj((id)objc_getClass("SBIconController"), @"sharedInstance"), @"iconManager");
+                SEL se = NSSelectorFromString(@"setEditing:");
+                if ([mgr respondsToSelector:se]) ((void (*)(id, SEL, BOOL))objc_msgSend)(mgr, se, word[6] == '1');
+                DMLog([NSString stringWithFormat:@"[k2] edit mode %s (%@)", word[6] == '1' ? "on" : "off", mgr ? @"icon manager" : @"no icon manager"]);
             } else if (!strcmp(word, "metricslog")) {   // debug (K-2): every Dock layout-number call for the next 6 s (bounds, our scale and slots, the caller)
                 gDMMetricsLogUntil = CACurrentMediaTime() + 6.0;
                 DMLog(@"[metricslog] on for 6 s");

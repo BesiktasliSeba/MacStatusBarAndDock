@@ -450,7 +450,12 @@ static UIView *DMMSWSMNotOnStrip(UIView *pic) {
 static UIView *DMMSWSMDeskPicture(NSInteger did, CGRect b) {
     UIView *shot = gMSWShots[@(did)];
     NSArray *set = DMMSWWindowSet(did);
-    if (shot && [gMSWShotSet[@(did)] isEqualToArray:set]) return DMMSWSMNotOnStrip(shot);
+    if (shot && [gMSWShotSet[@(did)] isEqualToArray:set]) {
+        // (a kept picture drawn from its windows without the Home Screen's picture -- a window landed on that desktop, MacSwitcher.h
+        //  DMMSWDeskTakesWindow --: the shared windows again at this slide, as when it was drawn)
+        if ([objc_getAssociatedObject(shot, kMSWDrawnKey) boolValue] && !DMTestFlag("/tmp/msw-sm-noshared")) objc_setAssociatedObject(shot, kMSWSharedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return DMMSWSMNotOnStrip(shot);
+    }
     // (a desktop with windows and no picture as it was left -- one desktop keeps its pictures on an iPad under 4 GB (DMMSWSMTrimPictures), none
     //  after a respring --: drawn from its windows, each one's picture where it is kept, else its place as a card with its app's icon, over the
     //  Home Screen as last left or the wallpaper (DMMSWSMComposedDesktop), as the other engines draw such a desktop from its parts
@@ -1199,11 +1204,21 @@ static UIView *DMMSWSMComposedDesktop(NSInteger did, CGRect b) {
     DMMSWWallLazy();   // (the wallpaper, read once: right after a respring nothing had asked for it yet -- a drawn desktop had nothing behind its windows)
     UIView *home = DMMSWSMHomeBackdrop(b);
     if (home) { [c addSubview:home]; DM_FEATURE_MARK("mac-switcher-sm-home-behind"); }
-    else if (gMSWWallContents) {
-        UIView *wv = [UIView new];
-        wv.layer.contents = gMSWWallContents; wv.layer.contentsRect = gMSWWallContentsRect; wv.layer.contentsGravity = gMSWWallGravity ?: kCAGravityResize;
-        wv.bounds = gMSWWallBounds; wv.center = gMSWWallCenter; wv.transform = gMSWWallTransform;
-        [c addSubview:wv];
+    else {
+        if (gMSWWallContents) {
+            UIView *wv = [UIView new];
+            wv.layer.contents = gMSWWallContents; wv.layer.contentsRect = gMSWWallContentsRect; wv.layer.contentsGravity = gMSWWallGravity ?: kCAGravityResize;
+            wv.bounds = gMSWWallBounds; wv.center = gMSWWallCenter; wv.transform = gMSWWallTransform;
+            [c addSubview:wv];
+        }
+        // (no picture of the Home Screen to put behind the windows -- since a respring, or let go under memory pressure --: the Home Screen, the
+        //  Dock and the menu bar come in live on the slide, under the windows' pictures (MacSwitcher.h DMMSWSlShared, tag 0x4D53 below), as on an
+        //  empty desktop without that picture and on the other engines' desktops drawn from their parts (DMMSWDeskPicture). They were missing in
+        //  the slide and popped in at the reveal, 1.4.1 logic test; more often since H-2 drew every such desktop. Debug /tmp/msw-sm-noshared = before.)
+        if (!DMTestFlag("/tmp/msw-sm-noshared")) {
+            objc_setAssociatedObject(c, kMSWSharedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(c, kMSWDrawnKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (kept after a window lands on it: asked again at each slide)
+        }
     }
     NSUInteger n = 0, icons = 0;
     for (NSArray *w in [DMMSWSMDeskWindows(did) reverseObjectEnumerator]) {
@@ -1214,6 +1229,7 @@ static UIView *DMMSWSMComposedDesktop(NSInteger did, CGRect b) {
             [pic removeFromSuperview];
             pic.transform = CGAffineTransformIdentity;
             pic.frame = CGRectFromString(f);
+            pic.tag = 0x4D53;   // (a window's picture: over the shared windows' portals)
             [c addSubview:pic];
             n++;
             continue;
@@ -1231,10 +1247,12 @@ static UIView *DMMSWSMComposedDesktop(NSInteger did, CGRect b) {
             iv.frame = CGRectMake((r.size.width - side) / 2.0, (r.size.height - side) / 2.0, side, side);
             [card addSubview:iv];
         }
+        card.tag = 0x4D53;   // (its place: over the shared windows' portals too)
         [c addSubview:card];
         icons++;
     }
-    DMLog([NSString stringWithFormat:@"[macswitcher] desktop %ld's thumbnail drawn from %@, %lu window pictures and %lu app icons", (long)did, home ? @"the Home Screen" : (gMSWWallContents ? @"its wallpaper" : @"nothing behind"), (unsigned long)n, (unsigned long)icons]);
+    DMLog([NSString stringWithFormat:@"[macswitcher] desktop %ld's thumbnail drawn from %@, %lu window pictures and %lu app icons", (long)did,
+        home ? @"the Home Screen" : [NSString stringWithFormat:@"%@ (the Home Screen, the Dock and the menu bar live on a slide)", gMSWWallContents ? @"its wallpaper" : @"nothing behind"], (unsigned long)n, (unsigned long)icons]);
     return c;
 }
 
