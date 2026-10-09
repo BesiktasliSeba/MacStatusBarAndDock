@@ -70,6 +70,9 @@ void DMLogWrite(NSString *line) {
 #endif
 
 static CGFloat gInfluence = 0.0;     // 0...1: how much of the magnification is applied right now
+#if DEBUG
+static CFTimeInterval gDMMetricsLogUntil = 0;   // (debug, K-2: every -getMetrics:forBounds: call is logged until then -- "metricslog" in /tmp/dockmag-escape)
+#endif
 
 // ===== curves ============================================================
 static CGFloat DMBell(CGFloat offset) {
@@ -498,6 +501,9 @@ static void DMDockMirrorMetrics(DMDockMetrics *m) {
     }
     gFinderSlot = CGRectMake(finderSlot.origin.x * f, finderSlot.origin.y * f, finderSlot.size.width * f, finderSlot.size.height * f);
     if (!downloadsOn && fabs(f - 1.0) < 0.001) {
+#if DEBUG
+        if (CACurrentMediaTime() < gDMMetricsLogUntil) DMLog([NSString stringWithFormat:@"[metricslog] view %p bounds %@: f 1 (no Downloads), platter %@", self, NSStringFromCGRect(bounds), NSStringFromCGRect(m->platter)]);
+#endif
         gDownloadsSlot = CGRectZero; gDivider2Rect = CGRectZero;
         if (rtl) { DMDockMirrorMetrics(m); if (gFinderSlot.size.width > 0.0) gFinderSlot = DMDockMirrorRect(gFinderSlot, m->platter.size.width); }
         return;
@@ -544,6 +550,13 @@ static void DMDockMirrorMetrics(DMDockMetrics *m) {
     // the platter margin hook below only ever lowered iPadOS's own margin, and on iPadOS 16 it had no effect at all (0 and 24 pt gave the same
     // Dock, iPad 2, 29 Sep). The icons are placed relative to the platter, so they move with it. Taken on every layout: a change shows at once.
     if (gEnabled && isfinite(gBottomGap)) { DM_FEATURE_MARK("dock-bottom-gap"); m->platter.origin.y = CGRectGetMaxY(bounds) - gBottomGap - m->platter.size.height; }
+#if DEBUG
+    if (CACurrentMediaTime() < gDMMetricsLogUntil) {
+        NSArray *st = [NSThread callStackSymbols];
+        DMLog([NSString stringWithFormat:@"[metricslog] view %p bounds %@: f %.3f, platter %@, user %@, finder %@, downloads %@ | from %@ / %@", self, NSStringFromCGRect(bounds), f, NSStringFromCGRect(m->platter), NSStringFromCGRect(m->userList),
+            NSStringFromCGRect(gFinderSlot), NSStringFromCGRect(gDownloadsSlot), st.count > 2 ? st[2] : @"-", st.count > 3 ? st[3] : @"-"]);
+    }
+#endif
 }
 %end
 
@@ -1597,6 +1610,37 @@ static void DMRemoveFromDock(id icon) {
                 if (!strcmp(word + 5, "off")) DMLoadPrefs(); else gIconSize = atof(word + 5);
                 DMLog([NSString stringWithFormat:@"[fit] debug: icon size setting %.2f", gIconSize]);
                 DMRelayoutDock();
+            } else if (!strcmp(word, "metricslog")) {   // debug (K-2): every Dock layout-number call for the next 6 s (bounds, our scale and slots, the caller)
+                gDMMetricsLogUntil = CACurrentMediaTime() + 6.0;
+                DMLog(@"[metricslog] on for 6 s");
+                DMRelayoutDock();
+            } else if (!strcmp(word, "dockcap")) {   // debug (K-2): every Dock icon list -- how many icons its model holds and may hold, the view's own maximum,
+                // its frame in the Dock window and each icon's frame there -- and the platter's frame, to see icons outside the Dock and a full Dock
+                NSMutableArray *todo = [NSMutableArray array];
+                for (UIWindow *w in [[UIApplication sharedApplication] valueForKey:@"windows"]) if ([NSStringFromClass([w class]) containsString:@"FloatingDock"]) [todo addObject:w];
+                while (todo.count) {
+                    UIView *v = todo.lastObject; [todo removeLastObject];
+                    NSString *cn = NSStringFromClass([v class]);
+                    if ([cn isEqualToString:@"SBFloatingDockPlatterView"]) {
+                        NSMutableString *ours = [NSMutableString string];   // (our own views in it: Finder, Downloads, the second divider -- where they are)
+                        for (UIView *sv in v.subviews) if (![NSStringFromClass([sv class]) hasPrefix:@"SB"] && ![NSStringFromClass([sv class]) hasPrefix:@"_"] && ![NSStringFromClass([sv class]) hasPrefix:@"MTMaterial"])
+                            [ours appendFormat:@" %@ %@%@", NSStringFromClass([sv class]), NSStringFromCGRect(CGRectIntegral([v convertRect:sv.frame toView:v.window])), sv.hidden ? @"(hidden)" : @""];
+                        DMLog([NSString stringWithFormat:@"[dockcap] platter %@ in its window; ours:%@", NSStringFromCGRect([v.superview convertRect:v.frame toView:v.window]), ours]);
+                    }
+                    if ([cn hasSuffix:@"IconListView"]) {
+                        id lm = nil; @try { lm = [v valueForKey:@"model"]; } @catch (NSException *e) {}
+                        NSString *mx = @"?", *cnt = @"?", *ic = @"?", *cols = @"?", *loc = @"?";
+                        @try { mx = [[lm valueForKey:@"maxNumberOfIcons"] description]; } @catch (NSException *e) {}
+                        @try { cnt = [[lm valueForKey:@"numberOfIcons"] description]; } @catch (NSException *e) {}
+                        @try { ic = [[v valueForKey:@"maximumIconCount"] description]; } @catch (NSException *e) {}
+                        @try { cols = [[v valueForKey:@"iconColumnsForCurrentOrientation"] description]; } @catch (NSException *e) {}
+                        @try { loc = [[v valueForKey:@"iconLocation"] description]; } @catch (NSException *e) {}
+                        NSMutableString *icons = [NSMutableString string];
+                        for (UIView *iv in v.subviews) if ([NSStringFromClass([iv class]) hasSuffix:@"IconView"]) [icons appendFormat:@" %@%@", NSStringFromCGRect(CGRectIntegral([v convertRect:iv.frame toView:v.window])), iv.hidden ? @"(hidden)" : @""];
+                        DMLog([NSString stringWithFormat:@"[dockcap] %@ (%@) model %@ holds %@ of max %@, view max %@, columns %@, frame %@ in its window; icons:%@", cn, loc, NSStringFromClass([lm class]), cnt, mx, ic, cols, NSStringFromCGRect([v.superview convertRect:v.frame toView:v.window]), icons]);
+                    }
+                    [todo addObjectsFromArray:v.subviews];
+                }
             } else if (!strcmp(word, "recents")) {   // debug: what the Dock's recents model holds
                 id m = gDMSuggestionsModel;
                 NSMutableString *o = [NSMutableString stringWithFormat:@"[recents] debug: model %p", m];

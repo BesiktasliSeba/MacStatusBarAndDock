@@ -2,6 +2,23 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.4.1
+
+### Improvements
+- Fill and tiled windows keep a small margin from the screen's side edges, the same on every engine.
+- Stage Manager engine with the Mac Switcher: a side swipe or Control-Left/Right made while a desktop slides in now changes where the slide goes, and a swipe can take a running slide with your fingers, as with the other engines.
+
+### Fixes
+- Mac Switcher: the end of a desktop switch no longer flashes darker for a moment.
+- Mac Switcher: after adding a desktop with +, the first trip back no longer shows the Mac Switcher over the Home Screen for a moment.
+- Mac Switcher: when you drag a window to another desktop and then switch desktops, the desktop you leave no longer shows a picture of the Mac Switcher itself.
+- Reinstalling MacStatusBar&Dock, switching between it and a beta, or updating it together with a window engine keeps the window engine you picked from the first start, so Stage Manager windows are no longer lost and no second respring is needed.
+- Stage Manager engine: an app opened on a full desktop no longer shows the other windows flying to the left edge for a moment.
+- Stage Manager engine with Reduce Motion: several quick swipes or Control-arrows during a desktop switch now move one desktop each, as with the other engines.
+- iPadOS 15: the on-screen keyboard of an app in a window is upright at the bottom in both landscape directions, also after turning the iPad around and for apps that stay in one landscape direction (Aerial 5.0, Zetsu and MilkyWay4).
+- With a hardware keyboard attached, the full on-screen keyboard you bring up is no longer covered by the Dock.
+- Aerial 5.0: windows put in a layout right after a respring (Fill, the halves, Fit to Window) no longer reach under the Dock.
+
 ## 1.4
 
 ### New
@@ -369,9 +386,6 @@ Doesn't work yet:
 - Fill Screen (and the other Window menu layouts) chosen for an app in full screen came out about 4% smaller than the screen with Aerial 5.0.
 - Fill Screen could leave a gap above the Dock after turning the iPad.
 - Reddit's Home feed could skew after its window was resized.
-
-### Known limitation
-- In one landscape direction, Aerial 5.0 keeps Fill Screen windows slightly inside the left and right screen edges.
 
 ## 1.0.7
 

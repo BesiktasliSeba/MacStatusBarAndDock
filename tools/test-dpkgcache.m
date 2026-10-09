@@ -40,6 +40,32 @@ int main(void) {
         NSString *u = @"Package: com.q\nConffiles:\n /etc/x\nPackage: com.r\nVersion: 7\n\nPackage: com.r\nVersion: 8\n";
         Check(@"only a line after an empty line starts a block", Eq(MSBDPackageFieldIn(u, @"com.r", @"Version"), @"8"), MSBDPackageFieldIn(u, @"com.r", @"Version"));
 
+        // ---- a package on the device for the engine helper's choice (DpkgState.h MSBDPackageOnDisk; 1.4.1 logic test M-1: a Sileo queue) ----
+        NSString *q = @"Package: e.inst\nStatus: install ok installed\n\n"
+                       "Package: e.unp\nStatus: install ok unpacked\n\n"
+                       "Package: e.half\nStatus: install ok half-configured\n\n"
+                       "Package: e.trp\nStatus: install ok triggers-pending\n\n"
+                       "Package: e.tra\nStatus: install ok triggers-awaited\n\n"
+                       "Package: e.cfg\nStatus: deinstall ok config-files\n\n"
+                       "Package: e.goes\nStatus: deinstall ok installed\n\n"
+                       "Package: e.purge\nStatus: purge ok not-installed\n\n"
+                       "Package: e.broken\nStatus: install reinstreq half-installed\n\n"
+                       "Package: e.hinst\nStatus: install ok half-installed\n\n"
+                       "Package: e.inst2\nVersion: 1\nStatus: install ok installed\nDescription: Status: purge ok not-installed\n";
+        Check(@"installed counts", MSBDPackageOnDisk(q, @"e.inst"), @"NO");
+        Check(@"unpacked (same dpkg run) counts", MSBDPackageOnDisk(q, @"e.unp"), @"NO");
+        Check(@"half-configured counts", MSBDPackageOnDisk(q, @"e.half"), @"NO");
+        Check(@"triggers-pending counts", MSBDPackageOnDisk(q, @"e.trp"), @"NO");
+        Check(@"triggers-awaited counts", MSBDPackageOnDisk(q, @"e.tra"), @"NO");
+        Check(@"config-files (removed) does not count", !MSBDPackageOnDisk(q, @"e.cfg"), @"YES");
+        Check(@"marked for removal does not count", !MSBDPackageOnDisk(q, @"e.goes"), @"YES");
+        Check(@"purged does not count", !MSBDPackageOnDisk(q, @"e.purge"), @"YES");
+        Check(@"reinstreq does not count", !MSBDPackageOnDisk(q, @"e.broken"), @"YES");
+        Check(@"half-installed does not count", !MSBDPackageOnDisk(q, @"e.hinst"), @"YES");
+        Check(@"not in the file does not count", !MSBDPackageOnDisk(q, @"e.none"), @"YES");
+        Check(@"a name that starts another's does not count for it", !MSBDPackageOnDisk(q, @"e.in"), @"YES");
+        Check(@"the field's own line, not one inside another field", MSBDPackageOnDisk(q, @"e.inst2"), @"NO");
+        Check(@"nil text does not count", !MSBDPackageOnDisk(nil, @"e.inst"), @"YES");
         // ---- the cache: read once per change of the file ----
         time_t base = time(NULL) - 1000;
         WriteStatus(@"Package: com.besiktasliseba.macstatusbaranddock\nVersion: 1.3.2\n\nPackage: ellekit\nVersion: 1.1.3\n", base);

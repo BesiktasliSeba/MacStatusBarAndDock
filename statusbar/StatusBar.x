@@ -1201,6 +1201,8 @@ static BOOL DMMSWStockOnce(void);   // (MacSwitcher.h: iPadOS's own App Switcher
 // (MacSwitcherSM.h: Mac Switcher desktops with the Stage Manager engine -- a desktop is a stage; included after the engine's code)
 static void DMMSWSMApply(void);
 static void DMMSWSMSwitchRun(NSUInteger to, NSString *why, CGFloat v, void (^done)(void));   // (v: the fingers' speed; 0 from rest)
+static BOOL DMMSWSMRedirect(NSInteger side, CGFloat v, NSString *why);   // (a side swipe / Control-arrow while its switch runs: its new aim)
+static BOOL DMMSWSMCanTake(void); static void DMMSWSMTaken(void); static void DMMSWSMTakenLift(NSInteger k, CGFloat v); static NSUInteger DMMSWSMAimPlace(void);   // (the fingers take its running slide)
 static UIView *DMMSWSMDeskPicture(NSInteger did, CGRect b);
 static void DMMSWSMRecordFirst(void);
 static void DMMSWSMMerged(NSUInteger into);
@@ -1673,7 +1675,13 @@ static BOOL DMSMThirdPartyLoaded(void) {
     return loaded;
 }
 // Picked, possible here and verified -- whether Stage Manager is on right now aside (the watcher switches it on for the engine: DMSMEnginePicked).
-static BOOL DMSMEnginePicked(void) {
+static BOOL DMSMPickUsable(void);
+static BOOL DMSMEnginePicked(void) { return DMSMPickUsable() && !DMSMThirdPartyLoaded(); }
+// Stage Manager is the pick and can be the engine here, but a third-party engine loaded in this SpringBoard anyway (an engine update or a newly
+// installed engine that Choicy / iCleaner Pro did not keep out yet): it stands in for this one start -- the root helper switches it off now and the
+// user is asked to respring (DMCheckEngineWarnings, gEngineAskSMBack). Its windows are not the user's windows of that engine.
+static BOOL DMSMStandInRun(void) { return DMSMPickUsable() && DMSMThirdPartyLoaded(); }
+static BOOL DMSMPickUsable(void) {
     static int ios16 = -1;
     if (ios16 < 0) {
         ios16 = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 16 && objc_getClass("SBSwitcherChamoisSettings") != nil;
@@ -1688,7 +1696,7 @@ static BOOL DMSMEnginePicked(void) {
     }
     // (gSMCheckOK: every private class, method and signature the engine uses was found as expected at start, and its hooks went in -- DMSMSelfCheck.
     //  Otherwise it is not the engine: the default engine runs, and Stage Manager is not switched on for it)
-    return ios16 && gSMCheckOK && [gEnginePref isEqualToString:@"stagemanager"] && DMWindowingEnabled() && !DMSMThirdPartyLoaded();
+    return ios16 && gSMCheckOK && [gEnginePref isEqualToString:@"stagemanager"] && DMWindowingEnabled();
 }
 // The engine acts only while Stage Manager is really on (review: DMSMEngine never looked): before it is switched on for the engine -- the first
 // seconds after the pick, Apple's introduction on a first switch-on -- or while the user turned it off (switched back on within 0.4 s), apps
@@ -3345,14 +3353,14 @@ static void DMZetsuInstallLights(UIWindow *w) {
 // (460.8 x 758, off the bottom of the screen), which the watcher then took for a hand resize. A window opened fresh records 1 and never does this.
 // So for the window's first 3 s (Zetsu fills these in a moment after the window appears) that record is set to the orientation the scene gets.
 // Plain properties; nothing of Zetsu's is called. Off switch: /tmp/msb-zetsu-noorientadopt.
-long DMWantedSceneOrientationFor(long current);
+long DMWantedSceneOrientationForBundle(NSString *bundleID, long current);
 static void DMZetsuSyncAppOrientation(UIWindow *w) {
     if (DMTestFlag("/tmp/msb-zetsu-noorientadopt")) return;
     id ctl = DMZetsuController(w);
     long ao = 0, co = 0;
     @try { ao = [[w valueForKey:@"appOrientation"] longValue]; co = [[ctl valueForKey:@"isOrientation"] longValue]; } @catch (id e) { return; }
     if (ao < 1 || ao > 4) return;   // (not recorded yet)
-    long want = DMWantedSceneOrientationFor(ao);
+    long want = DMWantedSceneOrientationForBundle(DMZetsuWindowBundle(w), ao);   // (as its scene gets it: I-7)
     if (want < 1 || want > 4 || (want == ao && (co < 1 || co > 4 || want == co))) return;
     @try { [w setValue:@(want) forKey:@"appOrientation"]; if (co >= 1 && co <= 4) [ctl setValue:@(want) forKey:@"isOrientation"]; } @catch (id e) {}
     DMLog([NSString stringWithFormat:@"[zetsu] %@: Zetsu's record of the app's orientation %ld/%ld -> %ld (what its window scene gets), so Zetsu does not reset the window when the app turns", DMZetsuWindowBundle(w), ao, co, want]);
@@ -3489,6 +3497,8 @@ static CGFloat DMDockCenterX(void);
 static CGPoint DMScreenToNative(CGPoint s, long orientation, CGSize native);
 static long DMRealInterfaceOrientation(void);
 static id DMKeyboardHostOwningScene(UIView *host);
+static CGFloat DMKeyboardQuarterTurn(long appSide, long screenSide);   // (with DMFixKeyboardHostIOS15)
+static long DMSceneSide(id scene);
 static void DMZetsuKeyboardOut(NSString *why) {
     if (DMActiveEngine() != DMEngineZetsu || DMTestFlag("/tmp/msb-zkb-off")) return;
     UIWindow *target = nil;
@@ -3576,11 +3586,27 @@ static void DMZetsuKeyboardOut(NSString *why) {
             t = CGAffineTransformMake(a, b, c, d, n0.x - centre.x - (a * px + c * py), n0.y - centre.y - (b * px + d * py));
         }
     }
+    // iPadOS 15 (M1, 9 Oct; 1.4.1): there Zetsu's keyboard window DOES turn with the interface (keyboard window 3 / 4, landscape bounds), while the
+    // keyboard's picture is still the remote keyboard scene's portrait canvas (834 x 1194), drawn for the app's orientation. Left as it was in the
+    // landscape window, the on-screen keyboard stood SIDEWAYS -- at the screen's left edge in side 3, left of the middle in side 4 --, before and
+    // after a half turn. As Aerial's keyboard host there (DMFixKeyboardHostIOS15, ad7c309) and as MilkyWay4 turns its own keyboard window (-90 in
+    // both sides, measured): the host gets the portrait canvas's bounds, centred, turned a quarter the same way for both landscape sides.
+    // Debug /tmp/msb-zkb15-off = before.
+    BOOL portraitCanvas = NO;
+    if ((have == 3 || have == 4) && target.bounds.size.width > target.bounds.size.height && !DMTestFlag("/tmp/msb-zkb15-off")) {
+        portraitCanvas = YES;
+        t = CGAffineTransformMakeRotation(-M_PI_2);
+    }
     for (UIView *h in target.subviews) {
         if (![NSStringFromClass([h class]) isEqualToString:@"_UIKeyboardLayerHostView"]) continue;
-        if (!CGAffineTransformEqualToTransform(h.transform, t)) { h.transform = t; DMLog([NSString stringWithFormat:@"[zetsu] keyboard picture %@ (screen %ld, keyboard window %ld)", CGAffineTransformIsIdentity(t) ? @"upright" : [NSString stringWithFormat:@"placed (turned / lifted / scaled: %@)", NSStringFromCGAffineTransform(t)], want, have]); }
+        // (the turn by its own app's side against the window's: an app on the other landscape side -- it keeps its own at a half turn, I-7 -- has its
+        //  picture drawn the other way round; DMKeyboardQuarterTurn, 1.4.1 logic test M-2)
+        CGAffineTransform th = portraitCanvas ? CGAffineTransformMakeRotation(DMKeyboardQuarterTurn(DMSceneSide(DMKeyboardHostOwningScene(h)), want)) : t;
+        if (!CGAffineTransformEqualToTransform(h.transform, th)) { h.transform = th; DMLog([NSString stringWithFormat:@"[zetsu] keyboard picture %@ (screen %ld, keyboard window %ld, its app %ld)", CGAffineTransformIsIdentity(th) ? @"upright" : [NSString stringWithFormat:@"placed (turned / lifted / scaled: %@)", NSStringFromCGAffineTransform(th)], want, have, DMSceneSide(DMKeyboardHostOwningScene(h))]); }
         CGRect b = target.bounds;
-        if (!CGRectEqualToRect(h.bounds, b) || !CGPointEqualToPoint(h.center, CGPointMake(CGRectGetMidX(b), CGRectGetMidY(b)))) { h.bounds = b; h.center = CGPointMake(CGRectGetMidX(b), CGRectGetMidY(b)); }   // (after a turn)
+        if (portraitCanvas) b = CGRectMake(0, 0, MIN(b.size.width, b.size.height), MAX(b.size.width, b.size.height));   // (turned about the window's middle)
+        CGPoint mid = CGPointMake(CGRectGetMidX(target.bounds), CGRectGetMidY(target.bounds));
+        if (!CGRectEqualToRect(h.bounds, b) || !CGPointEqualToPoint(h.center, mid)) { h.bounds = b; h.center = mid; }   // (after a turn)
     }
 }
 // Every 0.2 s (with the other watchers): new windows adopted, lights kept in place, the content scale kept right, the levels kept in order.
@@ -4093,12 +4119,71 @@ static long DMWantedSceneOrientation(long current) {
     if (o != 3 && o != 4) { long l = DMLandscapeSide(); o = l ? l : gLastConfidentLandscapeOrientation; }   // (see DMLandscapeSide)
     return o;
 }
-long DMWantedSceneOrientationFor(long current) { return DMWantedSceneOrientation(current); }   // (for DMZetsuAdopt, above)
+// The half turn and what the app supports (1.4 logic test I-7): the side above was given without asking the app. Windowed iPad apps support all
+// four orientations (iPad multitasking requires it), but an app that sets UIRequiresFullScreen can be a window too (DMAppNeedsFullScreen keeps only
+// fixed-axis games full screen) and may support one landscape side only. Its scene's client settings say what it supports right now (the mask
+// its root view controller reports, as SpringBoard reads it for a full-screen app): a side it does not support is not forced on it -- it keeps
+// its own, as iPadOS keeps a full-screen app in an orientation it supports. 90-degree turns are unchanged (the scene's shape follows the screen).
+static NSString *DMBundleOfSceneID(id scene);   // (defined with the scene identifiers further down)
+// The orientations an app declares in its Info.plist (UISupportedInterfaceOrientations~ipad, else the plain key), as a UIInterfaceOrientationMask
+// (bit 1 << orientation); 0 = none declared or not readable (not cached then). Cached per app.
+static unsigned long DMAppDeclaredOrientations(NSString *bundleID) {
+    if (!bundleID.length) return 0;
+    static NSMutableDictionary<NSString *, NSNumber *> *cache;
+    if (!cache) cache = [NSMutableDictionary dictionary];
+    NSNumber *known = cache[bundleID];
+    if (known) return known.unsignedLongValue;
+    NSURL *url = nil; @try { url = [DMProxyForBundle(bundleID) valueForKey:@"bundleURL"]; } @catch (id e) {}
+    NSDictionary *info = [url isKindOfClass:[NSURL class]] ? [NSDictionary dictionaryWithContentsOfURL:[url URLByAppendingPathComponent:@"Info.plist"]] : nil;
+    id o = info[@"UISupportedInterfaceOrientations~ipad"] ?: info[@"UISupportedInterfaceOrientations"];
+    unsigned long mask = 0;
+    if ([o isKindOfClass:[NSArray class]]) for (id x in o) {
+        if (![x isKindOfClass:[NSString class]]) continue;
+        if ([x isEqualToString:@"UIInterfaceOrientationPortrait"]) mask |= 1UL << 1;
+        else if ([x isEqualToString:@"UIInterfaceOrientationPortraitUpsideDown"]) mask |= 1UL << 2;
+        else if ([x isEqualToString:@"UIInterfaceOrientationLandscapeRight"]) mask |= 1UL << 3;
+        else if ([x isEqualToString:@"UIInterfaceOrientationLandscapeLeft"]) mask |= 1UL << 4;
+    }
+    if (mask) cache[bundleID] = @(mask);
+    return mask;
+}
+static unsigned long DMSceneSupportedOrientations(id scene) {   // (UIInterfaceOrientationMask: bit 1 << orientation; 0 = not known)
+    if (!scene) return 0;
+    id cl = nil;
+    @try { if ([scene respondsToSelector:NSSelectorFromString(@"clientSettings")]) cl = ((id (*)(id, SEL))objc_msgSend)(scene, NSSelectorFromString(@"clientSettings")); } @catch (id e) { cl = nil; }
+    SEL sup = NSSelectorFromString(@"supportedInterfaceOrientations");
+    unsigned long mask = [cl respondsToSelector:sup] ? ((unsigned long (*)(id, SEL))objc_msgSend)(cl, sup) : 0;
+    // (iPadOS 15.6.1 leaves that mask at 0 in every window's scene -- read on the M1, 9 Oct (sceneorient: Clock, Settings, Stocks, Tips) -- so the
+    //  app's own declaration is asked then: the orientations it lists in its Info.plist, which iPadOS keeps a full-screen app within)
+    if (!(mask & 0x1E)) mask = DMAppDeclaredOrientations(DMBundleOfSceneID(scene));
+#if DEBUG
+    {   // (test: /tmp/msb-fakemask holding "<bundle id> <mask>" -- that app's scene reports that mask; e.g. 10 = portrait + landscape 3 only)
+        NSArray *f = [[[NSString stringWithContentsOfFile:@"/tmp/msb-fakemask" encoding:NSUTF8StringEncoding error:nil] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] componentsSeparatedByString:@" "];
+        NSString *sid = nil; @try { sid = [scene valueForKey:@"identifier"]; } @catch (id e) {}
+        if (f.count == 2 && [sid isKindOfClass:[NSString class]] && [sid containsString:f[0]]) mask = (unsigned long)[f[1] longLongValue];
+    }
+#endif
+    return mask & 0x1E;   // (the four orientations only)
+}
+static long DMWantedSceneOrientationOf(id scene, long current) {
+    long want = DMWantedSceneOrientation(current);
+    if (want == current || !(current == 3 || current == 4) || !(want == 3 || want == 4)) return want;   // (only the half turn is asked about)
+    unsigned long mask = DMSceneSupportedOrientations(scene);
+    if (mask && !(mask & (1UL << want))) {
+        static NSMutableDictionary<NSString *, NSNumber *> *told; if (!told) told = [NSMutableDictionary dictionary];
+        NSString *sid = nil; @try { sid = [scene valueForKey:@"identifier"]; } @catch (id e) {}
+        NSString *key = [NSString stringWithFormat:@"%@|%ld", sid, want];
+        if (CACurrentMediaTime() - told[key].doubleValue > 30.0) { told[key] = @(CACurrentMediaTime()); DMLog([NSString stringWithFormat:@"[scene] %@: the screen is at %ld, which its app does not support (orientations mask %lu): the scene keeps %ld", DMBundleOfSceneID(scene) ?: DMShortSceneID(scene), want, mask, current]); }
+        return current;
+    }
+    return want;
+}
+long DMWantedSceneOrientationForBundle(NSString *bundleID, long current) { return DMWantedSceneOrientationOf(bundleID.length ? DMSceneForBundle(bundleID) : nil, current); }   // (Zetsu's record of the app's orientation, DMZetsuSyncAppOrientation above: as its scene gets it)
 static id DMPortraitWindowSettings(id scene, id settings) {
     SEL orientationSel = NSSelectorFromString(@"interfaceOrientation"), setOrientation = NSSelectorFromString(@"setInterfaceOrientation:"), frameSel = NSSelectorFromString(@"frame"), setFrame = NSSelectorFromString(@"setFrame:");
     if (![settings respondsToSelector:orientationSel] || ![settings respondsToSelector:frameSel]) return settings;
     long so = ((long (*)(id, SEL))objc_msgSend)(settings, orientationSel);
-    long want = DMWantedSceneOrientation(so);
+    long want = DMWantedSceneOrientationOf(scene, so);   // (I-7: a half turn only to a side the app supports)
     if (want == so) return settings;
     NSString *sid = nil; @try { sid = [scene valueForKey:@"identifier"]; } @catch (id e) {}
     if (![sid hasPrefix:@"sceneID:"]) return settings;
@@ -5431,21 +5516,18 @@ static void DMSetStageFrameSafe(UIView *stage, CGRect f) {
 }
 static const void *kA5EntranceTargetKey, *kA5EntranceUntilKey;   // (defined with DMA5HoldEntranceFrame)
 static void DMA5HoldStageAt(UIView *stage, CGRect target, CFTimeInterval until);   // (defined with DMA5HoldEntranceFrame)
-// Aerial 5.0 (iPad 2, iOS 16, landscape orientation 4 -- also 1.0.7, not orientation 3 or portrait): after EVERY change of a window's frame it puts
-// back its remembered frame for the orientation (_landscapeFrame), fitted into the screen inset by 20 pt (shrunk to scale, centred on the screen:
-// Fill 1036 x 645 became 984 x 613). A hold then fought it on every frame (129 put-backs and 317 scene updates in 2 s, logic test 1.0.8) and lost
-// when it ended. Once that is seen in an orientation (DMA5HoldEntranceFrame), our frames there stay inside what Aerial keeps.
-static uint8_t gA5FitsInOrientation = 0;   // bit o: Aerial fits every window into the screen inset by 20 pt in interface orientation o
-static BOOL DMA5AerialFitsHere(void) { long o = DMRealInterfaceOrientation(); return o >= 1 && o <= 4 && (gA5FitsInOrientation & (1 << o)); }
-static BOOL DMA5RectsClose(CGRect a, CGRect b) { return fabs(a.origin.x - b.origin.x) < 1.0 && fabs(a.origin.y - b.origin.y) < 1.0 && fabs(a.size.width - b.size.width) < 1.0 && fabs(a.size.height - b.size.height) < 1.0; }
-static CGRect DMA5AerialFit(CGRect f) {   // what Aerial makes of a frame then: too big for the screen inset by 20 -> shrunk to scale, centred on the screen
-    CGSize sc = [UIScreen mainScreen].bounds.size;
-    CGFloat W = sc.width - 40.0, H = sc.height - 40.0;
-    if (f.size.width <= W + 0.5 && f.size.height <= H + 0.5) return f;
-    CGFloat k = MIN(W / f.size.width, H / f.size.height);
-    return CGRectMake((sc.width - f.size.width * k) / 2.0, (sc.height - f.size.height * k) / 2.0, f.size.width * k, f.size.height * k);
-}
-static CGRect DMA5KeepableFrame(CGRect f) {   // in such an orientation: the frame no bigger than the screen inset by 20, the rest of the place kept
+// Aerial 5.0 keeps no window bigger than the screen inset by 20 pt: it puts back its remembered frame for the orientation (_landscapeFrame) fitted into
+// that (shrunk to scale, centred on the screen: Fill 1036 x 645 became 984 x 613, iPad 2) -- after a change of a window's frame (seen on the iPad 2,
+// where a hold then fought it on every frame: 129 put-backs and 317 scene updates in 2 s, logic test 1.0.8) and in its pass ~0.15 s after a window
+// appears: after the Mac Switcher's view closes, after a desktop switch. Measured on the M1 (iPadOS 15.6.1, 1.4.1 L-3) with the Window menu's Fill,
+// no Fit to Window and no drag: the frame we set ({{-6, 23}, {1206, 739.8}}, Aerial's own 6 pt side margins make the stage 12 pt wider than the
+// screen) stayed while a hold ran and for as long as nothing appeared, and became {{20, 63}, {1154, 708}} once the view had opened and closed --
+// in orientations 1, 3 and 4 alike. A hold only puts that off (the tester's Fit "fill" ended there the same way). This is Aerial's own limit, and
+// Aerial cannot be changed at its source (hooking its classes makes it end SpringBoard): so with Aerial 5.0 our frames stay inside what it keeps,
+// in every orientation (DMA5KeepableFrame) -- before, only in an orientation where a hold had seen Aerial fight it, which the pass after an appear
+// never shows. (Debug comparison: /tmp/msb-a5-nocap, the frames as asked.)
+static BOOL DMA5AerialFitsHere(void) { return gAerialFlavor == 5 && !DMTestFlag("/tmp/msb-a5-nocap"); }
+static CGRect DMA5KeepableFrame(CGRect f) {   // with Aerial 5.0: the frame no bigger than the screen inset by 20, the rest of the place kept
     if (gAerialFlavor != 5 || !DMA5AerialFitsHere() || CGRectIsNull(f)) return f;
     CGSize sc = [UIScreen mainScreen].bounds.size;
     CGFloat W = sc.width - 40.0, H = sc.height - 40.0;
@@ -5746,7 +5828,7 @@ static CGRect DMUsableArea(void) {
     else if (portrait ? lastDockTopP > 0 : lastDockTopL > 0) dockTop = portrait ? lastDockTopP : lastDockTopL;   // (the Dock is away: where it last was)
     else if (DMSpringBoardDockHeight() > 20.0) dockTop = screen.height - DMSpringBoardDockHeight();   // not measured yet: SpringBoard's own figure (valid while the Dock is away)
     else if (portrait) dockTop = screen.height - 84.0;   // no figure at all: the old guess
-    CGFloat top = DMTopLimit(), side = 0.0, gapToDock = 2.0;   // tiled windows touch the outer side edges of the screen, start flush under the status bar (24 pt; 0 while it hides itself) and end just above the Dock
+    CGFloat top = DMTopLimit(), side = 0.0, gapToDock = 2.0;   // the desktop reaches the screen's side edges (the layouts keep their own outer margin, DMLayoutOuterArea), starts flush under the status bar (24 pt; 0 while it hides itself) and ends just above the Dock
     return CGRectMake(side, top, screen.width - 2.0 * side, MAX(200.0, dockTop - gapToDock - top));
 }
 // Is the floating Dock on the screen now? (Behind a full-screen app it waits below the bottom edge.)
@@ -5786,7 +5868,21 @@ static CGRect DMLayoutFrameWindow(NSString *name);
 static CGRect DMLayoutFrame(NSString *name) { return DMA5KeepableFrame(DMA5StageFromWindow(DMLayoutFrameWindow(name))); }   // (Aerial 5.0: the stage that draws that window; inside what Aerial keeps, see DMA5AerialFitsHere)
 static CGRect DMLayoutFrameInArea(NSString *name, CGRect u, CGSize screen);
 static CGRect DMLayoutFrameWindow(NSString *name) { return DMLayoutFrameInArea(name, DMUsableArea(), [UIScreen mainScreen].bounds.size); }
+// The outer side margin every layout keeps (the owner's choice, 8 Oct, 1.4.1 L-3 option A): Fill, the Fit to Window tiles (the window left alone after a
+// drag or a close fills with it), halves and quarters -- on every engine, in Stage Manager's stage areas and on the TV -- stay this far from the
+// screen's side edges, so Fill looks the same everywhere (as macOS's tiled windows with margins). The figure is Aerial 5.0's own limit: it keeps no
+// window wider than the screen inset by 20 pt (6ffd52e), and its stage carries 6 pt of invisible margin on each side (gA5Insets), so a visible
+// window can come no closer than 26 pt to either edge there; the other engines' windows are their frames. One rule for all: only the outer edges
+// move, the gap between tiles stays (g below).
+static const CGFloat kLayoutSideMargin = 26.0;
+static CGRect DMLayoutOuterArea(CGRect u, CGSize screen) {
+    if (CGRectIsNull(u) || screen.width < 1.0) return u;
+    CGFloat minX = MAX(CGRectGetMinX(u), kLayoutSideMargin), maxX = MIN(CGRectGetMaxX(u), screen.width - kLayoutSideMargin);
+    if (maxX - minX < 200.0) return u;   // (an area too narrow for it: as it is)
+    return CGRectMake(minX, u.origin.y, maxX - minX, u.size.height);
+}
 static CGRect DMLayoutFrameInArea(NSString *name, CGRect u, CGSize screen) {   // (u: the usable desktop of that screen -- the iPad's, or the TV's)
+    u = DMLayoutOuterArea(u, screen);
     CGFloat g = 10.0;   // the space between tiled windows
     CGFloat halfW = floor((u.size.width - g) / 2.0), halfH = floor((u.size.height - g) / 2.0);
     CGFloat rightX = u.origin.x + u.size.width - halfW, bottomY = u.origin.y + u.size.height - halfH;
@@ -8007,6 +8103,27 @@ static void DMKeyboardTimeline(void) {
 // iPadOS 15: Aerial sets the keyboard host up (portrait canvas turned by a quarter for a landscape scene, plain for a portrait one) only when the keyboard
 // scene is laid out, not when the iPad is turned, so after a rotation the host kept the geometry of the other orientation (sideways, zoomed, or nowhere). The
 // host is set from the front window's scene orientation (which is kept in line with the screen, see DMPortraitWindowSettings) whenever it differs.
+// The quarter turn of a keyboard host in an engine's landscape keyboard window (Aerial's and Zetsu's on iPadOS 15): the keyboard's picture is the
+// remote keyboard scene's portrait canvas, drawn for its APP's orientation. The app on the screen's landscape side: -90 degrees (ad7c309). The app on
+// the other landscape side -- it does not list the side the screen turned to and keeps its own (I-7) --: +90, or the keyboard was drawn upside down
+// at the top (1.4.1 logic test M-2). The screen's side, not the keyboard window's: Aerial's window turns with the interface, Zetsu's stays with the app
+// (measured: Zetsu's keyboard window 3 on a screen at 4), and the picture must be upright on the screen either way. Debug /tmp/msb-kbturn-same =
+// before (-90 always).
+static CGFloat DMKeyboardQuarterTurn(long appSide, long screenSide) {
+    if ((appSide == 3 || appSide == 4) && (screenSide == 3 || screenSide == 4) && appSide != screenSide && !DMTestFlag("/tmp/msb-kbturn-same")) return M_PI_2;
+    return -M_PI_2;
+}
+static long DMWindowSide(UIWindow *w) {   // (a window's own interface orientation, else the interface's)
+    SEL s = NSSelectorFromString(@"_windowInterfaceOrientation");
+    if ([w respondsToSelector:s]) return ((long (*)(id, SEL))objc_msgSend)(w, s);
+    return ((long (*)(id, SEL))objc_msgSend)([UIApplication sharedApplication], NSSelectorFromString(@"activeInterfaceOrientation"));
+}
+static long DMSceneSide(id scene) {   // (a scene's interface orientation, -1 when unknown)
+    id settings = nil; @try { settings = [scene valueForKey:@"settings"]; } @catch (id e) {}
+    SEL s = NSSelectorFromString(@"interfaceOrientation");
+    return [settings respondsToSelector:s] ? ((long (*)(id, SEL))objc_msgSend)(settings, s) : -1;
+}
+static id DMKeyboardHostOwningScene(UIView *host);
 static void DMFixKeyboardHostIOS15(void) {
     UIView *top = DMTopStage(); NSString *bundle = top ? DMStageBundle(top) : nil; id scene = bundle.length ? DMSceneForBundle(bundle) : nil; id settings = nil;
     @try { settings = [scene valueForKey:@"settings"]; } @catch (id e) {}
@@ -8021,7 +8138,13 @@ static void DMFixKeyboardHostIOS15(void) {
         if (!host) continue;
         CGPoint centre = CGPointMake(w.bounds.size.width / 2.0, w.bounds.size.height / 2.0);
         CGSize bounds; CGAffineTransform t;
-        if (landscapeScreen && (so == 3 || so == 4)) { bounds = CGSizeMake(MIN(screen.width, screen.height), MAX(screen.width, screen.height)); t = CGAffineTransformMakeRotation(so == 3 ? -M_PI_2 : M_PI_2); }
+        // (the same quarter turn for both landscape sides: Aerial's keyboard window turns with the interface, and the keyboard's picture is drawn for
+        //  the app's orientation, so a half turn turns both and they cancel out. A quarter turn the other way for side 4 drew the keyboard upside down
+        //  at the top of the screen after a half turn, and the hardware keyboard's bar at the top left (M1, 9 Oct; the 1.4 integration's O5))
+        // (and the turn by the keyboard's own app's side against the window's: DMKeyboardQuarterTurn, M-2)
+        long appSide = DMSceneSide(DMKeyboardHostOwningScene(host)); if (appSide != 3 && appSide != 4) appSide = so;
+        long screenSide = ((long (*)(id, SEL))objc_msgSend)([UIApplication sharedApplication], NSSelectorFromString(@"activeInterfaceOrientation"));
+        if (landscapeScreen && (so == 3 || so == 4)) { bounds = CGSizeMake(MIN(screen.width, screen.height), MAX(screen.width, screen.height)); t = CGAffineTransformMakeRotation(so == 4 && DMTestFlag("/tmp/msb-kbfix-old") ? M_PI_2 : DMKeyboardQuarterTurn(appSide, screenSide)); }
         else if (!landscapeScreen && so == 1) { bounds = w.bounds.size; t = CGAffineTransformIdentity; }
         else continue;   // scene and screen do not agree yet (a moment after a turn): nothing to set
         if (CGSizeEqualToSize(host.bounds.size, bounds) && CGAffineTransformEqualToTransform(host.transform, t) && fabs(host.center.x - centre.x) < 0.5 && fabs(host.center.y - centre.y) < 0.5) continue;
@@ -8029,7 +8152,7 @@ static void DMFixKeyboardHostIOS15(void) {
         host.bounds = CGRectMake(0, 0, bounds.width, bounds.height);
         host.center = centre;
         host.transform = t;
-        DMLog([NSString stringWithFormat:@"[kbfix] iPadOS 15: keyboard host set for scene orientation %ld on a %@ screen (bounds %@)", so, landscapeScreen ? @"landscape" : @"portrait", NSStringFromCGSize(bounds)]);
+        DMLog([NSString stringWithFormat:@"[kbfix] iPadOS 15: keyboard host set for scene orientation %ld on a %@ screen (bounds %@; the keyboard's app at %ld, the screen at %ld, its window at %ld)", so, landscapeScreen ? @"landscape" : @"portrait", NSStringFromCGSize(bounds), appSide, screenSide, DMWindowSide(w)]);
     }
 }
 static void DMFixKeyboardOrientation(BOOL barOnly) {
@@ -8090,6 +8213,22 @@ static void DMFixKeyboardOrientation(BOOL barOnly) {
 // window). With the Keyboard Button off and no window (DMWindowWorkNeeded: none for 3 s), nothing reads its results, so it rests; the next watcher
 // pass after a window appears (or the button is switched on) runs it again before anything else asks. It also runs for 5 s after the pill was last
 // moved, so switching the button off still puts the pill back. /tmp/msb-kbcheck-always: the old behaviour (A/B).
+// MilkyWay4 (iPadOS 15): its keyboard window is turned -90 degrees in both landscape sides, and the keyboard's picture is drawn for the APP's
+// orientation, so an app on the other landscape side -- it does not list the side the screen turned to and keeps its own (I-7) -- had its keyboard
+// upside down at the top (M1, 9 Oct). The picture gets the half turn then -- the picture, not the host: the Keyboard Button's pill moves the host --
+// as DMKeyboardQuarterTurn turns Aerial's and Zetsu's (1.4.1 logic test M-2). Debug /tmp/msb-kbturn-same = before.
+static long DMRealInterfaceOrientation(void);
+static void DMMilkyWayKeyboardTurn(UIView *host) {
+    UIView *picture = nil;
+    for (UIView *c in host.subviews) if ([NSStringFromClass([c class]) isEqualToString:@"_UIScenePresentationView"]) picture = c;
+    if (!picture) return;
+    long app = DMSceneSide(DMKeyboardHostOwningScene(host)), ui = DMRealInterfaceOrientation();
+    BOOL flip = (app == 3 || app == 4) && (ui == 3 || ui == 4) && app != ui && !DMTestFlag("/tmp/msb-kbturn-same");
+    CGAffineTransform want = flip ? CGAffineTransformMakeRotation(M_PI) : CGAffineTransformIdentity;
+    if (CGAffineTransformEqualToTransform(picture.transform, want)) return;
+    picture.transform = want;
+    DMLog([NSString stringWithFormat:@"[kbfix] MilkyWay4: keyboard picture %@ (its app at %ld, the interface at %ld)", flip ? @"turned half way" : @"upright as drawn", app, ui]);
+}
 static void DMPlaceKeyboardPill(void) {
     if (!gTidyKeyboardPill && CACurrentMediaTime() - gPillMovedAt > 5.0 && !DMWindowWorkNeeded() && !DMTestFlag("/tmp/msb-kbcheck-always")) return;
     BOOL hardwareKeyboard = DMHardwareKeyboardAttached();
@@ -8113,6 +8252,15 @@ static void DMPlaceKeyboardPill(void) {
                 CGRect onScreen = CGRectIntersection([v.superview convertRect:v.frame toCoordinateSpace:[UIScreen mainScreen].coordinateSpace], [UIScreen mainScreen].bounds);
                 CGFloat shown = (v.hidden || v.alpha < 0.01 || w.hidden || CGRectIsNull(onScreen)) ? 0.0 : MIN(onScreen.size.height, v.frame.size.height);
                 keyboardH = MAX(keyboardH, shown);
+                // (a hardware keyboard attached and the full keyboard brought up with its Eject key after the field showed only the input bar: SpringBoard
+                //  keeps this host below the screen -- for it the keyboard is put away -- while the app's keyboard is drawn by the window engine's keyboard
+                //  window. Its _UIRemoteKeyboardPlaceholderView is there exactly while the app's software keyboard is up, as tall as that keyboard; none
+                //  with the input bar alone. Counted 0, the Dock stayed over the keyboard's bottom row on Zetsu and MilkyWay4 -- M1, 9 Oct, 1.4.1 logic
+                //  test H-3. Debug /tmp/msb-kbph-off = before.)
+                if (!v.hidden && v.alpha >= 0.01 && !w.hidden && !DMTestFlag("/tmp/msb-kbph-off"))
+                    for (UIView *ph in v.subviews)
+                        if ([NSStringFromClass([ph class]) isEqualToString:@"_UIRemoteKeyboardPlaceholderView"] && !ph.hidden && ph.alpha >= 0.01 && ph.bounds.size.height >= 100.0)
+                            keyboardH = MAX(keyboardH, ph.bounds.size.height);
                 if (DMTestFlag("/tmp/macstatusbar-debug")) hostDebug = [NSString stringWithFormat:@"host frame %@ on screen %@ hidden %d alpha %.2f", NSStringFromCGRect(v.frame), NSStringFromCGRect(onScreen), v.hidden, v.alpha];
             }
             [stack addObjectsFromArray:v.subviews];
@@ -8124,13 +8272,17 @@ static void DMPlaceKeyboardPill(void) {
         NSString *in = [NSString stringWithFormat:@"[pillstate] hardware %d keyboardH %.0f icons start %.1f tidy %d medusa %@ (hidden %d) aerial %@ (hidden %d, tf %@) milkyway %d, %@", hardwareKeyboard, keyboardH, gStatusIconsLeft, gTidyKeyboardPill, medusa ? @"yes" : @"no", medusa.hidden, aerialKeyboard ? @"yes" : @"no", aerialKeyboard.hidden, aerialKeyboard ? NSStringFromCGAffineTransform(aerialKeyboard.transform) : @"-", milkyWayKeyboard != nil, hostDebug];
         if (![in isEqualToString:lastIn]) { lastIn = in; DMLog(in); }
     }
-    gSoftKeyboardH = hardwareKeyboard ? 0.0 : keyboardH;
+    // (with a hardware keyboard only the input bar, ~55 pt, counts as no on-screen keyboard: the full keyboard shown with the keyboard's Eject key
+    //  is one -- it counted 0, so the Dock stayed raised over it, covering the space bar row on Zetsu and MilkyWay4, whose keyboard windows are
+    //  below the Dock's 1034, M1 9 Oct; the Dock goes to its own level while one is up, as without a hardware keyboard)
+    gSoftKeyboardH = (hardwareKeyboard && (keyboardH < 100.0 || DMTestFlag("/tmp/msb-kbh-old"))) ? 0.0 : keyboardH;   // (debug flag: before 1.4.1)
     gKbBarOnly = hardwareKeyboard && keyboardH < 100.0;
     DMFixKeyboardOrientation(hardwareKeyboard && keyboardH < 100.0);
     gKbLogAgain = NO;   // (with a hardware keyboard the keyboard scene is only the input bar: about 55 pt tall)
     if (medusa) DMPlaceKeyboardPillIn(medusa, NO, hardwareKeyboard, keyboardH);
     if (aerialKeyboard) DMPlaceKeyboardPillIn(aerialKeyboard, YES, hardwareKeyboard, keyboardH);
     if (milkyWayKeyboard) DMPlaceKeyboardPillIn(milkyWayKeyboard, NO, hardwareKeyboard, keyboardH);
+    if (milkyWayKeyboard && [NSProcessInfo processInfo].operatingSystemVersion.majorVersion < 16) DMMilkyWayKeyboardTurn(milkyWayKeyboard);   // (M-2)
     // Keyboard Phase (iPad 2, iOS 16): Aerial's keyboard window (level 1052) is above the Cover Sheet (1050), so with a hardware keyboard the window
     // app's input bar (EN / dictation pill) stayed on top of Notification Center and the Lock Screen (globe+N, a pull-down, locking). While the
     // Cover Sheet is showing, that window is faded out; it comes back as soon as the Cover Sheet is gone. (Only its alpha is touched, and only by us.)
@@ -8606,7 +8758,7 @@ static void DMUpdateFocusCatchers(void) {
         @try { settings = [scene valueForKey:@"settings"]; } @catch (id e) {}
         if (![settings respondsToSelector:NSSelectorFromString(@"interfaceOrientation")]) continue;
         long so = ((long (*)(id, SEL))objc_msgSend)(settings, NSSelectorFromString(@"interfaceOrientation"));
-        if (DMWantedSceneOrientation(so) == so || [objc_getAssociatedObject(st, kStageClosingKey) boolValue]) continue;
+        if (DMWantedSceneOrientationOf(scene, so) == so || [objc_getAssociatedObject(st, kStageClosingKey) boolValue]) continue;
         static NSMutableDictionary *tried; if (!tried) tried = [NSMutableDictionary dictionary];
         if (CACurrentMediaTime() - [tried[b] doubleValue] < 1.0) continue;   // (not more than once a second per window)
         tried[b] = @(CACurrentMediaTime());
@@ -8856,6 +9008,10 @@ static void DMRestoreStep(NSArray *wins, NSUInteger i, NSDictionary *state, int 
 }
 static void DMRestoreWindows(int attempt) {
     if (gWindowSaveOn || gRestoringWindows) return;
+    // (a start whose engine only stands in for a picked Stage Manager -- DMSMStandInRun: the saved state is that engine's last real session's, maybe
+    //  days old; it was opened as windows that the respring asked for then dropped again, and this start's windows were saved over it -- 1.4 logic
+    //  test L-6. Neither restored nor saved in such a start: gWindowSaveOn stays off)
+    if (DMSMStandInRun()) { DMLog(@"[restore] not restored or saved in this start: a third-party engine only stands in for Stage Manager until the respring"); return; }
     if (DMActiveEngine() == DMEngineNone || (DMActiveEngine() == DMEngineAerial && !objc_getClass("AerialCore")) || (DMActiveEngine() == DMEngineMilkyWay && !DMMilkyWayLayer()) || (DMActiveEngine() == DMEngineZetsu && !DMZetsuInstalled())) {
         if (attempt < 30) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMRestoreWindows(attempt + 1); });
         else gWindowSaveOn = YES;
@@ -21585,7 +21741,7 @@ static void DMRunTrigger(NSString *cmd) {
             long o = [st respondsToSelector:NSSelectorFromString(@"interfaceOrientation")] ? ((long (*)(id, SEL))objc_msgSend)(st, NSSelectorFromString(@"interfaceOrientation")) : -1;
             unsigned long mask = [cl respondsToSelector:NSSelectorFromString(@"supportedInterfaceOrientations")] ? ((unsigned long (*)(id, SEL))objc_msgSend)(cl, NSSelectorFromString(@"supportedInterfaceOrientations")) : 999;
             long co = [cl respondsToSelector:NSSelectorFromString(@"interfaceOrientation")] ? ((long (*)(id, SEL))objc_msgSend)(cl, NSSelectorFromString(@"interfaceOrientation")) : -1;
-            DMLog([NSString stringWithFormat:@"[sceneorient] %@: settings orientation %ld foreground %d, client orientation %ld supported mask %lu", sid, o, DMSettingsForeground(st), co, mask]);
+            DMLog([NSString stringWithFormat:@"[sceneorient] %@: settings orientation %ld foreground %d, client orientation %ld supported mask %lu (as used: %lu)", sid, o, DMSettingsForeground(st), co, mask, DMSceneSupportedOrientations(scene)]);
         }
     }
     else if ([cmd isEqualToString:@"iconlayout"]) {   // iconlayout: the Home Screen's scroll views and icon lists (frames in the window, offsets) -- read-only
@@ -23306,6 +23462,27 @@ static void DMRunTrigger(NSString *cmd) {
             ((void (*)(id, SEL, BOOL, id))objc_msgSend)(ctrl, dismissSel, YES, ^{ DMLog(@"[dockctrl] dismiss completion fired"); });
         }
     }
+    else if ([cmd isEqualToString:@"kbprobe2"]) {   // kbprobe2: every keyboard layer host (engine keyboard windows, SpringBoard's), its remote keyboard scene's settings and client settings (H-3 study, read-only)
+        NSMutableString *o = [NSMutableString stringWithString:@"[kbprobe2]"];
+        for (UIWindow *w in DMAllWindows()) {
+            NSMutableArray *stack = [NSMutableArray arrayWithObject:w];
+            while (stack.count) {
+                UIView *v = stack.lastObject; [stack removeLastObject]; [stack addObjectsFromArray:v.subviews];
+                NSString *cn = NSStringFromClass([v class]);
+                if ([cn isEqualToString:@"UIInputSetHostView"]) { [o appendFormat:@"\n %@ in %@: frame %@ in window, hidden %d alpha %.2f", cn, NSStringFromClass([w class]), NSStringFromCGRect([v.superview convertRect:v.frame toView:w]), v.hidden, v.alpha]; continue; }
+                if (![cn isEqualToString:@"_UIScenePresentationView"]) continue;
+                id scene = nil; @try { scene = [v valueForKey:@"scene"]; } @catch (id e) {}
+                NSString *ident = [scene respondsToSelector:NSSelectorFromString(@"identifier")] ? [scene valueForKey:@"identifier"] : nil;
+                if (![ident containsString:@"keyboard"]) continue;
+                id st = nil, cl = nil; @try { st = [scene valueForKey:@"settings"]; cl = [scene valueForKey:@"clientSettings"]; } @catch (id e) {}
+                NSString *sd = [[[st description] componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]] componentsJoinedByString:@" "];
+                NSString *cd = [[[cl description] componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]] componentsJoinedByString:@" "];
+                [o appendFormat:@"\n scene %@ in %@ (window hidden %d alpha %.2f, view hidden %d alpha %.2f)\n  settings %@\n  client %@", ident, NSStringFromClass([w class]), w.hidden, w.alpha, v.hidden, v.alpha,
+                    sd.length > 900 ? [sd substringToIndex:900] : sd, cd.length > 1400 ? [cd substringToIndex:1400] : cd];
+            }
+        }
+        DMLog(o);
+    }
     else if ([cmd isEqualToString:@"dumpwindows"]) {   // every real window (not internal ones like keyboards/effects): class, level, frame, hidden, alpha — for studying what keeps the Dock forward
         NSMutableString *out = [NSMutableString stringWithString:@"windows:"];
         for (UIWindow *w in DMAllWindows()) {
@@ -23887,16 +24064,7 @@ static void DMA5HoldEntranceFrame(UIView *stage) {
     while (recent.count && tnow - recent.firstObject.doubleValue > 0.25) [recent removeObjectAtIndex:0];
     int total = [objc_getAssociatedObject(stage, kA5PutBackCountKey) intValue] + 1;
     objc_setAssociatedObject(stage, kA5PutBackCountKey, @(total), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    CGRect aerialFit = DMA5AerialFit(want);
-    if (recent.count >= 6 && !DMA5RectsClose(aerialFit, want) && DMA5RectsClose(f, aerialFit)) {   // (Aerial fits windows into the screen here, every time)
-        long o = DMRealInterfaceOrientation();
-        if (o >= 1 && o <= 4) gA5FitsInOrientation |= (uint8_t)(1 << o);
-        CGRect keep = DMA5KeepableFrame(want);
-        DMLog([NSString stringWithFormat:@"[aerial5] %@: Aerial fits every window into the screen inset by 20 pt in orientation %ld (after each change): held at %@ instead of %@, and the layouts keep inside it here", DMStageBundle(stage), o, NSStringFromCGRect(keep), NSStringFromCGRect(want)]);
-        want = keep;
-        objc_setAssociatedObject(stage, kA5EntranceTargetKey, [NSValue valueWithCGRect:want], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [recent removeAllObjects];
-    } else if (recent.count >= 12 || total > 40) {   // (anything else Aerial keeps doing: given up, no storm)
+    if (recent.count >= 12 || total > 40) {   // (anything Aerial keeps doing: given up, no storm)
         [gA5HeldStages removeObject:stage];
         DMLog([NSString stringWithFormat:@"[aerial5] %@: placement hold ends (Aerial moved it again %lu times in 0.25 s, %d in all: not fought over)", DMStageBundle(stage), (unsigned long)recent.count, total]);
         objc_setAssociatedObject(stage, kA5EntranceTargetKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -24041,7 +24209,10 @@ static void DMAerial5BeginEntrance(UIView *stage) {
 // was themed last, so it flipped, and with it every layout's stage frame (window heights 668 / 676 on the M1), the chrome of every other window
 // (drawn 8 pt off its app) and the "put back" checks. Now each window keeps its own measured margins for drawing its chrome (DMA5InsetsOf), and
 // the standard margins that the layouts use (gA5Insets) change only when a settled measurement differs on windows of two different apps while no
-// settled window still has the old value (an Aerial update that changes its layout) -- never because of one odd window.
+// settled window still has the old value (an Aerial update that changes its layout) -- never because of one odd window among others. A window that
+// is the only one measured is enough on its own (1.4.1): every window on the M1 has 13/6/12/6 since, so with one window the layouts kept the
+// built-in 13/6/20/6 and Fill or a half reached 8 pt under the Dock; the standard was learnt only once a second app's window had settled.
+// When the standard changes, the windows that were put in a layout with the old one are put in it again (DMA5InsetsChangedRelayout).
 static const void *kA5StageInsetsKey = &kA5StageInsetsKey;   // this window's own margins (NSValue UIEdgeInsets)
 static const void *kA5InsetsNotedKey = &kA5InsetsNotedKey;   // the odd margins already logged for it
 static BOOL DMA5InsetsSame(UIEdgeInsets a, UIEdgeInsets b) { return fabs(a.top - b.top) <= 0.25 && fabs(a.left - b.left) <= 0.25 && fabs(a.bottom - b.bottom) <= 0.25 && fabs(a.right - b.right) <= 0.25; }
@@ -24049,6 +24220,7 @@ static UIEdgeInsets DMA5InsetsOf(UIView *stage) {
     NSValue *v = stage ? objc_getAssociatedObject(stage, kA5StageInsetsKey) : nil;
     return v ? v.UIEdgeInsetsValue : gA5Insets;
 }
+static void DMA5InsetsChangedRelayout(UIEdgeInsets was);
 static void DMA5NoteStageInsets(UIView *stage, UIEdgeInsets m, UIView *holder) {
     NSValue *prev = objc_getAssociatedObject(stage, kA5StageInsetsKey);
     BOOL stable = prev && DMA5InsetsSame(prev.UIEdgeInsetsValue, m);
@@ -24064,17 +24236,53 @@ static void DMA5NoteStageInsets(UIView *stage, UIEdgeInsets m, UIView *holder) {
         DMLog([NSString stringWithFormat:@"[aerial5] %@: its own app holder margins are %.1f/%.1f/%.1f/%.1f, the standard ones %.1f/%.1f/%.1f/%.1f: its chrome follows its own, the layouts keep the standard (frame %@)",
                DMStageBundle(stage), m.top, m.left, m.bottom, m.right, gA5Insets.top, gA5Insets.left, gA5Insets.bottom, gA5Insets.right, NSStringFromCGRect(stage.frame)]);
     }
-    NSMutableSet<NSString *> *agree = [NSMutableSet set];
+    NSMutableSet<NSString *> *agree = [NSMutableSet set], *measured = [NSMutableSet set];
     for (UIView *st in DMAerialStages()) {
         NSValue *v = objc_getAssociatedObject(st, kA5StageInsetsKey);
         if (!v || st.hidden || DMStageMinimized(st)) continue;
         if (DMA5InsetsSame(v.UIEdgeInsetsValue, gA5Insets)) return;   // a window still has the standard margins: they stay
+        if (DMStageBundle(st).length) [measured addObject:DMStageBundle(st)];
         if (DMA5InsetsSame(v.UIEdgeInsetsValue, m) && DMStageBundle(st).length) [agree addObject:DMStageBundle(st)];
     }
-    if (agree.count < 2) return;
+    if (!agree.count || agree.count < MIN((NSUInteger)2, measured.count)) return;   // (two apps when two or more are measured; the only one alone)
+    if (DMTestFlag("/tmp/msb-a5-insets-two") && agree.count < 2) return;   // debug: the rule before 1.4.1 (two apps needed)
     DMLog([NSString stringWithFormat:@"[aerial5] app holder margins are now %.1f/%.1f/%.1f/%.1f in every window (%lu apps; were %.1f/%.1f/%.1f/%.1f): the layouts use them",
            m.top, m.left, m.bottom, m.right, (unsigned long)agree.count, gA5Insets.top, gA5Insets.left, gA5Insets.bottom, gA5Insets.right]);
+    UIEdgeInsets was = gA5Insets;
     gA5Insets = m;
+    if (!DMTestFlag("/tmp/msb-a5-insets-norelayout")) dispatch_async(dispatch_get_main_queue(), ^{ DMA5InsetsChangedRelayout(was); });   // (debug flag: before 1.4.1)
+}
+// The standard margins changed (above): every layout's stage frame changes with them, so a window put in a layout with the old ones is that much
+// off it -- 13/6/20/6 -> 13/6/12/6 on the M1: Fit to Window's tiles, placed a second before the second window settled, reached 8 pt under the Dock
+// and stayed so (Fit's check found them 8 pt taller than their slots) until they were tiled again. Each such window is put in its layout again with
+// the new margins: Fit to Window's tiles by their slots, any other window (the Window menu's layouts) by the layout its stage matched exactly as
+// the old margins drew it. Windows elsewhere (moved or sized by hand) are left alone. (Aerial 5.0 only: the margins are Aerial 5.0's.)
+static void DMA5InsetsChangedRelayout(UIEdgeInsets was) {
+    if (!DMA5MacGeometry() || DMA5InsetsSame(was, gA5Insets)) return;
+    UIEdgeInsets now = gA5Insets;
+    NSArray<NSString *> *names = @[@"fill", @"left", @"right", @"top", @"bottom", @"topleft", @"topright", @"bottomleft", @"bottomright", @"center", @"small", @"medium", @"large"];
+    CGRect u = DMUsableArea(); CGSize scr = [UIScreen mainScreen].bounds.size;
+    CGRect before[13];
+    gA5Insets = was;   // (the layouts as the old margins drew them; main thread, put back at once)
+    for (NSUInteger i = 0; i < names.count; i++) before[i] = DMA5KeepableFrame(DMA5StageFromWindow(DMLayoutFrameInArea(names[i], u, scr)));
+    gA5Insets = now;
+    BOOL fit = DMFitEnabled() && gFitGroup.count > 0;
+    NSMutableArray<NSString *> *put = [NSMutableArray array];
+    for (UIView *st in DMAerialStages()) {
+        NSString *b = DMStageBundle(st);
+        if (!b.length || st.hidden || DMStageMinimized(st) || (fit && [gFitGroup containsObject:b])) continue;   // (Fit's tiles: by their slots, below)
+        CGRect f = st.frame;
+        for (NSUInteger i = 0; i < names.count; i++) {
+            CGRect o = before[i];
+            if (CGRectIsNull(o) || fabs(o.origin.x - f.origin.x) > 1.0 || fabs(o.origin.y - f.origin.y) > 1.0 || fabs(o.size.width - f.size.width) > 1.0 || fabs(o.size.height - f.size.height) > 1.0) continue;
+            CGRect t = DMLayoutFrame(names[i]);
+            if (!CGRectIsNull(t) && !CGRectEqualToRect(CGRectIntegral(t), CGRectIntegral(f))) { DMSetStageIntent(st, t); DMAerialMoveStage(st, t, nil); [put addObject:[NSString stringWithFormat:@"%@=%@", b, names[i]]]; }
+            break;
+        }
+    }
+    if (fit) DMApplyGroupSlots(nil);
+    DM_FEATURE_MARK("a5-insets-relayout");
+    DMLog([NSString stringWithFormat:@"[aerial5] the layouts' margins changed: windows in a layout follow (%@%@)", put.count ? [put componentsJoinedByString:@" "] : @"no Window menu layout", fit ? [NSString stringWithFormat:@"; Fit to Window's %lu tiles laid out again", (unsigned long)gFitGroup.count] : @""]);
 }
 static void DMAerial5Theme(UIView *stage) {
     if (gA5ThemeOff) return;
@@ -24377,15 +24585,19 @@ static void DMAerial5WatchLock(void) {
     int locked = DMLockUp(mgr) ? 1 : 0;
     // The user back after the screen was off although the UI lock never flipped (no passcode: the M1): the chip restore below runs on the reported
     // unlock, which never came, so Aerial 5.0's windows stayed round chips. The screen going off then coming back, not locked, the Cover Sheet gone,
-    // is the same cue (the screen-off time stands for when the lock began). DMAerial5RestoreAfterLock dedups (it and the reported unlock both fire on
-    // a passcode device).
+    // is the same cue (the screen-off time stands for when the lock began). Only while no lock is reported (as DMWatchLock's back path): where the
+    // lock is reported, its unlock below is the cue and takes the screen-off one with it (1.4 logic test, RC9 Low: the reported unlock left offSeen
+    // set, so the restore ran a second time once the Cover Sheet went, when that was more than a second later -- and run first in the unlock's own
+    // tick it took the screen-off time, which a screen woken while locked moves past the lock).
     static BOOL offSeen = NO;
     if (gDMScreenOff) offSeen = YES;
-    else if (offSeen && !locked && !DMCoverSheetShown()) { offSeen = NO; DMAerial5RestoreAfterLock(gDMScreenOffAt); }
+    else if (offSeen && !locked && wasLocked != 1 && !DMCoverSheetShown()) { offSeen = NO; DMLog(@"[aerial5] the lock's chip restore: back after the screen was off (no lock reported)"); DMAerial5RestoreAfterLock(gDMScreenOffAt); }
     if (wasLocked == -1) { wasLocked = locked; return; }
     if (locked == wasLocked) return;
     wasLocked = locked;
     if (locked) { lockedAt = now; return; }
+    offSeen = NO;
+    DMLog(@"[aerial5] the lock's chip restore: the reported unlock");
     DMAerial5RestoreAfterLock(lockedAt);
 }
 // ---- Aerial 5.0: never show its round minimized icon ("chip") -------------------------------------------------------------------------------
@@ -27803,7 +28015,16 @@ static BOOL DMCARSSnapshotLog(mach_port_t port, NSDictionary *d) {
     if (!DMTestFlag("/tmp/msw-snaplog")) return o_CARSSnapshot(port, d);
     CFTimeInterval t0 = CACurrentMediaTime();
     BOOL ok = o_CARSSnapshot(port, d);
-    NSString *desc = [[[d description] componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]] componentsJoinedByString:@" "];
+    NSMutableString *keys = [NSMutableString string];   // (every key but the context list in short, then the list as context ids: +t = with a transform of its own)
+    for (id k in d) {
+        id v = d[k];
+        if ([v isKindOfClass:[NSArray class]]) {
+            [keys appendFormat:@" %@=[", k];
+            for (id e in (NSArray *)v) if ([e isKindOfClass:[NSDictionary class]]) { NSDictionary *ed = e; id cid = nil; for (id ek in ed) if ([[ek description] containsString:@"ontext"]) cid = ed[ek]; [keys appendFormat:@"%@%@ ", cid, ed.count > 1 ? @"+t" : @""]; }
+            [keys appendString:@"]"];
+        } else if (![v isKindOfClass:[NSValue class]] || [v isKindOfClass:[NSNumber class]]) [keys appendFormat:@" %@=%@", k, [[v description] substringToIndex:MIN((NSUInteger)60, [v description].length)]];
+    }
+    NSString *desc = keys;
     for (id k in d) { id v = d[k]; if ([v isKindOfClass:[NSValue class]] && !strcmp([v objCType], @encode(CATransform3D))) { CATransform3D t = [v CATransform3DValue];
         desc = [desc stringByAppendingFormat:@" | %@ = [%g %g %g %g; %g %g %g %g; %g %g %g %g; %g %g %g %g]", k, t.m11, t.m12, t.m13, t.m14, t.m21, t.m22, t.m23, t.m24, t.m31, t.m32, t.m33, t.m34, t.m41, t.m42, t.m43, t.m44]; } }
     if (desc.length > 1600) desc = [desc substringFromIndex:desc.length - 1600];
@@ -29795,6 +30016,71 @@ static BOOL DMSMUnpinBegin(id self, SEL _cmd, id g) {
     }
     return o_SMUnpinBegin(self, _cmd, g);
 }
+// The strip is hidden while our engine runs (prefersStripHidden), but a stage LEAVING the screen still went into it: its window cards and app icons
+// flew from their places to the strip's slot past the left edge, fading in (1.4 logic test I-5 / O-1: at the window cap the full desktop's stage
+// showed as a small group at the left edge for a moment after the live slide to the new desktop). The strip takes the left stage in some 260 ms
+// after the new stage is drawn -- iPad 2 drawlog 8 Oct: the cards came back 48 x 107 at x 110 -> -7 -> -37, opacity 0.41 -> 0.77, after the
+// switch had already seen the new desktop stand still -- so no waiting covers it every time. A hidden strip draws none of its stages: the
+// strip's own opacity answers (each window card, the icons and titles under them) are 0 for every stage that is not the one on the stage.
+// Optional (not in the start-up check): another name or signature leaves the strip's drawing as Apple has it, and says so.
+static double (*o_SMStripOpacity)(id, SEL, long long, id, unsigned long long), (*o_SMStripIconOpacity)(id, SEL, unsigned long long);
+static SEL gSMStripOnStageSel, gSMStripEffSel, gSMStripLayoutsSel;
+static BOOL DMSMStripOffStage(id mod, id al) {   // (an app layout of the strip's that is not on the stage, as the strip itself sees it)
+    if (!al) return NO;
+    id on = ((id (*)(id, SEL))objc_msgSend)(mod, gSMStripOnStageSel);
+    if (on && [on isEqual:al]) return NO;
+    return !((BOOL (*)(id, SEL, id))objc_msgSend)(mod, gSMStripEffSel, al);
+}
+#if DEBUG
+static BOOL DMSMStripDebugApple(void) { return DMTestFlag("/tmp/msb-sm-stripdraw"); }   // (debug A/B of I-5: the strip's stages drawn as Apple has it)
+static void DMSMStripDebugLog(NSString *what, double o) {
+    static CFTimeInterval last[2];   // (cards and icons each their own pace: a layout pass asks both)
+    int k = [what hasSuffix:@"title"] ? 1 : 0;
+    if (!DMTestFlag("/tmp/msw-sm-drawlog") || CACurrentMediaTime() - last[k] < 0.05) return;
+    last[k] = CACurrentMediaTime();
+    DMLog([NSString stringWithFormat:@"[smstrip] %@ not drawn (Apple's opacity %.2f)", what, o]);
+}
+#else
+#define DMSMStripDebugApple() NO
+#define DMSMStripDebugLog(...) do {} while (0)
+#endif
+static double DMSMStripOpacity(id self, SEL _cmd, long long role, id al, unsigned long long i) {
+    double o = o_SMStripOpacity(self, _cmd, role, al, i);
+    if (o > 0.0 && DMSMFree() && !DMSMStripDebugApple() && DMSMStripOffStage(self, al)) {
+        DM_FEATURE_MARK("sm-strip-stages-not-drawn");
+        DMSMStripDebugLog([NSString stringWithFormat:@"stage %p window card (role %lld)", al, role], o);
+        return 0.0;
+    }
+    return o;
+}
+static double DMSMStripIconOpacity(id self, SEL _cmd, unsigned long long i) {
+    double o = o_SMStripIconOpacity(self, _cmd, i);
+    if (o <= 0.0 || !DMSMFree() || DMSMStripDebugApple()) return o;
+    NSArray *als = ((id (*)(id, SEL))objc_msgSend)(self, gSMStripLayoutsSel);
+    if (![als isKindOfClass:[NSArray class]] || i >= als.count || !DMSMStripOffStage(self, als[i])) return o;
+    DMSMStripDebugLog([NSString stringWithFormat:@"stage %p icons and title", als[i]], o);
+    return 0.0;
+}
+static void DMSMHookStripItems(void) {
+    static BOOL done = NO;
+    if (done) return;
+    done = YES;
+    Class c = objc_getClass("SBStripContinuousExposeSwitcherModifier");
+    SEL op = NSSelectorFromString(@"opacityForLayoutRole:inAppLayout:atIndex:"), io = NSSelectorFromString(@"titleAndIconOpacityForIndex:");
+    gSMStripOnStageSel = NSSelectorFromString(@"appLayoutOnStage"); gSMStripEffSel = NSSelectorFromString(@"_isAppLayoutEffectivelyOnStage:");
+    gSMStripLayoutsSel = NSSelectorFromString(@"appLayouts");
+    Method mop = c ? class_getInstanceMethod(c, op) : NULL, mio = c ? class_getInstanceMethod(c, io) : NULL;
+    Method mon = c ? class_getInstanceMethod(c, gSMStripOnStageSel) : NULL, meff = c ? class_getInstanceMethod(c, gSMStripEffSel) : NULL, mls = c ? class_getInstanceMethod(c, gSMStripLayoutsSel) : NULL;
+    BOOL asked = [DMSMSigOfMethod(mon) isEqualToString:DMSMExpect(@encode(id), NULL)] && [DMSMSigOfMethod(meff) isEqualToString:DMSMExpect(@encode(BOOL), @encode(id), NULL)]
+              && [DMSMSigOfMethod(mls) isEqualToString:DMSMExpect(@encode(id), NULL)];
+    BOOL opOK = [DMSMSigOfMethod(mop) isEqualToString:DMSMExpect(@encode(double), @encode(long long), @encode(id), @encode(unsigned long long), NULL)];
+    BOOL ioOK = [DMSMSigOfMethod(mio) isEqualToString:DMSMExpect(@encode(double), @encode(unsigned long long), NULL)];
+    // (both or neither: cards gone with their icons left, or the other way round, would still show half a stage leaving)
+    if (!asked || !opOK || !ioOK) { DMLog([NSString stringWithFormat:@"[smengine] the strip's drawing is not as expected here (stage %d, cards %d, icons %d): a leaving stage may show going into the hidden strip", asked, opOK, ioOK]); return; }
+    MSHookMessageEx(c, op, (IMP)DMSMStripOpacity, (IMP *)&o_SMStripOpacity);
+    MSHookMessageEx(c, io, (IMP)DMSMStripIconOpacity, (IMP *)&o_SMStripIconOpacity);
+    DMLog(o_SMStripOpacity && o_SMStripIconOpacity ? @"[smengine] the hidden strip draws none of its stages (a leaving stage does not show going into it)" : @"[smengine] the strip's drawing could not be replaced");
+}
 static void DMSMHookStripReveal(void) {
     static BOOL done = NO;
     if (done) return;
@@ -30584,6 +30870,7 @@ static void DMSMSelfCheck(void) {
         if (DMSMVariantIs("size grid", "lists")) %init(SMGridLists);      // (16.1+'s size lists: only where chosen, nothing hooked that is not there)
         %init(SMEngine);
         DMSMHookStripReveal();   // (optional: the recent-stages strip's reveal gesture, held off while our engine runs)
+        DMSMHookStripItems();    // (optional: the hidden strip draws none of its stages -- a leaving stage flew into it, 1.4 logic test I-5)
         DMSMDeskInstall();       // (optional: the Home Screen behind the windows, SMDesktop.h -- its own rows; missing = Apple's way, the engine runs)
         DMSMLimitInstall();      // (optional: more than four windows per desktop, SMLimit.h -- SpringBoard's own role functions + one row; else four, as 1.3.5)
         DMSMHomeInstall();       // (optional: the windows stay at Home and keep still in a Home gesture, SMHome.h -- its kSMNeeds rows; else Apple's Home)

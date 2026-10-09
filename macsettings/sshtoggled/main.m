@@ -43,6 +43,7 @@
 #include "../../common/DeviceGate.h"
 #include "../../common/EngineBuilds.h"
 #include "../../common/VersionGate.h"
+#include "../../common/DpkgState.h"
 #include "../../common/StageManagerAvailable.h"
 
 extern char **environ;
@@ -227,15 +228,19 @@ static BOOL PackageInstalled(NSString *status, NSString *pkg) {
     NSString *block = [status substringWithRange:NSMakeRange(r.location, (end.location == NSNotFound ? status.length : end.location) - r.location)];
     return [block containsString:@"Status: install ok installed"];
 }
+#if DEBUG   // (--dry-run-engines --old: the rule before 1.4.1, "install ok installed" only -- the device comparison of M-1)
+static BOOL gDryOldRule = NO;
+#define MSBDPackageOnDisk(s, p) (gDryOldRule ? PackageInstalled((s), (p)) : MSBDPackageOnDisk((s), (p)))
+#endif
 static BOOL ChoicyInstalled(NSString *status) {
 #if DEBUG   // (test switch: never in a release build)
     struct stat st;
     if (lstat("/var/jb/etc/sshtoggled-pretend-nochoicy", &st) == 0 && S_ISREG(st.st_mode) && st.st_uid == 0) return NO;
 #endif
-    return PackageInstalled(status, @"com.opa334.choicy");
+    return MSBDPackageOnDisk(status, @"com.opa334.choicy");   // (on disk: installed, or being set up in the dpkg run of the postinst, M-1)
 }
 static BOOL ICleanerInstalled(NSString *status) {
-    return PackageInstalled(status, @"com.exile90.icleanerpro") || PackageInstalled(status, @"xyz.cypwn.icleanerpro");
+    return MSBDPackageOnDisk(status, @"com.exile90.icleanerpro") || MSBDPackageOnDisk(status, @"xyz.cypwn.icleanerpro");
 }
 static BOOL IsRegular(NSString *path) { struct stat st; return lstat(path.fileSystemRepresentation, &st) == 0 && S_ISREG(st.st_mode); }
 static BOOL Exists(NSString *path) { struct stat st; return lstat(path.fileSystemRepresentation, &st) == 0; }
@@ -296,7 +301,7 @@ static NSString *EngineToKeep(NSString *status, BOOL *windowing, BOOL *picked) {
     NSString *stored = ChosenEngine(windowing);
     NSDictionary *libs = EngineLibs(), *pkgs = EnginePackage();
     BOOL ios16 = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 16;
-    *picked = stored && pkgs[stored] && PackageInstalled(status, pkgs[stored]) && !(ios16 && [stored isEqualToString:@"milkyway"]);
+    *picked = stored && pkgs[stored] && MSBDPackageOnDisk(status, pkgs[stored]) && !(ios16 && [stored isEqualToString:@"milkyway"]);
     if (*picked) return stored;
     NSDictionary *choicy = [NSDictionary dictionaryWithContentsOfFile:@"/var/jb/var/mobile/Library/Preferences/com.opa334.choicyprefs.plist"];
     NSArray *denied = [choicy[@"globalDeniedTweaks"] isKindOfClass:[NSArray class]] ? choicy[@"globalDeniedTweaks"] : @[];
@@ -308,7 +313,7 @@ static NSString *EngineToKeep(NSString *status, BOOL *windowing, BOOL *picked) {
         return Exists(dylib) ? dylib : [NSString stringWithFormat:@TWEAKDIR "/%@.disabled", lib];
     };
     return MSBDDefaultEngine(^BOOL(NSString *e) {
-        if (!PackageInstalled(status, pkgs[e])) return NO;
+        if (!MSBDPackageOnDisk(status, pkgs[e])) return NO;
         NSString *lib = libs[e][0];
         if ([denied containsObject:lib] && ![ours[lib] isEqual:@"added"]) return NO;   // (denied in Choicy by the user)
         if (!Exists([NSString stringWithFormat:@TWEAKDIR "/%@.dylib", lib]) && ![renamed containsObject:lib]) return NO;   // (switched off in iCleaner by the user)
@@ -318,7 +323,9 @@ static NSString *EngineToKeep(NSString *status, BOOL *windowing, BOOL *picked) {
 // SpringBoard asks at every start; when this really changed which engines load, it is told (the state names that SpringBoard), and only then does it
 // ask for the respring that finishes the switch (StatusBar.x, DMCheckEngineWarnings).
 static int SpringBoardPid(time_t *started);   // (section 3)
+static BOOL gTellSpringBoard = YES;   // (NO in the postinst's run, ApplyEnginesAtInstall: the SpringBoard running then is the one being replaced)
 static void TellSpringBoardEnginesChanged(void) {
+    if (!gTellSpringBoard) return;
     static int token = 0;
     if (!token && notify_register_check("com.besiktasliseba.msb.engines.changed", &token) != NOTIFY_STATUS_OK) { token = 0; return; }
     notify_set_state(token, (uint64_t)SpringBoardPid(NULL));
@@ -347,6 +354,7 @@ static void ChoicyApplyChosenEngine(NSString *why);                      // (sec
 // Settings rows load, and no other engine may be kept from loading. SpringBoard's decision at its start wins (what really runs); before it has
 // decided (the daemon's start at boot), the switches are read -- as mobile, since this helper runs as root (VersionGate's own reader reads the
 // current user's preferences).
+static void ApplyEngineRenames(NSString *reason, NSString *status);
 static BOOL TweakMeantToRun(void) {
     uint64_t sb = MSBDGateReadState(MSBD_GATE_STATE);
     if (sb) return sb == 2;
@@ -385,6 +393,15 @@ static void ApplyEngines(NSString *reason) {
         return;
     }
     if (!ICleanerInstalled(status)) { ELog(@"%@: neither Choicy nor iCleaner Pro installed -- nothing to do", reason); return; }
+    ApplyEngineRenames(reason, status);
+}
+// iCleaner Pro setups (no Choicy): every installed engine but the chosen one renamed to .disabled, as iCleaner does (ApplyEngines, and the postinst's
+// run: ApplyEnginesAtInstall).
+static void ApplyEngineRenames(NSString *reason, NSString *status) {
+    // (not while Mac Status Bar itself is switched off in iCleaner Pro: then the engines are the user's own -- RestoreForOff gave them back -- and the
+    //  helper's start at the next boot renamed them again, so the user's other engines stayed off while Mac Status Bar was off)
+    NSString *how = nil;
+    if (MacStatusBarSwitchedOff(status, &how)) { GiveBackAll(@"Mac Status Bar is switched off"); ELog(@"%@: Mac Status Bar is switched off in %@ -- no engine kept from loading", reason, how); return; }
     char real[PATH_MAX], tweakdir[PATH_MAX];   // (DynamicLibraries must be the same folder as TweakInject; /var/jb itself is a symlink into /private/preboot)
     if (!realpath("/var/jb/Library/MobileSubstrate/DynamicLibraries", real) || !realpath(TWEAKDIR, tweakdir) || strcmp(real, tweakdir) != 0) {
         ELog(@"%@: unexpected tweak folder -- nothing done", reason); return;
@@ -404,7 +421,7 @@ static void ApplyEngines(NSString *reason) {
     NSMutableOrderedSet *record = LoadRecord();
     if (chosen) for (NSString *n in libs[chosen]) EnableOurs(n, record, [NSString stringWithFormat:@"%@ is the chosen engine", chosen]);
     for (NSString *engine in libs) {
-        if ([engine isEqualToString:chosen] || !PackageInstalled(status, pkgs[engine])) continue;
+        if ([engine isEqualToString:chosen] || !MSBDPackageOnDisk(status, pkgs[engine])) continue;
         for (NSString *name in libs[engine]) {
             NSString *dylib = [NSString stringWithFormat:@TWEAKDIR "/%@.dylib", name], *disabled = [NSString stringWithFormat:@TWEAKDIR "/%@.disabled", name];
             if (!Exists(dylib)) continue;   // (already disabled, by us or by the user)
@@ -458,7 +475,7 @@ static NSInteger ChoicyMode(NSDictionary *sb) {   // Choicy's allow/deny mode: 1
 static BOOL MacStatusBarSwitchedOff(NSString *status, NSString **how) {
     NSString *dylib = @TWEAKDIR "/MacStatusBar.dylib", *disabled = @TWEAKDIR "/MacStatusBar.disabled";
     if (!Exists(dylib) && IsRegular(disabled)) { *how = @"iCleaner Pro"; return YES; }
-    if (!PackageInstalled(status, @"com.opa334.choicy")) return NO;
+    if (!MSBDPackageOnDisk(status, @"com.opa334.choicy")) return NO;
     NSDictionary *c = [NSDictionary dictionaryWithContentsOfFile:@PREFSDIR "/com.opa334.choicyprefs.plist"];
     if ([c[@"globalDeniedTweaks"] isKindOfClass:[NSArray class]] && [c[@"globalDeniedTweaks"] containsObject:@"MacStatusBar"]) { *how = @"Choicy (all processes)"; return YES; }
     NSDictionary *sb = [c[@"appSettings"] isKindOfClass:[NSDictionary class]] ? c[@"appSettings"][@"com.apple.springboard"] : nil;
@@ -621,7 +638,7 @@ static void ChoicyApplyChosenEngine(NSString *why) {
     // added earlier for an engine that is not installed is taken out again (our own record says so)
     NSDictionary *pkgs = EnginePackage();
     NSArray *keep = chosen ? libs[chosen] : @[]; NSMutableArray *deny = [NSMutableArray array], *notInstalled = [NSMutableArray array];
-    for (NSString *e in libs) if (![e isEqualToString:chosen]) [PackageInstalled(status, pkgs[e]) ? deny : notInstalled addObjectsFromArray:libs[e]];
+    for (NSString *e in libs) if (![e isEqualToString:chosen]) [MSBDPackageOnDisk(status, pkgs[e]) ? deny : notInstalled addObjectsFromArray:libs[e]];
     NSMutableArray *global = [prefs[@"globalDeniedTweaks"] isKindOfClass:[NSArray class]] ? [prefs[@"globalDeniedTweaks"] mutableCopy] : [NSMutableArray array];
     BOOL changed = SetMembershipRecorded(global, deny, keep, @"globalDeniedTweaks", record);
     NSDictionary *ours = [record[@"globalDeniedTweaks"] isKindOfClass:[NSDictionary class]] ? record[@"globalDeniedTweaks"] : @{};
@@ -687,7 +704,7 @@ static void RestoreForOff(NSString *how, NSString *why) {
     mkdir(ESTATEDIR, 0755);   // the marker FIRST: Mac Status Bar, still running until the respring, sees it and stops holding the engines' settings
     { FILE *m = fopen(OFFMARKER, "w"); if (m) { fputs(how.UTF8String, m); fclose(m); } chmod(OFFMARKER, 0644); }
     GiveBackEngineSettings();
-    if (PackageInstalled(status, @"com.opa334.choicy")) GiveBackChoicyEngines();
+    if (MSBDPackageOnDisk(status, @"com.opa334.choicy")) GiveBackChoicyEngines();
     GiveBackAll(@"Mac Status Bar is switched off");
     GiveBackStageManager(@"MSB off");
     mkdir(ESTATEDIR, 0755);
@@ -698,7 +715,7 @@ static void PrepareForOn(NSString *why) {
     unlink(OFFMARKER);
     unlink(ESTATEDIR "/msb-off-alert");   // (plan 3d-7: switched on again, so no "Mac Status Bar Is Off" alert may be shown any more)
     if (!TweakMeantToRun()) { ELog(@"%@: MacStatusBar&Dock is off (untested iPadOS or safe mode) -- no engine choice applied", why); return; }
-    if (PackageInstalled(status, @"com.opa334.choicy")) ChoicyApplyChosenEngine(why);
+    if (MSBDPackageOnDisk(status, @"com.opa334.choicy")) ChoicyApplyChosenEngine(why);
     else ApplyEngines(why);   // (iCleaner Pro setups: the other engines renamed again)
 }
 // The slow fallback (a switch-off the watcher missed, e.g. a respring before Choicy's change reached the disk): 95 s after SpringBoard starts, if Mac
@@ -873,6 +890,23 @@ static void KeepLinesDisabledAfterUpdate(void) {
         if (IsRegular(dylib) && IsRegular(disabled) && OwnedByPackage(OURPKG, line) && rename(dylib.fileSystemRepresentation, disabled.fileSystemRepresentation) == 0)
             ELog(@"install: %@ was switched off in iCleaner Pro -- the new build stays switched off", line);
     }
+}
+// After every install or upgrade (the postinst, before the install's respring): the engine choice is made sure of in Choicy (or by iCleaner Pro's
+// renames) NOW. A removal gives it back (the prerm's --uninstall), so after a remove-then-install -- a reinstall, or a switch between the release and
+// the beta package -- nothing kept the other engines from loading until SpringBoard's first start asked for it: that start ran every engine next to
+// the pick (Stage Manager held off, its windows lost, an old window state restored) and a second respring was needed (1.4 logic test L-6). The
+// same decision as at SpringBoard's start (ApplyEngines "request"); after an upgrade it is in place already and nothing changes. Not while
+// MacStatusBar&Dock is not meant to run (untested iPadOS without Enable Anyway, the crash guard's safe mode) or is switched off in Choicy or iCleaner
+// Pro (after KeepLinesDisabledAfterUpdate, so a line switched off in iCleaner Pro is seen as off). Our own package is only being configured here,
+// so its dpkg state is not asked; an engine, Choicy or iCleaner Pro installed or upgraded in the same dpkg run (a Sileo queue) is counted as
+// installed though it is only unpacked now (MSBDPackageOnDisk, DpkgState.h: its files are on the device; 1.4.1 logic test M-1).
+static void ApplyEnginesAtInstall(void) {
+    if (!TweakMeantToRun()) { ELog(@"install: MacStatusBar&Dock is off (untested iPadOS without Enable Anyway, or the crash guard's safe mode) -- no engine choice applied"); return; }
+    NSString *status = DpkgStatus(), *how = nil;
+    if (MacStatusBarSwitchedOff(status, &how)) { ELog(@"install: Mac Status Bar is switched off in %@ -- no engine choice applied", how); return; }
+    if (ChoicyInstalled(status)) { GiveBackAll(@"Choicy is installed"); ChoicyApplyChosenEngine(@"install"); return; }
+    if (!ICleanerInstalled(status)) { ELog(@"install: neither Choicy nor iCleaner Pro installed -- nothing to do"); return; }
+    ApplyEngineRenames(@"install", status);
 }
 
 // The move from the old separate packages (once, from the postinst). Everything is copied or added, nothing of the user's is overwritten:
@@ -1148,7 +1182,7 @@ static void Uninstall(void) {
     GiveBackEngineSettings();
     GiveBackStageManager(@"removal");
     NSString *status = DpkgStatus();
-    if (PackageInstalled(status, @"com.opa334.choicy")) {
+    if (MSBDPackageOnDisk(status, @"com.opa334.choicy")) {
         GiveBackChoicyEngines();
         NSDictionary *record = [NSDictionary dictionaryWithContentsOfFile:@LINERECORD];
         NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:@CHOICYPREFS] mutableCopy];
@@ -1202,6 +1236,24 @@ static void Uninstall(void) {
     }
 }
 
+#if DEBUG
+// --dry-run-engines <status file> [--old]: the engine choice the postinst would make with that dpkg status text (the real preferences, Choicy's
+// settings and the tweak folder are read; nothing is written) -- an engine "unpacked" in it is the same Sileo run as ours (M-1).
+static void DryRunEngines(const char *statusPath, BOOL oldRule) {
+    gDryOldRule = oldRule;
+    NSString *status = [NSString stringWithContentsOfFile:@(statusPath) encoding:NSUTF8StringEncoding error:nil] ?: @"";
+    BOOL windowing = YES, picked = NO;
+    NSString *chosen = EngineToKeep(status, &windowing, &picked);
+    if (!windowing) chosen = nil;
+    NSDictionary *libs = EngineLibs(), *pkgs = EnginePackage();
+    NSMutableArray *deny = [NSMutableArray array], *notInstalled = [NSMutableArray array];
+    for (NSString *e in libs) if (![e isEqualToString:chosen]) [MSBDPackageOnDisk(status, pkgs[e]) ? deny : notInstalled addObjectsFromArray:libs[e]];
+    printf("dry run (%s rule): Choicy %s, windowing %d, engine kept loading: %s (picked %d), kept from loading: %s, counted as not installed: %s\n", oldRule ? "the old" : "the 1.4.1",
+        ChoicyInstalled(status) ? "on the device" : "not counted", windowing, (chosen ?: @"none").UTF8String, picked,
+        [deny componentsJoinedByString:@" "].UTF8String, [notInstalled componentsJoinedByString:@" "].UTF8String);
+    gDryOldRule = NO;
+}
+#endif
 int main(int argc, char **argv) {
     @autoreleasepool {
         // Not an iPad (common/DeviceGate.h): nothing but giving back. The daemon stays idle (launchd would restart it if it quit).
@@ -1217,13 +1269,14 @@ int main(int argc, char **argv) {
         if (argc > 1 && strcmp(argv[1], "--restore-msb-off") == 0) { NSString *how = nil; if (MacStatusBarSwitchedOff(DpkgStatus(), &how)) RestoreForOff(how, @"manual"); else printf("Mac Status Bar is not switched off\n"); return 0; }
 #if DEBUG
         if (argc > 4 && strcmp(argv[1], "--dry-run-choicy") == 0) { DryRunChoicy(argv[2], argv[3], argv[4]); return 0; }
+        if (argc > 2 && strcmp(argv[1], "--dry-run-engines") == 0) { DryRunEngines(argv[2], argc > 3 && strcmp(argv[3], "--old") == 0); return 0; }
         if (argc > 1 && strcmp(argv[1], "--dpkg-busy") == 0) { printf("%s\n", DpkgBusy() ? "busy" : "free"); return 0; }   // (test of the package-transaction check)
 #endif
         if (argc > 1 && strcmp(argv[1], "--welcome-check") == 0) { WelcomeCheck(argc > 2 ? argv[2] : NULL); return 0; }   // (postinst, first: first install or not)
         if (argc > 1 && strcmp(argv[1], "--defaults-check") == 0) { DefaultsCheck(argc > 2 ? argv[2] : NULL); return 0; }   // (postinst, after the welcome check)
         if (argc > 1 && strcmp(argv[1], "--freeze-defaults") == 0) { FreezeOldDefaults(); return 0; }   // (postinst, after the migration)
         if (argc > 1 && strcmp(argv[1], "--migrate") == 0) { Migrate(); return 0; }                      // (postinst, once: from the old separate packages)
-        if (argc > 1 && strcmp(argv[1], "--after-install") == 0) { KeepLinesDisabledAfterUpdate(); return 0; }   // (postinst, every install/upgrade)
+        if (argc > 1 && strcmp(argv[1], "--after-install") == 0) { gTellSpringBoard = NO; KeepLinesDisabledAfterUpdate(); ApplyEnginesAtInstall(); return 0; }   // (postinst, every install/upgrade)
         if (argc > 1 && strcmp(argv[1], "--uninstall") == 0) { Uninstall(); return 0; }                    // (prerm, on removal only)
         // (--resume <what>: this daemon started over after a cfprefsd restart, StartOverIfPrefsDaemonRestarted -- the same start, then that work again)
         const char *resume = (argc > 2 && strcmp(argv[1], "--resume") == 0) ? argv[2] : NULL;

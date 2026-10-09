@@ -469,6 +469,7 @@ static UIView *DMMSWWallpaperImageView(UIView *wall) {   // (the view whose laye
     return nil;
 }
 static UIView *DMMSWWallpaperBackground(UIView *root, NSString **why) {
+    if (DMTestFlag("/tmp/msw-liveblur")) { *why = @"debug: /tmp/msw-liveblur"; return nil; }   // (the live blur's fade checked on a device, L-3)
     UIView *wall = DMMSWWallpaperView();
     if (!wall) { *why = @"no Home Screen wallpaper view"; return nil; }
     UIView *iv = DMMSWWallpaperImageView(wall);
@@ -535,6 +536,7 @@ static NSInteger DMMSWTurnKey(void) {
     return DMMSWHasMethod(object_getClass(sb), @"activeInterfaceOrientation", @"q@:") ? ((long long (*)(id, SEL))objc_msgSend)(sb, s) : -1;
 }
 // The content's root view with its background only (a turn shows just this until it has settled).
+static const void *kMSWLiveBlurKey = &kMSWLiveBlurKey;   // (the view's background is the live blur: never faded as a group, DMMSWCloseUnderSlide)
 static UIView *DMMSWBuildRoot(void) {
     UIWindow *w = gMSWWindow;
     UIView *host = w.rootViewController.view ?: w;
@@ -560,6 +562,7 @@ static UIView *DMMSWBuildRoot(void) {
         [back addSubview:dim];
     } else {
         DMLog([NSString stringWithFormat:@"[macswitcher] background: the live blur (%@)", why]);
+        objc_setAssociatedObject(root, kMSWLiveBlurKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         back = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThickMaterialDark]];
         back.frame = b;
         UIView *dim = [[UIView alloc] initWithFrame:b];
@@ -816,8 +819,18 @@ static BOOL DMMSWScreenPictureAsync(NSArray<UIWindow *> *exclude, void (^done)(U
     NSArray *wins = ((id (*)(id, SEL, BOOL, BOOL, id))objc_msgSend)([UIWindow class], ws, YES, YES, scr);
     NSMutableArray *list = [NSMutableArray array];
     id slotCtx = nil;
+#if DEBUG
+    NSInteger subLo = -1, subHi = -1, idx = -1;   // (K-1 test: /tmp/msw-snapsub "<lo> <hi>" lists only those windows, by their place in this order)
+    { NSArray *f = [[[NSString stringWithContentsOfFile:@"/tmp/msw-snapsub" encoding:NSUTF8StringEncoding error:nil] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] componentsSeparatedByString:@" "];
+      if (f.count == 2) { subLo = [f[0] integerValue]; subHi = [f[1] integerValue]; } }
+#endif
     for (UIWindow *w in wins) {
         if (![w isKindOfClass:[UIWindow class]] || [exclude containsObject:w]) continue;
+#if DEBUG
+        idx++;
+        if (subLo >= 0 && (idx < subLo || idx > subHi)) continue;
+        if (subLo >= 0) DMLog([NSString stringWithFormat:@"[mswpic] listed %ld: %@ level %.1f", (long)idx, NSStringFromClass([w class]), w.windowLevel]);
+#endif
         id c = DMCall(w.layer, @"context");
         uint32_t cid = c ? ((uint32_t (*)(id, SEL))objc_msgSend)(c, NSSelectorFromString(@"contextId")) : 0;
         if (!cid) continue;
@@ -835,6 +848,9 @@ static BOOL DMMSWScreenPictureAsync(NSArray<UIWindow *> *exclude, void (^done)(U
     id name = DMCall(scr, @"_name");
     NSMutableDictionary *opts = [NSMutableDictionary dictionary];
     opts[gMSWSnapKeyMode] = gMSWSnapModeStopAfter;
+#if DEBUG
+    if (DMTestFlag("/tmp/msw-snapinclude")) { NSString *inc = DMMSWSnapConst("kCASnapshotModeIncludeContextList"); if (inc) opts[gMSWSnapKeyMode] = inc; }   // (K-1 test: only the listed contexts)
+#endif
     opts[gMSWSnapKeyList] = list;
     if ([name isKindOfClass:[NSString class]]) opts[gMSWSnapKeyName] = name;
     opts[gMSWSnapKeyTransform] = [NSValue valueWithCATransform3D:CATransform3DMakeAffineTransform(a)];
@@ -880,6 +896,20 @@ static BOOL DMMSWAsyncPicsOn(void) {
 // quit) can show it without its window.
 static NSMutableDictionary<NSString *, UIView *> *gMSWFreshPics;   // app -> its picture cut out just before its window goes away
 static const void *kMSWOverKey = &kMSWOverKey;                    // (a cut-out's windows in front of it, covering part of it: their parts are in it)
+// After a window is dragged away in the open view, the view's opening picture (gMSWOpenShot) shows it still: it is no longer the desktop's picture
+// (DMMSWMoveRecords drops it), but every other window's part of it is still right -- kept here for their pictures (DMMSWLeftFromParts, and their
+// cut-outs when the desktop is left, DMMSWSwChange), with the windows each one had a dragged-away window in front of (gMSWCutSpoiled: those parts
+// show that window -- a picture of theirs from it is true only where that window is too, DMMSWCutTrue / DMMSWPicTrueOn). Let go with the view or
+// the switch.
+static UIView *gMSWCutShot;
+static NSInteger gMSWCutShotId = 0;
+static NSMutableDictionary<NSString *, NSMutableSet<NSString *> *> *gMSWCutSpoiled;   // window (app, or "native:<address>") -> dragged-away windows over it
+static void DMMSWCutLetGo(void) { gMSWCutShot = nil; gMSWCutShotId = 0; gMSWCutSpoiled = nil; }
+static NSString *DMMSWNativeCutKey(UIView *w) { return [NSString stringWithFormat:@"native:%p", w]; }
+static BOOL DMMSWCutTrue(NSString *key, NSInteger did) {   // (its part of gMSWCutShot shows no window that has left desktop `did` since)
+    for (NSString *o in gMSWCutSpoiled[key]) if (gMSWWinDesk[o].integerValue != did) return NO;
+    return YES;
+}
 // A window's picture is true on a desktop drawn from parts while every window that covered part of it when it was cut out is still on that desktop
 // (a force quit while away: that window's part would show in the picture of the one behind it -- an app icon card is drawn for it instead).
 static BOOL DMMSWPicTrueOn(UIView *pic, NSInteger did) {
@@ -928,6 +958,7 @@ static void DMMSWCutOutsFrom(UIView *old, NSInteger fromId) {
         if (!c) continue;
         NSMutableSet *over = [NSMutableSet set];   // (the windows in front of it that cover part of it: in its cut-out too)
         for (NSUInteger j = i + 1; j < shown.count; j++) if (CGRectIntersectsRect(r, [shown[j] convertRect:shown[j].bounds toCoordinateSpace:scr.coordinateSpace])) [over addObject:DMStageBundle(shown[j])];
+        if (old == gMSWCutShot && gMSWCutSpoiled[b].count) [over unionSet:gMSWCutSpoiled[b]];   // (the windows dragged away since that covered part of it there)
         objc_setAssociatedObject(c, kMSWOverKey, over, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         gMSWFreshPics[b] = c; n++;
     }
@@ -1182,12 +1213,18 @@ static NSMutableArray<UIView *> *gMSWSlPortals;   // the live parts of pictures 
 static CGFloat gMSWSlW = 0;           // how far one desktop is from the next on the strip: the screen's width
 static NSUInteger gMSWSlGen = 0, gMSWSlFinGen = 0;   // which slide / which ending a late completion belongs to
 static UIView *gMSWOpenShot;          // the screen as it was when the Mac Switcher opened: the left desktop's picture for a switch from its strip
+static const void *kMSWSharedKey = &kMSWSharedKey;   // (a picture that wants the shared windows' portals)
+static const void *kMSWNotKeptKey = &kMSWNotKeptKey;   // (a left picture never kept as its desktop's thumbnail: drawn from parts, DMMSWLeftFromParts / DMMSWSwEnd)
 static NSInteger gMSWOpenShotId = 0;
 static NSUInteger gMSWOpenShotGen = 0; // (which opening a picture on its way belongs to: a late one of an earlier opening, or one taken before a drop, is dropped)
 static void DMMSWOpenShotDrop(void) { gMSWOpenShot = nil; gMSWOpenShotGen++; }
 static UIView *gMSWLiftPic;           // the screen as it was when the last side-swipe-able gesture began (until a switch takes it, or 2 s)
 static CFTimeInterval gMSWLiftPicAt = 0;
 static NSInteger gMSWLiftPicId = 0;
+static NSUInteger gMSWTrackPicGen = 0;   // (which gesture a picture on its way belongs to: counted at each gesture's start, the gestures section)
+static NSUInteger gMSWLiftPicGen = 0; // (which gesture it belongs to: gMSWTrackPicGen then)
+static BOOL DMMSWGestureAlive(id gesture);   // (the gestures section: still held)
+static __weak id gMSWLiftPicGesture;  // (that gesture: kept while it is still held -- a hold that opens the view may last more than 2.5 s)
 static int gMSWTrack = 0;             // the tracker (gestures section): 0 idle, 1 armed (a gesture began), 2 the slide follows the fingers, 3 lifted
 static BOOL gMSWTrackCommit = NO;     // (the tracker hands its slide to the switch it starts: DMMSWSwitchRun / DMMSWSMSwitch take that slide)
 static NSInteger gMSWPendingSide = 0; // a side swipe that ended while a switch was still on its way: its desktop comes right after
@@ -1196,6 +1233,7 @@ static BOOL gMSWSlFresh = NO;         // (the slide's window was shown in this v
 static CFTimeInterval gMSWSlQuietAt = 0;   // (when the ending slide has 97% of its way behind it: the switch's own work goes there, DMMSWSwitchRun)
 static const NSTimeInterval kMSWRevealFade = 0.15, kMSWViewFade = 0.18;
 static UIView *DMMSWDeskPicture(NSUInteger i, CGRect b);   // (below DMMSWComposedDesktop: the coming desktop's picture)
+static UIView *DMMSWLeftFromParts(UIView *fsPic, UIView *fsSrc);   // (below DMMSWDeskPicture: the desktop on the screen drawn from its parts)
 static void DMMSWSlShared(UIView *pic);                    // (below it: a picture drawn from parts gets the shared windows, live)
 static void DMMSWTrackTick(void);                          // (the gestures section: a followed gesture that ended without its end)
 // More desktops on the strip than the two beside the left one: a slide that a swipe or a Control-arrow sent on further while it ran (the running
@@ -1219,6 +1257,7 @@ static __weak UIView *gMSWSlFadeTop;    // (Reduce Motion: the picture that show
 static void DMMSWSlPut(UIView *pic, CGRect r) {
     UIView *clip = [[UIView alloc] initWithFrame:r];
     clip.clipsToBounds = YES; clip.userInteractionEnabled = NO; clip.backgroundColor = [UIColor blackColor];
+    clip.layer.allowsGroupOpacity = !DMTestFlag("/tmp/msw-nogroupop");   // (Reduce Motion fades a clip in over the other: as one picture, see DMMSWSlBegin)
     [pic removeFromSuperview];
     pic.transform = CGAffineTransformIdentity; pic.alpha = 1;
     CGSize s = pic.bounds.size;
@@ -1262,6 +1301,9 @@ static BOOL DMMSWSlBegin(UIView *old, UIView *leftPic, UIView *rightPic) {
     UIView *root = [UIView new];
     root.userInteractionEnabled = YES;                 // (touches wait until the slide is over)
     root.backgroundColor = [UIColor blackColor];       // (what shows past the last desktop, under the rubber band)
+    // (faded as ONE picture: SpringBoard's layers do not composite a subtree as a group by default -- the reveal's fade showed the black backgrounds
+    //  under the pictures through them, the screen dipping ~35% darker mid-fade on every switch; K-1 / K-3, M1 8 Oct)
+    root.layer.allowsGroupOpacity = !DMTestFlag("/tmp/msw-nogroupop");
     [host insertSubview:root atIndex:0];               // (under the Mac Switcher's view while that fades away)
     DMMSWTurnIn(w, root);
     CGRect b = root.bounds;
@@ -1273,6 +1315,7 @@ static BOOL DMMSWSlBegin(UIView *old, UIView *leftPic, UIView *rightPic) {
     gMSWSlFadeTop = old.superview;   // (Reduce Motion: it shows; the coming one fades in over it)
     if (leftPic && leftPic != old) { gMSWSlSide[0] = leftPic; DMMSWSlPut(leftPic, CGRectOffset(b, -gMSWSlW, 0)); }
     if (rightPic && rightPic != old && rightPic != leftPic) { gMSWSlSide[1] = rightPic; DMMSWSlPut(rightPic, CGRectOffset(b, gMSWSlW, 0)); }
+    DMMSWSlShared(old);   // (only a picture drawn from parts takes them: the left desktop drawn from its parts, DMMSWLeftFromParts)
     if (gMSWSlSide[0]) DMMSWSlShared(gMSWSlSide[0]);
     if (gMSWSlSide[1]) DMMSWSlShared(gMSWSlSide[1]);
     DMMSWRecTrack(strip);
@@ -1453,6 +1496,9 @@ static void DMMSWCloseUnderSlide(void) {
     DMMenuKeyboardOrder();
     if (!vr) return;
     vr.userInteractionEnabled = NO;
+    // (the view fades over the slide as one picture, see DMMSWSlBegin -- not over the live blur: a blur inside a group drawn off screen sees
+    //  nothing behind the group and went flat for the fade; that background is used only when the wallpaper can't be read. 1.4.1 logic test L-3)
+    vr.layer.allowsGroupOpacity = !DMTestFlag("/tmp/msw-nogroupop") && ![objc_getAssociatedObject(vr, kMSWLiveBlurKey) boolValue];
     [vr.superview bringSubviewToFront:vr];
     [UIView animateWithDuration:kMSWViewFade delay:0 options:UIViewAnimationOptionCurveEaseIn animations:^{ vr.alpha = 0; } completion:^(BOOL f) {
         for (UIView *p in portals) DMMSWPortalLetGo(p);
@@ -1721,6 +1767,32 @@ static void DMMSWSwitchRun(NSUInteger to, NSString *why, CGFloat v, void (^done)
     NSString *src = nil;
     UIView *kept = DMMSWLeftPictureKept(gMSWOpen, &src);
     if (kept) { DMMSWMark([NSString stringWithFormat:@"left picture: %@", src]); DMMSWSwitchGo(to, why, v, done, NO, t0, kept); return; }
+    // (the view open and no picture of the desktop under it kept: a window was dragged away in the view, and the view's opening picture showed it
+    //  still. On iPadOS 15 a picture of the screen taken now has the view itself in it -- our window is drawn through SBRootSceneWindow, which every
+    //  picture of the screen draws (found with K-1, M1 8 Oct): it became that desktop's thumbnail and its windows' pictures. So the left desktop is
+    //  drawn from its parts (DMMSWLeftFromParts): its full-screen app's own picture, asked without waiting -- the slide comes up when it is in, at
+    //  most 0.3 s --, its wallpaper, the shared windows live, its windows' parts of the opening picture. 16 and 17 take UIKit's picture of the
+    //  screen without the view as before (DMMSWLeftPictureNow) until it is read there.)
+    if (gMSWOpen && [NSProcessInfo processInfo].operatingSystemVersion.majorVersion == 15 && !DMTestFlag("/tmp/msw-nopartsleft")) {
+        NSString *whyCopy = [why copy];
+        __block BOOL went = NO;
+        SBApplication *front = DMFrontApp();
+        NSString *fb = front && DMFullScreenAppInFront() ? [front bundleIdentifier] : nil;
+        if (fb && [[gMSWFullScreen allValues] containsObject:fb]) fb = nil;   // (dragged to another desktop in the view: it goes Home when it lands)
+        UIView *fsv = fb ? DMMSWFullScreenView(fb, NO) : nil;
+        void (^go)(UIView *, NSString *) = ^(UIView *fsPic, NSString *how) {
+            if (went) return;
+            went = YES;
+            DMMSWMark([NSString stringWithFormat:@"left picture: drawn from its parts (the view is open; %@)", how]);
+            DMMSWSwitchGo(to, whyCopy, v, done, NO, t0, DMMSWLeftFromParts(fsPic, fsPic ? fsv : nil));
+        };
+        if (fsv && DMMSWPictureAsync(fsv, ^(UIView *pic, double ms) { go(pic, pic ? [NSString stringWithFormat:@"the full-screen app's picture in %.1f ms", ms] : @"the full-screen app's picture not drawn"); })) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ go(nil, @"the full-screen app's picture not in within 0.3 s"); });
+            return;
+        }
+        go(nil, fb ? @"no picture of its full-screen app could be asked" : @"no full-screen app");
+        return;
+    }
     if (DMMSWAsyncScreenOn() && DMMSWAsyncPicturesOK()) {
         __block BOOL went = NO;
         NSString *whyCopy = [why copy];
@@ -1750,7 +1822,8 @@ static void DMMSWSwitchRun(NSUInteger to, NSString *why, CGFloat v, void (^done)
 // belong to it (gMSWSwGen): a redirect leaves those of the aim before doing nothing.
 // The strip's pictures are kept by slot -- k screens from the left desktop's -- with the desktop place each shows (gMSWSlPlaces): a switch from
 // the strip to a desktop further away slides one screen, so a redirect is taken only where the next desktop's slot is free or holds it already;
-// else (and for Stage Manager's switch, and a switch with its own follow-up: a launch, a remove) the desktop comes right after, as before.
+// else (and for a switch with its own follow-up: a launch, a remove) the desktop comes right after, as before. Stage Manager's switch is re-aimed
+// the same way by MacSwitcherSM.h (DMMSWSMRedirect).
 static NSUInteger gMSWSwFrom = 0, gMSWSwTo = 0;   // the desktop places it started from (slot 0) and goes to now
 static NSInteger gMSWSwToSlot = 0;                // the slot of the one it goes to
 static NSInteger gMSWSwFromId = 0;
@@ -1862,7 +1935,9 @@ static void DMMSWSwChange(NSUInteger gen, CFTimeInterval since) {
     CFTimeInterval t2 = CACurrentMediaTime(), t3 = t2;
     if (at != to) {
         DMMSWSpanBegin();   // (debug, /tmp/msw-span: the main thread from here to 120 ms after the windows change)
-        DMMSWCutOutsFrom(DMMSWSlPicOfPlace(at), gMSWDesks[at].integerValue);   // (the leaving windows' pictures: cut out of their desktop's picture)
+        UIView *leftPic = DMMSWSlPicOfPlace(at);   // (one drawn from its parts: its windows' pictures come out of the view's opening picture, gMSWCutShot)
+        if ([objc_getAssociatedObject(leftPic, kMSWNotKeptKey) boolValue] && gMSWCutShot && gMSWCutShotId == gMSWDesks[at].integerValue) leftPic = gMSWCutShot;
+        DMMSWCutOutsFrom(leftPic, gMSWDesks[at].integerValue);   // (the leaving windows' pictures: cut out of their desktop's picture)
         gMSWSwInChange = YES;
         fs = DMMSWChangeDesktop(at, to);
         gMSWSwInChange = NO; gMSWSwChanged = YES;
@@ -1912,7 +1987,9 @@ static void DMMSWTrimPictures(NSInteger keepId) {
 static void DMMSWSwEnd(void) {
     NSInteger fromId = gMSWSwFromId, toId = DMMSWCurId();
     UIView *old = gMSWSwOld;
-    if (old && fromId != toId) {   // (the left desktop's thumbnail, with the windows it showed)
+    BOOL notKept = old && [objc_getAssociatedObject(old, kMSWNotKeptKey) boolValue];
+    if (notKept && fromId != toId) [gMSWShots removeObjectForKey:@(fromId)];   // (it left drawn from its parts: so is its next visit)
+    if (old && fromId != toId && !notKept) {   // (the left desktop's thumbnail, with the windows it showed)
         if (!gMSWShots) gMSWShots = [NSMutableDictionary dictionary];
         if (!gMSWShotSet) gMSWShotSet = [NSMutableDictionary dictionary];
         gMSWShots[@(fromId)] = old; gMSWShotSet[@(fromId)] = DMMSWWindowSet(fromId);
@@ -1923,7 +2000,7 @@ static void DMMSWSwEnd(void) {
     for (NSString *b in [gMSWWinShots allKeys]) if (gMSWWinDesk[b].integerValue == toId) [gMSWWinShots removeObjectForKey:b];
     if (fromId != toId) DMMSWTrimPictures(fromId);
     if (fromId == toId) gMSWLiftPic = nil;
-    gMSWSwOld = nil; gMSWSlPlaces = nil;
+    gMSWSwOld = nil; gMSWSlPlaces = nil; DMMSWCutLetGo();
     gMSWSwitching = NO; gMSWSwRevealing = NO;
     if (gMSWTrack == 3) gMSWTrack = 0;
     DMMSWRecEndAfter(0.5);
@@ -1939,7 +2016,8 @@ static void DMMSWSwEnd(void) {
 // not here (Stage Manager, a switch with its own follow-up, a far switch with a desktop between, the reveal already fading) -- the caller then
 // keeps it for right after (gMSWPendingSide).
 static BOOL DMMSWSwRedirect(NSInteger side, CGFloat v, NSString *why) {
-    if (!side || !gMSWSwitching || !gMSWSlRoot || DMSMEngine() || !gMSWSwRedirectable || gMSWSwRevealing || gMSWTrack == 1 || gMSWTrack == 2) return NO;
+    if (DMSMEngine()) return DMMSWSMRedirect(side, v, why);   // (Stage Manager's switch has its own aim: MacSwitcherSM.h)
+    if (!side || !gMSWSwitching || !gMSWSlRoot || !gMSWSwRedirectable || gMSWSwRevealing || gMSWTrack == 1 || gMSWTrack == 2) return NO;
     NSInteger to = (NSInteger)gMSWSwTo + side, k = gMSWSwToSlot + side;
     if (to < 0 || to >= (NSInteger)gMSWDesks.count) {
         DMLog([NSString stringWithFormat:@"[macswitcher] %@ while sliding to %@: no desktop on that side, it slides on", why, DMMSWDeskName(gMSWSwTo)]);
@@ -2146,7 +2224,6 @@ static UIView *DMMSWComposedDesktop(NSInteger did, CGRect b) {
 // is drawn from its parts: its wallpaper, what every desktop shows alike -- the Home Screen, the Dock, the menu bar --, live (portals of their
 // windows, made once the slide is up: DMMSWSlShared), and its windows' own pictures where they were (when it was left in this shape). Stage
 // Manager: its own pictures (MacSwitcherSM.h); none yet: the wallpaper.
-static const void *kMSWSharedKey = &kMSWSharedKey;   // (a picture that wants the shared windows' portals)
 static UIView *DMMSWDeskPicture(NSUInteger i, CGRect b) {
     if (i >= gMSWDesks.count) return nil;
     NSInteger did = gMSWDesks[i].integerValue;
@@ -2186,13 +2263,85 @@ static UIView *DMMSWDeskPicture(NSUInteger i, CGRect b) {
     DMLog([NSString stringWithFormat:@"[macswitcher] %@ for the slide: drawn from its parts (%@wallpaper, %lu window pictures, %lu app icon cards%@)", DMMSWDeskName(i), gMSWWallContents ? @"" : @"no ", (unsigned long)n, (unsigned long)cards, sameShape ? @"" : @"; it was left in the other orientation"]);
     return c;
 }
+// The desktop on the screen drawn from its parts, for a switch from the open view when no picture of it is kept (DMMSWSwitchRun: a window was
+// dragged away in the view, and no picture of the screen taken now can leave the view out on iPadOS 15). As the coming desktop's parts
+// (DMMSWDeskPicture): its full-screen app's picture (fsPic, asked just before), its wallpaper, what every desktop shows alike live (DMMSWSlShared),
+// and its windows where they are, back to front -- each one's part of the view's opening picture (gMSWCutShot); one that a window dragged away
+// since covered in part gets its app icon card instead (that part would show the window that went). Native windows in their layer's place: just
+// above the engine's windows while one is active, else behind them. Never kept as the desktop's thumbnail (kMSWNotKeptKey, DMMSWSwEnd): its next
+// visit is drawn from its parts too.
+static UIView *DMMSWLeftFromParts(UIView *fsPic, UIView *fsSrc) {
+    CGRect b = [UIScreen mainScreen].bounds;
+    UIScreen *scr = [UIScreen mainScreen];
+    NSInteger did = DMMSWCurId();
+    DMMSWWallLazy();
+    UIView *c = [[UIView alloc] initWithFrame:b];
+    c.backgroundColor = [UIColor blackColor]; c.clipsToBounds = YES; c.userInteractionEnabled = NO;
+    if (gMSWWallContents) {
+        UIView *wv = [UIView new];
+        wv.userInteractionEnabled = NO;
+        wv.layer.contents = gMSWWallContents; wv.layer.contentsRect = gMSWWallContentsRect; wv.layer.contentsGravity = gMSWWallGravity ?: kCAGravityResize;
+        wv.bounds = gMSWWallBounds; wv.center = gMSWWallCenter; wv.transform = gMSWWallTransform;
+        [c addSubview:wv];
+    }
+    objc_setAssociatedObject(c, kMSWSharedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(c, kMSWNotKeptKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (fsPic && fsSrc) {   // (where its scene view is on the screen, turned as it is; over the Home Screen: the shared windows go under it)
+        CGRect fb = fsSrc.bounds;
+        CGPoint o = [fsSrc convertPoint:fb.origin toCoordinateSpace:scr.coordinateSpace];
+        CGPoint x = [fsSrc convertPoint:CGPointMake(fb.origin.x + 100.0, fb.origin.y) toCoordinateSpace:scr.coordinateSpace];
+        CGPoint m = [fsSrc convertPoint:CGPointMake(CGRectGetMidX(fb), CGRectGetMidY(fb)) toCoordinateSpace:scr.coordinateSpace];
+        CGFloat k = hypot(x.x - o.x, x.y - o.y) / 100.0;
+        if (k > 0.01) {
+            fsPic.transform = CGAffineTransformIdentity;
+            fsPic.bounds = CGRectMake(0, 0, fb.size.width, fb.size.height);
+            fsPic.center = m;
+            fsPic.transform = CGAffineTransformScale(CGAffineTransformMakeRotation(atan2(x.y - o.y, x.x - o.x)), k, k);
+            fsPic.tag = DMTestFlag("/tmp/msw-fsportals-old") ? 0x4D53 : 0x4D54;   // (the full-screen app's picture: the shared windows above apps go over it, DMMSWSlShared)
+            [c addSubview:fsPic];
+        } else fsPic = nil;
+    }
+    UIView *shot = gMSWCutShot && gMSWCutShotId == did && CGSizeEqualToSize(gMSWCutShot.bounds.size, b.size) ? gMSWCutShot : nil;
+    __block NSUInteger n = 0, cards = 0, none = 0;
+    void (^place)(UIView *, NSString *, NSString *) = ^(UIView *w, NSString *key, NSString *bundle) {
+        CGRect r = [w convertRect:w.bounds toCoordinateSpace:scr.coordinateSpace];
+        UIView *cut = shot && DMMSWCutTrue(key, did) ? DMMSWCutOut(shot, r) : nil;   // (the window's whole size, its part on the screen in it)
+        if (cut) cut.frame = r;
+        UIView *pic = cut ?: (bundle ? DMMSWIconCard(bundle, r) : nil);
+        if (!pic) { none++; return; }
+        pic.tag = 0x4D53; pic.userInteractionEnabled = NO;   // (a window's picture: over the shared windows' portals)
+        if (cut) n++; else cards++;
+        [c addSubview:pic];
+    };
+    NSMutableArray<UIView *> *natives = [NSMutableArray array];   // (this desktop's, on the screen, back to front)
+    for (DMNativeWindow *w in gNativeWindows) {
+        NSNumber *d = objc_getAssociatedObject(w, kMSWNativeDeskKey);
+        if (!w.hidden && w.superview && (!d || d.integerValue == did)) [natives addObject:w];
+    }
+    BOOL nativesFront = gNativeLayer && gNativeLayer.windowLevel > kNWBackLevel + 0.01;
+    if (!nativesFront) for (UIView *w in natives) place(w, DMMSWNativeCutKey(w), nil);
+    for (UIView *st in DMAerialStagesAll()) {
+        NSString *b2 = DMStageBundle(st);
+        if (!b2.length || st.hidden || st.alpha < 0.05 || DMStageMinimized(st) || [objc_getAssociatedObject(st, kMSWAwayKey) boolValue]) continue;
+        NSNumber *d = gMSWWinDesk[b2];
+        if (d && d.integerValue != did) continue;   // (a window dragged to another desktop that has not landed yet: not this desktop's)
+        place(st, b2, b2);
+    }
+    if (nativesFront) for (UIView *w in natives) place(w, DMMSWNativeCutKey(w), nil);
+    DMLog([NSString stringWithFormat:@"[macswitcher] %@ leaves drawn from its parts (the view is open, its opening picture shows a window dragged away): %@%@wallpaper, %lu window pictures from the opening picture, %lu app icon cards%@",
+        DMMSWDeskName(gMSWCur), fsPic ? @"its full-screen app's picture, " : @"", gMSWWallContents ? @"" : @"no ", (unsigned long)n, (unsigned long)cards, none ? [NSString stringWithFormat:@", %lu native window(s) left out (a dragged one covered them)", (unsigned long)none] : (shot ? @"" : @" (no opening picture)")]);
+    return c;
+}
 // A picture drawn from parts gets the shared windows live, under its window pictures -- once the slide's root is on screen (portals are placed
 // through the screen's coordinates).
+// A full-screen app's picture in it (tag 0x4D54, DMMSWLeftFromParts): the shared windows that are above apps -- the menu bar, the Dock -- go over
+// that picture (under the windows' pictures), the ones behind apps (the Home Screen) under it. All went under it: the leaving picture of a desktop
+// with a full-screen app lost its menu bar (b6ba9a0's branch; 1.4.1 logic test L-2).
 static void DMMSWSlShared(UIView *pic) {
     if (![objc_getAssociatedObject(pic, kMSWSharedKey) boolValue] || !gMSWSlRoot) return;
     objc_setAssociatedObject(pic, kMSWSharedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    UIView *firstWin = nil;
-    for (UIView *v in pic.subviews) if (v.tag == 0x4D53) { firstWin = v; break; }
+    UIView *firstWin = nil, *fsApp = nil;
+    for (UIView *v in pic.subviews) { if (v.tag == 0x4D53 && !firstWin) firstWin = v; if (v.tag == 0x4D54 && !fsApp) fsApp = v; }
     CGRect b = gMSWSlRoot.bounds;
     for (UIWindow *w in DMMSWScreenWindows()) {
         NSString *cn = NSStringFromClass([w class]);
@@ -2203,10 +2352,21 @@ static void DMMSWSlShared(UIView *pic) {
         UIView *p = DMMSWPortalInPlace(w, gMSWSlRoot, holder, &r);
         if (!p) continue;
         [gMSWPortals removeObjectIdenticalTo:p];
-        if (!CGRectEqualToRect(CGRectIntegral(CGRectInset(r, 0.5, 0.5)), CGRectIntegral(CGRectInset(b, 0.5, 0.5)))) { DMMSWPortalLetGo(p); continue; }
+        if (!CGRectEqualToRect(CGRectIntegral(CGRectInset(r, 0.5, 0.5)), CGRectIntegral(CGRectInset(b, 0.5, 0.5)))) {
+#if DEBUG
+            if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[mswshared] %@ (level %.0f) left out: it lands at %@", cn, w.windowLevel, NSStringFromCGRect(r)]);
+#endif
+            DMMSWPortalLetGo(p); continue;
+        }
         if (!gMSWSlPortals) gMSWSlPortals = [NSMutableArray array];
         [gMSWSlPortals addObject:p];
-        if (firstWin) [pic insertSubview:holder belowSubview:firstWin]; else [pic addSubview:holder];
+        BOOL underApp = fsApp && w.windowLevel <= UIWindowLevelNormal + 0.5;
+        if (underApp) [pic insertSubview:holder belowSubview:fsApp];   // (behind apps: under the full-screen app)
+        else if (firstWin) [pic insertSubview:holder belowSubview:firstWin]; else [pic addSubview:holder];
+#if DEBUG
+        if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[mswshared] %@ (level %.0f): %@", cn, w.windowLevel,
+            underApp ? @"under the full-screen app's picture" : (fsApp ? @"over the full-screen app's picture" : (firstWin ? @"under the window pictures" : @"on top"))]);
+#endif
     }
 }
 
@@ -2390,6 +2550,7 @@ static NSUInteger DMMSWDropContent(void) {
     return n;
 }
 static void DMMSWTeardown(void) {
+    DMMSWCutLetGo();
     NSUInteger n = DMMSWDropContent();
     DMMSWOpenShotDrop();   // (closed without a switch: the picture goes)
     if (!gMSWSlRoot) gMSWWindow.hidden = YES;
@@ -2415,9 +2576,19 @@ static void DMMSWOpen(NSString *why) {
     //  F5: the screen picture is asked for without waiting (DMMSWScreenPictureAsync, our window left out) -- UIKit's waiting one once held
     //  SpringBoard 3.7 s when the view opened during an app's cold launch; the view opens at once and the picture is there long before a tap in
     //  the strip can use it (else that switch takes the screen without the view, DMMSWLeftPicture)
-    BOOL lift = gMSWLiftPic && CACurrentMediaTime() - gMSWLiftPicAt < 2.0 && gMSWLiftPicId == DMMSWCurId();
+    // (only for the gesture's own opening: a keyboard, Home double press or accessibility opening within 2 s of a gesture took that gesture's start
+    //  picture -- the screen before the gesture --, and since K-1 that picture exists with one desktop too; 1.4.1 logic test L-4. Debug
+    //  /tmp/msw-liftany = before.)
+    BOOL byGesture = DMMSWGestureGrace() || DMTestFlag("/tmp/msw-liftany");
+    BOOL lift = byGesture && gMSWLiftPic && gMSWLiftPicId == DMMSWCurId() && (CACurrentMediaTime() - gMSWLiftPicAt < 2.0 || (DMMSWGestureGrace() && gMSWLiftPicGen == gMSWTrackPicGen));
     DMMSWOpenShotDrop();
     gMSWOpenShotId = DMMSWCurId();
+    // (opened by the hold: the picture from the gesture's start, taken before SpringBoard moved anything (DMMSWTrackBegin / DMMSWStartPicture) --
+    //  the screen now is SpringBoard's own return from the hold still on screen (the Home Screen zoomed, K-1). It belongs to the gesture that opened
+    //  the view whatever its age: a hold may last more than 2 s.)
+#if DEBUG
+    if (DMMSWGestureGrace()) DMLog([NSString stringWithFormat:@"[macswitcher] opened by the hold: the desktop's picture %@", lift ? @"from the gesture's start" : @"none from its start: the screen now"]);
+#endif
     if (lift) gMSWOpenShot = gMSWLiftPic;
     else {
         NSUInteger gen = gMSWOpenShotGen;
@@ -2811,6 +2982,29 @@ static BOOL DMMSWFitMove(NSString *b, NSInteger toId) {
 // What the desktop a window went to needs for its new picture (DMMSWDeskTakesWindow): whether its picture as it was left was still true before the
 // move, and whether a picture drawn from its parts shows the window by itself.
 typedef struct { BOOL shotOK, drawnHasIt; } DMMSWMoveInfo;
+// A window dragged away in the open view: every window it covered in part keeps that part of it in the view's opening picture (gMSWCutShot), so
+// their pictures from it name it (gMSWCutSpoiled): true only on a desktop where it is too. The engine's windows behind it are the ones before it
+// in DMAerialStagesAll (back to front). Native windows have their own layer, in front of the engine's windows or behind them: they count as
+// covering every window they overlap, and as covered by every one -- an app icon card at worst, never a window that has gone.
+static void DMMSWCutSpoil(UIView *gone, NSString *goneKey) {
+    if (!gMSWCutShot || !gone || !goneKey.length) return;
+    UIScreen *scr = [UIScreen mainScreen];
+    CGRect g = [gone convertRect:gone.bounds toCoordinateSpace:scr.coordinateSpace];
+    if (!gMSWCutSpoiled) gMSWCutSpoiled = [NSMutableDictionary dictionary];
+    __block NSUInteger n = 0;
+    void (^spoil)(NSString *, UIView *) = ^(NSString *key, UIView *w) {
+        if (!key.length || [key isEqualToString:goneKey] || !CGRectIntersectsRect(g, [w convertRect:w.bounds toCoordinateSpace:scr.coordinateSpace])) return;
+        NSMutableSet *set = gMSWCutSpoiled[key] ?: [NSMutableSet set];
+        [set addObject:goneKey]; gMSWCutSpoiled[key] = set; n++;
+    };
+    for (UIView *st in DMAerialStagesAll()) {
+        if (st == gone) break;   // (the ones in front of it: not covered by it)
+        if (st.hidden || [objc_getAssociatedObject(st, kMSWAwayKey) boolValue]) continue;
+        spoil(DMStageBundle(st), st);
+    }
+    for (DMNativeWindow *w in gNativeWindows) if (w != gone && !w.hidden) spoil(DMMSWNativeCutKey(w), w);
+    if (n) DMLog([NSString stringWithFormat:@"[macswitcher] %@ covered part of %lu window(s) in the view's opening picture: their pictures from it name it", goneKey, (unsigned long)n]);
+}
 // A drop happens in two steps, so that nothing holds the thumbnail back when the finger lifts (measured on the M1: three pictures of the window
 // taken at the lift -- ~35 ms, ~4 ms and ~29 ms -- held the frame for 93 ms before the thumbnail flew):
 //  1. at the lift (DMMSWMoveRecords): the records -- the window belongs to that desktop now (saved), Fit to Window per desktop --, and the
@@ -2861,6 +3055,10 @@ static NSInteger DMMSWMoveRecords(DMMSWTile *t, NSUInteger to, BOOL *retiled, DM
     gMSWDesksDirty = YES;
     DMMSWSave();
     if (info) *info = (DMMSWMoveInfo){ shotOK, drawnHasIt };
+    if (gMSWOpenShot && !DMSMEngine() && [NSProcessInfo processInfo].operatingSystemVersion.majorVersion == 15) {   // (its other windows' pictures, see
+        DMMSWCutLetGo(); gMSWCutShot = gMSWOpenShot; gMSWCutShotId = gMSWOpenShotId;                                    //  gMSWCutShot; where DMMSWSwitchRun
+    }                                                                                                                    //  draws the left desktop from parts)
+    if (gMSWCutShot && gMSWCutShotId == DMMSWCurId()) DMMSWCutSpoil(t.kind == DMMSWKindNative ? t.native : t.kind == DMMSWKindStage ? t.source : nil, t.kind == DMMSWKindNative ? DMMSWNativeCutKey(t.native) : bundle);
     DMMSWOpenShotDrop();   // (this desktop's picture from when the view opened shows the window still: a switch from the strip takes the screen anew)
     DM_FEATURE_MARK("mac-switcher-drag-to-desktop");
     DMLog([NSString stringWithFormat:@"[macswitcher] %@ dragged to %@%@: it is there now; %@ stays the current desktop", t.title ?: bundle, DMMSWDeskName(ti), fresh ? @" (a new desktop)" : @"", DMMSWDeskName(gMSWCur)]);
@@ -3214,7 +3412,7 @@ static void DMMSWTick(void) {
     DMMSWKeysRefresh();   // (the Control-arrows SpringBoard is to get: registered again when that changes)
     if (!gMSWSwitching) DMMSWApply();   // (desktops: cheap with one desktop and nothing away)
     if (gMSWTrack) DMMSWTrackTick();
-    if (gMSWLiftPic && !gMSWLiftPic.superview && CACurrentMediaTime() - gMSWLiftPicAt > 2.5) gMSWLiftPic = nil;   // (nothing took the gesture's picture)
+    if (gMSWLiftPic && !gMSWLiftPic.superview && CACurrentMediaTime() - gMSWLiftPicAt > 2.5 && !DMMSWGestureAlive(gMSWLiftPicGesture)) gMSWLiftPic = nil;   // (nothing took the gesture's picture)
     if (!gMSWOpen || gMSWClosing) return;
     if (!gMSWOn || (DMSwitcherVisible() && !DMMSWGestureGrace()) || DMCoverSheetShown()) { DMLog(@"[macswitcher] the App Switcher / Lock Screen came up or the switch went off: closed"); DMMSWClose(nil, NO); return; }
     CGSize screen = [UIScreen mainScreen].bounds.size;
@@ -3499,7 +3697,6 @@ static CGFloat DMMSWGestureTravelX(id modifier) {
 // Nothing is watched with one desktop, with Reduce Motion (a cross-fade at the lift instead), while the view is open, or with /tmp/msw-notrack
 // (a test flag, debug builds only: the side swipe then slides at the lift, as before).
 static UIView *gMSWTrackPic;             // the picture taken when the gesture began
-static NSUInteger gMSWTrackPicGen = 0;   // (which gesture a picture on its way belongs to)
 static CGPoint gMSWTrackStart;           // the gesture's translation then
 static CGFloat gMSWTrackZero = 0;        // its x when the slide came up (the slide starts there, at no offset)
 static CGFloat gMSWTrackV = 0;           // the fingers' x speed, last seen (points per second)
@@ -3580,8 +3777,8 @@ static BOOL DMMSWSlInOrder(void) {    // (every picture on the strip is the desk
     for (NSNumber *k in gMSWSlPlaces) if (gMSWSlPlaces[k].integerValue != (NSInteger)gMSWSwFrom + k.integerValue) return NO;
     return gMSWSlPlaces.count > 0;
 }
-static BOOL DMMSWGrabbable(void) {
-    return gMSWSwitching && gMSWSlRoot && gMSWSlStrip && !DMSMEngine() && gMSWSwRedirectable && !gMSWSwRevealing && !gMSWSlSpFade && !MSBReduceMotion() && !gMSWOpen
+static BOOL DMMSWGrabbable(void) {   // (Stage Manager's switch: its own aim, MacSwitcherSM.h DMMSWSMCanTake)
+    return gMSWSwitching && gMSWSlRoot && gMSWSlStrip && (DMSMEngine() ? DMMSWSMCanTake() : (gMSWSwRedirectable && !gMSWSwRevealing)) && !gMSWSlSpFade && !MSBReduceMotion() && !gMSWOpen
         && DMMSWMulti() && DMMSWGesturesOn() && DMMSWSlInOrder() && !DMTestFlag("/tmp/msw-notrack") && !DMTestFlag("/tmp/msw-nograb");
 }
 // The offset for the fingers on a taken slide: 1:1 between the outer desktops, with resistance past them.
@@ -3604,7 +3801,7 @@ static BOOL DMMSWTrackGrabEngage(CGFloat x) {
     CGFloat o = DMMSWSlOffsetNow();
     [gMSWSlStrip.layer removeAnimationForKey:@"msw.slide"]; [gMSWSlStrip.layer removeAnimationForKey:@"msw.catch"];
     gMSWSlFinGen++; gMSWSlSpT0 = 0;
-    gMSWSwGen++; gMSWSwLanded = NO;
+    if (DMSMEngine()) DMMSWSMTaken(); else { gMSWSwGen++; gMSWSwLanded = NO; }
     gMSWTrackGrabBase = o; gMSWTrackZero = gMSWTrackStart.x; gMSWTrack = 2; gMSWTrackSince = CACurrentMediaTime();
     // (SpringBoard reads the first sideways motion late -- its first update carries 20-70 pt --: the slide takes the whole travel at once and an
     //  additive animation takes that much back over 0.15 s, as when a slide comes up, so it neither jumps nor lags the fingers)
@@ -3619,7 +3816,7 @@ static BOOL DMMSWTrackGrabEngage(CGFloat x) {
     }
     DM_FEATURE_MARK("mac-switcher-take-slide");
     DMMSWMark([NSString stringWithFormat:@"slide taken by the fingers at %.0f pt", o]);
-    DMLog([NSString stringWithFormat:@"[macswitcher] side swipe while the slide runs: the fingers take it at %.0f pt (it was going to %@, the windows are on %@)", o, DMMSWDeskName(gMSWSwTo), DMMSWDeskName(gMSWCur)]);
+    DMLog([NSString stringWithFormat:@"[macswitcher] side swipe while the slide runs: the fingers take it at %.0f pt (it was going to %@, the windows are on %@)", o, DMMSWDeskName(DMSMEngine() ? DMMSWSMAimPlace() : gMSWSwTo), DMMSWDeskName(gMSWCur)]);
     return YES;
 }
 // Where a taken slide goes at the lift: the nearest desktop, or the next one the way a flick points (450 pt/s and more), never past the outer ones.
@@ -3628,11 +3825,32 @@ static NSInteger DMMSWGrabDecide(CGFloat o, CGFloat v) {
 }
 static void DMMSWGrabFinish(NSInteger k, CGFloat v) {
     gMSWTrackGrab = NO; gMSWTrackPic = nil; gMSWTrackGesture = nil;
+    if (DMSMEngine()) { DMMSWSMTakenLift(k, v); return; }   // (Stage Manager's switch: its own aim)
     NSUInteger place = (NSUInteger)((NSInteger)gMSWSwFrom + k);
     if (place >= gMSWDesks.count || !DMMSWSlEnsurePic(k, place)) { k = 0; place = gMSWSwFrom; }
     gMSWSwTo = place; gMSWSwToSlot = k; gMSWSwLanded = NO; gMSWSwRedirects++;
     DMMSWMark([NSString stringWithFormat:@"lifted (a taken slide): to %@ (slot %+ld, %.0f pt/s)", DMMSWDeskName(place), (long)k, v]);
     gMSWSlMaxAway = 3000.0; DMMSWSwAim(v, NO); gMSWSlMaxAway = 900.0;
+}
+// The view a gesture can open (the hold) shows the desktop it left -- and "+" or a tap in its strip slides that desktop away and keeps that picture
+// as its thumbnail. Its picture is the screen as it was when the gesture began, before SpringBoard moved anything (DMMSWOpen's "lift"): the screen
+// once the hold has ended is SpringBoard's own return still on screen (iPadOS 15: the Home Screen zoomed out, the app's card shrunk). With more than
+// one desktop the tracker takes that picture; with one desktop, or with Reduce Motion, nothing did, so the first trip back to a desktop left by "+"
+// slid in the zoomed Home Screen and faded it into the real one (K-1, M1 8 Oct). Taken without waiting (iPadOS 15 only: there SpringBoard's return
+// is still on screen when the view opens; on 16 the hold ends before SpringBoard's switcher comes up -- iPad 2, Stage Manager: no difference).
+static void DMMSWStartPicture(id gesture) {
+    if (!gMSWOn || !DMMSWGesturesOn() || gMSWOpen || gMSWSwitching || gMSWSlRoot || DMMSWGestureTypeOf(gesture) != 1 || !DMMSWAsyncScreenOn() || !DMMSWAsyncPicturesOK()) return;
+#if DEBUG
+    if (DMTestFlag("/tmp/msw-nostartpic")) return;   // (debug comparison: no picture at the start with one desktop, as before)
+#endif
+    NSUInteger tgen = ++gMSWTrackPicGen;
+    NSInteger did = DMMSWCurId();
+    CFTimeInterval t = CACurrentMediaTime();
+    __weak id g = gesture;
+    DMMSWScreenPictureAsync(gMSWWindow ? @[gMSWWindow] : @[], ^(UIView *pic, double ms) {
+        if (!pic || tgen != gMSWTrackPicGen || DMMSWCurId() != did || gMSWOpen) return;   // (a later gesture's, another desktop now, or the view opened at once)
+        gMSWLiftPic = pic; gMSWLiftPicAt = t; gMSWLiftPicId = did; gMSWLiftPicGen = tgen; gMSWLiftPicGesture = g;
+    });
 }
 static void DMMSWTrackBegin(id gesture) {
     gMSWTrackV = 0;
@@ -3648,7 +3866,7 @@ static void DMMSWTrackBegin(id gesture) {
         return;
     }
     if (gMSWTrack == 3) return;   // (a slide on its way that cannot be taken: a side swipe this gesture ends with comes at the lift, DMMSWSideRequest)
-    if (!DMMSWMulti() || !DMMSWGesturesOn() || MSBReduceMotion() || gMSWOpen || gMSWSwitching || gMSWSlRoot || DMTestFlag("/tmp/msw-notrack")) return;
+    if (!DMMSWMulti() || !DMMSWGesturesOn() || MSBReduceMotion() || gMSWOpen || gMSWSwitching || gMSWSlRoot || DMTestFlag("/tmp/msw-notrack")) { DMMSWStartPicture(gesture); return; }
     if (DMMSWGestureTypeOf(gesture) != 1) return;
     CGPoint tr, ve;
     if (!DMMSWGestureMotion(gesture, &tr, &ve)) return;
@@ -3661,7 +3879,7 @@ static void DMMSWTrackBegin(id gesture) {
     BOOL asked = DMMSWAsyncScreenOn() && DMMSWScreenPictureAsync(gMSWWindow ? @[gMSWWindow] : @[], ^(UIView *pic, double ms) {
         if (!pic || tgen != gMSWTrackPicGen) return;   // (a later gesture's, or none)
         if (gMSWTrack == 1) gMSWTrackPic = pic;
-        if (DMMSWCurId() == did) { gMSWLiftPic = pic; gMSWLiftPicAt = t; gMSWLiftPicId = did; }
+        if (DMMSWCurId() == did) { gMSWLiftPic = pic; gMSWLiftPicAt = t; gMSWLiftPicId = did; gMSWLiftPicGen = tgen; gMSWLiftPicGesture = gesture; }
         gMSWTrackArmMs = ms;
         DMMSWMark([NSString stringWithFormat:@"the gesture's picture is in (%.1f ms, asked without waiting)", ms]);
     });
@@ -3671,7 +3889,7 @@ static void DMMSWTrackBegin(id gesture) {
         DMMSWSpanEnd(@"the gesture's start picture (the screen now)");
         gMSWTrackArmMs = (CACurrentMediaTime() - t) * 1000.0;
         if (!gMSWTrackPic) return;
-        gMSWLiftPic = gMSWTrackPic; gMSWLiftPicAt = t; gMSWLiftPicId = DMMSWCurId();
+        gMSWLiftPic = gMSWTrackPic; gMSWLiftPicAt = t; gMSWLiftPicId = DMMSWCurId(); gMSWLiftPicGen = tgen; gMSWLiftPicGesture = gesture;
     }
     gMSWTrack = 1; gMSWTrackGesture = gesture; gMSWTrackStart = tr; gMSWTrackAt = t;
     gMSWTrackLastX = NAN; DMMSWTrackMoved(tr);
@@ -4572,7 +4790,7 @@ static BOOL DMMSWTrigger(NSString *cmd) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [root removeFromSuperview]; gMSWProbeWindow.hidden = YES; });
         });
     }
-    else if ([cmd isEqualToString:@"mswpics"] || [cmd isEqualToString:@"mswopenshot"]) {   // mswpics: the screen's picture asked without waiting (our window left out);
+    else if ([cmd isEqualToString:@"mswpics"] || [cmd isEqualToString:@"mswopenshot"] || [cmd hasPrefix:@"mswshot_"]) {   // mswpics: the screen's picture asked without waiting (our window left out);
         // mswopenshot: the open view's picture of the desktop under it -- each shown in the probe corner (over the view) for 6 s (F5)
         void (^show)(UIView *, double) = ^(UIView *pic, double ms) {
             DMLog([NSString stringWithFormat:@"[mswpic] screen: %@ after %.1f ms", pic ? NSStringFromCGRect(pic.bounds) : @"none", ms]);
@@ -4597,8 +4815,136 @@ static BOOL DMMSWTrigger(NSString *cmd) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [root removeFromSuperview]; gMSWProbeWindow.hidden = YES; });
         };
         if ([cmd isEqualToString:@"mswopenshot"]) { UIView *o = gMSWOpenShot; if (!o) DMLog(@"[mswpic] no open picture"); else { UIView *copy = [[UIView alloc] initWithFrame:o.bounds]; copy.layer.contents = o.layer.contents; if (!copy.layer.contents) { DMLog(@"[mswpic] the open picture has no plain contents (a UIKit picture): not shown"); } else show(copy, 0); } return YES; }
+        if ([cmd hasPrefix:@"mswshot_"]) {   // mswshot_<desktop id>: that desktop's kept picture (its thumbnail, and the slide's picture of it) in the probe corner for 6 s
+            NSInteger did = [[cmd substringFromIndex:8] integerValue];
+            UIView *o = gMSWShots[@(did)];
+            if (!o) { DMLog([NSString stringWithFormat:@"[mswpic] desktop %ld: no kept picture (drawn from its parts)", (long)did]); return YES; }
+            UIView *copy = [[UIView alloc] initWithFrame:o.bounds]; copy.layer.contents = o.layer.contents;
+            DMLog([NSString stringWithFormat:@"[mswpic] desktop %ld's kept picture: %@, %@, %lu window(s) then", (long)did, NSStringFromCGRect(o.bounds), copy.layer.contents ? @"plain contents" : @"a UIKit picture (not shown)", (unsigned long)gMSWShotSet[@(did)].count]);
+            if (copy.layer.contents) show(copy, 0);
+            return YES;
+        }
         BOOL asked = DMMSWScreenPictureAsync(gMSWWindow ? @[gMSWWindow] : @[], show);
         DMLog([NSString stringWithFormat:@"[mswpic] screen picture %@", asked ? @"asked" : @"could not be asked"]);
+    }
+    else if ([cmd hasPrefix:@"mswswwatch_"]) {   // mswswwatch_<ms>: every 50 ms for <ms>, SpringBoard's switcher windows -- hidden, alpha, the opacity drawn now, how many of
+        // their layers have animations running -- and SpringBoard's idle reading (K-1: what is still on screen when the slide's reveal uncovers it)
+        double ms = MAX(100.0, [[cmd substringFromIndex:11] doubleValue]);
+        CFTimeInterval t0 = CACurrentMediaTime();
+        __block void (^tick)(void);
+        tick = ^{
+            NSMutableString *o = [NSMutableString stringWithFormat:@"[swwatch] +%.0f idle %d switcher %d:", (CACurrentMediaTime() - t0) * 1000.0, DMMSWSpringBoardIdle(), DMSwitcherVisible()];
+            for (UIWindow *w in DMAllWindows()) {
+                NSString *cn = NSStringFromClass([w class]);
+                if (![cn containsString:@"Switcher"] && ![cn containsString:@"HomeScreen"]) continue;
+                NSInteger anim = 0, layers = 0; CGFloat minOp = 1.0;
+                NSMutableArray<CALayer *> *stack = [NSMutableArray arrayWithObject:w.layer];
+                while (stack.count && layers < 4000) {
+                    CALayer *l = stack.lastObject; [stack removeLastObject]; layers++;
+                    if (l.animationKeys.count) anim++;
+                    CALayer *pl = l.presentationLayer; if (pl && pl.opacity < minOp && l.sublayers.count) minOp = pl.opacity;
+                    if (l.sublayers) [stack addObjectsFromArray:l.sublayers];
+                }
+                CALayer *wp = w.layer.presentationLayer ?: w.layer;
+                [o appendFormat:@" %@ hidden %d alpha %.2f drawn %.2f, %ld/%ld animating", cn, w.hidden, w.alpha, wp.opacity, (long)anim, (long)layers];
+            }
+            DMLog(o);
+            if ((CACurrentMediaTime() - t0) * 1000.0 < ms) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(50 * NSEC_PER_MSEC)), dispatch_get_main_queue(), tick);
+            else tick = nil;
+        };
+        tick();
+    }
+    else if ([cmd isEqualToString:@"mswctx"]) {   // mswctx: the screen's visible windows in the order a screen picture lists them (class, level, context id), and the
+        // render server's snapshot modes this iPadOS has (K-1: which windows a picture "without our window" really leaves out)
+        NSArray *wins = ((id (*)(id, SEL, BOOL, BOOL, id))objc_msgSend)([UIWindow class], NSSelectorFromString(@"allWindowsIncludingInternalWindows:onlyVisibleWindows:forScreen:"), YES, YES, [UIScreen mainScreen]);
+        NSMutableString *o = [NSMutableString stringWithFormat:@"[mswctx] %lu visible windows (ours %p, level %.1f):", (unsigned long)wins.count, gMSWWindow, gMSWWindow.windowLevel];
+        for (UIWindow *w in wins) {
+            id c = DMCall(w.layer, @"context");
+            uint32_t cid = c ? ((uint32_t (*)(id, SEL))objc_msgSend)(c, NSSelectorFromString(@"contextId")) : 0;
+            [o appendFormat:@"\n  %@ level %.1f context %u%@", NSStringFromClass([w class]), w.windowLevel, cid, w == gMSWWindow ? @" (OURS)" : @""];
+        }
+        for (NSString *k in @[@"kCASnapshotModeStopAfterContextList", @"kCASnapshotModeExcludeContextList", @"kCASnapshotModeIncludeContextList", @"kCASnapshotModeLayer", @"kCASnapshotModeDisplay", @"kCASnapshotContextList", @"kCASnapshotExcludeContextList", @"kCASnapshotIncludeContextList"])
+            [o appendFormat:@"\n  %@ = %@", k, DMMSWSnapConst(k.UTF8String) ?: @"(none)"];
+        DMLog(o);
+    }
+    else if ([cmd isEqualToString:@"mswwithout"]) {   // mswwithout: UIKit's own picture of the screen without our window (DMMSWScreenWithoutView, waiting), in the probe corner for 6 s
+        CFTimeInterval t0 = CACurrentMediaTime();
+        UIView *pic = DMMSWScreenWithoutView();
+        DMLog([NSString stringWithFormat:@"[mswpic] UIKit's screen without our window: %@ (%.1f ms)", pic ? NSStringFromCGRect(pic.bounds) : @"none", (CACurrentMediaTime() - t0) * 1000.0]);
+        if (pic) {
+            if (!gMSWProbeWindow) {
+                gMSWProbeWindow = ((id (*)(id, SEL, id, id))objc_msgSend)([objc_getClass("SBMainScreenActiveInterfaceOrientationWindow") alloc], NSSelectorFromString(@"initWithRole:debugName:"), @"SBFTraitsParticipantRoleRecordingIndicator", @"MacStatusBarPortalProbe");
+                gMSWProbeWindow.userInteractionEnabled = NO; gMSWProbeWindow.backgroundColor = [UIColor clearColor];
+            }
+            gMSWProbeWindow.windowLevel = kMenuWindowLevel - 0.25; gMSWProbeWindow.hidden = NO;
+            UIView *root = [UIView new]; [gMSWProbeWindow addSubview:root]; DMMSWTurnIn(gMSWProbeWindow, root);
+            UIView *holder = [[UIView alloc] initWithFrame:pic.bounds]; [holder addSubview:pic]; pic.frame = holder.bounds;
+            CGFloat k = MIN(460.0 / MAX(1, pic.bounds.size.width), 330.0 / MAX(1, pic.bounds.size.height));
+            holder.transform = CGAffineTransformMakeScale(k, k); holder.center = CGPointMake(root.bounds.size.width - 250, root.bounds.size.height - 185);
+            holder.layer.borderColor = [UIColor magentaColor].CGColor; holder.layer.borderWidth = 3.0 / k;
+            [root addSubview:holder];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [root removeFromSuperview]; gMSWProbeWindow.hidden = YES; });
+        }
+    }
+    else if ([cmd hasPrefix:@"mswburst_"]) {   // mswburst_<n>_<every ms>[_<delay ms>]: n pictures of the whole screen (nothing left out, asked without waiting -- the
+        // main thread is not held, a slide keeps its timing), one every <every> ms from <delay> ms on; then shown side by side in the probe window for 12 s
+        // with their times (K-1: what a trip between desktops shows, frame by frame)
+        NSArray *q = [[cmd substringFromIndex:9] componentsSeparatedByString:@"_"];
+        NSInteger n = q.count > 0 ? MIN(12, MAX(1, [q[0] integerValue])) : 8;
+        double every = q.count > 1 ? MAX(8.0, [q[1] doubleValue]) : 60.0, delay = q.count > 2 ? MAX(0.0, [q[2] doubleValue]) : 0.0;
+        NSMutableArray *pics = [NSMutableArray array], *times = [NSMutableArray array];
+        for (NSInteger i = 0; i < n; i++) { [pics addObject:[NSNull null]]; [times addObject:@0]; }
+        for (UIView *older in [gMSWProbeWindow.subviews copy]) [older removeFromSuperview];   // (an earlier grid is never in these pictures)
+        gMSWProbeWindow.hidden = YES;
+        __block NSInteger left = n;
+        CFTimeInterval t0 = CACurrentMediaTime();
+        void (^showAll)(void) = ^{
+            if (!gMSWProbeWindow) {
+                gMSWProbeWindow = ((id (*)(id, SEL, id, id))objc_msgSend)([objc_getClass("SBMainScreenActiveInterfaceOrientationWindow") alloc], NSSelectorFromString(@"initWithRole:debugName:"), @"SBFTraitsParticipantRoleRecordingIndicator", @"MacStatusBarPortalProbe");
+                gMSWProbeWindow.userInteractionEnabled = NO; gMSWProbeWindow.backgroundColor = [UIColor clearColor];
+            }
+            gMSWProbeWindow.windowLevel = kMenuWindowLevel - 0.25;
+            gMSWProbeWindow.hidden = NO;
+            UIView *root = [UIView new];
+            [gMSWProbeWindow addSubview:root];
+            DMMSWTurnIn(gMSWProbeWindow, root);
+            root.backgroundColor = [UIColor blackColor];
+            CGSize b = root.bounds.size;
+            NSInteger cols = n <= 4 ? n : (n + 1) / 2, rows = n <= 4 ? 1 : 2;
+            CGFloat cw = b.width / cols, ch = b.height / rows;
+            for (NSInteger i = 0; i < n; i++) {
+                UIView *pic = pics[i] == [NSNull null] ? nil : pics[i];
+                CGRect cell = CGRectMake((i % cols) * cw, (i / cols) * ch, cw, ch);
+                UIView *holder = [[UIView alloc] initWithFrame:CGRectInset(cell, 3, 3)];
+                holder.clipsToBounds = YES; holder.layer.borderColor = [UIColor greenColor].CGColor; holder.layer.borderWidth = 1.0;
+                if (pic) {
+                    [pic removeFromSuperview];
+                    CGFloat k = MIN(holder.bounds.size.width / MAX(1, pic.bounds.size.width), holder.bounds.size.height / MAX(1, pic.bounds.size.height));
+                    pic.transform = CGAffineTransformMakeScale(k, k);
+                    pic.center = CGPointMake(holder.bounds.size.width / 2.0, holder.bounds.size.height / 2.0);
+                    [holder addSubview:pic];
+                }
+                UILabel *l = DMMSWLabel([NSString stringWithFormat:@"%ld: %.0f ms", (long)i, [times[i] doubleValue]], 12.0, UIFontWeightBold);
+                l.frame = CGRectMake(4, 4, 120, 16); l.textAlignment = NSTextAlignmentLeft;
+                [holder addSubview:l];
+                [root addSubview:holder];
+            }
+            for (UIView *older in [gMSWProbeWindow.subviews copy]) if (older != root) [older removeFromSuperview];   // (only the newest grid)
+            DMLog([NSString stringWithFormat:@"[mswburst] %ld pictures shown (times %@ ms)", (long)n, [times componentsJoinedByString:@","]]);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(12 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [root removeFromSuperview]; if (!gMSWProbeWindow.subviews.count) gMSWProbeWindow.hidden = YES; });
+        };
+        for (NSInteger i = 0; i < n; i++) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((delay + i * every) * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+                double at = (CACurrentMediaTime() - t0) * 1000.0;
+                BOOL asked = DMMSWScreenPictureAsync(@[], ^(UIView *pic, double ms) {
+                    if (pic) pics[i] = pic;
+                    times[i] = @(at);
+                    if (--left == 0) showAll();
+                });
+                if (!asked && --left == 0) showAll();
+            });
+        }
+        DMLog([NSString stringWithFormat:@"[mswburst] %ld pictures, every %.0f ms from %.0f ms", (long)n, every, delay]);
     }
     else if ([cmd hasPrefix:@"mswpic_"]) {   // mswpic_<n>: a picture of the n-th current window asked without waiting (F5); shown in the probe corner for 6 s
         NSArray<UIView *> *st = DMAerialStages();

@@ -13,6 +13,7 @@
 #import <sys/sysctl.h>
 #include "CrashGuard.h"
 #include "StageManagerAvailable.h"
+#include "DpkgState.h"
 #include <sys/stat.h>
 
 #ifndef MSBD_DPKG_DIR   // (overridable for the Mac test, tools/test-crashexplain.m)
@@ -179,28 +180,7 @@ static inline NSString *MSBDExplainMachine(void) {   // (hw.machine, e.g. iPad13
     if (sysctlbyname("hw.machine", m, &n, NULL, 0) != 0 || !m[0]) return @"unknown";
     return @(m);
 }
-// One field of one package in dpkg's status text: the block that starts with "Package: <package>" (a line of its own at a block's start), the
-// field's own line in it ("<field>: " at a line's start, so Depends never matches Pre-Depends). Searched, not split: the file has a few thousand blocks.
-static inline NSString *MSBDPackageFieldIn(NSString *status, NSString *package, NSString *field) {
-    if (!status.length || !package.length || !field.length) return nil;
-    NSString *head = [NSString stringWithFormat:@"Package: %@\n", package];
-    NSUInteger start = NSNotFound;
-    if ([status hasPrefix:head]) start = 0;
-    else {
-        NSRange r = [status rangeOfString:[@"\n" stringByAppendingString:head]];
-        while (r.location != NSNotFound) {   // (a block's first line: the line before it is empty, or it is the file's first line)
-            if (r.location == 0 || [status characterAtIndex:r.location - 1] == '\n') { start = r.location + 1; break; }
-            NSUInteger from = NSMaxRange(r) - 1;
-            r = [status rangeOfString:[@"\n" stringByAppendingString:head] options:0 range:NSMakeRange(from, status.length - from)];
-        }
-    }
-    if (start == NSNotFound) return nil;
-    NSRange end = [status rangeOfString:@"\n\n" options:0 range:NSMakeRange(start, status.length - start)];
-    NSString *block = [status substringWithRange:NSMakeRange(start, (end.location == NSNotFound ? status.length : end.location) - start)];
-    NSString *want = [field stringByAppendingString:@": "];
-    for (NSString *line in [block componentsSeparatedByString:@"\n"]) if ([line hasPrefix:want]) return [line substringFromIndex:want.length];
-    return nil;
-}
+// (MSBDPackageFieldIn: DpkgState.h)
 // dpkg's status file (1-3 MB with a few thousand packages) is read only when it changed: its modification time and size are the key (S-2, 4 Oct:
 // the Apple menu asks for our installed version every time it opens, and SpringBoard's main thread read and split the whole file each time).
 // The answers are kept per package and field until the file changes; any thread may ask.

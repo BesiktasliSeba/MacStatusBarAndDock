@@ -440,17 +440,33 @@ static UIView *gMSWSMHomeShot;   // (the Home Screen as last left: the picture o
 static UIView *DMMSWSMHomeBackdrop(CGRect b);
 static BOOL DMMSWSMHomeBackdropOK(CGRect b);
 static void DMMSWSMFreePictures(void) { gMSWSMHomeShot = nil; }   // (memory pressure, MacSwitcher.h DMMSWFreePictures: an empty desktop slides in live until it is left again)
+// A picture view is in one place at a time: one that is on the slide's strip already -- the left desktop's own, or another slot's: the same desktop
+// asked for again by a re-aim or the fingers' take, two empty desktops sharing the Home Screen's -- is given as a picture of it; moving it left its
+// first slot black (1.4.1 logic test H-1: a far switch's own picture taken for the fingers' slot beside it).
+static UIView *DMMSWSMNotOnStrip(UIView *pic) {
+    if (pic && gMSWSlStrip && [pic isDescendantOfView:gMSWSlStrip]) return [pic snapshotViewAfterScreenUpdates:NO];
+    return pic;
+}
 static UIView *DMMSWSMDeskPicture(NSInteger did, CGRect b) {
     UIView *shot = gMSWShots[@(did)];
     NSArray *set = DMMSWWindowSet(did);
-    if (shot && [gMSWShotSet[@(did)] isEqualToArray:set]) return shot;
+    if (shot && [gMSWShotSet[@(did)] isEqualToArray:set]) return DMMSWSMNotOnStrip(shot);
+    // (a desktop with windows and no picture as it was left -- one desktop keeps its pictures on an iPad under 4 GB (DMMSWSMTrimPictures), none
+    //  after a respring --: drawn from its windows, each one's picture where it is kept, else its place as a card with its app's icon, over the
+    //  Home Screen as last left or the wallpaper (DMMSWSMComposedDesktop), as the other engines draw such a desktop from its parts
+    //  (MacSwitcher.h DMMSWDeskPicture). It slid in live before, and a live slide can be neither re-aimed nor taken by the fingers -- 1.4.1
+    //  logic test H-2. Debug /tmp/msw-sm-nodrawn = before.)
     NSArray *wins = DMMSWSMDeskWindows(did);
-    if (wins.count) {   // (drawn from its windows' pictures -- only when they and what is behind them (the Home Screen as last left, or the wallpaper)
-                        //  are known: right after a respring there are none, and a black picture slid in; then the slide waits for the live desktop)
-        NSUInteger have = 0; for (NSArray *w in wins) if (gMSWWinShots[w[3]]) have++;
-        return have && (gMSWWallContents || DMMSWSMHomeBackdropOK(b)) ? DMMSWSMComposedDesktop(did, b) : nil;
+    if (wins.count) {
+        if (DMTestFlag("/tmp/msw-sm-nodrawn")) {
+            NSUInteger have = 0; for (NSArray *w in wins) if (gMSWWinShots[w[3]]) have++;
+            return have && (gMSWWallContents || DMMSWSMHomeBackdropOK(b)) ? DMMSWSMComposedDesktop(did, b) : nil;
+        }
+        return DMMSWSMComposedDesktop(did, b);
     }
-    return gMSWSMHomeShot;   // (the left desktop's own picture too: the strip and a slide never show at the same time, each puts it in place)
+    // (an empty desktop: the Home Screen as last left; none yet -- a respring, or let go under memory pressure --: nil, and the shared picture
+    //  draws it, the wallpaper with the Home Screen, the Dock and the menu bar live, MacSwitcher.h DMMSWDeskPicture)
+    return DMMSWSMNotOnStrip(gMSWSMHomeShot);
 }
 // The switch, with a Mac's slide. Measured on the iPad 2 (3 Oct): asking Stage Manager for a desktop's stage blocks SpringBoard's main thread
 // for ~0.4 s (it sets up the whole transition at once) and the cards then settle within a few frames -- a slide started after that left the
@@ -461,6 +477,29 @@ static UIView *DMMSWSMDeskPicture(NSInteger did, CGRect b) {
 // launching: the window whose launch brings this desktop (its key; the launch's own transition asks for the stage, DMMSWSMJoin), or nil.
 // v: the fingers' speed when a side swipe brings the desktop (0 from rest). The slide is the shared one (MacSwitcher.h, DMMSWSlBegin / Finish /
 // Reveal): begun by the fingers already (the tracker), or here with the arriving desktop's picture.
+// A side swipe or a Control-arrow while the slide runs gives it another aim (DMMSWSMRedirect), as with the other engines (MacSwitcher.h
+// DMMSWSwRedirect): the slide goes on from where it is, at the speed it has, to the next desktop that way -- or back --, and under the cover
+// Stage Manager is asked for that desktop's stage instead; a desktop only passed is never revealed (its Fit arrangement is kept, no pictures are
+// taken of it). An aim's change, wait and reveal belong to it (gMSWSMAimGen): an older aim's wait ends doing nothing. Not for a launch's switch
+// (its transition asks for the stage), a switch with its own follow-up (a remove), a live slide (no picture to go on with), Reduce Motion's
+// cross-fade, or once the reveal began: the desktop then comes right after, as before (gMSWPendingSide).
+static NSInteger gMSWSMQueued = 0;           // (Reduce Motion: side requests made during the cross-fade, taken one by one at each switch's end, H-4)
+static NSUInteger gMSWSMAimGen = 0;          // (the aim)
+static NSUInteger gMSWSMAimTo = 0;           // the desktop place it goes to now
+static NSInteger gMSWSMAimSlot = 0;          // that desktop's picture's slot on the strip (screens from the left desktop's)
+static BOOL gMSWSMAimRedirectable = NO, gMSWSMAimSlid = NO, gMSWSMAimHasPic = NO;
+static BOOL gMSWSMSwChanged = NO;            // (a stage was asked for in this switch already: a redirect leaves that desktop again first)
+static NSUInteger gMSWSMSwRedirects = 0;
+// what the whole switch keeps from its start
+static NSUInteger gMSWSMSwFrom = 0;
+static NSInteger gMSWSMSwFromId = 0;
+static UIView *gMSWSMSwOld;
+static BOOL gMSWSMSwLeftHome = NO;
+static CFTimeInterval gMSWSMSwT0 = 0, gMSWSMSwT1 = 0;
+static CGFloat gMSWSMSwV = 0;
+static NSString *gMSWSMSwWhy, *gMSWSMSwLaunching;
+static void (^gMSWSMSwDone)(void);
+static void DMMSWSMAimChange(NSUInteger gen);
 static void DMMSWSMSwitch(NSUInteger to, NSString *why, NSString *launching, CGFloat v, void (^done)(void)) {
     BOOL fromGesture = gMSWTrackCommit && gMSWSlRoot != nil;
     if (to >= gMSWDesks.count || to == gMSWCur || gMSWSwitching || gMSWTrack == 2 || (gMSWTrack == 3 && !fromGesture)) { if (done) done(); return; }
@@ -475,90 +514,222 @@ static void DMMSWSMSwitch(NSUInteger to, NSString *why, NSString *launching, CGF
     UIView *old = gMSWSlOld, *pic = gMSWSlSide[to > from ? 1 : 0];
     if (!fromGesture) {
         old = DMMSWLeftPicture(wasOpen);
-        pic = old ? DMMSWSMDeskPicture(toId, [UIScreen mainScreen].bounds) : nil;
+        // (the arriving desktop's picture: Stage Manager's own -- as it was left, or drawn from its windows -- else the shared one, the wallpaper with
+        //  the Home Screen live for an empty desktop not seen since a respring (MacSwitcher.h DMMSWDeskPicture): every switch is a picture slide that
+        //  a side request can re-aim and the fingers can take; 1.4.1 logic test H-2. Debug /tmp/msw-sm-nodrawn = before: Stage Manager's own only.)
+        pic = old ? (DMTestFlag("/tmp/msw-sm-nodrawn") ? DMMSWSMDeskPicture(toId, [UIScreen mainScreen].bounds) : DMMSWDeskPicture(to, [UIScreen mainScreen].bounds)) : nil;
         if (wasOpen) DMMSWCloseUnderSlide();
         DMMSWSlBegin(old, to < from ? pic : nil, to > from ? pic : nil);
     }
-    __block BOOL slid = NO;
-    if (pic) DMMSWSlFinish(to > from ? 1 : -1, v, ^{ slid = YES; });   // (committed with this turn of the run loop, before the stage is asked for)
-    CFTimeInterval t1 = CACurrentMediaTime();
-    void (^change)(void) = ^{
-        CFTimeInterval t2 = CACurrentMediaTime();
-        DMMSWSMLeave(fromId);   // (its windows' pictures: still the ones under the cover)
-        if (leftHome && old) gMSWSMHomeShot = old;
-        gMSWCur = to;
-        DMMSWSMArrive(toId);
-        if (gNativeActive) DMNativeSetActive(nil);
-        gMSWSwitching = NO; DMMSWApply(); gMSWSwitching = YES;   // (Finder's windows: the left desktop's away, the new one's back)
-        NSString *want = launching ?: DMMSWSMShowDesk(toId, why);
-        DMMSWSave();
-        DM_FEATURE_MARK("mac-switcher-desktops-sm");
-        CFTimeInterval t3 = CACurrentMediaTime();
-        DMMSWMark([NSString stringWithFormat:@"stage asked (%.1f ms)", (t3 - t2) * 1000]);
-        void (^finish)(void) = ^{   // (the slide is over: the left desktop's picture is its thumbnail; the new one is drawn live)
-            if (old) {
-                if (!gMSWShots) gMSWShots = [NSMutableDictionary dictionary];
-                if (!gMSWShotSet) gMSWShotSet = [NSMutableDictionary dictionary];
-                if (!gMSWSMLeftAt) gMSWSMLeftAt = [NSMutableDictionary dictionary];
-                gMSWShots[@(fromId)] = old; gMSWShotSet[@(fromId)] = DMMSWWindowSet(fromId); gMSWSMLeftAt[@(fromId)] = @(CACurrentMediaTime());
-            }
-            [gMSWShots removeObjectForKey:@(toId)];
-            DMMSWSMTrimPictures(toId);
-            gMSWSwitching = NO;
-            if (gMSWTrack == 3) gMSWTrack = 0;
-            gMSWSMQuietUntil = CACurrentMediaTime() + 1.0;
-            DMMSWRecEndAfter(0.5);
-            gMSWSMDiag[0]++; gMSWSMDiag[4] = (unsigned)MIN(99999.0, (CACurrentMediaTime() - t0) * 1000.0); DMSM17DiagSoon();   // (iPadOS 17 diagnostics)
-            if (done) done();
-            // (a side swipe or a Control-arrow made while this switch ran -- Stage Manager's switch is not redirected: its desktop comes now; it was
-            //  kept in gMSWPendingSide and only an Aerial switch's end took it, so here it was lost, or came at a later switch)
-            NSInteger pend = gMSWPendingSide; gMSWPendingSide = 0;
-            if (pend && (NSInteger)gMSWCur + pend >= 0 && (NSInteger)gMSWCur + pend < (NSInteger)gMSWDesks.count) {
-                DMLog(@"[macswitcher] the side swipe made on the way: its desktop comes now (Stage Manager)");
-                DMMSWSMSwitch((NSUInteger)((NSInteger)gMSWCur + pend), @"side swipe made on the way", nil, 0, nil);
-            }
-        };
-        // (Stage Manager has drawn the new desktop: its stage in front holding that window (or the Home Screen), and the window cards standing
-        //  still for 3 frames -- the model names the stage before its cards are in place. At most 1.2 s.)
-        __block int frames = 0, settled = 0;
-        __block BOOL fitDone = NO;
-        __block NSString *drawnBefore = nil;
-        __block void (^wait)(void);
-        void (^w)(void) = ^{
-            frames++;
-            BOOL there;
-            if (want) {
-                there = NO;
-                if (DMFrontApp()) for (id it in DMSMStageItemsMap(DMSMFrontStage())) if (DMMSWSMSameWindow(DMSMItemKey(it), want)) there = YES;
-            } else there = DMFrontApp() == nil;
-            NSString *drawn = DMMSWSMCardsDrawn();
-            if (there && [drawn isEqualToString:drawnBefore]) settled++; else settled = 0;
-            drawnBefore = drawn;
-            BOOL slideOver = !pic || slid || !gMSWSlRoot;
+    gMSWSMSwFrom = from; gMSWSMSwFromId = fromId; gMSWSMSwOld = old; gMSWSMSwLeftHome = leftHome; gMSWSMSwT0 = t0; gMSWSMSwV = v;
+    gMSWSwFrom = from;   // (the shared strip's left desktop: the fingers' take of the running slide reads it, MacSwitcher.h DMMSWGrabOffset / Decide / Pictures)
+    gMSWSMSwWhy = why; gMSWSMSwLaunching = launching; gMSWSMSwDone = done; gMSWSMSwChanged = NO; gMSWSMSwRedirects = 0;
+    NSUInteger gen = ++gMSWSMAimGen;
+    gMSWSMAimTo = to; gMSWSMAimSlot = to > from ? 1 : -1; gMSWSMAimSlid = NO; gMSWSMAimHasPic = pic != nil;
+    gMSWSMAimRedirectable = pic && gMSWSlRoot && !launching && !done;
+    if (gMSWSlRoot) {   // (which desktop each slot shows: a redirect goes on only where the next slot is free or shows that desktop)
+        DMMSWSlSetPlace(0, from);
+        if (fromGesture || DMTestFlag("/tmp/msw-sm-oldplaces")) {   // (the tracker's own slide: the desktops on either side)
+            if (gMSWSlSide[0] && from > 0) DMMSWSlSetPlace(-1, from - 1);
+            if (gMSWSlSide[1] && from + 1 < gMSWDesks.count) DMMSWSlSetPlace(1, from + 1);
+        } else if (pic) DMMSWSlSetPlace(to > from ? 1 : -1, to);
+        // (any other switch has the ARRIVING desktop's picture beside the left one, also for a far switch -- as MacSwitcher.h DMMSWSwitchGo marks it. It
+        //  was marked as the neighbour's: a far switch (the strip, D3 -> D1) then looked like a slide in desktop order, the fingers took it and the
+        //  slot for D1 two screens away took D1's picture from the slot beside -- black there --, and the lift landed on the wrong desktop; 1.4.1
+        //  logic test H-1. Now a far switch is taken by no fingers (DMMSWSMCanTake: not in order), its side swipe comes at the lift, as with the other
+        //  engines. Debug /tmp/msw-sm-oldplaces = before.)
+    }
+    if (pic) DMMSWSlFinish(to > from ? 1 : -1, v, ^{ if (gen == gMSWSMAimGen) gMSWSMAimSlid = YES; });   // (committed with this turn of the run loop, before the stage is asked for)
+    gMSWSMSwT1 = CACurrentMediaTime();
+    if (launching) DMMSWSMAimChange(gen);   // (inside the launch's transition: the stage is the launch's own)
+    else dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((wasOpen ? kMSWViewFade : 1.0 / 60.0) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMMSWSMAimChange(gen); });   // (a frame later, under the slide -- after the Mac Switcher's view has faded over it, when it was open)
+}
+// The switch is over (the reveal is done): the left desktop's picture is its thumbnail; the new one is drawn live.
+static void DMMSWSMSwitchEnd(NSInteger toId) {
+    UIView *old = gMSWSMSwOld;
+    NSInteger fromId = gMSWSMSwFromId;
+    void (^done)(void) = gMSWSMSwDone;
+    CFTimeInterval t0 = gMSWSMSwT0;
+    gMSWSMSwOld = nil; gMSWSMSwDone = nil; gMSWSMSwLaunching = nil; gMSWSMAimRedirectable = NO;
+    if (old && fromId != toId) {
+        if (!gMSWShots) gMSWShots = [NSMutableDictionary dictionary];
+        if (!gMSWShotSet) gMSWShotSet = [NSMutableDictionary dictionary];
+        if (!gMSWSMLeftAt) gMSWSMLeftAt = [NSMutableDictionary dictionary];
+        gMSWShots[@(fromId)] = old; gMSWShotSet[@(fromId)] = DMMSWWindowSet(fromId); gMSWSMLeftAt[@(fromId)] = @(CACurrentMediaTime());
+    }
+    [gMSWShots removeObjectForKey:@(toId)];
+    DMMSWSMTrimPictures(toId);
+    gMSWSwitching = NO;
+    if (gMSWTrack == 3) gMSWTrack = 0;
+    gMSWSMQuietUntil = CACurrentMediaTime() + 1.0;
+    DMMSWRecEndAfter(0.5);
+    gMSWSMDiag[0]++; gMSWSMDiag[4] = (unsigned)MIN(99999.0, (CACurrentMediaTime() - t0) * 1000.0); DMSM17DiagSoon();   // (iPadOS 17 diagnostics)
+    if (done) done();
+    // (a side swipe or a Control-arrow made while this switch ran that could not re-aim it: its desktop comes now; it was kept in
+    //  gMSWPendingSide and only an Aerial switch's end took it, so here it was lost, or came at a later switch)
+    NSInteger pend = gMSWPendingSide; gMSWPendingSide = 0;
+    // (the side requests made while this switch ran: under Reduce Motion every one counted (gMSWSMQueued, H-4), else the one kept for right after
+    //  (pend); one desktop at a time -- the rest waits for the next switch's end. A request towards no desktop is dropped.)
+    NSInteger q = gMSWSMQueued + pend; gMSWSMQueued = 0;
+    if (q) {
+        NSInteger step = q > 0 ? 1 : -1, to = (NSInteger)gMSWCur + step;
+        if (to >= 0 && to < (NSInteger)gMSWDesks.count) {
+            gMSWSMQueued = q - step;
+            DMLog(gMSWSMQueued ? [NSString stringWithFormat:@"[macswitcher] the side swipe made on the way: its desktop comes now (Stage Manager; %ld more after it)", (long)labs(gMSWSMQueued)]
+                               : @"[macswitcher] the side swipe made on the way: its desktop comes now (Stage Manager)");
+            DMMSWSMSwitch((NSUInteger)to, @"side swipe made on the way", nil, 0, nil);
+            if (!gMSWSwitching) gMSWSMQueued = 0;   // (it could not start: nothing waits on it)
+        }
+    }
+}
+// The aim's change: the stage of the desktop it goes to is asked for under the slide (the left desktop is left first: its windows' pictures, still
+// the ones under the cover, and its arrangement; a desktop a redirect only passed keeps its arrangement, no pictures), then the wait for its window
+// cards to be drawn still, then the reveal.
+static void DMMSWSMAimChange(NSUInteger gen) {
+    if (gen != gMSWSMAimGen || !gMSWSwitching) return;   // (re-aimed before this ran: the newer aim's change runs instead)
+    CFTimeInterval t2 = CACurrentMediaTime();
+    NSUInteger to = gMSWSMAimTo, from = gMSWSMSwFrom;
+    NSInteger toId = gMSWDesks[to].integerValue;
+    if (!gMSWSMSwChanged) {
+        DMMSWSMLeave(gMSWSMSwFromId);   // (its windows' pictures: still the ones under the cover)
+        if (gMSWSMSwLeftHome && gMSWSMSwOld) gMSWSMHomeShot = gMSWSMSwOld;
+    } else {
+        if (!gMSWFit) gMSWFit = [NSMutableDictionary dictionary];   // (only passed: its arrangement as it came, nothing of it was drawn for it)
+        gMSWFit[[@(DMMSWCurId()) stringValue]] = @{@"smslots": [gSMFitSlots copy] ?: @{}, @"smfree": [gSMFreeWindows allObjects] ?: @[]};
+        gMSWDesksDirty = YES;
+    }
+    gMSWSMSwChanged = YES;
+    gMSWCur = to;
+    DMMSWSMArrive(toId);
+    if (gNativeActive) DMNativeSetActive(nil);
+    gMSWSwitching = NO; DMMSWApply(); gMSWSwitching = YES;   // (Finder's windows: the left desktop's away, the new one's back)
+    NSString *want = gMSWSMSwLaunching ?: DMMSWSMShowDesk(toId, gMSWSMSwRedirects ? @"redirect" : gMSWSMSwWhy);
+    DMMSWSave();
+    DM_FEATURE_MARK("mac-switcher-desktops-sm");
+    CFTimeInterval t3 = CACurrentMediaTime();
+    DMMSWMark([NSString stringWithFormat:@"stage asked (%.1f ms)", (t3 - t2) * 1000]);
+    // (Stage Manager has drawn the new desktop: its stage in front holding that window (or the Home Screen), and the window cards standing
+    //  still for 3 frames -- the model names the stage before its cards are in place. At most 1.2 s.)
+    __block int frames = 0, settled = 0;
+    __block BOOL fitDone = NO;
+    __block NSString *drawnBefore = nil;
+    __block void (^wait)(void);
+    BOOL hasPic = gMSWSMAimHasPic;
+    void (^w)(void) = ^{
+        if (gen != gMSWSMAimGen) { wait = nil; return; }   // (re-aimed: the newer aim waits for its own desktop)
+        frames++;
+        BOOL there;
+        if (want) {
+            there = NO;
+            if (DMFrontApp()) for (id it in DMSMStageItemsMap(DMSMFrontStage())) if (DMMSWSMSameWindow(DMSMItemKey(it), want)) there = YES;
+        } else there = DMFrontApp() == nil;
+        NSString *drawn = DMMSWSMCardsDrawn();
+        if (there && [drawn isEqualToString:drawnBefore]) settled++; else settled = 0;
+        drawnBefore = drawn;
+        BOOL slideOver = !hasPic || gMSWSMAimSlid || !gMSWSlRoot;
 #if DEBUG
-            if (DMTestFlag("/tmp/msw-sm-drawlog")) DMLog([NSString stringWithFormat:@"[mswdraw] +%.0f ms frame %d there %d settled %d slide over %d: %@", (CACurrentMediaTime() - t3) * 1000, frames, there, settled, slideOver, drawn.length ? drawn : @"-"]);
+        if (DMTestFlag("/tmp/msw-sm-drawlog")) DMLog([NSString stringWithFormat:@"[mswdraw] +%.0f ms frame %d there %d settled %d slide over %d: %@", (CACurrentMediaTime() - t3) * 1000, frames, there, settled, slideOver, drawn.length ? drawn : @"-"]);
 #endif
-            // (Fit to Window: the arriving desktop is tiled under the cover once its stage is drawn -- the tick did it after the reveal, and a desktop
-            //  that was not tiled yet jumped into its tiles in front of the user; then the cards settle again)
-            if (settled >= 3 && !fitDone && frames < 60 && DMFitEnabled()) {
-                fitDone = YES; settled = 0; drawnBefore = nil;
-                gMSWSwitching = NO; DMSMFitTick(NO); gMSWSwitching = YES;
-            }
-            if ((settled < 3 || !slideOver) && frames < 72) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NSEC_PER_SEC / 60)), dispatch_get_main_queue(), wait); return; }
-            wait = nil;
-            CFTimeInterval t4 = CACurrentMediaTime();
-            DMMSWMark([NSString stringWithFormat:@"cards drawn (%d frames)", frames]);
-            if (pic) DMMSWSlReveal(kMSWRevealFade, finish);   // (the picture has slid in: the live screen shows through)
-            else DMMSWSlLive(to > from ? 1 : -1, v, finish);   // (no picture of it: the live desktop, drawn now, slides in)
-            DMLog([NSString stringWithFormat:@"[macswitcher] %@ -> %@ (%@, Stage Manager, %@): cover%@ %.1f ms, stage asked %.1f ms (%.0f ms after the start), drawn after %d frames (%.0f ms%@); drawn: %@",
-                DMMSWDeskName(from), DMMSWDeskName(to), why, pic ? @"picture slide" : @"live slide", pic ? @" + slide" : @"", (t1 - t0) * 1000, (t3 - t2) * 1000, (t3 - t0) * 1000, frames, (t4 - t3) * 1000,
-                settled >= 3 ? @"" : @", not settled: went on anyway", drawnBefore.length ? drawnBefore : @"no window"]);
-        };
-        wait = w;
-        dispatch_async(dispatch_get_main_queue(), wait);
+        // (Fit to Window: the arriving desktop is tiled under the cover once its stage is drawn -- the tick did it after the reveal, and a desktop
+        //  that was not tiled yet jumped into its tiles in front of the user; then the cards settle again)
+        if (settled >= 3 && !fitDone && frames < 60 && DMFitEnabled()) {
+            fitDone = YES; settled = 0; drawnBefore = nil;
+            gMSWSwitching = NO; DMSMFitTick(NO); gMSWSwitching = YES;
+        }
+        if ((settled < 3 || !slideOver) && frames < 72) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NSEC_PER_SEC / 60)), dispatch_get_main_queue(), wait); return; }
+        wait = nil;
+        gMSWSMAimRedirectable = NO;   // (the reveal begins: a side swipe from now on brings the next desktop right after)
+        CFTimeInterval t4 = CACurrentMediaTime();
+        DMMSWMark([NSString stringWithFormat:@"cards drawn (%d frames)", frames]);
+        if (hasPic) DMMSWSlReveal(kMSWRevealFade, ^{ DMMSWSMSwitchEnd(toId); });   // (the picture has slid in: the live screen shows through)
+        else DMMSWSlLive(to > from ? 1 : -1, gMSWSMSwV, ^{ DMMSWSMSwitchEnd(toId); });   // (no picture of it: the live desktop, drawn now, slides in)
+        DMLog([NSString stringWithFormat:@"[macswitcher] %@ -> %@ (%@, Stage Manager, %@%@): cover%@ %.1f ms, stage asked %.1f ms (%.0f ms after the start), drawn after %d frames (%.0f ms%@); drawn: %@",
+            DMMSWDeskName(from), DMMSWDeskName(to), gMSWSMSwWhy, hasPic ? @"picture slide" : @"live slide", gMSWSMSwRedirects ? [NSString stringWithFormat:@", %lu redirect(s)", (unsigned long)gMSWSMSwRedirects] : @"",
+            hasPic ? @" + slide" : @"", (gMSWSMSwT1 - gMSWSMSwT0) * 1000, (t3 - t2) * 1000, (t3 - gMSWSMSwT0) * 1000, frames, (t4 - t3) * 1000,
+            settled >= 3 ? @"" : @", not settled: went on anyway", drawnBefore.length ? drawnBefore : @"no window"]);
     };
-    if (launching) change();   // (inside the launch's transition: the stage is the launch's own)
-    else dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((wasOpen ? kMSWViewFade : 1.0 / 60.0) * NSEC_PER_SEC)), dispatch_get_main_queue(), change);   // (a frame later, under the slide -- after the Mac Switcher's view has faded over it, when it was open)
+    wait = w;
+    dispatch_async(dispatch_get_main_queue(), wait);
+}
+// The fingers take the running slide (MacSwitcher.h DMMSWTrackGrabEngage: a side swipe made while it runs, Reduce Motion off), as with the other
+// engines: it stops under them and follows them over the desktops on either side; at the lift it goes on to the desktop they chose -- the switch's
+// new aim, that desktop's stage asked for under the cover (a desktop only passed keeps its arrangement). Only where a re-aim may happen.
+static BOOL DMMSWSMCanTake(void) {
+    if (!gMSWSMAimRedirectable) return NO;
+    for (NSNumber *k in gMSWSlPlaces) if (gMSWSlPlaces[k].integerValue != (NSInteger)gMSWSMSwFrom + k.integerValue) return NO;   // (the strip in desktop order)
+    return gMSWSlPlaces.count > 0;
+}
+static NSUInteger DMMSWSMAimPlace(void) { return gMSWSMAimTo; }
+static void DMMSWSMTaken(void) {   // (the aim it had is given up: its landing and wait do nothing; the stage its change asked for stays until the lift)
+    gMSWSMAimGen++; gMSWSMAimSlid = NO;
+    gMSWSMQuietUntil = CACurrentMediaTime() + 20.0;   // (the fingers may hold it a while: the tick stays out until the lift's aim is in)
+    DM_FEATURE_MARK("mac-switcher-take-slide-sm");
+}
+static void DMMSWSMTakenLift(NSInteger k, CGFloat v) {
+    NSUInteger place = (NSUInteger)((NSInteger)gMSWSMSwFrom + k);
+    if (place >= gMSWDesks.count || !DMMSWSlEnsurePic(k, place)) { k = 0; place = gMSWSMSwFrom; }
+    NSUInteger gen = ++gMSWSMAimGen;
+    gMSWSMAimTo = place; gMSWSMAimSlot = k; gMSWSMAimSlid = NO; gMSWSMAimHasPic = YES; gMSWSMSwRedirects++;
+    gMSWSMQuietUntil = CACurrentMediaTime() + 5.0;
+    DMMSWMark([NSString stringWithFormat:@"lifted (a taken slide): to %@ (slot %+ld, %.0f pt/s)", DMMSWDeskName(place), (long)k, v]);
+    gMSWSlMaxAway = 3000.0;
+    DMMSWSlFinishTo(k, v, ^{ if (gen == gMSWSMAimGen) gMSWSMAimSlid = YES; });
+    gMSWSlMaxAway = 900.0;
+    // (the chosen desktop's stage under the cover -- the one asked for already when the fingers took it, again -- a frame later, as every stage
+    //  this switch asks for: the lift runs inside SpringBoard's own end of the gesture, and a stage asked for in there made SpringBoard's switcher
+    //  fail its own assertion at that end -- -[SBFluidSwitcherViewController handleFluidSwitcherGestureManager:didEndGesture:], iPad 2 crash
+    //  21:32:57 on the first build of this)
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NSEC_PER_SEC / 60)), dispatch_get_main_queue(), ^{ DMMSWSMAimChange(gen); });
+}
+// A side swipe or a Control-arrow while the switch runs (MacSwitcher.h DMMSWSideRequest via DMMSWSwRedirect): the slide's new aim. NO = it
+// cannot be re-aimed now (the desktop comes right after, gMSWPendingSide).
+static BOOL DMMSWSMRedirect(NSInteger side, CGFloat v, NSString *why) {
+    if (!side || !gMSWSwitching || !gMSWSlRoot || !gMSWSMAimRedirectable || gMSWTrack == 1 || gMSWTrack == 2) return NO;
+    if (MSBReduceMotion() && !DMTestFlag("/tmp/msw-sm-noqueue")) {
+        // (a cross-fade: one desktop after the other, as the other engines' cross-fades -- and every request counts: each is taken in turn when the
+        //  running switch ends (DMMSWSMSwitchEnd), as MacSwitcher.h queues them during its cross-fade (gMSWSwQueued). Only the last one was kept
+        //  (gMSWPendingSide), so three quick presses moved one desktop; 1.4.1 logic test H-4. Debug /tmp/msw-sm-noqueue = before.)
+        NSInteger to = (NSInteger)gMSWSMAimTo + gMSWSMQueued + side;
+        if (to < 0 || to >= (NSInteger)gMSWDesks.count) {
+            DMLog([NSString stringWithFormat:@"[macswitcher] %@ during the cross-fade: no desktop on that side (Stage Manager)", why]);
+            return YES;
+        }
+        gMSWSMQueued += side;
+        DMLog([NSString stringWithFormat:@"[macswitcher] %@ during the cross-fade: the next one starts when it ends (Stage Manager, %+ld waiting)", why, (long)gMSWSMQueued]);
+        return YES;
+    }
+    if (MSBReduceMotion()) return NO;
+    NSInteger to = (NSInteger)gMSWSMAimTo + side, k = gMSWSMAimSlot + side;
+    if (to < 0 || to >= (NSInteger)gMSWDesks.count) {
+        DMLog([NSString stringWithFormat:@"[macswitcher] %@ while sliding to %@: no desktop on that side, it slides on", why, DMMSWDeskName(gMSWSMAimTo)]);
+        return YES;
+    }
+    NSNumber *there = gMSWSlPlaces[@(k)];
+    if (there && there.integerValue != to) return NO;   // (that slot shows another desktop)
+    // (its picture beside the slide: Stage Manager's own or the shared one -- there always is one now, H-2; a picture already on the strip is given
+    //  as a picture of it, H-1)
+    if (!DMMSWSlPicAt(k) && !DMMSWSlEnsurePic(k, (NSUInteger)to)) return NO;
+    // (the speed: the slide's own where it is -- no jump in its motion; moving the other way it turns back on the spring --, or the fingers' when
+    //  they flicked that way faster)
+    CGFloat now = DMMSWSlSpeedNow(), dir = side > 0 ? -1.0 : 1.0, vv = (v * dir > 0 && v * dir > now * dir) ? v : now;
+    NSUInteger gen = ++gMSWSMAimGen;
+    BOOL changed = gMSWSMSwChanged;
+    gMSWSMAimTo = (NSUInteger)to; gMSWSMAimSlot = k; gMSWSMAimSlid = NO; gMSWSMAimHasPic = YES; gMSWSMSwRedirects++;
+    gMSWSMQuietUntil = CACurrentMediaTime() + 5.0;
+    DMMSWRecBegin([NSString stringWithFormat:@"redirect (%@)", why]);
+    DMMSWMark([NSString stringWithFormat:@"redirect to %@ (slot %+ld, slide at %.0f pt, %.0f pt/s)", DMMSWDeskName((NSUInteger)to), (long)k, DMMSWSlOffsetNow(), vv]);
+    DMLog([NSString stringWithFormat:@"[macswitcher] %@ while the slide runs: on to %@ (Stage Manager; %@, the slide at %.0f pt, %.0f pt/s)", why, DMMSWDeskName((NSUInteger)to),
+        changed ? [NSString stringWithFormat:@"%@'s stage was asked for, it is left again", DMMSWDeskName(gMSWCur)] : @"no stage asked for yet", DMMSWSlOffsetNow(), vv]);
+    DM_FEATURE_MARK("mac-switcher-redirect-sm");
+    gMSWSlMaxAway = 3000.0;   // (a slide sent back the other way turns on its spring, ~80 pt further at most, as a Mac's does -- no stop and jump)
+    DMMSWSlFinishTo(k, vv, ^{ if (gen == gMSWSMAimGen) gMSWSMAimSlid = YES; });
+    gMSWSlMaxAway = 900.0;
+    // (the stage the slide was going to is asked for already: the new one's a frame later -- never from inside the call that asked, which can be
+    //  SpringBoard's own end of a swipe (DMMSWSideRequest at the lift): a stage asked for in there fails SpringBoard's assertion at that end, see
+    //  DMMSWSMTakenLift; else the first aim's change, waiting its frame (or the Mac Switcher's view fading away), finds itself re-aimed and does
+    //  nothing -- this aim's runs after that same wait)
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((changed ? 1.0 / 60.0 : kMSWViewFade) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMMSWSMAimChange(gen); });
+    return YES;
 }
 static void DMMSWSMSwitchRun(NSUInteger to, NSString *why, CGFloat v, void (^done)(void)) { DMMSWSMSwitch(to, why, nil, v, done); }
 
@@ -1025,6 +1196,7 @@ static UIView *DMMSWSMComposedDesktop(NSInteger did, CGRect b) {
     UIView *c = [[UIView alloc] initWithFrame:b];
     c.backgroundColor = [UIColor blackColor];
     c.clipsToBounds = YES;
+    DMMSWWallLazy();   // (the wallpaper, read once: right after a respring nothing had asked for it yet -- a drawn desktop had nothing behind its windows)
     UIView *home = DMMSWSMHomeBackdrop(b);
     if (home) { [c addSubview:home]; DM_FEATURE_MARK("mac-switcher-sm-home-behind"); }
     else if (gMSWWallContents) {
@@ -1086,6 +1258,21 @@ static BOOL DMMSWSMTrigger(NSString *cmd) {
             [o appendFormat:@"\n  stage %p%@: %@", al, DMSMIsMainIdentity(DMSMStageDisplayIdentity(al)) ? @"" : @" (other display)", [bs componentsJoinedByString:@", "]];
         }
         DMLog(o);
+    }
+    else if ([cmd hasPrefix:@"mswsm_watch_"]) {   // mswsm_watch_<ms>: the window cards as drawn, every frame for <ms>, each change logged (I-5: what shows after a switch)
+        __block int left = MAX(1, MIN(600, [[cmd substringFromIndex:12] intValue] * 60 / 1000));
+        __block NSString *before = nil;
+        CFTimeInterval t0 = CACurrentMediaTime();
+        __block void (^step)(void);
+        void (^s)(void) = ^{
+            NSString *now = DMMSWSMCardsDrawn();
+            if (![now isEqualToString:before]) DMLog([NSString stringWithFormat:@"[mswwatch] +%.0f ms: %@", (CACurrentMediaTime() - t0) * 1000, now.length ? now : @"-"]);
+            before = now;
+            if (--left > 0) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NSEC_PER_SEC / 60)), dispatch_get_main_queue(), step);
+            else { DMLog([NSString stringWithFormat:@"[mswwatch] done after %.0f ms", (CACurrentMediaTime() - t0) * 1000]); step = nil; }
+        };
+        step = s;
+        dispatch_async(dispatch_get_main_queue(), step);
     }
     else if ([cmd hasPrefix:@"mswsm_note"]) DMMSWSMNotice([NSString stringWithFormat:@"%@: Clock was minimized.", DMMSWSMHoldsUpTo(@"Desktop 2")]);
     else if ([cmd isEqualToString:@"mswsm_cap"])   // (the full-desktop answers, DMMSWSMAtCap: 0 a new desktop, 1 the oldest minimized, 2 refused)
