@@ -855,7 +855,7 @@ static void DMMSWSMMoveFinish(NSString *b, NSInteger toId) {
             NSString *k = DMSMItemKey(it);
             if (!k.length || [k isEqualToString:b] || !gSMFitSlots[k] || DMSMKeySetHas(gSMFreeWindows, k)) continue;
             [items addObject:it];
-            if (DMSMPolicyOf(map[it]) == 2) [full addObject:k];
+            if (DMSMAttrsFullScreen(map[it])) [full addObject:k];
         }
         [items sortUsingComparator:^NSComparisonResult(id x, id y) {   // (newest first, as the Fit tick orders a desktop's windows)
             long long tx = DMSMAttrTimeOr(map[x], 0), ty = DMSMAttrTimeOr(map[y], 0);

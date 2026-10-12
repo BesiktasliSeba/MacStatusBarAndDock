@@ -482,6 +482,7 @@ static const CGFloat kSMBarH = 24.0;   // (our title bar on Stage Manager window
 static const CGFloat kSMCornerR = 10.0;   // (window corners: our Mac look, as with every engine; Stage Manager's own are 20)
 typedef struct { CGSize normalizedSize; CGRect referenceBounds; long long type; } DMSMAttributedSize;   // (SBDisplayItemAttributedSize, from its type encoding)
 static long DMSMPolicyOf(id attrs);
+static BOOL DMSMAttrsFullScreen(id attrs);
 static id DMSMItemFor(id stage, NSString *key, id *attrsOut);
 static NSString *DMSMCardBundle(UIView *card);
 static NSString *DMSMCardKey(UIView *card);
@@ -8791,7 +8792,7 @@ static void DMWatchSofaScore(void) {   // every 0.2 s
                     id attrs = nil;
                     if (!DMSMItemFor(DMSMStageOf(kSofaBundle), kSofaBundle, &attrs) && ++polls < 40) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), waitItem); return; }
                     waitItem = nil;
-                    BOOL ok = attrs && DMSMPolicyOf(attrs) != 2 ? DMSMSetFullScreenInStage(kSofaBundle, YES) : (attrs != nil);
+                    BOOL ok = attrs && !DMSMAttrsFullScreen(attrs) ? DMSMSetFullScreenInStage(kSofaBundle, YES) : (attrs != nil);
                     DMLog([NSString stringWithFormat:@"[sofa] relaunch (Stage Manager): full screen -> %d after %d polls", ok, polls]);
                 };
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), waitItem);
@@ -28758,7 +28759,7 @@ __attribute__((noinline)) static id DMSMDesktopFor(id onScreen, NSSet<NSString *
             if (DMSMIsMinimized(k)) continue;
             shown[it] = all[it];
             if (k) [names addObject:DMSMKeyText(k)];
-            if (DMSMPolicyOf(all[it]) != 2) window = YES;
+            if (!DMSMAttrsFullScreen(all[it])) window = YES;
             if (k && DMSMKeysHold(asked, k)) holds = YES;   // (that window, or its app: SMWindowKey.h, Mac test test-smwindowkey)
         }
         if (!shown.count) continue;
@@ -29014,7 +29015,7 @@ static CGRect DMSMCardDesk(CGRect u, CGSize scr, BOOL behindDock) {
 // win), handed over as fractions of THIS screen. Full-screen attributes (policy 2), sizes Stage Manager works out itself and attributes that fit
 // already are returned as they are (no rewrite). bundle: for the log.
 static id DMSMAttrsFitScreen(id attrs, id identity, BOOL behindDock, NSString *bundle) {
-    if (!DMSMIsAttrs(attrs) || DMSMPolicyOf(attrs) == 2) return attrs;
+    if (!DMSMIsAttrs(attrs) || DMSMAttrsFullScreen(attrs)) return attrs;
     DMSMAttributedSize sz; CGPoint c;
     if (!DMSMAttrAttributedSize(attrs, &sz) || !DMSMAttrCenter(attrs, &c)) return attrs;
     CGSize scr = CGSizeZero;
@@ -29256,8 +29257,8 @@ static id DMSMJoinAttributes(NSString *key, id frontAttrs, BOOL windowed, long n
     id ownStage = DMSMStageOf(key);
     id ownItem = DMSMItemFor(ownStage, key, &own);
     NSString *preKey = DMSMKeyLookup(gSMPreZoom, ownItem ? DMSMItemKey(ownItem) : key);
-    if (own && DMSMPolicyOf(own) == 2 && windowed && preKey) own = gSMPreZoom[preKey];   // (full screen by our green button: its window size from before)
-    id base = (own && (DMSMPolicyOf(own) != 2 || !windowed)) ? own : (frontAttrs ?: own);   // (no front window: its own attributes, re-made a window below)
+    if (own && DMSMAttrsFullScreen(own) && windowed && preKey) own = gSMPreZoom[preKey];   // (full screen by our green button: its window size from before)
+    id base = (own && (!DMSMAttrsFullScreen(own) || !windowed)) ? own : (frontAttrs ?: own);   // (no front window: its own attributes, re-made a window below)
     if (!base) {   // (nothing to start from -- an app with no stage left, on an empty desktop: new attributes, the default window below)
         base = DMSMAttrNew();
         if (base) DMLog([NSString stringWithFormat:@"[smjoin] %@: new window attributes (no earlier window)", bundle]);
@@ -29271,7 +29272,7 @@ static id DMSMJoinAttributes(NSString *key, id frontAttrs, BOOL windowed, long n
     long policy = windowed ? 0 : 2;
     if (!windowed) { sz.normalizedSize = CGSizeMake(1.0, 1.0); sz.type = 3; c = CGPointMake(0.5, 0.5); }
     else {
-        BOOL dflt = !haveSize || DMSMPolicyOf(base) == 2 || sz.type == 3 || sz.normalizedSize.width <= 0 || sz.normalizedSize.height <= 0;
+        BOOL dflt = !haveSize || DMSMAttrsFullScreen(base) || sz.type == 3 || sz.normalizedSize.width <= 0 || sz.normalizedSize.height <= 0;
         BOOL cascaded = !dflt && base != own && haveCenter;
         CGPoint from = c;   // (the front window's center, before the cascade)
         if (cascaded) c = CGPointMake(c.x + 0.05, c.y + 0.06);   // (cascaded from the front window)
@@ -29316,7 +29317,7 @@ static void DMSMDismissOtherFullScreen(id stage, NSString *keep) {   // keep: th
     NSDictionary *map = DMSMStageItemsMap(stage);
     for (id it in map) {
         NSString *k = DMSMItemKey(it);
-        if (k.length && !DMSMKeyCovers(keep, k) && DMSMPolicyOf(map[it]) == 2) {
+        if (k.length && !DMSMKeyCovers(keep, k) && DMSMAttrsFullScreen(map[it])) {
             DMLog([NSString stringWithFormat:@"[smengine] %@ goes full screen: the previous full-screen window %@ leaves the stage", DMSMKeyText(keep), DMSMKeyText(k)]);
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMSMWindowAction(k, @"removeFromSet"); });
         }
@@ -29341,7 +29342,7 @@ static BOOL DMSMSetFullScreenInStage(NSString *key, BOOL front) {
     //  since -- if it comes back, the log has the state it happened in)
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         id st = DMSMStageOf(wk), now = nil;
-        if (!DMSMItemFor(st, wk, &now) || DMSMPolicyOf(now) == 2) return;
+        if (!DMSMItemFor(st, wk, &now) || DMSMAttrsFullScreen(now)) return;
         DMLog([NSString stringWithFormat:@"[smengine] full screen for %@ NOT taken: now %@ on %@ (%lu windows), most recent stage on %@", DMSMKeyText(wk),
             [[now description] stringByReplacingOccurrencesOfString:@"\n" withString:@" "], DMSMStageDisplayIdentity(st),
             (unsigned long)[DMSMStageItemsMap(st) count], DMSMStageDisplayIdentity([DMSMRecentStages() firstObject])]);
@@ -29351,9 +29352,19 @@ static BOOL DMSMSetFullScreenInStage(NSString *key, BOOL front) {
 static long DMSMPolicyOf(id attrs) {
     return (long)DMSMPolicyOr(attrs, 0);
 }
+// A window in full screen: maximized (2), or zoomed-to-fill (1) over the whole screen. Stage Manager gives an app that only runs full screen
+// (UIRequiresFullScreen, e.g. games) zoomed-to-fill when it is asked for maximized; counting only 2 kept such an app a "window", and the Dock
+// stayed over it (iPad 2, 16.7.7: policy 0 as a window, 1 with FullWidthAndHeight in full screen).
+static BOOL DMSMAttrsFullScreen(id attrs) {
+    long p = DMSMPolicyOf(attrs);
+    if (p == 2) return YES;
+    if (p != 1) return NO;
+    DMSMAttributedSize sz;
+    return DMSMAttrAttributedSize(attrs, &sz) && (sz.type == 3 || (sz.normalizedSize.width >= 0.99 && sz.normalizedSize.height >= 0.99));
+}
 static NSString *DMSMFullScreenKey(void) {   // (the stage's full-screen window, if it has one)
     NSDictionary *map = DMSMStageItemsMap(DMSMFrontStage());
-    for (id it in map) if (DMSMPolicyOf(map[it]) == 2) return DMSMItemKey(it);
+    for (id it in map) if (DMSMAttrsFullScreen(map[it])) return DMSMItemKey(it);
     return nil;
 }
 static NSString *DMSMFullScreenBundle(void) { return DMSMKeyBundle(DMSMFullScreenKey()); }   // (... and its app)
@@ -29377,7 +29388,7 @@ static void DMSMWindowsForward(BOOL forward) {
     for (id it in map) {
         long t = DMSMAttrTimeOr(map[it], 0);
         lo = MIN(lo, t); hi = MAX(hi, t);
-        if (!fullItem && DMSMPolicyOf(map[it]) == 2) fullItem = it;   // (the full-screen window itself, not its app: the app's other windows are windows, M-2)
+        if (!fullItem && DMSMAttrsFullScreen(map[it])) fullItem = it;   // (the full-screen window itself, not its app: the app's other windows are windows, M-2)
         else if (t > topT) { topT = t; topItem = it; }
     }
     if (!fullItem) return;
@@ -29416,7 +29427,7 @@ static BOOL DMSMToggleZoom(NSString *key) {
     long long policy = 0;
     if (!DMSMAttrSizingPolicy(attrs, &policy)) return NO;
     if (!gSMPreZoom) gSMPreZoom = [NSMutableDictionary dictionary];
-    if (policy != 2) {   // (2 = maximized) green = native full screen (our standard); its old place and size are kept for the way back
+    if (!DMSMAttrsFullScreen(attrs)) {   // green = native full screen (our standard); its old place and size are kept for the way back
         gSMPreZoom[wk] = attrs;
         return DMSMSetFullScreenInStage(wk, YES);   // (full screen inside the stage: the other windows can come over it, as with our other engines)
     }
@@ -29919,7 +29930,7 @@ static void DMSMFitTick(BOOL force) {
     if (!DMFrontApp()) return;
     {   // (which windows are full screen now: their tiles are kept for their return)
         NSDictionary *fm = DMSMStageItemsMap(DMSMFrontStage());
-        for (id it in fm) if (DMSMPolicyOf(fm[it]) == 2) {
+        for (id it in fm) if (DMSMAttrsFullScreen(fm[it])) {
             NSString *b = DMSMItemKey(it);
             if (!b || [gSMFitWentFull containsObject:b]) continue;
             if (!gSMFitWentFull) gSMFitWentFull = [NSMutableSet set];
@@ -29933,7 +29944,7 @@ static void DMSMFitTick(BOOL force) {
     NSDictionary *map = DMSMStageItemsMap(DMSMFrontStage());
     NSSet *onScreen = [NSSet setWithArray:DMSMWindowKeys()];
     NSMutableArray *items = [NSMutableArray array];
-    for (id it in map) if ([onScreen containsObject:DMSMItemKey(it)] && DMSMPolicyOf(map[it]) != 2) [items addObject:it];
+    for (id it in map) if ([onScreen containsObject:DMSMItemKey(it)] && !DMSMAttrsFullScreen(map[it])) [items addObject:it];
     [items sortUsingComparator:^NSComparisonResult(id a, id b) {
         long ta = DMSMAttrTimeOr(map[a], 0), tb = DMSMAttrTimeOr(map[b], 0);
         return ta > tb ? NSOrderedAscending : (ta < tb ? NSOrderedDescending : NSOrderedSame);
@@ -30456,12 +30467,12 @@ static void DMSMHookStripReveal(void) {
 //  - "keyboard up" was set with no keyboard anywhere after a respring (fixed at its source: -_updateSoftwareKeyboardVisibleWithKeyboardShowing: below);
 //  - the height rule assumes Apple's own layout; two windows tiled above the Dock span more than that and hid it.
 // Our engine, like a Mac: the Dock stays, except while an app's keyboard is really on screen (Apple's flag, made reliable below), in native full
-// screen (a maximized window in the stage), or when the preference hides it.
+// screen (a window maximized or zoomed-to-fill over the screen: DMSMAttrsFullScreen), or when the preference hides it.
 static BOOL DMSMStageHasFullScreenWindow(void) {
     NSDictionary *map = DMSMStageItemsMap(DMSMFrontStage());
     for (id it in map) {
         id a = map[it];
-        if (DMSMPolicyOf(a) == 2) return YES;
+        if (DMSMAttrsFullScreen(a)) return YES;
     }
     return NO;
 }
@@ -30478,7 +30489,7 @@ static BOOL DMSMStageHasFullScreenWindow(void) {
     BOOL full = NO;
     Ivar fsl = class_getInstanceVariable([me class], "_fullScreenAppLayout");
     id own = fsl ? object_getIvar(me, fsl) : nil;
-    if (own) { NSDictionary *om = DMSMStageItemsMap(own); for (id it in om) if (DMSMPolicyOf(om[it]) == 2) full = YES; }
+    if (own) { NSDictionary *om = DMSMStageItemsMap(own); for (id it in om) if (DMSMAttrsFullScreen(om[it])) full = YES; }
     else full = DMSMStageHasFullScreenWindow();
     BOOL keyboard = appleKeyboard;   // (Apple's flag, set only for a keyboard really shown: see _updateSoftwareKeyboardVisible... below)
     BOOL r = keyboard || full || prefers;

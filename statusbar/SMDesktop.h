@@ -46,7 +46,7 @@ static BOOL DMSMDeskHomeBehind(id floor) {
         NSDictionary *m = DMSMIsStage(stage) && DMSMIsMainIdentity(DMSMStageDisplayIdentity(stage)) ? DMSMStageItemsMap(stage) : nil;
         if (m.count) {
             yes = YES;
-            for (id it in m) if (DMSMPolicyOf(m[it]) == 2) { yes = NO; break; }   // (a full-screen window covers the Home Screen)
+            for (id it in m) if (DMSMAttrsFullScreen(m[it])) { yes = NO; break; }   // (a full-screen window covers the Home Screen)
         }
     } @catch (NSException *e) { yes = NO; }
     depth--;

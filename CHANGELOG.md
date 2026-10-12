@@ -2,6 +2,11 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.4.4
+
+### Fixes
+- Stage Manager engine: the Dock now hides over apps that only run full screen, such as many games, as it does over other full-screen apps, and the usual swipe up from the bottom edge still shows it. Before, it stayed in front of them.
+
 ## 1.4.3
 
 ### New

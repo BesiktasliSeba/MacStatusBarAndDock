@@ -93,7 +93,7 @@ static NSArray<NSDictionary *> *DMSMHomeDeskOf(id stage, NSMutableDictionary<NSS
         NSString *ident = DMSMHomeItemIdent(it);
         long long r = 0, t = 0;
         if (!ident || !DMSMStageRoleOfItem(stage, it, &r) || !DMSMAttrLastInteractionTime(map[it], &t)) return nil;
-        [out addObject:@{@"id": ident, @"r": @(r), @"t": @(t), @"p": @((long long)DMSMPolicyOf(map[it]))}];
+        [out addObject:@{@"id": ident, @"r": @(r), @"t": @(t), @"p": @(DMSMAttrsFullScreen(map[it]) ? 2LL : (long long)DMSMPolicyOf(map[it]))}];   // (2: full screen in either of Stage Manager's forms)
         if (byId) byId[ident] = it;
     }
     return out;
@@ -128,7 +128,7 @@ __attribute__((noinline)) static void DMSMHomeNoteResult(id ctx) {   // (noinlin
     BOOL window = NO;
     if (env == 2 && prevEnv == 3) {
         NSDictionary *map = DMSMStageItemsMap(prevStage);
-        for (id it in map) { NSString *i = DMSMHomeItemIdent(it); if (i) [ids addObject:i]; if (DMSMPolicyOf(map[it]) != 2) window = YES; }
+        for (id it in map) { NSString *i = DMSMHomeItemIdent(it); if (i) [ids addObject:i]; if (!DMSMAttrsFullScreen(map[it])) window = YES; }
     }
     // (a switcher gesture's own first transition is no destination: its event label -- SMHomeRule.h DMSMSwitcherNote)
     id req = [ctx respondsToSelector:NSSelectorFromString(@"request")] && DMSMSigOK(ctx, NSSelectorFromString(@"request"), DMSMSigObj(), "request") ? DMCall(ctx, @"request") : nil;
@@ -312,7 +312,7 @@ static BOOL DMSMHGOverDesk(id mod, Ivar start) {
         id stage = DMSMFrontStageOnDisplay(DMSMIdentityOfScreen([UIScreen mainScreen]));
         NSDictionary *m = DMSMStageItemsMap(stage);
         yes = m.count > 0;
-        for (id it in m) if (DMSMPolicyOf(m[it]) == 2) { yes = NO; break; }
+        for (id it in m) if (DMSMAttrsFullScreen(m[it])) { yes = NO; break; }
     }
     objc_setAssociatedObject(mod, &kSMHGDeskKey, @(yes), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (yes) DM_FEATURE_MARK("sm-home-gesture-sharp");
@@ -527,7 +527,7 @@ static void DMSMRestoreDesktopTick(void) {
         NSArray<NSArray *> *cw = DMMSWSMDeskWindows(DMMSWCurId());
         if (!cw.count) { DMLog([NSString stringWithFormat:@"[smhome] after the start: %@ has no window to bring back", DMMSWDeskName(gMSWCur)]); return; }
         NSMutableArray<NSString *> *tiled = [NSMutableArray array];
-        for (NSArray *w in cw) if (DMSMPolicyOf(w[2]) != 2) [tiled addObject:w[3]];
+        for (NSArray *w in cw) if (!DMSMAttrsFullScreen(w[2])) [tiled addObject:w[3]];
         FILE *g = fopen(guard, "w"); if (g) fclose(g);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ unlink(guard); });
         NSString *front = DMMSWSMShowDesk(DMMSWCurId(), @"after the start");
