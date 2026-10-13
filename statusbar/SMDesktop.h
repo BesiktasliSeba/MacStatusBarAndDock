@@ -340,6 +340,12 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
     id req0 = [ctx respondsToSelector:NSSelectorFromString(@"request")] && DMSMSigOK(ctx, NSSelectorFromString(@"request"), DMSMSigObj(), "request") ? DMCall(ctx, @"request") : nil;
     id label0 = [req0 respondsToSelector:NSSelectorFromString(@"eventLabel")] ? DMCall(req0, @"eventLabel") : nil;
     if ([label0 isKindOfClass:[NSString class]] && [label0 isEqualToString:@"UpdateFluidSwitcherGestureAction"]) return;
+    // (a switcher gesture's own transitions -- a swipe to the previous app, its end: the stage the gesture holds is shown as it is, as Apple does;
+    //  joined into the desktop the previous app came in as a window and the gesture's stage was no longer the switcher's, 12 Oct, 16.1.1)
+    if (DMSMCtxFromSwitcherGesture(ctx)) {
+        DMSMGestureTrace("switcher gesture transition %{public}@: left as SpringBoard built it (no desktop join)", label0);
+        return;
+    }
     NSString *early = nil;
     if (!DMSMDeskJoinPlan(@[], askedW, flags, &early) && ![early isEqualToString:@"no desktop to keep"]) {
         DMLog([NSString stringWithFormat:@"[smjoin] roles already set (%@; %@): left as SpringBoard built it -- %@", [seen componentsJoinedByString:@", "], [label0 isKindOfClass:[NSString class]] ? label0 : @"no label", early]);
@@ -446,6 +452,8 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
     if (!windowed && desk) for (NSString *b in fresh) DMSMDismissOtherFullScreen(desk, b);   // (full screen: one full-screen app at a time, as a launch)
     DMMSWSMAskedJoined(fresh, leftOut);   // (Mac Switcher: recorded on the current desktop; a full desktop's left-out windows minimized and said)
     DM_FEATURE_MARK("sm-join-asked-stage");
+    DMSMNoteWrite("desktop join (asked stage)");
+    if (DMSMSystemGestureLive()) DMSMGestureTrace("gesture %lu: SpringBoard's stage rewritten into the desktop (%{public}@)", gSMGestureEpoch, askedText);
     for (NSString *b in fresh) {   // (a window of an app already on the desktop joined it: M-2's case)
         if (DMSMKeyIsApp(b)) continue;
         for (NSDictionary *w in deskW) if (![w[@"w"] isEqualToString:b] && [w[@"b"] isEqualToString:DMSMKeyBundle(b)]) { DM_FEATURE_MARK("sm-second-window-joins"); break; }

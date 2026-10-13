@@ -29922,6 +29922,8 @@ static void DMSMFitTick(BOOL force) {
     // (a Mac Switcher desktop is coming in: the cards on screen are changing stage under the cover, so the set read now is half of one desktop and
     //  half of the other -- it emptied the arriving desktop's arrangement and asked for a layout of a stage on its way out. Read once it is over.)
     if (gMSWSwitching) return;
+    // (a switcher gesture holds the stage it took until its transaction completes: read and tiled after it, SMEngineAPI.h DMSMSystemGestureLive)
+    if (DMSMSystemGestureLive()) return;
     // (the Home Screen in front: no stage is shown -- the most recent one is only kept, hidden. Nothing is read or asked then: the arrangement
     //  stays for when its windows come back, and a layout request for the hidden stage brought it to the front over the Home Screen -- iPad 2,
     //  4 Oct: on the Home Screen a swipe up from the bottom edge, which SpringBoard answers by showing the stage's cards for the gesture, had the
@@ -30175,6 +30177,7 @@ static void DMSMJoinDesktop(id ctx) {
     // then written into Apple's context (DMSMWritePlan, which empties what it wrote if a write fails). Any refusal on the way returns with the
     // context untouched: the launch goes on as Stage Manager's own (a new stage).
     if (DMSMCtxIsOurs(ctx)) return;   // (our own plan, or a request of ours: as we wrote it)
+    if (DMSMCtxFromSwitcherGesture(ctx)) return;   // (a switcher gesture's own transition: shown as Apple has it, SMDesktop.h DMSMJoinStageAsked)
     // A background activation -- an app launched or woken without being shown (background refresh, SpringBoard's auto-launch, a VoIP wake, a
     // suspended launch: -[SBWorkspaceApplicationSceneTransitionContext isBackground]) -- is no launch: SpringBoard's layout builder keeps the layout
     // state as it is for these and drops any roles written. The join took them for launches: a minimized window lost its "minimized" mark (the next
@@ -30288,6 +30291,10 @@ static void DMSMJoinDesktop(id ctx) {
 #if DEBUG
     gSMSimulateWriteFail = -1;
 #endif
+    if (ok) {
+        DMSMNoteWrite("desktop join (launch)");
+        if (DMSMSystemGestureLive()) DMSMGestureTrace("gesture %lu: %{public}@ joined the desktop", gSMGestureEpoch, bundle);
+    }
     if (ok && dismissFullIn) DMSMDismissOtherFullScreen(dismissFullIn, key);
     if (ok && leftOut.count) DMMSWSMLeftOut(leftOut, nil);
     DMLog(ok ? what : [NSString stringWithFormat:@"[smjoin] %@: writing the plan failed, context emptied again (a new stage)", bundle]);
@@ -30641,6 +30648,10 @@ static void DMSMReapplyGrabbers(UIView *card) {   // (Settings > Resize Handles 
 %hook SBWorkspaceApplicationSceneTransitionContext
 - (void)finalize {
     id me = self;
+    if (DMSMFree() && DMSMSystemGestureLive()) {
+        id label = DMCall(DMCall(me, @"request"), @"eventLabel");
+        DMSMGestureTrace("gesture %lu: finalize %p %{public}@", gSMGestureEpoch, me, [label isKindOfClass:[NSString class]] ? label : @"no label");
+    }
     if (DMSMFree()) {
         // (Home first: SpringBoard's Home transition becomes the desktop's windows, marked ours -- the join then leaves it alone. SMHome.h)
         @try { DMSMHomeKeepsDesktop(me); } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[smhome] keeping the windows at Home failed: %@", e.reason]); }
@@ -31220,6 +31231,7 @@ static void DMSMSelfCheck(void) {
         DMSMDeskInstall();       // (optional: the Home Screen behind the windows, SMDesktop.h -- its own rows; missing = Apple's way, the engine runs)
         DMSMLimitInstall();      // (optional: more than four windows per desktop, SMLimit.h -- SpringBoard's own role functions + one row; else four, as 1.3.5)
         DMSMHomeInstall();       // (optional: the windows stay at Home and keep still in a Home gesture, SMHome.h -- its kSMNeeds rows; else Apple's Home)
+        DMSMHomeSnapshotGuardInstall();   // (the gesture's stage gone from the switcher as it ends: its snapshot cache, SMHome.h B3)
 #if DEBUG
         DMSMHookOrientCheckDebug();   // (debug: a layout state whose elements and traits participants do not match is logged before Apple's check aborts)
 #endif

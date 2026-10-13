@@ -57,6 +57,8 @@ __attribute__((noinline)) static BOOL DMSMRequestRealHome(NSString *why) {   // 
 }
 static void DMSMGoHomeForReal(NSString *why) {
     DMLog([NSString stringWithFormat:@"[smhome] a real Home asked for (%@): the windows go with it", why ?: @"?"]);
+    // (a switcher gesture running: no request and no simulated press either -- the press is a Home transition of its own over the gesture's)
+    if (DMSMGestureRefuses("real Home", why)) return;
     if (gSMHomeOn && DMSMRequestRealHome(why)) return;
     gSMRealHomeUntil = CACurrentMediaTime() + 2.0;   // (the fallback: SpringBoard's own Home press, every Home transition of the next 2 s left as built)
     DMMinimize();
@@ -280,6 +282,10 @@ __attribute__((noinline)) static void DMSMHomeKeepsDesktop(id ctx) {   // (noinl
         if (k.length) { DMSMSetMinimized(k, YES); [awayNames addObject:DMSMKeyText(k)]; }
     }
     DM_FEATURE_MARK("sm-home-keeps-windows");
+    DMSMNoteWrite("Home keeps the desktop");
+    if (DMSMSystemGestureLive())
+        DMSMGestureTrace("gesture %lu: Home rewritten to the desktop's %lu window(s), %lu sent to the background (%{public}@)", gSMGestureEpoch,
+                         (unsigned long)rows.count, (unsigned long)[plan[@"away"] count], what);
     BOOL atHome = [plan[@"atHome"] boolValue];
     DMLog([NSString stringWithFormat:@"[smhome] Home (%@): the windows stay over the Home Screen -- %@%@", what, why,
            awayNames.count ? [NSString stringWithFormat:@" (%@ to the background)", [awayNames componentsJoinedByString:@", "]] : @""]);
@@ -410,6 +416,88 @@ static CGRect DMSMHGFrame(id self, SEL _cmd, unsigned long long index) {
     if (!DMSMHGStill(self, index)) return o_SMHGFrame(self, _cmd, index);
     struct objc_super su = { self, gSMHGSuper };
     return ((CGRect (*)(struct objc_super *, SEL, unsigned long long))objc_msgSendSuper)(&su, _cmd, index);
+}
+
+// ---- B3. the gesture's stage gone from the switcher: its snapshot cache ---------------------------------------------------------------------------
+// -[SBHomeGestureSwitcherModifier appLayoutsToCacheSnapshots] looks the gesture's selected app layout up in its app layouts and aborts SpringBoard
+// when it is not there (20B101: SBHomeGestureSwitcherModifier.m:1358, "_selectedAppLayout %@ not found"; the only use of that check). It runs as
+// the gesture ends and the switcher rebuilds its app layouts for the transition it asked for (-noteAppLayoutsDidChange -> -_updateSnapshotCache):
+// a stage that changed during the gesture -- a window sent to the background by the Home rule, a role or attributes rewritten -- is a new,
+// unequal app layout, and the old one is gone (iPad Pro M1, 16.1.1, 12 Oct: SIGABRT on a swipe up / a swipe to the previous app). The answer is
+// only which snapshots to keep: for this one call the stage that took its place (the app layout sharing most of its windows) stands in for it,
+// or none -- the modifier's own path when nothing was selected -- and the selection is put back as it was. Every other call is Apple's.
+static id (*o_SMHGSnapshots)(id, SEL);
+static Ivar gSMHGSnapSelIv;
+static char kSMHGStaleToldKey;
+static NSString *DMSMHGLayoutText(id al) {
+    if (!al) return @"none";
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    id items = DMCall(al, @"allItems");
+    for (id it in ([items isKindOfClass:[NSArray class]] ? items : @[])) {
+        long long r = -1;
+        if (!DMSMStageRoleOfItem(al, it, &r)) r = -1;
+        [parts addObject:[NSString stringWithFormat:@"%@ role %lld", DMSMHomeItemIdent(it) ?: DMSMItemBundle(it) ?: @"?", r]];
+    }
+    return [NSString stringWithFormat:@"%p [%@]", al, [parts componentsJoinedByString:@", "]];
+}
+static NSString *DMSMHGLayoutDump(id al) {
+    NSString *d = [[al description] stringByReplacingOccurrencesOfString:@"\n" withString:@" "] ?: @"none";
+    return d.length > 900 ? [d substringToIndex:900] : d;
+}
+static id DMSMHGSuccessor(id stale, NSArray *layouts) {
+    NSMutableSet<NSString *> *took = [NSMutableSet set];
+    id items = DMCall(stale, @"allItems");
+    for (id it in ([items isKindOfClass:[NSArray class]] ? items : @[])) { NSString *u = DMSMHomeItemIdent(it); if (u) [took addObject:u]; }
+    id best = nil;
+    NSUInteger shared = 0;
+    for (id al in layouts) {
+        id its = DMCall(al, @"allItems");
+        NSUInteger n = 0;
+        for (id it in ([its isKindOfClass:[NSArray class]] ? its : @[])) { NSString *u = DMSMHomeItemIdent(it); if (u && [took containsObject:u]) n++; }
+        if (n > shared) { best = al; shared = n; }
+    }
+    return best;
+}
+static id DMSMHGSnapshots(id self, SEL _cmd) {
+    id took = object_getIvar(self, gSMHGSnapSelIv);
+    if (!took) return o_SMHGSnapshots(self, _cmd);
+    id layouts = DMCall(self, @"appLayouts");
+    if (![layouts isKindOfClass:[NSArray class]] || ![(NSArray *)layouts count] || [(NSArray *)layouts indexOfObject:took] != NSNotFound) return o_SMHGSnapshots(self, _cmd);
+    DM_FEATURE_MARK("sm-gesture-stage-gone");
+    id instead = DMSMHGSuccessor(took, layouts);
+    BOOL live = DMSMSystemGestureLive();
+    DMSMGestureTrace("gesture %lu: the stage it took is not among the switcher's %lu app layouts (transaction running %d; the engine's last write: %{public}s, %.0f ms before) -- snapshots kept around %{public}s",
+                     gSMGestureEpoch, (unsigned long)[(NSArray *)layouts count], live, gSMLastWrite, gSMLastWriteAt > 0 ? (CACurrentMediaTime() - gSMLastWriteAt) * 1000.0 : -1.0,
+                     instead ? "the stage that took its place" : "no selected stage");
+    if (!objc_getAssociatedObject(self, &kSMHGStaleToldKey)) {   // (once per gesture: the switcher asks again for each change)
+        objc_setAssociatedObject(self, &kSMHGStaleToldKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        DMSMGestureTrace("gesture %lu: took %{public}@ -- in its place %{public}@", gSMGestureEpoch, DMSMHGLayoutText(took), DMSMHGLayoutText(instead));
+        DMSMGestureTrace("gesture %lu: took (whole) %{public}@", gSMGestureEpoch, DMSMHGLayoutDump(took));
+        if (instead) DMSMGestureTrace("gesture %lu: in its place (whole) %{public}@", gSMGestureEpoch, DMSMHGLayoutDump(instead));
+    }
+    object_setIvar(self, gSMHGSnapSelIv, instead);
+    id r = nil;
+    @try { r = o_SMHGSnapshots(self, _cmd); }
+    @finally { object_setIvar(self, gSMHGSnapSelIv, took); }
+    return r;
+}
+static void DMSMHomeSnapshotGuardInstall(void) {
+    static BOOL done = NO;
+    if (done) return;
+    done = YES;
+    gSMGestureGateFrom = CACurrentMediaTime() + 6.0;
+    Class c = objc_getClass("SBHomeGestureSwitcherModifier");
+    SEL s = sel_registerName("appLayoutsToCacheSnapshots");
+    Method m = c ? class_getInstanceMethod(c, s) : NULL;
+    gSMHGSnapSelIv = c ? class_getInstanceVariable(c, "_selectedAppLayout") : NULL;
+    const char *enc = gSMHGSnapSelIv ? ivar_getTypeEncoding(gSMHGSnapSelIv) : NULL;
+    if (!m || !enc || enc[0] != '@' || ![DMSMSigOfMethod(m) isEqualToString:DMSMSigObj()] || ![c instancesRespondToSelector:NSSelectorFromString(@"appLayouts")]) {
+        DMSMGestureTrace("stale-stage guard off: SBHomeGestureSwitcherModifier is not as expected here");
+        return;
+    }
+    MSHookMessageEx(c, s, (IMP)DMSMHGSnapshots, (IMP *)&o_SMHGSnapshots);
+    BOOL on = o_SMHGSnapshots && method_getImplementation(class_getInstanceMethod(c, s)) == (IMP)DMSMHGSnapshots;
+    DMSMGestureTrace("stale-stage guard %{public}s", on ? "on" : "off: the hook did not take");
 }
 #if DEBUG
 // debug /tmp/msb-sm-hgprobe: during a Home gesture over the desktop, every ~120 ms (outside the layout pass), what the switcher's ROOT modifier answers

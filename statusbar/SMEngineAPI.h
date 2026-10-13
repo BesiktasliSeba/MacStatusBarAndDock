@@ -447,6 +447,62 @@ static id DMSMStageLeaf(id stage, long long role) {
     id r = ((id (*)(id, SEL, long long))objc_msgSend)(stage, sel, role);
     return DMSMIsStage(r) ? r : nil;
 }
+// ---- a system switcher gesture holds the stage it took ---------------------------------------------------------------------------------------------
+// From its Begin until its transaction completes, SpringBoard's Home / switcher gesture keeps the stage under the finger as its selected app layout
+// (-[SBHomeGestureSwitcherModifier _selectedAppLayout]); when the gesture ends, the switcher rebuilds its app layouts and the modifier looks that
+// stage up again (-appLayoutsToCacheSnapshots, SBHomeGestureSwitcherModifier.m:1358 on 20B101: "_selectedAppLayout %@ not found" -> abort). A stage
+// replaced in the model or asked for again meanwhile is a new, unequal app layout. While the gesture's workspace transaction runs, the engine's own
+// model replacements and requests wait (refused here; their callers act again later or the user does); SpringBoard's own transitions are still
+// finalized as before. Release log: `log stream --predicate 'subsystem == "com.besiktasliseba.macstatusbaranddock"'`, category "gesture".
+#include <os/log.h>
+static os_log_t DMSMGestureLog(void) {
+    static os_log_t l;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ l = os_log_create("com.besiktasliseba.macstatusbaranddock", "gesture"); });
+    return l;
+}
+#define DMSMGestureTrace(fmt, ...) os_log(DMSMGestureLog(), fmt, ##__VA_ARGS__)
+static __weak id gSMGestureTxn;              // (the switcher gesture transaction last seen running)
+static unsigned long gSMGestureEpoch = 0;    // (one per gesture transaction seen)
+static const char *gSMLastWrite = "none";    // (the engine's last write into a transition or the model, and when)
+static CFTimeInterval gSMLastWriteAt = 0;
+static void DMSMNoteWrite(const char *what) {
+    gSMLastWrite = what;
+    gSMLastWriteAt = CACurrentMediaTime();
+}
+// (the workspace is asked only from 6 s after the engine's start: +[SBMainWorkspace sharedInstance] during SpringBoard's own start asserts --
+//  safeplacement1's start-up crash, 12 Oct; the desktop restore waits as long, SMHome.h DMSMRestoreDesktopTick)
+static CFTimeInterval gSMGestureGateFrom = 0;
+static BOOL DMSMSystemGestureLive(void) {
+    static int has = -1;
+    static Class gestureTxn;
+    if (gSMGestureGateFrom <= 0 || CACurrentMediaTime() < gSMGestureGateFrom) return NO;
+    id ws = DMCall(objc_getClass("SBMainWorkspace"), @"sharedInstance");
+    if (has < 0 && ws) {
+        gestureTxn = objc_getClass("SBFluidSwitcherGestureWorkspaceTransaction");
+        Method m = class_getInstanceMethod(object_getClass(ws), NSSelectorFromString(@"currentTransaction"));
+        has = gestureTxn && m && [DMSMSigOfMethod(m) isEqualToString:DMSMSigObj()];
+        DMSMGestureTrace("gesture gate %{public}s", has ? "on: the workspace's current transaction is watched" : "off: no -currentTransaction or no SBFluidSwitcherGestureWorkspaceTransaction");
+    }
+    if (has <= 0) return NO;
+    id t = nil;
+    @try { t = ((id (*)(id, SEL))objc_msgSend)(ws, NSSelectorFromString(@"currentTransaction")); } @catch (id e) { t = nil; }
+    if (!t || ![t isKindOfClass:gestureTxn]) return NO;
+    if (t != gSMGestureTxn) { gSMGestureTxn = t; gSMGestureEpoch++; }
+    return YES;
+}
+// A transition SpringBoard's switcher gesture asked for: its begin ("SBFluidSwitcherGesture"), its updates and its end (16.7.7 / 16.1.1 labels).
+static BOOL DMSMCtxFromSwitcherGesture(id ctx) {
+    id label = DMCall(DMCall(ctx, @"request"), @"eventLabel");
+    if (![label isKindOfClass:[NSString class]]) return NO;
+    return [label isEqualToString:@"SBFluidSwitcherGesture"] || [label isEqualToString:@"UpdateFluidSwitcherGestureAction"] || [label isEqualToString:@"FinalFluidSwitcherGestureAction"];
+}
+static BOOL DMSMGestureRefuses(const char *what, NSString *label) {
+    if (!DMSMSystemGestureLive()) return NO;
+    DMSMGestureTrace("gesture %lu: %{public}s %{public}@ waits -- a switcher gesture holds the stage", gSMGestureEpoch, what, label ?: @"");
+    return YES;
+}
+
 // The switcher's model of stages, and a stage replaced in it (a window's attributes changed in place).
 static id DMSMSwitcherModel(void) {
     id m = nil; @try { m = [DMSMCoordinator() valueForKey:@"_mainSwitcherModel"]; } @catch (id e) { m = nil; }
@@ -455,7 +511,9 @@ static id DMSMSwitcherModel(void) {
 // (StatusBar.x keeps the front window for one tick: told here whenever our code changes the stage model or asks for a transition)
 static void (*gDMSMModelChanged)(void) = NULL;
 static BOOL DMSMReplaceStage(id stage, id newStage) {
+    if (DMSMGestureRefuses("model replacement", nil)) return NO;
     if (gDMSMModelChanged) gDMSMModelChanged();
+    DMSMNoteWrite("model replacement");
     id model = DMSMSwitcherModel();
     SEL sel = NSSelectorFromString(@"replaceAppLayout:withAppLayout:");
     if (!DMSMIsStage(stage) || !DMSMIsStage(newStage) || !DMSMSigOK(model, sel, DMSMSigVoidObjObj(), "replaceAppLayout:withAppLayout:")) return NO;
@@ -629,7 +687,9 @@ static void DMSMCtxClearOtherRoles(id ctx, NSArray<NSArray *> *plan) {
     if (cleared.count && DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[smapi] whole stage: roles %@ set empty", [cleared componentsJoinedByString:@", "]]);
 }
 static BOOL DMSMRequestPlan(id identity, BOOL onMain, NSString *label, NSArray<NSArray *> *plan, NSSet<NSNumber *> *allowed, id frontEntity, BOOL whole) {
+    if (DMSMGestureRefuses("request", label ?: @"MSBDRequest")) return NO;
     if (gDMSMModelChanged) gDMSMModelChanged();
+    DMSMNoteWrite("request");
     NSString *why = nil;
     if (!DMSMPlanValid(plan, allowed, &why)) { DMSMAPIFail(@"transition plan", [NSString stringWithFormat:@"%@ refused before asking: %@", label, why]); return NO; }
     id ws = DMCall(objc_getClass("SBMainWorkspace"), @"sharedInstance");
