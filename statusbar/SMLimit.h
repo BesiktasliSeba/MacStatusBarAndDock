@@ -324,6 +324,8 @@ __attribute__((noinline)) static void DMSMRepairRoles(id ctx) {   // (noinline: 
         @catch (NSException *x) { DMSMAPIFail(@"one window, one role", [NSString stringWithFormat:@"emptying role %@ failed: %@", r, x.reason ?: @"exception"]); }
     }
     if (!done.count) return;
+    DMSMNoteWrite("role repair");
+    if (DMSMSystemGestureLive()) DMSMGestureTrace("gesture %lu: roles rewritten: %{public}@", gSMGestureEpoch, [done componentsJoinedByString:@", "]);
     if (keep.count) DM_FEATURE_MARK("sm-minimize-keeps-windows");
     if (empty.count) DM_FEATURE_MARK("sm-one-role-per-window");
     DMLog([NSString stringWithFormat:@"[smroles] roles put right before SpringBoard reads the transition: %@ (%@)", [done componentsJoinedByString:@", "], why ?: @"?"]);
