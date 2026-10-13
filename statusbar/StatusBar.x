@@ -1941,6 +1941,7 @@ static const CGFloat kMilkyWayBackLevel = -0.5;      // above the Home Screen (-
 static BOOL gFlexResize = YES;                       // apps re-lay out to their window's size (Aerial style) instead of MilkyWay scaling a full-screen picture
 static BOOL gWindowsBehindApps = YES;                // Settings > Mac Status Bar > Window Buttons
 static BOOL gWindowsPinnedForward = NO;              // brought over the current full-screen app on purpose
+static BOOL gFullScreenRaised = NO;                  // its Dock icon brought the full-screen app over the windows (also with Windows Behind Full-Screen Apps off)
 static BOOL gDockMenuOpen = NO;                      // a Dock icon's Haptic Touch menu is showing
 static BOOL gHomeMenuOpen = NO;                      // a Home Screen icon's Haptic Touch menu is showing (the windows fade like for the App Library)
 static BOOL DMIconMenuOpen(void) { return gDockMenuOpen || gHomeMenuOpen; }   // (the menu-closing wait, DMWaitForContextMenu)
@@ -2022,7 +2023,8 @@ static CGFloat DMDesiredWindowLevel(void) {
     static BOOL wasTyping = NO;
     if (typing != wasTyping) { wasTyping = typing; DMLog([NSString stringWithFormat:@"[focus] the full-screen app %@ its on-screen keyboard: the windows in front of it %@", typing ? @"brought up" : @"put away", typing ? @"step behind it" : @"come forward again"]); }
     if (typing) return kMilkyWayBackLevel;
-    if (!gWindowsBehindApps || gWindowsPinnedForward || !DMFullScreenAppInFront()) {
+    BOOL raised = gFullScreenRaised && !gWindowsPinnedForward;   // (DMBringFullScreenAppForward: until windows are brought over it again or the front app changes)
+    if ((!gWindowsBehindApps && !raised) || gWindowsPinnedForward || !DMFullScreenAppInFront()) {
         if (gDockMenuOpen) return kBelowDockLevel;
         // A status bar menu opens in the window that hosts the status bar (level 999 on the Home Screen, an app-level window inside
         // an app). While it is open the windows drop to just under that window so the menu is not hidden behind them.
@@ -2523,7 +2525,9 @@ static BOOL DMSurfaceWindowForApp(NSString *bundleID) {
     }
     if (DMActiveEngine() == DMEngineAerial) {   // an Aerial stage: un-minimize it and bring it to the front (over a full-screen app if needed)
         UIView *stage = DMStageForBundle(bundleID);
-        if (!stage) return NO;
+        // (a window on its way out -- closed, or the green button's way to full screen: the launch goes on as a launch, as Zetsu's and MilkyWay4's
+        //  branches have it; "showing" it swallowed the tap while it went)
+        if (!stage || [objc_getAssociatedObject(stage, kStageClosingKey) boolValue]) return NO;
         BOOL minimized = DMStageMinimized(stage);
         DMLog([NSString stringWithFormat:@"[lights] launch of %@ turned into showing its Aerial stage (minimized %d)", bundleID, minimized]);
         if (DMFrontApp()) gWindowsPinnedForward = YES;
@@ -2566,6 +2570,28 @@ static BOOL DMSurfaceWindowForApp(NSString *bundleID) {
             window.alpha = 1.0;
         }, nil);
     }
+    return YES;
+}
+// A Dock tap of the full-screen app that the windows cover -- they were brought over it: a window opened or shown over it, Bring All to Front, or
+// Windows Behind Full-Screen Apps off: it comes to the front, the windows behind it, as a click on an app's Dock icon brings that app forward on a
+// Mac. It did nothing: SpringBoard "activated" the app already in front and the windows stayed over it, so it could only be reached by minimizing
+// them (a report from use, 1.4.5). The windows come forward again with the next window opened or shown, or Bring All to Front.
+// Aerial, Zetsu and MilkyWay4; the Stage Manager engine raises a full-screen window in its stage the same way (DMSMAddToStage -> DMSMBringToFront).
+// Icon taps only (gIconTapLaunch: SBUIController's activation with an icon, Aerial's toggle-on tap hook, and a launch they queued during a desktop
+// slide): a notification, a link, Cmd-Tab or a menu opening the app in front leaves the windows where they are, as in 1.4.4 (1.4.5 logic test F2).
+static BOOL gIconTapLaunch = NO;
+static void DMResignWindowedKeyboards(NSString *exceptBundle);
+static BOOL DMBringFullScreenAppForward(NSString *bundleID) {
+    if (gForceFullScreenLaunch || !bundleID.length || DMActiveEngine() == DMEngineNone || DMSMEngine()) return NO;
+    if (![[DMFrontApp() bundleIdentifier] isEqualToString:bundleID] || !DMFullScreenAppInFront()) return NO;
+    if (!DMVisibleWindowCount() || DMDesiredWindowLevel() == kMilkyWayBackLevel) return NO;   // (no window over it: it is in front already)
+    gWindowsPinnedForward = NO;
+    gFullScreenRaised = !gWindowsBehindApps;   // (Windows Behind Full-Screen Apps off: the windows stay behind it all the same, until they are brought forward)
+    gFullScreenActivatedBundle = bundleID;     // (the status bar's app, as a tap on the part of it showing around the windows makes it)
+    DMResignWindowedKeyboards(nil);            // (a window's keyboard does not stay over the app in front)
+    DMApplyWindowLevel();
+    DM_FEATURE_MARK("dock-tap-full-screen-forward");
+    DMLog([NSString stringWithFormat:@"[windowed] %@ opened while it is full screen behind the windows: it comes to the front, the windows behind it", bundleID]);
     return YES;
 }
 
@@ -9686,12 +9712,28 @@ static void DMLaunchIntoTile(NSString *bundleID, CGRect frame);
             CFPreferencesAppSynchronize(CFSTR("com.uzra.aerial"));
             return;
         }
-        // The icon of the app that is open full screen in front (a Dock tap on it): turned into a window the way the status bar's green button does
-        // it. Aerial's own tap handling made a window and the tap ALSO launched the app full screen again, so Aerial closed its window at once (M1)
-        // and on the iPad 2 the app ended up full screen in portrait (2026-09-26, in 1.0.0 too).
+        // (its window, or its full-screen app, on another Mac Switcher desktop: that desktop comes, as from every other engine's launch path --
+        //  Aerial's own tap handling knows only its stages, and the window there is a hidden one: DMSurfaceWindowForApp, MacSwitcher.h)
+        if (bundleID.length) { BOOL was = gIconTapLaunch; gIconTapLaunch = YES; BOOL sw = DMMSWLaunchSwitches(bundleID); gIconTapLaunch = was; if (sw) return; }
+        // (the full-screen app in front with the windows over it: it comes over them -- DMBringFullScreenAppForward. Turning it into a window here
+        //  acted on the front WINDOW's app, DMLightAction's active app while the windows are over it, 1.4.5)
+        if (bundleID.length && DMBringFullScreenAppForward(bundleID)) return;
+        // (an app that has a window: the launch's own window path, DMSurfaceWindowForApp, as from every other engine's Dock -- minimized ones come
+        //  back, it comes to the front, over a full-screen app if needed. Aerial's own tap handling showed the window inside its layer only: with a
+        //  full-screen app in front the layer stayed behind it and the tap did nothing, 1.4.5. A window we minimized came back this way already.)
+        if (bundleID.length && DMStageForBundle(bundleID) && DMSurfaceWindowForApp(bundleID)) return;
+        // The icon of the app that is open full screen in front with no window over it (a Dock tap on it; with windows over it, the branch above):
+        // nothing happens, as with every other engine -- the app is in front already. SpringBoard gets the tap with Aerial's toggle seen as off, as
+        // for a full-screen-only app, so it only activates the app in front again, as it does with the other engines. It used to be turned into a
+        // window the green button's way (26 Sep design; Aerial's own tap handling made a window AND launched the app full screen again, so Aerial
+        // closed its window at once on the M1 and the app ended up full screen in portrait on the iPad 2). Engine parity, 1.4.5.
         if (bundleID.length && [[DMFrontApp() bundleIdentifier] isEqualToString:bundleID] && !DMStageForBundle(bundleID) && DMFullScreenAppInFront()) {
-            DMLog([NSString stringWithFormat:@"[aerial] icon tap on %@, open full screen in front: made a window the green button's way", bundleID]);
-            DMLightAction(2);
+            DMLog([NSString stringWithFormat:@"[aerial] icon tap on %@, open full screen in front with no window over it: nothing to do, it is in front", bundleID]);
+            CFPreferencesSetAppValue(CFSTR("AerialEnabled"), kCFBooleanFalse, CFSTR("com.uzra.aerial"));
+            CFPreferencesAppSynchronize(CFSTR("com.uzra.aerial"));
+            %orig;
+            CFPreferencesSetAppValue(CFSTR("AerialEnabled"), kCFBooleanTrue, CFSTR("com.uzra.aerial"));
+            CFPreferencesAppSynchronize(CFSTR("com.uzra.aerial"));
             return;
         }
         extern BOOL DMAerialWarmStartIfNeeded(NSString *bundleID);
@@ -9703,13 +9745,6 @@ static void DMLaunchIntoTile(NSString *bundleID, CGRect frame);
             return;
         }
         if (DMAerialWarmStartIfNeeded(bundleID)) return;   // (WhatsApp cold start: full screen first, then a window -- see there)
-        UIView *stage = bundleID.length ? DMStageForBundle(bundleID) : nil;
-        if (stage && [objc_getAssociatedObject(stage, kStageHiddenKey) boolValue]) {
-            DMLog([NSString stringWithFormat:@"[aerial] icon tap on %@: its minimized window comes back", bundleID]);
-            if (DMFrontApp()) gWindowsPinnedForward = YES;
-            DMApplyWindowLevel();
-            DMRestoreStage(stage);
-        }
     }
     %orig;
 }
@@ -10510,7 +10545,12 @@ static NSMutableDictionary<NSString *, NSNumber *> *gWindowLaunchUntil;   // (de
 %hook SBUIController
 - (void)activateApplication:(id)app fromIcon:(id)icon location:(id)location activationSettings:(id)settings actions:(id)actions {
     NSString *bundleID = [app bundleIdentifier];
-    if ((icon || !DMActivationNeedsIcon(bundleID)) && DMWindowedLaunch(bundleID)) return;
+    if (icon || !DMActivationNeedsIcon(bundleID)) {
+        BOOL was = gIconTapLaunch; gIconTapLaunch = icon != nil;   // (only an icon tap brings the covered full-screen app forward, DMBringFullScreenAppForward)
+        BOOL done = DMWindowedLaunch(bundleID);
+        gIconTapLaunch = was;
+        if (done) return;
+    }
     // A second icon tap while the app's Zetsu window is still coming up (a cold start takes 1-2 s with nothing on screen yet, so a second tap is
     // natural): it used to fall through to the normal full-screen launch (the 4 s "our own launch" pass above), and the app then ran full screen AND
     // in its new window at once -- YouTube on the iPad 2 came up as a full-screen app sized like its window, black below, the screen turned. Zetsu's
@@ -10572,7 +10612,9 @@ static NSMutableDictionary<NSString *, NSNumber *> *gWindowLaunchUntil;   // (de
 - (void)viewController:(id)vc selectedApplicationWithDisplayItem:(id)item {
     id pick = DMCmdTabPick((id)self, item);
     NSString *b = [pick respondsToSelector:@selector(bundleIdentifier)] ? [pick bundleIdentifier] : nil;
-    if (b.length && DMHasWindowFor(b)) {
+    // (a window on another Mac Switcher desktop too: its desktop comes, as from the Dock and the open requests -- Aerial's DMHasWindowFor sees the
+    //  current desktop only, so Cmd-Tab opened the app full screen here while its window waited there; Zetsu and MilkyWay4 found it, 1.4.5)
+    if (b.length && (DMHasWindowFor(b) || DMMSWWindowElsewhere(b))) {
         DMLog([NSString stringWithFormat:@"[cmdtab] %@ has a window: its window comes forward (not full screen)", b]);
         if ([(id)self respondsToSelector:@selector(dismiss)]) ((void (*)(id, SEL))objc_msgSend)((id)self, @selector(dismiss));
         dispatch_async(dispatch_get_main_queue(), ^{ DMWindowedLaunch(b); });
@@ -10585,7 +10627,7 @@ static NSMutableDictionary<NSString *, NSNumber *> *gWindowLaunchUntil;   // (de
     id item = [vc respondsToSelector:NSSelectorFromString(@"selectedApplicationDisplayItem")] ? DMCall(vc, @"selectedApplicationDisplayItem") : nil;
     id pick = DMCmdTabPick((id)self, item);
     NSString *b = [pick respondsToSelector:@selector(bundleIdentifier)] ? [pick bundleIdentifier] : nil;
-    if (b.length && DMHasWindowFor(b)) {
+    if (b.length && (DMHasWindowFor(b) || DMMSWWindowElsewhere(b))) {   // (on another desktop too, as above)
         DMLog([NSString stringWithFormat:@"[cmdtab] %@ has a window: its window comes forward (not full screen; launchCurrentSelectedApplication)", b]);
         if ([(id)self respondsToSelector:@selector(dismiss)]) ((void (*)(id, SEL))objc_msgSend)((id)self, @selector(dismiss));
         dispatch_async(dispatch_get_main_queue(), ^{ DMWindowedLaunch(b); });
@@ -12826,6 +12868,7 @@ static BOOL DMWindowedLaunch(NSString *bundleID) {
     if (!bundleID.length || gForceFullScreenLaunch || DMActiveEngine() == DMEngineNone) return NO;
     if (!gRestoringWindows) DMNoteOpenedBeforeRestore(bundleID);   // (not the restore's own launches)
     if (DMSurfaceWindowForApp(bundleID)) return YES;
+    if (gIconTapLaunch && DMBringFullScreenAppForward(bundleID)) return YES;   // (a Dock tap on the full-screen app in front, under the windows: over them)
     if (!DMWindowedLaunchEligible(bundleID)) return NO;
     if (!gWindowLaunchUntil) gWindowLaunchUntil = [NSMutableDictionary dictionary];
     gWindowLaunchUntil[bundleID] = @(CACurrentMediaTime() + 4.0);
@@ -14521,7 +14564,8 @@ static void DMOpenWindowMenu(UIButton *btn) {
         [items addObject:[[DMRow alloc] initWithTitle:@"Minimize All Windows" enabled:DMVisibleWindowCount() > 0 handler:DMCloseThen(^{ DMMinimizeAllWindows(); })]];
         // Windows tucked behind (or pulled in front of) a full-screen app, from here (like macOS's own Window menu "Bring All to Front"), not from the app
         // name menu, which is about the app itself, not its windows. Which of the two this offers follows where the windows already are.
-        if (gWindowsBehindApps && DMVisibleWindowCount() > 0)
+        // (also after a Dock tap brought the full-screen app over the windows with Windows Behind Full-Screen Apps off: DMBringFullScreenAppForward)
+        if ((gWindowsBehindApps || gFullScreenRaised) && DMVisibleWindowCount() > 0)
             [items addObject:[[DMRow alloc] initWithTitle:(gWindowsPinnedForward ? @"Send All to Back" : @"Bring All to Front") enabled:YES
                                                   handler:DMCloseThen(^{ DMToggleWindowsForward(); })]];
     } else if (DMSMEngine()) {   // (the same rows as with our other engines)
@@ -26269,7 +26313,7 @@ static void DMTickBody(void) {
     BOOL secondChanged = stamp != gLastSecond;
     gLastSecond = stamp;
     if (realChanged) {
-        gWindowsPinnedForward = NO; gFullScreenActivatedBundle = nil;
+        gWindowsPinnedForward = NO; gFullScreenActivatedBundle = nil; gFullScreenRaised = NO;
         // A full-screen app came to the front and the windows went behind it: an app in a window that was typing puts its keyboard away (it stayed
         // over the full-screen app, belonging to a window nobody could see).
         if (realBid.length && gWindowsBehindApps && DMActiveEngine() != DMEngineNone) {
@@ -28721,6 +28765,7 @@ static NSMutableSet<NSString *> *DMSMMinimizedSet(void) {
     return gSMMinimized;
 }
 static BOOL DMSMIsMinimized(NSString *key) { return DMSMKeySetHas(DMSMMinimizedSet(), key); }
+static BOOL DMSMOpensAsWindow(NSString *key, BOOL windowed, BOOL minimized);   // (below DMSMAddToStage: a minimized window comes back as that window)
 // Takes exactly these entries out of the saved minimized set (no app-wide removal: an older version's entry for an app stays) and saves it.
 static void DMSMMinimizedDrop(NSSet<NSString *> *keys) {
     NSMutableSet *s = DMSMMinimizedSet();
@@ -28781,6 +28826,13 @@ static id DMSMStageShownBefore(id ctx) {
     return stage;
 }
 static BOOL DMSMWindowAction(NSString *key, NSString *name) {
+    // (Stage Manager's own window actions take the window out of its stage, or move it: on a stage a switcher gesture holds, once its transition
+    //  is over -- SMGestureHold.h; e.g. the full-screen window a gesture's join sends away 0.35 s later, DMSMDismissOtherFullScreen)
+    if (DMSMGestureHoldsStage(DMSMStageOf(key))) {
+        NSString *k = [key copy], *n = [name copy];
+        DMSMAfterGesture([NSString stringWithFormat:@"%@ on %@", n, DMSMKeyText(k)], ^{ DMSMWindowAction(k, n); });
+        return YES;
+    }
     BOOL close = [name isEqualToString:@"close"], minimize = [name isEqualToString:@"removeFromSet"];
     // (the window itself: a key that names the app -- the menu bar's lights, the Window menu, force quit -- means the app's newest window; all
     //  below acts on that one window and its own controller, never on whichever window of the app came first, M-2)
@@ -29200,11 +29252,12 @@ static BOOL DMSMAddToStage(NSString *bundle, UIView *from) {   // from: the icon
         long t = DMSMAttrTimeOr(map[item], 0);
         if (t >= newest) { newest = t; frontAttrs = map[item]; }
     }
-    id attrs = DMSMJoinAttributes(newKey, frontAttrs, windowed, newest, al);   // (its own last place, or cascaded above the Dock; full screen when apps do not open as windows)
+    BOOL asWindow = DMSMOpensAsWindow(newKey, windowed, DMSMIsMinimized(newKey));   // (a minimized window: as that window)
+    id attrs = DMSMJoinAttributes(newKey, frontAttrs, asWindow, newest, al);   // (its own last place, or cascaded above the Dock; full screen when apps do not open as windows)
     if (!attrs) return NO;   // (refused: the normal launch -- DMSMJoinDesktop then decides)
     if (!DMSMRequestOn(identity, @"MSBDStageAdd", @[@[entity, @(role), attrs]], DMSMNewWindowRoles(), entity)) { DMLog([NSString stringWithFormat:@"[smengine] adding %@ refused", bundle]); return NO; }
     DMSMSetMinimized(newKey, NO);   // (a minimized window opened again from the Dock or the Home Screen is a window again)
-    if (!windowed) DMSMDismissOtherFullScreen(al, newKey);
+    if (!asWindow) DMSMDismissOtherFullScreen(al, newKey);
     DMLog([NSString stringWithFormat:@"[smengine] %@ added to the stage of %@ (role %ld, %lu window(s) there before)%@", bundle, main ? [front bundleIdentifier] : @"the TV", role, (unsigned long)map.count, main ? @"" : @" [external display]"]);
     return YES;
 }
@@ -29249,6 +29302,16 @@ static void DMSMForgetApp(NSString *bundle) {   // (the app quit: its windows' p
 // The attributes a window joining the desktop gets: its own last window size/place if it has one (a window restored from minimize came back at
 // the front window's size, logic test SM-8), else cascaded from the front window, kept ABOVE the Dock (new windows reached under it, SM-2);
 // full screen when apps do not open as windows. newest: the stage's newest interaction time (the window goes in front).
+// A minimized WINDOW opened again comes back as that window, also when apps open full screen (Open Apps as Windows off), as a minimized window does
+// with Aerial, Zetsu and MilkyWay4 (DMSurfaceWindowForApp). From the Dock it came back full screen (1.4.5). A full-screen app sent to the background
+// (Home marks it minimized) has full-screen attributes of its own and comes back full screen, as before. minimized: its mark before this launch.
+static BOOL DMSMOpensAsWindow(NSString *key, BOOL windowed, BOOL minimized) {
+    if (windowed || !minimized || !key.length) return windowed;
+    id own = nil;
+    if (!DMSMItemFor(DMSMStageOf(key), key, &own) || !own || DMSMAttrsFullScreen(own)) return NO;
+    DM_FEATURE_MARK("sm-minimized-window-back-as-window");
+    return YES;
+}
 static id DMSMJoinAttributes(NSString *key, id frontAttrs, BOOL windowed, long newest, id stage) {   // stage: the one it joins (its screen and Dock)
     // (key: the joining window -- its own last place is that window's; a NEW window of an app (a second scene) has none and is cascaded, it no
     //  longer opens exactly on the app's other window; an app key: the app's newest window's, as before)
@@ -30210,11 +30273,16 @@ static void DMSMJoinDesktop(id ctx) {
     //  counted as "already on the desktop" and SpringBoard showed it alone, the desktop's windows put away, M-2)
     NSString *key = DMSMEntityKey(act) ?: bundle;
     if (DMMSWSMJoin(ctx, act, key)) return;   // (Mac Switcher with more than one desktop: the current desktop's windows, or the window's own desktop -- MacSwitcherSM.h)
+    BOOL wasMinimized = DMSMIsMinimized(key);   // (a minimized window comes back as that window: DMSMOpensAsWindow)
     DMSMSetMinimized(key, NO);   // (opened again: no longer a minimized window)
     // The desktop (DMSMDesktopFor): the most recent stage on the iPad with a window that is not minimized, not an app in full screen sent to the
     // background; minimized windows are left out of what joins.
     NSMutableDictionary *map = nil;
     id desk = DMSMDesktopFor(DMSMStageShownBefore(ctx), [NSSet setWithObject:key], &map);
+    if (DMSMGestureHoldsStage(desk)) {   // (a switcher gesture holds the desktop's stage: joining it now would make SpringBoard drop it -- SMGestureHold.h)
+        DMLog([NSString stringWithFormat:@"[smjoin] %@: opened while a switcher gesture holds the desktop's stage -- left as SpringBoard built it", DMSMKeyText(key)]);
+        return;
+    }
     NSMutableArray *plan = [NSMutableArray array];   // [entity, role, attrs], the launching app last
     NSString *what = nil;
     NSMutableArray<NSString *> *leftOut = [NSMutableArray array];   // (a 5th app's oldest window; Mac Switcher on: minimized and said, DMMSWSMLeftOut)
@@ -30225,7 +30293,7 @@ static void DMSMJoinDesktop(id ctx) {
         // the Home Screen while a stage is on record (DMSMOpenFullScreenStage, which needs a window to copy and so never covered this case): a window
         // Stage Manager remembered from the other orientation came back 379 x 921 pt in the 649 pt landscape desktop, 200 pt past the screen's bottom
         // edge, its resize corners out of reach (iPad 2, 1.3.2 logic test)
-        BOOL windowed = DMWindowedLaunchOn();
+        BOOL windowed = DMSMOpensAsWindow(key, DMWindowedLaunchOn(), wasMinimized);
         id attrs = DMSMJoinAttributes(key, nil, windowed, 0, nil);
         if (!attrs) { DMLog([NSString stringWithFormat:@"[smjoin] %@: no desktop to join (a new stage, Stage Manager's own size)", bundle]); return; }
         [plan addObject:@[act, @1, attrs]];
@@ -30238,7 +30306,7 @@ static void DMSMJoinDesktop(id ctx) {
             if ([DMSMItemBundle(it) isEqualToString:bundle]) appThere = YES;
         }
         if (appThere) DM_FEATURE_MARK("sm-second-window-joins");   // (another window of an app on the desktop: it joins, M-2)
-        BOOL windowed = DMWindowedLaunchOn();
+        BOOL windowed = DMSMOpensAsWindow(key, DMWindowedLaunchOn(), wasMinimized);
         NSArray *items = [map.allKeys sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {   // (newest first)
             long long ta = DMSMAttrTimeOr(map[a], 0), tb = DMSMAttrTimeOr(map[b], 0);
             return ta > tb ? NSOrderedAscending : (ta < tb ? NSOrderedDescending : NSOrderedSame);
@@ -30641,6 +30709,9 @@ static void DMSMReapplyGrabbers(UIView *card) {   // (Settings > Resize Handles 
 %hook SBWorkspaceApplicationSceneTransitionContext
 - (void)finalize {
     id me = self;
+    // (a switcher gesture's own transition: the stage it comes from is held until the gesture's transition is over -- SMGestureHold.h)
+    BOOL gesture = DMSMFree() && DMSMGestureCtx(me);
+    if (gesture) DMSMGestureHold(DMSMStageShownBefore(me));
     if (DMSMFree()) {
         // (Home first: SpringBoard's Home transition becomes the desktop's windows, marked ours -- the join then leaves it alone. SMHome.h)
         @try { DMSMHomeKeepsDesktop(me); } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[smhome] keeping the windows at Home failed: %@", e.reason]); }
@@ -30649,6 +30720,7 @@ static void DMSMReapplyGrabbers(UIView *card) {   // (Settings > Resize Handles 
     // (then one window, one role -- whoever built the context, the join included: SMRoleRepair.h, SMLimit.h DMSMRepairRoles)
     @try { DMSMRepairRoles(me); } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[smroles] checking the roles failed: %@", e.reason]); }
     %orig;
+    if (gesture) @try { DMSMGestureHold(DMCall(DMCall(me, @"layoutState"), @"appLayout")); } @catch (NSException *e) {}   // (and the one it goes to)
     // (and where SpringBoard went, now that it is decided: the App Switcher's bookkeeping for the Home rule -- SMHome.h)
     if (DMSMFree()) @try { DMSMHomeNoteResult(me); } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[smhome] the App Switcher's bookkeeping failed: %@", e.reason]); }
 }
@@ -30956,6 +31028,7 @@ static void DMSMHookConstrain16(void) {
 #include "SMDesktop.h"   // (the Home Screen behind the windows, one desktop for SpringBoard's own transitions: 4 Oct, sm-desktop)
 #include "SMLimit.h"     // (more than four windows per desktop: Apple's limit answered with SpringBoard's own window-role count, 4 Oct, sm-nolimit)
 #include "SMHome.h"      // (the windows stay on screen at Home, like Aerial and Zetsu; still during a Home gesture: 4 Oct, sm-free)
+#include "SMGestureHook.h"   // (the switcher gesture's transaction, for SMGestureHold.h: 1.4.5, issue #7)
 #include "SpotlightBridge.h"   // (our sections in Apple's Spotlight -- Actions, Windows -- SpringBoard's half: 1.4.3, S-3)
 // The windows' corner radius (Stage Manager's own: rounder than a Mac window): under whichever name this iPadOS has (stageCornerRaddii, sic,
 // through 17; stageCornerRadii from 18.2 -- kSMNeeds' alt name, DMSMCornerRadiusSelector).
@@ -31220,6 +31293,7 @@ static void DMSMSelfCheck(void) {
         DMSMDeskInstall();       // (optional: the Home Screen behind the windows, SMDesktop.h -- its own rows; missing = Apple's way, the engine runs)
         DMSMLimitInstall();      // (optional: more than four windows per desktop, SMLimit.h -- SpringBoard's own role functions + one row; else four, as 1.3.5)
         DMSMHomeInstall();       // (optional: the windows stay at Home and keep still in a Home gesture, SMHome.h -- its kSMNeeds rows; else Apple's Home)
+        DMSMGestureHoldInstall();   // (a switcher gesture's stage left alone until its transition is over, SMGestureHold.h -- else a moment after its end)
 #if DEBUG
         DMSMHookOrientCheckDebug();   // (debug: a layout state whose elements and traits participants do not match is logged before Apple's check aborts)
 #endif

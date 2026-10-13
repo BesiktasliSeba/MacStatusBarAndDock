@@ -304,6 +304,12 @@ __attribute__((noinline)) static void DMSMRepairRoles(id ctx) {   // (noinline: 
         for (NSDictionary *s in slots) if ([s[@"r"] longLongValue] == gSMRemovingRole) mine = s;
         if (!mine || [mine[@"k"] intValue] != DMSMSlotUnset || [empty containsObject:@(gSMRemovingRole)]) { gSMRemovingId = nil; gSMRemovingRole = 0; }
     }
+    // (a switcher gesture's own transition names every window of the stage it holds: a role emptied here would make another stage of it, which
+    //  SpringBoard drops while the gesture still looks it up -- SMGestureHold.h. The "as it was" roles change nothing and stay.)
+    if (empty.count && DMSMGestureCtx(ctx)) {
+        DMLog([NSString stringWithFormat:@"[smroles] a switcher gesture's own transition: role(s) %@ left as SpringBoard built them (the gesture holds that stage)", [empty componentsJoinedByString:@", "]]);
+        empty = @[];
+    }
     if (!keep.count && !empty.count) {
         if (why) DMLog([NSString stringWithFormat:@"[smroles] left as SpringBoard built it: %@", why]);
         return;

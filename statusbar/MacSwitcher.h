@@ -1256,6 +1256,8 @@ static __weak id gMSWLiftPicGesture;  // (that gesture: kept while it is still h
 static int gMSWTrack = 0;             // the tracker (gestures section): 0 idle, 1 armed (a gesture began), 2 the slide follows the fingers, 3 lifted
 static BOOL gMSWTrackCommit = NO;     // (the tracker hands its slide to the switch it starts: DMMSWSwitchRun / DMMSWSMSwitch take that slide)
 static NSInteger gMSWPendingSide = 0; // a side swipe that ended while a switch was still on its way: its desktop comes right after
+static NSString *gMSWPendingLaunch = nil;   // (an app opened while a desktop was sliding in: opened right after it, DMMSWRunPendingLaunch / DMMSWLaunchSwitches)
+static BOOL gMSWPendingLaunchTap = NO;      // (that launch was an icon tap: gIconTapLaunch for it when it runs)
 static const CGFloat kMSWSlideOmega = 20.0;   // the spring (critically damped): from rest, done to the eye in ~0.38 s, within 1 pt in ~0.49 s
 static BOOL gMSWSlFresh = NO;         // (the slide's window was shown in this very frame: its first motion waits one frame, DMMSWSlFinish)
 static CFTimeInterval gMSWSlQuietAt = 0;   // (when the ending slide has 97% of its way behind it: the switch's own work goes there, DMMSWSwitchRun)
@@ -1869,6 +1871,21 @@ static CFTimeInterval gMSWSwViewGoneAt = 0;       // (when the Mac Switcher's vi
 static void DMMSWSwChange(NSUInteger gen, CFTimeInterval since);
 static void DMMSWSwWait(NSUInteger gen, NSString *fs, NSString *quiet, BOOL retry, NSString *head, CFTimeInterval t3);
 static void DMMSWSwEnd(void);
+// The app opened while the desktop slid in (DMMSWLaunchSwitches): now, by the launch's own path -- its desktop, its window, or a launch. Every
+// ending of a slide runs it (the slide's end, a dropped switch, a slide end that threw): only the slide's end did, so after the others it stayed
+// queued and opened at the end of the NEXT slide, maybe minutes later (1.4.5 logic test F1).
+static void DMMSWRunPendingLaunch(NSString *why) {
+    NSString *launch = gMSWPendingLaunch; BOOL tap = gMSWPendingLaunchTap;
+    gMSWPendingLaunch = nil; gMSWPendingLaunchTap = NO;
+    if (!launch.length) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        DMLog([NSString stringWithFormat:@"[macswitcher] %@, opened while the desktop slid in: now (%@)", launch, why]);
+        BOOL was = gIconTapLaunch; gIconTapLaunch = tap;
+        BOOL opened = DMWindowedLaunch(launch);
+        gIconTapLaunch = was;
+        if (!opened) DMOpenFullScreen(launch);
+    });
+}
 static BOOL DMMSWSwRedirect(NSInteger side, CGFloat v, NSString *why);
 // The picture of the desktop at `place`, put at slot k if that slot is empty (a redirect's next desktop). nil: none.
 static UIView *DMMSWSlEnsurePic(NSInteger k, NSUInteger place) {
@@ -1925,6 +1942,7 @@ static void DMMSWSwitchGo(NSUInteger to, NSString *why, CGFloat v, void (^done)(
         DMLog([NSString stringWithFormat:@"[macswitcher] switch to %lu (%@) dropped: that desktop is not there now", (unsigned long)to, why]);
         DMMSWSlDrop(); gMSWSwitching = NO; if (gMSWTrack == 3) gMSWTrack = 0;
         if (done) done();
+        DMMSWRunPendingLaunch(@"the switch was dropped");
         return;
     }
     NSUInteger from = gMSWCur;
@@ -2040,6 +2058,7 @@ static void DMMSWSwEnd(void) {
         DMLog(@"[macswitcher] the side swipe made on the way: its desktop comes now");
         DMMSWSwitchRun((NSUInteger)((NSInteger)gMSWCur + pend), @"side swipe made on the way", 0, nil);
     }
+    DMMSWRunPendingLaunch(@"the slide ended");   // (an app opened on the way)
 }
 // A side swipe or a Control-arrow while the switch runs: the slide goes on from where it is to the next desktop that way (or back), at once. NO:
 // not here (Stage Manager, a switch with its own follow-up, a far switch with a desktop between, the reveal already fading) -- the caller then
@@ -2173,14 +2192,28 @@ static NSUInteger DMMSWElsewhereIndex(NSString *b) {
 static BOOL DMMSWWindowElsewhere(NSString *b) { return DMMSWElsewhereIndex(b) != NSNotFound; }
 // Launching an app (StatusBar.x DMSurfaceWindowForApp): its window, or its full-screen app, on another desktop -> that desktop comes, as on a Mac.
 static BOOL DMMSWLaunchSwitches(NSString *b) {
-    if (!DMMSWMulti() || gRestoringWindows || gMSWSwitching || !b.length || DMSMEngine()) return NO;
+    if (!DMMSWMulti() || gRestoringWindows || !b.length || DMSMEngine()) return NO;
+    NSString *bc = [b copy];
+    // (a desktop is sliding in: the launch runs right after the slide, by the launch's own path -- its window's desktop, its window, or a launch. Run
+    //  now, it "showed" a window kept hidden on its desktop -- Zetsu, MilkyWay4 --, opened the app again on the desktop being left -- Aerial --, or
+    //  raised its window on the desktop being left just before that desktop went: the Dock tap did not bring the app, 1.4.5)
+    BOOL tap = gIconTapLaunch;
+    if (gMSWSwitching) {
+        gMSWPendingLaunch = bc; gMSWPendingLaunchTap = tap;
+        DMLog([NSString stringWithFormat:@"[macswitcher] %@ opened while a desktop slides in: it comes right after the slide", b]);
+        return YES;
+    }
     NSUInteger i = DMMSWElsewhereIndex(b);
     if (i == NSNotFound) return NO;
     DMLog([NSString stringWithFormat:@"[macswitcher] %@ opened: it is on %@, which comes", b, DMMSWDeskName(i)]);
-    NSString *bc = [b copy];
-    // (its window comes to the front there, as the launch asked: Zetsu / MilkyWay4 by the launch's own window path -- DMRaiseStageForBundle is a tap's
-    //  follow-up, which Zetsu does itself and MilkyWay4 has no Aerial raise for, as the Mac Switcher's pick found, F7)
-    DMMSWSwitchTo(i, @"launch", ^{ if (DMActiveEngine() == DMEngineZetsu || DMActiveEngine() == DMEngineMilkyWay) DMSurfaceWindowForApp(bc); else DMRaiseStageForBundle(bc); });
+    // (its window comes to the front there, as the launch asked, by the launch's own window path on every engine: restored when it was minimized there,
+    //  over a full-screen app if needed. Aerial had only a tap's raise, DMRaiseStageForBundle: a minimized window stayed minimized, 1.4.5. A switch
+    //  that did not happen -- refused on the way -- brings nothing here: asking again from here went round and round, the switch refused each time)
+    NSUInteger to = i;
+    DMMSWSwitchTo(i, @"launch", ^{
+        if (gMSWCur != to) { if (gMSWSwitching) { gMSWPendingLaunch = bc; gMSWPendingLaunchTap = tap; } else DMLog([NSString stringWithFormat:@"[macswitcher] %@: its desktop did not come -- the launch is left", bc]); return; }
+        DMSurfaceWindowForApp(bc);
+    });
     return YES;
 }
 // Settings off (or the self-check): everything on Desktop 1 again.
@@ -4073,7 +4106,7 @@ static void DMMSWGEnd(id self, SEL _cmd, id transaction, id gesture) {
         NSInteger k = DMMSWGrabDecide(o, v);
         gMSWTrack = 3;
         DMLog([NSString stringWithFormat:@"[macswitcher] the taken slide lifted at %.0f pt (%.0f pt/s, %.0f ms after the fingers took it): to %@", o, v, (CACurrentMediaTime() - gMSWTrackSince) * 1000.0, DMMSWDeskName((NSUInteger)MAX(0, (NSInteger)gMSWSwFrom + k))]);
-        @try { DMMSWGrabFinish(k, v); } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[macswitcher] taken slide end threw %@", e]); DMMSWSlDrop(); gMSWTrack = 0; gMSWSwitching = NO; }
+        @try { DMMSWGrabFinish(k, v); } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[macswitcher] taken slide end threw %@", e]); DMMSWSlDrop(); gMSWTrack = 0; gMSWSwitching = NO; DMMSWRunPendingLaunch(@"the taken slide's end threw"); }
         [CATransaction flush];
         gMSWTrackEnding = YES;   // (SpringBoard is told "stay" for this gesture, as for any followed one)
         o_MSWGEnd(self, _cmd, transaction, gesture);
@@ -4087,7 +4120,7 @@ static void DMMSWGEnd(id self, SEL _cmd, id transaction, id gesture) {
     gMSWTrack = 3;
     DMLog([NSString stringWithFormat:@"[macswitcher] side swipe lifted at %.0f pt (%.0f pt/s, %.0f ms after the slide came up): %@", o, v, (CACurrentMediaTime() - gMSWTrackSince) * 1000.0,
         side ? [NSString stringWithFormat:@"to the desktop on the %@", side > 0 ? @"right" : @"left"] : @"back"]);
-    @try { DMMSWTrackFinish(side, v); } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[macswitcher] tracker end threw %@", e]); DMMSWSlDrop(); gMSWTrack = 0; gMSWSwitching = NO; }
+    @try { DMMSWTrackFinish(side, v); } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[macswitcher] tracker end threw %@", e]); DMMSWSlDrop(); gMSWTrack = 0; gMSWSwitching = NO; DMMSWRunPendingLaunch(@"the side swipe's end threw"); }
     [CATransaction flush];   // (the spring to the render server before SpringBoard's own end, ~50 ms of its main thread, runs)
     gMSWTrackEnding = YES;   // (SpringBoard ends its gesture now -- its lift-off activation runs inside this call -- and is told "stay", DMMSWActivateWith)
     o_MSWGEnd(self, _cmd, transaction, gesture);

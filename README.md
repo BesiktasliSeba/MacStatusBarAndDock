@@ -131,6 +131,7 @@ Which one? Start with Aerial 5.0, the one marked Recommended. If you already use
 | iPad mini 4 | 15.8.8 | rootless | not reported | Reported running by a user. The Dock problem seen there (app icons past the ends of the Dock) is fixed in 1.4.2, awaiting confirmation |
 | iPad Pro (M2, 2022) | 16.0 to 16.6 | Dopamine | Zetsu, Aerial | Reported by users with Zetsu or Aerial. Stage Manager engine: see below |
 | iPad Pro 12.9" (M1, 2021) | 17.0 | rootless | Zetsu 1.6.6 | Reported working since 1.2.4, with Enable Anyway |
+| iPad Pro 12.9" (M1, 2021) | 16.1.1 | Dopamine | Stage Manager, Zetsu | Reported by a user. The Stage Manager engine's crash on the Home and previous-app gestures is fixed in 1.4.5, awaiting confirmation |
 | Other iPads | 15, 16 | rootless | | Likely to work, not tested |
 | Other iPads | 17 and later | | | Off until you turn on Enable Anyway, at your own risk |
 

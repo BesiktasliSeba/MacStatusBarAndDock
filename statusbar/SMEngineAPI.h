@@ -447,6 +447,7 @@ static id DMSMStageLeaf(id stage, long long role) {
     id r = ((id (*)(id, SEL, long long))objc_msgSend)(stage, sel, role);
     return DMSMIsStage(r) ? r : nil;
 }
+#include "SMGestureHold.h"   // (a switcher gesture's stage is left alone until its transition is over: 1.4.5, issue #7)
 // The switcher's model of stages, and a stage replaced in it (a window's attributes changed in place).
 static id DMSMSwitcherModel(void) {
     id m = nil; @try { m = [DMSMCoordinator() valueForKey:@"_mainSwitcherModel"]; } @catch (id e) { m = nil; }
@@ -455,6 +456,13 @@ static id DMSMSwitcherModel(void) {
 // (StatusBar.x keeps the front window for one tick: told here whenever our code changes the stage model or asks for a transition)
 static void (*gDMSMModelChanged)(void) = NULL;
 static BOOL DMSMReplaceStage(id stage, id newStage) {
+    if (DMSMGestureHoldsStage(stage)) {   // (a stage a switcher gesture holds: replaced once its transition is over, if it is still there)
+        DMSMAfterGesture(@"a window's place in its stage", ^{
+            if ([DMSMRecentStages() indexOfObjectIdenticalTo:stage] == NSNotFound) { DMLog(@"[smgesture] a window's place in its stage: that stage changed meanwhile -- left"); return; }
+            DMSMReplaceStage(stage, newStage);
+        });
+        return YES;
+    }
     if (gDMSMModelChanged) gDMSMModelChanged();
     id model = DMSMSwitcherModel();
     SEL sel = NSSelectorFromString(@"replaceAppLayout:withAppLayout:");
@@ -629,6 +637,14 @@ static void DMSMCtxClearOtherRoles(id ctx, NSArray<NSArray *> *plan) {
     if (cleared.count && DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[smapi] whole stage: roles %@ set empty", [cleared componentsJoinedByString:@", "]]);
 }
 static BOOL DMSMRequestPlan(id identity, BOOL onMain, NSString *label, NSArray<NSArray *> *plan, NSSet<NSNumber *> *allowed, id frontEntity, BOOL whole) {
+    if (DMSMGestureLive()) {   // (it would change a stage a switcher gesture holds -- its windows, or the stage on screen it adds to: asked for after it)
+        NSMutableSet<NSString *> *ids = [NSMutableSet set];
+        for (NSArray *en in plan) { NSString *u = [en isKindOfClass:[NSArray class]] && en.count ? DMSMEntityUid(en[0]) : nil; if (u) [ids addObject:u]; }
+        if ((!whole && onMain && gSMGestureHeld.count) || DMSMGestureHoldsAny(ids)) {
+            DMSMAfterGesture(label.length ? label : @"MSBDRequest", ^{ DMSMRequestPlan(identity, onMain, label, plan, allowed, frontEntity, whole); });
+            return YES;
+        }
+    }
     if (gDMSMModelChanged) gDMSMModelChanged();
     NSString *why = nil;
     if (!DMSMPlanValid(plan, allowed, &why)) { DMSMAPIFail(@"transition plan", [NSString stringWithFormat:@"%@ refused before asking: %@", label, why]); return NO; }

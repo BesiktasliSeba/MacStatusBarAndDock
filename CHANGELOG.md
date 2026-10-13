@@ -2,6 +2,12 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.4.5
+
+### Fixes
+- Stage Manager engine: swiping up from the bottom edge to go Home, or along it to the previous app, no longer makes SpringBoard crash (a black screen and a respring, sometimes Safe Mode) when a desktop has a full-screen app among its windows. Your windows still stay over the Home Screen, and an app you switch to still joins your desktop, now right after the gesture ends.
+- Dock: tapping an app's icon now always brings that app to the front, with every window engine. An app open full screen behind your windows comes in front of them, a window behind a full-screen app comes forward, a minimized window comes back as a window, a window on another desktop brings that desktop, and a tap made while a desktop slides in is no longer lost. Tapping the icon of the app that is already full screen in front leaves it as it is, with every engine (with Aerial and Open Apps as Windows it used to turn into a window).
+
 ## 1.4.4
 
 ### Fixes

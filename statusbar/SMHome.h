@@ -170,6 +170,37 @@ static void DMSMHomeAfterKeep(BOOL atHome) {
     if (atHome) DMSMHomePressAtHome();
 }
 
+// ---- A. a switcher gesture's own Home (1.4.5, issue #7) -------------------------------------------------------------------------------------------
+// The rewrite below makes the gesture end on the desktop's stage. With the same windows in the same roles that IS the stage the gesture holds (an
+// equal stage: SpringBoard finds it again). Any other set -- a full-screen window going to the background, the roles closed up -- is a new stage
+// that shares windows with the held one, which SpringBoard then drops while the gesture still looks it up (SMGestureHold.h): SpringBoard aborted
+// (iPad 2 16.7.7, 13 Oct). Then SpringBoard's Home is left as it built it, and right after the gesture's transition the desktop's other windows
+// are asked for as one stage, the full-screen window minimized -- where the rewrite would have left them.
+static id DMSMHomeCurrentState(void);
+static BOOL DMSMHomeKeepsStage(NSDictionary *plan, NSArray<NSDictionary *> *windows) {
+    if ([plan[@"away"] count] || [plan[@"keep"] count] != windows.count) return NO;
+    for (NSArray *k in plan[@"keep"]) {
+        BOOL same = NO;
+        for (NSDictionary *w in windows) if ([w[@"id"] isEqualToString:k[0]] && [w[@"r"] isEqual:k[1]]) { same = YES; break; }
+        if (!same) return NO;
+    }
+    return YES;
+}
+static void DMSMHomeKeepAfterGesture(NSArray<NSArray *> *rows, id front, NSArray<NSString *> *awayKeys, id identity) {
+    if (!gSMHomeOn || !DMSMFree()) return;
+    long long env = 0; id shown = nil;
+    if (!DMSMHomeStateOf(DMSMHomeCurrentState(), &env, &shown) || env != 1 || DMSMHomeUILocked()) {
+        DMLog([NSString stringWithFormat:@"[smhome] after the Home gesture: not on the Home Screen any more (environment %lld) -- the windows are left as they are", env]);
+        return;
+    }
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    for (NSString *k in awayKeys) { DMSMSetMinimized(k, YES); [names addObject:DMSMKeyText(k)]; }   // (the full-screen window: minimized, back with its app)
+    BOOL ok = DMSMRequestPlan(identity, YES, @"MSBDHomeKeep", rows, nil, front, YES);   // (whole: the window that went away is in no role of it)
+    DMLog([NSString stringWithFormat:@"[smhome] after the Home gesture: the desktop's %lu window(s) %@%@", (unsigned long)rows.count, ok ? @"stay over the Home Screen" : @"could not be asked for",
+           names.count ? [NSString stringWithFormat:@" (%@ to the background)", [names componentsJoinedByString:@", "]] : @""]);
+    if (ok) { DM_FEATURE_MARK("sm-home-keeps-windows-after-gesture"); DMSMHomeAfterKeep(NO); }
+}
+
 // ---- A. the rule's rewrite ---------------------------------------------------------------------------------------------------------------------
 // Called first in the finalize hook (StatusBar.x, %group SMEngine), for every transition context while our engine runs. Cheap unless the transition
 // is SpringBoard's Home (its activating entity is the Home Screen).
@@ -244,6 +275,14 @@ __attribute__((noinline)) static void DMSMHomeKeepsDesktop(id ctx) {   // (noinl
     }
     NSString *bad = nil;
     if (!frontEntity || !DMSMPlanValid(rows, nil, &bad)) { DMSMAPIFail(@"windows stay at Home", [NSString stringWithFormat:@"plan refused, Home as SpringBoard built it (%@)", bad ?: @"no front window"]); return; }
+    if (DMSMGestureCtx(ctx) && !DMSMHomeKeepsStage(plan, windows)) {   // (a switcher gesture's own Home that would make another stage: above)
+        NSMutableArray<NSString *> *awayKeys = [NSMutableArray array];
+        for (NSString *ident in plan[@"away"]) { NSString *k = DMSMItemKey(byId[ident]); if (k.length) [awayKeys addObject:k]; }
+        NSArray<NSArray *> *keepRows = [rows copy];
+        DMLog([NSString stringWithFormat:@"[smhome] Home (%@): a switcher gesture's own Home -- as SpringBoard built it while the gesture holds the desktop's stage; %@ right after it", what, why]);
+        DMSMAfterGestureOnce(@"Home: the desktop's windows", ^{ DMSMHomeKeepAfterGesture(keepRows, frontEntity, awayKeys, mainIdentity); });
+        return;
+    }
     // Written as one: the mode (application), the front app (the window in front), the windows in their roles with their attributes (DMSMWritePlan:
     // also marks the context ours and the front window frontmost), every other window role emptied (a role left unset keeps the window it had --
     // the full-screen window that leaves would stay). Any failure puts SpringBoard's Home back as it was.

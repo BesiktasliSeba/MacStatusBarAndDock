@@ -288,6 +288,7 @@ static long long DMSMCtxLong(id ctx, NSString *name, long long dflt) {
     if (![ctx respondsToSelector:s] || !DMSMSigOK(ctx, s, DMSMSigTime(), name.UTF8String)) return dflt;
     return ((long long (*)(id, SEL))objc_msgSend)(ctx, s);
 }
+static void DMSMDeskJoinDone(NSArray<NSString *> *fresh, NSArray<NSString *> *leftOut, NSArray<NSDictionary *> *deskW, id desk, BOOL windowed, NSSet<NSString *> *asWindow, NSString *how);
 // asked: @[role, entity] of every role the context has set (roles 1 up to the highest window role -- 1-9 on 16.7.7, SMRoles.h -- read by
 // DMSMJoinDesktop). Stage Manager is about to show another stage than
 // the desktop (DMSMDeskJoinPlan decides): instead the desktop's windows and the new ones, the new ones in front -- as a launch joins it. The plan
@@ -408,6 +409,7 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
     NSMutableArray<NSArray *> *plan = [NSMutableArray array];
     NSMutableArray<NSString *> *fresh = [NSMutableArray array];
     id frontEntity = nil; long k = 0;
+    NSMutableSet<NSString *> *asWin = [NSMutableSet set];   // (new windows that come back as windows although apps open full screen: DMSMOpensAsWindow)
     for (NSArray *d in decision) {
         NSString *b = d[0]; long long r = [d[1] longLongValue]; BOOL isNew = [d[2] boolValue];
         id e = nil, a = nil;
@@ -415,7 +417,9 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
             e = askedEntity[b] ?: DMSMNewEntity(DMSMKeyBundle(b), identity);
             BOOL front = [b isEqualToString:frontB];
             long t = front ? (long)(newest + (long long)freshB.count) : (long)(newest + k);   // (DMSMJoinAttributes puts it at t + 1)
-            a = DMSMJoinAttributes(b, frontAttrs, windowed, t, desk);
+            BOOL win = DMSMOpensAsWindow(b, windowed, DMSMIsMinimized(b));   // (a minimized window: as that window)
+            if (win && !windowed) [asWin addObject:b];
+            a = DMSMJoinAttributes(b, frontAttrs, win, t, desk);
             if (!front) k++;
             if (front) frontEntity = e;
             [fresh addObject:b];
@@ -429,6 +433,22 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
     NSArray<NSArray *> *toWrite = DMSMPlanFitted(identity, plan);
     NSString *bad = nil;
     if (!DMSMPlanValid(toWrite, DMSMNewWindowRoles(), &bad)) { DMSMAPIFail(@"joining the desktop (a stage SpringBoard asked for)", [NSString stringWithFormat:@"plan refused, left as SpringBoard built it (%@)", bad]); return; }
+    // (a switcher gesture's own end -- the previous / next app by a swipe along the bottom edge: written here, the desktop and the new window make
+    //  a new stage that shares windows with the stage the gesture holds, which SpringBoard then drops while the gesture still looks it up --
+    //  SMGestureHold.h, issue #7. SpringBoard's switch is left as built, and the same join is asked for as one stage right after the transition.)
+    if (DMSMGestureCtx(ctx)) {
+        NSArray<NSArray *> *planC = [toWrite copy];
+        NSArray<NSString *> *freshC = [fresh copy], *leftOutC = [leftOut copy];
+        NSArray<NSDictionary *> *deskWC = [deskW copy];
+        NSSet<NSString *> *asWinC = [asWin copy];
+        id deskC = desk, frontC = frontEntity;
+        DMLog([NSString stringWithFormat:@"[smjoin] SpringBoard asked for another stage at a switcher gesture's end (%@): left as it built it while the gesture holds the desktop's stage -- it joins the desktop right after (%@)", askedText, why]);
+        DMSMAfterGestureOnce(@"the desktop join", ^{
+            if (!DMSMRequestPlan(identity, DMSMIsMainIdentity(identity), @"MSBDJoinAfterGesture", planC, DMSMNewWindowRoles(), frontC, YES)) { DMLog(@"[smjoin] after the gesture: the desktop could not be asked for -- left as it is"); return; }
+            DMSMDeskJoinDone(freshC, leftOutC, deskWC, deskC, windowed, asWinC, @"after the switcher gesture");
+        });
+        return;
+    }
     // (SpringBoard's roles unset: the context is now a plain activation -- then ours written; on a failure SpringBoard's put back)
     SEL setE = NSSelectorFromString(@"setEntity:forLayoutRole:");
     if (!DMSMCtxCanWrite(ctx)) return;
@@ -441,14 +461,18 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
         DMLog([NSString stringWithFormat:@"[smjoin] another stage asked for (%@): writing the desktop failed, SpringBoard's roles put back", askedText]);
         return;
     }
+    DMSMDeskJoinDone(fresh, leftOut, deskW, desk, windowed, asWin, [NSString stringWithFormat:@"SpringBoard asked for another stage (%@): it joins the desktop instead -- %@", askedText, why]);
+}
+// (after a join: the new windows are no longer minimized ones, one full-screen app at a time, Mac Switcher's records, and the log line)
+static void DMSMDeskJoinDone(NSArray<NSString *> *fresh, NSArray<NSString *> *leftOut, NSArray<NSDictionary *> *deskW, id desk, BOOL windowed, NSSet<NSString *> *asWindow, NSString *how) {
     NSMutableArray<NSString *> *freshText = [NSMutableArray array];
     for (NSString *b in fresh) { DMSMSetMinimized(b, NO); [freshText addObject:DMSMKeyText(b)]; }   // (opened again: no longer a minimized window)
-    if (!windowed && desk) for (NSString *b in fresh) DMSMDismissOtherFullScreen(desk, b);   // (full screen: one full-screen app at a time, as a launch)
+    if (!windowed && desk) for (NSString *b in fresh) if (![asWindow containsObject:b]) DMSMDismissOtherFullScreen(desk, b);   // (full screen: one full-screen app at a time, as a launch; a minimized window back as a window leaves it)
     DMMSWSMAskedJoined(fresh, leftOut);   // (Mac Switcher: recorded on the current desktop; a full desktop's left-out windows minimized and said)
     DM_FEATURE_MARK("sm-join-asked-stage");
     for (NSString *b in fresh) {   // (a window of an app already on the desktop joined it: M-2's case)
         if (DMSMKeyIsApp(b)) continue;
         for (NSDictionary *w in deskW) if (![w[@"w"] isEqualToString:b] && [w[@"b"] isEqualToString:DMSMKeyBundle(b)]) { DM_FEATURE_MARK("sm-second-window-joins"); break; }
     }
-    DMLog([NSString stringWithFormat:@"[smjoin] SpringBoard asked for another stage (%@): it joins the desktop instead -- %@ (%@ in front)", askedText, why, [freshText componentsJoinedByString:@", "]]);
+    DMLog([NSString stringWithFormat:@"[smjoin] %@ (%@ in front)", how, [freshText componentsJoinedByString:@", "]]);
 }
