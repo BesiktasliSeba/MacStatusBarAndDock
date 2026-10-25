@@ -79,8 +79,10 @@ static void FQForceQuit(NSString *bundleID) {
     static void (*forceQuit)(NSString *) = NULL;
     if (!forceQuit) forceQuit = (void (*)(NSString *))dlsym(RTLD_DEFAULT, "MSBDForceQuitApp");
     if (forceQuit) { forceQuit(bundleID); return; }
-    BKSTerminateApplicationForReasonAndReportWithDescription(bundleID, 5, false, @"ForceQuitMenu - force touch, killed");
+    // (as the App Switcher's swipe-up: its card deleted -- SpringBoard's own kill -- and the same "User Initiated Quit" request, reason 1, so iOS
+    //  takes the app as quit by the user and does not launch it in the background again; reason 5 was a plain "Force Quit", see MSBDForceQuitApp)
     removeFromAppSwitcher(bundleID);
+    BKSTerminateApplicationForReasonAndReportWithDescription(bundleID, 1, false, @"killed from app switcher");
 }
 
 %hook SBIconView

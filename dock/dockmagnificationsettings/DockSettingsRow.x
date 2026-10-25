@@ -228,6 +228,7 @@ static void DMRowURLLog(NSString *line) {
 #define kPSGroupCell 0
 #define kPSSwitchCell 6
 
+static NSArray *DMHSSpecifiers(void);   // (below: the group's rows)
 @interface DMHomeScreenRows : NSObject
 @end
 @implementation DMHomeScreenRows
@@ -247,6 +248,22 @@ static BOOL DMHSStored(PSSpecifier *sp) {
 - (id)msbdHSValue:(PSSpecifier *)sp {
     BOOL stored = DMHSStored(sp);
     return @([[sp propertyForKey:@"msbInvert"] boolValue] ? !stored : stored);
+}
+// iPadOS 17+: Apple's Home Screen page is a SwiftUI page (HomeScreenSettings.bundle, "Home Screen & App Library": its principal class hosts a
+// SwiftUI list -- 17.5.1, read from its binary), with no list of rows another bundle can add to, so the group of DBSHomeScreenPadListController
+// (15/16, below) has nowhere to go. Our Dock page then shows the same group, the same rows and keys, after its App Library group, called "Home
+// Screen" (DMRootListController asks for it here, so the rows and their target stay in one place). 15/16: nil (the group is on Apple's page).
++ (NSArray *)msbdHomeScreenSpecifiersForOwnPage {
+    static int swiftUIPage = -1;
+    // (iPadOS 17+ with Apple's SwiftUI page there; never from whether DBSHomeScreenPadListController is loaded yet -- its bundle loads lazily, so a
+    //  "not there" cached before Apple's page was opened showed the group twice on a version that has both, logic test F2)
+    if (swiftUIPage < 0) swiftUIPage = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17
+                                       && [[NSFileManager defaultManager] fileExistsAtPath:@"/System/Library/PreferenceBundles/HomeScreenSettings.bundle"] ? 1 : 0;
+    if (swiftUIPage != 1) return nil;
+    NSArray *rows = DMHSSpecifiers();
+    if (rows.count < 2) return nil;
+    [(PSSpecifier *)rows.firstObject setName:@"Home Screen"];
+    return rows;
 }
 - (void)msbdHSSet:(id)value specifier:(PSSpecifier *)sp {
     NSString *domain = [sp propertyForKey:@"defaults"], *key = [sp propertyForKey:@"key"], *note = [sp propertyForKey:@"PostNotification"];

@@ -18,6 +18,8 @@
 #import <objc/runtime.h>
 #import <unistd.h>
 #import <dlfcn.h>
+#import <mach-o/dyld.h>
+#import <os/lock.h>
 
 @interface PSSpecifier : NSObject
 + (instancetype)preferenceSpecifierNamed:(NSString *)name target:(id)target set:(SEL)set get:(SEL)get detail:(Class)detail cell:(long long)cell edit:(Class)edit;
@@ -25,6 +27,7 @@
 - (NSString *)identifier;
 - (void)setIdentifier:(NSString *)identifier;
 - (void)setProperty:(id)value forKey:(NSString *)key;
+- (long long)cellType;
 @end
 @interface PSListController : UIViewController @end
 @interface PSUIPrefsListController : PSListController @end
@@ -97,6 +100,20 @@ static BOOL HomeBarOn(void) {
     BOOL on = CFGetTypeID(v) == CFBooleanGetTypeID() ? CFBooleanGetValue(v) : NO;
     CFRelease(v);
     return on;
+}
+// The two switches' actions (the sidebar's rows, and General's on iPadOS 18 -- MSGeneralInsertOurRows).
+static void MSSetSSH(BOOL on) {
+    // Hardening: the wanted state goes into our own preference FIRST; the helper reads it (a notification alone can no longer switch SSH).
+    CFPreferencesSetValue(CFSTR("sshWanted"), on ? kCFBooleanTrue : kCFBooleanFalse, CFSTR("com.besiktasliseba.macsettings"), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    CFPreferencesSynchronize(CFSTR("com.besiktasliseba.macsettings"), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    notify_post("com.besiktasliseba.sshtoggle.changed");
+    MLog([NSString stringWithFormat:@"SSH switched %@", on ? @"on" : @"off"]);
+}
+static void MSSetHomeBar(BOOL on) {
+    CFPreferencesSetValue(CFSTR("showHomeBar"), on ? kCFBooleanTrue : kCFBooleanFalse, HB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    CFPreferencesSynchronize(HB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    notify_post("com.besiktasliseba.machomebar/changed");   // (every running app and SpringBoard re-ask their view controllers at once: HomeBar.x)
+    MLog([NSString stringWithFormat:@"Home Bar switched %@", on ? @"on" : @"off"]);
 }
 
 // ---- the alert banners ("follow-ups") ----
@@ -421,22 +438,117 @@ static void DMRegisterSSHSync(void) {
 %new
 - (id)dm_sshEnabled:(id)specifier { return @(SSHOn()); }
 %new
-- (void)dm_setSSH:(id)value specifier:(id)specifier {
-    BOOL on = [value boolValue];
-    // Hardening: the wanted state goes into our own preference FIRST; the helper reads it (a notification alone can no longer switch SSH).
-    CFPreferencesSetValue(CFSTR("sshWanted"), on ? kCFBooleanTrue : kCFBooleanFalse, CFSTR("com.besiktasliseba.macsettings"), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-    CFPreferencesSynchronize(CFSTR("com.besiktasliseba.macsettings"), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-    notify_post("com.besiktasliseba.sshtoggle.changed");
-    MLog([NSString stringWithFormat:@"SSH switched %@", on ? @"on" : @"off"]);
-}
+- (void)dm_setSSH:(id)value specifier:(id)specifier { MSSetSSH([value boolValue]); }
 %new
 - (id)dm_homeBarEnabled:(id)specifier { return @(HomeBarOn()); }
 %new
-- (void)dm_setHomeBar:(id)value specifier:(id)specifier {
-    BOOL on = [value boolValue];
-    CFPreferencesSetValue(CFSTR("showHomeBar"), on ? kCFBooleanTrue : kCFBooleanFalse, HB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-    CFPreferencesSynchronize(HB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-    notify_post("com.besiktasliseba.machomebar/changed");   // (every running app and SpringBoard re-ask their view controllers at once: HomeBar.x)
-    MLog([NSString stringWithFormat:@"Home Bar switched %@", on ? @"on" : @"off"]);
+- (void)dm_setHomeBar:(id)value specifier:(id)specifier { MSSetHomeBar([value boolValue]); }
+%end
+
+// ---- iPadOS 18: a home for the rows the sidebar had ----
+// 18 builds Settings' root list in SwiftUI (no PSUIPrefsListController), so the rows the hook above puts into the sidebar -- SSH, Home Bar,
+// Pointer and Keyboard -- never appeared there, and our Pointer and Keyboard pages could not be reached at all (KT, 25 Oct). Until they can sit
+// with Apple's own keyboard and pointer settings (1.6.0), they are a group of their own near the top of General, whose page is still a
+// PSListController on 18.5 (PSGGeneralController). Only where the SwiftUI root is in use: 15-17 keep their sidebar rows and nothing else.
+// Nothing happens when General's page is not as expected (no such class, another -specifiers). Each row shows on the same terms as in the
+// sidebar (Pointer with a trackpad or mouse, Keyboard with a hardware keyboard, SSH with OpenSSH installed, Home Bar where there is one), and
+// the rows follow a device attached or detached while General is open, as the sidebar's did.
+@interface MSGeneralRowsTarget : NSObject
+@end
+@implementation MSGeneralRowsTarget
+- (id)dm_sshEnabled:(id)specifier { return @(SSHOn()); }
+- (void)dm_setSSH:(id)value specifier:(id)specifier { MSSetSSH([value boolValue]); }
+- (id)dm_homeBarEnabled:(id)specifier { return @(HomeBarOn()); }
+- (void)dm_setHomeBar:(id)value specifier:(id)specifier { MSSetHomeBar([value boolValue]); }
+@end
+#define kGeneralGroupID @"MAC_GENERAL18_GROUP"
+// (a method's return and argument types, offsets aside -- "v36@0:8@16q24B32" on 18.5 -- as expected; logged when not)
+static BOOL MSMethodTypesAre(Class c, SEL sel, const char *ret, NSArray<NSString *> *args) {
+    Method m = c ? class_getInstanceMethod(c, sel) : NULL;
+    BOOL ok = m && method_getNumberOfArguments(m) == args.count + 2;
+    if (ok) { char r[16] = {0}; method_getReturnType(m, r, sizeof(r)); ok = strcmp(r, ret) == 0; }
+    for (NSUInteger i = 0; ok && i < args.count; i++) {
+        char a[16] = {0};
+        method_getArgumentType(m, (unsigned)(i + 2), a, sizeof(a));
+        ok = strcmp(a, args[i].UTF8String) == 0;
+    }
+    if (!ok) MLog([NSString stringWithFormat:@"iPadOS 18: -[%@ %@] is %s here: our rows stay out", NSStringFromClass(c), NSStringFromSelector(sel), m ? method_getTypeEncoding(m) : "missing"]);
+    return ok;
+}
+// (General's page hands out a frozen copy of its list on 18.5 -- __NSFrozenArrayM, nothing can be put into it -- so the rows go in through the
+//  page's own insert call, the one General uses itself when a trackpad turns up, right after the list is handed out; again after a reload)
+static void MSGeneralInsertOurRows(PSListController *list) {
+    NSArray *specs = ((id (*)(id, SEL))objc_msgSend)(list, @selector(specifiers));
+    if (![specs isKindOfClass:[NSArray class]]) return;
+    for (id sp in specs) if ([[sp identifier] isEqualToString:kGeneralGroupID]) return;
+    SEL ins = NSSelectorFromString(@"insertContiguousSpecifiers:atIndex:animated:");
+    if (!MSMethodTypesAre(object_getClass(list), ins, "v", @[@"@", @"q", @"B"])) return;
+    static MSGeneralRowsTarget *target;
+    if (!target) target = [MSGeneralRowsTarget new];
+    NSMutableArray *rows = [NSMutableArray array];
+    if (MSPointerDeviceAttached()) [rows addObject:MSPointerRowSpecifier(target)];
+    if (MSKeyboardAttached()) [rows addObject:MSKeyboardRowSpecifier(target)];
+    if (access("/var/jb/usr/sbin/sshd", F_OK) == 0) {
+        PSSpecifier *sw = [PSSpecifier preferenceSpecifierNamed:@"SSH" target:target set:@selector(dm_setSSH:specifier:) get:@selector(dm_sshEnabled:) detail:nil cell:6 edit:nil];
+        [sw setIdentifier:kSwitchID];
+        [sw setProperty:SSHIcon() forKey:@"iconImage"];
+        [rows addObject:sw];
+    }
+    if (HBPillState() != 1) {
+        PSSpecifier *hb = [PSSpecifier preferenceSpecifierNamed:@"Home Bar" target:target set:@selector(dm_setHomeBar:specifier:) get:@selector(dm_homeBarEnabled:) detail:nil cell:6 edit:nil];
+        [hb setIdentifier:kHomeBarSwitchID];
+        [hb setProperty:HomeBarIcon() forKey:@"iconImage"];
+        [rows addObject:hb];
+    }
+    if (!rows.count) return;
+    PSSpecifier *group = [PSSpecifier groupSpecifierWithName:@"MacStatusBar&Dock"];
+    [group setIdentifier:kGeneralGroupID];
+    [rows insertObject:group atIndex:0];
+    // (right below General's first group -- its header card; About and the rest start the second group -- or at the end)
+    NSUInteger groups = 0, at = specs.count;
+    for (NSUInteger i = 0; i < specs.count; i++) if ([specs[i] respondsToSelector:@selector(cellType)] && [specs[i] cellType] == 0 && ++groups == 2) { at = i; break; }
+    ((void (*)(id, SEL, id, long long, BOOL))objc_msgSend)(list, ins, rows, (long long)at, NO);
+    gVisibleSSHList = list;
+    DMRegisterSSHSync();
+    MSPointerWatchSidebar(list);   // (a device attached or detached, the pointer style changed: General is reloaded as the sidebar was)
+    MSKeyboardWatchSidebar(list);
+    MLog([NSString stringWithFormat:@"iPadOS 18: %lu row(s) of ours put into General at %lu of %lu", (unsigned long)rows.count - 1, (unsigned long)at, (unsigned long)specs.count]);
+}
+%group General18
+%hook PSGGeneralController
+- (id)specifiers {
+    id specs = %orig;
+    if (![specs isKindOfClass:[NSArray class]]) return specs;
+    for (id sp in specs) if ([[sp identifier] isEqualToString:kGeneralGroupID]) return specs;
+    // (once the list is handed out, on the next turn of the main loop; asked for again and again while it is built: one try a second at most --
+    //  with nothing of ours to show, no try after try)
+    static const void *kTriedKey = &kTriedKey;
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    NSNumber *tried = objc_getAssociatedObject(self, kTriedKey);
+    if (tried && now - tried.doubleValue < 1.0) return specs;
+    objc_setAssociatedObject(self, kTriedKey, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak PSListController *weakSelf = (PSListController *)self;
+    dispatch_async(dispatch_get_main_queue(), ^{ PSListController *l = weakSelf; if (l) MSGeneralInsertOurRows(l); });
+    return specs;
 }
 %end
+%end
+// (General's class may come with a framework Settings loads later: looked for as each image is added, installed once)
+static void MSGeneral18Install(void) {
+    static os_unfair_lock lock = OS_UNFAIR_LOCK_INIT;
+    static BOOL done = NO;
+    os_unfair_lock_lock(&lock);
+    if (!done && !objc_getClass("PSUIPrefsListController")) {
+        Class c = objc_getClass("PSGGeneralController");
+        if (c) {
+            done = YES;
+            if (MSMethodTypesAre(c, @selector(specifiers), "@", @[])) { %init(General18); MLog(@"iPadOS 18: SSH, Home Bar, Pointer and Keyboard go into General"); }
+        }
+    }
+    os_unfair_lock_unlock(&lock);
+}
+static void MSGeneral18ImageAdded(const struct mach_header *mh, intptr_t slide) { MSGeneral18Install(); }
+%ctor {
+    %init;
+    if (!objc_getClass("PSUIPrefsListController")) _dyld_register_func_for_add_image(MSGeneral18ImageAdded);   // (15-17: the sidebar's rows, as before)
+}

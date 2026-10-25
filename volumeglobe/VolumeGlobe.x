@@ -45,10 +45,17 @@ static BOOL DMGlobeVolumePress(UIPress *p) {
     if (key.keyCode == OPTION_KEYCODE) step = VOLUME_STEP;
     else if (key.keyCode == CONTROL_KEYCODE) step = -VOLUME_STEP;
     else return NO;
-    [[%c(AVSystemController) sharedAVSystemController] changeVolumeBy:step forCategory:@"Audio/Video"];
+    // Once per press: with an app in front SpringBoard is handed the same press twice (17.5.1, 24 Oct: one Globe + Option raised the volume two
+    // steps, one Globe + Control lowered it two; with SpringBoard itself in front, once). The second delivery is swallowed, not acted on again.
+    static __weak UIPress *lastPress = nil;
+    static NSTimeInterval lastTime = -1;
+    BOOL again = (p == lastPress) || (p.timestamp == lastTime);
 #if DEBUG
-    if (access("/tmp/macstatusbar-debug", F_OK) == 0) { FILE *f = fopen("/tmp/volumeglobe.log", "a"); if (f) { fprintf(f, "volume %+.4f (key %ld)\n", step, (long)key.keyCode); fclose(f); } }
+    if (access("/tmp/macstatusbar-debug", F_OK) == 0) { FILE *f = fopen("/tmp/volumeglobe.log", "a"); if (f) { fprintf(f, "volume %+.4f (key %ld, press %p at %.4f)%s\n", step, (long)key.keyCode, (__bridge void *)p, p.timestamp, again ? " -- the same press again: not acted on" : ""); fclose(f); } }
 #endif
+    if (again) return YES;
+    lastPress = p; lastTime = p.timestamp;
+    [[%c(AVSystemController) sharedAVSystemController] changeVolumeBy:step forCategory:@"Audio/Video"];
     return YES;
 }
 %hook SpringBoard

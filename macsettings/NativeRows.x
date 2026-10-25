@@ -5,6 +5,7 @@
 // Done right after Apple's page has built (or rebuilt) its list, through the list's own remove call (see common/NativeEmbed.h).
 #import <UIKit/UIKit.h>
 #import <unistd.h>
+#import <objc/runtime.h>
 #import "../common/NativeEmbed.h"
 
 BOOL MSPointerDeviceAttached(void);
@@ -26,7 +27,16 @@ static void NRLog(UIViewController *list, NSString *what, NSArray *specs) {   //
 
 // Apple's pages also add these rows later, once they learn a device is attached (General adds Trackpad & Mouse a moment after it appears): such an
 // insert is simply left out (nothing reaches the table, so it stays in step).
+// Only where our rows can be in the sidebar at all: they are added by MacSettings.x's hook of the UIKit root list (PSUIPrefsListController). iPadOS 18
+// builds that root in SwiftUI and has no such class -- our Pointer and Keyboard rows never appear there, and taking Apple's out left no way to the
+// trackpad, Pointer Control or Hardware Keyboard settings at all (A12Z 18.5 with a Magic Keyboard: General without Trackpad & Mouse, 24 Oct).
+static BOOL MSOurSidebarRowsPossible(void) {
+    static int possible = -1;
+    if (possible < 0) possible = objc_getClass("PSUIPrefsListController") != Nil;
+    return possible == 1;
+}
 static NSArray *MSNativeRowsHidden(UIViewController *list) {
+    if (!MSOurSidebarRowsPossible()) return nil;
     NSString *c = NSStringFromClass([list class]);
     if ([c isEqualToString:@"AccessibilitySettingsController"]) return MSPointerDeviceAttached() ? @[@"POINTER_CONTROL"] : nil;
     if ([c isEqualToString:@"PSGGeneralController"]) return MSPointerDeviceAttached() ? @[@"POINTERS"] : nil;

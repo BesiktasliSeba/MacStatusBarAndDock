@@ -1,3 +1,4 @@
+#import <dlfcn.h>
 // MacSpotlight.x -- our sections in Apple's Spotlight (MacStatusBar&Dock 1.4.3, S-3 #2 "Actions" and #3 "Windows"), inside the Spotlight app
 // (com.apple.Spotlight: loader/Loader.c loads this part there and nowhere else). SpringBoard's half is statusbar/SpotlightBridge.h.
 //
@@ -37,6 +38,7 @@
 
 static BOOL gMSPChecked = NO, gMSPCheckOK = NO, gMSPHooked = NO;
 static MSPTapKind gMSPTap = MSPTapNone;
+static const char *gMSPModelSel = NULL;      // (the results controller's rows, as the check found them: "collectionModel" on 16, "tableModel" on 17)
 static Class gMSPResult, gMSPSection, gMSPText, gMSPRich, gMSPSymbol, gMSPAppIcon;
 static uint64_t gMSPState = 0;                 // the switches, as SpringBoard published them
 static NSDictionary *gMSPList;                 // the list last read: @{gen, rows[, outside]} -- one presentation's only (MSPDropList)
@@ -70,9 +72,31 @@ static BOOL MSPCheck(void) {
     NSMutableArray *why = [NSMutableArray array];
     gMSPTap = MSPCheckClasses(objc_getClass("SPUIResultsViewController"), objc_getClass("SearchUIRowModel"), gMSPResult, gMSPSection, gMSPText, gMSPRich,
                               gMSPSymbol, gMSPAppIcon, objc_getClass("SearchUICommandHandler"), objc_getClass("SearchUICollectionViewController"),
-                              objc_getClass("SearchUICollectionModel"), objc_getClass("SearchUICommand"), objc_getClass("SearchUITapCommand"), why);
+                              objc_getClass("SearchUICollectionModel"), objc_getClass("SearchUICommand"), objc_getClass("SearchUITapCommand"),
+                              objc_getClass("SearchUITableModel"), &gMSPModelSel, why);
     gMSPCheckOK = gMSPTap != MSPTapNone && !why.count;
     if (!gMSPCheckOK) NSLog(@"[MacSpotlight] check failed, Spotlight stays Apple's: %@", [why componentsJoinedByString:@"; "]);
+#if DEBUG
+    {   // (debug: the reasons where they can be read from the Mac -- the Spotlight app's own temporary folder; SpringBoard's log only gets their count)
+        NSMutableString *t = [NSMutableString stringWithFormat:@"check %@ (tap %ld)\n%@\n", gMSPCheckOK ? @"passed" : @"FAILED", (long)gMSPTap, [why componentsJoinedByString:@"\n"]];
+        // (and the classes the check reads, as tools/spotcheck-fixtures has them: "<class> <superclass> <+|-><selector> <shape>", for the Mac test)
+        NSMutableString *fx = [NSMutableString stringWithFormat:@"# spotcheck fixture from the running Spotlight app (MacSpotlight debug build), iPadOS %@: class superclass +/-selector shape\n", [[NSProcessInfo processInfo] operatingSystemVersionString]];
+        for (NSString *cn in @[@"SFAppIconImage", @"SFImage", @"SFResultSection", @"SFRichText", @"SFSearchResult", @"SFSymbolImage", @"SFText", @"SPUIResultsViewController",
+                               @"SearchUICollectionModel", @"SearchUITableModel", @"SearchUICollectionViewController", @"SearchUICommandHandler", @"SearchUICommand", @"SearchUITapCommand",
+                               @"SearchUIKeyboardableCollectionViewController", @"SearchUIResultsViewController", @"SearchUIRowModel"]) {
+            Class c = objc_getClass(cn.UTF8String);
+            if (!c) continue;
+            const char *sup = class_getSuperclass(c) ? class_getName(class_getSuperclass(c)) : "NSObject";
+            for (int meta = 1; meta >= 0; meta--) {
+                unsigned mc = 0; Method *ms = class_copyMethodList(meta ? object_getClass(c) : c, &mc);
+                for (unsigned j = 0; j < mc; j++) [fx appendFormat:@"%@ %s %c%s %@\n", cn, sup, meta ? '+' : '-', sel_getName(method_getName(ms[j])), MSPShape(method_getTypeEncoding(ms[j]))];
+                free(ms);
+            }
+        }
+        [fx writeToFile:[NSTemporaryDirectory() stringByAppendingPathComponent:@"macspotlight-fixture.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        [t writeToFile:[NSTemporaryDirectory() stringByAppendingPathComponent:@"macspotlight-check.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    }
+#endif
     MSPReport(kMSPRepCheck, gMSPCheckOK ? (uint32_t)gMSPTap : 0x10000u | (uint32_t)MIN(why.count, 0xFFFFu));
     return gMSPCheckOK;
 }
@@ -144,17 +168,37 @@ static NSArray *MSPOurSections(NSString *q) {
     gMSPCacheKey = key; gMSPCache = out; gMSPCacheA = gMSPShownActions = counts[0]; gMSPCacheW = gMSPShownWindows = counts[1];
     return out;
 }
+// Our sections' identifiers (MSPOurSections, MSPWithOurs): every one starts with this; the Tweak Settings section is the one made of Apple's rows.
+#define MSP_SECTION_PREFIX @"com.besiktasliseba.macstatusbar.spotlight."
+#define MSP_TWEAK_SECTION  @"com.besiktasliseba.macstatusbar.spotlight.tweaksettings"
+static NSString *MSPSectionIdent(id sec) {
+    NSString *ident = nil;
+    @try { ident = [sec respondsToSelector:sel_registerName("identifier")] ? MSPCall(sec, "identifier") : nil; } @catch (NSException *e) { ident = nil; }
+    return [ident isKindOfClass:[NSString class]] ? ident : nil;
+}
+// A list that already carries sections of ours (iPadOS 17's two- and three-argument updates may pass through each other, and Apple may push a list
+// it kept, with our sections for an earlier query, again -- logic test F4): our Actions and Windows are taken out and made again for the text typed
+// now, so the answer is the same however often it is asked and always for the current text. The Tweak Settings section is kept where it is: its
+// rows were taken out of Apple's Settings section when it was made, so moving again would find nothing.
 static NSArray *MSPWithOurs(UIViewController *vc, NSArray *sections) {
     if (sections && ![sections isKindOfClass:[NSArray class]]) return sections;
     gMSPLastResults = vc;
     NSString *q = MSPCall(vc, "queryString");
     if (![q isKindOfClass:[NSString class]]) q = nil;
-    NSMutableArray *out = [NSMutableArray arrayWithArray:sections ?: @[]];
-    NSArray *moved = (gMSPState & 4) ? MSPTakeTweakSettings(out) : @[];
+    NSMutableArray *out = [NSMutableArray array];
+    NSUInteger tweakAt = NSNotFound, stale = 0;
+    for (id sec in sections ?: @[]) {
+        NSString *ident = MSPSectionIdent(sec);
+        if ([ident isEqualToString:MSP_TWEAK_SECTION]) { tweakAt = out.count; [out addObject:sec]; continue; }   // (already moved: kept)
+        if ([ident hasPrefix:MSP_SECTION_PREFIX]) { stale++; continue; }   // (ours, for whatever text it was made: made again below)
+        [out addObject:sec];
+    }
+    NSArray *moved = (gMSPState & 4) && tweakAt == NSNotFound ? MSPTakeTweakSettings(out) : @[];
     NSArray *ours = MSPOurSections(q);
-    if (!moved.count && !ours.count) return sections;
-    [out addObjectsFromArray:ours];
-    if (moved.count) [out addObject:MSPSection(@"Tweak Settings", @"com.besiktasliseba.macstatusbar.spotlight.tweaksettings", @"com.apple.Preferences", moved)];
+    if (!moved.count && !ours.count && !stale) return sections;
+    if (tweakAt != NSNotFound) [out insertObjects:ours atIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(tweakAt, ours.count)]];   // (ours before the kept Tweak Settings, as made)
+    else [out addObjectsFromArray:ours];
+    if (moved.count) [out addObject:MSPSection(@"Tweak Settings", MSP_TWEAK_SECTION, @"com.apple.Preferences", moved)];
     DM_FEATURE_MARK("spotlight-sections");
     MSPReport(kMSPRepShown, (uint32_t)((MIN(ours.count ? gMSPShownActions : 0, (NSUInteger)0xFF) << 16) | (MIN(ours.count ? gMSPShownWindows : 0, (NSUInteger)0xFF) << 8) | MIN(moved.count, (NSUInteger)0xFF)));
     return out;
@@ -163,13 +207,48 @@ static NSArray *MSPWithOurs(UIViewController *vc, NSArray *sections) {
 // ---- the hooks ----
 static void (*oMSPUpdate)(id, SEL, id, BOOL);
 static Class gMSPResultsClass;   // (SPUIResultsViewController: the hook sits on SearchUI's class that has the method, and acts for this one only)
+#if DEBUG
+static void MSPDebugLine(NSString *line) {   // (debug: the Spotlight app's own temporary folder, read from the Mac)
+    NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"macspotlight-trace.txt"];
+    FILE *f = fopen(path.fileSystemRepresentation, "a");
+    if (f) { fprintf(f, "%.3f %s\n", CACurrentMediaTime(), line.UTF8String); fclose(f); }
+}
+static void (*oMSPDbgSections)(id, SEL, id);
+static void MSPDbgSections(id self, SEL _cmd, id sections) {
+    MSPDebugLine([NSString stringWithFormat:@"-[%@ %s] %lu sections", NSStringFromClass([self class]), sel_getName(_cmd), (unsigned long)([sections respondsToSelector:@selector(count)] ? [sections count] : 0)]);
+    oMSPDbgSections(self, _cmd, sections);
+}
+static void (*oMSPDbgObj[8])(id, SEL, id);
+static const char *gMSPDbgObjSel[8];
+#define MSP_DBG_OBJ(n) static void MSPDbgObj##n(id self, SEL _cmd, id a) { MSPDebugLine([NSString stringWithFormat:@"-[%@ %s] %@", NSStringFromClass([self class]), sel_getName(_cmd), a ? NSStringFromClass([a class]) : @"nil"]); oMSPDbgObj[n](self, _cmd, a); }
+MSP_DBG_OBJ(0) MSP_DBG_OBJ(1) MSP_DBG_OBJ(2) MSP_DBG_OBJ(3)
+static void (*oMSPDbgPush)(id, SEL);
+static void MSPDbgPush(id self, SEL _cmd) { MSPDebugLine([NSString stringWithFormat:@"-[%@ %s]", NSStringFromClass([self class]), sel_getName(_cmd)]); oMSPDbgPush(self, _cmd); }
+#endif
 static void MSPUpdate(id self, SEL _cmd, id sections, BOOL reset) {
+#if DEBUG
+    MSPDebugLine([NSString stringWithFormat:@"-[%@ updateWithResultSections:resetScrollPoint:] %lu sections, state %llu, ours %d", NSStringFromClass([self class]), (unsigned long)([sections respondsToSelector:@selector(count)] ? [sections count] : 0), gMSPState, [self isKindOfClass:gMSPResultsClass]]);
+#endif
     id shown = sections;
     if ((gMSPState & 7) && [self isKindOfClass:gMSPResultsClass]) {
         @try { shown = MSPWithOurs(self, sections); }
         @catch (NSException *e) { shown = sections; MSPReport(kMSPRepException, 1); NSLog(@"[MacSpotlight] sections left as Apple's: %@", e); }
     }
     oMSPUpdate(self, _cmd, shown, reset);
+}
+// iPadOS 17: the results list's sections come through -updateWithResultSections:resetScrollPoint:animated: (new in 17; 15/16's _pushSectionsUpdate
+// called the two-argument one, which 17 still has but its push no longer uses: 17.5.1 trace, round 2 -- eight pushes, no two-argument call)
+static void (*oMSPUpdate3)(id, SEL, id, BOOL, BOOL);
+static void MSPUpdate3(id self, SEL _cmd, id sections, BOOL reset, BOOL animated) {
+#if DEBUG
+    MSPDebugLine([NSString stringWithFormat:@"-[%@ updateWithResultSections:resetScrollPoint:animated:] %lu sections, state %llu", NSStringFromClass([self class]), (unsigned long)([sections respondsToSelector:@selector(count)] ? [sections count] : 0), gMSPState]);
+#endif
+    id shown = sections;
+    if ((gMSPState & 7) && [self isKindOfClass:gMSPResultsClass]) {
+        @try { shown = MSPWithOurs(self, sections); }
+        @catch (NSException *e) { shown = sections; MSPReport(kMSPRepException, 1); NSLog(@"[MacSpotlight] sections left as Apple's: %@", e); }
+    }
+    oMSPUpdate3(self, _cmd, shown, reset, animated);
 }
 static NSString *MSPOurIdentifier(id rowModel) {   // (a row of ours: its result's identifier; nil for every other row)
     if (!(gMSPState & 3) || !rowModel || ![rowModel respondsToSelector:sel_registerName("identifyingResult")]) return nil;
@@ -210,7 +289,7 @@ static BOOL (*oMSPCanHighlight)(id, SEL, id);
 static BOOL MSPCanHighlight(id self, SEL _cmd, id indexPath) {
     if (oMSPCanHighlight(self, _cmd, indexPath)) return YES;
     if (!gMSPHandlerClass || !indexPath) return NO;
-    id model = MSPCall(self, "collectionModel"), row = nil;
+    id model = gMSPModelSel ? MSPCall(self, gMSPModelSel) : nil, row = nil;   // (16: -collectionModel, 17: -tableModel -- as the check found it)
     SEL rowAt = sel_registerName("rowModelForIndexPath:");
     @try { row = model && [model respondsToSelector:rowAt] ? ((id (*)(id, SEL, id))objc_msgSend)(model, rowAt, indexPath) : nil; }
     @catch (NSException *e) { return NO; }
@@ -268,6 +347,27 @@ static void MSPInstall(void) {
         if (own) { owner = k; break; }
     }
     MSHookMessageEx(owner, upd, (IMP)MSPUpdate, (IMP *)&oMSPUpdate);
+    {   // (iPadOS 17: the three-argument update its push uses -- checked by MSPCheckClasses where it exists)
+        SEL upd3 = sel_registerName("updateWithResultSections:resetScrollPoint:animated:");
+        Class owner3 = Nil;
+        for (Class k = gMSPResultsClass; k && !owner3; k = class_getSuperclass(k)) {
+            unsigned n = 0; Method *ms = class_copyMethodList(k, &n);
+            for (unsigned i = 0; i < n; i++) if (method_getName(ms[i]) == upd3) { owner3 = k; break; }
+            free(ms);
+        }
+        if (owner3) { MSHookMessageEx(owner3, upd3, (IMP)MSPUpdate3, (IMP *)&oMSPUpdate3); DM_FEATURE_MARK("spotlight-sections-17"); }
+    }
+#if DEBUG
+    {   // (debug: which update path this iPadOS's Spotlight takes)
+        Class cvc = objc_getClass("SearchUICollectionViewController");
+        if (cvc && class_getInstanceMethod(cvc, sel_registerName("updateWithResultSections:"))) MSHookMessageEx(cvc, sel_registerName("updateWithResultSections:"), (IMP)MSPDbgSections, (IMP *)&oMSPDbgSections);
+        if (gMSPResultsClass && class_getInstanceMethod(gMSPResultsClass, sel_registerName("_pushSectionsUpdate"))) MSHookMessageEx(gMSPResultsClass, sel_registerName("_pushSectionsUpdate"), (IMP)MSPDbgPush, (IMP *)&oMSPDbgPush);
+        IMP dbg[4] = { (IMP)MSPDbgObj0, (IMP)MSPDbgObj1, (IMP)MSPDbgObj2, (IMP)MSPDbgObj3 };
+        const char *sels[4] = { "setTableModel:", "updateWithTableModel:", "updateWithSnapshot:", "setTableModelWithoutReset:" };
+        for (int i = 0; i < 4; i++) if (cvc && class_getInstanceMethod(cvc, sel_registerName(sels[i]))) { gMSPDbgObjSel[i] = sels[i]; MSHookMessageEx(cvc, sel_registerName(sels[i]), dbg[i], (IMP *)&oMSPDbgObj[i]); }
+        MSPDebugLine([NSString stringWithFormat:@"hooked: update on %s, state %llu", class_getName(owner), gMSPState]);
+    }
+#endif
     MSPReport(kMSPRepHooked, (uint32_t)gMSPTap | (owner == gMSPResultsClass ? 0x100u : 0x200u));
 }
 

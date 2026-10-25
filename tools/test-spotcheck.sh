@@ -17,15 +17,20 @@ NEEDS16="SearchUICommandHandler:+handlerForRowModel:environment: SearchUICommand
 SearchUICommandHandler:-executeWithTriggerEvent: SearchUICommandHandler:-shouldDeselectAfterExecution SearchUICommandHandler:-supportsCopy
 SearchUICommandHandler:-supportsShare SearchUICommandHandler:-prefersContextMenu SearchUICollectionViewController:-canHighlightRowAtIndexPath:
 SearchUICollectionViewController:-collectionModel SearchUICollectionModel:-rowModelForIndexPath:"
+# (iPadOS 17: no SearchUICollectionModel / -collectionModel; the rows are the controller's -tableModel, a SearchUITableModel -- 21F90 fixture read from the
+#  running Spotlight app of the 17.5.1 iPad by MacSpotlight's debug build, as no IPSW cache of that build is on the Mac)
+NEEDS17=$(echo "$NEEDS16" | sed 's/SearchUICollectionViewController:-collectionModel SearchUICollectionModel:-rowModelForIndexPath:/SearchUICollectionViewController:-tableModel SearchUITableModel:-rowModelForIndexPath:/')
 NEEDS15="SearchUICommand:+tapCommandForRowModel:environment: SearchUICommand:-initWithRowModel:command:environment: SearchUICommand:-rowModel
 SearchUITapCommand:-performCommandWithCompletion: SearchUITapCommand:-presentsViewController"
 CLASSES="SPUIResultsViewController SearchUIRowModel SFSearchResult SFResultSection SFText SFRichText SFSymbolImage SFAppIconImage"
 BASED="SPUIResultsViewController SFRichText SFSymbolImage SFAppIconImage"
 fail=0; n=0
 for F in spotcheck-fixtures/*.txt; do
-    if grep -q "^SearchUICommandHandler " "$F"; then TAP=16; NEEDS="$COMMON $NEEDS16"; MORE="SearchUICommandHandler SearchUICollectionViewController SearchUICollectionModel"; MOREBASED=""
+    ROWS=""
+    if grep -q "^SearchUICommandHandler " "$F" && grep -q "^SearchUICollectionModel " "$F"; then TAP=16; ROWS=collectionModel; NEEDS="$COMMON $NEEDS16"; MORE="SearchUICommandHandler SearchUICollectionViewController SearchUICollectionModel"; MOREBASED=""
+    elif grep -q "^SearchUICommandHandler " "$F"; then TAP=16; ROWS=tableModel; NEEDS="$COMMON $NEEDS17"; MORE="SearchUICommandHandler SearchUICollectionViewController SearchUITableModel"; MOREBASED=""
     else TAP=15; NEEDS="$COMMON $NEEDS15"; MORE="SearchUICommand SearchUITapCommand"; MOREBASED="SearchUITapCommand"; fi
-    "$W/t" "$F" pass $TAP > "$W/o" || { cat "$W/o"; fail=$((fail+1)); }; n=$((n+1))
+    "$W/t" "$F" pass $TAP $ROWS > "$W/o" || { cat "$W/o"; fail=$((fail+1)); }; n=$((n+1))
     for need in $NEEDS; do
         c=${need%%:*}; s=${need#*:}
         "$W/t" "$F" drop "$c" "$s" > "$W/o" || { cat "$W/o"; fail=$((fail+1)); }; n=$((n+1))

@@ -635,7 +635,14 @@ static void ChoicyApplyChosenEngine(NSString *why) {
     if (!windowing) ELog(@"MSB on (%@): %@ -- every installed engine kept from loading", why, OffWhy());
     else if (!picked) ELog(@"MSB on (%@): no engine picked -- %@ is the default, as in SpringBoard", why, chosen);
     NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:@CHOICYPREFS] mutableCopy];
-    if (!prefs) { ELog(@"MSB on (%@): Choicy's settings unreadable -- left as they are", why); return; }
+    // (no settings file yet -- Choicy installed but never configured: it starts with our list, as Settings' engine pick and the line switches
+    //  already did. Only a file that is there but can't be read is left alone. With none, nothing was kept from loading: KT installed Zetsu and
+    //  Aerial with Stage Manager as the engine and both loaded next to it, 24 Oct, "Choicy's settings unreadable -- left as they are")
+    if (!prefs) {
+        if (access(CHOICYPREFS, F_OK) == 0) { ELog(@"MSB on (%@): Choicy's settings unreadable -- left as they are", why); return; }
+        prefs = [NSMutableDictionary dictionaryWithObject:@1 forKey:@"preferenceVersion"];
+        ELog(@"MSB on (%@): Choicy has no settings file yet -- it starts with the engine list", why);
+    }
     NSMutableDictionary *record = [[NSDictionary dictionaryWithContentsOfFile:@CHOICYRECORD] mutableCopy] ?: [NSMutableDictionary dictionary];
     // only engines that are really installed are kept from loading (iPad 2: MilkyWay4 is not installed there, but its entries were added); an entry we
     // added earlier for an engine that is not installed is taken out again (our own record says so)
@@ -1169,8 +1176,17 @@ static void FreezeOldDefaults(void) {
         [[before stringByAppendingString:list] writeToFile:@MIGDIR "/defaults-frozen" atomically:YES encoding:NSUTF8StringEncoding error:nil];
     }
     if (fresh) {
-        // (1.1.0-1.1.2 made Stage Manager the engine here on iPads that can run it; 1.1.3: Aerial 5.0 is the recommended engine for everyone again
-        //  -- a first install keeps the normal default. The update notice about Stage Manager is still never shown after a first install.)
+        // 1.5.0: on a first install, Stage Manager is the window engine where this iPad can run it -- the engine graduated from "Experimental"
+        // (1.1.0-1.1.2 did the same; 1.1.3 took it back after a crash on a 16.x build it had never been tried on). Where it runs: an iPad with Stage
+        // Manager (or TrollPad) on iPadOS 16.1-17.x, the versions it was tested on (16.0 and iPadOS 18 keep the normal default: 18's support comes in
+        // 1.6.0). Still guarded at every start: SpringBoard's self-check of the engine's private API must pass on this very build, or the default
+        // engine runs (ChosenEngine above, StatusBar.x DMSMEnginePicked). Updates keep what they had: nothing is written for them, so a setup with
+        // no pick keeps the old default (Aerial, then MilkyWay4 on 15, then Zetsu: EngineBuilds.h). The update notice about Stage Manager is never
+        // shown after a first install.
+        NSOperatingSystemVersion ov = [NSProcessInfo processInfo].operatingSystemVersion;
+        BOOL tested = (ov.majorVersion == 16 && ov.minorVersion >= 1) || ov.majorVersion == 17;
+        if (tested && MSBDStageManagerAvailable() && WriteMobilePrefsKey(@"com.besiktasliseba.macstatusbar", @"windowEngine", @"stagemanager", YES))
+            ELog(@"defaults: first install on iPadOS %ld.%ld with Stage Manager -- Stage Manager is the window engine", (long)ov.majorVersion, (long)ov.minorVersion);
         WriteMobilePrefsKey(@"com.besiktasliseba.macstatusbaranddock", @"stageManagerEngineNoticeShown", @YES, YES);
     }
     if (fresh) ELog(@"defaults: first install -- the new defaults apply");
@@ -1183,6 +1199,7 @@ static void Uninstall(void) {
     // Spotlight: the rows of tweak settings we donated into Settings' index are deleted by the running SpringBoard (statusbar/SpotlightFiles.x,
     // common/TweakSpotlight.h kMTSRemoveAllNote); a moment for it before the files go.
     notify_post("com.besiktasliseba.msbd.spotlight.removeall");
+    notify_post("com.besiktasliseba.graveescapetweak/removing");   // the running SpringBoard takes the HID "Top-Left Key as Escape" key mapping off every keyboard before our code is gone
     usleep(800000);
     mkdir(ESTATEDIR, 0755);
     { FILE *m = fopen(OFFMARKER, "w"); if (m) { fputs("removal", m); fclose(m); } chmod(OFFMARKER, 0644); }   // (the running SpringBoard stops holding the engines)

@@ -11,6 +11,7 @@ typedef struct { const char *uuid, *lib, *label; } MSBDEngineBuild;
 static const MSBDEngineBuild kMSBDEngineBuilds[] = {
     { "568387C3-2FE1-462F-BA83-EE6106D17B6A", "Aerial", "3.0 arm64" },    { "AC58C835-40C3-4296-B2E8-9563162C5DDD", "Aerial", "3.0 arm64e" },
     { "6F9F6C99-29EC-3942-8F61-80B303352B77", "Aerial", "5.0 arm64" },    { "1950C538-AD6B-3BC4-B693-3610F17CC9E9", "Aerial", "5.0 arm64e" },
+    { "6F4E1459-1C43-3DAD-B097-68BC51B4EDA1", "Aerial", "5.1 arm64" },    { "BA4C415C-A657-3EBC-AFAD-9CE03D89FE55", "Aerial", "5.1 arm64e" },
     { "3D644D4C-2038-35E6-A128-A4061306E793", "Zetsu", "1.6.2 arm64" },   { "3518C322-674E-3ADD-8397-561EBCA731F6", "Zetsu", "1.6.2 arm64e" },
     { "6B98C0C5-D07B-36CC-828A-AE17C7F0CABA", "Zetsu", "1.6.6 arm64" },   { "BFAC898D-9182-3D0E-AC4C-85EF13063477", "Zetsu", "1.6.6 arm64e" },
     { "193A0C73-A67B-30A3-BC48-6D0BB5195532", "MilkyWay4", "0.1.1 arm64" }, { "1FD3346D-4025-3E55-8A87-DFAC6673888F", "MilkyWay4", "0.1.1 arm64e" },
@@ -57,6 +58,9 @@ static inline BOOL MSBDEngineFileTested(NSString *lib, NSString *path) {
 
 // The engine used when none is picked (or the picked one is not installed), the same order as DMActiveEngineUncached in SpringBoard: Aerial (any
 // build: an untested one runs on its own, still the engine), else MilkyWay4 (iPadOS 15 only, a tested build), else Zetsu (a tested build).
+// 1.5.0: the order of engines for a NEW install is Stage Manager where it runs, then this list: a first install picks Stage Manager on an iPad with
+// Stage Manager (or TrollPad) on iPadOS 16.1-17.x (the root helper writes the pick, sshtoggled FreezeOldDefaults), and SpringBoard's self-check
+// still has the last word at every start. Existing setups keep their choice, and with no pick this list, exactly as before.
 // `installed` says whether an engine's package is installed; nil = none.
 static inline NSString *MSBDDefaultEngine(BOOL (^installed)(NSString *engine), NSString *(^libraryPath)(NSString *lib)) {
     if (installed(@"aerial")) return @"aerial";

@@ -51,6 +51,11 @@ PLIST
     # the system pointer process keeps the Mac pointer code it loaded at start, and a respring does not restart it on iPadOS 16: it is stopped
     # here (launchd starts it again at once) so an install or update reaches the pointer without a reboot. A plain kill is ignored: -9.
     /var/jb/usr/bin/killall -9 pointeruid 2>/dev/null
+    # the prewarm scheduler (dasd) likewise keeps whatever it loaded at start, and a respring does not restart it: it is stopped here so the prewarm
+    # block loads (or updates) without a reboot. The part's own crash-loop switch-off is cleared, so an install always starts it fresh. launchd
+    # starts dasd again at once.
+    rm -f /var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-PrewarmBlockOff.txt /var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-PrewarmBlockStarts.txt
+    /var/jb/usr/bin/killall -9 dasd 2>/dev/null
 elif [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-remove" ] || [ "$1" = "abort-deconfigure" ]; then
     # an upgrade or removal failed after the prerm stopped the helper (dpkg calls this on the version that stays): it is started again, so SSH
     # toggling, engine exclusivity and the switch-off watcher do not stay dead until the next reboot

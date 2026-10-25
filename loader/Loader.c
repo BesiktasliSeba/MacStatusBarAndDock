@@ -25,8 +25,8 @@
 
 #define MSBD_PAYLOAD_DIR "/var/jb/usr/lib/MacStatusBarAndDock/"
 
-enum { kSpringBoard = 1, kSettings = 2, kUIKit = 4, kPointerUID = 8, kRow = 16, kSpotlight = 32 };   // kRow: a Settings row, loaded on untested versions too
-                                                                                                    // kSpotlight: the Spotlight app (com.apple.Spotlight) only
+enum { kSpringBoard = 1, kSettings = 2, kUIKit = 4, kPointerUID = 8, kRow = 16, kSpotlight = 32, kDasd = 64 };   // kRow: a Settings row, loaded on untested versions too
+                                                                                                    // kSpotlight: the Spotlight app (com.apple.Spotlight) only; kDasd: the Duet Activity Scheduler (prewarm) only
 typedef struct { const char *name; unsigned where; } Payload;
 
 #if MSBD_LINE_DOCK
@@ -64,6 +64,7 @@ static const Payload kPayloads[] = {
     { "MixAudio", kUIKit },
     { "TabMuteTweak", kUIKit },
     { "VolumeGlobeTweak", kSpringBoard },
+    { "PrewarmBlockTweak", kDasd },
 };
 #endif
 
@@ -114,6 +115,7 @@ __attribute__((constructor)) static void MSBDLoad(void) {
     else if (EndsWith(path, "/Preferences.app/Preferences")) kind = kSettings;
     else if (EndsWith(path, "/pointeruid")) kind = kPointerUID;
     else if (EndsWith(path, "/Spotlight.app/Spotlight")) kind = kSpotlight;   // (and kUIKit below: the app-side parts load there as before)
+    else if (EndsWith(path, "/dasd")) kind = kDasd;   // (the prewarm block: /usr/libexec/dasd, no UIKit)
     // (the Bundles filter com.apple.UIKit means "UIKit is loaded", as the tweak loader checks it; RTLD_NOLOAD only looks, it never loads anything)
     void *uikit = dlopen("/System/Library/Frameworks/UIKit.framework/UIKit", RTLD_LAZY | RTLD_NOLOAD);
     if (uikit) { kind |= kUIKit; dlclose(uikit); }

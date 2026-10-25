@@ -318,7 +318,7 @@ static CGFloat DMWiFiLayoutIcon(UIView *fg, CGFloat left, CGFloat midY, UIColor 
         [fg addSubview:icon];
         objc_setAssociatedObject(fg, kWiFiIconKey, icon, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         DMAXButton *wb = [DMAXButton buttonWithType:UIButtonTypeCustom];
-        wb.pointerInteractionEnabled = YES;
+        wb.pointerInteractionEnabled = DMButtonPointerEffects();   // (iPadOS's highlight and pull only with its own pointer, StatusBar.x)
         // (assistive features, 1.3.7 audit M-3: "Wi-Fi, <network>, signal strength 2 of 3 bars" -- or Off / Not connected --, read when asked)
         wb.accessibilityLabel = @"Wi-Fi";
         wb.axValue = ^NSString *{

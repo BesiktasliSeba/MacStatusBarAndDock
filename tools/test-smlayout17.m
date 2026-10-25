@@ -110,6 +110,7 @@ static void DMSM17DiagSoon(void) { gDiagSoon++; }
 - (id)attributesByModifyingSizingPolicy:(long long)p { SBDisplayItemLayoutAttributes *a = [self copy]; a.policy = p; return a; }
 - (id)attributesByModifyingLastInteractionTime:(long long)t { SBDisplayItemLayoutAttributes *a = [self copy]; a.time = t; return a; }
 - (BOOL)isPositionSystemManaged { return _managed; }
+- (DMSMAttributedSize)attributedSize { return _sz; }
 - (id)attributesByModifyingPositionIsSystemManaged:(BOOL)m { SBDisplayItemLayoutAttributes *a = [self copy]; a.managed = m; return a; }
 @end
 // (SpringBoard's exported layout-role function and constants, as the 17.6.1 decompile uses them; the role check finds these through dlsym)
@@ -154,6 +155,17 @@ static CGRect ApplePass176(SBContinuousExposeAutoLayoutSpace *space, CGRect cont
 static SBContinuousExposeAutoLayoutItem *Item(CGFloat x, CGFloat y, CGFloat w, CGFloat h, BOOL def) {
     SBContinuousExposeAutoLayoutItem *it = [SBContinuousExposeAutoLayoutItem new]; it.position = CGPointMake(x, y); it.size = CGSizeMake(w, h); it.inDefaultPosition = def; return it;
 }
+// iPadOS 17.5.1's -[SBDisplayItemLayoutAttributes _sizeForAttributedSize:inBounds:defaultSize:screenEdgePadding:] as measured on the device (iPad7,1,
+// 21F90, scratch probe "attrsize", 24 Oct): both parts <= 10 -> fractions of the reference rect (the bounds when it has none), else both points; the
+// result clamped to the bounds; a zero part stays zero. Added to the stand-in only in section 12 (the engine asks for it once: DMSMPointSizes).
+static CGSize Apple175SizeFor(id self, SEL _cmd, DMSMAttributedSize s, CGRect bounds, CGSize dflt, double pad) {
+    CGSize v = s.normalizedSize;
+    if (v.width <= 10.0 && v.height <= 10.0) {
+        CGSize ref = s.referenceBounds.size.width > 0 && s.referenceBounds.size.height > 0 ? s.referenceBounds.size : bounds.size;
+        v = CGSizeMake(v.width * ref.width, v.height * ref.height);
+    }
+    return CGSizeMake(fmin(v.width, bounds.size.width), fmin(v.height, bounds.size.height));
+}
 static NSString *P(CGPoint p) { return [NSString stringWithFormat:@"{%.1f, %.1f}", p.x, p.y]; }
 static CGPoint Pos(SBContinuousExposeAutoLayoutSpace *s, NSUInteger i) { return ((SBContinuousExposeAutoLayoutItem *)s.items[i]).position; }
 static BOOL Def(SBContinuousExposeAutoLayoutSpace *s, NSUInteger i) { return ((SBContinuousExposeAutoLayoutItem *)s.items[i]).inDefaultPosition; }
@@ -186,6 +198,7 @@ int main(void) {
             {DMSMSigBool, "B16@0:8", "item isInDefaultPosition"},
             {DMSMSigVoidBool, "v20@0:8B16", "item setInDefaultPosition:"},
             {DMSMSigBool, "B16@0:8", "attributes isPositionSystemManaged"},
+            {DMSMSigFrameForRole17, "{CGRect={CGPoint=dd}{CGSize=dd}}112@0:8q16@24{CGRect={CGPoint=dd}{CGSize=dd}}32q64@72d80d88B96B100B104B108", "_frameForLayoutRole:...skipAutoLayout: (17.5.1 runtime)"},
             {DMSMSigWithBool, "@20@0:8B16", "attributes attributesByModifyingPositionIsSystemManaged:"},
         };
         for (size_t i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++) {
@@ -383,6 +396,72 @@ int main(void) {
         Check(@"diag 17: the 17 layout hooks stay in the list", !DMSMHookNotForThisOS("SBContinuousExposeAutoLayoutController", "stageAreaForSpace:configuration:"), @"");
         Check(@"diag: the corner radius name that is not here is left out, the other kept", DMSMHookNotForThisOS("SBSwitcherChamoisLayoutAttributes", "stageCornerRaddii") && !DMSMHookNotForThisOS("SBSwitcherChamoisLayoutAttributes", "stageCornerRadii"), @"");
         Check(@"diag: an ordinary hook stays", !DMSMHookNotForThisOS("SBIconView", "_handleTap"), @"");
+        // 12. iPadOS 17: window sizes kept in points (SpringBoard's own windows: {700, 747.05} type 0 of {1366, 1024} on 17.5.1)
+        {
+            SBDisplayItemLayoutAttributes *a = [SBDisplayItemLayoutAttributes new];
+            DMSMAttributedSize got = {{0}};
+            gSMLayoutGen = 16; gSMPointSizes = -1;
+            a.sz = (DMSMAttributedSize){ CGSizeMake(700, 747.05), CGRectMake(0, 0, 1366, 1024), 0 };
+            Check(@"sizes 16 table: a points size is still refused (16.x keeps fractions)", !DMSMAttrAttributedSize(a, &got), @"");
+            Check(@"sizes 16 table: Apple's reading is never asked", !DMSMPointSizes() && gSMPointSizes == -1, [NSString stringWithFormat:@"%d", gSMPointSizes]);
+            gSMLayoutGen = 17; gSMPointSizes = -1;
+            Check(@"sizes 17 table, no -_sizeForAttributedSize: here: fractions are handed over", !DMSMPointSizes() && gSMPointSizes == 0, @"");
+            BOOL r = DMSMAttrAttributedSize(a, &got);
+            Check(@"sizes 17 table: SpringBoard's points size read as fractions of its reference", r && fabs(got.normalizedSize.width - 700.0 / 1366.0) < 1e-9 && fabs(got.normalizedSize.height - 747.05 / 1024.0) < 1e-9 && got.referenceBounds.size.width == 1366,
+                  NSStringFromCGSize(got.normalizedSize));
+            DMSMAttributedSize frac = { CGSizeMake(0.5, 0.6), CGRectMake(0, 0, 1194, 834), 0 };
+            SBDisplayItemLayoutAttributes *w = DMSMAttrWithSize(a, frac);
+            Check(@"sizes 17 table without Apple's reading: the fraction itself is handed over", w && w.sz.normalizedSize.width == 0.5 && w.sz.normalizedSize.height == 0.6, NSStringFromCGSize(w.sz.normalizedSize));
+            class_addMethod([SBDisplayItemLayoutAttributes class], NSSelectorFromString(@"_sizeForAttributedSize:inBounds:defaultSize:screenEdgePadding:"), (IMP)Apple175SizeFor,
+                            [[NSString stringWithFormat:@"%s@:%s%s%s%s", @encode(CGSize), @encode(DMSMAttributedSize), @encode(CGRect), @encode(CGSize), @encode(double)] UTF8String]);
+            gSMPointSizes = -1;
+            Check(@"sizes 17 table: Apple's reading asked once -> points", DMSMPointSizes() && gSMPointSizes == 1, @"");
+            w = DMSMAttrWithSize(a, frac);
+            Check(@"sizes 17 table: a fraction is handed over in points (597 x 500.4)", w && fabs(w.sz.normalizedSize.width - 597.0) < 1e-9 && fabs(w.sz.normalizedSize.height - 500.4) < 1e-9 && w.sz.referenceBounds.size.width == 1194 && w.sz.type == 0,
+                  NSStringFromCGSize(w.sz.normalizedSize));
+            CGSize appleFrac = Apple175SizeFor(nil, NULL, frac, CGRectMake(0, 0, 1194, 834), CGSizeZero, 0), applePts = Apple175SizeFor(nil, NULL, w.sz, CGRectMake(0, 0, 1194, 834), CGSizeZero, 0);
+            Check(@"sizes 17 table: Apple reads the points as the same window as the fraction", fabs(appleFrac.width - applePts.width) < 1e-9 && fabs(appleFrac.height - applePts.height) < 1e-9, [NSString stringWithFormat:@"%@ vs %@", NSStringFromCGSize(appleFrac), NSStringFromCGSize(applePts)]);
+            DMSMAttributedSize back = {{0}};
+            Check(@"sizes 17 table: read back = the fraction we handed over", DMSMAttrAttributedSize(w, &back) && fabs(back.normalizedSize.width - 0.5) < 1e-12 && fabs(back.normalizedSize.height - 0.6) < 1e-12, NSStringFromCGSize(back.normalizedSize));
+            DMSMAttributedSize full = { CGSizeMake(1.0, 1.0), CGRectMake(0, 0, 1194, 834), 3 };
+            w = DMSMAttrWithSize(a, full);
+            Check(@"sizes 17 table: full width and height (type 3) handed over as it is", w && w.sz.normalizedSize.width == 1.0 && w.sz.type == 3, NSStringFromCGSize(w.sz.normalizedSize));
+            a.sz = (DMSMAttributedSize){ CGSizeMake(0, 0), CGRectMake(0, 0, 1024, 1366), 6 };
+            Check(@"sizes 17 table: an unset size (Default width and height) reads as zero, type kept", DMSMAttrAttributedSize(a, &got) && got.normalizedSize.width == 0 && got.type == 6, @"");
+            a.sz = (DMSMAttributedSize){ CGSizeMake(928, 1189), CGRectMake(0, 0, 1024, 1366), 6 };
+            Check(@"sizes 17 table: Apple's own default size (type 6, points) reads as fractions, type kept", DMSMAttrAttributedSize(a, &got) && fabs(got.normalizedSize.width - 928.0 / 1024.0) < 1e-9 && got.type == 6, NSStringFromCGSize(got.normalizedSize));
+            a.sz = (DMSMAttributedSize){ CGSizeMake(10.5, 0.5), CGRectMake(0, 0, 1366, 1024), 0 };
+            Check(@"sizes 17 table: Apple's threshold -- one part over 10 makes both points", DMSMAttrAttributedSize(a, &got) && fabs(got.normalizedSize.width - 10.5 / 1366.0) < 1e-12 && fabs(got.normalizedSize.height - 0.5 / 1024.0) < 1e-12, NSStringFromCGSize(got.normalizedSize));
+            a.sz = (DMSMAttributedSize){ CGSizeMake(700, 747), CGRectZero, 0 };
+            Check(@"sizes 17 table: points with no reference and no screen to read them in: refused", !DMSMAttrAttributedSize(a, &got), @"");
+            a.sz = (DMSMAttributedSize){ CGSizeMake(NAN, 500), CGRectMake(0, 0, 1366, 1024), 0 };
+            Check(@"sizes 17 table: not a number is refused", !DMSMAttrAttributedSize(a, &got), @"");
+            gSMPointSizes = -1;
+        }
+        {   // SpringBoard's role symbols are read as data only (DMSMDataSymbolIn, b408cf6): a constant and a variable of an image are accepted, a function
+            // of that image and a function of the shared cache are refused, a shared-cache data symbol (slid) is accepted (logic test F8)
+            static const long long kTestRole = 25; static long long gTestRole = 7;
+            const long long *pc = DMSMDataSymbolIn((void *)&kTestRole), *pv = DMSMDataSymbolIn((void *)&gTestRole);
+            Check(@"role symbols: a constant of this image is read as data", pc && *pc == 25, @"");
+            Check(@"role symbols: a variable of this image is read as data", pv && *pv == 7, @"");
+            Check(@"role symbols: a function of this image is refused (SBLayoutRoleIsValid... as a function)", DMSMDataSymbolIn((void *)&DMSMWholeScreenFrame17) == NULL, @"");
+            Check(@"role symbols: a function of the shared cache is refused (objc_msgSend)", DMSMDataSymbolIn((void *)&objc_msgSend) == NULL, @"");
+            Check(@"role symbols: a data symbol of the shared cache is read (NSFoundationVersionNumber)", DMSMDataSymbolIn((void *)&NSFoundationVersionNumber) != NULL, @"");
+            Check(@"role symbols: nothing for no address", DMSMDataSymbolIn(NULL) == NULL, @"");
+        }
+        {   // green's full screen inside a desktop (17.5.1: a shared stage's maximized window was laid out 884 x 1270 and put back to snap-to-grid)
+            CGRect b = CGRectMake(0, 0, 1024, 1366), grid = CGRectMake(70, 48, 884, 1270);
+            Check(@"full screen 17: maximized window sharing its stage -> the whole container", DMSMWholeScreenFrame17(YES, YES, 1, grid, b, 3, 2), @"");
+            Check(@"full screen 17: an additional side role (7) the same", DMSMWholeScreenFrame17(YES, YES, 7, grid, b, 2, 2), @"");
+            Check(@"full screen 17: a window (snap-to-grid) keeps Apple's frame", !DMSMWholeScreenFrame17(YES, YES, 1, grid, b, 3, 0), @"");
+            Check(@"full screen 17: zoomed-to-fill (1) keeps Apple's frame", !DMSMWholeScreenFrame17(YES, YES, 1, grid, b, 3, 1), @"");
+            Check(@"full screen 17: alone in its stage (Apple's own full screen) left as it is", !DMSMWholeScreenFrame17(YES, YES, 1, grid, b, 1, 2), @"");
+            Check(@"full screen 17: already the container -> nothing to change", !DMSMWholeScreenFrame17(YES, YES, 1, b, b, 3, 2), @"");
+            Check(@"full screen 17: not our engine -> Apple's frame", !DMSMWholeScreenFrame17(YES, NO, 1, grid, b, 3, 2), @"");
+            Check(@"full screen 17: windowing off -> Apple's frame", !DMSMWholeScreenFrame17(NO, YES, 1, grid, b, 3, 2), @"");
+            Check(@"full screen 17: floating (3) and centre (4) roles left alone", !DMSMWholeScreenFrame17(YES, YES, 3, grid, b, 3, 2) && !DMSMWholeScreenFrame17(YES, YES, 4, grid, b, 3, 2), @"");
+            Check(@"full screen 17: a container that is not a rectangle -> Apple's frame", !DMSMWholeScreenFrame17(YES, YES, 1, grid, CGRectMake(0, 0, NAN, 1366), 3, 2), @"");
+        }
         printf("%d of %d passed\n", total - fails, total);
     }
     return fails ? 1 : 0;

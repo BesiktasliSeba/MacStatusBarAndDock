@@ -40,11 +40,13 @@ static inline BOOL MSBDVPNRiskEngineFile(NSString *lib) {
     }
     return NO;
 }
+// (any build but a tested 3.0 one counts: 5.1 -- untested, picked as a plain engine since 1.5.0 -- checks its license in SpringBoard the same way,
+//  and a newer build is not known to have dropped the call; only 3.0 is known to make none)
 static inline BOOL MSBDAerial5WillLoad(void) {
     BOOL five = NO;
     for (NSString *ext in @[@"dylib", @"disabled"])
         for (NSString *uuid in MSBDDylibUUIDs([[@MSBD_VPNRISK_TWEAKS stringByAppendingPathComponent:@"Aerial"] stringByAppendingPathExtension:ext]))
-            if ([MSBDEngineBuildLabel(@"Aerial", uuid) hasPrefix:@"5."]) five = YES;
+            if (![MSBDEngineBuildLabel(@"Aerial", uuid) hasPrefix:@"3."]) five = YES;
     if (!five) return NO;
     CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("windowEngine"), CFSTR("com.besiktasliseba.macstatusbar"), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     NSString *pick = (__bridge_transfer NSString *)v;
@@ -60,8 +62,8 @@ static inline BOOL MSBDAerial5WillLoad(void) {
 static inline UIAlertController *MSBDVPNRespringAlert(void (^respring)(void), void (^vpnSettings)(void), void (^cancel)(void)) {
     int risk = MSBDVPNRisk();
     if (!risk || !MSBDAerial5WillLoad()) return nil;
-    NSString *msg = risk == 1 ? @"Aerial 5.0 goes online while SpringBoard starts, and with a VPN on it can hang on a black screen."
-                              : @"A VPN was just turned off. Aerial 5.0 goes online while SpringBoard starts and can hang on a black screen until the network settles. Wait a minute.";
+    NSString *msg = risk == 1 ? @"Aerial 5 goes online while SpringBoard starts, and with a VPN on it can hang on a black screen."
+                              : @"A VPN was just turned off. Aerial 5 goes online while SpringBoard starts and can hang on a black screen until the network settles. Wait a minute.";
     UIAlertController *a = [UIAlertController alertControllerWithTitle:risk == 1 ? @"Turn Off the VPN First" : @"Respring in a Minute" message:msg preferredStyle:UIAlertControllerStyleAlert];
     if (risk == 1 && vpnSettings) [a addAction:[UIAlertAction actionWithTitle:@"VPN Settings" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { vpnSettings(); }]];
     [a addAction:[UIAlertAction actionWithTitle:@"Respring Anyway" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) { respring(); }]];

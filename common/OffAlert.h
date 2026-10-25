@@ -4,6 +4,7 @@
 // (its slow fallback), it asks for one more: a daemon cannot show a system alert on iOS 15, so SpringBoard shows it, stock-style. It used to live in
 // MacSettingsBadge, which only the MacStatusBar line loads -- exactly the line that is off when the alert is needed -- so it could never appear.
 #pragma once
+#include <dlfcn.h>
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
 #include <notify.h>
@@ -41,7 +42,16 @@ static void MSBDPresentMacStatusBarOffAlert(NSString *msg, int attempt) {
     [a addAction:[UIAlertAction actionWithTitle:@"Respring" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
         gMSBDOffAlertWindow.hidden = YES; gMSBDOffAlertWindow = nil;
         SEL relaunch = NSSelectorFromString(@"_relaunchSpringBoardNow");
-        if ([[UIApplication sharedApplication] respondsToSelector:relaunch]) ((void (*)(id, SEL))objc_msgSend)([UIApplication sharedApplication], relaunch);
+        if ([[UIApplication sharedApplication] respondsToSelector:relaunch]) { ((void (*)(id, SEL))objc_msgSend)([UIApplication sharedApplication], relaunch); return; }
+        // (iPadOS 17/18: -_relaunchSpringBoardNow is gone -- the button did nothing there. The relaunch action every respring of our Settings pages
+        //  sends (LineSwitch.h MSBDRespringNow), which SpringBoard's restart manager carries out, also from inside SpringBoard)
+        dlopen("/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices", RTLD_NOW);
+        dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_NOW);
+        Class actionClass = objc_getClass("SBSRelaunchAction"), serviceClass = objc_getClass("FBSSystemService");
+        SEL make = NSSelectorFromString(@"actionWithReason:options:targetURL:"), shared = NSSelectorFromString(@"sharedService"), send = NSSelectorFromString(@"sendActions:withResult:");
+        id action = [actionClass respondsToSelector:make] ? ((id (*)(id, SEL, id, NSUInteger, id))objc_msgSend)(actionClass, make, @"RestartRenderServer", 4, nil) : nil;
+        id service = [serviceClass respondsToSelector:shared] ? ((id (*)(id, SEL))objc_msgSend)(serviceClass, shared) : nil;
+        if (action && [service respondsToSelector:send]) ((void (*)(id, SEL, id, id))objc_msgSend)(service, send, [NSSet setWithObject:action], nil);
     }]];
 #if DEBUG   // (test evidence: the MacStatusBar line, which has the screen captures, is off while this alert shows)
     FILE *lf = fopen("/tmp/msbd-offalert.log", "a");

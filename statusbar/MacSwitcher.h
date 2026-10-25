@@ -460,7 +460,14 @@ static CGRect gMSWWallBounds, gMSWWallContentsRect;
 static CGPoint gMSWWallCenter;
 static CGAffineTransform gMSWWallTransform;
 static NSString *gMSWWallGravity;
+static id gMSWWallContentsTransform;      // (iPadOS 17's poster picture as shown: the layer's contentsTransform -- its portrait picture turned into a landscape
+                                           //  view by that transform, not by the view; without it the switcher showed the picture unturned in landscape)
+static void DMMSWApplyWall(CALayer *l) {   // (the wallpaper picture onto one of our layers, as SpringBoard's layer shows it)
+    l.contents = gMSWWallContents; l.contentsRect = gMSWWallContentsRect; l.contentsGravity = gMSWWallGravity ?: kCAGravityResize;
+    if (gMSWWallContentsTransform) { @try { [l setValue:gMSWWallContentsTransform forKey:@"contentsTransform"]; } @catch (NSException *e) {} }
+}
 static CGSize gMSWWallSize;                // the screen's size it was placed for
+static UIView *DMMSWWallpaperImageView(UIView *wall);   // (below: the view whose layer holds the picture)
 static UIView *DMMSWWallpaperView(void) {
     Class wvc = objc_getClass("SBWWallpaperViewController"), wv = objc_getClass("SBFWallpaperView");
     for (UIWindow *w in DMAllWindows()) {
@@ -473,16 +480,22 @@ static UIView *DMMSWWallpaperView(void) {
         // (iPadOS 16: PosterBoard draws it -- _SBWallpaperSecureWindow > PBUIWallpaperViewController > ... > PBUIStaticWallpaperView, whose
         //  PBUIStaticWallpaperImageView holds the picture; read on the iPad 2. The Mac Switcher showed the dark blur there instead.)
         if (![wc hasPrefix:@"_SBWallpaper"]) continue;
+        // (iPadOS 17: no PBUI...WallpaperView any more -- the poster is PosterBoard's own scene, hosted, and next to it a PBUISnapshotReplicaView
+        //  whose UIImageView holds the poster's picture as shown (17.5.1 view tree: _SBWallpaperSecureWindow > 5 plain views > PBUISnapshotReplicaView
+        //  > UIImageView). Taken only when no wallpaper view of the 15/16 kind is there; the first visible one, nearest the window.)
+        UIView *replica = nil;
         NSMutableArray<UIView *> *todo = [NSMutableArray arrayWithObject:w];
-        for (int depth = 0; depth < 6 && todo.count; depth++) {
+        for (int depth = 0; depth < 8 && todo.count; depth++) {
             NSMutableArray *next = [NSMutableArray array];
             for (UIView *x in todo) {
                 NSString *c = NSStringFromClass([x class]);
-                if (!x.hidden && [c hasPrefix:@"PBUI"] && [c hasSuffix:@"WallpaperView"]) return x;
+                if (!x.hidden && depth < 6 && [c hasPrefix:@"PBUI"] && [c hasSuffix:@"WallpaperView"]) return x;
+                if (!replica && !x.hidden && x.alpha > 0.01 && [c isEqualToString:@"PBUISnapshotReplicaView"] && DMMSWWallpaperImageView(x)) replica = x;
                 [next addObjectsFromArray:x.subviews];
             }
             todo = next;
         }
+        if (replica) return replica;
     }
     return nil;
 }
@@ -515,6 +528,8 @@ static UIView *DMMSWWallpaperBackground(UIView *root, NSString **why) {
             if (k > 0.01 && fabs(angle) < 0.01 && CGRectContainsRect(CGRectInset(r, -1.0, -1.0), b)) {
                 gMSWWallContents = iv.layer.contents; gMSWWallBounds = ib; gMSWWallCenter = c; gMSWWallTransform = CGAffineTransformMakeScale(k, k);
                 gMSWWallContentsRect = iv.layer.contentsRect; gMSWWallGravity = iv.layer.contentsGravity; gMSWWallSize = b.size;
+                gMSWWallContentsTransform = nil;
+                @try { id t = [iv.layer valueForKey:@"contentsTransform"]; if ([t isKindOfClass:[NSValue class]] && !CGAffineTransformIsIdentity([t CGAffineTransformValue])) gMSWWallContentsTransform = t; } @catch (NSException *e) {}
                 mode = [NSString stringWithFormat:@"as shown (%@ at %@)", NSStringFromClass([iv class]), NSStringFromCGRect(r)];
             } else DMLog([NSString stringWithFormat:@"[macswitcher] wallpaper as shown does not fit (angle %.2f, %@ for %@): its picture fills the screen instead", angle, NSStringFromCGRect(r), NSStringFromCGSize(b.size)]);
         }
@@ -525,7 +540,7 @@ static UIView *DMMSWWallpaperBackground(UIView *root, NSString **why) {
             CGFloat s = MAX(b.size.width / img.size.width, b.size.height / img.size.height);
             gMSWWallContents = (__bridge id)img.CGImage; gMSWWallBounds = CGRectMake(0, 0, img.size.width, img.size.height);
             gMSWWallCenter = CGPointMake(CGRectGetMidX(b), CGRectGetMidY(b)); gMSWWallTransform = CGAffineTransformMakeScale(s, s);
-            gMSWWallContentsRect = CGRectMake(0, 0, 1, 1); gMSWWallGravity = kCAGravityResize; gMSWWallSize = b.size;
+            gMSWWallContentsRect = CGRectMake(0, 0, 1, 1); gMSWWallGravity = kCAGravityResize; gMSWWallSize = b.size; gMSWWallContentsTransform = nil;
             mode = [NSString stringWithFormat:@"filling the screen (%@ picture)", NSStringFromCGSize(img.size)];
         }
         gMSWWallKey = key;
@@ -533,7 +548,7 @@ static UIView *DMMSWWallpaperBackground(UIView *root, NSString **why) {
     }
     UIView *v = [UIView new];
     v.userInteractionEnabled = NO;
-    v.layer.contents = gMSWWallContents; v.layer.contentsRect = gMSWWallContentsRect; v.layer.contentsGravity = gMSWWallGravity ?: kCAGravityResize;
+    DMMSWApplyWall(v.layer);
     v.bounds = gMSWWallBounds; v.center = gMSWWallCenter; v.transform = gMSWWallTransform;
     return v;
 }
@@ -552,7 +567,7 @@ static void DMMSWWallLazy(void) {
     CGFloat s = MAX(b.size.width / img.size.width, b.size.height / img.size.height);
     gMSWWallContents = (__bridge id)img.CGImage; gMSWWallBounds = CGRectMake(0, 0, img.size.width, img.size.height);
     gMSWWallCenter = CGPointMake(CGRectGetMidX(b), CGRectGetMidY(b)); gMSWWallTransform = CGAffineTransformMakeScale(s, s);
-    gMSWWallContentsRect = CGRectMake(0, 0, 1, 1); gMSWWallGravity = kCAGravityResize; gMSWWallKey = nil; gMSWWallSize = b.size;
+    gMSWWallContentsRect = CGRectMake(0, 0, 1, 1); gMSWWallGravity = kCAGravityResize; gMSWWallKey = nil; gMSWWallSize = b.size; gMSWWallContentsTransform = nil;
     DMLog([NSString stringWithFormat:@"[macswitcher] wallpaper taken for a desktop drawn from its parts (filling the screen %@, %@ picture)", NSStringFromCGSize(b.size), NSStringFromCGSize(img.size)]);
 }
 
@@ -1671,15 +1686,16 @@ static NSString *DMMSWChangeDesktop(NSUInteger from, NSUInteger to) {
             DMLog([NSString stringWithFormat:@"[macswitcher] Fit to Window came on while %@ was away: %@ join%@ its tiles", DMMSWDeskName(to), [joined componentsJoinedByString:@", "], joined.count == 1 ? @"s" : @""]);
         }
     }
-    // (Fit to Window's own rule: one window fills the space -- a window dragged alone onto "+" or onto an empty desktop kept the quarter it had,
-    //  F4 7 Oct; DMMSWFitMove gives a group of one no slots)
-    if (DMFitEnabled() && gFitGroup.count == 1 && ![gFitSlots[gFitGroup[0]] isEqualToString:@"fill"]) gFitSlots = [@{ gFitGroup[0]: @"fill" } mutableCopy];
+    // (Fit to Window's own rule: a tiled window left alone fills the space -- one whose other tiles went while its desktop was away. A window dragged
+    //  alone onto "+" or onto an empty desktop is given "fill" by DMMSWFitMove (it kept the quarter it had, F4 7 Oct). A window that was opened
+    //  alone there and never tiled has no tile: it keeps its size, as with Stage Manager (it filled the desktop after a switch away and back, 24 Oct))
+    if (DMFitEnabled() && gFitGroup.count == 1 && gFitSlots[gFitGroup[0]] && ![gFitSlots[gFitGroup[0]] isEqualToString:@"fill"]) gFitSlots = [@{ gFitGroup[0]: @"fill" } mutableCopy];
     NSString *leftAt = gMSWLeftSize[[@(toId) stringValue]];
     if (leftAt && !CGSizeEqualToSize(CGSizeFromString(leftAt), screen) && CGSizeFromString(leftAt).width > 1) {   // (turned while away: its windows are arranged
         CGSize was = CGSizeFromString(leftAt);                                                                    //  for the new shape, as a turn arranges the shown ones)
         DMLog([NSString stringWithFormat:@"[macswitcher] %@ was left at %@, the screen is %@ now: its windows are arranged for the turn", DMMSWDeskName(to), leftAt, NSStringFromCGSize(screen)]);
         dispatch_async(dispatch_get_main_queue(), ^{ DMRelayoutForOrientation(was, [UIScreen mainScreen].bounds.size); });   // (its Fit group is tiled again there)
-    } else if (DMFitEnabled() && gFitGroup.count >= 1) {   // (its Fit group, tiled again for the screen as it is; one window fills)
+    } else if (DMFitEnabled() && gFitGroup.count >= 1 && gFitSlots[gFitGroup[0]]) {   // (its Fit group, tiled again for the screen as it is; a filling one fills)
         DMLog([NSString stringWithFormat:@"[macswitcher] %@'s Fit to Window group (%@) tiled again", DMMSWDeskName(to), [gFitGroup componentsJoinedByString:@", "]]);
         gMoveKeepsOrder = YES; DMApplyGroupSlots(nil); gMoveKeepsOrder = NO;
     }
@@ -2253,7 +2269,7 @@ static UIView *DMMSWComposedDesktop(NSInteger did, CGRect b) {
     c.clipsToBounds = YES;
     if (gMSWWallContents) {
         UIView *wv = [UIView new];
-        wv.layer.contents = gMSWWallContents; wv.layer.contentsRect = gMSWWallContentsRect; wv.layer.contentsGravity = gMSWWallGravity ?: kCAGravityResize;
+        DMMSWApplyWall(wv.layer);
         wv.bounds = gMSWWallBounds; wv.center = gMSWWallCenter; wv.transform = gMSWWallTransform;
         [c addSubview:wv];
     }
@@ -2310,7 +2326,7 @@ static UIView *DMMSWDeskPicture(NSUInteger i, CGRect b) {
     if (gMSWWallContents) {
         UIView *wv = [UIView new];
         wv.userInteractionEnabled = NO;
-        wv.layer.contents = gMSWWallContents; wv.layer.contentsRect = gMSWWallContentsRect; wv.layer.contentsGravity = gMSWWallGravity ?: kCAGravityResize;
+        DMMSWApplyWall(wv.layer);
         wv.bounds = gMSWWallBounds; wv.center = gMSWWallCenter; wv.transform = gMSWWallTransform;
         [c addSubview:wv];
     }
@@ -2349,7 +2365,7 @@ static UIView *DMMSWLeftFromParts(UIView *fsPic, UIView *fsSrc) {
     if (gMSWWallContents) {
         UIView *wv = [UIView new];
         wv.userInteractionEnabled = NO;
-        wv.layer.contents = gMSWWallContents; wv.layer.contentsRect = gMSWWallContentsRect; wv.layer.contentsGravity = gMSWWallGravity ?: kCAGravityResize;
+        DMMSWApplyWall(wv.layer);
         wv.bounds = gMSWWallBounds; wv.center = gMSWWallCenter; wv.transform = gMSWWallTransform;
         [c addSubview:wv];
     }
@@ -3055,8 +3071,10 @@ static BOOL DMMSWFitMove(NSString *b, NSInteger toId) {
     if (wasFree) [free addObject:b];
     else if (group.count < 4) [group insertObject:b atIndex:0];
     NSMutableDictionary<NSString *, NSString *> *slots = [NSMutableDictionary dictionary];
-    NSArray<NSString *> *names = DMDefaultSlotNames(group.count);
-    if (group.count >= 2) for (NSUInteger i = 0; i < group.count && i < names.count; i++) slots[group[i]] = names[i];
+    // (it joins in front: the default tiles, and alone there it fills -- Fit's rule, the plan Stage Manager's DMMSWSMFitJoin takes. No Fit, or four
+    //  tiles there already: that desktop's arrangement stays as it was, as there)
+    if ([group containsObject:b]) [slots addEntriesFromDictionary:DMFitPlanAfterLeave(group)];
+    else if ([fit[@"slots"] isKindOfClass:[NSDictionary class]]) for (NSString *x in group) if ([fit[@"slots"][x] isKindOfClass:[NSString class]]) slots[x] = fit[@"slots"][x];
     if (!gMSWFit) gMSWFit = [NSMutableDictionary dictionary];
     gMSWFit[k] = @{@"group": group, @"slots": slots, @"free": free, @"fitOn": fit[@"fitOn"] ?: @NO};   // (made with Fit off there: its windows join when it comes)
     return retiled;
@@ -3740,10 +3758,17 @@ static BOOL DMMSWFlyIn(id self, SEL _cmd) { gMSWHomeMod = self; return DMMSWGest
 // With Reduce Motion on, SpringBoard runs the home gesture through SBReduceMotionHomeGestureSwitcherModifier instead (iPad 2, 16.7.7: Reduce Motion
 // is on there, the hooks above never ran, and the stock App Switcher came up on a hold): its own -_responseForActivatingFinalDestination: (no
 // fly-in there: the gesture goes to the App Switcher the moment it pauses) is taken over the same way, by the same code.
-static id (*o_MSWActivate)(id, SEL, long long), (*o_MSWActivateRM)(id, SEL, long long);
+static id (*o_MSWActivate)(id, SEL, long long), (*o_MSWActivateRM)(id, SEL, long long), (*o_MSWActivateCE)(id, SEL, long long);
 static id DMMSWActivateWith(id self, SEL _cmd, long long dest, id (*orig)(id, SEL, long long));
 static id DMMSWActivate(id self, SEL _cmd, long long dest) { return DMMSWActivateWith(self, _cmd, dest, o_MSWActivate); }
 static id DMMSWActivateRM(id self, SEL _cmd, long long dest) { return DMMSWActivateWith(self, _cmd, dest, o_MSWActivateRM); }
+// iPadOS 17+ with Stage Manager on: the home gesture's decisions are SBContinuousExposeHomeGestureSwitcherModifier's own -- a sibling of
+// SBHomeGestureSwitcherModifier (both SBGestureSwitcherModifier), not a subclass, with the same two methods and types (17.5.1 probe) -- so the hold
+// opened Stage Manager's App Switcher instead of the Mac Switcher there (17.5.1, TrollPad, our Stage Manager engine; on 16.7.7 the home gesture
+// went through SBHomeGestureSwitcherModifier with Stage Manager on too). Taken over the same way, by the same code.
+static BOOL (*o_MSWFlyInCE)(id, SEL);
+static BOOL DMMSWFlyInCE(id self, SEL _cmd) { gMSWHomeMod = self; return DMMSWGesturesOn() ? NO : o_MSWFlyInCE(self, _cmd); }
+static id DMMSWActivateCE(id self, SEL _cmd, long long dest) { return DMMSWActivateWith(self, _cmd, dest, o_MSWActivateCE); }
 // The gesture's final destination as the modifier has it (its -currentFinalDestination, checked), or -1.
 static long long DMMSWFinalDestinationOf(id modifier) {
     return modifier && DMMSWHasMethod(object_getClass(modifier), @"currentFinalDestination", @"q@:") ? ((long long (*)(id, SEL))objc_msgSend)(modifier, NSSelectorFromString(@"currentFinalDestination")) : -1;
@@ -4242,6 +4267,14 @@ static void DMMSWHookGestures(void) {
         MSHookMessageEx(rm, NSSelectorFromString(@"_responseForActivatingFinalDestination:"), (IMP)DMMSWActivateRM, (IMP *)&o_MSWActivateRM);
         DMLog(@"[macswitcher] gesture hook installed for Reduce Motion's home gesture too");
     } else DMLog(@"[macswitcher] Reduce Motion's home gesture is not as expected here: with Reduce Motion on, the gestures stay iPadOS's own");
+    Class ce = objc_getClass("SBContinuousExposeHomeGestureSwitcherModifier");   // (Stage Manager's own home gesture, iPadOS 17+: DMMSWActivateCE)
+    if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17 && DMMSWHasMethod(ce, @"_hasPausedEnoughForFlyIn", @"B@:")
+        && DMMSWHasMethod(ce, @"_responseForActivatingFinalDestination:", @"@@:q")) {
+        MSHookMessageEx(ce, NSSelectorFromString(@"_hasPausedEnoughForFlyIn"), (IMP)DMMSWFlyInCE, (IMP *)&o_MSWFlyInCE);
+        MSHookMessageEx(ce, NSSelectorFromString(@"_responseForActivatingFinalDestination:"), (IMP)DMMSWActivateCE, (IMP *)&o_MSWActivateCE);
+        gMSWDiagGestures = [gMSWDiagGestures stringByAppendingString:@",ce17"];
+        DMLog(@"[macswitcher] gesture hook installed for Stage Manager's home gesture too (iPadOS 17+)");
+    }
 }
 // The StatusBar diagnostic record's Mac Switcher line (untested iPadOS: StatusBar.x DMSBDiagFlush). Compact, no spaces: on, self-check, the
 // gesture hooks and which completion they found, the App Switcher toggle, and the desktops. Names and numbers only.
@@ -4805,6 +4838,16 @@ static UIWindow *gMSWProbeWindow;
 static UIView *gMSWProbeRoot, *gMSWProbePortal;
 static BOOL DMMSWTrigger(NSString *cmd) {
     if ([cmd isEqualToString:@"msw_open"]) DMMSWOpen(@"trigger");
+    else if ([cmd isEqualToString:@"mswwall"]) {   // mswwall: the wallpaper view the Mac Switcher takes its picture from, and that picture's layer (debug)
+        UIView *wall = DMMSWWallpaperView(), *iv = wall ? DMMSWWallpaperImageView(wall) : nil;
+        id c = iv.layer.contents;
+        NSString *kind = !c ? @"none" : (CFGetTypeID((__bridge CFTypeRef)c) == CGImageGetTypeID() ? [NSString stringWithFormat:@"CGImage %zux%zu", CGImageGetWidth((__bridge CGImageRef)c), CGImageGetHeight((__bridge CGImageRef)c)] : NSStringFromClass([c class]));
+        NSMutableString *m = [NSMutableString stringWithFormat:@"[mswwall] wall %@ image view %@ %@ bounds %@ contents %@ rect %@ gravity %@ scale %.1f", NSStringFromClass([wall class]), NSStringFromClass([iv class]),
+            NSStringFromCGRect(iv ? [iv convertRect:iv.bounds toView:nil] : CGRectNull), NSStringFromCGRect(iv.bounds), kind, NSStringFromCGRect(iv.layer.contentsRect), iv.layer.contentsGravity, iv.layer.contentsScale];
+        for (NSString *k in @[@"contentsTransform", @"contentsOrientation", @"contentsFlipped"]) { id v = nil; @try { v = [iv.layer valueForKey:k]; } @catch (NSException *e) { v = @"(no such key)"; } [m appendFormat:@" %@=%@", k, v]; }
+        for (UIView *x = iv; x && x != wall.window; x = x.superview) if (!CGAffineTransformIsIdentity(x.transform) || !CATransform3DIsIdentity(x.layer.sublayerTransform)) [m appendFormat:@" | %@ transform %@", NSStringFromClass([x class]), NSStringFromCGAffineTransform(x.transform)];
+        DMLog(m);
+    }
     else if ([cmd isEqualToString:@"msw_close"]) DMMSWClose(nil, YES);
     else if ([cmd hasPrefix:@"msw_pick_"]) {
         NSInteger i = [[cmd substringFromIndex:9] integerValue];

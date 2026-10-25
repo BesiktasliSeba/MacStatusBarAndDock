@@ -264,8 +264,11 @@ static void DMSMDeskSyncFade(void) {
     DMLog([NSString stringWithFormat:@"[smdesk] %@ %@: windows %@", forSwitcher ? @"App Switcher" : ((want ? gHomeMenuOpen : fadedForMenu) ? @"Home Screen icon menu" : @"App Library"),
         want ? @"is showing" : (forSwitcher ? @"is coming" : @"is gone"), want ? @"fade away" : @"come back"]);
     if (forSwitcher) { [w.layer removeAnimationForKey:@"opacity"]; w.alpha = to; }   // (only our own fade's animation)
-    else [UIView animateWithDuration:want ? 0.16 : 0.22 delay:0 options:UIViewAnimationOptionCurveEaseInOut | UIViewAnimationOptionBeginFromCurrentState
-                          animations:^{ w.alpha = to; } completion:nil];
+    else {   // (with the App Library's own transition: about its length, StatusBar.x DMLibraryTransitionFade)
+        double len = want ? (gLibraryFadeOut > 0 ? gLibraryFadeOut : 0.16) : (gLibraryFadeIn > 0 ? gLibraryFadeIn : 0.22);
+        [UIView animateWithDuration:len delay:0 options:(gLibraryFadeIn > 0 ? UIViewAnimationOptionCurveEaseOut : UIViewAnimationOptionCurveEaseInOut) | UIViewAnimationOptionBeginFromCurrentState
+                         animations:^{ w.alpha = to; } completion:nil];
+    }
     if (!want) gSMDeskFadedWindow = nil;
 }
 
@@ -468,6 +471,7 @@ static void DMSMDeskJoinDone(NSArray<NSString *> *fresh, NSArray<NSString *> *le
     NSMutableArray<NSString *> *freshText = [NSMutableArray array];
     for (NSString *b in fresh) { DMSMSetMinimized(b, NO); [freshText addObject:DMSMKeyText(b)]; }   // (opened again: no longer a minimized window)
     if (!windowed && desk) for (NSString *b in fresh) if (![asWindow containsObject:b]) DMSMDismissOtherFullScreen(desk, b);   // (full screen: one full-screen app at a time, as a launch; a minimized window back as a window leaves it)
+    DMSMMarkLeftOut(leftOut, @"a stage joined to a full desktop");   // (minimized with the Mac Switcher or not: the restore must not take one for the desktop)
     DMMSWSMAskedJoined(fresh, leftOut);   // (Mac Switcher: recorded on the current desktop; a full desktop's left-out windows minimized and said)
     DM_FEATURE_MARK("sm-join-asked-stage");
     for (NSString *b in fresh) {   // (a window of an app already on the desktop joined it: M-2's case)

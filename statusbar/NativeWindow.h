@@ -344,6 +344,19 @@ static BOOL DMPointOnOwnKeyboard(CGPoint p) {
     }
     return NO;
 }
+// The last press that brought a native window forward, and the window in front before it. A drag that press starts (an item of a Finder window
+// that was behind) sends the window back behind the one that was in front, as a Mac's Finder drags from an inactive window without activating
+// it: brought forward at the press, the source covered the window the item was dragged to, and the drop landed in the source's own folder
+// ("nothing to do") -- two overlapping Finder windows, A12Z 18.5, 25 Oct. The window still comes forward for a press that is not a drag.
+static __weak DMNativeWindow *gNativeRaisedFrom, *gNativeRaisedTo;
+static CFTimeInterval gNativeRaisedAt;
+static BOOL DMNativeUndoRaise(DMNativeWindow *source) {
+    DMNativeWindow *back = gNativeRaisedFrom;
+    if (!source || source != gNativeRaisedTo || !back || back.hidden || CACurrentMediaTime() - gNativeRaisedAt > 3.0) return NO;
+    gNativeRaisedTo = nil;
+    DMNativeSetActive(back);
+    return YES;
+}
 __attribute__((noinline)) static void DMNativeTouchBegan(UITouch *t) {   // (kept a symbol of its own: the crash guard names it -- tools/test-crashstep.sh)
     if (!gNativeLayer || gNativeLayer.hidden || !gNativeWindows.count) return;
     DM_FEATURE_MARK("native-touch-activation");
@@ -377,7 +390,13 @@ __attribute__((noinline)) static void DMNativeTouchBegan(UITouch *t) {   // (kep
     //  follows, let through to the layer by the switcher window (SBMainSwitcherWindow's hit test), and activates the window then.)
     if (hit && !gNativeActive && [NSStringFromClass([t.window class]) isEqualToString:@"_UISystemGestureWindow"]) return;
     if (hit) {
-        for (UIView *v = hit; v; v = v.superview) if ([v isKindOfClass:[DMNativeWindow class]]) { DMNativeSetActive((DMNativeWindow *)v); return; }
+        for (UIView *v = hit; v; v = v.superview) if ([v isKindOfClass:[DMNativeWindow class]]) {
+            DMNativeWindow *was = gNativeActive;   // (a press that brings a window forward: which one was in front -- a drag it starts sends it back, DMNativeUndoRaise)
+            if (was && was != v && !was.hidden) { gNativeRaisedFrom = was; gNativeRaisedTo = (DMNativeWindow *)v; gNativeRaisedAt = CACurrentMediaTime(); }
+            else if (CACurrentMediaTime() - gNativeRaisedAt > 0.3) gNativeRaisedTo = nil;   // (the same touch comes twice -- the system gestures' copy first: that keeps it)
+            DMNativeSetActive((DMNativeWindow *)v);
+            return;
+        }
         return;
     }
     if (!gNativeActive) return;

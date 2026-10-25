@@ -110,7 +110,7 @@ For keyboards without a function row, like the original Magic Keyboard for iPad.
 
 | Setting | What it does | New install |
 |---|---|---|
-| ~ Key as Escape | The key at the top left, next to 1, becomes Escape, whatever your layout types there. | Off |
+| Top-Left Key as Escape | The key at the top left, next to 1, becomes Escape, whatever your layout types there. | Off |
 | Tab Key Toggles Mute | A plain Tab mutes and unmutes the iPad instead of typing a tab. Full Keyboard Access keeps Tab. | Off |
 | Globe + Option/Control for Volume | Volume keys. Needs the Globe key set to Globe in Modifier Keys. | Off |
 | Shift + =/- for Screen Brightness | Screen brightness keys. | Off |

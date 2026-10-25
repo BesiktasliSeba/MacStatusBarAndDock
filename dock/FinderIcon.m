@@ -6,6 +6,11 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #include <notify.h>
+// With the Mac pointer (Settings > Pointer > Pointer Style: Mac, the default) the Dock's icons don't lift under the pointer, as SpringBoard's own icons
+// (StatusBar.x MacPointerIcons): iPadOS draws its pointer under a lifted icon, and the arrow went under it. iPadOS's pointer: the lift as before.
+// (and while the Mac pointer stands down for another pointer tweak: then the pointer is iPadOS's -- common/MacPointerActive.h, logic test W5)
+#import "../common/MacPointerActive.h"
+static BOOL DMDockIconLift(void) { return MSBDIPadPointerEffects(); }
 
 #define kFinderDockTap   "com.besiktasliseba.macstatusbar.finder.dock"
 #define kFinderDockNew   "com.besiktasliseba.macstatusbar.finder.new"
@@ -161,6 +166,7 @@ static UIImage *DMFinderThemedImage(void) {
 }
 - (void)tapped { notify_post(kFinderDockTap); }
 - (UIPointerStyle *)pointerInteraction:(UIPointerInteraction *)interaction styleForRegion:(UIPointerRegion *)region {
+    if (!DMDockIconLift()) return nil;
     return [UIPointerStyle styleWithEffect:[UIPointerLiftEffect effectWithPreview:[[UITargetedPreview alloc] initWithView:self]] shape:nil];
 }
 - (UIContextMenuConfiguration *)contextMenuInteraction:(UIContextMenuInteraction *)i configurationForMenuAtLocation:(CGPoint)p {

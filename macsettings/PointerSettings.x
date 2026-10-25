@@ -171,6 +171,9 @@ void MSPointerWatchSidebar(PSListController *sidebar) {
         PSListController *l = gMSSidebar;
         BOOL shown = NO;
         for (PSSpecifier *sp in [l specifiers]) if ([[sp identifier] isEqualToString:kPointerRowID]) { shown = YES; break; }
+#if DEBUG
+        if (access("/tmp/macsettings-debug", F_OK) == 0) { FILE *f = fopen("/tmp/macsettings.log", "a"); if (f) { fprintf(f, "[pointer] device changed: sidebar %p, row shown %d, attached %d\n", (__bridge void *)l, shown, MSPointerDeviceAttached()); fclose(f); } }
+#endif
         if (l && shown != MSPointerDeviceAttached()) MSReloadSidebarKeepingScroll(l);
     });
     // (the same for the Home Bar row: SpringBoard finds out whether this device has a home bar at all, see HomeBar.x)

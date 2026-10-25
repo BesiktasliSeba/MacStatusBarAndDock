@@ -2,6 +2,55 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.5.0
+
+### New
+- The Stage Manager engine is no longer experimental. On a new install, an iPad that can run Stage Manager (iPadOS 16.1 to 17, with Stage Manager or TrollPad) starts with it as its window engine. If you update, your window engine stays the one you had.
+- iPadOS 17 is supported without turning on Enable Anyway. It was tested on iPadOS 17.5.1 with the Stage Manager engine, Aerial 5.1 and Zetsu 1.6.6.
+- Aerial 5.1 works with the tweak on iPadOS 15, 16 and 17: title bars, traffic lights, Fit to Window and the Mac Switcher.
+- The yellow button shrinks a window into its app's icon in the Dock, with every window engine, as on a Mac. Opening the app again grows the window back out of the icon. With Reduce Motion on, the window fades instead.
+- Notifications in the Today View clear like on a Mac: a notification follows your finger, a Clear button appears behind it, and with a trackpad or mouse a close button shows when the pointer is over it. Clear in the header clears them all.
+- With a hardware keyboard, Esc closes the menu bar's menus and dialogs.
+
+### Improvements
+- The App Library and your windows now move together: when the App Library closes, it drops back into the Launchpad icon while your windows come back, in one movement.
+- The Mac pointer stays an arrow over buttons and controls, without iPadOS's round highlight, and it isn't pulled toward buttons any more. Home Screen and Dock icons no longer lift under it, so the arrow stays on top of them. Over text it still turns into the text cursor.
+- The Mac pointer moves more smoothly: it no longer does work with every move of the pointer.
+- Quitting an app with the red button or with Force Quit now ends it the way the App Switcher does, so iOS doesn't start it again in the background afterwards.
+- An app you quit is not started ahead of time ("prewarmed") by iOS again until you open it yourself, so it stays closed instead of coming back in the background.
+- "~ Key as Escape" is now "Top-Left Key as Escape" (your setting stays as it was). On keyboards with the international (ISO) layout, like Apple's Magic Keyboard in many countries, it now turns the right key into Escape: the one at the top left, next to 1.
+- About This iPad shows an iPad with a Home button on iPads that have one.
+- Settings > Window Engine: "Stage Manager" no longer says "(Experimental)", and Aerial is listed as "Aerial (v3.0, v5.0 or v5.1)".
+- The search field at the top of the Settings sidebar no longer autocorrects what you type, and Esc always clears it.
+- With a trackpad or mouse connected, the Pointer and Keyboard rows in Settings follow the device as it connects and disconnects.
+
+### Fixes
+- With an app in front, Globe + Option or Globe + Control changed the volume by two steps. Now each press is one step.
+- Shift + Option or Shift + Control changed the keyboard backlight twice for each press. Now once.
+- The Edit menu's Cut, Copy, Paste, Select All and Find work with any attached keyboard.
+- iPadOS 17, Stage Manager engine: minimizing a window that is behind another one no longer brings it to the front first.
+- iPadOS 17, Stage Manager engine: a window that a full desktop leaves out stays minimized after a respring instead of coming back as the desktop.
+- iPadOS 17, Stage Manager engine with Fit to Window: windows that come back after a respring in another orientation are tiled for it.
+- iPadOS 17: the Today View's column is no longer cut off at the panel's edge.
+- iPadOS 17: apps opened from the Dock open as windows on your desktop, the green button makes a window full screen with the menu bar on top, and turning Stage Manager off in Control Center waits for a safe moment.
+- iPadOS 17: the menu bar is there right after a respring and on the Lock Screen, swiping up and holding opens the Mac Switcher with your wallpaper, the Spotlight extras show up, the Downloads stack's search keeps the keyboard, and the Dock's running dots sit below the icons.
+- iPadOS 17: Hide Status Bar on Lock Screen, TabMute's ringer and the Respring button of the "MacStatusBar Is Off" alert work.
+- iPadOS 17: tapping an app's icon in the Dock while a Finder window is active brings the app in front of Finder.
+- iPadOS 17, Aerial: the keyboard of an app in a window shows across the bottom of the screen again.
+- Zetsu: the tweak now guards against a SpringBoard crash in Zetsu that could happen when switching apps.
+- Zetsu: tapping a window that is behind another brings it to the front, and the menu bar follows it. Tapping the desktop puts the keyboard of a window away.
+- Fit to Window with Mac Switcher desktops: a window you opened alone on a desktop keeps its size when you come back to that desktop.
+
+### Known limits
+- The keys that work inside apps (Shift + = / - for the screen brightness, Tab as Mute) do nothing while a package manager, Filza, iCleaner, TrollStore or the jailbreak app is in front: the tweak leaves those apps alone, so they always open even if something goes wrong.
+
+### Experimental (iPadOS 18)
+- iPadOS 18 stays experimental: the tweak keeps itself off there until you turn on Enable Anyway, and full support is planned for 1.6.0. It was tried on iPadOS 18.5 with the Stage Manager engine, on an iPad with Stage Manager of its own.
+- iPadOS 18: the SSH, Home Bar, Pointer and Keyboard rows are in a MacStatusBar&Dock group at the top of Settings > General.
+- iPadOS 18: Esc closes the menu bar's menus, and the Edit menu's keys work.
+- iPadOS 18: turning Stage Manager off in Control Center waits for a safe moment, as on iPadOS 17.
+- iPadOS 18: the Dock's Handoff suggestion stays in the row of recent apps.
+
 ## 1.4.5
 
 ### Fixes

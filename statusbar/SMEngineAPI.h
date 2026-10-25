@@ -13,6 +13,37 @@
 // Included once by StatusBar.x (after DMLog / DMCall / MSB_DOMAIN / DMTestFlag and the DMSMAttributedSize typedef).
 #pragma once
 #include <dlfcn.h>   // (dlsym: SpringBoard's exported layout-role functions and constants, iPadOS 17 check)
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
+#include <ptrauth.h>
+// A symbol SpringBoard exports, read as DATA only where it lies in a data section of its image: on iPadOS 18.5 SBLayoutRoleAdditionalSideRangeMax is
+// a function (__TEXT,__text), and read as a constant it crashed SpringBoard at every start (plans/ipados18-compat.md item 1: DMSMCheckRoles17, then
+// SMLimit.h's DMSMSBConstant). Code, a signed pointer or an unknown place: NULL, and the callers treat the value as unknown (as for a symbol that is
+// not exported). The 17.x builds keep it a constant (17.5.1: 25), so nothing changes there.
+static const long long *DMSMDataSymbolIn(void *p) {
+    if (!p) return NULL;
+    void *q = ptrauth_strip(p, ptrauth_key_asia);
+    if (q != p) return NULL;   // (signed: a function pointer)
+    Dl_info di; memset(&di, 0, sizeof di);
+    if (!dladdr(q, &di) || !di.dli_fbase) return NULL;
+    const struct mach_header_64 *mh = (const struct mach_header_64 *)di.dli_fbase;
+    if (mh->magic != MH_MAGIC_64) return NULL;
+    intptr_t slide = 0; BOOL found = NO;
+    for (uint32_t i = 0; i < _dyld_image_count(); i++) if ((const void *)_dyld_get_image_header(i) == (const void *)mh) { slide = _dyld_get_image_vmaddr_slide(i); found = YES; break; }
+    if (!found) return NULL;
+    const struct load_command *lc = (const struct load_command *)(mh + 1);
+    for (uint32_t i = 0; i < mh->ncmds; i++, lc = (const struct load_command *)((const char *)lc + lc->cmdsize)) {
+        if (lc->cmd != LC_SEGMENT_64) continue;
+        const struct segment_command_64 *sg = (const struct segment_command_64 *)lc;
+        const struct section_64 *sc = (const struct section_64 *)(sg + 1);
+        for (uint32_t j = 0; j < sg->nsects; j++) {
+            uintptr_t a = (uintptr_t)sc[j].addr + (uintptr_t)slide;
+            if ((uintptr_t)q < a || (uintptr_t)q + sizeof(long long) > a + sc[j].size) continue;
+            return (sc[j].flags & (S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS)) ? NULL : (const long long *)q;
+        }
+    }
+    return NULL;
+}
 #include "SMRoles.h"   // (the window roles a stage has: DMSMPlanValid reads the highest, sm-nolimit)
 #include "SMWindowKey.h"   // (one window, one key: its own scene -- M-2, sm-multiwin)
 
@@ -110,6 +141,7 @@ DMSM_SIG(DMSMSigInBounds, @encode(CGSize), @encode(CGRect))                     
 DMSM_SIG(DMSMSigRequestOnDisplay, @encode(BOOL), @encode(unsigned long long), @encode(id), @encode(id))   // -requestTransitionWithOptions:displayConfiguration:builder: (YES = taken)
 DMSM_SIG(DMSMSigRequest, @encode(BOOL), @encode(id))                                  // -requestTransitionWithBuilder: (YES = taken; B@:@? on 16.7.7)
 DMSM_SIG(DMSMSigWithBool, @encode(id), @encode(BOOL))                                  // -attributesByModifyingPositionIsSystemManaged: (iPadOS 17+)
+DMSM_SIG(DMSMSigSizeForAttr, @encode(CGSize), @encode(DMSMAttributedSize), @encode(CGRect), @encode(CGSize), @encode(double))   // -_sizeForAttributedSize:inBounds:defaultSize:screenEdgePadding: (iPadOS 17+)
 
 // ---- sense checks ------------------------------------------------------------------------------------------------------------------------------
 static BOOL DMSMFinite(double v) { return isfinite(v); }
@@ -239,6 +271,66 @@ static void DMSMPass160Begin(void) { gSMPostPass160 = NO; }
 static void DMSMPass160End(void) { gSMPostPass160 = gSMCalc160Depth > 0; }
 // The x a centre or the bounding box gets: its own while the group shift runs and our engine places windows freely, else the one asked for.
 static CGFloat DMSMShift160X(BOOL freePlacement, CGFloat asked, CGFloat own) { return gSMPostPass160 && freePlacement && isfinite(own) ? own : asked; }
+// ---- window sizes kept in points (iPadOS 17) ----
+// iPadOS 17 keeps a window's size in SBDisplayItemAttributedSize._private_opaqueSize as POINTS where SpringBoard writes it itself (read on 17.5.1
+// 21F90: {700, 747.05} type 0 with the reference rect {1366, 1024}); 16.x keeps fractions of the reference rect there. Apple's reading,
+// -[SBDisplayItemLayoutAttributes _sizeForAttributedSize:inBounds:defaultSize:screenEdgePadding:], measured on the device: while BOTH parts are at
+// most 10 they are fractions of the reference rect (of the bounds when it has none), else both are points ({10, 0.5} -> 13660 x 512 in big bounds,
+// {10.5, 0.5} -> 10.5 x 0.5); results are clamped to the bounds. The engine's one model stays fractions of the reference rect: our reader refused
+// every size SpringBoard had written ("attributedSize: not a size: {700, 747.05}"), so every join, restore and layout plan was refused and Stage
+// Manager's own choice stood -- e.g. an app opened from the Dock coming back with the stage it was last in, a second app joining it (KT, 1.4.5 on
+// 17.5.1 with TrollPad). Now a size with a part over 10 is read as points and turned into fractions (Apple's own threshold); where Apple's reading is
+// the points one (asked once of a fresh attributes object, no other effect: DMSMPointSizes, never the version number) sizes are handed over in points,
+// as SpringBoard writes them, so no threshold can misread one.
+static int gSMPointSizes = -1;   // (-1 not asked yet, 0 fractions, 1 points)
+static CGSize DMSMRefSizeOr(CGRect ref) {   // (the reference rect's size, or the screen as it is now when the attributes keep none -- Apple's bounds)
+    if (isfinite(ref.size.width) && isfinite(ref.size.height) && ref.size.width >= 1.0 && ref.size.height >= 1.0 && ref.size.width < 100000 && ref.size.height < 100000) return ref.size;
+    return DMSMMainScreenBounds().size;
+}
+static BOOL DMSMPointSizes(void) {
+    if (gSMPointSizes >= 0) return gSMPointSizes == 1;
+    if (DMSMLayoutGen() != 17) return NO;   // (iPadOS 16's layout engine keeps fractions: nothing asked, nothing changed there)
+    gSMPointSizes = 0;
+    Class c = objc_getClass("SBDisplayItemLayoutAttributes");
+    SEL s = sel_registerName("_sizeForAttributedSize:inBounds:defaultSize:screenEdgePadding:");
+    Method m = c ? class_getInstanceMethod(c, s) : NULL;
+    if (!m || ![DMSMSigOfMethod(m) isEqualToString:DMSMSigSizeForAttr()]) return NO;
+    @try {
+        id a = [[c alloc] init];
+        if (!a) return NO;
+        CGSize (*sizeFor)(id, SEL, DMSMAttributedSize, CGRect, CGSize, double) = (CGSize (*)(id, SEL, DMSMAttributedSize, CGRect, CGSize, double))objc_msgSend;
+        CGRect b = CGRectMake(0, 0, 1366, 1024);
+        DMSMAttributedSize pts = { CGSizeMake(700, 747), b, 0 }, frac = { CGSizeMake(0.5, 0.5), b, 0 };
+        CGSize rp = sizeFor(a, s, pts, b, CGSizeMake(500, 600), 0), rf = sizeFor(a, s, frac, b, CGSizeMake(500, 600), 0);
+        if (fabs(rp.width - 700) < 0.5 && fabs(rp.height - 747) < 0.5 && fabs(rf.width - 683) < 0.5 && fabs(rf.height - 512) < 0.5) gSMPointSizes = 1;
+    } @catch (id e) { gSMPointSizes = 0; }
+    DMLog(gSMPointSizes == 1 ? @"[smcheck] window sizes: SpringBoard keeps them in points here (iPadOS 17): read as points, handed over in points"
+                             : @"[smcheck] window sizes: Apple's reading is not the points one here: fractions are handed over");   // (asked at first use, never at start)
+    return gSMPointSizes == 1;
+}
+// Apple's size -> ours: a part over 10 means both are points (Apple's threshold); zero parts stay zero ("not set": Apple works them out).
+static DMSMAttributedSize DMSMSizeFromApple(DMSMAttributedSize s) {
+    if (DMSMLayoutGen() != 17) return s;   // (iPadOS 16: fractions only, a part over 4 stays refused as before)
+    if (!isfinite(s.normalizedSize.width) || !isfinite(s.normalizedSize.height)) return s;   // (the sense check refuses it)
+    if (!(s.normalizedSize.width > 10.0 || s.normalizedSize.height > 10.0)) return s;      // (fractions: our model already)
+    CGSize ref = DMSMRefSizeOr(s.referenceBounds);
+    if (!(ref.width >= 1.0) || !(ref.height >= 1.0)) return s;
+    BOOL kept = isfinite(s.referenceBounds.size.width) && s.referenceBounds.size.width >= 1.0 && s.referenceBounds.size.height >= 1.0;
+    s.normalizedSize = CGSizeMake(s.normalizedSize.width / ref.width, s.normalizedSize.height / ref.height);
+    if (!kept) s.referenceBounds = CGRectMake(0, 0, ref.width, ref.height);
+    return s;
+}
+// Ours -> Apple's: in points where Apple keeps points (a real window is always over 10 pt one way); full width and height (3) and unset sizes as they are.
+static DMSMAttributedSize DMSMSizeForApple(DMSMAttributedSize s) {
+    if (s.type == 3 || !DMSMPointSizes()) return s;
+    if (!(s.normalizedSize.width > 0) || !(s.normalizedSize.height > 0)) return s;
+    CGSize ref = DMSMRefSizeOr(s.referenceBounds);
+    if (!(ref.width >= 1.0) || !(ref.height >= 1.0)) return s;
+    CGSize pts = CGSizeMake(s.normalizedSize.width * ref.width, s.normalizedSize.height * ref.height);
+    if (!(pts.width > 10.0 || pts.height > 10.0)) return s;   // (could be taken for a fraction: the fraction itself, read the same way)
+    s.normalizedSize = pts;
+    return s;
+}
 static BOOL DMSMAttrAttributedSize(id attrs, DMSMAttributedSize *out) {
     if (!DMSMIsAttrs(attrs)) return NO;
     if (DMSMSizedModel()) {
@@ -254,8 +346,8 @@ static BOOL DMSMAttrAttributedSize(id attrs, DMSMAttributedSize *out) {
     }
     SEL sel = NSSelectorFromString(@"attributedSize");
     if (!DMSMSigOK(attrs, sel, DMSMSigSize(), "attributedSize")) return NO;
-    DMSMAttributedSize s = ((DMSMAttributedSize (*)(id, SEL))objc_msgSend)(attrs, sel);
-    if (!DMSMSizeReadSane(s)) { DMSMAPIFail(@"attributedSize", [@"not a size: " stringByAppendingString:DMSMSizeText(s)]); return NO; }
+    DMSMAttributedSize raw = ((DMSMAttributedSize (*)(id, SEL))DMSM_MSG_STRET)(attrs, sel), s = DMSMSizeFromApple(raw);   // (points -> fractions, iPadOS 17; stret: the Mac test)
+    if (!DMSMSizeReadSane(s)) { DMSMAPIFail(@"attributedSize", [@"not a size: " stringByAppendingString:DMSMSizeText(raw)]); return NO; }
     if (out) *out = s;
     return YES;
 }
@@ -298,7 +390,7 @@ static id DMSMAttrWithSize(id attrs, DMSMAttributedSize s) {
     }
     SEL sel = NSSelectorFromString(@"attributesByModifyingAttributedSize:");
     if (!DMSMSigOK(attrs, sel, DMSMSigWithSize(), "attributesByModifyingAttributedSize:")) return nil;
-    id r = ((id (*)(id, SEL, DMSMAttributedSize))objc_msgSend)(attrs, sel, s);
+    id r = ((id (*)(id, SEL, DMSMAttributedSize))objc_msgSend)(attrs, sel, DMSMSizeForApple(s));   // (in points where Apple keeps points, iPadOS 17)
     return DMSMIsAttrs(r) ? r : nil;
 }
 static id DMSMAttrWithCenter(id attrs, CGPoint c) {
@@ -614,9 +706,15 @@ static id DMSMEmptyEntity(void) {
     @try { e = ((id (*)(id, SEL))objc_msgSend)(c, s); } @catch (NSException *x) { e = nil; }
     return [e isKindOfClass:c] ? e : nil;
 }
-static void DMSMCtxClearOtherRoles(id ctx, NSArray<NSArray *> *plan) {
+// keep: the window roles left as they are besides the plan's own (nil: none) -- a launch's join keeps the roles of the stage on screen (their
+// windows stay as they are) and empties only the rest: there SpringBoard would lay the launched app's own last stage under it, and every window
+// that once shared that stage came along (KT 24 Oct, RC3: Sileo from the Dock brought Settings with it; StatusBar.x DMSMJoinDesktop).
+static void DMSMCtxClearRolesExcept(id ctx, NSArray<NSArray *> *plan, NSSet<NSNumber *> *keep);
+static void DMSMCtxClearOtherRoles(id ctx, NSArray<NSArray *> *plan) { DMSMCtxClearRolesExcept(ctx, plan, nil); }
+static void DMSMCtxClearRolesExcept(id ctx, NSArray<NSArray *> *plan, NSSet<NSNumber *> *keep) {
     NSMutableSet *mine = [NSMutableSet set];
     for (NSArray *en in plan) [mine addObject:@([en[1] longLongValue])];
+    if (keep) [mine unionSet:keep];
     SEL setE = NSSelectorFromString(@"setEntity:forLayoutRole:");
     if (!DMSMCtxCanWrite(ctx)) return;
     NSMutableArray *cleared = [NSMutableArray array];
@@ -634,14 +732,26 @@ static void DMSMCtxClearOtherRoles(id ctx, NSArray<NSArray *> *plan) {
         @try { ((void (*)(id, SEL, id, long long))objc_msgSend)(ctx, setE, empty, r.longLongValue); [cleared addObject:r]; }
         @catch (NSException *x) { DMSMAPIFail(@"setEntity:<empty> forLayoutRole:", x.reason ?: @"exception"); return; }
     }
-    if (cleared.count && DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[smapi] whole stage: roles %@ set empty", [cleared componentsJoinedByString:@", "]]);
+    if (cleared.count && DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[smapi] %@: roles %@ set empty", keep ? @"only the plan and the stage on screen" : @"whole stage", [cleared componentsJoinedByString:@", "]]);
 }
+// keepRoles (not nil): besides the plan's, the window roles left as they are; every other one is emptied (DMSMCtxClearRolesExcept). nil: whole
+// says (YES every role the plan does not name emptied, NO all of them left as they are).
+static BOOL DMSMRequestPlanEx(id identity, BOOL onMain, NSString *label, NSArray<NSArray *> *plan, NSSet<NSNumber *> *allowed, id frontEntity, BOOL whole, NSSet<NSNumber *> *keepRoles);
 static BOOL DMSMRequestPlan(id identity, BOOL onMain, NSString *label, NSArray<NSArray *> *plan, NSSet<NSNumber *> *allowed, id frontEntity, BOOL whole) {
+    return DMSMRequestPlanEx(identity, onMain, label, plan, allowed, frontEntity, whole, nil);
+}
+// (the last request was queued for after a switcher gesture rather than asked now: callers that change state after asking -- a minimized mark
+//  dropped, a full-screen app sent away -- do so in a block queued after it, so a request left in the queue leaves their state alone too: 1.4.5
+//  logic test F4. DMSMAfterRequest.)
+static BOOL gSMRequestDeferred = NO;
+static BOOL DMSMRequestPlanEx(id identity, BOOL onMain, NSString *label, NSArray<NSArray *> *plan, NSSet<NSNumber *> *allowed, id frontEntity, BOOL whole, NSSet<NSNumber *> *keepRoles) {
+    gSMRequestDeferred = NO;
     if (DMSMGestureLive()) {   // (it would change a stage a switcher gesture holds -- its windows, or the stage on screen it adds to: asked for after it)
         NSMutableSet<NSString *> *ids = [NSMutableSet set];
         for (NSArray *en in plan) { NSString *u = [en isKindOfClass:[NSArray class]] && en.count ? DMSMEntityUid(en[0]) : nil; if (u) [ids addObject:u]; }
         if ((!whole && onMain && gSMGestureHeld.count) || DMSMGestureHoldsAny(ids)) {
-            DMSMAfterGesture(label.length ? label : @"MSBDRequest", ^{ DMSMRequestPlan(identity, onMain, label, plan, allowed, frontEntity, whole); });
+            DMSMAfterGesture(label.length ? label : @"MSBDRequest", ^{ DMSMRequestPlanEx(identity, onMain, label, plan, allowed, frontEntity, whole, keepRoles); });
+            gSMRequestDeferred = YES;
             return YES;
         }
     }
@@ -659,7 +769,7 @@ static BOOL DMSMRequestPlan(id identity, BOOL onMain, NSString *label, NSArray<N
         if ([req respondsToSelector:lab] && DMSMSigOK(req, lab, DMSMSigVoidObj(), "setEventLabel:")) ((void (*)(id, SEL, id))objc_msgSend)(req, lab, ourLabel);
         SEL mod = NSSelectorFromString(@"modifyApplicationContext:");
         if (!DMSMSigOK(req, mod, DMSMSigVoidObj(), "modifyApplicationContext:")) return;
-        ((void (*)(id, SEL, id))objc_msgSend)(req, mod, ^(id ctx) { @try { wrote = DMSMWritePlan(ctx, plan, frontEntity); if (wrote && whole) DMSMCtxClearOtherRoles(ctx, plan); } @catch (id e) {} });
+        ((void (*)(id, SEL, id))objc_msgSend)(req, mod, ^(id ctx) { @try { wrote = DMSMWritePlan(ctx, plan, frontEntity); if (wrote && keepRoles) DMSMCtxClearRolesExcept(ctx, plan, keepRoles); else if (wrote && whole) DMSMCtxClearOtherRoles(ctx, plan); } @catch (id e) {} });
     };
     @try {
         if (!onMain) {
@@ -1024,11 +1134,11 @@ static NSString *DMSMRowProblem(const DMSMNeed *n, NSString *simulate, BOOL *com
 static NSString *gSMRolesNote;   // (what the roles check saw, for the diagnostics record)
 static void DMSMCheckRoles17(NSMutableArray *bad, NSString *simulate) {
     BOOL (*isValid)(long long) = (BOOL (*)(long long))dlsym(RTLD_DEFAULT, "SBLayoutRoleIsValid");
-    const long long *primary = (const long long *)dlsym(RTLD_DEFAULT, "SBLayoutRolePrimary");
-    const long long *side = (const long long *)dlsym(RTLD_DEFAULT, "SBLayoutRoleSide");
-    const long long *center = (const long long *)dlsym(RTLD_DEFAULT, "SBLayoutRoleCenter");
-    const long long *addMin = (const long long *)dlsym(RTLD_DEFAULT, "SBLayoutRoleAdditionalSideRangeMin");
-    const long long *addMax = (const long long *)dlsym(RTLD_DEFAULT, "SBLayoutRoleAdditionalSideRangeMax");
+    const long long *primary = DMSMDataSymbolIn(dlsym(RTLD_DEFAULT, "SBLayoutRolePrimary"));   // (data only: 18.5 made one of these a function)
+    const long long *side = DMSMDataSymbolIn(dlsym(RTLD_DEFAULT, "SBLayoutRoleSide"));
+    const long long *center = DMSMDataSymbolIn(dlsym(RTLD_DEFAULT, "SBLayoutRoleCenter"));
+    const long long *addMin = DMSMDataSymbolIn(dlsym(RTLD_DEFAULT, "SBLayoutRoleAdditionalSideRangeMin"));
+    const long long *addMax = DMSMDataSymbolIn(dlsym(RTLD_DEFAULT, "SBLayoutRoleAdditionalSideRangeMax"));
     NSMutableArray<NSString *> *note = [NSMutableArray array];
     BOOL ok = YES;
     if (isValid) {
@@ -1462,6 +1572,16 @@ static int DMSM17PassEnd(DMSM17Pass *pass, CGRect area) {
         if (DMSMItemSetPosition(en[0], want)) moved++;
     }
     return moved;
+}
+
+// iPadOS 17: whether a window role's frame is made the whole container (green's full screen inside a desktop, DMSMFrameForRole17 in StatusBar.x):
+// Stage Manager's windowing on, our engine placing the windows, a window role (not the floating 3 or centre 4 one) of a stage of two or more windows
+// whose attributes say maximized (policy 2), and Apple's frame not the container already. 17 lays such a window out as the largest window of the
+// size grid, and its auto-layout then puts the policy back to snap-to-grid (17.5.1 trace); a lone maximized window already gets the container.
+DMSM_SIG(DMSMSigFrameForRole17, @encode(CGRect), @encode(long long), @encode(id), @encode(CGRect), @encode(long long), @encode(id), @encode(double), @encode(double), @encode(BOOL), @encode(BOOL), @encode(BOOL), @encode(BOOL))
+static BOOL DMSMWholeScreenFrame17(BOOL windowing, BOOL ourEngine, long long role, CGRect apple, CGRect bounds, NSUInteger windows, long long policy) {
+    if (!windowing || !ourEngine || role == 3 || role == 4 || role <= 0 || !DMSMRectSane(bounds) || CGRectEqualToRect(apple, bounds)) return NO;
+    return windows >= 2 && policy == 2;
 }
 
 // ---- the window sizes Stage Manager allows (-[SBSwitcherChamoisLayoutAttributes gridWidths / gridHeights], %group SMEngine) ----------------------------

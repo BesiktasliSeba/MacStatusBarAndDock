@@ -1,6 +1,6 @@
 // test-spotcheck.m -- Mac test of our Spotlight sections' check (spotlight/MacSpotlightCheck.h) against Apple's own classes of real iPadOS builds
 // (tools/spotcheck-fixtures/<build>.txt, from each build's dyld shared cache: tools/make-spotcheck-fixture.py).
-// test-spotcheck <fixture> [pass <15|16> | drop <class> <+|-selector> | retype <class> <+|-selector> <shape> | nobase <class> | noclass <class>]
+// test-spotcheck <fixture> [pass <15|16> [<rows selector>] | drop <class> <+|-selector> | retype <class> <+|-selector> <shape> | nobase <class> | noclass <class>]
 //   pass      the check finds everything and picks that tap path (exit 0) -- the sections would be offered on that build
 //   drop      that method taken out of the fixture (from the class and every class above it): the check must refuse, naming it
 //   retype    that method with another type shape: the check must refuse, naming it
@@ -71,18 +71,20 @@ int main(int argc, char **argv) {
         make = makeRef;
         NSArray *names = @[@"SPUIResultsViewController", @"SearchUIRowModel", @"SFSearchResult", @"SFResultSection", @"SFText", @"SFRichText", @"SFSymbolImage",
                            @"SFAppIconImage", @"SearchUICommandHandler", @"SearchUICollectionViewController", @"SearchUICollectionModel", @"SearchUICommand",
-                           @"SearchUITapCommand"];
-        Class c[13];
+                           @"SearchUITapCommand", @"SearchUITableModel"];
+        Class c[14];
         for (NSUInteger i = 0; i < names.count; i++) {
             BOOL inFixture = superOf[names[i]] != nil;   // (15 has no SearchUICommandHandler, 16 no SearchUICommand / SearchUITapCommand)
             c[i] = inFixture && !([mode isEqualToString:@"noclass"] && [cls1 isEqualToString:names[i]]) ? make(names[i]) : Nil;
         }
         NSMutableArray *why = [NSMutableArray array];
-        MSPTapKind tap = MSPCheckClasses(c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9], c[10], c[11], c[12], why);
+        const char *modelSel = NULL;
+        MSPTapKind tap = MSPCheckClasses(c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9], c[10], c[11], c[12], c[13], &modelSel, why);
         NSString *found = [why componentsJoinedByString:@"; "];
         if ([mode isEqualToString:@"pass"]) {
             Expect(why.count == 0, [@"the check refused: " stringByAppendingString:found ?: @""]);
             Expect(tap == (MSPTapKind)[cls1 integerValue], [NSString stringWithFormat:@"tap path %ld, expected %@", (long)tap, cls1]);
+            if (sel1) Expect(modelSel && !strcmp(modelSel, sel1.UTF8String), [NSString stringWithFormat:@"rows read through %s, expected %@", modelSel ?: "nothing", sel1]);   // (pass 16 <collectionModel|tableModel>)
         } else {
             NSString *needle = [mode isEqualToString:@"nobase"] || [mode isEqualToString:@"noclass"] ? cls1 : [NSString stringWithFormat:@"%@]", [sel1 substringFromIndex:1]];
             Expect(why.count > 0 && tap == MSPTapNone, [NSString stringWithFormat:@"%@ %@ %@: the check passed", mode, cls1, sel1 ?: @""]);

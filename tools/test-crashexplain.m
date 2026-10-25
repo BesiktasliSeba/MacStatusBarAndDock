@@ -14,7 +14,7 @@ static NSString *Stamp(NSTimeInterval ago) {
 int main(int argc, char **argv) {
     @autoreleasepool {
         BOOL untested = argc > 1 && strcmp(argv[1], "untested") == 0;
-        if (untested) MSBDGatePublish(MSBD_GATE_FAKE_STATE, 17);   // (test build: acts as iPadOS 17)
+        if (untested) MSBDGatePublish(MSBD_GATE_FAKE_STATE, 18);   // (test build: acts as iPadOS 18 -- 17 counts as tested since 24 Oct)
         long now = (long)time(NULL);
         NSString *s;
         // 1. The explanation.
@@ -57,7 +57,7 @@ int main(int argc, char **argv) {
         Check(@"link length safe", url.absoluteString.length <= 6000, [@(url.absoluteString.length) stringValue]);
         Check(@"\"+\" sent as %2B (GitHub reads a bare + as a space)", ![url.query containsString:@"+"] && [url.query containsString:@"%2B%200x4d2"], @"");
         if (untested) {
-            Check(@"tester: untested version + Enable Anyway", [body containsString:@"- Untested iPadOS "] && [body containsString:@"(test build acting as 17), Enable Anyway: Off\n"], @"");
+            Check(@"tester: untested version + Enable Anyway", [body containsString:@"- Untested iPadOS "] && [body containsString:@"(test build acting as 18), Enable Anyway: Off\n"], @"");
             Check(@"tester: switches on (names only)", [body containsString:@"- Switches on: "], @"");
         } else Check(@"no tester lines on a tested version", ![body containsString:@"Untested"], @"");
         Check(@"nothing personal: no paths", ![body containsString:@"/var/"] && ![body containsString:@"/Users/"] && ![body containsString:@"/private/"], @"");

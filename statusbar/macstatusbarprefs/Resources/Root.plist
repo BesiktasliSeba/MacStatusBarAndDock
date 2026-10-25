@@ -370,10 +370,10 @@
 			</array>
 			<key>validTitles</key>
 			<array>
-				<string>Aerial (v3.0 or v5.0)</string>
+				<string>Aerial (v3.0, v5.0 or v5.1)</string>
 				<string>MilkyWay4</string>
 				<string>Zetsu</string>
-				<string>Stage Manager (Experimental)</string>
+				<string>Stage Manager</string>
 			</array>
 			<key>validValues</key>
 			<array>

@@ -74,7 +74,7 @@ static void *DMSMSBSymbol(const char *name) {
     void *p = h ? dlsym(h, name) : NULL;
     return p ?: dlsym(RTLD_DEFAULT, name);
 }
-static long long DMSMSBConstant(const char *name) { const long long *p = (const long long *)DMSMSBSymbol(name); return p ? *p : -1; }
+static long long DMSMSBConstant(const char *name) { const long long *p = DMSMDataSymbolIn(DMSMSBSymbol(name)); return p ? *p : -1; }   // (data only, SMEngineAPI.h: 18.5 made one a function)
 // More than four windows are only safe where the role repair below can run: Apple's own Minimize keeps the window of the highest role in two roles
 // of a desktop of seven, and SpringBoard aborts (SMRoleRepair.h; the same shift in 16.7.7's disassembly and in the 17.6.1 decompile, 1.4). A
 // repair that can't read its context leaves it as SpringBoard built it -- so every class, method and type it reads is checked once here, before

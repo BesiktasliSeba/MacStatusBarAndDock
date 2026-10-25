@@ -138,6 +138,7 @@ static void MSSLayout(UIViewController *list);
     return k;
 }
 - (void)msbd_key:(UIKeyCommand *)command {
+    MSSLog([NSString stringWithFormat:@"key %@ (list %d)", command.input, self.owner.list != nil]);
     UIViewController *list = self.owner.list;
     if (!list) return;
     if ([command.input isEqualToString:UIKeyInputEscape]) MSSEscape(list);
@@ -191,6 +192,14 @@ static void MSSInstall(UIViewController *list, UISearchController *apple) {
     f.placeholder = apple.searchBar.placeholder;      // (Apple's own, in the device's language: "Search")
     f.clearButtonMode = UITextFieldViewModeAlways;    // (the clear button whenever there is text, as on the Mac)
     f.returnKeyType = UIReturnKeySearch;
+    // No correcting, as in a Mac search field: what is typed is what is searched for ("blu" stays "blu", "wifi" is not made "Wi-Fi"). And Esc:
+    // a correction bubble, once turned down with Esc, left the keyboard answering every later Esc itself (-[UIKeyboardImpl _cancelOperation:testOnly:]
+    // YES each time, before any key command), so Esc never reached the field's own command and the search stayed (17.5.1, 24 Oct). Inline
+    // predictions (iPadOS 17: grey completions, which Esc also turns down) off for the same reason; the SDK here predates the property.
+    f.autocorrectionType = UITextAutocorrectionTypeNo;
+    f.spellCheckingType = UITextSpellCheckingTypeNo;
+    f.autocapitalizationType = UITextAutocapitalizationTypeNone;   // (a search, not a sentence: no capital first letter, as on the Mac)
+    { SEL ip = NSSelectorFromString(@"setInlinePredictionType:"); if ([f respondsToSelector:ip]) ((void (*)(id, SEL, NSInteger))objc_msgSend)(f, ip, 1); }   // (UITextInlinePredictionTypeNo)
     [f addTarget:st action:@selector(msbd_textChanged) forControlEvents:UIControlEventEditingChanged];
     [band addSubview:f];
     st.band = band; st.field = f;

@@ -61,11 +61,40 @@ static void MPDumpClass(Class c) {
 static void MPDumpAll(void);
 static void MPDumpTree(void);
 static NSData *MPPointerCapture(BOOL stateOnly);
+// Command 6: the pointer view's position every display frame for 3 s (model and on-screen), into the running log -- is the motion smooth?
+@interface MPFrameSampler : NSObject
+@property (nonatomic, strong) CADisplayLink *link;
+@property (nonatomic) CFTimeInterval until;
+@property (nonatomic) int frames;
+@end
+@interface PUIDPointerShapeView : UIView @end
+static __weak PUIDPointerShapeView *gMPShapeView;
+@implementation MPFrameSampler
+- (void)tick:(CADisplayLink *)l {
+    UIView *v = gMPShapeView;
+    CALayer *p = v.layer.presentationLayer;
+    MPLog([NSString stringWithFormat:@"frame %.4f model %.2f %.2f shown %.2f %.2f anim[%@]", l.timestamp, v.layer.position.x, v.layer.position.y, p ? p.position.x : -1, p ? p.position.y : -1, [[v.layer animationKeys] componentsJoinedByString:@","]]);
+    if (++self.frames > 600 || CACurrentMediaTime() > self.until) { [l invalidate]; self.link = nil; MPLog(@"frames: done"); }
+}
+@end
+static MPFrameSampler *gMPSampler;
 static void MPHandleCommand(void) {
     static int tCmd, tLen; static BOOL ready;
     if (!ready) { ready = YES; notify_register_check("com.besiktasliseba.macpointer.cmdarg", &tCmd); notify_register_check("com.besiktasliseba.macpointer.len", &tLen); }
     uint64_t c = 0; notify_get_state(tCmd, &c);
     NSString *saved = gMPLive; gMPLive = [NSMutableString string];
+    if (c == 6) {
+        gMPLive = [saved mutableCopy] ?: [NSMutableString string];
+        if (!gMPSampler) gMPSampler = [MPFrameSampler new];
+        [gMPSampler.link invalidate];
+        gMPSampler.frames = 0; gMPSampler.until = CACurrentMediaTime() + 3.0;
+        gMPSampler.link = [CADisplayLink displayLinkWithTarget:gMPSampler selector:@selector(tick:)];
+        if (@available(iOS 15.0, *)) gMPSampler.link.preferredFrameRateRange = CAFrameRateRangeMake(120, 120, 120);
+        [gMPSampler.link addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+        gMPOut = [[@"sampling 3 s" dataUsingEncoding:NSUTF8StringEncoding] mutableCopy];
+        notify_set_state(tLen, MAX((uint64_t)1, (uint64_t)gMPOut.length));
+        return;
+    }
     if (c == 1) MPDumpAll(); else if (c == 2) MPDumpTree();
     if (c == 4 || c == 5) {   // 4: a 2x picture of the 90 x 90 pt around the pointer (layers only: system backdrops draw blank); 5: Mac pointer state
         gMPLive = [saved mutableCopy] ?: [NSMutableString string];
@@ -80,10 +109,29 @@ static void MPHandleCommand(void) {
     notify_set_state(tLen, MAX((uint64_t)1, (uint64_t)gMPOut.length));
 }
 static void MPTreeLayer(CALayer *l, int depth, NSMutableString *m) {
-    [m appendFormat:@"%*s%@ %p frame %@ hidden %d opacity %.2f%@\n", depth * 2, "", NSStringFromClass([l class]), l, NSStringFromCGRect(l.frame), l.hidden, l.opacity,
-        [l.delegate isKindOfClass:[UIView class]] ? [NSString stringWithFormat:@" (view %@)", NSStringFromClass([(id)l.delegate class])] : @""];
+    NSString *src = @"";
+    if ([NSStringFromClass([l class]) isEqualToString:@"CAPortalLayer"]) { id s = nil; @try { s = [l valueForKey:@"sourceLayer"]; } @catch (id e) {} src = [NSString stringWithFormat:@" source %@ %p", s ? NSStringFromClass([s class]) : @"-", s]; }
+    [m appendFormat:@"%*s%@ %p frame %@ hidden %d opacity %.2f%@ bg %@ r%.1f clip %d contents %d anim[%@]%@\n", depth * 2, "", NSStringFromClass([l class]), l, NSStringFromCGRect(l.frame), l.hidden, l.opacity,
+        [l.delegate isKindOfClass:[UIView class]] ? [NSString stringWithFormat:@" (view %@)", NSStringFromClass([(id)l.delegate class])] : @"",
+        l.backgroundColor ? [UIColor colorWithCGColor:l.backgroundColor] : nil, l.cornerRadius, l.masksToBounds, l.contents != nil, [[l animationKeys] componentsJoinedByString:@","], src];
     if ([l isKindOfClass:[CAShapeLayer class]] && ((CAShapeLayer *)l).path) { CAShapeLayer *sl = (CAShapeLayer *)l; CATransform3D t = l.transform;
         [m appendFormat:@"%*s  path box %@ line %.2f fill %@ stroke %@ transform a%.2f b%.2f c%.2f d%.2f shadow %.2f r%.1f\n", depth * 2, "", NSStringFromCGRect(CGPathGetBoundingBox(sl.path)), sl.lineWidth, sl.fillColor ? [UIColor colorWithCGColor:sl.fillColor] : nil, sl.strokeColor ? [UIColor colorWithCGColor:sl.strokeColor] : nil, t.m11, t.m12, t.m21, t.m22, l.shadowOpacity, l.shadowRadius]; }
+    for (NSString *k in [l animationKeys]) {   // (match-move animations: what they follow and how)
+        CAAnimation *an = [l animationForKey:k];
+        NSMutableString *d = [NSMutableString stringWithFormat:@"%*s  anim %@ %@", depth * 2, "", k, NSStringFromClass([an class])];
+        for (NSString *prop in @[@"sourceLayer", @"sourceContextId", @"sourceLayerRenderId", @"sourcePoints", @"targetsSuperlayer", @"appliesX", @"appliesY", @"appliesScale", @"appliesRotation", @"usesNormalizedCoordinates", @"duration", @"fillMode", @"removedOnCompletion", @"additive"]) {
+            id v = nil; @try { v = [an valueForKey:prop]; } @catch (id e) { continue; }
+            if ([v isKindOfClass:[CALayer class]]) v = [NSString stringWithFormat:@"%@ %p frame %@", NSStringFromClass([v class]), v, NSStringFromCGRect(((CALayer *)v).frame)];
+            [d appendFormat:@" %@=%@", prop, [[v description] stringByReplacingOccurrencesOfString:@"\n" withString:@" "]];
+        }
+        [m appendFormat:@"%@\n", d];
+    }
+    if ([l.delegate isKindOfClass:objc_getClass("PUIDPointerShapeView")] || [l.delegate isKindOfClass:objc_getClass("_UILumaTrackingBackdropView")] || (l.bounds.size.width == 19 && l.bounds.size.height == 19)) {
+        static uint64_t (*renderId)(CALayer *); static dispatch_once_t once; dispatch_once(&once, ^{ renderId = (uint64_t (*)(CALayer *))dlsym(RTLD_DEFAULT, "CALayerGetRenderId"); });
+        id ctx = nil; @try { ctx = [l valueForKey:@"context"]; } @catch (id e) {}
+        id cid = nil; @try { cid = [ctx valueForKey:@"contextId"]; } @catch (id e) {}
+        [m appendFormat:@"%*s  ids: context %@ render 0x%llx\n", depth * 2, "", cid, renderId ? renderId(l) : 0ULL];
+    }
     if (depth < 12) for (CALayer *s in l.sublayers) MPTreeLayer(s, depth + 1, m);
 }
 static void MPDumpTree(void) {
@@ -116,11 +164,15 @@ static void __attribute__((unused)) MPProbePaths(void) {
 }
 #endif
 // ===== the Mac pointer =============================================================================================================
+#if !DEBUG
 @interface PUIDPointerShapeView : UIView @end
+#endif
 static int gMPConfigToken, gMPOrientToken, gMPHideToken;
 static BOOL gMPStandDown = NO;          // another tweak changes the pointer in this process (MPOtherPointerTweak)
 static BOOL gMPHovering = NO;           // the renderer's state has content (a hover effect is showing)
+#if !DEBUG
 static __weak PUIDPointerShapeView *gMPShapeView;
+#endif
 static NSHashTable *gMPShapeViews;     // every pointer view seen (one per display with an external display), weak
 static void MPRemember(PUIDPointerShapeView *v) { if (!gMPShapeViews) gMPShapeViews = [NSHashTable weakObjectsHashTable]; if (v) [gMPShapeViews addObject:v]; }
 static void MPUpdate(PUIDPointerShapeView *view);
@@ -159,9 +211,21 @@ static BOOL MPOtherPointerTweak(void) {
     }
     return NO;
 }
+static BOOL gMPStandDownChecked = NO;
+static void MPCheckStandDown(void) { if (!gMPStandDownChecked) { gMPStandDownChecked = YES; gMPStandDown = MPOtherPointerTweak(); } }
+// SpringBoard's buttons and icons drop iPadOS's pointer effects only while this pointer is the Mac arrow: it is told whether we stand down for another
+// pointer tweak (common/MacPointerActive.h: 1 present, 2 standing down; logic test W5, 25 Oct). The token is kept, so the state lives with pointeruid.
+static void MPPublishPresence(void) {
+    static int token = 0;
+    if (!token && notify_register_check("com.besiktasliseba.macpointer.active", &token) != NOTIFY_STATUS_OK) token = 0;
+    if (!token) return;
+    MPCheckStandDown();
+    uint64_t want = gMPStandDown ? 2 : 1, cur = 0;
+    notify_get_state(token, &cur);
+    if (cur != want) { notify_set_state(token, want); notify_post("com.besiktasliseba.macpointer.active"); }
+}
 static BOOL MPEnabled(void) {
-    static BOOL checked = NO;
-    if (!checked) { checked = YES; gMPStandDown = MPOtherPointerTweak(); }
+    MPCheckStandDown();
     uint64_t c = MPState(gMPConfigToken); return !gMPStandDown && c != 0 && (c & 1) && MPState(gMPOrientToken) != 0;
 }
 // The Mac pointer's size follows the system's own Pointer Size (Settings > Pointer, Apple's slider: com.apple.Accessibility PointerSizeMultiplier, 1-5),
@@ -205,8 +269,12 @@ static CAShapeLayer *MPCursorLayer(UIView *view) {
     a.shadowOpacity = 0.35;
     a.shadowRadius = 1.6;
     a.shadowOffset = CGSizeZero;   // (no offset: the layer is turned with the screen, an offset would point sideways in landscape)
+    a.shadowPath = MPCursorPath();   // (the shadow from the path itself: without it Core Animation works the shadow out of the drawn pixels, off screen, every frame)
     a.contentsScale = [UIScreen mainScreen].scale;
     a.zPosition = 1000;
+    a.anchorPoint = CGPointZero;   // (its origin, the cursor's tip, sits on the pointer view's origin, the pointer position: set once, the layer rides the view)
+    a.bounds = CGRectZero;
+    a.position = CGPointZero;
     objc_setAssociatedObject(view, kMPCursorKey, a, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return a;
 }
@@ -322,72 +390,170 @@ static BOOL MPHiddenBySystem(UIView *view) {
     objc_setAssociatedObject(c, kMPSysHidKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (shown again)
     return NO;
 }
+// An object ivar read straight (no key-value lookup: these run with the pointer's own updates). Nil when the class has no such ivar.
+static id MPIvar(id obj, const char *name) {
+    if (!obj) return nil;
+    Ivar iv = class_getInstanceVariable(object_getClass(obj), name);
+    if (!iv) return nil;
+    const char *t = ivar_getTypeEncoding(iv);
+    return (t && t[0] == '@') ? object_getIvar(obj, iv) : nil;
+}
+// Only the pointer itself carries the arrow: its controller's _pointerShapeView. iPadOS 17's controller has a second pointer view,
+// _specularEffectMaskPointerShapeView, the round mask of the "specular" light it shows on lifted content (an icon in the Dock, a button that lifts);
+// the hooks below ran for it too, put the arrow into that mask and took it for the pointer.
+static const void *kMPMainKey = &kMPMainKey;
+static BOOL MPIsMainShapeView(UIView *v) {
+    NSNumber *known = objc_getAssociatedObject(v, kMPMainKey);
+    if (known) return known.boolValue;
+    UIViewController *c = MPControllerOf(v);
+    id main = MPIvar(c, "_pointerShapeView");
+    if (!c || !main) return YES;   // (not known yet, or another layout: as before, and asked again next time)
+    BOOL is = main == v;
+    objc_setAssociatedObject(v, kMPMainKey, @(is), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return is;
+}
+// The specular light (a soft round spot that follows the pointer over lifted content, masked by the round pointer shape: "a little circle at its tip"
+// over the Dock and lifted buttons -- KT, 24 Oct) is not drawn while the arrow is in use; a Mac pointer has no light. Its image view is inside a
+// source that portals show elsewhere, so the image view's own layer is hidden (a portal draws its source's sublayers as they are).
+// The same for the pointer's accessories (_accessoryContainerView: the little arrows iPadOS puts around its pointer at some regions).
+static void MPHideControllerView(UIViewController *c, const char *ivar, const void *key, BOOL hide) {
+    UIView *v = MPIvar(c, ivar);
+    if (![v isKindOfClass:[UIView class]]) return;
+    BOOL weHid = [objc_getAssociatedObject(c, key) boolValue];
+    if (hide && !v.layer.hidden) { v.layer.hidden = YES; objc_setAssociatedObject(c, key, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
+    else if (!hide && weHid) { v.layer.hidden = NO; objc_setAssociatedObject(c, key, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
+}
+static void MPSpecular(UIViewController *c, BOOL hide) {
+    static const void *kMPSpecHidKey = &kMPSpecHidKey, *kMPAccHidKey = &kMPAccHidKey;
+    MPHideControllerView(c, "_specularImageView", kMPSpecHidKey, hide);
+    MPHideControllerView(c, "_accessoryContainerView", kMPAccHidKey, hide);
+}
+// The arrow's turn (the interface orientation, or another display's own) and size: worked out again only when something they depend on changes
+// (the orientation state, the size setting, the view's window or screen) -- MPUpdate runs for every shape change, up to every display frame while
+// the pointer hovers a control (17.5.1: setPointerShape about every 8 ms), and measuring the display every time was work on pointeruid's main
+// thread, the thread that moves the pointer.
+static const void *kMPTurnCacheKey = &kMPTurnCacheKey;
+static CGAffineTransform MPCursorTransform(UIView *view) {
+    NSArray *c = objc_getAssociatedObject(view, kMPTurnCacheKey);
+    uint64_t orient = MPState(gMPOrientToken); double size = MPSize(view);
+    UIWindow *w = view.window; UIScreen *s = nil; @try { s = w.screen; } @catch (id e) {}
+    // (the window and screen by their addresses only: the view must not keep its own window alive)
+    if (c.count == 5 && [c[0] unsignedLongLongValue] == orient && [c[1] doubleValue] == size && [c[2] unsignedLongValue] == (uintptr_t)w && [c[3] unsignedLongValue] == (uintptr_t)s)
+        return [c[4] CGAffineTransformValue];
+    CGFloat k = size * 1.12;   // 1.0 = about 22 pt tall on screen, the size the owner tuned the old cursor to
+    CGAffineTransform t = CGAffineTransformScale(CGAffineTransformMakeRotation(MPRotationFor(view)), k, k);
+    objc_setAssociatedObject(view, kMPTurnCacheKey, @[@(orient), @(size), @((uintptr_t)w), @((uintptr_t)s), [NSValue valueWithCGAffineTransform:t]], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return t;
+}
+// The system's own pointer views of a pointer view (its round pointer and its accessibility ring and dot), read each time (straight ivar reads: a
+// view the system replaces is never missed).
+static NSArray<UIView *> *MPNativeViews(UIView *view) {
+    NSMutableArray *m = [NSMutableArray arrayWithCapacity:3];
+    const char *names[] = {"_pointerView", "_axColorStroke", "_axCenterDot"};
+    for (int i = 0; i < 3; i++) { UIView *v = MPIvar(view, names[i]); if (!v) { @try { v = [view valueForKey:@(names[i])]; } @catch (id e) {} } if ([v isKindOfClass:[UIView class]]) [m addObject:v]; }
+    return m;
+}
+#if DEBUG
+static int gMPUpdates = 0; static double gMPUpdateMs = 0, gMPUpdateMax = 0; static CFTimeInterval gMPUpdateSince = 0;
+#endif
+// What the pointer shows. The system's pointer shape (PSPointerShape) as seen on 15-17:
+//  - type 1, the round pointer (also while it hovers an icon or our status bar, where the system only lifts or highlights the content): the arrow;
+//  - type 3, a rounded rectangle: a button's or a control's highlight (17.5.1: the Clock tab bar's World Clock, 41 x 182 pt, radius 8; our traffic
+//    lights, 20 x 20 radius 8 -- "the circle at the window edges", KT on 18.5) -- the arrow, as on a Mac; a thin one (4 pt or less) is the text beam
+//    of iPadOS 15/16: the system's beam;
+//  - type 4, the text beam of iPadOS 17 and 18 (17.5.1 over Finder's search field; the only types 18.5 showed: 1, 3, 4): the system's beam;
+//  - anything else: the arrow (a Mac shows the arrow everywhere but over text).
+// Wherever the arrow shows, nothing of the system's own pointer is drawn: not the round pointer, not a control's highlight, not the accessibility
+// ring (KT, 24 Oct: "a little circle at its tip" -- the round pointer came back for every highlight and beam and morphed out of its circle under the
+// arrow). The system's shape changes are made without their morph while the arrow is in use (the setPointerShape hook below): a Mac pointer changes
+// at once, and the morph started from the round pointer.
 static void MPUpdate(PUIDPointerShapeView *view) {
     if (!view) return;
-    PSPointerShape *shape = nil; @try { shape = [view valueForKey:@"pointerShape"]; } @catch (id e) {}
+#if DEBUG
+    CFTimeInterval t0 = CACurrentMediaTime();
+#endif
+    PSPointerShape *shape = MPIvar(view, "_pointerShape");
+    if (!shape) { @try { shape = [view valueForKey:@"pointerShape"]; } @catch (id e) {} }
     long long type = shape ? shape.shapeType : 1;
     CGRect sb = shape ? shape.bounds : CGRectZero;
-    BOOL beam = type == 3 || (!CGRectIsEmpty(sb) && MIN(sb.size.width, sb.size.height) <= 4.0);
-    BOOL round = type == 1;
-    BOOL want = MPEnabled() && !beam && !MPHiddenBySystem(view);
-    BOOL hideNative = want && round;
+    BOOL thin = !CGRectIsEmpty(sb) && MIN(sb.size.width, sb.size.height) <= 4.0;
+    BOOL systemShape = thin || type == 4;   // (only the text beam: iPadOS 17/18's type 4, 15/16's thin type 3 -- every other style gets the arrow)
+    // (Hide in Virtual Mac hides the pointer's root view, MPApplyVisibility; the arrow in the top window is not under it, so it goes too)
+    BOOL want = MPEnabled() && !systemShape && !MPHiddenBySystem(view) && MPState(gMPHideToken) != 1;
     CAShapeLayer *a = want ? MPCursorLayer(view) : objc_getAssociatedObject(view, kMPCursorKey);
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-    if (want) {
-        if (a.superlayer != view.layer) [view.layer addSublayer:a];
-        a.position = CGPointZero;
-        a.bounds = CGRectZero;
-        a.anchorPoint = CGPointZero;
-        CGFloat k = MPSize(view) * 1.12;   // 1.0 = about 22 pt tall on screen, the size the owner tuned the old cursor to
-        a.affineTransform = CGAffineTransformScale(CGAffineTransformMakeRotation(MPRotationFor(view)), k, k);
-        a.hidden = NO;
-        [view.layer insertSublayer:a atIndex:(unsigned)view.layer.sublayers.count];   // (on top of a highlight shape)
-    } else {
-        a.hidden = YES;
-        // (kept turned while hidden -- the iPad turned while the pointer was on the TV left the hidden arrow at the old angle, 29 Sep dump:
-        //  final rot 0.00, cursor layer turn 1.57 -- and it came back pointing the old way until the next shape change)
-        if (a) { CGFloat k = MPSize(view) * 1.12; a.affineTransform = CGAffineTransformScale(CGAffineTransformMakeRotation(MPRotationFor(view)), k, k); }
-    }
-    // the system's round pointer and its accessibility ring/dot (Settings > Accessibility > Pointer Control) hidden only while the Mac pointer replaces it
-    NSMutableArray *hid = objc_getAssociatedObject(view, kMPHidNativeKey) ?: [NSMutableArray array];
-    if (hideNative) {
-        for (NSString *k in @[@"_pointerView", @"_axColorStroke", @"_axCenterDot"]) {
-            UIView *v = nil; @try { v = [view valueForKey:k]; } @catch (id e) {}
-            if ([v isKindOfClass:[UIView class]] && !v.layer.hidden) { v.layer.hidden = YES; if (![hid containsObject:v]) [hid addObject:v]; }
+    CALayer *host = view.layer;   // (the arrow rides the pointer view itself: its origin is the pointer's position)
+    NSArray<UIView *> *natives = MPNativeViews(view);
+    NSMutableArray *hid = objc_getAssociatedObject(view, kMPHidNativeKey);
+    CGAffineTransform t = a ? MPCursorTransform(view) : CGAffineTransformIdentity;
+    float fadeTarget = gMPAutoHidden ? 0.0f : 1.0f;
+    // nothing to change (the usual case: this runs with the pointer's own updates): no transaction at all
+    BOOL nativesShown = NO; for (UIView *v in natives) if (!v.layer.hidden) { nativesShown = YES; break; }
+    BOOL settled = want ? (a.superlayer == host && host.sublayers.lastObject == a && !a.hidden && CGAffineTransformEqualToTransform(a.affineTransform, t) && !nativesShown && a.opacity == fadeTarget)
+                        : ((!a || a.hidden) && !hid.count);
+    if (!settled) {
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        if (a && !CGAffineTransformEqualToTransform(a.affineTransform, t)) a.affineTransform = t;   // (kept turned while hidden too -- the iPad turned while the pointer
+                                                                                                    //  was on the TV left the hidden arrow at the old angle, 29 Sep)
+        if (want) {
+            if (a.superlayer != host || host.sublayers.lastObject != a) [host addSublayer:a];   // (on top; moved only when it is not -- out of the pointer view when it moves to the box)
+            if (a.hidden) a.hidden = NO;
+            for (UIView *v in natives) if (!v.layer.hidden) {   // the system's own pointer views hidden exactly while the arrow shows
+                v.layer.hidden = YES;
+                if (!hid) { hid = [NSMutableArray array]; objc_setAssociatedObject(view, kMPHidNativeKey, hid, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
+                if (![hid containsObject:v]) [hid addObject:v];
+            }
+        } else {
+            if (a && !a.hidden) a.hidden = YES;
+            if (hid.count) {   // given back (only what we hid) when the system's shape is wanted
+                for (UIView *v in hid) v.layer.hidden = NO;
+                objc_setAssociatedObject(view, kMPHidNativeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
         }
-        objc_setAssociatedObject(view, kMPHidNativeKey, hid, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    } else if (hid.count) {   // give the system pointer back: only what we hid
-        for (UIView *v in hid) v.layer.hidden = NO;
-        objc_setAssociatedObject(view, kMPHidNativeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    if (a && !a.hidden) {
-        UIView *ring = nil; @try { ring = [view valueForKey:@"_axColorStroke"]; } @catch (id e) {}
-        NSArray *hidNow = objc_getAssociatedObject(view, kMPHidNativeKey);
-        MPApplyAXStyle(view, a, ring && [hidNow containsObject:ring]);
-    }
-    [CATransaction commit];
-    // auto-hide: fade out completely with the system (0.35 s), back at once
-    if (a && !a.hidden) {
-        float target = gMPAutoHidden ? 0.0f : 1.0f;
-        if (a.opacity != target) {
+        [CATransaction commit];
+        // auto-hide: fade out completely with the system (0.35 s), back at once
+        if (want && a.opacity != fadeTarget) {
             if (gMPAutoHidden) {
                 CABasicAnimation *f = [CABasicAnimation animationWithKeyPath:@"opacity"];
                 f.fromValue = @(a.presentationLayer ? a.presentationLayer.opacity : a.opacity); f.toValue = @0; f.duration = 0.35;
                 f.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
                 [a addAnimation:f forKey:@"mpfade"];
             } else [a removeAnimationForKey:@"mpfade"];
-            [CATransaction begin]; [CATransaction setDisableActions:YES]; a.opacity = target; [CATransaction commit];
+            [CATransaction begin]; [CATransaction setDisableActions:YES]; a.opacity = fadeTarget; [CATransaction commit];
         }
     }
+    if (want) {
+        static CFTimeInterval lastStyle = 0; static uint64_t lastConfig = UINT64_MAX;
+        uint64_t config = MPState(gMPConfigToken);
+        if (config != lastConfig || CACurrentMediaTime() - lastStyle > 1.0) {   // (the outline: once a second at most, at once when the settings change)
+            lastConfig = config; lastStyle = CACurrentMediaTime();
+            UIView *ring = MPIvar(view, "_axColorStroke");
+            NSArray *hidNow = objc_getAssociatedObject(view, kMPHidNativeKey);
+            [CATransaction begin]; [CATransaction setDisableActions:YES];
+            MPApplyAXStyle(view, a, ring && [hidNow containsObject:ring]);
+            [CATransaction commit];
+        }
+    }
+    MPSpecular(MPControllerOf(view), want);
+#if DEBUG
+    double ms = (CACurrentMediaTime() - t0) * 1000.0;
+    gMPUpdates++; gMPUpdateMs += ms; if (ms > gMPUpdateMax) gMPUpdateMax = ms;
+    if (CACurrentMediaTime() - gMPUpdateSince > 2.0) {
+        if (gMPUpdateSince > 0) MPLog([NSString stringWithFormat:@"%.3f updates: %d in %.1f s, avg %.3f ms, max %.3f ms (shape %lld, arrow %d)", CACurrentMediaTime(), gMPUpdates, CACurrentMediaTime() - gMPUpdateSince, gMPUpdates ? gMPUpdateMs / gMPUpdates : 0, gMPUpdateMax, type, want]);
+        gMPUpdates = 0; gMPUpdateMs = 0; gMPUpdateMax = 0; gMPUpdateSince = CACurrentMediaTime();
+    }
+#endif
 }
 // Hide in Virtual Mac: never write the root view's hidden unless we hid it (the system fades the pointer out with it).
 static void MPApplyVisibility(void) {
     UIViewController *c = gMPController; if (!c || gMPStandDown) return;
-    UIView *root = nil; @try { root = [c valueForKey:@"_pointerRootView"]; } @catch (id e) {}
+    BOOL hide = MPState(gMPHideToken) == 1;
+    if (!hide && !gMPWeHidRoot) return;   // (the usual case, with the pointer's updates: nothing to read)
+    UIView *root = MPIvar(c, "_pointerRootView");
+    if (!root) { @try { root = [c valueForKey:@"_pointerRootView"]; } @catch (id e) {} }
     if (![root isKindOfClass:[UIView class]]) return;
-    if (MPState(gMPHideToken) == 1) { if (!root.hidden) root.hidden = YES; gMPWeHidRoot = YES; }
-    else if (gMPWeHidRoot) { root.hidden = NO; gMPWeHidRoot = NO; }
+    if (hide) { if (!root.hidden) root.hidden = YES; gMPWeHidRoot = YES; }
+    else { root.hidden = NO; gMPWeHidRoot = NO; }
 }
 
 // ---- where the pointer is, for Mac Status Bar's auto-hiding status bar (config bit 2 set by the bridge while that is on) ------------------------
@@ -400,18 +566,27 @@ static void MPApplyVisibility(void) {
 }
 - (void)layoutSubviews {
     %orig;
+    if (!MPIsMainShapeView((UIView *)self)) return;   // (the specular light's mask: never the arrow's host)
     gMPShapeView = (PUIDPointerShapeView *)self;
     MPRemember((PUIDPointerShapeView *)self);
-    MPUpdate((PUIDPointerShapeView *)self);
+    MPUpdate((PUIDPointerShapeView *)self);   // (settled: no transaction, see MPUpdate)
 }
 - (void)setPointerShape:(id)shapeObj animated:(BOOL)animated completion:(id)completion {
+    // (while the arrow is in use, the system's shape changes without its morph: a Mac pointer changes at once, and the morph out of or into the round
+    //  pointer showed that circle under the arrow -- KT, 24 Oct, "a little circle at its tip")
+    BOOL main = MPIsMainShapeView((UIView *)self);
+    BOOL morph = animated && !MPEnabled();
+    id before = main ? MPIvar(self, "_pointerShape") : nil;
 #if DEBUG
-    PSPointerShape *shape = shapeObj;
-    MPLog([NSString stringWithFormat:@"%.3f setPointerShape type %lld bounds %@ r%.1f animated %d at %@", CACurrentMediaTime(), shape.shapeType, NSStringFromCGRect(shape.bounds), shape.cornerRadius, animated, NSStringFromCGPoint(((UIView *)self).frame.origin)]);
+    if (main) { PSPointerShape *shape = shapeObj; static NSString *last;
+      NSString *sig = [NSString stringWithFormat:@"type %lld bounds %@ r%.1f", shape.shapeType, NSStringFromCGRect(shape.bounds), shape.cornerRadius];
+      if (![sig isEqualToString:last]) { last = sig; MPLog([NSString stringWithFormat:@"%.3f setPointerShape %@ animated %d (passed on %d) at %@", CACurrentMediaTime(), sig, animated, morph, NSStringFromCGPoint(((UIView *)self).frame.origin)]); } }
 #endif
-    %orig;
+    %orig(shapeObj, morph, completion);
+    if (!main) return;
     gMPShapeView = (PUIDPointerShapeView *)self;
     MPRemember((PUIDPointerShapeView *)self);
+    if (before && [before isEqual:shapeObj]) return;   // (the same shape again -- 17 sets it every frame while a control is hovered: nothing to do)
     MPUpdate((PUIDPointerShapeView *)self);
 }
 %end
@@ -434,31 +609,63 @@ static void MPApplyVisibility(void) {
     gMPHovering = !CGRectIsEmpty(content);
     @try { gMPAutoHidden = [[state valueForKey:@"pointerAutoHidden"] boolValue]; } @catch (id e) {}
 #if DEBUG
-    static NSString *last;
-    PSPointerShape *sh = [state valueForKey:@"pointerShape"];
-    NSString *sig = [NSString stringWithFormat:@"shape %lld %@ r%.1f content %@ overlay %@ autohidden %@ pressed %@ client %@", sh.shapeType, NSStringFromCGRect(sh.bounds), sh.cornerRadius,
-        NSStringFromCGRect(content), [state valueForKey:@"overlayEffectStyle"], [state valueForKey:@"pointerAutoHidden"], [state valueForKey:@"pressed"], [state valueForKey:@"debugRequestingClientString"]];
-    if (![sig isEqualToString:last]) { last = sig; MPLog([NSString stringWithFormat:@"%.3f state %@", CACurrentMediaTime(), sig]); }
+    {   // (only when something changed: this is called with the pointer's updates, and the debug build is the one tested)
+        static long long lastType = -2; static int lastFlags = -1;
+        PSPointerShape *sh = [state valueForKey:@"pointerShape"];
+        int flags = (gMPAutoHidden ? 1 : 0) | (gMPHovering ? 2 : 0);
+        if (sh.shapeType != lastType || flags != lastFlags) {
+            lastType = sh.shapeType; lastFlags = flags;
+            MPLog([NSString stringWithFormat:@"%.3f state shape %lld %@ r%.1f content %@ overlay %@ autohidden %@ pressed %@ client %@", CACurrentMediaTime(), sh.shapeType, NSStringFromCGRect(sh.bounds), sh.cornerRadius,
+                NSStringFromCGRect(content), [state valueForKey:@"overlayEffectStyle"], [state valueForKey:@"pointerAutoHidden"], [state valueForKey:@"pressed"], [state valueForKey:@"debugRequestingClientString"]]);
+        }
+    }
 #endif
     BOOL r = %orig;
 #if DEBUG
-    { static NSMutableDictionary *lastVis; if (!lastVis) lastVis = [NSMutableDictionary dictionary]; NSString *k = [NSString stringWithFormat:@"%p", self];
-      long long v = MPVisibilityState((UIViewController *)self);
-      if (![lastVis[k] isEqual:@(v)]) { lastVis[k] = @(v); MPLog([NSString stringWithFormat:@"%.3f controller %p visibility %lld", CACurrentMediaTime(), self, v]); } }
+    { static long long lastVis = LLONG_MIN; long long v = MPVisibilityState((UIViewController *)self);
+      if (v != lastVis) { lastVis = v; MPLog([NSString stringWithFormat:@"%.3f controller %p visibility %lld", CACurrentMediaTime(), self, v]); } }
 #endif
     gMPController = (UIViewController *)self;
-    MPUpdate(gMPShapeView);
-    // (with an external display each display has its own controller and pointer view: update this controller's own view too)
-    PUIDPointerShapeView *own = nil; @try { own = [(id)self valueForKey:@"_pointerShapeView"]; } @catch (id e) {}
-    if ([own isKindOfClass:[UIView class]] && own != gMPShapeView) { MPRemember(own); MPUpdate(own); }
+    // (this controller's own pointer view -- with an external display each display has its own controller and pointer view; only what changed for it
+    //  is acted on: this is called with the pointer's updates)
+    PUIDPointerShapeView *own = MPIvar(self, "_pointerShapeView");
+    if ([own isKindOfClass:[UIView class]]) {
+        static const void *kMPStateSigKey = &kMPStateSigKey;
+        NSUInteger sig = (gMPAutoHidden ? 1 : 0) | (gMPHovering ? 2 : 0) | ((NSUInteger)(MPVisibilityState((UIViewController *)self) & 0xff) << 2);
+        NSNumber *last = objc_getAssociatedObject(own, kMPStateSigKey);
+        if (!last || last.unsignedIntegerValue != sig) {
+            objc_setAssociatedObject(own, kMPStateSigKey, @(sig), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            MPRemember(own);
+            if (!gMPShapeView) gMPShapeView = own;
+            MPUpdate(own);
+        }
+    }
 #if DEBUG   // the turn of the client's coordinate space to the display (evidence for the external display: which way pointeruid thinks is up)
-    if ([own isKindOfClass:[UIView class]]) { @try { CATransform3D ct = [[state valueForKey:@"clientCoordinateSpaceTransformToDisplay"] CATransform3DValue];
+    if ([own isKindOfClass:[UIView class]] && !objc_getAssociatedObject(own, kMPClientTurnKey)) { @try { CATransform3D ct = [[state valueForKey:@"clientCoordinateSpaceTransformToDisplay"] CATransform3DValue];
         bool ok = false; int q = MPQuarterTurns(ct.m11, ct.m12, &ok); objc_setAssociatedObject(own, kMPClientTurnKey, ok ? @(q) : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); } @catch (id e) {} }
 #endif
     MPApplyVisibility();
     return r;
 }
 %end
+// No pull toward buttons while the arrow is in use (KT on 18.5 via the A12Z: the shown pointer trailed the real one by up to 66 pt while it was drawn
+// to a button's centre -- iPadOS's magnetism; a Mac arrow never moves on its own). The position iPadOS gives the pointer over a target
+// (-_positionForTargetWithCenter:modelCursorPosition:slip:) is the real one, the model cursor position, while the Mac pointer is on. Nothing else is
+// done there: it is called with the pointer's moves over a target.
+static CGPoint (*o_MPTargetPosition)(id, SEL, CGPoint, CGPoint, CGPoint);
+static CGPoint MPTargetPosition(id self, SEL _cmd, CGPoint center, CGPoint model, CGPoint slip) {
+    return MPEnabled() ? model : o_MPTargetPosition(self, _cmd, center, model, slip);
+}
+static void MPInstallNoMagnetism(void) {
+    Class c = objc_getClass("PUIDPointerRenderingRootViewController");
+    SEL s = NSSelectorFromString(@"_positionForTargetWithCenter:modelCursorPosition:slip:");
+    Method m = c ? class_getInstanceMethod(c, s) : NULL;
+    if (!m) return;
+    NSMutableString *shape = [NSMutableString string];   // (the types without the frame offsets)
+    for (const char *t = method_getTypeEncoding(m); t && *t; t++) if (!isdigit((unsigned char)*t)) [shape appendFormat:@"%c", *t];
+    if (![shape isEqualToString:@"{CGPoint=dd}@:{CGPoint=dd}{CGPoint=dd}{CGPoint=dd}"]) return;
+    MSHookMessageEx(c, s, (IMP)MPTargetPosition, (IMP *)&o_MPTargetPosition);
+}
 // Apple's Pointer Size changed: the Mac pointer takes the new size at once (pointeruid is told through this same method).
 %hook PUIDPointerController
 - (void)_handleAccessibilityPointerSizePreferencesDidChange {
@@ -521,11 +728,14 @@ static NSData *MPPointerCapture(BOOL stateOnly) {
 }
 #endif
 %ctor {
+    MPInstallNoMagnetism();
     notify_register_check("com.besiktasliseba.macpointer.config", &gMPConfigToken);
     notify_register_check("com.besiktasliseba.macpointer.orient", &gMPOrientToken);
     notify_register_check("com.besiktasliseba.macpointer.hide", &gMPHideToken);
     int changed = 0;
-    notify_register_dispatch("com.besiktasliseba.macpointer.changed", &changed, dispatch_get_main_queue(), ^(int t) { MPUpdateAll(); MPApplyVisibility(); });
+    notify_register_dispatch("com.besiktasliseba.macpointer.changed", &changed, dispatch_get_main_queue(), ^(int t) { MPUpdateAll(); MPApplyVisibility(); MPPublishPresence(); });
+    // (whether we stand down is checked once every tweak is loaded -- a moment after start, on the main queue -- and published for SpringBoard)
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ MPPublishPresence(); });
 #if DEBUG   // (release plan 3b: this unauthenticated command channel into pointeruid must not exist in a release build)
     MPLog([NSString stringWithFormat:@"MacPointer loaded in pid %d (%@)", getpid(), [[NSProcessInfo processInfo] processName]]);
     int t = 0, t2 = 0;

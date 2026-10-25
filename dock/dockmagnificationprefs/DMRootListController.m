@@ -1,3 +1,4 @@
+#import <objc/message.h>
 #import <Foundation/Foundation.h>
 #import <dlfcn.h>
 #import "DMRootListController.h"
@@ -73,6 +74,16 @@ MSBD_LINE_SWITCH_METHODS
 				[g setProperty:[NSString stringWithFormat:@"Home Screen options are in %@.", home] forKey:@"footerText"];
 				break;
 			}
+		}
+		// (iPadOS 17+: our Home Screen group, which 15/16 show on Apple's Home Screen page, is here, after the App Library group -- Apple's page is a
+		//  SwiftUI page there, see DockSettingsRow.x +msbdHomeScreenSpecifiersForOwnPage; nil on 15/16 or when that part is not loaded)
+		Class hsRows = NSClassFromString(@"DMHomeScreenRows");
+		SEL hsSel = NSSelectorFromString(@"msbdHomeScreenSpecifiersForOwnPage");
+		NSArray *hs = [hsRows respondsToSelector:hsSel] ? ((NSArray *(*)(id, SEL))objc_msgSend)(hsRows, hsSel) : nil;
+		if ([hs isKindOfClass:[NSArray class]] && hs.count) {
+			NSUInteger at = specs.count;
+			for (NSUInteger i = 0; i < specs.count; i++) if ([[specs[i] identifier] isEqual:@"FINDER_GROUP"]) { at = i; break; }   // (after App Library: in front of Finder)
+			[specs insertObjects:hs atIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(at, hs.count)]];
 		}
 		// (Finder switched off in Mac Status Bar's settings: no Finder in the Dock, so no row for it)
 		CFPreferencesAppSynchronize(CFSTR("com.besiktasliseba.macstatusbar"));

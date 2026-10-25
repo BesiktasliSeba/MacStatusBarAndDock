@@ -194,8 +194,14 @@ static void DMSMHomeKeepAfterGesture(NSArray<NSArray *> *rows, id front, NSArray
         return;
     }
     NSMutableArray<NSString *> *names = [NSMutableArray array];
-    for (NSString *k in awayKeys) { DMSMSetMinimized(k, YES); [names addObject:DMSMKeyText(k)]; }   // (the full-screen window: minimized, back with its app)
+    for (NSString *k in awayKeys) [names addObject:DMSMKeyText(k)];
     BOOL ok = DMSMRequestPlan(identity, YES, @"MSBDHomeKeep", rows, nil, front, YES);   // (whole: the window that went away is in no role of it)
+    // (the full-screen window: minimized, back with its app -- only once the request is taken, and after it when it was queued: the mark stayed when
+    //  the request failed, 1.4.5 logic test F4)
+    NSArray<NSString *> *awayC = [awayKeys copy];
+    void (^markAway)(void) = ^{ for (NSString *k in awayC) DMSMSetMinimized(k, YES); };
+    if (ok && gSMRequestDeferred) DMSMAfterGesture(@"after keeping the windows at Home", markAway);
+    else if (ok) markAway();
     DMLog([NSString stringWithFormat:@"[smhome] after the Home gesture: the desktop's %lu window(s) %@%@", (unsigned long)rows.count, ok ? @"stay over the Home Screen" : @"could not be asked for",
            names.count ? [NSString stringWithFormat:@" (%@ to the background)", [names componentsJoinedByString:@", "]] : @""]);
     if (ok) { DM_FEATURE_MARK("sm-home-keeps-windows-after-gesture"); DMSMHomeAfterKeep(NO); }

@@ -144,6 +144,24 @@ int main(void) {
             NSDictionary *two = @{@"x": @"left", @"y": @"right"};
             CHECK(DMSMFitSlotsFor(two, @{DMSMFitDeskKey(@[@"x", @"y"]): @{@"x": @"right", @"y": @"left"}}, @[@"y", @"x"]) == two, "covered by the current slots: the memory is not asked");
         }
+        {   // tiles read from where the windows sit (the desktop back after a respring in another screen shape)
+            // (the 17.5 iPad's real numbers: landscape halves read on the portrait screen at centres 0.318 / 0.682)
+            NSDictionary *t2 = DMSMFitTilesFromCentres(@{@"tips": @[@0.318, @0.475], @"prefs": @[@0.682, @0.475]});
+            CHECK([t2[@"tips"] isEqualToString:@"left"] && [t2[@"prefs"] isEqualToString:@"right"], "two side by side: left / right (%s)", t2.description.UTF8String);
+            NSDictionary *tb = DMSMFitTilesFromCentres(@{@"a": @[@0.5, @0.8], @"b": @[@0.52, @0.25]});
+            CHECK([tb[@"a"] isEqualToString:@"bottom"] && [tb[@"b"] isEqualToString:@"top"], "two one above the other: top / bottom");
+            NSDictionary *t3 = DMSMFitTilesFromCentres(@{@"n": @[@0.74, @0.27], @"r": @[@0.74, @0.72], @"l": @[@0.26, @0.48]});
+            CHECK([t3[@"l"] isEqualToString:@"left"] && [t3[@"n"] isEqualToString:@"topright"] && [t3[@"r"] isEqualToString:@"bottomright"], "three: a half and two quarters (%s)", t3.description.UTF8String);
+            NSDictionary *t3b = DMSMFitTilesFromCentres(@{@"n": @[@0.26, @0.27], @"r": @[@0.26, @0.72], @"l": @[@0.74, @0.48]});
+            CHECK([t3b[@"l"] isEqualToString:@"right"] && [t3b[@"n"] isEqualToString:@"topleft"] && [t3b[@"r"] isEqualToString:@"bottomleft"], "three, mirrored");
+            NSDictionary *t4 = DMSMFitTilesFromCentres(@{@"a": @[@0.26, @0.27], @"b": @[@0.74, @0.27], @"c": @[@0.26, @0.72], @"d": @[@0.74, @0.72]});
+            CHECK([t4[@"a"] isEqualToString:@"topleft"] && [t4[@"b"] isEqualToString:@"topright"] && [t4[@"c"] isEqualToString:@"bottomleft"] && [t4[@"d"] isEqualToString:@"bottomright"], "four: the quarters");
+            CHECK([DMSMFitTilesFromCentres(@{@"x": @[@0.5, @0.5]})[@"x"] isEqualToString:@"fill"], "one: the whole space");
+            CHECK(DMSMFitTilesFromCentres(@{@"a": @[@0.5, @0.5], @"b": @[@0.51, @0.52]}) == nil, "two on one place: none");
+            CHECK(DMSMFitTilesFromCentres(@{@"a": @[@0.2, @0.3], @"b": @[@0.3, @0.6], @"c": @[@0.25, @0.8]}) == nil, "three all on one side: none");
+            CHECK(DMSMFitTilesFromCentres(@{@"a": @[@0.2, @0.3], @"b": @[@0.3, @0.6], @"c": @[@0.25, @0.8], @"d": @[@0.8, @0.5]}) == nil, "four not two by two: none");
+            CHECK(DMSMFitTilesFromCentres(@{@"a": @[@(NAN), @0.3], @"b": @[@0.7, @0.3]}) == nil && DMSMFitTilesFromCentres(@{}) == nil, "no centre, no windows: none");
+        }
         printf("test-smroles: %d passed, %d failed\n", passes, fails);
     }
     return fails ? 1 : 0;

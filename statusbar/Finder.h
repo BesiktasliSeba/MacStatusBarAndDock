@@ -861,6 +861,22 @@ static NSString *DMFDAppAt(CGPoint sp, CGPoint *scenePoint, NSString **sceneIden
         if ([wc containsString:@"StatusBar"] || [wc containsString:@"TextEffects"] || [wc containsString:@"SystemGesture"] || [wc containsString:@"Keyboard"] || [wc hasPrefix:@"MSB"] || [wc containsString:@"FloatingDock"]) continue;
         CGPoint wp = [w convertPoint:sp fromCoordinateSpace:w.screen.coordinateSpace];
         if (![w pointInside:wp withEvent:nil]) continue;
+        if (DMIsZetsuWindow(w)) {   // (a Zetsu window shows its app through a context layer host, not a scene view: its content is the app)
+            // (seen with a real drag, iPad 2, Zetsu 1.6.6, 24 Oct 2026: a file from the Downloads stack dropped onto a Zetsu window was not handed to
+            //  its app -- no scene view found -- and fell through to the desktop, which took it: the file moved to the desktop)
+            if (DMStageMinimized(w)) continue;
+            NSString *zb = DMZetsuWindowBundle((UIWindow *)w);
+            UIView *host = nil; @try { host = [DMZetsuController((UIWindow *)w) valueForKey:@"hosts"]; } @catch (id e) {}
+            UIView *content = [host isKindOfClass:[UIView class]] ? host.subviews.firstObject : nil;
+            if (!zb.length || !content) continue;
+            CGPoint cp = [content convertPoint:sp fromCoordinateSpace:w.screen.coordinateSpace];   // (in the app's own points: the content may be scaled)
+            if (![content pointInside:cp withEvent:nil]) return nil;   // (its title bar: over a window, not an app -- and not the desktop either)
+            id scene = DMSceneForBundle(zb);
+            if (scenePoint) *scenePoint = cp;
+            if (sceneIdent) *sceneIdent = scene ? DMFDSceneIdent(scene) : nil;
+            DM_FEATURE_MARK("finder-drop-zetsu-window");
+            return zb;
+        }
         // (front-most first: a view's later subviews are above it)
         NSMutableArray *stack = [NSMutableArray arrayWithObject:w];
         UIView *found = nil;
@@ -1073,6 +1089,7 @@ static void DMFDBusy(DMFDrag *d, NSString *what) {   // (the picture waits at th
 static void DMFinderDragBegin(DMFinderWindow *from, NSArray<DMFinderItem *> *items, CGPoint sp) {
     DM_FEATURE_MARK("finder-drag");
     DMFDWatchReports();
+    if (DMNativeUndoRaise(from)) DMLog(@"[finder] drag from a window its press brought forward: the window in front before is in front again");   // (NativeWindow.h)
     if (gFD) DMFDFinish(gFD, NO);   // (an earlier drag still waiting for its app: its picture goes now, it never stays behind)
     DMFDrag *d = [DMFDrag new];
     d.items = items; d.from = from; d.proposal = -1;
@@ -1125,12 +1142,21 @@ static void DMFinderDragBegin(DMFinderWindow *from, NSArray<DMFinderItem *> *ite
 }
 // The Finder window under a screen point (front-most first), or nil.
 static DMFinderWindow *DMFDFinderAt(CGPoint sp) {
-    for (DMNativeWindow *w in [gNativeWindows reverseObjectEnumerator]) {
+    // (the window under the finger as the screen stacks them: front to back in the layer's own order. The list of windows is kept in activation
+    //  order, which is not always the stacking -- a drop where two Finder windows overlap went into the one behind, iPad 2, 24 Oct 2026)
+    UIView *host = DMNativeHost();
+    NSArray *order = host.subviews.count ? host.subviews : gNativeWindows;
+    DMFinderWindow *hit = nil;
+    for (UIView *w in [order reverseObjectEnumerator]) {
         if (w.hidden || ![w isKindOfClass:NSClassFromString(@"DMFinderWindow")]) continue;
         CGPoint p = [w convertPoint:sp fromCoordinateSpace:w.window.screen.coordinateSpace];
-        if ([w pointInside:p withEvent:nil]) return (DMFinderWindow *)w;
+        if ([w pointInside:p withEvent:nil]) { hit = (DMFinderWindow *)w; break; }
     }
-    return nil;
+    // (an inactive Finder window sits behind every app -- the native layer at its back level, under even a full-screen app: where an app is
+    //  under the finger too, the app is the one in front and takes the drop. A drop from the Downloads stack onto a Tips window went into the
+    //  Finder window hidden behind it, iPad 2, 24 Oct 2026)
+    if (hit && gNativeLayer.windowLevel < 0.0 && DMFDAppAt(sp, NULL, NULL)) return nil;
+    return hit;
 }
 // A Finder-to-Finder drop copies instead of moving with Option held, or when an item is outside the user's own places (read only there: it is
 // copied out, never moved). Onto the Trash it is always Move to Trash.

@@ -1555,22 +1555,32 @@ static unsigned long long DMRecentsMaxFor(unsigned long long stockMax) {
     return r;
 }
 %end
+%end
 // ... and its grid: the list's flow layout (location SBIconLocationFloatingDockSuggestions) has 3 columns, so a 4th recent wrapped onto a second row.
-// Its layout configuration gets as many columns as places (never fewer than SpringBoard's own), before the list lays out its icons.
+// Its layout configuration gets as many columns as places (never fewer than SpringBoard's own), in both orientations, before the list lays out its
+// icons. Its own group, on every version that has the grid (15-18): these hooks sat in the 15-17 list group above, which iPadOS 18 never installs
+// (its recents list is made with homeScreenContextProvider:, DMRecentsList18) -- on 18 the Dock made room for 4 (the metrics: recents 282 -> 369.5
+// pt wide) while the list kept 3 columns, and a Handoff suggestion as the 4th item went UNDER the three recents, a second row lifting the Dock
+// (A12Z 18.5, 13 and 25 Oct).
 static BOOL DMWidenRecentsLayout(id layout) {   // YES if it had to be widened
     long c = (long)DMRecentsPlaces();
     if (c <= 3 || !layout) return NO;   // (SpringBoard's own 3 columns already fit 1-3 places)
+    BOOL widened = NO;
     @try {
         id cfg = [layout respondsToSelector:NSSelectorFromString(@"layoutConfiguration")] ? [layout valueForKey:@"layoutConfiguration"] : nil;
-        SEL get = NSSelectorFromString(@"numberOfPortraitColumns"), set = NSSelectorFromString(@"setNumberOfPortraitColumns:");
-        if (![cfg respondsToSelector:get] || ![cfg respondsToSelector:set]) return NO;
-        unsigned long long now = ((unsigned long long (*)(id, SEL))objc_msgSend)(cfg, get);
-        if (now >= (unsigned long long)c) return NO;
-        ((void (*)(id, SEL, unsigned long long))objc_msgSend)(cfg, set, (unsigned long long)c);
-        DMLog([NSString stringWithFormat:@"[recents] the recents grid: %llu -> %ld columns", now, c]);
-        return YES;
+        for (NSString *o in @[@"Portrait", @"Landscape"]) {   // (the Dock is one row either way; which one the list reads depends on the version)
+            SEL get = NSSelectorFromString([NSString stringWithFormat:@"numberOf%@Columns", o]), set = NSSelectorFromString([NSString stringWithFormat:@"setNumberOf%@Columns:", o]);
+            if (![cfg respondsToSelector:get] || ![cfg respondsToSelector:set]) continue;
+            Method gm = class_getInstanceMethod(object_getClass(cfg), get), sm = class_getInstanceMethod(object_getClass(cfg), set);
+            if (!gm || !sm || strcmp(method_getTypeEncoding(gm), "Q16@0:8") != 0 || strcmp(method_getTypeEncoding(sm), "v24@0:8Q16") != 0) continue;
+            unsigned long long now = ((unsigned long long (*)(id, SEL))objc_msgSend)(cfg, get);
+            if (now == 0 || now >= (unsigned long long)c) continue;   // (0: no count of its own -- 18's landscape takes the portrait one)
+            ((void (*)(id, SEL, unsigned long long))objc_msgSend)(cfg, set, (unsigned long long)c);
+            DMLog([NSString stringWithFormat:@"[recents] the recents grid (%@): %llu -> %ld columns", o.lowercaseString, now, c]);
+            widened = YES;
+        }
     } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[recents] the recents grid: %@", e.reason]); }
-    return NO;
+    return widened;
 }
 static void DMWidenRecentsGrid(UIView *list) {
     @try {
@@ -1585,6 +1595,7 @@ static void DMWidenRecentsGrid(UIView *list) {
 }
 // A new layout provider (Settings > Home Screen > Use Large App Icons makes SpringBoard build new ones) hands out the recents' layout with 3 columns
 // again: it is widened as it is handed out.
+%group DMRecentsGrid
 %hook SBHDefaultIconListLayoutProvider
 - (id)layoutForIconLocation:(NSString *)location {
     id r = %orig;
@@ -1854,6 +1865,11 @@ static NSString *DMK2Verdict(void) {
     }
     if ([objc_getClass("SBFloatingDockSuggestionsViewController") instancesRespondToSelector:NSSelectorFromString(@"initWithNumberOfRecents:iconController:applicationController:layoutStateTransitionCoordinator:suggestionsModel:iconViewProvider:")]) %init(DMRecentsList);
     else DMLog(@"[recents] this iOS has no -[SBFloatingDockSuggestionsViewController initWithNumberOfRecents:...]: the list keeps SpringBoard's size");
+    {   // (the recents grid, every version that has it: 15-17 and 18 -- DMWidenRecentsLayout)
+        Method lm = class_getInstanceMethod(objc_getClass("SBHDefaultIconListLayoutProvider"), NSSelectorFromString(@"layoutForIconLocation:"));
+        if (lm && !strcmp(method_getTypeEncoding(lm), "@24@0:8@16") && objc_getClass("SBDockSuggestionsIconListView")) %init(DMRecentsGrid);
+        else DMLog(@"[recents] the recents grid is not the known one here: its columns are left as SpringBoard has them");
+    }
     if ([objc_getClass("SBFluidSwitcherGestureManager") instancesRespondToSelector:NSSelectorFromString(@"_shouldTapToBringItemContainerForward:receiveTouch:")]) %init(DMPanelNoBringForward);
     if ([objc_getClass("SBDockIconListView") instancesRespondToSelector:NSSelectorFromString(@"layoutIconsIfNeededUsingAnimator:options:")]) %init(DMDockListLayout);   // (K-2, every version with that method: 15-18)
     else DMLog(@"[dock] this iOS has no -[SBDockIconListView layoutIconsIfNeededUsingAnimator:options:]: the Dock's count check is off");

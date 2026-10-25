@@ -116,7 +116,35 @@ static void RIUpdate(UIView *iconView, NSSet<NSString *> *running) {   // (runni
     // view's bottom put the dots 12 pt under the picture, under the Dock's background). On 17+ the view can be as tall as the picture (a tester
     // on 18.7.2: the dot sat on the icon). Without iconImageFrame: the view's bottom, as before.
     SEL imgSel = NSSelectorFromString(@"iconImageFrame");
-    if ([iconView respondsToSelector:imgSel]) {
+    // iPadOS 17+: the picture as it is drawn -- the icon's image view (SBIconImageView) in the icon view's space, its transforms included -- not
+    // iconImageFrame times the Dock's content scale, which is not what 17 draws everywhere (KT, 17.5.1: dots on the icons). 15/16: as before.
+    CGRect drawn = CGRectNull;
+    if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17) {
+        for (UIView *sub in iconView.subviews) {
+            if ([NSStringFromClass([sub class]) rangeOfString:@"IconImageView"].location == NSNotFound || sub.hidden) continue;
+            CGRect r = [sub convertRect:sub.bounds toView:iconView];
+            if (r.size.height > 8.0 && r.size.width > 8.0 && isfinite(r.origin.y) && isfinite(r.size.height)) { drawn = r; break; }
+        }
+    }
+    if (!CGRectIsNull(drawn)) {
+        CGFloat h = drawn.size.height, bottom = CGRectGetMaxY(drawn);
+        CGFloat g = round(MAX(3.0, h * 0.09));
+        y = bottom + g;
+        // (17+: the room below the picture is not the icon view's alone -- nothing above it clips: 17.5.1's SBDockSuggestionsIconListView,
+        //  SBFloatingDockPlatterView and SBFloatingDockView all have clipsToBounds NO, and the 68 pt icon view left 0.6 pt under its 57.8 pt picture
+        //  in landscape, so a dot kept inside the view touched the icon (round 2 of the port). The dot stays inside the Dock's platter -- its
+        //  background -- or the first ancestor that clips, whichever comes first.)
+        CGFloat limit = iconView.bounds.size.height;
+        for (UIView *v = iconView.superview; v; v = v.superview) {
+            if (!v.clipsToBounds && [NSStringFromClass([v class]) rangeOfString:@"Platter"].location == NSNotFound) continue;
+            CGRect b = [v convertRect:v.bounds toView:iconView];
+            if (isfinite(b.origin.y) && isfinite(b.size.height) && CGRectGetMaxY(b) > bottom) limit = CGRectGetMaxY(b);
+            break;
+        }
+        CGFloat lowest = limit - d - 0.5;
+        if (y > lowest && lowest >= bottom + 1.0) y = lowest;   // (inside the platter while there is room below the picture; never on it)
+        gDMDotGapBelowImage = y - bottom;
+    } else if ([iconView respondsToSelector:imgSel]) {
         CGRect img = ((CGRect (*)(id, SEL))objc_msgSend)(iconView, imgSel);
         CGFloat scale = 1.0;
         SEL scaleSel = NSSelectorFromString(@"iconContentScale");

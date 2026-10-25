@@ -12,7 +12,8 @@
 //  - a tap: 16 asks +[SearchUICommandHandler handlerForRowModel:environment:] and runs -executeWithTriggerEvent: (also its copy and drag paths
 //    ask that factory), and lets a row be highlighted -- touched, tapped, reached with the arrow keys -- only when
 //    -[SearchUICollectionViewController canHighlightRowAtIndexPath:] says so: Apple's answer is +hasValidHandlerForRowModel:environment: for the
-//    row at that place (-collectionModel, -rowModelForIndexPath:), and that factory question is also the long press's: a row it approves gets a
+//    row at that place (-collectionModel, -rowModelForIndexPath:; iPadOS 17: -tableModel, a SearchUITableModel -- 17.5.1 21F90 has no
+//    SearchUICollectionModel and no -collectionModel, read in its Spotlight app), and that factory question is also the long press's: a row it approves gets a
 //    preview menu (-[SearchUICollectionPeekDelegate contextMenuInteraction:configurationForMenuAtLocation:]). So our rows are approved where the
 //    highlight is asked, and nowhere else: they have no preview and no menu, and a long press on one does nothing (as on 15). 15 asks
 //    +[SearchUICommand tapCommandForRowModel:environment:] and runs -performCommandWithCompletion: after asking -presentsViewController. Our rows
@@ -78,9 +79,14 @@ static MSPTapKind MSPTapKindFor(Class handler16, Class command15, Class tapComma
 // The whole list, for the classes as found by name in this process (nil when missing). Empty why = everything as expected.
 //   results = SPUIResultsViewController, rowModel = SearchUIRowModel, result = SFSearchResult, section = SFResultSection, text = SFText,
 //   rich = SFRichText, symbol = SFSymbolImage, appIcon = SFAppIconImage, handler16 = SearchUICommandHandler, collection16 =
-//   SearchUICollectionViewController, collectionModel16 = SearchUICollectionModel, command15 = SearchUICommand, tapCommand15 = SearchUITapCommand.
+//   SearchUICollectionViewController, collectionModel16 = SearchUICollectionModel, command15 = SearchUICommand, tapCommand15 = SearchUITapCommand,
+//   tableModel17 = SearchUITableModel (17: the collection's rows; used only where SearchUICollectionModel is missing). modelSel (may be NULL): the
+//   controller's selector for its rows that the check found ("collectionModel" on 16, "tableModel" on 17), NULL when none.
 static MSPTapKind MSPCheckClasses(Class results, Class rowModel, Class result, Class section, Class text, Class rich, Class symbol, Class appIcon,
-                                  Class handler16, Class collection16, Class collectionModel16, Class command15, Class tapCommand15, NSMutableArray *why) {
+                                  Class handler16, Class collection16, Class collectionModel16, Class command15, Class tapCommand15, Class tableModel17,
+                                  const char **modelSel, NSMutableArray *why) {
+    if (modelSel) *modelSel = NULL;
+    BOOL rows17 = !collectionModel16 && tableModel17 && collection16 && class_getInstanceMethod(collection16, sel_registerName("tableModel"));
     if (!MSPDescendsFrom(results, "SearchUIResultsViewController") || !MSPDescendsFrom(results, "UIViewController"))
         [why addObject:@"SPUIResultsViewController missing or not a SearchUIResultsViewController"];
     if (!rowModel) [why addObject:@"SearchUIRowModel missing"];
@@ -94,13 +100,15 @@ static MSPTapKind MSPCheckClasses(Class results, Class rowModel, Class result, C
     if (tap == MSPTapNone) [why addObject:@"no tap path (+[SearchUICommandHandler handlerForRowModel:environment:] or +[SearchUICommand tapCommandForRowModel:environment:])"];
     if (tap == MSPTapCommand15 && !MSPDescendsFrom(tapCommand15, "SearchUICommand")) [why addObject:@"SearchUITapCommand not a SearchUICommand"];
     if (tap == MSPTapHandler16 && !collection16) [why addObject:@"SearchUICollectionViewController missing"];
-    if (tap == MSPTapHandler16 && !collectionModel16) [why addObject:@"SearchUICollectionModel missing"];
+    if (tap == MSPTapHandler16 && !collectionModel16 && !rows17) [why addObject:@"SearchUICollectionModel missing, and no SearchUITableModel with -[SearchUICollectionViewController tableModel]"];
     if (why.count) return MSPTapNone;
     NSString *obj = MSPExpect(@encode(id), NULL), *none = MSPExpect(@encode(void), NULL), *takesObj = MSPExpect(@encode(void), @encode(id), NULL),
              *isBool = MSPExpect(@encode(BOOL), NULL), *objFromTwo = MSPExpect(@encode(id), @encode(id), @encode(id), NULL),
              *objFromObj = MSPExpect(@encode(id), @encode(id), NULL);
     // the results list: the call that shows the sections (hooked), the typed text, and Apple's own push of its sections again
     MSPHas(results, "updateWithResultSections:resetScrollPoint:", MSPExpect(@encode(void), @encode(id), @encode(BOOL), NULL), why);
+    if (results && class_getInstanceMethod(results, sel_registerName("updateWithResultSections:resetScrollPoint:animated:")))   // (17: the one its push uses, hooked too)
+        MSPHas(results, "updateWithResultSections:resetScrollPoint:animated:", MSPExpect(@encode(void), @encode(id), @encode(BOOL), @encode(BOOL), NULL), why);
     MSPHas(results, "queryString", obj, why);
     MSPHas(results, "_pushSectionsUpdate", none, why);
     // a row: the result it shows
@@ -129,8 +137,10 @@ static MSPTapKind MSPCheckClasses(Class results, Class rowModel, Class result, C
     if (tap == MSPTapHandler16) {   // 16: the factory (hooked), Apple's init our handler is made with, the methods it overrides, and the highlight
         MSPHasClassMethod(handler16, "handlerForRowModel:environment:", objFromTwo, why);
         MSPHas(collection16, "canHighlightRowAtIndexPath:", MSPExpect(@encode(BOOL), @encode(id), NULL), why);   // (hooked)
-        MSPHas(collection16, "collectionModel", obj, why);
-        MSPHas(collectionModel16, "rowModelForIndexPath:", objFromObj, why);
+        const char *rowsSel = rows17 ? "tableModel" : "collectionModel";   // (17: the controller's table model, as Apple's highlight answer reads it there)
+        BOOL rowsOK = MSPHas(collection16, rowsSel, obj, why);
+        rowsOK = MSPHas(rows17 ? tableModel17 : collectionModel16, "rowModelForIndexPath:", objFromObj, why) && rowsOK;
+        if (rowsOK && modelSel) *modelSel = rowsSel;
         MSPHas(handler16, "initWithCommand:rowModel:button:environment:", MSPExpect(@encode(id), @encode(id), @encode(id), @encode(id), @encode(id), NULL), why);
         MSPHas(handler16, "rowModel", obj, why);
         MSPHas(handler16, "executeWithTriggerEvent:", MSPExpect(@encode(void), @encode(unsigned long long), NULL), why);

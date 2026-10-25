@@ -32,6 +32,11 @@
 
 #import "DMLog.h"
 #import "../common/ReduceMotion.h"   // (Reduce Motion: the panel fades instead of popping up)
+// With the Mac pointer (Settings > Pointer > Pointer Style: Mac, the default) the Dock's icons don't lift under the pointer, as SpringBoard's own icons
+// (StatusBar.x MacPointerIcons): iPadOS draws its pointer under a lifted icon, and the arrow went under it. iPadOS's pointer: the lift as before.
+// (and while the Mac pointer stands down for another pointer tweak: then the pointer is iPadOS's -- common/MacPointerActive.h, logic test W5)
+#import "../common/MacPointerActive.h"
+static BOOL DMDockIconLift(void) { return MSBDIPadPointerEffects(); }
 #define DM_FEATURE_MARK(name) do { static const char *const dmFeatureMark = "msbd-feature:" name; __asm__ volatile("" :: "r"(dmFeatureMark)); } while (0)   // (release-build feature marker, see statusbar/StatusBar.x)
 
 #pragma mark - model
@@ -1258,6 +1263,7 @@ static BOOL DMIsTypingInKeyboard(UIWindow *w) {
     }];
 }
 - (UIPointerStyle *)pointerInteraction:(UIPointerInteraction *)interaction styleForRegion:(UIPointerRegion *)region {
+    if (!DMDockIconLift()) return nil;
     UITargetedPreview *preview = [[UITargetedPreview alloc] initWithView:self];
     return [UIPointerStyle styleWithEffect:[UIPointerLiftEffect effectWithPreview:preview] shape:nil];
 }

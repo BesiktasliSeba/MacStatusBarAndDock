@@ -41,3 +41,44 @@ static NSDictionary<NSString *, NSString *> *DMSMFitSlotsFor(NSDictionary<NSStri
     NSDictionary *mem = memory[DMSMFitDeskKey(bundles)];
     return mem.count ? mem : current;
 }
+// The desktop brought back after a respring, laid out for another screen shape (the iPad turned while SpringBoard restarted): its windows'
+// sizes are of the old shape, but where they sit against each other is kept, and that names their tiles -- one window: the whole space; two:
+// side by side (left / right) or one above the other (top / bottom), whichever way they are further apart; three: the side with one window is
+// its half, the other side's two are its quarters, top and bottom (Fit's three-window arrangement); four: the quarters. centres: window key ->
+// @[x, y], its centre as fractions of the screen. nil when they do not read as distinct tiles (Fit then lays them out as a new set).
+static inline NSDictionary<NSString *, NSString *> *DMSMFitTilesFromCentres(NSDictionary<NSString *, NSArray<NSNumber *> *> *centres) {
+    NSArray<NSString *> *keys = [centres.allKeys sortedArrayUsingSelector:@selector(compare:)];
+    NSUInteger n = keys.count;
+    if (!n || n > 4) return nil;
+    for (NSString *k in keys) {
+        NSArray *p = centres[k];
+        if (![p isKindOfClass:[NSArray class]] || p.count != 2) return nil;
+        double x = [p[0] doubleValue], y = [p[1] doubleValue];
+        if (!(x >= -0.25 && x <= 1.25) || !(y >= -0.25 && y <= 1.25)) return nil;   // (not finite, or far off the screen)
+    }
+    double (^X)(NSString *) = ^double(NSString *k) { return [centres[k][0] doubleValue]; };
+    double (^Y)(NSString *) = ^double(NSString *k) { return [centres[k][1] doubleValue]; };
+    if (n == 1) return @{ keys[0]: @"fill" };
+    if (n == 2) {
+        NSString *a = keys[0], *b = keys[1];
+        double dx = fabs(X(a) - X(b)), dy = fabs(Y(a) - Y(b));
+        if (dx < 0.05 && dy < 0.05) return nil;   // (one on the other: no tiles to read)
+        if (dx >= dy) return X(a) < X(b) ? @{ a: @"left", b: @"right" } : @{ a: @"right", b: @"left" };
+        return Y(a) < Y(b) ? @{ a: @"top", b: @"bottom" } : @{ a: @"bottom", b: @"top" };
+    }
+    NSMutableArray<NSString *> *left = [NSMutableArray array], *right = [NSMutableArray array];
+    for (NSString *k in keys) [(X(k) < 0.5 ? left : right) addObject:k];
+    NSComparisonResult (^byY)(NSString *, NSString *) = ^NSComparisonResult(NSString *a, NSString *b) { return Y(a) < Y(b) ? NSOrderedAscending : (Y(a) > Y(b) ? NSOrderedDescending : [a compare:b]); };
+    NSMutableDictionary<NSString *, NSString *> *plan = [NSMutableDictionary dictionary];
+    if (n == 3) {
+        if (left.count == 1 && right.count == 2) { [right sortUsingComparator:byY]; plan[left[0]] = @"left"; plan[right[0]] = @"topright"; plan[right[1]] = @"bottomright"; }
+        else if (left.count == 2 && right.count == 1) { [left sortUsingComparator:byY]; plan[right[0]] = @"right"; plan[left[0]] = @"topleft"; plan[left[1]] = @"bottomleft"; }
+        else return nil;
+        return plan;
+    }
+    if (left.count != 2 || right.count != 2) return nil;   // (four: two on each side)
+    [left sortUsingComparator:byY]; [right sortUsingComparator:byY];
+    if (fabs(Y(left[0]) - Y(left[1])) < 0.05 || fabs(Y(right[0]) - Y(right[1])) < 0.05) return nil;
+    plan[left[0]] = @"topleft"; plan[left[1]] = @"bottomleft"; plan[right[0]] = @"topright"; plan[right[1]] = @"bottomright";
+    return plan;
+}

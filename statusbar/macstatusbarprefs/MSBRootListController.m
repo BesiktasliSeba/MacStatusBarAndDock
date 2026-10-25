@@ -126,8 +126,9 @@ static BOOL MSBChoicyApplyEngine(NSString *engine) {
 static void MSBRespring(void) { MSBDRespring(); }   // (LineSwitch.h: with the VPN check first)
 
 // ---- Window Engine list (2026-09-24): every engine this iOS supports is listed; one that is not installed is shown greyed out and cannot be
-// picked (stock-looking disabled row), and an installed build our integration has not been tested with is greyed with a short note (it would run on
-// its own, without any of our window features -- the one list of tested builds is common/EngineBuilds.h).
+// picked (stock-looking disabled row), and an installed build our integration has not been tested with is picked as a plain engine that runs on
+// its own, without any of our window features, and its row says so (1.5.0; greyed and unselectable before -- the one list of tested builds is
+// common/EngineBuilds.h).
 // "Installed" = its library is in TweakInject, as .dylib or as iCleaner's .disabled (Choicy's deny list does not make an engine uninstalled).
 // 0 = not installed, 1 = installed but not a tested build, 2 = installed and tested
 static NSString *MSBEngineLibraryPath(NSString *lib) {   // (its .dylib, or iCleaner's .disabled)
@@ -157,6 +158,19 @@ static int MSBEngineState(NSString *engine) {
 	if (![[NSFileManager defaultManager] fileExistsAtPath:path]) return 0;
 	return MSBDEngineFileTested(lib, path) ? 2 : 1;
 }
+// An installed build our integration has not been tested with is still the user's to pick (1.5.0): it runs on its own -- MacStatusBar&Dock
+// doesn't drive its windows, but it never keeps it from loading either. Greyed and unselectable until 1.4.5, so an engine update (Aerial 5.1)
+// could not be picked, our exclusivity kept it out of SpringBoard, and its license (checked in SpringBoard) could not be activated (24 Oct).
+static NSString *MSBEngineName(NSString *engine) {
+	return @{@"aerial": @"Aerial", @"milkyway": @"MilkyWay4", @"zetsu": @"Zetsu", @"stagemanager": @"Stage Manager"}[engine] ?: engine;
+}
+static NSString *MSBEngineNameVersion(NSString *engine) {   // ("Aerial 5.1": the installed package's version)
+	NSString *pkg = @{@"aerial": @"jp.uzra.aerial", @"milkyway": @"jp.akusio.milkyway4", @"zetsu": @"jp.dcsyhi.zetsu"}[engine];
+	NSString *v = pkg ? MSBDPackageVersion(pkg) : nil;
+	return v.length ? [NSString stringWithFormat:@"%@ %@", MSBEngineName(engine), v] : MSBEngineName(engine);
+}
+// The Window Engine page's footer: a license is checked in SpringBoard, and only the picked engine loads there.
+static NSString *const kMSBLicenseHint = @"Activating an engine's license? Pick it here and respring first: only the picked engine loads, and its license is checked in SpringBoard.";
 @interface MSBEngineListController : PSListItemsController
 @end
 @implementation MSBEngineListController
@@ -168,11 +182,11 @@ static int MSBEngineState(NSString *engine) {
 	UITableViewCell *cell = [super tableView:tv cellForRowAtIndexPath:ip];
 	NSString *v = [self msb_valueForRow:ip];
 	int state = v ? MSBEngineState(v) : 2;
-	BOOL usable = state == 2;
+	BOOL usable = state >= 1;   // (an untested build too: it runs on its own, and the row says so)
 	cell.userInteractionEnabled = usable || state == 0;   // (a not-installed row stays greyed and unselectable, but its GET button can be tapped)
 	cell.selectionStyle = usable ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
 	cell.textLabel.enabled = usable;
-	if (state == 1 && ![cell.textLabel.text hasSuffix:@"(untested version)"]) cell.textLabel.text = [cell.textLabel.text stringByAppendingString:@" (untested version)"];
+	if (state == 1) cell.textLabel.text = [NSString stringWithFormat:@"%@ (Untested, Runs on Its Own)", MSBEngineNameVersion(v)];   // (never "Recommended": not tested)
 	// Requirement (2026-09-24): an engine this iOS supports but that is not installed gets an App Store-style GET button where the checkmark would be,
 	// opening the engine's official page (Aerial: the GitHub link in Aerial's own Settings bundle; Zetsu and MilkyWay4: their developers' own
 	// GitHub-hosted pages).
@@ -204,7 +218,7 @@ static int MSBEngineState(NSString *engine) {
 }
 - (NSIndexPath *)tableView:(UITableView *)tv willSelectRowAtIndexPath:(NSIndexPath *)ip {
 	NSString *v = [self msb_valueForRow:ip];
-	return (v && MSBEngineState(v) != 2) ? nil : ip;
+	return (v && MSBEngineState(v) == 0) ? nil : ip;   // (not installed only: an untested build is picked as a plain engine)
 }
 @end
 
@@ -385,8 +399,9 @@ static void MSBFitValueLabels(UIView *v) {
 			NSDictionary *td = ((id (*)(id, SEL))objc_msgSend)(spec, NSSelectorFromString(@"titleDictionary"));
 			NSDictionary *sd = ((id (*)(id, SEL))objc_msgSend)(spec, NSSelectorFromString(@"shortTitleDictionary"));
 			NSMutableArray *values = [NSMutableArray array], *titles = [NSMutableArray array], *shorts = [NSMutableArray array];
-			for (NSString *x in v) { if ([x isEqual:@"stagemanager"]) continue; [values addObject:x]; [titles addObject:[x isEqual:@"aerial"] ? [NSString stringWithFormat:@"%@ (Recommended)", td[x] ?: @"Aerial"] : (td[x] ?: x)]; [shorts addObject:sd[x] ?: td[x] ?: x]; }
+			for (NSString *x in v) { if ([x isEqual:@"stagemanager"]) continue; [values addObject:x]; [titles addObject:td[x] ?: x]; [shorts addObject:sd[x] ?: td[x] ?: x]; }
 			((void (*)(id, SEL, id, id, id))objc_msgSend)(spec, NSSelectorFromString(@"setValues:titles:shortTitles:"), values, titles, shorts);
+			[spec setProperty:kMSBLicenseHint forKey:@"staticTextMessage"];   // (the picker page's footer, as on 16+)
 		}
 		// MilkyWay4 does not run on iPadOS 16, so there it is not offered as an engine and not named in the notes.
 		if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 16) {
@@ -405,11 +420,11 @@ static void MSBFitValueLabels(UIView *v) {
 				for (NSUInteger i = 0; i < v.count; i++) {
 					if ([v[i] isEqual:@"milkyway"]) continue;
 					[values addObject:v[i]];
-					// (1.1.3: Aerial 5.0 is the recommended engine on every iPad again -- Stage Manager is an option, not the default)
-					BOOL rec = [v[i] isEqual:@"aerial"];
+					// (1.5.0: no engine is marked any more -- the Stage Manager engine is out of "Experimental" and a first install picks it where it runs,
+					//  sshtoggled FreezeOldDefaults; Aerial lost its "Recommended")
 					// (sm-160: where the engine's check passed through a way Settings offers as untested -- iPadOS 16.0 -- the row says so; 16.1 is offered normally)
 					BOOL untested = [v[i] isEqual:@"stagemanager"] && MSBDStageManagerUntested(NULL);
-					[titles addObject:rec ? [NSString stringWithFormat:@"%@ (Recommended)", td[v[i]] ?: @"Aerial"] : untested ? @"Stage Manager (Untested)" : (td[v[i]] ?: v[i])];
+					[titles addObject:untested ? @"Stage Manager (Untested)" : (td[v[i]] ?: v[i])];
 					[shorts addObject:sd[v[i]] ?: td[v[i]] ?: v[i]];
 				}
 				((void (*)(id, SEL, id, id, id))objc_msgSend)(spec, NSSelectorFromString(@"setValues:titles:shortTitles:"), values, titles, shorts);
@@ -417,7 +432,7 @@ static void MSBFitValueLabels(UIView *v) {
 				//  supported on this iPadOS version -- the row alone said nothing in the first case; staticTextMessage = the list's footer, as on the
 				//  Status Bar Style page)
 				NSString *why = MSBDStageManagerFooter();
-				if (why) [spec setProperty:why forKey:@"staticTextMessage"];
+				[spec setProperty:why ? [NSString stringWithFormat:@"%@\n\n%@", why, kMSBLicenseHint] : kMSBLicenseHint forKey:@"staticTextMessage"];
 			}
 		}
 		// No working engine (none installed, or the one that would run is an untested build, which runs on its own): the Window Engine row says
@@ -426,13 +441,14 @@ static void MSBFitValueLabels(UIView *v) {
 			if (![[spec propertyForKey:@"key"] isEqual:@"windowEngine"]) continue;
 			NSString *engine = [self readPreferenceValue:spec];
 			if ([engine isKindOfClass:[NSString class]] && ![engine isEqualToString:@"none"] && MSBEngineState(engine) == 2) break;
+			BOOL onItsOwn = [engine isKindOfClass:[NSString class]] && ![engine isEqualToString:@"none"] && MSBEngineState(engine) == 1;   // (an untested build: runs on its own)
 			SEL setShort = NSSelectorFromString(@"setShortTitleDictionary:"), setTitles = NSSelectorFromString(@"setTitleDictionary:");
 			if ([spec respondsToSelector:setShort] && [spec respondsToSelector:setTitles] && [engine isKindOfClass:[NSString class]]) {
 				NSMutableDictionary *sd = [NSMutableDictionary dictionary];
 				NSDictionary *oldShort = [spec respondsToSelector:NSSelectorFromString(@"shortTitleDictionary")] ? ((id (*)(id, SEL))objc_msgSend)(spec, NSSelectorFromString(@"shortTitleDictionary")) : nil;
 				NSDictionary *oldTitles = [spec respondsToSelector:NSSelectorFromString(@"titleDictionary")] ? ((id (*)(id, SEL))objc_msgSend)(spec, NSSelectorFromString(@"titleDictionary")) : nil;
 				if ([oldShort isKindOfClass:[NSDictionary class]]) [sd addEntriesFromDictionary:oldShort];
-				sd[engine] = @"None";   // (the row only: the picker's own rows use the full titles, "(untested version)" included)
+				sd[engine] = onItsOwn ? [NSString stringWithFormat:@"%@ (On Its Own)", MSBEngineNameVersion(engine)] : @"None";   // (the row only: the picker's own rows say "Untested, Runs on Its Own")
 				((void (*)(id, SEL, id))objc_msgSend)(spec, setShort, sd);
 				if ([engine isEqualToString:@"none"]) {
 					NSMutableDictionary *td = [oldTitles isKindOfClass:[NSDictionary class]] ? [oldTitles mutableCopy] : [NSMutableDictionary dictionary];
@@ -444,7 +460,8 @@ static void MSBFitValueLabels(UIView *v) {
 			BOOL hiding = NO;
 			for (PSSpecifier *sp in _specifiers) {
 				if (sp.cellType == PSGroupCell) hiding = [sp.identifier isEqualToString:@"WINDOWS_GROUP"];
-				if ([sp.identifier isEqualToString:@"ENGINE_GROUP"]) [sp setProperty:@"No tested window engine is installed, so the window features are off." forKey:@"footerText"];
+				if ([sp.identifier isEqualToString:@"ENGINE_GROUP"]) [sp setProperty:onItsOwn ? [NSString stringWithFormat:@"%@ hasn't been tested with MacStatusBar&Dock yet, so it runs on its own and the window features are off.", MSBEngineNameVersion(engine)]
+				                                                                               : @"No tested window engine is installed, so the window features are off." forKey:@"footerText"];
 				if (!hiding) [kept addObject:sp];
 			}
 			_specifiers = kept;
@@ -570,14 +587,14 @@ static void MSBFitValueLabels(UIView *v) {
 }
 
 // The saved engine can name one this device does not offer (MilkyWay4 saved before an update to iPadOS 16, or an engine since removed): the tweak
-// then runs the default one (DMActiveEngine / MSBDDefaultEngine), so that is the one shown as picked (an untested Aerial too, greyed "(untested version)").
+// then runs the default one (DMActiveEngine / MSBDDefaultEngine), so that is the one shown as picked (an untested Aerial too: "Untested, Runs on Its Own").
 - (id)readPreferenceValue:(PSSpecifier *)specifier {
 	if ([[specifier propertyForKey:@"key"] isEqual:@"stockStatusBar"]) return MSBStockBarStored() ? @"stock" : @"mac";   // the row and its picker page show/pick these two strings
 	id value = [super readPreferenceValue:specifier];
 	if (![[specifier propertyForKey:@"key"] isEqual:@"windowEngine"]) return value;
 	NSArray *offered = [specifier respondsToSelector:NSSelectorFromString(@"values")] ? ((id (*)(id, SEL))objc_msgSend)(specifier, NSSelectorFromString(@"values")) : nil;
-	if ([value isKindOfClass:[NSString class]] && [offered containsObject:value] && MSBEngineState(value) == 2) return value;
-	// Nothing usable picked (none, not offered, not installed, or an untested build, which SpringBoard skips too): the same single rule as SpringBoard and the helper (EngineBuilds.h: Aerial of any build, else MilkyWay4, else Zetsu).
+	if ([value isKindOfClass:[NSString class]] && [offered containsObject:value] && MSBEngineState(value) >= 1) return value;   // (an untested build too: it is the one that loads, on its own)
+	// Nothing usable picked (none, not offered, not installed): the same single rule as SpringBoard and the helper (EngineBuilds.h: Aerial of any build, else MilkyWay4, else Zetsu).
 	NSString *fallback = MSBDDefaultEngine(^BOOL(NSString *e) { return MSBEngineState(e) != 0; }, ^NSString *(NSString *lib) { return MSBEngineLibraryPath(lib); });
 	return fallback ?: @"none";   // ("none": no engine at all, shown as "None", see -specifiers)
 }
@@ -635,6 +652,7 @@ static void MSBFitValueLabels(UIView *v) {
 			title = @"Respring to Switch Engines";
 			message = others.count ? [NSString stringWithFormat:@"Choicy now stops loading %@, so only %@ runs. The change takes effect after a respring.", [others.array componentsJoinedByString:@", "], names[engine] ?: engine]
 			                       : [NSString stringWithFormat:@"Only %@ runs. The change takes effect after a respring.", names[engine] ?: engine];
+			if (MSBEngineState(engine) == 1) message = [message stringByAppendingFormat:@" %@ hasn't been tested with MacStatusBar&Dock yet, so it runs on its own.", MSBEngineNameVersion(engine)];
 			offerRespring = YES;
 		}
 	} else if (MSBiCleanerInstalled() && access("/var/jb/usr/libexec/sshtoggled", X_OK) == 0) {
@@ -642,6 +660,7 @@ static void MSBFitValueLabels(UIView *v) {
 		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ notify_post("com.besiktasliseba.msb.engines.apply"); });
 		title = @"Respring to Switch Engines";
 		message = [NSString stringWithFormat:@"Only %@ will load after a respring.", names[engine] ?: engine];
+		if (MSBEngineState(engine) == 1) message = [message stringByAppendingFormat:@" %@ hasn't been tested with MacStatusBar&Dock yet, so it runs on its own.", MSBEngineNameVersion(engine)];
 		offerRespring = YES;
 	} else if (MSBiCleanerInstalled()) {
 		NSMutableArray *on = [NSMutableArray array];

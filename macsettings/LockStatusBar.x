@@ -34,12 +34,26 @@ static BOOL LSBHiddenCached(void) { return gLSBHiddenCache < 0 ? LSBHidden() : g
 @interface CSCoverSheetViewController : UIViewController
 @end
 
+static BOOL LSBForceOff(id controller) {
+    Class coverSheetClass = objc_getClass("CSCoverSheetViewController");
+    return coverSheetClass && [controller isKindOfClass:coverSheetClass] && LSBHidden() && !MSBDOtherTweakDoing(kMSBDDupLockStatusBar, YES);   // (Lynx does it: left to it)
+}
+%group LSBGeneric
 %hook UIViewController
 - (void)_setFakeStatusBarEnabled:(BOOL)enabled {
-    Class coverSheetClass = objc_getClass("CSCoverSheetViewController");
-    BOOL forceOff = coverSheetClass && [self isKindOfClass:coverSheetClass] && LSBHidden() && !MSBDOtherTweakDoing(kMSBDDupLockStatusBar, YES);   // (Lynx does it: left to it)
-    %orig(forceOff ? NO : enabled);
+    %orig(LSBForceOff(self) ? NO : enabled);
 }
+%end
+%end
+// iPadOS 17+: -_setFakeStatusBarEnabled: is no longer UIViewController's; only CSCoverSheetViewController has it (17.5.1 probe: missing on
+// UIViewController; 18.5: v20@0:8B16 on CSCoverSheetViewController), so the generic hook above installed nothing and the switch did nothing on 17/18.
+// There it is hooked on the Lock Screen's controller itself, once that class is loaded (deferred like LSBGrabber below).
+%group LSBCover
+%hook CSCoverSheetViewController
+- (void)_setFakeStatusBarEnabled:(BOOL)enabled {
+    %orig(LSBForceOff(self) ? NO : enabled);
+}
+%end
 %end
 
 // The Control Center grabber (the short line at the top right of the Lock Screen) is not part of the sliding pages: the Lock Screen places it
@@ -101,12 +115,17 @@ static void LSBFollowPages(UIViewController *coverSheet, UIScrollView *sv) {
 
 %ctor {
     %init;
+    SEL fake = NSSelectorFromString(@"_setFakeStatusBarEnabled:");
+    BOOL generic = [UIViewController instancesRespondToSelector:fake];   // (15/16: UIViewController's own method, hooked there as before)
+    if (generic) %init(LSBGeneric);
     // (CSCoverSheetViewController may not be loaded yet when we start: hook it once it is, as the note above explains)
     __block int tries = 0;
+    __block BOOL coverDone = generic;
     __block void (^attempt)(void);
     void (^a)(void) = ^{
         Class c = objc_getClass("CSCoverSheetViewController");
-        if (c && [c instancesRespondToSelector:NSSelectorFromString(@"scrollablePageViewController:scrollViewDidScroll:")]) { %init(LSBGrabber); attempt = nil; return; }
+        if (!coverDone && c && [c instancesRespondToSelector:fake]) { %init(LSBCover); coverDone = YES; }   // (17+: the Lock Screen's controller itself)
+        if (coverDone && c && [c instancesRespondToSelector:NSSelectorFromString(@"scrollablePageViewController:scrollViewDidScroll:")]) { %init(LSBGrabber); attempt = nil; return; }
         if (++tries < 30) { void (^again)(void) = attempt; dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), again); }
         else attempt = nil;
     };

@@ -28,6 +28,8 @@
 
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
+#import <objc/runtime.h>
+#include <string.h>
 #import <dlfcn.h>
 #include <notify.h>
 
@@ -144,11 +146,23 @@ static void SetSoundMuted(BOOL want) {
     if (now != want) ((void (*)(id, SEL))objc_msgSend)(av, toggle);
 }
 
+// The ringer control: the one SpringBoard made (captured at its creation, below), else asked of SpringBoard (-[SpringBoard ringerControl]).
+static id RingerControl(void) {
+    if (!gRingerControl) {
+        id app = [UIApplication sharedApplication];
+        SEL rc = NSSelectorFromString(@"ringerControl");
+        if ([app respondsToSelector:rc]) gRingerControl = ((id (*)(id, SEL))objc_msgSend)(app, rc);
+    }
+    return gRingerControl;
+}
 static void SetRingerMuted(BOOL want) {
-    SEL setMuted = NSSelectorFromString(@"setRingerMuted:");
-    if (!gRingerControl || ![gRingerControl respondsToSelector:setMuted]) return;
+    id rc = RingerControl();
+    SEL setMuted = NSSelectorFromString(@"setRingerMuted:"), setMuted4 = NSSelectorFromString(@"setRingerMuted:withFeedback:reason:clientType:");
+    if (!rc) return;
     gIgnoreRingerChange = YES;   // this is our own change, not one to mirror back
-    ((void (*)(id, SEL, BOOL))objc_msgSend)(gRingerControl, setMuted, want);
+    if ([rc respondsToSelector:setMuted]) ((void (*)(id, SEL, BOOL))objc_msgSend)(rc, setMuted, want);
+    // (iPadOS 17/18: only the four-argument setter is left -- v36@0:8B16B20@24I32 on 17.5.1 and 18.5. No feedback: our own HUD shows the change.)
+    else if ([rc respondsToSelector:setMuted4]) ((void (*)(id, SEL, BOOL, BOOL, id, unsigned int))objc_msgSend)(rc, setMuted4, want, NO, @"TabMute", 0);
     gIgnoreRingerChange = NO;
     gLastRinger = want ? 1 : 0;
 }
@@ -173,8 +187,20 @@ static void ShowVolumeHUD(BOOL muted) {
 // mutes what is heard. Falls back to gMuted when the system can't be asked.
 static BOOL CurrentlyMuted(void) {
     BOOL muted = gMuted;
-    SEL isMuted = NSSelectorFromString(@"isRingerMuted");
-    if (gRingerControl && [gRingerControl respondsToSelector:isMuted]) muted = ((BOOL (*)(id, SEL))objc_msgSend)(gRingerControl, isMuted);
+    SEL isMuted = NSSelectorFromString(@"isRingerMuted"), isMutedAX = NSSelectorFromString(@"_accessibilityIsRingerMuted");
+    // (where SpringBoard keeps it first -- SBAVSystemControllerCache, 17.5.1, signature checked -- then the ringer control's getter (15/16), then its
+    //  accessibility one, which is not on every device: ios17 logic test F3)
+    static id cache = nil; static BOOL cacheLooked = NO;
+    if (!cacheLooked) {
+        cacheLooked = YES;
+        Class c = objc_getClass("SBAVSystemControllerCache");
+        Method m = c ? class_getInstanceMethod(c, isMuted) : NULL;
+        if (m && !strcmp(method_getTypeEncoding(m) ?: "", "B16@0:8") && [c respondsToSelector:@selector(sharedInstance)]) cache = ((id (*)(id, SEL))objc_msgSend)(c, @selector(sharedInstance));
+    }
+    id rc = RingerControl();
+    if (cache) muted = ((BOOL (*)(id, SEL))objc_msgSend)(cache, isMuted);
+    else if (rc && [rc respondsToSelector:isMuted]) muted = ((BOOL (*)(id, SEL))objc_msgSend)(rc, isMuted);
+    else if (rc && [rc respondsToSelector:isMutedAX]) muted = ((BOOL (*)(id, SEL))objc_msgSend)(rc, isMutedAX);
     if (!muted) return NO;
     id av = AVController();
     SEL getter = NSSelectorFromString(@"getActiveCategoryMuted:"), attr = NSSelectorFromString(@"attributeForKey:");
@@ -194,12 +220,24 @@ static void ToggleMute(void) {
     ShowVolumeHUD(gMuted);
 }
 
+// Someone else (Control Center, SingleMute, the mute switch) changed the ringer mute: the sound follows.
+static void RingerChangedElsewhere(BOOL muted) {
+    int now = muted ? 1 : 0;
+    BOOL changed = (now != gLastRinger);
+    gLastRinger = now;
+    if (gIgnoreRingerChange || !changed || CACurrentMediaTime() < gReadyAt || TabMuteSwitchedOff()) return;   // (switched off: the ringer is left to itself)
+    Debug([NSString stringWithFormat:@"[ringer] changed elsewhere -> %d, sound follows", now]);
+    gMuted = muted;
+    SetSoundMuted(muted);
+}
+
 %group SpringBoardHooks
 
 %hook SBVolumeControl
 - (id)initWithHUDController:(id)hud ringerControl:(id)ringer telephonyManager:(id)telephony conferenceManager:(id)conference {
     id me = %orig;
     gVolumeControl = me;
+    if (!gRingerControl && ringer) gRingerControl = ringer;   // (iPadOS 17+: SBRingerControl's own initializer below is gone; this one hands it over)
     return me;
 }
 - (float)elasticValueViewControllerCurrentValue:(id)controller {
@@ -215,17 +253,21 @@ static void ToggleMute(void) {
 }
 - (void)setRingerMuted:(BOOL)muted {
     %orig;
-    int now = muted ? 1 : 0;
-    BOOL changed = (now != gLastRinger);
-    gLastRinger = now;
-    if (gIgnoreRingerChange || !changed || CACurrentMediaTime() < gReadyAt || TabMuteSwitchedOff()) return;   // (switched off: the ringer is left to itself)
-    // Someone else (Control Center, SingleMute, the mute switch) changed the ringer mute: the sound follows.
-    Debug([NSString stringWithFormat:@"[ringer] changed elsewhere -> %d, sound follows", now]);
-    gMuted = muted;
-    SetSoundMuted(muted);
+    RingerChangedElsewhere(muted);
 }
 %end
 
+%end
+// iPadOS 17/18: the ringer is set through the four-argument setter only (17.5.1 and 18.5: v36@0:8B16B20@24I32). Installed only where the old one-argument
+// setter is gone, so a change is never mirrored twice.
+%group Ringer17
+%hook SBRingerControl
+- (void)setRingerMuted:(BOOL)muted withFeedback:(BOOL)feedback reason:(id)reason clientType:(unsigned int)clientType {
+    %orig;
+    if (!gRingerControl) gRingerControl = self;
+    RingerChangedElsewhere(muted);
+}
+%end
 %end
 
 static void PublishSwitch(void) {
@@ -245,6 +287,8 @@ static void PublishSwitch(void) {
     %init;   // the UIApplication hook, in every process
     if (!InSpringBoard()) return;
     %init(SpringBoardHooks);
+    Class ringer = objc_getClass("SBRingerControl");
+    if (ringer && ![ringer instancesRespondToSelector:NSSelectorFromString(@"setRingerMuted:")] && [ringer instancesRespondToSelector:NSSelectorFromString(@"setRingerMuted:withFeedback:reason:clientType:")]) %init(Ringer17);
     gReadyAt = CACurrentMediaTime() + kReadyDelay;
     static int toggleToken = 0, prefsToken = 0;
     notify_register_dispatch(kToggleNotification, &toggleToken, dispatch_get_main_queue(), ^(int t) { ToggleMute(); });

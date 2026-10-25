@@ -1,7 +1,7 @@
 #import <unistd.h>
 // Keyboard (MacStatusBar&Dock, 2026-09-25): a "Keyboard" row in the Settings sidebar, shown only while a hardware keyboard is attached (like the
 // Pointer row with a pointer), opening a small stock-looking page with the switches of the keyboard features that used to be separate tweaks:
-// ` as Escape (GraveEscape), Tab mutes (TabMute), Globe volume keys (VolumeGlobe) and the brightness keys (BrightnessKey). Each keeps its own
+// Top-Left Key as Escape (GraveEscape), Tab mutes (TabMute), Globe volume keys (VolumeGlobe) and the brightness keys (BrightnessKey). Each keeps its own
 // preference domain and its own "prefsChanged" notification, so every switch applies at once, with no respring. All are off for a new install.
 #import <UIKit/UIKit.h>
 #import <notify.h>
@@ -72,7 +72,7 @@ static PSSpecifier *MSKeyGroup(NSString *title, NSString *footer) {
 //    themselves (HID usages 226/224, so not remapped to something else);
 //  - backlight keys (BrightnessKey.x): Shift + Option/Control (not remapped), and a keyboard with a backlight (Apple's page then shows its own
 //    "Keyboard Brightness" slider -- the same test Apple uses);
-//  - ` as Escape and Tab mute have no condition (any keyboard with those keys).
+//  - Top-Left Key as Escape and Tab mute have no condition (any keyboard with those keys).
 static BOOL MSKeyOn(NSString *domain, NSString *key) {
     CFPropertyListRef v = CFPreferencesCopyValue((__bridge CFStringRef)key, (__bridge CFStringRef)domain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     BOOL on = v && CFGetTypeID(v) == CFBooleanGetTypeID() && CFBooleanGetValue(v);
@@ -89,7 +89,7 @@ NSDictionary *MSModifierMapping(void);   // (below: Apple's Modifier Keys choice
         PSSpecifier *g = MSKeyGroup(nil, nil);
         [g setIdentifier:@"MAC_KEYS_GROUP"];
         [s addObject:g];
-        [s addObject:MSKeySwitch(self, @"~ Key as Escape", @"com.besiktasliseba.graveescapetweak", @"enabled")];
+        [s addObject:MSKeySwitch(self, @"Top-Left Key as Escape", @"com.besiktasliseba.graveescapetweak", @"enabled")];   // (KT, 25 Oct: named for the key it maps, the top-left one on every layout; the setting key stays "enabled")
         [s addObject:MSKeySwitch(self, @"Tab Key Toggles Mute", @"com.besiktasliseba.tabmutetweak", @"enabled")];
         [s addObject:MSKeySwitch(self, @"Globe + Option/Control for Volume", @"com.besiktasliseba.volumeglobetweak", @"enabled")];
         [s addObject:MSKeySwitch(self, @"Shift + =/- for Screen Brightness", @"com.besiktasliseba.brightnesskeytweak", @"screenKeysEnabled")];
@@ -106,7 +106,7 @@ NSDictionary *MSModifierMapping(void);   // (below: Apple's Modifier Keys choice
 }
 // The group's footer: what the keys are for, plus (only when needed) the one condition that is not met.
 - (void)msSetKeysFooter:(PSSpecifier *)g native:(NSArray *)native {
-    NSString *base = @"For keyboards without a function row, like the original Magic Keyboard for iPad. The ~ key at the top left, next to 1, becomes Escape; the others add volume and brightness keys.";
+    NSString *base = @"For keyboards without a function row, like the original Magic Keyboard for iPad. The key at the top left, next to 1, becomes Escape; the others add volume and brightness keys.";
     NSDictionary *map = MSModifierMapping();
     NSNumber *(^dest)(long long) = ^NSNumber *(long long src) { return map[@(src)]; };
     // HID usages (page << 32 | usage, as Apple's Modifier Keys page stores them): Globe (consumer page 0x0C, usage 0x29D), left Control and
@@ -121,7 +121,10 @@ NSDictionary *MSModifierMapping(void);   // (below: Apple's Modifier Keys choice
     if (volume && !globeOK) { hint = @"Volume keys need the Globe key set to Globe in Modifier Keys."; modifierHint = YES; }
     else if ((volume || backlight) && !optCtrlOK) { hint = @"Volume and backlight keys need Option and Control unchanged in Modifier Keys."; modifierHint = YES; }
     else if (backlight && native.count && !hasBacklight) hint = @"Backlight keys need a keyboard with a backlight.";
-    NSString *text = hint ? [NSString stringWithFormat:@"%@ %@", base, hint] : base;
+    NSString *text = base;
+    // The screen brightness keys reach whichever app has the keyboard, except a package manager or TrollStore, which never load our part.
+    if (MSKeyOn(@"com.besiktasliseba.brightnesskeytweak", @"screenKeysEnabled")) text = [text stringByAppendingString:@" Shift + =/- does not change the brightness while Sileo, Zebra, Filza or TrollStore is in front."];
+    if (hint) text = [text stringByAppendingFormat:@" %@", hint];
     [g setProperty:text forKey:@"footerText"];
     if (modifierHint) {   // "Modifier Keys" in the hint opens Apple's Modifier Keys page
         NSRange r = [text rangeOfString:@"Modifier Keys" options:NSBackwardsSearch];

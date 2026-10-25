@@ -57,8 +57,10 @@ static inline int MSBDOSMajor(void) {
     if (sysctlbyname("kern.osrelease", v, &n, NULL, 0) == 0 && atoi(v) > 6) return major = atoi(v) - 6;   // (Darwin 21 = iPadOS 15)
     return major = 0;
 }
-// Unknown counts as tested: never turn off what ran before because of a failed lookup.
-static inline int MSBDVersionTested(void) { int m = MSBDOSMajor(); return m == 0 || m == 15 || m == 16; }
+// Unknown counts as tested: never turn off what ran before because of a failed lookup. iPadOS 17 counts as one tested version (24 Oct 2026: every
+// class, ivar, symbol and hook we use is the same from 17.0 to 17.7.x -- plans/ipados17-versions.md --, and the port was tested on 17.5.1); its
+// diagnostics records stay on for the builds nobody here can run (Diag.h).
+static inline int MSBDVersionTested(void) { int m = MSBDOSMajor(); return m == 0 || m == 15 || m == 16 || m == 17; }
 
 // A boolean of ours (CFPreferences, looked up at run time): "Enable Anyway", or the safe mode.
 static inline int MSBDGatePrefOn(const char *keyName) {

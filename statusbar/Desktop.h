@@ -1324,10 +1324,23 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
 @end
 
 // ---- for Finder.h's drag ----
+// A window of any engine covers the point (its title bar too): the desktop under it is not where a drop lands. -dm_shownAt: asks only the Home
+// Screen's own window, so a drop onto a window whose app could not be found under the finger -- a Zetsu window, any window's title bar -- went
+// to the desktop (a file moved there, iPad 2, 24 Oct 2026).
+static BOOL DMDesktopCoveredAt(CGPoint sp) {
+    id<UICoordinateSpace> screen = [UIScreen mainScreen].coordinateSpace;
+    for (UIView *st in DMAerialStages()) {
+        if (st.hidden || st.alpha < 0.1 || DMStageMinimized(st) || (![st isKindOfClass:[UIWindow class]] && !st.window)) continue;   // (a Zetsu window is a UIWindow itself)
+        if (CGRectContainsPoint([st convertRect:st.bounds toCoordinateSpace:screen], sp)) return YES;
+    }
+    if (DMSMEngine()) { NSDictionary<NSString *, NSValue *> *f = DMSMOpenWindowFrames(); for (NSString *k in f) if (CGRectContainsPoint(f[k].CGRectValue, sp)) return YES; }
+    return NO;
+}
 static NSString *DMDesktopFolderAt(CGPoint sp, UIView **icon) {
     if (icon) *icon = nil;
     DMDesktop *dk = gDesktop;
     if (!dk || ![dk dm_shownAt:sp]) return nil;
+    if (DMDesktopCoveredAt(sp)) { DM_FEATURE_MARK("desktop-drop-not-under-windows"); return nil; }
     DMDesktopItemView *v = [dk dm_itemViewAtScreen:sp];
     if (v && v.alpha > 0.5 && v.item.dir && !v.item.locked && !v.item.package && ![v.item.name hasSuffix:@".app"]) { if (icon) *icon = v; return v.item.path; }
     return dk.folder;

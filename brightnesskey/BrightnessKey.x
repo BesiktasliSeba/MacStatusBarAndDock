@@ -11,6 +11,9 @@
 //  - Every process: Shift + the =/+ key or the -/_ key is swallowed (down and up, so no "+" or "_" is typed) and
 //    posts a Darwin notification; SpringBoard changes the screen brightness. Held keys auto-repeat, so holding
 //    ramps the brightness. Combinations that also hold Control, Option or Command are left alone.
+//    Known limit: this runs in the focused app, and our loader keeps every app-side part out of the recovery apps
+//    (Sileo, Zebra, Filza, TrollStore and the like), so Shift + =/- does not change the brightness while one of those
+//    is in front. (The backlight combo below is handled in SpringBoard, so it works whatever is in front.)
 //  - SpringBoard only: the Shift + Option / Shift + Control modifier combos, which SpringBoard sees itself, change
 //    the keyboard backlight through CoreBrightness' KeyboardBrightnessClient (the same client Control Center's
 //    "Keyboard Brightness" slider uses).
@@ -233,7 +236,9 @@ static BOOL KeyEventAPIPresent(void) {
             BOOL isDuplicate = (code == gLastCode && flags == gLastFlags);
             gLastCode = code;
             gLastFlags = flags;
-            if (!isDuplicate && (flags & SHIFT_FLAG)) {
+            // (on the key going down only: Option's or Control's release -- Shift still held, flags without that key, so not a duplicate --
+            //  stepped the backlight a second time, two steps per press; 17.5.1, 24 Oct)
+            if (!isDuplicate && (flags & SHIFT_FLAG) && [key _isKeyDown]) {
                 if (code == OPTION_KEYCODE) {
                     Debug(@"[key] Shift+Option -> keyboard backlight up");
                     AdjustKeyboardBacklight(BACKLIGHT_STEP);
