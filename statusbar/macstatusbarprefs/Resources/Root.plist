@@ -537,7 +537,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>If something doesn’t work as it should (the menu bar, the Dock, a window or an app), tap Report a Problem. It opens a GitHub issue with your iPad model, iPadOS and tweak version already filled in; nothing is sent until you submit it. Some apps, like many games, can’t run in a window: use those full screen.</string>
+			<string>If something doesn’t work as it should (the menu bar, the Dock, a window or an app), tap Report a Problem. It opens a GitHub issue in your browser with your iPad model, iPadOS and tweak version filled in. The report is part of the link, so GitHub receives it when the page opens; it is only posted if you submit it. Some apps, like many games, can’t run in a window: use those full screen.</string>
 			<key>id</key>
 			<string>REPORT_GROUP</string>
 			<key>stockHides</key>

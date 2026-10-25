@@ -12,13 +12,14 @@
 #include <CoreFoundation/CoreFoundation.h>
 #define kMSBDMacPointerState "com.besiktasliseba.macpointer.active"   // 1 present, 2 standing down (another pointer tweak), 0 not said
 
-static inline BOOL MSBDMacPointerStandsDown(void) {
+static inline uint64_t MSBDMacPointerState(void) {   // (1 present and drawing, 2 standing down, 0 not said -- as published)
     static int token = 0;   // (kept: the state lives on while pointeruid restarts, until MacPointer says again)
     if (!token && notify_register_check(kMSBDMacPointerState, &token) != NOTIFY_STATUS_OK) token = 0;
     uint64_t v = 0;
     if (token) notify_get_state(token, &v);
-    return v == 2;
+    return v;
 }
+static inline BOOL MSBDMacPointerStandsDown(void) { return MSBDMacPointerState() == 2; }
 // iPadOS's pointer effects on our buttons and icons: with Pointer Style "iPadOS", or while the Mac pointer stands down for another pointer tweak.
 static inline BOOL MSBDIPadPointerEffects(void) {
     CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("pointerStyle"), CFSTR("com.besiktasliseba.macstatusbar"), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);

@@ -45,6 +45,10 @@
 #include "../../common/VersionGate.h"
 #include "../../common/DpkgState.h"
 #include "../../common/StageManagerAvailable.h"
+#include "../../common/PointerAnim.h"       // (DMPtrAnimDecide: Pointer Animations given back as SpringBoard does it, Mac-tested)
+#include "../../statusbar/SMSwitchOn.h"     // (DMSMConsentFrom: the Stage Manager consent values)
+#include <dlfcn.h>
+#include <grp.h>
 
 extern char **environ;
 
@@ -696,8 +700,14 @@ static void GiveBackStageManager(NSString *why) {
         CFPreferencesSetValue(trollPad ? CFSTR("TPSBChamoisWindowingEnabled") : CFSTR("SBChamoisWindowingEnabled"), kCFBooleanFalse, sb, CFSTR("mobile"), kCFPreferencesAnyHost);
         CFPreferencesSynchronize(sb, CFSTR("mobile"), kCFPreferencesAnyHost);
         CFPreferencesSetValue(CFSTR("stageManagerOnForEngine"), NULL, ours, CFSTR("mobile"), kCFPreferencesAnyHost);
+        // (switched off by US, not by the user: a done consent goes back to yes, so switched on again, or a reinstall, with Stage Manager still the
+        //  engine switches it on again with no question -- as StatusBar.x does when it switches it off itself; logic test B2)
+        CFPropertyListRef c = CFPreferencesCopyValue(CFSTR("smConsentOn"), ours, CFSTR("mobile"), kCFPreferencesAnyHost);
+        BOOL done = DMSMConsentFrom((__bridge id)c) == DMSMConsentDone;
+        if (c) CFRelease(c);
+        if (done) CFPreferencesSetValue(CFSTR("smConsentOn"), (__bridge CFNumberRef)@(DMSMConsentYes), ours, CFSTR("mobile"), kCFPreferencesAnyHost);
         CFPreferencesSynchronize(ours, CFSTR("mobile"), kCFPreferencesAnyHost);
-        ELog(@"%@: Stage Manager was on only as the window engine -- switched back off%@", why, trollPad ? @" (TrollPad's key)" : @"");
+        ELog(@"%@: Stage Manager was on only as the window engine -- switched back off%@%@", why, trollPad ? @" (TrollPad's key)" : @"", done ? @"; its consent back to yes" : @"");
     }
     CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("stageManagerUserOn"), ours, CFSTR("mobile"), kCFPreferencesAnyHost);
     if (!v) return;
@@ -708,17 +718,66 @@ static void GiveBackStageManager(NSString *why) {
     CFPreferencesSynchronize(ours, CFSTR("mobile"), kCFPreferencesAnyHost);
     ELog(@"%@: Stage Manager is back on, as the user had it%@", why, trollPad ? @" (TrollPad's key)" : @"");
 }
+// Pointer Animations (Accessibility > Pointer Control), turned off by the Mac pointer (StatusBar.x DMPointerAnimSync): given back when we are switched
+// off or removed -- here too, not only by the running SpringBoard, which may not run our code then (switched off before a respring that already
+// happened; logic test B1). The same rule (common/PointerAnim.h): only while it is still off as we left it. Done AS mobile in a child of this
+// helper (--ptranim-giveback): Apple's own setter, as Settings' switch and SpringBoard call it, writes mobile's value and tells every process.
+static void GiveBackPointerAnimations(NSString *why) {
+    char *const argv[] = { gSelfPath, "--ptranim-giveback", NULL };
+    pid_t pid;
+    if (posix_spawn(&pid, gSelfPath, NULL, NULL, argv, environ) != 0) { ELog(@"%@: Pointer Animations -- the give-back could not start", why); return; }
+    int status = 0; pid_t done = 0;
+    for (int i = 0; i < 100 && (done = waitpid(pid, &status, WNOHANG)) == 0; i++) usleep(50000);   // (at most 5 s: a package removal never hangs on it)
+    if (done == 0) { kill(pid, SIGKILL); waitpid(pid, &status, 0); ELog(@"%@: Pointer Animations -- the give-back did not finish, stopped", why); return; }
+    int r = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    if (r == 0) return;   // (nothing of ours to give back: the usual case)
+    ELog(@"%@: Pointer Animations %@", why, r == 10 ? @"given back on (the user's value)" : r == 11 ? @"left as the user has them now (our record cleared)"
+         : r == 12 ? @"-- Apple's setter did not take from here: still off, our record kept for the next give-back"
+         : r == 2 ? @"-- the setting is not there on this iPadOS" : [NSString stringWithFormat:@"-- the give-back failed (%d)", r]);
+}
+// (the child: exit 0 nothing to do, 10 given back on, 11 record cleared only, 12 the setter did not take -- record kept, 2 not there, 3 not as mobile)
+static int PointerAnimationsGiveBackAsMobile(void) {
+    for (int fd = getdtablesize() - 1; fd > 2; fd--) close(fd);   // (nothing the daemon or dpkg had open stays open in here -- re-check N5)
+    if (getuid() == 0) {   // (to mobile for good: its group list, its group, then its user -- this process only ever runs as mobile from here)
+        gid_t g = 501;
+        if (setgroups(1, &g) != 0 || setgid(501) != 0 || setuid(501) != 0) return 3;
+    }
+    if (getuid() != 501 || geteuid() != 501 || getgid() != 501 || getegid() != 501) return 3;
+    setenv("HOME", "/var/mobile", 1); setenv("CFFIXED_USER_HOME", "/var/mobile", 1);
+    CFStringRef ours = CFSTR("com.besiktasliseba.macstatusbar");
+    CFPreferencesAppSynchronize(ours);
+    CFPropertyListRef a = CFPreferencesCopyAppValue(CFSTR("axPointerAnimApplied"), ours), sv = CFPreferencesCopyAppValue(CFSTR("axPointerAnimSaved"), ours);
+    bool applied = a && CFGetTypeID(a) == CFBooleanGetTypeID() && CFBooleanGetValue(a), savedPresent = sv != NULL;
+    bool saved = sv && CFGetTypeID(sv) == CFBooleanGetTypeID() && CFBooleanGetValue(sv);
+    if (a) CFRelease(a);
+    if (sv) CFRelease(sv);
+    if (!applied) return 0;
+    void *ax = dlopen("/usr/lib/libAccessibility.dylib", RTLD_LAZY);
+    Boolean (*get)(void) = ax ? (Boolean (*)(void))dlsym(ax, "_AXSPointerAllowAppCustomizationEnabled") : NULL;
+    void (*set)(Boolean) = ax ? (void (*)(Boolean))dlsym(ax, "_AXSPointerAllowAppCustomizationSetEnabled") : NULL;
+    if (!get || !set) return 2;
+    DMPtrAnimStep st = DMPtrAnimDecide(false, applied, savedPresent, saved, get());
+    if (st.set == 2) {
+        set(true);
+        if (!get()) return 12;   // (read back: still off -- the setter did nothing from here: the record stays, so the user's value is not lost; N4)
+    }
+    CFPreferencesSetAppValue(CFSTR("axPointerAnimApplied"), NULL, ours);
+    CFPreferencesSetAppValue(CFSTR("axPointerAnimSaved"), NULL, ours);
+    CFPreferencesAppSynchronize(ours);
+    return st.set == 2 ? 10 : 11;
+}
 static void RestoreForOff(NSString *how, NSString *why) {
     NSString *status = DpkgStatus();
     ELog(@"MSB off (%@): switched off in %@ -- giving the engines back now, so the next respring comes up without Mac Status Bar's changes", why, how);
-    mkdir(ESTATEDIR, 0755);   // the marker FIRST: Mac Status Bar, still running until the respring, sees it and stops holding the engines' settings
+    // the marker FIRST, before every give-back below (as Uninstall): Mac Status Bar, still running until the respring, sees it and stops holding the
+    // engines' settings, Stage Manager and Pointer Animations -- never switches one back on while the give-backs run (1.5.1 re-check N1)
+    mkdir(ESTATEDIR, 0755);
     { FILE *m = fopen(OFFMARKER, "w"); if (m) { fputs(how.UTF8String, m); fclose(m); } chmod(OFFMARKER, 0644); }
     GiveBackEngineSettings();
     if (MSBDPackageOnDisk(status, @"com.opa334.choicy")) GiveBackChoicyEngines();
     GiveBackAll(@"Mac Status Bar is switched off");
     GiveBackStageManager(@"MSB off");
-    mkdir(ESTATEDIR, 0755);
-    FILE *f = fopen(OFFMARKER, "w"); if (f) { fputs(how.UTF8String, f); fclose(f); }
+    GiveBackPointerAnimations(@"MSB off");
 }
 static void PrepareForOn(NSString *why) {
     NSString *status = DpkgStatus();
@@ -1200,11 +1259,13 @@ static void Uninstall(void) {
     // common/TweakSpotlight.h kMTSRemoveAllNote); a moment for it before the files go.
     notify_post("com.besiktasliseba.msbd.spotlight.removeall");
     notify_post("com.besiktasliseba.graveescapetweak/removing");   // the running SpringBoard takes the HID "Top-Left Key as Escape" key mapping off every keyboard before our code is gone
+    notify_post("com.besiktasliseba.macpointer.removing");   // ... and gives Pointer Animations (Accessibility) back, if the Mac pointer turned them off (StatusBar.x DMPointerAnimSync)
     usleep(800000);
     mkdir(ESTATEDIR, 0755);
     { FILE *m = fopen(OFFMARKER, "w"); if (m) { fputs("removal", m); fclose(m); } chmod(OFFMARKER, 0644); }   // (the running SpringBoard stops holding the engines)
     GiveBackEngineSettings();
     GiveBackStageManager(@"removal");
+    GiveBackPointerAnimations(@"removal");   // (after the running SpringBoard's own give-back, posted above: whichever comes first, the other finds nothing to do)
     NSString *status = DpkgStatus();
     if (MSBDPackageOnDisk(status, @"com.opa334.choicy")) {
         GiveBackChoicyEngines();
@@ -1280,6 +1341,8 @@ static void DryRunEngines(const char *statusPath, BOOL oldRule) {
 #endif
 int main(int argc, char **argv) {
     @autoreleasepool {
+        // (this helper's own child, as mobile: first, so nothing at all -- no preferences read -- runs as root in this process before it drops to mobile)
+        if (argc > 1 && strcmp(argv[1], "--ptranim-giveback") == 0) return PointerAnimationsGiveBackAsMobile();
         // Not an iPad (common/DeviceGate.h): nothing but giving back. The daemon stays idle (launchd would restart it if it quit).
         if (argc > 1 && strcmp(argv[1], "--os-major") == 0) { printf("%ld\n", (long)[NSProcessInfo processInfo].operatingSystemVersion.majorVersion); return 0; }   // (postinst: the iPadOS 17+ Settings entries)
         if (argc > 1 && strcmp(argv[1], "--is-ipad") == 0) return MSBDIsIPad() ? 0 : 2;   // (postinst: 2, not 1, so a failed start never reads as "not an iPad")

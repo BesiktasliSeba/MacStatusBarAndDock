@@ -24,7 +24,7 @@ On an iPadOS version that hasn't been tested, the top of the Status Bar and Dock
 | Finder | Off removes Finder completely, with its Dock icon. | On |
 | Show Desktop Icons | Files and folders from On My iPad > Desktop on the first Home Screen page. | On |
 | Enable Windowing | Off: no window engine loads and every app opens full screen (respring). | On |
-| Window Engine | Which engine runs your windows. Only that one loads (respring). | Aerial |
+| Window Engine | Which engine runs your windows. Only that one loads (respring). With Stage Manager, MacStatusBar&Dock asks before it turns Stage Manager on, and if you say Not Now (or turn it off later), Turn On Stage Manager appears here. With another engine, Stage Manager stays off while it runs and comes back on as you had it when you turn off windowing. | Stage Manager where it runs (iPadOS 16.1 to 17), else Aerial |
 | Windows Behind Full-Screen Apps | A full-screen app comes in front of your windows, and Window > Bring All to Front brings them back. Off: windows stay in front. | On |
 | Resize Handles (Stage Manager engine only) | Mac handles, or Stage Manager's own. | Mac |
 | Tint Resize Handles | Resize handles take a soft version of each app's color. | Off |
@@ -32,7 +32,7 @@ On an iPadOS version that hasn't been tested, the top of the Status Bar and Dock
 | Turn Off Traffic Lights | Hides the window buttons in the menu bar for full-screen apps. | Off |
 | Hide Multitasking Dots | Hides the three dots at the top of apps while windowing runs. | On |
 | Mac Switcher | Desktops and Mission Control in place of the App Switcher. Not offered on iPadOS 18. | Off |
-| Report a Problem | Opens a filled-in GitHub issue. Nothing is sent unless you submit it. | |
+| Report a Problem | Opens a filled-in GitHub issue in your browser. The report is part of the link, so GitHub receives it when the page opens. It is only posted if you submit it. | |
 | Background | Automatic: a color behind the menu bar, unless ColorBar15 already colors it. Also Always On or Off. | Automatic |
 | Color and opacity | The background color, used while the menu bar text is light. | 70% |
 | Hide Grabber | Hides the short line at the top right of Control Center. | On |
@@ -99,7 +99,7 @@ These show up only when they apply. While the Pointer and Keyboard rows are ther
 
 | Setting | What it does | New install |
 |---|---|---|
-| Pointer Style | Mac: the Mac arrow and I-beam. iPadOS: Apple's round pointer. The Mac pointer follows Apple's Pointer Size. | Mac |
+| Pointer Style | Mac: the Mac arrow and I-beam, with Pointer Animations in Accessibility turned off while it is on (your own setting comes back with the iPadOS pointer, and if you turn them back on, they stay on). iPadOS: Apple's round pointer. The Mac pointer follows Apple's Pointer Size. | Mac |
 | Hide in Virtual Mac | Hides the Mac pointer in the VirtualMac app, which draws its own. | On |
 | Use Pointer Control Style | The Mac pointer takes Color, Border Width and Increase Contrast from Pointer Control. Off: the classic black and white pointer. | Off |
 | Block Pointer Pull-Down | Stops the pointer at the top edge from pulling down the Lock Screen. | On |
@@ -139,3 +139,4 @@ These have no switch:
 - The red badge on the Settings icon is hidden.
 - The Settings app has no large title and no alert banners over its sidebar, and Accessibility starts its own section.
 - Command-Tab brings an app's window to the front when it has one, and a quick Command-Tab from a window goes back to the app you used before.
+- In portrait, a Home Screen page whose icon layout only fits landscape (for example one tuned with Atria, which keeps one layout for both orientations) keeps its landscape positions, so no icon ends up off the screen. Pages that fit in portrait are left as they are, and so is editing the Home Screen.

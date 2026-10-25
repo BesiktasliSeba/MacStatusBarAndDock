@@ -38,6 +38,7 @@
 #import "../common/CrashGuard.h"    // (MSBDGuardCrashes: real SpringBoard crash reports, for the Aerial 5.0 probation)
 #import "../common/EngineBuilds.h"  // (the tested engine builds: one list with Settings and the root helper)
 #import "../common/MacPointerActive.h"   // (MSBDIPadPointerEffects: iPadOS's pointer effects on our buttons and icons, only without the Mac arrow)
+#import "../common/PointerAnim.h"   // (DMPtrAnimDecide: Pointer Animations with the Mac pointer, Mac-tested)
 #import "../common/StageManagerAvailable.h"   // (MSBDStageManagerAvailable: the 1.1.0 Stage Manager engine notice; one test with Settings and the root helper)
 #import "../common/AlertQueue.h"   // (MSBDMakeAlertWindow / MSBDAlertBusy / MSBDAlertCloseOnLock: our alerts one at a time, never over the Lock Screen)
 #import "../common/ReduceMotion.h"  // (MSBReduceMotion / MSBAnimate: Reduce Motion turns our zooms and springs into short cross-fades)
@@ -2350,6 +2351,59 @@ static NSString *DMSMStoredEverKey(void) {
     return DMSMEverKeyIn(stored);
 }
 static BOOL DMScreenOnAndUnlocked(void);   // (below, with the lock watcher)
+// ---- Stage Manager consent (1.5.1, Havoc rule 2.5; the rules and the steps: SMSwitchOn.h) ---------------------------------------------------------
+// smConsentOn: switching it on as the engine. smHoldConsent: keeping it off while another engine runs. DMSMConsent values; absent = unasked.
+#define kDMSMConsentOnKey   CFSTR("smConsentOn")
+#define kDMSMHoldConsentKey CFSTR("smHoldConsent")
+static int DMSMConsentRead(CFStringRef key) {   // (Settings' Turn On Stage Manager writes it and posts prefsChanged; DMLoadPrefs synchronizes the domain then)
+    CFPropertyListRef v = CFPreferencesCopyValue(key, MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    int c = DMSMConsentFrom((__bridge id)v);
+    if (v) CFRelease(v);
+    return c;
+}
+static void DMSMConsentWrite(CFStringRef key, int c, NSString *why) {
+    if (DMSMConsentRead(key) == c) return;
+    CFPreferencesSetValue(key, (__bridge CFNumberRef)@(c), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    CFPreferencesSynchronize(MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    notify_post("com.besiktasliseba.macstatusbar.smconsent");   // (an open Settings page shows the new state)
+    DMLog([NSString stringWithFormat:@"[smconsent] %@ = %d (%@)", (__bridge NSString *)key, c, why]);
+}
+// Whether Stage Manager is on, for Settings (it shows the engine's "Stage Manager is off" note and its Turn On Stage Manager button from it):
+// 1 on, 2 off; 0 not known. The token is kept, so the state lives as long as SpringBoard.
+static void DMSMPublishOn(BOOL on) {
+    static int token = 0;
+    if (!token && notify_register_check("com.besiktasliseba.macstatusbar.smon", &token) != NOTIFY_STATUS_OK) token = 0;
+    if (!token) return;
+    uint64_t want = on ? 1 : 2, cur = 0;
+    notify_get_state(token, &cur);
+    if (cur != want) { notify_set_state(token, want); notify_post("com.besiktasliseba.macstatusbar.smon"); }
+}
+// The two questions, each asked once (until answered), one of our alerts at a time and never over the Lock Screen or the Cover Sheet (AlertQueue.h).
+static UIWindow *gSMConsentWindow;
+static void DMSMAsk(BOOL turnOn, NSString *engine) {
+    if (gSMConsentWindow || MSBDAlertBusy(nil) || MSBDAlertLockedOrCovered()) return;
+    UIWindow *w = MSBDMakeAlertWindow(UIWindowLevelAlert + 10.0); DMSnapInvalidate();
+    gSMConsentWindow = w;
+    NSString *msg = turnOn ? @"MacStatusBar&Dock would like to turn on Stage Manager to show apps as Mac windows. You can change this later in Window Engine."
+                           : [NSString stringWithFormat:@"MacStatusBar&Dock would like to turn off Stage Manager while %@ shows apps as Mac windows. It comes back on when you turn off windowing. You can change this later in Window Engine.", engine ?: @"the window engine"];
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Stage Manager" message:msg preferredStyle:UIAlertControllerStyleAlert];
+    CFStringRef key = turnOn ? kDMSMConsentOnKey : kDMSMHoldConsentKey;
+    [a addAction:[UIAlertAction actionWithTitle:@"Not Now" style:UIAlertActionStyleCancel handler:^(UIAlertAction *act) {
+        DMSMConsentWrite(key, DMSMConsentNo, @"Not Now");
+        if (gSMConsentWindow == w) { w.hidden = YES; gSMConsentWindow = nil; }
+    }]];
+    [a addAction:[UIAlertAction actionWithTitle:turnOn ? @"Turn On" : @"Turn Off" style:UIAlertActionStyleDefault handler:^(UIAlertAction *act) {
+        DMSMConsentWrite(key, DMSMConsentYes, turnOn ? @"Turn On" : @"Turn Off");
+        if (gSMConsentWindow == w) { w.hidden = YES; gSMConsentWindow = nil; }
+    }]];
+    [w.rootViewController presentViewController:a animated:YES completion:nil];
+    MSBDAlertCloseOnLock(w, ^{   // (put away for the Lock Screen: not an answer -- asked again after the unlock)
+        if (gSMConsentWindow == w) gSMConsentWindow = nil;
+        DMLog(@"[smconsent] question put away for the Lock Screen (asked again after the unlock)");
+    });
+    DM_FEATURE_MARK("sm-consent-question");
+    DMLog([NSString stringWithFormat:@"[smconsent] asked: %@", turnOn ? @"turn Stage Manager on for the engine" : [NSString stringWithFormat:@"keep Stage Manager off while %@ runs", engine]]);
+}
 static BOOL DMSMStageManagerOnNow(void) {
     if (gSMOnNow < 0) {   // (not read yet: asked now; SpringBoard's defaults not there yet this early -- asked again next time, not cached as off)
         id sd = DMSwitcherDefaults();
@@ -2383,8 +2437,77 @@ void DMInitStageManagerButtonHook(void);
 // it" ten seconds after the start and both engines ran at once -- every app opened as a Stage Manager window next to Aerial (iPad 2, 16.7.7 +
 // TrollPad, 1.5.0~rc4, 24 Oct 2026).
 static BOOL DMPlainEngineLoaded(void) { return DMWindowingEnabled() && DMActiveEngine() == DMEngineNone && DMSMThirdPartyLoaded(); }
+// Apple's first-time path (SMSwitchOn.h): when we took it in this SpringBoard, and whether its introduction was seen on screen since (logic test W1:
+// a no only when it was seen and closed with Stage Manager still off). File-static, so Settings' Turn On Stage Manager can start over (W2).
+static CFTimeInterval gSMEverAskedAt = 0;
+static BOOL gSMIntroSeen = NO;
+// Apple's Stage Manager introduction on screen. It is not SpringBoard's own view: the SpringBoardEducation app (com.apple.SpringBoardEducation, with
+// its ChamoisTutorial) draws it, shown by SpringBoard as a remote transient overlay -- on 17.5.1 an SBTransientOverlayWindow whose
+// SBRemoteTransientOverlayViewController holds an SBRemoteTransientOverlayHostViewController, a _UIRemoteViewController whose service is that app
+// (a check for SpringBoard classes from SpringBoardEducation found nothing there, 25 Oct). So: any visible window holding a remote view controller
+// of that service -- the root view controller, what it presents, or a child a few levels down -- whatever the classes around it are called.
+static NSString *DMSMRemoteService(UIViewController *vc) {   // (a remote view controller's service bundle identifier; nil for any other)
+    static Class remote; static SEL sel;
+    if (!sel) { remote = objc_getClass("_UIRemoteViewController"); sel = NSSelectorFromString(@"serviceBundleIdentifier"); }
+    if (!remote || ![vc isKindOfClass:remote] || ![vc respondsToSelector:sel]) return nil;
+    id b = ((id (*)(id, SEL))objc_msgSend)(vc, sel);
+    return [b isKindOfClass:[NSString class]] ? b : nil;
+}
+static BOOL DMSMIntroVC(UIViewController *vc, int depth) {
+    for (; vc && depth < 8; vc = vc.presentedViewController, depth++) {
+        if ([DMSMRemoteService(vc) containsString:@"SpringBoardEducation"]) return YES;
+        for (UIViewController *c in vc.childViewControllers) if (DMSMIntroVC(c, depth + 1)) return YES;
+    }
+    return NO;
+}
+static BOOL DMSMIntroShown(void) {
+    for (UIWindow *w in DMAllWindows()) if (!w.hidden && w.alpha >= 0.01 && DMSMIntroVC(w.rootViewController, 0)) return YES;
+    return NO;
+}
+// The check can see the introduction here at all: the remote view controller class and its service identifier (an object) are there. Not there
+// (another iPadOS built differently): never "not seen", the rule from before the check -- still off 45 s later is a no, never a blind write (N3).
+static BOOL DMSMIntroSeeable(void) {
+    static int ok = -1;
+    if (ok < 0) {
+        Class remote = objc_getClass("_UIRemoteViewController");
+        Method m = remote ? class_getInstanceMethod(remote, NSSelectorFromString(@"serviceBundleIdentifier")) : NULL;
+        const char *enc = m ? method_getTypeEncoding(m) : NULL;
+        ok = enc && enc[0] == '@' && method_getNumberOfArguments(m) == 2;
+        if (!ok) DMLog(@"[smengine] Apple's Stage Manager introduction can't be seen on this iPadOS: still off 45 s after its first-time path counts as declined");
+    }
+    return ok;
+}
+#if DEBUG
+static const char *DMSMImageOf(id o) {   // (debug: the last path component of the image a class comes from)
+    const char *img = o ? class_getImageName(object_getClass(o)) : NULL;
+    const char *slash = img ? strrchr(img, '/') : NULL;
+    return slash ? slash + 1 : img ?: "?";
+}
+static void DMSMIntroDiag(void) {   // (debug: what is on screen during the first-time wait -- each window, its view controllers and their images)
+    NSMutableString *out = [NSMutableString stringWithString:@"[smengine] first-time wait, windows:"];
+    for (UIWindow *w in DMAllWindows()) {
+        if (w.hidden || w.alpha < 0.01) continue;
+        [out appendFormat:@"\n  %@ (%s) level %.0f", NSStringFromClass([w class]), DMSMImageOf(w), w.windowLevel];
+        for (UIViewController *vc = w.rootViewController; vc; vc = vc.presentedViewController) {
+            [out appendFormat:@" > %@ (%s)%@", NSStringFromClass([vc class]), DMSMImageOf(vc), DMSMRemoteService(vc) ? [NSString stringWithFormat:@" service %@", DMSMRemoteService(vc)] : @""];
+            for (UIViewController *c in vc.childViewControllers)
+                [out appendFormat:@" [%@ (%s)%@]", NSStringFromClass([c class]), DMSMImageOf(c), DMSMRemoteService(c) ? [NSString stringWithFormat:@" service %@", DMSMRemoteService(c)] : @""];
+        }
+    }
+    DMLog(out);
+}
+#endif
 static void DMStageManagerWatch(void) {
     static CFTimeInterval last = 0, notSince = 0;
+    {   // Settings' Turn On Stage Manager (MSBRootListController): a yes given now -- a wait for Apple's introduction starts over, so a tap made while
+        // it ran (the introduction just declined) is not read as part of that no (logic test W2)
+        static int turnOnToken = 0;
+        if (!turnOnToken) notify_register_dispatch("com.besiktasliseba.macstatusbar.smturnon", &turnOnToken, dispatch_get_main_queue(), ^(int t) {
+            CFPreferencesAppSynchronize(MSB_DOMAIN);
+            if (gSMEverAskedAt) DMLog(@"[smengine] Turn On Stage Manager in Settings: the wait for Apple's introduction is over, switched on as the engine");
+            gSMEverAskedAt = 0; gSMIntroSeen = NO;
+        });
+    }
     CFTimeInterval now = CACurrentMediaTime();
     if (now - last < 0.4) return;
     last = now;
@@ -2397,13 +2520,30 @@ static void DMStageManagerWatch(void) {
     if (![sd respondsToSelector:get] || ![sd respondsToSelector:set]) return;
     BOOL on = ((BOOL (*)(id, SEL))objc_msgSend)(sd, get);
     if (gSMOnNow != (int)on) { gSMOnNow = on; DMLog([NSString stringWithFormat:@"[stagemgr] Stage Manager is %@", on ? @"on" : @"off"]); DMSM17DiagSoon(); }   // (iPadOS 17 diagnostics: the engine's state)
+    DMSMPublishOn(on);
     BOOL off = access("/var/jb/var/lib/sshtoggled-engines/msb-off-restored", F_OK) == 0   // (switched off or being removed: given back now, no 10 s wait)
             || access("/var/jb/Library/MobileSubstrate/DynamicLibraries/MacStatusBar.dylib", F_OK) != 0;   // (removed: the postrm deletes that marker, so
                                                       //  the loader's absence says it, as in the engine holds -- the helper's give-back is never undone)
     if (DMSMEnginePicked() && !off) {   // (Stage Manager IS the engine: kept on; turning it off in Control Center / Settings is undone like the hold below.
                                         //  Switched off or removed: not the engine any more -- the give-back below; it was undone here until 1.3.4)
         notSince = 0;
-        if (on) DMSMNoteOwnStageUI();   // (its UI is ours for this SpringBoard: SpringBoard's own switch-off of it waits for a safe moment, SMEngineAPI.h)
+        if (on) {
+            gSMEverAskedAt = 0; gSMIntroSeen = NO;   // (Apple's first-time path is over: on)
+            DMSMNoteOwnStageUI();   // (its UI is ours for this SpringBoard: SpringBoard's own switch-off of it waits for a safe moment, SMEngineAPI.h)
+            // (on: the user's from now on -- an iPad where it already was on is never asked; after a yes, done; after a no, the user turned it on)
+            int c = DMSMConsentRead(kDMSMConsentOnKey);
+            if (c != DMSMConsentDone) DMSMConsentWrite(kDMSMConsentOnKey, DMSMConsentDone, c == DMSMConsentYes ? @"switched on after the yes" : c == DMSMConsentNo ? @"switched on by the user" : @"already on: not asked");
+            // (and a kept "the user had it on" -- stageManagerUserOn, from a hold for another engine -- is satisfied now: cleared, so the user's next
+            //  switch-off is their no, never taken for giving back that old "on"; it stayed when Stage Manager came on another way than the give-back,
+            //  e.g. Control Center in SpringBoard's first seconds -- 1.5.1 re-check N2)
+            CFPropertyListRef userOn = CFPreferencesCopyValue(CFSTR("stageManagerUserOn"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+            if (userOn) {
+                CFRelease(userOn);
+                CFPreferencesSetValue(CFSTR("stageManagerUserOn"), NULL, MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+                CFPreferencesSynchronize(MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+                DMLog(@"[smengine] Stage Manager is on as the engine: the kept \"the user had it on\" is satisfied, cleared");
+            }
+        }
         // (switched on only once SpringBoard is well up -- never in its first seconds, the review's likeliest Safe Mode cause on a first install --
         //  and only after the self-check passed, which DMSMEnginePicked() includes; and only on an unlocked screen with no Cover Sheet: SMSwitchOn.h)
         if (!on) {
@@ -2413,21 +2553,54 @@ static void DMStageManagerWatch(void) {
             //  _chamoisWindowingUIEverEnabledDefaultChangeHandler]) closes Control Center and shows Apple's Stage Manager introduction
             //  (SpringBoardEducation), whose Continue switches it on. We do the same: a first switch-on by us never skips Apple's first-time
             //  path (review (A) option 1: a first install on an iPad that never had Stage Manager on). If it has not come on 45 s later -- the
-            //  introduction declined or not there -- the setting is written directly, as before. "Never on" means no key says it was: with
+            //  introduction declined or not there -- that is a no (1.5.1, consent: nothing is written; until 1.5.0 the setting was written then).
+            //  All of it only after the user's yes to our own question (SMSwitchOn.h, Consent). "Never on" means no key says it was: with
             //  TrollPad loaded SpringBoard reads TrollPad's copies of the keys, so Apple's own ones are read too (SMSwitchOn.h, A12Z 18.5).)
-            static CFTimeInterval everAskedAt = 0;
             SEL everGet = NSSelectorFromString(@"chamoisEverEnabled"), everSet = NSSelectorFromString(@"setChamoisEverEnabled:");
             BOOL unlocked = DMScreenOnAndUnlocked() && !DMCoverSheetShown();
             int everSB = [sd respondsToSelector:everGet] && [sd respondsToSelector:everSet] ? (((BOOL (*)(id, SEL))objc_msgSend)(sd, everGet) ? 1 : 0) : -1;
-            NSString *everKey = everSB == 0 && !everAskedAt && unlocked && DMProcessAge() >= 12.0 ? DMSMStoredEverKey() : nil;   // (read only when it decides something)
-            DMSMOnStep step = DMSMSwitchOnStep(NO, DMProcessAge(), unlocked, everSB, everKey, everAskedAt ? now - everAskedAt : -1.0);
-            static BOOL lockWaitLogged = NO;
+            int consent = DMSMConsentRead(kDMSMConsentOnKey);
+            CFPropertyListRef userOnRef = CFPreferencesCopyValue(CFSTR("stageManagerUserOn"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+            BOOL userOnSaved = userOnRef != NULL; if (userOnRef) CFRelease(userOnRef);   // (the user's own "on", held off while another engine ran)
+            int intro = 0;   // (Apple's introduction since the first-time path: 0 not seen, 2 on screen, 1 seen and gone, -1 can't be seen here)
+            if (gSMEverAskedAt) {
+                if (!DMSMIntroSeeable()) intro = -1;
+                else {
+                    BOOL up = DMSMIntroShown();
+                    if (up && !gSMIntroSeen) { gSMIntroSeen = YES; DMLog(@"[smengine] Apple's Stage Manager introduction is on screen"); }
+                    intro = up ? 2 : gSMIntroSeen ? 1 : 0;
+                }
+#if DEBUG
+                static int diags = 0;   // (what is on screen, also where the check can't see: for the device checks of other iPadOS versions)
+                if (diags < 3 && now - gSMEverAskedAt > 3.0 * (diags + 1)) { diags++; DMSMIntroDiag(); }
+#endif
+            }
+            NSString *everKey = everSB == 0 && !gSMEverAskedAt && unlocked && DMProcessAge() >= 12.0 && consent == DMSMConsentYes && !userOnSaved ? DMSMStoredEverKey() : nil;   // (read only when it decides something)
+            DMSMOnStep step = DMSMSwitchOnStep(NO, consent, DMProcessAge(), unlocked, everSB, everKey, gSMEverAskedAt ? now - gSMEverAskedAt : -1.0, intro, userOnSaved);
+            static BOOL lockWaitLogged = NO, leftOffLogged = NO;
             if (step == DMSMOnWait) {
                 if (!unlocked && DMProcessAge() >= 12.0 && !lockWaitLogged) { lockWaitLogged = YES; DMLog(@"[smengine] Stage Manager goes on for the engine once the iPad is unlocked (not on the Lock Screen or under the Cover Sheet)"); }
                 return;
             }
+            if (step == DMSMOnGiveBack) {   // (the user had it on; another engine of ours held it off: theirs again, no question -- logic test B2)
+                ((void (*)(id, SEL, BOOL))objc_msgSend)(sd, set, YES);
+                gSMOnNow = ((BOOL (*)(id, SEL))objc_msgSend)(sd, get) ? 1 : 0;
+                CFPreferencesSetValue(CFSTR("stageManagerUserOn"), NULL, MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+                CFPreferencesSynchronize(MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+                if (gSMOnNow != 1) DMSMConsentWrite(kDMSMConsentOnKey, DMSMConsentYes, @"the user's own on, given back, reads back off: switched on as the engine");
+                DMLog([NSString stringWithFormat:@"[smengine] Stage Manager is the window engine: back on, as the user had it before another engine held it off (now %d)", gSMOnNow]);
+                return;
+            }
+            if (step == DMSMOnAsk) { DMSMAsk(YES, nil); return; }   // (our one-time question; until it is answered nothing is switched on)
+            if (step == DMSMOnDeclined) { gSMEverAskedAt = 0; gSMIntroSeen = NO; DMSMConsentWrite(kDMSMConsentOnKey, DMSMConsentNo, @"Apple's introduction declined"); return; }
+            if (step == DMSMOnUserOff) { DMSMConsentWrite(kDMSMConsentOnKey, DMSMConsentNo, @"switched off by the user"); return; }
+            if (step == DMSMOnLeftOff) {
+                if (!leftOffLogged) { leftOffLogged = YES; DMLog(@"[smengine] Stage Manager is the engine but off, as the user chose: nothing written (Settings > Status Bar shows how to turn it on)"); }
+                return;
+            }
+            leftOffLogged = NO;
             if (step == DMSMOnFirstTime) {
-                everAskedAt = now;
+                gSMEverAskedAt = now; gSMIntroSeen = NO;
                 ((void (*)(id, SEL, BOOL))objc_msgSend)(sd, everSet, YES);
                 CFPreferencesSetValue(CFSTR("stageManagerOnForEngine"), kCFBooleanTrue, MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);   // (on for the engine, as below)
                 CFPreferencesSynchronize(MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
@@ -2436,7 +2609,11 @@ static void DMStageManagerWatch(void) {
                 DMLog(@"[smengine] Stage Manager was never on here: Apple's first-time path (its introduction; Continue switches it on)");
                 return;
             }
-            if (everKey && !everAskedAt) {   // (once: SpringBoard's own reading said never, a stored key says it was on -- no introduction again)
+            if (gSMEverAskedAt) {   // (the first-time path was taken but SpringBoard never showed its introduction: the yes stands, written -- W1)
+                DMLog(@"[smengine] Apple's Stage Manager introduction did not appear: switched on directly, after the user's yes");
+                gSMEverAskedAt = 0;
+            }
+            if (everKey) {   // (once: SpringBoard's own reading said never, a stored key says it was on -- no introduction again)
                 static BOOL everLogged = NO;
                 if (!everLogged) { everLogged = YES; DMLog([NSString stringWithFormat:@"[smengine] Stage Manager was on here before (%@ is set; SpringBoard reads %@): switched on directly, without Apple's introduction", everKey, MSBDStageManagerTrollPad() ? @"TrollPad's copy of the key, which is empty" : @"no ever-enabled mark"]); }
             }
@@ -2500,6 +2677,10 @@ static void DMStageManagerWatch(void) {
                 ((void (*)(id, SEL, BOOL))objc_msgSend)(sd, set, NO); on = NO;
                 DM_FEATURE_MARK("sm-off-when-safe");
             }
+            // (off by US -- windowing off, another engine, switched off or removed, a start whose self-check failed --, or already off on the way: never
+            //  the user's switch-off. A done consent goes back to yes, so the next time Stage Manager is the engine it comes on again with no question
+            //  -- read as the user's no until 1.5.1's logic test, B2. The user's own switch-off while it was the engine was recorded as a no there.)
+            if (DMSMConsentRead(kDMSMConsentOnKey) == DMSMConsentDone) DMSMConsentWrite(kDMSMConsentOnKey, DMSMConsentYes, @"switched off by us, not by the user");
             CFPreferencesSetValue(CFSTR("stageManagerOnForEngine"), NULL, MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
             CFPreferencesSynchronize(MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
             DMLog([NSString stringWithFormat:@"[stagemgr] Stage Manager is not the engine any more: %@ (it was on only for the engine; %@, %lu window(s) in front)", step == DMSMOffNow ? @"switched back off" : @"already off",
@@ -2512,12 +2693,30 @@ static void DMStageManagerWatch(void) {
     if (engine) {
         notSince = 0;
         if (!on) return;
+        // (keeping it off needs the same yes once: a pick of this engine in Settings -- its confirmation says so; every pick before 1.5.1 too --, or
+        //  the answer to our question for an engine nobody picked, SMSwitchOn.h DMSMHoldStepFor; a no leaves Stage Manager as the user has it)
+        static BOOL holdLeaveLogged = NO;
+        BOOL picked = [gEnginePref isEqualToString:@"aerial"] || [gEnginePref isEqualToString:@"milkyway"] || [gEnginePref isEqualToString:@"zetsu"];
+        DMSMHoldStep hold = DMSMHoldStepFor(YES, YES, DMSMConsentRead(kDMSMHoldConsentKey), picked, DMProcessAge(), DMScreenOnAndUnlocked() && !DMCoverSheetShown());
+        if (hold == DMSMHoldWait) return;
+        if (hold == DMSMHoldAsk) {
+            if (DMSMStandInRun()) return;   // (Stage Manager is the pick: an engine standing in for it until the respring is not asked about -- I4)
+            DMEngine e = DMActiveEngine();
+            DMSMAsk(NO, e == DMEngineAerial ? @"Aerial" : e == DMEngineZetsu ? @"Zetsu" : e == DMEngineMilkyWay ? @"MilkyWay4" : @"the window engine");
+            return;
+        }
+        if (hold == DMSMHoldLeave) {
+            if (!holdLeaveLogged) { holdLeaveLogged = YES; DMLog(@"[stagemgr] Stage Manager is on while our window engine runs: left on, as the user chose (Not Now)"); }
+            return;
+        }
+        holdLeaveLogged = NO;
         if (!saved) {
             CFPreferencesSetValue(CFSTR("stageManagerUserOn"), kCFBooleanTrue, MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
             CFPreferencesSynchronize(MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
         }
         ((void (*)(id, SEL, BOOL))objc_msgSend)(sd, set, NO);
         DMSMFlattenStages(@"Stage Manager switched off for our window engine");
+        if (DMSMConsentRead(kDMSMConsentOnKey) == DMSMConsentDone) DMSMConsentWrite(kDMSMConsentOnKey, DMSMConsentYes, @"switched off by us for another engine, not by the user");   // (B2, as above)
         DMLog([NSString stringWithFormat:@"[stagemgr] Stage Manager was switched on while our window engine runs: switched off again (now %d); it comes back when windowing is off",
                ((BOOL (*)(id, SEL))objc_msgSend)(sd, get)]);
         return;
@@ -2537,6 +2736,11 @@ static BOOL DMStageManagerHeldNow(void) {
     if (DMTestFlag("/tmp/msb-nosmguard")) return NO;
     if (DMSMEngine()) return NO;
     if (!DMWindowingEnabled() || (DMActiveEngine() == DMEngineNone && !DMPlainEngineLoaded())) return NO;   // (no window engine at all: the button is the user's)
+    {   // (held only with the user's yes to keeping it off -- 1.5.1: without one the tap goes through, and the question comes when Stage Manager is on)
+        BOOL picked = [gEnginePref isEqualToString:@"aerial"] || [gEnginePref isEqualToString:@"milkyway"] || [gEnginePref isEqualToString:@"zetsu"];
+        int hc = DMSMConsentRead(kDMSMHoldConsentKey);
+        if (hc == DMSMConsentNo || (!picked && hc != DMSMConsentYes && hc != DMSMConsentDone)) return NO;
+    }
     id sd = DMSwitcherDefaults();
     SEL get = NSSelectorFromString(@"chamoisWindowingEnabled");
     return [sd respondsToSelector:get] && !((BOOL (*)(id, SEL))objc_msgSend)(sd, get);
@@ -13549,7 +13753,7 @@ static void DMOpenMenu(UIButton *btn) {
     }
 #endif
     NSString *update = MSBDUpdateAvailable(installedVersion);
-    DMLog([NSString stringWithFormat:@"[update] installed %@, newest in the package managers' lists %@ (%lu list files) -> %@", installedVersion, MSBDNewestListedVersion(), (unsigned long)MSBDRepoListFiles().count, update ?: @"no update"]);
+    DMLog([NSString stringWithFormat:@"[update] installed %@ (%lu list files) -> %@", installedVersion, (unsigned long)MSBDRepoListFiles().count, update ?: @"no update"]);   // (the lists are read only when they change: MSBDUpdateAvailable)
     NSString *managerID = nil;
     NSURL *updateURL = update ? MSBDPackageManagerURL(^BOOL(NSString *bid) {
         return ((id (*)(id, SEL, id))objc_msgSend)(DMCall(objc_getClass("SBApplicationController"), @"sharedInstance"), NSSelectorFromString(@"applicationWithBundleIdentifier:"), bid) != nil;
@@ -23259,6 +23463,23 @@ static void DMRunTrigger(NSString *cmd) {
                 DMLog([NSString stringWithFormat:@"[smdump]    %@ size %@ type %lld of reference %@ (display %@)", DMCall(item, @"bundleIdentifier"), NSStringFromCGSize(sz.normalizedSize), sz.type, NSStringFromCGRect(sz.referenceBounds), DMCall(al, @"preferredDisplayIdentity")]); }
         }
     }
+    else if ([cmd isEqualToString:@"ptranimreset"]) {   // ptranimreset: test clean-up -- Pointer Animations given back as for the iPadOS pointer, our record
+                                                       // gone, and nothing applied again until the next SpringBoard start (debug)
+        extern void DMPointerAnimTestReset(void);
+        DMPointerAnimTestReset();
+    }
+    else if ([cmd hasPrefix:@"smanswer_"]) {   // smanswer_<button title>: press that button of our Stage Manager question, as a tap would (debug: consent tests)
+        NSString *title = [cmd substringFromIndex:9];
+        UIAlertController *a = (UIAlertController *)gSMConsentWindow.rootViewController.presentedViewController;
+        BOOL pressed = NO;
+        if ([a isKindOfClass:[UIAlertController class]]) for (UIAlertAction *act in a.actions) if ([act.title isEqualToString:title]) {
+            void (^h)(UIAlertAction *) = nil; @try { h = [act valueForKey:@"handler"]; } @catch (id e) {}
+            [a dismissViewControllerAnimated:NO completion:nil];
+            if (h) h(act);
+            pressed = YES; break;
+        }
+        DMLog([NSString stringWithFormat:@"[smanswer] %@: %@", title, pressed ? @"pressed" : (a ? @"no such button" : @"no question up")]);
+    }
     else if ([cmd hasPrefix:@"stagemgr_"]) {   // stagemgr_<0|1|get>: read or set SpringBoard's Stage Manager setting (as Settings / Control Center would) -- tests the hold
         id sd = DMSwitcherDefaults();
         SEL get = NSSelectorFromString(@"chamoisWindowingEnabled"), set = NSSelectorFromString(@"setChamoisWindowingEnabled:");
@@ -28881,6 +29102,88 @@ static void DMPointerDeviceCheck(void) {
         dispatch_async(dispatch_get_main_queue(), ^{ DMPointerDeviceApply(attached); });
     });
 }
+// ---- Pointer Animations off with the Mac pointer (1.5.1, KT) ------------------------------------------------------------------------------------
+// iPadOS's own Settings > Accessibility > Pointer Control > Pointer Animations ("Allow the pointer to animate and adapt to elements on the screen";
+// Apple's key PointerAllowAppCustomizationEnabled in com.apple.Accessibility: Settings' row, PointerCustomShapes, calls libAccessibility's
+// _AXSPointerAllowAppCustomizationSetEnabled, which writes it and posts its change notification -- read from AccessibilitySettings on 17.5.1) makes the
+// system snap and morph its pointer to elements; under the Mac arrow that showed as lag and glitches at the menu bar and elsewhere. Picking the Mac
+// pointer (the default) turns it off, once: the Pointer page's footer says so (the user's consent), and the user's own value is kept. Turned back on by
+// the user while the Mac pointer is on, it stays on (applied once per Mac-pointer period, never at every start). Whenever the Mac pointer is
+// selected, with or without a mouse or trackpad (KT, 25 Oct). Given back -- only if it is still off as we left it -- when the user picks the iPadOS
+// pointer, MacPointer stands down for another pointer tweak, the tweak is turned off (the constructor's off path), switched off in Choicy or iCleaner
+// Pro (the root helper's off marker) or the package removed (sshtoggled --uninstall posts com.besiktasliseba.macpointer.removing); switched off or
+// being removed, it is never applied again (DMPtrAnimOffOrRemoved), and the root helper gives it back too, as mobile, for a SpringBoard that does not
+// run our code any more (logic test B1). Existing users with the Mac pointer get the switch-off once, on the update. Not there (another iPadOS):
+// nothing is done.
+static Boolean (*gDMAXAnimGet)(void);
+static void (*gDMAXAnimSet)(Boolean);
+static BOOL DMAXAnimLoad(void) {
+    static dispatch_once_t once; static BOOL ok = NO;
+    dispatch_once(&once, ^{
+        void *ax = dlopen("/usr/lib/libAccessibility.dylib", RTLD_LAZY);
+        gDMAXAnimGet = ax ? (Boolean (*)(void))dlsym(ax, "_AXSPointerAllowAppCustomizationEnabled") : NULL;
+        gDMAXAnimSet = ax ? (void (*)(Boolean))dlsym(ax, "_AXSPointerAllowAppCustomizationSetEnabled") : NULL;
+        ok = gDMAXAnimGet && gDMAXAnimSet;
+        if (!ok) DMLog(@"[ptranim] Pointer Animations' setting is not there on this iPadOS: left alone");
+    });
+    return ok;
+}
+static BOOL DMPointerAnimPref(CFStringRef key, BOOL *present) {
+    CFPropertyListRef v = CFPreferencesCopyValue(key, MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    BOOL on = v && CFGetTypeID(v) == CFBooleanGetTypeID() && CFBooleanGetValue(v);
+    if (present) *present = v != NULL;
+    if (v) CFRelease(v);
+    return on;
+}
+static BOOL gDMPtrAnimHeld = NO;   // (debug: ptranimreset -- nothing more applied until the next SpringBoard start)
+static BOOL gDMPtrAnimRemoving = NO;   // (the package is being removed: sshtoggled --uninstall posted com.besiktasliseba.macpointer.removing)
+// Switched off (the root helper's off marker: Choicy or iCleaner Pro) or being removed (the notification, or the loader already gone): the pointer
+// is not ours any more, whatever Pointer Style says. Until 1.5.1's logic test (B1) the give-back for these lived only in DMStageManagerWatch -- which
+// never runs on iPadOS 15 nor with the stock status bar -- and the bridge's 30 s refresh turned Pointer Animations off again after any give-back,
+// the removal's too, so the user's value was lost once the package was gone.
+static BOOL DMPtrAnimOffOrRemoved(void) {
+    return gDMPtrAnimRemoving || access("/var/jb/var/lib/sshtoggled-engines/msb-off-restored", F_OK) == 0
+        || access("/var/jb/Library/MobileSubstrate/DynamicLibraries/MacStatusBar.dylib", F_OK) != 0;
+}
+static void DMPointerAnimSync(BOOL macPointer, NSString *why) {
+    if (gDMPtrAnimHeld || !DMAXAnimLoad()) return;
+    if (macPointer && DMPtrAnimOffOrRemoved()) { macPointer = NO; why = @"switched off or removed"; }   // (never applied then, whoever asks)
+    BOOL savedPresent = NO;
+    BOOL applied = DMPointerAnimPref(CFSTR("axPointerAnimApplied"), NULL), saved = DMPointerAnimPref(CFSTR("axPointerAnimSaved"), &savedPresent);
+    if (macPointer ? applied : !applied) return;   // (the usual case: nothing to decide, Apple's setting not even read)
+    BOOL now = gDMAXAnimGet();
+    DMPtrAnimStep st = DMPtrAnimDecide(macPointer, applied, savedPresent, saved, now);   // (common/PointerAnim.h, Mac-tested)
+    // (the record that keeps the user's value is written BEFORE Pointer Animations go off, and cleared only AFTER they came back: a SpringBoard that
+    //  ends in between -- a crash, a respring -- leaves the user's value stored, never lost; logic test W5)
+    if (st.set == 2) gDMAXAnimSet(true);
+    CFPreferencesSetValue(CFSTR("axPointerAnimApplied"), st.applied ? kCFBooleanTrue : NULL, MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    CFPreferencesSetValue(CFSTR("axPointerAnimSaved"), st.keepSaved ? (st.saved ? kCFBooleanTrue : kCFBooleanFalse) : NULL, MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    CFPreferencesSynchronize(MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    if (st.set == 1) gDMAXAnimSet(false);
+    if (macPointer) {
+        DM_FEATURE_MARK("pointer-animations-off");
+        DMLog([NSString stringWithFormat:@"[ptranim] the Mac pointer (%@): Pointer Animations %@ (the user's value, %@, kept)", why, st.set == 1 ? @"turned off" : @"already off", now ? @"on" : @"off"]);
+    } else DMLog([NSString stringWithFormat:@"[ptranim] %@: Pointer Animations given back (%@)", why, st.set == 2 ? @"on again" : now ? @"the user had turned them on already" : @"they were off before"]);
+}
+#if DEBUG
+void DMPointerAnimTestReset(void) {   // (the ptranimreset trigger)
+    DMPointerAnimSync(NO, @"test clean-up");
+    gDMPtrAnimHeld = YES;
+    DMLog([NSString stringWithFormat:@"[ptranim] test clean-up: Pointer Animations %@, held until the next start", DMAXAnimLoad() ? (gDMAXAnimGet() ? @"on" : @"off") : @"(not there)"]);
+}
+#endif
+// Pointer Animations follow the pointer (common/PointerAnim.h DMPtrAnimIsMacPointer, Mac-tested): off once whenever the Mac pointer is selected --
+// with no mouse or trackpad too, and before MacPointer has said anything (KT, 25 Oct) --; given back for iPadOS's pointer, while the Mac pointer
+// stands down for another pointer tweak (the pointer is not ours, common/MacPointerActive.h), and once we are switched off or being removed.
+// Decided at every 2 s check of the bridge -- with either status bar style and on every iPadOS -- and at once when Pointer Style or MacPointer's
+// state changes.
+static BOOL gDMPtrStyleMac = YES;   // (Pointer Style, from the bridge's preferences read)
+static void DMPointerAnimTick(void) {
+    uint64_t state = MSBDMacPointerState();
+    BOOL offOrRemoved = DMPtrAnimOffOrRemoved();
+    DMPointerAnimSync(DMPtrAnimIsMacPointer(gDMPtrStyleMac, state, offOrRemoved), offOrRemoved ? (gDMPtrAnimRemoving ? @"removal" : @"switched off or removed")
+                      : !gDMPtrStyleMac ? @"Pointer Style iPadOS" : state == 2 ? @"the Mac pointer stands down for another pointer tweak" : @"Pointer Style Mac");
+}
 static BOOL gDMPointerPrefsStale = YES;
 static void DMPointerBridgeTick(void) {
     static int tConfig, tOrient, tHide; static uint64_t lastConfig = UINT64_MAX, lastOrient = UINT64_MAX, lastHide = UINT64_MAX;
@@ -28902,6 +29205,7 @@ static void DMPointerBridgeTick(void) {
         if (v) { if (CFGetTypeID(v) == CFBooleanGetTypeID()) useAX = CFBooleanGetValue(v); CFRelease(v); }
         uint64_t pct = (uint64_t)llround(MAX(0.5, MIN(2.0, size)) * 100.0);
         config = (on ? 1 : 0) | (pct << 8) | (DMAutoHideActive() ? 4 : 0) | (useAX ? 8 : 0);   // (bit 2: the auto-hiding status bar wants to know where the pointer is; bit 3: Use Pointer Control Style)
+        gDMPtrStyleMac = on; DMPointerAnimTick();   // (Pointer Animations: at once after a Pointer Style change)
     }
     config = (config & ~(uint64_t)4) | (DMAutoHideActive() ? 4 : 0);
     uint64_t orient = (uint64_t)DMRealInterfaceOrientation();
@@ -28913,7 +29217,7 @@ static void DMPointerBridgeTick(void) {
     if (hide != lastHide) { lastHide = hide; notify_set_state(tHide, hide); changed = YES; }
     if (changed) notify_post("com.besiktasliseba.macpointer.changed");
     static CFTimeInterval lastDeviceCheck = -10;
-    if (CACurrentMediaTime() - lastDeviceCheck > 1.9) { lastDeviceCheck = CACurrentMediaTime(); DMPointerDeviceCheck(); }   // every 2 s, at either pace
+    if (CACurrentMediaTime() - lastDeviceCheck > 1.9) { lastDeviceCheck = CACurrentMediaTime(); DMPointerDeviceCheck(); DMPointerAnimTick(); }   // every 2 s, at either pace
 }
 // The bridge's pace (performance audit P4): every 0.25 s while a trackpad or mouse is attached (or the auto-hiding status bar is on), otherwise
 // once a second -- its per-tick work (orientation, front app, settings for MacPointer) matters only with a pointer, and the 2 s device check still
@@ -28936,6 +29240,8 @@ static void DMPointerBridgeStart(void) {
     DMGateTimer(gDMPointerTimer);
     static int prefsToken;   // a Settings change applies at once (not only at the next 2 s preferences read)
     notify_register_dispatch("com.besiktasliseba.macstatusbar/prefsChanged", &prefsToken, dispatch_get_main_queue(), ^(int tok) { gDMPointerPrefsStale = YES; DMPointerBridgeTick(); DMPointerBridgeSchedule(); });
+    static int presenceToken;   // (MacPointer says it draws or stands down: Pointer Animations follow at once)
+    notify_register_dispatch(kMSBDMacPointerState, &presenceToken, dispatch_get_main_queue(), ^(int tok) { DMPointerAnimTick(); });
     [[NSRunLoop mainRunLoop] addTimer:gDMPointerTimer forMode:NSRunLoopCommonModes];
     DMPointerBridgeTick();
 }
@@ -34229,6 +34535,7 @@ void DMSMRunAction(UIAction *action, id sender) {
         BOOL enabled = !v || (CFGetTypeID(v) == CFBooleanGetTypeID() && CFBooleanGetValue(v));
         if (v) CFRelease(v);
         if (!enabled) {   // switched off: Aerial 5.0's own settings (held while it was our engine) go back to the user's
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMPointerAnimSync(NO, @"Mac Status Bar is switched off"); });   // (and Pointer Animations)
             DMSpotPublishOff();   // (nothing of ours in Spotlight either)
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMAerial5GiveBackPrefs(@"Mac Status Bar is switched off"); });
             return;
@@ -34242,6 +34549,10 @@ void DMSMRunAction(UIAction *action, id sender) {
     if (DMTestFlag("/tmp/msb-autounlock")) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(14 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         DMLog(@"[lockcycle] auto-unlock after the start (debug flag /tmp/msb-autounlock)"); DMLockCycleStep(0); });
 #endif
+    {   // the package is being removed (sshtoggled --uninstall): Pointer Animations go back now, while our code still runs (either status bar style)
+        static int removeToken = 0;
+        notify_register_dispatch("com.besiktasliseba.macpointer.removing", &removeToken, dispatch_get_main_queue(), ^(int t) { gDMPtrAnimRemoving = YES; DMPointerAnimSync(NO, @"removal"); });
+    }
     if (!DMCtorSkip("noiconlift")) %init(MacPointerIcons);   // (no icon lift with the Mac pointer, see there; with either status bar style, as the Mac pointer
                                                              //  runs with both -- StockBar.h starts its bridge too)
     if (gStockBar) { DMSpotPublishOff(); DMSMCheckReadOnly(); DMSkipLockInit(); DMPrewarmStockOff(); DMStockBarStart(); return; }   // only the parts that stay (StockBar.h); the rest below never runs

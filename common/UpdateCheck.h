@@ -53,29 +53,41 @@ static inline int MSBDVersionCompare(NSString *a, NSString *b) {   // <0, 0, >0 
     return r ? r : MSBDVerRevCmp(ra, rb);
 }
 
-// The package lists the package managers downloaded for our repo: Sileo's (APT's lists) and Zebra's own copy.
+// The package lists the package managers downloaded for our repo: Sileo's (APT's lists) and Zebra's own copy -- and Havoc's (1.5.1): where the package
+// came from Havoc, the update is listed there (havoc.app_._Packages); the newest version of our package in any of them is the one waiting, the same one
+// the package manager offers.
 static inline NSArray<NSString *> *MSBDRepoListFiles(void) {
     NSMutableArray *out = [NSMutableArray array];
     for (NSString *dir in @[@"/var/jb/var/lib/apt/lists", @"/var/mobile/Library/Application Support/xyz.willy.Zebra/lists"]) {
         for (NSString *f in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil])
-            if ([f hasPrefix:@"besiktasliseba.github.io_repo"] && [f hasSuffix:@"Packages"]) [out addObject:[dir stringByAppendingPathComponent:f]];
+            if (([f hasPrefix:@"besiktasliseba.github.io_repo"] || [f hasPrefix:@"havoc.app_"]) && [f hasSuffix:@"Packages"]) [out addObject:[dir stringByAppendingPathComponent:f]];
     }
     return out;
 }
-// The newest version of this package in those lists, or nil. Cached until one of the files (or dpkg's status) changes.
-static inline NSString *MSBDNewestListedVersion(void) {
-    NSString *best = nil;
-    for (NSString *path in MSBDRepoListFiles()) {
-        NSString *text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
-        for (NSString *block in [text componentsSeparatedByString:@"\n\n"]) {
-            if (![block containsString:@"Package: " MSBD_PACKAGE_ID "\n"] && ![block hasSuffix:@"Package: " MSBD_PACKAGE_ID]) continue;
-            for (NSString *line in [block componentsSeparatedByString:@"\n"]) {
-                if (![line hasPrefix:@"Version: "]) continue;
-                NSString *v = [[line substringFromIndex:9] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-                if (v.length && (!best || MSBDVersionCompare(v, best) > 0)) best = v;
-            }
+// The newest version of this package in those lists, or nil. Cached until one of the files (or dpkg's status) changes (MSBDUpdateAvailable).
+// Only our own stanzas are read: Havoc's list is a few MB (2.9 MB on the 17.5 iPad, 25 Oct), so it is searched for our Package line, never split
+// into every stanza.
+static inline NSString *MSBDNewestVersionInList(NSString *text, NSString *best) {   // (one list's text; best: the newest so far, or nil)
+    NSString *needle = @"Package: " MSBD_PACKAGE_ID "\n";
+    NSUInteger at = 0, len = text.length;
+    while (at < len) {
+        NSRange r = [text rangeOfString:needle options:NSLiteralSearch range:NSMakeRange(at, len - at)];
+        if (r.location == NSNotFound) break;
+        at = NSMaxRange(r);
+        if (r.location > 0 && [text characterAtIndex:r.location - 1] != '\n') continue;   // (only a whole line: not "Depends: ...Package: ...")
+        NSRange stop = [text rangeOfString:@"\n\n" options:NSLiteralSearch range:NSMakeRange(r.location, len - r.location)];
+        NSString *block = [text substringWithRange:NSMakeRange(r.location, (stop.location == NSNotFound ? len : stop.location) - r.location)];
+        for (NSString *line in [block componentsSeparatedByString:@"\n"]) {
+            if (![line hasPrefix:@"Version: "]) continue;
+            NSString *v = [[line substringFromIndex:9] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+            if (v.length && (!best || MSBDVersionCompare(v, best) > 0)) best = v;
         }
     }
+    return best;
+}
+static inline NSString *MSBDNewestListedVersion(void) {
+    NSString *best = nil;
+    for (NSString *path in MSBDRepoListFiles()) best = MSBDNewestVersionInList([NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil], best);
     return best;
 }
 static inline NSString *MSBDUpdateAvailable(NSString *installed) {   // the newer version waiting, or nil (none, or not installed through dpkg)

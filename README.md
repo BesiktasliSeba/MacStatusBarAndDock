@@ -171,7 +171,7 @@ To uninstall, remove MacStatusBar&Dock in Sileo. It gives the window engines the
 
 ## Privacy
 
-MacStatusBar&Dock has no network code. It doesn't contact any server, send analytics or crash reports, or update itself. Report a Problem opens a filled-in GitHub issue in your browser, and nothing is sent unless you submit it. About This iPad shows your serial number on screen only. Details, and how to check this in the source: [SECURITY.md](./SECURITY.md).
+MacStatusBar&Dock has no network code. It doesn't contact any server, send analytics or crash reports, or update itself. Report a Problem opens a new GitHub issue in your browser with the report filled in. The report is part of the link, so GitHub receives it when the page opens, and it only becomes an issue if you submit it. About This iPad shows your serial number on screen only. Details, and how to check this in the source: [SECURITY.md](./SECURITY.md).
 
 Window engines are separate tweaks with their own behaviour. For example, Aerial 5.0 goes online when SpringBoard starts.
 

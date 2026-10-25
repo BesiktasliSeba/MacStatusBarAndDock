@@ -2,6 +2,25 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.5.1
+
+### Improvements
+- Stage Manager: MacStatusBar&Dock now asks before it turns Stage Manager on ("MacStatusBar&Dock would like to turn on Stage Manager to show apps as Mac windows."). If you choose Not Now, decline Apple's introduction or turn Stage Manager off yourself, it stays off, and Settings > Status Bar shows Turn On Stage Manager. If Stage Manager is already on, you are not asked.
+- With Aerial, Zetsu or MilkyWay4, Stage Manager still stays off while the engine runs, and comes back on as you had it when you turn off windowing. Picking the engine now says so, and an engine you never picked asks first.
+- The Mac pointer turns off Pointer Animations (Accessibility > Pointer Control) while it is on, so the pointer no longer snaps or morphs under the arrow and moves smoothly at the menu bar. Your own setting comes back when you choose the iPadOS pointer, turn MacStatusBar off or remove it, and if you turn Pointer Animations back on, they stay on. If you already use the Mac pointer, they are turned off once with this update.
+- Update Available in the Apple menu also sees an update listed on Havoc.
+
+### Fixes
+- Fixed a crash a future Zetsu version could cause when it opens its alerts.
+- Cancelling a swipe back from the App Library no longer leaves your windows on top of it.
+- A force quit that Guided Access stops no longer counts as quitting the app.
+- With another tweak drawing the pointer, buttons and icons keep iPadOS's pointer effects.
+- The protection that keeps a quit app closed is sturdier: quick restarts of the system's scheduler no longer turn it off, and it is safe when two launches are asked for at once.
+- iPadOS 18 (experimental): the Settings rows in General are set up more safely.
+
+### Report a Problem
+- The texts now say it plainly: the report is part of the GitHub link, so GitHub receives it when the page opens; it is only posted if you submit it.
+
 ## 1.5.0
 
 ### New

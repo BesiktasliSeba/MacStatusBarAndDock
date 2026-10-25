@@ -13,7 +13,7 @@ MacStatusBar&Dock contains **no network or telemetry functionality**. It does no
 
 What it does instead, all on the iPad:
 
-- **Report a Problem** (Settings > Status Bar, and the note after an automatic crash recovery) opens a new GitHub issue **in your browser, filled in for you to read, edit and send or discard yourself**. It contains your iPad model (for example iPad13,4), iPadOS version, window engine and its version, the tweak's version, and after a crash a short summary of this tweak's own part of the crash log. Nothing is sent unless you submit the issue.
+- **Report a Problem** (Settings > Status Bar, and the note after an automatic crash recovery) opens a new GitHub issue **in your browser, filled in for you to read, edit and submit or discard yourself**. It contains your iPad model (for example iPad13,4), iPadOS version, window engine and its version, the tweak's version, and after a crash a short summary of this tweak's own part of the crash log. The report travels in the link to GitHub, so GitHub receives its text when the page opens, even if you never submit it; it is only posted as an issue if you submit it.
 - **Links** open in your browser only when you tap them: the window engines' pages in Settings, the Reynard browser's page from the Go menu, and the UTM and VirtualMac pages in About This iPad.
 - **Update Available** in the Apple menu reads the package lists your package manager has already downloaded. The tweak doesn't go online to check.
 - **The Wi-Fi and VPN menus** use iPadOS's own Wi-Fi and VPN controls on the iPad. The tweak sends nothing of its own.

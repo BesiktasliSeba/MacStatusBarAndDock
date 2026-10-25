@@ -15,6 +15,7 @@
 #import "../../common/StageManagerAvailable.h"
 #import "../../common/DesktopCheck.h"   // (Show Desktop Icons on iPadOS 17+: SpringBoard's check of the Home Screen parts the desktop uses)
 #import "../../common/OtherTweaks.h"   // (Single Mute showing the mute icon: said under the Audio group)
+#import "../SMSwitchOn.h"   // (DMSMConsentFrom: the stored Stage Manager answers, read as SpringBoard reads them)
 
 // The "Apps" row in the plist uses AltList's app picker (ATLApplicationListMultiSelectionController). That
 // class only exists once AltList's library is loaded, and this bundle is not linked against it, so load it
@@ -124,6 +125,26 @@ static BOOL MSBChoicyApplyEngine(NSString *engine) {
 	return YES;
 }
 static void MSBRespring(void) { MSBDRespring(); }   // (LineSwitch.h: with the VPN check first)
+// ---- Stage Manager consent (1.5.1, Havoc rule 2.5; statusbar/SMSwitchOn.h) ----
+// SpringBoard's reading of Stage Manager (StatusBar.x DMSMPublishOn): 1 on, 2 off, 0 not known.
+static int MSBStageManagerOnState(void) {
+	int t = 0; uint64_t v = 0;
+	if (notify_register_check("com.besiktasliseba.macstatusbar.smon", &t) == NOTIFY_STATUS_OK) { notify_get_state(t, &v); notify_cancel(t); }
+	return v <= 2 ? (int)v : 0;
+}
+// smConsentOn / smHoldConsent (SMSwitchOn.h DMSMConsent: 1 yes, 2 done, 3 no; absent: unasked)
+static int MSBStageManagerConsent(CFStringRef key) {
+	CFPreferencesAppSynchronize(CFSTR("com.besiktasliseba.macstatusbar"));
+	CFPropertyListRef v = CFPreferencesCopyValue(key, CFSTR("com.besiktasliseba.macstatusbar"), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+	int c = DMSMConsentFrom((__bridge id)v);
+	if (v) CFRelease(v);
+	return c;
+}
+static void MSBSetStageManagerConsent(CFStringRef key, int value) {
+	CFPreferencesSetValue(key, (__bridge CFNumberRef)@(value), CFSTR("com.besiktasliseba.macstatusbar"), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+	CFPreferencesSynchronize(CFSTR("com.besiktasliseba.macstatusbar"), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+	notify_post("com.besiktasliseba.macstatusbar/prefsChanged");   // (SpringBoard reads it again: DMLoadPrefs)
+}
 
 // ---- Window Engine list (2026-09-24): every engine this iOS supports is listed; one that is not installed is shown greyed out and cannot be
 // picked (stock-looking disabled row), and an installed build our integration has not been tested with is picked as a plain engine that runs on
@@ -301,9 +322,26 @@ static void MSBSetStockBarStored(BOOL on) {
 	notify_post("com.besiktasliseba.macstatusbar/prefsChanged");
 }
 
-@implementation MSBRootListController
+@implementation MSBRootListController {
+	int _msbConsentToken, _msbSMOnToken;   // (Stage Manager's state and the consent answers, followed while the page exists)
+}
 
 MSBD_LINE_SWITCH_METHODS
+
+// SpringBoard switched Stage Manager on or off, or a consent answer changed (its question, Apple's introduction): the engine's footer and Turn On Stage
+// Manager follow at once, while the page is open (logic test I1).
+- (void)viewDidLoad {
+	[super viewDidLoad];
+	if (!MSBStageManagerAvailable()) return;
+	__weak MSBRootListController *weakSelf = self;
+	void (^follow)(int) = ^(int t) { MSBRootListController *me = weakSelf; if (!me) return; me->_specifiers = nil; [me reloadSpecifiers]; };
+	notify_register_dispatch("com.besiktasliseba.macstatusbar.smconsent", &_msbConsentToken, dispatch_get_main_queue(), follow);
+	notify_register_dispatch("com.besiktasliseba.macstatusbar.smon", &_msbSMOnToken, dispatch_get_main_queue(), follow);
+}
+- (void)dealloc {
+	if (_msbConsentToken) notify_cancel(_msbConsentToken);
+	if (_msbSMOnToken) notify_cancel(_msbSMOnToken);
+}
 
 - (void)msb_stockChanged:(BOOL)on {
 	dispatch_async(dispatch_get_main_queue(), ^{   // (after the picker's own callback)
@@ -476,11 +514,21 @@ static void MSBFitValueLabels(UIView *v) {
 			BOOL hiding = NO;
 			for (PSSpecifier *sp in _specifiers) {
 				if (sp.cellType == PSGroupCell) hiding = [sp.identifier isEqualToString:@"WINDOWS_GROUP"];
-				if ([sp.identifier isEqualToString:@"ENGINE_GROUP"]) [sp setProperty:@"Apple's Stage Manager does the windowing, with the Mac look on top. Other engines are not loaded." forKey:@"footerText"];
+				if ([sp.identifier isEqualToString:@"ENGINE_GROUP"])
+					[sp setProperty:MSBStageManagerOnState() == 2 ? @"Stage Manager is off, so apps open full screen. Tap Turn On Stage Manager, or turn it on in Control Center."
+					                                               : @"Apple's Stage Manager does the windowing, with the Mac look on top. Other engines are not loaded." forKey:@"footerText"];
 				// (the window handles are Stage Manager's own windows' too: their style and tint stay)
 				NSString *key = [sp propertyForKey:@"key"];
 				BOOL handles = [key isEqual:@"resizeHandleStyle"] || [key isEqual:@"tintResizeHandles"];
 				if (!hiding || handles || (sp.cellType == PSGroupCell && [sp.identifier isEqualToString:@"WINDOWS_GROUP"])) [kept addObject:sp];
+				// (Stage Manager off -- the user said Not Now, declined Apple's introduction, or switched it off: nothing is written for them; this button is
+				//  their yes, and SpringBoard turns it on -- 1.5.1, consent)
+				if (sp == spec && MSBStageManagerOnState() == 2) {
+					PSSpecifier *b = [PSSpecifier preferenceSpecifierNamed:@"Turn On Stage Manager" target:self set:NULL get:NULL detail:Nil cell:PSButtonCell edit:Nil];
+					[b setIdentifier:@"MSB_SM_TURN_ON"];
+					b.buttonAction = @selector(msb_turnOnStageManager:);
+					[kept addObject:b];
+				}
 			}
 			_specifiers = kept;
 			break;
@@ -680,6 +728,20 @@ static void MSBFitValueLabels(UIView *v) {
 		message = @"Install Choicy (or iCleaner Pro) so MacStatusBar&Dock can stop the other window engines from loading. Until then every installed engine loads.";
 	}
 	if (!title) return;
+	// (1.5.1, consent: Apple's Stage Manager setting is the user's. Picking another engine keeps it off while that engine runs -- said here, and this pick
+	//  is the yes (smHoldConsent); picking Stage Manager asks before it is turned on, in SpringBoard. Only where Stage Manager exists.)
+	if (MSBStageManagerAvailable()) {
+		if (![engine isEqualToString:@"stagemanager"]) {
+			MSBSetStageManagerConsent(CFSTR("smHoldConsent"), 1);
+			message = [message stringByAppendingFormat:@" Stage Manager stays off while %@ runs, and comes back on as you had it when you turn off windowing.", names[engine] ?: engine];
+		} else {   // (Stage Manager picked: what happens to Apple's setting, by the stored answer -- logic test W3; on already or a yes: nothing to say)
+			int c = MSBStageManagerConsent(CFSTR("smConsentOn"));
+			if (c == DMSMConsentNo && MSBStageManagerOnState() != 1)
+				message = [message stringByAppendingString:@" Stage Manager is off, as you chose. To use it, tap Turn On Stage Manager or turn it on in Control Center."];
+			else if (c == DMSMConsentUnasked && MSBStageManagerOnState() != 1)
+				message = [message stringByAppendingString:@" MacStatusBar&Dock asks before it turns Stage Manager on."];
+		}
+	}
 	UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
 	if (offerRespring) [alert addAction:[UIAlertAction actionWithTitle:@"Respring Now" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) { MSBRespring(); }]];
 	if (offerICleaner) [alert addAction:[UIAlertAction actionWithTitle:@"Open iCleaner Pro" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
@@ -687,6 +749,13 @@ static void MSBFitValueLabels(UIView *v) {
 	}]];
 	[alert addAction:[UIAlertAction actionWithTitle:offerRespring ? @"Later" : @"OK" style:UIAlertActionStyleCancel handler:nil]];
 	[self presentViewController:alert animated:YES completion:nil];
+}
+// Turn On Stage Manager (shown while it is off with Stage Manager as the engine): the user's yes. SpringBoard turns it on (Apple's introduction first, if it
+// was never on), then the page shows the usual footer again.
+- (void)msb_turnOnStageManager:(PSSpecifier *)spec {
+	MSBSetStageManagerConsent(CFSTR("smConsentOn"), 1);
+	notify_post("com.besiktasliseba.macstatusbar.smturnon");   // (a tap, even with the yes already stored: SpringBoard ends a wait for Apple's introduction -- W2)
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ _specifiers = nil; [self reloadSpecifiers]; });
 }
 
 @end

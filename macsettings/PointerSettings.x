@@ -11,6 +11,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import "../common/NativeEmbed.h"
+#import <dlfcn.h>
 
 @interface PSSpecifier : NSObject
 + (instancetype)preferenceSpecifierNamed:(NSString *)name target:(id)target set:(SEL)set get:(SEL)get detail:(Class)detail cell:(long long)cell edit:(Class)edit;
@@ -74,6 +75,14 @@ static UIImage *MSPointerIcon(void) {
     if (!_specifiers) {
         NSMutableArray *s = [NSMutableArray array];
         PSSpecifier *g = [PSSpecifier groupSpecifierWithName:nil];
+        // (1.5.1: the Mac pointer turns Apple's Pointer Animations off -- said here, before the choice; StatusBar.x DMPointerAnimSync. Only where that
+        //  setting is there: SpringBoard leaves it alone where libAccessibility has no getter and setter for it -- logic test I2)
+        static int axAnim = -1;
+        if (axAnim < 0) {
+            void *ax = dlopen("/usr/lib/libAccessibility.dylib", RTLD_LAZY);
+            axAnim = ax && dlsym(ax, "_AXSPointerAllowAppCustomizationEnabled") && dlsym(ax, "_AXSPointerAllowAppCustomizationSetEnabled") ? 1 : 0;
+        }
+        if (axAnim) [g setProperty:@"The Mac pointer turns off Pointer Animations in Accessibility while it is on." forKey:@"footerText"];
         [s addObject:g];
         PSSpecifier *style = [PSSpecifier preferenceSpecifierNamed:@"Pointer Style" target:self set:@selector(setPreferenceValue:specifier:) get:@selector(readPreferenceValue:)
                                                             detail:NSClassFromString(@"PSListItemsController") cell:kCellLinkList edit:nil];

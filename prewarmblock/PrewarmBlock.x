@@ -25,6 +25,7 @@
 #import <objc/message.h>
 #include <notify.h>
 #include <os/lock.h>
+#include <substrate.h>
 #include <sys/stat.h>
 #include <time.h>
 
@@ -118,18 +119,25 @@ static BOOL DMPrewarmRefuses(NSString *bundleID, const char *where) {
     Debug([NSString stringWithFormat:@"[%s] %@ allowed", where, bundleID]);
     return NO;
 }
-%hook _APRSPrewarmInterface
-- (id)prewarmLaunchAppFromBundleID:(id)bundleID {
-    if (DMPrewarmRefuses(bundleID, "prewarm")) return nil;
-    return %orig;
-}
-- (id)closureBuildLaunchAppFromBundleID:(id)bundleID {
-    if (DMPrewarmRefuses(bundleID, "closure")) return nil;
-    return %orig;
-}
-%end
+static id (*o_PrewarmLaunch)(id, SEL, id);
+static id (*o_ClosureBuild)(id, SEL, id);
+static id DMPrewarmLaunch(id self, SEL _cmd, id bundleID) { return DMPrewarmRefuses(bundleID, "prewarm") ? nil : o_PrewarmLaunch(self, _cmd, bundleID); }
+static id DMClosureBuild(id self, SEL _cmd, id bundleID) { return DMPrewarmRefuses(bundleID, "closure") ? nil : o_ClosureBuild(self, _cmd, bundleID); }
+#include "PrewarmShape.h"   // (DMPrewarmShapeOK: an object return and one object argument, checked for EACH method -- Mac test tools/test-prewarmshape.sh)
 
-// ---- self crash-guard: three starts within 60 s switch this part off for good (the next install clears it) ----
+// ---- self crash-guard: three starts within 60 s that die young switch this part off for good (the next install clears it) ----
+// A start that lives 30 s was not a crash: it leaves the count again, so launchd's on-demand restarts, a jetsam kill or two quick installs never add up
+// to the switch-off -- only starts that die young do (external logic test W4, 25 Oct).
+static time_t gThisStart = 0;
+static void ForgetThisStart(void) {
+    if (!gThisStart) return;
+    time_t starts[8]; int n = 0;
+    FILE *f = fopen(kStartsFile, "r");
+    if (f) { long t; while (n < 8 && fscanf(f, "%ld", &t) == 1) if ((time_t)t != gThisStart) starts[n++] = (time_t)t; fclose(f); }
+    f = fopen(kStartsFile, "w");
+    if (f) { for (int i = 0; i < n; i++) fprintf(f, "%ld\n", (long)starts[i]); fclose(f); }
+    Debug(@"[guard] this start lived 30 s: not counted any more");
+}
 static BOOL SelfDisabledByCrashLoop(void) {
     if (access(kDisabledFile, F_OK) == 0) { Debug(@"[guard] already switched off after an earlier crash loop"); return YES; }
     time_t now = time(NULL);
@@ -138,6 +146,7 @@ static BOOL SelfDisabledByCrashLoop(void) {
     if (f) { long t; while (n < 8 && fscanf(f, "%ld", &t) == 1) if (now - (time_t)t < 60) starts[n++] = (time_t)t; fclose(f); }
     if (n >= 8) n = 7;
     starts[n++] = now;
+    gThisStart = now;
     f = fopen(kStartsFile, "w");
     if (f) { for (int i = 0; i < n; i++) fprintf(f, "%ld\n", (long)starts[i]); fclose(f); }
     if (n >= 3) {   // three starts within a minute: a crash loop -- switch off
@@ -152,14 +161,16 @@ static BOOL SelfDisabledByCrashLoop(void) {
 %ctor {
     if (!InDasd()) return;
     if (SelfDisabledByCrashLoop()) return;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(30 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ ForgetThisStart(); });   // (the main queue, as the change notification: the debug log is not shared across threads)
     Class c = objc_getClass("_APRSPrewarmInterface");
-    SEL sel = @selector(prewarmLaunchAppFromBundleID:);
-    Method m = c ? class_getInstanceMethod(c, sel) : NULL;
+    SEL sel = @selector(prewarmLaunchAppFromBundleID:), closureSel = @selector(closureBuildLaunchAppFromBundleID:);
+    Method m = c ? class_getInstanceMethod(c, sel) : NULL, mc = c ? class_getInstanceMethod(c, closureSel) : NULL;
     if (!m) { Debug(@"[init] _APRSPrewarmInterface prewarmLaunchAppFromBundleID: not found: doing nothing"); return; }
     const char *enc = method_getTypeEncoding(m);
-    // one object argument after self/_cmd ("@24@0:8@16" for an id return, "v24@0:8@16" for void) -- refuse anything else, so an unexpected shape is never hooked
-    if (!enc || !(enc[0] == '@' || enc[0] == 'v') || !strstr(enc, "@16")) { Debug([NSString stringWithFormat:@"[init] unexpected signature \"%s\": doing nothing", enc ?: "(nil)"]); return; }
-    %init;
+    if (!DMPrewarmShapeOK(m)) { Debug([NSString stringWithFormat:@"[init] unexpected signature \"%s\": doing nothing", enc ?: "(nil)"]); return; }
+    MSHookMessageEx(c, sel, (IMP)DMPrewarmLaunch, (IMP *)&o_PrewarmLaunch);
+    if (DMPrewarmShapeOK(mc)) MSHookMessageEx(c, closureSel, (IMP)DMClosureBuild, (IMP *)&o_ClosureBuild);
+    else Debug([NSString stringWithFormat:@"[init] closureBuildLaunchAppFromBundleID: %s: not hooked (only the direct prewarm is refused)", mc ? "unexpected signature" : "not found"]);
     gArmed = YES;
     static int token = 0;
     notify_register_dispatch(kPrewarmChanged, &token, dispatch_get_main_queue(), ^(int t) { MarkQuitSetStale(); });

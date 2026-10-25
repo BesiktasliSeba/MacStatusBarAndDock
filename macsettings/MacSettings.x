@@ -534,18 +534,19 @@ static void MSGeneralInsertOurRows(PSListController *list) {
 %end
 %end
 // (General's class may come with a framework Settings loads later: looked for as each image is added, installed once)
+// Claimed with one atomic compare-and-swap, never a lock held while installing: this runs inside dyld's add-image callback, and if anything under it
+// (the hooking, a log) ever loaded an image on the same thread, dyld would call back in here -- a held os_unfair_lock then aborts the process
+// (external logic test C5, 25 Oct). Once claimed every later call returns at once.
+#include <stdatomic.h>
 static void MSGeneral18Install(void) {
-    static os_unfair_lock lock = OS_UNFAIR_LOCK_INIT;
-    static BOOL done = NO;
-    os_unfair_lock_lock(&lock);
-    if (!done && !objc_getClass("PSUIPrefsListController")) {
-        Class c = objc_getClass("PSGGeneralController");
-        if (c) {
-            done = YES;
-            if (MSMethodTypesAre(c, @selector(specifiers), "@", @[])) { %init(General18); MLog(@"iPadOS 18: SSH, Home Bar, Pointer and Keyboard go into General"); }
-        }
-    }
-    os_unfair_lock_unlock(&lock);
+    static atomic_int claimed = 0;
+    if (atomic_load_explicit(&claimed, memory_order_acquire)) return;
+    if (objc_getClass("PSUIPrefsListController")) return;   // (15-17's root: the sidebar's rows, as before)
+    Class c = objc_getClass("PSGGeneralController");
+    if (!c) return;   // (not loaded yet: looked for again with the next image)
+    int expected = 0;
+    if (!atomic_compare_exchange_strong(&claimed, &expected, 1)) return;   // (another thread claimed it first)
+    if (MSMethodTypesAre(c, @selector(specifiers), "@", @[])) { %init(General18); MLog(@"iPadOS 18: SSH, Home Bar, Pointer and Keyboard go into General"); }
 }
 static void MSGeneral18ImageAdded(const struct mach_header *mh, intptr_t slide) { MSGeneral18Install(); }
 %ctor {
