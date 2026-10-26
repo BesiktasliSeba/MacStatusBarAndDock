@@ -19,7 +19,20 @@ static inline uint64_t MSBDMacPointerState(void) {   // (1 present and drawing, 
     if (token) notify_get_state(token, &v);
     return v;
 }
-static inline BOOL MSBDMacPointerStandsDown(void) { return MSBDMacPointerState() == 2; }
+// What MacPointer said last, kept over a reboot (1.5.1 final logic test P1). notifyd forgets the state at every reboot: 0 until pointeruid starts and
+// says again -- 2 s after it loads, or only once a mouse or trackpad wakes it --, and a 0 counted as present: with another pointer tweak installed,
+// Pointer Animations went off at each boot and came back when the 2 came. SpringBoard keeps "standing down" in our preferences when MacPointer says
+// 2 and removes it when it says 1 (StatusBar.x DMMacPointerKeepState); while MacPointer has said nothing since the boot, that is the answer.
+#define kMSBDMacPointerStandsDownKey CFSTR("macPointerStandsDown")
+static inline uint64_t MSBDMacPointerStateKept(void) {
+    uint64_t v = MSBDMacPointerState();
+    if (v) return v;
+    CFPropertyListRef p = CFPreferencesCopyValue(kMSBDMacPointerStandsDownKey, CFSTR("com.besiktasliseba.macstatusbar"), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    BOOL down = p && CFGetTypeID(p) == CFBooleanGetTypeID() && CFBooleanGetValue(p);
+    if (p) CFRelease(p);
+    return down ? 2 : 0;
+}
+static inline BOOL MSBDMacPointerStandsDown(void) { return MSBDMacPointerStateKept() == 2; }
 // iPadOS's pointer effects on our buttons and icons: with Pointer Style "iPadOS", or while the Mac pointer stands down for another pointer tweak.
 static inline BOOL MSBDIPadPointerEffects(void) {
     CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("pointerStyle"), CFSTR("com.besiktasliseba.macstatusbar"), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);

@@ -13,6 +13,7 @@
 // Every private call goes through a checked wrapper (class, selector and type encoding); a mismatch keeps the feature off.
 
 #include "MSWSlideMath.h"   // (the slide's arithmetic: the spring, its speed, the slot a taken slide goes to -- plain C, tools/test-mswslide.sh)
+#include "MSWKept.h"        // (the desktops kept while it is off and what of them comes back -- plain Foundation, tools/test-mswkept.sh)
 static BOOL gMSWOn = NO;                 // the switch is on, iPadOS 15-17, and the self-check passed
 // Where it runs: iPadOS 15/16 (tested), and 17 (untested there: every class, method and type encoding it calls is in iPadOS 17's SpringBoard
 // and UIKit -- 17.0.3 headers, 17.6.1 code --, the home gesture's destinations are the same numbers, the gesture's completion lives on the gesture
@@ -738,7 +739,8 @@ static BOOL DMMSWPictureAsync(UIView *v, void (^done)(UIView *pic, double ms)) {
 // (Desktop.h, On My iPad > Desktop); only the windows differ per desktop.
 // A full-screen app stays on its desktop (owner's decision): leaving the desktop sends it Home and remembers it; coming back opens it again.
 // Saved in com.besiktasliseba.macstatusbar.desktops.plist (the desktops, the current one, the window records); the windows themselves come back
-// with the window state as before, then the records hide the ones of other desktops. Settings off: everything on Desktop 1 again.
+// with the window state as before, then the records hide the ones of other desktops. Settings off: everything on Desktop 1 again, the desktops
+// kept for when it is on again (DMMSWKeepForLater / DMMSWBringBack, 1.5.2 item 14).
 static NSMutableArray<NSNumber *> *gMSWDesks;                        // the desktops' ids, in strip order
 static NSUInteger gMSWCur = 0;                                       // the current desktop's place
 static NSMutableDictionary<NSString *, NSNumber *> *gMSWWinDesk;     // app -> its window's desktop id
@@ -764,6 +766,10 @@ static BOOL DMMSWDesktopsHere(void) { return gMSWOn; }
 static BOOL DMMSWMulti(void) { return DMMSWDesktopsHere() && gMSWDesks.count > 1; }
 static NSString *DMMSWDeskName(NSUInteger i) { return [NSString stringWithFormat:@"Desktop %lu", (unsigned long)i + 1]; }
 static NSString *DMMSWStatePath(void) { return [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Preferences/com.besiktasliseba.macstatusbar.desktops.plist"]; }
+// The desktops kept while the Mac Switcher is off (DMMSWKeepForLater / DMMSWBringBack): a file of their own beside the desktops file, written as it
+// goes off and read once as it comes on -- nothing in between touches it (a respring, a save of the one desktop). gMSWKept: the same, in this run.
+static NSDictionary *gMSWKept;
+static NSString *DMMSWKeptPath(void) { return [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Preferences/com.besiktasliseba.macstatusbar.desktops-kept.plist"]; }
 static void DMMSWSwitchTo(NSUInteger to, NSString *why, void (^done)(void));
 
 // A desktop's windows now (its apps, sorted), to tell a stale picture.
@@ -1156,10 +1162,61 @@ static void DMMSWApply(void) {
 //  again when it came; seen with a full-screen app dragged onto another desktop, 4 Oct)
 // Its window, if it has one, is left as it is while the engine takes it out (DMMSWApply: an away one stays hidden -- with the record gone the tick
 // took the dying window for a new one of the current desktop and showed it there for 0.2-1 s, 7 Oct).
+// A desktop's Fit to Window arrangement without app b; nil when b had no part in it. Its tiles close up as when a tiled window closes -- two or
+// more take the default tiles, one fills (DMFitPlanAfterLeave). Aerial / Zetsu / MilkyWay4: group, slots, free by app. A Stage Manager desktop's
+// arrangement (smslots / smfree, by window key) is the engine's own Fit tick's: one that no longer covers its windows is laid out the default way
+// when the desktop comes -- left as it is.
+static NSDictionary *DMMSWFitWithout(NSDictionary *fit, NSString *b) {
+    if (![fit isKindOfClass:[NSDictionary class]] || !b.length) return nil;
+    NSMutableDictionary *nf = [fit mutableCopy];
+    BOOL changed = NO;
+    NSArray *group = [fit[@"group"] isKindOfClass:[NSArray class]] ? fit[@"group"] : nil;
+    if ([group containsObject:b]) {
+        NSMutableArray *left = [NSMutableArray array];
+        for (id x in group) if ([x isKindOfClass:[NSString class]] && ![x isEqualToString:b]) [left addObject:x];
+        nf[@"group"] = left; nf[@"slots"] = left.count ? DMFitPlanAfterLeave(left) : @{};
+        changed = YES;
+    }
+    NSArray *free = [fit[@"free"] isKindOfClass:[NSArray class]] ? fit[@"free"] : nil;
+    if ([free containsObject:b]) { NSMutableArray *f2 = [free mutableCopy]; [f2 removeObject:b]; nf[@"free"] = f2; changed = YES; }
+    return changed ? nf : nil;
+}
+// Quit on purpose while the Mac Switcher is off: the app goes from the desktops kept for when it is on again (DMMSWKeepForLater) as it would go
+// from live ones -- its windows' records, a desktop's full-screen app, its tiles. The kept file is read when this run has no copy (a respring since).
+static void DMMSWKeptForget(NSString *b) {
+    if (gMSWOn || !b.length) return;   // (on: nothing is kept, the live records are the ones)
+    NSString *path = DMMSWKeptPath();
+    NSDictionary *st = gMSWKept;
+    if (!st && [[NSFileManager defaultManager] fileExistsAtPath:path]) st = [NSDictionary dictionaryWithContentsOfFile:path];
+    if (![st isKindOfClass:[NSDictionary class]]) return;
+    NSMutableDictionary *ns = [st mutableCopy];
+    NSMutableArray<NSString *> *what = [NSMutableArray array];
+    NSDictionary *w = st[@"windows"], *f = st[@"frames"], *fs = st[@"fullscreen"], *fit = st[@"fit"];
+    if ([w isKindOfClass:[NSDictionary class]]) {
+        NSMutableDictionary *nw = [w mutableCopy], *nf = [f isKindOfClass:[NSDictionary class]] ? [f mutableCopy] : nil;
+        for (id k in w) if ([k isKindOfClass:[NSString class]] && [DMSMKeyBundle(k) isEqualToString:b]) { [nw removeObjectForKey:k]; [nf removeObjectForKey:k]; [what addObject:[NSString stringWithFormat:@"window record (desktop id %@)", w[k]]]; }
+        ns[@"windows"] = nw; if (nf) ns[@"frames"] = nf;
+    }
+    if ([fs isKindOfClass:[NSDictionary class]]) {
+        NSMutableDictionary *nfs = [fs mutableCopy];
+        for (id k in fs) if ([fs[k] isEqual:b]) { [nfs removeObjectForKey:k]; [what addObject:[NSString stringWithFormat:@"full screen on desktop id %@", k]]; }
+        ns[@"fullscreen"] = nfs;
+    }
+    if ([fit isKindOfClass:[NSDictionary class]]) {
+        NSMutableDictionary *nfit = [fit mutableCopy];
+        for (id dk in fit) { NSDictionary *x = DMMSWFitWithout(fit[dk], b); if (x) { nfit[dk] = x; [what addObject:[NSString stringWithFormat:@"tiles of desktop id %@", dk]]; } }
+        ns[@"fit"] = nfit;
+    }
+    if (!what.count) return;
+    gMSWKept = ns;
+    BOOL ok = [ns writeToFile:path atomically:YES];
+    DMLog([NSString stringWithFormat:@"[macswitcher] %@ quit while the Mac Switcher is off: out of the desktops kept for when it is on again (%@)%@", b, [what componentsJoinedByString:@", "], ok ? @"" : @" -- the kept file could not be written"]);
+}
 static void DMMSWForgetApp(NSString *b) {
     if (!b.length) return;
     if (!gMSWQuitting) gMSWQuitting = [NSMutableDictionary dictionary];
     gMSWQuitting[b] = @(CACurrentMediaTime() + 4.0);
+    DMMSWKeptForget(b);   // (the Mac Switcher off: out of the desktops it keeps for later, 1.5.2 item 14)
     // (every record of the app: Aerial's by app; the Stage Manager engine's one per window, "<bundle>|<scene>" -- SMWindowKey.h, M-2)
     NSMutableArray<NSString *> *mine = [NSMutableArray array];
     for (NSString *k in gMSWWinDesk.allKeys) if ([DMSMKeyBundle(k) isEqualToString:b]) [mine addObject:k];
@@ -1167,26 +1224,11 @@ static void DMMSWForgetApp(NSString *b) {
     for (NSString *k in gMSWFullScreen.allKeys) if ([gMSWFullScreen[k] isEqualToString:b]) { [gMSWFullScreen removeObjectForKey:k]; had = YES; }
     if (!had) return;
     for (NSString *k in mine) { [gMSWWinDesk removeObjectForKey:k]; [gMSWWinFrame removeObjectForKey:k]; [gMSWWinShots removeObjectForKey:k]; }
-    // (and out of the Fit to Window arrangements other desktops keep while away: their tiles close up as when a tiled window closes -- two or
-    //  more take the default tiles, one fills (DMFitPlanAfterLeave). Kept, that desktop came back with a tile for a window that was gone, re-tiled
-    //  only a tick later by the closure check, 1.4 logic test L-4. Aerial / Zetsu / MilkyWay4: group, slots, free by app. A Stage Manager desktop's
-    //  arrangement (smslots / smfree, by window key) is the engine's own Fit tick's: an arrangement that no longer covers its windows is laid out
-    //  the default way when the desktop comes)
+    // (and out of the Fit to Window arrangements other desktops keep while away, DMMSWFitWithout. Kept, that desktop came back with a tile for a
+    //  window that was gone, re-tiled only a tick later by the closure check, 1.4 logic test L-4)
     for (NSString *dk in [gMSWFit allKeys]) {
-        NSDictionary *fit = gMSWFit[dk];
-        if (![fit isKindOfClass:[NSDictionary class]]) continue;
-        NSMutableDictionary *nf = [fit mutableCopy];
-        BOOL changed = NO;
-        NSArray *group = [fit[@"group"] isKindOfClass:[NSArray class]] ? fit[@"group"] : nil;
-        if ([group containsObject:b]) {
-            NSMutableArray *left = [NSMutableArray array];
-            for (id x in group) if ([x isKindOfClass:[NSString class]] && ![x isEqualToString:b]) [left addObject:x];
-            nf[@"group"] = left; nf[@"slots"] = left.count ? DMFitPlanAfterLeave(left) : @{};
-            changed = YES;
-        }
-        NSArray *free = [fit[@"free"] isKindOfClass:[NSArray class]] ? fit[@"free"] : nil;
-        if ([free containsObject:b]) { NSMutableArray *f2 = [free mutableCopy]; [f2 removeObject:b]; nf[@"free"] = f2; changed = YES; }
-        if (changed) { gMSWFit[dk] = nf; DMLog([NSString stringWithFormat:@"[macswitcher] %@ force quit: out of desktop id %@'s Fit to Window arrangement too", b, dk]); }
+        NSDictionary *nf = DMMSWFitWithout(gMSWFit[dk], b);
+        if (nf) { gMSWFit[dk] = nf; DMLog([NSString stringWithFormat:@"[macswitcher] %@ force quit: out of desktop id %@'s Fit to Window arrangement too", b, dk]); }
     }
     DMLog([NSString stringWithFormat:@"[macswitcher] %@ force quit: its desktop record is forgotten", b]);
     DMMSWSave();
@@ -2232,13 +2274,92 @@ static BOOL DMMSWLaunchSwitches(NSString *b) {
     });
     return YES;
 }
-// Settings off (or the self-check): everything on Desktop 1 again.
+// Settings off (or the self-check): everything on Desktop 1 again (what it had is kept first, DMMSWKeepForLater below).
 static void DMMSWCollapse(void) {
     if (!gMSWDesks) return;
     if (gMSWDesks.count > 1) DMLog(@"[macswitcher] one desktop again: every window on Desktop 1");
     gMSWDesks = [NSMutableArray arrayWithObject:@1]; gMSWCur = 0;
     [gMSWWinDesk removeAllObjects]; [gMSWWinFrame removeAllObjects]; [gMSWFullScreen removeAllObjects]; [gMSWShots removeAllObjects]; [gMSWFit removeAllObjects];
     DMMSWApply();
+    DMMSWSave();
+}
+
+// Settings off keeps the desktops for later, on again brings them back (1.5.2 item 14, KT: a feature turned off and on again gives back what it had,
+// as the engine settings do). Off, the Mac Switcher is one desktop as before (DMMSWCollapse); what it had is kept first, in its own file
+// (DMMSWKeptPath): the desktops, the windows on each with their places, each desktop's full-screen app, the screen size it was left at and its Fit
+// to Window arrangement -- the desktop on screen's own too, live until then. Nothing is kept with one desktop.
+static void DMMSWKeepForLater(void) {
+    NSString *path = DMMSWKeptPath();
+    if (gMSWDesks.count < 2) {
+        if (gMSWKept || [[NSFileManager defaultManager] fileExistsAtPath:path]) { gMSWKept = nil; [[NSFileManager defaultManager] removeItemAtPath:path error:nil]; }
+        return;
+    }
+    NSString *cur = [@(DMMSWCurId()) stringValue];
+    NSMutableDictionary *fit = [NSMutableDictionary dictionary];
+    for (NSString *k in gMSWFit) fit[k] = gMSWFit[k];
+    if (DMSMEngine()) fit[cur] = @{@"smslots": [gSMFitSlots copy] ?: @{}, @"smfree": [gSMFreeWindows allObjects] ?: @[]};   // (as DMMSWSMLeave keeps it)
+    else fit[cur] = @{@"group": [gFitGroup copy] ?: @[], @"slots": [gFitSlots copy] ?: @{}, @"free": [gFreeWindows allObjects] ?: @[], @"fitOn": @(DMFitEnabled())};   // (as a switch away)
+    NSDictionary *st = @{@"desktops": [gMSWDesks copy], @"current": @(DMMSWCurId()), @"windows": [gMSWWinDesk copy] ?: @{}, @"frames": [gMSWWinFrame copy] ?: @{},
+                         @"fullscreen": [gMSWFullScreen copy] ?: @{}, @"leftSizes": [gMSWLeftSize copy] ?: @{}, @"fit": fit};
+    gMSWKept = st;
+    BOOL ok = [st writeToFile:path atomically:YES];
+    DM_FEATURE_MARK("mac-switcher-desktops-kept");
+    DMLog([NSString stringWithFormat:@"[macswitcher] kept for when the Mac Switcher is on again: desktops %@, current %@, %lu window records%@", [gMSWDesks componentsJoinedByString:@","],
+           DMMSWDeskName(gMSWCur), (unsigned long)gMSWWinDesk.count, ok ? @"" : @" -- the kept file could not be written (kept in this run only)"]);
+}
+// On again: the kept desktops come back (read once, the file goes) -- what of them, MSWKept.h MSWKeptBringBack; gathered here: what is there now.
+// A quit through the tweak already went from the kept file (DMMSWKeptForget); the check here catches every other way a window went. The desktops
+// file already holding several desktops (written meanwhile) wins: the kept copy goes.
+static void DMMSWBringBack(void) {
+    NSString *path = DMMSWKeptPath();
+    NSDictionary *st = gMSWKept;
+    BOOL file = [[NSFileManager defaultManager] fileExistsAtPath:path];
+    if (!st && file) st = [NSDictionary dictionaryWithContentsOfFile:path];
+    gMSWKept = nil;
+    if (file) [[NSFileManager defaultManager] removeItemAtPath:path error:nil];   // (read once, also when it could not be read)
+    if (![st isKindOfClass:[NSDictionary class]]) return;
+    if (gMSWDesks.count > 1) {
+        DMLog([NSString stringWithFormat:@"[macswitcher] the desktops file has %lu desktops already: they stay, the kept ones are dropped", (unsigned long)gMSWDesks.count]);
+        return;
+    }
+    // (what is there now, to leave out what went meanwhile -- told by the engine's own state, never by a clock: Stage Manager, its stages as
+    //  SpringBoard has them (DMMSWSMAlive: NO while they can't be read); Aerial / Zetsu / MilkyWay4, the window restore over (gWindowSaveOn: set
+    //  once the restore has finished or found nothing to bring back -- an engine that comes up late keeps it off meanwhile, up to ~39 s). Not
+    //  told: every kept window and full-screen app comes back, and the usual rules forget a closed one later -- Stage Manager's tick, a window in
+    //  no stage; the other engines, one of the current desktop without a window. Logic test L2)
+    BOOL sm = DMSMEngine(), told = NO;
+    NSMutableSet<NSString *> *aliveKeys = [NSMutableSet set], *aliveApps = [NSMutableSet set];
+    NSMutableArray<NSArray<NSString *> *> *stages = [NSMutableArray array];
+    NSMutableArray<NSString *> *windowApps = [NSMutableArray array];
+    NSUInteger front = NSNotFound;
+    if (sm) front = DMMSWSMStagesNow(stages);
+    else for (UIView *s in DMAerialStagesAll()) { NSString *b = DMStageBundle(s); if (b.length && ![windowApps containsObject:b]) [windowApps addObject:b]; }
+    if (sm) told = DMMSWSMAlive(aliveKeys, aliveApps);
+    else if (gWindowSaveOn && !gRestoringWindows) { [aliveApps addObjectsFromArray:windowApps]; told = YES; }
+    // (what the user quit meanwhile, by what records a quit: the prewarm quit set -- our red light, Force Quit and the App Switcher's swipe-up,
+    //  which DMMSWKeptForget does not see; kept across a respring -- together with the app not running now. Not running alone is no quit: a
+    //  respring, a reboot or memory pressure while off end apps too, and those come back as before. Logic test L1, recheck R1)
+    NSSet<NSString *> *running = told ? DMLiveRunningBundleIDs() : nil;
+    NSSet<NSString *> *quit = gPrewarmQuitSet ? [NSSet setWithArray:gPrewarmQuitSet] : nil;
+    NSDictionary *r = MSWKeptBringBack(st, sm, told, aliveKeys, aliveApps, stages, front, sm ? [DMSMMinimizedSet() allObjects] : @[], windowApps,
+                                       running, quit, NSStringFromCGSize([UIScreen mainScreen].bounds.size), kMSWMaxDesks);
+    if (!r) return;
+    gMSWDesks = [r[@"desktops"] mutableCopy]; gMSWCur = [r[@"current"] unsignedIntegerValue];
+    gMSWWinDesk = [r[@"windows"] mutableCopy]; gMSWWinFrame = [r[@"frames"] mutableCopy];
+    gMSWFullScreen = [r[@"fullscreen"] mutableCopy]; gMSWLeftSize = [r[@"leftSizes"] mutableCopy]; gMSWFit = [r[@"fit"] mutableCopy];
+    for (NSString *b in r[@"gone"]) for (NSString *dk in [gMSWFit allKeys]) { NSDictionary *x = DMMSWFitWithout(gMSWFit[dk], b); if (x) gMSWFit[dk] = x; }   // (their tiles close up)
+    [gMSWShots removeAllObjects]; [gMSWShotSet removeAllObjects];
+    gMSWDesksDirty = YES;
+    NSDictionary<NSString *, NSNumber *> *fresh = r[@"fresh"];
+    NSMutableArray<NSString *> *freshNames = [NSMutableArray array];
+    for (NSString *k in fresh) [freshNames addObject:[NSString stringWithFormat:@"%@ -> %@", DMSMKeyText(k), DMMSWDeskName([gMSWDesks indexOfObject:fresh[k]])]];
+    NSArray *gone = r[@"gone"];
+    DMLog([NSString stringWithFormat:@"[macswitcher] the desktops kept when the Mac Switcher went off are back: %@, current %@; %@ window records back, %@, %@",
+           [gMSWDesks componentsJoinedByString:@","], DMMSWDeskName(gMSWCur), r[@"back"],
+           !told ? @"closed windows not told yet (the windows or stages not back yet: all kept, the usual rules forget a closed one)" : (gone.count ? [NSString stringWithFormat:@"left out (closed or quit meanwhile): %@", [gone componentsJoinedByString:@", "]] : @"none closed or quit meanwhile"),
+           fresh.count ? [NSString stringWithFormat:@"new since: %@", [freshNames componentsJoinedByString:@", "]] : @"none new since"]);
+    DM_FEATURE_MARK("mac-switcher-desktops-back");
+    if (told) DMMSWApply();   // (Aerial / Zetsu / MilkyWay4: the other desktops' windows go away now; at a start the tick does it)
     DMMSWSave();
 }
 
@@ -2723,12 +2844,22 @@ static void DMMSWBringForward(DMMSWTile *t) {
         case DMMSWKindStage:
         case DMMSWKindFullScreen:
             if (gNativeActive) DMNativeSetActive(nil);   // (an app's window comes forward: the native windows step back)
-            if (t.bundle.length && DMSMEngine()) DMSMBringToFront(t.bundle);   // (Stage Manager: in front of its stage)
-            else if (t.bundle.length && t.kind == DMMSWKindStage && (DMActiveEngine() == DMEngineZetsu || DMActiveEngine() == DMEngineMilkyWay))
-                DMSurfaceWindowForApp(t.bundle);   // (Zetsu / MilkyWay4: DMRaiseStageForBundle is a tap's follow-up -- Zetsu raises a window on its own
-                                                   //  tap, MilkyWay has no Aerial raise -- so a pick here left the window where it was, M1 7 Oct; this
-                                                   //  is what opening the app does: that engine's own raise)
-            else if (t.bundle.length) DMRaiseStageForBundle(t.bundle);
+            if (!t.bundle.length) break;
+            // A pick is what a Dock tap on that app does, on every engine (KT, 1.5.2: "do what aligns with our functions"):
+            //  - Stage Manager: in front of its stage, a full-screen window card too (DMSMBringToFront: DMSMAddToStage's step for an app already in
+            //    the stage);
+            //  - a window: what opening the app does, that engine's own raise, over a full-screen app too (DMSurfaceWindowForApp: DMWindowedLaunch's
+            //    first step);
+            //  - the full-screen app with windows over it: in front of them, the windows behind it (DMBringFullScreenAppForward: the icon tap's step).
+            // The pick used DMRaiseStageForBundle, a TAP's follow-up (a tap inside a window, or on the part of the full-screen app showing around the
+            // windows): Zetsu raises a window on its own tap and MilkyWay has no Aerial raise, so a picked window stayed where it was (M1 7 Oct); on
+            // Aerial a picked window stayed behind a full-screen app in front (M1 15.6.1, 26 Oct); and a picked full-screen app only took the menu
+            // bar, the windows staying over it, on every engine but Stage Manager (26 Oct, item 12). The tap's follow-up is left for a pick with
+            // nothing to bring (that app already in front: its menu bar).
+            if (DMSMEngine()) DMSMBringToFront(t.bundle);
+            else if (t.kind == DMMSWKindStage && DMActiveEngine() != DMEngineNone && DMSurfaceWindowForApp(t.bundle)) {}
+            else if (t.kind == DMMSWKindFullScreen && DMBringFullScreenAppForward(t.bundle)) DM_FEATURE_MARK("mac-switcher-pick-full-screen-forward");
+            else DMRaiseStageForBundle(t.bundle);
             break;
     }
     DMLog([NSString stringWithFormat:@"[macswitcher] picked %@ (%@)", t.title, t.kind == DMMSWKindNative ? @"native window" : t.kind == DMMSWKindStage ? @"window" : @"full-screen app"]);
@@ -4175,6 +4306,7 @@ static id DMMSWActivateWith(id self, SEL _cmd, long long dest, id (*orig)(id, SE
 #if DEBUG
     if (!inside && DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[mswprobe] activating destination %lld (final %lld, travel x %.0f, fingers went %@, %@)", dest, eff, DMMSWGestureTravelX(self),
         eff == 1 || eff == 2 ? (DMMSWFingersWentRight(self, eff) ? @"right" : @"left") : @"-", NSStringFromClass(object_getClass(self))]);
+    if (!inside) DMSMTestBarRefreshSoon("/tmp/msb-test-barrefresh", @"the gesture's lift");
 #endif
     if (!inside) gMSWHomeMod = self;
     if (!inside && gMSWTrackEnding) {   // (the slide follows this gesture: SpringBoard stays where it is, whatever it would have done -- the slide ends it)
@@ -4288,12 +4420,14 @@ static void DMMSWApplyPref(BOOL want) {
     if (on == gMSWOn) return;
     gMSWOn = on;
     DMLog([NSString stringWithFormat:@"[macswitcher] Mac Switcher %@", on ? @"on" : @"off"]);
-    if (on) { DMMSWHookKeys(); DMMSWHookGestures(); DMMSWHookStockPaths(); DMMSWWatchMemory(); DMMSWLoad(); }
+    if (on) { DMMSWHookKeys(); DMMSWHookGestures(); DMMSWHookStockPaths(); DMMSWWatchMemory(); DMMSWLoad(); DMMSWBringBack(); }   // (the desktops kept at the last off, item 14)
     if (!on) dispatch_async(dispatch_get_main_queue(), ^{
+        if (gMSWOn) return;   // (on again before this ran: nothing to take down -- collapsed now, the desktops just loaded would go)
         DMMSWDropFinishNow();
         if (DMMSWIsOpen()) DMMSWClose(nil, NO);
         if (gMSWTrack && !gMSWSwitching) { DMMSWSlDrop(); gMSWTrack = 0; gMSWTrackPic = nil; }   // (a slide following the fingers goes with the switch)
         gMSWLiftPic = nil; DMMSWOpenShotDrop();
+        DMMSWKeepForLater();   // (what it has, kept for when it is on again: 1.5.2 item 14)
         DMMSWCollapse();
     });
 }
@@ -4849,6 +4983,13 @@ static BOOL DMMSWTrigger(NSString *cmd) {
         DMLog(m);
     }
     else if ([cmd isEqualToString:@"msw_close"]) DMMSWClose(nil, YES);
+    else if ([cmd hasPrefix:@"msw_pickapp_"]) {   // msw_pickapp_<bundle>: what a tap on that app's thumbnail does (its first one; on the Stage Manager engine
+                                                  // a thumbnail names its window's key, "<bundle>|..."): DMMSWClose with that tile, as DMMSWTapped
+        NSString *b = [cmd substringFromIndex:12];
+        DMMSWTile *hit = nil;
+        for (DMMSWTile *t in gMSWTiles) if ([t.bundle isEqualToString:b] || [t.bundle hasPrefix:[b stringByAppendingString:@"|"]]) { hit = t; break; }
+        if (hit) DMMSWClose(hit, YES); else DMLog([NSString stringWithFormat:@"[macswitcher] msw_pickapp: no thumbnail of %@ (%lu thumbnails, open %d)", b, (unsigned long)gMSWTiles.count, gMSWOpen]);
+    }
     else if ([cmd hasPrefix:@"msw_pick_"]) {
         NSInteger i = [[cmd substringFromIndex:9] integerValue];
         if (i >= 0 && i < (NSInteger)gMSWTiles.count) DMMSWClose(gMSWTiles[i], YES); else DMLog(@"[macswitcher] msw_pick: no such tile");
@@ -4869,6 +5010,15 @@ static BOOL DMMSWTrigger(NSString *cmd) {
         for (NSString *b in gMSWWinDesk) [o appendFormat:@"\n  %@ -> %@", b, gMSWWinDesk[b]];
         for (NSString *k in gMSWFullScreen) [o appendFormat:@"\n  full screen on id %@: %@", k, gMSWFullScreen[k]];
         for (UIView *st in DMAerialStagesAll()) [o appendFormat:@"\n  stage %@ hidden %d away %d minimized %d", DMStageBundle(st), st.hidden, [objc_getAssociatedObject(st, kMSWAwayKey) boolValue], DMStageMinimized(st)];
+        {   // (the desktops kept while the Mac Switcher is off, item 14: in this run, else the file)
+            NSDictionary *kept = gMSWKept ?: [NSDictionary dictionaryWithContentsOfFile:DMMSWKeptPath()];
+            NSDictionary *kw = [kept[@"windows"] isKindOfClass:[NSDictionary class]] ? kept[@"windows"] : nil;
+            if (!kept) [o appendString:@"\n  kept for later: none"];
+            else {
+                [o appendFormat:@"\n  kept for later (%@): desktops %@, current id %@", gMSWKept ? @"this run" : @"file", [kept[@"desktops"] isKindOfClass:[NSArray class]] ? [kept[@"desktops"] componentsJoinedByString:@","] : @"?", kept[@"current"]];
+                for (NSString *k in kw) [o appendFormat:@"\n    kept %@ -> %@", k, kw[k]];
+            }
+        }
         DMLog(o);
     }
     else if ([cmd isEqualToString:@"msw_appswitcher"]) DMMSWShowAppSwitcher();

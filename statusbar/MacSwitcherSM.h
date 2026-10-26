@@ -21,7 +21,8 @@
 //  - remove (x): the windows go to the left neighbour; still in their own stage until that desktop is shown, then asked for together (at most a
 //    full desktop's worth, the oldest minimized);
 //  - Fit to Window per desktop (its arrangement and its free windows); saved across a respring (the records in MacSwitcher.h's desktops file,
-//    the stages by Stage Manager itself); Settings off = one desktop again (the windows stay where they are: the engine's own join from then on).
+//    the stages by Stage Manager itself); Settings off = one desktop again (the windows stay where they are: the engine's own join from then on),
+//    its desktops kept and back when it is on again (MacSwitcher.h DMMSWKeepForLater / DMMSWBringBack, 1.5.2 item 14).
 // Every private call goes through the engine's checked wrappers (SMEngineAPI.h) and the calls above; nothing new of Apple's is called here.
 
 static CFTimeInterval gMSWSMQuietUntil = 0;   // (just switched: the tick does not take the stage in front for "a desktop came up by itself" yet)
@@ -333,6 +334,34 @@ static void DMMSWSMRecordFirst(void) {
     for (NSString *k in DMSMMinimizedSet()) gMSWWinDesk[k] = @1;   // (each by its key; an older entry by app stands for the app's windows)
     NSMutableArray *names = [NSMutableArray array]; for (NSString *k in gMSWWinDesk) [names addObject:DMSMKeyText(k)];
     DMLog([NSString stringWithFormat:@"[macswitcher] Desktop 1's windows: %@", names.count ? [names componentsJoinedByString:@", "] : @"none"]);
+}
+
+// The Mac Switcher on again (MacSwitcher.h DMMSWBringBack, 1.5.2 item 14). What is there now: every window of a stage on the iPad's own screen and
+// every minimized one, by key (keys) and by app (apps). NO when the stages can't be read (then nothing is left out).
+static BOOL DMMSWSMAlive(NSMutableSet<NSString *> *keys, NSMutableSet<NSString *> *apps) {
+    NSArray *recent = DMSMRecentStages();
+    if (!recent) return NO;
+    for (id al in recent) {
+        if (!DMSMIsMainIdentity(DMSMStageDisplayIdentity(al))) continue;
+        for (id it in DMSMStageItemsMap(al)) { NSString *k = DMSMItemKey(it); if (k.length) { [keys addObject:k]; [apps addObject:DMSMKeyBundle(k)]; } }
+    }
+    for (NSString *k in DMSMMinimizedSet()) { [keys addObject:k]; [apps addObject:DMSMKeyBundle(k)]; }
+    return YES;
+}
+// ... and the stages on the iPad's own screen now, each as the keys of its windows that are not minimized (added to stages, most recent first), and
+// the place of the stage on screen among them (NSNotFound: none -- the Home Screen, the App Switcher). MSWKept.h decides from them where the
+// windows new since the off go and which desktop is current.
+static NSUInteger DMMSWSMStagesNow(NSMutableArray<NSArray<NSString *> *> *stages) {
+    id front = DMFrontApp() && !DMSwitcherVisible() ? DMSMFrontStage() : nil;
+    NSUInteger at = NSNotFound;
+    for (id al in DMSMRecentStages()) {
+        if (!DMSMIsMainIdentity(DMSMStageDisplayIdentity(al))) continue;
+        NSMutableArray<NSString *> *keys = [NSMutableArray array];
+        for (id it in DMSMStageItemsMap(al)) { NSString *k = DMSMItemKey(it); if (k.length && !DMSMIsMinimized(k) && ![keys containsObject:k]) [keys addObject:k]; }
+        if (front && at == NSNotFound && [al isEqual:front]) at = stages.count;
+        [stages addObject:keys];
+    }
+    return at;
 }
 
 // Asks for a desktop's windows together (its stage, in front; its newest window in front of the others). Returns the window expected in front

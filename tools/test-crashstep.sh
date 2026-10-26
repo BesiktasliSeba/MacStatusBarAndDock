@@ -83,7 +83,7 @@ if [ -f "$MAP" ] && [ -n "$DSYM" ]; then
   # (its blocks -- the kill and the switcher clean-up after the window closed -- fell to their section before, 1.3.5 round 2 R3-L3; a DMSM function's
   #  block in StatusBar.x the same way)
   real core-forcequit-block "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^___DMForceQuitBundle_block_invoke'
-  real core-sm-block "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^___DMSMWindowAction_block_invoke'
+  real core-sm-block "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^___DMSMWindowActionAs_block_invoke'
   # (the menu-closing wait of window changes and its poll's block, which closes SpringBoard's icon menu after 2 s: Windowing, not "part" -- L-3)
   real core-ctxwait "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMWaitForMenuToClose$'
   real core-ctxpoll "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^___DMContextMenuPoll_block_invoke'

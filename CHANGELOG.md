@@ -2,6 +2,37 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.5.2
+
+### New
+- Mac Switcher: turning it off in Settings no longer throws your desktops away. While it is off you work on one desktop as before. Turn it on again and your desktops come back with their windows. Apps you quit or windows you closed meanwhile stay closed, and new windows go to Desktop 1.
+- Settings > Status Bar > Window Engine now lists Apple's Stage Manager in its own Native group, above a Third-Party group with Aerial, Zetsu and MilkyWay4. On iPadOS 15, where Stage Manager doesn't exist, only the Third-Party group appears.
+
+### Improvements
+- Stage Manager engine: a swipe along the bottom edge to the previous or next app now switches to that app's own stage, as on a Mac and with Aerial and Zetsu. The app comes back as it was (full screen or with its windows) and no longer joins the windows you swiped away from.
+- Stage Manager engine: with a mouse or trackpad, a window now resizes from the top edge of its title bar, like a Mac window, and the top corners work from the bar's corners. The traffic lights are never a resize spot.
+- Stage Manager engine: Fit to Window never makes a window narrower than Stage Manager allows. On a small screen a tiled window keeps its smallest width and slightly overlaps its neighbour.
+- With Aerial, Zetsu or MilkyWay4 and the Mac Switcher off, tapping an app's card in iPadOS's App Switcher brings that app's window forward, as Cmd-Tab does. Apps without a window open as before.
+- Mac Switcher: picking a full-screen app while windows are over it brings that app in front of the windows, as a tap on its Dock icon does. With Aerial, picking a window while a full-screen app is in front brings the window over that app, as with Zetsu and MilkyWay4.
+
+### Fixes
+- Opening an app from the App Library now closes the App Library and shows the app, with every window engine. Before, the App Library could stay open with the new window hidden behind it.
+- Stage Manager engine: an app you close with the red button or Force Quit no longer stays in the App Switcher as an empty black card.
+- Stage Manager engine: the pointer no longer shows a resize arrow, or resizes a window behind, where another window covers it.
+- Stage Manager engine: when the tweak takes you to the Home Screen (switching to an empty desktop, or closing or minimizing a desktop's last window) during a swipe on the bottom edge, it now waits until the swipe has finished instead of interrupting it.
+- Stage Manager engine: after switching apps with a swipe along the bottom edge, the menu bar shows the app that is on screen, not the one you swiped away from.
+- Stage Manager engine: the swipe along the bottom edge now also works from a desktop of windows, wherever your finger starts on the edge, and minimized windows stay in the Dock.
+- Stage Manager on iPadOS 17: a window's title bar now sits flush on the window. The thin line that could show between the bar and the window is gone.
+- Zetsu on iPadOS 16: a swipe along the bottom edge to an app that has a window no longer turns the screen to portrait. With every window engine, an app that has a window is not a swipe target: open it from the Dock or its window instead.
+- A second respring right after another no longer leaves Aerial without its window handling until the next respring.
+- With the Mac pointer selected and another pointer tweak installed, Pointer Animations no longer turn off each time the iPad restarts.
+
+### Experimental (iPadOS 18)
+- Stage Manager: the same fixes. Closed apps leave the App Switcher, the title bar sits flush on the window, windows resize from the top of the title bar, and a window behind no longer resizes through the one in front.
+
+### Thanks
+- Thanks to @Rainrain2007 for the detailed Stage Manager gesture report (#7) and PR #8.
+
 ## 1.5.1
 
 ### Improvements

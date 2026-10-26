@@ -165,13 +165,21 @@ static BOOL MSBStageManagerAvailable(void) { return MSBDStageManagerEngineUsable
 static BOOL MSBStageManagerUnsupported(NSString **os) {   // (Stage Manager is here, but the engine's self-check failed on this iPadOS build)
 	return MSBDStageManagerAvailable() && MSBDStageManagerVerdict(NULL, os) == 0;
 }
+#if DEBUG
+// (debug: /tmp/msb-engine-notinstalled names engines to show as not installed -- the GET button --, "<engine>-untested" as an untested build, and
+//  "stagemanager" as an iPad without Stage Manager: its row greyed and the why under the Native group, 1.5.2)
+static NSString *MSBEnginePretend(void) { return [NSString stringWithContentsOfFile:@"/tmp/msb-engine-notinstalled" encoding:NSUTF8StringEncoding error:nil]; }
+#endif
 static int MSBEngineState(NSString *engine) {
+#if DEBUG
+	if ([engine isEqualToString:@"stagemanager"] && [MSBEnginePretend() containsString:@"stagemanager"]) return 0;
+#endif
 	if ([engine isEqualToString:@"stagemanager"]) return MSBStageManagerAvailable() ? 2 : 0;
 	NSDictionary *mainLib = @{@"aerial": @"Aerial", @"milkyway": @"MilkyWay4", @"zetsu": @"Zetsu"};
 	NSString *lib = mainLib[engine];
 	if (!lib) return 2;
 #if DEBUG
-	NSString *pretend = [NSString stringWithContentsOfFile:@"/tmp/msb-engine-notinstalled" encoding:NSUTF8StringEncoding error:nil];   // (debug: test the GET button)
+	NSString *pretend = MSBEnginePretend();   // (debug: test the GET button)
 	if ([pretend containsString:[engine stringByAppendingString:@"-untested"]]) return 1;   // (debug: test the "(untested version)" label)
 	if ([pretend containsString:engine]) return 0;
 #endif
@@ -192,12 +200,60 @@ static NSString *MSBEngineNameVersion(NSString *engine) {   // ("Aerial 5.1": th
 }
 // The Window Engine page's footer: a license is checked in SpringBoard, and only the picked engine loads there.
 static NSString *const kMSBLicenseHint = @"Activating an engine's license? Pick it here and respring first: only the picked engine loads, and its license is checked in SpringBoard.";
+// The engine a row of the Window Engine page stands for: PSListItemsController gives each row specifier its value as its only value (-itemsFromParent).
+static NSString *MSBEngineValueOf(PSSpecifier *s) {
+	SEL vs = NSSelectorFromString(@"values");
+	id v = s && s.cellType != PSGroupCell && [s respondsToSelector:vs] ? ((id (*)(id, SEL))objc_msgSend)(s, vs) : nil;
+	id x = [v isKindOfClass:[NSArray class]] ? [(NSArray *)v firstObject] : nil;
+	return [x isKindOfClass:[NSString class]] ? x : nil;
+}
 @interface MSBEngineListController : PSListItemsController
 @end
 @implementation MSBEngineListController
-- (NSString *)msb_valueForRow:(NSIndexPath *)ip {
-	NSArray *values = ((id (*)(id, SEL))objc_msgSend)(self.specifier, NSSelectorFromString(@"values"));
-	return ip.section == 0 && ip.row < (NSInteger)values.count ? values[ip.row] : nil;
+// The page in two groups (1.5.2, KT): "Native" -- Stage Manager, Apple's own windowing, natively or through TrollPad: on iPadOS 16 and later, its row
+// greyed where it can't run yet, with why under it -- and "Third-Party" -- the engines to install, as this iPad offers them, with the license hint
+// under them. A group with no row is left out (iPadOS 15: no Native). PSListItemsController makes one group of the row's values (-itemsFromParent);
+// its own row specifiers are regrouped here. Its checkmark and pick go by the specifier's place in the whole list (-setRowToSelect,
+// -indexForIndexPath:, -listItemSelected:, read on 18.5), so they follow a row into the second group once the selected row is worked out again.
+- (NSMutableArray *)specifiers {
+	if (!_specifiers) {
+		NSArray *flat = [super specifiers];
+		NSMutableArray *native = [NSMutableArray array], *thirdParty = [NSMutableArray array];
+		NSUInteger groups = 0;
+		for (PSSpecifier *s in flat) {
+			if (s.cellType == PSGroupCell) { groups++; continue; }
+			[([MSBEngineValueOf(s) isEqualToString:@"stagemanager"] ? native : thirdParty) addObject:s];
+		}
+		if (groups == 1 && flat.count && ((PSSpecifier *)flat[0]).cellType == PSGroupCell) {   // (the one-group page it makes; anything else stays as it is)
+			NSMutableArray *grouped = [NSMutableArray array];
+			if (native.count) {
+				PSSpecifier *g = [PSSpecifier groupSpecifierWithID:@"MSB_ENGINE_NATIVE"];
+				g.name = @"Native";
+				NSString *why = MSBDStageManagerFooter();   // (nil where Stage Manager can be picked)
+#if DEBUG
+				if ([MSBEnginePretend() containsString:@"stagemanager"]) why = MSBDStageManagerWhyText(2, 1, nil);
+#endif
+				if (why) [g setProperty:why forKey:@"footerText"];
+				[grouped addObject:g];
+				[grouped addObjectsFromArray:native];
+			}
+			if (thirdParty.count) {
+				PSSpecifier *g = [PSSpecifier groupSpecifierWithID:@"MSB_ENGINE_THIRD_PARTY"];
+				g.name = @"Third-Party";
+				[g setProperty:kMSBLicenseHint forKey:@"footerText"];
+				[grouped addObject:g];
+				[grouped addObjectsFromArray:thirdParty];
+			}
+			_specifiers = grouped;
+			SEL row = NSSelectorFromString(@"setRowToSelect");   // (the checkmark's place in the new order)
+			if ([self respondsToSelector:row]) ((void (*)(id, SEL))objc_msgSend)(self, row);
+		}
+	}
+	return _specifiers;
+}
+- (NSString *)msb_valueForRow:(NSIndexPath *)ip {   // (by the row's specifier, whichever group it is in)
+	NSInteger i = [self indexForIndexPath:ip];
+	return i >= 0 && i < (NSInteger)_specifiers.count ? MSBEngineValueOf(_specifiers[i]) : nil;
 }
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
 	UITableViewCell *cell = [super tableView:tv cellForRowAtIndexPath:ip];
@@ -468,7 +524,8 @@ static void MSBFitValueLabels(UIView *v) {
 				((void (*)(id, SEL, id, id, id))objc_msgSend)(spec, NSSelectorFromString(@"setValues:titles:shortTitles:"), values, titles, shorts);
 				// (the picker page's footer says why Stage Manager is greyed there: no Stage Manager on this iPad, iPadOS 16.0, not checked yet, or not
 				//  supported on this iPadOS version -- the row alone said nothing in the first case; staticTextMessage = the list's footer, as on the
-				//  Status Bar Style page)
+				//  Status Bar Style page. Since 1.5.2 MSBEngineListController puts the why under Native and the hint under Third-Party itself; this
+				//  one-group footer is what the page shows only if PSListItemsController ever builds it differently)
 				NSString *why = MSBDStageManagerFooter();
 				[spec setProperty:why ? [NSString stringWithFormat:@"%@\n\n%@", why, kMSBLicenseHint] : kMSBLicenseHint forKey:@"staticTextMessage"];
 			}

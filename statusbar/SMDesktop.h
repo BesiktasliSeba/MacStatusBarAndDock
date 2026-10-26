@@ -392,6 +392,21 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
         }
         return;
     }
+    // A switcher gesture's own end -- the previous / next app by a swipe along the bottom edge (four fingers, up and sideways) -- that would join the
+    // desktop: 1.4.5-1.5.1 joined it right after the gesture (MSBDJoinAfterGesture, below). Since 1.5.2 SpringBoard's own switch to that stage
+    // stands, as Apple, Aerial and Zetsu have it and as a Mac moves between spaces: the app comes back in its own stage, full screen as it was, and
+    // nothing joins the desktop (KT, 26 Oct). Its windows are on screen again: none of them a minimized one any more once the gesture's transition
+    // is over (DMSMShownByGesture). Asked before a full desktop's answer (nothing joins: no desktop is full). Everything above stays as it was --
+    // the Home rule's own windows, another desktop's, the Home Screen, the App Switcher -- and launches, Dock taps, the App Library and the Mac
+    // Switcher are no gesture's end: they still join.
+    if ([label isKindOfClass:[NSString class]] && [label isEqualToString:@"FinalFluidSwitcherGestureAction"]) {
+        NSMutableSet<NSString *> *keys = [NSMutableSet set];
+        for (NSDictionary *w in askedW) if ([w[@"w"] length]) [keys addObject:w[@"w"]];
+        DMLog([NSString stringWithFormat:@"[smjoin] a switcher gesture's end (%@): SpringBoard's own switch to that stage stands -- nothing joins the desktop (1.5.1 joined: %@)", askedText, why]);
+        DM_FEATURE_MARK("sm-gesture-switch-like-apple");
+        if (keys.count) DMSMAfterGestureOnce(@"the swiped-to windows shown", ^{ DMSMShownByGesture(keys); });
+        return;
+    }
     // The plan in entities and attributes: the desktop's windows as they are, the new ones in front (newest interaction times) at their own last
     // place (DMSMJoinAttributes: their own window attributes, fitted to the desktop as it is now). The one in front -- with the keyboard focus --
     // is the app SpringBoard is activating, else the first new one; it gets the newest time (Stage Manager orders windows by it).
@@ -436,9 +451,9 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
     NSArray<NSArray *> *toWrite = DMSMPlanFitted(identity, plan);
     NSString *bad = nil;
     if (!DMSMPlanValid(toWrite, DMSMNewWindowRoles(), &bad)) { DMSMAPIFail(@"joining the desktop (a stage SpringBoard asked for)", [NSString stringWithFormat:@"plan refused, left as SpringBoard built it (%@)", bad]); return; }
-    // (a switcher gesture's own end -- the previous / next app by a swipe along the bottom edge: written here, the desktop and the new window make
-    //  a new stage that shares windows with the stage the gesture holds, which SpringBoard then drops while the gesture still looks it up --
-    //  SMGestureHold.h, issue #7. SpringBoard's switch is left as built, and the same join is asked for as one stage right after the transition.)
+    // (another transition while a switcher gesture's transaction runs -- its own end joins nothing since 1.5.2, above: written here, the desktop and
+    //  the new window make a new stage that shares windows with the stage the gesture holds, which SpringBoard then drops while the gesture still
+    //  looks it up -- SMGestureHold.h, issue #7. SpringBoard's switch is left as built, and the same join is asked for as one stage right after.)
     if (DMSMGestureCtx(ctx)) {
         NSArray<NSArray *> *planC = [toWrite copy];
         NSArray<NSString *> *freshC = [fresh copy], *leftOutC = [leftOut copy];
@@ -449,6 +464,9 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
         DMSMAfterGestureOnce(@"the desktop join", ^{
             if (!DMSMRequestPlan(identity, DMSMIsMainIdentity(identity), @"MSBDJoinAfterGesture", planC, DMSMNewWindowRoles(), frontC, YES)) { DMLog(@"[smjoin] after the gesture: the desktop could not be asked for -- left as it is"); return; }
             DMSMDeskJoinDone(freshC, leftOutC, deskWC, deskC, windowed, asWinC, @"after the switcher gesture");
+#if DEBUG
+            DMSMTestBarRefreshSoon("/tmp/msb-test-barrefresh-join", @"the join after the gesture");
+#endif
         });
         return;
     }

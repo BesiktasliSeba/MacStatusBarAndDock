@@ -17,6 +17,23 @@ static BOOL gSMHomeOn = NO;                 // (A: every row there -- the Home r
 static BOOL gSMHomeTapOn = NO;              // (the Home Screen's own Home press is there)
 static BOOL gSMHomeGestureOn = NO;          // (B: the gesture's blur answers replaced)
 static CFTimeInterval gSMRealHomeUntil = 0; // (the fallback of a real Home: SpringBoard's Home press -- every Home transition until then is SpringBoard's)
+// Each real Home of ours is numbered, and the transition context it builds carries its number (DMSMRealHomeGenOf): SMAfterHome.h ties the desktop's
+// last window's removal to the end of exactly that Home -- not to whichever transition ends first (code review CR1). gSMRealHomeAskedGen: the
+// number of the real Home asked for last -- the next number while it waits for a switcher gesture's end, 0 when SpringBoard's Home press stood in.
+static NSUInteger gSMRealHomeGen = 0, gSMRealHomeAskedGen = 0;
+static char kSMRealHomeGenKey;
+static NSUInteger DMSMRealHomeGenOf(id ctx) {
+    if (!ctx) return 0;
+    NSNumber *n = objc_getAssociatedObject(ctx, &kSMRealHomeGenKey);
+    if ([n isKindOfClass:[NSNumber class]]) return n.unsignedIntegerValue;
+    // (a context SpringBoard made anew from our request: the number in the request's event label, "MSBDRealHome-<n>")
+    SEL rq = NSSelectorFromString(@"request"), lb = NSSelectorFromString(@"eventLabel");
+    id req = [ctx respondsToSelector:rq] && DMSMSigOK(ctx, rq, DMSMSigObj(), "request") ? ((id (*)(id, SEL))objc_msgSend)(ctx, rq) : nil;
+    id label = [req respondsToSelector:lb] && DMSMSigOK(req, lb, DMSMSigObj(), "eventLabel") ? ((id (*)(id, SEL))objc_msgSend)(req, lb) : nil;
+    if (![label isKindOfClass:[NSString class]] || ![label hasPrefix:@"MSBDRealHome-"]) return 0;
+    NSInteger v = [[label substringFromIndex:13] integerValue];
+    return v > 0 ? (NSUInteger)v : 0;
+}
 static NSSet<NSString *> *gSMSwitcherDesk;  // (the App Switcher on screen was opened from the desktop: its windows' identifiers)
 
 // Our own Home that must stay a real Home: the desktop's last window minimized or closed (DMSMWindowAction; Minimize All Windows ends with it),
@@ -34,30 +51,43 @@ __attribute__((noinline)) static BOOL DMSMRequestRealHome(NSString *why) {   // 
     SEL sel = NSSelectorFromString(@"requestTransitionWithBuilder:");
     if (!ws || ![ws respondsToSelector:sel] || !DMSMSigOK(ws, sel, DMSMSigRequest(), "requestTransitionWithBuilder:")) return NO;
     __block BOOL built = NO, wrote = NO;
+    NSUInteger gen = ++gSMRealHomeGen;   // (this Home's number: on its transition context, read at the transition's end -- SMAfterHome.h)
     void (^builder)(id) = ^(id req) {
         built = YES;
         SEL lab = NSSelectorFromString(@"setEventLabel:"), mod = NSSelectorFromString(@"modifyApplicationContext:");
         if (![req respondsToSelector:lab] || !DMSMSigOK(req, lab, DMSMSigVoidObj(), "setEventLabel:")) return;   // (unlabelled it would not be ours: not asked)
         if (![req respondsToSelector:mod] || !DMSMSigOK(req, mod, DMSMSigVoidObj(), "modifyApplicationContext:")) return;
-        ((void (*)(id, SEL, id))objc_msgSend)(req, lab, @"MSBDRealHome");
+        ((void (*)(id, SEL, id))objc_msgSend)(req, lab, [NSString stringWithFormat:@"MSBDRealHome-%lu", (unsigned long)gen]);   // (its number too: DMSMRealHomeGenOf)
         ((void (*)(id, SEL, id))objc_msgSend)(req, mod, ^(id ctx) {
             SEL setAct = NSSelectorFromString(@"setActivatingEntity:");
             if (![ctx respondsToSelector:setAct] || !DMSMSigOK(ctx, setAct, DMSMSigVoidObj(), "setActivatingEntity:")) return;
-            @try { ((void (*)(id, SEL, id))objc_msgSend)(ctx, setAct, home); DMSMCtxMarkOurs(ctx); wrote = YES; } @catch (id e) {}
+            @try { ((void (*)(id, SEL, id))objc_msgSend)(ctx, setAct, home); DMSMCtxMarkOurs(ctx); objc_setAssociatedObject(ctx, &kSMRealHomeGenKey, @(gen), OBJC_ASSOCIATION_RETAIN_NONATOMIC); wrote = YES; } @catch (id e) {}
         });
     };
     @try {
         BOOL taken = ((BOOL (*)(id, SEL, id))objc_msgSend)(ws, sel, builder);
         DMLog([NSString stringWithFormat:@"[smhome] a real Home of our own (%@): taken %d, built %d, the Home Screen asked for %d", why ?: @"?", taken, built, wrote]);
         if (!taken) return NO;
+        gSMRealHomeAskedGen = gen;   // (its transition will carry gen: also when SpringBoard runs the builder later)
         if (!built) return YES;   // (SpringBoard runs the builder later: our request stands -- a press as well would be a second Home)
         if (wrote) DM_FEATURE_MARK("sm-home-real-home");
         return wrote;
     } @catch (NSException *e) { DMSMAPIFail(@"a real Home", e.reason ?: @"exception"); return NO; }
 }
 static void DMSMGoHomeForReal(NSString *why) {
+    // (while a switcher gesture's transaction runs, our Home request waits for its end like every other write of ours (SMGestureHold.h): a request
+    //  of our own in the middle of it interrupts SpringBoard's gesture transition. Deferred, not refused: the user still gets the Home Screen --
+    //  a Mac Switcher desktop with no window, the desktop's last window minimized or closed. GitHub PR #8)
+    if (DMSMGestureLive()) {
+        NSString *w = [why copy];
+        DMLog([NSString stringWithFormat:@"[smhome] a real Home asked for (%@) while a switcher gesture's transition runs: it waits for its end", why ?: @"?"]);
+        gSMRealHomeAskedGen = gSMRealHomeGen + 1;   // (the Home asked for at the gesture's end: the next number)
+        DMSMAfterGestureUsers(@"a real Home", ^{ DMSMGoHomeForReal(w); });   // (the user's own: never dropped, one at a time -- logic test L3)
+        return;
+    }
     DMLog([NSString stringWithFormat:@"[smhome] a real Home asked for (%@): the windows go with it", why ?: @"?"]);
     if (gSMHomeOn && DMSMRequestRealHome(why)) return;
+    gSMRealHomeAskedGen = 0;   // (no Home of ours: SpringBoard's own press below, unnumbered)
     gSMRealHomeUntil = CACurrentMediaTime() + 2.0;   // (the fallback: SpringBoard's own Home press, every Home transition of the next 2 s left as built)
     DMMinimize();
 }

@@ -17,11 +17,12 @@
 
 static NSHashTable *gSMGestureTxs;                       // (the gesture transactions running now: SpringBoard's, weak)
 static NSMutableSet<NSString *> *gSMGestureHeld;         // (the windows of the stages they hold: their identifiers)
-static NSMutableArray<NSArray *> *gSMAfterGesture;       // (the writes waiting for their end: @[what, block, when queued])
+static NSMutableArray<NSArray *> *gSMAfterGesture;       // (the writes waiting for their end: @[what, block, when queued, the user's own])
 static CFTimeInterval gSMGestureSince = 0;
 static BOOL gSMGestureHooked = NO;                       // (the transaction's begin and end are seen: else the fallback below)
 static CFTimeInterval gSMGestureFallbackUntil = 0;       // (no hooks: a gesture's own end counts as running for a moment -- see DMSMGestureLive)
-static const CFTimeInterval kSMAfterGestureMaxWait = 3.0;   // (a write still waiting this long after it was asked for is no longer what the user wants)
+static const CFTimeInterval kSMAfterGestureMaxWait = 3.0;   // (a write of the engine's own still waiting this long is no longer what the user wants;
+                                                             //  the user's own actions have no such limit: DMSMAfterGestureUsers)
 static const CFTimeInterval kSMGestureFallbackHold = 1.2;
 
 static void DMSMGestureFlushSoon(void);
@@ -70,18 +71,31 @@ static BOOL DMSMGestureCtx(id ctx) {
 }
 // The write runs once no gesture's transaction runs: queued in order while one does, else on the next turn of the main queue (never inside the
 // SpringBoard call we were asked from -- the 1.4.1 "21:32" lesson).
-static void DMSMAfterGesture(NSString *what, dispatch_block_t block) {
+static BOOL DMSMAfterGestureIsUsers(NSArray *w) { return w.count > 3 && [w[3] boolValue]; }
+static void DMSMAfterGestureAs(NSString *what, dispatch_block_t block, BOOL users) {
     if (!block) return;
     if (!gSMAfterGesture) gSMAfterGesture = [NSMutableArray array];
-    [gSMAfterGesture addObject:@[what ?: @"a write", [block copy], @(CACurrentMediaTime())]];
-    DMLog([NSString stringWithFormat:@"[smgesture] %@: right after the switcher gesture's transition (it holds that stage)", what ?: @"a write"]);
+    [gSMAfterGesture addObject:@[what ?: @"a write", [block copy], @(CACurrentMediaTime()), @(users)]];
+    DMLog([NSString stringWithFormat:@"[smgesture] %@: right after the switcher gesture's transition (it holds that stage)%@", what ?: @"a write", users ? @" -- the user's own: kept until it can run" : @""]);
     DMSMGestureFlushSoon();
 }
+static void DMSMAfterGesture(NSString *what, dispatch_block_t block) { DMSMAfterGestureAs(what, block, NO); }
 // The same, once per gesture: SpringBoard finalizes a transition's context more than once (two "roles already set" lines per transition), and
 // each would queue the same join or Home again -- the later one replaces the earlier (the iPad 2 asked for the same join twice, r1).
 static void DMSMAfterGestureOnce(NSString *what, dispatch_block_t block) {
-    for (NSArray *w in [gSMAfterGesture copy]) if ([w[0] isEqualToString:what]) [gSMAfterGesture removeObject:w];
+    for (NSArray *w in [gSMAfterGesture copy]) if ([w[0] isEqualToString:what] && !DMSMAfterGestureIsUsers(w)) [gSMAfterGesture removeObject:w];
     DMSMAfterGesture(what, block);
+}
+// The user's own action -- a real Home (an empty Mac Switcher desktop, the desktop's last window), a window's red or yellow light, Force Quit, the
+// Window menu --: never dropped. It waits for the end of the gesture's transition whatever the time (no kSMAfterGestureMaxWait), a gesture that
+// begins before it ran just pushes it back to that gesture's end (DMSMGTBegin), and the same action asked for again meanwhile (a second click on
+// the same light) is one action: the first one stands (1.5.2 logic test L3, code review CR3: both runs saw "the last window", both asked for a
+// real Home, and the second acted on a window already closing). Only the user's own queued actions count as the same: the engine's queued write of
+// that name (its own "removeFromSet on K", say) can still be left after kSMAfterGestureMaxWait -- merged into it, the user's yellow light went with
+// it (1.5.2 logic recheck R2).
+static void DMSMAfterGestureUsers(NSString *what, dispatch_block_t block) {
+    for (NSArray *w in gSMAfterGesture) if (DMSMAfterGestureIsUsers(w) && [w[0] isEqualToString:what]) { DMLog([NSString stringWithFormat:@"[smgesture] %@: asked for again while it waits -- one action", what]); return; }
+    DMSMAfterGestureAs(what, block, YES);
 }
 static void DMSMGestureFlush(void) {
     if (DMSMGestureLive()) {   // (another gesture began meanwhile: its end flushes; without the hooks, the moment after it)
@@ -93,7 +107,7 @@ static void DMSMGestureFlush(void) {
     gSMAfterGesture = nil;
     CFTimeInterval now = CACurrentMediaTime();
     for (NSArray *w in todo) {
-        if (now - [w[2] doubleValue] > kSMAfterGestureMaxWait) { DMLog([NSString stringWithFormat:@"[smgesture] %@: asked for %.1f s ago -- left", w[0], now - [w[2] doubleValue]]); continue; }
+        if (!DMSMAfterGestureIsUsers(w) && now - [w[2] doubleValue] > kSMAfterGestureMaxWait) { DMLog([NSString stringWithFormat:@"[smgesture] %@: asked for %.1f s ago -- left", w[0], now - [w[2] doubleValue]]); continue; }
         @try { ((dispatch_block_t)w[1])(); }
         @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[smgesture] %@ after the gesture failed: %@", w[0], e.reason]); }
     }

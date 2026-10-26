@@ -24,14 +24,14 @@ On an iPadOS version that hasn't been tested, the top of the Status Bar and Dock
 | Finder | Off removes Finder completely, with its Dock icon. | On |
 | Show Desktop Icons | Files and folders from On My iPad > Desktop on the first Home Screen page. | On |
 | Enable Windowing | Off: no window engine loads and every app opens full screen (respring). | On |
-| Window Engine | Which engine runs your windows. Only that one loads (respring). With Stage Manager, MacStatusBar&Dock asks before it turns Stage Manager on, and if you say Not Now (or turn it off later), Turn On Stage Manager appears here. With another engine, Stage Manager stays off while it runs and comes back on as you had it when you turn off windowing. | Stage Manager where it runs (iPadOS 16.1 to 17), else Aerial |
+| Window Engine | Which engine runs your windows. Only that one loads (respring). Apple's Stage Manager is listed under Native (not on iPadOS 15), Aerial, Zetsu and MilkyWay4 under Third-Party. With Stage Manager, MacStatusBar&Dock asks before it turns Stage Manager on, and if you say Not Now (or turn it off later), Turn On Stage Manager appears here. With another engine, Stage Manager stays off while it runs and comes back on as you had it when you turn off windowing. | Stage Manager where it runs (iPadOS 16.1 to 17), else Aerial |
 | Windows Behind Full-Screen Apps | A full-screen app comes in front of your windows, and Window > Bring All to Front brings them back. Off: windows stay in front. | On |
 | Resize Handles (Stage Manager engine only) | Mac handles, or Stage Manager's own. | Mac |
 | Tint Resize Handles | Resize handles take a soft version of each app's color. | Off |
 | Resize Apps to Fit Windows (MilkyWay4 only) | Apps lay themselves out for the window. Off: the full-screen layout, scaled down. | On |
 | Turn Off Traffic Lights | Hides the window buttons in the menu bar for full-screen apps. | Off |
 | Hide Multitasking Dots | Hides the three dots at the top of apps while windowing runs. | On |
-| Mac Switcher | Desktops and Mission Control in place of the App Switcher. Not offered on iPadOS 18. | Off |
+| Mac Switcher | Desktops and Mission Control in place of the App Switcher. Turning it off keeps your desktops for when you turn it on again. Not offered on iPadOS 18. | Off |
 | Report a Problem | Opens a filled-in GitHub issue in your browser. The report is part of the link, so GitHub receives it when the page opens. It is only posted if you submit it. | |
 | Background | Automatic: a color behind the menu bar, unless ColorBar15 already colors it. Also Always On or Off. | Automatic |
 | Color and opacity | The background color, used while the menu bar text is light. | 70% |
