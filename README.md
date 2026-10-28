@@ -21,6 +21,8 @@ A macOS-style desktop for jailbroken iPads: a Mac menu bar with real app menus, 
    https://besiktasliseba.github.io/repo/
    ```
 
+   It's also on [Havoc](https://havoc.app/package/macstatusbardoc), with the same package.
+
 2. Install **MacStatusBar&Dock** and respring when Sileo asks.
 3. For windows, add a window engine, or use Apple's Stage Manager on iPadOS 16 and 17. Settings > Status Bar > Window Engine lists them, with a GET button for each one you don't have yet.
 
