@@ -2,6 +2,11 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.6.1
+
+### Fixes
+- Aerial: resizing a window works the way Stage Manager does. While you drag a corner, the window shows the app as it was, scaled to the window, and the app gets its new size once when you let go. In 1.6.0 the app was given a new size many times a second during the drag, so apps kept reloading their layout, heavy apps could freeze, and a page could end up off centre.
+
 ## 1.6.0
 
 ### New

@@ -3562,6 +3562,11 @@ static id DMSceneForBundle(NSString *bundleID);
 static BOOL DMSetSceneFrame(id scene, CGRect frame);
 static long gSceneFullOrientation = 0;   // (set while DMResetSceneFrameForBundle gives a scene the full screen back: the orientation it gets with it)
 static void (^gNextSceneFrameDone)(void) = nil;   // (DMResetSceneFrameForBundle: called once the app has taken the frame -- the update's completion)
+static NSHashTable<UIView *> *gA5PicStages;   // Aerial 5: the windows whose corner is dragged or whose picture is held (FBScene's update hooks look only then)
+static id DMA5PicCompletion(id scene, id settings, id completion);   // (with the Aerial 5 corner resize)
+#if DEBUG
+static void DMA5PictureLeakTest(UIView *stage);   // (debug trigger a5picleak_, with the Aerial 5 corner resize)
+#endif
 // iPad 2 fix (2026-09-24, "grey bars in Zetsu windows", mostly after a hand resize): the app's picture reaches Zetsu's content view through
 // _UIContextLayerHostView views that UIKit makes the size of the PORTRAIT screen (768 x 1024) and that clip (masksToBounds). A flexed window lays the
 // app out at the window's size (verified in the app: its UIWindow was 878.5 x 596), so in landscape any window wider than 768 pt had everything past
@@ -5302,6 +5307,7 @@ static void DMPassWindowFrameToShownScene(id scene, id settings) {
     }
     settings = DMPortraitWindowSettings(self, settings);
     { NSString *holdID = nil; if (gVetoFrameHolds.count) { @try { holdID = [self valueForKey:@"identifier"]; } @catch (id e) {} } settings = DMVetoFrameHoldApply(self, settings, holdID); }
+    if (gA5PicStages.count) completion = DMA5PicCompletion(self, settings, completion);   // (Aerial 5: a window's corner just let go -- the app's picture is held until it has laid itself out)
     %orig(settings, context, completion);
 }
 - (void)updateSettings:(id)settings withTransitionContext:(id)context {
@@ -5419,6 +5425,11 @@ static void DMPassWindowFrameToShownScene(id scene, id settings) {
         static int fixes = 0; if (fixes++ < 6) DMLog(@"[mode] legacy (100) changed to alwaysAll (2) on a scene update");
     }
     if (DMStormBrakeDrops(self, settings, context)) return;
+    if (gA5PicStages.count) {   // (Aerial 5: the size a window gets when its corner is let go goes out with a completion, which tells when the app has laid itself out;
+                                //  through the three-argument method, so our hook there checks it like every other update, DMKeepWindowedSettings & co.)
+        id done = DMA5PicCompletion(self, settings, nil);
+        if (done) { ((void (*)(id, SEL, id, id, id))objc_msgSend)(self, NSSelectorFromString(@"updateSettings:withTransitionContext:completion:"), settings, context, done); return; }
+    }
     %orig;
 }
 // Aerial-parity fix: the only FBScene method Aerial itself hooks (confirmed by disassembly — every other Aerial/scene interaction is a
@@ -5468,7 +5479,8 @@ static BOOL DMSetSceneFrame(id scene, CGRect frame) {
             CFTimeInterval t0 = CACurrentMediaTime();
             NSString *sidLog = nil; @try { sidLog = [scene valueForKey:@"identifier"]; } @catch (id e) {}
             void (^done)(long) = ^(long arg) { DMLog([NSString stringWithFormat:@"[scenecompl] %@: completion after %.0f ms (arg %ld)", sidLog, (CACurrentMediaTime() - t0) * 1000.0, arg & 0xff]); };
-            _logos_orig$_ungrouped$FBScene$updateSettings$withTransitionContext$completion$((FBScene *)scene, NSSelectorFromString(@"updateSettings:withTransitionContext:completion:"), mutable, context, (id)done);
+            id withPic = gA5PicStages.count ? DMA5PicCompletion(scene, mutable, done) : (id)done;   // (Aerial 5: a corner just let go -- see DMA5PicCompletion)
+            _logos_orig$_ungrouped$FBScene$updateSettings$withTransitionContext$completion$((FBScene *)scene, NSSelectorFromString(@"updateSettings:withTransitionContext:completion:"), mutable, context, withPic);
             __weak id ws = scene; __block long lastCO = -99;
             DMBlockLink *rec = [DMBlockLink new];
             rec.block = ^BOOL{
@@ -5481,7 +5493,11 @@ static BOOL DMSetSceneFrame(id scene, CGRect frame) {
             [rec start];
         } else
 #endif
-        _logos_orig$_ungrouped$FBScene$updateSettings$withTransitionContext$((FBScene *)scene, NSSelectorFromString(@"updateSettings:withTransitionContext:"), mutable, context);
+        {
+            id picDone = gA5PicStages.count ? DMA5PicCompletion(scene, mutable, nil) : nil;   // (Aerial 5: a corner just let go -- see DMA5PicCompletion)
+            if (picDone) _logos_orig$_ungrouped$FBScene$updateSettings$withTransitionContext$completion$((FBScene *)scene, NSSelectorFromString(@"updateSettings:withTransitionContext:completion:"), mutable, context, picDone);
+            else _logos_orig$_ungrouped$FBScene$updateSettings$withTransitionContext$((FBScene *)scene, NSSelectorFromString(@"updateSettings:withTransitionContext:"), mutable, context);
+        }
         // Aerial-parity fix (found by disassembling Aerial 3.0 offline): every place it sends a frame through the settings path above,
         // it ALSO, in the same breath, updates a private registry that its own -accessibilitySceneFrame hook (the only FBScene method
         // it hooks at all) reads from and returns instead of the real value when the two differ. This project's settings-path fix
@@ -23244,6 +23260,13 @@ static void DMRunTrigger(NSString *cmd) {
         id prop = nil; for (NSString *k in @[@"scene", @"_scene"]) { @try { id sc = [stage valueForKey:k]; if (DMIsSceneOfBundle(sc, b)) { prop = sc; break; } } @catch (id e) {} }
         DMLog([NSString stringWithFormat:@"[stagescene] %@: stage %p, property scene %@, hosted now %@, remembered %@, DMSceneForBundle %@", b, stage, prop ? DMShortSceneID(prop) : @"-", hosted ? DMShortSceneID(hosted) : @"-", box.scene ? DMShortSceneID(box.scene) : @"-", DMSceneForBundle(b) ? DMShortSceneID(DMSceneForBundle(b)) : @"-"]);
     }
+#if DEBUG
+    else if ([cmd hasPrefix:@"a5picleak_"]) {   // a5picleak_<bundle>: test -- a corner drag's picture left open with no drag on that window (its end never reached
+                                              // us): the pass before the next commit must end it (DMA5PictureCheck)
+        UIView *st = DMStageForBundle([cmd substringFromIndex:10]);
+        if (st) DMA5PictureLeakTest(st); else DMLog(@"[a5resize] a5picleak: no such window");
+    }
+#endif
     else if ([cmd hasPrefix:@"a5call_"]) {   // a5call_<bundle>|<selector>: call one of Aerial's real-named void methods without arguments on that window (5.1's closeStageWithAnimation, splitStageToLeftHalf, ...; debug study, never a scrambled one)
         NSArray *q = [[cmd substringFromIndex:7] componentsSeparatedByString:@"|"];
         UIView *stage = q.count == 2 ? DMStageForBundle(q[0]) : nil;
@@ -27215,17 +27238,22 @@ static BOOL DMA5ViewCovered(UIView *stage, UIView *v) {
         if (!subs[i].hidden && subs[i].alpha > 0.05 && CGRectIntersectsRect(subs[i].frame, v.frame)) return YES;
     return NO;
 }
-// ---- Aerial 5: the live app while a window is resized, not Aerial's placeholder ----------------------------------------------------------------
+// ---- Aerial 5: a window resized by its corner shows the app's last picture, and the app gets its new size once -------------------------------------
 // While a corner is dragged, Aerial covers the app with a placeholder of its own -- a light blur with the app's icon in the middle (the stage's
 // _resizeOverlay, put into the app's holder over the app on the drag's first event, faded in over 0.1 s and taken away about 0.4 s after the finger
 // lifts) -- and gives the app its new size only when the finger lifts (A12Z, 18.5, Aerial 5.1: no scene update during a 7 s drag, frame by frame;
-// KT on the M1, 15.6.1, Aerial 5.1). 5.0 has the same placeholder code in its corner resize (the same ivars and show / hide methods, read from both
-// binaries); 5.1 also shows it while a window comes back from the Dock and for its own menu's Maximize and Split moves. Nothing of ours ever handled it.
-// Like the rest of Aerial's own look we do not use (its frosted frame, its white handles, its "..." menu), the placeholder is kept hidden: from the
-// pass before every Core Animation commit (DMA5CatchNewStages) and from the resize handle's own events, so no frame shows it. And while a corner is
-// dragged the app is given its window's size as the window changes (Aerial's own scene call, as DMRefitStageScene makes it; at most 30 a second,
-// the last size always sent), so it lays itself out live, as on macOS and as our other engines resize (Zetsu, MilkyWay). Debug:
-// /tmp/msb-a5-placeholder keeps Aerial's placeholder and its after-the-drag-only size, to compare.
+// iPad 2, 16.7.7, 5.1: the same, the size once, 13 ms after the lift). 5.0 has the same placeholder code in its corner resize (the same ivars and
+// show / hide methods, read from both binaries); 5.1 also shows it while a window comes back from the Dock and for its own menu's Maximize and Split
+// moves. Like the rest of Aerial's own look we do not use (its frosted frame, its white handles, its "..." menu), the placeholder is kept hidden: from
+// the pass before every Core Animation commit (DMA5CatchNewStages) and from the resize handle's own events, so no frame shows it.
+// While the corner moves, the window shows the app's own last picture instead, scaled to fill it (DMA5FitPicture), and the app gets no size until
+// the finger lifts, as with Stage Manager. (1.6.0 gave the app its window's size as the window changed, up to 30 times a second: every step was a
+// size change the app laid itself out for again -- Settings flipped between its one- and two-column layouts, scroll and web views were left off
+// their place (a page not centred after the drag, Safari on the M1), and a heavy app could not keep up: Reddit froze (KT, M1, 15.6.1, Aerial 5.1,
+// a watchdog kill right after); on the iPad 2 Settings drew nothing new during a 1.3 s drag of 28 sizes -- its old layout beside an empty black
+// area -- and jumped 0.2 s after the lift.) When the finger lifts, Aerial gives the app the window's size; the picture, frozen as it was, is held
+// over the app until FrontBoard calls that update's completion -- the app has laid itself out for it (as the green button waits, DMSetSceneFrame)
+// -- and then cross-fades into the app: one layout, no jump. Debug: /tmp/msb-a5-placeholder keeps Aerial's placeholder and plain resize, to compare.
 static BOOL DMA5KeepPlaceholder(void) {
 #if DEBUG
     static BOOL keep = NO; static CFTimeInterval at = -10;   // (read from the pass before every commit: the flag at most once a second)
@@ -27247,40 +27275,232 @@ static void DMA5HidePlaceholder(UIView *stage, NSString *from) {
     static int told = 0;
     if (told < 40) { told++; DMLog([NSString stringWithFormat:@"[a5resize] %@: Aerial's resize placeholder hidden (%@)", DMStageBundle(stage), from]); }
 }
-static const void *kA5LiveSizeKey = &kA5LiveSizeKey, *kA5LiveAtKey = &kA5LiveAtKey, *kA5LivePendingKey = &kA5LivePendingKey;
-static void DMA5LiveResize(UIView *stage, UIPanGestureRecognizer *g) {
-    if (DMA5KeepPlaceholder() || !stage.superview || DMStageMinimized(stage)) return;
-    if (g.state != UIGestureRecognizerStateBegan && g.state != UIGestureRecognizerStateChanged) return;   // (the drag's end: Aerial gives the size itself)
-    Class core = objc_getClass("AerialCore");
-    SEL apply = DMAerialSel(@"applySceneFrameForBundle:frame:"), fit = DMAerialSel(@"adjustContentScaleToHost");
-    NSString *bundleID = DMStageBundle(stage);
-    if (!core || !bundleID.length || ![(id)core respondsToSelector:apply]) return;
-    CFTimeInterval now = CACurrentMediaTime();
-    NSNumber *at = objc_getAssociatedObject(stage, kA5LiveAtKey);
-    if (at && now - at.doubleValue < 1.0 / 30.0) {   // (too soon: once more when the 1/30 s is up, with the size the window has then)
-        if ([objc_getAssociatedObject(stage, kA5LivePendingKey) boolValue]) return;
-        objc_setAssociatedObject(stage, kA5LivePendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        __weak UIView *weakStage = stage; __weak UIPanGestureRecognizer *weakG = g;
+static const void *kA5PicSizeKey = &kA5PicSizeKey;     // while the corner is dragged: the size the app's picture was drawn at (NSValue CGSize)
+static const void *kA5PicLeftKey = &kA5PicLeftKey;     // the left corner is dragged: the picture keeps its right edge
+static const void *kA5PicWatchKey = &kA5PicWatchKey;   // when the size Aerial gave at the lift went out (its completion is watched: once per drag)
+static const void *kA5PicLaidKey = &kA5PicLaidKey;     // the app has laid itself out for that size
+static const void *kA5PicCoverKey = &kA5PicCoverKey;   // the frozen picture held over the app after the lift
+static const void *kA5PicLiftKey = &kA5PicLiftKey;     // when the finger lifted
+static const void *kA5PicBaseKey = &kA5PicBaseKey;     // the content view's own sublayer transform before the drag (kept under ours, given back after)
+static const void *kA5PicSetKey = &kA5PicSetKey;       // the sublayer transform we set last (given back only while it is still ours)
+static UIView *DMA5PictureView(UIView *stage) {   // Aerial's content view: the app's scene layer host (the _UISceneLayerHostContainerView in its holder)
+    for (UIView *v in DMStageInnerView(stage).subviews) if ([NSStringFromClass([v class]) containsString:@"SceneLayerHost"]) return v;
+    return nil;
+}
+// The picture fills the holder with one scale for both sides (it keeps its shape, as the green button's held picture), from the holder's top edge
+// and the side that does not move: the left one, or the right one while the left corner is dragged. It is the content view's sublayer transform,
+// which Core Animation applies around the layer's anchor point (its middle), so the way back from there is added. Aerial lays the holder and the
+// content view out for the window (its own sublayer transform, if it ever has one, stays under ours; neither 5.0 nor 5.1 has a selector for it);
+// nothing else of the window is scaled (our title bar, lights and corners). No size noted (the drag is over): the content view's own transform is
+// given back -- unless something else has set one since ours (that one is left as it is).
+static void DMA5FitPicture(UIView *stage) {
+    UIView *pic = DMA5PictureView(stage);
+    NSValue *base = objc_getAssociatedObject(stage, kA5PicBaseKey);
+    if (!pic || !base) return;
+    NSValue *pv = objc_getAssociatedObject(stage, kA5PicSizeKey), *mine = objc_getAssociatedObject(stage, kA5PicSetKey);
+    CGSize p = pv.CGSizeValue, h = pic.superview.bounds.size;
+    CATransform3D t = base.CATransform3DValue;
+    if (pv && p.width >= 1.0 && p.height >= 1.0 && (fabs(h.width - p.width) >= 0.5 || fabs(h.height - p.height) >= 0.5)) {
+        CGFloat s = MAX(h.width / p.width, h.height / p.height), x = [objc_getAssociatedObject(stage, kA5PicLeftKey) boolValue] ? h.width - p.width * s : 0.0;
+        CGRect b = pic.layer.bounds; CGPoint a = CGPointMake(b.origin.x + pic.layer.anchorPoint.x * b.size.width, b.origin.y + pic.layer.anchorPoint.y * b.size.height);
+        t = CATransform3DConcat(t, CATransform3DConcat(CATransform3DMakeScale(s, s, 1.0), CATransform3DMakeTranslation(x + a.x * (s - 1.0), a.y * (s - 1.0), 0.0)));
+    }
+    if (!pv) {
+        objc_setAssociatedObject(stage, kA5PicBaseKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(stage, kA5PicSetKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (!mine || !CATransform3DEqualToTransform(pic.layer.sublayerTransform, mine.CATransform3DValue)) return;   // (not ours any more, or never set)
+    }
+    if (CATransform3DEqualToTransform(pic.layer.sublayerTransform, t)) return;
+    pic.layer.sublayerTransform = t;
+    if (pv) objc_setAssociatedObject(stage, kA5PicSetKey, [NSValue valueWithCATransform3D:t], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+#if DEBUG
+    if (DMTestFlag("/tmp/msb-a5-dragtrace")) {   // (debug: where the app's picture is drawn now -- its top-left corner and its size, in the holder)
+        CALayer *sub = pic.layer.sublayers.firstObject;
+        CGPoint o = sub ? [pic.layer convertPoint:CGPointZero fromLayer:sub] : CGPointZero;
+        DMLog([NSString stringWithFormat:@"[a5resize] %@: holder %@, picture %@ drawn from %@ at scale %.4f", DMStageBundle(stage), NSStringFromCGSize(h), NSStringFromCGSize(p), NSStringFromCGPoint(o), t.m11]);
+    }
+#endif
+}
+static BOOL DMAerial5GestureLive(UIView *stage);   // (defined with the drag watch below)
+static void DMA5PictureFade(UIView *stage, NSString *why) {   // the held picture cross-fades into the app
+    UIView *box = objc_getAssociatedObject(stage, kA5PicCoverKey);
+    if (!objc_getAssociatedObject(stage, kA5PicSizeKey)) [gA5PicStages removeObject:stage];
+    if (!box) return;
+    objc_setAssociatedObject(stage, kA5PicCoverKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NSNumber *lift = objc_getAssociatedObject(stage, kA5PicLiftKey);
+    DMLog([NSString stringWithFormat:@"[a5resize] %@: the held picture fades (%@, %.0f ms after the lift)", DMStageBundle(stage), why, lift ? (CACurrentMediaTime() - lift.doubleValue) * 1000.0 : -1.0]);
+    [UIView animateWithDuration:0.18 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{ box.alpha = 0.0; } completion:^(BOOL finished) { [box removeFromSuperview]; }];
+}
+#if DEBUG
+// Debug, to compare: /tmp/msb-a5-livesize gives the app its window's size as the corner moves, as 1.6.0 did (Aerial's own scene call, at most 30 a
+// second, the last size always sent), and no picture is held.
+static BOOL DMA5LiveSizes(void) { return DMTestFlag("/tmp/msb-a5-livesize"); }
+static void DMA5LiveSize(UIView *stage, UIPanGestureRecognizer *g) {
+    static const void *kAtKey = &kAtKey, *kPendingKey = &kPendingKey;
+    if (!stage.superview || DMStageMinimized(stage) || (g.state != UIGestureRecognizerStateBegan && g.state != UIGestureRecognizerStateChanged)) return;
+    CFTimeInterval now = CACurrentMediaTime(); NSNumber *at = objc_getAssociatedObject(stage, kAtKey);
+    if (at && now - at.doubleValue < 1.0 / 30.0) {
+        if ([objc_getAssociatedObject(stage, kPendingKey) boolValue]) return;
+        objc_setAssociatedObject(stage, kPendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        __weak UIView *ws = stage; __weak UIPanGestureRecognizer *wg = g;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((1.0 / 30.0 - (now - at.doubleValue)) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            UIView *s = weakStage; UIPanGestureRecognizer *gg = weakG;
-            if (!s) return;
-            objc_setAssociatedObject(s, kA5LivePendingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            if (gg) DMA5LiveResize(s, gg);
+            UIView *st = ws; if (!st) return;
+            objc_setAssociatedObject(st, kPendingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            if (wg) DMA5LiveSize(st, wg);
         });
         return;
     }
-    [stage layoutIfNeeded];   // (Aerial lays the app's holder out for the window's new size now rather than at the commit: its size is what the app gets)
-    UIView *in = DMStageInnerView(stage);
-    if (!in.window) return;
-    CGRect r = [in convertRect:in.bounds toView:nil];
+    [stage layoutIfNeeded];
+    UIView *in = DMStageInnerView(stage); CGRect r = in.window ? [in convertRect:in.bounds toView:nil] : CGRectZero;
     if (r.size.width < 100.0 || r.size.height < 100.0) return;
-    NSValue *last = objc_getAssociatedObject(stage, kA5LiveSizeKey);
-    if (last && fabs(last.CGSizeValue.width - r.size.width) < 1.0 && fabs(last.CGSizeValue.height - r.size.height) < 1.0) return;
-    objc_setAssociatedObject(stage, kA5LiveSizeKey, [NSValue valueWithCGSize:r.size], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(stage, kA5LiveAtKey, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    ((void (*)(id, SEL, id, CGRect))objc_msgSend)((id)core, apply, bundleID, r);
-    if ([stage respondsToSelector:fit]) ((void (*)(id, SEL))objc_msgSend)(stage, fit);
-    if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[a5resize] %@: live size %@", bundleID, NSStringFromCGRect(r)]);
+    objc_setAssociatedObject(stage, kAtKey, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ((void (*)(id, SEL, id, CGRect))objc_msgSend)((id)objc_getClass("AerialCore"), DMAerialSel(@"applySceneFrameForBundle:frame:"), DMStageBundle(stage), r);
+    SEL fit = DMAerialSel(@"adjustContentScaleToHost"); if ([stage respondsToSelector:fit]) ((void (*)(id, SEL))objc_msgSend)(stage, fit);
+    DMLog([NSString stringWithFormat:@"[a5resize] %@: live size %@ (debug: 1.6.0's way)", DMStageBundle(stage), NSStringFromCGRect(r)]);
+}
+#endif
+// The drag begins (Aerial has not moved the window yet): the size the app's picture was drawn at is noted -- its scene's frame, which FrontBoard
+// last gave it, else the holder's (when they are far apart: a scene in another shape).
+static void DMA5PictureBegin(UIView *stage, BOOL left) {
+    UIView *pic = DMA5PictureView(stage);
+    BOOL found = NO, trim = DMBoolIvar(stage, "_trimMode", &found);
+    if (DMA5KeepPlaceholder() || DMStageMinimized(stage) || !pic || trim) return;   // (trim mode, 5.1: Aerial crops the app's picture itself)
+#if DEBUG
+    if (DMA5LiveSizes()) return;
+#endif
+    UIView *held = objc_getAssociatedObject(stage, kA5PicCoverKey);
+    if (held) { [held removeFromSuperview]; objc_setAssociatedObject(stage, kA5PicCoverKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }   // (a drag right after the last one)
+    CGSize p = pic.superview.bounds.size;
+    @try {
+        CGRect f = ((CGRect (*)(id, SEL))objc_msgSend)([DMSceneForBundle(DMStageBundle(stage)) valueForKey:@"settings"], NSSelectorFromString(@"frame"));
+        if (fabs(f.size.width - p.width) < 20.0 && fabs(f.size.height - p.height) < 20.0) p = f.size;
+    } @catch (id e) {}
+    if (!objc_getAssociatedObject(stage, kA5PicBaseKey)) objc_setAssociatedObject(stage, kA5PicBaseKey, [NSValue valueWithCATransform3D:pic.layer.sublayerTransform], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(stage, kA5PicSizeKey, [NSValue valueWithCGSize:p], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(stage, kA5PicLeftKey, left ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(stage, kA5PicWatchKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(stage, kA5PicLaidKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!gA5PicStages) gA5PicStages = [NSHashTable weakObjectsHashTable];
+    [gA5PicStages addObject:stage];
+    DMLog([NSString stringWithFormat:@"[a5resize] %@: %@ corner drag: the app's picture (%@) fills the window until the lift%@", DMStageBundle(stage), left ? @"left" : @"right", NSStringFromCGSize(p),
+        CATransform3DIsIdentity(pic.layer.sublayerTransform) ? @"" : @" (its content view had a sublayer transform of its own: kept under ours)"]);
+}
+// The frozen picture held over the app after the lift, in a box that follows the holder: if the holder changes before the picture fades (an
+// animated move or layout of the window, a turn), the picture keeps filling it the way the live one did -- one scale for both sides, from the top
+// edge and the side that did not move -- instead of being cut off, or the app showing past it.
+@interface DMA5HeldPicture : UIView
+@property (nonatomic) CGSize pictureSize;
+@property (nonatomic) BOOL keepsRightEdge;
+@end
+@implementation DMA5HeldPicture
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    UIView *pic = self.subviews.firstObject;
+    CGSize b = self.bounds.size, p = self.pictureSize;
+    if (!pic || p.width < 1.0 || p.height < 1.0) return;
+    CGFloat s = MAX(b.width / p.width, b.height / p.height);
+    CGAffineTransform t = CGAffineTransformMake(s, 0, 0, s, self.keepsRightEdge ? b.width - p.width * s : 0.0, 0.0);
+    if (!CGAffineTransformEqualToTransform(pic.transform, t)) pic.transform = t;
+}
+@end
+// The finger lifts (Aerial has just given the app the window's size, DMA5PicCompletion), or the drag ended some other way (DMA5PictureCheck): the
+// picture as the screen shows it is held over the app, the app's own picture goes back to its plain size under it, and the held one fades once the
+// app has laid itself out (or after 2 s at the most). Nothing is held for a window that is not on the screen now (hidden, minimized, taken out).
+static void DMA5PictureEnd(UIView *stage) {
+    NSValue *pv = objc_getAssociatedObject(stage, kA5PicSizeKey);
+    if (!pv) return;
+    [stage layoutIfNeeded];
+    UIView *in = DMA5PictureView(stage).superview;
+    CGSize p = pv.CGSizeValue, h = in.bounds.size;
+    BOOL resized = in && (fabs(h.width - p.width) >= 0.5 || fabs(h.height - p.height) >= 0.5);
+    BOOL shown = in.window && !stage.hidden && !DMStageMinimized(stage);
+    UIView *held = resized && shown ? [in snapshotViewAfterScreenUpdates:NO] : nil;
+    if (held) {
+        DM_FEATURE_MARK("aerial-resize-held-picture");
+        DMA5HeldPicture *box = [[DMA5HeldPicture alloc] initWithFrame:in.bounds];
+        box.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        box.userInteractionEnabled = NO; box.clipsToBounds = YES; box.accessibilityIdentifier = @"MSBResizePicture";
+        box.pictureSize = in.bounds.size; box.keepsRightEdge = [objc_getAssociatedObject(stage, kA5PicLeftKey) boolValue];
+        held.layer.anchorPoint = CGPointZero;
+        held.frame = box.bounds;
+        [box addSubview:held];
+        [in addSubview:box];
+        objc_setAssociatedObject(stage, kA5PicCoverKey, box, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(stage, kA5PicLiftKey, @(CACurrentMediaTime()), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    objc_setAssociatedObject(stage, kA5PicSizeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    DMA5FitPicture(stage);
+    DMLog([NSString stringWithFormat:@"[a5resize] %@: lifted at %@ (picture %@): %@", DMStageBundle(stage), NSStringFromCGSize(h), NSStringFromCGSize(p),
+        !resized ? @"same size" : (!shown ? @"not on the screen: nothing held" : (!held ? @"no picture to hold" : (objc_getAssociatedObject(stage, kA5PicLaidKey) ? @"held, the app has laid itself out already" : (objc_getAssociatedObject(stage, kA5PicWatchKey) ? @"held until the app has laid itself out" : @"held (no new size seen)"))))]);
+    if (!held || objc_getAssociatedObject(stage, kA5PicLaidKey)) { DMA5PictureFade(stage, @"no wait"); return; }
+    __weak UIView *weakStage = stage, *mine = objc_getAssociatedObject(stage, kA5PicCoverKey);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UIView *st = weakStage;
+        UIView *box = mine;
+        if (st && box && objc_getAssociatedObject(st, kA5PicCoverKey) == box) DMA5PictureFade(st, @"no completion within 2 s");
+    });
+}
+#if DEBUG
+static void DMA5PictureLeakTest(UIView *stage) {   // (trigger a5picleak_) a picture session open with no drag, the app's picture noted at 85 % of its holder
+    DMA5PictureBegin(stage, NO);
+    NSValue *pv = objc_getAssociatedObject(stage, kA5PicSizeKey);
+    if (!pv) { DMLog(@"[a5resize] a5picleak: no picture session (Aerial's placeholder kept, trim mode or minimized)"); return; }
+    objc_setAssociatedObject(stage, kA5PicSizeKey, [NSValue valueWithCGSize:CGSizeMake(pv.CGSizeValue.width * 0.85, pv.CGSizeValue.height * 0.85)], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    DMA5FitPicture(stage);
+    DMLog([NSString stringWithFormat:@"[a5resize] a5picleak: %@'s picture session left open with no drag, its picture scaled %.3f", DMStageBundle(stage), DMA5PictureView(stage).layer.sublayerTransform.m11]);
+}
+#endif
+// Before every Core Animation commit (DMA5CatchNewStages), while a window is in gA5PicStages: a window whose corner is no longer dragged ends its
+// picture here too, so its end never depends on the drag's last event reaching the handle's target (-resizeCatchUp: gives up on a window taken out
+// of its superview; a lock, a minimize, the App Switcher or a desktop move can cut the drag short).
+static void DMA5PictureCheck(void) {
+    for (UIView *st in gA5PicStages.allObjects) {
+        if (!objc_getAssociatedObject(st, kA5PicSizeKey) || DMAerial5GestureLive(st)) continue;
+        DMLog([NSString stringWithFormat:@"[a5resize] %@: the corner drag is over without its end reaching us: the picture ends here", DMStageBundle(st)]);
+        DMA5PictureEnd(st);
+    }
+}
+// (FBScene's update hooks and DMSetSceneFrame, while a window is in gA5PicStages) The size Aerial gives the window when its corner is let go -- the
+// first update of the scene the window shows once the drag is over, with another size than that scene has -- also calls a completion of ours:
+// FrontBoard calls it when the app has laid itself out. (An app with several scenes can get it on another one first; it goes on to the shown one,
+// DMPassWindowFrameToShownScene, and that update is the one watched.) A new size while the corner still moves (an Aerial build that resizes the
+// app as it goes, or another move of ours) ends the scaling: the app's picture is no longer the one noted.
+static id DMA5PicCompletion(id scene, id settings, id completion) {
+    if (![settings respondsToSelector:NSSelectorFromString(@"frame")]) return completion;
+    NSString *sb = DMBundleOfSceneID(scene);   // (exactly: com.foo.app is not com.foo.app.pro)
+    for (UIView *stage in gA5PicStages.allObjects) {
+        NSString *b = DMStageBundle(stage);
+        if (!sb.length || ![sb isEqualToString:b] || !DMSceneIsStageScene(scene, b)) continue;
+        if (objc_getAssociatedObject(stage, kA5PicWatchKey)) return completion;
+        CGRect f = ((CGRect (*)(id, SEL))objc_msgSend)(settings, NSSelectorFromString(@"frame")), cur = CGRectNull;
+        @try { cur = ((CGRect (*)(id, SEL))objc_msgSend)([scene valueForKey:@"settings"], NSSelectorFromString(@"frame")); } @catch (id e) {}
+        if (!CGRectIsNull(cur) && fabs(f.size.width - cur.size.width) < 0.5 && fabs(f.size.height - cur.size.height) < 0.5) return completion;   // (not a new size)
+        if (DMAerial5GestureLive(stage)) {
+            if (objc_getAssociatedObject(stage, kA5PicSizeKey)) {
+                objc_setAssociatedObject(stage, kA5PicSizeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                DMA5FitPicture(stage);
+                [gA5PicStages removeObject:stage];
+                DMLog([NSString stringWithFormat:@"[a5resize] %@: a new size (%@) while the corner moves: its picture is not scaled any more", b, NSStringFromCGSize(f.size)]);
+            }
+            return completion;
+        }
+        CFTimeInterval sent = CACurrentMediaTime();
+        NSNumber *watch = @(sent);
+        objc_setAssociatedObject(stage, kA5PicWatchKey, watch, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        __weak UIView *weakStage = stage; void (^theirs)(long) = (void (^)(long))completion;
+        return [^(long arg) {
+            if (theirs) theirs(arg);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                UIView *st = weakStage;
+                if (!st || objc_getAssociatedObject(st, kA5PicWatchKey) != watch) return;   // (a new drag has begun since)
+                objc_setAssociatedObject(st, kA5PicLaidKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                DMLog([NSString stringWithFormat:@"[a5resize] %@ has laid itself out for %@ (%.0f ms after its size went)", DMStageBundle(st), NSStringFromCGSize(f.size), (CACurrentMediaTime() - sent) * 1000.0]);
+                // (two display frames on: the completion can come just before the app's new picture is drawn)
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.04 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ UIView *s = weakStage; if (s) DMA5PictureFade(s, @"the app has laid itself out"); });
+            });
+        } copy];
+    }
+    return completion;
 }
 // Aerial 5.0's resize handles are laid out by Aerial below the app, so with the 3.0 shape most of each one sits in the invisible margin under the
 // window and only a thin band of it overlaps the window's corner (UIKit hit-testing follows the stage's draw offset, see DMA5StageShift). Each of our
@@ -27359,7 +27579,15 @@ static BOOL DMA5ShiftCornerOffset(UIView *stage, CGPoint d) {
         if (f.size.width >= 200 && f.size.height >= 150) stage.frame = f;
         if (g.state != UIGestureRecognizerStateChanged) objc_setAssociatedObject(g, &kOffsetKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    DMA5LiveResize(stage, g);   // (after the catch-up: the size the window has now)
+    // (after the catch-up: the size the window has now) The app's picture fills the window as it changes, and is held when the finger lifts.
+    if (g.state == UIGestureRecognizerStateBegan) DMA5PictureBegin(stage, CGRectGetMidX(self.frame) < stage.bounds.size.width / 2);
+#if DEBUG
+    if (DMA5LiveSizes()) DMA5LiveSize(stage, g);
+#endif
+    if (g.state == UIGestureRecognizerStateBegan || g.state == UIGestureRecognizerStateChanged) {
+        [stage layoutIfNeeded];   // (Aerial lays the holder out for the window's new size now rather than at the commit: the picture is fitted to it)
+        DMA5FitPicture(stage);
+    } else DMA5PictureEnd(stage);
 }
 @end
 // ---- Aerial 5.0: the window flies in out of the full-screen app, like on Aerial 3.0 (DMBeginStageEntrance) ----------------------------------------
@@ -28649,6 +28877,7 @@ static void DMA5WakeFrameWatcher(void) {
 }
 static void DMA5CatchNewStages(void) {
     DMA5WakeFrameWatcher();
+    if (gA5PicStages.count) DMA5PictureCheck();   // (a corner drag that ended without its end reaching the handle's target)
     if (gA5HeldStages) {   // (nil when no window is held: nothing is allocated on the ordinary commit)
         NSArray *held = gA5HeldStages.allObjects;
         for (UIView *st in held) DMA5HoldEntranceFrame(st);
