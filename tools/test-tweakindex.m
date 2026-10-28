@@ -13,6 +13,7 @@ static MTIConfig *Config(NSString *root, NSArray *langs) {
     c.supportDir = [root stringByAppendingPathComponent:@"Application Support"];
     c.languages = langs; c.cfVersion = 1953.1; c.maxPerPane = 400; c.maxTotal = 6000;
     c.own = @[@{@"id": @"MAC_STATUS_BAR", @"title": @"Status Bar", @"bundle": [root stringByAppendingPathComponent:@"PreferenceBundles/MacStatusBarPrefs.bundle"]},
+              @{@"id": @"MAC_WINDOWS", @"title": @"Windows & Multitasking", @"bundle": [root stringByAppendingPathComponent:@"PreferenceBundles/MacStatusBarPrefs.bundle"], @"plist": @"Windows", @"icon": @"windows"},
               @{@"id": @"DOCK_MAGNIFICATION", @"title": @"Dock", @"bundle": [root stringByAppendingPathComponent:@"PreferenceBundles/NotInstalled.bundle"]}];
     c.skipBundles = @[@"MacStatusBarPrefs", @"DockMagnificationPrefs"];
     c.extras = @[@{@"id": @"SSH_TOGGLE", @"title": @"SSH"}, @{@"id": @"MAC_POINTER", @"title": @"Pointer", @"page": @YES}];
@@ -30,7 +31,7 @@ int main(int argc, char **argv) {
         NSString *root = @(argv[1]);
         NSArray<MTIEntry *> *all = MTIBuild(Config(root, @[@"en-US"]));
         NSMutableOrderedSet *panes = [NSMutableOrderedSet orderedSet]; for (MTIEntry *e in all) [panes addObject:e.paneTitle];
-        NSArray *wantPanes = @[@"Status Bar", @"SSH", @"Pointer", @"Alpha", @"Delta", @"Epsilon", @"Eta", @"Gamma Tweak", @"Iota", @"Theta", @"Zeta"];
+        NSArray *wantPanes = @[@"Status Bar", @"Windows & Multitasking", @"SSH", @"Pointer", @"Alpha", @"Delta", @"Epsilon", @"Eta", @"Gamma Tweak", @"Iota", @"Theta", @"Zeta"];
         Expect([panes.array isEqualToArray:wantPanes], [NSString stringWithFormat:@"pages in order: %@", [panes.array componentsJoinedByString:@", "]]);
 
         // our own page, read from its Root.plist; its PreferenceLoader entry (iPadOS 17) left out
@@ -39,6 +40,12 @@ int main(int argc, char **argv) {
         Expect([e.crumb isEqualToString:@"Status Bar"] && [e.keywords isEqualToArray:@[@"Clock"]] && e.depth == 2, @"own row crumb, group keyword, depth");
         Expect([MTIPrefsURL(e.uid) isEqualToString:@"prefs:root=MAC_STATUS_BAR#Show%20Seconds"] && [MTIPaneOf(e.uid) isEqualToString:@"MAC_STATUS_BAR"], @"own row Settings URL");
         Expect(Find(all, @"Status Bar", @"Status Bar").iconPath != nil, @"own page icon found");
+        // the second page of the same bundle (1.6.0: Windows & Multitasking, Windows.plist): its own page, rows, Settings URL and icon
+        e = Find(all, @"Windows & Multitasking", @"Mac Switcher");
+        Expect([e.uid isEqualToString:@"msbd-tweaksetting:root=MAC_WINDOWS#Mac%20Switcher"] && [e.crumb isEqualToString:@"Windows & Multitasking"] && [e.keywords isEqualToArray:@[@"Multitasking"]], [NSString stringWithFormat:@"second own page row uid %@", e.uid]);
+        Expect([MTIPrefsURL(e.uid) isEqualToString:@"prefs:root=MAC_WINDOWS#Mac%20Switcher"] && [MTIPaneOf(e.uid) isEqualToString:@"MAC_WINDOWS"], @"second own page Settings URL");
+        Expect([Find(all, @"Windows & Multitasking", @"Windows & Multitasking").iconPath hasSuffix:@"windows@2x.png"], @"second own page icon found");
+        Expect(Find(all, @"Status Bar", @"Mac Switcher") == nil, @"its rows not on the first page");
         BOOL plOurs = NO; for (MTIEntry *x in all) if ([x.paneID isEqualToString:@"MSBD_PL_MacStatusBarPrefs"]) plOurs = YES;
         Expect(!plOurs, @"our page's PreferenceLoader entry left out");
         // our rows of the main list

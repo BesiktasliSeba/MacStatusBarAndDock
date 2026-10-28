@@ -121,3 +121,6 @@ entry('OursAgain', {'cell': 'PSLinkCell', 'bundle': 'MacStatusBarPrefs', 'isCont
 # Our own page (indexed as "own", not from its entry)
 w(os.path.join(PB, 'MacStatusBarPrefs.bundle', 'Root.plist'), {'items': [group('Clock'), sw('Show Seconds', 'showSeconds'), group('Search'), sw('Show Spotlight Search', 'showSpotlight')]})
 raw(os.path.join(PB, 'MacStatusBarPrefs.bundle', 'icon@2x.png'), PNG)
+# ... and its second page from the same bundle (1.6.0: Windows & Multitasking, Windows.plist, its own icon)
+w(os.path.join(PB, 'MacStatusBarPrefs.bundle', 'Windows.plist'), {'title': 'Windows & Multitasking', 'items': [group('Multitasking'), sw('Mac Switcher', 'macSwitcher')]})
+raw(os.path.join(PB, 'MacStatusBarPrefs.bundle', 'windows@2x.png'), PNG)

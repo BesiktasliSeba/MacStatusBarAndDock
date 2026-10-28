@@ -20,6 +20,9 @@
 #import <dlfcn.h>
 #import <mach-o/dyld.h>
 #import <os/lock.h>
+#import "../common/General18Group.h"
+#import "../common/CCModuleRegister.h"   // (15-17: RAM & CPU in Settings > Control Center's list of controls)
+#import "../common/SidebarScroll.h"   // (the launch correction below leaves a scroll of ours alone)
 
 @interface PSSpecifier : NSObject
 + (instancetype)preferenceSpecifierNamed:(NSString *)name target:(id)target set:(SEL)set get:(SEL)get detail:(Class)detail cell:(long long)cell edit:(Class)edit;
@@ -112,7 +115,7 @@ static void MSSetSSH(BOOL on) {
 static void MSSetHomeBar(BOOL on) {
     CFPreferencesSetValue(CFSTR("showHomeBar"), on ? kCFBooleanTrue : kCFBooleanFalse, HB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     CFPreferencesSynchronize(HB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-    notify_post("com.besiktasliseba.machomebar/changed");   // (every running app and SpringBoard re-ask their view controllers at once: HomeBar.x)
+    notify_post("com.besiktasliseba.machomebar/changed");   // (SpringBoard shows or hides the pill at once: HomeBar.x)
     MLog([NSString stringWithFormat:@"Home Bar switched %@", on ? @"on" : @"off"]);
 }
 
@@ -308,13 +311,18 @@ static void DMRegisterSSHSync(void) {
         // A single correction right here was not enough: it ran and found the stale offset (confirmed in the log), but something else —
         // almost certainly Settings' own state restoration, which typically finishes its work a moment AFTER -viewWillAppear:, in or after
         // -viewDidAppear: — put it right back afterward, so the screenshot still showed it cut off. Re-asserted a few times over the next
-        // half second instead of once, so it wins that race regardless of exactly when the other side finishes.
+        // half second instead of once, so it wins that race regardless of exactly when the other side finishes. A scroll of ours made on
+        // purpose in that time (a page of ours opened as Settings starts, scrolled to its row) is left alone: common/SidebarScroll.h.
         void (^correct)(void) = ^{
             UIViewController *strongVC = weakVC;
             if (!strongVC) return;
             UIScrollView *scroll = nil;
             for (NSString *key in @[@"tableView", @"table", @"_tableView", @"_table"]) {
                 @try { id v = [strongVC valueForKey:key]; if ([v isKindOfClass:[UIScrollView class]]) { scroll = v; break; } } @catch (NSException *e) {}
+            }
+            if (scroll && MSBDSidebarScrolledOnPurpose(scroll)) {   // (a page of ours opened at launch scrolled to its row: common/SidebarScroll.h)
+                MLog([NSString stringWithFormat:@"sidebar at y=%.0f: scrolled to a row of ours on purpose, left there", scroll.contentOffset.y]);
+                return;
             }
             if (scroll && scroll.contentOffset.y > 4.0) {
                 MLog([NSString stringWithFormat:@"sidebar scrolled to y=%.0f, forcing back to the top", scroll.contentOffset.y]);
@@ -447,12 +455,14 @@ static void DMRegisterSSHSync(void) {
 
 // ---- iPadOS 18: a home for the rows the sidebar had ----
 // 18 builds Settings' root list in SwiftUI (no PSUIPrefsListController), so the rows the hook above puts into the sidebar -- SSH, Home Bar,
-// Pointer and Keyboard -- never appeared there, and our Pointer and Keyboard pages could not be reached at all (KT, 25 Oct). Until they can sit
-// with Apple's own keyboard and pointer settings (1.6.0), they are a group of their own near the top of General, whose page is still a
-// PSListController on 18.5 (PSGGeneralController). Only where the SwiftUI root is in use: 15-17 keep their sidebar rows and nothing else.
-// Nothing happens when General's page is not as expected (no such class, another -specifiers). Each row shows on the same terms as in the
-// sidebar (Pointer with a trackpad or mouse, Keyboard with a hardware keyboard, SSH with OpenSSH installed, Home Bar where there is one), and
-// the rows follow a device attached or detached while General is open, as the sidebar's did.
+// Pointer and Keyboard -- never appeared there, and our Pointer and Keyboard pages could not be reached at all (KT, 25 Oct). They are in our
+// group at the top of General, whose page is still a PSListController on 18.5 (PSGGeneralController), after the Status Bar and Dock rows: the
+// sidebar's rows on the sidebar's terms and in its order -- SSH with OpenSSH installed, Home Bar where there is one, Pointer while a trackpad or
+// mouse is attached, Keyboard while a hardware keyboard is attached -- and the rows follow a device attached or detached while General is open,
+// as the sidebar's did. Pointer and Keyboard open our own pages, as on 15-17 (KT, 28 Oct: "Keyboard stuff shortcuts should be there too"); our
+// groups at the top of Apple's Trackpad / Mouse and Hardware Keyboard pages stay as well (AppleGroups18.x), and Apple's own rows are left where
+// they are (NativeRows.x hides them on 15-17 only). Only where the SwiftUI root is in use: 15-17 keep their sidebar rows and nothing else.
+// Nothing happens when General's page is not as expected (no such class, another -specifiers, its insert call of another shape).
 @interface MSGeneralRowsTarget : NSObject
 @end
 @implementation MSGeneralRowsTarget
@@ -461,7 +471,12 @@ static void DMRegisterSSHSync(void) {
 - (id)dm_homeBarEnabled:(id)specifier { return @(HomeBarOn()); }
 - (void)dm_setHomeBar:(id)value specifier:(id)specifier { MSSetHomeBar([value boolValue]); }
 @end
-#define kGeneralGroupID @"MAC_GENERAL18_GROUP"
+// Our own rows in General (MSBD_G18_MARK set; in one group of ours, MSBD_G18_GROUP_ID, shared with the Status Bar and Dock rows: common/
+// General18Group.h): any of these there means ours are in.
+static BOOL MSGeneralHasOurRows(NSArray *specs) {
+    for (id sp in specs) if (MSBDG18IsOurs(sp) && [@[kSwitchID, kHomeBarSwitchID, @"MAC_POINTER", @"MAC_KEYBOARD"] containsObject:MSBDG18Ident(sp) ?: @""]) return YES;
+    return NO;
+}
 // (a method's return and argument types, offsets aside -- "v36@0:8@16q24B32" on 18.5 -- as expected; logged when not)
 static BOOL MSMethodTypesAre(Class c, SEL sel, const char *ret, NSArray<NSString *> *args) {
     Method m = c ? class_getInstanceMethod(c, sel) : NULL;
@@ -479,15 +494,12 @@ static BOOL MSMethodTypesAre(Class c, SEL sel, const char *ret, NSArray<NSString
 //  page's own insert call, the one General uses itself when a trackpad turns up, right after the list is handed out; again after a reload)
 static void MSGeneralInsertOurRows(PSListController *list) {
     NSArray *specs = ((id (*)(id, SEL))objc_msgSend)(list, @selector(specifiers));
-    if (![specs isKindOfClass:[NSArray class]]) return;
-    for (id sp in specs) if ([[sp identifier] isEqualToString:kGeneralGroupID]) return;
+    if (![specs isKindOfClass:[NSArray class]] || MSGeneralHasOurRows(specs)) return;
     SEL ins = NSSelectorFromString(@"insertContiguousSpecifiers:atIndex:animated:");
     if (!MSMethodTypesAre(object_getClass(list), ins, "v", @[@"@", @"q", @"B"])) return;
     static MSGeneralRowsTarget *target;
     if (!target) target = [MSGeneralRowsTarget new];
     NSMutableArray *rows = [NSMutableArray array];
-    if (MSPointerDeviceAttached()) [rows addObject:MSPointerRowSpecifier(target)];
-    if (MSKeyboardAttached()) [rows addObject:MSKeyboardRowSpecifier(target)];
     if (access("/var/jb/usr/sbin/sshd", F_OK) == 0) {
         PSSpecifier *sw = [PSSpecifier preferenceSpecifierNamed:@"SSH" target:target set:@selector(dm_setSSH:specifier:) get:@selector(dm_sshEnabled:) detail:nil cell:6 edit:nil];
         [sw setIdentifier:kSwitchID];
@@ -500,26 +512,26 @@ static void MSGeneralInsertOurRows(PSListController *list) {
         [hb setProperty:HomeBarIcon() forKey:@"iconImage"];
         [rows addObject:hb];
     }
+    if (MSPointerDeviceAttached()) [rows addObject:MSPointerRowSpecifier(target)];   // Pointer: only with a trackpad or mouse (as in the sidebar)
+    if (MSKeyboardAttached()) [rows addObject:MSKeyboardRowSpecifier(target)];       // Keyboard: only with a hardware keyboard (as in the sidebar)
     if (!rows.count) return;
-    PSSpecifier *group = [PSSpecifier groupSpecifierWithName:@"MacStatusBar&Dock"];
-    [group setIdentifier:kGeneralGroupID];
-    [rows insertObject:group atIndex:0];
-    // (right below General's first group -- its header card; About and the rest start the second group -- or at the end)
-    NSUInteger groups = 0, at = specs.count;
-    for (NSUInteger i = 0; i < specs.count; i++) if ([specs[i] respondsToSelector:@selector(cellType)] && [specs[i] cellType] == 0 && ++groups == 2) { at = i; break; }
-    ((void (*)(id, SEL, id, long long, BOOL))objc_msgSend)(list, ins, rows, (long long)at, NO);
+    // (in our group right below General's first group -- its header card; About and the rest start the second group --, after the Status Bar and
+    //  Dock rows: the group is made by whichever of us comes first, common/General18Group.h)
+    if (!MSBDG18Put(list, rows, @[@"MSBD_PL_MacStatusBarPrefs", @"MAC_WINDOWS", @"MSBD_PL_DockMagnificationPrefs"])) return;
+    NSUInteger at = 0; specs = ((id (*)(id, SEL))objc_msgSend)(list, @selector(specifiers));
+    for (NSUInteger i = 0; i < specs.count; i++) if (rows.count && specs[i] == rows[0]) { at = i; break; }
     gVisibleSSHList = list;
     DMRegisterSSHSync();
     MSPointerWatchSidebar(list);   // (a device attached or detached, the pointer style changed: General is reloaded as the sidebar was)
     MSKeyboardWatchSidebar(list);
-    MLog([NSString stringWithFormat:@"iPadOS 18: %lu row(s) of ours put into General at %lu of %lu", (unsigned long)rows.count - 1, (unsigned long)at, (unsigned long)specs.count]);
+    MLog([NSString stringWithFormat:@"iPadOS 18: %lu row(s) of ours put into General at %lu of %lu", (unsigned long)rows.count, (unsigned long)at, (unsigned long)specs.count]);
 }
 %group General18
 %hook PSGGeneralController
 - (id)specifiers {
     id specs = %orig;
     if (![specs isKindOfClass:[NSArray class]]) return specs;
-    for (id sp in specs) if ([[sp identifier] isEqualToString:kGeneralGroupID]) return specs;
+    if (MSGeneralHasOurRows(specs)) return specs;
     // (once the list is handed out, on the next turn of the main loop; asked for again and again while it is built: one try a second at most --
     //  with nothing of ours to show, no try after try)
     static const void *kTriedKey = &kTriedKey;
@@ -552,4 +564,5 @@ static void MSGeneral18ImageAdded(const struct mach_header *mh, intptr_t slide) 
 %ctor {
     %init;
     if (!objc_getClass("PSUIPrefsListController")) _dyld_register_func_for_add_image(MSGeneral18ImageAdded);   // (15-17: the sidebar's rows, as before)
+    if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion < 18) MSBDCCModuleRegisterWhenLoaded();   // (15-17: Control Center's page lists RAM & CPU; 18 has no such page)
 }

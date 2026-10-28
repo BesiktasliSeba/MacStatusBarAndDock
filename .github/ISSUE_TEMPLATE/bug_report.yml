@@ -40,8 +40,9 @@ body:
     id: engine
     attributes:
       label: Window engine
-      description: Settings > Status Bar > Window Engine
+      description: Settings > Windows & Multitasking > Window Engine
       options:
+        - Aerial 5.1
         - Aerial 5.0
         - Aerial 3.0
         - Zetsu 1.6.6
@@ -56,7 +57,7 @@ body:
     id: mac-switcher
     attributes:
       label: Mac Switcher
-      description: Settings > Status Bar > Mac Switcher
+      description: Settings > Windows & Multitasking > Mac Switcher
       options:
         - "Off"
         - "On"

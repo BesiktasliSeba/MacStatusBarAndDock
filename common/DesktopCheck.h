@@ -22,3 +22,20 @@ static inline int MSBDDesktopVerdict(NSString **reason) {
     if (reason) *reason = [d[@"reason"] isKindOfClass:[NSString class]] ? d[@"reason"] : nil;
     return 0;
 }
+
+// iPadOS 18+ (1.6.0): SpringBoard's check that its typed keyboard focus lock is there (common/FocusLock.h MSBDFocusLock18Ready), kept per iPadOS
+// build like the desktop's. The Mac Switcher, the Wi-Fi menu and the desktop need it on 18; Settings offers their switches there unless the check
+// failed on this build. 15-17: never written, never read.
+#define MSBD_FOCUSLOCK_CHECK_KEY CFSTR("focusLockCheck")
+// 1 = there on this iPadOS build, 0 = not there, -1 = not checked on this build yet.
+static inline int MSBDFocusLockVerdict(void) {
+    CFStringRef domain = CFSTR("com.besiktasliseba.macstatusbar");
+    CFStringRef user = getuid() == 0 ? CFSTR("mobile") : kCFPreferencesCurrentUser;
+    CFPreferencesSynchronize(domain, user, kCFPreferencesAnyHost);
+    id v = (__bridge_transfer id)CFPreferencesCopyValue(MSBD_FOCUSLOCK_CHECK_KEY, domain, user, kCFPreferencesAnyHost);
+    if (![v isKindOfClass:[NSDictionary class]]) return -1;
+    NSDictionary *d = v;
+    NSString *build = MSBDOSBuild();
+    if (!build.length || ![d[@"build"] isKindOfClass:[NSString class]] || ![d[@"build"] isEqualToString:build]) return -1;
+    return [d[@"ok"] boolValue] ? 1 : 0;
+}

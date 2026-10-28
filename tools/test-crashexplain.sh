@@ -5,6 +5,7 @@ set -e
 cd "$(dirname "$0")"
 W=$(mktemp -d); mkdir -p "$W/dpkg/info" "$W/bundles/MacStatusBarPrefs.bundle" "$W/bundles/DockMagnificationPrefs.bundle"
 cp ../statusbar/macstatusbarprefs/Resources/Root.plist "$W/bundles/MacStatusBarPrefs.bundle/"
+cp ../statusbar/macstatusbarprefs/Resources/Windows.plist "$W/bundles/MacStatusBarPrefs.bundle/"   # (1.6.0: the Windows & Multitasking page, same bundle)
 cp ../dock/dockmagnificationprefs/Resources/Root.plist "$W/bundles/DockMagnificationPrefs.bundle/"
 printf 'Package: com.example.someothertweak\nStatus: install ok installed\nVersion: 2.1\nName: Some Other Tweak\n\nPackage: com.example.aerial\nVersion: 5.0.1\nName: Aerial\n\nPackage: com.besiktasliseba.macstatusbaranddock\nVersion: 1.0.0\nName: MacStatusBar&Dock\n' > "$W/dpkg/status"
 printf '/.\n/var/jb/Library/MobileSubstrate/DynamicLibraries/SomeOtherTweak.dylib\n/var/jb/Library/MobileSubstrate/DynamicLibraries/SomeOtherTweak.plist\n' > "$W/dpkg/info/com.example.someothertweak.list"

@@ -14,11 +14,14 @@
 
 #include "MSWSlideMath.h"   // (the slide's arithmetic: the spring, its speed, the slot a taken slide goes to -- plain C, tools/test-mswslide.sh)
 #include "MSWKept.h"        // (the desktops kept while it is off and what of them comes back -- plain Foundation, tools/test-mswkept.sh)
-static BOOL gMSWOn = NO;                 // the switch is on, iPadOS 15-17, and the self-check passed
-// Where it runs: iPadOS 15/16 (tested), and 17 (untested there: every class, method and type encoding it calls is in iPadOS 17's SpringBoard
-// and UIKit -- 17.0.3 headers, 17.6.1 code --, the home gesture's destinations are the same numbers, the gesture's completion lives on the gesture
-// manager, see DMMSWHookGestures). 18+: not yet (the keyboard focus lock is renamed there and asserts on a string reason).
-static BOOL DMMSWOSOK(void) { return [NSProcessInfo processInfo].operatingSystemVersion.majorVersion <= 17; }
+static BOOL gMSWOn = NO;                 // the switch is on, the iPadOS has what it needs (DMMSWOSOK), and the self-check passed
+// Where it runs: iPadOS 15/16 (tested), and 17 (every class, method and type encoding it calls is in iPadOS 17's SpringBoard and UIKit -- 17.0.3
+// headers, 17.6.1 code --, the home gesture's destinations are the same numbers, the gesture's completion lives on the gesture manager, see
+// DMMSWHookGestures). 18+ (1.6.0, 18.5): where SpringBoard's typed keyboard focus lock is there (StatusBar.x DMFocusLock18OK -- the 15-17 calls
+// are gone on 18 and the new one asserts on a string reason); iPadOS's own App Switcher is asked for through the scene's switcher controller there
+// (StatusBar.x DMToggleMainSwitcher18).
+static BOOL DMFocusLock18OK(void);   // (StatusBar.x)
+static BOOL DMMSWOSOK(void) { return [NSProcessInfo processInfo].operatingSystemVersion.majorVersion <= 17 || DMFocusLock18OK(); }
 static UIWindow *gMSWWindow;             // our layer window (made on first open; hidden and empty while closed)
 static UIView *gMSWRoot;                 // the content, turned with the screen (nil while closed)
 static NSMutableArray *gMSWTiles;        // the window thumbnails (DMMSWTile) of the open view
@@ -147,26 +150,21 @@ static UIView *DMMSWPortalInPlace(UIView *src, UIView *space, UIView *holder, CG
 }
 
 // ---- the keyboard: SpringBoard holds the keyboard focus while the view is open (Esc reaches us even when an app was being typed in; the
-// keys do not go on into the app under the view), and gives it back on close. The same calls as a native window's (NativeWindow.h DMNativeFocus):
-// -lockFocusToSpringBoardWindowScene:forReason: on iPadOS 16, -lockFocusToSpringBoardForReason: on iPadOS 15, each checked first. ----
+// keys do not go on into the app under the view), and gives it back on close. The same calls as a native window's (NativeWindow.h DMNativeFocus,
+// common/FocusLock.h): -lockFocusToSpringBoardWindowScene:forReason: on iPadOS 16/17, -lockFocusToSpringBoardForReason: on 15, the typed
+// -focusLockSpringBoardWindowScene:forReason: on 18, each checked first. ----
 static id gMSWFocusLock;
 static void DMMSWFocus(BOOL take) {
     if (!take) {
         id l = gMSWFocusLock; gMSWFocusLock = nil;
-        if (l && [l respondsToSelector:@selector(invalidate)]) ((void (*)(id, SEL))objc_msgSend)(l, @selector(invalidate));
+        MSBDFocusUnlock(l);
         if (l) DMLog(@"[macswitcher] keyboard focus given back");
         return;
     }
     if (gMSWFocusLock) return;
-    id ws = DMCall(objc_getClass("SBMainWorkspace"), @"sharedInstance");
-    id kfc = DMCall(ws, @"keyboardFocusController");
-    @try {
-        if (DMMSWHasMethod(object_getClass(kfc), @"lockFocusToSpringBoardWindowScene:forReason:", @"@@:@@") && gMSWWindow.windowScene)
-            gMSWFocusLock = ((id (*)(id, SEL, id, id))objc_msgSend)(kfc, NSSelectorFromString(@"lockFocusToSpringBoardWindowScene:forReason:"), gMSWWindow.windowScene, @"MacStatusBar Mac Switcher");
-        else if (DMMSWHasMethod(object_getClass(kfc), @"lockFocusToSpringBoardForReason:", @"@@:@"))
-            gMSWFocusLock = ((id (*)(id, SEL, id))objc_msgSend)(kfc, NSSelectorFromString(@"lockFocusToSpringBoardForReason:"), @"MacStatusBar Mac Switcher");
-    } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[macswitcher] keyboard focus lock threw %@", e]); gMSWFocusLock = nil; }
-    DMLog([NSString stringWithFormat:@"[macswitcher] keyboard focus to SpringBoard: %@", gMSWFocusLock ? NSStringFromClass([gMSWFocusLock class]) : @"no lock"]);
+    NSString *how = nil;
+    gMSWFocusLock = MSBDFocusLock(gMSWWindow.windowScene, @"MacStatusBar Mac Switcher", &how);
+    DMLog([NSString stringWithFormat:@"[macswitcher] keyboard focus to SpringBoard: %@%@", gMSWFocusLock ? NSStringFromClass([gMSWFocusLock class]) : @"no lock", how ? [NSString stringWithFormat:@" (the %@ call)", how] : @""]);
 }
 
 // ---- the current desktop's windows ----
@@ -1207,10 +1205,41 @@ static void DMMSWKeptForget(NSString *b) {
         for (id dk in fit) { NSDictionary *x = DMMSWFitWithout(fit[dk], b); if (x) { nfit[dk] = x; [what addObject:[NSString stringWithFormat:@"tiles of desktop id %@", dk]]; } }
         ns[@"fit"] = nfit;
     }
+    NSArray *mf = st[@"madeFullScreen"];   // (made full screen meanwhile, DMMSWKeptMadeFullScreen: its record goes with its windows')
+    if ([mf isKindOfClass:[NSArray class]] && [mf containsObject:b]) { NSMutableArray *nmf = [mf mutableCopy]; [nmf removeObject:b]; ns[@"madeFullScreen"] = nmf; [what addObject:@"made full screen"]; }
     if (!what.count) return;
     gMSWKept = ns;
     BOOL ok = [ns writeToFile:path atomically:YES];
     DMLog([NSString stringWithFormat:@"[macswitcher] %@ quit while the Mac Switcher is off: out of the desktops kept for when it is on again (%@)%@", b, [what componentsJoinedByString:@", "], ok ? @"" : @" -- the kept file could not be written"]);
+}
+// Made full screen with its green light while the Mac Switcher is off (1.6.0, the coordinator's R3 decision): recorded in the kept copy as a fact of
+// its own, "madeFullScreen", as the quit set records a quit -- when the Mac Switcher is on again, that app's kept window is no window any more
+// (MSWKept.h): its desktop does not open it again as a window. Its way back to a window (green on the full-screen app, DMSendToWindow) takes it
+// off again (full NO). Aerial / Zetsu / MilkyWay4 only (Stage Manager keeps its own windows in their stages); an app with a kept window only;
+// nothing kept, nothing written. The kept file is read when this run has no copy (a respring since), as DMMSWKeptForget does.
+static void DMMSWKeptMadeFullScreen(NSString *b, BOOL full) {
+    if (gMSWOn || !b.length || DMSMEngine()) return;
+    NSString *path = DMMSWKeptPath();
+    NSDictionary *st = gMSWKept;
+    if (!st && [[NSFileManager defaultManager] fileExistsAtPath:path]) st = [NSDictionary dictionaryWithContentsOfFile:path];
+    if (![st isKindOfClass:[NSDictionary class]]) return;
+    NSMutableArray *mf = [st[@"madeFullScreen"] isKindOfClass:[NSArray class]] ? [st[@"madeFullScreen"] mutableCopy] : [NSMutableArray array];
+    if (full) {
+        BOOL kept = NO;
+        NSDictionary *w = st[@"windows"];
+        if ([w isKindOfClass:[NSDictionary class]]) for (id k in w) if ([k isKindOfClass:[NSString class]] && [DMSMKeyBundle(k) isEqualToString:b]) { kept = YES; break; }
+        if (!kept || [mf containsObject:b]) return;
+        [mf addObject:b];
+    } else {
+        if (![mf containsObject:b]) return;
+        [mf removeObject:b];
+    }
+    NSMutableDictionary *ns = [st mutableCopy];
+    ns[@"madeFullScreen"] = mf;
+    gMSWKept = ns;
+    BOOL ok = [ns writeToFile:path atomically:YES];
+    DMLog([NSString stringWithFormat:@"[macswitcher] %@ %@ while the Mac Switcher is off: %@%@", b, full ? @"made full screen" : @"back in a window",
+           full ? @"its kept window will be no window when it is on again" : @"its kept window comes back on its desktop", ok ? @"" : @" -- the kept file could not be written (kept in this run only)"]);
 }
 static void DMMSWForgetApp(NSString *b) {
     if (!b.length) return;
@@ -2176,12 +2205,22 @@ static void DMMSWSideRequest(NSInteger side, CGFloat v, NSString *why) {
     if ([why hasPrefix:@"Control-"]) DMMSWBump(side);   // (a swipe's own rubber band shows it already)
 }
 // A new desktop at the end of the strip, not shown yet ("+" then goes there; a window dropped on "+" only goes there itself). The first one beyond
-// Desktop 1 records the windows there are on Desktop 1. Its id, or 0 (the Mac Switcher is off, or already the most).
+// Desktop 1 records the windows there are on Desktop 1 -- the engine's and our own (Finder, TextEdit: open or minimized; with one desktop they
+// have no record, and "+" goes to the new desktop at once, where DMMSWApply would have recorded them: Finder's window went to Desktop 2 while
+// the app windows stayed, M1 report 27 Oct). Its id, or 0 (the Mac Switcher is off, or already the most).
 static NSInteger DMMSWMakeDesktop(void) {
     if (!DMMSWDesktopsHere() || gMSWDesks.count >= kMSWMaxDesks) return 0;
     NSInteger nid = 2;
     while ([gMSWDesks containsObject:@(nid)]) nid++;
-    if (gMSWDesks.count == 1) { gMSWWinDesk = gMSWWinDesk ?: [NSMutableDictionary dictionary]; for (UIView *st in DMAerialStagesAll()) { NSString *b = DMStageBundle(st); if (b.length) gMSWWinDesk[b] = @1; } }
+    if (gMSWDesks.count == 1) {
+        NSNumber *first = gMSWDesks.firstObject ?: @1;
+        gMSWWinDesk = gMSWWinDesk ?: [NSMutableDictionary dictionary];
+        for (UIView *st in DMAerialStagesAll()) { NSString *b = DMStageBundle(st); if (b.length) gMSWWinDesk[b] = first; }
+        for (DMNativeWindow *w in [gNativeWindows copy]) {
+            NSNumber *d = objc_getAssociatedObject(w, kMSWNativeDeskKey);
+            if (!d || ![gMSWDesks containsObject:d]) objc_setAssociatedObject(w, kMSWNativeDeskKey, first, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
     if (gMSWDesks.count == 1 && DMSMEngine()) DMMSWSMRecordFirst();   // (Stage Manager: the engine's desktop stage, MacSwitcherSM.h)
     // (a new desktop starts with nothing of an earlier desktop that had its id: a removed one's screen size, picture, Fit group or full-screen app
     //  -- the size made the new desktop "turned while away" on its first visit, iPad 2 7 Oct; DMMSWRemoveDesktop clears them too, this covers the
@@ -2353,7 +2392,9 @@ static void DMMSWBringBack(void) {
     NSDictionary<NSString *, NSNumber *> *fresh = r[@"fresh"];
     NSMutableArray<NSString *> *freshNames = [NSMutableArray array];
     for (NSString *k in fresh) [freshNames addObject:[NSString stringWithFormat:@"%@ -> %@", DMSMKeyText(k), DMMSWDeskName([gMSWDesks indexOfObject:fresh[k]])]];
-    NSArray *gone = r[@"gone"];
+    NSMutableArray<NSString *> *gone = [NSMutableArray array];   // (each named with why when it was made full screen with green meanwhile)
+    NSArray *madeFull = [st[@"madeFullScreen"] isKindOfClass:[NSArray class]] ? st[@"madeFullScreen"] : @[];
+    for (NSString *b in r[@"gone"]) [gone addObject:[madeFull containsObject:b] && ![quit containsObject:b] ? [b stringByAppendingString:@" (made full screen)"] : b];
     DMLog([NSString stringWithFormat:@"[macswitcher] the desktops kept when the Mac Switcher went off are back: %@, current %@; %@ window records back, %@, %@",
            [gMSWDesks componentsJoinedByString:@","], DMMSWDeskName(gMSWCur), r[@"back"],
            !told ? @"closed windows not told yet (the windows or stages not back yet: all kept, the usual rules forget a closed one)" : (gone.count ? [NSString stringWithFormat:@"left out (closed or quit meanwhile): %@", [gone componentsJoinedByString:@", "]] : @"none closed or quit meanwhile"),
@@ -3681,11 +3722,13 @@ static void DMMSWTick(void) {
 static void DMMSWScreenOff(void) { if (DMMSWIsOpen()) { DMLog(@"[macswitcher] the screen went off: closed"); DMMSWClose(nil, NO); } }
 
 // ---- iPadOS's own App Switcher, on purpose (Apple menu > Show App Switcher) ----
-// iPadOS 15: SBMainSwitcherViewController -toggleMainSwitcherNoninteractivelyWithSource:animated:; 16: the coordinator's per-scene call. Only
-// opened when no switcher is showing (it is a toggle). YES when it was asked.
+// iPadOS 15: SBMainSwitcherViewController -toggleMainSwitcherNoninteractivelyWithSource:animated:; 16/17: the coordinator's per-scene call; 18: the
+// main scene's switcher controller's -toggleMainSwitcherWithSource:animated: (StatusBar.x DMToggleMainSwitcher18). Only opened when no switcher is
+// showing (it is a toggle). YES when it was asked.
 static BOOL DMMSWAppSwitcherAvailable(void) {
     if (DMMSWHasMethod(objc_getClass("SBMainSwitcherViewController"), @"toggleMainSwitcherNoninteractivelyWithSource:animated:", @"B@:qB")) return YES;
-    return DMMSWHasMethod(objc_getClass("SBMainSwitcherControllerCoordinator"), @"toggleMainSwitcherNoninteractivelyWithSource:animated:windowScene:", @"B@:qB@");
+    if (DMMSWHasMethod(objc_getClass("SBMainSwitcherControllerCoordinator"), @"toggleMainSwitcherNoninteractivelyWithSource:animated:windowScene:", @"B@:qB@")) return YES;
+    return DMToggleMainSwitcher18(NO, 1, NULL);
 }
 static BOOL DMMSWShowAppSwitcher(void) {
     if (DMSwitcherVisible()) { DMLog(@"[macswitcher] Show App Switcher: it is already showing"); return NO; }
@@ -3706,7 +3749,7 @@ static BOOL DMMSWShowAppSwitcher(void) {
             id scene = DMStatusBarWindow().windowScene;
             if ([co isKindOfClass:objc_getClass("SBMainSwitcherControllerCoordinator")] && [scene isKindOfClass:[UIWindowScene class]])
                 ok = ((BOOL (*)(id, SEL, long long, BOOL, id))objc_msgSend)(co, NSSelectorFromString(@"toggleMainSwitcherNoninteractivelyWithSource:animated:windowScene:"), 1, YES, scene);
-        }
+        } else DMToggleMainSwitcher18(YES, 1, &ok);   // (iPadOS 18)
     } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[macswitcher] Show App Switcher failed: %@", e]); ok = NO; }
     DMLog([NSString stringWithFormat:@"[macswitcher] Show App Switcher: %@", ok ? @"asked" : @"not possible here"]);
     if (!ok) DMMSWStockEnd(@"was not asked for");
@@ -3743,6 +3786,11 @@ static BOOL DMMSWSwActivate(id self, SEL _cmd, long long source, BOOL animated) 
 static BOOL DMMSWSwToggleScene(id self, SEL _cmd, long long source, BOOL animated, id scene) { return DMMSWStockAskTakenOver([NSString stringWithFormat:@"the App Switcher asked for (toggle, source %lld)", source]) || o_MSWSwToggleScene(self, _cmd, source, animated, scene); }
 static BOOL DMMSWSwToggleDisplay(id self, SEL _cmd, long long source, BOOL animated) { return DMMSWStockAskTakenOver([NSString stringWithFormat:@"the App Switcher asked for (a display's toggle, source %lld)", source]) || o_MSWSwToggleDisplay(self, _cmd, source, animated); }
 static BOOL DMMSWSwActivateCo(id self, SEL _cmd, long long source, BOOL animated) { return DMMSWStockAskTakenOver([NSString stringWithFormat:@"the App Switcher asked for (activate, source %lld)", source]) || o_MSWSwActivateCo(self, _cmd, source, animated); }
+// (iPadOS 18: the per-scene SBSwitcherController's -toggleMainSwitcherWithSource:animated: / -activateMainSwitcherWithSource:animated:, B28@0:8q16B24
+//  on 18.5 -- the noninteractive ones above are gone there)
+static BOOL (*o_MSWSwToggle18)(id, SEL, long long, BOOL), (*o_MSWSwActivate18)(id, SEL, long long, BOOL);
+static BOOL DMMSWSwToggle18(id self, SEL _cmd, long long source, BOOL animated) { return DMMSWStockAskTakenOver([NSString stringWithFormat:@"the App Switcher asked for (a scene's toggle, source %lld)", source]) || o_MSWSwToggle18(self, _cmd, source, animated); }
+static BOOL DMMSWSwActivate18(id self, SEL _cmd, long long source, BOOL animated) { return DMMSWStockAskTakenOver([NSString stringWithFormat:@"the App Switcher asked for (a scene's activate, source %lld)", source]) || o_MSWSwActivate18(self, _cmd, source, animated); }
 static NSString *gMSWDiagStock = @"-";   // (which of them were hooked: the diagnostic record)
 static void DMMSWHookStockPaths(void) {
     static BOOL done = NO;
@@ -3755,6 +3803,10 @@ static void DMMSWHookStockPaths(void) {
     if (DMMSWHasMethod(co, @"toggleMainSwitcherNoninteractivelyWithSource:animated:windowScene:", @"B@:qB@")) { MSHookMessageEx(co, NSSelectorFromString(@"toggleMainSwitcherNoninteractivelyWithSource:animated:windowScene:"), (IMP)DMMSWSwToggleScene, (IMP *)&o_MSWSwToggleScene); [in addObject:@"co-toggle"]; }
     if (DMMSWHasMethod(co, @"activateMainSwitcherNoninteractivelyWithSource:animated:", @"B@:qB")) { MSHookMessageEx(co, NSSelectorFromString(@"activateMainSwitcherNoninteractivelyWithSource:animated:"), (IMP)DMMSWSwActivateCo, (IMP *)&o_MSWSwActivateCo); [in addObject:@"co-activate"]; }
     if (DMMSWHasMethod(sc, @"toggleMainSwitcherNoninteractivelyWithSource:animated:", @"B@:qB")) { MSHookMessageEx(sc, NSSelectorFromString(@"toggleMainSwitcherNoninteractivelyWithSource:animated:"), (IMP)DMMSWSwToggleDisplay, (IMP *)&o_MSWSwToggleDisplay); [in addObject:@"sc-toggle"]; }
+    else if (DMMSWHasMethod(sc, @"toggleMainSwitcherWithSource:animated:", @"B@:qB")) {   // (iPadOS 18: the renamed per-scene calls; asked only where the noninteractive one is gone)
+        MSHookMessageEx(sc, NSSelectorFromString(@"toggleMainSwitcherWithSource:animated:"), (IMP)DMMSWSwToggle18, (IMP *)&o_MSWSwToggle18); [in addObject:@"sc-toggle18"];
+        if (DMMSWHasMethod(sc, @"activateMainSwitcherWithSource:animated:", @"B@:qB")) { MSHookMessageEx(sc, NSSelectorFromString(@"activateMainSwitcherWithSource:animated:"), (IMP)DMMSWSwActivate18, (IMP *)&o_MSWSwActivate18); [in addObject:@"sc-activate18"]; }
+    }
     gMSWDiagStock = in.count ? [in componentsJoinedByString:@"+"] : @"none";
     DMLog([NSString stringWithFormat:@"[macswitcher] iPadOS's App Switcher asked for directly (accessibility, keyboard): %@", in.count ? [NSString stringWithFormat:@"the Mac Switcher instead (%@)", gMSWDiagStock] : @"no switcher toggle of the expected kind here -- those ways stay iPadOS's"]);
 }

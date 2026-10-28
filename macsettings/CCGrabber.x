@@ -15,6 +15,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import "../common/OtherTweaks.h"
+#import "../common/CCModuleRegister.h"   // (RAM & CPU, our own Control Center module: its folder and identifier in Control Center's repository)
 
 // Settings > Status Bar > Control Center > Hide Grabber (1.3.3, audit L-2): on unless switched off -- the line stays hidden for everyone who had it
 // hidden before the switch existed. Read once and again after the switch posts its notification; switching it off shows the line again (the
@@ -55,4 +56,5 @@ static const void *kCCGHiddenByUsKey = &kCCGHiddenByUsKey;
 %ctor {
     %init;
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, CCGPrefsChanged, CFSTR("com.besiktasliseba.macccgrabber/prefsChanged"), NULL, CFNotificationSuspensionBehaviorCoalesce);
+    MSBDCCModuleRegisterWhenLoaded();   // (SpringBoard: Control Center and 18's "Add a Control" gallery can load RAM & CPU, ccmodule/)
 }

@@ -31,6 +31,7 @@ enum { kCellLinkList = 2, kCellSwitch = 6 };
 BOOL MSKeyboardAttached(void) {
 #if DEBUG
     if (access("/tmp/msb-fakekb", F_OK) == 0) return YES;   // (debug: test the Keyboard page without a hardware keyboard)
+    if (access("/tmp/msb-nokb", F_OK) == 0) return NO;      // (debug: as if no hardware keyboard were attached -- the rows that follow one)
 #endif
     static BOOL (*attached)(void) = NULL; static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -80,32 +81,51 @@ static BOOL MSKeyOn(NSString *domain, NSString *key) {
     return on;
 }
 NSDictionary *MSModifierMapping(void);   // (below: Apple's Modifier Keys choices for the attached keyboard, source usage -> destination usage)
+static void MSKeysSetFooter(PSSpecifier *g, NSArray *native, id linkTarget);
+void MSKeysOpenModifierKeysOn(PSListController *page);
+// Our keys' group and its five switches (target: whatever reads and writes the switches' preferences -- our page, or on iPadOS 18 a helper on
+// Apple's Hardware Keyboard page, AppleGroups18.x). title: the group's header (none on our page). native: Apple's Hardware Keyboard rows, for the
+// footer's hint. linkTarget: answers -msOpenModifierKeys (the hint's link).
+NSArray *MSKeysGroupSpecifiers(id target, NSString *title, NSArray *native, id linkTarget) {
+    NSMutableArray *s = [NSMutableArray array];
+    PSSpecifier *g = MSKeyGroup(title, nil);
+    [g setIdentifier:@"MAC_KEYS_GROUP"];
+    [s addObject:g];
+    [s addObject:MSKeySwitch(target, @"Top-Left Key as Escape", @"com.besiktasliseba.graveescapetweak", @"enabled")];   // (KT, 25 Oct: named for the key it maps, the top-left one on every layout; the setting key stays "enabled")
+    [s addObject:MSKeySwitch(target, @"Tab Key Toggles Mute", @"com.besiktasliseba.tabmutetweak", @"enabled")];
+    [s addObject:MSKeySwitch(target, @"Globe + Option/Control for Volume", @"com.besiktasliseba.volumeglobetweak", @"enabled")];
+    [s addObject:MSKeySwitch(target, @"Shift + =/- for Screen Brightness", @"com.besiktasliseba.brightnesskeytweak", @"screenKeysEnabled")];
+    [s addObject:MSKeySwitch(target, @"Shift + Option/Control for Backlight", @"com.besiktasliseba.brightnesskeytweak", @"backlightKeysEnabled")];
+    MSKeysSetFooter(g, native, linkTarget);
+    return s;
+}
 @implementation MSKeyboardListController {
     NSMutableArray *_msNativePages;   // Apple's Hardware Keyboard page (never shown), whose rows are on this page
 }
 - (NSMutableArray *)specifiers {
     if (!_specifiers) {
-        NSMutableArray *s = [NSMutableArray array];
-        PSSpecifier *g = MSKeyGroup(nil, nil);
-        [g setIdentifier:@"MAC_KEYS_GROUP"];
-        [s addObject:g];
-        [s addObject:MSKeySwitch(self, @"Top-Left Key as Escape", @"com.besiktasliseba.graveescapetweak", @"enabled")];   // (KT, 25 Oct: named for the key it maps, the top-left one on every layout; the setting key stays "enabled")
-        [s addObject:MSKeySwitch(self, @"Tab Key Toggles Mute", @"com.besiktasliseba.tabmutetweak", @"enabled")];
-        [s addObject:MSKeySwitch(self, @"Globe + Option/Control for Volume", @"com.besiktasliseba.volumeglobetweak", @"enabled")];
-        [s addObject:MSKeySwitch(self, @"Shift + =/- for Screen Brightness", @"com.besiktasliseba.brightnesskeytweak", @"screenKeysEnabled")];
-        [s addObject:MSKeySwitch(self, @"Shift + Option/Control for Backlight", @"com.besiktasliseba.brightnesskeytweak", @"backlightKeysEnabled")];
         // Apple's own Hardware Keyboard settings, live (see common/NativeEmbed.h): layouts, Auto-Capitalization, "." Shortcut, Keyboard
         // Brightness, Modifier Keys, Keyboard Type. They start with their own group.
         _msNativePages = [NSMutableArray array];
         NSArray *hw = MSNESpecifiers(self, @"TIHardwareKeyboardController", @[@"/System/Library/PreferenceBundles/KeyboardSettings.bundle"], @"Hardware Keyboard", _msNativePages, nil);
+        NSMutableArray *s = [NSMutableArray arrayWithArray:MSKeysGroupSpecifiers(self, nil, hw, self)];
         if (hw.count) [s addObjectsFromArray:hw];
-        [self msSetKeysFooter:g native:hw];
         _specifiers = s;
     }
     return _specifiers;
 }
+- (void)msOpenModifierKeys { MSKeysOpenModifierKeysOn(self); }
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"Keyboard";
+}
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self reloadSpecifiers];   // back from Modifier Keys or a layout page: the footer's hint and Apple's rows are read again
+}
+@end
 // The group's footer: what the keys are for, plus (only when needed) the one condition that is not met.
-- (void)msSetKeysFooter:(PSSpecifier *)g native:(NSArray *)native {
+static void MSKeysSetFooter(PSSpecifier *g, NSArray *native, id linkTarget) {
     NSString *base = @"For keyboards without a function row, like the original Magic Keyboard for iPad. The key at the top left, next to 1, becomes Escape; the others add volume and brightness keys.";
     NSDictionary *map = MSModifierMapping();
     NSNumber *(^dest)(long long) = ^NSNumber *(long long src) { return map[@(src)]; };
@@ -126,42 +146,48 @@ NSDictionary *MSModifierMapping(void);   // (below: Apple's Modifier Keys choice
     if (MSKeyOn(@"com.besiktasliseba.brightnesskeytweak", @"screenKeysEnabled")) text = [text stringByAppendingString:@" Shift + =/- does not change the brightness while Sileo, Zebra, Filza or TrollStore is in front."];
     if (hint) text = [text stringByAppendingFormat:@" %@", hint];
     [g setProperty:text forKey:@"footerText"];
-    if (modifierHint) {   // "Modifier Keys" in the hint opens Apple's Modifier Keys page
+    if (modifierHint && linkTarget) {   // "Modifier Keys" in the hint opens Apple's Modifier Keys page
         NSRange r = [text rangeOfString:@"Modifier Keys" options:NSBackwardsSearch];
         [g setProperty:@"PSFooterHyperlinkView" forKey:@"footerCellClass"];
         [g setProperty:text forKey:@"headerFooterHyperlinkButtonTitle"];
         [g setProperty:NSStringFromRange(r) forKey:@"footerHyperlinkRange"];
-        [g setProperty:[NSValue valueWithNonretainedObject:self] forKey:@"footerHyperlinkTarget"];
+        [g setProperty:[NSValue valueWithNonretainedObject:linkTarget] forKey:@"footerHyperlinkTarget"];
         [g setProperty:NSStringFromSelector(@selector(msOpenModifierKeys)) forKey:@"footerHyperlinkAction"];
     }
 }
-- (void)msOpenModifierKeys {
-    for (PSSpecifier *sp in [self specifiers]) {
+// Opens the "Modifier Keys" row of a page that shows Apple's Hardware Keyboard rows (ours, or Apple's own page on iPadOS 18), as a tap does.
+void MSKeysOpenModifierKeysOn(PSListController *page) {
+    for (PSSpecifier *sp in [page specifiers]) {
         if (![[sp name] isEqualToString:@"Modifier Keys"] || [sp cellType] != kCellLinkList) continue;
-        NSIndexPath *ip = [self indexPathForSpecifier:sp];
-        UITableView *t = nil; @try { t = [self valueForKey:@"table"]; } @catch (NSException *e) {}
-        if (ip && [t isKindOfClass:[UITableView class]]) [self tableView:t didSelectRowAtIndexPath:ip];
+        NSIndexPath *ip = [page indexPathForSpecifier:sp];
+        UITableView *t = nil; @try { t = [page valueForKey:@"table"]; } @catch (NSException *e) {}
+        if (ip && [t isKindOfClass:[UITableView class]] && [page respondsToSelector:@selector(tableView:didSelectRowAtIndexPath:)]) [page tableView:t didSelectRowAtIndexPath:ip];
         return;
     }
 }
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    self.title = @"Keyboard";
-}
-- (void)viewWillAppear:(BOOL)animated {
-    [super viewWillAppear:animated];
-    [self reloadSpecifiers];   // back from Modifier Keys or a layout page: the footer's hint and Apple's rows are read again
-}
-@end
 
-// Apple's Modifier Keys choices, as its page writes them (found on the device): com.apple.keyboard.preferences, key
-// com.apple.keyboard.modifierKeysRemapping = { "<product>-<vendor>": [ {HIDKeyboardModifierMappingSrc, HIDKeyboardModifierMappingDst}, ... ] },
-// usages as (page << 32 | usage); no entry = the key does what it says. All keyboards' choices are merged (a hint is only a hint).
+// Apple's Modifier Keys choices, as its page writes them: com.apple.keyboard.preferences, { "<product>-<vendor>": [ {HIDKeyboardModifierMappingSrc,
+// HIDKeyboardModifierMappingDst}, ... ] }, usages as (page << 32 | usage); no entry = the key does what it says. All keyboards' choices are merged (a
+// hint is only a hint). The key is BackBoardServices' BKSHIDServicesModifierKeysRemappingPreferenceKey -- "ModifierKeysRemapping" on 17.5 --; the
+// one before it, BKSHIDServicesOldModifierKeysRemappingPreferenceKey ("com.apple.keyboard.modifierKeysRemapping", the one found in September),
+// is moved into it by backboardd (17.5, 1.6.0: a mapping written under the old key was under the new one a moment later). Only the old key was
+// read, so on 17 the footer's Modifier Keys hint and its link never came. Both are read, by Apple's own names where it exports them; the current
+// one wins for a keyboard in both.
+static NSString *MSBKSPrefKey(const char *symbol, NSString *fallback) {
+    static void *bks; static dispatch_once_t once;
+    dispatch_once(&once, ^{ bks = dlopen("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices", RTLD_LAZY); });
+    CFStringRef *p = bks ? (CFStringRef *)dlsym(bks, symbol) : NULL;
+    return (p && *p && CFGetTypeID(*p) == CFStringGetTypeID()) ? (__bridge NSString *)*p : fallback;
+}
 NSDictionary *MSModifierMapping(void) {
     NSMutableDictionary *out = [NSMutableDictionary dictionary];
     CFPreferencesAppSynchronize(CFSTR("com.apple.keyboard.preferences"));
-    NSDictionary *all = (__bridge_transfer id)CFPreferencesCopyAppValue(CFSTR("com.apple.keyboard.modifierKeysRemapping"), CFSTR("com.apple.keyboard.preferences"));
-    if (![all isKindOfClass:[NSDictionary class]]) return out;
+    NSMutableDictionary *all = [NSMutableDictionary dictionary];
+    for (NSString *key in @[MSBKSPrefKey("BKSHIDServicesOldModifierKeysRemappingPreferenceKey", @"com.apple.keyboard.modifierKeysRemapping"),
+                            MSBKSPrefKey("BKSHIDServicesModifierKeysRemappingPreferenceKey", @"ModifierKeysRemapping")]) {   // (the current one last: it wins)
+        NSDictionary *d = (__bridge_transfer id)CFPreferencesCopyAppValue((__bridge CFStringRef)key, CFSTR("com.apple.keyboard.preferences"));
+        if ([d isKindOfClass:[NSDictionary class]]) [all addEntriesFromDictionary:d];
+    }
     for (id kb in all) {
         NSArray *list = all[kb];
         if (![list isKindOfClass:[NSArray class]]) continue;

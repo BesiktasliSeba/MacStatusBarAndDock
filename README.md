@@ -5,7 +5,7 @@ A macOS-style desktop for jailbroken iPads: a Mac menu bar with real app menus, 
 | | |
 |---|---|
 | Device | iPad only. On an iPhone it does nothing, even on one made to look like an iPad. Builds with the iPad check removed are not made or supported by us. |
-| iPadOS | 15, 16 and 17. On 18 and later it stays off until you turn on Enable Anyway (experimental; full support is planned for 1.6.0). |
+| iPadOS | 15 to 18. On newer versions it stays off until you turn on Enable Anyway. |
 | Jailbreak | Rootless. The test iPads use Dopamine and palera1n. |
 | Needs | A hooking platform (ElleKit, libhooker or Substrate), Choicy or iCleaner Pro, and AltList. Sileo installs what's missing. |
 | Window engine | Optional: Aerial, Zetsu, MilkyWay4 or Apple's Stage Manager. See [Window engines](#window-engines). |
@@ -24,13 +24,13 @@ A macOS-style desktop for jailbroken iPads: a Mac menu bar with real app menus, 
    It's also on [Havoc](https://havoc.app/package/macstatusbardoc), with the same package.
 
 2. Install **MacStatusBar&Dock** and respring when Sileo asks.
-3. For windows, add a window engine, or use Apple's Stage Manager on iPadOS 16 and 17. Settings > Status Bar > Window Engine lists them, with a GET button for each one you don't have yet.
+3. For windows, add a window engine, or use Apple's Stage Manager on iPadOS 16 to 18. Settings > Windows & Multitasking > Window Engine lists them, with a GET button for each one you don't have yet.
 
 After the respring:
 
 - Apps still open full screen. Tap the green light in the menu bar to put an app in a window, or turn on **Window > Open Apps as Windows** to open every app in one. With the Stage Manager engine, apps open as windows from the start.
-- The switches are in Settings > Status Bar and Settings > Dock, right below General. The [Settings reference](./docs/settings.md) explains each one.
-- Desktops and Mission Control stay off until you turn on Settings > Status Bar > Mac Switcher.
+- The switches are in Settings > Status Bar, Windows & Multitasking and Dock, right below General (on iPadOS 18, at the top of Settings > General). The [Settings reference](./docs/settings.md) explains each one.
+- Desktops and Mission Control stay off until you turn on Settings > Windows & Multitasking > Mac Switcher.
 
 Updates come through Sileo, and the Apple menu shows Update Available when your package list has a newer version. The checksum and source commit of every published package are in [RELEASES.md](https://github.com/BesiktasliSeba/repo/blob/main/RELEASES.md).
 
@@ -59,11 +59,11 @@ The Mac look is on right after install, and most features have their own switch.
 - Title bars, traffic lights, rounded corners and resize handles, on the engine you already use.
 - The Window menu has layouts (halves, quarters, Fill Screen, Center) and Fit to Window, which tiles your windows side by side.
 - Only the window you're using keeps a text cursor, and Esc ends typing.
-- With the Stage Manager engine on iPadOS 16 and 17, windows float over your Home Screen and stay where you put them, and on iPadOS 16 an external display gets its own Mac desktop.
+- With the Stage Manager engine on iPadOS 16 to 18, windows float over your Home Screen and stay where you put them, and on iPadOS 16 an external display gets its own Mac desktop.
 
 ### Mac Switcher (Mission Control and Spaces)
 
-Off until you turn it on in Settings > Status Bar > Mac Switcher. It takes the place of the App Switcher.
+Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It takes the place of the App Switcher.
 
 - Open it with a swipe up and hold, a double press of the Home button, or Control-Up. Your desktops are at the top, and the windows of the current one below.
 - Tap + to add a desktop (up to 8). Switch with a four-finger swipe, a swipe along the bottom edge, three fingers on a trackpad, or Control-Left and Control-Right.
@@ -87,7 +87,7 @@ Off until you turn it on in Settings > Status Bar > Mac Switcher. It takes the p
 
 ### Settings
 
-- The Status Bar and Dock pages sit right below General and look like Apple's own pages.
+- The Status Bar, Windows & Multitasking and Dock pages sit right below General and look like Apple's own pages. On iPadOS 18 they are in a group at the top of Settings > General.
 - A search field at the top of the Settings sidebar finds Apple's settings, like the search in System Settings on a Mac, and can find your tweaks' settings too.
 
 ### Also included
@@ -98,6 +98,7 @@ Off until you turn it on in Settings > Status Bar > Mac Switcher. It takes the p
 - Home Screen options: page dots, app names and the Home Bar
 - Keyboard extras for keyboards without a function row
 - Spotlight extras you can turn on: tweak settings, actions, your windows, and your Desktop and Downloads files
+- A RAM & CPU control for Control Center, with the details a tap away
 - Longer Auto-Lock times, an SSH switch and Ethernet settings
 - VoiceOver labels for the menu bar, the traffic lights and Finder, and Reduce Motion support
 
@@ -110,18 +111,18 @@ Off until you turn it on in Settings > Status Bar > Mac Switcher. It takes the p
 
 ## Window engines
 
-The menu bar and the Dock work on their own. App windows come from a window engine, and MacStatusBar&Dock gives them the Mac look. Pick one in Settings > Status Bar > Window Engine. Only that one loads (MacStatusBar&Dock sets up Choicy or iCleaner Pro for you), and a switch takes a respring.
+The menu bar and the Dock work on their own. App windows come from a window engine, and MacStatusBar&Dock gives them the Mac look. Pick one in Settings > Windows & Multitasking > Window Engine. Only that one loads (MacStatusBar&Dock sets up Choicy or iCleaner Pro for you), and a switch takes a respring.
 
 | Engine | iPadOS | Notes |
 |---|---|---|
-| Stage Manager, by Apple | 16, 17 | Needs Stage Manager on the iPad (TrollPad adds it to older iPads). A new install on iPadOS 16.1 to 17 starts with it where it runs. Up to 7 windows per desktop. The only engine that gives an external display its own desktop (tried on 16). Tested on 16.7.7 and 17.5.1. |
-| Aerial 5.1, 5.0 or 3.0, by uz.ra | 15, 16 (17: 5.1) | Aerial 5.0 and 5.1 have to be activated in their own settings before they open windows. |
-| Zetsu 1.6.6 or 1.6.2, by Dcsyhi | 15, 16 (17: 1.6.6) | A good alternative. Desktops were tested with 1.6.6. |
+| Stage Manager, by Apple | 16, 17, 18 | Needs Stage Manager on the iPad (TrollPad adds it to older iPads). A new install on iPadOS 16.1 to 18 starts with it where it runs. Up to 7 windows per desktop. The only engine that gives an external display its own desktop (tried on 16). Tested on 16.7.7, 17.5.1 and 18.5. |
+| Aerial 5.1, 5.0 or 3.0, by uz.ra | 15, 16 (17 and 18: 5.1) | Aerial 5.0 and 5.1 have to be activated in their own settings before they open windows. |
+| Zetsu 1.6.6 or 1.6.2, by Dcsyhi | 15, 16 (17 and 18: 1.6.6) | A good alternative. Desktops were tested with 1.6.6. |
 | MilkyWay4 0.1.1, by akusio | 15 | Adds the Resize Apps to Fit Windows switch. |
 
 Other versions of these engines run on their own, without the Mac look, and Settings marks them "untested version".
 
-Which one? On an iPad with Stage Manager (or TrollPad) on iPadOS 16.1 to 17, a new install starts with Stage Manager, Apple's own windowing. Anywhere else, start with Aerial. Updating keeps the engine you picked, so if you already use Aerial or Zetsu, nothing changes.
+Which one? On an iPad with Stage Manager (or TrollPad) on iPadOS 16.1 to 18, a new install starts with Stage Manager, Apple's own windowing. Anywhere else, start with Aerial. Updating keeps the engine you picked, so if you already use Aerial or Zetsu, nothing changes.
 
 ## Compatibility
 
@@ -130,18 +131,18 @@ Which one? On an iPad with Stage Manager (or TrollPad) on iPadOS 16.1 to 17, a n
 | iPad Pro 11" (M1, 2021) | 15.6.1 | Dopamine | Aerial 5.0 and 5.1, Zetsu, MilkyWay4 | Tested by the developer |
 | iPad Pro 9.7" | 16.7.7 | palera1n | Aerial 5.0 and 5.1, Zetsu, Stage Manager (with TrollPad) | Tested by the developer |
 | iPad Pro 12.9" (2nd generation) | 17.5.1 | palera1n | Stage Manager (with TrollPad), Aerial 5.1, Zetsu 1.6.6 | Tested by the developer |
-| iPad Pro 12.9" (4th generation) | 18.5 | Dopamine | Stage Manager (the iPad's own) | Tested by the developer with Enable Anyway. Experimental, full support is planned for 1.6.0 |
+| iPad Pro 12.9" (4th generation) | 18.5 | Dopamine | Stage Manager (the iPad's own), Aerial 5.1, Zetsu 1.6.6 | Tested by the developer |
 | iPad Pro 10.5" | 16.6.1 | rootless | not reported | Reported working by a user |
 | iPad mini 4 | 15.8.8 | rootless | not reported | Reported running by a user. The Dock problem seen there (app icons past the ends of the Dock) is fixed in 1.4.2, awaiting confirmation |
 | iPad Pro (M2, 2022) | 16.0 to 16.6 | Dopamine | Zetsu, Aerial | Reported by users with Zetsu or Aerial. Stage Manager engine: see below |
 | iPad Pro 12.9" (M1, 2021) | 17.0 | rootless | Zetsu 1.6.6 | Reported working since 1.2.4, with Enable Anyway |
 | iPad Pro 12.9" (M1, 2021) | 16.1.1 | Dopamine | Stage Manager, Zetsu | Reported by a user. The Stage Manager engine's crash on the Home and previous-app gestures is fixed in 1.4.5, awaiting confirmation |
-| Other iPads | 15, 16, 17 | rootless | | Likely to work, not tested |
-| Other iPads | 18 and later | | | Off until you turn on Enable Anyway, at your own risk (full support planned for 1.6.0) |
+| Other iPads | 15 to 18 | rootless | | Likely to work, not tested |
+| Other iPads | Newer than 18 | | | Off until you turn on Enable Anyway, at your own risk |
 
-- iPad Pro (M2) with the Stage Manager engine: offered on 16.1 and later, and as "Untested" on 16.0, where a user confirmed the basics (windows, resizing, traffic lights). On 16.3.1 a user confirmed it runs. One user reported SpringBoard crashes with Stage Manager on 16.1 to 16.6. If you see that, pick Aerial 5.0 in Settings > Status Bar > Window Engine.
+- iPad Pro (M2) with the Stage Manager engine: offered on 16.1 and later, and as "Untested" on 16.0, where a user confirmed the basics (windows, resizing, traffic lights). On 16.3.1 a user confirmed it runs. One user reported SpringBoard crashes with Stage Manager on 16.1 to 16.6. If you see that, pick Aerial 5.0 in Settings > Windows & Multitasking > Window Engine.
 - iPadOS 17: tested on 17.5.1 with the Stage Manager engine (Stage Manager through TrollPad), Aerial 5.1 and Zetsu, together with the desktop, Finder, the Wi-Fi menu, the Mac Switcher and the Spotlight extras. The Home Screen options are on the Dock page in Settings there. iPads with Stage Manager of their own on 17 and external displays on 17 haven't been tried yet; reports are welcome.
-- iPadOS 18: experimental. Tried on 18.5 with the Stage Manager engine on an iPad with Stage Manager of its own. The Mac Switcher, the desktop and the Wi-Fi menu are not offered there, and the SSH, Home Bar, Pointer and Keyboard rows are in Settings > General.
+- iPadOS 18: tested on 18.5 with the Stage Manager engine (an iPad with Stage Manager of its own), Aerial 5.1 and Zetsu, together with the desktop, Finder, the Wi-Fi menu, the Mac Switcher and RAM & CPU. Settings has no room for tweak rows in its sidebar there, so the tweak's pages and rows are in a group at the top of Settings > General. The tweak's search field in the Settings sidebar is for iPadOS 15 to 17. External displays on 18 haven't been tried yet.
 
 Tried it on another setup? A [compatibility report](https://github.com/BesiktasliSeba/MacStatusBarAndDock/issues/new?template=compatibility.yml) (works or doesn't) helps fill in this table.
 
@@ -161,8 +162,8 @@ Tried it on another setup? A [compatibility report](https://github.com/Besiktasl
 | Problem | What to do |
 |---|---|
 | Apps open full screen | Turn on Window > Open Apps as Windows, or tap the green light. Aerial 5.0 and 5.1 have to be activated in their own settings first. If Window Engine says None, no tested engine is installed. |
-| No desktops or Mission Control | Turn on Settings > Status Bar > Mac Switcher. It isn't offered on iPadOS 18. |
-| Stage Manager is greyed out | The footer under Settings > Status Bar > Window Engine says why: no Stage Manager on this iPad (TrollPad adds it), an iPadOS version that isn't supported yet, or a respring needed to check. |
+| No desktops or Mission Control | Turn on Settings > Windows & Multitasking > Mac Switcher. |
+| Stage Manager is greyed out | The footer under Settings > Windows & Multitasking > Window Engine says why: no Stage Manager on this iPad (TrollPad adds it), an iPadOS version that isn't supported yet, or a respring needed to check. |
 | A feature turned itself off | Automatic Crash Recovery turned it off after crashes. Settings > Status Bar says what and why. Tap Turn Back On to try again, or Report a Problem. |
 | SpringBoard keeps crashing | Your jailbreak's Safe Mode starts by itself after quick crashes. Exit Safe Mode, and at the next start crash recovery turns off what crashed. The Apple menu also has Safe Mode. |
 | Black screen after a respring, with Aerial 5.0 or 5.1 | Aerial 5.0 and 5.1 go online while SpringBoard starts, and with a VPN on (or just turned off) it can hang. Restart the iPad and jailbreak again. Next time, don't respring while a VPN is on or was just turned off; MacStatusBar&Dock warns before resprings that go through iOS. |

@@ -59,8 +59,8 @@ static inline int MSBDOSMajor(void) {
 }
 // Unknown counts as tested: never turn off what ran before because of a failed lookup. iPadOS 17 counts as one tested version (24 Oct 2026: every
 // class, ivar, symbol and hook we use is the same from 17.0 to 17.7.x -- plans/ipados17-versions.md --, and the port was tested on 17.5.1); its
-// diagnostics records stay on for the builds nobody here can run (Diag.h).
-static inline int MSBDVersionTested(void) { int m = MSBDOSMajor(); return m == 0 || m == 15 || m == 16 || m == 17; }
+// diagnostics records stay on for the builds nobody here can run (Diag.h). iPadOS 18 joins in 1.6.0 (tested on 18.5.0; its records stay on too).
+static inline int MSBDVersionTested(void) { int m = MSBDOSMajor(); return m == 0 || m == 15 || m == 16 || m == 17 || m == 18; }
 
 // A boolean of ours (CFPreferences, looked up at run time): "Enable Anyway", or the safe mode.
 static inline int MSBDGatePrefOn(const char *keyName) {

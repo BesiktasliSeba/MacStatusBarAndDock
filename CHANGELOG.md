@@ -2,6 +2,36 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.6.0
+
+### New
+- iPadOS 18 is supported without turning on Enable Anyway. It was tested on iPadOS 18.5 with the Stage Manager engine, Aerial 5.1 and Zetsu 1.6.6. A new install on an iPad with Stage Manager starts with the Stage Manager engine there too, as on iPadOS 16.1 to 17. If you had turned on Enable Anyway, the update turns it off, so a later iPadOS version that hasn't been tested asks for it again.
+- iPadOS 18: the Mac Switcher, the desktop icons and the Wi-Fi menu are offered, and a Stage Manager desktop holds up to 7 windows instead of 4.
+- Windows & Multitasking: a new page in Settings, between Status Bar and Dock, with the window settings that were on the Status Bar page (Windowing, Window Engine, Windows, Traffic Lights, Hide Multitasking Dots and Mac Switcher). On iPadOS 15 and 16 it also has Apple's Picture in Picture and Gestures settings, which leave General. On iPadOS 17 and 18 its Multitasking & Gestures row opens Apple's page.
+- RAM & CPU in Control Center: a 2 x 1 control with available memory, used memory and the CPU load. Tap it for details. On iPadOS 18, add it with Add a Control (search for RAM). On iPadOS 15 to 17, add it in Settings > Control Center. With BigSurCenter it fits a square tile.
+- iPadOS 18: Status Bar, Windows & Multitasking and Dock are in a MacStatusBar&Dock group at the top of Settings > General, with the SSH, Home Bar, Pointer and Keyboard rows where they apply. Apple's Hardware Keyboard and Trackpad pages start with the tweak's keyboard and pointer switches.
+
+### Improvements
+- Sharper Settings icons for Status Bar and Dock, and new ones for Windows & Multitasking and RAM & CPU.
+- With Open Apps as Windows on, Take Me There, Choose Engine, Edit Go Menu and the notices' Open Settings open Settings as a window on every iPadOS version. With it off, Settings opens full screen as before.
+
+### Fixes
+- iPadOS 17 and 18: Hide Multitasking Dots works again. With it off, the dots now stay visible instead of fading a moment after each touch.
+- With Home Bar off, the home bar stays hidden on the Lock Screen too.
+- Renaming an item on the desktop shows the keyboard above your windows and the Dock. It could open behind Stage Manager windows, and with a hardware keyboard its bar was under the Dock.
+- With a hardware keyboard, Show Keyboard and Show Emoji in the keyboard bar no longer end typing in Finder's search field or in a name on the desktop. On iPadOS 18 the Dock now moves under that keyboard.
+- With a hardware keyboard and a Zetsu window over the Dock, the keyboard bar of Finder's fields and of a desktop name stays above the Dock.
+- Typing in Finder or TextEdit with the on-screen or floating keyboard keeps that window active, and a tap on another window now makes it let go.
+- Apps and Settings pages that the tweak opens for you come in front of an active Finder window. With MilkyWay4 on iPadOS 15, an active Finder window comes in front of the app windows.
+- Minimize All Windows also minimizes Finder and TextEdit windows, and Finder's Window menu has it too. With the Dock's Downloads panel open, Esc closes the panel.
+- Mac Switcher: adding a desktop no longer moves your Finder window to it. With Aerial, Zetsu or MilkyWay4, an app you made full screen while the Mac Switcher was off no longer comes back as a window when you turn it on again.
+- Zetsu and MilkyWay4: a window coming back from full screen returns to where it was, and with Fit to Window it takes its tile again.
+- Aerial 5.1: a window shows the live app while you resize it, not Aerial's placeholder, and nothing jumps when you let go. The whole corner grip resizes the window, the grip mark included.
+- Switching the window engine to Stage Manager with an app open in a window no longer leaves that app's Dock icon hidden until the next respring.
+- Settings: Take Me There, Choose Engine, Edit Go Menu and the notices' Open Settings land on the right page or list when Settings is already showing one of the tweak's lists, and when Settings starts on one of the tweak's pages, that page's row is in view in the sidebar.
+- iPadOS 17: the Keyboard page again says when the volume keys need the Globe key set to Globe, with its link to Modifier Keys.
+- iPadOS 18: Finder's search and rename, TextEdit and the Wi-Fi password field take typing from a hardware keyboard while an app is in front, and the Today View lists your notifications.
+
 ## 1.5.2
 
 ### New

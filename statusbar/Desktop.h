@@ -17,6 +17,8 @@
 #define kDesktopDomain CFSTR("com.besiktasliseba.macstatusbar.desktop")
 #include "../common/DesktopCheck.h"   // (iPadOS 17+: the check's verdict, read by Settings -- DMDesktopNewOSReady)
 #include "DesktopPlace.h"   // (where the icons go: the free spots, the grid, no room -- plain C, tested on the Mac)
+#include "KeyboardDock.h"   // (when the Dock goes under our own on-screen keyboard -- plain C, tested on the Mac: tools/test-kbdock.sh)
+#include "DesktopRename.h"  // (the window a name is typed in: its level and the field's place -- plain C, tested on the Mac: tools/test-deskrename.sh)
 
 @interface DMDesktopItemView : UIView
 @property (nonatomic, strong) DMFinderItem *item;
@@ -124,28 +126,27 @@ static id gDesktopFocusLock;
 static void DMKeyboardDockWatch(void);
 static void DMDesktopFocus(BOOL take) {
     if (take) DMKeyboardDockWatch();
-    if (!take) { id l = gDesktopFocusLock; gDesktopFocusLock = nil; if ([l respondsToSelector:@selector(invalidate)]) ((void (*)(id, SEL))objc_msgSend)(l, @selector(invalidate)); return; }
+    if (!take) { id l = gDesktopFocusLock; gDesktopFocusLock = nil; MSBDFocusUnlock(l); return; }
     if (gDesktopFocusLock) return;
-    id ws = nil; Class wsc = objc_getClass("SBMainWorkspace");
-    if (wsc && [(id)wsc respondsToSelector:@selector(sharedInstance)]) ws = ((id (*)(id, SEL))objc_msgSend)((id)wsc, @selector(sharedInstance));
-    id kfc = DMCall(ws, @"keyboardFocusController");
-    SEL l16 = NSSelectorFromString(@"lockFocusToSpringBoardWindowScene:forReason:"), l15 = NSSelectorFromString(@"lockFocusToSpringBoardForReason:");
-    UIWindowScene *scene = gDesktop.window.windowScene;
-    @try {
-        if ([kfc respondsToSelector:l16] && scene) gDesktopFocusLock = ((id (*)(id, SEL, id, id))objc_msgSend)(kfc, l16, scene, @"MacStatusBar Desktop");
-        else if ([kfc respondsToSelector:l15]) gDesktopFocusLock = ((id (*)(id, SEL, id))objc_msgSend)(kfc, l15, @"MacStatusBar Desktop");
-    } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[desktop] keyboard focus lock threw %@", e.reason]); }
+    NSString *how = nil;
+    gDesktopFocusLock = MSBDFocusLock(gDesktop.window.windowScene, @"MacStatusBar Desktop", &how);   // (common/FocusLock.h: 15, 16/17, 18)
+    DMLog([NSString stringWithFormat:@"[desktop] keyboard focus to SpringBoard while a name is edited: %@%@", gDesktopFocusLock ? NSStringFromClass([gDesktopFocusLock class]) : @"no lock", how ? [NSString stringWithFormat:@" (the %@ call)", how] : @""]);
 }
 
 // The Dock's window under the Home Screen's, for as long as any reason holds (a desktop menu is up, our own on-screen keyboard is up); its own
 // level back when the last one goes, unless SpringBoard changed it meanwhile.
 static NSMutableSet<NSString *> *gDockUnderReasons;
 static __weak UIWindow *gDockLowered; static CGFloat gDockLevelWas, gDockLevelLow;
+static BOOL DMDesktopDockIsUnder(void) { return gDockUnderReasons.count > 0; }   // (the status bar's tick keeps the Dock's floor aside meanwhile)
 static void DMDesktopDockUnder(NSString *reason, BOOL on, CGFloat low) {
     if (!gDockUnderReasons) gDockUnderReasons = [NSMutableSet set];
     if (on) [gDockUnderReasons addObject:reason]; else [gDockUnderReasons removeObject:reason];
     if (gDockUnderReasons.count) {
         if (gDockLowered) return;
+        // (the Dock part's floor first steps aside -- the Dock above an engine window over it, dock/Dock.x: its level hook turned this -3 into its
+        //  1034 when the tick had not yet said a keyboard is up, and the Dock then stayed over our on-screen keyboard, its bottom row covered: Zetsu,
+        //  a window over the Dock, Finder's search, Show Keyboard, M1 15.6.1, 1.6.0. The tick keeps it aside while a reason holds: DMDesktopDockIsUnder)
+        { static void (*reassert)(BOOL) = NULL; if (!reassert) reassert = (void (*)(BOOL))dlsym(RTLD_DEFAULT, "DMDockReassertLevel"); if (reassert && !DMTestFlag("/tmp/msb-dockunder-old")) reassert(YES); }
         for (UIWindow *w in DMAllWindows()) if ([NSStringFromClass([w class]) isEqualToString:@"SBFloatingDockWindow"] && !w.hidden && w.windowLevel > low) {
             gDockLowered = w; gDockLevelWas = w.windowLevel; gDockLevelLow = low; w.windowLevel = low;
             DMLog([NSString stringWithFormat:@"[desktop] %@: the Dock's window from level %.0f to %.0f, under the Home Screen's, as for an app icon's menu", reason, gDockLevelWas, low]);
@@ -169,33 +170,211 @@ static BOOL DMDesktopMenuShown(UIWindow *w) {
 // keyboard, the Dock goes away (Stage Manager hides the in-app Dock for it; a full-screen app has no Dock); for ours the Dock goes under the
 // Home Screen while a docked on-screen keyboard is up for one of our fields (SpringBoard holding the keyboard focus for them, gNativeFocusLock /
 // gDesktopFocusLock), and comes back as it hides. A hardware keyboard's bar, a floating or a split keyboard leave the Dock alone.
+// What the keyboard announces is not enough on iPadOS 18: "Show Keyboard" from a hardware keyboard's bar menu announces a 3 pt keyboard with
+// will-show and then grows it to the full one with a frame change alone (seen once) or with no notification at all (seen once): SpringBoard's
+// own fields get their keyboard from the remote keyboard window, and the Dock stayed over its bottom row (A12Z 18.5, 1.6.0). So the keyboard is
+// also looked for where it is drawn: a host view in SpringBoard's keyboard windows across the whole width, down to the bottom edge, taller than
+// 150 pt (DMDockedKeyboardShown) -- after every notification, again while the keyboard settles, and every 0.5 s while the Dock is under it.
 static BOOL DMDesktopOwnKeyboard(void) { return gNativeFocusLock != nil || gDesktopFocusLock != nil; }
 static NSString *DMDesktopPlaceFor(NSString *path);
 static void DMDesktopKeyboardMoved(void);  // (a name being edited stays above it: -dm_fitRenameField)
+static CGRect DMDockedKeyboardShown(BOOL *sawHost) {   // (screen points; empty when no docked keyboard shows. sawHost: any keyboard host on screen)
+    Class host = objc_getClass("UIInputSetHostView");
+    UIScreen *screen = [UIScreen mainScreen];
+    CGRect bounds = screen.bounds, best = CGRectZero;
+    if (sawHost) *sawHost = NO;
+    if (!host) return best;
+    for (UIWindow *w in DMAllWindows()) {
+        if (w.hidden || w.alpha < 0.01) continue;
+        NSString *c = NSStringFromClass([w class]);
+        if (![c containsString:@"RemoteKeyboard"] && ![c containsString:@"TextEffects"]) continue;
+        id<UICoordinateSpace> scr = (w.screen ?: screen).coordinateSpace;
+        NSMutableArray<UIView *> *todo = [NSMutableArray arrayWithObject:w];
+        while (todo.count) {
+            UIView *v = todo.lastObject; [todo removeLastObject];
+            for (UIView *sub in v.subviews) {
+                if (sub.hidden || sub.alpha < 0.01) continue;
+                if (![sub isKindOfClass:host] || DMKeyboardHostIsContainer(sub)) { [todo addObject:sub]; continue; }   // (a container: looked into)
+                CGRect r = CGRectIntersection([sub convertRect:sub.bounds toCoordinateSpace:scr], bounds);
+                if (CGRectIsNull(r) || r.size.height < 1.0) continue;
+                if (sawHost) *sawHost = YES;
+                if (MSBDKeyboardRectDocked(r, bounds.size) && r.size.height > best.size.height) best = r;
+            }
+        }
+    }
+    return best;
+}
+static BOOL gKeyboardNotedDocked = NO;
+static CFTimeInterval gKeyboardNotedAt = 0;
+static CGRect gOwnKeyboardNoted;   // (the frame the last notification gave, screen points; zero when none)
+static NSTimer *gKeyboardDockTimer;
+static void DMKeyboardDockDecide(NSString *what) {
+    BOOL own = DMDesktopOwnKeyboard(), sawHost = NO;
+    CGRect shown = own ? DMDockedKeyboardShown(&sawHost) : CGRectZero;
+    BOOL under = MSBDKeyboardDockUnder(own, !CGRectIsEmpty(shown), sawHost, gKeyboardNotedDocked, CACurrentMediaTime() - gKeyboardNotedAt);   // (KeyboardDock.h)
+    BOOL was = [gDockUnderReasons containsObject:@"keyboard"];
+    DMDesktopDockUnder(@"keyboard", under, -3.0);   // (-3: the level SpringBoard itself gives it under an icon menu)
+    // (gOwnKeyboardFrame: our DOCKED keyboard only -- the drawn one, else the announced one while it counts. A hardware keyboard's bar (18: a
+    //  71.5 pt strip as wide as the screen, clear but for its button) and 18's 3 pt placeholder leave it empty, as 15 does for the bar: a tap in
+    //  that strip on an app window or the Dock is not one on our keyboard -- NativeWindow.h's DMPointOnOwnKeyboard then asks only the keyboard
+    //  windows' narrow views, the bar's button and menu.)
+    CGRect frame = !own ? CGRectZero : (!CGRectIsEmpty(shown) ? shown : (under ? gOwnKeyboardNoted : CGRectZero));
+    if (!CGRectEqualToRect(frame, gOwnKeyboardFrame)) { gOwnKeyboardFrame = frame; DMDesktopKeyboardMoved(); }
+    if (under != was) DMLog([NSString stringWithFormat:@"[kbdock] %@: the Dock %@ (keyboard drawn %@, announced docked %d)", what, under ? @"goes under our keyboard" : @"is back", NSStringFromCGRect(shown), gKeyboardNotedDocked]);
+    if (under && !gKeyboardDockTimer) {   // (while it is under: checked every 0.5 s)
+        gKeyboardDockTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) { DMKeyboardDockDecide(@"check"); }];
+    } else if (!under && gKeyboardDockTimer) { [gKeyboardDockTimer invalidate]; gKeyboardDockTimer = nil; }
+}
+static void DMKeyboardDockNote(NSNotification *n, NSString *what) {
+    NSValue *v = n.userInfo[UIKeyboardFrameEndUserInfoKey];
+    CGRect f = [v isKindOfClass:[NSValue class]] ? v.CGRectValue : CGRectZero;
+    // (SpringBoard is told the frame in the screen's fixed, portrait space: in landscape it read {360, 0, 408, 1024} on the iPad 2)
+    UIScreen *screen = [UIScreen mainScreen]; CGSize scr = screen.bounds.size;
+    CGRect g = [screen.fixedCoordinateSpace convertRect:f toCoordinateSpace:screen.coordinateSpace];
+    gKeyboardNotedDocked = MSBDKeyboardNoteDocked(f, g, scr); gKeyboardNotedAt = CACurrentMediaTime();   // (KeyboardDock.h)
+    CGRect onScreen = MSBDKeyboardNoteOnScreen(f, g, scr);
+    gOwnKeyboardNoted = DMDesktopOwnKeyboard() ? onScreen : CGRectZero;
+    if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[kbdock] %@: end %@ (screen %@), docked %d, ours %d", what, NSStringFromCGRect(f), NSStringFromCGRect(g), gKeyboardNotedDocked, DMDesktopOwnKeyboard()]);
+    DMKeyboardDockDecide(what);
+    for (NSNumber *after in @[@0.25, @0.6, @1.2])   // (the keyboard's own animation: the drawn keyboard settles after the notification)
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(after.doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMKeyboardDockDecide(@"settled"); });
+}
 static void DMKeyboardDockWatch(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
-        [nc addObserverForName:UIKeyboardWillShowNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) {
-            NSValue *v = n.userInfo[UIKeyboardFrameEndUserInfoKey];
-            CGRect f = [v isKindOfClass:[NSValue class]] ? v.CGRectValue : CGRectZero;
-            // (SpringBoard is told the frame in the screen's fixed, portrait space: in landscape it read {360, 0, 408, 1024} on the iPad 2)
-            UIScreen *screen = [UIScreen mainScreen]; CGSize scr = screen.bounds.size;
-            CGRect g = [screen.fixedCoordinateSpace convertRect:f toCoordinateSpace:screen.coordinateSpace];
-            BOOL (^isDocked)(CGRect) = ^BOOL(CGRect r) { return r.size.width >= scr.width - 1.0 && CGRectGetMaxY(r) >= scr.height - 1.0 && r.size.height > 150.0; };
-            BOOL docked = isDocked(f) || isDocked(g);
-            if (docked && DMDesktopOwnKeyboard()) DMDesktopDockUnder(@"keyboard", YES, -3.0);   // (-3: the level SpringBoard itself gives it under an icon menu)
-            else DMDesktopDockUnder(@"keyboard", NO, -3.0);
-            CGRect bounds = CGRectMake(0, 0, scr.width, scr.height);
-            gOwnKeyboardFrame = DMDesktopOwnKeyboard() ? (CGRectContainsRect(CGRectInset(bounds, -1.0, -1.0), f) ? f : g) : CGRectZero;
-            DMDesktopKeyboardMoved();
-        }];
+        [nc addObserverForName:UIKeyboardWillShowNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) { DMKeyboardDockNote(n, @"will show"); }];
+        [nc addObserverForName:UIKeyboardWillChangeFrameNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) { DMKeyboardDockNote(n, @"frame change"); }];
+#if DEBUG
+        for (NSString *name in @[UIKeyboardDidChangeFrameNotification, UIKeyboardDidShowNotification, UIKeyboardDidHideNotification])
+            [nc addObserverForName:name object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) {
+                if (!DMTestFlag("/tmp/macstatusbar-debug")) return;
+                NSValue *b = n.userInfo[UIKeyboardFrameBeginUserInfoKey], *e = n.userInfo[UIKeyboardFrameEndUserInfoKey];
+                DMLog([NSString stringWithFormat:@"[kbdock] %@: begin %@ end %@, ours %d, local %@", [n.name stringByReplacingOccurrencesOfString:@"UIKeyboard" withString:@""], b ? NSStringFromCGRect(b.CGRectValue) : @"-", e ? NSStringFromCGRect(e.CGRectValue) : @"-", DMDesktopOwnKeyboard(), n.userInfo[UIKeyboardIsLocalUserInfoKey] ?: @"-"]);
+            }];
+#endif
         [nc addObserverForName:UIKeyboardWillHideNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) {
-            DMDesktopDockUnder(@"keyboard", NO, -3.0);
-            gOwnKeyboardFrame = CGRectZero;
-            DMDesktopKeyboardMoved();
+            if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[kbdock] will hide: end %@, ours %d", NSStringFromCGRect([n.userInfo[UIKeyboardFrameEndUserInfoKey] CGRectValue]), DMDesktopOwnKeyboard()]);
+            gKeyboardNotedDocked = NO; gKeyboardNotedAt = CACurrentMediaTime();
+            gOwnKeyboardNoted = CGRectZero;
+            DMKeyboardDockDecide(@"will hide");   // (the drawn keyboard still counts while it goes: the checks after it give the Dock back)
+            for (NSNumber *after in @[@0.25, @0.6, @1.2])
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(after.doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMKeyboardDockDecide(@"settled"); });
         }];
     });
+}
+
+// ---- the window a name is typed in (1.6.0) ----
+// UIKit puts SpringBoard's keyboard windows just above the window that holds the field being typed in (DesktopRename.h). The desktop is in the
+// Home Screen's window (-2), under every app window and under the Dock, so a name edited there had its keyboard behind Stage Manager's windows
+// (iPad 2, 16.7.7: the text effects window at -1, the keyboard's at 0, the windows at 5) and a hardware keyboard's bar under the Dock, its keyboard
+// button under the Downloads icon (M1, 15.6.1); the engines' window layer (1033) covered it the same way. Finder's fields are in our native layer,
+// above the app windows while Finder is active, so their keyboard was in view. So while a name is edited its field is in a window of its own, at
+// the very place under its icon, just above the app windows, the Dock and our native windows: the keyboard UIKit puts above that window is above
+// all of them. Only the field takes touches there; everything else falls through to what is below, where a touch ends the editing as before.
+// Without that window (its class missing) the field stays in the desktop, as before 1.6.0.
+static UIWindow *gDesktopRenameWindow;
+static UIView *gDesktopRenameRotator;   // (the field's container, turned to how the window lies on the screen: its points are the screen's)
+static UIView *DMDesktopRenameHitTest(UIWindow *self, SEL _cmd, CGPoint p, UIEvent *e) {
+    struct objc_super sup = { self, [self superclass] };
+    UIView *hit = ((id (*)(struct objc_super *, SEL, CGPoint, UIEvent *))objc_msgSendSuper)(&sup, _cmd, p, e);
+    for (UIView *v = hit; v && v != self; v = v.superview) if ([v isKindOfClass:[UITextField class]]) return hit;   // (the field and its parts)
+    return nil;
+}
+static BOOL DMDesktopRenameYes(id self, SEL _cmd) { return YES; }   // (it has to be able to become the key window, or the field never gets the keys)
+// SpringBoard's orientation window keeps its portrait bounds on iPadOS 16 while the scene is turned, and turns itself once it is the key window
+// (our native layer and menu window do the same): the container is turned to how the window really lies on the screen, measured every time.
+static void DMDesktopRenameFit(void) {
+    UIWindow *w = gDesktopRenameWindow; UIView *r = gDesktopRenameRotator;
+    if (!w || !r || w.hidden) return;
+    CGSize screen = [UIScreen mainScreen].bounds.size, win = w.bounds.size;
+    id<UICoordinateSpace> scr = [UIScreen mainScreen].coordinateSpace;
+    CGPoint o = [w convertPoint:CGPointZero toCoordinateSpace:scr], x = [w convertPoint:CGPointMake(100, 0) toCoordinateSpace:scr];
+    CGFloat angle = hypot(x.x - o.x, x.y - o.y) > 50.0 ? -round(atan2(x.y - o.y, x.x - o.x) / M_PI_2) * M_PI_2 : 0.0;
+    BOOL turned = fabs(angle) > 0.01;
+    CGAffineTransform t = turned ? CGAffineTransformMakeRotation(angle) : CGAffineTransformIdentity;
+    CGRect b = CGRectMake(0, 0, turned ? screen.width : win.width, turned ? screen.height : win.height);
+    if (!CGAffineTransformEqualToTransform(r.transform, t) || !CGRectEqualToRect(r.bounds, b)) {
+        r.transform = CGAffineTransformIdentity; r.bounds = b; r.center = CGPointMake(win.width / 2.0, win.height / 2.0); r.transform = t;
+        DMLog([NSString stringWithFormat:@"[desktop] rename window turned: container %@ angle %.0f (window %@, screen %@)", NSStringFromCGRect(b), angle * 180.0 / M_PI, NSStringFromCGSize(win), NSStringFromCGSize(screen)]);
+    }
+    [gDesktop dm_fitRenameField];
+}
+static void DMDesktopRenameLayout(UIWindow *self, SEL _cmd) {
+    struct objc_super sup = { self, [self superclass] };
+    ((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(&sup, _cmd);
+    DMDesktopRenameFit();
+}
+// Just above every window the keyboard must not be under: the Dock, the engines' app windows (Stage Manager's switcher window, Aerial's and
+// MilkyWay's layer, Zetsu's windows), our native layer while it shows -- whatever level each has right now.
+static CGFloat DMDesktopRenameLevel(void) {
+    CGFloat levels[32]; int n = 0;
+    for (UIWindow *w in DMAllWindows()) {
+        if (n >= 32) break;
+        if (w.hidden || w == gDesktopRenameWindow) continue;
+        NSString *c = NSStringFromClass([w class]);
+        if (w == gNativeLayer || [c isEqualToString:@"SBFloatingDockWindow"] || [c isEqualToString:@"SBMainSwitcherWindow"] || [c isEqualToString:@"AerialWindow"]
+            || [c isEqualToString:@"AXPassthroughWindow"] || [c containsString:@"MilkyWay"] || DMIsZetsuWindow(w)) levels[n++] = w.windowLevel;
+    }
+    return MSBDRenameHostLevel(levels, n, kMenuWindowLevel);
+}
+// The container the field goes in, its window shown at its level; nil: no such window here (the field then stays in the desktop).
+static UIView *DMDesktopRenameHost(void) {
+#if DEBUG
+    if (DMTestFlag("/tmp/msb-rename-in-desktop")) return nil;   // (debug: the field in the desktop, as before 1.6.0 -- for comparisons)
+#endif
+    if (!gDesktopRenameWindow) {
+        @try {
+            Class base = objc_getClass("SBMainScreenActiveInterfaceOrientationWindow");
+            SEL initRole = NSSelectorFromString(@"initWithRole:debugName:");
+            if (!base || ![base instancesRespondToSelector:initRole]) { DMLog(@"[desktop] rename window: the window class or initializer is missing (the field stays in the desktop)"); return nil; }
+            Class sub = objc_getClass("MSBDesktopRenameWindow");
+            if (!sub) {
+                sub = objc_allocateClassPair(base, "MSBDesktopRenameWindow", 0);
+                if (!sub) return nil;
+                class_addMethod(sub, @selector(hitTest:withEvent:), (IMP)DMDesktopRenameHitTest, "@@:{CGPoint=dd}@");
+                class_addMethod(sub, @selector(canBecomeKeyWindow), (IMP)DMDesktopRenameYes, "B@:");
+                class_addMethod(sub, NSSelectorFromString(@"_canBecomeKeyWindow"), (IMP)DMDesktopRenameYes, "B@:");
+                class_addMethod(sub, @selector(layoutSubviews), (IMP)DMDesktopRenameLayout, "v@:");
+                objc_registerClassPair(sub);
+            }
+            UIWindow *w = ((id (*)(id, SEL, id, id))objc_msgSend)([sub alloc], initRole, @"SBFTraitsParticipantRoleRecordingIndicator", @"MacStatusBarDesktopRename");
+            if (!w) return nil;
+            w.backgroundColor = [UIColor clearColor];
+            w.hidden = YES;
+            UIView *r = [UIView new]; r.backgroundColor = [UIColor clearColor];
+            [w addSubview:r];
+            gDesktopRenameRotator = r; gDesktopRenameWindow = w;
+            DMSnapInvalidate();
+            DMLog([NSString stringWithFormat:@"[desktop] rename window made: %@ frame %@", NSStringFromClass([w class]), NSStringFromCGRect(w.frame)]);
+        } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[desktop] rename window failed: %@", e]); return nil; }
+    }
+    DM_FEATURE_MARK("desktop-rename-window");
+    UIWindow *w = gDesktopRenameWindow;
+    CGFloat level = DMDesktopRenameLevel();
+    if (fabs(w.windowLevel - level) > 0.01) w.windowLevel = level;
+    if (w.hidden) w.hidden = NO;
+    if (gDesktopRenameRotator.superview != w) [w addSubview:gDesktopRenameRotator];
+    DMDesktopRenameFit();
+    DMLog([NSString stringWithFormat:@"[desktop] the name is typed in its own window at level %.1f (above the apps, the Dock and our windows)", level]);
+    return gDesktopRenameRotator;
+}
+static void DMDesktopRenameHostDone(void) {
+    UIWindow *w = gDesktopRenameWindow;
+    if (w && !w.hidden) w.hidden = YES;
+}
+// A touch on the name being edited in that window. Stage Manager's window gestures see every touch through the system gesture window and only
+// ask what window card lies under the finger: a tap on the field brought the app window under it forward (iPad 2, 16.7.7, 1.6.0) -- they leave
+// such a touch alone, as one on a native window (StatusBar.x, DMNativeSysGestures).
+static BOOL DMDesktopRenameFieldTouch(UITouch *t) {
+    UIWindow *w = gDesktopRenameWindow;
+    if (!t || !w || w.hidden) return NO;
+    UITextField *tf = nil;
+    for (UIView *v in gDesktopRenameRotator.subviews) if ([v isKindOfClass:[UITextField class]]) { tf = (UITextField *)v; break; }
+    if (!tf) return NO;
+    UIScreen *screen = t.window.screen ?: [UIScreen mainScreen];
+    CGPoint p = t.window ? [t.window convertPoint:[t locationInView:t.window] toCoordinateSpace:screen.coordinateSpace] : [t locationInView:nil];
+    return CGRectContainsPoint(CGRectInset([tf convertRect:tf.bounds toCoordinateSpace:screen.coordinateSpace], -4.0, -4.0), p);
 }
 @implementation DMDesktop {
     __weak UIView *_list;                                  // page 1's icon list (SBIconListView), our superview
@@ -231,7 +410,8 @@ static void DMKeyboardDockWatch(void) {
     // icons that arrive soon after a drop or New Folder: placed where it happened
     CGPoint _arrivePoint; CFTimeInterval _arriveUntil; NSInteger _arriveLeft;
     NSArray<NSString *> *_selectWhenListed; NSString *_renameWhenListed;
-    UITextField *_renameField; NSString *_renamePath; __weak UIWindow *_keyBefore; CGRect _renameHome;
+    UITextField *_renameField; NSString *_renamePath; __weak UIWindow *_keyBefore; CGRect _renameHome;   // (_renameHome: screen points)
+    BOOL _renamePlaced;   // (the field had its first place: later moves are animated)
 }
 - (instancetype)initWithFolder:(NSString *)folder {
     if (!(self = [super initWithFrame:CGRectZero])) return nil;
@@ -688,7 +868,8 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
 // ---- touches ----
 - (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)e {   // (only the icons take touches: the empty desktop is the Home Screen's)
     if (self.hidden || self.alpha < 0.01 || !self.userInteractionEnabled) return nil;
-    if (_renameField && CGRectContainsPoint(CGRectInset(_renameField.frame, -4, -4), p)) return [_renameField hitTest:[self convertPoint:p toView:_renameField] withEvent:e] ?: _renameField;
+    if (_renameField && _renameField.superview == self && CGRectContainsPoint(CGRectInset(_renameField.frame, -4, -4), p))   // (the field in the desktop: no window of its own)
+        return [_renameField hitTest:[self convertPoint:p toView:_renameField] withEvent:e] ?: _renameField;
     for (UIView *v in [self.subviews reverseObjectEnumerator]) if ([v isKindOfClass:[DMDesktopItemView class]] && !v.hidden && v.alpha > 0.01 && CGRectContainsPoint(v.frame, p)) return v;
     return nil;
 }
@@ -851,6 +1032,7 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
     if (t.type == UITouchTypeIndirect) return;
     UIView *v = t.view;
     if (v && ([v isDescendantOfView:self] || v == self)) return;
+    if (_renameField && v && [v isDescendantOfView:_renameField]) return;   // (on the name being edited, in its own window: the caret, a selection)
     if (gOverlay && [v isDescendantOfView:gOverlay]) return;   // (our own menu: its row acts on the selection)
     if (DMAnyContextMenuVC(NULL) || _band) return;              // (a Haptic Touch menu: its rows act on the selection; the rectangle being drawn)
     // (judged by where it is on the screen: SpringBoard's system gesture window sees every touch first, with a view of its own -- a press on a
@@ -860,7 +1042,7 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
     if ([NSStringFromClass([t.window class]) isEqualToString:@"_UISystemGestureWindow"] || (gOverlay && gOverlay.window == t.window)) {
         if ([self dm_shownAt:sp] && [self dm_itemViewAtScreen:sp]) return;
         if (gOverlay) return;
-        if (_renameField && CGRectContainsPoint(CGRectInset(_renameField.frame, -4, -4), [self convertPoint:sp fromCoordinateSpace:(self.window.screen ?: [UIScreen mainScreen]).coordinateSpace])) return;
+        if (_renameField && _renameField.window && CGRectContainsPoint(CGRectInset([_renameField convertRect:_renameField.bounds toCoordinateSpace:(_renameField.window.screen ?: [UIScreen mainScreen]).coordinateSpace], -4, -4), sp)) return;
     }
     if (_renameField) [self dm_endRename:YES];
     _hasKeys = NO;
@@ -1141,50 +1323,67 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
     DMDesktopItemView *v = _views[path.lastPathComponent];
     if (!v || !DMFinderCanChange(path)) return;
     [self dm_select:@[path]];
-    CGRect lf = [v convertRect:v.label.frame toView:self];
-    UITextField *tf = [[UITextField alloc] initWithFrame:CGRectMake(CGRectGetMidX(lf) - MAX(lf.size.width, 140.0) / 2.0, lf.origin.y - 2.0, MAX(lf.size.width, 140.0), lf.size.height + 4.0)];
+    UITextField *tf = [[UITextField alloc] initWithFrame:CGRectZero];
     tf.font = _font ?: [UIFont systemFontOfSize:12.0]; tf.textAlignment = NSTextAlignmentCenter;
     tf.backgroundColor = [UIColor systemBackgroundColor]; tf.textColor = [UIColor labelColor];
     tf.layer.borderColor = [[UIColor systemBlueColor] colorWithAlphaComponent:0.8].CGColor; tf.layer.borderWidth = 1.5; tf.layer.cornerRadius = 3.0;
     tf.autocorrectionType = UITextAutocorrectionTypeNo; tf.autocapitalizationType = UITextAutocapitalizationTypeNone; tf.spellCheckingType = UITextSpellCheckingTypeNo;
     tf.smartQuotesType = UITextSmartQuotesTypeNo; tf.smartDashesType = UITextSmartDashesTypeNo; tf.returnKeyType = UIReturnKeyDone;
     tf.text = v.item.name; tf.delegate = self;
-    [self addSubview:tf];
-    _renameField = tf; _renamePath = path; _renameHome = tf.frame;
-    DMDesktopFocus(YES);
+    // (a name edited on the desktop is the desktop's: an active native window goes inactive, as a touch on the desktop makes it -- else it kept
+    //  the hardware keys a field gets only after SpringBoard's own key handling, and Return reached Finder, not the name: a rename started while
+    //  Finder was active, 1.6.0 parity pass on 17.5 / 16.7.7)
+    if (gNativeActive) { DMLog(@"[desktop] a name is edited on the desktop: the native windows inactive, as a touch on the desktop makes them"); DMNativeSetActive(nil); }
     UIWindow *key = nil; for (UIWindow *w in self.window.windowScene.windows) if (w.isKeyWindow) key = w;
     _keyBefore = key;
-    if (!self.window.isKeyWindow) [self.window makeKeyWindow];
+    // (in a window of its own above the app windows and the Dock, so its keyboard is above them too: DMDesktopRenameHost)
+    _renameField = tf; _renamePath = path; _renamePlaced = NO;
+    UIView *host = DMDesktopRenameHost(), *parent = host ?: (UIView *)self;
+    [parent addSubview:tf];
+    [self dm_fitRenameField];   // (its place under the icon, in the host's points)
+    DMDesktopFocus(YES);
+    UIWindow *typeIn = host ? gDesktopRenameWindow : self.window;
+    if (!typeIn.isKeyWindow) [typeIn makeKeyWindow];
     [tf becomeFirstResponder];
     NSString *base = (!v.item.dir && v.item.name.pathExtension.length && v.item.name.stringByDeletingPathExtension.length) ? v.item.name.stringByDeletingPathExtension : v.item.name;
     UITextPosition *start = tf.beginningOfDocument, *end = [tf positionFromPosition:start offset:(NSInteger)base.length];
     if (end) tf.selectedTextRange = [tf textRangeFromPosition:start toPosition:end];
     [self dm_fitRenameField];
-    DMLog([NSString stringWithFormat:@"[desktop] rename in place (first responder %d)", tf.isFirstResponder]);
+    DMLog([NSString stringWithFormat:@"[desktop] rename in place (first responder %d, %@)", tf.isFirstResponder, host ? [NSString stringWithFormat:@"its own window at %.1f", gDesktopRenameWindow.windowLevel] : @"in the desktop"]);
 }
 // The on-screen keyboard covers the lower part of the screen: a name edited there (an icon low on the desktop, a New Text File made where the
 // finger was) stood hidden under it (iPad 2, landscape). The field moves up above the keyboard while it is up, and back under its icon after.
+// Its place is worked out in screen points from its icon each time (the icons move with a turn) and put into whatever holds the field.
 - (void)dm_fitRenameField {
     UITextField *tf = _renameField;
-    if (!tf) return;
-    CGRect f = _renameHome;
-    if (!CGRectIsEmpty(gOwnKeyboardFrame)) {
-        CGRect kb = [self convertRect:gOwnKeyboardFrame fromCoordinateSpace:(self.window.screen ?: [UIScreen mainScreen]).coordinateSpace];
-        if (CGRectGetMaxY(f) > CGRectGetMinY(kb) - 8.0) f.origin.y = CGRectGetMinY(kb) - 8.0 - f.size.height;
+    UIView *host = tf.superview;
+    if (!tf || !host) return;
+    DMDesktopItemView *v = _views[_renamePath.lastPathComponent];
+    if (v && v.window) {   // (under its icon, as wide as its name and at least 140 points)
+        CGRect lf = [v convertRect:v.label.frame toView:self];
+        CGRect own = CGRectMake(CGRectGetMidX(lf) - MAX(lf.size.width, 140.0) / 2.0, lf.origin.y - 2.0, MAX(lf.size.width, 140.0), lf.size.height + 4.0);
+        _renameHome = [self convertRect:own toCoordinateSpace:(self.window.screen ?: [UIScreen mainScreen]).coordinateSpace];
     }
-    if (CGRectEqualToRect(f, tf.frame)) return;
-    [UIView animateWithDuration:0.2 animations:^{ tf.frame = f; }];
-    DMLog([NSString stringWithFormat:@"[desktop] rename field %@ (keyboard %@)", CGRectEqualToRect(f, _renameHome) ? @"back under its icon" : @"above the keyboard", NSStringFromCGRect(gOwnKeyboardFrame)]);
+    CGRect f = MSBDRenameFieldFrame(_renameHome, gOwnKeyboardFrame);   // (DesktopRename.h; both in screen points)
+    CGRect local = [host convertRect:f fromCoordinateSpace:(host.window.screen ?: [UIScreen mainScreen]).coordinateSpace];
+    CGRect now = tf.frame;
+    if (_renamePlaced && fabs(now.origin.x - local.origin.x) < 0.5 && fabs(now.origin.y - local.origin.y) < 0.5 && fabs(now.size.width - local.size.width) < 0.5 && fabs(now.size.height - local.size.height) < 0.5) return;
+    if (!_renamePlaced) { _renamePlaced = YES; tf.frame = local; return; }
+    [UIView animateWithDuration:0.2 animations:^{ tf.frame = local; }];
+    DMLog([NSString stringWithFormat:@"[desktop] rename field %@ (keyboard %@, field on the screen %@)", CGRectEqualToRect(f, _renameHome) ? @"under its icon" : @"above the keyboard", NSStringFromCGRect(gOwnKeyboardFrame), NSStringFromCGRect(f)]);
 }
 - (void)dm_endRename:(BOOL)commit {
     UITextField *tf = _renameField; NSString *path = _renamePath;
     if (!tf) return;
     _renameField = nil; _renamePath = nil;
     NSString *t = [tf.text stringByTrimmingCharactersInSet:[NSCharacterSet newlineCharacterSet]];
+    BOOL hosted = tf.window && tf.window == gDesktopRenameWindow;
     [tf resignFirstResponder]; [tf removeFromSuperview];
     DMDesktopFocus(NO);
+    DMDesktopRenameHostDone();
     UIWindow *before = _keyBefore; _keyBefore = nil;
-    if (before && before != self.window && !before.hidden) [before makeKeyWindow];
+    if (before && before != self.window && before != gDesktopRenameWindow && !before.hidden) [before makeKeyWindow];
+    else if (hosted && self.window && !self.window.hidden && !self.window.isKeyWindow) [self.window makeKeyWindow];   // (the keys where the old way left them)
     if (commit && t.length && ![t isEqualToString:path.lastPathComponent]) {
         NSArray *f = _places[path.lastPathComponent]; if (f && !_places[t]) _places[t] = f;   // (the new name takes the place at once)
         _selectWhenListed = @[[path.stringByDeletingLastPathComponent stringByAppendingPathComponent:t]];   // (and stays selected, as on a Mac)
@@ -1351,11 +1550,11 @@ static void DMDesktopTakeDrop(DMFDrag *d, CGPoint sp, NSString *dest, BOOL ontoF
 }
 
 // ---- switched on and off ----
-// Settings > Mac Status Bar > Show Desktop Icons (desktopIcons, on unless set; with Finder on). iPadOS 17 (untested, "Enable Anyway"): the same
-// switch, and the desktop goes up only once its check of the Home Screen parts it uses has passed (DMDesktopNewOSReady, in DMDesktopTick).
-// iPadOS 18+: off, as before 1.4 (only 17 was ported and read; the Wi-Fi menu and the Mac Switcher stop at 17 the same way).
+// Settings > Mac Status Bar > Show Desktop Icons (desktopIcons, on unless set; with Finder on). iPadOS 17+: the same switch, and the desktop goes up
+// only once its check of the Home Screen parts it uses has passed (DMDesktopNewOSReady, in DMDesktopTick). 18+ (1.6.0, 18.5): also only where
+// SpringBoard's typed keyboard focus lock is there for its rename (StatusBar.x DMFocusLock18OK).
 static BOOL DMDesktopPrefOn(void) {
-    if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 18) return NO;
+    if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 18 && !DMFocusLock18OK()) return NO;
     CFPreferencesAppSynchronize(MSB_DOMAIN);
     CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("desktopIcons"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     BOOL on = !v || (CFGetTypeID(v) == CFBooleanGetTypeID() ? CFBooleanGetValue(v) : (CFGetTypeID(v) == CFNumberGetTypeID() ? [(__bridge NSNumber *)v boolValue] : YES));

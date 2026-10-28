@@ -53,4 +53,4 @@ body:
     id: notes
     attributes:
       label: Notes
-      description: What works, what doesn't, and screenshots if you have them. On iPadOS 17 or later, say whether you turned on Enable Anyway.
+      description: What works, what doesn't, and screenshots if you have them. On an iPadOS version newer than 18, say whether you turned on Enable Anyway.

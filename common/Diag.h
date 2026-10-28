@@ -14,9 +14,9 @@
 
 static inline BOOL MSBDDiagEnabled(void) {
     static int on = -1;
-    if (on < 0) {   // (17: always -- a tested version now, but only 17.5.1 was run here, so the records cover the other 17.x builds; 18+: with Enable Anyway)
+    if (on < 0) {   // (17 and 18: always -- tested versions now, but only 17.5.1 and 18.5 were run here, so the records cover their other builds; 19+: with Enable Anyway)
         NSInteger major = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion;
-        on = major == 17 || (major >= 18 && MSBDUntestedOptIn());
+        on = major == 17 || major == 18 || (major >= 19 && MSBDUntestedOptIn());
     }
 #if DEBUG
     if (!on && access("/tmp/msb-diag-test", F_OK) == 0) on = 1;   // (debug builds: try the diagnostics on 15/16)

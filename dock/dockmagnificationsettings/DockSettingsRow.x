@@ -19,10 +19,13 @@
 #pragma clang diagnostic pop
 #import "../../common/NativeEmbed.h"
 #import "../../common/OtherTweaks.h"
+#import "../../common/General18Group.h"
+#include <stdatomic.h>
 
 #define kRowID       @"DOCK_MAGNIFICATION"
 #define kAnchorID    @"ACCESSIBILITY"
 #define kStatusBarRowID @"MAC_STATUS_BAR"
+#define kWindowsRowID   @"MAC_WINDOWS"   // (1.6.0: Windows & Multitasking, right after Status Bar: StatusBarSettingsRow.x)
 #define kBundlePath  @"/var/jb/Library/PreferenceBundles/DockMagnificationPrefs.bundle"
 #define kPSLinkListCell 2
 #define kPSLinkCell  1
@@ -90,12 +93,13 @@ static NSInteger AnchorIndex(NSArray *specs, NSString *before, NSString *after) 
 - (id)msbdLineValue:(id)specifier { return MSBDLineRuns(@"MacDock") ? @"On" : @"Off"; }
 @end
 static DMDockRowValue *gRowValue;
-static __weak PSListController *gRowList;
+static __weak PSListController *gRowList;   // (the list our row is in: Settings' main list; on iPadOS 18 General's page)
+static NSString *gRowID = kRowID;           // (our row's identifier there: on iPadOS 18 PreferenceLoader's, kPLRowID -- common/General18Group.h)
 static void RefreshRowValue(void) {
     PSListController *l = gRowList;
     SEL r = NSSelectorFromString(@"reloadSpecifierID:");
     if (!l || ![l respondsToSelector:r]) return;
-    for (PSSpecifier *sp in [l specifiers]) if ([[sp identifier] isEqualToString:kRowID]) { ((void (*)(id, SEL, id))objc_msgSend)(l, r, kRowID); break; }
+    for (PSSpecifier *sp in [l specifiers]) if ([[sp identifier] isEqualToString:gRowID]) { ((void (*)(id, SEL, id))objc_msgSend)(l, r, gRowID); break; }
 }
 static void WatchRowValue(PSListController *list) {
     gRowList = list;
@@ -110,24 +114,30 @@ static void WatchRowValue(PSListController *list) {
     notify_register_dispatch(MSBD_UNTESTED_CHANGED, &t3, dispatch_get_main_queue(), h);   // ("Enable Anyway", "Turn Back On")
 }
 
+static PSSpecifier *MakeRow(Class detail, NSString *ident) {
+    if (!gRowValue) gRowValue = [DMDockRowValue new];
+    PSSpecifier *row = [PSSpecifier preferenceSpecifierNamed:@"Dock" target:gRowValue set:NULL get:@selector(msbdLineValue:)
+                                                      detail:detail cell:kPSLinkListCell edit:nil];
+    row.identifier = ident;
+    [row setProperty:ident forKey:@"id"];
+    [row setProperty:@YES forKey:@"hasSelectionStyle"];
+    UIImage *icon = [UIImage imageNamed:@"icon" inBundle:PrefsBundle() compatibleWithTraitCollection:nil];
+    if (icon) [row setProperty:icon forKey:@"iconImage"];
+    return row;
+}
 static void InsertRow(PSListController *list) {
     NSArray *specs = [list specifiers];
     WatchRowValue(list);
     for (NSUInteger i = 0; i < specs.count; i++) if ([[specs[i] identifier] isEqualToString:kRowID]) return;   // already there
-    NSInteger anchor = AnchorIndex(specs, nil, kStatusBarRowID);
+    BOOL windows = NO;   // (after Windows & Multitasking when it is there, else after Status Bar: the order is Status Bar, Windows & Multitasking, Dock)
+    for (NSUInteger i = 0; i < specs.count; i++) if ([[specs[i] identifier] isEqualToString:kWindowsRowID]) { windows = YES; break; }
+    NSInteger anchor = AnchorIndex(specs, nil, windows ? kWindowsRowID : kStatusBarRowID);
     BOOL newOS = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17;   // (15/16: exactly as before)
     if (anchor == NSNotFound && newOS) anchor = TopIndex(specs);   // (only ever the main list: this runs from PSUIPrefsListController alone)
     Class detail = PrefsBundle() ? NSClassFromString(@"DMRootListController") : Nil;   // the class only exists once the bundle is loaded
     if (anchor == NSNotFound || !PrefsBundle() || !detail) return;         // not the main list, or the page is missing
 
-    if (!gRowValue) gRowValue = [DMDockRowValue new];
-    PSSpecifier *row = [PSSpecifier preferenceSpecifierNamed:@"Dock" target:gRowValue set:NULL get:@selector(msbdLineValue:)
-                                                      detail:detail cell:kPSLinkListCell edit:nil];
-    row.identifier = kRowID;
-    [row setProperty:kRowID forKey:@"id"];
-    [row setProperty:@YES forKey:@"hasSelectionStyle"];
-    UIImage *icon = [UIImage imageNamed:@"icon" inBundle:PrefsBundle() compatibleWithTraitCollection:nil];
-    if (icon) [row setProperty:icon forKey:@"iconImage"];
+    PSSpecifier *row = MakeRow(detail, kRowID);
     [list insertSpecifier:row atIndex:anchor animated:NO];
     if (newOS) {   // (the same page listed with the other tweaks by the postinst on 17+: hidden while our own row is there -- found by its id, or by our
         // bundle as it was listed before it had one; never another tweak's entry of the same name)
@@ -352,6 +362,52 @@ static NSUInteger DMHSIndex(NSArray *specs) {
 %end
 %end
 
+// ---- iPadOS 18: the row in our group at the top of General, after Status Bar (common/General18Group.h) ----
+// With PreferenceLoader's identifier (its entry at the end of General goes while our row is there, so prefs:root=General&path=MSBD_PL_DockMagnification
+// Prefs reaches our row as it reached the entry), the line's On / Off as on 15-17, and the page from our bundle.
+#define kPLRowID @"MSBD_PL_DockMagnificationPrefs"
+static void InsertRow18(PSListController *page) {
+    gRowID = kPLRowID;
+    WatchRowValue(page);
+    if (MSBDG18Has(page, kPLRowID)) { MSBDG18RemoveListed(page, kPLRowID, @"DockMagnificationPrefs"); return; }   // (ours in; PreferenceLoader's entry out)
+    Class detail = PrefsBundle() ? NSClassFromString(@"DMRootListController") : Nil;
+    if (detail) MSBDG18PutInPlaceOf(page, MakeRow(detail, kPLRowID), @[@"MSBD_PL_MacStatusBarPrefs", kWindowsRowID], kPLRowID, @"DockMagnificationPrefs");   // (after Status Bar and Windows & Multitasking, else first)
+}
+%group General18
+%hook PSGGeneralController
+- (id)specifiers {
+    id specs = %orig;
+    if (![specs isKindOfClass:[NSArray class]]) return specs;
+    BOOL ours = NO, listed = NO;   // (ours there and PreferenceLoader's gone: nothing to do -- read from the list handed out, never asked again here)
+    for (id sp in specs) if ([MSBDG18Ident(sp) isEqualToString:kPLRowID]) { if (MSBDG18IsOurs(sp)) ours = YES; else listed = YES; }
+    if (ours && !listed) return specs;
+    // (once the list is handed out, on the next turn of the main loop; asked for again and again while it is built: one try a second at most)
+    static const void *kTriedKey = &kTriedKey;
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    NSNumber *tried = objc_getAssociatedObject(self, kTriedKey);
+    if (tried && now - tried.doubleValue < 1.0) return specs;
+    objc_setAssociatedObject(self, kTriedKey, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak PSListController *weakSelf = (PSListController *)self;
+    dispatch_async(dispatch_get_main_queue(), ^{ PSListController *l = weakSelf; if (l) InsertRow18(l); });
+    return specs;
+}
+%end
+%end
+static void General18TryInit(void) {
+    static BOOL done = NO;
+    if (done || !MSBDG18Root()) return;
+    Class c = objc_getClass("PSGGeneralController");
+    if (!c) return;
+    done = YES;
+    if (MSBDG18PageOK(c)) %init(General18);
+}
+static void General18ImageAdded(const struct mach_header *mh, intptr_t slide) {
+    static atomic_int queued = 0;
+    int expected = 0;
+    if (!objc_getClass("PSGGeneralController") || !atomic_compare_exchange_strong(&queued, &expected, 1)) return;
+    dispatch_async(dispatch_get_main_queue(), ^{ General18TryInit(); });
+}
+
 // Apple's page class may come with a framework loaded later: the hook goes in as soon as the class exists (never inside the dyld callback itself).
 static void DMHSTryInit(void) {
     static BOOL done; if (done) return;
@@ -367,4 +423,5 @@ static void DMHSImageAdded(const struct mach_header *mh, intptr_t slide) {
     %init;
     DMHSTryInit();
     _dyld_register_func_for_add_image(DMHSImageAdded);
+    if (MSBDG18Root()) { General18TryInit(); _dyld_register_func_for_add_image(General18ImageAdded); }   // (iPadOS 18's SwiftUI root; 15-17: the main list's row above)
 }

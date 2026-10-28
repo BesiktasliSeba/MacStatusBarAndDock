@@ -4,6 +4,8 @@ Every switch MacStatusBar&Dock adds, where to find it, what it does, and how it 
 
 On an iPadOS version that hasn't been tested, the top of the Status Bar and Dock pages shows **Enable Anyway** (off), which lets the tweak run at your own risk. After Automatic Crash Recovery has acted, the same place says what it turned off, with **Turn Back On** and **Report a Problem**.
 
+On iPadOS 18, Settings has no room for tweak rows in its sidebar, so Status Bar, Windows & Multitasking and Dock are in a MacStatusBar&Dock group at the top of Settings > General, together with the sidebar rows further down this page.
+
 ## Settings > Status Bar
 
 | Setting | What it does | New install |
@@ -23,15 +25,6 @@ On an iPadOS version that hasn't been tested, the top of the Status Bar and Dock
 | Go Menu > Apps | Choose and order the apps in the Go menu. | |
 | Finder | Off removes Finder completely, with its Dock icon. | On |
 | Show Desktop Icons | Files and folders from On My iPad > Desktop on the first Home Screen page. | On |
-| Enable Windowing | Off: no window engine loads and every app opens full screen (respring). | On |
-| Window Engine | Which engine runs your windows. Only that one loads (respring). Apple's Stage Manager is listed under Native (not on iPadOS 15), Aerial, Zetsu and MilkyWay4 under Third-Party. With Stage Manager, MacStatusBar&Dock asks before it turns Stage Manager on, and if you say Not Now (or turn it off later), Turn On Stage Manager appears here. With another engine, Stage Manager stays off while it runs and comes back on as you had it when you turn off windowing. | Stage Manager where it runs (iPadOS 16.1 to 17), else Aerial |
-| Windows Behind Full-Screen Apps | A full-screen app comes in front of your windows, and Window > Bring All to Front brings them back. Off: windows stay in front. | On |
-| Resize Handles (Stage Manager engine only) | Mac handles, or Stage Manager's own. | Mac |
-| Tint Resize Handles | Resize handles take a soft version of each app's color. | Off |
-| Resize Apps to Fit Windows (MilkyWay4 only) | Apps lay themselves out for the window. Off: the full-screen layout, scaled down. | On |
-| Turn Off Traffic Lights | Hides the window buttons in the menu bar for full-screen apps. | Off |
-| Hide Multitasking Dots | Hides the three dots at the top of apps while windowing runs. | On |
-| Mac Switcher | Desktops and Mission Control in place of the App Switcher. Turning it off keeps your desktops for when you turn it on again. Not offered on iPadOS 18. | Off |
 | Report a Problem | Opens a filled-in GitHub issue in your browser. The report is part of the link, so GitHub receives it when the page opens. It is only posted if you submit it. | |
 | Background | Automatic: a color behind the menu bar, unless ColorBar15 already colors it. Also Always On or Off. | Automatic |
 | Color and opacity | The background color, used while the menu bar text is light. | 70% |
@@ -43,15 +36,31 @@ On an iPadOS version that hasn't been tested, the top of the Status Bar and Dock
 | Folder Apps in Folder Menus | A folder's long-press menu lists its apps. | On |
 | Updates Tab in App Store | The Updates tab in place of Arcade. | On |
 | Hide Large Titles | Compact titles in Apple's own apps, like Mac apps. Applies the next time an app opens. | On |
-| Search Field in Settings | A search field at the top of the Settings sidebar, with Apple's own results. | On |
-| Include Tweak Settings | The search field also finds your tweaks' settings. | Off |
+| Search Field in Settings | A search field at the top of the Settings sidebar, with Apple's own results. iPadOS 15 to 17. | On |
+| Include Tweak Settings | The search field also finds your tweaks' settings. iPadOS 15 to 17. | Off |
 | Keyboard Button in Status Bar (Experimental) | iPadOS 15 with a hardware keyboard: the floating keyboard and dictation button moves into the menu bar. | Off |
 | Esc Ends Typing in Windows | Esc puts away the text cursor in a window. Terminal apps keep their Esc. | On |
 | Mix Audio Between Apps | Apps can play at the same time, each with its own volume in the Audio menu. | On |
 | Show Mute Icon | A mute icon in the menu bar while the iPad is muted. | On |
-| Wi-Fi Menu | The Wi-Fi icon opens a Wi-Fi menu. Not offered on iPadOS 18. | On |
+| Wi-Fi Menu | The Wi-Fi icon opens a Wi-Fi menu. | On |
 | Hide Status Bar on Lock Screen | No status bar on the Lock Screen. | Off |
 | Skip Lock Screen After Respring | Goes straight to the Home Screen after a respring. Works only without a passcode. | Off |
+
+## Settings > Windows & Multitasking
+
+The window settings, on their own page between Status Bar and Dock. On iPadOS 15 and 16 the page also shows Apple's Picture in Picture and Gestures settings, which leave General while they are here. On iPadOS 17 and 18, Multitasking & Gestures at the end of the page opens Apple's own page.
+
+| Setting | What it does | New install |
+|---|---|---|
+| Enable Windowing | Off: no window engine loads and every app opens full screen (respring). | On |
+| Window Engine | Which engine runs your windows. Only that one loads (respring). Apple's Stage Manager is listed under Native (not on iPadOS 15), Aerial, Zetsu and MilkyWay4 under Third-Party. With Stage Manager, MacStatusBar&Dock asks before it turns Stage Manager on, and if you say Not Now (or turn it off later), Turn On Stage Manager appears here. With another engine, Stage Manager stays off while it runs and comes back on as you had it when you turn off windowing. | Stage Manager where it runs (iPadOS 16.1 to 18), else Aerial |
+| Windows Behind Full-Screen Apps | A full-screen app comes in front of your windows, and Window > Bring All to Front brings them back. Off: windows stay in front. | On |
+| Resize Handles (Stage Manager engine only) | Mac handles, or Stage Manager's own. | Mac |
+| Tint Resize Handles | Resize handles take a soft version of each app's color. | Off |
+| Resize Apps to Fit Windows (MilkyWay4 only) | Apps lay themselves out for the window. Off: the full-screen layout, scaled down. | On |
+| Turn Off Traffic Lights | Hides the window buttons in the menu bar for full-screen apps. | Off |
+| Hide Multitasking Dots | Hides the three dots at the top of apps while windowing runs. | On |
+| Mac Switcher | Desktops and Mission Control in place of the App Switcher. Turning it off keeps your desktops for when you turn it on again. | Off |
 
 ## Settings > Dock
 
@@ -75,7 +84,7 @@ On an iPadOS version that hasn't been tested, the top of the Status Bar and Dock
 
 ## Settings > Home Screen & Multitasking
 
-On iPadOS 15 this page is called Home Screen (Home Screen & Dock while the Dock features are off). MacStatusBar&Dock adds one group to it:
+On iPadOS 15 this page is called Home Screen (Home Screen & Dock while the Dock features are off). MacStatusBar&Dock adds one group to it (on iPadOS 17 and 18 the group is on the Dock page):
 
 | Setting | What it does | New install |
 |---|---|---|
@@ -86,7 +95,7 @@ On iPadOS 15 this page is called Home Screen (Home Screen & Dock while the Dock 
 
 ## Rows in the Settings sidebar
 
-These show up only when they apply. While the Pointer and Keyboard rows are there, Apple's own copies of those settings move into them, so each setting has one place.
+These show up only when they apply. While the Pointer and Keyboard rows are there, Apple's own copies of those settings move into them, so each setting has one place. On iPadOS 18 the rows are in the MacStatusBar&Dock group at the top of Settings > General, Apple's pages keep their own rows, and Apple's Hardware Keyboard and Trackpad pages start with the switches from the Keyboard and Pointer pages below.
 
 | Row | What it does | New install |
 |---|---|---|
@@ -115,6 +124,12 @@ For keyboards without a function row, like the original Magic Keyboard for iPad.
 | Globe + Option/Control for Volume | Volume keys. Needs the Globe key set to Globe in Modifier Keys. | Off |
 | Shift + =/- for Screen Brightness | Screen brightness keys. | Off |
 | Shift + Option/Control for Backlight | Keyboard backlight keys, on keyboards with a backlight. | Off |
+
+## Control Center
+
+| Control | What it does | New install |
+|---|---|---|
+| RAM & CPU | Available memory, used memory and the CPU load, in a 2 x 1 control. A tap opens the details (memory, CPU and uptime). On iPadOS 18, add it with Add a Control (search for RAM). On iPadOS 15 to 17, add it in Settings > Control Center. With BigSurCenter it fits a square tile. | Not added |
 
 ## Elsewhere in Settings
 

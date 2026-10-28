@@ -314,229 +314,6 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>When off, no window engine is loaded and every app opens full screen. Takes effect after a respring.</string>
-			<key>label</key>
-			<string>Windowing</string>
-			<key>stockHides</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>PostNotification</key>
-			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>default</key>
-			<true/>
-			<key>defaults</key>
-			<string>com.besiktasliseba.macstatusbar</string>
-			<key>key</key>
-			<string>windowingEnabled</string>
-			<key>label</key>
-			<string>Enable Windowing</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>footerText</key>
-			<string>Only the chosen engine is loaded.</string>
-			<key>id</key>
-			<string>ENGINE_GROUP</string>
-			<key>label</key>
-			<string>Window Engine</string>
-			<key>stockHides</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>PostNotification</key>
-			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
-			<key>cell</key>
-			<string>PSLinkListCell</string>
-			<key>default</key>
-			<string>aerial</string>
-			<key>defaults</key>
-			<string>com.besiktasliseba.macstatusbar</string>
-			<key>detail</key>
-			<string>MSBEngineListController</string>
-			<key>key</key>
-			<string>windowEngine</string>
-			<key>label</key>
-			<string>Window Engine</string>
-			<key>shortTitles</key>
-			<array>
-				<string>Aerial</string>
-				<string>MilkyWay4</string>
-				<string>Zetsu</string>
-				<string>Stage Manager</string>
-			</array>
-			<key>validTitles</key>
-			<array>
-				<string>Aerial (v3.0, v5.0 or v5.1)</string>
-				<string>MilkyWay4</string>
-				<string>Zetsu</string>
-				<string>Stage Manager</string>
-			</array>
-			<key>validValues</key>
-			<array>
-				<string>aerial</string>
-				<string>milkyway</string>
-				<string>zetsu</string>
-				<string>stagemanager</string>
-			</array>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>id</key>
-			<string>WINDOWS_GROUP</string>
-			<key>label</key>
-			<string>Windows</string>
-			<key>stockHides</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>PostNotification</key>
-			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>default</key>
-			<true/>
-			<key>defaults</key>
-			<string>com.besiktasliseba.macstatusbar</string>
-			<key>key</key>
-			<string>windowsBehindApps</string>
-			<key>label</key>
-			<string>Windows Behind Full-Screen Apps</string>
-		</dict>
-		<dict>
-			<key>PostNotification</key>
-			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
-			<key>cell</key>
-			<string>PSLinkListCell</string>
-			<key>detail</key>
-			<string>PSListItemsController</string>
-			<key>default</key>
-			<string>ours</string>
-			<key>defaults</key>
-			<string>com.besiktasliseba.macstatusbar</string>
-			<key>key</key>
-			<string>resizeHandleStyle</string>
-			<key>label</key>
-			<string>Resize Handles</string>
-			<key>validTitles</key>
-			<array>
-				<string>Mac</string>
-				<string>Stage Manager</string>
-			</array>
-			<key>validValues</key>
-			<array>
-				<string>ours</string>
-				<string>stagemanager</string>
-			</array>
-		</dict>
-		<dict>
-			<key>PostNotification</key>
-			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>default</key>
-			<false/>
-			<key>defaults</key>
-			<string>com.besiktasliseba.macstatusbar</string>
-			<key>key</key>
-			<string>tintResizeHandles</string>
-			<key>label</key>
-			<string>Tint Resize Handles</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>footerText</key>
-			<string>Apps lay themselves out to fit their window, like on a Mac. When off, an app keeps its full-screen layout and is scaled down to fit.</string>
-			<key>id</key>
-			<string>RESIZE_GROUP</string>
-			<key>stockHides</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>PostNotification</key>
-			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>default</key>
-			<true/>
-			<key>defaults</key>
-			<string>com.besiktasliseba.macstatusbar</string>
-			<key>key</key>
-			<string>flexResizeWindows</string>
-			<key>label</key>
-			<string>Resize Apps to Fit Windows</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>footerText</key>
-			<string>Hides the window buttons in the status bar for full-screen apps.</string>
-			<key>label</key>
-			<string>Traffic Lights</string>
-			<key>stockHides</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>PostNotification</key>
-			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>default</key>
-			<false/>
-			<key>defaults</key>
-			<string>com.besiktasliseba.macstatusbar</string>
-			<key>key</key>
-			<string>hideTrafficLights</string>
-			<key>label</key>
-			<string>Turn Off Traffic Lights</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>footerText</key>
-			<string>The dots stay visible while windowing is off or no window engine runs.</string>
-			<key>label</key>
-			<string>Multitasking</string>
-			<key>stockHides</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>PostNotification</key>
-			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>default</key>
-			<true/>
-			<key>defaults</key>
-			<string>com.besiktasliseba.macstatusbar</string>
-			<key>key</key>
-			<string>hideMultitaskingDots</string>
-			<key>label</key>
-			<string>Hide Multitasking Dots</string>
-		</dict>
-		<dict>
-			<key>PostNotification</key>
-			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>default</key>
-			<false/>
-			<key>defaults</key>
-			<string>com.besiktasliseba.macstatusbar</string>
-			<key>key</key>
-			<string>macSwitcher</string>
-			<key>label</key>
-			<string>Mac Switcher</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>footerText</key>
 			<string>If something doesn’t work as it should (the menu bar, the Dock, a window or an app), tap Report a Problem. It opens a GitHub issue in your browser with your iPad model, iPadOS and tweak version filled in. The report is part of the link, so GitHub receives it when the page opens; it is only posted if you submit it. Some apps, like many games, can’t run in a window: use those full screen.</string>
 			<key>id</key>
 			<string>REPORT_GROUP</string>
@@ -622,14 +399,16 @@
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>How large Control Center appears when you open it from the status bar.</string>
 			<key>id</key>
 			<string>CC_GROUP</string>
 			<key>label</key>
 			<string>Control Center</string>
-			<key>footerText</key>
-			<string>How large Control Center appears when you open it from the status bar.</string>
 		</dict>
 		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macccgrabber/prefsChanged</string>
 			<key>cell</key>
 			<string>PSSwitchCell</string>
 			<key>default</key>
@@ -640,8 +419,6 @@
 			<string>enabled</string>
 			<key>label</key>
 			<string>Hide Grabber</string>
-			<key>PostNotification</key>
-			<string>com.besiktasliseba.macccgrabber/prefsChanged</string>
 		</dict>
 		<dict>
 			<key>PostNotification</key>
@@ -738,14 +515,16 @@
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>The Updates tab replaces the Arcade tab.</string>
 			<key>id</key>
 			<string>APPLE_APPS_GROUP</string>
 			<key>label</key>
 			<string>Apple Apps</string>
-			<key>footerText</key>
-			<string>The Updates tab replaces the Arcade tab.</string>
 		</dict>
 		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
 			<key>cell</key>
 			<string>PSSwitchCell</string>
 			<key>default</key>
@@ -756,10 +535,10 @@
 			<string>appStoreUpdatesTab</string>
 			<key>label</key>
 			<string>Updates Tab in App Store</string>
-			<key>PostNotification</key>
-			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
 		</dict>
 		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.maclargetitles/prefsChanged</string>
 			<key>cell</key>
 			<string>PSSwitchCell</string>
 			<key>default</key>
@@ -770,10 +549,10 @@
 			<string>enabled</string>
 			<key>label</key>
 			<string>Hide Large Titles</string>
-			<key>PostNotification</key>
-			<string>com.besiktasliseba.maclargetitles/prefsChanged</string>
 		</dict>
 		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macsettings/searchChanged</string>
 			<key>cell</key>
 			<string>PSSwitchCell</string>
 			<key>default</key>
@@ -784,8 +563,6 @@
 			<string>sidebarSearch</string>
 			<key>label</key>
 			<string>Search Field in Settings</string>
-			<key>PostNotification</key>
-			<string>com.besiktasliseba.macsettings/searchChanged</string>
 		</dict>
 		<dict>
 			<key>PostNotification</key>

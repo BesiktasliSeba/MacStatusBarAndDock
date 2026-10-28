@@ -1,7 +1,9 @@
 // Mac test of the Mac Switcher's desktops kept while it is off (statusbar/MSWKept.h, 1.5.2 item 14): what comes back when it is on again.
 // Aerial / Zetsu / MilkyWay4 (records by app) and Stage Manager (records by window, a desktop = a stage): every kept desktop and window comes
 // back; a window closed or an app quit meanwhile is left out, and another desktop's full-screen app the user quit (logic test L1) -- a quit by
-// the prewarm quit set and the app gone now, never "not running" alone (a respring or memory while off: recheck R1); nothing when what is there
+// the prewarm quit set and the app gone now, never "not running" alone (a respring or memory while off: recheck R1); a window the user made full
+// screen with green while off (the kept copy's "madeFullScreen") is no window any more, and running or not decides nothing -- a prewarmed or
+// background-launched app keeps its window (R3 as the coordinator decided it, 1.6.0); nothing when what is there
 // can't be told yet; a new window goes to Desktop 1 -- with
 // Stage Manager to the desktop of the kept windows it joined; the current desktop (Desktop 1, or the stage on screen's); the desktop on screen
 // keeps its own full-screen app and Fit arrangement; screen sizes when left; an engine change meanwhile; bad input. Run by test-mswkept.sh.
@@ -109,6 +111,52 @@ int main(void) {
         CHECK([r[@"windows"][CLOCK] isEqual:@2], "W4w3 on the quit set but with a window now: kept");
         r = BackQuit(keptW, NO, YES, @[TIPS], nil, NSNotFound, nil, @[TIPS], @[TIPS], nil);
         CHECK([r[@"windows"] count] == 3, "W4w4 the quit set unknown: kept");
+        // 4x. Recheck R3, as the coordinator decided it (1.6.0): "made full screen with green while off" is a fact of its own in the kept copy
+        //     ("madeFullScreen", MacSwitcher.h DMMSWKeptMadeFullScreen), never inferred from "running without a window". Out: no window now and the
+        //     user quit it (the quit set) or made it full screen. Running or not decides nothing.
+        NSMutableDictionary *keptWF = [keptW mutableCopy]; keptWF[@"madeFullScreen"] = @[CLOCK];
+        // made full screen while off, still running (full screen): out -- not relaunched as a window on its desktop
+        r = BackQuit(keptWF, NO, YES, @[TIPS], nil, NSNotFound, nil, @[TIPS], @[TIPS, CLOCK], @[]);
+        CHECK([r[@"windows"] isEqualToDictionary:(@{TIPS: @1, CALC: @3})] && [r[@"gone"] isEqualToArray:(@[CLOCK])], "W4x made full screen, running: left out %s", [[r[@"windows"] description] UTF8String]);
+        // ... and after a respring while off (not running now): the record is in the kept file, still out
+        r = BackQuit(keptWF, NO, YES, @[TIPS], nil, NSNotFound, nil, @[TIPS], @[TIPS], @[]);
+        CHECK([r[@"windows"] isEqualToDictionary:(@{TIPS: @1, CALC: @3})] && [r[@"gone"] isEqualToArray:(@[CLOCK])], "W4x2 made full screen, a respring since: left out %s", [[r[@"windows"] description] UTF8String]);
+        // ... the running apps or the quit set not known: the record alone says it
+        r = BackQuit(keptWF, NO, YES, @[TIPS], nil, NSNotFound, nil, @[TIPS], nil, nil);
+        CHECK([r[@"windows"] isEqualToDictionary:(@{TIPS: @1, CALC: @3})] && [r[@"gone"] isEqualToArray:(@[CLOCK])], "W4x3 made full screen, nothing else known: left out %s", [[r[@"windows"] description] UTF8String]);
+        // ... but with a window now (back in a window by a way that left the record): kept, on its desktop
+        r = BackQuit(keptWF, NO, YES, @[TIPS, CLOCK], nil, NSNotFound, nil, @[TIPS, CLOCK], @[TIPS, CLOCK], @[]);
+        CHECK([r[@"windows"][CLOCK] isEqual:@2] && [r[@"gone"] count] == 0, "W4x4 made full screen, a window now: kept %s", [[r[@"windows"] description] UTF8String]);
+        // ... not told (the windows not back yet after a start): kept, as everything else
+        r = BackQuit(keptWF, NO, NO, @[], nil, NSNotFound, nil, @[], @[], @[]);
+        CHECK([r[@"windows"] count] == 3 && [r[@"gone"] count] == 0, "W4x5 made full screen, not told: kept %s", [[r[@"windows"] description] UTF8String]);
+        // prewarmed / background-launched while off (running, no window, neither quit nor made full screen): kept -- its desktop opens it
+        r = BackQuit(keptW, NO, YES, @[TIPS], nil, NSNotFound, nil, @[TIPS], @[TIPS, CLOCK], @[]);
+        CHECK([r[@"windows"] isEqualToDictionary:(@{TIPS: @1, CLOCK: @2, CALC: @3})] && [r[@"gone"] count] == 0, "W4x6 background-launched: kept %s", [[r[@"windows"] description] UTF8String]);
+        // ... the running apps not known: the same
+        r = BackQuit(keptW, NO, YES, @[TIPS], nil, NSNotFound, nil, @[TIPS], nil, @[]);
+        CHECK([r[@"windows"] count] == 3 && [r[@"gone"] count] == 0, "W4x7 running not known, nothing recorded: kept %s", [[r[@"windows"] description] UTF8String]);
+        // quit (on the quit set) and running again without a window (a background launch after the quit): out, the quit decides
+        r = BackQuit(keptW, NO, YES, @[TIPS], nil, NSNotFound, nil, @[TIPS], @[TIPS, CLOCK], @[CLOCK]);
+        CHECK([r[@"windows"] isEqualToDictionary:(@{TIPS: @1, CALC: @3})] && [r[@"gone"] isEqualToArray:(@[CLOCK])], "W4x8 quit, then running in the background: left out %s", [[r[@"windows"] description] UTF8String]);
+        // ... quit, the running apps not known: out (R1's rule, whatever runs)
+        r = BackQuit(keptW, NO, YES, @[TIPS], nil, NSNotFound, nil, @[TIPS], nil, @[CLOCK]);
+        CHECK([r[@"windows"] isEqualToDictionary:(@{TIPS: @1, CALC: @3})] && [r[@"gone"] isEqualToArray:(@[CLOCK])], "W4x9 quit, running not known: left out %s", [[r[@"windows"] description] UTF8String]);
+        // an app both quit and made full screen is named once
+        keptWF[@"madeFullScreen"] = @[CLOCK, CALC];
+        r = BackQuit(keptWF, NO, YES, @[TIPS], nil, NSNotFound, nil, @[TIPS], @[TIPS], @[CLOCK]);
+        CHECK([r[@"windows"] isEqualToDictionary:(@{TIPS: @1})] && [r[@"gone"] count] == 2 && [r[@"gone"] containsObject:CLOCK] && [r[@"gone"] containsObject:CALC], "W4x10 quit and made full screen: each once %s", [[r[@"gone"] description] UTF8String]);
+        // a bad record (not a list, or not names): read as none
+        keptWF[@"madeFullScreen"] = @"com.apple.mobiletimer";
+        r = BackQuit(keptWF, NO, YES, @[TIPS], nil, NSNotFound, nil, @[TIPS], @[TIPS, CLOCK], @[]);
+        CHECK([r[@"windows"] count] == 3 && [r[@"gone"] count] == 0, "W4x11 bad record (a string): ignored %s", [[r[@"windows"] description] UTF8String]);
+        keptWF[@"madeFullScreen"] = @[@42, @"", [NSNull null]];
+        r = BackQuit(keptWF, NO, YES, @[TIPS], nil, NSNotFound, nil, @[TIPS], @[TIPS, CLOCK], @[]);
+        CHECK([r[@"windows"] count] == 3 && [r[@"gone"] count] == 0, "W4x12 bad record (no names): ignored %s", [[r[@"windows"] description] UTF8String]);
+        // Stage Manager does not read the record (its windows are told by its stages)
+        NSDictionary *keptSMF = @{@"desktops": @[@1, @2], @"windows": @{K(TIPS, @"A"): @1, K(CLOCK, @"B"): @2}, @"madeFullScreen": @[CLOCK]};
+        r = BackQuit(keptSMF, YES, YES, @[K(TIPS, @"A"), K(CLOCK, @"B")], @[@[K(TIPS, @"A")], @[K(CLOCK, @"B")]], 0, nil, nil, @[TIPS, CLOCK], @[]);
+        CHECK([r[@"windows"][K(CLOCK, @"B")] isEqual:@2] && [r[@"gone"] count] == 0, "W4x13 Stage Manager: the record is not read %s", [[r[@"windows"] description] UTF8String]);
 
         // ---- Stage Manager: records by window, a desktop is a stage ----
         NSString *tA = K(TIPS, @"A"), *cB = K(CLOCK, @"B"), *xC = K(CALC, @"C"), *wW = K(WEATHER, @"W"), *mM = K(MAPS, @"M"), *nN = K(NOTES, @"N");

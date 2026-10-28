@@ -12,8 +12,13 @@
 // comes, MacSwitcher.h DMMSWRelaunchClosed; a full-screen app by its desktop). A quit is what records one -- the prewarm quit set (StatusBar.x:
 // our red light, Force Quit, the App Switcher's swipe-up; kept across a respring; an app opened again leaves it) -- and only with the app gone
 // now: Stage Manager, a window in no stage (Stage Manager keeps the windows of apps iPadOS closes in their stages: only a close takes one out);
-// the other engines, an app on the quit set with no window now; a full-screen app, one on the quit set not running now. The quit set not known:
-// kept (1.5.2 logic recheck R1: "not running" taken for "quit" dropped every full-screen app after "off, respring, on"). Told: what is there now
+// the other engines, a window whose app has no window now is left out only when the user quit the app (the quit set) or made it full screen with
+// its green light while off -- recorded as a fact of its own in the kept copy, "madeFullScreen" (MacSwitcher.h DMMSWKeptMadeFullScreen; its way
+// back to a window takes it off again), as the quit set records a quit. Running or not decides nothing: an app iPadOS ended (a respring, memory)
+// or started again in the background (prewarmed, a background launch: running without a window) comes back by its desktop (1.6.0, the
+// coordinator's R3 decision: R3 had taken "running without a window" for "made full screen" and dropped such a window). A full-screen app, one on
+// the quit set not running now -- the quit set not known: kept (1.5.2 logic recheck R1: "not running" taken for "quit" dropped every full-screen
+// app after "off, respring, on"). Told: what is there now
 // can be told; not told -- the engine's windows or the stages not back yet after a start (MacSwitcher.h: the window restore's own state, Stage
 // Manager's stages) --, everything kept comes back and the usual rules forget a closed one later. A window new since then: Desktop 1's. With Stage Manager a desktop is a stage, and a window opened
 // meanwhile joined one (Stage Manager's own join): it goes to the desktop of the kept windows it is with -- Desktop 1 when they are of none or
@@ -43,8 +48,9 @@ static NSNumber *MSWKeptRecordOf(NSDictionary<NSString *, NSNumber *> *windows, 
 // In: kept (as written at the off), sm (Stage Manager is the engine), told, aliveKeys / aliveApps (the windows there now by key and by app; Stage
 // Manager: stages' and minimized windows; other engines: apps with a window), stages (Stage Manager: each stage on the iPad's screen as the keys
 // of its windows that are not minimized; front: the place of the one on screen, NSNotFound for none), minimized (Stage Manager's minimized
-// windows' keys), windowApps (other engines: the apps with a window now), running (the apps running now; nil: not known), quit (the apps the
-// user quit and has not opened since, the prewarm quit set; nil: not known -- nothing is taken for quit), screen (the screen's size now), maxDesks.
+// windows' keys), windowApps (other engines: the apps with a window now), running (the apps running now; nil: not known -- read for a full-screen
+// app only), quit (the apps the user quit and has not opened since, the prewarm quit set; nil: not known -- nothing is taken for quit), screen (the
+// screen's size now), maxDesks. The kept copy's own "madeFullScreen": the apps the user made full screen with green while off (other engines).
 // Out: nil when nothing comes back (no kept copy, or one desktop); else desktops, current (a place), windows, frames, fullscreen, leftSizes, fit,
 // gone (apps left out, each once), fresh (window key -> desktop id, the new ones), back (how many kept window records came back).
 static NSDictionary *MSWKeptBringBack(NSDictionary *kept, BOOL sm, BOOL told, NSSet<NSString *> *aliveKeys, NSSet<NSString *> *aliveApps,
@@ -63,14 +69,18 @@ static NSDictionary *MSWKeptBringBack(NSDictionary *kept, BOOL sm, BOOL told, NS
     NSMutableDictionary<NSString *, NSNumber *> *windows = [NSMutableDictionary dictionary], *fresh = [NSMutableDictionary dictionary];
     NSMutableDictionary<NSString *, NSString *> *frames = [NSMutableDictionary dictionary];
     NSMutableArray<NSString *> *gone = [NSMutableArray array];
+    NSMutableSet<NSString *> *madeFull = [NSMutableSet set];
+    if ([kept[@"madeFullScreen"] isKindOfClass:[NSArray class]]) for (id b in kept[@"madeFullScreen"]) if ([b isKindOfClass:[NSString class]] && [b length]) [madeFull addObject:b];
     NSUInteger back = 0;
     for (id k in w) {
         if (![k isKindOfClass:[NSString class]] || ![k length] || ![w[k] isKindOfClass:[NSNumber class]] || ![desks containsObject:w[k]]) continue;
         NSString *b = DMSMKeyBundle(k);
         // (Stage Manager: that very window -- an app's record: any window of the app; a window's record where windows are known by app: the app's.
-        //  Other engines: gone only when the user quit the app and it has no window now -- an app iPadOS closed is opened again by its desktop)
+        //  Other engines: an app with a window now is here; one without is out only when the user quit it (the quit set) or made it full screen
+        //  with green while off (madeFullScreen). Running or not decides nothing: an app iPadOS ended or started in the background comes back by its
+        //  desktop, DMMSWRelaunchClosed)
         BOOL here = !told || (sm ? ([aliveKeys containsObject:k] || (DMSMKeyIsApp(k) && [aliveApps containsObject:k]) || (!DMSMKeyIsApp(k) && [aliveKeys containsObject:b]))
-                                 : (!quit || ![quit containsObject:b] || [aliveApps containsObject:b]));
+                                 : ([aliveApps containsObject:b] || !((quit && [quit containsObject:b]) || [madeFull containsObject:b])));
         if (!here) { if (b.length && ![gone containsObject:b]) [gone addObject:b]; continue; }
         windows[k] = w[k];
         if ([f[k] isKindOfClass:[NSString class]]) frames[k] = f[k];

@@ -36,6 +36,7 @@ enum { kCellGroup = 0, kCellLinkList = 2, kCellSwitch = 6, kCellSlider = 5 };
 BOOL MSPointerDeviceAttached(void) {
 #if DEBUG
     if (access("/tmp/msb-fakeptr", F_OK) == 0) return YES;   // (debug: test the Pointer page without a trackpad or mouse)
+    if (access("/tmp/msb-noptr", F_OK) == 0) return NO;      // (debug: as if no trackpad or mouse were attached -- the rows that follow one)
 #endif
     static int token = 0;
     if (!token) notify_register_check("com.besiktasliseba.macpointer.device", &token);
@@ -68,13 +69,13 @@ static UIImage *MSPointerIcon(void) {
 
 @interface MSPointerListController : PSListController
 @end
-@implementation MSPointerListController {
-    NSMutableArray *_msNativePages;   // Apple's Pointer Control and Trackpad pages (never shown), whose rows are on this page
-}
-- (NSMutableArray *)specifiers {
-    if (!_specifiers) {
+// Our pointer settings: Pointer Style, then (Mac pointer) Hide in Virtual Mac and Use Pointer Control Style, and Block Pointer Pull-Down, each in
+// its group with its footer. target: whatever reads and writes their preferences (our page; on iPadOS 18 a helper on Apple's own Trackpad page,
+// AppleGroups18.x). onApplePage: there the first group is headed "Mac Pointer" and Pointer Control is not "below" but in Accessibility.
+NSArray *MSPointerOwnSpecifiers(id target, BOOL onApplePage) {
         NSMutableArray *s = [NSMutableArray array];
-        PSSpecifier *g = [PSSpecifier groupSpecifierWithName:nil];
+        PSSpecifier *g = [PSSpecifier groupSpecifierWithName:onApplePage ? @"Mac Pointer" : nil];
+        [g setIdentifier:@"MAC_POINTER_GROUP"];
         // (1.5.1: the Mac pointer turns Apple's Pointer Animations off -- said here, before the choice; StatusBar.x DMPointerAnimSync. Only where that
         //  setting is there: SpringBoard leaves it alone where libAccessibility has no getter and setter for it -- logic test I2)
         static int axAnim = -1;
@@ -84,7 +85,7 @@ static UIImage *MSPointerIcon(void) {
         }
         if (axAnim) [g setProperty:@"The Mac pointer turns off Pointer Animations in Accessibility while it is on." forKey:@"footerText"];
         [s addObject:g];
-        PSSpecifier *style = [PSSpecifier preferenceSpecifierNamed:@"Pointer Style" target:self set:@selector(setPreferenceValue:specifier:) get:@selector(readPreferenceValue:)
+        PSSpecifier *style = [PSSpecifier preferenceSpecifierNamed:@"Pointer Style" target:target set:@selector(setPreferenceValue:specifier:) get:@selector(readPreferenceValue:)
                                                             detail:NSClassFromString(@"PSListItemsController") cell:kCellLinkList edit:nil];
         [style setProperty:@"pointerStyle" forKey:@"key"];
         [style setProperty:MP_DOMAIN forKey:@"defaults"];
@@ -96,7 +97,7 @@ static UIImage *MSPointerIcon(void) {
             PSSpecifier *gv = [PSSpecifier groupSpecifierWithName:nil];
             [gv setProperty:@"Virtual Mac draws its own pointer." forKey:@"footerText"];
             [s addObject:gv];
-            PSSpecifier *vm = [PSSpecifier preferenceSpecifierNamed:@"Hide in Virtual Mac" target:self set:@selector(setPreferenceValue:specifier:) get:@selector(readPreferenceValue:) detail:nil cell:kCellSwitch edit:nil];
+            PSSpecifier *vm = [PSSpecifier preferenceSpecifierNamed:@"Hide in Virtual Mac" target:target set:@selector(setPreferenceValue:specifier:) get:@selector(readPreferenceValue:) detail:nil cell:kCellSwitch edit:nil];
             [vm setProperty:@"macPointerHideInVirtualMac" forKey:@"key"];
             [vm setProperty:MP_DOMAIN forKey:@"defaults"];
             [vm setProperty:@YES forKey:@"default"];
@@ -104,9 +105,10 @@ static UIImage *MSPointerIcon(void) {
             [s addObject:vm];
             // (off by default: the Mac pointer starts as the classic black-and-white arrow, whatever Pointer Control is set to)
             PSSpecifier *ga = [PSSpecifier groupSpecifierWithName:nil];
-            [ga setProperty:@"Color, Border Width and Increase Contrast in Pointer Control below also change the Mac pointer. Off: the classic Mac pointer." forKey:@"footerText"];
+            [ga setProperty:onApplePage ? @"Color, Border Width and Increase Contrast in Accessibility > Pointer Control also change the Mac pointer. Off: the classic Mac pointer."
+                                        : @"Color, Border Width and Increase Contrast in Pointer Control below also change the Mac pointer. Off: the classic Mac pointer." forKey:@"footerText"];
             [s addObject:ga];
-            PSSpecifier *ax = [PSSpecifier preferenceSpecifierNamed:@"Use Pointer Control Style" target:self set:@selector(setPreferenceValue:specifier:) get:@selector(readPreferenceValue:) detail:nil cell:kCellSwitch edit:nil];
+            PSSpecifier *ax = [PSSpecifier preferenceSpecifierNamed:@"Use Pointer Control Style" target:target set:@selector(setPreferenceValue:specifier:) get:@selector(readPreferenceValue:) detail:nil cell:kCellSwitch edit:nil];
             [ax setProperty:@"macPointerUseAXStyle" forKey:@"key"];
             [ax setProperty:MP_DOMAIN forKey:@"defaults"];
             [ax setProperty:@NO forKey:@"default"];
@@ -116,12 +118,20 @@ static UIImage *MSPointerIcon(void) {
         PSSpecifier *gp = [PSSpecifier groupSpecifierWithName:nil];
         [gp setProperty:@"Stops the pointer at the top edge from pulling down the Lock Screen." forKey:@"footerText"];
         [s addObject:gp];
-        PSSpecifier *pull = [PSSpecifier preferenceSpecifierNamed:@"Block Pointer Pull-Down" target:self set:@selector(setPreferenceValue:specifier:) get:@selector(readPreferenceValue:) detail:nil cell:kCellSwitch edit:nil];
+        PSSpecifier *pull = [PSSpecifier preferenceSpecifierNamed:@"Block Pointer Pull-Down" target:target set:@selector(setPreferenceValue:specifier:) get:@selector(readPreferenceValue:) detail:nil cell:kCellSwitch edit:nil];
         [pull setProperty:@"noTopEdgePull" forKey:@"key"];
         [pull setProperty:MP_DOMAIN forKey:@"defaults"];
         [pull setProperty:@YES forKey:@"default"];
         [pull setProperty:MP_NOTIFY forKey:@"PostNotification"];
         [s addObject:pull];
+        return s;
+}
+@implementation MSPointerListController {
+    NSMutableArray *_msNativePages;   // Apple's Pointer Control and Trackpad pages (never shown), whose rows are on this page
+}
+- (NSMutableArray *)specifiers {
+    if (!_specifiers) {
+        NSMutableArray *s = [NSMutableArray arrayWithArray:MSPointerOwnSpecifiers(self, NO)];
         // Apple's own pointer settings, live (see common/NativeEmbed.h): Accessibility > Pointer Control, then General > Trackpad & Mouse. Each
         // starts with its own group, so they follow as Apple shows them.
         _msNativePages = [NSMutableArray array];

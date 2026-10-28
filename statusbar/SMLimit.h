@@ -75,6 +75,19 @@ static void *DMSMSBSymbol(const char *name) {
     return p ?: dlsym(RTLD_DEFAULT, name);
 }
 static long long DMSMSBConstant(const char *name) { const long long *p = DMSMDataSymbolIn(DMSMSBSymbol(name)); return p ? *p : -1; }   // (data only, SMEngineAPI.h: 18.5 made one a function)
+// A role value SpringBoard exports: a constant (data), as on 16/17; or -- iPadOS 18.5's SBLayoutRoleAdditionalSideRangeMax and SBLayoutRoleMax --
+// a function answering it (checked to be code first, SMEngineAPI.h DMSMCodeSymbolIn), called only once SpringBoard is up (callNow): each computes
+// its value the first time it is asked, and SpringBoard's own start is what should ask first. -1: not exported, neither data nor code, or a
+// function not to be called yet (*isFunction says which).
+static long long DMSMSBRoleValue(const char *name, BOOL callNow, BOOL *isFunction) {
+    void *p = DMSMSBSymbol(name);
+    const long long *d = DMSMDataSymbolIn(p);
+    if (d) return *d;
+    void *f = DMSMCodeSymbolIn(p);
+    if (isFunction && f) *isFunction = YES;
+    if (!f || !callNow) return -1;
+    return ((long long (*)(void))f)();
+}
 // More than four windows are only safe where the role repair below can run: Apple's own Minimize keeps the window of the highest role in two roles
 // of a desktop of seven, and SpringBoard aborts (SMRoleRepair.h; the same shift in 16.7.7's disassembly and in the 17.6.1 decompile, 1.4). A
 // repair that can't read its context leaves it as SpringBoard built it -- so every class, method and type it reads is checked once here, before
@@ -106,6 +119,8 @@ static NSString *DMSMRepairMissing(void) {
     }
     return nil;
 }
+static BOOL gSMLimitLater = NO;   // (iPadOS 18: a role value is a function -- read once SpringBoard is up, from the watcher: DMSMLimitTick)
+static void DMSMLimitSetUp(BOOL later);
 static void DMSMLimitInstall(void) {
     static BOOL done = NO;
     if (done) return;
@@ -118,10 +133,25 @@ static void DMSMLimitInstall(void) {
         return;
     }
 #endif
+    DMSMLimitSetUp(NO);
+}
+// The table, the row, the repair's needs, ours on the getter. At start (later NO); on iPadOS 18, where a role value is a function, once more from
+// the watcher once SpringBoard is up (later YES: the functions are called then). Until then: four windows, as in 1.3.5.
+static void DMSMLimitSetUp(BOOL later) {
     NSString *why = nil;
     DMSMRoleTestFn split = (DMSMRoleTestFn)DMSMSBSymbol("SBLayoutRoleIsValidForSplitView");
+    BOOL fnMax = NO, fnRoleMax = NO;
+    long long addMax = DMSMSBRoleValue("SBLayoutRoleAdditionalSideRangeMax", later, &fnMax), roleMax = DMSMSBRoleValue("SBLayoutRoleMax", later, &fnRoleMax);
+    if (!later && (fnMax || fnRoleMax)) {   // (18.5: read from the watcher once SpringBoard is up -- see DMSMSBRoleValue)
+        DMSMRolesReset();
+        gSMLimitOff = @"SpringBoard's role values are functions here: read once it is up";
+        gSMLimitLater = YES;
+        DMLog(@"[smlimit] four windows per desktop until SpringBoard is up: its role values are functions here (iPadOS 18), read then");
+        return;
+    }
     BOOL roles = DMSMRolesSetFrom(split, DMSMSBConstant("SBLayoutRolePrimary"), DMSMSBConstant("SBLayoutRoleSide"), DMSMSBConstant("SBLayoutRoleAdditionalSideRangeMin"),
-                                  DMSMSBConstant("SBLayoutRoleAdditionalSideRangeMax"), DMSMSBConstant("SBLayoutRoleMax"), &why);
+                                  addMax, roleMax, &why);
+    if (later) DMLog([NSString stringWithFormat:@"[smlimit] SpringBoard's role functions answered: additional sides up to %lld, roles up to %lld", addMax, roleMax]);
     // (the row: the getter is there with the signature we answer with -- an unsigned 64-bit count, Q16@0:8)
     Class c = objc_getClass("SBSwitcherChamoisSettings");
     Method m = c ? class_getInstanceMethod(c, sel_registerName("maximumNumberOfAppsOnStage")) : NULL;
@@ -140,16 +170,17 @@ static void DMSMLimitInstall(void) {
         DMLog([NSString stringWithFormat:@"[smlimit] four windows per desktop here (as in 1.3.5): %@", gSMLimitOff]);
         return;
     }
-    if (!DMSMLimitHookNow(@"at start")) { DMSMRolesReset(); gSMLimitOff = @"the hook did not take"; return; }
+    if (!DMSMLimitHookNow(later ? @"once SpringBoard is up" : @"at start")) { DMSMRolesReset(); gSMLimitOff = @"the hook did not take"; return; }
     gSMLimitOff = nil;
     DM_FEATURE_MARK("sm-window-roles");
     DMLog([NSString stringWithFormat:@"[smlimit] %zu windows per desktop: SpringBoard's window roles %@ (Apple's setting: 4)", DMSMWindowCap(), DMSMRolesText()]);
     // (every tweak loaded by the time the main queue runs: TrollPad's replacement, installed after ours, is put under ours again)
-    dispatch_async(dispatch_get_main_queue(), ^{ DMSMLimitHookNow(@"after every tweak loaded"); });
+    if (!later) dispatch_async(dispatch_get_main_queue(), ^{ DMSMLimitHookNow(@"after every tweak loaded"); });
 }
 // The watcher, while our engine runs (every 2 s at most): ours still the one answering? Put back on top a few times, then left (logged).
 static void DMSMLimitTick(void) {
     static CFTimeInterval last = 0;
+    if (gSMLimitLater && [NSThread isMainThread]) { gSMLimitLater = NO; DMSMLimitSetUp(YES); }   // (18: the role functions, now that SpringBoard is up)
     if (gSMLimitOff) return;
     CFTimeInterval now = CACurrentMediaTime();
     if (now - last < 2.0) return;

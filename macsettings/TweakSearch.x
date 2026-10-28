@@ -31,6 +31,8 @@
 #import <stdatomic.h>
 #import <sys/stat.h>
 #import <fcntl.h>
+#import "../common/General18Group.h"   // (MSBDG18Root: iPadOS 18's SwiftUI root)
+#import "../common/SettingsRoot.h"     // (MSBDSettingsLinkForRoot: our pages' links there)
 #import <unistd.h>
 
 static void MTSLog(NSString *line) {   // (debug builds only: release builds write no /tmp log)
@@ -260,7 +262,7 @@ static NSURL *MTSOpenURL(NSURL *url, NSString *from) {
     BOOL known = NO;
     for (MTIEntry *e in idx) if (MTISameUID(e.uid, s) || [e.paneID isEqualToString:pane] || [[@"ROOT#" stringByAppendingString:e.path.firstObject ?: @"?"] isEqualToString:pane]) { known = YES; break; }
     if (!known && idx) MTSRebuild(@"a result of a page that is gone");
-    NSString *routed = MTSShuffleRoute(prefs);
+    NSString *routed = MSBDSettingsLinkForRoot(MTSShuffleRoute(prefs), MSBDG18Root());   // (iPadOS 18: our pages are in General, common/SettingsRoot.h)
     MTSLog([NSString stringWithFormat:@"open (%@): %@ -> %@%@", from, s, routed, known || !idx ? @"" : @" (not in the index now)"]);
     return [NSURL URLWithString:routed] ?: [NSURL URLWithString:prefs];
 }

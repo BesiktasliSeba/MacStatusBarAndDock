@@ -11,11 +11,12 @@ static const CGFloat kWiFiHeaderH = 24.0, kWiFiSwitchRowH = 34.0;
 static NSMutableArray<NSString *> *gWiFiMenuOrder = nil;   // (the nearby networks in the order the open menu shows them, DMWiFiMenuItems)
 static NSArray<NSString *> *gWiFiLastOrder = nil;          // (the order the last menu built showed them)
 
-// Where the Wi-Fi menu runs: iPadOS 15/16 (tested), and 17 (untested there; every class and call below is in iPadOS 17's own WiFiKit and
-// SpringBoard with the same types, the stock Wi-Fi item is SystemStatusUI's STUIStatusBarWifiItem through DMSBClass -- it still takes
-// -canEnableDisplayItem:fromData: from its superclass --, and the password sheet's keyboard focus lock is the iPadOS 16 call). 18+: not yet --
-// that focus lock is renamed there and takes a typed reason object (asserting on a string), and nothing of it was checked on a device.
-static BOOL DMWiFiOSOK(void) { return [NSProcessInfo processInfo].operatingSystemVersion.majorVersion <= 17; }
+// Where the Wi-Fi menu runs: iPadOS 15/16 (tested), and 17 (every class and call below is in iPadOS 17's own WiFiKit and SpringBoard with the same
+// types, the stock Wi-Fi item is SystemStatusUI's STUIStatusBarWifiItem through DMSBClass -- it still takes -canEnableDisplayItem:fromData: from
+// its superclass --, and the password sheet's keyboard focus lock is the iPadOS 16 call). 18+ (1.6.0, 18.5): where SpringBoard's typed keyboard
+// focus lock is there for the password sheet (StatusBar.x DMFocusLock18OK; the 16 call is gone on 18 and the new one asserts on a string reason).
+static BOOL DMFocusLock18OK(void);   // (StatusBar.x)
+static BOOL DMWiFiOSOK(void) { return [NSProcessInfo processInfo].operatingSystemVersion.majorVersion <= 17 || DMFocusLock18OK(); }
 
 // ---- untested iPadOS (17): what the Wi-Fi menu found, for the StatusBar diagnostic record (StatusBar.x DMSBDiagFlush, common/Diag.h) -- so a
 // tester's Report a Problem says how far the menu got without a debug build. Numbers, booleans and Apple's own selector names only, never a
@@ -569,23 +570,19 @@ static NSString *DMWiFiRouteName(DMWiFiRoute k) { return @[@"nothing (current)",
 static DMWiFiPasswordSheet *gWiFiSheet = nil;
 // The keys come to a field in SpringBoard only while SpringBoard holds the keyboard focus; with an app in front the app holds it (iPad 2,
 // Stage Manager, Settings in front: the focus target was Settings' scene). The focus is held while the sheet is up, the way Finder's windows
-// and the desktop's rename hold it: -lockFocusToSpringBoardWindowScene:forReason: on iPadOS 16, -lockFocusToSpringBoardForReason: on iPadOS 15;
-// given back when it closes (measured: the focus went back to Settings). (A secure field's keyboard is left out of screen captures: a capture
+// and the desktop's rename hold it (common/FocusLock.h: -lockFocusToSpringBoardWindowScene:forReason: on iPadOS 16/17, -lockFocusToSpringBoardForReason:
+// on 15, the typed -focusLockSpringBoardWindowScene:forReason: on 18); given back when it closes (measured: the focus went back to Settings). (A secure field's keyboard is left out of screen captures: a capture
 // of the sheet shows no keyboard although it is up -- with "Show password" ticked it shows.)
 static void DMWiFiSheetFocus(DMWiFiPasswordSheet *sh, UIWindow *win, BOOL take) {
     if (!take) {
         id l = sh.focusLock; sh.focusLock = nil;
-        if ([l respondsToSelector:@selector(invalidate)]) ((void (*)(id, SEL))objc_msgSend)(l, @selector(invalidate));
+        MSBDFocusUnlock(l);
         return;
     }
     if (sh.focusLock) return;
-    id ws = DMCall(objc_getClass("SBMainWorkspace"), @"sharedInstance");
-    id kfc = [ws respondsToSelector:NSSelectorFromString(@"keyboardFocusController")] ? DMCall(ws, @"keyboardFocusController") : nil;
-    SEL l16 = NSSelectorFromString(@"lockFocusToSpringBoardWindowScene:forReason:"), l15 = NSSelectorFromString(@"lockFocusToSpringBoardForReason:");
-    @try {
-        if ([kfc respondsToSelector:l16] && win.windowScene) sh.focusLock = ((id (*)(id, SEL, id, id))objc_msgSend)(kfc, l16, win.windowScene, @"MacStatusBar Wi-Fi password");
-        else if ([kfc respondsToSelector:l15]) sh.focusLock = ((id (*)(id, SEL, id))objc_msgSend)(kfc, l15, @"MacStatusBar Wi-Fi password");
-    } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[wifi] password sheet: the keyboard focus lock threw %@", e.reason]); }
+    NSString *how = nil;
+    sh.focusLock = MSBDFocusLock(win.windowScene, @"MacStatusBar Wi-Fi password", &how);   // (common/FocusLock.h: 15, 16/17, 18)
+    DMLog([NSString stringWithFormat:@"[wifi] password sheet: keyboard focus to SpringBoard: %@%@", sh.focusLock ? NSStringFromClass([sh.focusLock class]) : @"no lock", how ? [NSString stringWithFormat:@" (the %@ call)", how] : @""]);
 }
 static void DMWiFiSheetClose(NSString *why, BOOL cancelContext);
 static BOOL DMWiFiMenuWindowKeyable(id self, SEL _cmd) { return gWiFiSheet != nil; }   // (the menu window takes the keys only while the sheet is up)

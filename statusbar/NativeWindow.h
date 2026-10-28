@@ -79,31 +79,25 @@ static DMNativeKeyView *gNativeKeys;
 - (id)forwardingTargetForSelector:(SEL)sel { return [gNativeActive respondsToSelector:sel] ? gNativeActive : [super forwardingTargetForSelector:sel]; }
 - (BOOL)respondsToSelector:(SEL)sel { return [super respondsToSelector:sel] || (NSStringFromSelector(sel).length > 6 && [NSStringFromSelector(sel) hasPrefix:@"dm_key"] && [gNativeActive respondsToSelector:sel]); }
 @end
-// SpringBoard holds the keyboard focus while a native window is active (normally the front app has it), and gives it back when it is not:
-// -lockFocusToSpringBoardWindowScene:forReason: on iPadOS 16, -lockFocusToSpringBoardForReason: on iPadOS 15.
+// SpringBoard holds the keyboard focus while a native window is active (normally the front app has it), and gives it back when it is not
+// (common/FocusLock.h: -lockFocusToSpringBoardWindowScene:forReason: on iPadOS 16/17, -lockFocusToSpringBoardForReason: on 15, the typed
+// -focusLockSpringBoardWindowScene:forReason: on 18).
 static id gNativeFocusLock;
 static void DMKeyboardDockWatch(void);   // (Desktop.h: the Dock goes under while our own on-screen keyboard is up)
 static void DMNativeFocus(BOOL take) {
     if (!take) {
         id l = gNativeFocusLock; gNativeFocusLock = nil;
         if (!l) return;
-        if ([l respondsToSelector:@selector(invalidate)]) ((void (*)(id, SEL))objc_msgSend)(l, @selector(invalidate));
+        MSBDFocusUnlock(l);
         DMLog(@"[native] keyboard focus given back to the apps");
         return;
     }
     if (gNativeFocusLock) return;
     DM_FEATURE_MARK("native-focus-lock");
     DMKeyboardDockWatch();
-    id ws = nil; Class wsc = objc_getClass("SBMainWorkspace");
-    if (wsc && [(id)wsc respondsToSelector:@selector(sharedInstance)]) ws = ((id (*)(id, SEL))objc_msgSend)((id)wsc, @selector(sharedInstance));
-    SEL kfcSel = NSSelectorFromString(@"keyboardFocusController");
-    id kfc = [ws respondsToSelector:kfcSel] ? ((id (*)(id, SEL))objc_msgSend)(ws, kfcSel) : nil;
-    SEL l16 = NSSelectorFromString(@"lockFocusToSpringBoardWindowScene:forReason:"), l15 = NSSelectorFromString(@"lockFocusToSpringBoardForReason:");
-    @try {
-        if ([kfc respondsToSelector:l16] && gNativeLayer.windowScene) gNativeFocusLock = ((id (*)(id, SEL, id, id))objc_msgSend)(kfc, l16, gNativeLayer.windowScene, @"MacStatusBar Finder");
-        else if ([kfc respondsToSelector:l15]) gNativeFocusLock = ((id (*)(id, SEL, id))objc_msgSend)(kfc, l15, @"MacStatusBar Finder");
-    } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[native] keyboard focus lock threw %@", e]); }
-    DMLog([NSString stringWithFormat:@"[native] keyboard focus to SpringBoard: %@", gNativeFocusLock ? NSStringFromClass([gNativeFocusLock class]) : @"no lock"]);
+    NSString *how = nil;
+    gNativeFocusLock = MSBDFocusLock(gNativeLayer.windowScene, @"MacStatusBar Finder", &how);
+    DMLog([NSString stringWithFormat:@"[native] keyboard focus to SpringBoard: %@%@", gNativeFocusLock ? NSStringFromClass([gNativeFocusLock class]) : @"no lock", how ? [NSString stringWithFormat:@" (the %@ call)", how] : @""]);
 }
 static BOOL DMNativeYes(id self, SEL _cmd) { return YES; }
 static void DMNativeUpdateRotation(void);
@@ -214,7 +208,10 @@ static CGFloat DMNativeFrontLevel(void) {
     for (UIWindow *w in DMAllWindows()) {
         if (w.hidden || w == gNativeLayer || w.windowLevel >= kMenuWindowLevel - 1.0) continue;
         NSString *c = NSStringFromClass([w class]);
-        if ([c isEqualToString:@"AerialWindow"] || [c containsString:@"MilkyWay"] || DMIsZetsuWindow(w)) top = MAX(top, w.windowLevel);
+        // (AXPassthroughWindow: MilkyWay4's window layer on iPadOS 15, 1033 -- left out, an active Finder stood at 6, behind every MilkyWay4 window and
+        //  the Dock, its window not to be seen while the menu bar said Finder: M1 15.6.1, 1.6.0, there since the first native window. The Dock's
+        //  floor, the desktop's rename window and the Mac Switcher already count it.)
+        if ([c isEqualToString:@"AerialWindow"] || [c containsString:@"MilkyWay"] || [c isEqualToString:@"AXPassthroughWindow"] || DMIsZetsuWindow(w)) top = MAX(top, w.windowLevel);
     }
     CGFloat want = MIN(top + 1.0, kMenuWindowLevel - 2.0);
     // (a status bar menu or dialog is open: the native windows stand just below the window it is shown in, like the engines' windows -- on
@@ -320,26 +317,64 @@ static DMNativeWindow *DMNativeWindowForTouch(UITouch *t, BOOL *onChrome) {
 // it sent a native window back, and ended a name being edited on the desktop -- the keyboard went away with the first key (iPad 2, iPadOS 16).
 // (only while it is really up: gOwnKeyboardFrame, from the keyboard's own show / hide notifications -- the host view keeps its frame and stays
 //  unhidden after the keyboard went, and a later tap there on an app window left Finder active in front of it)
+// iPadOS 18 also keeps host views as big as the whole screen in both keyboard windows (18.5, a hardware keyboard: one of {0, 0, 1366, 1024} in
+// UITextEffectsWindow and in UIRemoteKeyboardWindow, next to the keyboard's own {0, 952.5, 1366, 509}): no keyboard covers the whole screen, so
+// such a view is a container, looked into, never the keyboard -- every tap counted as one on the keyboard, and a tap on an app window left a
+// typing Finder or TextEdit window active in front of it (A12Z, 1.6.0). Looked into as a level of its own (four levels, as before, below it).
+// Also what the keyboard window itself shows at the point (its hit test; the window and views as big as the screen are no answer -- they take
+// every point): the keyboard's own menu (18's "Show Keyboard / Show Emoji" from the bar of a hardware keyboard, a _UIContextMenuContainerView in
+// UITextEffectsWindow, not in any host: a tap on it sent Finder back and the keyboard went, A12Z 18.5), a key of a keyboard drawn straight in a
+// host as big as the screen (1.6.0 code review: the floating keyboard).
+// Each keyboard window's own root, UIInputSetContainerView, is a UIInputSetHostView too (a subclass) and is never the keyboard either: as big as its
+// window, it took every point for one on the keyboard (15-17 before 1.6.0); a text effects window of another scene has one of {1024, 512}, which
+// lies over the left half of the screen once converted (iPad 2, 16.7.7) -- a tap on an app window there left Finder active. Looked into, like a
+// host as big as the screen (StatusBar.x DMKeyboardHostIsContainer).
+// With no docked on-screen keyboard up (gOwnKeyboardFrame empty: a hardware keyboard's bar only -- {0, 834, 0, 0} on 15.6.1 --, or the floating
+// keyboard -- {0, 0, 0, 0}) only the keyboard window's own hit test is asked, and only a view narrower than the screen counts: the bar's buttons
+// and pill, the bar's menu ("Keyboard Settings... / Show Keyboard / Show Emoji", a stack view in UIRemoteKeyboardWindow on 15), the floating
+// keyboard's keys (its layout view, 320 x 216). Before, nothing counted then: a tap on "Show Keyboard" sent Finder back, its search field lost the
+// typing and no keyboard came, and a key of the floating keyboard did the same (M1 15.6.1, 1.6.0 parity check; also in 1.5.2; 18's hardware
+// keyboard has a 3 pt frame, so a8c29de's hit test already ran there). The bar's own view (TUISystemInputAssistantView) is as wide as the screen
+// and clear, and a touch on its clear part goes on to the window below (M1: a tap at {30, 800} reached the Home Screen), so a hit that wide is no
+// answer without a docked keyboard.
 static CGRect gOwnKeyboardFrame;           // (our own keyboard on the screen, screen points; zero when none -- Desktop.h's keyboard watch)
+static UIView *DMKeyboardWindowHit(UIWindow *w, CGPoint wp) {   // (what a keyboard window shows at that point of its own: a view of its own there, else nil)
+    UIView *hit = nil;
+    @try { hit = [w hitTest:wp withEvent:nil]; } @catch (NSException *e) { hit = nil; }
+    if (!hit || hit == w || hit.hidden || hit.alpha < 0.01 || DMKeyboardHostIsContainer(hit) || hit.bounds.size.height <= 1.0 || hit.bounds.size.width <= 1.0) return nil;
+    // (nearly the whole screen is a container too -- no keyboard or menu of it is 90% of the screen's width and 75% of its height)
+    CGSize b = hit.bounds.size, s = [UIScreen mainScreen].bounds.size;
+    CGFloat sw = MAX(s.width, s.height), sh = MIN(s.width, s.height);
+    if ((b.width >= sw * 0.9 && b.height >= sh * 0.75) || (b.height >= sw * 0.9 && b.width >= sh * 0.75)) return nil;
+    return hit;
+}
 static BOOL DMPointOnOwnKeyboard(CGPoint p) {
-    if (CGRectIsEmpty(gOwnKeyboardFrame)) return NO;
+    BOOL keyboardUp = !CGRectIsEmpty(gOwnKeyboardFrame);   // (no: a hardware keyboard's bar, or the floating keyboard -- see above)
     Class host = objc_getClass("UIInputSetHostView");
     if (!host) return NO;
     for (UIWindow *w in DMAllWindows()) {
         if (w.hidden || w.alpha < 0.01) continue;
         NSString *c = NSStringFromClass([w class]);
         if (![c containsString:@"RemoteKeyboard"] && ![c containsString:@"TextEffects"]) continue;
+        id<UICoordinateSpace> scr = (w.screen ?: [UIScreen mainScreen]).coordinateSpace;
+        UIView *shown = DMKeyboardWindowHit(w, [w convertPoint:p fromCoordinateSpace:scr]);
+        if (shown && (keyboardUp || [shown convertRect:shown.bounds toCoordinateSpace:scr].size.width < scr.bounds.size.width * 0.9)) return YES;
+        if (!keyboardUp) continue;   // (the hosts keep their frames when no keyboard is up: only while it is)
+        // (each view with the levels still to look into below it: four from the window, as before 1.6.0; a container takes none)
         NSMutableArray<UIView *> *todo = [NSMutableArray arrayWithObject:w];
-        for (int depth = 0; depth < 4 && todo.count; depth++) {
-            NSMutableArray<UIView *> *next = [NSMutableArray array];
-            for (UIView *v in todo) for (UIView *sub in v.subviews) {
+        NSMutableArray<NSNumber *> *left = [NSMutableArray arrayWithObject:@4];
+        while (todo.count) {
+            UIView *v = todo.lastObject; int n = left.lastObject.intValue;
+            [todo removeLastObject]; [left removeLastObject];
+            if (n <= 0) continue;
+            for (UIView *sub in v.subviews) {
                 if (sub.hidden || sub.alpha < 0.01) continue;
                 if ([sub isKindOfClass:host]) {
-                    CGPoint lp = [sub convertPoint:p fromCoordinateSpace:(w.screen ?: [UIScreen mainScreen]).coordinateSpace];
+                    CGPoint lp = [sub convertPoint:p fromCoordinateSpace:scr];
+                    if (DMKeyboardHostIsContainer(sub)) { [todo addObject:sub]; [left addObject:@(n)]; continue; }   // (the window's root, or the whole screen: a container)
                     if (sub.bounds.size.height > 1.0 && CGRectContainsPoint(sub.bounds, lp)) return YES;
-                } else [next addObject:sub];
+                } else { [todo addObject:sub]; [left addObject:@(n - 1)]; }
             }
-            todo = next;
         }
     }
     return NO;
@@ -413,7 +448,12 @@ __attribute__((noinline)) static void DMNativeTouchBegan(UITouch *t) {   // (kep
         DMLog([NSString stringWithFormat:@"[native] a touch %.0f ms after activation at %@ (type %ld): not a new click, Finder stays active", (CACurrentMediaTime() - gNativeActivatedAt) * 1000.0, NSStringFromCGPoint(p), (long)t.type]);
         return;
     }
-    if (gNativeFocusLock && DMPointOnOwnKeyboard(p)) return;   // (typing on the on-screen keyboard: the window stays active)
+    if (gNativeFocusLock && DMPointOnOwnKeyboard(p)) {   // (typing on the on-screen keyboard: the window stays active)
+#if DEBUG
+        if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[native] touch at %@: on our own keyboard (%@), the window stays active", NSStringFromCGPoint(p), NSStringFromCGRect(gOwnKeyboardFrame)]);
+#endif
+        return;
+    }
     UIWindow *taker = DMNativeWindowTaking(p, gNativeLayer.windowLevel);   // (our menus, the Dock, alerts: Finder stays active)
     // (the desktop's own chrome keeps Finder active at ANY level: with Aerial the active layer sits at 1034, above the Dock's window (25), so the
     //  Dock was never "above" it -- a tap on the Dock's Finder icon made Finder active and the same touch sent it back, M1 30 Sep 13:27)

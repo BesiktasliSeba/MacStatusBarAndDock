@@ -3385,7 +3385,7 @@ static void DMFinderPublishWindowCount(void) {
     notify_set_state(token, n);
     notify_post("com.besiktasliseba.macstatusbar.finder.windows");
 }
-static void DMOpenSettingsLinkFullScreen(NSString *link, int attempt);   // (StatusBar.x)
+static void DMOpenSettingsLink(NSString *link);   // (StatusBar.x: as Open Apps as Windows says)
 // The Finder icon's "Remove from Dock": Finder never leaves the Dock (as on a Mac); a question says where it can be hidden instead.
 static void DMFinderRemoveFromDockAsked(void) {
     DM_FEATURE_MARK("finder-remove-from-dock");
@@ -3393,7 +3393,7 @@ static void DMFinderRemoveFromDockAsked(void) {
     UIView *host = DMMenuHost();
     if (!host) return;
     DMShowConfirm(host, @"Finder always stays in the Dock", @"You can hide it in Settings > Dock.", @"Open Settings", NO, ^{
-        DMOpenSettingsLinkFullScreen(@"prefs:root=DOCK_MAGNIFICATION&path=FINDER", 0);
+        DMOpenSettingsLink(@"prefs:root=DOCK_MAGNIFICATION&path=FINDER");
     });
 }
 static void DMFinderDockInit(void) {

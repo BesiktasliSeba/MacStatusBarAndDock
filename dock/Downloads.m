@@ -32,6 +32,7 @@
 
 #import "DMLog.h"
 #import "../common/ReduceMotion.h"   // (Reduce Motion: the panel fades instead of popping up)
+#import "../common/SettingsRoot.h"   // (MSBDSettingsLink: "Downloads From..." where Settings' root list has our Dock page -- iPadOS 18: in General)
 // With the Mac pointer (Settings > Pointer > Pointer Style: Mac, the default) the Dock's icons don't lift under the pointer, as SpringBoard's own icons
 // (StatusBar.x MacPointerIcons): iPadOS draws its pointer under a lifted icon, and the arrow went under it. iPadOS's pointer: the lift as before.
 // (and while the Mac pointer stands down for another pointer tweak: then the pointer is iPadOS's -- common/MacPointerActive.h, logic test W5)
@@ -240,6 +241,7 @@ static NSArray<DMDownload *> *DMSearchIndex(NSArray<DMDownloadSource *> *sources
 // Asking LaunchServices to open a URL can block for seconds while the target app (Files, Filza) launches, so it is done off
 // the main thread: SpringBoard's UI must never wait for it (it froze the whole Home Screen when done on the main thread).
 static void DMOpenURLString(NSString *string) {
+    string = MSBDSettingsLink(string);   // (a link into our Settings pages as Settings' root list needs it: iPadOS 18's is in General, common/SettingsRoot.h)
     NSURL *url = [NSURL URLWithString:string];
     Class ws = NSClassFromString(@"LSApplicationWorkspace");
     id workspace = [ws respondsToSelector:NSSelectorFromString(@"defaultWorkspace")] ? ((id (*)(id, SEL))objc_msgSend)((id)ws, NSSelectorFromString(@"defaultWorkspace")) : nil;
@@ -1182,10 +1184,10 @@ static BOOL DMIsTypingInKeyboard(UIWindow *w) {
         DMLog(@"[downloads] Downloads From: the screen is locked, Settings is not opened");
         return;
     }
-    // Mac Status Bar running in this SpringBoard: it opens Settings full screen, then the link (see DMOpenSettingsLinkFullScreen); otherwise the link
+    // Mac Status Bar running in this SpringBoard: it opens Settings as Open Apps as Windows says, then the link (see DMOpenSettingsLink); otherwise the link
     int alive = 0; uint64_t pid = 0;
     if (notify_register_check("com.besiktasliseba.macstatusbar.alive", &alive) == NOTIFY_STATUS_OK) { notify_get_state(alive, &pid); notify_cancel(alive); }
-    if (pid == (uint64_t)getpid()) { DMLog(@"[downloads] Downloads From: Mac Status Bar opens Settings full screen"); notify_post("com.besiktasliseba.macstatusbaranddock.opendownloadsfrom"); return; }
+    if (pid == (uint64_t)getpid()) { DMLog(@"[downloads] Downloads From: Mac Status Bar opens Settings"); notify_post("com.besiktasliseba.macstatusbaranddock.opendownloadsfrom"); return; }
     DMOpenURLString(@"prefs:root=DOCK_MAGNIFICATION&path=DOWNLOADS");
 }
 - (void)folderTapped:(UIButton *)b {
@@ -1406,6 +1408,16 @@ void DMDownloadsStartDebugPolling(void) {
 }
 #endif
 
+// Esc with the panel open while SpringBoard has the keys (our Finder or TextEdit window active, or the desktop): the panel closes, as a Dock stack
+// does on a Mac (the key went on to Finder before: its search was cleared or the app behind was told to put its typing away, M1 report 27 Oct).
+// MacStatusBar asks this first from SpringBoard's key handling (found with dlsym: nothing happens without this tweak). YES: it was open and goes.
+__attribute__((visibility("default"))) BOOL MSBDDownloadsPanelEscape(void) {
+    DMDownloadsPanel *p = [DMDownloadsPanel shared];
+    if (![p isOpen]) return NO;
+    DMLog(@"[downloads] closes: Esc");
+    [p dismissAnimated:YES];
+    return YES;
+}
 BOOL DMDownloadsPanelContainsTouch(UITouch *touch) {
     DMDownloadsPanel *p = [DMDownloadsPanel shared];
     if (![p isOpen] || !touch) return NO;

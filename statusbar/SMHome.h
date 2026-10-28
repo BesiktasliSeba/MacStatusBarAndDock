@@ -556,12 +556,28 @@ static void DMSMHGProbeKick(id mod) {
 // crash loop must not repeat itself). debug /tmp/msb-sm-norestore: not restored.
 static CFTimeInterval gSMHomeStart = 0;
 static BOOL gSMRestoreDone = NO;
-static id DMSMHomeCurrentState(void) {   // (the iPad switcher's layout state now)
+static id DMSMHomeSwitcherController(void) {   // (the iPad's switcher controller)
     id coord = DMSMCoordinator();
     UIWindowScene *scene = MSBDMainWindowScene();
     SEL forScene = NSSelectorFromString(@"switcherControllerForWindowScene:");
-    id sc = scene && [coord respondsToSelector:forScene] && DMSMSigOK(coord, forScene, DMSMSigObjObj(), "switcherControllerForWindowScene:") ? ((id (*)(id, SEL, id))objc_msgSend)(coord, forScene, scene) : nil;
-    return DMCall(DMCall(DMCall(sc, @"contentViewController"), @"layoutContext"), @"layoutState");
+    return scene && [coord respondsToSelector:forScene] && DMSMSigOK(coord, forScene, DMSMSigObjObj(), "switcherControllerForWindowScene:") ? ((id (*)(id, SEL, id))objc_msgSend)(coord, forScene, scene) : nil;
+}
+static id DMSMHomeCurrentState(void) {   // (the iPad switcher's layout state now)
+    return DMCall(DMCall(DMCall(DMSMHomeSwitcherController(), @"contentViewController"), @"layoutContext"), @"layoutState");
+}
+// Stage Manager's own switch-on is over: SpringBoard's switcher shows its windowing UI -- its handler of the setting has run, a moment after the
+// setting is written -- and nothing animates any more (no workspace transaction, no switcher transition event for 0.35 s, as DMSMTurnSettling).
+// A desktop asked for before that went to the switcher without Stage Manager -- the app launched zooming up from its Dock icon -- and the handler,
+// finding that app in front, started a transition of its own ("ChamoisWindowingEnabled") in the middle of the zoom, whose end then never came:
+// the app's Dock icon stayed hidden and the icon's overlay stayed on the window's card (a big app icon over the window on the A12Z, 18.5) until a
+// respring -- after an engine switch from Aerial with the app open as a window (iPad 2, 16.7.7: our request at 23.56, the icon lent to the zoom
+// at 23.64, SpringBoard's transition at 23.73; A12Z 27 Oct). Not readable: as before (no wait).
+static BOOL DMSMSwitchOnSettled(void) {
+    id sc = DMSMHomeSwitcherController();
+    SEL ui = NSSelectorFromString(@"isChamoisWindowingUIEnabled");
+    if (!sc || !DMSMSigOK(sc, ui, DMSMSigBool(), "isChamoisWindowingUIEnabled")) return YES;
+    if (!((BOOL (*)(id, SEL))objc_msgSend)(sc, ui)) return NO;
+    return !DMSMWorkspaceBusy() && CACurrentMediaTime() - gSwitcherEventAt >= 0.35;
 }
 static void DMSMRestoreDesktopTick(void) {
     if (gSMRestoreDone || !gSMHomeOn || !DMSMFree() || gSMHomeStart <= 0) return;
@@ -569,6 +585,12 @@ static void DMSMRestoreDesktopTick(void) {
     if (age < 6.0) return;
     if (age > 1200.0) { gSMRestoreDone = YES; DMLog(@"[smhome] the desktop was not brought back: no Home Screen within 20 min of the start"); return; }
     if (gDMScreenOff || DMSMHomeUILocked() || DMCoverSheetShown() || gOverlay) return;
+    if (!DMSMSwitchOnSettled()) {   // (Stage Manager still being switched on by SpringBoard: the desktop is asked for once that is over)
+        DM_FEATURE_MARK("sm-desktop-waits-switch-on");
+        static BOOL told = NO;
+        if (!told) { told = YES; DMLog(@"[smhome] after the start: the desktop waits until SpringBoard has finished switching Stage Manager on"); }
+        return;
+    }
     long long env = 0; id shown = nil;
     if (!DMSMHomeStateOf(DMSMHomeCurrentState(), &env, &shown)) return;   // (not readable yet)
     gSMRestoreDone = YES;

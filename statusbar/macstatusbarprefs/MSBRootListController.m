@@ -11,11 +11,15 @@
 #import <Preferences/PSTableCell.h>
 #import "MSBRootListController.h"
 #import "../../common/LineSwitch.h"
+#import "../../common/AppleMultitasking.h"   // (Apple's multitasking settings on the Windows & Multitasking page, 1.6.0: AppleMultitaskingTable.h)
 #import "../../common/EngineBuilds.h"
 #import "../../common/StageManagerAvailable.h"
 #import "../../common/DesktopCheck.h"   // (Show Desktop Icons on iPadOS 17+: SpringBoard's check of the Home Screen parts the desktop uses)
 #import "../../common/OtherTweaks.h"   // (Single Mute showing the mute icon: said under the Audio group)
 #import "../SMSwitchOn.h"   // (DMSMConsentFrom: the stored Stage Manager answers, read as SpringBoard reads them)
+@interface PSListController (MSBURL)
+- (void)handleURL:(NSDictionary *)url withCompletion:(id)completion;   // (Settings' link to a place on a page: -handleURL:withCompletion: below)
+@end
 
 // The "Apps" row in the plist uses AltList's app picker (ATLApplicationListMultiSelectionController). That
 // class only exists once AltList's library is loaded, and this bundle is not linked against it, so load it
@@ -207,6 +211,26 @@ static NSString *MSBEngineValueOf(PSSpecifier *s) {
 	id x = [v isKindOfClass:[NSArray class]] ? [(NSArray *)v firstObject] : nil;
 	return [x isKindOfClass:[NSString class]] ? x : nil;
 }
+// The engine the Window Engine row shows as picked (-readPreferenceValue: below): the stored one when this iPadOS offers it and it is installed (an
+// untested build too: it is the one that loads, on its own); else the same single rule as SpringBoard and the helper (EngineBuilds.h: Aerial of any
+// build, else MilkyWay4, else Zetsu); "none" with no engine at all.
+static NSString *MSBEngineShown(id value, NSArray *offered) {
+	if ([value isKindOfClass:[NSString class]] && [offered containsObject:value] && MSBEngineState(value) >= 1) return value;
+	NSString *fallback = MSBDDefaultEngine(^BOOL(NSString *e) { return MSBEngineState(e) != 0; }, ^NSString *(NSString *lib) { return MSBEngineLibraryPath(lib); });
+	return fallback ?: @"none";
+}
+// The same without the row (1.6.0: the row is on the Windows & Multitasking page, Report a Problem stays on the Status Bar page): the stored value or
+// the row's default, and the row's values (Windows.plist) less what -specifiers takes out on this iPadOS (Stage Manager before 16, MilkyWay4 on 16+).
+static NSString *MSBEngineShownWithoutRow(void) {
+	CFPreferencesAppSynchronize(CFSTR("com.besiktasliseba.macstatusbar"));
+	CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("windowEngine"), CFSTR("com.besiktasliseba.macstatusbar"), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+	NSString *stored = v && CFGetTypeID(v) == CFStringGetTypeID() ? [(__bridge NSString *)v copy] : @"aerial";
+	if (v) CFRelease(v);
+	NSMutableArray *offered = [@[@"aerial", @"milkyway", @"zetsu", @"stagemanager"] mutableCopy];
+	if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion < 16) [offered removeObject:@"stagemanager"];
+	else [offered removeObject:@"milkyway"];
+	return MSBEngineShown(stored, offered);
+}
 @interface MSBEngineListController : PSListItemsController
 @end
 @implementation MSBEngineListController
@@ -378,9 +402,29 @@ static void MSBSetStockBarStored(BOOL on) {
 	notify_post("com.besiktasliseba.macstatusbar/prefsChanged");
 }
 
+// ---- Two pages, one controller (1.6.0, KT): the Status Bar page (Root.plist) and the Windows & Multitasking page (Windows.plist: Windowing, Window
+// Engine with its notes and Turn On Stage Manager, Windows, Resize Apps to Fit Windows, Traffic Lights, Multitasking), its own row next to Status Bar
+// (StatusBarSettingsRow.x). MSBWindowsListController (below) is this controller with the other plist: every rule here works on the rows it finds, so
+// each page keeps the rules of its own rows.
+@interface MSBRootListController (MSBPages)
+- (NSString *)msb_plistName;
+- (BOOL)msb_windowsPage;
+@end
+// The Windows & Multitasking row is in Settings' list next to ours (StatusBarSettingsRow.x: the sidebar on 15-17, General's group on 18). Where it is
+// not -- the row tweak not loaded, or Settings' list not as expected, so this page came from PreferenceLoader's entry --, a link to that page takes
+// the place its settings had here, so they can always be reached.
+static BOOL MSBWindowsRowListed(void) {
+	BOOL (*listed)(void) = (BOOL (*)(void))dlsym(RTLD_DEFAULT, "MSBDWindowsRowListed");
+	return listed && listed();
+}
+static UIImage *MSBWindowsIcon(void) { return [UIImage imageNamed:@"windows" inBundle:[NSBundle bundleForClass:[MSBRootListController class]] compatibleWithTraitCollection:nil]; }
+
 @implementation MSBRootListController {
 	int _msbConsentToken, _msbSMOnToken;   // (Stage Manager's state and the consent answers, followed while the page exists)
+	NSMutableArray *_msbApplePages;   // (the Windows & Multitasking page: Apple's pages whose rows it shows, never shown themselves -- AppleMultitasking.h)
 }
+- (NSString *)msb_plistName { return @"Root"; }
+- (BOOL)msb_windowsPage { return NO; }
 
 MSBD_LINE_SWITCH_METHODS
 
@@ -413,9 +457,7 @@ MSBD_LINE_SWITCH_METHODS
 }
 
 - (void)msb_reportProblem:(PSSpecifier *)specifier {
-	PSSpecifier *engineSpec = nil;
-	for (PSSpecifier *sp in [self specifiers]) if ([[sp propertyForKey:@"key"] isEqual:@"windowEngine"]) engineSpec = sp;
-	NSString *engine = engineSpec ? [self readPreferenceValue:engineSpec] : nil;   // (the engine that really runs: see -readPreferenceValue: below)
+	NSString *engine = MSBEngineShownWithoutRow();   // (the engine that really runs, as the Window Engine row shows it: -readPreferenceValue: below)
 	MSBDOpenReport(MSBDReportProblemURL([engine isKindOfClass:[NSString class]] && ![engine isEqualToString:@"none"] ? engine : nil));
 }
 
@@ -423,6 +465,115 @@ MSBD_LINE_SWITCH_METHODS
 // bundle is instead of relying on the entry to tell Settings.
 - (NSBundle *)bundle {
 	return [NSBundle bundleForClass:[MSBRootListController class]];
+}
+
+static void MSBURLLog(NSString *line) {   // (debug builds: how a link reached the page, in the Settings probe's log)
+#if DEBUG
+	FILE *f = fopen("/tmp/msbd-settings.log", "a");
+	if (f) { fprintf(f, "%.3f [pageurl] %s\n", CFAbsoluteTimeGetCurrent(), line.UTF8String); fclose(f); }
+#else
+	(void)line;
+#endif
+}
+// A link to a place on the page (1.6.0, iPadOS 18: SpringBoard's "Edit Go Menu..." and the engine notice's "Choose Engine" open the page by Settings'
+// own link, which carries the place -- prefs:root=General&path=MSBD_PL_MacStatusBarPrefs/GO_APPS, or MAC_WINDOWS/WINDOW_ENGINE for the Windows &
+// Multitasking page, common/SettingsRoot.h -- as 15-17's main list row is picked by Settings itself): that row's page opens, as a tap does.
+// WINDOW_ENGINE on the Status Bar page (an older link) goes on to the Windows & Multitasking page. Any other path goes on as before.
+- (void)msb_openRowForPath:(NSString *)path attempt:(int)attempt {
+	PSSpecifier *row = nil;
+	for (PSSpecifier *sp in [self specifiers]) {
+		if ([path isEqualToString:@"GO_APPS"] ? [[sp identifier] isEqualToString:@"GO_APPS"] : [[sp propertyForKey:@"key"] isEqual:@"windowEngine"]) { row = sp; break; }
+	}
+	NSIndexPath *ip = row ? [self indexPathForSpecifier:row] : nil;
+	UITableView *t = [self respondsToSelector:@selector(table)] ? [self table] : nil;
+	// (and Settings done moving its pages: on a cold start the link comes twice -- SpringBoard opens it again once Settings is in front -- and Settings
+	//  puts its pages back each time; a row opened while it did went with them, so the picker never stayed (A12Z 18.5, cold "Choose Engine").
+	//  The page is on top of its navigation stack, directly or inside the controller that hosts it there on 18, and nothing is moving.)
+	UINavigationController *nav = self.navigationController;
+	UIViewController *mine = self;
+	while (mine.parentViewController && mine.parentViewController != nav) mine = mine.parentViewController;
+	BOOL settled = self.view.window && (!nav || (nav.topViewController == mine && !nav.transitionCoordinator));
+	if (!ip || !t || !settled || ip.section >= t.numberOfSections || ip.row >= [t numberOfRowsInSection:ip.section]) {   // (the page still being pushed and laid out)
+		if (attempt == 0 || attempt == 15) MSBURLLog([NSString stringWithFormat:@"%@ %@: try %d, row %d ip %d table %d window %d settled %d", NSStringFromClass([self class]), path, attempt, row != nil, ip != nil, t != nil, self.view.window != nil, settled]);
+		__weak MSBRootListController *weakSelf = self;
+		if (attempt < 16 || (attempt >= 100 && attempt < 104)) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [weakSelf msb_openRowForPath:path attempt:attempt + 1]; });
+		return;
+	}
+	[t scrollToRowAtIndexPath:ip atScrollPosition:UITableViewScrollPositionMiddle animated:NO];
+	[self tableView:t didSelectRowAtIndexPath:ip];
+	MSBURLLog([NSString stringWithFormat:@"%@ %@: row opened (try %d)", NSStringFromClass([self class]), path, attempt]);
+	// (looked at once more a moment later: the page on top again and settled means its row's list was taken away by Settings -- opened again, once)
+	if (attempt >= 100) return;
+	__weak MSBRootListController *weakSelf = self;
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+		MSBRootListController *me = weakSelf;
+		UINavigationController *n = me.navigationController;
+		UIViewController *m = me;
+		while (m.parentViewController && m.parentViewController != n) m = m.parentViewController;
+		if (me && me.view.window && n && n.topViewController == m && !n.transitionCoordinator) { MSBURLLog(@"its list was taken away: opened again"); [me msb_openRowForPath:path attempt:100]; }
+	});
+}
+- (void)handleURL:(NSDictionary *)url withCompletion:(id)completion {
+	NSString *path = [url isKindOfClass:[NSDictionary class]] ? url[@"path"] : nil;
+	MSBURLLog([NSString stringWithFormat:@"%@ handleURL %@ (in window %d)", NSStringFromClass([self class]), url, self.isViewLoaded && self.view.window != nil]);
+	if ([path isEqual:@"WINDOW_ENGINE"] && ![self msb_windowsPage]) {   // (1.6.0: the Window Engine row is on the Windows & Multitasking page)
+		__weak MSBRootListController *weakSelf = self;
+		dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf msb_openWindowsPageForPath:path]; });
+		if (completion) ((void (^)(void))completion)();
+		return;
+	}
+	if ([path isEqual:@"GO_APPS"] || [path isEqual:@"WINDOW_ENGINE"]) {
+		__weak MSBRootListController *weakSelf = self;
+		dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf msb_openRowForPath:path attempt:0]; });
+		if (completion) ((void (^)(void))completion)();
+		return;
+	}
+	// (1.6.0: a link into one of Apple's multitasking rows this page shows -- sent here from Apple's own page, StatusBarSettingsRow.x: scrolled to)
+	if ([self msb_windowsPage] && [path isKindOfClass:[NSString class]] && path.length && [self specifiers] && _msbApplePages.count && [self specifierForID:path]) {
+		__weak MSBRootListController *weakSelf = self;
+		dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf msb_scrollToRowID:path attempt:0]; });
+		if (completion) ((void (^)(void))completion)();
+		return;
+	}
+	[super handleURL:url withCompletion:completion];
+}
+// One of Apple's rows on this page brought into view (its group at the top), once the page is on screen and Settings' navigation has settled.
+- (void)msb_scrollToRowID:(NSString *)rowID attempt:(int)attempt {
+	PSSpecifier *row = [self specifierForID:rowID];
+	NSUInteger at = row ? [_specifiers indexOfObjectIdenticalTo:row] : NSNotFound;
+	PSSpecifier *cellRow = row;   // (a group: the first row after it)
+	if (row.cellType == PSGroupCell) { cellRow = nil; for (NSUInteger i = at + 1; at != NSNotFound && i < _specifiers.count; i++) { if (((PSSpecifier *)_specifiers[i]).cellType != PSGroupCell) cellRow = _specifiers[i]; break; } }
+	NSIndexPath *ip = cellRow ? [self indexPathForSpecifier:cellRow] : nil;
+	UITableView *t = [self respondsToSelector:@selector(table)] ? [self table] : nil;
+	UINavigationController *nav = self.navigationController;
+	UIViewController *mine = self;
+	while (mine.parentViewController && mine.parentViewController != nav) mine = mine.parentViewController;
+	BOOL settled = self.view.window && (!nav || (nav.topViewController == mine && !nav.transitionCoordinator));
+	if (!ip || !t || !settled || ip.section >= t.numberOfSections || ip.row >= [t numberOfRowsInSection:ip.section]) {
+		__weak MSBRootListController *weakSelf = self;
+		if (attempt < 16) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [weakSelf msb_scrollToRowID:rowID attempt:attempt + 1]; });
+		else MSBURLLog([NSString stringWithFormat:@"%@: not scrolled (row %d ip %d settled %d)", rowID, row != nil, ip != nil, settled]);
+		return;
+	}
+	[t layoutIfNeeded];
+	CGRect r = row == cellRow ? [t rectForRowAtIndexPath:ip] : [t rectForSection:ip.section];
+	CGFloat maxY = MAX(-t.adjustedContentInset.top, t.contentSize.height + t.adjustedContentInset.bottom - t.bounds.size.height);
+	[t setContentOffset:CGPointMake(t.contentOffset.x, MIN(MAX(r.origin.y - t.adjustedContentInset.top, -t.adjustedContentInset.top), maxY)) animated:NO];
+	MSBURLLog([NSString stringWithFormat:@"%@: scrolled to (try %d, section %ld)", rowID, attempt, (long)ip.section]);
+}
+
+// The Windows & Multitasking page pushed from this one, as a tap on its row does (PSListController's own way: the controller for a link specifier,
+// shown), then the place on it.
+- (void)msb_openWindowsPageForPath:(NSString *)path {
+	Class c = NSClassFromString(@"MSBWindowsListController");
+	if (!c) return;
+	PSSpecifier *link = [PSSpecifier preferenceSpecifierNamed:@"Windows & Multitasking" target:self set:NULL get:NULL detail:c cell:PSLinkCell edit:Nil];
+	link.identifier = @"MAC_WINDOWS";
+	SEL make = NSSelectorFromString(@"controllerForSpecifier:");
+	UIViewController *page = [self respondsToSelector:make] ? ((id (*)(id, SEL, id))objc_msgSend)(self, make, link) : nil;
+	if (![page isKindOfClass:c]) return;
+	[self showController:(PSViewController *)page animate:NO];
+	if (path.length && [page respondsToSelector:@selector(handleURL:withCompletion:)]) [(PSListController *)page handleURL:@{@"path": path} withCompletion:nil];
 }
 
 // The stock slider cell's value label is a little too narrow for two decimals on iPadOS 16: "0.70" showed as "0.7C" (iPad 2 cross-test, both
@@ -439,6 +590,19 @@ static void MSBFitValueLabels(UIView *v) {
 		MSBFitValueLabels(sub);
 	}
 }
+// A link row to one of Apple's pages (17: Multitasking & Gestures by Apple's own link, AppleMultitasking.h): Settings opens it, as a search result.
+- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
+	NSInteger i = [self indexForIndexPath:ip];
+	PSSpecifier *sp = i >= 0 && i < (NSInteger)_specifiers.count ? _specifiers[i] : nil;
+	NSString *link = [sp propertyForKey:@"msbdAppleLink"];
+	if ([link isKindOfClass:[NSString class]]) {
+		[tv deselectRowAtIndexPath:ip animated:YES];
+		MSBURLLog([NSString stringWithFormat:@"Apple's link opened: %@", link]);
+		MSAMOpenLink(link);
+		return;
+	}
+	[super tableView:tv didSelectRowAtIndexPath:ip];
+}
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
 	UITableViewCell *cell = [super tableView:tv cellForRowAtIndexPath:ip];
 	if ([NSStringFromClass([cell class]) containsString:@"Slider"]) {
@@ -450,9 +614,24 @@ static void MSBFitValueLabels(UIView *v) {
 
 - (NSArray *)specifiers {
 	if (!_specifiers) {
-		_specifiers = [self loadSpecifiersFromPlistName:@"Root" target:self];
-		NSArray *untested = [self msbd_untestedSpecifiers];   // (on top: "Enable Anyway" on an untested iPadOS version, or the crash guard's note)
-		if (untested.count) { NSMutableArray *all = [untested mutableCopy]; [all addObjectsFromArray:_specifiers]; _specifiers = all; }
+		_specifiers = [self loadSpecifiersFromPlistName:[self msb_plistName] target:self];
+		if (![self msb_windowsPage]) {
+			NSArray *untested = [self msbd_untestedSpecifiers];   // (on top: "Enable Anyway" on an untested iPadOS version, or the crash guard's note)
+			if (untested.count) { NSMutableArray *all = [untested mutableCopy]; [all addObjectsFromArray:_specifiers]; _specifiers = all; }
+			if (!MSBWindowsRowListed()) {   // (where the Windows & Multitasking row is not in Settings' list: a link to its page, where its rows were)
+				PSSpecifier *g = [PSSpecifier groupSpecifierWithID:@"WINDOWS_LINK_GROUP"];
+				[g setProperty:@YES forKey:@"stockHides"];   // (in stock mode that page has only its note: the link goes with the other window rows)
+				PSSpecifier *link = [PSSpecifier preferenceSpecifierNamed:@"Windows & Multitasking" target:self set:NULL get:NULL detail:NSClassFromString(@"MSBWindowsListController") cell:PSLinkCell edit:Nil];
+				link.identifier = @"MAC_WINDOWS";
+				UIImage *icon = MSBWindowsIcon();
+				if (icon) [link setProperty:icon forKey:@"iconImage"];
+				NSUInteger at = _specifiers.count;
+				for (NSUInteger i = 0; i < _specifiers.count; i++) if ([((PSSpecifier *)_specifiers[i]).identifier isEqualToString:@"REPORT_GROUP"]) { at = i; break; }
+				NSMutableArray *all = [_specifiers mutableCopy];
+				[all insertObjects:@[g, link] atIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(at, 2)]];
+				_specifiers = all;
+			}
+		}
 		// The Control Center size only resizes BigSurCenter's own drop-down panel opened from our status bar; with the stock Control Center, or the
 		// stock status bar, it does nothing, so then its slider and its footer are left out of the Control Center group (Hide Grabber stays).
 		BOOL bigSur = NO;
@@ -477,13 +656,15 @@ static void MSBFitValueLabels(UIView *v) {
 			large = [large imageWithTintColor:[UIColor secondaryLabelColor] renderingMode:UIImageRenderingModeAlwaysOriginal];
 			if (small && large) { [spec setProperty:small forKey:@"leftImage"]; [spec setProperty:large forKey:@"rightImage"]; }
 		}
-		// The desktop's icons on iPadOS 17 (untested versions): offered, unless SpringBoard's check of the Home Screen parts they use failed on this
-		// iPadOS build (common/DesktopCheck.h) -- then they stay off there and the switch is left out. The Mac Switcher is offered on 17 (off unless
-		// switched on, as everywhere). On 18+ neither is offered (MacSwitcher.h DMMSWOSOK, Desktop.h DMDesktopPrefOn: only 17 was ported).
+		// The desktop's icons on iPadOS 17+: offered, unless SpringBoard's check of the Home Screen parts they use failed on this iPadOS build
+		// (common/DesktopCheck.h) -- then they stay off there and the switch is left out. The Mac Switcher is offered on 17+ (off unless switched on,
+		// as everywhere). On 18+ both need SpringBoard's typed keyboard focus lock (StatusBar.x DMFocusLock18OK): left out where its check failed on
+		// this build.
 		if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17) {
-			BOOL is18 = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 18, desktopFailed = is18 || MSBDDesktopVerdict(NULL) == 0;
+			BOOL noFocus18 = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 18 && MSBDFocusLockVerdict() == 0;
+			BOOL desktopFailed = noFocus18 || MSBDDesktopVerdict(NULL) == 0;
 			NSMutableArray *kept = [_specifiers mutableCopy];
-			for (PSSpecifier *spec in _specifiers) if ((desktopFailed && [[spec propertyForKey:@"key"] isEqual:@"desktopIcons"]) || (is18 && [[spec propertyForKey:@"key"] isEqual:@"macSwitcher"])) [kept removeObject:spec];
+			for (PSSpecifier *spec in _specifiers) if ((desktopFailed && [[spec propertyForKey:@"key"] isEqual:@"desktopIcons"]) || (noFocus18 && [[spec propertyForKey:@"key"] isEqual:@"macSwitcher"])) [kept removeObject:spec];
 			_specifiers = kept;
 		}
 		// Stage Manager as an engine only exists on iPadOS 16+ (and only where Stage Manager runs, MSBEngineState greys it out elsewhere).
@@ -600,6 +781,18 @@ static void MSBFitValueLabels(UIView *v) {
 				[sp setProperty:[NSString stringWithFormat:@"Stage Manager isn't supported as a window engine on iPadOS %@ yet, so the default engine is used.", os ?: @"(this version)"] forKey:@"footerText"];
 			break;
 		}
+		// A third-party engine on an iPad with Stage Manager (1.6.0, the Windows & Multitasking page: one explanation of how the two go together): the
+		// engine's footer says what the pick did to Apple's setting (smHoldConsent: kept off while that engine runs, back as it was without windowing).
+		// Only for an engine that has a library of its own (Aerial, Zetsu, MilkyWay4): MSBEngineState answers 2 for any other name, "none" too, and
+		// with no engine at all this footer took the place of "No tested window engine is installed" (iPad 2 16.7.7: "... while none runs").
+		for (PSSpecifier *spec in [_specifiers copy]) {
+			if (![[spec propertyForKey:@"key"] isEqual:@"windowEngine"]) continue;
+			NSString *engine = [self readPreferenceValue:spec];
+			if (!MSBStageManagerAvailable() || ![engine isKindOfClass:[NSString class]] || !MSBEngineLibraries()[engine] || MSBEngineState(engine) != 2) break;
+			for (PSSpecifier *sp in _specifiers) if ([sp.identifier isEqualToString:@"ENGINE_GROUP"])
+				[sp setProperty:[NSString stringWithFormat:@"Only the chosen engine is loaded. Stage Manager stays off while %@ runs, and comes back as you had it when you turn off windowing.", MSBEngineName(engine)] forKey:@"footerText"];
+			break;
+		}
 		// "Resize Handles" (ours or Stage Manager's) is only a choice with Stage Manager as the engine: the other engines always have ours.
 		for (PSSpecifier *spec in [_specifiers copy]) {
 			if (![[spec propertyForKey:@"key"] isEqual:@"windowEngine"]) continue;
@@ -625,8 +818,9 @@ static void MSBFitValueLabels(UIView *v) {
 			_specifiers = kept;
 			break;
 		}
-		// The Wi-Fi Menu is for iPadOS 15/16 and 17 (WiFiMenu.h, DMWiFiOSOK): on 18+ its switch is not offered.
-		if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 18) {
+		// The Wi-Fi Menu on iPadOS 18+ needs SpringBoard's typed keyboard focus lock for its password sheet (WiFiMenu.h DMWiFiOSOK): its switch is
+		// left out where that check failed on this build.
+		if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 18 && MSBDFocusLockVerdict() == 0) {
 			NSMutableArray *kept = [NSMutableArray array];
 			BOOL hiding = NO;
 			for (PSSpecifier *sp in _specifiers) {
@@ -664,8 +858,35 @@ static void MSBFitValueLabels(UIView *v) {
 			_specifiers = kept;
 		}
 		_specifiers = [self msbd_hideRowsWhenLineOff:_specifiers offFooter:@"Everything except the Dock is off. Turn it on to change its settings. Takes effect after a respring."];
+		if ([self msb_windowsPage]) _specifiers = [self msb_windowsPageNotes:_specifiers];
+		// Apple's own multitasking settings, live and still Apple's, after ours (AppleMultitasking.h: per iPadOS version where Apple keeps them; 16: General's
+		// Picture in Picture and Gestures). Only while this page is the place for them -- the same answer that takes Apple's rows out of their page
+		// (StatusBarSettingsRow.x) -- and only an entry whose page is there with the rows it must have.
+		if ([self msb_windowsPage] && MSAMWanted(MSBWindowsRowListed())) {
+			_msbApplePages = [NSMutableArray array];
+			NSMutableArray *all = [_specifiers mutableCopy];
+			for (NSNumber *n in MSAMSourcesFor(MSAMOS())) {
+				if (!MSAMEntryOK(n.intValue)) continue;
+				NSArray *rows = MSAMEntryRows(n.intValue, self, _msbApplePages);
+				if (rows.count) [all addObjectsFromArray:rows];
+			}
+			_specifiers = all;
+		}
+		// Where Apple's page has no rows to show (17, 18: Multitasking & Gestures is a SwiftUI page), a row of ours that opens it: by Apple's own link where
+		// Settings has its URL handler (17), else Apple's page shown from here (18). Apple's own row stays; no row where the way to the page is not there.
+		if ([self msb_windowsPage] && MSAMPageLive()) {
+			NSMutableArray *all = nil;
+			for (NSNumber *n in MSAMSourcesFor(MSAMOS())) {
+				if (kMSAMSources[n.intValue].kind == MSAMRows) continue;
+				PSSpecifier *row = MSAMLinkRowSpecifier(n.intValue, self);
+				if (!row) continue;
+				if (!all) { all = [_specifiers mutableCopy]; [all addObject:[PSSpecifier groupSpecifierWithID:@"MSAM_LINK_GROUP"]]; }
+				[all addObject:row];
+			}
+			if (all) _specifiers = all;
+		}
 		// The last SpringBoard crash (24 h) was another tweak's: one quiet line at the bottom of the page, nothing else (CrashExplain.h).
-		NSString *other = MSBDOtherTweakCrashNote();
+		NSString *other = [self msb_windowsPage] ? nil : MSBDOtherTweakCrashNote();
 		if (other) {
 			PSSpecifier *note = [PSSpecifier groupSpecifierWithID:@"MSBD_OTHER_CRASH"];
 			[note setProperty:other forKey:@"footerText"];
@@ -675,6 +896,21 @@ static void MSBFitValueLabels(UIView *v) {
 	}
 	return _specifiers;
 }
+// The Windows & Multitasking page when its rows cannot work: MacStatusBar off (its switch is on the Status Bar page) -- only a note, as that page
+// shows only its switch then; the stock status bar -- its rows are left out as on the Status Bar page (stockHides), and a note says what runs;
+// MacStatusBar&Dock not running on this iPadOS version or in safe mode -- the rows are greyed (msbd_hideRowsWhenLineOff), a note says where to look.
+- (NSMutableArray *)msb_windowsPageNotes:(NSArray *)specs {
+	NSString *why = nil;
+	if (!MSBDLineEnabled(@"MacStatusBar")) why = @"MacStatusBar is off, and with it the window features. Turn it on in Status Bar to change these settings. Takes effect after a respring.";
+	else if (MSBStockBarStored()) why = @"With the stock status bar, your window engine works on its own, with its own settings.";
+	else if (!MSBDGateWanted()) why = @"MacStatusBar&Dock is not running right now, so these settings can't be changed. See Status Bar.";
+	if (!why) return [specs mutableCopy];
+	PSSpecifier *note = [PSSpecifier groupSpecifierWithID:@"MSB_WINDOWS_NOTE"];
+	[note setProperty:why forKey:@"footerText"];
+	if (MSBDLineEnabled(@"MacStatusBar") && !MSBStockBarStored()) return [[@[note] arrayByAddingObjectsFromArray:specs] mutableCopy];   // (greyed rows below)
+	return [@[note] mutableCopy];
+}
+
 // "Include Tweak Settings" adds to the search field's results: greyed while "Search Field in Settings" is off (as Apple greys a row that depends on
 // another switch), live when that switch changes.
 - (void)msb_updateSearchTweaksRow:(BOOL)reload {
@@ -698,10 +934,7 @@ static void MSBFitValueLabels(UIView *v) {
 	id value = [super readPreferenceValue:specifier];
 	if (![[specifier propertyForKey:@"key"] isEqual:@"windowEngine"]) return value;
 	NSArray *offered = [specifier respondsToSelector:NSSelectorFromString(@"values")] ? ((id (*)(id, SEL))objc_msgSend)(specifier, NSSelectorFromString(@"values")) : nil;
-	if ([value isKindOfClass:[NSString class]] && [offered containsObject:value] && MSBEngineState(value) >= 1) return value;   // (an untested build too: it is the one that loads, on its own)
-	// Nothing usable picked (none, not offered, not installed): the same single rule as SpringBoard and the helper (EngineBuilds.h: Aerial of any build, else MilkyWay4, else Zetsu).
-	NSString *fallback = MSBDDefaultEngine(^BOOL(NSString *e) { return MSBEngineState(e) != 0; }, ^NSString *(NSString *lib) { return MSBEngineLibraryPath(lib); });
-	return fallback ?: @"none";   // ("none": no engine at all, shown as "None", see -specifiers)
+	return MSBEngineShown(value, offered);   // ("none": no engine at all, shown as "None", see -specifiers)
 }
 // Picking a Window Engine: Mac Status Bar's own preference is saved as before, then the other engines are stopped from loading (see above).
 - (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)specifier {
@@ -815,4 +1048,12 @@ static void MSBFitValueLabels(UIView *v) {
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ _specifiers = nil; [self reloadSpecifiers]; });
 }
 
+@end
+
+// ---- The Windows & Multitasking page (1.6.0): the Status Bar page's controller with Windows.plist ----
+@interface MSBWindowsListController : MSBRootListController
+@end
+@implementation MSBWindowsListController
+- (NSString *)msb_plistName { return @"Windows"; }
+- (BOOL)msb_windowsPage { return YES; }
 @end

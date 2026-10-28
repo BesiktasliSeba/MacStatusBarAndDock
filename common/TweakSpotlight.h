@@ -52,6 +52,8 @@ static MTIConfig *MTSBaseConfig(void) {
     c.cfVersion = kCFCoreFoundationVersionNumber;
     c.maxPerPane = 400; c.maxTotal = 6000;
     c.own = @[@{@"id": @"MAC_STATUS_BAR", @"title": @"Status Bar", @"bundle": [kMTSBundleDir stringByAppendingPathComponent:@"MacStatusBarPrefs.bundle"]},
+              @{@"id": @"MAC_WINDOWS", @"title": @"Windows & Multitasking", @"bundle": [kMTSBundleDir stringByAppendingPathComponent:@"MacStatusBarPrefs.bundle"],
+                @"plist": @"Windows", @"icon": @"windows"},   // (1.6.0: the window rows' own page, from the Status Bar page's bundle)
               @{@"id": @"DOCK_MAGNIFICATION", @"title": @"Dock", @"bundle": [kMTSBundleDir stringByAppendingPathComponent:@"DockMagnificationPrefs.bundle"]}];
     c.skipBundles = @[@"MacStatusBarPrefs", @"DockMagnificationPrefs"];   // (on iPadOS 17 our page is also a PreferenceLoader entry, hidden while our row is there)
     NSMutableArray *x = [NSMutableArray array];

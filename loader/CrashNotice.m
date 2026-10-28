@@ -23,6 +23,7 @@
 #import <sys/time.h>
 #import "../common/CrashExplain.h"
 #import "../common/AlertQueue.h"   // (our alerts one at a time: the notice waits for another alert of ours)
+#import "../common/SettingsRoot.h"   // (MSBDSettingsRootSwiftUI, MSBDPageLink, MSBDSettingsLink: the way into our page that Settings' root list has)
 
 @interface UIWindow (MSBDNoticePrivate)
 + (NSArray<UIWindow *> *)allWindowsIncludingInternalWindows:(BOOL)internal onlyVisibleWindows:(BOOL)visible;
@@ -108,8 +109,23 @@ static void NoticeClose(NSString *how, BOOL putAway) {
     NoticeLog([NSString stringWithFormat:@"closed: %@", how]);
 }
 static void NoticeOpenSettings(void) {
-    void (*open)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "MSBDOpenStatusBarPage");   // (our status bar runs: it opens Settings full screen)
+    void (*open)(void) = (void (*)(void))dlsym(RTLD_DEFAULT, "MSBDOpenStatusBarPage");   // (our status bar runs: it opens Settings as Open Apps as Windows says)
     if (open) { open(); return; }
+    // Our status bar does not run (the guard turned the tweak off: safe mode), so the notice opens our Status Bar page itself, where Turn Back On
+    // is. iPadOS 18's root list is SwiftUI (common/SettingsRoot.h): Settings takes the page only by its own link, in General, and leaves a page
+    // request (StatusBarSettingsRow.x OpenPage), so the request below never reached the page on 18 -- which became a tested version, with this
+    // safe mode, in 1.6.0. The link is opened as SpringBoard's own opener does it (StatusBar.x DMOpenURL). 15-17: the request, as before.
+    if (MSBDSettingsRootSwiftUI()) {
+        NSURL *url = [NSURL URLWithString:MSBDSettingsLink(MSBDPageLink(0))];
+        NoticeLog([NSString stringWithFormat:@"open settings by its link: %@", url.absoluteString]);
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{   // (a synchronous round trip: never on the main thread)
+            id ws = NoticeCall((id)objc_getClass("LSApplicationWorkspace"), @"defaultWorkspace");
+            SEL sel = NSSelectorFromString(@"openSensitiveURL:withOptions:");
+            BOOL ok = url && [ws respondsToSelector:sel] && ((BOOL (*)(id, SEL, id, id))objc_msgSend)(ws, sel, url, nil);
+            NoticeLog([NSString stringWithFormat:@"open settings by its link: opened=%d", ok]);
+        });
+        return;
+    }
     static int token = 0;   // (Settings opens our page, once, if the request is recent: StatusBarSettingsRow.x; the token is kept, so the state stays)
     if (token || notify_register_check("com.besiktasliseba.macstatusbaranddock.openstatusbarpage", &token) == NOTIFY_STATUS_OK) {
         notify_set_state(token, (uint64_t)time(NULL));

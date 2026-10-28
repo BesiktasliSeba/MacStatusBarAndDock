@@ -1,14 +1,14 @@
 // HomeBar.x -- hides the home indicator (the pill at the bottom edge), everywhere: the Home Screen and every app. Replicates Trim's
 // "Remove Home Bar" (on by default there, the owner has never changed it) so Trim can eventually be removed.
 //
-// Only the INDICATOR is hidden — the swipe-up-from-the-bottom-edge gesture itself (to go home, or hold to open the app switcher) is
-// untouched. iOS keeps the two completely separate: -prefersHomeIndicatorAutoHidden only controls whether the little pill is drawn, never
-// whether the system gesture recognizer at the bottom edge responds to a touch, so this has no effect on that at all.
-//
-// -prefersHomeIndicatorAutoHidden is a PUBLIC, documented UIKit API (an app is meant to override it in its own view controllers) — not a
-// private class or method, so (learned the hard way tonight, see the ipad-tweak-dev-setup memory) this is safe to install in any process
-// that merely links UIKit without ever becoming a real app: a headless daemon has no view controllers ever put on screen, so the method is
-// simply never invoked there, exactly like MacLargeTitles' hooks (same filter, same reasoning) never fire outside a real UI process.
+// The pill is SpringBoard's own MTLumaDodgePillView (in SBMainDisplaySceneLayoutWindow for apps and the Home Screen; the Lock Screen's home
+// affordance has one too), the view Trim hides: SpringBoard keeps it hidden outright while the setting is off (below). Only its visibility is
+// touched; the swipe up from the bottom edge (go home, hold for the App Switcher) is a separate recogniser and keeps working.
+// Until 1.6.0 every app (and SpringBoard) also answered YES to -prefersHomeIndicatorAutoHidden, the public API, which on its own only made the pill
+// fade after a few idle seconds (Phase 2b, M1). SpringBoard takes that same answer for the multitasking dots of a full-screen app too
+// (-[SBFullScreenSwitcherSceneLiveContentOverlay _updateTopAffordanceAutoHide] -> -[SBTopAffordanceViewController setAutoHides:], 16.7.7), so with
+// Hide Multitasking Dots off the dots faded out 2.5 s after every touch, on every iPad, a Home-button one with no home bar at all too (iPad 2,
+// 1.6.0, traced). Apps keep their own answer now (a video player still hides both, as Apple has it); nothing of this part runs outside SpringBoard.
 #import <UIKit/UIKit.h>
 #if DEBUG
 #define MSTestFlag(path) (access((path), F_OK) == 0)   // a /tmp test switch (debug builds only; a release build behaves as if none existed)
@@ -25,49 +25,29 @@
 // not "is it being hidden": OFF (the default — matching Trim's own default, which is hidden) means no home bar; ON shows it normally.
 // A separate key from an earlier "enabled means hide" version of this switch, deliberately: reinterpreting the same stored value under
 // flipped semantics would have silently inverted anyone who had already set it. Read live, not cached, so switching it in Settings takes
-// effect on the next natural re-check (a rotation, a view controller transition, ...) with no respring needed.
-// Apps are sandboxed and cannot read our preferences (1.3.3, audit M-6: with the switch on, every app still said "auto-hide" and the pill faded away
-// in third-party apps): SpringBoard reads the switch and publishes it as notify state "com.besiktasliseba.machomebar.show" (1 showing, 2 hidden;
-// 0, not published yet, counts as hidden, the default), then posts "com.besiktasliseba.machomebar.show.changed", on which the apps read it again.
+// effect at once (the switch's notification, below) with no respring needed.
 #define HB_DOMAIN CFSTR("com.besiktasliseba.machomebar")
-#define HB_SHOW_STATE "com.besiktasliseba.machomebar.show"
-static BOOL gHBSpringBoard = NO;
-static int gHBAppShowing = -1;   // (an app: the published state, read once and again after each change)
-static BOOL HBShowing(void) {
-    if (!gHBSpringBoard) {
-        if (gHBAppShowing < 0) {
-            int t = 0; uint64_t state = 0;
-            if (notify_register_check(HB_SHOW_STATE, &t) == NOTIFY_STATUS_OK) { notify_get_state(t, &state); notify_cancel(t); }
-            gHBAppShowing = state == 1;
-        }
-        return gHBAppShowing == 1;
-    }
+static BOOL HBShowing(void) {   // (SpringBoard)
     CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("showHomeBar"), HB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     if (!v) return NO;   // default off (hidden), matching Trim's own default
     BOOL on = CFGetTypeID(v) == CFBooleanGetTypeID() ? CFBooleanGetValue(v) : NO;
     CFRelease(v);
     return on;
 }
-static void HBPublishShowing(void) {   // (SpringBoard only)
-    static int token = 0;
-    if (!token && notify_register_check(HB_SHOW_STATE, &token) != NOTIFY_STATUS_OK) token = 0;
-    if (token) notify_set_state(token, HBShowing() ? 1 : 2);
-    notify_post(HB_SHOW_STATE ".changed");
-}
 
-%hook UIViewController
-- (BOOL)prefersHomeIndicatorAutoHidden {
-    if (!HBShowing()) return YES;
-    return %orig;
-}
-%end
-
-// -prefersHomeIndicatorAutoHidden only makes the pill fade out after a few idle seconds (it came straight back on every touch, and was
-// fully visible for the first seconds of every app -- measured on the M1 after Trim's "Remove Home Bar" was switched off, Phase 2b). The pill
-// itself is SpringBoard's MTLumaDodgePillView (in SBMainDisplaySceneLayoutWindow), the view Trim hides too: in SpringBoard it is kept hidden
-// outright while the setting is off. Only its visibility is touched; the swipe-up gesture lives elsewhere and keeps working.
 @interface MTLumaDodgePillView : UIView
 @end
+// The Cover Sheet's home affordance (CSHomeAffordanceView: the Lock Screen, and Notification Center pulled down) draws its pill with a second
+// class, MTStaticColorPillView, next to an MTLumaDodgePillView that iOS keeps at alpha 0 there: with the Home Bar off that pill showed (M1 15.6.1,
+// 1.6.0 -- it used to fade a few seconds in, when SpringBoard's own view controllers also answered YES to -prefersHomeIndicatorAutoHidden). Both
+// classes are SpringBoard's home pills: the same rule for each (HBSpringBoardStatic, where the class exists).
+@interface MTStaticColorPillView : UIView
+@end
+static BOOL HBIsPillView(UIView *v) {
+    static Class luma, staticPill; static dispatch_once_t once;
+    dispatch_once(&once, ^{ luma = objc_getClass("MTLumaDodgePillView"); staticPill = objc_getClass("MTStaticColorPillView"); });
+    return (luma && [v isKindOfClass:luma]) || (staticPill && [v isKindOfClass:staticPill]);
+}
 // Does this device have a home bar at all? Published for MacSettings' Settings row (hidden where there is nothing to switch):
 // "com.besiktasliseba.machomebar.pill" = 1 none, 2 yes (0 = not known yet, the row then shows). Yes as soon as SpringBoard makes a pill view (this also
 // catches gesture tweaks that draw one on Home-button devices), or when MobileGestalt's HomeButtonType says there is no Home button (2).
@@ -135,26 +115,37 @@ static void HBCheckPillInUse(UIView *pill) {
 }
 %end
 %end
+%group HBSpringBoardStatic
+%hook MTStaticColorPillView
+- (void)didMoveToWindow {
+    %orig;
+    if (!HBIsHomePill((UIView *)self)) return;
+    if (((UIView *)self).window) HBCheckPillInUse((UIView *)self);
+    if (!HBShowing()) self.hidden = YES;
+}
+- (void)layoutSubviews {
+    %orig;
+    if (!HBIsHomePill((UIView *)self)) return;
+    HBCheckPillInUse((UIView *)self);
+    if (!HBShowing() && !self.hidden) self.hidden = YES;
+}
+- (void)setHidden:(BOOL)hidden {
+    BOOL want = (HBShowing() || !HBIsHomePill((UIView *)self)) ? hidden : YES;
+    %orig(want);
+}
+%end
+%end
 static void HBRefreshPills(UIView *v, BOOL show) {
-    if ([v isKindOfClass:objc_getClass("MTLumaDodgePillView")]) { if (HBIsHomePill(v)) v.hidden = !show; return; }
+    if (HBIsPillView(v)) { if (HBIsHomePill(v)) v.hidden = !show; return; }   // (either pill class)
     for (UIView *s in v.subviews) HBRefreshPills(s, show);
 }
 
-// Live switching (Phase 2b): the Settings switch posts com.besiktasliseba.machomebar/changed; every process with UI then asks each of its windows' view
-// controllers (and the ones they present) to re-read -prefersHomeIndicatorAutoHidden right away, instead of waiting for a turn or a transition.
-static void HBRefresh(UIViewController *vc) {
-    if (!vc) return;
-    [vc setNeedsUpdateOfHomeIndicatorAutoHidden];
-    for (UIViewController *c in vc.childViewControllers) HBRefresh(c);
-    if (vc.presentedViewController && vc.presentedViewController.presentingViewController == vc) HBRefresh(vc.presentedViewController);
-}
+// Live switching: the Settings switch posts com.besiktasliseba.machomebar/changed; SpringBoard shows or hides the pill views at once.
 %ctor {
-    %init;
-    BOOL springboard = [[NSBundle mainBundle].bundleIdentifier isEqualToString:@"com.apple.springboard"];
-    gHBSpringBoard = springboard;
-    if (springboard) HBPublishShowing();
-    if (springboard && objc_getClass("MTLumaDodgePillView")) %init(HBSpringBoard);
-    if (springboard) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    if (![[NSBundle mainBundle].bundleIdentifier isEqualToString:@"com.apple.springboard"]) return;   // (the pill is SpringBoard's; apps keep their own answer)
+    if (objc_getClass("MTLumaDodgePillView")) %init(HBSpringBoard);
+    if (objc_getClass("MTStaticColorPillView")) %init(HBSpringBoardStatic);   // (the Cover Sheet's home affordance)
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         void *mg = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_LAZY);
         int (*getInt)(CFStringRef, int) = mg ? (int (*)(CFStringRef, int))dlsym(mg, "MGGetSInt32Answer") : NULL;
         int type = getInt ? getInt(CFSTR("HomeButtonType"), -1) : -1;   // 2 = no Home button (the home bar is the way home)
@@ -171,23 +162,15 @@ static void HBRefresh(UIViewController *vc) {
         else if (type >= 0) HBPublishPill(1, [NSString stringWithFormat:@"HomeButtonType %d, no pill view", type]);
     });
     int token = 0;
-    // (SpringBoard: the switch's own notification, then the state is published; the apps follow the published state's own notification, which
-    //  comes after it -- reacting to the switch's notification they could read the state before SpringBoard had changed it)
-    notify_register_dispatch(springboard ? "com.besiktasliseba.machomebar/changed" : HB_SHOW_STATE ".changed", &token, dispatch_get_main_queue(), ^(int t) {
-        UIApplication *app = [UIApplication sharedApplication];
-        if (!app) return;
-        if (springboard) { CFPreferencesSynchronize(HB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost); HBPublishShowing(); }   // (the new value, not this process's cached one)
-        else gHBAppShowing = -1;
+    notify_register_dispatch("com.besiktasliseba.machomebar/changed", &token, dispatch_get_main_queue(), ^(int t) {
+        CFPreferencesSynchronize(HB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);   // (the new value, not this process's cached one)
+        BOOL show = HBShowing();
+        if (MSTestFlag("/tmp/macsettings-debug")) { FILE *f = fopen("/tmp/macsettings.log", "a"); if (f) { fprintf(f, "[homebar] changed: showing %d\n", show); fclose(f); } }
+        SEL allSel = NSSelectorFromString(@"allWindowsIncludingInternalWindows:onlyVisibleWindows:");
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-        for (UIWindow *w in app.windows) HBRefresh(w.rootViewController);
-        if (springboard) {   // (SpringBoard: the pill views themselves, in every window including internal ones)
-            BOOL show = HBShowing();
-            if (MSTestFlag("/tmp/macsettings-debug")) { FILE *f = fopen("/tmp/macsettings.log", "a"); if (f) { fprintf(f, "[homebar] changed: showing %d\n", show); fclose(f); } }
-            SEL allSel = NSSelectorFromString(@"allWindowsIncludingInternalWindows:onlyVisibleWindows:");
-            NSArray *all = [UIWindow respondsToSelector:allSel] ? ((NSArray *(*)(id, SEL, BOOL, BOOL))objc_msgSend)([UIWindow class], allSel, YES, NO) : nil;
-            for (UIWindow *w in all ?: app.windows) HBRefreshPills(w, show);
-        }
+        NSArray *all = [UIWindow respondsToSelector:allSel] ? ((NSArray *(*)(id, SEL, BOOL, BOOL))objc_msgSend)([UIWindow class], allSel, YES, NO) : [UIApplication sharedApplication].windows;
 #pragma clang diagnostic pop
+        for (UIWindow *w in all) HBRefreshPills(w, show);   // (the pill views themselves, in every window including internal ones)
     });
 }

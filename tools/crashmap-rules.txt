@@ -58,7 +58,8 @@ title MacIconLabels the Home Screen icon labels|the icon labels
 title MacPageDots the Home Screen page dots|the page dots
 title MacLockStatusBar the Lock Screen status bar|the Lock Screen status bar
 title MacHomeBar the Home Bar|the Home Bar
-title MacCCGrabber the Control Center grabber|the Control Center grabber
+title MacCCGrabber Control Center (grabber, RAM & CPU)|the Control Center grabber and RAM & CPU in Control Center
+title MacRAMCPU RAM & CPU in Control Center|RAM & CPU in Control Center
 
 # ---- the parts SpringBoard loads (loader/Loader.c): small ones as a whole ----
 image ForceQuitMenu forceQuitMenu
@@ -68,6 +69,9 @@ image BrightnessKeyTweak part map
 image GraveEscapeTweak part map
 image MacAppBridge part map
 image MacCCGrabber part
+# RAM & CPU (ccmodule/): loaded by Control Center itself, not by the loader -- "skip MacRAMCPU" keeps it out of Control Center's repository
+# (common/CCModuleRegister.h), so the module is not loaded any more
+image MacRAMCPU part
 image MacHomeBar part
 image MacIconLabels part
 image MacLargeTitles part

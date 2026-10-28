@@ -27,6 +27,10 @@ static inline void MSNECall1(id o, NSString *sel, id arg) {
     SEL s = NSSelectorFromString(sel);
     if ([o respondsToSelector:s]) ((void (*)(id, SEL, id))objc_msgSend)(o, s, arg);
 }
+// Apple's pages made here (never shown) carry a mark, so code that adds to Apple's pages when they are shown as Apple's (iPadOS 18,
+// macsettings/AppleGroups18.x) leaves them alone. (The key is a selector's address: the same in every file and part that includes this.)
+static inline const void *MSNEEmbeddedKey(void) { return (const void *)sel_registerName("msbdNativeEmbedded"); }
+static inline BOOL MSNEIsEmbedded(id page) { return page && objc_getAssociatedObject(page, MSNEEmbeddedKey()) != nil; }
 // Apple's page `className` made for `host` (not shown) and its rows; `only` keeps just those row identifiers (with nil, every row). The controller is
 // kept alive in `keep` (the rows' target is not retained by the rows). Returns nil if the page is not there on this iOS.
 static inline NSArray *MSNESpecifiers(UIViewController *host, NSString *className, NSArray<NSString *> *bundles, NSString *title, NSMutableArray *keep, NSArray<NSString *> *only) {
@@ -36,6 +40,7 @@ static inline NSArray *MSNESpecifiers(UIViewController *host, NSString *classNam
     @try {
         UIViewController *page = [[c alloc] init];
         if (!page) return nil;
+        objc_setAssociatedObject(page, MSNEEmbeddedKey(), @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (before its rows are asked for)
         MSNECall1(page, @"setRootController:", MSNECall(host, @"rootController"));
         MSNECall1(page, @"setParentController:", host);
         SEL make = NSSelectorFromString(@"preferenceSpecifierNamed:target:set:get:detail:cell:edit:");

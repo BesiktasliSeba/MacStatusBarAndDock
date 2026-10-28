@@ -43,6 +43,7 @@
 #include "../../common/DeviceGate.h"
 #include "../../common/EngineBuilds.h"
 #include "../../common/VersionGate.h"
+#include "../../common/WelcomeRule.h"     // (MSBDWelcomeAtInstall: the welcome's install-time decision, Mac-tested)
 #include "../../common/DpkgState.h"
 #include "../../common/StageManagerAvailable.h"
 #include "../../common/PointerAnim.h"       // (DMPtrAnimDecide: Pointer Animations given back as SpringBoard does it, Mac-tested)
@@ -1144,8 +1145,17 @@ static void Migrate(void) {
 // The one-time welcome alert (2026-09-25), decided here before anything of ours is written (the postinst runs this first): only a FIRST install gets
 // MIGDIR/welcome-pending, which Mac Status Bar's SpringBoard part needs to show it. Anything that shows the package or its settings were here before
 // -- an upgrade (dpkg's old version), an earlier install of this package (the migration marker), the old separate packages, or any preference file
-// of ours or of the old com.kaan.* tweaks -- marks it as already shown instead (welcomeShown), silently.
+// of ours or of the old com.kaan.* tweaks -- marks it as already shown instead (welcomeShown), silently. A marker still pending from the first
+// install is kept on an update, unless that install has run on an untested iPadOS version (Enable Anyway): then it is consumed (common/WelcomeRule.h;
+// 1.6.0: the update that made iPadOS 18 tested greeted every 18 user as a new one).
 #define WELCOMEFILE MIGDIR "/welcome-pending"
+static BOOL EnableAnywaySet(void) {   // (our "Enable Anyway" key exists, on or off: VersionGate.h; read as mobile, this helper runs as root)
+    CFStringRef domain = CFSTR(MSBD_GATE_DOMAIN);
+    CFPreferencesSynchronize(domain, CFSTR("mobile"), kCFPreferencesAnyHost);
+    CFPropertyListRef v = CFPreferencesCopyValue(CFSTR(MSBD_GATE_KEY), domain, CFSTR("mobile"), kCFPreferencesAnyHost);
+    if (v) CFRelease(v);
+    return v != NULL;
+}
 static NSString *NotFirstInstallReason(const char *oldVersion) {   // nil: a first install (nothing of ours or of the old packages was here)
     if (oldVersion && *oldVersion) return [NSString stringWithFormat:@"upgrade from %s", oldVersion];
     if (Exists(@MIGDIR "/migrated")) return @"installed before";
@@ -1158,15 +1168,33 @@ static NSString *NotFirstInstallReason(const char *oldVersion) {   // nil: a fir
 }
 static void WelcomeCheck(const char *oldVersion) {
     mkdir(MIGDIR, 0755);
-    if (Exists(@WELCOMEFILE)) { ELog(@"welcome: still pending from the first install -- kept"); return; }
-    NSString *why = NotFirstInstallReason(oldVersion);
-    if (why) {
-        WriteMobilePrefsKey(@"com.besiktasliseba.macstatusbaranddock", @"welcomeShown", @YES, YES);
-        ELog(@"welcome: not a first install (%@) -- marked as shown", why);
-        return;
+    BOOL pending = Exists(@WELCOMEFILE);
+    NSString *why = pending ? nil : NotFirstInstallReason(oldVersion);
+    switch (MSBDWelcomeAtInstall(pending, pending && EnableAnywaySet(), why != nil)) {
+        case kMSBDWelcomeKeep:
+            ELog(@"welcome: still pending from the first install -- kept");
+            return;
+        case kMSBDWelcomeMarkShown:
+            WriteMobilePrefsKey(@"com.besiktasliseba.macstatusbaranddock", @"welcomeShown", @YES, YES);
+            if (pending) ELog(@"welcome: pending since the first install, which has run on an untested iPadOS version (Enable Anyway) -- marked as shown");
+            else ELog(@"welcome: not a first install (%@) -- marked as shown", why);
+            return;
+        case kMSBDWelcomeMarkPending: {
+            BOOL ok = [@"1" writeToFile:@WELCOMEFILE atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            ELog(@"welcome: first install -- the welcome alert %@", ok ? @"will be shown once" : @"could NOT be marked (not shown)");
+            return;
+        }
     }
-    BOOL ok = [@"1" writeToFile:@WELCOMEFILE atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    ELog(@"welcome: first install -- the welcome alert %@", ok ? @"will be shown once" : @"could NOT be marked (not shown)");
+}
+// "Enable Anyway" is an at-your-own-risk choice for an untested iPadOS version. Once an update tests that version, the key has no use left, and
+// kept it would let a later, untested iPadOS (an iPadOS update without a new tweak) run the tweak without asking: so an install on a tested version
+// clears it (after the welcome check, which reads it). An unknown version (MSBDOSMajor 0) counts as tested but clears nothing.
+static void EnableAnywayClearIfTested(void) {
+    if (!MSBDOSMajor() || !MSBDVersionTested() || !EnableAnywaySet()) return;
+    CFStringRef gd = CFSTR(MSBD_GATE_DOMAIN);
+    CFPreferencesSetValue(CFSTR(MSBD_GATE_KEY), NULL, gd, CFSTR("mobile"), kCFPreferencesAnyHost);
+    CFPreferencesSynchronize(gd, CFSTR("mobile"), kCFPreferencesAnyHost);
+    ELog(@"enable anyway: iPadOS %d is a tested version now -- the Enable Anyway key cleared", MSBDOSMajor());
 }
 // New defaults for new installs only (2026-09-25). A setting nobody has touched is not stored, so its default decides -- and a changed default would
 // change it on every iPad that updates. So, once, on an update, every setting whose default changed gets the OLD default written in where nothing
@@ -1237,13 +1265,12 @@ static void FreezeOldDefaults(void) {
     if (fresh) {
         // 1.5.0: on a first install, Stage Manager is the window engine where this iPad can run it -- the engine graduated from "Experimental"
         // (1.1.0-1.1.2 did the same; 1.1.3 took it back after a crash on a 16.x build it had never been tried on). Where it runs: an iPad with Stage
-        // Manager (or TrollPad) on iPadOS 16.1-17.x, the versions it was tested on (16.0 and iPadOS 18 keep the normal default: 18's support comes in
-        // 1.6.0). Still guarded at every start: SpringBoard's self-check of the engine's private API must pass on this very build, or the default
+        // Manager (or TrollPad) on iPadOS 16.1-18.x, the versions it was tested on (16.0 keeps the normal default; 18 joined in 1.6.0). Still guarded at every start: SpringBoard's self-check of the engine's private API must pass on this very build, or the default
         // engine runs (ChosenEngine above, StatusBar.x DMSMEnginePicked). Updates keep what they had: nothing is written for them, so a setup with
         // no pick keeps the old default (Aerial, then MilkyWay4 on 15, then Zetsu: EngineBuilds.h). The update notice about Stage Manager is never
         // shown after a first install.
         NSOperatingSystemVersion ov = [NSProcessInfo processInfo].operatingSystemVersion;
-        BOOL tested = (ov.majorVersion == 16 && ov.minorVersion >= 1) || ov.majorVersion == 17;
+        BOOL tested = (ov.majorVersion == 16 && ov.minorVersion >= 1) || ov.majorVersion == 17 || ov.majorVersion == 18;
         if (tested && MSBDStageManagerAvailable() && WriteMobilePrefsKey(@"com.besiktasliseba.macstatusbar", @"windowEngine", @"stagemanager", YES))
             ELog(@"defaults: first install on iPadOS %ld.%ld with Stage Manager -- Stage Manager is the window engine", (long)ov.majorVersion, (long)ov.minorVersion);
         WriteMobilePrefsKey(@"com.besiktasliseba.macstatusbaranddock", @"stageManagerEngineNoticeShown", @YES, YES);
@@ -1359,7 +1386,7 @@ int main(int argc, char **argv) {
         if (argc > 2 && strcmp(argv[1], "--dry-run-engines") == 0) { DryRunEngines(argv[2], argc > 3 && strcmp(argv[3], "--old") == 0); return 0; }
         if (argc > 1 && strcmp(argv[1], "--dpkg-busy") == 0) { printf("%s\n", DpkgBusy() ? "busy" : "free"); return 0; }   // (test of the package-transaction check)
 #endif
-        if (argc > 1 && strcmp(argv[1], "--welcome-check") == 0) { WelcomeCheck(argc > 2 ? argv[2] : NULL); return 0; }   // (postinst, first: first install or not)
+        if (argc > 1 && strcmp(argv[1], "--welcome-check") == 0) { WelcomeCheck(argc > 2 ? argv[2] : NULL); EnableAnywayClearIfTested(); return 0; }   // (postinst, first: first install or not)
         if (argc > 1 && strcmp(argv[1], "--defaults-check") == 0) { DefaultsCheck(argc > 2 ? argv[2] : NULL); return 0; }   // (postinst, after the welcome check)
         if (argc > 1 && strcmp(argv[1], "--freeze-defaults") == 0) { FreezeOldDefaults(); return 0; }   // (postinst, after the migration)
         if (argc > 1 && strcmp(argv[1], "--migrate") == 0) { Migrate(); return 0; }                      // (postinst, once: from the old separate packages)

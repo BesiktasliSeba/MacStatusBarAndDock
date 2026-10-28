@@ -20,17 +20,15 @@
 // a function (__TEXT,__text), and read as a constant it crashed SpringBoard at every start (plans/ipados18-compat.md item 1: DMSMCheckRoles17, then
 // SMLimit.h's DMSMSBConstant). Code, a signed pointer or an unknown place: NULL, and the callers treat the value as unknown (as for a symbol that is
 // not exported). The 17.x builds keep it a constant (17.5.1: 25), so nothing changes there.
-static const long long *DMSMDataSymbolIn(void *p) {
-    if (!p) return NULL;
-    void *q = ptrauth_strip(p, ptrauth_key_asia);
-    if (q != p) return NULL;   // (signed: a function pointer)
+// Where an address lies in the image it belongs to: 1 a section of data, 2 a section of instructions, 0 not found (no image, no section).
+static int DMSMSymbolSectionKind(const void *q) {
     Dl_info di; memset(&di, 0, sizeof di);
-    if (!dladdr(q, &di) || !di.dli_fbase) return NULL;
+    if (!q || !dladdr(q, &di) || !di.dli_fbase) return 0;
     const struct mach_header_64 *mh = (const struct mach_header_64 *)di.dli_fbase;
-    if (mh->magic != MH_MAGIC_64) return NULL;
+    if (mh->magic != MH_MAGIC_64) return 0;
     intptr_t slide = 0; BOOL found = NO;
     for (uint32_t i = 0; i < _dyld_image_count(); i++) if ((const void *)_dyld_get_image_header(i) == (const void *)mh) { slide = _dyld_get_image_vmaddr_slide(i); found = YES; break; }
-    if (!found) return NULL;
+    if (!found) return 0;
     const struct load_command *lc = (const struct load_command *)(mh + 1);
     for (uint32_t i = 0; i < mh->ncmds; i++, lc = (const struct load_command *)((const char *)lc + lc->cmdsize)) {
         if (lc->cmd != LC_SEGMENT_64) continue;
@@ -39,10 +37,23 @@ static const long long *DMSMDataSymbolIn(void *p) {
         for (uint32_t j = 0; j < sg->nsects; j++) {
             uintptr_t a = (uintptr_t)sc[j].addr + (uintptr_t)slide;
             if ((uintptr_t)q < a || (uintptr_t)q + sizeof(long long) > a + sc[j].size) continue;
-            return (sc[j].flags & (S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS)) ? NULL : (const long long *)q;
+            return (sc[j].flags & (S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS)) ? 2 : 1;
         }
     }
-    return NULL;
+    return 0;
+}
+static const long long *DMSMDataSymbolIn(void *p) {
+    if (!p) return NULL;
+    void *q = ptrauth_strip(p, ptrauth_key_asia);
+    if (q != p) return NULL;   // (signed: a function pointer)
+    return DMSMSymbolSectionKind(q) == 1 ? (const long long *)q : NULL;
+}
+// The same for CODE: a function SpringBoard exports, lying in a section of instructions of its image; the pointer dlsym gave (on arm64e signed as
+// a C function pointer, as a call needs it), else NULL. iPadOS 18.5's SBLayoutRoleAdditionalSideRangeMax and SBLayoutRoleMax are such functions
+// (disassembled on the A12Z: each answers a value it computes once, dispatch_once, and takes nothing). SMLimit.h calls them, once SpringBoard is up.
+static void *DMSMCodeSymbolIn(void *p) {
+    if (!p) return NULL;
+    return DMSMSymbolSectionKind(ptrauth_strip(p, ptrauth_key_asia)) == 2 ? p : NULL;
 }
 #include "SMRoles.h"   // (the window roles a stage has: DMSMPlanValid reads the highest, sm-nolimit)
 #include "SMWindowKey.h"   // (one window, one key: its own scene -- M-2, sm-multiwin)
