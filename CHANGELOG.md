@@ -2,6 +2,24 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.7.1
+
+### Improvements
+- Stage Manager engine: iPadOS's App Switcher shows each app's window as its own card on iPadOS 16 to 18, as with Aerial, Zetsu and MilkyWay4. A tap brings that window forward on the desktop you are on, and a swipe up quits only that app.
+- Mac Switcher: opening an app whose window is on another desktop brings that window to the desktop you are on, whether you open it from the Dock, Command-Tab, the Go menu, Spotlight, a link, a notification or the App Switcher. Turn on Go to the App's Desktop in Settings > Windows & Multitasking to go to its desktop instead.
+- After unlocking, the status bar's items are there right away and fade in together.
+- iPadOS 15 with a hardware keyboard: typing goes to the window in front. A window behind can no longer keep the keys, and gets them back when you click it.
+
+### Fixes
+- With a trackpad or mouse, clicking the clock in the status bar opens the Today View again instead of Notification Center.
+- The status bar's items all take the same colour again when an app asks for a light or dark status bar.
+- Esc Ends Typing in Windows works again in text fields that apps draw themselves. Apps that read the keys themselves, such as terminals, virtual machines and remote desktops, still get Esc.
+- Apps you quit are no longer started in the background right after installing an update.
+- iPadOS 18: the RAM & CPU control comes back to its place in Control Center after safe mode, the jailbreak's Safe Mode, or switching the tweak off and on.
+- iPadOS 18: the alert banners at the top of Settings (iCloud, software update) are hidden, as on iPadOS 15 to 17.
+- iPadOS 18: with the Home Screen's page dots hidden, Control Center's page icons on the right edge show again.
+- iPads with a Home button: windows sit right under the status bar, without a gap.
+
 ## 1.7.0
 
 ### New

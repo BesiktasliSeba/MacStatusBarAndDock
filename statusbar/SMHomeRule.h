@@ -124,6 +124,22 @@ static int DMSMSwitcherNote(long long resultEnv, long long prevEnv, BOOL prevHas
     return resultEnv == 0 ? 0 : -1;
 }
 
+// The stage of the desktop the App Switcher was opened from (SMHome.h DMSMHomeSwitcherStage). Its windows were remembered then, and Stage Manager
+// makes a new stage object whenever one changes, so it is the stage holding exactly those windows -- less the ones closed in the App Switcher
+// meanwhile: with the engine every window has a card of its own (SMCards.h, 1.7.1) and a card swiped up closes that window alone, out of every
+// stage. A tap beside the cards is SpringBoard's Home, which keeps the desktop's windows over the Home Screen; after a card was swiped up no stage
+// held all the remembered windows any more and the rest went off the screen (A12Z, 18.5: Calculator's card swiped up, the tap, Tips gone).
+// remembered: the windows' identifiers; stages: each main-display stage's, most recent first; live: every window any stage holds (every display).
+// Returns the index of that stage, or NSNotFound (nothing remembered, every remembered window closed, or one in another stage now).
+static NSUInteger DMSMSwitcherDeskStage(NSSet<NSString *> *remembered, NSArray<NSSet<NSString *> *> *stages, NSSet<NSString *> *live) {
+    if (!remembered.count) return NSNotFound;
+    NSMutableSet<NSString *> *want = [remembered mutableCopy];
+    if (live) [want intersectSet:live];   // (closed in the App Switcher: in no stage any more)
+    if (!want.count) return NSNotFound;
+    for (NSUInteger i = 0; i < stages.count; i++) if ([stages[i] isKindOfClass:[NSSet class]] && [stages[i] isEqualToSet:want]) return i;
+    return NSNotFound;
+}
+
 // The Home gesture keeps the desktop still (SMHome.h B2, Reduce Motion off): the gesture runs over a desktop of windows (overDesk), the index it asks
 // about is the stage it took -- the one under the finger (selectedIndex) -- and that stage is the desktop (takenIsDesk); not once the finger has
 // held still in the App Switcher's range for 0.3 s (holdFrames: SpringBoard's own count, at fps frames a second), and not on a sideways swipe along

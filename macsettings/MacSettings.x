@@ -20,6 +20,7 @@
 #import <dlfcn.h>
 #import <mach-o/dyld.h>
 #import <os/lock.h>
+#include <stdatomic.h>
 #import "../common/General18Group.h"
 #import "../common/CCModuleRegister.h"   // (15-17: RAM & CPU in Settings > Control Center's list of controls)
 #import "../common/SidebarScroll.h"   // (the launch correction below leaves a scroll of ours alone)
@@ -131,6 +132,39 @@ static void NoteFollowUps(NSArray *specs, NSString *how) {   // (debug log: whic
     if (!MSTestFlag("/tmp/macsettings-debug")) return;
     NSUInteger n = 0; for (id sp in specs) if (IsFollowUp(sp)) n++;
     if (n) MLog([NSString stringWithFormat:@"alert banners (%lu) arrived via %@: left out", (unsigned long)n, how]);
+}
+// iPadOS 18: Settings draws its list in SwiftUI (SettingsApp), so there is no PSUIPrefsListController and no FollowUp row for the filter above to
+// leave out. Its banners -- "Some iCloud Data Isn't Syncing" under the Apple Account, "Update to iPadOS ..." under More for Your iPad -- come from
+// CoreFollowUp: the list's FollowUpListElementsGenerator asks an FLTopLevelViewModel made for com.apple.Preferences for its groups
+// (-groupsForPrimaryAccount:secondaryAccounts:), and each group is filled from that model's -allPendingItems (A12Z 18.5, traced 30 Oct). That one
+// model -- the list's own, told by its bundle identifier -- has no pending items here, so its groups are empty, as Settings' other empty groups
+// are, and the list shows no banner, as on 15-17. Every other model stays as it is (General's com.apple.GeneralSettingsUI; Software Update's
+// own controller and its badge).
+static id (*o_MSFUAllPending)(id, SEL);
+static BOOL MSFUListModel(id model) {
+    Ivar iv = class_getInstanceVariable(object_getClass(model), "_bundleIdentifier");
+    const char *t = iv ? ivar_getTypeEncoding(iv) : NULL;
+    if (!t || strcmp(t, "@\"NSString\"") != 0) return NO;
+    id b = object_getIvar(model, iv);
+    return [b isKindOfClass:[NSString class]] && [b isEqualToString:@"com.apple.Preferences"];
+}
+static id MSFUAllPending(id self, SEL _cmd) {
+    id r = o_MSFUAllPending(self, _cmd);
+    if (![r isKindOfClass:[NSArray class]] || !MSFUListModel(self)) return r;
+    if ([(NSArray *)r count]) MLog([NSString stringWithFormat:@"iPadOS 18: alert banners (%lu) of the list's follow-ups left out", (unsigned long)[(NSArray *)r count]]);
+    return @[];
+}
+static void MSFollowUps18Install(void) {   // (once, where 18's list is SwiftUI; as soon as CoreFollowUp's class is there)
+    static atomic_int claimed = 0;
+    if (atomic_load_explicit(&claimed, memory_order_acquire) || objc_getClass("PSUIPrefsListController")) return;
+    Class c = objc_getClass("FLTopLevelViewModel");
+    if (!c) return;
+    int expected = 0;
+    if (!atomic_compare_exchange_strong(&claimed, &expected, 1)) return;
+    SEL s = NSSelectorFromString(@"allPendingItems");
+    Method m = class_getInstanceMethod(c, s);
+    if (m && method_getTypeEncoding(m) && !strcmp(method_getTypeEncoding(m), "@16@0:8")) { MSHookMessageEx(c, s, (IMP)MSFUAllPending, (IMP *)&o_MSFUAllPending); MLog(@"iPadOS 18: the list's alert banners are left out (FLTopLevelViewModel)"); }
+    else MLog([NSString stringWithFormat:@"iPadOS 18: -[FLTopLevelViewModel allPendingItems] is %s here: the alert banners stay", m ? method_getTypeEncoding(m) : "missing"]);
 }
 // The Status Bar and Dock rows (Mac Status Bar, Mac Dock) add themselves "just before Accessibility", after the section marker put there, which would pull
 // them into the new section. Only those two rows are inserted in front of the marker instead. (Nothing else is touched: other tweaks insert whole
@@ -560,9 +594,9 @@ static void MSGeneral18Install(void) {
     if (!atomic_compare_exchange_strong(&claimed, &expected, 1)) return;   // (another thread claimed it first)
     if (MSMethodTypesAre(c, @selector(specifiers), "@", @[])) { %init(General18); MLog(@"iPadOS 18: SSH, Home Bar, Pointer and Keyboard go into General"); }
 }
-static void MSGeneral18ImageAdded(const struct mach_header *mh, intptr_t slide) { MSGeneral18Install(); }
+static void MSGeneral18ImageAdded(const struct mach_header *mh, intptr_t slide) { MSGeneral18Install(); MSFollowUps18Install(); }
 %ctor {
     %init;
-    if (!objc_getClass("PSUIPrefsListController")) _dyld_register_func_for_add_image(MSGeneral18ImageAdded);   // (15-17: the sidebar's rows, as before)
+    if (!objc_getClass("PSUIPrefsListController")) _dyld_register_func_for_add_image(MSGeneral18ImageAdded);   // (15-17: the sidebar's rows, as before; 18: General's rows and the list's alert banners)
     if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion < 18) MSBDCCModuleRegisterWhenLoaded();   // (15-17: Control Center's page lists RAM & CPU; 18 has no such page)
 }

@@ -298,6 +298,70 @@ static void DMSMDeskJoinDone(NSArray<NSString *> *fresh, NSArray<NSString *> *le
 // is built and checked first; then SpringBoard's roles are unset (the context becomes a plain activation, whose unset roles Stage Manager keeps "as
 // they were" -- emptying them instead drops a window the plan moves to another role, 1.4 finding) and the plan is written. A write that fails
 // puts SpringBoard's own roles back.
+// The App Switcher's card of one window of a desktop, tapped (1.7.1 item 6: with the engine every window has a card of its own, SMCards.h):
+// SpringBoard asks for that window alone, which took the desktop's other windows off the screen (iPad 2, sm02). A desktop is asked for instead,
+// every window in its place and that one in front -- as a click on it (SMDeskJoin.h DMSMDeskCardPlan): the desktop on screen when the window is
+// one of its windows (DMSMJoinWindowCard), its own desktop when it is on another Mac Switcher desktop and Go to the App's Desktop is on
+// (DMSMJoinWindowCardGo; with the switch off it comes here, MacSwitcherSM.h DMMSWSMAskedBringHere). Only for the tap SMCards.h noted (its window,
+// the card's label, nothing else in the context). YES: written (SpringBoard's roles unset, the plan written, every other role emptied).
+static NSString *DMSMCardsTappedKey(void);
+static void DMSMCardsTapDone(void);
+static NSString *DMSMCardTapOf(NSArray<NSDictionary *> *askedW, id label) {   // (the window of a tapped card this transition is, else nil)
+    NSString *tapped = DMSMCardsTappedKey();
+    if (!tapped || askedW.count != 1 || ![askedW.firstObject[@"w"] isEqual:tapped] || !DMSMIsCardDismissLabel(label)) return nil;   // (SMDeskJoin.h: 18's has the display after it)
+    return tapped;
+}
+// wins: the desktop's windows, @[stage, item, attributes, key] each (DMMSWSMDeskWindows' shape); what: which desktop, for the log.
+static BOOL DMSMCardWriteDesk(id ctx, NSArray<NSArray *> *asked, NSArray<NSDictionary *> *askedW, NSArray<NSArray *> *wins, id identity, NSString *tapped, NSString *what) {
+    NSMutableArray<NSDictionary *> *deskW = [NSMutableArray array];
+    NSMutableDictionary<NSString *, NSArray *> *deskItem = [NSMutableDictionary dictionary];
+    long long newest = 0;
+    for (NSArray *w in wins) {
+        NSString *b = DMSMItemBundle(w[1]), *k = w[3];
+        long long r = 0, t = 0;
+        if (!b.length || !k.length || !DMSMStageRoleOfItem(w[0], w[1], &r) || !DMSMAttrLastInteractionTime(w[2], &t)) return NO;   // (unreadable: as built)
+        [deskW addObject:@{@"w": k, @"b": b, @"r": @(r), @"t": @(t)}];
+        if (!deskItem[k]) deskItem[k] = w;
+        if (!deskItem[b] || t > DMSMAttrTimeOr(deskItem[b][2], 0)) deskItem[b] = w;   // (by app: the app's newest)
+        newest = MAX(newest, t);
+    }
+    NSString *why = nil;
+    NSArray<NSArray *> *decision = DMSMDeskCardPlan(deskW, askedW, 0, &why);
+    if (!decision) { DMLog([NSString stringWithFormat:@"[smcards] %@'s card: %@ left to the desktop's join rule -- %@", DMSMKeyText(tapped), what, why]); return NO; }
+    NSMutableArray<NSArray *> *plan = [NSMutableArray array];
+    id frontEntity = nil;
+    for (NSArray *d in decision) {
+        NSArray *w = deskItem[d[0]];
+        id e = w ? DMSMEntityForStageItem(w[0], w[1]) : nil, a = w[2];
+        if ([d[2] boolValue]) { a = DMSMAttrWithLastInteractionTime(a, newest + 1); frontEntity = e; }   // (the newest interaction time: in front)
+        if (!e || !a) { DMLog([NSString stringWithFormat:@"[smcards] %@'s card: %@ could not be planned, left as SpringBoard built it", DMSMKeyText(tapped), DMSMKeyText(d[0])]); return NO; }
+        [plan addObject:@[e, d[1], a]];
+    }
+    NSArray<NSArray *> *toWrite = DMSMPlanFitted(identity, plan);
+    NSString *bad = nil;
+    if (!DMSMPlanValid(toWrite, nil, &bad)) { DMSMAPIFail(@"a window's App Switcher card (its desktop with it in front)", [NSString stringWithFormat:@"plan refused, left as SpringBoard built it (%@)", bad]); return NO; }
+    if (!DMSMCtxCanWrite(ctx)) return NO;
+    SEL setE = NSSelectorFromString(@"setEntity:forLayoutRole:");
+    void (^putBack)(void) = ^{ for (NSArray *a in asked) @try { ((void (*)(id, SEL, id, long long))objc_msgSend)(ctx, setE, a[1], [a[0] longLongValue]); } @catch (id y) {} };
+    @try { for (NSArray *a in asked) ((void (*)(id, SEL, id, long long))objc_msgSend)(ctx, setE, nil, [a[0] longLongValue]); }
+    @catch (NSException *x) { putBack(); DMSMAPIFail(@"a window's App Switcher card: unsetting SpringBoard's roles", [NSString stringWithFormat:@"%@: its roles put back", x.reason ?: @"exception"]); return NO; }
+    if (!DMSMWritePlan(ctx, toWrite, frontEntity)) { putBack(); DMLog([NSString stringWithFormat:@"[smcards] %@'s card: writing %@ failed, SpringBoard's roles put back", DMSMKeyText(tapped), what]); return NO; }
+    DMSMCtxClearOtherRoles(ctx, toWrite);   // (that desktop's whole stage: nothing else comes with it)
+    DMSMCardsTapDone();
+    DM_FEATURE_MARK("sm-switcher-card-window-front");
+    DMLog([NSString stringWithFormat:@"[smcards] %@'s card: %@ instead of that window alone -- %@", DMSMKeyText(tapped), what, why]);
+    return YES;
+}
+static BOOL DMSMJoinWindowCard(id ctx, NSArray<NSArray *> *asked, NSArray<NSDictionary *> *askedW, NSArray<NSArray *> *wins, int flags, id label, id identity) {
+    NSString *tapped = flags ? nil : DMSMCardTapOf(askedW, label);
+    return tapped && DMSMCardWriteDesk(ctx, asked, askedW, wins, identity, tapped, @"the desktop on screen");
+}
+static BOOL DMSMJoinWindowCardGo(id ctx, NSArray<NSArray *> *asked, NSArray<NSDictionary *> *askedW, int flags, id label, id identity) {
+    NSString *tapped = flags == DMSMJoinOtherDesk && gMSWGoToAppDesk ? DMSMCardTapOf(askedW, label) : nil;
+    NSNumber *did = tapped ? DMMSWSMRecordOf(tapped) : nil;
+    NSArray<NSArray *> *wins = did ? DMMSWSMDeskWindows(did.integerValue) : nil;
+    return wins.count && DMSMCardWriteDesk(ctx, asked, askedW, wins, identity, tapped, [NSString stringWithFormat:@"its own desktop (%@: Go to the App's Desktop)", DMMSWDeskName([gMSWDesks indexOfObject:did])]);
+}
 __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray *> *asked) {   // (noinline: its own range in the release crash map --
     // inlined into DMSMJoinDesktop after the 1.3.8 RC2 edits, test-crashstep's line for it had no symbol on the release build: logic test N-1)
 #if DEBUG
@@ -344,6 +408,12 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
     id req0 = [ctx respondsToSelector:NSSelectorFromString(@"request")] && DMSMSigOK(ctx, NSSelectorFromString(@"request"), DMSMSigObj(), "request") ? DMCall(ctx, @"request") : nil;
     id label0 = [req0 respondsToSelector:NSSelectorFromString(@"eventLabel")] ? DMCall(req0, @"eventLabel") : nil;
     if ([label0 isKindOfClass:[NSString class]] && [label0 isEqualToString:@"UpdateFluidSwitcherGestureAction"]) return;
+    // (1.7.1: a window of another desktop that an app switch asks for -- an App Switcher card, nothing else in the context -- comes to the desktop
+    //  on screen unless Go to the App's Desktop is on, as a launch's does: MacSwitcherSM.h DMMSWSMAskedBringHere. A switcher gesture's end stays
+    //  SpringBoard's own switch to that stage, below.)
+    if (flags == DMSMJoinOtherDesk && !([label0 isKindOfClass:[NSString class]] && [label0 isEqualToString:@"FinalFluidSwitcherGestureAction"]) && !DMSMGestureCtx(ctx)
+        && DMMSWSMAskedBringHere(ctx, asked, askedW, askedEntity, identity)) return;
+    if (DMSMJoinWindowCardGo(ctx, asked, askedW, flags, label0, identity)) return;   // (one card per window, SMCards.h: Go on -- its own desktop comes)
     NSString *early = nil;
     if (!DMSMDeskJoinPlan(@[], askedW, flags, &early) && ![early isEqualToString:@"no desktop to keep"]) {
         DMLog([NSString stringWithFormat:@"[smjoin] roles already set (%@; %@): left as SpringBoard built it -- %@", [seen componentsJoinedByString:@", "], [label0 isKindOfClass:[NSString class]] ? label0 : @"no label", early]);
@@ -375,10 +445,11 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
         if (![k isEqualToString:b]) deskItem[k] = w;   // (by app -- the key is the bundle -- only the app's newest, below)
         if (!deskItem[b] || t > DMSMAttrTimeOr(deskItem[b][2], 0)) deskItem[b] = w;
     }
+    if (DMSMJoinWindowCard(ctx, asked, askedW, wins, flags, label0, identity)) return;   // (one card per window: SMCards.h -- a window of the desktop)
     NSString *why = nil;
     NSArray<NSArray *> *decision = DMSMDeskJoinPlan(deskW, askedW, flags, &why);
     // (which of SpringBoard's paths built it, for the log: the request's event label and source -- "DismissSwitcherNoninteractive" is the App
-    //  Switcher's card, "FinalFluidSwitcherGestureAction" a switcher gesture's end, read on 16.7.7)
+    //  Switcher's card ("-EmbeddedDisplay" after it on 18.5), "FinalFluidSwitcherGestureAction" a switcher gesture's end, read on 16.7.7)
     id req = [ctx respondsToSelector:NSSelectorFromString(@"request")] && DMSMSigOK(ctx, NSSelectorFromString(@"request"), DMSMSigObj(), "request") ? DMCall(ctx, @"request") : nil;
     id label = [req respondsToSelector:NSSelectorFromString(@"eventLabel")] ? DMCall(req, @"eventLabel") : nil;
     long long source = [req respondsToSelector:NSSelectorFromString(@"source")] ? DMSMCtxLong(req, @"source", -1) : -1;

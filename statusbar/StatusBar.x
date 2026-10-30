@@ -84,6 +84,8 @@ static void DMBannerDebug(NSString *what);   // (Mac-style banners block, near t
 static BOOL DMAutoHideActive(void);          // (auto-hiding status bar block, near the end)
 static BOOL DMAutoHideHandlePointerPull(void);
 static CGFloat DMTopLimit(void);
+#include "../common/MenuBarHeight.h"   // (the bar's height and the geometry from it, Mac-tested)
+static CGFloat DMMenuBarHeight(void);   // (our menu bar's height on the iPad's screen: 24 pt on Face ID iPads, 20 pt on Home-button iPads -- near DMTopLimit)
 static CGFloat DMAutoHideShiftOf(UIView *stage);
 static CGFloat DMAutoHideTitleShiftOf(UIView *stage);   // (step 2: how far only its title bar has slid down: 0 normally)
 static void DMAutoHideNoteFrame(UIView *stage);   // (after we set a moved-down window's frame ourselves: not the engine's doing)   // (how far the auto-hiding status bar has moved a window down right now: 0 normally)
@@ -1109,12 +1111,12 @@ static NSString *DMStageBundle(UIView *stage);
 // (The file, 1.7.0: dasd read our preferences through cfprefsd, which answers a sandboxed process only for the domains its sandbox allows -- on
 //  palera1n dasd got an empty set and refused nothing -- and cfprefsd writes the file it keeps them in 4 to 10 s after a change: common/PrewarmQuitSet.h.
 //  Ours is written at once, before dasd is told, and again at every start, so it is the set SpringBoard has, also after the preferences changed
-//  while SpringBoard was not running.)
+//  while SpringBoard was not running. Since 1.7.1 the file is also the block's switch -- there means on -- so dasd decides from its first prewarm
+//  on; the notify state SpringBoard published at its start for that is gone: a dasd started before it saw "off".)
 #include "../common/PrewarmQuitSet.h"
 #define MSB_PREWARM_DOMAIN  CFSTR("com.besiktasliseba.macstatusbar.prewarm")
 #define MSB_PREWARM_SETKEY  CFSTR("quitSet")
 #define MSB_PREWARM_CHANGED "com.besiktasliseba.macstatusbar.prewarm.changed"
-#define MSB_PREWARM_ENABLED "com.besiktasliseba.macstatusbar.prewarm.enabled"   // state: 1 = the block is on (published here; dasd reads it)
 #define MSB_PREWARM_CAP 128
 static NSMutableArray<NSString *> *gPrewarmQuitSet;   // ordered, oldest first
 static void DMPrewarmQuitWriteFile(void) {   // the set as dasd reads it (atomically: dasd never sees half a file)
@@ -1127,26 +1129,20 @@ static void DMPrewarmQuitPublish(void) {   // persist across resprings, write da
     DMPrewarmQuitWriteFile();
     notify_post(MSB_PREWARM_CHANGED);
 }
-static void DMPrewarmQuitLoad(void) {   // at SpringBoard start: the set from last time, and publish that the block is on
+static void DMPrewarmQuitLoad(void) {   // at SpringBoard start: the set from last time, its file written -- the block is on (the quit must stick)
     gPrewarmQuitSet = [NSMutableArray array];
     CFPreferencesAppSynchronize(MSB_PREWARM_DOMAIN);
     CFPropertyListRef v = CFPreferencesCopyValue(MSB_PREWARM_SETKEY, MSB_PREWARM_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     if (v) { if (CFGetTypeID(v) == CFArrayGetTypeID()) for (id b in (__bridge NSArray *)v) if ([b isKindOfClass:[NSString class]] && [b length]) [gPrewarmQuitSet addObject:b]; CFRelease(v); }
-    DMPrewarmQuitWriteFile();   // (before the block is said to be on: dasd then reads this set)
+    DMPrewarmQuitWriteFile();
     notify_post(MSB_PREWARM_CHANGED);
-    static int enToken = 0;
-    if (!enToken) notify_register_check(MSB_PREWARM_ENABLED, &enToken);
-    notify_set_state(enToken, 1);   // on by default (the quit must stick); a build/kill switch can clear it
-    notify_post(MSB_PREWARM_ENABLED);
     DMLog([NSString stringWithFormat:@"[prewarm] quit set loaded: %lu app(s)", (unsigned long)gPrewarmQuitSet.count]);
 }
-// "Use Stock Status Bar": the parts that keep the quit set (the kill and open hooks, the set itself) do not run there, so the block is off: dasd is
-// told (enabled 0, it then refuses nothing) and a stored set goes, or dasd would go on refusing apps the user opens meanwhile (logic test W1, 25 Oct).
-static void DMPrewarmStockOff(void) {
-    static int enToken = 0;
-    if (!enToken) notify_register_check(MSB_PREWARM_ENABLED, &enToken);
-    notify_set_state(enToken, 0);
-    notify_post(MSB_PREWARM_ENABLED);
+// "Use Stock Status Bar", or Mac Status Bar switched off with its old on/off entry (tweakEnabled): the parts that keep the quit set (the kill and
+// open hooks, the set itself) do not run there, so the block is off: the file goes (dasd then refuses nothing) and a stored set goes, or dasd would
+// go on refusing apps the user opens meanwhile (logic test W1, 25 Oct). (Since the file is the switch, 1.7.1, the old switch's way needs it too:
+// without it the file of the last start stayed, and dasd refused that set from then on, reboots included -- external review, 30 Oct.)
+static void DMPrewarmBlockOff(NSString *why) {
     CFPreferencesAppSynchronize(MSB_PREWARM_DOMAIN);
     CFPropertyListRef v = CFPreferencesCopyValue(MSB_PREWARM_SETKEY, MSB_PREWARM_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     BOOL had = v != NULL;
@@ -1157,7 +1153,7 @@ static void DMPrewarmStockOff(void) {
     }
     if (unlink(kMSBDPrewarmQuitSetFile) == 0) had = YES;   // (dasd's file goes with it)
     if (had) notify_post(MSB_PREWARM_CHANGED);
-    DMLog([NSString stringWithFormat:@"[prewarm] Use Stock Status Bar: the prewarm block is off%@", had ? @", the quit set cleared" : @""]);
+    DMLog([NSString stringWithFormat:@"[prewarm] %@: the prewarm block is off%@", why, had ? @", the quit set cleared" : @""]);
 }
 static void DMPrewarmQuitAdd(NSString *bundleID) {   // the user quit this app
     if (!bundleID.length || !gPrewarmQuitSet) return;
@@ -1378,6 +1374,7 @@ static void DMMSWHomeTick(void);         // (MacSwitcherButton.h: the open view 
 static void DMMSWHookHomeButton(void);   // (MacSwitcherButton.h: the Home button's double press opens the Mac Switcher)
 #if DEBUG
 static BOOL DMMSWSMTrigger(NSString *cmd);
+static BOOL DMSMCardsTrigger(NSString *cmd);   // (SMCards.h: the App Switcher's cards with the Stage Manager engine)
 #endif
 static BOOL DMMSWAppSwitcherAvailable(void);
 static BOOL gShowMuteIcon = YES;   // Settings > Status Bar > Audio > Show Mute Icon (on by default)
@@ -2297,6 +2294,7 @@ static void DMWatchFitClosures(void);
 static void DMPlaceKeyboardPill(void);
 static void DMKeepKeyboardFocusOnWindowAfterTurn(void);
 static void DMKeyboardFocusFollowsFrontWindow(void);
+static void DMKeyboardFocusBehindWindows(void);
 static BOOL DMSpotlightShown(void);
 static BOOL DMSpotlightShownOn(UIWindowScene *scene);
 static void DMWatchFitToggle(void);
@@ -2851,6 +2849,7 @@ static void DMSyncWindowsForLibraryBody(void) {
     DM_PERF("kbpill", DMPlaceKeyboardPill());
     DM_PERF("kbturn", DMKeepKeyboardFocusOnWindowAfterTurn());
     DM_PERF("kbfollow", DMKeyboardFocusFollowsFrontWindow());
+    DM_PERF("kbbehind", DMKeyboardFocusBehindWindows());
     DM_PERF("wincards", DMWinCardsTick());
     DM_PERF("zetsu", DMWatchZetsu());
     DM_PERF("gamebar", DMWatchBarOverHidingApp());
@@ -3159,7 +3158,7 @@ static BOOL DMEnlargeNewWindow(UIView *window) {
     CGRect usable = remembered ? DMLayoutFrame(@"fill") : CGRectNull;
     CGRect big = pending ? gPendingWindowFrame
                : (remembered && !CGRectIsNull(usable)) ? DMFitInto(remembered.CGRectValue, usable)
-               : CGRectMake(round(screen.width * 0.11), 36.0, round(screen.width * 0.78), round(screen.height * 0.80));
+               : CGRectMake(round(screen.width * 0.11), MSBDMenuBarCenterTop(DMMenuBarHeight()), round(screen.width * 0.78), round(screen.height * 0.80));
     if (CGRectEqualToRect(window.frame, big)) return NO;
     DMLog([NSString stringWithFormat:@"[lights] window enlarged from %@ to %@%@", NSStringFromCGRect(window.frame), NSStringFromCGRect(big), remembered && !pending ? @" (where its window last was)" : @""]);
     window.frame = big;
@@ -4363,6 +4362,7 @@ static void DMWatchZetsu(void) {
     DMZetsuApplyLevels();
     if (all.count != lastCount) { lastCount = all.count; DMSaveWindowState(); }
 }
+static UIView *DMA5ComingBackTop(void);   // (the front one of the windows the lock hid, on their way back after the unlock: Aerial 5, below)
 static SBApplication *DMActiveApp(void) {
     if (DMSMEngine()) {   // (Stage Manager as the engine: the front window of the stage on screen -- the newest interaction)
         NSString *b = DMSMFrontWindowBundle();
@@ -4381,6 +4381,12 @@ static SBApplication *DMActiveApp(void) {
         if (staged) return staged;
         SBApplication *front = DMFrontApp();
         if (front) { if ([[front bundleIdentifier] isEqualToString:gPendingFrontBundle]) gPendingFrontBundle = nil; return front; }
+        {   // (the windows the lock hid, on their way back after the unlock -- Aerial 5 brings them ~1.7 s after a wake: the one that comes back in
+            //  front is the active app already, so the menu bar names it as soon as it is unlocked, not Finder first; 1.7.1 item 11)
+            UIView *back = DMA5ComingBackTop();
+            SBApplication *backApp = back ? DMAppForBundle(DMStageBundle(back)) : nil;
+            if (backApp) return backApp;
+        }
         if (gPendingFrontBundle.length && CACurrentMediaTime() < gPendingFrontUntil) return DMAppForBundle(gPendingFrontBundle);
         return nil;
     }
@@ -5771,6 +5777,19 @@ static const void *kBarLaidOutLockedKey = &kBarLaidOutLockedKey;   // @YES / @NO
 #if DEBUG
 static BOOL gDMBarForceLockedOnce = NO;   // (debug, "k5lockonce": the next layouts take the locked look although unlocked -- a Lock Screen moment's layout)
 #endif
+// The Cover Sheet (the Lock Screen, or Notification Center pulled down) over the status bar, for the bar's locked look: shown and NOT on its way out
+// (the rule: BarUnlock.h, Mac-tested). 1.7.1 item 11 (KT, M1: after an unlock our items came back late, and all at once): the locked look followed
+// -isPresented / -isVisible, which stay YES until the Cover Sheet's dismissal has finished -- 2.0 s after a wake on the M1 (measured 30 Oct, wake at
+// 0: from 0.5 s on the Home Screen showed, -isPresented 0, -dismissingCoverSheet 1, -isTransitioning 1, -isVisible 1 until 2.05 s; our titles and
+// lights came at 2.07 s, in one frame). -isVisibleAndNotDisappearing turns NO as the dismissal starts: the unlocked look is built while the Cover
+// Sheet leaves, and its returning items fade in once (DMBarFadeBack). (cs: the manager, nil = not made yet.)
+#include "BarUnlock.h"
+static BOOL DMCoverSheetCoversBarOf(id cs) {
+    NSString *v = DMBoolStr(cs, @"isVisibleAndNotDisappearing");
+    int vnl = [v isEqualToString:@"n/a"] ? -1 : [v isEqualToString:@"Y"];
+    return MSBDCoverSheetCoversBar(vnl, [DMBoolStr(cs, @"isPresented") isEqualToString:@"Y"], [DMBoolStr(cs, @"isVisible") isEqualToString:@"Y"]);
+}
+static BOOL DMCoverSheetCoversBar(void) { return DMCoverSheetCoversBarOf(DMSBManager("SBCoverSheetPresentationManager")); }
 static BOOL DMBarLockedNow(void) {   // (issue #1: on 17+ never off the main thread while SpringBoard starts; the managers only as they exist, DMSBManager)
     // (iPadOS 17 start on the Lock Screen: this answered NO for the first 8 s, so the Lock Screen's copy -- no clock there -- was taken for one still
     //  being built, held, given up by the safety release and left stock; the unlock then refilled it without a layout pass: the stock bar until
@@ -5779,9 +5798,21 @@ static BOOL DMBarLockedNow(void) {   // (issue #1: on 17+ never off the main thr
     if (DMNewOS() && DMStarting()) {   // (only managers SpringBoard has made: +sharedInstanceIfExists, never +sharedInstance -- review finding 1)
         if (![NSThread isMainThread]) return NO;
         id lock = DMSBManagerExisting("SBLockScreenManager"), cs = DMSBManagerExisting("SBCoverSheetPresentationManager");
-        return DMLockUp(lock) || [DMBoolStr(cs, @"isPresented") isEqualToString:@"Y"] || [DMBoolStr(cs, @"isVisible") isEqualToString:@"Y"];
+        return MSBDBarLockedLook(DMLockUp(lock), DMCoverSheetCoversBarOf(cs));
     }
-    return DMLockUp(DMSBManager("SBLockScreenManager")) || DMCoverSheetShown();
+    return MSBDBarLockedLook(DMLockUp(DMSBManager("SBLockScreenManager")), DMCoverSheetCoversBar());
+}
+// The Cover Sheet starts to leave (an unlock, Notification Center pushed up): every status bar copy is laid out now, in its unlocked look when the
+// bar's lock test says so (DMBarLockedNow), instead of at the watcher's next tick (up to 0.2 s later). Hooked only where SpringBoard's own call is
+// there with the expected types (DMCoverSheetLeavingInit); the watcher does the same otherwise.
+static void DMRelayoutUnattachedBars(NSString *why);
+static void DMBarCoverLeaving(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{   // (after SpringBoard's own preparation of the transition)
+        if (DMBarLockedNow()) return;
+        for (UIView *fg in gCopies.allObjects) { [fg setNeedsLayout]; if (fg.window && !fg.window.hidden) [fg layoutIfNeeded]; }
+        DMRelayoutUnattachedBars(@"the Cover Sheet starts to leave");
+        if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog(@"[lock] the Cover Sheet starts to leave: the status bars laid out unlocked now");
+    });
 }
 // Every live status bar copy that is in a window but not ours yet (no logo, not laid out the Lock Screen's way) is laid out again: after an unlock, the
 // Cover Sheet going up, the end of the start-up, and when its leading region gets its time label. iPadOS 17 fills the leading region at the unlock
@@ -5843,9 +5874,10 @@ static void DMWatchLock(void) {
         if (locked) unlockedAt = 0; else if (!unlockedAt) unlockedAt = now;
         if (!locked && now - lastSettle > 2.0 && (now - firstSeen < 60.0 || (now - unlockedAt > 2.0 && now - unlockedAt < 10.0))) { lastSettle = now; DMSettleLockScreenClock(); }
     }
-    {   // the Cover Sheet coming down or going up while unlocked: the status bars lay out again (only the Apple menu while it is down)
+    {   // the Cover Sheet coming down or going up while unlocked: the status bars lay out again (only the Apple menu while it is down; back as
+        //  soon as it starts to leave: DMCoverSheetCoversBar)
         static BOOL wasCover = NO;
-        BOOL cover = DMCoverSheetShown();
+        BOOL cover = DMCoverSheetCoversBar();
         if (cover != wasCover) {
             wasCover = cover;
             if (cover) DMHideAppBarItemsNow(); else for (UIView *fg in gCopies.allObjects) [fg setNeedsLayout];
@@ -6817,7 +6849,11 @@ static CGRect DMLayoutFrameInArea(NSString *name, CGRect u, CGSize screen) {   /
     CGFloat halfW = floor((u.size.width - g) / 2.0), halfH = floor((u.size.height - g) / 2.0);
     CGFloat rightX = u.origin.x + u.size.width - halfW, bottomY = u.origin.y + u.size.height - halfH;
     if ([name isEqualToString:@"fill"]) return u;
-    if ([name isEqualToString:@"center"]) return CGRectMake(round(screen.width * 0.11), 36.0, round(screen.width * 0.78), MIN(round(screen.height * 0.80), CGRectGetMaxY(u) - 36.0));
+    if ([name isEqualToString:@"center"]) {   // (12 pt under the menu bar: 36 on a 24 pt bar; a TV keeps 36)
+        CGSize main = [UIScreen mainScreen].bounds.size;
+        CGFloat top = CGSizeEqualToSize(screen, main) || CGSizeEqualToSize(screen, CGSizeMake(main.height, main.width)) ? MSBDMenuBarCenterTop(DMMenuBarHeight()) : 36.0;
+        return CGRectMake(round(screen.width * 0.11), top, round(screen.width * 0.78), MIN(round(screen.height * 0.80), CGRectGetMaxY(u) - top));
+    }
     if ([name isEqualToString:@"left"]) return CGRectMake(u.origin.x, u.origin.y, halfW, u.size.height);
     if ([name isEqualToString:@"right"]) return CGRectMake(rightX, u.origin.y, halfW, u.size.height);
     if ([name isEqualToString:@"top"]) return CGRectMake(u.origin.x, u.origin.y, u.size.width, halfH);
@@ -9731,6 +9767,7 @@ static const void *kFocusCatcherKey = &kFocusCatcherKey;
     if (stage && [stage respondsToSelector:front]) ((void (*)(id, SEL))objc_msgSend)(stage, front);
     DMLog([NSString stringWithFormat:@"[focus] a touch on the window of %@ brought it to the front", stage ? DMStageBundle(stage) : @"?"]);
     if (stage) DMResignWindowedKeyboards(DMStageBundle(stage));   // the window that had the keyboard gives it up (a hardware keyboard's cursor too)
+    DMKeyboardFocusBehindWindows();   // (the raised window may take the keyboard at once, the one before it no longer)
     self.hidden = YES;   // (the next pass puts the sheets on the windows that are behind now)
 }
 @end
@@ -9751,6 +9788,7 @@ static void DMRaiseStageForBundle(NSString *bundle) {
         }
         DMLog([NSString stringWithFormat:@"[focus] a tap or click in the window of %@ brought it to the front", bundle]);
         DMResignWindowedKeyboards(bundle);   // the window that had the keyboard gives it up (with a hardware keyboard too: only the front window keeps a cursor)
+        DMKeyboardFocusBehindWindows();   // (the window now in front may take the keyboard, the one before it no longer: at once, not at the next tick)
         return;
     }
     // No stage: this is the current full-screen app, tapped through the part of it that shows around the windows in front of it. It has no window to
@@ -10585,6 +10623,244 @@ static void DMKeyboardFocusFollowsFrontWindow(void) {
     else return;
     DMLog([NSString stringWithFormat:@"[kbfocus] %@ came to the front without a tap (keyboard focus was on %@): focus given to its window", front, fb]);
 }
+// The windows behind the active one cannot take the hardware keyboard (1.7.1 item 9; the rule: KeyboardBehind.h, Mac-tested). KT (M1, 15.6.1, Aerial,
+// Magic Keyboard): Amazon's window typing, Settings opened as a window from the Dock, a click in Settings' search field -- the typing stayed with
+// Amazon. Measured (kbtrace / kbfocus, 30 Oct): Settings' field asked the keyboard arbiter for the keys, Amazon asked again 60-200 ms later and
+// SpringBoard gave them back to it, each time (its search screen puts its field back whenever it goes -- Esc put it away, it was back at once); our
+// focus request for the window that came to the front (above) was taken back the same way. Settings and Maps let go when another window takes the keys;
+// Amazon does not. SpringBoard's own focus policy is told instead: the scene of every window whose app is not the active one gets a "prevent focus"
+// assertion (-[SBWorkspaceKeyboardFocusController preventFocusForSceneWithIdentityToken:reason:], one each, kept in the controller's own compound
+// assertion), given back when the window comes to the front or goes, when the hardware keyboard goes, or when the engine stops. A window behind is
+// clicked to the front first (its first touch only raises it: DMFocusCatcher), then it types -- like an app that is not active on a Mac. iPadOS 15/16's
+// controller only (the call is type-checked); Stage Manager is SpringBoard's own windows; 17/18's focus coordinator has no such call: nothing there.
+// Debug /tmp/msb-nokbbehind = before (no assertions).
+#include "KeyboardBehind.h"
+static NSMutableDictionary<NSString *, id> *gKBBehind;   // scene identifier -> its prevent-focus assertion
+static NSString *gKBBehindLastActive;          // (the active app at the last pass: a change is when the app at the front is looked at)
+// The keyboard arbiter works on its own serial queue, not the main thread (com.apple.UIKit.keyboard-arbiter: SpringBoard's crash reports, M1 7 Oct
+// and iPad 2 4 Oct): the gate's hooks below run there, while the list they read is made on the main thread. So what both sides share is kept
+// under one lock, and the arbiter's clients are read on its own queue only (DMKBClientWantsKeys) -- never from the main thread, where the arbiter
+// can change its client list under the reader.
+#include <os/lock.h>
+static os_unfair_lock gKBGateLock = OS_UNFAIR_LOCK_INIT;
+static NSSet<NSString *> *gKBBehindBundles;   // (lock) the apps of those windows (the keyboard arbiter's gate below)
+static NSString *gKBActiveBundle;              // (lock) the active app when the list was made (the gate's other half: its requests take the keys)
+static NSMutableSet<NSString *> *gKBHeldBack;  // (lock) apps whose keyboard request or on-screen keyboard the gate held back: given the keys when they come to the front
+static __weak id gKBArbiter;                   // (SpringBoard's keyboard arbiter, as the gate saw it: its clients' state, DMKeyboardFocusBehindWindows)
+static void DMKBSetGateList(NSSet<NSString *> *behind, NSString *active) {   // (main thread)
+    os_unfair_lock_lock(&gKBGateLock);
+    gKBBehindBundles = behind; gKBActiveBundle = active;
+    os_unfair_lock_unlock(&gKBGateLock);
+}
+static void DMKBGateList(NSSet<NSString *> * __strong *behind, NSString * __strong *active) {   // (either side: the list as it is now)
+    os_unfair_lock_lock(&gKBGateLock);
+    *behind = gKBBehindBundles; *active = gKBActiveBundle;
+    os_unfair_lock_unlock(&gKBGateLock);
+}
+static void DMKBHoldBack(NSString *b) {   // (the arbiter's queue: the gate held this app's keyboard back)
+    os_unfair_lock_lock(&gKBGateLock);
+    if (!gKBHeldBack) gKBHeldBack = [[NSMutableSet alloc] init];
+    [gKBHeldBack addObject:b];
+    os_unfair_lock_unlock(&gKBGateLock);
+}
+static BOOL DMKBTakeHeldBack(NSString *b) {   // (main thread: whether the gate held this app back; it is off the set after)
+    os_unfair_lock_lock(&gKBGateLock);
+    BOOL had = b && [gKBHeldBack containsObject:b];
+    if (had) [gKBHeldBack removeObject:b];
+    os_unfair_lock_unlock(&gKBGateLock);
+    return had;
+}
+static void DMKBClearHeldBack(void) {   // (main thread)
+    os_unfair_lock_lock(&gKBGateLock);
+    [gKBHeldBack removeAllObjects];
+    os_unfair_lock_unlock(&gKBGateLock);
+}
+static BOOL DMKBGateHolds(void) {   // (main thread: the gate still has a list of apps behind, or apps it held back)
+    os_unfair_lock_lock(&gKBGateLock);
+    BOOL holds = gKBBehindBundles.count || gKBHeldBack.count;
+    os_unfair_lock_unlock(&gKBGateLock);
+    return holds;
+}
+static dispatch_queue_t DMKBArbiterQueue(id arb) {   // the arbiter's own queue (its _queue, an object set once when it starts), or nil
+    Ivar iv = arb ? class_getInstanceVariable(object_getClass(arb), "_queue") : NULL;
+    const char *enc = iv ? ivar_getTypeEncoding(iv) : NULL;
+    id q = enc && enc[0] == '@' ? object_getIvar(arb, iv) : nil;
+    Class qc = objc_getClass("OS_dispatch_queue");
+    return q && qc && [q isKindOfClass:qc] ? (dispatch_queue_t)q : nil;
+}
+static BOOL DMKBClientWantsKeys(id arb, NSString *bundle) {   // (on the arbiter's queue only) that app's keyboard client wants the keys and is not the active one
+    SEL hb = NSSelectorFromString(@"handlerForBundleID:"), ws = NSSelectorFromString(@"wantedState");
+    id h = MSBDFocusHas(arb, hb, @"@@:@") ? ((id (*)(id, SEL, id))objc_msgSend)(arb, hb, bundle) : nil;
+    if (!h || !MSBDFocusHas(h, @selector(active), @"B@:") || !MSBDFocusHas(h, ws, @"Q@:")) return NO;
+    return !((BOOL (*)(id, SEL))objc_msgSend)(h, @selector(active)) && ((unsigned long long (*)(id, SEL))objc_msgSend)(h, ws) != 0;
+}
+// The keyboard arbiter's gate (device finding, M1 30 Oct, with the assertions alone): Amazon asks for the keyboard again at every touch in another
+// window (60-200 ms after it, or just before the touched app asks), and while SpringBoard's policy now kept the focus off Amazon, its request,
+// passed on, still took the touched app's field out of typing -- Settings' search field showed no cursor and got no keys (focus on Settings,
+// keys nowhere). So a request from an app whose windows are all behind the active one is not passed on to the arbiter at all
+// (-[_UIKeyboardArbiter handlerRequestedFocus:shouldStealKeyboard:], SpringBoard's half of the apps' keyboard requests; type-checked). Clicked to
+// the front, the app asks again (or the front window's focus request above gives it the keys).
+static void (*o_KBArbiterRequest)(id, SEL, id, BOOL);
+// And the other half (device finding, M1 30 Oct, with the request gate): the active window's field asked politely (steal 0) while the app behind
+// still had its keyboard up -- Amazon's search field never lets go --, so the arbiter left the keyboard with Amazon and told Settings so, and Settings'
+// field gave up its typing at once (-[_UIRemoteKeyboards didHandleKeyboardChange:...] -> -resignFirstResponder, 0.1 s after it began; traced). A
+// request of the active app while the keyboard is shown for an app behind it takes the keyboard (steal 1: what SpringBoard's own focus request for
+// a tapped app asks), as a click in the active window does on a Mac. Only then: the arbiter's own presenter is asked (type-checked).
+static NSString *DMKBPresentingBundle(id arbiter) {   // (on the arbiter's queue: from its request hook)
+    SEL pp = NSSelectorFromString(@"presentingKeyboardProcessIdentifier"), hp = NSSelectorFromString(@"handlerForPID:");
+    if (!MSBDFocusHas(arbiter, pp, @"i@:") || !MSBDFocusHas(arbiter, hp, @"@@:i")) return nil;
+    int pid = ((int (*)(id, SEL))objc_msgSend)(arbiter, pp);
+    id h = pid > 0 ? ((id (*)(id, SEL, int))objc_msgSend)(arbiter, hp, pid) : nil;
+    NSString *b = [h respondsToSelector:NSSelectorFromString(@"bundleIdentifier")] ? DMCall(h, @"bundleIdentifier") : nil;
+    return [b isKindOfClass:[NSString class]] ? b : nil;
+}
+static void DMKBArbiterRequest(id self, SEL _cmd, id handler, BOOL steal) {   // (on the arbiter's queue)
+    gKBArbiter = self;
+#if DEBUG
+    static dispatch_once_t where; dispatch_once(&where, ^{ DMLog([NSString stringWithFormat:@"[kbbehind] the arbiter's requests come on %s (main thread %d)", dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL), pthread_main_np()]); });
+#endif
+    NSSet<NSString *> *behind = nil; NSString *active = nil;
+    DMKBGateList(&behind, &active);
+    if (behind.count) {
+        NSString *b = [handler respondsToSelector:NSSelectorFromString(@"bundleIdentifier")] ? DMCall(handler, @"bundleIdentifier") : nil;
+        if ([b isKindOfClass:[NSString class]] && [behind containsObject:b]) {
+            static CFTimeInterval windowAt = 0; static int told = 0;
+            if (CACurrentMediaTime() - windowAt > 60.0) { windowAt = CACurrentMediaTime(); told = 0; }
+            if (told++ < 12) DMLog([NSString stringWithFormat:@"[kbbehind] %@ asked for the keyboard from behind (steal %d): not passed on", b, steal]);
+            DMKBHoldBack(b);
+            return;
+        }
+        if (!steal && [b isKindOfClass:[NSString class]] && [b isEqualToString:active]) {
+            NSString *presenting = DMKBPresentingBundle(self);
+            if (presenting && [behind containsObject:presenting]) {
+                steal = YES;
+                DMLog([NSString stringWithFormat:@"[kbbehind] %@ (the active app) asked for the keyboard while %@ behind it had it: it takes it", b, presenting]);
+            }
+        }
+    }
+    o_KBArbiterRequest(self, _cmd, handler, steal);
+}
+// And the keyboard an app behind puts on screen itself (device finding, M1 30 Oct, traced in Amazon: its search field refuses
+// -resignFirstResponder -- NO to UIKit's own resign when another app took the keyboard, and to ours --, so its keyboard never goes; its
+// keyboard reported itself on screen again within 0.2 s of Settings taking the keys, the arbiter made Amazon the presenting app again and told
+// Settings, whose field then gave up its typing). A status from an app whose windows are all behind that says its keyboard is on screen is not
+// passed on (-[_UIKeyboardArbiter updateKeyboardStatus:fromHandler:], one-way, type-checked); a keyboard that goes off screen is. The app keeps
+// its typing (as an inactive app does on a Mac); brought to the front, its next status passes and the front window's focus request gives it
+// the keys back.
+static void (*o_KBArbiterStatus)(id, SEL, id, id);
+static void DMKBArbiterStatus(id self, SEL _cmd, id status, id handler) {   // (on the arbiter's queue)
+#if DEBUG
+    static dispatch_once_t where; dispatch_once(&where, ^{ DMLog([NSString stringWithFormat:@"[kbbehind] the arbiter's keyboard statuses come on %s (main thread %d)", dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL), pthread_main_np()]); });
+#endif
+    NSSet<NSString *> *behind = nil; NSString *active = nil;
+    DMKBGateList(&behind, &active);
+    if (behind.count) {
+        NSString *b = [handler respondsToSelector:NSSelectorFromString(@"bundleIdentifier")] ? DMCall(handler, @"bundleIdentifier") : nil;
+        SEL on = NSSelectorFromString(@"keyboardOnScreen");
+        if ([b isKindOfClass:[NSString class]] && [behind containsObject:b] && MSBDFocusHas(status, on, @"B@:") && ((BOOL (*)(id, SEL))objc_msgSend)(status, on)) {
+            static CFTimeInterval windowAt = 0; static int told = 0;
+            if (CACurrentMediaTime() - windowAt > 60.0) { windowAt = CACurrentMediaTime(); told = 0; }
+            if (told++ < 12) DMLog([NSString stringWithFormat:@"[kbbehind] %@ put its keyboard on screen from behind: not passed on", b]);
+            DMKBHoldBack(b);
+            return;
+        }
+    }
+    o_KBArbiterStatus(self, _cmd, status, handler);
+}
+static void DMKBArbiterGateInit(void) {
+    static BOOL done; if (done) return; done = YES;
+    Class arb = objc_getClass("_UIKeyboardArbiter");
+    SEL s = NSSelectorFromString(@"handlerRequestedFocus:shouldStealKeyboard:");
+    Method m = arb ? class_getInstanceMethod(arb, s) : NULL;
+    if (!m || strcmp(method_getTypeEncoding(m), "v28@0:8@16B24") != 0 || !MSBDFocusHas(DMKeyboardFocusController(), NSSelectorFromString(@"preventFocusForSceneWithIdentityToken:reason:"), @"@@:@@")) {
+        DMLog([NSString stringWithFormat:@"[kbbehind] the keyboard arbiter's requests: %s (no gate)", m ? method_getTypeEncoding(m) : "not there"]); return;
+    }
+    o_KBArbiterRequest = (void (*)(id, SEL, id, BOOL))method_getImplementation(m);   // (set before the hook goes in: the arbiter's queue may call it meanwhile)
+    MSHookMessageEx(arb, s, (IMP)DMKBArbiterRequest, (IMP *)&o_KBArbiterRequest);
+    SEL st = NSSelectorFromString(@"updateKeyboardStatus:fromHandler:");
+    Method sm = class_getInstanceMethod(arb, st);
+    if (sm && !strcmp(method_getTypeEncoding(sm), "v32@0:8@16@24")) {
+        o_KBArbiterStatus = (void (*)(id, SEL, id, id))method_getImplementation(sm);
+        MSHookMessageEx(arb, st, (IMP)DMKBArbiterStatus, (IMP *)&o_KBArbiterStatus);
+    }
+    DMLog([NSString stringWithFormat:@"[kbbehind] the keyboard arbiter's requests are gated: a window behind the active one cannot ask for the keys (its keyboard's on-screen status: %@)", sm ? @"gated too" : @"not there"]);
+}
+static void DMKBGiveBack(NSString *app) {   // (main thread) the app in front gets back the keys its field kept: SpringBoard's own focus request for its scene, as a tap
+    id kfc = DMKeyboardFocusController(), scene = DMSceneForBundle(app);
+    SEL req = NSSelectorFromString(@"userFocusRequestForScene:reason:");
+    if (!scene || !MSBDFocusHas(kfc, req, @"v@:@@")) return;
+    ((void (*)(id, SEL, id, id))objc_msgSend)(kfc, req, scene, @"MacStatusBar: the window in front gets back the keyboard it had");
+    DMLog([NSString stringWithFormat:@"[kbbehind] %@ is in front again: the keyboard it had is given back", app]);
+}
+static void DMKeyboardFocusBehindWindows(void) {
+    id kfc = DMKeyboardFocusController();
+    SEL prevent = NSSelectorFromString(@"preventFocusForSceneWithIdentityToken:reason:");
+    static long osMajor = -1; if (osMajor < 0) osMajor = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion;   // (checked on the M1, 15.6.1, only:
+    //  16 has the same controller but its keyboard and windows were not tried with this; 17/18's coordinator has no prevent call -- before there)
+    BOOL osOK = osMajor == 15;
+    BOOL can = osOK && kfc && MSBDFocusHas(kfc, prevent, @"@@:@@") && !DMSMEngine() && DMActiveEngine() != DMEngineNone && !gStockBar;
+#if DEBUG
+    if (DMTestFlag("/tmp/msb-nokbbehind")) can = NO;
+#endif
+    // (nothing to undo -- no assertion, no gate list, no app held back -- and nothing to do. The gate's list can be there with no assertion: one is
+    //  taken only for a scene with an identifier and an identity token whose prevent call gave one; the pass below empties it, or the arbiter went
+    //  on dropping those apps' keyboard requests after the engine changed, until a respring -- code review, 30 Oct)
+    if (!can && !gKBBehind.count && !DMKBGateHolds()) return;
+    NSMutableArray<NSString *> *bundles = [NSMutableArray array];
+    NSMutableDictionary<NSString *, NSMutableArray *> *scenesOf = [NSMutableDictionary dictionary];
+    if (can) for (UIView *st in DMAerialStagesAll()) {   // (every desktop's windows: one on another desktop types no more than one behind)
+        NSString *b = DMStageBundle(st);
+        id scene = b.length ? DMStageScene(st, b) : nil;
+        if (!scene) continue;
+        [bundles addObject:b];
+        if (!scenesOf[b]) scenesOf[b] = [NSMutableArray array];
+        [scenesOf[b] addObject:scene];
+    }
+    NSString *active = DMNativeActiveApp() ? nil : [DMActiveApp() bundleIdentifier];   // (a window of ours in front -- Finder: none of the apps types)
+    NSSet<NSString *> *behind = MSBDKeyboardBehind(bundles, active, DMHardwareKeyboardAttached(), can);
+    {   // (the gate's list first: our own focus request below for an app coming to the front must not meet the list of before -- device check,
+        //  M1 30 Oct: Settings made full screen over Maps had its keyboard request of ours dropped as "from behind" once)
+        NSMutableSet *gate = [NSMutableSet set];
+        if (can) for (NSString *b in behind) if (scenesOf[b].count) [gate addObject:b];
+        if (gate.count) DMKBArbiterGateInit();
+        DMKBSetGateList(gate.count ? [gate copy] : nil, [active copy]);
+    }
+    NSMutableDictionary<NSString *, id> *want = [NSMutableDictionary dictionary];   // scene identifier -> scene
+    for (NSString *b in behind) for (id scene in scenesOf[b]) { NSString *sid = nil; @try { sid = [scene valueForKey:@"identifier"]; } @catch (id e) {} if ([sid isKindOfClass:[NSString class]]) want[sid] = scene; }
+    if (!gKBBehind) gKBBehind = [NSMutableDictionary dictionary];
+    for (NSString *sid in [gKBBehind.allKeys copy]) if (!want[sid]) {
+        id a = gKBBehind[sid]; [gKBBehind removeObjectForKey:sid];
+        if ([a respondsToSelector:@selector(invalidate)]) ((void (*)(id, SEL))objc_msgSend)(a, @selector(invalidate));
+        DMLog([NSString stringWithFormat:@"[kbbehind] %@ may take the keyboard again (active %@)", sid, active ?: @"none"]);
+    }
+    // (an app at the front again whose field is still typing behind -- the gate held its keyboard back, or its keyboard client still wants the keys
+    //  without being the arbiter's active one --: it gets the keys back the way a tap in it would give them, SpringBoard's own focus request for
+    //  its scene; its keyboard comes back on screen. Device check, M1 30 Oct: Amazon brought back stayed "wants YES, active NO" without it)
+    BOOL inFront = active.length && ![behind containsObject:active], cameToFront = inFront && ![gKBBehindLastActive isEqualToString:active];
+    gKBBehindLastActive = [active copy];
+    if (inFront && DMKBTakeHeldBack(active)) DMKBGiveBack(active);
+    else if (cameToFront) {   // (its keyboard client still wants the keys and is not the arbiter's active one: a field that kept typing behind, held
+                              //  back or quiet -- asked on the arbiter's own queue, acted on here)
+        id arb = gKBArbiter; dispatch_queue_t q = DMKBArbiterQueue(arb); NSString *app = [active copy];
+        if (q) dispatch_async(q, ^{
+            if (!DMKBClientWantsKeys(arb, app)) return;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSSet<NSString *> *nowBehind = nil; NSString *nowActive = nil;
+                DMKBGateList(&nowBehind, &nowActive);
+                if ([gKBBehindLastActive isEqualToString:app] && ![nowBehind containsObject:app]) DMKBGiveBack(app);   // (still the app in front)
+            });
+        });
+    }
+    if (!can) DMKBClearHeldBack();
+    for (NSString *sid in want) if (!gKBBehind[sid]) {
+        id scene = want[sid], token = [scene respondsToSelector:NSSelectorFromString(@"identityToken")] ? DMCall(scene, @"identityToken") : nil, a = nil;
+        if (!token) continue;
+        @try { a = ((id (*)(id, SEL, id, id))objc_msgSend)(kfc, prevent, token, @"MacStatusBar: a window behind the active one"); } @catch (NSException *e) { a = nil; }
+        if (!a) continue;
+        gKBBehind[sid] = a;
+        DMLog([NSString stringWithFormat:@"[kbbehind] %@ kept from the keyboard: a window behind the active app (%@)", sid, active ?: @"none"]);
+    }
+}
 static void DMKeepKeyboardFocusOnWindowAfterTurn(void) {
     static int ios16 = -1;
     if (ios16 < 0) ios16 = [[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion){16, 0, 0}] ? 1 : 0;
@@ -11128,11 +11404,13 @@ static void DMSMBarsForEnvironment(long long mode);   // (below, with the title 
 static void DMSMBarsSettleSoon(NSString *why);         // (below, with DMSMRefreshBars: the top bar decided again once the switcher has settled)
 static void DMInitSwitcherLog(void);
 static void DMWinCardsSwitcherComing(long long mode);   // (WindowCards.h: the windows' cards get fresh pictures as iPadOS's App Switcher comes)
+static void DMSMCardsSwitcherEnv(long long mode);       // (SMCards.h: a new App Switcher scrolls to its newest card once)
 %group SwitcherLog
 %hook SBTransitionSwitcherModifierEvent
 - (void)setToEnvironmentMode:(long long)mode {
     gEnvMode = mode;
     DMWinCardsSwitcherComing(mode);
+    DMSMCardsSwitcherEnv(mode);
     gSwitcherEventAt = CACurrentMediaTime();
     DMSMBarsForEnvironment(mode);   // (Stage Manager engine: the title bars leave with the windows going Home)
     DMWatchTurnLoop();
@@ -15506,7 +15784,7 @@ static void DMNativeStepBackForOpen(NSString *what) {
 #include "WindowCards.h"    // (iPadOS's App Switcher cards for the engines' windows, as Stage Manager's: 1.7.0, engine parity)
 #include "MacSwitcherButton.h"   // (the Home button with the Mac Switcher on: double press = the Mac Switcher, never iPadOS's App Switcher)
 #if DEBUG
-#include "CCProbe.h"        // (debug only: Control Center module repositories and 18's control gallery, read-only -- 1.6.0 RAM/CPU module research)
+#include "CCProbe.h"        // (debug only: read-only Control Center walkers for tests -- no hooks)
 #include "ActMonProbe.h"    // (debug only: the read-only process table for the Activity Monitor feature, 1.7.0 research)
 #endif
 static void DMNativeMenuBarChanged(void) { for (UIView *fg in gCopies.allObjects) [fg setNeedsLayout]; }
@@ -17525,7 +17803,7 @@ static UIView *DMDateStringView(UIView *container) {
 // and a highlight pill for while its menu is open. Returns the title's right edge, or -1 if there is no room.
 // (x and maxRight in leading coordinates, DMBarRTL: in a right-to-left language the titles go left from the logo)
 static CGFloat DMLayoutTitle(UIView *fg, BOOL rtl, const void *labelKey, const void *buttonKey, const void *pillKey,
-                             NSString *text, UIFontWeight weight, UIFont *baseFont, UIColor *color,
+                             NSString *text, UIFontWeight weight, UIFont *baseFont,
                              CGFloat centreY, CGFloat x, CGFloat maxRight, void (^onTap)(UIButton *)) {
     UILabel *label = objc_getAssociatedObject(fg, labelKey);
     UIButton *btn = objc_getAssociatedObject(fg, buttonKey);
@@ -17574,8 +17852,7 @@ static CGFloat DMLayoutTitle(UIView *fg, BOOL rtl, const void *labelKey, const v
         natural = [NSValue valueWithCGSize:label.bounds.size];
         objc_setAssociatedObject(label, kTitleSizeKey, natural, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    if (color && ![label.textColor isEqual:color]) label.textColor = color;
-    CGFloat w = MIN(natural.CGSizeValue.width, maxW), h = natural.CGSizeValue.height;
+    CGFloat w = MIN(natural.CGSizeValue.width, maxW), h = natural.CGSizeValue.height;   // (its colour: DMApplyBarItemColor, with every other item)
     label.frame = DMBarRect(fg, rtl, CGRectMake(x, centreY + kTitleDrop - h / 2.0, w, h));
     btn.frame = DMBarRect(fg, rtl, CGRectMake(x - 8.0, 0, w + 16.0, fg.bounds.size.height));
     pill.frame = CGRectInset(btn.frame, 3.0, 3.0);
@@ -17683,6 +17960,50 @@ static UIView *DMTrailingContainer(UIView *fg) {
         if (!best || v.subviews.count > best.subviews.count) best = v;
     }
     return best;
+}
+
+// ---- the colour of our status bar items: decided in one place (DMBarItemColor), put on every item in one place (DMApplyBarItemColor) ----
+// iOS colours the bar's own text and icons for the style the app in front asks for (light or dark content), and a tweak that recolours the bar
+// (ColorBar15) changes that colour after iOS. Every item of ours takes the colour the bar's own text has at that moment: the time label's final
+// colour; a copy with no time label (the Lock Screen's) the status icons' colour; else the colour last seen on screen. Applied at every layout of
+// a copy, at every restyle of its time label (an app asking for the other style, without a layout of ours) and by the Lock Screen's layout.
+// (Before, 1.7.1 item 8 -- KT, M1, Amazon as an Aerial window: some items white, some black: each item was coloured where it was laid out, and a
+// restyle reached only the logo, the menu titles but Audio, the date and the Spotlight icon. The Wi-Fi, VPN, mute and SSH icons and the Audio
+// title kept the old colour until the next layout of ours -- up to the next minute --, and the Lock Screen's layout coloured only the Wi-Fi and
+// mute icons, from another place.)
+static UIColor *DMTrailingIconColor(UIView *trailing);
+// The colour a label of the bar is drawn in: its text colour -- or its tint colour when its text follows the tint (UIKit's
+// -_textColorFollowsTintColor, type-checked). ColorBar15 colours the bar that way: the string views' text follows the tint it sets, while their text
+// colour stays the one the app's style asked for. Read as the text colour, the M1's bar with ColorBar15 (all white) under an app asking for dark
+// content gave our items black next to Apple's white (1.7.1 item 8, measured 30 Oct: the time label's text colour black, its tint white, white on
+// the screen).
+static UIColor *DMLabelDrawnColor(UILabel *l) {
+    static SEL follows; static dispatch_once_t once; dispatch_once(&once, ^{ follows = NSSelectorFromString(@"_textColorFollowsTintColor"); });
+    Method m = l ? class_getInstanceMethod(object_getClass(l), follows) : NULL;
+    const char *enc = m ? method_getTypeEncoding(m) : NULL;
+    if (enc && (!strcmp(enc, "B16@0:8") || !strcmp(enc, "c16@0:8")) && ((BOOL (*)(id, SEL))objc_msgSend)(l, follows) && l.tintColor) return l.tintColor;
+    return l.textColor;
+}
+static UIColor *DMBarItemColor(UIView *fg, UIView *timeLabel) {
+    UIColor *c = [timeLabel isKindOfClass:[UILabel class]] ? DMLabelDrawnColor((UILabel *)timeLabel) : nil;
+    if (!c) { UIView *trailing = DMTrailingContainer(fg); if (trailing) c = DMTrailingIconColor(trailing); }
+    return c ?: (gStatusTextColor ?: [UIColor whiteColor]);
+}
+// background: our bar's background follows too (not on the Lock Screen's layout, which never drew one)
+static void DMApplyBarItemColor(UIView *fg, UIColor *c, BOOL background) {
+    if (!fg || !c) return;
+    const void *labels[] = { kLogoKey, kAppLabelKey, kFileLabelKey, kEditLabelKey, kViewLabelKey, kGoLabelKey, kWinLabelKey, kAudioLabelKey, kDateProxyKey };
+    const void *icons[] = { kSpotIconKey, kWiFiIconKey, kVPNIconKey, kMuteIconKey, kSSHIconKey };
+    for (size_t i = 0; i < sizeof labels / sizeof labels[0]; i++) {
+        UILabel *l = objc_getAssociatedObject(fg, labels[i]);
+        if ([l isKindOfClass:[UILabel class]] && ![l.textColor isEqual:c]) l.textColor = c;
+    }
+    for (size_t i = 0; i < sizeof icons / sizeof icons[0]; i++) {
+        UIView *v = objc_getAssociatedObject(fg, icons[i]);
+        if ([v isKindOfClass:[UIView class]] && ![v.tintColor isEqual:c]) v.tintColor = c;
+    }
+    if (background) DMApplyBackground(fg, c);
+    if (fg.window && !fg.window.hidden && fg.bounds.size.width > 300.0) gStatusTextColor = c;   // (the bar on screen: the keyboard pill's colour, DMPlaceKeyboardPillIn)
 }
 
 
@@ -19308,6 +19629,13 @@ static void DMLoadPrefs(void) {
         if (mswRef) { if (CFGetTypeID(mswRef) == CFBooleanGetTypeID()) msw = CFBooleanGetValue(mswRef); CFRelease(mswRef); }
         DMMSWApplyPref(msw && !DMCtorSkip("macswitcher"));
         DMMSWHookHomeButton();   // (once, when it is first on: the Home button's double press, MacSwitcherButton.h)
+        // Go to the App's Desktop (1.7.1): off unless switched on -- opening an app whose windows are all on other desktops brings its window here
+        // (MacSwitcher.h DMMSWBringHere, MacSwitcherSM.h); on, that desktop comes, as before
+        BOOL go = NO;
+        CFPropertyListRef goRef = CFPreferencesCopyValue(CFSTR("goToAppDesktop"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        if (goRef) { if (CFGetTypeID(goRef) == CFBooleanGetTypeID()) go = CFBooleanGetValue(goRef); CFRelease(goRef); }
+        if (go != gMSWGoToAppDesk) DMLog([NSString stringWithFormat:@"[macswitcher] Go to the App's Desktop %@", go ? @"on: an app opened goes to its window's desktop" : @"off: an app's window comes to the desktop it is opened on"]);
+        gMSWGoToAppDesk = go;
     }
     {
         CGFloat scale = 0.82;
@@ -19631,7 +19959,7 @@ static UIColor *DMTrailingIconColor(UIView *trailing) {
     while (pending.count) {
         UIView *v = pending.firstObject; [pending removeObjectAtIndex:0];
         if (v != trailing && !v.hidden && v.alpha > 0.05) {
-            if ([v isKindOfClass:[UILabel class]]) return ((UILabel *)v).textColor;
+            if ([v isKindOfClass:[UILabel class]]) return DMLabelDrawnColor((UILabel *)v);   // (as drawn: DMLabelDrawnColor)
             if ([v isKindOfClass:[UIImageView class]] && ((UIImageView *)v).image.renderingMode != UIImageRenderingModeAlwaysOriginal) return v.tintColor;
         }
         [pending addObjectsFromArray:v.subviews];
@@ -19698,7 +20026,7 @@ static BOOL DMLayoutWithoutClock(UIView *fg) {
         CGRect f = DMBarRect(fg, rtl, icon.frame); left -= 8.0 + f.size.width; f.origin.x = left; icon.frame = DMBarRect(fg, rtl, f);
         CGRect b = DMBarRect(fg, rtl, btn.frame); b.origin.x = left - 6.0; btn.frame = DMBarRect(fg, rtl, b);
     };
-    DMWiFiRefreshIcon(fg, DMTrailingIconColor(trailing));
+    DMWiFiRefreshIcon(fg);
     closeUp(kWiFiIconKey, kWiFiButtonKey);   // (the Wi-Fi icon nearest the status icons, as elsewhere)
     closeUp(kVPNIconKey, kVPNButtonKey);
     {   // the mute icon (ours) after the VPN icon, as elsewhere (DMMuteIconWanted)
@@ -19707,8 +20035,6 @@ static BOOL DMLayoutWithoutClock(UIView *fg) {
         BOOL show = DMMuteIconWanted() && left < CGFLOAT_MAX && muteIcon.image;
         muteIcon.hidden = !show;
         if (show) {
-            UIColor *tint = DMTrailingIconColor(trailing);
-            if (tint) muteIcon.tintColor = tint;
             CGFloat w = ceil(muteIcon.image.size.width), h = ceil(muteIcon.image.size.height);
             left -= 8.0 + w;
             CGFloat midY = [trailing convertPoint:CGPointMake(0, CGRectGetMidY(trailing.bounds)) toView:fg].y;
@@ -19717,6 +20043,7 @@ static BOOL DMLayoutWithoutClock(UIView *fg) {
         }
     }
     closeUp(kSSHIconKey, kSSHButtonKey);
+    DMApplyBarItemColor(fg, DMBarItemColor(fg, nil), NO);   // (the icons that show here, in the status icons' colour: no time label on this copy)
     if (fabs(DMBarShiftOf(rtl, trailing.transform) - shift) < 0.5) return YES;
     BOOL onScreen = fg.window && !fg.window.hidden;
     void (^apply)(void) = ^{ trailing.transform = DMBarShift(rtl, shift); };
@@ -19767,6 +20094,37 @@ static BOOL DMIsTimeLabel(UIView *v) {
 static void DMHoldSafetyCheck(UIView *fg, int checks);
 static const void *kHoldGaveUpKey = &kHoldGaveUpKey;      // (the safety release let this copy go: never held again, see DMHoldSafetyCheck)
 static const void *kNoClockLayoutKey = &kNoClockLayoutKey;  // (our Lock Screen layout -- no clock, the icons closed up -- is on this copy)
+// The items the locked look takes away and the unlocked look brings back. When a copy on screen goes from the locked look to the unlocked one (an
+// unlock, Notification Center pushed up), those that come back fade in together, once (0.25 s, with the status icons' slide); before 1.7.1 they
+// came in one frame, the Spotlight icon alone faded (item 11).
+static const void *kBarLookLockedKey = &kBarLookLockedKey;   // @YES: the copy's last layout gave it the locked look (kept: the watcher's K-5 record is cleared to ask)
+static NSArray<NSValue *> *DMBarFadeBackKeys(void) {
+    static NSArray *keys; static dispatch_once_t once;
+    dispatch_once(&once, ^{ keys = @[[NSValue valueWithPointer:kLightsKey], [NSValue valueWithPointer:kAppLabelKey], [NSValue valueWithPointer:kFileLabelKey], [NSValue valueWithPointer:kEditLabelKey],
+        [NSValue valueWithPointer:kViewLabelKey], [NSValue valueWithPointer:kGoLabelKey], [NSValue valueWithPointer:kWinLabelKey], [NSValue valueWithPointer:kAudioLabelKey],
+        [NSValue valueWithPointer:kDateProxyKey], [NSValue valueWithPointer:kSpotIconKey]]; });
+    return keys;
+}
+static NSSet<NSValue *> *DMBarShownItems(UIView *fg) {   // (which of those show now)
+    NSMutableSet *s = [NSMutableSet set];
+    for (NSValue *k in DMBarFadeBackKeys()) { UIView *v = objc_getAssociatedObject(fg, k.pointerValue); if (v && !v.hidden) [s addObject:k]; }
+    return s;
+}
+static void DMBarFadeBack(UIView *fg, NSSet<NSValue *> *shownBefore, UIView *timeLabel, BOOL clockBack) {
+    if (!fg.window || fg.window.hidden || DMEffectiveAlpha(fg) < 0.05) return;
+#if DEBUG
+    if (DMTestFlag("/tmp/msb-nofadeback")) return;   // (debug: as before, for the before/after test)
+#endif
+    NSMutableArray<UIView *> *back = [NSMutableArray array];
+    if (clockBack && timeLabel && !timeLabel.hidden && timeLabel.alpha > 0.01) { [timeLabel.layer removeAnimationForKey:@"opacity"]; timeLabel.alpha = 0.0; [back addObject:timeLabel]; }   // (iOS's time, back with our date)
+    for (NSValue *k in DMBarFadeBackKeys()) {
+        UIView *v = objc_getAssociatedObject(fg, k.pointerValue);
+        if (v && !v.hidden && ![shownBefore containsObject:k]) { [v.layer removeAnimationForKey:@"opacity"]; v.alpha = 0.0; [back addObject:v]; }
+    }
+    if (!back.count) return;
+    [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionAllowUserInteraction animations:^{ for (UIView *v in back) v.alpha = 1.0; } completion:nil];
+    if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[lock] %p: the unlocked look's %lu items fade in together", fg, (unsigned long)back.count]);
+}
 // While a copy is held, the opacity iOS asks for is remembered and given back on release, so the hold only delays iOS's choice and never overrides
 // it (1.3.3: with plain Stage Manager and Windowing off, iPadOS hides SpringBoard's bar while a window fills the screen and the app's own bar in the
 // window becomes the top bar; a release that always set 1.0 could show a bar iOS had hidden, or keep one invisible).
@@ -20125,9 +20483,12 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
         //  left them on the Lock Screen -- and the watcher checks the record)
         if (laidOut && lockedNow) DMHideAppBarItemsOf(fg);
         if (laidOut) objc_setAssociatedObject(fg, kBarLaidOutLockedKey, @(lockedNow), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (laidOut && lockedNow) objc_setAssociatedObject(fg, kBarLookLockedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (the unlocked look is only whole with the clock: the full layout ends it)
         return;
     }
     objc_setAssociatedObject(fg, kNoClockLayoutKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    BOOL lookWasLocked = [objc_getAssociatedObject(fg, kBarLookLockedKey) boolValue];   // (the unlocked look coming back: DMBarFadeBack at the end)
+    NSSet<NSValue *> *shownBefore = lookWasLocked ? DMBarShownItems(fg) : nil;
     UIView *trailing = DMTrailingContainer(fg);
     DMSBDiagStep(trailing ? @"d-regions-found" : @"d-no-trailing-region");
     // Every x below is in leading coordinates (DMBarRTL: from the left in English, from the right in a right-to-left language, where the bar is
@@ -20180,7 +20541,7 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
         created = YES;
     }
     UIFont *timeFont = [timeLabel valueForKey:@"font"];
-    UIColor *timeColor = [timeLabel valueForKey:@"textColor"];
+    UIColor *barColor = DMBarItemColor(fg, timeLabel);   // (the one colour of every item of ours, put on them at the end of this layout)
     // Size the logo so its visible shape is as tall as the bar allows (minus a small margin), and
     // centre that shape vertically in the bar.
     CGRect ink100;
@@ -20189,8 +20550,6 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
     CGFloat targetInk = fg.bounds.size.height - 2.0 * kLogoBarMargin;
     if (measured) logoSize = targetInk / (ink100.size.height / 100.0);
     logo.font = [UIFont systemFontOfSize:logoSize weight:UIFontWeightSemibold];
-    if (timeColor) logo.textColor = timeColor;
-    DMApplyBackground(fg, timeColor);
     [logo sizeToFit];
 
     // Untransformed leading edge of the leading container (centre/bounds ignore transforms), from the leading end.
@@ -20248,7 +20607,7 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
     if (newlyOurs) DMSMMainBarChanged(fg);   // (the screen's own bar just became ours: a full-screen card's strip decides again, F1)
     DMStartClockBalanceIfNeeded();   // a second status bar copy has just appeared (an app opening over another)
     SBApplication *frontApp = DMNativeActiveApp() ? nil : DMActiveApp();   // whichever app is frontmost, windowed or full screen (a native window: none)
-    BOOL activeIsWindow = DMWindowsOwnStatusBar();
+    BOOL activeIsWindow = DMWindowsOwnStatusBar() || (frontApp && !DMFrontApp() && DMA5ComingBackTop());   // (a window on its way back after the unlock: still a window -- no lights in the bar)
     NSString *appName = frontApp ? ([frontApp displayName] ?: [frontApp bundleIdentifier]) : (DMNativeActiveAppName() ?: @"Finder");
 
     // ---- traffic lights, right after the logo, while an app is full screen; the titles move right to make room ----
@@ -20262,6 +20621,7 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
     if (gDMBarForceLockedOnce) locked = YES;
 #endif
     objc_setAssociatedObject(fg, kBarLaidOutLockedKey, @(locked), OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (K-5: the watcher lays the copy out again if this stops being true)
+    objc_setAssociatedObject(fg, kBarLookLockedKey, @(locked), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     btn.accessibilityTraits = UIAccessibilityTraitButton | (locked ? UIAccessibilityTraitNotEnabled : 0);   // (locked, the Apple menu stays shut: VoiceOver says dimmed)
     BOOL wantLights = gShowWindowButtons && frontApp != nil && !activeIsWindow && !locked;   // a window has its own buttons
     if (DMTestFlag("/tmp/macstatusbar-debug")) {
@@ -20292,7 +20652,7 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
 
     CGFloat titleMaxRight = locked ? 0.0 : fg.bounds.size.width / 2.0 - 24.0;   // stay in the left half (locked: no room, so every title hides)
     CGFloat leftEnd = wantLights ? CGRectGetMaxX(lightsL) - 4.0 : CGRectGetMaxX(lf);
-    CGFloat appRight = DMLayoutTitle(fg, rtl, kAppLabelKey, kAppButtonKey, kAppPillKey, appName, UIFontWeightBold, timeFont, timeColor,
+    CGFloat appRight = DMLayoutTitle(fg, rtl, kAppLabelKey, kAppButtonKey, kAppPillKey, appName, UIFontWeightBold, timeFont,
                                      timeCentre.y, titlesStart, titleMaxRight,
                                      ^(UIButton *b) { DMLog(@"[appbutton] tapped"); DMOpenAppMenu(b); });
     BOOL finderTitles = DMNativeActiveApp() != nil && appRight > 0;   // (our Finder in front: File and View too, like a Mac's Finder)
@@ -20302,28 +20662,28 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
         leftEnd = appRight;
         CGFloat editStart = appRight + kTitleGap;
         if (finderTitles) {
-            CGFloat fileRight = DMLayoutTitle(fg, rtl, kFileLabelKey, kFileButtonKey, kFilePillKey, @"File", UIFontWeightRegular, timeFont, timeColor,
+            CGFloat fileRight = DMLayoutTitle(fg, rtl, kFileLabelKey, kFileButtonKey, kFilePillKey, @"File", UIFontWeightRegular, timeFont,
                                               timeCentre.y, appRight + kTitleGap, titleMaxRight, ^(UIButton *b) { DMOpenFinderFileMenu(b); });
             if (fileRight > 0) editStart = fileRight + kTitleGap;
         }
-        CGFloat editRight = DMLayoutTitle(fg, rtl, kEditLabelKey, kEditButtonKey, kEditPillKey, @"Edit", UIFontWeightRegular, timeFont, timeColor,
+        CGFloat editRight = DMLayoutTitle(fg, rtl, kEditLabelKey, kEditButtonKey, kEditPillKey, @"Edit", UIFontWeightRegular, timeFont,
                                           timeCentre.y, editStart, titleMaxRight,
                                           ^(UIButton *b) { DMLog(@"[editbutton] tapped"); DMOpenEditMenu(b); });
         if (editRight > 0 && finderTitles) {
-            CGFloat viewRight = DMLayoutTitle(fg, rtl, kViewLabelKey, kViewButtonKey, kViewPillKey, @"View", UIFontWeightRegular, timeFont, timeColor,
+            CGFloat viewRight = DMLayoutTitle(fg, rtl, kViewLabelKey, kViewButtonKey, kViewPillKey, @"View", UIFontWeightRegular, timeFont,
                                               timeCentre.y, editRight + kTitleGap, titleMaxRight, ^(UIButton *b) { DMOpenFinderViewMenu(b); });
             if (viewRight > 0) editRight = viewRight;
         }
         if (editRight > 0) {
             leftEnd = editRight;
-            CGFloat goRight = DMLayoutTitle(fg, rtl, kGoLabelKey, kGoButtonKey, kGoPillKey, @"Go", UIFontWeightRegular, timeFont, timeColor,
+            CGFloat goRight = DMLayoutTitle(fg, rtl, kGoLabelKey, kGoButtonKey, kGoPillKey, @"Go", UIFontWeightRegular, timeFont,
                                             timeCentre.y, editRight + kTitleGap, titleMaxRight,
                                             ^(UIButton *b) { DMLog(@"[gobutton] tapped"); DMOpenGoMenu(b); });
             if (goRight > 0) {
                 leftEnd = goRight;
                 CGFloat audioStart = goRight + kTitleGap;   // Window is only shown while windowing is active; Audio always follows whichever of the two actually laid out
                 if (DMActiveEngine() != DMEngineNone || DMSMEngine() || DMNativeActiveApp()) {   // (Stage Manager as the engine is windowing too, with no engine library; our native windows always are)
-                    CGFloat winRight = DMLayoutTitle(fg, rtl, kWinLabelKey, kWinButtonKey, kWinPillKey, @"Window", UIFontWeightRegular, timeFont, timeColor,
+                    CGFloat winRight = DMLayoutTitle(fg, rtl, kWinLabelKey, kWinButtonKey, kWinPillKey, @"Window", UIFontWeightRegular, timeFont,
                                                      timeCentre.y, goRight + kTitleGap, titleMaxRight,
                                                      ^(UIButton *b) { DMLog(@"[winbutton] tapped"); DMOpenWindowMenu(b); });
                     if (winRight > 0) { leftEnd = winRight; audioStart = winRight + kTitleGap; }
@@ -20332,7 +20692,7 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
                     ((UIView *)objc_getAssociatedObject(fg, kWinButtonKey)).hidden = YES;
                 }
                 if (gAudioTabShown) {   // only while some app is playing audio (see DMWatchAudioPlaying)
-                    CGFloat audioRight = DMLayoutTitle(fg, rtl, kAudioLabelKey, kAudioButtonKey, kAudioPillKey, @"Audio", UIFontWeightRegular, timeFont, timeColor,
+                    CGFloat audioRight = DMLayoutTitle(fg, rtl, kAudioLabelKey, kAudioButtonKey, kAudioPillKey, @"Audio", UIFontWeightRegular, timeFont,
                                                        timeCentre.y, audioStart, titleMaxRight,
                                                        ^(UIButton *b) { DMLog(@"[audiobutton] tapped"); DMOpenAudioMenu(b); });
                     if (audioRight > 0) leftEnd = audioRight;
@@ -20385,7 +20745,6 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
     if (needProxy) {
         dateProxy.text = DMDateString();
         dateProxy.font = tabular ?: timeFont;
-        if (timeColor) dateProxy.textColor = timeColor;
         [dateProxy sizeToFit];
         proxyW = dateProxy.bounds.size.width;
         proxyH = dateProxy.bounds.size.height;
@@ -20430,11 +20789,7 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
         spotIcon.image = [glyph imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
     }
     spotIcon.hidden = spotBtn.hidden = !gShowSpotlight;
-    if ([objc_getAssociatedObject(fg, kSpotLockHidKey) boolValue]) {   // (back after the Lock Screen: it fades in while the icons slide back)
-        objc_setAssociatedObject(fg, kSpotLockHidKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        if (!spotIcon.hidden && fg.window && !fg.window.hidden) { spotIcon.alpha = 0.0; [UIView animateWithDuration:0.25 animations:^{ spotIcon.alpha = 1.0; }]; }
-    }
-    if (timeColor) spotIcon.tintColor = timeColor;
+    objc_setAssociatedObject(fg, kSpotLockHidKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (back after the Lock Screen: it fades in with the other items, DMBarFadeBack)
     CGSize glyphSize = spotIcon.image.size;
     CGFloat spotW = ceil(glyphSize.width), spotH = ceil(glyphSize.height);
     // Anything else that lives in the clock's container (a recording indicator drawn around the time) is part of the clock: the icons keep clear of it.
@@ -20495,7 +20850,10 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
     {
         CGFloat want = -((rightEdge - iconsEnd) + kClockIconsGap);
         // (a big change -- the clock coming back after the Lock Screen -- slides; the everyday small ones, a second digit changing width, do not)
-        if (fabs(DMBarShiftOf(rtl, trailing.transform) - want) > 20.0 && fg.window && !fg.window.hidden && ![trailing.layer animationForKey:@"transform"])
+        // (not as the locked look ends -- an unlock, Notification Center pushed up: the bar is coming back then, iOS brings it in, and the icons
+        //  sliding over the clock that is already there drew the date and the battery over each other, 1.7.1 item 11; they are in place and the
+        //  clock fades in with the other items, DMBarFadeBack)
+        if (fabs(DMBarShiftOf(rtl, trailing.transform) - want) > 20.0 && fg.window && !fg.window.hidden && !lookWasLocked && ![trailing.layer animationForKey:@"transform"])
             [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionBeginFromCurrentState animations:^{ trailing.transform = DMBarShift(rtl, want); } completion:nil];
         else trailing.transform = DMBarShift(rtl, want);
     }
@@ -20548,7 +20906,7 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
         }
         // Wi-Fi icon (Settings > Status Bar > Wi-Fi Menu): our own item nearest the status icons, like a Mac's Wi-Fi menu extra beside Control
         // Center; iOS's own Wi-Fi item is left out of our bars then (DMHideStockWiFi). It stays with Wi-Fi off (the empty fan). Tapping it opens its menu.
-        left = DMWiFiLayoutIcon(fg, left, timeCentre.y, timeColor);
+        left = DMWiFiLayoutIcon(fg, left, timeCentre.y);
         // VPN icon: its own item right next to the status icons, like a Mac's VPN menu extra next to Control Center, only while a
         // tunnel is connected; iOS's own VPN badge is taken out of the status icons group in our bars (DMHideStockVPN). Tapping it opens its menu.
         UIImageView *vpnIcon = objc_getAssociatedObject(fg, kVPNIconKey);
@@ -20571,7 +20929,6 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
         }
         UIButton *vpnButton = objc_getAssociatedObject(fg, kVPNButtonKey);
         vpnIcon.hidden = vpnButton.hidden = !gVPNActive;
-        if (timeColor) vpnIcon.tintColor = timeColor;
         if (gVPNActive && left < CGFLOAT_MAX && vpnIcon.image) {
             CGFloat w = ceil(vpnIcon.image.size.width), h = ceil(vpnIcon.image.size.height);
             left -= 8.0 + w;
@@ -20591,7 +20948,6 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
                 DMLog([NSString stringWithFormat:@"[mute] before 1.4.3: symbol %.1f pt (time %.1f + 0.5), picture %.1fx%.1f pt, ink %.2fx%.2f pt", timeFont.pointSize + 0.5, timeFont.pointSize, old.size.width, old.size.height, oi.size.width, oi.size.height]);
             }
 #endif
-            if (timeColor) muteIcon.tintColor = timeColor;
             BOOL show = DMMuteIconWanted() && left < CGFLOAT_MAX && muteIcon.image;
             muteIcon.hidden = !show;
             if (fg.window && !fg.window.hidden && fg.bounds.size.width > 300.0) gMuteIconShown = show;
@@ -20624,7 +20980,6 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
         }
         UIButton *sshButton = objc_getAssociatedObject(fg, kSSHButtonKey);
         sshIcon.hidden = sshButton.hidden = !gSSHActive;
-        if (timeColor) sshIcon.tintColor = timeColor;
         if (gSSHActive && left < CGFLOAT_MAX && sshIcon.image) {
             CGFloat w = ceil(sshIcon.image.size.width), h = ceil(sshIcon.image.size.height);
             left -= 8.0 + w;
@@ -20632,8 +20987,10 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
             sshButton.frame = DMBarRect(fg, rtl, CGRectMake(left - 6.0, 0, w + 12.0, fg.bounds.size.height));
             [fg bringSubviewToFront:sshIcon]; [fg bringSubviewToFront:sshButton];
         }
-        if (left < CGFLOAT_MAX && fg.window && !fg.window.hidden && fg.bounds.size.width > 300.0) { gStatusIconsLeft = rtl ? 0.0 : left; if (timeColor) gStatusTextColor = timeColor; }   // (the keyboard button's place: left-to-right only, see DMPlaceKeyboardPill)
+        if (left < CGFLOAT_MAX && fg.window && !fg.window.hidden && fg.bounds.size.width > 300.0) gStatusIconsLeft = rtl ? 0.0 : left;   // (the keyboard button's place: left-to-right only, see DMPlaceKeyboardPill)
     }
+    DMApplyBarItemColor(fg, barColor, YES);   // (every item of ours, in one place: DMBarItemColor)
+    if (lookWasLocked && !locked) DMBarFadeBack(fg, shownBefore, timeLabel, ![shownBefore containsObject:[NSValue valueWithPointer:kDateProxyKey]]);   // (the locked look ends: what comes back fades in, once)
 
     if (DMLabelShown(timeLabel) && timeLabel.bounds.size.width > 1.0) {   // where the time is drawn, for the Lock Screen (see DMShowTimeProxy)
         objc_setAssociatedObject(fg, kTimeSlotKey, [NSValue valueWithCGRect:[timeLabel.superview convertRect:timeLabel.frame toView:fg]], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -20692,7 +21049,7 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
     if (a > 0.01) DMAttachIfFilled(me.superview.superview, "a label was shown");   // (17+ only)
 }
 
-// Keep our labels' colour in step with the time when the status bar restyles. Read the label's
+// Keep every item of ours in step with the time when the status bar restyles (DMApplyBarItemColor). Read the label's
 // FINAL colour after %orig, so tweaks that recolour it (ColorBar15) are followed rather than fought.
 - (void)setTextColor:(UIColor *)color {
     %orig;
@@ -20702,17 +21059,16 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
     if (!logo) return;
     if (me != DMFirstStringView(me.superview)) return;
     if (me.superview != DMLeadingContainer(fg)) return;
-    UIColor *final = [(UILabel *)me textColor] ?: color;
-    logo.textColor = final;
-    DMApplyBackground(fg, final);
-    ((UILabel *)objc_getAssociatedObject(fg, kAppLabelKey)).textColor = final;
-    ((UILabel *)objc_getAssociatedObject(fg, kEditLabelKey)).textColor = final;
-    ((UILabel *)objc_getAssociatedObject(fg, kGoLabelKey)).textColor = final;
-    ((UILabel *)objc_getAssociatedObject(fg, kFileLabelKey)).textColor = final;
-    ((UILabel *)objc_getAssociatedObject(fg, kViewLabelKey)).textColor = final;
-    ((UILabel *)objc_getAssociatedObject(fg, kWinLabelKey)).textColor = final;
-    ((UILabel *)objc_getAssociatedObject(fg, kDateProxyKey)).textColor = final;
-    ((UIImageView *)objc_getAssociatedObject(fg, kSpotIconKey)).tintColor = final;
+    DMApplyBarItemColor(fg, DMBarItemColor(fg, me), YES);   // (every item of ours, as the layout does: an app asking for the other style restyles the bar without one)
+}
+// The same when the time's tint changes: a tweak that colours the bar through the string views' tint (ColorBar15: their text follows the tint,
+// DMLabelDrawnColor) recolours it without a new text colour.
+- (void)tintColorDidChange {
+    %orig;
+    UIView *me = (UIView *)self;
+    UIView *fg = me.superview.superview;
+    if (!fg || !objc_getAssociatedObject(fg, kLogoKey) || me != DMFirstStringView(me.superview) || me.superview != DMLeadingContainer(fg)) return;
+    DMApplyBarItemColor(fg, DMBarItemColor(fg, me), YES);
 }
 
 // The status bar writes the time without seconds once a minute; substitute ours.
@@ -20731,6 +21087,23 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
 }
 
 %end
+
+%group CoverSheetLeaving
+%hook SBCoverSheetPresentationManager
+- (void)coverSheetSlidingViewController:(id)vc prepareForDismissalTransitionForReversingTransition:(BOOL)reversing forUserGesture:(BOOL)gesture {
+    %orig;
+    DMBarCoverLeaving();
+}
+%end
+%end
+static void DMCoverSheetLeavingInit(void) {
+    static BOOL done; if (done) return; done = YES;
+    Class c = objc_getClass("SBCoverSheetPresentationManager");
+    Method m = c ? class_getInstanceMethod(c, NSSelectorFromString(@"coverSheetSlidingViewController:prepareForDismissalTransitionForReversingTransition:forUserGesture:")) : NULL;
+    const char *enc = m ? method_getTypeEncoding(m) : NULL;
+    if (enc && !strcmp(enc, "v32@0:8@16B24B28") && !DMTestFlag("/tmp/msb-nocoverleave")) { %init(CoverSheetLeaving); DMLog(@"[lock] the Cover Sheet's dismissal start is watched: the bar's unlocked look at once"); }
+    else DMLog([NSString stringWithFormat:@"[lock] the Cover Sheet's dismissal start: %s (the watcher alone)", enc ?: "not there"]);
+}
 
 // iPadOS 17+ (SystemStatusUI): the leading region gets its time and date at an unlock without a layout pass of the foreground view (15/16 laid it
 // out), so a copy that was not ours yet stayed stock until something else laid it out (17.5.1). When a string view arrives in a copy that is not ours,
@@ -20796,24 +21169,41 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
 }
 %end
 
-// ===== keeping the Cover Sheet pull away from the logo ====================
-static BOOL DMPointOverLogo(UIView *bar, UIGestureRecognizer *g) {
+// ===== keeping the status bar's own actions away from our controls =========
+// A touch (or pointer click) on one of our controls in the bar is that control's, never the status bar's region action. iPadOS's bar runs the
+// action of the region under the touch: the time-and-date region's brings Notification Center down (with the pointer: -[SpringBoard
+// handleStatusBarHoverActionForRegion:] 0), the status icons' region's opens Control Center (1). This rule's first set had only the logo and
+// the menus, but the time region lies under our clock: since 17 (SystemStatusUI) a region is measured from its own view
+// (-[STUIStatusBar _frameForActionable:actionInsets:] converts the view's bounds; -absoluteHoverFrame unites its items' views), and our bar
+// moves the time-and-date view to the right end to draw the clock there (dm_layoutLogoBody, above): the time region lay under our clock, the
+// icons' region under our icons. 15/16 (UIKit's bar) measure the time region under our clock as well (landscape: 15.6.1 {{1105, -3}, {74, 22}},
+// 16.7.7 {{955, -3}, {64, 20}}), the icons' region reaching under the Spotlight button's edge. A pointer resting on the clock made the time
+// region the bar's -hoveredActionable, -gestureRecognizerShouldBegin: then starts the region's action for any touch there, so a click or tap on
+// the clock brought Notification Center down (the Lock Screen look) and cancelled the clock's own tap (17.5.1, 30 Oct; with the first set the
+// same on 15.6.1 and 16.7.7). So every control of ours counts, the clock too; elsewhere the regions' actions stay.
+static BOOL DMPointOverOurControl(UIView *bar, UIGestureRecognizer *g) {
     if (![g respondsToSelector:@selector(locationInView:)]) return NO;
     UIView *fg = nil; @try { fg = [bar valueForKey:@"foregroundView"]; } @catch (id e) {}   // (KVC on a private class, in a hook that runs on every pull: guarded)
     if (![fg isKindOfClass:[UIView class]]) return NO;
     CGPoint p = [g locationInView:fg];
     UIButton *btn = objc_getAssociatedObject(fg, kButtonKey);
-    UIButton *appBtn = objc_getAssociatedObject(fg, kAppButtonKey);
-    UIButton *goBtn = objc_getAssociatedObject(fg, kGoButtonKey);
-    if (goBtn && !goBtn.hidden && CGRectContainsPoint(goBtn.frame, p)) return YES;
-    UIButton *editBtn = objc_getAssociatedObject(fg, kEditButtonKey);
-    if (editBtn && !editBtn.hidden && CGRectContainsPoint(editBtn.frame, p)) return YES;
-    UIButton *spotBtn = objc_getAssociatedObject(fg, kSpotButtonKey);
-    if (spotBtn && !spotBtn.hidden && CGRectContainsPoint(spotBtn.frame, p)) return YES;
+    if (btn && CGRectContainsPoint(btn.frame, p)) return YES;   // (the logo: also while it is fading in)
     UIView *lightsView = objc_getAssociatedObject(fg, kLightsKey);
     if (lightsView && !lightsView.hidden && CGRectContainsPoint(lightsView.frame, p)) return YES;
-    if (btn && CGRectContainsPoint(btn.frame, p)) return YES;
-    return appBtn && !appBtn.hidden && CGRectContainsPoint(appBtn.frame, p);
+    const void *keys[] = { kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, kSSHButtonKey,
+                           kVPNButtonKey, kWiFiButtonKey, kSpotButtonKey, kClockButtonKey };
+#if DEBUG
+    if (DMTestFlag("/tmp/msb-bar-apple-actions")) {   // (tests: the set before 1.7.1 -- the clock and the icons left to iPadOS's region actions)
+        const void *old[] = { kAppButtonKey, kEditButtonKey, kGoButtonKey, kSpotButtonKey };
+        for (unsigned i = 0; i < sizeof(old) / sizeof(old[0]); i++) { UIButton *b = objc_getAssociatedObject(fg, old[i]); if (b && !b.hidden && CGRectContainsPoint(b.frame, p)) return YES; }
+        return NO;
+    }
+#endif
+    for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+        UIButton *b = objc_getAssociatedObject(fg, keys[i]);
+        if (b && !b.hidden && CGRectContainsPoint(b.frame, p)) return YES;
+    }
+    return NO;
 }
 
 %hook UIStatusBar_Modern
@@ -20938,21 +21328,22 @@ static BOOL DMPointOnMultitaskingDots(UIView *fromView, CGPoint point) {
     return %orig;
 }
 
-// Stop the status bar's tap action from starting when the touch is on the logo.
+// Stop the status bar's region action from starting when the touch is on one of our controls (DMPointOverOurControl: the logo, the menus,
+// the icons, the clock).
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)g {
     BOOL orig = %orig;
-    BOOL over = DMPointOverLogo((UIView *)self, g);
+    BOOL over = DMPointOverOurControl((UIView *)self, g);
     static int n = 0;
-    if (n++ < 30) DMLog([NSString stringWithFormat:@"[shouldBegin] %@ orig=%d overLogo=%d",
+    if (n++ < 30) DMLog([NSString stringWithFormat:@"[shouldBegin] %@ orig=%d overOurs=%d",
                          NSStringFromClass([g class]), orig, over]);
     return (orig && over) ? NO : orig;
 }
 
-// Belt and braces: if the action fires anyway, swallow it over the logo.
+// Belt and braces: if the action fires anyway, swallow it over our controls.
 - (void)statusBarGesture:(UIGestureRecognizer *)g {
-    BOOL over = DMPointOverLogo((UIView *)self, g);
+    BOOL over = DMPointOverOurControl((UIView *)self, g);
     static int n = 0;
-    if (n++ < 30) DMLog([NSString stringWithFormat:@"[statusBarGesture] %@ overLogo=%d",
+    if (n++ < 30) DMLog([NSString stringWithFormat:@"[statusBarGesture] %@ overOurs=%d",
                          NSStringFromClass([g class]), over]);
     if (over) return;
     %orig;
@@ -22378,6 +22769,39 @@ static void DMRunTrigger(NSString *cmd) {
         return;
     }
     if ([cmd isEqualToString:@"key"]) DMSendShortcut(HID_KEY_F, NO);
+#if DEBUG
+    else if ([cmd hasPrefix:@"sbhover_"]) {   // sbhover_<x>_<y> | sbhover_off: the pointer resting there, as the main status bar sees it (debug): its own pointer
+                                             // interaction asked for the region at that screen point and that region entered, the way UIKit does when a
+                                             // pointer hovers (-pointerInteraction:regionForRequest:defaultRegion:, then -pointerInteraction:willEnterRegion:animator:,
+                                             // which makes it the bar's -hoveredActionable); _off: the region exited. Then a tap there is what a click is.
+        UIView *fg = DMFindForegroundView(DMStatusBarWindow());
+        UIView *bar = fg.superview;
+        id inter = [bar respondsToSelector:@selector(pointerInteraction)] ? DMCall(bar, @"pointerInteraction") : nil;
+        SEL ask = NSSelectorFromString(@"pointerInteraction:regionForRequest:defaultRegion:"), enter = NSSelectorFromString(@"pointerInteraction:willEnterRegion:animator:"),
+            leave = NSSelectorFromString(@"pointerInteraction:willExitRegion:animator:"), hovered = NSSelectorFromString(@"hoveredActionable");
+        if (!inter || ![bar respondsToSelector:ask] || ![bar respondsToSelector:enter] || ![bar respondsToSelector:leave]) { DMLog([NSString stringWithFormat:@"[sbhover] no pointer regions on %@ (interaction %@)", NSStringFromClass([bar class]), inter]); return; }
+        static UIPointerRegion *last;
+        NSArray *q = [[cmd substringFromIndex:8] componentsSeparatedByString:@"_"];
+        if ([q.firstObject isEqualToString:@"off"]) {
+            if (last) ((void (*)(id, SEL, id, id, id))objc_msgSend)(bar, leave, inter, last, nil);
+            last = nil;
+        } else if (q.count >= 2) {
+            CGPoint p = [bar convertPoint:CGPointMake([q[0] doubleValue], [q[1] doubleValue]) fromCoordinateSpace:(bar.window.screen ?: [UIScreen mainScreen]).coordinateSpace];
+            UIPointerRegionRequest *req = [[UIPointerRegionRequest alloc] init];
+            SEL setLoc = NSSelectorFromString(@"setLocation:");
+            if ([req respondsToSelector:setLoc]) ((void (*)(id, SEL, CGPoint))objc_msgSend)(req, setLoc, p);
+            UIPointerRegion *def = [UIPointerRegion regionWithRect:bar.bounds identifier:nil];
+            UIPointerRegion *r = nil;
+            @try { r = ((id (*)(id, SEL, id, id, id))objc_msgSend)(bar, ask, inter, req, def); } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[sbhover] region request threw %@", e.reason]); }
+            if (r) { ((void (*)(id, SEL, id, id, id))objc_msgSend)(bar, enter, inter, r, nil); last = r; }
+            DMLog([NSString stringWithFormat:@"[sbhover] %@ in the bar: region %@ id %@", NSStringFromCGPoint(p), r ? NSStringFromCGRect(r.rect) : @"none", r ? (id)r.identifier : @"-"]);
+        }
+        id h = [bar respondsToSelector:hovered] ? DMCall(bar, @"hoveredActionable") : nil;
+        id hid = [h respondsToSelector:@selector(identifier)] ? DMCall(h, @"identifier") : nil;
+        DMLog([NSString stringWithFormat:@"[sbhover] the bar's hovered actionable: %@ %@ (hover action %d, action %d)", h ? NSStringFromClass([h class]) : @"none", hid ?: @"",
+            [h respondsToSelector:NSSelectorFromString(@"hoverAction")] && DMCall(h, @"hoverAction") != nil, [h respondsToSelector:@selector(action)] && DMCall(h, @"action") != nil]);
+    }
+#endif
     else if ([cmd isEqualToString:@"sbregions"]) {   // sbregions: (debug) the main status bar's own regions and display item states -- which item iOS shows, and why not (read-only)
         UIView *fg = DMFindForegroundView(DMStatusBarWindow());
         id bar = fg.superview;
@@ -23475,6 +23899,15 @@ static void DMRunTrigger(NSString *cmd) {
         id target = tsi ? object_getIvar(kfc, tsi) : nil;
         [out appendFormat:@"\n  focus: presenting keyboard pid %d, external scene with focus %@, deferring target scene %@", pid, [ext valueForKey:@"identifier"], [target valueForKey:@"identifier"]];
         @try { [out appendFormat:@"\n  controller: %@", [kfc description]]; } @catch (id e) {}
+        {   // (the keyboard gate, DMKeyboardFocusBehindWindows: the apps it keeps from the keys, the active app, the apps it held back, its assertions)
+            NSSet *behind = nil; NSString *active = nil;
+            DMKBGateList(&behind, &active);
+            os_unfair_lock_lock(&gKBGateLock);
+            NSArray *held = [gKBHeldBack allObjects] ?: @[];
+            os_unfair_lock_unlock(&gKBGateLock);
+            [out appendFormat:@"\n  gate: behind %@, active %@, held back %@, prevent-focus assertions %lu", behind.count ? [behind.allObjects componentsJoinedByString:@" "] : @"none",
+                active ?: @"none", held.count ? [held componentsJoinedByString:@" "] : @"none", (unsigned long)gKBBehind.count];
+        }
         for (NSString *b in @[@"com.apple.mobilenotes", @"com.apple.mobilesafari"]) { SBApplication *a = DMAppForBundle(b); [out appendFormat:@"\n  pid of %@ = %d", b, a ? ((int (*)(id, SEL))objc_msgSend)(DMCall(a, @"processState"), NSSelectorFromString(@"pid")) : -1]; }
         DMLog(out);
     }
@@ -25706,6 +26139,7 @@ static void DMRunTrigger(NSString *cmd) {
     else if ([cmd hasPrefix:@"mswsm_"] && DMMSWSMTrigger(cmd)) {}   // the Mac Switcher's Stage Manager desktops (MacSwitcherSM.h)
     else if ([cmd hasPrefix:@"msw"] && DMMSWTrigger(cmd)) {}     // the Mac Switcher's tests and probes (MacSwitcher.h)
     else if ([cmd hasPrefix:@"wincard"] && DMWinCardTrigger(cmd)) {}   // the windows' App Switcher cards (WindowCards.h)
+    else if ([cmd hasPrefix:@"smcards"] && DMSMCardsTrigger(cmd)) {}   // the App Switcher's cards with the Stage Manager engine (SMCards.h)
 #endif
     else if ([cmd isEqualToString:@"sshmenu"]) {   // sshmenu: open the menu of the SSH icon in the status bar
         for (UIView *fg in gCopies.allObjects) {
@@ -26098,7 +26532,6 @@ static void DMRunTrigger(NSString *cmd) {
         DMLog(@"[debug] window layer hidden by hand");
     }
 #if DEBUG
-    else if ([cmd isEqualToString:@"ccrepos"]) DMCCProbeRepos();   // ccrepos: every Control Center module repository seen since the start (CCProbe.h)
     else if ([cmd hasPrefix:@"ccopen_"]) DMCCProbeOpen([[cmd substringFromIndex:7] boolValue]);   // ccopen_1 / ccopen_0: Control Center through its coordinator (18)
     else if ([cmd hasPrefix:@"ivpath_"]) DMCCProbeIvarPath([cmd substringFromIndex:7]);   // ivpath_<Class>|<ivar>.<ivar>...: walk by exact ivar names (else getters), read-only
     else if ([cmd hasPrefix:@"protomethods_"]) DMCCProbeProtocol([cmd substringFromIndex:13]);   // protomethods_<Protocol>: its methods, read-only
@@ -28748,6 +29181,7 @@ static BOOL DMAerial5GestureLive(UIView *stage) {   // a pan (move) or a resize 
 // Locking the screen: Aerial minimizes every window to its round chip (3.0: our -minimizeStage hook ignored that). 5.0: the windows that were not
 // minimized when the lock began are brought back after the unlock with Aerial's own restore (its resolved -restoreFromMinimize).
 static const void *kA5MinStateKey = &kA5MinStateKey, *kA5MinSinceKey = &kA5MinSinceKey;
+static const void *kA5UnlockBackKey = &kA5UnlockBackKey;   // (when the lock hid this window, or Aerial right after the unlock: it comes back after the unlock)
 static const void *kA5ChipHiddenKey = &kA5ChipHiddenKey, *kA5LockHiddenKey = &kA5LockHiddenKey, *kA5GoodFrameKey = &kA5GoodFrameKey;
 static CFTimeInterval gA5UnlockedAt = 0;   // when the screen was last unlocked (DMAerial5WatchLock)
 // The windows Aerial 5.0 minimized to chips as the screen locked, brought back with Aerial's own restore. `since`: when the lock began (the reported
@@ -28775,6 +29209,20 @@ static void DMAerial5RestoreAfterLock(CFTimeInterval since) {
             ((void (*)(id, SEL))objc_msgSend)(s, restore);
         }
     });
+}
+// The front one of the windows the lock hid that are on their way back (hidden by our minimize since the lock, or since Aerial minimized them again
+// right after the unlock; not restored yet): the menu bar names its app while it comes back (DMActiveApp). Within 4 s of the unlock -- a window
+// hidden while locking counts from the unlock however long the lock was; a restore that never comes ends it.
+static UIView *DMA5ComingBackTop(void) {
+    if (DMActiveEngine() != DMEngineAerial || DMLockUp(DMSBManager("SBLockScreenManager"))) return nil;
+    CFTimeInterval now = CACurrentMediaTime();
+    UIView *top = nil;
+    for (UIView *s in DMAerialStages()) {   // (back to front: the last one found is the front one)
+        NSNumber *at = objc_getAssociatedObject(s, kA5UnlockBackKey);
+        if (!at || ![objc_getAssociatedObject(s, kStageHiddenKey) boolValue] || [objc_getAssociatedObject(s, kStageClosingKey) boolValue]) continue;
+        if (gA5UnlockedAt < at.doubleValue || now - gA5UnlockedAt < 4.0) top = s;
+    }
+    return top;
 }
 static void DMAerial5WatchLock(void) {
     static int wasLocked = -1; static CFTimeInterval lockedAt = 0;
@@ -28828,6 +29276,7 @@ static void DMAerial5CatchChip(UIView *stage) {
     // Right after an unlock Aerial minimizes the windows once more (M1, Phase 2b: 16 ms after our "back after the unlock" restore every window was
     // minimized again and stayed hidden): a window caught within 0.5 s of the unlock was open before the lock, so it comes back once more.
     BOOL justUnlocked = !locked && gA5UnlockedAt > 0 && CACurrentMediaTime() - gA5UnlockedAt < 0.5;
+    objc_setAssociatedObject(stage, kA5UnlockBackKey, (locked || justUnlocked) ? @(CACurrentMediaTime()) : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (DMA5ComingBackTop)
     if (justUnlocked) {
         __weak UIView *ws = stage;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -31328,7 +31777,31 @@ static BOOL DMAutoHideActive(void) {   // the bar may hide right now
     id lm = DMSBManager("SBLockScreenManager");
     return !DMLockUp(lm);
 }
-static CGFloat DMTopLimit(void) { return DMAutoHideLayout() ? 0.0 : 23.0; }   // (tiles and the window clamps: under the status bar, or the top edge)
+// Our menu bar's height on the iPad's own screen (common/MenuBarHeight.h, Mac-tested): iOS's status bar height there -- 24 pt on Face ID iPads, 20 pt
+// on Home-button iPads. 1.7.1 item 14: the window geometry took 24 everywhere, so on Home-button iPads windows and tiles started 3-4 pt below the
+// bar. Read from a status bar copy on the main screen -- its visual provider's +height (type-checked), else the copy's own height -- and kept once
+// known (an iPad's bar does not change); 24 until then, the geometry as it was. Face ID iPads: 24, every number below as before.
+static CGFloat gDMMenuBarH = 0;
+static CGFloat DMMenuBarHeight(void) {
+    if (gDMMenuBarH > 0 || ![NSThread isMainThread]) return gDMMenuBarH > 0 ? gDMMenuBarH : kMSBDMenuBarDefault;
+    SEL vs = NSSelectorFromString(@"visualProvider"), hs = NSSelectorFromString(@"height");
+    for (NSHashTable *copies in @[gCopies ?: [NSHashTable weakObjectsHashTable], gAllBarCopies ?: [NSHashTable weakObjectsHashTable]]) for (UIView *fg in copies.allObjects) {
+        if (!fg.window || fg.window.screen != [UIScreen mainScreen]) continue;
+        id bar = fg.superview, vp = nil; double provided = 0;
+        Method vm = bar ? class_getInstanceMethod(object_getClass(bar), vs) : NULL;
+        if (vm && !strcmp(method_getTypeEncoding(vm) ?: "", "@16@0:8")) vp = ((id (*)(id, SEL))objc_msgSend)(bar, vs);
+        Class vc = vp ? object_getClass(vp) : Nil;
+        Method hm = vc ? class_getClassMethod(vc, hs) : NULL;
+        if (hm && !strcmp(method_getTypeEncoding(hm) ?: "", "d16@0:8")) provided = ((double (*)(id, SEL))objc_msgSend)((id)vc, hs);
+        double h = MSBDMenuBarHeightOf(provided, fg.bounds.size.height);
+        if (h <= 0) continue;
+        gDMMenuBarH = h;
+        DMLog([NSString stringWithFormat:@"[menubar] the menu bar is %.1f pt tall on this iPad (%@)", h, provided > 0 ? [NSString stringWithFormat:@"iOS's %@", NSStringFromClass(vc)] : @"its laid-out height"]);
+        return h;
+    }
+    return kMSBDMenuBarDefault;
+}
+static CGFloat DMTopLimit(void) { return DMAutoHideLayout() ? 0.0 : MSBDMenuBarTopLimit(DMMenuBarHeight()); }   // (tiles and the window clamps: one point into the menu bar -- 23 on a 24 pt bar --, or the top edge while it hides itself)
 static BOOL gSBHidden = NO;                    // the bar is hidden right now
 static BOOL gSBPointerInBar = NO;              // the pointer is over the bar (hover)
 static CFTimeInterval gSBLastExit = 0, gSBRevealedAt = 0, gSBTurnAt = -10;
@@ -31630,7 +32103,7 @@ static void DMStatusBarMoveWindows(BOOL show, CGFloat h, BOOL animated) {
     DMLog([NSString stringWithFormat:@"[autohide] %lu windows %@", (unsigned long)stages.count, show ? @"moved down with the bar" : @"moved back up"]);
 }
 static CGFloat DMStatusBarHeightForMove(void) {
-    CGFloat h = 24.0;
+    CGFloat h = DMMenuBarHeight();   // (at least the bar's height: 24 pt, 20 on Home-button iPads)
     for (UIView *b in DMStatusBarsToMove()) h = MAX(h, MIN(40.0, b.bounds.size.height));
     return h;
 }
@@ -31777,8 +32250,9 @@ static void DMAutoHideRetopAll(BOOL layout, BOOL tiled, BOOL modeChanged) {
         if (wasTop) objc_setAssociatedObject(st, kSBWasTopKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         // (a turn scales a window's place: one that was at the top goes back to it. A full-height window keeps its bottom where the usable area
         // ends, not lower: an engine may already have taken our move into its frame)
-        if (layout && (fabs(f.origin.y - 23.5) < 2.0 || (wasTop && f.origin.y > 0.5 && f.origin.y < 60.0))) { if (fullHeight) f.size.height = MAX(bottom, CGRectGetMaxY(f) - f.origin.y); f.origin.y = 0; }
-        else if (!layout && f.origin.y < 22.0) { if (fullHeight) f.size.height = MAX(bottom, CGRectGetMaxY(f)) - 23.0; f.origin.y = 23.0; }
+        CGFloat bar = DMMenuBarHeight(), limit = MSBDMenuBarTopLimit(bar);   // (the top under the bar: 23 on a 24 pt bar)
+        if (layout && (fabs(f.origin.y - MSBDMenuBarWasTop(bar)) < 2.0 || (wasTop && f.origin.y > 0.5 && f.origin.y < 60.0))) { if (fullHeight) f.size.height = MAX(bottom, CGRectGetMaxY(f) - f.origin.y); f.origin.y = 0; }
+        else if (!layout && f.origin.y < MSBDMenuBarUnderTop(bar)) { if (fullHeight) f.size.height = MAX(bottom, CGRectGetMaxY(f)) - limit; f.origin.y = limit; }
         else continue;
         if (CGRectEqualToRect(f, was)) continue;
         objc_setAssociatedObject(st, kSBRetopKey, @(tries + 1), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -34696,6 +35170,10 @@ static NSDictionary<NSString *, NSValue *> *DMSMOpenWindowFrames(void) {   // (t
 // Dock height for that screen size, from the stage-area pass), so TV windows no longer reach under the TV's Dock.
 static CGRect DMSMUsableAreaForIdentity(id identity, CGSize *screenOut);
 static CGRect DMSMUsableAreaForStage(id stage, CGSize *screenOut) { return DMSMUsableAreaForIdentity(DMSMStageDisplayIdentity(stage), screenOut); }
+static CGFloat DMSMTopBarOf(CGSize size) {   // the menu bar's height on the screen of that size: the iPad's (DMMenuBarHeight), a TV's 24 (as below)
+    CGSize main = [UIScreen mainScreen].bounds.size;
+    return CGSizeEqualToSize(size, main) || CGSizeEqualToSize(size, CGSizeMake(main.height, main.width)) ? DMMenuBarHeight() : 24.0;
+}
 static CGRect DMSMUsableAreaForIdentity(id identity, CGSize *screenOut) {   // (the same for the display a plan is asked on)
     if (!DMSMIsMainIdentity(identity)) {
         for (UIScreen *sc in [UIScreen screens]) {
@@ -34708,11 +35186,13 @@ static CGRect DMSMUsableAreaForIdentity(id identity, CGSize *screenOut) {   // (
         }
     }
     if (screenOut) *screenOut = [UIScreen mainScreen].bounds.size;
-    // (the top where Stage Manager's stage area has it: its status bar height raised to our menu bar's 24 pt, our title bar below that -- the
-    //  _statusBarHeight hook, also while the bar hides itself. DMUsableArea starts at 23 for the other engines' tiles: Fit tiles and windows placed
-    //  from there stood 1 pt above the stage area, their title bars a point under the menu bar, and Stage Manager's constraint moved them again)
+    // (the top where Stage Manager's stage area has it: its status bar height raised to our menu bar's (DMMenuBarHeight: 24 pt, 20 on Home-button
+    //  iPads), our title bar below that -- the _statusBarHeight hook, also while the bar hides itself. DMUsableArea starts a point higher for the
+    //  other engines' tiles: Fit tiles and windows placed from there stood 1 pt above the stage area, their title bars a point under the menu bar,
+    //  and Stage Manager's constraint moved them again)
     CGRect u = DMUsableArea();
-    if (CGRectGetMinY(u) < 24.0) u = CGRectMake(u.origin.x, 24.0, u.size.width, MAX(100.0, CGRectGetMaxY(u) - 24.0));
+    CGFloat bar = DMMenuBarHeight();
+    if (CGRectGetMinY(u) < bar) u = CGRectMake(u.origin.x, bar, u.size.width, MAX(100.0, CGRectGetMaxY(u) - bar));
     return u;
 }
 // Attributes placing a window at a layout on its stage's screen (the whole window; the card is under our title bar).
@@ -34924,6 +35404,10 @@ static void DMSMFitTick(BOOL force) {
     if (DMSMWorkspaceBusy()) { if (force) forceWaiting = YES; return; }   // (after the transition in flight: DMSMWorkspaceBusy)
     if (DMSMTurnSettling()) { if (force) forceWaiting = YES; return; }   // (after the turn in flight: DMSMTurnSettling)
     if (DMSMSpotlightHolds()) { if (force) forceWaiting = YES; return; }   // (not under Spotlight: a request would dismiss it, DMSMSpotlightHolds)
+    // (not under iPadOS's App Switcher: a layout request is a transition to the desktop and closes it -- 1.7.1, a window's own card swiped up there
+    //  (SMCards.h) left one tiled window, which was made to fill the space at once and the App Switcher went, iPad 2. The desktop is tiled again
+    //  once the App Switcher has gone, as it comes back on screen.)
+    if (DMSwitcherVisible()) { if (force) forceWaiting = YES; return; }
     if (forceWaiting) { force = YES; forceWaiting = NO; }
     // (a Mac Switcher desktop is coming in: the cards on screen are changing stage under the cover, so the set read now is half of one desktop and
     //  half of the other -- it emptied the arriving desktop's arrangement and asked for a layout of a stage on its way out. Read once it is over.)
@@ -36064,11 +36548,12 @@ static void DMSMReapplyGrabbers(UIView *card) {   // (Settings > Resize Handles 
 }
 %end
 %hook SBSwitcherChamoisSettings
-// the stage starts below the top bar: ours is 24 pt (iPadOS's is 20), so windows at the top edge are not under it
+// the stage starts below the menu bar -- our bar's height, kept while the bar hides itself (iOS's then reads less) -- and our title bar under it.
+// (1.7.1 item 14: this was at least 24, so on a Home-button iPad, whose bar is 20 pt, every window stood 4 pt below the bar)
 - (CGFloat)_statusBarHeight {
     CGFloat h = %orig;
     static BOOL logged; if (!logged) { logged = YES; DMLog([NSString stringWithFormat:@"[smengine] Stage Manager's status bar height %.1f", h]); }
-    return DMSMEngine() ? MAX(h, 24.0) + (DMTestFlag("/tmp/msb-sm-nochrome") ? 0.0 : kSMBarH) : h;   // (+ our title bar above each window)
+    return DMSMEngine() ? MAX(h, DMMenuBarHeight()) + (DMTestFlag("/tmp/msb-sm-nochrome") ? 0.0 : kSMBarH) : h;   // (+ our title bar above each window)
 }
 // no recent-stages strip on the left: like a Mac, other apps are in the Dock (minimized windows too)
 - (BOOL)_shouldPreferStripHiddenForWindowScene:(id)scene interfaceOrientation:(long long)o {
@@ -36115,7 +36600,7 @@ static void DMSMReapplyGrabbers(UIView *card) {   // (Settings > Resize Handles 
     //  taller than the area once the Dock is up, and Stage Manager kept its bottom above the Dock by pushing its top under the menu bar -- the
     //  title bar and traffic lights hidden, iPad 2 29 Sep 21:12, Reynard)
     NSNumber *dock = gSMDockHeightBySize[NSStringFromCGSize(b.size)];
-    if (dock.doubleValue > 0 && CGRectGetHeight(b) > 0) maxH = MIN(maxH, CGRectGetHeight(b) - dock.doubleValue - 2.0 - (24.0 + kSMBarH));
+    if (dock.doubleValue > 0 && CGRectGetHeight(b) > 0) maxH = MIN(maxH, CGRectGetHeight(b) - dock.doubleValue - 2.0 - (DMSMTopBarOf(b.size) + kSMBarH));
     CGSize r = CGSizeMake(MIN(size.width, maxW), MIN(size.height, maxH));
     // (and never smaller than the lists' first sizes, as Apple's own rounding: those are the smallest window -- DMSMFineGrid, 1.7.0 -- here as small
     //  as the room allows)
@@ -36300,6 +36785,7 @@ static void DMSMPlacesInMinimize(id ctx, NSString *removedId) {
 #include "SMHome.h"      // (the windows stay on screen at Home, like Aerial and Zetsu; still during a Home gesture: 4 Oct, sm-free)
 #include "SMGestureHook.h"   // (the switcher gesture's transaction, for SMGestureHold.h: 1.4.5, issue #7)
 #include "SMAfterHome.h"     // (the desktop's last window leaves the App Switcher once the Home transition is over: 1.5.2, the black ghost cards)
+#include "SMCards.h"         // (iPadOS's App Switcher shows each window of a desktop as a card of its own, as the other engines: 1.7.1 item 6)
 #include "SMResizeEdges.h"   // (a window's top resize zone at the title bar's outer edge, pointer: 1.5.2 item 7)
 #include "SMResizeAnchor.h"   // (a corner or side drag keeps the window's opposite corner, iPadOS 16 and 17: 1.7.0)
 #include "SpotlightBridge.h"   // (our sections in Apple's Spotlight -- Actions, Windows -- SpringBoard's half: 1.4.3, S-3)
@@ -36402,7 +36888,7 @@ static void DMSMPlacesInMinimize(id ctx, NSString *removedId) {
     if (DMSMSigOK(self, minSel, DMSMSigMinGrid(), "minGridSizeForBounds:")) mn = ((CGSize (*)(id, SEL, CGRect, long long, id, double, id))objc_msgSend)(self, minSel, b, o, info, sc, a);
     CGFloat maxW = CGRectGetWidth(b) > 0 ? CGRectGetWidth(b) : size.width, maxH = CGRectGetHeight(b) > 0 ? CGRectGetHeight(b) : size.height;
     NSNumber *dock = gSMDockHeightBySize[NSStringFromCGSize(b.size)];
-    if (dock.doubleValue > 0 && CGRectGetHeight(b) > 0) maxH = MIN(maxH, CGRectGetHeight(b) - dock.doubleValue - 2.0 - (24.0 + kSMBarH));
+    if (dock.doubleValue > 0 && CGRectGetHeight(b) > 0) maxH = MIN(maxH, CGRectGetHeight(b) - dock.doubleValue - 2.0 - (DMSMTopBarOf(b.size) + kSMBarH));
     CGSize r = CGSizeMake(MIN(size.width, maxW), MIN(size.height, maxH));
     if (isfinite(mn.width) && isfinite(mn.height)) r = CGSizeMake(MAX(r.width, mn.width), MAX(r.height, mn.height));
     static int logged = 0;
@@ -36670,6 +37156,7 @@ static void DMSMSelfCheck(void) {
         DMSMHomeInstall();       // (optional: the windows stay at Home and keep still in a Home gesture, SMHome.h -- its kSMNeeds rows; else Apple's Home)
         DMSMGestureHoldInstall();   // (a switcher gesture's stage left alone until its transition is over, SMGestureHold.h -- else a moment after its end)
         DMSMAfterHomeInstall();     // (optional: the last window's stage taken out once the Home transition is over, SMAfterHome.h -- else 0.6 s after)
+        DMSMCardsInstall();         // (optional: one App Switcher card per window, SMCards.h -- else a desktop of several windows is one card, as Apple has it)
         DMSMEdgesInstall();         // (optional: the top resize zone at our title bar's outer edge, SMResizeEdges.h -- else at the content's edge, as Apple has it)
         DMSMResizeAnchorInstall(gSMLayoutGen);   // (optional: a corner drag keeps the opposite corner, SMResizeAnchor.h -- else 16 resizes around the centre)
 #if DEBUG
@@ -36846,6 +37333,7 @@ void DMSMRunAction(UIAction *action, id sender) {
         if (!enabled) {   // switched off: Aerial 5.0's own settings (held while it was our engine) go back to the user's
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMPointerAnimSync(NO, @"Mac Status Bar is switched off"); });   // (and Pointer Animations)
             DMSpotPublishOff();   // (nothing of ours in Spotlight either)
+            DMPrewarmBlockOff(@"Mac Status Bar is switched off");   // (and no prewarm refused for a quit set nothing keeps now)
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMAerial5GiveBackPrefs(@"Mac Status Bar is switched off"); });
             return;
         }
@@ -36864,25 +37352,23 @@ void DMSMRunAction(UIAction *action, id sender) {
     }
     if (!DMCtorSkip("noiconlift")) %init(MacPointerIcons);   // (no icon lift with the Mac pointer, see there; with either status bar style, as the Mac pointer
                                                              //  runs with both -- StockBar.h starts its bridge too)
-    if (gStockBar) { DMSpotPublishOff(); DMSMCheckReadOnly(); DMSkipLockInit(); DMPrewarmStockOff(); DMStockBarStart(); return; }   // only the parts that stay (StockBar.h); the rest below never runs
+    if (gStockBar) { DMSpotPublishOff(); DMSMCheckReadOnly(); DMSkipLockInit(); DMPrewarmBlockOff(@"Use Stock Status Bar"); DMStockBarStart(); return; }   // only the parts that stay (StockBar.h); the rest below never runs
     // (the status bar hooks go on the classes SpringBoard's bar uses: 15/16 UIKit's, the same as a plain %init; 17+ SystemStatusUI's, DMSBClass)
-    %init(_UIStatusBarForegroundView = DMSBClass("_UIStatusBarForegroundView"), _UIStatusBarStringView = DMSBClass("_UIStatusBarStringView"),
+    if (!DMCtorSkip("mainhooks")) %init(_UIStatusBarForegroundView = DMSBClass("_UIStatusBarForegroundView"), _UIStatusBarStringView = DMSBClass("_UIStatusBarStringView"),
           UIStatusBar_Modern = DMSBClass("UIStatusBar_Modern"), _UIStatusBar = DMSBClass("_UIStatusBar"), UIStatusBarWindow = DMSBClass("UIStatusBarWindow"));
-    if (DMSBUseSTUI()) {   // (17+: a copy is made ours when its leading region fills, not only in iOS's own layout passes -- DMRelayoutUnattachedBars)
+    if (DMSBUseSTUI() && !DMCtorSkip("attach17")) {   // (17+: a copy is made ours when its leading region fills, not only in iOS's own layout passes -- DMRelayoutUnattachedBars)
         %init(SBAttach17, _UIStatusBarStringView = DMSBClass("_UIStatusBarStringView"), _UIStatusBarForegroundView = DMSBClass("_UIStatusBarForegroundView"));
         Class sbBar = DMSBClass("_UIStatusBar");
         if ([sbBar instancesRespondToSelector:NSSelectorFromString(@"_updateRegionItems")] && [sbBar instancesRespondToSelector:NSSelectorFromString(@"foregroundView")]) %init(SBAttach17Regions, _UIStatusBar = sbBar);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMRelayoutUnattachedBars(@"start-up over"); });
     }
+    if (!DMCtorSkip("coverleave")) DMCoverSheetLeavingInit();   // (the bar's unlocked look as the Cover Sheet starts to leave: 1.7.1 item 11)
     if (!DMCtorSkip("stockvpn")) DMStockVPNInit();
     if (!DMCtorSkip("stockwifi")) DMStockWiFiInit();   // (the Wi-Fi Menu: iOS's own Wi-Fi item can be left out of our bars; before the prefs are read)
     if (!DMCtorSkip("smengine")) DMSMEngineInit();
     DMFinderApplyPref();    // (Finder: its hooks, the Dock's Finder icon -- only while switched on)
 #if DEBUG
     DMMSWInstallProbes();   // (Mac Switcher Phase 1a: read-only gesture logging, debug builds only)
-    DMCCProbeInit();        // (Control Center repositories / 18's control gallery, read-only logging)
-    DMCCProbeInit2();       // (the gallery's module entries and module instances, read-only logging)
-    DMCCProbeInit3();       // (18: Control Center's grid size conversion -- logged; an exception caught in debug builds)
 #endif
     { static int finderPrefToken; notify_register_dispatch("com.besiktasliseba.macstatusbar.finder.pref", &finderPrefToken, dispatch_get_main_queue(), ^(int t) { DMFinderApplyPref(); }); }
     // The RAM & CPU Control Center panel's "Open Activity Monitor" button: dismiss Control Center, then open the window.
@@ -36892,9 +37378,9 @@ void DMSMRunAction(UIAction *action, id sender) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMActivityMonitorOpen(); });
     }); }
     dispatch_async(dispatch_get_main_queue(), ^{ DMDesktopStartEarly(); });   // (the desktop as soon as page 1 of the Home Screen is on screen, Desktop.h)
-    DMPointerPullInit();
-    DMCCPresentSeenInit();   // (Control Center seen from its controller too: F13)
-    DMSkipLockInit();
+    if (!DMCtorSkip("pointerpull")) DMPointerPullInit();
+    if (!DMCtorSkip("ccseen")) DMCCPresentSeenInit();   // (Control Center seen from its controller too: F13)
+    if (!DMCtorSkip("skiplock")) DMSkipLockInit();
     if (!DMCtorSkip("todayoffset")) DMTodayKeepOffsetInit();
     if (!DMCtorSkip("todaynotifications")) DMTNWatchInit();   // (the Today panel's notifications box: when the Cover Sheet's list changes)
 #if DEBUG
@@ -36945,7 +37431,7 @@ void DMSMRunAction(UIAction *action, id sender) {
     }
 #endif
     if (!DMCtorSkip("loadprefs")) DMLoadPrefs();
-    DMPrewarmQuitLoad();   // (the prewarm quit set from last time, and publish that the block is on)
+    DMPrewarmQuitLoad();   // (the prewarm quit set from last time, and its file for dasd: the block is on)
     if (!DMCtorSkip("spotlight")) DMSpotInit();   // (the Spotlight app's requests and picks: SpotlightBridge.h)
     // DMRealInterfaceOrientation()'s UIDevice fallback (used by the menu/keyboard orientation fixes) needs a genuinely live reading, not whatever
     // SpringBoard's own unrelated subsystems happen to leave [UIDevice currentDevice].orientation at -- without this, that property can return

@@ -301,16 +301,15 @@ static UIView *DMWiFiMakeIcon(void) {
     iv.userInteractionEnabled = NO;
     return iv;
 }
-static CGSize DMWiFiApplyIconState(UIView *icon, UIColor *tint) {
+static CGSize DMWiFiApplyIconState(UIView *icon) {   // (its colour: with every other item of the bar, StatusBar.x DMApplyBarItemColor)
     UIImageView *iv = (UIImageView *)icon;
     UIImage *img = DMWiFiFanImage(DMWiFiAssociated() ? DMWiFiBars() : 0, kWiFiIconH);
     if (iv.image != img) iv.image = img;
-    if (tint && ![iv.tintColor isEqual:tint]) iv.tintColor = tint;
     return img.size;
 }
 // Places our Wi-Fi icon just left of `left` (where the status icons start) in a status bar copy, and returns the new left edge. Hidden while
 // the Wi-Fi Menu switch is off: the bar is then exactly as before. (`left` in leading coordinates, DMBarRTL: right of the icons right-to-left.)
-static CGFloat DMWiFiLayoutIcon(UIView *fg, CGFloat left, CGFloat midY, UIColor *tint) {
+static CGFloat DMWiFiLayoutIcon(UIView *fg, CGFloat left, CGFloat midY) {
     UIView *icon = objc_getAssociatedObject(fg, kWiFiIconKey);
     UIButton *btn = objc_getAssociatedObject(fg, kWiFiButtonKey);
     if (!gWiFiMenuOn || left == CGFLOAT_MAX) { icon.hidden = btn.hidden = YES; return left; }
@@ -334,7 +333,7 @@ static CGFloat DMWiFiLayoutIcon(UIView *fg, CGFloat left, CGFloat midY, UIColor 
         [fg addSubview:btn];
         objc_setAssociatedObject(fg, kWiFiButtonKey, btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    CGSize s = DMWiFiApplyIconState(icon, tint);
+    CGSize s = DMWiFiApplyIconState(icon);
     CGFloat w = ceil(s.width), h = ceil(s.height);
     left -= 8.0 + w;
     BOOL rtl = DMBarRTL(fg);
@@ -345,11 +344,11 @@ static CGFloat DMWiFiLayoutIcon(UIView *fg, CGFloat left, CGFloat midY, UIColor 
     return left;
 }
 // (the Lock Screen layout only moves our icons along: the bars are brought up to date here)
-static void DMWiFiRefreshIcon(UIView *fg, UIColor *tint) {
+static void DMWiFiRefreshIcon(UIView *fg) {
     UIView *icon = objc_getAssociatedObject(fg, kWiFiIconKey);
     if (!icon || icon.hidden) return;
     if (!gWiFiMenuOn) { icon.hidden = YES; ((UIView *)objc_getAssociatedObject(fg, kWiFiButtonKey)).hidden = YES; return; }
-    DMWiFiApplyIconState(icon, tint);
+    DMWiFiApplyIconState(icon);
 }
 
 // ---- the menu's own rows ----

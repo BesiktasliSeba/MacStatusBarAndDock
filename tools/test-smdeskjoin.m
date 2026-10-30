@@ -257,13 +257,81 @@ static void SuiteWindows(void) {
     }
 }
 
+// SuiteCards: the App Switcher's card of one window of the desktop (1.7.1 item 6, SMCards.h: one card per window with the engine): SpringBoard
+// activates that window alone; DMSMDeskCardPlan keeps the desktop and brings that window to the front. Cases from the iPad 2 (16.7.7, 30 Oct) and
+// a sweep: every desktop window once, roles unique, exactly the asked one in front, and the rewritten transition then passes the join untouched.
+static NSArray *FrontOf(NSArray<NSArray *> *plan) { NSMutableArray *o = [NSMutableArray array]; for (NSArray *p in plan) if ([p[2] boolValue]) [o addObject:p[0]]; return o; }
+static void SuiteCards(void) {
+    @autoreleasepool {
+        NSString *why = nil;
+        NSString *clk = @"com.apple.mobiletimer", *tips = @"com.apple.tips", *ff = @"com.apple.freeform";
+        NSString *uC = @"sceneID:com.apple.mobiletimer-default", *uT = @"sceneID:com.apple.tips-default";
+        NSString *kC = DMSMKeyMake(clk, uC), *kT = DMSMKeyMake(tips, uT);
+        NSArray *desk = @[WK(clk, uC, 1, 1127), WK(tips, uT, 2, 1129)];
+        // 1. iPad 2: Clock's card (role 1 Clock, every other window role emptied): both stay in their roles, Clock in front.
+        NSArray *p = DMSMDeskCardPlan(desk, @[AK(clk, uC, 1)], 0, &why);
+        CHECK(p.count == 2 && RoleOf(p, kC) == 1 && RoleOf(p, kT) == 2 && [FrontOf(p) isEqualToArray:@[kC]], "Clock's card: the desktop stays, Clock in front (%s)", why.UTF8String);
+        CHECK(!DMSMDeskJoinPlan(desk, @[AK(clk, uC, 1)], 0, &why) && [why containsString:@"desktop's own"], "(the join alone left it: %s)", why.UTF8String);
+        // 2. Not a window's card: the whole desktop asked, a window from elsewhere, any flag, nothing asked, no desktop.
+        CHECK(!DMSMDeskCardPlan(desk, @[AK(clk, uC, 1), AK(tips, uT, 2)], 0, &why) && [why containsString:@"keeps every"], "the whole desktop: as built (%s)", why.UTF8String);
+        CHECK(!DMSMDeskCardPlan(desk, @[AK(@"com.apple.Maps", @"sceneID:com.apple.Maps-default", 1)], 0, &why) && [why containsString:@"not on the desktop"], "a window not on the desktop: the join's own rule (%s)", why.UTF8String);
+        CHECK(!DMSMDeskCardPlan(desk, @[AK(clk, uC, 1)], DMSMJoinOtherDesk, &why) && !DMSMDeskCardPlan(desk, @[AK(clk, uC, 1)], DMSMJoinRemoval, &why) && !DMSMDeskCardPlan(desk, @[AK(clk, uC, 1)], DMSMJoinToSwitcher, &why), "any flag: left to the join's rules");
+        CHECK(!DMSMDeskCardPlan(desk, @[], 0, &why) && !DMSMDeskCardPlan(@[], @[AK(clk, uC, 1)], 0, &why), "nothing asked / no desktop: left");
+        // 2b. The card's transition by its event label: 16.7.7 / 17.5.1 without a display, 18.5 with it (A12Z: a card tapped there was left as built).
+        CHECK(DMSMIsCardDismissLabel(@"DismissSwitcherNoninteractive") && DMSMIsCardDismissLabel(@"DismissSwitcherNoninteractive-EmbeddedDisplay"), "a card's transition: 16/17 and 18's label");
+        CHECK(!DMSMIsCardDismissLabel(@"ActivateSwitcherNoninteractive-EmbeddedDisplay") && !DMSMIsCardDismissLabel(@"FinalFluidSwitcherGestureAction")
+              && !DMSMIsCardDismissLabel(@"UpdateFluidSwitcherGestureAction") && !DMSMIsCardDismissLabel(@"DismissSwitcherNoninteractiveX") && !DMSMIsCardDismissLabel(nil)
+              && !DMSMIsCardDismissLabel((id)@3), "not a card's transition: into the switcher, gestures, another name, none");
+        // 3. Two windows of one app: A's card keeps B (a window of its own, M-2).
+        NSString *A1 = @"sceneID:com.apple.freeform-A", *B1 = @"sceneID:com.apple.freeform-B";
+        NSArray *desk2 = @[WK(ff, A1, 1, 20), WK(ff, B1, 2, 21), WK(clk, uC, 5, 22)];
+        p = DMSMDeskCardPlan(desk2, @[AK(ff, A1, 1)], 0, &why);
+        CHECK(p.count == 3 && RoleOf(p, DMSMKeyMake(ff, B1)) == 2 && RoleOf(p, kC) == 5 && [FrontOf(p) isEqualToArray:@[DMSMKeyMake(ff, A1)]], "Freeform A's card: B and Clock stay, A in front");
+        // 4. A desktop window in a role that is not a window role gets a free one; by app when a key is missing.
+        p = DMSMDeskCardPlan(@[WK(clk, uC, 3, 5), WK(tips, uT, 1, 6)], @[AK(tips, uT, 1)], 0, &why);
+        CHECK(p.count == 2 && RolesValid(p) && RoleOf(p, kT) == 1 && [FrontOf(p) isEqualToArray:@[kT]], "role 3 is not a window role: Clock gets a free one");
+        p = DMSMDeskCardPlan(@[W(clk, 1, 5), W(tips, 2, 6)], @[A(clk, 1)], 0, &why);
+        CHECK(p.count == 2 && [FrontOf(p) isEqualToArray:@[clk]] && [why containsString:@"by app"], "no window keys: by app (%s)", why.UTF8String);
+        // 5. Sweep: one window of a random desktop picked.
+        srandom(77);
+        long long roles[] = {1, 2, 4, 5, 6, 7, 8, 9};
+        int planned = 0;
+        for (int n = 0; n < 20000; n++) {
+            NSUInteger cap = DMSMWindowCap(), nd = 2 + (NSUInteger)random() % (cap - 1);
+            NSMutableArray *dk = [NSMutableArray array];
+            NSMutableSet *usedR = [NSMutableSet set];
+            for (NSUInteger i = 0; i < nd; i++) {
+                long long r = roles[random() % 8]; if ([usedR containsObject:@(r)]) r = 3; [usedR addObject:@(r)];   // (now and then a role that is no window role)
+                NSString *b = @[clk, tips, ff, @"com.apple.Maps"][random() % 4];
+                [dk addObject:WK(b, [NSString stringWithFormat:@"sceneID:%@-%lu", b, (unsigned long)i], r, random() % 1000)];
+            }
+            NSDictionary *pick = dk[(NSUInteger)random() % dk.count];
+            p = DMSMDeskCardPlan(dk, @[AK(pick[@"b"], [pick[@"w"] substringFromIndex:[pick[@"w"] rangeOfString:@"|"].location + 1], 1)], 0, &why);
+            CHECK(p != nil, "sweep %d: a window's card is planned (%s)", n, why.UTF8String);
+            if (!p) continue;
+            planned++;
+            NSMutableSet *keys = [NSMutableSet set]; for (NSArray *q in p) [keys addObject:q[0]];
+            NSMutableSet *deskK = [NSMutableSet set]; for (NSDictionary *w in dk) [deskK addObject:w[@"w"]];
+            CHECK([keys isEqualToSet:deskK] && keys.count == p.count, "sweep %d: every desktop window once", n);
+            CHECK(RolesValid(p) && p.count <= DMSMWindowCap(), "sweep %d: roles unique, at most a stage's windows", n);
+            CHECK([FrontOf(p) isEqualToArray:@[pick[@"w"]]], "sweep %d: exactly the picked window in front", n);
+            NSMutableArray *again = [NSMutableArray array];   // (the rewritten transition names the whole desktop: the join leaves it)
+            for (NSArray *q in p) [again addObject:@{@"w": q[0], @"b": DMSMKeyBundle(q[0]), @"r": q[1]}];
+            CHECK(!DMSMDeskJoinPlan(dk, again, 0, &why) && !DMSMDeskCardPlan(dk, again, 0, &why), "sweep %d: the rewritten transition passes untouched", n);
+        }
+        CHECK(planned == 20000, "the cards sweep planned every case: %d", planned);
+    }
+}
+
 int main(void) {
     @autoreleasepool {
         Suite();   // (the engine's four: no role table from SpringBoard)
         SuiteWindows();
+        SuiteCards();
         CHECK(DMSMRolesSetFrom(SB1677, 1, 2, 5, 25, 10, NULL) && DMSMWindowCap() == 7, "16.7.7's seven window roles set");
         Suite();   // (16.7.7: seven windows per desktop)
         SuiteWindows();
+        SuiteCards();
         printf("test-smdeskjoin: %d passed, %d failed\n", passes, fails);
     }
     return fails ? 1 : 0;

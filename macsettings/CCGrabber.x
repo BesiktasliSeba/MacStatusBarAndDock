@@ -16,6 +16,7 @@
 #import <objc/runtime.h>
 #import "../common/OtherTweaks.h"
 #import "../common/CCModuleRegister.h"   // (RAM & CPU, our own Control Center module: its folder and identifier in Control Center's repository)
+#import "../common/CCTileKeep.h"         // (18: its tile put back where it was after SpringBoard ran without the module, e.g. in safe mode)
 
 // Settings > Status Bar > Control Center > Hide Grabber (1.3.3, audit L-2): on unless switched off -- the line stays hidden for everyone who had it
 // hidden before the switch existed. Read once and again after the switch posts its notification; switching it off shows the line again (the
@@ -57,4 +58,13 @@ static const void *kCCGHiddenByUsKey = &kCCGHiddenByUsKey;
     %init;
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, CCGPrefsChanged, CFSTR("com.besiktasliseba.macccgrabber/prefsChanged"), NULL, CFNotificationSuspensionBehaviorCoalesce);
     MSBDCCModuleRegisterWhenLoaded();   // (SpringBoard: Control Center and 18's "Add a Control" gallery can load RAM & CPU, ccmodule/)
+    // 18: RAM & CPU's tile back in its place if SpringBoard ran without the module (CCTileKeep.h) -- here, before Control Center reads its layout,
+    // and only when the module is in the repository now (all three methods taken: not while step 1b has it off, not without its bundle)
+    if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 18 && gMSBDCCHooked == 3) {
+        void (^log)(NSString *) = nil;
+#if DEBUG
+        log = ^(NSString *line) { MSBDCCDebugLog([@"[cctile] " stringByAppendingString:line]); };
+#endif
+        MSBDCCTileKeepStart(kMSBDCCTileStateFile, kMSBDCCTileNoteFile, kMSBDCCModuleID, log);
+    }
 }

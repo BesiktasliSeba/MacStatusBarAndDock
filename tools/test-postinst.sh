@@ -11,6 +11,7 @@ cat > "$R/usr/libexec/sshtoggled" <<EOF
 #!/bin/sh
 echo "helper \$*" >> "$W/calls"
 [ "\$1" = "--is-ipad" ] && exit \$(cat "$W/ipad-rc")
+[ "\$1" = "--quit-set-kept" ] && exit \$(cat "$W/kept-rc" 2>/dev/null || echo 0)
 exit 0
 EOF
 cat > "$R/usr/bin/launchctl" <<EOF
@@ -58,5 +59,19 @@ printf 'ours' > "$QS"; "$W/postinst" configure 1.7.0 >/dev/null 2>&1
 qs "quit set: a file of SpringBoard's own is kept" '[ "$(cat "$QS")" = ours ]'
 rm -f "$QS" "$QP"; "$W/postinst" configure 1.6.1 >/dev/null 2>&1
 qs "quit set: no set kept, no file made" '[ ! -e "$QS" ]'
+# (code review, 30 Oct: the file is the block's switch since 1.7.1 -- made for a SpringBoard that keeps no set, dasd refused those apps until that
+#  SpringBoard's start removed it. The helper answers as SpringBoard decides: Mac Status Bar's old on/off, Use Stock Status Bar, the version gate)
+printf 'bplist00 the set' > "$QP"; echo 1 > "$W/kept-rc"; : > "$W/calls"; "$W/postinst" configure 1.7.0 >/dev/null 2>&1
+qs "quit set: Mac Status Bar off, Use Stock Status Bar on or the tweak not running (the helper says no set is kept): no file made" '[ ! -e "$QS" ] && grep -q -- "--quit-set-kept" "$W/calls"'
+printf 'left by 1.7.0' > "$QS"; "$W/postinst" configure 1.7.0 >/dev/null 2>&1
+qs "quit set: no set kept, a file there (1.7.0 left it with the old on/off switched off): it goes before dasd starts again" '[ ! -e "$QS" ]'
+echo 139 > "$W/kept-rc"; "$W/postinst" configure 1.7.0 >/dev/null 2>&1
+qs "quit set: the helper could not answer (it crashed): no file made" '[ ! -e "$QS" ]'
+printf 'ours' > "$QS"; "$W/postinst" configure 1.7.0 >/dev/null 2>&1
+qs "  ... and one that is there stays" '[ "$(cat "$QS")" = ours ]'
+rm -f "$QS"; echo 0 > "$W/kept-rc"; chmod -x "$R/usr/libexec/sshtoggled"; "$W/postinst" configure 1.7.0 >/dev/null 2>&1; chmod +x "$R/usr/libexec/sshtoggled"
+qs "quit set: no helper to ask: no file made" '[ ! -e "$QS" ]'
+: > "$W/calls"; "$W/postinst" configure 1.7.0 >/dev/null 2>&1
+qs "quit set: the helper says a set is kept: the file made" 'cmp -s "$QP" "$QS" && grep -q -- "--quit-set-kept" "$W/calls"'
 echo "postinst: $pass passed, $fail failed"
 [ "$fail" = 0 ]

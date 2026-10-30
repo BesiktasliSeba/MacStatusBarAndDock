@@ -57,9 +57,15 @@ PLIST
     rm -f /var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-PrewarmBlockOff.txt /var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-PrewarmBlockStarts.txt
     # the quit set's file for dasd (common/PrewarmQuitSet.h): SpringBoard writes it only once it starts with this version, which can be long after
     # this (a respring left for later), so on the first update to a version that has it, it starts as the set SpringBoard keeps -- cfprefsd's file
-    # of it has the same contents (the set under quitSet), which dasd reads as well
+    # of it has the same contents (the set under quitSet), which dasd reads as well. Since 1.7.1 the file is also the block's switch, so it is made
+    # only when SpringBoard keeps a set (the helper answers from Mac Status Bar's old on/off, Use Stock Status Bar and the version gate, as SpringBoard
+    # decides at its start), and one there for a SpringBoard that keeps none goes now (1.7.0 left it with the old on/off switched off): the dasd
+    # started below refused those apps until that SpringBoard's start removed it (code review, 30 Oct). A helper that cannot answer: as it is.
     QS=/var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-PrewarmQuitSet.plist; QP=/var/jb/var/mobile/Library/Preferences/com.besiktasliseba.macstatusbar.prewarm.plist
-    if [ ! -e "$QS" ] && [ -f "$QP" ]; then cp "$QP" "$QS" && chmod 644 "$QS"; chown 501:501 "$QS" 2>/dev/null; fi
+    kept=2; [ -x "$H" ] && { "$H" --quit-set-kept; kept=$?; }
+    if [ "$kept" = 0 ]; then
+        if [ ! -e "$QS" ] && [ -f "$QP" ]; then cp "$QP" "$QS" && chmod 644 "$QS"; chown 501:501 "$QS" 2>/dev/null; fi
+    elif [ "$kept" = 1 ]; then rm -f "$QS"; fi
     /var/jb/usr/bin/killall -9 dasd 2>/dev/null
 elif [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-remove" ] || [ "$1" = "abort-deconfigure" ]; then
     # an upgrade or removal failed after the prerm stopped the helper (dpkg calls this on the version that stays): it is started again, so SSH

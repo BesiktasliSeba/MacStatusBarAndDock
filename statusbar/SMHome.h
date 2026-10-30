@@ -129,16 +129,21 @@ static NSArray<NSDictionary *> *DMSMHomeDeskOf(id stage, NSMutableDictionary<NSS
     return out;
 }
 // The stage of the desktop the App Switcher was opened from: the most recent stage on the iPad holding exactly those windows (Stage Manager makes a
-// new stage object whenever one changes; the windows are what it is).
+// new stage object whenever one changes; the windows are what it is), less any closed in the App Switcher since (SMHomeRule.h DMSMSwitcherDeskStage).
 static id DMSMHomeSwitcherStage(void) {
     if (!gSMSwitcherDesk.count) return nil;
+    NSMutableArray *stages = [NSMutableArray array];
+    NSMutableArray<NSSet<NSString *> *> *ids = [NSMutableArray array];
+    NSMutableSet<NSString *> *live = [NSMutableSet set];
     for (id al in DMSMRecentStages()) {
+        NSMutableSet *s = [NSMutableSet set];
+        for (id it in DMSMStageItemsMap(al)) { NSString *i = DMSMHomeItemIdent(it); if (i) [s addObject:i]; }
+        [live unionSet:s];
         if (!DMSMIsMainIdentity(DMSMStageDisplayIdentity(al))) continue;
-        NSMutableSet *ids = [NSMutableSet set];
-        for (id it in DMSMStageItemsMap(al)) { NSString *i = DMSMHomeItemIdent(it); if (i) [ids addObject:i]; }
-        if ([ids isEqualToSet:gSMSwitcherDesk]) return al;
+        [stages addObject:al]; [ids addObject:s];
     }
-    return nil;
+    NSUInteger i = DMSMSwitcherDeskStage(gSMSwitcherDesk, ids, live);
+    return i == NSNotFound ? nil : stages[i];
 }
 // The App Switcher's bookkeeping, after SpringBoard has finalized each transition (StatusBar.x's finalize hook, after %orig; the Home rule has read
 // it before): where SpringBoard WENT decides -- the context's resulting layout state (-[SBWorkspaceApplicationSceneTransitionContext finalize] works

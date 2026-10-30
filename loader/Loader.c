@@ -16,6 +16,7 @@
 #include "../common/VersionGate.h"
 #include "../common/CrashGuard.h"
 #include "../common/DeviceGate.h"
+#include "../common/PrewarmQuitSet.h"   // (only its path in C: the prewarm block's quit set, below)
 #if DEBUG
 #include <stdio.h>
 #include <unistd.h>
@@ -129,6 +130,7 @@ __attribute__((constructor)) static void MSBDLoad(void) {
     if (kind & kSpringBoard) MSBDGuardNoticeLoad();   // (the guard's one-time notice, also when it turned the tweak off: loader/CrashNotice.m)
     int rowsOnly = kind && !MSBDVersionAllowed((kind & kSpringBoard) != 0);   // (untested without "Enable Anyway", or the crash guard's safe mode)
     unsigned loaded = 0;
+    int coreLoaded = 0;   // (MacStatusBarCore in SpringBoard: the part that keeps the prewarm quit set)
     for (size_t i = 0; i < sizeof(kPayloads) / sizeof(kPayloads[0]); i++) {
         if (!(kPayloads[i].where & kind)) continue;
         if (rowsOnly && !(kPayloads[i].where & kRow)) continue;
@@ -143,7 +145,7 @@ __attribute__((constructor)) static void MSBDLoad(void) {
         strlcpy(lib, MSBD_PAYLOAD_DIR, sizeof(lib));
         strlcat(lib, kPayloads[i].name, sizeof(lib));
         strlcat(lib, ".dylib", sizeof(lib));
-        if (dlopen(lib, RTLD_NOW)) loaded++;
+        if (dlopen(lib, RTLD_NOW)) { loaded++; if (strcmp(kPayloads[i].name, "MacStatusBarCore") == 0) coreLoaded = 1; }
 #if DEBUG
         else if (access("/tmp/msbd-loader-debug", F_OK) == 0) {
             FILE *f = fopen("/tmp/msbd-loader.log", "a");
@@ -151,14 +153,23 @@ __attribute__((constructor)) static void MSBDLoad(void) {
         }
 #endif
     }
+    int quitSetGone = 0;
+#if !MSBD_LINE_DOCK
+    // The prewarm block (dasd) refuses the apps in the quit set's file, and the status bar part keeps that file (StatusBar.x, common/PrewarmQuitSet.h).
+    // A SpringBoard without that part -- the crash guard's safe mode or step 1b, an untested iPadOS without Enable Anyway -- keeps no set: the file
+    // goes, and dasd (which looks at it at every prewarm) refuses nothing until the part runs again and writes it from the set it kept.
+    if ((kind & kSpringBoard) && !coreLoaded) quitSetGone = unlink(kMSBDPrewarmQuitSetFile) == 0;
+#else
+    (void)coreLoaded;
+#endif
 #if DEBUG
     if (access("/tmp/msbd-loader-debug", F_OK) == 0) {
         mach_timebase_info_data_t tb; mach_timebase_info(&tb);
         double us = (double)(mach_absolute_time() - t0) * tb.numer / tb.denom / 1000.0;
         FILE *f = fopen("/tmp/msbd-loader.log", "a");
-        if (f) { fprintf(f, "%s: kind %u, iPadOS %d%s%s, %u parts loaded, %.1f us\n", getprogname(), kind, MSBDOSMajor(), rowsOnly ? (MSBDVersionTested() ? " (crash guard safe mode: rows only)" : " (untested: rows only)") : "", noIPad ? " (no iPad: nothing)" : "", loaded, us); fclose(f); }
+        if (f) { fprintf(f, "%s: kind %u, iPadOS %d%s%s, %u parts loaded%s, %.1f us\n", getprogname(), kind, MSBDOSMajor(), rowsOnly ? (MSBDVersionTested() ? " (crash guard safe mode: rows only)" : " (untested: rows only)") : "", noIPad ? " (no iPad: nothing)" : "", loaded, quitSetGone ? " (no status bar part: the prewarm quit set's file removed)" : "", us); fclose(f); }
     }
 #else
-    (void)loaded; (void)noIPad;
+    (void)loaded; (void)noIPad; (void)quitSetGone;
 #endif
 }

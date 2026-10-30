@@ -14,7 +14,10 @@
 
 #include "MSWSlideMath.h"   // (the slide's arithmetic: the spring, its speed, the slot a taken slide goes to -- plain C, tools/test-mswslide.sh)
 #include "MSWKept.h"        // (the desktops kept while it is off and what of them comes back -- plain Foundation, tools/test-mswkept.sh)
+#include "MSWAppDesk.h"     // (where an app opens when its windows are on other desktops -- plain Foundation, tools/test-mswappdesk.sh)
 static BOOL gMSWOn = NO;                 // the switch is on, the iPadOS has what it needs (DMMSWOSOK), and the self-check passed
+static BOOL gMSWGoToAppDesk = NO;        // Settings > Windows & Multitasking > Go to the App's Desktop (goToAppDesktop, off unless switched on, 1.7.1):
+                                         //  opening an app whose windows are all on other desktops goes to its desktop; off, its window comes here
 // Where it runs: iPadOS 15/16 (tested), and 17 (every class, method and type encoding it calls is in iPadOS 17's SpringBoard and UIKit -- 17.0.3
 // headers, 17.6.1 code --, the home gesture's destinations are the same numbers, the gesture's completion lives on the gesture manager, see
 // DMMSWHookGestures). 18+ (1.6.0, 18.5): where SpringBoard's typed keyboard focus lock is there (StatusBar.x DMFocusLock18OK -- the 15-17 calls
@@ -1262,49 +1265,62 @@ static void DMMSWForgetApp(NSString *b) {
     DMLog([NSString stringWithFormat:@"[macswitcher] %@ force quit: its desktop record is forgotten", b]);
     DMMSWSave();
 }
+// (MilkyWay4 keeps the window of an app iPadOS closed -- grey, its app gone -- where Aerial and Zetsu take theirs away: an away window whose app is
+//  not running is taken for closed, goes with MilkyWay's own close, and its app opens again at its place, as on the other engines -- it came back as
+//  an empty grey window, M1 7 Oct. Its desktop coming (DMMSWRelaunchClosed) or the window brought to the desktop on screen (DMMSWBringHere) asks.
+//  *running: the running apps, read once for several windows.)
+static BOOL DMMSWMWAppGone(UIView *st, NSString *b, NSSet **running) {
+    id sc = DMStageScene(st, b);
+    if (sc) return !DMSceneAlive(sc);
+    NSSet *r = running && *running ? *running : DMLiveRunningBundleIDs();
+    if (running) *running = r;
+    return ![r containsObject:b];
+}
+static void DMMSWMWCloseGone(UIView *st) {
+    objc_setAssociatedObject(st, kFitSizeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (no full screen to give back to an app that is gone)
+    SEL close = NSSelectorFromString(@"closeButtonAction:");
+    if ([st respondsToSelector:close]) ((void (*)(id, SEL, id))objc_msgSend)(st, close, nil);
+}
+// A window of the desktop on screen whose app iPadOS closed (b's record is there, its window is not): opened again as a window at its place (a
+// normal launch, never an empty frame). afterMWClose: MilkyWay's own close of its grey window is on its way (DMMSWMWCloseGone).
+static void DMMSWRelaunchAt(NSString *b, BOOL afterMWClose) {
+    CGRect f = gMSWWinFrame[b] ? CGRectFromString(gMSWWinFrame[b]) : CGRectNull;
+    if (!gMSWRelaunching) gMSWRelaunching = [NSMutableDictionary dictionary];
+    gMSWRelaunching[b] = @(CACurrentMediaTime() + 8.0);
+    BOOL placed = !CGRectIsNull(f) && f.size.width > 100 && f.size.height > 100;
+    DMEngine e = DMActiveEngine();
+    if (e == DMEngineZetsu || e == DMEngineMilkyWay) {
+        // (Zetsu / MilkyWay4: the engine's own launch makes the window, placed at its frame when it appears -- the place it is given as the app's
+        //  remembered frame, which their adoption takes. DMLaunchIntoTile is Aerial's: under Zetsu nothing opened, iPad 2 7 Oct.)
+        if (placed) { if (!gLastWindowFrames) gLastWindowFrames = [NSMutableDictionary dictionary]; gLastWindowFrames[b] = [NSValue valueWithCGRect:f]; }
+        if (e == DMEngineZetsu) DMZetsuLaunch(b);
+        else if (afterMWClose) { NSString *bb = [b copy]; dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMLaunchAsWindow(bb); }); }   // (once MilkyWay's close is through)
+        else DMLaunchAsWindow(b);
+    } else if (placed) DMLaunchIntoTile(b, f); else DMOpenApp(b);
+}
 // A window whose app iPadOS closed while its desktop was away: opened again as a window at its place (a normal launch, never an empty frame).
 static void DMMSWRelaunchClosed(void) {
     NSInteger cur = DMMSWCurId();
     NSMutableSet *alive = [NSMutableSet set];
-    // (MilkyWay4 keeps the window of an app iPadOS closed -- grey, its app gone -- where Aerial and Zetsu take theirs away: an away window of the
-    //  coming desktop whose app is not running is taken for closed, goes with MilkyWay's own close, and its app opens again at its place below,
-    //  as on the other engines -- it came back as an empty grey window, M1 7 Oct. Minimized ones stay as they are.)
+    // (MilkyWay4: an away window of the coming desktop whose app is gone is closed here and its app opens again below. Minimized ones stay as they are.)
     BOOL mw = DMActiveEngine() == DMEngineMilkyWay;
     NSMutableSet<NSString *> *deadMW = [NSMutableSet set];
     NSSet *running = nil;
     for (UIView *st in DMAerialStagesAll()) {
         NSString *b = DMStageBundle(st);
         if (!b.length) continue;
-        if (mw && gMSWWinDesk[b].integerValue == cur && [objc_getAssociatedObject(st, kMSWAwayKey) boolValue] && !DMMSWMinimizedByUs(st)) {
-            id sc = DMStageScene(st, b);
-            if (!sc && !running) running = DMLiveRunningBundleIDs();
-            if (sc ? !DMSceneAlive(sc) : ![running containsObject:b]) {
-                DMLog([NSString stringWithFormat:@"[macswitcher] %@'s MilkyWay window kept no app while its desktop was away (closed by iPadOS): closed, its app opens again", b]);
-                objc_setAssociatedObject(st, kFitSizeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (no full screen to give back to an app that is gone)
-                SEL close = NSSelectorFromString(@"closeButtonAction:");
-                if ([st respondsToSelector:close]) ((void (*)(id, SEL, id))objc_msgSend)(st, close, nil);
-                [deadMW addObject:b];
-                continue;
-            }
+        if (mw && gMSWWinDesk[b].integerValue == cur && [objc_getAssociatedObject(st, kMSWAwayKey) boolValue] && !DMMSWMinimizedByUs(st) && DMMSWMWAppGone(st, b, &running)) {
+            DMLog([NSString stringWithFormat:@"[macswitcher] %@'s MilkyWay window kept no app while its desktop was away (closed by iPadOS): closed, its app opens again", b]);
+            DMMSWMWCloseGone(st);
+            [deadMW addObject:b];
+            continue;
         }
         [alive addObject:b];
     }
     for (NSString *b in gMSWWinDesk.allKeys) {
         if (gMSWWinDesk[b].integerValue != cur || [alive containsObject:b] || !DMSMKeyIsApp(b)) continue;   // (a Stage Manager window's key "<bundle>|<scene>" is no app to open)
-        CGRect f = gMSWWinFrame[b] ? CGRectFromString(gMSWWinFrame[b]) : CGRectNull;
-        DMLog([NSString stringWithFormat:@"[macswitcher] %@ was closed while its desktop was away: opened again as a window at %@", b, NSStringFromCGRect(f)]);
-        if (!gMSWRelaunching) gMSWRelaunching = [NSMutableDictionary dictionary];
-        gMSWRelaunching[b] = @(CACurrentMediaTime() + 8.0);
-        BOOL placed = !CGRectIsNull(f) && f.size.width > 100 && f.size.height > 100;
-        DMEngine e = DMActiveEngine();
-        if (e == DMEngineZetsu || e == DMEngineMilkyWay) {
-            // (Zetsu / MilkyWay4: the engine's own launch makes the window, placed at its frame when it appears -- the place it is given as the app's
-            //  remembered frame, which their adoption takes. DMLaunchIntoTile is Aerial's: under Zetsu nothing opened, iPad 2 7 Oct.)
-            if (placed) { if (!gLastWindowFrames) gLastWindowFrames = [NSMutableDictionary dictionary]; gLastWindowFrames[b] = [NSValue valueWithCGRect:f]; }
-            if (e == DMEngineZetsu) DMZetsuLaunch(b);
-            else if ([deadMW containsObject:b]) { NSString *bb = [b copy]; dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMLaunchAsWindow(bb); }); }   // (once MilkyWay's close is through)
-            else DMLaunchAsWindow(b);
-        } else if (placed) DMLaunchIntoTile(b, f); else DMOpenApp(b);
+        DMLog([NSString stringWithFormat:@"[macswitcher] %@ was closed while its desktop was away: opened again as a window at %@", b, gMSWWinFrame[b] ?: NSStringFromCGRect(CGRectNull)]);
+        DMMSWRelaunchAt(b, [deadMW containsObject:b]);
     }
 }
 
@@ -2272,22 +2288,148 @@ static void DMMSWRemoveDesktop(NSUInteger i) {
     DMMSWSave();
     DMMSWRebuildOpen();
 }
-// The place of the desktop an app's window -- or its remembered full-screen app -- is on, when that is another desktop; NSNotFound otherwise.
+// An app's windows, for MSWAppDesk.h (Aerial, Zetsu, MilkyWay4: one window per app, recorded by app): its window -- on the desktop on screen, or
+// away on its record's desktop --, each other desktop's full-screen app left there, and the record of a window whose app iPadOS closed while its
+// desktop was away (no window). Each @{k, d, t} plus "kind" (w / f / c); t ranks them as this has always looked: a window, then a full-screen app,
+// then a closed one.
+static NSArray<NSDictionary *> *DMMSWAppWindows(NSString *b) {
+    NSMutableArray<NSDictionary *> *out = [NSMutableArray array];
+    if (!b.length) return out;
+    NSInteger cur = DMMSWCurId();
+    BOOL hasStage = NO;
+    for (UIView *st in DMAerialStagesAll()) {
+        if (![DMStageBundle(st) isEqualToString:b]) continue;
+        hasStage = YES;
+        if ([objc_getAssociatedObject(st, kStageClosingKey) boolValue]) continue;   // (on its way out: the launch goes on as a launch, as DMSurfaceWindowForApp has it)
+        NSNumber *d = [objc_getAssociatedObject(st, kMSWAwayKey) boolValue] ? gMSWWinDesk[b] : @(cur);
+        if (d && [gMSWDesks containsObject:d]) [out addObject:@{@"k": b, @"d": d, @"t": @3, @"kind": @"w"}];
+    }
+    for (NSString *k in gMSWFullScreen) if ([gMSWFullScreen[k] isEqualToString:b] && [gMSWDesks containsObject:@(k.integerValue)]) [out addObject:@{@"k": b, @"d": @(k.integerValue), @"t": @2, @"kind": @"f"}];
+    NSNumber *r = gMSWWinDesk[b];
+    if (!hasStage && r && r.integerValue != cur && [gMSWDesks containsObject:r]) [out addObject:@{@"k": b, @"d": r, @"t": @1, @"kind": @"c"}];   // (closed by iPadOS while away)
+    return out;
+}
+// The place of the desktop an app's window -- or its remembered full-screen app -- is on, when that is another desktop and none of the app's is on
+// the desktop on screen (MSWAppDesk.h); NSNotFound otherwise.
 static NSUInteger DMMSWElsewhereIndex(NSString *b) {
     if (!DMMSWMulti() || DMSMEngine() || gRestoringWindows || !b.length) return NSNotFound;
-    NSNumber *d = nil;
-    BOOL hasStage = NO;
-    for (UIView *st in DMAerialStagesAll()) if ([DMStageBundle(st) isEqualToString:b]) { hasStage = YES; if ([objc_getAssociatedObject(st, kMSWAwayKey) boolValue]) d = gMSWWinDesk[b]; }
-    if (!d) for (NSString *k in gMSWFullScreen) if ([gMSWFullScreen[k] isEqualToString:b]) d = @(k.integerValue);
-    if (!d && !hasStage && gMSWWinDesk[b] && gMSWWinDesk[b].integerValue != DMMSWCurId()) d = gMSWWinDesk[b];   // (closed by iPadOS while away)
-    NSUInteger i = d ? [gMSWDesks indexOfObject:d] : NSNotFound;
+    NSArray<NSDictionary *> *wins = DMMSWAppWindows(b);
+    NSUInteger pick = NSNotFound;
+    if (DMMSWAppDeskDecide(wins, DMMSWCurId(), b, YES, &pick) != DMMSWAppDeskGo || pick == NSNotFound) return NSNotFound;
+    NSUInteger i = [gMSWDesks indexOfObject:wins[pick][@"d"]];
     return i == gMSWCur ? NSNotFound : i;
+}
+// Fit to Window per desktop (Aerial, Zetsu, MilkyWay4): a window brought from another desktop (DMMSWBringHere) leaves that desktop's tiles -- they
+// close up there as when a tiled window closes (DMMSWFitWithout) -- and takes part here as a window opening here does (DMCascadeStage's rule, which
+// the Stage Manager engine's Fit tick has for a window joining its stage too): every open window here that is not free takes part, the tiled ones
+// first; four or more open: a regular window over them; two side by side: the side question (*askLeft / *askRight -- asked once the window shows,
+// DMPromptForSide; the tiles stay until the answer); otherwise in front, the default tiles for the new count; alone: its own size (no tile, as a
+// window opened alone). Free on its desktop (No Fit): free here too. join NO: a window that opens again (its app was closed) -- only out of that
+// desktop's tiles (and free here when it was free there); its new window takes part as any new window does. YES when this desktop's tiles changed
+// (DMApplyGroupSlots).
+static BOOL DMMSWFitBringHere(NSString *b, NSInteger fromId, BOOL join, NSString **askLeft, NSString **askRight) {
+    NSString *fk = [@(fromId) stringValue];
+    NSDictionary *was = [gMSWFit[fk] isKindOfClass:[NSDictionary class]] ? gMSWFit[fk] : nil;
+    BOOL wasFree = [was[@"free"] isKindOfClass:[NSArray class]] && [was[@"free"] containsObject:b];
+    NSDictionary *nf = DMMSWFitWithout(was, b);
+    if (nf) gMSWFit[fk] = nf;
+    if (!DMFitEnabled()) return NO;
+    if (wasFree) { if (!gFreeWindows) gFreeWindows = [NSMutableSet set]; [gFreeWindows addObject:b]; return NO; }
+    if (!join) return NO;
+    NSMutableArray<NSString *> *group = [NSMutableArray array], *open = [NSMutableArray array];
+    for (NSString *x in gFitGroup) if (![x isEqualToString:b] && DMStageTakesPartInFit(DMStageForBundle(x))) [group addObject:x];
+    for (UIView *s in DMAerialStages()) { NSString *x = DMStageBundle(s); if (x.length && ![x isEqualToString:b] && !s.hidden && !DMStageMinimized(s)) [open addObject:x]; }
+    if (group.count >= 4 || open.count >= 4) {
+        gFitGroup = group;
+        DMLog([NSString stringWithFormat:@"[fit] %@ came from another desktop: four windows are tiled here already, it is a regular window over them", b]);
+        return NO;
+    }
+    for (NSString *x in open) if (![group containsObject:x] && ![gFreeWindows containsObject:x]) [group addObject:x];
+    if (group.count > 3) [group removeObjectsInRange:NSMakeRange(3, group.count - 3)];   // (it and three others make four)
+    if (group.count == 2 && askLeft && askRight && !(gSidePromptCtx && ![gSidePromptCtx[@"decided"] boolValue])) {   // (as DMCascadeStage asks a third window)
+        NSString *s0 = DMSlotNameForFrame(DMStageForBundle(group[0]).frame), *s1 = DMSlotNameForFrame(DMStageForBundle(group[1]).frame);
+        NSString *l = [s0 isEqualToString:@"left"] ? group[0] : ([s1 isEqualToString:@"left"] ? group[1] : nil);
+        NSString *r = [s0 isEqualToString:@"right"] ? group[0] : ([s1 isEqualToString:@"right"] ? group[1] : nil);
+        if (l && r) {
+            gFitGroup = group;
+            *askLeft = l; *askRight = r;
+            DMLog([NSString stringWithFormat:@"[fit] %@ came from another desktop next to two tiled windows: which side, asked once it shows", b]);
+            return NO;
+        }
+    }
+    [group insertObject:b atIndex:0];
+    gFitGroup = group;
+    DMFitWatchSync();   // (the closure check: the group as it is now)
+    if (group.count < 2) { DMLog([NSString stringWithFormat:@"[fit] %@ came from another desktop: alone here, it keeps its size", b]); return NO; }
+    DMAssignDefaultSlots();   // (the default tiles for the count, newest first)
+    DMLog([NSString stringWithFormat:@"[fit] %@ came from another desktop: %lu windows tiled here (%@ first)", b, (unsigned long)group.count, b]);
+    return YES;
+}
+// A window brought from a desktop left at another screen shape (the iPad turned while that desktop was away): placed for this one while it is still
+// hidden, as a turn places a window (DMRelayoutForOrientation) -- where it was the last time the screen had this shape, else the same relative
+// place and size, inside the desktop.
+static void DMMSWFitTurned(UIView *st, NSInteger fromId) {
+    NSString *leftAt = gMSWLeftSize[[@(fromId) stringValue]];
+    CGSize screen = [UIScreen mainScreen].bounds.size;
+    if (!st || !leftAt.length || CGSizeFromString(leftAt).width <= 1 || CGSizeEqualToSize(CGSizeFromString(leftAt), screen)) return;
+    CGRect usable = DMLayoutFrame(@"fill");
+    if (CGRectIsNull(usable)) return;
+    NSValue *saved = [objc_getAssociatedObject(st, kStageByOrientKey) objectForKey:DMOrientKey()];
+    NSValue *was = objc_getAssociatedObject(st, kStageIntentKey), *fromSize = objc_getAssociatedObject(st, kStageIntentSizeKey);
+    CGRect f = DMFitInto(saved ? saved.CGRectValue : DMScaleFrame(was ? was.CGRectValue : st.frame, fromSize ? fromSize.CGSizeValue : CGSizeFromString(leftAt), screen), usable);
+    DMLog([NSString stringWithFormat:@"[macswitcher] %@'s desktop was left at %@, the screen is %@ now: its window is placed at %@", DMStageBundle(st), leftAt, NSStringFromCGSize(screen), NSStringFromCGRect(f)]);
+    gStageFrameBypass = YES; st.frame = f; gStageFrameBypass = NO;
+    DMSetStageIntent(st, f);
+}
+// 1.7.1 item 5 (KT): the app's window comes to the desktop on screen -- MSWAppDesk.h's Bring (Go to the App's Desktop off). w: the window that
+// comes (DMMSWAppWindows). Its record moves here, its tiles with it (DMMSWFitBringHere), its away state ends (DMMSWApply: shown, keyboard focus
+// let go). NO: it is a window of this desktop now, and the launch's own window path brings it forward as it brings any -- DMSurfaceWindowForApp,
+// Aerial's icon tap: restored when it was minimized there, over a full-screen app if needed. YES: done here -- a full-screen app left on that
+// desktop opens full screen here (that desktop shows its windows when it comes), a window whose app iPadOS closed opens again here at its place.
+static BOOL DMMSWBringHere(NSString *b, NSDictionary *w) {
+    NSInteger fromId = [w[@"d"] integerValue];
+    NSString *kind = w[@"kind"], *from = DMMSWDeskName([gMSWDesks indexOfObject:@(fromId)]), *here = DMMSWDeskName(gMSWCur);
+    DM_FEATURE_MARK("mac-switcher-bring-here");
+    if ([kind isEqualToString:@"f"]) {
+        [gMSWFullScreen removeObjectForKey:[@(fromId) stringValue]];
+        DMMSWSave();
+        DMLog([NSString stringWithFormat:@"[macswitcher] %@ opened: it was full screen on %@ -- it comes to %@, full screen", b, from, here]);
+        DMOpenFullScreen(b);
+        return YES;
+    }
+    gMSWWinDesk[b] = @(DMMSWCurId()); gMSWDesksDirty = YES;
+    UIView *st = nil;
+    if ([kind isEqualToString:@"w"]) for (UIView *s in DMAerialStagesAll()) if ([DMStageBundle(s) isEqualToString:b]) { st = s; break; }
+    BOOL gone = st && DMActiveEngine() == DMEngineMilkyWay && !DMMSWMinimizedByUs(st) && DMMSWMWAppGone(st, b, NULL);
+    if (!st || gone) {   // (no window: its app was closed by iPadOS while that desktop was away -- opened again here, at its place)
+        DMLog([NSString stringWithFormat:@"[macswitcher] %@ opened: iPadOS closed it while %@ was away -- it opens again on %@, at its place", b, from, here]);
+        DMMSWFitBringHere(b, fromId, NO, NULL, NULL);
+        if (gone) DMMSWMWCloseGone(st);
+        DMMSWSave();
+        DMMSWRelaunchAt(b, gone);
+        return YES;
+    }
+    DMMSWFitTurned(st, fromId);   // (left at another screen shape)
+    NSString *askL = nil, *askR = nil;
+    BOOL tiled = DMMSWFitBringHere(b, fromId, YES, &askL, &askR);
+    DMMSWApply();   // (back: shown -- one we minimized stays so until the launch restores it --, its keyboard focus let go)
+    if (tiled) { gMoveKeepsOrder = YES; DMApplyGroupSlots(st); gMoveKeepsOrder = NO; }   // (it straight into its tile, the others close up)
+    if (askL && askR) {   // (after the launch's own path has brought it forward)
+        NSString *bb = [b copy];
+        dispatch_async(dispatch_get_main_queue(), ^{ if (DMStageForBundle(bb) == st) DMPromptForSide(st, bb, askL, askR); });
+    }
+    DMMSWSave();
+    DMLog([NSString stringWithFormat:@"[macswitcher] %@ opened: its window was on %@ -- it comes to %@ (Go to the App's Desktop is off)", b, from, here]);
+    return NO;
 }
 // (StatusBar.x, SBMainWorkspace's open requests: an app opened by Spotlight, a link, a notification or LaunchServices whose window is on another
 //  desktop takes the window path, which brings its desktop; it was "left alone" and opened full screen on the current desktop, its window still
 //  recorded on the other one -- found on the M1, 4 Oct)
 static BOOL DMMSWWindowElsewhere(NSString *b) { return DMMSWElsewhereIndex(b) != NSNotFound; }
-// Launching an app (StatusBar.x DMSurfaceWindowForApp): its window, or its full-screen app, on another desktop -> that desktop comes, as on a Mac.
+// Launching an app (StatusBar.x DMSurfaceWindowForApp, Aerial's icon tap): its window, or its full-screen app, on another desktop (and none of its
+// on this one) -> MSWAppDesk.h: the window comes here (DMMSWBringHere), or with Go to the App's Desktop on that desktop comes, as on a Mac (the
+// only way before 1.7.1: KT, 30 Oct, "it should come up on whichever desktop I am on"). YES: the launch is taken (a switch, or done here); NO: the
+// launch's own path goes on -- for a window brought here, that path brings it forward.
 static BOOL DMMSWLaunchSwitches(NSString *b) {
     if (!DMMSWMulti() || gRestoringWindows || !b.length || DMSMEngine()) return NO;
     NSString *bc = [b copy];
@@ -2300,8 +2442,12 @@ static BOOL DMMSWLaunchSwitches(NSString *b) {
         DMLog([NSString stringWithFormat:@"[macswitcher] %@ opened while a desktop slides in: it comes right after the slide", b]);
         return YES;
     }
-    NSUInteger i = DMMSWElsewhereIndex(b);
-    if (i == NSNotFound) return NO;
+    NSArray<NSDictionary *> *wins = DMMSWAppWindows(b);
+    NSUInteger pick = NSNotFound;
+    DMMSWAppDeskWay way = DMMSWAppDeskDecide(wins, DMMSWCurId(), b, gMSWGoToAppDesk, &pick);
+    NSUInteger i = pick == NSNotFound ? NSNotFound : [gMSWDesks indexOfObject:wins[pick][@"d"]];
+    if (way == DMMSWAppDeskStay || i == NSNotFound || i == gMSWCur) return NO;
+    if (way == DMMSWAppDeskBring) return DMMSWBringHere(bc, wins[pick]);
     DMLog([NSString stringWithFormat:@"[macswitcher] %@ opened: it is on %@, which comes", b, DMMSWDeskName(i)]);
     // (its window comes to the front there, as the launch asked, by the launch's own window path on every engine: restored when it was minimized there,
     //  over a full-screen app if needed. Aerial had only a tap's raise, DMRaiseStageForBundle: a minimized window stayed minimized, 1.4.5. A switch

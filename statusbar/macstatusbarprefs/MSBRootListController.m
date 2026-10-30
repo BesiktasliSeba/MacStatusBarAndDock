@@ -665,6 +665,13 @@ static void MSBFitValueLabels(UIView *v) {
 			BOOL desktopFailed = noFocus18 || MSBDDesktopVerdict(NULL) == 0;
 			NSMutableArray *kept = [_specifiers mutableCopy];
 			for (PSSpecifier *spec in _specifiers) if ((desktopFailed && [[spec propertyForKey:@"key"] isEqual:@"desktopIcons"]) || (noFocus18 && [[spec propertyForKey:@"key"] isEqual:@"macSwitcher"])) [kept removeObject:spec];
+			if (noFocus18) {   // (and its group: Go to the App's Desktop, 1.7.1, is the Mac Switcher's)
+				BOOL inGroup = NO;
+				for (PSSpecifier *spec in _specifiers) {
+					if (spec.cellType == PSGroupCell) inGroup = [spec.identifier isEqualToString:@"MSW_GROUP"];
+					if (inGroup) [kept removeObject:spec];
+				}
+			}
 			_specifiers = kept;
 		}
 		// Stage Manager as an engine only exists on iPadOS 16+ (and only where Stage Manager runs, MSBEngineState greys it out elsewhere).
@@ -893,6 +900,7 @@ static void MSBFitValueLabels(UIView *v) {
 			_specifiers = [[_specifiers arrayByAddingObject:note] mutableCopy];
 		}
 		[self msb_updateSearchTweaksRow:NO];
+		[self msb_updateGoToDesktopRow:NO];
 	}
 	return _specifiers;
 }
@@ -922,6 +930,22 @@ static void MSBFitValueLabels(UIView *v) {
 	for (PSSpecifier *spec in _specifiers) {
 		if (![spec.identifier isEqualToString:@"SEARCH_TWEAK_SETTINGS"]) continue;
 		[spec setProperty:@(field) forKey:@"enabled"];
+		if (reload) [self reloadSpecifier:spec animated:YES];
+		break;
+	}
+}
+
+// "Go to the App's Desktop" (1.7.1) is the Mac Switcher's: greyed while the Mac Switcher is off (as Apple greys a row that depends on another
+// switch), live when that switch changes -- as Include Tweak Settings above.
+- (void)msb_updateGoToDesktopRow:(BOOL)reload {
+	CFPreferencesAppSynchronize(kMSBBarDomain);
+	CFPropertyListRef v = CFPreferencesCopyAppValue(CFSTR("macSwitcher"), kMSBBarDomain);
+	BOOL on = v && CFGetTypeID(v) == CFBooleanGetTypeID() && CFBooleanGetValue(v);   // (never set: off)
+	if (v) CFRelease(v);
+	if (!MSBDGateWanted()) on = NO;   // (untested iPadOS / safe mode: every row greyed, LineSwitch.h -- this one stays so)
+	for (PSSpecifier *spec in _specifiers) {
+		if (![spec.identifier isEqualToString:@"MSW_GO_TO_APP_DESKTOP"]) continue;
+		[spec setProperty:@(on) forKey:@"enabled"];
 		if (reload) [self reloadSpecifier:spec animated:YES];
 		break;
 	}
@@ -957,6 +981,7 @@ static void MSBFitValueLabels(UIView *v) {
 	[super setPreferenceValue:value specifier:specifier];
 	if ([[specifier propertyForKey:@"key"] isEqual:@"finderEnabled"]) { notify_post("com.besiktasliseba.dockmagnification/prefsChanged"); return; }   // (the Dock shows or hides its Finder icon too)
 	if ([[specifier propertyForKey:@"key"] isEqual:@"sidebarSearch"]) { [self msb_updateSearchTweaksRow:YES]; return; }
+	if ([[specifier propertyForKey:@"key"] isEqual:@"macSwitcher"]) { [self msb_updateGoToDesktopRow:YES]; return; }
 	// Enable Windowing off = no window engine loads at all (MacSettings' root helper denies them all in Choicy / renames them for iCleaner Pro; on
 	// again, only the chosen one comes back). Its footer says it takes effect after a respring. An engine picked while windowing is off is only
 	// saved; the helper applies it when windowing is on again.

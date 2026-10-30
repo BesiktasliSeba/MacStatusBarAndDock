@@ -47,6 +47,7 @@
 #include "../../common/DpkgState.h"
 #include "../../common/StageManagerAvailable.h"
 #include "../../common/PointerAnim.h"       // (DMPtrAnimDecide: Pointer Animations given back as SpringBoard does it, Mac-tested)
+#include "../../common/PrewarmQuitSet.h"    // (MSBDPrewarmQuitSetKept: whether SpringBoard keeps a prewarm quit set, Mac-tested)
 #include "../../statusbar/SMSwitchOn.h"     // (DMSMConsentFrom: the Stage Manager consent values)
 #include <dlfcn.h>
 #include <grp.h>
@@ -373,6 +374,19 @@ static BOOL TweakMeantToRun(void) {
     BOOL on = v && CFGetTypeID(v) == CFBooleanGetTypeID() && CFBooleanGetValue(v);
     if (v) CFRelease(v);
     return MSBDVersionTested() ? !on : on;   // (tested: on unless in safe mode; untested: only with Enable Anyway)
+}
+// Whether SpringBoard keeps a prewarm quit set (common/PrewarmQuitSet.h MSBDPrewarmQuitSetKept): Mac Status Bar's old on/off and Use Stock Status Bar
+// as SpringBoard reads them -- as mobile --, and whether its status bar part runs (TweakMeantToRun). The postinst asks it before it makes dasd's
+// file from cfprefsd's copy of the set (--quit-set-kept: 0 kept, 1 not).
+static BOOL QuitSetKept(void) {
+    CFStringRef d = CFSTR("com.besiktasliseba.macstatusbar");
+    CFPreferencesSynchronize(d, CFSTR("mobile"), kCFPreferencesAnyHost);
+    CFPropertyListRef e = CFPreferencesCopyValue(CFSTR("tweakEnabled"), d, CFSTR("mobile"), kCFPreferencesAnyHost);
+    CFPropertyListRef s = CFPreferencesCopyValue(CFSTR("stockStatusBar"), d, CFSTR("mobile"), kCFPreferencesAnyHost);
+    BOOL kept = MSBDPrewarmQuitSetKept((__bridge id)e, (__bridge id)s, TweakMeantToRun());
+    if (e) CFRelease(e);
+    if (s) CFRelease(s);
+    return kept;
 }
 static void ApplyEngines(NSString *reason) {
     static BOOL retryPending = NO, logged = NO;
@@ -1374,6 +1388,7 @@ int main(int argc, char **argv) {
         // Not an iPad (common/DeviceGate.h): nothing but giving back. The daemon stays idle (launchd would restart it if it quit).
         if (argc > 1 && strcmp(argv[1], "--os-major") == 0) { printf("%ld\n", (long)[NSProcessInfo processInfo].operatingSystemVersion.majorVersion); return 0; }   // (postinst: the iPadOS 17+ Settings entries)
         if (argc > 1 && strcmp(argv[1], "--is-ipad") == 0) return MSBDIsIPad() ? 0 : 2;   // (postinst: 2, not 1, so a failed start never reads as "not an iPad")
+        if (argc > 1 && strcmp(argv[1], "--quit-set-kept") == 0) return MSBDIsIPad() && QuitSetKept() ? 0 : 1;   // (postinst: dasd's quit-set file made only for a SpringBoard that keeps one)
         if (!MSBDIsIPad()) {
             if (argc < 2) dispatch_main();
             if (strcmp(argv[1], "--uninstall") != 0 && strcmp(argv[1], "--restore-engines") != 0 && strcmp(argv[1], "--restore-msb-off") != 0) return 0;

@@ -276,6 +276,25 @@ static void StageIsDesktop(void) {
     CHECK(!DMSMStageIsDesktop(0, YES, YES, YES), "no window that is not minimized: never the desktop");
 }
 
+// The desktop the App Switcher was opened from, after windows were closed in it (DMSMSwitcherDeskStage; A12Z 18.5, 1.7.1: Desktop 2 = Tips +
+// Calculator, Calculator's card swiped up, a tap beside the cards went Home and Tips left the screen).
+static void SwitcherDeskStage(void) {
+    NSSet *ab = [NSSet setWithArray:@[@"tips", @"calc"]], *a = [NSSet setWithObject:@"tips"], *c = [NSSet setWithObject:@"clock"];
+    NSSet *live = [NSSet setWithArray:@[@"tips", @"clock"]];
+    CHECK(DMSMSwitcherDeskStage(ab, @[c, ab], [NSSet setWithArray:@[@"tips", @"calc", @"clock"]]) == 1, "the desktop as it was opened: its stage");
+    CHECK(DMSMSwitcherDeskStage(ab, @[a, c], live) == 0, "Calculator closed in the App Switcher: the stage with Tips is the desktop");
+    CHECK(DMSMSwitcherDeskStage(ab, @[c, a], live) == 1, "not the most recent stage: found where it is");
+    CHECK(DMSMSwitcherDeskStage(ab, @[a, [NSSet setWithArray:@[@"calc", @"clock"]]], [NSSet setWithArray:@[@"tips", @"calc", @"clock"]]) == NSNotFound,
+          "a remembered window in another stage now (not closed): not the desktop");
+    CHECK(DMSMSwitcherDeskStage(ab, @[c], [NSSet setWithObject:@"clock"]) == NSNotFound, "every remembered window closed: no desktop");
+    CHECK(DMSMSwitcherDeskStage([NSSet set], @[a], live) == NSNotFound && DMSMSwitcherDeskStage(nil, @[a], live) == NSNotFound, "nothing remembered");
+    CHECK(DMSMSwitcherDeskStage([NSSet setWithArray:@[@"a", @"b", @"c"]], @[[NSSet setWithObject:@"d"], [NSSet setWithObject:@"a"]], [NSSet setWithArray:@[@"a", @"d"]]) == 1,
+          "two of three closed: the one left");
+    CHECK(DMSMSwitcherDeskStage(ab, @[c, a], [NSSet setWithArray:@[@"tips", @"calc", @"clock"]]) == NSNotFound,
+          "a window still alive on another display: the stage with Tips alone is not the desktop");
+    CHECK(DMSMSwitcherDeskStage(ab, @[a], nil) == NSNotFound && DMSMSwitcherDeskStage(ab, @[ab], nil) == 0, "no live set: the exact match only, as before 1.7.1");
+}
+
 int main(void) {
     const long long four[] = {1, 2, 5, 6};
     const long long seven[] = {1, 2, 5, 6, 7, 8, 9};
@@ -285,6 +304,7 @@ int main(void) {
     HGKeepStill();
     StageIsDesktop();
     RuleEdges();
+    SwitcherDeskStage();
     printf("test-smhomerule: %d checks, %d failed\n", passes + fails, fails);
     return fails ? 1 : 0;
 }

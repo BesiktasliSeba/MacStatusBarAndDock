@@ -54,6 +54,15 @@ int main(void) {
         CHECK(MSBDPrewarmStampChanged(b, gone) && !gone.present, "the file went: changed (an empty set)");
         [[NSFileManager defaultManager] removeItemAtPath:dir error:NULL];
         CHECK(!strcmp(kMSBDPrewarmQuitSetFile, "/var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-PrewarmQuitSet.plist"), "the file sits in the jailbreak's preferences folder, beside dasd's start count");
+        // whether SpringBoard keeps a set (the postinst's first copy of the file asks it): read as SpringBoard reads the two switches
+        CHECK(MSBDPrewarmQuitSetKept(nil, nil, YES), "nothing set (a new install, an updater's defaults): a set kept");
+        CHECK(MSBDPrewarmQuitSetKept(@YES, @NO, YES), "Mac Status Bar on, the stock status bar off: kept");
+        CHECK(!MSBDPrewarmQuitSetKept(@NO, nil, YES), "Mac Status Bar switched off its old way (tweakEnabled NO): none kept");
+        CHECK(!MSBDPrewarmQuitSetKept(@0, nil, YES) && !MSBDPrewarmQuitSetKept(@"YES", nil, YES), "  ... a tweakEnabled that is no boolean is off, as SpringBoard reads it");
+        CHECK(!MSBDPrewarmQuitSetKept(nil, @YES, YES) && !MSBDPrewarmQuitSetKept(@YES, @YES, YES), "Use Stock Status Bar on: none kept");
+        CHECK(MSBDPrewarmQuitSetKept(nil, @1, YES) && MSBDPrewarmQuitSetKept(nil, @"YES", YES), "  ... a stockStatusBar that is no boolean is off, as SpringBoard reads it");
+        CHECK(!MSBDPrewarmQuitSetKept(nil, nil, NO), "the status bar part not running (safe mode, an untested iPadOS): none kept");
+        CHECK(MSBDPrewarmQuitSetKept((__bridge id)kCFBooleanTrue, (__bridge id)kCFBooleanFalse, YES) && !MSBDPrewarmQuitSetKept((__bridge id)kCFBooleanFalse, nil, YES), "  ... CFBooleans as cfprefsd gives them");
     }
     printf("%s: %d of %d checks passed\n", fails ? "FAIL" : "PASS", checks - fails, checks);
     return fails ? 1 : 0;

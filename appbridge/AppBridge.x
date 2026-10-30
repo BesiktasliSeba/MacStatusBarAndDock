@@ -498,10 +498,11 @@ static void MABRegisterActions(void) {
 // Esc Ends Typing in Windows (Settings > Status Bar > Keyboard, on by default; the owner, 27 Sep): Esc while typing in a windowed app puts the typing away,
 // like clicking the desktop on a Mac. Caught where hardware keys enter the app (-[UIApplication handleKeyUIEvent:]): they reach most text views
 // through the keyboard system, not through the text view's own pressesBegan: or sendEvent: (earlier versions hooked those and missed Notes, Messages, Reddit).
-// Left alone when: the app has its own Esc shortcut anywhere from the text field up (a UIKeyCommand for Esc), a composition is in progress (marked
-// text: Esc belongs to the input method), web content (pages use Esc themselves), terminal apps (Esc is a key there), a text view of the app's own
-// rather than UIKit's (terminals, virtual machines, remote desktops), full screen. The switch is
+// When Esc ends the typing and when it stays the app's: EscRule.h (Mac-tested) -- the app's own Esc shortcut, a composition, web content, a terminal
+// app, an app that reads the keys itself (terminals, virtual machines, remote desktops: M-9), full screen. The switch is
 // published by SpringBoard as notify state "com.besiktasliseba.appbridge.escends" (1 on, 2 off, 0 not yet published = on).
+#include "EscRule.h"
+#include <ptrauth.h>
 static UIResponder *MABTypingResponder(void) {
     for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
         if (![sc isKindOfClass:[UIWindowScene class]]) continue;
@@ -512,36 +513,63 @@ static UIResponder *MABTypingResponder(void) {
     }
     return nil;
 }
-static BOOL MABEscEndsTypingNow(void) {   // an Esc key-down just came in: put the typing away if all the conditions hold
+// The app reads the hardware keys itself at the text input or above it (up to its window): a -pressesBegan:withEvent: of the app's own code -- its
+// executable or a framework in its bundle -- on the responder's class or on a view or view controller above it. UIKit's own classes, other system
+// code and tweaks do not count. (EscRule.h: Esc is then the app's, as in terminals, virtual machines and remote desktops.)
+static BOOL MABAppReadsKeys(UIResponder *r) {
+    static NSString *appDir = nil;
+    if (!appDir) appDir = [[[NSBundle mainBundle].bundlePath stringByResolvingSymlinksInPath] stringByAppendingString:@"/"];
+    SEL s = @selector(pressesBegan:withEvent:);
+    for (UIResponder *x = r; x && ![x isKindOfClass:[UIApplication class]]; x = x.nextResponder) {
+        IMP imp = class_getMethodImplementation(object_getClass(x), s);
+        Dl_info di;
+        if (!imp || !dladdr(ptrauth_strip((const void *)imp, ptrauth_key_function_pointer), &di) || !di.dli_fname) continue;
+        if ([[@(di.dli_fname) stringByResolvingSymlinksInPath] hasPrefix:appDir]) {
+#if DEBUG
+            MABLog([NSString stringWithFormat:@"esc: the app reads the keys itself (%@ -pressesBegan:withEvent:)", NSStringFromClass([x class])]);
+#endif
+            return YES;
+        }
+        if ([x isKindOfClass:[UIWindow class]]) break;
+    }
+    return NO;
+}
+static BOOL MABEscEndsTypingNow(void) {   // an Esc key-down just came in (no Cmd, Ctrl or Alt): put the typing away if EscRule.h says so
     static int token = 0; uint64_t state = 0;
     if (!token) notify_register_check("com.besiktasliseba.appbridge.escends", &token);
     if (token) notify_get_state(token, &state);
-    if (state == 2) return NO;
+    MSBDEscState s = {0};
+    s.switchOff = state == 2;
     NSString *bundle = [NSBundle mainBundle].bundleIdentifier;
-    if ([@[@"dev.diffterm.app", @"ws.hbang.Terminal", @"com.officialscheduler.mterminal", @"com.googlecode.mobileterminal.Terminal"] containsObject:bundle]) return NO;   // (kDMTerminalApps)
+    s.terminalApp = [@[@"dev.diffterm.app", @"ws.hbang.Terminal", @"com.officialscheduler.mterminal", @"com.googlecode.mobileterminal.Terminal"] containsObject:bundle];   // (kDMTerminalApps)
+    if (s.switchOff || s.terminalApp) return NO;
     UIResponder *r = MABTypingResponder();
 #if DEBUG
     if (MSTestFlag("/tmp/macstatusbar-debug")) MABLog([NSString stringWithFormat:@"esc: key down, typing responder %@", r ? NSStringFromClass([r class]) : @"none"]);
 #endif
-    if (!r || ((id<UITextInput>)r).markedTextRange || [NSStringFromClass([r class]) hasPrefix:@"WK"]) return NO;
-    // (only UIKit's own text views and fields, and their subclasses: terminal, virtual machine and remote desktop apps draw their own text input
-    //  views and need Esc themselves -- in a window it ended the typing there and never reached the session; 1.3.3, audit M-9)
-    if (![r isKindOfClass:[UITextField class]] && ![r isKindOfClass:[UITextView class]]) return NO;
-    for (UIResponder *x = r; x; x = x.nextResponder) {   // (the app's own Esc shortcut wins: cancelling a search, closing a sheet)
+    s.typing = r != nil;
+    if (!s.typing) return NO;
+    s.composing = ((id<UITextInput>)r).markedTextRange != nil;
+    s.webContent = [NSStringFromClass([r class]) hasPrefix:@"WK"];
+    s.uikitText = [r isKindOfClass:[UITextField class]] || [r isKindOfClass:[UITextView class]];
+    s.appReadsKeys = !s.uikitText && !s.composing && !s.webContent && MABAppReadsKeys(r);   // (asked only where it decides: an input of the app's own)
+    for (UIResponder *x = r; x && !s.appEscCommand; x = x.nextResponder) {   // (the app's own Esc shortcut wins: cancelling a search, closing a sheet)
         if ([x isKindOfClass:[UIApplication class]]) break;   // (iPadOS 16 puts a system Esc command on UIApplication itself -- not the app's: it made every
                                                               //  app look as if it used Esc, and Esc stopped ending the typing, iPad 2 30 Sep)
         for (UIKeyCommand *c in x.keyCommands) if ([c.input isEqualToString:UIKeyInputEscape]) {
 #if DEBUG
             MABLog([NSString stringWithFormat:@"esc: left to the app (%@ has an Esc shortcut)", NSStringFromClass([x class])]);
 #endif
-            return NO;
+            s.appEscCommand = 1; break;
         }
     }
     UIView *v = [r isKindOfClass:[UIView class]] ? (UIView *)r : nil;
     UIWindowScene *scene = v.window.windowScene;
-    if (!scene) return NO;
-    CGSize sc = scene.coordinateSpace.bounds.size, screen = scene.screen.bounds.size;   // (a window: the scene is smaller than the screen either way round)
-    if (!(MIN(sc.width, sc.height) < MIN(screen.width, screen.height) - 1.0 || MAX(sc.width, sc.height) < MAX(screen.width, screen.height) - 1.0)) return NO;
+    if (scene) {
+        CGSize sc = scene.coordinateSpace.bounds.size, screen = scene.screen.bounds.size;   // (a window: the scene is smaller than the screen either way round)
+        s.inWindow = MIN(sc.width, sc.height) < MIN(screen.width, screen.height) - 1.0 || MAX(sc.width, sc.height) < MAX(screen.width, screen.height) - 1.0;
+    }
+    if (!MSBDEscEndsTyping(s)) return NO;
     [r resignFirstResponder];
 #if DEBUG
     MABLog([NSString stringWithFormat:@"esc: typing in %@ put away", NSStringFromClass([r class])]);

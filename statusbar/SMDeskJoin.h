@@ -89,6 +89,56 @@ static NSArray<NSArray *> *DMSMDeskJoinPlan(NSArray<NSDictionary *> *desktop, NS
     #undef DMSM_ID
     #undef DMSM_LEAVE
 }
+// The event label of SpringBoard's own transition out of the App Switcher to a card's stage: "DismissSwitcherNoninteractive" on 16 and 17; 18
+// names the display after it, "DismissSwitcherNoninteractive-EmbeddedDisplay" (A12Z, 18.5, as its "ActivateSwitcherNoninteractive-EmbeddedDisplay"
+// into the App Switcher; the switcher gestures' labels, "FinalFluidSwitcherGestureAction" and the others, have none there). A card's tap of a window
+// (SMDesktop.h DMSMCardTapOf) is that transition.
+static BOOL DMSMIsCardDismissLabel(id label) {
+    if (![label isKindOfClass:[NSString class]]) return NO;
+    return [label isEqualToString:@"DismissSwitcherNoninteractive"] || [label hasPrefix:@"DismissSwitcherNoninteractive-"];
+}
+// The App Switcher's card of ONE window of the desktop (1.7.1 item 6: with the engine every window has a card of its own, SMCards.h). SpringBoard
+// activates that window by itself -- role 1, every other window role emptied -- which took the desktop's other windows off the screen (iPad 2, 30
+// Oct: Clock's card, Tips gone). It is a window picked, as a click on it: the desktop stays and that window comes to the front. Arguments as
+// DMSMDeskJoinPlan's. Returns nil (left to DMSMDeskJoinPlan; *why says why), or the plan: @[key, role, front] for each desktop window (its own role
+// when it is a window role, else a free one; front: asked for -- the caller gives it the newest interaction time, so it is the one in front).
+static NSArray<NSArray *> *DMSMDeskCardPlan(NSArray<NSDictionary *> *desktop, NSArray<NSDictionary *> *asked, int flags, NSString **why) {
+    #define DMSM_LEAVE(text) do { if (why) *why = (text); return nil; } while (0)
+    if (flags) DMSM_LEAVE(@"not only a window's card (DMSMDeskJoinPlan's rules)");   // (ours, another display, Home, the switcher, a removal, ...)
+    if (!asked.count) DMSM_LEAVE(@"no window asked for");
+    if (!desktop.count) DMSM_LEAVE(@"no desktop to keep");
+    BOOL byApp = NO;
+    for (NSArray<NSDictionary *> *list in @[desktop, asked]) for (NSDictionary *w in list) {
+        NSString *b = w[@"b"], *k = w[@"w"];
+        if (![b isKindOfClass:[NSString class]] || !b.length) DMSM_LEAVE(@"a window without an app");
+        if (DMSMKeyIsApp(k) || !DMSMKeyCovers(b, k)) byApp = YES;
+    }
+    #define DMSM_ID(w) ((NSString *)(byApp ? (w)[@"b"] : (w)[@"w"]))
+    NSMutableOrderedSet<NSString *> *deskK = [NSMutableOrderedSet orderedSet], *askedK = [NSMutableOrderedSet orderedSet];
+    for (NSDictionary *w in desktop) [deskK addObject:DMSM_ID(w)];
+    for (NSDictionary *w in asked) [askedK addObject:DMSM_ID(w)];
+    for (NSString *k in askedK) if (![deskK containsObject:k]) DMSM_LEAVE(@"a window that is not on the desktop (it joins it the usual way)");
+    BOOL leavesOut = NO;
+    for (NSString *k in deskK) if (![askedK containsObject:k]) { leavesOut = YES; break; }
+    if (!leavesOut) DMSM_LEAVE(@"it keeps every desktop window");
+    NSMutableSet<NSNumber *> *used = [NSMutableSet set];
+    NSMutableSet<NSString *> *done = [NSMutableSet set];
+    NSMutableArray<NSArray *> *plan = [NSMutableArray array];
+    NSMutableArray<NSString *> *needRole = [NSMutableArray array];
+    for (NSDictionary *w in desktop) {
+        NSString *k = DMSM_ID(w);
+        if ([done containsObject:k]) continue;
+        [done addObject:k];
+        long long r = [w[@"r"] longLongValue];
+        if (DMSMIsWindowRole(r) && ![used containsObject:@(r)]) { [used addObject:@(r)]; [plan addObject:@[k, @(r), @([askedK containsObject:k])]]; }
+        else [needRole addObject:k];
+    }
+    for (NSString *k in needRole) { long long r = DMSMFirstFreeRole(used); if (!r) DMSM_LEAVE(@"no free role"); [plan addObject:@[k, @(r), @([askedK containsObject:k])]]; }
+    if (why) *why = [NSString stringWithFormat:@"its %lu window(s) stay, %lu brought to the front%@", (unsigned long)plan.count, (unsigned long)askedK.count, byApp ? @" (windows told apart by app)" : @""];
+    return plan;
+    #undef DMSM_ID
+    #undef DMSM_LEAVE
+}
 // The desktop's windows a plan of DMSMDeskJoinPlan leaves out -- what a FULL desktop gives up for the new windows (none while it has room) -- in
 // the desktop's order, each window once, by its key ("w"; its app where it has none). A plan made by app names the app: every window of it is
 // kept then. With the Mac Switcher on, a full desktop is its decision first (MacSwitcherSM.h DMMSWSMAtCap): the new windows on a new desktop, or

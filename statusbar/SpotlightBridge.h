@@ -188,13 +188,17 @@ static NSArray<NSDictionary *> *DMSpotWindowRows(void) {
             BOOL mini = DMStageMinimized(st) || [objc_getAssociatedObject(st, kStageHiddenKey) boolValue];
             NSInteger did = (DMMSWMulti() && gMSWWinDesk[b]) ? gMSWWinDesk[b].integerValue : cur;
             NSString *name = DMMSWAppName(b);
-            [(did == cur ? rows : others) addObject:DMSpotRow(@"w", name, DMSpotWhere(did, mini), name, nil, b, ^{ if (!DMSurfaceWindowForApp(b)) DMOpenApp(b); })];
+            // (a row of another desktop names that desktop: its window is shown THERE, as with Stage Manager above -- that desktop first, then the
+            //  window. Opening the app is another thing since 1.7.1 -- its window comes here unless Go to the App's Desktop is on, MSWAppDesk.h)
+            if (did == cur) [rows addObject:DMSpotRow(@"w", name, DMSpotWhere(did, mini), name, nil, b, ^{ if (!DMSurfaceWindowForApp(b)) DMOpenApp(b); })];
+            else [others addObject:DMSpotRow(@"w", name, DMSpotWhere(did, mini), name, nil, b, ^{ DMSpotOnDesktopThen(did, ^{ DMSurfaceWindowForApp(b); }); })];
         }
         if (DMMSWMulti()) for (NSString *b in [[gMSWWinDesk allKeys] sortedArrayUsingSelector:@selector(compare:)]) {   // (closed by iPadOS while away: it comes back with its desktop)
             if ([seen containsObject:b] || gMSWWinDesk[b].integerValue == cur || DMMSWElsewhereIndex(b) == NSNotFound) continue;
             [seen addObject:b];
             NSString *name = DMMSWAppName(b);
-            [others addObject:DMSpotRow(@"w", name, DMSpotWhere(gMSWWinDesk[b].integerValue, NO), name, nil, b, ^{ if (!DMSurfaceWindowForApp(b)) DMOpenApp(b); })];
+            NSInteger did = gMSWWinDesk[b].integerValue;
+            [others addObject:DMSpotRow(@"w", name, DMSpotWhere(did, NO), name, nil, b, ^{ DMSpotOnDesktopThen(did, ^{ DMSurfaceWindowForApp(b); }); })];   // (its desktop opens it again: DMMSWRelaunchClosed)
         }
     }
     // Finder's (native) windows: this desktop's, then the others'

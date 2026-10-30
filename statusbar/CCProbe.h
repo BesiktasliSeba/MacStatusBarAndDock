@@ -1,7 +1,9 @@
-// CCProbe.h -- DEBUG BUILDS ONLY (included under #if DEBUG): what iPadOS's Control Center module repositories hold, what 18's "Add a Control"
-// gallery hands to the add sheet, and a few read-only walkers used to find out how a module of ours can be offered there (1.6.0 research).
-// Nothing here changes what SpringBoard does: the hooks log and return the original answer.
-static NSHashTable *gCCPRepos;
+// CCProbe.h -- DEBUG BUILDS ONLY (included under #if DEBUG): read-only walkers for Control Center, run only when a test asks for them (the
+// ivpath_, protomethods_, ccopen_, ccsizes and ccsettings triggers). Nothing here is hooked.
+// (Until 1.7.1 this file also hooked Control Center at every start of a debug build -- its module repositories, 18's "Add a Control" gallery, the
+// module icon elements and instances, and CCUIGridSizeClassForSBHIconGridSizeClass -- for the 1.6.0 RAM & CPU module research, which is done
+// (common/CCModuleRegister.h). The last of those hooks passed one argument to a function that takes two, and iPadOS 18 dropped the tiles of
+// Control Center's full-page modules -- KT's Now Playing and Connectivity pages, A12Z, 30 Oct. Debug builds run on KT's iPads, so the hooks went.)
 static NSString *DMCCPShort(id o, NSUInteger max) {
     NSString *d = [o description] ?: @"(nil)";
     d = [[d componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]] componentsJoinedByString:@" "];
@@ -17,75 +19,6 @@ static id DMCCPIvar(id obj, NSString *name) {   // (an object ivar by its exact 
         return object_getIvar(obj, iv);
     }
     return nil;
-}
-static void DMCCPLogRepo(id repo, NSString *why) {
-    NSArray *urls = DMCCPIvar(repo, @"_directoryURLs");
-    NSSet *allowed = DMCCPIvar(repo, @"_allowedModuleIdentifiers"), *loadable = DMCCPIvar(repo, @"_loadableModuleIdentifiers"), *available = DMCCPIvar(repo, @"_availableModuleIdentifiers");
-    NSDictionary *all = DMCCPIvar(repo, @"_allModuleMetadataByIdentifier");
-    Ivar ig = class_getInstanceVariable(object_getClass(repo), "_ignoreAllowedList");
-    BOOL ignore = ig ? *(BOOL *)((uint8_t *)(__bridge void *)repo + ivar_getOffset(ig)) : NO;
-    NSMutableArray *third = [NSMutableArray array];
-    for (NSString *k in all) if (![k hasPrefix:@"com.apple."]) [third addObject:k];
-    DMLog([NSString stringWithFormat:@"[ccprobe] repository %p (%@): dirs %@; allowed %lu, ignore allowed list %d; all %lu (not Apple's: %@); available %lu; loadable %lu (MemoryMagic %d)",
-        repo, why, [[urls valueForKey:@"path"] componentsJoinedByString:@", "], (unsigned long)allowed.count, ignore, (unsigned long)all.count, [third componentsJoinedByString:@","],
-        (unsigned long)available.count, (unsigned long)loadable.count, [loadable containsObject:@"com.sop.MemoryMagic"]]);
-}
-static id (*gCCPOrigRepoInit)(id, SEL, NSArray *, NSSet *);
-static id DMCCPRepoInit(id self, SEL _cmd, NSArray *urls, NSSet *allowed) {
-    id r = gCCPOrigRepoInit(self, _cmd, urls, allowed);
-    if (!gCCPRepos) gCCPRepos = [NSHashTable weakObjectsHashTable];
-    if (r) [gCCPRepos addObject:r];
-    NSArray *stack = [NSThread callStackSymbols];
-    DMLog([NSString stringWithFormat:@"[ccprobe] repository %p made: dirs %@, allowed %lu; called from %@", r, [[urls valueForKey:@"path"] componentsJoinedByString:@", "], (unsigned long)allowed.count,
-        DMCCPShort([[stack subarrayWithRange:NSMakeRange(1, MIN((NSUInteger)6, stack.count - 1))] componentsJoinedByString:@" | "], 700)]);
-    return r;
-}
-// The gallery (ControlCenterUIServices.ControlsGalleryManager, Swift with @objc delegate methods): what it gives SpringBoardHome's add sheet.
-static id (*gCCPOrigCollections)(id, SEL, id);
-static id DMCCPCollections(id self, SEL _cmd, id mgr) {
-    id r = gCCPOrigCollections(self, _cmd, mgr);
-    NSArray *cols = [r isKindOfClass:[NSArray class]] ? r : nil;
-    DMLog([NSString stringWithFormat:@"[ccprobe] gallery collections: %lu (%@)", (unsigned long)cols.count, NSStringFromClass([r class])]);
-    for (id c in cols) {
-        NSArray *ds = [c respondsToSelector:NSSelectorFromString(@"widgetDescriptors")] ? DMCall(c, @"widgetDescriptors") : nil;
-        id first = ds.firstObject;
-        SEL pgs = NSSelectorFromString(@"preferredGallerySizeClass");
-        if ([NSStringFromClass([first class]) isEqualToString:@"CCUIModuleIconElement"] && [first respondsToSelector:pgs]) {
-            // (an integer -- the size class number --, never an object: read through its signature; reading it as an object crashed SpringBoard twice)
-            NSMethodSignature *sig = [first methodSignatureForSelector:pgs];
-            const char *rt = sig.methodReturnType;
-            NSString *pref = rt && rt[0] == '@' ? [NSString stringWithFormat:@"%@", ((id (*)(id, SEL))objc_msgSend)(first, pgs)]
-                : (sig.methodReturnLength == 8 ? [NSString stringWithFormat:@"%lld", ((long long (*)(id, SEL))objc_msgSend)(first, pgs)] : [NSString stringWithFormat:@"(type %s)", rt]);
-            NSString *mid = [first respondsToSelector:NSSelectorFromString(@"moduleIdentifier")] ? DMCall(first, @"moduleIdentifier") : @"?";
-            if ([mid hasPrefix:@"com.besiktasliseba"] || [mid isEqualToString:@"com.apple.FocusUIModule"] || [mid isEqualToString:@"jp.dcsyhi.cczetsu"] || [mid isEqualToString:@"com.apple.control-center.FlashlightModule"])
-                DMLog([NSString stringWithFormat:@"[ccprobe]   element %@ preferred gallery size %@", mid, pref]);
-        }
-        DMLog([NSString stringWithFormat:@"[ccprobe]   %@ id %@ type %@ container %@ vendor %@: %lu descriptors, first %@", NSStringFromClass([c class]),
-            DMCCPIvar(c, @"_collectionIdentifier"), DMCCPIvar(c, @"_typeIdentifier"), DMCCPIvar(c, @"_containerName"), DMCCPIvar(c, @"_vendorName"), (unsigned long)ds.count,
-            ds.count ? [NSString stringWithFormat:@"%@: %@", NSStringFromClass([ds.firstObject class]), DMCCPShort(ds.firstObject, 400)] : @"-"]);
-    }
-    return r;
-}
-static BOOL (*gCCPOrigSupported)(id, SEL, id, id);
-static BOOL DMCCPSupported(id self, SEL _cmd, id mgr, id descriptor) {
-    BOOL r = gCCPOrigSupported(self, _cmd, mgr, descriptor);
-    static int n = 0;
-    if (n++ < 40) DMLog([NSString stringWithFormat:@"[ccprobe] gallery: descriptor %@ supported %d: %@", NSStringFromClass([descriptor class]), r, DMCCPShort(descriptor, 300)]);
-    return r;
-}
-static void DMCCProbeInit(void) {
-    Class rc = objc_getClass("CCSModuleRepository");
-    SEL ri = NSSelectorFromString(@"_initWithDirectoryURLs:allowedModuleIdentifiers:");
-    if (rc && class_getInstanceMethod(rc, ri)) MSHookMessageEx(rc, ri, (IMP)DMCCPRepoInit, (IMP *)&gCCPOrigRepoInit);
-    Class g = objc_getClass("ControlCenterUIServices.ControlsGalleryManager");
-    SEL cs = NSSelectorFromString(@"customApplicationWidgetCollectionsForAddWidgetSheetConfigurationManager:"), ss = NSSelectorFromString(@"addWidgetSheetConfigurationManager:isDescriptorSupported:");
-    if (g && class_getInstanceMethod(g, cs)) MSHookMessageEx(g, cs, (IMP)DMCCPCollections, (IMP *)&gCCPOrigCollections);
-    if (g && class_getInstanceMethod(g, ss)) MSHookMessageEx(g, ss, (IMP)DMCCPSupported, (IMP *)&gCCPOrigSupported);
-    DMLog([NSString stringWithFormat:@"[ccprobe] installed (repository %d, gallery manager %d)", objc_getClass("CCSModuleRepository") != nil, g != nil]);
-}
-static void DMCCProbeRepos(void) {
-    for (id r in gCCPRepos.allObjects) DMCCPLogRepo(r, @"now");
-    if (!gCCPRepos.count) DMLog(@"[ccprobe] no repository seen since the start");
 }
 // ivpath_<Class>|<ivar or getter>.<...>: walk from the class's sharedInstance (or the class) by exact ivar names, else zero-argument getters
 static void DMCCProbeIvarPath(NSString *spec) {
@@ -127,33 +60,6 @@ static void DMCCProbeProtocol(NSString *name) {
     free(ps);
     DMLog(out);
 }
-// The gallery's module entries: every CCUIModuleIconElement made (module, its sizes) and who made it; and module instances made or refused.
-static id (*gCCPOrigIconInit)(id, SEL, id, id, id, id, BOOL);
-static id DMCCPIconInit(id self, SEL _cmd, id uid, id module, id container, id sizes, BOOL expands) {
-    id r = gCCPOrigIconInit(self, _cmd, uid, module, container, sizes, expands);
-    NSArray *stack = [NSThread callStackSymbols];
-    DMLog([NSString stringWithFormat:@"[ccprobe] icon element %@ (container %@): sizes %@ %@ expands %d; from %@", module, container, NSStringFromClass([sizes class]), DMCCPShort(sizes, 200), expands,
-        DMCCPShort([[stack subarrayWithRange:NSMakeRange(1, MIN((NSUInteger)4, stack.count - 1))] componentsJoinedByString:@" | "], 500)]);
-    return r;
-}
-static id (*gCCPOrigInstantiate)(id, SEL, id, id);
-static id DMCCPInstantiate(id self, SEL _cmd, id metadata, id uid) {
-    id r = gCCPOrigInstantiate(self, _cmd, metadata, uid);
-    NSString *mid = [metadata respondsToSelector:@selector(moduleIdentifier)] ? [metadata performSelector:@selector(moduleIdentifier)] : @"?";
-    if (![mid hasPrefix:@"com.apple."]) DMLog([NSString stringWithFormat:@"[ccprobe] module instance for %@: %@ (module %@, prototype size %@)", mid, r ? NSStringFromClass([r class]) : @"NONE",
-        r && [r respondsToSelector:@selector(module)] ? NSStringFromClass([[r performSelector:@selector(module)] class]) : @"-",
-        r && [r respondsToSelector:NSSelectorFromString(@"prototypeModuleSize")] ? @"(struct)" : @"-"]);
-    return r;
-}
-static void DMCCProbeInit2(void) {
-    Class ie = objc_getClass("CCUIModuleIconElement");
-    SEL is = NSSelectorFromString(@"initWithUniqueIdentifier:moduleIdentifier:containerBundleIdentifier:standardSupportedGridSizeClasses:expandsGridSizeClassesForAccessibility:");
-    if (ie && class_getInstanceMethod(ie, is)) MSHookMessageEx(ie, is, (IMP)DMCCPIconInit, (IMP *)&gCCPOrigIconInit);
-    Class mm = objc_getClass("CCUIModuleInstanceManager");
-    SEL ms = NSSelectorFromString(@"_instantiateModuleWithMetadata:uniqueIdentifier:");
-    if (mm && class_getInstanceMethod(mm, ms)) MSHookMessageEx(mm, ms, (IMP)DMCCPInstantiate, (IMP *)&gCCPOrigInstantiate);
-    DMLog([NSString stringWithFormat:@"[ccprobe] icon element hook %d, instance hook %d", ie && class_getInstanceMethod(ie, is), mm && class_getInstanceMethod(mm, ms)]);
-}
 // ccsizes: every module instance Control Center has made: its class, its 18 grid size classes (supportedGridSizeClasses, a bit mask) and its
 // prototype layout size; and the grid size class its content view controller has now
 static void DMCCProbeSizes(void) {
@@ -184,30 +90,6 @@ static void DMCCProbeSizes(void) {
         NSString *grid = [cvc respondsToSelector:gs] ? [NSString stringWithFormat:@"%ld", ((long (*)(id, SEL))objc_msgSend)(cvc, gs)] : @"-";
         DMLog([NSString stringWithFormat:@"[ccsizes] %@ (%@): supported %@, prototype %lux%lu, content %@ grid %@", mid, mod ? NSStringFromClass([mod class]) : @"-", mask, proto.w, proto.h, cvc ? NSStringFromClass([cvc class]) : @"-", grid]);
     }
-}
-// CCUIGridSizeClassForSBHIconGridSizeClass (ControlCenterUIServices): what SpringBoardHome's grid size class is when Control Center turns it into
-// its own -- 18's gallery search threw in it for RAM & CPU (SpringBoard crashed, 22:20). Debug only: logged, and an exception is caught and logged
-// (answer: smallWide) instead of taking SpringBoard down, so the cause can be read.
-static long long (*gCCPOrigGridConv)(void *);
-static long long DMCCPGridConv(void *arg) {
-    uintptr_t raw = (uintptr_t)arg;
-    NSString *what = raw > 0x100000000ull ? [NSString stringWithFormat:@"%@ %@", NSStringFromClass(object_getClass((__bridge id)arg)), DMCCPShort((__bridge id)arg, 120)] : [NSString stringWithFormat:@"raw %lu", (unsigned long)raw];
-    long long r = -1;
-    @try { r = gCCPOrigGridConv(arg); }
-    @catch (NSException *e) {
-        DMLog([NSString stringWithFormat:@"[ccprobe] grid size conversion THREW for %@: %@ -- %@; from %@", what, e.name, e.reason,
-            DMCCPShort([[[NSThread callStackSymbols] subarrayWithRange:NSMakeRange(1, 6)] componentsJoinedByString:@" | "], 900)]);
-        return 2;
-    }
-    static int n = 0;
-    if (n++ < 60) DMLog([NSString stringWithFormat:@"[ccprobe] grid size conversion %@ -> %lld", what, r]);
-    return r;
-}
-static void DMCCProbeInit3(void) {
-    void *h = dlopen("/System/Library/PrivateFrameworks/ControlCenterUIServices.framework/ControlCenterUIServices", RTLD_LAZY | RTLD_NOLOAD);
-    void *f = h ? dlsym(h, "CCUIGridSizeClassForSBHIconGridSizeClass") : NULL;
-    if (f) MSHookFunction(f, (void *)DMCCPGridConv, (void **)&gCCPOrigGridConv);
-    DMLog([NSString stringWithFormat:@"[ccprobe] grid size conversion hook %d", f != NULL]);
 }
 // ccsettings: Control Center's module settings (CCUIModuleSettingsManager -moduleSettingsForModuleIdentifier:) for a few modules, ours among them
 static void DMCCProbeSettings(void) {

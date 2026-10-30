@@ -158,9 +158,12 @@ static NSArray<NSArray *> *DMMSWSMPlan(NSArray<NSArray *> *wins, NSArray *extra,
 //  - DMMSWSMCapMerge: a removed desktop's windows shown with its neighbour's, more than one desktop holds: MinimizeOldest only (today).
 //  - DMMSWSMCapDrop: a window dragged onto a full desktop in the view: Refuse (today: the thumbnail shakes and goes back) or MinimizeOldest (it
 //    goes there; that desktop's oldest window is minimized, said by a notice).
+//  - DMMSWSMCapBring (1.7.1): an app opened onto the full desktop whose window is on another desktop, which would come here (MSWAppDesk.h's Bring):
+//    ItsDesktop (today: its window stays where it is and its desktop comes, as with Go to the App's Desktop on; a short notice says why -- the
+//    window has a desktop with room already) or MinimizeOldest (it comes; the oldest window here is minimized, said by a notice).
 // minimizedOne: the window was minimized and there is one desktop (DMMSWSMCapOpen only).
-typedef NS_ENUM(int, DMMSWSMCapCase) { DMMSWSMCapOpen, DMMSWSMCapMerge, DMMSWSMCapDrop };
-typedef NS_ENUM(int, DMMSWSMCapWay) { DMMSWSMCapNewDesktop, DMMSWSMCapMinimizeOldest, DMMSWSMCapRefuse };
+typedef NS_ENUM(int, DMMSWSMCapCase) { DMMSWSMCapOpen, DMMSWSMCapMerge, DMMSWSMCapDrop, DMMSWSMCapBring };
+typedef NS_ENUM(int, DMMSWSMCapWay) { DMMSWSMCapNewDesktop, DMMSWSMCapMinimizeOldest, DMMSWSMCapRefuse, DMMSWSMCapItsDesktop };
 static DMMSWSMCapWay DMMSWSMAtCap(DMMSWSMCapCase what, BOOL minimizedOne) {
     switch (what) {
         case DMMSWSMCapOpen:
@@ -168,6 +171,7 @@ static DMMSWSMCapWay DMMSWSMAtCap(DMMSWSMCapCase what, BOOL minimizedOne) {
             return gMSWDesks.count < kMSWMaxDesks ? DMMSWSMCapNewDesktop : DMMSWSMCapMinimizeOldest;
         case DMMSWSMCapMerge: return DMMSWSMCapMinimizeOldest;
         case DMMSWSMCapDrop: return DMMSWSMCapRefuse;
+        case DMMSWSMCapBring: return DMMSWSMCapItsDesktop;
     }
     return DMMSWSMCapMinimizeOldest;
 }
@@ -841,6 +845,31 @@ static void DMMSWSMFitJoin(NSString *b, NSInteger toId) {   // (b: the window's 
     NSString *what = [free containsObject:b] ? @"stays free (No Fit)" : [slots[b] isEqualToString:@"fill"] ? @"is its only tiled window: it fills the space there" : slots[b] ? [NSString stringWithFormat:@"joins in front (%lu tiles)", (unsigned long)slots.count] : @"is its only window (no tiles)";
     DMLog([NSString stringWithFormat:@"[macswitcher] Fit to Window on %@: %@ %@", DMMSWDeskName([gMSWDesks indexOfObject:@(toId)]), DMSMKeyText(b), what]);
 }
+// Fit to Window per desktop, a window brought from another desktop to the one on screen (1.7.1, DMMSWSMJoin / DMMSWSMAskedBringHere): it leaves
+// that desktop's arrangement, whose other tiles close up in their order as when a tiled window leaves (DMFitPlanAfterLeave -- the other engines'
+// DMMSWFitWithout), and here it is a window that joins the stage on screen (the engine's Fit tick tiles the new set); left out of Fit there (No
+// Fit), it is left out here too.
+static void DMMSWSMFitBringHere(NSString *k, NSInteger fromId) {   // (k: the window's key)
+    NSString *fk = [@(fromId) stringValue];
+    NSDictionary *st = [gMSWFit[fk] isKindOfClass:[NSDictionary class]] ? gMSWFit[fk] : nil;
+    if (!st || !k.length) return;
+    NSDictionary *was = [st[@"smslots"] isKindOfClass:[NSDictionary class]] ? st[@"smslots"] : @{};
+    NSMutableArray *free = [st[@"smfree"] isKindOfClass:[NSArray class]] ? [st[@"smfree"] mutableCopy] : [NSMutableArray array];
+    BOOL wasFree = [free containsObject:k];
+    [free removeObject:k];
+    NSDictionary *slots = was;
+    if (was[k]) {
+        NSArray *names = DMDefaultSlotNames(MIN((NSUInteger)4, was.count));
+        NSMutableArray<NSString *> *left = [NSMutableArray array];
+        for (NSString *o in [[was allKeys] sortedArrayUsingComparator:^NSComparisonResult(NSString *x, NSString *y) {
+            NSUInteger ix = [names indexOfObject:was[x]], iy = [names indexOfObject:was[y]];
+            return ix < iy ? NSOrderedAscending : (ix > iy ? NSOrderedDescending : [x compare:y]);
+        }]) if ([o isKindOfClass:[NSString class]] && ![o isEqualToString:k]) [left addObject:o];
+        slots = left.count ? DMFitPlanAfterLeave(left) : @{};
+    }
+    gMSWFit[fk] = @{@"smslots": slots, @"smfree": free};
+    if (wasFree && DMFitEnabled()) { if (!gSMFreeWindows) gSMFreeWindows = [NSMutableSet set]; [gSMFreeWindows addObject:k]; }
+}
 static void DMMSWSMMoveRecord(NSString *b, NSInteger toId) {   // (b: the dragged window's key -- the view's tile for a card, DMMSWSMCollect)
     if (!b.length || ![gMSWDesks containsObject:@(toId)]) return;
     // (a full desktop took the drop: what DMMSWSMAtCap says -- refused before it gets here today; MinimizeOldest: that desktop's oldest window)
@@ -967,21 +996,37 @@ static BOOL DMMSWSMJoin(id ctx, id act, NSString *key) {   // (key: the window o
     DMSMSetMinimized(key, NO);   // (opened again: no longer a minimized window; it comes onto the current desktop, as the engine's restore does)
     NSInteger cur = DMMSWCurId(), target = cur;
     NSArray<NSArray *> *wins = nil;
-    // (the window's own desktop: the one it is recorded on, among the windows there -- a window key names that very window; an app key the app's
-    //  newest window, as the Dock's click activates the app on a Mac: one of its windows on the current desktop keeps it here, DMMSWSMElsewhere)
+    NSString *fullNote = nil;
+    NSArray *src = nil;   // (1.7.1: the window that comes here from its desktop, @[stage, item, attributes, key] as DMMSWSMDeskWindows lists it)
+    NSInteger srcFrom = 0;
+    // (the window on another desktop -- a window key names that very window; an app key the app's newest window, as the Dock's click activates the
+    //  app on a Mac: one of its windows on the current desktop keeps it here, DMMSWSMElsewhere. Where it opens is MSWAppDesk.h's answer (1.7.1, KT:
+    //  "it should come up on whichever desktop I am on"): that window comes HERE, in front, at its own place and size -- full screen it stays full
+    //  screen --, the rest of its desktop stays there (Bring); with Go to the App's Desktop on, its desktop comes with the window in front (Go), the
+    //  only way before. A full desktop here: DMMSWSMAtCap(DMMSWSMCapBring) -- today its desktop comes, with a notice.)
     if (!wasMinimized && !gMSWSwitching && DMMSWSMElsewhere(key)) {
-        long long best = LLONG_MIN;
+        NSMutableArray<NSDictionary *> *cands = [NSMutableArray array];
+        NSMutableArray<NSArray *> *found = [NSMutableArray array];   // (each candidate's @[its window, its desktop's windows])
         for (NSNumber *d in gMSWDesks) {
-            if (d.integerValue == cur) continue;
             NSArray *there = DMMSWSMDeskWindows(d.integerValue);
-            for (NSArray *w in there) if (DMMSWSMSameWindow(w[3], key) && DMSMAttrTimeOr(w[2], 0) > best) { best = DMSMAttrTimeOr(w[2], 0); target = d.integerValue; wins = there; }
+            for (NSArray *w in there) { [cands addObject:@{@"k": w[3], @"d": d, @"t": @(DMSMAttrTimeOr(w[2], 0))}]; [found addObject:@[w, there]]; }
         }
+        NSUInteger pick = NSNotFound;
+        DMMSWAppDeskWay way = DMMSWAppDeskDecide(cands, cur, key, gMSWGoToAppDesk, &pick);
+        NSInteger from = pick != NSNotFound ? [cands[pick][@"d"] integerValue] : 0;
+        if (way == DMMSWAppDeskBring && DMMSWSMDeskWindows(cur).count >= DMSMWindowCap() && DMMSWSMAtCap(DMMSWSMCapBring, NO) == DMMSWSMCapItsDesktop) {
+            way = DMMSWAppDeskGo;
+            fullNote = [NSString stringWithFormat:@"%@: %@ stays on %@.", DMMSWSMHoldsUpTo(DMMSWDeskName(gMSWCur)), DMMSWAppName(bundle), DMMSWDeskName([gMSWDesks indexOfObject:@(from)])];
+            DM_FEATURE_MARK("mac-switcher-bring-here-full");
+            DMLog([NSString stringWithFormat:@"[macswitcher] %@ is full (%lu windows): %@ stays on %@, which comes", DMMSWDeskName(gMSWCur), (unsigned long)DMSMWindowCap(), DMSMKeyText(key), DMMSWDeskName([gMSWDesks indexOfObject:@(from)])]);
+        }
+        if (way == DMMSWAppDeskGo) { target = from; wins = found[pick][1]; }
+        else if (way == DMMSWAppDeskBring) { src = found[pick][0]; srcFrom = from; }
     }
     if (!wins) wins = DMMSWSMDeskWindows(cur);
-    NSArray *mine = nil;   // (the window itself among them: that very window, or the app's newest -- wins are newest first)
-    for (NSArray *w in wins) if ([w[3] isEqualToString:key]) { mine = w; break; }
+    NSArray *mine = src;   // (the window itself: the one brought here, or among them -- that very window, or the app's newest; wins are newest first)
+    if (!mine) for (NSArray *w in wins) if ([w[3] isEqualToString:key]) { mine = w; break; }
     if (!mine) for (NSArray *w in wins) if (DMMSWSMSameWindow(w[3], key)) { mine = w; break; }
-    NSString *fullNote = nil;
     // (the desktop is full and the window not on it: DMMSWSMAtCap -- a new desktop for it; otherwise (MinimizeOldest) the plan below leaves the
     //  oldest out, minimized and said)
     if (!mine && wins.count >= DMSMWindowCap() && !gMSWSwitching && DMMSWSMAtCap(DMMSWSMCapOpen, NO) == DMMSWSMCapNewDesktop) {
@@ -1021,9 +1066,18 @@ static BOOL DMMSWSMJoin(id ctx, id act, NSString *key) {   // (key: the window o
         else { written = YES; with = plan.count - 1; DMSMCtxClearOtherRoles(ctx, plan); }   // (the plan is the desktop's whole stage: a launch from another stage on screen kept its extra windows)
     } else DMLog([NSString stringWithFormat:@"[macswitcher] %@ opens on %@ as Stage Manager opens it (a stage of its own)", DMSMKeyText(key), DMMSWDeskName(ti)]);
     if (written && !windowed && !mine && others.count) DMSMDismissOtherFullScreen(others.firstObject[0], key);
-    if (!written && others.count) return YES;   // (refused: Stage Manager's own launch; the tick records where its window lands)
+    if (written && src && others.count && DMSMAttrsFullScreen(src[2])) DMSMDismissOtherFullScreen(others.firstObject[0], rec);   // (full screen it comes: one full-screen app at a time)
+    // (refused: Stage Manager's own launch -- its last stage, the window's desktop, which the tick follows -- and the tick records where its window
+    //  lands; a window to bring here is left recorded where it is)
+    if (!written && (others.count || src)) return YES;
     gMSWWinDesk[rec] = @(target);
-    DMLog([NSString stringWithFormat:@"[macswitcher] %@ %@ %@ (%lu window(s) with it)", DMSMKeyText(rec), target != cur ? @"is on" : (mine ? @"comes forward on" : @"joins"), DMMSWDeskName(ti), (unsigned long)with]);
+    if (src) {
+        DMMSWSMFitBringHere(rec, srcFrom);
+        gMSWSMQuietUntil = CACurrentMediaTime() + 1.0;   // (the tick lets SpringBoard's transition land first)
+        DM_FEATURE_MARK("mac-switcher-bring-here");
+        DMLog([NSString stringWithFormat:@"[macswitcher] %@ opened: its window was on %@ -- it comes to %@ (Go to the App's Desktop is off)", DMSMKeyText(rec), DMMSWDeskName([gMSWDesks indexOfObject:@(srcFrom)]), DMMSWDeskName(ti)]);
+    }
+    DMLog([NSString stringWithFormat:@"[macswitcher] %@ %@ %@ (%lu window(s) with it)", DMSMKeyText(rec), target != cur ? @"is on" : (src ? @"comes to" : mine ? @"comes forward on" : @"joins"), DMMSWDeskName(ti), (unsigned long)with]);
     DMMSWSMLeftOut(left, DMMSWDeskName(ti));
     if (fullNote) DMMSWSMNotice(fullNote);
     if (target != cur) {
@@ -1150,6 +1204,67 @@ static BOOL DMMSWSMAskedFull(id ctx, NSArray<NSArray *> *asked, NSArray<NSString
     DM_FEATURE_MARK("mac-switcher-sm-asked-full-new-desktop");
     DMLog([NSString stringWithFormat:@"[macswitcher] %@ is full: %@ open%@ on a new desktop, %@ (SpringBoard's own transition)", fromName, [names componentsJoinedByString:@", "], fresh.count == 1 ? @"s" : @"", DMMSWDeskName(gMSWCur)]);
     DMMSWSMNotice([NSString stringWithFormat:@"%@: %@ opened on %@.", DMMSWSMHoldsUpTo(fromName), [names componentsJoinedByString:@", "], DMMSWDeskName(gMSWCur)]);
+    return YES;
+}
+
+// SpringBoard's own transition asks for a window of another desktop -- an App Switcher card: the roles it set name that window's stage, which is
+// that desktop's switch (SMDesktop.h DMSMJoinStageAsked, DMSMJoinOtherDesk). 1.7.1, as a launch (DMMSWSMJoin, MSWAppDesk.h): with Go to the App's
+// Desktop off, that window comes to the desktop on screen instead -- in front, at its own place and size (full screen it stays full screen) --, and
+// the rest of its stage stays on its desktop. The window: the one the transition activates, else the one window it asks for (16.7.7: an App
+// Switcher card activates none and names its stage's windows; a card of several windows is that desktop's stage, picked as a whole -- it comes,
+// as before). (Command-Tab is a launch on 16.7.7, no roles: DMMSWSMJoin.) The context becomes the desktop's whole stage, as for a full desktop's
+// new desktop (DMMSWSMAskedFull): SpringBoard's roles unset, our plan written, every other role emptied; a write that fails puts SpringBoard's roles
+// back. YES: written. NO: left as SpringBoard built it, that desktop comes (the switch on, a minimized window, a full desktop here --
+// DMMSWSMAtCap(DMMSWSMCapBring) --, the desktop on screen not settled, something unreadable). askedW / askedEntity: DMSMJoinStageAsked's.
+static BOOL DMMSWSMAskedBringHere(id ctx, NSArray<NSArray *> *asked, NSArray<NSDictionary *> *askedW, NSDictionary<NSString *, id> *askedEntity, id identity) {
+    if (!gMSWOn || !DMSMEngine() || !DMMSWMulti() || gMSWGoToAppDesk || gMSWSwitching) return NO;
+    id act = [ctx respondsToSelector:NSSelectorFromString(@"activatingEntity")] ? DMCall(ctx, @"activatingEntity") : nil;
+    if (!DMSMIsEntity(act) && askedW.count == 1) act = askedEntity[askedW.firstObject[@"w"]];   // (the one window an App Switcher card names)
+    NSString *bundle = DMSMIsEntity(act) ? DMCall(DMCall(act, @"application"), @"bundleIdentifier") : nil;
+    if (![bundle isKindOfClass:[NSString class]] || !bundle.length) return NO;
+    NSString *key = DMSMEntityKey(act) ?: bundle;   // (the window: its scene)
+    if (DMSMIsMinimized(key) || !DMMSWSMElsewhere(key)) return NO;
+    NSInteger cur = DMMSWCurId();
+    NSMutableArray<NSDictionary *> *cands = [NSMutableArray array];
+    NSMutableArray<NSArray *> *found = [NSMutableArray array];
+    for (NSNumber *d in gMSWDesks) for (NSArray *w in DMMSWSMDeskWindows(d.integerValue)) { [cands addObject:@{@"k": w[3], @"d": d, @"t": @(DMSMAttrTimeOr(w[2], 0))}]; [found addObject:w]; }
+    NSUInteger pick = NSNotFound;
+    if (DMMSWAppDeskDecide(cands, cur, key, NO, &pick) != DMMSWAppDeskBring || pick == NSNotFound) return NO;
+    NSArray *src = found[pick];
+    NSInteger from = [cands[pick][@"d"] integerValue];
+    NSString *fromName = DMMSWDeskName([gMSWDesks indexOfObject:@(from)]), *hereName = DMMSWDeskName(gMSWCur);
+    NSArray<NSArray *> *here = DMMSWSMAskedDeskWindows();   // (the desktop on screen's windows, newest first; nil: not settled)
+    if (!here) return NO;
+    if (here.count >= DMSMWindowCap() && DMMSWSMAtCap(DMMSWSMCapBring, NO) == DMMSWSMCapItsDesktop) {
+        DM_FEATURE_MARK("mac-switcher-bring-here-full");
+        DMLog([NSString stringWithFormat:@"[macswitcher] %@ is full (%lu windows): %@ stays on %@, which comes (SpringBoard's own transition)", hereName, (unsigned long)DMSMWindowCap(), DMSMKeyText(key), fromName]);
+        DMMSWSMNotice([NSString stringWithFormat:@"%@: %@ stays on %@.", DMMSWSMHoldsUpTo(hereName), DMMSWAppName(bundle), fromName]);
+        return NO;
+    }
+    long long newest = 0;
+    for (NSArray *w in here) newest = MAX(newest, DMSMAttrTimeOr(w[2], 0));
+    id attrs = DMSMAttrWithLastInteractionTime(src[2], newest + 1) ?: src[2];   // (its own place, in front)
+    NSMutableArray<NSString *> *left = [NSMutableArray array];
+    NSArray<NSArray *> *plan = DMSMPlanFitted(identity, DMMSWSMPlan(here, @[act, attrs, key], left));   // (every window inside the desktop as it is now)
+    NSString *bad = nil;
+    if (!plan || !DMSMPlanValid(plan, DMSMNewWindowRoles(), &bad)) { DMSMAPIFail(@"Mac Switcher: a window brought here (SpringBoard's own transition)", [NSString stringWithFormat:@"%@: plan refused, its desktop comes (%@)", DMSMKeyText(key), bad ?: @"a part missing"]); return NO; }
+    if (!DMSMCtxCanWrite(ctx)) return NO;
+    SEL setE = NSSelectorFromString(@"setEntity:forLayoutRole:");
+    void (^putBack)(void) = ^{ for (NSArray *a in asked) @try { ((void (*)(id, SEL, id, long long))objc_msgSend)(ctx, setE, a[1], [a[0] longLongValue]); } @catch (id y) {} };
+    @try { for (NSArray *a in asked) ((void (*)(id, SEL, id, long long))objc_msgSend)(ctx, setE, nil, [a[0] longLongValue]); }
+    @catch (NSException *x) { putBack(); DMSMAPIFail(@"Mac Switcher: a window brought here (SpringBoard's own transition)", [NSString stringWithFormat:@"unsetting SpringBoard's roles: %@ (put back)", x.reason ?: @"exception"]); return NO; }
+    if (!DMSMWritePlan(ctx, plan, act)) { putBack(); DMLog([NSString stringWithFormat:@"[macswitcher] %@: writing the plan failed -- SpringBoard's roles put back, %@ comes", DMSMKeyText(key), fromName]); return NO; }
+    DMSMCtxClearOtherRoles(ctx, plan);   // (the desktop's whole stage: nothing of the window's own stage comes with it)
+    NSString *rec = !DMSMKeyIsApp(src[3]) ? src[3] : key;
+    DMSMSetMinimized(rec, NO);
+    gMSWWinDesk[rec] = @(cur);
+    DMMSWSMFitBringHere(rec, from);
+    if (here.count && DMSMAttrsFullScreen(src[2])) DMSMDismissOtherFullScreen(here.firstObject[0], rec);   // (full screen it comes: one full-screen app at a time)
+    gMSWSMQuietUntil = CACurrentMediaTime() + 1.0;   // (the tick lets SpringBoard's transition land first)
+    DMMSWSave();
+    DM_FEATURE_MARK("mac-switcher-bring-here");
+    DMLog([NSString stringWithFormat:@"[macswitcher] %@ asked for (SpringBoard's own transition): its window was on %@ -- it comes to %@ (Go to the App's Desktop is off; %lu window(s) with it)", DMSMKeyText(rec), fromName, hereName, (unsigned long)(plan.count - 1)]);
+    DMMSWSMLeftOut(left, hereName);
     return YES;
 }
 
@@ -1322,9 +1437,9 @@ static BOOL DMMSWSMTrigger(NSString *cmd) {
         dispatch_async(dispatch_get_main_queue(), step);
     }
     else if ([cmd hasPrefix:@"mswsm_note"]) DMMSWSMNotice([NSString stringWithFormat:@"%@: Clock was minimized.", DMMSWSMHoldsUpTo(@"Desktop 2")]);
-    else if ([cmd isEqualToString:@"mswsm_cap"])   // (the full-desktop answers, DMMSWSMAtCap: 0 a new desktop, 1 the oldest minimized, 2 refused)
-        DMLog([NSString stringWithFormat:@"[macswitcher] a desktop holds up to %lu windows; full: open %d (minimized, one desktop %d), merge %d, drop %d", (unsigned long)DMSMWindowCap(),
-            DMMSWSMAtCap(DMMSWSMCapOpen, NO), DMMSWSMAtCap(DMMSWSMCapOpen, YES), DMMSWSMAtCap(DMMSWSMCapMerge, NO), DMMSWSMAtCap(DMMSWSMCapDrop, NO)]);
+    else if ([cmd isEqualToString:@"mswsm_cap"])   // (the full-desktop answers, DMMSWSMAtCap: 0 a new desktop, 1 the oldest minimized, 2 refused, 3 its own desktop comes)
+        DMLog([NSString stringWithFormat:@"[macswitcher] a desktop holds up to %lu windows; full: open %d (minimized, one desktop %d), merge %d, drop %d, bring %d", (unsigned long)DMSMWindowCap(),
+            DMMSWSMAtCap(DMMSWSMCapOpen, NO), DMMSWSMAtCap(DMMSWSMCapOpen, YES), DMMSWSMAtCap(DMMSWSMCapMerge, NO), DMMSWSMAtCap(DMMSWSMCapDrop, NO), DMMSWSMAtCap(DMMSWSMCapBring, NO)]);
     else if ([cmd isEqualToString:@"mswsm_pics"] || [cmd isEqualToString:@"mswsm_drop"]) {   // the pictures kept (and mswsm_drop: all let go, to measure their memory)
         DMLog([NSString stringWithFormat:@"[macswitcher] pictures: %lu desktops (%@), %lu windows, Home %d", (unsigned long)gMSWShots.count, [[gMSWShots allKeys] componentsJoinedByString:@","], (unsigned long)gMSWWinShots.count, gMSWSMHomeShot != nil]);
         if ([cmd isEqualToString:@"mswsm_drop"]) { [gMSWShots removeAllObjects]; [gMSWShotSet removeAllObjects]; [gMSWWinShots removeAllObjects]; gMSWSMHomeShot = nil; DMLog(@"[macswitcher] pictures: all let go"); }

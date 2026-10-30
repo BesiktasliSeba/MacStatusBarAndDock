@@ -13,7 +13,12 @@
 // nothing, 29 Oct. The read is cached and done again only when SpringBoard says the set changed or the file is not the one read last, so a prewarm
 // costs one stat and one set lookup.
 //
-// Kill switch. SpringBoard publishes an "on" state; off (or, in debug builds, the file /tmp/msb-noprewarmblock) and this part never refuses anything.
+// On and off. The quit set's file is the switch: there, its apps are refused; gone (Use Stock Status Bar, a SpringBoard without our status bar
+// part, the package removed -- common/PrewarmQuitSet.h), nothing is. So this part decides from the first prewarm on, also when dasd starts before
+// SpringBoard's status bar part runs (right after an install launchd starts dasd again with the new SpringBoard): until 1.7.1 it waited for
+// SpringBoard to publish an "on" state at its start, and the prewarms dasd asked for before that went through (M1, 30 Oct: an app the user had
+// quit "allowed (block off)" right after an install; with 1.7.1 that same first prewarm was refused). In debug builds the file
+// /tmp/msb-noprewarmblock switches it off as well.
 //
 // Safety. dasd is not SpringBoard: a crash here only restarts dasd, it does not take the interface down. Still, so a fault here can never loop, this
 // part counts its own starts: three starts within 60 s (a crash loop) and it switches itself off for good (a flag the next install clears), doing
@@ -35,7 +40,6 @@
 #define kPrewarmDomain   CFSTR("com.besiktasliseba.macstatusbar.prewarm")
 #define kQuitSetKey      CFSTR("quitSet")
 #define kPrewarmChanged  "com.besiktasliseba.macstatusbar.prewarm.changed"   // posted by SpringBoard when the set changes
-#define kPrewarmEnabled  "com.besiktasliseba.macstatusbar.prewarm.enabled"   // state: 1 = block on (SpringBoard publishes it; unset/0 = off)
 
 #define kStartsFile   "/var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-PrewarmBlockStarts.txt"
 #define kDisabledFile "/var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-PrewarmBlockOff.txt"
@@ -85,12 +89,14 @@ static NSSet<NSString *> *gQuitSet = nil;   // (under gQuitLock)
 static BOOL gQuitSetStale = YES;            // (under gQuitLock)
 static MSBDPrewarmFileStamp gQuitFileStamp;   // (under gQuitLock: the file as it was when it was read)
 static void MarkQuitSetStale(void) { os_unfair_lock_lock(&gQuitLock); gQuitSetStale = YES; os_unfair_lock_unlock(&gQuitLock); }
-// Whether the quit set holds this app; the set is read again first when it changed (one small file read, under the lock: a change is rare).
-static BOOL QuitSetContains(NSString *bundleID) {
+// Whether the quit set holds this app (*kept: its file is there, so SpringBoard keeps a set -- the block is on); the set is read again first when
+// it changed (one small file read, under the lock: a change is rare).
+static BOOL QuitSetContains(NSString *bundleID, BOOL *kept) {
     NSString *refreshed = nil;
     os_unfair_lock_lock(&gQuitLock);
     struct stat st;
     MSBDPrewarmFileStamp now = MSBDPrewarmStampOf(stat(kMSBDPrewarmQuitSetFile, &st) == 0 ? &st : NULL);
+    *kept = now.present;
     if (gQuitSetStale || MSBDPrewarmStampChanged(gQuitFileStamp, now)) {
         gQuitSetStale = NO;
         gQuitFileStamp = now;
@@ -121,14 +127,6 @@ static void DebugReadsAtStart(void) {
 }
 #endif
 
-// (its token is registered once, by the constructor before the hooks are armed: the prewarm calls come on dasd's queues, two at once, and a token
-//  registered on first use could be registered twice)
-static int gEnabledToken = 0;
-static BOOL BlockOn(void) {   // the master switch SpringBoard publishes (off for a new install until SpringBoard turns it on)
-    uint64_t state = 0;
-    return gEnabledToken != 0 && notify_get_state(gEnabledToken, &state) == NOTIFY_STATUS_OK && state == 1;
-}
-
 // ---- the two hooked calls ------------------------------------------------------------------------------------
 // dasd asks _APRSPrewarmInterface for a prewarm launch two ways: prewarmLaunchAppFromBundleID: (the direct launch) and closureBuildLaunchAppFromBundleID:
 // (it builds a closure that launches the app later, used for the boot/opportunistic prewarms). Both are refused for the quit set -- a quit app that
@@ -138,12 +136,13 @@ static BOOL BlockOn(void) {   // the master switch SpringBoard publishes (off fo
 static BOOL gArmed = NO;
 static BOOL DMPrewarmRefuses(NSString *bundleID, const char *where) {
     if (!gArmed || ![bundleID isKindOfClass:[NSString class]] || ![(NSString *)bundleID length]) return NO;
-    if (DebugKillSwitch() || !BlockOn()) { Debug([NSString stringWithFormat:@"[%s] %@ allowed (block off)", where, bundleID]); return NO; }
-    if (QuitSetContains(bundleID)) {
+    if (DebugKillSwitch()) { Debug([NSString stringWithFormat:@"[%s] %@ allowed (block off: the debug switch)", where, bundleID]); return NO; }
+    BOOL kept = NO;
+    if (QuitSetContains(bundleID, &kept)) {
         Debug([NSString stringWithFormat:@"[%s] %@ REFUSED (the user quit it; not prewarmed until they open it)", where, bundleID]);
         return YES;
     }
-    Debug([NSString stringWithFormat:@"[%s] %@ allowed", where, bundleID]);
+    Debug([NSString stringWithFormat:kept ? @"[%s] %@ allowed" : @"[%s] %@ allowed (block off: no quit set kept -- its file is not there)", where, bundleID]);
     return NO;
 }
 static id (*o_PrewarmLaunch)(id, SEL, id);
@@ -198,7 +197,6 @@ static BOOL SelfDisabledByCrashLoop(void) {
     MSHookMessageEx(c, sel, (IMP)DMPrewarmLaunch, (IMP *)&o_PrewarmLaunch);
     if (DMPrewarmShapeOK(mc)) MSHookMessageEx(c, closureSel, (IMP)DMClosureBuild, (IMP *)&o_ClosureBuild);
     else Debug([NSString stringWithFormat:@"[init] closureBuildLaunchAppFromBundleID: %s: not hooked (only the direct prewarm is refused)", mc ? "unexpected signature" : "not found"]);
-    if (notify_register_check(kPrewarmEnabled, &gEnabledToken) != NOTIFY_STATUS_OK) gEnabledToken = 0;   // (read by BlockOn)
     gArmed = YES;
     static int token = 0;
     notify_register_dispatch(kPrewarmChanged, &token, dispatch_get_main_queue(), ^(int t) { MarkQuitSetStale(); });

@@ -437,7 +437,7 @@ __attribute__((noinline)) static void DMNativeTouchBegan(UITouch *t) {   // (kep
     if (!gNativeActive) return;
     // (the menu bar: judged on the SCREEN's coordinates -- the touch's window point is in that window's own space, which on iPadOS 15 in landscape
     //  is still portrait: the top of the screen came as {833, 66}, and a tap on the menu bar's "Finder" title sent Finder back, M1 30 Sep 14:04)
-    if (p.y < 26.0) return;
+    if (p.y < MSBDMenuBarTouchBand(DMMenuBarHeight())) return;   // (the bar and 2 pt under it: 26 on a 24 pt bar, 22 on a Home-button iPad's 20 pt one)
     if (gOverlay) {     // (a menu or dialog is open: that touch is its -- choosing a row, or closing it -- not a click on another window)
 #if DEBUG
         if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[native] touch at %@: a menu or dialog is open (%@ in %@), nothing changes", NSStringFromCGPoint(p), NSStringFromClass([gOverlay class]), NSStringFromClass([gOverlay.window class])]);

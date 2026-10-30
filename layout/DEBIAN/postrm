@@ -16,6 +16,7 @@ if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
     rmdir "$S" 2>/dev/null
     [ "$1" = "purge" ] && rm -rf /var/jb/var/lib/macstatusbaranddock
     rm -f "$P/MacStatusBarAndDock-Diag-Hooks.txt" "$P/MacStatusBarAndDock-Diag-Dock.txt"   # (untested-iPadOS diagnostics, common/Diag.h)
+    rm -f "$P/MacStatusBarAndDock-CCTile.plist"   # (18: where RAM & CPU's tile was in Control Center, common/CCTileKeep.h -- a reinstall starts afresh)
     rm -f /var/jb/Library/PreferenceLoader/Preferences/MacStatusBarAndDock-MacStatusBarPrefs.plist /var/jb/Library/PreferenceLoader/Preferences/MacStatusBarAndDock-DockMagnificationPrefs.plist   # (the iPadOS 17+ entries, postinst)
     # the list of names our Spotlight sections read (statusbar/SpotlightBridge.h; normally gone a few seconds after Spotlight read it) and its folder
     rm -f /var/jb/var/mobile/Library/Caches/com.besiktasliseba.macstatusbar/Spotlight.plist

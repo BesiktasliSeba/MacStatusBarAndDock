@@ -61,6 +61,7 @@ The window settings, on their own page between Status Bar and Dock. On iPadOS 15
 | Turn Off Traffic Lights | Hides the window buttons in the menu bar for full-screen apps. | Off |
 | Hide Multitasking Dots | Hides the three dots at the top of apps while windowing runs. | On |
 | Mac Switcher | Desktops and Mission Control in place of the App Switcher. Turning it off keeps your desktops for when you turn it on again. | Off |
+| Go to the App's Desktop | With the Mac Switcher on, opening an app whose window is on another desktop takes you to that desktop. Off: the window comes to the desktop you're on. | Off |
 
 ## Settings > Dock
 
