@@ -31,6 +31,8 @@ MacCrashNotice_INSTALL_PATH = /usr/lib/MacStatusBarAndDock
 
 # Each part keeps its own project (it used to be a tweak of its own); they are moved out of the tweak folder when packaged.
 SUBPROJECTS += statusbar macsettings dock appbridge mixaudio forcequitmenu graveescape tabmute volumeglobe brightnesskey spotlight prewarmblock ccmodule
+# The Dock's Trash ejects a drive dropped on it through this helper (it has StorageKit's eject entitlement; SpringBoard does not): ejecthelper/.
+SUBPROJECTS += ejecthelper
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 include $(THEOS_MAKE_PATH)/library.mk

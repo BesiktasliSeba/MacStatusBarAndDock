@@ -31,7 +31,11 @@ int main(void) {
     char buf[32];
     MSBDFormatBytes(820 * MB, buf, sizeof buf); CHECK(!strcmp(buf, "820 MB"), "820 MB -> %s", buf);
     MSBDFormatBytes((uint64_t)(1.9 * GB), buf, sizeof buf); CHECK(!strcmp(buf, "1.9 GB"), "1.9 GB -> %s", buf);
-    MSBDFormatBytes(16 * GB, buf, sizeof buf); CHECK(!strcmp(buf, "16 GB"), "16 GB -> %s", buf);
+    MSBDFormatBytes(16 * GB, buf, sizeof buf); CHECK(!strcmp(buf, "16.0 GB"), "16 GB -> %s", buf);   // (1.7.0: one decimal at every size)
+    MSBDFormatBytes((uint64_t)(11.6 * GB), buf, sizeof buf); CHECK(!strcmp(buf, "11.6 GB"), "11.6 GB -> %s (as the tile drawn over Memory Magic's)", buf);
+    MSBDFormatBytes(11878 * MB, buf, sizeof buf); CHECK(!strcmp(buf, "11.6 GB"), "11878 MB -> %s (= the old tile's %.1f of MB / 1024)", buf, 11878.0 / 1024.0);
+    MSBDFormatBytes(10240 * MB, buf, sizeof buf); CHECK(!strcmp(buf, "10.0 GB"), "10 GB -> %s (no jump at 10 GB)", buf);
+    MSBDFormatBytes(150 * GB, buf, sizeof buf); CHECK(!strcmp(buf, "150.0 GB"), "150 GB -> %s", buf);
     MSBDFormatBytes(999 * MB, buf, sizeof buf); CHECK(!strcmp(buf, "999 MB"), "999 MB -> %s", buf);
     MSBDFormatBytes(1000 * MB, buf, sizeof buf); CHECK(!strcmp(buf, "1.0 GB"), "1000 MB -> %s", buf);
     // live on this Mac

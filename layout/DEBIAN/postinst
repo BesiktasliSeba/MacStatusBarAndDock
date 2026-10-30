@@ -55,6 +55,11 @@ PLIST
     # block loads (or updates) without a reboot. The part's own crash-loop switch-off is cleared, so an install always starts it fresh. launchd
     # starts dasd again at once.
     rm -f /var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-PrewarmBlockOff.txt /var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-PrewarmBlockStarts.txt
+    # the quit set's file for dasd (common/PrewarmQuitSet.h): SpringBoard writes it only once it starts with this version, which can be long after
+    # this (a respring left for later), so on the first update to a version that has it, it starts as the set SpringBoard keeps -- cfprefsd's file
+    # of it has the same contents (the set under quitSet), which dasd reads as well
+    QS=/var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-PrewarmQuitSet.plist; QP=/var/jb/var/mobile/Library/Preferences/com.besiktasliseba.macstatusbar.prewarm.plist
+    if [ ! -e "$QS" ] && [ -f "$QP" ]; then cp "$QP" "$QS" && chmod 644 "$QS"; chown 501:501 "$QS" 2>/dev/null; fi
     /var/jb/usr/bin/killall -9 dasd 2>/dev/null
 elif [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-remove" ] || [ "$1" = "abort-deconfigure" ]; then
     # an upgrade or removal failed after the prerm stopped the helper (dpkg calls this on the version that stays): it is started again, so SSH

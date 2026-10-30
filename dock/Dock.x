@@ -49,6 +49,7 @@ static CGFloat gBottomGap = 6.0;        // points between the Dock and the botto
 static BOOL    gTweakOn = YES;          // the Dock part's own switch (Settings > Dock Magnification): off = the Dock exactly as iPadOS draws it
 static BOOL    gShowDownloads = YES;    // the Downloads stack in the Dock
 static BOOL    gShowFinder = YES;       // Finder as the Dock's first item, like a Mac (FinderIcon.m)
+static BOOL    gShowTrash = NO;         // the Trash at the Dock's right end, after Downloads, like a Mac (TrashIcon.m; Settings > Dock > Show Trash in Dock, off by default)
 static BOOL    gEscapeClosesLibrary = YES;   // pressing Escape closes the App Library
 static BOOL    gLaunchpadIcon = YES;    // the App Library icon drawn like macOS Launchpad
 static BOOL    gLaunchpadClassic = YES; // round rocket (YES) or the silver grid tile (NO)
@@ -177,6 +178,7 @@ static void DMLoadPrefs(void) {
     BOOL finder = YES;
     CFPropertyListRef fi = DMCopyPref(CFSTR("showFinder"));
     if (fi) { if (CFGetTypeID(fi) == CFBooleanGetTypeID()) finder = CFBooleanGetValue(fi); CFRelease(fi); }
+    BOOL finderRuns = YES;
     {   // (Finder itself lives in Mac Status Bar: no icon while Finder is switched off there, Mac Status Bar is off, or the stock status bar runs --
         //  the icon did nothing then, review M8)
         CFStringRef msb = CFSTR("com.besiktasliseba.macstatusbar");
@@ -187,10 +189,15 @@ static void DMLoadPrefs(void) {
             CFPropertyListRef v = CFPreferencesCopyValue(keys[k], msb, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
             BOOL b = dflt[k];
             if (v) { if (CFGetTypeID(v) == CFBooleanGetTypeID()) b = CFBooleanGetValue(v); CFRelease(v); }
-            if (b != want[k]) finder = NO;
+            if (b != want[k]) finderRuns = NO;
         }
     }
-    gShowFinder = finder;
+    gShowFinder = finder && finderRuns;
+    // Show Trash in Dock (off unless set): the Trash is Finder's (statusbar/DockTrash.h), so it is there only while Finder runs, as Finder's icon
+    BOOL trash = NO;
+    CFPropertyListRef tr = DMCopyPref(CFSTR("showTrash"));
+    if (tr) { if (CFGetTypeID(tr) == CFBooleanGetTypeID()) trash = CFBooleanGetValue(tr); CFRelease(tr); }
+    gShowTrash = trash && finderRuns;
     BOOL launchpad = YES;
     CFPropertyListRef lp = DMCopyPref(CFSTR("launchpadIcon"));
     if (lp) {
@@ -224,7 +231,7 @@ static void DMLoadPrefs(void) {
     }
     gSwipeDownOpensLibrary = swipeDown;
 
-    DMLog([NSString stringWithFormat:@"[prefs] enabled=%d magnification=%.3f iconSize=%.2f bottomGap=%.1f blockSwipeUp=%d downloads=%d launchpad=%d swipeDownOpensLibrary=%d", enabled, mag, gIconSize, gBottomGap, blockUp, downloads, launchpad, swipeDown]);
+    DMLog([NSString stringWithFormat:@"[prefs] enabled=%d magnification=%.3f iconSize=%.2f bottomGap=%.1f blockSwipeUp=%d downloads=%d trash=%d launchpad=%d swipeDownOpensLibrary=%d", enabled, mag, gIconSize, gBottomGap, blockUp, downloads, gShowTrash, launchpad, swipeDown]);
 }
 
 @interface SBFloatingDockView : UIView
@@ -258,12 +265,17 @@ static void DMReadIconCornerRatio(UIView *dockView) {
 }
 extern void DMDownloadsAttach(UIView *platter, CGRect slot, BOOL show);
 extern UIView *DMDownloadsIcon(UIView *platter);
+static CGRect gTrashSlot = {{0, 0}, {0, 0}};       // where the Trash goes: after Downloads, the Dock's right end (set by getMetrics)
+extern void DMTrashAttach(UIView *platter, CGRect slot, BOOL show);
+extern UIView *DMTrashIcon(UIView *platter);
+#import "../common/DockTrash.h"   // (MSBDDockEndLayout: Downloads and the Trash at the Dock's end)
+#import "../common/CCController.h"   // (MSBDControlCenterController: Control Center's controller -- iPadOS 18 has no shared instance)
 
 // A second divider between the recent apps and the Downloads stack, like macOS has before its Downloads/Trash end (2026-09-25). getMetrics makes
 // room for it (the same gap the Dock keeps around its own divider: one icon spacing on each side of a 1 pt line) and sets its place here; it is
 // drawn as a copy of SpringBoard's own divider view (same colour, blending, alpha and height, re-copied at every layout and style update). It
-// only exists with Downloads on. With no recents the Dock hides its own line, and ours is then the only line (apps | Downloads, as on macOS):
-// there are never two lines side by side.
+// only exists with Downloads or the Trash on (1.7.0: the Trash alone has it too, as on macOS). With no recents the Dock hides its own line, and
+// ours is then the only line (apps | Downloads, Trash, as on macOS): there are never two lines side by side.
 static CGRect gDivider2Rect = {{0, 0}, {0, 0}};   // in the platter's coordinates, or zero for none (set by getMetrics)
 static BOOL gDivider2Alone = NO;   // no recents: the Dock's own line is hidden and ours is the only one
 static const void *kDivider2Key = &kDivider2Key;
@@ -283,7 +295,7 @@ static void DMCopyDividerLook(UIView *from, UIView *to) {
 static void DMSecondDividerAttach(UIView *dockView) {
     UIView *native = DMNativeDivider(dockView);
     UIView *mine = objc_getAssociatedObject(dockView, kDivider2Key);
-    BOOL want = native.superview && gShowDownloads && gDivider2Rect.size.height > 1.0 && (gDivider2Alone || !native.hidden);
+    BOOL want = native.superview && (gShowDownloads || gShowTrash) && gDivider2Rect.size.height > 1.0 && (gDivider2Alone || !native.hidden);
     if (!want) { mine.hidden = YES; return; }
     if (!mine) {
         mine = [[UIView alloc] initWithFrame:gDivider2Rect];
@@ -408,6 +420,7 @@ static void DMDockMirrorMetrics(DMDockMetrics *m) {
     // again here for this view's own bounds, the ones the layout above just used (K-2: a slot from another answer sits off the platter).
     { DMDockMetrics own; memset(&own, 0, sizeof(own)); [(SBFloatingDockView *)self getMetrics:&own forBounds:((UIView *)self).bounds]; }
     if (platter) DMDownloadsAttach(platter, gDownloadsSlot, gShowDownloads);
+    if (platter) DMTrashAttach(platter, gTrashSlot, gShowTrash && gTrashSlot.size.width > 0);
     DMReadIconCornerRatio((UIView *)self);
     if (platter) DMFinderIconAttach(platter, gFinderSlot, gShowFinder && gFinderSlot.size.width > 0);
     DMSecondDividerAttach((UIView *)self);
@@ -452,9 +465,9 @@ static void DMDockMirrorMetrics(DMDockMetrics *m) {
             NSMutableArray *k = [NSMutableArray array];
             for (NSString *c in kinds) [k addObject:[NSString stringWithFormat:@"%@ x%lu", c, (unsigned long)[kinds countForObject:c]]];
             #define R(r) NSStringFromCGRect(CGRectIntegral(r))
-            MSBDDiagWrite(@"Dock", [NSString stringWithFormat:@"bounds %@\nuserList %@ recents %@ library %@ divider %@ platter %@ spacing %.1f\nshowDownloads %d magnify %d iconSize %.2f\nicons: %@\ndownloads %@ own %d, finder %@",
-                R(bounds), R(m->userList), R(m->recentsList), R(m->libraryIcon), R(m->divider), R(m->platter), m->spacing, gShowDownloads, gEnabled, gIconSize, [k componentsJoinedByString:@", "],
-                R(gDownloadsSlot), gDownloadsOwnSlot, R(gFinderSlot)]);   // (our slots from the last layout)
+            MSBDDiagWrite(@"Dock", [NSString stringWithFormat:@"bounds %@\nuserList %@ recents %@ library %@ divider %@ platter %@ spacing %.1f\nshowDownloads %d showTrash %d magnify %d iconSize %.2f\nicons: %@\ndownloads %@ own %d, trash %@, finder %@",
+                R(bounds), R(m->userList), R(m->recentsList), R(m->libraryIcon), R(m->divider), R(m->platter), m->spacing, gShowDownloads, gShowTrash, gEnabled, gIconSize, [k componentsJoinedByString:@", "],
+                R(gDownloadsSlot), gDownloadsOwnSlot, R(gTrashSlot), R(gFinderSlot)]);   // (our slots from the last layout)
             #undef R
         }
     }
@@ -504,7 +517,11 @@ static void DMDockMirrorMetrics(DMDockMetrics *m) {
     }
     // Downloads stack: one more icon slot right before the App Library icon. The slot is the App Library icon's old spot; the
     // App Library icon and the end of the platter move over by one icon + spacing. (Launchpad at the start: the slot is the end, the icon stays.)
+    // The Trash (1.7.0) comes right after Downloads, one more icon + spacing (common/DockTrash.h MSBDDockEndLayout): the Dock's right end with
+    // Launchpad at the start, as on a Mac; with the App Library icon kept at the end (iPadOS's place, Next to Finder off) that icon stays the last.
+    // With Downloads off the Trash takes the slot Downloads would have had. Both go after the second divider.
     CGRect slot = lpLeft ? libEnd : m->libraryIcon;
+    BOOL wantEnd = gShowDownloads || gShowTrash;   // (the Dock's end group: Downloads and / or the Trash)
     // Without the App Library icon (its spot 0 wide) Downloads takes a whole icon's spot of the Dock's size (DMDockHiddenLibrarySide) at the end of the
     // lists, level with the apps, as the App Library icon sits when it is there. Without it iOS ends the lists at the platter's end (18.2's class
     // method: the lists carry a spacing on both sides, the platter is the icons plus a spacing at each end), so the platter grows by the icon plus the
@@ -512,7 +529,7 @@ static void DMDockMirrorMetrics(DMDockMetrics *m) {
     // everything Downloads-related in this layout is left out (no widening, no second divider, no slot): the Dock only grows for a stack it shows.
     CGFloat ownExtra = -1.0;   // (>= 0: the platter's growth for a Downloads slot of its own, instead of one icon + one spacing)
     gDownloadsOwnSlot = NO;
-    if (!lpLeft && gShowDownloads && hiddenSide > 0.0 && slot.size.width < 1.0) {
+    if (!lpLeft && wantEnd && hiddenSide > 0.0 && slot.size.width < 1.0) {
         CGFloat listsEnd = MAX(CGRectGetMaxX(m->userList), m->recentsList.size.width >= 1.0 ? CGRectGetMaxX(m->recentsList) : 0.0);
         CGFloat after = m->platter.size.width - listsEnd;
         if (isfinite(listsEnd) && listsEnd > 0.0 && isfinite(after) && after > -1.0) {
@@ -522,23 +539,25 @@ static void DMDockMirrorMetrics(DMDockMetrics *m) {
             gDownloadsOwnSlot = YES;
         }
     }
-    BOOL downloadsOn = gShowDownloads && slot.size.width >= 1.0;
+    BOOL endOn = wantEnd && slot.size.width >= 1.0;
+    BOOL downloadsOn = endOn && gShowDownloads, trashOn = endOn && gShowTrash;
+    MSBDDockEnd endLayout = MSBDDockEndLayout(slot.origin.x, slot.size.width, m->spacing, ownExtra, downloadsOn, trashOn);   // (unscaled; Trash off: the Downloads slot of before)
     // The second divider (see gDivider2Rect): with Downloads. After the recents (the recents list at least half an icon wide) it is a second line;
     // with no recents the Dock hides its own line and ours is the only one, between the apps and Downloads (as on macOS). Its gap is one spacing
     // + the 1 pt line; the line's own width is not scaled below, which is corrected after scaling.
     CGRect nativeDivider = m->divider;
     CGFloat unscaledSpacing = m->spacing;
     BOOL hasRecents = m->recentsList.size.width >= slot.size.width * 0.5;
-    BOOL divider2 = downloadsOn && nativeDivider.size.width > 0.0 && nativeDivider.size.height > 1.0;
+    BOOL divider2 = endOn && nativeDivider.size.width > 0.0 && nativeDivider.size.height > 1.0;
 #if DEBUG
     {   // (debug: the Dock's own numbers, whenever they change)
         static NSString *lastMetrics = nil;
-        NSString *mt = [NSString stringWithFormat:@"user %@ recents %@ divider %@ library %@ spacing %.2f", NSStringFromCGRect(m->userList), NSStringFromCGRect(m->recentsList), NSStringFromCGRect(nativeDivider), NSStringFromCGRect(slot), m->spacing];
+        NSString *mt = [NSString stringWithFormat:@"user %@ recents %@ divider %@ library %@ spacing %.2f end %d+%d", NSStringFromCGRect(m->userList), NSStringFromCGRect(m->recentsList), NSStringFromCGRect(nativeDivider), NSStringFromCGRect(slot), m->spacing, downloadsOn, trashOn];
         if (![mt isEqualToString:lastMetrics]) { lastMetrics = mt; DMLog([@"[metrics] " stringByAppendingString:mt]); }
     }
 #endif
-    if (downloadsOn) {
-        CGFloat extra = (ownExtra >= 0.0 ? ownExtra : slot.size.width + m->spacing) + (divider2 ? unscaledSpacing + nativeDivider.size.width : 0.0);
+    if (endOn) {
+        CGFloat extra = endLayout.growth + (divider2 ? unscaledSpacing + nativeDivider.size.width : 0.0);
         if (!lpLeft) m->libraryIcon.origin.x += extra;
         m->platter.size.width += extra;
         m->platter.origin.x -= extra / 2.0;
@@ -565,17 +584,21 @@ static void DMDockMirrorMetrics(DMDockMetrics *m) {
         DMLog([NSString stringWithFormat:@"[fit] screen %.0f, dock %.0f + %.0f magnification room at size 1: icon size %.3f (setting %.2f, fits up to %.3f)", bounds.size.width, m->platter.size.width, headroom, f, gIconSize, room]);
     }
     gFinderSlot = CGRectMake(finderSlot.origin.x * f, finderSlot.origin.y * f, finderSlot.size.width * f, finderSlot.size.height * f);
-    if (!downloadsOn && fabs(f - 1.0) < 0.001) {
+    if (!endOn && fabs(f - 1.0) < 0.001) {
         if (gTweakOn && isfinite(gBottomGap)) m->platter.origin.y = CGRectGetMaxY(bounds) - gBottomGap - m->platter.size.height;   // (Gap to Screen Edge, below)
 #if DEBUG
-        if (CACurrentMediaTime() < gDMMetricsLogUntil) DMLog([NSString stringWithFormat:@"[metricslog] view %p bounds %@: f 1 (no Downloads), platter %@", self, NSStringFromCGRect(bounds), NSStringFromCGRect(m->platter)]);
+        if (CACurrentMediaTime() < gDMMetricsLogUntil) DMLog([NSString stringWithFormat:@"[metricslog] view %p bounds %@: f 1 (no Downloads, no Trash), platter %@", self, NSStringFromCGRect(bounds), NSStringFromCGRect(m->platter)]);
 #endif
-        gDownloadsSlot = CGRectZero; gDivider2Rect = CGRectZero;
+        gDownloadsSlot = CGRectZero; gTrashSlot = CGRectZero; gDivider2Rect = CGRectZero;
         if (rtl) { DMDockMirrorMetrics(m); if (gFinderSlot.size.width > 0.0) gFinderSlot = DMDockMirrorRect(gFinderSlot, m->platter.size.width); }
         return;
     }
     CGRect (^scaled)(CGRect) = ^CGRect(CGRect r) { return CGRectMake(r.origin.x * f, r.origin.y * f, r.size.width * f, r.size.height * f); };
-    gDownloadsSlot = downloadsOn ? scaled(slot) : CGRectZero;
+    CGRect slotD = slot, slotT = slot;
+    slotD.origin.x = endLayout.downloadsX; slotT.origin.x = endLayout.trashX;
+    gDownloadsSlot = downloadsOn ? scaled(slotD) : CGRectZero;
+    gTrashSlot = trashOn ? scaled(slotT) : CGRectZero;
+    if (trashOn) DM_FEATURE_MARK("dock-trash-slot");
     gDivider2Rect = CGRectZero;
     gDivider2Alone = !hasRecents;
     if (divider2) {
@@ -589,7 +612,8 @@ static void DMDockMirrorMetrics(DMDockMetrics *m) {
         if (fabs(off) > 2.0) off = 0.0;   // (only that hair: never a big jump if the Dock's own layout ever differs)
         CGFloat pull = lineW - lineW * f + off;
         gDivider2Rect = CGRectMake(slot.origin.x * f, nativeDivider.origin.y * f, lineW, nativeDivider.size.height * f);
-        gDownloadsSlot.origin.x += unscaledSpacing * f + lineW + off;
+        if (downloadsOn) gDownloadsSlot.origin.x += unscaledSpacing * f + lineW + off;
+        if (trashOn) gTrashSlot.origin.x += unscaledSpacing * f + lineW + off;
         if (!lpLeft) m->libraryIcon.origin.x += pull / f;   // (in unscaled units: scaled below; Launchpad at the start stays next to Finder)
         m->platter.size.width += pull / f;
         m->platter.origin.x -= pull / f / 2.0;
@@ -610,6 +634,7 @@ static void DMDockMirrorMetrics(DMDockMetrics *m) {
         DMDockMirrorMetrics(m);
         if (gFinderSlot.size.width > 0.0) gFinderSlot = DMDockMirrorRect(gFinderSlot, pw);
         if (gDownloadsSlot.size.width > 0.0) gDownloadsSlot = DMDockMirrorRect(gDownloadsSlot, pw);
+        if (gTrashSlot.size.width > 0.0) gTrashSlot = DMDockMirrorRect(gTrashSlot, pw);
         if (gDivider2Rect.size.height > 0.0) gDivider2Rect = DMDockMirrorRect(gDivider2Rect, pw);
     }
     // Gap to Screen Edge: the platter's bottom this many points above the Dock view's bottom (= the screen's bottom edge), whatever iPadOS chose --
@@ -621,8 +646,8 @@ static void DMDockMirrorMetrics(DMDockMetrics *m) {
 #if DEBUG
     if (CACurrentMediaTime() < gDMMetricsLogUntil) {
         NSArray *st = [NSThread callStackSymbols];
-        DMLog([NSString stringWithFormat:@"[metricslog] view %p bounds %@: f %.3f, platter %@, user %@, finder %@, downloads %@ | from %@ / %@", self, NSStringFromCGRect(bounds), f, NSStringFromCGRect(m->platter), NSStringFromCGRect(m->userList),
-            NSStringFromCGRect(gFinderSlot), NSStringFromCGRect(gDownloadsSlot), st.count > 2 ? st[2] : @"-", st.count > 3 ? st[3] : @"-"]);
+        DMLog([NSString stringWithFormat:@"[metricslog] view %p bounds %@: f %.3f, platter %@, user %@, finder %@, downloads %@, trash %@ | from %@ / %@", self, NSStringFromCGRect(bounds), f, NSStringFromCGRect(m->platter), NSStringFromCGRect(m->userList),
+            NSStringFromCGRect(gFinderSlot), NSStringFromCGRect(gDownloadsSlot), NSStringFromCGRect(gTrashSlot), st.count > 2 ? st[2] : @"-", st.count > 3 ? st[3] : @"-"]);
     }
 #endif
 }
@@ -826,8 +851,7 @@ static BOOL DMDockSwitcherOrCCUp(void) {
         SEL sel = NSSelectorFromString(name);
         if ([sw respondsToSelector:sel] && ((BOOL (*)(id, SEL))objc_msgSend)(sw, sel)) return YES;
     }
-    Class ccClass = objc_getClass("SBControlCenterController");
-    id cc = ccClass && [(id)ccClass respondsToSelector:shared] ? ((id (*)(id, SEL))objc_msgSend)((id)ccClass, shared) : nil;
+    id cc = MSBDControlCenterController();   // (iPadOS 18: the main scene's -- no shared instance there, CCController.h)
     for (NSString *name in @[@"isPresented", @"isVisible"]) {
         SEL sel = NSSelectorFromString(name);
         if ([cc respondsToSelector:sel] && ((BOOL (*)(id, SEL))objc_msgSend)(cc, sel)) return YES;
@@ -1024,6 +1048,8 @@ static BOOL DMIsDockIcon(UIView *icon) {
         if (downloads) [icons addObject:downloads];
         UIView *finderIcon = DMFinderIcon(self);     // (and Finder)
         if (finderIcon) [icons addObject:finderIcon];
+        UIView *trashIcon = DMTrashIcon(self);       // (and the Trash)
+        if (trashIcon) [icons addObject:trashIcon];
         gIcons = icons;
         gFramesSinceRefresh = 0;
     }
@@ -1630,18 +1656,18 @@ static BOOL DMIconKeptInDock(id icon) {   // (in the Dock list itself: a kept ap
     SEL has = NSSelectorFromString(@"directlyContainsIcon:");
     return icon && [dock respondsToSelector:has] && ((BOOL (*)(id, SEL, id))objc_msgSend)(dock, has, icon);
 }
-static void DMRemoveFromDock(id icon) {
+static BOOL DMRemoveFromDock(id icon) {   // (YES: it left the Dock for the Home Screen)
     DM_FEATURE_MARK("dock-remove-from-dock");
     id mgr = nil, model = nil;
     id root = DMIconModelRoot(&mgr, &model);
     id dock = DMObj(root, @"dock");
     NSArray *icons = DMObj(dock, @"icons");
-    if (!root || !dock || ![icons isKindOfClass:[NSArray class]] || ![icons containsObject:icon]) return;
+    if (!root || !dock || ![icons isKindOfClass:[NSArray class]] || ![icons containsObject:icon]) return NO;
     NSUInteger oldIndex = [icons indexOfObject:icon];
     SEL optsSel = NSSelectorFromString(@"gridCellInfoOptions"), freeSel = NSSelectorFromString(@"gridPathForFirstFreeSlotAvoidingFirstList:listGridCellInfoOptions:");
     SEL insertSel = NSSelectorFromString(@"insertIcon:atGridPath:options:"), addSel = NSSelectorFromString(@"addIcon:options:listGridCellInfoOptions:");
     SEL removeSel = NSSelectorFromString(@"removeIcons:"), putBackSel = NSSelectorFromString(@"insertIcons:atIndex:options:");
-    if (![dock respondsToSelector:removeSel]) return;
+    if (![dock respondsToSelector:removeSel]) return NO;
     unsigned long long opts = [mgr respondsToSelector:optsSel] ? ((unsigned long long (*)(id, SEL))objc_msgSend)(mgr, optsSel) : 0;
     id path = [root respondsToSelector:freeSel] ? ((id (*)(id, SEL, BOOL, unsigned long long))objc_msgSend)(root, freeSel, NO, opts) : nil;
     ((void (*)(id, SEL, id))objc_msgSend)(dock, removeSel, @[icon]);
@@ -1653,11 +1679,46 @@ static void DMRemoveFromDock(id icon) {
     if (!placed) {   // (nowhere to put it: it stays in the Dock where it was, nothing lost)
         if ([dock respondsToSelector:putBackSel]) ((void (*)(id, SEL, id, NSUInteger, unsigned long long))objc_msgSend)(dock, putBackSel, @[icon], oldIndex, 0);
         DMLog(@"[dock] Remove from Dock: no free place on the Home Screen, kept in the Dock");
-        return;
+        return NO;
     }
     if ([model respondsToSelector:NSSelectorFromString(@"markIconStateDirty")]) ((void (*)(id, SEL))objc_msgSend)(model, NSSelectorFromString(@"markIconStateDirty"));
     if ([model respondsToSelector:NSSelectorFromString(@"saveIconStateIfNeeded")]) ((BOOL (*)(id, SEL))objc_msgSend)(model, NSSelectorFromString(@"saveIconStateIfNeeded"));
     DMLog([NSString stringWithFormat:@"[dock] Remove from Dock: %@ moved to the Home Screen at %@", DMObj(icon, @"applicationBundleID"), path]);
+    return YES;
+}
+// The Trash (TrashIcon.m): an app dragged off the Dock and dropped on the bin leaves the Dock the same way, once SpringBoard's drag has ended.
+BOOL DMTrashRemoveIconFromDock(id icon) {
+    if (!gEnabled || !DMIconKeptInDock(icon) || ![DMObj(icon, @"applicationBundleID") isKindOfClass:[NSString class]]) return NO;
+    return DMRemoveFromDock(icon);
+}
+// What one of SpringBoard's own icon drags carries, for a drop on the bin (common/DockTrash.h MSBDTrashRemovesFromDock): SpringBoard's icon drag
+// manager knows the drag by its session (-iconDragContextForDropSession:); its context names the icons and the icon view the drag began on (its
+// location: the Dock's own list, its recents, the Home Screen). NO when the session is not an icon drag of SpringBoard's.
+BOOL DMTrashIconDragInfo(id session, MSBDTrashIconDrag *info, id *iconOut) {
+    if (!session || !info) return NO;
+    memset(info, 0, sizeof(*info));
+    if (iconOut) *iconOut = nil;
+    id mgr = DMObj(DMObj((id)objc_getClass("SBIconController"), @"sharedInstance"), @"iconManager");
+    id drags = DMObj(mgr, @"iconDragManager");
+    SEL ctxSel = NSSelectorFromString(@"iconDragContextForDropSession:");
+    if (![drags respondsToSelector:ctxSel]) return NO;
+    id ctx = nil;
+    @try { ctx = ((id (*)(id, SEL, id))objc_msgSend)(drags, ctxSel, session); } @catch (NSException *e) { ctx = nil; }
+    if (!ctx) return NO;
+    id dragged = DMObj(ctx, @"draggedIcons");
+    info->count = [dragged respondsToSelector:@selector(count)] ? [dragged count] : 0;
+    UIView *view = DMObj(ctx, @"primaryIconView");
+    id icon = DMObj(view, @"icon");
+    if (!icon && [dragged respondsToSelector:@selector(anyObject)]) icon = [dragged anyObject];
+    info->isApp = [DMObj(icon, @"applicationBundleID") isKindOfClass:[NSString class]];
+    SEL folderSel = NSSelectorFromString(@"isFolderIcon");
+    info->isFolder = [icon respondsToSelector:folderSel] && ((BOOL (*)(id, SEL))objc_msgSend)(icon, folderSel);
+    info->fromDock = MSBDTrashLocationIsDock(DMObj(view, @"location"));
+    SEL tempSel = NSSelectorFromString(@"isManagingTemporarilyRemovedIcon:");   // (an icon dragged out of its list is taken out of it while the drag lasts)
+    BOOL taken = icon && [drags respondsToSelector:tempSel] && ((BOOL (*)(id, SEL, id))objc_msgSend)(drags, tempSel, icon);
+    info->keptInDock = DMIconKeptInDock(icon) || (taken && info->fromDock);
+    if (iconOut) *iconOut = icon;
+    return YES;
 }
 %hook SBIconView
 - (NSArray *)applicationShortcutItems {
@@ -1763,7 +1824,7 @@ static void DMK2Dump(void) {
                     ((void (*)(id, SEL, DMDockMetrics *, CGRect))objc_msgSend)(v, gm, &ours, v.bounds);
                     DMLog([@"[k2] SpringBoard's metrics: " stringByAppendingString:DMK2Metrics(stock)]);
                     DMLog([@"[k2] our metrics:          " stringByAppendingString:DMK2Metrics(ours)]);
-                    DMLog([NSString stringWithFormat:@"[k2] our slots: finder %@ downloads %@ (own %d) divider2 %@", NSStringFromCGRect(gFinderSlot), NSStringFromCGRect(gDownloadsSlot), gDownloadsOwnSlot, NSStringFromCGRect(gDivider2Rect)]);
+                    DMLog([NSString stringWithFormat:@"[k2] our slots: finder %@ downloads %@ (own %d) trash %@ divider2 %@", NSStringFromCGRect(gFinderSlot), NSStringFromCGRect(gDownloadsSlot), gDownloadsOwnSlot, NSStringFromCGRect(gTrashSlot), NSStringFromCGRect(gDivider2Rect)]);
                 }
                 SEL cs = NSSelectorFromString(@"iconContentScaleForNumberOfUserIcons:");
                 if ([v respondsToSelector:cs] && DMK2Ret(v, cs) == 'd') {
@@ -1887,7 +1948,7 @@ static NSString *DMK2Verdict(void) {
             struct stat st;
             if (stat("/tmp/dockmag-escape", &st) != 0 || st.st_mtimespec.tv_sec == lastEscape) return;
             lastEscape = st.st_mtimespec.tv_sec;
-            char word[16] = {0}; FILE *f = fopen("/tmp/dockmag-escape", "r"); if (f) { if (fscanf(f, "%15s", word) != 1) word[0] = 0; fclose(f); }
+            char word[96] = {0}; FILE *f = fopen("/tmp/dockmag-escape", "r"); if (f) { if (fscanf(f, "%95s", word) != 1) word[0] = 0; fclose(f); }
             if (!strcmp(word, "present")) {
                 id presenter = DMLibraryPresenter();
                 SEL present = NSSelectorFromString(@"presentLibraryWithAnimation:completion:");
@@ -1897,6 +1958,9 @@ static NSString *DMK2Verdict(void) {
                 if (!strcmp(word + 5, "off")) DMLoadPrefs(); else gIconSize = atof(word + 5);
                 DMLog([NSString stringWithFormat:@"[fit] debug: icon size setting %.2f", gIconSize]);
                 DMRelayoutDock();
+            } else if (!strncmp(word, "trash:", 6)) {   // debug (1.7.0): the Dock's Trash -- trash:tap, trash:empty, trash:hover1/0, trash:eject1/0, trash:state, trash:removeicon_<bundle>
+                extern void DMTrashDebug(NSString *cmd);
+                DMTrashDebug([NSString stringWithUTF8String:word + 6]);
             } else if (!strcmp(word, "k2")) {   // debug (K-2): the whole Dock layout in one dump (DMK2Dump)
                 DMK2Dump();
                 DMLog([@"[k2] verdict: " stringByAppendingString:DMK2Verdict()]);

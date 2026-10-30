@@ -19,6 +19,8 @@ What it does instead, all on the iPad:
 - **The Wi-Fi and VPN menus** use iPadOS's own Wi-Fi and VPN controls on the iPad. The tweak sends nothing of its own.
 - **About This iPad** in the Apple menu shows your iPad's serial number on screen, like a Mac does. It is only displayed, never sent or stored.
 - **The SSH switch** (Settings, only shown when OpenSSH is installed) starts or stops OpenSSH, which is a network service. The tweak never changes SSH on its own: after installing, OpenSSH stays as it was until you use the switch, and your choice then sticks across restarts. The Settings app isn't allowed to start or stop OpenSSH, or to switch window engines, so a small local root helper (`com.besiktasliseba.sshtoggled`) stays running and does these steps when Settings signals it. **The helper is not an SSH server and accepts no network connections:** it only reacts to a local signal from Settings and reads what to do from a Settings preference apps can't write.
+- **The Dock's Trash** ejects a drive you drop on it through a small helper, `msbdeject`, because SpringBoard isn't allowed to eject drives. The helper only starts for that drop, runs as the mobile user and has no network code. It checks for itself that the folder is a USB drive or SD card connected to the iPad, never the iPad's own storage, and asks iPadOS's storage service (StorageKit) to eject it. iPadOS 15 has no StorageKit, so the helper isn't used there.
+- **Activity Monitor** only reads the process list and the figures iPadOS lets SpringBoard read. Its Quit asks an app to quit, as a swipe up in the App Switcher does.
 - **Automatic Crash Recovery** reads the iPad's own crash logs locally, to see whether a SpringBoard crash came from this tweak.
 
 ### Checking it yourself
@@ -26,6 +28,7 @@ What it does instead, all on the iPad:
 - A source search for networking APIs (`NSURLSession`, `NSURLConnection`, `NSURLRequest`, `NSStream`, `CFStream`, `CFSocket`, `CFNetwork`, Network.framework's `nw_`, `socket(`, `connect(`, `getaddrinfo`, `gethostbyname`, `curl_`) finds no networking implementation (`WKWebView` appears once in `appbridge/AppBridge.x`, only to find an app's own web page view for the Print and Share menu items).
 - Report a Problem: `common/CrashExplain.h` (`MSBD_REPORT_URL` and the text it fills in).
 - The root helper: `macsettings/sshtoggled/main.m` (SSH on/off, window-engine exclusivity, giving settings back on removal).
+- The eject helper: `ejecthelper/main.m`, and its permissions in `ejecthelper/entitlements.plist`.
 - What gets loaded where: `loader/Loader.c` (see "How it's built" in [docs/development.md](./docs/development.md#how-its-built)).
 - Every published package's checksum and the source commit it was built from: [RELEASES.md](https://github.com/BesiktasliSeba/repo/blob/main/RELEASES.md) in the Sileo repo.
 

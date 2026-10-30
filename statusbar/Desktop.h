@@ -239,6 +239,10 @@ static void DMKeyboardDockNote(NSNotification *n, NSString *what) {
     for (NSNumber *after in @[@0.25, @0.6, @1.2])   // (the keyboard's own animation: the drawn keyboard settles after the notification)
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(after.doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMKeyboardDockDecide(@"settled"); });
 }
+static void DMKeyboardDockWatch(void);
+#if DEBUG
+void DMKeyboardDockWatchFlag(void) { DMKeyboardDockWatch(); }   // (debug trigger kbnotes)
+#endif
 static void DMKeyboardDockWatch(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{

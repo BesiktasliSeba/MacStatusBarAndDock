@@ -30,6 +30,25 @@ int main(void) {
         NSArray *arr2 = MSBDCCWithOurIdentifier(arr);
         CHECK(arr2.count == 2 && [arr2.lastObject isEqualToString:kMSBDCCModuleID], "array: ours added at the end");
         CHECK(MSBDCCWithOurIdentifier(nil) == nil, "no allowed list (everything loads): nothing added");
+        // RAM & CPU in Memory Magic's place (the tile drawn over Memory Magic's, 1.6.2): the M1's own list (15.6.1, CCSupport + BigSurCenter, 29 Oct)
+        NSArray *m1 = @[@"com.apple.control-center.ConnectivityModule", @"com.apple.mediaremote.controlcenter.nowplaying", @"com.apple.control-center.OrientationLockModule",
+            @"com.apple.mediaremote.controlcenter.airplaymirroring", @"com.apple.control-center.DisplayModule", @"com.apple.mediaremote.controlcenter.audio",
+            @"com.apple.control-center.MuteModule", @"com.apple.control-center.FlashlightModule", @"com.apple.control-center.CameraModule",
+            @"com.apple.donotdisturb.DoNotDisturbModule", @"com.mtac.uptimemodule", @"com.0xkuj.ccadsbegone", @"com.apple.keyboard.KeyboardBrightnessModule",
+            @"com.apple.replaykit.controlcenter.screencapture", @"com.apple.control-center.LowPowerModule", @"jp.akusio.backgrounderaction15", kMSBDMemoryMagicID,
+            @"com.KingPuffaddi.control-center.CCWiFiQR", @"com.ginsu.pockettranslatorcc", @"com.uzra.aerial.togglecc"];
+        NSArray *s1 = MSBDCCInPlaceOf(m1, kMSBDMemoryMagicID);
+        BOOL same = s1.count == m1.count;
+        for (NSUInteger i = 0; same && i < m1.count; i++) same = i == 16 ? [s1[i] isEqualToString:kMSBDCCModuleID] : [s1[i] isEqualToString:m1[i]];
+        CHECK(same, "M1's list: RAM & CPU at Memory Magic's place (16), the 19 others where they were");
+        NSArray *withOurs = [@[@"com.apple.control-center.MuteModule", kMSBDMemoryMagicID, @"com.apple.control-center.CameraModule"] arrayByAddingObject:kMSBDCCModuleID];
+        NSArray *s2 = MSBDCCInPlaceOf(withOurs, kMSBDMemoryMagicID);
+        CHECK([s2 isEqualToArray:(@[@"com.apple.control-center.MuteModule", kMSBDCCModuleID, @"com.apple.control-center.CameraModule"])], "RAM & CPU already further down: moved to Memory Magic's place, once");
+        CHECK(MSBDCCInPlaceOf(@[@"com.apple.control-center.MuteModule", kMSBDCCModuleID], kMSBDMemoryMagicID) == nil, "no Memory Magic in the list: nothing to do");
+        CHECK(MSBDCCInPlaceOf(@[], kMSBDMemoryMagicID) == nil && MSBDCCInPlaceOf(nil, kMSBDMemoryMagicID) == nil && MSBDCCInPlaceOf((NSArray *)@{}, kMSBDMemoryMagicID) == nil, "an empty list, none, or not a list: nothing to do");
+        NSArray *s3 = MSBDCCInPlaceOf(@[kMSBDMemoryMagicID, @"a", kMSBDMemoryMagicID], kMSBDMemoryMagicID);
+        CHECK([s3 isEqualToArray:(@[kMSBDCCModuleID, @"a"])], "Memory Magic twice: RAM & CPU at the first place, the second one gone");
+        CHECK(!MSBDCCModuleSkipped(), "no crash guard skip list on the Mac: RAM & CPU loads");
     }
     // the tile's lines (ccmodule/RAMCPULayout.h): Control Center's own 2 x 1 tile (142 x 66, iPad 2 16.7.7) as before 1.6.0's square layout;
     // BigSurCenter's square tile (75 x 75): every line at least 50 points wide (laid out for 2 x 1 there: 18 and 15 points, "..." on the screen)

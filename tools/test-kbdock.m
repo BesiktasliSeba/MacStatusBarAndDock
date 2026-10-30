@@ -57,6 +57,12 @@ int main(void) {
     CHECK(!MSBDOwnBarUnderDockFloor(true, 0, -1000, kMSBDDockFloorLevel), "no bar drawn: nothing changes");
     CHECK(!MSBDOwnBarUnderDockFloor(true, 428, 1004, kMSBDDockFloorLevel), "a full keyboard is the on-screen keyboard's rule, not this one");
     CHECK(!MSBDOwnBarUnderDockFloor(false, 69, 1004, kMSBDDockFloorLevel), "no hardware keyboard: no input bar");
+    // the tidy pill's measure (M1 15.6.1, 1.7.0): Spotlight's full keyboard is drawn in SpringBoard's hosted keyboard window, unseen by its own hosts
+    CHECK(MSBDKeyboardPillMeasure(0, 0) == 0, "no keyboard anywhere: the pill is alone");
+    CHECK(MSBDKeyboardPillMeasure(0, 398) == 398, "Spotlight's full keyboard (another process): counted, the window is not tidied");
+    CHECK(MSBDKeyboardPillMeasure(0, 55) == 0, "another process's input bar or pill only: still the pill alone");
+    CHECK(MSBDKeyboardPillMeasure(69, 0) == 69, "SpringBoard's own field's bar: as before");
+    CHECK(MSBDKeyboardPillMeasure(420, 398) == 420, "both: the taller one");
     printf("test-kbdock: %d passed, %d failed\n", passes, fails);
     return fails ? 1 : 0;
 }

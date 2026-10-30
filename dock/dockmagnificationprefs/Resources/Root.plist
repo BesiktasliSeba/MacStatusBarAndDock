@@ -367,6 +367,30 @@
 			<key>useSearchBar</key>
 			<true/>
 		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>id</key>
+			<string>TRASH_GROUP</string>
+			<key>label</key>
+			<string>Trash</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.dockmagnification/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.dockmagnification</string>
+			<key>id</key>
+			<string>TRASH</string>
+			<key>key</key>
+			<string>showTrash</string>
+			<key>label</key>
+			<string>Show Trash in Dock</string>
+		</dict>
 	</array>
 	<key>title</key>
 	<string>Dock</string>

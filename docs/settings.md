@@ -17,7 +17,7 @@ On iPadOS 18, Settings has no room for tweak rows in its sidebar, so Status Bar,
 | Notifications in Today View | Your notifications in a box above the widgets. | On |
 | Show Spotlight Search | A magnifying glass next to the clock that opens Spotlight. | On |
 | Tweak Settings | Your tweaks' settings in Spotlight, in a section after Apple's results. | Off |
-| Actions | Show Desktop, your desktops, Downloads, New Finder Window, Lock Screen and Force Quit in Spotlight, when what you type matches. | Off |
+| Actions | Show Desktop, your desktops, Downloads, New Finder Window, Activity Monitor, Lock Screen and Force Quit in Spotlight, when what you type matches. Typing an action's name brings the Actions to the top of the results, right after Apple's Top Hit when there is one. | Off |
 | Windows | Your open windows in Spotlight, when what you type matches. | Off |
 | Desktop and Downloads | Files in On My iPad > Desktop and Downloads in Spotlight: right away on iPadOS 15, once iPadOS indexes them on 16. Needs Files allowed in Settings > Siri & Search. | Off |
 | Automatically Hide and Show the Status Bar | Hides the menu bar until the pointer reaches the top edge. | Off |
@@ -81,6 +81,7 @@ The window settings, on their own page between Status Bar and Dock. On iPadOS 15
 | Show Finder in Dock | Finder as the first Dock icon. Not shown while Finder is off. | On |
 | Show Downloads in Dock | The Downloads stack at the end of the Dock. | On |
 | Downloads From | Which apps' downloads the stack shows: Safari, plus other apps you pick. | Safari |
+| Show Trash in Dock | A Trash at the end of the Dock, after Downloads, while Finder is on. It looks full when Finder's Trash has items, a tap opens it in Finder, and a long press or a right click offers Open and Empty Trash, which asks first. Drop files on it to move them to the Trash, a Dock app to take it out of the Dock, or a drive from Finder's sidebar to eject it (iPadOS 16 and later). | Off |
 
 ## Settings > Home Screen & Multitasking
 
@@ -129,7 +130,7 @@ For keyboards without a function row, like the original Magic Keyboard for iPad.
 
 | Control | What it does | New install |
 |---|---|---|
-| RAM & CPU | Available memory, used memory and the CPU load, in a 2 x 1 control. A tap opens the details (memory, CPU and uptime). On iPadOS 18, add it with Add a Control (search for RAM). On iPadOS 15 to 17, add it in Settings > Control Center. With BigSurCenter it fits a square tile. | Not added |
+| RAM & CPU | Available memory, used memory and the CPU load, in a 2 x 1 control. A tap opens the details (memory, CPU and uptime) with Open Activity Monitor. On iPadOS 18, add it with Add a Control (search for RAM). On iPadOS 15 to 17, add it in Settings > Control Center. With BigSurCenter it fits a square tile. With Memory Magic on iPadOS 15 to 17, a tap on its tile, which shows the same numbers, offers to put RAM & CPU in its place. | Not added |
 
 ## Elsewhere in Settings
 
@@ -154,4 +155,6 @@ These have no switch:
 - The red badge on the Settings icon is hidden.
 - The Settings app has no large title and no alert banners over its sidebar, and Accessibility starts its own section.
 - Command-Tab brings an app's window to the front when it has one, and a quick Command-Tab from a window goes back to the app you used before.
+- Windows have a smallest size with every window engine, as with Stage Manager: the app at least 320 x 300 points, as far as the screen allows.
+- With Aerial, Zetsu or MilkyWay4 on iPadOS 15 to 18, every app with a window has its card in iPadOS's App Switcher, with a picture of the window. A tap on the card brings the window forward.
 - In portrait, a Home Screen page whose icon layout only fits landscape (for example one tuned with Atria, which keeps one layout for both orientations) keeps its landscape positions, so no icon ends up off the screen. Pages that fit in portrait are left as they are, and so is editing the Home Screen.

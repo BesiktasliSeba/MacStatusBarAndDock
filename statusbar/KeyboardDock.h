@@ -46,4 +46,12 @@ static inline bool MSBDKeyboardDockUnder(bool ownField, bool drawnDocked, bool s
 static inline bool MSBDOwnBarUnderDockFloor(bool hardwareKeyboard, double barH, double barLevel, double floorLevel) {
     return hardwareKeyboard && barH >= kMSBDInputBarMinH && barH < 100.0 && barLevel < floorLevel - 0.25;
 }
+// The Keyboard Button's tidy pill (StatusBar.x DMPlaceKeyboardPillIn, iPadOS 15): the hardware keyboard's pill window is scaled into the status bar
+// only while that window holds the pill alone. It is also where another process's keyboard is drawn (Spotlight's search: SBMedusaHostedKeyboardWindow),
+// which SpringBoard's own keyboard hosts do not show: ownH is what they show, remoteH UIKit's record of the keyboard on the screen whichever process
+// shows it (_UIRemoteKeyboards' current state). A full keyboard there (over 100 pt: no bar or pill is that tall) is no pill: the window stays as it
+// is (M1 15.6.1, 28 Oct, 1.7.0: Show Keyboard in Spotlight, then the keyboard shrank into the status bar). The height the pill's decision reads:
+static inline double MSBDKeyboardPillMeasure(double ownH, double remoteH) {
+    return remoteH > 100.0 && remoteH > ownH ? remoteH : ownH;
+}
 #endif

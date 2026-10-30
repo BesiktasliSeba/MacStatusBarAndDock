@@ -12,6 +12,8 @@
 #include <sys/sysctl.h>
 #include <unistd.h>
 #include "../common/SystemStats.h"
+#include "../common/ActMonText.h"   // (MSBD_ACTMON_OPEN_NOTE: the "Open Activity Monitor" button posts it; SpringBoard opens the window)
+#include <notify.h>
 #include "RAMCPULayout.h"   // (where the tile's lines go, 2 x 1 or square -- plain C, tested on the Mac: tools/test-ccmodule.sh)
 // (a release-build feature marker, as StatusBar.x's: tools/verify-release-features.sh finds "msbd-feature:<name>" in the built bundle)
 #define DM_FEATURE_MARK(name) do { static const char *const dmFeatureMark = "msbd-feature:" name; __asm__ volatile("" :: "r"(dmFeatureMark)); } while (0)
@@ -67,6 +69,7 @@ static void MSBDModuleLog(NSString *what) {   // (debug builds, with /tmp/macsta
     UITapGestureRecognizer *_tap;
     int _laidOutSquare;   // (-1: not laid out yet; the log line when the layout changes)
     UILabel *_title, *_memHeader, *_cpuHeader, *_memLabels[3], *_memValues[3], *_memExtra, *_cpuLabel, *_cpuValueBig, *_cpuExtra, *_uptime;
+    UIButton *_openButton;
     UIView *_memTrack, *_memFill, *_cpuTrack, *_cpuFill;
     NSTimer *_timer;
     MSBDCPUTicks _ticks; BOOL _haveTicks;
@@ -129,6 +132,14 @@ static void MSBDModuleLog(NSString *what) {   // (debug builds, with /tmp/macsta
     _cpuTrack = [self track:_detail fill:&fill]; _cpuFill = fill;
     _cpuExtra = [self label:_detail size:11 weight:UIFontWeightRegular alpha:0.6 digits:YES];
     _uptime = [self label:_detail size:11 weight:UIFontWeightRegular alpha:0.6 digits:YES];
+    _openButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [_openButton setTitle:@"Open Activity Monitor" forState:UIControlStateNormal];
+    _openButton.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+    [_openButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    _openButton.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.14];
+    _openButton.layer.cornerRadius = 9.0;
+    [_openButton addTarget:self action:@selector(openActivityMonitor) forControlEvents:UIControlEventTouchUpInside];
+    [_detail addSubview:_openButton];
     self.view = v;
     [self refreshLabels];
 }
@@ -162,7 +173,8 @@ static void MSBDModuleLog(NSString *what) {   // (debug builds, with /tmp/macsta
     _cpuLabel.frame = CGRectMake(x, y, pw * 0.5, 20.0); _cpuValueBig.frame = CGRectMake(x + pw * 0.5, y, pw * 0.5, 20.0); y += 24.0;
     _cpuTrack.frame = CGRectMake(x, y + 2.0, pw, 6.0); y += 14.0;
     _cpuExtra.frame = CGRectMake(x, y, pw, 14.0); y += 24.0;
-    _uptime.frame = CGRectMake(x, y, pw, 14.0);
+    _uptime.frame = CGRectMake(x, y, pw, 14.0); y += 22.0;
+    _openButton.frame = CGRectMake(x, y, pw, 34.0);
     [self layoutBars];
 }
 - (void)layoutBars {
@@ -248,7 +260,8 @@ static void MSBDModuleLog(NSString *what) {   // (debug builds, with /tmp/macsta
 - (void)dealloc { [_timer invalidate]; }
 
 // Control Center: the panel
-- (CGFloat)preferredExpandedContentHeight { return 300.0; }
+- (void)openActivityMonitor { notify_post(MSBD_ACTMON_OPEN_NOTE); }   // (SpringBoard dismisses Control Center and opens the window)
+- (CGFloat)preferredExpandedContentHeight { return 340.0; }
 - (CGFloat)preferredExpandedContentWidth { return 340.0; }
 - (BOOL)shouldBeginTransitionToExpandedContentModule { return YES; }
 - (BOOL)shouldExpandModuleOnTouch:(id)touch { return YES; }   // (a tap opens the panel)

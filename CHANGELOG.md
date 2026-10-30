@@ -2,6 +2,40 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.7.0
+
+### New
+- Dock: a Trash at its end, after the Downloads stack, as on a Mac. Turn it on in Settings > Dock > Show Trash in Dock. It looks full when Finder's Trash has items in it, a tap opens the Trash in Finder, and a long press or a right click offers Open and Empty Trash, which asks first.
+- Drop files on the Trash from the desktop, a Finder window or the Downloads stack to move them to the Trash. Undo and Put Back work as in Finder.
+- Drag an app off the Dock onto the Trash to take it out of the Dock. The app stays installed and its icon goes to the Home Screen.
+- iPadOS 16 and later: drag a USB drive or SD card from Finder's sidebar and the Trash turns into Eject. Drop the drive on it to eject it.
+- Activity Monitor: a Mac-style window with the running processes and their CPU, memory and disk use, updated every 2 seconds. Sort by any column, search, show All, My or System Processes, inspect a process and quit apps. System processes are listed without figures, and the Energy and Network tabs have no figures per process.
+- Open Activity Monitor from the Go menu, from the RAM & CPU panel in Control Center, or from Spotlight with its Actions turned on in Settings > Status Bar.
+- With Aerial, Zetsu or MilkyWay4 on iPadOS 15 to 18, every app with a window has its card in iPadOS's App Switcher, as with Stage Manager, with a current picture of the window. Before, an app opened straight into a window or brought back after a respring had no card, and some cards were black. A tap on a card brings its window forward, and a swipe up quits the app and closes its window.
+
+### Improvements
+- Windows have a smallest size with every window engine: the app at least 320 points wide, as in Stage Manager, and 300 points tall. A corner drag stops there, and windows keep that size in the Window menu's layouts, in Fit to Window, when the iPad turns and when they come back after a respring, where the screen has room. Before, a corner drag could make a window too small for the app, down to 150 x 150 points with the Stage Manager engine through TrollPad.
+- Spotlight's Actions: typing an action's name, for example "activity" for Activity Monitor, brings the Actions to the top of the results, right after Apple's Top Hit when there is one. An action found by another word, such as "cpu", stays after Apple's results.
+- RAM & CPU shows gigabytes with one decimal at every size: 11.6 GB where it said 12 GB. Activity Monitor writes them the same way.
+- A file dragged from a Finder window stays visible above the Dock while it is over the Downloads stack or the Trash.
+- Control Center with Memory Magic (iPadOS 15 to 17): its tile shows the tweak's RAM and CPU numbers but did nothing when tapped. A tap there now offers to put the tweak's own RAM & CPU control in its place, with the details a tap away. With BigSurCenter, SpringBoard restarts to show it. Memory Magic stays installed, and Not Now keeps the tile and doesn't ask again.
+
+### Fixes
+- Stage Manager engine on iPadOS 16 and 17: Spotlight opened over your windows keeps its on-screen keyboard, so you can type without a hardware keyboard. The keyboard went away right after Spotlight opened, and a tap in the search field didn't bring it back.
+- Stage Manager engine: Spotlight stays open when you turn the iPad. It closed a moment after the turn.
+- Stage Manager engine: Fit to Window tiles the windows again after every turn, also when the iPad is turned and quickly back. The windows could stay overlapping.
+- With a hardware keyboard, Esc closes the Dock's Downloads panel also while an app's window is active, and with text in the panel's search field the first Esc clears it.
+- Finder and TextEdit stay active in front of the other windows when you force quit the app behind them. They dropped behind the app windows.
+- MilkyWay4: a window brought back after a respring and then made bigger shows the whole app. The app could stay cut at its old size, with grey beside and below it.
+- Keyboard Button in Status Bar (iPadOS 15): with a hardware keyboard, the on-screen keyboard you show in Spotlight stays up. It was shrunk into the menu bar along with the button a moment after it appeared.
+- Mac pointer: Pointer Animations stay off when Reduce Motion is turned off again. iPadOS 15 to 17 turn them back on with it. If you turn Pointer Animations on yourself, they stay on.
+- Stage Manager engine on iPadOS 16: a corner drag keeps the opposite corner where it is, as with the other engines. The window grew and shrank around its middle.
+- Stage Manager engine on iPadOS 17 and 18: a corner dragged in past the smallest size and back out stays under your finger.
+- iPadOS 18: Open Activity Monitor in the RAM & CPU panel closes Control Center, and open menus close when Control Center comes up.
+- Switching the window engine, or any respring, no longer removes your cards from iPadOS's App Switcher with Aerial, Zetsu or MilkyWay4.
+- On palera1n, apps you quit are no longer started again in the background before you open them.
+- Activity Monitor's Memory and Network column headings are no longer cut off.
+
 ## 1.6.1
 
 ### Fixes

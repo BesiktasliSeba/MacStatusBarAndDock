@@ -108,6 +108,16 @@ static NSArray<NSDictionary *> *DMFinderDrivesScan(void) {   // @[{t: volume nam
         [out addObject:@{@"t": on.lastPathComponent, @"p": on, @"fat": @(fat), @"from": from, @"type": type}];
     }
     free(fs);
+#if DEBUG
+    // (tests without a real drive, 1.7.0's Trash: the folder named in /tmp/msb-fdrive-fake is listed as a connected drive -- the sidebar shows it, a
+    //  drag of it turns the Dock's Trash into Eject, its .Trashes/501 is its Trash -- outside LiveFiles, so nothing of the system's is touched)
+    if (DMTestFlag("/tmp/msb-fdrive-fake")) {
+        NSString *fp = [[NSString stringWithContentsOfFile:@"/tmp/msb-fdrive-fake" encoding:NSUTF8StringEncoding error:nil] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        BOOL isDir = NO;
+        if (fp.length > 1 && [[NSFileManager defaultManager] fileExistsAtPath:fp isDirectory:&isDir] && isDir)
+            [out addObject:@{@"t": fp.lastPathComponent, @"p": DMFinderNorm(fp), @"fat": @NO, @"from": @"fake://disk99s1", @"type": @"fake"}];
+    }
+#endif
     [out sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) { return [a[@"t"] localizedStandardCompare:b[@"t"]]; }];
     return out;
 }
@@ -125,6 +135,9 @@ static NSArray<NSDictionary *> *DMFinderDrives(void) {
 static void DMFinderDrivesForget(void) { os_unfair_lock_lock(&gFinderDrivesLock); gFinderDrivesCache = nil; os_unfair_lock_unlock(&gFinderDrivesLock); }
 // The drive a REAL path is on (its mount point), or nil.
 static NSString *DMFinderDriveRoot(NSString *real) {
+#if DEBUG
+    if (DMTestFlag("/tmp/msb-fdrive-fake")) for (NSDictionary *d in DMFinderDrives()) if ([d[@"type"] isEqualToString:@"fake"] && DMFinderInside(real, d[@"p"])) return d[@"p"];
+#endif
     if (!DMFinderInside(real, DMFinderNorm(kFinderLiveFiles))) return nil;
     for (NSDictionary *d in DMFinderDrives()) if (DMFinderInside(real, d[@"p"])) return d[@"p"];
     return nil;
@@ -837,10 +850,22 @@ static void DMFinderOpen(NSString *path, BOOL newWindow);
 @property (nonatomic) BOOL iconSprung, iconTimed;
 @property (nonatomic) CGPoint grab;              // (a picture of the items themselves -- the desktop's icons --: where the finger holds it, from its centre)
 @property (nonatomic) BOOL hasGrab;
+@property (nonatomic) NSInteger trashKind;       // (1.7.0: what a drop on the Dock's Trash does with these items, common/DockTrash.h; -1 until first asked)
+@property (nonatomic) BOOL ejectShown;           // (the Dock's Trash shows Eject for this drag of drives)
+@property (nonatomic) BOOL overDock;             // (over a Dock icon that takes drops -- the Trash, the Downloads stack: the picture rides above the finger)
 @end
 @implementation DMFDrag
 @end
 static DMFDrag *gFD;          // the drag under way, or the last one while it waits for its app's answer
+// The Dock's Trash as a drop target (1.7.0, statusbar/DockTrash.h, after this file): the bin under a point, its look while a drag is over it, the
+// drop itself (Move to Trash, or the drives ejected), and the Eject sign for a drag of drives.
+static UIView *DMFDTrashIconAt(CGPoint sp);
+static void DMFDTrashHover(DMFDrag *d, UIView *bin);
+static void DMFDTrashTakeDrop(DMFDrag *d);
+static void DMFDTrashSetEject(BOOL on);
+static BOOL DMFDTrashDragEjects(DMFDrag *d);
+static void DMDockTrashInit(void);
+static void DMDockTrashDrivesChanged(void);
 static CGRect gFDFromRect;    // (the held row / icon on screen: the tile grows out of it instead of appearing under the finger)
 static UIView *gFDCustomTile; static CGPoint gFDCustomGrab;   // (the next drag's picture, when its source draws its own: the desktop's icons, Desktop.h)
 static uint8_t gFDSeq;
@@ -993,6 +1018,23 @@ static CGPoint DMFDHostPoint(UIView *host, CGPoint sp) {
     if (host == gMenuRotator) return sp;   // (its space is the screen's, see DMMenuHost)
     return [host convertPoint:sp fromCoordinateSpace:(host.window.screen ?: [UIScreen mainScreen]).coordinateSpace];
 }
+static void DMFDPlaceTile(DMFDrag *d, CGPoint sp);
+// A drag from a Finder window rides in the native layer, which is under the Dock: over the Dock's own drop targets (the Downloads stack, the Trash)
+// its picture moves into our menu window, above the Dock, for the rest of the drag -- as on a Mac, a dragged item never goes under the Dock (it
+// did: the picture was hidden by the Dock while the bin or the stack lit up, 17.5, 1.7.0).
+static void DMFDTileAboveDock(DMFDrag *d, CGPoint sp) {
+    UIView *tile = d.tile;
+    if (!tile || !DMFDFromFinderWindow(d) || (gMenuWindow && tile.window == gMenuWindow)) return;
+    UIView *host = DMMenuHost();
+    if (!host) return;
+    if (gMenuWindow.hidden) gMenuWindow.hidden = NO;
+    if (!gOverlay) DMFDHitTestsOpaque(gMenuWindow.layer, NO);
+    [tile removeFromSuperview];
+    [host addSubview:tile];
+    DMFDNoTouches(tile);
+    DMFDPlaceTile(d, sp);
+    DMLog(@"[finder] drag: over the Dock -- its picture rides above the Dock now");
+}
 static void DMFDPlaceTile(DMFDrag *d, CGPoint sp) {
     UIView *host = d.tile.superview;
     if (!d.tile || !host) return;
@@ -1000,6 +1042,9 @@ static void DMFDPlaceTile(DMFDrag *d, CGPoint sp) {
     CGSize t = d.tile.bounds.size, b = host.bounds.size;
     CGFloat x = p.x + t.width / 2.0 - 16.0, y = p.y + t.height / 2.0 - 16.0;
     if (d.hasGrab) { x = p.x - d.grab.x; y = p.y - d.grab.y; }
+    // (over the Dock's Trash or Downloads stack the picture goes up above the finger: the icon under it stays in sight while it lights up -- the
+    //  picture covered the bin, Eject sign and all, 17.5 1.7.0)
+    if (d.overDock) y = p.y - t.height / 2.0 - 34.0;
     if (b.width > t.width + 8.0) x = MIN(x, b.width - t.width / 2.0 - 4.0);   // (kept on the screen: at the Dock's right end -- the Downloads stack -- it was cut off)
     if (b.height > t.height + 8.0) y = MIN(y, b.height - t.height / 2.0 - 4.0);
     d.tile.center = CGPointMake(x, y);
@@ -1069,6 +1114,7 @@ static void DMFDFinish(DMFDrag *d, BOOL ok) {
     if (!d || d.finished) return;
     d.finished = YES; d.cancelled = YES; [d.zipper cancel];
     DMFDIconHover(d, nil);
+    if (d.ejectShown) { d.ejectShown = NO; DMFDTrashSetEject(NO); }   // (the Dock's Trash is the Trash again)
     UIView *tile = d.tile; d.tile = nil; d.badge = nil;
     BOOL inMenuWindow = tile.window && tile.window == gMenuWindow;
     [UIView animateWithDuration:ok ? 0.18 : 0.25 animations:^{ tile.alpha = 0; tile.transform = CGAffineTransformMakeScale(ok ? 0.4 : 0.8, ok ? 0.4 : 0.8); } completion:^(BOOL f) {
@@ -1092,9 +1138,10 @@ static void DMFinderDragBegin(DMFinderWindow *from, NSArray<DMFinderItem *> *ite
     if (DMNativeUndoRaise(from)) DMLog(@"[finder] drag from a window its press brought forward: the window in front before is in front again");   // (NativeWindow.h)
     if (gFD) DMFDFinish(gFD, NO);   // (an earlier drag still waiting for its app: its picture goes now, it never stays behind)
     DMFDrag *d = [DMFDrag new];
-    d.items = items; d.from = from; d.proposal = -1;
+    d.items = items; d.from = from; d.proposal = -1; d.trashKind = -1;
     gFDTokens = (uint16_t)(gFDTokens % 4095 + 1); d.token = gFDTokens;
     gFD = d;
+    if (DMFDTrashDragEjects(d)) { d.ejectShown = YES; DMFDTrashSetEject(YES); }   // (a drag of drives: the Dock's Trash shows Eject, as on a Mac)
     DMFinderItem *it = items.firstObject;
     UIView *custom = gFDCustomTile; gFDCustomTile = nil;
     UIView *tile = custom ?: [[UIView alloc] initWithFrame:CGRectMake(0, 0, 210, 44)];
@@ -1218,11 +1265,24 @@ __attribute__((noinline)) static void DMFinderDragMove(CGPoint sp, BOOL option) 
     if (!d || d.finished || !d.tile) return;
     d.option = option;
     DMFDPlaceTile(d, sp);
+    // (over the Dock's Trash: it lights up and takes the drop -- Move to Trash, or Eject for drives; it never opens a window under a resting drag)
+    UIView *bin = DMFDTrashIconAt(sp);
+    if (bin) {
+        DM_FEATURE_MARK("finder-drag-dock-trash");
+        if (d.app) { DMFDSend(d.app, CGPointZero, 8); d.app = nil; d.scene = nil; }
+        d.springFolder = nil;
+        if (!d.overDock) { d.overDock = YES; DMFDPlaceTile(d, sp); }
+        DMFDTileAboveDock(d, sp);
+        DMFDTrashHover(d, bin);
+        return;
+    }
     // (over the Dock's Downloads stack: its folder takes it, like a folder in the Dock on a Mac; resting on it a second opens that folder)
     UIView *icon = DMFDDownloadsIconAt(sp);
     NSString *iconDir = icon ? DMFDIconFolder(icon) : nil;
     if (iconDir) {
         DM_FEATURE_MARK("finder-drag-downloads-stack");
+        if (!d.overDock) { d.overDock = YES; DMFDPlaceTile(d, sp); }
+        DMFDTileAboveDock(d, sp);
         DMFDIconHover(d, icon);
         if (d.app) { DMFDSend(d.app, CGPointZero, 8); d.app = nil; d.scene = nil; }
         d.springFolder = nil;
@@ -1230,6 +1290,7 @@ __attribute__((noinline)) static void DMFinderDragMove(CGPoint sp, BOOL option) 
         DMFDSpringIcon(d, icon, iconDir, @"the Downloads stack");
         return;
     }
+    if (d.overDock) { d.overDock = NO; DMFDPlaceTile(d, sp); }   // (off the Dock's targets: the picture at the finger again)
     DMFinderWindow *fw = DMFDFinderAt(sp);
     if (fw) {   // (over a Finder window: its folder takes it, unless that is where the items already are, or an item itself)
         DMFDIconHover(d, nil);
@@ -1411,6 +1472,7 @@ static void DMFinderDragEnd(CGPoint sp, BOOL drop, BOOL option) {
     if (!d || d.finished || !d.tile || d.answered) return;
     d.option = option;
     if (!drop) { if (d.app) DMFDSend(d.app, CGPointZero, 8); DMFDFinish(d, NO); return; }
+    if (DMFDTrashIconAt(sp)) { if (d.app) DMFDSend(d.app, CGPointZero, 8); DMFDTrashTakeDrop(d); return; }   // (the Dock's Trash, DockTrash.h)
     UIView *icon = DMFDDownloadsIconAt(sp);
     NSString *iconDir = icon ? DMFDIconFolder(icon) : nil;
     if (iconDir) { DMFDDropInto(d, iconDir, DMFDFromFinderWindow(d) ? d.from : DMFinderOps(), @"the Dock's Downloads stack"); return; }
@@ -1750,6 +1812,7 @@ static void DMFinderDrivesCheck(NSString *why);
     dispatch_source_t _watch; BOOL _watchPending;   // (the open folder is watched: a change in it shows at once, whoever made it)
     NSMutableArray *_watchMore;   // (the Trash: the connected drives' Trashes are watched too)
     unsigned long long _free;     // (the free space where the open folder is, for the status line; ULLONG_MAX: unknown)
+    DMFinderItem *_sideDrive; CGPoint _sideStart; BOOL _sideLifted; __weak UIView *_sideCell;   // (a drive held in the sidebar, -dm_sideDragPress:)
 }
 - (instancetype)initWithTitle:(NSString *)title frame:(CGRect)frame {
     self = [super initWithTitle:title frame:frame];
@@ -1858,6 +1921,12 @@ static void DMFinderDrivesCheck(NSString *why);
         lp.delegate = self;
         lp.name = @"dm.finder.drag";
         [v addGestureRecognizer:lp];
+    }
+    {   // A drive in the sidebar can be dragged, as on a Mac -- onto the Dock's Trash, which turns into Eject for it (1.7.0, DockTrash.h); press and move
+        UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(dm_sideDragPress:)];
+        lp.minimumPressDuration = 0.3; lp.allowableMovement = CGFLOAT_MAX; lp.delegate = self;
+        lp.name = @"dm.finder.sidedrag";
+        [_sidebar addGestureRecognizer:lp];
     }
     [self updateViewSwitch];
     return self;
@@ -3139,6 +3208,35 @@ static NSString *DMFinderResolveTyped(NSString *p) {
         _dragArmed = nil; _dragLifted = NO; _pressActive = NO;
     }
 }
+// A drive row of the sidebar held and moved (1.7.0): the drive itself rides on Finder's drag -- the Dock's Trash shows Eject while it does, and a
+// drop on it ejects the drive (DockTrash.h); anywhere else it is the drive's folder, as when its item is dragged from a list (copied out, never
+// moved: the volume can't change). Only drive rows: the other places stay where they are.
+- (void)dm_sideDragPress:(UILongPressGestureRecognizer *)g {
+    CGPoint sp = [g.view convertPoint:[g locationInView:g.view] toCoordinateSpace:g.view.window.screen.coordinateSpace];
+    if (g.state == UIGestureRecognizerStateBegan) {
+        NSIndexPath *ip = [_sidebar indexPathForRowAtPoint:[g locationInView:_sidebar]];
+        NSDictionary *row = ip && ip.section < (NSInteger)_places.count && ip.row < (NSInteger)[_places[ip.section][@"rows"] count] ? _places[ip.section][@"rows"][ip.row] : nil;
+        _sideDrive = [row[@"drive"] boolValue] ? DMFinderItemFor(row[@"p"]) : nil;
+        _sideStart = sp; _sideLifted = NO;
+        _sideCell = ip ? [_sidebar cellForRowAtIndexPath:ip] : nil;
+        if (_sideDrive) { DMLog(@"[finder] a drive held in the sidebar: moving it drags the drive"); [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred]; }
+        return;
+    }
+    if (g.state == UIGestureRecognizerStateChanged) {
+        if (!_sideDrive) return;
+        if (!_sideLifted && hypot(sp.x - _sideStart.x, sp.y - _sideStart.y) > 10.0) {
+            DM_FEATURE_MARK("finder-sidebar-drive-drag");
+            _sideLifted = YES;
+            UIView *cell = _sideCell;
+            gFDFromRect = cell ? [cell convertRect:cell.bounds toCoordinateSpace:cell.window.screen.coordinateSpace] : CGRectZero;
+            DMFinderDragBegin(self, @[_sideDrive], sp);
+        }
+        if (_sideLifted) DMFinderDragMove(sp, [self dm_optionHeld:g]);
+        return;
+    }
+    if (_sideLifted) DMFinderDragEnd(sp, g.state == UIGestureRecognizerStateEnded, [self dm_optionHeld:g]);
+    _sideDrive = nil; _sideLifted = NO; _sideCell = nil;
+}
 // The menu of a hold that stayed still, or of a pointer's secondary click: a Mac menu of our own at the finger / pointer, with the same items the
 // long-press menu had (the menu interaction's own UIMenu). UIKit's menu took the finger over the moment it opened -- our press was cancelled,
 // and a hold that then moved slid through the menu's rows instead of lifting the item (iPad 2 30 Sep); ours leaves the press alone: a move
@@ -3280,6 +3378,7 @@ static void DMFinderDrivesCheck(NSString *why) {
     NSMutableArray *desc = [NSMutableArray array];
     for (NSDictionary *d in drives) [desc addObject:[NSString stringWithFormat:@"%@/%@ (%@ via %@%@)", [d[@"p"] stringByDeletingLastPathComponent].lastPathComponent, d[@"t"], [d[@"from"] componentsSeparatedByString:@"/"].firstObject, d[@"type"], [d[@"fat"] boolValue] ? @", FAT: 4 GB file limit" : @""]];
     DMLog([NSString stringWithFormat:@"[finder] drives (%@): %lu connected%@%@", why, (unsigned long)drives.count, drives.count ? @": " : @"", [desc componentsJoinedByString:@"; "]]);
+    DMDockTrashDrivesChanged();   // (the Dock's Trash: a drive's Trash is counted, or no longer)
     if (first) return;
     for (DMNativeWindow *w in [gNativeWindows copy]) if ([w isKindOfClass:[DMFinderWindow class]]) [(DMFinderWindow *)w dm_drivesChanged];
 }
@@ -3401,6 +3500,7 @@ static void DMFinderDockInit(void) {
     notify_register_dispatch("com.besiktasliseba.macstatusbar.finder.dock", &t1, dispatch_get_main_queue(), ^(int t) { DMFinderDockTapped(); });
     notify_register_dispatch("com.besiktasliseba.macstatusbar.finder.new", &t2, dispatch_get_main_queue(), ^(int t) { DMFinderOpen(nil, YES); });
     notify_register_dispatch("com.besiktasliseba.macstatusbar.finder.remove", &t3, dispatch_get_main_queue(), ^(int t) { if (gFinderOn) DMFinderRemoveFromDockAsked(); });
+    DMDockTrashInit();   // (the Dock's Trash: its tap, Open and Empty Trash, and the bin's state -- DockTrash.h)
     DMFinderPublishWindowCount();
     DMFDSweep();   // (files staged for apps before a respring)
 }

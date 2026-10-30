@@ -56,6 +56,7 @@ static void *DMSMCodeSymbolIn(void *p) {
     return DMSMSymbolSectionKind(ptrauth_strip(p, ptrauth_key_asia)) == 2 ? p : NULL;
 }
 #include "SMRoles.h"   // (the window roles a stage has: DMSMPlanValid reads the highest, sm-nolimit)
+#include "WindowMinSize.h"   // (every engine's smallest window: DMSMFineGrid's first sizes, 1.7.0)
 #include "SMWindowKey.h"   // (one window, one key: its own scene -- M-2, sm-multiwin)
 
 // ---- one place for refusals -------------------------------------------------------------------------------------------------------------------
@@ -1602,9 +1603,15 @@ static BOOL DMSMWholeScreenFrame17(BOOL windowing, BOOL ourEngine, long long rol
 // _gridHeightsForSafeHeight:minimumHeight:480.0 ...; widths from 320), and its flexible grid (_SBDisplayItemFlexibleGrid) only ever picks a height
 // from that list -- so a window was never shorter than 480 pt: Fit to Window's quarters and the Top/Bottom Half layouts in landscape (an 11" iPad's
 // quarter is 321 pt, an iPad Air's 314) came out 480 pt tall and overlapped. On 16.7.7 the engine ran with TrollPad's list (from 150: TrollPad
-// -setGridHeights:), which hid this. 17+: the height list starts at 300 pt (every iPad with Stage Manager has quarters of at least 314 pt); Apple's
-// own list is kept where it starts lower (TrollPad's 150). 16: Apple's minimum, as before. The diagnostics record shows Apple's first sizes.
-static const CGFloat kSM17MinWindowHeight = 300.0;
+// -setGridHeights:), which hid this. 17+: the height list starts at 300 pt (every iPad with Stage Manager has quarters of at least 314 pt). 16:
+// Apple's minimum, as before. The diagnostics record shows Apple's first sizes.
+// Every iPadOS (1.7.0): never below the smallest window of the other engines either (WindowMinSize.h: the app 320 x 300). TrollPad's lists start
+// at 150 (-setGridWidths: / -setGridHeights:, 16.7.7 and 17.5.1), and a corner drag took an app down to 150 x 150 (17.5.1 and 16.7.7, 29 Oct):
+// a window's live resize stops at the lists' first sizes (-[SBItemResizeGestureSwitcherModifier handleGestureEvent:] reads gridWidths /
+// gridHeights' firstObject, with Apple's rubber band past it) and the size it ends at comes from the same lists (17: _SBDisplayItemFlexibleGrid
+// builds its widths and heights from them, its -minSize is their first sizes). So the lists start there and the app is laid out once, at a size it
+// can take. Where Apple's own list starts higher (a width of 414 on wide displays, 16's heights) it is Apple's; a screen smaller than that: as Apple's.
+static const CGFloat kSM17MinWindowHeight = kMSBDWindowMinAppHeight;   // (300: WindowMinSize.h, the app's smallest height on every engine)
 static double gSMAppleGridLo[2];   // (the smallest width / height in Apple's lists, as last seen: the iPadOS 17 diagnostics record)
 static NSArray<NSNumber *> *DMSMFineGrid(NSArray *orig, CGFloat full, int axis) {   // axis: 0 widths, 1 heights
     static NSMutableDictionary<NSString *, NSArray *> *cache;
@@ -1615,6 +1622,8 @@ static NSArray<NSNumber *> *DMSMFineGrid(NSArray *orig, CGFloat full, int axis) 
     for (id x in orig) { if (![x isKindOfClass:[NSNumber class]]) return orig; lo = MIN(lo, [x doubleValue]); }
     if (!isfinite(lo) || lo < 1.0 || lo > full) return orig;
     if (axis >= 0 && axis < 2) gSMAppleGridLo[axis] = lo;
+    CGFloat least = axis == 0 ? kMSBDWindowMinWidth : kMSBDWindowMinAppHeight;   // (every engine's smallest app, see above)
+    if (lo < least && least < full) lo = least;
     if (axis == 1 && DMSMLayoutGen() == 17 && lo > kSM17MinWindowHeight && kSM17MinWindowHeight < full) lo = kSM17MinWindowHeight;   // (iPadOS 17+, see above)
     NSString *key = [NSString stringWithFormat:@"%.0f-%.0f", lo, full];
     NSArray *hit = cache[key];

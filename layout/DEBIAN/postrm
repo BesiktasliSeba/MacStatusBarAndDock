@@ -20,9 +20,9 @@ if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
     # the list of names our Spotlight sections read (statusbar/SpotlightBridge.h; normally gone a few seconds after Spotlight read it) and its folder
     rm -f /var/jb/var/mobile/Library/Caches/com.besiktasliseba.macstatusbar/Spotlight.plist
     rmdir /var/jb/var/mobile/Library/Caches/com.besiktasliseba.macstatusbar 2>/dev/null
-    # the prewarm quit set (and the debug-only diagnostic domain), the prewarm block's crash-loop markers (postinst), and the prewarm scheduler
-    # restarted so our code leaves it (see postinst)
-    rm -f "$P/com.besiktasliseba.macstatusbar.prewarm.plist" "$P/com.besiktasliseba.macstatusbar.prewarm.diag.plist" "$P/MacStatusBarAndDock-PrewarmBlockOff.txt" "$P/MacStatusBarAndDock-PrewarmBlockStarts.txt"
+    # the prewarm quit set (and the debug-only diagnostic domain), its file for dasd (common/PrewarmQuitSet.h), the prewarm block's crash-loop markers
+    # (postinst), and the prewarm scheduler restarted so our code leaves it (see postinst)
+    rm -f "$P/com.besiktasliseba.macstatusbar.prewarm.plist" "$P/com.besiktasliseba.macstatusbar.prewarm.diag.plist" "$P/MacStatusBarAndDock-PrewarmQuitSet.plist" "$P/MacStatusBarAndDock-PrewarmBlockOff.txt" "$P/MacStatusBarAndDock-PrewarmBlockStarts.txt"
     # the system pointer process would keep running the removed Mac pointer code until a reboot: restarted (see the postinst)
     /var/jb/usr/bin/killall -9 pointeruid 2>/dev/null
     /var/jb/usr/bin/killall -9 dasd 2>/dev/null

@@ -131,6 +131,7 @@ static NSArray<NSDictionary *> *DMSpotActionRows(void) {
         if (dl) [rows addObject:DMSpotRow(@"a", @"Downloads", @"Opens the Downloads folder in Finder", @"downloads download", @"arrow.down.circle", nil, ^{ DMSpotOpenFolder(dl); })];
         [rows addObject:DMSpotRow(@"a", @"New Finder Window", @"Finder", @"new finder window", @"folder", nil, ^{ DMFinderOpen(nil, YES); })];
     }
+    [rows addObject:DMSpotRow(@"a", @"Activity Monitor", @"Opens Activity Monitor", @"activity monitor processes cpu memory ram", @"chart.bar.xaxis", nil, ^{ DMActivityMonitorOpen(); })];
     [rows addObject:DMSpotRow(@"a", @"Lock Screen", @"Locks this iPad", @"lock screen", @"lock", nil, ^{ DMLock(); })];
     SBApplication *front = DMForceQuitTargetApp();   // (the app the menu bar names, as the Apple menu's Force Quit row)
     NSString *fb = [front bundleIdentifier], *fn = [front displayName] ?: fb;

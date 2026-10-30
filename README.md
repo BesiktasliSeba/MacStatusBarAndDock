@@ -42,10 +42,11 @@ Updates come through Sileo, and the Apple menu shows Update Available when your 
 | Windows with traffic lights | Mac windows on Aerial, Zetsu, MilkyWay4 or Apple's Stage Manager |
 | Mission Control and Spaces | The Mac Switcher, with up to 8 desktops that slide with your fingers |
 | Finder and the desktop | A Finder window, and your files on the first Home Screen page |
-| Dock | A magnifying Dock with Finder, Launchpad, recent apps and a Downloads stack |
+| Dock | A magnifying Dock with Finder, Launchpad, recent apps, a Downloads stack and a Trash |
+| Activity Monitor | An Activity Monitor window with your processes' CPU, memory and disk use |
 | Search in System Settings | A search field at the top of the Settings sidebar |
 
-The Mac look is on right after install, and most features have their own switch. Some extras start off, such as the Mac Switcher, the auto-hiding menu bar, seconds in the clock, tinted resize handles, the keyboard extras and the Lock Screen options. The [Settings reference](./docs/settings.md) shows how each switch starts.
+The Mac look is on right after install, and most features have their own switch. Some extras start off, such as the Mac Switcher, the Dock's Trash, the auto-hiding menu bar, seconds in the clock, tinted resize handles, the keyboard extras and the Lock Screen options. The [Settings reference](./docs/settings.md) shows how each switch starts.
 
 ### Menu bar
 
@@ -58,6 +59,8 @@ The Mac look is on right after install, and most features have their own switch.
 
 - Title bars, traffic lights, rounded corners and resize handles, on the engine you already use.
 - The Window menu has layouts (halves, quarters, Fill Screen, Center) and Fit to Window, which tiles your windows side by side.
+- Windows have a smallest size with every engine, as with Stage Manager: the app at least 320 x 300 points.
+- With Aerial, Zetsu or MilkyWay4 on iPadOS 15 to 18, every app with a window has its card in iPadOS's App Switcher, as with Stage Manager. A tap on the card brings the window forward.
 - Only the window you're using keeps a text cursor, and Esc ends typing.
 - With the Stage Manager engine on iPadOS 16 to 18, windows float over your Home Screen and stay where you put them, and on iPadOS 16 an external display gets its own Mac desktop.
 
@@ -83,7 +86,14 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 
 - Magnification, dots under open apps, recent apps, and Finder and Launchpad at its start, like on a Mac.
 - A Downloads stack with search, which you can drag files into and out of.
+- A Trash at its end, which you turn on in Settings > Dock. Drop files on it to move them to the Trash, a Dock app to take it out of the Dock, or a drive to eject it (iPadOS 16 and later).
 - Haptic Touch menus get Force Quit and App Size on app icons, and a folder's menu lists its apps.
+
+### Activity Monitor and RAM & CPU
+
+- An Activity Monitor window lists the running processes with their CPU, memory and disk use. Sort by any column, search, pick All, My or System Processes, inspect a process or quit an app. System processes show no figures, and the Energy and Network tabs have no figures per process.
+- RAM & CPU in Control Center shows the available and used memory and the CPU load, and a tap opens the details, with a button for Activity Monitor. Activity Monitor also opens from the Go menu and from Spotlight's actions.
+- With Memory Magic on iPadOS 15 to 17, a tap on its tile offers to put RAM & CPU in its place.
 
 ### Settings
 
@@ -98,7 +108,6 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 - Home Screen options: page dots, app names and the Home Bar
 - Keyboard extras for keyboards without a function row
 - Spotlight extras you can turn on: tweak settings, actions, your windows, and your Desktop and Downloads files
-- A RAM & CPU control for Control Center, with the details a tap away
 - Longer Auto-Lock times, an SSH switch and Ethernet settings
 - VoiceOver labels for the menu bar, the traffic lights and Finder, and Reduce Motion support
 

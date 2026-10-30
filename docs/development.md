@@ -16,8 +16,8 @@ MacStatusBar&Dock
 │
 ├── SpringBoard (Home Screen, windows, Dock)
 │   ├── MacStatusBarCore    menu bar and app menus, windows and the Window menu, the Stage Manager engine,
-│   │                       Mac Switcher, Finder, the desktop, the TextEdit window, Wi-Fi menu, banners, Today panel
-│   ├── DockMagnification   Dock, magnification, recent apps, Launchpad, Downloads stack
+│   │                       Mac Switcher, Finder, the desktop, the TextEdit and Activity Monitor windows, Wi-Fi menu, banners, Today panel
+│   ├── DockMagnification   Dock, magnification, recent apps, Launchpad, Downloads stack, Trash
 │   ├── Home Screen parts   MacIconLabels, MacPageDots, MacFolderMenu, MacAppSizeMenu, ForceQuitMenu
 │   ├── MacRAMCPU           the RAM & CPU control, a module Control Center loads from the tweak's folder
 │   └── MacLockStatusBar, MacCCGrabber, MacSettingsBadge, VolumeGlobeTweak
@@ -38,13 +38,16 @@ MacStatusBar&Dock
 │   ├── MacCrashBlame       reads a SpringBoard crash report to see whether this tweak caused it
 │   └── MacCrashNotice      the one-time alert after it acted
 │
+├── Eject helper (msbdeject, a small program Finder starts for the Dock's Trash)
+│   └── ejects a USB drive or SD card dropped on the Trash, which SpringBoard isn't allowed to do
+│
 └── Root helper (sshtoggled, a small launch daemon)
     ├── SSH on and off from Settings
     ├── window-engine exclusivity (Choicy's list, or iCleaner Pro's renaming without Choicy)
     └── gives the engines' settings back when the tweak is removed or switched off
 ```
 
-Every part can be traced to its process in `loader/Loader.c` (the `kPayloads` table), except MacRAMCPU, which Control Center loads itself.
+Every part can be traced to its process in `loader/Loader.c` (the `kPayloads` table), except MacRAMCPU, which Control Center loads itself, and the eject helper, a program of its own.
 
 ## Where things are
 
@@ -54,6 +57,7 @@ Every part can be traced to its process in `loader/Loader.c` (the `kPayloads` ta
 | `statusbar/` | MacStatusBarCore, the Status Bar and Windows & Multitasking pages, and MacPointer |
 | `dock/` | The Dock and its page |
 | `ccmodule/` | The RAM & CPU Control Center module |
+| `ejecthelper/` | The eject helper for the Dock's Trash (`msbdeject`) |
 | `macsettings/` | The Settings app changes, the smaller Home Screen parts and the root helper (`sshtoggled/`) |
 | `appbridge/` | MacAppBridge, which runs inside apps |
 | `mixaudio/`, `forcequitmenu/`, `graveescape/`, `tabmute/`, `volumeglobe/`, `brightnesskey/` | The smaller parts |
@@ -73,6 +77,7 @@ THEOS=~/theos gmake -j4 package FINALPACKAGE=1    # release build
 - Use `gmake`. macOS's built-in make 3.81 hangs in Theos's bundle step with `-jN`.
 - Builds target `arm64 arm64e`, rootless packaging, with a minimum iOS version of 15.0.
 - The parts share one Theos object folder, so every source file needs a unique name.
+- The eject helper is signed with macOS's own `codesign`, which writes its entitlements in the form iPadOS 15 and later require (`ejecthelper/Makefile`).
 - The package step also builds `CrashMap.txt` from the debug symbols (`tools/make-crashmap.py`, rules in `tools/crashmap-rules.txt`). It tells crash recovery which switch turns off the code that crashed.
 
 ## Testing

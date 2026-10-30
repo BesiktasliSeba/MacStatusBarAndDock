@@ -764,6 +764,7 @@ static int PointerAnimationsGiveBackAsMobile(void) {
     }
     CFPreferencesSetAppValue(CFSTR("axPointerAnimApplied"), NULL, ours);
     CFPreferencesSetAppValue(CFSTR("axPointerAnimSaved"), NULL, ours);
+    CFPreferencesSetAppValue(CFSTR("axPointerAnimUserOn"), NULL, ours);   // (1.7.0: the user's own "on" of that period, DMPtrAnimAfterLook)
     CFPreferencesAppSynchronize(ours);
     return st.set == 2 ? 10 : 11;
 }

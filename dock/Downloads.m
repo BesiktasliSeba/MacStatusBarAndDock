@@ -25,6 +25,7 @@
 #import <dlfcn.h>
 #import "../common/GuidedAccess.h"   // (MSBDGuidedAccessActive: no panel while a Guided Access session keeps the iPad in one app, 1.3.7)
 #import "../common/AXText.h"         // (MSBDAXJoin: a row read as one element, 1.3.7)
+#import "../common/FocusLock.h"      // (MSBDFocusLock: SpringBoard holds the keyboard focus while the panel is open, so Esc reaches it -- 15-18)
 
 @interface UIWindow (DMPrivateDL)
 + (NSArray *)allWindowsIncludingInternalWindows:(BOOL)internal onlyVisibleWindows:(BOOL)visible;
@@ -489,10 +490,12 @@ static NSString *DMAgeText(NSDate *date) {
 @property (nonatomic) CGFloat openListH, openBottom, keyboardTop;  // (layout: the list height and panel bottom it opened with, the keyboard's top edge)
 @property (nonatomic) CGRect keyboardFrame;                         // (the on-screen keyboard in the panel window's coordinates, empty when none)
 @property (nonatomic, strong) id focusLock;                         // SpringBoard's keyboard focus, held while the field is being typed in
+@property (nonatomic, strong) id openFocusLock;                     // SpringBoard's keyboard focus, held while the panel is open (a hardware keyboard)
 @property (nonatomic, weak) UIWindow *keyWindowBefore;
 @property (nonatomic, weak) NSTimer *dockWatch;                      // (the watch below: one at a time, stopped when the panel goes -- audit L-19)
 - (BOOL)searchFieldWillFocus;
 - (void)searchFieldDidUnfocus;
+- (void)holdKeys:(BOOL)hold;
 - (void)searchEscape;
 - (void)searchChanged;
 - (NSArray<UIView *> *)fillList:(NSArray<DMDownload *> *)items;
@@ -722,6 +725,7 @@ static BOOL DMDownloadsSwitcherVisible(void) {
     DMDownloadsSearchField *field = self.searchField;
     if (field.isFirstResponder) [field resignFirstResponder];
     [self searchFieldDidUnfocus];
+    [self holdKeys:NO];   // (the keys go back to whoever had them: the app's window, or SpringBoard's own windows)
     self.searchField = nil; self.list = nil; self.emptyLabel = nil; self.items = nil; self.searchIndex = nil; self.results = nil;
     UIView *panel = self.panel, *shield = self.shield;
     UITapGestureRecognizer *outsideTap = self.outsideTap;
@@ -901,6 +905,7 @@ static BOOL DMDownloadsSwitcherVisible(void) {
     [window addSubview:panel];
     self.panel = panel;
     [self startDockWatch];
+    [self holdKeys:YES];   // (Esc closes it while it is open, also over an app's window: see -holdKeys:)
     {   // (assistive features: the focus goes into the panel -- its first element -- once it is up)
         __weak UIView *wp = panel;
         dispatch_async(dispatch_get_main_queue(), ^{ if (wp && wp == self.panel && (UIAccessibilityIsVoiceOverRunning() || UIAccessibilityIsSwitchControlRunning())) UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, nil); });
@@ -1147,6 +1152,34 @@ static BOOL DMIsTypingInKeyboard(UIWindow *w) {
     if (before && !before.hidden && before.windowScene) [before makeKeyWindow];
     self.keyboardFrame = CGRectZero;
     if (self.keyboardTop < CGFLOAT_MAX) { self.keyboardTop = CGFLOAT_MAX; [self relayoutAnimated:YES]; }
+}
+// Esc with the panel open closes it, as a Dock stack on a Mac takes the keys while it is open -- also when an app's window has them. Keys go to
+// whatever holds the keyboard focus, and with an app's window active (Aerial, Zetsu, MilkyWay4) that is the app: Esc went to it and the panel stayed
+// (M1 15.6.1, 1.6.0 and 1.7.0 passes; with Finder, TextEdit or the desktop SpringBoard has them already). So while the panel is open SpringBoard
+// holds the keyboard focus, as it does for our menus and dialogs (StatusBar.x DMOverlayFocus), and gives it back when the panel goes (every way
+// it goes ends in -dismissAnimated:); SpringBoard's key handler then closes it (MSBDDownloadsPanelEscape). Only with a hardware keyboard attached,
+// as for the menus: without one there is no Esc, and the app keeps its on-screen keyboard. The search field's own lock (-searchFieldWillFocus) is
+// apart from this one; each is given back by itself.
+static BOOL DMDLHardwareKeyboard(void) {
+    static BOOL (*attached)(void) = NULL; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        void *gs = dlopen("/System/Library/PrivateFrameworks/GraphicsServices.framework/GraphicsServices", RTLD_LAZY);
+        if (gs) attached = (BOOL (*)(void))dlsym(gs, "GSEventIsHardwareKeyboardAttached");
+    });
+    return attached ? attached() : NO;   // (cannot be read: as before, the app keeps the keys)
+}
+- (void)holdKeys:(BOOL)hold {
+    if (!hold) {
+        id lock = self.openFocusLock;
+        self.openFocusLock = nil;
+        if (lock) { MSBDFocusUnlock(lock); DMLog(@"[downloads] keyboard focus given back (the panel is closing)"); }
+        return;
+    }
+    if (self.openFocusLock || !self.panel.window || !DMDLHardwareKeyboard()) return;
+    NSString *how = nil;
+    self.openFocusLock = MSBDFocusLock(self.panel.window.windowScene, @"MacDock Downloads panel", &how);
+    DMLog([NSString stringWithFormat:@"[downloads] keyboard focus to SpringBoard while the panel is open: %@%@", self.openFocusLock ? NSStringFromClass([self.openFocusLock class]) : @"no lock",
+           how ? [NSString stringWithFormat:@" (the %@ call)", how] : @""]);
 }
 // The on-screen keyboard covers the bottom of the screen, the Dock and the field with it: while it is up the panel stands above it.
 - (void)watchKeyboard:(BOOL)on {
@@ -1408,12 +1441,16 @@ void DMDownloadsStartDebugPolling(void) {
 }
 #endif
 
-// Esc with the panel open while SpringBoard has the keys (our Finder or TextEdit window active, or the desktop): the panel closes, as a Dock stack
-// does on a Mac (the key went on to Finder before: its search was cleared or the app behind was told to put its typing away, M1 report 27 Oct).
-// MacStatusBar asks this first from SpringBoard's key handling (found with dlsym: nothing happens without this tweak). YES: it was open and goes.
+// Esc with the panel open while SpringBoard has the keys (the panel holds them while it is open, -holdKeys:; our Finder or TextEdit window or the
+// desktop have them anyway): the panel closes, as a Dock stack does on a Mac (the key went on to Finder before: its search was cleared or the app
+// behind was told to put its typing away, M1 report 27 Oct). MacStatusBar asks this first from SpringBoard's key handling (found with dlsym:
+// nothing happens without this tweak). YES: it was open and goes.
 __attribute__((visibility("default"))) BOOL MSBDDownloadsPanelEscape(void) {
     DMDownloadsPanel *p = [DMDownloadsPanel shared];
     if (![p isOpen]) return NO;
+    // (text in the search field: Esc clears it first, as the field's own Esc does -- the key comes this way, not to the field's key command, while
+    //  SpringBoard holds the keys, which is always while the panel is open with a hardware keyboard: "zzqx" typed, one Esc closed the panel, M1 29 Oct)
+    if (p.searchField.text.length) { [p searchEscape]; return YES; }
     DMLog(@"[downloads] closes: Esc");
     [p dismissAnimated:YES];
     return YES;

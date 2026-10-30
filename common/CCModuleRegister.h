@@ -16,22 +16,7 @@
 #include <stdio.h>
 #include <unistd.h>
 
-#include "CCModuleList.h"
-#define kMSBDCCModuleStepFile "/var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-CrashStep.txt"   // (= CrashStep.h's MSBD_STEP_FILE)
-
-static BOOL MSBDCCModuleSkipped(void) {   // (step 1b's skip list names the module, and the guard's note is still there)
-    FILE *f = fopen(kMSBDCCModuleStepFile, "r");
-    if (!f) return NO;   // (normally missing: the whole cost)
-    char line[128]; BOOL listed = NO;
-    while (!listed && fgets(line, sizeof(line), f)) listed = strncmp(line, "skip MacRAMCPU", 14) == 0;
-    fclose(f);
-    if (!listed) return NO;
-    CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("crashGuardAction"), CFSTR("com.besiktasliseba.macstatusbaranddock"), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-    int action = 0;
-    if (v && CFGetTypeID(v) == CFNumberGetTypeID()) CFNumberGetValue((CFNumberRef)v, kCFNumberIntType, &action);
-    if (v) CFRelease(v);
-    return action != 0;
-}
+#include "CCModuleList.h"   // (and MSBDCCModuleSkipped: step 1b's skip list names the module, and the guard's note is still there)
 #if DEBUG   // (debug builds: which process registered, and the folders each repository is made with -> /tmp/macsettings.log with /tmp/macsettings-debug)
 static void MSBDCCDebugLog(NSString *line) {
     if (access("/tmp/macsettings-debug", F_OK) != 0) return;

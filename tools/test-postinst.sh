@@ -45,5 +45,18 @@ done
 [ ! -s "$W/calls" ] && { pass=$((pass+1)); echo "ok    other actions do nothing"; } || { fail=$((fail+1)); echo "FAIL  another action ran: $(cat "$W/calls")"; }
 echo 1 > "$W/ipad-rc"; : > "$W/calls"; out=$("$W/postinst" configure 1.0.0 2>&1)
 case "$out" in *"could not run (code 1)"*) pass=$((pass+1)); echo "ok    a failed check is reported";; *) fail=$((fail+1)); echo "FAIL  a failed check is not reported: $out";; esac
+# the quit set's file for dasd: on the first update to a version that has it, it starts as the set SpringBoard keeps (cfprefsd's file of it);
+# one that is there already is SpringBoard's own and stays; no set kept, no file
+P="$R/var/mobile/Library/Preferences"; mkdir -p "$P"; QS="$P/MacStatusBarAndDock-PrewarmQuitSet.plist"; QP="$P/com.besiktasliseba.macstatusbar.prewarm.plist"
+qs() {   # qs <name> <condition>
+    if eval "$2"; then pass=$((pass+1)); echo "ok    $1"; else fail=$((fail+1)); echo "FAIL  $1"; fi
+}
+echo 0 > "$W/ipad-rc"; rm -f "$QS" "$QP"; printf 'bplist00 the set' > "$QP"
+"$W/postinst" configure 1.6.1 >/dev/null 2>&1
+qs "quit set: the first update starts dasd's file as SpringBoard's set" 'cmp -s "$QP" "$QS"'
+printf 'ours' > "$QS"; "$W/postinst" configure 1.7.0 >/dev/null 2>&1
+qs "quit set: a file of SpringBoard's own is kept" '[ "$(cat "$QS")" = ours ]'
+rm -f "$QS" "$QP"; "$W/postinst" configure 1.6.1 >/dev/null 2>&1
+qs "quit set: no set kept, no file made" '[ ! -e "$QS" ]'
 echo "postinst: $pass passed, $fail failed"
 [ "$fail" = 0 ]

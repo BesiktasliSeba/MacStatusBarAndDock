@@ -2,9 +2,10 @@
 // MacSpotlight.x -- our sections in Apple's Spotlight (MacStatusBar&Dock 1.4.3, S-3 #2 "Actions" and #3 "Windows"), inside the Spotlight app
 // (com.apple.Spotlight: loader/Loader.c loads this part there and nowhere else). SpringBoard's half is statusbar/SpotlightBridge.h.
 //
-// Apple's results stay first and untouched: our sections come after all of Apple's, each only when the typed text matches one of its rows
-// (MacSpotlightMatch.h), and nothing at all is added while the switches are off -- not even a hook: the hooks go in the first time a switch is on
-// (Settings > Status Bar > Spotlight, off unless switched on), and do nothing while every switch is off again.
+// Apple's results stay untouched: our sections come after all of Apple's -- the Actions before them when the typed text names one, after Apple's
+// Top Hit if it has one (1.7.0, KT: "activ" shows Activity Monitor first; MacSpotlightMove.h MSPPlaceOurs) --, each only when the typed text
+// matches one of its rows (MacSpotlightMatch.h), and nothing at all is added while the switches are off -- not even a hook: the hooks go in the
+// first time a switch is on (Settings > Status Bar > Spotlight, off unless switched on), and do nothing while every switch is off again.
 //  - Actions: Show Desktop, Desktop N (the Mac Switcher's desktops), Downloads, New Finder Window, Lock Screen, Force Quit (asks first);
 //  - Windows: the open windows of every engine and Finder's, on this desktop and the others; picking one brings it forward (its desktop first);
 //  - Tweak Settings (search-143, S-3 #1): its rows are Apple's own results (CoreSpotlight items of Settings, identifiers "msbd-tweaksetting:");
@@ -44,10 +45,10 @@ static uint64_t gMSPState = 0;                 // the switches, as SpringBoard p
 static NSDictionary *gMSPList;                 // the list last read: @{gen, rows[, outside]} -- one presentation's only (MSPDropList)
 static uint64_t gMSPListGen = 0;
 static CFTimeInterval gMSPListAt = 0, gMSPAskedAt = 0;
-static NSString *gMSPCacheKey; static NSArray *gMSPCache; static NSUInteger gMSPCacheA, gMSPCacheW;   // (MSPOurSections' last answer)
+static NSString *gMSPCacheKey; static id gMSPCacheActions, gMSPCacheWindows; static BOOL gMSPCacheLead; static NSUInteger gMSPCacheA, gMSPCacheW;   // (MSPOurSections' last answer)
 // The list and the sections made from it go when the app's scene leaves the screen: a list never outlives the Spotlight it was written for (the
 // Today view and the Lock Screen's Today view host this app too, and get an empty one from SpringBoard -- no rows of ours there).
-static void MSPDropList(void) { gMSPList = nil; gMSPListGen = 0; gMSPListAt = 0; gMSPCacheKey = nil; gMSPCache = nil; }
+static void MSPDropList(void) { gMSPList = nil; gMSPListGen = 0; gMSPListAt = 0; gMSPCacheKey = nil; gMSPCacheActions = gMSPCacheWindows = nil; gMSPCacheLead = NO; }
 static __weak UIViewController *gMSPLastResults;   // (the results list last seen: shown again when a fresh list comes)
 
 #if DEBUG
@@ -144,29 +145,39 @@ static id MSPSection(NSString *title, NSString *ident, NSString *app, NSArray *r
     MSPSet(s, "setResults:", results);
     return s;
 }
-// Actions and Windows for this text (cached: Apple shows its sections several times while one search answers, and the same rows keep their place).
+// Actions and Windows for this text, each nil without a row, and whether the text names an action (MSPNamesOne: then the Actions lead; cached:
+// Apple shows its sections several times while one search answers, and the same rows keep their place).
 static NSUInteger gMSPShownActions = 0, gMSPShownWindows = 0;   // (how many rows of each the last sections had: the debug report)
-static NSArray *MSPOurSections(NSString *q) {
-    if (!(gMSPState & 3) || q.length < 2) return @[];
+static BOOL MSPOurSections(NSString *q, id *actions, id *windows) {
+    *actions = nil; *windows = nil;
+    if (!(gMSPState & 3) || q.length < 2) return NO;
     CFTimeInterval age = CACurrentMediaTime() - gMSPListAt;   // (an "outside" list -- the Today view, locked -- is asked again soon: Spotlight's own window may follow)
     if ((!gMSPList || age > 30.0 || ([gMSPList[@"outside"] boolValue] && age > 2.0)) && CACurrentMediaTime() - gMSPAskedAt > 2.0) MSPAsk();
-    if (!gMSPList) return @[];
+    if (!gMSPList) return NO;
     NSString *key = [NSString stringWithFormat:@"%llu|%llu|%@", gMSPListGen, gMSPState, q];
-    if ([key isEqualToString:gMSPCacheKey]) { gMSPShownActions = gMSPCacheA; gMSPShownWindows = gMSPCacheW; return gMSPCache; }
+    if ([key isEqualToString:gMSPCacheKey]) {
+        gMSPShownActions = gMSPCacheA; gMSPShownWindows = gMSPCacheW; *actions = gMSPCacheActions; *windows = gMSPCacheWindows;
+        return gMSPCacheLead;
+    }
     NSArray *rows = gMSPList[@"rows"];
-    NSMutableArray *out = [NSMutableArray array];
+    id made[2] = { nil, nil };
     NSUInteger counts[2] = { 0, 0 };
+    BOOL lead = NO;
     NSArray *groups = @[@[@1, @"a", @"Actions", @"com.besiktasliseba.macstatusbar.spotlight.actions"], @[@2, @"w", @"Windows", @"com.besiktasliseba.macstatusbar.spotlight.windows"]];
     for (NSUInteger k = 0; k < groups.count; k++) {
         NSArray *g = groups[k];
         if (!(gMSPState & [g[0] unsignedLongLongValue])) continue;
+        NSArray<NSNumber *> *hits = MSPMatches(q, rows, g[1], 8);
         NSMutableArray *res = [NSMutableArray array];
-        for (NSNumber *i in MSPMatches(q, rows, g[1], 8)) [res addObject:MSPRow(rows[i.unsignedIntegerValue], gMSPListGen, i.unsignedIntegerValue)];
-        if (res.count) [out addObject:MSPSection(g[2], g[3], nil, res)];
+        for (NSNumber *i in hits) [res addObject:MSPRow(rows[i.unsignedIntegerValue], gMSPListGen, i.unsignedIntegerValue)];
+        if (res.count) made[k] = MSPSection(g[2], g[3], nil, res);
+        if (k == 0) lead = res.count && MSPNamesOne(q, rows, hits);
         counts[k] = res.count;
     }
-    gMSPCacheKey = key; gMSPCache = out; gMSPCacheA = gMSPShownActions = counts[0]; gMSPCacheW = gMSPShownWindows = counts[1];
-    return out;
+    gMSPCacheKey = key; gMSPCacheActions = made[0]; gMSPCacheWindows = made[1]; gMSPCacheLead = lead;
+    gMSPCacheA = gMSPShownActions = counts[0]; gMSPCacheW = gMSPShownWindows = counts[1];
+    *actions = made[0]; *windows = made[1];
+    return lead;
 }
 // Our sections' identifiers (MSPOurSections, MSPWithOurs): every one starts with this; the Tweak Settings section is the one made of Apple's rows.
 #define MSP_SECTION_PREFIX @"com.besiktasliseba.macstatusbar.spotlight."
@@ -176,10 +187,13 @@ static NSString *MSPSectionIdent(id sec) {
     @try { ident = [sec respondsToSelector:sel_registerName("identifier")] ? MSPCall(sec, "identifier") : nil; } @catch (NSException *e) { ident = nil; }
     return [ident isKindOfClass:[NSString class]] ? ident : nil;
 }
+#if DEBUG
+static void MSPDebugLine(NSString *line);   // (below, with the hooks)
+#endif
 // A list that already carries sections of ours (iPadOS 17's two- and three-argument updates may pass through each other, and Apple may push a list
 // it kept, with our sections for an earlier query, again -- logic test F4): our Actions and Windows are taken out and made again for the text typed
 // now, so the answer is the same however often it is asked and always for the current text. The Tweak Settings section is kept where it is: its
-// rows were taken out of Apple's Settings section when it was made, so moving again would find nothing.
+// rows were taken out of Apple's Settings section when it was made, so moving again would find nothing. Where each goes: MSPPlaceOurs.
 static NSArray *MSPWithOurs(UIViewController *vc, NSArray *sections) {
     if (sections && ![sections isKindOfClass:[NSArray class]]) return sections;
     gMSPLastResults = vc;
@@ -190,18 +204,32 @@ static NSArray *MSPWithOurs(UIViewController *vc, NSArray *sections) {
     for (id sec in sections ?: @[]) {
         NSString *ident = MSPSectionIdent(sec);
         if ([ident isEqualToString:MSP_TWEAK_SECTION]) { tweakAt = out.count; [out addObject:sec]; continue; }   // (already moved: kept)
-        if ([ident hasPrefix:MSP_SECTION_PREFIX]) { stale++; continue; }   // (ours, for whatever text it was made: made again below)
+        if ([ident hasPrefix:MSP_SECTION_PREFIX]) { stale++; continue; }   // (ours, for whatever text it was made -- the Actions at the top too: made again below)
         [out addObject:sec];
     }
     NSArray *moved = (gMSPState & 4) && tweakAt == NSNotFound ? MSPTakeTweakSettings(out) : @[];
-    NSArray *ours = MSPOurSections(q);
-    if (!moved.count && !ours.count && !stale) return sections;
-    if (tweakAt != NSNotFound) [out insertObjects:ours atIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(tweakAt, ours.count)]];   // (ours before the kept Tweak Settings, as made)
-    else [out addObjectsFromArray:ours];
-    if (moved.count) [out addObject:MSPSection(@"Tweak Settings", MSP_TWEAK_SECTION, @"com.apple.Preferences", moved)];
+    id actions = nil, windows = nil;
+    BOOL lead = MSPOurSections(q, &actions, &windows);
+    if (!moved.count && !actions && !windows && !stale) return sections;
+    NSUInteger topAt = actions && lead ? MSPTopHitAt(out) : NSNotFound;
+#if DEBUG
+    {   // (debug: how Apple marks its sections -- identifiers and top-hit flags only, never a title)
+        NSMutableString *m = [NSMutableString stringWithFormat:@"sections for %lu letters, Top Hit at %ld:", (unsigned long)q.length, topAt == NSNotFound ? -1L : (long)topAt];
+        for (NSUInteger i = 0; i < out.count; i++) {
+            id sec = out[i]; NSArray *rs = MSPCall(sec, "results"); id first = [rs isKindOfClass:[NSArray class]] ? rs.firstObject : nil;
+            SEL th = sel_registerName("topHit"), la = sel_registerName("isLocalApplicationResult");
+            [m appendFormat:@" [%lu %@ | %@ | %lu, topHit %d app %d]", (unsigned long)i, MSPCall(sec, "identifier"), MSPCall(sec, "bundleIdentifier"), (unsigned long)([rs isKindOfClass:[NSArray class]] ? rs.count : 0),
+                first && [first respondsToSelector:th] ? ((int (*)(id, SEL))objc_msgSend)(first, th) : -1, first && [first respondsToSelector:la] ? ((BOOL (*)(id, SEL))objc_msgSend)(first, la) : -1];
+        }
+        MSPDebugLine(m);
+    }
+#endif
+    NSArray *shown = MSPPlaceOurs(out, tweakAt, topAt, actions, lead, windows, moved.count ? MSPSection(@"Tweak Settings", MSP_TWEAK_SECTION, @"com.apple.Preferences", moved) : nil);
     DM_FEATURE_MARK("spotlight-sections");
-    MSPReport(kMSPRepShown, (uint32_t)((MIN(ours.count ? gMSPShownActions : 0, (NSUInteger)0xFF) << 16) | (MIN(ours.count ? gMSPShownWindows : 0, (NSUInteger)0xFF) << 8) | MIN(moved.count, (NSUInteger)0xFF)));
-    return out;
+    if (actions && lead) DM_FEATURE_MARK("spotlight-actions-first");
+    MSPReport(kMSPRepShown, (uint32_t)((actions && lead ? (topAt == NSNotFound ? 1u << 24 : 2u << 24) : 0u) | (MIN(actions ? gMSPShownActions : 0, (NSUInteger)0xFF) << 16)
+                                       | (MIN(windows ? gMSPShownWindows : 0, (NSUInteger)0xFF) << 8) | MIN(moved.count, (NSUInteger)0xFF)));
+    return shown;
 }
 
 // ---- the hooks ----

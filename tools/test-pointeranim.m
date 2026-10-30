@@ -1,5 +1,6 @@
 // Mac test of common/PointerAnim.h (1.5.1): Pointer Animations with the Mac pointer -- off once per Mac-pointer period with the user's value kept,
-// never fought when the user turns them back on, given back only while still off as we left them.
+// never fought when the user turns them back on, given back only while still off as we left them; 1.7.0: off again when Apple's Reduce Motion
+// switch turned them on with it, unless the user had turned them on.
 #import <Foundation/Foundation.h>
 #include "../common/PointerAnim.h"
 static int fails = 0, passes = 0;
@@ -13,6 +14,19 @@ static void Step(World *w, bool mac) {
     if (s.set == 2) { w->anim = true; w->writes++; }
     w->applied = s.applied; w->savedPresent = s.keepSaved; w->saved = s.saved;
 }
+
+// 1.7.0: after the switch-off of a period, Apple's Reduce Motion switch (it sets Pointer Animations to the opposite of Reduce Motion, iPadOS
+// 15.6.1) and the user's own Pointer Animations switch, with StatusBar.x DMPointerAnimFollow's looks (one half a second after each Reduce Motion
+// notice, noticed = YES, and the 2 s checks) -- the user's own choice stored as userOn.
+typedef struct { bool rm, pa, userOn, lookRM, lookPA; int sets; } AXWorld;
+static void Look(AXWorld *w, bool noticed) {
+    DMPtrAnimLook l = DMPtrAnimAfterLook(w->lookRM, w->lookPA, w->rm, w->pa, noticed, w->userOn);
+    w->userOn = l.userOn;
+    if (l.set == 1) { w->pa = false; w->sets++; }
+    w->lookRM = w->rm; w->lookPA = w->pa;
+}
+static void AppleRM(AXWorld *w, bool on) { w->rm = on; w->pa = !on; Look(w, true); Look(w, false); }   // (Apple's setter, then the notice's look and a 2 s check)
+static void UserPA(AXWorld *w, bool on) { w->pa = on; Look(w, false); Look(w, false); }                  // (Accessibility > Pointer Control, then two 2 s checks)
 
 // The bridge's tick (StatusBar.x DMPointerAnimTick, every 2 s and at each change): whether the Mac pointer counts, then the decision. style: Pointer
 // Style Mac; state: MacPointer's published state (0 not said, 1 drawing, 2 standing down); off: switched off (the off marker) or being removed.
@@ -129,6 +143,59 @@ int main(void) {
             cases++;
         }
         CHECK(bad == 0, "exhaustive: %d of %d cases wrong", bad, cases);
+
+        // ---- 1.7.0: Apple's Reduce Motion switch turns Pointer Animations on with it (KT: off again with the Mac pointer, never fight the user) ----
+        AXWorld ax = { false, false, false, false, false, 0 };   // (KT's M1: the switch-off applied, Reduce Motion off, Pointer Animations off)
+        AppleRM(&ax, true);
+        CHECK(!ax.pa && ax.sets == 0, "Reduce Motion on: Apple turns them off, nothing of ours");
+        AppleRM(&ax, false);
+        CHECK(!ax.pa && ax.sets == 1 && !ax.userOn, "Reduce Motion off: Apple's 'on' taken back (off again, once)");
+        for (int i = 0; i < 5; i++) Look(&ax, false);
+        CHECK(!ax.pa && ax.sets == 1, "then quiet: nothing more");
+        AppleRM(&ax, true); AppleRM(&ax, false); AppleRM(&ax, true); AppleRM(&ax, false);
+        CHECK(!ax.pa && ax.sets == 3, "every Reduce Motion on / off: off again each time (sets %d)", ax.sets);
+        // the user turns them on themselves: theirs, through Reduce Motion on and off too (as iPadOS leaves them without us)
+        UserPA(&ax, true);
+        CHECK(ax.pa && ax.userOn && ax.sets == 3, "turned on by the user: left on, recorded as theirs");
+        AppleRM(&ax, true);
+        CHECK(!ax.pa && ax.userOn, "then Reduce Motion on: Apple turns them off, the user's choice still recorded");
+        AppleRM(&ax, false);
+        CHECK(ax.pa && ax.sets == 3, "then Reduce Motion off: Apple's 'on' is the user's choice: left on");
+        // ... and off again by the user: theirs; the next Reduce Motion off: off again
+        UserPA(&ax, false);
+        CHECK(!ax.pa && !ax.userOn && ax.sets == 3, "turned off by the user: theirs, nothing written");
+        AppleRM(&ax, true); AppleRM(&ax, false);
+        CHECK(!ax.pa && ax.sets == 4, "Reduce Motion on / off after that: off again");
+        // turned on by the user while Reduce Motion is on: theirs; Reduce Motion off leaves them on
+        AppleRM(&ax, true); UserPA(&ax, true);
+        CHECK(ax.pa && ax.userOn, "turned on while Reduce Motion is on: theirs");
+        AppleRM(&ax, false);
+        CHECK(ax.pa && ax.sets == 4, "Reduce Motion off then: left on");
+        UserPA(&ax, false);
+        // Reduce Motion on and off between two 2 s checks: the notice's look tells it is Apple's
+        ax.rm = true; ax.pa = false; ax.rm = false; ax.pa = true; Look(&ax, true);
+        CHECK(!ax.pa && ax.sets == 5, "Reduce Motion on and off between two looks, the notice seen: off again");
+        // with Reduce Motion changed since the last look (no notice seen, e.g. its look still to come): still Apple's
+        ax.rm = true; ax.pa = false; Look(&ax, false); ax.rm = false; ax.pa = true; Look(&ax, false);
+        CHECK(!ax.pa && ax.sets == 6, "Reduce Motion off seen by a 2 s check: off again");
+        // Pointer Animations turned on by the user right as Reduce Motion goes ON (not Apple's: Apple turns them off then)
+        ax.rm = true; ax.pa = true; Look(&ax, true);
+        CHECK(ax.pa && ax.userOn && ax.sets == 6, "on while Reduce Motion goes on: the user's, left on");
+        // exhaustive: never turned ON by us; off only when they are on now, Apple's doing and not the user's; a user's change never written; a
+        // second look with nothing changed does nothing
+        int lbad = 0, lcases = 0;
+        for (int rb = 0; rb <= 1; rb++) for (int pb = 0; pb <= 1; pb++) for (int rn = 0; rn <= 1; rn++) for (int pn = 0; pn <= 1; pn++)
+        for (int nt = 0; nt <= 1; nt++) for (int uo = 0; uo <= 1; uo++) {
+            DMPtrAnimLook l = DMPtrAnimAfterLook(rb, pb, rn, pn, nt, uo);
+            bool apples = pn != pb && (rn != rb || nt) && pn == !rn;
+            bool wrong = (l.set != 0 && l.set != 1) || (l.set == 1 && !(pn && apples && !uo)) || (pn && apples && !uo && l.set != 1)
+                      || (l.by == 2 && (l.set || l.userOn != pn)) || (pn == pb && (l.set || l.by || l.userOn != uo));
+            DMPtrAnimLook again = DMPtrAnimAfterLook(rn, l.set == 1 ? false : pn, rn, l.set == 1 ? false : pn, false, l.userOn);
+            if (again.set || again.by || again.userOn != l.userOn) wrong = true;
+            if (wrong) lbad++;
+            lcases++;
+        }
+        CHECK(lbad == 0, "Reduce Motion looks, exhaustive: %d of %d cases wrong", lbad, lcases);
     }
     printf("test-pointeranim: %d passed, %d failed\n", passes, fails);
     return fails ? 1 : 0;

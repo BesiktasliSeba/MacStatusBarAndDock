@@ -12,7 +12,9 @@ GONE="$S/msb-off-restored $S/msb-off-alert $S/msb-config $S/ssh-state $S/.ssh-st
 $P/MacStatusBarAndDock-CrashGuard.txt $P/MacStatusBarAndDock-RecentlyOn.txt $P/MacStatusBarAndDock-CrashRecord.txt $P/MacStatusBarAndDock-CrashTweakName.txt
 $P/MacStatusBarAndDock-CrashVerdicts.txt $P/MacStatusBarAndDock-CrashStep.txt $P/MacStatusBar-ChoicyBackup.plist
 $J/var/log/sshtoggled-engines.log $J/var/log/sshtoggled-engines.log.old $J/var/mobile/.sshtoggle-state
-$M/Library/Caches/com.besiktasliseba.macsettings.landscapeicons.plist"
+$M/Library/Caches/com.besiktasliseba.macsettings.landscapeicons.plist
+$P/com.besiktasliseba.macstatusbar.prewarm.plist $P/com.besiktasliseba.macstatusbar.prewarm.diag.plist $P/MacStatusBarAndDock-PrewarmQuitSet.plist
+$P/MacStatusBarAndDock-PrewarmBlockOff.txt $P/MacStatusBarAndDock-PrewarmBlockStarts.txt"
 KEPT="$P/com.besiktasliseba.macstatusbaranddock.plist $P/com.besiktasliseba.macstatusbar.plist $P/com.opa334.choicyprefs.plist $J/var/lib/macstatusbaranddock/migrated
 $J/var/log/other.log $M/Library/Caches/other.plist"
 setup() {

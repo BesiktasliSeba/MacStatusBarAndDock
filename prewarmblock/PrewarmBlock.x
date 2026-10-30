@@ -7,9 +7,11 @@
 // user's quit set, and leaves every other launch dasd makes untouched (this method is only ever the prewarm path -- a notification, a VoIP/CallKit
 // call, a location launch, Background App Refresh and a normal open all go through FrontBoard, not through here).
 //
-// The quit set. SpringBoard keeps it (the apps the user quit, cleared when the user opens one again) in our own preferences and tells the world when
-// it changes; this part reads it through cfprefsd, the same broker SpringBoard wrote it with, so no file is touched directly and dasd's sandbox is
-// never in the way. The read is cached and refreshed only when SpringBoard says the set changed, so a prewarm costs one set lookup, nothing more.
+// The quit set. SpringBoard keeps it (the apps the user quit, cleared when the user opens one again) in our own preferences, writes it to a file of
+// its own for this part and then tells the world it changed; this part reads that file (common/PrewarmQuitSet.h), never through cfprefsd -- which
+// answers a sandboxed process only for the domains its sandbox allows: on palera1n (iPad 2, 16.7.7) dasd read an empty set that way and refused
+// nothing, 29 Oct. The read is cached and done again only when SpringBoard says the set changed or the file is not the one read last, so a prewarm
+// costs one stat and one set lookup.
 //
 // Kill switch. SpringBoard publishes an "on" state; off (or, in debug builds, the file /tmp/msb-noprewarmblock) and this part never refuses anything.
 //
@@ -18,7 +20,8 @@
 // nothing but logging -- the same "a crash switches the part off" the SpringBoard crash guard gives the other parts. Every private call it makes is
 // checked once; if the class or the method is not what it expects, it does nothing.
 //
-// Debug: `touch /tmp/macstatusbar-debug` makes dasd write /tmp/msb-prewarmblock.log (each prewarm asked for, whether it was refused, the set).
+// Debug builds: each prewarm asked for, whether it was refused, and the set, in the diagnostic domain com.besiktasliseba.macstatusbar.prewarm.diag
+// and, while /var/tmp/msb-prewarmblock-debug exists, in /var/tmp/msb-prewarmblock.log (below).
 
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
@@ -44,20 +47,27 @@ static BOOL InDasd(void) {
 }
 
 #if DEBUG
-// (dasd's sandbox may block /tmp and /var/tmp; the one channel known to work is cfprefsd, which the quit-set read already uses. Debug builds write a
-//  running diagnostic there -- read it from the Mac with `plutil -p`. A file log is also attempted, for when the sandbox does allow it.)
+// (Debug builds write a running diagnostic through cfprefsd -- read it from the Mac with `plutil -p` -- where cfprefsd takes it from dasd (Dopamine;
+//  on palera1n it does not, as with the quit set), and with /var/tmp/msb-prewarmblock-debug present also the file log /var/tmp/msb-prewarmblock.log,
+//  which dasd's sandbox allows on palera1n (iPad 2, 16.7.7, 30 Oct).)
 #define kPrewarmDiagDomain CFSTR("com.besiktasliseba.macstatusbar.prewarm.diag")
 static void DiagWrite(NSString *key, NSString *value) {
     CFPreferencesSetValue((__bridge CFStringRef)key, (__bridge CFStringRef)value, kPrewarmDiagDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     CFPreferencesSynchronize(kPrewarmDiagDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
 }
+// (one line at a time, under a lock: the prewarm calls come on dasd's launch queues, two at once -- its boot and opportunistic closure builds run
+//  together right after it starts -- and the list changed by one while the other joined it threw in -componentsJoinedByString:, aborting dasd:
+//  two of three starts on the A12Z, 18.5, 29 Oct, and its third start switched the prewarm block off)
+static os_unfair_lock gDebugLock = OS_UNFAIR_LOCK_INIT;
 static void DebugWrite(NSString *line) {
-    static NSMutableArray *gLog = nil; static unsigned long gN = 0;
+    static NSMutableArray *gLog = nil; static unsigned long gN = 0;   // (under gDebugLock)
+    os_unfair_lock_lock(&gDebugLock);
     if (!gLog) gLog = [NSMutableArray array];
     [gLog addObject:[NSString stringWithFormat:@"%lu %@", ++gN, line]];
     while (gLog.count > 40) [gLog removeObjectAtIndex:0];
     DiagWrite(@"log", [gLog componentsJoinedByString:@"\n"]);
     if (access("/var/tmp/msb-prewarmblock-debug", F_OK) == 0) { FILE *f = fopen("/var/tmp/msb-prewarmblock.log", "a"); if (f) { fprintf(f, "%.3f %s\n", (double)time(NULL), line.UTF8String); fclose(f); } }
+    os_unfair_lock_unlock(&gDebugLock);
 }
 #define Debug(...) DebugWrite(__VA_ARGS__)
 static BOOL DebugKillSwitch(void) { return access("/tmp/msb-noprewarmblock", F_OK) == 0; }
@@ -66,27 +76,26 @@ static BOOL DebugKillSwitch(void) { return access("/tmp/msb-noprewarmblock", F_O
 static BOOL DebugKillSwitch(void) { return NO; }
 #endif
 
-// ---- the quit set, read through cfprefsd (cached; refreshed when SpringBoard says it changed) --------------
+// ---- the quit set, read from its file (cached; read again when SpringBoard says it changed, or the file changed) --------------
 // dasd may ask for two prewarms at once on two queues (the direct launch and the closure build), so the cache is read, refreshed and replaced only
 // under one lock: without it one thread could message the set the other had just replaced and released (external logic test C2, 25 Oct).
+#include "../common/PrewarmQuitSet.h"   // (the file, its reading and its stamp -- Mac test tools/test-prewarmquitset.sh)
 static os_unfair_lock gQuitLock = OS_UNFAIR_LOCK_INIT;
 static NSSet<NSString *> *gQuitSet = nil;   // (under gQuitLock)
 static BOOL gQuitSetStale = YES;            // (under gQuitLock)
+static MSBDPrewarmFileStamp gQuitFileStamp;   // (under gQuitLock: the file as it was when it was read)
 static void MarkQuitSetStale(void) { os_unfair_lock_lock(&gQuitLock); gQuitSetStale = YES; os_unfair_lock_unlock(&gQuitLock); }
-// Whether the quit set holds this app; the set is read again first when it changed (one cfprefsd read, under the lock: a change is rare).
+// Whether the quit set holds this app; the set is read again first when it changed (one small file read, under the lock: a change is rare).
 static BOOL QuitSetContains(NSString *bundleID) {
     NSString *refreshed = nil;
     os_unfair_lock_lock(&gQuitLock);
-    if (gQuitSetStale) {
+    struct stat st;
+    MSBDPrewarmFileStamp now = MSBDPrewarmStampOf(stat(kMSBDPrewarmQuitSetFile, &st) == 0 ? &st : NULL);
+    if (gQuitSetStale || MSBDPrewarmStampChanged(gQuitFileStamp, now)) {
         gQuitSetStale = NO;
-        CFPreferencesAppSynchronize(kPrewarmDomain);
-        CFPropertyListRef v = CFPreferencesCopyValue(kQuitSetKey, kPrewarmDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-        NSMutableSet *set = [NSMutableSet set];
-        if (v) {
-            if (CFGetTypeID(v) == CFArrayGetTypeID()) for (id b in (__bridge NSArray *)v) if ([b isKindOfClass:[NSString class]] && [b length]) [set addObject:b];
-            CFRelease(v);
-        }
-        gQuitSet = [set copy];
+        gQuitFileStamp = now;
+        NSSet<NSString *> *set = MSBDPrewarmQuitSetFromPlist(now.present ? [NSData dataWithContentsOfFile:@kMSBDPrewarmQuitSetFile] : nil);
+        gQuitSet = set;
         refreshed = [NSString stringWithFormat:@"%lu app(s) %@", (unsigned long)set.count, [[set allObjects] componentsJoinedByString:@" "]];
     }
     BOOL hit = [gQuitSet containsObject:bundleID];
@@ -94,12 +103,30 @@ static BOOL QuitSetContains(NSString *bundleID) {
     if (refreshed) Debug([NSString stringWithFormat:@"[set] refreshed: %@", refreshed]);   // (logged outside the lock)
     return hit;
 }
+#if DEBUG
+// (debug, once at the start: the set from its file, and what cfprefsd and dasd's sandbox say about SpringBoard's domain of the same set -- which
+//  way a jailbreak goes; 0 = allowed, 1 = refused by the sandbox)
+extern int sandbox_check(pid_t pid, const char *operation, int type, ...);
+static void DebugReadsAtStart(void) {
+    NSSet *file = MSBDPrewarmQuitSetFromPlist([NSData dataWithContentsOfFile:@kMSBDPrewarmQuitSetFile]);
+    CFPreferencesAppSynchronize(kPrewarmDomain);
+    CFPropertyListRef v = CFPreferencesCopyValue(kQuitSetKey, kPrewarmDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    long viaPrefs = v && CFGetTypeID(v) == CFArrayGetTypeID() ? (long)CFArrayGetCount((CFArrayRef)v) : -1;
+    if (v) CFRelease(v);
+    const int noReport = 0x40000000, preferenceDomain = 6, path = 1;   // (SANDBOX_CHECK_NO_REPORT, SANDBOX_FILTER_PREFERENCE_DOMAIN, SANDBOX_FILTER_PATH)
+    int domainRead = sandbox_check(getpid(), "user-preference-read", preferenceDomain | noReport, "com.besiktasliseba.macstatusbar.prewarm");
+    int fileRead = sandbox_check(getpid(), "file-read-data", path | noReport, kMSBDPrewarmQuitSetFile);
+    Debug([NSString stringWithFormat:@"[init] quit set: %lu app(s) in its file, %@ through cfprefsd (sandbox, asked: the domain %d, the file %d)",
+           (unsigned long)file.count, viaPrefs < 0 ? @"none" : [NSString stringWithFormat:@"%ld", viaPrefs], domainRead, fileRead]);
+}
+#endif
 
+// (its token is registered once, by the constructor before the hooks are armed: the prewarm calls come on dasd's queues, two at once, and a token
+//  registered on first use could be registered twice)
+static int gEnabledToken = 0;
 static BOOL BlockOn(void) {   // the master switch SpringBoard publishes (off for a new install until SpringBoard turns it on)
-    static int token = 0;
-    if (token == 0) notify_register_check(kPrewarmEnabled, &token);
     uint64_t state = 0;
-    return token != 0 && notify_get_state(token, &state) == NOTIFY_STATUS_OK && state == 1;
+    return gEnabledToken != 0 && notify_get_state(gEnabledToken, &state) == NOTIFY_STATUS_OK && state == 1;
 }
 
 // ---- the two hooked calls ------------------------------------------------------------------------------------
@@ -161,7 +188,7 @@ static BOOL SelfDisabledByCrashLoop(void) {
 %ctor {
     if (!InDasd()) return;
     if (SelfDisabledByCrashLoop()) return;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(30 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ ForgetThisStart(); });   // (the main queue, as the change notification: the debug log is not shared across threads)
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(30 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ ForgetThisStart(); });   // (the main queue, as the change notification)
     Class c = objc_getClass("_APRSPrewarmInterface");
     SEL sel = @selector(prewarmLaunchAppFromBundleID:), closureSel = @selector(closureBuildLaunchAppFromBundleID:);
     Method m = c ? class_getInstanceMethod(c, sel) : NULL, mc = c ? class_getInstanceMethod(c, closureSel) : NULL;
@@ -171,9 +198,13 @@ static BOOL SelfDisabledByCrashLoop(void) {
     MSHookMessageEx(c, sel, (IMP)DMPrewarmLaunch, (IMP *)&o_PrewarmLaunch);
     if (DMPrewarmShapeOK(mc)) MSHookMessageEx(c, closureSel, (IMP)DMClosureBuild, (IMP *)&o_ClosureBuild);
     else Debug([NSString stringWithFormat:@"[init] closureBuildLaunchAppFromBundleID: %s: not hooked (only the direct prewarm is refused)", mc ? "unexpected signature" : "not found"]);
+    if (notify_register_check(kPrewarmEnabled, &gEnabledToken) != NOTIFY_STATUS_OK) gEnabledToken = 0;   // (read by BlockOn)
     gArmed = YES;
     static int token = 0;
     notify_register_dispatch(kPrewarmChanged, &token, dispatch_get_main_queue(), ^(int t) { MarkQuitSetStale(); });
     MarkQuitSetStale();
     Debug([NSString stringWithFormat:@"[init] prewarm block armed (signature \"%s\")", enc]);
+#if DEBUG
+    dispatch_async(dispatch_get_main_queue(), ^{ DebugReadsAtStart(); });
+#endif
 }

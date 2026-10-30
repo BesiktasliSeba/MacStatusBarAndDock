@@ -40,6 +40,7 @@ target showDownloads pref com.besiktasliseba.dockmagnification showDownloads 0 1
 target launchpadIcon pref com.besiktasliseba.dockmagnification launchpadIcon 0 1 Launchpad Icon|Launchpad
 target finder pref com.besiktasliseba.macstatusbar finderEnabled 0 1 Finder|Finder
 target showFinder pref com.besiktasliseba.dockmagnification showFinder 0 1 Show Finder in Dock|Finder in the Dock
+target showTrash pref com.besiktasliseba.dockmagnification showTrash 0 0 Show Trash in Dock|the Dock's Trash
 target wifiMenu pref com.besiktasliseba.macstatusbar wifiMenu 0 1 Wi-Fi Menu|the Wi-Fi menu
 target desktopIcons pref com.besiktasliseba.macstatusbar desktopIcons 0 1 Show Desktop Icons|the desktop
 target runningIndicator pref com.besiktasliseba.dockrunningindicator enabled 0 1 Show Indicators for Open Apps|the open-app indicators
@@ -95,6 +96,7 @@ file DockMagnification ^Downloads\.m$ showDownloads
 file DockMagnification ^Launchpad\.m$ launchpadIcon
 file DockMagnification ^RunningIndicator\.m$ runningIndicator
 file DockMagnification ^FinderIcon\.m$ showFinder
+file DockMagnification ^TrashIcon\.m$ showTrash
 
 # ---- the status bar (MacStatusBarCore): by feature; anything else = Stock status bar mode ----
 image MacStatusBarCore stock map
@@ -104,6 +106,7 @@ sym MacStatusBarCore \$DMNativeHooks\$SpringBoard\$(sendEvent|pressesBegan) tran
 sym MacStatusBarCore \$DMNativeHooks\$ finder
 sym MacStatusBarCore \$DMNativeSysGestures\$ finder
 sym MacStatusBarCore ^_?DM(Finder|Native|OpenFinder|OpenNativeWindow)[A-Z] finder
+file MacStatusBarCore ^DockTrash\.h$ showTrash
 file MacStatusBarCore ^(Finder|NativeWindow)\.h$ finder
 # the text window (TextWindow.h) is Finder's; the desktop (Desktop.h, DesktopPlace.h) and the Wi-Fi menu (WiFiMenu.h) have their own switches
 file MacStatusBarCore ^TextWindow\.h$ finder
@@ -168,6 +171,9 @@ sym MacStatusBarCore ^_?DMFit flexResizeWindows
 sym MacStatusBarCore \$(Aerial\w*|Zetsu\w*|MilkyWay\w*|WindowLaunch|EngineMedusa|AppExitForget)\$ windowingEnabled
 # (AppExitForget: the app exit hook that forgets where a quit app's window was, out of the Aerial-only group since 1.4.2 so every engine has it)
 sym MacStatusBarCore ^_?(DMZetsu|DMAerial|DMMilky|DMMinimize|DMSwap|DMCascade|DMRestoreWindow|DMSaveWindow|DMRememberStage|DMWindowed|DMInstallAppExitForget) windowingEnabled
+# (the windows' App Switcher cards, 1.7.0: SpringBoard asked for each window's card and its picture -- window code, every function and block in it;
+#  the smallest window of the engines, 1.7.0: plain functions, mostly inlined into the window code that calls them)
+file MacStatusBarCore ^(WindowCards|WindowMinSize)\.h$ windowingEnabled
 # the Stage Manager engine (its functions, its hook groups, its source sections): windowing off -- the engine stops, the Mac status bar stays
 # (unnamed, it fell to the image's target: Stock status bar mode, which stopped the engine too but also took the menu bar; iPadOS 17 runs the
 # engine's 17 layout code untested, so a crash there must cost the engine, not the bar)
@@ -194,7 +200,7 @@ sec MacStatusBarCore Stage\sManager\sswitched\soff windowingEnabled
 sec MacStatusBarCore Stage\sManager\s(as\sthe\sengine|engine) windowingEnabled
 # (the engine's own headers: the checked API, the window fit, the Home Screen behind the windows, the desktop join, the window roles and one window
 #  per role, the windows staying at Home and its rule, the window keys (M-2) -- every function and block in them, whatever its name)
-file MacStatusBarCore ^(SMEngineAPI|SMFit|SMDesktop|SMDeskJoin|SMRoles|SMLimit|SMFitPlan|SMRoleRepair|SMHome|SMHomeRule|SMWindowKey|SMGestureHold|SMGestureHook|SMAfterHome|SMResizeEdges)\.h$ windowingEnabled
+file MacStatusBarCore ^(SMEngineAPI|SMFit|SMDesktop|SMDeskJoin|SMRoles|SMLimit|SMFitPlan|SMRoleRepair|SMHome|SMHomeRule|SMWindowKey|SMGestureHold|SMGestureHook|SMAfterHome|SMResizeEdges|SMResizeAnchor|SMResizeAnchorMath)\.h$ windowingEnabled
 sec MacStatusBarCore iPadOS\s17's\slayout\sengine windowingEnabled
 sec MacStatusBarCore which\swindow\sengine windowingEnabled
 sec MacStatusBarCore Stage\sManager\sis\sheld\soff windowingEnabled

@@ -68,12 +68,12 @@ static inline double MSBDCPULoadBetween(MSBDCPUTicks a, MSBDCPUTicks b, double *
     double load = (double)(du + ds + dn) / (double)all;
     return load > 1.0 ? 1.0 : load;
 }
-// "1.9 GB" / "820 MB" (one decimal under 10 GB, as macOS's Activity Monitor writes it), into buf
+// "820 MB" / "1.9 GB" / "11.6 GB", into buf: gigabytes with one decimal at every size (1.7.0, KT: RAM & CPU's tile reads "11.6 GB" as the tile
+// drawn over Memory Magic's does, not "12 GB"; its panel and Activity Monitor write the same numbers the same way)
 #include <stdio.h>
 static inline void MSBDFormatBytes(uint64_t bytes, char *buf, size_t size) {
     double mb = (double)bytes / 1048576.0;
     if (mb < 1000.0) snprintf(buf, size, "%.0f MB", mb);
-    else if (mb < 10240.0) snprintf(buf, size, "%.1f GB", mb / 1024.0);
-    else snprintf(buf, size, "%.0f GB", mb / 1024.0);
+    else snprintf(buf, size, "%.1f GB", mb / 1024.0);
 }
 #endif

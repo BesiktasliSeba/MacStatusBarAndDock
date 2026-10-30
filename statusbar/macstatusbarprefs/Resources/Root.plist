@@ -132,7 +132,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>Adds these to Spotlight. Apple's own results stay first. Desktop and Downloads needs Files allowed in Settings &gt; Siri &amp; Search.</string>
+			<string>Adds these to Spotlight, after Apple's own results. Typing an action's name brings it to the top. Desktop and Downloads needs Files allowed in Settings &gt; Siri &amp; Search.</string>
 			<key>id</key>
 			<string>SPOTLIGHT_GROUP</string>
 			<key>label</key>

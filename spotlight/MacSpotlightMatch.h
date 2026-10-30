@@ -3,6 +3,7 @@
 // "Lock Screen", "desk 2" finds "Desktop 2", "new fi" finds "New Finder Window"), ignoring case, accents and width. One letter matches nothing:
 // a row of ours shows only once the text says what it is (shown only when the typed text matches). Order: the title starting with the
 // text first, then a title word starting with the first word, then the rest; ties keep SpringBoard's order (this desktop's windows first).
+// MSPNamesOne: whether the text names an Actions row (then the Actions come before Apple's results, MacSpotlightMove.h MSPPlaceOurs).
 #pragma once
 #import <Foundation/Foundation.h>
 
@@ -46,4 +47,15 @@ static NSArray<NSNumber *> *MSPMatches(NSString *query, NSArray<NSDictionary *> 
     NSMutableArray<NSNumber *> *out = [NSMutableArray array];
     for (NSArray *h in hits) { if (out.count >= limit) break; [out addObject:h[1]]; }
     return out;
+}
+// Whether the text names one of the matched rows (their places in `rows`): its title -- or the words it is found by instead, "m" -- starts with the
+// text, or a word of it with the first word typed (score 2 or 3: "activ", "monitor", "lock", "desk 2", "new fi"), the way Apple's Top Hit finds an
+// app by its name. Found only by an extra word ("cpu" or "memory" for Activity Monitor, "space" for a desktop) it is not named.
+static BOOL MSPNamesOne(NSString *query, NSArray<NSDictionary *> *rows, NSArray<NSNumber *> *places) {
+    for (NSNumber *i in places) {
+        NSDictionary *r = i.unsignedIntegerValue < rows.count ? rows[i.unsignedIntegerValue] : nil;
+        if (![r isKindOfClass:[NSDictionary class]] || ![r[@"t"] isKindOfClass:[NSString class]]) continue;
+        if (MSPScore(query, [r[@"m"] isKindOfClass:[NSString class]] ? r[@"m"] : r[@"t"], [r[@"k"] isKindOfClass:[NSString class]] ? r[@"k"] : nil) >= 2) return YES;
+    }
+    return NO;
 }
