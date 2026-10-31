@@ -19,7 +19,7 @@ int main(int argc, char **argv) {
             @"⌘Z": @"Command Z", @"⌘W": @"Command W", @"⌘O": @"Command O", @"⌘M": @"Command M", @"⌘I": @"Command I", @"⌘F": @"Command F",
             @"⌘D": @"Command D", @"⌘C": @"Command C", @"⌘V": @"Command V", @"⌘2": @"Command 2", @"⌘1": @"Command 1", @"⇧⌘Z": @"Shift Command Z",
             @"⇧⌘N": @"Shift Command N", @"⇧⌘G": @"Shift Command G", @"⇧⌘D": @"Shift Command D", @"⇧⌘.": @"Shift Command Period",
-            @"⌘A": @"Command A", @"⌘X": @"Command X",
+            @"⌘A": @"Command A", @"⌘X": @"Command X", @"⌘E": @"Command E",
             @"›": @"Submenu", @"↩︎": @"Return", @"Space": @"Space", @"GET": @"Get",
         };
         for (NSString *k in menuHints) eq([NSString stringWithFormat:@"menu hint %@", k], MSBDAXShortcutSpoken(k), menuHints[k]);

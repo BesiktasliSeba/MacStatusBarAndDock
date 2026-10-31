@@ -68,6 +68,12 @@ static NSSet<NSString *> *RIRunningBundleIDs(void) {
     if (!withWindows && tries < 40) { tries++; withWindows = (NSSet *(*)(void))dlsym(RTLD_DEFAULT, "MSBDAppsWithWindows"); }   // (MacStatusBar may load after the Dock)
     NSSet *shown = withWindows ? withWindows() : nil;
     if (shown.count) [ids unionSet:shown];
+    // Our own apps kept in the Dock (1.7.3: Activity Monitor, MacStatusBar's ActMonDock.h): running while their window is there, by their icon's
+    // identifier (nil without MacStatusBar or with none open).
+    static NSSet *(*ownApps)(void) = NULL; static int ownTries = 0;
+    if (!ownApps && ownTries < 40) { ownTries++; ownApps = (NSSet *(*)(void))dlsym(RTLD_DEFAULT, "MSBDOwnAppsRunning"); }
+    NSSet *own = ownApps ? ownApps() : nil;
+    if (own.count) [ids unionSet:own];
     return ids;
 }
 

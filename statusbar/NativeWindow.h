@@ -723,13 +723,17 @@ static void DMNativeEscToApps(void) {
     DMResignWindowedKeyboards(nil);
     DMLog([NSString stringWithFormat:@"[native] Esc: the app windows are asked to put their typing away (%@)", [bundles.allObjects componentsJoinedByString:@", "]]);
 }
-// A hardware key reached SpringBoard (-[SpringBoard pressesBegan:withEvent:]): the active native window has it first.
+// A hardware key reached SpringBoard (-[SpringBoard pressesBegan:withEvent:]): the active native window has it first -- its own keys
+// (-dm_handleKey:: Finder, TextEdit, Quick Look), else the keys every window has (DMNativeWindowKeys: Activity Monitor; 1.7.3 item 13 -- Command-W
+// closed nothing there, it has no keys of its own).
+static BOOL DMNativeWindowKeys(DMNativeWindow *w, UIKey *key);
 __attribute__((noinline)) static BOOL DMNativeHandlePress(UIPress *p) {   // (kept a symbol of its own: inlined into the transparent pressesBegan: hook, a crash here would have no owner)
     DM_FEATURE_MARK("native-keys");
     id w = DMNativeActiveApp();
-    if (!w || !p.key || ![w respondsToSelector:@selector(dm_handleKey:)]) return NO;
-    BOOL done = ((BOOL (*)(id, SEL, id))objc_msgSend)(w, @selector(dm_handleKey:), p.key);
-    if (done) DMLog([NSString stringWithFormat:@"[native] key 0x%02lx (modifiers 0x%lx) handled by %@", (long)p.key.keyCode, (long)p.key.modifierFlags, [w title]]);
+    if (!w || !p.key) return NO;
+    BOOL own = [w respondsToSelector:@selector(dm_handleKey:)];
+    BOOL done = own ? ((BOOL (*)(id, SEL, id))objc_msgSend)(w, @selector(dm_handleKey:), p.key) : DMNativeWindowKeys(w, p.key);
+    if (done) DMLog([NSString stringWithFormat:@"[native] key 0x%02lx (modifiers 0x%lx) handled by %@%@", (long)p.key.keyCode, (long)p.key.modifierFlags, [w title], own ? @"" : @" (the window keys)"]);
     return done;
 }
 
@@ -768,6 +772,26 @@ __attribute__((noinline)) static BOOL DMNativeHandlePress(UIPress *p) {   // (ke
 - (void)dm_cancel { [self dm_done:NO]; }
 - (BOOL)textFieldShouldReturn:(UITextField *)tf { [self dm_done:YES]; return NO; }
 @end
+// The keys every native window has, as on a Mac (for a window with no keys of its own: Activity Monitor): Command-W closes it and Command-M puts it
+// in the Dock, as the Window menu shows; with a sheet up, the sheet's: Return its action, Esc Cancel (Esc only while its text field has the typing),
+// and nothing else reaches the window behind it -- the system's own Command shortcuts are never swallowed.
+static BOOL DMNativeWindowKeys(DMNativeWindow *w, UIKey *key) {
+    UIKeyModifierFlags m = key.modifierFlags & (UIKeyModifierCommand | UIKeyModifierShift | UIKeyModifierAlternate | UIKeyModifierControl);
+    long c = (long)key.keyCode;
+    if (!w || gNativeLayer.rootViewController.presentedViewController) return NO;
+    DMNativeSheet *sh = nil; for (UIView *v in w.subviews) if ([v isKindOfClass:[DMNativeSheet class]]) sh = (DMNativeSheet *)v;
+    if (sh) {
+        if (m & (UIKeyModifierCommand | UIKeyModifierControl)) return NO;
+        BOOL esc = c == UIKeyboardHIDUsageKeyboardEscape && m == 0;
+        if (sh.field.isFirstResponder) { if (esc) { [sh dm_cancel]; return YES; } return NO; }
+        if (c == UIKeyboardHIDUsageKeyboardReturnOrEnter && m == 0) { [sh dm_ok]; return YES; }
+        if (esc) { [sh dm_cancel]; return YES; }
+        return NO;
+    }
+    if (m == UIKeyModifierCommand && c == UIKeyboardHIDUsageKeyboardW) { DM_FEATURE_MARK("native-window-keys"); [w close]; return YES; }
+    if (m == UIKeyModifierCommand && c == UIKeyboardHIDUsageKeyboardM) { [w minimize]; return YES; }
+    return NO;
+}
 @implementation DMNativeWindow (Sheet)
 - (BOOL)hasSheet { for (UIView *v in self.subviews) if ([v isKindOfClass:[DMNativeSheet class]]) return YES; return NO; }
 - (void)sheetTitle:(NSString *)title message:(NSString *)message field:(NSString *)field action:(NSString *)action destructive:(BOOL)destructive then:(void (^)(NSString *text))then {

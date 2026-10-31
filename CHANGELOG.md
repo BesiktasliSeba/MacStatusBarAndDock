@@ -2,6 +2,28 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.7.3
+
+### New
+- Menu Bar Size in Settings > Status Bar: Small (the size it had until now), Medium or Large. Medium and Large make the menu bar taller, with larger text, icons and menus that are easier to tap with a finger. Apps and windows start right under it, and windows placed under the old size move to fit under the new one. Window title bars keep their size. It takes effect after a respring.
+- Window snapping with every window engine: a window you move or resize lines up with the screen edges, the menu bar, the Dock and other windows when you let go of it near them.
+- Activity Monitor can be added to the Dock: choose Add to Dock in its icon's menu in the App Library. There it works like an app: a tap opens its window or brings it forward, and a dot shows while the window is open. Remove from Dock in its menu takes it out again. It's never saved with your Home Screen layout, so nothing is left behind when the tweak is off or removed.
+- Finder: each drive in the sidebar has an Eject button, as on a Mac, and File > Eject (Command-E) ejects the selected drive or the one the window shows. A long press or a right click on a drive's row opens its menu with Open, Open in New Window, Get Info and Eject. iPadOS 15 can't eject drives this way, so there only the menu is added, without Eject.
+
+### Improvements
+- Removing the tweak or switching MacStatusBar off sets an Auto-Lock of 2 hours to 1 hour. iPadOS on its own takes anything over an hour for Never, so the iPad stopped locking by itself. Switching MacStatusBar on again brings back the 2 hours.
+
+### Fixes
+- Zetsu: a window closed while its app was still opening no longer crashes SpringBoard a few seconds later. This could happen after switching to Zetsu with windows open, and end in Safe Mode.
+- iPadOS 18: dropping a drive on the Dock's Trash ejects it. iPadOS 18 didn't let the tweak start its eject helper, so you got an error instead.
+- iPadOS 18: Finder shows a drive under its own name instead of a long ID.
+- Aerial, Zetsu and MilkyWay4: with a window in front, the iPad waits the whole Auto-Lock time, as with an app in front. iPadOS took those windows for the Home Screen, where it halves the time on some iPads, so 2 hours could lock after 1 hour.
+- Quick Look: PDF pages no longer flicker, and no part of a page stays blurred. Depending on where the window was, part of the page kept switching between sharp and blurred, or stayed blurred.
+- App Library search: when you type fast, Activity Monitor is listed exactly while its name matches what you typed. It could be missing, or stay listed after the text stopped matching.
+- With a hardware keyboard, Command-W closes Activity Monitor's window and Command-M minimizes it, as in Finder. Before, Command-W left it open.
+- iPadOS 15 and 16: after unlocking, the menu bar's titles, date and icons no longer show a few points too low for a moment.
+- iPadOS 16 in landscape, with Automatically Hide and Show the Status Bar on: while the menu bar is hidden, a pull from the top edge opens Notification Center or Control Center, and the left edge of the screen takes touches. The strip that catches that pull was on the left edge, where it took every touch.
+
 ## 1.7.2
 
 ### New

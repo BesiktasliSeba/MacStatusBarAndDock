@@ -17,6 +17,7 @@
 #import "../../common/DesktopCheck.h"   // (Show Desktop Icons on iPadOS 17+: SpringBoard's check of the Home Screen parts the desktop uses)
 #import "../../common/OtherTweaks.h"   // (Single Mute showing the mute icon: said under the Audio group)
 #import "../SMSwitchOn.h"   // (DMSMConsentFrom: the stored Stage Manager answers, read as SpringBoard reads them)
+#import "../../common/MenuBarSize.h"   // (Menu Bar Size, 1.7.3: the stored value read as SpringBoard reads it)
 @interface PSListController (MSBURL)
 - (void)handleURL:(NSDictionary *)url withCompletion:(id)completion;   // (Settings' link to a place on a page: -handleURL:withCompletion: below)
 @end
@@ -402,6 +403,19 @@ static void MSBSetStockBarStored(BOOL on) {
 	notify_post("com.besiktasliseba.macstatusbar/prefsChanged");
 }
 
+// ---- Menu Bar Size (1.7.3, common/MenuBarSize.h): a "Menu Bar Size" row (Small / Medium / Large) in the Status Bar group, opening a three-item picker
+// page (Root.plist: PSLinkListCell, PSListItemsController, key menuBarSize, validValues 0 / 1 / 2). Stored as a number, so the crash guard can set it
+// back as it does a switch (false): -readPreferenceValue: below shows anything that is not 1 or 2 as Small, as SpringBoard reads it
+// (MSBDMenuBarSizeFrom). SpringBoard sizes iOS's bar once, when it starts (StatusBar.x DMBarSizeInit), so a change offers a respring, as Status Bar
+// Style does. With the stock status bar the row is hidden with its group (stockHides).
+static int MSBMenuBarSizeStored(void) {
+	CFPreferencesAppSynchronize(kMSBBarDomain);
+	CFPropertyListRef v = CFPreferencesCopyValue(CFSTR(kMSBDMenuBarSizeKey), kMSBBarDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+	double d = 0.0; int isNumber = 0;
+	if (v) { if (CFGetTypeID(v) == CFNumberGetTypeID()) isNumber = CFNumberGetValue((CFNumberRef)v, kCFNumberDoubleType, &d); CFRelease(v); }
+	return MSBDMenuBarSizeFrom(isNumber, d);
+}
+
 // ---- Two pages, one controller (1.6.0, KT): the Status Bar page (Root.plist) and the Windows & Multitasking page (Windows.plist: Windowing, Window
 // Engine with its notes and Turn On Stage Manager, Windows, Resize Apps to Fit Windows, Traffic Lights, Multitasking), its own row next to Status Bar
 // (StatusBarSettingsRow.x). MSBWindowsListController (below) is this controller with the other plist: every rule here works on the rows it finds, so
@@ -450,6 +464,18 @@ MSBD_LINE_SWITCH_METHODS
 		UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Respring to Finish" message:on ? @"The stock status bar turns on after a respring." : @"The Mac status bar comes back after a respring." preferredStyle:UIAlertControllerStyleAlert];
 		[alert addAction:[UIAlertAction actionWithTitle:@"Respring Now" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
 			dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ MSBRespring(); });   // (SpringBoard gives the engine its settings back first)
+		}]];
+		[alert addAction:[UIAlertAction actionWithTitle:@"Later" style:UIAlertActionStyleCancel handler:nil]];
+		[self presentViewController:alert animated:YES completion:nil];
+	});
+}
+
+- (void)msb_menuBarSizeChanged:(int)size {
+	dispatch_async(dispatch_get_main_queue(), ^{   // (after the picker's own callback)
+		NSString *name = size == MSBDMenuBarLarge ? @"Large" : size == MSBDMenuBarMedium ? @"Medium" : @"Small";
+		UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Respring to Finish" message:[NSString stringWithFormat:@"The menu bar changes to %@ after a respring.", name] preferredStyle:UIAlertControllerStyleAlert];
+		[alert addAction:[UIAlertAction actionWithTitle:@"Respring Now" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+			dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ MSBRespring(); });
 		}]];
 		[alert addAction:[UIAlertAction actionWithTitle:@"Later" style:UIAlertActionStyleCancel handler:nil]];
 		[self presentViewController:alert animated:YES completion:nil];
@@ -975,6 +1001,7 @@ static void MSBFitValueLabels(UIView *v) {
 // then runs the default one (DMActiveEngine / MSBDDefaultEngine), so that is the one shown as picked (an untested Aerial too: "Untested, Runs on Its Own").
 - (id)readPreferenceValue:(PSSpecifier *)specifier {
 	if ([[specifier propertyForKey:@"key"] isEqual:@"stockStatusBar"]) return MSBStockBarStored() ? @"stock" : @"mac";   // the row and its picker page show/pick these two strings
+	if ([[specifier propertyForKey:@"key"] isEqual:@(kMSBDMenuBarSizeKey)]) return @(MSBMenuBarSizeStored());   // (0 / 1 / 2: the crash guard's false is Small)
 	id value = [super readPreferenceValue:specifier];
 	if (![[specifier propertyForKey:@"key"] isEqual:@"windowEngine"]) return value;
 	NSArray *offered = [specifier respondsToSelector:NSSelectorFromString(@"values")] ? ((id (*)(id, SEL))objc_msgSend)(specifier, NSSelectorFromString(@"values")) : nil;
@@ -996,6 +1023,13 @@ static void MSBFitValueLabels(UIView *v) {
 			CFPreferencesSynchronize(MSBD_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
 		}
 		[self msb_stockChanged:on];
+		return;
+	}
+	if ([[specifier propertyForKey:@"key"] isEqual:@(kMSBDMenuBarSizeKey)]) {   // Small / Medium / Large from the picker page: 0 / 1 / 2
+		int size = [value respondsToSelector:@selector(doubleValue)] ? MSBDMenuBarSizeFrom(1, [value doubleValue]) : MSBDMenuBarSmall;
+		if (size == MSBMenuBarSizeStored()) return;   // the size in force tapped again
+		[super setPreferenceValue:@(size) specifier:specifier];
+		[self msb_menuBarSizeChanged:size];
 		return;
 	}
 	[super setPreferenceValue:value specifier:specifier];

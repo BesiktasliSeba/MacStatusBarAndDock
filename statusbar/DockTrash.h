@@ -4,7 +4,7 @@
 // Trash in a Finder window for a tap or Open, empties it with its own question for Empty Trash, and ejects the drives a drag drops on the bin.
 // Only while Settings > Dock > Show Trash in Dock is on (the Dock's own switch, read here too) and Finder is on: otherwise nothing here runs.
 #import "../common/DockTrash.h"
-#include <sys/wait.h>
+#import "DriveEject.h"   // (1.7.3: a drive's eject, the bin's and Finder's own -- through the root helper)
 
 static BOOL gDockTrashOn = NO;   // (the bin is wanted: the Dock's switch, with Finder on)
 static BOOL DMDockTrashPrefOn(void) {
@@ -148,59 +148,19 @@ static void DMDockTrashEmpty(void) {
 }
 
 // ---- the drives a drag drops on the bin: ejected ----
-// The way the Files app ejects a drive: StorageKit's storagekitd, asked to eject the disk the volume is on. That request needs StorageKit's
-// state-changing entitlement, which SpringBoard does not have, so a small helper of ours that has it does it (ejecthelper/, /usr/libexec/msbdeject):
-// spawned with the volume's folder, it checks for itself that it is a connected drive and not the iPad's own storage, and answers with one line.
-// Nothing is forced: a drive in use stays, and Finder says so in a Mac's words.
-static NSString *const kDockTrashEjectHelper = @"/var/jb/usr/libexec/msbdeject";
-// Whether this iPadOS can eject a drive at all: StorageKit is there for the helper to load (in the shared cache or on disk, the way dlopen finds it;
-// nothing is loaded into SpringBoard for the look). 16 on, it is; 15 has neither StorageKit nor storagekitd (15.6.1: the helper's --info finds no
-// manager), so there the bin never turns into Eject and a drive dropped on it is refused (common/DockTrash.h canEject; KT, 1.7.0). Decided once.
-static BOOL DMDockTrashCanEject(void) {
-    static int can = -1;
-    if (can < 0) {
-        const char *sk = "/System/Library/PrivateFrameworks/StorageKit.framework/StorageKit";
-        can = (_dyld_shared_cache_contains_path(sk) || access(sk, F_OK) == 0) ? 1 : 0;
-        DMLog([NSString stringWithFormat:@"[trash] drive eject %@", can ? @"available (StorageKit)" : @"not on this iPadOS (no StorageKit): drives are never ejected from the Dock's Trash, no Eject offered"]);
-    }
-    return can == 1;
-}
-static void DMDockTrashEjectOne(NSString *root, NSString *name) {
-    DM_FEATURE_MARK("finder-dock-trash-eject");
-#if DEBUG
-    if (DMTestFlag("/tmp/msb-feject-ok")) {   // (tests without a real drive: the eject is taken as done -- nothing spawned)
-        DMLog([NSString stringWithFormat:@"[trash] eject (test): %@ would be ejected now", name]);
-        return;
-    }
-#endif
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSData *out = nil; int status = -1;   // (common/DockTrash.h: only the descriptors it uses go with it, Mac-tested)
-        char *argv[] = { (char *)"msbdeject", (char *)root.fileSystemRepresentation, NULL };
-        int rc = MSBDTrashRunHelper(kDockTrashEjectHelper.fileSystemRepresentation, argv, &out, &status);
-        NSString *answer = rc == 0 ? [[NSString alloc] initWithData:out encoding:NSUTF8StringEncoding]
-                         : rc < 0 ? @"error: no pipe" : [NSString stringWithFormat:@"error: the eject helper could not be started (%d)", rc];
-        NSString *line = [[[answer ?: @"" stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] componentsSeparatedByString:@"\n"] lastObject] ?: @"";
-        int code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            DMLog([NSString stringWithFormat:@"[trash] eject of a drive: exit %d, \"%@\"", code, line]);
-            // (the helper's own line decides: SpringBoard may reap its children itself, and then no exit status comes back here)
-            if ([line hasPrefix:@"ok"]) { DMFinderDrivesForget(); DMFinderDrivesCheck(@"ejected"); return; }   // (the sidebar and the windows follow at once)
-            NSString *title = [line hasPrefix:@"busy"] ? [NSString stringWithFormat:@"The disk “%@” wasn’t ejected because one or more programs may be using it.", name]
-                                                      : [NSString stringWithFormat:@"The disk “%@” couldn’t be ejected.", name];
-            NSRange colon = [line rangeOfString:@": "];
-            NSString *why = colon.location != NSNotFound ? [line substringFromIndex:colon.location + 2] : nil;
-            if (why.length) why = [[[why substringToIndex:1] uppercaseString] stringByAppendingFormat:@"%@%@", [why substringFromIndex:1], [why hasSuffix:@"."] ? @"" : @"."];   // (a sentence)
-            DMFinderLooseSheet(title, [line hasPrefix:@"busy"] ? @"Close the files on it and try again." : why, @"OK", NO, nil, nil);
-        });
-    });
-}
+// The way the Files app ejects a drive, through MacStatusBar&Dock's root helper: DriveEject.h (DMDriveEject), the same as Finder's sidebar Eject
+// button and File > Eject. Nothing is forced: a drive in use stays, and Finder says so in a Mac's words.
+// Whether this iPadOS can eject a drive at all (DriveEject.h DMDriveCanEject): where it can't, the bin never turns into Eject and a drive dropped
+// on it is refused (common/DockTrash.h canEject; KT, 1.7.0).
+static BOOL DMDockTrashCanEject(void) { return DMDriveCanEject(); }
 static void DMDockTrashEject(NSArray<NSString *> *roots) {
     if (!gFinderOn || !DMDockTrashCanEject() || DMGARefuses(@"Eject (Dock)")) return;
     for (NSString *root in roots) {
         NSDictionary *d = DMFinderDriveInfo(DMFinderNorm(root));
         if (!d) { DMLog(@"[trash] eject: that drive is not connected any more"); continue; }
         DMLog([NSString stringWithFormat:@"[trash] eject: %@", d[@"t"]]);
-        DMDockTrashEjectOne(d[@"p"], d[@"t"]);
+        DM_FEATURE_MARK("finder-dock-trash-eject");
+        DMDriveEject(d[@"p"], d[@"t"]);
     }
 }
 

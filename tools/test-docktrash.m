@@ -4,6 +4,8 @@
 #import <Foundation/Foundation.h>
 #include <sys/stat.h>
 #include "../common/DockTrash.h"
+#include "../common/DriveEject.h"   // (the eject helper's spawn, MSBDRunHelperTimed: the root helper runs it since 1.7.3)
+extern char **environ;
 
 static int fails = 0, checks = 0;
 static void ok(NSString *what, BOOL cond) { checks++; if (!cond) { fails++; printf("FAIL %s\n", what.UTF8String); } }
@@ -16,7 +18,7 @@ static MSBDTrashDrop dropOn(NSArray<NSArray<NSNumber *> *> *spec, BOOL canEject)
 }
 static MSBDTrashDrop drop(NSArray<NSArray<NSNumber *> *> *spec) { return dropOn(spec, YES); }   // (16 on: StorageKit there)
 
-// This test is also the eject helper's stand-in (MSBDTrashRunHelper): run as "--child", it prints the descriptors above 2 it was started with,
+// This test is also the eject helper's stand-in (MSBDRunHelperTimed, common/DriveEject.h): run as "--child", it prints the descriptors above 2 it was started with,
 // whether its stdin and its stderr are /dev/null (looked at, never read: the control's stdin is the test's own), writes a line to stderr (never part
 // of the answer) and exits 7.
 static BOOL IsDevNull(int fd) {
@@ -150,30 +152,31 @@ int main(int argc, char **argv) {
         ok(@"state name", !strcmp(kMSBDTrashStateName, "com.besiktasliseba.macstatusbar.finder.trash"));
         ok(@"open / empty names are distinct", strcmp(kMSBDTrashOpenName, kMSBDTrashEmptyName) != 0 && strcmp(kMSBDTrashOpenName, kMSBDTrashStateName) != 0);
 
-        // ---- the eject helper's spawn: only the descriptors it uses (review of 1.7.0) ----
-        // SpringBoard's own open descriptors, stood in for by a file and a pipe of this test (no close-on-exec, as SpringBoard's are), at numbers
-        // a starting process never takes for itself; the pipe's write end is "a second eject's", whose answer must not wait for this helper
+        // ---- the eject helper's spawn: only the descriptors it uses (review of 1.7.0; the root helper spawns it since 1.7.3) ----
+        // The spawner's own open descriptors, stood in for by a file and a pipe of this test (no close-on-exec), at numbers a starting process
+        // never takes for itself; the pipe's write end is "a second eject's", whose answer must not wait for this helper
         int f = open("/dev/null", O_RDONLY), q[2] = { -1, -1 };
         ok(@"spawn test: its descriptors made", f >= 0 && pipe(q) == 0 && dup2(f, 200) == 200 && dup2(q[0], 201) == 201 && dup2(q[1], 202) == 202);
         char self[PATH_MAX]; if (!realpath(argv[0], self)) strlcpy(self, argv[0], sizeof self);
         char *cargv[] = { self, (char *)"--child", NULL };
         NSString *old = OldSpawn(self, cargv);
         NSSet *oldFds = FdsIn(old);
-        ok(@"control: spawned as before the review, the helper had SpringBoard's descriptors (the file, a second eject's pipe)", [oldFds containsObject:@"200"] && [oldFds containsObject:@"202"]);
+        ok(@"control: spawned as before the review, the helper had its spawner's descriptors (the file, a second eject's pipe)", [oldFds containsObject:@"200"] && [oldFds containsObject:@"202"]);
         NSData *outData = nil; int st = -1;
-        int rc = MSBDTrashRunHelper(self, cargv, &outData, &st);
+        BOOL late = YES;
+        int rc = MSBDRunHelperTimed(self, cargv, 30.0, &outData, &st, &late);
         NSString *answer = [[NSString alloc] initWithData:outData ?: [NSData data] encoding:NSUTF8StringEncoding];
         NSSet *fds = FdsIn(answer);
         ok(@"the helper ran", rc == 0 && fds != nil);
-        ok([NSString stringWithFormat:@"the helper had no descriptor of SpringBoard's, none at all above 2 (it had: %@)", [fds.allObjects componentsJoinedByString:@" "]], fds && fds.count == 0);
+        ok([NSString stringWithFormat:@"the helper had no descriptor of its spawner's, none at all above 2 (it had: %@)", [fds.allObjects componentsJoinedByString:@" "]], fds && fds.count == 0);
         ok(@"its stdin and its stderr are /dev/null", [answer containsString:@"stdin null"] && [answer containsString:@"stderr null"]);
         ok(@"what it writes to stderr is not part of the answer", ![answer containsString:@"stderr text"]);
-        ok(@"its exit status comes back", WIFEXITED(st) && WEXITSTATUS(st) == 7);
+        ok(@"its exit status comes back, in time", WIFEXITED(st) && WEXITSTATUS(st) == 7 && !late);
         close(202); close(q[1]);   // (this test's own write ends gone: a reader sees the end at once, nothing else holds the pipe)
         fcntl(201, F_SETFL, O_NONBLOCK);   // (never a hang: a write end still held somewhere reads as "would block", not as the end)
         char c; ok(@"a second eject's pipe ends as soon as its own side closes (no helper holds it)", read(201, &c, 1) == 0);
         close(f); close(q[0]); close(200); close(201);
-        rc = MSBDTrashRunHelper("/nonexistent/msbdeject", cargv, &outData, &st);
+        rc = MSBDRunHelperTimed("/nonexistent/msbdeject", cargv, 30.0, &outData, &st, NULL);
         ok(@"a helper that is not there: posix_spawn's error, no answer, no status", rc != 0 && outData == nil && st == -1);
     }
     printf("%s: %d checks, %d failed\n", fails ? "FAIL" : "PASS", checks, fails);

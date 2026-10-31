@@ -44,6 +44,6 @@ rest = nodebug.replace(apply, '')
 bad = re.findall(r'\b(logo|dateProxy|spotIcon|vpnIcon|muteIcon|sshIcon|label)\.(?:textColor|tintColor) = (?!c;)[^;\n]*(?:timeColor|final|tint)\b', rest)
 check(not bad, 'no item coloured anywhere else ' + (str(bad) if bad else ''))
 check('timeColor' not in nodebug, 'no per-item timeColor left')
-check('UIColor *tint' not in body(wf, 'static CGSize DMWiFiApplyIconState(UIView *icon) {') and 'DMWiFiApplyIconState(UIView *icon) {' in wf, "the Wi-Fi icon's state carries no colour of its own")
+check('UIColor *tint' not in body(wf, 'static CGSize DMWiFiApplyIconState(UIView *icon, CGFloat k) {') and 'DMWiFiApplyIconState(UIView *icon, CGFloat k) {' in wf, "the Wi-Fi icon's state carries no colour of its own")   # (k: Menu Bar Size, 1.7.3)
 print(f'{fails} failed'); sys.exit(1 if fails else 0)
 PY

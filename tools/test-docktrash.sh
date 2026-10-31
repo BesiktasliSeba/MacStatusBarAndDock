@@ -24,10 +24,10 @@ check "the eject helper is built, entitled and checked by the gate" \
 check "Empty Trash from the Dock is Finder's own question" "grep -q '\[DMFinderOps() emptyTrash\]' ../statusbar/DockTrash.h"
 check "Empty Trash from the Dock counts the Trashes off the main thread, then asks on it (a slow drive held SpringBoard)" \
   "awk '/^static void DMDockTrashEmpty/,/^}/' ../statusbar/DockTrash.h | awk '/dispatch_get_global_queue/{q=1} q && /DMDockTrashCountNow\(\)/{c=1} c && /dispatch_get_main_queue/{m=1} m && /emptyTrash\]/{print \"ok\"; exit}' | grep -q ok"
-check "Finder spawns the eject helper only through the shared, Mac-tested spawn (only the descriptors it uses)" \
-  "grep -q 'MSBDTrashRunHelper(kDockTrashEjectHelper.fileSystemRepresentation, argv, &out, &status)' ../statusbar/DockTrash.h && ! grep -q 'posix_spawn' ../statusbar/DockTrash.h && grep -q 'POSIX_SPAWN_CLOEXEC_DEFAULT' ../common/DockTrash.h"
+check "the bin's eject asks the root helper like Finder's own (1.7.3, DriveEject.h): no spawn here; the helper's spawn is the shared, Mac-tested one" \
+  "grep -q 'DMDriveEject(d\[@\"p\"\], d\[@\"t\"\]);' ../statusbar/DockTrash.h && ! grep -q 'posix_spawn' ../statusbar/DockTrash.h && grep -q 'POSIX_SPAWN_CLOEXEC_DEFAULT' ../common/DriveEject.h"
 check "the helper asks StorageKit for a disk's whole disk only where it has that call" \
   "[ \$(grep -c 'wholeDiskForDisk:' ../ejecthelper/main.m) = 1 ] && grep -q 'return disk && \[m respondsToSelector:s\]' ../ejecthelper/main.m"
 check "Eject only where this iPadOS can eject (StorageKit, 16 on): the drag's look, the drop's rule and the eject itself" \
-  "grep -q '_dyld_shared_cache_contains_path(sk) || access(sk, F_OK) == 0' ../statusbar/DockTrash.h && grep -q 'MSBDTrashDropFor(it, n, DMDockTrashCanEject())' ../statusbar/DockTrash.h && grep -q '!d.items.count || !DMDockTrashCanEject()' ../statusbar/DockTrash.h && grep -q '!gFinderOn || !DMDockTrashCanEject()' ../statusbar/DockTrash.h"
+  "grep -q '_dyld_shared_cache_contains_path(sk) || access(sk, F_OK) == 0' ../statusbar/DriveEject.h && grep -q 'MSBDTrashDropFor(it, n, DMDockTrashCanEject())' ../statusbar/DockTrash.h && grep -q '!d.items.count || !DMDockTrashCanEject()' ../statusbar/DockTrash.h && grep -q '!gFinderOn || !DMDockTrashCanEject()' ../statusbar/DockTrash.h"
 [ $fails = 0 ] && echo "test-docktrash: all wiring checks pass" || { echo "test-docktrash: wiring checks FAILED"; exit 1; }

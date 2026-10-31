@@ -167,6 +167,33 @@ int main(void) {
                       "%s %s: Fill and the halves reach both side edges, start under the %.0f pt bar, exactly 6 pt between tiles, the bottom tiles end at the Dock line", dev[d].what, o ? "portrait" : "landscape", dev[d].bar);
             }
         }
+        // 2d. Menu Bar Size (1.7.3, common/MenuBarSize.h): under a 30 pt (Medium) or 37 pt (Large) bar -- the same on every iPad -- every layout's tile
+        //     is still at least the smallest window and needs no growing: the tightest, the iPad 2's landscape quarters (333 pt under the 24 pt bar),
+        //     are 327 / 326 pt under the 37 pt bar (apps 303 / 302 pt under our 24 pt title bar, against the 300 pt minimum); every layout starts right
+        //     under the bar, the halves and quarters 6 pt apart; Stage Manager 17+ with our lists lets every window through.
+        {
+            struct { const char *what; CGSize s; double dockL, dockP; } ipads[] = { {"iPad 2", {1024, 768}, 768 - 697.06844892501829, 1024 - 970.06844892501829}, {"A12Z", {1366, 1024}, 76.3 + 2, 62.7 + 2}, {"17.5", {1366, 1024}, 76.3 + 2, 62.7 + 2}, {"11-inch", {1194, 834}, 70 + 2, 60 + 2} };
+            const double bars[] = { 30.0, 37.0 };
+            for (int d = 0; d < 4; d++) for (int b = 0; b < 2; b++) for (int o = 0; o < 2; o++) {
+                CGSize s = o ? CGSizeMake(ipads[d].s.height, ipads[d].s.width) : ipads[d].s;
+                double bar = bars[b];
+                CGRect u = CGRectMake(0, bar, s.width, s.height - bar - (o ? ipads[d].dockP : ipads[d].dockL));
+                for (size_t i = 0; i < sizeof(kNames) / sizeof(kNames[0]); i++) {
+                    if (!strcmp(kNames[i], "center")) continue;   // (its own top, 12 pt under the bar: MenuBarHeight.h MSBDMenuBarCenterTop, test-menubarheight)
+                    CGRect c = cut(kNames[i], u, s), t = tile(kNames[i], u, s);
+                    CHECK(same(t, c) && c.size.width >= 320.0 - 0.01 && c.size.height >= 324.0 - 0.01 && inside(c, u), "%s %s, %.0f pt bar, %s: at least the smallest window as cut, inside the desktop (%s)", ipads[d].what, o ? "portrait" : "landscape", bar, kNames[i], S(c));
+                    if (d == 0) continue;   // (the iPad 2 runs iPadOS 16: no 17+ cap there)
+                    CGSize card = CGSizeMake(c.size.width, c.size.height - 24.0);
+                    CGSize got = smCap17(card, s, 0, 0, 48, 48, 0, 2, smMin);
+                    CHECK(near(got.width, card.width) && near(got.height, card.height), "Stage Manager 17+, %s %s, %.0f pt bar, %s: our lists let it through", ipads[d].what, o ? "portrait" : "landscape", bar, kNames[i]);
+                }
+                CGRect f = cut("fill", u, s), tl = cut("topleft", u, s), bl = cut("bottomleft", u, s);
+                CHECK(near(f.origin.y, bar) && near(tl.origin.y, bar) && near(bl.origin.y - CGRectGetMaxY(tl), 6.0) && near(CGRectGetMaxY(bl), CGRectGetMaxY(u)), "%s %s: Fill and the top tiles start right under the %.0f pt bar, the quarters 6 pt apart", ipads[d].what, o ? "portrait" : "landscape", bar);
+            }
+            CGRect l37 = CGRectMake(0, 37, 1024, 697.06844892501829 - 37);
+            CHECK(near(cut("topleft", l37, kLand).size.height, 327.0) && near(cut("bottomleft", l37, kLand).size.height - 24.0, 697.06844892501829 - 37 - 327 - 6 - 24) && cut("bottomleft", l37, kLand).size.height - 24.0 >= 300.0,
+                  "iPad 2 landscape quarters under the 37 pt bar: 327 / %.2f pt (apps 303 / %.2f pt, the minimum 300)", cut("bottomleft", l37, kLand).size.height, cut("bottomleft", l37, kLand).size.height - 24.0);
+        }
         // 3. A desktop smaller than a window may be: every tile is the whole of it on that axis, never more (it never goes past the desktop).
         const CGSize kTiny = {300, 300}; const CGRect tinyU = CGRectMake(0, 24, 300, 250); CGRect to = outer(tinyU, kTiny);
         for (size_t i = 0; i < sizeof(kNames) / sizeof(kNames[0]); i++) {

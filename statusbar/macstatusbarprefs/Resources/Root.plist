@@ -215,6 +215,36 @@
 			<true/>
 		</dict>
 		<dict>
+			<key>cell</key>
+			<string>PSLinkListCell</string>
+			<key>default</key>
+			<integer>0</integer>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>detail</key>
+			<string>PSListItemsController</string>
+			<key>id</key>
+			<string>MENU_BAR_SIZE</string>
+			<key>key</key>
+			<string>menuBarSize</string>
+			<key>label</key>
+			<string>Menu Bar Size</string>
+			<key>staticTextMessage</key>
+			<string>Small: The standard size. Medium and Large: A taller menu bar with larger text, icons and menus that are easier to tap with a finger. Window title bars keep their size. Takes effect after a respring.</string>
+			<key>validTitles</key>
+			<array>
+				<string>Small</string>
+				<string>Medium</string>
+				<string>Large</string>
+			</array>
+			<key>validValues</key>
+			<array>
+				<integer>0</integer>
+				<integer>1</integer>
+				<integer>2</integer>
+			</array>
+		</dict>
+		<dict>
 			<key>PostNotification</key>
 			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
 			<key>cell</key>

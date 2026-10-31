@@ -61,6 +61,50 @@ static CGRect DMSMRAArea(id self, SEL _cmd) {   // -[SBChamoisOverlappingModel s
     if (gSMRAArea.fake.vertical) { r.origin.y = gSMRAArea.fake.areaY; r.size.height = gSMRAArea.fake.areaH; }
     return r;
 }
+// 16's last step (the finger lifted): where the dragged sides end, snapped as on every engine (1.7.3 item 3, WindowSnap.h: within 10 pt of the
+// desktop's edges or the stage's other windows' sides; 17 and 18 snap a resized side themselves and are left as Apple has them). at: the location
+// the step reads, which is where it puts the dragged sides; start: the card as the drag began (the switcher's points: the screen's); the window as
+// drawn is the card with our title bar above it. The window being resized is the one whose held sides are start's (WindowSnap.h
+// MSBDSnapHeldSidesMatch). Only a window of the iPad's own screen found that way among the working stage's windows is snapped: this step runs for a
+// TV's window too (16 with an extended display), and the working stage can be the TV's -- the area here is the iPad's desktop and the neighbours
+// another screen's points, so a TV's side was pulled up to 10 pt onto a line of the iPad's (its Dock line, its right edge) and never onto the TV's
+// own. A TV's window is left as Apple's step has it, as a move leaves it (DMSMSnapMoveTarget); so is one that is not found (1.7.3 review).
+static CGPoint DMSMRASnapEnd(unsigned long long edge, CGRect start, CGPoint at) {
+    MSBDResizeSides sd = MSBDResizeSidesOf(edge);
+    if (DMSnapOff() || !(sd.left || sd.right || sd.top || sd.bottom)) return at;
+    CGRect card = start;
+    if (sd.left) { card.origin.x = at.x; card.size.width = CGRectGetMaxX(start) - at.x; }
+    if (sd.right) card.size.width = at.x - start.origin.x;
+    if (sd.top) { card.origin.y = at.y; card.size.height = CGRectGetMaxY(start) - at.y; }
+    if (sd.bottom) card.size.height = at.y - start.origin.y;
+    if (!(card.size.width > 0) || !(card.size.height > 0)) return at;
+    CGRect window = CGRectMake(card.origin.x, card.origin.y - kSMBarH, card.size.width, card.size.height + kSMBarH);
+    unsigned how = (sd.left ? MSBDSnapLeft : 0) | (sd.right ? MSBDSnapRight : 0) | (sd.top ? MSBDSnapTop : 0) | (sd.bottom ? MSBDSnapBottom : 0);
+    CGRect others[32]; int n = 0, mine = 0; BOOL offIPad = NO;
+    NSDictionary<NSString *, NSValue *> *frames = DMSMOpenWindowFrames();
+    for (NSString *k in frames) {
+        CGRect f = frames[k].CGRectValue, c = CGRectMake(f.origin.x, f.origin.y + kSMBarH, f.size.width, f.size.height - kSMBarH);
+        if (MSBDSnapHeldSidesMatch(c, start, how)) {   // (the window being resized: not a neighbour of its own)
+            mine++;
+            UIView *own = DMSMCardFor(k);
+            if ((own.window.screen ?: [UIScreen mainScreen]) != [UIScreen mainScreen]) offIPad = YES;
+            continue;
+        }
+        if (n < 32) others[n++] = f;
+    }
+    if (!mine || offIPad) {   // (a TV's window, or one not found on the working stage: left as Apple's step has it)
+        static int told = 0;
+        if (told < 4) { told++; DMLog([NSString stringWithFormat:@"[snap] a Stage Manager window's resize ended %@: not snapped (the iPad's own windows only)", offIPad ? @"on another screen" : @"where none of the working stage's windows is"]); }
+        return at;
+    }
+    CGRect s = DMSnapFrameFor(@"a Stage Manager window", window, how, others, n, DMSMUsableAreaForIdentity(nil, NULL));
+    if (CGRectEqualToRect(s, window)) return at;
+    if (sd.left) at.x = CGRectGetMinX(s);
+    if (sd.right) at.x = CGRectGetMaxX(s);
+    if (sd.top) at.y = CGRectGetMinY(s) + kSMBarH;
+    if (sd.bottom) at.y = CGRectGetMaxY(s);
+    return at;
+}
 static id (*o_SMRAStep16)(id, SEL, BOOL);
 static id DMSMRAStep16(id self, SEL _cmd, BOOL end) {   // -[SBItemResizeGestureSwitcherModifier _responseForGestureUpdateAtGestureEnd:]
     unsigned long long edge = 0, anchor = 0; CGRect start = CGRectNull; id layout = nil;
@@ -88,6 +132,16 @@ static id DMSMRAStep16(id self, SEL _cmd, BOOL end) {   // -[SBItemResizeGesture
     DMSMRAWrite(self, gSMRAAnchorIv, &f.anchor, sizeof f.anchor);
     DMSMRAWrite(self, gSMRAStartIv, &f.frame, sizeof f.frame);
     if (moveLoc) { CGPoint at = CGPointMake(loc.x + grab.x, loc.y + grab.y); DMSMRAWrite(self, gSMRALocIv, &at, sizeof at); }
+    if (end) {   // (1.7.3 item 3: the finger lifted -- the dragged sides where they snap; the location put back after the step, as the grab's)
+        CGPoint cur = CGPointZero;
+        if (DMSMRARead(self, gSMRALocIv, &cur, sizeof cur)) {
+            CGPoint snapped = DMSMRASnapEnd(edge, start, cur);
+            if (!CGPointEqualToPoint(snapped, cur)) {
+                if (!moveLoc) { loc = cur; moveLoc = YES; }
+                DMSMRAWrite(self, gSMRALocIv, &snapped, sizeof snapped);
+            }
+        }
+    }
     id r = nil;
     @try { r = o_SMRAStep16(self, _cmd, end); }
     @finally {

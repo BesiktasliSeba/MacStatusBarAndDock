@@ -12,6 +12,7 @@ if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
     # record that could not be given back stays, so the next install can still give those engines back).
     rm -f "$P/MacStatusBar-ChoicyBackup.plist" /var/jb/var/log/sshtoggled-engines.log /var/jb/var/log/sshtoggled-engines.log.old
     rm -f "$S/ssh-state" "$S"/.ssh-state.* /var/jb/var/mobile/.sshtoggle-state
+    rm -f "$S/eject-answer" "$S"/.eject-answer.* "$S/eject-dryrun"   # (a drive's eject for Finder: the last answer, and the debug test switch)
     rm -f /var/mobile/Library/Caches/com.besiktasliseba.macsettings.landscapeicons.plist
     rmdir "$S" 2>/dev/null
     [ "$1" = "purge" ] && rm -rf /var/jb/var/lib/macstatusbaranddock

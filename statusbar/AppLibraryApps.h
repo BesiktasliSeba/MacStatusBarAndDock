@@ -14,9 +14,12 @@
 //    apps --: in the A-Z list of the empty search under its letter (the result's own collation: main thread only, it asserts the main queue; never a
 //    result made anew for the empty search: 18.5 hydrates that one off the main queue and asserts it), in a
 //    search's list sorted by the query's own comparator, and to the "No Results" one (which comes without its query: the list's own current one)
-//    (DMALResults); a new search text while ours is shown goes through the same rule at once (DMALExecute);
-//  - its icon view: no Haptic Touch menu and no drag (nothing to delete, share or place on the Home Screen: it lives in the App Library only).
+//    (DMALResults); whether ours is there follows the search field's text, also when the engine's answer for a new text is unchanged and so never
+//    reaches the list (DMALEngineAnswered, 1.7.3 item 13);
+//  - its icon view: its own Haptic Touch menu (Open, Add to Dock / Remove from Dock) and a drag into the Dock only (1.7.3: ActMonDock.h --
+//    nothing to delete or share, and no place on the Home Screen's pages or in a folder: it lives in the App Library, and the Dock if added).
 // Settings > Status Bar > Activity Monitor > Show in App Library (activityMonitorInLibrary, on unless switched off): DMALApplyPref.
+#include "../common/ActMonDock.h"   // (the rules shared with the Mac test: the search's (1.7.3 item 13) and the Dock's (item 5))
 #define kDMALActMonIdentifier @"com.besiktasliseba.macstatusbar.activitymonitor"
 #define kDMALActMonName @"Activity Monitor"
 // iPadOS's prediction category of "Utilities": the App Library's own group 1010 (16.7.7 and 17.5.1), or the App Store's genre 6002 where a
@@ -148,8 +151,15 @@ static id DMALIcon(void) {
 static BOOL DMALIsOurs(id icon) { return gDMALIconClass && icon && [icon isKindOfClass:gDMALIconClass]; }
 
 // A tap on it (the category's tile, its expanded list, a search result): the App Library goes, as when an app opens from it, then the window comes.
+static BOOL DMAMLocationIsDock(id loc);
 static void DMALOpen(id location) {
     if (![NSThread isMainThread]) { dispatch_async(dispatch_get_main_queue(), ^{ DMALOpen(location); }); return; }
+    if (DMAMLocationIsDock(location)) {   // (its icon in the Dock, 1.7.3: the window comes, or comes forward -- back from the Dock when minimized)
+        DM_FEATURE_MARK("actmon-dock-open");
+        DMLog([NSString stringWithFormat:@"[amdock] Activity Monitor opened from the Dock (%@)", location]);
+        DMActivityMonitorOpen();
+        return;
+    }
     DM_FEATURE_MARK("actmon-app-library-open");
     NSString *how = DMLibraryShowCall(NO);
     DMLog([NSString stringWithFormat:@"[applib] Activity Monitor opened from the App Library (%@): the App Library goes (%@), the window comes", location, how ?: @"no call"]);
@@ -255,22 +265,26 @@ static id DMALResultCollated(id result, id query, id icon) {
     NSSet *icons = DMCall(result, @"icons") ?: [NSSet set];
     return ((id (*)(id, SEL, id, id, id, id, id, unsigned long long))objc_msgSend)([rc alloc], NSSelectorFromString(full), query, [icons setByAddingObject:icon], s2, collation, [m2 copy], how);
 }
+// Ours is in the list exactly when the search field's text matches its name (1.7.3 item 13) -- `current`, the list's query for its field
+// (DMALFieldQuery) --, not the text a result was found for: with keys ~25 ms apart the engine's answer comes back for a text already typed over
+// ("a" while the field says "actx", 18.5), or inside the list's own call for a new text. The result keeps its own query (the list's own rule for
+// which text it shows a result for).
 static id DMALResultWithOurs(id result, id current) {
     id icon = DMALIcon(), query = DMCall(result, @"query");
     SEL nq = NSSelectorFromString(@"isNullQueryResult");
     BOOL empty = [result respondsToSelector:nq] && ((BOOL (*)(id, SEL))objc_msgSend)(result, nq);
     if (!query || empty) query = current;   // (nothing found: no query with it -- the list's own current one)
-    else if (current && ![DMCall(query, @"searchString") ?: @"" isEqual:DMCall(current, @"searchString") ?: @""]) return nil;   // (a late result of another text)
+    id decide = current ?: query;
     NSSet *icons = DMCall(result, @"icons");
     if (![icons isKindOfClass:[NSSet class]]) icons = [NSSet set];
-    if (!icon || !query || [icons containsObject:icon] || !DMALQueryMatches(query, icon)) return nil;
+    if (!icon || !query || !decide || [icons containsObject:icon] || !DMALQueryMatches(decide, icon)) return nil;
     id r = empty ? nil : DMALResultCollated(result, query, icon);
     // The empty search (the A-Z list) only ever gets ours in the engine's own result, in its letter's section (above): a result made anew for it
     // hydrates the A-Z collation, which 18.5 runs off the main queue and asserts so (+[SBHIconLibraryQueryResult _hydrateSnapshot:...]:
     // BSDispatchQueueAssertNotMain) -- SpringBoard crashed when the search field was cleared after a text that found nothing (A12Z, 31 Oct),
-    // as the list's "nothing found" result then came back for the empty text. The engine's own A-Z result follows the clearing anyway.
-    NSString *text = [DMCall(query, @"searchString") isKindOfClass:[NSString class]] ? DMCall(query, @"searchString") : @"";
-    if (!r && ![text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]].length) return nil;
+    // as the list's "nothing found" result then came back for the empty text. The engine's own A-Z result follows the clearing anyway. (Neither the
+    // result's text nor the list's may be empty for a result made anew.)
+    if (!r && !MSBDALMayMakeAnew(DMCall(query, @"searchString"), DMCall(decide, @"searchString"))) return nil;
     if (!r) {   // (a search's own list: every icon sorted by the query's own comparator, ours among them)
         Class rc = objc_getClass("SBHIconLibraryQueryResult");
         if (!DMMSWHasMethod(rc, @"initWithQuery:icons:sortComparator:", @"@@:@@@?")) return nil;
@@ -292,55 +306,112 @@ static id DMALIvarObj(id o, const char *name) {
     const char *t = iv ? ivar_getTypeEncoding(iv) : NULL;
     return (t && t[0] == '@') ? object_getIvar(o, iv) : nil;
 }
-static BOOL gDMALShown = NO;   // (the list's last result had ours: DMALExecute)
+static BOOL gDMALShown = NO;   // (the list's last result had ours: DMALEngineAnswered)
+static __weak id gDMALAsked;   // (the query the list is asking for right now: its result can come back inside that call, before the list keeps it)
+static __weak id gDMALList;    // (the App Library's search list: the engine's answers are checked against its field, DMALEngineAnswered)
 static void (*o_DMALResults)(id, SEL, id, id);
+#if DEBUG
+static NSString *DMALText(id query) { id t = DMCall(query, @"searchString"); return [t isKindOfClass:[NSString class]] ? t : @""; }
+#endif
+// The text the list stands for: its search field's, as the list makes its query from it (-_queryForCurrentSearchTextField) -- not the query the list
+// keeps (_currentQuery: it takes each result's own query, a late one's too, so it can lag behind the field); else the one it is asking for right
+// now, else the one it keeps.
+static id DMALFieldQuery(id list) {
+    static int has = -1;
+    if (has < 0 && list) has = DMMSWHasMethod(object_getClass(list), @"_queryForCurrentSearchTextField", @"@@:");
+    id q = nil;
+    if (has == 1) @try { q = ((id (*)(id, SEL))objc_msgSend)(list, NSSelectorFromString(@"_queryForCurrentSearchTextField")); } @catch (id e) { q = nil; }
+    return q ?: (gDMALAsked ?: DMALIvarObj(list, "_currentQuery"));
+}
 static void DMALResults(id self, SEL _cmd, id library, id result) {
     id withOurs = nil;
-    if (gDMALOn && [NSThread isMainThread]) @try { withOurs = DMALResultWithOurs(result, DMALIvarObj(self, "_currentQuery")); } @catch (id e) { withOurs = nil; }
+    if ([NSThread isMainThread]) gDMALList = self;
+    if (gDMALOn && [NSThread isMainThread]) @try { withOurs = DMALResultWithOurs(result, DMALFieldQuery(self)); } @catch (id e) { withOurs = nil; }
     if ([NSThread isMainThread]) { id shownIcons = DMCall(withOurs ?: result, @"icons"); gDMALShown = gDMALIcon && [shownIcons isKindOfClass:[NSSet class]] && [shownIcons containsObject:gDMALIcon]; }
+#if DEBUG
+    if (DMTestFlag("/tmp/macstatusbar-debug")) {
+        SEL nq = NSSelectorFromString(@"isNullQueryResult");
+        BOOL null = [result respondsToSelector:nq] && ((BOOL (*)(id, SEL))objc_msgSend)(result, nq);
+        DMLog([NSString stringWithFormat:@"[alsearch] result for \"%@\" (list's text \"%@\"): %@%lu icons, main %d -> shown with Activity Monitor %d",
+               DMALText(DMCall(result, @"query")), DMALText(DMALIvarObj(self, "_currentQuery")), null ? @"nothing found, " : @"", (unsigned long)[DMCall(result, @"icons") count], [NSThread isMainThread], gDMALShown]);
+    }
+#endif
     o_DMALResults(self, _cmd, library, withOurs ?: result);
 }
-// A new search text: the engine tells the list only when ITS result changes -- nothing found, then nothing found again, is no change to it. So
-// with nothing found the list kept what it showed: ours for a text that no longer matched ("act" -> "actx", 16.7.7), or no ours for one that
-// matches again. Once the list has asked (the next turn of the main queue, never from inside its own call), the engine's "nothing found" result goes
-// to the list again for the new text, through the same rule (DMALResults): ours is added when the text matches, else the list says "No Results".
-// Only that result: one carrying another text's apps would be another query's list.
+// The list asks for a new text: kept as the one being asked for while the list's call runs (a result can come back inside it).
 static BOOL (*o_DMALExecute)(id, SEL, id);
 static BOOL DMALExecute(id self, SEL _cmd, id query) {
+    id was = gDMALAsked; gDMALAsked = query;
     BOOL r = o_DMALExecute(self, _cmd, query);
-    if (!gDMALOn || ![NSThread isMainThread]) return r;
-    __weak id ws = self;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        id me = ws, library = DMALIvarObj(me, "_library"), last = DMCall(library, @"lastQueryResults");
-        SEL nq = NSSelectorFromString(@"isNullQueryResult");
-        if (!me || !last || ![last respondsToSelector:nq] || !((BOOL (*)(id, SEL))objc_msgSend)(last, nq) || [DMCall(last, @"icons") count]) return;
-        id current = DMALIvarObj(me, "_currentQuery"), icon = DMALIcon();
-        if (!current || !icon || DMALQueryMatches(current, icon) == gDMALShown) return;   // (the list shows ours exactly when the text matches already)
-        NSString *text = [DMCall(current, @"searchString") isKindOfClass:[NSString class]] ? DMCall(current, @"searchString") : @"";
-        if (![text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]].length) return;   // (the empty text: the engine's A-Z list comes, with ours -- never "nothing found")
-        DMALResults(me, NSSelectorFromString(@"iconLibrary:hasUpdatedQueryResult:"), library, last);
-    });
+    gDMALAsked = was;
+#if DEBUG
+    if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[alsearch] query \"%@\" asked (%d)", DMALText(query), r]);
+#endif
+    if ([NSThread isMainThread]) gDMALList = self;
     return r;
 }
 
-// ---- its icon view: no Haptic Touch menu, no drag ----
-static id (*o_DMALMenuConfig)(id, SEL, id, CGPoint);
-static id DMALMenuConfig(id self, SEL _cmd, id interaction, CGPoint p) {
-    if (DMALIsOurs(DMCall(self, @"icon"))) return nil;
-    return o_DMALMenuConfig(self, _cmd, interaction, p);
+#if DEBUG
+// (debug, item 13: what the library passes on to the list)
+static void (*o_DMALDbgDispatch)(id, SEL, id);
+static void DMALDbgDispatch(id self, SEL _cmd, id result) {
+    if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[alsearch] library dispatches \"%@\" (%lu icons)", DMALText(DMCall(result, @"query")), (unsigned long)[DMCall(result, @"icons") count]]);
+    o_DMALDbgDispatch(self, _cmd, result);
 }
-static BOOL (*o_DMALCanDrag)(id, SEL);
-static BOOL DMALCanDrag(id self, SEL _cmd) {
-    if (DMALIsOurs(DMCall(self, @"icon"))) return NO;
-    return o_DMALCanDrag(self, _cmd);
+#endif
+// The engine's answer to the library: the list hears only of a changed one, so an unchanged answer for a new text -- nothing found after nothing found
+// ("act" -> "actx", 16.7.7 and 18.5), the same apps for "Ac" and "Act" (15.6.1 lost ours with keys ~25 ms apart) -- left the list showing ours for a
+// text that no longer matches it, or without ours for one that does. The shared rule (common/ActMonDock.h MSBDALGiveAnswer) decides when the list
+// is given the answer anyway, through DMALResults (ours by the field's text) -- at the moment the engine answers that text, never on a guess.
+static void DMALEngineAnswered(id library, id result) {
+    id list = gDMALList, icon = gDMALIcon;
+    if (!gDMALOn || !list || !icon || !result || DMALIvarObj(list, "_library") != library) return;
+    id field = DMALFieldQuery(list);
+    SEL nq = NSSelectorFromString(@"isNullQueryResult");
+    BOOL nothing = [result respondsToSelector:nq] && ((BOOL (*)(id, SEL))objc_msgSend)(result, nq);
+    if (!field || !MSBDALGiveAnswer(nothing, DMCall(DMCall(result, @"query"), @"searchString"), DMCall(field, @"searchString"), DMALQueryMatches(field, icon), gDMALShown)) return;
+    DM_FEATURE_MARK("actmon-search-answer");
+#if DEBUG
+    if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[alsearch] the engine's unchanged answer for \"%@\" given to the list (Activity Monitor %@)", DMALText(field), gDMALShown ? @"no longer matches" : @"matches now"]);
+#endif
+    DMALResults(list, NSSelectorFromString(@"iconLibrary:hasUpdatedQueryResult:"), library, result);
 }
-
+static void (*o_DMALEngine)(id, SEL, id, id);
+static void DMALEngine(id self, SEL _cmd, id engine, id result) {
+    o_DMALEngine(self, _cmd, engine, result);
+    __weak id wl = self; id r = result;
+    if ([NSThread isMainThread]) DMALEngineAnswered(self, result);   // (after the library's own dispatch: a changed answer has reached the list through DMALResults)
+    else dispatch_async(dispatch_get_main_queue(), ^{ id l = wl; if (l) DMALEngineAnswered(l, r); });
+}
 static BOOL DMALHook(NSString *cls, NSString *sel, NSString *types, IMP repl, IMP *orig) {
     Class c = objc_getClass(cls.UTF8String);
     if (!DMMSWHasMethod(c, sel, types)) { DMLog([NSString stringWithFormat:@"[applib] -[%@ %@] is not as read here: not hooked", cls, sel]); return NO; }
     MSHookMessageEx(c, NSSelectorFromString(sel), repl, orig);
     return YES;
 }
+#include "ActMonDock.h"   // (Activity Monitor in the Dock, 1.7.3 item 5)
+
+// ---- its icon view: its own menu, and a drag only into the Dock (ActMonDock.h) ----
+// Its Haptic Touch menu (1.7.3 item 5, KT: Open, Add to Dock / Remove from Dock): SpringBoard's own menu for the icon -- its preview and look --
+// with our rows in place of SpringBoard's (an app's would be its shortcuts, Share and Remove App: none of them is Activity Monitor's).
+static id (*o_DMALMenuConfig)(id, SEL, id, CGPoint);
+static id DMALMenuConfig(id self, SEL _cmd, id interaction, CGPoint p) {
+    if (!DMALIsOurs(DMCall(self, @"icon"))) return o_DMALMenuConfig(self, _cmd, interaction, p);
+    id cfg = o_DMALMenuConfig(self, _cmd, interaction, p);
+    UIContextMenuActionProvider provider = nil; @try { provider = [cfg valueForKey:@"actionProvider"]; } @catch (id e) {}
+    if (!cfg || !provider) { static BOOL told; if (!told) { told = YES; DMLog(@"[applib] SpringBoard gives Activity Monitor's icon no menu here: none"); } return nil; }
+    id location = DMCall(self, @"location");
+    UIContextMenuActionProvider ours = ^UIMenu *(NSArray<UIMenuElement *> *suggested) { return DMAMMenu(location); };
+    @try { [cfg setValue:ours forKey:@"actionProvider"]; } @catch (id e) { return nil; }
+    DM_FEATURE_MARK("actmon-menu");
+    return cfg;
+}
+static BOOL (*o_DMALCanDrag)(id, SEL);
+static BOOL DMALCanDrag(id self, SEL _cmd) {
+    if (DMALIsOurs(DMCall(self, @"icon"))) return gDMAMReady && gDMALOn && o_DMALCanDrag(self, _cmd);   // (into the Dock only: the root folder refuses it in any other list)
+    return o_DMALCanDrag(self, _cmd);
+}
+
 // Settings > Status Bar > Activity Monitor > Show in App Library (DMLoadPrefs). The hooks go in the first time it is on; a change reloads the App
 // Library's categories (its search list asks again by itself).
 static void DMALApplyPref(BOOL want) {
@@ -352,7 +423,11 @@ static void DMALApplyPref(BOOL want) {
               && DMALHook(@"SBHIconLibraryTableViewController", @"_executeQuery:", @"B@:@", (IMP)DMALExecute, (IMP *)&o_DMALExecute);
         DMALHook(@"SBIconView", @"contextMenuInteraction:configurationForMenuAtLocation:", @"@@:@{CGPoint=dd}", (IMP)DMALMenuConfig, (IMP *)&o_DMALMenuConfig);
         DMALHook(@"SBIconView", @"canBeginDrags", @"B@:", (IMP)DMALCanDrag, (IMP *)&o_DMALCanDrag);
-        DMLog([NSString stringWithFormat:@"[applib] Activity Monitor in the App Library: categories %@, search %@", a ? @"hooked" : @"NOT hooked", b ? @"hooked" : @"NOT hooked"]);
+        BOOL c = DMALHook(@"SBHTableViewIconLibrary", @"engine:queryResultsWereUpdated:", @"v@:@@", (IMP)DMALEngine, (IMP *)&o_DMALEngine);   // (1.7.3 item 13)
+#if DEBUG
+        DMALHook(@"SBHTableViewIconLibrary", @"_dispatchQueryResult:", @"v@:@", (IMP)DMALDbgDispatch, (IMP *)&o_DMALDbgDispatch);
+#endif
+        DMLog([NSString stringWithFormat:@"[applib] Activity Monitor in the App Library: categories %@, search %@, the engine's unchanged answers %@", a ? @"hooked" : @"NOT hooked", b ? @"hooked" : @"NOT hooked", c ? @"hooked" : @"NOT hooked"]);
     }
     BOOL on = want && hooked;
     if (on == gDMALOn) return;
@@ -360,4 +435,5 @@ static void DMALApplyPref(BOOL want) {
     id ds = gDMALDataSource;
     if (ds && [ds respondsToSelector:NSSelectorFromString(@"reloadData")]) dispatch_async(dispatch_get_main_queue(), ^{ ((id (*)(id, SEL))objc_msgSend)(ds, NSSelectorFromString(@"reloadData")); });
     DMLog([NSString stringWithFormat:@"[applib] Activity Monitor in the App Library %@", on ? @"on" : @"off"]);
+    DMAMApply(on);   // (the Dock follows: its hooks the first time, out of the Dock when off -- the record kept --, back when on; ActMonDock.h)
 }

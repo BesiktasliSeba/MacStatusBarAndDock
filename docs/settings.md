@@ -20,13 +20,14 @@ On iPadOS 18, Settings has no room for tweak rows in its sidebar, so Status Bar,
 | Actions | Show Desktop, your desktops, Downloads, New Finder Window, Activity Monitor, Lock Screen and Force Quit in Spotlight, when what you type matches. Typing an action's name brings the Actions to the top of the results, right after Apple's Top Hit when there is one. | Off |
 | Windows | Your open windows in Spotlight, when what you type matches. | Off |
 | Desktop and Downloads | Files in On My iPad > Desktop and Downloads in Spotlight: right away on iPadOS 15, once iPadOS indexes them on 16. Needs Files allowed in Settings > Siri & Search. | Off |
+| Menu Bar Size | Small is the standard size. Medium and Large make the menu bar taller, with larger text, icons and menus that are easier to tap with a finger. Window title bars keep their size (respring). | Small |
 | Automatically Hide and Show the Status Bar | Hides the menu bar until the pointer reaches the top edge. | Off |
 | Mac-Style Banners | Notification banners come in at the top right, like on a Mac. | On |
 | Go Menu > Apps | Choose and order the apps in the Go menu. | |
 | Finder | Off removes Finder completely, with its Dock icon. | On |
 | Show Desktop Icons | Files and folders from On My iPad > Desktop on the first Home Screen page. | On |
 | Hide Desktop Icon Names | Hides the names under every desktop icon. VoiceOver still reads them. An icon's own menu has Hide Name for just that icon. Greyed out while Finder or Show Desktop Icons is off. | Off |
-| Activity Monitor > Show in App Library | Activity Monitor as an app in the App Library, in its Utilities category and its search. A tap opens the Activity Monitor window. | On |
+| Activity Monitor > Show in App Library | Activity Monitor as an app in the App Library, in its Utilities category and its search. A tap opens the Activity Monitor window, and Add to Dock in its menu puts it in the Dock. Off also takes it out of the Dock, and on puts it back. | On |
 | Report a Problem | Opens a filled-in GitHub issue in your browser. The report is part of the link, so GitHub receives it when the page opens. It is only posted if you submit it. | |
 | Background | Automatic: a color behind the menu bar, unless ColorBar15 already colors it. Also Always On or Off. | Automatic |
 | Color and opacity | The background color, used while the menu bar text is light. | 70% |
@@ -85,7 +86,7 @@ The window settings, on their own page between Status Bar and Dock. On iPadOS 15
 | Show Finder in Dock | Finder as the first Dock icon. Not shown while Finder is off. | On |
 | Show Downloads in Dock | The Downloads stack at the end of the Dock. | On |
 | Downloads From | Which apps' downloads the stack shows: Safari, plus other apps you pick. | Safari |
-| Show Trash in Dock | A Trash at the end of the Dock, after Downloads, while Finder is on. It looks full when Finder's Trash has items, a tap opens it in Finder, and a long press or a right click offers Open and Empty Trash, which asks first. Drop files on it to move them to the Trash, a Dock app to take it out of the Dock, or a drive from Finder's sidebar to eject it (iPadOS 16 and 17; ejecting doesn't work on iPadOS 18 yet). | Off |
+| Show Trash in Dock | A Trash at the end of the Dock, after Downloads, while Finder is on. It looks full when Finder's Trash has items, a tap opens it in Finder, and a long press or a right click offers Open and Empty Trash, which asks first. Drop files on it to move them to the Trash, a Dock app to take it out of the Dock, or a drive from Finder's sidebar to eject it (iPadOS 16 to 18). | Off |
 
 ## Settings > Home Screen & Multitasking
 
@@ -138,7 +139,7 @@ For keyboards without a function row, like the original Magic Keyboard for iPad.
 
 ## Elsewhere in Settings
 
-- Display & Brightness > Auto-Lock offers 30 minutes, 1 hour and 2 hours too, except in Low Power Mode. iPadOS takes any time over an hour for Never, so the tweak keeps 2 hours in SpringBoard's idle timer, and 2 hours is listed only while it can.
+- Display & Brightness > Auto-Lock offers 30 minutes, 1 hour and 2 hours too, except in Low Power Mode. iPadOS takes any time over an hour for Never, so the tweak keeps 2 hours in SpringBoard's idle timer, and 2 hours is listed only while it can. Removing the tweak or switching MacStatusBar off sets 2 hours to 1 hour, and switching MacStatusBar on again brings the 2 hours back. With an Aerial, Zetsu or MilkyWay4 window in front, the iPad gets the whole Auto-Lock time, as with an app in front.
 - General > Ethernet is always listed, with or without an adapter.
 
 ## In the menu bar's Window menu
@@ -160,6 +161,7 @@ These have no switch:
 - The Settings app has no large title and no alert banners over its sidebar, and Accessibility starts its own section.
 - Command-Tab brings an app's window to the front when it has one, and a quick Command-Tab from a window goes back to the app you used before.
 - Windows have a smallest size with every window engine, as with Stage Manager: the app at least 320 x 300 points, as far as the screen allows.
+- A window you move or resize lines up with the screen edges, the menu bar, the Dock and other windows when you let go of it near them, with every window engine.
 - With Aerial, Zetsu or MilkyWay4 on iPadOS 15 to 18, every app with a window has its card in iPadOS's App Switcher, with a picture of the window. A tap on the card brings the window forward.
 - On iPads with a Home button, windows placed before 1.7.1 with a gap under the menu bar move up under it once.
 - In portrait, a Home Screen page whose icon layout only fits landscape (for example one tuned with Atria, which keeps one layout for both orientations) keeps its landscape positions, so no icon ends up off the screen. Pages that fit in portrait are left as they are, and so is editing the Home Screen.

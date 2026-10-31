@@ -209,7 +209,8 @@ static void DMMSWSMNotice(NSString *text) {
     CGFloat maxW = MIN(520.0, root.bounds.size.width - 40.0);
     CGSize s = [l sizeThatFits:CGSizeMake(maxW - 28.0, 60.0)];
     UIVisualEffectView *pill = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThickMaterialDark]];
-    pill.frame = CGRectIntegral(CGRectMake((root.bounds.size.width - MIN(maxW, s.width + 28.0)) / 2.0, 24.0 + 14.0, MIN(maxW, s.width + 28.0), s.height + 16.0));
+    // (14 pt under where the menu bar is: a 24 pt bar at Small, as before; the bar's own height at Medium and Large -- Menu Bar Size, 1.7.3)
+    pill.frame = CGRectIntegral(CGRectMake((root.bounds.size.width - MIN(maxW, s.width + 28.0)) / 2.0, MSBDMenuBarFixedSite(gDMBarSize, DMMenuBarHeight()) + 14.0, MIN(maxW, s.width + 28.0), s.height + 16.0));
     pill.layer.cornerRadius = 10.0; pill.layer.cornerCurve = kCACornerCurveContinuous; pill.clipsToBounds = YES;
     l.frame = CGRectInset(pill.bounds, 14.0, 8.0);
     [pill.contentView addSubview:l];

@@ -17,6 +17,7 @@
 #import <unistd.h>
 #import <sys/stat.h>
 #import <notify.h>
+#import <dlfcn.h>   // (1.7.3: MacStatusBar's Activity Monitor in the Dock, MSBDActMonDockRemove)
 
 // The Dock's layout numbers, as SBFloatingDockView fills them in -[getMetrics:forBounds:] (found by dumping it on the device):
 // frames inside the platter for the user icons, the recents, the App Library icon and the divider, the platter itself in
@@ -1638,6 +1639,7 @@ static void DMWidenRecentsGrid(UIView *list) {
 %end
 
 #import "../common/OffAlert.h"
+#import "../macsettings/AutoLockGiveBack.h"   // (1.7.3: a stored 2 hours lowered while MacStatusBar's part that keeps it is not here)
 // ---- "Remove from Dock" in a Dock app's Haptic Touch menu (2026-09-29) ----
 // Like a Mac's Dock: an app kept in the Dock can be taken out of it from its own menu, without the Home Screen in view (windows up, Stage
 // Manager). The app goes to the first free place on the Home Screen, the same place iPadOS gives an app it adds itself. Only apps kept in
@@ -1686,8 +1688,15 @@ static BOOL DMRemoveFromDock(id icon) {   // (YES: it left the Dock for the Home
     DMLog([NSString stringWithFormat:@"[dock] Remove from Dock: %@ moved to the Home Screen at %@", DMObj(icon, @"applicationBundleID"), path]);
     return YES;
 }
+// Our own apps kept in the Dock (1.7.3: Activity Monitor, MacStatusBar's ActMonDock.h): an icon of SpringBoard's with our identifier and no
+// app; it leaves the Dock through MacStatusBar (back to the App Library, nothing on the Home Screen), found with dlsym.
+static BOOL DMIsOwnAppIcon(id icon) { return [DMObj(icon, @"leafIdentifier") isEqual:@"com.besiktasliseba.macstatusbar.activitymonitor"]; }
 // The Trash (TrashIcon.m): an app dragged off the Dock and dropped on the bin leaves the Dock the same way, once SpringBoard's drag has ended.
 BOOL DMTrashRemoveIconFromDock(id icon) {
+    if (gEnabled && DMIsOwnAppIcon(icon)) {
+        static BOOL (*own)(void) = NULL; if (!own) own = (BOOL (*)(void))dlsym(RTLD_DEFAULT, "MSBDActMonDockRemove");
+        return own && own();
+    }
     if (!gEnabled || !DMIconKeptInDock(icon) || ![DMObj(icon, @"applicationBundleID") isKindOfClass:[NSString class]]) return NO;
     return DMRemoveFromDock(icon);
 }
@@ -1710,7 +1719,7 @@ BOOL DMTrashIconDragInfo(id session, MSBDTrashIconDrag *info, id *iconOut) {
     UIView *view = DMObj(ctx, @"primaryIconView");
     id icon = DMObj(view, @"icon");
     if (!icon && [dragged respondsToSelector:@selector(anyObject)]) icon = [dragged anyObject];
-    info->isApp = [DMObj(icon, @"applicationBundleID") isKindOfClass:[NSString class]];
+    info->isApp = [DMObj(icon, @"applicationBundleID") isKindOfClass:[NSString class]] || DMIsOwnAppIcon(icon);   // (Activity Monitor too, 1.7.3)
     SEL folderSel = NSSelectorFromString(@"isFolderIcon");
     info->isFolder = [icon respondsToSelector:folderSel] && ((BOOL (*)(id, SEL))objc_msgSend)(icon, folderSel);
     info->fromDock = MSBDTrashLocationIsDock(DMObj(view, @"location"));
@@ -1918,6 +1927,7 @@ static NSString *DMK2Verdict(void) {
 %ctor {
     %init;
     MSBDWatchMacStatusBarOff();   // ("MacStatusBar Is Off": this line runs while MacStatusBar is off, see OffAlert.h)
+    MSAutoLockWatchFromDock(^(NSString *l) { DMLog(l); });   // (Auto-Lock 2 hours left behind: likewise, AutoLockGiveBack.h)
     {
         Method m = class_getInstanceMethod(objc_getClass("SBFloatingDockSuggestionsModel"), NSSelectorFromString(@"_updateCurrentDisplayItemsAfterContinuityChange:notifyDelegate:"));
         const char *enc = m ? method_getTypeEncoding(m) : NULL;

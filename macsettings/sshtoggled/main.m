@@ -50,6 +50,8 @@
 #include "../../common/PrewarmQuitSet.h"    // (MSBDPrewarmQuitSetKept: whether SpringBoard keeps a prewarm quit set, Mac-tested)
 #include "../../common/PrewarmPartID.h"     // (MSBDPrewarmPartCurrent: whether the running dasd has the prewarm block just installed, Mac-tested)
 #include "../../statusbar/SMSwitchOn.h"     // (DMSMConsentFrom: the Stage Manager consent values)
+#include "../../common/DriveEject.h"       // (a drive ejected for Finder: the request, its checks, msbdeject's run and the answer, Mac-tested)
+#include "../AutoLockLongest.h"            // (MS_AUTOLOCK_CHECK: removal and switch-off tell SpringBoard to look at the stored Auto-Lock)
 #include <dlfcn.h>
 #include <grp.h>
 
@@ -148,10 +150,12 @@ static NSString *gPrefsDaemons = nil;   // (the cfprefsd processes this helper's
 static char gSelfPath[PATH_MAX] = "/var/jb/usr/libexec/sshtoggled";
 // The work that can be asked for, and is still to be done (a request waiting out its 2 s burst limit, or a package transaction): it is done again
 // after starting over too, whoever notices the restart first (the 10 s check included).
-enum { kWorkEngines = 1, kWorkLines = 2, kWorkSSH = 4 };
+enum { kWorkEngines = 1, kWorkLines = 2, kWorkSSH = 4, kWorkEject = 8 };
 static unsigned gPendingWork = 0;
+static volatile int gEjectBusy = 0;   // (an eject is under way on its own queue, section 5: never started over meanwhile -- the eject and its answer would be lost)
 static void StartOverIfPrefsDaemonRestarted(unsigned work) {
     if (!gPrefsDaemons.length) return;   // (not the daemon, or its start could not read the process list)
+    if (gEjectBusy) return;   // (an eject is under way: looked at again by the next request or the 10 s check, once it is done)
     NSString *now = PrefsDaemonSignature();
     if (!now.length || [now isEqualToString:gPrefsDaemons]) return;
     work |= gPendingWork;
@@ -159,6 +163,7 @@ static void StartOverIfPrefsDaemonRestarted(unsigned work) {
     if (work & kWorkEngines) [kinds addObject:@"engines"];
     if (work & kWorkLines) [kinds addObject:@"lines"];
     if (work & kWorkSSH) [kinds addObject:@"ssh"];
+    if (work & kWorkEject) [kinds addObject:@"eject"];
     NSString *resume = kinds.count ? [kinds componentsJoinedByString:@","] : @"none";
     ELog(@"settings: cfprefsd restarted since this helper started (%@ -> %@) -- starting over as a fresh process so mobile's settings are read anew, then: %@", gPrefsDaemons, now, resume);
     char *args[] = { gSelfPath, "--resume", (char *)resume.UTF8String, NULL };
@@ -813,6 +818,7 @@ static void RestoreForOff(NSString *how, NSString *why) {
     // engines' settings, Stage Manager and Pointer Animations -- never switches one back on while the give-backs run (1.5.1 re-check N1)
     mkdir(ESTATEDIR, 0755);
     { FILE *m = fopen(OFFMARKER, "w"); if (m) { fputs(how.UTF8String, m); fclose(m); } chmod(OFFMARKER, 0644); }
+    notify_post(MS_AUTOLOCK_CHECK);   // (a stored 2 hours: lowered to 1 hour by the SpringBoard still running our code, given back when switched on -- 1.7.3)
     GiveBackEngineSettings();
     if (MSBDPackageOnDisk(status, @"com.opa334.choicy")) GiveBackChoicyEngines();
     GiveBackAll(@"Mac Status Bar is switched off");
@@ -823,6 +829,7 @@ static void PrepareForOn(NSString *why) {
     NSString *status = DpkgStatus();
     unlink(OFFMARKER);
     unlink(ESTATEDIR "/msb-off-alert");   // (plan 3d-7: switched on again, so no "Mac Status Bar Is Off" alert may be shown any more)
+    notify_post(MS_AUTOLOCK_CHECK);   // (2 hours lowered at the switch-off: given back by the SpringBoard that keeps it)
     if (!TweakMeantToRun()) { ELog(@"%@: MacStatusBar&Dock is off (untested iPadOS or safe mode) -- no engine choice applied", why); return; }
     if (MSBDPackageOnDisk(status, @"com.opa334.choicy")) ChoicyApplyChosenEngine(why);
     else ApplyEngines(why);   // (iCleaner Pro setups: the other engines renamed again)
@@ -876,7 +883,7 @@ static void EvaluateMacStatusBarConfig(NSString *source) {
         BOOL off = MacStatusBarSwitchedOff(statusCache, &how);
         NSString *last = [NSString stringWithContentsOfFile:@ESTATEDIR "/msb-config" encoding:NSUTF8StringEncoding error:nil];
         NSString *now = off ? @"off" : @"on";
-        if (!off && Exists(@OFFMARKER)) { unlink(OFFMARKER); unlink(ESTATEDIR "/msb-off-alert"); }   // (a stale marker must never keep a running Mac Status Bar from holding its engine)
+        if (!off && Exists(@OFFMARKER)) { unlink(OFFMARKER); unlink(ESTATEDIR "/msb-off-alert"); notify_post(MS_AUTOLOCK_CHECK); }   // (a stale marker must never keep a running Mac Status Bar from holding its engine)
         if ([last isEqualToString:now]) return;
         mkdir(ESTATEDIR, 0755);
         [now writeToFile:@ESTATEDIR "/msb-config" atomically:YES encoding:NSUTF8StringEncoding error:nil];
@@ -1317,6 +1324,28 @@ static void FreezeOldDefaults(void) {
     if (fresh) ELog(@"defaults: first install -- the new defaults apply");
     else ELog(@"defaults: %@ (from v%ld) -- the old defaults kept for %lu untouched setting(s): %@", decision, (long)done, (unsigned long)frozen.count, frozen.count ? [frozen componentsJoinedByString:@", "] : @"none");
 }
+// The stored Auto-Lock, as ManagedConfiguration's own file says it (read-only, for the log: changed only through SpringBoard, AutoLockGiveBack.h).
+static double AutoLockStored(void) {
+    for (NSString *p in @[@"/var/mobile/Library/UserConfigurationProfiles/EffectiveUserSettings.plist", @"/var/mobile/Library/ConfigurationProfiles/EffectiveUserSettings.plist"]) {
+        NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:p];
+        NSDictionary *rv = [d isKindOfClass:[NSDictionary class]] && [d[@"restrictedValue"] isKindOfClass:[NSDictionary class]] ? d[@"restrictedValue"] : nil;
+        NSDictionary *mi = [rv[@"maxInactivity"] isKindOfClass:[NSDictionary class]] ? rv[@"maxInactivity"] : nil;
+        if ([mi[@"value"] isKindOfClass:[NSNumber class]]) return [mi[@"value"] doubleValue];
+    }
+    return NAN;
+}
+// Removal (1.7.3, item 9): stock SpringBoard takes a stored 2 hours for Never. The SpringBoard still running our code lowers it to 1 hour (it may
+// change ManagedConfiguration's setting, this script may not), told by MS_AUTOLOCK_CHECK once the "removal" marker is there; a moment is given
+// for it (at most 2 s, only while 2 hours is stored), and the outcome is logged.
+static void AutoLockLowerForRemoval(void) {
+    double before = AutoLockStored();
+    notify_post(MS_AUTOLOCK_CHECK);
+    if (!(before > MS_AUTOLOCK_STOCK_LONGEST && before <= MS_AUTOLOCK_LONGEST)) return;
+    double now = before;
+    for (int i = 0; i < 40 && now == before; i++) { usleep(50000); now = AutoLockStored(); }
+    ELog(@"removal: Auto-Lock was %.0f s, %@", before, now == before ? @"still so -- SpringBoard didn't lower it (our code not running there?): the iPad may not lock by itself until Auto-Lock is set again"
+         : [NSString stringWithFormat:@"now %.0f s (lowered by SpringBoard: stock SpringBoard takes anything over 1 hour for Never)", now]);
+}
 // Removal (the prerm, not on an upgrade): everything we changed is given back -- the engines' own settings, our Choicy entries for the engines and
 // for the lines, the engines we renamed for iCleaner Pro -- and our lines' own .disabled files go (dpkg does not know them).
 static void Uninstall(void) {
@@ -1329,6 +1358,7 @@ static void Uninstall(void) {
     usleep(800000);
     mkdir(ESTATEDIR, 0755);
     { FILE *m = fopen(OFFMARKER, "w"); if (m) { fputs("removal", m); fclose(m); } chmod(OFFMARKER, 0644); }   // (the running SpringBoard stops holding the engines)
+    AutoLockLowerForRemoval();
     GiveBackEngineSettings();
     GiveBackStageManager(@"removal");
     GiveBackPointerAnimations(@"removal");   // (after the running SpringBoard's own give-back, posted above: whichever comes first, the other finds nothing to do)
@@ -1364,6 +1394,11 @@ static void Uninstall(void) {
         AsMobile(^BOOL{ return unlink(LINERECORD) == 0; });
     }
     GiveBackAll(@"MacStatusBar&Dock removed");
+    {   // (2 hours lowered at a switch-off before: not given back after a removal -- nothing of ours keeps it any more)
+        CFPreferencesSynchronize(CFSTR(MS_AUTOLOCK_DOMAIN), CFSTR("mobile"), kCFPreferencesAnyHost);
+        CFPropertyListRef r = CFPreferencesCopyValue(CFSTR(MS_AUTOLOCK_RECORD), CFSTR(MS_AUTOLOCK_DOMAIN), CFSTR("mobile"), kCFPreferencesAnyHost);
+        if (r) { CFRelease(r); WriteMobilePrefsKey(@MS_AUTOLOCK_DOMAIN, @MS_AUTOLOCK_RECORD, nil, NO); ELog(@"removal: the Auto-Lock lowered at a switch-off is not given back (removed)"); }
+    }
     // The crash guard's state goes with its record (the postrm deletes the record files): a reinstall must never come back in safe mode, or with a
     // footer about a part "turned off", with nothing left to explain it. The user's own settings stay (as usual on removal).
     CFStringRef gd = CFSTR(MSBD_GATE_DOMAIN);
@@ -1385,6 +1420,75 @@ static void Uninstall(void) {
         NSString *d = [NSString stringWithFormat:@TWEAKDIR "/%@.disabled", line];
         if (IsRegular(d) && unlink(d.fileSystemRepresentation) == 0) ELog(@"removal: %@.disabled removed", line);
     }
+}
+
+// ---- 5. a connected drive ejected for Finder (1.7.3) ---------------------------------------------------------------------------------------------
+// Finder (SpringBoard) can't start the eject helper itself on iPadOS 18 -- its posix_spawn of anything under /var/jb is refused (EPERM, 1.7.2 item
+// 21) -- so it asks this launchd job, on every version: one path. The channel and its rules are common/DriveEject.h. Here: the request read from our
+// own preferences (as mobile's, through cfprefsd, like Settings' requests above) and taken away at once; the volume folder checked against the
+// kernel's mount table; msbdeject run with that one argument and a time limit, one eject at a time on a queue of its own (the main queue keeps
+// watching meanwhile); its line written with the request's id into the root-owned answer file, and Finder told. Our pid is published
+// (kMSBDEjectHelperState): Finder knows the helper is there before it asks, and says so when it is not.
+static dispatch_queue_t gEjectQueue;
+static BOOL gEjectAgain = NO;   // (a request posted while one ran: read when that one is done -- the request in the preferences is always the latest)
+static void EjectWriteAnswer(NSString *rid, NSString *line) {
+    mkdir(ESTATEDIR, 0755);
+    NSData *d = MSBDEjectAnswerData(rid, line);
+    char tmp[] = ESTATEDIR "/.eject-answer.XXXXXX";
+    int fd = mkstemp(tmp);
+    if (fd < 0) { dispatch_async(dispatch_get_main_queue(), ^{ ELog(@"eject: the answer could not be written (%s)", strerror(errno)); }); return; }
+    BOOL ok = write(fd, d.bytes, d.length) == (ssize_t)d.length;
+    fchmod(fd, 0644);   // (Finder reads it: root's file, in root's folder -- only an answer of ours is taken, with the request's id)
+    close(fd);
+    if (!ok || rename(tmp, kMSBDEjectAnswerFile) != 0) { unlink(tmp); dispatch_async(dispatch_get_main_queue(), ^{ ELog(@"eject: the answer could not be written"); }); return; }
+    notify_post(kMSBDEjectAnswerName);
+}
+#if DEBUG
+// Tests: with the ROOT-owned flag ESTATEDIR/eject-dryrun (mobile can't make it), msbdeject only checks (--check) and nothing is ejected -- the whole
+// way through this job, on a real drive too (KT's drive stays in); for the debug fake drive it checks a fixed folder instead (below).
+static BOOL EjectDryRun(void) { struct stat st; return lstat(ESTATEDIR "/eject-dryrun", &st) == 0 && S_ISREG(st.st_mode) && st.st_uid == 0; }
+#else
+static BOOL EjectDryRun(void) { return NO; }
+#endif
+static void EjectRequest(NSString *why) {
+    if (gEjectBusy) { gEjectAgain = YES; return; }
+    StartOverIfPrefsDaemonRestarted(kWorkEject);
+    gPendingWork &= ~kWorkEject;
+    CFStringRef key = CFSTR(kMSBDEjectRequestKey), dom = CFSTR(kMSBDEjectDomain);
+    CFPreferencesSynchronize(dom, CFSTR("mobile"), kCFPreferencesAnyHost);
+    CFPropertyListRef v = CFPreferencesCopyValue(key, dom, CFSTR("mobile"), kCFPreferencesAnyHost);
+    if (!v) return;   // (nothing asked: a repeated or spoofed post)
+    CFPreferencesSetValue(key, NULL, dom, CFSTR("mobile"), kCFPreferencesAnyHost);   // (taken away at once: no later post can replay it)
+    CFPreferencesSynchronize(dom, CFSTR("mobile"), kCFPreferencesAnyHost);
+    NSString *rid = nil, *vol = nil, *bad = nil;
+    BOOL good = MSBDEjectRequestFrom((__bridge id)v, [[NSDate date] timeIntervalSince1970], &rid, &vol, &bad);
+    CFRelease(v);
+    if (!rid) { ELog(@"eject (%@): a request that isn't one of Finder's -- ignored", why); return; }
+    BOOL dry = EjectDryRun();
+    if (!good && !dry) { ELog(@"eject (%@): refused -- %@", why, bad); EjectWriteAnswer(rid, [@"refused: " stringByAppendingString:bad]); return; }
+    gEjectBusy = 1;
+    dispatch_async(gEjectQueue, ^{
+        @autoreleasepool {
+            NSString *from = nil, *no = bad, *line = nil;
+            NSString *mp = good ? MSBDEjectVolumeAt(vol.fileSystemRepresentation, &from, &no) : nil;   // (the kernel's spelling of the mount point, checked)
+            if (!mp && !dry) line = [@"refused: " stringByAppendingString:no ?: @"it isn't a connected drive"];
+            else {   // (a debug test run for a folder that is no drive -- the debug fake drive --: the refusal stands, and msbdeject still runs once, on a
+                     //  fixed folder it refuses too: its run from this job is proven without a real drive. Never another argument than these two.)
+                const char *arg = mp ? mp.fileSystemRepresentation : "/var/mobile";
+                char *args[] = { "msbdeject", dry ? "--check" : (char *)arg, dry ? (char *)arg : NULL, NULL };
+                NSData *out = nil; int status = -1; BOOL late = NO;
+                int rc = MSBDRunHelperTimed(kMSBDEjectHelperPath, args, kMSBDEjectHelperTimeout, &out, &status, &late);
+                line = MSBDEjectHelperAnswer(rc, out, late);
+                if (dry) line = [NSString stringWithFormat:@"error: test run, nothing was ejected -- %@%@", mp ? @"" : [NSString stringWithFormat:@"%@; msbdeject ran: ", no ?: @"not a drive"], line];
+            }
+            EjectWriteAnswer(rid, line);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                ELog(@"eject (%@): %@ (%@) -> %@", why, mp ?: vol, from ?: @"-", line);
+                gEjectBusy = 0;
+                if (gEjectAgain) { gEjectAgain = NO; EjectRequest(@"a request that came meanwhile"); }
+            });
+        }
+    });
 }
 
 #if DEBUG
@@ -1442,7 +1546,10 @@ int main(int argc, char **argv) {
         if (resume) { int open_fds = 0; for (int fd = 0; fd < 1024; fd++) if (fcntl(fd, F_GETFD) != -1) open_fds++; ELog(@"settings: (debug) %d file descriptors open at the fresh start", open_fds); }
 #endif
         writeState(sshdLoaded());
-        int t3, t4, t5;
+        int t3, t4, t5, t6, alive;
+        gEjectQueue = dispatch_queue_create("msbd.eject", DISPATCH_QUEUE_SERIAL);
+        notify_register_dispatch(kMSBDEjectRequestName, &t6, dispatch_get_main_queue(), ^(int t) { EjectRequest(@"Finder"); });   // (section 5)
+        if (notify_register_check(kMSBDEjectHelperState, &alive) == NOTIFY_STATUS_OK) notify_set_state(alive, (uint64_t)getpid());   // (kept for the daemon's life)
         notify_register_dispatch("com.besiktasliseba.sshtoggle.changed", &t4, dispatch_get_main_queue(), ^(int t) { SSHRequest(-1); });
         notify_register_dispatch("com.besiktasliseba.msb.engines.apply", &t3, dispatch_get_main_queue(), ^(int t) {
             static CFAbsoluteTime last = 0; static BOOL pending = NO;
@@ -1457,6 +1564,8 @@ int main(int argc, char **argv) {
         ApplyEngines(resume && strstr(resume, "engines") ? @"request" : @"daemon start");   // (waits by itself while a package transaction is running)
         if (resume && strstr(resume, "lines")) ApplyLines(@"Settings");
         if (resume && strstr(resume, "ssh")) SSHRequest(-1);
+        if (resume && strstr(resume, "eject")) EjectRequest(@"Finder (after starting over)");
+        EjectRequest(@"daemon start");   // (a request left while the helper was not running -- an install's restart: answered now, Finder may still wait)
         WatchForMacStatusBarOff();
         WatchMacStatusBarConfig();
         WatchScreen();

@@ -17,6 +17,7 @@
 #include <sys/event.h>
 #include <dirent.h>
 #import <AudioToolbox/AudioToolbox.h>   // (the "Trash emptied" sound, DMTrashEmptiedSound)
+#import "../common/DriveEject.h"        // (a drive's name, MSBDDriveName: its volume's label, not the folder it is mounted on -- 1.7.3)
 
 static NSString *const kFinderTrash = @"/var/mobile/.Trash";
 static NSString *const kFinderLiveFiles = @"/var/mobile/Library/LiveFiles";   // (external drives: <LiveFiles>/<provider>/<volume>, see DMFinderDrives)
@@ -82,6 +83,47 @@ static BOOL DMFinderIntoItself(NSString *item, NSString *destDir) {
 // (smb://...) are not drives. Read from any thread; the list is kept for half a second (the policy asks it for every check).
 static os_unfair_lock gFinderDrivesLock = OS_UNFAIR_LOCK_INIT;
 static NSArray<NSDictionary *> *gFinderDrivesCache; static CFTimeInterval gFinderDrivesAt = -100;
+// A drive's name: its volume's own label (common/DriveEject.h MSBDDriveName) -- 18's FSKit mounts a drive on a folder named by a UUID, which
+// Finder showed instead of "NO NAME" (1.7.2 item 21). The label is read once per mount, kept by the mount's identity (its fsid and folder), and
+// never on the main thread: the read may ask the drive's file system server (UserFS / FSKit), and a slow drive must not hold SpringBoard -- a look
+// from the main thread names the drive as before for that moment and reads the label on a queue; the drives are looked at again once it is in.
+// A read that fails is tried again on later looks, three times at most. Each mount point's last name is remembered too, for the words about a
+// drive that has gone ("The drive “NO NAME” was disconnected.").
+static NSMutableDictionary *gFinderDriveLabels;   // "fsid:folder" -> the label (NSString, "" for none), or NSNumber: the failed reads so far
+static NSMutableSet<NSString *> *gFinderDriveLabelsReading;   // (keys whose label a queue reads now)
+static NSMutableDictionary<NSString *, NSString *> *gFinderDriveNames;   // mount point -> the name it had
+static void DMFinderDrivesCheck(NSString *why);
+static NSString *DMFinderDriveLabelRead(NSString *key, NSString *mountPoint, int failed) {   // (any thread but the main one)
+    NSString *label = MSBDDriveVolumeLabel(mountPoint.fileSystemRepresentation);
+    os_unfair_lock_lock(&gFinderDrivesLock);
+    if (!gFinderDriveLabels || gFinderDriveLabels.count > 64) gFinderDriveLabels = [NSMutableDictionary dictionary];
+    gFinderDriveLabels[key] = label ?: @(failed + 1);
+    [gFinderDriveLabelsReading removeObject:key];
+    os_unfair_lock_unlock(&gFinderDrivesLock);
+    return label;
+}
+static NSString *DMFinderDriveLabel(const struct statfs *fs) {
+    NSString *key = [NSString stringWithFormat:@"%08x:%08x:%s", (unsigned)fs->f_fsid.val[0], (unsigned)fs->f_fsid.val[1], fs->f_mntonname];
+    NSString *mountPoint = [NSString stringWithUTF8String:fs->f_mntonname];
+    os_unfair_lock_lock(&gFinderDrivesLock);
+    id have = gFinderDriveLabels[key];
+    BOOL reading = [gFinderDriveLabelsReading containsObject:key];
+    os_unfair_lock_unlock(&gFinderDrivesLock);
+    if ([have isKindOfClass:[NSString class]]) return [have length] ? have : nil;
+    int failed = [have isKindOfClass:[NSNumber class]] ? [have intValue] : 0;
+    if (failed >= 3 || !mountPoint) return nil;
+    if (![NSThread isMainThread]) return DMFinderDriveLabelRead(key, mountPoint, failed);
+    if (reading) return nil;
+    os_unfair_lock_lock(&gFinderDrivesLock);
+    if (!gFinderDriveLabelsReading) gFinderDriveLabelsReading = [NSMutableSet set];
+    [gFinderDriveLabelsReading addObject:key];
+    os_unfair_lock_unlock(&gFinderDrivesLock);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        DMFinderDriveLabelRead(key, mountPoint, failed);
+        dispatch_async(dispatch_get_main_queue(), ^{ DMFinderDrivesCheck(@"a drive's name read"); });   // (the sidebar and the windows follow)
+    });
+    return nil;
+}
 static BOOL DMFinderFromLocalDisk(NSString *from) {   // "fat://disk2s1/NO NAME", "exfat://disk3s1/X", "/dev/disk4s1"
     if ([from hasPrefix:@"/dev/disk"]) return YES;
     NSRange r = [from rangeOfString:@"://"];
@@ -107,21 +149,36 @@ static NSArray<NSDictionary *> *DMFinderDrivesScan(void) {   // @[{t: volume nam
 #endif
         NSString *scheme = [from containsString:@"://"] ? [from substringToIndex:[from rangeOfString:@"://"].location].lowercaseString : @"";
         BOOL fat = [@[@"fat", @"msdos", @"vfat", @"fat32"] containsObject:scheme] || [type isEqualToString:@"msdos"];   // (exFAT: "exfat", no 4 GB limit)
-        [out addObject:@{@"t": on.lastPathComponent, @"p": on, @"fat": @(fat), @"from": from, @"type": type}];
+        NSString *name = MSBDDriveName(on, from, DMFinderDriveLabel(&fs[i])) ?: on.lastPathComponent;
+        [out addObject:@{@"t": name, @"p": on, @"fat": @(fat), @"from": from, @"type": type}];
     }
     free(fs);
 #if DEBUG
     // (tests without a real drive, 1.7.0's Trash: the folder named in /tmp/msb-fdrive-fake is listed as a connected drive -- the sidebar shows it, a
     //  drag of it turns the Dock's Trash into Eject, its .Trashes/501 is its Trash -- outside LiveFiles, so nothing of the system's is touched)
     if (DMTestFlag("/tmp/msb-fdrive-fake")) {
-        NSString *fp = [[NSString stringWithContentsOfFile:@"/tmp/msb-fdrive-fake" encoding:NSUTF8StringEncoding error:nil] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        // (its second line, if any, is the drive's label -- a folder named like 18's UUID mount, shown by that name: 1.7.3)
+        NSArray<NSString *> *lines = [[[NSString stringWithContentsOfFile:@"/tmp/msb-fdrive-fake" encoding:NSUTF8StringEncoding error:nil] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] componentsSeparatedByString:@"\n"];
+        NSString *fp = [lines.firstObject stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        NSString *label = lines.count > 1 ? [lines[1] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] : nil;
         BOOL isDir = NO;
         if (fp.length > 1 && [[NSFileManager defaultManager] fileExistsAtPath:fp isDirectory:&isDir] && isDir)
-            [out addObject:@{@"t": fp.lastPathComponent, @"p": DMFinderNorm(fp), @"fat": @NO, @"from": @"fake://disk99s1", @"type": @"fake"}];
+            [out addObject:@{@"t": MSBDDriveName(fp, @"fake://disk99s1", label) ?: fp.lastPathComponent, @"p": DMFinderNorm(fp), @"fat": @NO, @"from": @"fake://disk99s1", @"type": @"fake"}];
     }
 #endif
     [out sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) { return [a[@"t"] localizedStandardCompare:b[@"t"]]; }];
+    os_unfair_lock_lock(&gFinderDrivesLock);
+    if (!gFinderDriveNames || gFinderDriveNames.count > 64) gFinderDriveNames = [NSMutableDictionary dictionary];
+    for (NSDictionary *d in out) gFinderDriveNames[d[@"p"]] = d[@"t"];
+    os_unfair_lock_unlock(&gFinderDrivesLock);
     return out;
+}
+// What Finder calls the drive mounted at `root` (normalised): its name now, or the one it had while it was connected; else the folder's name.
+static NSString *DMFinderDriveNameFor(NSString *root) {
+    os_unfair_lock_lock(&gFinderDrivesLock);
+    NSString *n = gFinderDriveNames[root];
+    os_unfair_lock_unlock(&gFinderDrivesLock);
+    return n ?: root.lastPathComponent;
 }
 static NSArray<NSDictionary *> *DMFinderDrives(void) {
     os_unfair_lock_lock(&gFinderDrivesLock);
@@ -522,6 +579,7 @@ static NSArray<DMFinderItem *> *DMFinderList(NSString *path, BOOL hidden, NSErro
     // (a drive's top folder: Windows' system folders are hidden files there, as a Mac's Finder shows the drive; dot files -- .Spotlight-V100,
     //  .Trashes, .fseventsd, "._" AppleDouble files -- are hidden files everywhere)
     BOOL driveTop = !hidden && [DMFinderDriveRoot(rn) isEqualToString:rn];
+    BOOL inLiveFiles = DMFinderInside(rn, DMFinderNorm(kFinderLiveFiles)) && !DMFinderDriveRoot(rn);   // (a provider's folder: its drives' own folders in it)
     NSMutableArray *out = [NSMutableArray arrayWithCapacity:urls.count];
     for (NSURL *u in urls) {
         if (driveTop && [@[@"System Volume Information", @"$RECYCLE.BIN", @"$Recycle.Bin", @"RECYCLER"] containsObject:u.lastPathComponent]) continue;
@@ -548,6 +606,7 @@ static NSArray<DMFinderItem *> *DMFinderList(NSString *path, BOOL hidden, NSErro
         it.kind = DMFinderKind(it.path, it.dir);
         it.display = it.name;
         if (containers && it.dir && it.name.length == 36) { NSString *n = DMFinderContainerName(it.path); if (n) it.display = n; }
+        if (inLiveFiles && it.dir) { NSDictionary *dv = DMFinderDriveInfo(it.path); if (dv) it.display = dv[@"t"]; }   // (a drive's folder: the drive's name, 1.7.3)
         if (it.dir && it.name.length == 36 && [rn isEqualToString:@"/var/containers/Bundle/Application"]) {   // (Applications: the app itself, as on a Mac)
             for (NSString *f in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:it.path error:nil]) if ([f hasSuffix:@".app"]) { it.app = [it.path stringByAppendingPathComponent:f]; break; }
             if (it.app) it.kind = @"Application";
@@ -587,6 +646,8 @@ static DMFinderItem *DMFinderItemFor(NSString *path) {
     it.date = v[NSURLContentModificationDateKey];
     it.kind = DMFinderKind(path, it.dir);
     if (it.dir) it.locked = access(path.fileSystemRepresentation, R_OK | X_OK) != 0;
+    NSDictionary *drive = it.dir ? DMFinderDriveInfo(path) : nil;   // (a drive's own folder -- dragged from the sidebar: the drive's name, 1.7.3)
+    if (drive) it.display = drive[@"t"];
     return it;
 }
 static UIImage *DMFinderIcon(DMFinderItem *it, CGFloat side);
@@ -793,6 +854,50 @@ static NSString *DMQLText(NSString *path) {
     if (cut && text) text = [text stringByAppendingString:@"\n\n… (only the first 512 KB are shown)"];
     return text ?: @"";
 }
+// PDF pages in our windows: PDFKit draws a page sharp only in the tiles it takes for visible, and it works that out in two spaces it expects to be
+// the same -- the PDF view's own area in its window ("root view" bounds, the window's points x the screen scale) and each page's rect carried up its
+// layers to the top of the layer tree (-[PDFView convertRectToRootView:fromPageLayer:], and back, -convertRootViewRect:toPageLayer:). In an app the
+// window's layer is that top. Our windows live in SpringBoard's turning window (MSBNativeLayer), whose layer sits under SpringBoard's own turned
+// layers: the page came up a quarter turn round, so only the part where the two overlapped was taken for visible (page 1 of a 680 pt Quick Look
+// window: 416 of 595 pt, the rest stayed blurred) and the tile on that border was drawn and dropped again every 0.1 s -- the text flickering
+// there 5 times a second (1.7.3 item 2; KT's PDF on the A12Z 18.5, a test PDF on the M1 15.6.1: frame bursts and PDFKit's own numbers). For a PDF
+// view in our layer the two conversions now stop at the window, as in an app; every other PDF view is left to PDFKit.
+static CGRect (*o_DMQLToRoot)(id, SEL, CGRect, id);
+static CGRect (*o_DMQLFromRoot)(id, SEL, CGRect, id);
+static BOOL DMQLPDFInOurWindow(UIView *pdfView, CALayer *pageLayer, CGFloat *scale) {
+    if (!gNativeLayer || pdfView.window != gNativeLayer || ![pageLayer isKindOfClass:[CALayer class]] || DMTestFlag("/tmp/msb-qlrootoff")) return NO;   // (debug: PDFKit's own, for comparison)
+    SEL s = NSSelectorFromString(@"mainScreenScale");   // (PDFKit's own scale for these rects; the window's screen otherwise)
+    *scale = [pdfView respondsToSelector:s] ? ((CGFloat (*)(id, SEL))objc_msgSend)(pdfView, s) : (pdfView.window.screen ?: [UIScreen mainScreen]).scale;
+    if (!(*scale > 0.0)) *scale = 1.0;
+    return YES;
+}
+static CGRect DMQLToRoot(id self, SEL _cmd, CGRect r, id pageLayer) {
+    CGFloat k = 1.0;
+    if (!DMQLPDFInOurWindow(self, pageLayer, &k)) return o_DMQLToRoot(self, _cmd, r, pageLayer);
+    CGRect w = [(CALayer *)pageLayer convertRect:r toLayer:((UIView *)self).window.layer];
+    return CGRectMake(w.origin.x * k, w.origin.y * k, w.size.width * k, w.size.height * k);
+}
+static CGRect DMQLFromRoot(id self, SEL _cmd, CGRect r, id pageLayer) {
+    CGFloat k = 1.0;
+    if (!DMQLPDFInOurWindow(self, pageLayer, &k)) return o_DMQLFromRoot(self, _cmd, r, pageLayer);
+    return [(CALayer *)pageLayer convertRect:CGRectMake(r.origin.x / k, r.origin.y / k, r.size.width / k, r.size.height / k) fromLayer:((UIView *)self).window.layer];
+}
+static void DMQLPDFGeometryHook(void) {   // (once PDFKit is loaded: at the first PDF shown in Quick Look)
+    static BOOL done = NO;
+    if (done) return;
+    done = YES;
+    Class c = DMFinderClass(@"PDFView");
+    SEL to = NSSelectorFromString(@"convertRectToRootView:fromPageLayer:"), from = NSSelectorFromString(@"convertRootViewRect:toPageLayer:");
+    Method mt = c ? class_getInstanceMethod(c, to) : NULL, mf = c ? class_getInstanceMethod(c, from) : NULL;
+    const char *want = "{CGRect={CGPoint=dd}{CGSize=dd}}56@0:8{CGRect={CGPoint=dd}{CGSize=dd}}16@48";
+    if (!mt || !mf || strcmp(method_getTypeEncoding(mt), want) || strcmp(method_getTypeEncoding(mf), want)) {
+        DMLog([NSString stringWithFormat:@"[quicklook] PDFKit's page geometry: %s / %s, not as expected: PDF pages stay as PDFKit draws them", mt ? method_getTypeEncoding(mt) : "not there", mf ? method_getTypeEncoding(mf) : "not there"]);
+        return;
+    }
+    MSHookMessageEx(c, to, (IMP)DMQLToRoot, (IMP *)&o_DMQLToRoot);
+    MSHookMessageEx(c, from, (IMP)DMQLFromRoot, (IMP *)&o_DMQLFromRoot);
+    DMLog(@"[quicklook] PDF pages in our windows: PDFKit's visible part measured in the window");
+}
 @implementation DMQuickLookWindow {
     AVPlayer *_player;
 }
@@ -820,6 +925,7 @@ static NSString *DMQLText(NSString *path) {
         });
         v = iv;
     } else if ([t conformsToType:UTTypePDF] && DMFinderClass(@"PDFView")) {   // (the document is opened in the background, then shown)
+        DMQLPDFGeometryHook();   // (its visible part measured in our window, see there)
         PDFView *pv = [DMFinderClass(@"PDFView") new]; pv.autoScales = YES;
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
             id doc = [[DMFinderClass(@"PDFDocument") alloc] initWithURL:[NSURL fileURLWithPath:path]];
@@ -876,6 +982,50 @@ static NSString *DMQLText(NSString *path) {
     return NO;
 }
 @end
+#if DEBUG
+// qlprobe (debug, read-only): what PDFKit takes for the visible part of each page of every Quick Look PDF window, against the screen as it is.
+static void DMQuickLookProbe(void) {
+    for (DMNativeWindow *w in gNativeWindows) {
+        if (![w isKindOfClass:[DMQuickLookWindow class]]) continue;
+        UIView *pv = [w.contentView viewWithTag:100];
+        if (![pv isKindOfClass:DMFinderClass(@"PDFView")]) continue;
+        CGRect msb = [pv respondsToSelector:NSSelectorFromString(@"mainScreenBounds")] ? ((CGRect (*)(id, SEL))objc_msgSend)(pv, NSSelectorFromString(@"mainScreenBounds")) : CGRectNull;
+        UIScreen *scr = pv.window.screen ?: [UIScreen mainScreen];
+        DMLog([NSString stringWithFormat:@"[qlprobe] %@: window %@ bounds %@ (layer %@), PDFView in window %@ in screen %@; mainScreenBounds %@; screen bounds %@ fixed %@ native %@; scene space %@",
+               w.title, NSStringFromCGRect(w.frame), NSStringFromCGRect(pv.window.bounds), NSStringFromClass([pv.window class]), NSStringFromCGRect([pv convertRect:pv.bounds toView:nil]),
+               NSStringFromCGRect([pv convertRect:pv.bounds toCoordinateSpace:scr.coordinateSpace]), NSStringFromCGRect(msb), NSStringFromCGRect(scr.bounds),
+               NSStringFromCGRect(scr.fixedCoordinateSpace.bounds), NSStringFromCGRect(scr.nativeBounds), NSStringFromCGRect(pv.window.windowScene.coordinateSpace.bounds)]);
+        NSMutableArray<UIView *> *todo = [NSMutableArray arrayWithObject:pv];
+        for (NSUInteger k = 0; k < todo.count && k < 400; k++) {
+            UIView *v = todo[k];
+            [todo addObjectsFromArray:v.subviews];
+            if (![NSStringFromClass([v class]) isEqualToString:@"PDFPageView"]) continue;
+            SEL vis = NSSelectorFromString(@"visibleRectForPageView:");
+            CGRect r = [pv respondsToSelector:vis] ? ((CGRect (*)(id, SEL, id))objc_msgSend)(pv, vis, v) : CGRectNull;
+            DMLog([NSString stringWithFormat:@"[qlprobe]   page view %@ in window %@: PDFKit's visible part %@ (in the window %@)", NSStringFromCGRect(v.frame),
+                   NSStringFromCGRect([v convertRect:v.bounds toView:nil]), NSStringFromCGRect(r), CGRectIsNull(r) ? @"-" : NSStringFromCGRect([v convertRect:r toView:nil])]);
+            CALayer *pl = [v respondsToSelector:NSSelectorFromString(@"pageLayer")] ? ((id (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"pageLayer")) : nil;
+            SEL plv = NSSelectorFromString(@"_pageLayerVisibleRect"), toRoot = NSSelectorFromString(@"convertRectToRootView:fromPageLayer:");
+            CGRect plr = [pl respondsToSelector:plv] ? ((CGRect (*)(id, SEL))objc_msgSend)(pl, plv) : CGRectNull;
+            CGRect inRoot = pl && [pv respondsToSelector:toRoot] ? ((CGRect (*)(id, SEL, CGRect, id))objc_msgSend)(pv, toRoot, pl.bounds, pl) : CGRectNull;
+            NSMutableString *tiles = [NSMutableString string];
+            for (CALayer *t in pl.sublayers) {
+                SEL rvf = NSSelectorFromString(@"rootViewFrame");
+                [tiles appendFormat:@" %@%@%@", NSStringFromClass([t class]), NSStringFromCGRect(t.frame), [t respondsToSelector:rvf] ? [@" root " stringByAppendingString:NSStringFromCGRect(((CGRect (*)(id, SEL))objc_msgSend)(t, rvf))] : @""];
+            }
+            CGRect pdfkits = pl && o_DMQLToRoot ? o_DMQLToRoot(pv, toRoot, pl.bounds, pl) : CGRectNull;   // (PDFKit's own answer, under our hook)
+            CALayer *top = pl; while (top.superlayer) top = top.superlayer;
+            DMLog([NSString stringWithFormat:@"[qlprobe]     page layer %@ bounds %@: its visible rect %@, its bounds in the root view %@ (PDFKit's own %@; in the top layer %@ of %@, in the window's layer %@; the window's layer under %@); layers:%@",
+                   pl ? NSStringFromClass([pl class]) : @"none", NSStringFromCGRect(pl.bounds), NSStringFromCGRect(plr), NSStringFromCGRect(inRoot), NSStringFromCGRect(pdfkits),
+                   NSStringFromCGRect([pl convertRect:pl.bounds toLayer:nil]), top ? NSStringFromClass([top class]) : @"-", NSStringFromCGRect([pl convertRect:pl.bounds toLayer:pv.window.layer]),
+                   pv.window.layer.superlayer ? NSStringFromClass([pv.window.layer.superlayer class]) : @"nothing", tiles]);
+        }
+        SEL rvb = NSSelectorFromString(@"rootViewBounds"), erb = NSSelectorFromString(@"extendedRootViewBounds");
+        DMLog([NSString stringWithFormat:@"[qlprobe]   root view bounds %@, extended %@", [pv respondsToSelector:rvb] ? NSStringFromCGRect(((CGRect (*)(id, SEL))objc_msgSend)(pv, rvb)) : @"-",
+               [pv respondsToSelector:erb] ? NSStringFromCGRect(((CGRect (*)(id, SEL))objc_msgSend)(pv, erb)) : @"-"]);
+    }
+}
+#endif
 static void DMQuickLookOpen(NSString *path) {
     DM_FEATURE_MARK("finder-quick-look");
     for (DMNativeWindow *w in gNativeWindows) if ([w isKindOfClass:[DMQuickLookWindow class]] && [((DMQuickLookWindow *)w).file isEqualToString:path]) { [w show]; return; }
@@ -939,6 +1089,8 @@ static NSUInteger DMDockTrashCountNow(void);   // (DockTrash.h: what Finder's Tr
 - (BOOL)dm_canUndo; - (NSString *)dm_undoTitle; - (void)dm_undo;
 - (BOOL)dm_canWriteHere; - (BOOL)dm_canChangeSelection;
 - (void)dm_keyCopy:(id)k; - (void)dm_keyPaste:(id)k; - (void)dm_keyFind:(id)k;
+- (void)dm_reloadSidebar;                                   // (a drive's eject began or ended: its Eject button or spinner, DriveEject.h)
+- (void)dm_sideMenuForDrive:(NSString *)root at:(CGPoint)sp;   // (a drive's menu in the sidebar: Open, Open in New Window, Get Info, Eject)
 #if DEBUG
 - (void)dm_debugDo:(NSString *)spec;
 #endif
@@ -1007,6 +1159,13 @@ static void DMFDTrashSetEject(BOOL on);
 static BOOL DMFDTrashDragEjects(DMFDrag *d);
 static void DMDockTrashInit(void);
 static void DMDockTrashDrivesChanged(void);
+// A connected drive's eject (1.7.3, statusbar/DriveEject.h, after this file): the sidebar's Eject button and a drive's menus, File > Eject, Command-E.
+static BOOL DMDriveCanEject(void);
+static BOOL DMDriveEjecting(NSString *root);
+static void DMDriveEject(NSString *root, NSString *name);
+static void DMDriveEjectFromWindow(DMFinderWindow *f);
+static NSArray<NSDictionary *> *DMDriveEjectTargets(DMFinderWindow *f);
+static NSString *DMDriveEjectTitle(NSArray<NSDictionary *> *targets);
 static CGRect gFDFromRect;    // (the held row / icon on screen: the tile grows out of it instead of appearing under the finger)
 static UIView *gFDCustomTile; static CGPoint gFDCustomGrab;   // (the next drag's picture, when its source draws its own: the desktop's icons, Desktop.h)
 static uint8_t gFDSeq;
@@ -1888,7 +2047,7 @@ static NSError *DMFinderDriveGoneError(NSError *e, NSArray<NSString *> *paths) {
         NSArray *c = DMFinderNorm(p).pathComponents, *lf = DMFinderNorm(kFinderLiveFiles).pathComponents;
         if (c.count < lf.count + 2) continue;
         NSString *root = [NSString pathWithComponents:[c subarrayWithRange:NSMakeRange(0, lf.count + 2)]];
-        if (!DMFinderDriveInfo(root)) return [NSError errorWithDomain:@"Finder" code:2 userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"The drive “%@” was disconnected.", root.lastPathComponent]}];
+        if (!DMFinderDriveInfo(root)) return [NSError errorWithDomain:@"Finder" code:2 userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"The drive “%@” was disconnected.", DMFinderDriveNameFor(root)]}];
     }
     return e;
 }
@@ -1956,6 +2115,7 @@ static void DMFinderDrivesCheck(NSString *why);
     NSUInteger _watchApps;        // (how many app folders On My iPad's watch covers: watched again once the list knows more)
     unsigned long long _free;     // (the free space where the open folder is, for the status line; ULLONG_MAX: unknown)
     DMFinderItem *_sideDrive; CGPoint _sideStart; BOOL _sideLifted; __weak UIView *_sideCell;   // (a drive held in the sidebar, -dm_sideDragPress:)
+    NSUInteger _sideSerial;   // (that hold's number: held still, its menu opens -- unless it moved or ended first)
 }
 - (instancetype)initWithTitle:(NSString *)title frame:(CGRect)frame {
     self = [super initWithTitle:title frame:frame];
@@ -2088,6 +2248,12 @@ static void DMFinderDrivesCheck(NSString *why);
         lp.minimumPressDuration = 0.3; lp.allowableMovement = CGFLOAT_MAX; lp.delegate = self;
         lp.name = @"dm.finder.sidedrag";
         [_sidebar addGestureRecognizer:lp];
+        // (1.7.3: a drive's menu -- Open, Open in New Window, Get Info, Eject -- for a pointer's right click on its row too; a finger's hold that
+        //  stays still opens it from -dm_sideDragPress:)
+        UITapGestureRecognizer *rc = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(dm_sideSecondaryClick:)];
+        rc.buttonMaskRequired = UIEventButtonMaskSecondary; rc.allowedTouchTypes = @[@(UITouchTypeIndirectPointer)];
+        rc.name = @"dm.finder.sidemenu";
+        [_sidebar addGestureRecognizer:rc];
     }
     [self updateViewSwitch];
     return self;
@@ -2343,6 +2509,29 @@ static void DMFinderDrivesCheck(NSString *why);
         // (assistive features: a place to go, one element -- a button, selected where this window is; its labels were read as text: 1.3.7)
         cell.isAccessibilityElement = YES; cell.accessibilityLabel = r[@"t"];
         cell.accessibilityTraits = UIAccessibilityTraitButton | (here ? UIAccessibilityTraitSelected : UIAccessibilityTraitNone);
+        // A connected drive's Eject button at the row's end, as in a Mac's sidebar (1.7.3) -- a spinner while it is being ejected; VoiceOver: the
+        // row's Eject action. Only where this iPadOS can eject (DriveEject.h DMDriveCanEject).
+        cell.accessoryView = nil; cell.accessibilityCustomActions = nil;
+        if ([r[@"drive"] boolValue] && DMDriveCanEject()) {
+            NSString *root = r[@"p"], *name = r[@"t"];
+            if (DMDriveEjecting(root)) {
+                UIActivityIndicatorView *spin = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+                spin.transform = CGAffineTransformMakeScale(0.7, 0.7); [spin startAnimating];
+                cell.accessoryView = spin;
+                cell.accessibilityValue = @"Ejecting";
+            } else {
+                UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+                [b setImage:[UIImage systemImageNamed:@"eject.fill" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:10.0 weight:UIImageSymbolWeightSemibold]] forState:UIControlStateNormal];
+                b.tintColor = [UIColor secondaryLabelColor];
+                b.frame = CGRectMake(0, 0, 26.0, 26.0);
+                b.accessibilityLabel = [NSString stringWithFormat:@"Eject “%@”", name];
+                b.pointerInteractionEnabled = YES;
+                [b addAction:[UIAction actionWithHandler:^(UIAction *a) { DMDriveEject(root, name); }] forControlEvents:UIControlEventTouchUpInside];
+                cell.accessoryView = b;
+                cell.accessibilityValue = nil;
+                cell.accessibilityCustomActions = @[[[UIAccessibilityCustomAction alloc] initWithName:@"Eject" actionHandler:^BOOL(UIAccessibilityCustomAction *a) { DMDriveEject(root, name); return YES; }]];
+            }
+        } else cell.accessibilityValue = nil;
         return cell;
     }
     DMFinderItem *it = _items[ip.row];
@@ -2578,6 +2767,7 @@ static void DMFinderDrivesCheck(NSString *why);
         K(UIKeyInputUpArrow, 0, @"dm_keyPrev:"); K(UIKeyInputDownArrow, 0, @"dm_keyNext:"); K(UIKeyInputLeftArrow, 0, @"dm_keyPrev:"); K(UIKeyInputRightArrow, 0, @"dm_keyNext:");
         K(@"c", UIKeyModifierCommand, @"dm_keyCopy:"); K(@"v", UIKeyModifierCommand, @"dm_keyPaste:"); K(@"z", UIKeyModifierCommand, @"dm_keyUndo:");
         K(@"a", UIKeyModifierCommand, @"dm_keySelectAll:");
+        K(@"e", UIKeyModifierCommand, @"dm_keyEject:");   // (1.7.3: File > Eject)
         cmds = a;
     });
     return [self dm_typingInSearch] || [self hasSheet] || _renameField ? @[] : cmds;   // (typing in Search: the field has the keys; a sheet: nothing behind it acts)
@@ -2648,11 +2838,13 @@ static void DMFinderDrivesCheck(NSString *why);
         case UIKeyboardHIDUsageKeyboardV: if (cmd) { [self dm_keyPaste:nil]; return YES; } break;
         case UIKeyboardHIDUsageKeyboardZ: if (cmd) { [self dm_undo]; return YES; } break;
         case UIKeyboardHIDUsageKeyboardA: if (cmd) { [self dm_selectAll]; return YES; } break;
+        case UIKeyboardHIDUsageKeyboardE: if (cmd) { DMDriveEjectFromWindow(self); return YES; } break;   // (File > Eject: the selected drives, or the one shown)
         default: break;
     }
     return NO;
 }
 - (void)dm_keyNewWindow:(id)k { DMFinderOpen(self.path, YES); }
+- (void)dm_keyEject:(id)k { DMDriveEjectFromWindow(self); }
 - (void)dm_keyNewFolder:(id)k { [self newFolder]; }
 - (void)dm_keyOpen:(id)k { [self dm_openSelected]; }
 - (void)dm_keyQuickLook:(id)k { [self dm_quickLookSelected]; }
@@ -2739,6 +2931,30 @@ static void DMFinderDrivesCheck(NSString *why);
     }
     else if ([act isEqualToString:@"up"]) [self goUp];
     else if ([act isEqualToString:@"drivescheck"]) DMFinderDrivesCheck(@"test");   // (the check a mount event runs; with /tmp/msb-fdrive-hide the drives look unplugged)
+    else if ([act isEqualToString:@"drivenames"]) {   // (1.7.3: where each drive's name comes from -- the label, the mount's source, the folder)
+        for (NSDictionary *d in DMFinderDrives()) DMLog([NSString stringWithFormat:@"[finder] test drive name: \"%@\" (label %@, source %@, folder %@)", d[@"t"],
+                                                         MSBDDriveVolumeLabel([d[@"p"] fileSystemRepresentation]) ?: @"none", d[@"from"], [d[@"p"] lastPathComponent]]);
+    }
+    else if ([act isEqualToString:@"ejectstate"]) {   // (1.7.3: can this iPadOS eject, is the helper there, what File > Eject would eject now)
+        NSMutableArray *t = [NSMutableArray array]; for (NSDictionary *d in DMDriveEjectTargets(self)) [t addObject:d[@"t"]];
+        NSMutableArray *rows = [NSMutableArray array];
+        for (NSDictionary *r in _places.lastObject[@"rows"]) if ([r[@"drive"] boolValue]) {
+            NSIndexPath *ip = [NSIndexPath indexPathForRow:[_places.lastObject[@"rows"] indexOfObject:r] inSection:_places.count - 1];
+            UIView *acc = [_sidebar cellForRowAtIndexPath:ip].accessoryView;
+            [rows addObject:[NSString stringWithFormat:@"%@: %@", r[@"t"], !acc ? @"no button" : [acc isKindOfClass:[UIButton class]] ? [NSString stringWithFormat:@"Eject button %@", NSStringFromCGRect([acc convertRect:acc.bounds toCoordinateSpace:self.window.screen.coordinateSpace])] : @"spinner"]];
+        }
+        DMLog([NSString stringWithFormat:@"[eject] test state: can eject %d, helper running %d, File > Eject \"%@\" for %@; sidebar %@", DMDriveCanEject(), MSBDEjectHelperRunning(),
+               DMDriveEjectTitle(DMDriveEjectTargets(self)), t.count ? [t componentsJoinedByString:@", "] : @"nothing", rows.count ? [rows componentsJoinedByString:@"; "] : @"no drives"]);
+    }
+    else if ([act isEqualToString:@"eject"]) DMDriveEjectFromWindow(self);   // (1.7.3: File > Eject / Command-E on this window)
+    else if ([act isEqualToString:@"sideeject"] || [act isEqualToString:@"sidemenu"]) {   // sideeject:<drive name> / sidemenu:<drive name>: its row's Eject button / its menu
+        NSArray *rows = _places.lastObject[@"rows"]; NSUInteger i = [rows indexOfObjectPassingTest:^BOOL(NSDictionary *r, NSUInteger n, BOOL *stop) { return [r[@"drive"] boolValue] && [r[@"t"] isEqualToString:arg]; }];
+        UITableViewCell *c = i == NSNotFound ? nil : [_sidebar cellForRowAtIndexPath:[NSIndexPath indexPathForRow:i inSection:_places.count - 1]];
+        if (!c) DMLog([NSString stringWithFormat:@"[eject] test %@: no sidebar row for the drive \"%@\"", act, arg]);
+        else if ([act isEqualToString:@"sidemenu"]) [self dm_sideMenuForDrive:rows[i][@"p"] at:[c convertPoint:CGPointMake(CGRectGetMidX(c.bounds), CGRectGetMidY(c.bounds)) toCoordinateSpace:self.window.screen.coordinateSpace]];
+        else if ([c.accessoryView isKindOfClass:[UIButton class]]) { DMLog([NSString stringWithFormat:@"[eject] test: the sidebar's Eject button of \"%@\" pressed", arg]); [(UIButton *)c.accessoryView sendActionsForControlEvents:UIControlEventTouchUpInside]; }
+        else DMLog([NSString stringWithFormat:@"[eject] test: \"%@\" has %@", arg, c.accessoryView ? @"a spinner (being ejected)" : @"no Eject button"]);
+    }
     else if ([act isEqualToString:@"origin"]) { if (sel.count) DMLog([NSString stringWithFormat:@"[finder] test origin of %@: %@", [sel[0] lastPathComponent], DMFinderOrigin(sel[0]) ?: @"-"]); }
     else if ([act isEqualToString:@"closeothers"]) { for (DMNativeWindow *w in [gNativeWindows copy]) if (w != self) [w close]; }
     else if ([act isEqualToString:@"frame"]) { NSArray *n = [arg componentsSeparatedByString:@","]; if (n.count == 4) { self.layoutName = nil; self.restoreFrame = CGRectNull; self.frame = DMNativeClamp(CGRectMake([n[0] doubleValue], [n[1] doubleValue], [n[2] doubleValue], [n[3] doubleValue]), self.minSize); } }
@@ -3283,6 +3499,13 @@ static NSString *DMFinderResolveTyped(NSString *p) {
             UIAction *t = A(DMFinderInOwnTrash(it.path) ? @"Delete Immediately…" : @"Move to Trash", @"trash", ^{ [w trash:it]; });
             t.attributes = canChange ? UIMenuElementAttributesDestructive : UIMenuElementAttributesDisabled;
             [end addObject:t];
+            NSDictionary *drive = it.dir && DMDriveCanEject() ? DMFinderDriveInfo(DMFinderReal(it.path)) : nil;   // (a drive's own folder: Eject, as on a Mac -- 1.7.3)
+            if (drive) {
+                NSString *root = drive[@"p"], *name = drive[@"t"];
+                UIAction *ej = A([NSString stringWithFormat:@"Eject “%@”", name], @"eject", ^{ DMDriveEject(root, name); });
+                if (DMDriveEjecting(root)) ej.attributes = UIMenuElementAttributesDisabled;
+                [end addObject:ej];
+            }
         } else {
             BOOL writable = [w dm_canWriteHere];
             UIAction *nf = A(@"New Folder", @"folder.badge.plus", ^{ [w newFolder]; }); if (!writable) nf.attributes = UIMenuElementAttributesDisabled; [top addObject:nf];
@@ -3436,14 +3659,24 @@ static NSString *DMFinderResolveTyped(NSString *p) {
         _sideDrive = [row[@"drive"] boolValue] ? DMFinderItemFor(row[@"p"]) : nil;
         _sideStart = sp; _sideLifted = NO;
         _sideCell = ip ? [_sidebar cellForRowAtIndexPath:ip] : nil;
-        if (_sideDrive) { DMLog(@"[finder] a drive held in the sidebar: moving it drags the drive"); [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred]; }
+        if (_sideDrive) {
+            DMLog(@"[finder] a drive held in the sidebar: moving it drags the drive, holding it still opens its menu");
+            [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
+            NSUInteger serial = ++_sideSerial; __weak DMFinderWindow *ws = self; NSString *root = row[@"p"];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{   // (as a list item's hold, -dm_dragPress:)
+                DMFinderWindow *s = ws;
+                if (!s || s->_sideSerial != serial || s->_sideLifted || !s->_sideDrive) return;
+                [s dm_sideMenuForDrive:root at:s->_sideStart];
+            });
+        }
         return;
     }
     if (g.state == UIGestureRecognizerStateChanged) {
         if (!_sideDrive) return;
         if (!_sideLifted && hypot(sp.x - _sideStart.x, sp.y - _sideStart.y) > 10.0) {
             DM_FEATURE_MARK("finder-sidebar-drive-drag");
-            _sideLifted = YES;
+            _sideLifted = YES; _sideSerial++;   // (moved: no menu -- one already open closes, the drive is dragged)
+            if (gOverlay && gOverlay.superview == gNativeRotator) DMCloseOverlay();
             UIView *cell = _sideCell;
             gFDFromRect = cell ? [cell convertRect:cell.bounds toCoordinateSpace:cell.window.screen.coordinateSpace] : CGRectZero;
             DMFinderDragBegin(self, @[_sideDrive], sp);
@@ -3452,8 +3685,37 @@ static NSString *DMFinderResolveTyped(NSString *p) {
         return;
     }
     if (_sideLifted) DMFinderDragEnd(sp, g.state == UIGestureRecognizerStateEnded, [self dm_optionHeld:g]);
-    _sideDrive = nil; _sideLifted = NO; _sideCell = nil;
+    _sideDrive = nil; _sideLifted = NO; _sideCell = nil; _sideSerial++;   // (a menu not open yet stays shut)
 }
+// A drive's menu in the sidebar (1.7.3), as a Mac's: Open, Open in New Window, Get Info, and Eject (where this iPadOS can eject). From a finger's
+// hold that stays still, or a pointer's right click on the row; a hold that moves still drags the drive (the menu closes then, -dm_sideDragPress:).
+- (void)dm_sideMenuForDrive:(NSString *)root at:(CGPoint)sp {
+    NSDictionary *d = DMFinderDriveInfo(root);
+    if (!d) return;
+    NSString *name = d[@"t"];
+    __weak DMFinderWindow *ws = self;
+    UIAction *(^A)(NSString *, NSString *, void (^)(void)) = ^UIAction *(NSString *t, NSString *img, void (^h)(void)) { return [UIAction actionWithTitle:t image:img ? [UIImage systemImageNamed:img] : nil identifier:nil handler:^(UIAction *a) { h(); }]; };
+    NSMutableArray *groups = [NSMutableArray array];
+    [groups addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:@[
+        A(@"Open", nil, ^{ [ws go:root]; }), A(@"Open in New Window", nil, ^{ DMFinderOpen(root, YES); }) ]]];
+    [groups addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:@[
+        A(@"Get Info", @"info.circle", ^{ DMFinderItem *it = DMFinderItemFor(root); if (it) [ws getInfo:it]; }) ]]];
+    if (DMDriveCanEject()) {
+        UIAction *ej = A([NSString stringWithFormat:@"Eject “%@”", name], @"eject", ^{ DMDriveEject(root, name); });
+        if (DMDriveEjecting(root)) ej.attributes = UIMenuElementAttributesDisabled;
+        [groups addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:@[ej]]];
+    }
+    DM_FEATURE_MARK("finder-sidebar-drive-menu");
+    DMFinderShowMenu([UIMenu menuWithTitle:@"" children:groups], sp);
+    DMLog([NSString stringWithFormat:@"[finder] a drive's menu in the sidebar: %@", name]);
+}
+- (void)dm_sideSecondaryClick:(UITapGestureRecognizer *)g {
+    NSIndexPath *ip = [_sidebar indexPathForRowAtPoint:[g locationInView:_sidebar]];
+    NSDictionary *row = ip && ip.section < (NSInteger)_places.count && ip.row < (NSInteger)[_places[ip.section][@"rows"] count] ? _places[ip.section][@"rows"][ip.row] : nil;
+    if (![row[@"drive"] boolValue]) return;   // (the other places have no menu of their own)
+    [self dm_sideMenuForDrive:row[@"p"] at:[g.view convertPoint:[g locationInView:g.view] toCoordinateSpace:g.view.window.screen.coordinateSpace]];
+}
+- (void)dm_reloadSidebar { [_sidebar reloadData]; }
 // The menu of a hold that stayed still, or of a pointer's secondary click: a Mac menu of our own at the finger / pointer, with the same items the
 // long-press menu had (the menu interaction's own UIMenu). UIKit's menu took the finger over the moment it opened -- our press was cancelled,
 // and a hold that then moved slid through the menu's rows instead of lifting the item (iPad 2 30 Sep); ours leaves the press alone: a move
@@ -3588,7 +3850,8 @@ static NSArray<NSString *> *gFinderDrivesShown;
 static void DMFinderDrivesCheck(NSString *why) {
     DMFinderDrivesForget();
     NSArray *drives = DMFinderDrives();
-    NSArray *paths = [drives valueForKey:@"p"];
+    NSMutableArray *paths = [NSMutableArray array];   // (each drive's folder and name: a name read only on a later look shows too)
+    for (NSDictionary *d in drives) [paths addObject:[NSString stringWithFormat:@"%@\t%@", d[@"p"], d[@"t"]]];
     if (gFinderDrivesShown && [paths isEqualToArray:gFinderDrivesShown]) return;
     BOOL first = gFinderDrivesShown == nil;
     gFinderDrivesShown = paths;

@@ -24,6 +24,7 @@ target transparent transparent
 target stock pref com.besiktasliseba.macstatusbar stockStatusBar 1 0 Status Bar Style|the status bar
 target macBanners pref com.besiktasliseba.macstatusbar macBanners 0 1 Mac-Style Banners|the Mac-style banners
 target autoHideStatusBar pref com.besiktasliseba.macstatusbar autoHideStatusBar 0 0 Automatically Hide and Show the Status Bar|the auto-hiding status bar
+target menuBarSize pref com.besiktasliseba.macstatusbar menuBarSize 0 0 Menu Bar Size|the larger menu bar
 target tidyKeyboardPill pref com.besiktasliseba.macstatusbar tidyKeyboardPill 0 0 Keyboard Button in Status Bar|the keyboard button
 target windowingEnabled pref com.besiktasliseba.macstatusbar windowingEnabled 0 1 Enable Windowing|the window code
 target windowsBehindApps pref com.besiktasliseba.macstatusbar windowsBehindApps 0 1 Windows Behind Full-Screen Apps|the windows behind full-screen apps
@@ -110,13 +111,17 @@ sym MacStatusBarCore \$DMNativeHooks\$ finder
 sym MacStatusBarCore \$DMNativeSysGestures\$ finder
 sym MacStatusBarCore ^_?DM(Finder|Native|OpenFinder|OpenNativeWindow)[A-Z] finder
 file MacStatusBarCore ^DockTrash\.h$ showTrash
+# a drive's eject (DriveEject.h, 1.7.3: the sidebar's Eject button, File > Eject, the drives' menus, the bin's eject) is Finder's
+file MacStatusBarCore ^DriveEject\.h$ finder
 file MacStatusBarCore ^(Finder|NativeWindow)\.h$ finder
 # the text window (TextWindow.h) is Finder's; the desktop (Desktop.h, DesktopPlace.h, DesktopNames.h) and the Wi-Fi menu (WiFiMenu.h) have their
 # own switches (DesktopNames.h's functions under the Desktop.h rule: they may all be inlined, and a rule that matches nothing stops the build)
 file MacStatusBarCore ^TextWindow\.h$ finder
-# Activity Monitor in the App Library (AppLibraryApps.h: its icon's methods, the App Library's category and search hooks): its own switch
+# Activity Monitor in the App Library (AppLibraryApps.h: its icon's methods, the App Library's category and search hooks): its own switch; in the
+# Dock (ActMonDock.h, 1.7.3: the store's and the root folder's hooks, its menu) too -- it is the same icon, off with the same switch
 sym MacStatusBarCore ^_*DMAL[A-Z] actmonLibrary
 file MacStatusBarCore ^AppLibraryApps\.h$ actmonLibrary
+file MacStatusBarCore ^ActMonDock\.h$ actmonLibrary
 sym MacStatusBarCore ^_?DMDesktop[A-Z] desktopIcons
 file MacStatusBarCore ^Desktop(Names)?\.h$ desktopIcons
 file MacStatusBarCore ^DesktopPlace\.h$ desktopIcons
@@ -152,6 +157,10 @@ sec MacStatusBarCore banners\sfor\sapps\swhose\swindows macBanners
 sym MacStatusBarCore ^_?DMAutoHide autoHideStatusBar
 sec MacStatusBarCore Auto-hiding\sstatus\sbar autoHideStatusBar
 sec MacStatusBarCore only\sthe\stitle\sbar\sslides autoHideStatusBar
+# Menu Bar Size (1.7.3): iOS's bar made taller at Medium / Large -- the providers' hooks (%group MenuBarSize*) and the code of their section: back to
+# Small (menuBarSize 0: the crash guard writes false, which SpringBoard and Settings read as Small; at Small none of it is hooked)
+sym MacStatusBarCore \$MenuBarSize(UIKit|STUI|Scenes|SceneFrames|Grabber|Battery|BatteryBolt|BatteryStaticBolt|BatteryItem)(Clock)?\$ menuBarSize
+sec MacStatusBarCore ^(//\s=+\sMenu\sBar\sSize\s|%group\sMenuBarSize) menuBarSize
 # the keyboard section (its header names the keyboard button, but the code under it runs for the window engines whether the button is on or not:
 # the keyboard turned for a window app's side, the Dock's level while a keyboard is up, MilkyWay's and Aerial's keyboard windows, the Fit to Window
 # spread): Windowing. The button's switch is off for new users, so a crash there fell to Stock status bar mode, which keeps the engines running

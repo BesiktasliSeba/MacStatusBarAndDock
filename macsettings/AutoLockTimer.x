@@ -16,6 +16,7 @@
 #import <notify.h>
 #import <unistd.h>
 #import "AutoLockLongest.h"
+#import "AutoLockGiveBack.h"   // (1.7.3: a stored 2 hours lowered when nothing of ours will keep it, given back when this part keeps it again)
 #if DEBUG
 #define MSTestFlag(path) (access((path), F_OK) == 0)   // a /tmp test switch (debug builds only; a release build behaves as if none existed)
 #else
@@ -54,6 +55,12 @@ static double MSALTTimeout(id factory) {
 %end
 %end
 
+static void MSALTLog(NSString *line) {
+#if DEBUG
+    if (MSTestFlag("/tmp/macsettings-debug")) { FILE *f = fopen("/tmp/macsettings.log", "a"); if (f) { fprintf(f, "%s\n", line.UTF8String); fclose(f); } }
+#endif
+}
+
 %ctor {
     Class f = objc_getClass("SBIdleTimerDescriptorFactory"), d = objc_getClass("SBIdleTimerDescriptor");
     BOOL ok = MSALTSig(f, NSSelectorFromString(@"updateIdleTimerSettingsForAutoLockTimeout:"), "B24@0:8@16")
@@ -61,7 +68,14 @@ static double MSALTTimeout(id factory) {
            && MSALTSig(d, NSSelectorFromString(@"setTotalInterval:"), "v24@0:8d16") && MSALTSig(d, NSSelectorFromString(@"setWarnInterval:"), "v24@0:8d16");
     int token = 0;
     if (notify_register_check(MS_AUTOLOCK_LONG_STATE, &token) != NOTIFY_STATUS_OK) token = 0;
-    if (!ok) { if (token) notify_set_state(token, 0); return; }   // (not as on 15-18: the longer times are not offered)
-    %init(MSAutoLockTimer);
-    if (token) notify_set_state(token, (uint64_t)getpid());   // (kept registered: the state lives as long as this SpringBoard)
+    if (!ok) { if (token) notify_set_state(token, 0); }   // (not as on 15-18: the longer times are not offered)
+    else {
+        %init(MSAutoLockTimer);
+        if (token) notify_set_state(token, (uint64_t)getpid());   // (kept registered: the state lives as long as this SpringBoard)
+    }
+    // 2 hours left behind (AutoLockLongest.h): looked at once SpringBoard has settled, and whenever the root helper says we are removed, switched
+    // off or on again. Kept here: given back (if lowered before); not kept (the step above is not as expected), or leaving: lowered to 1 hour.
+    static int check = 0;
+    notify_register_dispatch(MS_AUTOLOCK_CHECK, &check, dispatch_get_main_queue(), ^(int t) { MSAutoLockSettle(ok, @"MacStatusBar's part, asked", ^(NSString *l) { MSALTLog(l); }); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ MSAutoLockSettle(ok, @"MacStatusBar's part, start", ^(NSString *l) { MSALTLog(l); }); });
 }

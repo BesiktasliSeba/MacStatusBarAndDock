@@ -38,13 +38,14 @@ MacStatusBar&Dock
 │   ├── MacCrashBlame       reads a SpringBoard crash report to see whether this tweak caused it
 │   └── MacCrashNotice      the one-time alert after it acted
 │
-├── Eject helper (msbdeject, a small program Finder starts for the Dock's Trash)
-│   └── ejects a USB drive or SD card dropped on the Trash, which SpringBoard isn't allowed to do
+├── Eject helper (msbdeject, a small program the root helper starts)
+│   └── ejects a USB drive or SD card for Finder's Eject and the Dock's Trash, which SpringBoard isn't allowed to do
 │
 └── Root helper (sshtoggled, a small launch daemon)
     ├── SSH on and off from Settings
     ├── window-engine exclusivity (Choicy's list, or iCleaner Pro's renaming without Choicy)
-    └── gives the engines' settings back when the tweak is removed or switched off
+    ├── a drive's eject for Finder: it checks that the folder is a connected drive's, then runs the eject helper
+    └── gives the engines' settings back when the tweak is removed or switched off, and has SpringBoard lower a stored Auto-Lock of 2 hours then
 ```
 
 Every part can be traced to its process in `loader/Loader.c` (the `kPayloads` table), except MacRAMCPU, which Control Center loads itself, and the eject helper, a program of its own.
@@ -57,7 +58,7 @@ Every part can be traced to its process in `loader/Loader.c` (the `kPayloads` ta
 | `statusbar/` | MacStatusBarCore, the Status Bar and Windows & Multitasking pages, and MacPointer |
 | `dock/` | The Dock and its page |
 | `ccmodule/` | The RAM & CPU Control Center module |
-| `ejecthelper/` | The eject helper for the Dock's Trash (`msbdeject`) |
+| `ejecthelper/` | The eject helper (`msbdeject`), which the root helper runs for Finder's Eject and the Dock's Trash |
 | `macsettings/` | The Settings app changes, the smaller Home Screen parts and the root helper (`sshtoggled/`) |
 | `appbridge/` | MacAppBridge, which runs inside apps |
 | `mixaudio/`, `forcequitmenu/`, `graveescape/`, `tabmute/`, `volumeglobe/`, `brightnesskey/` | The smaller parts |
@@ -83,7 +84,7 @@ THEOS=~/theos gmake -j4 package FINALPACKAGE=1    # release build
 
 ## Testing
 
-- `tools/test-*.sh` are Mac tests of the logic that doesn't need an iPad: crash recovery, the install and removal scripts, the Stage Manager engine's maths and checks, the Mac Switcher's slide, desktop icon placement, the update check and more. Each one builds what it needs with clang and prints its result, for example `bash tools/test-smfit.sh`.
+- `tools/test-*.sh` are Mac tests of the logic that doesn't need an iPad: crash recovery, the install and removal scripts, the Stage Manager engine's maths and checks, the Mac Switcher's slide, desktop icon placement, window snapping, the menu bar's sizes, the eject requests, the update check and more. Each one builds what it needs with clang and prints its result, for example `bash tools/test-smfit.sh`.
 - After you add or remove a hook, run `python3 tools/make-hooklist.py`. It regenerates `common/HookList.h`, which the diagnostics on iPadOS 17 and later use.
 - Everything else needs a real iPad. Please say in your pull request what you tested, on which iPad, iPadOS version and window engine.
 

@@ -295,21 +295,24 @@ static UIImage *DMWiFiFanImage(NSInteger bars, CGFloat height) {
 // icons: the lit bars when joined, every bar faint when Wi-Fi is off or not joined (the Mac's empty fan). (iOS's own _UIStatusBarWifiSignalView
 // was tried first: outside a status bar item it never redrew after its bars or colours changed -- seen on the M1.) ----
 static const CGFloat kWiFiIconH = 10.0;   // (the fan's height in the bar; its ink is 1 pt less: DMWiFiFanImage keeps half a point above and below)
+// (Menu Bar Size, 1.7.3: x our items' scale on that bar, StatusBar.x DMBarItemScale -- 10 pt at Small, 11.5 Medium, 12.5 Large -- in half points)
+static CGFloat DMWiFiIconHeight(CGFloat k) { return round(2.0 * kWiFiIconH * k) / 2.0; }
 static UIView *DMWiFiMakeIcon(void) {
     UIImageView *iv = [UIImageView new];
     iv.contentMode = UIViewContentModeScaleAspectFit;
     iv.userInteractionEnabled = NO;
     return iv;
 }
-static CGSize DMWiFiApplyIconState(UIView *icon) {   // (its colour: with every other item of the bar, StatusBar.x DMApplyBarItemColor)
+static CGSize DMWiFiApplyIconState(UIView *icon, CGFloat k) {   // (its colour: with every other item of the bar, StatusBar.x DMApplyBarItemColor)
     UIImageView *iv = (UIImageView *)icon;
-    UIImage *img = DMWiFiFanImage(DMWiFiAssociated() ? DMWiFiBars() : 0, kWiFiIconH);
+    UIImage *img = DMWiFiFanImage(DMWiFiAssociated() ? DMWiFiBars() : 0, DMWiFiIconHeight(k));
     if (iv.image != img) iv.image = img;
     return img.size;
 }
 // Places our Wi-Fi icon just left of `left` (where the status icons start) in a status bar copy, and returns the new left edge. Hidden while
-// the Wi-Fi Menu switch is off: the bar is then exactly as before. (`left` in leading coordinates, DMBarRTL: right of the icons right-to-left.)
-static CGFloat DMWiFiLayoutIcon(UIView *fg, CGFloat left, CGFloat midY) {
+// the Wi-Fi Menu switch is off: the bar is then exactly as before. (`left` in leading coordinates, DMBarRTL: right of the icons right-to-left; k: our
+// items' scale on that bar, DMBarItemScale.)
+static CGFloat DMWiFiLayoutIcon(UIView *fg, CGFloat left, CGFloat midY, CGFloat k) {
     UIView *icon = objc_getAssociatedObject(fg, kWiFiIconKey);
     UIButton *btn = objc_getAssociatedObject(fg, kWiFiButtonKey);
     if (!gWiFiMenuOn || left == CGFLOAT_MAX) { icon.hidden = btn.hidden = YES; return left; }
@@ -333,12 +336,12 @@ static CGFloat DMWiFiLayoutIcon(UIView *fg, CGFloat left, CGFloat midY) {
         [fg addSubview:btn];
         objc_setAssociatedObject(fg, kWiFiButtonKey, btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    CGSize s = DMWiFiApplyIconState(icon);
+    CGSize s = DMWiFiApplyIconState(icon, k);
     CGFloat w = ceil(s.width), h = ceil(s.height);
-    left -= 8.0 + w;
+    left -= 8.0 * k + w;
     BOOL rtl = DMBarRTL(fg);
     icon.frame = DMBarRect(fg, rtl, CGRectMake(left, round(midY - h / 2.0), w, h));
-    btn.frame = DMBarRect(fg, rtl, CGRectMake(left - 6.0, 0, w + 12.0, fg.bounds.size.height));
+    btn.frame = DMBarRect(fg, rtl, CGRectMake(left - 6.0 * k, 0, w + 12.0 * k, fg.bounds.size.height));
     icon.hidden = btn.hidden = NO;
     [fg bringSubviewToFront:icon]; [fg bringSubviewToFront:btn];
     return left;
@@ -348,7 +351,7 @@ static void DMWiFiRefreshIcon(UIView *fg) {
     UIView *icon = objc_getAssociatedObject(fg, kWiFiIconKey);
     if (!icon || icon.hidden) return;
     if (!gWiFiMenuOn) { icon.hidden = YES; ((UIView *)objc_getAssociatedObject(fg, kWiFiButtonKey)).hidden = YES; return; }
-    DMWiFiApplyIconState(icon);
+    DMWiFiApplyIconState(icon, DMBarItemScale(fg));
 }
 
 // ---- the menu's own rows ----
@@ -362,10 +365,10 @@ static void DMWiFiRefreshIcon(UIView *fg) {
 @implementation DMWiFiHeaderRow
 - (instancetype)initWithTitle:(NSString *)title {
     self = [super initWithTitle:title enabled:NO handler:nil];
-    if (self) self.label.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightSemibold];
+    if (self) self.label.font = [UIFont systemFontOfSize:MSBDMenuTextScaled(gDMBarSize, 12.0) weight:UIFontWeightSemibold];
     return self;
 }
-- (CGFloat)dmRowHeight { return kWiFiHeaderH; }
+- (CGFloat)dmRowHeight { return MSBDMenuRowScaled(gDMBarSize, kWiFiHeaderH); }   // (Menu Bar Size, 1.7.3: with the menu's rows)
 - (void)refresh { [super refresh]; self.label.textColor = [UIColor secondaryLabelColor]; }
 - (UIAccessibilityTraits)accessibilityTraits { return UIAccessibilityTraitHeader; }   // (a heading, not a dimmed button: 1.3.7, audit M-3)
 @end
@@ -380,7 +383,7 @@ static void DMWiFiRefreshIcon(UIView *fg) {
     if (!self) return nil;
     _label = [UILabel new];
     _label.text = @"Wi-Fi";
-    _label.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightSemibold];
+    _label.font = [UIFont systemFontOfSize:DMMenuTextPt() weight:UIFontWeightSemibold];
     _label.textColor = [UIColor labelColor];
     _label.isAccessibilityElement = NO;   // (the switch carries the name: "Wi-Fi, switch button, on" -- 1.3.7, audit M-3)
     [self addSubview:_label];
@@ -396,7 +399,7 @@ static void DMWiFiRefreshIcon(UIView *fg) {
     [self addSubview:_toggle];
     return self;
 }
-- (CGFloat)dmRowHeight { return kWiFiSwitchRowH; }
+- (CGFloat)dmRowHeight { return MSBDMenuRowScaled(gDMBarSize, kWiFiSwitchRowH); }
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGSize s = self.toggle.bounds.size;   // (unscaled; the transform shrinks it around its centre)
@@ -951,9 +954,11 @@ static NSArray *DMWiFiMenuItems(NSString **signatureOut) {
         gWiFiLastOrder = names;
         NSMutableArray *known = [NSMutableArray array], *other = [NSMutableArray array];
         for (id r in sorted) [(DMWiFiRecKnown(r) ? known : other) addObject:r];
-        // (as many rows as fit on the screen under the menu bar: the rest are in Settings, "Other Networks…")
-        CGFloat room = [UIScreen mainScreen].bounds.size.height - 40.0 - 12.0 - 2.0 * kPanelPad - kWiFiSwitchRowH - 2.0 * kSepH - 2.0 * kRowH - (curName.length ? kRowH + kSepH : 0.0);
-        NSInteger fit = MAX(2, (NSInteger)floor((room - 2.0 * kWiFiHeaderH) / kRowH));
+        // (as many rows as fit on the screen under the menu bar: the rest are in Settings, "Other Networks…". Menu Bar Size, 1.7.3: under the
+        //  bar's height at Medium and Large -- 40 = a 24 pt bar + 16 at Small, as before --, with the menu's taller rows)
+        CGFloat rowH = DMMenuRowH(), sepH = DMMenuSepH();
+        CGFloat room = [UIScreen mainScreen].bounds.size.height - (MSBDMenuBarFixedSite(gDMBarSize, DMMenuBarHeight()) + 16.0) - 12.0 - 2.0 * kPanelPad - MSBDMenuRowScaled(gDMBarSize, kWiFiSwitchRowH) - 2.0 * sepH - 2.0 * rowH - (curName.length ? rowH + sepH : 0.0);
+        NSInteger fit = MAX(2, (NSInteger)floor((room - 2.0 * MSBDMenuRowScaled(gDMBarSize, kWiFiHeaderH)) / rowH));
         if (known.count + other.count > (NSUInteger)fit) {
             NSUInteger k = MIN(known.count, (NSUInteger)MAX(1, fit / 2));
             if (other.count < (NSUInteger)(fit - k)) k = MIN(known.count, (NSUInteger)fit - other.count);

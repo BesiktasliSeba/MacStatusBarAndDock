@@ -8,7 +8,7 @@ trap 'rm -rf "$W"' EXIT
 J="$W/root/var/jb"; M="$W/root/var/mobile"
 sed -e "s#/var/jb#$J#g" -e "s#/var/mobile/Library/Caches#$M/Library/Caches#g" layout/DEBIAN/postrm > "$W/postrm"; chmod +x "$W/postrm"
 S="$J/var/lib/sshtoggled-engines"; P="$J/var/mobile/Library/Preferences"
-GONE="$S/msb-off-restored $S/msb-off-alert $S/msb-config $S/ssh-state $S/.ssh-state.Ab12Cd
+GONE="$S/msb-off-restored $S/msb-off-alert $S/msb-config $S/ssh-state $S/.ssh-state.Ab12Cd $S/eject-answer $S/.eject-answer.Xy34Zw $S/eject-dryrun
 $P/MacStatusBarAndDock-CrashGuard.txt $P/MacStatusBarAndDock-RecentlyOn.txt $P/MacStatusBarAndDock-CrashRecord.txt $P/MacStatusBarAndDock-CrashTweakName.txt
 $P/MacStatusBarAndDock-CrashVerdicts.txt $P/MacStatusBarAndDock-CrashStep.txt $P/MacStatusBar-ChoicyBackup.plist
 $J/var/log/sshtoggled-engines.log $J/var/log/sshtoggled-engines.log.old $J/var/mobile/.sshtoggle-state

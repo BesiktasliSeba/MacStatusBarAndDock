@@ -86,9 +86,25 @@ static BOOL DMAutoHideActive(void);          // (auto-hiding status bar block, n
 static BOOL DMAutoHideHandlePointerPull(void);
 static CGFloat DMTopLimit(void);
 #include "../common/MenuBarHeight.h"   // (the bar's height and the geometry from it, Mac-tested)
+#include "../common/MenuBarSize.h"     // (Settings > Status Bar > Menu Bar Size, 1.7.3: Small / Medium / Large, Mac-tested)
 static CGFloat DMMenuBarHeight(void);   // (our menu bar's height on the iPad's screen: 24 pt on Face ID iPads, 20 pt on Home-button iPads -- near DMTopLimit)
+static CGFloat DMMenuBarKnownHeight(void);   // (the same once read from a bar, 0 before)
+static CGFloat DMMenuBarStockHeight(void);   // (iOS's own height of that bar, the size left out: 24 / 20 -- 0 before it is read)
 static BOOL DMRefitTopWanted(int part);   // (1.7.2 item 9: windows placed with the old 24 pt top, re-fitted once -- near DMTopLimit)
 static void DMRefitTopDone(int part);
+// Menu Bar Size (1.7.3): the size in force -- the stored one when iOS's bar could be made that size at the start (DMBarSizeInit, near DMTopLimit),
+// else Small. Read once per SpringBoard: a change applies after a respring.
+static int gDMBarSize = MSBDMenuBarSmall;
+// The size of a status bar copy: the size in force on the iPad's own screen, Small on a TV's bar (it keeps the normal bar). Our items on it (gaps,
+// touch areas, the traffic lights, our icons) are today's x its scale -- exactly 1 at Small: every item as before.
+static int DMBarCopySize(UIView *fg) {
+    if (gDMBarSize == MSBDMenuBarSmall) return MSBDMenuBarSmall;
+    UIScreen *s = fg.window.screen;
+    return s && s != [UIScreen mainScreen] ? MSBDMenuBarSmall : gDMBarSize;
+}
+static CGFloat DMBarItemScale(UIView *fg) { return MSBDMenuBarSizeScale(DMBarCopySize(fg)); }
+static CGFloat DMMenuRowH(void) { return MSBDMenuRowHeight(gDMBarSize); }   // (a menu row: 30 pt at Small, 33 Medium, 36 Large)
+static CGFloat DMMenuTextPt(void) { return MSBDMenuTextSize(gDMBarSize); }  // (a menu row's title: 14 pt at Small, 15 Medium, 16 Large)
 static CGFloat DMAutoHideShiftOf(UIView *stage);
 static CGFloat DMAutoHideTitleShiftOf(UIView *stage);   // (step 2: how far only its title bar has slid down: 0 normally)
 static void DMAutoHideNoteFrame(UIView *stage);   // (after we set a moved-down window's frame ourselves: not the engine's doing)   // (how far the auto-hiding status bar has moved a window down right now: 0 normally)
@@ -144,7 +160,7 @@ static const CGFloat kClockGap = 10.0;       // date <-> time
 static const CGFloat kClockIconsGap = 14.0;  // spotlight icon <-> the icons to its left
 static const CGFloat kSpotClockGap = 12.0;   // clock <-> spotlight icon
 static const CGFloat kSpotHitSlop = 10.0;    // extra clickable width each side of the spotlight icon
-static const CGFloat kLogoBarMargin = 4.5;  // gap between the Apple logo and the top and bottom of the bar
+// (the gap between the Apple logo and the top and bottom of the bar, 4.5 pt: common/MenuBarSize.h kMSBDLogoBarMargin, MSBDMenuBarLogoInk)
 static const CGFloat kLogoHitSlop = 12.0;  // extra clickable width on each side of the logo
 
 static const CGFloat kLightCell = 20.0;     // width of one traffic-light touch target (the dot itself is 12 pt)
@@ -614,6 +630,10 @@ static CGPoint gSBFakePointer;   // (auto-hiding status bar, debug stand-in poin
 static BOOL gKbBarOnly = NO;   // a hardware keyboard is attached and only the app's input bar is in the keyboard picture (set by DMPlaceKeyboardPill)
 #include "KeyboardDock.h"   // (MSBDOwnBarUnderDockFloor: the Dock's floor steps aside for our own fields' input bar -- plain C, tools/test-kbdock.sh)
 #include "WindowMinSize.h"   // (the smallest window of the engines, as Stage Manager's: 1.7.0 -- plain C, tools/test-winminsize.sh)
+#include "WindowSnap.h"      // (window snapping on every engine, 1.7.3 item 3 -- plain C, tools/test-windowsnap.sh; the glue: DMSnapMoveEnded)
+static BOOL DMSnapOff(void);
+static CGRect DMSnapEngineWindow(UIView *st, CGRect window, unsigned how);
+static void DMSnapMoveEnded(UIView *st);
 #include "A5FitPass.h"   // (Aerial 5.x's fit-to-screen pass as it shows from outside: 1.7.2 -- plain C, tools/test-a5fitpass.sh)
 static BOOL gOwnBarUnderFloor = NO;   // our own field's input bar (hardware keyboard) is up in keyboard windows under the Dock's floor (set by DMPlaceKeyboardPill)
 static long gLastConfidentLandscapeOrientation;
@@ -3824,6 +3844,7 @@ static CGPoint DMPanDownPointOnScreen(UIPanGestureRecognizer *g, UIWindow *w, CG
         DM_FEATURE_MARK("zetsu-corner-min-size");
         if (!self.atMinimum) { self.atMinimum = YES; DMLog([NSString stringWithFormat:@"[minsize] %@: the corner stops at the smallest a window may be (%@)", DMZetsuWindowBundle(w), NSStringFromCGSize(f.size)]); }
     }
+    if (g.state == UIGestureRecognizerStateEnded) f = DMSnapEngineWindow(w, f, (self.left ? MSBDSnapLeft : MSBDSnapRight) | MSBDSnapBottom);   // (1.7.3 item 3: let go, its two sides line up with what is near)
     [UIView performWithoutAnimation:^{ w.frame = f; [w layoutIfNeeded]; DMZetsuFitStack(w); }];
     {   // (iPad 2, 2026-09-24) the app follows the drag every 0.1 s (the 0.2 s watcher alone left a strip of Zetsu's grey at the moving edge)
         static CFTimeInterval lastFit = 0; CFTimeInterval t = CACurrentMediaTime();
@@ -3869,6 +3890,7 @@ static const void *kZetsuBarPanKey = &kZetsuBarPanKey, *kZetsuBarStartKey = &kZe
     if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled || g.state == UIGestureRecognizerStateFailed) {
         objc_setAssociatedObject(w, kStageGestureKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(w, kZetsuBarStartKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (g.state == UIGestureRecognizerStateEnded) DMSnapMoveEnded(w);   // (1.7.3 item 3: let go, it lines up with what is near)
         DMZetsuFixScale(w);
         DMRememberStageFrame(w);
         DMFitGroupForget(DMZetsuWindowBundle(w));   // moved by hand: no longer tiled
@@ -4413,6 +4435,48 @@ static SBApplication *DMActiveApp(void) {
 static SBApplication *DMForceQuitTargetApp(void) {
     if (DMNativeActiveApp()) return nil;
     return DMActiveApp();
+}
+
+// ---- Auto-Lock with an engine's window in front (1.7.3 item 8) ----
+// SpringBoard halves the Auto-Lock time while it is the active app itself -- the Home Screen -- on an iPad with Face ID or Touch ID:
+// -[SBIdleTimerDescriptorFactory updateIdleTimerSettingsForUnlockedWithMesa:] sets the total to half (at least 30 s) when -[SBMainWorkspace
+// isSpringBoardActive] and the biometric capability are both on (15.6.1's own log: "sbIsActive and mesaEnabled are YES; calculating totalInterval as
+// half"; the same step on 16-18), and only for the Auto-Lock behaviour (the Lock Screen's own times never pass it). With Stage Manager the app in a
+// stage is the workspace's front app, so a window in front keeps the whole time and the Home Screen gets the half. Aerial, Zetsu and MilkyWay4
+// windows float over the Home Screen: SpringBoard counted as active, so with a window in front the time was halved too (M1 15.6.1, 1.7.2 item 18:
+// 2 hours -> 1 hour). While one of their windows is the app in front, the step now answers as it does for an app in front: NO, nothing changed.
+// The Home Screen with no window in front keeps Apple's half, as with Stage Manager. SpringBoard makes the timer's descriptor when a behaviour is
+// proposed, not at each reset: when the reading changes, its coordinator is asked to make it again (-_updateIdleTimerForReason:).
+static BOOL gDMIdleWindowFront = NO;    // (an engine's window is the app in front: the tick's reading, DMIdleWindowFrontTick)
+static BOOL gDMIdleWindowHooked = NO;
+%group IdleWindowFront
+%hook SBIdleTimerDescriptorFactory
+- (BOOL)updateIdleTimerSettingsForUnlockedWithMesa:(id)desc {
+    if (gDMIdleWindowFront && !DMTestFlag("/tmp/msb-idlehalf")) return NO;   // (debug: /tmp/msb-idlehalf = Apple's half, for comparison)
+    return %orig;
+}
+%end
+%end
+static void DMIdleWindowFrontInit(void) {
+    Class f = objc_getClass("SBIdleTimerDescriptorFactory"), c = objc_getClass("SBIdleTimerGlobalCoordinator");
+    Method m = f ? class_getInstanceMethod(f, NSSelectorFromString(@"updateIdleTimerSettingsForUnlockedWithMesa:")) : NULL;
+    Method u = c ? class_getInstanceMethod(c, NSSelectorFromString(@"_updateIdleTimerForReason:")) : NULL;
+    const char *me = m ? method_getTypeEncoding(m) : NULL, *ue = u ? method_getTypeEncoding(u) : NULL;
+    if (me && !strcmp(me, "B24@0:8@16") && ue && (!strcmp(ue, "B24@0:8@16") || !strcmp(ue, "v24@0:8@16"))) { %init(IdleWindowFront); gDMIdleWindowHooked = YES; }
+    else DMLog([NSString stringWithFormat:@"[idle] Auto-Lock with a window in front: SpringBoard's step %s, its update %s: Apple's rule stays", me ?: "not there", ue ?: "not there"]);
+}
+// From the tick (5 Hz): an engine's window is the app in front -- Aerial, Zetsu or MilkyWay4 (Stage Manager's own windows already count as apps),
+// the windows own the menu bar and it names an app. A change makes SpringBoard work out its idle timer again.
+static void DMIdleWindowFrontTick(BOOL windowsOwnBar, NSString *activeBundle) {
+    if (!gDMIdleWindowHooked) return;
+    BOOL now = (DMActiveEngine() != DMEngineNone && windowsOwnBar && activeBundle.length > 0) || DMTestFlag("/tmp/msb-idlefront");   // (debug: as if one were)
+    if (now == gDMIdleWindowFront) return;
+    gDMIdleWindowFront = now;
+    id coord = DMSBManager("SBIdleTimerGlobalCoordinator");
+    SEL s = NSSelectorFromString(@"_updateIdleTimerForReason:");
+    if ([coord respondsToSelector:s]) ((void (*)(id, SEL, id))objc_msgSend)(coord, s, now ? @"MacStatusBar: a window is in front" : @"MacStatusBar: no window in front");
+    DMLog([NSString stringWithFormat:@"[idle] %@: Auto-Lock %@", now ? [NSString stringWithFormat:@"%@'s window is in front", activeBundle] : @"no window in front",
+           now ? @"keeps its whole time, as with an app in front" : @"as on the Home Screen (Apple's half with Face ID / Touch ID)"]);
 }
 
 // Test helper: a pan recogniser with a scripted state and translation, to drive MilkyWay's own resize handler.
@@ -5267,6 +5331,7 @@ static void DMWatchSceneStorm(NSString *sid) {
 // iPadOS 17+ (untested versions): an iPad 7 on 18.2.1 crashed three times at every respring with the Mac status bar (issue #1): our scene hook below
 // asked +[SBLockScreenManager sharedInstance] (DMScreenOnAndUnlocked) while SpringBoard was still starting up, or off the main thread where iOS 18
 // may deliver scene updates. There, the hook stands aside in both cases and iOS updates the scene on its own (15/16: as before).
+static id DMBarSizeAerialWindowSettings(id scene, id settings);   // (Menu Bar Size: an Aerial window's scene keeps iOS's own status bar height)
 static BOOL DMSceneHookStandsAside(void) {
     return DMNewOS() && (![NSThread isMainThread] || DMStarting());
 }
@@ -5352,6 +5417,7 @@ static void DMPassWindowFrameToShownScene(id scene, id settings) {
     }
     settings = DMPortraitWindowSettings(self, settings);
     { NSString *holdID = nil; if (gVetoFrameHolds.count) { @try { holdID = [self valueForKey:@"identifier"]; } @catch (id e) {} } settings = DMVetoFrameHoldApply(self, settings, holdID); }
+    settings = DMBarSizeAerialWindowSettings(self, settings);
     if (gA5PicStages.count) completion = DMA5PicCompletion(self, settings, completion);   // (Aerial 5: a window's corner just let go -- the app's picture is held until it has laid itself out)
     %orig(settings, context, completion);
 }
@@ -5422,6 +5488,7 @@ static void DMPassWindowFrameToShownScene(id scene, id settings) {
             }
         }
     }
+    settings = DMBarSizeAerialWindowSettings(self, settings);
     DMPassWindowFrameToShownScene(self, settings);   // (Aerial: a window's frame sent to another scene of its app goes to the scene the window shows)
     if (!gSceneUpdateTime) gSceneUpdateTime = [NSMutableDictionary dictionary];
     @try { NSString *sid = [self valueForKey:@"identifier"]; if (sid.length) { { DMWeakScene *box = [DMWeakScene new]; box.scene = self; gSceneByID[sid] = box; } gSceneUpdateTime[sid] = @(CACurrentMediaTime()); } } @catch (id e) {}
@@ -6506,6 +6573,80 @@ static void DMAerialMoveStage(UIView *stage, CGRect target, void (^done)(void)) 
 }
 BOOL gMoveKeepsOrderFlag(void) { return gMoveKeepsOrder; }
 void DMSetMoveKeepsOrder(BOOL keep) { gMoveKeepsOrder = keep; }
+// ===== Window snapping (1.7.3 item 3, KT 31 Oct) ====================================================================================================
+// Where a move or a resize by hand ends, on every engine, a side near the desktop's edge (the screen's sides, the menu bar's line, the Dock line) or
+// near another window's side lines up with it exactly, as Stage Manager does on 17 and 18 (its numbers, measured: WindowSnap.h). The geometry is
+// WindowSnap.h's (Mac-tested); here: the engine windows' frames as drawn (title bar and app) in the screen's points, the windows around on this
+// desktop, and the move to the snapped place. The ends: Aerial's drag (DMAerialGestureAfter) and its corner step (DMA5CornerMinimum), Zetsu's title
+// bar and grips (DMZetsuBarPan, DMZetsuGripBox), MilkyWay4's title bar and handle (DMMWResizeCatchUp), our Stage Manager title bar (DMSMTitleBar) and
+// 16's resize step (SMResizeAnchor.h). Debug: /tmp/msb-nosnap (none), the snapinfo trigger.
+static CGRect DMA5StageFromWindow(CGRect r);   // (Aerial 5.x's stage for a window, and back: defined with its Mac geometry below)
+static CGRect DMA5WindowFromStage(CGRect f);
+static BOOL DMSnapOff(void) { return DMTestFlag("/tmp/msb-nosnap"); }
+static UIScreen *DMSnapScreenOf(UIView *v) { return v.window.screen ?: ([v isKindOfClass:[UIWindow class]] ? ((UIWindow *)v).screen : nil) ?: [UIScreen mainScreen]; }
+// An engine window's frame as drawn -- title bar and app -- in the screen's points (Aerial 5.x: its stage is the window grown by margins).
+static CGRect DMSnapWindowOf(UIView *st) {
+    if (!st) return CGRectNull;
+    CGRect f = st.frame;
+    if (![st isKindOfClass:[UIWindow class]]) {   // (Zetsu's windows are UIWindows: their frame is in the screen's space already)
+        if (!st.superview) return CGRectNull;
+        f = [st.superview convertRect:f toCoordinateSpace:DMSnapScreenOf(st).coordinateSpace];
+    }
+    return DMActiveEngine() == DMEngineAerial ? DMA5WindowFromStage(f) : f;
+}
+// The engine's own frame (in its superview) for a window frame on the screen: the reverse of DMSnapWindowOf.
+static CGRect DMSnapEngineFrameFor(UIView *st, CGRect window) {
+    CGRect f = DMActiveEngine() == DMEngineAerial ? DMA5StageFromWindow(window) : window;
+    if (![st isKindOfClass:[UIWindow class]] && st.superview) f = [st.superview convertRect:f fromCoordinateSpace:DMSnapScreenOf(st).coordinateSpace];
+    return f;
+}
+// The other windows on screen on this desktop (not minimized, not closing, not hidden): their frames as drawn, at most max.
+static int DMSnapOthers(UIView *except, CGRect *out, int max) {
+    int n = 0;
+    for (UIView *st in DMAerialStages()) {   // (this desktop's windows of the engine in use: Aerial's stages, Zetsu's windows, MilkyWay4's)
+        if (st == except || n >= max) continue;
+        if (st.hidden || st.alpha < 0.05 || DMStageMinimized(st) || [objc_getAssociatedObject(st, kStageClosingKey) boolValue]) continue;
+        CGRect f = DMSnapWindowOf(st);
+        if (!CGRectIsNull(f) && !CGRectIsEmpty(f)) out[n++] = f;
+    }
+    return n;
+}
+// The window frame a move or a resize by hand that ends at window (as drawn, on the screen) snaps to; logged when it changes.
+static CGRect DMSnapFrameFor(NSString *who, CGRect window, unsigned how, const CGRect *others, int n, CGRect area) {
+    if (DMSnapOff() || CGRectIsNull(window)) return window;
+    BOOL move = (how & MSBDSnapMove) == MSBDSnapMove;
+    MSBDSnapWhy why;
+    CGRect s = MSBDSnapFrame(window, how, others, n, area, kMSBDSnapGap, move ? kMSBDSnapMoveDistance : kMSBDSnapResizeDistance, MSBDWindowMinSize(), &why);
+    if (!CGRectEqualToRect(s, window)) {
+        DM_FEATURE_MARK("window-snap");
+        DMLog([NSString stringWithFormat:@"[snap] %@ %@ let go at %@ -> %@ (x: %s, y: %s; %d window(s) around)", who ?: @"a window", move ? @"moved" : @"resized",
+               NSStringFromCGRect(window), NSStringFromCGRect(s), MSBDSnapWhyText(why.x), MSBDSnapWhyText(why.y), n]);
+    }
+    return s;
+}
+static CGRect DMSnapEngineWindow(UIView *st, CGRect window, unsigned how) {
+    CGRect others[32];
+    int n = DMSnapOthers(st, others, 32);
+    return DMSnapFrameFor(DMStageBundle(st), window, how, others, n, DMUsableArea());
+}
+// A move by hand of an Aerial, Zetsu or MilkyWay4 window has ended: it goes to its snapped place, as our own moves go (DMAerialMoveStage: animated,
+// the app's place updated, then remembered), and the windows' state is saved again.
+static void DMSnapMoveEnded(UIView *st) {
+    if (!st || DMSnapOff()) return;
+    CGRect w = DMSnapWindowOf(st);
+    if (CGRectIsNull(w) || CGRectIsEmpty(w)) return;
+    CGRect s = DMSnapEngineWindow(st, w, MSBDSnapMove);
+    if (CGRectEqualToRect(s, w)) return;
+    CGRect target = DMSnapEngineFrameFor(st, s);
+    if (DMActiveEngine() == DMEngineMilkyWay) {   // (only its place changes: no veil over the app, which DMAerialMoveStage puts up for a size change)
+        MSBAnimate(0.36, 0, 1.0, UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction, ^{ DMSetStageFrameSafe(st, target); [st layoutIfNeeded]; },
+                   ^(BOOL finished) { DMRememberStageFrame(st); DMSaveWindowState(); });
+        return;
+    }
+    DMSetMoveKeepsOrder(YES);   // (it is in front already: the drag brought it)
+    DMAerialMoveStage(st, target, ^{ DMSaveWindowState(); });
+    DMSetMoveKeepsOrder(NO);
+}
 // A tap or click anywhere on a window brings it to the front (so it becomes the active app); MilkyWay does not always reorder.
 @interface DMWindowFocus : NSObject <UIGestureRecognizerDelegate>
 + (instancetype)shared;
@@ -7320,14 +7461,20 @@ static char kMWDownKey, kMWWatchedKey, kMWOffsetKey;
     NSValue *dv = objc_getAssociatedObject(g, &kMWOffsetKey);
     if (DMTestFlag("/tmp/msb-a5-dragtrace")) DMLog([NSString stringWithFormat:@"[mwresize] state %ld location %@ window %@ catch-up %@", (long)g.state, NSStringFromCGPoint([g locationInView:win.superview]), NSStringFromCGRect(win.frame), dv ? NSStringFromCGPoint(dv.CGPointValue) : @"-"]);
     if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) DMMWRememberSoon(win);   // (resized by hand: kept as its place)
-    if (!dv || g.state == UIGestureRecognizerStateBegan) return;
-    if (g.state == UIGestureRecognizerStateChanged || g.state == UIGestureRecognizerStateEnded) {   // (MilkyWay sizes from where its recogniser started)
+    if (g.state == UIGestureRecognizerStateBegan) return;
+    if (dv && (g.state == UIGestureRecognizerStateChanged || g.state == UIGestureRecognizerStateEnded)) {   // (MilkyWay sizes from where its recogniser started)
         CGRect f = win.frame; f.size.width += dv.CGPointValue.x; f.size.height += dv.CGPointValue.y;
         win.frame = f;
         DMMWKeepMinSize(win);   // (never smaller than a window may be, the catch-up included; before 1.7.0: not applied below 200 x 150)
         DMMWKeepStepRecord(win);   // (and MilkyWay's record of the step not smaller than the window: above)
     }
-    if (g.state != UIGestureRecognizerStateChanged) objc_setAssociatedObject(g, &kMWOffsetKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (g.state == UIGestureRecognizerStateEnded && !DMSnapOff()) {   // (1.7.3 item 3: let go, the handle's two sides -- right, bottom -- line up with what is near)
+        UIScreen *scr = DMSnapScreenOf(win);
+        CGRect w = [win.superview convertRect:win.frame toCoordinateSpace:scr.coordinateSpace];
+        CGRect s = DMSnapEngineWindow(win, w, MSBDSnapRight | MSBDSnapBottom);
+        if (!CGRectEqualToRect(s, w)) { win.frame = [win.superview convertRect:s fromCoordinateSpace:scr.coordinateSpace]; DMMWKeepStepRecord(win); }
+    }
+    if (dv && g.state != UIGestureRecognizerStateChanged) objc_setAssociatedObject(g, &kMWOffsetKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 // Title-bar drags: the same catch-up (MilkyWay moves the window from where its recogniser started), and the window's top is kept below our
 // status bar like a macOS window below the menu bar (MilkyWay4 let a window go up under the status bar, out of reach: measured y = -2).
@@ -7349,6 +7496,7 @@ static char kMWDownKey, kMWWatchedKey, kMWOffsetKey;
         if (!CGRectEqualToRect(f, win.frame)) win.frame = f;
     }
     if (g.state != UIGestureRecognizerStateChanged && g.state != UIGestureRecognizerStateBegan) objc_setAssociatedObject(g, &kMWOffsetKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (g.state == UIGestureRecognizerStateEnded) DMSnapMoveEnded(win);   // (1.7.3 item 3: let go, it lines up with what is near)
     if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) DMMWRememberSoon(win);   // (moved by hand: kept as its place)
 }
 + (void)watchTitleBar:(UIView *)bar {
@@ -7764,12 +7912,53 @@ static void DMInstallZetsuObserverGuard(void) {
     MSHookMessageEx([NSNotificationCenter class], s, (IMP)DMZetsuGuardAddBlock, (IMP *)&o_ZGAddBlock);
     DMLog(@"[zetsu] observer guard on (Zetsu's CloseSwitcherRemoveAlert observer runs only while its alert host lives)");
 }
+// A window's launch retry that outlives its close (1.7.3 item 11, M1 15.6.1, 31 Oct: Safe Mode on an Aerial -> Zetsu switch). Zetsu opens an app in a
+// window from -[ZetsuAppController setHost:]: a block run a moment later asks for the app (-[ZetsuSceneUtils getAppWithId:...], which launches it:
+// our "[zetsu] launch call ... caller +0x371f8" lines) and, while the app is not there yet, calls -setHost: again -- every ~0.25 s, holding the
+// controller. -CloseAppWindow: (Zetsu's own close, which ours and the 6 s rescue call) takes the window down but does not stop that chain. Settings
+// never came up in its window, the rescue closed it at 18.85 and opened Settings full screen, and the closed controller went on asking for 7 s;
+// when Settings was finally there (26.07) the block went on as for a new window -- it began observing the scene's layer manager and made a new
+// scene monitor -- and then the controller was freed with both: FrontBoard's monitor assert, or (with our guard, SceneMonitorGuard) a KVO
+// notification to the freed controller. So a controller is marked when its close runs, and its -setHost: does nothing from then on: the chain ends at
+// its next turn and the controller goes with nothing registered. (A turn already queued at the close can still go through once if the app is there
+// by then: SceneMonitorGuard's owner cleanup covers that.) Zetsu 1.6.6 (a tested build), the two methods checked by type first.
+static const void *kZetsuCtlClosedKey = &kZetsuCtlClosedKey;
+%group ZetsuRetryStop
+%hook ZetsuAppController
+- (void)CloseAppWindow:(BOOL)kill {
+    objc_setAssociatedObject(self, kZetsuCtlClosedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    %orig;
+}
+- (void)setHost:(float)ratio {
+    if ([objc_getAssociatedObject(self, kZetsuCtlClosedKey) boolValue]) {
+        DM_FEATURE_MARK("zetsu-closed-retry-stop");
+        static int told = 0;
+        if (told < 20) { told++; NSString *b = nil; @try { b = [(id)self valueForKey:@"app_id"]; } @catch (id e) {} DMLog([NSString stringWithFormat:@"[zetsu] %@: its window was closed -- Zetsu's launch retry for it stops here (nothing observed, no scene monitor made)", b ?: @"?"]); }
+        return;
+    }
+    %orig;
+}
+%end
+%end
+static void DMZetsuStopClosedRetry(void) {
+    if (!DMZetsuInstalled()) return;   // (an untested Zetsu build runs on its own)
+    Class c = objc_getClass("ZetsuAppController");
+    Method close = c ? class_getInstanceMethod(c, NSSelectorFromString(@"CloseAppWindow:")) : NULL, host = c ? class_getInstanceMethod(c, NSSelectorFromString(@"setHost:")) : NULL;
+    const char *ce = close ? method_getTypeEncoding(close) : NULL, *he = host ? method_getTypeEncoding(host) : NULL;
+    if (!ce || !he || strcmp(ce, "v20@0:8B16") || strcmp(he, "v20@0:8f16") || DMTestFlag("/tmp/msb-zetsu-noretrystop")) {
+        DMLog([NSString stringWithFormat:@"[zetsu] its window controller is not as expected here (%s / %s): a closed window's launch retry is left to Zetsu", ce ?: "-", he ?: "-"]);
+        return;
+    }
+    %init(ZetsuRetryStop);
+    DMLog(@"[zetsu] a closed window's launch retry stops at its next turn (ZetsuAppController -CloseAppWindow: / -setHost:)");
+}
 static void DMInstallAppExitForget(void);   // (with the Aerial hooks: an app that quits forgets where its window was, every engine)
 static void DMTryHookZetsu(int attempt) {
     if (gZetsuHooked) return;
     if (objc_getClass("ZetsuWindow")) {
         gZetsuHooked = YES;
         DMInstallZetsuObserverGuard();   // (first: Zetsu may make its alert host and observer at any moment from now on)
+        DMZetsuStopClosedRetry();
         %init(ZetsuStyle);
         DMInstallAppExitForget();
         DMLog(@"[zetsu-style] ZetsuWindow hook installed");
@@ -9223,9 +9412,10 @@ static void DMPlaceKeyboardPillIn(UIView *pillWindow, BOOL screenSpace, BOOL har
     BOOL move = hardwareKeyboard && gTidyKeyboardPill && [NSProcessInfo processInfo].operatingSystemVersion.majorVersion < 16 && keyboardH < 1.0 && gStatusIconsLeft > 100.0 && !pillWindow.hidden;   // (iPadOS 16 draws it differently: see the notes)
     CGAffineTransform want = CGAffineTransformIdentity;
     if (move) {
-        const CGFloat scale = 0.52, pillW = 125.0;
+        // (Menu Bar Size, 1.7.3: in the middle of the bar -- 12 on the 24 pt bar at Small, as before -- and x our items' scale at Medium and Large)
+        const CGFloat k = MSBDMenuBarSizeScale(gDMBarSize), scale = 0.52 * k, pillW = 125.0;
         CGPoint pill = CGPointMake(screen.width - 67.0, screen.height - 38.0);                 // the pill's centre on the screen, stock place
-        CGPoint target = CGPointMake(gStatusIconsLeft + 11.0 - pillW * scale / 2.0 - ((gSSHActive || gMuteIconShown) ? 5.0 : 0.0), 12.0);   // just left of the status icons (the capsule around the glyphs is invisible now, so its padding is subtracted)
+        CGPoint target = CGPointMake(gStatusIconsLeft + 11.0 * k - pillW * scale / 2.0 - ((gSSHActive || gMuteIconShown) ? 5.0 * k : 0.0), MSBDMenuBarFixedSite(gDMBarSize, DMMenuBarHeight()) / 2.0);   // just left of the status icons (the capsule around the glyphs is invisible now, so its padding is subtracted)
         CGPoint C = CGPointMake(space.width / 2.0, space.height / 2.0);
         CGPoint n0 = screenSpace ? pill : DMScreenToNative(pill, orientation, native), nt = screenSpace ? target : DMScreenToNative(target, orientation, native);
         want = CGAffineTransformMake(scale, 0, 0, scale, nt.x - C.x - scale * (n0.x - C.x), nt.y - C.y - scale * (n0.y - C.y));
@@ -10211,8 +10401,10 @@ static void DMSaveWindowState(void) {
         }
         [wins addObject:@{@"bundle": b, @"frame": NSStringFromCGRect(f), @"minimized": @(minimized)}];
     }
-    NSDictionary *state = @{@"windows": wins, @"screen": NSStringFromCGSize([UIScreen mainScreen].bounds.size),
-                            @"fitGroup": gFitGroup ? [gFitGroup copy] : @[], @"fitSlots": gFitSlots ? [gFitSlots copy] : @{}};
+    NSMutableDictionary *saving = [@{@"windows": wins, @"screen": NSStringFromCGSize([UIScreen mainScreen].bounds.size),
+                                     @"fitGroup": gFitGroup ? [gFitGroup copy] : @[], @"fitSlots": gFitSlots ? [gFitSlots copy] : @{}} mutableCopy];
+    if (DMMenuBarKnownHeight() > 0) saving[@"bar"] = @(DMMenuBarKnownHeight());   // (the bar they were placed under: a restore under a bar of another size re-fits them, Menu Bar Size 1.7.3)
+    NSDictionary *state = [saving copy];
     if ([state isEqualToDictionary:gLastWindowState]) return;
     gLastWindowState = state;
     static dispatch_queue_t writer;   // (perf step 7: the file is written off the main thread, in order; the dictionary is immutable)
@@ -10222,6 +10414,7 @@ static void DMSaveWindowState(void) {
 }
 static void DMRestoreStep(NSArray *wins, NSUInteger i, NSDictionary *state, int waited);
 static BOOL gRestoreRefitTop = NO;   // (1.7.2 item 9: this restore re-fits windows saved with the 24 pt bar's top, once -- DMRefitTopWanted)
+static BOOL gRestoreRefitSize = NO;  // (Menu Bar Size, 1.7.3: this restore re-fits windows saved under a bar of another height -- the state's "bar")
 static NSMutableSet<NSString *> *gRestoreHidden;   // apps whose window the restore brings back minimized: invisible from its first frame
 BOOL DMRestoreWantsHidden(NSString *bundleID) { return bundleID.length && [gRestoreHidden containsObject:bundleID]; }
 // Apps the user opened since SpringBoard started, before the saved windows were brought back: the restore leaves them as the user opened them
@@ -10288,6 +10481,7 @@ static void DMFinishRestore(NSDictionary *state) {
     gRestoringWindows = NO; gWindowSaveOn = YES;
     gRestoreHidden = nil;   // (nothing is kept invisible after the restore)
     if (gRestoreRefitTop) { gRestoreRefitTop = NO; DMRefitTopDone(1); }   // (every saved window has been through the re-fit: 1.7.2 item 9, once)
+    gRestoreRefitSize = NO;   // (Menu Bar Size: the windows are saved again with this bar's height from now on, the state's "bar")
     unlink("/tmp/macstatusbar-restore-guard");
     DMLog([NSString stringWithFormat:@"[restore] done: %lu windows, fit group %lu", (unsigned long)DMAerialStages().count, (unsigned long)group.count]);
     if (gFitGroup.count >= 2 && DMFitEnabled()) {   // the tiles exactly in their slots for the screen as it is now (saved frames can be from another shape)
@@ -10345,6 +10539,18 @@ static void DMRestoreStep(NSArray *wins, NSUInteger i, NSDictionary *state, int 
         BOOL sameShape = CGSizeEqualToSize(saved, now) || !(saved.width > 100.0);
         if (MSBDMenuBarRefitTop(&y, &h, kMSBDMenuBarDefault - 1.0, MSBDMenuBarTopLimit(DMMenuBarHeight()), sameShape && !CGRectIsNull(usable) ? CGRectGetMaxY(usable) : NAN)) {
             if (waited == 0) DMLog([NSString stringWithFormat:@"[menubar] %@: saved with the 24 pt bar's top -- brought back under the %.0f pt bar at %.1f (%.0f pt tall)", bundle, DMMenuBarHeight(), y, h]);
+            f.origin.y = y; f.size.height = h;
+        }
+    }
+    if (gRestoreRefitSize) {   // (Menu Bar Size, 1.7.3: saved under a bar of another height -- the state's "bar"; not known: saved before 1.7.3, under the
+                               //  Small bar -- a window the taller bar would cover goes under it keeping its bottom, one at a shorter bar's old top goes up)
+        double y = f.origin.y, h = f.size.height;
+        BOOL sameShape = CGSizeEqualToSize(saved, now) || !(saved.width > 100.0);
+        NSNumber *placed = [state[@"bar"] isKindOfClass:[NSNumber class]] ? state[@"bar"] : nil;
+        if (MSBDMenuBarRefitSize(&y, &h, placed ? MSBDMenuBarTopLimit(placed.doubleValue) : NAN, MSBDMenuBarTopLimit(DMMenuBarHeight()),
+                                 sameShape && !CGRectIsNull(usable) ? CGRectGetMaxY(usable) : NAN, DMEngineWindowMin().height)) {
+            if (waited == 0) DMLog([NSString stringWithFormat:@"[barsize] %@: saved under the %@ bar at %.1f (%.0f pt tall) -- now under the %.0f pt bar at %.1f (%.0f pt tall)", bundle,
+                                    placed ? [NSString stringWithFormat:@"%.0f pt", placed.doubleValue] : @"Small", f.origin.y, f.size.height, DMMenuBarHeight(), y, h]);
             f.origin.y = y; f.size.height = h;
         }
     }
@@ -10466,6 +10672,13 @@ static void DMRestoreWindows(int attempt) {
     FILE *g = fopen("/tmp/macstatusbar-restore-guard", "w"); if (g) fclose(g);
     gRestoringWindows = YES;
     gRestoreRefitTop = DMRefitTopWanted(1);   // (1.7.2 item 9)
+    {   // (Menu Bar Size, 1.7.3: saved under a bar of another height -- not while the bar hides itself: the windows are at the top edge then, and auto-hide
+        //  moves them with the bar)
+        NSNumber *placed = [state[@"bar"] isKindOfClass:[NSNumber class]] ? state[@"bar"] : nil;
+        gRestoreRefitSize = !DMAutoHideLayout() && MSBDMenuBarRefitWanted(placed ? placed.doubleValue : NAN, DMMenuBarHeight(), gDMBarSize);
+        if (gRestoreRefitSize) DMLog([NSString stringWithFormat:@"[barsize] the saved windows were placed under the %@ bar, the bar is %.0f pt now: re-fitted under it",
+                                      placed ? [NSString stringWithFormat:@"%.0f pt", placed.doubleValue] : @"Small", DMMenuBarHeight()]);
+    }
     DMLog([NSString stringWithFormat:@"[restore] %lu windows to bring back", (unsigned long)wins.count]);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(120.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ if (gRestoringWindows) { gRestoringWindows = NO; gWindowSaveOn = YES; unlink("/tmp/macstatusbar-restore-guard"); DMLog(@"[restore] gave up after 120 s"); } });
     DMRestoreStep(wins, 0, state, 0);
@@ -11026,6 +11239,10 @@ static BOOL DMAerialPanBefore(UIView *stage, UIPanGestureRecognizer *g) {
 static void DMAerialGestureAfter(UIView *stage, UIGestureRecognizerState s, BOOL wasPan) {
     if (s == UIGestureRecognizerStateEnded || s == UIGestureRecognizerStateCancelled || s == UIGestureRecognizerStateFailed) {
         objc_setAssociatedObject(stage, kStageGestureKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (wasPan && s == UIGestureRecognizerStateEnded) {   // (1.7.3 item 3: let go, it lines up with what is near -- the desktop's edges, the windows around)
+            if (DMA5MacGeometry() && stage.frame.origin.y < DMTopLimit()) { CGRect f = stage.frame; f.origin.y = DMTopLimit(); stage.frame = f; }   // (under the bar first, as -dragTrace: keeps it)
+            DMSnapMoveEnded(stage);
+        }
         DMRememberStageFrame(stage);
         DMFitGroupForget(DMStageBundle(stage));   // placed by hand: no longer tiled
         if (wasPan) DMSaveWindowState();
@@ -11482,14 +11699,19 @@ static void DMTryHookAerial(int attempt) {
 // plain container that BigSurCenter moves by changing its frame; scaling that container from its top right corner makes the whole panel
 // smaller while its slide animation and its touches (UIKit maps them through the scale) keep working.
 static CGFloat gCCPanelTop = 20.0;   // where the panel rests below the top of the screen (learned from its frame; it slides in from above)
+// (Menu Bar Size, 1.7.3: the panel rests 20 pt down, right under iOS's own bar; under the taller bar of Medium and Large its top sat inside the bar,
+//  over its lower 10 / 17 pt (iPad 2, device pass). Drawn that much lower -- as much as the bar grew, MenuBarSize.h MSBDCCPanelShift --, it keeps
+//  today's place against the bar. Small: 0, as before.)
+static CGFloat DMCCPanelShift(void) { return MSBDCCPanelShift(gDMBarSize, DMMenuBarHeight(), DMMenuBarStockHeight()); }
 static void DMScalePanelView(UIView *panel) {
     if (!panel || panel.bounds.size.width < 100.0) return;
     if (panel.frame.origin.y >= 0.0) gCCPanelTop = panel.frame.origin.y;
     // Only what is DRAWN inside the container is scaled (sublayerTransform), from its top right corner. The container keeps its own size.
-    CGFloat k = gCCScale;
+    CGFloat k = gCCScale, down = DMCCPanelShift();
     CGSize s = panel.bounds.size;
     CATransform3D want = CATransform3DIdentity;
     if (k < 0.999) want = CATransform3DTranslate(CATransform3DMakeScale(k, k, 1.0), s.width * (1.0 - k) / (2.0 * k), -s.height * (1.0 - k) / (2.0 * k), 0.0);
+    if (down > 0.0) want = CATransform3DConcat(want, CATransform3DMakeTranslation(0.0, down, 0.0));   // (then down by the bar's growth; UIKit maps touches through it as through the scale)
     if (!CATransform3DEqualToTransform(panel.layer.sublayerTransform, want)) panel.layer.sublayerTransform = want;
     if (!CGAffineTransformIsIdentity(panel.transform)) panel.transform = CGAffineTransformIdentity;
 }
@@ -11524,7 +11746,8 @@ static NSLayoutConstraint *gDummyHeightConstraint = nil;
             // BigSurCenter caps the panel to the screen; drawn at this scale the panel needs 1/scale as much height to fill the same room, so the whole
             // grid (all three rows) fits instead of its last row being cut off at the bottom.
             // (BigSurCenter adds the panel's own 20 pt offset on top of that, leaving 40 pt under the last row; 20 pt matches the margin at the sides.)
-            CGFloat wanted = MIN(r.origin.y + grid.contentSize.height + 20.0, (MIN(screen.size.width, screen.size.height) - 40.0) / gCCScale);
+            // (Menu Bar Size: drawn lower under a taller bar, DMCCPanelShift -- that much less room under it)
+            CGFloat wanted = MIN(r.origin.y + grid.contentSize.height + 20.0, (MIN(screen.size.width, screen.size.height) - 40.0 - DMCCPanelShift()) / gCCScale);
             if (wanted > h + 0.5) {
                 DMLog([NSString stringWithFormat:@"[bsc] panel height %.1f corrected to %.1f", h, wanted]);
                 h = wanted; gCorrectedPanelHeight = wanted; gSwallowHeightConstraint = YES;
@@ -12730,10 +12953,13 @@ static void DMCPUSample(double seconds) {
 // was rotated inside apps. UIStatusBarWindow is always correctly oriented, so the
 // menu and confirmation dialogs live in it instead.
 
-static const CGFloat kRowH    = 30.0;
 static const CGFloat kSepH    = 11.0;
 static const CGFloat kPanelW  = 230.0;
 static const CGFloat kPanelPad = 6.0;
+// (Menu Bar Size, 1.7.3: at Medium and Large the menus are for fingers too -- rows 30 / 33 / 36 pt and text 14 / 15 / 16 pt, MenuBarSize.h:
+//  DMMenuRowH and DMMenuTextPt, near the top; a separator with the rows, the panel's width with the text. The values above are Small's, as before.)
+static CGFloat DMMenuSepH(void) { return MSBDMenuRowScaled(gDMBarSize, kSepH); }
+static CGFloat DMMenuPanelW(void) { return MSBDMenuTextScaled(gDMBarSize, kPanelW); }
 static const CGFloat kSliderRowH = 46.0;   // taller than a plain DMRow: an app name label above a mute button + slider (see DMSliderRow)
 
 static UIView *gOverlay = nil;   // non-nil while the menu or a dialog is showing
@@ -12808,7 +13034,7 @@ static void DMAXMenuPanel(UIView *panel, NSString *title) {
 
     _label = [UILabel new];
     _label.text = title;
-    _label.font = [UIFont systemFontOfSize:14.0];
+    _label.font = [UIFont systemFontOfSize:DMMenuTextPt()];   // (14 pt; Menu Bar Size: 15 / 16)
     _label.userInteractionEnabled = NO;
     [self addSubview:_label];
 
@@ -12823,7 +13049,7 @@ static void DMAXMenuPanel(UIView *panel, NSString *title) {
 - (void)setChecked:(BOOL)checked {
     _checked = checked;
     if (checked && !self.tickView) {
-        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:10.0 weight:UIImageSymbolWeightSemibold];
+        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:MSBDMenuTextScaled(gDMBarSize, 10.0) weight:UIImageSymbolWeightSemibold];
         self.tickView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"checkmark" withConfiguration:cfg]];
         self.tickView.userInteractionEnabled = NO;
         [self addSubview:self.tickView];
@@ -12836,7 +13062,7 @@ static void DMAXMenuPanel(UIView *panel, NSString *title) {
     _hint = [hint copy];
     if (!self.hintLabel) {
         self.hintLabel = [UILabel new];
-        self.hintLabel.font = [UIFont systemFontOfSize:13.0];
+        self.hintLabel.font = [UIFont systemFontOfSize:MSBDMenuTextScaled(gDMBarSize, 13.0)];
         self.hintLabel.textAlignment = NSTextAlignmentRight;
         self.hintLabel.userInteractionEnabled = NO;
         [self addSubview:self.hintLabel];
@@ -12864,11 +13090,11 @@ static void DMAXMenuPanel(UIView *panel, NSString *title) {
     self.hintLabel.textColor = !self.enabled ? [UIColor tertiaryLabelColor]
                              : (lit ? [UIColor colorWithWhite:1.0 alpha:0.8] : [UIColor secondaryLabelColor]);
     if (self.getBadge) {
-        self.hintLabel.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightBold];
+        self.hintLabel.font = [UIFont systemFontOfSize:MSBDMenuTextScaled(gDMBarSize, 11.0) weight:UIFontWeightBold];
         self.hintLabel.textAlignment = NSTextAlignmentCenter;
         self.hintLabel.textColor = lit ? [UIColor whiteColor] : [UIColor systemBlueColor];
         self.hintLabel.backgroundColor = lit ? [UIColor colorWithWhite:1.0 alpha:0.22] : [UIColor tertiarySystemFillColor];
-        self.hintLabel.layer.cornerRadius = 9.0; self.hintLabel.clipsToBounds = YES;
+        self.hintLabel.layer.cornerRadius = MSBDMenuTextScaled(gDMBarSize, 18.0) / 2.0; self.hintLabel.clipsToBounds = YES;
     }
     self.tickView.tintColor = lit ? [UIColor whiteColor] : [UIColor labelColor];
 }
@@ -12897,9 +13123,9 @@ static void DMAXMenuPanel(UIView *panel, NSString *title) {
     self.highlightView.frame = CGRectInset(self.bounds, 5.0, 0.0);
     CGFloat hintW = self.hint.length ? ceil([self.hintLabel sizeThatFits:CGSizeMake(200, 30)].width) + (self.getBadge ? 18.0 : 0.0) : 0.0;
     self.hintLabel.frame = CGRectMake(self.bounds.size.width - 16.0 - hintW, 0.0, hintW, self.bounds.size.height);
-    if (self.getBadge) self.hintLabel.frame = CGRectMake(self.bounds.size.width - 12.0 - hintW, (self.bounds.size.height - 18.0) / 2.0, hintW, 18.0);
+    if (self.getBadge) { CGFloat bh = MSBDMenuTextScaled(gDMBarSize, 18.0); self.hintLabel.frame = CGRectMake(self.bounds.size.width - 12.0 - hintW, (self.bounds.size.height - bh) / 2.0, hintW, bh); }
     self.label.frame = CGRectMake(16.0, 0.0, self.bounds.size.width - 32.0 - (hintW > 0 ? hintW + 8.0 : 0.0), self.bounds.size.height);
-    if (self.tickView) self.tickView.frame = CGRectMake(3.0, (self.bounds.size.height - 11.0) / 2.0, 10.0, 11.0);
+    if (self.tickView) { CGFloat tw = MSBDMenuTextScaled(gDMBarSize, 10.0), th = MSBDMenuTextScaled(gDMBarSize, 11.0); self.tickView.frame = CGRectMake(3.0, (self.bounds.size.height - th) / 2.0, tw, th); }
 }
 @end
 
@@ -13599,11 +13825,13 @@ static UIColor *DMMenuDividerColor(void) {
 }
 
 // items: DMRow or DMSliderRow objects, or [NSNull null] for a separator line.
+static CGFloat gPanelRowH = 0.0;   // (a bar menu's plain rows while its panel is made, when they had to get shorter to fit: DMMakeBarMenuPanel; 0: the size's)
+static BOOL DMPanelPlainRow(id it) { return it != [NSNull null] && ![it isKindOfClass:[DMSliderRow class]] && ![it respondsToSelector:NSSelectorFromString(@"dmRowHeight")]; }
 static CGFloat DMPanelItemHeight(id it) {
-    if (it == [NSNull null]) return kSepH;
+    if (it == [NSNull null]) return DMMenuSepH();
     if ([it isKindOfClass:[DMSliderRow class]]) return kSliderRowH;
     { SEL h = NSSelectorFromString(@"dmRowHeight"); if ([it respondsToSelector:h]) return ((CGFloat (*)(id, SEL))objc_msgSend)(it, h); }   // (a row with a height of its own: the Wi-Fi menu's heading and switch rows)
-    return kRowH;
+    return gPanelRowH > 0.0 ? gPanelRowH : DMMenuRowH();
 }
 // Our menus are English and keep their left-to-right layout in a right-to-left language too (only where they hang is mirrored, DMMenuOriginX): every
 // view of a menu is set to left-to-right, so a row's title stays left-aligned and an Audio row's slider runs from the left (a right-to-left app
@@ -13617,7 +13845,8 @@ static UIView *DMMakePanel(NSArray *items) {
     CGFloat h = kPanelPad * 2.0;
     for (id it in items) h += DMPanelItemHeight(it);
 
-    UIView *host = [[UIView alloc] initWithFrame:CGRectMake(0, 0, kPanelW, h)];
+    CGFloat panelW = DMMenuPanelW();
+    UIView *host = [[UIView alloc] initWithFrame:CGRectMake(0, 0, panelW, h)];
     host.layer.shadowColor = [[UIColor blackColor] CGColor];
     host.layer.shadowOpacity = 0.35;
     host.layer.shadowRadius = 16.0;
@@ -13631,18 +13860,35 @@ static UIView *DMMakePanel(NSArray *items) {
     for (id it in items) {
         CGFloat rh = DMPanelItemHeight(it);
         if (it == [NSNull null]) {
-            UIView *line = [[UIView alloc] initWithFrame:CGRectMake(12.0, y + (kSepH - kDividerH) / 2.0, kPanelW - 24.0, kDividerH)];
+            UIView *line = [[UIView alloc] initWithFrame:CGRectMake(12.0, y + (rh - kDividerH) / 2.0, panelW - 24.0, kDividerH)];
             line.backgroundColor = DMMenuDividerColor();
             [blur.contentView addSubview:line];
         } else {
             UIView *row = it;
-            row.frame = CGRectMake(0, y, kPanelW, rh);
+            row.frame = CGRectMake(0, y, panelW, rh);
             [blur.contentView addSubview:row];
         }
         y += rh;
     }
     if ([UIApplication sharedApplication].userInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft) DMForceLeftToRight(host, 0);
     return host;
+}
+// A menu that hangs from the bar (`anchor`: its title or icon in the host's space): its rows get shorter when the menu is taller than the room from
+// its top (2 pt under the title) to the screen's bottom -- MenuBarSize.h MSBDMenuRowFit, never shorter than Small's rows --, so every row stays on the
+// screen. (Menu Bar Size, 1.7.3 device pass: the Window menu at Large on the iPad 2's landscape screen, 19 rows of 36 pt, ran 32 pt past the bottom;
+// its last row could not be reached.) A menu that fits keeps the size's rows.
+static UIView *DMMakeBarMenuPanel(NSArray *items, UIView *host, CGRect anchor) {
+    int rows = 0; CGFloat other = kPanelPad * 2.0;
+    for (id it in items) { if (DMPanelPlainRow(it)) rows++; else other += DMPanelItemHeight(it); }
+    CGFloat room = host.bounds.size.height - (CGRectGetMaxY(anchor) + 2.0) - kPanelPad;
+    CGFloat rowH = MSBDMenuRowFit(DMMenuRowH(), rows, other, room);
+    if (rowH < DMMenuRowH()) {
+        gPanelRowH = rowH;
+        DMLog([NSString stringWithFormat:@"[menu] %d rows of %.0f pt would end %.0f pt past the screen's bottom: rows of %.0f pt", rows, DMMenuRowH(), rows * DMMenuRowH() + other - room, rowH]);
+    }
+    UIView *panel = DMMakePanel(items);
+    gPanelRowH = 0.0;
+    return panel;
 }
 
 static UIButton *DMDialogButton(NSString *title, BOOL bold, UIColor *color, CGRect frame, dispatch_block_t action) {
@@ -14784,8 +15030,8 @@ static void DMOpenMenu(UIButton *btn) {
         forControlEvents:UIControlEventTouchUpInside];
     DMAttachMenuHover(o, fg, host, btn);
 
-    UIView *panel = DMMakePanel(items);
     CGRect anchor = DMConvertToHost(fg, btn.frame, host);
+    UIView *panel = DMMakeBarMenuPanel(items, host, anchor);
     CGRect pf = panel.frame;
     pf.origin = CGPointMake(DMMenuOriginX(fg, host, anchor, pf.size.width), CGRectGetMaxY(anchor) + 2.0);
     panel.frame = pf;
@@ -15740,8 +15986,8 @@ static void DMPresentMenu(UIButton *btn, const void *labelKey, const void *pillK
         forControlEvents:UIControlEventTouchUpInside];
     DMAttachMenuHover(o, fg, host, btn);
 
-    UIView *panel = DMMakePanel(items);
     CGRect anchor = DMConvertToHost(fg, btn.frame, host);
+    UIView *panel = DMMakeBarMenuPanel(items, host, anchor);
     CGRect pf = panel.frame;
     pf.origin = CGPointMake(DMMenuOriginX(fg, host, anchor, pf.size.width), CGRectGetMaxY(anchor) + 2.0);
     panel.frame = pf;
@@ -15819,6 +16065,7 @@ static void DMOpenFinderFileMenu(UIButton *btn) {
         [NSNull null],
         DMFinderRow(@"Close Window", @"⌘W", f != nil, ^(DMFinderWindow *w) { [w close]; }),
     ];
+    items = DMDriveEjectMenuWith(items, f);   // (1.7.3: Eject after Move to Trash, where this iPadOS can eject -- DriveEject.h)
     DMPresentMenu(btn, kFileLabelKey, kFilePillKey, items);
 }
 // Our own windows on screen (Finder, TextEdit; not minimized, not away on another desktop): "Minimize All Windows" takes them too.
@@ -17591,6 +17838,8 @@ static void DMAttachMenuHover(UIControl *overlay, UIView *fg, UIView *host, UIBu
 @interface DMLights : UIView
 @property (nonatomic, strong) NSArray<DMLightCell *> *cells;
 @property (nonatomic, assign) CGFloat dotCenterY;
+@property (nonatomic, assign) CGFloat scale;   // (Menu Bar Size, 1.7.3: the bar's own lights x our items' scale -- 15 pt dots in 25 pt cells at Large; 1 at Small and
+                                               //  until set. The windows' title-bar lights keep kLightDot / kLightCell.)
 @property (nonatomic, assign) BOOL greenHidden;   // windowing is off: there is nothing for the green button to do
 @property (nonatomic, assign) BOOL greenDisabled;   // the app can only run full screen (DMAppNeedsFullScreen): green shown greyed, like macOS
 @end
@@ -17613,8 +17862,14 @@ static char kLightsInwardKey;
         [cells addObject:c];
     }
     self.cells = cells;
+    _scale = 1.0;
     DMLightGroupAttach(self, cells, [cells valueForKey:@"dot"], nil);   // (the active app's own: always colored; symbols on hover or press)
     return self;
+}
+- (void)setScale:(CGFloat)scale {
+    if (!(scale > 0.0) || fabs(scale - _scale) < 0.001) return;
+    _scale = scale;
+    [self setNeedsLayout];
 }
 
 - (void)layoutSubviews {
@@ -17622,17 +17877,25 @@ static char kLightsInwardKey;
     // (green's arrows say what it does: inward for a full-screen app -- every engine but Stage Manager shows these lights only then --, outward for
     //  a Stage Manager window, which green takes into full screen)
     BOOL inward = !DMSMEngine() || DMSMFrontIsFullScreen();
+    CGFloat k = self.scale > 0.0 ? self.scale : 1.0, cell = kLightCell * k, dot = kLightDot * k;
     DMLightCell *green = self.cells.count > 2 ? self.cells[2] : nil;
-    if (green && green.tag == 2 && [objc_getAssociatedObject(self, &kLightsInwardKey) boolValue] != inward) {
+    BOOL resized = fabs(self.cells.firstObject.dot.bounds.size.width - dot) > 0.01;   // (the dots and their symbols at this scale: once per change)
+    if (green && green.tag == 2 && ([objc_getAssociatedObject(self, &kLightsInwardKey) boolValue] != inward || resized)) {
         objc_setAssociatedObject(self, &kLightsInwardKey, @(inward), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        green.glyph.image = [UIImage systemImageNamed:DMLightSymbolName(2, inward) withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:7.0 weight:UIImageSymbolWeightHeavy]];
+        green.glyph.image = [UIImage systemImageNamed:DMLightSymbolName(2, inward) withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:7.0 * k weight:UIImageSymbolWeightHeavy]];
         green.accessibilityLabel = inward ? @"Exit Full Screen" : @"Full Screen";   // (what VoiceOver says follows the arrows: 1.3.7, audit M-3)
+    }
+    if (resized) for (DMLightCell *c in self.cells) {
+        c.dot.bounds = CGRectMake(0, 0, dot, dot);
+        c.dot.layer.cornerRadius = dot / 2.0;
+        c.glyph.frame = c.dot.bounds;
+        if (c.tag != 2) c.glyph.image = [UIImage systemImageNamed:DMLightSymbolName(c.tag, YES) withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:7.0 * k weight:UIImageSymbolWeightHeavy]];
     }
     BOOL rtl = DMBarRTL(self);   // (a right-to-left language: mirrored, red nearest the logo at the right, like a Mac's window buttons then)
     NSInteger shown = self.greenHidden ? 2 : 3;
     for (DMLightCell *c in self.cells) {
-        c.frame = CGRectMake((rtl ? MAX(0, shown - 1 - c.tag) : c.tag) * kLightCell, 0, kLightCell, self.bounds.size.height);
-        c.dot.center = CGPointMake(kLightCell / 2.0, self.dotCenterY);
+        c.frame = CGRectMake((rtl ? MAX(0, shown - 1 - c.tag) : c.tag) * cell, 0, cell, self.bounds.size.height);
+        c.dot.center = CGPointMake(cell / 2.0, self.dotCenterY);
         c.hidden = (c.tag == 2 && self.greenHidden);
         if (c.tag == 2) {   // greyed out and inert for a full-screen-only app (macOS shows a disabled green button the same way)
             BOOL off = self.greenDisabled;
@@ -17859,9 +18122,11 @@ static CGFloat DMLayoutTitle(UIView *fg, BOOL rtl, const void *labelKey, const v
         objc_setAssociatedObject(label, kTitleSizeKey, natural, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     CGFloat w = MIN(natural.CGSizeValue.width, maxW), h = natural.CGSizeValue.height;   // (its colour: DMApplyBarItemColor, with every other item)
-    label.frame = DMBarRect(fg, rtl, CGRectMake(x, centreY + kTitleDrop - h / 2.0, w, h));
-    btn.frame = DMBarRect(fg, rtl, CGRectMake(x - 8.0, 0, w + 16.0, fg.bounds.size.height));
-    pill.frame = CGRectInset(btn.frame, 3.0, 3.0);
+    CGFloat k = DMBarItemScale(fg);   // (Menu Bar Size, 1.7.3: its touch area and the open menu's highlight x the size's scale; 1 at Small)
+    label.frame = DMBarRect(fg, rtl, CGRectMake(x, centreY + kTitleDrop * k - h / 2.0, w, h));
+    btn.frame = DMBarRect(fg, rtl, CGRectMake(x - 8.0 * k, 0, w + 16.0 * k, fg.bounds.size.height));
+    pill.frame = CGRectInset(btn.frame, 3.0 * k, 3.0 * k);
+    pill.layer.cornerRadius = 5.0 * k;
     [fg bringSubviewToFront:label];
     [fg bringSubviewToFront:btn];
     return x + w;
@@ -19964,33 +20229,37 @@ static CGRect DMImageInkRect(UIImage *img) {   // (in points: the part of the pi
     if (maxx < minx) return CGRectNull;
     return CGRectMake(minx / sc, miny / sc, (maxx - minx + 1) / sc, (maxy - miny + 1) / sc);
 }
-static UIImage *DMMuteGlyph(void) {
-    static UIImage *glyph;
+// (Menu Bar Size, 1.7.3: at the Wi-Fi fan's height on that bar -- kWiFiIconH x the size's scale, DMWiFiIconHeight -- one picture per height)
+static UIImage *DMMuteGlyph(CGFloat iconH) {
+    static NSMutableDictionary<NSNumber *, UIImage *> *glyphs;
+    if (!glyphs) glyphs = [NSMutableDictionary dictionary];
+    UIImage *glyph = glyphs[@(iconH)];
     if (glyph) return glyph;
     UIImage *(^symbol)(CGFloat) = ^UIImage *(CGFloat pt) {
         UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:pt weight:UIImageSymbolWeightSemibold];
         return [UIImage systemImageNamed:@"bell.slash.fill" withConfiguration:cfg] ?: [UIImage systemImageNamed:@"bell.slash" withConfiguration:cfg];
     };
-    const CGFloat probe = 40.0, inkH = kWiFiIconH - 1.0;
+    const CGFloat probe = 40.0, inkH = iconH - 1.0;
     CGRect big = DMImageInkRect(symbol(probe));
     if (CGRectIsNull(big) || big.size.height < 1.0) return nil;
     UIImage *g = symbol(probe * inkH / big.size.height);
     CGRect ink = DMImageInkRect(g);   // (again at the size drawn: small sizes round)
     if (CGRectIsNull(ink)) return nil;
-    CGSize size = CGSizeMake(ceil(ink.size.width) + 2.0, kWiFiIconH);
+    CGSize size = CGSizeMake(ceil(ink.size.width) + 2.0, iconH);
     UIImage *out = [[[UIGraphicsImageRenderer alloc] initWithSize:size] imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
         [g drawAtPoint:CGPointMake((size.width - ink.size.width) / 2.0 - ink.origin.x, (size.height - ink.size.height) / 2.0 - ink.origin.y)];
     }];
     glyph = [out imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    glyphs[@(iconH)] = glyph;
 #if DEBUG
-    CGRect fan = DMImageInkRect(DMWiFiFanImage(3, kWiFiIconH)), drawn = DMImageInkRect(glyph);   // (the measurement S-2 is checked by)
+    CGRect fan = DMImageInkRect(DMWiFiFanImage(3, iconH)), drawn = DMImageInkRect(glyph);   // (the measurement S-2 is checked by)
     DMLog([NSString stringWithFormat:@"[mute] icon %.1fx%.1f pt (symbol %.2f pt): ink %.2fx%.2f pt at y %.2f; Wi-Fi fan %.1fx%.1f pt: ink %.2fx%.2f pt at y %.2f",
            size.width, size.height, probe * inkH / big.size.height, drawn.size.width, drawn.size.height, drawn.origin.y,
-           DMWiFiFanImage(3, kWiFiIconH).size.width, kWiFiIconH, fan.size.width, fan.size.height, fan.origin.y]);
+           DMWiFiFanImage(3, iconH).size.width, iconH, fan.size.width, fan.size.height, fan.origin.y]);
 #endif
     return glyph;
 }
-static UIImageView *DMMuteIcon(UIView *fg) {
+static UIImageView *DMMuteIcon(UIView *fg, CGFloat k) {   // (k: our items' scale on that bar, DMBarItemScale)
     UIImageView *icon = objc_getAssociatedObject(fg, kMuteIconKey);
     if (!icon) {
         icon = [UIImageView new];
@@ -20004,7 +20273,8 @@ static UIImageView *DMMuteIcon(UIView *fg) {
         [fg addSubview:icon];
         objc_setAssociatedObject(fg, kMuteIconKey, icon, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    if (!icon.image) icon.image = DMMuteGlyph();
+    UIImage *glyph = DMMuteGlyph(DMWiFiIconHeight(k));
+    if (glyph && icon.image != glyph) icon.image = glyph;
     return icon;
 }
 // The colour the status icons are drawn in, for a status bar copy that has no time label to take it from (the Lock Screen's).
@@ -20074,23 +20344,25 @@ static BOOL DMLayoutWithoutClock(UIView *fg) {
         left = MIN(left, DMBarLead(fg, rtl, CGRectOffset([trailing convertRect:sub.frame toView:fg], -trailing.transform.tx, 0)) + shift);   // (where it is with the shift below)
     }
     // our own icons (VPN, then later SSH) keep their size and height and only move along to close up; the VPN icon sits nearest the status icons
+    // (Menu Bar Size, 1.7.3: the gaps x our items' scale on this bar, as in the full layout)
+    CGFloat k = DMBarItemScale(fg);
     void (^closeUp)(const void *, const void *) = ^(const void *iconKey, const void *btnKey) {
         UIView *icon = objc_getAssociatedObject(fg, iconKey), *btn = objc_getAssociatedObject(fg, btnKey);
         if (left == CGFLOAT_MAX || !icon || icon.hidden) return;
-        CGRect f = DMBarRect(fg, rtl, icon.frame); left -= 8.0 + f.size.width; f.origin.x = left; icon.frame = DMBarRect(fg, rtl, f);
-        CGRect b = DMBarRect(fg, rtl, btn.frame); b.origin.x = left - 6.0; btn.frame = DMBarRect(fg, rtl, b);
+        CGRect f = DMBarRect(fg, rtl, icon.frame); left -= 8.0 * k + f.size.width; f.origin.x = left; icon.frame = DMBarRect(fg, rtl, f);
+        CGRect b = DMBarRect(fg, rtl, btn.frame); b.origin.x = left - 6.0 * k; btn.frame = DMBarRect(fg, rtl, b);
     };
     DMWiFiRefreshIcon(fg);
     closeUp(kWiFiIconKey, kWiFiButtonKey);   // (the Wi-Fi icon nearest the status icons, as elsewhere)
     closeUp(kVPNIconKey, kVPNButtonKey);
     {   // the mute icon (ours) after the VPN icon, as elsewhere (DMMuteIconWanted)
         DMReadRingerState();
-        UIImageView *muteIcon = DMMuteIcon(fg);
+        UIImageView *muteIcon = DMMuteIcon(fg, k);
         BOOL show = DMMuteIconWanted() && left < CGFLOAT_MAX && muteIcon.image;
         muteIcon.hidden = !show;
         if (show) {
             CGFloat w = ceil(muteIcon.image.size.width), h = ceil(muteIcon.image.size.height);
-            left -= 8.0 + w;
+            left -= 8.0 * k + w;
             CGFloat midY = [trailing convertPoint:CGPointMake(0, CGRectGetMidY(trailing.bounds)) toView:fg].y;
             muteIcon.frame = DMBarRect(fg, rtl, CGRectMake(left, round(midY - h / 2.0), w, h));
             [fg bringSubviewToFront:muteIcon];
@@ -20292,6 +20564,10 @@ static BOOL DMHideStockActivity(id item) {
     if (![fg isKindOfClass:[UIView class]] || DMTestFlag("/tmp/msb-stockactivity")) return NO;
     return objc_getAssociatedObject(fg, kLogoKey) || [objc_getAssociatedObject(fg, kHoldKey) boolValue];
 }
+static CGFloat DMStockPillScale(id item) {   // (Menu Bar Size, 1.7.3: the pill's room x our items' scale on its bar -- its icon is iOS's, x the icon scale)
+    UIView *fg = DMCall(DMCall(item, @"statusBar"), @"foregroundView");
+    return [fg isKindOfClass:[UIView class]] ? DMBarItemScale(fg) : 1.0;
+}
 // iOS's own Wi-Fi item, while the Wi-Fi Menu switch is on: left out of our bars the same way (our Wi-Fi icon replaces it; Control Center's own
 // bar and the stock-bar mode keep it). _UIStatusBarWifiItem does not answer -canEnableDisplayItem:fromData: itself (its superclass does), so the
 // method is added to it, calling the superclass's own. Kill switch /tmp/msb-stockwifi.
@@ -20390,7 +20666,7 @@ static BOOL gRestartGateOpen = NO;
 %hook _UIStatusBarPillBackgroundActivityItem
 - (CGSize)pillSize {
     CGSize s = %orig;
-    if (DMHideStockActivity(self)) return CGSizeMake(MIN(s.width, 20.0), MIN(s.height > 0 ? s.height : 16.0, 16.0));
+    if (DMHideStockActivity(self)) { CGFloat k = DMStockPillScale(self); return CGSizeMake(MIN(s.width, 20.0 * k), MIN(s.height > 0 ? s.height : 16.0 * k, 16.0 * k)); }
     return s;
 }
 - (id)_backgroundColorForActivityType:(long long)type {
@@ -20403,7 +20679,7 @@ static BOOL gRestartGateOpen = NO;
 %hook _UIStatusBarPillBackgroundActivityItem
 - (CGSize)pillSize {
     CGSize s = %orig;
-    if (DMHideStockActivity(self)) return CGSizeMake(MIN(s.width, 20.0), MIN(s.height > 0 ? s.height : 16.0, 16.0));
+    if (DMHideStockActivity(self)) { CGFloat k = DMStockPillScale(self); return CGSizeMake(MIN(s.width, 20.0 * k), MIN(s.height > 0 ? s.height : 16.0 * k, 16.0 * k)); }
     return s;
 }
 - (id)_backgroundColorForActivityWithIdentifier:(id)identifier {
@@ -20619,11 +20895,14 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
     UIFont *timeFont = [timeLabel valueForKey:@"font"];
     UIColor *barColor = DMBarItemColor(fg, timeLabel);   // (the one colour of every item of ours, put on them at the end of this layout)
     // Size the logo so its visible shape is as tall as the bar allows (minus a small margin), and
-    // centre that shape vertically in the bar.
+    // centre that shape vertically in the bar. (Menu Bar Size, 1.7.3: at Medium and Large 1.25 x the text instead -- MenuBarSize.h -- and every gap
+    // and touch area of ours below x the size's scale, k: 1 at Small and on a TV's bar)
+    int copySize = DMBarCopySize(fg);
+    CGFloat k = MSBDMenuBarSizeScale(copySize);
     CGRect ink100;
     CGFloat logoSize = timeFont.pointSize + 3.5;   // fallback if the glyph cannot be measured
     BOOL measured = DMLogoInkAt100(&ink100);
-    CGFloat targetInk = fg.bounds.size.height - 2.0 * kLogoBarMargin;
+    CGFloat targetInk = MSBDMenuBarLogoInk(copySize, fg.bounds.size.height, timeFont.pointSize);
     if (measured) logoSize = targetInk / (ink100.size.height / 100.0);
     logo.font = [UIFont systemFontOfSize:logoSize weight:UIFontWeightSemibold];
     [logo sizeToFit];
@@ -20671,9 +20950,10 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
         objc_setAssociatedObject(fg, kButtonKey, btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     btn.hidden = NO;
-    btn.frame = DMBarRect(fg, rtl, CGRectMake(MAX(0.0, lf.origin.x - kLogoHitSlop), 0, lf.size.width + 2.0 * kLogoHitSlop, fg.bounds.size.height));
+    btn.frame = DMBarRect(fg, rtl, CGRectMake(MAX(0.0, lf.origin.x - kLogoHitSlop * k), 0, lf.size.width + 2.0 * kLogoHitSlop * k, fg.bounds.size.height));
     UIView *pillView = objc_getAssociatedObject(fg, kPillKey);
-    pillView.frame = CGRectInset(btn.frame, 3.0, 3.0);
+    pillView.frame = CGRectInset(btn.frame, 3.0 * k, 3.0 * k);
+    pillView.layer.cornerRadius = 5.0 * k;
     [fg bringSubviewToFront:btn];
 
     // ---- menu titles after the logo: the app name (or "Finder" with no app open), then "Edit" ----
@@ -20687,7 +20967,7 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
     NSString *appName = frontApp ? ([frontApp displayName] ?: [frontApp bundleIdentifier]) : (DMNativeActiveAppName() ?: @"Finder");
 
     // ---- traffic lights, right after the logo, while an app is full screen; the titles move right to make room ----
-    CGFloat titlesStart = CGRectGetMaxX(lf) + kAppGap;
+    CGFloat titlesStart = CGRectGetMaxX(lf) + kAppGap * k;
     DMLights *lights = objc_getAssociatedObject(fg, kLightsKey);
     CGRect lightsL = CGRectZero;   // (the traffic lights, in leading coordinates)
     // Locked (the Lock Screen, or the Cover Sheet pulled down): only the Apple menu on the left and the status icons with Control Center on the right --
@@ -20711,23 +20991,24 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
             [fg addSubview:lights];
             objc_setAssociatedObject(fg, kLightsKey, lights, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
-        lights.dotCenterY = timeCentre.y + kLightsDrop;
+        lights.dotCenterY = timeCentre.y + kLightsDrop * k;
+        lights.scale = k;   // (its cells and dots: own sizes, the windows' lights stay)
         BOOL noWindows = DMActiveEngine() == DMEngineNone && !DMSMEngine();
         lights.greenHidden = noWindows;
         lights.greenDisabled = DMAppNeedsFullScreen([frontApp bundleIdentifier]);
-        lightsL = CGRectMake(CGRectGetMaxX(lf) + kAppGap - 4.0, 0, kLightCell * (noWindows ? 2.0 : 3.0), fg.bounds.size.height);
+        lightsL = CGRectMake(CGRectGetMaxX(lf) + (kAppGap - 4.0) * k, 0, kLightCell * k * (noWindows ? 2.0 : 3.0), fg.bounds.size.height);
         lights.frame = DMBarRect(fg, rtl, lightsL);
         lights.hidden = NO;
         gStatusLightsFrame = lights.frame; gStatusLightsDotY = lights.dotCenterY; gStatusLightsTime = CACurrentMediaTime();
         [lights setNeedsLayout];
         [fg bringSubviewToFront:lights];
-        titlesStart = CGRectGetMaxX(lightsL) - 4.0 + kAppGap;   // 4 pt of each end cell is empty padding
+        titlesStart = CGRectGetMaxX(lightsL) + (kAppGap - 4.0) * k;   // 4 pt of each end cell is empty padding
     } else {
         lights.hidden = YES;
     }
 
     CGFloat titleMaxRight = locked ? 0.0 : fg.bounds.size.width / 2.0 - 24.0;   // stay in the left half (locked: no room, so every title hides)
-    CGFloat leftEnd = wantLights ? CGRectGetMaxX(lightsL) - 4.0 : CGRectGetMaxX(lf);
+    CGFloat leftEnd = wantLights ? CGRectGetMaxX(lightsL) - 4.0 * k : CGRectGetMaxX(lf);
     CGFloat appRight = DMLayoutTitle(fg, rtl, kAppLabelKey, kAppButtonKey, kAppPillKey, appName, UIFontWeightBold, timeFont,
                                      timeCentre.y, titlesStart, titleMaxRight,
                                      ^(UIButton *b) { DMLog(@"[appbutton] tapped"); DMOpenAppMenu(b); });
@@ -20736,33 +21017,33 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
         ((UIView *)objc_getAssociatedObject(fg, k.pointerValue)).hidden = YES;
     if (appRight > 0) {
         leftEnd = appRight;
-        CGFloat editStart = appRight + kTitleGap;
+        CGFloat editStart = appRight + kTitleGap * k;
         if (finderTitles) {
             CGFloat fileRight = DMLayoutTitle(fg, rtl, kFileLabelKey, kFileButtonKey, kFilePillKey, @"File", UIFontWeightRegular, timeFont,
-                                              timeCentre.y, appRight + kTitleGap, titleMaxRight, ^(UIButton *b) { DMOpenFinderFileMenu(b); });
-            if (fileRight > 0) editStart = fileRight + kTitleGap;
+                                              timeCentre.y, appRight + kTitleGap * k, titleMaxRight, ^(UIButton *b) { DMOpenFinderFileMenu(b); });
+            if (fileRight > 0) editStart = fileRight + kTitleGap * k;
         }
         CGFloat editRight = DMLayoutTitle(fg, rtl, kEditLabelKey, kEditButtonKey, kEditPillKey, @"Edit", UIFontWeightRegular, timeFont,
                                           timeCentre.y, editStart, titleMaxRight,
                                           ^(UIButton *b) { DMLog(@"[editbutton] tapped"); DMOpenEditMenu(b); });
         if (editRight > 0 && finderTitles) {
             CGFloat viewRight = DMLayoutTitle(fg, rtl, kViewLabelKey, kViewButtonKey, kViewPillKey, @"View", UIFontWeightRegular, timeFont,
-                                              timeCentre.y, editRight + kTitleGap, titleMaxRight, ^(UIButton *b) { DMOpenFinderViewMenu(b); });
+                                              timeCentre.y, editRight + kTitleGap * k, titleMaxRight, ^(UIButton *b) { DMOpenFinderViewMenu(b); });
             if (viewRight > 0) editRight = viewRight;
         }
         if (editRight > 0) {
             leftEnd = editRight;
             CGFloat goRight = DMLayoutTitle(fg, rtl, kGoLabelKey, kGoButtonKey, kGoPillKey, @"Go", UIFontWeightRegular, timeFont,
-                                            timeCentre.y, editRight + kTitleGap, titleMaxRight,
+                                            timeCentre.y, editRight + kTitleGap * k, titleMaxRight,
                                             ^(UIButton *b) { DMLog(@"[gobutton] tapped"); DMOpenGoMenu(b); });
             if (goRight > 0) {
                 leftEnd = goRight;
-                CGFloat audioStart = goRight + kTitleGap;   // Window is only shown while windowing is active; Audio always follows whichever of the two actually laid out
+                CGFloat audioStart = goRight + kTitleGap * k;   // Window is only shown while windowing is active; Audio always follows whichever of the two actually laid out
                 if (DMActiveEngine() != DMEngineNone || DMSMEngine() || DMNativeActiveApp()) {   // (Stage Manager as the engine is windowing too, with no engine library; our native windows always are)
                     CGFloat winRight = DMLayoutTitle(fg, rtl, kWinLabelKey, kWinButtonKey, kWinPillKey, @"Window", UIFontWeightRegular, timeFont,
-                                                     timeCentre.y, goRight + kTitleGap, titleMaxRight,
+                                                     timeCentre.y, goRight + kTitleGap * k, titleMaxRight,
                                                      ^(UIButton *b) { DMLog(@"[winbutton] tapped"); DMOpenWindowMenu(b); });
-                    if (winRight > 0) { leftEnd = winRight; audioStart = winRight + kTitleGap; }
+                    if (winRight > 0) { leftEnd = winRight; audioStart = winRight + kTitleGap * k; }
                 } else {
                     ((UIView *)objc_getAssociatedObject(fg, kWinLabelKey)).hidden = YES;
                     ((UIView *)objc_getAssociatedObject(fg, kWinButtonKey)).hidden = YES;
@@ -20831,7 +21112,7 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
     // far outside their container's bounds were clipped away, leaving the clock slot blank).
     CGFloat tw = DMLabelShown(timeLabel) ? timeLabel.bounds.size.width : 0.0;
     CGFloat dw = needProxy ? proxyW : (DMLabelShown(dateLabel) ? dateLabel.bounds.size.width : 0.0);
-    CGFloat clockW = tw + dw + ((tw > 0 && dw > 0) ? kClockGap : 0.0);
+    CGFloat clockW = tw + dw + ((tw > 0 && dw > 0) ? kClockGap * k : 0.0);
     CGFloat rightEdge = trailing ? DMBarTrail(fg, rtl, DMBarUntransformed(trailing))   // (the trailing end of the status icons, before any shift)
                                  : (fg.bounds.size.width - baseLeft);
     CGFloat clockLeft = rightEdge - clockW;
@@ -20839,7 +21120,7 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
     if (prevLead && prevLead != container) prevLead.transform = CGAffineTransformIdentity;
     objc_setAssociatedObject(fg, kShiftedKey, container, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     // container's left edge at the clock's left edge; with no clock, park it after the app name
-    container.transform = DMBarShift(rtl, (clockW > 0 ? clockLeft : leftEnd + kLeftGroupGap) - baseLeft);
+    container.transform = DMBarShift(rtl, (clockW > 0 ? clockLeft : leftEnd + kLeftGroupGap * k) - baseLeft);
     // ---- Spotlight search icon, between the status icons and the clock ----
     UIImageView *spotIcon = objc_getAssociatedObject(fg, kSpotIconKey);
     UIButton *spotBtn = objc_getAssociatedObject(fg, kSpotButtonKey);
@@ -20874,10 +21155,10 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
         if (extra == timeLabel || extra == dateLabel || extra.hidden || extra.alpha < 0.05 || extra.bounds.size.width < 1.0) continue;
         clockEdge = MIN(clockEdge, DMBarLead(fg, rtl, [container convertRect:extra.frame toView:fg]));
     }
-    CGFloat spotLeft = clockEdge - kSpotClockGap - spotW;   // with the icon off, the status icons end right before the clock instead
+    CGFloat spotLeft = clockEdge - kSpotClockGap * k - spotW;   // with the icon off, the status icons end right before the clock instead
     if (gShowSpotlight) {
         spotIcon.frame = DMBarRect(fg, rtl, CGRectMake(spotLeft, timeCentre.y - spotH / 2.0, spotW, spotH));
-        spotBtn.frame = DMBarRect(fg, rtl, CGRectMake(spotLeft - kSpotHitSlop, 0, spotW + 2.0 * kSpotHitSlop, fg.bounds.size.height));
+        spotBtn.frame = DMBarRect(fg, rtl, CGRectMake(spotLeft - kSpotHitSlop * k, 0, spotW + 2.0 * kSpotHitSlop * k, fg.bounds.size.height));
         [fg bringSubviewToFront:spotIcon];
         [fg bringSubviewToFront:spotBtn];
     }
@@ -20907,10 +21188,10 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
         //  proxy show the time under the button and were read a second time -- the device test, 5 Oct)
         dateProxy.isAccessibilityElement = clockBtn.hidden;
         if (timeLabel) timeLabel.isAccessibilityElement = clockBtn.hidden;
-        if (!clockBtn.hidden) { clockBtn.frame = DMBarRect(fg, rtl, CGRectMake(clockLeft - 4.0, 0, clockW + 8.0, fg.bounds.size.height)); [fg bringSubviewToFront:clockBtn]; }
+        if (!clockBtn.hidden) { clockBtn.frame = DMBarRect(fg, rtl, CGRectMake(clockLeft - 4.0 * k, 0, clockW + 8.0 * k, fg.bounds.size.height)); [fg bringSubviewToFront:clockBtn]; }
     }
     if (dateLabel && dateLabel.alpha != 0.0) dateLabel.alpha = 0.0;   // ours is the one drawn
-    if (tw > 0) DMShiftLabel(fg, timeLabel, DMBarRect(fg, rtl, CGRectMake(clockLeft + (dw > 0 ? dw + kClockGap : 0.0), 0, tw, 1)).origin.x);   // (its place, as the label's own left edge)
+    if (tw > 0) DMShiftLabel(fg, timeLabel, DMBarRect(fg, rtl, CGRectMake(clockLeft + (dw > 0 ? dw + kClockGap * k : 0.0), 0, tw, 1)).origin.x);   // (its place, as the label's own left edge)
     for (UIView *v in container.subviews) {   // anything else in there stays where the engine put it
         if (v == timeLabel || v == dateLabel) continue;
         if (objc_getAssociatedObject(v, kClockShiftKey)) {
@@ -20924,7 +21205,7 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
     objc_setAssociatedObject(fg, kTrailShiftKey, trailing, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     // icons end kClockIconsGap before the spotlight icon, which ends kSpotClockGap before the clock
     {
-        CGFloat want = -((rightEdge - iconsEnd) + kClockIconsGap);
+        CGFloat want = -((rightEdge - iconsEnd) + kClockIconsGap * k);
         // (a big change -- the clock coming back after the Lock Screen -- slides; the everyday small ones, a second digit changing width, do not)
         // (not as the locked look ends -- an unlock, Notification Center pushed up: the bar is coming back then, iOS brings it in, and the icons
         //  sliding over the clock that is already there drew the date and the battery over each other, 1.7.1 item 11; they are in place and the
@@ -20982,7 +21263,7 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
         }
         // Wi-Fi icon (Settings > Status Bar > Wi-Fi Menu): our own item nearest the status icons, like a Mac's Wi-Fi menu extra beside Control
         // Center; iOS's own Wi-Fi item is left out of our bars then (DMHideStockWiFi). It stays with Wi-Fi off (the empty fan). Tapping it opens its menu.
-        left = DMWiFiLayoutIcon(fg, left, timeCentre.y);
+        left = DMWiFiLayoutIcon(fg, left, timeCentre.y, k);
         // VPN icon: its own item right next to the status icons, like a Mac's VPN menu extra next to Control Center, only while a
         // tunnel is connected; iOS's own VPN badge is taken out of the status icons group in our bars (DMHideStockVPN). Tapping it opens its menu.
         UIImageView *vpnIcon = objc_getAssociatedObject(fg, kVPNIconKey);
@@ -21006,15 +21287,15 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
         UIButton *vpnButton = objc_getAssociatedObject(fg, kVPNButtonKey);
         vpnIcon.hidden = vpnButton.hidden = !gVPNActive;
         if (gVPNActive && left < CGFLOAT_MAX && vpnIcon.image) {
-            CGFloat w = ceil(vpnIcon.image.size.width), h = ceil(vpnIcon.image.size.height);
-            left -= 8.0 + w;
+            CGFloat w = ceil(vpnIcon.image.size.width * k), h = ceil(vpnIcon.image.size.height * k);   // (iOS's own badge picture: drawn x k, aspect fit)
+            left -= 8.0 * k + w;
             vpnIcon.frame = DMBarRect(fg, rtl, CGRectMake(left, timeCentre.y - h / 2.0, w, h));
-            vpnButton.frame = DMBarRect(fg, rtl, CGRectMake(left - 6.0, 0, w + 12.0, fg.bounds.size.height));
+            vpnButton.frame = DMBarRect(fg, rtl, CGRectMake(left - 6.0 * k, 0, w + 12.0 * k, fg.bounds.size.height));
             [fg bringSubviewToFront:vpnIcon]; [fg bringSubviewToFront:vpnButton];
         }
         {   // Mute icon: next to the status icons (after the VPN icon), only while muted
             DMReadRingerState();
-            UIImageView *muteIcon = DMMuteIcon(fg);
+            UIImageView *muteIcon = DMMuteIcon(fg, k);
 #if DEBUG
             static BOOL toldOld = NO;   // (S-2's "before": the picture this bar used to make, the symbol at the time's size + 0.5)
             if (!toldOld && timeFont.pointSize > 1.0) {
@@ -21029,7 +21310,7 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
             if (fg.window && !fg.window.hidden && fg.bounds.size.width > 300.0) gMuteIconShown = show;
             if (show) {
                 CGFloat w = ceil(muteIcon.image.size.width), h = ceil(muteIcon.image.size.height);
-                left -= 8.0 + w;
+                left -= 8.0 * k + w;
                 muteIcon.frame = DMBarRect(fg, rtl, CGRectMake(left, round(timeCentre.y - h / 2.0), w, h));   // (rounded like the Wi-Fi icon's: the same line)
                 [fg bringSubviewToFront:muteIcon];
             }
@@ -21058,9 +21339,9 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
         sshIcon.hidden = sshButton.hidden = !gSSHActive;
         if (gSSHActive && left < CGFLOAT_MAX && sshIcon.image) {
             CGFloat w = ceil(sshIcon.image.size.width), h = ceil(sshIcon.image.size.height);
-            left -= 8.0 + w;
+            left -= 8.0 * k + w;
             sshIcon.frame = DMBarRect(fg, rtl, CGRectMake(left, timeCentre.y - h / 2.0, w, h));
-            sshButton.frame = DMBarRect(fg, rtl, CGRectMake(left - 6.0, 0, w + 12.0, fg.bounds.size.height));
+            sshButton.frame = DMBarRect(fg, rtl, CGRectMake(left - 6.0 * k, 0, w + 12.0 * k, fg.bounds.size.height));
             [fg bringSubviewToFront:sshIcon]; [fg bringSubviewToFront:sshButton];
         }
         if (left < CGFLOAT_MAX && fg.window && !fg.window.hidden && fg.bounds.size.width > 300.0) gStatusIconsLeft = rtl ? 0.0 : left;   // (the keyboard button's place: left-to-right only, see DMPlaceKeyboardPill)
@@ -21220,6 +21501,36 @@ static void DMCoverSheetLeavingInit(void) {
 // Cover Sheet's slide. A copy of ours still in the locked look (no clock, the status icons closed up to the trailing end -- only the full layout ends
 // it, kBarLookLockedKey) showed iOS's time drawn over those icons until a later relayout: 0.1-0.25 s, iPad 2 16.7.7 (1.7.0 the same, frame bursts
 // 30 Oct). Such a copy is laid out when its time label arrives while the bar is not locked: the full layout ends the locked look in that frame.
+// ...and laid out once more when this frame's layout pass is over, still before the frame is drawn (Core Animation's pre-commit phase): the label
+// that just arrived is placed by its region only in that pass, and our items take their line from it (timeCentre). Laid out at its arrival alone,
+// the titles, the date and our icons stood 3 pt low -- the label's place from before the lock -- until the next layout of the copy, 150-220 ms
+// (iPad 2 16.7.7 frame bursts; the label itself was in place in the first frame: 1.7.3 item 10).
+static void DMBarLayoutAgainBeforeDraw(UIView *fg) {
+    static const void *kAgainKey = &kAgainKey;
+    static int returnsBool = -1;   // (+[CATransaction addCommitHandler:forPhase:]: -1 not looked at, 0 not there, 1 returns a BOOL, 2 returns nothing)
+    SEL add = NSSelectorFromString(@"addCommitHandler:forPhase:");
+    if (returnsBool < 0) {
+        Method m = class_getClassMethod([CATransaction class], add);
+        const char *e = m ? method_getTypeEncoding(m) : NULL;
+        char block[8] = "", phase[8] = "";
+        if (m && method_getNumberOfArguments(m) == 4) { method_getArgumentType(m, 2, block, sizeof block); method_getArgumentType(m, 3, phase, sizeof phase); }
+        returnsBool = strcmp(block, "@?") || !strchr("IiQqLl", phase[0]) || !phase[0] || phase[1] ? 0 : (e[0] == 'B' ? 1 : (e[0] == 'v' ? 2 : 0));
+        if (!returnsBool) DMLog([NSString stringWithFormat:@"[lock] Core Animation's commit handlers: %s, not as expected: the bar is laid out once at an unlock", e ?: "not there"]);
+    }
+    if (!returnsBool || objc_getAssociatedObject(fg, kAgainKey)) return;   // (once per frame)
+    objc_setAssociatedObject(fg, kAgainKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak UIView *weakFG = fg;
+    void (^again)(void) = [^{
+        UIView *f = weakFG; if (!f) return;
+        objc_setAssociatedObject(f, kAgainKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (!f.window || f.window.hidden) return;
+        [f setNeedsLayout];
+        [f layoutIfNeeded];
+    } copy];
+    if (returnsBool == 2) ((void (*)(id, SEL, id, unsigned long))objc_msgSend)([CATransaction class], add, again, 1ul);   // (kCATransactionPhasePreCommit:
+    else if (!((BOOL (*)(id, SEL, id, unsigned long))objc_msgSend)([CATransaction class], add, again, 1ul))                //  after the layout pass, before the commit)
+        objc_setAssociatedObject(fg, kAgainKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (that phase is over for this frame: not taken)
+}
 static void DMClockBackNow(UIView *fg) {
     if (!fg || !fg.window || ![objc_getAssociatedObject(fg, kBarLookLockedKey) boolValue] || !objc_getAssociatedObject(fg, kLogoKey)) return;
     if (gDMBarLayoutDepth > 0 && fg == gDMBarLayingOut) return;   // (inside that copy's own layout pass: the pass lays it out)
@@ -21229,6 +21540,7 @@ static void DMClockBackNow(UIView *fg) {
     [fg setNeedsLayout];
     BOOL now = gDMBarLayoutDepth == 0 && !fg.window.hidden;
     if (now) [fg layoutIfNeeded];   // (outside any layout pass: now, before the frame is drawn; inside one, that pass lays it out)
+    if (!DMTestFlag("/tmp/msb-noclockagain")) DMBarLayoutAgainBeforeDraw(fg);   // (debug: /tmp/msb-noclockagain = without the second layout, for comparison)
     if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[lock] %p: its time label is back: laid out %@ (the locked look ends)", fg, now ? @"now" : @"in this layout pass"]);
 }
 %group SBClockBack
@@ -22911,6 +23223,10 @@ static NSString *DMSMDebugStrips(NSString **verdict, BOOL coarse) {
     return [parts componentsJoinedByString:@" | "];
 }
 #endif
+#if DEBUG
+static id DMBarSizeObjectOf(id o, const char *name);   // (Menu Bar Size's battery: the battinfo trigger)
+static double DMBarSizeBatteryScale(id battery);
+#endif
 static void DMRunTrigger(NSString *cmd) {
     if ([cmd hasPrefix:@"seq:"]) {
         for (NSString *part in [[cmd substringFromIndex:4] componentsSeparatedByString:@";"]) {
@@ -22954,6 +23270,56 @@ static void DMRunTrigger(NSString *cmd) {
         id hid = [h respondsToSelector:@selector(identifier)] ? DMCall(h, @"identifier") : nil;
         DMLog([NSString stringWithFormat:@"[sbhover] the bar's hovered actionable: %@ %@ (hover action %d, action %d)", h ? NSStringFromClass([h class]) : @"none", hid ?: @"",
             [h respondsToSelector:NSSelectorFromString(@"hoverAction")] && DMCall(h, @"hoverAction") != nil, [h respondsToSelector:@selector(action)] && DMCall(h, @"action") != nil]);
+    }
+    else if ([cmd isEqualToString:@"battinfo"] || [cmd hasPrefix:@"battcharge_"]) {   // battinfo: every battery view in every window -- its bar's provider, our mark,
+        // iOS's size category, charging state, place on the screen, intrinsic size and layers (outline, pin, fill, bolt); battcharge_<state> / battcharge_back:
+        // (test) that charging state on every battery of a bar, so its bolt is drawn as when charging, then each one's own back (debug, 1.7.3 item 14)
+        BOOL charge = [cmd hasPrefix:@"battcharge_"];
+        NSString *arg = charge ? [cmd substringFromIndex:11] : nil;
+        static const void *kBattOwnStateKey = &kBattOwnStateKey;
+        Class bv = objc_getClass("_UIBatteryView"), sbv = objc_getClass("_UIStatusBarBatteryView");
+        SEL cs = NSSelectorFromString(@"chargingState"), ss = NSSelectorFromString(@"setChargingState:"), is = NSSelectorFromString(@"iconSize");
+        __block int n = 0;
+        __block void (^walk)(UIView *);
+        void (^w)(UIView *) = ^(UIView *v) {
+            if ((bv && [v isKindOfClass:bv]) || (sbv && [v isKindOfClass:sbv])) {
+                n++;
+                id vp = nil;
+                for (UIView *u = v.superview; u && !vp; u = u.superview) vp = DMBarSizeObjectOf(u, "visualProvider");
+                long state = [v respondsToSelector:cs] ? ((long (*)(id, SEL))objc_msgSend)(v, cs) : -9;
+                if (charge && vp && [v respondsToSelector:ss]) {
+                    NSNumber *own = objc_getAssociatedObject(v, kBattOwnStateKey);
+                    if ([arg isEqualToString:@"back"]) {
+                        if (own) ((void (*)(id, SEL, long))objc_msgSend)(v, ss, own.longValue);
+                        objc_setAssociatedObject(v, kBattOwnStateKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                    } else {
+                        if (!own) objc_setAssociatedObject(v, kBattOwnStateKey, @(state), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                        ((void (*)(id, SEL, long))objc_msgSend)(v, ss, (long)arg.integerValue);
+                    }
+                    [v setNeedsLayout]; [v layoutIfNeeded];
+                    state = ((long (*)(id, SEL))objc_msgSend)(v, cs);
+                }
+                CGRect onScreen = v.window ? [v convertRect:v.bounds toCoordinateSpace:v.window.screen.coordinateSpace] : CGRectNull;
+                NSMutableString *layers = [NSMutableString string];
+                for (CALayer *l in v.layer.sublayers) {
+                    [layers appendFormat:@" %@ %@", NSStringFromClass([l class]), NSStringFromCGRect(l.frame)];
+                    if ([l isKindOfClass:[CAShapeLayer class]] && ((CAShapeLayer *)l).path)
+                        [layers appendFormat:@" path %@ line %.3f", NSStringFromCGRect(CGPathGetBoundingBox(((CAShapeLayer *)l).path)), ((CAShapeLayer *)l).lineWidth];
+                    if (!CATransform3DIsIdentity(l.transform)) [layers appendFormat:@" scale %.4f", l.transform.m11];
+                    if (l.hidden || l.opacity < 0.01) [layers appendString:@" (hidden)"];
+                    [layers appendString:@";"];
+                }
+                DMLog([NSString stringWithFormat:@"[battinfo] %@ %p (window %@%@, alpha %.2f%@): bar %@, mark x %.3f, icon size %ld, charging %ld, on the screen %@, intrinsic %@, layers:%@",
+                       NSStringFromClass([v class]), v, NSStringFromClass([v.window class]), v.window.hidden ? @" hidden" : @"", v.alpha, v.hidden ? @" hidden" : @"",
+                       vp ? NSStringFromClass([vp class]) : @"none", DMBarSizeBatteryScale(v), [v respondsToSelector:is] ? ((long (*)(id, SEL))objc_msgSend)(v, is) : -9L, state,
+                       NSStringFromCGRect(onScreen), NSStringFromCGSize(v.intrinsicContentSize), layers]);
+            }
+            for (UIView *c in v.subviews) walk(c);
+        };
+        walk = w;
+        for (UIWindow *win in [UIWindow allWindowsIncludingInternalWindows:YES onlyVisibleWindows:NO]) walk(win);
+        walk = nil;
+        DMLog([NSString stringWithFormat:@"[battinfo] %d battery view(s)", n]);
     }
 #endif
     else if ([cmd isEqualToString:@"sbregions"]) {   // sbregions: (debug) the main status bar's own regions and display item states -- which item iOS shows, and why not (read-only)
@@ -23084,6 +23450,7 @@ static void DMRunTrigger(NSString *cmd) {
     else if ([cmd isEqualToString:@"idleprobe"]) DMIdleProbe();
     else if ([cmd hasPrefix:@"idlechanges_"]) DMIdleChanges([[cmd substringFromIndex:12] doubleValue]);   // idlechanges_<s>: which layers change while idle (debug)
     else if ([cmd hasPrefix:@"rsframes_"]) DMRenderFramesLog([[cmd substringFromIndex:9] doubleValue], @"now");   // rsframes_<s>: render server frames per second (debug)
+    else if ([cmd hasPrefix:@"amdbg_"]) DMAMDebugTrigger(cmd);   // amdbg_...: Activity Monitor in the Dock, App Library search typing, the app-folder scan (ActMonDock.h)
     else if ([cmd hasPrefix:@"methods_"]) {   // methods_<Class>: its instance methods and ivars, names only (debug)
         Class c = objc_getClass([[cmd substringFromIndex:8] UTF8String]);
         unsigned n = 0; Method *m = c ? class_copyMethodList(c, &n) : NULL; NSMutableArray *names = [NSMutableArray array];
@@ -23542,6 +23909,21 @@ static void DMRunTrigger(NSString *cmd) {
         });
     }
     else if ([cmd hasPrefix:@"banner_"]) DMBannerDebug([cmd substringFromIndex:7]);   // banner_close / banner_options / banner_hover: that hover button of the banner on screen (real handlers)
+    else if ([cmd hasPrefix:@"idlemesa_"]) {   // idlemesa_<s>: SpringBoard's own Home Screen half step on a scratch descriptor of <s> seconds (SpringBoard's timer untouched): what it makes of it now
+        id factory = nil;   // (SpringBoard's own factory: an ivar of the coordinator, or of SpringBoard itself)
+        for (id owner in @[DMCall(objc_getClass("SBIdleTimerGlobalCoordinator"), @"sharedInstance") ?: [NSNull null], [UIApplication sharedApplication]])
+            for (Class c = [owner class]; c && !factory && owner != [NSNull null]; c = class_getSuperclass(c)) { unsigned n = 0; Ivar *iv = class_copyIvarList(c, &n);
+                for (unsigned i = 0; i < n; i++) { const char *t = ivar_getTypeEncoding(iv[i]); if (t && t[0] == '@') { id v = object_getIvar(owner, iv[i]); if ([v isKindOfClass:objc_getClass("SBIdleTimerDescriptorFactory")]) { factory = v; break; } } }
+                free(iv); }
+        id desc = [objc_getClass("SBIdleTimerDescriptor") new];
+        SEL step = NSSelectorFromString(@"updateIdleTimerSettingsForUnlockedWithMesa:");
+        double asked = [[cmd substringFromIndex:9] doubleValue];
+        if (!factory || ![factory respondsToSelector:step] || ![desc respondsToSelector:NSSelectorFromString(@"setTotalInterval:")]) { DMLog([NSString stringWithFormat:@"[idle] test: factory %@, descriptor %@: nothing run", factory ? @"found" : @"not found", desc ? @"made" : @"not made"]); return; }
+        ((void (*)(id, SEL, double))objc_msgSend)(desc, NSSelectorFromString(@"setTotalInterval:"), asked);
+        BOOL changed = ((BOOL (*)(id, SEL, id))objc_msgSend)(factory, step, desc);
+        DMLog([NSString stringWithFormat:@"[idle] test: the Home Screen step on %.0f s -> %.0f s (changed %d); a window in front %d (hooked %d), Apple's half forced %d",
+               asked, ((double (*)(id, SEL))objc_msgSend)(desc, @selector(totalInterval)), changed, gDMIdleWindowFront, gDMIdleWindowHooked, DMTestFlag("/tmp/msb-idlehalf")]);
+    }
     else if ([cmd isEqualToString:@"idletimeout"]) {   // idletimeout: the Auto-Lock time SpringBoard's idle timer really uses (read-only; MacSettings' long Auto-Lock times)
         id coord = DMCall(objc_getClass("SBIdleTimerGlobalCoordinator"), @"sharedInstance");
         id mon = nil;
@@ -23550,7 +23932,13 @@ static void DMRunTrigger(NSString *cmd) {
             free(iv); }
         id t = [mon respondsToSelector:@selector(autoLockTimeout)] ? ((id (*)(id, SEL))objc_msgSend)(mon, @selector(autoLockTimeout)) : nil;   // (an NSNumber of seconds)
         BOOL never = [mon respondsToSelector:NSSelectorFromString(@"dontLockEver")] ? ((BOOL (*)(id, SEL))objc_msgSend)(mon, NSSelectorFromString(@"dontLockEver")) : NO;
-        DMLog([NSString stringWithFormat:@"[idle] coordinator %@ monitor %@: autoLockTimeout %@ s, dontLockEver %d", coord ? @"yes" : @"no", mon ? @"yes" : @"no", t, never]);
+        // (and what the timer really counts now -- its descriptor --, with the Home Screen half's two inputs and our reading: 1.7.3 item 8)
+        id timer = DMCall(coord, @"idleTimer"), desc = DMCall(DMCall(timer, @"sourceTimer") ?: timer, @"descriptor");
+        double total = [desc respondsToSelector:@selector(totalInterval)] ? ((double (*)(id, SEL))objc_msgSend)(desc, @selector(totalInterval)) : NAN;
+        double warn = [desc respondsToSelector:@selector(warnInterval)] ? ((double (*)(id, SEL))objc_msgSend)(desc, @selector(warnInterval)) : NAN;
+        id ws = DMCall(objc_getClass("SBMainWorkspace"), @"sharedInstance"), bio = DMCall(objc_getClass("SBUIBiometricResource"), @"sharedInstance");
+        DMLog([NSString stringWithFormat:@"[idle] coordinator %@ monitor %@: autoLockTimeout %@ s, dontLockEver %d; the timer counts total %.0f s, warn %.0f s; SpringBoard active %@, biometrics %@; a window in front %d (hooked %d)",
+               coord ? @"yes" : @"no", mon ? @"yes" : @"no", t, never, total, warn, DMBoolStr(ws, @"isSpringBoardActive"), DMBoolStr(bio, @"hasBiometricAuthenticationCapabilityEnabled"), gDMIdleWindowFront, gDMIdleWindowHooked]);
     }
     else if ([cmd hasPrefix:@"mainhang_"]) {   // mainhang_<seconds>: SpringBoard's main thread sleeps (a stuck SpringBoard: the system watchdog kills it after ~50 s) -- for a real watchdog report
         int secs = MAX(1, MIN(120, [[cmd substringFromIndex:9] intValue]));
@@ -23792,6 +24180,7 @@ static void DMRunTrigger(NSString *cmd) {
         if (set) set(want);
         DMLog([NSString stringWithFormat:@"[debug] Reduce Motion %@ (%@)", want ? @"on" : @"off", set ? (get ? (get() ? @"reads on" : @"reads off") : @"set") : @"no setter"]);
     }
+    else if ([cmd isEqualToString:@"qlprobe"]) DMQuickLookProbe();   // qlprobe: PDFKit's visible part of each page in the Quick Look windows (Finder.h), read-only
     else if ([cmd isEqualToString:@"winlist"]) {   // winlist: every visible SpringBoard window (class, level, frame, alpha) and its root view controller (read-only)
         NSMutableString *out = [NSMutableString stringWithString:@"[winlist]"];
         for (UIWindow *w in DMAllWindows()) if (!w.hidden)
@@ -25209,6 +25598,23 @@ static void DMRunTrigger(NSString *cmd) {
 #endif
     else if ([cmd hasPrefix:@"smzoom_"]) DMSMToggleZoom(DMSMDebugKey([cmd substringFromIndex:7]));   // smzoom_<bundle>[@<n>]: the green button's Zoom toggle on that window
     else if ([cmd isEqualToString:@"smwins"]) DMSMDebugWindows();   // smwins: every recent stage's windows by key (M-2), front, full screen, minimized
+#if DEBUG
+    else if ([cmd isEqualToString:@"snapinfo"]) {   // snapinfo: what a window let go now would snap against (1.7.3 item 3): the desktop, every window as drawn, the distances; Stage Manager's own snap padding (read-only)
+        NSMutableArray *lines = [NSMutableArray array];
+        if (DMSMEngine()) {
+            NSDictionary<NSString *, NSValue *> *frames = DMSMOpenWindowFrames();
+            for (NSString *k in frames) [lines addObject:[NSString stringWithFormat:@"%@ %@", DMSMKeyText(k), NSStringFromCGRect(frames[k].CGRectValue)]];
+            [lines addObject:[NSString stringWithFormat:@"desktop %@", NSStringFromCGRect(DMSMUsableAreaForIdentity(nil, NULL))]];
+        } else {
+            for (UIView *st in DMAerialStages()) [lines addObject:[NSString stringWithFormat:@"%@ %@%@", DMStageBundle(st), NSStringFromCGRect(DMSnapWindowOf(st)), DMStageMinimized(st) || st.hidden ? @" (minimized / hidden: not a neighbour)" : @""]];
+            [lines addObject:[NSString stringWithFormat:@"desktop %@", NSStringFromCGRect(DMUsableArea())]];
+        }
+        id sw = DMCall(objc_getClass("SBAppSwitcherDomain"), @"rootSettings"), cs = DMCall(sw, @"chamoisSettings"), pad = DMCall(cs, @"embeddedDisplaySnapPaddingSettings");
+        NSString *apple = @"-";
+        @try { if (pad) apple = [NSString stringWithFormat:@"edgePadding %@, singleAppCenterPadding %@, multiAppCenterPadding %@, fullScreenSnapPadding %@", [pad valueForKey:@"edgePadding"], [pad valueForKey:@"singleAppCenterPadding"], [pad valueForKey:@"multiAppCenterPadding"], [pad valueForKey:@"fullScreenSnapPadding"]]; } @catch (id e) {}
+        DMLog([NSString stringWithFormat:@"[snapinfo] engine %d (SM %d), off %d; ours: move %.0f, resize %.0f, gap %.0f; Stage Manager's own snap padding: %@\n[snapinfo] %@", (int)DMActiveEngine(), DMSMEngine(), DMSnapOff(), kMSBDSnapMoveDistance, kMSBDSnapResizeDistance, kMSBDSnapGap, apple, [lines componentsJoinedByString:@"\n[snapinfo] "]]);
+    }
+#endif
     else if ([cmd hasPrefix:@"burst_"]) {   // burst_<frames>_<ms>_<div>[_<x>_<y>_<w>_<h>][|<trigger>]: the screen frame by frame (DMBurstCapture)
         NSString *rest = [cmd substringFromIndex:6], *then = nil;
         NSRange bar = [rest rangeOfString:@"|"];
@@ -28758,7 +29164,7 @@ static BOOL DMGestureTargetFirst(UIGestureRecognizer *g, id target, SEL action) 
 // first (DMGestureTargetFirst; resizeCatchUp: still comes after Aerial's), once per corner handle, while no drag runs on it; where that cannot be
 // done it goes behind Aerial's, and the offset holds from the next step on; where Aerial's two values are not there, nothing is changed. Debug:
 // /tmp/msb-a5-nominsize (the corner as Aerial alone has it).
-static char kA5MinWatchedKey, kA5MinDragKey;
+static char kA5MinWatchedKey, kA5MinDragKey, kA5MinFirstKey;   // (kA5MinFirstKey: on a recogniser, our step runs in front of Aerial's)
 @interface DMA5CornerMinimum : NSObject
 + (instancetype)shared;
 @end
@@ -28791,6 +29197,24 @@ static char kA5MinWatchedKey, kA5MinDragKey;
             }
         }
     }
+    // (1.7.3 item 3: as the finger lifts, the corner's two sides line up with what is near -- the desktop's edges, the windows around --, the same
+    //  way: the offset of Aerial's last step, so the frame it ends at and the size it gives the app from inside its own handler are the snapped ones.
+    //  Behind Aerial's step -- its targets could not be read -- the frame is put there after it instead.)
+    if (s == UIGestureRecognizerStateEnded && !DMSnapOff()) {
+        BOOL left = [drag[@"left"] boolValue];
+        CGPoint fin = [g locationInView:stage.superview], o = *co;
+        CGRect start = *rs;
+        CGFloat cx = fin.x + o.x, cy = fin.y + o.y;   // (Aerial's step: the corner at the finger plus the offset, the other sides where the drag began)
+        CGRect step = left ? CGRectMake(cx, start.origin.y, CGRectGetMaxX(start) - cx, cy - start.origin.y) : CGRectMake(start.origin.x, start.origin.y, cx - start.origin.x, cy - start.origin.y);
+        UIScreen *scr = DMSnapScreenOf(stage);
+        CGRect win = DMActiveEngine() == DMEngineAerial ? DMA5WindowFromStage([stage.superview convertRect:step toCoordinateSpace:scr.coordinateSpace]) : CGRectNull;
+        CGRect snapped = CGRectIsNull(win) ? win : DMSnapEngineWindow(stage, win, (left ? MSBDSnapLeft : MSBDSnapRight) | MSBDSnapBottom);
+        if (!CGRectIsNull(win) && !CGRectEqualToRect(snapped, win)) {
+            CGRect to = [stage.superview convertRect:DMA5StageFromWindow(snapped) fromCoordinateSpace:scr.coordinateSpace];
+            if ([objc_getAssociatedObject(g, &kA5MinFirstKey) boolValue]) *co = CGPointMake((left ? CGRectGetMinX(to) : CGRectGetMaxX(to)) - fin.x, CGRectGetMaxY(to) - fin.y);
+            else dispatch_async(dispatch_get_main_queue(), ^{ if (stage.superview) { DMSetStageFrameSafe(stage, to); DMRememberStageFrame(stage); } });
+        }
+    }
     if (s == UIGestureRecognizerStateEnded) objc_setAssociatedObject(g, &kA5MinDragKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 @end
@@ -28808,6 +29232,7 @@ static BOOL DMA5CornerMinWatch(UIView *h) {
     objc_setAssociatedObject(h, &kA5MinWatchedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     for (UIGestureRecognizer *g in pans) {
         BOOL first = DMGestureTargetFirst(g, [DMA5CornerMinimum shared], @selector(step:));
+        objc_setAssociatedObject(g, &kA5MinFirstKey, @(first), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         static int told = 0;
         if (told < 4) { told++; DMLog([NSString stringWithFormat:@"[minsize] Aerial's corner handle watched: the smallest a window may be holds %@", first ? @"in front of Aerial's own step" : @"after Aerial's step (its recogniser's targets could not be read), from the next step on"]); }
     }
@@ -29306,8 +29731,20 @@ static BOOL DMA5DragAllowedAt(UIView *stage, CGPoint p) {   // p in the stage's 
     if ((g.state == UIGestureRecognizerStateChanged || g.state == UIGestureRecognizerStateEnded) && stage.frame.origin.y < DMTopLimit() && DMA5MacGeometry()) {
         CGRect f = stage.frame; f.origin.y = DMTopLimit(); stage.frame = f;
     }
+    // (1.7.3 item 3: let go, it lines up with what is near -- the desktop's edges, the windows around. 5.x: none of Aerial's classes is hooked, so
+    //  its drag ends here, in our target after its own; 3.0's ends in DMAerialGestureAfter. A drag already snapped there finds nothing left to do.)
+    if (g.state == UIGestureRecognizerStateEnded && stage.superview) DMSnapMoveEnded(stage);
     if (!DMTestFlag("/tmp/msb-a5-dragtrace")) return;
     DMLog([NSString stringWithFormat:@"[a5drag] trace state %ld location %@ translation %@ stage origin %@", (long)g.state, NSStringFromCGPoint([g locationInView:stage.superview]), NSStringFromCGPoint([g translationInView:stage.superview]), NSStringFromCGPoint(stage.frame.origin)]);
+}
+// Aerial 5.1 also lays an AerialDragAreaView over the stage's top strip (the stage's whole width, 33 pt) with a drag recogniser of its own that moves
+// the stage: a title-bar drag that starts on it is that recogniser's (the stage's own fails), so it never came to -dragTrace: and was let go without
+// the snap (M1 15.6.1, 1.7.3 final regression: drags from the left part of the title bar). Its end gets the same step: under the bar first, then the snap.
+- (void)areaDragEnded:(UIPanGestureRecognizer *)g {
+    UIView *stage = g.view.superview;
+    if (g.state != UIGestureRecognizerStateEnded || !stage.superview || ![DMAerialStages() containsObject:stage]) return;
+    if (stage.frame.origin.y < DMTopLimit() && DMA5MacGeometry()) { CGRect f = stage.frame; f.origin.y = DMTopLimit(); stage.frame = f; }
+    DMSnapMoveEnded(stage);
 }
 @end
 static void DMAerial5DragGuard(UIView *stage) {
@@ -29316,6 +29753,14 @@ static void DMAerial5DragGuard(UIView *stage) {
     if (!objc_getAssociatedObject(drag, @selector(dragTrace:))) { [drag addTarget:[DMA5DragGuard shared] action:@selector(dragTrace:)]; objc_setAssociatedObject(drag, @selector(dragTrace:), @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
     if (drag.delegate == nil) { drag.delegate = [DMA5DragGuard shared]; DMLog([NSString stringWithFormat:@"[a5drag] %@: Aerial's drag recogniser now only takes title-strip touches", DMStageBundle(stage)]); }
     if ([drag respondsToSelector:@selector(setAllowedScrollTypesMask:)] && drag.allowedScrollTypesMask != 0) drag.allowedScrollTypesMask = 0;
+    static Class areaClass = Nil;   // (Aerial 5.1's drag area over the top strip: its own recogniser's drags end in our step too, -areaDragEnded:)
+    if (!areaClass) areaClass = objc_getClass("AerialDragAreaView");
+    if (areaClass) for (UIView *v in stage.subviews) if ([v isKindOfClass:areaClass])
+        for (UIGestureRecognizer *a in v.gestureRecognizers) if ([a isKindOfClass:[UIPanGestureRecognizer class]] && !objc_getAssociatedObject(a, @selector(areaDragEnded:))) {
+            [a addTarget:[DMA5DragGuard shared] action:@selector(areaDragEnded:)];
+            objc_setAssociatedObject(a, @selector(areaDragEnded:), @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            DMLog([NSString stringWithFormat:@"[a5drag] %@: Aerial's drag area ends its drags in our step too (its recogniser %p)", DMStageBundle(stage), a]);
+        }
     if (objc_getAssociatedObject(stage, kA5DragGuardKey)) return;
     UIGestureRecognizer *guard = [[UIGestureRecognizer alloc] initWithTarget:nil action:NULL];
     guard.cancelsTouchesInView = NO; guard.delaysTouchesBegan = NO; guard.delaysTouchesEnded = NO;
@@ -30944,6 +31389,7 @@ static void DMTickBody(void) {
     static BOOL lastOwn = NO;
     BOOL ownNow = DMWindowsOwnStatusBar(), ownChanged = ownNow != lastOwn;
     lastOwn = ownNow;
+    DMIdleWindowFrontTick(ownNow, bid);   // (Auto-Lock: an engine's window in front keeps the whole time, as with an app in front -- 1.7.3 item 8)
     long second = (long)[[NSDate date] timeIntervalSince1970];
     long stamp = gShowSeconds ? second : second / 60;   // seconds tick each second, otherwise each minute
     BOOL secondChanged = stamp != gLastSecond;
@@ -31474,14 +31920,16 @@ static BOOL DMIsNotificationBannerVC(id vc) {
     for (UIViewController *c = vc; c; c = c.childViewControllers.firstObject) if ([NSStringFromClass([c class]) hasPrefix:@"NCNotification"]) return YES;
     return [NSStringFromClass([vc class]) hasPrefix:@"NCNotification"];
 }
-static const CGFloat kDMBannerWidth = 360, kDMBannerRight = 10, kDMBannerTop = 24 + 8;   // (24 = our status bar)
+static const CGFloat kDMBannerWidth = 360, kDMBannerRight = 10;
+// 8 pt under our status bar: 24 + 8 at Small (a Home-button iPad's 20 pt bar too, as before), the bar's own height + 8 at Medium and Large (1.7.3)
+static CGFloat DMBannerTop(void) { return MSBDMenuBarFixedSite(gDMBarSize, DMMenuBarHeight()) + 8.0; }
 // (a right-to-left language: mirrored -- top left, in from and out to the left, a leftward swipe, the Close button at the top right -- as the
 //  clock and its Today panel are at the left end of the menu bar there, 1.3.3)
 static BOOL DMBannerRTL(void) { static int v = -1; if (v < 0) v = [UIApplication sharedApplication].userInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft; return v == 1; }
 static CGRect DMBannerPresentedFrame(CGRect stock, CGRect cb) {
     CGFloat w = MIN(kDMBannerWidth, cb.size.width - 2 * kDMBannerRight);
     CGFloat x = DMBannerRTL() ? CGRectGetMinX(cb) + kDMBannerRight : CGRectGetMaxX(cb) - w - kDMBannerRight;
-    return CGRectMake(x, CGRectGetMinY(cb) + kDMBannerTop, w, stock.size.height);
+    return CGRectMake(x, CGRectGetMinY(cb) + DMBannerTop(), w, stock.size.height);
 }
 static CGRect DMBannerDismissedFrame(CGRect stock, CGRect cb) {
     CGRect p = DMBannerPresentedFrame(stock, cb);
@@ -31977,9 +32425,14 @@ static BOOL DMAutoHideActive(void) {   // the bar may hide right now
 // on Home-button iPads. 1.7.1 item 14: the window geometry took 24 everywhere, so on Home-button iPads windows and tiles started 3-4 pt below the
 // bar. Read from a status bar copy on the main screen -- its visual provider's +height (type-checked), else the copy's own height -- and kept once
 // known (an iPad's bar does not change); 24 until then, the geometry as it was. Face ID iPads: 24, every number below as before.
+// (Menu Bar Size, 1.7.3: at Medium and Large the provider's +height is the size's -- DMBarSizeInit below --, so this reads 30 / 37 pt; until a bar is
+//  known, the size's height instead of 24)
 static CGFloat gDMMenuBarH = 0;
+static CGFloat gDMMenuBarStockH = 0;        // (iOS's own height of that bar, the size left out: 24 / 20 -- what the size added is gDMMenuBarH less this)
+static __thread int gDMBarStockDepth = 0;   // (Menu Bar Size: while > 0 the providers give iOS's own +height, on this thread only -- DMBarSizeHeightFor)
+static CGFloat DMMenuBarUnknownHeight(void) { return MSBDMenuBarSizeHeight(gDMBarSize, kMSBDMenuBarDefault); }
 static CGFloat DMMenuBarHeight(void) {
-    if (gDMMenuBarH > 0 || ![NSThread isMainThread]) return gDMMenuBarH > 0 ? gDMMenuBarH : kMSBDMenuBarDefault;
+    if (gDMMenuBarH > 0 || ![NSThread isMainThread]) return gDMMenuBarH > 0 ? gDMMenuBarH : DMMenuBarUnknownHeight();
     SEL vs = NSSelectorFromString(@"visualProvider"), hs = NSSelectorFromString(@"height");
     for (NSHashTable *copies in @[gCopies ?: [NSHashTable weakObjectsHashTable], gAllBarCopies ?: [NSHashTable weakObjectsHashTable]]) for (UIView *fg in copies.allObjects) {
         if (!fg.window || fg.window.screen != [UIScreen mainScreen]) continue;
@@ -31988,14 +32441,554 @@ static CGFloat DMMenuBarHeight(void) {
         if (vm && !strcmp(method_getTypeEncoding(vm) ?: "", "@16@0:8")) vp = ((id (*)(id, SEL))objc_msgSend)(bar, vs);
         Class vc = vp ? object_getClass(vp) : Nil;
         Method hm = vc ? class_getClassMethod(vc, hs) : NULL;
-        if (hm && !strcmp(method_getTypeEncoding(hm) ?: "", "d16@0:8")) provided = ((double (*)(id, SEL))objc_msgSend)((id)vc, hs);
+        if (hm && !strcmp(method_getTypeEncoding(hm) ?: "", "d16@0:8")) {
+            provided = ((double (*)(id, SEL))objc_msgSend)((id)vc, hs);
+            gDMBarStockDepth++;
+            gDMMenuBarStockH = ((double (*)(id, SEL))objc_msgSend)((id)vc, hs);   // (the same provider, the size left out)
+            gDMBarStockDepth--;
+        }
         double h = MSBDMenuBarHeightOf(provided, fg.bounds.size.height);
         if (h <= 0) continue;
         gDMMenuBarH = h;
-        DMLog([NSString stringWithFormat:@"[menubar] the menu bar is %.1f pt tall on this iPad (%@)", h, provided > 0 ? [NSString stringWithFormat:@"iOS's %@", NSStringFromClass(vc)] : @"its laid-out height"]);
+        if (!(gDMMenuBarStockH > 0)) gDMMenuBarStockH = h;   // (no provider read: the bar's own height, nothing added)
+        DMLog([NSString stringWithFormat:@"[menubar] the menu bar is %.1f pt tall on this iPad (%@; Menu Bar Size %@; iOS's own %.1f)", h, provided > 0 ? [NSString stringWithFormat:@"iOS's %@", NSStringFromClass(vc)] : @"its laid-out height",
+               gDMBarSize == MSBDMenuBarLarge ? @"Large" : gDMBarSize == MSBDMenuBarMedium ? @"Medium" : @"Small", gDMMenuBarStockH]);
         return h;
     }
-    return kMSBDMenuBarDefault;
+    return DMMenuBarUnknownHeight();
+}
+static CGFloat DMMenuBarKnownHeight(void) { return gDMMenuBarH; }
+static CGFloat DMMenuBarStockHeight(void) { return gDMMenuBarStockH; }
+
+// ===== Menu Bar Size (1.7.3; Settings > Status Bar > Menu Bar Size, common/MenuBarSize.h) =========================================================
+// The root of a taller menu bar: iOS's own bar, made taller in SpringBoard. A bar's look comes from its visual provider, picked per screen
+// (+[_UIStatusBarVisualProvider_Pad visualProviderSubclassForScreen:visualProviderInfo:]): _Pad on Home-button iPads, _RoundedPad on Face ID iPads
+// (or their _ForcedCellular / _ForcedNoCell subclasses), _ExternalPad -- a _Pad subclass -- on a TV. iPadOS 17 moved SpringBoard's bars to
+// SystemStatusUI, whose STUIStatusBarVisualProvider_* classes have the same shape (17's headers; UIKit's stay, for apps). The provider gives:
+//  - +height: every bar's height (+[_UIStatusBar intrinsicContentSizeForTargetScreen:...], read on 15.6.1) and, through SpringBoard's own bar, the
+//    height SpringBoard writes into every app's scene (-[SBDeviceApplicationSceneHandle _defaultStatusBarHeights]) -- where an app takes its status
+//    bar's height and its top safe area from, so a full-screen app's content starts under the taller bar with no code in the app;
+//  - +baselineOffset (where the text sits), -normalFont / -clockFont (12 pt Medium), -styleAttributesForStyle: (the icons' scale).
+// At Medium and Large these are the size's (MenuBarSize.h); a TV's provider is left as it is (it keeps the normal bar, as a Mac's second display has
+// no notch bar). Nothing is hooked at Small. A family is hooked only when every method is there, its own, with the types read (15.6.1's UIKit, 17's
+// headers); the size is in force only when the family of SpringBoard's own bars went on (DMSBUseSTUI), else everything stays Small, ours included.
+static __thread int gDMBarFontDepth = 0;   // (a font asked for inside another font hook -- -clockFont made from -normalFont -- is left to the outer one)
+static BOOL DMBarSizeClass(Class c) {   // a provider whose bar takes the size: any but a TV's
+    if (gDMBarSize == MSBDMenuBarSmall || !c) return NO;
+    static Class extUIKit, extSTUI; static BOOL looked = NO;
+    if (!looked) { looked = YES; extUIKit = objc_getClass("_UIStatusBarVisualProvider_ExternalPad"); extSTUI = objc_getClass("STUIStatusBarVisualProvider_ExternalPad"); }
+    return !((extUIKit && [c isSubclassOfClass:extUIKit]) || (extSTUI && [c isSubclassOfClass:extSTUI]));
+}
+static BOOL DMBarSizeFontWanted(id provider) { return !gDMBarFontDepth && DMBarSizeClass(object_getClass(provider)); }
+// A provider's +height: the size's, except for a TV's and while SpringBoard works out the settings of a scene that is not under the bar (a window:
+// DMBarSizeSceneIsWindow below), which keep iOS's own.
+static double DMBarSizeHeightFor(Class c, double stock) { return DMBarSizeClass(c) && !gDMBarStockDepth ? MSBDMenuBarSizeHeight(gDMBarSize, stock) : stock; }
+// iOS's bar text at the size's scale (the font itself kept: its weight, its digits). Never twice: a font at the size's text already (13.5 / 15 pt; iOS's
+// own is 12) is one made from the hooked -normalFont and kept by iOS -- a -clockFont built from it once, say -- and goes back as it is.
+static id DMBarSizeFont(id f) {
+    if (![f isKindOfClass:[UIFont class]]) return f;
+    CGFloat pt = ((UIFont *)f).pointSize, k = MSBDMenuBarSizeScale(gDMBarSize);
+    if (pt >= kMSBDMenuBarStockText * k - 0.01) return f;
+    return [(UIFont *)f fontWithSize:pt * k];
+}
+static const void *kBarSizeScaledKey = &kBarSizeScaledKey;
+static id DMBarSizeAttributes(id provider, id attrs) {   // iOS's icons at the size's scale: the style attributes' -iconScale (type-checked), each object once
+    if (!attrs || !DMBarSizeClass(object_getClass(provider)) || objc_getAssociatedObject(attrs, kBarSizeScaledKey)) return attrs;
+    SEL gs = NSSelectorFromString(@"iconScale"), ss = NSSelectorFromString(@"setIconScale:");
+    Method g = class_getInstanceMethod(object_getClass(attrs), gs), s = class_getInstanceMethod(object_getClass(attrs), ss);
+    if (!g || !s || strcmp(method_getTypeEncoding(g) ?: "", "d16@0:8") || strcmp(method_getTypeEncoding(s) ?: "", "v24@0:8d16")) {
+        static BOOL told = NO;
+        if (!told) { told = YES; DMLog([NSString stringWithFormat:@"[barsize] %@ has no icon scale as read (%s / %s): iOS's icons keep their size", NSStringFromClass(object_getClass(attrs)), g ? method_getTypeEncoding(g) : "-", s ? method_getTypeEncoding(s) : "-"]); }
+        return attrs;
+    }
+    double v = ((double (*)(id, SEL))objc_msgSend)(attrs, gs);
+    if (!(v > 0.0) || !isfinite(v)) return attrs;
+    ((void (*)(id, SEL, double))objc_msgSend)(attrs, ss, v * MSBDMenuBarSizeScale(gDMBarSize));
+    objc_setAssociatedObject(attrs, kBarSizeScaledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return attrs;
+}
+%group MenuBarSizeUIKit
+%hook _UIStatusBarVisualProvider_Pad
++ (double)height {
+    double h = %orig;
+    return DMBarSizeHeightFor(self, h);
+}
++ (double)baselineOffset {
+    double b = %orig;
+    return DMBarSizeClass(self) ? MSBDMenuBarSizeBaseline(gDMBarSize, b) : b;
+}
+- (id)normalFont {
+    if (!DMBarSizeFontWanted(self)) return %orig;
+    id f = nil;
+    gDMBarFontDepth++;
+    @try {
+        f = %orig;
+    } @finally {
+        gDMBarFontDepth--;
+    }
+    return DMBarSizeFont(f);
+}
+- (id)styleAttributesForStyle:(long long)style {
+    id a = %orig;
+    return DMBarSizeAttributes(self, a);
+}
+%end
+%hook _UIStatusBarVisualProvider_RoundedPad
++ (double)height {
+    double h = %orig;
+    return DMBarSizeHeightFor(self, h);
+}
++ (double)baselineOffset {
+    double b = %orig;
+    return DMBarSizeClass(self) ? MSBDMenuBarSizeBaseline(gDMBarSize, b) : b;
+}
+%end
+%end
+%group MenuBarSizeUIKitClock
+%hook _UIStatusBarVisualProvider_Pad
+- (id)clockFont {
+    if (!DMBarSizeFontWanted(self)) return %orig;
+    id f = nil;
+    gDMBarFontDepth++;
+    @try {
+        f = %orig;
+    } @finally {
+        gDMBarFontDepth--;
+    }
+    return DMBarSizeFont(f);
+}
+%end
+%end
+%group MenuBarSizeSTUI
+%hook STUIStatusBarVisualProvider_Pad
++ (double)height {
+    double h = %orig;
+    return DMBarSizeHeightFor(self, h);
+}
++ (double)baselineOffset {
+    double b = %orig;
+    return DMBarSizeClass(self) ? MSBDMenuBarSizeBaseline(gDMBarSize, b) : b;
+}
+- (id)normalFont {
+    if (!DMBarSizeFontWanted(self)) return %orig;
+    id f = nil;
+    gDMBarFontDepth++;
+    @try {
+        f = %orig;
+    } @finally {
+        gDMBarFontDepth--;
+    }
+    return DMBarSizeFont(f);
+}
+- (id)styleAttributesForStyle:(long long)style {
+    id a = %orig;
+    return DMBarSizeAttributes(self, a);
+}
+%end
+%hook STUIStatusBarVisualProvider_RoundedPad
++ (double)height {
+    double h = %orig;
+    return DMBarSizeHeightFor(self, h);
+}
++ (double)baselineOffset {
+    double b = %orig;
+    return DMBarSizeClass(self) ? MSBDMenuBarSizeBaseline(gDMBarSize, b) : b;
+}
+%end
+%end
+%group MenuBarSizeSTUIClock
+%hook STUIStatusBarVisualProvider_Pad
+- (id)clockFont {
+    if (!DMBarSizeFontWanted(self)) return %orig;
+    id f = nil;
+    gDMBarFontDepth++;
+    @try {
+        f = %orig;
+    } @finally {
+        gDMBarFontDepth--;
+    }
+    return DMBarSizeFont(f);
+}
+%end
+%end
+// iOS's battery at the size (1.7.3 item 14). iOS's other icons in the bar are images it draws at the style attributes' icon scale (DMBarSizeAttributes),
+// but the battery is measured from a fixed size category: the iPad's provider asks for icon size 14 (-styleAttributesForStyle:, the same on 15.6.1,
+// 16.7.7, 17.5.1 and 18.5; 15 with its own 1.16 icon scale for Apple's expanded bar), the battery's -applyStyleAttributes: takes that (and isRounded,
+// 16+), never the icon scale, and a bar's battery (internal size category 0) works every measure out from it: _UIBatteryView's
+// -_batterySizeForTraitCollection:, -_pinSizeForTraitCollection:, -_lineWidthAndInterspaceForTraitCollection:, -_outsideCornerRadiusForTraitCollection:
+// and -_insideCornerRadiusForTraitCollection: ask its class's +_batterySizeForIconSize: & co., and its charging bolt is a fixed path scaled by
+// -_batteryBoltScaleFactorMultiplier (the category's height over category 1's). So at Medium and Large the battery stayed 24 x 12 pt (26.5 with its pin)
+// while the bar, its text, the percentage and the other icons grew (R1 on 18.5, R2 on 16.7.7 and 17.5.1; 15.6.1 takes the same path, its methods of the
+// same types). The bar's battery item makes two: the battery (_UIBatteryView, 17+ STUIStatusBarBatteryView: shape layers) and a static one
+// (_UIStaticBatteryView, 17+ STUIStatusBarStaticBatteryView: the same measures drawn into images) -- 18.5's iPad bar shows the static one (A12Z,
+// battinfo). Everything else of either comes from those six (read on 16.7.7, 17.5.1 and 18.5): its intrinsic size (by which the bar places and centres
+// it, as now), its body rect and outline, the pin, the fill, the bolt's size and place (the body's centre). Both batteries of a battery item whose bar
+// takes the size (DMBarSizeSizedProvider) are marked with the size's scale, and those six are x that scale for them: 30 x 15 pt (33.125 with its pin), a
+// 1.25 pt outline at Large; 27 x 13.5, 1.125 at Medium (MenuBarSize.h MSBDMenuBarBatteryScale). The percentage beside it is another view, a label in
+// the bar's font, already at the size: left alone. Any other battery (a TV's bar, BigSurCenter's) is not marked and stays as it is. Small: nothing
+// hooked.
+@class _UIBatteryView, _UIStatusBarBatteryItem;
+static Class gDMBarSizedPad[2];   // (the providers' Pad class of each family that took the size, UIKit's and SystemStatusUI's: DMBarSizeInit)
+static BOOL DMBarSizeSizedProvider(Class c) {   // a provider whose bar took the size: one of those families (RoundedPad and the forced ones are subclasses), not a TV's
+    if (!DMBarSizeClass(c)) return NO;
+    return (gDMBarSizedPad[0] && [c isSubclassOfClass:gDMBarSizedPad[0]]) || (gDMBarSizedPad[1] && [c isSubclassOfClass:gDMBarSizedPad[1]]);
+}
+static const void *kBarSizeBatteryKey = &kBarSizeBatteryKey;
+static double DMBarSizeBatteryScale(id battery) {
+    NSNumber *k = objc_getAssociatedObject(battery, kBarSizeBatteryKey);
+    return k ? k.doubleValue : 1.0;
+}
+static id DMBarSizeObjectOf(id o, const char *name) {   // a getter's object, its types read (@16@0:8), else nil
+    SEL s = sel_registerName(name);
+    Method m = o ? class_getInstanceMethod(object_getClass(o), s) : NULL;
+    return m && !strcmp(method_getTypeEncoding(m) ?: "", "@16@0:8") ? ((id (*)(id, SEL))objc_msgSend)(o, s) : nil;
+}
+static void DMBarSizeBatteryMade(id item) {   // (after a battery item made a battery: both of its batteries marked when its bar's provider took the size)
+    id vp = DMBarSizeObjectOf(DMBarSizeObjectOf(item, "statusBar"), "visualProvider");
+    double k = MSBDMenuBarBatteryScale(gDMBarSize, vp && DMBarSizeSizedProvider(object_getClass(vp)));
+    const char *const names[2] = { "_batteryView", "_staticBatteryView" };   // (the ivars, not the getters: they make one when it is nil)
+    for (int i = 0; i < 2; i++) {
+        Ivar iv = class_getInstanceVariable(object_getClass(item), names[i]);
+        id battery = iv && (ivar_getTypeEncoding(iv) ?: "")[0] == '@' ? object_getIvar(item, iv) : nil;
+        if (battery && k != 1.0) objc_setAssociatedObject(battery, kBarSizeBatteryKey, @(k), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    static NSMutableSet *told;   // (each kind of bar once)
+    NSString *kind = vp ? NSStringFromClass(object_getClass(vp)) : @"no provider";
+    if (!told) told = [NSMutableSet set];
+    if ([told containsObject:kind]) return;
+    [told addObject:kind];
+    DMLog([NSString stringWithFormat:@"[barsize] iOS's battery made for a bar of %@: %@", kind, k != 1.0 ? [NSString stringWithFormat:@"x %.3f", k] : @"as it is"]);
+}
+%group MenuBarSizeBattery
+%hook _UIBatteryView
+- (CGSize)_batterySizeForTraitCollection:(id)traits {
+    CGSize s = %orig;
+    double k = DMBarSizeBatteryScale(self);
+    return CGSizeMake(s.width * k, s.height * k);
+}
+- (CGSize)_pinSizeForTraitCollection:(id)traits {
+    CGSize s = %orig;
+    double k = DMBarSizeBatteryScale(self);
+    return CGSizeMake(s.width * k, s.height * k);
+}
+- (double)_lineWidthAndInterspaceForTraitCollection:(id)traits {
+    double w = %orig;
+    return w * DMBarSizeBatteryScale(self);
+}
+- (double)_outsideCornerRadiusForTraitCollection:(id)traits {
+    double r = %orig;
+    return r * DMBarSizeBatteryScale(self);
+}
+- (double)_insideCornerRadiusForTraitCollection:(id)traits {
+    double r = %orig;
+    return r * DMBarSizeBatteryScale(self);
+}
+%end
+%end
+%group MenuBarSizeBatteryBolt   // (the bar battery's own class: 15 / 16 _UIBatteryView, 17+ STUIStatusBarBatteryView, which has its own)
+%hook _UIBatteryView
+- (double)_batteryBoltScaleFactorMultiplier {
+    double m = %orig;
+    return m * DMBarSizeBatteryScale(self);
+}
+%end
+%end
+%group MenuBarSizeBatteryStaticBolt   // (17+: STUIStatusBarStaticBatteryView has its own too; 15 / 16's static battery takes _UIBatteryView's)
+%hook _UIBatteryView
+- (double)_batteryBoltScaleFactorMultiplier {
+    double m = %orig;
+    return m * DMBarSizeBatteryScale(self);
+}
+%end
+%end
+%group MenuBarSizeBatteryItem   // (the bar's battery item: 15 / 16 UIKit's _UIStatusBarBatteryItem, 17+ SystemStatusUI's STUIStatusBarBatteryItem)
+%hook _UIStatusBarBatteryItem
+- (void)_create_batteryView {
+    %orig;
+    DMBarSizeBatteryMade(self);
+}
+- (void)_create_staticBatteryView {
+    %orig;
+    DMBarSizeBatteryMade(self);
+}
+%end
+%end
+// The battery's hooks, all or none (a battery with some of its measures scaled would be drawn wrong), on the family of SpringBoard's own bars.
+static BOOL DMBarSizeOwns(Class c, BOOL classMethod, const char *name, const char *types);
+static void DMBarSizeBatteryInit(BOOL stui) {
+    Class view = objc_getClass("_UIBatteryView"), bolt = stui ? objc_getClass("STUIStatusBarBatteryView") : view, item = objc_getClass(stui ? "STUIStatusBarBatteryItem" : "_UIStatusBarBatteryItem");
+    Class still = objc_getClass(stui ? "STUIStatusBarStaticBatteryView" : "_UIStaticBatteryView");   // (the static battery)
+    const char *size = "{CGSize=dd}24@0:8@16", *measure = "d24@0:8@16";
+    Ivar bv = item ? class_getInstanceVariable(item, "_batteryView") : NULL, sv = item ? class_getInstanceVariable(item, "_staticBatteryView") : NULL;
+    BOOL stillBolt = DMBarSizeOwns(still, NO, "_batteryBoltScaleFactorMultiplier", "d16@0:8");   // (its own on 17+; on 15 / 16 _UIBatteryView's, hooked as the bolt's)
+    BOOL all = view && bolt && item && still && [bolt isSubclassOfClass:view] && [still isSubclassOfClass:view] && (stillBolt || [still isSubclassOfClass:bolt])
+        && DMBarSizeOwns(view, NO, "_batterySizeForTraitCollection:", size) && DMBarSizeOwns(view, NO, "_pinSizeForTraitCollection:", size)
+        && DMBarSizeOwns(view, NO, "_lineWidthAndInterspaceForTraitCollection:", measure) && DMBarSizeOwns(view, NO, "_outsideCornerRadiusForTraitCollection:", measure)
+        && DMBarSizeOwns(view, NO, "_insideCornerRadiusForTraitCollection:", measure) && DMBarSizeOwns(bolt, NO, "_batteryBoltScaleFactorMultiplier", "d16@0:8")
+        && DMBarSizeOwns(item, NO, "_create_batteryView", "v16@0:8") && DMBarSizeOwns(item, NO, "_create_staticBatteryView", "v16@0:8")
+        && bv && (ivar_getTypeEncoding(bv) ?: "")[0] == '@' && sv && (ivar_getTypeEncoding(sv) ?: "")[0] == '@';
+    if (!all) {
+        DMLog([NSString stringWithFormat:@"[barsize] iOS's battery: %s / %s / %s not as read -- it keeps its size", item ? class_getName(item) : "-", bolt ? class_getName(bolt) : "-", still ? class_getName(still) : "-"]);
+        return;
+    }
+    %init(MenuBarSizeBattery, _UIBatteryView = view);
+    %init(MenuBarSizeBatteryBolt, _UIBatteryView = bolt);
+    if (stillBolt) %init(MenuBarSizeBatteryStaticBolt, _UIBatteryView = still);
+    %init(MenuBarSizeBatteryItem, _UIStatusBarBatteryItem = item);
+    DMLog([NSString stringWithFormat:@"[barsize] iOS's battery follows the size: x %.3f (%s's battery and static battery, their bolts' scale from %s and %s)", MSBDMenuBarSizeScale(gDMBarSize),
+           class_getName(item), class_getName(bolt), class_getName(stillBolt ? still : bolt)]);
+}
+// A scene that does not reach the top edge of its screen -- a window (Stage Manager's, another engine's), Slide Over -- is not under the bar: it keeps
+// iOS's own status bar height, as at Small. SpringBoard hands every app scene the bar's height at each scene request (-[SBDeviceApplicationSceneHandle
+// _modifyApplicationSceneSettings:fromRequestContext:entity:] -> _populateSettingsWithDefaultStatusBarHeight:, read on 15.6.1; the same on 18.5) and
+// an app takes its top safe area from it, in a window too: Clock's content sat 13 pt lower inside its Stage Manager window at Large (its settings'
+// defaultStatusBarHeight 37; A12Z). So such a scene's settings are worked out with the providers' own +height (gDMBarStockDepth); a scene under the
+// bar -- full screen, Split View: the screen's whole height -- takes the size's. Told in the scene's own coordinate space (MenuBarSize.h
+// MSBDSceneShortfall): its settings' -bounds, the frame's size turned to its orientation (18.5, landscape: a right-half window, frame {{82.5, 686},
+// {880.5, 680}}, is 680 x 880.5 there, on a display 1366 x 1024 in that space: 143.5 pt short of its height). Not the frame's origin: an Aerial window's
+// scene on 15 has it on the screen, not in the display's portrait space (M1: App Store's {{406, 249.8}, {512, 788}} was read as on the top edge).
+@class SBDeviceApplicationSceneHandle, CSTeachableMomentsContainerView;
+// (1: a window, not under the bar; 0: under the bar; -1: not known -- no frame or display yet, a TV's scene, not as read)
+static int DMBarSizeSceneWindowState(id settings) {
+    if (gDMBarSize == MSBDMenuBarSmall || !settings) return -1;
+    SEL bs = @selector(bounds), os = @selector(interfaceOrientation), ds = NSSelectorFromString(@"displayConfiguration");
+    Class sc = object_getClass(settings);
+    Method sbm = class_getInstanceMethod(sc, bs), om = class_getInstanceMethod(sc, os), dm = class_getInstanceMethod(sc, ds);
+    if (!sbm || !om || !dm || strncmp(method_getTypeEncoding(sbm) ?: "", "{CGRect=", 8) || strcmp(method_getTypeEncoding(om) ?: "", "q16@0:8") || (method_getTypeEncoding(dm) ?: "")[0] != '@') return -1;
+    id disp = ((id (*)(id, SEL))objc_msgSend)(settings, ds);
+    SEL ms = NSSelectorFromString(@"isMainDisplay");
+    Method mm = disp ? class_getInstanceMethod(object_getClass(disp), ms) : NULL, bm = disp ? class_getInstanceMethod(object_getClass(disp), bs) : NULL;
+    if (!mm || !bm || strcmp(method_getTypeEncoding(mm) ?: "", "B16@0:8") || strncmp(method_getTypeEncoding(bm) ?: "", "{CGRect=", 8)) return -1;
+    if (!((BOOL (*)(id, SEL))objc_msgSend)(disp, ms)) return -1;   // (a TV's scene: its bar is the normal one anyway)
+    CGRect own = ((CGRect (*)(id, SEL))objc_msgSend)(settings, bs), b = ((CGRect (*)(id, SEL))objc_msgSend)(disp, bs);
+    if (CGRectIsEmpty(own) || CGRectIsEmpty(b)) return -1;   // (no frame yet: as under the bar; the next request decides again)
+    long o = ((long (*)(id, SEL))objc_msgSend)(settings, os);
+    return MSBDSceneIsWindow(MSBDSceneShortfall(own.size.height, b.size.width, b.size.height, o)) ? 1 : 0;
+}
+static BOOL DMBarSizeSceneIsWindow(id settings) { return DMBarSizeSceneWindowState(settings) == 1; }
+// A scene that becomes a window after its request, or comes back up under the bar, without a new one: Zetsu brings an app in under the bar and makes
+// it a window afterwards, so its windows kept the size's height -- Clock's and Tips's content 17 pt lower inside their windows at Large (iPad 2, 16.7.7,
+// R2 device pass; Stage Manager and Aerial ask with the window's frame). When a scene's frame is set its default status bar height follows the same
+// rule (DMBarSizeSceneWindowState); only a height SpringBoard gave -- iOS's own or the size's -- is changed (an iPhone app's fixed one is left).
+static void DMBarSizeSceneFrameSet(id settings) {
+    double stock = gDMMenuBarStockH, sized = gDMMenuBarH;
+    if (gDMBarSize == MSBDMenuBarSmall || !(stock > 0) || !(sized > stock + 0.25)) return;
+    SEL gs = NSSelectorFromString(@"defaultStatusBarHeightForOrientation:"), ss = NSSelectorFromString(@"setDefaultStatusBarHeight:forOrientation:");
+    Class sc = object_getClass(settings);
+    Method gm = class_getInstanceMethod(sc, gs), sm = class_getInstanceMethod(sc, ss);
+    if (!gm || !sm || strcmp(method_getTypeEncoding(gm) ?: "", "d24@0:8q16") || strcmp(method_getTypeEncoding(sm) ?: "", "v32@0:8d16q24")) return;   // (no app scene's)
+    int state = DMBarSizeSceneWindowState(settings);
+    if (state < 0) return;
+    double want = state == 1 ? stock : sized, from = state == 1 ? sized : stock;
+    int changed = 0;
+    for (long o = 1; o <= 4; o++) {
+        double h = ((double (*)(id, SEL, long))objc_msgSend)(settings, gs, o);
+        if (fabs(h - from) < 0.25) { ((void (*)(id, SEL, double, long))objc_msgSend)(settings, ss, want, o); changed++; }
+    }
+#if DEBUG
+    if (changed && DMTestFlag("/tmp/macstatusbar-debug")) {
+        CGRect f = [settings respondsToSelector:@selector(frame)] ? ((CGRect (*)(id, SEL))objc_msgSend)(settings, @selector(frame)) : CGRectNull;
+        CGRect own = ((CGRect (*)(id, SEL))objc_msgSend)(settings, @selector(bounds));   // (DMBarSizeSceneWindowState read it, types checked)
+        DMLog([NSString stringWithFormat:@"[barsize] a scene's frame set %@: its status bar height %.1f -> %.1f (%d orientations; frame %@, its own %@, orientation %ld)",
+               state == 1 ? @"to a window, not under the bar" : @"under the bar", from, want, changed, NSStringFromCGRect(f), NSStringFromCGSize(own.size),
+               ((long (*)(id, SEL))objc_msgSend)(settings, @selector(interfaceOrientation))]);
+    }
+#else
+    (void)changed;   // (only the debug log reads it: release builds treat a variable set but not used as an error)
+#endif
+}
+static void DMBarSizeSceneNote(id handle, id settings, BOOL window) {   // (debug log: a scene's height when it changes, and a frame that changed inside the request)
+#if DEBUG
+    static const void *kBarSizeSceneKey = &kBarSizeSceneKey;
+    double given = -1;
+    SEL hs = NSSelectorFromString(@"defaultStatusBarHeightForOrientation:"), os = @selector(interfaceOrientation);
+    Method hm = settings ? class_getInstanceMethod(object_getClass(settings), hs) : NULL;
+    if (hm && !strcmp(method_getTypeEncoding(hm) ?: "", "d24@0:8q16") && [settings respondsToSelector:os])
+        given = ((double (*)(id, SEL, long))objc_msgSend)(settings, hs, ((long (*)(id, SEL))objc_msgSend)(settings, os));
+    NSNumber *was = objc_getAssociatedObject(handle, kBarSizeSceneKey);
+    BOOL after = DMBarSizeSceneIsWindow(settings);
+    if (was && fabs(was.doubleValue - given) < 0.25 && after == window) return;
+    objc_setAssociatedObject(handle, kBarSizeSceneKey, @(given), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    id who = [handle respondsToSelector:NSSelectorFromString(@"sceneIdentifier")] ? DMCall(handle, @"sceneIdentifier") : nil;
+    DMLog([NSString stringWithFormat:@"[barsize] %@: %@ -- status bar height %.1f%@", who ?: @"a scene", window ? @"a window, not under the bar: iOS's own" : @"under the bar: the size's", given,
+           after == window ? @"" : [NSString stringWithFormat:@" (its frame changed inside the request: a window at its start %d, after it %d)", window, after]]);
+#endif
+}
+%group MenuBarSizeSceneFrames
+%hook FBSMutableSceneSettings
+- (void)setFrame:(CGRect)frame {
+    %orig;
+    DMBarSizeSceneFrameSet(self);
+}
+%end
+%end
+// Aerial's windows (15 / 16): Aerial gives a window its frame in its own scene updates, after SpringBoard's request made the scene's settings for the
+// full screen with the size's height -- the request's frame is the full screen, so DMBarSizeSceneIsWindow sees no window there, and Settings' content
+// sat 13 pt lower inside its Aerial window at Large (M1). So where the window's frame reaches the app (FBScene's -updateSettings:..., after our frame
+// veto and the full-frame guard): the window-sized frame of an Aerial window's own scene gets iOS's own status bar height, every orientation. Full
+// screen keeps the size's; Zetsu's and MilkyWay4's window scenes are full-screen sized by design and go through as they are.
+static id DMBarSizeAerialWindowSettings(id scene, id settings) {
+    if (gDMBarSize == MSBDMenuBarSmall || !(gDMMenuBarStockH > 0) || DMActiveEngine() != DMEngineAerial || !settings) return settings;
+    SEL fs = @selector(frame), hs = NSSelectorFromString(@"defaultStatusBarHeightForOrientation:"), ss = NSSelectorFromString(@"setDefaultStatusBarHeight:forOrientation:");
+    Method fm = class_getInstanceMethod(object_getClass(settings), fs), hm = class_getInstanceMethod(object_getClass(settings), hs);
+    if (!fm || !hm || strncmp(method_getTypeEncoding(fm) ?: "", "{CGRect=", 8) || strcmp(method_getTypeEncoding(hm) ?: "", "d24@0:8q16")) return settings;
+    CGRect f = ((CGRect (*)(id, SEL))objc_msgSend)(settings, fs);
+    if (DMSceneFrameIsCanvas(f) || !(f.size.width >= 50.0) || !(f.size.height >= 50.0)) return settings;   // (full screen, or no frame yet)
+    NSString *sid = nil; @try { sid = [scene valueForKey:@"identifier"]; } @catch (id e) {}
+    if (![sid isKindOfClass:[NSString class]] || ![sid hasPrefix:@"sceneID:"]) return settings;
+    NSString *windowed = nil;
+    for (UIView *st in DMAerialStagesAll()) { NSString *b = DMStageBundle(st); if (b.length && [sid containsString:b]) { windowed = b; break; } }
+    if (!windowed || !DMSceneIsStageScene(scene, windowed)) return settings;
+    BOOL differs = NO;
+    for (long o = 1; o <= 4 && !differs; o++) differs = fabs(((double (*)(id, SEL, long))objc_msgSend)(settings, hs, o) - gDMMenuBarStockH) > 0.25;
+    if (!differs) return settings;
+    id copy = [settings respondsToSelector:@selector(mutableCopy)] ? [settings mutableCopy] : nil;
+    Method sm = copy ? class_getInstanceMethod(object_getClass(copy), ss) : NULL;
+    if (!sm || strcmp(method_getTypeEncoding(sm) ?: "", "v32@0:8d16q24")) return settings;
+    for (long o = 1; o <= 4; o++) ((void (*)(id, SEL, double, long))objc_msgSend)(copy, ss, gDMMenuBarStockH, o);
+    static int told = 0;
+    if (told < 8) { told++; DMLog([NSString stringWithFormat:@"[barsize] %@: an Aerial window (frame %@): iOS's own status bar height %.1f", windowed, NSStringFromCGRect(f), gDMMenuBarStockH]); }
+    return copy;
+}
+static int gDMBarSizeFramesHooked = 0;   // (the later frame rule's hook: 0 not yet, 1 on, -1 not as read -- DMBarSizeSceneFramesInit below)
+static void DMBarSizeSceneFramesInit(BOOL atRequest);
+%group MenuBarSizeScenes
+%hook SBDeviceApplicationSceneHandle
+- (void)_modifyApplicationSceneSettings:(id)settings fromRequestContext:(id)context entity:(id)entity {
+    if (!gDMBarSizeFramesHooked) DMBarSizeSceneFramesInit(YES);   // (a request carries a scene settings object: from now on its -setFrame: is there)
+    BOOL window = DMBarSizeSceneIsWindow(settings);
+    if (window) gDMBarStockDepth++;
+    @try {
+        %orig;
+    } @finally {
+        if (window) gDMBarStockDepth--;
+    }
+    DMBarSizeSceneNote(self, settings, window);
+}
+%end
+%end
+// The Lock Screen's Control Center grabber (18: CSTeachableMomentsContainerView) takes its top from a fixed value per device (UIScreen's reference
+// bounds and SBDisplayMetrics in -_layoutControlCenterGrabberAndGlyph -- like Control Center's own top), not from the bar it sits under: at Large it
+// stayed at 26, inside the 37 pt bar (A12Z; under the 24 pt bar it is 2 pt below it). Its top goes down by what the size added to the bar (13 pt at
+// Large, 6 at Medium) on the iPad's own screen; a top given relative to something else is left as it is.
+static double DMBarSizeGrabberShift(UIView *v) {
+    if (v.window && v.window.screen != [UIScreen mainScreen]) return 0.0;
+    return MSBDMenuBarGrabberShift(gDMBarSize, gDMMenuBarH, gDMMenuBarStockH);
+}
+%group MenuBarSizeGrabber
+%hook CSTeachableMomentsContainerView
+- (CGPoint)_grabberCenterForContainerBounds:(CGRect)bounds grabberTop:(double)top grabberTopIsRelative:(BOOL)relative grabberSize:(CGSize)size isSpaceConstrained:(BOOL *)constrained {
+    double shift = relative ? 0.0 : DMBarSizeGrabberShift((UIView *)self);
+    CGPoint c = %orig(bounds, top + shift, relative, size, constrained);
+    static double lastTop = -1, lastShift = -1;
+    if (fabs(top - lastTop) > 0.25 || fabs(shift - lastShift) > 0.25) {
+        lastTop = top; lastShift = shift;
+        DMLog([NSString stringWithFormat:@"[barsize] the Lock Screen's grabber: iOS's top %.1f%@, %.1f pt lower for the bar -> centre %@", top, relative ? @" (relative: left)" : @"", shift, NSStringFromCGPoint(c)]);
+    }
+    return c;
+}
+%end
+%end
+static BOOL DMBarSizeOwns(Class c, BOOL classMethod, const char *name, const char *types);
+static void DMBarSizeGrabberInit(void) {   // (CoverSheet's class may load after us: looked for once a second, up to 30 s, as LockStatusBar.x does)
+    static int tries = 0;
+    Class c = objc_getClass("CSTeachableMomentsContainerView");
+    if (c) {
+        if (DMBarSizeOwns(c, NO, "_grabberCenterForContainerBounds:grabberTop:grabberTopIsRelative:grabberSize:isSpaceConstrained:", "{CGPoint=dd}84@0:8{CGRect={CGPoint=dd}{CGSize=dd}}16d48B56{CGSize=dd}60o^B76")) {
+            %init(MenuBarSizeGrabber, CSTeachableMomentsContainerView = c);
+            DMLog(@"[barsize] the Lock Screen's Control Center grabber follows the bar's height");
+        } else DMLog(@"[barsize] the Lock Screen's Control Center grabber: its layout is not as read -- left where iOS puts it");
+        return;
+    }
+    if (++tries < 30) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{ DMBarSizeGrabberInit(); });
+    else DMLog(@"[barsize] the Lock Screen's Control Center grabber: no CSTeachableMomentsContainerView here -- left where iOS puts it");
+}
+// (a scene made a window, or full screen, after its request: DMBarSizeSceneFrameSet. 16: FBSMutableSceneSettings's own -setFrame:, there from the start;
+//  17+: FBSSceneSettings's, which FrontBoardServices adds to the class when the first scene settings object is made -- its 24 own methods become 46
+//  then, -setFrame: among them (17.5.1 and 18.5, read in a process of our own) --, after SpringBoard's start (~2.5 s in on 17.5.1): not there at %ctor.
+//  Every scene request carries such an object, so the request hook (MenuBarSizeScenes) looks again before it runs one, until the setter is hooked: a
+//  frame set after a scene's request is caught however long the start took. Looked for at the start and at requests only, never on a timer.)
+static BOOL gDMBarSizeScenesOn = NO;   // (MenuBarSizeScenes went on: requests will look for the setter)
+static void DMBarSizeSceneFramesInit(BOOL atRequest) {
+    if (gDMBarSizeFramesHooked) return;
+    const char *t = "v48@0:8{CGRect={CGPoint=dd}{CGSize=dd}}16";
+    Class frames = objc_getClass("FBSMutableSceneSettings");
+    if (!DMBarSizeOwns(frames, NO, "setFrame:", t)) frames = objc_getClass("FBSSceneSettings");   // (17+: the base class's own setter)
+    if (DMBarSizeOwns(frames, NO, "setFrame:", t)) {
+        %init(MenuBarSizeSceneFrames, FBSMutableSceneSettings = frames);
+        gDMBarSizeFramesHooked = 1;
+        DMLog([NSString stringWithFormat:@"[barsize] a scene's frame set later moves it to iOS's own status bar height or the size's too (-[%@ setFrame:], %@)", NSStringFromClass(frames),
+               atRequest ? @"at the first scene request" : @"at the start"]);
+        return;
+    }
+    if (!atRequest) {
+        DMLog(gDMBarSizeScenesOn ? @"[barsize] a scene's frame set later: -setFrame: not set up yet -- hooked at the first scene request"
+                                 : @"[barsize] a scene's frame set later: -setFrame: not set up yet and no scene request hook -- left to the requests");
+        return;
+    }
+    gDMBarSizeFramesHooked = -1;
+    DMLog(@"[barsize] a scene's frame set later: no -setFrame: of FBSMutableSceneSettings / FBSSceneSettings as read at the first scene request -- left to the requests");
+}
+static BOOL DMBarSizeOwns(Class c, BOOL classMethod, const char *name, const char *types) {   // c itself (not a superclass) has the method, with these types
+    if (!c) return NO;
+    unsigned n = 0; BOOL ok = NO;
+    Method *ms = class_copyMethodList(classMethod ? object_getClass((id)c) : c, &n);
+    SEL s = sel_registerName(name);
+    for (unsigned i = 0; i < n && !ok; i++) if (method_getName(ms[i]) == s) ok = !strcmp(method_getTypeEncoding(ms[i]) ?: "", types);
+    free(ms);
+    return ok;
+}
+static int DMBarSizeStored(void) {   // Settings > Status Bar > Menu Bar Size, as stored (MenuBarSize.h: a number; the crash guard's false and anything else, Small)
+    CFPropertyListRef v = CFPreferencesCopyValue(CFSTR(kMSBDMenuBarSizeKey), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    double d = 0.0; int isNumber = 0;
+    if (v) { if (CFGetTypeID(v) == CFNumberGetTypeID()) isNumber = CFNumberGetValue((CFNumberRef)v, kCFNumberDoubleType, &d); CFRelease(v); }
+    return MSBDMenuBarSizeFrom(isNumber, d);
+}
+// Before SpringBoard makes its first bar (%ctor): the stored size, and iOS's providers hooked for it. Read once: a change applies after a respring.
+static void DMBarSizeInit(void) {
+    int want = DMBarSizeStored();
+    if (want == MSBDMenuBarSmall) { DMLog(@"[barsize] Menu Bar Size: Small (iOS's bar as it is, nothing hooked)"); return; }
+    NSString *name = want == MSBDMenuBarLarge ? @"Large" : @"Medium";
+    gDMBarSize = want;   // (before the hooks go on: they act from their first call)
+    BOOL stui = DMSBUseSTUI(), went[2] = { NO, NO }, clock[2] = { NO, NO };
+    const char *const names[2][2] = { { "_UIStatusBarVisualProvider_Pad", "_UIStatusBarVisualProvider_RoundedPad" }, { "STUIStatusBarVisualProvider_Pad", "STUIStatusBarVisualProvider_RoundedPad" } };
+    for (int f = 0; f < 2; f++) {
+        if (f == 1 && !stui) continue;   // (SystemStatusUI's bars: iPadOS 17+, DMSBUseSTUI)
+        Class pad = objc_getClass(names[f][0]), rounded = objc_getClass(names[f][1]);
+        BOOL all = pad && rounded && [rounded isSubclassOfClass:pad]
+            && DMBarSizeOwns(pad, YES, "height", "d16@0:8") && DMBarSizeOwns(pad, YES, "baselineOffset", "d16@0:8")
+            && DMBarSizeOwns(rounded, YES, "height", "d16@0:8") && DMBarSizeOwns(rounded, YES, "baselineOffset", "d16@0:8")
+            && DMBarSizeOwns(pad, NO, "normalFont", "@16@0:8") && DMBarSizeOwns(pad, NO, "styleAttributesForStyle:", "@24@0:8q16");
+        if (!all) { DMLog([NSString stringWithFormat:@"[barsize] %s / %s are not as read: not hooked", names[f][0], names[f][1]]); continue; }
+        if (f == 0) %init(MenuBarSizeUIKit, _UIStatusBarVisualProvider_Pad = pad, _UIStatusBarVisualProvider_RoundedPad = rounded);
+        else %init(MenuBarSizeSTUI, STUIStatusBarVisualProvider_Pad = pad, STUIStatusBarVisualProvider_RoundedPad = rounded);
+        went[f] = YES;
+        gDMBarSizedPad[f] = pad;
+        if (DMBarSizeOwns(pad, NO, "clockFont", "@16@0:8")) {   // (the time's own font, where the provider has one: 17's headers; 15.6.1 read only -normalFont)
+            if (f == 0) %init(MenuBarSizeUIKitClock, _UIStatusBarVisualProvider_Pad = pad);
+            else %init(MenuBarSizeSTUIClock, STUIStatusBarVisualProvider_Pad = pad);
+            clock[f] = YES;
+        }
+    }
+    if (!(stui ? went[1] : went[0])) {
+        gDMBarSize = MSBDMenuBarSmall;   // (SpringBoard's own bars could not take it: Small, ours included -- anything hooked above stays inert)
+        gDMBarSizedPad[0] = gDMBarSizedPad[1] = Nil;
+        DMLog([NSString stringWithFormat:@"[barsize] Menu Bar Size %@ NOT in force: iOS's %@ providers are not as read -- the bar stays Small", name, stui ? @"SystemStatusUI" : @"UIKit"]);
+        return;
+    }
+    DM_FEATURE_MARK("menubar-size");
+    DMLog([NSString stringWithFormat:@"[barsize] Menu Bar Size %@: iOS's bar %.0f pt, its text and icons x %.3f, baseline %.0f (UIKit's providers %@%@%@)", name,
+           MSBDMenuBarSizeHeight(want, 0.0), MSBDMenuBarSizeScale(want), MSBDMenuBarSizeBaseline(want, 0.0), went[0] ? @"hooked" : @"NOT hooked", clock[0] ? @" with the clock font" : @"",
+           stui ? [NSString stringWithFormat:@"; SystemStatusUI's %@%@", went[1] ? @"hooked" : @"NOT hooked", clock[1] ? @" with the clock font" : @""] : @""]);
+    DMBarSizeBatteryInit(stui);   // (iOS's battery at the size: its measures come from a size category, not the icon scale)
+    Class handle = objc_getClass("SBDeviceApplicationSceneHandle");   // (windows keep iOS's own status bar height: DMBarSizeSceneIsWindow)
+    if (DMBarSizeOwns(handle, NO, "_modifyApplicationSceneSettings:fromRequestContext:entity:", "v40@0:8@16@24@32")) {
+        %init(MenuBarSizeScenes, SBDeviceApplicationSceneHandle = handle);
+        gDMBarSizeScenesOn = YES;
+        DMLog(@"[barsize] windows' scenes keep iOS's own status bar height; scenes under the bar take the size's");
+    } else DMLog(@"[barsize] windows' scenes NOT kept at iOS's own status bar height: -_modifyApplicationSceneSettings:fromRequestContext:entity: is not as read");
+    DMBarSizeSceneFramesInit(NO);
+    DMBarSizeGrabberInit();
 }
 // 1.7.2 item 9: windows placed before 1.7.1 on a Home-button iPad kept the 24 pt bar's top and showed a 4 pt band of wallpaper under the 20 pt bar
 // until they were moved (17.5, KT's Clock window). They are re-fitted ONCE (common/MenuBarHeight.h MSBDMenuBarRefitTop), each set of windows by the
@@ -32272,6 +33265,8 @@ static void DMAutoHideKeepBarAbove(BOOL on) {
 }
 // Moves the windows touching the top edge down by the bar's height (show) or back (hide). Also used after Fit places windows afresh while the bar shows.
 static void DMStatusBarMoveWindows(BOOL show, CGFloat h, BOOL animated) {
+    // (a window "touches the top" above 23 -- one point under a 24 pt bar --, at Medium and Large above the bar's own height less 1: 1.7.3)
+    const CGFloat touching = MSBDMenuBarFixedSite(gDMBarSize, DMMenuBarHeight()) - 1.0;
     NSMutableArray *stages = [NSMutableArray array];
     BOOL titleOnly = DMAutoHideTitleOnly();
     NSUInteger titles = 0;
@@ -32279,7 +33274,7 @@ static void DMStatusBarMoveWindows(BOOL show, CGFloat h, BOOL animated) {
         if (titleOnly) {   // step 2: the window stays, its title bar slides (a window left moved down from before is put back first)
             if (DMAutoHideShiftOf(st) > 0) DMAutoHideUnshift(st);
             CGFloat top = st.frame.origin.y, cur = DMAutoHideTitleShiftOf(st);
-            CGFloat want = (show && !st.hidden && !DMStageMinimized(st) && top < 23.0) ? MAX(0.0, h - MAX(0.0, top)) : 0.0;
+            CGFloat want = (show && !st.hidden && !DMStageMinimized(st) && top < touching) ? MAX(0.0, h - MAX(0.0, top)) : 0.0;
             if (fabs(want - cur) < 0.25) continue;
             if (want > 0 && [objc_getAssociatedObject(st, kStageGestureKey) boolValue]) continue;   // (not mid-drag)
             DMAutoHideSetTitleShift(st, want, animated);
@@ -32289,7 +33284,7 @@ static void DMStatusBarMoveWindows(BOOL show, CGFloat h, BOOL animated) {
         if (st.hidden || DMStageMinimized(st)) continue;
         CGFloat shift = [objc_getAssociatedObject(st, kSBShiftKey) doubleValue];
         CGFloat top = st.frame.origin.y - shift;   // (its own place, without our shift)
-        CGFloat want = show && top < 23.0 ? MAX(0.0, h - top) : 0.0;
+        CGFloat want = show && top < touching ? MAX(0.0, h - top) : 0.0;
         if (fabs(want - shift) < 0.25) continue;
         if (show && [st.layer animationKeys].count && ![st.layer animationForKey:@"transform"]) continue;   // (being placed or turned right now: next time)
         BOOL busy = NO;   // (not while the user drags or resizes it: its title bar or handle is in use)
@@ -32306,7 +33301,7 @@ static void DMStatusBarMoveWindows(BOOL show, CGFloat h, BOOL animated) {
     void (^move)(void) = ^{
         for (UIView *st in stages) {
             CGFloat shift = [objc_getAssociatedObject(st, kSBShiftKey) doubleValue], top = st.frame.origin.y - shift;
-            CGFloat want = show && top < 23.0 ? MAX(0.0, h - top) : 0.0;
+            CGFloat want = show && top < touching ? MAX(0.0, h - top) : 0.0;
             st.transform = CGAffineTransformTranslate(st.transform, 0, want - shift);
             objc_setAssociatedObject(st, kSBShiftKey, want > 0 ? @(want) : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             objc_setAssociatedObject(st, kSBShiftTyKey, want > 0 ? @(st.transform.ty) : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -32340,6 +33335,22 @@ static UIView *DMEdgeWindowHitTest(id self, SEL _cmd, CGPoint p, UIEvent *e) {
     CGPoint q = [(UIView *)self convertPoint:p toView:gSBEdgeStrip];
     return [gSBEdgeStrip pointInside:q withEvent:e] ? gSBEdgeStrip : nil;
 }
+// The strip's place: the screen's top 6 pt as the screen is turned now, in the strip window's own space. On iPadOS 16 this window class keeps its
+// native portrait frame and bounds and lies turned on the screen (DMMenuHost), so the window's own top (y 0..6 across its bounds) was a SIDE edge in
+// landscape: on the iPad 2 in orientation 3 the strip took every touch on the screen's left 6 pt while the bar was hidden, and the top edge had none
+// (hitwin, 1.7.3 device pass). UIKit knows how the window lies on the screen (the menus convert through the screen's space the same way). Placed
+// when the strip comes on and again on every auto-hide tick while the bar is hidden: SpringBoard turns the window only once it is shown, and a turn
+// of the screen moves the edge.
+static void DMEdgeStripPlace(void) {
+    if (!gSBEdgeWindow || !gSBEdgeStrip) return;
+    UIScreen *s = [UIScreen mainScreen];
+    CGRect r = [gSBEdgeWindow convertRect:CGRectMake(0, 0, s.bounds.size.width, 6.0) fromCoordinateSpace:s.coordinateSpace];
+    if (CGRectIsNull(r) || r.size.width < 1.0 || r.size.height < 1.0) return;
+    CGRect f = gSBEdgeStrip.frame;
+    if (fabs(r.origin.x - f.origin.x) <= 0.25 && fabs(r.origin.y - f.origin.y) <= 0.25 && fabs(r.size.width - f.size.width) <= 0.25 && fabs(r.size.height - f.size.height) <= 0.25) return;
+    gSBEdgeStrip.frame = r;
+    if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[autohide] top-edge touch strip placed: %@ in its window, %@ on the screen", NSStringFromCGRect(r), NSStringFromCGRect([gSBEdgeStrip convertRect:gSBEdgeStrip.bounds toCoordinateSpace:s.coordinateSpace])]);
+}
 static void DMAutoHideTouchStrip(BOOL on) {
     if (DMTestFlag("/tmp/msb-nostrip")) on = NO;   // (debug: without the strip)
     if (on && !gSBEdgeWindow) {
@@ -32356,9 +33367,8 @@ static void DMAutoHideTouchStrip(BOOL on) {
             UIWindow *w = ((id (*)(id, SEL, id, id))objc_msgSend)([sub alloc], initRole, @"SBFTraitsParticipantRoleRecordingIndicator", @"MacStatusBarTopEdge"); DMSnapInvalidate();
             w.backgroundColor = [UIColor clearColor];
             w.hidden = YES;
-            UIView *strip = [[UIView alloc] initWithFrame:CGRectMake(0, 0, w.bounds.size.width, 6.0)];
+            UIView *strip = [[UIView alloc] initWithFrame:CGRectMake(0, 0, w.bounds.size.width, 6.0)];   // (its place: DMEdgeStripPlace)
             strip.backgroundColor = [UIColor colorWithWhite:0 alpha:0.011];   // (not quite clear: the render server then counts it as there)
-            strip.autoresizingMask = UIViewAutoresizingFlexibleWidth;
             SEL opaque = NSSelectorFromString(@"setHitTestsAsOpaque:");
             if ([strip.layer respondsToSelector:opaque]) ((void (*)(id, SEL, BOOL))objc_msgSend)(strip.layer, opaque, YES);
             [w addSubview:strip];
@@ -32369,10 +33379,10 @@ static void DMAutoHideTouchStrip(BOOL on) {
     if (on) {
         UIWindow *layer = DMActiveEngine() == DMEngineZetsu ? nil : DMWindowLayer();
         gSBEdgeWindow.windowLevel = MAX(layer ? layer.windowLevel + 1.0 : 0.0, kMenuWindowLevel - 5.0);
-        gSBEdgeStrip.frame = CGRectMake(0, 0, gSBEdgeWindow.bounds.size.width, 6.0);
     }
     gSBEdgeWindow.hidden = !on;
-    if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[autohide] top-edge touch strip %@ (window level %.0f, %@)", on ? @"on" : @"off", gSBEdgeWindow.windowLevel, NSStringFromCGRect(gSBEdgeStrip.frame)]);
+    if (on) DMEdgeStripPlace();
+    if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[autohide] top-edge touch strip %@ (window level %.0f, %@ in its window, %@ on the screen)", on ? @"on" : @"off", gSBEdgeWindow.windowLevel, NSStringFromCGRect(gSBEdgeStrip.frame), NSStringFromCGRect([gSBEdgeStrip convertRect:gSBEdgeStrip.bounds toCoordinateSpace:[UIScreen mainScreen].coordinateSpace])]);
 }
 static void DMStatusBarSetHidden(BOOL hide, NSString *why) {
     if (hide == gSBHidden) return;
@@ -32464,7 +33474,10 @@ static void DMAutoHideRetopAll(BOOL layout, BOOL tiled, BOOL modeChanged) {
         // the top 24 pt stayed there, over the bar, after auto-hide went off: seen on the iPad 2)
         UIWindow *host = [st isKindOfClass:[UIWindow class]] ? (UIWindow *)st : st.window;
         if (!host || [st.layer animationKeys].count) continue;   // (not while it is animating in: next time)
-        if (bottom < 0) bottom = CGRectGetMaxY(DMUsableArea());
+        // (the bottom our layouts give a full-height window -- Fill's: an Aerial stage's frame runs 1 pt below the usable area's bottom, so with the
+        //  usable bottom each hide / show cycle left full-height Aerial windows 1 pt short, and a Menu Bar Size re-fit then took them for windows
+        //  that do not reach the bottom (M1, 1.7.3: Settings and Clock halves kept their size under a shorter bar, a 7 pt gap above the Dock))
+        if (bottom < 0) { CGRect fill = DMLayoutFrame(@"fill"); bottom = CGRectIsNull(fill) || CGRectIsEmpty(fill) ? CGRectGetMaxY(DMUsableArea()) : CGRectGetMaxY(fill); }
         CGRect f = st.frame, was = f;
         f.origin.y -= DMAutoHideShiftOf(st);
         BOOL fullHeight = CGRectGetMaxY(f) > bottom - 3.0;   // (reaching the usable bottom, or below it behind the Dock)
@@ -32485,6 +33498,7 @@ static void DMAutoHideRetopAll(BOOL layout, BOOL tiled, BOOL modeChanged) {
 }
 static void DMAutoHideTick(void) {   // every 0.1 s
     static BOOL wasActive = NO, wasLayout = NO;
+    if (gSBHidden) DMEdgeStripPlace();   // (the top-edge strip where the screen's top is now: the window's turn comes once it shows, a turn moves it)
     BOOL active = DMAutoHideActive(), layout = DMAutoHideLayout();
     if (active != wasActive) {
         wasActive = active;
@@ -33022,7 +34036,15 @@ static void DMWatchBarOverHidingApp(void) {   // every tick
 // when Settings, just restored into a Zetsu window after a respring, was killed during Zetsu's launch burst): FrontBoard asserts that a scene monitor was
 // invalidated before it goes away. Zetsu keeps one per window (ZetsuAppController -sceneMonitor) and can drop it without invalidating it when the app
 // dies at the wrong moment. A monitor that reaches -dealloc still valid is invalidated first (FrontBoard's own call), then released as usual.
+// 1.7.3 item 11 (M1 15.6.1, 31 Oct 07:07, Safe Mode on an Aerial -> Zetsu switch): invalidating the monitor alone only moved the end. The monitor is
+// dropped by a controller that is being freed without its own close, and Zetsu's controllers pair the monitor with a KVO observation of the scene's
+// layer manager ("layers") that only their close removes: the freed ZetsuAppController stayed registered, and the next change of Settings' layers
+// sent the notification to it (EXC_BAD_ACCESS in KVO, x0 = that controller), 160 ms after this guard's line. So the owner is looked at first
+// (MonitorGuard.h): when it is being deallocated right now, its registrations on its own layer manager and on the monitored scene's are removed, as
+// its close would have done, and then the monitor is invalidated. (Why the controller was freed without its close: its launch retry outlived the
+// close -- DMZetsuStopClosedRetry, with the Zetsu hooks.)
 // Off switch: /tmp/msb-nomonitorguard.
+#include "../common/MonitorGuard.h"
 %group SceneMonitorGuard
 %hook FBSceneMonitor
 - (void)dealloc {
@@ -33031,7 +34053,14 @@ static void DMWatchBarOverHidingApp(void) {   // every tick
     if (off >= 0 && !*((BOOL *)((uint8_t *)(__bridge void *)self + off)) && !DMTestFlag("/tmp/msb-nomonitorguard")
         && [(id)self respondsToSelector:@selector(invalidate)]) {
         NSString *sid = nil; @try { sid = [(id)self valueForKey:@"_sceneID"]; } @catch (id e) {}
-        DMLog([NSString stringWithFormat:@"[monitorguard] a scene monitor for %@ was released without being invalidated: invalidated first (FrontBoard would abort)", sid ?: @"?"]);
+        // (the monitored scene's layer manager: the scene is still the monitor's own ivar here, before FrontBoard's -dealloc runs)
+        id scene = (__bridge id)MSBDIvarRaw((id)self, "_scene"), sceneLayers = nil;
+        if (scene && [scene respondsToSelector:NSSelectorFromString(@"layerManager")]) sceneLayers = DMCall(scene, @"layerManager");
+        NSString *owner = nil; int removed = 0;
+        @try { removed = MSBDMonitorOwnerCleanup((id)self, "_manager", sceneLayers, kMSBDMonitorOwnerKeyPath, &owner); } @catch (id e) {}
+        if (removed > 0) DM_FEATURE_MARK("monitor-guard-owner-unobserved");
+        DMLog([NSString stringWithFormat:@"[monitorguard] a scene monitor for %@ was released without being invalidated: invalidated first (FrontBoard would abort)%@", sid ?: @"?",
+               owner ? [NSString stringWithFormat:@"; its owner %@ is being freed without its own close: %d observation(s) of the layer manager's layers removed", owner, removed] : @""]);
         @try { [(id)self performSelector:@selector(invalidate)]; } @catch (id e) {}
     }
     %orig;
@@ -34536,8 +35565,16 @@ static CGRect DMSMCardDesk(CGRect u, CGSize scr, BOOL behindDock) {
 // screen: no title bar, no traffic lights, iPad 2 3 Oct), at most the desktop, all of it inside (DMSMFitInDesk: when too big, top and left edges
 // win), handed over as fractions of THIS screen. Full-screen attributes (policy 2), sizes Stage Manager works out itself and attributes that fit
 // already are returned as they are (no rewrite). bundle: for the log.
+// Menu Bar Size (1.7.3): a window placed under a bar of another height, not yet re-fitted (DMSMSizeRefitPending), is first re-fitted under the bar
+// now -- under a taller one keeping its bottom (DMSMAttrsRefitTop) -- before the fit below, which moves a window that starts above the desktop down
+// whole: the start's own request hands the stage on screen over through here before DMSMRefitOldTopTick runs, and a top-left quarter came back 13 pt
+// lower with its size, its bottom past its 6 pt gap (A12Z, Small -> Large).
+static id DMSMAttrsRefitTop(id attrs, NSString *who, BOOL old24, BOOL sized, double placedTop);
+static BOOL DMSMSizeRefitPending(double *placedTop);
 static id DMSMAttrsFitScreen(id attrs, id identity, BOOL behindDock, NSString *bundle) {
     if (!DMSMIsAttrs(attrs) || DMSMAttrsFullScreen(attrs)) return attrs;
+    double placedTop = NAN;
+    if (DMSMIsMainIdentity(identity) && DMSMSizeRefitPending(&placedTop)) { id r = DMSMAttrsRefitTop(attrs, bundle, NO, YES, placedTop); if (r) attrs = r; }
     DMSMAttributedSize sz; CGPoint c;
     if (!DMSMAttrAttributedSize(attrs, &sz) || !DMSMAttrCenter(attrs, &c)) return attrs;
     CGSize scr = CGSizeZero;
@@ -34561,26 +35598,39 @@ static id DMSMAttrsFitScreen(id attrs, id identity, BOOL behindDock, NSString *b
 // 1.7.2 item 9 (DMRefitTopWanted): a window's attributes with its top at the 24 pt bar's old top -- the whole window, our title bar on top: 24, its
 // card 24 + 24 down -- moved up under the bar this iPad has (MSBDMenuBarRefitTop: a window down to the desktop's bottom keeps its bottom). Measured
 // on the iPad's screen as it is now, as DMSMAttrsFitScreen measures; nil when it is not at the old top (or full screen, or not readable).
-static id DMSMAttrsRefitTop(id attrs, NSString *who) {
+// Menu Bar Size (1.7.3; `sized`): a window placed under a bar of another height -- placedTop, the top under it (NAN: not known, before 1.7.3) -- goes
+// under the bar now (MSBDMenuBarRefitSize: under a taller bar keeping its bottom, from a shorter bar's old top up), after item 9's step. A window
+// whose size Stage Manager works out itself (its default size: no points in its attributes) is measured by its card when it is on screen (`key`):
+// it was skipped, so a window at Medium's top stayed there back at Small, a 10 pt band of wallpaper under the bar (17.5 device pass); it is handed
+// back with that size.
+static id DMSMAttrsRefitTop(id attrs, NSString *key, BOOL old24, BOOL sized, double placedTop) {
     if (!DMSMIsAttrs(attrs) || DMSMAttrsFullScreen(attrs)) return nil;
+    NSString *who = key ? DMSMKeyText(key) : nil;
     DMSMAttributedSize sz; CGPoint c;
     if (!DMSMAttrAttributedSize(attrs, &sz) || !DMSMAttrCenter(attrs, &c)) return nil;
     CGSize scr = CGSizeZero;
     CGRect u = DMSMUsableAreaForIdentity(nil, &scr);
     if (scr.width < 1.0 || scr.height < 1.0 || CGRectIsEmpty(u) || CGRectIsNull(u)) return nil;
     CGSize pts = DMSMFitSizeInPoints(sz.normalizedSize, sz.referenceBounds, sz.type, scr);
+    if ((pts.width <= 0 || pts.height <= 0) && sized && key) {   // (Stage Manager's own size: its card's, on screen)
+        UIView *card = DMSMCardFor(key);
+        if (card.window && !DMSMCardIsFullSize(card)) pts = card.bounds.size;
+    }
     if (pts.width <= 0 || pts.height <= 0) return nil;
     CGPoint cp = CGPointMake(c.x * scr.width, c.y * scr.height);
-    double y = cp.y - pts.height / 2.0 - kSMBarH, h = pts.height + kSMBarH, oldY = y;   // (the whole window)
-    if (!MSBDMenuBarRefitTop(&y, &h, kMSBDMenuBarDefault, DMMenuBarHeight(), CGRectGetMaxY(u))) return nil;
+    double y = cp.y - pts.height / 2.0 - kSMBarH, h = pts.height + kSMBarH, oldY = y, oldH = h;   // (the whole window)
+    BOOL moved = old24 && MSBDMenuBarRefitTop(&y, &h, kMSBDMenuBarDefault, DMMenuBarHeight(), CGRectGetMaxY(u));
+    if (sized && MSBDMenuBarRefitSize(&y, &h, placedTop, DMMenuBarHeight(), CGRectGetMaxY(u), MSBDWindowMinSize().height)) moved = YES;
+    if (!moved) return nil;
     CGSize np = CGSizeMake(pts.width, h - kSMBarH);
     CGPoint nc = CGPointMake(cp.x, y + kSMBarH + np.height / 2.0);
     DMSMAttributedSize ns = sz;
     ns.normalizedSize = CGSizeMake(np.width / scr.width, np.height / scr.height); ns.type = 0;
     ns.referenceBounds = CGRectMake(0, 0, scr.width, scr.height);
     id a = DMSMAttrWith(attrs, ns, CGPointMake(nc.x / scr.width, nc.y / scr.height), DMSMPolicyOf(attrs), -1);
-    if (a) DMLog([NSString stringWithFormat:@"[menubar] %@: placed with the 24 pt bar's top (%.1f) -- now under the %.0f pt bar: %.0f x %.0f pt at %.1f (was %.0f x %.0f)",
-        who ?: @"a window", oldY, DMMenuBarHeight(), np.width, np.height + kSMBarH, y, pts.width, pts.height + kSMBarH]);
+    if (a) DMLog([NSString stringWithFormat:@"[menubar] %@: placed with %@ (top %.1f, %.0f pt tall) -- now under the %.0f pt bar: %.0f x %.0f pt at %.1f",
+        who ?: @"a window", sized ? (isfinite(placedTop) ? [NSString stringWithFormat:@"the %.0f pt bar's top", placedTop] : @"the Small bar's top") : @"the 24 pt bar's top",
+        oldY, oldH, DMMenuBarHeight(), np.width, np.height + kSMBarH, y]);
     return a;
 }
 // Every window a plan names (@[entity, role, attributes] each) fitted to the screen it is asked on -- the one place where our requests and launch
@@ -35137,6 +36187,32 @@ static void DMSMBringToFront(NSString *key) {   // (newest interaction time in t
 @property (nonatomic, weak) UIView *card;
 @end
 static CFTimeInterval gSMDragUntil = 0;   // (a title-bar drag in progress, and 1 s after: the stage area reaches the screen bottom, _stageAreaForModel)
+// Our Stage Manager title bar's drag (-dm_pan:) has ended with the finger's travel t (in the card's superview): YES and the place to ask for when it
+// snaps as every engine's windows snap (1.7.3 item 3, WindowSnap.h) -- the window as drawn (our bar and the card) against the desktop of the iPad's
+// screen (DMSMUsableAreaForIdentity: under the menu bar, above the Dock line) and the stage's other windows (DMSMOpenWindowFrames). Stage Manager's own
+// pass would snap a window put down (45 pt, its auto-layout's snap step); with our engine that step is skipped (free placement: SMLayout16 /
+// SMLayout17), so the move snaps here, once, where we ask for its place. The dropped frame is the card's own on the screen, drawn at t; the place
+// asked for is the snapped card's middle as a share of the screen, as the turn's re-fit asks (DMSMSetWindowGeometry) -- not from the card's
+// centre: while a window is lifted Stage Manager moves the card's anchor to the finger (16.7.7: {0.47, -0.02}, on our title bar), so its centre is
+// the finger's point, not its middle. A TV's windows are left as they are.
+static BOOL DMSMSnapMoveTarget(NSString *key, UIView *card, CGPoint t, CGPoint *at) {
+    UIView *sup = card.superview;
+    UIScreen *scr = card.window.screen ?: [UIScreen mainScreen];
+    CGSize screen = scr.bounds.size;
+    if (!sup || !key.length || scr != [UIScreen mainScreen] || DMSnapOff() || !(screen.width > 0) || !(screen.height > 0)) return NO;
+    CGAffineTransform was = card.transform;
+    card.transform = CGAffineTransformMakeTranslation(t.x, t.y);   // (the card where the drag ends; put back at once)
+    CGRect dropped = [card convertRect:card.bounds toCoordinateSpace:scr.coordinateSpace];
+    card.transform = was;
+    CGRect window = CGRectMake(dropped.origin.x, dropped.origin.y - kSMBarH, dropped.size.width, dropped.size.height + kSMBarH);
+    CGRect others[32]; int n = 0;
+    NSDictionary<NSString *, NSValue *> *frames = DMSMOpenWindowFrames();
+    for (NSString *k in frames) { if (n < 32 && ![k isEqualToString:key]) others[n++] = frames[k].CGRectValue; }
+    CGRect s = DMSnapFrameFor(DMSMKeyText(key), window, MSBDSnapMove, others, n, DMSMUsableAreaForIdentity(nil, NULL));
+    if (CGRectEqualToRect(s, window)) return NO;
+    *at = CGPointMake(CGRectGetMidX(s) / screen.width, (CGRectGetMinY(s) + kSMBarH + CGRectGetMaxY(s)) / 2.0 / screen.height);
+    return YES;
+}
 @implementation DMSMTitleBar
 - (instancetype)initWithFrame:(CGRect)f {
     if ((self = [super initWithFrame:f])) {
@@ -35220,11 +36296,13 @@ static CFTimeInterval gSMDragUntil = 0;   // (a title-bar drag in progress, and 
             if (!gSMBehindDock) gSMBehindDock = [NSMutableSet set];
             if (w.length) { if (CGRectGetMaxY(onScreen) + t.y > line + 4.0) [gSMBehindDock addObject:w]; else DMSMKeySetRemove(gSMBehindDock, w); }
         }
-        CGPoint c = CGPointMake(card.center.x + t.x, card.center.y + t.y);
+        CGPoint c = CGPointMake(card.center.x + t.x, card.center.y + t.y), at = CGPointZero;
+        BOOL snapped = DMSMSnapMoveTarget(w, card, t, &at);   // (1.7.3 item 3: let go, it lines up with what is near -- 16, 17 and 18 alike)
         CGSize b = sup.bounds.size;
         card.transform = CGAffineTransformIdentity;
         card.center = c;   // (in place at once; the stage then lays itself out there)
-        if (b.width > 0 && b.height > 0) DMSMSetWindowGeometry(w, CGPointMake(c.x / b.width, c.y / b.height), CGSizeZero);
+        if (snapped) DMSMSetWindowGeometry(w, at, CGSizeZero);
+        else if (b.width > 0 && b.height > 0) DMSMSetWindowGeometry(w, CGPointMake(c.x / b.width, c.y / b.height), CGSizeZero);
         DMLog([NSString stringWithFormat:@"[smchrome] %@ moved by %@", DMSMKeyText(w), NSStringFromCGPoint(t)]);
     }
 }
@@ -37143,13 +38221,49 @@ static void DMSMSaveStages(void) {
     @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[menubar] Stage Manager's stages NOT written: %@", e.reason]); return; }
     DMLog(@"[menubar] Stage Manager's stages written (the re-fitted places last past the next start)");
 }
+// Menu Bar Size (1.7.3): the same once for a bar of another height -- the bar the stages were last fitted under is kept (pref stagesMenuBar, in
+// points; not there: placed before 1.7.3, under the Small bar), and a start under a bar of another height re-fits them (DMSMAttrsRefitTop, `sized`).
+static double DMSMStagesBar(void) {
+    CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("stagesMenuBar"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    double d = NAN;
+    if (v) { if (CFGetTypeID(v) == CFNumberGetTypeID()) CFNumberGetValue((CFNumberRef)v, kCFNumberDoubleType, &d); CFRelease(v); }
+    return d > 0.0 ? d : NAN;
+}
+// The stages were placed under a bar of another height and are not re-fitted yet (DMSMRefitOldTopTick notes the bar once they are: then no more): a
+// window handed to Stage Manager meanwhile is re-fitted on the way (DMSMAttrsFitScreen). Only once the bar is known; placedTop: the old bar's top.
+static BOOL DMSMSizeRefitPending(double *placedTop) {
+    if (!(gDMMenuBarH > 0)) return NO;
+    double placed = DMSMStagesBar();
+    if (!MSBDMenuBarRefitWanted(placed, gDMMenuBarH, gDMBarSize)) return NO;
+    if (placedTop) *placedTop = isfinite(placed) ? MSBDMenuBarTopLimit(placed) : NAN;
+    return YES;
+}
+static void DMSMNoteStagesBar(void) {   // (the stages are fitted under this bar now)
+    if (!(gDMMenuBarH > 0)) return;
+    double was = DMSMStagesBar(), h = gDMMenuBarH;
+    if (isfinite(was) && fabs(was - h) < 0.25) return;
+    CFNumberRef n = CFNumberCreate(NULL, kCFNumberDoubleType, &h);
+    CFPreferencesSetValue(CFSTR("stagesMenuBar"), n, MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    CFPreferencesSynchronize(MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    CFRelease(n);
+    DMLog([NSString stringWithFormat:@"[barsize] Stage Manager's stages are fitted under the %.0f pt bar (was %@)", h, isfinite(was) ? [NSString stringWithFormat:@"%.0f", was] : @"not noted"]);
+}
 static void DMSMRefitOldTopTick(void) {
     static BOOL done = NO, again = NO; static CFTimeInterval readyAt = 0;
+    static int sized = -1; static double placedTop = NAN;   // (Menu Bar Size: decided once the bar is known)
 #if DEBUG
     if (gDMRefitTopAgain) { gDMRefitTopAgain = NO; done = NO; again = YES; readyAt = 0; DMLog(@"[menubar] (test) the windows' re-fit once more"); }
 #endif
     if (done || !DMSMEngine() || !gSMRestoreDone) return;
-    if (!again && !DMRefitTopWanted(2)) { if (gDMMenuBarH > 0) done = YES; return; }
+    if (sized < 0 && gDMMenuBarH > 0) {
+        double placed = DMSMStagesBar();
+        sized = MSBDMenuBarRefitWanted(placed, gDMMenuBarH, gDMBarSize);
+        placedTop = isfinite(placed) ? MSBDMenuBarTopLimit(placed) : NAN;
+        if (sized) DMLog([NSString stringWithFormat:@"[barsize] Stage Manager's stages were placed under the %@ bar, the bar is %.0f pt now: re-fitted under it",
+                          isfinite(placed) ? [NSString stringWithFormat:@"%.0f pt", placed] : @"Small", gDMMenuBarH]);
+    }
+    BOOL old24 = again || DMRefitTopWanted(2);
+    if (!old24 && sized != 1) { if (gDMMenuBarH > 0) { done = YES; DMSMNoteStagesBar(); } return; }
     CFTimeInterval now = CACurrentMediaTime();
     if (readyAt <= 0) { readyAt = now + 3.0; return; }   // (the start's own request settles first)
     if (now < readyAt || gDMScreenOff || DMSMHomeUILocked() || DMCoverSheetShown() || gOverlay || gMSWSwitching || DMSwitcherVisible() || DMSMWorkspaceBusy() || DMSMSpotlightHolds()) return;
@@ -37164,7 +38278,7 @@ static void DMSMRefitOldTopTick(void) {
         id st = al; BOOL changed = NO;
         for (id it in m) {
             NSString *k = DMSMItemKey(it);
-            id a = DMSMAttrsRefitTop(m[it], k ? DMSMKeyText(k) : nil);
+            id a = DMSMAttrsRefitTop(m[it], k, old24, sized == 1, placedTop);
             if (!a) continue;
             if (onScreen) { [shown addObject:@[it, a]]; continue; }
             id ns = DMSMStageWithAttrs(st, a, it);
@@ -37183,8 +38297,8 @@ static void DMSMRefitOldTopTick(void) {
     done = YES; again = NO;
     DM_FEATURE_MARK("menubar-refit-old-top");
     DMLog([NSString stringWithFormat:@"[menubar] Stage Manager: %lu window(s) on screen and %d in other stages re-fitted under the bar", (unsigned long)shown.count, hidden]);
-    if (!shown.count && !hidden) { DMRefitTopDone(2); return; }
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMSMSaveStages(); DMRefitTopDone(2); });   // (the requests' transitions over)
+    if (!shown.count && !hidden) { DMRefitTopDone(2); DMSMNoteStagesBar(); return; }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMSMSaveStages(); DMRefitTopDone(2); DMSMNoteStagesBar(); });   // (the requests' transitions over)
 }
 #include "SMGestureHook.h"   // (the switcher gesture's transaction, for SMGestureHold.h: 1.4.5, issue #7)
 #include "SMAfterHome.h"     // (the desktop's last window leaves the App Switcher once the Home transition is over: 1.5.2, the black ghost cards)
@@ -37803,6 +38917,7 @@ void DMSMRunAction(UIAction *action, id sender) {
     if (!DMCtorSkip("noiconlift")) %init(MacPointerIcons);   // (no icon lift with the Mac pointer, see there; with either status bar style, as the Mac pointer
                                                              //  runs with both -- StockBar.h starts its bridge too)
     if (gStockBar) { DMSpotPublishOff(); DMSMCheckReadOnly(); DMSkipLockInit(); DMPrewarmBlockOff(@"Use Stock Status Bar"); DMStockBarStart(); return; }   // only the parts that stay (StockBar.h); the rest below never runs
+    if (!DMCtorSkip("barsize")) DMBarSizeInit();   // (Menu Bar Size, 1.7.3: iOS's bar at Medium / Large, before SpringBoard makes its first bar; Small: nothing)
     // (the status bar hooks go on the classes SpringBoard's bar uses: 15/16 UIKit's, the same as a plain %init; 17+ SystemStatusUI's, DMSBClass)
     if (!DMCtorSkip("mainhooks")) %init(_UIStatusBarForegroundView = DMSBClass("_UIStatusBarForegroundView"), _UIStatusBarStringView = DMSBClass("_UIStatusBarStringView"),
           UIStatusBar_Modern = DMSBClass("UIStatusBar_Modern"), _UIStatusBar = DMSBClass("_UIStatusBar"), UIStatusBarWindow = DMSBClass("UIStatusBarWindow"));
@@ -37815,6 +38930,7 @@ void DMSMRunAction(UIAction *action, id sender) {
     }
     if (!DMCtorSkip("coverleave")) DMCoverSheetLeavingInit();   // (the bar's unlocked look as the Cover Sheet starts to leave: 1.7.1 item 11)
     if (!DMCtorSkip("ccregion")) DMCCRegionInit();   // (Control Center's pull region takes in our status icons: 1.7.2 item 12)
+    if (!DMCtorSkip("idlewindow")) DMIdleWindowFrontInit();   // (Auto-Lock: Apple's Home Screen half not while an engine's window is in front: 1.7.3 item 8)
     if (!DMCtorSkip("stockvpn")) DMStockVPNInit();
     if (!DMCtorSkip("stockwifi")) DMStockWiFiInit();   // (the Wi-Fi Menu: iOS's own Wi-Fi item can be left out of our bars; before the prefs are read)
     if (!DMCtorSkip("smengine")) DMSMEngineInit();

@@ -43,7 +43,7 @@ Updates come through Sileo, and the Apple menu shows Update Available when your 
 | Mission Control and Spaces | The Mac Switcher, with up to 8 desktops that slide with your fingers |
 | Finder and the desktop | A Finder window, and your files on the first Home Screen page |
 | Dock | A magnifying Dock with Finder, Launchpad, recent apps, a Downloads stack and a Trash |
-| Activity Monitor | An Activity Monitor window with your processes' CPU, memory and disk use, also in the App Library |
+| Activity Monitor | An Activity Monitor window with your processes' CPU, memory and disk use, also in the App Library and the Dock |
 | Search in System Settings | A search field at the top of the Settings sidebar |
 
 The Mac look is on right after install, and most features have their own switch. Some extras start off, such as the Mac Switcher, the Dock's Trash, the auto-hiding menu bar, seconds in the clock, tinted resize handles, the keyboard extras and the Lock Screen options. The [Settings reference](./docs/settings.md) shows how each switch starts.
@@ -54,11 +54,13 @@ The Mac look is on right after install, and most features have their own switch.
 - Tap the clock to drop down your Today View widgets, with your notifications above them.
 - The Wi-Fi icon opens a Wi-Fi menu, so you can join a network without Control Center. The Audio menu gives each app its own volume, and apps can play at the same time. While a VPN is connected, it gets its own menu with Disconnect.
 - Right-to-left languages get a mirrored menu bar, as on a Mac. Status Bar Style switches back to the stock iPadOS bar.
+- Menu Bar Size in Settings > Status Bar: Medium and Large make the menu bar taller, with larger text, icons and menus that are easier to tap with a finger.
 
 ### Windows
 
 - Title bars, traffic lights, rounded corners and resize handles, on the engine you already use.
 - The Window menu has layouts (halves, quarters, Fill Screen, Center) and Fit to Window, which tiles your windows side by side. Layouts and tiles reach the screen's edges, from right under the menu bar down to the Dock.
+- A window you move or resize lines up with the screen edges, the menu bar, the Dock and other windows when you let go of it near them.
 - On iPads with a Home button, windows placed before 1.7.1 with a gap under the menu bar move up under it once.
 - Windows have a smallest size with every engine, as with Stage Manager: the app at least 320 x 300 points.
 - With Aerial, Zetsu or MilkyWay4 on iPadOS 15 to 18, every app with a window has its card in iPadOS's App Switcher, as with Stage Manager. A tap on the card brings the window forward.
@@ -83,19 +85,20 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 - Files and folders from On My iPad > Desktop sit on the first Home Screen page, never over your apps. A long press or a right click opens their menus over your windows, and Hide Name hides an icon's name (Hide Desktop Icon Names in Settings > Status Bar hides them all).
 - Text files open in a small TextEdit window and save by themselves.
 - USB drives and SD cards show up under Locations. exFAT and FAT32 work (FAT32 can't hold files over 4 GB). APFS and Mac OS Extended should work but haven't been tested, and iPadOS doesn't read NTFS. An SSD may need a powered hub.
+- On iPadOS 16 to 18, each drive has an Eject button in Finder's sidebar, as on a Mac, and File > Eject and the drive's menu eject it too.
 - Finder only changes files in your own places: On My iPad, the apps' Documents folders, drives and its Trash. Everything else can be opened and copied, but not changed.
 
 ### Dock
 
 - Magnification, dots under open apps, recent apps, and Finder and Launchpad at its start, like on a Mac.
 - A Downloads stack with search, which you can drag files into and out of.
-- A Trash at its end, which you turn on in Settings > Dock. Drop files on it to move them to the Trash, a Dock app to take it out of the Dock, or a drive to eject it on iPadOS 16 and 17. On iPadOS 18, ejecting doesn't work yet.
+- A Trash at its end, which you turn on in Settings > Dock. Drop files on it to move them to the Trash, a Dock app to take it out of the Dock, or a drive to eject it (iPadOS 16 to 18).
 - Haptic Touch menus get Force Quit, App Size and Add to Folder on app icons, and a folder's menu lists its apps. Add to Folder moves the app into a Home Screen folder or a new one, as a drag would, also from the App Library.
 
 ### Activity Monitor and RAM & CPU
 
 - An Activity Monitor window lists the running processes with their CPU, memory and disk use. Sort by any column, search, pick All, My or System Processes, inspect a process or quit an app. System processes show no figures, and the Energy and Network tabs have no figures per process.
-- Activity Monitor is also an app in the App Library, in Utilities and in its search. Its icon lives only there and isn't saved with your Home Screen layout. Show in App Library in Settings > Status Bar turns it off.
+- Activity Monitor is also an app in the App Library, in Utilities and in its search. Add to Dock in its menu puts it in the Dock, where it works like an app. It's never saved with your Home Screen layout. Show in App Library in Settings > Status Bar turns it off.
 - RAM & CPU in Control Center shows the available and used memory and the CPU load, and a tap opens the details, with a button for Activity Monitor. Activity Monitor also opens from the Go menu and from Spotlight's actions.
 - With Memory Magic on iPadOS 15 to 17, a tap on its tile offers to put RAM & CPU in its place.
 
@@ -184,7 +187,7 @@ Tried it on another setup? A [compatibility report](https://github.com/Besiktasl
 | The Status Bar and Dock pages are gone | Both MacStatusBar and MacDock were turned off. Turn them back on in Choicy (or iCleaner Pro), then respring. |
 | Several window engines installed | That's fine. Only the one picked in Window Engine loads. Leave the engines' entries in Choicy alone: MacStatusBar&Dock manages them. |
 
-To uninstall, remove MacStatusBar&Dock in Sileo. It gives the window engines their own settings back and undoes its Choicy or iCleaner Pro changes. Finder's Trash isn't visible in the Files app and stays behind, so empty it in Finder first.
+To uninstall, remove MacStatusBar&Dock in Sileo. It gives the window engines their own settings back, undoes its Choicy or iCleaner Pro changes, and sets an Auto-Lock of 2 hours to 1 hour, the longest iPadOS keeps on its own. Finder's Trash isn't visible in the Files app and stays behind, so empty it in Finder first.
 
 ## Privacy
 
