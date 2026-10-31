@@ -32,7 +32,7 @@ static inline BOOL MSBDBlameIsOurName(NSString *name) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         ours = [NSSet setWithArray:@[@"MacStatusBar", @"MacDock", @"MacCrashBlame", @"BrightnessKeyTweak", @"DockMagnification", @"DockMagnificationSettings",
-            @"ForceQuitMenu", @"GraveEscapeTweak", @"MacAppBridge", @"MacAppSizeMenu", @"MacCCGrabber", @"MacCrashNotice", @"MacEthernetFix", @"MacFolderMenu", @"MacHomeBar",
+            @"ForceQuitMenu", @"GraveEscapeTweak", @"MacAddToFolder", @"MacAppBridge", @"MacAppSizeMenu", @"MacCCGrabber", @"MacCrashNotice", @"MacEthernetFix", @"MacFolderMenu", @"MacHomeBar",
             @"MacIconLabels", @"MacLargeTitles", @"MacLockStatusBar", @"MacPageDots", @"MacPointer", @"MacSettings", @"MacSettingsBadge", @"MacStatusBarCore",
             @"MacStatusBarSettings", @"MixAudio", @"TabMuteTweak", @"VolumeGlobeTweak"]];
     });

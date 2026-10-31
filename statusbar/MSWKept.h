@@ -21,8 +21,12 @@
 // app after "off, respring, on"). Told: what is there now
 // can be told; not told -- the engine's windows or the stages not back yet after a start (MacSwitcher.h: the window restore's own state, Stage
 // Manager's stages) --, everything kept comes back and the usual rules forget a closed one later. A window new since then: Desktop 1's. With Stage Manager a desktop is a stage, and a window opened
-// meanwhile joined one (Stage Manager's own join): it goes to the desktop of the kept windows it is with -- Desktop 1 when they are of none or
-// of several desktops --, and a minimized one to Desktop 1. The current desktop: Desktop 1, the one desktop of the time off; with Stage Manager the
+// meanwhile joined one (Stage Manager's own join): it goes to the desktop of the kept windows it is with -- Desktop 1 when they are of
+// several desktops --, and a minimized one to Desktop 1. A stage with no kept window in it is the current desktop's only when it is the one
+// on screen: the Mac Switcher records the windows of the stage in front and no other (MacSwitcherSM.h DMMSWSMApply, DMMSWSMRecordFirst); the
+// stages behind it are apps without a window, which join the desktop they are opened on. Taking them for Desktop 1's put every such stage on
+// Desktop 1, and after the next respring Desktop 1 asked for them all together (1.7.2 item 11: KT's one-window stages came back as Desktop 1's
+// windows after the Mac Switcher was switched off and on). The current desktop: Desktop 1, the one desktop of the time off; with Stage Manager the
 // desktop of the stage on screen (Desktop 1 when it holds no kept window or kept windows of several desktops). What the screen shows stays the
 // current desktop's own: its full-screen app and Fit to Window arrangement are not taken from the kept copy; the other desktops' are. Their screen
 // size when left: kept with Stage Manager (their stages were not on screen); the screen as it is now with the other engines (every window was on
@@ -98,6 +102,7 @@ static NSDictionary *MSWKeptBringBack(NSDictionary *kept, BOOL sm, BOOL told, NS
                 if (d && byWindow) windows[k] = d;   // (known by app now: the app's record, as the tick's DMMSWSMRecordOf reads it)
                 if (d) [on addObject:d]; else if (!fresh[k] && ![mine containsObject:k]) [mine addObject:k];
             }
+            if (!on.count && i != front) continue;   // (no kept window here and not on screen: an app without a window, recorded nowhere -- as the tick has it)
             NSNumber *to = on.count == 1 ? on.anyObject : @1;
             for (NSString *k in mine) { windows[k] = to; fresh[k] = to; }
             if (i == front) { NSUInteger p = [desks indexOfObject:to]; cur = p == NSNotFound ? 0 : p; }

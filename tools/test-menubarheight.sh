@@ -9,7 +9,8 @@ clang -O2 -Wall -Wno-unused-function -o "$W/tmbh" test-menubarheight.c
 fails=0
 check() { if eval "$2"; then echo "PASS  $1"; else echo "FAIL  $1"; fails=1; fi; }
 S=../statusbar/StatusBar.x
-check "DMTopLimit: one point into the bar's height (0 while it hides itself)" "grep -q 'static CGFloat DMTopLimit(void) { return DMAutoHideLayout() ? 0.0 : MSBDMenuBarTopLimit(DMMenuBarHeight()); }' $S"
+check "DMTopLimit: the bar's height (0 while it hides itself)" "grep -q 'static CGFloat DMTopLimit(void) { return DMAutoHideLayout() ? 0.0 : MSBDMenuBarTopLimit(DMMenuBarHeight()); }' $S"
+check "item 9: saved windows of Aerial / Zetsu / MilkyWay4 re-fitted from the pre-1.7.1 top (23: one point into the 24 pt bar), not today's MSBDMenuBarTopLimit(24)" "grep -q 'MSBDMenuBarRefitTop(&y, &h, kMSBDMenuBarDefault - 1.0, MSBDMenuBarTopLimit(DMMenuBarHeight()),' $S"
 check "DMMenuBarHeight: iOS's provider (+height, type-checked) or the copy's height, on the main screen, 24 until known" \
   "awk '/^static CGFloat DMMenuBarHeight\\(void\\) \\{/{f=1} f&&/fg.window.screen != \\[UIScreen mainScreen\\]/{a=1} f&&/\"d16@0:8\"/{b=1} f&&/MSBDMenuBarHeightOf\\(provided, fg.bounds.size.height\\)/{c=1} f&&/return kMSBDMenuBarDefault;/{d=1} f&&/^}/{print (a&&b&&c&&d) ? \"ok\" : \"no\"; exit}' $S | grep -q ok"
 check "Stage Manager: the stage starts under the bar's height, not at least 24 (the _statusBarHeight hook)" "grep -q 'return DMSMEngine() ? MAX(h, DMMenuBarHeight()) + ' $S && ! grep -q 'MAX(h, 24.0)' $S"

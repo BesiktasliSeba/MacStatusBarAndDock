@@ -38,7 +38,7 @@ include $(THEOS_MAKE_PATH)/tweak.mk
 include $(THEOS_MAKE_PATH)/library.mk
 include $(THEOS_MAKE_PATH)/aggregate.mk
 
-PAYLOADS = BrightnessKeyTweak DockMagnification DockMagnificationSettings ForceQuitMenu GraveEscapeTweak MacAppBridge MacAppSizeMenu MacCCGrabber \
+PAYLOADS = BrightnessKeyTweak DockMagnification DockMagnificationSettings ForceQuitMenu GraveEscapeTweak MacAddToFolder MacAppBridge MacAppSizeMenu MacCCGrabber \
            MacEthernetFix MacFolderMenu MacHomeBar MacIconLabels MacLargeTitles MacLockStatusBar MacPageDots MacPointer MacSettings MacSettingsBadge \
            MacSpotlight MacStatusBarCore MacStatusBarSettings MixAudio TabMuteTweak VolumeGlobeTweak PrewarmBlockTweak
 
@@ -47,12 +47,17 @@ PAYLOADS = BrightnessKeyTweak DockMagnification DockMagnificationSettings ForceQ
 # The crash guard's step 1b map (common/CrashStep.h): which feature a crash address in a part belongs to, from the build's debug symbols
 # (tools/make-crashmap.py, tools/crashmap-rules.txt); shipped as CrashMap.txt next to the parts, read only after crashes that count.
 # Only the two loaders stay in the tweak folder; every part goes to usr/lib/MacStatusBarAndDock (not a tweak folder, so no Choicy/iCleaner line of its own).
+# The prewarm block's build ID in the part packaged must be the one its sources and this build kind make (common/PrewarmPartID.h): an install
+# leaves dasd running when the ID is the one dasd's block was built with, so a wrong ID would keep an old block there.
 internal-stage::
 	$(ECHO_NOTHING)set -e; T="$(THEOS_STAGING_DIR)"; D="$$T/Library/MobileSubstrate/DynamicLibraries"; P="$$T/usr/lib/MacStatusBarAndDock"; \
 	mkdir -p "$$P"; \
 	for n in $(PAYLOADS); do mv -f "$$D/$$n.dylib" "$$P/$$n.dylib"; rm -f "$$D/$$n.plist"; done; \
 	left=$$(ls "$$D" | grep -v -E '^(MacStatusBar|MacDock)\.(dylib|plist)$$' || true); [ -z "$$left" ] || { echo "unexpected files in the tweak folder: $$left"; exit 1; }; \
 	python3 tools/make-crashmap.py tools/crashmap-rules.txt "$(THEOS_OBJ_DIR)" "$$P" . "$$P/CrashMap.txt"; \
+	want=$$(tools/prewarm-part-id.sh prewarmblock $(if $(findstring DEBUG,$(_THEOS_ON_SCHEMA)),d,r)); \
+	got=$$(strings -a "$$P/PrewarmBlockTweak.dylib" | sed -n 's/^.*msbd-dasd-part:\([0-9a-f]\{16\}\).*$$/\1/p' | sort -u); \
+	[ -n "$$want" ] && [ "$$got" = "$$want" ] || { echo "the prewarm block's build ID is '$$got', this tree and build kind make '$$want' (common/PrewarmPartID.h)"; exit 1; }; \
 	{ echo "commit $$(git rev-parse HEAD 2>/dev/null || echo unknown)"; \
 	  echo "dirty $$(if [ -n "$$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then echo 1; else echo 0; fi)"; \
 	  echo "debug $(if $(findstring DEBUG,$(_THEOS_ON_SCHEMA)),1,0)"; echo "version $(MSBD_BUILD_VERSION)"; } > "$$P/BuildInfo.txt"$(ECHO_END)

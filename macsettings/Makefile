@@ -5,7 +5,8 @@ INSTALL_TARGET_PROCESSES = Preferences
 
 include $(THEOS)/makefiles/common.mk
 
-# MacSettings: everything inside the Settings app. MacSettingsBadge: hides the red badge on the Settings icon (SpringBoard).
+# MacSettings: everything inside the Settings app. MacSettingsBadge: the Settings part SpringBoard loads -- hides the red badge on the Settings icon,
+# and keeps the longer Auto-Lock times in SpringBoard's idle timer (AutoLockTimer.x).
 # MacLargeTitles: no large titles in Apple's own apps, everywhere (Notes, Reminders, Mail, ...), not just Settings.
 # MacHomeBar: no home indicator pill, everywhere (Home Screen and every app) — replicates Trim's "Remove Home Bar".
 # MacPageDots: no Home Screen page dots — replicates Lynx's "hidePageDots".  Also IconLayout.x: portrait keeps icons on the screen when the layout only fits landscape (Atria).
@@ -15,7 +16,8 @@ include $(THEOS)/makefiles/common.mk
 # MacLockStatusBar: hides the status bar on the Lock Screen.
 # MacFolderMenu: adds one row per contained app to a Home Screen FOLDER icon's Haptic Touch menu, tapping a row opens that app.
 # MacCCGrabber: hides the small grabber/handle line in the top-right corner of Control Center — replicates Lynx's "hideCCGrabber".
-TWEAK_NAME = MacSettings MacSettingsBadge MacLargeTitles MacHomeBar MacPageDots MacIconLabels MacEthernetFix MacAppSizeMenu MacLockStatusBar MacFolderMenu MacCCGrabber
+# MacAddToFolder: "Add to Folder" in an app icon's Haptic Touch menu (1.7.2): the app moves into a Home Screen folder, or a new one.
+TWEAK_NAME = MacSettings MacSettingsBadge MacLargeTitles MacHomeBar MacPageDots MacIconLabels MacEthernetFix MacAppSizeMenu MacLockStatusBar MacFolderMenu MacCCGrabber MacAddToFolder
 
 MacSettings_FILES = MacSettings.x PointerSettings.x KeyboardSettings.x AutoLock.x NativeRows.x SidebarSearch.x TweakSearch.x AppleGroups18.x
 ifneq ($(FINALPACKAGE),1)
@@ -25,7 +27,7 @@ MacSettings_CFLAGS = -fobjc-arc
 MacSettings_PRIVATE_FRAMEWORKS = Preferences
 MacSettings_FRAMEWORKS = CoreSpotlight
 
-MacSettingsBadge_FILES = Badge.x
+MacSettingsBadge_FILES = Badge.x AutoLockTimer.x
 MacSettingsBadge_CFLAGS = -fobjc-arc
 
 MacLargeTitles_FILES = LargeTitles.x
@@ -54,6 +56,9 @@ MacFolderMenu_CFLAGS = -fobjc-arc
 
 MacCCGrabber_FILES = CCGrabber.x
 MacCCGrabber_CFLAGS = -fobjc-arc
+
+MacAddToFolder_FILES = AddToFolder.x
+MacAddToFolder_CFLAGS = -fobjc-arc
 
 SUBPROJECTS += sshtoggled
 

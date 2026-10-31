@@ -20,6 +20,10 @@
 // quit "allowed (block off)" right after an install; with 1.7.1 that same first prewarm was refused). In debug builds the file
 // /tmp/msb-noprewarmblock switches it off as well.
 //
+// Loaded. Once armed it writes its start stamp (dasd's pid and start time, its build ID: common/PrewarmPartID.h), so an install that does not change
+// this part leaves dasd running -- a dasd started again costs the M1 10 to 26 minutes of CPU (1.7.2 item 8). The postinst restarts dasd only
+// when the stamp is not the running dasd's or names another build.
+//
 // Safety. dasd is not SpringBoard: a crash here only restarts dasd, it does not take the interface down. Still, so a fault here can never loop, this
 // part counts its own starts: three starts within 60 s (a crash loop) and it switches itself off for good (a flag the next install clears), doing
 // nothing but logging -- the same "a crash switches the part off" the SpringBoard crash guard gives the other parts. Every private call it makes is
@@ -35,7 +39,10 @@
 #include <os/lock.h>
 #include <substrate.h>
 #include <sys/stat.h>
+#include <sys/sysctl.h>
 #include <time.h>
+#include <unistd.h>
+#include "../common/PrewarmPartID.h"   // (the build ID and the start stamp -- Mac test tools/test-prewarmpartid.sh)
 
 #define kPrewarmDomain   CFSTR("com.besiktasliseba.macstatusbar.prewarm")
 #define kQuitSetKey      CFSTR("quitSet")
@@ -151,6 +158,32 @@ static id DMPrewarmLaunch(id self, SEL _cmd, id bundleID) { return DMPrewarmRefu
 static id DMClosureBuild(id self, SEL _cmd, id bundleID) { return DMPrewarmRefuses(bundleID, "closure") ? nil : o_ClosureBuild(self, _cmd, bundleID); }
 #include "PrewarmShape.h"   // (DMPrewarmShapeOK: an object return and one object argument, checked for EACH method -- Mac test tools/test-prewarmshape.sh)
 
+// ---- the start stamp: this dasd has this build of the part (common/PrewarmPartID.h) ----
+// The build ID is in the binary after its marker (the helper reads it from the file installed: prewarmblock/Makefile makes it). Written once armed,
+// through a new file renamed over the old one, so the postinst never reads half a line. No stamp (a write refused, a sysctl refused) only means the
+// next install restarts dasd, as every install did before.
+#ifndef MSBD_DASD_PART_ID
+#error "MSBD_DASD_PART_ID comes from prewarmblock/Makefile (tools/prewarm-part-id.sh)"
+#endif
+__attribute__((used)) static const char kPartMark[] = kMSBDPrewarmPartMarker MSBD_DASD_PART_ID;
+_Static_assert(sizeof(MSBD_DASD_PART_ID) - 1 == kMSBDPrewarmPartIDLen, "the build ID is 16 hex digits");
+static void WriteLoadedStamp(void) {
+    struct kinfo_proc kp; size_t len = sizeof kp; int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid() };
+    memset(&kp, 0, sizeof kp);
+    if (sysctl(mib, 4, &kp, &len, NULL, 0) != 0 || len < sizeof kp || kp.kp_proc.p_pid != getpid()) { Debug(@"[stamp] dasd's start time not readable: no stamp (the next install restarts dasd)"); return; }
+    char line[96];
+    MSBDPrewarmStampFormat(line, sizeof line, (long)getpid(), (long long)kp.kp_proc.p_starttime.tv_sec, (long)kp.kp_proc.p_starttime.tv_usec, kPartMark + sizeof(kMSBDPrewarmPartMarker) - 1);
+    FILE *f = fopen(kMSBDPrewarmLoadedFile ".new", "w");
+    BOOL ok = f && fputs(line, f) >= 0;
+    if (f) ok = fclose(f) == 0 && ok;
+    ok = ok && rename(kMSBDPrewarmLoadedFile ".new", kMSBDPrewarmLoadedFile) == 0;
+    int err = errno;
+    if (!ok) unlink(kMSBDPrewarmLoadedFile ".new");
+    if (ok) Debug([NSString stringWithFormat:@"[stamp] written: %@", [@(line) stringByTrimmingCharactersInSet:[NSCharacterSet newlineCharacterSet]]]);
+    else Debug([NSString stringWithFormat:@"[stamp] could not be written (%s): the next install restarts dasd", strerror(err)]);
+    (void)err;
+}
+
 // ---- self crash-guard: three starts within 60 s that die young switch this part off for good (the next install clears it) ----
 // A start that lives 30 s was not a crash: it leaves the count again, so launchd's on-demand restarts, a jetsam kill or two quick installs never add up
 // to the switch-off -- only starts that die young do (external logic test W4, 25 Oct).
@@ -198,6 +231,7 @@ static BOOL SelfDisabledByCrashLoop(void) {
     if (DMPrewarmShapeOK(mc)) MSHookMessageEx(c, closureSel, (IMP)DMClosureBuild, (IMP *)&o_ClosureBuild);
     else Debug([NSString stringWithFormat:@"[init] closureBuildLaunchAppFromBundleID: %s: not hooked (only the direct prewarm is refused)", mc ? "unexpected signature" : "not found"]);
     gArmed = YES;
+    WriteLoadedStamp();
     static int token = 0;
     notify_register_dispatch(kPrewarmChanged, &token, dispatch_get_main_queue(), ^(int t) { MarkQuitSetStale(); });
     MarkQuitSetStale();

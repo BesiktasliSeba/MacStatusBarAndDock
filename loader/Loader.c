@@ -46,6 +46,7 @@ static const Payload kPayloads[] = {
     { "DockMagnificationSettings", kSettings | kRow },
     { "ForceQuitMenu", kSpringBoard },
     { "GraveEscapeTweak", kUIKit },
+    { "MacAddToFolder", kSpringBoard },
     { "MacAppBridge", kUIKit },
     { "MacAppSizeMenu", kSpringBoard },
     { "MacCCGrabber", kSpringBoard },

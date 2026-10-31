@@ -18,7 +18,7 @@ MacStatusBar&Dock
 │   ├── MacStatusBarCore    menu bar and app menus, windows and the Window menu, the Stage Manager engine,
 │   │                       Mac Switcher, Finder, the desktop, the TextEdit and Activity Monitor windows, Wi-Fi menu, banners, Today panel
 │   ├── DockMagnification   Dock, magnification, recent apps, Launchpad, Downloads stack, Trash
-│   ├── Home Screen parts   MacIconLabels, MacPageDots, MacFolderMenu, MacAppSizeMenu, ForceQuitMenu
+│   ├── Home Screen parts   MacIconLabels, MacPageDots, MacFolderMenu, MacAppSizeMenu, ForceQuitMenu, MacAddToFolder
 │   ├── MacRAMCPU           the RAM & CPU control, a module Control Center loads from the tweak's folder
 │   └── MacLockStatusBar, MacCCGrabber, MacSettingsBadge, VolumeGlobeTweak
 │
@@ -79,6 +79,7 @@ THEOS=~/theos gmake -j4 package FINALPACKAGE=1    # release build
 - The parts share one Theos object folder, so every source file needs a unique name.
 - The eject helper is signed with macOS's own `codesign`, which writes its entitlements in the form iPadOS 15 and later require (`ejecthelper/Makefile`).
 - The package step also builds `CrashMap.txt` from the debug symbols (`tools/make-crashmap.py`, rules in `tools/crashmap-rules.txt`). It tells crash recovery which switch turns off the code that crashed.
+- The package step also checks that the prewarm part carries the build ID its sources and build kind make (`tools/prewarm-part-id.sh`, `common/PrewarmPartID.h`). An install leaves dasd running only when the block it has already loaded carries that ID, and restarts it otherwise.
 
 ## Testing
 

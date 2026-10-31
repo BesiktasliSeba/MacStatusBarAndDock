@@ -51,9 +51,9 @@ PLIST
     # the system pointer process keeps the Mac pointer code it loaded at start, and a respring does not restart it on iPadOS 16: it is stopped
     # here (launchd starts it again at once) so an install or update reaches the pointer without a reboot. A plain kill is ignored: -9.
     /var/jb/usr/bin/killall -9 pointeruid 2>/dev/null
-    # the prewarm scheduler (dasd) likewise keeps whatever it loaded at start, and a respring does not restart it: it is stopped here so the prewarm
-    # block loads (or updates) without a reboot. The part's own crash-loop switch-off is cleared, so an install always starts it fresh. launchd
-    # starts dasd again at once.
+    # the prewarm scheduler (dasd) likewise keeps whatever it loaded at start, and a respring does not restart it: it is stopped at the end of this
+    # step when it does not have the prewarm block just installed, so the block loads (or updates) without a reboot. The part's own crash-loop
+    # switch-off is cleared, so a dasd started again starts it fresh. launchd starts dasd again at once.
     rm -f /var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-PrewarmBlockOff.txt /var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-PrewarmBlockStarts.txt
     # the quit set's file for dasd (common/PrewarmQuitSet.h): SpringBoard writes it only once it starts with this version, which can be long after
     # this (a respring left for later), so on the first update to a version that has it, it starts as the set SpringBoard keeps -- cfprefsd's file
@@ -66,7 +66,11 @@ PLIST
     if [ "$kept" = 0 ]; then
         if [ ! -e "$QS" ] && [ -f "$QP" ]; then cp "$QP" "$QS" && chmod 644 "$QS"; chown 501:501 "$QS" 2>/dev/null; fi
     elif [ "$kept" = 1 ]; then rm -f "$QS"; fi
-    /var/jb/usr/bin/killall -9 dasd 2>/dev/null
+    # Only when it lacks the block just installed (common/PrewarmPartID.h, 1.7.2): the block in dasd writes a start stamp (dasd's pid and start
+    # time, the block's build ID), and the helper answers 0 only when that stamp is the running dasd's and names the build ID of the part installed
+    # now. A dasd started again works 10 to 26 minutes of CPU before it settles (M1, 1.7.1), and most updates do not change the block: a dasd
+    # that has it keeps it, refusing the quit set's apps from its file without a gap. No stamp, another build or no answer: restarted as before.
+    if [ -x "$H" ] && "$H" --dasd-part-current; then :; else /var/jb/usr/bin/killall -9 dasd 2>/dev/null; fi
 elif [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-remove" ] || [ "$1" = "abort-deconfigure" ]; then
     # an upgrade or removal failed after the prerm stopped the helper (dpkg calls this on the version that stays): it is started again, so SSH
     # toggling, engine exclusivity and the switch-off watcher do not stay dead until the next reboot

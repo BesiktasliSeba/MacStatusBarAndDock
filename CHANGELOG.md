@@ -2,6 +2,36 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.7.2
+
+### New
+- Activity Monitor is an app in the App Library, in the Utilities category and in the App Library's search, and a tap opens its window. Show in App Library in Settings > Status Bar turns it off.
+- Add to Folder in an app icon's Haptic Touch menu: pick one of your Home Screen folders, or New Folder, and the app moves into it. It's there for apps on the Home Screen, in folders and in the App Library, not in the Dock, and full folders are greyed out. Add to Folder in App Menus in Settings > Status Bar turns it off. While the AddToFolder tweak is installed, that tweak's item is used instead.
+- Finder: the Trash window has an Empty button at the top right, as on a Mac. It asks first, and it's greyed out while the Trash is empty.
+- Emptying the Trash plays a sound, from Finder's Empty button, the File menu or the Dock's Trash. It follows the ringer volume and stays silent while the iPad is muted.
+- Desktop: Hide Name in an icon's menu hides its name, and Show Name brings it back. The icon keeps its place, the name stays hidden after a rename or a respring, and VoiceOver still reads it. Hide Desktop Icon Names in Settings > Status Bar hides every name.
+
+### Improvements
+- Finder: On My iPad shows the same folders as the Files app, with a folder for each app that shares its files there, under the name Files gives it and with the app's icon. An app's folder shows up once the app has put a file in it. App folders can't be renamed or moved to the Trash, but what's in them can be changed.
+- The Window menu's layouts and Fit to Window's tiles reach the edges of the screen with every window engine: the sides, right under the menu bar and down to the Dock. Tiles are 6 points apart instead of 10. Before, they kept a gap at the sides, and a wider one with the Stage Manager engine on iPadOS 17 and 18.
+- A long press or a right click on a desktop icon, or on the empty desktop, opens the Mac menu over your windows, and the windows stay where they are. With iPadOS's menu every window faded out while it was open, and choosing Quick Look or Open made them leave and come back. For a preview, use Quick Look. The empty desktop's menu has Edit Home Screen, since a long press there no longer starts it.
+- Activity Monitor no longer stutters every 2 seconds when it updates its list.
+- Installing an update no longer restarts the system service that prewarms apps when the tweak's part in it is unchanged, as in most updates. After a restart, that service kept the CPU busy for many minutes.
+- The pointer settings show Hide in Virtual Mac only on iPads that can run virtual machines: M1 and M2 iPads up to iPadOS 16.3.1.
+
+### Fixes
+- Scrolling with a trackpad or mouse in Finder, Quick Look, TextEdit and Activity Monitor is smooth, with momentum and the bounce at the ends, as with a finger.
+- Auto-Lock set to 2 hours now locks the iPad after 2 hours. iPadOS took any time over an hour for Never, so the iPad never locked on its own. 2 hours is listed only while the tweak can keep it.
+- With a hardware keyboard and an app's window open, the keys go to the desktop while one of its icons is selected, so Space opens Quick Look. The app got the keys instead, and Space could pause its music.
+- Stage Manager engine: turning the Mac Switcher off and on again no longer adds the apps open behind the one on screen to Desktop 1 as windows. After a respring, Desktop 1 opened them all together.
+- iPads with a Home button: windows placed before 1.7.1 move up under the menu bar once, so no strip of wallpaper is left above them. 1.7.1 placed only new windows there.
+- Aerial, Zetsu and MilkyWay4: windows start right under the menu bar instead of one point into it. With Aerial, a window could cover the bottom of the menu bar's letters.
+- The Today View that drops down from the clock shows its widgets as a plain list. Widgets that didn't fit in the panel were piled over the ones above them at its bottom.
+- A pull down that starts on the menu bar's SSH, VPN, mute or Wi-Fi icon opens Control Center instead of Notification Center.
+- iPadOS 15 and 16: after unlocking, iPadOS's own clock is no longer drawn over the menu bar's icons for a moment.
+- iPadOS 18: after unlocking, the menu bar is no longer empty for a moment before its items appear.
+- Hide Status Bar on Lock Screen also hides the Lock Screen's short Control Center line at the top right, which was left there on its own.
+
 ## 1.7.1
 
 ### Improvements

@@ -36,6 +36,7 @@ target skipLockAfterRespring pref com.besiktasliseba.macstatusbar skipLockAfterR
 target forceQuitMenu pref com.besiktasliseba.forcequitmenu enabled 0 1 Force Quit in App Menus|the Force Quit menu item
 target appSizeMenu pref com.besiktasliseba.macappsizemenu enabled 0 1 App Size in App Menus|the App Size menu item
 target folderMenu pref com.besiktasliseba.macfoldermenu enabled 0 1 Folder Apps in Folder Menus|the folder menus
+target addToFolder pref com.besiktasliseba.macaddtofolder enabled 0 1 Add to Folder in App Menus|the Add to Folder menu item
 target showDownloads pref com.besiktasliseba.dockmagnification showDownloads 0 1 Show Downloads in Dock|the Dock's Downloads
 target launchpadIcon pref com.besiktasliseba.dockmagnification launchpadIcon 0 1 Launchpad Icon|Launchpad
 target finder pref com.besiktasliseba.macstatusbar finderEnabled 0 1 Finder|Finder
@@ -49,6 +50,7 @@ target spotlightFiles pref com.besiktasliseba.macstatusbar spotlightFiles 0 0 De
 target spotlightTweakSettings pref com.besiktasliseba.macstatusbar spotlightTweakSettings 0 0 Tweak Settings|Spotlight's tweak settings
 target spotlightActions pref com.besiktasliseba.macstatusbar spotlightActions 0 0 Actions|our actions in Spotlight
 target spotlightWindows pref com.besiktasliseba.macstatusbar spotlightWindows 0 0 Windows|our windows in Spotlight
+target actmonLibrary pref com.besiktasliseba.macstatusbar activityMonitorInLibrary 0 1 Show in App Library|Activity Monitor in the App Library
 
 # The parts in words, for the guard's explanation: title <Image> <where it crashed>|<what was turned off> ("SpringBoard crashed twice in the
 # Dock, so MacDock was turned off for now."). A part without a title is named by its file name.
@@ -66,6 +68,7 @@ title MacRAMCPU RAM & CPU in Control Center|RAM & CPU in Control Center
 image ForceQuitMenu forceQuitMenu
 image MacAppSizeMenu appSizeMenu
 image MacFolderMenu folderMenu
+image MacAddToFolder addToFolder
 image BrightnessKeyTweak part map
 image GraveEscapeTweak part map
 image MacAppBridge part map
@@ -108,10 +111,14 @@ sym MacStatusBarCore \$DMNativeSysGestures\$ finder
 sym MacStatusBarCore ^_?DM(Finder|Native|OpenFinder|OpenNativeWindow)[A-Z] finder
 file MacStatusBarCore ^DockTrash\.h$ showTrash
 file MacStatusBarCore ^(Finder|NativeWindow)\.h$ finder
-# the text window (TextWindow.h) is Finder's; the desktop (Desktop.h, DesktopPlace.h) and the Wi-Fi menu (WiFiMenu.h) have their own switches
+# the text window (TextWindow.h) is Finder's; the desktop (Desktop.h, DesktopPlace.h, DesktopNames.h) and the Wi-Fi menu (WiFiMenu.h) have their
+# own switches (DesktopNames.h's functions under the Desktop.h rule: they may all be inlined, and a rule that matches nothing stops the build)
 file MacStatusBarCore ^TextWindow\.h$ finder
+# Activity Monitor in the App Library (AppLibraryApps.h: its icon's methods, the App Library's category and search hooks): its own switch
+sym MacStatusBarCore ^_*DMAL[A-Z] actmonLibrary
+file MacStatusBarCore ^AppLibraryApps\.h$ actmonLibrary
 sym MacStatusBarCore ^_?DMDesktop[A-Z] desktopIcons
-file MacStatusBarCore ^Desktop\.h$ desktopIcons
+file MacStatusBarCore ^Desktop(Names)?\.h$ desktopIcons
 file MacStatusBarCore ^DesktopPlace\.h$ desktopIcons
 sym MacStatusBarCore ^_?DMWiFi[A-Z] wifiMenu
 file MacStatusBarCore ^WiFiMenu\.h$ wifiMenu

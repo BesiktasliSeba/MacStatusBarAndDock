@@ -34,6 +34,9 @@ static BOOL LSBHiddenCached(void) { return gLSBHiddenCache < 0 ? LSBHidden() : g
 @interface CSCoverSheetViewController : UIViewController
 @end
 
+static BOOL LSBIsCoverSheet(id controller) { Class c = objc_getClass("CSCoverSheetViewController"); return c && [controller isKindOfClass:c]; }
+static void LSBApplyGrabberHidden(NSArray<UIView *> *views);
+static NSArray<UIView *> *LSBGrabberViews(UIViewController *coverSheet);
 static BOOL LSBForceOff(id controller) {
     Class coverSheetClass = objc_getClass("CSCoverSheetViewController");
     return coverSheetClass && [controller isKindOfClass:coverSheetClass] && LSBHidden() && !MSBDOtherTweakDoing(kMSBDDupLockStatusBar, YES);   // (Lynx does it: left to it)
@@ -42,6 +45,7 @@ static BOOL LSBForceOff(id controller) {
 %hook UIViewController
 - (void)_setFakeStatusBarEnabled:(BOOL)enabled {
     %orig(LSBForceOff(self) ? NO : enabled);
+    if (LSBIsCoverSheet(self)) LSBApplyGrabberHidden(LSBGrabberViews((UIViewController *)self));
 }
 %end
 %end
@@ -52,6 +56,7 @@ static BOOL LSBForceOff(id controller) {
 %hook CSCoverSheetViewController
 - (void)_setFakeStatusBarEnabled:(BOOL)enabled {
     %orig(LSBForceOff(self) ? NO : enabled);
+    if (LSBIsCoverSheet(self)) LSBApplyGrabberHidden(LSBGrabberViews((UIViewController *)self));
 }
 %end
 %end
@@ -112,6 +117,46 @@ static void LSBFollowPages(UIViewController *coverSheet, UIScrollView *sv) {
 }
 %end
 %end
+// ...and it goes with the Lock Screen's status bar: while that bar is hidden here, so is the grabber (and its teaching glyph). The teachable-moments
+// view puts the grabber under the status bar it follows; with the Lock Screen's own bar off that is SpringBoard's bar -- ours -- and the line stayed
+// right under our menu bar (A12Z 18.5, KT 31 Oct: statusBarToFollow STUIStatusBar_Wrapper, the grabber 61 x 2.5 pt at alpha 0.5; 15.6.1 showed it
+// too, 26 Sep). Hidden by its own -hidden (iOS animates its alpha, not that), shown again when the bar is shown; checked whenever the view is laid
+// out and whenever the Lock Screen sets its bar.
+static const void *kLSBGrabberHiddenKey = &kLSBGrabberHiddenKey;
+static void LSBApplyGrabberHidden(NSArray<UIView *> *views) {
+    BOOL hide = LSBHiddenCached() && !MSBDOtherTweakDoing(kMSBDDupLockStatusBar, YES);
+    for (UIView *v in views) {
+        if (hide && !v.hidden) {
+            v.hidden = YES;
+            objc_setAssociatedObject(v, kLSBGrabberHiddenKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            LSBLog(@"the Lock Screen's status bar is hidden: its Control Center grabber too");
+        } else if (!hide && objc_getAssociatedObject(v, kLSBGrabberHiddenKey)) {
+            v.hidden = NO;
+            objc_setAssociatedObject(v, kLSBGrabberHiddenKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            LSBLog(@"the Lock Screen's status bar is shown: its Control Center grabber too");
+        }
+    }
+}
+static NSArray<UIView *> *LSBContainerGrabberViews(UIView *container) {   // (the same two views as LSBGrabberViews, from the teachable-moments view itself)
+    NSMutableArray *views = [NSMutableArray array];
+    for (NSString *name in @[@"controlCenterGrabberContainerView", @"controlCenterGlyphContainerView"]) {
+        SEL sel = NSSelectorFromString(name);
+        if (![container respondsToSelector:sel]) continue;
+        id v = ((id (*)(id, SEL))objc_msgSend)(container, sel);
+        if ([v isKindOfClass:[UIView class]]) [views addObject:v];
+    }
+    return views;
+}
+@interface CSTeachableMomentsContainerView : UIView
+@end
+%group LSBGrabberHide
+%hook CSTeachableMomentsContainerView
+- (void)layoutSubviews {
+    %orig;
+    LSBApplyGrabberHidden(LSBContainerGrabberViews((UIView *)self));
+}
+%end
+%end
 
 %ctor {
     %init;
@@ -125,7 +170,11 @@ static void LSBFollowPages(UIViewController *coverSheet, UIScrollView *sv) {
     void (^a)(void) = ^{
         Class c = objc_getClass("CSCoverSheetViewController");
         if (!coverDone && c && [c instancesRespondToSelector:fake]) { %init(LSBCover); coverDone = YES; }   // (17+: the Lock Screen's controller itself)
-        if (coverDone && c && [c instancesRespondToSelector:NSSelectorFromString(@"scrollablePageViewController:scrollViewDidScroll:")]) { %init(LSBGrabber); attempt = nil; return; }
+        if (coverDone && c && [c instancesRespondToSelector:NSSelectorFromString(@"scrollablePageViewController:scrollViewDidScroll:")]) {
+            %init(LSBGrabber);
+            if (objc_getClass("CSTeachableMomentsContainerView")) %init(LSBGrabberHide);   // (the grabber hidden with the bar; its view's class missing: shown as before)
+            attempt = nil; return;
+        }
         if (++tries < 30) { void (^again)(void) = attempt; dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), again); }
         else attempt = nil;
     };

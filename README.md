@@ -43,7 +43,7 @@ Updates come through Sileo, and the Apple menu shows Update Available when your 
 | Mission Control and Spaces | The Mac Switcher, with up to 8 desktops that slide with your fingers |
 | Finder and the desktop | A Finder window, and your files on the first Home Screen page |
 | Dock | A magnifying Dock with Finder, Launchpad, recent apps, a Downloads stack and a Trash |
-| Activity Monitor | An Activity Monitor window with your processes' CPU, memory and disk use |
+| Activity Monitor | An Activity Monitor window with your processes' CPU, memory and disk use, also in the App Library |
 | Search in System Settings | A search field at the top of the Settings sidebar |
 
 The Mac look is on right after install, and most features have their own switch. Some extras start off, such as the Mac Switcher, the Dock's Trash, the auto-hiding menu bar, seconds in the clock, tinted resize handles, the keyboard extras and the Lock Screen options. The [Settings reference](./docs/settings.md) shows how each switch starts.
@@ -58,7 +58,8 @@ The Mac look is on right after install, and most features have their own switch.
 ### Windows
 
 - Title bars, traffic lights, rounded corners and resize handles, on the engine you already use.
-- The Window menu has layouts (halves, quarters, Fill Screen, Center) and Fit to Window, which tiles your windows side by side.
+- The Window menu has layouts (halves, quarters, Fill Screen, Center) and Fit to Window, which tiles your windows side by side. Layouts and tiles reach the screen's edges, from right under the menu bar down to the Dock.
+- On iPads with a Home button, windows placed before 1.7.1 with a gap under the menu bar move up under it once.
 - Windows have a smallest size with every engine, as with Stage Manager: the app at least 320 x 300 points.
 - With Aerial, Zetsu or MilkyWay4 on iPadOS 15 to 18, every app with a window has its card in iPadOS's App Switcher, as with Stage Manager. A tap on the card brings the window forward.
 - Only the window you're using keeps a text cursor, and Esc ends typing.
@@ -76,8 +77,10 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 ### Finder and the desktop
 
 - A Finder window with a sidebar, list and icon views, Quick Look, Search, Undo and Put Back. Open it from the Dock or the Go menu.
+- On My iPad shows the same folders as the Files app, with a folder for each app that shares its files there.
+- The Trash has an Empty button at the top right, and emptying the Trash plays a sound unless the iPad is muted.
 - Drag files between Finder windows, the desktop and the Downloads stack, or into an app, which gets a copy.
-- Files and folders from On My iPad > Desktop sit on the first Home Screen page, never over your apps.
+- Files and folders from On My iPad > Desktop sit on the first Home Screen page, never over your apps. A long press or a right click opens their menus over your windows, and Hide Name hides an icon's name (Hide Desktop Icon Names in Settings > Status Bar hides them all).
 - Text files open in a small TextEdit window and save by themselves.
 - USB drives and SD cards show up under Locations. exFAT and FAT32 work (FAT32 can't hold files over 4 GB). APFS and Mac OS Extended should work but haven't been tested, and iPadOS doesn't read NTFS. An SSD may need a powered hub.
 - Finder only changes files in your own places: On My iPad, the apps' Documents folders, drives and its Trash. Everything else can be opened and copied, but not changed.
@@ -86,12 +89,13 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 
 - Magnification, dots under open apps, recent apps, and Finder and Launchpad at its start, like on a Mac.
 - A Downloads stack with search, which you can drag files into and out of.
-- A Trash at its end, which you turn on in Settings > Dock. Drop files on it to move them to the Trash, a Dock app to take it out of the Dock, or a drive to eject it (iPadOS 16 and later).
-- Haptic Touch menus get Force Quit and App Size on app icons, and a folder's menu lists its apps.
+- A Trash at its end, which you turn on in Settings > Dock. Drop files on it to move them to the Trash, a Dock app to take it out of the Dock, or a drive to eject it on iPadOS 16 and 17. On iPadOS 18, ejecting doesn't work yet.
+- Haptic Touch menus get Force Quit, App Size and Add to Folder on app icons, and a folder's menu lists its apps. Add to Folder moves the app into a Home Screen folder or a new one, as a drag would, also from the App Library.
 
 ### Activity Monitor and RAM & CPU
 
 - An Activity Monitor window lists the running processes with their CPU, memory and disk use. Sort by any column, search, pick All, My or System Processes, inspect a process or quit an app. System processes show no figures, and the Energy and Network tabs have no figures per process.
+- Activity Monitor is also an app in the App Library, in Utilities and in its search. Its icon lives only there and isn't saved with your Home Screen layout. Show in App Library in Settings > Status Bar turns it off.
 - RAM & CPU in Control Center shows the available and used memory and the CPU load, and a tap opens the details, with a button for Activity Monitor. Activity Monitor also opens from the Go menu and from Spotlight's actions.
 - With Memory Magic on iPadOS 15 to 17, a tap on its tile offers to put RAM & CPU in its place.
 
@@ -108,7 +112,8 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 - Home Screen options: page dots, app names and the Home Bar
 - Keyboard extras for keyboards without a function row
 - Spotlight extras you can turn on: tweak settings, actions, your windows, and your Desktop and Downloads files
-- Longer Auto-Lock times, an SSH switch and Ethernet settings
+- Longer Auto-Lock times, up to 2 hours, which the tweak makes iPadOS keep (on its own, iPadOS takes anything over an hour for Never)
+- An SSH switch and Ethernet settings
 - VoiceOver labels for the menu bar, the traffic lights and Finder, and Reduce Motion support
 
 ### Built to be safe
@@ -142,14 +147,14 @@ Which one? On an iPad with Stage Manager (or TrollPad) on iPadOS 16.1 to 18, a n
 | iPad Pro 12.9" (2nd generation) | 17.5.1 | palera1n | Stage Manager (with TrollPad), Aerial 5.1, Zetsu 1.6.6 | Tested by the developer |
 | iPad Pro 12.9" (4th generation) | 18.5 | Dopamine | Stage Manager (the iPad's own), Aerial 5.1, Zetsu 1.6.6 | Tested by the developer |
 | iPad Pro 10.5" | 16.6.1 | rootless | not reported | Reported working by a user |
-| iPad mini 4 | 15.8.8 | rootless | not reported | Reported running by a user. The Dock problem seen there (app icons past the ends of the Dock) is fixed in 1.4.2, awaiting confirmation |
+| iPad mini 4 | 15.8.8 | rootless | not reported | Reported running by a user |
 | iPad Pro (M2, 2022) | 16.0 to 16.6 | Dopamine | Zetsu, Aerial | Reported by users with Zetsu or Aerial. Stage Manager engine: see below |
-| iPad Pro 12.9" (M1, 2021) | 17.0 | rootless | Zetsu 1.6.6 | Reported working since 1.2.4, with Enable Anyway |
-| iPad Pro 12.9" (M1, 2021) | 16.1.1 | Dopamine | Stage Manager, Zetsu | Reported by a user. The Stage Manager engine's crash on the Home and previous-app gestures is fixed in 1.4.5, awaiting confirmation |
+| iPad Pro 12.9" (M1, 2021) | 17.0 | rootless | Zetsu 1.6.6 | Reported working since 1.2.4 |
+| iPad Pro 12.9" (M1, 2021) | 16.1.1 | Dopamine | Stage Manager, Zetsu | Reported by a user |
 | Other iPads | 15 to 18 | rootless | | Likely to work, not tested |
 | Other iPads | Newer than 18 | | | Off until you turn on Enable Anyway, at your own risk |
 
-- iPad Pro (M2) with the Stage Manager engine: offered on 16.1 and later, and as "Untested" on 16.0, where a user confirmed the basics (windows, resizing, traffic lights). On 16.3.1 a user confirmed it runs. One user reported SpringBoard crashes with Stage Manager on 16.1 to 16.6. If you see that, pick Aerial 5.0 in Settings > Windows & Multitasking > Window Engine.
+- iPad Pro (M2) with the Stage Manager engine: offered on 16.1 and later, and as "Untested" on 16.0, where a user confirmed the basics (windows, resizing, traffic lights). On 16.3.1 a user confirmed it runs.
 - iPadOS 17: tested on 17.5.1 with the Stage Manager engine (Stage Manager through TrollPad), Aerial 5.1 and Zetsu, together with the desktop, Finder, the Wi-Fi menu, the Mac Switcher and the Spotlight extras. The Home Screen options are on the Dock page in Settings there. iPads with Stage Manager of their own on 17 and external displays on 17 haven't been tried yet; reports are welcome.
 - iPadOS 18: tested on 18.5 with the Stage Manager engine (an iPad with Stage Manager of its own), Aerial 5.1 and Zetsu, together with the desktop, Finder, the Wi-Fi menu, the Mac Switcher and RAM & CPU. Settings has no room for tweak rows in its sidebar there, so the tweak's pages and rows are in a group at the top of Settings > General. The tweak's search field in the Settings sidebar is for iPadOS 15 to 17. External displays on 18 haven't been tried yet.
 

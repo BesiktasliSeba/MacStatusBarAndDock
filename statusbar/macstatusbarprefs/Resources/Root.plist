@@ -311,6 +311,48 @@
 			<string>Show Desktop Icons</string>
 		</dict>
 		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar.finder.pref</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>DESKTOP_HIDE_NAMES</string>
+			<key>key</key>
+			<string>desktopHideNames</string>
+			<key>label</key>
+			<string>Hide Desktop Icon Names</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>id</key>
+			<string>ACTMON_GROUP</string>
+			<key>label</key>
+			<string>Activity Monitor</string>
+			<key>stockHides</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>ACTMON_LIBRARY</string>
+			<key>key</key>
+			<string>activityMonitorInLibrary</string>
+			<key>label</key>
+			<string>Show in App Library</string>
+		</dict>
+		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
@@ -511,6 +553,20 @@
 			<string>enabled</string>
 			<key>label</key>
 			<string>Folder Apps in Folder Menus</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macaddtofolder/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macaddtofolder</string>
+			<key>key</key>
+			<string>enabled</string>
+			<key>label</key>
+			<string>Add to Folder in App Menus</string>
 		</dict>
 		<dict>
 			<key>cell</key>

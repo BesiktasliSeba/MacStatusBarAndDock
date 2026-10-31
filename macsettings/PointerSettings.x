@@ -1,7 +1,7 @@
 #import <unistd.h>
 // Pointer (M1 pipeline C6, 2026-09-24): a "Pointer" row in the Settings sidebar, shown only while a trackpad or mouse is attached (like iPadOS's own
 // trackpad settings), showing the Pointer Style and opening the one page for the pointer: Pointer Style (iPadOS = the stock round pointer, Mac = the
-// Mac pointer drawn by MacPointer in pointeruid), Hide in Virtual Mac (Mac only) and Block Pointer Pull-Down, then Apple's own Pointer Control and
+// Mac pointer drawn by MacPointer in pointeruid), Hide in Virtual Mac (Mac only, where VirtualMac can run) and Block Pointer Pull-Down, then Apple's own Pointer Control and
 // Trackpad & Mouse settings, live (common/NativeEmbed.h). Our settings are stored in Mac Status Bar's own preferences (com.besiktasliseba.macstatusbar)
 // and apply live: SpringBoard hands them to pointeruid.
 // Whether a pointer device is attached comes from SpringBoard too (Darwin notification state com.besiktasliseba.macpointer.device, see Mac Status Bar's
@@ -11,6 +11,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import "../common/NativeEmbed.h"
+#import "../common/Hypervisor.h"   // (MSBDHypervisorCapable: Hide in Virtual Mac only where VirtualMac can run)
 #import <dlfcn.h>
 
 @interface PSSpecifier : NSObject
@@ -69,7 +70,7 @@ static UIImage *MSPointerIcon(void) {
 
 @interface MSPointerListController : PSListController
 @end
-// Our pointer settings: Pointer Style, then (Mac pointer) Hide in Virtual Mac and Use Pointer Control Style, and Block Pointer Pull-Down, each in
+// Our pointer settings: Pointer Style, then (Mac pointer) Hide in Virtual Mac (where VirtualMac can run) and Use Pointer Control Style, and Block Pointer Pull-Down, each in
 // its group with its footer. target: whatever reads and writes their preferences (our page; on iPadOS 18 a helper on Apple's own Trackpad page,
 // AppleGroups18.x). onApplePage: there the first group is headed "Mac Pointer" and Pointer Control is not "below" but in Accessibility.
 NSArray *MSPointerOwnSpecifiers(id target, BOOL onApplePage) {
@@ -94,15 +95,17 @@ NSArray *MSPointerOwnSpecifiers(id target, BOOL onApplePage) {
         [style setValues:@[@"ipados", @"mac"] titles:@[@"iPadOS", @"Mac"] shortTitles:@[@"iPadOS", @"Mac"]];
         [s addObject:style];
         if ([MSPointerStyle() isEqualToString:@"mac"]) {   // (the Mac pointer's size is Apple's Pointer Size below: MacPointer follows it)
-            PSSpecifier *gv = [PSSpecifier groupSpecifierWithName:nil];
-            [gv setProperty:@"Virtual Mac draws its own pointer." forKey:@"footerText"];
-            [s addObject:gv];
-            PSSpecifier *vm = [PSSpecifier preferenceSpecifierNamed:@"Hide in Virtual Mac" target:target set:@selector(setPreferenceValue:specifier:) get:@selector(readPreferenceValue:) detail:nil cell:kCellSwitch edit:nil];
-            [vm setProperty:@"macPointerHideInVirtualMac" forKey:@"key"];
-            [vm setProperty:MP_DOMAIN forKey:@"defaults"];
-            [vm setProperty:@YES forKey:@"default"];
-            [vm setProperty:MP_NOTIFY forKey:@"PostNotification"];
-            [s addObject:vm];
+            if (MSBDHypervisorCapable()) {   // (only where VirtualMac can run at all -- M1/M2 up to 16.3.1, common/Hypervisor.h; the stored switch is kept)
+                PSSpecifier *gv = [PSSpecifier groupSpecifierWithName:nil];
+                [gv setProperty:@"Virtual Mac draws its own pointer." forKey:@"footerText"];
+                [s addObject:gv];
+                PSSpecifier *vm = [PSSpecifier preferenceSpecifierNamed:@"Hide in Virtual Mac" target:target set:@selector(setPreferenceValue:specifier:) get:@selector(readPreferenceValue:) detail:nil cell:kCellSwitch edit:nil];
+                [vm setProperty:@"macPointerHideInVirtualMac" forKey:@"key"];
+                [vm setProperty:MP_DOMAIN forKey:@"defaults"];
+                [vm setProperty:@YES forKey:@"default"];
+                [vm setProperty:MP_NOTIFY forKey:@"PostNotification"];
+                [s addObject:vm];
+            }
             // (off by default: the Mac pointer starts as the classic black-and-white arrow, whatever Pointer Control is set to)
             PSSpecifier *ga = [PSSpecifier groupSpecifierWithName:nil];
             [ga setProperty:onApplePage ? @"Color, Border Width and Increase Contrast in Accessibility > Pointer Control also change the Mac pointer. Off: the classic Mac pointer."

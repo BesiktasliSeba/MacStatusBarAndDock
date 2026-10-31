@@ -14,25 +14,23 @@ static BOOL same(CGRect a, CGRect b) { return near(a.origin.x, b.origin.x) && ne
 static BOOL inside(CGRect r, CGRect a) { return r.origin.x >= a.origin.x - 0.01 && r.origin.y >= a.origin.y - 0.01 && CGRectGetMaxX(r) <= CGRectGetMaxX(a) + 0.01 && CGRectGetMaxY(r) <= CGRectGetMaxY(a) + 0.01; }
 static const char *S(CGRect r) { static char b[8][96]; static int i = 0; i = (i + 1) % 8; snprintf(b[i], 96, "{%.2f, %.2f, %.2f, %.2f}", r.origin.x, r.origin.y, r.size.width, r.size.height); return b[i]; }
 
-// The tiles as StatusBar.x's DMLayoutOuterArea / DMLayoutFrameInArea cut them (copied: this test checks the minimum, not the cut).
-static CGRect outer(CGRect u, CGSize screen) {
-    CGFloat minX = fmax(CGRectGetMinX(u), 26.0), maxX = fmin(CGRectGetMaxX(u), screen.width - 26.0);
-    return maxX - minX < 200.0 ? u : CGRectMake(minX, u.origin.y, maxX - minX, u.size.height);
-}
+// The tiles as StatusBar.x's DMLayoutFrameInArea cuts them (copied: this test checks the minimum, not the cut). Since 31 Oct (KT) every layout
+// reaches the desktop's edges: no outer margin (the 26 pt one of 1.4.1 L-3 is gone), and the gap between tiles is exactly 6 pt (was 10): the right
+// and bottom tiles start g after the left and top ones and take the rest.
+static CGRect outer(CGRect u, CGSize screen) { return u; }
 static CGRect cut(const char *name, CGRect u, CGSize screen) {
-    u = outer(u, screen);
-    CGFloat g = 10.0, halfW = floor((u.size.width - g) / 2.0), halfH = floor((u.size.height - g) / 2.0);
-    CGFloat rightX = u.origin.x + u.size.width - halfW, bottomY = u.origin.y + u.size.height - halfH;
+    CGFloat g = 6.0, halfW = floor((u.size.width - g) / 2.0), halfH = floor((u.size.height - g) / 2.0);
+    CGFloat rightX = u.origin.x + halfW + g, bottomY = u.origin.y + halfH + g, rightW = CGRectGetMaxX(u) - rightX, bottomH = CGRectGetMaxY(u) - bottomY;
     if (!strcmp(name, "fill")) return u;
     if (!strcmp(name, "center")) return CGRectMake(round(screen.width * 0.11), 36.0, round(screen.width * 0.78), fmin(round(screen.height * 0.80), CGRectGetMaxY(u) - 36.0));
     if (!strcmp(name, "left")) return CGRectMake(u.origin.x, u.origin.y, halfW, u.size.height);
-    if (!strcmp(name, "right")) return CGRectMake(rightX, u.origin.y, halfW, u.size.height);
+    if (!strcmp(name, "right")) return CGRectMake(rightX, u.origin.y, rightW, u.size.height);
     if (!strcmp(name, "top")) return CGRectMake(u.origin.x, u.origin.y, u.size.width, halfH);
-    if (!strcmp(name, "bottom")) return CGRectMake(u.origin.x, bottomY, u.size.width, halfH);
+    if (!strcmp(name, "bottom")) return CGRectMake(u.origin.x, bottomY, u.size.width, bottomH);
     if (!strcmp(name, "topleft")) return CGRectMake(u.origin.x, u.origin.y, halfW, halfH);
-    if (!strcmp(name, "topright")) return CGRectMake(rightX, u.origin.y, halfW, halfH);
-    if (!strcmp(name, "bottomleft")) return CGRectMake(u.origin.x, bottomY, halfW, halfH);
-    if (!strcmp(name, "bottomright")) return CGRectMake(rightX, bottomY, halfW, halfH);
+    if (!strcmp(name, "topright")) return CGRectMake(rightX, u.origin.y, rightW, halfH);
+    if (!strcmp(name, "bottomleft")) return CGRectMake(u.origin.x, bottomY, halfW, bottomH);
+    if (!strcmp(name, "bottomright")) return CGRectMake(rightX, bottomY, rightW, bottomH);
     CGFloat fw = !strcmp(name, "small") ? 0.50 : (!strcmp(name, "medium") ? 0.66 : 0.86), fh = !strcmp(name, "small") ? 0.58 : (!strcmp(name, "medium") ? 0.74 : 0.92);
     CGFloat w = round(u.size.width * fw), h = round(u.size.height * fh);
     return CGRectMake(round(u.origin.x + (u.size.width - w) / 2.0), round(u.origin.y + (u.size.height - h) / 2.0), w, h);
@@ -59,6 +57,16 @@ static CGRect aerialStep(CGRect start, CGPoint finger, CGPoint o, BOOL left) {
     if (left) { CGFloat x = finger.x + o.x; return CGRectMake(x, start.origin.y, right - x, bottom - start.origin.y); }
     return CGRectMake(start.origin.x, start.origin.y, finger.x + o.x - start.origin.x, bottom - start.origin.y);
 }
+// Stage Manager's cap on a window's size on iPadOS 17+ (-[SBDisplayItemLayoutAttributesCalculator _frameForLayoutRole:...], read on the A12Z, 18.5
+// 22F76; StatusBar.x DMSMHookEdgeReach17): a window that is smaller than the container on either axis -- or any window of a stage of two or more --
+// gets at most the container less the last (smallest) inset of each side's list, and less the occlusion-dodging peek with two or more windows, in
+// width; less the top and bottom limits in height; never less than the grid's smallest size. Size only (the place is the window's). The card: the
+// window under our 24 pt title bar.
+static CGSize smCap17(CGSize card, CGSize container, double lead, double trail, double top, double bottom, double peek, int windows, CGSize least) {
+    BOOL capped = windows > 1 || card.width < container.width || card.height < container.height;
+    double maxW = capped ? container.width - (lead + trail + (windows >= 2 ? peek : 0.0)) : container.width, maxH = capped ? container.height - (top + bottom) : container.height;
+    return CGSizeMake(fmin(maxW, fmax(card.width, least.width)), fmin(maxH, fmax(card.height, least.height)));
+}
 static CGFloat rnd(CGFloat lo, CGFloat hi) { return lo + (hi - lo) * (arc4random_uniform(1000001) / 1000000.0); }
 
 int main(void) {
@@ -77,34 +85,34 @@ int main(void) {
             for (size_t i = 0; i < sizeof(kNames) / sizeof(kNames[0]); i++)
                 CHECK(same(tile(kNames[i], u, s), cut(kNames[i], u, s)), "iPad 2 %s, %s: unchanged by the minimum (%s -> %s)", o ? "portrait" : "landscape", kNames[i], S(cut(kNames[i], u, s)), S(tile(kNames[i], u, s)));
         }
-        CHECK(near(cut("topleft", landU, kLand).size.height, 331.0) && near(cut("left", portU, kPort).size.width, 353.0), "the iPad 2's shortest and narrowest tiles: 331 pt (landscape quarters), 353 pt (portrait halves)");
+        CHECK(near(cut("topleft", landU, kLand).size.height, 333.0) && near(cut("left", portU, kPort).size.width, 381.0), "the iPad 2's shortest and narrowest tiles: 333 pt (landscape quarters), 381 pt (portrait halves)");
 
         // 2. A smaller desktop (a screen smaller than our iPads': 690 x 560 under the menu bar): the quarters grow to the minimum, each keeps its own
         //    sides at the desktop's edges and grows over its neighbours; the halves keep their own side; everything stays inside the desktop.
         const CGSize kSmall = {742, 640}; const CGRect smallU = CGRectMake(0, 24, 742, 560);
         CGRect so = outer(smallU, kSmall);
         CGRect tl = tile("topleft", smallU, kSmall), tr = tile("topright", smallU, kSmall), bl = tile("bottomleft", smallU, kSmall), br = tile("bottomright", smallU, kSmall);
-        CHECK(near(cut("topleft", smallU, kSmall).size.width, 340.0) && near(cut("topleft", smallU, kSmall).size.height, 275.0), "the small desktop's quarters are cut 340 x 275 (%s)", S(cut("topleft", smallU, kSmall)));
+        CHECK(near(cut("topleft", smallU, kSmall).size.width, 368.0) && near(cut("topleft", smallU, kSmall).size.height, 277.0), "the small desktop's quarters are cut 368 x 277 (%s)", S(cut("topleft", smallU, kSmall)));
         for (int i = 0; i < 4; i++) { CGRect r = i == 0 ? tl : (i == 1 ? tr : (i == 2 ? bl : br));
             CHECK(r.size.width >= 320.0 - 0.01 && near(r.size.height, 324.0) && inside(r, so), "small desktop quarter %d is at least the minimum, inside the desktop: %s", i, S(r)); }
         CHECK(near(tl.origin.x, so.origin.x) && near(tl.origin.y, so.origin.y), "top left keeps the desktop's top left corner: %s", S(tl));
         CHECK(near(CGRectGetMaxX(tr), CGRectGetMaxX(so)) && near(tr.origin.y, so.origin.y), "top right keeps the top right corner: %s", S(tr));
         CHECK(near(bl.origin.x, so.origin.x) && near(CGRectGetMaxY(bl), CGRectGetMaxY(so)), "bottom left keeps the bottom left corner: %s", S(bl));
         CHECK(near(CGRectGetMaxX(br), CGRectGetMaxX(so)) && near(CGRectGetMaxY(br), CGRectGetMaxY(so)), "bottom right keeps the bottom right corner: %s", S(br));
-        CHECK(near(tl.size.width, 340.0) && near(br.size.width, 340.0), "a side that is big enough keeps its size (340 wide)");
+        CHECK(near(tl.size.width, 368.0) && near(br.size.width, 368.0), "a side that is big enough keeps its size (368 wide)");
         CHECK(CGRectGetMaxY(tl) > bl.origin.y, "the top and bottom tiles overlap (grown over each other, nothing squeezed): %.1f > %.1f", CGRectGetMaxY(tl), bl.origin.y);
         CGRect t = tile("top", smallU, kSmall), b = tile("bottom", smallU, kSmall);
         CHECK(near(t.origin.y, so.origin.y) && near(CGRectGetMaxY(b), CGRectGetMaxY(so)) && near(t.size.width, so.size.width) && near(t.size.height, 324.0), "top / bottom halves keep their edge, full width: %s %s", S(t), S(b));
-        //    a narrow one (a 600 pt wide desktop): the left and right halves are 269 wide when cut, 320 wide with the minimum, each at its own edge
+        //    a narrow one (a 600 pt wide desktop): the left and right halves are 297 wide when cut, 320 wide with the minimum, each at its own edge
         const CGSize kNarrow = {600, 900}; const CGRect narrowU = CGRectMake(0, 24, 600, 800); CGRect no = outer(narrowU, kNarrow);
         CGRect l = tile("left", narrowU, kNarrow), r = tile("right", narrowU, kNarrow);
-        CHECK(near(cut("left", narrowU, kNarrow).size.width, 269.0) && near(l.size.width, 320.0) && near(r.size.width, 320.0), "narrow halves: cut 269, given 320 (%s %s)", S(l), S(r));
+        CHECK(near(cut("left", narrowU, kNarrow).size.width, 297.0) && near(l.size.width, 320.0) && near(r.size.width, 320.0), "narrow halves: cut 297, given 320 (%s %s)", S(l), S(r));
         CHECK(near(l.origin.x, no.origin.x) && near(CGRectGetMaxX(r), CGRectGetMaxX(no)) && near(l.size.height, no.size.height), "narrow halves keep their own side and the full height");
         //    centred sizes grow around their middle
         CGRect sm = tile("small", smallU, kSmall), smc = cut("small", smallU, kSmall);
-        CHECK(near(sm.size.width, 345.0) && near(sm.size.height, 325.0) && same(sm, smc), "small (half the width, 58%% of the height) of the small desktop is big enough as it is: %s", S(sm));
+        CHECK(near(sm.size.width, 371.0) && near(sm.size.height, 325.0) && same(sm, smc), "small (half the width, 58%% of the height) of the small desktop is big enough as it is: %s", S(sm));
         CGRect sn = tile("small", narrowU, kNarrow), snc = cut("small", narrowU, kNarrow);
-        CHECK(near(sn.size.width, 320.0) && fabs(CGRectGetMidX(sn) - CGRectGetMidX(snc)) <= 0.5 && same(CGRectMake(0, snc.origin.y, 0, snc.size.height), CGRectMake(0, sn.origin.y, 0, sn.size.height)), "small on the narrow desktop: 274 -> 320 wide around its middle (%s -> %s)", S(snc), S(sn));
+        CHECK(near(sn.size.width, 320.0) && fabs(CGRectGetMidX(sn) - CGRectGetMidX(snc)) <= 0.5 && same(CGRectMake(0, snc.origin.y, 0, snc.size.height), CGRectMake(0, sn.origin.y, 0, sn.size.height)), "small on the narrow desktop: 300 -> 320 wide around its middle (%s -> %s)", S(snc), S(sn));
         //    the kept sides themselves (in the layouts they lie on the desktop's edges, where the desktop's own edge would hold them anyway): a
         //    100 x 100 tile in the middle of a big area grows from the sides it keeps, or around its middle
         CGRect big = CGRectMake(0, 0, 1000, 1000), mid = CGRectMake(500, 500, 100, 100);
@@ -130,8 +138,37 @@ int main(void) {
         CHECK(near(wl.size.width, 414.0) && near(wl.origin.x, no.origin.x) && near(wr.size.width, 414.0) && near(CGRectGetMaxX(wr), CGRectGetMaxX(no)), "a wider minimum of Stage Manager's (414): each half keeps its own side (%s %s)", S(wl), S(wr));
         CHECK(same(MSBDWindowMinSlotOf(mid, MSBDKeepLeft | MSBDKeepTop, big, MSBDWindowMinSize()), MSBDWindowMinSlot(mid, MSBDKeepLeft | MSBDKeepTop, big)), "MSBDWindowMinSlot is MSBDWindowMinSlotOf with the minimum");
 
+        // 2c. Stage Manager on iPadOS 17+: its size cap (smCap17) with Apple's lists cut Fill (A12Z, 18.5: 1270 pt wide alone, 1226 with another window
+        //     -- 48 / 70 pt from each side); with our engine's lists (no side inset, no peek; top and bottom Apple's 48 + 48) every layout's window
+        //     passes unchanged, alone and with others, on the A12Z (24 pt bar, Docks 76.3 / 62.7 pt measured), the 17.5 (iPad7,1: 20 pt bar) and an
+        //     11-inch iPad (1194 x 834), both ways round.
+        {
+            const CGSize kA = {1366, 1024}, kAp = {1024, 1366};
+            const CGRect aU = CGRectMake(0, 24, 1366, 1024 - 24 - 76.3 - 2), aUp = CGRectMake(0, 24, 1024, 1366 - 24 - 62.7 - 2);
+            CGSize fillCard = CGSizeMake(cut("fill", aU, kA).size.width, cut("fill", aU, kA).size.height - 24.0);
+            CGSize one = smCap17(fillCard, kA, 48, 48, 48, 48, 44, 1, smMin), two = smCap17(fillCard, kA, 48, 48, 48, 48, 44, 2, smMin);
+            CHECK(near(fillCard.width, 1366.0) && near(one.width, 1270.0) && near(two.width, 1226.0) && near(one.height, fillCard.height), "A12Z Fill with Apple's lists: %.0f wide -> %.0f alone, %.0f with another window (the reported gaps)", fillCard.width, one.width, two.width);
+            CGSize p1 = smCap17(CGSizeMake(cut("fill", aUp, kAp).size.width, cut("fill", aUp, kAp).size.height - 24.0), kAp, 48, 48, 48, 48, 44, 1, smMin);
+            CHECK(near(p1.width, 928.0), "A12Z portrait Fill with Apple's lists: %.0f wide (1024 less 48 + 48)", p1.width);
+            struct { const char *what; CGSize s; double bar, dockL, dockP; } dev[] = { {"A12Z", {1366, 1024}, 24, 76.3, 62.7}, {"17.5", {1366, 1024}, 20, 76.3, 62.7}, {"11-inch", {1194, 834}, 24, 70, 60} };
+            for (int d = 0; d < 3; d++) for (int o = 0; o < 2; o++) {
+                CGSize s = o ? CGSizeMake(dev[d].s.height, dev[d].s.width) : dev[d].s;
+                CGRect u = CGRectMake(0, dev[d].bar, s.width, s.height - dev[d].bar - (o ? dev[d].dockP : dev[d].dockL) - 2.0);
+                for (size_t i = 0; i < sizeof(kNames) / sizeof(kNames[0]); i++) {
+                    CGRect w = MSBDWindowMinSlotOf(cut(kNames[i], u, s), MSBDWindowKeepForLayout(kNames[i]), u, smMin);
+                    CGSize card = CGSizeMake(w.size.width, w.size.height - 24.0);
+                    for (int n = 1; n <= 3; n++) {
+                        CGSize got = smCap17(card, s, 0, 0, 48, 48, 0, n, smMin);
+                        CHECK(near(got.width, card.width) && near(got.height, card.height), "Stage Manager 17+, %s %s %s, %d window(s): our lists let it through (%s -> %.1f x %.1f)", dev[d].what, o ? "portrait" : "landscape", kNames[i], n, S(w), got.width, got.height);
+                    }
+                }
+                CGRect f = cut("fill", u, s), l = cut("left", u, s), r = cut("right", u, s);
+                CHECK(near(f.origin.x, 0.0) && near(CGRectGetMaxX(f), s.width) && near(f.origin.y, dev[d].bar) && near(l.origin.x, 0.0) && near(CGRectGetMaxX(r), s.width) && near(r.origin.x - CGRectGetMaxX(l), 6.0) && near(cut("bottom", u, s).origin.y - CGRectGetMaxY(cut("top", u, s)), 6.0) && near(CGRectGetMaxY(cut("bottomright", u, s)), CGRectGetMaxY(u)),
+                      "%s %s: Fill and the halves reach both side edges, start under the %.0f pt bar, exactly 6 pt between tiles, the bottom tiles end at the Dock line", dev[d].what, o ? "portrait" : "landscape", dev[d].bar);
+            }
+        }
         // 3. A desktop smaller than a window may be: every tile is the whole of it on that axis, never more (it never goes past the desktop).
-        const CGSize kTiny = {352, 300}; const CGRect tinyU = CGRectMake(0, 24, 352, 250); CGRect to = outer(tinyU, kTiny);
+        const CGSize kTiny = {300, 300}; const CGRect tinyU = CGRectMake(0, 24, 300, 250); CGRect to = outer(tinyU, kTiny);
         for (size_t i = 0; i < sizeof(kNames) / sizeof(kNames[0]); i++) {
             CGRect x = tile(kNames[i], tinyU, kTiny);
             if (!strcmp(kNames[i], "center")) continue;   // (the centre place starts at y 36 whatever the desktop: as before)

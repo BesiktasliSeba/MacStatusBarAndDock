@@ -12,13 +12,18 @@ cat > "$R/usr/libexec/sshtoggled" <<EOF
 echo "helper \$*" >> "$W/calls"
 [ "\$1" = "--is-ipad" ] && exit \$(cat "$W/ipad-rc")
 [ "\$1" = "--quit-set-kept" ] && exit \$(cat "$W/kept-rc" 2>/dev/null || echo 0)
+[ "\$1" = "--dasd-part-current" ] && exit \$(cat "$W/dasd-rc" 2>/dev/null || echo 1)
 exit 0
+EOF
+cat > "$R/usr/bin/killall" <<EOF
+#!/bin/sh
+echo "killall \$*" >> "$W/calls"
 EOF
 cat > "$R/usr/bin/launchctl" <<EOF
 #!/bin/sh
 echo "launchctl \$*" >> "$W/calls"
 EOF
-chmod +x "$R/usr/libexec/sshtoggled" "$R/usr/bin/launchctl"
+chmod +x "$R/usr/libexec/sshtoggled" "$R/usr/bin/launchctl" "$R/usr/bin/killall"
 : > "$R/Library/LaunchDaemons/com.besiktasliseba.sshtoggled.plist"
 sed "s#/var/jb#$R#g" layout/DEBIAN/postinst > "$W/postinst"; chmod +x "$W/postinst"
 
@@ -73,5 +78,21 @@ rm -f "$QS"; echo 0 > "$W/kept-rc"; chmod -x "$R/usr/libexec/sshtoggled"; "$W/po
 qs "quit set: no helper to ask: no file made" '[ ! -e "$QS" ]'
 : > "$W/calls"; "$W/postinst" configure 1.7.0 >/dev/null 2>&1
 qs "quit set: the helper says a set is kept: the file made" 'cmp -s "$QP" "$QS" && grep -q -- "--quit-set-kept" "$W/calls"'
+# dasd (1.7.2 item 8): restarted only when it lacks the prewarm block just installed -- the helper answers from the block's start stamp; any other
+# answer, or no helper, restarts it as every install did before. The pointer process is restarted every time (unchanged).
+echo 0 > "$W/ipad-rc"; echo 0 > "$W/kept-rc"
+dasd() {   # dasd <name> <helper's answer, or "none"> <expected: kill|keep>
+    if [ "$2" = none ]; then chmod -x "$R/usr/libexec/sshtoggled"; else echo "$2" > "$W/dasd-rc"; fi
+    : > "$W/calls"; "$W/postinst" configure 1.7.1 >/dev/null 2>&1
+    [ "$2" = none ] && chmod +x "$R/usr/libexec/sshtoggled"
+    local got=keep; grep -q "^killall -9 dasd" "$W/calls" && got=kill
+    if [ "$got" = "$3" ] && grep -q "^killall -9 pointeruid" "$W/calls"; then pass=$((pass+1)); echo "ok    $1"; else fail=$((fail+1)); echo "FAIL  $1 (got $got): $(tr '\n' ';' < "$W/calls")"; fi
+}
+dasd "dasd: the running dasd has the block just installed (helper 0): left running" 0 keep
+dasd "dasd: it does not (helper 1: no stamp, another dasd, another build): restarted" 1 kill
+dasd "dasd: the helper crashed (139): restarted" 139 kill
+dasd "dasd: no helper to ask: restarted" none kill
+echo 0 > "$W/dasd-rc"; : > "$W/calls"; "$W/postinst" configure 1.7.1 >/dev/null 2>&1
+qs "dasd: the helper is asked after the quit set's file is settled (a dasd started again reads the right file)" 'awk "/--quit-set-kept/{q=NR} /--dasd-part-current/{d=NR} END{exit !(q && d && q < d)}" "$W/calls"'
 echo "postinst: $pass passed, $fail failed"
 [ "$fail" = 0 ]

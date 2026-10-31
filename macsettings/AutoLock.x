@@ -4,7 +4,10 @@
 // iOS 15: DBSSettingsController fills that list itself (the plist's 30 s ... 5 min is replaced by what ManagedConfiguration allows: 2/5/10/15 min
 // on this iPad) in -_updateAutoLockSpecifiers: / -_localizeAutoLockTitlesWithSpecifiers:, so our three are added right after it has done so. The
 // chosen value is stored by the system as usual (ManagedConfiguration's maxInactivity, via -setScreenLock:specifier:), which the idle timer uses.
+// SpringBoard's idle timer takes any time over an hour for Never, so 2 hours never locked (1.7.2 item 18): AutoLockTimer.x makes SpringBoard keep
+// our times, and 2 hours is offered only while a SpringBoard does (MSAutoLockLongTimesKept); 30 minutes and 1 hour stock SpringBoard keeps itself.
 #import <UIKit/UIKit.h>
+#import "AutoLockLongest.h"
 #if DEBUG
 #define MSTestFlag(path) (access((path), F_OK) == 0)   // a /tmp test switch (debug builds only; a release build behaves as if none existed)
 #else
@@ -31,6 +34,11 @@ static NSString *MSDurationTitle(NSInteger seconds) {
     if (!f) { f = [NSDateComponentsFormatter new]; f.unitsStyle = NSDateComponentsFormatterUnitsStyleFull; f.allowedUnits = NSCalendarUnitHour | NSCalendarUnitMinute; }
     return [f stringFromTimeInterval:seconds] ?: [NSString stringWithFormat:@"%ld", (long)seconds];
 }
+static NSArray<NSNumber *> *MSLongTimes(void) {   // (30 minutes, 1 hour, and 2 hours while our SpringBoard part keeps it)
+    static NSArray<NSNumber *> *kept, *stock;
+    if (!kept) { kept = @[@1800, @3600, @((NSInteger)MS_AUTOLOCK_LONGEST)]; stock = @[@1800, @3600]; }
+    return MSAutoLockLongTimesKept() ? kept : stock;
+}
 static BOOL MSIsAutoLockSpecifier(PSSpecifier *s) {
     if (![s respondsToSelector:@selector(values)] || ![s respondsToSelector:@selector(propertyForKey:)]) return NO;
     id label = [s propertyForKey:@"label"];
@@ -43,13 +51,16 @@ static void MSAddLongAutoLockTimes(NSArray *specifiers) {
     if (MSTestFlag("/tmp/macsettings-debug")) { FILE *f = fopen("/tmp/macsettings.log", "a"); if (f) { fprintf(f, "autolock: add called (%lu specifiers)\n", (unsigned long)specifiers.count); fclose(f); } }
 #endif
     if (MSTestFlag("/tmp/ms-autolock-off")) return;   // (debug kill switch)
+#if DEBUG
+    if (!MSAutoLockLongTimesKept() && MSTestFlag("/tmp/macsettings-debug")) { FILE *f = fopen("/tmp/macsettings.log", "a"); if (f) { fputs("autolock: 2 hours not added (SpringBoard would take it for Never)\n", f); fclose(f); } }
+#endif
     for (PSSpecifier *s in specifiers) {
         @try { if (![s isKindOfClass:NSClassFromString(@"PSSpecifier")] || !MSIsAutoLockSpecifier(s)) continue; } @catch (NSException *e) { continue; }
         NSMutableArray *values = [[s values] mutableCopy];
         if (!values.count) return;
         if ([values containsObject:@1800]) {   // values already ours, but the system may have just put its own titles back: add ours to them again
             NSMutableDictionary *td = [[s titleDictionary] mutableCopy] ?: [NSMutableDictionary dictionary], *sd = [[s shortTitleDictionary] mutableCopy] ?: [NSMutableDictionary dictionary];
-            for (NSNumber *v in @[@1800, @3600, @7200]) { if (!td[v]) td[v] = MSDurationTitle(v.integerValue); if (!sd[v]) sd[v] = td[v]; }
+            for (NSNumber *v in MSLongTimes()) { if (!td[v]) td[v] = MSDurationTitle(v.integerValue); if (!sd[v]) sd[v] = td[v]; }
             if ([s respondsToSelector:@selector(setTitleDictionary:)]) [s setTitleDictionary:td];
             if ([s respondsToSelector:@selector(setShortTitleDictionary:)]) [s setShortTitleDictionary:sd];
             return;
@@ -74,7 +85,7 @@ static void MSAddLongAutoLockTimes(NSArray *specifiers) {
         NSUInteger never = values.count;
         for (NSUInteger i = 0; i < values.count; i++) { NSInteger v = [values[i] integerValue]; if (v < 0 || v >= INT_MAX) { never = i; break; } }
         NSMutableArray *t = [NSMutableArray array], *st = [NSMutableArray array];
-        NSArray *add = @[@1800, @3600, @7200];
+        NSArray *add = MSLongTimes();
         [values insertObjects:add atIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(never, add.count)]];
         for (id v in values) {
             NSString *title = titles[v] ?: MSDurationTitle([v integerValue]);

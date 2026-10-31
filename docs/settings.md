@@ -25,6 +25,8 @@ On iPadOS 18, Settings has no room for tweak rows in its sidebar, so Status Bar,
 | Go Menu > Apps | Choose and order the apps in the Go menu. | |
 | Finder | Off removes Finder completely, with its Dock icon. | On |
 | Show Desktop Icons | Files and folders from On My iPad > Desktop on the first Home Screen page. | On |
+| Hide Desktop Icon Names | Hides the names under every desktop icon. VoiceOver still reads them. An icon's own menu has Hide Name for just that icon. Greyed out while Finder or Show Desktop Icons is off. | Off |
+| Activity Monitor > Show in App Library | Activity Monitor as an app in the App Library, in its Utilities category and its search. A tap opens the Activity Monitor window. | On |
 | Report a Problem | Opens a filled-in GitHub issue in your browser. The report is part of the link, so GitHub receives it when the page opens. It is only posted if you submit it. | |
 | Background | Automatic: a color behind the menu bar, unless ColorBar15 already colors it. Also Always On or Off. | Automatic |
 | Color and opacity | The background color, used while the menu bar text is light. | 70% |
@@ -34,6 +36,7 @@ On iPadOS 18, Settings has no room for tweak rows in its sidebar, so Status Bar,
 | Force Quit in App Menus | Force Quit in app icon menus. | On |
 | App Size in App Menus | The app's size at the top of its icon menu. | On |
 | Folder Apps in Folder Menus | A folder's long-press menu lists its apps. | On |
+| Add to Folder in App Menus | Add to Folder in the menus of apps on the Home Screen, in folders and in the App Library: the app moves into the Home Screen folder you pick, or into a new one made where the app was. A full folder is greyed out. Not on the Dock's icons. While the AddToFolder tweak is installed, its item is used instead. | On |
 | Updates Tab in App Store | The Updates tab in place of Arcade. | On |
 | Hide Large Titles | Compact titles in Apple's own apps, like Mac apps. Applies the next time an app opens. | On |
 | Search Field in Settings | A search field at the top of the Settings sidebar, with Apple's own results. iPadOS 15 to 17. | On |
@@ -43,7 +46,7 @@ On iPadOS 18, Settings has no room for tweak rows in its sidebar, so Status Bar,
 | Mix Audio Between Apps | Apps can play at the same time, each with its own volume in the Audio menu. | On |
 | Show Mute Icon | A mute icon in the menu bar while the iPad is muted. | On |
 | Wi-Fi Menu | The Wi-Fi icon opens a Wi-Fi menu. | On |
-| Hide Status Bar on Lock Screen | No status bar on the Lock Screen. | Off |
+| Hide Status Bar on Lock Screen | No status bar on the Lock Screen, and no Control Center line at its top right. | Off |
 | Skip Lock Screen After Respring | Goes straight to the Home Screen after a respring. Works only without a passcode. | Off |
 
 ## Settings > Windows & Multitasking
@@ -82,7 +85,7 @@ The window settings, on their own page between Status Bar and Dock. On iPadOS 15
 | Show Finder in Dock | Finder as the first Dock icon. Not shown while Finder is off. | On |
 | Show Downloads in Dock | The Downloads stack at the end of the Dock. | On |
 | Downloads From | Which apps' downloads the stack shows: Safari, plus other apps you pick. | Safari |
-| Show Trash in Dock | A Trash at the end of the Dock, after Downloads, while Finder is on. It looks full when Finder's Trash has items, a tap opens it in Finder, and a long press or a right click offers Open and Empty Trash, which asks first. Drop files on it to move them to the Trash, a Dock app to take it out of the Dock, or a drive from Finder's sidebar to eject it (iPadOS 16 and later). | Off |
+| Show Trash in Dock | A Trash at the end of the Dock, after Downloads, while Finder is on. It looks full when Finder's Trash has items, a tap opens it in Finder, and a long press or a right click offers Open and Empty Trash, which asks first. Drop files on it to move them to the Trash, a Dock app to take it out of the Dock, or a drive from Finder's sidebar to eject it (iPadOS 16 and 17; ejecting doesn't work on iPadOS 18 yet). | Off |
 
 ## Settings > Home Screen & Multitasking
 
@@ -111,7 +114,7 @@ These show up only when they apply. While the Pointer and Keyboard rows are ther
 | Setting | What it does | New install |
 |---|---|---|
 | Pointer Style | Mac: the Mac arrow and I-beam, with Pointer Animations in Accessibility turned off while it is on (your own setting comes back with the iPadOS pointer, and if you turn them back on, they stay on). iPadOS: Apple's round pointer. The Mac pointer follows Apple's Pointer Size. | Mac |
-| Hide in Virtual Mac | Hides the Mac pointer in the VirtualMac app, which draws its own. | On |
+| Hide in Virtual Mac | Hides the Mac pointer in the VirtualMac app, which draws its own. Shown only on iPads that can run virtual machines (M1 and M2 iPads up to iPadOS 16.3.1). | On |
 | Use Pointer Control Style | The Mac pointer takes Color, Border Width and Increase Contrast from Pointer Control. Off: the classic black and white pointer. | Off |
 | Block Pointer Pull-Down | Stops the pointer at the top edge from pulling down the Lock Screen. | On |
 
@@ -135,7 +138,7 @@ For keyboards without a function row, like the original Magic Keyboard for iPad.
 
 ## Elsewhere in Settings
 
-- Display & Brightness > Auto-Lock offers 30 minutes, 1 hour and 2 hours too, except in Low Power Mode.
+- Display & Brightness > Auto-Lock offers 30 minutes, 1 hour and 2 hours too, except in Low Power Mode. iPadOS takes any time over an hour for Never, so the tweak keeps 2 hours in SpringBoard's idle timer, and 2 hours is listed only while it can.
 - General > Ethernet is always listed, with or without an adapter.
 
 ## In the menu bar's Window menu
@@ -145,9 +148,9 @@ These two live in the Window menu instead of Settings, so you can change them wh
 | Item | What it does | New install |
 |---|---|---|
 | Open Apps as Windows | Apps open as windows from anywhere: the Home Screen, the Dock, Spotlight, links and notifications. With Aerial it is Aerial's own Control Center toggle. | Off (Stage Manager engine: On) |
-| Fit to Window | Tiles your windows side by side. When a third app opens, you pick its side, or No Fit. | Off |
+| Fit to Window | Tiles your windows side by side, from edge to edge with 6 points between them. When a third app opens, you pick its side, or No Fit. | Off |
 
-The Window menu also has Minimize All Windows, Bring All to Front or Send All to Back, the layouts (Fill Screen, Center, halves, quarters, Small, Large) and, with the Stage Manager engine and a display connected, Move to Other Display.
+The Window menu also has Minimize All Windows, Bring All to Front or Send All to Back, the layouts (Fill Screen, Center, halves, quarters, Small, Large) and, with the Stage Manager engine and a display connected, Move to Other Display. Fill Screen, the halves and the quarters reach the screen's edges, from right under the menu bar down to the Dock.
 
 ## Always on
 
@@ -158,4 +161,5 @@ These have no switch:
 - Command-Tab brings an app's window to the front when it has one, and a quick Command-Tab from a window goes back to the app you used before.
 - Windows have a smallest size with every window engine, as with Stage Manager: the app at least 320 x 300 points, as far as the screen allows.
 - With Aerial, Zetsu or MilkyWay4 on iPadOS 15 to 18, every app with a window has its card in iPadOS's App Switcher, with a picture of the window. A tap on the card brings the window forward.
+- On iPads with a Home button, windows placed before 1.7.1 with a gap under the menu bar move up under it once.
 - In portrait, a Home Screen page whose icon layout only fits landscape (for example one tuned with Atria, which keeps one layout for both orientations) keeps its landscape positions, so no icon ends up off the screen. Pages that fit in portrait are left as they are, and so is editing the Home Screen.

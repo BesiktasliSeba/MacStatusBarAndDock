@@ -10,7 +10,7 @@ TWEAK_NAME = MacStatusBarCore
 MacStatusBarCore_FILES = StatusBar.x SpotlightFiles.x
 MacStatusBarCore_CFLAGS = -fobjc-arc
 MacStatusBarCore_PRIVATE_FRAMEWORKS = BackBoardServices
-MacStatusBarCore_FRAMEWORKS = NetworkExtension UniformTypeIdentifiers ImageIO CoreSpotlight   # (PDFKit, AVKit, AVFoundation: opened by Finder at first use, Finder.h DMFinderClass)
+MacStatusBarCore_FRAMEWORKS = NetworkExtension UniformTypeIdentifiers ImageIO CoreSpotlight AudioToolbox   # (PDFKit, AVKit, AVFoundation: opened by Finder at first use, Finder.h DMFinderClass; AudioToolbox: the Trash emptied sound, SpringBoard has it loaded anyway)
 
 SUBPROJECTS += macstatusbarprefs macstatusbarsettings macpointer
 

@@ -5,7 +5,8 @@
 // screen with green while off (the kept copy's "madeFullScreen") is no window any more, and running or not decides nothing -- a prewarmed or
 // background-launched app keeps its window (R3 as the coordinator decided it, 1.6.0); nothing when what is there
 // can't be told yet; a new window goes to Desktop 1 -- with
-// Stage Manager to the desktop of the kept windows it joined; the current desktop (Desktop 1, or the stage on screen's); the desktop on screen
+// Stage Manager to the desktop of the kept windows it joined, and a stage of no kept window only when it is on screen (1.7.1 item 13: the stages
+// behind, apps without a window, stay recorded nowhere); the current desktop (Desktop 1, or the stage on screen's); the desktop on screen
 // keeps its own full-screen app and Fit arrangement; screen sizes when left; an engine change meanwhile; bad input. Run by test-mswkept.sh.
 #import <Foundation/Foundation.h>
 #include "../statusbar/MSWKept.h"
@@ -183,10 +184,33 @@ int main(void) {
         CHECK([r[@"current"] integerValue] == 0 && [r[@"fresh"] isEqualToDictionary:(@{nN: @1})], "S7 current/fresh %s", [[r[@"fresh"] description] UTF8String]);
         CHECK([r[@"windows"][cB] isEqual:@2], "S7 a kept window keeps its desktop (the tick decides about the shared stage)");
 
-        // 8. Calculator's window closed meanwhile: left out; Desktop 3 stays, empty. A stage of new windows only: Desktop 1's.
+        // 8. Calculator's window closed meanwhile: left out; Desktop 3 stays, empty. A stage of new windows only, not on screen: recorded nowhere
+        //    (an app without a window, as the tick has it -- 1.7.1 item 13); the same stage on screen: Desktop 1's, and Desktop 1 current.
         r = Back(keptS, YES, YES, @[tA, cB, wW], @[@[cB], @[tA], @[wW]], 1, nil, nil);
         CHECK([r[@"gone"] isEqualToArray:(@[CALC])] && r[@"windows"][xC] == nil, "S8 gone %s", [[r[@"gone"] description] UTF8String]);
-        CHECK([r[@"desktops"] isEqualToArray:(@[@1, @2, @3])] && [r[@"current"] integerValue] == 0 && [r[@"windows"][wW] isEqual:@1], "S8 desktops/current/new");
+        CHECK([r[@"desktops"] isEqualToArray:(@[@1, @2, @3])] && [r[@"current"] integerValue] == 0 && r[@"windows"][wW] == nil && r[@"fresh"][wW] == nil, "S8 desktops/current/not recorded %s", [[r[@"windows"] description] UTF8String]);
+        r = Back(keptS, YES, YES, @[tA, cB, wW], @[@[cB], @[tA], @[wW]], 2, nil, nil);
+        CHECK([r[@"windows"][wW] isEqual:@1] && [r[@"fresh"] isEqualToDictionary:(@{wW: @1})] && [r[@"current"] integerValue] == 0, "S8b on screen: Desktop 1's %s", [[r[@"windows"] description] UTF8String]);
+
+        // 8k. 1.7.1 item 13 as KT had it (17.5): Desktop 1 = Clock, Desktop 2 empty; Weather, App Store and Settings each in a one-window stage of their
+        //     own, never recorded. Off and on again from the Home Screen: Clock back on Desktop 1, the three stay recorded nowhere (a respring
+        //     then asks Desktop 1 for Clock alone, not for the four together).
+        NSString *kClock = K(CLOCK, @"default"), *kWeather = K(WEATHER, @"default"), *kStore = K(@"com.apple.AppStore", @"default"), *kSettings = K(@"com.apple.Preferences", @"default");
+        NSDictionary *keptKT = @{@"desktops": @[@1, @2], @"current": @1, @"windows": @{kClock: @1}, @"leftSizes": @{@"2": @"{1024, 1366}"}, @"fit": @{@"2": @{@"smslots": @{}, @"smfree": @[]}}};
+        NSArray *ktStages = @[@[kClock], @[kWeather], @[kStore], @[kSettings]], *ktAlive = @[kClock, kWeather, kStore, kSettings];
+        r = Back(keptKT, YES, YES, ktAlive, ktStages, NSNotFound, nil, nil);
+        CHECK([r[@"windows"] isEqualToDictionary:(@{kClock: @1})] && [r[@"fresh"] count] == 0 && [r[@"current"] integerValue] == 0, "S8k Home Screen: only Clock %s", [[r[@"windows"] description] UTF8String]);
+        CHECK([r[@"desktops"] isEqualToArray:(@[@1, @2])] && [r[@"back"] integerValue] == 1, "S8k desktops/back");
+        // ... Clock's window on screen: the same
+        r = Back(keptKT, YES, YES, ktAlive, ktStages, 0, nil, nil);
+        CHECK([r[@"windows"] isEqualToDictionary:(@{kClock: @1})] && [r[@"fresh"] count] == 0 && [r[@"current"] integerValue] == 0, "S8k2 Clock on screen %s", [[r[@"windows"] description] UTF8String]);
+        // ... switched on in Settings (its stage on screen): Settings joins the desktop it is on now (Desktop 1, as the tick would record it); the
+        //     other two stay recorded nowhere
+        r = Back(keptKT, YES, YES, ktAlive, ktStages, 3, nil, nil);
+        CHECK([r[@"windows"] isEqualToDictionary:(@{kClock: @1, kSettings: @1})] && [r[@"fresh"] isEqualToDictionary:(@{kSettings: @1})] && [r[@"current"] integerValue] == 0, "S8k3 Settings on screen %s", [[r[@"windows"] description] UTF8String]);
+        // ... a window opened while off joined Clock's stage (Stage Manager's own join): Desktop 1's, as before
+        r = Back(keptKT, YES, YES, @[kClock, kWeather, kStore, kSettings, nN], @[@[kClock, nN], @[kWeather], @[kStore], @[kSettings]], 0, nil, nil);
+        CHECK([r[@"windows"] isEqualToDictionary:(@{kClock: @1, nN: @1})] && [r[@"fresh"] isEqualToDictionary:(@{nN: @1})], "S8k4 joined Clock %s", [[r[@"windows"] description] UTF8String]);
 
         // 9. A minimized window new since: Desktop 1's; a kept minimized one stays where it was.
         NSDictionary *keptMin = @{@"desktops": @[@1, @2], @"windows": @{tA: @1, cB: @2}};

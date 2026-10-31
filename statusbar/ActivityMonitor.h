@@ -201,7 +201,7 @@ static dispatch_queue_t DMAMSampleQueue(void) {
         if (_haveTicks) { double u = 0, s = 0, l = MSBDCPULoadBetween(_ticks, t, &u, &s); if (l >= 0) { _cpuLoad = l; _cpuUser = u; _cpuSystem = s; } }
         _ticks = t; _haveTicks = YES; _cores = t.cores;
     }
-    [self dm_rebuildRows];
+    [self dm_rebuildRowsInPlace:YES];
     [self dm_updateSummary];
     if (_secondSoon) {   // (the first %CPU needs two readings: the second one 0.3 s after the first is in)
         _secondSoon = NO;
@@ -217,7 +217,10 @@ static dispatch_queue_t DMAMSampleQueue(void) {
         default:            return 0;   // Energy / Network: no per-process metric in this build
     }
 }
-- (void)dm_rebuildRows {
+- (void)dm_rebuildRows { [self dm_rebuildRowsInPlace:NO]; }   // (a tab, a sort, the filter, a search: the whole list again)
+// The rows, sorted and filtered. In place (the 2 s refresh): no -reloadData -- the visible rows are filled again where they stand (only what
+// changed is drawn, -dm_fillCell:), rows a process list grew or shrank by are added or taken off the end, without animation.
+- (void)dm_rebuildRowsInPlace:(BOOL)inPlace {
     NSString *q = [_query lowercaseString];
     NSMutableArray<DMProcInfo *> *rows = [NSMutableArray array];
     for (DMProcInfo *p in _all) {
@@ -239,17 +242,36 @@ static dispatch_queue_t DMAMSampleQueue(void) {
         r = [a.name localizedCaseInsensitiveCompare:b.name];
         return r != NSOrderedSame ? r : (a.pid < b.pid ? NSOrderedAscending : a.pid > b.pid ? NSOrderedDescending : NSOrderedSame);
     }];
+    NSInteger had = (NSInteger)_rows.count, now = (NSInteger)rows.count;
     _rows = rows;
-    [_list reloadData];
+    if (!inPlace || [_list numberOfRowsInSection:0] != had) [_list reloadData];
+    else {
+        if (now != had) [UIView performWithoutAnimation:^{
+            [_list performBatchUpdates:^{
+                NSMutableArray<NSIndexPath *> *ends = [NSMutableArray array];
+                for (NSInteger r = MIN(had, now); r < MAX(had, now); r++) [ends addObject:[NSIndexPath indexPathForRow:r inSection:0]];
+                if (now > had) [_list insertRowsAtIndexPaths:ends withRowAnimation:UITableViewRowAnimationNone];
+                else [_list deleteRowsAtIndexPaths:ends withRowAnimation:UITableViewRowAnimationNone];
+            } completion:nil];
+        }];
+        CGFloat w = _list.bounds.size.width;
+        for (NSIndexPath *ip in _list.indexPathsForVisibleRows) {
+            UITableViewCell *cell = ip.row < now ? [_list cellForRowAtIndexPath:ip] : nil;
+            if (cell) [self dm_fillCell:cell row:_rows[ip.row] width:w];
+        }
+    }
     // (the selected process stays selected across the refreshes, as on a Mac -- -reloadData drops the table's selection, so its row lost the
     //  highlight within 2 s while Quit and Inspect still acted on it --: found again by its pid, every refresh making new rows; a process that has
-    //  gone or is no longer listed (search, filter) leaves nothing selected)
+    //  gone or is no longer listed (search, filter) leaves nothing selected. In place, the selection the table keeps is a row number: moved with
+    //  its process, or taken off.)
+    NSIndexPath *was = _list.indexPathForSelectedRow;
     if (_selected) {
         NSUInteger at = NSNotFound;
         for (NSUInteger i = 0; i < _rows.count; i++) if (_rows[i].pid == _selected.pid) { at = i; break; }
-        if (at == NSNotFound) { _selected = nil; _inspect.enabled = NO; _quit.enabled = NO; [self dm_refreshNote]; }
-        else { _selected = _rows[at]; [_list selectRowAtIndexPath:[NSIndexPath indexPathForRow:(NSInteger)at inSection:0] animated:NO scrollPosition:UITableViewScrollPositionNone]; }
-    }
+        if (at == NSNotFound) { _selected = nil; _inspect.enabled = NO; _quit.enabled = NO; [self dm_refreshNote]; if (was) [_list deselectRowAtIndexPath:was animated:NO]; }
+        else if (was.row != (NSInteger)at || !was) { _selected = _rows[at]; [_list selectRowAtIndexPath:[NSIndexPath indexPathForRow:(NSInteger)at inSection:0] animated:NO scrollPosition:UITableViewScrollPositionNone]; }
+        else _selected = _rows[at];
+    } else if (was) [_list deselectRowAtIndexPath:was animated:NO];
 }
 - (void)dm_updateSummary {
     char buf[32];
@@ -300,8 +322,13 @@ static dispatch_queue_t DMAMSampleQueue(void) {
             [cell.contentView addSubview:l];
         }
     }
-    DMProcInfo *p = _rows[ip.row];
-    NSArray<NSNumber *> *edges = [self dm_columnEdges:tv.bounds.size.width];
+    [self dm_fillCell:cell row:_rows[ip.row] width:tv.bounds.size.width];
+    return cell;
+}
+// A row's labels set from its process. Only what differs is set: a label given its text again is drawn again, and the 2 s refresh redrew every
+// visible label at once -- a 40-45 ms frame on SpringBoard's main thread, a hitch in any scroll or animation on the screen (M1, 1.7.2 item 6).
+- (void)dm_fillCell:(UITableViewCell *)cell row:(DMProcInfo *)p width:(CGFloat)w {
+    NSArray<NSNumber *> *edges = [self dm_columnEdges:w];
     // (none of these is ever nil -- an array literal with a nil throws, inside SpringBoard: a name read from bytes that were not UTF-8 was, until
     //  DMProcInfo's name became never nil; the figures are our own ASCII)
     NSArray<NSString *> *vals = _tab == DMAMTabCPU
@@ -309,13 +336,15 @@ static dispatch_queue_t DMAMSampleQueue(void) {
         : @[p.name, [self dm_metricText:p], p.threads >= 0 ? @(p.threads).stringValue : @"–", @(p.pid).stringValue];
     for (int i = 0; i < 5; i++) {
         UILabel *l = [cell.contentView viewWithTag:600 + i];
-        if (i >= (int)vals.count) { l.hidden = YES; continue; }
-        l.hidden = NO; l.text = vals[i];
-        CGFloat x = [edges[i] doubleValue], nx = (i + 1 < (int)edges.count) ? [edges[i + 1] doubleValue] : tv.bounds.size.width - kMSBDAMRightInset;
-        l.frame = CGRectMake(x, 0, nx - x - kMSBDAMColumnGap, 28);
-        l.textAlignment = i == 0 ? NSTextAlignmentLeft : NSTextAlignmentRight;
+        if (i >= (int)vals.count) { if (!l.hidden) l.hidden = YES; continue; }
+        if (l.hidden) l.hidden = NO;
+        if (![l.text isEqualToString:vals[i]]) l.text = vals[i];
+        CGFloat x = [edges[i] doubleValue], nx = (i + 1 < (int)edges.count) ? [edges[i + 1] doubleValue] : w - kMSBDAMRightInset;
+        CGRect f = CGRectMake(x, 0, nx - x - kMSBDAMColumnGap, 28);
+        if (!CGRectEqualToRect(l.frame, f)) l.frame = f;
+        NSTextAlignment a = i == 0 ? NSTextAlignmentLeft : NSTextAlignmentRight;
+        if (l.textAlignment != a) l.textAlignment = a;
     }
-    return cell;
 }
 - (NSString *)dm_cpuTime:(uint64_t)ns {   // seconds.hundredths, like Activity Monitor's shorter form
     double s = ns / 1e9; unsigned m = (unsigned)(s / 60); double rem = s - m * 60;

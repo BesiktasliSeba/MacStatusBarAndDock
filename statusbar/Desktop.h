@@ -9,8 +9,10 @@
 //    as on a Mac; with no free spot left, further icons are stacked on the last free one (DesktopPlace.h). A rename -- here, in Finder or in
 //    the Files app -- keeps the place (the file's inode is followed).
 //  - Mac actions: tap / click selects, double tap / double click opens (a folder in a Finder window, a file as Finder opens it), a held finger or
-//    a right click opens the menu (Open, Quick Look, Get Info, Rename, Move to Trash; on the empty desktop with a pointer: New Folder, Paste,
-//    Undo), a pointer drag on the empty desktop selects with a rectangle, the keys of a Mac's desktop while it was clicked last.
+//    a right click opens our menu over the windows (Open, Quick Look, Get Info, Rename, Hide Name, Duplicate, Share, Move to Trash; on the empty
+//    desktop: New Folder, New Text File, Clean Up, Show in Finder, Edit Home Screen), a pointer drag on the empty desktop selects with a
+//    rectangle, the keys of a Mac's desktop while it was clicked last.
+//  - Names: an icon's own Hide Name, or every name (Settings > Hide Desktop Icon Names) -- the icon keeps its place (DesktopNames.h).
 //  - Every file change is Finder's (DMFinderOps: the policy -- only the user's own places --, Undo); every drag is Finder's own drag (into
 //    Finder windows, onto folders here, the Dock's Downloads stack, app windows; and from them onto the desktop).
 // One DMDesktop is one desktop -- its folder, its places, its view -- so a later Spaces feature can keep one per desktop.
@@ -19,6 +21,7 @@
 #include "DesktopPlace.h"   // (where the icons go: the free spots, the grid, no room -- plain C, tested on the Mac)
 #include "KeyboardDock.h"   // (when the Dock goes under our own on-screen keyboard -- plain C, tested on the Mac: tools/test-kbdock.sh)
 #include "DesktopRename.h"  // (the window a name is typed in: its level and the field's place -- plain C, tested on the Mac: tools/test-deskrename.sh)
+#include "DesktopNames.h"   // (which icons show their name: the record kept by name -- Foundation only, tested on the Mac: tools/test-desktopnames.sh)
 
 @interface DMDesktopItemView : UIView
 @property (nonatomic, strong) DMFinderItem *item;
@@ -26,6 +29,7 @@
 @property (nonatomic, strong) UIView *back, *labelBack;   // (the selection: a dark rounded square behind the icon, a blue capsule behind the name)
 @property (nonatomic, strong) UILabel *label;
 @property (nonatomic) BOOL selected, dropTarget;
+@property (nonatomic) BOOL nameHidden;   // (its name not shown -- its own Hide Name, or Settings' for every icon: DesktopNames.h; the icon keeps its place)
 @property (nonatomic) CGFloat side;
 @property (nonatomic, strong) UIColor *textColor;   // (the name's colour when not selected: the Home Screen's label colour)
 - (void)dm_setDropHover:(BOOL)on;   // (Finder's drag over a folder here, Finder.h DMFDIconHover)
@@ -60,11 +64,13 @@ static void DMDesktopAXOpen(DMDesktopItemView *v);   // (below, with DMDesktop)
     _labelBack.layer.cornerRadius = lh / 2.0;
 }
 - (void)setSelected:(BOOL)sel { _selected = sel; [self dm_look]; }
+- (void)setNameHidden:(BOOL)h { if (h == _nameHidden) return; _nameHidden = h; [self dm_look]; }
 - (void)dm_setDropHover:(BOOL)on { _dropTarget = on; [self dm_look]; }
 - (void)dm_look {   // (selected, or a folder taking a drag: as a Mac's desktop shows it)
     BOOL lit = _selected || _dropTarget;
     _back.hidden = !lit;
-    _labelBack.hidden = !_selected;
+    _label.hidden = _nameHidden;   // (the name only: the frame, and so the icon's place and its touch area, stay; VoiceOver reads the name still)
+    _labelBack.hidden = !_selected || _nameHidden;
     _label.layer.shadowOpacity = _selected ? 0.0 : 1.0;
     _label.textColor = _selected ? [UIColor whiteColor] : (_textColor ?: [UIColor whiteColor]);
 }
@@ -93,6 +99,7 @@ static BOOL DMDesktopPointerTouch(UITouch *t, UIEvent *e) {
 @class DMDesktop;
 static DMDesktop *gDesktop;
 static BOOL gDesktopOn = YES;   // (Settings > Mac Status Bar > Show Desktop Icons; with Finder on)
+static BOOL gDesktopHideNames = NO;   // (Settings > Mac Status Bar > Hide Desktop Icon Names: every icon without its name, DesktopNames.h)
 // (for the untested-iPadOS diagnostics, DMDesktopDiag: what the last measure read from the Home Screen -- 1 the names' font, 2 their colours,
 //  4 an app icon view to read them from, 8 the picture size from an icon view -- and where the folders' picture came from: 4 drawn, the folder
 //  icon of 1.4 (1-3 were the Files app's Home Screen icon, iOS's own Files icon, none, before it was drawn))
@@ -109,10 +116,12 @@ static int gDesktopLookRead, gDesktopFolderFrom;
 - (void)dm_touchBegan:(UITouch *)t;
 - (void)dm_event:(UIEvent *)e;
 - (BOOL)dm_hasKeys;
+- (void)dm_setHasKeys:(BOOL)has;
 - (BOOL)dm_handleKey:(UIKey *)key;
 - (void)dm_made:(NSArray<NSString *> *)paths;
 - (void)dm_fitRenameField;
 - (NSString *)dm_placeStringFor:(NSString *)path;
+- (void)dm_applyNames;   // (each icon's name shown or not, after Settings' Hide Desktop Icon Names or an icon's own Hide Name changed)
 - (NSString *)dm_diagLine;   // (untested iPadOS diagnostics, DMDesktopDiag: where it sits and what it found there; names and numbers only)
 - (void)dm_axOpen:(DMDesktopItemView *)v;
 #if DEBUG
@@ -131,6 +140,30 @@ static void DMDesktopFocus(BOOL take) {
     NSString *how = nil;
     gDesktopFocusLock = MSBDFocusLock(gDesktop.window.windowScene, @"MacStatusBar Desktop", &how);   // (common/FocusLock.h: 15, 16/17, 18)
     DMLog([NSString stringWithFormat:@"[desktop] keyboard focus to SpringBoard while a name is edited: %@%@", gDesktopFocusLock ? NSStringFromClass([gDesktopFocusLock class]) : @"no lock", how ? [NSString stringWithFormat:@" (the %@ call)", how] : @""]);
+}
+
+// SpringBoard's keyboard focus while the desktop has the keys (an icon clicked or selected, a selection drawn, an icon's menu) and an app is in front:
+// the hardware keys go to the app that has the keyboard focus, so Space -- Quick Look on the selected icon -- reached the app instead (it paused
+// the music of an app with a window open, KT, 1.7.2 item 14). Taken the way Finder's windows take it (common/FocusLock.h), only with a hardware
+// keyboard (no keys to route without one: an app's own on-screen keyboard is left alone), given back when the desktop loses the keys -- a touch
+// elsewhere, another app coming to the front (Cmd-Tab, Spotlight, a link), the desktop going away. With no app in front SpringBoard has the keys
+// anyway. Not the lock for a name being edited (gDesktopFocusLock: our own on-screen keyboard goes with that one).
+static id gDesktopKeysLock;
+static NSString *gDesktopKeysFront;   // (the app in front when it was taken: another one in front gives it back)
+static BOOL DMHardwareKeyboardAttached(void);
+static void DMDesktopKeysFocus(BOOL take) {
+    if (!take) {
+        id l = gDesktopKeysLock; gDesktopKeysLock = nil; gDesktopKeysFront = nil;
+        if (l) { MSBDFocusUnlock(l); DMLog(@"[desktop] keyboard focus given back to the apps (the desktop no longer has the keys)"); }
+        return;
+    }
+    NSString *front = [DMActiveApp() bundleIdentifier];
+    if (gDesktopKeysLock || !front.length || !DMHardwareKeyboardAttached()) return;
+    DM_FEATURE_MARK("desktop-keys-focus");
+    NSString *how = nil;
+    gDesktopKeysLock = MSBDFocusLock(gDesktop.window.windowScene, @"MacStatusBar Desktop selection", &how);
+    gDesktopKeysFront = gDesktopKeysLock ? front : nil;
+    DMLog([NSString stringWithFormat:@"[desktop] keyboard focus to SpringBoard while the desktop has the keys (an app in front): %@%@", gDesktopKeysLock ? NSStringFromClass([gDesktopKeysLock class]) : @"no lock", how ? [NSString stringWithFormat:@" (the %@ call)", how] : @""]);
 }
 
 // The Dock's window under the Home Screen's, for as long as any reason holds (a desktop menu is up, our own on-screen keyboard is up); its own
@@ -385,6 +418,7 @@ static BOOL DMDesktopRenameFieldTouch(UITouch *t) {
     NSArray<DMFinderItem *> *_items;
     NSMutableDictionary<NSString *, DMDesktopItemView *> *_views;   // by name
     NSMutableDictionary<NSString *, NSArray<NSNumber *> *> *_places; // by name: @[fx, fy], the icon's centre as a fraction of the free area
+    NSMutableSet<NSString *> *_hiddenNames;                // by name: the icons whose own Hide Name was chosen (DesktopNames.h)
     NSDictionary<NSString *, NSNumber *> *_inodes;         // by name, from the last listing (a rename keeps the place)
     NSSet<NSString *> *_fresh;                             // names new in the last listing
     NSMutableSet<NSString *> *_back;                       // names back from the Trash in the last listing (placed last)
@@ -395,7 +429,7 @@ static BOOL DMDesktopRenameFieldTouch(UITouch *t) {
     NSString *_iconSig; CFTimeInterval _sigAt, _listAt;
     BOOL _placeDirty; CGRect _placedArea; CGSize _placedCell; NSInteger _piled;   // (a layout pass only when what it depends on changed, see -dm_placeAgain)
     BOOL _syncPending; NSUInteger _saveGen;
-    BOOL _folderMissing; dev_t _watchDev; ino_t _watchIno; CFTimeInterval _watchCheckedAt;   // (the folder watched: which one, see -dm_tick)
+    BOOL _folderMissing, _listFailed; dev_t _watchDev; ino_t _watchIno; CFTimeInterval _watchCheckedAt;   // (the folder watched: which one, see -dm_tick)
     BOOL _editing, _hasKeys, _renameNew;
     NSString *_lastTapPath; CFTimeInterval _lastTapAt; BOOL _lastTapPointer;
     // an icon lifted by a drag (see -dm_event:)
@@ -405,6 +439,9 @@ static BOOL DMDesktopRenameFieldTouch(UITouch *t) {
     UIView *_band; CGPoint _bandStart; NSOrderedSet<NSString *> *_bandBase;
     // a finger on the desktop, followed from SpringBoard's events (-dm_event:): held, then moved -- an icon's drag, or the rectangle
     __weak UITouch *_track; __weak DMDesktopItemView *_trackView; CGPoint _trackDown, _trackLast; CFTimeInterval _trackAt; int _trackMode; BOOL _trackPointer;   // (1 drag, 2 rectangle)
+    BOOL _trackSecondary;   // (the press is a pointer's secondary click: its menu is ours, over the windows -- see -contextMenuInteraction:configurationForMenuAtLocation:)
+    BOOL _holdMenu;         // (a finger's hold opened our menu for this press, -dm_holdCheck:: a move now closes it and drags)
+    CFTimeInterval _ownMenuAt;   // (the press -- its _trackAt -- a pointer's menu of ours was opened for: once per press)
     NSInteger _trackFinger; NSTimeInterval _trackStamp;   // (the finger behind it, and the time of the last report of it used: see DMDesktopTouchFinger)
     // Haptic Touch menus (UIKit's, in our Mac look like the app icons' -- StatusBar.x's context menu theme): on each icon, and on the empty desktop
     UIContextMenuInteraction *_bgMenu; UIView *_bgAnchor;
@@ -429,6 +466,8 @@ static BOOL DMDesktopRenameFieldTouch(UITouch *t) {
     NSDictionary *stored = v ? CFBridgingRelease(v) : nil;
     _places = [NSMutableDictionary dictionary];
     if ([stored isKindOfClass:[NSDictionary class]]) for (NSString *k in stored) { NSArray *p = stored[k]; if ([k isKindOfClass:[NSString class]] && [p isKindOfClass:[NSArray class]] && p.count == 2) _places[k] = p; }
+    CFPropertyListRef hn = CFPreferencesCopyValue(CFSTR("hiddenNames"), kDesktopDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    _hiddenNames = DMNamesHiddenFromStored(hn ? CFBridgingRelease(hn) : nil);   // (the icons whose own Hide Name was chosen, by name)
     // icons: tap / double tap, a finger's hold-and-move (drag; holding still opens the Haptic Touch menu), a pointer's drag
     _menuGRs = [NSHashTable weakObjectsHashTable];
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(dm_tap:)];
@@ -479,8 +518,23 @@ static BOOL DMDesktopEditing(void) {
     id im = DMCall(DMSBManager("SBIconController"), @"iconManager");
     return [im respondsToSelector:@selector(isEditing)] && ((BOOL (*)(id, SEL))objc_msgSend)(im, @selector(isEditing));
 }
+// The empty desktop's Edit Home Screen (its menu, 1.7.2 item 15): jiggle mode through the icon manager's own switch, -[SBHIconManager setEditing:],
+// only where it is there with the type it was checked to have (v20@0:8B16) -- else the row is left out.
+static id DMDesktopHomeEditor(void) {
+    id im = DMCall(DMSBManager("SBIconController"), @"iconManager");
+    Method m = im ? class_getInstanceMethod([im class], @selector(setEditing:)) : NULL;
+    return m && !strcmp(method_getTypeEncoding(m) ?: "", "v20@0:8B16") ? im : nil;
+}
+static void DMDesktopEditHomeScreen(void) {
+    id im = DMDesktopHomeEditor();
+    if (!im) return;
+    DM_FEATURE_MARK("desktop-edit-home");
+    DMLog(@"[desktop] Edit Home Screen (the empty desktop's menu)");
+    ((void (*)(id, SEL, BOOL))objc_msgSend)(im, @selector(setEditing:), YES);
+}
 - (void)dm_detach {
     [self dm_endRename:NO];
+    [self dm_setHasKeys:NO];
     if (_bgMenu.view) { [_menuOpen dismissMenu]; [_bgMenu.view removeInteraction:_bgMenu]; }
     [self removeFromSuperview];
     _list = nil;
@@ -494,6 +548,10 @@ static BOOL DMDesktopEditing(void) {
 }
 - (void)dealloc { if (_watch) dispatch_source_cancel(_watch); }
 - (void)dm_tick {
+    if (gDesktopKeysLock && ![[DMActiveApp() bundleIdentifier] ?: @"" isEqualToString:gDesktopKeysFront]) {   // (another app came to the front: the keys are its)
+        DMLog(@"[desktop] another app came to the front: the desktop's keys go");
+        [self dm_setHasKeys:NO];
+    }
     UIView *list = _list;
     BOOL ok = list && self.superview == list && list.window && list.superview;
     if (ok) {   // (still page 1: no list further left in the same scroll view -- a page was added, moved or hidden)
@@ -704,7 +762,8 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
     __weak DMDesktop *ws = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         struct stat fst; BOOL missing = lstat(folder.fileSystemRepresentation, &fst) != 0 || !S_ISDIR(fst.st_mode);
-        NSArray<DMFinderItem *> *items = missing ? @[] : DMFinderList(folder, NO, NULL) ?: @[];
+        NSArray<DMFinderItem *> *listed = missing ? nil : DMFinderList(folder, NO, NULL), *items = listed ?: @[];
+        BOOL failed = !missing && !listed;   // (the folder there but not read: not taken for an empty desktop by the Hide Name record)
         NSMutableDictionary *inodes = [NSMutableDictionary dictionary], *returned = [NSMutableDictionary dictionary];
         for (DMFinderItem *it in items) {
             struct stat st; if (lstat(it.path.fileSystemRepresentation, &st) == 0) inodes[it.name] = @((unsigned long long)st.st_ino);
@@ -719,7 +778,7 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
             //  DMWaitForContextMenu; the folder is read again then. SpringBoard's own app icon menus don't count: their icons are not ours)
             if (DMWaitForOwnMenus(@"desktop-list", ^{ [ws dm_list]; })) return;
             if (missing != s->_folderMissing) DMLog(missing ? @"[desktop] the Desktop folder is missing: no icons, their places kept" : @"[desktop] the Desktop folder is back");
-            s->_folderMissing = missing;
+            s->_folderMissing = missing; s->_listFailed = failed;
             [s dm_setItems:items inodes:inodes returned:returned];
             if (s->_relist) { s->_relist = NO; [s dm_list]; }
         });
@@ -749,6 +808,9 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
         DMLog(@"[desktop] an icon back from the Trash takes its old place");
     }
     _fresh = fresh;   // (new since the last listing: a drop's icons go where it was dropped, even where an old place was kept for the name)
+    // (an icon's own Hide Name: a rename made elsewhere keeps it -- the same inode under a new name --, an item gone from the desktop is forgotten;
+    //  a listing that failed forgets nothing)
+    if (DMNamesHiddenFollowListing(_hiddenNames, names, inodes, _inodes, _folderMissing || _listFailed)) [self dm_saveNames];
     _inodes = inodes;
     _items = items;
     for (NSString *n in [_views allKeys]) if (![names containsObject:n]) { [_views[n] removeFromSuperview]; [_views removeObjectForKey:n]; }
@@ -774,6 +836,7 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
         v.label.layer.shadowColor = _shadowColor.CGColor; v.label.layer.shadowOffset = CGSizeMake(0, 1); v.label.layer.shadowRadius = 2.0;
         if (newItem || !v.icon.image) v.icon.image = [self dm_imageFor:it view:v];
         v.selected = [_sel containsObject:it.path];
+        v.nameHidden = !DMNameShows(_hiddenNames, it.name, gDesktopHideNames);
     }
     _placeDirty = YES;
     [self setNeedsLayout];
@@ -869,6 +932,22 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
     });
 }
 
+// The icons' own Hide Name, kept with the places (written out off the main thread with them, -dm_syncPlaces).
+- (void)dm_saveNames {
+    CFPreferencesSetValue(CFSTR("hiddenNames"), (__bridge CFPropertyListRef)DMNamesHiddenToStore(_hiddenNames), kDesktopDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    _saveGen++;
+    if (!_syncPending) { _syncPending = YES; [self dm_syncPlaces]; }
+}
+- (void)dm_applyNames { for (NSString *n in _views) _views[n].nameHidden = !DMNameShows(_hiddenNames, n, gDesktopHideNames); }
+// The menu's Hide Name / Show Name: for these icons (the selection, or the icon held), every one hidden or every one shown.
+- (void)dm_setNamesHidden:(BOOL)hide for:(NSArray<NSString *> *)names {
+    if (!DMNamesHiddenSet(_hiddenNames, names, hide)) return;
+    DM_FEATURE_MARK("desktop-hide-name");
+    DMLog([NSString stringWithFormat:@"[desktop] %lu icon name(s) %@", (unsigned long)names.count, hide ? @"hidden" : @"shown again"]);
+    [self dm_saveNames];
+    [self dm_applyNames];
+}
+
 // ---- touches ----
 - (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)e {   // (only the icons take touches: the empty desktop is the Home Screen's)
     if (self.hidden || self.alpha < 0.01 || !self.userInteractionEnabled) return nil;
@@ -898,7 +977,11 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)a shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)b { return YES; }
 - (UIKeyModifierFlags)dm_flags:(UIGestureRecognizer *)g { if (@available(iOS 13.4, *)) return g.modifierFlags; return 0; }
 - (void)dm_select:(NSArray<NSString *> *)paths { [_sel removeAllObjects]; [_sel addObjectsFromArray:paths]; [self dm_showSelection]; }
-- (void)dm_showSelection { for (NSString *n in _views) { DMDesktopItemView *v = _views[n]; v.selected = [_sel containsObject:v.item.path]; } }
+- (void)dm_showSelection {
+    for (NSString *n in _views) { DMDesktopItemView *v = _views[n]; v.selected = [_sel containsObject:v.item.path]; }
+    // (nothing selected any more -- Esc, a click that deselects -- while an app is in front: the keys go back to it at once, DMDesktopKeysFocus)
+    if (!_sel.count && gDesktopKeysLock && !_band && !_renameField) [self dm_setHasKeys:NO];
+}
 - (NSArray<DMFinderItem *> *)dm_selectedItems { NSMutableArray *a = [NSMutableArray array]; for (DMFinderItem *it in _items) if ([_sel containsObject:it.path]) [a addObject:it]; return a; }
 - (void)dm_tap:(UITapGestureRecognizer *)g {
     DMDesktopItemView *v = [self dm_viewAt:[g locationInView:self]];
@@ -908,7 +991,7 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
     //  not part of; read as a tap it only selected the icon: logic test 6 Oct, both iPads)
     if (UIAccessibilityIsVoiceOverRunning()) { [self dm_axOpen:v]; return; }
     [self dm_endRename:YES];
-    _hasKeys = YES;
+    [self dm_setHasKeys:YES];
     UIKeyModifierFlags m = [self dm_flags:g];
     NSString *p = v.item.path;
     CFTimeInterval now = CACurrentMediaTime();
@@ -1017,7 +1100,7 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
     _band.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.15];
     _band.layer.borderColor = [[UIColor whiteColor] colorWithAlphaComponent:0.6].CGColor; _band.layer.borderWidth = 1.0;
     [self addSubview:_band];
-    _hasKeys = YES;
+    [self dm_setHasKeys:YES];
 }
 - (void)dm_bandTo:(CGPoint)p {
     if (!_band) return;
@@ -1030,6 +1113,7 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
 - (void)dm_bandEnd {
     if (!_band) return;
     [_band removeFromSuperview]; _band = nil; _bandBase = nil;
+    if (!_sel.count && gDesktopKeysLock && !_renameField) [self dm_setHasKeys:NO];   // (a rectangle over nothing: the keys go back to the app in front)
     DMLog([NSString stringWithFormat:@"[desktop] selection rectangle: %lu selected", (unsigned long)_sel.count]);
 }
 - (void)dm_touchBegan:(UITouch *)t {   // (any touch elsewhere -- not on a desktop icon -- ends the desktop's selection and keys, as a click elsewhere does)
@@ -1049,7 +1133,7 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
         if (_renameField && _renameField.window && CGRectContainsPoint(CGRectInset([_renameField convertRect:_renameField.bounds toCoordinateSpace:(_renameField.window.screen ?: [UIScreen mainScreen]).coordinateSpace], -4, -4), sp)) return;
     }
     if (_renameField) [self dm_endRename:YES];
-    _hasKeys = NO;
+    [self dm_setHasKeys:NO];
     if (_sel.count && !_band) { [_sel removeAllObjects]; [self dm_showSelection]; }
 }
 // ---- actions (Finder's) ----
@@ -1134,6 +1218,13 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
         [top addObject:A(@"Quick Look", @"eye", ^{ DMQuickLookOpen(sel.firstObject.path); })];
         [top addObject:A(@"Get Info", @"info.circle", ^{ for (DMFinderItem *x in sel) [ops getInfo:x]; })];
         if (!many) { UIAction *rn = A(@"Rename", @"pencil", ^{ [ws dm_beginRename:v.item.path]; }); if (!canChange) rn.attributes = UIMenuElementAttributesDisabled; [top addObject:rn]; }
+        {   // (Hide Name / Show Name, 1.7.2 item 16: these icons' own, kept by name -- DesktopNames.h; greyed while Settings hides every name)
+            NSArray<NSString *> *names = [sel valueForKey:@"name"];
+            BOOL hidden = gDesktopHideNames || DMNamesHiddenEvery(_hiddenNames, names);
+            UIAction *hn = A(hidden ? (many ? @"Show Names" : @"Show Name") : (many ? @"Hide Names" : @"Hide Name"), hidden ? @"text.below.photo" : @"photo", ^{ [ws dm_setNamesHidden:!hidden for:names]; });
+            if (gDesktopHideNames) hn.attributes = UIMenuElementAttributesDisabled;
+            [top addObject:hn];
+        }
         UIAction *du = A(@"Duplicate", @"plus.square.on.square", ^{ [ws dm_duplicate:sel]; }); if (!DMFinderCanWriteInto(folder)) du.attributes = UIMenuElementAttributesDisabled; [top addObject:du];
         NSMutableArray *targets = [NSMutableArray array];   // (Finder's Share: handed to the app the way a drop on its window is -- a folder as a zip)
         for (NSString *b in DMFinderShareApps()) [targets addObject:[UIAction actionWithTitle:DMCall(DMProxyForBundle(b), @"localizedName") ?: b image:nil identifier:nil handler:^(UIAction *x) { DMFinderShareTo(sel, b, DMFinderOps()); }]];
@@ -1148,15 +1239,93 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
         UIAction *nt = A(@"New Text File", @"doc.badge.plus", ^{ [ws dm_newTextFileAt:sp]; }); if (!DMFinderCanWriteInto(folder)) nt.attributes = UIMenuElementAttributesDisabled; [top addObject:nt];
         [top addObject:A(@"Clean Up", @"square.grid.3x3", ^{ [ws dm_cleanUp]; })];
         [top addObject:A(@"Show in Finder", @"folder", ^{ DMFinderOpen(folder, NO); })];
+        // (the Home Screen's own hold on its empty space started jiggle mode; on the desktop the hold opens this menu, so arranging the Home
+        //  Screen is a row of it -- iPadOS's own icon menus have the same "Edit Home Screen"; the desktop steps aside meanwhile, -dm_tick)
+        if (DMDesktopHomeEditor()) [end addObject:A(@"Edit Home Screen", @"apps.ipad", ^{ DMDesktopEditHomeScreen(); })];
     }
     NSMutableArray *groups = [NSMutableArray array];
     for (NSArray *g in @[top, end]) if (g.count) [groups addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:g]];
     return [UIMenu menuWithTitle:@"" children:groups];
 }
+// A finger held still on an icon or the empty desktop: our menu opens there (DMFinderShowMenuIn, in the menu window over everything), as on
+// Finder's windows. UIKit's Haptic Touch menu lived in the Home Screen's window, under the app windows, so every window faded away while it was up
+// and came back after (KT: a preview opening from the desktop must leave the windows where they are, 1.7.2 item 15). The press's other
+// gestures let go at that moment (the Home Screen's own hold never starts jiggle mode under the menu); a move after it closes the menu and drags.
+static const double kDMDesktopHoldMenu = 0.45;
+// Which menu a finger's hold opens (1.7.2 item 15, KT's choice: ours). YES: our Mac menu over the windows -- the same rows as before (Open, Quick
+// Look, Get Info, Rename, Hide Name, Duplicate, Share, Move to Trash; on the empty desktop New Folder, New Text File, Clean Up, Show in Finder and
+// Edit Home Screen), without the lifted preview: a preview is Quick Look's (Space, or the menu's row). NO would be iPadOS's Haptic Touch menu with
+// its preview, in the Home Screen's window (the windows fade while it is up). A pointer's secondary click always opens ours.
+// Debug builds: the file /tmp/msb-desktop-fingermenu turns the other way on for a try.
+static const BOOL kDMDesktopFingerOwnMenu = YES;
+static BOOL DMDesktopFingerOwnMenu(void) {
+#if DEBUG
+    if (access("/tmp/msb-desktop-fingermenu", F_OK) == 0) return !kDMDesktopFingerOwnMenu;
+#endif
+    return kDMDesktopFingerOwnMenu;
+}
+- (void)dm_holdCheck:(UITouch *)t since:(CFTimeInterval)at {
+    if (!t || t != _track || _trackAt != at || _trackMode || _lifted || _band || _editing || _holdMenu || !self.userInteractionEnabled || !self.window) return;
+    if (t.phase == UITouchPhaseEnded || t.phase == UITouchPhaseCancelled) return;
+    if (hypot(_trackLast.x - _trackDown.x, _trackLast.y - _trackDown.y) > 10.0) return;
+    DMDesktopItemView *v = _trackView;
+    if (v) {
+        if (!v.window || !v.item) return;
+        if (![_sel containsObject:v.item.path]) [self dm_select:@[v.item.path]];
+        [self dm_setHasKeys:YES];
+    } else {
+        if (![self dm_shownAt:_trackDown]) return;
+        [_sel removeAllObjects]; [self dm_showSelection];
+    }
+    UIMenu *menu = [self dm_menuFor:v at:_trackDown];
+    UIView *host = DMMenuHost();
+    if (!menu || !host) return;
+    for (UIGestureRecognizer *o in [t.gestureRecognizers copy]) if (![o.name hasPrefix:@"dm."] && o.enabled) { o.enabled = NO; o.enabled = YES; }   // (the press is ours now)
+    _holdMenu = YES;
+    DM_FEATURE_MARK("desktop-own-menu");
+    DMLog([NSString stringWithFormat:@"[desktop] a finger held still: %@ menu over the windows", v ? @"an icon's" : @"the desktop's"]);
+    DMFinderShowMenuIn(host, menu, _trackDown);
+}
 - (UIContextMenuConfiguration *)contextMenuInteraction:(UIContextMenuInteraction *)i configurationForMenuAtLocation:(CGPoint)loc {
     if (_lifted || _trackMode || _band || _editing || !self.userInteractionEnabled) return nil;
+    if (_track && !_trackPointer && DMDesktopFingerOwnMenu()) return nil;   // (a finger: its hold opens our menu, -dm_holdCheck:)
     CGPoint sp = [i.view convertPoint:loc toCoordinateSpace:(self.window.screen ?: [UIScreen mainScreen]).coordinateSpace];
     DMDesktopItemView *v = nil;
+    // A pointer's secondary click: the menu is ours, in the menu window over everything (DMFinderShowMenuIn, as Finder's windows show theirs), and
+    // the windows stay. UIKit's menu lives in the Home Screen's window, under the app windows, so for it the windows fade away while it is up
+    // ("[lights] Home Screen icon menu"): with an app open, Quick Look or Open chosen from a desktop icon's menu made every window go and come back
+    // (KT, 1.7.2 item 15). A finger's hold: the same menu of ours (DMDesktopFingerOwnMenu, -dm_holdCheck:); a pointer's click held still -- UIKit's
+    // long press asks here, as for a finger -- likewise: its other gestures let go (the Home Screen's own hold never starts jiggle mode under the
+    // menu), and a move after it closes the menu and drags, as after a finger's hold.
+    BOOL pointerHold = _trackPointer && _track && !_trackSecondary && DMDesktopFingerOwnMenu();
+    if ((_trackSecondary || pointerHold) && _trackPointer && _track && CACurrentMediaTime() - _trackAt < 1.0) {
+        if (_ownMenuAt == _trackAt) return nil;   // (asked again for the same press: its menu is up already)
+        _trackSecondary = NO;
+        DMDesktopItemView *at = i == _bgMenu ? nil : (DMDesktopItemView *)i.view;
+        if (i == _bgMenu) {
+            UIView *h = [_list hitTest:[_list convertPoint:loc fromView:i.view] withEvent:nil];
+            if (h != _list || ![self dm_shownAt:sp]) return nil;
+            [_sel removeAllObjects]; [self dm_showSelection];
+        } else {
+            if (![at isKindOfClass:[DMDesktopItemView class]] || !at.item) return nil;
+            if (![_sel containsObject:at.item.path]) [self dm_select:@[at.item.path]];
+            [self dm_setHasKeys:YES];
+        }
+        UIMenu *menu = [self dm_menuFor:at at:sp];
+        UIView *host = DMMenuHost();
+        DM_FEATURE_MARK("desktop-own-menu");
+        DMLog([NSString stringWithFormat:@"[desktop] %@: %@ menu over the windows", pointerHold ? @"a click held still" : @"secondary click", at ? @"an icon's" : @"the desktop's"]);
+        if (pointerHold) _holdMenu = YES;
+        _ownMenuAt = _trackAt;
+        __weak UITouch *wt = _track;
+        dispatch_async(dispatch_get_main_queue(), ^{   // (after UIKit is done with this press)
+            UITouch *tt = wt;
+            if (pointerHold && tt && tt.phase != UITouchPhaseEnded && tt.phase != UITouchPhaseCancelled)   // (the click still held: the press is ours now)
+                for (UIGestureRecognizer *o in [tt.gestureRecognizers copy]) if (![o.name hasPrefix:@"dm."] && o.enabled) { o.enabled = NO; o.enabled = YES; }
+            DMFinderShowMenuIn(host, menu, sp);
+        });
+        return nil;
+    }
     if (i == _bgMenu) {   // (the empty desktop only: an app icon, a widget or one of our icons has its own menu)
         UIView *h = [_list hitTest:[_list convertPoint:loc fromView:i.view] withEvent:nil];
         if (h != _list || ![self dm_shownAt:sp]) return nil;
@@ -1168,7 +1337,7 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
         v = (DMDesktopItemView *)i.view;
         if (![v isKindOfClass:[DMDesktopItemView class]] || !v.item) return nil;
         if (![_sel containsObject:v.item.path]) [self dm_select:@[v.item.path]];   // (as a Mac's right click: the icon is selected, unless it is part of the selection)
-        _hasKeys = YES;
+        [self dm_setHasKeys:YES];
     }
     __weak DMDesktop *ws = self; __weak DMDesktopItemView *wv = v;
     return [UIContextMenuConfiguration configurationWithIdentifier:v ? v.item.path : @"desktop" previewProvider:nil actionProvider:^UIMenu *(NSArray *suggested) {
@@ -1183,7 +1352,9 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
     DMDesktopItemView *v = (DMDesktopItemView *)i.view;
     if (!v.window) return nil;
     [v layoutIfNeeded];
-    pp.visiblePath = [UIBezierPath bezierPathWithRoundedRect:CGRectUnion(CGRectInset(v.icon.frame, -6.0, -6.0), v.labelBack.frame) cornerRadius:10.0];   // (the icon and its name lift, like an app icon)
+    CGRect shape = CGRectInset(v.icon.frame, -6.0, -6.0);
+    if (!v.nameHidden) shape = CGRectUnion(shape, v.labelBack.frame);
+    pp.visiblePath = [UIBezierPath bezierPathWithRoundedRect:shape cornerRadius:10.0];   // (the icon and its name lift, like an app icon; no name: the icon)
     return [[UITargetedPreview alloc] initWithView:v parameters:pp];
 }
 - (UITargetedPreview *)contextMenuInteraction:(UIContextMenuInteraction *)i previewForHighlightingMenuWithConfiguration:(UIContextMenuConfiguration *)c { return [self dm_previewFor:i]; }
@@ -1269,6 +1440,12 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
             _track = t; _trackView = onIcon ? (DMDesktopItemView *)at : nil; _trackDown = sp; _trackLast = sp; _trackAt = CACurrentMediaTime(); _trackMode = 0;
             _trackFinger = DMDesktopTouchFinger(t); _trackStamp = t.timestamp;
             _trackPointer = pointer;
+            _trackSecondary = pointer && (DMDesktopButtons(e) & UIEventButtonMaskSecondary) != 0;
+            _holdMenu = NO;
+            if (!pointer && DMDesktopFingerOwnMenu()) {   // (a finger held still: our menu, -dm_holdCheck:)
+                __weak DMDesktop *ws = self; __weak UITouch *wt = t; CFTimeInterval at = _trackAt;
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kDMDesktopHoldMenu * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [ws dm_holdCheck:wt since:at]; });
+            }
             continue;
         }
         if (t != _track && t != copy) continue;
@@ -1291,6 +1468,7 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
 #endif
                     _track = nil; continue;
                 }
+                if (_holdMenu) { _holdMenu = NO; DMCloseOverlay(); }   // (our menu of this hold goes: the finger moved on, it drags)
                 BOOL menuUp = _menuOpen != nil;
                 [_menuOpen dismissMenu];   // (an open menu closes the way UIKit closes it; one not open yet never opens: its gestures let go below)
                 for (UIGestureRecognizer *o in [t.gestureRecognizers copy]) if (![o.name hasPrefix:@"dm."] && o.enabled && !(menuUp && [_menuGRs containsObject:o])) { o.enabled = NO; o.enabled = YES; }   // (it is ours now)
@@ -1298,7 +1476,7 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
                 for (UIView *v = self.superview; v; v = v.superview) if ([v isKindOfClass:[UIScrollView class]]) { UIPanGestureRecognizer *pan = ((UIScrollView *)v).panGestureRecognizer; pan.enabled = NO; pan.enabled = YES; }
                 DMDesktopItemView *v = _trackView;
                 if (v && v.window) {
-                    _trackMode = 1; _hasKeys = YES;
+                    _trackMode = 1; [self dm_setHasKeys:YES];
                     if (![_sel containsObject:v.item.path]) [self dm_select:@[v.item.path]];
                     DMLog([NSString stringWithFormat:@"[desktop] %@ on an icon%@: the icon lifts", _trackPointer ? @"a pointer drag" : [NSString stringWithFormat:@"a finger held %.2f s and moved", held], menuUp ? @" (its menu goes)" : @""]);
                     _armed = v;
@@ -1314,7 +1492,7 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
             else if (_trackMode == 2) [self dm_bandTo:[self convertPoint:sp fromCoordinateSpace:(self.window.screen ?: [UIScreen mainScreen]).coordinateSpace]];
         } else if (t.phase == UITouchPhaseEnded || t.phase == UITouchPhaseCancelled) {
             int mode = _trackMode;
-            _track = nil; _trackView = nil; _trackMode = 0;
+            _track = nil; _trackView = nil; _trackMode = 0; _holdMenu = NO;   // (a menu the hold opened stays: a row is tapped next)
             if (mode == 1) { _armed = nil; DMFinderDragEnd(sp, t.phase == UITouchPhaseEnded, option); [self dm_dragEnded]; }
             else if (mode == 2) [self dm_bandEnd];
         }
@@ -1390,6 +1568,7 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
     else if (hosted && self.window && !self.window.hidden && !self.window.isKeyWindow) [self.window makeKeyWindow];   // (the keys where the old way left them)
     if (commit && t.length && ![t isEqualToString:path.lastPathComponent]) {
         NSArray *f = _places[path.lastPathComponent]; if (f && !_places[t]) _places[t] = f;   // (the new name takes the place at once)
+        if (DMNamesHiddenRenaming(_hiddenNames, path.lastPathComponent, t, [NSSet setWithArray:[_items valueForKey:@"name"] ?: @[]])) [self dm_saveNames];   // (and its hidden name)
         _selectWhenListed = @[[path.stringByDeletingLastPathComponent stringByAppendingPathComponent:t]];   // (and stays selected, as on a Mac)
         DMFinderOps().path = _folder;
         [DMFinderOps() dm_renameItem:path to:t];
@@ -1402,6 +1581,7 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
 // ---- keys (a hardware keyboard, while the desktop was clicked last) ----
 // (the desktop has the keys when it was clicked last, or when nothing is in front of it: no Finder window active, no app in front)
 - (BOOL)dm_hasKeys { return (_hasKeys || _renameField || (!gNativeActive && !DMActiveApp())) && self.window && self.userInteractionEnabled && !_editing; }
+- (void)dm_setHasKeys:(BOOL)has { _hasKeys = has; DMDesktopKeysFocus(has); }   // (and SpringBoard's keyboard focus with them, DMDesktopKeysFocus)
 - (BOOL)dm_handleKey:(UIKey *)key {
     UIKeyModifierFlags m = key.modifierFlags & (UIKeyModifierCommand | UIKeyModifierShift | UIKeyModifierAlternate | UIKeyModifierControl);
     BOOL cmd = m == UIKeyModifierCommand, cmdShift = m == (UIKeyModifierCommand | UIKeyModifierShift), none = m == 0;
@@ -1476,6 +1656,13 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
         UIMenu *m = [self dm_menuFor:v at:CGPointZero]; NSMutableArray *t = [NSMutableArray array];
         for (UIMenuElement *g in m.children) { if ([g isKindOfClass:[UIMenu class]]) { for (UIMenuElement *x in ((UIMenu *)g).children) [t addObject:[NSString stringWithFormat:@"%@%@", x.title, [x isKindOfClass:[UIAction class]] && (((UIAction *)x).attributes & UIMenuElementAttributesDisabled) ? @" (off)" : [x isKindOfClass:[UIAction class]] && (((UIAction *)x).attributes & UIMenuElementAttributesDestructive) ? @" (red)" : @""]]; [t addObject:@"|"]; } }
         DMLog([NSString stringWithFormat:@"[desktop] test menu: %@", [t componentsJoinedByString:@" "]]); }
+    else if ([act isEqualToString:@"hidename"] && v) [self dm_setNamesHidden:!DMNamesHiddenEvery(_hiddenNames, @[v.item.name]) for:@[v.item.name]];   // hidename:<name>: its Hide / Show Name
+    else if ([act isEqualToString:@"names"]) {   // names: the record (test items only) and each test icon's name: shown or hidden, its frame, VoiceOver's label
+        NSMutableArray *rec = [NSMutableArray array]; for (NSString *n in DMNamesHiddenToStore(_hiddenNames)) [rec addObject:[n hasPrefix:@"MSB"] ? n : @"(other)"];
+        DMLog([NSString stringWithFormat:@"[desktop] test names: record [%@], every name hidden %d", [rec componentsJoinedByString:@", "], gDesktopHideNames]);
+        for (NSString *n in _views) if ([n hasPrefix:@"MSB"]) { DMDesktopItemView *x = _views[n];
+            DMLog([NSString stringWithFormat:@"[desktop] test name %@: hidden %d (label %d, capsule %d), frame %@, ax \"%@\"", n, x.nameHidden, x.label.hidden, x.labelBack.hidden, NSStringFromCGRect(x.frame), x.accessibilityLabel]); }
+    }
     else if ([act isEqualToString:@"cleanup"]) [self dm_cleanUp];
     else if ([act isEqualToString:@"dup"] && v) [self dm_duplicate:@[v.item]];
     else if ([act isEqualToString:@"rename"] && v) [self dm_beginRename:v.item.path];
@@ -1565,9 +1752,22 @@ static BOOL DMDesktopPrefOn(void) {
     if (v) CFRelease(v);
     return on;
 }
+// Settings > Mac Status Bar > Hide Desktop Icon Names (desktopHideNames, off unless set; 1.7.2 item 16): every icon without its name, at once.
+static BOOL DMDesktopHideNamesPref(void) {
+    CFPreferencesAppSynchronize(MSB_DOMAIN);
+    CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("desktopHideNames"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    BOOL on = v && (CFGetTypeID(v) == CFBooleanGetTypeID() ? CFBooleanGetValue(v) : (CFGetTypeID(v) == CFNumberGetTypeID() && [(__bridge NSNumber *)v boolValue]));
+    if (v) CFRelease(v);
+    return on;
+}
 static void DMDesktopApplyPref(void) {
     gDesktopOn = DMDesktopPrefOn();
-    DMLog([NSString stringWithFormat:@"[desktop] Show Desktop Icons %@", gDesktopOn ? @"on" : @"off"]);
+    BOOL hide = DMDesktopHideNamesPref();
+    DMLog([NSString stringWithFormat:@"[desktop] Show Desktop Icons %@, Hide Desktop Icon Names %@", gDesktopOn ? @"on" : @"off", hide ? @"on" : @"off"]);
+    if (hide == gDesktopHideNames) return;
+    gDesktopHideNames = hide;
+    if (hide) DM_FEATURE_MARK("desktop-hide-names");
+    [gDesktop dm_applyNames];
 }
 // SpringBoard's focus guides (SBHFocusGuideView: invisible strips beside the Home Screen's icon rows, there for keyboard focus) lie in front of
 // the desktop and took the touch from a desktop icon they cross: a tap on that part of the icon did nothing (iPad 2, 3 Oct: a 12 pt strip down

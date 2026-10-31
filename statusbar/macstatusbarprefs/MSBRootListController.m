@@ -664,7 +664,7 @@ static void MSBFitValueLabels(UIView *v) {
 			BOOL noFocus18 = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 18 && MSBDFocusLockVerdict() == 0;
 			BOOL desktopFailed = noFocus18 || MSBDDesktopVerdict(NULL) == 0;
 			NSMutableArray *kept = [_specifiers mutableCopy];
-			for (PSSpecifier *spec in _specifiers) if ((desktopFailed && [[spec propertyForKey:@"key"] isEqual:@"desktopIcons"]) || (noFocus18 && [[spec propertyForKey:@"key"] isEqual:@"macSwitcher"])) [kept removeObject:spec];
+			for (PSSpecifier *spec in _specifiers) if ((desktopFailed && ([[spec propertyForKey:@"key"] isEqual:@"desktopIcons"] || [[spec propertyForKey:@"key"] isEqual:@"desktopHideNames"])) || (noFocus18 && [[spec propertyForKey:@"key"] isEqual:@"macSwitcher"])) [kept removeObject:spec];
 			if (noFocus18) {   // (and its group: Go to the App's Desktop, 1.7.1, is the Mac Switcher's)
 				BOOL inGroup = NO;
 				for (PSSpecifier *spec in _specifiers) {
@@ -901,6 +901,7 @@ static void MSBFitValueLabels(UIView *v) {
 		}
 		[self msb_updateSearchTweaksRow:NO];
 		[self msb_updateGoToDesktopRow:NO];
+		[self msb_updateDesktopNamesRow:NO];
 	}
 	return _specifiers;
 }
@@ -951,6 +952,25 @@ static void MSBFitValueLabels(UIView *v) {
 	}
 }
 
+// "Hide Desktop Icon Names" (1.7.2) is the desktop's: greyed while Finder or Show Desktop Icons is off (both on unless set), live when either
+// changes -- as Go to the App's Desktop above.
+- (void)msb_updateDesktopNamesRow:(BOOL)reload {
+	CFPreferencesAppSynchronize(kMSBBarDomain);
+	BOOL on = YES;
+	for (NSString *k in @[@"finderEnabled", @"desktopIcons"]) {
+		CFPropertyListRef v = CFPreferencesCopyAppValue((__bridge CFStringRef)k, kMSBBarDomain);
+		if (v && CFGetTypeID(v) == CFBooleanGetTypeID() && !CFBooleanGetValue(v)) on = NO;   // (never set: on)
+		if (v) CFRelease(v);
+	}
+	if (!MSBDGateWanted()) on = NO;   // (untested iPadOS / safe mode: every row greyed, LineSwitch.h -- this one stays so)
+	for (PSSpecifier *spec in _specifiers) {
+		if (![spec.identifier isEqualToString:@"DESKTOP_HIDE_NAMES"]) continue;
+		[spec setProperty:@(on) forKey:@"enabled"];
+		if (reload) [self reloadSpecifier:spec animated:YES];
+		break;
+	}
+}
+
 // The saved engine can name one this device does not offer (MilkyWay4 saved before an update to iPadOS 16, or an engine since removed): the tweak
 // then runs the default one (DMActiveEngine / MSBDDefaultEngine), so that is the one shown as picked (an untested Aerial too: "Untested, Runs on Its Own").
 - (id)readPreferenceValue:(PSSpecifier *)specifier {
@@ -979,7 +999,8 @@ static void MSBFitValueLabels(UIView *v) {
 		return;
 	}
 	[super setPreferenceValue:value specifier:specifier];
-	if ([[specifier propertyForKey:@"key"] isEqual:@"finderEnabled"]) { notify_post("com.besiktasliseba.dockmagnification/prefsChanged"); return; }   // (the Dock shows or hides its Finder icon too)
+	if ([[specifier propertyForKey:@"key"] isEqual:@"finderEnabled"]) { [self msb_updateDesktopNamesRow:YES]; notify_post("com.besiktasliseba.dockmagnification/prefsChanged"); return; }   // (the Dock shows or hides its Finder icon too)
+	if ([[specifier propertyForKey:@"key"] isEqual:@"desktopIcons"]) { [self msb_updateDesktopNamesRow:YES]; return; }
 	if ([[specifier propertyForKey:@"key"] isEqual:@"sidebarSearch"]) { [self msb_updateSearchTweaksRow:YES]; return; }
 	if ([[specifier propertyForKey:@"key"] isEqual:@"macSwitcher"]) { [self msb_updateGoToDesktopRow:YES]; return; }
 	// Enable Windowing off = no window engine loads at all (MacSettings' root helper denies them all in Choicy / renames them for iCleaner Pro; on

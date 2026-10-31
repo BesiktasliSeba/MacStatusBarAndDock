@@ -15,6 +15,8 @@
 #include <os/lock.h>
 #include <sys/mount.h>
 #include <sys/event.h>
+#include <dirent.h>
+#import <AudioToolbox/AudioToolbox.h>   // (the "Trash emptied" sound, DMTrashEmptiedSound)
 
 static NSString *const kFinderTrash = @"/var/mobile/.Trash";
 static NSString *const kFinderLiveFiles = @"/var/mobile/Library/LiveFiles";   // (external drives: <LiveFiles>/<provider>/<volume>, see DMFinderDrives)
@@ -255,6 +257,87 @@ static NSSet<NSString *> *DMFinderHiddenApps(void) {
     os_unfair_lock_unlock(&gFinderNamesLock);
     return set;
 }
+// ---- On My iPad's app folders (1.7.2) ----
+// The Files app's On My iPad is its own storage (DMFinderOnMyIPad) plus a folder for each app that shares its Documents folder with Files, mixed in
+// by name. Files' own rules (iPadOS 18.5, read from FileProvider): an app shares it when its Info.plist turns on LSSupportsOpeningDocumentsInPlace
+// together with UIFileSharingEnabled, or UISupportsDocumentBrowser (-[FPDAppMonitor _appMetadataIfMonitoringIsNeeded:], Apple's documented rule
+// since iOS 11); the folder is <the app's data container>/Documents, named as Files names it -- the name of the app's iCloud container when its
+// Info.plist gives one (+[FPAppMetadata _localizedCustomDisplayNameForAppProxy:], asked when it is there), else the app's name --, one app per name
+// (FPAppRegistry keeps one app per display name); and an app's folder shows once the app has put something in it (a pristine container is not
+// user-visible, -[FPAppRegistry _isAppLibrary:appMetadata:userVisible:]; on the A12Z, 18.5: of three sharing apps Files shows the one with a file in
+// its Documents, not the two whose Documents are empty). Apps hidden with AppHider are left out, as in App Documents. @[{p: the Documents folder
+// (normalised), t: its name, b: the app, e: @YES when it is empty (not shown, still watched: the folder appears when the app puts a file there)}],
+// sorted by name. Read from any thread (LaunchServices), kept for 3 s.
+static os_unfair_lock gFinderAppFoldersLock = OS_UNFAIR_LOCK_INIT;
+static NSArray<NSDictionary *> *DMFinderAppFoldersScan(void) {
+    NSMutableArray *out = [NSMutableArray array];
+    NSArray *proxies = DMCall(DMCall(objc_getClass("LSApplicationWorkspace"), @"defaultWorkspace"), @"allInstalledApplications");
+    if (![proxies isKindOfClass:[NSArray class]]) return out;
+    NSSet *hiddenApps = DMFinderHiddenApps();
+    SEL infoKey = NSSelectorFromString(@"objectForInfoDictionaryKey:ofClass:");
+    SEL sharing = NSSelectorFromString(@"fileSharingEnabled");
+    Class meta = objc_getClass("FPAppMetadata");
+    SEL custom = NSSelectorFromString(@"_localizedCustomDisplayNameForAppProxy:");
+    BOOL askCustom = meta && [meta respondsToSelector:custom];
+    BOOL (^infoBool)(id, NSString *) = ^BOOL(id proxy, NSString *key) {
+        id v = [proxy respondsToSelector:infoKey] ? ((id (*)(id, SEL, id, Class))objc_msgSend)(proxy, infoKey, key, [NSNumber class]) : nil;
+        return [v isKindOfClass:[NSNumber class]] && [v boolValue];
+    };
+    // (LSSupportsOpeningDocumentsInPlace is a flag LaunchServices keeps, not served from the Info.plist copy (18.5: nil there for every app): asked
+    //  as Files asks it, -supportsOpenInPlace -- of the proxy where it answers itself, else of the app's record (18.5: only LSApplicationRecord
+    //  has it); the plist key only where neither does)
+    SEL inPlace = NSSelectorFromString(@"supportsOpenInPlace");
+    BOOL (^openInPlace)(id) = ^BOOL(id proxy) {
+        if ([proxy respondsToSelector:inPlace]) return ((BOOL (*)(id, SEL))objc_msgSend)(proxy, inPlace);
+        id rec = DMCall(proxy, @"correspondingApplicationRecord");
+        if (rec && [rec respondsToSelector:inPlace]) return ((BOOL (*)(id, SEL))objc_msgSend)(rec, inPlace);
+        return infoBool(proxy, @"LSSupportsOpeningDocumentsInPlace");
+    };
+    NSMutableDictionary<NSString *, NSDictionary *> *byName = [NSMutableDictionary dictionary];
+    for (id proxy in proxies) {
+        BOOL share = [proxy respondsToSelector:sharing] && ((BOOL (*)(id, SEL))objc_msgSend)(proxy, sharing);
+        if (!((share && openInPlace(proxy)) || infoBool(proxy, @"UISupportsDocumentBrowser"))) continue;
+        NSString *bid = DMCall(proxy, @"bundleIdentifier");
+        NSURL *data = DMCall(proxy, @"dataContainerURL");
+        if (![bid isKindOfClass:[NSString class]] || ![data isKindOfClass:[NSURL class]] || [hiddenApps containsObject:bid]) continue;
+        NSString *docs = DMFinderNorm([data.path stringByAppendingPathComponent:@"Documents"]);
+        struct stat st; if (lstat(docs.fileSystemRepresentation, &st) != 0 || !S_ISDIR(st.st_mode)) continue;   // (no folder there, or a link: nothing to show)
+        NSString *name = nil;
+        if (askCustom) { id c = ((id (*)(id, SEL, id))objc_msgSend)((id)meta, custom, proxy); if ([c isKindOfClass:[NSString class]] && [c length]) name = c; }
+        if (!name.length) { id n = DMCall(proxy, @"localizedName"); name = [n isKindOfClass:[NSString class]] && [n length] ? n : bid; }
+        BOOL empty = YES;
+        DIR *d = opendir(docs.fileSystemRepresentation);
+        if (d) { struct dirent *e; while ((e = readdir(d))) if (strcmp(e->d_name, ".") && strcmp(e->d_name, "..")) { empty = NO; break; } closedir(d); }
+        NSDictionary *f = @{@"p": docs, @"t": name, @"b": bid, @"e": @(empty)};
+        NSDictionary *had = byName[name];   // (two apps with one name: one folder, as in Files -- the one with something in it, else the first by bundle id)
+        if (!had || ([had[@"e"] boolValue] && !empty) || ([had[@"e"] boolValue] == empty && [bid compare:had[@"b"]] == NSOrderedAscending)) byName[name] = f;
+    }
+    [out addObjectsFromArray:byName.allValues];
+    [out sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) { return [a[@"t"] localizedStandardCompare:b[@"t"]]; }];
+    return out;
+}
+static NSArray<NSDictionary *> *gFinderAppFoldersCache; static CFTimeInterval gFinderAppFoldersAt = -100;
+static NSArray<NSDictionary *> *DMFinderAppFolders(void) {
+    os_unfair_lock_lock(&gFinderAppFoldersLock);
+    NSArray *have = gFinderAppFoldersCache; BOOL fresh = have && CACurrentMediaTime() - gFinderAppFoldersAt < 3.0;
+    os_unfair_lock_unlock(&gFinderAppFoldersLock);
+    if (fresh) return have;
+    DM_FEATURE_MARK("finder-app-folders");
+    NSArray *now = DMFinderAppFoldersScan();
+    os_unfair_lock_lock(&gFinderAppFoldersLock);
+    gFinderAppFoldersCache = now; gFinderAppFoldersAt = CACurrentMediaTime();
+    os_unfair_lock_unlock(&gFinderAppFoldersLock);
+    return now;
+}
+// The app folder (as On My iPad lists it) this path is, from the list kept last -- never read here (the main thread asks: a window's title, Up).
+static NSDictionary *DMFinderAppFolderAt(NSString *path) {
+    os_unfair_lock_lock(&gFinderAppFoldersLock);
+    NSArray *have = gFinderAppFoldersCache;
+    os_unfair_lock_unlock(&gFinderAppFoldersLock);
+    NSString *n = DMFinderNorm(path);
+    for (NSDictionary *f in have) if (![f[@"e"] boolValue] && [f[@"p"] isEqualToString:n]) return f;
+    return nil;
+}
 // The desktop's folder: "Desktop" in On My iPad (the Files app's own storage, one of the user's places), made when it is missing and `make` is set
 // (as SpringBoard, the user's own: the Files app shows it like a folder made there). nil when On My iPad isn't there or it can't be made.
 static NSString *DMFinderDesktopFolder(BOOL make) {
@@ -400,6 +483,7 @@ static unsigned long long DMFinderFreeSpace(NSString *dir) {
 @interface DMFinderItem : NSObject
 @property (nonatomic, copy) NSString *path, *name, *display, *kind;
 @property (nonatomic, copy) NSString *app;   // an app's container folder (Applications): the .app inside -- shown and opened as that app
+@property (nonatomic, copy) NSString *appFolder;   // On My iPad: the app (bundle id) whose shared Documents folder this is, named and drawn as Files does
 @property (nonatomic) BOOL dir, locked, package, alias;   // alias: a symbolic link (shown with a Mac alias arrow; a link to a folder opens it)
 @property (nonatomic) BOOL cloud;            // an iCloud Drive file that is not downloaded: only its placeholder (.name.icloud) is here
 @property (nonatomic, copy) NSString *stub;  // (that placeholder's path; `path` is where the file will be once downloaded)
@@ -471,6 +555,18 @@ static NSArray<DMFinderItem *> *DMFinderList(NSString *path, BOOL hidden, NSErro
         if (it.dir) it.locked = access(it.path.fileSystemRepresentation, R_OK | X_OK) != 0;
         [out addObject:it];
     }
+    NSString *mine = DMFinderOnMyIPad();
+    if (mine && [rn isEqualToString:DMFinderReal(mine)]) {   // (On My iPad: the apps' shared Documents folders too, as the Files app lists them)
+        for (NSDictionary *f in DMFinderAppFolders()) {
+            if ([f[@"e"] boolValue]) continue;
+            NSDictionary *v = [[NSURL fileURLWithPath:f[@"p"]] resourceValuesForKeys:@[NSURLContentModificationDateKey] error:nil];
+            DMFinderItem *it = [DMFinderItem new];
+            it.path = f[@"p"]; it.name = it.path.lastPathComponent; it.display = f[@"t"]; it.appFolder = f[@"b"];
+            it.dir = YES; it.kind = @"Folder"; it.date = v[NSURLContentModificationDateKey];
+            it.locked = access(it.path.fileSystemRepresentation, R_OK | X_OK) != 0;
+            [out addObject:it];
+        }
+    }
     if ([path isEqualToString:kFinderTrash])   // (the Trash shows the connected drives' Trashes too, as a Mac's does; each item keeps its place on the drive)
         for (NSString *t in DMFinderDriveTrashes()) { if (!DMFinderDriveTrashIsSound(t)) continue; NSArray *more = DMFinderList(t, hidden, NULL); if (more) [out addObjectsFromArray:more]; }
     [out sortUsingComparator:^NSComparisonResult(DMFinderItem *a, DMFinderItem *b) { return [a.display localizedStandardCompare:b.display]; }];
@@ -502,6 +598,26 @@ static UIImage *DMFinderAppIcon(DMFinderItem *it, CGFloat side) {
 static UIImage *DMFinderIcon(DMFinderItem *it, CGFloat side) {
     if (it.app) { UIImage *ai = DMFinderAppIcon(it, side); if (ai) return ai; }
     UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:side * 0.8 weight:UIImageSymbolWeightRegular];
+    if (it.appFolder.length && !it.locked) {   // (an app's folder in On My iPad: the folder with the app's icon on it, as the Files app draws it; made once per app and size)
+        static NSCache *appFolderIcons; if (!appFolderIcons) appFolderIcons = [NSCache new];
+        NSString *ck = [NSString stringWithFormat:@"%@|%.0f", it.appFolder, side];
+        UIImage *hit = [appFolderIcons objectForKey:ck]; if (hit) return hit;
+        UIImage *folder = [[UIImage systemImageNamed:@"folder.fill" withConfiguration:cfg] imageWithTintColor:[UIColor colorWithRed:0.33 green:0.66 blue:0.96 alpha:1] renderingMode:UIImageRenderingModeAlwaysOriginal];
+        SEL s = NSSelectorFromString(@"_applicationIconImageForBundleIdentifier:format:scale:");
+        UIImage *app = [UIImage respondsToSelector:s] ? ((id (*)(id, SEL, id, int, CGFloat))objc_msgSend)([UIImage class], s, it.appFolder, 2, [UIScreen mainScreen].scale) : nil;
+        if (folder && app) {
+            UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:folder.size];
+            UIImage *both = [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+                [folder drawAtPoint:CGPointZero];
+                CGFloat a = MIN(folder.size.width, folder.size.height) * 0.46;
+                CGRect box = CGRectMake((folder.size.width - a) / 2.0, folder.size.height * 0.58 - a / 2.0, a, a);
+                [[UIBezierPath bezierPathWithRoundedRect:box cornerRadius:a * 0.225] addClip];
+                [app drawInRect:box];
+            }];
+            [appFolderIcons setObject:both forKey:ck];
+            return both;
+        }
+    }
     if (it.dir && ![it.name hasSuffix:@".app"]) {
         UIImage *f = [UIImage systemImageNamed:it.locked ? @"lock.fill" : @"folder.fill" withConfiguration:cfg];
         return [f imageWithTintColor:it.locked ? [UIColor systemGrayColor] : [UIColor colorWithRed:0.33 green:0.66 blue:0.96 alpha:1] renderingMode:UIImageRenderingModeAlwaysOriginal];
@@ -765,6 +881,31 @@ static void DMQuickLookOpen(NSString *path) {
     for (DMNativeWindow *w in gNativeWindows) if ([w isKindOfClass:[DMQuickLookWindow class]] && [((DMQuickLookWindow *)w).file isEqualToString:path]) { [w show]; return; }
     [[[DMQuickLookWindow alloc] initWithFile:path] show];
 }
+
+// ---- the "Trash emptied" sound (1.7.2) --------------------------------------------------------------------------------------------------------
+// Played once Empty Trash really erased something: Finder's Empty button, its File menu and the Dock's Trash all end in -emptyTrash. Apple's macOS
+// sound can't be shipped, so one of the iPad's own system sounds plays (kDMTrashEmptiedSound; the candidates for KT: Swish, Mail's sent whoosh,
+// the tweet swoop -- all in /System/Library/Audio/UISounds on 15 to 18). As a system sound it follows the ringer: silent while the iPad is muted
+// (Control Center's bell, our Tab key) and at the ringer's volume, as the keyboard clicks are. A sound file that isn't there plays nothing.
+static NSString *const kDMTrashEmptiedSound = @"/System/Library/Audio/UISounds/Swish.caf";
+static int DMRingerMutedState(void);   // (StatusBar.x, where the mute icon reads it: 1 muted, 0 not, -1 unknown)
+static void DMTrashEmptiedSound(void) {
+    static SystemSoundID sid = 0; static BOOL made = NO;
+    if (DMRingerMutedState() == 1) { DMLog(@"[trash] emptied: the ringer is muted, no sound"); return; }
+    if (!made) {
+        made = YES;
+        NSURL *u = [NSURL fileURLWithPath:kDMTrashEmptiedSound];
+        OSStatus st = [[NSFileManager defaultManager] fileExistsAtPath:u.path] ? AudioServicesCreateSystemSoundID((__bridge CFURLRef)u, &sid) : -1;
+        if (st != noErr) { sid = 0; DMLog([NSString stringWithFormat:@"[trash] the emptied sound %@ can't be played (%d)", kDMTrashEmptiedSound.lastPathComponent, (int)st]); }
+    }
+    if (!sid) return;
+    DM_FEATURE_MARK("finder-trash-sound");
+    CFTimeInterval t0 = CACurrentMediaTime();
+    AudioServicesPlaySystemSoundWithCompletion(sid, ^{   // (the system's word that it played it: in the log, with how long it took)
+        dispatch_async(dispatch_get_main_queue(), ^{ DMLog([NSString stringWithFormat:@"[trash] emptied: %@ played (%.0f ms)", kDMTrashEmptiedSound.lastPathComponent, (CACurrentMediaTime() - t0) * 1000.0]); });
+    });
+}
+static NSUInteger DMDockTrashCountNow(void);   // (DockTrash.h: what Finder's Trash holds, every drive's Trash too, hidden items counted -- what Empty erases)
 
 // ---- the window -----------------------------------------------------------------------------------------------------------------------------
 @interface DMFinderWindow : DMNativeWindow <UITableViewDataSource, UITableViewDelegate, UICollectionViewDataSource, UICollectionViewDelegate,
@@ -1796,6 +1937,7 @@ static void DMFinderDrivesCheck(NSString *why);
     UIButton *_back, *_fwd, *_viewSwitch;
     UILabel *_folderLabel, *_status, *_empty;
     UIView *_header;
+    UIView *_trashBar; UIButton *_emptyButton; NSUInteger _trashCount;   // (the Trash's own bar: Empty at its right, as on a Mac)
     DMFinderItem *_dragArmed; CGPoint _dragStart, _dragDown, _dragDownOffset; BOOL _dragLifted; __weak UIView *_dragCell;
     BOOL _fingerDown, _menuByHold, _pressActive; NSUInteger _pressSerial;   // (a finger's press: its menu opens from our hold, see -dm_dragPress:)
     UISearchBar *_search;
@@ -1810,7 +1952,8 @@ static void DMFinderDrivesCheck(NSString *why);
     UITextField *_renameField; NSString *_renamePath, *_renameWhenListed;   // (a name being edited in place, -dm_beginInlineRename:)
     NSArray<NSString *> *_selectWhenListed;
     dispatch_source_t _watch; BOOL _watchPending;   // (the open folder is watched: a change in it shows at once, whoever made it)
-    NSMutableArray *_watchMore;   // (the Trash: the connected drives' Trashes are watched too)
+    NSMutableArray *_watchMore;   // (the Trash: the connected drives' Trashes are watched too; On My iPad: the apps' shared Documents folders)
+    NSUInteger _watchApps;        // (how many app folders On My iPad's watch covers: watched again once the list knows more)
     unsigned long long _free;     // (the free space where the open folder is, for the status line; ULLONG_MAX: unknown)
     DMFinderItem *_sideDrive; CGPoint _sideStart; BOOL _sideLifted; __weak UIView *_sideCell;   // (a drive held in the sidebar, -dm_sideDragPress:)
 }
@@ -1873,6 +2016,24 @@ static void DMFinderDrivesCheck(NSString *why);
     }
     UIView *line = [UIView new]; line.backgroundColor = [UIColor separatorColor]; line.tag = 9; [_header addSubview:line];
     [c addSubview:_header];
+    // The Trash's bar (1.7.2): a Mac's Finder has an Empty button at the top right of the Trash window, between the toolbar and the files. Empty
+    // runs Finder's own Empty Trash (its question first); it is greyed while the Trash holds nothing (what Empty would erase: every drive's Trash
+    // and hidden items too, counted as the folder is read). The folder's name stays in the toolbar alone (a "Trash" in the bar as well read as
+    // "Trash" twice -- KT, 1.7.2 item 13).
+    _trashBar = [UIView new]; _trashBar.backgroundColor = [UIColor secondarySystemBackgroundColor]; _trashBar.hidden = YES;
+    _emptyButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [_emptyButton setTitle:@"Empty" forState:UIControlStateNormal];
+    _emptyButton.titleLabel.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightMedium];
+    [_emptyButton setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
+    [_emptyButton setTitleColor:[UIColor tertiaryLabelColor] forState:UIControlStateDisabled];
+    _emptyButton.backgroundColor = [UIColor tertiarySystemFillColor];
+    _emptyButton.layer.cornerRadius = 5.0; _emptyButton.layer.cornerCurve = kCACornerCurveContinuous;
+    _emptyButton.accessibilityLabel = @"Empty Trash";
+    _emptyButton.enabled = NO;
+    [_emptyButton addTarget:self action:@selector(dm_emptyPressed) forControlEvents:UIControlEventTouchUpInside];
+    UIView *trashLine = [UIView new]; trashLine.backgroundColor = [UIColor separatorColor]; trashLine.tag = 9;
+    for (UIView *v in @[_emptyButton, trashLine]) [_trashBar addSubview:v];
+    [c addSubview:_trashBar];
     UICollectionViewFlowLayout *fl = [UICollectionViewFlowLayout new];
     fl.itemSize = CGSizeMake(96.0, 96.0); fl.minimumInteritemSpacing = 8.0; fl.minimumLineSpacing = 12.0; fl.sectionInset = UIEdgeInsetsMake(14, 14, 14, 14);
     _grid = [[UICollectionView alloc] initWithFrame:CGRectZero collectionViewLayout:fl];
@@ -1947,6 +2108,16 @@ static void DMFinderDrivesCheck(NSString *why);
     _viewSwitch.frame = CGRectMake(CGRectGetMinX(_search.frame) - 38, cy, 34, 32);
     _selectButton.frame = CGRectMake(CGRectGetMinX(_viewSwitch.frame) - 56, cy, 54, 32);
     _folderLabel.frame = CGRectMake(76, 0, CGRectGetMinX(_selectButton.frame) - 80, tb);
+    BOOL trash = [self.path isEqualToString:kFinderTrash];
+    CGFloat trashH = trash ? 32.0 : 0.0;
+    _trashBar.hidden = !trash;
+    if (trash) {
+        _trashBar.frame = CGRectMake(x, tb, b.size.width - x, trashH);
+        CGFloat bw = MAX(58.0, ceil([_emptyButton sizeThatFits:CGSizeMake(200, 22)].width) + 18.0);
+        _emptyButton.frame = CGRectMake(_trashBar.bounds.size.width - bw - 10.0, (trashH - 22.0) / 2.0, bw, 22.0);
+        for (UIView *v in _trashBar.subviews) if (v.tag == 9) v.frame = CGRectMake(0, trashH - 0.5, _trashBar.bounds.size.width, 0.5);
+    }
+    tb += trashH;   // (below the Trash's bar: the column headings, the list and the icons)
     CGFloat hh = _icons ? 0.0 : 22.0;
     _header.hidden = _icons;
     _header.frame = CGRectMake(x, tb, b.size.width - x, hh);
@@ -1981,17 +2152,23 @@ static void DMFinderDrivesCheck(NSString *why);
 }
 - (void)goBack { if (_hpos > 0) { _hpos--; [self load:_history[_hpos]]; } }
 - (void)goForward { if (_hpos < (NSInteger)_history.count - 1) { _hpos++; [self load:_history[_hpos]]; } }
-- (void)goUp { NSString *up = self.path.stringByDeletingLastPathComponent; if (up.length && ![up isEqualToString:self.path]) [self go:up]; }
+- (void)goUp {   // (an app's folder in On My iPad: up is On My iPad, where it is shown -- as in the Files app)
+    NSString *up = DMFinderAppFolderAt(self.path) && DMFinderOnMyIPad() ? DMFinderNorm(DMFinderOnMyIPad()) : self.path.stringByDeletingLastPathComponent;
+    if (up.length && ![up isEqualToString:self.path]) [self go:up];
+}
 - (void)load:(NSString *)path {
     path = DMFinderNorm(path);
     self.path = path;
     NSString *name = [path isEqualToString:@"/"] ? @"iPad" : path.lastPathComponent;
     for (NSDictionary *sec in _places) for (NSDictionary *r in sec[@"rows"]) if ([r[@"p"] isEqualToString:path]) name = r[@"t"];
     if ([path.stringByDeletingLastPathComponent hasSuffix:@"/Application"] && path.lastPathComponent.length == 36) name = DMFinderContainerName(path) ?: name;
+    NSDictionary *appFolder = DMFinderAppFolderAt(path);   // (an app's folder in On My iPad: its name there, as the Files app shows it)
+    if (appFolder) name = appFolder[@"t"];
     self.title = name; _folderLabel.text = name;
     [self dm_endRename:YES];
     _search.text = @""; _selected = nil; [_sel removeAllObjects]; _lastClickPath = nil;
     if ([path isEqualToString:kFinderTrash]) [[NSFileManager defaultManager] createDirectoryAtPath:kFinderTrash withIntermediateDirectories:YES attributes:nil error:nil];
+    _trashCount = 0; _emptyButton.enabled = NO;   // (until the folder is read: -dm_list counts what the Trash holds)
     [self dm_watch:path];
     [self dm_list];
     [self setNeedsLayout];
@@ -2006,9 +2183,11 @@ static void DMFinderDrivesCheck(NSString *why);
         NSError *err = nil;
         NSArray *items = DMFinderList(path, hidden, &err);
         unsigned long long free = items ? DMFinderFreeSpace(path) : ULLONG_MAX;
+        NSUInteger inTrash = [path isEqualToString:kFinderTrash] ? DMDockTrashCountNow() : 0;   // (the Trash's Empty: hidden items and drives too)
         dispatch_async(dispatch_get_main_queue(), ^{
             DMFinderWindow *s = ws; if (!s || ![s.path isEqualToString:path]) return;
             s->_free = free;
+            s->_trashCount = inTrash; s->_emptyButton.enabled = inTrash > 0;
             [s setItems:items error:err];
         });
     });
@@ -2044,6 +2223,13 @@ static void DMFinderDrivesCheck(NSString *why);
         return src;
     };
     _watch = watch(path);
+    _watchApps = 0;
+    NSString *mine = DMFinderOnMyIPad();
+    if (mine && [path isEqualToString:DMFinderNorm(mine)]) {   // (On My iPad: each app's shared Documents, empty ones too -- a folder shows as soon as its app puts a file there)
+        os_unfair_lock_lock(&gFinderAppFoldersLock); NSArray *apps = gFinderAppFoldersCache; os_unfair_lock_unlock(&gFinderAppFoldersLock);
+        for (NSDictionary *f in apps) { dispatch_source_t m = watch(f[@"p"]); if (m) [_watchMore addObject:m]; }
+        _watchApps = apps.count;
+    }
     if ([path isEqualToString:kFinderTrash]) {   // (the Trash: each connected drive's Trash, or its .Trashes / the volume while it isn't made yet)
         for (NSString *t in DMFinderDriveTrashes()) {
             NSString *w = t;
@@ -2088,6 +2274,13 @@ static void DMFinderDrivesCheck(NSString *why);
 - (void)close { [self dm_endRename:NO]; if (_watch) { dispatch_source_cancel(_watch); _watch = nil; } for (dispatch_source_t m in _watchMore) dispatch_source_cancel(m); _watchMore = nil; [super close]; }
 - (void)setItems:(NSArray *)items error:(NSError *)err {
     _all = items ?: @[];
+    {   // (On My iPad: the listing has read the apps' folders -- the watch covers them all, and an app folder's window takes its name)
+        NSString *mine = DMFinderOnMyIPad();
+        os_unfair_lock_lock(&gFinderAppFoldersLock); NSUInteger apps = gFinderAppFoldersCache.count; os_unfair_lock_unlock(&gFinderAppFoldersLock);
+        if (mine && [self.path isEqualToString:DMFinderNorm(mine)] && apps != _watchApps) [self dm_watch:self.path];
+        NSDictionary *appFolder = DMFinderAppFolderAt(self.path);
+        if (appFolder && ![_folderLabel.text isEqualToString:appFolder[@"t"]]) { self.title = appFolder[@"t"]; _folderLabel.text = appFolder[@"t"]; }
+    }
     _empty.text = items ? (items.count ? nil : @"This folder is empty.") : [NSString stringWithFormat:@"The iPad doesn't let Finder open this folder.\n%@", err.localizedDescription ?: @""];
     NSSet *here = [NSSet setWithArray:[_all valueForKey:@"path"]];   // (selected items that are gone leave the selection)
     for (NSString *x in [_sel array]) if (![here containsObject:x]) [_sel removeObject:x];
@@ -2496,8 +2689,9 @@ static void DMFinderDrivesCheck(NSString *why);
         return;
     }
 }
-- (void)dm_openNamed:(NSString *)name { for (DMFinderItem *it in _items) if ([it.name isEqualToString:name]) { [self open:it]; return; } }
-- (void)dm_selectNamed:(NSString *)name { for (DMFinderItem *it in _items) if ([it.name isEqualToString:name]) { [self dm_setSelection:@[it.path] anchor:it.path]; return; } }
+// (an app's folder in On My iPad by the name it shows: its folder's own name is Documents for every app)
+- (void)dm_openNamed:(NSString *)name { for (DMFinderItem *it in _items) if ([it.name isEqualToString:name] || (it.appFolder && [it.display isEqualToString:name])) { [self open:it]; return; } }
+- (void)dm_selectNamed:(NSString *)name { for (DMFinderItem *it in _items) if ([it.name isEqualToString:name] || (it.appFolder && [it.display isEqualToString:name])) { [self dm_setSelection:@[it.path] anchor:it.path]; return; } }
 - (void)dm_toggleView { [self toggleView]; }
 #if DEBUG
 // Test machinery (the fdo_ trigger): select:<name>, trash, putback, dup, copy, paste, undo, newfolder, rename:<new name>, move:<folder>,
@@ -2521,6 +2715,11 @@ static void DMFinderDrivesCheck(NSString *why);
     else if ([act isEqualToString:@"copyto"]) [self dm_moveItems:sel to:arg copy:YES];
     else if ([act isEqualToString:@"delete"]) [self dm_deleteItems:sel];
     else if ([act isEqualToString:@"empty"]) [self emptyTrash];
+    else if ([act isEqualToString:@"emptybutton"]) {   // (the Trash bar's Empty, as a tap on it: greyed, it does nothing)
+        DMLog([NSString stringWithFormat:@"[finder] test Empty button: bar %@, button %@ %@ (Trash holds %lu)", _trashBar.hidden ? @"hidden" : NSStringFromCGRect([_trashBar convertRect:_trashBar.bounds toCoordinateSpace:self.window.screen.coordinateSpace]),
+               NSStringFromCGRect([_emptyButton convertRect:_emptyButton.bounds toCoordinateSpace:self.window.screen.coordinateSpace]), _emptyButton.enabled ? @"enabled" : @"greyed", (unsigned long)_trashCount]);
+        if (!_trashBar.hidden && _emptyButton.enabled) [_emptyButton sendActionsForControlEvents:UIControlEventTouchUpInside];
+    }
     else if ([act isEqualToString:@"hidden"]) [self dm_toggleHidden];
     else if ([act isEqualToString:@"drives"]) {   // (the drives now, the sidebar's Locations, and the policy for this folder -- names of drives only)
         DMFinderDrivesForget();
@@ -2531,6 +2730,14 @@ static void DMFinderDrivesCheck(NSString *why);
     else if ([act isEqualToString:@"policy"]) {   // policy:<path>: what the policy says about a path (item may change / folder may be written into / in a Trash)
         DMLog([NSString stringWithFormat:@"[finder] test policy %@: change %d writeinto %d intrash %d owntrash %d zone %d dest %d", arg, DMFinderCanChange(arg), DMFinderCanWriteInto(arg), DMFinderInTrash(arg), DMFinderInOwnTrash(arg), DMFinderItemZone(DMFinderRealItem(arg)), DMFinderDestZone(arg)]);
     }
+    else if ([act isEqualToString:@"appfolders"]) {   // (On My iPad's app folders as read now, and this window's items: app folders by name, the user's own by count)
+        os_unfair_lock_lock(&gFinderAppFoldersLock); gFinderAppFoldersAt = -100; os_unfair_lock_unlock(&gFinderAppFoldersLock);
+        CFTimeInterval t0 = CACurrentMediaTime(); NSArray *all = DMFinderAppFolders(); double ms = (CACurrentMediaTime() - t0) * 1000.0;
+        NSMutableArray *a = [NSMutableArray array]; for (NSDictionary *f in all) [a addObject:[NSString stringWithFormat:@"%@ (%@%@)", f[@"t"], f[@"b"], [f[@"e"] boolValue] ? @", empty: not shown" : @""]];
+        NSMutableArray *shown = [NSMutableArray array]; NSUInteger own = 0; for (DMFinderItem *it in _all) { if (it.appFolder) [shown addObject:[@"app:" stringByAppendingString:it.display]]; else { own++; [shown addObject:@"(own)"]; } }
+        DMLog([NSString stringWithFormat:@"[finder] test app folders (read in %.1f ms): %@; this window (%@, title \"%@\"): %@ (%lu of the user's own)", ms, [a componentsJoinedByString:@"; "], self.path.lastPathComponent, _folderLabel.text, [shown componentsJoinedByString:@", "], (unsigned long)own]);
+    }
+    else if ([act isEqualToString:@"up"]) [self goUp];
     else if ([act isEqualToString:@"drivescheck"]) DMFinderDrivesCheck(@"test");   // (the check a mount event runs; with /tmp/msb-fdrive-hide the drives look unplugged)
     else if ([act isEqualToString:@"origin"]) { if (sel.count) DMLog([NSString stringWithFormat:@"[finder] test origin of %@: %@", [sel[0] lastPathComponent], DMFinderOrigin(sel[0]) ?: @"-"]); }
     else if ([act isEqualToString:@"closeothers"]) { for (DMNativeWindow *w in [gNativeWindows copy]) if (w != self) [w close]; }
@@ -2546,7 +2753,8 @@ static void DMFinderDrivesCheck(NSString *why);
     else if ([act isEqualToString:@"state"]) {   // (every Finder window's state, front last, for the test log -- names only in the test folders)
         for (DMNativeWindow *nw in gNativeWindows) if ([nw isKindOfClass:[DMFinderWindow class]]) { DMFinderWindow *w = (DMFinderWindow *)nw;
             UILabel *t = nil; for (UIView *v in w.subviews) if ([v isKindOfClass:[DMNativeSheet class]]) for (UIView *x in ((DMNativeSheet *)v).panel.subviews) for (UIView *y in x.subviews) if ([y isKindOfClass:[UILabel class]] && !t) t = (UILabel *)y;
-            DMLog([NSString stringWithFormat:@"[finder] test state%@: %@ items %lu read-only %d selected %@ undo '%@' sheet '%@' status '%@' active %d frame %@", w == self ? @" (front)" : @"", w.path.lastPathComponent, (unsigned long)w->_items.count, ![w dm_canWriteHere], w->_selected.lastPathComponent ?: @"-", [w dm_canUndo] ? [w dm_undoTitle] : @"-", [w hasSheet] ? t.text : @"-", w->_status.text, w == gNativeActive, NSStringFromCGRect(w.frame)]); }
+            DMLog([NSString stringWithFormat:@"[finder] test state%@: %@ items %lu read-only %d selected %@ undo '%@' sheet '%@' status '%@' active %d frame %@%@", w == self ? @" (front)" : @"", w.path.lastPathComponent, (unsigned long)w->_items.count, ![w dm_canWriteHere], w->_selected.lastPathComponent ?: @"-", [w dm_canUndo] ? [w dm_undoTitle] : @"-", [w hasSheet] ? t.text : @"-", w->_status.text, w == gNativeActive, NSStringFromCGRect(w.frame),
+                   w->_trashBar.hidden ? @"" : [NSString stringWithFormat:@" trash bar: Empty %@ (%lu)", w->_emptyButton.enabled ? @"enabled" : @"greyed", (unsigned long)w->_trashCount]]); }
     }
 }
 #endif
@@ -2613,7 +2821,9 @@ static void DMFinderDrivesCheck(NSString *why);
         }
         if (itemsMatter && !DMFinderCanChange(p)) {
             DMLog([NSString stringWithFormat:@"[finder] policy: %@ refused (outside the user's places)", verb]);
-            [self sheetTitle:[NSString stringWithFormat:@"“%@” can't be %@", p.lastPathComponent, verbPast] message:own field:nil action:@"OK" destructive:NO then:^(NSString *t) {}];
+            NSDictionary *appFolder = DMFinderAppFolderAt(p);   // (an app's folder in On My iPad: named as it shows, and said why -- it is the app's, as in the Files app)
+            if (appFolder) [self sheetTitle:[NSString stringWithFormat:@"“%@” can't be %@", appFolder[@"t"], verbPast] message:@"It is the app's own folder. What is in it can be changed." field:nil action:@"OK" destructive:NO then:^(NSString *t) {}];
+            else [self sheetTitle:[NSString stringWithFormat:@"“%@” can't be %@", p.lastPathComponent, verbPast] message:own field:nil action:@"OK" destructive:NO then:^(NSString *t) {}];
             return;
         }
         if ([verb isEqualToString:@"trash"] && DMFinderInICloud(p)) icloudTrash = YES;
@@ -2956,11 +3166,17 @@ static NSString *DMFinderResolveTyped(NSString *p) {
 }
 - (void)dm_duplicate:(DMFinderItem *)it { [self dm_duplicateItems:@[it.path]]; }
 - (void)trash:(DMFinderItem *)it { [self dm_trashItems:@[it.path]]; }
+- (void)dm_emptyPressed {   // (the Trash bar's Empty)
+    DM_FEATURE_MARK("finder-trash-empty-button");
+    if (!_trashCount) return;
+    DMLog(@"[finder] the Trash's Empty button: Finder's question");
+    [self emptyTrash];
+}
 - (void)emptyTrash {
     DM_FEATURE_MARK("finder-trash");
     [self alertTitle:@"Are you sure you want to permanently erase the items in the Trash?" message:@"You can't undo this action." field:nil action:@"Empty Trash" destructive:YES then:^(NSString *t) {
         [self fileWork:@"Empty Trash" work:^NSError *{
-            NSError *first = nil; NSUInteger failed = 0;
+            NSError *first = nil; NSUInteger failed = 0, erased = 0;
             if (!DMFinderTrashIsSound()) return DMFinderError(@"The Trash is not a folder of its own here: nothing was erased.");
             // (Finder's Trash and every connected drive's Trash, <volume>/.Trashes/501 -- only what is inside those folders, as on a Mac)
             NSMutableArray *trashes = [NSMutableArray arrayWithObject:kFinderTrash];
@@ -2969,8 +3185,9 @@ static NSString *DMFinderResolveTyped(NSString *p) {
                 NSString *x = [t stringByAppendingPathComponent:f];
                 if (!DMFinderTaken(x)) continue;   // (a "._" file on a drive goes with its item)
                 NSError *e = DMFinderDriveGoneError(DMFinderRemove(x), @[x]);   // (the same rule as Delete Immediately)
-                if (e) { failed++; if (!first) first = e; }
+                if (e) { failed++; if (!first) first = e; } else erased++;
             }
+            if (erased) dispatch_async(dispatch_get_main_queue(), ^{ DMTrashEmptiedSound(); });   // (only when something was erased, as on a Mac)
             return failed ? DMFinderError([NSString stringWithFormat:@"%lu item%@ could not be erased: %@", (unsigned long)failed, failed == 1 ? @"" : @"s", first.localizedDescription ?: @"?"]) : nil;
         }];
     }];

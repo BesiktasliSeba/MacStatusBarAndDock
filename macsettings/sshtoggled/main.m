@@ -48,6 +48,7 @@
 #include "../../common/StageManagerAvailable.h"
 #include "../../common/PointerAnim.h"       // (DMPtrAnimDecide: Pointer Animations given back as SpringBoard does it, Mac-tested)
 #include "../../common/PrewarmQuitSet.h"    // (MSBDPrewarmQuitSetKept: whether SpringBoard keeps a prewarm quit set, Mac-tested)
+#include "../../common/PrewarmPartID.h"     // (MSBDPrewarmPartCurrent: whether the running dasd has the prewarm block just installed, Mac-tested)
 #include "../../statusbar/SMSwitchOn.h"     // (DMSMConsentFrom: the Stage Manager consent values)
 #include <dlfcn.h>
 #include <grp.h>
@@ -387,6 +388,29 @@ static BOOL QuitSetKept(void) {
     if (e) CFRelease(e);
     if (s) CFRelease(s);
     return kept;
+}
+// Whether the running dasd has the prewarm block just installed (common/PrewarmPartID.h): its start stamp is that dasd's -- the process at the stamp's
+// pid is dasd and started at the stamp's time -- and names the build ID in the part's file installed now. The postinst asks it before it restarts
+// dasd (--dasd-part-current: 0 it has, the restart is left out; 1 dasd starts again to load the part, as at every install before 1.7.2).
+static BOOL DasdPartCurrent(void) {
+    char stamp[160] = {0};
+    FILE *f = fopen(kMSBDPrewarmLoadedFile, "r");
+    if (!f) return NO;
+    size_t n = fread(stamp, 1, sizeof stamp - 1, f); fclose(f); stamp[n] = 0;
+    MSBDPrewarmStampProc p; char sid[kMSBDPrewarmPartIDLen + 1];
+    if (!MSBDPrewarmStampParse(stamp, &p, sid, sizeof sid) || p.pid > INT_MAX) return NO;
+    MSBDPrewarmRunning run = { 0, NULL, 0, 0 };
+    struct kinfo_proc kp; size_t len = sizeof kp; int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)p.pid };
+    char comm[MAXCOMLEN + 1] = {0};
+    memset(&kp, 0, sizeof kp);
+    if (sysctl(mib, 4, &kp, &len, NULL, 0) == 0 && len >= sizeof kp && kp.kp_proc.p_pid == (pid_t)p.pid) {   // (no such process: the call answers 0 bytes)
+        memcpy(comm, kp.kp_proc.p_comm, MAXCOMLEN);
+        run.found = 1; run.name = comm; run.startSec = (long long)kp.kp_proc.p_starttime.tv_sec; run.startUsec = (long)kp.kp_proc.p_starttime.tv_usec;
+    }
+    NSData *part = [NSData dataWithContentsOfFile:@kMSBDPrewarmPartFile options:NSDataReadingMappedIfSafe error:nil];
+    char iid[kMSBDPrewarmPartIDLen + 1] = {0};
+    if (!part || !MSBDPrewarmPartIDIn(part.bytes, part.length, iid, sizeof iid)) return NO;
+    return MSBDPrewarmPartCurrent(stamp, run, iid) != 0;
 }
 static void ApplyEngines(NSString *reason) {
     static BOOL retryPending = NO, logged = NO;
@@ -1389,6 +1413,7 @@ int main(int argc, char **argv) {
         if (argc > 1 && strcmp(argv[1], "--os-major") == 0) { printf("%ld\n", (long)[NSProcessInfo processInfo].operatingSystemVersion.majorVersion); return 0; }   // (postinst: the iPadOS 17+ Settings entries)
         if (argc > 1 && strcmp(argv[1], "--is-ipad") == 0) return MSBDIsIPad() ? 0 : 2;   // (postinst: 2, not 1, so a failed start never reads as "not an iPad")
         if (argc > 1 && strcmp(argv[1], "--quit-set-kept") == 0) return MSBDIsIPad() && QuitSetKept() ? 0 : 1;   // (postinst: dasd's quit-set file made only for a SpringBoard that keeps one)
+        if (argc > 1 && strcmp(argv[1], "--dasd-part-current") == 0) return DasdPartCurrent() ? 0 : 1;   // (postinst: dasd restarted only when it lacks the prewarm block just installed)
         if (!MSBDIsIPad()) {
             if (argc < 2) dispatch_main();
             if (strcmp(argv[1], "--uninstall") != 0 && strcmp(argv[1], "--restore-engines") != 0 && strcmp(argv[1], "--restore-msb-off") != 0) return 0;
