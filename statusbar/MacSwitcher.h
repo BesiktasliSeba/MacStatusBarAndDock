@@ -1781,6 +1781,7 @@ static NSString *DMMSWChangeDesktop(NSUInteger from, NSUInteger to) {
     if (leftAt && !CGSizeEqualToSize(CGSizeFromString(leftAt), screen) && CGSizeFromString(leftAt).width > 1) {   // (turned while away: its windows are arranged
         CGSize was = CGSizeFromString(leftAt);                                                                    //  for the new shape, as a turn arranges the shown ones)
         DMLog([NSString stringWithFormat:@"[macswitcher] %@ was left at %@, the screen is %@ now: its windows are arranged for the turn", DMMSWDeskName(to), leftAt, NSStringFromCGSize(screen)]);
+        DMLayoutNoteHold(2.4);   // (the layouts its windows had when it was left are what the turn puts back: TurnPlace.h, 1.7.4)
         dispatch_async(dispatch_get_main_queue(), ^{ DMRelayoutForOrientation(was, [UIScreen mainScreen].bounds.size); });   // (its Fit group is tiled again there)
     } else if (DMFitEnabled() && gFitGroup.count >= 1 && gFitSlots[gFitGroup[0]]) {   // (its Fit group, tiled again for the screen as it is; a filling one fills)
         DMLog([NSString stringWithFormat:@"[macswitcher] %@'s Fit to Window group (%@) tiled again", DMMSWDeskName(to), [gFitGroup componentsJoinedByString:@", "]]);

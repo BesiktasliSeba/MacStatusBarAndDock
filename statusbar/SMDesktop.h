@@ -362,6 +362,24 @@ static BOOL DMSMJoinWindowCardGo(id ctx, NSArray<NSArray *> *asked, NSArray<NSDi
     NSArray<NSArray *> *wins = did ? DMMSWSMDeskWindows(did.integerValue) : nil;
     return wins.count && DMSMCardWriteDesk(ctx, asked, askedW, wins, identity, tapped, [NSString stringWithFormat:@"its own desktop (%@: Go to the App's Desktop)", DMMSWDeskName([gMSWDesks indexOfObject:did])]);
 }
+// 1.7.4 item 1: with Go to the App's Desktop on, a MINIMIZED window of another Mac Switcher desktop that SpringBoard is asked to show -- its App
+// Switcher card, Command-Tab -- opens again as a window of that desktop, as a Dock tap opens it (MacSwitcherSM.h DMMSWSMJoin) and as Aerial, Zetsu
+// and MilkyWay4 open it: no longer minimized (DMSMJoinMinimizedReopen, before the flags are read: it is then a window of another desktop), and that
+// desktop's windows come with it in front (DMSMJoinMinimizedGo; a card tap: DMSMJoinWindowCardGo). It came here. Off: it comes here, as before.
+static BOOL DMSMJoinMinimizedReopen(NSString *k) {
+    if (!gMSWOn || !gMSWGoToAppDesk || !DMSMEngine() || !DMMSWMulti() || gMSWSwitching || !k.length || !DMSMIsMinimized(k)) return NO;
+    NSNumber *did = DMMSWSMRecordOf(k);
+    if (!did || did.integerValue == DMMSWCurId() || ![gMSWDesks containsObject:did]) return NO;
+    DMSMSetMinimized(k, NO);
+    DM_FEATURE_MARK("mac-switcher-sm-minimized-go");
+    DMLog([NSString stringWithFormat:@"[macswitcher] %@ (minimized on %@) asked for by SpringBoard's own transition: opened again there (Go to the App's Desktop)", DMSMKeyText(k), DMMSWDeskName([gMSWDesks indexOfObject:did])]);
+    return YES;
+}
+static BOOL DMSMJoinMinimizedGo(id ctx, NSArray<NSArray *> *asked, NSArray<NSDictionary *> *askedW, int flags, id identity, NSString *k) {
+    NSNumber *did = k && flags == DMSMJoinOtherDesk && askedW.count == 1 ? DMMSWSMRecordOf(k) : nil;
+    NSArray<NSArray *> *wins = did ? DMMSWSMDeskWindows(did.integerValue) : nil;   // (alone there: SpringBoard's own transition shows its desktop, below)
+    return wins.count > 1 && DMSMCardWriteDesk(ctx, asked, askedW, wins, identity, k, [NSString stringWithFormat:@"its own desktop (%@: minimized there, Go to the App's Desktop)", DMMSWDeskName([gMSWDesks indexOfObject:did])]);
+}
 __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray *> *asked) {   // (noinline: its own range in the release crash map --
     // inlined into DMSMJoinDesktop after the 1.3.8 RC2 edits, test-crashstep's line for it had no symbol on the release build: logic test N-1)
 #if DEBUG
@@ -381,6 +399,7 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
     NSMutableArray<NSDictionary *> *askedW = [NSMutableArray array];
     NSMutableDictionary<NSString *, id> *askedEntity = [NSMutableDictionary dictionary];
     NSMutableArray<NSString *> *seen = [NSMutableArray array];
+    NSString *reopenAsk = nil;
     for (NSArray *a in asked) {
         long long r = [a[0] longLongValue]; id e = a[1];
         // (roles 3 and 4 -- the floating app and the centre window -- matter only with an app in them: the App Switcher's card sets 3 to "as it
@@ -395,6 +414,7 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
             if (![b isKindOfClass:[NSString class]] || !b.length) { flags |= DMSMJoinNonApp; continue; }
             NSString *k = DMSMEntityKey(e) ?: b;   // (the window: two windows of one app are two -- M-2)
             [askedW addObject:@{@"w": k, @"b": b, @"r": @(r)}];
+            if (!reopenAsk && DMSMIsMinimized(k)) reopenAsk = k;   // (1.7.4 item 1: opened again below, when it is a plain activation of it)
             if (DMSMDeskOnOtherDesktop(k)) flags |= DMSMJoinOtherDesk;
             if (!askedEntity[k]) askedEntity[k] = e;
             if (!askedEntity[b]) askedEntity[b] = e;   // (by app, when the decision compares apps: the first of the app's)
@@ -408,12 +428,18 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
     id req0 = [ctx respondsToSelector:NSSelectorFromString(@"request")] && DMSMSigOK(ctx, NSSelectorFromString(@"request"), DMSMSigObj(), "request") ? DMCall(ctx, @"request") : nil;
     id label0 = [req0 respondsToSelector:NSSelectorFromString(@"eventLabel")] ? DMCall(req0, @"eventLabel") : nil;
     if ([label0 isKindOfClass:[NSString class]] && [label0 isEqualToString:@"UpdateFluidSwitcherGestureAction"]) return;
+    // (1.7.4 item 1: a minimized window of another desktop asked for alone -- not by a switcher gesture, which shows it SpringBoard's way and
+    //  DMSMShownByGesture unmarks it then -- with Go to the App's Desktop on: a window of its desktop again, that desktop's switch below)
+    NSString *reopened = nil;
+    if (reopenAsk && askedW.count == 1 && !(flags & ~DMSMJoinOtherDesk) && !([label0 isKindOfClass:[NSString class]] && [label0 isEqualToString:@"FinalFluidSwitcherGestureAction"])
+        && !DMSMGestureCtx(ctx) && DMSMJoinMinimizedReopen(reopenAsk)) { reopened = reopenAsk; if (DMSMDeskOnOtherDesktop(reopened)) flags |= DMSMJoinOtherDesk; }
     // (1.7.1: a window of another desktop that an app switch asks for -- an App Switcher card, nothing else in the context -- comes to the desktop
     //  on screen unless Go to the App's Desktop is on, as a launch's does: MacSwitcherSM.h DMMSWSMAskedBringHere. A switcher gesture's end stays
     //  SpringBoard's own switch to that stage, below.)
     if (flags == DMSMJoinOtherDesk && !([label0 isKindOfClass:[NSString class]] && [label0 isEqualToString:@"FinalFluidSwitcherGestureAction"]) && !DMSMGestureCtx(ctx)
         && DMMSWSMAskedBringHere(ctx, asked, askedW, askedEntity, identity)) return;
     if (DMSMJoinWindowCardGo(ctx, asked, askedW, flags, label0, identity)) return;   // (one card per window, SMCards.h: Go on -- its own desktop comes)
+    if (reopened && DMSMJoinMinimizedGo(ctx, asked, askedW, flags, identity, reopened)) return;   // (1.7.4 item 1: a minimized one by another way, Command-Tab)
     NSString *early = nil;
     if (!DMSMDeskJoinPlan(@[], askedW, flags, &early) && ![early isEqualToString:@"no desktop to keep"]) {
         DMLog([NSString stringWithFormat:@"[smjoin] roles already set (%@; %@): left as SpringBoard built it -- %@", [seen componentsJoinedByString:@", "], [label0 isKindOfClass:[NSString class]] ? label0 : @"no label", early]);

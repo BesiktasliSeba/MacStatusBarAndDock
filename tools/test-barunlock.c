@@ -1,6 +1,8 @@
 // test-barunlock.c -- Mac test of the status bar's locked look (statusbar/BarUnlock.h, used by StatusBar.x DMBarLockedNow): the M1's wake of 30 Oct
 // (1.7.1 item 11, the Cover Sheet's flags sampled every 0.25 s) gives the unlocked look from the first sample, not 2 s later; the Lock Screen and
-// Notification Center keep the locked look; a SpringBoard without -isVisibleAndNotDisappearing as before.
+// Notification Center keep the locked look; a SpringBoard without -isVisibleAndNotDisappearing as before; a Notification Center pull keeps the bar's
+// look until it commits (1.7.4 item 3a); after a wake the windows' follow-ups (Zetsu's pills, the apps woken) start as the Cover Sheet starts to
+// leave (1.7.4, engine parity).
 #include <stdio.h>
 #include "../statusbar/BarUnlock.h"
 static int fails = 0, checks = 0;
@@ -19,6 +21,19 @@ int main(void) {
     Expect("a SpringBoard without -isVisibleAndNotDisappearing: presented counts (as before)", MSBDCoverSheetCoversBar(-1, 1, 0), 1);
     Expect("  ... visible counts (as before)", MSBDCoverSheetCoversBar(-1, 0, 1), 1);
     Expect("  ... neither: not over the bar", MSBDCoverSheetCoversBar(-1, 0, 0), 0);
+    // 1.7.4 item 3a: a Notification Center pull keeps the bar's look until it commits (a pull let go flashed the items: hidden, faded back in)
+    Expect("a pull of Notification Center under way (shown, not leaving, not committed): the unlocked look stays", MSBDBarLockedLook(0, MSBDCoverSheetCoversBarPulled(MSBDCoverSheetCoversBar(1, 0, 1), 1)), 0);
+    Expect("  ... before 1.7.4 the locked look came as the pull began", MSBDBarLockedLook(0, MSBDCoverSheetCoversBarPulled(MSBDCoverSheetCoversBar(1, 0, 1), 0)), 1);
+    Expect("  ... the pull let go (going back, no commit to presented): still the unlocked look -- no fade", MSBDBarLockedLook(0, MSBDCoverSheetCoversBarPulled(MSBDCoverSheetCoversBar(0, 0, 1), 1)), 0);
+    Expect("  ... the pull committed (Notification Center down): locked look", MSBDBarLockedLook(0, MSBDCoverSheetCoversBarPulled(MSBDCoverSheetCoversBar(1, 1, 1), 0)), 1);
+    Expect("the Lock Screen keeps the locked look whatever the pull state (UI locked)", MSBDBarLockedLook(1, MSBDCoverSheetCoversBarPulled(MSBDCoverSheetCoversBar(1, 1, 1), 1)), 1);
+    Expect("nothing over the bar, no pull: unlocked look", MSBDBarLockedLook(0, MSBDCoverSheetCoversBarPulled(MSBDCoverSheetCoversBar(0, 0, 0), 0)), 0);
+    // 1.7.4 (engine parity): the windows' follow-ups after a wake as the Cover Sheet starts to leave (the M1's wake: Zetsu's windows back 2.8 s
+    // after the unlock, waiting for the Cover Sheet to be gone; Aerial's 0.9 s)
+    Expect("the M1's wake: the screen was off, unlocked as the Cover Sheet starts to leave: the follow-ups run now", MSBDBackCueAtCoverLeave(1, 0, 0), 1);
+    Expect("Notification Center pushed up, no screen-off since the user was last back: nothing to follow up", MSBDBackCueAtCoverLeave(0, 0, 0), 0);
+    Expect("a Lock Screen with a passcode still to come (UI locked as it starts to leave): the watcher's reported unlock runs them", MSBDBackCueAtCoverLeave(1, 0, 1), 0);
+    Expect("the screen off again meanwhile: nothing now", MSBDBackCueAtCoverLeave(1, 1, 0), 0);
     printf("%d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }

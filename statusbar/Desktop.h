@@ -1579,8 +1579,22 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
 - (void)textFieldDidEndEditing:(UITextField *)tf { if (tf == _renameField) [self dm_endRename:YES]; }
 
 // ---- keys (a hardware keyboard, while the desktop was clicked last) ----
-// (the desktop has the keys when it was clicked last, or when nothing is in front of it: no Finder window active, no app in front)
-- (BOOL)dm_hasKeys { return (_hasKeys || _renameField || (!gNativeActive && !DMActiveApp())) && self.window && self.userInteractionEnabled && !_editing; }
+// A text field of SpringBoard's has the typing -- the App Library's search, Spotlight's, the Dock's Downloads search: the first responder of the
+// key window, a text input (`except`: the desktop's own rename field). Its keys are its own, never the desktop's (1.7.4 item 19: Cmd-A typed in the
+// App Library's search field selected every desktop item, the desktop having the keys with nothing in front of it).
+static BOOL DMSBTextFieldTyping(UIResponder *except) {
+    if (DMTestFlag("/tmp/msb-desktop-textkeys")) return NO;   // (debug: as before 1.7.4)
+    SEL frSel = NSSelectorFromString(@"firstResponder");
+    for (UIWindow *w in DMAllWindows()) {
+        if (w.hidden || !w.isKeyWindow || ![w respondsToSelector:frSel]) continue;
+        id fr = ((id (*)(id, SEL))objc_msgSend)(w, frSel);
+        if (fr != except && [fr isKindOfClass:[UIResponder class]] && [fr isFirstResponder] && [fr conformsToProtocol:@protocol(UITextInput)]) return YES;
+    }
+    return NO;
+}
+// (the desktop has the keys when it was clicked last, or when nothing is in front of it: no Finder window active, no app in front -- and no text
+//  field of SpringBoard's typing, DMSBTextFieldTyping)
+- (BOOL)dm_hasKeys { return (_hasKeys || _renameField || (!gNativeActive && !DMActiveApp())) && self.window && self.userInteractionEnabled && !_editing && !DMSBTextFieldTyping(_renameField); }
 - (void)dm_setHasKeys:(BOOL)has { _hasKeys = has; DMDesktopKeysFocus(has); }   // (and SpringBoard's keyboard focus with them, DMDesktopKeysFocus)
 - (BOOL)dm_handleKey:(UIKey *)key {
     UIKeyModifierFlags m = key.modifierFlags & (UIKeyModifierCommand | UIKeyModifierShift | UIKeyModifierAlternate | UIKeyModifierControl);

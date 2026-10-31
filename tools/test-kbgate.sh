@@ -2,7 +2,7 @@
 # Source check of the keyboard gate's threads (1.7.1 item 9): SpringBoard's keyboard arbiter works on its own serial queue
 # (com.apple.UIKit.keyboard-arbiter), not the main thread, so its hooks (StatusBar.x DMKBArbiterRequest / DMKBArbiterStatus) and the main thread's
 # policy (DMKeyboardFocusBehindWindows) share their state only under gKBGateLock, the arbiter's clients are read on its queue only, and the
-# originals are set before the hooks go in. Run from anywhere; reads ../statusbar/StatusBar.x.
+# originals are set before the hooks go in; on iPadOS 15-18 (1.7.4 item 2), with the 16-18 focus request. Run from anywhere; reads ../statusbar/StatusBar.x.
 set -e
 cd "$(dirname "$0")"
 python3 -I - ../statusbar/StatusBar.x <<'PY'
@@ -33,7 +33,8 @@ for hook in ['static void DMKBArbiterRequest(id self, SEL _cmd, id handler, BOOL
     check(bool(b) and 'DMKBGateList(&behind, &active);' in b, f'{hook.split("(")[0][12:]} reads the list under the lock (DMKBGateList)')
     check(bool(b) and 'DMKBHoldBack(b);' in b, f'{hook.split("(")[0][12:]} notes a held-back app under the lock (DMKBHoldBack)')
 # 2. the arbiter's clients: read on its queue only
-check(src.count('handlerForBundleID:') == 1 and '@"handlerForBundleID:"' in body('static BOOL DMKBClientWantsKeys(id arb, NSString *bundle) {'),
+# (counted as a selector made for a call, @"handlerForBundleID:"; the debug kbapi trigger only reads its type encoding, from a C string)
+check(src.count('@"handlerForBundleID:"') == 1 and '@"handlerForBundleID:"' in body('static BOOL DMKBClientWantsKeys(id arb, NSString *bundle) {'),
       'the arbiter\'s clients are looked up in one place (DMKBClientWantsKeys)')
 calls = [n for n, l in enumerate(lines, 1) if 'DMKBClientWantsKeys(' in l and not l.startswith('static BOOL DMKBClientWantsKeys')]
 check(len(calls) >= 1 and all(any('dispatch_async(q, ^{' in lines[k - 1] for k in range(max(1, c - 2), c)) for c in calls),
@@ -56,5 +57,16 @@ holds = body('static BOOL DMKBGateHolds(void) {')
 check(bool(holds) and 'gKBBehindBundles.count' in holds and 'gKBHeldBack.count' in holds, 'DMKBGateHolds asks for both the list and the held-back set')
 check('if (can) for (NSString *b in behind) if (scenesOf[b].count) [gate addObject:b];' in policy and 'DMKBSetGateList(gate.count ? [gate copy] : nil, [active copy]);' in policy
       and 'if (!can) DMKBClearHeldBack();' in policy, 'a pass with the gate off sets an empty list and empties the held-back set')
+# 5. 1.7.4 item 2: the policy runs on iPadOS 15-18 (every call it makes is there with the same types on 16.7.7, 17.5.1 and 18.5), never with the
+#    Stage Manager engine; the app at the front gets its keys back with SpringBoard's own focus request as 15 has it or as 16-18 have it (the
+#    2-argument call is gone there: before 1.7.4 the give-back did nothing on 16)
+can = [l.strip() for l in policy.split('\n') if l.strip().startswith('BOOL can = ')]
+check(len(can) == 1 and 'osMajor >= 15 && osMajor <= 18' in can[0] and '!DMSMEngine()' in can[0] and "MSBDFocusHas(kfc, prevent, @\"@@:@@\")" in can[0],
+      'the policy runs on iPadOS 15-18, type-checked, not with the Stage Manager engine ' + (f'({can})' if len(can) != 1 else ''))
+req = body('static BOOL DMKBUserFocusRequest(id kfc, id scene, NSString *why) {')
+check(bool(req) and '"v@:@@")' in req and '"v@:@@@?")' in req and 'userFocusRequestForScene:reason:completion:' in req,
+      'the focus request is made as 15 has it (2 arguments) or as 16-18 have it (with a completion), each type-checked')
+give = body('static void DMKBGiveBack(NSString *app) {')
+check(bool(give) and 'DMKBUserFocusRequest(' in give and 'userFocusRequestForScene' not in give, 'the give-back goes through that request (no 15-only call of its own)')
 print(f'{fails} failed'); sys.exit(1 if fails else 0)
 PY

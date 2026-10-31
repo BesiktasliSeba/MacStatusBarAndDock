@@ -61,6 +61,7 @@ The Mac look is on right after install, and most features have their own switch.
 - Title bars, traffic lights, rounded corners and resize handles, on the engine you already use.
 - The Window menu has layouts (halves, quarters, Fill Screen, Center) and Fit to Window, which tiles your windows side by side. Layouts and tiles reach the screen's edges, from right under the menu bar down to the Dock.
 - A window you move or resize lines up with the screen edges, the menu bar, the Dock and other windows when you let go of it near them.
+- When you turn the iPad, a window in a layout (Fill Screen, a half or a quarter) takes the same layout in the new orientation, and any other window goes back to where it last was in that orientation.
 - On iPads with a Home button, windows placed before 1.7.1 with a gap under the menu bar move up under it once.
 - Windows have a smallest size with every engine, as with Stage Manager: the app at least 320 x 300 points.
 - With Aerial, Zetsu or MilkyWay4 on iPadOS 15 to 18, every app with a window has its card in iPadOS's App Switcher, as with Stage Manager. A tap on the card brings the window forward.

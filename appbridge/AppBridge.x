@@ -576,6 +576,17 @@ static BOOL MABEscEndsTypingNow(void) {   // an Esc key-down just came in (no Cm
 #endif
     return YES;
 }
+// Esc closes Spotlight, as on a Mac (1.7.4 item 3b; before, Esc did nothing there). Spotlight's own process has the keys while it is up: an Esc
+// there (no Cmd, Ctrl or Alt, no input method's composition going on) asks SpringBoard, which closes Spotlight if it is what is up -- not the Today
+// View, the same app (SpotlightBridge.h DM_SPOT_ESC). The key goes on to Spotlight as before.
+static void MABSpotlightEsc(void) {
+    static int isSpotlight = -1;
+    if (isSpotlight < 0) isSpotlight = [[NSBundle mainBundle].bundleIdentifier isEqualToString:@"com.apple.Spotlight"];
+    if (!isSpotlight) return;
+    UIResponder *r = MABTypingResponder();
+    if (r && ((id<UITextInput>)r).markedTextRange) return;   // (the composition's Esc: it cancels that)
+    notify_post("com.besiktasliseba.macstatusbar.spotlight.esc");
+}
 // Hardware keys reach an app as UIPhysicalKeyboardEvent through -[UIApplication handleKeyUIEvent:] (not sendEvent:). Esc is HID 41 (GraveEscape's grave
 // key reports 41 too). A handled Esc's key-down and key-up are not passed on.
 static void (*oMABHandleKeyUIEvent)(id, SEL, id);
@@ -586,6 +597,7 @@ static void hMABHandleKeyUIEvent(id self, SEL _cmd, id ev) {
         BOOL isDown = ((BOOL (*)(id, SEL))objc_msgSend)(ev, down);
         long long m = [ev respondsToSelector:mods] ? ((long long (*)(id, SEL))objc_msgSend)(ev, mods) : 0;
         if (!isDown && gMABEscSwallowRelease) { gMABEscSwallowRelease = NO; return; }
+        if (isDown && !(m & (UIKeyModifierCommand | UIKeyModifierControl | UIKeyModifierAlternate))) MABSpotlightEsc();
         if (isDown && !(m & (UIKeyModifierCommand | UIKeyModifierControl | UIKeyModifierAlternate)) && MABEscEndsTypingNow()) { gMABEscSwallowRelease = YES; return; }
     }
     oMABHandleKeyUIEvent(self, _cmd, ev);

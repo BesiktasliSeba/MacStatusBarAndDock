@@ -292,6 +292,8 @@ static const char *const kMSBDHookList[][4] = {   // class, selector, +/-, sourc
     {"UIStatusBarWindow", "setHidden:", "-", "statusbar/StatusBar.x"},
     {"UIStatusBarWindow", "hitTest:withEvent:", "-", "statusbar/StatusBar.x"},
     {"SpringBoard", "sendEvent:", "-", "statusbar/StatusBar.x"},
+    {"SBGrabberTongue", "gestureRecognizerShouldBegin:", "-", "statusbar/StatusBar.x"},
+    {"SBControlCenterController", "gestureRecognizerShouldBegin:", "-", "statusbar/StatusBar.x"},
     {"SBExternalDisplayPresenter", "updateToConfiguration:withForegroundApp:", "-", "statusbar/StatusBar.x"},
     {"SBExternalDisplayController", "_application:canAccessDisplay:", "-", "statusbar/StatusBar.x"},
     {"SBExternalDisplayController", "_shouldConnectDisplayNow:", "-", "statusbar/StatusBar.x"},

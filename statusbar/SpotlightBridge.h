@@ -21,6 +21,7 @@
 #define DM_SPOT_READY   "com.besiktasliseba.macstatusbar.spotlight.ready"
 #define DM_SPOT_PICK    "com.besiktasliseba.macstatusbar.spotlight.pick"
 #define DM_SPOT_REPORT  "com.besiktasliseba.macstatusbar.spotlight.report"   // (debug builds of MacSpotlight: what happened there, for our log)
+#define DM_SPOT_ESC     "com.besiktasliseba.macstatusbar.spotlight.esc"      // (MacAppBridge in the Spotlight app: Esc was pressed there)
 
 static BOOL gSpotActions = NO, gSpotWindows = NO, gSpotTweaks = NO;
 static BOOL gSpotGuardTripped = NO;   // (the Spotlight app went away twice while showing our list: nothing of ours until the next respring)
@@ -347,6 +348,14 @@ static void DMSpotInit(void) {
     static int request = 0, pick = 0;
     if (!request) notify_register_dispatch(DM_SPOT_REQUEST, &request, dispatch_get_main_queue(), ^(int t) { DMSpotAsked(0); });
     if (!pick) notify_register_dispatch(DM_SPOT_PICK, &pick, dispatch_get_main_queue(), ^(int t) { uint64_t st = 0; notify_get_state(t, &st); DMSpotPicked(st); });
+    static int esc = 0;   // (Esc in the Spotlight app closes Spotlight, as on a Mac: only while Spotlight is what is up -- the Today View is the same app)
+    if (!esc) notify_register_dispatch(DM_SPOT_ESC, &esc, dispatch_get_main_queue(), ^(int t) {
+        id sb = [UIApplication sharedApplication]; SEL s = NSSelectorFromString(@"_toggleSearch");
+        if (!DMSpotlightShown() || ![sb respondsToSelector:s]) return;
+        DM_FEATURE_MARK("esc-closes-spotlight");
+        ((void (*)(id, SEL))objc_msgSend)(sb, s);
+        DMLog(@"[spotlight] Esc: Spotlight closed");
+    });
 #if DEBUG
     static int report = 0;   // (MacSpotlight's debug reports: one number each, see MSPReport there)
     if (!report) notify_register_dispatch(DM_SPOT_REPORT, &report, dispatch_get_main_queue(), ^(int t) {

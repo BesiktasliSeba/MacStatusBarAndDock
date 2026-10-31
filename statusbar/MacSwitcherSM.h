@@ -994,7 +994,7 @@ static BOOL DMMSWSMJoin(id ctx, id act, NSString *key) {   // (key: the window o
         DMMSWSMRecordFirst();   // (Desktop 1 = these windows, as at the first "+")
     }
     BOOL wasMinimized = DMSMIsMinimized(key);
-    DMSMSetMinimized(key, NO);   // (opened again: no longer a minimized window; it comes onto the current desktop, as the engine's restore does)
+    DMSMSetMinimized(key, NO);   // (opened again: no longer a minimized window -- a window of the desktop it was minimized on, decided below as any is)
     NSInteger cur = DMMSWCurId(), target = cur;
     NSArray<NSArray *> *wins = nil;
     NSString *fullNote = nil;
@@ -1005,7 +1005,10 @@ static BOOL DMMSWSMJoin(id ctx, id act, NSString *key) {   // (key: the window o
     //  "it should come up on whichever desktop I am on"): that window comes HERE, in front, at its own place and size -- full screen it stays full
     //  screen --, the rest of its desktop stays there (Bring); with Go to the App's Desktop on, its desktop comes with the window in front (Go), the
     //  only way before. A full desktop here: DMMSWSMAtCap(DMMSWSMCapBring) -- today its desktop comes, with a notice.)
-    if (!wasMinimized && !gMSWSwitching && DMMSWSMElsewhere(key)) {
+    // (1.7.4 item 1: a minimized window too -- the window of the desktop it was minimized on, as with Aerial, Zetsu and MilkyWay4 (DMMSWAppWindows
+    //  lists their minimized windows with their desktops): with Go to the App's Desktop on, that desktop comes with the window in front; off, it
+    //  comes here at its own place. It always came here, also with the switch on. Unmarked above, it is among its desktop's windows.)
+    if (!gMSWSwitching && DMMSWSMElsewhere(key)) {
         NSMutableArray<NSDictionary *> *cands = [NSMutableArray array];
         NSMutableArray<NSArray *> *found = [NSMutableArray array];   // (each candidate's @[its window, its desktop's windows])
         for (NSNumber *d in gMSWDesks) {
@@ -1082,7 +1085,8 @@ static BOOL DMMSWSMJoin(id ctx, id act, NSString *key) {   // (key: the window o
     DMMSWSMLeftOut(left, DMMSWDeskName(ti));
     if (fullNote) DMMSWSMNotice(fullNote);
     if (target != cur) {
-        if (!fullNote) DMLog([NSString stringWithFormat:@"[macswitcher] %@ opened: it is on %@, which comes", DMSMKeyText(rec), DMMSWDeskName(ti)]);
+        if (!fullNote) DMLog([NSString stringWithFormat:@"[macswitcher] %@ opened: it is on %@%@, which comes", DMSMKeyText(rec), DMMSWDeskName(ti), wasMinimized ? @" (minimized there)" : @""]);
+        if (wasMinimized) DM_FEATURE_MARK("mac-switcher-sm-minimized-go");
         DMMSWSMSwitch(ti, fullNote ? @"desktop full" : @"launch", rec, 0, nil);
     } else DMMSWSave();
     return YES;

@@ -5,7 +5,7 @@
 //    save), or an encoding the file itself names. Anything else -- larger, binary, UTF-16 (zero bytes) -- goes to Quick Look as before. Read off
 //    the main thread (a file on a USB drive is slow).
 //  - Editable only where Finder may change the file (the user's own places, DMFinderCanChange); elsewhere it opens read-only ("Read Only" in
-//    the title).
+//    the title). It opens at the top, the insertion point at the start, as a Mac's TextEdit does (1.7.4).
 //  - Saved ~1 s after typing stops, on Command-S and on close (atomically, through NSFileCoordinator in File Provider storage, as Finder's own
 //    writes); "Edited" in the title while unsaved. A change on disk while open and unedited is read again; edited on both sides, ours is kept.
 //  - The window follows its file, not its path, as TextEdit follows a document: renamed or moved (here, in Finder, in the Files app), the title
@@ -72,6 +72,9 @@ static NSString *DMTextRead(NSString *path, NSStringEncoding *enc, BOOL *bom) {
     _text.alwaysBounceVertical = YES;
     _text.editable = editable;
     _text.text = text;
+    // (the insertion point at the start, the text from its top, as TextEdit opens a document on a Mac: UITextView's -setText: puts it at the end,
+    //  and -becomeFirstResponder in -show then scrolled a long text to its last line -- 1.7.4 item 12)
+    _text.selectedRange = NSMakeRange(0, 0);
     _text.delegate = self;
     [self.contentView addSubview:_text];
     _savedDate = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil].fileModificationDate;
@@ -240,7 +243,8 @@ static NSString *DMTextRead(NSString *path, NSStringEncoding *enc, BOOL *bom) {
 }
 #if DEBUG
 - (void)dm_debugType:(NSString *)s { if (!_editable || _gone) return; [_text insertText:s]; }   // (tests: as if typed)
-- (NSString *)dm_debugState { return [NSString stringWithFormat:@"title '%@' editable %d edited %d gone %d chars %lu first responder %d", self.title, _editable, _edited, _gone, (unsigned long)_text.text.length, _text.isFirstResponder]; }
+- (NSString *)dm_debugState { return [NSString stringWithFormat:@"title '%@' editable %d edited %d gone %d chars %lu first responder %d caret %lu (+%lu) scrolled %.1f of %.1f", self.title, _editable, _edited, _gone, (unsigned long)_text.text.length, _text.isFirstResponder,
+    (unsigned long)_text.selectedRange.location, (unsigned long)_text.selectedRange.length, _text.contentOffset.y + _text.adjustedContentInset.top, MAX(0.0, _text.contentSize.height - _text.bounds.size.height + _text.adjustedContentInset.top + _text.adjustedContentInset.bottom)]; }
 #endif
 @end
 // Opens a text file in its window (the one it has, or a new one). The file is read off the main thread; when it turns out not to be plain text

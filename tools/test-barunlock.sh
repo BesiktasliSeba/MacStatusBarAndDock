@@ -1,6 +1,7 @@
 #!/bin/bash
 # Mac test of the status bar's locked look (statusbar/BarUnlock.h, test-barunlock.c): the unlocked look as soon as the Cover Sheet starts to leave
-# (1.7.1 item 11: the M1's wake gave it 2 s late), the Lock Screen and Notification Center keep the locked look.
+# (1.7.1 item 11: the M1's wake gave it 2 s late), the Lock Screen and Notification Center keep the locked look; after a wake the windows'
+# follow-ups start as the Cover Sheet starts to leave (1.7.4: Zetsu's windows came back 2.8 s after the M1's unlock).
 set -e
 cd "$(dirname "$0")"
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT

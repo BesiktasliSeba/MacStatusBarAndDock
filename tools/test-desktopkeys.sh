@@ -39,4 +39,8 @@ check "  ... ours: the press's other gestures let go when it opens; a move after
   "fn '- (void)dm_holdCheck:(UITouch *)t since:(CFTimeInterval)at {' | grep -q 'o.enabled = NO; o.enabled = YES;' && grep -q 'if (_holdMenu) { _holdMenu = NO; DMCloseOverlay(); }' $D"
 check "the empty desktop's menu: Edit Home Screen, only where the icon manager's switch is there with the checked type (v20@0:8B16)" \
   "fn '- (UIMenu *)dm_menuFor:(DMDesktopItemView *)v at:(CGPoint)sp {' | grep -q 'if (DMDesktopHomeEditor()) \\[end addObject:A(@\"Edit Home Screen\"' && fn 'static id DMDesktopHomeEditor(void) {' | grep -q 'strcmp(method_getTypeEncoding(m) ?: \"\", \"v20@0:8B16\")'"
+check "1.7.4 item 19: no keys for the desktop while a text field of SpringBoard's types (Cmd-A in the App Library's search selected every icon)" \
+  "grep -q '&& !_editing && !DMSBTextFieldTyping(_renameField); }' $D"
+check "  ... that is the key window's first responder, a text input, other than the desktop's own rename field" \
+  "fn 'static BOOL DMSBTextFieldTyping(UIResponder *except) {' | grep -q 'w.isKeyWindow' && fn 'static BOOL DMSBTextFieldTyping(UIResponder *except) {' | grep -q 'fr != except && \\[fr isKindOfClass:\\[UIResponder class\\]\\] && \\[fr isFirstResponder\\] && \\[fr conformsToProtocol:@protocol(UITextInput)\\]'"
 [ $fails = 0 ] && echo "test-desktopkeys: all checks pass" || { echo "test-desktopkeys: checks FAILED"; exit 1; }

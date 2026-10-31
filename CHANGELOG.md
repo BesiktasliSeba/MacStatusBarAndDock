@@ -2,6 +2,32 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.7.4
+
+### Improvements
+- When you turn the iPad, a window in a layout (Fill Screen, a half or a quarter) takes the same layout in the new orientation, and any other window goes back to where it last was in that orientation. This works the same with every window engine and on every desktop. Before, Aerial, Zetsu and MilkyWay4 scaled the windows, so a half could come back off its half.
+- After waking the iPad, windows are back sooner: Aerial's about a second sooner, Zetsu's after about 1 second instead of almost 3, and the apps in MilkyWay4's windows wake up about 2 seconds sooner.
+- iPadOS 16 to 18 with Aerial or Zetsu and a hardware keyboard: typing goes to the window in front, as on iPadOS 15. A window behind can no longer keep the keys, and gets them back when you click it.
+- Stage Manager engine: switching Fit to Window off spreads the windows back out at a normal size, as with Aerial, Zetsu and MilkyWay4. They stayed tiled.
+- Stage Manager engine on iPadOS 17 and 18: a window you resize next to another keeps the same 6-point gap as with every other engine, instead of Stage Manager's own 10.
+- iPadOS 15 with Aerial: while the keyboard is up, two of the tweak's own steps no longer undo each other five times a second.
+
+### Fixes
+- iPadOS 18: Respring and Safe Mode in the Apple menu work again (they did nothing there).
+- Zetsu: an app opened again right after its window was closed gets its window, also when it was still opening. It showed none until it was opened once more.
+- Stage Manager engine with Go to the App's Desktop on: opening an app whose window is minimized on another desktop takes you to that desktop, as with the other engines. The window came to the desktop you were on.
+- Stage Manager engine on iPadOS 16: a window dragged by its title bar lands where you let it go, and snaps. Stage Manager's own window drag took over after a moment, and the window sprang back near where it started.
+- Stage Manager engine: after turning the iPad and back, a tall window gets its full height back on iPadOS 17, and a window on another desktop fits the new orientation instead of keeping the old one's size.
+- A window you made full screen with the green button goes back to its place after a respring too, with every window engine. It came back at the app's default place.
+- After switching the window engine, windows come back at the same size and place. Coming from Aerial, Zetsu's windows were up to 12 points larger and overlapped.
+- With Automatically Hide and Show the Status Bar on, a window at the very top of the screen can be dragged by its title bar and snaps where you let go. Notification Center's pull took the drag over after a moment and the window stopped.
+- Starting to pull down Notification Center and letting it go back leaves the menu bar as it is. It switched to its Lock Screen look and faded its items back in.
+- After a respring, the first pull down from the top edge opens Notification Center or Control Center. On some iPads the first touch after a respring was held back, so that pull did nothing.
+- With a hardware keyboard, Esc closes Spotlight.
+- With a hardware keyboard, Command-A in a search field of the Home Screen, such as the App Library's, selects its text instead of every icon on the desktop.
+- TextEdit opens a text at its top, as on a Mac. A long text opened scrolled to its end.
+- Keyboard Button in Status Bar (Experimental), iPadOS 15 with Aerial: for an app in a window, the button sits in the menu bar instead of the middle of the screen.
+
 ## 1.7.3
 
 ### New
