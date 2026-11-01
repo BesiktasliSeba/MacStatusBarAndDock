@@ -20,6 +20,11 @@
 //    nothing to delete or share, and no place on the Home Screen's pages or in a folder: it lives in the App Library, and the Dock if added).
 // Settings > Status Bar > Activity Monitor > Show in App Library (activityMonitorInLibrary, on unless switched off): DMALApplyPref.
 #include "../common/ActMonDock.h"   // (the rules shared with the Mac test: the search's (1.7.3 item 13) and the Dock's (item 5))
+// 1.7.5 item 7: Activity Monitor is an app icon an icon theme can change, like any app's (common/IconTheme.h): its class comes from SpringBoard's
+// SBApplicationIcon -- the class a theme engine themes (SnowBoard: by -applicationBundleID, com.besiktasliseba.macstatusbar.activitymonitor) --
+// and overrides no image method; its picture is our drawing, given by a data source as an app's own icon. Where that chain is not as read
+// (iPadOS 18, ...) it stays the SBLeafIcon of before with its own picture methods.
+#include "../common/IconTheme.h"
 #define kDMALActMonIdentifier @"com.besiktasliseba.macstatusbar.activitymonitor"
 #define kDMALActMonName @"Activity Monitor"
 // iPadOS's prediction category of "Utilities": the App Library's own group 1010 (16.7.7 and 17.5.1), or the App Store's genre 6002 where a
@@ -27,6 +32,7 @@
 static const unsigned long long kDMALUtilitiesGroup = 1010, kDMALUtilitiesGenre = 6002;
 typedef struct { CGSize size; double scale; double continuousCornerRadius; } DMALIconImageInfo;   // (SpringBoard's SBIconImageInfo, by its encoding)
 static BOOL gDMALOn = NO;
+static BOOL gDMALThemable = NO;   // (1.7.5: the icon is an SBApplicationIcon with our data source -- see IconTheme.h)
 static Class gDMALIconClass;
 static id gDMALIcon;
 static __weak id gDMALDataSource;   // (the App Library's categories, last seen: reloaded when the switch changes)
@@ -113,8 +119,12 @@ static Class DMALIconClass(void) {
         if (!DMMSWHasMethod(leaf, @"initWithLeafIdentifier:applicationBundleID:", @"@@:@@") || !DMMSWHasMethod(leaf, @"displayNameForLocation:", @"@@:@")) {
             DMLog(@"[applib] SBLeafIcon is not as read here: Activity Monitor stays out of the App Library"); return;
         }
-        Class c = objc_allocateClassPair(leaf, "DMALActivityMonitorIcon", 0);
+        BOOL themable = MSBDIconThemeShapeOK();   // (1.7.5: the app icon class a theme engine sees, its picture from our data source -- shapes only
+                                                  //  here, in the constructor; the probe runs before the first icon is made, DMALIcon)
+        Class base = themable ? objc_getClass("SBApplicationIcon") : leaf;
+        Class c = objc_allocateClassPair(base, "DMALActivityMonitorIcon", 0);
         if (!c) return;
+        leaf = base;   // (the methods below are read and replaced on the class it comes from: the leaf icon's, inherited)
         NSString *img = @"@@:{SBIconImageInfo={CGSize=dd}dd}";
         int launches = 0, images = 0;
         DMALAddMethod(c, leaf, @"displayNameForLocation:", @"@@:@", (IMP)DMALName);
@@ -122,10 +132,12 @@ static Class DMALIconClass(void) {
         DMALAddMethod(c, leaf, @"iconLibraryQueryingAlphaSortString", @"@@:", (IMP)DMALName0);
         DMALAddMethod(c, leaf, @"iconLibraryQueryingFilterStrings", @"@@:", (IMP)DMALFilterStrings);
         DMALAddMethod(c, leaf, @"_sbhIconLibraryCollationString", @"@@:", (IMP)DMALName0);
-        images += DMALAddMethod(c, leaf, @"iconImageWithInfo:", img, (IMP)DMALImage);
-        images += DMALAddMethod(c, leaf, @"generateIconImageWithInfo:", img, (IMP)DMALImage);
-        DMALAddMethod(c, leaf, @"genericIconImageWithInfo:", img, (IMP)DMALImage);
-        DMALAddMethod(c, leaf, @"unmaskedIconImageWithInfo:", img, (IMP)DMALUnmasked);
+        if (!themable) {   // (its own picture methods: SpringBoard's chain is not as read here)
+            images += DMALAddMethod(c, leaf, @"iconImageWithInfo:", img, (IMP)DMALImage);
+            images += DMALAddMethod(c, leaf, @"generateIconImageWithInfo:", img, (IMP)DMALImage);
+            DMALAddMethod(c, leaf, @"genericIconImageWithInfo:", img, (IMP)DMALImage);
+            DMALAddMethod(c, leaf, @"unmaskedIconImageWithInfo:", img, (IMP)DMALUnmasked);
+        } else images = 1;   // (the picture: our data source, DMALIcon)
         DMALAddMethod(c, leaf, @"iconImageCacheIdentifier", @"@@:", (IMP)DMALIdent);
         launches += DMALAddMethod(c, leaf, @"launchFromLocation:context:", @"v@:@@", (IMP)DMALLaunch);   // (16; 17 still has it, 18: to check)
         launches += DMALAddMethod(c, leaf, @"performLaunchFromLocation:context:", @"B@:@@", (IMP)DMALPerformLaunch);   // (17)
@@ -137,14 +149,34 @@ static Class DMALIconClass(void) {
         DMALAddMethod(c, leaf, @"progressState", @"q@:", (IMP)DMALZero);
         DMALAddMethod(c, leaf, @"iTunesCategoriesOrderedByRelevancy", @"@@:", (IMP)DMALEmpty);
         if (!images || !launches) { DMLog([NSString stringWithFormat:@"[applib] SBLeafIcon has no picture (%d) or launch (%d) method as read here: Activity Monitor stays out of the App Library", images, launches]); return; }
+        if (themable) MSBDIconThemeAppOverrides(c, base);   // (an app icon without an app: -application nil, not "an application icon" for SpringBoard)
         objc_registerClassPair(c);
         gDMALIconClass = c;
+        gDMALThemable = themable;
+        DMLog([NSString stringWithFormat:@"[applib] Activity Monitor's icon: %@ (%@)", NSStringFromClass(base), themable ? @"an app icon an icon theme can change" : @"its own picture methods"]);
     });
     return gDMALIconClass;
 }
+// SpringBoard's icon chain did not pass the probe after all (IconTheme.h MSBDIconThemeReady): the class gets its own picture methods, as before 1.7.5.
+static void DMALThemeOff(void) {
+    Class c = gDMALIconClass, from = class_getSuperclass(c);
+    NSString *img = @"@@:{SBIconImageInfo={CGSize=dd}dd}";
+    DMALAddMethod(c, from, @"iconImageWithInfo:", img, (IMP)DMALImage);
+    DMALAddMethod(c, from, @"generateIconImageWithInfo:", img, (IMP)DMALImage);
+    DMALAddMethod(c, from, @"genericIconImageWithInfo:", img, (IMP)DMALImage);
+    DMALAddMethod(c, from, @"unmaskedIconImageWithInfo:", img, (IMP)DMALUnmasked);
+    gDMALThemable = NO;
+    DMLog(@"[applib] Activity Monitor's icon draws its own picture (SpringBoard's icon chain is not as read)");
+}
 static id DMALIcon(void) {
     if (gDMALIcon || !DMALIconClass()) return gDMALIcon;
-    gDMALIcon = ((id (*)(id, SEL, id, id))objc_msgSend)([gDMALIconClass alloc], NSSelectorFromString(@"initWithLeafIdentifier:applicationBundleID:"), kDMALActMonIdentifier, nil);
+    if (gDMALThemable && !MSBDIconThemeReady()) DMALThemeOff();
+    // (1.7.5: its bundle identifier is its own identifier -- what a theme names its picture by, and what SpringBoard caches its picture by)
+    id icon = ((id (*)(id, SEL, id, id))objc_msgSend)([gDMALIconClass alloc], NSSelectorFromString(@"initWithLeafIdentifier:applicationBundleID:"), kDMALActMonIdentifier, gDMALThemable ? kDMALActMonIdentifier : nil);
+    if (icon && gDMALThemable && !MSBDIconAttachSource(icon, MSBDIconActivityMonitor, ^UIImage *(CGSize size, CGFloat scale, CGFloat radius, BOOL masked) { return DMALActMonImage(size, scale, masked ? radius : 0.0); })) {
+        DMLog(@"[applib] Activity Monitor's picture source could not be added: it stays out of the App Library"); return nil;
+    }
+    gDMALIcon = icon;
     if (gDMALIcon) DM_FEATURE_MARK("actmon-app-library");
     return gDMALIcon;
 }

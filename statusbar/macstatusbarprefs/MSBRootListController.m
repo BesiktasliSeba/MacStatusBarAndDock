@@ -18,6 +18,7 @@
 #import "../../common/OtherTweaks.h"   // (Single Mute showing the mute icon: said under the Audio group)
 #import "../SMSwitchOn.h"   // (DMSMConsentFrom: the stored Stage Manager answers, read as SpringBoard reads them)
 #import "../../common/MenuBarSize.h"   // (Menu Bar Size, 1.7.3: the stored value read as SpringBoard reads it)
+#import "../../common/DesktopIconSize.h"   // (the desktop's Icon Size, 1.7.5: its range, steps and the size in force, as SpringBoard reads them)
 @interface PSListController (MSBURL)
 - (void)handleURL:(NSDictionary *)url withCompletion:(id)completion;   // (Settings' link to a place on a page: -handleURL:withCompletion: below)
 @end
@@ -403,6 +404,29 @@ static void MSBSetStockBarStored(BOOL on) {
 	notify_post("com.besiktasliseba.macstatusbar/prefsChanged");
 }
 
+// The desktop's Icon Size (1.7.5 item 4): the stored number (nil: never set -- the Home Screen's own size, as before), and what the slider shows.
+static NSNumber *MSBDesktopIconStored(void) {
+	CFPreferencesAppSynchronize(kMSBBarDomain);
+	CFPropertyListRef v = CFPreferencesCopyAppValue(CFSTR(MSBD_DESKTOP_ICON_KEY), kMSBBarDomain);
+	NSNumber *n = v && CFGetTypeID(v) == CFNumberGetTypeID() ? [(__bridge NSNumber *)v copy] : nil;
+	if (v) CFRelease(v);
+	return n;
+}
+static uint64_t MSBDesktopHomeState(void) {   // (the Home Screen's icon side as SpringBoard published it, quarter points; 0 unknown)
+	static int token = 0;
+	if (!token && notify_register_check(MSBD_DESKTOP_HOMESIDE_STATE, &token) != NOTIFY_STATUS_OK) token = 0;
+	uint64_t home = 0;
+	if (token) notify_get_state(token, &home);
+	return home;
+}
+static double MSBDesktopIconShownNow(void) {
+	NSNumber *n = MSBDesktopIconStored();
+	return MSBDDesktopIconShown(n != nil, n.doubleValue, MSBDesktopHomeState());
+}
+// The step written last while the slider is dragged (-1: none yet, read from the store at the first move): the store is not asked at every move
+// (each read is a round trip to the preferences daemon, many a second -- 1.7.5 review). 0: "the Home Screen's", nothing stored.
+static double gMSBDesktopIconWritten = -1;
+
 // ---- Menu Bar Size (1.7.3, common/MenuBarSize.h): a "Menu Bar Size" row (Small / Medium / Large) in the Status Bar group, opening a three-item picker
 // page (Root.plist: PSLinkListCell, PSListItemsController, key menuBarSize, validValues 0 / 1 / 2). Stored as a number, so the crash guard can set it
 // back as it does a switch (false): -readPreferenceValue: below shows anything that is not 1 or 2 as Small, as SpringBoard reads it
@@ -423,6 +447,8 @@ static int MSBMenuBarSizeStored(void) {
 @interface MSBRootListController (MSBPages)
 - (NSString *)msb_plistName;
 - (BOOL)msb_windowsPage;
+- (BOOL)msb_desktopPage;
+- (BOOL)msb_rootPage;
 @end
 // The Windows & Multitasking row is in Settings' list next to ours (StatusBarSettingsRow.x: the sidebar on 15-17, General's group on 18). Where it is
 // not -- the row tweak not loaded, or Settings' list not as expected, so this page came from PreferenceLoader's entry --, a link to that page takes
@@ -432,6 +458,20 @@ static BOOL MSBWindowsRowListed(void) {
 	return listed && listed();
 }
 static UIImage *MSBWindowsIcon(void) { return [UIImage imageNamed:@"windows" inBundle:[NSBundle bundleForClass:[MSBRootListController class]] compatibleWithTraitCollection:nil]; }
+// The Desktop page (1.7.5, KT 31 Oct: the desktop's rows out of the Status Bar page, right after it): the same, by its own row (MAC_DESKTOP).
+static BOOL MSBDesktopRowListed(void) {
+	BOOL (*listed)(void) = (BOOL (*)(void))dlsym(RTLD_DEFAULT, "MSBDDesktopRowListed");
+	return listed && listed();
+}
+static UIImage *MSBDesktopIcon(void) { return [UIImage imageNamed:@"desktop" inBundle:[NSBundle bundleForClass:[MSBRootListController class]] compatibleWithTraitCollection:nil]; }
+// Finder as stored (finderEnabled, on unless set): the desktop is Finder's, so its page notes when Finder is off.
+static BOOL MSBFinderStored(void) {
+	CFPreferencesAppSynchronize(CFSTR("com.besiktasliseba.macstatusbar"));
+	CFPropertyListRef v = CFPreferencesCopyAppValue(CFSTR("finderEnabled"), CFSTR("com.besiktasliseba.macstatusbar"));
+	BOOL on = !v || (CFGetTypeID(v) == CFBooleanGetTypeID() ? CFBooleanGetValue(v) : (CFGetTypeID(v) == CFNumberGetTypeID() ? [(__bridge NSNumber *)v boolValue] : YES));   // (as SpringBoard reads it)
+	if (v) CFRelease(v);
+	return on;
+}
 
 @implementation MSBRootListController {
 	int _msbConsentToken, _msbSMOnToken;   // (Stage Manager's state and the consent answers, followed while the page exists)
@@ -439,6 +479,8 @@ static UIImage *MSBWindowsIcon(void) { return [UIImage imageNamed:@"windows" inB
 }
 - (NSString *)msb_plistName { return @"Root"; }
 - (BOOL)msb_windowsPage { return NO; }
+- (BOOL)msb_desktopPage { return NO; }
+- (BOOL)msb_rootPage { return ![self msb_windowsPage] && ![self msb_desktopPage]; }   // (the Status Bar page itself)
 
 MSBD_LINE_SWITCH_METHODS
 
@@ -634,6 +676,12 @@ static void MSBFitValueLabels(UIView *v) {
 	if ([NSStringFromClass([cell class]) containsString:@"Slider"]) {
 		MSBFitValueLabels(cell);
 		dispatch_async(dispatch_get_main_queue(), ^{ MSBFitValueLabels(cell); });   // (the value label may be made during the first layout)
+		// (the desktop's Icon Size, 1.7.5: its value goes out while it is dragged -- the icons follow live -- whatever the cell's own default)
+		PSSpecifier *sp = [cell respondsToSelector:@selector(specifier)] ? [(PSTableCell *)cell specifier] : nil;
+		if ([[sp propertyForKey:@"key"] isEqual:@MSBD_DESKTOP_ICON_KEY]) {
+			NSMutableArray *views = [NSMutableArray arrayWithObject:cell];
+			for (NSUInteger k = 0; k < views.count && k < 80; k++) { UIView *v = views[k]; if ([v isKindOfClass:[UISlider class]]) ((UISlider *)v).continuous = YES; else [views addObjectsFromArray:v.subviews]; }
+		}
 	}
 	return cell;
 }
@@ -641,7 +689,7 @@ static void MSBFitValueLabels(UIView *v) {
 - (NSArray *)specifiers {
 	if (!_specifiers) {
 		_specifiers = [self loadSpecifiersFromPlistName:[self msb_plistName] target:self];
-		if (![self msb_windowsPage]) {
+		if ([self msb_rootPage]) {
 			NSArray *untested = [self msbd_untestedSpecifiers];   // (on top: "Enable Anyway" on an untested iPadOS version, or the crash guard's note)
 			if (untested.count) { NSMutableArray *all = [untested mutableCopy]; [all addObjectsFromArray:_specifiers]; _specifiers = all; }
 			if (!MSBWindowsRowListed()) {   // (where the Windows & Multitasking row is not in Settings' list: a link to its page, where its rows were)
@@ -655,6 +703,18 @@ static void MSBFitValueLabels(UIView *v) {
 				for (NSUInteger i = 0; i < _specifiers.count; i++) if ([((PSSpecifier *)_specifiers[i]).identifier isEqualToString:@"REPORT_GROUP"]) { at = i; break; }
 				NSMutableArray *all = [_specifiers mutableCopy];
 				[all insertObjects:@[g, link] atIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(at, 2)]];
+				_specifiers = all;
+			}
+			if (!MSBDesktopRowListed()) {   // (the same for the Desktop page: a link in the Finder group, right after Finder, where its rows were)
+				PSSpecifier *link = [PSSpecifier preferenceSpecifierNamed:@"Desktop" target:self set:NULL get:NULL detail:NSClassFromString(@"MSBDesktopListController") cell:PSLinkCell edit:Nil];
+				link.identifier = @"MAC_DESKTOP";
+				UIImage *icon = MSBDesktopIcon();
+				if (icon) [link setProperty:icon forKey:@"iconImage"];
+				NSUInteger at = NSNotFound;
+				for (NSUInteger i = 0; i < _specifiers.count; i++) if ([((PSSpecifier *)_specifiers[i]).identifier isEqualToString:@"FINDER"]) { at = i + 1; break; }
+				NSMutableArray *all = [_specifiers mutableCopy];
+				if (at != NSNotFound) [all insertObject:link atIndex:at];
+				else { [all addObject:[PSSpecifier groupSpecifierWithID:@"DESKTOP_LINK_GROUP"]]; [all addObject:link]; }
 				_specifiers = all;
 			}
 		}
@@ -682,6 +742,15 @@ static void MSBFitValueLabels(UIView *v) {
 			large = [large imageWithTintColor:[UIColor secondaryLabelColor] renderingMode:UIImageRenderingModeAlwaysOriginal];
 			if (small && large) { [spec setProperty:small forKey:@"leftImage"]; [spec setProperty:large forKey:@"rightImage"]; }
 		}
+		// The desktop's Icon Size (1.7.5 item 4): a small and a large folder at its ends, the same way, no number (as Apple's own size sliders).
+		for (PSSpecifier *spec in _specifiers) {
+			if (![[spec propertyForKey:@"key"] isEqual:@"desktopIconSize"]) continue;
+			UIImage *small = [UIImage systemImageNamed:@"folder" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:13 weight:UIImageSymbolWeightRegular]];
+			UIImage *large = [UIImage systemImageNamed:@"folder" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:20 weight:UIImageSymbolWeightRegular]];
+			small = [small imageWithTintColor:[UIColor secondaryLabelColor] renderingMode:UIImageRenderingModeAlwaysOriginal];
+			large = [large imageWithTintColor:[UIColor secondaryLabelColor] renderingMode:UIImageRenderingModeAlwaysOriginal];
+			if (small && large) { [spec setProperty:small forKey:@"leftImage"]; [spec setProperty:large forKey:@"rightImage"]; }
+		}
 		// The desktop's icons on iPadOS 17+: offered, unless SpringBoard's check of the Home Screen parts they use failed on this iPadOS build
 		// (common/DesktopCheck.h) -- then they stay off there and the switch is left out. The Mac Switcher is offered on 17+ (off unless switched on,
 		// as everywhere). On 18+ both need SpringBoard's typed keyboard focus lock (StatusBar.x DMFocusLock18OK): left out where its check failed on
@@ -690,7 +759,10 @@ static void MSBFitValueLabels(UIView *v) {
 			BOOL noFocus18 = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 18 && MSBDFocusLockVerdict() == 0;
 			BOOL desktopFailed = noFocus18 || MSBDDesktopVerdict(NULL) == 0;
 			NSMutableArray *kept = [_specifiers mutableCopy];
-			for (PSSpecifier *spec in _specifiers) if ((desktopFailed && ([[spec propertyForKey:@"key"] isEqual:@"desktopIcons"] || [[spec propertyForKey:@"key"] isEqual:@"desktopHideNames"])) || (noFocus18 && [[spec propertyForKey:@"key"] isEqual:@"macSwitcher"])) [kept removeObject:spec];
+			for (PSSpecifier *spec in _specifiers) if ((desktopFailed && ([[spec propertyForKey:@"key"] isEqual:@"desktopIcons"] || [[spec propertyForKey:@"key"] isEqual:@"desktopHideNames"] || [[spec propertyForKey:@"key"] isEqual:@"desktopIconSize"]
+			                                                               || [spec.identifier isEqualToString:@"DESKTOP_SIZE_GROUP"])) || (noFocus18 && [[spec propertyForKey:@"key"] isEqual:@"macSwitcher"])) [kept removeObject:spec];
+			if (desktopFailed && [self msb_desktopPage]) for (PSSpecifier *spec in kept) if ([spec.identifier isEqualToString:@"DESKTOP_GROUP"])   // (the page with nothing else: says why)
+				[spec setProperty:@"The desktop isn't available on this iPadOS version." forKey:@"footerText"];
 			if (noFocus18) {   // (and its group: Go to the App's Desktop, 1.7.1, is the Mac Switcher's)
 				BOOL inGroup = NO;
 				for (PSSpecifier *spec in _specifiers) {
@@ -892,6 +964,7 @@ static void MSBFitValueLabels(UIView *v) {
 		}
 		_specifiers = [self msbd_hideRowsWhenLineOff:_specifiers offFooter:@"Everything except the Dock is off. Turn it on to change its settings. Takes effect after a respring."];
 		if ([self msb_windowsPage]) _specifiers = [self msb_windowsPageNotes:_specifiers];
+		if ([self msb_desktopPage]) _specifiers = [self msb_desktopPageNotes:_specifiers];
 		// Apple's own multitasking settings, live and still Apple's, after ours (AppleMultitasking.h: per iPadOS version where Apple keeps them; 16: General's
 		// Picture in Picture and Gestures). Only while this page is the place for them -- the same answer that takes Apple's rows out of their page
 		// (StatusBarSettingsRow.x) -- and only an entry whose page is there with the rows it must have.
@@ -919,7 +992,7 @@ static void MSBFitValueLabels(UIView *v) {
 			if (all) _specifiers = all;
 		}
 		// The last SpringBoard crash (24 h) was another tweak's: one quiet line at the bottom of the page, nothing else (CrashExplain.h).
-		NSString *other = [self msb_windowsPage] ? nil : MSBDOtherTweakCrashNote();
+		NSString *other = [self msb_rootPage] ? MSBDOtherTweakCrashNote() : nil;
 		if (other) {
 			PSSpecifier *note = [PSSpecifier groupSpecifierWithID:@"MSBD_OTHER_CRASH"];
 			[note setProperty:other forKey:@"footerText"];
@@ -944,6 +1017,21 @@ static void MSBFitValueLabels(UIView *v) {
 	[note setProperty:why forKey:@"footerText"];
 	if (MSBDLineEnabled(@"MacStatusBar") && !MSBStockBarStored()) return [[@[note] arrayByAddingObjectsFromArray:specs] mutableCopy];   // (greyed rows below)
 	return [@[note] mutableCopy];
+}
+// The Desktop page (1.7.5) when its rows cannot work: MacStatusBar off -- only a note, as on the Windows & Multitasking page; MacStatusBar&Dock not
+// running on this iPadOS version or in safe mode -- the rows greyed (msbd_hideRowsWhenLineOff) under a note; Finder off -- the desktop is Finder's,
+// so a note and the rows greyed (msb_updateDesktopNamesRow). The stock status bar keeps the desktop: nothing to say then.
+- (NSMutableArray *)msb_desktopPageNotes:(NSArray *)specs {
+	NSString *why = nil;
+	BOOL onlyNote = !MSBDLineEnabled(@"MacStatusBar");
+	if (onlyNote) why = @"MacStatusBar is off, and with it the desktop. Turn it on in Status Bar to change these settings. Takes effect after a respring.";
+	else if (!MSBDGateWanted()) why = @"MacStatusBar&Dock is not running right now, so these settings can't be changed. See Status Bar.";
+	else if (!MSBFinderStored()) why = @"Finder is off, so the desktop is off too. Turn on Finder in Status Bar.";
+	if (!why) return [specs mutableCopy];
+	PSSpecifier *note = [PSSpecifier groupSpecifierWithID:@"MSB_DESKTOP_NOTE"];
+	[note setProperty:why forKey:@"footerText"];
+	if (onlyNote) return [@[note] mutableCopy];
+	return [[@[note] arrayByAddingObjectsFromArray:specs] mutableCopy];   // (greyed rows below)
 }
 
 // "Include Tweak Settings" adds to the search field's results: greyed while "Search Field in Settings" is off (as Apple greys a row that depends on
@@ -978,22 +1066,22 @@ static void MSBFitValueLabels(UIView *v) {
 	}
 }
 
-// "Hide Desktop Icon Names" (1.7.2) is the desktop's: greyed while Finder or Show Desktop Icons is off (both on unless set), live when either
-// changes -- as Go to the App's Desktop above.
+// "Hide Desktop Icon Names" (1.7.2) and Icon Size (1.7.5) are the desktop's: greyed while Finder or Show Desktop Icons is off (both on unless set),
+// live when either changes -- as Go to the App's Desktop above. On the Desktop page (1.7.5) Show Desktop Icons itself is greyed while Finder is off
+// (the page's note says why: Finder is on the Status Bar page).
 - (void)msb_updateDesktopNamesRow:(BOOL)reload {
 	CFPreferencesAppSynchronize(kMSBBarDomain);
-	BOOL on = YES;
-	for (NSString *k in @[@"finderEnabled", @"desktopIcons"]) {
-		CFPropertyListRef v = CFPreferencesCopyAppValue((__bridge CFStringRef)k, kMSBBarDomain);
-		if (v && CFGetTypeID(v) == CFBooleanGetTypeID() && !CFBooleanGetValue(v)) on = NO;   // (never set: on)
-		if (v) CFRelease(v);
-	}
-	if (!MSBDGateWanted()) on = NO;   // (untested iPadOS / safe mode: every row greyed, LineSwitch.h -- this one stays so)
+	BOOL finder = MSBFinderStored(), on = finder;
+	CFPropertyListRef v = CFPreferencesCopyAppValue(CFSTR("desktopIcons"), kMSBBarDomain);
+	if (v && CFGetTypeID(v) == CFBooleanGetTypeID() && !CFBooleanGetValue(v)) on = NO;   // (never set: on)
+	if (v) CFRelease(v);
+	if (!MSBDGateWanted()) on = finder = NO;   // (untested iPadOS / safe mode: every row greyed, LineSwitch.h -- these stay so)
 	for (PSSpecifier *spec in _specifiers) {
-		if (![spec.identifier isEqualToString:@"DESKTOP_HIDE_NAMES"]) continue;
-		[spec setProperty:@(on) forKey:@"enabled"];
+		BOOL icons = [spec.identifier isEqualToString:@"DESKTOP_ICONS"];
+		if (!icons && ![spec.identifier isEqualToString:@"DESKTOP_HIDE_NAMES"] && ![spec.identifier isEqualToString:@"DESKTOP_ICON_SIZE"]) continue;
+		if (icons && ![self msb_desktopPage]) continue;
+		[spec setProperty:@(icons ? finder : on) forKey:@"enabled"];
 		if (reload) [self reloadSpecifier:spec animated:YES];
-		break;
 	}
 }
 
@@ -1002,6 +1090,7 @@ static void MSBFitValueLabels(UIView *v) {
 - (id)readPreferenceValue:(PSSpecifier *)specifier {
 	if ([[specifier propertyForKey:@"key"] isEqual:@"stockStatusBar"]) return MSBStockBarStored() ? @"stock" : @"mac";   // the row and its picker page show/pick these two strings
 	if ([[specifier propertyForKey:@"key"] isEqual:@(kMSBDMenuBarSizeKey)]) return @(MSBMenuBarSizeStored());   // (0 / 1 / 2: the crash guard's false is Small)
+	if ([[specifier propertyForKey:@"key"] isEqual:@MSBD_DESKTOP_ICON_KEY]) return @(MSBDesktopIconShownNow());   // (never set: the Home Screen's size, as SpringBoard uses it)
 	id value = [super readPreferenceValue:specifier];
 	if (![[specifier propertyForKey:@"key"] isEqual:@"windowEngine"]) return value;
 	NSArray *offered = [specifier respondsToSelector:NSSelectorFromString(@"values")] ? ((id (*)(id, SEL))objc_msgSend)(specifier, NSSelectorFromString(@"values")) : nil;
@@ -1030,6 +1119,21 @@ static void MSBFitValueLabels(UIView *v) {
 		if (size == MSBMenuBarSizeStored()) return;   // the size in force tapped again
 		[super setPreferenceValue:@(size) specifier:specifier];
 		[self msb_menuBarSizeChanged:size];
+		return;
+	}
+	if ([[specifier propertyForKey:@"key"] isEqual:@MSBD_DESKTOP_ICON_KEY]) {   // (1.7.5: the slider, while it is dragged -- SpringBoard resizes the icons live)
+		double side = [value respondsToSelector:@selector(doubleValue)] ? MSBDDesktopIconSnap([value doubleValue]) : 0.0;
+		if (side <= 0.0) return;
+		// (the Home Screen's own step is "the same as the Home Screen", as never set: nothing stored, so the icons follow the Home Screen again)
+		double home = MSBDDesktopHomeSideFromState(MSBDesktopHomeState());
+		double want = home > 0.0 && MSBDDesktopIconSnap(home) == side ? 0.0 : side;
+		if (gMSBDesktopIconWritten < 0) { NSNumber *n = MSBDesktopIconStored(); gMSBDesktopIconWritten = n ? MSBDDesktopIconSnap(n.doubleValue) : 0.0; }
+		if (want == gMSBDesktopIconWritten) return;   // (the same step: nothing written, nothing posted)
+		gMSBDesktopIconWritten = want;
+		if (want > 0.0) { [super setPreferenceValue:@(want) specifier:specifier]; return; }
+		CFPreferencesSetAppValue(CFSTR(MSBD_DESKTOP_ICON_KEY), NULL, kMSBBarDomain);
+		CFPreferencesAppSynchronize(kMSBBarDomain);
+		notify_post("com.besiktasliseba.macstatusbar.finder.pref");
 		return;
 	}
 	[super setPreferenceValue:value specifier:specifier];
@@ -1136,4 +1240,25 @@ static void MSBFitValueLabels(UIView *v) {
 @implementation MSBWindowsListController
 - (NSString *)msb_plistName { return @"Windows"; }
 - (BOOL)msb_windowsPage { return YES; }
+@end
+
+// ---- The Desktop page (1.7.5 item 1): the Status Bar page's controller with Desktop.plist -- Show Desktop Icons and Hide Desktop Icon Names
+// (moved here from the Status Bar page's Finder group, same keys), Icon Size (item 4) ----
+@interface MSBDesktopListController : MSBRootListController
+@end
+@implementation MSBDesktopListController
+- (NSString *)msb_plistName { return @"Desktop"; }
+- (BOOL)msb_desktopPage { return YES; }
+// Back on the page: Finder, MacStatusBar or the gate changed elsewhere -- the note comes or goes (built again); otherwise the greyed rows follow
+// Finder and Show Desktop Icons, and the slider shows the size in force (the Home Screen's may have been measured since).
+- (void)viewWillAppear:(BOOL)animated {
+	[super viewWillAppear:animated];
+	gMSBDesktopIconWritten = -1;   // (the slider's last step read from the store again: it may have changed elsewhere)
+	PSSpecifier *shown = [self specifierForID:@"MSB_DESKTOP_NOTE"], *wanted = [[self msb_desktopPageNotes:@[]] firstObject];
+	NSString *a = [shown propertyForKey:@"footerText"], *b = [wanted propertyForKey:@"footerText"];
+	if ((a || b) && ![a isEqual:b]) { _specifiers = nil; [self reloadSpecifiers]; return; }
+	[self msb_updateDesktopNamesRow:YES];
+	PSSpecifier *size = [self specifierForID:@"DESKTOP_ICON_SIZE"];
+	if (size) [self reloadSpecifier:size animated:NO];
+}
 @end

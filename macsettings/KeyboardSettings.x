@@ -8,6 +8,7 @@
 #import <dlfcn.h>
 #import <objc/runtime.h>
 #import "../common/NativeEmbed.h"
+#import "../common/InputDevices.h"   // (MSBDKeyboardAttached: read the same way by the Ethernet row's rule, EthernetFix.x -- 1.7.5)
 
 @interface PSSpecifier : NSObject
 + (instancetype)preferenceSpecifierNamed:(NSString *)name target:(id)target set:(SEL)set get:(SEL)get detail:(Class)detail cell:(long long)cell edit:(Class)edit;
@@ -28,18 +29,7 @@
 enum { kCellLinkList = 2, kCellSwitch = 6 };
 
 // Whether a hardware keyboard is attached right now: the same flag UIKit uses to choose between the on-screen keyboard and the shortcut bar.
-BOOL MSKeyboardAttached(void) {
-#if DEBUG
-    if (access("/tmp/msb-fakekb", F_OK) == 0) return YES;   // (debug: test the Keyboard page without a hardware keyboard)
-    if (access("/tmp/msb-nokb", F_OK) == 0) return NO;      // (debug: as if no hardware keyboard were attached -- the rows that follow one)
-#endif
-    static BOOL (*attached)(void) = NULL; static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        void *gs = dlopen("/System/Library/PrivateFrameworks/GraphicsServices.framework/GraphicsServices", RTLD_LAZY);
-        if (gs) attached = (BOOL (*)(void))dlsym(gs, "GSEventIsHardwareKeyboardAttached");
-    });
-    return attached ? attached() : NO;
-}
+BOOL MSKeyboardAttached(void) { return MSBDKeyboardAttached(); }   // (common/InputDevices.h, shared with the Ethernet row's rule; debug flags /tmp/msb-fakekb, /tmp/msb-nokb)
 static UIImage *MSKeyboardIcon(void) {   // a 29 pt rounded square with the keyboard glyph, like the other Settings rows
     UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(29, 29)];
     return [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
@@ -212,9 +202,13 @@ void MSReloadSidebarKeepingScroll(PSListController *l);   // (PointerSettings.x)
 void MSKeyboardWatchSidebar(PSListController *sidebar) {
     static __weak PSListController *gSidebar;
     gSidebar = sidebar;
+    // (a keyboard attached or detached before this list was watched: the row follows now, once -- as the Pointer row, PointerSettings.x)
+    BOOL shown = NO;
+    for (PSSpecifier *sp in [sidebar specifiers]) if ([[sp identifier] isEqualToString:kKeyboardRowID]) { shown = YES; break; }
+    if (sidebar && shown != MSKeyboardAttached()) dispatch_async(dispatch_get_main_queue(), ^{ PSListController *l = gSidebar; if (l) MSReloadSidebarKeepingScroll(l); });
     static int token = 0;
     if (token) return;
-    notify_register_dispatch("GSEventHardwareKeyboardAvailabilityChangedNotification", &token, dispatch_get_main_queue(), ^(int t) {
+    notify_register_dispatch(MSBD_KEYBOARD_CHANGED, &token, dispatch_get_main_queue(), ^(int t) {
         PSListController *l = gSidebar;
         if (!l) return;
         BOOL shown = NO;

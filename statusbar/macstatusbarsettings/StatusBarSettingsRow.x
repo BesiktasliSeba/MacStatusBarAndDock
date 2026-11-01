@@ -28,6 +28,7 @@
 
 #define kRowID        @"MAC_STATUS_BAR"
 #define kWindowsRowID @"MAC_WINDOWS"   // (1.6.0: the Windows & Multitasking page, right after Status Bar -- the same bundle, MSBWindowsListController)
+#define kDesktopRowID @"MAC_DESKTOP"   // (1.7.5: the Desktop page, right after Status Bar, before Windows & Multitasking -- MSBDesktopListController)
 #define kDockRowID    @"DOCK_MAGNIFICATION"
 #define kAnchorID     @"ACCESSIBILITY"
 #define kBundlePath   @"/var/jb/Library/PreferenceBundles/MacStatusBarPrefs.bundle"
@@ -140,6 +141,25 @@ static PSSpecifier *MakeWindowsRow(Class detail) {
     if (icon) [row setProperty:icon forKey:@"iconImage"];
     return row;
 }
+// The Desktop row (1.7.5, KT 31 Oct: the desktop's rows out of the Status Bar page): right after Status Bar, a plain link to its page.
+static PSSpecifier *MakeDesktopRow(Class detail) {
+    PSSpecifier *row = [PSSpecifier preferenceSpecifierNamed:@"Desktop" target:nil set:NULL get:NULL detail:detail cell:kPSLinkCell edit:nil];
+    row.identifier = kDesktopRowID;
+    [row setProperty:kDesktopRowID forKey:@"id"];
+    [row setProperty:@YES forKey:@"hasSelectionStyle"];
+    UIImage *icon = [UIImage imageNamed:@"desktop" inBundle:PrefsBundle() compatibleWithTraitCollection:nil];
+    if (icon) [row setProperty:icon forKey:@"iconImage"];
+    return row;
+}
+// Whether the Desktop row is in Settings' list, as the Windows & Multitasking row's below (MSBRootListController.m MSBDesktopRowListed): where it
+// is not, the Status Bar page links to the page in its Finder group.
+static BOOL gDesktopRowListed = NO;
+__attribute__((visibility("default"))) BOOL MSBDDesktopRowListed(void) {
+#if DEBUG
+    if (access("/tmp/msb-nodeskrow", F_OK) == 0) return NO;   // (debug: the Status Bar page as if the row were not listed -- its link to the page)
+#endif
+    return gDesktopRowListed;
+}
 // Whether the Windows & Multitasking row is in Settings' list (15-17: it went into the main list; 18: General's group is in use, so it goes in with
 // General's list). The Status Bar page asks (dlsym: MSBRootListController.m MSBWindowsRowListed): where it is not, that page links to the new page.
 static BOOL gWindowsRowListed = NO;
@@ -165,23 +185,38 @@ static void SetWindowsRowListed(void) {
     MSAMRowListedNow();
 }
 // Right after Status Bar (15-17's main list), unless it is there already.
-static void InsertWindowsRow(PSListController *list) {
+static void InsertDesktopRow(PSListController *list) {
     NSArray *specs = [list specifiers];
     NSInteger statusBar = NSNotFound;
     for (NSUInteger i = 0; i < specs.count; i++) {
         NSString *ident = [specs[i] identifier];
+        if ([ident isEqualToString:kDesktopRowID]) { gDesktopRowListed = YES; return; }
+        if ([ident isEqualToString:kRowID]) statusBar = (NSInteger)i;
+    }
+    Class detail = PrefsBundle() ? NSClassFromString(@"MSBDesktopListController") : Nil;
+    if (statusBar == NSNotFound || !detail) return;
+    [list insertSpecifier:MakeDesktopRow(detail) atIndex:statusBar + 1 animated:NO];
+    gDesktopRowListed = YES;
+}
+// Right after Desktop (1.7.5), else right after Status Bar (15-17's main list), unless it is there already.
+static void InsertWindowsRow(PSListController *list) {
+    NSArray *specs = [list specifiers];
+    NSInteger statusBar = NSNotFound, desktop = NSNotFound;
+    for (NSUInteger i = 0; i < specs.count; i++) {
+        NSString *ident = [specs[i] identifier];
         if ([ident isEqualToString:kWindowsRowID]) { SetWindowsRowListed(); return; }
         if ([ident isEqualToString:kRowID]) statusBar = (NSInteger)i;
+        if ([ident isEqualToString:kDesktopRowID]) desktop = (NSInteger)i;
     }
     Class detail = PrefsBundle() ? NSClassFromString(@"MSBWindowsListController") : Nil;
     if (statusBar == NSNotFound || !detail) return;
-    [list insertSpecifier:MakeWindowsRow(detail) atIndex:statusBar + 1 animated:NO];
+    [list insertSpecifier:MakeWindowsRow(detail) atIndex:(desktop != NSNotFound ? desktop : statusBar) + 1 animated:NO];
     SetWindowsRowListed();
 }
 static void InsertRow(PSListController *list) {
     NSArray *specs = [list specifiers];
     WatchRowValue(list);
-    for (NSUInteger i = 0; i < specs.count; i++) if ([[specs[i] identifier] isEqualToString:kRowID]) { InsertWindowsRow(list); return; }   // already there
+    for (NSUInteger i = 0; i < specs.count; i++) if ([[specs[i] identifier] isEqualToString:kRowID]) { InsertDesktopRow(list); InsertWindowsRow(list); return; }   // already there
     NSInteger anchor = AnchorIndex(specs, kDockRowID, nil);
     BOOL newOS = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17;   // (15/16: exactly as before)
     if (anchor == NSNotFound && newOS) anchor = TopIndex(specs);   // (only ever the main list: this runs from PSUIPrefsListController alone)
@@ -199,6 +234,7 @@ static void InsertRow(PSListController *list) {
             if (ours) [list removeSpecifier:sp animated:NO];
         }
     }
+    InsertDesktopRow(list);
     InsertWindowsRow(list);
 }
 
@@ -217,7 +253,7 @@ static void InsertRow(PSListController *list) {
 - (id)specifierForID:(NSString *)identifier {
     static BOOL inserting = NO;
     id r = %orig;
-    if (!r && !inserting && ([identifier isEqualToString:kRowID] || [identifier isEqualToString:kWindowsRowID])) {
+    if (!r && !inserting && ([identifier isEqualToString:kRowID] || [identifier isEqualToString:kWindowsRowID] || [identifier isEqualToString:kDesktopRowID])) {
         inserting = YES;
         InsertRow((PSListController *)self);
         inserting = NO;
@@ -231,17 +267,23 @@ static void InsertRow(PSListController *list) {
 // With PreferenceLoader's identifier (its entry at the end of General goes while our row is there, so prefs:root=General&path=MSBD_PL_MacStatusBarPrefs
 // reaches our row as it reached the entry), the line's On / Off as on 15-17, and the page from our bundle.
 #define kPLRowID @"MSBD_PL_MacStatusBarPrefs"
-static void InsertWindowsRow18(PSListController *page) {   // (right after Status Bar in our group, else first: General18Group.h MSBDG18Put)
+static void InsertDesktopRow18(PSListController *page) {   // (right after Status Bar in our group, else first: General18Group.h MSBDG18Put)
+    if (MSBDG18Has(page, kDesktopRowID)) return;
+    Class detail = PrefsBundle() ? NSClassFromString(@"MSBDesktopListController") : Nil;
+    if (detail) MSBDG18Put(page, @[MakeDesktopRow(detail)], @[kPLRowID]);
+}
+static void InsertWindowsRow18(PSListController *page) {   // (right after Status Bar and Desktop in our group, else first)
     if (MSBDG18Has(page, kWindowsRowID)) return;
     Class detail = PrefsBundle() ? NSClassFromString(@"MSBWindowsListController") : Nil;
-    if (detail) MSBDG18Put(page, @[MakeWindowsRow(detail)], @[kPLRowID]);
+    if (detail) MSBDG18Put(page, @[MakeWindowsRow(detail)], @[kPLRowID, kDesktopRowID]);
 }
 static void InsertRow18(PSListController *page) {
     gRowID = kPLRowID;
     WatchRowValue(page);
-    if (MSBDG18Has(page, kPLRowID)) { MSBDG18RemoveListed(page, kPLRowID, @"MacStatusBarPrefs"); InsertWindowsRow18(page); return; }   // (ours in; PreferenceLoader's entry out)
+    if (MSBDG18Has(page, kPLRowID)) { MSBDG18RemoveListed(page, kPLRowID, @"MacStatusBarPrefs"); InsertDesktopRow18(page); InsertWindowsRow18(page); return; }   // (ours in; PreferenceLoader's entry out)
     Class detail = PrefsBundle() ? NSClassFromString(@"MSBRootListController") : Nil;
     if (detail) MSBDG18PutInPlaceOf(page, MakeRow(detail, kPLRowID), @[], kPLRowID, @"MacStatusBarPrefs");   // (first in the group)
+    InsertDesktopRow18(page);
     InsertWindowsRow18(page);
 }
 %group General18
@@ -249,12 +291,13 @@ static void InsertRow18(PSListController *page) {
 - (id)specifiers {
     id specs = %orig;
     if (![specs isKindOfClass:[NSArray class]]) return specs;
-    BOOL ours = NO, listed = NO, windows = NO;   // (ours there and PreferenceLoader's gone: nothing to do -- read from the list handed out, never asked again here)
+    BOOL ours = NO, listed = NO, windows = NO, desktop = NO;   // (ours there and PreferenceLoader's gone: nothing to do -- read from the list handed out, never asked again here)
     for (id sp in specs) {
         if ([MSBDG18Ident(sp) isEqualToString:kPLRowID]) { if (MSBDG18IsOurs(sp)) ours = YES; else listed = YES; }
         if (MSBDG18IsOurs(sp) && [MSBDG18Ident(sp) isEqualToString:kWindowsRowID]) windows = YES;
+        if (MSBDG18IsOurs(sp) && [MSBDG18Ident(sp) isEqualToString:kDesktopRowID]) desktop = YES;
     }
-    if (ours && !listed && windows) return specs;
+    if (ours && !listed && windows && desktop) return specs;
     // (once the list is handed out, on the next turn of the main loop; asked for again and again while it is built: one try a second at most)
     static const void *kTriedKey = &kTriedKey;
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
@@ -275,7 +318,7 @@ static void General18TryInit(void) {
     Class c = objc_getClass("PSGGeneralController");
     if (!c) return;
     done = YES;
-    if (MSBDG18PageOK(c)) { %init(General18); gWindowsRowListed = YES; }   // (the Windows & Multitasking row goes in with General's list from now on)
+    if (MSBDG18PageOK(c)) { %init(General18); gWindowsRowListed = YES; gDesktopRowListed = YES; }   // (the Desktop and Windows & Multitasking rows go in with General's list from now on)
 }
 static void General18ImageAdded(const struct mach_header *mh, intptr_t slide) {
     static atomic_int queued = 0;

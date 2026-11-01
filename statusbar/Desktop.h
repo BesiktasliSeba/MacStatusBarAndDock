@@ -22,6 +22,7 @@
 #include "KeyboardDock.h"   // (when the Dock goes under our own on-screen keyboard -- plain C, tested on the Mac: tools/test-kbdock.sh)
 #include "DesktopRename.h"  // (the window a name is typed in: its level and the field's place -- plain C, tested on the Mac: tools/test-deskrename.sh)
 #include "DesktopNames.h"   // (which icons show their name: the record kept by name -- Foundation only, tested on the Mac: tools/test-desktopnames.sh)
+#include "../common/DesktopIconSize.h"   // (Settings > Desktop > Icon Size, 1.7.5: the side in force and the cell -- plain C, tools/test-desktopiconsize.sh)
 
 @interface DMDesktopItemView : UIView
 @property (nonatomic, strong) DMFinderItem *item;
@@ -98,8 +99,9 @@ static BOOL DMDesktopPointerTouch(UITouch *t, UIEvent *e) {
 }
 @class DMDesktop;
 static DMDesktop *gDesktop;
-static BOOL gDesktopOn = YES;   // (Settings > Mac Status Bar > Show Desktop Icons; with Finder on)
-static BOOL gDesktopHideNames = NO;   // (Settings > Mac Status Bar > Hide Desktop Icon Names: every icon without its name, DesktopNames.h)
+static BOOL gDesktopOn = YES;   // (Settings > Desktop > Show Desktop Icons; with Finder on. On the Status Bar page until 1.7.5, same key)
+static BOOL gDesktopHideNames = NO;   // (Settings > Desktop > Hide Desktop Icon Names: every icon without its name, DesktopNames.h)
+static double gDesktopIconSize = 0;   // (Settings > Desktop > Icon Size, 1.7.5: points, 0 = never set -- the Home Screen's size, as always)
 // (for the untested-iPadOS diagnostics, DMDesktopDiag: what the last measure read from the Home Screen -- 1 the names' font, 2 their colours,
 //  4 an app icon view to read them from, 8 the picture size from an icon view -- and where the folders' picture came from: 4 drawn, the folder
 //  icon of 1.4 (1-3 were the Files app's Home Screen icon, iOS's own Files icon, none, before it was drawn))
@@ -122,6 +124,7 @@ static int gDesktopLookRead, gDesktopFolderFrom;
 - (void)dm_fitRenameField;
 - (NSString *)dm_placeStringFor:(NSString *)path;
 - (void)dm_applyNames;   // (each icon's name shown or not, after Settings' Hide Desktop Icon Names or an icon's own Hide Name changed)
+- (void)dm_iconSizeChanged;   // (Settings' Icon Size changed -- live, while its slider is dragged: the icons, their cells and the grid follow)
 - (NSString *)dm_diagLine;   // (untested iPadOS diagnostics, DMDesktopDiag: where it sits and what it found there; names and numbers only)
 - (void)dm_axOpen:(DMDesktopItemView *)v;
 #if DEBUG
@@ -653,7 +656,13 @@ static void DMDesktopEditHomeScreen(void) {
         }
     }
     if (!best) { SEL s = NSSelectorFromString(@"iconImageSize"); if ([_list respondsToSelector:s]) best = ((CGSize (*)(id, SEL))objc_msgSend)(_list, s).width; }
-    _side = best > 20.0 ? best : (_side ?: 64.0);
+    // (1.7.5: Settings' Icon Size when it was set, else the Home Screen's own size as always; the Home Screen's size is published for Settings' slider)
+    _side = MSBDDesktopIconSide(gDesktopIconSize > 0, gDesktopIconSize, best, _side);
+    if (best > 20.0) {
+        static int homeToken = 0; static unsigned long long published = 0;
+        unsigned long long st = MSBDDesktopHomeSideState(best);
+        if (st != published && (homeToken || notify_register_check(MSBD_DESKTOP_HOMESIDE_STATE, &homeToken) == NOTIFY_STATUS_OK)) { notify_set_state(homeToken, st); published = st; }
+    }
     UIFont *font = nil; UIColor *text = nil, *shadow = nil;
     @try {   // (the app names' own font and legibility colours, from an app icon of the page -- they follow the wallpaper, as the names do;
              //  asked from the icon view, not its label: with the names hidden the label has no parameters, M1 3 Oct)
@@ -671,8 +680,27 @@ static void DMDesktopEditHomeScreen(void) {
     _font = font ?: _font ?: [UIFont systemFontOfSize:12.0 weight:UIFontWeightMedium];
     _textColor = text ?: _textColor ?: [UIColor whiteColor];
     _shadowColor = shadow ?: _shadowColor ?: [UIColor colorWithWhite:0 alpha:0.5];
-    _cellW = MAX(_side + 30.0, 84.0);
-    _cellH = 2.0 + _side + 4.0 + ceil(_font.lineHeight) + 2.0 + 4.0;
+    double cw = 0, ch = 0; MSBDDesktopIconCell(_side, _font.lineHeight, &cw, &ch);   // (grid spacing and the name's width follow the icon: DesktopIconSize.h)
+    _cellW = cw; _cellH = ch;
+}
+// Settings' Icon Size changed (1.7.5 item 4; one notification per 4 pt step while its slider is dragged): the new side at once -- cells, grid
+// spacing and the names' width with it; the placing pass that the new cell brings keeps every stored place (an icon that no longer fits where it is
+// goes to the nearest free spot for now, its place kept for when it fits again). The pictures scale meanwhile and are drawn again at the new size
+// once the slider rests (0.3 s).
+- (void)dm_iconSizeChanged {
+    CGFloat before = _side;
+    [self dm_measure];
+    if (fabs(_side - before) < 0.01) return;
+    DM_FEATURE_MARK("desktop-icon-size");
+    DMLog([NSString stringWithFormat:@"[desktop] icon size %.1f -> %.1f pt (cell %.0f x %.0f)", before, _side, _cellW, _cellH]);
+    for (DMDesktopItemView *v in _views.allValues) { v.side = _side; [v setNeedsLayout]; }
+    [self dm_placeAgain];
+    static NSUInteger gen = 0; NSUInteger mine = ++gen;
+    __weak DMDesktop *ws = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        DMDesktop *s = ws; if (!s || mine != gen) return;
+        for (DMFinderItem *it in s->_items) { DMDesktopItemView *v = s->_views[it.name]; if (v) v.icon.image = [s dm_imageFor:it view:v] ?: v.icon.image; }
+    });
 }
 // A folder's icon on the desktop, drawn the same on every iPad (not the Files app's icon, which a theme or iOS itself changes): a macOS folder,
 // light blue, its darker tab and back behind, two folds near the bottom (y down, s = the icon's side, laid out on a 256 grid)
@@ -1755,7 +1783,7 @@ static void DMDesktopTakeDrop(DMFDrag *d, CGPoint sp, NSString *dest, BOOL ontoF
 }
 
 // ---- switched on and off ----
-// Settings > Mac Status Bar > Show Desktop Icons (desktopIcons, on unless set; with Finder on). iPadOS 17+: the same switch, and the desktop goes up
+// Settings > Desktop > Show Desktop Icons (desktopIcons, on unless set; with Finder on). iPadOS 17+: the same switch, and the desktop goes up
 // only once its check of the Home Screen parts it uses has passed (DMDesktopNewOSReady, in DMDesktopTick). 18+ (1.6.0, 18.5): also only where
 // SpringBoard's typed keyboard focus lock is there for its rename (StatusBar.x DMFocusLock18OK).
 static BOOL DMDesktopPrefOn(void) {
@@ -1766,7 +1794,7 @@ static BOOL DMDesktopPrefOn(void) {
     if (v) CFRelease(v);
     return on;
 }
-// Settings > Mac Status Bar > Hide Desktop Icon Names (desktopHideNames, off unless set; 1.7.2 item 16): every icon without its name, at once.
+// Settings > Desktop > Hide Desktop Icon Names (desktopHideNames, off unless set; 1.7.2 item 16): every icon without its name, at once.
 static BOOL DMDesktopHideNamesPref(void) {
     CFPreferencesAppSynchronize(MSB_DOMAIN);
     CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("desktopHideNames"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
@@ -1774,10 +1802,20 @@ static BOOL DMDesktopHideNamesPref(void) {
     if (v) CFRelease(v);
     return on;
 }
+// Settings > Desktop > Icon Size (desktopIconSize, 1.7.5 item 4): points, snapped to the slider's 4 pt steps; 0 = never set (the Home Screen's size).
+static double DMDesktopIconSizePref(void) {
+    CFPropertyListRef v = CFPreferencesCopyValue(CFSTR(MSBD_DESKTOP_ICON_KEY), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    double size = v && CFGetTypeID(v) == CFNumberGetTypeID() ? MSBDDesktopIconSnap([(__bridge NSNumber *)v doubleValue]) : 0;
+    if (v) CFRelease(v);
+    return size;
+}
 static void DMDesktopApplyPref(void) {
     gDesktopOn = DMDesktopPrefOn();
     BOOL hide = DMDesktopHideNamesPref();
-    DMLog([NSString stringWithFormat:@"[desktop] Show Desktop Icons %@, Hide Desktop Icon Names %@", gDesktopOn ? @"on" : @"off", hide ? @"on" : @"off"]);
+    double size = DMDesktopIconSizePref();
+    DMLog([NSString stringWithFormat:@"[desktop] Show Desktop Icons %@, Hide Desktop Icon Names %@, Icon Size %@", gDesktopOn ? @"on" : @"off", hide ? @"on" : @"off",
+           size > 0 ? [NSString stringWithFormat:@"%.0f pt", size] : @"the Home Screen's"]);
+    if (size != gDesktopIconSize) { gDesktopIconSize = size; [gDesktop dm_iconSizeChanged]; }
     if (hide == gDesktopHideNames) return;
     gDesktopHideNames = hide;
     if (hide) DM_FEATURE_MARK("desktop-hide-names");

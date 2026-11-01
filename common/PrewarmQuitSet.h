@@ -11,12 +11,18 @@
 //    without the status bar part (the crash guard's safe mode or step 1b, an untested iPadOS without Enable Anyway: loader/Loader.c), the package
 //    removed (postrm), an install for a SpringBoard that keeps none (postinst: MSBDPrewarmQuitSetKept below). Not a SpringBoard with no loader of
 //    ours at all (the MacStatusBar line switched off in Choicy or iCleaner Pro, ElleKit's Safe Mode): nothing removes the file there, and a dasd
-//    that still has our part goes on refusing its set until dasd starts again -- as the notify state stayed on before 1.7.1; Choicy and iCleaner
+//    that still has our part goes on refusing its set (and with Prewarm Apps off every prewarm, the user's own choice) until dasd starts again --
+//    as the notify state stayed on before 1.7.1; Choicy and iCleaner
 //    keep the part out of the next dasd as well. Until 1.7.1 the switch was a notify state SpringBoard published at its start, which lives only
 //    while a process holds the name. After the postinst stops dasd, launchd
 //    starts it again only when something asks for it: on the M1 in the same second as the new SpringBoard of the install's respring (01:26:57 and
 //    02:40:25, 30 Oct), with the old SpringBoard gone and the new one's status bar part not yet started -- that dasd read "off" and let its first
 //    prewarms through (an app the user had quit "allowed (block off)"). The same for any dasd start before SpringBoard's.
+//  - Prewarm Apps (1.7.5, Settings > Windows & Multitasking): switched off, the file also says "refuseAll" and dasd refuses every prewarm, not
+//    only the set's. The same file, so the switch is in force wherever the block is (from dasd's first prewarm, without a respring) and goes with
+//    it everywhere the file goes: the stock status bar, a SpringBoard without the status bar part, the package removed -- iPadOS prewarms as it
+//    always did then. The postinst's first copy of the file (from cfprefsd's file of the prewarm domain) has the set only, so in that rare case
+//    (no file at the install) the switch is in force once SpringBoard's status bar part has started and written the file, a few seconds later.
 //    (The path is plain C for the loader; the rest is Foundation.)
 #ifndef MSBD_PREWARM_QUIT_SET_H
 #define MSBD_PREWARM_QUIT_SET_H
@@ -37,9 +43,19 @@ static inline NSSet<NSString *> *MSBDPrewarmQuitSetFromPlist(NSData *data) {
     if ([list isKindOfClass:[NSArray class]]) for (id b in (NSArray *)list) if ([b isKindOfClass:[NSString class]] && [(NSString *)b length]) [set addObject:b];
     return [set copy];
 }
-// The file's contents for a set (the apps in their order, oldest quit first): what SpringBoard writes.
-static inline NSData *MSBDPrewarmQuitSetPlist(NSArray<NSString *> *apps) {
-    return [NSPropertyListSerialization dataWithPropertyList:@{@"quitSet": apps ?: @[]} format:NSPropertyListXMLFormat_v1_0 options:0 error:NULL];
+// Whether the file's contents refuse every prewarm (Prewarm Apps off: "refuseAll" true). Only a real true does; no file, a damaged one, a missing
+// key or a value of another type (a number, a string) refuses the set alone -- the switch's way back is always "iPadOS prewarms".
+static inline BOOL MSBDPrewarmRefuseAllFromPlist(NSData *data) {
+    if (!data.length) return NO;
+    id plist = [NSPropertyListSerialization propertyListWithData:data options:NSPropertyListImmutable format:NULL error:NULL];
+    id all = [plist isKindOfClass:[NSDictionary class]] ? ((NSDictionary *)plist)[@"refuseAll"] : nil;
+    return all && CFGetTypeID((__bridge CFTypeRef)all) == CFBooleanGetTypeID() && [(NSNumber *)all boolValue];
+}
+// The file's contents for a set (the apps in their order, oldest quit first) and the switch: what SpringBoard writes. With Prewarm Apps on the
+// file is exactly what it was before 1.7.5 (no "refuseAll" key).
+static inline NSData *MSBDPrewarmQuitSetPlist(NSArray<NSString *> *apps, BOOL refuseAll) {
+    NSDictionary *d = refuseAll ? @{@"quitSet": apps ?: @[], @"refuseAll": @YES} : @{@"quitSet": apps ?: @[]};
+    return [NSPropertyListSerialization dataWithPropertyList:d format:NSPropertyListXMLFormat_v1_0 options:0 error:NULL];
 }
 
 // Which file was read: its modification time and size (present NO: there was none). A file whose stamp is not the one read last is read again --

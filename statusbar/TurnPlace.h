@@ -50,6 +50,19 @@ static inline CGRect MSBDTurnPlaceFor(CGRect layoutNew, CGRect remembered, CGRec
     if (why) *why = w;
     return r;
 }
+// A window a turn put back where it was in this shape (step 3) was in no layout before the turn, and that place can be a layout's frame (a window set
+// free after a turn round trip as a quarter: its place in the other shape is still the quarter's). While it stays at the frame the turn gave it, it is
+// still in no layout -- taken for the quarter, the next turn put it into that quarter's layout instead of back at its free place (1.7.5 item 14,
+// 1.7.4 R2 F1: Tips free at {174, 108} in landscape came back as the bottom-right quarter after P -> L). i: the layout its frame matches now
+// (MSBDTurnLayoutIndex); placed: the frame the turn gave it (CGRectNull: none). Returns the layout to note; *keep: whether it is still there (the
+// record stays) -- moved or laid out since, the record goes and its frame tells again.
+#define kMSBDTurnPlacedTolerance 2.0   // (still where the turn put it: within 2 pt on each number -- the engines' own rounding of a place)
+static inline int MSBDTurnNoteIndex(CGRect f, int i, CGRect placed, CGFloat tol, bool *keep) {
+    bool still = !CGRectIsNull(placed) && !CGRectIsEmpty(placed) && !CGRectIsNull(f) && fabs(f.origin.x - placed.origin.x) < tol && fabs(f.origin.y - placed.origin.y) < tol
+                 && fabs(f.size.width - placed.size.width) < tol && fabs(f.size.height - placed.size.height) < tol;
+    if (keep) *keep = still;
+    return still ? -1 : i;
+}
 static inline const char *MSBDTurnWhyText(int w) {
     return w == MSBDTurnLayout ? "its layout" : w == MSBDTurnRemembered ? "where it was in this shape" : w == MSBDTurnProportional ? "in proportion" : "left to the engine";
 }

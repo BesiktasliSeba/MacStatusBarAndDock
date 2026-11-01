@@ -326,10 +326,10 @@ static inline NSString *MSBDReportCrashSummary(NSUInteger maxFrames) {
     }
     return s;
 }
-// Our switches on the Status Bar, Windows & Multitasking and Dock pages that are on (their row titles), read from the pages' own lists.
+// Our switches on the Status Bar, Desktop, Windows & Multitasking and Dock pages that are on (their row titles), read from the pages' own lists.
 static inline NSArray<NSString *> *MSBDSwitchesOn(void) {
     NSMutableArray *on = [NSMutableArray array];
-    for (NSString *page in @[@"MacStatusBarPrefs/Windows", @"MacStatusBarPrefs/Root", @"DockMagnificationPrefs/Root"]) {   // (the window switches first: the list is cut at its length)
+    for (NSString *page in @[@"MacStatusBarPrefs/Windows", @"MacStatusBarPrefs/Desktop", @"MacStatusBarPrefs/Root", @"DockMagnificationPrefs/Root"]) {   // (the window switches first: the list is cut at its length)
         NSArray *bp = [page componentsSeparatedByString:@"/"];
         NSDictionary *plist = [NSDictionary dictionaryWithContentsOfFile:[NSString stringWithFormat:@"%s/%@.bundle/%@.plist", MSBD_PREF_BUNDLES, bp[0], bp[1]]];
         for (NSDictionary *item in [plist[@"items"] isKindOfClass:[NSArray class]] ? plist[@"items"] : @[]) {

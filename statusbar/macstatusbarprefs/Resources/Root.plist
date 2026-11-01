@@ -325,38 +325,6 @@
 			<string>Finder</string>
 		</dict>
 		<dict>
-			<key>PostNotification</key>
-			<string>com.besiktasliseba.macstatusbar.finder.pref</string>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>default</key>
-			<true/>
-			<key>defaults</key>
-			<string>com.besiktasliseba.macstatusbar</string>
-			<key>id</key>
-			<string>DESKTOP_ICONS</string>
-			<key>key</key>
-			<string>desktopIcons</string>
-			<key>label</key>
-			<string>Show Desktop Icons</string>
-		</dict>
-		<dict>
-			<key>PostNotification</key>
-			<string>com.besiktasliseba.macstatusbar.finder.pref</string>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>default</key>
-			<false/>
-			<key>defaults</key>
-			<string>com.besiktasliseba.macstatusbar</string>
-			<key>id</key>
-			<string>DESKTOP_HIDE_NAMES</string>
-			<key>key</key>
-			<string>desktopHideNames</string>
-			<key>label</key>
-			<string>Hide Desktop Icon Names</string>
-		</dict>
-		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>id</key>

@@ -551,7 +551,7 @@ static void MSGeneralInsertOurRows(PSListController *list) {
     if (!rows.count) return;
     // (in our group right below General's first group -- its header card; About and the rest start the second group --, after the Status Bar and
     //  Dock rows: the group is made by whichever of us comes first, common/General18Group.h)
-    if (!MSBDG18Put(list, rows, @[@"MSBD_PL_MacStatusBarPrefs", @"MAC_WINDOWS", @"MSBD_PL_DockMagnificationPrefs"])) return;
+    if (!MSBDG18Put(list, rows, @[@"MSBD_PL_MacStatusBarPrefs", @"MAC_DESKTOP", @"MAC_WINDOWS", @"MSBD_PL_DockMagnificationPrefs"])) return;
     NSUInteger at = 0; specs = ((id (*)(id, SEL))objc_msgSend)(list, @selector(specifiers));
     for (NSUInteger i = 0; i < specs.count; i++) if (rows.count && specs[i] == rows[0]) { at = i; break; }
     gVisibleSSHList = list;

@@ -2,6 +2,31 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.7.5
+
+### New
+- Settings has a Desktop page, right under Status Bar: Show Desktop Icons and Hide Desktop Icon Names move there from the Status Bar page, keeping your settings, and Icon Size is new.
+- Icon Size for the desktop icons, from 40 to 96 points, in Settings > Desktop. The icons change as you drag the slider, their names and spacing follow, and every icon keeps its place. Until you change it, they keep your Home Screen's icon size. Home Screen app icons don't change.
+- iPadOS 15 to 17: icon themes, such as SnowBoard's, change Finder, Launchpad, Downloads, the Trash (empty and full) and Activity Monitor like any app icon, with the theme's order and masks, and they follow a theme change right away. Without a picture in the theme they keep their own, shaped like your other icons. The identifiers for theme makers are in the README.
+- Menus that open from the Dock and the Downloads stack sit over their icon with the Mac's arrow pointing at it, also when the screen's edge pushes a menu aside. The Dock's menus get it with Haptic Touch Menus set to Mac, the default.
+- Prewarm Apps in Settings > Windows & Multitasking: iPadOS starts some apps in the background before you open them, so they open a little faster. Turn it off to keep that memory free on an iPad with little RAM. It stays on unless you turn it off.
+
+### Improvements
+- A shorter Settings sidebar on iPadOS 15 to 17: Notifications & Sounds and Focus & Screen Time each open a page with Apple's two pages on it. Links and search results that lead to Apple's pages still open them.
+- The empty Ethernet row leaves the Settings sidebar while a trackpad or mouse and a keyboard are both connected. It comes back as soon as an adapter is connected or one of them is disconnected.
+- Aerial, Zetsu and MilkyWay4: a window that opens again at its last place stays there, as a Mac app's window does. Only a window that would sit right on another is still moved aside.
+
+### Fixes
+- Stage Manager engine: a window brought from another desktop keeps its size. It could come back at an older size.
+- Stage Manager engine on iPadOS 17 and 18: a window you resize next to another snaps to it from 10 points away again, as with the other engines. With 1.7.4's 6-point gap it snapped only within 6.
+- Aerial: a window dragged by its title bar moves exactly as far as your finger. It went 6 points further sideways.
+- Switching from Zetsu to Aerial brings every window back at its size and in its layout. The first one came back 8 points taller.
+- A pull down from the top edge opens only Notification Center or Control Center. Started just under the menu bar, or while the menu bar was hidden, it also opened the App Library behind them, which stayed until you pressed Home.
+- Stage Manager engine: opening an app from a menu, Spotlight or a link while the App Library is showing closes the App Library, as an icon tap does. The app stayed hidden behind it until you pressed Home.
+- After turning the iPad and back, a window not in a layout stays a free window. If its place in the other orientation was a quarter's, it came back as that quarter.
+- Stage Manager engine with the menu bar hiding itself: windows in a half or a quarter take the same layout when you turn the iPad. While the bar was hidden they were taken for free windows.
+- iPadOS 17 with Include Tweak Settings on: a Settings search that lists one of the tweak's settings pages no longer crashes Settings.
+
 ## 1.7.4.1
 
 ### Fixes

@@ -45,6 +45,11 @@ static inline NSArray<NSString *> *MSBDWindowsPageRowIDs(void) {
              @"Windows Behind Full-Screen Apps", @"Resize Handles", @"Tint Resize Handles", @"RESIZE_GROUP", @"Resize Apps to Fit Windows", @"Traffic Lights",
              @"Turn Off Traffic Lights", @"Multitasking", @"Hide Multitasking Dots", @"Mac Switcher"];
 }
+// 1.7.5: Show Desktop Icons and Hide Desktop Icon Names moved from the Status Bar page's Finder group to the Desktop page (MAC_DESKTOP, right after
+// Status Bar): links to them go there the same way.
+static inline NSArray<NSString *> *MSBDDesktopPageRowIDs(void) {
+    return @[@"DESKTOP_ICONS", @"Show Desktop Icons", @"DESKTOP_HIDE_NAMES", @"Hide Desktop Icon Names"];
+}
 static inline NSString *MSBDSettingsLinkMoved(NSString *link) {
     NSString *pre = @"prefs:root=MAC_STATUS_BAR";
     if (![link isKindOfClass:[NSString class]] || ![link hasPrefix:pre]) return link;
@@ -56,20 +61,23 @@ static inline NSString *MSBDSettingsLinkMoved(NSString *link) {
     NSUInteger cut = name.length;
     for (NSString *mark in @[@"/", @"#", @"%23", @"&"]) { NSRange r = [name rangeOfString:mark]; if (r.location != NSNotFound) cut = MIN(cut, r.location); }
     name = [name substringToIndex:cut];
-    if (![MSBDWindowsPageRowIDs() containsObject:name.stringByRemovingPercentEncoding ?: name]) return link;
+    NSString *plain = name.stringByRemovingPercentEncoding ?: name;
+    if ([MSBDDesktopPageRowIDs() containsObject:plain]) return [@"prefs:root=MAC_DESKTOP" stringByAppendingString:tail];
+    if (![MSBDWindowsPageRowIDs() containsObject:plain]) return link;
     return [@"prefs:root=MAC_WINDOWS" stringByAppendingString:tail];
 }
 // A link into one of our pages as the SwiftUI root needs it: prefs:root=MAC_STATUS_BAR[&path=X][#Y] -> prefs:root=General&path=
 // MSBD_PL_MacStatusBarPrefs[/X][#Y] (DOCK_MAGNIFICATION likewise); our Keyboard and Pointer pages, the sidebar's MAC_KEYBOARD and MAC_POINTER rows on
 // 15-17, are rows of the same identifiers in our group at the top of General there (macsettings/MacSettings.x): prefs:root=MAC_KEYBOARD[...] ->
-// prefs:root=General&path=MAC_KEYBOARD[...]; Windows & Multitasking (MAC_WINDOWS) likewise. Any other link, or one with something else after the
-// page, as it is. (The moved window rows first, on every version: MSBDSettingsLinkMoved.)
+// prefs:root=General&path=MAC_KEYBOARD[...]; Windows & Multitasking (MAC_WINDOWS) and Desktop (MAC_DESKTOP, 1.7.5) likewise. Any other link, or one
+// with something else after the page, as it is. (The moved window and desktop rows first, on every version: MSBDSettingsLinkMoved.)
 static inline NSString *MSBDSettingsLinkForRoot(NSString *link, BOOL swiftUI) {
     link = MSBDSettingsLinkMoved(link);
     if (!swiftUI || ![link isKindOfClass:[NSString class]] || ![link hasPrefix:@"prefs:root="]) return link;
     NSString *rest = [link substringFromIndex:11], *page = nil, *pl = nil;
     for (NSArray<NSString *> *m in @[@[@"MAC_STATUS_BAR", @"MSBD_PL_MacStatusBarPrefs"], @[@"DOCK_MAGNIFICATION", @"MSBD_PL_DockMagnificationPrefs"],
-                                     @[@"MAC_KEYBOARD", @"MAC_KEYBOARD"], @[@"MAC_POINTER", @"MAC_POINTER"], @[@"MAC_WINDOWS", @"MAC_WINDOWS"]])
+                                     @[@"MAC_KEYBOARD", @"MAC_KEYBOARD"], @[@"MAC_POINTER", @"MAC_POINTER"], @[@"MAC_WINDOWS", @"MAC_WINDOWS"],
+                                     @[@"MAC_DESKTOP", @"MAC_DESKTOP"]])
         if ([rest hasPrefix:m[0]]) { page = m[0]; pl = m[1]; }
     if (!pl) return link;
     NSString *tail = [rest substringFromIndex:page.length], *frag = @"", *path = nil;

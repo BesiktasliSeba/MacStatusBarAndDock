@@ -26,6 +26,7 @@
 #import "../common/GuidedAccess.h"   // (MSBDGuidedAccessActive: no panel while a Guided Access session keeps the iPad in one app, 1.3.7)
 #import "../common/AXText.h"         // (MSBDAXJoin: a row read as one element, 1.3.7)
 #import "../common/FocusLock.h"      // (MSBDFocusLock: SpringBoard holds the keyboard focus while the panel is open, so Esc reaches it -- 15-18)
+#import "../common/MenuArrow.h"      // (the Mac's arrow under the panel, pointing at the stack: 1.7.5 item 5)
 
 @interface UIWindow (DMPrivateDL)
 + (NSArray *)allWindowsIncludingInternalWindows:(BOOL)internal onlyVisibleWindows:(BOOL)visible;
@@ -38,6 +39,7 @@
 // (StatusBar.x MacPointerIcons): iPadOS draws its pointer under a lifted icon, and the arrow went under it. iPadOS's pointer: the lift as before.
 // (and while the Mac pointer stands down for another pointer tweak: then the pointer is iPadOS's -- common/MacPointerActive.h, logic test W5)
 #import "../common/MacPointerActive.h"
+#import "DMIconTheme.h"   // (1.7.5 item 7: the folder as an app icon of its own, com.besiktasliseba.macstatusbar.downloads, that an icon theme can change)
 static BOOL DMDockIconLift(void) { return MSBDIPadPointerEffects(); }
 #define DM_FEATURE_MARK(name) do { static const char *const dmFeatureMark = "msbd-feature:" name; __asm__ volatile("" :: "r"(dmFeatureMark)); } while (0)   // (release-build feature marker, see statusbar/StatusBar.x)
 
@@ -271,17 +273,18 @@ static UIColor *DMBlue(CGFloat r, CGFloat g, CGFloat b) { return [UIColor colorW
 // seen from the front -- a dark back (#0090D2) with a lighter tab at the top left (#3AADE3) that slopes down into a band across
 // the top, a light blue front (#5ED0FF) from 18% down with two slightly darker stripes along its bottom edge, and in the middle a
 // darker circle (#1896DC) with a thin down arrow in the front's own colour. Drawn, so it stays sharp at any size.
-static UIImage *DMFolderImage(CGSize size) {
+// `rounded`: the Dock's tile; NO: the whole square, for a theme engine to shape like an app's own icon (1.7.5 item 7).
+static UIImage *DMFolderDraw(CGSize size, BOOL rounded) {
     static NSMutableDictionary *cache = nil;
     if (!cache) cache = [NSMutableDictionary dictionary];
-    NSString *key = NSStringFromCGSize(size);
+    NSString *key = [NSStringFromCGSize(size) stringByAppendingString:rounded ? @"" : @"|square"];
     if (cache[key]) return cache[key];
     UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat preferredFormat];
     UIImage *img = [[[UIGraphicsImageRenderer alloc] initWithSize:size format:fmt] imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
         CGFloat w = size.width, h = size.height;
         CGContextRef c = ctx.CGContext;
         CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
-        [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, w, h) cornerRadius:w * 0.225] addClip];   // continuous corners, like app icons
+        if (rounded) [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, w, h) cornerRadius:w * 0.225] addClip];   // continuous corners, like app icons
         // back of the folder
         [DMBlue(0, 144, 210) setFill];
         UIRectFill(CGRectMake(0, 0, w, h * 0.19));
@@ -324,6 +327,7 @@ static UIImage *DMFolderImage(CGSize size) {
     cache[key] = img;
     return img;
 }
+static UIImage *DMFolderImage(CGSize size) { return DMFolderDraw(size, YES); }
 
 static NSString *DMSymbolFor(DMDownload *d, UIColor **tint) {
     NSString *ext = d.url.pathExtension.lowercaseString;
@@ -470,6 +474,7 @@ static NSString *DMAgeText(NSDate *date) {
 @property (nonatomic, strong) UIView *shield;
 @property (nonatomic, strong) UITapGestureRecognizer *outsideTap;
 @property (nonatomic, strong) UIView *panel;
+@property (nonatomic, strong) UIView *arrow;   // (the Mac's arrow under the panel: above it in the same window, see DMPanelArrowMake)
 @property (nonatomic, strong) NSArray<DMDownloadSource *> *sources;
 @property (nonatomic, weak) UIWindow *hostWindow;   // the Dock window, raised above MilkyWay's windows while the panel is open
 @property (nonatomic) CGFloat savedLevel;
@@ -527,6 +532,32 @@ static NSString *DMAgeText(NSDate *date) {
 }
 @end
 
+// The Mac's arrow under the panel (1.7.5 item 5, common/MenuArrow.h): a stack's list on a Mac opens over the stack with an arrow pointing at it. Its
+// own view in the panel's window, just above the panel (the panel clips to its rounded corners): the panel's blur, masked to the arrow, and the
+// panel's border along its two sides; its band covers the panel's bottom edge where it joins, so the outline runs on into the arrow. Its anchor is
+// the panel's (the stack's middle on the panel's bottom edge), so the same pop-up, move and fade look like one shape.
+static const CGFloat kPanelCorner = 18.0;   // (the panel's corner radius, -presentItems:)
+static const CGFloat kPanelArrowBand = 1.0;   // (the arrow's band over the panel's edge: covers the 0.5 pt border there)
+static UIView *DMPanelArrowMake(void) {
+    const CGFloat W = kMSBDArrowWidth, H = kMSBDArrowHeight, o = kPanelArrowBand;
+    UIView *arrow = [[UIView alloc] initWithFrame:CGRectMake(0, 0, W, H + o)];
+    arrow.userInteractionEnabled = NO; arrow.accessibilityElementsHidden = YES;
+    UIVisualEffectView *fx = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThickMaterial]];   // (the panel's)
+    fx.frame = arrow.bounds; fx.userInteractionEnabled = NO;
+    CGPathRef fill = MSBDArrowPathCreate(W, H, o, MSBDArrowDown, false), sides = MSBDArrowPathCreate(W, H, o, MSBDArrowDown, true);
+    UIView *mask = [[UIView alloc] initWithFrame:fx.bounds];
+    CAShapeLayer *shape = [CAShapeLayer layer];
+    shape.frame = mask.bounds; shape.path = fill; shape.fillColor = [UIColor blackColor].CGColor;
+    [mask.layer addSublayer:shape];
+    fx.maskView = mask;   // (a blur view is masked through its mask view)
+    [arrow addSubview:fx];
+    CAShapeLayer *line = [CAShapeLayer layer];   // (the panel's border, 0.5 pt inside its edge: the sides' line a quarter point up to meet it)
+    line.frame = CGRectOffset(arrow.bounds, 0, -0.25); line.path = sides; line.fillColor = nil;
+    line.strokeColor = [UIColor colorWithWhite:0.5 alpha:0.35].CGColor; line.lineWidth = 0.5;
+    [arrow.layer addSublayer:line];
+    CGPathRelease(fill); CGPathRelease(sides);
+    return arrow;
+}
 @implementation DMDownloadsPanelView
 - (BOOL)accessibilityPerformEscape { DMLog(@"[downloads] closes: escape (assistive feature)"); [[DMDownloadsPanel shared] dismissAnimated:YES]; return YES; }
 @end
@@ -727,18 +758,20 @@ static BOOL DMDownloadsSwitcherVisible(void) {
     [self searchFieldDidUnfocus];
     [self holdKeys:NO];   // (the keys go back to whoever had them: the app's window, or SpringBoard's own windows)
     self.searchField = nil; self.list = nil; self.emptyLabel = nil; self.items = nil; self.searchIndex = nil; self.results = nil;
-    UIView *panel = self.panel, *shield = self.shield;
+    UIView *panel = self.panel, *shield = self.shield, *arrow = self.arrow;
     UITapGestureRecognizer *outsideTap = self.outsideTap;
     [self.dockWatch invalidate]; self.dockWatch = nil;
-    self.panel = nil; self.shield = nil; self.outsideTap = nil;
+    self.panel = nil; self.shield = nil; self.outsideTap = nil; self.arrow = nil;
     [shield removeFromSuperview];
     [outsideTap.view removeGestureRecognizer:outsideTap];
-    if (!panel) { [self restoreHostWindowIfIdle]; return; }
-    if (!animated) { [panel removeFromSuperview]; [self restoreHostWindowIfIdle]; return; }
+    if (!panel) { [arrow removeFromSuperview]; [self restoreHostWindowIfIdle]; return; }
+    if (!animated) { [panel removeFromSuperview]; [arrow removeFromSuperview]; [self restoreHostWindowIfIdle]; return; }
     BOOL rm = MSBReduceMotion();   // (Reduce Motion: a fade with only a tiny scale)
+    CGAffineTransform away = rm ? CGAffineTransformMakeScale(kMSBRMScale, kMSBRMScale) : CGAffineTransformMakeScale(0.94, 0.94);
     [UIView animateWithDuration:0.14 delay:0 options:rm ? UIViewAnimationOptionCurveEaseInOut : UIViewAnimationOptionCurveEaseIn animations:^{
-        panel.alpha = 0.0; panel.transform = rm ? CGAffineTransformMakeScale(kMSBRMScale, kMSBRMScale) : CGAffineTransformMakeScale(0.94, 0.94);
-    } completion:^(BOOL f) { [panel removeFromSuperview]; [self restoreHostWindowIfIdle]; }];
+        panel.alpha = 0.0; panel.transform = away;
+        arrow.alpha = 0.0; arrow.transform = away;   // (about the same point as the panel: one shape)
+    } completion:^(BOOL f) { [panel removeFromSuperview]; [arrow removeFromSuperview]; [self restoreHostWindowIfIdle]; }];
 }
 
 - (void)toggleFromIcon:(UIView *)icon {
@@ -800,7 +833,7 @@ static BOOL DMDownloadsSwitcherVisible(void) {
 
     // A list that grows upward from the icon: newest at the bottom (closest to the icon), older ones above it, scrollable.
     // It gets as tall as the room above the Dock allows (never under the status bar), at most 10 rows before it scrolls.
-    const CGFloat width = 360.0, pad = 8.0, rowH = 56.0, headerH = 42.0, gap = 14.0, footerH = 30.0, searchH = kSearchRowH;
+    const CGFloat width = 360.0, pad = 8.0, rowH = 56.0, headerH = 42.0, gap = kMSBDArrowHeight + kMSBDArrowTipGap, footerH = 30.0, searchH = kSearchRowH;   // (gap: the arrow, its tip 3 pt above the stack)
     CGRect iconFrame = [icon.superview convertRect:icon.frame toView:window];
     CGFloat room = iconFrame.origin.y - gap - 54.0;   // 54: keeps clear of the status bar
     NSUInteger fit = (NSUInteger)MAX(1.0, floor((room - headerH - footerH - searchH - 2 * pad) / rowH));
@@ -904,6 +937,20 @@ static BOOL DMDownloadsSwitcherVisible(void) {
     panel.transform = rm ? CGAffineTransformMakeScale(kMSBRMScale, kMSBRMScale) : CGAffineTransformMakeScale(0.9, 0.9);
     [window addSubview:panel];
     self.panel = panel;
+    {   // the arrow under the panel, pointing at the stack: under its middle, never into the rounded corners (MSBDArrowOffset)
+        UIView *arrow = DMPanelArrowMake();
+        CGFloat off = MSBDArrowOffset(CGRectMake(x, y, width, height), CGRectGetMidX(iconFrame), kPanelCorner, kMSBDArrowWidth);
+        CGRect af = CGRectMake(x + off - kMSBDArrowWidth / 2.0, y + height - kPanelArrowBand, kMSBDArrowWidth, kMSBDArrowHeight + kPanelArrowBand);
+        arrow.layer.anchorPoint = CGPointMake((CGRectGetMidX(iconFrame) - af.origin.x) / af.size.width, kPanelArrowBand / af.size.height);   // (the panel's anchor point)
+        arrow.frame = af;   // (after the anchor point, as for the panel)
+        arrow.alpha = 0.0; arrow.transform = panel.transform;
+        [window insertSubview:arrow aboveSubview:panel];   // (above: its band hides the panel's border where they join)
+        self.arrow = arrow;
+        DM_FEATURE_MARK("downloads-arrow");
+        DMLog([NSString stringWithFormat:@"[downloads] the arrow: %.1f pt from the panel's left edge (the stack's middle %.1f, panel %@), tip %.1f pt above the stack",
+               off, CGRectGetMidX(iconFrame), NSStringFromCGRect(CGRectMake(x, y, width, height)), CGRectGetMinY(iconFrame) - CGRectGetMaxY(af)]);
+    }
+    UIView *arrowNow = self.arrow;
     [self startDockWatch];
     [self holdKeys:YES];   // (Esc closes it while it is open, also over an app's window: see -holdKeys:)
     {   // (assistive features: the focus goes into the panel -- its first element -- once it is up)
@@ -912,6 +959,7 @@ static BOOL DMDownloadsSwitcherVisible(void) {
     }
     MSBAnimate(0.24, 0, 0.86, 0, ^{
         panel.alpha = 1.0; panel.transform = CGAffineTransformIdentity;
+        arrowNow.alpha = 1.0; arrowNow.transform = CGAffineTransformIdentity;
     }, nil);
     // the visible rows pop up one after another from the icon, newest first
     if (!rm) for (NSUInteger k = 0; k < rows.count; k++) {
@@ -1005,8 +1053,8 @@ static BOOL DMIsTypingInKeyboard(UIWindow *w) {
             self.dragLifted = YES;
             row.highlighted = NO;
             DMLog(@"[downloads] an item is dragged out of the stack: the panel fades until the drop");
-            UIView *panel = self.panel;
-            [UIView animateWithDuration:0.15 animations:^{ panel.alpha = 0.0; }];
+            UIView *panel = self.panel, *arrow = self.arrow;
+            [UIView animateWithDuration:0.15 animations:^{ panel.alpha = 0.0; arrow.alpha = 0.0; }];
         }
         if (self.dragLifted) {
             void (*move)(CGPoint, BOOL) = (void (*)(CGPoint, BOOL))dlsym(RTLD_DEFAULT, "MSBDFinderDragMoveTo");
@@ -1070,7 +1118,10 @@ static BOOL DMIsTypingInKeyboard(UIWindow *w) {
     CGRect b = panel.bounds; b.size.height = height;
     CGPoint pos = panel.layer.position; pos.y = bottom;
     if (CGRectEqualToRect(b, panel.bounds) && CGPointEqualToPoint(pos, panel.layer.position)) { [self pinListToBottom]; return; }
-    void (^apply)(void) = ^{ panel.bounds = b; panel.layer.position = pos; [panel layoutIfNeeded]; [self pinListToBottom]; };
+    UIView *arrow = self.arrow;   // (its anchor is on the panel's bottom edge: it moves with it; while the keyboard lifts the panel off the stack it goes)
+    CGFloat arrowAlpha = bottom >= self.openBottom - 0.5 ? panel.alpha : 0.0;
+    void (^apply)(void) = ^{ panel.bounds = b; panel.layer.position = pos; [panel layoutIfNeeded]; [self pinListToBottom];
+                             arrow.layer.position = CGPointMake(arrow.layer.position.x, pos.y); arrow.alpha = arrowAlpha; };
     if (animated && !MSBReduceMotion()) [UIView animateWithDuration:0.18 delay:0 options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionCurveEaseOut animations:apply completion:nil];
     else apply();
 }
@@ -1235,6 +1286,8 @@ static BOOL DMDLHardwareKeyboard(void) {
 
 @interface DMDownloadsIconView : UIView <UIPointerInteractionDelegate>
 @property (nonatomic, strong) UIImageView *image;
+@property (nonatomic) CGSize themeSize;          // (the size and theme-engine generation the shown app-icon picture was asked for)
+@property (nonatomic) NSUInteger themeGeneration;
 - (void)tapped;
 @end
 @implementation DMDownloadsIconView
@@ -1250,12 +1303,20 @@ static BOOL DMDLHardwareKeyboard(void) {
     self.isAccessibilityElement = YES;   // ("Downloads, button", used as a tap is: 1.3.7, audit M-3)
     self.accessibilityLabel = @"Downloads";
     self.accessibilityTraits = UIAccessibilityTraitButton;
+    DMIconThemeSetDrawer(MSBDIconDownloads, ^UIImage *(CGSize size, CGFloat scale, CGFloat radius, BOOL masked) { return DMFolderDraw(size, masked); });
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(setNeedsLayout) name:DMIconThemeChangedNotification object:nil];
     return self;
 }
 - (BOOL)accessibilityActivate { DM_FEATURE_MARK("ax-dock-items"); [self tapped]; return YES; }
 - (void)layoutSubviews {
     [super layoutSubviews];
     self.image.frame = self.bounds;
+    // (1.7.5: the app icon's picture -- a theme's, or the folder as SpringBoard / a theme engine shapes an app's own icon; else drawn here)
+    if (!CGSizeEqualToSize(self.themeSize, self.bounds.size) || self.themeGeneration != DMIconThemeGeneration() || !self.image.image) {
+        UIImage *pic = DMIconThemePicture(MSBDIconDownloads, self.bounds.size, NULL);
+        self.themeSize = pic ? self.bounds.size : CGSizeZero; self.themeGeneration = DMIconThemeGeneration();
+        if (pic) { self.image.image = pic; return; }
+    } else return;
     if (!self.image.image || !CGSizeEqualToSize(self.image.image.size, self.bounds.size)) self.image.image = DMFolderImage(self.bounds.size);
 }
 - (void)tapped { [[DMDownloadsPanel shared] toggleFromIcon:self]; }

@@ -122,6 +122,8 @@ file MacStatusBarCore ^TextWindow\.h$ finder
 sym MacStatusBarCore ^_*DMAL[A-Z] actmonLibrary
 file MacStatusBarCore ^AppLibraryApps\.h$ actmonLibrary
 file MacStatusBarCore ^ActMonDock\.h$ actmonLibrary
+# its picture as an app icon an icon theme can change (common/IconTheme.h, 1.7.5 item 7: in this library only Activity Monitor uses it)
+file MacStatusBarCore ^IconTheme\.h$ actmonLibrary
 sym MacStatusBarCore ^_?DMDesktop[A-Z] desktopIcons
 file MacStatusBarCore ^Desktop(Names)?\.h$ desktopIcons
 file MacStatusBarCore ^DesktopPlace\.h$ desktopIcons

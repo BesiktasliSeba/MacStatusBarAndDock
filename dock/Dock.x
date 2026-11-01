@@ -1264,14 +1264,51 @@ static BOOL DMPanStartedOnDesktopIcon(UIGestureRecognizer *gesture) {
     for (UIView *v = [w hitTest:CGPointMake(p.x - t.x, p.y - t.y) withEvent:nil]; v; v = v.superview) if ([v isKindOfClass:c]) return YES;
     return NO;
 }
+// 1.7.5 items 12 and 16: a pull down from the screen's top edge is Notification Center's or Control Center's (iPadOS's own pulls, SBGrabberTongue), never
+// a swipe down. One that started just under the menu bar outside the windows -- or anywhere from the top while the auto-hiding bar is hidden -- also
+// reached the Home Screen's search view and opened the App Library behind Notification Center (A12Z 18.5: from y 28; 16 / 17: y 6-20 with the bar
+// hidden); after Notification Center closed it was still there, the windows faded away behind it (Stage Manager: the stage hidden) until a Home
+// press. The start of a top-edge pull is noted (the tongue's -_pullGestureBegan:): a swipe down within half a second of it is the pull's, and an
+// App Library the swipe down opened just before the pull began (the other order) is closed again at once, behind Notification Center.
+static CFTimeInterval gTopPullAt = -10.0, gSwipeLibraryAt = -10.0;
+static ptrdiff_t gTongueEdgeIvar = -2;   // (iPadOS 15: no -screenEdge, only the _screenEdge ivar)
+static BOOL DMTongueOnTopEdge(id tongue) {
+    if ([tongue respondsToSelector:NSSelectorFromString(@"screenEdge")]) {
+        Method m = class_getInstanceMethod(object_getClass(tongue), NSSelectorFromString(@"screenEdge"));
+        const char *enc = m ? method_getTypeEncoding(m) : NULL;
+        if (enc && !strcmp(enc, "Q16@0:8")) return ((NSUInteger (*)(id, SEL))objc_msgSend)(tongue, NSSelectorFromString(@"screenEdge")) == UIRectEdgeTop;
+    }
+    if (gTongueEdgeIvar == -2) { Ivar iv = class_getInstanceVariable(objc_getClass("SBGrabberTongue"), "_screenEdge"); const char *e = iv ? ivar_getTypeEncoding(iv) : NULL; gTongueEdgeIvar = e && !strcmp(e, "Q") ? ivar_getOffset(iv) : -1; }
+    return gTongueEdgeIvar >= 0 && *(NSUInteger *)((uint8_t *)(__bridge void *)tongue + gTongueEdgeIvar) == UIRectEdgeTop;
+}
+%group TopPullYield
+%hook SBGrabberTongue
+- (void)_pullGestureBegan:(id)gesture {
+    %orig;
+    if (!DMTongueOnTopEdge(self)) return;
+    CFTimeInterval now = CACurrentMediaTime();
+    gTopPullAt = now;
+    if (now - gSwipeLibraryAt < 0.5) {   // (the swipe down came first: its App Library goes again, behind the pull's panel)
+        gSwipeLibraryAt = -10.0;
+        DM_FEATURE_MARK("swipe-down-yields-to-top-pull");
+        DMLog([NSString stringWithFormat:@"[swipe-down] that drag is a pull from the top edge (Notification Center / Control Center): the App Library closes again (%d)", DMDismissAppLibraryIfShowing()]);
+    }
+}
+%end
+%end
 %hook SBSearchScrollView
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gesture {
     if (DMPanStartedOnDesktopIcon(gesture)) { DMLog(@"[swipe-down] a drag from a desktop icon: not a swipe"); return NO; }
     if (gSwipeDownOpensLibrary && DMSpotlightButtonShown() && [gesture isKindOfClass:[UIPanGestureRecognizer class]] &&
         DMSwipeIsDownward((UIPanGestureRecognizer *)gesture, (UIView *)self)) {
+        if (CACurrentMediaTime() - gTopPullAt < 0.5) {   // (Notification Center's / Control Center's pull from the top edge: theirs, not a swipe down)
+            DM_FEATURE_MARK("swipe-down-yields-to-top-pull");
+            DMLog(@"[swipe-down] a pull from the top edge (Notification Center / Control Center) reached the Home Screen too: not a swipe down");
+            return NO;
+        }
         static int logged = 0;
         if (logged++ < 20) DMLog(@"[swipe-down] genuine downward drag on the Home Screen search view -> opening the App Library");
-        DMPresentAppLibrary();
+        if (DMPresentAppLibrary()) gSwipeLibraryAt = CACurrentMediaTime();
         return NO;   // do not let Spotlight's own scroll view begin dragging open underneath us
     }
     return %orig;
@@ -1926,6 +1963,12 @@ static NSString *DMK2Verdict(void) {
 
 %ctor {
     %init;
+    {   // (1.7.5 items 12 / 16: a pull from the top edge is never a swipe down -- where the tongue's pull start is as on 15-18)
+        Method m = class_getInstanceMethod(objc_getClass("SBGrabberTongue"), NSSelectorFromString(@"_pullGestureBegan:"));
+        const char *enc = m ? method_getTypeEncoding(m) : NULL;
+        if (enc && !strcmp(enc, "v24@0:8@16")) %init(TopPullYield);
+        else DMLog([NSString stringWithFormat:@"[swipe-down] the top edge's pull start is not the known one (%s): a swipe down is not told from a pull", enc ?: "missing"]);
+    }
     MSBDWatchMacStatusBarOff();   // ("MacStatusBar Is Off": this line runs while MacStatusBar is off, see OffAlert.h)
     MSAutoLockWatchFromDock(^(NSString *l) { DMLog(l); });   // (Auto-Lock 2 hours left behind: likewise, AutoLockGiveBack.h)
     {
@@ -1971,6 +2014,9 @@ static NSString *DMK2Verdict(void) {
             } else if (!strncmp(word, "trash:", 6)) {   // debug (1.7.0): the Dock's Trash -- trash:tap, trash:empty, trash:hover1/0, trash:eject1/0, trash:state, trash:removeicon_<bundle>
                 extern void DMTrashDebug(NSString *cmd);
                 DMTrashDebug([NSString stringWithUTF8String:word + 6]);
+            } else if (!strcmp(word, "ithm")) {   // debug (1.7.5 item 7): the items' app-icon pictures, asked and on screen (IconTheme.m)
+                extern void DMIconThemeDebug(void);
+                DMIconThemeDebug();
             } else if (!strcmp(word, "k2")) {   // debug (K-2): the whole Dock layout in one dump (DMK2Dump)
                 DMK2Dump();
                 DMLog([@"[k2] verdict: " stringByAppendingString:DMK2Verdict()]);

@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>items</key>
+	<array>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>The files in On My iPad &gt; Desktop, on the first page of the Home Screen.</string>
+			<key>id</key>
+			<string>DESKTOP_GROUP</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar.finder.pref</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>DESKTOP_ICONS</string>
+			<key>key</key>
+			<string>desktopIcons</string>
+			<key>label</key>
+			<string>Show Desktop Icons</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar.finder.pref</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>DESKTOP_HIDE_NAMES</string>
+			<key>key</key>
+			<string>desktopHideNames</string>
+			<key>label</key>
+			<string>Hide Desktop Icon Names</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>id</key>
+			<string>DESKTOP_SIZE_GROUP</string>
+			<key>label</key>
+			<string>Icon Size</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar.finder.pref</string>
+			<key>cell</key>
+			<string>PSSliderCell</string>
+			<key>default</key>
+			<real>64</real>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>DESKTOP_ICON_SIZE</string>
+			<key>key</key>
+			<string>desktopIconSize</string>
+			<key>max</key>
+			<real>96</real>
+			<key>min</key>
+			<real>40</real>
+		</dict>
+	</array>
+	<key>title</key>
+	<string>Desktop</string>
+</dict>
+</plist>

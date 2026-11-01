@@ -13,6 +13,7 @@ static MTIConfig *Config(NSString *root, NSArray *langs) {
     c.supportDir = [root stringByAppendingPathComponent:@"Application Support"];
     c.languages = langs; c.cfVersion = 1953.1; c.maxPerPane = 400; c.maxTotal = 6000;
     c.own = @[@{@"id": @"MAC_STATUS_BAR", @"title": @"Status Bar", @"bundle": [root stringByAppendingPathComponent:@"PreferenceBundles/MacStatusBarPrefs.bundle"]},
+              @{@"id": @"MAC_DESKTOP", @"title": @"Desktop", @"bundle": [root stringByAppendingPathComponent:@"PreferenceBundles/MacStatusBarPrefs.bundle"], @"plist": @"Desktop", @"icon": @"desktop"},
               @{@"id": @"MAC_WINDOWS", @"title": @"Windows & Multitasking", @"bundle": [root stringByAppendingPathComponent:@"PreferenceBundles/MacStatusBarPrefs.bundle"], @"plist": @"Windows", @"icon": @"windows"},
               @{@"id": @"DOCK_MAGNIFICATION", @"title": @"Dock", @"bundle": [root stringByAppendingPathComponent:@"PreferenceBundles/NotInstalled.bundle"]}];
     c.skipBundles = @[@"MacStatusBarPrefs", @"DockMagnificationPrefs"];
@@ -31,7 +32,7 @@ int main(int argc, char **argv) {
         NSString *root = @(argv[1]);
         NSArray<MTIEntry *> *all = MTIBuild(Config(root, @[@"en-US"]));
         NSMutableOrderedSet *panes = [NSMutableOrderedSet orderedSet]; for (MTIEntry *e in all) [panes addObject:e.paneTitle];
-        NSArray *wantPanes = @[@"Status Bar", @"Windows & Multitasking", @"SSH", @"Pointer", @"Alpha", @"Delta", @"Epsilon", @"Eta", @"Gamma Tweak", @"Iota", @"Theta", @"Zeta"];
+        NSArray *wantPanes = @[@"Status Bar", @"Desktop", @"Windows & Multitasking", @"SSH", @"Pointer", @"Alpha", @"Delta", @"Epsilon", @"Eta", @"Gamma Tweak", @"Iota", @"Theta", @"Zeta"];
         Expect([panes.array isEqualToArray:wantPanes], [NSString stringWithFormat:@"pages in order: %@", [panes.array componentsJoinedByString:@", "]]);
 
         // our own page, read from its Root.plist; its PreferenceLoader entry (iPadOS 17) left out
@@ -46,6 +47,14 @@ int main(int argc, char **argv) {
         Expect([MTIPrefsURL(e.uid) isEqualToString:@"prefs:root=MAC_WINDOWS#Mac%20Switcher"] && [MTIPaneOf(e.uid) isEqualToString:@"MAC_WINDOWS"], @"second own page Settings URL");
         Expect([Find(all, @"Windows & Multitasking", @"Windows & Multitasking").iconPath hasSuffix:@"windows@2x.png"], @"second own page icon found");
         Expect(Find(all, @"Status Bar", @"Mac Switcher") == nil, @"its rows not on the first page");
+        // the third page of the same bundle (1.7.5: Desktop, Desktop.plist): its rows, a slider named by its group, its Settings URL and icon
+        e = Find(all, @"Desktop", @"Show Desktop Icons");
+        Expect([e.uid isEqualToString:@"msbd-tweaksetting:root=MAC_DESKTOP#Show%20Desktop%20Icons"] && [e.crumb isEqualToString:@"Desktop"], [NSString stringWithFormat:@"desktop page row uid %@", e.uid]);
+        Expect([MTIPrefsURL(e.uid) isEqualToString:@"prefs:root=MAC_DESKTOP#Show%20Desktop%20Icons"] && [MTIPaneOf(e.uid) isEqualToString:@"MAC_DESKTOP"], @"desktop page Settings URL");
+        e = Find(all, @"Desktop", @"Icon Size");
+        Expect([MTIPrefsURL(e.uid) isEqualToString:@"prefs:root=MAC_DESKTOP#DESKTOP_ICON_SIZE"], [NSString stringWithFormat:@"the Icon Size slider, named by its group: %@", e.uid]);
+        Expect([Find(all, @"Desktop", @"Desktop").iconPath hasSuffix:@"desktop@2x.png"], @"desktop page icon found");
+        Expect(Find(all, @"Status Bar", @"Show Desktop Icons") == nil && Find(all, @"Windows & Multitasking", @"Show Desktop Icons") == nil, @"its rows on no other page");
         BOOL plOurs = NO; for (MTIEntry *x in all) if ([x.paneID isEqualToString:@"MSBD_PL_MacStatusBarPrefs"]) plOurs = YES;
         Expect(!plOurs, @"our page's PreferenceLoader entry left out");
         // our rows of the main list

@@ -29,7 +29,7 @@ MacStatusBar&Dock
 │   └── MacHomeBar, MacLargeTitles
 │
 ├── Settings app
-│   └── MacSettings, MacEthernetFix, the Status Bar, Windows & Multitasking and Dock pages
+│   └── MacSettings, MacEthernetFix, the Status Bar, Desktop, Windows & Multitasking and Dock pages
 │
 ├── pointeruid (the pointer)
 │   └── MacPointer          the Mac pointer

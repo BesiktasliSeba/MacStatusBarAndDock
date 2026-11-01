@@ -1,5 +1,6 @@
-// EthernetFix.x -- Settings > General > Ethernet (MacSettings, Settings app only). What it does today:
-//  - the Ethernet section is always listed, with or without an adapter (EthernetAlwaysShow, below; ported from Lynx's showSettingsEthernetSection);
+// EthernetFix.x -- Settings' Ethernet row (MacSettings, Settings app only; in the sidebar on every version, between Wi-Fi and Bluetooth). What it does:
+//  - Ethernet is listed with or without an adapter (EthernetAlwaysShow, below; ported from Lynx's showSettingsEthernetSection), except while a
+//    trackpad or mouse and a keyboard are both attached and no adapter is -- our Pointer and Keyboard rows are there then (1.7.5 item 3);
 //  - Apple's page for one interface (AppleEthernetSettingsController, which embeds WiFi's WFNetworkSettingsViewController) throws in stock iPadOS
 //    ("-[AppleEthernetSettingsController network]: unrecognized selector") and used to crash Preferences. Both controllers' lifecycle calls are
 //    wrapped in @try/@catch: a throw shows a plain "aren't available" message instead of a crash. A row tap on the interface list is also answered
@@ -14,7 +15,11 @@
 #define MSTestFlag(path) 0
 #endif
 #import <unistd.h>
+#import <objc/runtime.h>
+#import <objc/message.h>
+#import <dlfcn.h>
 #import "../common/OtherTweaks.h"
+#import "../common/InputDevices.h"   // (the pointer and keyboard as our rows show them, and the rule: MSBDEthernetListed)
 
 static void MLog(NSString *line) {   // (debug builds only: release builds write no /tmp log)
 #if DEBUG
@@ -207,26 +212,79 @@ static void MLog(NSString *line) {   // (debug builds only: release builds write
 }
 %end
 
-// ALWAYS SHOW THE ETHERNET SECTION (2026-09-24; ported from Lynx's "showSettingsEthernetSection", which the M1 had on): Settings >
-// General only lists Ethernet while it sees an Ethernet interface, and Preferences asks this watcher (Preferences.framework, the same
-// class Lynx hooks) whether there is one. Answering YES keeps the section visible with no adapter connected, on iOS 15 and 16; the pages
-// behind it are the stock ones (with the crash catches above). Installed only if the class exists.
+// ALWAYS SHOW THE ETHERNET SECTION (2026-09-24; ported from Lynx's "showSettingsEthernetSection", which the M1 had on): Settings only lists
+// Ethernet while it sees an Ethernet interface, and Preferences asks this watcher (Preferences.framework, the same class Lynx hooks) whether
+// there is one -- 15-17: the sidebar's -[PSUIPrefsListController shouldShowEthernetSpecifier] / -updateEthernetWithCompletion:; 18: its SwiftUI
+// sidebar's Ethernet item (A12Z 18.5: between Wi-Fi and Bluetooth). Answering YES keeps the row with no adapter connected; the pages behind it are
+// the stock ones (with the crash catches above). Installed only if the class exists.
+// 1.7.5 item 3 (KT 31 Oct): not while a trackpad or mouse and a keyboard are both attached -- our Pointer and Keyboard rows are in the sidebar
+// then, and the empty Ethernet row goes to keep it short (common/InputDevices.h MSBDEthernetListed: the same readers as those rows). Apple's own
+// answer first: with an adapter connected the row is always there. Only ever NO where Apple's answer was NO too.
 %group EthernetAlwaysShow
 @interface PSSystemConfigurationDynamicStoreEthernetWatcher : NSObject
 @end
 %hook PSSystemConfigurationDynamicStoreEthernetWatcher
 - (BOOL)hasEthernetNetworkInterfaces {
-    return YES;
+    BOOL adapter = %orig;
+    BOOL pointer = MSBDPointerAttached(), keyboard = MSBDKeyboardAttached();
+    BOOL listed = MSBDEthernetListed(adapter, pointer, keyboard);
+    static int said = -1;
+    if (said != (int)listed) { said = listed; MLog([NSString stringWithFormat:@"[ethernetfix] Ethernet %@ (adapter %d, pointer %d, keyboard %d)", listed ? @"listed" : @"left out", adapter, pointer, keyboard]); }
+    return listed;
 }
 %end
 %end
+
+// A trackpad, mouse or keyboard attached or detached while Settings runs, a moment after our Pointer / Keyboard rows have followed the device
+// (MacSettings reloads the sidebar for them): the sidebar asks the watcher again. 15-17: through its own -updateEthernet (type-checked), nothing
+// else -- Apple's Ethernet pages listen to the change notification too, and they throw on their own (1.7.5 review). 18 (no UIKit sidebar list):
+// Preferences' own PSEthernetChangedNotification, what an adapter coming or going posts, which the SwiftUI sidebar follows (A12Z 18.5: Ethernet
+// came and went live). Where neither is there, the row follows the next time the sidebar is built.
+static void EthernetFindRootLists(UIViewController *vc, NSMutableArray *out) {
+    if (!vc || out.count > 4) return;
+    Class root = objc_getClass("PSUIPrefsListController");
+    if (root && [vc isKindOfClass:root]) [out addObject:vc];
+    for (UIViewController *c in vc.childViewControllers) EthernetFindRootLists(c, out);
+}
+static void EthernetAskAgain(void) {
+    NSString *const *note = objc_getClass("PSUIPrefsListController") ? NULL : (NSString *const *)dlsym(RTLD_DEFAULT, "PSEthernetChangedNotification");
+    if (note && [*note isKindOfClass:[NSString class]]) {
+        Class wc = objc_getClass("PSSystemConfigurationDynamicStoreEthernetWatcher");
+        Method sm = wc ? class_getClassMethod(wc, @selector(sharedInstance)) : NULL;
+        id watcher = sm && method_getTypeEncoding(sm) && !strcmp(method_getTypeEncoding(sm), "@16@0:8") ? ((id (*)(id, SEL))objc_msgSend)(wc, @selector(sharedInstance)) : nil;
+        MLog([NSString stringWithFormat:@"[ethernetfix] a pointer or keyboard came or went: %@ posted (watcher %@)", *note, watcher ? @"shared" : @"none"]);
+        [[NSNotificationCenter defaultCenter] postNotificationName:*note object:watcher];
+    }
+    Class root = objc_getClass("PSUIPrefsListController");
+    Method m = root ? class_getInstanceMethod(root, @selector(updateEthernet)) : NULL;
+    const char *t = m ? method_getTypeEncoding(m) : NULL;
+    if (!t || strcmp(t, "v16@0:8") != 0) return;
+    NSMutableArray *lists = [NSMutableArray array];
+    for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
+        if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+        for (UIWindow *w in ((UIWindowScene *)sc).windows) EthernetFindRootLists(w.rootViewController, lists);
+    }
+    for (UIViewController *l in lists) {
+        MLog([NSString stringWithFormat:@"[ethernetfix] a pointer or keyboard came or went: the sidebar asks again (pointer %d, keyboard %d)", MSBDPointerAttached(), MSBDKeyboardAttached()]);
+        ((void (*)(id, SEL))objc_msgSend)(l, @selector(updateEthernet));
+    }
+}
+static void EthernetFollowDevices(void) {
+    static int t1 = 0, t2 = 0;
+    void (^later)(int) = ^(int tok) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ EthernetAskAgain(); });
+    };
+    notify_register_dispatch(MSBD_POINTER_CHANGED, &t1, dispatch_get_main_queue(), later);
+    notify_register_dispatch(MSBD_KEYBOARD_CHANGED, &t2, dispatch_get_main_queue(), later);
+}
 
 %ctor {
     %init;
     if (MSBDOtherTweakDoing(kMSBDDupEthernetSection, NO)) MLog(@"[ethernetfix] Lynx shows the Ethernet section already: ours is not added");
     else if (objc_getClass("PSSystemConfigurationDynamicStoreEthernetWatcher")) {
         %init(EthernetAlwaysShow);
-        MLog(@"[ethernetfix] the Ethernet section is always shown (PSSystemConfigurationDynamicStoreEthernetWatcher hooked)");
+        EthernetFollowDevices();
+        MLog(@"[ethernetfix] Ethernet is listed without an adapter unless a pointer and a keyboard are attached (PSSystemConfigurationDynamicStoreEthernetWatcher hooked)");
     } else MLog(@"[ethernetfix] PSSystemConfigurationDynamicStoreEthernetWatcher not found: the Ethernet section shows only with an adapter");
     // AppleEthernetSettingsController does not exist yet at this point (confirmed live, see the EthernetDetailFix group's
     // own comment above) -- poll for it rather than %init'ing that group immediately, since %init only ever resolves the

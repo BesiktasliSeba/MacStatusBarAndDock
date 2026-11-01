@@ -46,6 +46,19 @@ int main(void) {
         Expect(@"prefs:root=MAC_WINDOWS&path=WINDOW_ENGINE", YES, @"prefs:root=General&path=MAC_WINDOWS/WINDOW_ENGINE");
         Expect(@"prefs:root=MAC_WINDOWSX", YES, @"prefs:root=MAC_WINDOWSX");
         Expect(@"prefs:root=MAC_STATUS_BAR#Show%20Seconds", YES, @"prefs:root=General&path=MSBD_PL_MacStatusBarPrefs#Show%20Seconds");
+        // 1.7.5: the desktop's rows moved to the Desktop page (MAC_DESKTOP): old links to them on the Status Bar page go there, on every version
+        Expect(@"prefs:root=MAC_STATUS_BAR#Show%20Desktop%20Icons", NO, @"prefs:root=MAC_DESKTOP#Show%20Desktop%20Icons");
+        Expect(@"prefs:root=MAC_STATUS_BAR%23Hide%20Desktop%20Icon%20Names", NO, @"prefs:root=MAC_DESKTOP%23Hide%20Desktop%20Icon%20Names");
+        Expect(@"prefs:root=MAC_STATUS_BAR#DESKTOP_ICONS", NO, @"prefs:root=MAC_DESKTOP#DESKTOP_ICONS");
+        Expect(@"prefs:root=MAC_STATUS_BAR#DESKTOP_HIDE_NAMES", NO, @"prefs:root=MAC_DESKTOP#DESKTOP_HIDE_NAMES");
+        Expect(@"prefs:root=MAC_STATUS_BAR#Finder", NO, @"prefs:root=MAC_STATUS_BAR#Finder");   // (Finder stays on the Status Bar page)
+        Expect(@"prefs:root=MAC_DESKTOP", NO, @"prefs:root=MAC_DESKTOP");
+        Expect(@"prefs:root=MAC_DESKTOP#DESKTOP_ICON_SIZE", NO, @"prefs:root=MAC_DESKTOP#DESKTOP_ICON_SIZE");
+        Expect(@"prefs:root=MAC_STATUS_BAR#Show%20Desktop%20Icons", YES, @"prefs:root=General&path=MAC_DESKTOP#Show%20Desktop%20Icons");
+        Expect(@"prefs:root=MAC_STATUS_BAR%23DESKTOP_HIDE_NAMES", YES, @"prefs:root=General&path=MAC_DESKTOP%23DESKTOP_HIDE_NAMES");
+        Expect(@"prefs:root=MAC_DESKTOP", YES, @"prefs:root=General&path=MAC_DESKTOP");
+        Expect(@"prefs:root=MAC_DESKTOP#DESKTOP_ICON_SIZE", YES, @"prefs:root=General&path=MAC_DESKTOP#DESKTOP_ICON_SIZE");
+        Expect(@"prefs:root=MAC_DESKTOPS", YES, @"prefs:root=MAC_DESKTOPS");
         // 18: anything else as it is
         Expect(@"prefs:root=General&path=About", YES, @"prefs:root=General&path=About");
         Expect(@"prefs:root=MAC_STATUS_BAR_OTHER", YES, @"prefs:root=MAC_STATUS_BAR_OTHER");

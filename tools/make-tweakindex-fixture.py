@@ -124,3 +124,7 @@ raw(os.path.join(PB, 'MacStatusBarPrefs.bundle', 'icon@2x.png'), PNG)
 # ... and its second page from the same bundle (1.6.0: Windows & Multitasking, Windows.plist, its own icon)
 w(os.path.join(PB, 'MacStatusBarPrefs.bundle', 'Windows.plist'), {'title': 'Windows & Multitasking', 'items': [group('Multitasking'), sw('Mac Switcher', 'macSwitcher')]})
 raw(os.path.join(PB, 'MacStatusBarPrefs.bundle', 'windows@2x.png'), PNG)
+# ... and its third (1.7.5: Desktop, Desktop.plist, its own icon; a slider named by its group)
+w(os.path.join(PB, 'MacStatusBarPrefs.bundle', 'Desktop.plist'), {'title': 'Desktop', 'items': [group(None), sw('Show Desktop Icons', 'desktopIcons'), group('Icon Size'),
+  {'cell': 'PSSliderCell', 'id': 'DESKTOP_ICON_SIZE', 'key': 'desktopIconSize', 'min': 40, 'max': 96, 'defaults': 'com.besiktasliseba.macstatusbar'}]})
+raw(os.path.join(PB, 'MacStatusBarPrefs.bundle', 'desktop@2x.png'), PNG)

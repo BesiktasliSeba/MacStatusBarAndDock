@@ -12,6 +12,7 @@
 #import <objc/message.h>
 #import "../common/NativeEmbed.h"
 #import "../common/Hypervisor.h"   // (MSBDHypervisorCapable: Hide in Virtual Mac only where VirtualMac can run)
+#import "../common/InputDevices.h"   // (MSBDPointerAttached: read the same way by the Ethernet row's rule, EthernetFix.x -- 1.7.5)
 #import <dlfcn.h>
 
 @interface PSSpecifier : NSObject
@@ -34,16 +35,7 @@
 #define kPointerRowID @"MAC_POINTER"
 enum { kCellGroup = 0, kCellLinkList = 2, kCellSwitch = 6, kCellSlider = 5 };
 
-BOOL MSPointerDeviceAttached(void) {
-#if DEBUG
-    if (access("/tmp/msb-fakeptr", F_OK) == 0) return YES;   // (debug: test the Pointer page without a trackpad or mouse)
-    if (access("/tmp/msb-noptr", F_OK) == 0) return NO;      // (debug: as if no trackpad or mouse were attached -- the rows that follow one)
-#endif
-    static int token = 0;
-    if (!token) notify_register_check("com.besiktasliseba.macpointer.device", &token);
-    uint64_t v = 0; notify_get_state(token, &v);
-    return v == 1;
-}
+BOOL MSPointerDeviceAttached(void) { return MSBDPointerAttached(); }   // (common/InputDevices.h; its debug flags /tmp/msb-fakeptr and /tmp/msb-noptr)
 // Pointer Style: "ipados" or "mac" (the default). Older versions stored "arrow" for Mac: it is read as Mac and rewritten as "mac" once, so the choice
 // carries over (SpringBoard's bridge treats every value but "ipados" as the Mac pointer, old or new).
 static NSString *MSPointerStyle(void) {
@@ -187,9 +179,14 @@ void MSReloadSidebarKeepingScroll(PSListController *l) {   // (also used by the 
 }
 void MSPointerWatchSidebar(PSListController *sidebar) {
     gMSSidebar = sidebar;
+    // (a trackpad or mouse attached or detached before this list was watched -- Settings started on a page, its sidebar not shown yet: the row
+    //  follows now, once, so it and the Ethernet row's rule, which follows from the start, never disagree -- 1.7.5, iPad 2 16.7.7)
+    BOOL shown = NO;
+    for (PSSpecifier *sp in [sidebar specifiers]) if ([[sp identifier] isEqualToString:kPointerRowID]) { shown = YES; break; }
+    if (sidebar && shown != MSPointerDeviceAttached()) dispatch_async(dispatch_get_main_queue(), ^{ PSListController *l = gMSSidebar; if (l) MSReloadSidebarKeepingScroll(l); });
     static int token = 0;
     if (token) return;
-    notify_register_dispatch("com.besiktasliseba.macpointer.device.changed", &token, dispatch_get_main_queue(), ^(int t) {
+    notify_register_dispatch(MSBD_POINTER_CHANGED, &token, dispatch_get_main_queue(), ^(int t) {
         PSListController *l = gMSSidebar;
         BOOL shown = NO;
         for (PSSpecifier *sp in [l specifiers]) if ([[sp identifier] isEqualToString:kPointerRowID]) { shown = YES; break; }

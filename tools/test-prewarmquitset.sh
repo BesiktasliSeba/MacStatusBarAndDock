@@ -16,8 +16,18 @@ check "the header in plain C (the loader): the same path, nothing of Foundation"
   "clang -x c -Wall -Werror -o '$W/c' '$W/c.c' && [ \"\$('$W/c')\" = /var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-PrewarmQuitSet.plist ]"
 check "dasd: no notify state decides any more (no prewarm.enabled, no BlockOn)" \
   "! grep -n 'prewarm.enabled\|BlockOn\|gEnabledToken' ../prewarmblock/PrewarmBlock.x"
-check "dasd: refused only for an app in the file's set; the file's absence logged as the block off" \
-  "grep -q 'if (QuitSetContains(bundleID, &kept))' ../prewarmblock/PrewarmBlock.x && grep -q 'block off: no quit set kept' ../prewarmblock/PrewarmBlock.x"
+check "dasd: refused for an app in the file's set, or for every app while the file says Prewarm Apps is off; the file's absence logged as the block off" \
+  "awk '/^static BOOL DMPrewarmRefuses/{f=1} f&&/BOOL quit = QuitSetContains\\(bundleID, &kept, &all\\);/{q=1} q&&/if \\(all\\) \\{/{a=1} a&&/if \\(quit\\) \\{/{print \"ok\"; exit}' ../prewarmblock/PrewarmBlock.x | grep -q ok && grep -q 'block off: no quit set kept' ../prewarmblock/PrewarmBlock.x"
+check "dasd: refuseAll is read from the file with the set (only when it changed) and counts only while the file is there (no file: nothing refused)" \
+  "awk '/^static BOOL QuitSetContains/{f=1} f&&/gRefuseAll = MSBDPrewarmRefuseAllFromPlist\\(data\\);/{r=1} f&&/\\*all = now.present && gRefuseAll;/{a=1} f&&/^}/{print (r && a) ? \"ok\" : \"no\"; exit}' ../prewarmblock/PrewarmBlock.x | grep -q ok"
+check "SpringBoard: the file says refuseAll exactly while Prewarm Apps is off" \
+  "grep -q 'NSData \\*d = MSBDPrewarmQuitSetPlist(\\[gPrewarmQuitSet copy\\], !gPrewarmAppsOn);' ../statusbar/StatusBar.x && grep -q '^static BOOL gPrewarmAppsOn = YES;' ../statusbar/StatusBar.x"
+check "SpringBoard: Prewarm Apps read with the other settings (prewarmApps, on unless a boolean says off); a change rewrites the file and tells dasd, once the set is loaded" \
+  "awk '/^static void DMLoadPrefs\\(void\\) \\{/{f=1} f&&/CFSTR\\(\"prewarmApps\"\\)/{k=1} f&&/if \\(CFGetTypeID\\(pw\\) == CFBooleanGetTypeID\\(\\)\\) prewarm = CFBooleanGetValue\\(pw\\);/{b=1} f&&/DMPrewarmAppsSet\\(prewarm\\);/{s=1} f&&/^}/{print (k && b && s) ? \"ok\" : \"no\"; exit}' ../statusbar/StatusBar.x | grep -q ok && awk '/^static void DMPrewarmAppsSet\\(BOOL on\\)/{f=1} f&&/if \\(!gPrewarmQuitSet\\) return;/{l=1} l&&/DMPrewarmQuitWriteFile\\(\\);/{w=1} w&&/notify_post\\(MSB_PREWARM_CHANGED\\);/{print \"ok\"; exit}' ../statusbar/StatusBar.x | grep -q ok"
+check "SpringBoard's start: the settings are read before the set's file is written, so the first file already has the switch" \
+  "awk '/if \\(!DMCtorSkip\\(\"loadprefs\"\\)\\) DMLoadPrefs\\(\\);/{l=NR} /^    DMPrewarmQuitLoad\\(\\);/{q=NR} END{print (l && q && l < q) ? \"ok\" : \"no\"}' ../statusbar/StatusBar.x | grep -q ok"
+check "Settings: Prewarm Apps on Windows & Multitasking: a switch for prewarmApps in our domain, on by default, posting the change SpringBoard reads, in its own group (hidden with the stock status bar)" \
+  "plutil -convert json -o - ../statusbar/macstatusbarprefs/Resources/Windows.plist | python3 -c 'import json,sys; it=json.load(sys.stdin)[\"items\"]; i=[n for n,x in enumerate(it) if x.get(\"key\")==\"prewarmApps\"]; x=it[i[0]] if len(i)==1 else {}; g=it[i[0]-1] if i else {}; sys.exit(0 if x.get(\"cell\")==\"PSSwitchCell\" and x.get(\"label\")==\"Prewarm Apps\" and x.get(\"default\") is True and x.get(\"defaults\")==\"com.besiktasliseba.macstatusbar\" and x.get(\"PostNotification\")==\"com.besiktasliseba.macstatusbar/prefsChanged\" and g.get(\"cell\")==\"PSGroupCell\" and g.get(\"stockHides\") is True and g.get(\"footerText\") else 1)'"
 check "dasd: the file is looked at on every prewarm (its stamp), so a file that went is an empty set at once" \
   "awk '/^static BOOL QuitSetContains/{f=1} f&&/stat\\(kMSBDPrewarmQuitSetFile/{print \"ok\"; exit}' ../prewarmblock/PrewarmBlock.x | grep -q ok"
 check "SpringBoard: no notify state published (the file is the switch)" \

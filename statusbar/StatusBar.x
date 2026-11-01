@@ -517,6 +517,7 @@ static int DMSMTakeOutOfHiddenStages(NSString *bundle);   // (Stage Manager engi
 static double DMSMForceQuitWindows(NSString *bundleID, BOOL *windowed);   // (Stage Manager engine: force quit closes every window of the app, below)
 static void DMSMSetMinimized(NSString *key, BOOL on);
 static BOOL DMSMIsMinimized(NSString *key);
+static void DMSMLibraryLaunched(NSString *bundle);   // (an app opened while the App Library shows closes it: 1.7.5 item 12)
 static void DMSMMarkLeftOut(NSArray<NSString *> *keys, NSString *how);   // (windows a full desktop gave up: minimized, with the Mac Switcher or not)
 static NSMutableDictionary<NSString *, UIView *> *gSMMinPictures;   // (minimized windows' pictures, for the grow back out of the Dock: DMSMKeepMinPicture)
 static void DMSMGrowFromDock(NSString *key, int tries);
@@ -1158,8 +1159,12 @@ static NSString *DMStageBundle(UIView *stage);
 #define MSB_PREWARM_CHANGED "com.besiktasliseba.macstatusbar.prewarm.changed"
 #define MSB_PREWARM_CAP 128
 static NSMutableArray<NSString *> *gPrewarmQuitSet;   // ordered, oldest first
+// Settings > Windows & Multitasking > Prewarm Apps (1.7.5 item 6; key prewarmApps, on unless switched off): off, the same file tells dasd to refuse
+// every prewarm, not only the set's (common/PrewarmQuitSet.h). Read with the other settings (DMLoadPrefs); the set is kept either way, so the apps
+// the user quit stay refused when it is switched on again.
+static BOOL gPrewarmAppsOn = YES;
 static void DMPrewarmQuitWriteFile(void) {   // the set as dasd reads it (atomically: dasd never sees half a file)
-    NSData *d = MSBDPrewarmQuitSetPlist([gPrewarmQuitSet copy]);
+    NSData *d = MSBDPrewarmQuitSetPlist([gPrewarmQuitSet copy], !gPrewarmAppsOn);
     if (![d writeToFile:@kMSBDPrewarmQuitSetFile atomically:YES]) DMLog(@"[prewarm] the quit set's file for dasd could not be written");
 }
 static void DMPrewarmQuitPublish(void) {   // persist across resprings, write dasd's file, then tell dasd
@@ -1175,7 +1180,17 @@ static void DMPrewarmQuitLoad(void) {   // at SpringBoard start: the set from la
     if (v) { if (CFGetTypeID(v) == CFArrayGetTypeID()) for (id b in (__bridge NSArray *)v) if ([b isKindOfClass:[NSString class]] && [b length]) [gPrewarmQuitSet addObject:b]; CFRelease(v); }
     DMPrewarmQuitWriteFile();
     notify_post(MSB_PREWARM_CHANGED);
-    DMLog([NSString stringWithFormat:@"[prewarm] quit set loaded: %lu app(s)", (unsigned long)gPrewarmQuitSet.count]);
+    DMLog([NSString stringWithFormat:@"[prewarm] quit set loaded: %lu app(s)%@", (unsigned long)gPrewarmQuitSet.count, gPrewarmAppsOn ? @"" : @"; Prewarm Apps is off: no app is prewarmed"]);
+}
+// Prewarm Apps switched (DMLoadPrefs, from Settings' change notification): the file says it at once and dasd is told, so the next prewarm follows
+// it -- no respring. Before the set is loaded at the start (DMLoadPrefs runs first there) only the value is taken: DMPrewarmQuitLoad writes the file.
+static void DMPrewarmAppsSet(BOOL on) {
+    if (on == gPrewarmAppsOn) return;
+    gPrewarmAppsOn = on;
+    if (!gPrewarmQuitSet) return;
+    DMPrewarmQuitWriteFile();
+    notify_post(MSB_PREWARM_CHANGED);
+    DMLog(on ? @"[prewarm] Prewarm Apps on: iPadOS prewarms apps again (not the quit set's)" : @"[prewarm] Prewarm Apps off: dasd refuses every prewarm from now on");
 }
 // "Use Stock Status Bar", or Mac Status Bar switched off with its old on/off entry (tweakEnabled): the parts that keep the quit set (the kill and
 // open hooks, the set itself) do not run there, so the block is off: the file goes (dasd then refuses nothing) and a stored set goes, or dasd would
@@ -3182,6 +3197,7 @@ static BOOL DMMilkyWayTakeAskedFrame(NSString *bundleID, CGRect *frame) {
 }
 static CGRect DMFitInto(CGRect f, CGRect usable);
 static CGRect DMLayoutFrame(NSString *name);
+static void DMMarkOwnPlace(UIView *stage, CGRect frame);   // (1.7.5 item 13: opened at its own last place, DMCascadeStage)
 static BOOL DMEnlargeNewWindow(UIView *window) {
     CGSize screen = [UIScreen mainScreen].bounds.size;
     BOOL pending = !CGRectIsNull(gPendingWindowFrame);
@@ -3199,6 +3215,7 @@ static BOOL DMEnlargeNewWindow(UIView *window) {
     CGRect big = pending ? gPendingWindowFrame
                : (remembered && !CGRectIsNull(usable)) ? DMFitInto(remembered.CGRectValue, usable)
                : CGRectMake(round(screen.width * 0.11), MSBDMenuBarCenterTop(DMMenuBarHeight()), round(screen.width * 0.78), round(screen.height * 0.80));
+    if (remembered && !pending) DMMarkOwnPlace(window, big);
     if (CGRectEqualToRect(window.frame, big)) return NO;
     DMLog([NSString stringWithFormat:@"[lights] window enlarged from %@ to %@%@", NSStringFromCGRect(window.frame), NSStringFromCGRect(big), remembered && !pending ? @" (where its window last was)" : @""]);
     window.frame = big;
@@ -4102,6 +4119,7 @@ static void DMZetsuAdopt(UIWindow *w) {
     DMZetsuInstallLights(w);
     DMZetsuSyncAppOrientation(w);
     if (!CGRectIsNull(target) && !gRestoringWindowsFlag()) DMZetsuMove(w, target, NO, nil);
+    if (!asked && gLastWindowFrames[bundleID] && !CGRectIsNull(target)) DMMarkOwnPlace(w, target);   // (where its window last was: DMCascadeStage keeps it there)
     // (opened where we asked -- green from full screen back to where the window was, or a Window menu layout -- it stays there, as a Mac's window
     //  leaving full screen: not moved off the other windows by the cascade below, as Aerial's window flying in from full screen keeps its frame.
     //  Before, the green light's way back on Zetsu came out moved down and right "so it does not sit over another window" -- A12Z 18.5, 1.6.0)
@@ -6846,8 +6864,10 @@ static NSDictionary<NSString *, NSString *> *DMSMLayoutsFor(NSDictionary<NSStrin
     if (!frames.count) return out;
     // (the nine layouts are worked out once per call, from ONE measurement of the usable area: DMLayoutFrame measures it again each time, walking
     //  the Dock's views, and DMSMWatchTurn asks for these layouts every second -- 0.78 ms per 0.2 s tick with one window open, iPad 2, S-1. The
-    //  nine and the 6 pt are TurnPlace.h's, the other engines' too since 1.7.4)
-    CGRect u = DMUsableArea(); CGSize scr = [UIScreen mainScreen].bounds.size;
+    //  nine and the 6 pt are TurnPlace.h's, the other engines' too since 1.7.4. The area is Stage Manager's own, under the menu bar also while the
+    //  auto-hiding bar is hidden -- the area the layouts are placed in, DMSMAttrsForLayoutIn: DMUsableArea's top is 0 then, so no window was ever
+    //  noted in a layout and a turn kept halves and quarters at their old size, 1.7.5 item 15 -- and the same as DMUsableArea while the bar shows)
+    CGRect u = DMSMUsableAreaForIdentity(nil, NULL); CGSize scr = [UIScreen mainScreen].bounds.size;
     CGRect targets[kMSBDTurnLayoutCount];
     for (int i = 0; i < kMSBDTurnLayoutCount; i++) targets[i] = DMA5StageFromWindow(DMLayoutFrameInArea(@(kMSBDTurnLayouts[i]), u, scr));   // (= DMLayoutFrame)
     for (NSString *b in frames) {
@@ -6865,6 +6885,7 @@ static NSDictionary<NSString *, NSString *> *DMSMLayoutsNow(void) { return DMSML
 // (A12Z). In memory, as the other engines' (kStageByOrientKey); forgotten with the window (DMSMTurnForget).
 static NSMutableDictionary<NSString *, NSString *> *gSMTurnLayout;
 static NSMutableDictionary<NSString *, NSDictionary<NSString *, NSValue *> *> *gSMTurnFrames;
+static NSMutableDictionary<NSString *, NSValue *> *gSMTurnPlaced;   // (1.7.5 item 14: the whole frame a turn put a window in no layout back at -- TurnPlace.h MSBDTurnNoteIndex)
 static NSString *DMSMShapeKey(CGSize s) { return s.width > s.height ? @"L" : @"P"; }
 static void DMSMTurnNote(void) {
     NSDictionary<NSString *, NSValue *> *frames = DMSMOpenWindowFrames();
@@ -6877,7 +6898,14 @@ static void DMSMTurnNote(void) {
     for (NSString *b in frames) {
         CGRect f = frames[b].CGRectValue;
         if (CGRectEqualToRect(CGRectIntegral(f), CGRectIntegral(whole))) continue;   // (full screen: no window place -- the green's own, gSMPreZoom)
-        if (layouts[b]) gSMTurnLayout[b] = layouts[b]; else [gSMTurnLayout removeObjectForKey:b];
+        NSString *lay = layouts[b];
+        NSValue *tp = gSMTurnPlaced[b];   // (put back by a turn where it was in this shape: in no layout while it stays there, 1.7.5 item 14)
+        if (tp) {
+            bool keep = false;
+            if (MSBDTurnNoteIndex(f, lay ? 0 : -1, tp.CGRectValue, kMSBDTurnPlacedTolerance, &keep) < 0) lay = nil;
+            if (!keep) [gSMTurnPlaced removeObjectForKey:b];
+        }
+        if (lay) gSMTurnLayout[b] = lay; else [gSMTurnLayout removeObjectForKey:b];
         NSMutableDictionary *by = [gSMTurnFrames[b] mutableCopy] ?: [NSMutableDictionary dictionary];
         by[shape] = frames[b];
         gSMTurnFrames[b] = by;
@@ -6885,7 +6913,7 @@ static void DMSMTurnNote(void) {
     if (gSMTurnFrames.count > 64) {   // (windows closed long ago: only the ones still in a stage are kept)
         NSMutableSet<NSString *> *alive = [NSMutableSet set];
         for (id al in DMSMRecentStages()) for (id it in DMSMStageItemsMap(al)) { NSString *k = DMSMItemKey(it); if (k.length) [alive addObject:k]; }
-        for (NSString *k in [gSMTurnFrames allKeys]) if (![alive containsObject:k]) { [gSMTurnFrames removeObjectForKey:k]; [gSMTurnLayout removeObjectForKey:k]; }
+        for (NSString *k in [gSMTurnFrames allKeys]) if (![alive containsObject:k]) { [gSMTurnFrames removeObjectForKey:k]; [gSMTurnLayout removeObjectForKey:k]; [gSMTurnPlaced removeObjectForKey:k]; }
     }
 }
 static void DMDockChangedRelayout(NSString *why) {
@@ -6966,11 +6994,13 @@ static void DMSMWatchTurn(void) {
             int why = MSBDTurnNone;
             CGRect t = MSBDTurnPlaceFor(CGRectNull, was ? was.CGRectValue : CGRectNull, CGRectNull, &why);   // (in proportion: Stage Manager's own)
             if (why == MSBDTurnRemembered) {
-                if (fabs(t.origin.x - f.origin.x) < 1.0 && fabs(t.origin.y - f.origin.y) < 1.0 && fabs(t.size.width - f.size.width) < 1.0 && fabs(t.size.height - f.size.height) < 1.0) continue;
+                if (!gSMTurnPlaced) gSMTurnPlaced = [NSMutableDictionary dictionary];
+                if (fabs(t.origin.x - f.origin.x) < 1.0 && fabs(t.origin.y - f.origin.y) < 1.0 && fabs(t.size.width - f.size.width) < 1.0 && fabs(t.size.height - f.size.height) < 1.0) { gSMTurnPlaced[b] = [NSValue valueWithCGRect:f]; continue; }
                 f = t; [back addObject:[NSString stringWithFormat:@"%@ %@", DMSMKeyText(b), NSStringFromCGRect(t)]];
             } else if (CGRectContainsRect(CGRectInset(area, -1.0, -1.0), f)) continue;
             CGFloat w = MIN(f.size.width, area.size.width), h = MIN(f.size.height, area.size.height);
             CGFloat x = MIN(MAX(f.origin.x, CGRectGetMinX(area)), CGRectGetMaxX(area) - w), y = MIN(MAX(f.origin.y, CGRectGetMinY(area)), CGRectGetMaxY(area) - h);
+            if (why == MSBDTurnRemembered) gSMTurnPlaced[b] = [NSValue valueWithCGRect:CGRectMake(x, y, w, h)];   // (1.7.5 item 14: in no layout while it stays there)
             CGRect card = CGRectMake(x, y + kSMBarH, w, h - kSMBarH);
             DMSMSetWindowGeometry(b, CGPointMake(CGRectGetMidX(card) / scr.width, CGRectGetMidY(card) / scr.height), CGSizeMake(card.size.width / scr.width, card.size.height / scr.height));
         }
@@ -7216,11 +7246,17 @@ static CFTimeInterval gA5EntranceAt = 0;
 static NSString *DMCurrentLayoutName(void);   // defined with the Window menu
 static void DMFitRejoinAfterFullScreen(NSString *bundleID);
 static void DMFitForgetFullScreenTile(NSString *bundleID);
+static char kStageTurnPlacedKey;   // (on a window of Aerial / Zetsu / MilkyWay4: the frame a turn put it back at in no layout -- TurnPlace.h MSBDTurnNoteIndex, 1.7.5 item 14)
 static void DMWindowLayout(NSString *name) {
     CGRect target = DMLayoutFrame(name);
     SBApplication *app = DMActiveApp();
     NSString *bundleID = [app bundleIdentifier];
     if (CGRectIsNull(target) || !bundleID.length) return;
+    {   // (a layout picked from the Window menu is a layout, also where a turn had put the window back: 1.7.5 item 14)
+        UIView *st = DMSMEngine() ? nil : DMStageForBundle(bundleID);
+        if (st) objc_setAssociatedObject(st, &kStageTurnPlacedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (DMSMEngine()) for (NSString *k in [gSMTurnPlaced allKeys]) if ([DMSMKeyBundle(k) isEqualToString:bundleID]) [gSMTurnPlaced removeObjectForKey:k];
+    }
     if (DMAppNeedsFullScreen(bundleID) && [[DMFrontApp() bundleIdentifier] isEqualToString:bundleID]) {   // (it stays full screen: no hop home and back)
         DMLog([NSString stringWithFormat:@"[fullscreenonly] %@ cannot live in a window: layout %@ ignored, it stays full screen", bundleID, name]);
         return;
@@ -8699,6 +8735,10 @@ static BOOL DMStageStillZooming(UIView *stage) {
     return in && (in.bounds.size.width * k > big || in.bounds.size.height * k > big);   // (bigger than the screen: not a settled window)
 }
 static const void *kStageCascadedKey = &kStageCascadedKey;
+static const void *kStageOwnPlaceKey = &kStageOwnPlaceKey;   // (1.7.5 item 13: the frame a new window got as its own last place)
+static void DMMarkOwnPlace(UIView *stage, CGRect frame) {
+    if (stage && !CGRectIsNull(frame)) objc_setAssociatedObject(stage, kStageOwnPlaceKey, [NSValue valueWithCGRect:frame], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
 static void DMMarkStagePlaced(UIView *stage, CGRect frame) {
     if (!stage) return;
     objc_setAssociatedObject(stage, kStageCascadedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -8751,8 +8791,13 @@ static void DMCascadeStage(UIView *stage) {
     // (launched straight into its place after the side question: its frame is already the one we asked for -- the tile, or No Fit's centred
     //  frame -- so Aerial 5.0's remembered frame is not "corrected" to the default place / an old tile; logic test 1.0.7)
     BOOL preLaunched = [gPreSideBundle isEqualToString:me] && CACurrentMediaTime() < gPreSideUntil;
+    NSValue *ownMark = objc_getAssociatedObject(stage, kStageOwnPlaceKey);   // (Zetsu, MilkyWay4: opened at its own last place -- DMMarkOwnPlace)
+    objc_setAssociatedObject(stage, kStageOwnPlaceKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    BOOL ownPlace = ownMark && fabs(ownMark.CGRectValue.origin.x - base.origin.x) <= 1.0 && fabs(ownMark.CGRectValue.origin.y - base.origin.y) <= 1.0
+                    && fabs(ownMark.CGRectValue.size.width - base.size.width) <= 1.0 && fabs(ownMark.CGRectValue.size.height - base.size.height) <= 1.0;
     if (gAerialFlavor == 5 && !preLaunched) {
         NSValue *remembered = gLastWindowFrames[me];
+        if (remembered) ownPlace = YES;
         CGRect want = remembered ? DMFitInto(remembered.CGRectValue, usable) : DMLayoutFrame(@"center");
         if (!CGRectIsNull(want) && (fabs(want.size.width - base.size.width) > 4.0 || fabs(want.size.height - base.size.height) > 4.0 || fabs(want.origin.x - base.origin.x) > 4.0 || fabs(want.origin.y - base.origin.y) > 4.0)) {
             DMLog([NSString stringWithFormat:@"[cascade] %@: Aerial 5.0 reopened it at its own remembered frame %@, moved to %@ %@", me, NSStringFromCGRect(base), remembered ? @"where we last had it" : @"the default place", NSStringFromCGRect(want)]);
@@ -8826,6 +8871,19 @@ regularWindow:;
     if (!overlaps) return;
     CGRect pick = base;
     const CGFloat stepX = 50.0, stepY = 44.0, near = 34.0;
+    // (1.7.5 item 13: a window back at its own last place -- where we last had it, kept until the app quits -- stays there, over whatever it was over
+    //  before, as a Mac app's window comes back at its saved frame; only a window that would sit right on another one (their top-left corners within
+    //  34 pt: its title bar hidden under the other's) is still moved on. Before, a Zetsu window reopened right after its close went from {250, 124}
+    //  to {300, 152} "so it does not sit over another window" -- A12Z 18.5, 1.7.4 R1 --, and the other engines' the same.)
+    if (ownPlace) {
+        BOOL onAnother = NO;
+        for (UIView *o in others) if (fabs(o.frame.origin.x - base.origin.x) < near && fabs(o.frame.origin.y - base.origin.y) < near) onAnother = YES;
+        if (!onAnother) {
+            DM_FEATURE_MARK("cascade-keeps-own-place");
+            DMLog([NSString stringWithFormat:@"[cascade] %@ came back at its own last place %@: kept there", me, NSStringFromCGRect(base)]);
+            return;
+        }
+    }
     BOOL found = NO;
     for (int k = 1; k <= 8 && !found; k++) {
         for (int sign = 1; sign >= -1 && !found; sign -= 2) {
@@ -9284,6 +9342,8 @@ static void DMNoteWindowLayouts(void) {
             || [objc_getAssociatedObject(st, kStageClosingKey) boolValue] || !DMStageBundle(st).length) continue;
         CGRect f = st.frame; f.origin.y -= DMAutoHideShiftOf(st);
         int i = MSBDTurnLayoutIndex(f, t, kMSBDTurnLayoutCount, kMSBDTurnLayoutTolerance);
+        NSValue *tp = objc_getAssociatedObject(st, &kStageTurnPlacedKey);   // (put back by a turn where it was in this shape: in no layout while it stays there, 1.7.5 item 14)
+        if (tp) { bool keep = false; i = MSBDTurnNoteIndex(f, i, tp.CGRectValue, kMSBDTurnPlacedTolerance, &keep); if (!keep) objc_setAssociatedObject(st, &kStageTurnPlacedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
         objc_setAssociatedObject(st, kStageLayoutNameKey, i >= 0 ? @(kMSBDTurnLayouts[i]) : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 }
@@ -9517,6 +9577,7 @@ static void DMRelayoutForOrientation(CGSize oldSize, CGSize newSize) {
         else { [laidOut addObject:[NSString stringWithFormat:@"%@ %@", b, lay]]; DM_FEATURE_MARK("turn-layout-again"); }
         if (s.hidden || DMStageMinimized(s)) { gStageFrameBypass = YES; s.frame = f; gStageFrameBypass = NO; DMSetStageIntent(s, f); }
         else { DMAerialMoveStage(s, f, nil); targets[b] = [NSValue valueWithCGRect:f]; }
+        objc_setAssociatedObject(s, &kStageTurnPlacedKey, why == MSBDTurnRemembered ? [NSValue valueWithCGRect:f] : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (1.7.5 item 14)
     }
     gMoveKeepsOrder = NO;
     if (laidOut.count) DMLog([NSString stringWithFormat:@"[orient] back in their layouts for the new shape: %@", [laidOut componentsJoinedByString:@", "]]);
@@ -10640,6 +10701,8 @@ static void DMSaveWindowState(void) {
     dispatch_async(writer, ^{ [state writeToFile:path atomically:YES]; });
 }
 static void DMRestoreStep(NSArray *wins, NSUInteger i, NSDictionary *state, int waited);
+static void DMA5NoteProvisionalPlace(UIView *stage, CGRect placed);   // (1.7.5 item 11: a restored window placed with margins not measured yet)
+static NSMutableDictionary<NSString *, NSArray<NSValue *> *> *gA5ProvisionalLast;   // (1.7.5 item 11: the green's places turned into stages the same way)
 static BOOL gRestoreRefitTop = NO;   // (1.7.2 item 9: this restore re-fits windows saved with the 24 pt bar's top, once -- DMRefitTopWanted)
 static BOOL gRestoreRefitSize = NO;  // (Menu Bar Size, 1.7.3: this restore re-fits windows saved under a bar of another height -- the state's "bar")
 static NSMutableSet<NSString *> *gRestoreHidden;   // apps whose window the restore brings back minimized: invisible from its first frame
@@ -10779,6 +10842,7 @@ static void DMRestoreStep(NSArray *wins, NSUInteger i, NSDictionary *state, int 
     }
     CGSize saved = CGSizeFromString(state[@"screen"]), now = [UIScreen mainScreen].bounds.size;
     CGRect f = DMSavedFrameForThisEngine(CGRectFromString(w[@"frame"]), state, bundle, waited == 0);
+    BOOL fromWindowFrame = DMA5MacGeometry() && [state[@"frameKind"] isEqual:@"window"];   // (turned into a stage with the margins known now: 1.7.5 item 11)
     CGRect usable = DMLayoutFrame(@"fill");
     if (gRestoreRefitTop) {   // (1.7.2 item 9: saved with the 24 pt bar's top -- 23 -- on this Home-button iPad: under its bar now; the bottom kept when it
                               //  reached the desktop's, in the same screen shape. 23 as such: MSBDMenuBarTopLimit is the bar's height itself since 1.7.2)
@@ -10851,6 +10915,10 @@ static void DMRestoreStep(NSArray *wins, NSUInteger i, NSDictionary *state, int 
         [rec start];
     }
 #endif
+    // (1.7.5 item 11: the window to draw -- saved as a window, by Zetsu or MilkyWay4 --; its stage is worked out when it is placed, with the margins
+    //  known then: the margins Aerial learns from this very window 1.2 s after it opened came between this step and the placement 0.9 s later, and
+    //  the placement put back the stage made with the old ones, over the layouts' own re-placement for the new ones -- the M1's Clock 8 pt too tall)
+    CGRect drawnWanted = fromWindowFrame ? DMA5WindowFromStage(f) : CGRectNull;
     if (stage) {
         // A window that was minimized is kept invisible while it is brought back and minimized again (it flashed up for a second after a respring,
         // iPad 2, 27 Sep); it is made visible again in any case after 1.8 s -- by then it is hidden as minimized.
@@ -10865,10 +10933,13 @@ static void DMRestoreStep(NSArray *wins, NSUInteger i, NSDictionary *state, int 
                 [gRestoreHidden removeObject:bundle];
                 DMRestoreAfterScene(bundle, 0, ^{ DMRestoreStep(wins, i + 1, state, 0); }); return;
             }
+            CGRect place = CGRectIsNull(drawnWanted) ? f : DMA5StageFromWindow(drawnWanted);   // (the margins known now, 1.7.5 item 11)
+            if (!CGRectEqualToRect(CGRectIntegral(place), CGRectIntegral(f))) DMLog([NSString stringWithFormat:@"[restore] %@: Aerial's margins are known now: its stage %@ (was %@)", bundle, NSStringFromCGRect(place), NSStringFromCGRect(f)]);
             gMoveKeepsOrder = YES;
-            if (minimizedAgain) [UIView performWithoutAnimation:^{ DMSetStageFrameSafe(stage, f); [stage layoutIfNeeded]; }];
-            else DMAerialMoveStage(stage, f, nil);
+            if (minimizedAgain) [UIView performWithoutAnimation:^{ DMSetStageFrameSafe(stage, place); [stage layoutIfNeeded]; }];
+            else DMAerialMoveStage(stage, place, nil);
             gMoveKeepsOrder = NO;
+            if (fromWindowFrame && !minimizedAgain) DMA5NoteProvisionalPlace(stage, place);
             // (MilkyWay4's own minimized state is DMMinimizeWindow's: DMMinimizeStage's mark left the window hidden yet "not minimized" for
             //  DMStageMinimized, so the next save wrote it as an open window and the respring after that brought it back shown, M1 7 Oct)
             if (minimizedAgain) { Class mwc = objc_getClass("AXWindowView"); if (mwc && [stage isKindOfClass:mwc]) DMMinimizeWindow(stage); else DMMinimizeStage(stage); }
@@ -10894,6 +10965,10 @@ static void DMRestoreLastFrames(NSDictionary *state) {
         if (!CGSizeEqualToSize(saved, now) && saved.width > 100.0) f = DMScaleFrame(f, saved, now);
         if (!CGRectIsNull(usable)) f = DMFitInto(f, usable);
         gLastWindowFrames[b] = [NSValue valueWithCGRect:f];
+        if (DMA5MacGeometry() && [state[@"frameKind"] isEqual:@"window"]) {   // (turned with the margins known now: again once Aerial's are learned, 1.7.5 item 11)
+            if (!gA5ProvisionalLast) gA5ProvisionalLast = [NSMutableDictionary dictionary];
+            gA5ProvisionalLast[b] = @[[NSValue valueWithCGRect:f], [NSValue valueWithCGRect:DMA5WindowFromStage(f)]];
+        }
         [got addObject:[NSString stringWithFormat:@"%@ %@", b, NSStringFromCGRect(f)]];
     }
     if (got.count) { DM_FEATURE_MARK("restore-green-places"); DMLog([NSString stringWithFormat:@"[restore] where the windows of apps not in a window were (their green brings them back there): %@", [got componentsJoinedByString:@", "]]); }
@@ -20184,6 +20259,12 @@ static void DMLoadPrefs(void) {
         if (!settleQueued) { settleQueued = YES; dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(12 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ gDotsEngineSettled = YES; DMDotsApply(); }); }
         DMDotsApply();
     }
+    {   // Prewarm Apps (Windows & Multitasking, 1.7.5): on unless switched off; off, dasd refuses every prewarm (the quit set's file says so)
+        BOOL prewarm = YES;
+        CFPropertyListRef pw = CFPreferencesCopyValue(CFSTR("prewarmApps"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        if (pw) { if (CFGetTypeID(pw) == CFBooleanGetTypeID()) prewarm = CFBooleanGetValue(pw); CFRelease(pw); }
+        DMPrewarmAppsSet(prewarm);
+    }
     {
         BOOL tidy = NO;
         CFPropertyListRef pillRef = CFPreferencesCopyValue(CFSTR("tidyKeyboardPill"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
@@ -24549,6 +24630,24 @@ static void DMRunTrigger(NSString *cmd) {
             }
         }
     }
+    else if ([cmd hasPrefix:@"ctxpresent_"]) {   // ctxpresent_<x>_<y>: the context menu of the view at that screen point opened at that point without a lift, the way a pointer's secondary click opens one (UIKit's -_presentMenuAtLocation:; debug, 1.7.5 item 5)
+        NSArray *q = [[cmd substringFromIndex:11] componentsSeparatedByString:@"_"];
+        if (q.count < 2) return;
+        CGPoint p = CGPointMake([q[0] doubleValue], [q[1] doubleValue]);
+        UIView *hit = nil;
+        NSArray *wins = [DMAllWindows() sortedArrayUsingComparator:^NSComparisonResult(UIWindow *a, UIWindow *b) { return a.windowLevel > b.windowLevel ? NSOrderedAscending : (a.windowLevel < b.windowLevel ? NSOrderedDescending : NSOrderedSame); }];
+        for (UIWindow *w in wins) {
+            if (w.hidden || w.alpha < 0.01 || w.screen != [UIScreen mainScreen]) continue;
+            UIView *h = [w hitTest:[w convertPoint:p fromCoordinateSpace:w.screen.coordinateSpace] withEvent:nil];
+            if (h && h != w) { hit = h; break; }
+        }
+        UIContextMenuInteraction *cmi = nil;
+        for (UIView *v = hit; v && !cmi; v = v.superview) for (id<UIInteraction> i in v.interactions) if ([(NSObject *)i isKindOfClass:[UIContextMenuInteraction class]]) { cmi = (UIContextMenuInteraction *)i; break; }
+        SEL pres = NSSelectorFromString(@"_presentMenuAtLocation:");
+        BOOL can = cmi && [cmi respondsToSelector:pres];
+        DMLog([NSString stringWithFormat:@"[ctxpresent] %@ at %@ in %@: menu interaction %@ (%@)", NSStringFromClass([hit class]), NSStringFromCGPoint(p), NSStringFromClass([hit.window class]), cmi ? NSStringFromClass([cmi.view class]) : @"none", can ? @"opened" : @"no -_presentMenuAtLocation:"]);
+        if (can) ((void (*)(id, SEL, CGPoint))objc_msgSend)(cmi, pres, [cmi.view convertPoint:p fromCoordinateSpace:cmi.view.window.screen.coordinateSpace]);
+    }
     else if ([cmd isEqualToString:@"ctxtree"]) {   // ctxtree: the open context menu (Haptic Touch menu) in any window: compact tree with label fonts (read-only)
         UIView *menu = nil; UIWindow *inWin = nil;
         for (UIWindow *w in DMAllWindows()) {
@@ -28440,6 +28539,22 @@ static void DMRunTrigger(NSString *cmd) {
         DMLog([NSString stringWithFormat:@"[debug] iconlaunch %@: icon %@ responds %d", bid, icon, [icon respondsToSelector:sel]]);
         if ([icon respondsToSelector:sel]) ((void (*)(id, SEL, id, id))objc_msgSend)(icon, sel, @"SBIconLocationAppLibrary", nil);
     }
+    else if ([cmd hasPrefix:@"launchtime_"]) {   // launchtime_<bundle>: open the app as Spotlight or a link does (LaunchServices, the tail of DMOpenApp, never
+        // as a window of ours), timed: the seconds to the app in front with its first frame drawn (FrontBoard's content state, DMWhenAppDrawn) --
+        // what a prewarm saves (1.7.5 item 6: the same app prewarmed or not; whether it was is read from outside, ActivePrewarm=1 in its environment)
+        NSString *bid = [cmd substringFromIndex:11];
+        id app = ((id (*)(id, SEL, id))objc_msgSend)(DMCall(objc_getClass("SBApplicationController"), @"sharedInstance"), NSSelectorFromString(@"applicationWithBundleIdentifier:"), bid);
+        int pid = 0; @try { pid = [[[app valueForKey:@"processState"] valueForKey:@"pid"] intValue]; } @catch (id e) {}
+        CFTimeInterval t0 = CACurrentMediaTime();
+        DMWhenAppDrawn(bid, YES, 15.0, ^(BOOL ready) {
+            DMLog([NSString stringWithFormat:@"[launchtime] %@: %@ %.3f s after the launch", bid, ready ? @"in front, first frame drawn" : @"NOT drawn (15 s timeout)", CACurrentMediaTime() - t0]);
+        });
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            LSApplicationWorkspace *ws = [objc_getClass("LSApplicationWorkspace") defaultWorkspace];
+            BOOL ok = [ws respondsToSelector:@selector(openApplicationWithBundleID:)] && [ws openApplicationWithBundleID:bid];
+            DMLog([NSString stringWithFormat:@"[launchtime] %@: opened %d, %.3f s after the ask (SpringBoard's process before: %d)", bid, ok, CACurrentMediaTime() - t0, pid]);
+        });
+    }
     else if ([cmd isEqualToString:@"windowedstate"]) {   // windowedstate: the toggles and the windows
         DMLog([NSString stringWithFormat:@"[debug] windowedstate: engine %d, open as windows %d, fit %d, aerial toggle %d, stages %lu, front %@, level %.1f alpha %.2f hidden %d", (int)DMActiveEngine(), DMWindowedLaunchOn(), DMFitEnabled(), DMAerialToggleOn(), (unsigned long)DMAerialStages().count, [DMFrontApp() bundleIdentifier], DMWindowLayer().windowLevel, DMWindowLayer().alpha, DMWindowLayer().hidden]);
         for (UIView *st in DMAerialStages()) DMLog([NSString stringWithFormat:@"[debug]   stage %@ frame %@ hidden %d alpha %.2f minimized %d", DMStageBundle(st), NSStringFromCGRect(st.frame), st.hidden, st.alpha, DMStageMinimized(st)]);
@@ -30015,10 +30130,48 @@ static UIEdgeInsets DMA5InsetsOf(UIView *stage) {
     return v ? v.UIEdgeInsetsValue : gA5Insets;
 }
 static void DMA5InsetsChangedRelayout(UIEdgeInsets was);
+// 1.7.5 item 11: a window a restore brings back from another engine's save (Zetsu's, MilkyWay4's: the window's own frame) is turned into Aerial's
+// stage with the margins known at that moment -- Aerial's standard 13/6/20/6 until a window has been measured; the M1's are 13/6/12/6 -- so the first
+// window after a switch to Aerial came out 8 pt taller than it was, out of its layout (Clock's bottom-right quarter 363.8 -> 371.8 pt tall, its
+// bottom in the Dock's line; 1.7.4 R1 N3). Each such window keeps the window it is to draw (DMA5NoteProvisionalPlace); once its own margins are
+// measured, settled and not the ones it was placed with, it is placed again with them -- unless it has been moved since (then it is the user's).
+static const void *kA5ProvisionalPlaceKey = &kA5ProvisionalPlaceKey;   // (@[the stage frame placed, the window to draw, the margins used])
+static void DMA5ProvisionalPlaceCheck(UIView *stage, UIEdgeInsets m, UIView *holder);
+static void DMA5NoteProvisionalPlace(UIView *stage, CGRect placed) {
+    if (!stage || CGRectIsNull(placed)) return;
+    objc_setAssociatedObject(stage, kA5ProvisionalPlaceKey, @[[NSValue valueWithCGRect:placed], [NSValue valueWithCGRect:DMA5WindowFromStage(placed)], [NSValue valueWithUIEdgeInsets:gA5Insets]], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak UIView *ws = stage;   // (its own margins may be known already -- measured before it was placed: then once the move is over)
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UIView *st = ws;
+        NSValue *own = st ? objc_getAssociatedObject(st, kA5StageInsetsKey) : nil;
+        if (own && objc_getAssociatedObject(st, kA5ProvisionalPlaceKey)) DMA5ProvisionalPlaceCheck(st, own.UIEdgeInsetsValue, DMStageInnerView(st));
+    });
+}
+static void DMA5ProvisionalPlaceCheck(UIView *stage, UIEdgeInsets m, UIView *holder) {
+    NSNumber *born = objc_getAssociatedObject(stage, kA5BornKey);   // (settled, as for the standard margins below)
+    if (!born || CACurrentMediaTime() - born.doubleValue < 1.0 || stage.layer.animationKeys.count || holder.layer.animationKeys.count || !CGAffineTransformIsIdentity(holder.transform)
+        || !CGAffineTransformIsIdentity(stage.transform) || DMAerial5GestureLive(stage) || [objc_getAssociatedObject(stage, kStageEnteringKey) boolValue]) return;
+    NSArray<NSValue *> *rec = objc_getAssociatedObject(stage, kA5ProvisionalPlaceKey);
+    objc_setAssociatedObject(stage, kA5ProvisionalPlaceKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (rec.count != 3) return;
+    CGRect placed = rec[0].CGRectValue, drawn = rec[1].CGRectValue, f = stage.frame;
+    if (DMA5InsetsSame(rec[2].UIEdgeInsetsValue, m)) return;   // (placed with its own margins: right as it is)
+    if (fabs(f.origin.x - placed.origin.x) > 1.0 || fabs(f.origin.y - placed.origin.y) > 1.0 || fabs(f.size.width - placed.size.width) > 1.0 || fabs(f.size.height - placed.size.height) > 1.0) return;
+    MSBDStageMargins own = { m.top, m.left, m.bottom, m.right };
+    CGRect t = MSBDStageFromWindowFrame(drawn, own);
+    if (fabs(t.origin.x - f.origin.x) < 0.5 && fabs(t.origin.y - f.origin.y) < 0.5 && fabs(t.size.width - f.size.width) < 0.5 && fabs(t.size.height - f.size.height) < 0.5) return;
+    DM_FEATURE_MARK("a5-restore-own-margins");
+    DMLog([NSString stringWithFormat:@"[restore] %@: placed with the margins known then (%.1f/%.1f/%.1f/%.1f), its own are %.1f/%.1f/%.1f/%.1f: placed again so it draws %@ (stage %@ -> %@)",
+           DMStageBundle(stage), rec[2].UIEdgeInsetsValue.top, rec[2].UIEdgeInsetsValue.left, rec[2].UIEdgeInsetsValue.bottom, rec[2].UIEdgeInsetsValue.right, m.top, m.left, m.bottom, m.right,
+           NSStringFromCGRect(drawn), NSStringFromCGRect(f), NSStringFromCGRect(t)]);
+    __weak UIView *ws = stage;
+    dispatch_async(dispatch_get_main_queue(), ^{ UIView *st = ws; if (!st || st.hidden || DMStageMinimized(st)) return; DMSetStageIntent(st, t); DMAerialMoveStage(st, t, nil); });   // (not inside this layout pass)
+}
 static void DMA5NoteStageInsets(UIView *stage, UIEdgeInsets m, UIView *holder) {
     NSValue *prev = objc_getAssociatedObject(stage, kA5StageInsetsKey);
     BOOL stable = prev && DMA5InsetsSame(prev.UIEdgeInsetsValue, m);
     if (!stable) objc_setAssociatedObject(stage, kA5StageInsetsKey, [NSValue valueWithUIEdgeInsets:m], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (stable && objc_getAssociatedObject(stage, kA5ProvisionalPlaceKey)) DMA5ProvisionalPlaceCheck(stage, m, holder);   // (1.7.5 item 11)
     if (!stable || DMA5InsetsSame(m, gA5Insets)) return;
     // settled: the same on two passes, nothing moving it (no animation, gesture, entrance or opening zoom), the app not scaled inside it
     NSNumber *born = objc_getAssociatedObject(stage, kA5BornKey);
@@ -30054,6 +30207,19 @@ static void DMA5NoteStageInsets(UIView *stage, UIEdgeInsets m, UIView *holder) {
 static void DMA5InsetsChangedRelayout(UIEdgeInsets was) {
     if (!DMA5MacGeometry() || DMA5InsetsSame(was, gA5Insets)) return;
     UIEdgeInsets now = gA5Insets;
+    if (gA5ProvisionalLast.count) {   // (1.7.5 item 11: the green's places a restore turned into stages with the old margins: the same windows with these)
+        MSBDStageMargins nm = { now.top, now.left, now.bottom, now.right };
+        NSMutableArray *redone = [NSMutableArray array];
+        for (NSString *b in gA5ProvisionalLast) {
+            NSArray<NSValue *> *rec = gA5ProvisionalLast[b];
+            NSValue *cur = gLastWindowFrames[b];
+            if (!cur || !CGRectEqualToRect(CGRectIntegral(cur.CGRectValue), CGRectIntegral(rec[0].CGRectValue))) continue;   // (kept anew since: Aerial's own)
+            gLastWindowFrames[b] = [NSValue valueWithCGRect:MSBDStageFromWindowFrame(rec[1].CGRectValue, nm)];
+            [redone addObject:b];
+        }
+        gA5ProvisionalLast = nil;
+        if (redone.count) DMLog([NSString stringWithFormat:@"[restore] the green's places of %@ turned again with these margins", [redone componentsJoinedByString:@", "]]);
+    }
     NSArray<NSString *> *names = @[@"fill", @"left", @"right", @"top", @"bottom", @"topleft", @"topright", @"bottomleft", @"bottomright", @"center", @"small", @"medium", @"large"];
     CGRect u = DMUsableArea(); CGSize scr = [UIScreen mainScreen].bounds.size;
     CGRect before[13];
@@ -30237,7 +30403,7 @@ static void DMAerial5Theme(UIView *stage) {
 // above the app) or off (touch anywhere else). Aerial's recogniser is only switched back on if we were the ones who switched it off, so its own
 // "lock window" mode keeps working. Trackpad two-finger scrolling never drags a window (its scroll types are cleared).
 static const void *kA5DragGuardKey = &kA5DragGuardKey, *kA5DragOffByUsKey = &kA5DragOffByUsKey;
-static char kA5DragDownKey;   // (on Aerial's drag recogniser: where the finger went down, see -dragTrace:)
+static char kA5DragDownKey;   // (on the stage: where the finger went down and where the window was then; on a drag recogniser, from its start: DMA5DragFollow)
 static UIPanGestureRecognizer *DMA5AerialDrag(UIView *stage) {
     for (UIGestureRecognizer *g in stage.gestureRecognizers)
         if ([g isMemberOfClass:[UIPanGestureRecognizer class]] && g != objc_getAssociatedObject(stage, kA5DragGuardKey)) return (UIPanGestureRecognizer *)g;
@@ -30250,6 +30416,35 @@ static BOOL DMA5DragAllowedAt(UIView *stage, CGPoint p) {   // p in the stage's 
     CGFloat titleShift = DMAutoHideTitleShiftOf(stage);   // (slid down with the auto-hiding status bar: the strip is where it is drawn)
     stripTop += titleShift; stripBottom += titleShift;
     return p.y >= stripTop && p.y < stripBottom + 2.0 && p.x >= 0 && p.x <= stage.bounds.size.width;   // the title strip (plus the touch slop above it)
+}
+// A title-bar drag moves the window exactly as far as the finger (1.7.5 item 10): the window goes to where it was when the finger went down plus how
+// far the finger has moved since, on every move -- not Aerial's own deltas from wherever it left the window. Aerial moves by deltas from the drag's
+// start, some 10-13 pt after the finger went down (its recogniser's threshold), so the window used to fall that far behind; and Aerial keeps a
+// STAGE inside the screen on every move, while a window of ours at the side of the screen has its stage reaching past it by Aerial's margins (the
+// drawn window at the edge, MSBDStageFromWindowFrame): the first move pulled the stage in by those 6 pt and the drag ended 6 pt further than the
+// finger went on x (+200 -> +206, -200 -> -206: M1 15.6.1 and the 17.5, Aerial 5.1). Along x the window is kept as the finger has it, as far as
+// the drawn window stays on the screen; y as Aerial has it after the start (the stage's top is the drawn window's own: nothing to make up), the
+// title bar under the menu bar (-dragTrace:). The start point comes from the guard (every touch in the window is offered to it first).
+static void DMA5DragFollow(UIView *stage, UIPanGestureRecognizer *g, BOOL began) {
+    if (!stage.superview) return;
+    NSArray *down = objc_getAssociatedObject(began ? stage : g, &kA5DragDownKey);
+    if (began) {   // (taken by this drag: another finger touching the window meanwhile does not move its start)
+        objc_setAssociatedObject(stage, &kA5DragDownKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(g, &kA5DragDownKey, down, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (down.count != 2) return;
+    CGPoint d = [down[0] CGPointValue], c0 = [down[1] CGPointValue], now = [g locationInView:stage.superview];
+    CGFloat dx = now.x - d.x, dy = now.y - d.y;
+    if (began && !(hypot(dx, dy) < 40)) { objc_setAssociatedObject(g, &kA5DragDownKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); return; }   // (not this drag's start)
+    UIEdgeInsets m = DMA5InsetsOf(stage);
+    CGFloat w = stage.frame.size.width, W = stage.superview.bounds.size.width;
+    CGFloat x = c0.x + dx, lo = w / 2.0 - m.left, hi = W - w / 2.0 + m.right;
+    if (hi >= lo) x = MAX(lo, MIN(x, hi));   // (the drawn window on the screen; its stage may reach past the sides by the margins)
+    CGPoint c = stage.center, want = CGPointMake(x, began ? c0.y + dy : c.y);
+    if (fabs(want.x - c.x) > 0.25 || fabs(want.y - c.y) > 0.25) {
+        stage.center = want;
+        if (began) DM_FEATURE_MARK("a5-drag-follows-finger");
+    }
 }
 @interface DMA5DragGuard : NSObject <UIGestureRecognizerDelegate>
 + (instancetype)shared;
@@ -30264,9 +30459,13 @@ static BOOL DMA5DragAllowedAt(UIView *stage, CGPoint p) {   // p in the stage's 
     if (stage && guard != objc_getAssociatedObject(stage, kA5DragGuardKey)) {
         BOOL ok = DMTestFlag("/tmp/msb-a5-dragall") || DMA5DragAllowedAt(stage, [touch locationInView:stage]);
         if (ok && DMAutoHideTopEdgeTouch(touch) && !DMTopEdgeTitleBarTouch(touch)) ok = NO;   // (the top edge swipe for Notification Center / Control Center wins -- not on a window's title bar: the pulls leave those to the window, 1.7.4 item 17)
-        if (ok && stage.superview) objc_setAssociatedObject(guard, &kA5DragDownKey, [NSValue valueWithCGPoint:[touch locationInView:stage.superview]], OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // where the finger went down
+        if (ok && stage.superview) objc_setAssociatedObject(stage, &kA5DragDownKey, @[[NSValue valueWithCGPoint:[touch locationInView:stage.superview]], [NSValue valueWithCGPoint:stage.center]], OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // where the finger went down
         return ok;
     }
+    // (every touch in the window also comes here, to the guard: one on Aerial 5.1's drag area over the title strip starts that area's own drag, which
+    //  follows the finger the same way -- DMA5DragFollow from -areaDrag:)
+    if (stage && stage.superview && DMA5DragAllowedAt(stage, [touch locationInView:stage]))
+        objc_setAssociatedObject(stage, &kA5DragDownKey, @[[NSValue valueWithCGPoint:[touch locationInView:stage.superview]], [NSValue valueWithCGPoint:stage.center]], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     UIPanGestureRecognizer *drag = stage ? DMA5AerialDrag(stage) : nil;
     if (!drag || DMTestFlag("/tmp/msb-a5-dragall")) return NO;   // debug: Aerial's own behaviour
     CGPoint p = [touch locationInView:stage];
@@ -30288,16 +30487,9 @@ static BOOL DMA5DragAllowedAt(UIView *stage, CGPoint p) {   // p in the stage's 
 // dragged window follows the finger)
 - (void)dragTrace:(UIPanGestureRecognizer *)g {
     UIView *stage = g.view;
-    // A window follows the finger exactly: Aerial moves it only by what the finger does after its drag recogniser has started, which is some 10-13 pt
-    // after the finger went down (the recogniser's own threshold), so a title-bar drag used to fall that far behind (iPad 2: ~80% of a short drag).
-    // When the drag starts, the window is moved once by that missed distance (Aerial goes on from wherever the window is: it moves by deltas).
-    if (g.state == UIGestureRecognizerStateBegan && stage.superview) {
-        NSValue *down = objc_getAssociatedObject(g, &kA5DragDownKey);
-        objc_setAssociatedObject(g, &kA5DragDownKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        CGPoint now = [g locationInView:stage.superview];
-        CGFloat dx = down ? now.x - down.CGPointValue.x : 0, dy = down ? now.y - down.CGPointValue.y : 0;
-        if (down && hypot(dx, dy) > 0.5 && hypot(dx, dy) < 40) stage.center = CGPointMake(stage.center.x + dx, stage.center.y + dy);
-    }
+    UIGestureRecognizerState st = g.state;   // (its end too: Aerial's last move put right before the snap)
+    if (st == UIGestureRecognizerStateBegan || st == UIGestureRecognizerStateChanged || st == UIGestureRecognizerStateEnded) DMA5DragFollow(stage, g, st == UIGestureRecognizerStateBegan);
+    if (st != UIGestureRecognizerStateBegan && st != UIGestureRecognizerStateChanged) objc_setAssociatedObject(g, &kA5DragDownKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     // Like a macOS window under the menu bar, a window's title bar is kept below our status bar (a drag could take it up over the status bar:
     // stage y 0, the window's title bar drawn over the menu titles). Aerial moves by deltas, so it simply goes on from the kept position.
     if ((g.state == UIGestureRecognizerStateChanged || g.state == UIGestureRecognizerStateEnded) && stage.frame.origin.y < DMTopLimit() && DMA5MacGeometry()) {
@@ -30312,9 +30504,13 @@ static BOOL DMA5DragAllowedAt(UIView *stage, CGPoint p) {   // p in the stage's 
 // Aerial 5.1 also lays an AerialDragAreaView over the stage's top strip (the stage's whole width, 33 pt) with a drag recogniser of its own that moves
 // the stage: a title-bar drag that starts on it is that recogniser's (the stage's own fails), so it never came to -dragTrace: and was let go without
 // the snap (M1 15.6.1, 1.7.3 final regression: drags from the left part of the title bar). Its end gets the same step: under the bar first, then the snap.
-- (void)areaDragEnded:(UIPanGestureRecognizer *)g {
+- (void)areaDrag:(UIPanGestureRecognizer *)g {
     UIView *stage = g.view.superview;
-    if (g.state != UIGestureRecognizerStateEnded || !stage.superview || ![DMAerialStages() containsObject:stage]) return;
+    if (!stage.superview || ![DMAerialStages() containsObject:stage]) return;
+    if (g.state == UIGestureRecognizerStateBegan || g.state == UIGestureRecognizerStateChanged) { DMA5DragFollow(stage, g, g.state == UIGestureRecognizerStateBegan); return; }   // (as -dragTrace:)
+    if (g.state == UIGestureRecognizerStateEnded) DMA5DragFollow(stage, g, NO);
+    objc_setAssociatedObject(g, &kA5DragDownKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (g.state != UIGestureRecognizerStateEnded) return;
     if (stage.frame.origin.y < DMTopLimit() && DMA5MacGeometry()) { CGRect f = stage.frame; f.origin.y = DMTopLimit(); stage.frame = f; }
     DMSnapMoveEnded(stage);
 }
@@ -30325,12 +30521,12 @@ static void DMAerial5DragGuard(UIView *stage) {
     if (!objc_getAssociatedObject(drag, @selector(dragTrace:))) { [drag addTarget:[DMA5DragGuard shared] action:@selector(dragTrace:)]; objc_setAssociatedObject(drag, @selector(dragTrace:), @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
     if (drag.delegate == nil) { drag.delegate = [DMA5DragGuard shared]; DMLog([NSString stringWithFormat:@"[a5drag] %@: Aerial's drag recogniser now only takes title-strip touches", DMStageBundle(stage)]); }
     if ([drag respondsToSelector:@selector(setAllowedScrollTypesMask:)] && drag.allowedScrollTypesMask != 0) drag.allowedScrollTypesMask = 0;
-    static Class areaClass = Nil;   // (Aerial 5.1's drag area over the top strip: its own recogniser's drags end in our step too, -areaDragEnded:)
+    static Class areaClass = Nil;   // (Aerial 5.1's drag area over the top strip: its own recogniser's drags follow the finger and end in our step too, -areaDrag:)
     if (!areaClass) areaClass = objc_getClass("AerialDragAreaView");
     if (areaClass) for (UIView *v in stage.subviews) if ([v isKindOfClass:areaClass])
-        for (UIGestureRecognizer *a in v.gestureRecognizers) if ([a isKindOfClass:[UIPanGestureRecognizer class]] && !objc_getAssociatedObject(a, @selector(areaDragEnded:))) {
-            [a addTarget:[DMA5DragGuard shared] action:@selector(areaDragEnded:)];
-            objc_setAssociatedObject(a, @selector(areaDragEnded:), @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        for (UIGestureRecognizer *a in v.gestureRecognizers) if ([a isKindOfClass:[UIPanGestureRecognizer class]] && !objc_getAssociatedObject(a, @selector(areaDrag:))) {
+            [a addTarget:[DMA5DragGuard shared] action:@selector(areaDrag:)];
+            objc_setAssociatedObject(a, @selector(areaDrag:), @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             DMLog([NSString stringWithFormat:@"[a5drag] %@: Aerial's drag area ends its drags in our step too (its recogniser %p)", DMStageBundle(stage), a]);
         }
     if (objc_getAssociatedObject(stage, kA5DragGuardKey)) return;
@@ -34552,6 +34748,208 @@ static UIImage *DMCtxSizedRowImage(UIView *row, UIImage *image) {
 }
 %end
 %end
+// ---- 1.7.5 item 5: the Mac's arrow on the Dock's menus (common/MenuArrow.h) ------------------------------------------------------------------------
+// The menus of ours that open from a point (release-1.7.5.md, "v175 menu arrow + window fixes"): the Dock's apps, folders and App Library icon
+// (SpringBoard's own icon menus), Finder and the Trash (Dock.x's icons), and the Downloads stack's panel (dock/Downloads.m). On a Mac each of these
+// opens centred over its Dock item with an arrow pointing at it; the menu bar's menus, the desktop's and the Home Screen's icon menus and menus in
+// windows have none, and keep UIKit's place here. A Dock menu is UIKit's context menu whose source is in the Dock's window. UIKit's layout arbiter
+// (-[_UIContextMenuLayoutArbiter computedLayoutWithInput:], the same on 15.6.1 and 18.5) puts it at the icon's side -- left-aligned with the icon in
+// the screen's left half, right-aligned in the right half -- 8 to 20 pt above it. After it, the menu is centred over the icon (pushed in by UIKit's
+// own content bounds at the screen's sides), its bottom an arrow above the icon, and UIKit's own pop-up anchor is worked out for that place. The
+// arrow is drawn on the menu view in the menu's own material (a copy of its blur), so it moves, pops up and fades with the menu. With Haptic Touch
+// Menus: Stock (iPadOS's look) nothing changes. Debug: /tmp/msb-noctxarrow = UIKit's place, no arrow.
+#include "../common/MenuArrow.h"
+static const void *kCtxArrowRecKey = &kCtxArrowRecKey;     // (on the arbiter's container view: @[dir, offset, width, height] of the menu laid out there)
+static const void *kCtxArrowViewKey = &kCtxArrowViewKey;   // (on the menu view: its arrow; on the arrow: YES)
+static const CGFloat kCtxMenuCorner = 10.0;                // (the menus' corner with the Mac look: _UIContextMenuListView above)
+static BOOL DMCtxEncIs(id obj, SEL sel, const char *enc) {
+    Method m = obj ? class_getInstanceMethod(object_getClass(obj), sel) : NULL;
+    const char *e = m ? method_getTypeEncoding(m) : NULL;
+    return e && !strcmp(e, enc);
+}
+static BOOL DMCtxInDockWindow(UIView *v) {
+    UIWindow *w = [v isKindOfClass:[UIView class]] ? v.window : nil;
+    return w && [NSStringFromClass([w class]) hasPrefix:@"SBFloatingDock"];
+}
+#define DM_CTX_RECT_GET "{CGRect={CGPoint=dd}{CGSize=dd}}16@0:8"
+#define DM_CTX_RECT_SET "v48@0:8{CGRect={CGPoint=dd}{CGSize=dd}}16"
+// The arbiter's answer comes in two shapes: frames (15.6.1: -menuFrame / -setMenuFrame:, -previewFrame) or places (18.5: -menu / -setMenu: and
+// -preview, each bounds, centre, anchor point, transform and alpha). DMCtxOutputKind tells which, by the methods' exact types; anything else: none.
+typedef struct { CGRect bounds; struct { double x, y, z; } center; CGPoint anchorPoint; CGAffineTransform transform; double alpha; } DMCtxPlace;
+#define DM_CTX_PLACE_GET "{?={CGRect={CGPoint=dd}{CGSize=dd}}{CAPoint3D=ddd}{CGPoint=dd}{CGAffineTransform=dddddd}d}16@0:8"
+#define DM_CTX_PLACE_SET "v144@0:8{?={CGRect={CGPoint=dd}{CGSize=dd}}{CAPoint3D=ddd}{CGPoint=dd}{CGAffineTransform=dddddd}d}16"
+enum { DMCtxOutNone = 0, DMCtxOutFrames = 1, DMCtxOutPlaces = 2 };
+static int DMCtxOutputKind(id out) {
+    if (DMCtxEncIs(out, NSSelectorFromString(@"menuFrame"), DM_CTX_RECT_GET) && DMCtxEncIs(out, NSSelectorFromString(@"setMenuFrame:"), DM_CTX_RECT_SET)) return DMCtxOutFrames;
+    if (DMCtxEncIs(out, NSSelectorFromString(@"menu"), DM_CTX_PLACE_GET) && DMCtxEncIs(out, NSSelectorFromString(@"setMenu:"), DM_CTX_PLACE_SET)) return DMCtxOutPlaces;
+    return DMCtxOutNone;
+}
+static DMCtxPlace DMCtxGetPlace(id out, NSString *name) { return ((DMCtxPlace (*)(id, SEL))objc_msgSend)(out, NSSelectorFromString(name)); }
+static CGRect DMCtxPlaceFrame(DMCtxPlace p) {   // (where it is drawn: its centre less its anchor's share of its size; a place still being scaled is no frame)
+    if (!CGAffineTransformIsIdentity(p.transform)) return CGRectNull;
+    CGFloat w = p.bounds.size.width, h = p.bounds.size.height;
+    return CGRectMake(p.center.x - p.anchorPoint.x * w, p.center.y - p.anchorPoint.y * h, w, h);
+}
+// The menu's source in the container's space, when it is in the Dock's window: where its preview is drawn (the lifted icon), else where the view
+// it opens from is (a menu without a preview). CGRectNull: not a Dock menu.
+static CGRect DMCtxDockSource(UIView *container, id input, CGRect pf) {
+    id preview = [input respondsToSelector:NSSelectorFromString(@"sourcePreview")] ? DMCall(input, @"sourcePreview") : nil;
+    if (![preview isKindOfClass:[UITargetedPreview class]]) return CGRectNull;
+    UITargetedPreview *tp = preview;
+    if (!DMCtxInDockWindow(tp.view) && !DMCtxInDockWindow(tp.target.container)) return CGRectNull;
+    if (!CGRectIsNull(pf) && pf.size.width >= 8.0 && pf.size.height >= 8.0 && CGRectIntersectsRect(pf, container.bounds)) return pf;
+    UIView *in = tp.target.container;
+    if (!in.window || in.window != container.window) return CGRectNull;
+    CGPoint c = [container convertPoint:tp.target.center fromView:in];
+    CGSize s = tp.size;
+    if (!(s.width >= 8.0) || !(s.height >= 8.0)) return CGRectNull;
+    return CGRectMake(c.x - s.width / 2.0, c.y - s.height / 2.0, s.width, s.height);
+}
+// The menu's own material: the biggest blur view in it (UIKit's list background, 15.6.1 and 18.5), not inside our arrow.
+static UIVisualEffectView *DMCtxMenuBackdrop(UIView *menu) {
+    UIVisualEffectView *best = nil; CGFloat bestArea = 0;
+    NSMutableArray<UIView *> *q = [NSMutableArray arrayWithObject:menu];
+    for (NSUInteger i = 0; i < q.count && i < 80; i++) {
+        UIView *v = q[i];
+        if (v != menu && objc_getAssociatedObject(v, kCtxArrowViewKey) == (id)kCFBooleanTrue) continue;   // (our arrow)
+        if (v != menu && [v isKindOfClass:[UIVisualEffectView class]]) {
+            CGFloat a = v.bounds.size.width * v.bounds.size.height;
+            if (a > bestArea) { best = (UIVisualEffectView *)v; bestArea = a; }
+            continue;
+        }
+        [q addObjectsFromArray:v.subviews];
+    }
+    return bestArea >= 0.5 * menu.bounds.size.width * menu.bounds.size.height ? best : nil;
+}
+static void DMCtxPlaceArrow(UIView *menu) {
+    NSArray *rec = nil;
+    for (UIView *v = menu.superview; v && !rec; v = v.superview) rec = objc_getAssociatedObject(v, kCtxArrowRecKey);
+    UIView *arrow = objc_getAssociatedObject(menu, kCtxArrowViewKey);
+    CGSize sz = menu.bounds.size;
+    BOOL ok = rec.count == 4 && DMContextMenuTheme() && fabs([rec[2] doubleValue] - sz.width) < 0.6 && fabs([rec[3] doubleValue] - sz.height) < 0.6;
+    if (!ok) { if (arrow && !arrow.hidden) arrow.hidden = YES; return; }
+    int dir = [rec[0] intValue];
+    CGFloat off = [rec[1] doubleValue], W = kMSBDArrowWidth, H = kMSBDArrowHeight, o = 0.5;
+    UIVisualEffectView *fx = nil;
+    if (!arrow) {
+        arrow = [[UIView alloc] initWithFrame:CGRectZero];
+        arrow.userInteractionEnabled = NO;
+        arrow.accessibilityElementsHidden = YES;
+        objc_setAssociatedObject(arrow, kCtxArrowViewKey, (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (marks it: DMCtxMenuBackdrop leaves it out)
+        fx = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial]];   // (until the menu's own is there, below)
+        fx.userInteractionEnabled = NO;
+        [arrow addSubview:fx];
+        objc_setAssociatedObject(menu, kCtxArrowViewKey, arrow, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [menu insertSubview:arrow atIndex:0];   // (under the list: the 0.5 pt that overlaps the menu's edge lies under its own material)
+    } else for (UIView *v in arrow.subviews) if ([v isKindOfClass:[UIVisualEffectView class]]) fx = (UIVisualEffectView *)v;
+    static char kLookKey;
+    BOOL redraw = NO;
+    if (!objc_getAssociatedObject(arrow, &kLookKey)) {   // (the menu's own material and shadow: its list -- and its blur -- come after the menu's first layout pass)
+        UIVisualEffectView *look = DMCtxMenuBackdrop(menu);
+        if (look) {
+            objc_setAssociatedObject(arrow, &kLookKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            fx.effect = look.effect;
+            id effects = nil; @try { effects = [look valueForKey:@"backgroundEffects"]; } @catch (id e) {}   // (UIKit's own menus set their blur this way)
+            if ([effects isKindOfClass:[NSArray class]] && [effects count]) { @try { [fx setValue:effects forKey:@"backgroundEffects"]; } @catch (id e) {} }
+            CALayer *shadowFrom = nil;   // (the list's shadow, if UIKit gave it one)
+            for (CALayer *l = look.layer; l && l != menu.layer.superlayer; l = l.superlayer) if (l.shadowOpacity > 0.01) { shadowFrom = l; break; }
+            if (shadowFrom) {
+                arrow.layer.shadowColor = shadowFrom.shadowColor; arrow.layer.shadowOpacity = shadowFrom.shadowOpacity;
+                arrow.layer.shadowRadius = shadowFrom.shadowRadius; arrow.layer.shadowOffset = shadowFrom.shadowOffset;
+                redraw = YES;   // (drawn again below, with the shadow's path)
+            }
+            if (DMTestFlag("/tmp/macstatusbar-debug")) {
+                NSMutableArray *chain = [NSMutableArray array];
+                for (UIView *v = look; v && v != menu; v = v.superview) [chain addObject:[NSString stringWithFormat:@"%@ bg %@ a%.2f r%.1f shadow %.2f", NSStringFromClass([v class]), v.backgroundColor, v.alpha, v.layer.cornerRadius, v.layer.shadowOpacity]];
+                DMLog([NSString stringWithFormat:@"[ctxarrow] the arrow takes the menu's material: effect %@, background effects %@, shadow %.2f; %@", look.effect, effects, shadowFrom.shadowOpacity, [chain componentsJoinedByString:@" < "]]);
+            }
+        }
+    }
+    CGRect f = CGRectMake(round((off - W / 2.0) * 2.0) / 2.0, dir == MSBDArrowDown ? sz.height - o : -H, W, H + o);
+    NSNumber *was = objc_getAssociatedObject(arrow, &kCtxArrowRecKey);
+    if (redraw || arrow.hidden || !CGRectEqualToRect(arrow.frame, f) || was.intValue != dir) {
+        arrow.hidden = NO;
+        arrow.frame = f;
+        fx.frame = arrow.bounds;
+        CGPathRef path = MSBDArrowPathCreate(W, H, o, dir, false);
+        UIView *mask = fx.maskView ?: [[UIView alloc] init];
+        mask.frame = fx.bounds;
+        CAShapeLayer *shape = (CAShapeLayer *)mask.layer.sublayers.firstObject;
+        if (![shape isKindOfClass:[CAShapeLayer class]]) { shape = [CAShapeLayer layer]; shape.fillColor = [UIColor blackColor].CGColor; [mask.layer addSublayer:shape]; }
+        shape.frame = mask.bounds; shape.path = path;
+        fx.maskView = mask;   // (a blur view is masked through its mask view, never its layer's mask)
+        if (arrow.layer.shadowOpacity > 0.01) arrow.layer.shadowPath = path;
+        CGPathRelease(path);
+        objc_setAssociatedObject(arrow, &kCtxArrowRecKey, @(dir), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (arrow.superview == menu && menu.subviews.firstObject != arrow) [menu sendSubviewToBack:arrow];
+}
+%group DockMenuArrow
+%hook _UIContextMenuLayoutArbiter
+- (id)computedLayoutWithInput:(id)input {
+    id out = %orig;
+    UIView *container = DMCall(self, @"containerView");
+    if (![container isKindOfClass:[UIView class]]) return out;
+    objc_setAssociatedObject(container, kCtxArrowRecKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!DMContextMenuTheme() || DMTestFlag("/tmp/msb-noctxarrow")) return out;
+    SEL mf = NSSelectorFromString(@"menuFrame"), smf = NSSelectorFromString(@"setMenuFrame:"), cb = NSSelectorFromString(@"contentBounds");
+    int kind = DMCtxOutputKind(out);
+    if (kind == DMCtxOutNone) return out;
+    CGRect menu = CGRectNull, previewAt = CGRectNull;
+    DMCtxPlace place = {0};
+    if (kind == DMCtxOutFrames) {
+        menu = ((CGRect (*)(id, SEL))objc_msgSend)(out, mf);
+        if (DMCtxEncIs(out, NSSelectorFromString(@"previewFrame"), DM_CTX_RECT_GET)) previewAt = ((CGRect (*)(id, SEL))objc_msgSend)(out, NSSelectorFromString(@"previewFrame"));
+    } else {
+        place = DMCtxGetPlace(out, @"menu");
+        menu = DMCtxPlaceFrame(place);
+        if (DMCtxEncIs(out, NSSelectorFromString(@"preview"), DM_CTX_PLACE_GET)) previewAt = DMCtxPlaceFrame(DMCtxGetPlace(out, @"preview"));
+        if (CGRectIsNull(menu)) return out;
+    }
+    CGRect src = DMCtxDockSource(container, input, previewAt);
+    if (CGRectIsNull(src)) return out;
+    CGRect bounds = DMCtxEncIs(out, cb, DM_CTX_RECT_GET) ? ((CGRect (*)(id, SEL))objc_msgSend)(out, cb) : CGRectNull;
+    if (CGRectIsNull(bounds) || bounds.size.width < 100.0 || bounds.size.height < 100.0) bounds = CGRectInset(container.bounds, 8.0, 8.0);
+    int dir = MSBDArrowNone;
+    CGRect f = MSBDArrowMenuFrame(menu, src, bounds, kMSBDArrowHeight, kMSBDArrowTipGap, &dir);
+    static __weak UIView *loggedFor = nil;
+    BOOL say = loggedFor != container && DMTestFlag("/tmp/macstatusbar-debug");
+    if (dir == MSBDArrowNone) {
+        if (say) { loggedFor = container; DMLog([NSString stringWithFormat:@"[ctxarrow] a Dock menu %@ over %@ has no room for its arrow (bounds %@): UIKit's place", NSStringFromCGRect(menu), NSStringFromCGRect(src), NSStringFromCGRect(bounds)]); }
+        return out;
+    }
+    CGFloat off = MSBDArrowOffset(f, CGRectGetMidX(src), kCtxMenuCorner, kMSBDArrowWidth);
+    if (kind == DMCtxOutFrames) {
+        ((void (*)(id, SEL, CGRect))objc_msgSend)(out, smf, f);
+        SEL anchorFor = NSSelectorFromString(@"_computedMenuAnchorPointForMenuFrame:previewFrame:"), setAnchor = NSSelectorFromString(@"setMenuAnchorPoint:");
+        if (DMCtxEncIs(self, anchorFor, "{CGPoint=dd}80@0:8{CGRect={CGPoint=dd}{CGSize=dd}}16{CGRect={CGPoint=dd}{CGSize=dd}}48") && DMCtxEncIs(out, setAnchor, "v32@0:8{CGPoint=dd}16")) {   // (where the menu pops up from, as UIKit works it out for this place)
+            CGPoint a = ((CGPoint (*)(id, SEL, CGRect, CGRect))objc_msgSend)(self, anchorFor, f, previewAt);
+            if (isfinite(a.x) && isfinite(a.y)) ((void (*)(id, SEL, CGPoint))objc_msgSend)(out, setAnchor, a);
+        }
+    } else {   // (18.5: the place's centre for this frame, its anchor -- where it pops up from and goes back to -- at the arrow's tip)
+        place.bounds.size = f.size;
+        place.anchorPoint = CGPointMake(f.size.width > 0 ? off / f.size.width : 0.5, dir == MSBDArrowDown ? 1.0 : 0.0);
+        place.center.x = f.origin.x + place.anchorPoint.x * f.size.width;
+        place.center.y = f.origin.y + place.anchorPoint.y * f.size.height;
+        ((void (*)(id, SEL, DMCtxPlace))objc_msgSend)(out, NSSelectorFromString(@"setMenu:"), place);
+    }
+    objc_setAssociatedObject(container, kCtxArrowRecKey, @[@(dir), @(off), @(f.size.width), @(f.size.height)], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    DM_FEATURE_MARK("dock-menu-arrow");
+    if (say) {
+        loggedFor = container;
+        DMLog([NSString stringWithFormat:@"[ctxarrow] a Dock menu: UIKit's %@ over its source %@ -> %@ (bounds %@), the arrow %@ %.1f pt from its left edge (the source's middle %.1f)",
+               NSStringFromCGRect(menu), NSStringFromCGRect(src), NSStringFromCGRect(f), NSStringFromCGRect(bounds), dir == MSBDArrowDown ? @"down" : @"up", off, CGRectGetMidX(src)]);
+    }
+    return out;
+}
+%end
+%hook _UIContextMenuView
+- (void)layoutSubviews {
+    %orig;
+    DMCtxPlaceArrow((UIView *)self);
+}
+%end
+%end
 // iPad 2 crash (2026-09-25 00:50, Safe Mode): SIGABRT from an NSException in -[UIPreviewTarget initWithContainer:center:transform:], thrown while a
 // Haptic Touch menu was dismissing (-[_UIContextMenuPresentationAnimation _targetedPreviewForDismissalAnimation], Reduce Motion path): the view the
 // menu came from had just left its window (a window minimized or resized at that moment -- Zetsu's own long-press menu on a full-screen game's window).
@@ -34809,6 +35207,13 @@ static void DMContextMenusInit(void) {
         if (cv && ![cv instancesRespondToSelector:NSSelectorFromString(@"_iconSymbolConfigurationForCurrentTraitsUsingBoldFont:")]
             && [cv instancesRespondToSelector:NSSelectorFromString(@"_symbolConfigurationForCurrentTraitsUsingBoldFont:")]
             && [cv instancesRespondToSelector:NSSelectorFromString(@"setTrailingImage:")]) %init(MacContextMenus15);
+    }
+    {   // (1.7.5 item 5: the Dock's menus centred over their icon with the Mac's arrow -- where UIKit's layout arbiter is as on 15.6.1 and 18.5)
+        Class arb = objc_getClass("_UIContextMenuLayoutArbiter"), mv = objc_getClass("_UIContextMenuView");
+        Method m = arb ? class_getInstanceMethod(arb, NSSelectorFromString(@"computedLayoutWithInput:")) : NULL;
+        const char *enc = m ? method_getTypeEncoding(m) : NULL;
+        if (mv && enc && !strcmp(enc, "@24@0:8@16")) %init(DockMenuArrow);
+        else DMLog(@"[ctxarrow] UIKit's context menu layout is not as expected here: the Dock's menus keep UIKit's place, without an arrow");
     }
     if (objc_getClass("UIPreviewTarget") && !DMTestFlag("/tmp/msb-nopreviewguard")) %init(PreviewTargetGuard);
     if (objc_getClass("SBDeviceApplicationSceneStatusBarStateProvider_Base") && !gStockBar) %init(GameStatusBar);   // (our bar over games: not with the stock one)
@@ -36454,6 +36859,7 @@ static void DMSMFitHiddenStages(id onScreen, NSDictionary<NSString *, NSString *
                 NSValue *was = lay ? nil : places[k][shape];
                 id placed = lay ? DMSMAttrsForLayoutIn(a, lay, al) : (was ? DMSMAttrsForFrameIn(a, was.CGRectValue, al) : nil);
                 if (placed) { a = placed; if (lay) laid++; else back++; }
+                if (placed && !lay) { if (!gSMTurnPlaced) gSMTurnPlaced = [NSMutableDictionary dictionary]; gSMTurnPlaced[k] = was; }   // (in no layout while it stays there, 1.7.5 item 14)
             }
             id f = DMSMAttrsFitScreen(a, nil, DMSMKeySetHas(gSMBehindDock, k), k ? DMSMKeyText(k) : nil);
             if (f == m[it]) continue;
@@ -38130,6 +38536,10 @@ static void DMSMJoinDesktop(id ctx) {
     NSString *bundle = DMCall(DMCall(act, @"application"), @"bundleIdentifier");
     id identity = DMCall(ctx, @"displayIdentity");
     if (![bundle isKindOfClass:[NSString class]] || !bundle.length || !DMSMIsMainIdentity(identity)) return;
+    // (1.7.5 item 12: an app opened while the App Library shows -- from our menus, Spotlight, a link; an icon tap closes it itself, DMSMLibraryLaunched
+    //  -- closes the App Library too, as anything that opens an app closes Launchpad on a Mac. It stayed over the stage, which SpringBoard brought
+    //  forward behind it -- the app in front, nothing of it to see -- until a Home press: A12Z 18.5, Clock opened our menus' way, 1.7.4 R1)
+    if (DMLibraryVisible()) { NSString *b = [bundle copy]; dispatch_async(dispatch_get_main_queue(), ^{ DMSMLibraryLaunched(b); }); }
     // (the window SpringBoard is opening: its scene -- an app's second window is a window of its own, which joins the desktop like any other; it
     //  counted as "already on the desktop" and SpringBoard showed it alone, the desktop's windows put away, M-2)
     NSString *key = DMSMEntityKey(act) ?: bundle;
@@ -39555,7 +39965,26 @@ static BOOL DMSMEdgeReachOurs17(void) {
 }
 static id DMSMLeadingInsets17(id self, SEL _cmd, id cfg) { id v = o_SMLeadingInsets17(self, _cmd, cfg); return DMSMEdgeReachOurs17() ? @[@0.0] : v; }
 static id DMSMTrailingInsets17(id self, SEL _cmd, id cfg) { id v = o_SMTrailingInsets17(self, _cmd, cfg); return DMSMEdgeReachOurs17() ? @[@0.0] : v; }
-static double DMSMPeekLength17(id self, SEL _cmd) { double v = o_SMPeekLength17(self, _cmd); return DMSMEdgeReachOurs17() ? 0.0 : v; }
+// 1.7.5 item 9: Stage Manager's own resize snap (17 / 18) takes a dragged side to the nearest place when it is closer than stageInterItemSpacing +
+// stageOcclusionDodgingPeekLength (-[SBItemResizeGestureSwitcherModifier _responseForGestureUpdateAtGestureEnd:], 18.5 disassembled: the nearest
+// side over the stage's windows, then "nearest < spacing + peek length", the peek length read there for nothing else). With our engine the spacing is
+// our 6 pt gap and the peek length 0 (windows never dodge, below), so it reached 6 pt; our other engines' reach is 10 (WindowSnap.h). While that
+// method runs the peek length is the difference, 4 pt: Stage Manager's snap reaches 10 pt and still puts the side one 6 pt gap from its neighbour.
+// Debug: /tmp/msb-sm-applereach (the 6 pt reach of 1.7.4).
+static int gSMResizeResponseDepth = 0;
+static double DMSMPeekLength17(id self, SEL _cmd) {
+    double v = o_SMPeekLength17(self, _cmd);
+    if (!DMSMEdgeReachOurs17()) return v;
+    if (gSMResizeResponseDepth > 0 && !DMTestFlag("/tmp/msb-sm-applereach")) { DM_FEATURE_MARK("sm-resize-snap-reach-10"); return kMSBDSnapResizeDistance - kMSBDSnapGap; }
+    return 0.0;
+}
+static id (*o_SMResizeResponse)(id, SEL, BOOL);
+static id DMSMResizeResponse(id self, SEL _cmd, BOOL atEnd) {
+    gSMResizeResponseDepth++;
+    id r = o_SMResizeResponse(self, _cmd, atEnd);
+    gSMResizeResponseDepth--;
+    return r;
+}
 // 1.7.4 item 15 (KT's default for the 1.7.3 snapping question): Stage Manager's own resize snap on 17 / 18 put a dragged side one
 // -[SBSwitcherChamoisLayoutAttributes stageInterItemSpacing] (10 pt, 17.5.1 and 18.5) from a neighbour's side -- every snap of ours keeps windows
 // our layouts' 6 pt apart (WindowSnap.h kMSBDSnapGap). With our engine that spacing is the 6 pt too: one gap on every engine and iPad. Apple's
@@ -39566,6 +39995,17 @@ static double (*o_SMInterItem17)(id, SEL);
 static double DMSMInterItem17(id self, SEL _cmd) {
     double v = o_SMInterItem17(self, _cmd);
 #if DEBUG
+    if (DMTestFlag("/tmp/msb-sm-gapcallers")) {   // (debug, 1.7.5 item 9: which of SpringBoard's code reads the gap -- each place once: image, offset, symbol)
+        static NSMutableSet<NSNumber *> *seen; if (!seen) seen = [NSMutableSet set];
+        void *ra = __builtin_return_address(0);
+        if (![seen containsObject:@((uintptr_t)ra)] && seen.count < 60) {
+            [seen addObject:@((uintptr_t)ra)];
+            Dl_info di; memset(&di, 0, sizeof di); dladdr(ra, &di);
+            const char *img = di.dli_fname ? (strrchr(di.dli_fname, '/') ? strrchr(di.dli_fname, '/') + 1 : di.dli_fname) : "?";
+            DMLog([NSString stringWithFormat:@"[smgap] the gap read from %s+0x%lx (%s+0x%lx, return address %p)", img, (unsigned long)((uintptr_t)ra - (uintptr_t)di.dli_fbase),
+                   di.dli_sname ?: "?", di.dli_saddr ? (unsigned long)((uintptr_t)ra - (uintptr_t)di.dli_saddr) : 0UL, ra]);
+        }
+    }
     if (DMTestFlag("/tmp/msb-sm-applegap")) return v;
 #endif
     if (!DMSMEngine()) return v;
@@ -39577,6 +40017,13 @@ static void DMSMHookInterItemGap17(void) {
     static BOOL done = NO;
     if (done) return;
     done = YES;
+    {   // (1.7.5 item 9: the reach of Stage Manager's resize snap, DMSMPeekLength17 -- only where the method is there with its known type)
+        Class rm = objc_getClass("SBItemResizeGestureSwitcherModifier");
+        SEL resp = NSSelectorFromString(@"_responseForGestureUpdateAtGestureEnd:");
+        Method mr = rm ? class_getInstanceMethod(rm, resp) : NULL;
+        if (mr && [DMSMSigOfMethod(mr) isEqualToString:DMSMExpect(@encode(id), @encode(BOOL), NULL)]) MSHookMessageEx(rm, resp, (IMP)DMSMResizeResponse, (IMP *)&o_SMResizeResponse);
+        else DMLog(@"[smengine] Stage Manager's resize gesture is not as expected here: its own resize snap reaches 6 pt");
+    }
     Class a = objc_getClass("SBSwitcherChamoisLayoutAttributes");
     SEL gap = NSSelectorFromString(@"stageInterItemSpacing");
     Method m = a ? class_getInstanceMethod(a, gap) : NULL;

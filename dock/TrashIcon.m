@@ -14,6 +14,7 @@
 #import "../common/DockTrash.h"
 #import "../common/ReduceMotion.h"
 #import "../common/MacPointerActive.h"   // (the Mac pointer: no lift under it, as the Dock's other icons)
+#import "DMIconTheme.h"   // (1.7.5 item 7: the empty and the full bin as app icons of their own that an icon theme can change)
 static BOOL DMTrashIconLift(void) { return MSBDIPadPointerEffects(); }
 #define DM_FEATURE_MARK(name) do { static const char *const dmFeatureMark = "msbd-feature:" name; __asm__ volatile("" :: "r"(dmFeatureMark)); } while (0)   // (release-build feature marker, see statusbar/StatusBar.x)
 
@@ -201,6 +202,24 @@ static UIImage *DMTrashImage(CGSize size, DMTrashLook look, BOOL dark) {
     if (img) [cache setObject:img forKey:key];
     return img;
 }
+// Any picture darkened where it is drawn (a drag over the bin), as DMTrashImage's own dark one: for an app-icon picture (a theme's, 1.7.5).
+static UIImage *DMTrashDarkened(UIImage *base) {
+    if (!base) return nil;
+    static NSMapTable *made; if (!made) made = [NSMapTable weakToStrongObjectsMapTable];
+    UIImage *hit = [made objectForKey:base]; if (hit) return hit;
+    UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat preferredFormat];
+    fmt.scale = base.scale; fmt.opaque = NO;
+    UIImage *img = [[[UIGraphicsImageRenderer alloc] initWithSize:base.size format:fmt] imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        CGContextRef c = ctx.CGContext;
+        CGContextBeginTransparencyLayer(c, NULL);
+        [base drawAtPoint:CGPointZero];
+        CGContextSetBlendMode(c, kCGBlendModeSourceAtop);
+        [DMTGray(0.0, 0.38) setFill]; CGContextFillRect(c, CGRectMake(0, 0, base.size.width, base.size.height));
+        CGContextEndTransparencyLayer(c);
+    }];
+    if (img) [made setObject:img forKey:base];
+    return img;
+}
 
 // ---- the Dock icon ------------------------------------------------------------------------------------------------------------------------
 // The view Finder's drags look for (statusbar/Finder.h DMFDTrashIconAt, by its class name and -dm_trashTarget).
@@ -209,6 +228,7 @@ static UIImage *DMTrashImage(CGSize size, DMTrashLook look, BOOL dark) {
 @property (nonatomic) NSUInteger count;      // items in Finder's Trash (its published state)
 @property (nonatomic) BOOL eject, hover;     // a drag of drives under way / a drag over the bin
 @property (nonatomic, strong) id pendingIcon;   // an app dropped on the bin by SpringBoard's own icon drag: leaves the Dock once that drag has ended
+@property (nonatomic, strong) NSMutableDictionary *themePics;   // (1.7.5) the app-icon pictures asked for: "w|h|generation|full" -> picture
 - (void)tapped;
 - (void)dm_refreshLook:(BOOL)animated;
 @end
@@ -239,7 +259,27 @@ static NSUInteger DMTrashPublishedCount(void) {
     self.isAccessibilityElement = YES;
     self.accessibilityTraits = UIAccessibilityTraitButton;
     self.count = DMTrashPublishedCount();
+    DMIconThemeSetDrawer(MSBDIconTrashEmpty, ^UIImage *(CGSize size, CGFloat scale, CGFloat radius, BOOL masked) { return DMTrashImage(size, DMTrashLookEmpty, NO); });
+    DMIconThemeSetDrawer(MSBDIconTrashFull, ^UIImage *(CGSize size, CGFloat scale, CGFloat radius, BOOL masked) { return DMTrashImage(size, DMTrashLookFull, NO); });
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(dm_themeChanged) name:DMIconThemeChangedNotification object:nil];
     return self;
+}
+- (void)dm_themeChanged { [self.themePics removeAllObjects]; [self dm_refreshLook:NO]; }
+// The bin's picture: the empty or full bin as an app icon (a theme's picture, or ours as SpringBoard / a theme engine shapes an app's own icon),
+// darkened under a drag; the Eject sign, and the bin where the app-icon path is off, drawn here as before.
+- (UIImage *)dm_lookImage {
+    DMTrashLook look = [self dm_look];
+    if (look != DMTrashLookEject) {
+        BOOL full = look == DMTrashLookFull;
+        NSString *k = [NSString stringWithFormat:@"%.2f|%.2f|%lu|%d", self.bounds.size.width, self.bounds.size.height, (unsigned long)DMIconThemeGeneration(), full];
+        UIImage *base = self.themePics[k];
+        if (!base) {
+            base = DMIconThemePicture(MSBDIconTrashItem(full), self.bounds.size, NULL);
+            if (base) { if (!self.themePics || self.themePics.count > 8) self.themePics = [NSMutableDictionary dictionary]; self.themePics[k] = base; }
+        }
+        if (base) return self.hover ? DMTrashDarkened(base) : base;
+    }
+    return DMTrashImage(self.bounds.size, look, self.hover);
 }
 - (BOOL)dm_trashTarget { return YES; }
 - (BOOL)accessibilityActivate { [self tapped]; return YES; }
@@ -257,7 +297,7 @@ static NSUInteger DMTrashPublishedCount(void) {
 }
 - (DMTrashLook)dm_look { return self.eject ? DMTrashLookEject : self.count ? DMTrashLookFull : DMTrashLookEmpty; }
 - (void)dm_refreshLook:(BOOL)animated {
-    UIImage *want = DMTrashImage(self.bounds.size, [self dm_look], self.hover);
+    UIImage *want = [self dm_lookImage];
     if (!want || self.image.image == want) return;
     if (animated && self.image.image && self.window) {   // (empty <-> full, bin <-> Eject: a short cross-fade, also with Reduce Motion)
         [UIView transitionWithView:self.image duration:MSBReduceMotion() ? kMSBRMDuration : 0.18 options:UIViewAnimationOptionTransitionCrossDissolve | UIViewAnimationOptionAllowUserInteraction

@@ -29,7 +29,7 @@ A macOS-style desktop for jailbroken iPads: a Mac menu bar with real app menus, 
 After the respring:
 
 - Apps still open full screen. Tap the green light in the menu bar to put an app in a window, or turn on **Window > Open Apps as Windows** to open every app in one. With the Stage Manager engine, apps open as windows from the start.
-- The switches are in Settings > Status Bar, Windows & Multitasking and Dock, right below General (on iPadOS 18, at the top of Settings > General). The [Settings reference](./docs/settings.md) explains each one.
+- The switches are in Settings > Status Bar, Desktop, Windows & Multitasking and Dock, right below General (on iPadOS 18, at the top of Settings > General). The [Settings reference](./docs/settings.md) explains each one.
 - Desktops and Mission Control stay off until you turn on Settings > Windows & Multitasking > Mac Switcher.
 
 Updates come through Sileo, and the Apple menu shows Update Available when your package list has a newer version. The checksum and source commit of every published package are in [RELEASES.md](https://github.com/BesiktasliSeba/repo/blob/main/RELEASES.md).
@@ -83,7 +83,7 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 - On My iPad shows the same folders as the Files app, with a folder for each app that shares its files there.
 - The Trash has an Empty button at the top right, and emptying the Trash plays a sound unless the iPad is muted.
 - Drag files between Finder windows, the desktop and the Downloads stack, or into an app, which gets a copy.
-- Files and folders from On My iPad > Desktop sit on the first Home Screen page, never over your apps. A long press or a right click opens their menus over your windows, and Hide Name hides an icon's name (Hide Desktop Icon Names in Settings > Status Bar hides them all).
+- Files and folders from On My iPad > Desktop sit on the first Home Screen page, never over your apps. A long press or a right click opens their menus over your windows, and Hide Name hides an icon's name. In Settings > Desktop, Hide Desktop Icon Names hides them all and Icon Size sets their size.
 - Text files open in a small TextEdit window and save by themselves.
 - USB drives and SD cards show up under Locations. exFAT and FAT32 work (FAT32 can't hold files over 4 GB). APFS and Mac OS Extended should work but haven't been tested, and iPadOS doesn't read NTFS. An SSD may need a powered hub.
 - On iPadOS 16 to 18, each drive has an Eject button in Finder's sidebar, as on a Mac, and File > Eject and the drive's menu eject it too.
@@ -95,6 +95,8 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 - A Downloads stack with search, which you can drag files into and out of.
 - A Trash at its end, which you turn on in Settings > Dock. Drop files on it to move them to the Trash, a Dock app to take it out of the Dock, or a drive to eject it (iPadOS 16 to 18).
 - Haptic Touch menus get Force Quit, App Size and Add to Folder on app icons, and a folder's menu lists its apps. Add to Folder moves the app into a Home Screen folder or a new one, as a drag would, also from the App Library.
+- Menus that open from the Dock and the Downloads stack sit over their icon with the Mac's arrow pointing at it.
+- On iPadOS 15 to 17, icon themes such as SnowBoard's change Finder, Launchpad, Downloads, the Trash and Activity Monitor like any app icon. The identifiers are under [For theme makers](#for-theme-makers).
 
 ### Activity Monitor and RAM & CPU
 
@@ -105,7 +107,9 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 
 ### Settings
 
-- The Status Bar, Windows & Multitasking and Dock pages sit right below General and look like Apple's own pages. On iPadOS 18 they are in a group at the top of Settings > General.
+- The Status Bar, Desktop, Windows & Multitasking and Dock pages sit right below General and look like Apple's own pages. On iPadOS 18 they are in a group at the top of Settings > General.
+- On iPadOS 15 to 17 the sidebar is shorter: Notifications & Sounds and Focus & Screen Time each open Apple's two pages.
+- Ethernet is listed in the sidebar with or without an adapter, except while a trackpad or mouse and a keyboard are both connected and no adapter is.
 - A search field at the top of the Settings sidebar finds Apple's settings, like the search in System Settings on a Mac, and can find your tweaks' settings too.
 
 ### Also included
@@ -212,12 +216,26 @@ On iPads with 2 or 3 GB of memory:
 
 - Work with 2 or 3 windows at a time. Every window is a running app, and iPadOS closes apps in the background when memory runs short, so they reload when you go back.
 - Turn off what you don't use, such as Siri Suggestions (Settings > Siri & Search) and Handoff (Settings > General > AirPlay & Handoff).
+- Turn off Prewarm Apps in Settings > Windows & Multitasking, so iPadOS doesn't start apps in the background before you open them.
 
 ## In the works
 
 A real second desktop on external displays for iPadOS 15. An early version already runs its own menu bar, Dock and apps on a TV.
 
 ![An early iPadOS 15 second desktop on a TV: its own menu bar, a Clock window and a Dock](./images/ios15-tv-desktop-teaser.jpg)
+
+## For theme makers
+
+On iPadOS 15 to 17, SnowBoard and other engines that theme app icons can change the Dock's own items like any app icon. Name the pictures in the theme's IconBundles folder after these identifiers, for example `IconBundles/com.besiktasliseba.macstatusbar.trash-large.png`. Without a picture in the theme, an item keeps its own, shaped like your other icons.
+
+| Item | Identifier |
+|---|---|
+| Finder | `com.besiktasliseba.finder` (`com.apple.finder` works too) |
+| Launchpad | `com.besiktasliseba.macstatusbar.launchpad` (the classic round style looks for `com.besiktasliseba.macstatusbar.launchpad.classic` first) |
+| Downloads | `com.besiktasliseba.macstatusbar.downloads` |
+| Trash, empty | `com.besiktasliseba.macstatusbar.trash` |
+| Trash, full | `com.besiktasliseba.macstatusbar.trash.full` |
+| Activity Monitor | `com.besiktasliseba.macstatusbar.activitymonitor` |
 
 ## Contributing
 

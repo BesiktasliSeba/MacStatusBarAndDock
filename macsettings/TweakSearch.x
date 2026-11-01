@@ -346,8 +346,10 @@ BOOL MTSTestCommand(NSString *cmd) {
 }
 - (id)searchResultsCollectionViewController:(id)controller iconForCategory:(NSString *)category {
     if (!MTSIsOurs(category)) return %orig;
-    id apple = %orig(controller, [category substringFromIndex:kMTIPrefix.length]);   // (the icon of the page's own row in the main list, as Apple finds it)
-    return apple ?: MTSIconForCategory(category);
+    // (the page's own icon, the one its row shows; Apple's lookup is never handed a page id: on 17 it takes the cell at NSNotFound when the
+    //  row is not where it looks, e.g. with Shuffle, and throws, which crashed Settings, 17.5.1 1 Nov; and -specifierForID: is no presence check,
+    //  our row tweaks answer it by putting their rows back)
+    return MTSIconForCategory(category);
 }
 - (void)searchResultsCollectionViewController:(id)controller didSelectURL:(NSURL *)url {
     NSURL *open = MTSOpenURL(url, @"Settings search");

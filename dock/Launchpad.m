@@ -9,23 +9,25 @@
 #import <objc/message.h>
 
 #import "DMLog.h"
+#import "DMIconTheme.h"   // (1.7.5 item 7: Launchpad as an app icon of its own that an icon theme can change)
 
 static const void *kOverlayKey = &kOverlayKey;
 
 static UIColor *DMRGB(CGFloat r, CGFloat g, CGFloat b) { return [UIColor colorWithRed:r / 255.0 green:g / 255.0 blue:b / 255.0 alpha:1.0]; }
 
-// Silver gradient tile with a 3 x 3 grid of colourful app tiles, like the Big Sur-era Launchpad icon.
-static UIImage *DMLaunchpadImage(CGSize size) {
+// Silver gradient tile with a 3 x 3 grid of colourful app tiles, like the Big Sur-era Launchpad icon. `rounded`: cut to the tile's rounded square
+// with its thin inner edge (the Dock's picture); NO: the whole square, for a theme engine to shape like an app's own icon (1.7.5 item 7).
+static UIImage *DMLaunchpadDrawGrid(CGSize size, BOOL rounded) {
     static NSMutableDictionary *cache = nil;
     if (!cache) cache = [NSMutableDictionary dictionary];
-    NSString *key = NSStringFromCGSize(size);
+    NSString *key = [NSStringFromCGSize(size) stringByAppendingString:rounded ? @"" : @"|square"];
     if (cache[key]) return cache[key];
     UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat preferredFormat];
     UIImage *img = [[[UIGraphicsImageRenderer alloc] initWithSize:size format:fmt] imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
         CGFloat w = size.width, h = size.height;
         CGContextRef c = ctx.CGContext;
         CGRect full = CGRectMake(0, 0, w, h);
-        UIBezierPath *shape = [UIBezierPath bezierPathWithRoundedRect:full cornerRadius:w * 0.2237];
+        UIBezierPath *shape = rounded ? [UIBezierPath bezierPathWithRoundedRect:full cornerRadius:w * 0.2237] : [UIBezierPath bezierPathWithRect:full];
         CGContextSaveGState(c);
         [shape addClip];
         CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
@@ -53,6 +55,7 @@ static UIImage *DMLaunchpadImage(CGSize size) {
             }
         }
         // a thin inner edge so the tile reads against a dark Dock
+        if (!rounded) return;
         [[UIColor colorWithWhite:1.0 alpha:0.35] setStroke];
         UIBezierPath *edge = [UIBezierPath bezierPathWithRoundedRect:CGRectInset(full, 0.5, 0.5) cornerRadius:w * 0.2237];
         edge.lineWidth = 1.0;
@@ -61,6 +64,7 @@ static UIImage *DMLaunchpadImage(CGSize size) {
     cache[key] = img;
     return img;
 }
+static UIImage *DMLaunchpadImage(CGSize size) { return DMLaunchpadDrawGrid(size, YES); }
 
 // The classic round Launchpad (the gray one from OS X Yosemite to Mojave): a gray disc with a light rim and a flat charcoal
 // rocket flying up and to the right. The rocket, its porthole and its flame were traced from a picture of that icon and are
@@ -156,6 +160,31 @@ static UIView *DMIconImageView(UIView *iconView) {
 }
 
 static const void *kSavedShapeKey = &kSavedShapeKey;
+static const void *kHiddenKey = &kHiddenKey;     // the App Library picture's own views we hid under an app-icon picture (1.7.5)
+static const void *kAskedKey = &kAskedKey;       // what the overlay's app-icon picture was asked for: size, style, theme generation
+
+// The App Library picture's own views (its mini app grid, its platter) hidden while Launchpad shows a picture with see-through parts (a theme's
+// mask, the round rocket shaped by a theme engine), and back when it doesn't.
+static void DMLaunchpadHideOwn(UIView *imageView, UIView *overlay, BOOL hide) {
+    NSHashTable *hidden = objc_getAssociatedObject(imageView, kHiddenKey);
+    if (!hide) {
+        for (UIView *v in hidden.allObjects) v.hidden = NO;
+        [hidden removeAllObjects];
+        return;
+    }
+    if (!hidden) { hidden = [NSHashTable weakObjectsHashTable]; objc_setAssociatedObject(imageView, kHiddenKey, hidden, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
+    for (UIView *v in imageView.subviews) if (v != overlay && !v.hidden) { v.hidden = YES; [hidden addObject:v]; }
+}
+
+// Launchpad as an app icon (1.7.5 item 7, DMIconTheme.h): the grid tile and the classic rocket are its own pictures -- the grid masked as drawn,
+// unmasked the whole square; the rocket round either way --, com.besiktasliseba.macstatusbar.launchpad (and ...launchpad.classic for the round
+// style, asked first there) take a theme's picture with everything a theme engine does to app icons.
+static void DMLaunchpadSetDrawers(void) {
+    static BOOL done; if (done) return; done = YES;
+    DMIconThemeSetDrawer(MSBDIconLaunchpad, ^UIImage *(CGSize size, CGFloat scale, CGFloat radius, BOOL masked) { return DMLaunchpadDrawGrid(size, masked); });
+    DMIconThemeSetDrawer(MSBDIconLaunchpadClassic, ^UIImage *(CGSize size, CGFloat scale, CGFloat radius, BOOL masked) { return DMLaunchpadRocketImage(size); });
+}
+static __weak UIView *gDMLaunchpadIconView;   // (the App Library icon last refreshed: laid out again when a theme engine refreshed its icons)
 
 // Called from -[SBIconView layoutSubviews]: only the App Library indicator icon is touched. `classic` = the round rocket
 // icon, otherwise the silver grid tile. The round one also clips the original (square) picture underneath to a circle.
@@ -167,6 +196,9 @@ void DMLaunchpadRefresh(UIView *iconView, BOOL enabled, BOOL classic) {
     UIView *imageView = DMIconImageView(iconView);
     if (!imageView) return;
     UIImageView *overlay = objc_getAssociatedObject(imageView, kOverlayKey);
+    gDMLaunchpadIconView = iconView;
+    static BOOL watching;
+    if (!watching) { watching = YES; [[NSNotificationCenter defaultCenter] addObserverForName:DMIconThemeChangedNotification object:nil queue:nil usingBlock:^(NSNotification *n) { [gDMLaunchpadIconView setNeedsLayout]; }]; }
 
     // remember how the picture was clipped before we touched it, so turning the feature off puts it back
     NSArray *saved = objc_getAssociatedObject(imageView, kSavedShapeKey);
@@ -175,12 +207,44 @@ void DMLaunchpadRefresh(UIView *iconView, BOOL enabled, BOOL classic) {
         objc_setAssociatedObject(imageView, kSavedShapeKey, saved, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     if (!enabled) {
+        DMLaunchpadHideOwn(imageView, overlay, NO);
         if (overlay) { [overlay removeFromSuperview]; objc_setAssociatedObject(imageView, kOverlayKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
         imageView.layer.cornerRadius = [saved[0] doubleValue]; imageView.layer.masksToBounds = [saved[1] boolValue]; imageView.layer.cornerCurve = saved[2];
         return;
     }
     CGRect bounds = imageView.bounds;
     if (bounds.size.width < 8.0) return;
+    // 1.7.5: the app icon's picture (a theme's, or ours as SpringBoard / a theme engine shapes an app's own icon): shown as it comes, its corners
+    // its own; the App Library picture underneath is hidden, so nothing of it shows through a see-through part.
+    DMLaunchpadSetDrawers();
+    NSArray *asked = overlay ? objc_getAssociatedObject(overlay, kAskedKey) : nil;
+    BOOL same = asked && CGSizeEqualToSize([asked[0] CGSizeValue], bounds.size) && [asked[1] boolValue] == classic && [asked[2] unsignedIntegerValue] == DMIconThemeGeneration();
+    UIImage *pic = same ? overlay.image : DMIconThemePicture(MSBDIconLaunchpadItem(classic), bounds.size, NULL);
+    if (pic) {
+        imageView.layer.cornerRadius = [saved[0] doubleValue]; imageView.layer.masksToBounds = [saved[1] boolValue]; imageView.layer.cornerCurve = saved[2];
+        if (!overlay) {
+            overlay = [[UIImageView alloc] initWithFrame:bounds];
+            overlay.accessibilityIgnoresInvertColors = YES;
+            overlay.userInteractionEnabled = NO;
+            objc_setAssociatedObject(imageView, kOverlayKey, overlay, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [imageView addSubview:overlay];
+            DMLog([NSString stringWithFormat:@"[launchpad] overlay added on %@ bounds %@ (%@, an app icon of its own)", NSStringFromClass([imageView class]), NSStringFromCGRect(bounds), classic ? @"classic" : @"grid"]);
+        }
+        overlay.clipsToBounds = NO;
+        overlay.layer.cornerRadius = 0;
+        overlay.frame = bounds;
+        overlay.contentMode = UIViewContentModeScaleAspectFit;
+        if (overlay.image != pic) overlay.image = pic;
+        objc_setAssociatedObject(overlay, kSavedShapeKey, @(classic), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(overlay, kAskedKey, @[[NSValue valueWithCGSize:bounds.size], @(classic), @(DMIconThemeGeneration())], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (overlay.superview != imageView) [imageView addSubview:overlay];
+        [imageView bringSubviewToFront:overlay];
+        DMLaunchpadHideOwn(imageView, overlay, YES);
+        return;
+    }
+    BOOL hadAppPicture = overlay && objc_getAssociatedObject(overlay, kAskedKey);   // (an app-icon picture shown before: drawn again below)
+    DMLaunchpadHideOwn(imageView, overlay, NO);
+    if (overlay) objc_setAssociatedObject(overlay, kAskedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (classic) {
         imageView.layer.cornerRadius = bounds.size.width / 2.0; imageView.layer.masksToBounds = YES; imageView.layer.cornerCurve = kCACornerCurveCircular;
     } else {
@@ -196,10 +260,11 @@ void DMLaunchpadRefresh(UIView *iconView, BOOL enabled, BOOL classic) {
         DMLog([NSString stringWithFormat:@"[launchpad] overlay added on %@ bounds %@ (%@)", NSStringFromClass([imageView class]), NSStringFromCGRect(bounds), classic ? @"classic" : @"grid"]);
     }
     overlay.frame = bounds;
+    overlay.clipsToBounds = YES;
     overlay.layer.cornerCurve = classic ? kCACornerCurveCircular : kCACornerCurveContinuous;
     overlay.layer.cornerRadius = classic ? bounds.size.width / 2.0 : bounds.size.width * 0.2237;
     NSNumber *shown = objc_getAssociatedObject(overlay, kSavedShapeKey);   // which style the current image is
-    if (!overlay.image || !CGSizeEqualToSize(overlay.image.size, bounds.size) || shown.boolValue != classic) {
+    if (hadAppPicture || !overlay.image || !CGSizeEqualToSize(overlay.image.size, bounds.size) || shown.boolValue != classic) {
         overlay.image = classic ? DMLaunchpadRocketImage(bounds.size) : DMLaunchpadImage(bounds.size);
         objc_setAssociatedObject(overlay, kSavedShapeKey, @(classic), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }

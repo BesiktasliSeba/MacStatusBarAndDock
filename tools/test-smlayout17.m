@@ -98,13 +98,13 @@ static void DMSM17DiagSoon(void) { gDiagSoon++; }
 @end
 // (a window's attributes with the 17.0.3 signatures: each attributesByModifying... returns a changed copy)
 @interface SBDisplayItemLayoutAttributes : NSObject <NSCopying>
-@property (nonatomic) DMSMAttributedSize sz;
+@property (nonatomic) DMSMAttributedSize sz, userSz;   // (userSz: -attributedUserSizeBeforeOverlapping, 17 / 18; its setter added in section 13)
 @property (nonatomic) CGPoint center;
 @property (nonatomic) long long policy, time;
 @property (nonatomic) BOOL managed;
 @end
 @implementation SBDisplayItemLayoutAttributes
-- (id)copyWithZone:(NSZone *)z { SBDisplayItemLayoutAttributes *a = [SBDisplayItemLayoutAttributes new]; a.sz = _sz; a.center = _center; a.policy = _policy; a.time = _time; a.managed = _managed; return a; }
+- (id)copyWithZone:(NSZone *)z { SBDisplayItemLayoutAttributes *a = [SBDisplayItemLayoutAttributes new]; a.sz = _sz; a.userSz = _userSz; a.center = _center; a.policy = _policy; a.time = _time; a.managed = _managed; return a; }
 - (id)attributesByModifyingAttributedSize:(DMSMAttributedSize)s { SBDisplayItemLayoutAttributes *a = [self copy]; a.sz = s; return a; }
 - (id)attributesByModifyingNormalizedCenter:(CGPoint)c { SBDisplayItemLayoutAttributes *a = [self copy]; a.center = c; return a; }
 - (id)attributesByModifyingSizingPolicy:(long long)p { SBDisplayItemLayoutAttributes *a = [self copy]; a.policy = p; return a; }
@@ -473,6 +473,27 @@ int main(void) {
             Check(@"full screen 17: windowing off -> Apple's frame", !DMSMWholeScreenFrame17(NO, YES, 1, grid, b, 3, 2), @"");
             Check(@"full screen 17: floating (3) and centre (4) roles left alone", !DMSMWholeScreenFrame17(YES, YES, 3, grid, b, 3, 2) && !DMSMWholeScreenFrame17(YES, YES, 4, grid, b, 3, 2), @"");
             Check(@"full screen 17: a container that is not a rectangle -> Apple's frame", !DMSMWholeScreenFrame17(YES, YES, 1, grid, CGRectMake(0, 0, NAN, 1366), 3, 2), @"");
+        }
+        {   // 13. (1.7.5 item 8) the size before overlapping (17 / 18) follows a size we hand over; where the method is not there (16) nothing changes
+            SBDisplayItemLayoutAttributes *a = [SBDisplayItemLayoutAttributes new];
+            a.sz = (DMSMAttributedSize){ CGSizeMake(0.6, 0.72), CGRectMake(0, 0, 1366, 1024), 0 };
+            a.userSz = a.sz;   // (the size it joined its stage with: 820 x 737 on the A12Z)
+            gSMLayoutGen = 17; gSMPointSizes = 0;
+            DMSMAttributedSize medium = { CGSizeMake(0.4, 0.45), CGRectMake(0, 0, 1366, 1024), 0 };
+            NSUInteger refusedBefore = gLog.count;
+            SBDisplayItemLayoutAttributes *w = DMSMAttrWithSize(a, medium);
+            Check(@"overlap size: without the method (16) the size is handed over and nothing else changes", w && w.sz.normalizedSize.width == 0.4 && w.userSz.normalizedSize.width == 0.6, NSStringFromCGSize(w.userSz.normalizedSize));
+            BOOL refused = NO; for (NSUInteger i = refusedBefore; i < gLog.count; i++) if ([gLog[i] containsString:@"REFUSED"]) refused = YES;
+            Check(@"overlap size: its missing method is no refusal", !refused, @"");
+            IMP setUser = imp_implementationWithBlock(^id(SBDisplayItemLayoutAttributes *me, DMSMAttributedSize u) { SBDisplayItemLayoutAttributes *c = [me copy]; c.userSz = u; return c; });
+            class_addMethod([SBDisplayItemLayoutAttributes class], NSSelectorFromString(@"attributesByModifyingAttributedUserSizeBeforeOverlapping:"), setUser,
+                            [[NSString stringWithFormat:@"@@:%s", @encode(DMSMAttributedSize)] UTF8String]);
+            w = DMSMAttrWithSize(a, medium);
+            Check(@"overlap size: with the method (17 / 18) the size before overlapping is the size handed over (Clock's Medium, not its old 820 x 737)",
+                  w && w.sz.normalizedSize.width == 0.4 && w.userSz.normalizedSize.width == 0.4 && w.userSz.normalizedSize.height == 0.45 && w.userSz.referenceBounds.size.width == 1366, NSStringFromCGSize(w.userSz.normalizedSize));
+            SBDisplayItemLayoutAttributes *w2 = DMSMAttrWith(a, medium, CGPointMake(0.7, 0.6), 0, 9);
+            Check(@"overlap size: DMSMAttrWith (size, place, policy, order in one) too", w2 && w2.userSz.normalizedSize.width == 0.4 && w2.center.x == 0.7 && w2.time == 9, @"");
+            gSMPointSizes = -1;
         }
         printf("%d of %d passed\n", total - fails, total);
     }

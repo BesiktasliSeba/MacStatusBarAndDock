@@ -57,6 +57,21 @@ int main(void) {
     Frame("an empty layout frame does not count: the remembered place", MSBDTurnPlaceFor(CGRectZero, remembered, scaled, &why), remembered);
     Int("  ... why", why, MSBDTurnRemembered);
     Frame("a round trip of a Fill window (hidden desktop, item 11): landscape -> portrait -> landscape gives landscape's Fill, not portrait's width", MSBDTurnPlaceFor(tl[0], CGRectMake(0, 24, 1024, 917.47), CGRectNull, &why), l);
+    // ---- 1.7.5 item 14: a window a turn put back where it was in this shape keeps no layout while it stays there ----
+    {
+        bool keep = true;
+        CGRect quarter = tp[8];   // (Tips' old portrait place, the bottom-right quarter's frame: 1.7.4 R2 F1)
+        Int("a free window put back by a turn at a quarter's frame: no layout (not 'bottomright')", MSBDTurnNoteIndex(quarter, 8, quarter, kMSBDTurnPlacedTolerance, &keep), -1);
+        Int("  ... the record stays", keep, 1);
+        Int("  ... 1.5 pt off (the engine's rounding): still no layout", MSBDTurnNoteIndex(CGRectOffset(quarter, 1.5, -1.5), 8, quarter, kMSBDTurnPlacedTolerance, &keep), -1);
+        Int("moved since (8 pt): its frame tells again -- the quarter it is in", MSBDTurnNoteIndex(CGRectOffset(quarter, 0, 0), 8, CGRectOffset(quarter, 8, 0), kMSBDTurnPlacedTolerance, &keep), 8);
+        Int("  ... and the record goes", keep, 0);
+        Int("moved elsewhere, in no layout: none", MSBDTurnNoteIndex(CGRectMake(174, 108, 676, 501), -1, quarter, kMSBDTurnPlacedTolerance, &keep), -1);
+        Int("  ... the record goes", keep, 0);
+        Int("no record: the layout its frame is in", MSBDTurnNoteIndex(quarter, 8, CGRectNull, kMSBDTurnPlacedTolerance, &keep), 8);
+        Int("  ... nothing to keep", keep, 0);
+        Int("an empty record counts as none", MSBDTurnNoteIndex(quarter, 8, CGRectZero, kMSBDTurnPlacedTolerance, &keep), 8);
+    }
     // ---- Fit to Window off: the spread (the same numbers as the engines' spread before 1.7.4, DMSpreadFitGroup's formula) ----
     CGRect m1 = CGRectMake(0, 24, 1194, 761.8 - 24);
     CGSize medium = CGSizeMake(round(m1.size.width * 0.66), round(m1.size.height * 0.74));

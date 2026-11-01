@@ -1,6 +1,7 @@
 // Mac test of the quit set's file (common/PrewarmQuitSet.h): SpringBoard's write (StatusBar.x DMPrewarmQuitWriteFile) read back as the dasd part
 // reads it (PrewarmBlock.x), XML and binary, every damaged or other shape an empty set, and the file stamp that has the set read again when the
-// file changed (iPad 2, palera1n, 29 Oct: cfprefsd gave dasd nothing for our domain, so it refused nothing).
+// file changed (iPad 2, palera1n, 29 Oct: cfprefsd gave dasd nothing for our domain, so it refused nothing). 1.7.5: Prewarm Apps off is
+// "refuseAll" in the same file -- only a real true refuses every prewarm, anything else the set alone.
 #import <Foundation/Foundation.h>
 #include <unistd.h>
 #include "../common/PrewarmQuitSet.h"
@@ -10,13 +11,13 @@ static NSData *Plist(id obj, NSPropertyListFormat f) { return [NSPropertyListSer
 int main(void) {
     @autoreleasepool {
         NSArray *six = @[@"com.apple.mobiletimer", @"com.apple.tips", @"com.apple.Preferences", @"com.apple.Maps", @"com.apple.weather", @"com.apple.AppStore"];
-        NSData *written = MSBDPrewarmQuitSetPlist(six);
+        NSData *written = MSBDPrewarmQuitSetPlist(six, NO);
         CHECK(written.length > 0 && [[[NSString alloc] initWithData:written encoding:NSUTF8StringEncoding] containsString:@"<key>quitSet</key>"], "SpringBoard's write: an XML property list with the set under quitSet");
         NSSet *s = MSBDPrewarmQuitSetFromPlist(written);
         CHECK(s.count == 6 && [s isEqualToSet:[NSSet setWithArray:six]], "read back: all six apps");
         id back = [NSPropertyListSerialization propertyListWithData:written options:0 format:NULL error:NULL];
         CHECK([back[@"quitSet"] isEqualToArray:six], "  ... stored in their order (oldest quit first)");
-        CHECK(MSBDPrewarmQuitSetFromPlist(MSBDPrewarmQuitSetPlist(@[])).count == 0 && MSBDPrewarmQuitSetFromPlist(MSBDPrewarmQuitSetPlist(nil)).count == 0, "an empty set (or none) written: read back empty");
+        CHECK(MSBDPrewarmQuitSetFromPlist(MSBDPrewarmQuitSetPlist(@[], NO)).count == 0 && MSBDPrewarmQuitSetFromPlist(MSBDPrewarmQuitSetPlist(nil, NO)).count == 0, "an empty set (or none) written: read back empty");
         NSData *bin = Plist(@{@"quitSet": six}, NSPropertyListBinaryFormat_v1_0);
         CHECK(bin.length > 8 && !memcmp(bin.bytes, "bplist00", 8) && [MSBDPrewarmQuitSetFromPlist(bin) isEqualToSet:s], "binary: the same six");
         CHECK([MSBDPrewarmQuitSetFromPlist(Plist(@{@"quitSet": six, @"other": @1}, NSPropertyListBinaryFormat_v1_0)) isEqualToSet:s], "other keys beside it: ignored");
@@ -28,6 +29,22 @@ int main(void) {
         CHECK(MSBDPrewarmQuitSetFromPlist(Plist(@{}, NSPropertyListBinaryFormat_v1_0)).count == 0, "no quitSet key (the set cleared, the stock status bar): empty");
         CHECK(MSBDPrewarmQuitSetFromPlist(Plist(@{@"quitSet": @"com.apple.tips"}, NSPropertyListBinaryFormat_v1_0)).count == 0, "a string, not a list: empty");
         CHECK(MSBDPrewarmQuitSetFromPlist(Plist(six, NSPropertyListBinaryFormat_v1_0)).count == 0, "a list at the top, not a dictionary: empty");
+        // Prewarm Apps (1.7.5): on, the file is the set alone, byte for byte as before; off, the set and refuseAll true
+        CHECK(![back objectForKey:@"refuseAll"] && [written isEqualToData:Plist(@{@"quitSet": six}, NSPropertyListXMLFormat_v1_0)], "Prewarm Apps on: no refuseAll key, the file exactly as 1.7.4 wrote it");
+        CHECK(!MSBDPrewarmRefuseAllFromPlist(written), "  ... read: only the set refused");
+        NSData *off = MSBDPrewarmQuitSetPlist(six, YES);
+        CHECK(MSBDPrewarmRefuseAllFromPlist(off) && [MSBDPrewarmQuitSetFromPlist(off) isEqualToSet:s], "Prewarm Apps off: every prewarm refused, and the set read as it was (kept for when it is on again)");
+        id offBack = [NSPropertyListSerialization propertyListWithData:off options:0 format:NULL error:NULL];
+        CHECK(offBack[@"refuseAll"] == (__bridge id)kCFBooleanTrue && [[[NSString alloc] initWithData:off encoding:NSUTF8StringEncoding] containsString:@"<key>refuseAll</key>"], "  ... written as <true/> under refuseAll");
+        CHECK(MSBDPrewarmRefuseAllFromPlist(MSBDPrewarmQuitSetPlist(@[], YES)) && MSBDPrewarmQuitSetFromPlist(MSBDPrewarmQuitSetPlist(nil, YES)).count == 0, "  ... with an empty set too");
+        CHECK(MSBDPrewarmRefuseAllFromPlist(Plist(@{@"quitSet": six, @"refuseAll": @YES}, NSPropertyListBinaryFormat_v1_0)), "  ... binary: the same");
+        CHECK(!MSBDPrewarmRefuseAllFromPlist(nil) && !MSBDPrewarmRefuseAllFromPlist([NSData data]), "no file, an empty file: not refused (iPadOS prewarms)");
+        CHECK(!MSBDPrewarmRefuseAllFromPlist([off subdataWithRange:NSMakeRange(0, off.length / 2)]) && !MSBDPrewarmRefuseAllFromPlist([@"not a plist" dataUsingEncoding:NSUTF8StringEncoding]), "a cut or damaged file: not refused");
+        CHECK(!MSBDPrewarmRefuseAllFromPlist(Plist(@{@"quitSet": six, @"refuseAll": @NO}, NSPropertyListBinaryFormat_v1_0)), "refuseAll false: not refused");
+        CHECK(!MSBDPrewarmRefuseAllFromPlist(Plist(@{@"refuseAll": @1}, NSPropertyListBinaryFormat_v1_0)) && !MSBDPrewarmRefuseAllFromPlist(Plist(@{@"refuseAll": @"YES"}, NSPropertyListBinaryFormat_v1_0)), "  ... a number or a string, not a boolean: not refused");
+        CHECK(!MSBDPrewarmRefuseAllFromPlist(Plist(@[@{@"refuseAll": @YES}], NSPropertyListBinaryFormat_v1_0)), "  ... not at the top of a dictionary: not refused");
+        CHECK(MSBDPrewarmRefuseAllFromPlist(Plist(@{@"refuseAll": @YES}, NSPropertyListBinaryFormat_v1_0)) && MSBDPrewarmQuitSetFromPlist(Plist(@{@"refuseAll": @YES}, NSPropertyListBinaryFormat_v1_0)).count == 0, "refuseAll without a set: every prewarm refused, an empty set");
+        CHECK(!MSBDPrewarmRefuseAllFromPlist(Plist(@{@"quitSet": six}, NSPropertyListBinaryFormat_v1_0)), "the postinst's first copy (cfprefsd's prewarm domain: the set only): the set alone, until SpringBoard writes the file");
         // the stamp: a real file, rewritten as cfprefsd does (a new file in its place)
         NSString *dir = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"tpq-%d", getpid()]];
         [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:NULL];
@@ -41,7 +58,7 @@ int main(void) {
         MSBDPrewarmFileStamp a2 = MSBDPrewarmStampOf(stat(f.fileSystemRepresentation, &st) == 0 ? &st : NULL);
         CHECK(!MSBDPrewarmStampChanged(a, a2), "the same file again: unchanged (no read)");
         usleep(20000);
-        [MSBDPrewarmQuitSetPlist([six subarrayWithRange:NSMakeRange(0, 5)]) writeToFile:f atomically:YES];
+        [MSBDPrewarmQuitSetPlist([six subarrayWithRange:NSMakeRange(0, 5)], NO) writeToFile:f atomically:YES];
         MSBDPrewarmFileStamp b = MSBDPrewarmStampOf(stat(f.fileSystemRepresentation, &st) == 0 ? &st : NULL);
         CHECK(MSBDPrewarmStampChanged(a, b), "rewritten with one app less: changed");
         CHECK(MSBDPrewarmQuitSetFromPlist([NSData dataWithContentsOfFile:f]).count == 5, "  ... and read again: five");

@@ -384,6 +384,26 @@ static BOOL DMSMAttrCenter(id attrs, CGPoint *out) {
     if (out) *out = c;
     return YES;
 }
+// 1.7.5 item 8: Stage Manager (17, 18) keeps a second size for each window, the size the user had given it before it was made smaller to make room for
+// others (-attributedUserSizeBeforeOverlapping), and gives it back once the window overlaps nothing -- alone in a stage of its own: a window brought
+// from another desktop (Go to the App's Desktop off), a window that leaves its stage. A size we hand over (the Window menu's layouts, Fit to Window's
+// tiles and its spread, a turn, Menu Bar Size's refit) set only the window's size, so such a window came back at its size from before: Clock at
+// 546 x 461 brought to Desktop 2 came at 820 x 737, the size it had when it joined Settings (A12Z 18.5; size before overlapping 820 x 737 at the
+// switch, "unspecified" after). The size we hand over is the user's size: it is that one too. Only where the method is there with the size's type
+// (16 has no such size): anywhere else nothing changes, and nothing is refused.
+static id DMSMAttrWithUserSizeToo(id attrs, DMSMAttributedSize apple) {
+    SEL put = NSSelectorFromString(@"attributesByModifyingAttributedUserSizeBeforeOverlapping:");
+    Method m = attrs ? class_getInstanceMethod(object_getClass(attrs), put) : NULL;
+    if (!m) return attrs;
+    static int sane = -1;
+    if (sane < 0) {
+        sane = [DMSMSigOfMethod(m) isEqualToString:DMSMSigWithSize()] ? 1 : 0;
+        if (!sane) DMLog([NSString stringWithFormat:@"[smapi] the size before overlapping is %@ here, not %@: Stage Manager keeps its own", DMSMSigOfMethod(m), DMSMSigWithSize()]);
+    }
+    if (!sane) return attrs;
+    id r = ((id (*)(id, SEL, DMSMAttributedSize))objc_msgSend)(attrs, put, apple);
+    return DMSMIsAttrs(r) ? r : attrs;
+}
 // The attributesByModifying... family: a copy with one thing changed; nil (nothing changed anywhere) when refused.
 static id DMSMAttrWithSize(id attrs, DMSMAttributedSize s) {
     if (!DMSMIsAttrs(attrs)) return nil;
@@ -402,8 +422,9 @@ static id DMSMAttrWithSize(id attrs, DMSMAttributedSize s) {
     }
     SEL sel = NSSelectorFromString(@"attributesByModifyingAttributedSize:");
     if (!DMSMSigOK(attrs, sel, DMSMSigWithSize(), "attributesByModifyingAttributedSize:")) return nil;
-    id r = ((id (*)(id, SEL, DMSMAttributedSize))objc_msgSend)(attrs, sel, DMSMSizeForApple(s));   // (in points where Apple keeps points, iPadOS 17)
-    return DMSMIsAttrs(r) ? r : nil;
+    DMSMAttributedSize apple = DMSMSizeForApple(s);   // (in points where Apple keeps points, iPadOS 17)
+    id r = ((id (*)(id, SEL, DMSMAttributedSize))objc_msgSend)(attrs, sel, apple);
+    return DMSMIsAttrs(r) ? DMSMAttrWithUserSizeToo(r, apple) : nil;   // (the size before overlapping too: 1.7.5 item 8)
 }
 static id DMSMAttrWithCenter(id attrs, CGPoint c) {
     if (!DMSMIsAttrs(attrs)) return nil;

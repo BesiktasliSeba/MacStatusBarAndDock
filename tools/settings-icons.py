@@ -33,6 +33,8 @@ class Canvas:
         f = self.font(size, weight); lay = self.layer()
         ImageDraw.Draw(lay).text((self.p(x), self.p(baseline)), s, font=f, fill=fill, anchor='ls'); self.over(lay)
         return f.getlength(s) / self.k
+    def poly(self, pts, fill):                            # a polygon, points in points
+        lay = self.layer(); ImageDraw.Draw(lay).polygon([(self.p(x), self.p(y)) for x, y in pts], fill=fill); self.over(lay)
     def wedge(self, cx, cy, r, a0, a1, fill):            # a pie slice (angles in degrees, 0 = right, clockwise)
         lay = self.layer(); ImageDraw.Draw(lay).pieslice(self.box(cx - r, cy - r, cx + r, cy + r), a0, a1, fill=fill); self.over(lay)
     def out(self, px): return self.im.resize((px, px), Image.BOX)
@@ -120,11 +122,31 @@ def windows(px):
         c.ellipse(12.0 + i * 2.1, 12.6, 0.8, hexc(col))
     return c.out(px)
 
+def desktop(px):
+    # the Desktop page (1.7.5): a desktop's wallpaper with its icons where a Mac puts them, down a column at the top right -- a folder, then a
+    # document -- each with its name under it
+    c = Canvas(px)
+    base(c, hexc('#3FC9C3'), hexc('#167C8E'))
+    c.poly([(0, 21.0), (6.5, 18.2), (14.0, 19.6), (21.5, 17.4), (29, 18.6), (29, 29), (0, 29)], hexc('#FFFFFF', 34))   # a soft hill in the wallpaper
+    # the folder: its back with the tab, then its front (macOS's light blue)
+    c.rrect(14.2, 3.6, 19.4, 6.8, 1.0, hexc('#3E9FDB'))
+    c.rrect(14.2, 4.9, 25.6, 12.4, 1.3, hexc('#3E9FDB'))
+    c.rrect(14.2, 6.2, 25.6, 12.4, 1.3, hexc('#79CCF7'))
+    c.rrect(15.0, 13.3, 24.8, 14.4, 0.55, hexc('#FFFFFF', 215))      # its name
+    # the document: a sheet with its corner folded
+    c.poly([(16.4, 16.0), (21.6, 16.0), (23.4, 17.8), (23.4, 24.0), (16.4, 24.0)], hexc('#FFFFFF'))
+    c.poly([(21.6, 16.0), (21.6, 17.8), (23.4, 17.8)], hexc('#C9D3DA'))
+    for y in (19.2, 20.6, 22.0):                                      # its lines of text
+        c.rrect(17.6, y - 0.3, 22.2, y + 0.3, 0.3, hexc('#B8C4CC'))
+    c.rrect(15.0, 24.9, 24.8, 26.0, 0.55, hexc('#FFFFFF', 215))      # its name
+    return c.out(px)
+
 ICONS = {
     'statusbar/macstatusbarprefs/Resources/icon': status_bar,
     'dock/dockmagnificationprefs/Resources/icon': dock,
     'ccmodule/Resources/SettingsIcon': ram_cpu,
     'statusbar/macstatusbarprefs/Resources/windows': windows,   # the Windows & Multitasking page (its row's icon, from the Status Bar page's bundle)
+    'statusbar/macstatusbarprefs/Resources/desktop': desktop,   # the Desktop page (1.7.5; its row's icon, from the same bundle)
 }
 
 root = sys.argv[1]

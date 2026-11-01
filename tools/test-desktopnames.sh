@@ -30,14 +30,14 @@ check "the menu: Hide Name / Show Name (Names for a selection), greyed while Set
   "fn '- (UIMenu *)dm_menuFor:(DMDesktopItemView *)v at:(CGPoint)sp {' | grep -q '@\"Show Names\" : @\"Show Name\") : (many ? @\"Hide Names\" : @\"Hide Name\")' && fn '- (UIMenu *)dm_menuFor:(DMDesktopItemView *)v at:(CGPoint)sp {' | grep -q 'if (gDesktopHideNames) hn.attributes = UIMenuElementAttributesDisabled;'"
 check "Settings' switch: read with Show Desktop Icons (the Finder notification), off unless set, applied to the icons at once" \
   "fn 'static BOOL DMDesktopHideNamesPref(void) {' | grep -q 'CFSTR(\"desktopHideNames\")' && fn 'static void DMDesktopApplyPref(void) {' | grep -q '\\[gDesktop dm_applyNames\\];' && grep -q '^static BOOL gDesktopHideNames = NO;' $D"
-check "  ... the row: Hide Desktop Icon Names, right after Show Desktop Icons, off by default, the same notification" \
+check "  ... the row: Hide Desktop Icon Names, right after Show Desktop Icons on the Desktop page (1.7.5), off by default, the same notification" \
   "python3 -c \"
 import plistlib,sys
-items=plistlib.load(open('../statusbar/macstatusbarprefs/Resources/Root.plist','rb'))['items']
+items=plistlib.load(open('../statusbar/macstatusbarprefs/Resources/Desktop.plist','rb'))['items']
 i=[k for k,x in enumerate(items) if x.get('key')=='desktopIcons'][0]; r=items[i+1]
 sys.exit(0 if r.get('key')=='desktopHideNames' and r.get('label')=='Hide Desktop Icon Names' and r.get('default') is False and r.get('defaults')=='com.besiktasliseba.macstatusbar' and r.get('PostNotification')==items[i].get('PostNotification') and r.get('cell')=='PSSwitchCell' else 1)\""
 check "  ... left out with Show Desktop Icons where the desktop's 17+ check failed; greyed while Finder or Show Desktop Icons is off" \
-  "grep -q 'isEqual:@\"desktopIcons\"\\] || \\[\\[spec propertyForKey:@\"key\"\\] isEqual:@\"desktopHideNames\"\\]' ../statusbar/macstatusbarprefs/MSBRootListController.m && grep -q 'for (NSString \\*k in @\\[@\"finderEnabled\", @\"desktopIcons\"\\])' ../statusbar/macstatusbarprefs/MSBRootListController.m"
+  "grep -q 'isEqual:@\"desktopIcons\"\\] || \\[\\[spec propertyForKey:@\"key\"\\] isEqual:@\"desktopHideNames\"\\]' ../statusbar/macstatusbarprefs/MSBRootListController.m && grep -q 'BOOL finder = MSBFinderStored(), on = finder;' ../statusbar/macstatusbarprefs/MSBRootListController.m && grep -q 'CFPreferencesCopyAppValue(CFSTR(\"desktopIcons\"), kMSBBarDomain);' ../statusbar/macstatusbarprefs/MSBRootListController.m"
 check "a crash in DesktopNames.h is the desktop's (its switch), as Desktop.h's" \
   "grep -qxF 'file MacStatusBarCore ^Desktop(Names)?\\.h\$ desktopIcons' crashmap-rules.txt"
 [ $fails = 0 ] && echo "test-desktopnames: wiring checks pass" || { echo "test-desktopnames: wiring checks FAILED"; exit 1; }

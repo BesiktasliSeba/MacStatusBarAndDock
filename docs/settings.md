@@ -4,7 +4,7 @@ Every switch MacStatusBar&Dock adds, where to find it, what it does, and how it 
 
 On an iPadOS version that hasn't been tested, the top of the Status Bar and Dock pages shows **Enable Anyway** (off), which lets the tweak run at your own risk. After Automatic Crash Recovery has acted, the same place says what it turned off, with **Turn Back On** and **Report a Problem**.
 
-On iPadOS 18, Settings has no room for tweak rows in its sidebar, so Status Bar, Windows & Multitasking and Dock are in a MacStatusBar&Dock group at the top of Settings > General, together with the sidebar rows further down this page.
+On iPadOS 18, Settings has no room for tweak rows in its sidebar, so Status Bar, Desktop, Windows & Multitasking and Dock are in a MacStatusBar&Dock group at the top of Settings > General, together with the sidebar rows further down this page.
 
 ## Settings > Status Bar
 
@@ -24,9 +24,7 @@ On iPadOS 18, Settings has no room for tweak rows in its sidebar, so Status Bar,
 | Automatically Hide and Show the Status Bar | Hides the menu bar until the pointer reaches the top edge. | Off |
 | Mac-Style Banners | Notification banners come in at the top right, like on a Mac. | On |
 | Go Menu > Apps | Choose and order the apps in the Go menu. | |
-| Finder | Off removes Finder completely, with its Dock icon. | On |
-| Show Desktop Icons | Files and folders from On My iPad > Desktop on the first Home Screen page. | On |
-| Hide Desktop Icon Names | Hides the names under every desktop icon. VoiceOver still reads them. An icon's own menu has Hide Name for just that icon. Greyed out while Finder or Show Desktop Icons is off. | Off |
+| Finder | Off removes Finder completely, with its Dock icon and the desktop. | On |
 | Activity Monitor > Show in App Library | Activity Monitor as an app in the App Library, in its Utilities category and its search. A tap opens the Activity Monitor window, and Add to Dock in its menu puts it in the Dock. Off also takes it out of the Dock, and on puts it back. | On |
 | Report a Problem | Opens a filled-in GitHub issue in your browser. The report is part of the link, so GitHub receives it when the page opens. It is only posted if you submit it. | |
 | Background | Automatic: a color behind the menu bar, unless ColorBar15 already colors it. Also Always On or Off. | Automatic |
@@ -50,9 +48,19 @@ On iPadOS 18, Settings has no room for tweak rows in its sidebar, so Status Bar,
 | Hide Status Bar on Lock Screen | No status bar on the Lock Screen, and no Control Center line at its top right. | Off |
 | Skip Lock Screen After Respring | Goes straight to the Home Screen after a respring. Works only without a passcode. | Off |
 
+## Settings > Desktop
+
+The desktop's settings, on their own page between Status Bar and Windows & Multitasking. The desktop is Finder's: while Finder is off, these rows are greyed out.
+
+| Setting | What it does | New install |
+|---|---|---|
+| Show Desktop Icons | Files and folders from On My iPad > Desktop on the first Home Screen page. | On |
+| Hide Desktop Icon Names | Hides the names under every desktop icon. VoiceOver still reads them. An icon's own menu has Hide Name for just that icon. Greyed out while Show Desktop Icons is off. | Off |
+| Icon Size | The size of the desktop icons, from 40 to 96 points. The icons change as you drag the slider, their names and spacing follow, and every icon keeps its place. Home Screen app icons stay as they are. | The Home Screen's icon size |
+
 ## Settings > Windows & Multitasking
 
-The window settings, on their own page between Status Bar and Dock. On iPadOS 15 and 16 the page also shows Apple's Picture in Picture and Gestures settings, which leave General while they are here. On iPadOS 17 and 18, Multitasking & Gestures at the end of the page opens Apple's own page.
+The window settings, on their own page between Desktop and Dock. On iPadOS 15 and 16 the page also shows Apple's Picture in Picture and Gestures settings, which leave General while they are here. On iPadOS 17 and 18, Multitasking & Gestures at the end of the page opens Apple's own page.
 
 | Setting | What it does | New install |
 |---|---|---|
@@ -66,6 +74,7 @@ The window settings, on their own page between Status Bar and Dock. On iPadOS 15
 | Hide Multitasking Dots | Hides the three dots at the top of apps while windowing runs. | On |
 | Mac Switcher | Desktops and Mission Control in place of the App Switcher. Turning it off keeps your desktops for when you turn it on again. | Off |
 | Go to the App's Desktop | With the Mac Switcher on, opening an app whose window is on another desktop takes you to that desktop. Off: the window comes to the desktop you're on. | Off |
+| Prewarm Apps | iPadOS starts some apps in the background before you open them, so they open faster. Off: no app is started before you open it, which keeps that memory free on an iPad with little RAM. | On |
 
 ## Settings > Dock
 
@@ -110,6 +119,8 @@ These show up only when they apply. While the Pointer and Keyboard rows are ther
 | Pointer (with a trackpad or mouse) | The pointer page below, followed by Apple's Pointer Control and Trackpad & Mouse settings. | |
 | Keyboard (with a hardware keyboard) | The keyboard page below, followed by Apple's Hardware Keyboard settings. | |
 
+On iPadOS 15 to 17, Notifications and Sounds share one row, Notifications & Sounds, and Focus and Screen Time another, Focus & Screen Time. Each opens a page with Apple's two pages on it. Links and search results that lead to one of Apple's four pages open it there.
+
 ### Pointer
 
 | Setting | What it does | New install |
@@ -140,7 +151,7 @@ For keyboards without a function row, like the original Magic Keyboard for iPad.
 ## Elsewhere in Settings
 
 - Display & Brightness > Auto-Lock offers 30 minutes, 1 hour and 2 hours too, except in Low Power Mode. iPadOS takes any time over an hour for Never, so the tweak keeps 2 hours in SpringBoard's idle timer, and 2 hours is listed only while it can. Removing the tweak or switching MacStatusBar off sets 2 hours to 1 hour, and switching MacStatusBar on again brings the 2 hours back. With an Aerial, Zetsu or MilkyWay4 window in front, the iPad gets the whole Auto-Lock time, as with an app in front.
-- General > Ethernet is always listed, with or without an adapter.
+- Ethernet is listed in the sidebar with or without an adapter, except while a trackpad or mouse and a keyboard are both connected and no adapter is. Then the Pointer and Keyboard rows are there, and Ethernet comes back as soon as an adapter is connected or one of the two is disconnected.
 
 ## In the menu bar's Window menu
 

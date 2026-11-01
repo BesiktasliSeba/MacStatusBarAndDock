@@ -10,6 +10,7 @@
 // (StatusBar.x MacPointerIcons): iPadOS draws its pointer under a lifted icon, and the arrow went under it. iPadOS's pointer: the lift as before.
 // (and while the Mac pointer stands down for another pointer tweak: then the pointer is iPadOS's -- common/MacPointerActive.h, logic test W5)
 #import "../common/MacPointerActive.h"
+#import "DMIconTheme.h"   // (1.7.5 item 7: the face as an app icon of its own, com.besiktasliseba.finder, that an icon theme can change)
 static BOOL DMDockIconLift(void) { return MSBDIPadPointerEffects(); }
 
 #define kFinderDockTap   "com.besiktasliseba.macstatusbar.finder.dock"
@@ -74,7 +75,22 @@ static UIImage *DMFinderFaceImage(CGSize size) {
 // every Dock layout; iPad 2 / M1: 17.12 / 76 = 0.225). The Finder picture's corners are cut with it, as continuous corners, like the apps' pictures.
 CGFloat gDMIconCornerRatio = 0.2253;
 
-// An icon theme's Finder picture, when an active SnowBoard theme has one: IconBundles/com.apple.finder-large.png (the macOS Finder's id, as icon
+// Finder as an app icon (1.7.5 item 7, DMIconTheme.h): the face is the icon's own picture -- masked with SpringBoard's corner, unmasked the whole
+// square for a theme engine to shape like any app's (SnowBoard: its mask, corner radius, effects) --, and a theme's picture for
+// com.besiktasliseba.finder (or com.apple.finder) replaces it, with everything the engine does to app icons.
+static UIImage *DMFinderShaped(CGSize size, CGFloat scale, CGFloat radius, BOOL masked) {
+    UIImage *face = DMFinderFaceImage(size);
+    if (!masked || !face || radius <= 0.0) return face;
+    UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat preferredFormat];
+    fmt.scale = scale; fmt.opaque = NO;
+    return [[[UIGraphicsImageRenderer alloc] initWithSize:size format:fmt] imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, size.width, size.height) cornerRadius:radius] addClip];
+        [face drawInRect:CGRectMake(0, 0, size.width, size.height)];
+    }];
+}
+
+// Where SpringBoard's icon chain is not as read (DMIconThemePicture nil: iPadOS 18, ...) -- the way before 1.7.5: an icon theme's Finder picture,
+// when an active SnowBoard theme has one: IconBundles/com.apple.finder-large.png (the macOS Finder's id, as icon
 // themes name their pictures) or com.besiktasliseba.finder-large.png, checked in SnowBoard's own order (its active themes list), then SnowBoard's
 // per-icon overrides for those ids. It is cut with the same corners as the apps' themed pictures. Looked up again only when SnowBoard's settings
 // file changes (a theme switched on or off); nil = no theme has one: the drawn face.
@@ -109,6 +125,8 @@ static UIImage *DMFinderThemedImage(void) {
 @interface DMFinderIconView : UIView <UIPointerInteractionDelegate, UIContextMenuInteractionDelegate>
 @property (nonatomic, strong) UIImageView *image;
 @property (nonatomic, strong) UIView *dot;
+@property (nonatomic) CGSize themeSize;          // (the size and theme-engine generation the shown app-icon picture was asked for)
+@property (nonatomic) NSUInteger themeGeneration;
 - (void)tapped;
 - (void)updateDot;
 @end
@@ -133,12 +151,26 @@ static UIImage *DMFinderThemedImage(void) {
     self.isAccessibilityElement = YES;
     self.accessibilityLabel = @"Finder";
     self.accessibilityTraits = UIAccessibilityTraitButton;
+    DMIconThemeSetDrawer(MSBDIconFinder, ^UIImage *(CGSize size, CGFloat scale, CGFloat radius, BOOL masked) { return DMFinderShaped(size, scale, radius, masked); });
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(dm_themeChanged) name:DMIconThemeChangedNotification object:nil];
     return self;
 }
+- (void)dm_themeChanged { [self setNeedsLayout]; }
 - (BOOL)accessibilityActivate { [self tapped]; return YES; }
 - (void)layoutSubviews {
     [super layoutSubviews];
     self.image.frame = self.bounds;
+    // (1.7.5: the app icon's picture -- a theme's, or the face as SpringBoard / a theme engine shapes an app's own icon; its corners are its own)
+    if (!CGSizeEqualToSize(self.themeSize, self.bounds.size) || self.themeGeneration != DMIconThemeGeneration() || !self.image.image) {
+        UIImage *pic = DMIconThemePicture(MSBDIconFinder, self.bounds.size, NULL);
+        self.themeSize = pic ? self.bounds.size : CGSizeZero; self.themeGeneration = DMIconThemeGeneration();
+        if (pic) {
+            self.image.layer.cornerRadius = 0; self.image.layer.masksToBounds = NO;
+            self.image.contentMode = UIViewContentModeScaleAspectFit;
+            self.image.image = pic;
+        }
+    }
+    if (!CGSizeEqualToSize(self.themeSize, CGSizeZero)) { [self updateDot]; return; }
     // (the corners: SpringBoard's own app icon corner for this size, continuous, cut by the layer -- the face fills the slot, K-4)
     CALayer *l = self.image.layer;
     l.cornerRadius = gDMIconCornerRatio * MIN(self.bounds.size.width, self.bounds.size.height);

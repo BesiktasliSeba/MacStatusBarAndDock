@@ -1,5 +1,12 @@
 // PrewarmBlockTweak (dasd) -- an app the user QUIT (our red light, our Force Quit, or the App Switcher's swipe-up) is not prewarmed again until the
-// user opens it themselves.
+// user opens it themselves; and with Prewarm Apps switched off (1.7.5, Settings > Windows & Multitasking) no app is prewarmed at all.
+//
+// Prewarm Apps off. For iPads with little memory (1.7.5 item 6, measured: on the 2 GB iPad Pro 9.7" dasd kept up to ~40 prewarmed apps at once,
+// ~1.5 MB each, ~50 MB in all, none of them opened, while iOS killed daemons below them for memory; on 4 GB and more a rounding error). The quit
+// set's file then also says "refuseAll" (common/PrewarmQuitSet.h): the same two calls are refused for every app, nothing else changes. Live: the
+// file is looked at on every prewarm and SpringBoard says when it wrote it, so the next prewarm already follows the switch, without a respring
+// and without a dasd restart. Apps prewarmed before the switch went off stay as they are (suspended, ~1.5 MB each) until a respring or iOS ends
+// them: telling a prewarmed process from one the user has opened since needs SpringBoard's view of the scenes, and ending one is iOS's to do.
 //
 // Why here. iOS 15+ prewarms apps: dasd (the Duet Activity Scheduler) picks apps and launches them suspended with ActivePrewarm=1 in their
 // environment, out of the App Switcher, every ~30 min (:12 and :42). SpringBoard never sees that request, so it cannot refuse one. dasd asks
@@ -93,12 +100,13 @@ static BOOL DebugKillSwitch(void) { return NO; }
 #include "../common/PrewarmQuitSet.h"   // (the file, its reading and its stamp -- Mac test tools/test-prewarmquitset.sh)
 static os_unfair_lock gQuitLock = OS_UNFAIR_LOCK_INIT;
 static NSSet<NSString *> *gQuitSet = nil;   // (under gQuitLock)
+static BOOL gRefuseAll = NO;                // (under gQuitLock: the file says Prewarm Apps is off -- every prewarm refused, 1.7.5)
 static BOOL gQuitSetStale = YES;            // (under gQuitLock)
 static MSBDPrewarmFileStamp gQuitFileStamp;   // (under gQuitLock: the file as it was when it was read)
 static void MarkQuitSetStale(void) { os_unfair_lock_lock(&gQuitLock); gQuitSetStale = YES; os_unfair_lock_unlock(&gQuitLock); }
-// Whether the quit set holds this app (*kept: its file is there, so SpringBoard keeps a set -- the block is on); the set is read again first when
-// it changed (one small file read, under the lock: a change is rare).
-static BOOL QuitSetContains(NSString *bundleID, BOOL *kept) {
+// Whether the quit set holds this app (*kept: its file is there, so SpringBoard keeps a set -- the block is on; *all: the file refuses every
+// prewarm, Prewarm Apps off); the file is read again first when it changed (one small file read, under the lock: a change is rare).
+static BOOL QuitSetContains(NSString *bundleID, BOOL *kept, BOOL *all) {
     NSString *refreshed = nil;
     os_unfair_lock_lock(&gQuitLock);
     struct stat st;
@@ -107,11 +115,15 @@ static BOOL QuitSetContains(NSString *bundleID, BOOL *kept) {
     if (gQuitSetStale || MSBDPrewarmStampChanged(gQuitFileStamp, now)) {
         gQuitSetStale = NO;
         gQuitFileStamp = now;
-        NSSet<NSString *> *set = MSBDPrewarmQuitSetFromPlist(now.present ? [NSData dataWithContentsOfFile:@kMSBDPrewarmQuitSetFile] : nil);
+        NSData *data = now.present ? [NSData dataWithContentsOfFile:@kMSBDPrewarmQuitSetFile] : nil;
+        NSSet<NSString *> *set = MSBDPrewarmQuitSetFromPlist(data);
         gQuitSet = set;
-        refreshed = [NSString stringWithFormat:@"%lu app(s) %@", (unsigned long)set.count, [[set allObjects] componentsJoinedByString:@" "]];
+        gRefuseAll = MSBDPrewarmRefuseAllFromPlist(data);
+        refreshed = [NSString stringWithFormat:@"%lu app(s)%@ %@", (unsigned long)set.count, gRefuseAll ? @", Prewarm Apps off (every prewarm refused)" : @"",
+                     [[set allObjects] componentsJoinedByString:@" "]];
     }
     BOOL hit = [gQuitSet containsObject:bundleID];
+    *all = now.present && gRefuseAll;   // (no file: nothing refused, whatever was read last)
     os_unfair_lock_unlock(&gQuitLock);
     if (refreshed) Debug([NSString stringWithFormat:@"[set] refreshed: %@", refreshed]);   // (logged outside the lock)
     return hit;
@@ -121,7 +133,8 @@ static BOOL QuitSetContains(NSString *bundleID, BOOL *kept) {
 //  way a jailbreak goes; 0 = allowed, 1 = refused by the sandbox)
 extern int sandbox_check(pid_t pid, const char *operation, int type, ...);
 static void DebugReadsAtStart(void) {
-    NSSet *file = MSBDPrewarmQuitSetFromPlist([NSData dataWithContentsOfFile:@kMSBDPrewarmQuitSetFile]);
+    NSData *data = [NSData dataWithContentsOfFile:@kMSBDPrewarmQuitSetFile];
+    NSSet *file = MSBDPrewarmQuitSetFromPlist(data);
     CFPreferencesAppSynchronize(kPrewarmDomain);
     CFPropertyListRef v = CFPreferencesCopyValue(kQuitSetKey, kPrewarmDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     long viaPrefs = v && CFGetTypeID(v) == CFArrayGetTypeID() ? (long)CFArrayGetCount((CFArrayRef)v) : -1;
@@ -129,8 +142,8 @@ static void DebugReadsAtStart(void) {
     const int noReport = 0x40000000, preferenceDomain = 6, path = 1;   // (SANDBOX_CHECK_NO_REPORT, SANDBOX_FILTER_PREFERENCE_DOMAIN, SANDBOX_FILTER_PATH)
     int domainRead = sandbox_check(getpid(), "user-preference-read", preferenceDomain | noReport, "com.besiktasliseba.macstatusbar.prewarm");
     int fileRead = sandbox_check(getpid(), "file-read-data", path | noReport, kMSBDPrewarmQuitSetFile);
-    Debug([NSString stringWithFormat:@"[init] quit set: %lu app(s) in its file, %@ through cfprefsd (sandbox, asked: the domain %d, the file %d)",
-           (unsigned long)file.count, viaPrefs < 0 ? @"none" : [NSString stringWithFormat:@"%ld", viaPrefs], domainRead, fileRead]);
+    Debug([NSString stringWithFormat:@"[init] quit set: %lu app(s) in its file%@, %@ through cfprefsd (sandbox, asked: the domain %d, the file %d)",
+           (unsigned long)file.count, MSBDPrewarmRefuseAllFromPlist(data) ? @" (Prewarm Apps off)" : @"", viaPrefs < 0 ? @"none" : [NSString stringWithFormat:@"%ld", viaPrefs], domainRead, fileRead]);
 }
 #endif
 
@@ -144,8 +157,13 @@ static BOOL gArmed = NO;
 static BOOL DMPrewarmRefuses(NSString *bundleID, const char *where) {
     if (!gArmed || ![bundleID isKindOfClass:[NSString class]] || ![(NSString *)bundleID length]) return NO;
     if (DebugKillSwitch()) { Debug([NSString stringWithFormat:@"[%s] %@ allowed (block off: the debug switch)", where, bundleID]); return NO; }
-    BOOL kept = NO;
-    if (QuitSetContains(bundleID, &kept)) {
+    BOOL kept = NO, all = NO;
+    BOOL quit = QuitSetContains(bundleID, &kept, &all);
+    if (all) {
+        Debug([NSString stringWithFormat:@"[%s] %@ REFUSED (Prewarm Apps is off: no app is prewarmed)", where, bundleID]);
+        return YES;
+    }
+    if (quit) {
         Debug([NSString stringWithFormat:@"[%s] %@ REFUSED (the user quit it; not prewarmed until they open it)", where, bundleID]);
         return YES;
     }
@@ -154,7 +172,28 @@ static BOOL DMPrewarmRefuses(NSString *bundleID, const char *where) {
 }
 static id (*o_PrewarmLaunch)(id, SEL, id);
 static id (*o_ClosureBuild)(id, SEL, id);
-static id DMPrewarmLaunch(id self, SEL _cmd, id bundleID) { return DMPrewarmRefuses(bundleID, "prewarm") ? nil : o_PrewarmLaunch(self, _cmd, bundleID); }
+#if DEBUG
+// (debug, 1.7.5 item 6: what a prewarm saves, measured on demand) the interface dasd prewarms through, as it last called it, and a test command that
+// has it prewarm one app exactly as dasd does: echo <bundle id> > /var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-PrewarmAsk.txt
+// (beside the quit set's file: dasd's sandbox reads that folder on Dopamine too, /var/tmp only on palera1n), then post
+// com.besiktasliseba.macstatusbar.prewarm.ask.
+// It goes through this part's own hook, so the block refuses it as it would refuse dasd. What the call returns is kept for 3 minutes, as dasd may
+// hold it while the app starts (an object dropped at once could end the prewarm early).
+static id gDebugInterface;   // (main queue; set from dasd's queues, read on the main queue -- a debug aid, the object lives as long as dasd)
+static void DebugNoteInterface(id iface) { if (iface && !gDebugInterface) dispatch_async(dispatch_get_main_queue(), ^{ gDebugInterface = iface; }); }
+#else
+#define DebugNoteInterface(iface) do { } while (0)
+#endif
+static id DMPrewarmLaunch(id self, SEL _cmd, id bundleID) { DebugNoteInterface(self); return DMPrewarmRefuses(bundleID, "prewarm") ? nil : o_PrewarmLaunch(self, _cmd, bundleID); }
+#if DEBUG
+static void DebugAskPrewarm(void) {
+    NSString *bid = [[NSString stringWithContentsOfFile:@"/var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-PrewarmAsk.txt" encoding:NSUTF8StringEncoding error:NULL] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!bid.length || !gDebugInterface) { Debug([NSString stringWithFormat:@"[ask] %@: nothing asked (%@)", bid ?: @"-", gDebugInterface ? @"no app in the file" : @"dasd has not prewarmed through the interface since this part loaded"]); return; }
+    id r = DMPrewarmLaunch(gDebugInterface, @selector(prewarmLaunchAppFromBundleID:), bid);
+    Debug([NSString stringWithFormat:@"[ask] %@ prewarmed as dasd does: %@", bid, r ? NSStringFromClass([r class]) : @"nil (refused, or dasd's call gave nothing)"]);
+    if (r) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(180 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ (void)r; });
+}
+#endif
 static id DMClosureBuild(id self, SEL _cmd, id bundleID) { return DMPrewarmRefuses(bundleID, "closure") ? nil : o_ClosureBuild(self, _cmd, bundleID); }
 #include "PrewarmShape.h"   // (DMPrewarmShapeOK: an object return and one object argument, checked for EACH method -- Mac test tools/test-prewarmshape.sh)
 
@@ -238,5 +277,7 @@ static BOOL SelfDisabledByCrashLoop(void) {
     Debug([NSString stringWithFormat:@"[init] prewarm block armed (signature \"%s\")", enc]);
 #if DEBUG
     dispatch_async(dispatch_get_main_queue(), ^{ DebugReadsAtStart(); });
+    static int askToken = 0;
+    notify_register_dispatch("com.besiktasliseba.macstatusbar.prewarm.ask", &askToken, dispatch_get_main_queue(), ^(int t) { DebugAskPrewarm(); });
 #endif
 }

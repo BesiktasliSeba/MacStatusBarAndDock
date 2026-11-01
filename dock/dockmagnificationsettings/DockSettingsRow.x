@@ -26,6 +26,7 @@
 #define kAnchorID    @"ACCESSIBILITY"
 #define kStatusBarRowID @"MAC_STATUS_BAR"
 #define kWindowsRowID   @"MAC_WINDOWS"   // (1.6.0: Windows & Multitasking, right after Status Bar: StatusBarSettingsRow.x)
+#define kDesktopRowID   @"MAC_DESKTOP"   // (1.7.5: Desktop, right after Status Bar, before Windows & Multitasking: StatusBarSettingsRow.x)
 #define kBundlePath  @"/var/jb/Library/PreferenceBundles/DockMagnificationPrefs.bundle"
 #define kPSLinkListCell 2
 #define kPSLinkCell  1
@@ -129,9 +130,12 @@ static void InsertRow(PSListController *list) {
     NSArray *specs = [list specifiers];
     WatchRowValue(list);
     for (NSUInteger i = 0; i < specs.count; i++) if ([[specs[i] identifier] isEqualToString:kRowID]) return;   // already there
-    BOOL windows = NO;   // (after Windows & Multitasking when it is there, else after Status Bar: the order is Status Bar, Windows & Multitasking, Dock)
-    for (NSUInteger i = 0; i < specs.count; i++) if ([[specs[i] identifier] isEqualToString:kWindowsRowID]) { windows = YES; break; }
-    NSInteger anchor = AnchorIndex(specs, nil, windows ? kWindowsRowID : kStatusBarRowID);
+    BOOL windows = NO, desktop = NO;   // (after Windows & Multitasking when it is there, else Desktop, else Status Bar: the order is Status Bar, Desktop,
+    for (NSUInteger i = 0; i < specs.count; i++) {   //  Windows & Multitasking, Dock)
+        if ([[specs[i] identifier] isEqualToString:kWindowsRowID]) windows = YES;
+        if ([[specs[i] identifier] isEqualToString:kDesktopRowID]) desktop = YES;
+    }
+    NSInteger anchor = AnchorIndex(specs, nil, windows ? kWindowsRowID : desktop ? kDesktopRowID : kStatusBarRowID);
     BOOL newOS = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17;   // (15/16: exactly as before)
     if (anchor == NSNotFound && newOS) anchor = TopIndex(specs);   // (only ever the main list: this runs from PSUIPrefsListController alone)
     Class detail = PrefsBundle() ? NSClassFromString(@"DMRootListController") : Nil;   // the class only exists once the bundle is loaded
@@ -371,7 +375,7 @@ static void InsertRow18(PSListController *page) {
     WatchRowValue(page);
     if (MSBDG18Has(page, kPLRowID)) { MSBDG18RemoveListed(page, kPLRowID, @"DockMagnificationPrefs"); return; }   // (ours in; PreferenceLoader's entry out)
     Class detail = PrefsBundle() ? NSClassFromString(@"DMRootListController") : Nil;
-    if (detail) MSBDG18PutInPlaceOf(page, MakeRow(detail, kPLRowID), @[@"MSBD_PL_MacStatusBarPrefs", kWindowsRowID], kPLRowID, @"DockMagnificationPrefs");   // (after Status Bar and Windows & Multitasking, else first)
+    if (detail) MSBDG18PutInPlaceOf(page, MakeRow(detail, kPLRowID), @[@"MSBD_PL_MacStatusBarPrefs", kDesktopRowID, kWindowsRowID], kPLRowID, @"DockMagnificationPrefs");   // (after Status Bar, Desktop and Windows & Multitasking, else first)
 }
 %group General18
 %hook PSGGeneralController
