@@ -3,6 +3,8 @@
 //  - The Home Screen layout SpringBoard writes, without our icon (MSBDLayoutWithout): it is never saved, so no layout file of SpringBoard's ever
 //    names it -- with the tweak removed, switched off, in Safe Mode or on an untested iPadOS there is no dead icon to clean up.
 //  - Where it goes back into the Dock at start (MSBDActMonDockPlace), from our own record of its place.
+//  - Its running entry (1.7.7 item 1b): where it shows while its window is open and it is not kept in the Dock (MSBDActMonRunningSpot), and its
+//    menu's Dock row (MSBDActMonMenuRow).
 #pragma once
 #import <Foundation/Foundation.h>
 
@@ -55,6 +57,36 @@ static inline NSInteger MSBDActMonDockRecord(id value) {
     double v = [value doubleValue];
     if (!(v >= 0.0) || v > 64.0 || v != floor(v)) return -1;
     return (NSInteger)v;
+}
+
+// ---- the running entry (1.7.7 item 1b, KT 1 Nov: an open app is in the Dock, as on a Mac) ----
+// While its window exists (open, minimized, or on another desktop) and the user has not kept it in the Dock, Activity Monitor shows in the Dock as
+// an open app: in the Dock's recent apps while the Dock shows them (iPadOS's own place for an open app that is not kept there) and that path is in,
+// else after the Dock's own apps (a Mac's Dock). Never recorded, never in a saved layout; it leaves with the window.
+typedef NS_ENUM(NSInteger, MSBDActMonSpot) { MSBDActMonSpotNone = 0, MSBDActMonSpotRecents, MSBDActMonSpotDockEnd };
+static inline MSBDActMonSpot MSBDActMonRunningSpot(BOOL on, BOOL kept, BOOL windowExists, BOOL recentsShown) {
+    if (!on || kept || !windowExists) return MSBDActMonSpotNone;
+    return recentsShown ? MSBDActMonSpotRecents : MSBDActMonSpotDockEnd;
+}
+// The recents the Dock's shown list is made from, with ours first (the app in use: where iPadOS puts an app just opened) -- a copy, so the list
+// SpringBoard keeps and saves never holds it. nil when ours is in it already or it is not an ordered set.
+static inline NSMutableOrderedSet *MSBDActMonRecentsWithOurs(id recents, id ours) {
+    if (![recents isKindOfClass:[NSOrderedSet class]] || !ours || [(NSOrderedSet *)recents containsObject:ours]) return nil;
+    NSMutableOrderedSet *m = [(NSOrderedSet *)recents mutableCopy];
+    [m insertObject:ours atIndex:0];
+    return m;
+}
+// Its menu's Dock row: kept in the Dock -> Remove from Dock; the running entry's own icon (after the Dock's apps, or in the recents) -> Keep in Dock;
+// anywhere else (the App Library) -> Add to Dock. Keep and Add both make it a kept icon, and need room unless it is in the Dock's list already.
+typedef NS_ENUM(NSInteger, MSBDActMonRow) { MSBDActMonRowAdd = 0, MSBDActMonRowKeep, MSBDActMonRowRemove };
+static inline MSBDActMonRow MSBDActMonMenuRow(BOOL kept, BOOL runningEntryHere) {
+    return kept ? MSBDActMonRowRemove : runningEntryHere ? MSBDActMonRowKeep : MSBDActMonRowAdd;
+}
+// No longer kept (Remove from Dock, a drag out of the Dock, the Trash) while its window exists: it stays in the Dock as the running entry -- in its
+// place when that entry goes after the Dock's apps (a Mac's Dock: an open app no longer kept stays until it quits); else it leaves the Dock's list
+// (for the recents, or for good).
+static inline BOOL MSBDActMonUnkeptStaysInPlace(BOOL on, BOOL windowExists, BOOL recentsShown) {
+    return MSBDActMonRunningSpot(on, NO, windowExists, recentsShown) == MSBDActMonSpotDockEnd;
 }
 
 // ---- the App Library's search (1.7.3 item 13, AppLibraryApps.h): Activity Monitor is in the list exactly when the list's own text matches it ----

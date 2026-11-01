@@ -12,11 +12,18 @@
 #include "../common/ActMonText.h"   // (the plain lines where a figure is not available; Mac-tested)
 #include "ActMonColumns.h"   // (each tab's column titles and where its columns sit; Mac test tools/test-actmoncolumns.sh)
 
+static void DMAMWindowChanged(void);   // (ActMonDock.h: Activity Monitor's running entry in the Dock follows its window, 1.7.7)
+
 typedef NS_ENUM(NSInteger, DMAMTab) { DMAMTabCPU = 0, DMAMTabMemory, DMAMTabEnergy, DMAMTabDisk, DMAMTabNetwork };
 typedef NS_ENUM(NSInteger, DMAMFilter) { DMAMFilterAll = 0, DMAMFilterMine, DMAMFilterSystem };
 
 @interface DMActivityMonitorWindow : DMNativeWindow <UITableViewDataSource, UITableViewDelegate, UISearchBarDelegate>
 @end
+#if DEBUG
+@interface DMActivityMonitorWindow ()
+- (void)dm_raceTest:(NSInteger)k;
+@end
+#endif
 
 @implementation DMActivityMonitorWindow {
     UIView *_toolbarBack, *_toolbar, *_headerBar, *_summaryBar;
@@ -218,9 +225,8 @@ static dispatch_queue_t DMAMSampleQueue(void) {
     }
 }
 - (void)dm_rebuildRows { [self dm_rebuildRowsInPlace:NO]; }   // (a tab, a sort, the filter, a search: the whole list again)
-// The rows, sorted and filtered. In place (the 2 s refresh): no -reloadData -- the visible rows are filled again where they stand (only what
-// changed is drawn, -dm_fillCell:), rows a process list grew or shrank by are added or taken off the end, without animation.
-- (void)dm_rebuildRowsInPlace:(BOOL)inPlace {
+// The rows to show: the view filter, the search, the sort.
+- (NSMutableArray<DMProcInfo *> *)dm_rowsNow {
     NSString *q = [_query lowercaseString];
     NSMutableArray<DMProcInfo *> *rows = [NSMutableArray array];
     for (DMProcInfo *p in _all) {
@@ -242,12 +248,34 @@ static dispatch_queue_t DMAMSampleQueue(void) {
         r = [a.name localizedCaseInsensitiveCompare:b.name];
         return r != NSOrderedSame ? r : (a.pid < b.pid ? NSOrderedAscending : a.pid > b.pid ? NSOrderedDescending : NSOrderedSame);
     }];
+    return rows;
+}
+// The rows, sorted and filtered. In place (the 2 s refresh): no -reloadData -- the visible rows are filled again where they stand (only what
+// changed is drawn, -dm_fillCell:), rows a process list grew or shrank by are added or taken off the end, without animation.
+- (void)dm_rebuildRowsInPlace:(BOOL)inPlace {
+    NSMutableArray<DMProcInfo *> *rows = [self dm_rowsNow];
     NSInteger had = (NSInteger)_rows.count, now = (NSInteger)rows.count;
-    _rows = rows;
-    if (!inPlace || [_list numberOfRowsInSection:0] != had) [_list reloadData];
+    // (in place only when the list is settled on the rows it was last given, and with the data source changed INSIDE the updates, as UIKit asks of
+    //  -performBatchUpdates:. The rows used to go into the data source before it: a list that reads its data source again when the updates begin
+    //  (its rows not up to date -- the window's first layout still to come) then found the NEW count, the added rows counted twice, "invalid
+    //  batch updates" and SpringBoard aborted -- A12Z 18.5, 1.7.7 RC: Activity Monitor opened from the App Library's search over a Finder window,
+    //  its quick second reading 0.3 s after the first. So the work UIKit still holds for the list is done here first, with the old rows, the list
+    //  must then count exactly them, and the new rows go in with the updates. Anything else (no window, another count): a reload, as for a tab, a
+    //  sort or a search.)
+    BOOL settled = NO;
+    if (inPlace && _list.window) {
+        BOOL pending = _list.layer.needsLayout || self.layer.needsLayout;   // (for the debug log)
+        [self layoutIfNeeded];
+        settled = [_list numberOfRowsInSection:0] == had;
+        if (pending) DMLog([NSString stringWithFormat:@"[actmonwin] in place: a layout was still pending -- done first, with the rows the list was given (it counts %ld, given %ld, now %ld)", (long)[_list numberOfRowsInSection:0], (long)had, (long)now]);
+    }
+    if (inPlace && !settled) DMLog([NSString stringWithFormat:@"[actmonwin] in place: the list was not settled (window %d, it counts %ld, it was given %ld, now %ld): reloaded", _list.window != nil, (long)[_list numberOfRowsInSection:0], (long)had, (long)now]);
+    if (!settled) { _rows = rows; [_list reloadData]; }
     else {
-        if (now != had) [UIView performWithoutAnimation:^{
+        if (now == had) _rows = rows;
+        else [UIView performWithoutAnimation:^{
             [_list performBatchUpdates:^{
+                _rows = rows;   // (with the updates: a list that reads its data source again as they begin still finds the rows it was given)
                 NSMutableArray<NSIndexPath *> *ends = [NSMutableArray array];
                 for (NSInteger r = MIN(had, now); r < MAX(had, now); r++) [ends addObject:[NSIndexPath indexPathForRow:r inSection:0]];
                 if (now > had) [_list insertRowsAtIndexPaths:ends withRowAnimation:UITableViewRowAnimationNone];
@@ -427,7 +455,21 @@ static dispatch_queue_t DMAMSampleQueue(void) {
     [[NSRunLoop mainRunLoop] addTimer:_timer forMode:NSRunLoopCommonModes];
 }
 - (void)dm_stop { [_timer invalidate]; _timer = nil; }
-- (void)didMoveToWindow { [super didMoveToWindow]; if (self.window) [self dm_start]; else [self dm_stop]; }
+#if DEBUG
+// amrace_<k> (debug): the 1.7.7 RC crash's shape on this window's list, through -dm_rebuildRowsInPlace: as built: the list reloaded with k rows
+// fewer, and in the same turn, before its next layout, the full rows coming in place (the full, unfiltered list only).
+- (void)dm_raceTest:(NSInteger)k {
+    if (k < 1 || !_list.window || _query.length || _filter != DMAMFilterAll || _all.count < (NSUInteger)k + 5) { DMLog(@"[amrace] not now: needs the open window's full, unfiltered list"); return; }
+    NSArray<DMProcInfo *> *all = _all;
+    _all = [all subarrayWithRange:NSMakeRange(0, all.count - (NSUInteger)k)];
+    [self dm_rebuildRowsInPlace:NO];                       // (the reading before: k rows fewer, reloaded)
+    _all = all;
+    BOOL pending = _list.layer.needsLayout || self.layer.needsLayout;
+    [self dm_rebuildRowsInPlace:YES];                      // (this reading, in place)
+    DMLog([NSString stringWithFormat:@"[amrace] layout pending before %d; the list counts %ld, the rows %lu: %@", pending, (long)[_list numberOfRowsInSection:0], (unsigned long)_rows.count, [_list numberOfRowsInSection:0] == (NSInteger)_rows.count ? @"consistent" : @"NOT consistent"]);
+}
+#endif
+- (void)didMoveToWindow { [super didMoveToWindow]; if (self.window) [self dm_start]; else [self dm_stop]; DMAMWindowChanged(); }
 - (void)dealloc { [_timer invalidate]; }
 @end
 

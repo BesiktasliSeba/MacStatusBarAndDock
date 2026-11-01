@@ -54,7 +54,7 @@ The desktop's settings, on their own page between Status Bar and Windows & Multi
 
 | Setting | What it does | New install |
 |---|---|---|
-| Show Desktop Icons | Files and folders from On My iPad > Desktop on the first Home Screen page. | On |
+| Show Desktop Icons | Files and folders from On My iPad > Desktop on the first Home Screen page. They are separate from your app icons, which stay as they are. | On |
 | Hide Desktop Icon Names | Hides the names under every desktop icon. VoiceOver still reads them. An icon's own menu has Hide Name for just that icon. Greyed out while Show Desktop Icons is off. | Off |
 | Icon Size | The size of the desktop icons, from 40 to 96 points. The icons change as you drag the slider, their names and spacing follow, and every icon keeps its place. Home Screen app icons stay as they are. | The Home Screen's icon size |
 
@@ -74,7 +74,7 @@ The window settings, on their own page between Desktop and Dock. On iPadOS 15 an
 | Hide Multitasking Dots | Hides the three dots at the top of apps while windowing runs. | On |
 | Mac Switcher | Desktops and Mission Control in place of the App Switcher. Turning it off keeps your desktops for when you turn it on again. | Off |
 | Go to the App's Desktop | With the Mac Switcher on, opening an app whose window is on another desktop takes you to that desktop. Off: the window comes to the desktop you're on. | Off |
-| Prewarm Apps | iPadOS starts some apps in the background before you open them, so they open faster. Off: no app is started before you open it, which keeps that memory free on an iPad with little RAM. | On |
+| Prewarm Apps | iPadOS starts some apps in the background before you open them, so they open faster. Off: no app is started before you open it, which keeps that memory free on an iPad with little RAM. Shown only where the tweak can control prewarming on that iPad. | On, Off on iPads with 2 GB of memory |
 
 ## Settings > Dock
 
@@ -146,7 +146,7 @@ For keyboards without a function row, like the original Magic Keyboard for iPad.
 
 | Control | What it does | New install |
 |---|---|---|
-| RAM & CPU | Available memory, used memory and the CPU load, in a 2 x 1 control. A tap opens the details (memory, CPU and uptime) with Open Activity Monitor. On iPadOS 18, add it with Add a Control, where it's under Activity Monitor (or search for RAM). On iPadOS 15 to 17, add it in Settings > Control Center. With BigSurCenter it fits a square tile. With Memory Magic on iPadOS 15 to 17, a tap on its tile, which shows the same numbers, offers to put RAM & CPU in its place. | Not added |
+| RAM & CPU | Available memory, used memory and the CPU load, in a 2 x 1 control. A tap opens the details (memory, CPU and uptime) with Open Activity Monitor. On iPadOS 18, add it with Add a Control, where it's under Activity Monitor (or search for RAM). On iPadOS 15 to 17, add it in Settings > Control Center. With BigSurCenter it fits a square tile. With Memory Magic on iPadOS 15 to 17, a tap on its tile, which shows the same numbers, offers to put RAM & CPU in its place. On iPadOS 15 to 17 it's added by itself once, the first time Control Center opens and closes after an install or update, if it fits at the end without moving anything. Once you take it out, it isn't added again. | Added by itself where it fits (iPadOS 15 to 17), else not added |
 | SSH (when OpenSSH is installed) | Turns SSH on and off, as the SSH row in the Settings sidebar does; the two always agree, and so does the menu bar's SSH icon. A press and hold shows whether SSH is on, the iPad's address and the ssh command, and the reason when a switch didn't work. On iPadOS 18, add it with Add a Control, where it's under Settings. On iPadOS 15 to 17, add it in Settings > Control Center. With BigSurCenter on iPadOS 15 and 16 it works there too, and shows up after a respring. | Not added |
 
 ## Elsewhere in Settings

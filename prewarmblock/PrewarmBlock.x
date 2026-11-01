@@ -25,11 +25,17 @@
 // SpringBoard's status bar part runs (right after an install launchd starts dasd again with the new SpringBoard): until 1.7.1 it waited for
 // SpringBoard to publish an "on" state at its start, and the prewarms dasd asked for before that went through (M1, 30 Oct: an app the user had
 // quit "allowed (block off)" right after an install; with 1.7.1 that same first prewarm was refused). In debug builds the file
-// /tmp/msb-noprewarmblock switches it off as well.
+// /tmp/msb-noprewarmblock (palera1n: dasd's sandbox reads /var/tmp there) or MacStatusBarAndDock-NoPrewarmBlock.txt beside the quit set's file
+// (Dopamine too) switches it off as well.
 //
 // Loaded. Once armed it writes its start stamp (dasd's pid and start time, its build ID: common/PrewarmPartID.h), so an install that does not change
 // this part leaves dasd running -- a dasd started again costs the M1 10 to 26 minutes of CPU (1.7.2 item 8). The postinst restarts dasd only
 // when the stamp is not the running dasd's or names another build.
+//
+// Armed or not. Every start also records whether it armed, or why not (common/PrewarmArmed.h), so Settings offers Prewarm Apps only where the
+// switch does something (1.7.7 item 5): its crash-loop guard, a class or method not there, another shape -- and the closure-build call in
+// another shape, which dasd would still prewarm through. Recorded whether or not it armed: a start that did not arm must not leave the last
+// start's "armed" behind.
 //
 // Safety. dasd is not SpringBoard: a crash here only restarts dasd, it does not take the interface down. Still, so a fault here can never loop, this
 // part counts its own starts: three starts within 60 s (a crash loop) and it switches itself off for good (a flag the next install clears), doing
@@ -88,7 +94,9 @@ static void DebugWrite(NSString *line) {
     os_unfair_lock_unlock(&gDebugLock);
 }
 #define Debug(...) DebugWrite(__VA_ARGS__)
-static BOOL DebugKillSwitch(void) { return access("/tmp/msb-noprewarmblock", F_OK) == 0; }
+// (the test switch: /tmp/msb-noprewarmblock where dasd's sandbox reads /var/tmp -- palera1n --, or a file beside the quit set's file, which dasd
+//  reads on Dopamine too, as the test ask's file below)
+static BOOL DebugKillSwitch(void) { return access("/tmp/msb-noprewarmblock", F_OK) == 0 || access("/var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-NoPrewarmBlock.txt", F_OK) == 0; }
 #else
 #define Debug(...) do { if (0) { (void)(__VA_ARGS__); } } while (0)
 static BOOL DebugKillSwitch(void) { return NO; }
@@ -223,6 +231,35 @@ static void WriteLoadedStamp(void) {
     (void)err;
 }
 
+// ---- the armed record: whether this start armed the block, or why not, for Settings' Prewarm Apps row (common/PrewarmArmed.h, 1.7.7) ----
+// The same way as the stamp: a new file renamed over the old one. One that cannot be written leaves the last one (the stamp's write works on
+// Dopamine and palera1n alike: the same folder).
+#include "../common/PrewarmArmed.h"   // (the record's file and line -- Mac test tools/test-prewarmarmed.sh)
+static void WriteArmedRecord(const char *state) {
+    char line[48];
+    MSBDPrewarmArmedFormat(line, sizeof line, state, (long)getpid());
+    FILE *f = fopen(kMSBDPrewarmArmedFile ".new", "w");
+    BOOL ok = f && fputs(line, f) >= 0;
+    if (f) ok = fclose(f) == 0 && ok;
+    ok = ok && rename(kMSBDPrewarmArmedFile ".new", kMSBDPrewarmArmedFile) == 0;
+    int err = errno;
+    if (!ok) unlink(kMSBDPrewarmArmedFile ".new");
+    if (ok) notify_post(kMSBDPrewarmArmedNote);   // (a SpringBoard already running reads it again: Spotlight's rows, common/PrewarmArmed.h)
+    if (ok) Debug([NSString stringWithFormat:@"[armed] recorded: %s", state]);
+    else Debug([NSString stringWithFormat:@"[armed] could not be recorded (%s): Settings goes by the record already there", strerror(err)]);
+    (void)err;
+}
+// An armed start's record: "armed", or "closure" (see the constructor). Debug builds: "debug" while the test switch is on -- looked at again when
+// SpringBoard says the quit set changed, so Settings' row can be tried both ways without restarting dasd (main queue; release builds write once).
+static const char *gArmedState = "armed";
+static int gRecordedOff = -1;   // (the test switch as last recorded; -1: nothing recorded yet)
+static void RecordArmed(void) {
+    int off = DebugKillSwitch();
+    if (off == gRecordedOff) return;
+    gRecordedOff = off;
+    WriteArmedRecord(off ? "debug" : gArmedState);
+}
+
 // ---- self crash-guard: three starts within 60 s that die young switch this part off for good (the next install clears it) ----
 // A start that lives 30 s was not a crash: it leaves the count again, so launchd's on-demand restarts, a jetsam kill or two quick installs never add up
 // to the switch-off -- only starts that die young do (external logic test W4, 25 Oct).
@@ -258,21 +295,26 @@ static BOOL SelfDisabledByCrashLoop(void) {
 
 %ctor {
     if (!InDasd()) return;
-    if (SelfDisabledByCrashLoop()) return;
+    if (SelfDisabledByCrashLoop()) { WriteArmedRecord("guard"); return; }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(30 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ ForgetThisStart(); });   // (the main queue, as the change notification)
     Class c = objc_getClass("_APRSPrewarmInterface");
     SEL sel = @selector(prewarmLaunchAppFromBundleID:), closureSel = @selector(closureBuildLaunchAppFromBundleID:);
     Method m = c ? class_getInstanceMethod(c, sel) : NULL, mc = c ? class_getInstanceMethod(c, closureSel) : NULL;
-    if (!m) { Debug(@"[init] _APRSPrewarmInterface prewarmLaunchAppFromBundleID: not found: doing nothing"); return; }
+    if (!m) { Debug(@"[init] _APRSPrewarmInterface prewarmLaunchAppFromBundleID: not found: doing nothing"); WriteArmedRecord("missing"); return; }
     const char *enc = method_getTypeEncoding(m);
-    if (!DMPrewarmShapeOK(m)) { Debug([NSString stringWithFormat:@"[init] unexpected signature \"%s\": doing nothing", enc ?: "(nil)"]); return; }
+    if (!DMPrewarmShapeOK(m)) { Debug([NSString stringWithFormat:@"[init] unexpected signature \"%s\": doing nothing", enc ?: "(nil)"]); WriteArmedRecord("shape"); return; }
     MSHookMessageEx(c, sel, (IMP)DMPrewarmLaunch, (IMP *)&o_PrewarmLaunch);
-    if (DMPrewarmShapeOK(mc)) MSHookMessageEx(c, closureSel, (IMP)DMClosureBuild, (IMP *)&o_ClosureBuild);
+    BOOL closure = DMPrewarmShapeOK(mc);
+    if (closure) MSHookMessageEx(c, closureSel, (IMP)DMClosureBuild, (IMP *)&o_ClosureBuild);
     else Debug([NSString stringWithFormat:@"[init] closureBuildLaunchAppFromBundleID: %s: not hooked (only the direct prewarm is refused)", mc ? "unexpected signature" : "not found"]);
     gArmed = YES;
     WriteLoadedStamp();
+    // (for Prewarm Apps every prewarm must go through a hook: no closure-build call at all is nothing to refuse, one in another shape is a way
+    //  dasd still prewarms by -- the quit set keeps what the direct hook refuses either way)
+    gArmedState = closure || !mc ? "armed" : "closure";
+    RecordArmed();
     static int token = 0;
-    notify_register_dispatch(kPrewarmChanged, &token, dispatch_get_main_queue(), ^(int t) { MarkQuitSetStale(); });
+    notify_register_dispatch(kPrewarmChanged, &token, dispatch_get_main_queue(), ^(int t) { MarkQuitSetStale(); RecordArmed(); });
     MarkQuitSetStale();
     Debug([NSString stringWithFormat:@"[init] prewarm block armed (signature \"%s\")", enc]);
 #if DEBUG

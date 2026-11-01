@@ -9,15 +9,26 @@ static int fails = 0, passes = 0;
 
 int main(void) {
     const uint64_t GB = 1073741824ull, MB = 1048576ull, page = 16384;
-    // 4 GB iPad (17.5 iPad7,1): 1.1 GB active, 0.9 GB wired, 0.2 GB compressed, 0.7 GB free, 1.1 GB inactive
-    MSBDMemory m = MSBDMemoryFromCounts(4 * GB, page, (1100 * MB) / page, (1100 * MB) / page, (900 * MB) / page, (200 * MB) / page, (700 * MB) / page);
-    CHECK(m.used == 2200 * MB, "used = active + wired + compressed (%llu MB)", m.used / MB);
-    CHECK(m.available == 4 * GB - 2200 * MB, "available = total - used (%llu MB)", m.available / MB);
+    // 4 GB iPad (17.5 iPad7,1): 1.1 GB active, 1.1 GB inactive, 0.1 GB speculative, 0.9 GB wired, 0.2 GB compressed, 0.6 GB free
+    MSBDMemory m = MSBDMemoryFromCounts(4 * GB, page, (1100 * MB) / page, (1100 * MB) / page, (100 * MB) / page, (900 * MB) / page, (200 * MB) / page, (600 * MB) / page);
+    CHECK(m.available == 1800 * MB, "available = free + inactive + speculative (%llu MB)", m.available / MB);
+    CHECK(m.used == 4 * GB - 1800 * MB, "used = the rest of the memory (%llu MB)", m.used / MB);
     CHECK(m.used + m.available == m.total, "used + available = total");
     CHECK(m.available > m.freeBytes, "available counts more than the free pages (Memory Magic's Free RAM)");
-    // more counted than there is (a counter racing the others): never negative
-    MSBDMemory over = MSBDMemoryFromCounts(1 * GB, page, (900 * MB) / page, 0, (300 * MB) / page, 0, 0);
-    CHECK(over.used == 1 * GB && over.available == 0, "used capped at the total, available 0");
+    // the M1 from 31 Oct 2026 (15.6.1): its wired counter 81,130 pages over what the iPad has -- Available follows the free pages, not the error
+    const uint64_t m1 = 1005064ull * page;
+    MSBDMemory ok = MSBDMemoryFromCounts(m1, page, 89999, 215888, 82984, 177149 - 81130, 14290, 510810);
+    MSBDMemory bad = MSBDMemoryFromCounts(m1, page, 89999, 215888, 82984, 177149, 14290, 510810);
+    CHECK(bad.available == ok.available && bad.available == (510810ull + 215888 + 82984) * page, "a wired counter over the memory leaves Available alone (%llu MB)", bad.available / MB);
+    CHECK(bad.available / MB > 12000, "the M1's Available reads its real free memory: over 12 GB (%llu MB)", bad.available / MB);
+    // the kernel's free_count holds the speculative pages: taken out once, so they are counted once (vm_stat: raw 159064 - 33731 speculative)
+    CHECK(MSBDFreeWithoutSpeculative(159064, 33731) == 125333, "free without speculative = raw free - speculative");
+    CHECK(MSBDFreeWithoutSpeculative(10, 30) == 0, "never below 0");
+    MSBDMemory raw = MSBDMemoryFromCounts(m1, page, 89999, 215888, 82984, 177149, 14290, MSBDFreeWithoutSpeculative(510810 + 82984, 82984));
+    CHECK(raw.available == bad.available, "the raw counters give the same Available as vm_stat's (%llu MB)", raw.available / MB);
+    // more counted than there is (a counter racing the others): never over the total, never negative
+    MSBDMemory over = MSBDMemoryFromCounts(1 * GB, page, 0, (900 * MB) / page, 0, 0, 0, (300 * MB) / page);
+    CHECK(over.available == 1 * GB && over.used == 0, "available capped at the total, used 0");
     // CPU: 8 cores' ticks
     MSBDCPUTicks a = { 1000, 500, 0, 8500, 8 }, b = { 1100, 550, 0, 9350, 8 };
     double u = -1, s = -1, l = MSBDCPULoadBetween(a, b, &u, &s);

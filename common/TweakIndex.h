@@ -493,6 +493,14 @@ static NSArray<MTIEntry *> *MTIMatch(NSArray<MTIEntry *> *all, NSString *query, 
     return hits;
 }
 
+// The rows without one row of one page, by the page's identifier and the row's (the last of its path): a row its page leaves out now is not listed
+// either (common/TweakSpotlight.h MTSShownRows, 1.7.7).
+static NSArray<MTIEntry *> *MTIWithout(NSArray<MTIEntry *> *rows, NSString *pane, NSString *rowID) {
+    NSMutableArray<MTIEntry *> *out = [NSMutableArray arrayWithCapacity:rows.count];
+    for (MTIEntry *e in rows) if (!([e.paneID isEqualToString:pane] && [e.path.lastObject isEqualToString:rowID])) [out addObject:e];
+    return out;
+}
+
 // ---- identifiers ------------------------------------------------------------------------------------------------------------------------------
 // Settings' own URL for one of our identifiers ("msbd-tweaksetting:root=X&path=Y&msbdn=2" -> "prefs:root=X&path=Y"), nil for anything else.
 static NSString *MTIPrefsURL(NSString *uid) {

@@ -16,8 +16,9 @@
 //    search's list sorted by the query's own comparator, and to the "No Results" one (which comes without its query: the list's own current one)
 //    (DMALResults); whether ours is there follows the search field's text, also when the engine's answer for a new text is unchanged and so never
 //    reaches the list (DMALEngineAnswered, 1.7.3 item 13);
-//  - its icon view: its own Haptic Touch menu (Open, Add to Dock / Remove from Dock) and a drag into the Dock only (1.7.3: ActMonDock.h --
-//    nothing to delete or share, and no place on the Home Screen's pages or in a folder: it lives in the App Library, and the Dock if added).
+//  - its icon view: its own Haptic Touch menu (Open, Add to Dock / Keep in Dock / Remove from Dock) and a drag into the Dock only (1.7.3:
+//    ActMonDock.h -- nothing to delete or share, and no place on the Home Screen's pages or in a folder: it lives in the App Library, and the Dock
+//    if added, or while its window is open: 1.7.7).
 // Settings > Status Bar > Activity Monitor > Show in App Library (activityMonitorInLibrary, on unless switched off): DMALApplyPref.
 #include "../common/ActMonDock.h"   // (the rules shared with the Mac test: the search's (1.7.3 item 13) and the Dock's (item 5))
 // 1.7.5 item 7: Activity Monitor is an app icon an icon theme can change, like any app's (common/IconTheme.h): its class comes from SpringBoard's
@@ -183,10 +184,11 @@ static id DMALIcon(void) {
 static BOOL DMALIsOurs(id icon) { return gDMALIconClass && icon && [icon isKindOfClass:gDMALIconClass]; }
 
 // A tap on it (the category's tile, its expanded list, a search result): the App Library goes, as when an app opens from it, then the window comes.
-static BOOL DMAMLocationIsDock(id loc);
+static BOOL DMAMLocationInDock(id loc);
 static void DMALOpen(id location) {
     if (![NSThread isMainThread]) { dispatch_async(dispatch_get_main_queue(), ^{ DMALOpen(location); }); return; }
-    if (DMAMLocationIsDock(location)) {   // (its icon in the Dock, 1.7.3: the window comes, or comes forward -- back from the Dock when minimized)
+    if (DMAMLocationInDock(location)) {   // (its icon in the Dock -- kept (1.7.3), or its running entry after the Dock's apps or in its recents (1.7.7): the
+                                          //  window comes, or comes forward -- back from the Dock when minimized)
         DM_FEATURE_MARK("actmon-dock-open");
         DMLog([NSString stringWithFormat:@"[amdock] Activity Monitor opened from the Dock (%@)", location]);
         DMActivityMonitorOpen();

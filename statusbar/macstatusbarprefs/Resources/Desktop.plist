@@ -8,7 +8,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>The files in On My iPad &gt; Desktop, on the first page of the Home Screen.</string>
+			<string>Desktop icons show the files and folders in On My iPad &gt; Desktop on the first page of the Home Screen. They are separate from your app icons, which stay as they are.</string>
 			<key>id</key>
 			<string>DESKTOP_GROUP</string>
 		</dict>
@@ -51,6 +51,8 @@
 			<string>DESKTOP_SIZE_GROUP</string>
 			<key>label</key>
 			<string>Icon Size</string>
+			<key>footerText</key>
+			<string>Changes the size of desktop icons only. App icons on the Home Screen are not affected.</string>
 		</dict>
 		<dict>
 			<key>PostNotification</key>

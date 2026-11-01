@@ -17,6 +17,9 @@
 #import "../common/OtherTweaks.h"
 #import "../common/CCModuleRegister.h"   // (RAM & CPU and SSH, our own Control Center modules: their folders and identifiers in Control Center's repository)
 #import "../common/CCTileKeep.h"         // (18: their tiles put back where they were after SpringBoard ran without the modules, e.g. in safe mode)
+// RAM & CPU is in Control Center's repository in this SpringBoard (all three repository methods taken, its bundle there, not off by step 1b): the
+// status bar part asks before it puts RAM & CPU in Control Center by itself (1.7.7 item 8, common/CCAutoAdd.h) -- found with dlsym, another part's
+__attribute__((visibility("default"))) BOOL MSBDCCRAMCPURegistered(void) { return gMSBDCCHooked == 3 && [gMSBDCCIdentifiers containsObject:kMSBDCCModuleID]; }
 
 // Settings > Status Bar > Control Center > Hide Grabber (1.3.3, audit L-2): on unless switched off -- the line stays hidden for everyone who had it
 // hidden before the switch existed. Read once and again after the switch posts its notification; switching it off shows the line again (the

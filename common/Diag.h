@@ -23,15 +23,21 @@ static inline BOOL MSBDDiagEnabled(void) {
 #endif
     return on;
 }
-// Replaces the record `name` (only when the text changed; at most 3000 characters).
+// Replaces the record `name` (only when the text changed; at most 3000 characters). The file is written on a serial background queue: the
+// atomic write (a temporary file, the flash's flush, a rename) on the main thread was a SpringBoard stall each time a record changed on 17/18
+// (A12Z 18.5: up to 30 ms, a dropped frame or three; plans/smoothness-audit.md). Records are read only for a report, long after.
 static inline void MSBDDiagWrite(NSString *name, NSString *text) {
     if (!MSBDDiagEnabled() || !name.length || !text) return;
     static NSMutableDictionary<NSString *, NSString *> *last;
     if (!last) last = [NSMutableDictionary dictionary];
     if ([last[name] isEqualToString:text]) return;
     last[name] = [text copy];
-    NSString *t = text.length > 3000 ? [[text substringToIndex:3000] stringByAppendingString:@"\n(cut)"] : text;
-    [t writeToFile:MSBD_DIAG_PATH(name) atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    NSString *t = text.length > 3000 ? [[text substringToIndex:3000] stringByAppendingString:@"\n(cut)"] : [text copy];
+    NSString *path = MSBD_DIAG_PATH(name);
+    static dispatch_queue_t queue;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ queue = dispatch_queue_create("com.besiktasliseba.diagwrite", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0)); });
+    dispatch_async(queue, ^{ [t writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil]; });
 }
 // For Report a Problem: the records, each cut to `maxChars` (nil when there are none: 15/16, or nothing written yet).
 static inline NSString *MSBDDiagText(NSUInteger maxChars) {

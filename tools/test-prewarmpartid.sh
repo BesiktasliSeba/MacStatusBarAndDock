@@ -47,7 +47,7 @@ check "the part: the marker with the ID kept in the binary; the stamp written on
 check "  ... the stamp replaced in one rename (never half a line), its own pid and start time from the system" \
   "awk '/^static void WriteLoadedStamp/{f=1} f&&/KERN_PROC_PID, getpid\\(\\)/{k=1} f&&/rename\\(kMSBDPrewarmLoadedFile \".new\", kMSBDPrewarmLoadedFile\\)/{r=1} f&&/^}/{print (k && r) ? \"ok\" : \"no\"; exit}' ../prewarmblock/PrewarmBlock.x | grep -q ok"
 check "  ... and not written by a part its crash guard switched off (it returns before arming)" \
-  "awk '/^%ctor/{f=1} f&&/if \\(SelfDisabledByCrashLoop\\(\\)\\) return;/{c=1} f&&/WriteLoadedStamp\\(\\);/{print c ? \"ok\" : \"no\"; exit}' ../prewarmblock/PrewarmBlock.x | grep -q ok"
+  "awk '/^%ctor/{f=1} f&&/if \\(SelfDisabledByCrashLoop\\(\\)\\) \\{ WriteArmedRecord\\(\"guard\"\\); return; \\}/{c=1} f&&/WriteLoadedStamp\\(\\);/{print c ? \"ok\" : \"no\"; exit}' ../prewarmblock/PrewarmBlock.x | grep -q ok"
 check "the helper: --dasd-part-current answers 0 only from MSBDPrewarmPartCurrent on the stamp, the process at its pid and the installed part's ID" \
   "grep -q 'strcmp(argv\\[1\\], \"--dasd-part-current\") == 0) return DasdPartCurrent() ? 0 : 1;' ../macsettings/sshtoggled/main.m && awk '/^static BOOL DasdPartCurrent\\(void\\)/{f=1} f&&/KERN_PROC_PID/{k=1} f&&/MSBDPrewarmPartIDIn\\(part.bytes/{i=1} f&&/return MSBDPrewarmPartCurrent\\(stamp, run, iid\\) != 0;/{print (k && i) ? \"ok\" : \"no\"; exit}' ../macsettings/sshtoggled/main.m | grep -q ok"
 check "the postinst: dasd killed unless the helper says it has the block just installed" \

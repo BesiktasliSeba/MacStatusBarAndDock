@@ -2,6 +2,30 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.7.7
+
+### New
+- Activity Monitor shows in the Dock while its window is open, also when it's minimized, as an open app with a dot. It's first among the recent apps, or after the Dock's apps when the Dock shows no recent apps, and it leaves when the window closes. Keep in Dock in its menu keeps it there.
+- Finder: Share on an app, in Applications or any .app in Finder or on the desktop, hands it over as an .ipa named after the app and its version, for example to save it in Files. A drag into an app does the same. For an App Store app, a note says first that the copy only opens on iPads signed in with the same Apple ID. Nothing is decrypted. Apps over 2 GB can't be handed over this way.
+- iPadOS 15 to 17: RAM & CPU is added to Control Center by itself, once, if it fits at the end without moving anything or making Control Center scroll. This happens the first time Control Center opens and closes after you install or update. If you take it out, it isn't added again, and with Memory Magic's tile in Control Center nothing is added. With BigSurCenter it shows after the next respring. On iPadOS 18, add it with Add a Control as before.
+
+### Improvements
+- Prewarm Apps in Settings > Windows & Multitasking is shown only where the tweak can control prewarming on that iPad. It could show where it did nothing.
+- Prewarm Apps is off by default on iPads with 2 GB of memory, such as the iPad Air 2 and the 9.7-inch iPad Pro. If you never changed it, this update turns it off there. A setting you made yourself stays.
+- Settings > Desktop has a new icon. Its footers now say that desktop icons are the files and folders in On My iPad > Desktop, separate from your app icons, and that Icon Size changes only the desktop icons.
+
+### Fixes
+- With Aerial on iPadOS 15, Activity Monitor opened from the App Library comes up as its normal window, in front. Since 1.7.5 it showed a black window, and it opened inactive.
+- With Aerial on iPadOS 15 in landscape, apps' scroll bars sit at the window's right edge. In Fill Screen and the half layouts they sat further in, for example in the middle of a Bottom Half window.
+- With Aerial on iPadOS 15, the green button zooms a window smoothly to full screen. It showed a blurred, frozen window for about a second first. Going back to the window no longer waits either.
+- Desktop icons you drag follow your finger or pointer again. Since 1.7.2 the drag often showed nothing until the drop, almost always with a trackpad. The icons land where you let go, and icons dropped into a folder or the Trash leave the desktop at once.
+- Desktop with a trackpad: a click that pauses before you drag on the empty desktop starts the selection rectangle. It could open the desktop's menu instead. A click held still opens the menu after the same hold time as a finger, and a two-finger click opens it at once.
+- RAM & CPU and Activity Monitor: Available is now the memory apps can get without anything being compressed or closed (free, inactive and speculative memory), counted directly, and Used is the rest. Before, Available was what was left after the used memory, so an error in iPadOS's own counts could make it look lower, by about 1.2 GB on one iPad.
+- iPadOS 17 and 18: the Home Screen no longer stutters for a moment about 20 and 90 seconds after a respring, or when the Wi-Fi menu closes.
+- iPadOS 15 and 16: taps in the App Library reach it where a window of the tweak's own, such as Finder or Activity Monitor, is open behind it. They did nothing there.
+- Desktop: a finger held for a moment and then moved down draws the selection rectangle only. It could also open the App Library, or show the desktop's menu for a moment.
+- A Dock icon's menu takes taps where it covers a window, for example Activity Monitor's menu over its own window, and a tap beside the menu closes it.
+
 ## 1.7.6
 
 ### New

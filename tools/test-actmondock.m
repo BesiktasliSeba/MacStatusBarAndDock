@@ -1,6 +1,7 @@
 // Mac test of Activity Monitor in the Dock and in the App Library's search (common/ActMonDock.h, 1.7.3 items 5 and 13): the layout SpringBoard
 // writes never names our icon (every list, a drag's stand-in in a page's turned order, nothing else touched), where it goes back into the Dock at
-// start, how the record is read back, and the search's rules (when the list is given its last result again; when a result may be made anew).
+// start, how the record is read back, the search's rules (when the list is given its last result again; when a result may be made anew), and its
+// running entry (1.7.7 item 1b: where it shows while its window is open, the recents it is shown from, its menu row).
 #import <Foundation/Foundation.h>
 #include "../common/ActMonDock.h"
 
@@ -94,6 +95,50 @@ int main(void) {
         // "Act": never sent). Ours follows the list's text, so the late answer gets ours; the next text that no longer matches takes it out again.
         ok(@"late answer for \"Ac\" while the list shows \"Act\": made anew with ours", MSBDALMayMakeAnew(@"Ac", @"Act"));
         ok(@"then \"Actx\": nothing found (a change: the list hears it), ours out by the field's text", MSBDALMayMakeAnew(@"Actx", @"Actx") && !MSBDALGiveAnswer(YES, nil, @"Actx", NO, NO));
+
+        // ---- its running entry (1.7.7 item 1b) ----
+        eqi(@"window open, not kept, the Dock shows recents: in the recents", MSBDActMonRunningSpot(YES, NO, YES, YES), MSBDActMonSpotRecents);
+        eqi(@"window open, not kept, no recents shown: after the Dock's apps", MSBDActMonRunningSpot(YES, NO, YES, NO), MSBDActMonSpotDockEnd);
+        eqi(@"kept: never a running entry (the kept icon is its Dock icon)", MSBDActMonRunningSpot(YES, YES, YES, YES), MSBDActMonSpotNone);
+        eqi(@"kept, no recents: none", MSBDActMonRunningSpot(YES, YES, YES, NO), MSBDActMonSpotNone);
+        eqi(@"no window: none (it leaves with the window)", MSBDActMonRunningSpot(YES, NO, NO, YES), MSBDActMonSpotNone);
+        eqi(@"no window, no recents: none", MSBDActMonRunningSpot(YES, NO, NO, NO), MSBDActMonSpotNone);
+        eqi(@"Show in App Library off (no icon): none", MSBDActMonRunningSpot(NO, NO, YES, YES), MSBDActMonSpotNone);
+        eqi(@"off, no recents: none", MSBDActMonRunningSpot(NO, NO, YES, NO), MSBDActMonSpotNone);
+        // the recents the Dock's list is made from, with ours first (display items stood for by strings)
+        NSMutableOrderedSet *recents = [NSMutableOrderedSet orderedSetWithArray:@[@"com.example.clock", @"com.example.maps", @"com.example.notes"]];
+        NSMutableOrderedSet *with = MSBDActMonRecentsWithOurs(recents, AM);
+        ok(@"ours first, the recents after it in their order", [with.array isEqual:(@[AM, @"com.example.clock", @"com.example.maps", @"com.example.notes"])]);
+        ok(@"a copy: the recents SpringBoard keeps (and saves) are not touched", recents.count == 3 && ![recents containsObject:AM] && with != recents);
+        ok(@"ours there already: nil (never twice)", MSBDActMonRecentsWithOurs(with, AM) == nil);
+        ok(@"no recents yet: ours alone", [MSBDActMonRecentsWithOurs([NSOrderedSet orderedSet], AM).array isEqual:(@[AM])]);
+        ok(@"not an ordered set (an array, nil): nil", MSBDActMonRecentsWithOurs(@[@"com.example.clock"], AM) == nil && MSBDActMonRecentsWithOurs(nil, AM) == nil);
+        ok(@"no item of ours: nil", MSBDActMonRecentsWithOurs(recents, nil) == nil);
+        // SpringBoard's own list from them (as read on 18.5, -_updateCurrentDisplayItemsAfterContinuityChange:notifyDelegate:): the recents, a suggested app
+        // last, culled to the room (max) from the recents' end -- the suggestion and ours (first) are never culled.
+        NSArray *(^shown)(NSOrderedSet *, NSString *, NSUInteger) = ^NSArray *(NSOrderedSet *r, NSString *sug, NSUInteger max) {
+            NSMutableOrderedSet *items = [r mutableCopy];
+            if (sug) { [items removeObject:sug]; [items addObject:sug]; }
+            if (items.count > max) [items removeObjectsInRange:NSMakeRange(max - (sug ? 1 : 0), items.count - max)];
+            return items.array;
+        };
+        NSOrderedSet *four = [NSOrderedSet orderedSetWithArray:@[@"r0", @"r1", @"r2", @"r3"]];
+        ok(@"4 recents, 5 places (KT's A12Z: Recent Apps 4 + the suggestion's place), no suggestion: ours + the 4 (the suggestion's place)",
+           [shown(MSBDActMonRecentsWithOurs(four, AM), nil, 5) isEqual:(@[AM, @"r0", @"r1", @"r2", @"r3"])]);
+        ok(@"4 recents and a suggestion, 5 places: ours + 3 + the suggestion (the oldest recent waits, as for any app just opened)",
+           [shown(MSBDActMonRecentsWithOurs(four, AM), @"handoff", 5) isEqual:(@[AM, @"r0", @"r1", @"r2", @"handoff"])]);
+        ok(@"stock room of 3: ours + the 2 newest", [shown(MSBDActMonRecentsWithOurs(four, AM), nil, 3) isEqual:(@[AM, @"r0", @"r1"])]);
+        ok(@"without ours the list is SpringBoard's as before", [shown(four, @"handoff", 5) isEqual:(@[@"r0", @"r1", @"r2", @"r3", @"handoff"])]);
+        // its menu's Dock row
+        eqi(@"kept: Remove from Dock (in the Dock and in the App Library)", MSBDActMonMenuRow(YES, NO), MSBDActMonRowRemove);
+        eqi(@"kept wins over a running entry's own icon", MSBDActMonMenuRow(YES, YES), MSBDActMonRowRemove);
+        eqi(@"the running entry's own icon: Keep in Dock", MSBDActMonMenuRow(NO, YES), MSBDActMonRowKeep);
+        eqi(@"the App Library (not kept): Add to Dock", MSBDActMonMenuRow(NO, NO), MSBDActMonRowAdd);
+        // no longer kept while the window is open
+        ok(@"unkept, window open, no recents shown: stays in its place (a Mac's Dock)", MSBDActMonUnkeptStaysInPlace(YES, YES, NO));
+        ok(@"unkept, window open, recents shown: leaves the Dock's list for the recents", !MSBDActMonUnkeptStaysInPlace(YES, YES, YES));
+        ok(@"unkept, no window: leaves", !MSBDActMonUnkeptStaysInPlace(YES, NO, NO) && !MSBDActMonUnkeptStaysInPlace(YES, NO, YES));
+        ok(@"unkept with Show in App Library off: leaves", !MSBDActMonUnkeptStaysInPlace(NO, YES, NO));
     }
     printf("test-actmondock: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;

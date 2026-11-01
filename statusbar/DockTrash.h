@@ -256,6 +256,7 @@ static void DMFDTrashTakeDrop(DMFDrag *d) {
     for (DMFinderItem *x in items) if (!DMFinderInOwnTrash(x.path)) [paths addObject:x.path];
     DMFinderWindow *host = DMFDFromFinderWindow(d) ? d.from : DMFinderOps();
     DMLog([NSString stringWithFormat:@"[trash] drop on the bin: %lu item(s) to the Trash (from %@)", (unsigned long)paths.count, DMFDFromFinderWindow(d) ? @"a Finder window" : @"the desktop or the Downloads stack"]);
+    d.movedAway = paths.count > 0;
     DMFDFinish(d, YES);
     [host dm_trashItems:paths];
 }

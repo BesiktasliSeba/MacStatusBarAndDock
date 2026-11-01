@@ -54,6 +54,7 @@
 #include "../AutoLockLongest.h"            // (MS_AUTOLOCK_CHECK: removal and switch-off tell SpringBoard to look at the stored Auto-Lock)
 #include "../../common/SSHSwitch.h"        // (the SSH state every switch reads, and its notification, 1.7.6; Mac-tested)
 #include "../../common/CCModuleList.h"     // (our Control Center controls' identifiers: taken out of the user's lists on removal)
+#include "../../common/CCAutoAdd.h"        // (RAM & CPU's once-only marker: forgotten on removal where the removal takes the control out, Mac-tested)
 #include <dlfcn.h>
 #include <grp.h>
 
@@ -1409,6 +1410,30 @@ static void TakeOurControlsOut(void) {
         ELog(@"removal: our Control Center controls taken out of %@: %@", path.lastPathComponent, ok ? @"done" : @"NOT written");
     }
 }
+// RAM & CPU's once-only marker (common/CCAutoAdd.h, in our main preferences, which the removal keeps): where the control is in Control Center now
+// and the marker says it was there or put there, the removal is what takes it out (TakeOurControlsOut and SpringBoard on the note; 18 drops the
+// tile), so the marker goes and the next install puts it back where there is room (1.7.7: it stayed out after a reinstall). Read before SpringBoard
+// is told: the list it saves without ours tells nothing any more. A user's own removal and Memory Magic's tile keep theirs.
+static void ForgetCCAutoAddWhereShown(void) {
+    NSMutableArray *lists = [NSMutableArray array];
+    id layout = nil;
+    // (18 decides from its layout only: the 15-17 list files can be left over from before an update to 18, and would clear or keep the marker
+    //  for a Control Center that no longer reads them -- 1.7.7 code review, fix round)
+    BOOL eighteen = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 18;
+    for (NSString *path in eighteen ? @[kMSBDCCAutoAdd18LayoutFile] : @[kMSBDCCAppleListFile, kMSBDCCCCSupportListFile, kMSBDCCAutoAdd18LayoutFile]) {
+        NSData *data = [NSData dataWithContentsOfFile:path];
+        id plist = data ? [NSPropertyListSerialization propertyListWithData:data options:NSPropertyListImmutable format:NULL error:NULL] : nil;
+        if (!plist) continue;
+        if ([path isEqualToString:kMSBDCCAutoAdd18LayoutFile]) layout = plist; else [lists addObject:plist];
+    }
+    CFStringRef domain = CFSTR("com.besiktasliseba.macstatusbar");   // (StatusBar.x's MSB_DOMAIN)
+    CFPreferencesSynchronize(domain, CFSTR("mobile"), kCFPreferencesAnyHost);
+    id marker = CFBridgingRelease(CFPreferencesCopyValue((__bridge CFStringRef)kMSBDCCAutoAddDone, domain, CFSTR("mobile"), kCFPreferencesAnyHost));
+    if (!marker) return;
+    if (!MSBDCCAutoAddForgetOnRemoval(marker, lists, layout)) { ELog(@"removal: RAM & CPU's Control Center marker \"%@\" kept", marker); return; }
+    WriteMobilePrefsKey((__bridge NSString *)domain, kMSBDCCAutoAddDone, nil, NO);
+    ELog(@"removal: RAM & CPU's Control Center marker \"%@\" cleared -- the removal takes the control out, the next install puts it back where there is room", marker);
+}
 // Removal (the prerm, not on an upgrade): everything we changed is given back -- the engines' own settings, our Choicy entries for the engines and
 // for the lines, the engines we renamed for iCleaner Pro -- and our lines' own .disabled files go (dpkg does not know them).
 static void Uninstall(void) {
@@ -1418,6 +1443,7 @@ static void Uninstall(void) {
     notify_post("com.besiktasliseba.msbd.spotlight.removeall");
     notify_post("com.besiktasliseba.graveescapetweak/removing");   // the running SpringBoard takes the HID "Top-Left Key as Escape" key mapping off every keyboard before our code is gone
     notify_post("com.besiktasliseba.macpointer.removing");   // ... and gives Pointer Animations (Accessibility) back, if the Mac pointer turned them off (StatusBar.x DMPointerAnimSync)
+    ForgetCCAutoAddWhereShown();   // (before the note: from the lists as they are)
     notify_post(kMSBDCCRemovingNote);   // ... and takes our Control Center controls out of the list it keeps (15-17; TakeOurControlsOut below does the files)
     usleep(800000);
     TakeOurControlsOut();

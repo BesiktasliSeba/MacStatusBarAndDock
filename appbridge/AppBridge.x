@@ -1024,6 +1024,47 @@ static void MABViewTree(void) {
 #pragma clang diagnostic pop
     MABLog(out);
 }
+// Debug: "com.besiktasliseba.appbridge.scrollgeo.<hash>" (1.7.7, a scroll indicator away from a window's edge): every window (frame, safe area, its
+// scene's size), and each big scroll view in it -- frame, safe area, insets, the indicator's own insets and frame -- with the controllers above it.
+static void MABScrollGeoView(UIView *v, int depth, NSMutableString *out) {
+    if (depth > 40 || v.hidden) return;
+    if ([v isKindOfClass:[UIScrollView class]] && v.bounds.size.width >= 150 && v.bounds.size.height >= 150) {
+        UIScrollView *s = (UIScrollView *)v;
+        CGRect f = [s convertRect:s.bounds toView:nil];
+        UIView *ind = nil; @try { ind = [s valueForKey:@"_verticalScrollIndicator"]; } @catch (id e) {}
+        [out appendFormat:@"  SCROLL %@ %p win{%.1f,%.1f %.1fx%.1f} size{%.0fx%.0f} safe %@ inset %@ adjusted %@ indicatorInsets %@ auto %d behavior %ld margins %@ fromSafe %d\n", NSStringFromClass([s class]), s,
+            f.origin.x, f.origin.y, f.size.width, f.size.height, s.contentSize.width, s.contentSize.height, NSStringFromUIEdgeInsets(s.safeAreaInsets), NSStringFromUIEdgeInsets(s.contentInset),
+            NSStringFromUIEdgeInsets(s.adjustedContentInset), NSStringFromUIEdgeInsets(s.verticalScrollIndicatorInsets), s.automaticallyAdjustsScrollIndicatorInsets, (long)s.contentInsetAdjustmentBehavior,
+            NSStringFromUIEdgeInsets(s.layoutMargins), s.insetsLayoutMarginsFromSafeArea];
+        if ([ind isKindOfClass:[UIView class]]) [out appendFormat:@"    indicator %@ in scroll %@ win %@ hidden %d alpha %.2f\n", NSStringFromClass([ind class]), NSStringFromCGRect(ind.frame), NSStringFromCGRect([ind convertRect:ind.bounds toView:nil]), ind.hidden, ind.alpha];
+        for (UIResponder *r = s.nextResponder; r && ![r isKindOfClass:[UIWindow class]]; r = r.nextResponder)
+            if ([r isKindOfClass:[UIViewController class]]) { UIViewController *c = (UIViewController *)r; [out appendFormat:@"    controller %@ view win %@ safe %@ additional %@\n", NSStringFromClass([c class]), NSStringFromCGRect([c.view convertRect:c.view.bounds toView:nil]), NSStringFromUIEdgeInsets(c.view.safeAreaInsets), NSStringFromUIEdgeInsets(c.additionalSafeAreaInsets)]; }
+    }
+    for (UIView *sv in v.subviews) MABScrollGeoView(sv, depth + 1, out);
+}
+static void MABScrollGeo(void) {
+    NSMutableString *out = [NSMutableString stringWithString:@"scrollgeo:\n"];
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    for (UIWindow *w in [UIApplication sharedApplication].windows) {
+        if (w.hidden) continue;
+        UIWindowScene *sc = w.windowScene;
+        id fbs = nil; @try { fbs = [sc valueForKey:@"_FBSScene"]; } @catch (id e) {}
+        id settings = nil; @try { settings = [fbs valueForKey:@"settings"]; } @catch (id e) {}
+        NSString *sceneSafe = @"-";
+        for (NSString *k in @[@"safeAreaInsetsPortrait", @"safeAreaInsetsLandscapeLeft", @"safeAreaInsetsLandscapeRight", @"peripheryInsets"]) {
+            id val = nil; @try { val = [settings valueForKey:k]; } @catch (id e) {}
+            if (val) sceneSafe = [sceneSafe stringByAppendingFormat:@" %@=%@", k, val];
+        }
+        id frameV = nil; @try { frameV = [settings valueForKey:@"frame"]; } @catch (id e) {}
+        [out appendFormat:@"WINDOW %@ frame %@ safe %@ scene %@ iface %ld settings frame %@ orientation %@%@ | on screen %@ fixed %@ screen %@\n", NSStringFromClass([w class]), NSStringFromCGRect(w.frame), NSStringFromUIEdgeInsets(w.safeAreaInsets),
+            sc ? NSStringFromCGRect(sc.coordinateSpace.bounds) : @"-", sc ? (long)sc.interfaceOrientation : -1L, frameV ?: @"-", [settings respondsToSelector:NSSelectorFromString(@"interfaceOrientation")] ? [settings valueForKey:@"interfaceOrientation"] : @"-", sceneSafe,
+            NSStringFromCGRect([w convertRect:w.bounds toCoordinateSpace:w.screen.coordinateSpace]), NSStringFromCGRect([w convertRect:w.bounds toCoordinateSpace:w.screen.fixedCoordinateSpace]), NSStringFromCGRect(w.screen.bounds)];
+        MABScrollGeoView(w, 0, out);
+    }
+#pragma clang diagnostic pop
+    MABLog(out);
+}
 // Debug: "com.besiktasliseba.appbridge.kbgeo.<hash>" (M1 2026-09-27, Messages Send button dead in a small window): logs the keyboard-accessory geometry —
 // every window's frame/safe area, each CKMessageEntryView's frame, fitting sizes, vertical constraints and CGFloat "height" getters of it and its controller,
 // the Send button's layer chain, and UIKit's hit test at its centre. The first run also starts logging keyboard frame notifications and any zero-height
@@ -1328,6 +1369,9 @@ static void MABRegisterFocus(void) {
     static int tokenViewTree = 0;
     snprintf(n2, sizeof n2, "com.besiktasliseba.appbridge.viewtree.%08x", hash);
     notify_register_dispatch(n2, &tokenViewTree, dispatch_get_main_queue(), ^(int t) { MABViewTree(); });
+    static int tokenScrollGeo = 0;
+    snprintf(n2, sizeof n2, "com.besiktasliseba.appbridge.scrollgeo.%08x", hash);
+    notify_register_dispatch(n2, &tokenScrollGeo, dispatch_get_main_queue(), ^(int t) { MABScrollGeo(); });
     static int tokenKbGeo = 0;
     snprintf(n2, sizeof n2, "com.besiktasliseba.appbridge.kbgeo.%08x", hash);
     notify_register_dispatch(n2, &tokenKbGeo, dispatch_get_main_queue(), ^(int t) { MABKbGeo(); });
@@ -2134,15 +2178,24 @@ static MABDropSession *MABDropSessionMake(NSDictionary *d) {
     for (NSDictionary *e in list) {
         if (![e isKindOfClass:[NSDictionary class]]) continue;
         NSString *name = e[@"name"], *path = e[@"path"], *uti = e[@"uti"];
+        // (every type SpringBoard names for it, its own first: an app's .ipa is com.apple.itunes.ipa and a zip archive too -- older senders name one)
+        NSMutableArray<NSString *> *utis = [NSMutableArray array];
+        for (id t in [e[@"utis"] isKindOfClass:[NSArray class]] ? e[@"utis"] : (uti ? @[uti] : @[])) if ([t isKindOfClass:[NSString class]] && [t length] && ![utis containsObject:t]) [utis addObject:t];
         NSItemProvider *ip = nil;
         if (path.length) {
             // (only a file staged inside this app's own tmp folder, and never a folder: SpringBoard zips folders)
             BOOL isDir = NO;
             if (![path.stringByStandardizingPath hasPrefix:tmp] || ![[NSFileManager defaultManager] fileExistsAtPath:path isDirectory:&isDir] || isDir) { MABDropLog([NSString stringWithFormat:@"tvdrop: staged file refused (%@)", path.lastPathComponent]); return nil; }
-            ip = [[NSItemProvider alloc] initWithContentsOfURL:[NSURL fileURLWithPath:path]];
-        } else if (!ready && uti.length) {
+            NSURL *url = [NSURL fileURLWithPath:path];
+            ip = [[NSItemProvider alloc] initWithContentsOfURL:url];
+            // (also as each type SpringBoard named that the file's extension alone doesn't give here: an app's .ipa as com.apple.itunes.ipa -- Filza
+            //  claims ".ipa" for a type of its own --, and as a zip named .ipa, which Files takes where it refuses both .ipa types (bare data) and
+            //  names the file by, iPad 2 1.7.7; what the extension gives stays first)
+            for (NSString *t in utis) if (ip && ![ip.registeredTypeIdentifiers containsObject:t])
+                [ip registerFileRepresentationForTypeIdentifier:t fileOptions:0 visibility:NSItemProviderRepresentationVisibilityAll loadHandler:^NSProgress *(void (^c)(NSURL *, BOOL, NSError *)) { c(url, NO, nil); return nil; }];
+        } else if (!ready && utis.count) {
             ip = [NSItemProvider new];
-            [ip registerFileRepresentationForTypeIdentifier:uti fileOptions:0 visibility:NSItemProviderRepresentationVisibilityAll loadHandler:^NSProgress *(void (^c)(NSURL *, BOOL, NSError *)) {
+            for (NSString *t in utis) [ip registerFileRepresentationForTypeIdentifier:t fileOptions:0 visibility:NSItemProviderRepresentationVisibilityAll loadHandler:^NSProgress *(void (^c)(NSURL *, BOOL, NSError *)) {
                 c(nil, NO, [NSError errorWithDomain:@"MacAppBridge" code:1 userInfo:@{NSLocalizedDescriptionKey: @"not dropped yet"}]); return nil; }];
         }
         if (!ip || !ip.registeredTypeIdentifiers.count) { MABDropLog([NSString stringWithFormat:@"tvdrop: no content type for %@: not offered", name]); return nil; }
@@ -2197,12 +2250,28 @@ static void MABDropAt(CGPoint scenePoint, int kind) {   // kind 6 over, 7 drop, 
     // (Share… with nothing that takes files right under the window's middle -- Files: an empty area over its item view --: the biggest view in the
     //  window that takes them, at a spot in it with no item under it (so nothing is dropped into a subfolder by chance))
     if (!target && [d[@"share"] boolValue]) {
+#if DEBUG
+        if (kind == 7) {   // (every drop target in the window, shown or not: what the choice below sees)
+            NSMutableString *m = [NSMutableString stringWithString:@"tvdrop: share: drop targets:"]; NSMutableArray<UIView *> *all = [NSMutableArray arrayWithObject:w]; NSUInteger n = 0, k = 0;
+            while (all.count && n++ < 6000 && k < 24) { UIView *v = all.firstObject; [all removeObjectAtIndex:0]; [all addObjectsFromArray:v.subviews];
+                for (id<UIInteraction> ia in v.interactions) if ([ia isKindOfClass:[UIDropInteraction class]]) { UIDropInteraction *di = (UIDropInteraction *)ia; BOOL can = NO; k++;
+                    @try { can = ![di.delegate respondsToSelector:@selector(dropInteraction:canHandleSession:)] || [di.delegate dropInteraction:di canHandleSession:s]; } @catch (NSException *e) {}
+                    BOOL shown = YES; for (UIView *u = v; u; u = u.superview) if (u.hidden || u.alpha < 0.05) shown = NO;
+                    [m appendFormat:@" %@%@ %@ can %d;", NSStringFromClass([v class]), shown ? @"" : @" (not shown)", NSStringFromCGRect([v convertRect:v.bounds toView:w]), can]; } }
+            MABDropLog(m);
+        }
+#endif
         CGFloat bestArea = 0; NSMutableArray<UIView *> *todo = [NSMutableArray arrayWithObject:w]; NSUInteger seen = 0;
         while (todo.count && seen++ < 4000) {
             UIView *v = todo.firstObject; [todo removeObjectAtIndex:0];
             if (v.hidden || v.alpha < 0.05) continue;
+            // (never a one-line text field -- a search field, a form's field: a shared file is no text to type there. This holds for every Share,
+            //  whatever the file and the app, on purpose: with nothing else in the window that takes it, the app didn't take the file (Share says so)
+            //  rather than getting its URL as text. Found with an .ipa: Files' item view under the middle refused it, and its search field then took
+            //  the file's URL as text, iPad 2 1.7.7. A drag's own drop point is the user's: not this fallback)
+            BOOL field = [v isKindOfClass:[UITextField class]];
             for (id<UIInteraction> ia in v.interactions) {
-                if (![ia isKindOfClass:[UIDropInteraction class]]) continue;
+                if (field || ![ia isKindOfClass:[UIDropInteraction class]]) continue;
                 UIDropInteraction *di = (UIDropInteraction *)ia; BOOL can = NO;
                 @try { can = ![di.delegate respondsToSelector:@selector(dropInteraction:canHandleSession:)] || [di.delegate dropInteraction:di canHandleSession:s]; } @catch (NSException *e) { can = NO; }
                 CGRect r = CGRectIntersection([v convertRect:v.bounds toView:w], w.bounds);

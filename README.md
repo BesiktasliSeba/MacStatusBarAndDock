@@ -83,6 +83,7 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 - On My iPad shows the same folders as the Files app, with a folder for each app that shares its files there.
 - The Trash has an Empty button at the top right, and emptying the Trash plays a sound unless the iPad is muted.
 - Drag files between Finder windows, the desktop and the Downloads stack, or into an app, which gets a copy.
+- Share on an app, in Applications or any .app in Finder or on the desktop, hands it over as an .ipa named after the app and its version. For an App Store app, a note says first that the copy only opens on iPads signed in with the same Apple ID. Nothing is decrypted.
 - Files and folders from On My iPad > Desktop sit on the first Home Screen page, never over your apps. A long press or a right click opens their menus over your windows, and Hide Name hides an icon's name. In Settings > Desktop, Hide Desktop Icon Names hides them all and Icon Size sets their size.
 - Text files open in a small TextEdit window and save by themselves.
 - USB drives and SD cards show up under Locations. exFAT and FAT32 work (FAT32 can't hold files over 4 GB). APFS and Mac OS Extended should work but haven't been tested, and iPadOS doesn't read NTFS. An SSD may need a powered hub.
@@ -101,8 +102,8 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 ### Activity Monitor and RAM & CPU
 
 - An Activity Monitor window lists the running processes with their CPU, memory and disk use. Sort by any column, search, pick All, My or System Processes, inspect a process or quit an app. System processes show no figures, and the Energy and Network tabs have no figures per process.
-- Activity Monitor is also an app in the App Library, in Utilities and in its search. Add to Dock in its menu puts it in the Dock, where it works like an app. It's never saved with your Home Screen layout. Show in App Library in Settings > Status Bar turns it off.
-- RAM & CPU in Control Center shows the available and used memory and the CPU load, and a tap opens the details, with a button for Activity Monitor. Activity Monitor also opens from the Go menu and from Spotlight's actions.
+- Activity Monitor is also an app in the App Library, in Utilities and in its search. Add to Dock in its menu puts it in the Dock, where it works like an app. While its window is open, also minimized, it shows in the Dock as an open app, with a dot, and leaves when the window closes. Keep in Dock in its menu keeps it there. It's never saved with your Home Screen layout. Show in App Library in Settings > Status Bar turns it off.
+- RAM & CPU in Control Center shows the available and used memory and the CPU load, and a tap opens the details, with a button for Activity Monitor. On iPadOS 15 to 17 it's added to Control Center by itself once, where it fits without moving anything, and not again after you take it out. Activity Monitor also opens from the Go menu and from Spotlight's actions.
 - With Memory Magic on iPadOS 15 to 17, a tap on its tile offers to put RAM & CPU in its place.
 
 ### Settings
@@ -216,7 +217,7 @@ On iPads with 2 or 3 GB of memory:
 
 - Work with 2 or 3 windows at a time. Every window is a running app, and iPadOS closes apps in the background when memory runs short, so they reload when you go back.
 - Turn off what you don't use, such as Siri Suggestions (Settings > Siri & Search) and Handoff (Settings > General > AirPlay & Handoff).
-- Turn off Prewarm Apps in Settings > Windows & Multitasking, so iPadOS doesn't start apps in the background before you open them.
+- Turn off Prewarm Apps in Settings > Windows & Multitasking, so iPadOS doesn't start apps in the background before you open them. It starts off on iPads with 2 GB of memory.
 
 ## In the works
 

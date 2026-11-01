@@ -1,8 +1,11 @@
 // SystemStats.h -- the memory and CPU numbers our Control Center tiles show (the RAM & CPU module, ccmodule/; the tile drawn over Memory Magic,
 // statusbar/StatusBar.x), plain C so the Mac test (tools/test-systemstats.sh) runs this very code. One definition everywhere:
-//  - Used RAM = active + wired + compressed pages; available = the rest of the physical memory (free, inactive, speculative: what apps can
-//    get without anything being compressed or quit). Memory Magic's "Free RAM" is only the free pages (~700 MB on the 17.5 iPad while about
-//    1.7-1.8 GB were available), which is why ours differs from it.
+//  - Available RAM = the free, inactive and speculative pages, counted themselves: what apps can get without anything being compressed or
+//    quit. Used = the rest of the physical memory (active, wired, the compressor's). Taken as total minus active + wired + compressed until
+//    1.7.6, that read 1.2 GB too little on the M1 (15.6.1) from 31 Oct: after a jetsam storm its kernel's wired count stayed 81k pages above
+//    what the iPad has (every counter together 1.24 GiB over its memory, the other iPads within 0.1 %), so a counter's error never moves
+//    Available now. Memory Magic's "Free RAM" is only the free pages (~700 MB on the 17.5 iPad while about 1.7-1.8 GB were available),
+//    which is why ours differs from it.
 //  - CPU = busy ticks (user + system + nice) over all ticks between two samples, every core together; user and system on their own too.
 #ifndef MSBD_SYSTEM_STATS_H
 #define MSBD_SYSTEM_STATS_H
@@ -16,16 +19,20 @@ typedef struct {
     uint64_t total, used, available, wired, compressed, active, inactive, freeBytes;   // bytes
 } MSBDMemory;
 
-// From page counts (pure: the Mac test feeds it numbers). total = the physical memory in bytes, page = the size of a counted page.
-static inline MSBDMemory MSBDMemoryFromCounts(uint64_t total, uint64_t page, uint64_t active, uint64_t inactive, uint64_t wired, uint64_t compressed, uint64_t freeCount) {
+// From page counts (pure: the Mac test feeds it numbers). total = the physical memory in bytes, page = the size of a counted page, freeCount =
+// the free pages without the speculative ones (as vm_stat's "Pages free" prints them; MSBDFreeWithoutSpeculative).
+static inline MSBDMemory MSBDMemoryFromCounts(uint64_t total, uint64_t page, uint64_t active, uint64_t inactive, uint64_t speculative, uint64_t wired, uint64_t compressed, uint64_t freeCount) {
     MSBDMemory m = {0};
     m.total = total;
     m.active = active * page; m.inactive = inactive * page; m.wired = wired * page; m.compressed = compressed * page; m.freeBytes = freeCount * page;
-    uint64_t used = m.active + m.wired + m.compressed;
-    m.used = used < total ? used : total;
-    m.available = total - m.used;
+    uint64_t available = m.freeBytes + m.inactive + speculative * page;
+    m.available = available < total ? available : total;
+    m.used = total - m.available;
     return m;
 }
+// The kernel's free_count already holds the speculative pages (vm_stat takes them out before it prints "Pages free"): counted again beside
+// speculative they made Available 1.3-1.4 GB too large on the M1 (1.7.7 code review, part two).
+static inline uint64_t MSBDFreeWithoutSpeculative(uint64_t freeCount, uint64_t speculative) { return freeCount > speculative ? freeCount - speculative : 0; }
 static inline bool MSBDMemoryNow(MSBDMemory *out) {
     vm_statistics64_data_t vm; mach_msg_type_number_t n = HOST_VM_INFO64_COUNT;
     mach_port_t host = mach_host_self();
@@ -36,7 +43,7 @@ static inline bool MSBDMemoryNow(MSBDMemory *out) {
     if (sysctlbyname("hw.memsize", &total, &len, NULL, 0) != 0 || !total) return false;
     uint64_t page = vm_kernel_page_size;   // (the counters are in kernel pages)
     if (!page) return false;
-    *out = MSBDMemoryFromCounts(total, page, vm.active_count, vm.inactive_count, vm.wire_count, vm.compressor_page_count, vm.free_count);
+    *out = MSBDMemoryFromCounts(total, page, vm.active_count, vm.inactive_count, vm.speculative_count, vm.wire_count, vm.compressor_page_count, MSBDFreeWithoutSpeculative(vm.free_count, vm.speculative_count));
     return true;
 }
 

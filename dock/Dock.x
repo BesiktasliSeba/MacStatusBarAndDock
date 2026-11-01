@@ -1296,9 +1296,26 @@ static BOOL DMTongueOnTopEdge(id tongue) {
 }
 %end
 %end
+// A touch the desktop has taken (MacStatusBar's, statusbar/Desktop.h -dm_touchIsOursFor:: held there long enough that a move draws its selection
+// rectangle or drags an icon) is never a swipe down, nor this view's own pull: a finger held 0.35-0.45 s on the empty desktop and then moved down
+// opened the App Library under the rectangle (1.7.7 fix round, both iPads). Found with dlsym (MacStatusBar may load after the Dock; without it, no
+// desktop).
+static BOOL DMDesktopTakesTouch(UIGestureRecognizer *gesture) {
+    static BOOL (*ours)(UIGestureRecognizer *) = NULL; static int tries = 0;
+    if (!ours && tries < 40) { tries++; ours = (BOOL (*)(UIGestureRecognizer *))dlsym(RTLD_DEFAULT, "MSBDDesktopTouchIsOurs"); }
+    return ours && ours(gesture);
+}
 %hook SBSearchScrollView
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gesture {
     if (DMPanStartedOnDesktopIcon(gesture)) { DMLog(@"[swipe-down] a drag from a desktop icon: not a swipe"); return NO; }
+    if (DMDesktopTakesTouch(gesture)) {
+        static int logged = 0;
+        if (logged++ < 20) {
+            CGPoint moved = [gesture isKindOfClass:[UIPanGestureRecognizer class]] ? [(UIPanGestureRecognizer *)gesture translationInView:(UIView *)self] : CGPointZero;
+            DMLog([NSString stringWithFormat:@"[swipe-down] the desktop's touch (held there, then moved %.1f pt: its rectangle or an icon's drag): not a swipe", hypot(moved.x, moved.y)]);
+        }
+        return NO;
+    }
     if (gSwipeDownOpensLibrary && DMSpotlightButtonShown() && [gesture isKindOfClass:[UIPanGestureRecognizer class]] &&
         DMSwipeIsDownward((UIPanGestureRecognizer *)gesture, (UIView *)self)) {
         if (CACurrentMediaTime() - gTopPullAt < 0.5) {   // (Notification Center's / Control Center's pull from the top edge: theirs, not a swipe down)
@@ -1477,6 +1494,9 @@ static void DMFlushDeferredDockIconsAfter(NSString *why, double delay, int tries
         } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[recents] parked updates: %@", e.reason]); }
     });
 }
+// MacStatusBar's Activity Monitor in the recents (1.7.7, statusbar/ActMonDock.h: its running entry): its own changes of the shown list are run the
+// same way (found with dlsym).
+__attribute__((visibility("default"))) void MSBDDockRecentsFlush(NSString *why) { DMFlushDeferredDockIcons(why); }
 static unsigned long long DMRecentsPlaces(void) { long n = DMRecentsCount(); return n > 0 ? (unsigned long long)n + 1 : 0; }
 static unsigned long long DMRecentsMaxFor(unsigned long long stockMax) {
     long n = DMRecentsCount();

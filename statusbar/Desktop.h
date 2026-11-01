@@ -117,6 +117,7 @@ static int gDesktopLookRead, gDesktopFolderFrom;
 - (void)dm_takeDrop:(DMFDrag *)d at:(CGPoint)sp into:(NSString *)dest ontoFolder:(BOOL)ontoFolder;
 - (void)dm_touchBegan:(UITouch *)t;
 - (void)dm_event:(UIEvent *)e;
+- (BOOL)dm_touchIsOursFor:(UIGestureRecognizer *)g;
 - (BOOL)dm_hasKeys;
 - (void)dm_setHasKeys:(BOOL)has;
 - (BOOL)dm_handleKey:(UIKey *)key;
@@ -131,6 +132,8 @@ static int gDesktopLookRead, gDesktopFolderFrom;
 - (void)dm_debug:(NSString *)spec;
 #endif
 @end
+// For the Dock (dock/Dock.x, found with dlsym): a gesture of the Home Screen's asks to begin -- is its touch the desktop's? (-dm_touchIsOursFor:)
+__attribute__((visibility("default"))) BOOL MSBDDesktopTouchIsOurs(UIGestureRecognizer *g) { return gDesktop && g && [gDesktop dm_touchIsOursFor:g]; }
 
 // SpringBoard's keyboard focus while a name is edited on the desktop (the Home Screen has no keyboard of its own), as the Dock's Downloads search
 // takes it: given back when the editing ends.
@@ -438,10 +441,12 @@ static BOOL DMDesktopRenameFieldTouch(UITouch *t) {
     // an icon lifted by a drag (see -dm_event:)
     DMDesktopItemView *_armed; BOOL _lifted;
     NSArray<DMDesktopItemView *> *_dragViews; CGPoint _dragGrab; CGRect _dragUnion;
+    DMFDrag *_drag;   // (Finder's drag that lift started: what its drop did, -dm_dragEnded)
     // the selection rectangle on the empty desktop: a pointer's drag, or a finger held 0.35 s and then moved
     UIView *_band; CGPoint _bandStart; NSOrderedSet<NSString *> *_bandBase;
     // a finger on the desktop, followed from SpringBoard's events (-dm_event:): held, then moved -- an icon's drag, or the rectangle
     __weak UITouch *_track; __weak DMDesktopItemView *_trackView; CGPoint _trackDown, _trackLast; CFTimeInterval _trackAt; int _trackMode; BOOL _trackPointer;   // (1 drag, 2 rectangle)
+    CGPoint _trackRest; CFTimeInterval _trackRestAt;   // (where the finger last came to rest, and since when: -dm_holdCheck: opens no menu under a finger on its way)
     BOOL _trackSecondary;   // (the press is a pointer's secondary click: its menu is ours, over the windows -- see -contextMenuInteraction:configurationForMenuAtLocation:)
     BOOL _holdMenu;         // (a finger's hold opened our menu for this press, -dm_holdCheck:: a move now closes it and drags)
     CFTimeInterval _ownMenuAt;   // (the press -- its _trackAt -- a pointer's menu of ours was opened for: once per press)
@@ -1074,12 +1079,22 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
     NSMutableArray *items = [NSMutableArray array]; for (DMDesktopItemView *v in views) [items addObject:v.item];
     DMFinderOps().path = _folder;
     DMFinderDragBegin(DMFinderOps(), items, sp);
+    _drag = gFD;
     for (UIView *v in views) v.alpha = 0.35;   // (ghosts stay where they were until the drop)
     DMLog([NSString stringWithFormat:@"[desktop] %lu icon(s) lifted", (unsigned long)views.count]);
 }
+// The drag is over: its icons, dimmed where they were, come back -- unless the drop moved them off the desktop (into a folder, the Trash): then they
+// stay out of sight until the folder's listing takes them away, as on a Mac. They came back at full strength where they had been picked up for the
+// moment that took (0.7 s, M1), as if the drop had not been taken (1.7.7 item 6). Still here a moment later (the move refused, a question first): back.
 - (void)dm_dragEnded {
     NSArray *views = _dragViews; _dragViews = nil; _lifted = NO;
-    for (UIView *v in views) [UIView animateWithDuration:0.15 animations:^{ v.alpha = 1.0; }];
+    BOOL gone = _drag.movedAway; _drag = nil;
+    if (gone) {
+        for (UIView *v in views) v.alpha = 0.0;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            for (UIView *v in views) if (v.superview && v.alpha < 0.01) [UIView animateWithDuration:0.15 animations:^{ v.alpha = 1.0; }];
+        });
+    } else for (UIView *v in views) [UIView animateWithDuration:0.15 animations:^{ v.alpha = 1.0; }];
     [self dm_placeAgain];
 }
 // A drop on the desktop (Finder.h DMFinderDragEnd): icons already on it move to the drop point; anything else comes into the folder by Finder's
@@ -1091,12 +1106,22 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
     for (DMFinderItem *it in d.items) if (![DMFinderReal(it.path.stringByDeletingLastPathComponent) isEqualToString:real]) here = NO;
     CGPoint p = [self convertPoint:sp fromCoordinateSpace:(self.window.screen ?: [UIScreen mainScreen]).coordinateSpace];
     if (here) {   // (moved on the desktop: new places, nothing changes on the disk)
+        // The drop lands where it is let go, as on a Mac: the icons are at once where their picture is, and the picture goes without the shrink of a
+        // drop into a folder -- they glided over from where they had been picked up, under a picture shrinking away, so even with the picture on the
+        // finger the icon still moved at the drop (1.7.7 item 6). Only an icon whose spot is taken (another icon, an app icon) then slides to the
+        // nearest free one.
+        UIView *tile = _dragViews ? d.tile : nil;
+        CGPoint uc = CGPointMake(p.x - (_dragViews ? _dragGrab.x : 0), p.y - (_dragViews ? _dragGrab.y : 0));   // (the picture's new centre)
+        if (tile.superview) {   // (where the picture really is: kept on the screen at its edges, DMFDPlaceTile)
+            id<UICoordinateSpace> scr = (self.window.screen ?: [UIScreen mainScreen]).coordinateSpace;
+            uc = [self convertPoint:tile.superview == gMenuRotator ? tile.center : [tile.superview convertPoint:tile.center toCoordinateSpace:scr] fromCoordinateSpace:scr];
+        }
+        tile.hidden = YES;
         DMFDFinish(d, YES);
         CGRect area = [self dm_area];
         DMPlacer pl; [self dm_placer:&pl area:area];
         NSSet *moving = [NSSet setWithArray:[d.items valueForKey:@"name"]];
         for (NSString *n in _views) if (![moving containsObject:n]) DMPlacerTake(&pl, _views[n].frame);
-        CGPoint uc = CGPointMake(p.x - (_dragViews ? _dragGrab.x : 0), p.y - (_dragViews ? _dragGrab.y : 0));   // (the picture's new centre)
         NSInteger k = 0;
         for (DMFinderItem *it in d.items) {
             DMDesktopItemView *v = _views[it.name];
@@ -1105,6 +1130,7 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
             int fits = 1; CGPoint c = DMPlacerPlaceNear(&pl, want, &fits);
             if (!fits) { k++; continue; }   // (no room anywhere: it stays where it was)
             _places[it.name] = [self dm_fractionFor:c area:area];
+            if (tile) [UIView performWithoutAnimation:^{ v.center = want; v.alpha = 1.0; }];
             [UIView animateWithDuration:0.2 animations:^{ v.center = c; }];
             k++;
         }
@@ -1279,7 +1305,16 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
 // Finder's windows. UIKit's Haptic Touch menu lived in the Home Screen's window, under the app windows, so every window faded away while it was up
 // and came back after (KT: a preview opening from the desktop must leave the windows where they are, 1.7.2 item 15). The press's other
 // gestures let go at that moment (the Home Screen's own hold never starts jiggle mode under the menu); a move after it closes the menu and drags.
+// A pointer's click held still: the same, after the same time (1.7.7 item 6b). It used to open at UIKit's first ask for a menu, which comes 0.16 s
+// into a click (UIKit's own click-and-hold menu shows 0.74 s in, M1 15.6.1), so a click that went on into a drag a moment later opened the menu
+// first: a selection rectangle drawn over the empty desktop's menu, and that menu left open after it (KT).
 static const double kDMDesktopHoldMenu = 0.45;
+// How long a finger is held before a move is the desktop's -- an icon's drag, the empty desktop's selection rectangle -- rather than a swipe the page
+// takes (-dm_event:); the Dock's swipe down asks by the same rule (-dm_touchIsOursFor:).
+static inline double DMDesktopHoldToTake(BOOL onIcon) { return onIcon ? 0.3 : 0.35; }
+// A finger is at rest once it has stayed within 4 pt for 0.1 s (-dm_event: notes where, -dm_holdCheck: asks): a held finger's own wobble stays
+// within that, a drag under way leaves it (40 pt a second or faster).
+static const double kDMDesktopRestRadius = 4.0, kDMDesktopRestTime = 0.1;
 // Which menu a finger's hold opens (1.7.2 item 15, KT's choice: ours). YES: our Mac menu over the windows -- the same rows as before (Open, Quick
 // Look, Get Info, Rename, Hide Name, Duplicate, Share, Move to Trash; on the empty desktop New Folder, New Text File, Clean Up, Show in Finder and
 // Edit Home Screen), without the lifted preview: a preview is Quick Look's (Space, or the menu's row). NO would be iPadOS's Haptic Touch menu with
@@ -1295,7 +1330,19 @@ static BOOL DMDesktopFingerOwnMenu(void) {
 - (void)dm_holdCheck:(UITouch *)t since:(CFTimeInterval)at {
     if (!t || t != _track || _trackAt != at || _trackMode || _lifted || _band || _editing || _holdMenu || !self.userInteractionEnabled || !self.window) return;
     if (t.phase == UITouchPhaseEnded || t.phase == UITouchPhaseCancelled) return;
-    if (hypot(_trackLast.x - _trackDown.x, _trackLast.y - _trackDown.y) > 10.0) return;
+    if (hypot(_trackLast.x - _trackDown.x, _trackLast.y - _trackDown.y) > (_trackPointer ? 4.0 : 10.0)) return;   // (moved: a drag's, as -dm_event: tells them)
+    // Moving now, short of a drag's distance: on its way into the rectangle or a drag, so no menu yet (1.7.7 fix round, both iPads: a finger that
+    // began to move 0.42 s in had the menu opened under it at 0.45 s, closed again by the rectangle two frames later). The press is ours all the
+    // same -- held this long, a move is the desktop's --, so its other gestures let go now (the Home Screen's own hold started jiggle mode under a
+    // finger that came to rest a moment later), and it is looked at again in a moment: a finger that comes to rest gets its menu.
+    if (CACurrentMediaTime() - _trackRestAt < kDMDesktopRestTime) {
+        for (UIGestureRecognizer *o in [t.gestureRecognizers copy]) if (![o.name hasPrefix:@"dm."] && o.enabled) { o.enabled = NO; o.enabled = YES; }
+        if (CACurrentMediaTime() - at < 3.0) {
+            __weak DMDesktop *ws = self; __weak UITouch *wt = t;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [ws dm_holdCheck:wt since:at]; });
+        }
+        return;
+    }
     DMDesktopItemView *v = _trackView;
     if (v) {
         if (!v.window || !v.item) return;
@@ -1311,22 +1358,21 @@ static BOOL DMDesktopFingerOwnMenu(void) {
     for (UIGestureRecognizer *o in [t.gestureRecognizers copy]) if (![o.name hasPrefix:@"dm."] && o.enabled) { o.enabled = NO; o.enabled = YES; }   // (the press is ours now)
     _holdMenu = YES;
     DM_FEATURE_MARK("desktop-own-menu");
-    DMLog([NSString stringWithFormat:@"[desktop] a finger held still: %@ menu over the windows", v ? @"an icon's" : @"the desktop's"]);
+    DMLog([NSString stringWithFormat:@"[desktop] %@ held still: %@ menu over the windows", _trackPointer ? @"a click" : @"a finger", v ? @"an icon's" : @"the desktop's"]);
     DMFinderShowMenuIn(host, menu, _trackDown);
 }
 - (UIContextMenuConfiguration *)contextMenuInteraction:(UIContextMenuInteraction *)i configurationForMenuAtLocation:(CGPoint)loc {
     if (_lifted || _trackMode || _band || _editing || !self.userInteractionEnabled) return nil;
-    if (_track && !_trackPointer && DMDesktopFingerOwnMenu()) return nil;   // (a finger: its hold opens our menu, -dm_holdCheck:)
+    // (a finger, or a pointer's primary click: held still, it opens our menu from our own hold check, -dm_holdCheck: -- UIKit asks here early in a
+    //  click, long before a hold, kDMDesktopHoldMenu)
+    if (_track && !_trackSecondary && DMDesktopFingerOwnMenu()) return nil;
     CGPoint sp = [i.view convertPoint:loc toCoordinateSpace:(self.window.screen ?: [UIScreen mainScreen]).coordinateSpace];
     DMDesktopItemView *v = nil;
     // A pointer's secondary click: the menu is ours, in the menu window over everything (DMFinderShowMenuIn, as Finder's windows show theirs), and
     // the windows stay. UIKit's menu lives in the Home Screen's window, under the app windows, so for it the windows fade away while it is up
     // ("[lights] Home Screen icon menu"): with an app open, Quick Look or Open chosen from a desktop icon's menu made every window go and come back
-    // (KT, 1.7.2 item 15). A finger's hold: the same menu of ours (DMDesktopFingerOwnMenu, -dm_holdCheck:); a pointer's click held still -- UIKit's
-    // long press asks here, as for a finger -- likewise: its other gestures let go (the Home Screen's own hold never starts jiggle mode under the
-    // menu), and a move after it closes the menu and drags, as after a finger's hold.
-    BOOL pointerHold = _trackPointer && _track && !_trackSecondary && DMDesktopFingerOwnMenu();
-    if ((_trackSecondary || pointerHold) && _trackPointer && _track && CACurrentMediaTime() - _trackAt < 1.0) {
+    // (KT, 1.7.2 item 15). A finger's hold and a click held still: the same menu of ours (DMDesktopFingerOwnMenu, -dm_holdCheck:).
+    if (_trackSecondary && _trackPointer && _track && CACurrentMediaTime() - _trackAt < 1.0) {
         if (_ownMenuAt == _trackAt) return nil;   // (asked again for the same press: its menu is up already)
         _trackSecondary = NO;
         DMDesktopItemView *at = i == _bgMenu ? nil : (DMDesktopItemView *)i.view;
@@ -1342,14 +1388,14 @@ static BOOL DMDesktopFingerOwnMenu(void) {
         UIMenu *menu = [self dm_menuFor:at at:sp];
         UIView *host = DMMenuHost();
         DM_FEATURE_MARK("desktop-own-menu");
-        DMLog([NSString stringWithFormat:@"[desktop] %@: %@ menu over the windows", pointerHold ? @"a click held still" : @"secondary click", at ? @"an icon's" : @"the desktop's"]);
-        if (pointerHold) _holdMenu = YES;
+        DMLog([NSString stringWithFormat:@"[desktop] secondary click: %@ menu over the windows", at ? @"an icon's" : @"the desktop's"]);
         _ownMenuAt = _trackAt;
-        __weak UITouch *wt = _track;
+        CFTimeInterval press = _trackAt; __weak DMDesktop *ws = self;
         dispatch_async(dispatch_get_main_queue(), ^{   // (after UIKit is done with this press)
-            UITouch *tt = wt;
-            if (pointerHold && tt && tt.phase != UITouchPhaseEnded && tt.phase != UITouchPhaseCancelled)   // (the click still held: the press is ours now)
-                for (UIGestureRecognizer *o in [tt.gestureRecognizers copy]) if (![o.name hasPrefix:@"dm."] && o.enabled) { o.enabled = NO; o.enabled = YES; }
+            // (not for a press that went on into a drag meanwhile -- its moves can come in before this turn of the main queue: the menu then opened
+            //  over the drag, and nothing closed it after)
+            DMDesktop *s = ws;
+            if (!s || s->_trackAt != press || s->_trackMode || s->_lifted || s->_band) { DMLog(@"[desktop] the press went on into a drag before its menu opened: no menu"); return; }
             DMFinderShowMenuIn(host, menu, sp);
         });
         return nil;
@@ -1466,11 +1512,12 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
             if (!onIcon && at != _list) continue;
             if (!onIcon && ![self dm_shownAt:sp]) continue;
             _track = t; _trackView = onIcon ? (DMDesktopItemView *)at : nil; _trackDown = sp; _trackLast = sp; _trackAt = CACurrentMediaTime(); _trackMode = 0;
+            _trackRest = sp; _trackRestAt = _trackAt;
             _trackFinger = DMDesktopTouchFinger(t); _trackStamp = t.timestamp;
             _trackPointer = pointer;
             _trackSecondary = pointer && (DMDesktopButtons(e) & UIEventButtonMaskSecondary) != 0;
             _holdMenu = NO;
-            if (!pointer && DMDesktopFingerOwnMenu()) {   // (a finger held still: our menu, -dm_holdCheck:)
+            if (DMDesktopFingerOwnMenu() && !_trackSecondary) {   // (a finger, or a click, held still: our menu, -dm_holdCheck:)
                 __weak DMDesktop *ws = self; __weak UITouch *wt = t; CFTimeInterval at = _trackAt;
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kDMDesktopHoldMenu * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [ws dm_holdCheck:wt since:at]; });
             }
@@ -1482,6 +1529,7 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
         // (the touch's own window can be gone once UIKit's menu took it: then where it was last seen counts)
         CGPoint sp = t.window ? [t.window convertPoint:[t locationInView:nil] toCoordinateSpace:(t.window.screen ?: [UIScreen mainScreen]).coordinateSpace] : _trackLast;
         _trackLast = sp;
+        if (hypot(sp.x - _trackRest.x, sp.y - _trackRest.y) > kDMDesktopRestRadius) { _trackRest = sp; _trackRestAt = CACurrentMediaTime(); }   // (on its way: -dm_holdCheck:)
         BOOL option = NO; if (@available(iOS 13.4, *)) option = (e.modifierFlags & UIKeyModifierAlternate) != 0;
         option = option || DMTestFlag("/tmp/msb-fdrag-option");
         if (t.phase == UITouchPhaseMoved || t.phase == UITouchPhaseStationary) {
@@ -1490,13 +1538,15 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
                 if (hypot(sp.x - _trackDown.x, sp.y - _trackDown.y) <= (_trackPointer ? 4.0 : 10.0)) continue;
                 CFTimeInterval held = CACurrentMediaTime() - _trackAt;
                 // (a finger that moved at once: a swipe -- the page turns. A pointer drags an icon or draws the rectangle at once, as on a Mac)
-                if (!_trackPointer && held < (_trackView ? 0.3 : 0.35) && !_menuOpen) {
+                if (!_trackPointer && held < DMDesktopHoldToTake(_trackView != nil) && !_menuOpen) {
 #if DEBUG
                     if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[desktop] moved %.2f s after touching down, as a finger: a swipe, left to the page", held]);
 #endif
                     _track = nil; continue;
                 }
-                if (_holdMenu) { _holdMenu = NO; DMCloseOverlay(); }   // (our menu of this hold goes: the finger moved on, it drags)
+                // (our menu of this hold goes: the finger moved on, it drags -- out of sight at once, not fading over the drag's first frames: 1.7.7 fix
+                //  round, the menu must never show once a move has started)
+                if (_holdMenu) { _holdMenu = NO; gOverlay.alpha = 0.0; DMCloseOverlay(); }
                 BOOL menuUp = _menuOpen != nil;
                 [_menuOpen dismissMenu];   // (an open menu closes the way UIKit closes it; one not open yet never opens: its gestures let go below)
                 for (UIGestureRecognizer *o in [t.gestureRecognizers copy]) if (![o.name hasPrefix:@"dm."] && o.enabled && !(menuUp && [_menuGRs containsObject:o])) { o.enabled = NO; o.enabled = YES; }   // (it is ours now)
@@ -1516,7 +1566,13 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
                     [self dm_bandBeginAt:[self convertPoint:_trackDown fromCoordinateSpace:(self.window.screen ?: [UIScreen mainScreen]).coordinateSpace] add:add];
                 } else { _track = nil; continue; }
             }
-            if (_trackMode == 1) DMFinderDragMove(sp, option);
+            if (_trackMode == 1) {
+#if DEBUG
+                CFTimeInterval t0 = CACurrentMediaTime(); DMFinderDragMove(sp, option); DMFDRecMove(CACurrentMediaTime() - t0);   // (/tmp/msb-dragrec: each move's time)
+#else
+                DMFinderDragMove(sp, option);
+#endif
+            }
             else if (_trackMode == 2) [self dm_bandTo:[self convertPoint:sp fromCoordinateSpace:(self.window.screen ?: [UIScreen mainScreen]).coordinateSpace]];
         } else if (t.phase == UITouchPhaseEnded || t.phase == UITouchPhaseCancelled) {
             int mode = _trackMode;
@@ -1525,6 +1581,17 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
             else if (mode == 2) [self dm_bandEnd];
         }
     }
+}
+// A gesture of the Home Screen's asks to begin (dock/Dock.x: the search view's -- the Dock's swipe down that opens the App Library, Spotlight's pull):
+// is its touch the desktop's? The finger followed above once held long enough that a move is the desktop's, a pointer's press at once, and one already
+// dragging, drawing the rectangle or holding its menu. UIKit's pans begin a few points before -dm_event: takes a move (10 pt), so the swipe down was
+// decided first: a finger held 0.35-0.45 s and then moved down drew the rectangle and opened the App Library too (1.7.7 fix round, both iPads; held
+// longer, the hold's menu had already made the other gestures let go).
+- (BOOL)dm_touchIsOursFor:(UIGestureRecognizer *)g {
+    UITouch *t = _track;
+    if (!t || ![t.gestureRecognizers containsObject:g]) return NO;
+    if (_trackMode || _holdMenu || _trackPointer) return YES;
+    return CACurrentMediaTime() - _trackAt >= DMDesktopHoldToTake(_trackView != nil);
 }
 // ---- rename in place ----
 - (void)dm_beginRename:(NSString *)path {

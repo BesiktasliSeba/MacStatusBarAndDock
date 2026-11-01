@@ -19,6 +19,7 @@
 #import <AudioToolbox/AudioToolbox.h>   // (the "Trash emptied" sound, DMTrashEmptiedSound)
 #import "../common/DriveEject.h"        // (a drive's name, MSBDDriveName: its volume's label, not the folder it is mounted on -- 1.7.3)
 #include "FinderApps.h"   // (Applications: each row is the app's .app, not its bundle container -- Foundation only, tools/test-finderapps.sh; 1.7.6)
+#include "FinderIPA.h"    // (an app shared or handed over goes as an .ipa: its name, Payload layout, FairPlay check -- tools/test-finderipa.sh; 1.7.7)
 
 static NSString *const kFinderTrash = @"/var/mobile/.Trash";
 static NSString *const kFinderLiveFiles = @"/var/mobile/Library/LiveFiles";   // (external drives: <LiveFiles>/<provider>/<volume>, see DMFinderDrives)
@@ -1136,6 +1137,8 @@ static void DMFinderOpen(NSString *path, BOOL newWindow);
 @property (nonatomic, copy) void (^answered)(BOOL ok);
 @property (nonatomic) BOOL finished, option;
 @property (nonatomic) BOOL share;   // (Share…: the app puts it where its typing is -- the cursor, or the end of the text -- not at the drop point)
+@property (nonatomic) BOOL asked;   // (its folders and apps counted and asked about already: Share does that before it opens the app, DMFDAskFirst)
+@property (nonatomic) BOOL told;    // (it stopped with its own word -- a sheet saying why, or the user's Cancel --: Share adds no sheet of its own)
 @property (atomic) BOOL cancelled;
 @property (atomic, strong) NSFileCoordinator *zipper;
 @property (nonatomic, copy) NSString *springFolder;
@@ -1149,10 +1152,13 @@ static void DMFinderOpen(NSString *path, BOOL newWindow);
 @property (nonatomic) NSInteger trashKind;       // (1.7.0: what a drop on the Dock's Trash does with these items, common/DockTrash.h; -1 until first asked)
 @property (nonatomic) BOOL ejectShown;           // (the Dock's Trash shows Eject for this drag of drives)
 @property (nonatomic) BOOL overDock;             // (over a Dock icon that takes drops -- the Trash, the Downloads stack: the picture rides above the finger)
+@property (nonatomic) BOOL movedAway;            // (the drop moves the items out of their folder -- into another one, the Trash: the desktop shows them gone)
 @end
 @implementation DMFDrag
 @end
 static DMFDrag *gFD;          // the drag under way, or the last one while it waits for its app's answer
+// (the drag under way has its picture in the menu window: the window stays shown for it when a menu goes -- StatusBar.x, DMCloseOverlay)
+static BOOL DMFDPictureInMenuWindow(void) { return gFD && !gFD.finished && gFD.tile && gMenuWindow && gFD.tile.window == gMenuWindow; }
 // The Dock's Trash as a drop target (1.7.0, statusbar/DockTrash.h, after this file): the bin under a point, its look while a drag is over it, the
 // drop itself (Move to Trash, or the drives ejected), and the Eject sign for a drag of drives.
 static UIView *DMFDTrashIconAt(CGPoint sp);
@@ -1232,13 +1238,27 @@ static NSURL *DMFDContainer(NSString *bundle) {
     id url = [proxy respondsToSelector:NSSelectorFromString(@"dataContainerURL")] ? [proxy valueForKey:@"dataContainerURL"] : nil;
     return [url isKindOfClass:[NSURL class]] ? url : nil;
 }
-static NSString *DMFDHandName(DMFinderItem *it) { return it.dir ? [it.name stringByAppendingPathExtension:@"zip"] : it.name; }
+// An app -- an Applications row, any .app folder -- goes as an .ipa (FinderIPA.h, 1.7.7): "<App name> <version>.ipa", the name the iPad shows for
+// it (LaunchServices', when its bundle id is installed: also for a copy of it), else its Info.plist's. A folder goes as a zip, a file as it is.
+static BOOL DMFDIsApp(DMFinderItem *it) { return it.dir && (it.app.length || [it.name hasSuffix:@".app"]); }
+static NSString *DMFDIPAName(DMFinderItem *it) {
+    NSString *app = DMFinderReal(it.path);
+    NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:[app stringByAppendingPathComponent:@"Info.plist"]];
+    NSString *bid = [info[@"CFBundleIdentifier"] isKindOfClass:[NSString class]] ? info[@"CFBundleIdentifier"] : nil;
+    NSString *shown = bid.length && DMAppInstalled(bid) ? DMCall(DMProxyForBundle(bid), @"localizedName") : nil;
+    return DMFinderIPAFileName(DMFinderIPAAppName(info, app, shown), DMFinderIPAVersion(info));
+}
+static NSString *DMFDHandName(DMFinderItem *it) { return DMFDIsApp(it) ? DMFDIPAName(it) : it.dir ? [it.name stringByAppendingPathExtension:@"zip"] : it.name; }
 static NSString *DMFDUTI(DMFinderItem *it) {
+    if (DMFDIsApp(it)) return DMFinderIPATypes().firstObject;   // (Apple's type for an .ipa when this iPad knows it; else what ".ipa" is here -- on the iPad 2, Filza's)
     if (it.dir) return UTTypeZIP.identifier;
     NSString *real = DMFinderReal(it.path);
     UTType *t = [UTType typeWithFilenameExtension:real.pathExtension];
     return t.identifier ?: UTTypeData.identifier;
 }
+// Every type the item is offered as, its own first: an .ipa also as a zip named .ipa (FinderIPA.h DMFinderIPATypes) -- Files refused the .ipa's own
+// bare-data types and named a plain zip "Tips 9.0.zip" (iPad 2 1.7.7).
+static NSArray<NSString *> *DMFDUTIs(DMFinderItem *it) { return DMFDIsApp(it) ? DMFinderIPATypes() : @[DMFDUTI(it)]; }
 // The descriptor in the app's container: which drag (token), which of its windows (scene), and the files -- their names and types while the
 // finger passes over (hover), their staged paths once dropped (ready).
 static BOOL DMFDDescribe(DMFDrag *d, NSString *bundle, NSString *scene, NSArray<NSDictionary *> *staged) {
@@ -1246,7 +1266,7 @@ static BOOL DMFDDescribe(DMFDrag *d, NSString *bundle, NSString *scene, NSArray<
     if (!c) { DMLog([NSString stringWithFormat:@"[finder] drag: no data container for %@", bundle]); return NO; }
     NSMutableArray *items = [NSMutableArray array];
     if (staged) [items addObjectsFromArray:staged];
-    else for (DMFinderItem *it in d.items) [items addObject:@{@"name": DMFDHandName(it), @"uti": DMFDUTI(it)}];
+    else for (DMFinderItem *it in d.items) [items addObject:@{@"name": DMFDHandName(it), @"uti": DMFDUTI(it), @"utis": DMFDUTIs(it)}];
     NSMutableDictionary *desc = [@{@"token": @(d.token), @"items": items, @"ready": @(staged != nil)} mutableCopy];
     if (scene.length) desc[@"scene"] = scene;
     if (d.share) desc[@"share"] = @YES;
@@ -1314,7 +1334,7 @@ static void DMFDReleasePicture(DMFDrag *d) {
     if (!tile || tile.window != gMenuWindow) return;
     d.tile = nil; d.badge = nil;
     [UIView animateWithDuration:0.15 animations:^{ tile.alpha = 0; tile.transform = CGAffineTransformMakeScale(0.6, 0.6); } completion:^(BOOL f) { [tile removeFromSuperview]; }];
-    if (!gOverlay && gMenuWindow) gMenuWindow.hidden = YES;
+    if (!gOverlay && gMenuWindow && !DMFDPictureInMenuWindow()) gMenuWindow.hidden = YES;
     DMLog(@"[finder] drop: the picture leaves the menu window at once (the window is hidden again)");
 }
 static CGPoint DMFDHostPoint(UIView *host, CGPoint sp) {
@@ -1413,8 +1433,51 @@ static void DMFDSweep(void) {
         if (n) DMLog([NSString stringWithFormat:@"[finder] drag: %d staged folders left from before were removed", n]);
     });
 }
+#if DEBUG
+// /tmp/msb-dragrec (debug, 1.7.7 item 6): a drag's picture looked at every display frame -- shown or not, where it is, the gap since the frame
+// before (a late frame: the main thread held up) -- and each move's time on the main thread; one line when the drag ends (the frames too with
+// /tmp/msb-dragrec-frames).
+@interface DMFDRec : NSObject
+@property (nonatomic, strong) CADisplayLink *link;
+@property (nonatomic, strong) NSMutableArray<NSString *> *rows;
+@property (nonatomic) CFTimeInterval t0, lastFrame, moveSum, moveMax, gapMax;
+@property (nonatomic) NSInteger moves, frames, hidden, late;
+@end
+@implementation DMFDRec
+- (void)tick:(CADisplayLink *)l {
+    UIView *tile = gFD.tile;
+    CFTimeInterval now = CACurrentMediaTime(), gap = _lastFrame ? now - _lastFrame : 0; _lastFrame = now;
+    _frames++; if (gap > _gapMax) _gapMax = gap; if (gap > 0.0125) _late++;   // (late: more than a 120 Hz frame, 8.3 ms, and some slack)
+    BOOL shown = tile.window && !tile.window.hidden && tile.alpha > 0.01;
+    if (!shown) _hidden++;
+    CGPoint at = CGPointZero;
+    if (tile.superview) { CALayer *p = tile.layer.presentationLayer ?: tile.layer; at = tile.superview == gMenuRotator ? p.position : [tile.superview convertPoint:p.position toCoordinateSpace:(tile.window.screen ?: [UIScreen mainScreen]).coordinateSpace]; }
+    if (_rows.count < 600) [_rows addObject:[NSString stringWithFormat:@"%.1f %@ %.0f,%.0f gap %.1f", (now - _t0) * 1000.0, shown ? @"shown" : @"HIDDEN", at.x, at.y, gap * 1000.0]];
+}
+@end
+static DMFDRec *gFDRec;
+static void DMFDRecStart(void) {
+    [gFDRec.link invalidate]; gFDRec = nil;
+    if (!DMTestFlag("/tmp/msb-dragrec")) return;
+    DMFDRec *r = [DMFDRec new]; r.rows = [NSMutableArray array]; r.t0 = CACurrentMediaTime();
+    r.link = [CADisplayLink displayLinkWithTarget:r selector:@selector(tick:)];
+    if (@available(iOS 15.0, *)) r.link.preferredFrameRateRange = CAFrameRateRangeMake(60, 120, 120);
+    [r.link addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+    gFDRec = r;
+}
+static void DMFDRecMove(CFTimeInterval took) { DMFDRec *r = gFDRec; if (!r) return; r.moves++; r.moveSum += took; if (took > r.moveMax) r.moveMax = took; }
+static void DMFDRecStop(void) {
+    DMFDRec *r = gFDRec; if (!r) return;
+    gFDRec = nil; [r.link invalidate];
+    DMLog([NSString stringWithFormat:@"[dragrec] %ld frames in %.0f ms (%ld with the picture hidden, %ld late, longest gap %.1f ms), %ld moves (mean %.2f ms, max %.2f ms)", (long)r.frames, (CACurrentMediaTime() - r.t0) * 1000.0, (long)r.hidden, (long)r.late, r.gapMax * 1000.0, (long)r.moves, r.moves ? r.moveSum / r.moves * 1000.0 : 0.0, r.moveMax * 1000.0]);
+    if (DMTestFlag("/tmp/msb-dragrec-frames")) DMLog([NSString stringWithFormat:@"[dragrec] frames:\n%@", [r.rows componentsJoinedByString:@"\n"]]);
+}
+#endif
 static void DMFDFinish(DMFDrag *d, BOOL ok) {
     if (!d || d.finished) return;
+#if DEBUG
+    if (gFD == d) DMFDRecStop();
+#endif
     d.finished = YES; d.cancelled = YES; [d.zipper cancel];
     DMFDIconHover(d, nil);
     if (d.ejectShown) { d.ejectShown = NO; DMFDTrashSetEject(NO); }   // (the Dock's Trash is the Trash again)
@@ -1422,7 +1485,7 @@ static void DMFDFinish(DMFDrag *d, BOOL ok) {
     BOOL inMenuWindow = tile.window && tile.window == gMenuWindow;
     [UIView animateWithDuration:ok ? 0.18 : 0.25 animations:^{ tile.alpha = 0; tile.transform = CGAffineTransformMakeScale(ok ? 0.4 : 0.8, ok ? 0.4 : 0.8); } completion:^(BOOL f) {
         [tile removeFromSuperview];
-        if (inMenuWindow && !gOverlay && gMenuWindow && !(gFD && gFD.tile.window == gMenuWindow)) gMenuWindow.hidden = YES;   // (shown for the picture only: hidden again, as after a menu)
+        if (inMenuWindow && !gOverlay && gMenuWindow && !DMFDPictureInMenuWindow()) gMenuWindow.hidden = YES;   // (shown for the picture only: hidden again, as after a menu)
     }];
     d.answered = nil;
     DMFDCleanLater(d);
@@ -1444,6 +1507,9 @@ static void DMFinderDragBegin(DMFinderWindow *from, NSArray<DMFinderItem *> *ite
     d.items = items; d.from = from; d.proposal = -1; d.trashKind = -1;
     gFDTokens = (uint16_t)(gFDTokens % 4095 + 1); d.token = gFDTokens;
     gFD = d;
+#if DEBUG
+    DMFDRecStart();
+#endif
     if (DMFDTrashDragEjects(d)) { d.ejectShown = YES; DMFDTrashSetEject(YES); }   // (a drag of drives: the Dock's Trash shows Eject, as on a Mac)
     DMFinderItem *it = items.firstObject;
     UIView *custom = gFDCustomTile; gFDCustomTile = nil;
@@ -1664,27 +1730,36 @@ static dispatch_queue_t DMFDStageQueue(void) {
     return q;
 }
 // One item into the app's container (on the stage queue): an APFS clone, else (another volume) a real copy up to the cap. A folder: zipped
-// first, in SpringBoard's tmp, the zip removed once staged. Returns the descriptor entry, or nil with *why.
+// first, in SpringBoard's tmp, the zip removed once staged. An app: the same zip of a Payload folder holding the bundle (FinderIPA.h), so the
+// .ipa's root is Payload/<Name>.app. Returns the descriptor entry, or nil with *why.
 static NSDictionary *DMFDStageItem(DMFDrag *d, DMFinderItem *it, NSString *dir, NSString **why) {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *src = DMFinderReal(it.path), *zip = nil, *name = DMFDHandName(it);
     const unsigned long long reserve = 200ULL * 1024 * 1024;   // (the iPad is never filled up for a hand-over: a full disk upsets the whole system)
     if (it.dir) {
-        unsigned long long room = DMFinderFreeSpace(NSTemporaryDirectory());
-        long long size = DMFDFolderSize(src, room);
-        if (size < 0 || (unsigned long long)size + reserve > room) { *why = [NSString stringWithFormat:@"There isn't enough free space to compress “%@”.", it.name]; return nil; }
+        BOOL app = DMFDIsApp(it);
         NSString *zdir = [[NSTemporaryDirectory() stringByAppendingPathComponent:@"msb-finder-drag"] stringByAppendingPathComponent:[NSString stringWithFormat:@"%u", d.token]];
         [fm createDirectoryAtPath:zdir withIntermediateDirectories:YES attributes:nil error:nil];
+        unsigned long long room = DMFinderFreeSpace(zdir);
+        long long size = DMFDFolderSize(src, room);
+        // (an app on another volume -- the system's own in /Applications, the jailbreak's -- can't be cloned into the Payload folder: it is copied)
+        BOOL clone = !app || DMFinderIPASameVolume(src, zdir);
+        if (size < 0 || (unsigned long long)size * (clone ? 1 : 2) + reserve > room) { [fm removeItemAtPath:zdir error:nil]; *why = [NSString stringWithFormat:@"There isn't enough free space to compress “%@”.", it.name]; return nil; }
         zip = [zdir stringByAppendingPathComponent:name];
         __block BOOL ok = NO; NSError *err = nil;
+        NSString *what = app ? DMFinderIPAStage(src, zdir, &err) : src;
+        if (!what) { [fm removeItemAtPath:zdir error:nil]; *why = [NSString stringWithFormat:@"“%@” could not be laid out as an .ipa (%@)", it.name, err.localizedDescription ?: @"?"]; return nil; }
         NSFileCoordinator *fc = [[NSFileCoordinator alloc] initWithFilePresenter:nil]; d.zipper = fc;
-        [fc coordinateReadingItemAtURL:[NSURL fileURLWithPath:src] options:NSFileCoordinatorReadingForUploading error:&err byAccessor:^(NSURL *z) {
+        [fc coordinateReadingItemAtURL:[NSURL fileURLWithPath:what] options:NSFileCoordinatorReadingForUploading error:&err byAccessor:^(NSURL *z) {
             if (!d.cancelled) ok = [fm copyItemAtURL:z toURL:[NSURL fileURLWithPath:zip] error:nil]; }];
         d.zipper = nil;
         if (!ok || d.cancelled) { [fm removeItemAtPath:zdir error:nil]; *why = d.cancelled ? @"cancelled" : [NSString stringWithFormat:@"the folder could not be compressed (%@)", err.localizedDescription ?: @"?"]; return nil; }
+        if (app) DMLog([NSString stringWithFormat:@"[finder] .ipa of %@: Payload/%@ (%@), %lld bytes in, %llu zipped", it.name, src.lastPathComponent, clone ? @"cloned" : @"copied from another volume",
+                        size, [[fm attributesOfItemAtPath:zip error:nil] fileSize]]);
         src = zip;
     }
-    NSString *dst = [dir stringByAppendingPathComponent:name];
+    NSString *dst = DMFinderStagedPath(dir, name);   // (a name there already gets " 2", " 3" ...: two copies of an app make one .ipa name, "Tips 9.0 2.ipa" -- FinderIPA.h)
+    name = dst.lastPathComponent;
     BOOL ok = clonefile(src.fileSystemRepresentation, dst.fileSystemRepresentation, 0) == 0;
     if (!ok) {   // (another volume -- the jailbreak's files --, or no clone support: a real copy, within the cap)
         struct stat st; unsigned long long size = stat(src.fileSystemRepresentation, &st) == 0 ? (unsigned long long)st.st_size : 0;
@@ -1695,7 +1770,38 @@ static NSDictionary *DMFDStageItem(DMFDrag *d, DMFinderItem *it, NSString *dir, 
     if (zip) [fm removeItemAtPath:zip.stringByDeletingLastPathComponent error:nil];
     if (!ok) return nil;
     chmod(dst.fileSystemRepresentation, 0644);
-    return @{@"path": dst, @"name": name, @"uti": DMFDUTI(it)};
+    return @{@"path": dst, @"name": name, @"uti": DMFDUTI(it), @"utis": DMFDUTIs(it)};
+}
+// Before folders or apps are handed over (a drop, or Share before it opens the app: the app's window would cover the question): the folders are
+// counted -- a huge one is refused, a big one asks first --, and an app from the App Store gets one plain line, as its copy is the buyer's
+// (FinderIPA.h): one sheet at most, the line inside the size question when there is one. go() runs when it may go on, stop(why) when not
+// ("cancelled": the user said no). Nothing runs once the drag is over -- neither: what they hold goes with them (so they never hold themselves,
+// DMFinderShareTo; a stop here would also end a drop that the next drag's app may be in, DMFDSend's 8).
+static void DMFDAskFirst(DMFDrag *d, DMFinderWindow *w, void (^go)(void), void (^stop)(NSString *why)) {
+    NSArray *paths = [d.items valueForKey:@"path"];
+    NSMutableArray<NSString *> *apps = [NSMutableArray array]; BOOL onlyApps = YES;
+    for (DMFinderItem *it in d.items) if (it.dir) { if (DMFDIsApp(it)) [apps addObject:DMFinderReal(it.path)]; else onlyApps = NO; }
+    dispatch_async(DMFDStageQueue(), ^{
+        unsigned long long total = 0; BOOL unreadable = NO;
+        for (NSString *p in paths) { BOOL isDir = NO; [[NSFileManager defaultManager] fileExistsAtPath:p isDirectory:&isDir]; if (!isDir) continue;
+                                     long long s = DMFDFolderSize(p, kFDZipCap + 1); if (s < 0) unreadable = YES; else total += (unsigned long long)s; }
+        NSUInteger store = 0; for (NSString *a in apps) if (DMFinderIPAEncrypted(a) == 1) store++;   // (the executable's load commands, read only)
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (d.finished) return;
+            NSString *size = [NSByteCountFormatter stringFromByteCount:(long long)total countStyle:NSByteCountFormatterCountStyleFile];
+            NSString *cap = [NSByteCountFormatter stringFromByteCount:(long long)kFDZipCap countStyle:NSByteCountFormatterCountStyleFile];
+            if (unreadable) { stop(onlyApps ? @"The app can't be read." : @"The folder can't be read."); return; }
+            if (total > kFDZipCap) { stop(onlyApps ? [NSString stringWithFormat:@"The app is too large to hand over as an .ipa (more than %@).", cap] : [NSString stringWithFormat:@"The folder is too large to compress and hand over (more than %@).", cap]); return; }
+            NSString *storeTitle = !store ? nil : apps.count == 1 ? @"This app is from the App Store." : store == apps.count ? @"These apps are from the App Store." :
+                                   store == 1 ? @"One of these apps is from the App Store." : [NSString stringWithFormat:@"%lu of these apps are from the App Store.", (unsigned long)store];
+            NSString *storeLine = store == 1 ? @"Its copy only opens on iPads signed in with the same Apple ID." : @"Their copies only open on iPads signed in with the same Apple ID.";
+            if (total <= kFDZipAsk && !storeTitle) { go(); return; }
+            if (total <= kFDZipAsk) { [w sheetTitle:storeTitle message:storeLine field:nil action:@"Continue" destructive:NO then:^(NSString *t) { go(); } cancel:^{ stop(@"cancelled"); }]; return; }
+            NSString *how = !onlyApps ? @"The folder is handed to the app as a zip file, made first." : apps.count == 1 ? @"The app is handed over as an .ipa file, made first." : @"The apps are handed over as .ipa files, made first.";
+            [w sheetTitle:[NSString stringWithFormat:@"Compress %@ to hand it over?", size] message:storeTitle ? [NSString stringWithFormat:@"%@ %@ %@", how, storeTitle, storeLine] : how field:nil action:@"Compress" destructive:NO
+                     then:^(NSString *t) { go(); } cancel:^{ stop(@"cancelled"); }];
+        });
+    });
 }
 // The drop on an app's window (a drag, or Share): the files are made ready off the main thread, then the app is told to drop them at the point
 // in that scene. done(ok) runs once the app answered (NO: not taken, no answer, or nothing could be handed over).
@@ -1705,7 +1811,8 @@ static void DMFDHandOver(DMFDrag *d, NSString *bundle, NSString *scene, CGPoint 
     void (^fail)(NSString *) = ^(NSString *why) {   // (a sheet only for what the user can act on: too large, not downloaded; an app that takes no files just doesn't, as on a Mac)
         DMLog([NSString stringWithFormat:@"[finder] drop into %@: not handed over (%@)", bundle, why]);
         DMFDSend(bundle, CGPointZero, 8);
-        if (why.length && ![why isEqualToString:@"cancelled"] && ![why hasPrefix:@"the app"]) [w sheetTitle:@"The item couldn't be handed over" message:why field:nil action:@"OK" destructive:NO then:^(NSString *t) {}];
+        d.told = why.length && ![why hasPrefix:@"the app"];
+        if (d.told && ![why isEqualToString:@"cancelled"]) [w sheetTitle:@"The item couldn't be handed over" message:why field:nil action:@"OK" destructive:NO then:^(NSString *t) {}];
         DMFDFinish(d, NO); if (done) done(NO);
     };
     for (DMFinderItem *it in d.items) if (it.cloud) { fail([NSString stringWithFormat:@"“%@” is in iCloud and not downloaded yet. Open it first to download it.", it.name]); return; }
@@ -1715,8 +1822,8 @@ static void DMFDHandOver(DMFDrag *d, NSString *bundle, NSString *scene, CGPoint 
     if (!d.containers) d.containers = [NSMutableSet set];
     [d.containers addObject:c.path];
     BOOL folders = NO; for (DMFinderItem *it in d.items) if (it.dir) folders = YES;
-    DMFDBusy(d, folders ? @"Compressing…" : nil);
     void (^stage)(void) = ^{
+        DMFDBusy(d, folders ? @"Compressing…" : nil);   // (once it is made, not while a question is up: an App Store app's drop asks first)
         dispatch_async(DMFDStageQueue(), ^{
             NSMutableArray *staged = [NSMutableArray array]; NSString *why = nil;
             [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
@@ -1742,22 +1849,8 @@ static void DMFDHandOver(DMFDrag *d, NSString *bundle, NSString *scene, CGPoint 
             });
         });
     };
-    if (!folders) { stage(); return; }
-    NSArray *paths = [d.items valueForKey:@"path"];
-    dispatch_async(DMFDStageQueue(), ^{   // (a folder: counted first -- a big one asks, a huge one is refused)
-        unsigned long long total = 0; BOOL unreadable = NO;
-        for (NSString *p in paths) { BOOL isDir = NO; [[NSFileManager defaultManager] fileExistsAtPath:p isDirectory:&isDir]; if (!isDir) continue;
-                                     long long s = DMFDFolderSize(p, kFDZipCap + 1); if (s < 0) unreadable = YES; else total += (unsigned long long)s; }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (d.finished) return;
-            NSString *size = [NSByteCountFormatter stringFromByteCount:(long long)total countStyle:NSByteCountFormatterCountStyleFile];
-            if (unreadable) { fail(@"The folder can't be read."); return; }
-            if (total > kFDZipCap) { fail([NSString stringWithFormat:@"The folder is too large to compress and hand over (more than %@).", [NSByteCountFormatter stringFromByteCount:(long long)kFDZipCap countStyle:NSByteCountFormatterCountStyleFile]]); return; }
-            if (total <= kFDZipAsk) { stage(); return; }
-            [w sheetTitle:[NSString stringWithFormat:@"Compress %@ to hand it over?", size] message:@"The folder is handed to the app as a zip file, made first." field:nil action:@"Compress" destructive:NO
-                     then:^(NSString *t) { stage(); } cancel:^{ fail(@"cancelled"); }];
-        });
-    });
+    if (!folders || d.asked) { stage(); return; }
+    DMFDAskFirst(d, w, stage, fail);   // (a folder or an app: counted first, asked about when it must be)
 }
 // A drop into a folder (a Finder window's, the Dock's Downloads stack, the desktop): moved there, or copied (Option, or from a read-only place),
 // through `host`'s file operations -- the policy, Undo, and its sheets for what goes wrong.
@@ -1767,6 +1860,7 @@ static void DMFDDropInto(DMFDrag *d, NSString *dest, DMFinderWindow *host, NSStr
     if (!DMFDMayDrop(d, dest, copy)) { DMLog(@"[finder] drop: refused (the folder, or an item, is outside the user's places)"); DMFDFinish(d, NO); return; }   // (the "no" badge showed it: the picture just goes back)
     if (!host) { DMLog(@"[finder] drop: no Finder to do it"); DMFDFinish(d, NO); return; }
     DMLog([NSString stringWithFormat:@"[finder] drop: %@ into %@", copy ? @"copied" : @"moved", where]);
+    d.movedAway = !copy;
     DMFDFinish(d, YES);
     [host dm_moveItems:[d.items valueForKey:@"path"] to:dest copy:copy];
 }
@@ -1875,32 +1969,45 @@ static void DMFinderShareTo(NSArray<DMFinderItem *> *items, NSString *bundle, DM
     d.items = items; d.from = from; d.proposal = -1; d.share = YES;
     gFDTokens = (uint16_t)(gFDTokens % 4095 + 1); d.token = gFDTokens;
     gFD = d;
-    __block int tries = 0; __block void (^attempt)(void);
+    // (the wait for the app's window is held by its own pending retry only, and the window weakly: a retry that held itself kept this record, its
+    //  items and the window for good whenever the share ended without its go or stop -- a drag begun while its folders were counted (DMFDAskFirst
+    //  then runs neither), a question that went without an answer (the screen going off closes a question outside a window): the 1.7.7 code
+    //  review's N1. A sheet in the window holds the first step; the window no longer holds itself through it.)
+    __weak DMFinderWindow *wfrom = from;
+    __block int tries = 0; __block __weak void (^again)(void) = nil;
     void (^a)(void) = ^{
-        if (d.finished) { attempt = nil; return; }
+        if (d.finished) return;
         NSString *sceneId = nil;
         UIView *v = DMFDSceneViewOf(bundle, &sceneId);
         if (!v) {
             if (tries == 0) DMOpenApp(bundle);
-            if (++tries > 40) { DMLog([NSString stringWithFormat:@"[finder] share to %@: its window never appeared", bundle]); DMFDFinish(d, NO); attempt = nil; return; }
-            void (^n)(void) = attempt;
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), n);
+            if (++tries > 40) { DMLog([NSString stringWithFormat:@"[finder] share to %@: its window never appeared", bundle]); DMFDFinish(d, NO); return; }
+            void (^n)(void) = again;   // (this very step: alive while it runs)
+            if (n) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), n);
             return;
         }
-        attempt = nil;
         CGPoint mid = CGPointMake(CGRectGetMidX(v.bounds), CGRectGetMidY(v.bounds));
         d.app = bundle; d.scene = sceneId;
         if (!DMFDDescribe(d, bundle, sceneId, nil)) { DMFDFinish(d, NO); return; }
         DMFDSend(bundle, mid, 6);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            DMFDHandOver(d, bundle, sceneId, mid, from, 2.5, ^(BOOL ok) {
-                DMLog([NSString stringWithFormat:@"[finder] share to %@: %@", bundle, ok ? @"taken" : @"not taken"]);
-                if (!ok) [from sheetTitle:[NSString stringWithFormat:@"%@ didn't take the file", DMCall(DMProxyForBundle(bundle), @"localizedName") ?: bundle] message:@"Open the place in the app where it should go (a note, a message, a folder), then share again or drag the file there." field:nil action:@"OK" destructive:NO then:^(NSString *t) {}];
+            DMFDHandOver(d, bundle, sceneId, mid, wfrom, 2.5, ^(BOOL ok) {
+                DMLog([NSString stringWithFormat:@"[finder] share to %@: %@", bundle, ok ? @"taken" : d.told ? @"stopped (said why)" : @"not taken"]);
+                // (not when the hand-over stopped with its own word: this sheet replaced its "couldn't be handed over", or followed a Cancel)
+                if (!ok && !d.told) [wfrom sheetTitle:[NSString stringWithFormat:@"%@ didn't take the file", DMCall(DMProxyForBundle(bundle), @"localizedName") ?: bundle] message:@"Open the place in the app where it should go (a note, a message, a folder), then share again or drag the file there." field:nil action:@"OK" destructive:NO then:^(NSString *t) {}];
             });
         });
     };
-    attempt = a;
-    a();
+    again = a;
+    BOOL folders = NO; for (DMFinderItem *it in items) if (it.dir) folders = YES;
+    if (!folders) { a(); return; }
+    // (a folder or an app: counted, and an App Store app's line said, here over this window before the app opens -- its window would cover the
+    //  question; the hand-over doesn't ask again)
+    DMFDAskFirst(d, from, ^{ d.asked = YES; a(); }, ^(NSString *why) {
+        DMLog([NSString stringWithFormat:@"[finder] share to %@: not handed over (%@)", bundle, why]);
+        if (![why isEqualToString:@"cancelled"]) [wfrom sheetTitle:@"The item couldn't be handed over" message:why field:nil action:@"OK" destructive:NO then:^(NSString *t) {}];
+        DMFDFinish(d, NO);
+    });
 }
 // ---- a Mac context menu in the native layer -----------------------------------------------------------------------------------------------
 // A UIMenu drawn as our menus are (DMMakePanel rows over a catch-all that closes it): inline groups between divider lines, a submenu (Share) as a
@@ -2915,6 +3022,46 @@ static void DMFinderDrivesCheck(NSString *why);
     NSArray *sel = [self dm_selectedPaths];
     DMLog([NSString stringWithFormat:@"[finder] test: %@ %@ (selected %@)", act, arg ?: @"", [[sel valueForKey:@"lastPathComponent"] componentsJoinedByString:@", "]]);
     if ([act isEqualToString:@"select"]) [self dm_selectNamed:arg];
+    else if ([act isEqualToString:@"selectmany"]) {   // selectmany:<name>|<name>...: those items selected together (1.7.7)
+        NSArray *names = [arg componentsSeparatedByString:@"|"]; NSMutableArray *paths = [NSMutableArray array];
+        for (DMFinderItem *it in _items) if ([names containsObject:it.name]) [paths addObject:it.path];
+        [self dm_setSelection:paths anchor:paths.firstObject];
+    }
+    else if ([act isEqualToString:@"menu"]) {   // menu:<name>[|<row>/<row>]: that item's menu as a hold opens it (the selection kept when the item is in it): its rows logged, one run
+        NSArray *q = [arg componentsSeparatedByString:@"|"]; NSUInteger i = [_items indexOfObjectPassingTest:^BOOL(DMFinderItem *x, NSUInteger n, BOOL *stop) { return [x.name isEqualToString:q[0]]; }];
+        UIView *v = _list.hidden ? (UIView *)_grid : (UIView *)_list;
+        CGRect r = i == NSNotFound ? CGRectNull : v == _list ? [_list rectForRowAtIndexPath:[NSIndexPath indexPathForRow:i inSection:0]] : [_grid layoutAttributesForItemAtIndexPath:[NSIndexPath indexPathForItem:i inSection:0]].frame;
+        if (CGRectIsNull(r)) { DMLog([NSString stringWithFormat:@"[finder] test menu: no item %@", q[0]]); return; }
+        if (![self dm_isSelected:_items[i]]) [self dm_setSelection:@[_items[i].path] anchor:_items[i].path];
+        UIMenu *m = [self dm_menuIn:v at:CGPointMake(CGRectGetMidX(r), CGRectGetMidY(r))];
+        __block UIAction *run = nil; NSArray *want = q.count > 1 ? [q[1] componentsSeparatedByString:@"/"] : nil;
+        NSString *(^rows)(UIMenu *, NSUInteger); __block __weak NSString *(^weakRows)(UIMenu *, NSUInteger);   // (it walks its submenus: itself, weakly)
+        weakRows = rows = ^NSString *(UIMenu *mm, NSUInteger depth) {
+            NSMutableArray *t = [NSMutableArray array];
+            for (UIMenuElement *e in mm.children) {
+                BOOL inl = [e isKindOfClass:[UIMenu class]] && (((UIMenu *)e).options & UIMenuOptionsDisplayInline);
+                BOOL on = depth < want.count && [e.title isEqualToString:want[depth]];
+                if ([e isKindOfClass:[UIMenu class]]) [t addObject:inl ? weakRows((UIMenu *)e, depth) : [NSString stringWithFormat:@"%@ › [%@]", e.title, on || !want ? weakRows((UIMenu *)e, depth + 1) : @"…"]];
+                else { UIAction *a = (UIAction *)e; [t addObject:[NSString stringWithFormat:@"%@%@", a.title, (a.attributes & UIMenuElementAttributesDisabled) ? @" (off)" : @""]]; if (on && depth + 1 == want.count) run = a; }
+            }
+            return [t componentsJoinedByString:depth || !mm.title.length ? @", " : @" | "];
+        };
+        NSMutableArray *groups = [NSMutableArray array]; for (UIMenuElement *g in m.children) [groups addObject:[g isKindOfClass:[UIMenu class]] ? rows((UIMenu *)g, 0) : g.title];
+        DMLog([NSString stringWithFormat:@"[finder] test menu of %@ (%lu selected): %@", q[0], (unsigned long)[self dm_selectedItems].count, [groups componentsJoinedByString:@" | "]]);
+        if (want) { DMLog([NSString stringWithFormat:@"[finder] test menu: %@ %@", q[1], run ? @"run" : @"not found"]); if (run) DMFinderRunAction(run); }
+    }
+    else if ([act isEqualToString:@"shareops"]) {   // shareops:<name>|<bundle>: Share as the desktop's menu does it (from Finder's operations host: its sheets over everything)
+        NSArray *q = [arg componentsSeparatedByString:@"|"];
+        for (DMFinderItem *it in _items) if (q.count == 2 && [it.name isEqualToString:q[0]]) { DMFinderShareTo(@[DMFinderItemFor(it.path) ?: it], q[1], DMFinderOps()); return; }
+        DMLog(@"[finder] test shareops: want <name>|<bundle> of an item here");
+    }
+    else if ([act isEqualToString:@"ipainfo"]) {   // ipainfo:<name>: what Share hands over for that item (an app: its .ipa's name and type, FairPlay)
+        for (DMFinderItem *it in _items) if ([it.name isEqualToString:arg]) {
+            DMLog([NSString stringWithFormat:@"[finder] test ipainfo %@: app %d, hands over \"%@\" (%@), FairPlay %d, Payload/%@, same volume as tmp %d", it.name, DMFDIsApp(it), DMFDHandName(it), DMFDUTI(it),
+                   DMFDIsApp(it) ? DMFinderIPAEncrypted(DMFinderReal(it.path)) : -2, DMFinderReal(it.path).lastPathComponent, DMFinderIPASameVolume(DMFinderReal(it.path), NSTemporaryDirectory())]);
+            return;
+        }
+    }
     else if ([act isEqualToString:@"trash"]) [self dm_trashSelected];
     else if ([act isEqualToString:@"putback"]) [self dm_putBackItems:sel];
     else if ([act isEqualToString:@"dup"]) [self dm_duplicateSelected];
@@ -3478,8 +3625,8 @@ static NSString *DMFinderResolveTyped(NSString *p) {
         NSArray<DMFinderItem *> *many = (it && [w dm_isSelected:it] && [w dm_selectedItems].count > 1) ? [w dm_selectedItems] : nil;
         if (many) {   // (the item is one of several selected: the menu acts on them all, as on a Mac)
             NSArray<NSString *> *paths = [many valueForKey:@"path"];
-            BOOL canChange = YES, files = YES, inTrash = YES, ownTrash = YES;
-            for (DMFinderItem *x in many) { canChange = canChange && DMFinderCanChange(x.path); files = files && !x.dir && !x.cloud; inTrash = inTrash && DMFinderInTrash(x.path); ownTrash = ownTrash && DMFinderInOwnTrash(x.path); }
+            BOOL canChange = YES, files = YES, inTrash = YES, ownTrash = YES;   // (files: files and apps only -- an app goes as an .ipa; a plain folder has no Share here)
+            for (DMFinderItem *x in many) { canChange = canChange && DMFinderCanChange(x.path); files = files && (!x.dir || DMFDIsApp(x)) && !x.cloud; inTrash = inTrash && DMFinderInTrash(x.path); ownTrash = ownTrash && DMFinderInOwnTrash(x.path); }
             NSString *n = [NSString stringWithFormat:@"%lu Items", (unsigned long)many.count];
             [top addObject:A(@"Open", nil, ^{ [w dm_openSelected]; })];
             UIAction *du = A(@"Duplicate", @"plus.square.on.square", ^{ [w dm_duplicateItems:paths]; }); if (![w dm_canWriteHere]) du.attributes = UIMenuElementAttributesDisabled; [mid addObject:du];
@@ -3504,7 +3651,7 @@ static NSString *DMFinderResolveTyped(NSString *p) {
             [mid addObject:A(@"Copy", @"doc.on.doc", ^{ gFinderClipboard = [@[it.path] mutableCopy]; })];
             if (it.cloud) [top addObject:A(@"Download Now", @"icloud.and.arrow.down", ^{ [w dm_download:it]; })];
             [mid addObject:A(@"Copy Path", @"link", ^{ [UIPasteboard generalPasteboard].string = it.path; })];
-            if (!it.dir && !it.cloud) {
+            if ((!it.dir || DMFDIsApp(it)) && !it.cloud) {   // (a file, or an app -- an Applications row, any .app --: handed over as an .ipa, 1.7.7)
                 NSMutableArray *targets = [NSMutableArray array];
                 for (NSString *b in DMFinderShareApps()) {
                     NSString *name = DMCall(DMProxyForBundle(b), @"localizedName") ?: b;

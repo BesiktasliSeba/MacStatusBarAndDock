@@ -19,6 +19,8 @@
 #import "../SMSwitchOn.h"   // (DMSMConsentFrom: the stored Stage Manager answers, read as SpringBoard reads them)
 #import "../../common/MenuBarSize.h"   // (Menu Bar Size, 1.7.3: the stored value read as SpringBoard reads it)
 #import "../../common/DesktopIconSize.h"   // (the desktop's Icon Size, 1.7.5: its range, steps and the size in force, as SpringBoard reads them)
+#import "../../common/PrewarmArmed.h"   // (Prewarm Apps, 1.7.7: offered only where the prewarm block in dasd is armed)
+#import "../../common/PrewarmDefault.h"   // (Prewarm Apps, 1.7.7: never set, off on a 2 GB iPad and on with more, as SpringBoard reads it)
 @interface PSListController (MSBURL)
 - (void)handleURL:(NSDictionary *)url withCompletion:(id)completion;   // (Settings' link to a place on a page: -handleURL:withCompletion: below)
 @end
@@ -427,6 +429,16 @@ static double MSBDesktopIconShownNow(void) {
 // (each read is a round trip to the preferences daemon, many a second -- 1.7.5 review). 0: "the Home Screen's", nothing stored.
 static double gMSBDesktopIconWritten = -1;
 
+// Prewarm Apps as SpringBoard reads it (common/PrewarmDefault.h): a boolean stored, else the default for this iPad's RAM -- off with 2 GB (1.7.7).
+// The switch shows that (-readPreferenceValue: below); the default is never written, only a tap stores a value.
+static BOOL MSBPrewarmAppsInForce(void) {
+	CFPreferencesAppSynchronize(kMSBBarDomain);
+	CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("prewarmApps"), kMSBBarDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+	int stored = MSBDPrewarmAppsStored(v);
+	if (v) CFRelease(v);
+	return MSBDPrewarmAppsOn(stored, MSBDPrewarmRAM()) != 0;
+}
+
 // ---- Menu Bar Size (1.7.3, common/MenuBarSize.h): a "Menu Bar Size" row (Small / Medium / Large) in the Status Bar group, opening a three-item picker
 // page (Root.plist: PSLinkListCell, PSListItemsController, key menuBarSize, validValues 0 / 1 / 2). Stored as a number, so the crash guard can set it
 // back as it does a switch (false): -readPreferenceValue: below shows anything that is not 1 or 2 as Small, as SpringBoard reads it
@@ -449,6 +461,7 @@ static int MSBMenuBarSizeStored(void) {
 - (BOOL)msb_windowsPage;
 - (BOOL)msb_desktopPage;
 - (BOOL)msb_rootPage;
+- (void)msb_prewarmMaybeChanged;
 @end
 // The Windows & Multitasking row is in Settings' list next to ours (StatusBarSettingsRow.x: the sidebar on 15-17, General's group on 18). Where it is
 // not -- the row tweak not loaded, or Settings' list not as expected, so this page came from PreferenceLoader's entry --, a link to that page takes
@@ -476,6 +489,7 @@ static BOOL MSBFinderStored(void) {
 @implementation MSBRootListController {
 	int _msbConsentToken, _msbSMOnToken;   // (Stage Manager's state and the consent answers, followed while the page exists)
 	NSMutableArray *_msbApplePages;   // (the Windows & Multitasking page: Apple's pages whose rows it shows, never shown themselves -- AppleMultitasking.h)
+	BOOL _msbPrewarmShown;   // (the Windows & Multitasking page: whether the prewarm block was armed when the list was built -- msb_prewarmMaybeChanged)
 }
 - (NSString *)msb_plistName { return @"Root"; }
 - (BOOL)msb_windowsPage { return NO; }
@@ -934,6 +948,19 @@ static void MSBFitValueLabels(UIView *v) {
 			}
 			_specifiers = kept;
 		}
+		// Prewarm Apps (1.7.5) works only through the prewarm block in dasd: its group, footer and switch are left out where the block is not armed
+		// -- dasd's record of its last start, or no quit set kept by SpringBoard (common/PrewarmArmed.h) --, as the switch would do nothing there
+		// (1.7.7 item 5). The Settings search leaves the row out the same way (common/TweakSpotlight.h MTSShownRows).
+		if ([self msb_windowsPage]) {
+			_msbPrewarmShown = MSBDPrewarmAppsShown() != 0;
+			NSMutableArray *kept = [NSMutableArray array];
+			BOOL hiding = NO;
+			for (PSSpecifier *sp in _specifiers) {
+				if (sp.cellType == PSGroupCell) hiding = !_msbPrewarmShown && [sp.identifier isEqualToString:@"PREWARM_GROUP"];
+				if (!hiding) [kept addObject:sp];
+			}
+			_specifiers = kept;
+		}
 		// Single Mute installed and switched on: it shows the mute icon and ours steps aside (OtherTweaks.h), so the switch says who does it.
 		NSString *muteBy = MSBDOtherTweakDoing(kMSBDDupMuteIcon, NO);
 		if (muteBy) for (PSSpecifier *spec in _specifiers) if ([spec.identifier isEqualToString:@"AUDIO_GROUP"])
@@ -1085,12 +1112,21 @@ static void MSBFitValueLabels(UIView *v) {
 	}
 }
 
+// Back on the Windows & Multitasking page: Prewarm Apps comes or goes when the prewarm block's state changed since the list was built (a dasd
+// started again since, the quit set's file gone or back: common/PrewarmArmed.h) -- the list built again, as the Desktop page does for its note.
+- (void)msb_prewarmMaybeChanged {
+	if (!_specifiers || ![self msb_windowsPage] || (MSBDPrewarmAppsShown() != 0) == _msbPrewarmShown) return;
+	_specifiers = nil;
+	[self reloadSpecifiers];
+}
+
 // The saved engine can name one this device does not offer (MilkyWay4 saved before an update to iPadOS 16, or an engine since removed): the tweak
 // then runs the default one (DMActiveEngine / MSBDDefaultEngine), so that is the one shown as picked (an untested Aerial too: "Untested, Runs on Its Own").
 - (id)readPreferenceValue:(PSSpecifier *)specifier {
 	if ([[specifier propertyForKey:@"key"] isEqual:@"stockStatusBar"]) return MSBStockBarStored() ? @"stock" : @"mac";   // the row and its picker page show/pick these two strings
 	if ([[specifier propertyForKey:@"key"] isEqual:@(kMSBDMenuBarSizeKey)]) return @(MSBMenuBarSizeStored());   // (0 / 1 / 2: the crash guard's false is Small)
 	if ([[specifier propertyForKey:@"key"] isEqual:@MSBD_DESKTOP_ICON_KEY]) return @(MSBDesktopIconShownNow());   // (never set: the Home Screen's size, as SpringBoard uses it)
+	if ([[specifier propertyForKey:@"key"] isEqual:@"prewarmApps"]) return @(MSBPrewarmAppsInForce());   // (never set: off on a 2 GB iPad, as SpringBoard reads it)
 	id value = [super readPreferenceValue:specifier];
 	if (![[specifier propertyForKey:@"key"] isEqual:@"windowEngine"]) return value;
 	NSArray *offered = [specifier respondsToSelector:NSSelectorFromString(@"values")] ? ((id (*)(id, SEL))objc_msgSend)(specifier, NSSelectorFromString(@"values")) : nil;
@@ -1240,6 +1276,10 @@ static void MSBFitValueLabels(UIView *v) {
 @implementation MSBWindowsListController
 - (NSString *)msb_plistName { return @"Windows"; }
 - (BOOL)msb_windowsPage { return YES; }
+- (void)viewWillAppear:(BOOL)animated {
+	[super viewWillAppear:animated];
+	[self msb_prewarmMaybeChanged];   // (Prewarm Apps where the prewarm block is armed now)
+}
 @end
 
 // ---- The Desktop page (1.7.5 item 1): the Status Bar page's controller with Desktop.plist -- Show Desktop Icons and Hide Desktop Icon Names

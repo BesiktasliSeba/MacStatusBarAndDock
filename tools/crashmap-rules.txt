@@ -150,6 +150,7 @@ sym MacStatusBarCore \$(MacContextMenus|MacContextMenus15|PreviewTargetGuard|Sto
 sec MacStatusBarCore Haptic\sTouch\smenus part
 sec MacStatusBarCore MacPointer\sbridge part
 sec MacStatusBarCore Control\sCenter\sresource\stile part
+sec MacStatusBarCore RAM\s&\sCPU\sin\sControl\sCenter\sby\sitself part
 sec MacStatusBarCore ^//\s-+\sWelcome part
 file MacStatusBarCore ^StockBar\.h$ part
 # banners

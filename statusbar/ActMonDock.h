@@ -12,7 +12,19 @@
 //  - only the Dock: the root folder refuses it in any other list (-iconListModel:isAllowedToContainIcon:): it can't be dropped on a page or in a
 //    folder; dragged out of the Dock and let go anywhere else (no taker: the drop is cancelled) it leaves the Dock, as on a Mac.
 // It follows Settings > Status Bar > Activity Monitor > Show in App Library (DMALApplyPref): off, it leaves the Dock and the record stays; on, it
-// comes back. Its menus (DMAMMenu): Open, Add to Dock ("Dock full" greyed) / Remove from Dock.
+// comes back. Its menus (DMAMMenu): Open, Add to Dock ("Dock full" greyed) / Keep in Dock (its running entry) / Remove from Dock.
+// Its running entry (1.7.7 item 1b, KT 1 Nov: an open app is in the Dock, as on a Mac): while its window exists (open, minimized, or on another
+// desktop) and it is not kept in the Dock, it shows there as an open app -- the running dot, "Keep in Dock" in its menu, gone with the window
+// (common/ActMonDock.h MSBDActMonRunningSpot):
+//  - in the Dock's recent apps while the Dock shows them (iPadOS's place for an open app the Dock does not keep; Settings' Show Suggested and Recent
+//    Apps in Dock, our Recent Apps count not None): SpringBoard's recents model makes the list the Dock shows from its recents (-[SBFloatingDock
+//    SuggestionsModel _updateCurrentDisplayItemsAfterContinuityChange:notifyDelegate:], read on 18.5) -- while it makes it, its recents are a copy
+//    with our display item first, so its own cull, its diff and the Dock's insert / remove animations take ours as one of its items, and the recents
+//    it keeps and saves never hold it; the Dock's recents view asks for each item's icon (-[SBFloatingDockSuggestionsViewController
+//    _iconForDisplayItem:]): ours is Activity Monitor's;
+//  - else after the Dock's own apps, in SpringBoard's Dock list as a kept icon is, but never recorded (and, as any icon of ours, never saved).
+// Where SpringBoard's recents are not as read here, or do not take ours, it goes after the Dock's apps. It is put in or taken out when its window
+// comes or goes (ActivityMonitor.h DMAMWindowChanged), and follows the Dock's own changes (its recents switched on or off, an icon kept or let go).
 #include "../common/ActMonDock.h"
 
 #define kDMAMDockKey CFSTR("activityMonitorDock")
@@ -20,6 +32,14 @@ static BOOL gDMAMReady = NO;            // the store's hook is in: only then doe
 static BOOL gDMAMStarted = NO;          // the start's look for SpringBoard's Dock list is done (before it, a save never changes the record)
 static __weak id gDMAMListPutIn;        // the Dock list the icon was last put into by us (a new list from SpringBoard: put in again, once)
 static NSInteger gDMAMRecord = -2;      // the record as last read or written (-2: not read yet)
+// its running entry (1.7.7)
+static BOOL gDMAMTemp = NO;             // it is in SpringBoard's Dock list as the running entry (after the Dock's apps): never recorded
+static BOOL gDMAMInRecents = NO;        // it is in the Dock's recents as the running entry
+static int gDMAMRecentsPath = -1;       // the recents path: 1 in; 0 not as read here, or ours not taken (after the Dock's apps then); -1 not looked at
+static Ivar gDMAMRecentsIvar;           // the recents model's own recents (_currentRecentDisplayItems): the Dock's shown list is made from them
+static __weak id gDMAMModelSeen;        // the recents model last seen making its list
+static MSBDActMonSpot gDMAMSpotDone = MSBDActMonSpotNone;   // where the running entry was last put (DMAMRunningSync)
+static __weak id gDMAMTempRefused;      // a Dock list that let go of the running entry by itself: not put in that one again while the window is open
 
 static id DMAMModel(void) { return DMCall(DMCall(DMCall(objc_getClass("SBIconController"), @"sharedInstance"), @"iconManager"), @"iconModel"); }
 static id DMAMDockList(void) { return DMCall(DMCall(DMAMModel(), @"rootFolder"), @"dock"); }
@@ -32,6 +52,10 @@ static NSInteger DMAMDockIndex(void) {   // its place in the Dock list now, -1 w
 // The Dock's own icons -- not its recent apps (SBIconLocationFloatingDockSuggestions), not the App Library opened from its button.
 static BOOL DMAMLocationIsDock(id loc) {
     return [loc isKindOfClass:[NSString class]] && [loc containsString:@"Dock"] && ![loc containsString:@"Library"] && ![loc containsString:@"Suggestions"] && ![loc containsString:@"Recent"];
+}
+// Any part of the Dock -- its own icons or its recent apps --, not the App Library opened from its button.
+static BOOL DMAMLocationInDock(id loc) {
+    return [loc isKindOfClass:[NSString class]] && [loc containsString:@"Dock"] && ![loc containsString:@"Library"];
 }
 
 // ---- the record: our own preference, never SpringBoard's layout ----
@@ -79,7 +103,7 @@ static BOOL DMAMDockPutIn(NSInteger at, NSString *why) {
     DMLog([NSString stringWithFormat:@"[amdock] Activity Monitor put in the Dock at %ld of %lu (%@)%@", (long)now, (unsigned long)DMAMIconsOf(dock).count, why, now < 0 ? @": NOT there after it" : @""]);
     return now >= 0;
 }
-static BOOL DMAMDockTakeOut(NSString *why, BOOL forget) {
+static BOOL DMAMDockLeave(NSString *why, BOOL forget, BOOL save) {
     id dock = DMAMDockList(), icon = gDMALIcon;
     if (forget) DMAMRecordWrite(-1, why);
     if (!dock || !icon || DMAMDockIndex() < 0) return NO;
@@ -88,19 +112,29 @@ static BOOL DMAMDockTakeOut(NSString *why, BOOL forget) {
     ((void (*)(id, SEL, id))objc_msgSend)(dock, rm, @[icon]);
     DM_FEATURE_MARK("actmon-dock-out");
     DMLog([NSString stringWithFormat:@"[amdock] Activity Monitor taken out of the Dock (%@)%@", why, DMAMDockIndex() >= 0 ? @": STILL there" : @""]);
-    DMAMSaveLayout();
+    if (save) DMAMSaveLayout();   // (not for the running entry: no saved layout ever had it, nothing to save)
     return YES;
 }
-// Removal from outside (the Dock's Trash, dock/TrashIcon.m through Dock.x; found with dlsym): out of the Dock, the record cleared.
+static BOOL DMAMDockTakeOut(NSString *why, BOOL forget) { return DMAMDockLeave(why, forget, YES); }
+static void DMAMUnkeep(NSString *why);
+// Removal from outside (the Dock's Trash, dock/TrashIcon.m through Dock.x; found with dlsym): no longer kept, the record cleared (its running
+// entry, while the window is open, is not taken: an open app stays in the Dock).
 __attribute__((visibility("default"))) BOOL MSBDActMonDockRemove(void) {
-    if (![NSThread isMainThread] || DMAMDockIndex() < 0) return NO;
-    return DMAMDockTakeOut(@"dropped on the Dock's Trash", YES);
+    if (![NSThread isMainThread] || DMAMDockIndex() < 0 || gDMAMTemp) return NO;
+    DMAMUnkeep(@"dropped on the Dock's Trash");
+    return YES;
 }
-// For the Dock's running dots (RunningIndicator.m, dlsym): Activity Monitor runs while its window exists (open or minimized), as an app on a Mac.
+// Its window exists: open or minimized (the native windows), or on another desktop (the Mac Switcher's) -- it runs, as an app on a Mac does with a
+// window in another Space.
+static BOOL DMAMWindowExists(void) {
+    for (DMNativeWindow *w in gNativeWindows) if ([w isKindOfClass:[DMActivityMonitorWindow class]]) return YES;
+    for (DMNativeWindow *w in gMSWAwayNatives) if ([w isKindOfClass:[DMActivityMonitorWindow class]]) return YES;
+    return NO;
+}
+// For the Dock's running dots (RunningIndicator.m, dlsym): Activity Monitor runs while its window exists, as an app on a Mac.
 __attribute__((visibility("default"))) NSSet<NSString *> *MSBDOwnAppsRunning(void) {
     if (![NSThread isMainThread]) return nil;
-    for (DMNativeWindow *w in gNativeWindows) if ([w isKindOfClass:[DMActivityMonitorWindow class]]) return [NSSet setWithObject:kDMALActMonIdentifier];
-    return nil;
+    return DMAMWindowExists() ? [NSSet setWithObject:kDMALActMonIdentifier] : nil;
 }
 
 // Anywhere but the Dock (a page, a folder, the App Library's own list): SpringBoard's drop never puts it there (the root folder refuses it), but
@@ -122,6 +156,7 @@ static void DMAMTakeOutElsewhere(void) {
     }
 }
 // ---- the start, and a Dock list made anew: it goes back in at its recorded place ----
+static void DMAMRunningSyncSoon(NSString *why);
 static void DMAMDockCheck(NSString *why) {
     if (![NSThread isMainThread]) { dispatch_async(dispatch_get_main_queue(), ^{ DMAMDockCheck(why); }); return; }
     id dock = DMAMDockList();
@@ -131,8 +166,18 @@ static void DMAMDockCheck(NSString *why) {
     NSInteger here = DMAMDockIndex();
     if (here >= 0) {   // (in the Dock: its place, after a move SpringBoard saved -- also a drop from the App Library, SpringBoard's own)
         gDMAMListPutIn = dock;
+        if (gDMAMTemp) return;   // (its running entry: never recorded, wherever it is moved)
         if (gDMAMStarted && gDMALOn) DMAMRecordWrite(here, why);
         return;
+    }
+    if (gDMAMTemp) {   // (the running entry is not in the Dock's list: the list it was put in let go of it by SpringBoard's own doing -- not put back into
+                       //  that list while the window is open --, or SpringBoard made the list anew (the layout reloaded or restored) and the new one never
+                       //  had it: put in again. A new list refused it too before, so it stayed out until the window closed: the 1.7.7 code review's N2)
+        BOOL letGo = dock == gDMAMListPutIn;
+        gDMAMTemp = NO;
+        if (letGo) gDMAMTempRefused = dock;
+        DMLog([NSString stringWithFormat:@"[amdock] Activity Monitor's running entry %@ (%@)", letGo ? @"left the Dock's list without us" : @"is not in the Dock's new list: put in again", why]);
+        DMAMRunningSyncSoon(why);
     }
     gDMAMStarted = YES;
     NSInteger rec = DMAMRecordRead();
@@ -147,6 +192,134 @@ static void DMAMDockCheck(NSString *why) {
 static void DMAMStartLook(int tries) {   // (SpringBoard lays out its Home Screen during its start: until its Dock list is there, every 0.5 s, up to 60 s)
     if (DMAMIconsOf(DMAMDockList()) || tries >= 120) { DMAMDockCheck(@"SpringBoard's start"); gDMAMStarted = YES; return; }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMAMStartLook(tries + 1); });
+}
+
+// ---- its running entry (1.7.7 item 1b): in the Dock while its window exists, until it is kept or the window goes ----
+// The Dock's recents models: each floating Dock's (its root view controller's; the main screen's first), and the one last seen making its list.
+static NSArray *DMAMRecentsModels(void) {
+    NSMutableArray *out = [NSMutableArray array];
+    for (UIWindow *w in DMAllWindows()) {
+        if (![NSStringFromClass([w class]) isEqualToString:@"SBFloatingDockWindow"]) continue;
+        id m = DMCall(w.rootViewController, @"suggestionsModel");
+        if (!m || [out indexOfObjectIdenticalTo:m] != NSNotFound) continue;
+        if (w.screen == [UIScreen mainScreen]) [out insertObject:m atIndex:0]; else [out addObject:m];
+    }
+    id seen = gDMAMModelSeen;
+    if (seen && [out indexOfObjectIdenticalTo:seen] == NSNotFound) [out addObject:seen];
+    return out;
+}
+// (ours among the recents' display items: an app's display item with our identifier, one kept for good. Made once, only where the recents path is
+//  hooked (DMAMApply), and a throw caught as WindowCards.h asks for one: SpringBoard's maker takes no scene identifier from us -- read on 18.5 only)
+static id DMAMRecentsItem(void) {
+    static id item; static BOOL asked = NO;
+    if (item || asked) return item;
+    asked = YES;
+    Class di = objc_getClass("SBDisplayItem");
+    if (!di || !DMMSWHasMethod(object_getClass((id)di), @"applicationDisplayItemWithBundleIdentifier:sceneIdentifier:", @"@@:@@")) return nil;
+    @try { item = ((id (*)(id, SEL, id, id))objc_msgSend)((id)di, NSSelectorFromString(@"applicationDisplayItemWithBundleIdentifier:sceneIdentifier:"), kDMALActMonIdentifier, nil); }
+    @catch (NSException *e) { item = nil; DMLog([NSString stringWithFormat:@"[amdock] SpringBoard made no display item for Activity Monitor (%@): its running entry goes after the Dock's apps", e.reason]); }
+    return item;
+}
+static BOOL DMAMIsRecentsItem(id item) { return item && [DMCall(item, @"bundleIdentifier") isEqual:kDMALActMonIdentifier]; }
+static BOOL DMAMRecentsShownBy(id model) {   // (the Dock shows its recents: the model's own flag -- Settings' switch, and our Recent Apps count not None, Dock.x)
+    SEL s = NSSelectorFromString(@"recentsEnabled");
+    return model && [model respondsToSelector:s] && ((BOOL (*)(id, SEL))objc_msgSend)(model, s);
+}
+// Kept in the Dock: recorded, or in its list as an icon the user put there (a drop SpringBoard has not saved yet) -- anything but the running entry.
+static BOOL DMAMKept(void) { return DMAMRecordRead() >= 0 || (DMAMDockIndex() >= 0 && !gDMAMTemp); }
+static MSBDActMonSpot DMAMSpotFor(id model) {
+    return MSBDActMonRunningSpot(gDMAMReady && gDMALOn, DMAMKept(), DMAMWindowExists(), gDMAMRecentsPath == 1 && DMAMRecentsShownBy(model));
+}
+static void DMAMRecentsRemake(id model) {   // (SpringBoard's own remake of the list the Dock shows, the Dock told of each change -- ours through DMAMShownList)
+    SEL s = NSSelectorFromString(@"_updateCurrentDisplayItemsAfterContinuityChange:notifyDelegate:");
+    if ([model respondsToSelector:s]) ((void (*)(id, SEL, BOOL, BOOL))objc_msgSend)(model, s, NO, YES);
+}
+static BOOL DMAMRecentsShowOurs(id model) {
+    for (id it in DMALItems(DMCall(model, @"currentDisplayItems"))) if (DMAMIsRecentsItem(it)) return YES;
+    return NO;
+}
+// The Dock's recents view parks a change while an app is in front of the Home Screen, for the end of a full-screen transition (windows make none):
+// run now, as the Dock part does for its own changes (Dock.x MSBDDockRecentsFlush, dlsym).
+static void DMAMRecentsFlush(void) {
+    static void (*flush)(NSString *) = NULL; static int tries = 0;
+    if (!flush && tries < 40) { tries++; flush = (void (*)(NSString *))dlsym(RTLD_DEFAULT, "MSBDDockRecentsFlush"); }
+    if (flush) flush(@"Activity Monitor's running entry");
+}
+// Where the running entry is now follows where it belongs (MSBDActMonRunningSpot): out of the places it no longer belongs, into the one it does.
+static void DMAMRunningSync(NSString *why) {
+    if (![NSThread isMainThread]) { dispatch_async(dispatch_get_main_queue(), ^{ DMAMRunningSync(why); }); return; }
+    if (!gDMAMReady) return;
+    NSArray *models = DMAMRecentsModels();
+    MSBDActMonSpot spot = DMAMSpotFor(models.firstObject);
+    gDMAMSpotDone = spot;   // (first: the remakes below come back through DMAMShownList, which then finds nothing to follow)
+    if (spot == MSBDActMonSpotNone) gDMAMTempRefused = nil;
+    // out of the Dock's list: the running entry, when it belongs elsewhere (never an icon the user put there)
+    if (gDMAMTemp && spot != MSBDActMonSpotDockEnd) {
+        gDMAMTemp = NO;
+        if (DMAMDockIndex() >= 0) DMAMDockLeave([NSString stringWithFormat:@"the running entry leaves the Dock's list: %@", why], NO, NO);
+    }
+    // the recents: SpringBoard's model makes its shown list again (DMAMShownList puts ours in or leaves it out); the Dock animates the change
+    BOOL recents = spot == MSBDActMonSpotRecents;
+    if (recents != gDMAMInRecents) {
+        gDMAMInRecents = recents;
+        for (id m in models) DMAMRecentsRemake(m);
+        DMAMRecentsFlush();
+        if (recents && DMAMDockIndex() < 0 && !DMAMRecentsShowOurs(models.firstObject)) {   // (not taken here: after the Dock's apps, from now on)
+            gDMAMRecentsPath = 0; gDMAMInRecents = NO;
+            for (id m in models) DMAMRecentsRemake(m);
+            DMLog([NSString stringWithFormat:@"[amdock] the Dock's recents did not take Activity Monitor (%lu models): its running entry goes after the Dock's apps", (unsigned long)models.count]);
+            spot = gDMAMSpotDone = DMAMSpotFor(models.firstObject);
+        } else {
+            if (recents) DM_FEATURE_MARK("actmon-dock-recents");
+            DMLog([NSString stringWithFormat:@"[amdock] Activity Monitor's running entry %@ the Dock's recents (%@)", recents ? @"in" : @"out of", why]);
+        }
+    }
+    // after the Dock's own apps (the Dock shows no recents)
+    if (spot == MSBDActMonSpotDockEnd && !gDMAMTemp && DMAMDockIndex() < 0) {
+        id dock = DMAMDockList();
+        if (dock && dock != gDMAMTempRefused) {
+            gDMAMTemp = YES;   // (before it goes in: what SpringBoard does on the insert sees the running entry, never a kept icon)
+            if (DMAMDockPutIn((NSInteger)DMAMIconsOf(dock).count, [NSString stringWithFormat:@"its running entry: %@", why])) DM_FEATURE_MARK("actmon-dock-running");
+            else gDMAMTemp = NO;
+        }
+    }
+}
+static void DMAMRunningSyncSoon(NSString *why) {   // (once per turn of the main queue: a window that goes and comes in one turn changes nothing)
+    static BOOL queued = NO;
+    if (![NSThread isMainThread]) { dispatch_async(dispatch_get_main_queue(), ^{ DMAMRunningSyncSoon(why); }); return; }
+    if (queued) return;
+    queued = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{ queued = NO; DMAMRunningSync(why); });
+}
+// Its window came or went (ActivityMonitor.h: the window's -didMoveToWindow -- opened, closed, to or from another desktop).
+static void DMAMWindowChanged(void) { if (gDMAMReady) DMAMRunningSyncSoon(DMAMWindowExists() ? @"its window is open" : @"its window closed"); }
+// Keep in Dock (its running entry's menu) / Add to Dock (the App Library's): a kept icon of the Dock, as 1.7.3 adds it -- where it is when it is in
+// the Dock's list already (the running entry there), else at the Dock's end. The record first: from then on the recents leave it out.
+static void DMAMKeep(NSString *why) {
+    NSInteger here = DMAMDockIndex();
+    if (here >= 0) { gDMAMTemp = NO; DMAMRecordWrite(here, why); }
+    else {
+        NSInteger end = (NSInteger)DMAMIconsOf(DMAMDockList()).count;
+        DMAMRecordWrite(end, why);
+        if (!DMAMDockPutIn(end, why)) { DMAMRecordWrite(-1, @"not put in"); DMAMRunningSync(why); return; }
+        DMAMRecordWrite(DMAMDockIndex(), why);
+    }
+    DM_FEATURE_MARK("actmon-dock-keep");
+    DMAMSaveLayout();
+    DMAMRunningSync(why);
+}
+// No longer kept (its menu's Remove from Dock, a drag out of the Dock, the Trash): the record cleared and out of the Dock -- but while its window
+// exists it stays as its running entry: in its place when that entry goes after the Dock's apps, else in the recents (DMAMRunningSync).
+static void DMAMUnkeep(NSString *why) {
+    BOOL recents = gDMAMRecentsPath == 1 && DMAMRecentsShownBy(DMAMRecentsModels().firstObject);
+    if (DMAMDockIndex() >= 0 && MSBDActMonUnkeptStaysInPlace(gDMAMReady && gDMALOn, DMAMWindowExists(), recents)) {
+        gDMAMTemp = YES; gDMAMSpotDone = MSBDActMonSpotDockEnd;
+        DMAMRecordWrite(-1, why);
+        DMLog([NSString stringWithFormat:@"[amdock] Activity Monitor no longer kept (%@): its window is open, it stays in its place as its running entry", why]);
+        return;
+    }
+    DMAMDockTakeOut(why, YES);
+    DMAMRunningSync(why);
 }
 
 // ---- the hooks ----
@@ -263,7 +436,44 @@ static void DMAMDragEnded(id self, SEL _cmd, id interaction, id session, unsigne
     if (!ours) return;
     DMLog([NSString stringWithFormat:@"[amdock] a drag of Activity Monitor ended: from the Dock %d, let go outside it %d, operation %llu", fromDock, outside, op]);
     if (fromDock && outside && op <= 1)   // (UIDropOperationCancel / Forbidden: nothing took it; after SpringBoard has put it back in its place)
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMAMDockTakeOut(@"dragged out of the Dock", YES); });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (gDMAMTemp) DMLog(@"[amdock] its running entry stays in the Dock: its window is open");   // (an open app's icon on a Mac comes back too)
+            else DMAMUnkeep(@"dragged out of the Dock");
+        });
+}
+
+// The list the Dock shows after its divider (SpringBoard's recents model: its recents, a suggested app last, culled to its room; the Dock told of each
+// change): while the running entry belongs in the recents and is not in the Dock's own list, ours is first among the recents it is made from -- a
+// copy, put back right after, so the recents SpringBoard keeps and saves never hold it. Each remake also lets the running entry follow the Dock's
+// own changes (its recents switched on or off -- the model's reset remakes the list --, an icon kept in its list).
+static void (*o_DMAMShownList)(id, SEL, BOOL, BOOL);
+static void DMAMShownList(id self, SEL _cmd, BOOL continuity, BOOL notify) {
+    if (![NSThread isMainThread]) { o_DMAMShownList(self, _cmd, continuity, notify); return; }
+    gDMAMModelSeen = self;
+    MSBDActMonSpot spot = DMAMSpotFor(self);
+    id was = nil; NSMutableOrderedSet *with = nil;
+    if (spot == MSBDActMonSpotRecents && gDMAMRecentsIvar && DMAMDockIndex() < 0 && DMALIcon()) {   // (never an item without its icon: the view would get none)
+        was = object_getIvar(self, gDMAMRecentsIvar);
+        with = MSBDActMonRecentsWithOurs(was, DMAMRecentsItem());
+        if (with) object_setIvarWithStrongDefault(self, gDMAMRecentsIvar, with);
+    }
+    @try { o_DMAMShownList(self, _cmd, continuity, notify); }
+    @catch (NSException *e) {
+        if (!with) @throw;
+        object_setIvarWithStrongDefault(self, gDMAMRecentsIvar, was); with = nil;   // (SpringBoard's own list again, and the Dock given it whole)
+        gDMAMRecentsPath = 0;
+        DMLog([NSString stringWithFormat:@"[amdock] the Dock's recents refused Activity Monitor (%@: %@): its running entry goes after the Dock's apps", e.name, e.reason]);
+        SEL reload = NSSelectorFromString(@"_reloadRecentsAndSuggestions");
+        if ([self respondsToSelector:reload]) ((void (*)(id, SEL))objc_msgSend)(self, reload); else o_DMAMShownList(self, _cmd, continuity, notify);
+    }
+    if (with) object_setIvarWithStrongDefault(self, gDMAMRecentsIvar, was);
+    if (DMAMSpotFor(self) != gDMAMSpotDone) DMAMRunningSyncSoon(@"the Dock's recents changed");
+}
+// The Dock's recents view asks for each item's icon (SpringBoard's icon model, by the app's identifier): ours is Activity Monitor's own.
+static id (*o_DMAMRecentsIcon)(id, SEL, id);
+static id DMAMRecentsIcon(id self, SEL _cmd, id item) {
+    id icon = DMAMIsRecentsItem(item) ? DMALIcon() : nil;
+    return icon ?: o_DMAMRecentsIcon(self, _cmd, item);
 }
 
 #if DEBUG
@@ -274,7 +484,7 @@ static void DMAMDebugDragBegins(id self, SEL _cmd, id interaction, id session) {
 }
 #endif
 
-// ---- its menu (App Library and Dock): Open, Add to Dock / Remove from Dock ----
+// ---- its menu (App Library and Dock): Open, Add to Dock / Keep in Dock (its running entry) / Remove from Dock ----
 static void DMAMAfterMenu(void (^block)(void)) {   // (once the menu has closed -- its preview animates the icon back into its place first)
     __block BOOL ran = NO;
     void (^once)(void) = ^{ if (ran) return; ran = YES; block(); };
@@ -289,17 +499,18 @@ static UIMenu *DMAMMenu(id location) {
         DMAMAfterMenu(^{ DMALOpen(location); });
     }]];
     if (gDMAMReady && gDMALOn) {
-        if (DMAMDockIndex() >= 0) {
+        BOOL inList = DMAMDockIndex() >= 0;
+        // (the running entry's own icon: the one after the Dock's apps, or ours in the Dock's recents)
+        BOOL runningHere = DMAMLocationInDock(location) && (DMAMLocationIsDock(location) ? gDMAMTemp : YES);
+        MSBDActMonRow row = MSBDActMonMenuRow(inList && !gDMAMTemp, runningHere);
+        if (row == MSBDActMonRowRemove) {
             [rows addObject:[UIAction actionWithTitle:@"Remove from Dock" image:[UIImage systemImageNamed:@"minus.circle"] identifier:nil handler:^(UIAction *a) {
-                DMAMAfterMenu(^{ DMAMDockTakeOut(@"Remove from Dock in its menu", YES); });
+                DMAMAfterMenu(^{ DMAMUnkeep(@"Remove from Dock in its menu"); });
             }]];
         } else {
-            BOOL room = DMAMDockHasRoom(DMAMDockList(), DMALIcon());
-            UIAction *add = [UIAction actionWithTitle:@"Add to Dock" image:[UIImage systemImageNamed:@"plus.circle"] identifier:nil handler:^(UIAction *a) {
-                DMAMAfterMenu(^{
-                    NSArray *icons = DMAMIconsOf(DMAMDockList());
-                    if (DMAMDockPutIn((NSInteger)icons.count, @"Add to Dock in its menu")) { DMAMRecordWrite(DMAMDockIndex(), @"Add to Dock"); DMAMSaveLayout(); }
-                });
+            BOOL keep = row == MSBDActMonRowKeep, room = inList || DMAMDockHasRoom(DMAMDockList(), DMALIcon());
+            UIAction *add = [UIAction actionWithTitle:keep ? @"Keep in Dock" : @"Add to Dock" image:[UIImage systemImageNamed:@"plus.circle"] identifier:nil handler:^(UIAction *a) {
+                DMAMAfterMenu(^{ DMAMKeep(keep ? @"Keep in Dock in its menu" : @"Add to Dock in its menu"); });
             }];
             if (!room) { add.attributes = UIMenuElementAttributesDisabled; if (@available(iOS 15.0, *)) add.subtitle = @"Dock full"; }
             [rows addObject:add];
@@ -325,12 +536,24 @@ static void DMAMApply(BOOL on) {
         DMLog([NSString stringWithFormat:@"[amdock] Activity Monitor in the Dock: %@ (store's save %@ [%@], desired %@, Dock only %@, drops %@, drag out %@)", gDMAMReady ? @"ready" : @"NOT possible here",
                save ? @"hooked" : @"NOT hooked", [stores componentsJoinedByString:@", "], desired ? @"hooked" : @"NOT hooked", allowed ? @"hooked" : @"NOT hooked",
                drop ? @"hooked" : @"NOT hooked (the folder's rule only)", drag ? @"hooked" : @"NOT hooked (Remove from Dock only)"]);
+        // (its running entry in the Dock's recents, 1.7.7: SpringBoard's recents model and the Dock's recents view as read on 18.5 -- after the Dock's
+        //  apps where they are not)
+        BOOL shown = gDMAMReady && DMALHook(@"SBFloatingDockSuggestionsModel", @"_updateCurrentDisplayItemsAfterContinuityChange:notifyDelegate:", @"v@:BB", (IMP)DMAMShownList, (IMP *)&o_DMAMShownList);
+        BOOL icons = shown && DMALHook(@"SBFloatingDockSuggestionsViewController", @"_iconForDisplayItem:", @"@@:@", (IMP)DMAMRecentsIcon, (IMP *)&o_DMAMRecentsIcon);
+        Ivar iv = class_getInstanceVariable(objc_getClass("SBFloatingDockSuggestionsModel"), "_currentRecentDisplayItems");
+        const char *ivt = iv ? ivar_getTypeEncoding(iv) : NULL;
+        gDMAMRecentsIvar = (ivt && ivt[0] == '@') ? iv : NULL;
+        id item = icons && gDMAMRecentsIvar ? DMAMRecentsItem() : nil;   // (asked only where the recents path is in: every start ran it before, hooks or not)
+        gDMAMRecentsPath = item ? 1 : 0;
+        if (gDMAMReady) DMLog([NSString stringWithFormat:@"[amdock] its running entry: %@ (recents' list %@, icons %@, their recents %@, display item %@)",
+                               gDMAMRecentsPath == 1 ? @"the Dock's recents while shown, else after the Dock's apps" : @"after the Dock's apps", shown ? @"hooked" : @"NOT hooked",
+                               icons ? @"hooked" : @"NOT hooked", gDMAMRecentsIvar ? @"read" : @"NOT as read", item ? @"made" : icons && gDMAMRecentsIvar ? @"NOT made" : @"not asked"]);
         // (SpringBoard lays out its Home Screen during its start, on the main thread: the look begins once the main queue runs, 3 s on)
         if (gDMAMReady) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMAMStartLook(0); });
     }
     if (!gDMAMReady) return;
-    if (!on) DMAMDockTakeOut(@"Show in App Library switched off", NO);
-    else if (gDMAMStarted) { gDMAMListPutIn = nil; DMAMDockCheck(@"Show in App Library switched on"); }
+    if (!on) { DMAMRunningSync(@"Show in App Library switched off"); DMAMDockTakeOut(@"Show in App Library switched off", NO); }
+    else if (gDMAMStarted) { gDMAMListPutIn = nil; DMAMDockCheck(@"Show in App Library switched on"); DMAMRunningSync(@"Show in App Library switched on"); }
 }
 
 #if DEBUG
@@ -362,12 +585,53 @@ static void DMAMDebugTrigger(NSString *cmd) {
                gDMAMReady, gDMAMStarted, gDMALOn, (long)DMAMRecordRead(), (long)DMAMDockIndex(), (unsigned long)DMAMIconsOf(dock).count,
                [dock respondsToSelector:maxSel] ? @(((NSUInteger (*)(id, SEL))objc_msgSend)(dock, maxSel)) : @"?", NSStringFromClass([dock class]), DMCall(dock, @"uniqueIdentifier"),
                tracked, byId ? (byId == icon ? @"ours" : NSStringFromClass([byId class])) : @"nil", inIgnored, DMAMDockHasRoom(dock, DMALIcon())]);
+        NSArray *models = DMAMRecentsModels(); id m = models.firstObject;
+        NSArray *spots = @[@"none", @"the recents", @"after the Dock's apps"];
+        DMLog([NSString stringWithFormat:@"[amdbg] running entry: window %d, kept %d, belongs %@ (last put %@); in the Dock's list %d, in the recents %d (path %d, %lu models, recents shown %d, the shown list has ours %d)",
+               DMAMWindowExists(), DMAMKept(), spots[DMAMSpotFor(m)], spots[gDMAMSpotDone], gDMAMTemp, gDMAMInRecents, gDMAMRecentsPath, (unsigned long)models.count, DMAMRecentsShownBy(m), DMAMRecentsShowOurs(m)]);
     }
-    else if ([cmd isEqualToString:@"amdbg_add"]) { NSArray *icons = DMAMIconsOf(DMAMDockList()); if (DMAMDockPutIn((NSInteger)icons.count, @"debug")) { DMAMRecordWrite(DMAMDockIndex(), @"debug"); DMAMSaveLayout(); } }
+    else if ([cmd isEqualToString:@"amdbg_recents"]) {   // the Dock's recents: each model's shown list (ours at, of), and the Dock's recents view's own list
+        for (id m in DMAMRecentsModels()) {
+            NSArray *items = DMALItems(DMCall(m, @"currentDisplayItems")); NSInteger at = -1;
+            for (NSUInteger i = 0; i < items.count; i++) if (DMAMIsRecentsItem(items[i])) at = (NSInteger)i;
+            id vc = DMCall(m, @"delegate"); NSArray *icons = DMAMIconsOf(DMCall(vc, @"suggestionsIconListModel"));
+            NSUInteger vi = gDMALIcon ? [icons indexOfObjectIdenticalTo:gDMALIcon] : NSNotFound;
+            DMLog([NSString stringWithFormat:@"[amdbg] recents model %p: enabled %d, max %@, shown %lu (ours at %ld); its recents %lu; view %@: %lu icons (ours at %ld), parked %lu",
+                   m, DMAMRecentsShownBy(m), [m respondsToSelector:NSSelectorFromString(@"maxSuggestions")] ? [m valueForKey:@"maxSuggestions"] : @"?", (unsigned long)items.count, (long)at,
+                   (unsigned long)DMALItems(DMCall(m, @"currentRecentDisplayItems")).count, vc ? NSStringFromClass([vc class]) : @"none", (unsigned long)icons.count,
+                   vi == NSNotFound ? -1L : (long)vi, (unsigned long)[DMCall(vc, @"deferredIconUpdates") count]]);
+        }
+    }
+    else if ([cmd hasPrefix:@"amdbg_cmdtab_"]) {   // amdbg_cmdtab_<1|0>: iPadOS's Command-Tab switcher shown (as Command-Tab shows it) / dismissed without a switch, and
+                                                   // whether its apps include Activity Monitor (read-only otherwise)
+        Class c = objc_getClass("SBCommandTabController");
+        id ct = c && DMMSWHasMethod(object_getClass((id)c), @"sharedInstance", @"@@:") ? DMCall(c, @"sharedInstance") : nil;
+        if (!ct || !DMMSWHasMethod(object_getClass(ct), @"_activateWithForwardDirection:", @"v@:B") || !DMMSWHasMethod(object_getClass(ct), @"dismiss", @"v@:")) { DMLog(@"[amdbg] no Command-Tab controller as read"); return; }
+        if ([cmd hasSuffix:@"1"]) ((void (*)(id, SEL, BOOL))objc_msgSend)(ct, NSSelectorFromString(@"_activateWithForwardDirection:"), YES);
+        else ((void (*)(id, SEL))objc_msgSend)(ct, NSSelectorFromString(@"dismiss"));
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            id vc = DMALIvarObj(ct, "_commandTabViewController");
+            NSArray *items = DMALItems(DMALIvarObj(vc, "_recentDisplayItems")); BOOL ours = NO;
+            for (id it in items) if (DMAMIsRecentsItem(it)) ours = YES;
+            BOOL visible = DMMSWHasMethod(object_getClass(ct), @"isVisible", @"B@:") && ((BOOL (*)(id, SEL))objc_msgSend)(ct, NSSelectorFromString(@"isVisible"));
+            DMLog([NSString stringWithFormat:@"[amdbg] Command-Tab: visible %d, %lu apps, Activity Monitor among them %d", visible, (unsigned long)items.count, ours]);
+        });
+    }
+    else if ([cmd isEqualToString:@"amdbg_add"] || [cmd isEqualToString:@"amdbg_keep"]) DMAMKeep(@"debug");
     else if ([cmd hasPrefix:@"amdbg_addat_"]) { if (DMAMDockPutIn([[cmd substringFromIndex:12] integerValue], @"debug")) { DMAMRecordWrite(DMAMDockIndex(), @"debug"); DMAMSaveLayout(); } }
-    else if ([cmd isEqualToString:@"amdbg_remove"]) DMAMDockTakeOut(@"debug", YES);
+    else if ([cmd isEqualToString:@"amdbg_remove"]) DMAMUnkeep(@"debug");
+    else if ([cmd isEqualToString:@"amdbg_sync"]) DMAMRunningSync(@"debug");
+    else if ([cmd hasPrefix:@"amdbg_dockrecents_"]) {   // amdbg_dockrecents_<0|1>: Settings' "Show Suggested and Recent Apps in Dock", the way its switch sets it
+                                                        // (SBFloatingDockDefaults recentsEnabled; the recents model follows the defaults)
+        id d = DMCall(DMCall(objc_getClass("SBDefaults"), @"localDefaults"), @"floatingDockDefaults");
+        SEL get = NSSelectorFromString(@"recentsEnabled"), set = NSSelectorFromString(@"setRecentsEnabled:");
+        if (![d respondsToSelector:get] || ![d respondsToSelector:set]) { DMLog(@"[amdbg] no floating Dock defaults with recentsEnabled here"); return; }
+        BOOL before = ((BOOL (*)(id, SEL))objc_msgSend)(d, get);
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(d, set, [[cmd substringFromIndex:18] boolValue]);
+        DMLog([NSString stringWithFormat:@"[amdbg] Show Suggested and Recent Apps in Dock: %d -> %d", before, ((BOOL (*)(id, SEL))objc_msgSend)(d, get)]);
+    }
     else if ([cmd isEqualToString:@"amdbg_menu"]) {
-        for (NSString *loc in @[@"SBIconLocationAppLibrary", @"SBIconLocationFloatingDock"]) {
+        for (NSString *loc in @[@"SBIconLocationAppLibrary", @"SBIconLocationFloatingDock", @"SBIconLocationFloatingDockSuggestions"]) {
             NSMutableArray *t = [NSMutableArray array];
             for (UIMenu *sec in DMAMMenu(loc).children) for (UIMenuElement *e in ([sec isKindOfClass:[UIMenu class]] ? sec.children : @[sec])) {
                 UIAction *a = [e isKindOfClass:[UIAction class]] ? (UIAction *)e : nil;

@@ -252,15 +252,29 @@ static void SFReadFilesSwitch(NSString *why) {
 }
 
 // ==== 2. Tweak Settings while Settings is closed ================================================================================================
+static int gSFArmedSeen = -1;   // (gSFQueue) whether Prewarm Apps' row was shown when the rows were last brought up to date (MTSShownRows); -1 not yet
 static void SFTweakRefresh(NSString *why) {
     dispatch_async(gSFQueue, ^{
         @autoreleasepool {
+            gSFArmedSeen = MSBDPrewarmAppsShown();
             if (!MTSSpotlightSwitch()) { MTSSyncSpotlight(nil, NO, why); return; }   // (off, also by the stock bar or the guards: a donation made before goes)
             CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
-            NSArray<MTIEntry *> *all = MTIBuild(MTSBaseConfig());
+            NSArray<MTIEntry *> *all = MTSShownRows(MTIBuild(MTSBaseConfig()));   // (not the rows their page leaves out now: TweakSpotlight.h)
             SFLog([NSString stringWithFormat:@"tweak index (%@): %lu rows, %.0f ms", why, (unsigned long)all.count, (CFAbsoluteTimeGetCurrent() - t0) * 1000]);
             MTSSyncSpotlight(all, YES, why);
         }
+    });
+}
+// The prewarm block's record (dasd writes one at each of its starts and says so, common/PrewarmArmed.h): the rows follow it when it changes what
+// Prewarm Apps' row does -- a dasd started after this SpringBoard made the rows (the 1.7.7 code review: they followed only when made again). Settings
+// donates into the same index, by the same record, when it makes its own (TweakSearch.x): one donation, kept by either. One small read and a stat
+// per record; nothing else is done unless the row comes or goes.
+static void SFArmedChanged(void) {
+    dispatch_async(gSFQueue, ^{
+        int now = MSBDPrewarmAppsShown();
+        if (gSFArmedSeen < 0 || now == gSFArmedSeen) return;   // (not made yet -- the start's refresh reads it then --, or the row stays as it is)
+        SFLog([NSString stringWithFormat:@"the prewarm block's record: Prewarm Apps' row %@", now ? @"comes" : @"goes"]);
+        SFTweakRefresh(@"the prewarm block's record changed");
     });
 }
 static void SFWatchTweaks(void) {   // (PreferenceLoader's folder and the bundles folder: a tweak installed or removed -> 5 s after the last change)
@@ -413,6 +427,8 @@ static void SFTestPoll(void) {
     notify_register_dispatch(kMTSRemoveAllNote, &t2, dispatch_get_main_queue(), ^(int t) {   // (MacStatusBar&Dock is being removed)
         dispatch_async(gSFQueue, ^{ MTSDeleteSpotlight(@"MacStatusBar&Dock removed"); });
     });
+    int t4 = 0;
+    notify_register_dispatch(kMSBDPrewarmArmedNote, &t4, dispatch_get_main_queue(), ^(int t) { SFArmedChanged(); });   // (dasd wrote a new record)
     SFWatchTweaks();
     // (a short while after SpringBoard starts, out of the way of the start: the switches, and a tweak installed with this respring)
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 25 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{

@@ -144,7 +144,7 @@ static void MTSRebuild(NSString *why) {
             MTSLog([NSString stringWithFormat:@"index built (%@): %lu rows, %lu pages, %.0f ms", why, (unsigned long)all.count, (unsigned long)panes.count, (CFAbsoluteTimeGetCurrent() - t0) * 1000]);
             dispatch_async(dispatch_get_main_queue(), ^{ MTSRequery(NO); });
             if (spot) DM_FEATURE_MARK("spotlight-tweak-settings");
-            MTSSyncSpotlight(spot ? (same ? all : MTIBuild(donated)) : nil, spot, why);
+            MTSSyncSpotlight(spot ? MTSShownRows(same ? all : MTIBuild(donated)) : nil, spot, why);   // (not the rows their page leaves out now)
             MTSGuardMark(NO);
         }
     });
@@ -165,8 +165,8 @@ static NSArray *MTSMerge(id controller, NSArray *items) {
     }
     NSUInteger added = 0;
     NSString *q = MTSQueryText();
-    if (atomic_load(&gMTSSearchOn) && q.length) {
-        for (MTIEntry *e in MTIMatch(MTSIndex(), q, kMTSMaxResults)) { [out addObject:MTSItem(e, NO, nil)]; added++; }
+    if (atomic_load(&gMTSSearchOn) && q.length) {   // (not the rows their page leaves out now -- Prewarm Apps where the prewarm block is not armed: MTSShownRows)
+        for (MTIEntry *e in MTSShownRows(MTIMatch(MTSIndex(), q, 0))) { if (added >= kMTSMaxResults) break; [out addObject:MTSItem(e, NO, nil)]; added++; }
     }
     atomic_store(&gMTSDelivered, atomic_load(&gMTSGeneration));
     if (added || dropped) MTSLog([NSString stringWithFormat:@"results: Apple's %lu, ours %lu (dropped %lu donated)", (unsigned long)(out.count - added), (unsigned long)added, (unsigned long)dropped]);
@@ -298,7 +298,8 @@ BOOL MTSTestCommand(NSString *cmd) {
     } else if ([c isEqualToString:@"rebuild"]) MTSRebuild(@"test");
     else if ([c hasPrefix:@"match "]) {   // the rows the Settings search would add for a text (titles only)
         NSMutableString *o = [NSMutableString string];
-        for (MTIEntry *e in MTIMatch(MTSIndex(), [c substringFromIndex:6], 30)) [o appendFormat:@" | %@ <%@>", e.title, e.crumb ?: @""];
+        NSArray<MTIEntry *> *hits = MTSShownRows(MTIMatch(MTSIndex(), [c substringFromIndex:6], 0));
+        for (NSUInteger i = 0; i < hits.count && i < 30; i++) [o appendFormat:@" | %@ <%@>", hits[i].title, hits[i].crumb ?: @""];
         MTSLog([@"match:" stringByAppendingString:o]);
     } else if ([c hasPrefix:@"panes"]) {   // every page in the index with its row count
         NSCountedSet *n = [NSCountedSet set]; for (MTIEntry *e in MTSIndex()) [n addObject:e.paneTitle ?: @"?"];

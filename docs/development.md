@@ -81,6 +81,7 @@ THEOS=~/theos gmake -j4 package FINALPACKAGE=1    # release build
 - The eject helper is signed with macOS's own `codesign`, which writes its entitlements in the form iPadOS 15 and later require (`ejecthelper/Makefile`).
 - The package step also builds `CrashMap.txt` from the debug symbols (`tools/make-crashmap.py`, rules in `tools/crashmap-rules.txt`). It tells crash recovery which switch turns off the code that crashed.
 - The package step also checks that the prewarm part carries the build ID its sources and build kind make (`tools/prewarm-part-id.sh`, `common/PrewarmPartID.h`). An install leaves dasd running only when the block it has already loaded carries that ID, and restarts it otherwise.
+- Each start of the prewarm part in dasd writes down whether it armed (`common/PrewarmArmed.h`). Settings, its search and Spotlight's Tweak Settings offer Prewarm Apps only where it did.
 
 ## Testing
 

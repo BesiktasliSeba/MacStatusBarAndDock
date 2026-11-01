@@ -126,6 +126,10 @@ static id DMNativeLayerHitTest(UIWindow *self, SEL _cmd, CGPoint p, UIEvent *e) 
     //  nothing, M1 30 Sep. Only the two bottom resize grips reach outside a window now.)
     CGPoint sp = [self convertPoint:p toCoordinateSpace:self.screen.coordinateSpace];
     if (sp.y < CGRectGetMinY(DMNativeDesktop())) return nil;
+    // (faded out of the way of the App Library, an icon menu, the App Switcher or Guided Access, DMNativeTick: no window takes a touch -- the windows'
+    //  own hit test let them go then, but the window under the point was still returned below, and the layer, over the Home Screen's window, took
+    //  every App Library tap over a native window: iPad 2 16.7.7, M1 15.6.1, 1.7.7 fix round)
+    if (gNativeAway) return nil;
     for (DMNativeWindow *w in [gNativeWindows reverseObjectEnumerator]) {
         if (w.hidden) continue;
         CGPoint q = [self convertPoint:p toView:w];
@@ -218,6 +222,12 @@ static CGFloat DMNativeFrontLevel(void) {
     //  iPadOS 15 menus open in the status bar's own window (999), under an active Finder (1034): the menu was hidden behind Finder, M1 30 Sep)
     UIWindow *menuHost = gOverlay.window;
     if (menuHost && menuHost != gNativeLayer) want = MIN(want, menuHost.windowLevel - 0.5);
+    // (a Dock icon's menu, open: just under the Dock's window that holds it, as the engines' windows go under the Dock then (kBelowDockLevel) --
+    //  an active native window stood at 1034 on Aerial, over the Dock's window (25), and Activity Monitor's own Dock menu opened behind its window:
+    //  its rows and a tap beside it went to the window, M1 15.6.1, 1.7.7 RC. Over it now, the Dock's window takes every touch it answers while the
+    //  menu is open (its hit test keeps them, 1.7.7 fix round).)
+    UIWindow *dockMenuHost = gDockMenuOpen ? gDockMenuWindow : nil;
+    if (dockMenuHost && dockMenuHost != gNativeLayer) want = MIN(want, dockMenuHost.windowLevel - 0.5);
     return want;
 }
 static void DMFinderPublishWindowCount(void);

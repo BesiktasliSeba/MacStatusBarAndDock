@@ -11,6 +11,7 @@
 #import <objc/runtime.h>
 #import <unistd.h>
 #import "TweakIndex.h"
+#import "PrewarmArmed.h"   // (Prewarm Apps: offered only where the prewarm block is armed -- MTSShownRows)
 
 #define kMTSSettingsDomain CFSTR("com.besiktasliseba.macsettings")
 #define kMTSBarDomain CFSTR("com.besiktasliseba.macstatusbar")
@@ -35,6 +36,13 @@ static BOOL MTSBool(CFStringRef key, CFStringRef domain, BOOL fallback) {
 static BOOL MTSBarInUse(void) { return MTSBool(CFSTR("tweakEnabled"), kMTSBarDomain, YES) && !MTSBool(CFSTR("stockStatusBar"), kMTSBarDomain, NO); }
 static BOOL MTSSpotlightSwitch(void) { return MTSBarInUse() && MTSBool(CFSTR("spotlightTweakSettings"), kMTSBarDomain, NO); }
 
+// The rows, without those of our own pages that their page leaves out right now (1.7.7 item 5): the Settings search and the Spotlight donation
+// list what the page shows. The index itself keeps every row, so a row that comes back needs no new index; this is asked at every search (cheap:
+// the state is read once). Now one: Windows & Multitasking > Prewarm Apps, left out where the prewarm block is not armed (common/PrewarmArmed.h;
+// the page: MSBRootListController.m).
+static NSArray<MTIEntry *> *MTSShownRows(NSArray<MTIEntry *> *rows) {
+    return !rows.count || MSBDPrewarmAppsShown() ? rows : MTIWithout(rows, @"MAC_WINDOWS", @"PREWARM_APPS");   // (the page's id, the row's id in Windows.plist)
+}
 static uint64_t MTSHomeBarPill(void) {   // (MacSettings.x HBPillState: 1 = this iPad has no home bar, so no Home Bar row)
     static int token = 0;
     if (!token) notify_register_check("com.besiktasliseba.machomebar.pill", &token);

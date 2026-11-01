@@ -36,8 +36,8 @@ check "no research probe left in the source (ScrollProbe.h, scrollrec_, amprobe)
 AM=../statusbar/ActivityMonitor.h
 check "Activity Monitor: the 2 s refresh fills the rows in place, the user's own changes (tab, sort, filter, search) reload" \
   "awk '/- \\(void\\)dm_took:/{f=1} f&&/\\[self dm_rebuildRowsInPlace:YES\\];/{print \"ok\"; exit}' $AM | grep -q ok && grep -q '^- (void)dm_rebuildRows { \\[self dm_rebuildRowsInPlace:NO\\]; }' $AM"
-check "  ... in place: no -reloadData unless the table's own count is not the old one; rows added or taken off the end without animation" \
-  "awk '/^- \\(void\\)dm_rebuildRowsInPlace:/{f=1} f&&/if \\(!inPlace \\|\\| \\[_list numberOfRowsInSection:0\\] != had\\) \\[_list reloadData\\];/{a=1} f&&/performWithoutAnimation/{b=1} f&&/^}/{print (a && b) ? \"ok\" : \"no\"; exit}' $AM | grep -q ok"
+check "  ... in place: no -reloadData unless the list is not settled on the old rows (test-actmonrefresh.sh: counted before the new rows go in); rows added or taken off the end without animation" \
+  "awk '/^- \\(void\\)dm_rebuildRowsInPlace:/{f=1} f&&/if \\(!settled\\) \\{ _rows = rows; \\[_list reloadData\\]; \\}/{a=1} f&&/performWithoutAnimation/{b=1} f&&/^}/{print (a && b) ? \"ok\" : \"no\"; exit}' $AM | grep -q ok"
 check "  ... a label is given only a text that differs (an equal one would be drawn again)" \
   "awk '/^- \\(void\\)dm_fillCell:/{f=1} f&&/if \\(!\\[l.text isEqualToString:vals\\[i\\]\\]\\) l.text = vals\\[i\\];/{print \"ok\"; exit}' $AM | grep -q ok"
 [ $fails = 0 ] && echo "test-scrollroute: all checks pass" || { echo "test-scrollroute: checks FAILED"; exit 1; }
