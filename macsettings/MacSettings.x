@@ -52,8 +52,7 @@ static uint64_t HBPillState(void) {
     return v;
 }
 
-#define kStateFile "/var/jb/var/lib/sshtoggled-engines/ssh-state"   // (root-owned since the hardening; the old file below is the fallback)
-#define kStateFileOld "/var/jb/var/mobile/.sshtoggle-state"
+#import "../common/SSHSwitch.h"   // (SSH's state, asking and its notification: one logic for this row, the menu bar and the Control Center control)
 #define kSwitchID @"SSH_TOGGLE"
 #define kHomeBarSwitchID @"HOMEBAR_TOGGLE"
 #define kAccessibilityGroupID @"MAC_SETTINGS_ACCESSIBILITY_GROUP"
@@ -68,13 +67,7 @@ static void MLog(NSString *line) {   // (debug builds only: release builds write
 }
 
 // ---- SSH ----
-static BOOL SSHOn(void) {
-    FILE *f = fopen(kStateFile, "r");
-    if (!f) f = fopen(kStateFileOld, "r");
-    if (!f) return YES;   // the helper has not written its state yet: OpenSSH is on unless it has been switched off
-    int c = fgetc(f); fclose(f);
-    return c != '0';
-}
+static BOOL SSHOn(void) { return MSBDSSHReadState().on != 0; }   // (no state yet -- the helper has not written it: OpenSSH is on unless switched off)
 // A 29 pt rounded square with a terminal glyph, like the icons of the other Settings rows.
 static UIImage *SSHIcon(void) {
     UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(29, 29)];
@@ -108,9 +101,7 @@ static BOOL HomeBarOn(void) {
 // The two switches' actions (the sidebar's rows, and General's on iPadOS 18 -- MSGeneralInsertOurRows).
 static void MSSetSSH(BOOL on) {
     // Hardening: the wanted state goes into our own preference FIRST; the helper reads it (a notification alone can no longer switch SSH).
-    CFPreferencesSetValue(CFSTR("sshWanted"), on ? kCFBooleanTrue : kCFBooleanFalse, CFSTR("com.besiktasliseba.macsettings"), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-    CFPreferencesSynchronize(CFSTR("com.besiktasliseba.macsettings"), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-    notify_post("com.besiktasliseba.sshtoggle.changed");
+    MSBDSSHAsk(on);
     MLog([NSString stringWithFormat:@"SSH switched %@", on ? @"on" : @"off"]);
 }
 static void MSSetHomeBar(BOOL on) {
@@ -258,7 +249,7 @@ static void MSResyncSidebar(id controller) {
     if (bluetooth != NSNotFound) {
         // A normal row of the same block as Bluetooth and VPN, between the two -- only when OpenSSH is actually installed (requested: with no SSH on
         // the device the row should not be there at all; it used to be shown greyed out). openssh-server is no longer a hard Depends either.
-        BOOL sshInstalled = access("/var/jb/usr/sbin/sshd", F_OK) == 0;
+        BOOL sshInstalled = MSBDSSHInstalled();
         NSUInteger next = bluetooth + 1;
         if (sshInstalled) {
             PSSpecifier *sw = [PSSpecifier preferenceSpecifierNamed:@"SSH" target:self set:@selector(dm_setSSH:specifier:) get:@selector(dm_sshEnabled:) detail:nil cell:6 edit:nil];   // 6 = a switch cell
@@ -322,7 +313,11 @@ static void DMRegisterSSHSync(void) {
     notify_register_dispatch("com.besiktasliseba.sshtoggle.enable", &tokenOn, dispatch_get_main_queue(), ^(int t) { DMRefreshSSHRowWhenDone(); });
     notify_register_dispatch("com.besiktasliseba.sshtoggle.disable", &tokenOff, dispatch_get_main_queue(), ^(int t) { DMRefreshSSHRowWhenDone(); });
     static int tokenChanged = 0;
-    notify_register_dispatch("com.besiktasliseba.sshtoggle.changed", &tokenChanged, dispatch_get_main_queue(), ^(int t) { DMRefreshSSHRowWhenDone(); });
+    notify_register_dispatch(kMSBDSSHAskNote, &tokenChanged, dispatch_get_main_queue(), ^(int t) { DMRefreshSSHRowWhenDone(); });
+    // 1.7.6: the helper says when it has written the state (common/SSHSwitch.h) -- the row follows at once, whoever switched (this row, the menu bar,
+    // the Control Center control); the read-again above stays for a helper from before (an update not finished yet)
+    static int tokenState = 0;
+    notify_register_dispatch(kMSBDSSHStateNote, &tokenState, dispatch_get_main_queue(), ^(int t) { DMRefreshSSHRow(); });
 }
 - (void)viewWillAppear:(BOOL)animated {
     %orig;
@@ -534,7 +529,7 @@ static void MSGeneralInsertOurRows(PSListController *list) {
     static MSGeneralRowsTarget *target;
     if (!target) target = [MSGeneralRowsTarget new];
     NSMutableArray *rows = [NSMutableArray array];
-    if (access("/var/jb/usr/sbin/sshd", F_OK) == 0) {
+    if (MSBDSSHInstalled()) {
         PSSpecifier *sw = [PSSpecifier preferenceSpecifierNamed:@"SSH" target:target set:@selector(dm_setSSH:specifier:) get:@selector(dm_sshEnabled:) detail:nil cell:6 edit:nil];
         [sw setIdentifier:kSwitchID];
         [sw setProperty:SSHIcon() forKey:@"iconImage"];

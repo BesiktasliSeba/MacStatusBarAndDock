@@ -112,6 +112,16 @@ def ram_cpu(px):
     c.rrect(11.6, 11.6, 17.4, 17.4, 0.9, w)                         # its die
     return c.out(px)
 
+def ssh(px):
+    # the SSH control (1.7.6): a terminal window on grey, as Settings' own SSH row draws it (terminal.fill on a dark grey square)
+    c = Canvas(px)
+    base(c, hexc('#636366'), hexc('#3A3A3C'))
+    c.rrect(5.4, 7.6, 23.6, 21.4, 2.6, hexc('#FFFFFF'))                       # the window
+    ink = hexc('#48484A')
+    c.poly([(8.6, 10.9), (10.1, 10.9), (13.0, 13.8), (10.1, 16.7), (8.6, 16.7), (11.5, 13.8)], ink)   # the prompt
+    c.rrect(13.9, 15.5, 19.4, 16.9, 0.5, ink)                                # the cursor
+    return c.out(px)
+
 def windows(px):
     c = Canvas(px)
     base(c, hexc('#8E8BFF'), hexc('#5450D4'))
@@ -145,6 +155,7 @@ ICONS = {
     'statusbar/macstatusbarprefs/Resources/icon': status_bar,
     'dock/dockmagnificationprefs/Resources/icon': dock,
     'ccmodule/Resources/SettingsIcon': ram_cpu,
+    'ccmodule/SSHResources/SettingsIcon': ssh,   # (the SSH control, 1.7.6: its row in Settings > Control Center on 15-17)
     'statusbar/macstatusbarprefs/Resources/windows': windows,   # the Windows & Multitasking page (its row's icon, from the Status Bar page's bundle)
     'statusbar/macstatusbarprefs/Resources/desktop': desktop,   # the Desktop page (1.7.5; its row's icon, from the same bundle)
 }

@@ -19,7 +19,7 @@ MacStatusBar&Dock
 │   │                       Mac Switcher, Finder, the desktop, the TextEdit and Activity Monitor windows, Wi-Fi menu, banners, Today panel
 │   ├── DockMagnification   Dock, magnification, recent apps, Launchpad, Downloads stack, Trash
 │   ├── Home Screen parts   MacIconLabels, MacPageDots, MacFolderMenu, MacAppSizeMenu, ForceQuitMenu, MacAddToFolder
-│   ├── MacRAMCPU           the RAM & CPU control, a module Control Center loads from the tweak's folder
+│   ├── MacRAMCPU, MacSSH   the RAM & CPU and SSH controls, modules Control Center loads from the tweak's folder
 │   └── MacLockStatusBar, MacCCGrabber, MacSettingsBadge, VolumeGlobeTweak
 │
 ├── Apps (every app that uses UIKit; MixAudio stays out of app extensions)
@@ -42,13 +42,13 @@ MacStatusBar&Dock
 │   └── ejects a USB drive or SD card for Finder's Eject and the Dock's Trash, which SpringBoard isn't allowed to do
 │
 └── Root helper (sshtoggled, a small launch daemon)
-    ├── SSH on and off from Settings
+    ├── SSH on and off from Settings and Control Center, with each switch's result in its state file for every switch to show
     ├── window-engine exclusivity (Choicy's list, or iCleaner Pro's renaming without Choicy)
     ├── a drive's eject for Finder: it checks that the folder is a connected drive's, then runs the eject helper
     └── gives the engines' settings back when the tweak is removed or switched off, and has SpringBoard lower a stored Auto-Lock of 2 hours then
 ```
 
-Every part can be traced to its process in `loader/Loader.c` (the `kPayloads` table), except MacRAMCPU, which Control Center loads itself, and the eject helper, a program of its own.
+Every part can be traced to its process in `loader/Loader.c` (the `kPayloads` table), except MacRAMCPU and MacSSH, which Control Center loads itself, and the eject helper, a program of its own.
 
 ## Where things are
 
@@ -57,7 +57,7 @@ Every part can be traced to its process in `loader/Loader.c` (the `kPayloads` ta
 | `loader/` | The two loaders and crash recovery's helpers |
 | `statusbar/` | MacStatusBarCore, the Status Bar and Windows & Multitasking pages, and MacPointer |
 | `dock/` | The Dock and its page |
-| `ccmodule/` | The RAM & CPU Control Center module |
+| `ccmodule/` | The RAM & CPU and SSH Control Center modules |
 | `ejecthelper/` | The eject helper (`msbdeject`), which the root helper runs for Finder's Eject and the Dock's Trash |
 | `macsettings/` | The Settings app changes, the smaller Home Screen parts and the root helper (`sshtoggled/`) |
 | `appbridge/` | MacAppBridge, which runs inside apps |

@@ -114,7 +114,7 @@ These show up only when they apply. While the Pointer and Keyboard rows are ther
 
 | Row | What it does | New install |
 |---|---|---|
-| SSH (when OpenSSH is installed) | Starts or stops OpenSSH. Your choice survives restarts, and installing the tweak never changes it. | As it was |
+| SSH (when OpenSSH is installed) | Starts or stops OpenSSH. Your choice survives restarts, and installing the tweak never changes it. The SSH control in Control Center does the same. | As it was |
 | Home Bar (iPads with a home bar) | Shows the home indicator line at the bottom edge. The swipe works either way. | Off (hidden) |
 | Pointer (with a trackpad or mouse) | The pointer page below, followed by Apple's Pointer Control and Trackpad & Mouse settings. | |
 | Keyboard (with a hardware keyboard) | The keyboard page below, followed by Apple's Hardware Keyboard settings. | |
@@ -146,7 +146,8 @@ For keyboards without a function row, like the original Magic Keyboard for iPad.
 
 | Control | What it does | New install |
 |---|---|---|
-| RAM & CPU | Available memory, used memory and the CPU load, in a 2 x 1 control. A tap opens the details (memory, CPU and uptime) with Open Activity Monitor. On iPadOS 18, add it with Add a Control (search for RAM). On iPadOS 15 to 17, add it in Settings > Control Center. With BigSurCenter it fits a square tile. With Memory Magic on iPadOS 15 to 17, a tap on its tile, which shows the same numbers, offers to put RAM & CPU in its place. | Not added |
+| RAM & CPU | Available memory, used memory and the CPU load, in a 2 x 1 control. A tap opens the details (memory, CPU and uptime) with Open Activity Monitor. On iPadOS 18, add it with Add a Control, where it's under Activity Monitor (or search for RAM). On iPadOS 15 to 17, add it in Settings > Control Center. With BigSurCenter it fits a square tile. With Memory Magic on iPadOS 15 to 17, a tap on its tile, which shows the same numbers, offers to put RAM & CPU in its place. | Not added |
+| SSH (when OpenSSH is installed) | Turns SSH on and off, as the SSH row in the Settings sidebar does; the two always agree, and so does the menu bar's SSH icon. A press and hold shows whether SSH is on, the iPad's address and the ssh command, and the reason when a switch didn't work. On iPadOS 18, add it with Add a Control, where it's under Settings. On iPadOS 15 to 17, add it in Settings > Control Center. With BigSurCenter on iPadOS 15 and 16 it works there too, and shows up after a respring. | Not added |
 
 ## Elsewhere in Settings
 

@@ -15,8 +15,8 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import "../common/OtherTweaks.h"
-#import "../common/CCModuleRegister.h"   // (RAM & CPU, our own Control Center module: its folder and identifier in Control Center's repository)
-#import "../common/CCTileKeep.h"         // (18: its tile put back where it was after SpringBoard ran without the module, e.g. in safe mode)
+#import "../common/CCModuleRegister.h"   // (RAM & CPU and SSH, our own Control Center modules: their folders and identifiers in Control Center's repository)
+#import "../common/CCTileKeep.h"         // (18: their tiles put back where they were after SpringBoard ran without the modules, e.g. in safe mode)
 
 // Settings > Status Bar > Control Center > Hide Grabber (1.3.3, audit L-2): on unless switched off -- the line stays hidden for everyone who had it
 // hidden before the switch existed. Read once and again after the switch posts its notification; switching it off shows the line again (the
@@ -57,14 +57,20 @@ static const void *kCCGHiddenByUsKey = &kCCGHiddenByUsKey;
 %ctor {
     %init;
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, CCGPrefsChanged, CFSTR("com.besiktasliseba.macccgrabber/prefsChanged"), NULL, CFNotificationSuspensionBehaviorCoalesce);
-    MSBDCCModuleRegisterWhenLoaded();   // (SpringBoard: Control Center and 18's "Add a Control" gallery can load RAM & CPU, ccmodule/)
-    // 18: RAM & CPU's tile back in its place if SpringBoard ran without the module (CCTileKeep.h) -- here, before Control Center reads its layout,
-    // and only when the module is in the repository now (all three methods taken: not while step 1b has it off, not without its bundle)
+    MSBDCCModuleRegisterWhenLoaded();   // (SpringBoard: Control Center and 18's "Add a Control" gallery can load RAM & CPU and SSH, ccmodule/)
+    // 18: our controls' tiles back in their places if SpringBoard ran without the modules (CCTileKeep.h) -- here, before Control Center reads its
+    // layout, and only for the controls in the repository now (all three methods taken; not one step 1b has off, nor one without its bundle, nor SSH
+    // without OpenSSH: their notes stay as they are)
     if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 18 && gMSBDCCHooked == 3) {
         void (^log)(NSString *) = nil;
 #if DEBUG
         log = ^(NSString *line) { MSBDCCDebugLog([@"[cctile] " stringByAppendingString:line]); };
 #endif
-        MSBDCCTileKeepStart(kMSBDCCTileStateFile, kMSBDCCTileNoteFile, kMSBDCCModuleID, log);
+        NSMutableArray *notes = [NSMutableArray array];
+        for (NSString *mid in gMSBDCCIdentifiers) [notes addObject:[mid isEqualToString:kMSBDCCSSHModuleID] ? kMSBDCCTileSSHNoteFile : kMSBDCCTileNoteFile];
+        MSBDCCTileKeepStartAll(kMSBDCCTileStateFile, notes, gMSBDCCIdentifiers, log);
     }
+    // Removal (the prerm's root helper, sshtoggled --uninstall): our controls out of the user's list of controls on 15-17 (CCModuleRegister.h)
+    int removingToken = 0;
+    notify_register_dispatch(kMSBDCCRemovingNote, &removingToken, dispatch_get_main_queue(), ^(int t) { MSBDCCTakeOursOutOfUserList(); });
 }

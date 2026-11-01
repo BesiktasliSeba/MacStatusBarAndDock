@@ -469,3 +469,111 @@ static void DMALApplyPref(BOOL want) {
     DMLog([NSString stringWithFormat:@"[applib] Activity Monitor in the App Library %@", on ? @"on" : @"off"]);
     DMAMApply(on);   // (the Dock follows: its hooks the first time, out of the Dock when off -- the record kept --, back when on; ActMonDock.h)
 }
+
+// ---- iPadOS 18's controls gallery: the sections of our controls (1.7.6 items 1, 3) ----
+// "Add a Control" lists every control that is not in one of Apple's own sections under its app: RAM & CPU's app is Activity Monitor, SSH's is Settings
+// (their module settings, common/CCModuleRegister.h -- made as Apple's DefaultModuleSettings.plist makes theirs). Each app's section is an
+// SBHApplicationWidgetCollection (SpringBoardHome) made by the gallery manager in ControlCenterUIServices with a bare leaf icon of its own
+// (-initWithIcon:galleryItems:vendorName:uniqueIdentifier:; for a module's section without even the app's identifier), and the section's header
+// (-[SBHAddWidgetSheetViewController collectionView:cellForItemAtIndexPath:itemIdentifier:], 18.5) shows: the section's own image when it has one
+// (Apple's named sections, -initWithCustomImage:...), else the image of its type, else the INSTALLED app's icon for the icon's applicationBundleID
+// (SBHGetApplicationIconImageWithTraitCollection) -- and as its title the icon's name, else the first control's app name. The section holds its
+// icon and its image only weakly. Ours came as a blank icon titled "RAM & CPU" and one titled "Settings" (third-party modules: a blank one titled
+// "SpringBoard"; A12Z, 1 Nov). So:
+//  - Activity Monitor (RAM & CPU): no app is installed under its identifier, so the section is made as Apple makes its own named sections, with its
+//    own image -- our Activity Monitor icon (the App Library's picture) -- and its name (nothing installed, nothing in LaunchServices).
+//    Independent of Show in App Library: the control belongs to Activity Monitor either way -- its module settings ask this part
+//    (MSBDCCActivityMonitorSectionReady: this hook is in), not the App Library's icon class, which exists only while that setting is on (with it
+//    off RAM & CPU stayed with SpringBoard, and SpringBoard's whole section, other tweaks' controls too, was named Activity Monitor: 1.7.6 review).
+//    Only the section made for Activity Monitor (common/CCModuleList.h, MSBDCCGallerySectionIsActivityMonitor): never SpringBoard's.
+//  - Settings (SSH): the Settings app's icon from SpringBoard's own icon model (its name; the installed Settings app's picture).
+// Every other section is made as the gallery makes it.
+static NSArray *DMALGalleryModules(id items) {   // (the module identifiers of a gallery section's controls; [NSNull null] for one without)
+    if (![items isKindOfClass:[NSArray class]]) return nil;
+    NSMutableArray *out = [NSMutableArray array];
+    for (id i in (NSArray *)items) {
+        id m = [i respondsToSelector:NSSelectorFromString(@"moduleIdentifier")] ? DMCall(i, @"moduleIdentifier") : nil;
+        [out addObject:[m isKindOfClass:[NSString class]] ? m : [NSNull null]];
+    }
+    return out;
+}
+static NSString *DMALGalleryOurs(NSArray *modules) {   // (the control of ours a gallery section holds; nil for every other section)
+    for (id m in modules) if ([m isEqual:kMSBDCCModuleID] || [m isEqual:kMSBDCCSSHModuleID]) return m;
+    return nil;
+}
+static BOOL gDMALGalleryReady;   // (DMALGalleryIconInit's hook is in: RAM & CPU's module settings give it Activity Monitor as its app)
+__attribute__((visibility("default"))) BOOL MSBDCCActivityMonitorSectionReady(void) { return gDMALGalleryReady; }   // (kMSBDCCActivityMonitorSectionFn)
+static id (*o_DMALCollIcon)(id, SEL, id, id, id, id);
+static __thread BOOL tDMALMakingOurs;   // (our own -initWithCustomImage:... comes back through here: made as asked then)
+static id DMALCollIcon(id self, SEL _cmd, id icon, id items, id vendor, id uid) {
+    static Class leaf; if (!leaf) leaf = objc_getClass("SBLeafIcon");
+    // (a section is made again from the one shown -- with its icon, nil for a named one, and its name set afterwards: ours is made with its own
+    //  image each time, A12Z)
+    BOOL bare = !tDMALMakingOurs && (!icon || (object_getClass(icon) == leaf && !DMCall(icon, @"activeDataSource")));
+    NSArray *modules = bare ? DMALGalleryModules(items) : nil;
+    NSString *ours = DMALGalleryOurs(modules);
+#if DEBUG
+    if (ours) DMLog([NSString stringWithFormat:@"[ccgallery] made: %@ icon %@ leaf %@ app %@ vendor %@ uid %@ controls %@", ours, icon ? NSStringFromClass([icon class]) : @"none", DMCall(icon, @"leafIdentifier"), DMCall(icon, @"applicationBundleID"), vendor, uid, [modules componentsJoinedByString:@" "]]);
+#endif
+    SEL custom = NSSelectorFromString(@"initWithCustomImage:iconBackgroundColor:displayName:galleryItems:vendorName:uniqueIdentifier:");
+    if ([ours isEqualToString:kMSBDCCModuleID] && [self respondsToSelector:custom]
+        && MSBDCCGallerySectionIsActivityMonitor(icon ? DMCall(icon, @"applicationBundleID") : nil, modules)) {
+        // (kept here: a section holds its image only weakly, as its icon -- Apple's are UIKit's own symbol images, kept by UIKit; one made only for it
+        //  was gone before its header was drawn: a blank icon, A12Z)
+        static UIImage *picture;
+        if (!picture) picture = DMALActMonImage(CGSizeMake(40.0, 40.0), [UIScreen mainScreen].scale, 9.0);   // (an app icon's size in the header, its corners)
+        if (picture) {
+            DM_FEATURE_MARK("actmon-cc-gallery");
+            DMLog(@"[applib] Control Center's gallery: RAM & CPU's section made as Activity Monitor, with its picture");
+            tDMALMakingOurs = YES;
+            id made = ((id (*)(id, SEL, id, id, id, id, id, id))objc_msgSend)(self, custom, picture, nil, kDMALActMonName, items, vendor, uid);   // (it comes back here with no icon)
+            tDMALMakingOurs = NO;
+            return made;
+        }
+    } else if ([ours isEqualToString:kMSBDCCSSHModuleID]) {
+        id model = DMCall(DMCall(objc_getClass("SBIconController"), @"sharedInstance"), @"model");
+        SEL byID = NSSelectorFromString(@"applicationIconForBundleIdentifier:");
+        id settings = [model respondsToSelector:byID] ? ((id (*)(id, SEL, id))objc_msgSend)(model, byID, kMSBDCCSettingsAppID) : nil;
+        if (settings) {
+            DM_FEATURE_MARK("ssh-cc-gallery");
+            DMLog([NSString stringWithFormat:@"[applib] Control Center's gallery: SSH's section made with Settings' own icon (%@)", NSStringFromClass([settings class])]);
+            icon = settings;
+        }
+    }
+    return o_DMALCollIcon(self, _cmd, icon, items, vendor, uid);
+}
+#if DEBUG
+// ccgallery (debug trigger): every app section of an open "Add a Control" sheet, as the sheet holds them -- read-only
+static NSMutableSet *gDMALGallerySeen;   // (one dump: each sheet once)
+static void DMALGalleryDumpView(UIView *v, int depth) {
+    if (depth > 40) return;
+    for (UIResponder *r = v.nextResponder; r; r = r.nextResponder) {
+        if (![NSStringFromClass([r class]) containsString:@"AddSheetViewController"] && ![NSStringFromClass([r class]) containsString:@"AddWidgetSheetViewController"]) continue;
+        NSMutableSet *seen = gDMALGallerySeen;
+        NSValue *key = [NSValue valueWithNonretainedObject:r];
+        if ([seen containsObject:key]) break;
+        [seen addObject:key];
+        for (NSString *ivar in @[@"_applicationWidgetCollections", @"_customApplicationWidgetCollections", @"_favoredApplicationWidgetCollections"]) {
+            Ivar iv = class_getInstanceVariable([r class], ivar.UTF8String);
+            id list = iv ? object_getIvar(r, iv) : nil;
+            if (![list respondsToSelector:@selector(count)]) continue;
+            DMLog([NSString stringWithFormat:@"[ccgallery] %@ %@: %lu", NSStringFromClass([r class]), ivar, (unsigned long)[list count]]);
+            for (id c in list) {
+                id icon = DMCall(c, @"icon");
+                DMLog([NSString stringWithFormat:@"[ccgallery]   %p \"%@\" icon %@ leaf %@ app %@ type %@ own image %d uid %@ coll %@ container %@ iconapp %@ vendor %@ controls %@", c, DMCall(c, @"displayName"), icon ? NSStringFromClass([icon class]) : @"none", icon ? DMCall(icon, @"leafIdentifier") : nil, icon ? DMCall(icon, @"applicationBundleID") : nil, DMCall(c, @"typeIdentifier"), DMCall(c, @"customImage") != nil, DMCall(c, @"uniqueIdentifier"), DMCall(c, @"collectionIdentifier"), DMCall(c, @"containerName"), DMCall(c, @"iconImageApplicationBundleIdentifier"), DMCall(c, @"vendorName"), [DMALGalleryModules(DMCall(c, @"widgetDescriptors")) componentsJoinedByString:@" "]]);
+            }
+        }
+        break;
+    }
+    for (UIView *s in v.subviews) DMALGalleryDumpView(s, depth + 1);
+}
+static void DMALGalleryDump(void) {
+    gDMALGallerySeen = [NSMutableSet set];
+    for (UIWindow *w in DMAllWindows()) DMALGalleryDumpView(w, 0);
+    DMLog(@"[ccgallery] done");
+}
+#endif
+static void DMALGalleryIconInit(void) {   // (SpringBoard's start, iPadOS 18 and later: the gallery is 18's)
+    if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion < 18) return;
+    gDMALGalleryReady = DMALHook(@"SBHApplicationWidgetCollection", @"initWithIcon:galleryItems:vendorName:uniqueIdentifier:", @"@@:@@@@", (IMP)DMALCollIcon, (IMP *)&o_DMALCollIcon);
+}

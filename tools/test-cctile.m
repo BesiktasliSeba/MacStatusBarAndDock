@@ -69,6 +69,40 @@ static BOOL Write(NSDictionary *d, NSString *path, BOOL inPlace) {
     fclose(f); return ok;
 }
 
+// 1.7.6: the same layout with the SSH control's tile too (H, 1 x 1, between Low Power and RAM & CPU; in the rotated order before RAM & CPU)
+#define SSH @"com.besiktasliseba.macstatusbaranddock.ssh"
+static NSDictionary *Layout2(void) {
+    NSDictionary *l = Layout();
+    NSMutableArray *p1 = [l[@"iconLists"][0] mutableCopy];
+    [p1 insertObject:Tile(@"H", SSH, @"small") atIndex:p1.count - 1];
+    NSMutableDictionary *m = [l mutableCopy], *meta = [l[@"listMetadata"] mutableCopy];
+    NSMutableArray *rot = [l[@"listMetadata"][@"P1"][@"rotatedOrder"] mutableCopy];
+    [rot insertObject:@"H" atIndex:[rot indexOfObject:@"R"]];
+    meta[@"P1"] = @{@"rotatedOrder": rot};
+    m[@"listMetadata"] = meta;
+    m[@"iconLists"] = @[p1, l[@"iconLists"][1], l[@"iconLists"][2]];
+    return m;
+}
+static NSDictionary *WithoutModule(NSDictionary *state, NSString *module) {   // (as 18 leaves the layout without that module: its tiles out of pages and orders)
+    NSMutableDictionary *m = [state mutableCopy]; NSMutableArray *pages = [NSMutableArray array]; NSMutableSet *gone = [NSMutableSet set];
+    for (NSArray *page in state[@"iconLists"]) {
+        NSMutableArray *kept = [NSMutableArray array];
+        for (NSDictionary *i in page) { if (MSBDCCTileIsOurs(i, module)) [gone addObject:i[@"displayIdentifier"]]; else [kept addObject:i]; }
+        [pages addObject:kept];
+    }
+    NSMutableDictionary *meta = [state[@"listMetadata"] mutableCopy];
+    for (NSString *k in [meta allKeys]) { NSMutableArray *o = [meta[k][@"rotatedOrder"] mutableCopy]; [o removeObjectsInArray:gone.allObjects]; meta[k] = @{@"rotatedOrder": o}; }
+    m[@"iconLists"] = pages; m[@"listMetadata"] = meta;
+    return m;
+}
+static int Start2(NSString *statePath, NSString *noteRAM, NSString *noteSSH, BOOL sshToo) {   // (both controls loading, or RAM & CPU alone)
+    void (^log)(NSString *) = ^(NSString *line) { printf("  [cctile] %s\n", line.UTF8String); fflush(stdout); };
+    if (sshToo) MSBDCCTileKeepStartAll(statePath, @[noteRAM, noteSSH], @[OURS, SSH], log);
+    else MSBDCCTileKeepStartAll(statePath, @[noteRAM], @[OURS], log);
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
+    return 0;
+}
+
 static int Start(NSString *statePath, NSString *notePath, NSString *then) {
     MSBDCCTileKeepStart(statePath, notePath, OURS, ^(NSString *line) { printf("  [cctile] %s\n", line.UTF8String); fflush(stdout); });
     [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
@@ -103,6 +137,13 @@ static int Start(NSString *statePath, NSString *notePath, NSString *then) {
 int main(int argc, char **argv) {
     @autoreleasepool {
         if (argc >= 4 && !strcmp(argv[1], "start")) return Start(@(argv[2]), @(argv[3]), argc > 4 ? @(argv[4]) : nil);
+        if (argc >= 5 && !strcmp(argv[1], "start2")) return Start2(@(argv[2]), @(argv[3]), @(argv[4]), argc <= 5 || strcmp(argv[5], "ramonly") != 0);
+        if (argc >= 3 && !strcmp(argv[1], "layout2")) {   // (both controls' tiles; "pruned": a SpringBoard without either; "sshpruned": without SSH's module only)
+            NSDictionary *l = Layout2();
+            if (argc > 3 && !strcmp(argv[3], "pruned")) l = WithoutModule(WithoutModule(l, OURS), SSH);
+            if (argc > 3 && !strcmp(argv[3], "sshpruned")) l = WithoutModule(l, SSH);
+            return MSBDCCTileWrite(l, @(argv[2]), NSPropertyListBinaryFormat_v1_0) ? 0 : 1;
+        }
         if (argc >= 3 && !strcmp(argv[1], "layout")) {   // (the script's files: the layout, or as a SpringBoard without our module leaves it)
             NSDictionary *l = Layout(); if (argc > 3 && !strcmp(argv[3], "pruned")) l = Pruned(l, YES);
             if (argc > 3 && !strcmp(argv[3], "added")) l = WithPage(Pruned(l, YES), 0, [Pruned(l, YES)[@"iconLists"][0] arrayByAddingObject:Tile(@"Z", @"com.apple.control-center.FlashlightModule", @"small")]);

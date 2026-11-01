@@ -2,6 +2,17 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.7.6
+
+### New
+- An SSH control for Control Center, when OpenSSH is installed: a tap turns SSH on or off, and the SSH switch in Settings and the menu bar's SSH icon follow. A press and hold shows whether SSH is on, the iPad's address and the ssh command, and the reason when a switch didn't work. Add it in Settings > Control Center on iPadOS 15 to 17, or with Add a Control on iPadOS 18, where it's under Settings. With BigSurCenter on iPadOS 15 and 16 it works there too.
+
+### Improvements
+- iPadOS 18: in Add a Control, RAM & CPU is listed under Activity Monitor, with its icon, instead of under SpringBoard.
+
+### Fixes
+- Finder: an app dragged from Applications to the desktop, into a folder or onto the Downloads stack arrives as the app, with its icon, and opens it. It's named as the app's own folder, for example MobileTimer.app for Clock. Before, you got a folder with the app inside. It's a copy that opens the installed app, so after the app updates it still opens the current version, and moving it to the Trash leaves the app installed.
+
 ## 1.7.5
 
 ### New

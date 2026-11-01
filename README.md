@@ -121,7 +121,7 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 - Keyboard extras for keyboards without a function row
 - Spotlight extras you can turn on: tweak settings, actions, your windows, and your Desktop and Downloads files
 - Longer Auto-Lock times, up to 2 hours, which the tweak makes iPadOS keep (on its own, iPadOS takes anything over an hour for Never)
-- An SSH switch and Ethernet settings
+- An SSH switch, in Settings and in Control Center, and Ethernet settings
 - VoiceOver labels for the menu bar, the traffic lights and Finder, and Reduce Motion support
 
 ### Built to be safe

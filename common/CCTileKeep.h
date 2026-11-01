@@ -1,4 +1,5 @@
-// CCTileKeep.h -- iPadOS 18: RAM & CPU's tile keeps its place in Control Center through a SpringBoard that ran without our module.
+// CCTileKeep.h -- iPadOS 18: RAM & CPU's tile (and, from 1.7.6, the SSH control's: each with a note of its own) keeps its place in Control Center
+// through a SpringBoard that ran without our module.
 // 18 keeps Control Center's layout in SpringBoardHome's icon state (ControlsIconState.plist: pages of tiles, each tile a module with a grid size)
 // and drops every tile whose module is not there when SpringBoard reads it -- ours in the crash guard's safe mode, in ElleKit's Safe Mode (18.5
 // enters it after one SpringBoard crash, before our guard has counted two), with the MacStatusBar line switched off in Choicy or iCleaner Pro, or
@@ -18,7 +19,8 @@
 #include <sys/stat.h>
 
 #define kMSBDCCTileStateFile @"/var/mobile/Library/ControlCenter/ControlsIconState.plist"   // (18.5: Control Center's layout, SpringBoard's)
-#define kMSBDCCTileNoteFile @"/var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-CCTile.plist"   // (ours: where the tiles were)
+#define kMSBDCCTileNoteFile @"/var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-CCTile.plist"   // (ours: where the tiles were -- RAM & CPU's)
+#define kMSBDCCTileSSHNoteFile @"/var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-CCTile-SSH.plist"   // (the SSH control's, 1.7.6)
 
 // A tile's identifier in the layout (nil when it has none).
 static inline NSString *MSBDCCTileID(id icon) {
@@ -280,32 +282,47 @@ static inline MSBDCCTileStamp MSBDCCTileStampOf(NSString *path) {
 static inline BOOL MSBDCCTileStampSame(MSBDCCTileStamp a, MSBDCCTileStamp b) {
     return a.present == b.present && a.ino == b.ino && a.sec == b.sec && a.nsec == b.nsec && a.size == b.size;
 }
-static NSString *gMSBDCCTileState, *gMSBDCCTileNotePath, *gMSBDCCTileModule;
+static NSString *gMSBDCCTileState;
+static NSArray<NSString *> *gMSBDCCTileModules, *gMSBDCCTileNotePaths;   // (1.7.6: each control of ours, RAM & CPU and SSH, with a note of its own)
 static void (^gMSBDCCTileLog)(NSString *);
 #define MSBDCCTileLog(...) do { if (gMSBDCCTileLog) gMSBDCCTileLog([NSString stringWithFormat:__VA_ARGS__]); } while (0)
 static dispatch_queue_t gMSBDCCTileQueue;
 static dispatch_source_t gMSBDCCTileFolderWatch, gMSBDCCTileFileWatch;
-static NSDictionary *gMSBDCCTileNoted;     // (on the queue: the note last written, or the one kept)
-static MSBDCCTileStamp gMSBDCCTileSeen;    // (on the queue: the layout file the note stands for -- another change in the folder is not one of it)
+static NSMutableDictionary<NSString *, NSDictionary *> *gMSBDCCTileNoted;   // (on the queue: per control, the note last written, or the one kept)
+static MSBDCCTileStamp gMSBDCCTileSeen;    // (on the queue: the layout file the notes stand for -- another change in the folder is not one of it)
 static unsigned long gMSBDCCTileChanges;  // (on the queue: one per change seen, for the half second)
 static int gMSBDCCTileRetries;            // (on the queue: a note that could not be written, tried again every 2 s, 5 times at most)
-static void MSBDCCTileNoteFromLayout(NSString *when, BOOL always) {   // (on the queue)
+static NSString *MSBDCCTileWhen(NSString *when, NSUInteger i) {   // (one control: the words as before 1.7.6; more: which one)
+    return gMSBDCCTileModules.count > 1 ? [NSString stringWithFormat:@"%@ (%@)", when, gMSBDCCTileModules[i].pathExtension] : when;
+}
+// (`kept`: controls whose note stays as it is this time -- at the start, a note whose tiles could not go back: only a save of the layout replaces it)
+static void MSBDCCTileNoteFromLayoutKeeping(NSString *when, BOOL always, NSSet *kept) {   // (on the queue)
     MSBDCCTileStamp now = MSBDCCTileStampOf(gMSBDCCTileState);
     if (!always && MSBDCCTileStampSame(now, gMSBDCCTileSeen)) return;   // (the layout file is as it was: another file of that folder changed)
-    NSDictionary *note = MSBDCCTileNote(MSBDCCTileRead(gMSBDCCTileState, NULL, NULL), gMSBDCCTileModule);
-    if (!note) { MSBDCCTileLog(@"%@: the layout could not be read -- the note stays as it was", when); return; }
-    if ([note isEqual:gMSBDCCTileNoted]) { gMSBDCCTileSeen = now; return; }
-    if (!MSBDCCTileWrite(note, gMSBDCCTileNotePath, NSPropertyListBinaryFormat_v1_0)) {
-        MSBDCCTileLog(@"%@: the note could not be written%@", when, gMSBDCCTileRetries < 5 ? @" -- tried again in 2 s" : @"");
-        if (gMSBDCCTileRetries++ < 5) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), gMSBDCCTileQueue, ^{ MSBDCCTileNoteFromLayout(@"again", YES); });
+    NSDictionary *layout = MSBDCCTileRead(gMSBDCCTileState, NULL, NULL);
+    BOOL failed = NO;
+    for (NSUInteger i = 0; i < gMSBDCCTileModules.count; i++) {
+        if ([kept containsObject:gMSBDCCTileModules[i]]) continue;
+        NSDictionary *note = MSBDCCTileNote(layout, gMSBDCCTileModules[i]);
+        if (!note) { MSBDCCTileLog(@"%@: the layout could not be read -- the note stays as it was", MSBDCCTileWhen(when, i)); return; }
+        if ([note isEqual:gMSBDCCTileNoted[gMSBDCCTileModules[i]]]) continue;
+        if (!MSBDCCTileWrite(note, gMSBDCCTileNotePaths[i], NSPropertyListBinaryFormat_v1_0)) {
+            MSBDCCTileLog(@"%@: the note could not be written%@", MSBDCCTileWhen(when, i), gMSBDCCTileRetries < 5 ? @" -- tried again in 2 s" : @"");
+            failed = YES; continue;
+        }
+        gMSBDCCTileNoted[gMSBDCCTileModules[i]] = note;
+        if (!gMSBDCCTileLog) continue;
+        NSMutableArray *where = [NSMutableArray array];
+        for (NSDictionary *t in note[@"tiles"]) [where addObject:[NSString stringWithFormat:@"page %ld at %ld after %@", [t[@"page"] longValue] + 1, [t[@"index"] longValue] + 1, t[@"after"] ?: @"nothing"]];
+        MSBDCCTileLog(@"%@: noted, placed %d%@%@", MSBDCCTileWhen(when, i), [note[@"placed"] boolValue], where.count ? @": " : @"", [where componentsJoinedByString:@"; "]);
+    }
+    if (failed) {
+        if (gMSBDCCTileRetries++ < 5) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), gMSBDCCTileQueue, ^{ MSBDCCTileNoteFromLayoutKeeping(@"again", YES, kept); });
         return;
     }
-    gMSBDCCTileNoted = note; gMSBDCCTileSeen = now; gMSBDCCTileRetries = 0;
-    if (!gMSBDCCTileLog) return;
-    NSMutableArray *where = [NSMutableArray array];
-    for (NSDictionary *t in note[@"tiles"]) [where addObject:[NSString stringWithFormat:@"page %ld at %ld after %@", [t[@"page"] longValue] + 1, [t[@"index"] longValue] + 1, t[@"after"] ?: @"nothing"]];
-    MSBDCCTileLog(@"%@: noted, placed %d%@%@", when, [note[@"placed"] boolValue], where.count ? @": " : @"", [where componentsJoinedByString:@"; "]);
+    gMSBDCCTileSeen = now; gMSBDCCTileRetries = 0;
 }
+static void MSBDCCTileNoteFromLayout(NSString *when, BOOL always) { MSBDCCTileNoteFromLayoutKeeping(when, always, nil); }
 static void MSBDCCTileChanged(void);
 static void MSBDCCTileWatchFile(void) {   // (on the queue: the file that is there now -- after a change it may be a new one)
     if (gMSBDCCTileFileWatch) { dispatch_source_cancel(gMSBDCCTileFileWatch); gMSBDCCTileFileWatch = nil; }
@@ -325,27 +342,44 @@ static void MSBDCCTileChanged(void) {   // (on the queue)
     MSBDCCTileNoteFromLayout(@"saved", NO);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), gMSBDCCTileQueue, ^{ if (mine == gMSBDCCTileChanges) MSBDCCTileNoteFromLayout(@"saved", NO); });
 }
-static void MSBDCCTileKeepStart(NSString *statePath, NSString *notePath, NSString *moduleID, void (^log)(NSString *)) {
-    if (gMSBDCCTileQueue || !statePath.length || !notePath.length || !moduleID.length) return;
-    gMSBDCCTileState = [statePath copy]; gMSBDCCTileNotePath = [notePath copy]; gMSBDCCTileModule = [moduleID copy]; gMSBDCCTileLog = [log copy];
+// Each control in `moduleIDs` with its note at the same place in `notePaths` (1.7.6); one layout written at most.
+static void MSBDCCTileKeepStartAll(NSString *statePath, NSArray<NSString *> *notePaths, NSArray<NSString *> *moduleIDs, void (^log)(NSString *)) {
+    if (gMSBDCCTileQueue || !statePath.length || !moduleIDs.count || notePaths.count != moduleIDs.count) return;
+    for (NSUInteger i = 0; i < moduleIDs.count; i++) if (!moduleIDs[i].length || !notePaths[i].length) return;
+    gMSBDCCTileState = [statePath copy]; gMSBDCCTileNotePaths = [notePaths copy]; gMSBDCCTileModules = [moduleIDs copy]; gMSBDCCTileLog = [log copy];
+    gMSBDCCTileNoted = [NSMutableDictionary dictionary];
     gMSBDCCTileQueue = dispatch_queue_create("com.besiktasliseba.macstatusbaranddock.cctile", DISPATCH_QUEUE_SERIAL);
     NSPropertyListFormat format = NSPropertyListBinaryFormat_v1_0;
-    BOOL noteUnreadable = NO;
-    NSDictionary *state = MSBDCCTileRead(statePath, &format, NULL), *note = MSBDCCTileRead(notePath, NULL, &noteUnreadable);
-    BOOL keep = NO;   // (a note whose tiles could not go back stays, for a later start -- until the layout itself is saved with our module there)
-    if (state && note) {
-        NSString *why = nil;
-        NSDictionary *back = MSBDCCTilePutBack(state, note, moduleID, &why);
-        if (back && MSBDCCTileWrite(back, statePath, format)) MSBDCCTileLog(@"start: %@", why);
-        else if (back) { MSBDCCTileLog(@"start: the layout could not be written -- not put back"); keep = YES; }
-        else { MSBDCCTileLog(@"start: %@", why); keep = [note[@"placed"] isKindOfClass:[NSNumber class]] && [note[@"placed"] boolValue] && ![why isEqualToString:@"the tile is there"]; }
-    } else if (noteUnreadable) {   // (there, but not readable now: nothing put back, and not written over -- a later start reads it)
-        MSBDCCTileLog(@"start: the note is there but could not be read -- nothing put back, the note kept as it is");
-        keep = YES;
-    } else MSBDCCTileLog(state ? @"start: no note yet" : @"start: no layout (Control Center has not saved one, or it could not be read)");
+    NSDictionary *state = MSBDCCTileRead(statePath, &format, NULL), *layout = state;
+    NSMutableDictionary *kept = [NSMutableDictionary dictionary];   // (a note whose tiles could not go back stays, for a later start -- until the layout itself is saved)
+    NSMutableArray *putBack = [NSMutableArray array], *said = [NSMutableArray array];
+    for (NSUInteger i = 0; i < moduleIDs.count; i++) {
+        BOOL noteUnreadable = NO;
+        NSDictionary *note = MSBDCCTileRead(notePaths[i], NULL, &noteUnreadable);
+        NSString *when = MSBDCCTileWhen(@"start", i);
+        if (state && note) {
+            NSString *why = nil;
+            NSDictionary *back = MSBDCCTilePutBack(layout, note, moduleIDs[i], &why);
+            if (back) { layout = back; [putBack addObject:@(i)]; [said addObject:[NSString stringWithFormat:@"%@: %@", when, why]]; kept[moduleIDs[i]] = note; }
+            else {
+                MSBDCCTileLog(@"%@: %@", when, why);
+                if ([note[@"placed"] isKindOfClass:[NSNumber class]] && [note[@"placed"] boolValue] && ![why isEqualToString:@"the tile is there"]) kept[moduleIDs[i]] = note;
+            }
+        } else if (noteUnreadable) {   // (there, but not readable now: nothing put back, and not written over -- a later start reads it)
+            MSBDCCTileLog(@"%@: the note is there but could not be read -- nothing put back, the note kept as it is", when);
+            kept[moduleIDs[i]] = note ?: @{};
+        } else MSBDCCTileLog(@"%@", state ? [when stringByAppendingString:@": no note yet"] : [when stringByAppendingString:@": no layout (Control Center has not saved one, or it could not be read)"]);
+    }
+    if (putBack.count) {
+        if (MSBDCCTileWrite(layout, statePath, format)) {
+            for (NSString *line in said) MSBDCCTileLog(@"%@", line);
+            for (NSNumber *i in putBack) [kept removeObjectForKey:moduleIDs[i.unsignedIntegerValue]];   // (back in the layout: noted from it below)
+        } else for (NSNumber *i in putBack) MSBDCCTileLog(@"%@: the layout could not be written -- not put back", MSBDCCTileWhen(@"start", i.unsignedIntegerValue));
+    }
     dispatch_sync(gMSBDCCTileQueue, ^{
-        if (keep) { gMSBDCCTileNoted = note; gMSBDCCTileSeen = MSBDCCTileStampOf(statePath); }   // (the layout as it is now: only a save of it replaces the note)
-        else MSBDCCTileNoteFromLayout(@"start", YES);
+        if (kept.count) [gMSBDCCTileNoted addEntriesFromDictionary:kept];   // (only a save of the layout replaces these)
+        if (kept.count < moduleIDs.count) MSBDCCTileNoteFromLayoutKeeping(@"start", YES, [NSSet setWithArray:kept.allKeys]);
+        else gMSBDCCTileSeen = MSBDCCTileStampOf(statePath);   // (the layout as it is now: only a save of it replaces the notes)
         int fd = open(statePath.stringByDeletingLastPathComponent.fileSystemRepresentation, O_EVTONLY);
         dispatch_source_t s = fd >= 0 ? dispatch_source_create(DISPATCH_SOURCE_TYPE_VNODE, (uintptr_t)fd, DISPATCH_VNODE_WRITE, gMSBDCCTileQueue) : nil;
         if (s) {
@@ -356,4 +390,7 @@ static void MSBDCCTileKeepStart(NSString *statePath, NSString *notePath, NSStrin
         } else if (fd >= 0) close(fd);
         MSBDCCTileWatchFile();
     });
+}
+static inline void MSBDCCTileKeepStart(NSString *statePath, NSString *notePath, NSString *moduleID, void (^log)(NSString *)) {   // (one control: as before 1.7.6)
+    if (notePath.length && moduleID.length) MSBDCCTileKeepStartAll(statePath, @[notePath], @[moduleID], log);
 }

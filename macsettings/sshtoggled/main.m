@@ -52,12 +52,15 @@
 #include "../../statusbar/SMSwitchOn.h"     // (DMSMConsentFrom: the Stage Manager consent values)
 #include "../../common/DriveEject.h"       // (a drive ejected for Finder: the request, its checks, msbdeject's run and the answer, Mac-tested)
 #include "../AutoLockLongest.h"            // (MS_AUTOLOCK_CHECK: removal and switch-off tell SpringBoard to look at the stored Auto-Lock)
+#include "../../common/SSHSwitch.h"        // (the SSH state every switch reads, and its notification, 1.7.6; Mac-tested)
+#include "../../common/CCModuleList.h"     // (our Control Center controls' identifiers: taken out of the user's lists on removal)
 #include <dlfcn.h>
 #include <grp.h>
 
 extern char **environ;
 
 // ---- 1. SSH ----------------------------------------------------------------------------------------------------------------------------------------
+static void ELog(NSString *fmt, ...) NS_FORMAT_FUNCTION(1, 2);
 #define LAUNCHCTL "/var/jb/usr/bin/launchctl"
 #define SSHD_PLIST "/var/jb/Library/LaunchDaemons/com.openssh.sshd.plist"
 #define STATE_FILE "/var/jb/var/mobile/.sshtoggle-state"
@@ -80,34 +83,74 @@ static int sshdLoaded(void) {
 // to be a plain file with one link before anything is changed: a symlink or hard link planted there by mobile is refused, never followed.
 #define STATE_DIR "/var/jb/var/lib/sshtoggled-engines"
 #define STATE_FILE_NEW STATE_DIR "/ssh-state"
-static void writeStateNew(int on) {
+// (1.7.6: the line common/SSHSwitch.h reads -- 1 or 0 first, as before, then the wish acted on, the result and a count of answers -- and then
+// kMSBDSSHStateNote, so Settings' row, the menu bar's icon and the Control Center control show the new state at once)
+static unsigned long gSSHAnswers = 0;   // (the count goes on from the file's at the daemon's start: a switch tells a new answer from an old one)
+// A write that fails (the root-owned folder cannot be written, e.g. a full disk) takes the older line away: every reader takes this file before the
+// legacy one (common/SSHSwitch.h, MSBDSSHReadState), so a stale line here would show the state from before the switch; without it they read the
+// legacy file, which has the new state (1.7.6 review n1).
+static BOOL writeStateNew(int on, int wish, int result) {
     mkdir(STATE_DIR, 0755);
     char tmp[] = STATE_DIR "/.ssh-state.XXXXXX";
     int fd = mkstemp(tmp);
-    if (fd < 0) return;
-    BOOL ok = write(fd, on ? "1" : "0", 1) == 1;
+    if (fd < 0) { unlink(STATE_FILE_NEW); return NO; }
+    if (!gSSHAnswers) gSSHAnswers = MSBDSSHReadStateFrom(STATE_FILE_NEW, NULL).count;
+    MSBDSSHState s = { on ? 1 : 0, wish, result, ++gSSHAnswers };
+    char line[96]; int n = MSBDSSHFormatState(line, sizeof(line), s);
+    BOOL ok = n > 0 && (size_t)n < sizeof(line) && write(fd, line, (size_t)n) == n;
     fchmod(fd, 0644);
     close(fd);
-    if (!ok || rename(tmp, STATE_FILE_NEW) != 0) unlink(tmp);
+    if (!ok || rename(tmp, STATE_FILE_NEW) != 0) { unlink(tmp); unlink(STATE_FILE_NEW); return NO; }
+    return YES;
 }
-static void writeStateLegacy(int on) {
+static BOOL writeStateLegacy(int on) {
     int fd = open(STATE_FILE, O_WRONLY | O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0644);   // (no O_TRUNC before the checks: a hard link must not be truncated)
-    if (fd < 0) return;
-    struct stat st;
+    if (fd < 0) return NO;
+    struct stat st; BOOL ok = NO;
     if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_nlink == 1 && (st.st_uid == 0 || st.st_uid == 501)) {
-        if (ftruncate(fd, 0) == 0 && write(fd, on ? "1" : "0", 1) == 1) { fchmod(fd, 0644); fchown(fd, 501, 501); }   // (on the descriptor, never the path)
+        if (ftruncate(fd, 0) == 0 && write(fd, on ? "1" : "0", 1) == 1) { fchmod(fd, 0644); fchown(fd, 501, 501); ok = YES; }   // (on the descriptor, never the path)
     }
     close(fd);
+    return ok;
 }
-static void writeState(int on) {
-    writeStateNew(on);
-    writeStateLegacy(on);
+static void writeStateAnswer(int on, int wish, int result) {
+    BOOL written = writeStateNew(on, wish, result);
+    if (writeStateLegacy(on) || written) notify_post(kMSBDSSHStateNote);   // (the new line, or only the legacy one: the readers fall back to it)
 }
+static void writeState(int on) { writeStateAnswer(on, -1, kMSBDSSHResultNone); }   // (only looked: no wish acted on)
+static void SSHBackOnLater(const char *why);
 static void apply(int on) {
+    BOOL plist = access(SSHD_PLIST, F_OK) == 0;
     if (on) { char *argv[] = { LAUNCHCTL, "load", "-w", SSHD_PLIST, NULL }; run(argv); }
     else    { char *argv[] = { LAUNCHCTL, "unload", "-w", SSHD_PLIST, NULL }; run(argv); }
-    writeState(sshdLoaded());
+    int now = sshdLoaded();
+    int result = now == on ? kMSBDSSHResultDone : (!plist ? kMSBDSSHResultNotInstalled : (on ? kMSBDSSHResultNoStart : kMSBDSSHResultNoStop));
+    writeStateAnswer(now, on ? 1 : 0, result);
+    if (result != kMSBDSSHResultDone) ELog(@"ssh: asked to turn it %s, OpenSSH is %s (%s)", on ? "on" : "off", now ? "on" : "off", MSBDSSHReason(result, on));
+    if (!now) SSHBackOnLater("switched off");
 }
+#if DEBUG
+// TEST ONLY (debug builds; never in a release build: tools/verify-release.sh refuses "/tmp/" in it): switching SSH off cuts a tester's own way in.
+// While /tmp/msb-ssh-backon exists, SSH comes back on by itself 60 s after it went off -- also when the helper started with it off (a respring or a
+// restart of the helper meanwhile) -- through the same path as a switch: the wish written as Settings writes it, then applied, so every switch
+// shows it. The flag is removed by the tester at the end.
+#define SSH_BACKON_FLAG "/tmp/msb-ssh-backon"
+static void SSHBackOnLater(const char *why) {
+    if (access(SSH_BACKON_FLAG, F_OK) != 0) return;
+    static unsigned generation = 0;
+    unsigned mine = ++generation;
+    ELog(@"ssh (debug): %s with %s there -- back on in 60 s", why, SSH_BACKON_FLAG);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(60 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (mine != generation || access(SSH_BACKON_FLAG, F_OK) != 0 || sshdLoaded()) return;
+        CFPreferencesSetValue(CFSTR("sshWanted"), kCFBooleanTrue, CFSTR("com.besiktasliseba.macsettings"), CFSTR("mobile"), kCFPreferencesAnyHost);
+        CFPreferencesSynchronize(CFSTR("com.besiktasliseba.macsettings"), CFSTR("mobile"), kCFPreferencesAnyHost);
+        ELog(@"ssh (debug): back on (%s)", SSH_BACKON_FLAG);
+        apply(1);
+    });
+}
+#else
+static void SSHBackOnLater(const char *why) {}
+#endif
 // Hardening (release plan 3d-1): the notification only says "look"; WHAT to do comes from MacSettings' own preference (com.besiktasliseba.macsettings sshWanted,
 // written by Settings before it posts), which a sandboxed app cannot write. A spoofed post therefore only re-applies the user's choice. Compatibility for
 // one release: while sshWanted has never been written (an older Settings build), the old enable/disable notifications still mean what they say.
@@ -1346,6 +1389,26 @@ static void AutoLockLowerForRemoval(void) {
     ELog(@"removal: Auto-Lock was %.0f s, %@", before, now == before ? @"still so -- SpringBoard didn't lower it (our code not running there?): the iPad may not lock by itself until Auto-Lock is set again"
          : [NSString stringWithFormat:@"now %.0f s (lowered by SpringBoard: stock SpringBoard takes anything over 1 hour for Never)", now]);
 }
+// Our Control Center controls (RAM & CPU, SSH) out of the user's lists of controls on 15-17, as Settings > Control Center leaves a list after its
+// "-": Apple's file and CCSupport's (which BigSurCenter reads itself), so no host is left with an entry whose module is gone -- in every one of a
+// file's lists, nothing else changed, in the file's own format and permissions, written as mobile. (The running SpringBoard was told first,
+// kMSBDCCRemovingNote: it takes them out of the list it keeps, which it would otherwise save again.) 18 keeps Control Center's layout another way and
+// drops the tile of a module that is gone when SpringBoard starts.
+static void TakeOurControlsOut(void) {
+    for (NSString *path in @[kMSBDCCAppleListFile, kMSBDCCCCSupportListFile]) {
+        struct stat st;
+        if (lstat(path.fileSystemRepresentation, &st) != 0 || !S_ISREG(st.st_mode)) continue;   // (not there, or not a plain file: left alone)
+        NSData *data = [NSData dataWithContentsOfFile:path];
+        NSPropertyListFormat format = NSPropertyListXMLFormat_v1_0;
+        id list = data ? [NSPropertyListSerialization propertyListWithData:data options:NSPropertyListImmutable format:&format error:NULL] : nil;
+        NSDictionary *kept = MSBDCCListWithoutOurs(list);
+        if (!kept) continue;
+        NSData *out = [NSPropertyListSerialization dataWithPropertyList:kept format:format == NSPropertyListBinaryFormat_v1_0 ? format : NSPropertyListXMLFormat_v1_0 options:0 error:NULL];
+        mode_t mode = st.st_mode & 0777;
+        BOOL ok = out && AsMobile(^BOOL{ return [out writeToFile:path atomically:YES] && chmod(path.fileSystemRepresentation, mode) == 0; });
+        ELog(@"removal: our Control Center controls taken out of %@: %@", path.lastPathComponent, ok ? @"done" : @"NOT written");
+    }
+}
 // Removal (the prerm, not on an upgrade): everything we changed is given back -- the engines' own settings, our Choicy entries for the engines and
 // for the lines, the engines we renamed for iCleaner Pro -- and our lines' own .disabled files go (dpkg does not know them).
 static void Uninstall(void) {
@@ -1355,7 +1418,9 @@ static void Uninstall(void) {
     notify_post("com.besiktasliseba.msbd.spotlight.removeall");
     notify_post("com.besiktasliseba.graveescapetweak/removing");   // the running SpringBoard takes the HID "Top-Left Key as Escape" key mapping off every keyboard before our code is gone
     notify_post("com.besiktasliseba.macpointer.removing");   // ... and gives Pointer Animations (Accessibility) back, if the Mac pointer turned them off (StatusBar.x DMPointerAnimSync)
+    notify_post(kMSBDCCRemovingNote);   // ... and takes our Control Center controls out of the list it keeps (15-17; TakeOurControlsOut below does the files)
     usleep(800000);
+    TakeOurControlsOut();
     mkdir(ESTATEDIR, 0755);
     { FILE *m = fopen(OFFMARKER, "w"); if (m) { fputs("removal", m); fclose(m); } chmod(OFFMARKER, 0644); }   // (the running SpringBoard stops holding the engines)
     AutoLockLowerForRemoval();
@@ -1546,6 +1611,7 @@ int main(int argc, char **argv) {
         if (resume) { int open_fds = 0; for (int fd = 0; fd < 1024; fd++) if (fcntl(fd, F_GETFD) != -1) open_fds++; ELog(@"settings: (debug) %d file descriptors open at the fresh start", open_fds); }
 #endif
         writeState(sshdLoaded());
+        if (!sshdLoaded()) SSHBackOnLater("off at the helper's start");   // (debug builds only: the test flag)
         int t3, t4, t5, t6, alive;
         gEjectQueue = dispatch_queue_create("msbd.eject", DISPATCH_QUEUE_SERIAL);
         notify_register_dispatch(kMSBDEjectRequestName, &t6, dispatch_get_main_queue(), ^(int t) { EjectRequest(@"Finder"); });   // (section 5)

@@ -18,6 +18,7 @@
 #include <dirent.h>
 #import <AudioToolbox/AudioToolbox.h>   // (the "Trash emptied" sound, DMTrashEmptiedSound)
 #import "../common/DriveEject.h"        // (a drive's name, MSBDDriveName: its volume's label, not the folder it is mounted on -- 1.7.3)
+#include "FinderApps.h"   // (Applications: each row is the app's .app, not its bundle container -- Foundation only, tools/test-finderapps.sh; 1.7.6)
 
 static NSString *const kFinderTrash = @"/var/mobile/.Trash";
 static NSString *const kFinderLiveFiles = @"/var/mobile/Library/LiveFiles";   // (external drives: <LiveFiles>/<provider>/<volume>, see DMFinderDrives)
@@ -608,8 +609,10 @@ static NSArray<DMFinderItem *> *DMFinderList(NSString *path, BOOL hidden, NSErro
         if (containers && it.dir && it.name.length == 36) { NSString *n = DMFinderContainerName(it.path); if (n) it.display = n; }
         if (inLiveFiles && it.dir) { NSDictionary *dv = DMFinderDriveInfo(it.path); if (dv) it.display = dv[@"t"]; }   // (a drive's folder: the drive's name, 1.7.3)
         if (it.dir && it.name.length == 36 && [rn isEqualToString:@"/var/containers/Bundle/Application"]) {   // (Applications: the app itself, as on a Mac)
-            for (NSString *f in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:it.path error:nil]) if ([f hasSuffix:@".app"]) { it.app = [it.path stringByAppendingPathComponent:f]; break; }
-            if (it.app) it.kind = @"Application";
+            // (the row IS the .app -- its path and name --, not the bundle container around it: a drag onto the desktop, a copy, Get Info act on
+            //  the app. FinderApps.h; the name shown stays the app's own, as above. 1.7.6 item 2: the container's UUID folder came out on the desktop)
+            NSString *app = DMFinderBundleApp(it.path);
+            if (app) { it.path = DMFinderNorm(app); it.name = app.lastPathComponent; it.app = it.path; it.kind = @"Application"; it.package = YES; }
         }
         if (it.dir) it.locked = access(it.path.fileSystemRepresentation, R_OK | X_OK) != 0;
         [out addObject:it];
@@ -1790,6 +1793,24 @@ static void DMFinderDragEnd(CGPoint sp, BOOL drop, BOOL option) {
     if (d.app && (![d.app isEqualToString:app] || ![d.scene ?: @"" isEqualToString:sceneId ?: @""])) DMFDSend(d.app, CGPointZero, 8);
     DMFDHandOver(d, app, sceneId, scene, d.from, 2.0, nil);
 }
+#if DEBUG
+// fdragto_<name>|<x>,<y> (debug): that item of the front Finder window dragged as a finger drags it -- lifted at the window's centre, moved in 12
+// steps to that screen point, dropped there by the drop's own rules (the desktop, a folder on it, the Dock's Downloads stack, a Finder window, an app).
+static void DMFinderTestDragTo(NSString *spec) {
+    NSArray *q = [spec componentsSeparatedByString:@"|"], *xy = q.count == 2 ? [q[1] componentsSeparatedByString:@","] : nil;
+    DMFinderWindow *f = DMFinderFront(); DMFinderItem *it = nil;
+    for (DMFinderItem *x in (f && xy.count == 2 ? DMFinderList(f.path, NO, NULL) : @[])) if ([x.name isEqualToString:q[0]]) it = x;
+    if (!it) { DMLog([NSString stringWithFormat:@"[finder] test drag to: %@", xy.count == 2 ? @"no front Finder window with that item" : @"want <name>|<x>,<y>"]); return; }
+    CGPoint start = [f convertPoint:CGPointMake(CGRectGetMidX(f.bounds), CGRectGetMidY(f.bounds)) toCoordinateSpace:f.window.screen.coordinateSpace], end = CGPointMake([xy[0] doubleValue], [xy[1] doubleValue]);
+    DMLog([NSString stringWithFormat:@"[finder] test drag to %@: %@ (path %@, kind %@)", NSStringFromCGPoint(end), it.name, it.path, it.kind]);
+    DMFinderDragBegin(f, @[it], start);
+    for (int k = 1; k <= 14; k++) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(k * 0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        CGFloat t = MIN(1.0, k / 12.0);
+        if (k < 14) DMFinderDragMove(CGPointMake(start.x + (end.x - start.x) * t, start.y + (end.y - start.y) * t), NO);
+        else DMFinderDragEnd(end, YES, NO);
+    });
+}
+#endif
 
 // ---- Share (a Mac-style Share menu of our own) ----------------------------------------------------------------------------------------------
 // The system share sheet cannot work from SpringBoard's windows (see the note at -getInfo:), so Share lists apps and hands the items to the chosen

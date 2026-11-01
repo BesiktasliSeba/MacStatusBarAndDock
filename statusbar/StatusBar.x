@@ -54,6 +54,7 @@
 #import "../common/FocusLock.h"      // (MSBDFocusLock: SpringBoard holds the keyboard focus for our windows, 15-18 -- the 18 call takes a typed reason)
 #import "../common/DesktopCheck.h"   // (MSBD_FOCUSLOCK_CHECK_KEY: the 18 focus lock verdict for Settings, DMFocusLock18OK)
 #import "../common/Relaunch.h"       // (MSBDRelaunchLikeSbreload: our Respring where SpringBoard may not start sbreload -- iPadOS 18)
+#import "../common/SSHSwitch.h"      // (SSH: its state, asking, the helper's notification -- one logic with Settings and the Control Center control, 1.7.6)
 
 extern int proc_pid_rusage(int pid, int flavor, rusage_info_t *buffer);
 
@@ -17910,10 +17911,8 @@ static void DMOpenSSHMenu(UIButton *btn) {
     DMRow *detail = [[DMRow alloc] initWithTitle:connected ? @"Someone is connected" : @"Nobody is connected" enabled:NO handler:nil];
     DMRow *off = [[DMRow alloc] initWithTitle:@"Turn SSH Off" enabled:YES handler:DMCloseThen(^{
         // (hardening: the root helper takes what to do from MacSettings' own preference -- written here as Settings does -- and the notification only
-        // says "look again"; the old .disable notification is no longer acted on once the preference exists)
-        CFPreferencesSetValue(CFSTR("sshWanted"), kCFBooleanFalse, CFSTR("com.besiktasliseba.macsettings"), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-        CFPreferencesSynchronize(CFSTR("com.besiktasliseba.macsettings"), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-        notify_post("com.besiktasliseba.sshtoggle.changed");
+        // says "look again"; the old .disable notification is no longer acted on once the preference exists. common/SSHSwitch.h, as every switch)
+        MSBDSSHAsk(0);
         gSSHActive = NO;   // the icon goes at once; the helper's own answer (the state file) follows a moment later. It comes back when SSH is switched on in Settings.
         for (UIView *fg in gCopies.allObjects) [fg setNeedsLayout];
         DMLog(@"[ssh] switched off from the status bar");
@@ -27788,7 +27787,8 @@ static void DMRunTrigger(NSString *cmd) {
             [now isKindOfClass:[NSArray class]] && [now containsObject:kMSBDCCModuleID] ? (long)[now indexOfObject:kMSBDCCModuleID] : -1L,
             MSBDCCModuleSkipped(), objc_getClass("SCContentViewController") != nil, DMRAMCPUOfferDeclined() ? @"none (Not Now before: not asked again)" : list ? [NSString stringWithFormat:@"%lu controls, RAM & CPU at %lu", (unsigned long)list.count, (unsigned long)[list indexOfObject:kMSBDCCModuleID]] : @"none"]);
     }
-    else if ([cmd isEqualToString:@"ccoffertap"]) DMOfferRAMCPU();   // ccoffertap: what a tap on the tile drawn over Memory Magic's does (with /tmp/msb-ccoffer-fake: as if Memory Magic were in the list)
+    else if ([cmd isEqualToString:@"ccoffertap"]) DMOfferRAMCPU();
+    else if ([cmd isEqualToString:@"ccgallery"]) DMALGalleryDump();   // ccgallery: the open "Add a Control" sheet's app sections (18, read-only)   // ccoffertap: what a tap on the tile drawn over Memory Magic's does (with /tmp/msb-ccoffer-fake: as if Memory Magic were in the list)
 #endif
     else if ([cmd isEqualToString:@"cctexts"]) {   // cctexts: every label in the Control Center window (text, hidden, size, its enclosing tile)
         for (UIWindow *w in DMAllWindows()) {
@@ -28299,6 +28299,7 @@ static void DMRunTrigger(NSString *cmd) {
     }
     else if ([cmd hasPrefix:@"desk_"]) { if (gDesktop) [gDesktop dm_debug:[cmd substringFromIndex:5]]; else DMLog(@"[desktop] test: no desktop"); }   // desk_<what>[:<arg>]: Desktop.h -dm_debug:
     else if ([cmd hasPrefix:@"trash_"]) DMDockTrashTest([cmd substringFromIndex:6]);   // trash_<what>[:<arg>]: the Dock's Trash, Finder's side (DockTrash.h -- state, open, empty, button, drag)
+    else if ([cmd hasPrefix:@"fdragto_"]) DMFinderTestDragTo([cmd substringFromIndex:8]);   // fdragto_<name>|<x>,<y>: drag that item of the front Finder window there and drop it (Finder.h)
     else if ([cmd hasPrefix:@"fdlicon_"]) {   // fdlicon_<x>_<y>: is the Dock's Downloads stack a drop target at that screen point (Finder.h DMFDDownloadsIconAt)
         NSArray *q = [[cmd substringFromIndex:8] componentsSeparatedByString:@"_"];
         CGPoint sp = q.count >= 2 ? CGPointMake([q[0] doubleValue], [q[1] doubleValue]) : CGPointZero;
@@ -29282,12 +29283,11 @@ static BOOL DMSSHSessionActive(void) {
     free(procs);
     return found;
 }
-// The SSH icon is shown while OpenSSH is switched on (the Mac Settings helper keeps that in a file), like the VPN icon while a VPN is on. Without
-// that helper (no state file) it is shown while somebody is connected instead.
+// The SSH icon is shown while OpenSSH is switched on (the Mac Settings helper keeps that in a file, common/SSHSwitch.h), like the VPN icon while a VPN
+// is on. Without that helper (no state file) it is shown while somebody is connected instead.
 static BOOL DMSSHOn(void) {
-    FILE *f = fopen("/var/jb/var/lib/sshtoggled-engines/ssh-state", "r");   // (the root helper's own state file since the hardening)
-    if (!f) f = fopen("/var/jb/var/mobile/.sshtoggle-state", "r");   // (the old one, still written for one release)
-    if (f) { int c = fgetc(f); fclose(f); return c == '1'; }
+    MSBDSSHState st = MSBDSSHReadState();   // (the root helper's own state file since the hardening, else the old one)
+    if (st.on >= 0) return st.on == 1;
     // (no state file: the process-list scan is expensive -- it ran 4 times a second; its answer is kept for 10 s)
     static BOOL cached = NO; static CFTimeInterval at = -100;
     if (CACurrentMediaTime() - at > 10.0) { at = CACurrentMediaTime(); cached = DMSSHSessionActive(); }
@@ -40341,11 +40341,21 @@ void DMSMRunAction(UIAction *action, id sender) {
     if (!DMCtorSkip("stockvpn")) DMStockVPNInit();
     if (!DMCtorSkip("stockwifi")) DMStockWiFiInit();   // (the Wi-Fi Menu: iOS's own Wi-Fi item can be left out of our bars; before the prefs are read)
     if (!DMCtorSkip("smengine")) DMSMEngineInit();
+    if (!DMCtorSkip("applibgallery")) DMALGalleryIconInit();   // (18: Activity Monitor's section in Control Center's gallery, before Control Center is made)
     DMFinderApplyPref();    // (Finder: its hooks, the Dock's Finder icon -- only while switched on)
 #if DEBUG
     DMMSWInstallProbes();   // (Mac Switcher Phase 1a: read-only gesture logging, debug builds only)
 #endif
     { static int finderPrefToken; notify_register_dispatch("com.besiktasliseba.macstatusbar.finder.pref", &finderPrefToken, dispatch_get_main_queue(), ^(int t) { DMFinderApplyPref(); }); }
+    // SSH (1.7.6): the root helper says when it has written OpenSSH's state (common/SSHSwitch.h): the menu bar's SSH icon follows at once, whoever
+    // switched -- Settings, this bar's menu or the Control Center control (the once-a-second read stays for a helper from before)
+    { static int sshStateToken; notify_register_dispatch(kMSBDSSHStateNote, &sshStateToken, dispatch_get_main_queue(), ^(int t) {
+        BOOL on = DMSSHOn();
+        if (on == gSSHActive) return;
+        gSSHActive = on;
+        DMLog([NSString stringWithFormat:@"[ssh] status bar icon %@ (the helper's answer)", on ? @"on" : @"off"]);
+        for (UIView *fg in gCopies.allObjects) [fg setNeedsLayout];
+    }); }
     // The RAM & CPU Control Center panel's "Open Activity Monitor" button: dismiss Control Center, then open the window.
     { static int actmonToken; notify_register_dispatch(MSBD_ACTMON_OPEN_NOTE, &actmonToken, dispatch_get_main_queue(), ^(int t) {
         id cc = DMControlCenterController();

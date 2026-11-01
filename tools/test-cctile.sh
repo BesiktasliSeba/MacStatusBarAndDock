@@ -62,12 +62,26 @@ check "start 11, the note there but not readable: nothing put back, the note kep
 check "start 12, the note readable again: put back, the layout exactly as before" "grep -q 'start: 1 tile(s) put back (page 1 at 15)' '$W/o12' && [ \"\$(xml '$S')\" = \"\$(xml '$W/original.plist')\" ]"
 check "no layout at all: nothing written, nothing thrown" "rm -f '$S' && '$W/tcc' start '$S' '$W/n2.plist' | grep -q 'start: no layout' && [ ! -e '$S' ] && [ ! -e '$W/n2.plist' ]"
 # the part that runs it: only on 18 and later, only with our module in the repository, before Control Center reads its layout
-check "CCGrabber.x: started on 18 and later, once all three repository methods are taken" \
-  "grep -q 'operatingSystemVersion.majorVersion >= 18 && gMSBDCCHooked == 3' ../macsettings/CCGrabber.x && awk '/^%ctor/{f=1} f&&/MSBDCCModuleRegisterWhenLoaded\\(\\)/{r=NR} f&&/MSBDCCTileKeepStart\\(/{k=NR} END{exit !(r && k && r < k)}' ../macsettings/CCGrabber.x"
+check "CCGrabber.x: started on 18 and later, once all three repository methods are taken, for the controls that load" \
+  "grep -q 'operatingSystemVersion.majorVersion >= 18 && gMSBDCCHooked == 3' ../macsettings/CCGrabber.x && awk '/^%ctor/{f=1} f&&/MSBDCCModuleRegisterWhenLoaded\\(\\)/{r=NR} f&&/MSBDCCTileKeepStartAll\\(kMSBDCCTileStateFile, notes, gMSBDCCIdentifiers/{k=NR} END{exit !(r && k && r < k)}' ../macsettings/CCGrabber.x"
+# 1.7.6: two controls, each with its own note, one layout written at most
+S2="$W/ControlCenter/two.plist"; NR="$W/note-ram.plist"; NS="$W/note-ssh.plist"
+"$W/tcc" layout2 "$S2"; cp "$S2" "$W/two-original.plist"
+"$W/tcc" start2 "$S2" "$NR" "$NS" > "$W/t1"
+check "two controls, start 1: each noted, in its own note (RAM & CPU at 16, SSH at 15)" "[ \"\$(placed '$NR')\" = '1 1/16' ] && [ \"\$(placed '$NS')\" = '1 1/15' ] && grep -q 'start (ramcpu): noted, placed 1' '$W/t1' && grep -q 'start (ssh): noted, placed 1' '$W/t1'"
+"$W/tcc" layout2 "$S2" pruned
+"$W/tcc" start2 "$S2" "$NR" "$NS" > "$W/t2"
+check "two controls, both dropped by a SpringBoard without our modules: both put back, the layout exactly as before" "[ \"\$(xml '$S2')\" = \"\$(xml '$W/two-original.plist')\" ] && grep -q 'start (ramcpu): 1 tile(s) put back' '$W/t2' && grep -q 'start (ssh): 1 tile(s) put back' '$W/t2'"
+"$W/tcc" layout2 "$S2" sshpruned
+"$W/tcc" start2 "$S2" "$NR" "$NS" ramonly > "$W/t3"
+check "SSH not loading (step 1b, or OpenSSH gone): RAM & CPU kept and noted, SSH's note left as it was" "grep -q 'start: the tile is there' '$W/t3' && [ \"\$(placed '$NS')\" = '1 1/15' ] && ! grep -q ssh '$W/t3'"
+"$W/tcc" start2 "$S2" "$NR" "$NS" > "$W/t4"
+check "  ... SSH loading again: its tile back, RAM & CPU's untouched, the layout exactly as before" "[ \"\$(xml '$S2')\" = \"\$(xml '$W/two-original.plist')\" ] && grep -q 'start (ssh): 1 tile(s) put back' '$W/t4' && grep -q 'start (ramcpu): the tile is there' '$W/t4'"
 # (the Mac reads every file as class 3, so the class kept is checked on the iPads -- 16.7.7 and 18.5: Foundation's atomic write made classes 1-3
 #  class 4, MSBDCCTileWrite kept 1-4; here: the write makes the new file with the old one's class)
 check "MSBDCCTileWrite: a file written over is made with the class the old one has" \
   "awk '/^static inline BOOL MSBDCCTileWrite/{f=1} f&&/int cls = stat\\(path.fileSystemRepresentation, &st\\) == 0 \\? MSBDCCTileClassOf\\(path\\) : 0;/{c=1} f&&/if \\(cls <= 0\\) return \\[d writeToFile:path options:NSDataWritingAtomic error:NULL\\];/{a=1} f&&/open_dprotected_np\\(tmp.fileSystemRepresentation, O_WRONLY \\| O_CREAT \\| O_EXCL \\| O_CLOEXEC, cls,/{o=1} f&&/^}/{print (c && a && o) ? \"ok\" : \"no\"; exit}' ../common/CCTileKeep.h | grep -q ok"
+check "SSH's note goes with the package too (postrm)" "grep -q 'MacStatusBarAndDock-CCTile-SSH.plist' ../layout/DEBIAN/postrm"
 check "the note goes with the package (postrm), not with an update" \
   "grep -q 'MacStatusBarAndDock-CCTile.plist' ../layout/DEBIAN/postrm && awk '/if \\[ \"\\\$1\" = \"remove\" \\] \\|\\| \\[ \"\\\$1\" = \"purge\" \\]/{f=1} f&&/MacStatusBarAndDock-CCTile.plist/{print \"ok\"; exit}' ../layout/DEBIAN/postrm | grep -q ok"
 [ $fails = 0 ] && echo "test-cctile: SpringBoard start checks pass" || { echo "test-cctile: SpringBoard start checks FAILED"; exit 1; }

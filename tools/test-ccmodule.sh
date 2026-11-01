@@ -18,4 +18,14 @@ check "the package's removal leaves our main preferences (the record stays for a
   "! grep -n 'com.besiktasliseba.macstatusbar.plist' ../layout/DEBIAN/postrm ../layout/DEBIAN/prerm"
 check "the debug-only fake list never reaches a release build" \
   "awk '/^static void DMOfferRAMCPU\\(void\\)/{f=1} f&&/msb-ccoffer-fake/{print prev} f{prev=\$0} f&&/DMShowRAMCPUOffer\\(0\\)/{exit}' ../statusbar/StatusBar.x | grep -q '#if DEBUG'"
+# (1.7.6 review S1) 18's gallery: RAM & CPU's app does not hang on the App Library's icon class (made only while Show in App Library is on); the
+# status bar part says it names Activity Monitor's section by an exported function, and renames only that section
+check "RAM & CPU's app is asked of the status bar part's exported function, not of the App Library's icon class" \
+  "awk '/^static NSString \\*MSBDCCContainerFor\\(/{f=1} f&&/dlsym\\(RTLD_DEFAULT, kMSBDCCActivityMonitorSectionFn\\)/{a=1} f&&/DMALActivityMonitorIcon/{bad=1} f&&/^}/{exit} END{exit !(a && !bad)}' ../common/CCModuleRegister.h"
+check "  ... that function is exported under the name asked for, and answers whether the gallery hook is in" \
+  "grep -q '^#define kMSBDCCActivityMonitorSectionFn \"MSBDCCActivityMonitorSectionReady\"' ../common/CCModuleList.h && grep -q '__attribute__((visibility(\"default\"))) BOOL MSBDCCActivityMonitorSectionReady(void) { return gDMALGalleryReady; }' ../statusbar/AppLibraryApps.h && grep -q 'gDMALGalleryReady = DMALHook(@\"SBHApplicationWidgetCollection\"' ../statusbar/AppLibraryApps.h"
+check "  ... set whatever Show in App Library says (DMALGalleryIconInit runs at SpringBoard's start, outside DMALApplyPref)" \
+  "! awk '/^static void DMALApplyPref\\(/{f=1} f&&/gDMALGalleryReady|DMALGalleryIconInit/{print; exit} f&&/^}/{exit}' ../statusbar/AppLibraryApps.h | grep -q . && grep -q 'DMALGalleryIconInit();' ../statusbar/StatusBar.x"
+check "a gallery section is named Activity Monitor only when it is Activity Monitor's (MSBDCCGallerySectionIsActivityMonitor)" \
+  "awk '/^static id DMALCollIcon\\(/{f=1} f&&/MSBDCCGallerySectionIsActivityMonitor\\(/{print \"ok\"; exit} f&&/^}/{exit}' ../statusbar/AppLibraryApps.h | grep -q ok"
 [ $fails = 0 ] && echo "test-ccmodule: offer wiring checks pass" || { echo "test-ccmodule: offer wiring checks FAILED"; exit 1; }
