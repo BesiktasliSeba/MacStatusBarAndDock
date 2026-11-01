@@ -2,6 +2,11 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.7.4.1
+
+### Fixes
+- With SnowBoard, or another theme engine that reloads the icons, opening the App Library after applying a theme no longer crashes SpringBoard, and Activity Monitor is back in the App Library's Utilities tile. Both broke in 1.7.3; search still found Activity Monitor.
+
 ## 1.7.4
 
 ### Improvements

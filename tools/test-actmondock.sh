@@ -28,6 +28,8 @@ check "a save before the start's look never changes the record; SpringBoard taki
   "grep -q 'if (gDMAMStarted && gDMALOn) DMAMRecordWrite(here, why);' $D && grep -q 'gDMAMListPutIn == dock) return;' $D"
 check "only the Dock: the root folder's rule, SpringBoard's drop, and anything else taken out of other lists" \
   "grep -q 'iconListModel:isAllowedToContainIcon:' $D && grep -q 'canAcceptDropInSession:inIconListView:' $D && grep -q 'DMAMTakeOutElsewhere();' $D"
+check "the Dock-only rule is the Home Screen's: the App Library's own folders keep SpringBoard's rule (refused there, a category update inserted past its list's end: SpringBoard's assertion after SnowBoard's Apply, 1.7.3-1.7.4)" \
+  "grep -q 'if (!DMALIsOurs(icon) || DMAMLibraryFolder(self)) return o_DMAMAllowed(self, _cmd, list, icon);' $D && grep -q 'isLibraryCategoryFolder' $D"
 check "a drag out of the Dock let go where nothing took it leaves the Dock (UIKit's own end of the drag, cancelled or forbidden, outside the Dock)" \
   "grep -q 'dragInteraction:session:didEndWithOperation:' $D && grep -q 'if (fromDock && outside && op <= 1)' $D"
 check "its menu: Open, Add to Dock (greyed: Dock full) / Remove from Dock, run once the menu has closed" \

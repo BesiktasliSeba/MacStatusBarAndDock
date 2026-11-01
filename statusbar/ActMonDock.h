@@ -197,10 +197,19 @@ static BOOL DMAMHookStores(BOOL *desiredOut, NSMutableArray *names) {
     if (desiredOut) *desiredOut = desired && anyDesired;
     return any && all;
 }
-// The root folder decides what its lists may hold: ours only the Dock list.
+// The Home Screen's folders decide what their lists may hold: ours only the Dock list. The App Library's own folders (SBHLibraryCategoryFolder:
+// its category tiles and their opened lists, SBFolders too) keep SpringBoard's rule (1.7.5): refused there, Activity Monitor was left out of a
+// category's first build quietly, and the next update of that category inserted past its list's end -- SpringBoard's assertion "Bad proposed
+// index for insertIcons" (-[SBHLibraryCategory updateCategoryWithIcons:]): the App Library opened after SnowBoard's Apply (which reloads the
+// icon model) took SpringBoard down since 1.7.3.
+static BOOL DMAMLibraryFolder(id folder) {
+    SEL s = NSSelectorFromString(@"isLibraryCategoryFolder");
+    if ([folder respondsToSelector:s]) return ((BOOL (*)(id, SEL))objc_msgSend)(folder, s);
+    return [NSStringFromClass([folder class]) containsString:@"Library"];
+}
 static BOOL (*o_DMAMAllowed)(id, SEL, id, id);
 static BOOL DMAMAllowed(id self, SEL _cmd, id list, id icon) {
-    if (!DMALIsOurs(icon)) return o_DMAMAllowed(self, _cmd, list, icon);
+    if (!DMALIsOurs(icon) || DMAMLibraryFolder(self)) return o_DMAMAllowed(self, _cmd, list, icon);
     id dock = DMAMDockList();
     if (!gDMAMReady || !gDMALOn || !dock || !list) return NO;
     // (the Dock list itself, or SpringBoard's copy of it -- a drop's room is worked out on a copy of the list: same unique identifier)
