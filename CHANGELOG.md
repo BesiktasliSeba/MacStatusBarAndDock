@@ -2,6 +2,11 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.7.8.1
+
+### Fixes
+- Dock: the dot under an app shows only for apps you have open. An app iPadOS starts in the background by itself, such as Calendar after an iCloud calendar sync, got a dot though you never opened it, and now has none until you open it. Apps with a window on another desktop or minimized keep their dot.
+
 ## 1.7.8
 
 ### New

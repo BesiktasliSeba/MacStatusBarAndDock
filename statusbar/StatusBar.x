@@ -38321,6 +38321,22 @@ __attribute__((visibility("default"))) NSSet<NSString *> *MSBDAppsWithWindows(vo
     }
     return out;
 }
+// For the Dock's running dots too (RunningIndicator.m, via dlsym; 1.7.8.1): the apps with a window that is not on screen now -- on another Mac
+// Switcher desktop (every engine's records, and the app left full screen on one), or minimized: the Stage Manager engine's saved set; Aerial's,
+// Zetsu's and MilkyWay4's minimized (and away) windows, hidden views of their engine -- the restore after a respring brings a minimized one back
+// invisible from its first frame (DMRestoreWantsHidden), its app never on screen. A running app among them keeps its dot whatever started its
+// process (dock/RunningDotRule.h: otherwise the process must have been on screen).
+__attribute__((visibility("default"))) NSSet<NSString *> *MSBDAppsWithWindowsAway(void) {
+    NSMutableSet<NSString *> *out = [NSMutableSet set];
+    if (DMMSWMulti()) {
+        NSInteger cur = DMMSWCurId();
+        for (NSString *k in gMSWWinDesk) { NSString *b = DMSMKeyBundle(k); if (b.length && gMSWWinDesk[k].integerValue != cur) [out addObject:b]; }
+        for (NSString *d in gMSWFullScreen) { NSString *b = gMSWFullScreen[d]; if ([b isKindOfClass:[NSString class]] && b.length && d.integerValue != cur) [out addObject:b]; }
+    }
+    if (DMSMEngine()) for (NSString *k in DMSMMinimizedSet()) { NSString *b = DMSMKeyBundle(k); if (b.length) [out addObject:b]; }
+    else for (UIView *st in DMAerialStagesAll()) { if (!(DMStageMinimized(st) || st.hidden)) continue; NSString *b = DMStageBundle(st); if (b.length) [out addObject:b]; }
+    return out;
+}
 static UIView *DMSMCardOfView(UIView *v);   // (below, with the title bars)
 void DMSMRefreshBars(void) {
     DMLightGroupsRefresh();   // (the active app as the lights see it, first: every bar's lights from it)

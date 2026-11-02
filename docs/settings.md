@@ -86,7 +86,7 @@ The window settings, on their own page between Desktop and Dock. On iPadOS 15 an
 | Larger Dock in Portrait | A bigger Dock in portrait. | On |
 | Gap to Screen Edge | Space between the Dock and the bottom edge, from 0 to 24 pt. | 6 pt |
 | Number of Recent Apps | Up to 10 recent apps after your own (respring). A suggested or Handoff app can appear too. None also turns off Apple's Show Suggested and Recent Apps in Dock. | 3 |
-| Show Indicators for Open Apps | A dot under apps that are open. | On |
+| Show Indicators for Open Apps | A dot under apps that are open, also while their windows are on another desktop or minimized. An app iPadOS starts in the background by itself gets no dot until you open it. | On |
 | Show App Library in Dock | Apple's own switch, moved here while the Dock features are on. | Apple's setting |
 | Launchpad Icon | A Launchpad icon that opens the App Library. | On |
 | Style | The Launchpad icon: Classic (Rocket) or Grid. | Classic |

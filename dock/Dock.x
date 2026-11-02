@@ -2209,6 +2209,9 @@ static NSString *DMK2Verdict(void) {
             } else if (!strcmp(word, "ithm")) {   // debug (1.7.5 item 7): the items' app-icon pictures, asked and on screen (IconTheme.m)
                 extern void DMIconThemeDebug(void);
                 DMIconThemeDebug();
+            } else if (!strcmp(word, "dots")) {   // debug (1.7.8.1): every running app as the running dot's rule reads it (RunningIndicator.m)
+                extern void DMRunningDotsDebug(void);
+                DMRunningDotsDebug();
             } else if (!strcmp(word, "k2")) {   // debug (K-2): the whole Dock layout in one dump (DMK2Dump)
                 DMK2Dump();
                 DMLog([@"[k2] verdict: " stringByAppendingString:DMK2Verdict()]);

@@ -5,12 +5,16 @@
 // SBApplicationController.sharedInstance's -runningApplications, a real array of SBApplication objects each with -bundleIdentifier.
 // Nothing here is alloc/init'd -- sharedInstance is a singleton accessor, and every object touched (the running SBApplications, this
 // icon's own -icon) was already created by the OS.
+// 1.7.8.1: of the running apps, only those the user has open -- a process iPadOS started in the background (prewarm, a background launch) has
+// no dot until it has been on screen (RunningDotRule.h).
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <notify.h>
 #import <dlfcn.h>
 #import "../common/OtherTweaks.h"   // (Lynx 2 drawing its own Dock indicators: ours steps aside)
+#import "DMLog.h"
+#include "RunningDotRule.h"   // (which running app has the dot: its process seen on screen, or a window of it away -- Mac test tools/test-runningdot.sh)
 
 @interface UIWindow (DMPrivate)
 + (NSArray *)allWindowsIncludingInternalWindows:(BOOL)internal onlyVisibleWindows:(BOOL)visible;
@@ -45,6 +49,34 @@ static BOOL RIIsDockIcon(UIView *icon) {
     return NO;
 }
 
+// SpringBoard's process state of a running app (-[SBApplication processState], an SBApplicationProcessState: "pid: 80747; taskState: Running;
+// visibility: Background" in SpringBoard's own log, 18.5), read only in the shape it has: -processState "@16@0:8", -pid "i16@0:8", -isForeground
+// "B16@0:8". *foreground: a scene of the app is on screen now. NO when it is not there in that shape (then every running app has its dot, as before).
+static BOOL RIShape(Class c, SEL s, const char *enc) {
+    Method m = c ? class_getInstanceMethod(c, s) : NULL;
+    const char *e = m ? method_getTypeEncoding(m) : NULL;
+    return e && !strcmp(e, enc);
+}
+static BOOL RIProcessState(id app, int *pid, int *foreground) {
+    static Class appClass = Nil, stateClass = Nil;
+    static BOOL appOK = NO, stateOK = NO;   // (checked once per class)
+    SEL stateSel = NSSelectorFromString(@"processState"), pidSel = NSSelectorFromString(@"pid"), fgSel = NSSelectorFromString(@"isForeground");
+    Class ac = object_getClass(app);
+    if (ac != appClass) { appClass = ac; appOK = RIShape(ac, stateSel, "@16@0:8"); }
+    if (!appOK) return NO;
+    id st = ((id (*)(id, SEL))objc_msgSend)(app, stateSel);
+    if (!st) return NO;
+    Class sc = object_getClass(st);
+    if (sc != stateClass) { stateClass = sc; stateOK = RIShape(sc, pidSel, "i16@0:8") && RIShape(sc, fgSel, "B16@0:8"); }
+    if (!stateOK) return NO;
+    *pid = ((int (*)(id, SEL))objc_msgSend)(st, pidSel);
+    *foreground = ((BOOL (*)(id, SEL))objc_msgSend)(st, fgSel) ? 1 : 0;
+    return YES;
+}
+// Each running app's process that has been on screen: app -> its pid (RunningDotRule.h MSBDDotSeenPid). Looked at with every read of the running
+// apps (the 0.75 s poll while the screen is on, and each Dock icon's layout); an app that is no longer running is forgotten. Main thread only.
+static NSMutableDictionary<NSString *, NSNumber *> *gRISeenPid;
+
 static NSSet<NSString *> *RIRunningBundleIDs(void) {
     Class controllerClass = objc_getClass("SBApplicationController");
     if (!controllerClass) return nil;
@@ -56,12 +88,25 @@ static NSSet<NSString *> *RIRunningBundleIDs(void) {
     id running = ((id (*)(id, SEL))objc_msgSend)(controller, runningSel);
     if (![running respondsToSelector:@selector(countByEnumeratingWithState:objects:count:)]) return nil;
     NSMutableSet<NSString *> *ids = [NSMutableSet set];
+    // (the apps with a window that is not on screen -- another Mac Switcher desktop, minimized: MacStatusBar's StatusBar.x; nil without it)
+    static NSSet *(*withWindowsAway)(void) = NULL; static int awayTries = 0;
+    if (!withWindowsAway && awayTries < 40) { awayTries++; withWindowsAway = (NSSet *(*)(void))dlsym(RTLD_DEFAULT, "MSBDAppsWithWindowsAway"); }
+    NSSet *away = withWindowsAway ? withWindowsAway() : nil;
+    if (!gRISeenPid) gRISeenPid = [NSMutableDictionary dictionary];
+    NSMutableSet<NSString *> *live = [NSMutableSet set];
     for (id app in (id<NSFastEnumeration>)running) {
         if ([app respondsToSelector:@selector(bundleIdentifier)]) {
             NSString *bid = [app valueForKey:@"bundleIdentifier"];
-            if (bid.length) [ids addObject:bid];
+            if (!bid.length) continue;
+            int pid = 0, foreground = 0;
+            BOOL known = RIProcessState(app, &pid, &foreground);
+            int seen = known ? MSBDDotSeenPid(1, pid, foreground, [gRISeenPid[bid] intValue]) : 0;
+            if (seen) gRISeenPid[bid] = @(seen); else [gRISeenPid removeObjectForKey:bid];
+            [live addObject:bid];
+            if (MSBDDotShown(1, known, pid, seen, [away containsObject:bid])) [ids addObject:bid];
         }
     }
+    for (NSString *b in gRISeenPid.allKeys) if (![live containsObject:b]) [gRISeenPid removeObjectForKey:b];
     // Stage Manager engine: an app whose window is back on screen after a respring counts as running before iPadOS has restarted it (MacStatusBar's
     // StatusBar.x; nil when that engine is not in use or MacStatusBar is not loaded).
     static NSSet *(*withWindows)(void) = NULL; static int tries = 0;
@@ -203,6 +248,27 @@ static void RIResyncDock(void) {
     NSSet *running = RIWanted() ? RIRunningBundleIDs() ?: [NSSet set] : nil;   // (once per pass, not once per icon)
     for (UIView *iconView in icons) RIUpdate(iconView, running);
 }
+#if DEBUG
+// debug ("dots" in /tmp/dockmag-escape, Dock.x's debug poll; 1.7.8.1): every running app as the dot rule reads it -- pid, on screen now, the pid
+// remembered as seen, a window away -- and whether it has the dot (after one read of the running apps, which also updates what is remembered).
+void DMRunningDotsDebug(void) {
+    NSSet *dotted = RIRunningBundleIDs();
+    id controller = ((id (*)(id, SEL))objc_msgSend)((id)objc_getClass("SBApplicationController"), NSSelectorFromString(@"sharedInstance"));
+    NSArray *running = ((id (*)(id, SEL))objc_msgSend)(controller, NSSelectorFromString(@"runningApplications"));
+    NSSet *(*away)(void) = (NSSet *(*)(void))dlsym(RTLD_DEFAULT, "MSBDAppsWithWindowsAway");
+    NSSet *awaySet = away ? away() : nil;
+    for (id app in running) {
+        NSString *bid = [app valueForKey:@"bundleIdentifier"];
+        int pid = 0, fg = 0;
+        BOOL known = RIProcessState(app, &pid, &fg);
+        id st = [app respondsToSelector:NSSelectorFromString(@"processState")] ? ((id (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"processState")) : nil;
+        DMLog([NSString stringWithFormat:@"[dots] %@ state %@ pid %d on screen %d seen %@ away %d -> %@ | %@", bid, known ? @"read" : @"NOT READ", pid, fg,
+               gRISeenPid[bid] ?: @"-", [awaySet containsObject:bid] ? 1 : 0, [dotted containsObject:bid] ? @"DOT" : @"no dot", [st description] ?: @"(no state)"]);
+    }
+    DMLog([NSString stringWithFormat:@"[dots] %lu running, %lu with the dot (windows away: %@)", (unsigned long)running.count, (unsigned long)dotted.count,
+           awaySet ? [[awaySet allObjects] componentsJoinedByString:@", "] : @"(no MacStatusBar)"]);
+}
+#endif
 // The poll runs only while it has something to do: the switch on (and Lynx not drawing its own) and the screen on. It is suspended otherwise, and
 // resumed (with one pass at once) when the screen comes back or the switch changes.
 void DMStartRunningIndicatorPoll(void) {
