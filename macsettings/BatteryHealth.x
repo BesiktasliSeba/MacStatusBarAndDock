@@ -20,6 +20,7 @@
 #import <mach-o/dyld.h>
 #import <dlfcn.h>
 #import <unistd.h>
+#import <os/lock.h>
 #import "../common/BatteryHealthFigures.h"
 #import "../common/OtherTweaks.h"   // (MSBDTweakPresent)
 
@@ -145,19 +146,33 @@ static void MSBHSetHeaderText(id specs, Class page) {
 }
 
 // ---- the page's data: ours only where Apple's is missing
+// (debug builds, with /tmp/macsettings-debug: Apple's own answer and ours, each time either changes -- how each iPadOS answers on iPad)
+static int MSBHAnswer(NSString *what, int apple, int ours) {
+#if DEBUG
+    static NSMutableDictionary *last; static os_unfair_lock lock = OS_UNFAIR_LOCK_INIT;
+    NSString *now = [NSString stringWithFormat:@"%d -> %d", apple, ours];
+    os_unfair_lock_lock(&lock);
+    if (!last) last = [NSMutableDictionary dictionary];
+    BOOL changed = ![last[what] isEqualToString:now];
+    last[what] = now;
+    os_unfair_lock_unlock(&lock);
+    if (changed) MSBHLog([NSString stringWithFormat:@"%@: Apple's %@ (ours)", what, now]);
+#endif
+    return ours;
+}
 %group MSBHData
 %hook BatteryUIResourceClass
 + (int)getBatteryHealthServiceState {
     int apple = %orig;
-    return MSBDBatteryHealthServiceState(apple, MSBHFiguresNow().percent);
+    return MSBHAnswer(@"service state", apple, MSBDBatteryHealthServiceState(apple, MSBHFiguresNow().percent));
 }
 + (int)genuineBatteryStatus {
     int apple = %orig;
-    return MSBDBatteryGenuineStatus(apple, MSBHFiguresNow().percent);
+    return MSBHAnswer(@"battery check", apple, MSBDBatteryGenuineStatus(apple, MSBHFiguresNow().percent));
 }
 + (int)getManagementState {
     int apple = %orig;
-    return MSBDBatteryManagementState(apple, MSBHFiguresNow().percent);
+    return MSBHAnswer(@"management state", apple, MSBDBatteryManagementState(apple, MSBHFiguresNow().percent));
 }
 %end
 %hook BatteryHealthUIController

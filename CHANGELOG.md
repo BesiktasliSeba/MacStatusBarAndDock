@@ -2,6 +2,11 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.7.8.2
+
+### Fixes
+- Battery Health on iPadOS 15 and 16 shows your battery's Maximum Capacity, without a wrong warning that the battery couldn't be verified.
+
 ## 1.7.8.1
 
 ### Fixes

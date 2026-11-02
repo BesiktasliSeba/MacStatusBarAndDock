@@ -22,6 +22,9 @@ int main(void) {
     Expect("Apple's 0 stays", MSBDBatteryHealthServiceState(0, 93), 0);
     Expect("iPad: Apple has none (-1), we have a figure: normal (0)", MSBDBatteryHealthServiceState(-1, 93), 0);
     Expect("iPad: neither has a figure: Apple's -1 (\"unable to determine\") stays", MSBDBatteryHealthServiceState(-1, -1), -1);
+    Expect("iPad 16.7.7: Apple's 5 (a battery the iPhone's authentication could not verify), we have a figure: normal (0)", MSBDBatteryHealthServiceState(5, 91), 0);
+    Expect("  ... 5 without a figure: Apple's 5 stays", MSBDBatteryHealthServiceState(5, -1), 5);
+    Expect("  ... Apple's service (1) and recalibration-type states (3, 4) stay with a figure", MSBDBatteryHealthServiceState(1, 91) == 1 && MSBDBatteryHealthServiceState(3, 91) == 3 && MSBDBatteryHealthServiceState(4, 91) == 4, 1);
     Expect("battery check: Apple's 1 stays", MSBDBatteryGenuineStatus(1, 93), 1);
     Expect("battery check: Apple's 2 (unverified battery) stays", MSBDBatteryGenuineStatus(2, 93), 2);
     Expect("battery check: iPad, never answered (0), we have a figure: 1 (no spinner forever)", MSBDBatteryGenuineStatus(0, 93), 1);

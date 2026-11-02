@@ -16,11 +16,15 @@ static inline int MSBDBatteryHealthPercent(long nominalChargeCapacity, long rawM
     if (p < 1 || p > 150) return -1;   // (a gauge that is still learning, or a wrong design capacity: no figure rather than a wrong one)
     return p > 100 ? 100 : (int)p;
 }
-// What Apple's page is handed for the battery's service state. Apple's own answer when it has one (>= 0); on iPad it has none (-1, which the page
-// shows as "unable to determine"): 0, the normal state, when we have a figure. (The page's other states are Apple's service and recalibration
-// texts; we never make those up.)
+// What Apple's page is handed for the battery's service state. Apple's own answer when it has one (>= 0); on iPad it has none: -1 on 17.5.1 and
+// 18.5 (the page shows "unable to determine"), and on 16.7.7 5, the state of a battery the iPhone's battery authentication could not verify (the
+// page's "Important Battery Message", "Unable to verify this iPhone has a genuine Apple battery", and no Maximum Capacity: KT's iPad 2, 2 Nov,
+// once BatteryHealthEnabler, which answered 0, was gone; its battery check answered 0). iPads have no such authentication, so with a figure
+// both are 0, the normal state. (The page's other states are Apple's service and recalibration texts; we never make those up.)
+#define kMSBDServiceStateUnverified 5
 static inline int MSBDBatteryHealthServiceState(int appleState, int percent) {
-    return appleState >= 0 ? appleState : (percent >= 0 ? 0 : appleState);
+    if (percent < 0) return appleState;
+    return appleState < 0 || appleState == kMSBDServiceStateUnverified ? 0 : appleState;
 }
 // The performance-management state. Apple's page takes 0 for "no battery data" (+[BatteryUIResourceClass batteryDataUnavailable]: a spinner
 // instead of the page, read on 18.5) and iPads answer 0 (the M1 4). 2 -- the normal managed state, what the page shows when all is well -- once
