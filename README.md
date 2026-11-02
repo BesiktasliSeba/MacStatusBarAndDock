@@ -72,7 +72,7 @@ The Mac look is on right after install, and most features have their own switch.
 
 Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It takes the place of the App Switcher.
 
-- Open it with a swipe up and hold, a double press of the Home button, or Control-Up. Your desktops are at the top, and the windows of the current one below.
+- Open it with a swipe up and hold, a double press of the Home button, or Control-Up. With a finger, hold still for a moment before you lift: a swipe up that only slows down at its end goes Home. Your desktops are at the top, and the windows of the current one below.
 - Tap + to add a desktop (up to 8). Switch with a four-finger swipe, a swipe along the bottom edge, three fingers on a trackpad, or Control-Left and Control-Right.
 - Drag a window onto another desktop to move it there. To remove a desktop, hold it and tap its remove button; its windows move to the desktop next to it.
 - It works with every window engine, and your desktops are still there after a respring. Show App Switcher in the Apple menu opens the iPadOS App Switcher once.
@@ -95,16 +95,22 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 - Magnification, dots under open apps, recent apps, and Finder and Launchpad at its start, like on a Mac.
 - A Downloads stack with search, which you can drag files into and out of.
 - A Trash at its end, which you turn on in Settings > Dock. Drop files on it to move them to the Trash, a Dock app to take it out of the Dock, or a drive to eject it (iPadOS 16 to 18).
-- Haptic Touch menus get Force Quit, App Size and Add to Folder on app icons, and a folder's menu lists its apps. Add to Folder moves the app into a Home Screen folder or a new one, as a drag would, also from the App Library.
+- Haptic Touch menus get Force Quit, App Size and Add App to Folder on app icons, and a folder's menu lists its apps. Add App to Folder moves the app into a Home Screen folder or a new one, as a drag would, also from the App Library.
 - Menus that open from the Dock and the Downloads stack sit over their icon with the Mac's arrow pointing at it.
 - On iPadOS 15 to 17, icon themes such as SnowBoard's change Finder, Launchpad, Downloads, the Trash and Activity Monitor like any app icon. The identifiers are under [For theme makers](#for-theme-makers).
 
 ### Activity Monitor and RAM & CPU
 
 - An Activity Monitor window lists the running processes with their CPU, memory and disk use. Sort by any column, search, pick All, My or System Processes, inspect a process or quit an app. System processes show no figures, and the Energy and Network tabs have no figures per process.
-- Activity Monitor is also an app in the App Library, in Utilities and in its search. Add to Dock in its menu puts it in the Dock, where it works like an app. While its window is open, also minimized, it shows in the Dock as an open app, with a dot, and leaves when the window closes. Keep in Dock in its menu keeps it there. It's never saved with your Home Screen layout. Show in App Library in Settings > Status Bar turns it off.
+- Activity Monitor is also an app in the App Library, in Utilities and in its search. Add to Dock in its menu puts it in the Dock, where it works like an app. While its window is open, also minimized, it shows in the Dock as an open app, with a dot, and leaves when the window closes. Keep in Dock in its menu keeps it there. While its window is open, it's also in Command-Tab with your apps, in the order you last used it. It's never saved with your Home Screen layout. Show in App Library in Settings > Status Bar turns it off.
 - RAM & CPU in Control Center shows the available and used memory and the CPU load, and a tap opens the details, with a button for Activity Monitor. On iPadOS 15 to 17 it's added to Control Center by itself once, where it fits without moving anything, and not again after you take it out. Activity Monitor also opens from the Go menu and from Spotlight's actions.
 - With Memory Magic on iPadOS 15 to 17, a tap on its tile offers to put RAM & CPU in its place.
+
+### Battery
+
+- Settings > Battery > Battery Health (Battery Health & Charging on iPadOS 17 and 18) opens on every iPad, as on an iPhone, with the battery's Maximum Capacity and Cycle Count. If another battery health tweak is installed, the page is left to it.
+- Sleep Guard, in the page's Battery Use group and on unless you turn it off, lets the iPad sleep when a hold left behind by a process that's gone is the only thing keeping it awake with the screen off.
+- While the screen is off, the tweak's own timers stop, such as Activity Monitor's refresh and the RAM & CPU tile's.
 
 ### Settings
 
@@ -118,7 +124,7 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 - A Mac pointer, with an I-beam over text
 - Mac-style notification banners and a mute icon
 - A Go menu with the apps you choose, and an auto-hiding menu bar
-- Home Screen options: page dots, app names and the Home Bar
+- Home Screen options: page dots, app names, the Home Bar, and whether a swipe past the last page opens the App Library
 - Keyboard extras for keyboards without a function row
 - Spotlight extras you can turn on: tweak settings, actions, your windows, and your Desktop and Downloads files
 - Longer Auto-Lock times, up to 2 hours, which the tweak makes iPadOS keep (on its own, iPadOS takes anything over an hour for Never)
@@ -212,6 +218,8 @@ Please report security problems privately, as described in [SECURITY.md](./SECUR
 ## Memory and older iPads
 
 Measured on 1.1.9, before Finder, the desktop and the Mac Switcher were added: over a 30 minute check, SpringBoard used 63 to 69 MB on the 2 GB iPad Pro 9.7" with the Stage Manager engine, and about 100 MB on the M1 iPad Pro. Picture caches have size limits and are emptied when memory runs low, and the Mac Switcher lets go of its desktop pictures then too.
+
+Since 1.7.8, the tweak's parts for apps load only into apps, their extensions and SpringBoard, not into background system services, which saves about 1 MB in each of those services.
 
 On iPads with 2 or 3 GB of memory:
 

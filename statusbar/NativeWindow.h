@@ -70,10 +70,12 @@ static void DMNativeMenuBarChanged(void);
 @interface DMNativeKeyView : UIView
 @end
 static DMNativeKeyView *gNativeKeys;
+static BOOL DMDesktopHasKeysNow(void);   // (Desktop.h: the desktop -- Finder's -- was clicked last, or a name is edited on it)
 @implementation DMNativeKeyView
 - (BOOL)canBecomeFirstResponder { return YES; }
 - (NSArray<UIKeyCommand *> *)keyCommands {
     id w = gNativeActive;
+    if (DMDesktopHasKeysNow()) return @[];   // (the desktop's keys meanwhile, 1.7.8: a native window's shortcut -- Command-Delete -- must not act on its own selection)
     return [w respondsToSelector:@selector(dm_keyCommands)] ? ((NSArray *(*)(id, SEL))objc_msgSend)(w, @selector(dm_keyCommands)) : @[];
 }
 - (id)forwardingTargetForSelector:(SEL)sel { return [gNativeActive respondsToSelector:sel] ? gNativeActive : [super forwardingTargetForSelector:sel]; }
@@ -244,13 +246,29 @@ static void DMNativeApplyLevel(void) {
 }
 // The native window that acts as the front app for the menu bar, or nil.
 static DMNativeWindow *DMNativeActiveApp(void) { return (gNativeActive && !gNativeActive.hidden && !gNativeLayer.hidden) ? gNativeActive : nil; }
+static BOOL DMNativeAnyActive(void) { return DMNativeActiveApp() != nil; }   // (StatusBar.x's Command-Tab hooks)
 // Traffic lights: each native window's lights stand for it alone ("native:<address>"), and while one is active that is the active window for every
 // set of lights (DMActiveBundleForLights) -- exactly one colored set on the screen, as on a Mac.
 static NSString *DMNativeLightsTokenFor(DMNativeWindow *w) { return w ? [NSString stringWithFormat:@"native:%p", w] : nil; }
 static NSString *DMNativeLightsToken(void) { return DMNativeLightsTokenFor(DMNativeActiveApp()); }
+static void DMDesktopYieldKeys(void);   // (Desktop.h)
+static void DMAMCmdTabAppsForward(void);   // (ActMonDock.h: the apps have the screen again, for Command-Tab's order, 1.7.8)
+// The active window has the keys: SpringBoard holds the keyboard focus, the layer is the key window, and our key view its first responder -- unless
+// something is presented over the windows, or a text field of this window has the typing.
+static void DMNativeTakeKeys(DMNativeWindow *w) {
+    DMNativeFocus(YES);
+    if (!gNativeLayer.isKeyWindow) [gNativeLayer makeKeyWindow];
+    // (typing goes to the active window only: a text field / view of another native window lets go -- the text window's keyboard stayed up
+    //  and kept the keys after a tap brought Finder in front of it, iPad 2 3 Oct)
+    UIResponder *fr = nil; @try { fr = [gNativeLayer valueForKey:@"firstResponder"]; } @catch (id e) {}
+    BOOL typingHere = [UIResponder dm_currentFirstResponderIsIn:gNativeLayer] && [fr isKindOfClass:[UIView class]] && [(UIView *)fr isDescendantOfView:w];
+    if (!gNativeLayer.rootViewController.presentedViewController && !typingHere && !gNativeKeys.isFirstResponder) [gNativeKeys becomeFirstResponder];
+}
 static void DMNativeSetActive(DMNativeWindow *w) {
     if (!w) DMNativeFocus(NO);   // (no native window active: the keyboard goes back to the apps, whatever the path here)
-    if (w == gNativeActive) { DMNativeApplyLevel(); return; }
+    // (a native window made active -- touched, opened, brought forward -- has the keys again, not the desktop that was clicked meanwhile, 1.7.8)
+    if (w) DMDesktopYieldKeys();
+    if (w == gNativeActive) { if (w) DMNativeTakeKeys(w); DMNativeApplyLevel(); return; }
     DMNativeWindow *was = gNativeActive;
     gNativeActive = w;
     if (was) { [was setNeedsLayout]; if (was.onActiveChanged) was.onActiveChanged(was, NO); }
@@ -259,13 +277,7 @@ static void DMNativeSetActive(DMNativeWindow *w) {
         [gNativeWindows removeObjectIdenticalTo:w]; [gNativeWindows addObject:w];
         [w.superview bringSubviewToFront:w];
         [w setNeedsLayout]; if (w.onActiveChanged) w.onActiveChanged(w, YES);
-        DMNativeFocus(YES);
-        if (!gNativeLayer.isKeyWindow) [gNativeLayer makeKeyWindow];
-        // (typing goes to the active window only: a text field / view of another native window lets go -- the text window's keyboard stayed up
-        //  and kept the keys after a tap brought Finder in front of it, iPad 2 3 Oct)
-        UIResponder *fr = nil; @try { fr = [gNativeLayer valueForKey:@"firstResponder"]; } @catch (id e) {}
-        BOOL typingHere = [UIResponder dm_currentFirstResponderIsIn:gNativeLayer] && [fr isKindOfClass:[UIView class]] && [(UIView *)fr isDescendantOfView:w];
-        if (!gNativeLayer.rootViewController.presentedViewController && !typingHere) [gNativeKeys becomeFirstResponder];
+        DMNativeTakeKeys(w);
     } else {
         if ([gNativeLayer isKeyWindow]) [gNativeLayer endEditing:YES];
         [gNativeKeys resignFirstResponder];
@@ -274,6 +286,14 @@ static void DMNativeSetActive(DMNativeWindow *w) {
     DMNativeApplyLevel();
     DMNativeMenuBarChanged();
     DMLightGroupsRefresh();   // (the lights: this window's colored, every other window's grey)
+    if (!w) DMAMCmdTabAppsForward();   // (the apps have the screen again: Command-Tab's order looks at the app in front only once they settled)
+}
+// An app comes forward by another way than a touch (Command-Tab's pick): the native windows step back behind the app windows, as an app icon's tap
+// makes them (the front-app watcher can't see the app that was already in front behind them come forward).
+static void DMNativeStepBack(NSString *why) {
+    if (!gNativeActive) return;
+    DMLog([NSString stringWithFormat:@"[native] %@: native windows inactive", why]);
+    DMNativeSetActive(nil);
 }
 // SpringBoard saw a touch begin (-[SpringBoard sendEvent:]): in a native window it becomes active; in an app window or on the Home Screen the
 // native windows become inactive. Touches on our menu bar, menus, the Dock or the system's own overlays change nothing (Finder's menus are used
@@ -402,6 +422,8 @@ static BOOL DMNativeUndoRaise(DMNativeWindow *source) {
     DMNativeSetActive(back);
     return YES;
 }
+static BOOL DMDesktopShownAtScreen(CGPoint sp);   // (Desktop.h: the desktop shows at that screen point -- Finder's, on the Home Screen's first page)
+static CGFloat DMDesktopWindowLevel(void);          // (Desktop.h: the level of the Home Screen's window the desktop is in)
 __attribute__((noinline)) static void DMNativeTouchBegan(UITouch *t) {   // (kept a symbol of its own: the crash guard names it -- tools/test-crashstep.sh)
     if (!gNativeLayer || gNativeLayer.hidden || !gNativeWindows.count) return;
     DM_FEATURE_MARK("native-touch-activation");
@@ -475,6 +497,17 @@ __attribute__((noinline)) static void DMNativeTouchBegan(UITouch *t) {   // (kep
         if (h && h != w && h != w.rootViewController.view) { taker = w; break; }
     }
     if (taker) { DMLog([NSString stringWithFormat:@"[native] a touch outside Finder went to %@: Finder stays active", NSStringFromClass([taker class])]); return; }
+    // The desktop is Finder's, as on a Mac (1.7.8; the 1.7.7 regression's bug 4): a touch on it -- an icon or its empty space, where no app window
+    // lies over it -- keeps the native windows active and in front of the app windows. It sent them behind them, so a desktop icon dragged to a
+    // Finder window that had been in front of an app window found it gone (17.5, every engine). The desktop takes the keyboard instead, while it
+    // has the keys (an icon clicked, a selection, a name edited: SpringBoard's -pressesBegan:, -[DMNativeKeyView keyCommands]); a touch on a native
+    // window gives them back to it (DMNativeSetActive). Typing in a native window's field ends, as a click elsewhere ends it.
+    if (DMDesktopShownAtScreen(p) && !DMNativeWindowTaking(p, DMDesktopWindowLevel())) {
+        DM_FEATURE_MARK("native-desktop-keeps-active");
+        if ([gNativeLayer isKeyWindow]) { [gNativeLayer endEditing:YES]; if (!gNativeLayer.rootViewController.presentedViewController && !gNativeKeys.isFirstResponder) [gNativeKeys becomeFirstResponder]; }
+        DMLog([NSString stringWithFormat:@"[native] a touch on the desktop at %@ (Finder's): the native windows stay active and in front", NSStringFromCGPoint(p)]);
+        return;
+    }
     DMLog([NSString stringWithFormat:@"[native] a touch outside at %@ (type %ld, window %@, view %@): native windows inactive", NSStringFromCGPoint(p), (long)t.type, NSStringFromClass([t.window class]), NSStringFromClass([t.view class])]);
     DMNativeSetActive(nil);
 }

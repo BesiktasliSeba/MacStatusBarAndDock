@@ -2,6 +2,32 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.7.8
+
+### New
+- Battery Health on iPad: Settings > Battery has the Battery Health page on every iPad, as on an iPhone (Battery Health & Charging on iPadOS 17 and 18), with the battery's Maximum Capacity and a Cycle Count row. Rows for iPhone-only features, such as Peak Performance Capability, are left out. If another battery health tweak is installed, the page is left to it.
+- Sleep Guard, in a new Battery Use group on the Battery Health page, on by default: when the screen is off and the only thing keeping the iPad awake is a hold left behind by a process that's gone, such as a SpringBoard from before a respring, it clears that hold so the iPad can sleep. It never acts with the screen on or while something else keeps the iPad awake, such as audio, a download or a backup, and at most once in 30 minutes and 6 times a day. iPads stuck awake this way lost about 10 to 28% of their battery a day. While a hold is stuck and not cleared, an iPad Can't Sleep row shows since when.
+- Activity Monitor is in Command-Tab while its window is open, also when it's minimized or on another desktop, with its icon and in the order you last used it. Picking it brings its window forward, and Command-Q closes the window. This doesn't depend on the Show in App Library switch.
+- Swiping past the last Home Screen page no longer opens the App Library. The pages end at the last one, as they do at the first, and this update turns it off on every iPad. To get it back, turn on Swipe Past Last Page Opens App Library: on iPadOS 15 and 16 it's in Apple's Home Screen settings, next to the App Library's rows, and on iPadOS 17 and 18 in the Home Screen group of Settings > Dock. The Dock's Launchpad icon and the App Library's other ways in work as before.
+
+### Improvements
+- Less memory: the tweak's parts for apps now load only into apps, their extensions and SpringBoard, no longer into background system services. That saves about 1 MB in each of those services, up to tens of MB in all, depending on the iPad. Services that are already running let go of them when they next start, at the latest when the iPad restarts.
+- Apps use a little less memory too, about 0.2 MB each: the Home Bar part now loads only into SpringBoard, and the audio mixing part adds some of its hooks only when an app first plays sound of its own.
+- iPadOS 18: the tweak no longer lays out its menu bar inside Control Center's hidden status bar, so SpringBoard does about 10 ms less work each time Control Center opens or closes.
+- With the screen off, the tweak's own timers stop: Activity Monitor's refresh (also while its window is minimized), the RAM & CPU tile in Control Center, a Dock check and the screen orientation readings. A 4-second timer in every app now runs only while that app is active. On iPads without Choicy, the tweak's helper no longer looks for Choicy's settings every 5 seconds, day and night.
+- iPadOS 16 to 18: SpringBoard takes a hold that keeps the iPad awake as it starts, and now gives it back a minute later and before a respring from the tweak. A SpringBoard that went away still holding it, for example in an install's respring, could keep the iPad awake for days.
+- Desktop with a trackpad or mouse: a click held still opens the desktop's menu after 0.75 seconds, as iPadOS's own menus do, so a click that pauses before a drag has more time. It was 0.45 seconds. A finger's hold stays as it was, and a two-finger click still opens the menu at once.
+- Add to Folder is now called Add App to Folder, in an app icon's Haptic Touch menu and in its switch in Settings > Status Bar, Add App to Folder in App Menus.
+
+### Fixes
+- Mac Switcher with a finger: a swipe up that slows down before you lift goes Home. It could open the Mac Switcher. The Mac Switcher now opens after a short hold, with the finger still for a moment. A trackpad or mouse works as before. With Reduce Motion on, a hold opens the Mac Switcher as soon as iPadOS reads the pause, as before.
+- Desktop: touching it keeps Finder's and Activity Monitor's windows active and in front, as on a Mac. A desktop icon can now be dropped on a Finder window that was over an app's window. The touch sent Finder's windows behind the app windows first.
+- Desktop: a finger held for a moment and then moved down does one thing, the swipe down or the selection rectangle. Held a little shorter than the rectangle needs, it could open the App Library and draw the rectangle under it.
+- Desktop: a finger held still but trembling a little opens the desktop's menu after 1 second. It could open nothing.
+- The menu bar shows its Audio menu only while sound really plays. An app playing silently, such as a muted video preview, could show it with nothing to hear.
+- With Aerial on iPadOS 15, after the green button the full-screen app shows at once, without a faint picture of the old window over it for a moment.
+- Removing the tweak now really empties its list of the apps you quit, which iOS doesn't prewarm. iPadOS kept a copy of it, so a reinstall started with the old list.
+
 ## 1.7.7
 
 ### New

@@ -23,7 +23,9 @@ if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
     rm -f /var/jb/var/mobile/Library/Caches/com.besiktasliseba.macstatusbar/Spotlight.plist
     rmdir /var/jb/var/mobile/Library/Caches/com.besiktasliseba.macstatusbar 2>/dev/null
     # the prewarm quit set (and the debug-only diagnostic domain), its file for dasd (common/PrewarmQuitSet.h), the prewarm block's crash-loop markers
-    # (postinst), and the prewarm scheduler restarted so our code leaves it (see postinst)
+    # (postinst), and the prewarm scheduler restarted so our code leaves it (see postinst). The two domains are cfprefsd's: the prerm's helper has
+    # emptied them through it already (1.7.8, common/PrefsForget.h -- an rm alone left cfprefsd's copy for a reinstall to read back), which leaves at
+    # most an empty file (iPadOS's cfprefsd writes one); their files are removed here, with nothing cached behind them.
     rm -f "$P/com.besiktasliseba.macstatusbar.prewarm.plist" "$P/com.besiktasliseba.macstatusbar.prewarm.diag.plist" "$P/MacStatusBarAndDock-PrewarmQuitSet.plist" "$P/MacStatusBarAndDock-PrewarmBlockOff.txt" "$P/MacStatusBarAndDock-PrewarmBlockStarts.txt"
     rm -f "$P/MacStatusBarAndDock-PrewarmBlockLoaded.txt" "$P/MacStatusBarAndDock-PrewarmBlockLoaded.txt.new"   # (the block's start stamp, common/PrewarmPartID.h)
     rm -f "$P/MacStatusBarAndDock-PrewarmBlockArmed.txt" "$P/MacStatusBarAndDock-PrewarmBlockArmed.txt.new" "$P/MacStatusBarAndDock-NoPrewarmBlock.txt"   # (whether it armed, common/PrewarmArmed.h; a debug build's test switch)

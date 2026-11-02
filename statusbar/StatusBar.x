@@ -54,6 +54,7 @@
 #import "../common/FocusLock.h"      // (MSBDFocusLock: SpringBoard holds the keyboard focus for our windows, 15-18 -- the 18 call takes a typed reason)
 #import "../common/DesktopCheck.h"   // (MSBD_FOCUSLOCK_CHECK_KEY: the 18 focus lock verdict for Settings, DMFocusLock18OK)
 #import "../common/Relaunch.h"       // (MSBDRelaunchLikeSbreload: our Respring where SpringBoard may not start sbreload -- iPadOS 18)
+#import "StartupAssertion.h"         // (MSBDGiveBackStartupAssertion: SpringBoard's start-up power assertion given back once it is up, 1.7.8)
 #import "../common/SSHSwitch.h"      // (SSH: its state, asking, the helper's notification -- one logic with Settings and the Control Center control, 1.7.6)
 
 extern int proc_pid_rusage(int pid, int flavor, rusage_info_t *buffer);
@@ -333,6 +334,7 @@ static void DMStartClockBalanceIfNeeded(void);
 static void DMHoldStatusBarCopy(UIView *fg);
 static void DMReleaseStatusBarCopy(UIView *fg);
 static void DMStockVPNRecheck(UIView *fg);
+static BOOL DMBarCopyIsCCDuplicate(UIView *fg);
 static const void *kSpotButtonKey = &kSpotButtonKey;
 static const void *kEditLabelKey = &kEditLabelKey;
 static const void *kEditButtonKey = &kEditButtonKey;
@@ -391,7 +393,35 @@ static inline CGRect DMBarUntransformed(UIView *v) {   // where a view was laid 
 // away; the argument is still type-checked and counts as used, so -Werror sees no unused variables.
 #if DEBUG
 #define DMLog(...) DMLogWrite(__VA_ARGS__)
-#define DMTestFlag(path) (access((path), F_OK) == 0)   // a /tmp test switch (debug builds only; a release build behaves as if none existed)
+// A /tmp test switch (debug builds only; a release build behaves as if none existed). On the main thread each one is looked at once per main
+// run-loop turn (and at least every 100 ms): SpringBoard asks several of them many times in one layout pass -- Stage Manager's strip and status
+// bar height hooks, DMSMFree -- and access() for each was ~15 % of a window drag's main-thread stall in a debug build (A12Z 18.5, smoothness
+// audit). A flag a test makes or removes is seen from the next turn; other threads still look every time. (Keyed by the path's text: some
+// callers build the path.)
+#include <mach/mach_time.h>
+static unsigned long gDMFlagTurn = 1;   // (+1 at every wake and sleep of the main run loop: DMTestFlagTurnsInit)
+static BOOL DMTestFlagNow(const char *path) {
+    if (!path) return NO;
+    if (!pthread_main_np()) return access(path, F_OK) == 0;
+    static uint64_t maxAge = 0;
+    if (!maxAge) { mach_timebase_info_data_t tb; mach_timebase_info(&tb); maxAge = (uint64_t)(100e6 * tb.denom / tb.numer); }
+    uint32_t h = 2166136261u, len = 0;
+    for (const char *c = path; *c; c++, len++) { h ^= (uint8_t)*c; h *= 16777619u; }
+    enum { kSlots = 128 };
+    static struct { uint32_t hash, len; unsigned long turn; uint64_t at; BOOL on; } slot[kSlots];
+    uint64_t now = mach_absolute_time();
+    unsigned i = h % kSlots;
+    if (slot[i].hash == h && slot[i].len == len && slot[i].turn == gDMFlagTurn && now - slot[i].at < maxAge) return slot[i].on;
+    BOOL on = access(path, F_OK) == 0;
+    slot[i].hash = h; slot[i].len = len; slot[i].turn = gDMFlagTurn; slot[i].at = now; slot[i].on = on;
+    return on;
+}
+static void DMTestFlagTurnsInit(void) {
+    CFRunLoopObserverRef o = CFRunLoopObserverCreateWithHandler(kCFAllocatorDefault, kCFRunLoopAfterWaiting | kCFRunLoopBeforeWaiting, true, 0,
+                                                                ^(CFRunLoopObserverRef ob, CFRunLoopActivity a) { gDMFlagTurn++; });
+    CFRunLoopAddObserver(CFRunLoopGetMain(), o, kCFRunLoopCommonModes);
+}
+#define DMTestFlag(path) DMTestFlagNow(path)
 #else
 #define DMLog(...) do { if (0) { (void)(__VA_ARGS__); } } while (0)
 #define DMTestFlag(path) 0
@@ -593,9 +623,23 @@ static void DMWelcomeDismissForLock(void);
 static void DMCloseOverlaysForScreenOff(void);   // (defined with DMCloseOverlay)
 static BOOL gDMOffSinceBack = NO;   // the screen went off since the user was last back (DMWatchLock: the unlock's window follow-ups are due)
 static CFTimeInterval gDMScreenOffAt = 0;   // when the screen last went off (DMAerial5WatchLock: the lock's chip restore on a device whose UI lock never flips)
+// The device-orientation feed we start (DMRealInterfaceOrientation's UIDevice fallback, the Mac pointer's turn) runs only while the screen is on.
+// UIKit keeps the accelerometer streaming to SpringBoard for as long as anyone in it asked for orientation notifications, screen off included, on
+// iPadOS 15/16 (SpringBoard's CoreMotion thread with the screen off and locked: 1.28 s per 10 min on the M1 15.6.1, 1.53 s on the iPad 2 16.7.7;
+// 17/18 quiet it themselves: 34 ms / 4 ms, battery-drain notes 1 Nov). UIDevice counts begins against ends, so ours are kept to one, here.
+static BOOL gDMOrientFeedWanted = NO, gDMOrientFeedOn = NO;
+static void DMOrientationFeedApply(void) {
+    BOOL want = gDMOrientFeedWanted && !gDMScreenOff;
+    if (want == gDMOrientFeedOn) return;
+    gDMOrientFeedOn = want;
+    if (want) [[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
+    else [[UIDevice currentDevice] endGeneratingDeviceOrientationNotifications];
+}
+static void DMOrientationFeedWant(BOOL want) { gDMOrientFeedWanted = want; DMOrientationFeedApply(); }
 static void DMScreenPowerChanged(BOOL off) {
     if (off == gDMScreenOff) return;
     gDMScreenOff = off;
+    DMOrientationFeedApply();   // (first: the screen on again, a reading is due before anything asks for one)
     if (off) { gDMOffSinceBack = YES; gDMScreenOffAt = CACurrentMediaTime(); }
     if (off) DMWelcomeDismissForLock();   // (the welcome alert never waits on the Lock Screen)
     if (off) DMCloseOverlaysForScreenOff();   // (menus and panels too: a quick Face ID unlock showed the old menu for a moment, layering audit F11)
@@ -609,6 +653,7 @@ static void DMScreenPowerWatch(void) {
         DMScreenPowerChanged(st != 0);
     });
     uint64_t st = 0; notify_get_state(token, &st); gDMScreenOff = st != 0;
+    DMOrientationFeedApply();   // (a SpringBoard started with the screen off: the feed asked for earlier waits for the screen)
 }
 // ---- Use Stock Status Bar (Settings > Status Bar; off by default): the whole run is one mode, decided in %ctor (a change needs a respring). ----
 // On: none of our status bar, menus, windowing, engine integration or audio mixing runs (StockBar.h starts only what stays); the gates below are the
@@ -793,9 +838,17 @@ static void DMSaveWindowState(void);
 // sbreload where SpringBoard may start it (15-17); where it may not (18: EPERM for anything under /var/jb, as the eject), SpringBoard sends itself the
 // one request sbreload would have sent (common/Relaunch.h). Until 1.7.4 the fallback was -_relaunchSpringBoardNow, which is gone since iPadOS 17: on
 // 18 every Respring of ours did nothing, and Safe Mode's marker stayed for whatever respring came next (1.7.4 item 6).
+// SpringBoard's start-up power assertion (iPadOS 16-18, StartupAssertion.h) given back: a minute after the start, and before any respring of ours.
+static void DMGiveBackStartupAssertionNow(NSString *when) {
+    NSString *what = nil;
+    int n = MSBDGiveBackStartupAssertion(&what);
+    if (n) DM_FEATURE_MARK("startup-assertion-given-back");
+    DMLog([NSString stringWithFormat:@"[power] start-up assertion %@: %@", when, what ?: @"-"]);
+}
 static void DMRespring(void) {
     DMLog(@"[action] respring");
     DMSaveWindowState();   // the windows come back after the respring
+    DMGiveBackStartupAssertionNow(@"before our respring");   // (this SpringBoard's start-up assertion would outlive it: battery drain F1b)
     const char *sbreload = "/var/jb/usr/bin/sbreload";
     int err = access(sbreload, X_OK) == 0 ? 0 : errno;
     if (!err && !DMTestFlag("/tmp/msb-nosbreload")) {   // (debug: /tmp/msb-nosbreload takes the request path on any version)
@@ -2909,6 +2962,7 @@ static BOOL DMStageManagerHeldNow(void) {
 }
 static void DMWatchGuidedAccess(void);   // (Guided Access: our UI steps aside while a session runs -- defined with DMNativeTick)
 static void DMWinCardsTick(void);   // (WindowCards.h: every window's app has its App Switcher card, the front window's first)
+static void DMAMCmdTabTick(void);   // (ActMonDock.h: the apps seen in front since Activity Monitor was, for Command-Tab's order, 1.7.8)
 static void DMSyncWindowsForLibraryBody(void) {
     DM_PERF("guided", DMWatchGuidedAccess());
     DM_PERF("stagemgr", DMStageManagerWatch());
@@ -2917,6 +2971,7 @@ static void DMSyncWindowsForLibraryBody(void) {
     if (gSMCheckOK) DMSMRefitOldTopTick();   // (Home-button iPads: windows placed with the 24 pt bar's top, re-fitted once -- 1.7.2 item 9)
     DM_PERF("dock", DMWatchDockChanges());   // (the Dock changed for good: windows follow its new height, every engine)
     DM_PERF("native", DMNativeTick());   // (native windows: their level follows the engine's windows; kept on screen after a turn)
+    DMAMCmdTabTick();   // (Activity Monitor in iPadOS's Command-Tab: the apps in front since it was, once SpringBoard has settled)
     DM_PERF("smturn", DMSMWatchTurn());   // (Stage Manager engine: windows keep their layouts, and stay reachable, when the iPad turns)
     DM_PERF("switcher", DMWatchSwitcher());
     DMMSWTick();   // (Mac Switcher: nothing to do while it is closed)
@@ -9342,6 +9397,20 @@ static void DMAerialToFullScreen(UIView *stage) {
             DMLog([NSString stringWithFormat:@"[aerial] %@ full screen: the cover goes %@ (%.2f s after the press; zoom %@, launch %@)", bundleID, laidOut ? @"now that the app has laid itself out" : @"without the app's word",
                    CACurrentMediaTime() - resetAt, zoomed ? @"over" : @"still running", DMWorkspaceIdle() ? @"over" : @"still running"]);
             if (!cover || gStageCover != cover) { showWindows(); return; }
+            // The zoom ends where the live app is, at its size, so the hand-over is a cut once the app has laid itself out for the whole screen: the
+            // zoom's last picture -- the window's own layout, grown -- faded over the live app's full-screen layout for 0.2 s, a ghost of the old
+            // layout over the new one for about a tenth of a second (M1, Aerial, 1.7.7 RC; 1.7.8). One frame after the app's word, so its first
+            // full-screen frame is on the screen. Without its word (the deadline), and with Reduce Motion (a cross-fade by design), it fades as before.
+            if (zoom && !rm && laidOut) {
+                gCoverSnap.hidden = YES;
+                if (hidden && gWindowsUnderCover && hidden.alpha < 0.01) hidden.alpha = 1.0;
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.017 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    DM_FEATURE_MARK("aerial-green-cut-to-app");
+                    if (gStageCover == cover) DMStageCoverRemove();
+                    showWindows();
+                });
+                return;
+            }
             // (one picture fades: the grown window -- the still under it showed through it as it faded, a ghost of the desktop and the small window --,
             //  or with Reduce Motion the still, the window in it)
             if (zoom && !rm) gCoverSnap.hidden = YES; else zoom.hidden = YES;
@@ -13296,8 +13365,14 @@ static void DMDismissSpotlightSoon(void) {
 // Cmd-Tab's list is SpringBoard's own recent-apps order, which knows nothing about windows: raising a window does not make its app the "current"
 // one there, so a quick Cmd-Tab from a window kept picking that same app again (no change on the screen). When the picked app is the app of the front
 // window, the next app in the list is taken instead -- a quick Cmd-Tab then goes to the app used before, as on a Mac.
+static BOOL DMNativeAnyActive(void);                      // (a native window -- Finder, Activity Monitor -- is the active one: NativeWindow.h)
+static void DMNativeStepBack(NSString *why);               // (... it steps back: an app comes forward)
+static BOOL DMAMCmdTabPicked(id controller, id item);      // (ActMonDock.h: Activity Monitor's own item picked -- its window comes forward, never a launch)
 static id DMCmdTabPick(id controller, id item) {   // returns the display item to switch to
     NSString *b = [item respondsToSelector:@selector(bundleIdentifier)] ? [item bundleIdentifier] : nil;
+    // (a native window is the active one -- Activity Monitor or Finder in front: the app behind it is not the "current" one, picking it brings it
+    //  forward, 1.7.8)
+    if (DMNativeAnyActive()) return item;
     NSString *front = [DMActiveApp() bundleIdentifier];   // (the front window's app while windows are in front)
     if (!b.length || !front.length || ![b isEqualToString:front] || !DMHasWindowFor(b)) return item;
     Ivar vi = class_getInstanceVariable(object_getClass(controller), "_commandTabViewController");
@@ -13393,6 +13468,10 @@ static NSMutableDictionary<NSString *, NSNumber *> *gWindowLaunchUntil;   // (de
 %hook SBCommandTabController
 - (void)viewController:(id)vc selectedApplicationWithDisplayItem:(id)item {
     id pick = DMCmdTabPick((id)self, item);
+    // (the next app in the list taken can be Activity Monitor's item, used just before the front window's app: its window comes forward -- never
+    //  SpringBoard's launch of a bundle that is no app, whichever of the two hooks of this call runs first, 1.7.8)
+    if (DMAMCmdTabPicked((id)self, pick)) return;
+    DMNativeStepBack(@"an app picked in Command-Tab");   // (an app comes forward over the native windows, as from the Dock)
     NSString *b = [pick respondsToSelector:@selector(bundleIdentifier)] ? [pick bundleIdentifier] : nil;
     // (a window on another Mac Switcher desktop too: its desktop comes, as from the Dock and the open requests -- Aerial's DMHasWindowFor sees the
     //  current desktop only, so Cmd-Tab opened the app full screen here while its window waited there; Zetsu and MilkyWay4 found it, 1.4.5)
@@ -13408,6 +13487,8 @@ static NSMutableDictionary<NSString *, NSNumber *> *gWindowLaunchUntil;   // (de
     id vc = nil; Ivar iv = class_getInstanceVariable(object_getClass((id)self), "_commandTabViewController"); if (iv) vc = object_getIvar((id)self, iv);
     id item = [vc respondsToSelector:NSSelectorFromString(@"selectedApplicationDisplayItem")] ? DMCall(vc, @"selectedApplicationDisplayItem") : nil;
     id pick = DMCmdTabPick((id)self, item);
+    if (DMAMCmdTabPicked((id)self, pick)) return;   // (Activity Monitor's item, as above)
+    if (item) DMNativeStepBack(@"an app picked in Command-Tab");   // (an app comes forward over the native windows, as from the Dock)
     NSString *b = [pick respondsToSelector:@selector(bundleIdentifier)] ? [pick bundleIdentifier] : nil;
     if (b.length && (DMHasWindowFor(b) || DMMSWWindowElsewhere(b))) {   // (on another desktop too, as above)
         DMLog([NSString stringWithFormat:@"[cmdtab] %@ has a window: its window comes forward (not full screen; launchCurrentSelectedApplication)", b]);
@@ -17813,6 +17894,9 @@ static BOOL DMMixAudioOn(void) {
 // way, so which apps are listed inside the menu still comes from MixAudio for now. Read once a second from the 0.2 s tick (it is a call to
 // the media server, so not on every tick). The title appears as soon as something plays and goes only after 3 s of silence, so a track
 // change or a short gap doesn't make it blink, and never while a menu is open. If the controller can't be reached, it stays shown as before.
+// The flag alone decides the title (common/AudioTitle.h, 1.7.8): a session the list calls playing may make no sound -- a muted preview in
+// Spotify's home feed showed the title on the A12Z, flag 0 -- and the list decides only where the flag gives no answer.
+#include "../common/AudioTitle.h"
 static BOOL gAudioTabShown = NO;
 // Which apps are playing, straight from the same controller: "PlayingSessionsDescriptionAttribute" (that is the constant's real string -- the
 // symbol is named AVSystemController_PlayingSessionsDescriptionAttribute, but asking by the symbol's name returns nil) is a list of
@@ -17940,7 +18024,13 @@ static void DMAudioPlayingAnswer(id v, id sessions, NSDictionary *webHosts) {
     CFTimeInterval now = CACurrentMediaTime();
     BOOL playing = YES;
     if (v) {
-        playing = [v respondsToSelector:@selector(boolValue)] && [v boolValue];
+        // (the flag as the controller gave it: 1 / 0, or -1 for no boolean -- then the sessions list decides, AudioTitle.h)
+        int flag = [v isKindOfClass:[NSNumber class]] ? ([v boolValue] ? 1 : 0) : -1;
+        long listed = -1;
+#if DEBUG
+        extern int gDMAudioFlagSim;
+        if (gDMAudioFlagSim != -2) flag = gDMAudioFlagSim;   // (debug: audioflag_ stands in for the system's flag)
+#endif
         if ([sessions isKindOfClass:[NSArray class]]) {
             NSArray<NSString *> *ids = DMAudioBundleIDsForSessions(sessions, webHosts);
 #if DEBUG
@@ -17953,8 +18043,12 @@ static void DMAudioPlayingAnswer(id v, id sessions, NSDictionary *webHosts) {
             }
             DMAudioSingleSourceUpdate(ids, NO);
             DMAudioRefreshOpenRows();
-            if (ids.count) playing = YES;
+            listed = (long)ids.count;
         }
+        playing = MSBDAudioTitlePlaying(flag, listed);
+        static int quietListed = 0;   // (logged once per stretch: a listed session the flag calls silent -- a muted player -- shows no title)
+        if (!playing && listed > 0 && flag == 0) { if (!quietListed) { quietListed = 1; DMLog([NSString stringWithFormat:@"[audio] %ld session(s) listed as playing, but the system hears nothing: no Audio title", listed]); } }
+        else quietListed = 0;
     }
     BOOL show = gAudioTabShown;
     if (playing || gOverlay) { silentSince = 0; if (playing) show = YES; }
@@ -18039,6 +18133,7 @@ static void DMSetAudioVolumeAndNotify(NSString *bid, float value, BOOL commit) {
 // only started while it was off gets the level of the app that was heard. The Audio menu shows silenced apps muted (DMSliderRow.sourceMuted).
 #if DEBUG
 NSArray<NSString *> *gDMAudioSim = nil;   // (debug: audiosim_)
+int gDMAudioFlagSim = -2;   // (debug: audioflag_ -- -2 the system's flag, -1 no answer, 0 / 1)
 #endif
 static NSString *gDMAudioSource = nil;                                  // the app that is heard
 static NSMutableSet<NSString *> *gDMAudioSourceMuted = nil;             // apps silenced for it (never an app in a call, see DMAudioUpdateCalls)
@@ -20756,6 +20851,9 @@ static void DMLoadPrefs(void) {
         CFPropertyListRef alRef = CFPreferencesCopyValue(CFSTR("activityMonitorInLibrary"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
         if (alRef) { if (CFGetTypeID(alRef) == CFBooleanGetTypeID()) al = CFBooleanGetValue(alRef); CFRelease(alRef); }
         DMALApplyPref(al && !DMCtorSkip("applib"));
+        // (iPadOS's Command-Tab lists it while its window exists whatever that switch says -- KT, 1.7.8 review m2: its hooks at the start, once, where
+        //  read; classes only, as our constructor needs: ActMonDock.h DMAMCmdTabInstall)
+        if (!DMCtorSkip("cmdtab")) DMAMCmdTabInstall();
     }
     {   // Mac Switcher: off unless switched on (DMMSWApplyPref: iPadOS 15-17, DMMSWOSOK, and only when its self-check passed)
         BOOL msw = NO;
@@ -21213,6 +21311,10 @@ static void DMAttachIfFilledNow(UIView *fg, const char *why, BOOL now) {
     // (the copy whose own layout pass is running is left to that pass -- our own views added by it arrive here too: answering them with another
     //  layout recursed until the stack ran out, two SpringBoard crashes with debug twin 1.4.5-9, 24 Oct 03:23)
     if (gDMBarLayoutDepth > 0 && fg == gDMBarLayingOut) return;
+    // (Control Center's hidden duplicate on 18 is never ours, DMBarCopyIsCCDuplicate: asked to lay out again and held here, it was released by that
+    //  layout, its items were asked again (DMStockVPNRecheck) and came back here -- a loop of ~150 rounds a second for as long as Control Center
+    //  was up: SpringBoard 47 % and backboardd 38 % of a core with Control Center open and untouched, A12Z 18.5, 1.7.8~t02)
+    if (DMBarCopyIsCCDuplicate(fg)) return;
     // (only once the leading region has its time: what our layout attaches to. The Lock Screen's copy has no clock and its labels change many times a
     //  second there -- each change asked for a whole layout pass before this test)
     UIView *c = DMLeadingContainer(fg);
@@ -21306,6 +21408,7 @@ static BOOL DMBarCopyPooled(UIView *fg) {
 static void DMHoldStatusBarCopy(UIView *fg) {
     if (objc_getAssociatedObject(fg, kLogoKey) || objc_getAssociatedObject(fg, kHoldKey) || objc_getAssociatedObject(fg, kHoldGaveUpKey)) return;   // already ours, already held, or given up on
     if (DMBarCopyPooled(fg)) return;   // (17+: a spare copy in the hidden reuse pool -- held once it comes into a visible window)
+    if (DMBarCopyIsCCDuplicate(fg)) return;   // (Control Center's hidden duplicate, 18: never ours, nothing to hold -- DMAttachIfFilledNow)
     // (iOS's choice when the hold starts -- unless the copy is a Stage Manager window card's, whose opacity is ours: setAlpha: below; then iOS's
     //  last word is not known and 1.0 is kept, as before)
     BOOL oursNow = DMSMEngine() && [NSStringFromClass([fg.window class]) isEqualToString:@"SBMainSwitcherWindow"] && !DMSMInFullScreenCard(fg);
@@ -21541,6 +21644,18 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
     DMLog([NSString stringWithFormat:@"[smstrips] %@'s strip held at 0 (%@ asked %.2f, was %.2f): %@", DMSMCardBundle(card) ?: @"?", where, asked, fg.alpha, above ? [NSString stringWithFormat:@"the full-screen card of %@ is above it", above] : @"the screen's own bar shows"]);
 }
 #endif
+// Control Center's own full-width status bar copy (SBControlCenterWindow, outside its header's CCUIStatusBar): UIStatusBar_Modern's setAlpha:
+// hook keeps it hidden while Control Center is up (Control Center's duplicates, "keepbar"), and iPadOS 18 makes a new one for every presentation;
+// dressing it as our menu bar (our buttons, titles, icons) cost ~11 ms of every open and every close and was never seen. Not dressed (18).
+static BOOL DMBarCopyIsCCDuplicate(UIView *fg) {
+    static int os = -1; if (os < 0) os = (int)[NSProcessInfo processInfo].operatingSystemVersion.majorVersion;
+    if (os != 18) return NO;
+    UIWindow *w = fg.window;
+    if (!w || fg.bounds.size.width < 300.0 || ![NSStringFromClass([w class]) isEqualToString:@"SBControlCenterWindow"]) return NO;
+    static Class ccBar; if (!ccBar) ccBar = objc_getClass("CCUIStatusBar");
+    for (UIView *v = fg.superview; v && v != w; v = v.superview) if (ccBar && [v isKindOfClass:ccBar]) return NO;   // (Control Center's header bar: as before)
+    return YES;
+}
 %hook _UIStatusBarForegroundView
 
 - (void)setAlpha:(CGFloat)a {
@@ -21585,6 +21700,7 @@ static void DMSMDebugStripHidden(UIView *fg, NSString *where, CGFloat asked) {
             gDMBarLayingOut = prev; gDMBarLayoutDepth--;
         }
     }
+    if (DMBarCopyIsCCDuplicate((UIView *)self)) { DMReleaseStatusBarCopy((UIView *)self); return; }   // (Control Center's hidden duplicate, 18: DMBarCopyIsCCDuplicate)
     CFTimeInterval began = CACurrentMediaTime();
     DMHoldStatusBarCopy((UIView *)self);
     DMSnapBegin();   // (S-1: one look at the windows, stages and front window for the whole pass, as in the watchers' ticks)
@@ -23325,11 +23441,12 @@ static void DMCornerWatch(UIEvent *event) {
 - (void)addToRunLoop:(NSRunLoop *)runloop forMode:(NSRunLoopMode)mode {
     %orig;
     if (!gDMLinks) gDMLinks = [NSMapTable weakToStrongObjectsMapTable];
-    if (![gDMLinks objectForKey:self]) {
-        NSArray *st = [NSThread callStackSymbols];
-        NSMutableArray *short_ = [NSMutableArray array];
-        for (NSUInteger i = 1; i < MIN(st.count, (NSUInteger)8); i++) { NSString *f = st[i]; NSRange r = [f rangeOfString:@"0x"]; [short_ addObject:r.location != NSNotFound ? [f substringFromIndex:r.location] : f]; }
-        [gDMLinks setObject:[short_ componentsJoinedByString:@" | "] forKey:self];
+    if (![gDMLinks objectForKey:self]) {   // (the caller's return addresses only, named when the idle probe reads them: -callStackSymbols named every frame
+                                           //  of the stack on each new display link -- ~1-6 ms each, 6 ms of every Control Center open: smoothness audit)
+        NSArray<NSNumber *> *ra = [NSThread callStackReturnAddresses];
+        NSMutableString *line = [NSMutableString string];
+        for (NSUInteger i = 1; i < MIN(ra.count, (NSUInteger)8); i++) [line appendFormat:@"%@0x%016llx", i > 1 ? @" | " : @"", ra[i].unsignedLongLongValue];
+        [gDMLinks setObject:line forKey:self];
     }
 }
 %end
@@ -24638,8 +24755,8 @@ static void DMRunTrigger(NSString *cmd) {
                 }
             }
         }
-        else if ([w isEqualToString:@"orientoff"]) [[UIDevice currentDevice] endGeneratingDeviceOrientationNotifications];
-        else if ([w isEqualToString:@"orienton"]) [[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
+        else if ([w isEqualToString:@"orientoff"]) DMOrientationFeedWant(NO);
+        else if ([w isEqualToString:@"orienton"]) DMOrientationFeedWant(YES);
         else if ([w isEqualToString:@"timersoff"] || [w isEqualToString:@"timerson"]) {
             BOOL off = [w isEqualToString:@"timersoff"];
             for (NSTimer *t in gDMGatedTimers.allObjects) if (t.valid) t.fireDate = off ? [NSDate distantFuture] : [NSDate dateWithTimeIntervalSinceNow:0.05];
@@ -25348,6 +25465,12 @@ static void DMRunTrigger(NSString *cmd) {
         NSString *list = [cmd substringFromIndex:9];
         gDMAudioSim = [list isEqualToString:@"off"] ? nil : ([list isEqualToString:@"none"] ? @[] : [list componentsSeparatedByString:@","]);
         DMLog([NSString stringWithFormat:@"[debug] audiosim: %@", gDMAudioSim ?: @"off (the system's list)"]);
+    }
+    else if ([cmd hasPrefix:@"audioflag_"]) {   // audioflag_<0|1|none|off>: pretend the system's "audio is playing somewhere" flag says this (the Audio title's rule, debug)
+        extern int gDMAudioFlagSim;
+        NSString *f = [cmd substringFromIndex:10];
+        gDMAudioFlagSim = [f isEqualToString:@"off"] ? -2 : [f isEqualToString:@"none"] ? -1 : [f intValue] ? 1 : 0;
+        DMLog([NSString stringWithFormat:@"[debug] audioflag: %@", gDMAudioFlagSim == -2 ? @"off (the system's flag)" : gDMAudioFlagSim == -1 ? @"no answer" : gDMAudioFlagSim ? @"playing" : @"silent"]);
     }
     else if ([cmd hasPrefix:@"ringer_"]) {   // ringer_0 / ringer_1: the ringer unmuted / muted through SpringBoard's ringer control, as Control Center does (debug)
         BOOL want = [[cmd substringFromIndex:7] boolValue];
@@ -36279,8 +36402,15 @@ static BOOL DMDownloadsPanelTakesEsc(NSSet<UIPress *> *presses) {
 }
 - (void)pressesBegan:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
     if (DMDownloadsPanelTakesEsc(presses)) return;
+    // (the desktop first while it has the keys -- clicked last, a name edited on it, or nothing in front of it --, also with a native window active
+    //  in front: the desktop is Finder's and a touch on it leaves the native windows active, 1.7.8. What it does not take goes on as usual, never to
+    //  the native window: Space with nothing selected would Quick Look the Finder window's selection; a rename's typing is its field's)
+    if (gDesktop && [gDesktop dm_hasKeys]) {
+        for (UIPress *p in presses) if (p.key && [gDesktop dm_handleKey:p.key]) return;
+        %orig;   // (Logos: nothing after %orig on its line)
+        return;
+    }
     if (gNativeActive) for (UIPress *p in presses) if (DMNativeHandlePress(p)) return;
-    if (!gNativeActive && gDesktop && [gDesktop dm_hasKeys]) for (UIPress *p in presses) if (p.key && [gDesktop dm_handleKey:p.key]) return;   // (the desktop was clicked last)
     %orig;
 }
 %end
@@ -40785,6 +40915,15 @@ void DMSMRunAction(UIAction *action, id sender) {
     if (h) h(action);
 }
 %ctor {
+#if DEBUG
+    DMTestFlagTurnsInit();   // (the test switches' look-once-per-turn, above)
+#endif
+    // SpringBoard's start-up power assertion given back a minute after the start (battery drain F1b, StartupAssertion.h): a later death of this
+    // SpringBoard leaves no SystemIsActive behind. First thing, before the returns below: the leak is SpringBoard's whatever bar shows -- Use
+    // Stock Status Bar on, or Mac Status Bar switched off, too.
+    if (!DMCtorSkip("power")) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(60 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        DMGiveBackStartupAssertionNow(@"a minute after the start");
+    });
     if (MSBDDiagEnabled()) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMDiagHooks(); });
     {   // Settings > Mac Status Bar (a separate, minimal entry, alongside the other installed tweaks' own on/off switches): fully off means fully off — not
         // one hook of this file runs, the same as if the tweak were not installed. Checked before %init, so nothing is even hooked yet to undo.
@@ -40914,8 +41053,8 @@ void DMSMRunAction(UIAction *action, id sender) {
     // DMRealInterfaceOrientation()'s UIDevice fallback (used by the menu/keyboard orientation fixes) needs a genuinely live reading, not whatever
     // SpringBoard's own unrelated subsystems happen to leave [UIDevice currentDevice].orientation at -- without this, that property can return
     // UIDeviceOrientationUnknown depending on what else in-process has (or hasn't) turned the accelerometer feed on. Explicitly starting it
-    // ourselves removes that as a variable. Public API, read-only effect (starts a system sensor feed, nothing more).
-    if (!DMTestFlag("/tmp/msb-noorientnotes")) [[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];   // (debug kill switch: idle-cost test)
+    // ourselves removes that as a variable. Public API, read-only effect (starts a system sensor feed, nothing more), while the screen is on.
+    if (!DMTestFlag("/tmp/msb-noorientnotes")) DMOrientationFeedWant(YES);   // (debug kill switch: idle-cost test)
     if (!DMCtorSkip("startup")) dispatch_async(dispatch_get_main_queue(), ^{ DMStartStartupWatcher(); });   // as soon as the main run loop is up
 #if DEBUG
     {   // debug probe: app lifecycle events sent by the debug build of MixAudio (state = hash of the bundle id)

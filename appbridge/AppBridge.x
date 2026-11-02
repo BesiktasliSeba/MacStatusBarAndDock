@@ -2047,10 +2047,22 @@ static void MABStartTintReports(void) {
     if (!bundle.length || [bundle isEqualToString:@"com.apple.springboard"]) return;
     dispatch_async(dispatch_get_main_queue(), ^{
         if (![UIApplication sharedApplication]) return;
-        [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) { MABPublishTint(); }];
-        NSTimer *t = [NSTimer timerWithTimeInterval:4.0 repeats:YES block:^(NSTimer *timer) { MABPublishTint(); }];
-        t.tolerance = 1.0;
-        [[NSRunLoop mainRunLoop] addTimer:t forMode:NSRunLoopCommonModes];
+        // (the 4 s refresh only while the app is active -- MABPublishTint does nothing otherwise: it never stopped, so every app kept running in
+        //  the background or behind a locked screen -- music, navigation, a call -- woke up for it every 4 s; battery drain F4)
+        static NSTimer *t = nil;
+        void (^start)(void) = ^{
+            MABPublishTint();
+            if (t) return;
+            t = [NSTimer timerWithTimeInterval:4.0 repeats:YES block:^(NSTimer *timer) { MABPublishTint(); }];
+            t.tolerance = 1.0;
+            [[NSRunLoop mainRunLoop] addTimer:t forMode:NSRunLoopCommonModes];
+        };
+        void (^stop)(void) = ^{ [t invalidate]; t = nil; };
+        NSNotificationCenter *nc = [NSNotificationCenter defaultCenter]; NSOperationQueue *mq = [NSOperationQueue mainQueue];
+        [nc addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:mq usingBlock:^(NSNotification *n) { start(); }];
+        [nc addObserverForName:UIApplicationWillResignActiveNotification object:nil queue:mq usingBlock:^(NSNotification *n) { stop(); }];
+        [nc addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil queue:mq usingBlock:^(NSNotification *n) { stop(); }];
+        if ([UIApplication sharedApplication].applicationState == UIApplicationStateActive) start();
         for (int i = 1; i <= 3; i++) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ MABPublishTint(); });
     });
 }

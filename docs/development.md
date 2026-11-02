@@ -20,16 +20,16 @@ MacStatusBar&Dock
 │   ├── DockMagnification   Dock, magnification, recent apps, Launchpad, Downloads stack, Trash
 │   ├── Home Screen parts   MacIconLabels, MacPageDots, MacFolderMenu, MacAppSizeMenu, ForceQuitMenu, MacAddToFolder
 │   ├── MacRAMCPU, MacSSH   the RAM & CPU and SSH controls, modules Control Center loads from the tweak's folder
-│   └── MacLockStatusBar, MacCCGrabber, MacSettingsBadge, VolumeGlobeTweak
+│   └── MacHomeBar, MacLockStatusBar, MacCCGrabber, MacSettingsBadge, VolumeGlobeTweak
 │
-├── Apps (every app that uses UIKit; MixAudio stays out of app extensions)
+├── Apps (apps, app extensions and XPC services that use UIKit, never bare daemons; MixAudio stays out of app extensions)
 │   ├── MacAppBridge        window interaction: menus, typing and Esc, button color for resize handles, small per-app fixes
 │   ├── MixAudio            per-app volume and audio mixing
 │   ├── GraveEscapeTweak, BrightnessKeyTweak, TabMuteTweak   keyboard keys
-│   └── MacHomeBar, MacLargeTitles
+│   └── MacLargeTitles
 │
 ├── Settings app
-│   └── MacSettings, MacEthernetFix, the Status Bar, Desktop, Windows & Multitasking and Dock pages
+│   └── MacSettings, MacEthernetFix, the Status Bar, Desktop, Windows & Multitasking and Dock pages, and the Battery Health page with its Battery Use group
 │
 ├── pointeruid (the pointer)
 │   └── MacPointer          the Mac pointer
@@ -45,6 +45,7 @@ MacStatusBar&Dock
     ├── SSH on and off from Settings and Control Center, with each switch's result in its state file for every switch to show
     ├── window-engine exclusivity (Choicy's list, or iCleaner Pro's renaming without Choicy)
     ├── a drive's eject for Finder: it checks that the folder is a connected drive's, then runs the eject helper
+    ├── Sleep Guard: with the screen off, has launchd start powerd over when a power assertion of a process that's gone is the only one keeping the iPad awake
     └── gives the engines' settings back when the tweak is removed or switched off, and has SpringBoard lower a stored Auto-Lock of 2 hours then
 ```
 

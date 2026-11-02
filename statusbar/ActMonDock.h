@@ -519,6 +519,177 @@ static UIMenu *DMAMMenu(id location) {
     return [UIMenu menuWithTitle:@"" children:@[[UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:rows]]];
 }
 
+// ---- iPadOS's Command-Tab (1.7.8 item 10, KT 2 Nov: Activity Monitor there while its window exists; the Mac Switcher shows its window already) ----
+// While its window exists (open, minimized, or on another desktop) Activity Monitor is one of Command-Tab's apps, with its icon, where its last use
+// puts it among them (common/ActMonDock.h MSBDActMonCmdTabIndex: first while its window is the active one). The switcher's view controller is given
+// SpringBoard's recents with ours added -- a copy (-[SBCommandTabViewController initWithRecentDisplayItems:]), so SpringBoard's recents controller and
+// the data store it persists them to never hold it, as the Dock's running entry (1.7.7). The switcher asks the icon model for each app's icon: while
+// it builds, ours is Activity Monitor's (the model itself never holds it). Picked -- Command let go on it, or a tap -- its window comes forward
+// (from minimized too; its desktop first when it is on another); Command-Q on it closes the window, as Command-Q quits an app there.
+// Our own Command-Tab list: none (the Mac Switcher is Mission Control's, and lists the window already). Whatever Show in App Library says (KT, 1.7.8
+// review m2: an open app is in Command-Tab on a Mac however it is kept): its hooks go in at the start, where read (StatusBar.x DMLoadPrefs), not with
+// the App Library's and the Dock's on that switch's first on.
+static NSArray<NSString *> *gDMAMCmdTabSnapshot;   // (the recents' bundle identifiers when its window was last the active one)
+static NSMutableArray<NSString *> *gDMAMCmdTabUsed;   // (the apps seen in front since then: all used after it)
+static CFTimeInterval gDMAMCmdTabQuietUntil = 0;     // (no look at the app in front until then: the native windows just handed the screen back)
+static int gDMAMCmdTabBuilding = 0;               // (the switcher builds its icons: the icon model answers ours for our identifier)
+static BOOL gDMAMCmdTabReady = NO;
+static id DMAMCmdTabController(void) {
+    Class c = objc_getClass("SBCommandTabController");
+    return c && DMMSWHasMethod(object_getClass((id)c), @"sharedInstance", @"@@:") ? DMCall(c, @"sharedInstance") : nil;
+}
+static NSArray<NSString *> *DMAMBundlesOf(id items) {
+    NSMutableArray *out = [NSMutableArray array];
+    for (id it in DMALItems(items)) { id b = DMCall(it, @"bundleIdentifier"); if ([b isKindOfClass:[NSString class]]) [out addObject:b]; }
+    return out;
+}
+static NSArray<NSString *> *DMAMRecentsNow(void) {   // (SpringBoard's own recents, as Command-Tab takes them)
+    return DMAMBundlesOf(DMCall(DMALIvarObj(DMAMCmdTabController(), "_recentDisplayItemsController"), @"recentDisplayItems"));
+}
+// Its window became the active one (ActivityMonitor.h, the window's onActiveChanged): the recents as they are now -- whatever comes to the front later
+// is used after it.
+static void DMAMCmdTabNoteActive(void) { if (gDMAMCmdTabReady) { gDMAMCmdTabSnapshot = DMAMRecentsNow(); gDMAMCmdTabUsed = [NSMutableArray array]; } }
+static BOOL DMAMActiveNow(void) { return [DMNativeActiveApp() isKindOfClass:[DMActivityMonitorWindow class]]; }
+// Since then, while its window is there and neither it nor another native window (Finder) is the active one: the app in front, seen every 0.2 s by
+// the watcher (DMSyncWindowsForLibraryBody) once SpringBoard has settled -- no workspace transaction, no switcher transition for 0.35 s, the App
+// Library and the App Switcher gone (as DMSMBarsSettleCheck) -- and not in the first 0.5 s after the native windows handed the screen back to the
+// apps (a touch on another app's window brings that one forward only as the finger lifts; the app in front behind them until then is not used).
+// What the recents cannot tell (common/ActMonDock.h, MSBDActMonCmdTabIndex's usedSince); also an app picked in Command-Tab, at once.
+static void DMAMCmdTabUsedApp(NSString *b) {
+    if (![b isKindOfClass:[NSString class]] || !b.length || !gDMAMCmdTabUsed || [gDMAMCmdTabUsed containsObject:b]) return;
+    [gDMAMCmdTabUsed addObject:b];
+    DMLog([NSString stringWithFormat:@"[amcmdtab] %@ in front since Activity Monitor was: after it in Command-Tab", b]);
+}
+static void DMAMCmdTabTick(void) {
+    if (!gDMAMCmdTabReady || !gDMAMCmdTabUsed || gNativeActive || !DMAMWindowExists()) return;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now < gDMAMCmdTabQuietUntil || DMSMWorkspaceBusy() || now - gSwitcherEventAt < 0.35 || DMSwitcherVisible() || DMLibraryVisible()) return;
+    DMAMCmdTabUsedApp([DMActiveApp() bundleIdentifier]);
+}
+static void DMAMCmdTabAppsForward(void) { gDMAMCmdTabQuietUntil = CACurrentMediaTime() + 0.5; }   // (NativeWindow.h, DMNativeSetActive(nil))
+static id (*o_DMAMCmdTabInit)(id, SEL, id);
+static id DMAMCmdTabInit(id self, SEL _cmd, id items) {
+    id with = items, ours = gDMAMCmdTabReady && DMAMWindowExists() && DMALIcon() ? DMAMRecentsItem() : nil;   // (whatever Show in App Library says)
+    NSUInteger at = NSNotFound;
+    if (ours && ([items isKindOfClass:[NSOrderedSet class]] || [items isKindOfClass:[NSArray class]]) && ![DMALItems(items) containsObject:ours]) {
+        at = MSBDActMonCmdTabIndex(DMAMBundlesOf(items), gDMAMCmdTabSnapshot, gDMAMCmdTabUsed, DMAMActiveNow());
+        id m = [items mutableCopy];
+        at = MIN(at, (NSUInteger)[m count]);
+        [m insertObject:ours atIndex:at];
+        with = m;
+    }
+    gDMAMCmdTabBuilding++;
+    id r = nil;
+    @try { r = o_DMAMCmdTabInit(self, _cmd, with); } @finally { gDMAMCmdTabBuilding--; }
+    if (with != items) { DM_FEATURE_MARK("actmon-cmdtab"); DMLog([NSString stringWithFormat:@"[amcmdtab] Command-Tab: Activity Monitor at %lu of %lu (%@)", (unsigned long)at, (unsigned long)[with count], DMAMActiveNow() ? @"its window is the active one" : @"by its last use"]); }
+    return r;
+}
+// (the switcher's own builds of its icons: its view, an icon model change)
+static void (*o_DMAMCmdTabViewDidLoad)(id, SEL);
+static void DMAMCmdTabViewDidLoad(id self, SEL _cmd) { gDMAMCmdTabBuilding++; @try { o_DMAMCmdTabViewDidLoad(self, _cmd); } @finally { gDMAMCmdTabBuilding--; } }
+static void (*o_DMAMCmdTabModelChanged)(id, SEL, id);
+static void DMAMCmdTabModelChanged(id self, SEL _cmd, id n) { gDMAMCmdTabBuilding++; @try { o_DMAMCmdTabModelChanged(self, _cmd, n); } @finally { gDMAMCmdTabBuilding--; } }
+// The icon model's lookups while the switcher builds: ours for our identifier (each logged once in debug builds: which one the switcher asks).
+#define DMAM_CMDTAB_LOOKUP(N, SELNAME) \
+    static id (*o_DMAMLookup##N)(id, SEL, id); \
+    static id DMAMLookup##N(id self, SEL _cmd, id ident) { \
+        if (gDMAMCmdTabBuilding && [ident isEqual:kDMALActMonIdentifier]) { id i = DMALIcon(); \
+            static BOOL told = NO; if (i && !told) { told = YES; DMLog(@"[amcmdtab] the switcher asked the icon model for Activity Monitor's icon (" SELNAME ")"); } \
+            if (i) return i; } \
+        return o_DMAMLookup##N(self, _cmd, ident); }
+DMAM_CMDTAB_LOOKUP(0, "applicationIconForBundleIdentifier:")
+DMAM_CMDTAB_LOOKUP(1, "expectedIconForDisplayIdentifier:")
+DMAM_CMDTAB_LOOKUP(2, "leafIconForIdentifier:")
+// Its window forward: from minimized too ([w show]); on another desktop, that desktop first (the Mac Switcher's switch); none: opened.
+static void DMAMBringForward(NSString *why) {
+    for (DMNativeWindow *w in gNativeWindows) if ([w isKindOfClass:[DMActivityMonitorWindow class]]) { [w show]; DMLog([NSString stringWithFormat:@"[amcmdtab] its window forward (%@)", why]); return; }
+    for (DMNativeWindow *w in [gMSWAwayNatives copy]) {
+        if (![w isKindOfClass:[DMActivityMonitorWindow class]]) continue;
+        NSNumber *did = objc_getAssociatedObject(w, kMSWNativeDeskKey);
+        NSUInteger at = DMMSWMulti() && [did isKindOfClass:[NSNumber class]] ? [gMSWDesks indexOfObject:did] : NSNotFound;
+        __weak DMNativeWindow *ww = w;
+        void (^then)(void) = ^{ DMNativeWindow *x = ww; if (x && [gNativeWindows containsObject:x]) [x show]; };
+        DMLog([NSString stringWithFormat:@"[amcmdtab] its window is on another desktop: that desktop, then the window (%@)", why]);
+        if (at == NSNotFound || at == gMSWCur) then(); else DMMSWSwitchTo(at, @"Command-Tab", then);
+        return;
+    }
+    DMActivityMonitorOpen();
+}
+// Picked -- a tap on it (-viewController:selectedApplicationWithDisplayItem:) or Command let go on it (-launchCurrentSelectedApplication): the
+// switcher goes and its window comes forward; never SpringBoard's launch of an app by its identifier. Hooked here, whatever the engine (StatusBar.x's
+// own hooks of the same calls are an engine's only).
+static BOOL DMAMCmdTabPicked(id controller, id item) {
+    if (!gDMAMCmdTabReady || !DMAMIsRecentsItem(item)) return NO;
+    if ([controller respondsToSelector:@selector(dismiss)]) ((void (*)(id, SEL))objc_msgSend)(controller, @selector(dismiss));
+    dispatch_async(dispatch_get_main_queue(), ^{ DMAMBringForward(@"Command-Tab"); });
+    return YES;
+}
+// Another app picked while a native window is the active one -- with Activity Monitor first in the list, Command-Tab's own pick is the app in front
+// behind it: SpringBoard has nothing to switch, and the native windows stayed in front (iPad 2, 16.7.7, Stage Manager). After SpringBoard's own pick
+// they step back, as from the Dock: every engine -- StatusBar.x's hooks, which do it before theirs and read the active window first, are an engine's only.
+static void DMAMCmdTabOtherPicked(id item) { if (!item) return; DMNativeStepBack(@"an app picked in Command-Tab"); DMAMCmdTabUsedApp(DMCall(item, @"bundleIdentifier")); }
+static void (*o_DMAMCmdTabSelected)(id, SEL, id, id);
+static void DMAMCmdTabSelected(id self, SEL _cmd, id vc, id item) {
+    if (DMAMCmdTabPicked(self, item)) return;
+    o_DMAMCmdTabSelected(self, _cmd, vc, item);
+    DMAMCmdTabOtherPicked(item);
+}
+static void (*o_DMAMCmdTabLaunch)(id, SEL);
+static void DMAMCmdTabLaunch(id self, SEL _cmd) {
+    id item = DMCall(DMALIvarObj(self, "_commandTabViewController"), @"selectedApplicationDisplayItem");
+    if (DMAMCmdTabPicked(self, item)) return;
+    o_DMAMCmdTabLaunch(self, _cmd);
+    DMAMCmdTabOtherPicked(item);
+}
+// Command-Tab brought up while its window is the active one: the switcher's first pick skips it, as SpringBoard's skips the app in front. With an
+// engine's windows SpringBoard has no app in front (the Home Screen is under them) and starts on the list's first app -- ours, then: a quick Command-Tab
+// picked Activity Monitor itself and nothing changed (iPad 2, 16.7.7, Aerial). With Stage Manager it starts on the app behind it already. Only when
+// the switcher's list is made anew (no list before): a Tab while it is up moves on as before.
+static void (*o_DMAMCmdTabActivate)(id, SEL, BOOL);
+static void DMAMCmdTabActivate(id self, SEL _cmd, BOOL forward) {
+    id before = DMALIvarObj(self, "_commandTabViewController");
+    o_DMAMCmdTabActivate(self, _cmd, forward);
+    id vc = DMALIvarObj(self, "_commandTabViewController");
+    if (before || !vc || !forward || !gDMAMCmdTabReady || !DMAMActiveNow() || !DMAMIsRecentsItem(DMCall(vc, @"selectedApplicationDisplayItem"))) return;
+    if (!DMMSWHasMethod(object_getClass(self), @"next", @"v@:")) return;
+    ((void (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"next"));
+    DMLog(@"[amcmdtab] Command-Tab started on Activity Monitor, the active window: its first pick is the next app");
+}
+// Command-Q on it in the switcher: its window closes (an app is quit there), and it leaves the switcher's list.
+static void (*o_DMAMCmdTabRemove)(id, SEL);
+static void DMAMCmdTabRemove(id self, SEL _cmd) {
+    id vc = DMALIvarObj(self, "_commandTabViewController");
+    id item = DMCall(vc, @"selectedApplicationDisplayItem");
+    if (!DMAMIsRecentsItem(item)) { o_DMAMCmdTabRemove(self, _cmd); return; }
+    DMLog(@"[amcmdtab] Command-Q on Activity Monitor in the switcher: its window closes");
+    if ([vc respondsToSelector:NSSelectorFromString(@"removeDisplayItem:")]) ((void (*)(id, SEL, id))objc_msgSend)(vc, NSSelectorFromString(@"removeDisplayItem:"), item);
+    for (DMNativeWindow *w in [gNativeWindows copy]) if ([w isKindOfClass:[DMActivityMonitorWindow class]]) [w close];
+}
+static void DMAMCmdTabInstall(void) {
+    static BOOL done = NO;
+    if (done) return;
+    done = YES;
+    // (SpringBoard's own model class, by its name: never its instance -- this runs in our constructor, inside SpringBoard's start, and asking for
+    //  SBIconController's shared instance there hung SpringBoard before its first frame, M1 15.6.1, debug ui01)
+    NSString *modelClass = objc_getClass("SBIconModel") ? @"SBIconModel" : objc_getClass("SBHIconModel") ? @"SBHIconModel" : nil;
+    BOOL init = DMALHook(@"SBCommandTabViewController", @"initWithRecentDisplayItems:", @"@@:@", (IMP)DMAMCmdTabInit, (IMP *)&o_DMAMCmdTabInit);
+    BOOL view = init && DMALHook(@"SBCommandTabViewController", @"viewDidLoad", @"v@:", (IMP)DMAMCmdTabViewDidLoad, (IMP *)&o_DMAMCmdTabViewDidLoad);
+    if (init) DMALHook(@"SBCommandTabViewController", @"iconModelDidChange:", @"v@:@", (IMP)DMAMCmdTabModelChanged, (IMP *)&o_DMAMCmdTabModelChanged);
+    int lookups = 0;
+    if (init && modelClass) {
+        lookups += DMALHook(modelClass, @"applicationIconForBundleIdentifier:", @"@@:@", (IMP)DMAMLookup0, (IMP *)&o_DMAMLookup0);
+        lookups += DMALHook(modelClass, @"expectedIconForDisplayIdentifier:", @"@@:@", (IMP)DMAMLookup1, (IMP *)&o_DMAMLookup1);
+        lookups += DMALHook(modelClass, @"leafIconForIdentifier:", @"@@:@", (IMP)DMAMLookup2, (IMP *)&o_DMAMLookup2);
+    }
+    BOOL quit = init && DMALHook(@"SBCommandTabController", @"removeCurrentSelectedApplication", @"v@:", (IMP)DMAMCmdTabRemove, (IMP *)&o_DMAMCmdTabRemove);
+    BOOL picks = init && DMALHook(@"SBCommandTabController", @"viewController:selectedApplicationWithDisplayItem:", @"v@:@@", (IMP)DMAMCmdTabSelected, (IMP *)&o_DMAMCmdTabSelected)
+                      && DMALHook(@"SBCommandTabController", @"launchCurrentSelectedApplication", @"v@:", (IMP)DMAMCmdTabLaunch, (IMP *)&o_DMAMCmdTabLaunch);
+    BOOL start = picks && DMALHook(@"SBCommandTabController", @"_activateWithForwardDirection:", @"v@:B", (IMP)DMAMCmdTabActivate, (IMP *)&o_DMAMCmdTabActivate);
+    gDMAMCmdTabReady = init && view && picks && lookups > 0 && DMAMRecentsItem() != nil;   // (never in the list without its pick: SpringBoard would launch a bundle that is no app)
+    DMLog([NSString stringWithFormat:@"[amcmdtab] Activity Monitor in Command-Tab: %@ (the list %@, its view %@, picks %@, the icon model's lookups %d of 3 on %@, Command-Q %@, the first pick %@)", gDMAMCmdTabReady ? @"ready" : @"NOT here",
+           init ? @"hooked" : @"NOT as read", view ? @"hooked" : @"NOT hooked", picks ? @"hooked" : @"NOT hooked", lookups, modelClass ?: @"no model", quit ? @"hooked" : @"NOT hooked", start ? @"hooked" : @"NOT hooked"]);
+}
+
 // ---- switched on / off (DMALApplyPref): the hooks go in the first time; off takes it out of the Dock (the record stays) ----
 static void DMAMApply(BOOL on) {
     static BOOL hooked = NO;

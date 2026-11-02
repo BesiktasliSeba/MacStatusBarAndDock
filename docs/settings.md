@@ -35,7 +35,7 @@ On iPadOS 18, Settings has no room for tweak rows in its sidebar, so Status Bar,
 | Force Quit in App Menus | Force Quit in app icon menus. | On |
 | App Size in App Menus | The app's size at the top of its icon menu. | On |
 | Folder Apps in Folder Menus | A folder's long-press menu lists its apps. | On |
-| Add to Folder in App Menus | Add to Folder in the menus of apps on the Home Screen, in folders and in the App Library: the app moves into the Home Screen folder you pick, or into a new one made where the app was. A full folder is greyed out. Not on the Dock's icons. While the AddToFolder tweak is installed, its item is used instead. | On |
+| Add App to Folder in App Menus | Add App to Folder in the menus of apps on the Home Screen, in folders and in the App Library: the app moves into the Home Screen folder you pick, or into a new one made where the app was. A full folder is greyed out. Not on the Dock's icons. While the AddToFolder tweak is installed, its item is used instead. | On |
 | Updates Tab in App Store | The Updates tab in place of Arcade. | On |
 | Hide Large Titles | Compact titles in Apple's own apps, like Mac apps. Applies the next time an app opens. | On |
 | Search Field in Settings | A search field at the top of the Settings sidebar, with Apple's own results. iPadOS 15 to 17. | On |
@@ -105,6 +105,7 @@ On iPadOS 15 this page is called Home Screen (Home Screen & Dock while the Dock 
 |---|---|---|
 | Swipe Up Does Not Open App Library | Stops a swipe up on the Home Screen from opening the App Library. | On |
 | Swipe Down Opens App Library | A swipe down on the Home Screen opens the App Library while the menu bar shows its Spotlight button, and Spotlight otherwise. | On |
+| Swipe Past Last Page Opens App Library | Swiping past the last Home Screen page opens the App Library, as in iPadOS. Off: the pages end at the last one, and the Dock's Launchpad icon still opens the App Library. | Off, also after an update |
 | Show Page Dots | The page dots below the Home Screen icons (respring). | On |
 | Show App Names | Names under Home Screen icons. Folders keep theirs either way (respring). | On |
 
@@ -149,6 +150,14 @@ For keyboards without a function row, like the original Magic Keyboard for iPad.
 | RAM & CPU | Available memory, used memory and the CPU load, in a 2 x 1 control. A tap opens the details (memory, CPU and uptime) with Open Activity Monitor. On iPadOS 18, add it with Add a Control, where it's under Activity Monitor (or search for RAM). On iPadOS 15 to 17, add it in Settings > Control Center. With BigSurCenter it fits a square tile. With Memory Magic on iPadOS 15 to 17, a tap on its tile, which shows the same numbers, offers to put RAM & CPU in its place. On iPadOS 15 to 17 it's added by itself once, the first time Control Center opens and closes after an install or update, if it fits at the end without moving anything. Once you take it out, it isn't added again. | Added by itself where it fits (iPadOS 15 to 17), else not added |
 | SSH (when OpenSSH is installed) | Turns SSH on and off, as the SSH row in the Settings sidebar does; the two always agree, and so does the menu bar's SSH icon. A press and hold shows whether SSH is on, the iPad's address and the ssh command, and the reason when a switch didn't work. On iPadOS 18, add it with Add a Control, where it's under Settings. On iPadOS 15 to 17, add it in Settings > Control Center. With BigSurCenter on iPadOS 15 and 16 it works there too, and shows up after a respring. | Not added |
 
+## Settings > Battery > Battery Health
+
+On iPad, MacStatusBar&Dock opens Apple's Battery Health page (Battery Health & Charging on iPadOS 17 and 18), with the battery's Maximum Capacity and a Cycle Count row. Rows for iPhone-only features, such as Peak Performance Capability, are left out. While another battery health tweak is installed, the page is that tweak's, without the group below.
+
+| Setting | What it does | New install |
+|---|---|---|
+| Sleep Guard | In the Battery Use group. With the screen off, when the only thing keeping the iPad awake is a hold left behind by a process that's gone, such as a SpringBoard from before a respring, it clears that hold so the iPad can sleep. Never with the screen on or while something else keeps the iPad awake, and at most once in 30 minutes and 6 times a day. While a hold is stuck and not cleared, an iPad Can't Sleep row shows since when. | On |
+
 ## Elsewhere in Settings
 
 - Display & Brightness > Auto-Lock offers 30 minutes, 1 hour and 2 hours too, except in Low Power Mode. iPadOS takes any time over an hour for Never, so the tweak keeps 2 hours in SpringBoard's idle timer, and 2 hours is listed only while it can. Removing the tweak or switching MacStatusBar off sets 2 hours to 1 hour, and switching MacStatusBar on again brings the 2 hours back. With an Aerial, Zetsu or MilkyWay4 window in front, the iPad gets the whole Auto-Lock time, as with an app in front.
@@ -171,7 +180,7 @@ These have no switch:
 
 - The red badge on the Settings icon is hidden.
 - The Settings app has no large title and no alert banners over its sidebar, and Accessibility starts its own section.
-- Command-Tab brings an app's window to the front when it has one, and a quick Command-Tab from a window goes back to the app you used before.
+- Command-Tab brings an app's window to the front when it has one, and a quick Command-Tab from a window goes back to the app you used before. Activity Monitor is in Command-Tab too while its window is open.
 - Windows have a smallest size with every window engine, as with Stage Manager: the app at least 320 x 300 points, as far as the screen allows.
 - A window you move or resize lines up with the screen edges, the menu bar, the Dock and other windows when you let go of it near them, with every window engine.
 - When you turn the iPad, a window in a layout (Fill Screen, a half or a quarter) takes the same layout in the new orientation, and any other window goes back to where it last was in that orientation, with every window engine.

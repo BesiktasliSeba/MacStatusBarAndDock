@@ -10,7 +10,7 @@ S=../statusbar/StatusBar.x
 check "items 12 / 16: the start of a top-edge pull is noted (SBGrabberTongue -_pullGestureBegan:, the top edge only: -screenEdge, or the _screenEdge ivar on 15)" \
   "grep -q '^- (void)_pullGestureBegan:(id)gesture {' $K && grep -q 'if (!DMTongueOnTopEdge(self)) return;' $K && grep -q 'gTongueEdgeIvar = e && !strcmp(e, \"Q\") ? ivar_getOffset(iv) : -1;' $K"
 check "  ... a swipe down within half a second of it is the pull's: no App Library (and no Spotlight pull)" \
-  "awk '/^%hook SBSearchScrollView/{f=1} f&&/if \(CACurrentMediaTime\(\) - gTopPullAt < 0.5\) \{/{a=1} f&&a&&/return NO;/{b=1} f&&b&&/if \(DMPresentAppLibrary\(\)\) gSwipeLibraryAt = CACurrentMediaTime\(\);/{print \"ok\"; exit}' $K | grep -q ok"
+  "awk '/^%hook SBSearchScrollView/{f=1} f&&/if \(CACurrentMediaTime\(\) - gTopPullAt < 0.5\) \{/{a=1} f&&a&&/return NO;/{b=1} f&&b&&/if \(DMPresentAppLibrary\(\)\) \{ gSwipeLibraryAt = CACurrentMediaTime\(\);/{print \"ok\"; exit}' $K | grep -q ok"
 check "  ... the other order: an App Library the swipe down opened just before the pull began is closed again" \
   "grep -q 'if (now - gSwipeLibraryAt < 0.5) {' $K && grep -q 'DMDismissAppLibraryIfShowing()' $K"
 check "  ... hooked only where the pull start has the known type" \

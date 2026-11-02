@@ -660,6 +660,13 @@ static OSStatus MARenderNotify(void *ref, AudioUnitRenderActionFlags *flags, con
     }
     return noErr;
 }
+// Each C function hook costs every app ~50 KB: the patched code page copied twice ("Mach message" regions) plus a trampoline page
+// (AccessibilityUIServer on the 17.5, 1 Nov 2026: these 8 hooks = 256 KB + 128 KB + stacks and page tables, 0.31 MB of MixAudio's 0.44 MB).
+// The output unit's three go in at the start: AudioComponentInstanceDispose and AudioUnitSetProperty are called all the time, on every thread,
+// by every audio stack in the app (AVAudioEngine's units, the system's own) -- patched later, at the app's first output unit, the patch could
+// land on a function another thread is running (code review, 2 Nov: eager, ~100 KB per process is worth it). The AudioQueue functions only
+// act on queues made through AudioQueueNewOutput: those follow at its first call, before it returns (no queue exists yet for them to see).
+static void MAInstallQueueRest(void);
 %group MAOutput
 %hookf(OSStatus, AudioComponentInstanceNew, AudioComponent component, AudioComponentInstance *outInstance) {
     OSStatus r = %orig;
@@ -740,16 +747,20 @@ static void MAReapplyQueues(void) {
 %group MAQueue
 %hookf(OSStatus, AudioQueueNewOutput, const AudioStreamBasicDescription *fmt, AudioQueueOutputCallback cb, void *ud, CFRunLoopRef rl, CFStringRef mode, UInt32 flags, AudioQueueRef *outQ) {
     const void *ret = __builtin_return_address(0);
+    MAInstallQueueRest();
     OSStatus r = %orig;
     if (r == noErr && outQ && *outQ && MACallerIsApp(ret)) MATrackQueue(*outQ);
     return r;
 }
 %hookf(OSStatus, AudioQueueNewOutputWithDispatchQueue, AudioQueueRef *outQ, const AudioStreamBasicDescription *fmt, UInt32 flags, dispatch_queue_t dq, AudioQueueOutputCallbackBlock block) {
     const void *ret = __builtin_return_address(0);
+    MAInstallQueueRest();
     OSStatus r = %orig;
     if (r == noErr && outQ && *outQ && MACallerIsApp(ret)) MATrackQueue(*outQ);
     return r;
 }
+%end
+%group MAQueueRest
 %hookf(OSStatus, AudioQueueSetParameter, AudioQueueRef q, AudioQueueParameterID param, AudioQueueParameterValue value) {
     if (param != kAudioQueueParam_Volume) return %orig;
     BOOL tracked = NO;
@@ -773,6 +784,7 @@ static void MAReapplyQueues(void) {
     return %orig;
 }
 %end
+static void MAInstallQueueRest(void) { static dispatch_once_t once; dispatch_once(&once, ^{ %init(MAQueueRest); }); }
 %ctor {
     dlopen("/System/Library/Frameworks/AVFAudio.framework/AVFAudio", RTLD_LAZY);      // AVAudioSession, AVAudioPlayer, AVAudioEngine/AVAudioMixerNode live here
     dlopen("/System/Library/Frameworks/AVFoundation.framework/AVFoundation", RTLD_LAZY);   // AVPlayer lives in the umbrella framework itself, not AVFAudio -- both must be loaded before %init installs the hooks below

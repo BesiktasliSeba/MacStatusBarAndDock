@@ -151,6 +151,17 @@ int main(int argc, char **argv) {
         Expect([MTIClean(cut.title) isEqualToString:@"Cut "] && [MTIClean([NSString stringWithFormat:@"%Cx", (unichar)0xDE00]) isEqualToString:@"x"], @"MTIClean leaves a lone high or low half out");
         Expect([MTIClean(@"A\U0001F600B") isEqualToString:@"A\U0001F600B"] && MTIClean(nil) == nil && [MTIClean(@"") isEqualToString:@""], @"MTIClean keeps whole emoji, nil and empty");
 
+        // our rows made in code on a page (1.7.8: the Home Screen page's Swipe Past Last Page Opens App Library): that page, at the row, with its group
+        MTIConfig *oc = Config(root, @[@"en-US"]);
+        oc.ownRows = @[@{@"pane": @"HOME_SCREEN_DOCK", @"paneTitle": @"Home Screen & Multitasking", @"row": @"MSBD_LAST_PAGE_LIBRARY", @"title": @"Swipe Past Last Page Opens App Library", @"group": @"App Library"},
+                       @{@"pane": @"HOME_SCREEN_DOCK", @"row": @"NO_TITLE"}];
+        NSArray<MTIEntry *> *withRows = MTIBuild(oc);
+        e = Find(withRows, @"Home Screen & Multitasking", @"Swipe Past Last Page Opens App Library");
+        Expect([e.uid isEqualToString:@"msbd-tweaksetting:root=HOME_SCREEN_DOCK#MSBD_LAST_PAGE_LIBRARY"] && !e.opensPage && e.depth == 2, [NSString stringWithFormat:@"a code-made row: uid %@", e.uid]);
+        Expect([MTIPrefsURL(e.uid) isEqualToString:@"prefs:root=HOME_SCREEN_DOCK#MSBD_LAST_PAGE_LIBRARY"] && [MTIPaneOf(e.uid) isEqualToString:@"HOME_SCREEN_DOCK"], @"  ... Apple's page by its identifier, at the row");
+        Expect([e.crumb isEqualToString:@"Home Screen & Multitasking"] && [e.keywords isEqualToArray:@[@"App Library"]], @"  ... the page as its breadcrumb, its group as a keyword");
+        Expect([MTIMatch(withRows, @"last page", 0) containsObject:e] && [MTIMatch(withRows, @"app library", 0) containsObject:e], @"  ... found by its words and its group's");
+        Expect(withRows.count == all.count + 1, @"  ... one row: a row without a title is left out");
         printf("test-tweakindex: %d/%d passed (%lu rows)\n", gN - gFail, gN, (unsigned long)all.count);
     }
     return gFail ? 1 : 0;

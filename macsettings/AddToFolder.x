@@ -280,7 +280,7 @@ static UIMenu *ATFSubmenu(id appIcon) {
     NSMutableArray *children = [NSMutableArray array];
     if (rows.count) [children addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:rows]];
     [children addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:@[newFolder]]];
-    return [UIMenu menuWithTitle:@"Add to Folder" image:[UIImage systemImageNamed:@"folder.badge.plus"] identifier:@"com.besiktasliseba.addtofolder" options:0 children:children];
+    return [UIMenu menuWithTitle:@"Add App to Folder" image:[UIImage systemImageNamed:@"folder.badge.plus"] identifier:@"com.besiktasliseba.addtofolder" options:0 children:children];
 }
 // Our submenu into the menu: right before Force Quit (ours, ForceQuitMenu.x), or after the app's own items -- the first section that has them.
 static BOOL ATFIsForceQuit(UIMenuElement *e) { return [e isKindOfClass:[UIAction class]] && [((UIAction *)e).title isEqualToString:@"Force Quit"]; }

@@ -232,7 +232,8 @@ static void DMRowURLLog(NSString *line) {
 // Apple's page (Home Screen & Dock on iPadOS 15, called "Home Screen" while MacDock is active; Home Screen & Multitasking on iPadOS 16) gets one
 // group of our switches, right after Apple's own Home Screen section (Use Large App Icons), before Newly Downloaded Apps -- whether MacDock is
 // active or not. Each row is there only while the part that does the work runs:
-//   Swipe Up Does Not Open App Library, Swipe Down Opens App Library   the Dock part (MacDock line, SpringBoard)       applied at once
+//   Swipe Up Does Not Open App Library, Swipe Down Opens App Library,  the Dock part (MacDock line, SpringBoard)       applied at once
+//   Swipe Past Last Page Opens App Library (1.7.8, off unless switched on)
 //   Show Page Dots, Show App Names                                     MacPageDots / MacIconLabels (MacStatusBar line)  after a respring
 // The stored keys are the ones the parts read (unchanged): page dots and app names store "hidden" (key enabled), so their rows show the opposite.
 // The rows are put into Apple's list at the moment the page hands out a new list (its -specifiers), before any table sees it, found by the rows'
@@ -277,6 +278,10 @@ static BOOL DMHSStored(PSSpecifier *sp) {
     NSArray *rows = DMHSSpecifiers();
     if (rows.count < 2) return nil;
     [(PSSpecifier *)rows.firstObject setName:@"Home Screen"];
+    // (one sentence more on our page: the App Library's own options -- Newly Downloaded Apps, Show in App Library -- stay on Apple's page, 1.7.8)
+    NSString *f = [rows.firstObject propertyForKey:@"footerText"];
+    NSString *apple = @"The App Library's own options are in Settings > Home Screen & App Library.";
+    [(PSSpecifier *)rows.firstObject setProperty:([f isKindOfClass:[NSString class]] && f.length ? [NSString stringWithFormat:@"%@ %@", f, apple] : apple) forKey:@"footerText"];
     return rows;
 }
 - (void)msbdHSSet:(id)value specifier:(PSSpecifier *)sp {
@@ -312,7 +317,8 @@ static NSArray *DMHSSpecifiers(void) {
     PSSpecifier *g = [specClass groupSpecifierWithID:kHSGroupID];
     if (!g) return nil;
     NSMutableString *f = [NSMutableString string];
-    if (dock) [f appendString:@"Swipe down opens the App Library while the status bar shows its Spotlight button, and Spotlight otherwise."];   // (Dock.x)
+    if (dock) [f appendString:@"Swipe down opens the App Library while the status bar shows its Spotlight button, and Spotlight otherwise. "
+                                @"Without Swipe Past Last Page, the Home Screen's pages end at the last one; the App Library opens from its icon in the Dock."];   // (Dock.x)
     if (bar) {   // (another tweak already hiding them: ours steps aside, OtherTweaks.h, so the switch would do nothing -- say who does it)
         [f appendString:f.length ? @" Page dots and app names change after a respring." : @"Page dots and app names change after a respring."];
         NSString *dots = MSBDOtherTweakDoing(kMSBDDupPageDots, NO), *names = MSBDOtherTweakDoing(kMSBDDupIconLabels, NO);
@@ -324,6 +330,8 @@ static NSArray *DMHSSpecifiers(void) {
     if (dock) {
         [out addObject:DMHSSwitch(@"Swipe Up Does Not Open App Library", @"MSBD_BLOCK_SWIPE_UP", @"com.besiktasliseba.dockmagnification", @"blockSwipeUpLibrary", YES, NO, @"com.besiktasliseba.dockmagnification/prefsChanged")];
         [out addObject:DMHSSwitch(@"Swipe Down Opens App Library", @"MSBD_SWIPE_DOWN_LIBRARY", @"com.besiktasliseba.macspotlightreplace", @"enabled", YES, NO, @"com.besiktasliseba.dockmagnification/prefsChanged")];
+        // (KT, 1.7.8: iPadOS's own swipe past the last page into the App Library, off unless switched on -- Dock.x DMTrailingPages)
+        [out addObject:DMHSSwitch(@"Swipe Past Last Page Opens App Library", @"MSBD_LAST_PAGE_LIBRARY", @"com.besiktasliseba.dockmagnification", @"lastPageOpensLibrary", NO, NO, @"com.besiktasliseba.dockmagnification/prefsChanged")];
     }
     if (bar) {
         [out addObject:DMHSSwitch(@"Show Page Dots", @"MSBD_SHOW_PAGE_DOTS", @"com.besiktasliseba.macpagedots", @"enabled", NO, YES, @"com.besiktasliseba.macpagedots/prefsChanged")];

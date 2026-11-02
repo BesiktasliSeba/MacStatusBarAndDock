@@ -17,6 +17,10 @@
 #include "../common/CrashGuard.h"
 #include "../common/DeviceGate.h"
 #include "../common/PrewarmQuitSet.h"   // (only its path in C: the prewarm block's quit set, below)
+#include "../common/BundledPath.h"      // (MSBDBundledProcess / MSBDAppExtension: which processes get the app-side parts, Mac-tested)
+#if MSBD_PERFPROBE
+#include <unistd.h>
+#endif
 #if DEBUG
 #include <stdio.h>
 #include <unistd.h>
@@ -39,8 +43,9 @@ static const Payload kPayloads[] = {
     { "MacStatusBarSettings", kSettings | kRow },
 };
 #else
-// MacStatusBar: everything except the Dock. The old filters: springboard / Preferences = that app only, UIKit = every process that has UIKit
-// loaded (SpringBoard, Settings and the apps), pointeruid = the pointer daemon.
+// MacStatusBar: everything except the Dock. The old filters: springboard / Preferences = that app only, UIKit = every bundled process that has UIKit
+// loaded (SpringBoard, Settings, the apps, their extensions and XPC services; not the bare daemons that merely link it, below), pointeruid = the
+// pointer daemon.
 static const Payload kPayloads[] = {
     { "BrightnessKeyTweak", kUIKit },
     { "DockMagnificationSettings", kSettings | kRow },
@@ -52,7 +57,7 @@ static const Payload kPayloads[] = {
     { "MacCCGrabber", kSpringBoard },
     { "MacEthernetFix", kSettings },
     { "MacFolderMenu", kSpringBoard },
-    { "MacHomeBar", kUIKit },
+    { "MacHomeBar", kSpringBoard },   // (SpringBoard's home pill only: its %ctor returns at once anywhere else)
     { "MacIconLabels", kSpringBoard },
     { "MacLargeTitles", kUIKit },
     { "MacLockStatusBar", kSpringBoard },
@@ -119,8 +124,13 @@ __attribute__((constructor)) static void MSBDLoad(void) {
     else if (EndsWith(path, "/Spotlight.app/Spotlight")) kind = kSpotlight;   // (and kUIKit below: the app-side parts load there as before)
     else if (EndsWith(path, "/dasd")) kind = kDasd;   // (the prewarm block: /usr/libexec/dasd, no UIKit)
     // (the Bundles filter com.apple.UIKit means "UIKit is loaded", as the tweak loader checks it; RTLD_NOLOAD only looks, it never loads anything)
+    // The app-side parts are for processes inside a bundle (common/BundledPath.h): apps and SpringBoard (.app), app extensions (.appex) and XPC
+    // services (.xpc: WebKit's GPU process plays Safari's web audio, which MixAudio's session rule makes mixable). Many daemons link UIKit without
+    // ever starting an app (runningboardd, mediaserverd, locationd, CommCenter, a DriverKit HID driver, ...: 50 of the 59 processes with these
+    // parts on the M1, 15.6.1) and paid ~0.8-1 MB each for parts that never run there (UniversalControl on the 17.5: 6.9 -> 5.9-6.1 MB; memory
+    // audit, 1 Nov 2026).
     void *uikit = dlopen("/System/Library/Frameworks/UIKit.framework/UIKit", RTLD_LAZY | RTLD_NOLOAD);
-    if (uikit) { kind |= kUIKit; dlclose(uikit); }
+    if (uikit) { if (MSBDBundledProcess(path)) kind |= kUIKit; dlclose(uikit); }
     if ((kind & ~kSpotlight) == kUIKit && MSBDRecoveryApp(path)) kind = 0;   // (nothing of ours in the recovery apps)
     int noIPad = kind && !MSBDIsIPad();   // (an iPhone made to look like an iPad: nothing at all, not even the rows)
     if (noIPad) kind = 0;
@@ -136,7 +146,7 @@ __attribute__((constructor)) static void MSBDLoad(void) {
         if (!(kPayloads[i].where & kind)) continue;
         if (rowsOnly && !(kPayloads[i].where & kRow)) continue;
 #if !MSBD_LINE_DOCK
-        if (strcmp(kPayloads[i].name, "MixAudio") == 0 && (strstr(path, ".appex/") || MSBDStockBar())) continue;   // (and never in app extensions: widgets and keyboards would only pay for AVFoundation, audio audit F15c)
+        if (strcmp(kPayloads[i].name, "MixAudio") == 0 && (MSBDAppExtension(path) || MSBDStockBar())) continue;   // (and never in app extensions: widgets and keyboards would only pay for AVFoundation, audio audit F15c)
 #endif
 #if DEBUG
         if (MSBDSkipped(kPayloads[i].name)) continue;
@@ -154,6 +164,11 @@ __attribute__((constructor)) static void MSBDLoad(void) {
         }
 #endif
     }
+#if MSBD_PERFPROBE
+    // (the smoothness audit's frame/stall probe, loader/PerfProbe.m, debug builds and measurement builds: only while /tmp/msb-perfprobe exists,
+    // in SpringBoard and UIKit apps, also when every part is skipped -- so a measurement with and without our parts uses the same probe)
+    if ((kind & (kSpringBoard | kUIKit)) && access("/tmp/msb-perfprobe", F_OK) == 0) dlopen(MSBD_PAYLOAD_DIR "MacPerfProbe.dylib", RTLD_NOW);
+#endif
     int quitSetGone = 0;
 #if !MSBD_LINE_DOCK
     // The prewarm block (dasd) refuses the apps in the quit set's file, and the status bar part keeps that file (StatusBar.x, common/PrewarmQuitSet.h).

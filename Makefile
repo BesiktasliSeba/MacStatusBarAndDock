@@ -29,6 +29,22 @@ MacCrashNotice_CFLAGS = -fobjc-arc
 MacCrashNotice_FRAMEWORKS = Foundation UIKit
 MacCrashNotice_INSTALL_PATH = /usr/lib/MacStatusBarAndDock
 
+# Debug builds only: the smoothness audit's frame-hitch / main-thread stall probe (loader/PerfProbe.m), opened by the loaders only while
+# /tmp/msb-perfprobe exists. Never in a published package; MSBD_PERFPROBE=1 adds it to a FINALPACKAGE=1 build for measuring the release code
+# itself (a measurement build, not for publishing).
+ifneq ($(FINALPACKAGE),1)
+MSBD_PERFPROBE = 1
+endif
+ifeq ($(MSBD_PERFPROBE),1)
+LIBRARY_NAME += MacPerfProbe
+MacPerfProbe_FILES = loader/PerfProbe.m
+MacPerfProbe_CFLAGS = -fobjc-arc
+MacPerfProbe_FRAMEWORKS = Foundation QuartzCore
+MacPerfProbe_INSTALL_PATH = /usr/lib/MacStatusBarAndDock
+MacStatusBar_CFLAGS += -DMSBD_PERFPROBE=1
+MacDock_CFLAGS += -DMSBD_PERFPROBE=1
+endif
+
 # Each part keeps its own project (it used to be a tweak of its own); they are moved out of the tweak folder when packaged.
 SUBPROJECTS += statusbar macsettings dock appbridge mixaudio forcequitmenu graveescape tabmute volumeglobe brightnesskey spotlight prewarmblock ccmodule
 # The Dock's Trash ejects a drive dropped on it through this helper (it has StorageKit's eject entitlement; SpringBoard does not): ejecthelper/.

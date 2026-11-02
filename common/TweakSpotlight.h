@@ -12,6 +12,8 @@
 #import <unistd.h>
 #import "TweakIndex.h"
 #import "PrewarmArmed.h"   // (Prewarm Apps: offered only where the prewarm block is armed -- MTSShownRows)
+#import "LineSwitch.h"     // (MacDockActive.h asks it first: MSBDLineEnabled)
+#import "MacDockActive.h"  // (MTSOwnRows: the Dock part's rows only while it runs, as its page builds them)
 
 #define kMTSSettingsDomain CFSTR("com.besiktasliseba.macsettings")
 #define kMTSBarDomain CFSTR("com.besiktasliseba.macstatusbar")
@@ -49,6 +51,18 @@ static uint64_t MTSHomeBarPill(void) {   // (MacSettings.x HBPillState: 1 = this
     uint64_t v = 0; notify_get_state(token, &v);
     return v;
 }
+// Our rows made in code on a page (common/TweakIndex.h ownRows): the Home Screen group's Swipe Past Last Page Opens App Library (1.7.8; the Dock
+// part, dock/dockmagnificationsettings/DockSettingsRow.x) on Apple's Home Screen page -- "Home Screen" on 15 (Apple's "Home Screen & Dock" is
+// called so while the Dock part runs: DockSettingsRow.x DMRenameHomeScreenRow, and the row is there only then), "Home Screen & Multitasking" on
+// 16 --, and on 17/18 on our Dock page, which shows that group there (Apple's page is a SwiftUI page there: msbdHomeScreenSpecifiersForOwnPage).
+// Only while the Dock part runs (MSBDMacDockActive, as DMHSSpecifiers builds the row): with MacDock switched off, or on an untested iPadOS
+// without Enable Anyway, a search result led to a page without the row (1.7.8 review m1).
+static NSArray<NSDictionary *> *MTSOwnRows(void) {
+    if (!MSBDMacDockActive()) return @[];
+    NSInteger os = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion;
+    NSString *pane = os >= 17 ? @"DOCK_MAGNIFICATION" : @"HOME_SCREEN_DOCK", *paneTitle = os >= 17 ? @"Dock" : os == 16 ? @"Home Screen & Multitasking" : @"Home Screen";
+    return @[@{@"pane": pane, @"paneTitle": paneTitle, @"row": @"MSBD_LAST_PAGE_LIBRARY", @"title": @"Swipe Past Last Page Opens App Library", @"group": @"App Library"}];
+}
 // The index's configuration: tweak pages (PreferenceLoader), our own pages and our rows of Settings' main list, as MacSettings.x adds them.
 // Pointer and Keyboard (only there while a trackpad or keyboard is attached) are added by the Settings search itself, never donated.
 static MTIConfig *MTSBaseConfig(void) {
@@ -70,6 +84,7 @@ static MTIConfig *MTSBaseConfig(void) {
     if (access("/var/jb/usr/sbin/sshd", F_OK) == 0) [x addObject:@{@"id": @"SSH_TOGGLE", @"title": @"SSH"}];
     if (MTSHomeBarPill() != 1) [x addObject:@{@"id": @"HOMEBAR_TOGGLE", @"title": @"Home Bar"}];
     c.extras = x;
+    c.ownRows = MTSOwnRows();
     return c;
 }
 

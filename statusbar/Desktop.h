@@ -22,6 +22,7 @@
 #include "KeyboardDock.h"   // (when the Dock goes under our own on-screen keyboard -- plain C, tested on the Mac: tools/test-kbdock.sh)
 #include "DesktopRename.h"  // (the window a name is typed in: its level and the field's place -- plain C, tested on the Mac: tools/test-deskrename.sh)
 #include "DesktopNames.h"   // (which icons show their name: the record kept by name -- Foundation only, tested on the Mac: tools/test-desktopnames.sh)
+#include "DesktopHold.h"    // (a hold's menu, and whose a touch is: decided once -- plain C, tested on the Mac: tools/test-desktophold.sh)
 #include "../common/DesktopIconSize.h"   // (Settings > Desktop > Icon Size, 1.7.5: the side in force and the cell -- plain C, tools/test-desktopiconsize.sh)
 
 @interface DMDesktopItemView : UIView
@@ -118,7 +119,9 @@ static int gDesktopLookRead, gDesktopFolderFrom;
 - (void)dm_touchBegan:(UITouch *)t;
 - (void)dm_event:(UIEvent *)e;
 - (BOOL)dm_touchIsOursFor:(UIGestureRecognizer *)g;
+- (void)dm_touchGivenAwayFor:(UIGestureRecognizer *)g;
 - (BOOL)dm_hasKeys;
+- (BOOL)dm_ownsKeys;
 - (void)dm_setHasKeys:(BOOL)has;
 - (BOOL)dm_handleKey:(UIKey *)key;
 - (void)dm_made:(NSArray<NSString *> *)paths;
@@ -134,6 +137,14 @@ static int gDesktopLookRead, gDesktopFolderFrom;
 @end
 // For the Dock (dock/Dock.x, found with dlsym): a gesture of the Home Screen's asks to begin -- is its touch the desktop's? (-dm_touchIsOursFor:)
 __attribute__((visibility("default"))) BOOL MSBDDesktopTouchIsOurs(UIGestureRecognizer *g) { return gDesktop && g && [gDesktop dm_touchIsOursFor:g]; }
+// For the native windows (NativeWindow.h, 1.7.8): the desktop is Finder's -- a touch on it keeps them active and in front, and it has the keys while
+// it was clicked last; a native window made active takes them back.
+static BOOL DMDesktopShownAtScreen(CGPoint sp) { return gDesktop && [gDesktop dm_shownAt:sp]; }
+static CGFloat DMDesktopWindowLevel(void) { return gDesktop.window ? gDesktop.window.windowLevel : -2.0; }
+static BOOL DMDesktopHasKeysNow(void) { return gDesktop && [gDesktop dm_hasKeys]; }
+static void DMDesktopYieldKeys(void) { if (gDesktop && [gDesktop dm_ownsKeys]) [gDesktop dm_setHasKeys:NO]; }
+// ... and the Dock's swipe down fired for that touch: the desktop lets it go (decided once per touch, DesktopHold.h -- 1.7.8).
+__attribute__((visibility("default"))) void MSBDDesktopTouchGivenAway(UIGestureRecognizer *g) { if (gDesktop && g) [gDesktop dm_touchGivenAwayFor:g]; }
 
 // SpringBoard's keyboard focus while a name is edited on the desktop (the Home Screen has no keyboard of its own), as the Dock's Downloads search
 // takes it: given back when the editing ends.
@@ -451,6 +462,7 @@ static BOOL DMDesktopRenameFieldTouch(UITouch *t) {
     BOOL _holdMenu;         // (a finger's hold opened our menu for this press, -dm_holdCheck:: a move now closes it and drags)
     CFTimeInterval _ownMenuAt;   // (the press -- its _trackAt -- a pointer's menu of ours was opened for: once per press)
     NSInteger _trackFinger; NSTimeInterval _trackStamp;   // (the finger behind it, and the time of the last report of it used: see DMDesktopTouchFinger)
+    MSBDTouchOwner _trackOwner;   // (whose the press is, decided once: the desktop's, or given away to the Dock's swipe down -- DesktopHold.h)
     // Haptic Touch menus (UIKit's, in our Mac look like the app icons' -- StatusBar.x's context menu theme): on each icon, and on the empty desktop
     UIContextMenuInteraction *_bgMenu; UIView *_bgAnchor;
     NSHashTable<UIGestureRecognizer *> *_menuGRs;           // (the menus' own gestures: never held up or cancelled by ours)
@@ -1309,6 +1321,9 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
 // into a click (UIKit's own click-and-hold menu shows 0.74 s in, M1 15.6.1), so a click that went on into a drag a moment later opened the menu
 // first: a selection rectangle drawn over the empty desktop's menu, and that menu left open after it (KT).
 static const double kDMDesktopHoldMenu = 0.45;
+// A pointer's click held still waits as long as UIKit's own click-and-hold menu (0.74 s): a click that pauses before a drag or a selection
+// rectangle has that long to start moving, and a secondary click opens the menu at once (KT, 2 Nov: the longer time, 1.7.8).
+static const double kDMDesktopHoldMenuPointer = 0.75;
 // How long a finger is held before a move is the desktop's -- an icon's drag, the empty desktop's selection rectangle -- rather than a swipe the page
 // takes (-dm_event:); the Dock's swipe down asks by the same rule (-dm_touchIsOursFor:).
 static inline double DMDesktopHoldToTake(BOOL onIcon) { return onIcon ? 0.3 : 0.35; }
@@ -1330,19 +1345,28 @@ static BOOL DMDesktopFingerOwnMenu(void) {
 - (void)dm_holdCheck:(UITouch *)t since:(CFTimeInterval)at {
     if (!t || t != _track || _trackAt != at || _trackMode || _lifted || _band || _editing || _holdMenu || !self.userInteractionEnabled || !self.window) return;
     if (t.phase == UITouchPhaseEnded || t.phase == UITouchPhaseCancelled) return;
-    if (hypot(_trackLast.x - _trackDown.x, _trackLast.y - _trackDown.y) > (_trackPointer ? 4.0 : 10.0)) return;   // (moved: a drag's, as -dm_event: tells them)
+    if (_trackOwner == MSBDTouchGivenAway) return;   // (the Dock's swipe down took this touch: no menu from it, DesktopHold.h)
+    CFTimeInterval now = CACurrentMediaTime();
+    MSBDHoldStep step = MSBDDesktopHoldStep(now - at, now - _trackRestAt, hypot(_trackLast.x - _trackDown.x, _trackLast.y - _trackDown.y), _trackPointer, kDMDesktopRestTime);
+    if (step == MSBDHoldNone) return;   // (moved: a drag's, as -dm_event: tells them -- or past the looks' cap)
     // Moving now, short of a drag's distance: on its way into the rectangle or a drag, so no menu yet (1.7.7 fix round, both iPads: a finger that
     // began to move 0.42 s in had the menu opened under it at 0.45 s, closed again by the rectangle two frames later). The press is ours all the
     // same -- held this long, a move is the desktop's --, so its other gestures let go now (the Home Screen's own hold started jiggle mode under a
-    // finger that came to rest a moment later), and it is looked at again in a moment: a finger that comes to rest gets its menu.
-    if (CACurrentMediaTime() - _trackRestAt < kDMDesktopRestTime) {
+    // finger that came to rest a moment later), and it is looked at again in a moment: a finger that comes to rest gets its menu. One that keeps
+    // wobbling in place (never 0.1 s within 4 pt) but stays within a drag's distance gets it at 1 s all the same: a hold (DesktopHold.h, 1.7.8 --
+    // until then it got no menu and, its gestures let go, no jiggle mode either).
+    if (step == MSBDHoldWait) {
+        _trackOwner = MSBDTouchDesktop;
         for (UIGestureRecognizer *o in [t.gestureRecognizers copy]) if (![o.name hasPrefix:@"dm."] && o.enabled) { o.enabled = NO; o.enabled = YES; }
-        if (CACurrentMediaTime() - at < 3.0) {
-            __weak DMDesktop *ws = self; __weak UITouch *wt = t;
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [ws dm_holdCheck:wt since:at]; });
-        }
+        __weak DMDesktop *ws = self; __weak UITouch *wt = t;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [ws dm_holdCheck:wt since:at]; });
         return;
     }
+    if (now - _trackRestAt < kDMDesktopRestTime) {
+        DM_FEATURE_MARK("desktop-hold-wobble");
+        DMLog([NSString stringWithFormat:@"[desktop] a finger held %.2f s within a drag's distance, never at rest: a hold all the same", now - at]);
+    }
+    _trackOwner = MSBDTouchDesktop;
     DMDesktopItemView *v = _trackView;
     if (v) {
         if (!v.window || !v.item) return;
@@ -1514,12 +1538,12 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
             _track = t; _trackView = onIcon ? (DMDesktopItemView *)at : nil; _trackDown = sp; _trackLast = sp; _trackAt = CACurrentMediaTime(); _trackMode = 0;
             _trackRest = sp; _trackRestAt = _trackAt;
             _trackFinger = DMDesktopTouchFinger(t); _trackStamp = t.timestamp;
-            _trackPointer = pointer;
+            _trackPointer = pointer; _trackOwner = MSBDTouchUndecided;
             _trackSecondary = pointer && (DMDesktopButtons(e) & UIEventButtonMaskSecondary) != 0;
             _holdMenu = NO;
             if (DMDesktopFingerOwnMenu() && !_trackSecondary) {   // (a finger, or a click, held still: our menu, -dm_holdCheck:)
                 __weak DMDesktop *ws = self; __weak UITouch *wt = t; CFTimeInterval at = _trackAt;
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kDMDesktopHoldMenu * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [ws dm_holdCheck:wt since:at]; });
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((pointer ? kDMDesktopHoldMenuPointer : kDMDesktopHoldMenu) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [ws dm_holdCheck:wt since:at]; });
             }
             continue;
         }
@@ -1537,6 +1561,10 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
             if (!_trackMode) {
                 if (hypot(sp.x - _trackDown.x, sp.y - _trackDown.y) <= (_trackPointer ? 4.0 : 10.0)) continue;
                 CFTimeInterval held = CACurrentMediaTime() - _trackAt;
+                if (_trackOwner == MSBDTouchGivenAway) {   // (the Dock's swipe down fired for it first: its App Library, never our rectangle under it too)
+                    DMLog([NSString stringWithFormat:@"[desktop] moved %.2f s after touching down, but the swipe down took this touch: left to it", held]);
+                    _track = nil; continue;
+                }
                 // (a finger that moved at once: a swipe -- the page turns. A pointer drags an icon or draws the rectangle at once, as on a Mac)
                 if (!_trackPointer && held < DMDesktopHoldToTake(_trackView != nil) && !_menuOpen) {
 #if DEBUG
@@ -1544,6 +1572,7 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
 #endif
                     _track = nil; continue;
                 }
+                _trackOwner = MSBDTouchDesktop;   // (the desktop's from here: a Home Screen gesture that asks now is refused, DesktopHold.h)
                 // (our menu of this hold goes: the finger moved on, it drags -- out of sight at once, not fading over the drag's first frames: 1.7.7 fix
                 //  round, the menu must never show once a move has started)
                 if (_holdMenu) { _holdMenu = NO; gOverlay.alpha = 0.0; DMCloseOverlay(); }
@@ -1587,11 +1616,19 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
 // dragging, drawing the rectangle or holding its menu. UIKit's pans begin a few points before -dm_event: takes a move (10 pt), so the swipe down was
 // decided first: a finger held 0.35-0.45 s and then moved down drew the rectangle and opened the App Library too (1.7.7 fix round, both iPads; held
 // longer, the hold's menu had already made the other gestures let go).
+// Decided once per touch (DesktopHold.h, 1.7.8; the fix-round review's N1): the first "ours" sticks, and a touch the swipe down took
+// (-dm_touchGivenAwayFor:) is never the desktop's after -- asked separately, the pan's early "not yet" and the move's later "ours" both acted on
+// one finger, the App Library under the rectangle.
 - (BOOL)dm_touchIsOursFor:(UIGestureRecognizer *)g {
     UITouch *t = _track;
     if (!t || ![t.gestureRecognizers containsObject:g]) return NO;
-    if (_trackMode || _holdMenu || _trackPointer) return YES;
-    return CACurrentMediaTime() - _trackAt >= DMDesktopHoldToTake(_trackView != nil);
+    return MSBDDesktopTouchOursAnswer(&_trackOwner, _trackMode != 0, _holdMenu, _trackPointer, CACurrentMediaTime() - _trackAt, DMDesktopHoldToTake(_trackView != nil));
+}
+- (void)dm_touchGivenAwayFor:(UIGestureRecognizer *)g {
+    UITouch *t = _track;
+    if (!t || ![t.gestureRecognizers containsObject:g]) return;
+    MSBDDesktopTouchGiveAway(&_trackOwner);
+    if (_trackOwner == MSBDTouchGivenAway) { DM_FEATURE_MARK("desktop-touch-given-away"); DMLog(@"[desktop] the swipe down took this touch: the desktop lets it go"); }
 }
 // ---- rename in place ----
 - (void)dm_beginRename:(NSString *)path {
@@ -1607,10 +1644,9 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
     tf.autocorrectionType = UITextAutocorrectionTypeNo; tf.autocapitalizationType = UITextAutocapitalizationTypeNone; tf.spellCheckingType = UITextSpellCheckingTypeNo;
     tf.smartQuotesType = UITextSmartQuotesTypeNo; tf.smartDashesType = UITextSmartDashesTypeNo; tf.returnKeyType = UIReturnKeyDone;
     tf.text = v.item.name; tf.delegate = self;
-    // (a name edited on the desktop is the desktop's: an active native window goes inactive, as a touch on the desktop makes it -- else it kept
-    //  the hardware keys a field gets only after SpringBoard's own key handling, and Return reached Finder, not the name: a rename started while
-    //  Finder was active, 1.6.0 parity pass on 17.5 / 16.7.7)
-    if (gNativeActive) { DMLog(@"[desktop] a name is edited on the desktop: the native windows inactive, as a touch on the desktop makes them"); DMNativeSetActive(nil); }
+    // (a name edited on the desktop is the desktop's: its window is the key window and the field has the typing; an active native window stays
+    //  active and in front, as a touch on the desktop leaves it (1.7.8). SpringBoard's own key handling comes before the field's: there the desktop
+    //  goes first while it renames (-dm_hasKeys), so Return ends the rename and never reaches Finder -- it did, 1.6.0 parity pass on 17.5 / 16.7.7)
     UIWindow *key = nil; for (UIWindow *w in self.window.windowScene.windows) if (w.isKeyWindow) key = w;
     _keyBefore = key;
     // (in a window of its own above the app windows and the Dock, so its keyboard is above them too: DMDesktopRenameHost)
@@ -1691,6 +1727,7 @@ static BOOL DMSBTextFieldTyping(UIResponder *except) {
 //  field of SpringBoard's typing, DMSBTextFieldTyping)
 - (BOOL)dm_hasKeys { return (_hasKeys || _renameField || (!gNativeActive && !DMActiveApp())) && self.window && self.userInteractionEnabled && !_editing && !DMSBTextFieldTyping(_renameField); }
 - (void)dm_setHasKeys:(BOOL)has { _hasKeys = has; DMDesktopKeysFocus(has); }   // (and SpringBoard's keyboard focus with them, DMDesktopKeysFocus)
+- (BOOL)dm_ownsKeys { return _hasKeys; }   // (clicked last: given back when a native window is made active, DMDesktopYieldKeys)
 - (BOOL)dm_handleKey:(UIKey *)key {
     UIKeyModifierFlags m = key.modifierFlags & (UIKeyModifierCommand | UIKeyModifierShift | UIKeyModifierAlternate | UIKeyModifierControl);
     BOOL cmd = m == UIKeyModifierCommand, cmdShift = m == (UIKeyModifierCommand | UIKeyModifierShift), none = m == 0;

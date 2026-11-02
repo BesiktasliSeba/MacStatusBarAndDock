@@ -13,6 +13,7 @@
 #include "ActMonColumns.h"   // (each tab's column titles and where its columns sit; Mac test tools/test-actmoncolumns.sh)
 
 static void DMAMWindowChanged(void);   // (ActMonDock.h: Activity Monitor's running entry in the Dock follows its window, 1.7.7)
+static void DMAMCmdTabNoteActive(void);   // (ActMonDock.h: its place in iPadOS's Command-Tab counts from its last use, 1.7.8)
 
 typedef NS_ENUM(NSInteger, DMAMTab) { DMAMTabCPU = 0, DMAMTabMemory, DMAMTabEnergy, DMAMTabDisk, DMAMTabNetwork };
 typedef NS_ENUM(NSInteger, DMAMFilter) { DMAMFilterAll = 0, DMAMFilterMine, DMAMFilterSystem };
@@ -41,12 +42,14 @@ typedef NS_ENUM(NSInteger, DMAMFilter) { DMAMFilterAll = 0, DMAMFilterMine, DMAM
     MSBDCPUTicks _ticks; BOOL _haveTicks; double _cpuLoad, _cpuUser, _cpuSystem; unsigned _cores;
     MSBDMemory _mem; BOOL _haveMem;
     DMProcInfo *_selected;
-    BOOL _sampling, _secondSoon; uint64_t _lastWall;   // (a snapshot being read on its queue; the quick second reading due; the last one's time)
+    BOOL _sampling, _secondSoon; uint64_t _lastWall, _lastCont;   // (a snapshot being read on its queue; the quick second reading due; the last one's time,
+                                                                  //  also on the clock that runs while the iPad sleeps)
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
     if (!(self = [super initWithTitle:@"Activity Monitor" frame:frame])) return nil;
     self.appName = @"Activity Monitor";
+    self.onActiveChanged = ^(DMNativeWindow *w, BOOL active) { if (active) DMAMCmdTabNoteActive(); };   // (Command-Tab's order: its last use, ActMonDock.h)
     self.titleBarHeight = 52.0; self.fullSizeContent = YES; self.showsTitle = NO;
     self.minSize = CGSizeMake(520, 320);
     _prevCpu = [NSMutableDictionary dictionary];
@@ -194,6 +197,10 @@ static dispatch_queue_t DMAMSampleQueue(void) {
     uint64_t wallNs = 0; static mach_timebase_info_data_t tbi; if (!tbi.denom) mach_timebase_info(&tbi);
     if (_lastWall) wallNs = MSBDMachTicksToNs(nowMach - _lastWall, tbi.numer, tbi.denom);
     _lastWall = nowMach;
+    uint64_t cont = clock_gettime_nsec_np(CLOCK_MONOTONIC);   // (Darwin: counts the time asleep too)
+    BOOL paused = _lastCont && cont - _lastCont > 6000000000ULL;
+    _lastCont = cont;
+    if (paused) { wallNs = 0; _secondSoon = YES; }   // (after a pause -- screen off, minimized: no %CPU averaged over the pause; a fresh pair)
     for (DMProcInfo *p in snap) {
         if (p.haveStats) {
             nowCpu[@(p.pid)] = @(p.cpuNs);
@@ -445,16 +452,26 @@ static dispatch_queue_t DMAMSampleQueue(void) {
     for (UIView *v = self; v; v = v.superview) if (v.hidden || v.alpha < 0.01) return NO;
     return YES;
 }
+// The 2 s refresh runs only while the window can be seen: in a window, not minimized (hidden), and the screen on. With the screen off the
+// shared gate (StatusBar.x DMGateTimer) parks it and starts it 0.05 s after the screen comes on; a minimized window stops it, its return starts
+// it. Each reading sweeps every process, so a window left open with the screen off cost a sweep every 2 s all night (battery drain F3).
 - (void)dm_start {
-    if (_timer) return;
+    if (_timer || self.hidden || !self.window) return;
     _secondSoon = YES;   // (the first %CPU needs two readings: the second one comes 0.3 s after the first is in, dm_took:)
-    [self dm_sample];
+    if (!gDMScreenOff) [self dm_sample];
     __weak typeof(self) ws = self;
-    _timer = [NSTimer timerWithTimeInterval:2.0 repeats:YES block:^(NSTimer *t) { if ([ws dm_onScreen]) [ws dm_sample]; }];
+    _timer = [NSTimer timerWithTimeInterval:2.0 repeats:YES block:^(NSTimer *t) { if (!gDMScreenOff && [ws dm_onScreen]) [ws dm_sample]; }];
     _timer.tolerance = 0.4;
     [[NSRunLoop mainRunLoop] addTimer:_timer forMode:NSRunLoopCommonModes];
+    DMGateTimer(_timer);
 }
 - (void)dm_stop { [_timer invalidate]; _timer = nil; }
+- (void)setHidden:(BOOL)hidden {   // (minimized = hidden: dm_minimizeNow; shown again by the Dock icon / the Window menu)
+    BOOL was = self.hidden;
+    [super setHidden:hidden];
+    if (hidden && !was) [self dm_stop];
+    else if (!hidden && was) [self dm_start];
+}
 #if DEBUG
 // amrace_<k> (debug): the 1.7.7 RC crash's shape on this window's list, through -dm_rebuildRowsInPlace: as built: the list reloaded with k rows
 // fewer, and in the same turn, before its next layout, the full rows coming in place (the full, unfiltered list only).

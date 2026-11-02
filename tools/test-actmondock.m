@@ -139,6 +139,28 @@ int main(void) {
         ok(@"unkept, window open, recents shown: leaves the Dock's list for the recents", !MSBDActMonUnkeptStaysInPlace(YES, YES, YES));
         ok(@"unkept, no window: leaves", !MSBDActMonUnkeptStaysInPlace(YES, NO, NO) && !MSBDActMonUnkeptStaysInPlace(YES, NO, YES));
         ok(@"unkept with Show in App Library off: leaves", !MSBDActMonUnkeptStaysInPlace(NO, YES, NO));
+        // Command-Tab (1.7.8 item 10): its place among iPadOS's recents, by its last use
+        NSArray *snap = @[@"settings", @"clock", @"maps"];
+        eqi(@"Command-Tab: its window the active one -> first", (NSInteger)MSBDActMonCmdTabIndex(snap, snap, nil, YES), 0);
+        eqi(@"  ... nothing used since it was active -> first (the most recent)", (NSInteger)MSBDActMonCmdTabIndex(snap, snap, nil, NO), 0);
+        eqi(@"  ... Clock brought forward since -> after Clock", (NSInteger)MSBDActMonCmdTabIndex(@[@"clock", @"settings", @"maps"], snap, nil, NO), 1);
+        eqi(@"  ... Maps, then Settings since -> after both", (NSInteger)MSBDActMonCmdTabIndex(@[@"settings", @"maps", @"clock"], snap, nil, NO), 2);
+        eqi(@"  ... an app opened for the first time since -> after it", (NSInteger)MSBDActMonCmdTabIndex(@[@"tips", @"settings", @"clock", @"maps"], snap, nil, NO), 1);
+        eqi(@"  ... an app quit since, nothing used -> still first", (NSInteger)MSBDActMonCmdTabIndex(@[@"settings", @"maps"], snap, nil, NO), 0);
+        eqi(@"  ... an app quit and another used since -> after the one used", (NSInteger)MSBDActMonCmdTabIndex(@[@"maps", @"settings"], snap, nil, NO), 1);
+        eqi(@"  ... the oldest app brought forward -> after it", (NSInteger)MSBDActMonCmdTabIndex(@[@"maps", @"settings", @"clock"], snap, nil, NO), 1);
+        eqi(@"  ... never active since the start (no snapshot) -> after every app", (NSInteger)MSBDActMonCmdTabIndex(snap, nil, nil, NO), 3);
+        eqi(@"  ... an empty list -> first", (NSInteger)MSBDActMonCmdTabIndex(@[], snap, nil, NO), 0);
+        // ... the apps seen in front since (a touch on the window behind it, its Dock icon, Command-Tab: the recents do not move)
+        eqi(@"  ... Settings, in front behind it, brought forward again -> after Settings", (NSInteger)MSBDActMonCmdTabIndex(snap, snap, @[@"settings"], NO), 1);
+        eqi(@"  ... Settings brought forward again, then Clock -> after both", (NSInteger)MSBDActMonCmdTabIndex(@[@"clock", @"settings", @"maps"], snap, @[@"settings", @"clock"], NO), 2);
+        eqi(@"  ... Clock brought forward from it directly (Settings not used since) -> after Clock, before Settings", (NSInteger)MSBDActMonCmdTabIndex(@[@"clock", @"settings", @"maps"], snap, @[@"clock"], NO), 1);
+        eqi(@"  ... Clock used, then Settings again: the recents as they were -> after both", (NSInteger)MSBDActMonCmdTabIndex(snap, snap, @[@"clock", @"settings"], NO), 2);
+        eqi(@"  ... an app seen in front and quit since -> as if not used", (NSInteger)MSBDActMonCmdTabIndex(@[@"clock", @"maps"], snap, @[@"settings"], NO), 0);
+        eqi(@"  ... its window the active one -> first, whatever was seen before", (NSInteger)MSBDActMonCmdTabIndex(snap, snap, @[@"settings", @"clock"], YES), 0);
+        eqi(@"  ... nothing seen, nothing moved -> first", (NSInteger)MSBDActMonCmdTabIndex(snap, snap, @[], NO), 0);
+        eqi(@"  ... an app seen in front that the recents keep last (stale recents) -> after it", (NSInteger)MSBDActMonCmdTabIndex(snap, snap, @[@"maps"], NO), 3);
+        eqi(@"  ... the recents' own run longer than what was seen -> after the run", (NSInteger)MSBDActMonCmdTabIndex(@[@"settings", @"maps", @"clock"], snap, @[@"settings"], NO), 2);
     }
     printf("test-actmondock: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;

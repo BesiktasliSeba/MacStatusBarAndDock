@@ -46,6 +46,20 @@ static BOOL MSBDViewShows(UIView *v) {   // (on a window that shows, nothing abo
     return YES;
 }
 static NSString *MSBDBytes(uint64_t bytes) { char b[32]; MSBDFormatBytes(bytes, b, sizeof b); return @(b); }
+// The screen's state (SpringBoard's own "com.apple.springboard.hasBlankedScreen", state 1 = blank), and the tiles to stop when it goes off.
+static int gMSBDBlankToken = 0;
+static NSHashTable *gMSBDScreenWatchers;   // (the tiles updating now, weak)
+static BOOL MSBDScreenBlank(void) { uint64_t b = 0; if (gMSBDBlankToken) notify_get_state(gMSBDBlankToken, &b); return b != 0; }
+static void MSBDWatchScreen(id tile) {
+    if (!gMSBDScreenWatchers) gMSBDScreenWatchers = [NSHashTable weakObjectsHashTable];
+    [gMSBDScreenWatchers addObject:tile];
+    if (gMSBDBlankToken) return;
+    notify_register_dispatch("com.apple.springboard.hasBlankedScreen", &gMSBDBlankToken, dispatch_get_main_queue(), ^(int t) {
+        if (!MSBDScreenBlank()) return;
+        for (id v in gMSBDScreenWatchers.allObjects) ((void (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"stopUpdating"));
+        [gMSBDScreenWatchers removeAllObjects];
+    });
+}
 #if DEBUG
 static void MSBDModuleLog(NSString *what) {   // (debug builds, with /tmp/macstatusbar-debug: into the status bar part's log)
     if (access("/tmp/macstatusbar-debug", F_OK) != 0) return;
@@ -72,6 +86,7 @@ static void MSBDModuleLog(NSString *what) {   // (debug builds, with /tmp/macsta
     UIButton *_openButton;
     UIView *_memTrack, *_memFill, *_cpuTrack, *_cpuFill;
     NSTimer *_timer;
+    int _unshownTicks;   // (ticks in a row with the tile not on the screen: 3 stop the timer, battery drain F6)
     MSBDCPUTicks _ticks; BOOL _haveTicks;
     double _cpu; unsigned _cores;
     MSBDMemory _mem; BOOL _haveMem;
@@ -145,6 +160,7 @@ static void MSBDModuleLog(NSString *what) {   // (debug builds, with /tmp/macsta
 }
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
+    if (!_timer && MSBDViewShows(self.view) && !MSBDScreenBlank()) [self startUpdating];   // (shown again without an appearance call: a host's own panel)
     CGRect b = self.view.bounds;
     _compact.frame = b; _detail.frame = b;
     // the tile: 2 x 1, the memory on the left and the CPU on the right; in a square tile (BigSurCenter's) the memory over the CPU
@@ -212,13 +228,22 @@ static void MSBDModuleLog(NSString *what) {   // (debug builds, with /tmp/macsta
     }
     [self layoutBars];
 }
+// The 1 s refresh runs only while the tile or its panel is on the screen. Control Center's own appearance calls start and stop it; a host that
+// keeps a Control Center around hidden (BigSurCenter keeps iPadOS's own one) or never sends them stops it here instead: 3 ticks in a row off the
+// screen, or the screen going off. Showing again (an appearance call, a layout of the tile on the screen, the panel opening) starts it.
 - (void)tick {
-    if (!MSBDViewShows(self.view)) return;   // (not on the screen: nothing sampled)
+    if (!MSBDViewShows(self.view) || MSBDScreenBlank()) {   // (not on the screen: nothing sampled)
+        if (++_unshownTicks >= 3 || MSBDScreenBlank()) [self stopUpdating];
+        return;
+    }
+    _unshownTicks = 0;
     [self sample];
     [self refreshLabels];
 }
 - (void)startUpdating {
     if (_timer) return;
+    _unshownTicks = 0;
+    MSBDWatchScreen(self);
     MSBDModuleLog(@"updating (on the screen)");
     [self sample];   // (the first CPU value needs two samples: it shows on the next tick, a quarter of a second later)
     [self refreshLabels];
@@ -270,7 +295,7 @@ static void MSBDModuleLog(NSString *what) {   // (debug builds, with /tmp/macsta
     _expanded = expanded;
     _compact.hidden = expanded; _detail.hidden = !expanded;
     [self.view setNeedsLayout];
-    if (expanded) { [self sample]; [self refreshLabels]; }
+    if (expanded) { [self sample]; [self refreshLabels]; [self startUpdating]; }
 }
 - (MSBDModuleLayoutSize)moduleLayoutSizeForOrientation:(long long)orientation { MSBDModuleLayoutSize s = { 2, 1 }; return s; }   // (15-17: 2 x 1)
 - (long long)gridSizeClass { return _gridSizeClass; }   // (18)

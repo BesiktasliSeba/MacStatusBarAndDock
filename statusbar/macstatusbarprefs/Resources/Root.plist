@@ -564,7 +564,7 @@
 			<key>key</key>
 			<string>enabled</string>
 			<key>label</key>
-			<string>Add to Folder in App Menus</string>
+			<string>Add App to Folder in App Menus</string>
 		</dict>
 		<dict>
 			<key>cell</key>

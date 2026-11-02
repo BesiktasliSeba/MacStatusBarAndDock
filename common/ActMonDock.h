@@ -5,6 +5,7 @@
 //  - Where it goes back into the Dock at start (MSBDActMonDockPlace), from our own record of its place.
 //  - Its running entry (1.7.7 item 1b): where it shows while its window is open and it is not kept in the Dock (MSBDActMonRunningSpot), and its
 //    menu's Dock row (MSBDActMonMenuRow).
+//  - Its place in iPadOS's Command-Tab while its window exists (1.7.8 item 10, MSBDActMonCmdTabIndex).
 #pragma once
 #import <Foundation/Foundation.h>
 
@@ -87,6 +88,30 @@ static inline MSBDActMonRow MSBDActMonMenuRow(BOOL kept, BOOL runningEntryHere) 
 // (for the recents, or for good).
 static inline BOOL MSBDActMonUnkeptStaysInPlace(BOOL on, BOOL windowExists, BOOL recentsShown) {
     return MSBDActMonRunningSpot(on, NO, windowExists, recentsShown) == MSBDActMonSpotDockEnd;
+}
+
+// ---- Command-Tab (1.7.8 item 10, KT 2 Nov: in iPadOS's own Command-Tab while its window exists, ordered by recency as the apps are) ----
+// iPadOS's list is its recents, the most recent first. Ours goes where it was last used among them: first while its window is the active one,
+// else after the apps that came to the front since it last was. Those are told from the recents as they were then (snapshot) and as they are now
+// (current), bundle identifiers: an app brought to the front moves to the front of the list, so the apps used since are a leading run of the
+// current list, and the rest is the snapshot's order without them (apps quit since gone from it). The shortest such run is the answer; no
+// snapshot (never active since the start): after them all.
+// usedSince: the apps seen in front since its window was last the active one (statusbar/ActMonDock.h, DMAMCmdTabTick and Command-Tab's pick). They
+// are more recent than it whatever the recents show: the app in front behind it brought forward again (a touch on its window, its Dock icon,
+// Command-Tab) leaves them as they were, and so does an app used and then left for the one before it -- the recents alone kept Activity Monitor
+// first, and Command-Tab picked the app in front (iPad 2, 16.7.7). It goes after the last of them.
+static inline NSUInteger MSBDActMonCmdTabIndex(NSArray<NSString *> *current, NSArray<NSString *> *snapshot, NSArray<NSString *> *usedSince, BOOL activeNow) {
+    if (activeNow) return 0;
+    if (![snapshot isKindOfClass:[NSArray class]]) return current.count;
+    NSUInteger at = current.count;
+    for (NSUInteger k = 0; k <= current.count; k++) {
+        NSArray *used = [current subarrayWithRange:NSMakeRange(0, k)], *rest = [current subarrayWithRange:NSMakeRange(k, current.count - k)];
+        NSMutableArray *expected = [NSMutableArray array];
+        for (NSString *b in snapshot) if ([current containsObject:b] && ![used containsObject:b]) [expected addObject:b];
+        if ([rest isEqualToArray:expected]) { at = k; break; }
+    }
+    for (NSUInteger i = current.count; i > at; i--) if ([usedSince isKindOfClass:[NSArray class]] && [usedSince containsObject:current[i - 1]]) return i;
+    return at;
 }
 
 // ---- the App Library's search (1.7.3 item 13, AppLibraryApps.h): Activity Monitor is in the list exactly when the list's own text matches it ----

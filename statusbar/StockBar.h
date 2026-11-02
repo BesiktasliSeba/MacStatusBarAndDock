@@ -67,7 +67,7 @@ static void DMStockBarStart(void) {
         if (!mixToken) notify_register_check("com.besiktasliseba.mixaudio.disabled", &mixToken);
         if (mixToken) { notify_set_state(mixToken, 1); notify_post("com.besiktasliseba.mixaudio.disabled"); }
     }
-    if (!DMTestFlag("/tmp/msb-noorientnotes")) [[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];   // (the Mac pointer's turn)
+    if (!DMTestFlag("/tmp/msb-noorientnotes")) DMOrientationFeedWant(YES);   // (the Mac pointer's turn; while the screen is on, StatusBar.x)
     DMScreenPowerWatch();
     DMBannersInit();
     {   // Block Pointer Pull-Down (Settings > Pointer): the one hook and its one setting, followed live

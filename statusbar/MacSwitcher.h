@@ -13,6 +13,7 @@
 // Every private call goes through a checked wrapper (class, selector and type encoding); a mismatch keeps the feature off.
 
 #include "MSWSlideMath.h"   // (the slide's arithmetic: the spring, its speed, the slot a taken slide goes to -- plain C, tools/test-mswslide.sh)
+#include "MSWHoldRule.h"    // (the hold that opens the view from a swipe up: rests of the fingers -- plain C, tools/test-mswhold.sh)
 #include "MSWKept.h"        // (the desktops kept while it is off and what of them comes back -- plain Foundation, tools/test-mswkept.sh)
 #include "MSWAppDesk.h"     // (where an app opens when its windows are on other desktops -- plain Foundation, tools/test-mswappdesk.sh)
 static BOOL gMSWOn = NO;                 // the switch is on, the iPadOS has what it needs (DMMSWOSOK), and the self-check passed
@@ -4083,7 +4084,19 @@ static BOOL gMSWTrackEnding = NO;          // (the followed gesture is ending: i
 static BOOL DMMSWGesturesOn(void) { return gMSWOn && !DMTestFlag("/tmp/msb-noswitcher") && !DMCoverSheetShown() && !DMMSWStockOnce() && !MSBDGuidedAccessActive(); }
 // Root cause 1: the stock fly-in during the hold. While the feature is on, SpringBoard is told the finger never paused enough to fly its cards in.
 static BOOL (*o_MSWFlyIn)(id, SEL);
-static BOOL DMMSWFlyIn(id self, SEL _cmd) { gMSWHomeMod = self; return DMMSWGesturesOn() ? NO : o_MSWFlyIn(self, _cmd); }
+#if DEBUG
+static void DMMSWProbeFlyIn(id modifier, BOOL stock);   // (the probes, below: when SpringBoard's own rule would fly its cards in)
+#endif
+static BOOL DMMSWFlyIn(id self, SEL _cmd) {
+    gMSWHomeMod = self;
+#if DEBUG
+    BOOL stock = o_MSWFlyIn(self, _cmd);   // (a query: reads the hold count and the acceleration dip, sets nothing)
+    DMMSWProbeFlyIn(self, stock);
+    return DMMSWGesturesOn() ? NO : stock;
+#else
+    return DMMSWGesturesOn() ? NO : o_MSWFlyIn(self, _cmd);
+#endif
+}
 // Root cause 2: the one place a final destination becomes a transition request. The taken-over destinations are given 0 (stay); our action runs.
 // With Reduce Motion on, SpringBoard runs the home gesture through SBReduceMotionHomeGestureSwitcherModifier instead (iPad 2, 16.7.7: Reduce Motion
 // is on there, the hooks above never ran, and the stock App Switcher came up on a hold): its own -_responseForActivatingFinalDestination: (no
@@ -4097,7 +4110,16 @@ static id DMMSWActivateRM(id self, SEL _cmd, long long dest) { return DMMSWActiv
 // opened Stage Manager's App Switcher instead of the Mac Switcher there (17.5.1, TrollPad, our Stage Manager engine; on 16.7.7 the home gesture
 // went through SBHomeGestureSwitcherModifier with Stage Manager on too). Taken over the same way, by the same code.
 static BOOL (*o_MSWFlyInCE)(id, SEL);
-static BOOL DMMSWFlyInCE(id self, SEL _cmd) { gMSWHomeMod = self; return DMMSWGesturesOn() ? NO : o_MSWFlyInCE(self, _cmd); }
+static BOOL DMMSWFlyInCE(id self, SEL _cmd) {
+    gMSWHomeMod = self;
+#if DEBUG
+    BOOL stock = o_MSWFlyInCE(self, _cmd);
+    DMMSWProbeFlyIn(self, stock);
+    return DMMSWGesturesOn() ? NO : stock;
+#else
+    return DMMSWGesturesOn() ? NO : o_MSWFlyInCE(self, _cmd);
+#endif
+}
 static id DMMSWActivateCE(id self, SEL _cmd, long long dest) { return DMMSWActivateWith(self, _cmd, dest, o_MSWActivateCE); }
 // The gesture's final destination as the modifier has it (its -currentFinalDestination, checked), or -1.
 static long long DMMSWFinalDestinationOf(id modifier) {
@@ -4420,11 +4442,110 @@ static void DMMSWTrackFinish(NSInteger side, CGFloat v) {
     DMMSWMark([NSString stringWithFormat:@"lifted: back (%.0f pt/s)", v]);
     DMMSWSwBack(v);
 }
+// ---- the hold that opens the Mac Switcher (1.7.8, KT: Home and the switcher clearly apart for a finger without any attachment) ----
+// SpringBoard ends a swipe up in the App Switcher by SPEED alone: its final destination says App Switcher (3, "AppSwitcherByPausing") as soon as the
+// fingers go slower than an adaptive limit -- 265 pt/s (51 mm/s) on the A12Z, raised up to 1601 pt/s (308 mm/s) once the swipe slows down sharply
+// (its "acceleration dip") -- and that is what it has at the lift (read with the probes on 18.5 and in -[SBHomeGestureSettings setDefaultValues]).
+// No pause is needed: a swipe that slows to a stop and lifts at once, or a slow drag lifted at 150-300 pt/s, ends there (measured, 2 Nov: the same
+// with and without the Mac Switcher). iPadOS gives the finger a warning first: its cards fly in when the finger slows sharply or holds still for
+// 0.1 s (-_hasPausedEnoughForFlyIn: the dip, or the hold count over 0.1 s x the display rate at <= 17.3 pt/s, read live in SpringBoard), so a
+// Home swipe that is about to become the App Switcher shows it before the lift. The Mac Switcher keeps those cards away (DMMSWFlyIn), so that
+// warning was gone and a Home swipe that slowed down at its end opened the Mac Switcher out of nowhere. Now, for fingers on the screen, the
+// Mac Switcher asks for what the flying cards stand for -- a real hold: the fingers rest (inside kMSWRestSlop) for kMSWRestNeeded somewhere up
+// the screen (past kMSWRestMinTravel). A swipe SpringBoard ends in the App Switcher without one goes Home, as the swipe asked. A swipe up the
+// fingers flick on from after a hold goes Home as before (SpringBoard's own destination then), and the trackpad and a mouse (pointer touches)
+// keep SpringBoard's rule. The rule answers only at a lift: while the gesture's end is handled (DMMSWGEnd) and that end brought the lift's
+// touch. SpringBoard decides at the pause itself with Reduce Motion -- its modifier ends the gesture there, the finger still down (17.5.1) --
+// and an end like that brings no new touch, whichever modifier makes it, so SpringBoard's rule stays there (a rest read then would be ~0 ms,
+// and every hold would go Home). Measured from the gesture's own translation (the event SpringBoard reads) and its touches' own time, at every
+// update and at the end; the rule itself is MSWHoldRule.h (Mac-tested, tools/test-mswhold.sh).
+static __weak id gMSWRestGesture;              // (the gesture watched)
+static DMMSWPause gMSWHold;                     // (its rests, its end and the lift's answer: MSWHoldRule.h)
+static SEL sMSWTouchType, sMSWPointerTouch, sMSWMouseEvent, sMSWTouchTime;
+static BOOL gMSWTouchTimeOK = NO;   // (the event has -lastTouchTimestamp: the time of its latest touch, as the touches carry it)
+// Fingers on the screen: the gesture event's touch type is a direct touch and it is no pointer touch or mouse event (each method checked once per
+// class; NO when one is missing -- SpringBoard's rule stays then).
+static BOOL DMMSWGestureIsFinger(id gesture) {
+    static Class ec = Nil; static BOOL ok = NO;
+    id ev = gesture && DMMSWHasMethod(object_getClass(gesture), @"gestureEvent", @"@@:") ? ((id (*)(id, SEL))objc_msgSend)(gesture, NSSelectorFromString(@"gestureEvent")) : nil;
+    if (!ev) return NO;
+    if (object_getClass(ev) != ec) {
+        ec = object_getClass(ev);
+        sMSWTouchType = NSSelectorFromString(@"touchType"); sMSWPointerTouch = NSSelectorFromString(@"isPointerTouch"); sMSWMouseEvent = NSSelectorFromString(@"isMouseEvent");
+        sMSWTouchTime = NSSelectorFromString(@"lastTouchTimestamp");
+        ok = DMMSWHasMethod(ec, @"touchType", @"q@:") && DMMSWHasMethod(ec, @"isPointerTouch", @"B@:") && DMMSWHasMethod(ec, @"isMouseEvent", @"B@:");
+        gMSWTouchTimeOK = DMMSWHasMethod(ec, @"lastTouchTimestamp", @"d@:");
+        DMLog([NSString stringWithFormat:@"[macswitcher] gesture event %@: touch type %d, touch time %d (the hold rule %@)", NSStringFromClass(ec), ok, gMSWTouchTimeOK, ok ? @"on for fingers" : @"off: SpringBoard's rule"]);
+    }
+    if (!ok) return NO;
+    return ((long long (*)(id, SEL))objc_msgSend)(ev, sMSWTouchType) == UITouchTypeDirect && !((BOOL (*)(id, SEL))objc_msgSend)(ev, sMSWPointerTouch)
+        && !((BOOL (*)(id, SEL))objc_msgSend)(ev, sMSWMouseEvent);
+}
+// The time of the gesture's latest touch (seconds since boot, as UITouch's): from its event where it has one, else now. A rest is measured
+// between touches, so a busy main thread between the last move and the lift (SpringBoard handling them late) does not make it longer.
+static CFTimeInterval DMMSWGestureTouchTime(id gesture) {
+    if (gMSWTouchTimeOK && DMMSWHasMethod(object_getClass(gesture), @"gestureEvent", @"@@:")) {
+        id ev = ((id (*)(id, SEL))objc_msgSend)(gesture, NSSelectorFromString(@"gestureEvent"));
+        double t = ev && object_getClass(ev) && [ev respondsToSelector:sMSWTouchTime] ? ((double (*)(id, SEL))objc_msgSend)(ev, sMSWTouchTime) : 0;
+        if (t > 0 && isfinite(t)) return t;
+    }
+    return CACurrentMediaTime();
+}
+static void DMMSWRestBegin(id gesture) {
+    gMSWRestGesture = nil; gMSWHold.on = 0;
+    CGPoint tr;
+#if DEBUG
+    if (DMTestFlag("/tmp/msw-nohold")) return;   // (debug comparison: SpringBoard's speed rule alone, as before 1.7.8)
+#endif
+    if (!DMMSWGesturesOn() || DMMSWGestureTypeOf(gesture) != 1 || !DMMSWGestureMotion(gesture, &tr, NULL) || !DMMSWGestureIsFinger(gesture)) return;
+    gMSWRestGesture = gesture; DMMSWPauseBegin(&gMSWHold, tr.x, tr.y, DMMSWGestureTouchTime(gesture));
+}
+static void DMMSWRestMoved(id gesture) {   // (an update: MSWHoldRule.h)
+    CGPoint tr;
+    if (!gesture || gesture != gMSWRestGesture || !DMMSWGestureMotion(gesture, &tr, NULL)) return;
+    DMMSWPauseMove(&gMSWHold, tr.x, tr.y, DMMSWGestureTouchTime(gesture));
+}
+static void DMMSWRestEnded(id gesture) {   // (the gesture's end, as SpringBoard starts handling it: the lift's touch, when it brought one)
+    CGPoint tr;
+    if (!gesture || gesture != gMSWRestGesture || !DMMSWGestureMotion(gesture, &tr, NULL)) return;
+    double before = gMSWHold.last, t = DMMSWGestureTouchTime(gesture);
+    DMMSWPauseEnd(&gMSWHold, tr.x, tr.y, t);
+#if DEBUG
+    id ev = DMMSWHasMethod(object_getClass(gesture), @"gestureEvent", @"@@:") ? ((id (*)(id, SEL))objc_msgSend)(gesture, NSSelectorFromString(@"gestureEvent")) : nil;
+    unsigned long long phase = ev && DMMSWHasMethod(object_getClass(ev), @"phase", @"Q@:") ? ((unsigned long long (*)(id, SEL))objc_msgSend)(ev, NSSelectorFromString(@"phase")) : 99;
+    DMLog([NSString stringWithFormat:@"[mswprobe] hold rule: the gesture's end -- its touch %.1f ms after the latest update's (lifted %d), event phase %llu", (t - before) * 1000.0, gMSWHold.lifted, phase]);
+#endif
+}
+// The lift's answer for a swipe SpringBoard ends in the App Switcher (MSWHoldRule.h DMMSWPauseSaysHome): YES = Home, a lift without a hold. Only for
+// the watched gesture (DMMSWRestBegin: fingers, the motion readable) and only while its end is handled with the lift's touch (DMMSWGEnd); the
+// first answer stands however often SpringBoard asks, from one modifier or two. Asked otherwise -- the finger still down -- SpringBoard's own.
+static BOOL DMMSWRestSaysHome(void) {
+    if (!gMSWRestGesture || !gMSWHold.on) return NO;
+    BOOL first = !gMSWHold.decided;
+    double rest = 0;
+    BOOL home = DMMSWPauseSaysHome(&gMSWHold, &rest) != 0;
+    int restMs = (int)(rest * 1000.0);
+    if (!gMSWHold.decided) {
+        static __weak id told;   // (once per gesture)
+        if (told != gMSWRestGesture) { told = gMSWRestGesture; DMLog([NSString stringWithFormat:@"[macswitcher] gesture ended on 3 with no lift to measure (its end handled %d, a new touch %d): SpringBoard's own rule", gMSWHold.ending, gMSWHold.lifted]); }
+        return NO;
+    }
+    if (!first) return home;
+    if (home) {
+        DM_FEATURE_MARK("mac-switcher-hold-rule");
+        DMLog([NSString stringWithFormat:@"[macswitcher] gesture ended on 3 without a hold (resting %d ms at %.0f pt up, a hold is %.0f ms): Home", restMs, -gMSWHold.y, kMSWRestNeeded * 1000.0]);
+    } else if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[macswitcher] gesture ended on 3 after a hold (resting %d ms at %.0f pt up, held earlier %d)", restMs, -gMSWHold.y, gMSWHold.held]);
+#if DEBUG
+    DMLog([NSString stringWithFormat:@"[mswprobe] hold rule: rest %d ms by the touches' time, %d ms by the clock now (touch time %d)", restMs, (int)((CACurrentMediaTime() - gMSWHold.since) * 1000.0), gMSWTouchTimeOK]);
+#endif
+    return home;
+}
 static void (*o_MSWGBegin)(id, SEL, id, id), (*o_MSWGUpdate)(id, SEL, id, id), (*o_MSWGEnd)(id, SEL, id, id);
 static void DMMSWGBegin(id self, SEL _cmd, id transaction, id gesture) {
     static BOOL inside = NO;
     if (!inside) {
         inside = YES;
+        @try { DMMSWRestBegin(gesture); } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[macswitcher] hold watch threw %@", e]); gMSWRestGesture = nil; }
         @try { DMMSWTrackBegin(gesture); } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[macswitcher] tracker begin threw %@", e]); gMSWTrack = 0; }
         if (gMSWTrack == 1) { DMMSWRecBegin(@"gesture (followed)"); DMMSWRecordEvent(gesture, @"B"); }
         inside = NO;
@@ -4433,6 +4554,7 @@ static void DMMSWGBegin(id self, SEL _cmd, id transaction, id gesture) {
 }
 static void DMMSWGUpdate(id self, SEL _cmd, id transaction, id gesture) {
     static BOOL inside = NO;
+    if (!inside && gesture == gMSWRestGesture) DMMSWRestMoved(gesture);
     if (inside || (gMSWTrack != 1 && gMSWTrack != 2) || gesture != gMSWTrackGesture) { o_MSWGUpdate(self, _cmd, transaction, gesture); return; }
     inside = YES;
     BOOL swallow = NO;
@@ -4441,7 +4563,16 @@ static void DMMSWGUpdate(id self, SEL _cmd, id transaction, id gesture) {
     inside = NO;
     if (!swallow) o_MSWGUpdate(self, _cmd, transaction, gesture);
 }
+static void DMMSWGEndBody(id self, SEL _cmd, id transaction, id gesture);
+// The gesture's end: the hold rule's lift is handled inside it (SpringBoard's lift-off activation runs within its own end, DMMSWActivateWith),
+// then the tracker's end (the body).
 static void DMMSWGEnd(id self, SEL _cmd, id transaction, id gesture) {
+    BOOL watched = gesture && gesture == gMSWRestGesture && gMSWHold.on && !gMSWHold.ending;
+    if (watched) { DMMSWRestEnded(gesture); gMSWHold.ending = 1; }
+    DMMSWGEndBody(self, _cmd, transaction, gesture);
+    if (watched) gMSWHold.ending = 0;
+}
+static void DMMSWGEndBody(id self, SEL _cmd, id transaction, id gesture) {
     static BOOL inside = NO;
     if (inside || (gMSWTrack != 1 && gMSWTrack != 2) || gesture != gMSWTrackGesture) { o_MSWGEnd(self, _cmd, transaction, gesture); return; }
     inside = YES;
@@ -4517,6 +4648,9 @@ static id DMMSWActivateWith(id self, SEL _cmd, long long dest, id (*orig)(id, SE
         return r;
     }
     if (inside || (eff != 3 && eff != 1 && eff != 2) || !DMMSWGesturesOn()) return orig(self, _cmd, dest);
+    // (fingers: the Mac Switcher only after a hold -- answered at a lift only: with the finger still down, as Reduce Motion's end at the pause,
+    //  SpringBoard's own rule stays, DMMSWRestSaysHome)
+    if (eff == 3 && dest == 3 && DMMSWRestSaysHome()) return orig(self, _cmd, 4);
     dispatch_block_t act = nil;
     if (eff == 3) act = ^{ gMSWGestureAt = CACurrentMediaTime(); DMMSWOpen(@"the App Switcher gesture"); };
     else if (DMMSWMulti()) {
@@ -4642,6 +4776,49 @@ static long long gMSWProbeDest = LLONG_MIN, gMSWProbeType = LLONG_MIN;
 static BOOL gMSWProbeHold = NO;
 static void *gMSWProbeFDInst[4]; static long long gMSWProbeFDLast[4];   // (each final-destination modifier's own last answer: two of them answer)
 static int DMMSWProbeMs(void) { return gMSWProbeBegan > 0 ? (int)((CACurrentMediaTime() - gMSWProbeBegan) * 1000.0) : -1; }
+// The decision's inputs as SpringBoard has them (read-only, each ivar's type checked): the destination modifier's velocity and translation, its
+// adaptive thresholds (the App Switcher's pause speed, Home's minimum speed) and acceleration dip, and the gesture modifier's hold count (frames the
+// finger held still while lifting would open the App Switcher).
+static long long DMMSWIvarQ(id o, const char *name);   // (below)
+static double DMMSWProbeIvarD(id o, const char *name) {
+    Ivar iv = o ? class_getInstanceVariable(object_getClass(o), name) : NULL;
+    const char *t = iv ? ivar_getTypeEncoding(iv) : NULL;
+    if (!t || strcmp(t, "d")) return NAN;
+    double v; memcpy(&v, (const char *)(__bridge const void *)o + ivar_getOffset(iv), sizeof v); return v;
+}
+static CGPoint DMMSWProbeIvarP(id o, const char *name) {
+    Ivar iv = o ? class_getInstanceVariable(object_getClass(o), name) : NULL;
+    const char *t = iv ? ivar_getTypeEncoding(iv) : NULL;
+    if (!t || strncmp(t, "{CGPoint", 8)) return CGPointMake(NAN, NAN);
+    CGPoint v; memcpy(&v, (const char *)(__bridge const void *)o + ivar_getOffset(iv), sizeof v); return v;
+}
+static int DMMSWProbeIvarB(id o, const char *name) {
+    Ivar iv = o ? class_getInstanceVariable(object_getClass(o), name) : NULL;
+    const char *t = iv ? ivar_getTypeEncoding(iv) : NULL;
+    if (!t || strcmp(t, "B")) return -1;
+    return *((const char *)(__bridge const void *)o + ivar_getOffset(iv)) ? 1 : 0;
+}
+static NSString *DMMSWProbeState(id fd) {
+    id hg = gMSWHomeMod;
+    if (!fd && hg) { Ivar iv = class_getInstanceVariable(object_getClass(hg), "_finalDestinationModifier"); if (iv && ivar_getTypeEncoding(iv)[0] == '@') fd = object_getIvar(hg, iv); }
+    CGPoint v = DMMSWProbeIvarP(fd, "_velocity"), tr = DMMSWProbeIvarP(fd, "_translation");
+    return [NSString stringWithFormat:@"v %.0f,%.0f tr %.0f,%.0f pauseThr %.0f homeMinV %.0f dip %d hold %lld multi %d", v.x, v.y, tr.x, tr.y,
+        DMMSWProbeIvarD(fd, "_adaptivePauseVelocityThresholdForAppSwitcher"), DMMSWProbeIvarD(fd, "_adaptiveMinimumYVelocityForHome"),
+        DMMSWProbeIvarB(fd, "_hasSeenAccelerationDipForAppSwitcher"), DMMSWIvarQ(hg, "_gestureHoldTimer"), DMMSWProbeIvarB(hg, "_inMultitasking")];
+}
+static long long gMSWProbeHoldMax = 0; static int gMSWProbeFlyMs = -1;
+static void DMMSWProbeFlyIn(id modifier, BOOL stock) {   // (each display frame of a home gesture: SpringBoard's own fly-in rule, asked)
+    static BOOL inside = NO;
+    if (inside) return;
+    inside = YES;
+    long long h = DMMSWIvarQ(modifier, "_gestureHoldTimer");
+    if (h != LLONG_MIN && h > gMSWProbeHoldMax) gMSWProbeHoldMax = h;
+    if (stock && gMSWProbeFlyMs < 0) {
+        gMSWProbeFlyMs = DMMSWProbeMs();
+        DMLog([NSString stringWithFormat:@"[mswprobe] STOCK FLY-IN (paused enough) at +%d ms: %@", gMSWProbeFlyMs, DMMSWProbeState(nil)]);
+    }
+    inside = NO;
+}
 
 // ==== measurement: a frame recording of a desktop switch or a gesture (armed while /tmp/msw-rec exists) ====
 // From a gesture's or a switch's start to a moment after it is over, every display frame of SpringBoard's main thread is one line "t dt rs x a":
@@ -4796,7 +4973,7 @@ static void DMMSWProbeDidBegin(id self, SEL _cmd, id transaction, id gesture) {
     static BOOL inside = NO;
     if (inside) { o_MSWDidBegin(self, _cmd, transaction, gesture); return; }
     inside = YES;
-    gMSWProbeBegan = CACurrentMediaTime(); gMSWProbeDest = LLONG_MIN; gMSWProbeHold = NO;
+    gMSWProbeBegan = CACurrentMediaTime(); gMSWProbeDest = LLONG_MIN; gMSWProbeHold = NO; gMSWProbeHoldMax = 0; gMSWProbeFlyMs = -1;
     memset(gMSWProbeFDInst, 0, sizeof gMSWProbeFDInst);
     gMSWProbeType = DMMSWGestureFieldQ(gesture, @"type");
     DMMSWRecBegin([NSString stringWithFormat:@"gesture type %lld", gMSWProbeType]);
@@ -4813,7 +4990,7 @@ static void DMMSWProbeDidEnd(id self, SEL _cmd, id transaction, id gesture) {
     DMMSWRecEvent(gesture, @"E");
     DMMSWMark(@"gesture end");
     DMMSWRecEndAfter(1.6);
-    DMLog([NSString stringWithFormat:@"[mswprobe] END gesture type %lld after %d ms: last final destination %lld, hold %d", DMMSWGestureFieldQ(gesture, @"type"), DMMSWProbeMs(), gMSWProbeDest, gMSWProbeHold]);
+    DMLog([NSString stringWithFormat:@"[mswprobe] END gesture type %lld after %d ms: last final destination %lld, hold %d, stock fly-in %d ms, hold frames max %lld; at the end %@", DMMSWGestureFieldQ(gesture, @"type"), DMMSWProbeMs(), gMSWProbeDest, gMSWProbeHold, gMSWProbeFlyMs, gMSWProbeHoldMax, DMMSWProbeState(nil)]);
     inside = NO; }
     o_MSWDidEnd(self, _cmd, transaction, gesture);
 }
@@ -4837,7 +5014,7 @@ static long long DMMSWProbeFinalDest(id self, SEL _cmd) {
     gMSWProbeFDLast[slot] = d;
     gMSWProbeDest = d;
     id reason = DMMSWHasMethod(object_getClass(self), @"finalDestinationReason", @"@@:") ? ((id (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"finalDestinationReason")) : nil;
-    DMLog([NSString stringWithFormat:@"[mswprobe] final destination -> %lld at +%d ms (reason %@) [FD %p]", d, DMMSWProbeMs(), [reason isKindOfClass:[NSString class]] ? reason : NSStringFromClass([reason class]), self]);
+    DMLog([NSString stringWithFormat:@"[mswprobe] final destination -> %lld at +%d ms (reason %@) [FD %p] %@", d, DMMSWProbeMs(), [reason isKindOfClass:[NSString class]] ? reason : NSStringFromClass([reason class]), self, DMMSWProbeState(self)]);
     inside = NO;
     return d;
 }

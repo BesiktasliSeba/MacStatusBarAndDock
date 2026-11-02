@@ -59,8 +59,9 @@ check "never ours in the recents while it is in the Dock's own list; the recents
   "grep -q 'if (spot == MSBDActMonSpotRecents && gDMAMRecentsIvar && DMAMDockIndex() < 0 && DMALIcon()) {' $D && grep -q 'gDMAMRecentsPath = 0; gDMAMInRecents = NO;' $D && grep -q 'if (!with) @throw;' $D"
 check "a Dock list SpringBoard made anew (the layout reloaded or restored) gets the running entry again: only the list it was put in refuses it (1.7.7 review N2)" \
   "grep -q 'BOOL letGo = dock == gDMAMListPutIn;' $D && grep -q '        if (letGo) gDMAMTempRefused = dock;' $D && ! grep -q 'gDMAMTemp = NO; gDMAMTempRefused = dock;' $D && [ \$(grep -c 'gDMAMTempRefused = dock' $D) = 1 ]"
-check "its display item for the recents is asked for once, only where the recents' hooks and list are in, its throw caught (every start asked it before, hooks or not)" \
-  "grep -q 'id item = icons && gDMAMRecentsIvar ? DMAMRecentsItem() : nil;' $D && grep -q 'gDMAMRecentsPath = item ? 1 : 0;' $D && [ \$(grep -c 'DMAMRecentsItem()' $D) = 2 ] \
+check "its display item for the recents is asked for once, only where the recents' hooks and list are in (or Command-Tab's, 1.7.8), its throw caught (every start asked it before, hooks or not)" \
+  "grep -q 'id item = icons && gDMAMRecentsIvar ? DMAMRecentsItem() : nil;' $D && grep -q 'gDMAMRecentsPath = item ? 1 : 0;' $D && [ \$(grep -c 'DMAMRecentsItem()' $D) = 4 ] \
+   && grep -q 'gDMAMCmdTabReady = init && view && picks && lookups > 0 && DMAMRecentsItem() != nil;' $D && grep -q 'gDMAMCmdTabReady && DMAMWindowExists() && DMALIcon() ? DMAMRecentsItem() : nil;' $D \
    && awk '/^static id DMAMRecentsItem\\(void\\) \\{/,/^}/' $D | grep -q 'if (item || asked) return item;' && awk '/^static id DMAMRecentsItem\\(void\\) \\{/,/^}/' $D | grep -q '@try { item = ' && awk '/^static id DMAMRecentsItem\\(void\\) \\{/,/^}/' $D | grep -q '@catch (NSException \\*e) { item = nil;'"
 check "Keep / Add: the record first (the recents let go of it as it goes in), then the Dock's end, as 1.7.3 adds it" \
   "grep -q 'DMAMRecordWrite(end, why);' $D && grep -q 'if (!DMAMDockPutIn(end, why)) { DMAMRecordWrite(-1, @\"not put in\"); DMAMRunningSync(why); return; }' $D"
@@ -86,4 +87,46 @@ check "Command-W / Command-M for every native window without keys of its own (Ac
    && grep -q 'UIKeyboardHIDUsageKeyboardW) { DM_FEATURE_MARK(\"native-window-keys\"); \[w close\]; return YES; }' $N && grep -q 'UIKeyboardHIDUsageKeyboardM) { \[w minimize\]; return YES; }' $N \
    && ! grep -q 'dm_handleKey' ../statusbar/ActivityMonitor.h"
 check "the window keys never swallow the system's Command shortcuts while a sheet is up" "grep -q 'if (m & (UIKeyModifierCommand | UIKeyModifierControl)) return NO;' $N"
+# 1.7.8 item 10: iPadOS's Command-Tab, while its window exists
+check "Command-Tab: the switcher's view controller gets the recents with ours added -- a copy, where its last use puts it (the shared rule) -- never SpringBoard's recents controller" \
+  "grep -q 'at = MSBDActMonCmdTabIndex(DMAMBundlesOf(items), gDMAMCmdTabSnapshot, gDMAMCmdTabUsed, DMAMActiveNow());' $D && grep -q 'id m = \\[items mutableCopy\\];' $D && grep -q '@try { r = o_DMAMCmdTabInit(self, _cmd, with); }' $D \
+   && ! grep -q 'setRecentDisplayItems:' $D && ! awk '/^static id DMAMCmdTabInit/{f=1} f&&/_recentDisplayItemsController/{print \"bad\"} f&&/^}/{exit}' $D | grep -q bad"
+check "  ... only while its window exists, with its icon and the pick hooked (SpringBoard would launch a bundle that is no app)" \
+  "grep -q 'gDMAMCmdTabReady && DMAMWindowExists() && DMALIcon() ? DMAMRecentsItem() : nil;' $D && grep -q 'gDMAMCmdTabReady = init && view && picks && lookups > 0 && DMAMRecentsItem() != nil;' $D"
+check "  ... its order: the recents noted when its window becomes the active one (the window's onActiveChanged), the apps seen in front since emptied" \
+  "grep -q 'self.onActiveChanged = ^(DMNativeWindow \\*w, BOOL active) { if (active) DMAMCmdTabNoteActive(); };' ../statusbar/ActivityMonitor.h \
+   && grep -q '^static void DMAMCmdTabNoteActive(void) { if (gDMAMCmdTabReady) { gDMAMCmdTabSnapshot = DMAMRecentsNow(); gDMAMCmdTabUsed = \\[NSMutableArray array\\]; } }' $D"
+check "  ... and the apps seen in front since (what the recents can't tell: the app behind it brought forward again): every 0.2 s by the watcher, once SpringBoard has settled" \
+  "grep -q '^    DMAMCmdTabTick();' ../statusbar/StatusBar.x && awk '/^static void DMSyncWindowsForLibraryBody\\(void\\) \\{/{f=1} f&&/^    DMAMCmdTabTick\\(\\);/{print \"in\"} f&&/^}/{exit}' ../statusbar/StatusBar.x | grep -q in \
+   && grep -q 'if (!gDMAMCmdTabReady || !gDMAMCmdTabUsed || gNativeActive || !DMAMWindowExists()) return;' $D \
+   && grep -q 'if (now < gDMAMCmdTabQuietUntil || DMSMWorkspaceBusy() || now - gSwitcherEventAt < 0.35 || DMSwitcherVisible() || DMLibraryVisible()) return;' $D \
+   && grep -q 'DMAMCmdTabUsedApp(\\[DMActiveApp() bundleIdentifier\\]);' $D"
+check "  ... not in the first 0.5 s after the native windows hand the screen back (a touch on another app's window brings it forward as the finger lifts)" \
+  "grep -q 'static void DMAMCmdTabAppsForward(void) { gDMAMCmdTabQuietUntil = CACurrentMediaTime() + 0.5; }' $D \
+   && awk '/^static void DMNativeSetActive\\(DMNativeWindow \\*w\\) \\{/{f=1} f&&/^    if \\(!w\\) DMAMCmdTabAppsForward\\(\\);/{print \"in\"} f&&/^}/{exit}' $N | grep -q in"
+check "  ... its icon: the icon model answers ours for our identifier only while the switcher builds (its list, its view, a model change)" \
+  "grep -q 'if (gDMAMCmdTabBuilding && \\[ident isEqual:kDMALActMonIdentifier\\]) { id i = DMALIcon();' $D && [ \$(grep -c 'gDMAMCmdTabBuilding++;' $D) = 3 ] && [ \$(grep -c 'gDMAMCmdTabBuilding--;' $D) = 3 ]"
+check "  ... picked (a tap, or Command let go on it): the switcher goes and its window comes forward, never SpringBoard's launch -- hooked whatever the engine" \
+  "awk '/^static void DMAMCmdTabSelected\\(/{f=1} f' $D | head -5 | tr -d '\\n' | grep -q 'if (DMAMCmdTabPicked(self, item)) return;    o_DMAMCmdTabSelected(self, _cmd, vc, item);    DMAMCmdTabOtherPicked(item);}' \
+   && awk '/^static void DMAMCmdTabLaunch\\(/{f=1} f' $D | head -6 | tr -d '\\n' | grep -q 'id item = DMCall(DMALIvarObj(self, \"_commandTabViewController\"), @\"selectedApplicationDisplayItem\");    if (DMAMCmdTabPicked(self, item)) return;    o_DMAMCmdTabLaunch(self, _cmd);    DMAMCmdTabOtherPicked(item);}' \
+   && grep -q 'dispatch_async(dispatch_get_main_queue(), ^{ DMAMBringForward(@\"Command-Tab\"); });' $D && grep -q 'DMMSWSwitchTo(at, @\"Command-Tab\", then);' $D"
+check "  ... Command-Q on it closes its window and takes it out of the switcher; an app picked while a native window is active comes forward over it" \
+  "grep -q 'for (DMNativeWindow \\*w in \\[gNativeWindows copy\\]) if (\\[w isKindOfClass:\\[DMActivityMonitorWindow class\\]\\]) \\[w close\\];' $D \
+   && [ \$(grep -c 'DMNativeStepBack(@\"an app picked in Command-Tab\");' ../statusbar/StatusBar.x) = 2 ] && grep -q 'if (DMNativeAnyActive()) return item;' ../statusbar/StatusBar.x"
+check "  ... another app picked: after SpringBoard's own pick the native windows step back and it counts as used -- every engine (with Stage Manager the app in front behind them stayed covered, iPad 2)" \
+  "grep -q 'static void DMAMCmdTabOtherPicked(id item) { if (!item) return; DMNativeStepBack(@\"an app picked in Command-Tab\"); DMAMCmdTabUsedApp(DMCall(item, @\"bundleIdentifier\")); }' $D"
+check "  ... Command-Tab brought up while its window is the active one: the first pick skips it, as SpringBoard's skips the app in front (with an engine SpringBoard starts on the first app: ours)" \
+  "grep -q 'BOOL start = picks && DMALHook(@\"SBCommandTabController\", @\"_activateWithForwardDirection:\", @\"v@:B\", (IMP)DMAMCmdTabActivate, (IMP \\*)&o_DMAMCmdTabActivate);' $D \
+   && awk '/^static void DMAMCmdTabActivate\\(/{f=1} f' $D | head -10 | tr -d '\\n' | grep -q 'id before = DMALIvarObj(self, \"_commandTabViewController\");    o_DMAMCmdTabActivate(self, _cmd, forward);    id vc = DMALIvarObj(self, \"_commandTabViewController\");    if (before || !vc || !forward || !gDMAMCmdTabReady || !DMAMActiveNow() || !DMAMIsRecentsItem(DMCall(vc, @\"selectedApplicationDisplayItem\"))) return;' \
+   && awk '/^static void DMAMCmdTabActivate\\(/{f=1} f' $D | head -10 | grep -q '((void (\\*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@\"next\"));'"
+check "  ... the engines' own Command-Tab hooks hand its item to its pick (the next app they take after the front window's can be it): never SpringBoard's launch" \
+  "[ \$(grep -c 'if (DMAMCmdTabPicked((id)self, pick)) return;' ../statusbar/StatusBar.x) = 2 ] \
+   && awk '/^%hook SBCommandTabController/{f=1} f&&/DMAMCmdTabPicked\\(\\(id\\)self, pick\\)/{p++} f&&/DMNativeStepBack\\(@\"an app picked in Command-Tab\"\\)/{if (p <= s) bad=1; s++} f&&/^%end/{exit} END{exit !(p == 2 && s == 2 && !bad)}' ../statusbar/StatusBar.x"
+check "  ... whatever Show in App Library says (KT, review m2): its hooks go in at the start from the preferences' first read, outside that switch -- never with the App Library's and the Dock's on its first on -- and the list never asks that switch" \
+  "awk '/Activity Monitor in the App Library: on unless switched off/{f=1} f&&/DMALApplyPref\\(al && !DMCtorSkip\\(\"applib\"\\)\\);/{a=NR} f&&/^        if \\(!DMCtorSkip\\(\"cmdtab\"\\)\\) DMAMCmdTabInstall\\(\\);/{b=NR} f&&/^    }/{exit} END{exit !(a && b > a)}' ../statusbar/StatusBar.x \
+   && [ \$(grep -c 'DMAMCmdTabInstall();' $D ../statusbar/StatusBar.x ../statusbar/AppLibraryApps.h | awk -F: '{n+=\$2} END{print n}') = 1 ] \
+   && ! awk '/^static id DMAMCmdTabInit\\(/{f=1} f&&/gDMALOn/{print \"bad\"} f&&/^}/{exit}' $D | grep -q bad"
+check "  ... installed from our constructor (inside SpringBoard's start): SpringBoard's classes by name only, never its instances (sharedInstance there hung SpringBoard before its first frame, M1 ui01)" \
+  "! awk '/^static void DMAMCmdTabInstall\\(void\\) \\{/{f=1} f&&/DMAMModel\\(\\)|sharedInstance|DMAMCmdTabController\\(\\)|DMAMRecentsNow\\(\\)|DMAMCmdTabNoteActive\\(\\)/&&!/\\/\\//{print \"bad\"} f&&/^}/{exit}' $D | grep -q bad \
+   && grep -q 'NSString \\*modelClass = objc_getClass(\"SBIconModel\") ? @\"SBIconModel\" : objc_getClass(\"SBHIconModel\") ? @\"SBHIconModel\" : nil;' $D"
 [ $fails = 0 ] && echo "test-actmondock: all wiring checks pass" || { echo "test-actmondock: wiring checks FAILED"; exit 1; }

@@ -43,11 +43,13 @@
 // plDirs: PreferenceLoader's folders of entry plists; bundleDirs: where "bundle" names are looked up (in this order, as libprefs does);
 // supportDir: Application Support (some tweaks keep their strings in a bundle there, e.g. Choicy); own: our pages [{id, title, bundle, plist,
 // icon}]; extras: rows of Settings' main list that are ours [{id, title, icon}] (switches: opened as Apple's main-list rows, "ROOT#<id>");
+// ownRows: rows of ours that are made in code on a page (Apple's own or ours), so no plist names them [{pane, paneTitle, row, title, group}]:
+// opened as that page, at the row (1.7.8: the Home Screen page's Swipe Past Last Page Opens App Library);
 // languages: the user's languages, in order ([NSLocale preferredLanguages]); cfVersion: kCFCoreFoundationVersionNumber (pl_filter).
 @interface MTIConfig : NSObject
 @property (nonatomic, copy) NSArray<NSString *> *plDirs, *bundleDirs, *languages;
 @property (nonatomic, copy) NSString *supportDir;
-@property (nonatomic, copy) NSArray<NSDictionary *> *own, *extras;
+@property (nonatomic, copy) NSArray<NSDictionary *> *own, *extras, *ownRows;
 @property (nonatomic, copy) NSArray<NSString *> *skipBundles;   // bundles (names) whose PreferenceLoader entries are left out (our own pages: indexed as "own")
 @property (nonatomic) double cfVersion;
 @property (nonatomic) NSUInteger maxPerPane, maxTotal;
@@ -455,6 +457,17 @@ static NSArray<MTIEntry *> *MTIBuild(MTIConfig *cfg) {
             e.category = [kMTIPrefix stringByAppendingString:rid];
             e.uid = [b uidForPane:@"ROOT" path:@[rid] rootRow:YES opensPage:NO];
             e.tokens = MTITokens(title, nil);
+            [b.out addObject:e];
+        }
+        for (NSDictionary *x in cfg.ownRows) {   // our rows made in code on a page (no plist names them): the page by its identifier, at the row
+            NSString *pane = MTIStr(x[@"pane"]), *rid = MTIStr(x[@"row"]), *title = MTIStr(x[@"title"]), *paneTitle = MTIStr(x[@"paneTitle"]) ?: pane, *group = MTIStr(x[@"group"]);
+            if (!pane || !rid || !title) continue;
+            MTIEntry *e = [MTIEntry new];
+            e.paneID = pane; e.paneTitle = paneTitle; e.title = title; e.depth = 2; e.path = @[rid]; e.crumb = paneTitle;
+            e.keywords = group && ![group isEqualToString:title] ? @[group] : @[]; e.iconPath = MTIStr(x[@"icon"]);
+            e.category = [kMTIPrefix stringByAppendingString:pane];
+            e.uid = [b uidForPane:pane path:@[rid] rootRow:NO opensPage:NO];
+            e.tokens = MTITokens(title, e.keywords);
             [b.out addObject:e];
         }
         NSFileManager *fm = [NSFileManager defaultManager];

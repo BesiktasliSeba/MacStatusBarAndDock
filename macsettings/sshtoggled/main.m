@@ -49,6 +49,7 @@
 #include "../../common/PointerAnim.h"       // (DMPtrAnimDecide: Pointer Animations given back as SpringBoard does it, Mac-tested)
 #include "../../common/PrewarmQuitSet.h"    // (MSBDPrewarmQuitSetKept: whether SpringBoard keeps a prewarm quit set, Mac-tested)
 #include "../../common/PrewarmPartID.h"     // (MSBDPrewarmPartCurrent: whether the running dasd has the prewarm block just installed, Mac-tested)
+#include "../../common/PrefsForget.h"       // (MSBDForgetPrefsDomain: a domain emptied through cfprefsd, at a removal -- Mac-tested)
 #include "../../statusbar/SMSwitchOn.h"     // (DMSMConsentFrom: the Stage Manager consent values)
 #include "../../common/DriveEject.h"       // (a drive ejected for Finder: the request, its checks, msbdeject's run and the answer, Mac-tested)
 #include "../AutoLockLongest.h"            // (MS_AUTOLOCK_CHECK: removal and switch-off tell SpringBoard to look at the stored Auto-Lock)
@@ -855,6 +856,50 @@ static int PointerAnimationsGiveBackAsMobile(void) {
     CFPreferencesAppSynchronize(ours);
     return st.set == 2 ? 10 : 11;
 }
+// The prewarm quit set's domain (SpringBoard's own record of it, StatusBar.x MSB_PREWARM_DOMAIN) and the debug builds' prewarm diagnostics (dasd,
+// prewarmblock/PrewarmBlock.x) live in cfprefsd: a removal empties them THROUGH it, as mobile, as SpringBoard and dasd use them (1.7.8). The postrm's
+// rm of their files alone left cfprefsd's cached copy, which a reinstall read back as if the files had never gone (1.7.7 fix round); emptied first,
+// a domain leaves at most an empty file (iPadOS's cfprefsd writes one: M1 15.6.1), which the postrm's rm then takes away with nothing cached behind
+// it. Done in a child of this helper (--forget-prewarm-prefs), mobile from its first line, like the Pointer Animations give-back: the very user and
+// path the domains are used through, never root's view of mobile's.
+static const char *const kPrewarmPrefDomains[] = { "com.besiktasliseba.macstatusbar.prewarm", "com.besiktasliseba.macstatusbar.prewarm.diag" };
+static void ForgetPrewarmPrefs(NSString *why) {
+    char *const argv[] = { gSelfPath, "--forget-prewarm-prefs", NULL };
+    pid_t pid;
+    if (posix_spawn(&pid, gSelfPath, NULL, NULL, argv, environ) != 0) { ELog(@"%@: the prewarm settings -- the child could not start (the postrm removes their files)", why); return; }
+    int status = 0; pid_t done = 0;
+    for (int i = 0; i < 100 && (done = waitpid(pid, &status, WNOHANG)) == 0; i++) usleep(50000);   // (at most 5 s: a package removal never hangs on it)
+    if (done == 0) { kill(pid, SIGKILL); waitpid(pid, &status, 0); ELog(@"%@: the prewarm settings -- the child did not finish, stopped", why); return; }
+    int r = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    ELog(@"%@: the prewarm settings %@", why, r == 0 ? @"were empty already" : r == 10 ? @"emptied through cfprefsd (as mobile)"
+         : r == 11 ? @"-- cfprefsd still lists keys after the removal" : r == 3 ? @"-- the child could not become mobile" : [NSString stringWithFormat:@"-- failed (%d)", r]);
+}
+// (the child: exit 0 nothing there, 10 emptied, 11 keys left after it, 3 not as mobile. Debug builds: a scratch domain named after the option
+//  is emptied instead -- a device test that leaves the real quit set alone)
+static int ForgetPrewarmPrefsAsMobile(const char *testDomain) {
+    for (int fd = getdtablesize() - 1; fd > 2; fd--) close(fd);   // (nothing the daemon or dpkg had open stays open in here)
+    if (getuid() == 0) {   // (to mobile for good: its group list, its group, then its user -- before any preference is touched)
+        gid_t g = 501;
+        if (setgroups(1, &g) != 0 || setgid(501) != 0 || setuid(501) != 0) return 3;
+    }
+    if (getuid() != 501 || geteuid() != 501 || getgid() != 501 || getegid() != 501) return 3;
+    setenv("HOME", "/var/mobile", 1); setenv("CFFIXED_USER_HOME", "/var/mobile", 1);
+    int removed = 0, left = 0;
+    size_t n = sizeof(kPrewarmPrefDomains) / sizeof(kPrewarmPrefDomains[0]);
+#if DEBUG
+    if (testDomain && strncmp(testDomain, "com.besiktasliseba.msbdtest.", 28) == 0) n = 1; else testDomain = NULL;
+#else
+    testDomain = NULL;
+#endif
+    for (size_t i = 0; i < n; i++) {
+        CFStringRef d = CFStringCreateWithCString(NULL, testDomain ?: kPrewarmPrefDomains[i], kCFStringEncodingUTF8);
+        int l = 0;
+        removed += MSBDForgetPrefsDomain(d, &l);   // (common/PrefsForget.h)
+        left += l;
+        CFRelease(d);
+    }
+    return left ? 11 : removed ? 10 : 0;
+}
 static void RestoreForOff(NSString *how, NSString *why) {
     NSString *status = DpkgStatus();
     ELog(@"MSB off (%@): switched off in %@ -- giving the engines back now, so the next respring comes up without Mac Status Bar's changes", why, how);
@@ -937,12 +982,13 @@ static void EvaluateMacStatusBarConfig(NSString *source) {
         else PrepareForOn(@"switched on again");
     }
 }
-static dispatch_source_t WatchPath(const char *path, unsigned long mask, NSString *name, void (^rearm)(void)) {
+static dispatch_source_t WatchPath(const char *path, unsigned long mask, NSString *name, void (^rearm)(void), void (^onEvent)(void)) {
     int fd = open(path, O_EVTONLY | O_CLOEXEC);   // (CLOEXEC: starting over after a cfprefsd restart runs no cancel handler -- not carried into the fresh process)
     if (fd < 0) return nil;
     dispatch_source_t src = dispatch_source_create(DISPATCH_SOURCE_TYPE_VNODE, fd, mask, dispatch_get_main_queue());
     dispatch_source_set_event_handler(src, ^{
         unsigned long got = dispatch_source_get_data(src);
+        if (onEvent) onEvent();
         EvaluateMacStatusBarConfig(name);
         if (got & (DISPATCH_VNODE_DELETE | DISPATCH_VNODE_RENAME | DISPATCH_VNODE_REVOKE)) { dispatch_source_cancel(src); if (rearm) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 20), dispatch_get_main_queue(), rearm); }
     });
@@ -950,16 +996,26 @@ static dispatch_source_t WatchPath(const char *path, unsigned long mask, NSStrin
     dispatch_resume(src);
     return src;
 }
-static void WatchChoicyFile(void) {   // the file itself (written in place) -- re-armed after an atomic replace (a new file under the same name)
-    static dispatch_source_t fileSrc;
-    fileSrc = WatchPath(CHOICYPREFS, DISPATCH_VNODE_WRITE | DISPATCH_VNODE_EXTEND | DISPATCH_VNODE_DELETE | DISPATCH_VNODE_RENAME | DISPATCH_VNODE_REVOKE, @"Choicy's settings file", ^{ WatchChoicyFile(); });
-    if (!fileSrc) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ WatchChoicyFile(); });
+// Choicy's settings file itself (written in place) -- re-armed after an atomic replace (a new file under the same name). No such file (no Choicy,
+// or Choicy never saved): the preferences folder's own watch arms it when the file comes (WatchMacStatusBarConfig); two slow retries are left as
+// a safety net, 5 s then 60 s (MSBDChoicyRetryDelay). It used to retry every 5 s for ever: 720 wake-ups an hour all night for everyone without
+// Choicy (battery drain F7).
+#include "ChoicyRetry.h"
+static dispatch_source_t gChoicyFileSrc;
+static int gChoicyRetries;
+static void WatchChoicyFile(void) {
+    if (gChoicyFileSrc && !dispatch_source_testcancel(gChoicyFileSrc)) return;   // (watching already: a folder event only re-checks)
+    gChoicyFileSrc = WatchPath(CHOICYPREFS, DISPATCH_VNODE_WRITE | DISPATCH_VNODE_EXTEND | DISPATCH_VNODE_DELETE | DISPATCH_VNODE_RENAME | DISPATCH_VNODE_REVOKE, @"Choicy's settings file", ^{ WatchChoicyFile(); }, nil);
+    if (gChoicyFileSrc) { gChoicyRetries = 0; return; }
+    double wait = MSBDChoicyRetryDelay(++gChoicyRetries);
+    if (wait > 0) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(wait * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WatchChoicyFile(); });
 }
 static dispatch_source_t gConfigTimer, gSpringBoardTimer;   // (the 2 s and 10 s checks: paused while the screen is off, see WatchScreen)
 static void WatchMacStatusBarConfig(void) {
     static dispatch_source_t prefsDir, tweakDir;
-    prefsDir = WatchPath(PREFSDIR, DISPATCH_VNODE_WRITE, @"the preferences folder", nil);   // (an atomic replace of Choicy's file changes the folder)
-    tweakDir = WatchPath(TWEAKDIR, DISPATCH_VNODE_WRITE, @"TweakInject (iCleaner)", nil);    // (iCleaner renames MacStatusBar.dylib here)
+    // (an atomic replace of Choicy's file changes the folder; so does its first save: the file's own watch is armed then if it is not)
+    prefsDir = WatchPath(PREFSDIR, DISPATCH_VNODE_WRITE, @"the preferences folder", nil, ^{ WatchChoicyFile(); });
+    tweakDir = WatchPath(TWEAKDIR, DISPATCH_VNODE_WRITE, @"TweakInject (iCleaner)", nil, nil);    // (iCleaner renames MacStatusBar.dylib here)
     WatchChoicyFile();
     dispatch_source_t t = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
     dispatch_source_set_timer(t, dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), 2 * NSEC_PER_SEC, NSEC_PER_SEC / 2);
@@ -984,10 +1040,12 @@ static void WatchForMacStatusBarOff(void) {   // SpringBoard's pid is looked at 
 }
 // Screen off (SpringBoard's own com.apple.springboard.hasBlankedScreen, state 1 = blank): the two checks rest, so the helper does not wake every
 // 2 s all night. The kernel file events stay armed (they cost nothing until something changes). Screen on: one look at once, then the checks go on.
+#include "SleepGuardDaemon.h"   // (battery drain F1: the screen-off look at powerd's assertions)
 static void WatchScreen(void) {
     static int token = 0; static BOOL paused = NO;
     void (^apply)(int) = ^(int t) {
         uint64_t blank = 0; notify_get_state(t, &blank);
+        if ((blank != 0) != gSGScreenOff) SGScreenChanged(blank != 0);   // (the Sleep Guard: a look once the screen is off; its first state at the start too)
         if (blank && !paused) { paused = YES; if (gConfigTimer) dispatch_suspend(gConfigTimer); if (gSpringBoardTimer) dispatch_suspend(gSpringBoardTimer); }
         else if (!blank && paused) { paused = NO; if (gConfigTimer) dispatch_resume(gConfigTimer); if (gSpringBoardTimer) dispatch_resume(gSpringBoardTimer); EvaluateMacStatusBarConfig(@"the screen came on"); }
     };
@@ -1453,6 +1511,7 @@ static void Uninstall(void) {
     GiveBackEngineSettings();
     GiveBackStageManager(@"removal");
     GiveBackPointerAnimations(@"removal");   // (after the running SpringBoard's own give-back, posted above: whichever comes first, the other finds nothing to do)
+    ForgetPrewarmPrefs(@"removal");
     NSString *status = DpkgStatus();
     if (MSBDPackageOnDisk(status, @"com.opa334.choicy")) {
         GiveBackChoicyEngines();
@@ -1604,6 +1663,7 @@ int main(int argc, char **argv) {
     @autoreleasepool {
         // (this helper's own child, as mobile: first, so nothing at all -- no preferences read -- runs as root in this process before it drops to mobile)
         if (argc > 1 && strcmp(argv[1], "--ptranim-giveback") == 0) return PointerAnimationsGiveBackAsMobile();
+        if (argc > 1 && strcmp(argv[1], "--forget-prewarm-prefs") == 0) return ForgetPrewarmPrefsAsMobile(argc > 2 ? argv[2] : NULL);   // (the same: mobile before anything else)
         // Not an iPad (common/DeviceGate.h): nothing but giving back. The daemon stays idle (launchd would restart it if it quit).
         if (argc > 1 && strcmp(argv[1], "--os-major") == 0) { printf("%ld\n", (long)[NSProcessInfo processInfo].operatingSystemVersion.majorVersion); return 0; }   // (postinst: the iPadOS 17+ Settings entries)
         if (argc > 1 && strcmp(argv[1], "--is-ipad") == 0) return MSBDIsIPad() ? 0 : 2;   // (postinst: 2, not 1, so a failed start never reads as "not an iPad")
@@ -1660,6 +1720,7 @@ int main(int argc, char **argv) {
         EjectRequest(@"daemon start");   // (a request left while the helper was not running -- an install's restart: answered now, Finder may still wait)
         WatchForMacStatusBarOff();
         WatchMacStatusBarConfig();
+        SGStart();
         WatchScreen();
         dispatch_main();
     }

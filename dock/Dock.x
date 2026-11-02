@@ -58,6 +58,7 @@ static BOOL    gLaunchpadLeft = YES;    // Launchpad at the Dock's start, next t
 static BOOL    gBlockSwipeUp  = YES;    // stop an upward swipe on the Home Screen from opening the App Library
 static BOOL    gPortraitLarger = YES;   // in portrait the (shrunk) Dock grows to the widest size that fits the screen
 static BOOL    gSwipeDownOpensLibrary = YES;   // a downward swipe on the Home Screen opens the App Library (our own replacement for Lynx's "replace Spotlight")
+static BOOL    gLastPageOpensLibrary = NO;     // swiping past the last Home Screen page opens the App Library, as iPadOS does (KT, 1.7.8: off unless switched on)
 
 // ===== logging (no system log on this setup) ==============================
 #import "DMLog.h"
@@ -231,8 +232,12 @@ static void DMLoadPrefs(void) {
         CFRelease(sd);
     }
     gSwipeDownOpensLibrary = swipeDown;
+    // Swipe Past Last Page Opens App Library (Settings > Home Screen & Dock / & App Library, KT 1.7.8): off unless switched on, for every user
+    CFPropertyListRef lpl = DMCopyPref(CFSTR("lastPageOpensLibrary"));
+    gLastPageOpensLibrary = lpl && CFGetTypeID(lpl) == CFBooleanGetTypeID() && CFBooleanGetValue(lpl);
+    if (lpl) CFRelease(lpl);
 
-    DMLog([NSString stringWithFormat:@"[prefs] enabled=%d magnification=%.3f iconSize=%.2f bottomGap=%.1f blockSwipeUp=%d downloads=%d trash=%d launchpad=%d swipeDownOpensLibrary=%d", enabled, mag, gIconSize, gBottomGap, blockUp, downloads, gShowTrash, launchpad, swipeDown]);
+    DMLog([NSString stringWithFormat:@"[prefs] enabled=%d magnification=%.3f iconSize=%.2f bottomGap=%.1f blockSwipeUp=%d downloads=%d trash=%d launchpad=%d swipeDownOpensLibrary=%d lastPageOpensLibrary=%d", enabled, mag, gIconSize, gBottomGap, blockUp, downloads, gShowTrash, launchpad, swipeDown, gLastPageOpensLibrary]);
 }
 
 @interface SBFloatingDockView : UIView
@@ -841,7 +846,8 @@ static void DMDockReassertLevelNow(BOOL systemUIUp) {
 // Stock status bar mode, or the MacStatusBar line off: the status bar's tick (which normally lowers the Dock again) does not run, so a Dock raised by
 // the hook would stay at 1034 (a Home Screen icon's Haptic Touch menu then opens behind it; layering audit #4). While the Dock is raised, this
 // light 0.5 s watcher of the Dock part does the tick's job whenever the tick has not asked for 1.5 s; it stops as soon as the Dock is back down
-// (or the tick is running), and skips its work while the screen is off.
+// (or the tick is running), and while the screen is off: the screen's return starts it again if the Dock is still raised (it used to keep firing
+// twice a second all night with nothing to do; battery drain F5).
 static BOOL DMDockSwitcherOrCCUp(void) {
     id sw = nil;
     Class vc = objc_getClass("SBMainSwitcherViewController"), co = objc_getClass("SBMainSwitcherControllerCoordinator");
@@ -860,16 +866,21 @@ static BOOL DMDockSwitcherOrCCUp(void) {
     return NO;
 }
 static NSTimer *gDockFloorWatch = nil;
+static int gDockBlankToken = 0;   // (com.apple.springboard.hasBlankedScreen, state 1 = blank)
+static BOOL DMDockScreenBlank(void) { uint64_t b = 0; if (gDockBlankToken) notify_get_state(gDockBlankToken, &b); return b != 0; }
+static BOOL DMDockFloorWatchNeeded(void) {   // (raised, and the status bar's tick has not asked for 1.5 s)
+    UIWindow *w = gDockWindow;
+    return w && fabs(w.windowLevel - kDockMinWindowLevel) < 0.01 && CACurrentMediaTime() - gDockTickReassertAt >= 1.5;
+}
 static void DMDockFloorWatchStart(void) {
-    if (gDockFloorWatch) return;
+    if (!gDockBlankToken)
+        notify_register_dispatch("com.apple.springboard.hasBlankedScreen", &gDockBlankToken, dispatch_get_main_queue(), ^(int tok) {
+            if (!DMDockScreenBlank() && DMDockFloorWatchNeeded()) DMDockFloorWatchStart();   // (the screen back on, the Dock still raised)
+        });
+    if (gDockFloorWatch || DMDockScreenBlank()) return;   // (screen off: not now -- its return starts it)
     gDockFloorWatch = [NSTimer timerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {
-        UIWindow *w = gDockWindow;
-        BOOL raised = w && fabs(w.windowLevel - kDockMinWindowLevel) < 0.01;
-        if (!raised || CACurrentMediaTime() - gDockTickReassertAt < 1.5) { [t invalidate]; gDockFloorWatch = nil; return; }   // (down again, or the tick runs)
-        static int blankToken = 0; uint64_t blank = 0;
-        if (!blankToken) notify_register_check("com.apple.springboard.hasBlankedScreen", &blankToken);
-        if (blankToken) notify_get_state(blankToken, &blank);
-        if (blank) return;   // (screen off: nothing to see)
+        // (down again, or the tick runs, or the screen went off: stopped)
+        if (!DMDockFloorWatchNeeded() || DMDockScreenBlank()) { [t invalidate]; gDockFloorWatch = nil; return; }
         DMDockReassertLevelNow(DMDockSwitcherOrCCUp());
     }];
     gDockFloorWatch.tolerance = 0.1;
@@ -915,11 +926,14 @@ static void DMRefreshLaunchpadIcons(void) {
         }
     }
 }
+static void DMLastPageApply(NSString *why);   // (below, with the App Library's last page)
 static void DMPrefsChanged(CFNotificationCenterRef c, void *o, CFNotificationName n,
                            const void *obj, CFDictionaryRef info) {
+    BOOL lastPage = gLastPageOpensLibrary;
     DMLoadPrefs();
     DMRelayoutDock();
     DMRefreshLaunchpadIcons();
+    if (lastPage != gLastPageOpensLibrary) DMLastPageApply(@"switched in Settings");
 }
 
 static void DMCollectIcons(UIView *root, Class iconClass, NSMutableArray *out) {
@@ -1130,6 +1144,156 @@ extern void DMStartRunningIndicatorPoll(void);
 %end
 %end
 
+// ---- Swiping past the last Home Screen page opens the App Library: off unless switched on (KT, 1.7.8) ------------------------------------
+// iPadOS keeps an empty page after the last Home Screen page -- the root folder's trailing custom page, SBHLibraryOverscrollViewController (read
+// on the M1, 15.6.1: 4 icon pages and a page count of 5, the trailing page's index the last icon page's + 1) -- and scrolling into it presents
+// the App Library over everything (the icon manager's overscroll library). While the switch is off that page is left out (LastPageRule.h): of
+// the root folder's page count (SBRootFolderView: -_trailingCustomPageCount on 15-17, -trailingCustomPageCount on 18) and of its index
+// (-trailingCustomViewPageIndex answers NSIntegerMax, iPadOS's own "no trailing page"). Both, as one: 15-17 work the index out from the trailing
+// view, not from the count, so with the count alone they took the last icon page for the App Library's (Edit Home Screen there moved to edit
+// mode's empty page after it: 1.7.8 regression R-8). The pages end at the last one, which then bounces at its edge as the first page does -- no
+// empty page to scroll into, nothing presented. Only the page: the App Library is still reached the other ways -- its Dock icon (our Launchpad),
+// the swipe down, its search, Spotlight, an icon dragged to the edge in edit mode --, which present it from the icon manager, not through it.
+// Shape checks first (the class, the count and the index and their types, the page's class, the getter of the trailing pages); anything else:
+// iPadOS's own page. 18 can have several trailing pages: left out only while every one of them is the App Library's.
+#import "LastPageRule.h"
+static id DMObj(id o, NSString *sel);   // (below)
+static unsigned long long (*o_DMTrailingPages)(id, SEL);
+static long long (*o_DMTrailingPageIndex)(id, SEL);
+static SEL gDMTrailingCountSel;   // (_trailingCustomPageCount on 15-17, trailingCustomPageCount on 18)
+static Class gDMLibraryPageClass;
+static NSString *gDMTrailingGetter;   // (trailingCustomViewControllers on 18, trailingCustomViewController on 15-17)
+static BOOL DMTrailingIsLibraryOnly(id rootFolderView) {
+    id got = nil;
+    @try { got = ((id (*)(id, SEL))objc_msgSend)(rootFolderView, NSSelectorFromString(gDMTrailingGetter)); } @catch (NSException *e) { return NO; }
+    NSArray *pages = [got isKindOfClass:[NSArray class]] ? got : got ? @[got] : @[];
+    if (!pages.count) return NO;
+    for (id vc in pages) if (![vc isKindOfClass:gDMLibraryPageClass]) return NO;
+    return YES;
+}
+// The one test both hooks answer from, given iPadOS's own count: the page is left out while the switch is off and every trailing page is the
+// App Library's. (So the count and the index can never disagree.)
+static BOOL DMTrailingLeftOut(id rootFolderView, unsigned long long iosCount) {
+    return DMLastPageMayLeaveOut(iosCount, gLastPageOpensLibrary) && DMTrailingIsLibraryOnly(rootFolderView);
+}
+static unsigned long long DMTrailingPages(id self, SEL _cmd) {
+    unsigned long long n = o_DMTrailingPages(self, _cmd);
+    BOOL out = DMTrailingLeftOut(self, n);
+    if (out) DM_FEATURE_MARK("last-page-no-library");
+    return DMLastPageCount(n, out);
+}
+// The trailing page's index (SBRootFolderController's asks this one): NSIntegerMax while the page is left out, so every user of it sees no
+// trailing page, as iPadOS has it without one -- -isOnTrailingCustomPage, edit mode's -[SBRootFolderController
+// _updateFolderRequiredTrailingEmptyListCount], -viewControllersForPageIndex:, the page state transitions, the library overlay's swipe-to-dismiss
+// and its scroll back to the last page, Focus (SBHFocusModeManager) -- and the unused trailing view is laid out at that index's offset, far
+// off-screen. 18 already answers this from the count (-firstTrailingCustomPageIndex): there it comes back as NSIntegerMax by itself.
+static long long DMTrailingPageIndex(id self, SEL _cmd) {
+    long long i = o_DMTrailingPageIndex(self, _cmd);
+    if (i == LLONG_MAX) return i;   // (iPadOS's own "no trailing page")
+    BOOL out = DMTrailingLeftOut(self, o_DMTrailingPages(self, gDMTrailingCountSel));
+#if DEBUG
+    static int logged = 0;
+    if (out && logged++ < 10) DMLog([NSString stringWithFormat:@"[lastpage] the trailing page's index: none (iPadOS had %lld, its last icon page's)", i]);
+#endif
+    return DMLastPageIndex(i, out);
+}
+// The App Library a page swipe brings is the icon manager's "overscroll" library: presented when a scroll ends where the trailing page would be
+// (-[SBHIconManager _updateOverscrollModalLibraryForScrollToPresented:], every version 15-18). With the page left out, a fling from the page before
+// the last still landed there: the scroll's target, worked out from its speed, was the trailing page's index, and the library came (M1 15.6.1,
+// debug ui02: from page 3 of 4, not from page 4 itself). So while the switch is off that presentation is refused too -- only the page swipe's: the
+// Dock icon, the swipe down, search and Spotlight present it through the modal presenter, never through this. Its dismissal (NO) always goes on.
+static void (*o_DMOverscrollLibrary)(id, SEL, BOOL);
+static void DMOverscrollLibrary(id self, SEL _cmd, BOOL presented) {
+#if DEBUG
+    if (access("/tmp/msb-lastpage-nogate", F_OK) == 0) { DMLog([NSString stringWithFormat:@"[lastpage] overscroll library %d (debug: not gated)", presented]); o_DMOverscrollLibrary(self, _cmd, presented); return; }
+#endif
+    if (presented && !gLastPageOpensLibrary) {
+        DM_FEATURE_MARK("last-page-no-overscroll-library");
+        static int logged = 0;
+        if (logged++ < 20) DMLog(@"[lastpage] a scroll past the last page asked for the App Library: not opened (Swipe Past Last Page is off)");
+        return;
+    }
+    o_DMOverscrollLibrary(self, _cmd, presented);
+}
+#if DEBUG
+// (debug: who presents the App Library, and the scroll's page targets -- 1.7.8 item 7)
+static void (*o_DMDbgPresentLib)(id, SEL, BOOL, id);
+static void DMDbgPresentLib(id self, SEL _cmd, BOOL animated, id completion) {
+    NSArray *st = [NSThread callStackSymbols];
+    DMLog([NSString stringWithFormat:@"[lastpage] debug: the modal presenter presents the App Library; called from %@", [[st subarrayWithRange:NSMakeRange(1, MIN((NSUInteger)6, st.count - 1))] componentsJoinedByString:@" | "]]);
+    o_DMDbgPresentLib(self, _cmd, animated, completion);
+}
+static void (*o_DMDbgWillScroll)(id, SEL, long long, BOOL);
+static void DMDbgWillScroll(id self, SEL _cmd, long long page, BOOL animated) {
+    DMLog([NSString stringWithFormat:@"[lastpage] debug: the root folder will scroll to page %lld (animated %d)", page, animated]);
+    o_DMDbgWillScroll(self, _cmd, page, animated);
+}
+static void (*o_DMDbgOverscroll)(id, SEL, id, double);
+static void DMDbgOverscroll(id self, SEL _cmd, id rfc, double amount) {
+    static CFTimeInterval last = 0;
+    if (CACurrentMediaTime() - last > 0.3) { last = CACurrentMediaTime(); DMLog([NSString stringWithFormat:@"[lastpage] debug: overscroll on the last page by %.1f", amount]); }
+    o_DMDbgOverscroll(self, _cmd, rfc, amount);
+}
+#endif
+static id DMRootFolderView(void) {
+    id mgr = DMObj(DMObj((id)objc_getClass("SBIconController"), @"sharedInstance"), @"iconManager");
+    id v = DMObj(DMObj(mgr, @"rootFolderController"), @"contentView");
+    return [NSStringFromClass([v class]) containsString:@"RootFolderView"] ? v : nil;
+}
+// The switch changed: the Home Screen lays its pages out again, so the page comes or goes at once (not at the next respring).
+static void DMLastPageApply(NSString *why) {
+    if (!o_DMTrailingPages) return;
+    UIView *v = DMRootFolderView();
+    if (!v) return;
+    [v setNeedsLayout]; [v layoutIfNeeded];
+    SEL dots = NSSelectorFromString(@"_updatePageControlNumberOfPages");
+    if ([v respondsToSelector:dots]) ((void (*)(id, SEL))objc_msgSend)(v, dots);
+    DMLog([NSString stringWithFormat:@"[lastpage] %@: swiping past the last page %@ (%@ pages now)", why, gLastPageOpensLibrary ? @"opens the App Library" : @"ends at the last page",
+           [v respondsToSelector:NSSelectorFromString(@"pageCount")] ? [v valueForKey:@"pageCount"] : @"?"]);
+}
+static void DMLastPageInit(void) {
+    Class view = objc_getClass("SBRootFolderView");
+    gDMLibraryPageClass = objc_getClass("SBHLibraryOverscrollViewController");
+    SEL count = NULL; NSString *why = nil;
+    for (NSString *name in @[@"_trailingCustomPageCount", @"trailingCustomPageCount"]) {   // (15-17, 18)
+        Method m = view ? class_getInstanceMethod(view, NSSelectorFromString(name)) : NULL;
+        if (m && !strcmp(method_getTypeEncoding(m), "Q16@0:8")) { count = NSSelectorFromString(name); break; }
+    }
+    for (NSString *name in @[@"trailingCustomViewControllers", @"trailingCustomViewController"]) {   // (18, 15-17)
+        Method m = view ? class_getInstanceMethod(view, NSSelectorFromString(name)) : NULL;
+        if (m && !strcmp(method_getTypeEncoding(m), "@16@0:8")) { gDMTrailingGetter = name; break; }
+    }
+    SEL index = NSSelectorFromString(@"trailingCustomViewPageIndex");   // (every version 15-18: q16@0:8)
+    Method im = view ? class_getInstanceMethod(view, index) : NULL;
+    if (!view) why = @"no SBRootFolderView";
+    else if (!count) why = @"its trailing page count is not the known one";
+    else if (!im || strcmp(method_getTypeEncoding(im), "q16@0:8")) why = @"its trailing page's index is not the known one";
+    else if (!gDMTrailingGetter) why = @"its trailing pages' getter is not the known one";
+    else if (!gDMLibraryPageClass) why = @"no SBHLibraryOverscrollViewController";
+    if (why) { DMLog([NSString stringWithFormat:@"[lastpage] %@: the last page opens the App Library as iPadOS has it", why]); return; }
+    gDMTrailingCountSel = count;
+    MSHookMessageEx(view, count, (IMP)DMTrailingPages, (IMP *)&o_DMTrailingPages);
+    MSHookMessageEx(view, index, (IMP)DMTrailingPageIndex, (IMP *)&o_DMTrailingPageIndex);   // (the count and the index together, never one alone)
+    Class mgr = objc_getClass("SBHIconManager");
+    Method om = mgr ? class_getInstanceMethod(mgr, NSSelectorFromString(@"_updateOverscrollModalLibraryForScrollToPresented:")) : NULL;
+    BOOL gate = om && !strcmp(method_getTypeEncoding(om), "v20@0:8B16");
+    if (gate) MSHookMessageEx(mgr, NSSelectorFromString(@"_updateOverscrollModalLibraryForScrollToPresented:"), (IMP)DMOverscrollLibrary, (IMP *)&o_DMOverscrollLibrary);
+    else DMLog(@"[lastpage] the icon manager's overscroll library call is not the known one: only the page is left out");
+#if DEBUG
+    Class pres = objc_getClass("SBHModalLibraryPresenter");
+    Method pm = pres ? class_getInstanceMethod(pres, NSSelectorFromString(@"presentLibraryWithAnimation:completion:")) : NULL;
+    if (pm && !strcmp(method_getTypeEncoding(pm), "v28@0:8B16@?20")) MSHookMessageEx(pres, NSSelectorFromString(@"presentLibraryWithAnimation:completion:"), (IMP)DMDbgPresentLib, (IMP *)&o_DMDbgPresentLib);
+    Method wm = class_getInstanceMethod(view, NSSelectorFromString(@"_willScrollToPageIndex:animated:"));
+    if (wm && !strcmp(method_getTypeEncoding(wm), "v28@0:8q16B24")) MSHookMessageEx(view, NSSelectorFromString(@"_willScrollToPageIndex:animated:"), (IMP)DMDbgWillScroll, (IMP *)&o_DMDbgWillScroll);
+    Method dm = mgr ? class_getInstanceMethod(mgr, NSSelectorFromString(@"rootFolderController:didOverscrollOnLastPageByAmount:")) : NULL;
+    if (dm && !strcmp(method_getTypeEncoding(dm), "v32@0:8@16d24")) MSHookMessageEx(mgr, NSSelectorFromString(@"rootFolderController:didOverscrollOnLastPageByAmount:"), (IMP)DMDbgOverscroll, (IMP *)&o_DMDbgOverscroll);
+#endif
+    // (in our constructor, before SpringBoard builds its Home Screen: its first layout counts the pages through the hook -- nothing to lay out again,
+    //  and nothing of SpringBoard's asked for here, where its icon controller does not exist yet)
+    DMLog([NSString stringWithFormat:@"[lastpage] -[SBRootFolderView %@] and -trailingCustomViewPageIndex hooked (pages from -%@): swiping past the last page %@", NSStringFromSelector(count), gDMTrailingGetter,
+           gLastPageOpensLibrary ? @"opens the App Library (switched on)" : @"ends at the last page"]);
+}
+
 // ---- Escape closes the App Library ----------------------------------------------------------------------------------
 // The iPad's App Library is presented by an SBHModalLibraryPresenter, which the icon manager owns. Escape reaches SpringBoard as a
 // key press that climbs the responder chain (like GraveEscapeTweak relies on), so a hook on UIResponder sees it whichever view has
@@ -1305,6 +1469,14 @@ static BOOL DMDesktopTakesTouch(UIGestureRecognizer *gesture) {
     if (!ours && tries < 40) { tries++; ours = (BOOL (*)(UIGestureRecognizer *))dlsym(RTLD_DEFAULT, "MSBDDesktopTouchIsOurs"); }
     return ours && ours(gesture);
 }
+// The swipe down fired for this touch: the desktop is told, and lets that touch go -- whose a touch is is decided once (statusbar/DesktopHold.h,
+// 1.7.8; the 1.7.7 fix-round review's N1: a pan that began just before the desktop's hold time opened the App Library, and the same finger's move a
+// moment later drew the desktop's rectangle under it).
+static void DMDesktopTouchGivenAway(UIGestureRecognizer *gesture) {
+    static void (*given)(UIGestureRecognizer *) = NULL; static int tries = 0;
+    if (!given && tries < 40) { tries++; given = (void (*)(UIGestureRecognizer *))dlsym(RTLD_DEFAULT, "MSBDDesktopTouchGivenAway"); }
+    if (given) given(gesture);
+}
 %hook SBSearchScrollView
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gesture {
     if (DMPanStartedOnDesktopIcon(gesture)) { DMLog(@"[swipe-down] a drag from a desktop icon: not a swipe"); return NO; }
@@ -1325,7 +1497,7 @@ static BOOL DMDesktopTakesTouch(UIGestureRecognizer *gesture) {
         }
         static int logged = 0;
         if (logged++ < 20) DMLog(@"[swipe-down] genuine downward drag on the Home Screen search view -> opening the App Library");
-        if (DMPresentAppLibrary()) gSwipeLibraryAt = CACurrentMediaTime();
+        if (DMPresentAppLibrary()) { gSwipeLibraryAt = CACurrentMediaTime(); DMDesktopTouchGivenAway(gesture); }
         return NO;   // do not let Spotlight's own scroll view begin dragging open underneath us
     }
     return %orig;
@@ -2152,6 +2324,7 @@ static NSString *DMK2Verdict(void) {
 #endif
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ %init(SwipeUpFix); });
     DMLoadPrefs();
+    DMLastPageInit();   // (after the switch is read: the App Library's last page, KT 1.7.8)
     DMStartRunningIndicatorPoll();   // periodic dot resync (RunningIndicator.m) -- catches Force Quit All / 3D-Touch quit / App Switcher, not just layoutSubviews
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
                                     DMPrefsChanged, DM_NOTIFY, NULL,

@@ -19,7 +19,7 @@ include $(THEOS)/makefiles/common.mk
 # MacAddToFolder: "Add to Folder" in an app icon's Haptic Touch menu (1.7.2): the app moves into a Home Screen folder, or a new one.
 TWEAK_NAME = MacSettings MacSettingsBadge MacLargeTitles MacHomeBar MacPageDots MacIconLabels MacEthernetFix MacAppSizeMenu MacLockStatusBar MacFolderMenu MacCCGrabber MacAddToFolder
 
-MacSettings_FILES = MacSettings.x PointerSettings.x KeyboardSettings.x AutoLock.x NativeRows.x SidebarSearch.x TweakSearch.x AppleGroups18.x SidebarGroups.x
+MacSettings_FILES = MacSettings.x PointerSettings.x KeyboardSettings.x AutoLock.x NativeRows.x SidebarSearch.x TweakSearch.x AppleGroups18.x SidebarGroups.x BatteryHealth.x BatteryUse.x
 ifneq ($(FINALPACKAGE),1)
 MacSettings_FILES += SpecDump.x
 endif
