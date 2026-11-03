@@ -653,6 +653,13 @@ static void DMSMCtxMarkFrontmost(id ctx, id entity) {
     SEL sel = NSSelectorFromString(@"_setRequestedFrontmostEntity:");
     if (entity && [ctx respondsToSelector:sel] && DMSMSigOK(ctx, sel, DMSMSigVoidObj(), "_setRequestedFrontmostEntity:")) ((void (*)(id, SEL, id))objc_msgSend)(ctx, sel, entity);
 }
+// ... and the transition's activating window, where a request brings a window of the stage forward as Stage Manager's own bring-to-front does (a tap
+// on a window, a resize, a drag: -[SBMainSwitcherControllerCoordinator _configureRequest:forSwitcherTransitionRequest:withEventLabel:] names the
+// whole stage, the window brought forward as the activating entity, 16.3.1 read). Optional, set when Apple has it.
+static void DMSMCtxMarkActivating(id ctx, id entity) {
+    SEL sel = NSSelectorFromString(@"setActivatingEntity:");
+    if (entity && [ctx respondsToSelector:sel] && DMSMSigOK(ctx, sel, DMSMSigVoidObj(), "setActivatingEntity:")) ((void (*)(id, SEL, id))objc_msgSend)(ctx, sel, entity);
+}
 // A PLAN = every window a transition names: @[entity, role, attributes] each. Checked as a whole BEFORE anything is written (review S2): entities of
 // the entity class, roles in range and each used once, attributes of the attributes class with a sane size and center. Then written in one go;
 // if a write throws anyway, the roles already written are emptied again, so Apple's context is left as it was (the roles we write into were empty
@@ -769,7 +776,11 @@ static void DMSMCtxClearRolesExcept(id ctx, NSArray<NSArray *> *plan, NSSet<NSNu
 }
 // keepRoles (not nil): besides the plan's, the window roles left as they are; every other one is emptied (DMSMCtxClearRolesExcept). nil: whole
 // says (YES every role the plan does not name emptied, NO all of them left as they are).
-static BOOL DMSMRequestPlanEx(id identity, BOOL onMain, NSString *label, NSArray<NSArray *> *plan, NSSet<NSNumber *> *allowed, id frontEntity, BOOL whole, NSSet<NSNumber *> *keepRoles);
+// activates: the front window is the transition's activating window too (DMSMCtxMarkActivating) -- a window of the stage brought forward.
+static BOOL DMSMRequestPlanAct(id identity, BOOL onMain, NSString *label, NSArray<NSArray *> *plan, NSSet<NSNumber *> *allowed, id frontEntity, BOOL whole, NSSet<NSNumber *> *keepRoles, BOOL activates);
+static BOOL DMSMRequestPlanEx(id identity, BOOL onMain, NSString *label, NSArray<NSArray *> *plan, NSSet<NSNumber *> *allowed, id frontEntity, BOOL whole, NSSet<NSNumber *> *keepRoles) {
+    return DMSMRequestPlanAct(identity, onMain, label, plan, allowed, frontEntity, whole, keepRoles, NO);
+}
 static BOOL DMSMRequestPlan(id identity, BOOL onMain, NSString *label, NSArray<NSArray *> *plan, NSSet<NSNumber *> *allowed, id frontEntity, BOOL whole) {
     return DMSMRequestPlanEx(identity, onMain, label, plan, allowed, frontEntity, whole, nil);
 }
@@ -777,13 +788,13 @@ static BOOL DMSMRequestPlan(id identity, BOOL onMain, NSString *label, NSArray<N
 //  dropped, a full-screen app sent away -- do so in a block queued after it, so a request left in the queue leaves their state alone too: 1.4.5
 //  logic test F4. DMSMAfterRequest.)
 static BOOL gSMRequestDeferred = NO;
-static BOOL DMSMRequestPlanEx(id identity, BOOL onMain, NSString *label, NSArray<NSArray *> *plan, NSSet<NSNumber *> *allowed, id frontEntity, BOOL whole, NSSet<NSNumber *> *keepRoles) {
+static BOOL DMSMRequestPlanAct(id identity, BOOL onMain, NSString *label, NSArray<NSArray *> *plan, NSSet<NSNumber *> *allowed, id frontEntity, BOOL whole, NSSet<NSNumber *> *keepRoles, BOOL activates) {
     gSMRequestDeferred = NO;
     if (DMSMGestureLive()) {   // (it would change a stage a switcher gesture holds -- its windows, or the stage on screen it adds to: asked for after it)
         NSMutableSet<NSString *> *ids = [NSMutableSet set];
         for (NSArray *en in plan) { NSString *u = [en isKindOfClass:[NSArray class]] && en.count ? DMSMEntityUid(en[0]) : nil; if (u) [ids addObject:u]; }
         if ((!whole && onMain && gSMGestureHeld.count) || DMSMGestureHoldsAny(ids)) {
-            DMSMAfterGesture(label.length ? label : @"MSBDRequest", ^{ DMSMRequestPlanEx(identity, onMain, label, plan, allowed, frontEntity, whole, keepRoles); });
+            DMSMAfterGesture(label.length ? label : @"MSBDRequest", ^{ DMSMRequestPlanAct(identity, onMain, label, plan, allowed, frontEntity, whole, keepRoles, activates); });
             gSMRequestDeferred = YES;
             return YES;
         }
@@ -802,7 +813,7 @@ static BOOL DMSMRequestPlanEx(id identity, BOOL onMain, NSString *label, NSArray
         if ([req respondsToSelector:lab] && DMSMSigOK(req, lab, DMSMSigVoidObj(), "setEventLabel:")) ((void (*)(id, SEL, id))objc_msgSend)(req, lab, ourLabel);
         SEL mod = NSSelectorFromString(@"modifyApplicationContext:");
         if (!DMSMSigOK(req, mod, DMSMSigVoidObj(), "modifyApplicationContext:")) return;
-        ((void (*)(id, SEL, id))objc_msgSend)(req, mod, ^(id ctx) { @try { wrote = DMSMWritePlan(ctx, plan, frontEntity); if (wrote && keepRoles) DMSMCtxClearRolesExcept(ctx, plan, keepRoles); else if (wrote && whole) DMSMCtxClearOtherRoles(ctx, plan); } @catch (id e) {} });
+        ((void (*)(id, SEL, id))objc_msgSend)(req, mod, ^(id ctx) { @try { wrote = DMSMWritePlan(ctx, plan, frontEntity); if (wrote && activates) DMSMCtxMarkActivating(ctx, frontEntity); if (wrote && keepRoles) DMSMCtxClearRolesExcept(ctx, plan, keepRoles); else if (wrote && whole) DMSMCtxClearOtherRoles(ctx, plan); } @catch (id e) {} });
     };
     @try {
         if (!onMain) {

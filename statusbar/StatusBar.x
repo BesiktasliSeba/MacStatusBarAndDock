@@ -27307,6 +27307,7 @@ static void DMRunTrigger(NSString *cmd) {
     }
 #endif
     else if ([cmd hasPrefix:@"smzoom_"]) DMSMToggleZoom(DMSMDebugKey([cmd substringFromIndex:7]));   // smzoom_<bundle>[@<n>]: the green button's Zoom toggle on that window
+    else if ([cmd hasPrefix:@"smfront_"]) DMSMBringToFront(DMSMDebugKey([cmd substringFromIndex:8]));   // smfront_<bundle>[@<n>]: that window to the front of its stage, as a Dock tap on an app already there brings it (DMSMAddToStage)
     else if ([cmd isEqualToString:@"smwins"]) DMSMDebugWindows();   // smwins: every recent stage's windows by key (M-2), front, full screen, minimized
 #if DEBUG
     else if ([cmd isEqualToString:@"snapinfo"]) {   // snapinfo: what a window let go now would snap against (1.7.3 item 3): the desktop, every window as drawn, the distances; Stage Manager's own snap padding (read-only)
@@ -38574,7 +38575,8 @@ static BOOL DMSMFrontIsFullScreen(void) {   // (the front window is the full-scr
 }
 static BOOL DMSMWindowsBehindFullScreen(void) { return DMSMFrontIsFullScreen(); }
 // Bring All to Front / Send All to Back: the full-screen app's place in the stage's order -- behind every window, or in front of them all.
-static BOOL DMSMRequestStageOrder(id stage, NSDictionary *timeByItem, id frontItem);
+static BOOL DMSMRequestStageOrderAs(id stage, NSDictionary *timeByItem, id frontItem, BOOL activates);
+static BOOL DMSMRequestStageOrder(id stage, NSDictionary *timeByItem, id frontItem) { return DMSMRequestStageOrderAs(stage, timeByItem, frontItem, NO); }
 static void DMSMWindowsForward(BOOL forward) {
     DM_FEATURE_MARK("sm-send-all-to-back");
     // One request that names every window of the stage with its new place in the order (logic review L1: a model change plus one window asked
@@ -38599,8 +38601,8 @@ static void DMSMWindowsForward(BOOL forward) {
     DMSMRequestStageOrder(stage, times, forward ? topItem : fullItem);
 }
 // Every window of the stage asked for in one transition, in its role with its attributes -- interaction times changed where given -- and the
-// front one marked frontmost.
-static BOOL DMSMRequestStageOrder(id stage, NSDictionary *timeByItem, id frontItem) {
+// front one marked frontmost (activates: the transition's activating window too -- a window brought forward, DMSMBringToFront).
+static BOOL DMSMRequestStageOrderAs(id stage, NSDictionary *timeByItem, id frontItem, BOOL activates) {
     NSDictionary *map = DMSMStageItemsMap(stage);
     NSMutableArray *plan = [NSMutableArray array]; id frontEntity = nil;
     for (id it in map) {
@@ -38613,7 +38615,8 @@ static BOOL DMSMRequestStageOrder(id stage, NSDictionary *timeByItem, id frontIt
         [plan addObject:@[e, @(role), a]];
         if (it == frontItem) frontEntity = e;
     }
-    if (!DMSMRequestOn(DMSMStageDisplayIdentity(stage), nil, plan, nil, frontEntity)) { DMLog(@"[sm] order refused"); return NO; }
+    id identity = DMSMStageDisplayIdentity(stage);
+    if (!DMSMRequestPlanAct(identity, DMSMIsMainIdentity(identity), nil, DMSMPlanFitted(identity, plan), nil, frontEntity, NO, nil, activates)) { DMLog(@"[sm] order refused"); return NO; }
     DMLog([NSString stringWithFormat:@"[sm] order of %lu windows requested", (unsigned long)plan.count]);
     return YES;
 }
@@ -38723,7 +38726,12 @@ static void DMSMBringToFront(NSString *key) {   // (newest interaction time in t
     long long newest = 0; for (id it in map) newest = MAX(newest, DMSMAttrTimeOr(map[it], 0));
     long long mine = 0;
     if (!DMSMAttrLastInteractionTime(attrs, &mine) || mine >= newest) return;
-    id a = DMSMAttrWithLastInteractionTime(attrs, newest + 1);
+    // As Stage Manager brings a window forward itself -- a tap on it, a resize, a drag (-[SBFluidSwitcherViewController
+    // appLayoutByBringingItemToFront:inAppLayout:] and -[SBMainSwitcherControllerCoordinator _configureRequest:forSwitcherTransitionRequest:
+    // withEventLabel:], 16.3.1 read): the whole stage asked for, every window in its role with its own interaction time, this one with the newest
+    // as the transition's activating and frontmost window. (debug /tmp/msb-sm-front-alone: this window alone, as before -- to compare)
+    if (!DMTestFlag("/tmp/msb-sm-front-alone") && DMSMRequestStageOrderAs(stage, @{item: @(newest + 1)}, item, YES)) { DM_FEATURE_MARK("sm-bring-forward-stage"); return; }
+    id a = DMSMAttrWithLastInteractionTime(attrs, newest + 1);   // (a window of the stage unreadable: this window alone)
     if (a) DMSMRequestWindow(DMSMItemKey(item), a, -1);   // (this very window: another window of its app stays where it is in the order, M-2)
 }
 @interface DMSMTitleBar : UIView <UIGestureRecognizerDelegate>

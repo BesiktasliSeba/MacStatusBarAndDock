@@ -170,6 +170,7 @@ Which one? On an iPad with Stage Manager (or TrollPad) on iPadOS 16.1 to 18, a n
 | iPad Pro (M2, 2022) | 16.0 to 16.6 | Dopamine | Zetsu, Aerial | Reported by users with Zetsu or Aerial. Stage Manager engine: see below |
 | iPad Pro 12.9" (M1, 2021) | 17.0 | rootless | Zetsu 1.6.6 | Reported working since 1.2.4 |
 | iPad Pro 12.9" (M1, 2021) | 16.1.1 | Dopamine | Stage Manager, Zetsu | Reported by a user |
+| iPad Air (5th generation) | 16.3.1 | rootless | Stage Manager | Reported by a user |
 | Other iPads | 15 to 18 | rootless | | Likely to work, not tested |
 | Other iPads | Newer than 18 | | | Off until you turn on Enable Anyway, at your own risk |
 

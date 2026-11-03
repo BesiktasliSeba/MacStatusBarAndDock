@@ -2,6 +2,11 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.7.9.1
+
+### Fixes
+- Stage Manager engine: opening an app from the Dock, the App Library or the Home Screen now brings its window to the front, also when another window covers it completely.
+
 ## 1.7.9
 
 ### New
