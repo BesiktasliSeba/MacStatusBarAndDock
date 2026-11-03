@@ -20,10 +20,10 @@
 #import "../../common/NativeEmbed.h"
 #import "../../common/OtherTweaks.h"
 #import "../../common/General18Group.h"
+#import "../../common/MainListRows.h"   // (where the row goes, from the main list read once -- never the row Settings fills in on its own queue: 1.7.9)
 #include <stdatomic.h>
 
 #define kRowID       @"DOCK_MAGNIFICATION"
-#define kAnchorID    @"ACCESSIBILITY"
 #define kStatusBarRowID @"MAC_STATUS_BAR"
 #define kWindowsRowID   @"MAC_WINDOWS"   // (1.6.0: Windows & Multitasking, right after Status Bar: StatusBarSettingsRow.x)
 #define kDesktopRowID   @"MAC_DESKTOP"   // (1.7.5: Desktop, right after Status Bar, before Windows & Multitasking: StatusBarSettingsRow.x)
@@ -62,28 +62,7 @@ static NSBundle *PrefsBundle(void) {
 // Status Bar row when that is already there (both rows insert themselves, in whichever order); without Control Center and General, before Accessibility.
 // No known row found (an iPadOS whose main list we have not seen: iPadOS 17 tester, 2026-09-26, got no rows at all, so not even Enable Anyway):
 // the rows go near the top instead -- the start of the list's second block, below the Apple account -- so they always show, on any version.
-static NSInteger TopIndex(NSArray *specs) {
-    SEL cellType = NSSelectorFromString(@"cellType");
-    for (NSUInteger i = 1; i < specs.count; i++)
-        if ([specs[i] respondsToSelector:cellType] && ((long long (*)(id, SEL))objc_msgSend)(specs[i], cellType) == 0) return (NSInteger)i + 1;   // (0: PSGroupCell)
-    return specs.count ? 1 : 0;
-}
-static NSInteger AnchorIndex(NSArray *specs, NSString *before, NSString *after) {
-    NSInteger cc = NSNotFound, general = NSNotFound, accessibility = NSNotFound, own = NSNotFound;
-    for (NSUInteger i = 0; i < specs.count; i++) {
-        NSString *ident = [specs[i] identifier];
-        if (![ident isKindOfClass:[NSString class]]) continue;
-        if (before && [ident isEqualToString:before]) own = (NSInteger)i;
-        if (after && [ident isEqualToString:after]) own = (NSInteger)i + 1;
-        if (cc == NSNotFound && [ident caseInsensitiveCompare:@"ControlCenter"] == NSOrderedSame) cc = (NSInteger)i;
-        if (general == NSNotFound && [ident caseInsensitiveCompare:@"General"] == NSOrderedSame) general = (NSInteger)i + 1;
-        if (accessibility == NSNotFound && [ident caseInsensitiveCompare:kAnchorID] == NSOrderedSame) accessibility = (NSInteger)i;
-    }
-    if (own != NSNotFound) return own;
-    if (cc != NSNotFound) return cc;
-    if (general != NSNotFound) return general;
-    return accessibility;
-}
+// (The rules: common/MainListRows.h MSBDMLAnchor / MSBDMLTop, shared with the Status Bar row and tested on the Mac.)
 
 
 // Like Bluetooth's "On", the row shows whether its line (MacDock in Choicy / iCleaner Pro, the switch at the top of its page) is on -- redrawn when
@@ -100,7 +79,7 @@ static void RefreshRowValue(void) {
     PSListController *l = gRowList;
     SEL r = NSSelectorFromString(@"reloadSpecifierID:");
     if (!l || ![l respondsToSelector:r]) return;
-    for (PSSpecifier *sp in [l specifiers]) if ([[sp identifier] isEqualToString:gRowID]) { ((void (*)(id, SEL, id))objc_msgSend)(l, r, gRowID); break; }
+    if (MSBDMLIndexOf(MSBDMLIdentifiers(l, [l specifiers]), gRowID, NO) != NSNotFound) ((void (*)(id, SEL, id))objc_msgSend)(l, r, gRowID);
 }
 static void WatchRowValue(PSListController *list) {
     gRowList = list;
@@ -129,15 +108,15 @@ static PSSpecifier *MakeRow(Class detail, NSString *ident) {
 static void InsertRow(PSListController *list) {
     NSArray *specs = [list specifiers];
     WatchRowValue(list);
-    for (NSUInteger i = 0; i < specs.count; i++) if ([[specs[i] identifier] isEqualToString:kRowID]) return;   // already there
-    BOOL windows = NO, desktop = NO;   // (after Windows & Multitasking when it is there, else Desktop, else Status Bar: the order is Status Bar, Desktop,
-    for (NSUInteger i = 0; i < specs.count; i++) {   //  Windows & Multitasking, Dock)
-        if ([[specs[i] identifier] isEqualToString:kWindowsRowID]) windows = YES;
-        if ([[specs[i] identifier] isEqualToString:kDesktopRowID]) desktop = YES;
-    }
-    NSInteger anchor = AnchorIndex(specs, nil, windows ? kWindowsRowID : desktop ? kDesktopRowID : kStatusBarRowID);
+    // (the rows' identifiers read once, never the Apple Account row Settings is filling in on its own queue right after a reload -- reading every
+    //  row then crashed Settings, 17.5.1: common/MainListRows.h)
+    NSArray *ids = MSBDMLIdentifiers(list, specs);
+    if (MSBDMLIndexOf(ids, kRowID, NO) != NSNotFound) return;   // already there
+    // (after Windows & Multitasking when it is there, else Desktop, else Status Bar: the order is Status Bar, Desktop, Windows & Multitasking, Dock)
+    BOOL windows = MSBDMLIndexOf(ids, kWindowsRowID, NO) != NSNotFound, desktop = MSBDMLIndexOf(ids, kDesktopRowID, NO) != NSNotFound;
+    NSInteger anchor = MSBDMLAnchor(ids, nil, windows ? kWindowsRowID : desktop ? kDesktopRowID : kStatusBarRowID);
     BOOL newOS = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17;   // (15/16: exactly as before)
-    if (anchor == NSNotFound && newOS) anchor = TopIndex(specs);   // (only ever the main list: this runs from PSUIPrefsListController alone)
+    if (anchor == NSNotFound && newOS) anchor = MSBDMLTop(MSBDMLCellTypes(list, specs));   // (only ever the main list: this runs from PSUIPrefsListController alone)
     Class detail = PrefsBundle() ? NSClassFromString(@"DMRootListController") : Nil;   // the class only exists once the bundle is loaded
     if (anchor == NSNotFound || !PrefsBundle() || !detail) return;         // not the main list, or the page is missing
 
@@ -145,9 +124,12 @@ static void InsertRow(PSListController *list) {
     [list insertSpecifier:row atIndex:anchor animated:NO];
     if (newOS) {   // (the same page listed with the other tweaks by the postinst on 17+: hidden while our own row is there -- found by its id, or by our
         // bundle as it was listed before it had one; never another tweak's entry of the same name)
-        for (PSSpecifier *sp in [[list specifiers] copy]) {
-            if ([[sp identifier] isEqualToString:kRowID]) continue;
-            BOOL ours = [[sp identifier] isEqualToString:@"MSBD_PL_DockMagnificationPrefs"];
+        NSArray *now = [[list specifiers] copy], *nowIDs = MSBDMLIdentifiers(list, now);
+        for (NSUInteger i = 0; i < now.count; i++) {
+            PSSpecifier *sp = now[i];
+            NSString *ident = [nowIDs[i] isKindOfClass:[NSString class]] ? nowIDs[i] : nil;
+            if ([ident isEqualToString:kRowID] || !MSBDMLReadable(list, sp)) continue;   // (ours; or the row Settings is filling in: never read)
+            BOOL ours = [ident isEqualToString:@"MSBD_PL_DockMagnificationPrefs"];
             if (!ours && [[sp name] isEqualToString:@"Dock"]) { id b = [sp propertyForKey:@"bundle"] ?: [sp propertyForKey:@"lazy-bundle"]; ours = [b isKindOfClass:[NSString class]] && [(NSString *)b containsString:@"DockMagnificationPrefs"]; }
             if (ours) [list removeSpecifier:sp animated:NO];
         }
@@ -165,15 +147,12 @@ static NSArray *DMHomeScreenHidden(UIViewController *list) {
 }
 static void DMRenameHomeScreenRow(PSListController *list) {
     if (!MSBDMacDockActive()) return;
-    for (PSSpecifier *sp in [list specifiers]) {
-        if (![[sp identifier] isEqualToString:@"HOME_SCREEN_DOCK"]) continue;
-        NSString *name = [sp valueForKey:@"name"];
-        if (![name isKindOfClass:[NSString class]] || ![name hasSuffix:@" & Dock"]) return;   // (iPadOS 16's name has no Dock in it)
-        [sp setValue:[name substringToIndex:name.length - 7] forKey:@"name"];
-        SEL r = NSSelectorFromString(@"reloadSpecifier:");
-        if ([list respondsToSelector:r]) ((void (*)(id, SEL, id))objc_msgSend)(list, r, sp);
-        return;
-    }
+    PSSpecifier *sp = MSBDMLRowFor(list, [list specifiers], @"HOME_SCREEN_DOCK", NO);   // (the main list read once, never the row Settings fills in: MainListRows.h)
+    NSString *name = sp ? [sp valueForKey:@"name"] : nil;
+    if (![name isKindOfClass:[NSString class]] || ![name hasSuffix:@" & Dock"]) return;   // (iPadOS 16's name has no Dock in it)
+    [sp setValue:[name substringToIndex:name.length - 7] forKey:@"name"];
+    SEL r = NSSelectorFromString(@"reloadSpecifier:");
+    if ([list respondsToSelector:r]) ((void (*)(id, SEL, id))objc_msgSend)(list, r, sp);
 }
 %hook PSListController
 - (void)viewWillAppear:(BOOL)animated {

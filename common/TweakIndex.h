@@ -1,5 +1,6 @@
-// TweakIndex.h -- the index of tweak settings behind the Settings search (macsettings/TweakSearch.x, "Include Tweak Settings") and Spotlight
-// ("Tweak Settings", donated into Settings' own CoreSpotlight index). One indexer for both (MacStatusBar&Dock 1.4.3).
+// TweakIndex.h -- the index of tweak settings behind the Settings search (macsettings/TweakSearch.x: our own pages and rows always, other tweaks'
+// with "Include Tweak Settings") and Spotlight ("Tweak Settings", donated into Settings' own CoreSpotlight index). One indexer for both
+// (MacStatusBar&Dock 1.4.3).
 //
 // What it reads, and only reads: PreferenceLoader's entry plists (the rows tweaks add to Settings) and the plists and .strings files inside the
 // preference bundles they name, exactly the files PreferenceLoader and Settings read to show those pages. No bundle is ever loaded and no tweak
@@ -21,6 +22,7 @@
 #define kMTIPrefix @"msbd-tweaksetting:"                               // every identifier of ours starts with this (Settings search, Spotlight)
 #define kMTIDomain @"com.besiktasliseba.msbd.tweaksettings"           // the CoreSpotlight domain of the donated items
 #define kMTIFormat 1                                                    // (part of the content hash: a change of the index's format re-donates)
+#define kMTILineRowID @"MSBD_LINE"                                     // a page's line switch (common/LineSwitch.h): the rows after it go with it
 
 @interface MTIEntry : NSObject
 @property (nonatomic, copy) NSString *uid;            // kMTIPrefix + "root=<page>[&path=<page>[/<page>]][#<row>][&msbdn=<k>]"
@@ -35,6 +37,12 @@
 @property (nonatomic, copy) NSString *iconPath;       // the page's icon file, or nil
 @property (nonatomic, copy) NSString *paneTitle;      // the page's title
 @property (nonatomic, copy) NSString *tokens;         // " token token ... " folded (case, accents, width), for the matching
+@property (nonatomic) BOOL ours;                       // a page or row of MacStatusBar&Dock's own (own, extras, ownRows), not another tweak's (1.7.9)
+// (what a page leaves a row out by -- common/OwnPageRows.h, 1.7.9: the Settings search lists what the page shows now)
+@property (nonatomic, copy) NSString *groupID;        // its group's identifier in the plist (nil: none)
+@property (nonatomic) BOOL stockHides;                 // that group is marked stockHides (gone with the stock status bar)
+@property (nonatomic, copy) NSString *key;            // its preference key (nil: none)
+@property (nonatomic) BOOL belowLine;                  // it comes after its page's line switch (kMTILineRowID: MacStatusBar's, MacDock's)
 @end
 @implementation MTIEntry
 @end
@@ -44,7 +52,9 @@
 // supportDir: Application Support (some tweaks keep their strings in a bundle there, e.g. Choicy); own: our pages [{id, title, bundle, plist,
 // icon}]; extras: rows of Settings' main list that are ours [{id, title, icon}] (switches: opened as Apple's main-list rows, "ROOT#<id>");
 // ownRows: rows of ours that are made in code on a page (Apple's own or ours), so no plist names them [{pane, paneTitle, row, title, group}]:
-// opened as that page, at the row (1.7.8: the Home Screen page's Swipe Past Last Page Opens App Library);
+// opened as that page, at the row (1.7.8: the Home Screen page's Swipe Past Last Page Opens App Library); a row on a page inside the pane also names
+// that page [page, pageTitle] and may name the link a result opens instead of "#row", the path below the pane [link]: 1.7.9's Sleep Guard on Apple's
+// Battery Health page, opened at its group ("BATTERY_HEALTH/MSBD_BATTERY_USE_GROUP", the battery menu's own link: macsettings/BatteryHealthLink.x);
 // languages: the user's languages, in order ([NSLocale preferredLanguages]); cfVersion: kCFCoreFoundationVersionNumber (pl_filter).
 @interface MTIConfig : NSObject
 @property (nonatomic, copy) NSArray<NSString *> *plDirs, *bundleDirs, *languages;
@@ -200,6 +210,8 @@ static BOOL MTIFilterPasses(id f, double cf) {
 @property (nonatomic, strong) NSMutableArray<MTIEntry *> *out;
 @property (nonatomic, strong) NSMutableSet<NSString *> *panes, *uids;
 @property (nonatomic, copy) NSString *arrow;   // " → ", or " ← " for a right-to-left language (as Apple's breadcrumbs)
+@property (nonatomic) BOOL ours;               // (the pages being added now are our own: their entries say so)
+@property (nonatomic) BOOL belowLine, lineNext; // (the page being walked: past its line switch / the line switch was the row just seen)
 @end
 
 static NSString *MTISupportName(NSString *bundleName) {   // "ChoicyPrefs" -> "Choicy"
@@ -306,6 +318,7 @@ static NSString *MTICleanTitle(NSString *t) {
     e.category = [kMTIPrefix stringByAppendingString:pane];
     e.uid = [self uidForPane:pane path:@[] rootRow:NO opensPage:YES];
     e.tokens = MTITokens(title, nil);
+    e.ours = self.ours;
     [self.out addObject:e];
 }
 // The rows of one page (plist items), and of the pages its link rows open inside the same bundle (two levels at most).
@@ -319,16 +332,23 @@ static NSString *MTICleanTitle(NSString *t) {
         noise = [NSRegularExpression regularExpressionWithPattern:@"header|banner|logo|twitter|credit|spacer|footer|donat|avatar|social" options:NSRegularExpressionCaseInsensitive error:nil];
     });
     BOOL (^hits)(NSRegularExpression *, NSString *) = ^BOOL(NSRegularExpression *re, NSString *s) { return s.length && [re numberOfMatchesInString:s options:0 range:NSMakeRange(0, s.length)] > 0; };
-    NSString *group = nil;
+    NSString *group = nil, *groupID = nil;
+    BOOL groupStock = NO;
     NSUInteger max = self.cfg.maxPerPane ?: 400;
     for (id raw in items) {
         if (*count >= max || [self full]) return;
         if (![raw isKindOfClass:[NSDictionary class]]) continue;
         NSDictionary *it = raw;
+        if (self.lineNext) { self.belowLine = YES; self.lineNext = NO; }   // (the rows after the page's line switch)
+        if (depth == 2 && [MTIStr(it[@"id"]) isEqualToString:kMTILineRowID]) self.lineNext = YES;
         if (!MTIFilterPasses(it[@"pl_filter"], self.cfg.cfVersion)) continue;
         NSString *cell = MTIStr(it[@"cell"]) ?: @"";
         NSString *rawLabel = MTIStr(it[@"label"]);
-        if ([cell isEqualToString:@"PSGroupCell"]) { group = [self.strings localize:rawLabel bundle:bundle table:table supportName:support]; continue; }
+        if ([cell isEqualToString:@"PSGroupCell"]) {
+            group = [self.strings localize:rawLabel bundle:bundle table:table supportName:support];
+            groupID = MTIStr(it[@"id"]); groupStock = [it[@"stockHides"] isKindOfClass:[NSNumber class]] && [it[@"stockHides"] boolValue];
+            continue;
+        }
         if (it[@"url"] || it[@"user"] || hits(noise, MTIStr(it[@"cellClass"]))) continue;                      // (links out, credits, headers: not settings)
         if ([@[@"PSStaticTextCell", @"PSSpinnerCell", @"PSTitleValueCell", @"PSTitleCell", @"PSGiantIconCell", @"PSGiantCell"] containsObject:cell]) continue;
         if ([cell isEqualToString:@"PSButtonCell"] && (hits(social, MTIStr(it[@"action"])) || hits(social, rawLabel))) continue;
@@ -354,6 +374,8 @@ static NSString *MTICleanTitle(NSString *t) {
         e.category = [kMTIPrefix stringByAppendingString:pane];
         e.uid = [self uidForPane:pane path:e.path rootRow:NO opensPage:link];
         e.tokens = MTITokens(title, kw);
+        e.ours = self.ours;
+        e.groupID = groupID; e.stockHides = groupStock; e.key = MTIStr(it[@"key"]); e.belowLine = self.belowLine;
         [self.out addObject:e];
         (*count)++;
         // the page a link row opens, when it is one of this bundle's plists (found as MTISubPlist says): its rows too
@@ -374,6 +396,7 @@ static NSString *MTICleanTitle(NSString *t) {
         support:(NSString *)support pages:(NSDictionary *)pages mainName:(NSString *)mainName {
     if (!pane.length || !title.length || [self.panes containsObject:pane] || [self full]) return;   // (the same identifier twice: Settings finds the first)
     [self.panes addObject:pane];
+    self.belowLine = NO; self.lineNext = NO;
     [self addPane:pane title:title icon:icon];
     if (![items isKindOfClass:[NSArray class]]) return;
     NSMutableArray *free = [NSMutableArray arrayWithArray:pages.allKeys ?: @[]];
@@ -440,6 +463,7 @@ static NSArray<MTIEntry *> *MTIBuild(MTIConfig *cfg) {
     BOOL rtl = lang && [NSLocale characterDirectionForLanguage:lang] == NSLocaleLanguageDirectionRightToLeft;
     b.arrow = rtl ? @" ← " : @" → ";
     @try {
+        b.ours = YES;   // (our own pages and rows: the Settings search lists them whatever Include Tweak Settings says -- MTIListed)
         for (NSDictionary *o in cfg.own) {   // our pages first (their rows are Settings rows Apple's index lacks)
             NSString *bundle = MTIStr(o[@"bundle"]), *plistName = MTIStr(o[@"plist"]) ?: @"Root";
             if (!MTIIsDir(bundle)) continue;
@@ -457,19 +481,24 @@ static NSArray<MTIEntry *> *MTIBuild(MTIConfig *cfg) {
             e.category = [kMTIPrefix stringByAppendingString:rid];
             e.uid = [b uidForPane:@"ROOT" path:@[rid] rootRow:YES opensPage:NO];
             e.tokens = MTITokens(title, nil);
+            e.ours = YES;
             [b.out addObject:e];
         }
         for (NSDictionary *x in cfg.ownRows) {   // our rows made in code on a page (no plist names them): the page by its identifier, at the row
             NSString *pane = MTIStr(x[@"pane"]), *rid = MTIStr(x[@"row"]), *title = MTIStr(x[@"title"]), *paneTitle = MTIStr(x[@"paneTitle"]) ?: pane, *group = MTIStr(x[@"group"]);
+            NSString *page = MTIStr(x[@"page"]), *pageTitle = MTIStr(x[@"pageTitle"]) ?: page, *link = page ? MTIStr(x[@"link"]) : nil;
             if (!pane || !rid || !title) continue;
             MTIEntry *e = [MTIEntry new];
-            e.paneID = pane; e.paneTitle = paneTitle; e.title = title; e.depth = 2; e.path = @[rid]; e.crumb = paneTitle;
+            e.paneID = pane; e.paneTitle = paneTitle; e.title = title; e.depth = page ? 3 : 2; e.path = page ? @[page, rid] : @[rid];
+            e.crumb = page ? [@[paneTitle, pageTitle] componentsJoinedByString:b.arrow] : paneTitle;
             e.keywords = group && ![group isEqualToString:title] ? @[group] : @[]; e.iconPath = MTIStr(x[@"icon"]);
             e.category = [kMTIPrefix stringByAppendingString:pane];
-            e.uid = [b uidForPane:pane path:@[rid] rootRow:NO opensPage:NO];
+            e.uid = link ? [b uidForPane:pane path:[link componentsSeparatedByString:@"/"] rootRow:NO opensPage:YES] : [b uidForPane:pane path:e.path rootRow:NO opensPage:NO];
             e.tokens = MTITokens(title, e.keywords);
+            e.ours = YES;
             [b.out addObject:e];
         }
+        b.ours = NO;   // (PreferenceLoader's entries: other tweaks' pages)
         NSFileManager *fm = [NSFileManager defaultManager];
         for (NSString *dir in cfg.plDirs) {
             NSArray *subs = [[fm subpathsOfDirectoryAtPath:dir error:nil] sortedArrayUsingSelector:@selector(compare:)];
@@ -512,6 +541,23 @@ static NSArray<MTIEntry *> *MTIWithout(NSArray<MTIEntry *> *rows, NSString *pane
     NSMutableArray<MTIEntry *> *out = [NSMutableArray arrayWithCapacity:rows.count];
     for (MTIEntry *e in rows) if (!([e.paneID isEqualToString:pane] && [e.path.lastObject isEqualToString:rowID])) [out addObject:e];
     return out;
+}
+// The rows the Settings search lists (macsettings/TweakSearch.x, 1.7.9, KT): our own pages and rows while `own` (always, unless the search's loop
+// guard left them out), other tweaks' pages and rows while `others` ("Include Tweak Settings", with "Search Field in Settings").
+static NSArray<MTIEntry *> *MTIListed(NSArray<MTIEntry *> *rows, BOOL own, BOOL others) {
+    if (own && others) return rows;
+    NSMutableArray<MTIEntry *> *out = [NSMutableArray array];
+    for (MTIEntry *e in rows) if (e.ours ? own : others) [out addObject:e];
+    return out;
+}
+// The Settings search's loop guard (macsettings/TweakSearch.x): the mark a build of the index leaves while it runs, read at the next start --
+// 1 a build of our own pages and rows alone, 2 one that read other tweaks' pages too, 0 none. Before 1.7.9 the mark was true (every build read
+// the tweaks' pages then); a number it does not know counts as 2.
+static int MTIGuardKind(id mark) {
+    if (![mark isKindOfClass:[NSNumber class]]) return 0;
+    if (CFGetTypeID((__bridge CFTypeRef)mark) == CFBooleanGetTypeID()) return [mark boolValue] ? 2 : 0;
+    int kind = [mark intValue];
+    return kind == 1 ? 1 : kind ? 2 : 0;
 }
 
 // ---- identifiers ------------------------------------------------------------------------------------------------------------------------------

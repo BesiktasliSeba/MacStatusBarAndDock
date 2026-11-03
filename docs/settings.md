@@ -39,12 +39,13 @@ On iPadOS 18, Settings has no room for tweak rows in its sidebar, so Status Bar,
 | Updates Tab in App Store | The Updates tab in place of Arcade. | On |
 | Hide Large Titles | Compact titles in Apple's own apps, like Mac apps. Applies the next time an app opens. | On |
 | Search Field in Settings | A search field at the top of the Settings sidebar, with Apple's own results. iPadOS 15 to 17. | On |
-| Include Tweak Settings | The search field also finds your tweaks' settings. iPadOS 15 to 17. | Off |
+| Include Tweak Settings | The search also finds other tweaks' settings. MacStatusBar&Dock's own settings are found either way, as long as their page shows them. iPadOS 15 to 17. | Off |
 | Keyboard Button in Status Bar (Experimental) | iPadOS 15 with a hardware keyboard: the floating keyboard and dictation button moves into the menu bar. | Off |
 | Esc Ends Typing in Windows | Esc puts away the text cursor in a window. Terminal apps keep their Esc. | On |
 | Mix Audio Between Apps | Apps can play at the same time, each with its own volume in the Audio menu. | On |
 | Show Mute Icon | A mute icon in the menu bar while the iPad is muted. | On |
 | Wi-Fi Menu | The Wi-Fi icon opens a Wi-Fi menu. | On |
+| Battery Menu | The battery in the menu bar opens a battery menu, as on a Mac, with its level and power source, a Low Power Mode switch, Sleep Guard and Battery Settings. A Control Center icon next to the clock opens Control Center, and the swipe down from the top right still does. Off: a click on the battery opens Control Center, and there's no icon. | On, also after an update |
 | Hide Status Bar on Lock Screen | No status bar on the Lock Screen, and no Control Center line at its top right. | Off |
 | Skip Lock Screen After Respring | Goes straight to the Home Screen after a respring. Works only without a passcode. | Off |
 
@@ -57,6 +58,8 @@ The desktop's settings, on their own page between Status Bar and Windows & Multi
 | Show Desktop Icons | Files and folders from On My iPad > Desktop on the first Home Screen page. They are separate from your app icons, which stay as they are. | On |
 | Hide Desktop Icon Names | Hides the names under every desktop icon. VoiceOver still reads them. An icon's own menu has Hide Name for just that icon. Greyed out while Show Desktop Icons is off. | Off |
 | Icon Size | The size of the desktop icons, from 40 to 96 points. The icons change as you drag the slider, their names and spacing follow, and every icon keeps its place. Home Screen app icons stay as they are. | The Home Screen's icon size |
+| App Icon Corner Radius | How round the corners of the app icons on the desktop are, from square to a circle. The icons change as you drag the slider. Folders, files and Home Screen icons keep their look. Until you move it, desktop app icons have the same shape as your Home Screen icons, icon theme included. | The Home Screen icons' shape |
+| Match Home Screen Icons | Gives desktop app icons your Home Screen icons' shape again, and they follow it from then on. | |
 
 ## Settings > Windows & Multitasking
 
@@ -69,12 +72,14 @@ The window settings, on their own page between Desktop and Dock. On iPadOS 15 an
 | Windows Behind Full-Screen Apps | A full-screen app comes in front of your windows, and Window > Bring All to Front brings them back. Off: windows stay in front. | On |
 | Resize Handles (Stage Manager engine only) | Mac handles, or Stage Manager's own. | Mac |
 | Tint Resize Handles | Resize handles take a soft version of each app's color. | Off |
+| Home Minimizes Windows | Swiping up from the bottom or pressing the Home button minimizes the windows of the desktop you're on, so the Home Screen shows. Opening an app brings its window back. Keyboard shortcuts for Home, such as Command-H, leave the windows as they are. Off: the windows stay when you go Home. | On, also after an update |
 | Resize Apps to Fit Windows (MilkyWay4 only) | Apps lay themselves out for the window. Off: the full-screen layout, scaled down. | On |
 | Turn Off Traffic Lights | Hides the window buttons in the menu bar for full-screen apps. | Off |
 | Hide Multitasking Dots | Hides the three dots at the top of apps while windowing runs. | On |
 | Mac Switcher | Desktops and Mission Control in place of the App Switcher. Turning it off keeps your desktops for when you turn it on again. | Off |
 | Go to the App's Desktop | With the Mac Switcher on, opening an app whose window is on another desktop takes you to that desktop. Off: the window comes to the desktop you're on. | Off |
 | Prewarm Apps | iPadOS starts some apps in the background before you open them, so they open faster. Off: no app is started before you open it, which keeps that memory free on an iPad with little RAM. Shown only where the tweak can control prewarming on that iPad. | On, Off on iPads with 2 GB of memory |
+| Keep Tailspin Off | iPadOS turns on tailspin, a performance trace for Apple's diagnostics, for a few days at a time. It holds tens of MB of memory and samples the whole system many times a second. On: iPadOS doesn't turn it on. Shown only where the tweak can control it on that iPad. | Off, On on iPads with 2 GB of memory |
 
 ## Settings > Dock
 
@@ -152,7 +157,7 @@ For keyboards without a function row, like the original Magic Keyboard for iPad.
 
 ## Settings > Battery > Battery Health
 
-On iPad, MacStatusBar&Dock opens Apple's Battery Health page (Battery Health & Charging on iPadOS 17 and 18), with the battery's Maximum Capacity and a Cycle Count row. Rows for iPhone-only features, such as Peak Performance Capability, are left out. While another battery health tweak is installed, the page is that tweak's, without the group below.
+On iPad, MacStatusBar&Dock opens Apple's Battery Health page (Battery Health & Charging on iPadOS 16 to 18), with the battery's Maximum Capacity and a Cycle Count row. Rows for iPhone-only features, such as Peak Performance Capability, are left out. It's the tweak's own page, with the group below, also while another battery health tweak is installed. The battery menu's Sleep Guard row opens it.
 
 | Setting | What it does | New install |
 |---|---|---|

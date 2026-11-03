@@ -1,8 +1,9 @@
 // TweakSearch.x -- tweak settings in the Settings search and in Spotlight (MacStatusBar&Dock 1.4.3). Settings.
-//  - Settings search ("Include Tweak Settings", while "Search Field in Settings" is on): the pages tweaks add to Settings (PreferenceLoader), their
-//    rows, our own pages' rows and our own rows of the main list are listed under Apple's results, in Apple's results list with Apple's look:
-//    one section per page with its icon, each row with Apple's breadcrumb. Apple's results stay first and untouched. In the sidebar's field and
-//    in Apple's own search bar (a narrow window) alike.
+//  - Settings search: our own pages' rows, our own rows of the main list and our rows on Apple's pages always (1.7.9, KT: they are Settings rows
+//    like Apple's), and with "Include Tweak Settings" (while "Search Field in Settings" is on) the pages other tweaks add to Settings
+//    (PreferenceLoader) and their rows, are listed under Apple's results, in Apple's results list with Apple's look: one section per page with
+//    its icon, each row with Apple's breadcrumb. Apple's results stay first and untouched. In the sidebar's field and in Apple's own search bar (a
+//    narrow window) alike.
 //  - Spotlight ("Tweak Settings" in the Spotlight group of the Status Bar page): the same rows donated into Settings' own CoreSpotlight index
 //    (common/TweakSpotlight.h; spot-143's Spotlight hook lists them in a section after Apple's, else Spotlight ranks them with the lowest hint).
 //    Off: everything donated is deleted.
@@ -31,6 +32,7 @@
 #import <stdatomic.h>
 #import <sys/stat.h>
 #import <fcntl.h>
+#import <dlfcn.h>
 #import "../common/General18Group.h"   // (MSBDG18Root: iPadOS 18's SwiftUI root)
 #import "../common/SettingsRoot.h"     // (MSBDSettingsLinkForRoot: our pages' links there)
 #import <unistd.h>
@@ -61,6 +63,10 @@ static void MTSLog(NSString *line) {   // (debug builds only: release builds wri
 @end
 BOOL MSPointerDeviceAttached(void);   // PointerSettings.x
 BOOL MSKeyboardAttached(void);        // KeyboardSettings.x
+int MSBHPageVerdict(void);            // BatteryHealth.x: 1 no Battery Health on this iPad (Apple's page left as it is)
+int MSBUGroupVerdict(void);           // BatteryUse.x: 1 our Battery Use group is not put into the page
+// Our Battery Use group (Sleep Guard) is not on Battery Health here, as our own battery parts decided once Apple's pages loaded (common/OwnPageState.h).
+static BOOL MTSBatteryUseOff(void) { return MSBHPageVerdict() == 1 || MSBUGroupVerdict() == 1; }
 
 static const NSUInteger kMTSMaxResults = 100;   // (rows of ours in one Settings search, at most)
 
@@ -70,7 +76,8 @@ static BOOL gMTSResultsOK, gMTSOpeningOK;
 static NSString *gMTSWhyResults, *gMTSWhyOpening;
 
 // ---- state (read from the query's queue too: atomics, and the index behind a lock) -----------------------------------------------------------
-static _Atomic bool gMTSSearchOn;     // "Search Field in Settings" and "Include Tweak Settings"
+static _Atomic bool gMTSTweaksOn;     // other tweaks' pages in the Settings search: "Search Field in Settings" and "Include Tweak Settings"
+static BOOL gMTSOwnOn;                // our own pages and rows in it: always, unless the loop guard left them out (set once, at load)
 static _Atomic bool gMTSSpotOn;       // "Tweak Settings" (Spotlight)
 static os_unfair_lock gMTSLock = OS_UNFAIR_LOCK_INIT;
 static NSArray<MTIEntry *> *gMTSIndex;                         // (guarded) the last index built
@@ -86,8 +93,9 @@ static NSCache<NSString *, UIImage *> *gMTSIcons;
 static NSArray<MTIEntry *> *MTSIndex(void) { os_unfair_lock_lock(&gMTSLock); NSArray *a = gMTSIndex; os_unfair_lock_unlock(&gMTSLock); return a; }
 static NSString *MTSQueryText(void) { os_unfair_lock_lock(&gMTSLock); NSString *q = gMTSQuery; os_unfair_lock_unlock(&gMTSLock); return q; }
 static BOOL MTSIsOurs(id s) { return [s isKindOfClass:[NSString class]] && [(NSString *)s hasPrefix:kMTIPrefix]; }
+static BOOL MTSListsAny(void) { return gMTSOwnOn || atomic_load(&gMTSTweaksOn); }   // (the Settings search lists rows of the index)
 static void MTSReadSwitches(void) {
-    atomic_store(&gMTSSearchOn, MTSBool(CFSTR("sidebarSearch"), kMTSSettingsDomain, YES) && MTSBool(CFSTR("sidebarTweaks"), kMTSSettingsDomain, NO));
+    atomic_store(&gMTSTweaksOn, MTSBool(CFSTR("sidebarSearch"), kMTSSettingsDomain, YES) && MTSBool(CFSTR("sidebarTweaks"), kMTSSettingsDomain, NO));
     atomic_store(&gMTSSpotOn, MTSSpotlightSwitch());
 }
 
@@ -95,47 +103,74 @@ static void MTSReadSwitches(void) {
 // The index (and the donation) is built a moment after every Settings start. Should that ever crash Settings -- a tweak's malformed text once did
 // (1.4.3 external test H-1) -- it would crash at every start and the switches could not be reached. A mark kept while that work runs counts the
 // starts that ended during it; after two in a row, both switches that build the index (Include Tweak Settings and Spotlight's Tweak Settings) are
-// turned off, as the crash guard turns a part off for SpringBoard.
-static void MTSGuardMark(BOOL busy) {
-    CFPreferencesSetAppValue(CFSTR("tweakIndexBusy"), busy ? kCFBooleanTrue : NULL, kMTSSettingsDomain);
-    if (!busy) CFPreferencesSetAppValue(CFSTR("tweakIndexDeaths"), NULL, kMTSSettingsDomain);
+// turned off, as the crash guard turns a part off for SpringBoard. Since 1.7.9 our own pages and rows are indexed with both switches off too (the
+// Settings search always lists them), from our own files alone: the mark says which kind of build it was (TweakIndex.h MTIGuardKind), and two
+// starts in a row that ended in a build of our own rows alone leave them out of the Settings search for this build of the part (its file's stamp,
+// MTSPartStamp: an update or a reinstall tries again).
+static void MTSGuardMark(int kind) {   // (1 our own pages and rows alone, 2 other tweaks' pages too; 0 the build is done)
+    CFPreferencesSetAppValue(CFSTR("tweakIndexBusy"), kind ? (__bridge CFNumberRef)@(kind) : NULL, kMTSSettingsDomain);
+    if (!kind) { CFPreferencesSetAppValue(CFSTR("tweakIndexDeaths"), NULL, kMTSSettingsDomain); CFPreferencesSetAppValue(CFSTR("tweakIndexOwnDeaths"), NULL, kMTSSettingsDomain); }
     CFPreferencesAppSynchronize(kMTSSettingsDomain);
 }
+// This part's file as installed (its inode and time: an install puts a new file there).
+static NSString *MTSPartStamp(void) {
+    Dl_info di; struct stat st;
+    if (!dladdr((const void *)&MTSPartStamp, &di) || !di.dli_fname || stat(di.dli_fname, &st) != 0) return @"?";
+    return [NSString stringWithFormat:@"%llu-%ld", (unsigned long long)st.st_ino, (long)st.st_mtimespec.tv_sec];
+}
 static void MTSGuardAtStart(void) {   // (%ctor: did the last start end while it built the index?)
-    if (!MTSBool(CFSTR("tweakIndexBusy"), kMTSSettingsDomain, NO)) return;
+    CFPreferencesAppSynchronize(kMTSSettingsDomain);
+    CFPropertyListRef m = CFPreferencesCopyAppValue(CFSTR("tweakIndexBusy"), kMTSSettingsDomain);
+    int kind = MTIGuardKind((__bridge id)m);
+    if (m) CFRelease(m);
+    if (!kind) return;
+    CFStringRef counter = kind == 1 ? CFSTR("tweakIndexOwnDeaths") : CFSTR("tweakIndexDeaths");
     int deaths = 0;
-    CFPropertyListRef v = CFPreferencesCopyAppValue(CFSTR("tweakIndexDeaths"), kMTSSettingsDomain);
+    CFPropertyListRef v = CFPreferencesCopyAppValue(counter, kMTSSettingsDomain);
     if (v && CFGetTypeID(v) == CFNumberGetTypeID()) CFNumberGetValue((CFNumberRef)v, kCFNumberIntType, &deaths);
     if (v) CFRelease(v);
     deaths++;
     CFPreferencesSetAppValue(CFSTR("tweakIndexBusy"), NULL, kMTSSettingsDomain);
-    CFPreferencesSetAppValue(CFSTR("tweakIndexDeaths"), deaths >= 2 ? NULL : (__bridge CFNumberRef)@(deaths), kMTSSettingsDomain);
-    if (deaths >= 2) CFPreferencesSetAppValue(CFSTR("sidebarTweaks"), kCFBooleanFalse, kMTSSettingsDomain);
+    CFPreferencesSetAppValue(counter, deaths >= 2 ? NULL : (__bridge CFNumberRef)@(deaths), kMTSSettingsDomain);
+    if (deaths >= 2 && kind == 1) CFPreferencesSetAppValue(CFSTR("tweakIndexOwnOff"), (__bridge CFStringRef)MTSPartStamp(), kMTSSettingsDomain);
+    if (deaths >= 2 && kind == 2) CFPreferencesSetAppValue(CFSTR("sidebarTweaks"), kCFBooleanFalse, kMTSSettingsDomain);
     CFPreferencesAppSynchronize(kMTSSettingsDomain);
-    if (deaths < 2) { MTSLog(@"guard: the last start ended while it built the index (once)"); return; }
+    if (deaths < 2) { MTSLog(kind == 1 ? @"guard: the last start ended while it built the index of our own rows (once)" : @"guard: the last start ended while it built the index (once)"); return; }
+    if (kind == 1) { MTSLog(@"guard: two starts in a row ended while they built the index of our own rows: left out of the Settings search for this build"); return; }
     CFPreferencesSetValue(CFSTR("spotlightTweakSettings"), kCFBooleanFalse, kMTSBarDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     CFPreferencesSynchronize(kMTSBarDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     notify_post("com.besiktasliseba.macsettings/searchChanged");
     notify_post("com.besiktasliseba.macstatusbar/prefsChanged");
     MTSLog(@"guard: two starts in a row ended while they built the index: Include Tweak Settings and Spotlight's Tweak Settings switched off");
 }
+// Our own rows in the Settings search: where its hooks are in, unless the guard left them out for this build (a mark of an older build is removed).
+static BOOL MTSOwnListedAtStart(void) {
+    NSString *off = MTSStoredString(CFSTR("tweakIndexOwnOff"));
+    if (off && ![off isEqualToString:MTSPartStamp()]) { CFPreferencesSetAppValue(CFSTR("tweakIndexOwnOff"), NULL, kMTSSettingsDomain); CFPreferencesAppSynchronize(kMTSSettingsDomain); off = nil; }
+    if (off) MTSLog(@"guard: our own rows stay out of the Settings search with this build");
+    return gMTSResultsOK && !off;
+}
 
 // ---- building the index ---------------------------------------------------------------------------------------------------------------------
 static void MTSRequery(BOOL force);
-// The index (off the main thread) when a switch needs it; then the Spotlight donation brought up to date (also deleted when switched off).
-// The Settings search also finds Pointer and Keyboard (our pages while a trackpad / keyboard is attached); the donation never has them.
+// The index (off the main thread): our own pages and rows (the Settings search always lists them), and other tweaks' pages while a switch lists
+// them (Include Tweak Settings, Spotlight's Tweak Settings) -- only then are their files read; then the Spotlight donation brought up to date
+// (also deleted when switched off). The Settings search also finds Pointer and Keyboard (our pages while a trackpad / keyboard is attached); the
+// donation never has them.
 static void MTSRebuild(NSString *why) {
-    BOOL search = atomic_load(&gMTSSearchOn), spot = atomic_load(&gMTSSpotOn) && gMTSOpeningOK;
-    if (!search && !spot) { dispatch_async(gMTSQueue, ^{ MTSSyncSpotlight(nil, NO, why); }); return; }
+    BOOL tweaks = atomic_load(&gMTSTweaksOn), spot = atomic_load(&gMTSSpotOn) && gMTSOpeningOK;
+    if (!gMTSOwnOn && !tweaks && !spot) { dispatch_async(gMTSQueue, ^{ MTSSyncSpotlight(nil, NO, why); }); return; }
     MTIConfig *donated = MTSBaseConfig(), *cfg = MTSBaseConfig();
     NSMutableArray *x = [cfg.extras mutableCopy];
     if (MSPointerDeviceAttached()) [x addObject:@{@"id": @"MAC_POINTER", @"title": @"Pointer", @"page": @YES}];
     if (MSKeyboardAttached()) [x addObject:@{@"id": @"MAC_KEYBOARD", @"title": @"Keyboard", @"page": @YES}];
     BOOL same = x.count == cfg.extras.count;
     cfg.extras = x;
+    BOOL others = tweaks || spot;
+    if (!others) cfg.plDirs = @[];   // (our own pages and rows alone: no other tweak's file is read for them)
     dispatch_async(gMTSQueue, ^{
         @autoreleasepool {
-            MTSGuardMark(YES);
+            MTSGuardMark(others ? 2 : 1);
             CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
             NSArray<MTIEntry *> *all = MTIBuild(cfg);
             NSMutableDictionary *panes = [NSMutableDictionary dictionary];
@@ -145,14 +180,15 @@ static void MTSRebuild(NSString *why) {
             dispatch_async(dispatch_get_main_queue(), ^{ MTSRequery(NO); });
             if (spot) DM_FEATURE_MARK("spotlight-tweak-settings");
             MTSSyncSpotlight(spot ? MTSShownRows(same ? all : MTIBuild(donated)) : nil, spot, why);   // (not the rows their page leaves out now)
-            MTSGuardMark(NO);
+            MTSGuardMark(0);
         }
     });
 }
 
 // ---- the Settings search ----------------------------------------------------------------------------------------------------------------------
 // Apple's items as they came, without any of ours that the Spotlight donation put into Settings' index (those are listed by the lines below
-// instead, only with the switch on, after Apple's), plus ours that match the text typed. On the query's queue, under gMTSDeliverLock.
+// instead, after Apple's: our own always, other tweaks' with the switch on), plus ours that match the text typed. On the query's queue, under
+// gMTSDeliverLock.
 static NSArray *MTSMerge(id controller, NSArray *items) {
     id delegate = [controller respondsToSelector:@selector(delegate)] ? ((id (*)(id, SEL))objc_msgSend)(controller, @selector(delegate)) : nil;
     if (![delegate isKindOfClass:gMTSList] || ![items isKindOfClass:[NSArray class]]) return items;
@@ -165,8 +201,8 @@ static NSArray *MTSMerge(id controller, NSArray *items) {
     }
     NSUInteger added = 0;
     NSString *q = MTSQueryText();
-    if (atomic_load(&gMTSSearchOn) && q.length) {   // (not the rows their page leaves out now -- Prewarm Apps where the prewarm block is not armed: MTSShownRows)
-        for (MTIEntry *e in MTSShownRows(MTIMatch(MTSIndex(), q, 0))) { if (added >= kMTSMaxResults) break; [out addObject:MTSItem(e, NO, nil)]; added++; }
+    if (MTSListsAny() && q.length) {   // (our own rows, other tweaks' with Include Tweak Settings: MTIListed; not the rows their page leaves out now -- Prewarm Apps where the prewarm block is not armed: MTSShownRows)
+        for (MTIEntry *e in MTSShownRows(MTIListed(MTIMatch(MTSIndex(), q, 0), gMTSOwnOn, atomic_load(&gMTSTweaksOn)))) { if (added >= kMTSMaxResults) break; [out addObject:MTSItem(e, NO, nil)]; added++; }
     }
     atomic_store(&gMTSDelivered, atomic_load(&gMTSGeneration));
     if (added || dropped) MTSLog([NSString stringWithFormat:@"results: Apple's %lu, ours %lu (dropped %lu donated)", (unsigned long)(out.count - added), (unsigned long)added, (unsigned long)dropped]);
@@ -179,10 +215,10 @@ static NSArray *MTSMerge(id controller, NSArray *items) {
 static void MTSCompleted(id controller) {
     uint64_t gen = atomic_load(&gMTSGeneration);
     BOOL forced = atomic_load(&gMTSForceGen) == gen;
-    if ((!atomic_load(&gMTSSearchOn) && !forced) || atomic_load(&gMTSDelivered) == gen || !MTSQueryText().length) return;
+    if ((!MTSListsAny() && !forced) || atomic_load(&gMTSDelivered) == gen || !MTSQueryText().length) return;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         pthread_mutex_lock(&gMTSDeliverLock);
-        if (atomic_load(&gMTSGeneration) == gen && atomic_load(&gMTSDelivered) != gen && (atomic_load(&gMTSSearchOn) || atomic_load(&gMTSForceGen) == gen))
+        if (atomic_load(&gMTSGeneration) == gen && atomic_load(&gMTSDelivered) != gen && (MTSListsAny() || atomic_load(&gMTSForceGen) == gen))
             ((void (*)(id, SEL, id))objc_msgSend)(controller, @selector(searchQueryFoundItems:), @[]);
         pthread_mutex_unlock(&gMTSDeliverLock);
     });
@@ -191,7 +227,7 @@ static void MTSCompleted(id controller) {
 // it is empty, so rows of ours shown before the switch went off go away).
 static void MTSRequery(BOOL force) {
     UIViewController *list = gMTSListSeen;
-    if (!list || !gMTSResultsOK || (!force && !atomic_load(&gMTSSearchOn))) return;
+    if (!list || !gMTSResultsOK || (!force && !MTSListsAny())) return;
     id sc = ((id (*)(id, SEL))objc_msgSend)(list, @selector(spotlightSearchController));
     UISearchBar *bar = [sc isKindOfClass:[UISearchController class]] ? ((UISearchController *)sc).searchBar : nil;
     if (!bar.text.length) return;
@@ -221,8 +257,9 @@ static UIImage *MTSIconForCategory(NSString *category) {   // (main thread: the 
 // but only in the one-argument -[PreferencesAppController processURL:], which a search result never passes through (Apple's results and
 // Spotlight call -processURL:animated:fromSearch:), and its rewrite does not expect a path already there (it made "path=Lynx&path=LOCKSCREEN...").
 // So its own rewrite is asked about the page alone, and our pages and row are joined after it: "prefs:root=Tweaks&path=Lynx/LOCKSCREEN#..."
-// (15.6.1 M1, 9 Oct). Without Shuffle, or for a page it did not move: the URL as it was.
-static NSString *MTSShuffleRoute(NSString *prefs) {
+// (15.6.1 M1, 9 Oct). Without Shuffle, or for a page it did not move: the URL as it was. (Also asked by BatteryHealthLink.x for the battery
+// menu's links, which Shuffle's rewrite misroutes: one function of this library, not exported.)
+__attribute__((visibility("hidden"))) NSString *MTSShuffleRoute(NSString *prefs) {
     SEL shuffle = NSSelectorFromString(@"_shuffle_preprocessURL:");
     id app = [UIApplication sharedApplication];
     if (![prefs hasPrefix:@"prefs:root="] || ![app respondsToSelector:shuffle]) return prefs;
@@ -292,13 +329,13 @@ BOOL MTSTestCommand(NSString *cmd) {
     NSString *c = [[cmd substringFromIndex:6] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
     if ([c isEqualToString:@"state"]) {
         NSArray *idx = MTSIndex();
-        MTSLog([NSString stringWithFormat:@"state: results check %@, opening check %@, search %d, spotlight %d, index %@, donated %@ at %@, query %lu chars, gen %llu delivered %llu",
-            gMTSResultsOK ? @"ok" : gMTSWhyResults, gMTSOpeningOK ? @"ok" : gMTSWhyOpening, atomic_load(&gMTSSearchOn), atomic_load(&gMTSSpotOn), idx ? @(idx.count) : @"none",
+        MTSLog([NSString stringWithFormat:@"state: results check %@, opening check %@, own %d, tweaks %d, spotlight %d, index %@, donated %@ at %@, query %lu chars, gen %llu delivered %llu",
+            gMTSResultsOK ? @"ok" : gMTSWhyResults, gMTSOpeningOK ? @"ok" : gMTSWhyOpening, gMTSOwnOn, atomic_load(&gMTSTweaksOn), atomic_load(&gMTSSpotOn), idx ? @(idx.count) : @"none",
             MTSStoredString(CFSTR("tweakSpotlightHash")) ?: @"nothing", MTSStoredString(CFSTR("tweakSpotlightDate")) ?: @"-", (unsigned long)MTSQueryText().length, atomic_load(&gMTSGeneration), atomic_load(&gMTSDelivered)]);
     } else if ([c isEqualToString:@"rebuild"]) MTSRebuild(@"test");
     else if ([c hasPrefix:@"match "]) {   // the rows the Settings search would add for a text (titles only)
         NSMutableString *o = [NSMutableString string];
-        NSArray<MTIEntry *> *hits = MTSShownRows(MTIMatch(MTSIndex(), [c substringFromIndex:6], 0));
+        NSArray<MTIEntry *> *hits = MTSShownRows(MTIListed(MTIMatch(MTSIndex(), [c substringFromIndex:6], 0), gMTSOwnOn, atomic_load(&gMTSTweaksOn)));
         for (NSUInteger i = 0; i < hits.count && i < 30; i++) [o appendFormat:@" | %@ <%@>", hits[i].title, hits[i].crumb ?: @""];
         MTSLog([@"match:" stringByAppendingString:o]);
     } else if ([c hasPrefix:@"panes"]) {   // every page in the index with its row count
@@ -335,7 +372,7 @@ BOOL MTSTestCommand(NSString *cmd) {
     %orig;
 }
 - (BOOL)searchResultsCollectionViewController:(id)controller shouldShowCategory:(NSString *)category {
-    if (MTSIsOurs(category)) return atomic_load(&gMTSSearchOn);
+    if (MTSIsOurs(category)) return MTSListsAny();   // (the rows handed over decide which: MTSMerge)
     return %orig;
 }
 - (long long)searchResultsCollectionViewController:(id)controller sortCategory1:(NSString *)a sortCategory2:(NSString *)b {
@@ -397,13 +434,15 @@ BOOL MTSTestCommand(NSString *cmd) {
     if (gMTSOpeningOK) %init(MTSOpeningHooks);
     MTSLog([NSString stringWithFormat:@"check: results %@, opening %@", gMTSResultsOK ? @"ok" : gMTSWhyResults, gMTSOpeningOK ? @"ok" : gMTSWhyOpening]);
     MTSGuardAtStart();
+    gMTSOwnOn = MTSOwnListedAtStart();
+    gMSBDOwnBatteryUseOff = MTSBatteryUseOff;   // (the search lists Sleep Guard only where its page has it: common/OwnPageRows.h)
     MTSReadSwitches();
     void (^changed)(int) = ^(int t) {
-        BOOL search = atomic_load(&gMTSSearchOn), spot = atomic_load(&gMTSSpotOn);
+        BOOL tweaks = atomic_load(&gMTSTweaksOn), spot = atomic_load(&gMTSSpotOn);
         MTSReadSwitches();
-        if (search == atomic_load(&gMTSSearchOn) && spot == atomic_load(&gMTSSpotOn)) return;
-        MTSLog([NSString stringWithFormat:@"switches: search %d, spotlight %d", atomic_load(&gMTSSearchOn), atomic_load(&gMTSSpotOn)]);
-        if (search != atomic_load(&gMTSSearchOn)) MTSRequery(YES);   // (rows of ours on screen go, or come, at once)
+        if (tweaks == atomic_load(&gMTSTweaksOn) && spot == atomic_load(&gMTSSpotOn)) return;
+        MTSLog([NSString stringWithFormat:@"switches: tweaks %d, spotlight %d", atomic_load(&gMTSTweaksOn), atomic_load(&gMTSSpotOn)]);
+        if (tweaks != atomic_load(&gMTSTweaksOn)) MTSRequery(YES);   // (other tweaks' rows on screen go, or come, at once)
         MTSRebuild(@"a switch changed");
     };
     int t1 = 0, t2 = 0;

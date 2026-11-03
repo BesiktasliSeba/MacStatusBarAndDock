@@ -12,8 +12,13 @@
 // Battery Charging switch (PowerUI runs its "unsupported" manager on iPad: +[PowerUISmartChargeUtilities isOBCSupported] is [self isiPhone]) --
 // on 17 / 18 its charging options group and Clean Energy Charging. Added: a Cycle Count row (the battery service's CycleCount) under Maximum
 // Capacity, on every version; and the header says what Apple's iPad page says there (MSBHSetHeaderText), not its iPhone text.
-// Another tweak that opens this page (PoomSmart's Battery Health Enabler, Brend0n's BatteryHealthEnabler) hooks the same methods: while one is
-// loaded in Settings, none of this is installed and the page is that tweak's.
+// With another tweak that opens this page all of this is installed too, and the page is ours (KT, 1.7.9: ours is the default even with another
+// battery health tweak). The two read on KT's iPads (plans/battery-charging.md, section 1) hook some of the same methods without a row of their
+// own on the page: PoomSmart's Battery Health Enabler 1.0.0 rebuilds the 15 / 16 row builder as Apple's (one group, one Battery Health row) and
+// Brend0n's BatteryHealthEnabler 0.0.1 answers isiPhone "yes" inside BatteryUsageUI, so either way the one builder makes the one row, whichever
+// hook runs first (ours only lets that builder ask), and their state getters answer what ours answer once there is a figure (service state 0,
+// performance management 2, PoomSmart's battery check 1). Ours alone: Maximum Capacity, Cycle Count, the iPad header text, Peak Performance and
+// Optimized Battery Charging left out (PoomSmart's greyed switch goes with Apple's group) and our groups after them (BatteryUse.x).
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -22,7 +27,6 @@
 #import <unistd.h>
 #import <os/lock.h>
 #import "../common/BatteryHealthFigures.h"
-#import "../common/OtherTweaks.h"   // (MSBDTweakPresent)
 
 @interface PSSpecifier : NSObject
 - (id)propertyForKey:(NSString *)key;
@@ -252,23 +256,24 @@ static NSString *MSBHCycleCountValue(id self, SEL _cmd, id specifier) {
     return cycles >= 0 ? [NSNumberFormatter localizedStringFromNumber:@(cycles) numberStyle:NSNumberFormatterDecimalStyle] : @"";
 }
 
-// Another battery health tweak in this process (both enablers ship a BatteryHealthEnabler.dylib, with no switch of their own): it owns the page.
-// (Its dylib is loaded at Settings' start, before any page is opened.)
-static BOOL MSBHOtherTweakLoaded(void) { return MSBDTweakPresent("BatteryHealthEnabler", YES); }
 static BOOL MSBHHas(Class c, BOOL meta, const char *sel) {
     return c && (meta ? class_getClassMethod(c, sel_registerName(sel)) : class_getInstanceMethod(c, sel_registerName(sel))) != NULL;
 }
 // BatteryUsageUI.bundle is loaded when the Battery page is first opened: the hooks go in as soon as it is (NSBundle's load notification comes
 // right after its classes are registered and before the page is made, so the first Battery page already has the row).
+// What the check below decided (1.7.9, for the Settings search: common/OwnPageState.h): 0 not yet (Apple's battery pages not loaded in this
+// process), 1 Apple's page left as it is -- no Battery Health on iPad, so our groups are not there --, 2 the page is ours.
+static int gMSBHVerdict = 0;
+__attribute__((visibility("hidden"))) int MSBHPageVerdict(void) { return gMSBHVerdict; }   // (TweakSearch.x)
 static void MSBHTryInit(void) {
     static BOOL done; if (done) return;
     Class page = objc_getClass("BatteryUIController"), health = objc_getClass("BatteryHealthUIController"), resource = objc_getClass("BatteryUIResourceClass");
     Class modeling = objc_getClass("PLModelingUtilities");
     if (!page || !health || !resource || !modeling) return;
     done = YES;
-    if (MSBHOtherTweakLoaded()) { MSBHLog(@"another battery health tweak is loaded: its page, nothing installed"); return; }
     BOOL gate15 = MSBHHas(page, NO, "setUpBatteryHealthSpecifiers"), gate17 = MSBHHas(page, NO, "setUpBatteryHealthGroup");
-    if ((!gate15 && !gate17) || !MSBHHas(modeling, YES, "isiPhone")) { MSBHLog(@"no row builder or isiPhone: Apple's page untouched"); return; }   // (a page we do not know)
+    if ((!gate15 && !gate17) || !MSBHHas(modeling, YES, "isiPhone")) { gMSBHVerdict = 1; MSBHLog(@"no row builder or isiPhone: Apple's page untouched"); return; }   // (a page we do not know)
+    gMSBHVerdict = 2;
     class_addMethod(health, sel_registerName("msbdCycleCount:"), (IMP)MSBHCycleCountValue, "@24@0:8@16");
     if (gate15) %init(MSBHGate15); else %init(MSBHGate17);
     %init(MSBHIsPhone);

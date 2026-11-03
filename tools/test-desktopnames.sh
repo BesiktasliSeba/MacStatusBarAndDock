@@ -37,7 +37,7 @@ items=plistlib.load(open('../statusbar/macstatusbarprefs/Resources/Desktop.plist
 i=[k for k,x in enumerate(items) if x.get('key')=='desktopIcons'][0]; r=items[i+1]
 sys.exit(0 if r.get('key')=='desktopHideNames' and r.get('label')=='Hide Desktop Icon Names' and r.get('default') is False and r.get('defaults')=='com.besiktasliseba.macstatusbar' and r.get('PostNotification')==items[i].get('PostNotification') and r.get('cell')=='PSSwitchCell' else 1)\""
 check "  ... left out with Show Desktop Icons where the desktop's 17+ check failed; greyed while Finder or Show Desktop Icons is off" \
-  "grep -q 'isEqual:@\"desktopIcons\"\\] || \\[\\[spec propertyForKey:@\"key\"\\] isEqual:@\"desktopHideNames\"\\]' ../statusbar/macstatusbarprefs/MSBRootListController.m && grep -q 'BOOL finder = MSBFinderStored(), on = finder;' ../statusbar/macstatusbarprefs/MSBRootListController.m && grep -q 'CFPreferencesCopyAppValue(CFSTR(\"desktopIcons\"), kMSBBarDomain);' ../statusbar/macstatusbarprefs/MSBRootListController.m"
-check "a crash in DesktopNames.h is the desktop's (its switch), as Desktop.h's" \
-  "grep -qxF 'file MacStatusBarCore ^Desktop(Names)?\\.h\$ desktopIcons' crashmap-rules.txt"
+  "grep -q 'if ((desktopFailed && MSBDDesktopCheckRow(\\[spec propertyForKey:@\"key\"\\], spec.identifier))' ../statusbar/macstatusbarprefs/MSBRootListController.m && grep -q 'return (key && \\[@\\[@\"desktopIcons\", @\"desktopHideNames\", @\"desktopIconSize\"\\] containsObject:key\\])' ../common/OwnPageRows.h && grep -q 'BOOL finder = MSBFinderStored(), on = finder;' ../statusbar/macstatusbarprefs/MSBRootListController.m && grep -q 'CFPreferencesCopyAppValue(CFSTR(\"desktopIcons\"), kMSBBarDomain);' ../statusbar/macstatusbarprefs/MSBRootListController.m"
+check "a crash in DesktopNames.h is the desktop's (its switch), as Desktop.h's (and DesktopCorner.h's, 1.7.9)" \
+  "grep -qxF 'file MacStatusBarCore ^Desktop(Names|Corner)?\\.h\$ desktopIcons' crashmap-rules.txt"
 [ $fails = 0 ] && echo "test-desktopnames: wiring checks pass" || { echo "test-desktopnames: wiring checks FAILED"; exit 1; }

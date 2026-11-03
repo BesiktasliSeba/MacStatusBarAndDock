@@ -286,6 +286,9 @@ __attribute__((noinline)) static void DMSMHomeKeepsDesktop(id ctx) {   // (noinl
     long long source = [req respondsToSelector:NSSelectorFromString(@"source")] ? DMSMCtxLong(req, @"source", -1) : -1;
     NSString *what = [NSString stringWithFormat:@"%@ source %lld, from environment %lld, %lu window(s)", [label isKindOfClass:[NSString class]] ? label : @"no label", source, prevEnv, (unsigned long)windows.count];
     if (!windows) { DMLog([NSString stringWithFormat:@"[smhome] Home (%@): the desktop could not be read -- Home as SpringBoard built it", what]); return; }
+    // (Home Minimizes Windows: the user's Home takes the windows with it -- never our own simulated press, DMMinimize, a full-screen app sent away,
+    //  nor Cmd-H's: a Home from the keyboard keeps the windows as before, StatusBar.x DMHomeFromKeys)
+    if (gHomeMinimizes && !DMHomeIsOurs() && !DMHomeFromKeys()) flags |= DMSMHomeHide;
     NSString *why = nil;
     NSDictionary *plan = DMSMHomePlan(windows, roles, nRoles, flags, requested, prevEnv, showsDesk, &why);
     if (!plan) {
@@ -300,6 +303,16 @@ __attribute__((noinline)) static void DMSMHomeKeepsDesktop(id ctx) {   // (noinl
             for (NSDictionary *w in windows) { NSString *k = DMSMItemKey(byId[w[@"id"]]); if (k.length) { DMSMSetMinimized(k, YES); [away addObject:DMSMKeyText(k)]; } }   // (each window by its key, as below)
             if (away.count) DMLog([NSString stringWithFormat:@"[smhome] Home: %@ to the background (Mac Switcher desktops: no longer one of %@'s windows)", [away componentsJoinedByString:@", "], DMMSWDeskName(gMSWCur)]);
         }
+        return;
+    }
+    if (plan[@"hide"]) {   // (Home Minimizes Windows: Home as SpringBoard built it -- the stage goes, Apple's way -- and each window is a minimized one,
+        // back with its own app or from the Dock, the others staying away: the joins, the restore after a respring and the Mac Switcher leave
+        // minimized windows out, SMWindowKey.h's keys, as the yellow light's)
+        NSMutableArray<NSString *> *names = [NSMutableArray array];
+        for (NSString *ident in plan[@"hide"]) { NSString *k = DMSMItemKey(byId[ident]); if (k.length) { DMSMSetMinimized(k, YES); [names addObject:DMSMKeyText(k)]; } }
+        DM_FEATURE_MARK("sm-home-minimizes-windows");
+        DMLog([NSString stringWithFormat:@"[smhome] Home (%@): the windows go with it -- %@ (%@ minimized)", what, why, [names componentsJoinedByString:@", "]]);
+        dispatch_async(dispatch_get_main_queue(), ^{ DMSMHomeAfterKeep(NO); });   // (our open menu and the Downloads panel close, as at every Home)
         return;
     }
     // The plan in SpringBoard's terms: each window's own entity (its scene -- two windows of one app are two), its attributes as they are on screen.
@@ -383,6 +396,7 @@ static char kSMHGDeskKey;
 // windows and none full screen, the Home Screen is shown behind windows (SMDesktop.h's floor answers on). Decided once per gesture.
 static BOOL DMSMHGOverDesk(id mod, Ivar start) {
     if (!gSMHomeGestureOn || !DMSMFree() || !gSMDeskHooked || gSMDeskOff) return NO;
+    if (gHomeMinimizes) return NO;   // (Home Minimizes Windows: the windows go with this Home -- Apple's look, the stage following the finger)
     NSNumber *cached = objc_getAssociatedObject(mod, &kSMHGDeskKey);
     if (cached) return cached.boolValue;
     long long env = 0;

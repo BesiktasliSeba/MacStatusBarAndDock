@@ -10,7 +10,8 @@
 // desktop's windows in their roles (application mode, the newest window in front) -- only a full-screen window leaves, as a full-screen app does
 // with Aerial (it goes to the background; its window comes back with the app). A desktop of a full-screen window alone, an empty desktop, a
 // transition our own code asked for as a real Home (the desktop's last window, 1.4's empty desktop), and anything not leaving the desktop: Home as
-// SpringBoard built it.
+// SpringBoard built it. With Home Minimizes Windows on (1.7.9: a swipe up dismisses the apps, as on an iPad), the windows go with that Home
+// instead, as with every engine (DMSMHomeHide below).
 #pragma once
 #import <Foundation/Foundation.h>
 #include <math.h>
@@ -26,6 +27,7 @@ enum {
     DMSMHomeNotHome       = 1 << 6,   // the activating entity is not the Home Screen
     DMSMHomeRolesSet      = 1 << 7,   // a window role holds an app (not a plain Home)
     DMSMHomeSwitcherDesk  = 1 << 8,   // (not a refusal) the App Switcher on screen was opened from the desktop
+    DMSMHomeHide          = 1 << 9,   // (not a refusal) Home Minimizes Windows is on: the desktop's windows go with Home (1.7.9)
 };
 // desk: the windows of the stage on screen that the transition leaves, @{@"id": the window's identifier (its scene: two windows of one app are two
 // entries), @"r": role, @"t": last interaction time, @"p": sizing policy (2 = full screen)}. roles: SpringBoard's window roles in their order
@@ -34,6 +36,10 @@ enum {
 // Returns nil (leave it; *why says why) or @{@"keep": @[@[id, @(role)], ...] (each window that stays, in its role), @"empty": @[roles to empty],
 // @"front": id (the window in front: keyboard focus), @"away": @[ids] (full-screen windows that leave), @"atHome": @YES when nothing leaves -- the
 // person was on the Home Screen already, behind the windows (the Home Screen's own Home press applies: close a folder, the App Library...)}.
+// With DMSMHomeHide (Settings > Windows & Multitasking > Home Minimizes Windows, 1.7.9) a Home the rule would keep the windows for leaves them
+// instead: @{@"hide": @[every window of the desktop, full-screen ones too]} -- Home as SpringBoard built it (the stage goes, as Stage Manager has
+// it), and SMHome.h marks each of them minimized, so each comes back with its own app and the others stay away. Everything left as SpringBoard
+// built it without the switch is left the same with it (a desktop of a full-screen window alone among them).
 // (noinline: its own range in the release crash map, tools/test-crashstep.sh)
 // (the one refusal SMHome.h acts on besides leaving it: a desktop of full-screen windows alone -- with Mac Switcher desktops they go to the background)
 static NSString *const kDMSMHomeOnlyFullScreen = @"only a full-screen window: it goes Home as Apple has it";
@@ -66,6 +72,12 @@ __attribute__((noinline)) static NSDictionary *DMSMHomePlan(NSArray<NSDictionary
         if ([w[@"p"] longLongValue] == 2) [away addObject:ident]; else [kept addObject:w];
     }
     if (!kept.count) DMSM_HOME_LEAVE(kDMSMHomeOnlyFullScreen);
+    if (flags & DMSMHomeHide) {   // (nothing is written: the windows go with SpringBoard's own Home, each by its identifier, in the desktop's order)
+        NSMutableArray<NSString *> *all = [NSMutableArray array];
+        for (NSDictionary *w in desk) [all addObject:w[@"id"]];
+        if (why) *why = [NSString stringWithFormat:@"Home Minimizes Windows: %lu window(s) go with Home", (unsigned long)all.count];
+        return @{@"hide": all};
+    }
     if (kept.count > nRoles) DMSM_HOME_LEAVE(@"more windows than window roles");
     // The roles: nothing leaves -- each window keeps its own role (the same layout as on screen: no window moves); a full-screen window leaves --
     // the rest closes up in role order, as SpringBoard's own Minimize does (a stage always has its primary window).

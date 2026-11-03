@@ -52,10 +52,18 @@
 #import "../common/GuidedAccess.h"   // (MSBDGuidedAccessActive: while a Guided Access session runs, our own UI steps aside -- DMGuidedAccessChanged)
 #import "../common/AXText.h"         // (the words VoiceOver and the other assistive features get for our UI: menu shortcuts, Wi-Fi, items)
 #import "../common/FocusLock.h"      // (MSBDFocusLock: SpringBoard holds the keyboard focus for our windows, 15-18 -- the 18 call takes a typed reason)
+#import "../common/MenuKeys.h"       // (an open menu's keys: left with the app when its MacAppBridge reads them, the lease and the key rule -- Mac-tested, 1.7.9)
 #import "../common/DesktopCheck.h"   // (MSBD_FOCUSLOCK_CHECK_KEY: the 18 focus lock verdict for Settings, DMFocusLock18OK)
 #import "../common/Relaunch.h"       // (MSBDRelaunchLikeSbreload: our Respring where SpringBoard may not start sbreload -- iPadOS 18)
 #import "StartupAssertion.h"         // (MSBDGiveBackStartupAssertion: SpringBoard's start-up power assertion given back once it is up, 1.7.8)
 #import "../common/SSHSwitch.h"      // (SSH: its state, asking, the helper's notification -- one logic with Settings and the Control Center control, 1.7.6)
+#import "../common/BatteryMenu.h"    // (the battery menu and the Control Center icon: their places in the bar, the Charge Limit job's words -- Mac-tested, 1.7.9)
+#import "../common/SleepGuard.h"     // (the battery menu's Sleep Guard row: the guard's switch and the helper's state file, as Settings shows them)
+#import "../common/FinderFolders.h"  // (the Home Screen folders attached to the Finder menu: the record, the rows' order and titles -- Mac-tested, 1.7.9)
+#import "../common/HomeFolderRule.h" // (a Home Screen folder the user is looking at: the windows step aside for it -- from its opening until it closes or an app comes to the front, Mac-tested, 1.7.9)
+#import "../common/BatteryHealthLink.h"   // (the battery menu's settings rows: the link to Settings' Battery Health page at their group -- Mac-tested, 1.7.9)
+#import "../common/ScrollTurn.h"     // (a trackpad's scroll in our turned containers: the orientation UIKit turns its delta by -- Mac-tested, 1.7.9)
+#import <stdatomic.h>
 
 extern int proc_pid_rusage(int pid, int flavor, rusage_info_t *buffer);
 
@@ -688,6 +696,7 @@ static CGRect DMSnapEngineWindow(UIView *st, CGRect window, unsigned how);
 static void DMSnapMoveEnded(UIView *st);
 #include "A5FitPass.h"   // (Aerial 5.x's fit-to-screen pass as it shows from outside: 1.7.2 -- plain C, tools/test-a5fitpass.sh)
 #include "A5WakeFollow.h"   // (the steps after Aerial 5's round-icon minimize, each when Aerial's animation has run out: 1.7.4 -- plain C, tools/test-a5wake.sh)
+#include "A5LockCatch.h"    // (what that catch makes of a window: the lock's, back by itself, or kept as it was -- 1.7.9 G-4b -- plain C, tools/test-a5lockcatch.sh)
 static BOOL gOwnBarUnderFloor = NO;   // our own field's input bar (hardware keyboard) is up in keyboard windows under the Dock's floor (set by DMPlaceKeyboardPill)
 static long gLastConfidentLandscapeOrientation;
 static id DMCall(id obj, NSString *name) {
@@ -1364,8 +1373,32 @@ static SBApplication *DMFrontApp(void) {
                ? [sb _accessibilityFrontMostApplication] : nil;
 }
 
+// Settings > Windows & Multitasking > Home Minimizes Windows (homeMinimizesWindows, on unless switched off, for every user, updaters too: KT,
+// 1.7.9): going Home -- a swipe up from the bottom, four fingers or the trackpad, the Home button -- minimizes every window of the desktop, so the
+// Home Screen shows, as Stage Manager and an iPad without windows do; opening an app brings its window back. Off, the windows stay over the Home
+// Screen at Home (the desktop, as with Aerial). Stage Manager engine: its Home rule (SMHomeRule.h DMSMHomeHide); the other engines and our own
+// windows: HomeAway.h. Our own simulated Home press (DMMinimize: a full-screen app minimized, sent away by the Mac Switcher, ...) is never the
+// user's Home: it minimizes nothing else. Nor is a Home from the keyboard (DMHomeFromKeys below): the switch is not about the keyboard (KT).
+static BOOL gHomeMinimizes = NO;   // (DMLoadPrefs: on unless switched off)
+static CFTimeInterval gDMOwnHomeAt = -100;   // (DMMinimize's last press, and while it runs: SpringBoard handles it inside, or right after)
+static int gDMOwnHomeDepth = 0;
+static BOOL DMHomeIsOurs(void) { return gDMOwnHomeDepth > 0 || CACurrentMediaTime() - gDMOwnHomeAt < 1.0; }
+// A Home from the keyboard: Cmd-H is SpringBoard's Home shortcut, -[SpringBoard _handleGotoHomeScreenShortcut:], which runs the Home button's
+// single press inside ([[SBUIController buttonActions] performSinglePressUpActions], 16.7.7; there on 15-18) -- so the press alone cannot tell it
+// from the button. It keeps its Home as before Home Minimizes Windows (KT 2 Nov: "it doesn't actually affect the keyboard use"): marked as our own
+// press is, while the shortcut runs and for a second after (the Stage Manager engine's Home transition is finalized after it: SMHome.h).
+static CFTimeInterval gDMKeysHomeAt = -100;
+static int gDMKeysHomeDepth = 0;
+static BOOL DMHomeFromKeys(void) { return gDMKeysHomeDepth > 0 || CACurrentMediaTime() - gDMKeysHomeAt < 1.0; }
 // "Minimize": send the app to the background (the same as pressing Home) without killing it.
+static void DMMinimizeBody(void);
 static void DMMinimize(void) {
+    gDMOwnHomeAt = CACurrentMediaTime();   // (not the user's Home: Home Minimizes Windows leaves the other windows alone)
+    gDMOwnHomeDepth++;
+    DMMinimizeBody();
+    gDMOwnHomeDepth--;
+}
+static void DMMinimizeBody(void) {
     if (DMGARefuses(@"minimize")) return;   // (Home is Guided Access's to refuse; SBUIController's own handler below would not ask it)
     SpringBoard *sb = (SpringBoard *)[UIApplication sharedApplication];
     SEL home = NSSelectorFromString(@"_simulateHomeButtonPress");
@@ -1452,6 +1485,11 @@ static BOOL gWiFiMenuOn = NO;   // Settings > Status Bar > Wi-Fi Menu (pref wifi
 static const void *kWiFiIconKey = &kWiFiIconKey, *kWiFiButtonKey = &kWiFiButtonKey;
 static void DMOpenWiFiMenu(UIButton *btn);   // (defined in WiFiMenu.h)
 static void DMWiFiMenuGone(NSString *why);   // (WiFiMenu.h: a menu closed -- its scan stops if it was ours)
+static BOOL gBattMenuOn = NO;   // Settings > Status Bar > Battery Menu (pref batteryMenu, on unless switched off): the battery opens our battery menu, and a Control Center icon is left of the clock (BatteryMenu.h)
+static const void *kBattButtonKey = &kBattButtonKey, *kCCIconKey = &kCCIconKey, *kCCButtonKey = &kCCButtonKey;
+static void DMOpenBatteryMenu(UIButton *btn);        // (defined in BatteryMenu.h)
+static void DMBattOpenControlCenter(UIButton *btn);  // (BatteryMenu.h: the Control Center icon's tap)
+static void DMBattMenuGone(NSString *why);           // (BatteryMenu.h: a menu closed -- its refresh stops if it was ours)
 static BOOL gMSWOpen;   // the Mac Switcher is showing (MacSwitcher.h)
 static void DMMSWNewStage(UIView *stage, NSString *bundleID);   // (MacSwitcher.h: a new window of another desktop is hidden before its first frame)
 static BOOL gMSWSwitching;   // a desktop is sliding in (MacSwitcher.h): the left desktop's apps go to the background when it is over
@@ -2242,6 +2280,33 @@ static BOOL gDockMenuOpen = NO;                      // a Dock icon's Haptic Tou
 static __weak UIWindow *gDockMenuWindow = nil;       // the Dock's window that holds it (DMNativeFrontLevel: our native windows go just under it)
 static BOOL gHomeMenuOpen = NO;                      // a Home Screen icon's Haptic Touch menu is showing (the windows fade like for the App Library)
 static BOOL DMIconMenuOpen(void) { return gDockMenuOpen || gHomeMenuOpen; }   // (the menu-closing wait, DMWaitForContextMenu)
+// A Home Screen folder is what the user is looking at (1.7.9): it opens in the Home Screen's own window, under every window, like the icon menus --
+// opened from the Finder menu's folder rows (FinderFolders.h) it came up behind a Finder window (A12Z 18.5, 2 Nov) --, so the windows step aside
+// the same way while it is. From the folder's own opening until it closes or an app or a window comes to the front (common/HomeFolderRule.h):
+// iPadOS keeps a folder open behind the app launched from it, and with -hasOpenFolder alone every window, that app's included, faded away and
+// took no touches for as long as the folder stayed open behind it (17.5.1, Stage Manager engine, 2 Nov; code review).
+static MSBDHomeFolderState gHomeFolder;
+static BOOL DMHomeFolderOpenNow(void) { return [DMBoolStr(DMCall(DMSBManager("SBIconController"), @"iconManager"), @"hasOpenFolder") isEqualToString:@"Y"]; }
+static SBApplication *DMActiveApp(void);
+static BOOL DMSMFrontIsFullScreen(void);
+static BOOL DMHomeFolderShowing(void) {   // (one look: the watcher's fades and the native windows' tick ask it)
+    BOOL open = DMHomeFolderOpenNow(), was = gHomeFolder.showing;
+    if (!open && !gHomeFolder.wasOpen) return NO;   // (no folder: nothing more to read)
+    uint64_t front = open ? MSBDHomeFolderFrontID([DMActiveApp() bundleIdentifier].UTF8String) : 0;   // (the menu bar's app: an engine's front window, else the full-screen app)
+    BOOL covered = open && !gHomeFolder.wasOpen && (DMSMEngine() ? DMSMFrontIsFullScreen() : DMFrontApp() != nil);   // (only asked as it opens)
+    BOOL showing = MSBDHomeFolderStep(&gHomeFolder, open, front, covered) != 0;
+    if (open && covered) DMLog(@"[folder] a folder opened behind a full-screen app: the windows stay");
+    if (was && !showing && open) DMLog([NSString stringWithFormat:@"[folder] %@ came to the front: the windows come back, the folder stays open behind them", [DMActiveApp() bundleIdentifier]]);
+    return showing;
+}
+static void DMSyncWindowFade(void);
+static void DMHomeFolderMovedOn(NSString *what) {   // (an app icon tapped, a native window made active: DMHomeFolderTapInstall, NativeWindow.h)
+    BOOL was = gHomeFolder.showing;
+    MSBDHomeFolderMovedOn(&gHomeFolder, DMHomeFolderOpenNow());
+    if (!was) return;
+    DMLog([NSString stringWithFormat:@"[folder] %@: the windows come back, the folder stays open behind them", what]);
+    dispatch_async(dispatch_get_main_queue(), ^{ DMSyncWindowFade(); });   // (now, not at the next tick: with the app's own opening)
+}
 static BOOL DMDockIconMenuOpen(void) { return gDockMenuOpen; }
 // A full-screen app sitting behind windows still shows through around them; tapping that visible part reclaims the status bar's name and traffic lights
 // for it, the same way clicking a partly-covered window's visible edge focuses it on a Mac, even though the windows stay exactly where they are (on
@@ -3002,6 +3067,7 @@ static BOOL gMilkyWayHiddenForSwitcher = NO;   // (DMZetsuSwitcherCheck: MilkyWa
 static void DMSMDeskSyncFade(void);   // (Stage Manager engine: its windows over the Home Screen, SMDesktop.h)
 static BOOL DMSMDeskIsFaded(void);
 static void DMSyncWindowFade(void) {
+    BOOL folder = DMHomeFolderShowing();   // (first, whatever the engine: every tick looks, so a folder's opening is seen as it happens)
     if (DMSMEngine() || DMSMDeskIsFaded()) {   // (Stage Manager: its window cards, the same triggers; a fade still on when the engine stopped -- an engine
         DMSMDeskSyncFade();                     //  change while the App Library was up -- is given back, 1.3.5 logic test L1)
         if (DMSMEngine()) return;
@@ -3009,15 +3075,15 @@ static void DMSyncWindowFade(void) {
     BOOL zetsu = DMActiveEngine() == DMEngineZetsu;
     UIWindow *layer = DMWindowLayer();
     if (!layer && !zetsu) return;
-    BOOL want = DMLibraryVisible() || gHomeMenuOpen;
+    BOOL want = DMLibraryVisible() || gHomeMenuOpen || folder;
     if (want == gWindowsHiddenForLibrary) return;
     // The App Switcher opened from the App Library dismisses the Library: bringing the windows back then faded them in OVER the switcher's cards
     // (Zetsu, iPad 2, 26 Sep; layering audit row 17 / F15). While the switcher shows they stay away; this runs again on the next tick once it is gone.
     if (!want && DMSwitcherVisible()) return;
     gWindowsHiddenForLibrary = want;
-    static BOOL fadedForMenu = NO;   // (log only: a closing icon menu was reported as "App Library is gone")
-    if (want) fadedForMenu = gHomeMenuOpen;
-    DMLog([NSString stringWithFormat:@"[lights] %@ %@: windows %@", (want ? gHomeMenuOpen : fadedForMenu) ? @"Home Screen icon menu" : @"App Library", want ? @"is showing" : @"is gone", want ? @"fade away" : @"come back"]);
+    static NSString *fadedFor = @"App Library";   // (log only: a closing icon menu was reported as "App Library is gone")
+    if (want) fadedFor = gHomeMenuOpen ? @"Home Screen icon menu" : (folder ? @"Home Screen folder" : @"App Library");
+    DMLog([NSString stringWithFormat:@"[lights] %@ %@: windows %@", fadedFor, want ? @"is showing" : @"is gone", want ? @"fade away" : @"come back"]);
     NSArray *faders = zetsu ? DMZetsuAllWindows() : @[layer];   // Zetsu has no single layer: every one of its windows fades
     // (layering audit F15: the App Library going away because the App Switcher came up from it must not bring MilkyWay's / Zetsu's windows back
     // OVER the switcher -- they stayed there at full opacity on the M1, 26 Sep. The switcher check brings them back when the switcher is gone.)
@@ -3147,10 +3213,15 @@ static void DMMinimizeStage(UIView *stage) {
         DMApplyWindowLevel();
     });
 }
-static void DMRestoreStage(UIView *stage) {
-    if (![objc_getAssociatedObject(stage, kStageHiddenKey) boolValue]) return;
+static BOOL DMA5ShowWaits(UIView *stage);   // (Aerial 5 still has it minimized: shown once its own restore is over -- with the round-icon catch)
+static void DMRestoreStageNow(UIView *stage) {
     objc_setAssociatedObject(stage, kStageHiddenKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     DMRestoreAnimate(stage);   // (out of its Dock icon)
+}
+static void DMRestoreStage(UIView *stage) {
+    if (![objc_getAssociatedObject(stage, kStageHiddenKey) boolValue]) return;
+    if (DMA5ShowWaits(stage)) return;
+    DMRestoreStageNow(stage);
 }
 // The app was launched from somewhere: if it has a MilkyWay window, show that (un-minimize it, bring it to the front, and over
 // a full-screen app if needed) and report YES so the caller skips the full-screen launch.
@@ -8103,6 +8174,11 @@ static UIMenu *DMMenuEngineItems(UIMenu *m, BOOL dropZetsu, BOOL greyEngines) {
 }
 static const void *kZetsuMenuWrappedKey = &kZetsuMenuWrappedKey;
 static CFTimeInterval gCtxAskedAt = 0;   // (debug: when the last icon menu was asked for, for [ctxperf])
+static id DMFFMenuFolder(UIView *iconView);              // (FinderFolders.h: a folder whose menu gets "Show in Finder Menu" / "Remove from Finder Menu")
+static UIMenu *DMFFMenuWithRow(UIMenu *m, id folderIcon);
+#if DEBUG
+static void DMFFDebugMenu(UIMenu *m, UIView *iconView);
+#endif
 %group ZetsuIconItems
 %hook SBIconView
 - (id)contextMenuInteraction:(id)interaction configurationForMenuAtLocation:(CGPoint)location {
@@ -8112,12 +8188,23 @@ static CFTimeInterval gCtxAskedAt = 0;   // (debug: when the last icon menu was 
     BOOL dropZetsu = DMActiveEngine() == DMEngineZetsu && !DMTestFlag("/tmp/msb-zetsu-keepitems");
     NSString *bid = nil; @try { bid = [[self valueForKey:@"icon"] valueForKey:@"applicationBundleID"]; } @catch (id e) {}
     BOOL greyEngines = [bid isKindOfClass:[NSString class]] && DMAppNeedsFullScreen(bid);
-    if (!cfg || (!dropZetsu && !greyEngines) || objc_getAssociatedObject(cfg, kZetsuMenuWrappedKey)) return cfg;
+    id folder = DMFFMenuFolder((UIView *)self);   // (a Home Screen folder: its Finder menu row, 1.7.9)
+    if (!cfg || (!dropZetsu && !greyEngines && !folder) || objc_getAssociatedObject(cfg, kZetsuMenuWrappedKey)) return cfg;
     UIContextMenuActionProvider provider = nil; @try { provider = [cfg valueForKey:@"actionProvider"]; } @catch (id e) {}
     if (!provider) return cfg;
+    __weak id weakFolder = folder;
+#if DEBUG
+    __weak UIView *weakView = (UIView *)self;
+#endif
     UIContextMenuActionProvider wrapped = ^UIMenu *(NSArray<UIMenuElement *> *suggested) {
         UIMenu *m = provider(suggested);
-        return m ? DMMenuEngineItems(m, dropZetsu, greyEngines) : m;
+        if (m && (dropZetsu || greyEngines)) m = DMMenuEngineItems(m, dropZetsu, greyEngines);
+#if DEBUG
+        DMFFDebugMenu(m, weakView);   // (ffmenu: the next menu's tree, as SpringBoard made it)
+#endif
+        id f = weakFolder;
+        if (m && f) { @try { m = DMFFMenuWithRow(m, f); } @catch (id e) {} }
+        return m;
     };
     @try { [cfg setValue:wrapped forKey:@"actionProvider"]; objc_setAssociatedObject(cfg, kZetsuMenuWrappedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC); } @catch (id e) {}
     return cfg;
@@ -13085,6 +13172,12 @@ static void DMStockCCTiles(BOOL shown) {
     %orig;
     if (!gCCWindowSeen) DMLog(@"[cc] Control Center presented (controller): its state is asked from now on");
     gCCWindowSeen = YES;
+#if DEBUG
+    if (DMTestFlag("/tmp/msb-ccstack")) {   // (battmenu_ccstack_1: who presents Control Center -- a click on the status icons, the Control Center icon)
+        DMLog(@"[ccstack] Control Center presenting, called from:");
+        NSArray<NSNumber *> *ret = [NSThread callStackReturnAddresses]; for (NSUInteger i = 1; i < ret.count && i < 16; i++) DMSymbolize(ret[i].unsignedLongLongValue);
+    }
+#endif
 }
 %end
 %end
@@ -14171,6 +14264,17 @@ static UIWindow *gMenuWindow = nil;
 static UIView *gMenuRotator = nil;   // iPadOS 16: the container menus are built in when the menu window is not turned with the screen (see DMMenuHost)
 static long gMenuRotatorBuiltForOrientation = 0;   // the orientation DMMenuHost() last hosted a menu for, turned window or not; 0 when none (see DMCloseMenuIfOrientationStale)
 static CGSize gMenuBuiltForScreen = {0, 0};         // the screen size at that same moment
+// A trackpad's or mouse's scroll into the menu window, and into the native windows' layer, while their container is turned with the screen (16 and
+// later): the orientation UIKit turns its delta by, set where each container is turned, 0 while it is not (common/ScrollTurn.h, DMScrollDeltaToFixed).
+// Read from any thread.
+static _Atomic int gDMMenuScrollTurn = 0, gDMNativeScrollTurn = 0;
+static void DMScrollTurnWindowClass(Class sub);   // (our two window classes answer it for that turn: near DMScrollRoutingInit)
+static IMP gDMScrollTurnOwnOverridden = NULL, gDMScrollTurnOwnWindowOrient = NULL;   // (the windows' own answers, their base class's: DMScrollTurnWindowClass)
+static CGVector (*o_DMScrollDeltaToFixed)(id, SEL, CGVector) = NULL;   // (UIKit's turn of a scroll's delta, hooked once its shape is checked: DMScrollTurnInit)
+static long DMScrollTurnOverridden(id self, SEL _cmd);
+#if DEBUG
+static BOOL gDMScrollTurnTestOff = NO;   // (scrollsynth_: UIKit's own turn for one pass, to compare)
+#endif
 // The escape gesture of assistive features (VoiceOver's two-finger scrub, Full Keyboard Access's Escape, Switch Control's): the open menu or dialog
 // closes as a tap outside or Esc closes it -- a dialog's own answer to Esc when it has one (kOverlayEscapeKey). Asked of the focused element and then
 // of everything above it, so the menu windows (here) and the rows (DMRow) both answer. NO when nothing of ours is open there. (1.3.7, audit M-3)
@@ -14307,6 +14411,7 @@ static UIView *DMMenuHost(void) {
     if (!turned) {
         if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[menuhost] screen %@ win %@ orientation %ld: window not turned, used as it is", NSStringFromCGSize(screen), NSStringFromCGSize(win), orientation]);
         if (gMenuRotator && !gMenuRotator.subviews.count) [gMenuRotator removeFromSuperview];
+        atomic_store(&gDMMenuScrollTurn, 0);   // (the window's own orientation is the menus': a scroll is UIKit's as it is)
         return gMenuWindow;
     }
     if (!gMenuRotator) { gMenuRotator = [UIView new]; gMenuRotator.backgroundColor = [UIColor clearColor]; }
@@ -14339,6 +14444,7 @@ static UIView *DMMenuHost(void) {
     // the screen really turned from code: window x-axis runs UP the screen in orientation 3, DOWN in 4, right-to-left in 2), and the rotator must
     // undo exactly that. The fixed +90 deg used before was right in 3 but drew menus upside down in the opposite corner in 4 (raw capture).
     gMenuRotator.transform = CGAffineTransformMakeRotation(angle);
+    atomic_store(&gDMMenuScrollTurn, MSBDScrollTurnOrientation(angle));   // (a trackpad's scroll in the menus is turned as they are shown: DMScrollDeltaToFixed)
     if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[menuhost] screen %@ win %@ orientation %ld rotator frame %@", NSStringFromCGSize(screen), NSStringFromCGSize(win), orientation, NSStringFromCGRect(gMenuRotator.frame)]);
     return gMenuRotator;
 }
@@ -14432,6 +14538,7 @@ static void DMCreateMenuWindow(void) {
             sub = objc_allocateClassPair(base, "MSBMenuWindow", 0);
             class_addMethod(sub, @selector(hitTest:withEvent:), (IMP)DMMenuWindowHitTest, "@@:{CGPoint=dd}@");
             class_addMethod(sub, @selector(accessibilityPerformEscape), (IMP)DMMenuWindowAXEscape, "B@:");
+            DMScrollTurnWindowClass(sub);   // (a trackpad's scroll in a turned menu: UIKit is told the orientation it is shown in)
             objc_registerClassPair(sub);
         }
         UIWindow *w = ((id (*)(id, SEL, id, id))objc_msgSend)([sub alloc], initRole, @"SBFTraitsParticipantRoleRecordingIndicator", @"MacStatusBarMenus"); DMSnapInvalidate();
@@ -14579,7 +14686,72 @@ static void DMOverlayFocus(BOOL take, UIWindow *w) {
     }
     if (gOverlayFocusLock || !w || !DMHardwareKeyboardAttached()) return;
     gOverlayFocusLock = DMSpringBoardFocusLock(w, @"MacStatusBar menu");
-    static int told = 0; if (told++ < 3) DMLog([NSString stringWithFormat:@"[overlay] keyboard focus to SpringBoard while open: %@", gOverlayFocusLock ? NSStringFromClass([gOverlayFocusLock class]) : @"no lock"]);
+    static int told = 0; if (told++ < 3 || DMTestFlag("/tmp/msb-focuswatch")) DMLog([NSString stringWithFormat:@"[overlay] keyboard focus to SpringBoard while open: %@", gOverlayFocusLock ? NSStringFromClass([gOverlayFocusLock class]) : @"no lock"]);
+}
+// ---- the menu bar's menus leave the keys with the app, as on a Mac (1.7.9) ----
+// The lock above takes the keyboard focus from the app in front, and iPadOS then turns the app's keyboard focus off (its scene is no longer the target
+// of the keyboard's deferring environment): its focused item -- the selected row of Settings' sidebar -- took the unfocused look while a menu was
+// open, and each switch from one menu to the next (DMRemoveOverlayNow, then the next menu's lock) gave the focus back for a moment: the row flickered
+// (KT, A12Z 18.5, Settings in a Stage Manager window). A Mac's menu bar leaves its app active. So a menu of the bar leaves the focus with the app
+// when the app reads the menu's keys itself -- its MacAppBridge says so per process (common/MenuKeys.h) --: SpringBoard publishes a lease while
+// the menu is open, and the bridge gives the menu the keys that would reach the app (Esc closes it, MSBD_MENU_ESC; the rest do nothing, as with
+// the lock). SpringBoard holding the keys itself (the Home Screen, Finder, Spotlight), an app without the bridge (the recovery apps: the loader
+// keeps our parts out of them), an assistive feature that moves through the menu (DMAXRunning) and the dialogs keep the lock. Debug
+// /tmp/msb-menulock: the lock for menus too (before).
+static BOOL gMenuKeysInApp = NO;           // (the open menu's keys are read by the app's MacAppBridge)
+static NSString *gMenuKeysApp = nil;       // (which app: for the log)
+static NSTimer *gMenuKeysRenew = nil;      // (renews the lease while the menu is open)
+static void DMMenuKeysPublish(uint64_t stamp) {
+    static int token = 0;
+    if (!token && notify_register_check(MSBD_MENU_KEYS_STATE, &token) != NOTIFY_STATUS_OK) token = 0;
+    if (token) notify_set_state(token, stamp);
+}
+static double DMMenuKeysNowMs(void) { return CFAbsoluteTimeGetCurrent() * 1000.0; }
+// The app holding the keyboard (SpringBoard's focus controller, the 15-18 call -externalSceneWithFocus), when its MacAppBridge reads the keys: the
+// bridge's published pid is that app's process. nil when SpringBoard has the keys, the scene cannot be named, or the app has no bridge.
+static NSString *DMMenuKeysReader(void) {
+#if DEBUG
+    if (DMTestFlag("/tmp/msb-menulock")) return nil;
+#endif
+    id kfc = DMKeyboardFocusController();
+    id scene = MSBDFocusHas(kfc, NSSelectorFromString(@"externalSceneWithFocus"), @"@@:") ? DMCall(kfc, @"externalSceneWithFocus") : nil;
+    NSString *bundle = DMBundleOfSceneID(scene);
+    if (!bundle.length) return nil;
+    id ps = DMCall(DMAppForBundle(bundle), @"processState");
+    SEL pidSel = NSSelectorFromString(@"pid");
+    int pid = MSBDFocusHas(ps, pidSel, @"i@:") ? ((int (*)(id, SEL))objc_msgSend)(ps, pidSel) : 0;
+    if (pid <= 0) return nil;
+    uint32_t hash = 2166136261u; for (const char *c = bundle.UTF8String; *c; c++) { hash ^= (uint8_t)*c; hash *= 16777619u; }
+    char name[96]; snprintf(name, sizeof name, MSBD_BRIDGE_KEYS_FMT, hash);
+    int token = 0; uint64_t bridgePid = 0;
+    if (notify_register_check(name, &token) != NOTIFY_STATUS_OK) return nil;
+    notify_get_state(token, &bridgePid);
+    notify_cancel(token);
+    return bridgePid == (uint64_t)pid ? bundle : nil;
+}
+static void DMMenuKeysEnd(void) {
+    if (!gMenuKeysInApp) return;
+    gMenuKeysInApp = NO;
+    [gMenuKeysRenew invalidate]; gMenuKeysRenew = nil;
+    DMMenuKeysPublish(0);
+    if (DMTestFlag("/tmp/msb-focuswatch")) DMLog([NSString stringWithFormat:@"[overlay] menu keys back to %@", gMenuKeysApp]);
+}
+// A menu of the bar opens (DMMakeOverlayFor): YES when its keys are left with the app (the lease is out); NO = take the lock as for any overlay.
+static BOOL DMMenuKeysBegin(void) {
+    DMMenuKeysEnd();
+    if (!DMHardwareKeyboardAttached()) return NO;   // (no keys to route: no lock either, as before)
+    if (DMAXRunning()) return NO;   // (VoiceOver, Switch Control, Full Keyboard Access: they move through the menu with the keys, so SpringBoard holds them)
+    NSString *app = DMMenuKeysReader();
+    if (!app) return NO;
+    gMenuKeysInApp = YES; gMenuKeysApp = app;
+    DMMenuKeysPublish(MSBDMenuKeysStamp(DMMenuKeysNowMs()));
+    gMenuKeysRenew = [NSTimer timerWithTimeInterval:kMSBDMenuKeysRenewMs / 1000.0 repeats:YES block:^(NSTimer *t) {
+        if (gMenuKeysInApp && gOverlay) DMMenuKeysPublish(MSBDMenuKeysStamp(DMMenuKeysNowMs())); else DMMenuKeysEnd();
+    }];
+    [[NSRunLoop mainRunLoop] addTimer:gMenuKeysRenew forMode:NSRunLoopCommonModes];
+    DM_FEATURE_MARK("menu-keys-in-app");
+    static int told = 0; if (told++ < 3 || DMTestFlag("/tmp/msb-focuswatch")) DMLog([NSString stringWithFormat:@"[overlay] menu open: the keyboard stays with %@ (its MacAppBridge gives the menu the keys)", app]);
+    return YES;
 }
 static void (*o_OverlayPressesBegan)(id, SEL, NSSet *, UIPressesEvent *);
 static BOOL DMDownloadsPanelTakesEsc(NSSet<UIPress *> *presses);   // (with the native windows' key handling, below)
@@ -14596,6 +14768,13 @@ static void DMInstallOverlayEsc(void) {
     done = YES;
     Class sb = objc_getClass("SpringBoard"); SEL s = @selector(pressesBegan:withEvent:);
     if (sb && class_getInstanceMethod(sb, s)) MSHookMessageEx(sb, s, (IMP)DMOverlayPressesBegan, (IMP *)&o_OverlayPressesBegan);
+    static int appEsc = 0;   // (Esc in the app while a menu of the bar has its keys: DMMenuKeysBegin)
+    notify_register_dispatch(MSBD_MENU_ESC, &appEsc, dispatch_get_main_queue(), ^(int t) {
+        if (!gMenuKeysInApp || !gOverlay) return;
+        DM_FEATURE_MARK("menu-esc-in-app");
+        DMLog([NSString stringWithFormat:@"[overlay] Esc in %@: closed", gMenuKeysApp]);
+        DMOverlayEscape(nil);
+    });
 }
 // The menu window also carries the picture of a Finder drag that starts outside a Finder window -- the desktop's icons, the Dock's Downloads
 // stack (Finder.h DMFDTileHost) --, so a menu going hides it only when no such picture rides in it: a desktop icon dragged on from a hold whose
@@ -14604,6 +14783,7 @@ static BOOL DMFDPictureInMenuWindow(void);   // (Finder.h)
 static void DMRemoveOverlayNow(void) {
     DMTodayGiveBack(@"another menu or dialog");
     DMWiFiMenuGone(@"removed");   // (the Wi-Fi menu's scan stops with it)
+    DMBattMenuGone(@"removed");   // (the battery menu's refresh too)
     UIView *o = gOverlay;
     if (o) DMLog(@"[overlay] removed immediately");
 #if DEBUG
@@ -14611,6 +14791,7 @@ static void DMRemoveOverlayNow(void) {
 #endif
     gOverlay = nil;
     DMOverlayFocus(NO, nil);
+    DMMenuKeysEnd();
     gPill.hidden = YES;
     [o removeFromSuperview];
     if (gMenuWindow && !DMFDPictureInMenuWindow()) gMenuWindow.hidden = YES;
@@ -14622,10 +14803,12 @@ static void DMRemoveOverlayNow(void) {
 static void DMCloseOverlay(void) {
     DMTodayGiveBack(@"closed");
     DMWiFiMenuGone(@"closed");   // (the Wi-Fi menu's scan stops with it; also the screen going off, DMCloseOverlaysForScreenOff)
+    DMBattMenuGone(@"closed");
     UIView *o = gOverlay;
     DMLog([NSString stringWithFormat:@"[overlay] close requested (overlay %@)", o ? @"present" : @"already gone"]);
     gOverlay = nil;
     DMOverlayFocus(NO, nil);
+    DMMenuKeysEnd();
     gPill.hidden = YES;
     if (!o) return;
     o.userInteractionEnabled = NO;   // stop intercepting touches immediately
@@ -14657,8 +14840,9 @@ static UIUserInterfaceStyle DMSystemInterfaceStyle(void) {
     return s == UIUserInterfaceStyleUnspecified ? UIUserInterfaceStyleLight : s;
 }
 
-// Full-window control that catches every touch while something is showing.
-static UIControl *DMMakeOverlay(UIView *host, CGFloat dimAlpha) {
+// Full-window control that catches every touch while something is showing. menu: a menu of the bar (DMPresentMenu, the Apple menu), whose keys
+// can stay with the app (DMMenuKeysBegin); dialogs and panels take the keyboard focus.
+static UIControl *DMMakeOverlayFor(UIView *host, CGFloat dimAlpha, BOOL menu) {
     DMRemoveOverlayNow();
     UIControl *o = [[UIControl alloc] initWithFrame:host.bounds];
     o.overrideUserInterfaceStyle = DMSystemInterfaceStyle();   // every menu and dialog follows the system appearance
@@ -14681,7 +14865,7 @@ static UIControl *DMMakeOverlay(UIView *host, CGFloat dimAlpha) {
         for (CALayer *layer in @[o.layer, host.layer]) if ([layer respondsToSelector:opaque]) ((void (*)(id, SEL, BOOL))objc_msgSend)(layer, opaque, YES);
     }
     [host addSubview:o];
-    if (host == gMenuWindow || host == gMenuRotator) DMOverlayFocus(YES, gMenuWindow);   // (Esc reaches us while it is open: DMOverlayPressesBegan)
+    if ((host == gMenuWindow || host == gMenuRotator) && !(menu && DMMenuKeysBegin())) DMOverlayFocus(YES, gMenuWindow);   // (Esc reaches us while it is open: DMOverlayPressesBegan)
     // iPadOS 15: the menu window turns itself, but while hidden it keeps its old shape, and the catch-all made from it then covered only the old
     // (portrait) area: touches right of x 834 in landscape went through to the windows below (seen with the Today View panel under the clock).
     if (host == gMenuWindow && [NSProcessInfo processInfo].operatingSystemVersion.majorVersion < 16) o.frame = [UIScreen mainScreen].bounds;
@@ -14696,6 +14880,7 @@ static UIControl *DMMakeOverlay(UIView *host, CGFloat dimAlpha) {
     DMMenuKeyboardOrder();   // (a windowed app's keyboard steps under the menu while it is open)
     return o;
 }
+static UIControl *DMMakeOverlay(UIView *host, CGFloat dimAlpha) { return DMMakeOverlayFor(host, dimAlpha, NO); }
 
 static UIVisualEffectView *DMMakeBlur(CGFloat radius) {
     UIVisualEffectView *v = [[UIVisualEffectView alloc] initWithEffect:
@@ -15919,7 +16104,7 @@ static void DMOpenMenu(UIButton *btn) {
         }],
     ]];
 
-    UIControl *o = DMMakeOverlay(host, 0.0);
+    UIControl *o = DMMakeOverlayFor(host, 0.0, YES);   // (a menu: the app keeps the keyboard, DMMenuKeysBegin)
     [o addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { DMCloseOverlay(); }]
         forControlEvents:UIControlEventTouchUpInside];
     DMAttachMenuHover(o, fg, host, btn);
@@ -16221,11 +16406,15 @@ static id DMFindJailbreakFolderIcon(NSString **nameOut) {
     return best;
 }
 
-// Scroll the Home Screen to the folder's page, then open it.
-static void DMOpenJailbreakFolder(void) {
-    id icon = DMFindJailbreakFolderIcon(NULL);
+// Scroll the Home Screen to the folder's page, then open it (the jailbreak folder, and the folders attached to the Finder menu: FinderFolders.h). A
+// folder in the Dock opens from the Dock, as a tap on it does (DMFFOpenDockFolder).
+static BOOL DMFFOpenDockFolder(id icon, NSString *what);   // (FinderFolders.h)
+static void DMOpenHomeFolder(id icon, NSString *what) {
     id mgr = DMCall(DMCall(objc_getClass("SBIconController"), @"sharedInstance"), @"iconManager");
-    if (!icon || !mgr) { DMLog(@"[folder] jailbreak folder not found"); return; }
+    if (!icon || !mgr) { DMLog([NSString stringWithFormat:@"[folder] %@: not found", what]); return; }
+    id dock = DMCall(DMCall(DMCall(mgr, @"iconModel"), @"rootFolder"), @"dock");
+    SEL has = NSSelectorFromString(@"directlyContainsIcon:");
+    if ([dock respondsToSelector:has] && ((BOOL (*)(id, SEL, id))objc_msgSend)(dock, has, icon)) { DMFFOpenDockFolder(icon, what); return; }
     SEL reveal = NSSelectorFromString(@"revealIcon:animated:completionHandler:");
     SEL open = NSSelectorFromString(@"openFolderIcon:location:animated:withCompletion:");
     if (![mgr respondsToSelector:open]) { DMLog(@"[folder] openFolderIcon:... is missing"); return; }
@@ -16233,7 +16422,7 @@ static void DMOpenJailbreakFolder(void) {
     void (^openIt)(void) = ^{
         if (opened) return;
         opened = YES;
-        DMLog(@"[folder] opening the jailbreak folder");
+        DMLog([NSString stringWithFormat:@"[folder] opening %@", what]);
         ((void (*)(id, SEL, id, id, BOOL, id))objc_msgSend)(mgr, open, icon, @"SBIconLocationRoot", YES, nil);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             DMLog([NSString stringWithFormat:@"[folder] hasOpenFolder=%@", DMBoolStr(mgr, @"hasOpenFolder")]);
@@ -16246,6 +16435,8 @@ static void DMOpenJailbreakFolder(void) {
         openIt();
     }
 }
+static void DMOpenJailbreakFolder(void) { DMOpenHomeFolder(DMFindJailbreakFolderIcon(NULL), @"the jailbreak folder"); }
+#include "FinderFolders.h"   // (Home Screen folders attached to the Finder menu, 1.7.9 item 3: their rows, the folders' own menu row)
 
 // ---- keyboard shortcuts sent to whatever app is in front ----
 // The status bar lives in SpringBoard, so Cut/Copy/Paste cannot be called in the app directly. Instead
@@ -16875,7 +17066,7 @@ static void DMPresentMenu(UIButton *btn, const void *labelKey, const void *pillK
     UIView *fg = btn.superview;
     UIView *host = DMHostFor(fg);
     if (!host) return;
-    UIControl *o = DMMakeOverlay(host, 0.0);
+    UIControl *o = DMMakeOverlayFor(host, 0.0, YES);   // (a menu: the app keeps the keyboard, DMMenuKeysBegin)
     [o addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { DMCloseOverlay(); }]
         forControlEvents:UIControlEventTouchUpInside];
     DMAttachMenuHover(o, fg, host, btn);
@@ -16920,6 +17111,7 @@ static void DMNativeStepBackForOpen(NSString *what) {
     DMNativeSetActive(nil);
 }
 #include "WiFiMenu.h"       // (the Wi-Fi menu: Settings > Status Bar > Wi-Fi Menu, 2 Oct 2026)
+#include "BatteryMenu.h"    // (the battery menu and the Control Center icon: Settings > Status Bar > Battery Menu, 1.7.9)
 #include "TextWindow.h"     // (plain text files: a TextEdit-style window)
 #include "ProcList.h"       // (the process snapshot for Activity Monitor: the same stats reads as the RAM & CPU tile)
 #include "ActivityMonitor.h"   // (the Activity Monitor window: CPU and Memory tabs, 1.7.0)
@@ -17023,14 +17215,15 @@ static void DMNativeTick(void) {
     if (!gNativeLayer || gNativeLayer.hidden) return;
     {   // (the App Library, a Home Screen icon menu or the App Switcher takes over the screen: the native windows fade out of its way, like the
         //  engines' windows (DMSyncWindowFade) -- Finder stayed over the App Library, 30 Sep -- and come back when it is gone)
-        BOOL away = DMLibraryVisible() || gHomeMenuOpen || DMSwitcherVisible() || MSBDGuidedAccessActive();   // (and a Guided Access session: 1.3.7, audit M-7)
+        BOOL away = DMLibraryVisible() || gHomeMenuOpen || DMHomeFolderShowing() || DMSwitcherVisible() || MSBDGuidedAccessActive();   // (and a Guided Access session: 1.3.7, audit M-7;
+                                                                                                                                          //  a Home Screen folder: 1.7.9)
         if (away != gNativeAway) {
             gNativeAway = away;
             if (away && gNativeActive) DMNativeSetActive(nil);
             gNativeRotator.userInteractionEnabled = !away;
             [UIView animateWithDuration:away ? 0.16 : 0.22 delay:0 options:UIViewAnimationOptionCurveEaseInOut | UIViewAnimationOptionBeginFromCurrentState
                              animations:^{ gNativeRotator.alpha = away ? 0.0 : 1.0; } completion:nil];
-            DMLog([NSString stringWithFormat:@"[native] %@", away ? (MSBDGuidedAccessActive() ? @"Guided Access: native windows faded out" : @"App Library / App Switcher up: native windows faded out") : @"back: native windows shown"]);
+            DMLog([NSString stringWithFormat:@"[native] %@", away ? (MSBDGuidedAccessActive() ? @"Guided Access: native windows faded out" : @"App Library / App Switcher / a Home Screen menu or folder up: native windows faded out") : @"back: native windows shown"]);
         }
     }
     // (an app came to the front some other way than a touch -- opened from the Dock, a menu, a link --: the native windows step back, as on a Mac.
@@ -17137,21 +17330,26 @@ static void DMOpenFinderMenu(UIButton *btn) {
     }
     NSMutableArray *jailbreak = [NSMutableArray array];
     NSString *folderName = nil;
-    if (DMFindJailbreakFolderIcon(&folderName)) {
+    id jbFolder = DMFindJailbreakFolderIcon(&folderName);
+    if (jbFolder) {
         [jailbreak addObject:[[DMRow alloc] initWithTitle:folderName.length ? folderName : @"Jailbreak" enabled:YES
                                                   handler:DMCloseThen(^{ DMOpenJailbreakFolder(); })]];
     } else if (DMAppInstalled(@"com.opa334.TrollStore")) {
         [jailbreak addObject:[[DMRow alloc] initWithTitle:DMCall(DMProxyForBundle(@"com.opa334.TrollStore"), @"localizedName") enabled:YES
                                                   handler:DMCloseThen(^{ DMOpenApp(@"com.opa334.TrollStore"); })]];
     }
+    // the Home Screen folders attached to this menu (their Haptic Touch menu's "Show in Finder Menu"): with the jailbreak folder, after it -- folders
+    // together, TrollStore's row (an app) in its own section before them
+    NSArray<DMRow *> *folders = DMFFRows(jbFolder);
     NSMutableArray *items = [NSMutableArray arrayWithArray:finder];
-    if (apps.count || jailbreak.count) [items addObject:[NSNull null]];
-    [items addObjectsFromArray:apps];
-    if (apps.count && jailbreak.count) [items addObject:[NSNull null]];
-    [items addObjectsFromArray:jailbreak];
+    for (NSArray *section in @[apps, jailbreak, folders]) {
+        if (!section.count) continue;
+        if (items.count && !(section == folders && jbFolder)) [items addObject:[NSNull null]];
+        [items addObjectsFromArray:section];
+    }
     if (!items.count) [items addObject:[[DMRow alloc] initWithTitle:@"Nothing to open" enabled:NO handler:nil]];
     DMPresentMenu(btn, kAppLabelKey, kAppPillKey, items);
-    DMLog([NSString stringWithFormat:@"[finder] menu opened with %lu items", (unsigned long)items.count]);
+    DMLog([NSString stringWithFormat:@"[finder] menu opened with %lu items (%lu attached folders)", (unsigned long)items.count, (unsigned long)folders.count]);
 }
 
 static DMRow *DMShortcutRow(NSString *title, NSString *hint, BOOL enabled, uint32_t usage, BOOL shift) {
@@ -17774,6 +17972,119 @@ static void DMMinimizeAllWindows(void) {
         SEL miniSel = NSSelectorFromString(@"MinibtnEvent");
         if ([appCtl respondsToSelector:miniSel]) ((void (*)(id, SEL))objc_msgSend)(appCtl, miniSel);
     }
+}
+// ---- Home Minimizes Windows (1.7.9; the switch: gHomeMinimizes, above DMMinimize) ----
+// A Home the user makes -- the Home gesture's lift that SpringBoard activates as Home (MacSwitcher.h DMMSWActOrig: the bottom edge, four fingers,
+// the trackpad), a Home button press (not Cmd-H's, which runs the same press: DMHomeFromKeys) -- minimizes the windows on screen, as Minimize All
+// Windows does: into their Dock icons (with Reduce Motion: a fade), each back when its app is opened (DMSurfaceWindowForApp) or from the Dock,
+// the windows of other desktops untouched (they are not on screen). SpringBoard's own Home goes on as always (a full-screen app goes to the
+// background). With Aerial, Zetsu and MilkyWay4 the windows float over the Home Screen, where SpringBoard often is already: such a Home makes no
+// transition, and these two are what there is to see. The Stage Manager engine's windows go with SpringBoard's Home transition itself (SMHome.h);
+// only our own windows are left for this there. The rule: HomeAway.h (Mac-tested, tools/test-homeaway.sh).
+#include "HomeAway.h"
+static double gHomeAwayLiftAt = -100, gHomeAwayPressAt = -100;
+// (the Cover Sheet or Control Center over the screen: a Home press closes that, not the desktop -- read before SpringBoard handles the press, whose
+//  own handling starts their dismissal; for a lift, SpringBoard's switcher gesture ran, so neither was up)
+static BOOL DMHomeAwayCovered(void) { return DMCoverSheetShown() || DMControlCenterActive(); }
+static BOOL DMHomeAwayPressCovered(void) { return gHomeMinimizes && DMHomeAwayCovered(); }   // (MacSwitcherButton.h: nothing read with the switch off)
+static void DMHomeAwayRun(NSString *how, BOOL ours, BOOL keys, BOOL coveredBefore) {   // (after SpringBoard's own handling of the lift or the press, on the next turn)
+    dispatch_async(dispatch_get_main_queue(), ^{
+        BOOL sm = DMSMEngine();
+        unsigned engineWins = sm ? 0 : (unsigned)DMVisibleWindowCount(), ourWins = (unsigned)DMNativeVisibleWindowCount();
+        int what = DMHomeAwayWhat(gHomeMinimizes, ours, keys, coveredBefore || DMHomeAwayCovered(), MSBDGuidedAccessActive(), sm, engineWins, ourWins);
+        if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[homeaway] %@: %@ (ours %d, keyboard %d, %u engine windows, %u of ours%@)", how,
+            what == DMHomeAwayAll ? @"every window minimized" : what == DMHomeAwayOurs ? @"our own windows minimized (the engine's go with its Home)" : @"nothing",
+            ours, keys, engineWins, ourWins, sm ? @", Stage Manager engine" : @""]);
+        if (what == DMHomeAwayNone) return;
+        DM_FEATURE_MARK("home-minimizes-windows");
+        if (what == DMHomeAwayOurs) { for (DMNativeWindow *nw in [gNativeWindows copy]) if (!nw.hidden && nw.superview) [nw minimize]; return; }
+        DMMinimizeAllWindows();
+    });
+}
+static void DMHomeAwayLift(void) {   // (MacSwitcher.h: SpringBoard is given Home for the gesture's lift -- once per gesture, HomeAway.h)
+    if (!gHomeMinimizes || !DMHomeAwayOnce(CACurrentMediaTime(), &gHomeAwayLiftAt)) return;
+    DMHomeAwayRun(@"a Home gesture", DMHomeIsOurs(), NO, NO);
+}
+static void DMHomeAwayPress(BOOL handled, BOOL coveredBefore) {   // (MacSwitcherButton.h: SpringBoard has handled a single press -- once, whichever variant ran)
+    if (!gHomeMinimizes || !DMHomeAwayOnce(CACurrentMediaTime(), &gHomeAwayPressAt)) return;
+    DMHomeAwayRun([NSString stringWithFormat:@"a Home press (SpringBoard's answer %d%@)", handled, coveredBefore ? @", over the Cover Sheet or Control Center" : @""], DMHomeIsOurs(), DMHomeFromKeys(), coveredBefore);
+}
+// iPadOS's App Switcher closes to the Home Screen by a tap beside its cards too (-[SBFluidSwitcherViewController _handleDismissTapGesture:], the
+// event SBTapOutsideToDismissSwitcherModifierEvent: Home, read on 15.6.1): with the windows' own cards there (WindowCards.h), that is a Home from
+// the windows as Stage Manager's is (its Home rule sees that one as a Home from the App Switcher). Only for iPadOS's main App Switcher (Slide
+// Over's floating one closes the same way and is no Home); a card's tap is didSelectContainer:'s (DMCardTakes).
+static void (*o_HomeAwayDismissTap)(id, SEL, id);
+static void DMHomeAwayDismissTap(id self, SEL _cmd, id recognizer) {
+    BOOL main = gHomeMinimizes && !DMSMEngine() && self == DMMainSwitcherContent() && DMMainSwitcherVisible();
+    o_HomeAwayDismissTap(self, _cmd, recognizer);
+    if (main) DMHomeAwayRun(@"a tap beside the App Switcher's cards", DMHomeIsOurs(), NO, NO);
+}
+static void DMHomeAwayHookDismissTap(void) {   // (once, when Home Minimizes Windows is first on; the exact type only)
+    static BOOL done = NO;
+    if (done) return;
+    done = YES;
+    Class c = objc_getClass("SBFluidSwitcherViewController");
+    SEL s = NSSelectorFromString(@"_handleDismissTapGesture:");
+    Method m = c ? class_getInstanceMethod(c, s) : NULL;
+    if (!m || ![DMSMSigOfMethod(m) isEqualToString:DMSMExpect(@encode(void), @encode(id), NULL)]) { DMLog(@"[homeaway] the App Switcher's tap beside its cards is not as expected here: it minimizes nothing"); return; }
+    MSHookMessageEx(c, s, (IMP)DMHomeAwayDismissTap, (IMP *)&o_HomeAwayDismissTap);
+}
+// Cmd-H: SpringBoard's Home shortcut marked while it runs and when it is done (DMHomeFromKeys: its Home stays SpringBoard's own, as before).
+static void (*o_HomeAwayKeysHome)(id, SEL, id);
+static void DMHomeAwayKeysHome(id self, SEL _cmd, id sender) {
+    gDMKeysHomeAt = CACurrentMediaTime();
+    gDMKeysHomeDepth++;
+    o_HomeAwayKeysHome(self, _cmd, sender);
+    gDMKeysHomeDepth--;
+    gDMKeysHomeAt = CACurrentMediaTime();
+}
+static void DMHomeAwayHookKeys(void) {   // (once, when Home Minimizes Windows is first on; the exact type only)
+    static BOOL done = NO;
+    if (done) return;
+    done = YES;
+    Class c = objc_getClass("SpringBoard");
+    SEL s = NSSelectorFromString(@"_handleGotoHomeScreenShortcut:");
+    Method m = c ? class_getInstanceMethod(c, s) : NULL;
+    if (!m || ![DMSMSigOfMethod(m) isEqualToString:DMSMExpect(@encode(void), @encode(id), NULL)]) { DMLog(@"[homeaway] SpringBoard's Home shortcut (Cmd-H) is not as expected here: its Home is read as the Home button's"); return; }
+    MSHookMessageEx(c, s, (IMP)DMHomeAwayKeysHome, (IMP *)&o_HomeAwayKeysHome);
+}
+// Any other Home shortcut of SpringBoard's -- Globe-H, if it has an action of its own (not found yet: 15.6.1's Globe-Up has its own,
+// _handleOpenAppSwitcherShortcut:, plans/v1.4-integration.md) --: once SpringBoard is up, its key commands for H (-[SpringBoard keyCommands])
+// are read, and each action other than Cmd-H's is marked the same way, on its exact type only (the debug log lists what was found).
+enum { kDMHomeKeysMax = 4 };
+static SEL gDMHomeKeysSel[kDMHomeKeysMax];
+static void (*gDMHomeKeysOrig[kDMHomeKeysMax])(id, SEL, id);
+static int gDMHomeKeysCount = 0;
+static void DMHomeAwayKeysOther(id self, SEL _cmd, id sender) {
+    void (*orig)(id, SEL, id) = NULL;
+    for (int i = 0; i < gDMHomeKeysCount; i++) if (sel_isEqual(gDMHomeKeysSel[i], _cmd)) orig = gDMHomeKeysOrig[i];
+    gDMKeysHomeAt = CACurrentMediaTime();
+    gDMKeysHomeDepth++;
+    if (orig) orig(self, _cmd, sender);
+    gDMKeysHomeDepth--;
+    gDMKeysHomeAt = CACurrentMediaTime();
+}
+static void DMHomeAwayScanKeys(void) {   // (once, with SpringBoard up and Home Minimizes Windows on: DMTickBody)
+    static BOOL done = NO;
+    if (done || !gHomeMinimizes) return;
+    done = YES;
+    UIApplication *sb = [UIApplication sharedApplication];
+    Class k = sb ? object_getClass(sb) : Nil;
+    NSArray *cmds = [sb respondsToSelector:@selector(keyCommands)] ? [sb keyCommands] : nil;
+    NSMutableString *seen = [NSMutableString string];
+    for (UIKeyCommand *c in cmds) {
+        if (![c isKindOfClass:[UIKeyCommand class]] || ![[c.input lowercaseString] isEqualToString:@"h"] || !c.action) continue;
+        [seen appendFormat:@" %@ (mod 0x%lx)", NSStringFromSelector(c.action), (long)c.modifierFlags];
+        if (sel_isEqual(c.action, NSSelectorFromString(@"_handleGotoHomeScreenShortcut:")) || gDMHomeKeysCount >= kDMHomeKeysMax) continue;
+        BOOL known = NO;
+        for (int i = 0; i < gDMHomeKeysCount; i++) if (sel_isEqual(gDMHomeKeysSel[i], c.action)) known = YES;
+        Method m = known || !k ? NULL : class_getInstanceMethod(k, c.action);
+        if (!m || ![DMSMSigOfMethod(m) isEqualToString:DMSMExpect(@encode(void), @encode(id), NULL)]) continue;
+        gDMHomeKeysSel[gDMHomeKeysCount] = c.action;
+        MSHookMessageEx(k, c.action, (IMP)DMHomeAwayKeysOther, (IMP *)&gDMHomeKeysOrig[gDMHomeKeysCount]);
+        gDMHomeKeysCount++;
+    }
+    DMLog([NSString stringWithFormat:@"[homeaway] SpringBoard's key commands for H:%@ -- %d other action(s) marked as the keyboard's", seen.length ? seen : @" none", gDMHomeKeysCount]);
 }
 static void DMOpenWindowMenu(UIButton *btn) {
     if (DMTitleTapWithMenuOpen(btn)) return;
@@ -18650,7 +18961,8 @@ static void DMOpenMenuForButton(UIButton *b) {
 - (UIButton *)titleAt:(CGPoint)p {
     UIView *fg = self.fg, *host = self.host;
     if (!fg || !host) return nil;
-    const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, kSSHButtonKey, kVPNButtonKey, kWiFiButtonKey };
+    const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, kSSHButtonKey, kVPNButtonKey, kWiFiButtonKey,
+                           kBattButtonKey, kCCButtonKey };   // (the Control Center icon too: like a Mac's, a click on it with a menu open opens Control Center)
     for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
         UIButton *b = objc_getAssociatedObject(fg, keys[i]);
         if (!b || b.hidden || b == self.current || b.frame.size.width < 1.0) continue;
@@ -18675,6 +18987,8 @@ static void DMOpenMenuForButton(UIButton *b) {
         if (b == objc_getAssociatedObject(bfg, kSSHButtonKey)) DMOpenSSHMenu(b);
         else if (b == objc_getAssociatedObject(bfg, kVPNButtonKey)) DMOpenVPNMenu(b);
         else if (b == objc_getAssociatedObject(bfg, kWiFiButtonKey)) DMOpenWiFiMenu(b);
+        else if (b == objc_getAssociatedObject(bfg, kBattButtonKey)) DMOpenBatteryMenu(b);
+        else if (b == objc_getAssociatedObject(bfg, kCCButtonKey)) DMBattOpenControlCenter(b);
         else DMOpenMenuForButton(b);
     });
     else if (onCurrent) dispatch_async(dispatch_get_main_queue(), ^{ DMLog(@"[menu] touch on its own title: closed"); DMCloseOverlay(); });
@@ -18690,6 +19004,8 @@ static void DMOpenMenuForButton(UIButton *b) {
     if (b == objc_getAssociatedObject(fg, kSSHButtonKey)) DMOpenSSHMenu(b);
     else if (b == objc_getAssociatedObject(fg, kVPNButtonKey)) DMOpenVPNMenu(b);
     else if (b == objc_getAssociatedObject(fg, kWiFiButtonKey)) DMOpenWiFiMenu(b);
+    else if (b == objc_getAssociatedObject(fg, kBattButtonKey)) DMOpenBatteryMenu(b);
+    else if (b == objc_getAssociatedObject(fg, kCCButtonKey)) DMBattOpenControlCenter(b);
     else DMOpenMenuForButton(b);
 }
 @end
@@ -19173,7 +19489,7 @@ static UIColor *DMBarItemColor(UIView *fg, UIView *timeLabel) {
 static void DMApplyBarItemColor(UIView *fg, UIColor *c, BOOL background) {
     if (!fg || !c) return;
     const void *labels[] = { kLogoKey, kAppLabelKey, kFileLabelKey, kEditLabelKey, kViewLabelKey, kGoLabelKey, kWinLabelKey, kAudioLabelKey, kDateProxyKey };
-    const void *icons[] = { kSpotIconKey, kWiFiIconKey, kVPNIconKey, kMuteIconKey, kSSHIconKey };
+    const void *icons[] = { kSpotIconKey, kWiFiIconKey, kVPNIconKey, kMuteIconKey, kSSHIconKey, kCCIconKey };
     for (size_t i = 0; i < sizeof labels / sizeof labels[0]; i++) {
         UILabel *l = objc_getAssociatedObject(fg, labels[i]);
         if ([l isKindOfClass:[UILabel class]] && ![l.textColor isEqual:c]) l.textColor = c;
@@ -20846,6 +21162,12 @@ static void DMLoadPrefs(void) {
         if (wifiRef) { if (CFGetTypeID(wifiRef) == CFBooleanGetTypeID()) wifi = CFBooleanGetValue(wifiRef); CFRelease(wifiRef); }
         DMWiFiApplyPref(wifi && (gSBItemHooks & 16) && DMWiFiSupported());
     }
+    {   // Battery Menu: on unless switched off, updaters too (BatteryMenu.h DMBattApplyPref; common/BatteryMenu.h MSBDBattMenuOn)
+        CFPropertyListRef bmRef = CFPreferencesCopyValue(CFSTR(MSBD_BATT_MENU_KEY), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        BOOL isBool = bmRef && CFGetTypeID(bmRef) == CFBooleanGetTypeID();
+        DMBattApplyPref(MSBDBattMenuOn(isBool, isBool && CFBooleanGetValue(bmRef)));
+        if (bmRef) CFRelease(bmRef);
+    }
     {   // Activity Monitor in the App Library: on unless switched off (AppLibraryApps.h DMALApplyPref)
         BOOL al = YES;
         CFPropertyListRef alRef = CFPreferencesCopyValue(CFSTR("activityMonitorInLibrary"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
@@ -20855,12 +21177,24 @@ static void DMLoadPrefs(void) {
         //  read; classes only, as our constructor needs: ActMonDock.h DMAMCmdTabInstall)
         if (!DMCtorSkip("cmdtab")) DMAMCmdTabInstall();
     }
+    {   // Home Minimizes Windows (1.7.9): on unless switched off, for every user, updaters too (KT 2 Nov; no OldDefaults line in the root helper) --
+        // going Home minimizes the windows (above DMMinimize). Its hooks once, when it is first on: the gesture's lift (MacSwitcher.h
+        // DMMSWHookActivation), the App Switcher's tap beside its cards, Cmd-H's shortcut (to leave it out) and the Home button's single press
+        // (DMMSWHookHomeButton, below)
+        BOOL hm = YES;
+        CFPropertyListRef hmRef = CFPreferencesCopyValue(CFSTR("homeMinimizesWindows"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        if (hmRef) { if (CFGetTypeID(hmRef) == CFBooleanGetTypeID()) hm = CFBooleanGetValue(hmRef); CFRelease(hmRef); }
+        hm = hm && !DMCtorSkip("homeaway");
+        if (hm != gHomeMinimizes) DMLog([NSString stringWithFormat:@"[homeaway] Home Minimizes Windows %@", hm ? @"on: going Home minimizes the windows" : @"off: the windows stay at Home"]);
+        gHomeMinimizes = hm;
+        if (hm) { DMMSWHookActivation(); DMHomeAwayHookDismissTap(); DMHomeAwayHookKeys(); }
+    }
     {   // Mac Switcher: off unless switched on (DMMSWApplyPref: iPadOS 15-17, DMMSWOSOK, and only when its self-check passed)
         BOOL msw = NO;
         CFPropertyListRef mswRef = CFPreferencesCopyValue(CFSTR("macSwitcher"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
         if (mswRef) { if (CFGetTypeID(mswRef) == CFBooleanGetTypeID()) msw = CFBooleanGetValue(mswRef); CFRelease(mswRef); }
         DMMSWApplyPref(msw && !DMCtorSkip("macswitcher"));
-        DMMSWHookHomeButton();   // (once, when it is first on: the Home button's double press, MacSwitcherButton.h)
+        DMMSWHookHomeButton();   // (once, when it or Home Minimizes Windows is first on: the Home button's presses, MacSwitcherButton.h)
         // Go to the App's Desktop (1.7.1): off unless switched on -- opening an app whose windows are all on other desktops brings its window here
         // (MacSwitcher.h DMMSWBringHere, MacSwitcherSM.h); on, that desktop comes, as before
         BOOL go = NO;
@@ -21253,6 +21587,7 @@ static BOOL DMLayoutWithoutClock(UIView *fg) {
     // Requirement (2026-09-25): a locked iPad shows only passive icons -- the Spotlight icon goes too (a tap on it opened Spotlight over the Lock Screen),
     // and the status icons close up to the right edge in its place. It comes back (fading in) with the clock after unlocking.
     if (spotIcon && !spotIcon.hidden) { spotIcon.hidden = YES; spotBtn.hidden = YES; objc_setAssociatedObject(fg, kSpotLockHidKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
+    DMBattLockLayout(fg);   // (the Control Center icon goes the same way, and the battery is iOS's own there: BatteryMenu.h)
     UIView *prevTrail = objc_getAssociatedObject(fg, kTrailShiftKey);
     if (prevTrail && prevTrail != trailing) prevTrail.transform = CGAffineTransformIdentity;
     objc_setAssociatedObject(fg, kTrailShiftKey, trailing, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -21369,7 +21704,7 @@ static NSArray<NSValue *> *DMBarFadeBackKeys(void) {
     static NSArray *keys; static dispatch_once_t once;
     dispatch_once(&once, ^{ keys = @[[NSValue valueWithPointer:kLightsKey], [NSValue valueWithPointer:kAppLabelKey], [NSValue valueWithPointer:kFileLabelKey], [NSValue valueWithPointer:kEditLabelKey],
         [NSValue valueWithPointer:kViewLabelKey], [NSValue valueWithPointer:kGoLabelKey], [NSValue valueWithPointer:kWinLabelKey], [NSValue valueWithPointer:kAudioLabelKey],
-        [NSValue valueWithPointer:kDateProxyKey], [NSValue valueWithPointer:kSpotIconKey]]; });
+        [NSValue valueWithPointer:kDateProxyKey], [NSValue valueWithPointer:kSpotIconKey], [NSValue valueWithPointer:kCCIconKey]]; });
     return keys;
 }
 static NSSet<NSValue *> *DMBarShownItems(UIView *fg) {   // (which of those show now)
@@ -21751,7 +22086,7 @@ static BOOL DMBarCopyIsCCDuplicate(UIView *fg) {
         DMSBDiagStep(@"b-narrow");
         // A copy that has collapsed (an app card being dismissed, say) must not leave our
         // views behind at their old positions, or a stale app name lingers that nobody updates.
-        const void *keys[] = { kSSHIconKey, kSSHButtonKey, kVPNIconKey, kVPNButtonKey, kWiFiIconKey, kWiFiButtonKey, kMuteIconKey, kLogoKey, kButtonKey, kPillKey, kAppLabelKey, kAppButtonKey, kAppPillKey, kDateProxyKey, kClockButtonKey, kSpotIconKey, kSpotButtonKey, kEditLabelKey, kEditButtonKey, kEditPillKey, kGoLabelKey, kGoButtonKey, kGoPillKey, kWinLabelKey, kWinButtonKey, kWinPillKey, kAudioLabelKey, kAudioButtonKey, kAudioPillKey, kBackgroundKey, kLightsKey , kFileLabelKey, kFileButtonKey, kFilePillKey, kViewLabelKey, kViewButtonKey, kViewPillKey };
+        const void *keys[] = { kSSHIconKey, kSSHButtonKey, kVPNIconKey, kVPNButtonKey, kWiFiIconKey, kWiFiButtonKey, kBattButtonKey, kCCIconKey, kCCButtonKey, kMuteIconKey, kLogoKey, kButtonKey, kPillKey, kAppLabelKey, kAppButtonKey, kAppPillKey, kDateProxyKey, kClockButtonKey, kSpotIconKey, kSpotButtonKey, kEditLabelKey, kEditButtonKey, kEditPillKey, kGoLabelKey, kGoButtonKey, kGoPillKey, kWinLabelKey, kWinButtonKey, kWinPillKey, kAudioLabelKey, kAudioButtonKey, kAudioPillKey, kBackgroundKey, kLightsKey , kFileLabelKey, kFileButtonKey, kFilePillKey, kViewLabelKey, kViewButtonKey, kViewPillKey };
         for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
             ((UIView *)objc_getAssociatedObject(fg, keys[i])).hidden = YES;
         return;
@@ -22093,14 +22428,17 @@ static BOOL DMBarCopyIsCCDuplicate(UIView *fg) {
         if (extra == timeLabel || extra == dateLabel || extra.hidden || extra.alpha < 0.05 || extra.bounds.size.width < 1.0) continue;
         clockEdge = MIN(clockEdge, DMBarLead(fg, rtl, [container convertRect:extra.frame toView:fg]));
     }
-    CGFloat spotLeft = clockEdge - kSpotClockGap * k - spotW;   // with the icon off, the status icons end right before the clock instead
+    // The Control Center icon (Battery Menu on: BatteryMenu.h) right before the clock, then the Spotlight icon, as on a Mac; with both off, the
+    // status icons end right before the clock instead. Without the Control Center icon the Spotlight icon sits as before (common/BatteryMenu.h).
+    MSBDBattRightSide side = DMBattCCLayout(fg, rtl, clockEdge, timeCentre.y, timeFont, k, gShowSpotlight, spotW, kSpotHitSlop * k, kSpotClockGap * k);
+    CGFloat spotLeft = side.spotLead;
     if (gShowSpotlight) {
         spotIcon.frame = DMBarRect(fg, rtl, CGRectMake(spotLeft, timeCentre.y - spotH / 2.0, spotW, spotH));
-        spotBtn.frame = DMBarRect(fg, rtl, CGRectMake(spotLeft - kSpotHitSlop * k, 0, spotW + 2.0 * kSpotHitSlop * k, fg.bounds.size.height));
+        spotBtn.frame = DMBarRect(fg, rtl, CGRectMake(side.spotBtnLead, 0, side.spotBtnTrail - side.spotBtnLead, fg.bounds.size.height));
         [fg bringSubviewToFront:spotIcon];
         [fg bringSubviewToFront:spotBtn];
     }
-    CGFloat iconsEnd = gShowSpotlight ? spotLeft : clockEdge;
+    CGFloat iconsEnd = side.iconsEnd;
 
     if (needProxy) {
         dateProxy.frame = DMBarRect(fg, rtl, CGRectMake(clockLeft, timeCentre.y - proxyH / 2.0, proxyW, proxyH));
@@ -22199,6 +22537,8 @@ static BOOL DMBarCopyIsCCDuplicate(UIView *fg) {
                 });
             }
         }
+        // The battery's button (Settings > Status Bar > Battery Menu): over iOS's own battery item, which then opens our battery menu (BatteryMenu.h)
+        DMBattLayoutButton(fg, left, k);
         // Wi-Fi icon (Settings > Status Bar > Wi-Fi Menu): our own item nearest the status icons, like a Mac's Wi-Fi menu extra beside Control
         // Center; iOS's own Wi-Fi item is left out of our bars then (DMHideStockWiFi). It stays with Wi-Fi off (the empty fan). Tapping it opens its menu.
         left = DMWiFiLayoutIcon(fg, left, timeCentre.y, k);
@@ -22569,7 +22909,7 @@ static BOOL DMPointOverOurControl(UIView *bar, UIGestureRecognizer *g) {
     UIView *lightsView = objc_getAssociatedObject(fg, kLightsKey);
     if (lightsView && !lightsView.hidden && CGRectContainsPoint(lightsView.frame, p)) return YES;
     const void *keys[] = { kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, kSSHButtonKey,
-                           kVPNButtonKey, kWiFiButtonKey, kSpotButtonKey, kClockButtonKey };
+                           kVPNButtonKey, kWiFiButtonKey, kSpotButtonKey, kClockButtonKey, kBattButtonKey, kCCButtonKey };   // (the battery: our menu, not Control Center, while Battery Menu is on)
 #if DEBUG
     if (DMTestFlag("/tmp/msb-bar-apple-actions")) {   // (tests: the set before 1.7.1 -- the clock and the icons left to iPadOS's region actions)
         const void *old[] = { kAppButtonKey, kEditButtonKey, kGoButtonKey, kSpotButtonKey };
@@ -25604,6 +25944,39 @@ static void DMRunTrigger(NSString *cmd) {
         }
         DMLog([NSString stringWithFormat:@"[dylibs] %lu tweak libraries: %@", (unsigned long)names.count, [names componentsJoinedByString:@" "]]);
     }
+    else if ([cmd hasPrefix:@"hooks_"]) {   // hooks_<library name part>: the Objective-C methods of other images' classes whose code lies in that loaded library -- its hooks (read-only)
+        const char *want = [cmd substringFromIndex:6].UTF8String; uintptr_t lo = 0, hi = 0; const char *path = NULL;
+        for (uint32_t i = 0; i < _dyld_image_count() && !lo; i++) {
+            const char *p = _dyld_get_image_name(i); const struct mach_header_64 *h = (const struct mach_header_64 *)_dyld_get_image_header(i);
+            if (!p || !h || !strstr(p, want) || h->magic != MH_MAGIC_64) continue;
+            const struct load_command *lc = (const struct load_command *)(h + 1);
+            for (uint32_t k = 0; k < h->ncmds; k++, lc = (const struct load_command *)((const char *)lc + lc->cmdsize))
+                if (lc->cmd == LC_SEGMENT_64 && !strcmp(((const struct segment_command_64 *)lc)->segname, "__TEXT")) {
+                    const struct segment_command_64 *sg = (const struct segment_command_64 *)lc;
+                    lo = (uintptr_t)sg->vmaddr + (uintptr_t)_dyld_get_image_vmaddr_slide(i); hi = lo + (uintptr_t)sg->vmsize; path = p;
+                }
+        }
+        if (!lo) DMLog([NSString stringWithFormat:@"[hooks] no loaded library named like '%s'", want]);
+        else {
+            unsigned int nc = 0, no = 0; Class *cs = objc_copyClassList(&nc); const char **own = objc_copyClassNamesForImage(path, &no);
+            NSMutableSet *mine = [NSMutableSet set]; for (unsigned int i = 0; i < no; i++) [mine addObject:@(own[i])];
+            NSMutableArray *hooks = [NSMutableArray array];
+            for (unsigned int i = 0; i < nc; i++) {
+                if ([mine containsObject:@(class_getName(cs[i]))]) continue;   // (the library's own classes: its code, not hooks)
+                for (int meta = 0; meta < 2; meta++) {
+                    unsigned int mc = 0; Method *ms = class_copyMethodList(meta ? object_getClass(cs[i]) : cs[i], &mc);
+                    for (unsigned int j = 0; j < mc; j++) {
+                        uintptr_t imp = (uintptr_t)ptrauth_strip((void *)method_getImplementation(ms[j]), ptrauth_key_function_pointer);
+                        if (imp >= lo && imp < hi) [hooks addObject:[NSString stringWithFormat:@"%c[%s %s]", meta ? '+' : '-', class_getName(cs[i]), sel_getName(method_getName(ms[j]))]];
+                    }
+                    free(ms);
+                }
+            }
+            free(cs); free(own);
+            [hooks sortUsingSelector:@selector(compare:)];
+            DMLog([NSString stringWithFormat:@"[hooks] %s: %lu method(s) of other classes run its code: %@", strrchr(path, '/') ? strrchr(path, '/') + 1 : path, (unsigned long)hooks.count, [hooks componentsJoinedByString:@" "]]);
+        }
+    }
     else if ([cmd isEqualToString:@"kbfocus"]) {   // kbfocus: which host shows the keyboard, every keyboard host with its owner, and SpringBoard's keyboard focus (read-only)
         NSMutableString *out = [NSMutableString stringWithString:@"[kbfocus]"];
         UIView *shown = DMKeyboardPresentingHost();
@@ -26184,6 +26557,106 @@ static void DMRunTrigger(NSString *cmd) {
             DMLog([NSString stringWithFormat:@"[ptrseq] %d events of (%g, %g)", count, dx, dy]);
         }
     }
+    else if ([cmd hasPrefix:@"scrollsys_"]) {   // scrollsys_<dx>_<dy>_<count>_<senderhex>[_wheel]: a two-finger scroll from that HID sender (began, <count> changes 16 ms apart, ended; _wheel: plain wheel steps, no phases) -- debug, 1.7.9 scroll turn
+        NSArray *a = [[cmd substringFromIndex:10] componentsSeparatedByString:@"_"];
+        if (a.count >= 4) {
+            void *iokit = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY);
+            static HIDClientRef2 client; if (!client) { HIDClientRef2 (*create)(CFAllocatorRef) = dlsym(iokit, "IOHIDEventSystemClientCreate"); client = create ? create(kCFAllocatorDefault) : NULL; }
+            void *(*mk)(CFAllocatorRef, uint64_t, double, double, double, uint32_t) = dlsym(iokit, "IOHIDEventCreateScrollEvent");
+            void (*setSender)(void *, uint64_t) = dlsym(iokit, "IOHIDEventSetSenderID");
+            void (*setPhase)(void *, uint32_t) = dlsym(iokit, "IOHIDEventSetPhase");
+            void (*sysDispatch)(HIDClientRef2, void *) = dlsym(iokit, "IOHIDEventSystemClientDispatchEvent");
+            double dx = [a[0] doubleValue], dy = [a[1] doubleValue]; int count = MAX(1, MIN(120, [a[2] intValue]));
+            uint64_t sender = strtoull([a[3] UTF8String], NULL, 16);
+            BOOL wheel = [a.lastObject isEqualToString:@"wheel"];
+            void (^send)(double, double, uint32_t) = ^(double x, double y, uint32_t phase) {
+                void *ev = (mk && client && sysDispatch) ? mk(kCFAllocatorDefault, mach_absolute_time(), x, y, 0, 0) : NULL;
+                if (!ev) return;
+                if (setSender && sender) setSender(ev, sender);
+                if (setPhase && phase) setPhase(ev, phase);
+                sysDispatch(client, ev); CFRelease(ev);
+            };
+            int steps = wheel ? count : count + 2;
+            for (int i = 0; i < steps; i++)
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 0.016 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    if (wheel) send(dx, dy, 0);
+                    else if (i == 0) send(0, 0, 1);              // (began)
+                    else if (i == steps - 1) send(0, 0, 4);      // (ended)
+                    else send(dx, dy, 2);                        // (changed)
+                });
+            DMLog([NSString stringWithFormat:@"[scrollsys] %d %@ of (%g, %g) from sender 0x%llx (%@)", count, wheel ? @"wheel steps" : @"changes", dx, dy, sender, mk ? @"sent" : @"IOHIDEventCreateScrollEvent missing"]);
+        }
+    }
+    else if ([cmd isEqualToString:@"scrollturn"]) {   // scrollturn: the scroll turn's state -- the hook, our windows' own and told orientations, the containers' turns (read-only; 1.7.9)
+        Method m = class_getInstanceMethod(objc_getClass("UIScrollEvent"), NSSelectorFromString(@"_convertDeltaFromHIDDeviceSpaceToSceneReferenceSpaceIfNeeded:"));
+        SEL ov = NSSelectorFromString(@"_overriddenInterfaceOrientation"), wo = NSSelectorFromString(@"_windowInterfaceOrientation");
+        NSMutableString *out = [NSMutableString stringWithFormat:@"[scrollturn] hook %@ (%s), own getters %p / %p; menu container turn -> %d, native -> %d; screen %@ orientation %ld",
+            o_DMScrollDeltaToFixed ? @"in" : @"OUT", m ? method_getTypeEncoding(m) : "missing", gDMScrollTurnOwnOverridden, gDMScrollTurnOwnWindowOrient,
+            atomic_load(&gDMMenuScrollTurn), atomic_load(&gDMNativeScrollTurn), NSStringFromCGSize([UIScreen mainScreen].bounds.size), DMRealInterfaceOrientation()];
+        for (UIWindow *w in @[gMenuWindow ?: (id)[NSNull null], gNativeLayer ?: (id)[NSNull null]]) {
+            if (![w isKindOfClass:[UIWindow class]]) { [out appendString:@"; (window not made)"]; continue; }
+            Method mine = class_getInstanceMethod(object_getClass(w), ov);
+            long (^ask)(SEL) = ^long(SEL s) { return [w respondsToSelector:s] ? ((long (*)(id, SEL))objc_msgSend)(w, s) : -1; };
+            [out appendFormat:@"; %s bounds %@ hidden %d: overridden %ld window %ld interface %ld (answered by %@)", class_getName(object_getClass(w)), NSStringFromCGSize(w.bounds.size), w.hidden,
+                ask(ov), ask(wo), ask(NSSelectorFromString(@"interfaceOrientation")),
+                mine && method_getImplementation(mine) == (IMP)DMScrollTurnOverridden ? @"ours for a turned scroll" : @"UIKit's"];
+        }
+        DMLog(out);
+    }
+#if DEBUG
+    else if ([cmd hasPrefix:@"scrollsynth_"]) {   // scrollsynth_<dx>_<dy>[_flip]: a trackpad scroll's delta as UIKit turns it for the open Today panel's list, on a scroll event made here
+                                                  // and sent nowhere -- once with UIKit's own turn, once with the scroll turn (debug, 1.7.9: injected scrolls are not routed by backboardd)
+        NSArray *a = [[cmd substringFromIndex:12] componentsSeparatedByString:@"_"];
+        UIScrollView *list = gTodayList; UIWindow *w = gMenuWindow;
+        Class se = objc_getClass("UIScrollEvent"), da = objc_getClass("BKSHIDEventPointerAttributes"), tk = objc_getClass("BKSHIDEventDeferringToken");   // (the event's own attributes: pointer attributes, digitizer attributes' kind)
+        void *bks = dlopen("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices", RTLD_LAZY);
+        void (*setAttrs)(void *, id) = bks ? dlsym(bks, "BKSHIDEventSetAttributes") : NULL;
+        void *iokit = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY);
+        void *(*mk)(CFAllocatorRef, uint64_t, double, double, double, uint32_t) = iokit ? dlsym(iokit, "IOHIDEventCreateScrollEvent") : NULL;
+        SEL initSel = NSSelectorFromString(@"_init"), setHID = NSSelectorFromString(@"_setHIDEvent:"), ctxSel = NSSelectorFromString(@"_contextId"), tokSel = NSSelectorFromString(@"tokenForIdentifierOfCAContext:");
+        SEL accSel = NSSelectorFromString(@"acceleratedDelta"), inViewSel = NSSelectorFromString(@"_adjustedAcceleratedDeltaInView:"), wsSel = NSSelectorFromString(@"_windowServerHitTestWindow");
+        if (a.count < 2 || !list || !w || !se || !da || !tk || !setAttrs || !mk || ![se instancesRespondToSelector:initSel] || ![tk respondsToSelector:tokSel] || ![w respondsToSelector:ctxSel]
+            || ![se instancesRespondToSelector:accSel] || ![se instancesRespondToSelector:inViewSel]) {
+            DMLog([NSString stringWithFormat:@"[scrollsynth] not here: list %p, menu window %p, classes %d %d %d, calls %d %d", list, w, se != Nil, da != Nil, tk != Nil, setAttrs != NULL, mk != NULL]);
+            return;
+        }
+        Ivar attrsIvar = NULL; unsigned int n = 0; Ivar *ivs = class_copyIvarList(se, &n);
+        for (unsigned int i = 0; i < n; i++) { const char *t = ivar_getTypeEncoding(ivs[i]); if (t && !strcmp(t, "@\"BKSHIDEventPointerAttributes\"")) { attrsIvar = ivs[i]; break; } }
+        free(ivs);
+        if (!attrsIvar) { DMLog(@"[scrollsynth] no pointer attributes on UIScrollEvent here"); return; }
+        BOOL flip = [a.lastObject isEqualToString:@"flip"];
+        double dx = [a[0] doubleValue], dy = [a[1] doubleValue];
+        unsigned int ctx = ((unsigned int (*)(id, SEL))objc_msgSend)(w, ctxSel);
+        id attrs = [da new];
+        @try {
+            [attrs setValue:((id (*)(id, SEL, unsigned int))objc_msgSend)(tk, tokSel, ctx) forKey:@"token"];
+            [attrs setValue:@(0x40 | (flip ? 0x20 : 0)) forKey:@"options"];   // (the device-space delta, as the trackpad's come; 0x20: flipped)
+            [attrs setValue:@11 forKey:@"source"];                            // (a trackpad: a continuous scroll)
+            [attrs setValue:@100.0 forKey:@"digitizerSurfaceWidth"]; [attrs setValue:@70.0 forKey:@"digitizerSurfaceHeight"];
+        } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[scrollsynth] attributes not set: %@", e.reason]); return; }
+        void *ev = mk(kCFAllocatorDefault, mach_absolute_time(), dx, dy, 0, 0);
+        if (!ev) { DMLog(@"[scrollsynth] no scroll event"); return; }
+        setAttrs(ev, attrs);
+        void (*uiEventSetHID)(id, SEL, void *) = (void (*)(id, SEL, void *))class_getMethodImplementation([UIEvent class], setHID);   // (UIEvent's own: UIScrollEvent's wants a pointer event inside)
+        NSMutableString *out = [NSMutableString stringWithFormat:@"[scrollsynth] device delta %g,%g%@ into the Today list (menu window context %u, container turn %d):", dx, dy, flip ? @" flipped" : @"", ctx, atomic_load(&gDMMenuScrollTurn)];
+        for (int pass = 0; pass < 2; pass++) {
+            id e = ((id (*)(id, SEL))objc_msgSend)([se alloc], initSel);
+            if (!e) continue;
+            @try {
+                uiEventSetHID(e, setHID, ev);
+                object_setIvarWithStrongDefault(e, attrsIvar, attrs);
+                gDMScrollTurnTestOff = (pass == 0);
+                id named = ((id (*)(id, SEL))objc_msgSend)(e, wsSel);
+                CGVector fixed = ((CGVector (*)(id, SEL))objc_msgSend)(e, accSel), inList = ((CGVector (*)(id, SEL, id))objc_msgSend)(e, inViewSel, list);
+                gDMScrollTurnTestOff = NO;
+                [out appendFormat:@" %@: named %@, screen-fixed %.1f,%.1f, in the list %.1f,%.1f;", pass == 0 ? @"UIKit's own turn" : @"with the scroll turn", NSStringFromClass([named class]), fixed.dx, fixed.dy, inList.dx, inList.dy];
+                uiEventSetHID(e, setHID, NULL);
+            } @catch (NSException *x) { gDMScrollTurnTestOff = NO; [out appendFormat:@" pass %d: %@;", pass, x.reason]; }
+        }
+        CFRelease(ev);
+        DMLog(out);
+    }
+#endif
     else if ([cmd hasPrefix:@"ptrmove_"]) {   // ptrmove_<dx>_<dy>_<senderhex>[_<buttons>][_abs]: inject one relative pointer (mouse) event from that HID sender (debug, MacPointer tests)
         NSArray *a = [[cmd substringFromIndex:8] componentsSeparatedByString:@"_"];
         if (a.count >= 3) {
@@ -27928,9 +28401,10 @@ static void DMRunTrigger(NSString *cmd) {
     else if ([cmd isEqualToString:@"sbmem"]) DMLog([NSString stringWithFormat:@"[sbmem] SpringBoard footprint %.1f MB", DMFootprintBytes(getpid()) / 1048576.0]);   // sbmem: SpringBoard's memory now
     else if ([cmd isEqualToString:@"menutitles"]) {   // menutitles: every menu title on the screen, as "name x y" centres in screen points (for finger-tap stress tests)
         NSMutableString *o = [NSMutableString stringWithString:@"[menutitles]"];
-        const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, kSSHButtonKey, kVPNButtonKey, kWiFiButtonKey, kClockButtonKey };
+        const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, kSSHButtonKey, kVPNButtonKey, kWiFiButtonKey, kClockButtonKey,
+                               kBattButtonKey, kCCButtonKey, kSpotButtonKey };
         // (one name per key, in the same order: the list once had 9 names for 11 keys and read past its end -- an exception in SpringBoard)
-        static const char *names[] = { "apple", "app", "file", "edit", "view", "go", "window", "audio", "ssh", "vpn", "wifi", "clock" };
+        static const char *names[] = { "apple", "app", "file", "edit", "view", "go", "window", "audio", "ssh", "vpn", "wifi", "clock", "battery", "cc", "spotlight" };
         _Static_assert(sizeof(names) / sizeof(names[0]) == sizeof(keys) / sizeof(keys[0]), "menutitles: one name per key");
         for (UIView *fg in gCopies.allObjects) {
             if (!fg.window || fg.window.hidden || fg.hidden || DMEffectiveAlpha(fg) < 0.5) continue;
@@ -27947,7 +28421,7 @@ static void DMRunTrigger(NSString *cmd) {
     else if ([cmd isEqualToString:@"menucheck"]) {   // menucheck: regression check -- opens every status bar menu from every visible status bar copy, one after another
         // (0.5 s apart), and [menugeo] asserts each menu hangs directly under its title on the screen; ends with a PASS/FAIL count and the menu closed.
         NSMutableArray *jobs = [NSMutableArray array];
-        const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, kSSHButtonKey, kVPNButtonKey, kWiFiButtonKey };
+        const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, kSSHButtonKey, kVPNButtonKey, kWiFiButtonKey, kBattButtonKey };
         for (UIView *fg in gCopies.allObjects) {
             if (!fg.window || fg.window.hidden || fg.hidden || fg.alpha < 0.01) continue;
             for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
@@ -27966,12 +28440,50 @@ static void DMRunTrigger(NSString *cmd) {
                 if (b == objc_getAssociatedObject(fg, kSSHButtonKey)) DMOpenSSHMenu(b);
                 else if (b == objc_getAssociatedObject(fg, kVPNButtonKey)) DMOpenVPNMenu(b);
                 else if (b == objc_getAssociatedObject(fg, kWiFiButtonKey)) DMOpenWiFiMenu(b);
+                else if (b == objc_getAssociatedObject(fg, kBattButtonKey)) DMOpenBatteryMenu(b);
                 else DMOpenMenuForButton(b);
             });
         }
     }
 #if DEBUG
+    else if ([cmd hasPrefix:@"menusweep_"]) {   // menusweep_<ms>_<steps>: the pointer sweeping along the left-hand titles with a menu open -- each step is what the hover switch
+                                               // does (DMAttachMenuHover: DMRemoveOverlayNow, then that title's menu), <ms> apart, left to right and back; then the menu closes
+        NSArray *a = [[cmd substringFromIndex:10] componentsSeparatedByString:@"_"];
+        double ms = a.count > 0 ? MAX(30.0, [a[0] doubleValue]) : 150.0;
+        int steps = a.count > 1 ? MAX(1, MIN(200, [a[1] intValue])) : 12;
+        NSMutableArray<UIButton *> *titles = [NSMutableArray array];
+        const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey };
+        for (UIView *fg in gCopies.allObjects) {
+            if (!fg.window || fg.window.hidden || fg.hidden || DMEffectiveAlpha(fg) < 0.5) continue;
+            for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+                UIButton *b = objc_getAssociatedObject(fg, keys[i]);
+                if (b && !b.hidden && b.frame.size.width > 1.0) [titles addObject:b];
+            }
+            break;
+        }
+        [titles sortUsingComparator:^NSComparisonResult(UIButton *x, UIButton *y) { return [@(x.frame.origin.x) compare:@(y.frame.origin.x)]; }];
+        if (titles.count < 2) DMLog(@"[menusweep] fewer than two titles: nothing done");
+        else {
+            DMLog([NSString stringWithFormat:@"[menusweep] %d steps %.0f ms apart over %lu titles", steps, ms, (unsigned long)titles.count]);
+            NSUInteger n = titles.count, period = 2 * (n - 1);
+            for (int k = 0; k <= steps; k++) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(k * ms * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+                if (k == steps) { DMLog(@"[menusweep] done: closed"); DMCloseOverlay(); return; }
+                NSUInteger ph = (NSUInteger)k % period, idx = ph < n ? ph : period - ph;
+                UIButton *b = titles[idx];
+                if (!b.superview) return;
+                if (k) DMRemoveOverlayNow();   // (the first step opens the first menu, as a click on its title)
+                DMOpenMenuForButton(b);
+            });
+        }
+    }
+    else if ([cmd isEqualToString:@"menukeys_hold"]) {   // menukeys_hold: the open menu's lease is no longer renewed, the menu stays (as if SpringBoard had stopped
+                                                         // mid-menu): kMSBDMenuKeysStaleMs later the app's keys are its own again (common/MenuKeys.h)
+        [gMenuKeysRenew invalidate]; gMenuKeysRenew = nil;
+        DMLog([NSString stringWithFormat:@"[overlay] menu keys: the lease is no longer renewed (menu %@, keys with %@)", gOverlay ? @"open" : @"closed", gMenuKeysInApp ? gMenuKeysApp : @"SpringBoard"]);
+    }
     else if ([cmd hasPrefix:@"wifi"] && DMWiFiTrigger(cmd)) {}   // the Wi-Fi menu's tests (WiFiMenu.h)
+    else if ([cmd hasPrefix:@"battmenu"] && DMBattTrigger(cmd)) {}   // the battery menu's and the Control Center icon's tests (BatteryMenu.h)
+    else if ([cmd hasPrefix:@"ff"] && DMFFTrigger(cmd)) {}   // the Finder menu's attached folders: ffstate, ffattach_, ffdetach_, ffopen_, ffmove_, ffrename_, ffmenu (FinderFolders.h)
     else if ([cmd hasPrefix:@"mswsm_"] && DMMSWSMTrigger(cmd)) {}   // the Mac Switcher's Stage Manager desktops (MacSwitcherSM.h)
     else if ([cmd hasPrefix:@"msw"] && DMMSWTrigger(cmd)) {}     // the Mac Switcher's tests and probes (MacSwitcher.h)
     else if ([cmd hasPrefix:@"wincard"] && DMWinCardTrigger(cmd)) {}   // the windows' App Switcher cards (WindowCards.h)
@@ -28895,6 +29407,12 @@ static void DMRunTrigger(NSString *cmd) {
     }
     else if ([cmd hasPrefix:@"desknames_"]) {   // desknames_<0|1>: Hide Desktop Icon Names off / on, as the Settings switch does (unset when 0: its default)
         CFPreferencesSetValue(CFSTR("desktopHideNames"), [[cmd substringFromIndex:10] boolValue] ? kCFBooleanTrue : NULL, MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        CFPreferencesSynchronize(MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        notify_post("com.besiktasliseba.macstatusbar.finder.pref");
+    }
+    else if ([cmd hasPrefix:@"deskcorner_"]) {   // deskcorner_<fraction|none>: App Icon Corner Radius set to that fraction, or never set (Match Home Screen Icons)
+        NSString *a = [cmd substringFromIndex:11];
+        CFPreferencesSetValue(CFSTR(MSBD_DESKTOP_CORNER_KEY), [a isEqualToString:@"none"] ? NULL : (__bridge CFNumberRef)@(a.doubleValue), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
         CFPreferencesSynchronize(MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
         notify_post("com.besiktasliseba.macstatusbar.finder.pref");
     }
@@ -31204,7 +31722,7 @@ static NSString *DMA5AnimationsNote(UIView *stage) {   // (debug log: Aerial's a
     double left = 0; int n = DMA5AnimationsRunning(stage, CACurrentMediaTime(), &left);
     return [NSString stringWithFormat:@"%d of Aerial's animations on it, %.0f ms left", n, left * 1000.0];
 }
-@interface DMA5Follow : NSObject { @public int phase, quiet; CFTimeInterval caughtAt, phaseAt; BOOL back, again, settle, fixed; }
+@interface DMA5Follow : NSObject { @public int phase, quiet; CFTimeInterval caughtAt, phaseAt; BOOL back, again, settle, fixed, opened; }
 @end
 @implementation DMA5Follow
 @end
@@ -31244,6 +31762,9 @@ static void DMA5FollowStart(UIView *stage, BOOL back, BOOL again) {
 static void DMA5FollowStep(UIView *st, CFTimeInterval now) {
     DMA5Follow *f = objc_getAssociatedObject(st, kA5FollowKey);
     if (!f || !st.superview || [objc_getAssociatedObject(st, kStageClosingKey) boolValue]) { DMA5FollowEnd(st); return; }   // (closed meanwhile)
+    // (another desktop's window, its minimize undone behind the desktop's hide: Aerial's restore does not show it here -- the per-frame watch, which
+    //  keeps a window we minimized hidden through it, only looks at this desktop's)
+    if (!st.hidden && [objc_getAssociatedObject(st, kMSWAwayKey) boolValue]) st.hidden = YES;
     BOOL chip = DMA5ChipFlag(st);
     f->quiet = DMA5AnimationsRunning(st, now, NULL) ? 0 : f->quiet + 1;
     NSString *b = DMStageBundle(st); double ms = (now - f->caughtAt) * 1000.0;
@@ -31273,12 +31794,12 @@ static void DMA5FollowStep(UIView *st, CFTimeInterval now) {
             continue;
         }
         if (next == MSBDA5Show) {
-            if ([objc_getAssociatedObject(st, kA5ChipHiddenKey) boolValue]) {
-                DMLog([NSString stringWithFormat:@"[aerial5] %@: back after the unlock, %.0f ms after the catch (Aerial's restore over)", b, ms]);
+            DMA5FollowEnd(st);   // (first: the restore below must not find it still under way, DMA5ShowWaits)
+            if ([objc_getAssociatedObject(st, kA5ChipHiddenKey) boolValue] && [objc_getAssociatedObject(st, kStageHiddenKey) boolValue]) {
+                DMLog([NSString stringWithFormat:@"[aerial5] %@: %@, %.0f ms after the catch (Aerial's restore over)", b, f->opened ? @"back, as it was asked back meanwhile" : @"back after the unlock", ms]);
                 objc_setAssociatedObject(st, kA5BackAtKey, f->again ? nil : @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (once: never a minimize-and-back loop)
-                DMRestoreStage(st);
+                DMRestoreStageNow(st);   // (Aerial is done with it, or its restore at its limit: shown now, never asked to wait again)
             }
-            DMA5FollowEnd(st);
         } else if (next == MSBDA5End) DMA5FollowEnd(st);
         return;
     }
@@ -31346,10 +31867,11 @@ static void DMAerial5RestoreAfterLock(CFTimeInterval since) {
     DMA5WakeTraceStart(@"the reported unlock");
 #endif
     for (UIView *s in DMAerialStages()) if ([objc_getAssociatedObject(s, kA5LockHiddenKey) boolValue]) {   // caught while locking: never shown as a chip
-        objc_setAssociatedObject(s, kA5LockHiddenKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         __weak UIView *weakS = s;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             UIView *st = weakS; if (!st) return;
+            // (the lock's mark stays until here: Aerial minimizing it once more meanwhile is still the lock's, never a window kept minimized)
+            objc_setAssociatedObject(st, kA5LockHiddenKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (brought back now)
             DMA5Follow *f = objc_getAssociatedObject(st, kA5FollowKey);
             if (f) { f->back = YES; DMLog([NSString stringWithFormat:@"[aerial5] %@: back after the unlock once Aerial's restore is over", DMStageBundle(st)]); return; }   // (still under way: shown by its follow, never mid-animation -- 1.7.4)
             DMLog([NSString stringWithFormat:@"[aerial5] %@: back after the unlock (it was never shown as a round icon)", DMStageBundle(st)]);
@@ -31380,14 +31902,16 @@ static UIView *DMA5ComingBackTop(void) {
     }
     return top;
 }
+static void DMA5CatchBehindHide(UIView *stage);   // (with the round-icon catch, below)
 static void DMAerial5WatchLock(void) {
     static int wasLocked = -1; static CFTimeInterval lockedAt = 0;
     CFTimeInterval now = CACurrentMediaTime();
-    for (UIView *s in DMAerialStages()) {   // when each window last changed between minimized and not (Aerial minimizes them right as the lock starts)
+    for (UIView *s in DMAerialStagesAll()) {   // when each window last changed between minimized and not (Aerial minimizes them right as the lock starts)
         NSNumber *cur = @([DMStageValue(s, @[@"_isMinimized"]) boolValue]);
         if (![objc_getAssociatedObject(s, kA5MinStateKey) isEqual:cur]) {
             objc_setAssociatedObject(s, kA5MinStateKey, cur, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             objc_setAssociatedObject(s, kA5MinSinceKey, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            if (cur.boolValue) DMA5CatchBehindHide(s);   // (a window we keep hidden: no per-frame watch looks at it)
         }
     }
     id mgr = DMSBManager("SBLockScreenManager");
@@ -31413,8 +31937,8 @@ static void DMAerial5WatchLock(void) {
 // However a window gets minimized by Aerial (its "..." menu, a swipe on its bottom handle, the screen locking, anything internal), the moment its
 // _isMinimized flag turns on -- checked on every display frame -- the window is hidden (so the chip is never drawn, or at most for a frame), put in
 // OUR minimized state (the same one the yellow light uses: it comes back from its app icon / the Dock / the Window menu), and Aerial is told to
-// restore it with its own resolved -restoreFromMinimize, so Aerial's own state is "a normal window" again (behind our hide). A window caught while
-// the screen is locked is brought back by itself after the unlock.
+// restore it with its own resolved -restoreFromMinimize, so Aerial's own state is "a normal window" again (behind our hide). A window that was on
+// screen as the lock came is brought back by itself after the unlock; one we hid before (minimized, or on another desktop) stays as it was.
 static NSHashTable<UIView *> *gA5StageCache;
 static ptrdiff_t gA5MinOffset = -1;
 static BOOL DMA5ChipFlag(UIView *stage) {
@@ -31425,31 +31949,72 @@ static BOOL DMA5ChipFlag(UIView *stage) {
 static void DMAerial5CatchChip(UIView *stage) {
     if (DMTestFlag("/tmp/msb-a5-allowchip")) return;   // debug: leave Aerial's chip alone
     BOOL locked = DMLockUp(DMSBManager("SBLockScreenManager"));
-    if (!stage.hidden) stage.hidden = YES;   // first: never let the chip be seen
-    objc_setAssociatedObject(stage, kStageHiddenKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // our minimized state
-    objc_setAssociatedObject(stage, kA5ChipHiddenKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    if (locked) objc_setAssociatedObject(stage, kA5LockHiddenKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    // Right after an unlock Aerial minimizes the windows once more (M1, Phase 2b: 16 ms after our "back after the unlock" restore every window was
-    // minimized again and stayed hidden): a window caught within 0.5 s of the unlock was open before the lock, so it comes back once more -- and so
-    // does one caught again on its way back, or within a second of being shown back (it is back sooner since 1.7.4: before 1.6 s).
-    BOOL justUnlocked = !locked && gA5UnlockedAt > 0 && CACurrentMediaTime() - gA5UnlockedAt < 0.5;
+    CFTimeInterval now = CACurrentMediaTime();
+    // What the window is to us decides what the catch makes of it (A5LockCatch.h). Aerial minimizes every window as the screen locks, the ones we
+    // keep hidden too: one minimized our way (the yellow light, Home Minimizes Windows, Minimize All) or on another desktop stays as it was, only
+    // Aerial's own state put back behind our hide -- the lock's catch took them all for open windows and brought them back (1.7.9 G-4b). One that
+    // was on screen: the lock's (back after the unlock); right after an unlock Aerial minimizes the windows once more (M1, Phase 2b: 16 ms after
+    // our "back after the unlock" restore every window was minimized again and stayed hidden), so a window caught within 0.5 s of the unlock was
+    // open before the lock and comes back once more -- and so does one caught again on its way back, or within a second of being shown back (it
+    // is back sooner since 1.7.4: before 1.6 s).
     DMA5Follow *was = objc_getAssociatedObject(stage, kA5FollowKey);
     NSNumber *backAt = objc_getAssociatedObject(stage, kA5BackAtKey);
-    BOOL again = !justUnlocked && !locked && backAt && CACurrentMediaTime() - backAt.doubleValue < 1.0;
-    BOOL back = justUnlocked || (was && was->back) || again;
+    BOOL hiddenOurs = [objc_getAssociatedObject(stage, kStageHiddenKey) boolValue], away = [objc_getAssociatedObject(stage, kMSWAwayKey) boolValue];
+    int role = MSBDA5CatchRole(hiddenOurs, away, [objc_getAssociatedObject(stage, kA5LockHiddenKey) boolValue], was ? (was->back ? 2 : 1) : 0, locked,
+                               gA5UnlockedAt > 0 ? now - gA5UnlockedAt : -1, backAt ? now - backAt.doubleValue : -1);
+    if (!stage.hidden) stage.hidden = YES;   // first: never let the chip be seen
+    if (!away) objc_setAssociatedObject(stage, kStageHiddenKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // our minimized state (another desktop's window stays that desktop's)
+    objc_setAssociatedObject(stage, kA5ChipHiddenKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (role & MSBDA5CatchLock) objc_setAssociatedObject(stage, kA5LockHiddenKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(stage, kA5BackAtKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(stage, kA5UnlockBackKey, (locked || back) ? @(CACurrentMediaTime()) : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (DMA5ComingBackTop)
-    DMLog([NSString stringWithFormat:@"[aerial5] %@: Aerial minimized it to its round icon%@ -> hidden and turned into our minimize (%@)", DMStageBundle(stage),
-           locked ? @" (screen locking)" : (justUnlocked ? @" (just after the unlock)" : (back ? @" (again, on its way back)" : @"")), DMA5AnimationsNote(stage)]);
+    objc_setAssociatedObject(stage, kA5UnlockBackKey, (role & (MSBDA5CatchLock | MSBDA5CatchBack)) ? @(now) : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (DMA5ComingBackTop)
+    BOOL justUnlocked = !locked && gA5UnlockedAt > 0 && now - gA5UnlockedAt < MSBD_A5_JUST_UNLOCKED;
+    NSString *when = locked ? @" (screen locking)" : justUnlocked ? @" (just after the unlock)" : !(role & MSBDA5CatchBack) ? @""
+                   : (was && !was->back && !hiddenOurs) ? @" (shown while Aerial's minimize was being undone)" : @" (again, on its way back)";
+    if (role & MSBDA5CatchKeep)
+        DMLog([NSString stringWithFormat:@"[aerial5] %@: Aerial minimized it to its round icon%@ while it was %@ -> it stays %@, Aerial's own minimize undone behind our hide (%@)", DMStageBundle(stage),
+               when, away ? @"on another desktop" : @"minimized", away ? @"there" : @"minimized", DMA5AnimationsNote(stage)]);
+    else DMLog([NSString stringWithFormat:@"[aerial5] %@: Aerial minimized it to its round icon%@ -> hidden and turned into our minimize (%@)", DMStageBundle(stage), when, DMA5AnimationsNote(stage)]);
     // Aerial's own state goes back to "a window" once its shrink animation has run out (restoring earlier left the window at the chip's size: the
     // end of Aerial's animation set the chip frame after the restore -- seen live), then the window's real frame is checked and put back, and a
     // window open before the lock is shown again: each step as soon as Aerial's animation of the step before has run out, the fixed waits of
     // before 1.7.4 (0.6 s, 0.8 s more, 0.2 s more) kept as each step's upper limit (DMA5FollowStep, A5WakeFollow.h).
-    DMA5FollowStart(stage, back, again);
+    DMA5FollowStart(stage, (role & MSBDA5CatchBack) != 0, (role & MSBDA5CatchAgain) != 0);
 #if DEBUG
     DMA5WakeTraceStart([NSString stringWithFormat:@"the catch of %@", DMStageBundle(stage)]);
 #endif
     DMApplyWindowLevel();
+}
+// A window we keep hidden -- minimized our way, or on another desktop -- that Aerial minimizes (the lock minimizes every window, these too): the
+// per-frame watch never sees it (it rests while no window is on screen, and leaves a window it caught once alone after), so Aerial's round-icon
+// state stayed on it, its frame the icon's ({{1122, 46}, {56, 56}} on the M1), until it was shown again -- and then it was taken for a new
+// minimize of an open window and hidden at once: the first reopen of each app after a lock showed nothing (1.7.9 G-4b). Caught by the lock
+// watch's tick instead, as its _isMinimized turns on (DMAerial5WatchLock); it stays as it was.
+static void DMA5CatchBehindHide(UIView *stage) {
+    if (objc_getAssociatedObject(stage, kA5FollowKey) || [objc_getAssociatedObject(stage, kStageClosingKey) boolValue]) return;   // (being undone already, or closing)
+    if (![objc_getAssociatedObject(stage, kStageHiddenKey) boolValue] && ![objc_getAssociatedObject(stage, kMSWAwayKey) boolValue]) return;   // (on screen: the per-frame watch's)
+    if (DMA5ChipFlag(stage)) DMAerial5CatchChip(stage);
+}
+// A window brought back (its app opened, the Dock, the Window menu, the Mac Switcher, the unlock) while Aerial 5 still has it minimized behind our
+// hide -- its minimize being undone, or never seen: shown now it is drawn as Aerial's round icon at the icon's frame and caught at once as a new
+// minimize of an open window, kept hidden (G-4b's first reopen). Its follow shows it instead, as soon as Aerial's own restore is over and its frame
+// is checked (DMA5FollowStep).
+static BOOL DMA5ShowWaits(UIView *stage) {
+    if (gAerialFlavor != 5 || DMActiveEngine() != DMEngineAerial || DMTestFlag("/tmp/msb-a5-allowchip")) return NO;
+    DMA5Follow *f = objc_getAssociatedObject(stage, kA5FollowKey);
+    if (!f) {
+        if (!DMA5ChipFlag(stage)) return NO;
+        DMLog([NSString stringWithFormat:@"[aerial5] %@: asked back while Aerial still has it minimized (at %@): Aerial's restore first, shown once it is over", DMStageBundle(stage), NSStringFromCGRect(stage.frame)]);
+        objc_setAssociatedObject(stage, kA5ChipHiddenKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        DMA5FollowStart(stage, YES, NO);
+        f = objc_getAssociatedObject(stage, kA5FollowKey);
+        if (f) f->opened = YES;
+    } else if (!f->back) {
+        DMLog([NSString stringWithFormat:@"[aerial5] %@: asked back while Aerial's minimize is being undone: shown once its restore is over", DMStageBundle(stage)]);
+        f->opened = YES;
+    }
+    if (f) f->back = YES;
+    return YES;
 }
 // The app's corners in the Aerial 3.0 shape (see 3b in DMAerial5Theme): a mask layer of ours on Aerial's app holder, square on top, the window's
 // 12 pt at the bottom. It is kept at the holder's size on every display frame; when the holder is resized inside an animation (a layout, a tile
@@ -32401,6 +32966,10 @@ static BOOL gEngineRespringAsk = NO;   // two engines loaded at start AND the ro
 static BOOL gEngineAskWaiting = NO;    // two engines loaded: waiting (up to 40 s) for the helper to say whether it changed anything
 static BOOL gEngineAskNone = NO;       // no engine loaded at start although windowing is on (the helper may switch the default one on: asked the same way)
 static BOOL gEngineAskSMBack = NO;     // Stage Manager picked and usable again, the stand-in engine still loaded (the helper switches it off: asked the same way)
+// The root helper (MacSettings' sshtoggled) is installed, so its answer will come: its executable is there, read from the file's own mode, not asked
+// with access(X_OK) -- SpringBoard's sandbox answers that exec check with EPERM on 18.5 for the Charge Limit's job in the same folder (BatteryMenu.h
+// DMBattChargeJob, 1.7.9), which here would leave the respring question unasked after the helper switched an engine on or off.
+static BOOL DMEngineHelperInstalled(void) { struct stat st; return stat("/var/jb/usr/libexec/sshtoggled", &st) == 0 && S_ISREG(st.st_mode) && (st.st_mode & S_IXUSR); }
 static void DMCheckEngineWarnings(void) {
     static BOOL done = NO; static CFTimeInterval started = 0;
     if (done || gEngineWarningWindow) return;
@@ -32869,6 +33438,7 @@ static void DMTickBody(void) {
     DMCheckAerialNote();
     DM_PERF("t-today", DMWatchTodayView());
     { static int n = 0; if (++n % 10 == 1 && DMProcessAge() > 8.0) DMApplyHomeScreenTodayPage(); }   // (~every 2 s once SpringBoard is up: the Home Screen may be rebuilt)
+    if (gHomeMinimizes && DMProcessAge() > 8.0) DMHomeAwayScanKeys();   // (once: SpringBoard's other Home key commands, Globe-H's, marked as Cmd-H's)
     static BOOL engineLogged = NO;   // once per SpringBoard start: which engine is picked, and which engine libraries really loaded (engine exclusivity check)
     if (!engineLogged && CACurrentMediaTime() > 0) {
         engineLogged = YES;
@@ -32879,7 +33449,8 @@ static void DMTickBody(void) {
             NSString *n = [[@(p) lastPathComponent] stringByDeletingPathExtension];
             if ([@[@"Aerial", @"MilkyWay4", @"MilkyWay3SubModule", @"Zetsu"] containsObject:n]) [loaded addObject:n];
         }
-        DMLog([NSString stringWithFormat:@"[engine] picked %@; engine libraries loaded in SpringBoard: %@%@", gEnginePref ?: @"(default)", loaded.count ? [loaded componentsJoinedByString:@" "] : @"none", ([loaded containsObject:@"Aerial"] + ([loaded containsObject:@"MilkyWay4"] || [loaded containsObject:@"MilkyWay3SubModule"]) + [loaded containsObject:@"Zetsu"]) > 1 ? @" -- MORE THAN ONE ENGINE LOADED" : @""]);
+        DMLog([NSString stringWithFormat:@"[engine] picked %@; engine libraries loaded in SpringBoard: %@%@; root helper installed %d", gEnginePref ?: @"(default)", loaded.count ? [loaded componentsJoinedByString:@" "] : @"none", ([loaded containsObject:@"Aerial"] + ([loaded containsObject:@"MilkyWay4"] || [loaded containsObject:@"MilkyWay3SubModule"]) + [loaded containsObject:@"Zetsu"]) > 1 ? @" -- MORE THAN ONE ENGINE LOADED" : @"",
+               DMEngineHelperInstalled()]);
         // MacSettings' root helper keeps the other engines from loading, in Choicy or (without it) through iCleaner Pro's renames; it re-reads the
         // choice itself -- the picked engine, or the default when none is picked (see MacSettings/sshtoggled/main.m). Asked at every start, which
         // also covers an engine update that brought a disabled engine back. If a second engine really loaded this time AND the helper then really
@@ -32895,7 +33466,7 @@ static void DMTickBody(void) {
         // (Stage Manager picked and its self-check passes again -- an update that supports this iPadOS -- while the default engine that stood in
         //  for it still loaded: the helper switches that one off, and the user is asked the same way)
         gEngineAskSMBack = engines >= 1 && [gEnginePref isEqualToString:@"stagemanager"] && gSMCheckOK && DMWindowingEnabled();
-        if ((engines > 1 || gEngineAskNone || gEngineAskSMBack) && access("/var/jb/usr/libexec/sshtoggled", X_OK) == 0) {
+        if ((engines > 1 || gEngineAskNone || gEngineAskSMBack) && DMEngineHelperInstalled()) {
             gEngineAskWaiting = YES;
             static int changedToken = 0;
             notify_register_dispatch("com.besiktasliseba.msb.engines.changed", &changedToken, dispatch_get_main_queue(), ^(int t) {
@@ -36339,6 +36910,85 @@ static void DMScrollRoutingInit(void) {
     MSHookMessageEx(c, sel, (IMP)DMScrollWSWindow, (IMP *)&o_DMScrollWS);
     gDMScrollRouted = YES;
 }
+// A trackpad's or mouse's scroll in our turned containers (KT, A12Z 18.5, 1.7.9: in the Today panel a vertical two-finger scroll did nothing and
+// a horizontal one moved the list up and down; common/ScrollTurn.h has why). UIKit turns a scroll's delta from the device's space into the screen's
+// fixed one by the interface orientation of the window the scroll was sent to (-[UIScrollEvent
+// _convertDeltaFromHIDDeviceSpaceToSceneReferenceSpaceIfNeeded:], which in SpringBoard asks the window's -_overriddenInterfaceOrientation; UIKitCore
+// 17.5.1; 18.5 through _UIEventHIDGetInterfaceOrientationForEvent, the same getters). The menu window and the native windows' layer answer
+// portrait while their container shows everything turned for the screen (on 18.5 the layer turns itself, the menu window does not). For that
+// one turn of a scroll sent to one of them, while its container is turned (gDMMenuScrollTurn / gDMNativeScrollTurn), the window answers the
+// orientation its content is shown in; everything else that asks the window keeps the window's own answer (the keyboard, the window's rotation).
+// A scroll whose delta UIKit does not turn (its options say it is in the fixed space already) is untouched, as UIKit asks nothing then.
+static __thread __unsafe_unretained id gDMScrollTurnFor = nil;   // (the window a scroll's delta is being turned for, on this thread)
+static __thread int gDMScrollTurnTo = 0;
+static long DMScrollTurnOverridden(id self, SEL _cmd) {
+    if (gDMScrollTurnTo && self == gDMScrollTurnFor) return gDMScrollTurnTo;
+    return ((long (*)(id, SEL))gDMScrollTurnOwnOverridden)(self, _cmd);
+}
+static long DMScrollTurnWindowOrient(id self, SEL _cmd) {
+    if (gDMScrollTurnTo && self == gDMScrollTurnFor) return gDMScrollTurnTo;
+    return ((long (*)(id, SEL))gDMScrollTurnOwnWindowOrient)(self, _cmd);
+}
+static NSString *DMScrollTurnShape(Method m) {   // (a method's type encoding without its offsets)
+    NSMutableString *t = [NSMutableString string];
+    for (const char *e = m ? method_getTypeEncoding(m) ?: "" : ""; *e; e++) if (*e < '0' || *e > '9') [t appendFormat:@"%c", *e];
+    return t;
+}
+// Our two window classes (MSBMenuWindow, MSBNativeLayer), as they are made: the two orientation getters UIKit's turn asks, answered for that turn
+// only. Both are SpringBoard's orientation window; another base, or getters of another shape, and the class is left as it was.
+static void DMScrollTurnWindowClass(Class sub) {
+    Class base = class_getSuperclass(sub);
+    SEL ov = NSSelectorFromString(@"_overriddenInterfaceOrientation"), wo = NSSelectorFromString(@"_windowInterfaceOrientation");
+    Method mo = base ? class_getInstanceMethod(base, ov) : NULL, mw = base ? class_getInstanceMethod(base, wo) : NULL;
+    if (![DMScrollTurnShape(mo) isEqualToString:@"q@:"] || ![DMScrollTurnShape(mw) isEqualToString:@"q@:"]) {
+        DMLog([NSString stringWithFormat:@"[scrollturn] %s: the window's orientation getters are %@ / %@ here, not q@: -- a trackpad's scroll is left to UIKit", class_getName(sub), mo ? DMScrollTurnShape(mo) : @"missing", mw ? DMScrollTurnShape(mw) : @"missing"]);
+        return;
+    }
+    IMP io = method_getImplementation(mo), iw = method_getImplementation(mw);
+    if ((gDMScrollTurnOwnOverridden && gDMScrollTurnOwnOverridden != io) || (gDMScrollTurnOwnWindowOrient && gDMScrollTurnOwnWindowOrient != iw)) {
+        DMLog([NSString stringWithFormat:@"[scrollturn] %s is made from another window class (%s): left as it is", class_getName(sub), class_getName(base)]);
+        return;
+    }
+    gDMScrollTurnOwnOverridden = io; gDMScrollTurnOwnWindowOrient = iw;
+    class_addMethod(sub, ov, (IMP)DMScrollTurnOverridden, method_getTypeEncoding(mo));
+    class_addMethod(sub, wo, (IMP)DMScrollTurnWindowOrient, method_getTypeEncoding(mw));
+}
+static CGVector DMScrollDeltaToFixed(id self, SEL _cmd, CGVector d) {
+    static SEL wsSel; if (!wsSel) wsSel = NSSelectorFromString(@"_windowServerHitTestWindow");
+    id w = ((id (*)(id, SEL))objc_msgSend)(self, wsSel);   // (as UIKit asks it: our routing names the native windows' layer for a scroll over them)
+    int to = 0;
+    if (w && w == gMenuWindow) to = atomic_load(&gDMMenuScrollTurn);
+    else if (w && w == gNativeLayer) to = atomic_load(&gDMNativeScrollTurn);
+    if (!to || !gDMScrollTurnOwnOverridden) return o_DMScrollDeltaToFixed(self, _cmd, d);   // (not turned, or the window class could not answer it)
+#if DEBUG
+    if (gDMScrollTurnTestOff || DMTestFlag("/tmp/msb-scrollturn-off")) return o_DMScrollDeltaToFixed(self, _cmd, d);   // (tests: UIKit's own turn, to compare)
+#endif
+    id wasFor = gDMScrollTurnFor; int wasTo = gDMScrollTurnTo;
+    gDMScrollTurnFor = w; gDMScrollTurnTo = to;
+    CGVector r = o_DMScrollDeltaToFixed(self, _cmd, d);
+    gDMScrollTurnFor = wasFor; gDMScrollTurnTo = wasTo;
+    DM_FEATURE_MARK("scroll-turn");
+#if DEBUG
+    if ([NSThread isMainThread] && DMTestFlag("/tmp/macstatusbar-debug")) {
+        static CFTimeInterval last = 0;
+        if (CACurrentMediaTime() - last > 0.5) { last = CACurrentMediaTime(); DMLog([NSString stringWithFormat:@"[scrollturn] %@: delta %.1f,%.1f -> %.1f,%.1f in the screen's fixed space (turned by orientation %d, the window's own is %ld)", w == gMenuWindow ? @"menu window" : @"native windows", d.dx, d.dy, r.dx, r.dy, to, ((long (*)(id, SEL))gDMScrollTurnOwnOverridden)(w, NSSelectorFromString(@"_overriddenInterfaceOrientation"))]); }
+    }
+#endif
+    return r;
+}
+static void DMScrollTurnInit(void) {
+    // (15 turns these windows with the screen: their containers never turn. 16's UIKit turns the delta by the window SCENE's orientation, not the
+    //  window's (16.7.7), which this does not answer: from 17, where it asks the window, as in 17.5.1 and 18.5.)
+    if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion < 17) return;
+    Class c = objc_getClass("UIScrollEvent");
+    SEL sel = NSSelectorFromString(@"_convertDeltaFromHIDDeviceSpaceToSceneReferenceSpaceIfNeeded:");
+    Method m = c ? class_getInstanceMethod(c, sel) : NULL, ws = c ? class_getInstanceMethod(c, NSSelectorFromString(@"_windowServerHitTestWindow")) : NULL;
+    if (![DMScrollTurnShape(m) isEqualToString:@"{CGVector=dd}@:{CGVector=dd}"] || ![DMScrollTurnShape(ws) isEqualToString:@"@@:"]) {
+        DMLog([NSString stringWithFormat:@"[scrollturn] -[UIScrollEvent _convertDeltaFromHIDDeviceSpaceToSceneReferenceSpaceIfNeeded:] is %@ here (window %@): a trackpad's scroll is left to UIKit", m ? DMScrollTurnShape(m) : @"missing", ws ? DMScrollTurnShape(ws) : @"missing"]);
+        return;
+    }
+    MSHookMessageEx(c, sel, (IMP)DMScrollDeltaToFixed, (IMP *)&o_DMScrollDeltaToFixed);
+}
 // The old path, kept for an iPadOS where the hook cannot go in: the list under the pointer moved by the event's own delta (the user's scroll
 // direction applied), turned from the screen's fixed orientation into the list's, kept within its content.
 static BOOL DMNativeScrollMove(UIEvent *event) {
@@ -36460,6 +37110,64 @@ static void DMHookIconTap17Common(void) {
     for (const char *e = method_getTypeEncoding(m) ?: ""; *e; e++) if (*e < '0' || *e > '9') [t appendFormat:@"%c", *e];
     if (![t isEqualToString:@"v@:q"]) { DMLog([NSString stringWithFormat:@"[icontap] -[SBIconView _handleTapWithModifierFlags:] is %@ here, not v@:q: left alone", t]); return; }
     MSHookMessageEx(c, s, (IMP)DMIconTap17, (IMP *)&o_IconTap17);
+}
+// A Home Screen folder the windows stepped aside for (DMHomeFolderShowing): an app icon tapped -- in the folder, in the Dock -- is the user going
+// on to that app, also when it is the app already in front (the looks see no other app come forward then). At the tap's own recognizer action,
+// where every icon tap starts, before 15/16's -_handleTap, 17's -_handleTapWithModifierFlags: and the engines' hooks on those (the Stage Manager
+// engine's takes the tap without calling on). Not a folder's icon (it opens a folder), not while the Home Screen is being edited (no launch then).
+// The method missing or of another shape: nothing here (the folder still counts only until it closes or another app comes to the front).
+static void (*o_IconTapGesture)(id, SEL, id);
+static void DMIconTapGesture(id self, SEL _cmd, id g) {
+    if ([g isKindOfClass:[UIGestureRecognizer class]] && ((UIGestureRecognizer *)g).state == UIGestureRecognizerStateEnded) {
+        id icon = DMCall(self, @"icon");
+        if (icon && ![DMBoolStr(icon, @"isFolderIcon") isEqualToString:@"Y"] && ![DMBoolStr(DMCall(DMSBManager("SBIconController"), @"iconManager"), @"isEditing") isEqualToString:@"Y"])
+            DMHomeFolderMovedOn(@"an app icon was tapped");
+    }
+    o_IconTapGesture(self, _cmd, g);
+}
+static void DMHomeFolderTapInstall(void) {
+    Class c = objc_getClass("SBIconView");
+    SEL s = NSSelectorFromString(@"tapGestureDidChange:");
+    Method m = c ? class_getInstanceMethod(c, s) : NULL;
+    NSMutableString *t = [NSMutableString string];
+    const char *types = m ? method_getTypeEncoding(m) : NULL;
+    for (const char *e = types ?: ""; *e; e++) if (*e < '0' || *e > '9') [t appendFormat:@"%c", *e];
+    if (![t isEqualToString:@"v@:@"]) { DMLog([NSString stringWithFormat:@"[folder] -[SBIconView tapGestureDidChange:] is %@ here, not v@:@: left alone", m ? t : @"missing"]); return; }
+    MSHookMessageEx(c, s, (IMP)DMIconTapGesture, (IMP *)&o_IconTapGesture);
+}
+// The menu bar while a Home Screen folder is open (KT, A12Z 18.5, 1.7.9: "whenever I open a folder the status bar kind of shifts to the left behind
+// the folder"; the M1's 1.7.9 regression, 15.6.1: with a folder left open behind an app launched from it the bar took no touches, and the first tap
+// on a menu title closed the folder). iPadOS swaps the status bar for a stand-in while a folder is open (SpringBoardHome, 17.5.1): as a folder opens,
+// its parent's -[SBFolderController _addFakeStatusBarView] hides the real bar (-_hideStatusBarForReason:animated:, through the folder delegate a
+// status bar settings assertion at level 1, -[SBIconController iconManager:wantsToHideStatusBarForFolderController:animated:]) and puts a bar from
+// SpringBoard's reuse pool into its own view, under the folder (-fakeStatusBarForFolderController:), until the folder closes -- also while it stays
+// open behind an app launched from it. We dress that stand-in like any bar, but it is not the menu bar: it lies under the folder's background in the
+// Home Screen's window (level -2), laid out from a pool bar (without its clock, so without our clock and Spotlight icon, the icons closed up), and the
+// folder's background takes every touch on it (and closes the folder), while the real bar (UIStatusBarWindow, 999) is hidden. A Mac's menu bar stays
+// on top whatever is open: with our bar the swap is not made, no real bar hidden for the folder and no stand-in. The bar's other hiding stays
+// iPadOS's (the Home Screen's edit mode and the widget sheet hide it through the same calls, with their own reasons), and the folder's close takes
+// away only what is there (-_removeFakeStatusBarAndAssertionIfExists). The folder opens, closes and stays open behind an app as before.
+static void (*o_DMFolderAddFakeBar)(id, SEL);
+static void DMFolderAddFakeBar(id self, SEL _cmd) {
+#if DEBUG
+    if (DMTestFlag("/tmp/msb-folderbar-stock")) { DMLog(@"[folder] a folder opens: iPadOS's stand-in bar (test flag)"); o_DMFolderAddFakeBar(self, _cmd); return; }   // (tests: iPadOS's swap, to compare)
+#endif
+    static int told = 0;
+    if (told < 3) { told++; DMLog(@"[folder] a folder opens: the menu bar stays over it (iPadOS's stand-in bar is not made)"); }
+    DM_FEATURE_MARK("folder-keeps-bar");
+}
+static void DMFolderBarInstall(void) {
+    Class c = objc_getClass("SBFolderController");
+    SEL s = NSSelectorFromString(@"_addFakeStatusBarView"), undo = NSSelectorFromString(@"_removeFakeStatusBarAndAssertionIfExists");
+    Method m = c ? class_getInstanceMethod(c, s) : NULL, u = c ? class_getInstanceMethod(c, undo) : NULL;
+    NSMutableString *t = [NSMutableString string], *ut = [NSMutableString string];
+    for (const char *e = m ? method_getTypeEncoding(m) ?: "" : ""; *e; e++) if (*e < '0' || *e > '9') [t appendFormat:@"%c", *e];
+    for (const char *e = u ? method_getTypeEncoding(u) ?: "" : ""; *e; e++) if (*e < '0' || *e > '9') [ut appendFormat:@"%c", *e];
+    if (![t isEqualToString:@"v@:"] || ![ut isEqualToString:@"v@:"]) {
+        DMLog([NSString stringWithFormat:@"[folder] -[SBFolderController _addFakeStatusBarView] is %@ here (its undo %@), not v@:: iPadOS's stand-in bar stays for a folder", m ? t : @"missing", u ? ut : @"missing"]);
+        return;
+    }
+    MSHookMessageEx(c, s, (IMP)DMFolderAddFakeBar, (IMP *)&o_DMFolderAddFakeBar);
 }
 // Native windows and Stage Manager (iPadOS 16). SpringBoard's system gestures see every touch -- also the ones UIKit gives our layer -- through
 // the system gesture window, and Stage Manager's window gestures (SBFluidSwitcherGestureManager) only ask what window CARD lies under the
@@ -41014,6 +41722,7 @@ void DMSMRunAction(UIAction *action, id sender) {
     if (!DMCtorSkip("ccautoadd")) DMCCAutoAddInit();   // (RAM & CPU in Control Center by itself where there is room, once per iPad: 1.7.7 item 8)
     if (!DMCtorSkip("skiplock")) DMSkipLockInit();
     if (!DMCtorSkip("todayoffset")) DMTodayKeepOffsetInit();
+    if (!DMCtorSkip("scrollturn")) DMScrollTurnInit();   // (a trackpad's scroll in our turned menus and windows: up is up, DMScrollDeltaToFixed)
     if (!DMCtorSkip("todaynotifications")) DMTNWatchInit();   // (the Today panel's notifications box: when the Cover Sheet's list changes)
 #if DEBUG
     DMTNTestInit();   // (tests: our own test notifications)
@@ -41049,6 +41758,8 @@ void DMSMRunAction(UIAction *action, id sender) {
     }
     if (!DMCtorSkip("windowingoff")) %init(WindowingOff);   // the default group; MilkyWayGreen is initialised later, when MilkyWay's class exists
     if (!DMCtorSkip("icontap17")) DMHookIconTap17Common();   // (iPadOS 17's icon tap: the two -_handleTap hooks above for every engine, see there)
+    if (!DMCtorSkip("foldertap")) DMHomeFolderTapInstall();   // (an app icon tapped: a Home Screen folder left open behind it no longer has the windows step aside)
+    if (!DMCtorSkip("folderbar")) DMFolderBarInstall();   // (a Home Screen folder open: the menu bar stays over it, no stand-in bar under the folder)
     if (!DMCtorSkip("overlayesc")) DMInstallOverlayEsc();   // (Esc closes our menus and dialogs with a hardware keyboard, see there)
     if (!DMCtorSkip("libraryfade")) DMLibraryTransitionInstall();   // (the windows follow the App Library's own transition, see there)
 #if DEBUG

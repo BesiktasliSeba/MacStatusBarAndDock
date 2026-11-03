@@ -63,6 +63,8 @@ static void SGSetMembers(int g, NSArray *m) {
 
 static NSString *SGIdent(id sp) { id i = [sp respondsToSelector:@selector(identifier)] ? [sp identifier] : nil; return [i isKindOfClass:[NSString class]] ? i : nil; }
 static NSArray *SGSpecs(id list) { id s = list ? ((id (*)(id, SEL))objc_msgSend)(list, @selector(specifiers)) : nil; return [s isKindOfClass:[NSArray class]] ? s : nil; }
+// (the sidebar's rows' identifiers, read once: never the row Settings fills in on its own queue -- common/MainListRows.h, 1.7.9; NSNull: not read)
+static NSString *SGIDAt(NSArray *ids, NSUInteger i) { id s = i < ids.count ? ids[i] : nil; return [s isKindOfClass:[NSString class]] ? s : nil; }
 
 @interface MSSGPageController : PSListController
 @end
@@ -98,18 +100,19 @@ static void SGApply(id list) {
         SGSetMembers(g, members);
         SGLog([NSString stringWithFormat:@"%s: %@ and %@ grouped in the sidebar", kMSSGGroups[g].title, SGIdent(members[0]), SGIdent(members[1])]);
     });
-    NSArray *specs = [SGSpecs(list) copy];
+    NSArray *specs = [SGSpecs(list) copy], *ids = MSBDMLIdentifiers(list, specs);
     NSMutableSet *ours = [NSMutableSet set];
-    for (id sp in specs) { int g = MSSGGroupOfOurs(SGIdent(sp)); if (g >= 0) [ours addObject:@(g)]; }
+    for (NSUInteger i = 0; i < specs.count; i++) { int g = MSSGGroupOfOurs(SGIDAt(ids, i)); if (g >= 0) [ours addObject:@(g)]; }
     for (int g = 0; g < MSSG_COUNT; g++) if (![ours containsObject:@(g)] && SGMembers(g)) { SGSetMembers(g, nil); SGLog([NSString stringWithFormat:@"%s: our row is not in the list: nothing kept", kMSSGGroups[g].title]); }
     SEL remove = NSSelectorFromString(@"removeSpecifier:animated:");
-    for (id sp in specs) {
-        int m = -1, g = MSSGGroupOfApple(SGIdent(sp), &m);
+    for (NSUInteger i = 0; i < specs.count; i++) {
+        id sp = specs[i];
+        int m = -1, g = MSSGGroupOfApple(SGIDAt(ids, i), &m);
         if (g < 0 || ![ours containsObject:@(g)]) continue;
         NSMutableArray *members = [(SGMembers(g) ?: @[]) mutableCopy];
         @try { ((void (*)(id, SEL, id, BOOL))objc_msgSend)(list, remove, sp, NO); } @catch (NSException *e) { continue; }
         if (members.count == 2) { members[m] = sp; SGSetMembers(g, members); }
-        SGLog([NSString stringWithFormat:@"%@ came back next to our row: kept for our page", SGIdent(sp)]);
+        SGLog([NSString stringWithFormat:@"%@ came back next to our row: kept for our page", SGIDAt(ids, i)]);
     }
     applying = NO;
 }
@@ -123,7 +126,8 @@ static BOOL SGAppleRowGone(id list, id spec, NSString *ident) {
         if (m == NSNotFound && ident && members.count == 2) for (NSUInteger k = 0; k < 2; k++) { NSString *mi = SGIdent(members[k]); if (mi && [mi caseInsensitiveCompare:ident] == NSOrderedSame) m = k; }
         if (m == NSNotFound) continue;
         id row = nil;
-        for (id sp in SGSpecs(list)) if (MSSGGroupOfOurs(SGIdent(sp)) == g) { row = sp; break; }
+        NSArray *specs = SGSpecs(list), *ids = MSBDMLIdentifiers(list, specs);
+        for (NSUInteger i = 0; i < specs.count; i++) if (MSSGGroupOfOurs(SGIDAt(ids, i)) == g) { row = specs[i]; break; }
         id other = members[1 - m];
         SGSetMembers(g, nil);
         if (row) @try { ((void (*)(id, SEL, id, id, BOOL))objc_msgSend)(list, NSSelectorFromString(@"replaceContiguousSpecifiers:withSpecifiers:animated:"), @[row], @[other], NO); } @catch (NSException *e) {}
@@ -136,7 +140,8 @@ static BOOL SGAppleRowGone(id list, id spec, NSString *ident) {
 static NSString *SGAfterID(id list, NSString *ident) {
     int g = MSSGGroupOfApple(ident, NULL);
     if (g < 0 || !SGMembers(g)) return ident;
-    for (id sp in SGSpecs(list)) if (MSSGGroupOfApple(SGIdent(sp), NULL) == g && [SGIdent(sp) caseInsensitiveCompare:ident] == NSOrderedSame) return ident;   // (Apple's row is there itself)
+    NSArray *ids = MSBDMLIdentifiers(list, SGSpecs(list));
+    for (NSUInteger i = 0; i < ids.count; i++) if (MSSGGroupOfApple(SGIDAt(ids, i), NULL) == g && [SGIDAt(ids, i) caseInsensitiveCompare:ident] == NSOrderedSame) return ident;   // (Apple's row is there itself)
     return @(kMSSGGroups[g].ident);
 }
 // The sidebar, found from the windows (a link handled before it appeared: Settings has made it by then), else the one seen last.
@@ -159,7 +164,7 @@ static BOOL SGGrouped(int g) {
     id root = SGRoot();
     if (!root) return NO;
     SGApply(root);
-    for (id sp in SGSpecs(root)) if (MSSGGroupOfOurs(SGIdent(sp)) == g) return YES;
+    for (id ident in MSBDMLIdentifiers(root, SGSpecs(root))) if (MSSGGroupOfOurs([ident isKindOfClass:[NSString class]] ? ident : nil) == g) return YES;
     return NO;
 }
 static NSURL *SGRoute(NSURL *url, NSString *how) {
@@ -299,7 +304,7 @@ static NSString *SGCategory(NSString *category) {
     %orig;
 }
 - (void)removeSpecifierID:(NSString *)ident animated:(BOOL)animated {
-    BOOL inList = ((id (*)(id, SEL, id))objc_msgSend)(self, @selector(specifierForID:), ident) != nil;
+    BOOL inList = MSBDMLIndexOf(MSBDMLIdentifiers(self, MSBDMLLive(self)), ident, NO) != NSNotFound;   // (our own reading of the list as it is: Apple's -specifierForID: reads every row)
     if (!inList && MSSGGroupOfApple(ident, NULL) >= 0 && SGAppleRowGone(self, nil, ident)) return;
     %orig;
 }

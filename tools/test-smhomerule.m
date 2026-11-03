@@ -130,6 +130,25 @@ static void Suite(const long long *roles, size_t n) {
         p = DMSMHomePlan(@[W(@"a", roles[0], 5, 0), W(@"b", roles[1], 5, 0)], roles, n, 0, 1, 3, YES, &why);
         CHECK([p[@"front"] isEqualToString:@"a"], "a tie in time: the lower role in front");
 
+        // 7b. Home Minimizes Windows (DMSMHomeHide, 1.7.9): every Home the rule would keep the windows for takes them with it instead -- every
+        //     window of the desktop, the full-screen ones too, nothing written (no keep, no roles) --; whatever it leaves as SpringBoard built it
+        //     stays so.
+        p = DMSMHomePlan(desk, roles, n, DMSMHomeHide, 1, 3, YES, &why);
+        NSArray *deskIds = @[@"sceneID:com.apple.mobiletimer-default", @"sceneID:com.apple.Preferences-default", @"sceneID:com.apple.Maps-default"];
+        CHECK(p && [p[@"hide"] isEqualToArray:deskIds] && !p[@"keep"] && !p[@"empty"] && !p[@"front"], "hide: the desktop's windows go with Home, in its order, nothing kept (%s)", why.UTF8String);
+        CHECK([why containsString:@"Home Minimizes Windows"], "hide: said (%s)", why.UTF8String);
+        p = DMSMHomePlan(withFull, roles, n, DMSMHomeHide, 1, 3, YES, &why);
+        CHECK(p && [p[@"hide"] count] == 3 && [p[@"hide"] containsObject:@"full"], "hide: a full-screen window and its windows all go");
+        p = DMSMHomePlan(desk, roles, n, DMSMHomeHide | DMSMHomeSwitcherDesk, 1, 2, NO, &why);
+        CHECK(p && [p[@"hide"] count] == 3, "hide: Home from the App Switcher opened from the desktop takes its windows too");
+        CHECK(DMSMHomePlan(desk, roles, n, DMSMHomeHide, 1, 2, NO, &why) == nil, "hide: a switcher not opened from the desktop: left (%s)", why.UTF8String);
+        CHECK(DMSMHomePlan(@[W(@"full", roles[0], 20, 2)], roles, n, DMSMHomeHide, 1, 3, YES, &why) == nil && [why isEqualToString:kDMSMHomeOnlyFullScreen], "hide: only a full-screen window: Home as Apple has it, as without (%s)", why.UTF8String);
+        CHECK(DMSMHomePlan(desk, roles, n, DMSMHomeHide, 1, 1, NO, &why) == nil, "hide: already on the Home Screen: left");
+        CHECK(DMSMHomePlan(desk, roles, n, DMSMHomeHide, 2, 3, YES, &why) == nil, "hide: asks for the App Switcher: left");
+        for (size_t i = 0; i < sizeof leave / sizeof leave[0]; i++)
+            CHECK(DMSMHomePlan(desk, roles, n, leave[i].f | DMSMHomeHide, 1, 3, YES, &why) == nil, "hide, %s: left as SpringBoard built it", leave[i].name);
+        CHECK(DMSMHomePlan(@[W(@"x", roles[0], 1, 0), W(@"x", roles[1], 2, 0)], roles, n, DMSMHomeHide, 1, 3, YES, &why) == nil, "hide: a window listed twice: left");
+
         // 8. Random sweep.
         srand48(1677 + (long)n);
         int sweeps = 0;
@@ -147,6 +166,11 @@ static void Suite(const long long *roles, size_t n) {
                 [d addObject:W([NSString stringWithFormat:@"w%zu", i], r, (long long)(drand48() * 50), pol)];
             }
             NSDictionary *pl = DMSMHomePlan(d, roles, n, drand48() < 0.5 ? 0 : DMSMHomeSwitcherDesk, drand48() < 0.5 ? 0 : 1, 3, YES, &why);
+            {   // (Home Minimizes Windows: every window of a desktop with a window goes, whatever its roles; a full-screen one alone is left)
+                NSDictionary *ph = DMSMHomePlan(d, roles, n, DMSMHomeHide, 1, 3, YES, &why);
+                NSMutableArray *ids = [NSMutableArray array]; for (NSDictionary *w in d) [ids addObject:w[@"id"]];
+                CHECK(anyWindowed ? [ph[@"hide"] isEqualToArray:ids] : ph == nil, "sweep %d: hide takes exactly the desktop's windows (%s)", iter, why.UTF8String);
+            }
             if (!anyWindowed) { CHECK(pl == nil, "sweep %d: only full screen must be left", iter); continue; }
             NSString *bad = nil;
             if (!pl) { CHECK(NO, "sweep %d: no plan (%s)", iter, why.UTF8String); continue; }

@@ -25,12 +25,12 @@
 #import "../../common/General18Group.h"
 #import "../../common/SettingsRoot.h"
 #import "../../common/SidebarScroll.h"   // (a page opened at launch keeps its row on screen in the sidebar)
+#import "../../common/MainListRows.h"   // (where the rows go, from the main list read once -- never the row Settings fills in on its own queue: 1.7.9)
 
 #define kRowID        @"MAC_STATUS_BAR"
 #define kWindowsRowID @"MAC_WINDOWS"   // (1.6.0: the Windows & Multitasking page, right after Status Bar -- the same bundle, MSBWindowsListController)
 #define kDesktopRowID @"MAC_DESKTOP"   // (1.7.5: the Desktop page, right after Status Bar, before Windows & Multitasking -- MSBDesktopListController)
 #define kDockRowID    @"DOCK_MAGNIFICATION"
-#define kAnchorID     @"ACCESSIBILITY"
 #define kBundlePath   @"/var/jb/Library/PreferenceBundles/MacStatusBarPrefs.bundle"
 #define kPSLinkListCell 2
 #define kPSLinkCell   1
@@ -67,28 +67,7 @@ static NSBundle *PrefsBundle(void) {
 // Dock row when that is already there (both rows insert themselves, in whichever order); without Control Center and General, before Accessibility.
 // No known row found (an iPadOS whose main list we have not seen: iPadOS 17 tester, 2026-09-26, got no rows at all, so not even Enable Anyway):
 // the rows go near the top instead -- the start of the list's second block, below the Apple account -- so they always show, on any version.
-static NSInteger TopIndex(NSArray *specs) {
-    SEL cellType = NSSelectorFromString(@"cellType");
-    for (NSUInteger i = 1; i < specs.count; i++)
-        if ([specs[i] respondsToSelector:cellType] && ((long long (*)(id, SEL))objc_msgSend)(specs[i], cellType) == 0) return (NSInteger)i + 1;   // (0: PSGroupCell)
-    return specs.count ? 1 : 0;
-}
-static NSInteger AnchorIndex(NSArray *specs, NSString *before, NSString *after) {
-    NSInteger cc = NSNotFound, general = NSNotFound, accessibility = NSNotFound, own = NSNotFound;
-    for (NSUInteger i = 0; i < specs.count; i++) {
-        NSString *ident = [specs[i] identifier];
-        if (![ident isKindOfClass:[NSString class]]) continue;
-        if (before && [ident isEqualToString:before]) own = (NSInteger)i;
-        if (after && [ident isEqualToString:after]) own = (NSInteger)i + 1;
-        if (cc == NSNotFound && [ident caseInsensitiveCompare:@"ControlCenter"] == NSOrderedSame) cc = (NSInteger)i;
-        if (general == NSNotFound && [ident caseInsensitiveCompare:@"General"] == NSOrderedSame) general = (NSInteger)i + 1;
-        if (accessibility == NSNotFound && [ident caseInsensitiveCompare:kAnchorID] == NSOrderedSame) accessibility = (NSInteger)i;
-    }
-    if (own != NSNotFound) return own;
-    if (cc != NSNotFound) return cc;
-    if (general != NSNotFound) return general;
-    return accessibility;
-}
+// (The rules: common/MainListRows.h MSBDMLAnchor / MSBDMLTop, shared with the Dock row and tested on the Mac.)
 
 
 // Like Bluetooth's "On", the row shows whether its line (MacStatusBar in Choicy / iCleaner Pro, the switch at the top of its page) is on -- redrawn when
@@ -105,7 +84,7 @@ static void RefreshRowValue(void) {
     PSListController *l = gRowList;
     SEL r = NSSelectorFromString(@"reloadSpecifierID:");
     if (!l || ![l respondsToSelector:r]) return;
-    for (PSSpecifier *sp in [l specifiers]) if ([[sp identifier] isEqualToString:gRowID]) { ((void (*)(id, SEL, id))objc_msgSend)(l, r, gRowID); break; }
+    if (MSBDMLIndexOf(MSBDMLIdentifiers(l, [l specifiers]), gRowID, NO) != NSNotFound) ((void (*)(id, SEL, id))objc_msgSend)(l, r, gRowID);
 }
 static void WatchRowValue(PSListController *list) {
     gRowList = list;
@@ -175,8 +154,7 @@ __attribute__((visibility("default"))) BOOL MSBDWindowsRowListed(void) {
 __attribute__((visibility("default"))) id MSBDMainListRow(NSString *ident) {
     PSListController *l = gRowList;
     if (!l || MSBDG18Root() || ![ident isKindOfClass:[NSString class]] || ![NSStringFromClass([l class]) isEqualToString:@"PSUIPrefsListController"]) return nil;
-    for (PSSpecifier *sp in [l specifiers]) if ([[sp identifier] isEqualToString:ident]) return sp;
-    return nil;
+    return MSBDMLRowFor(l, [l specifiers], ident, NO);   // (never the row Settings is filling in on its own queue: common/MainListRows.h)
 }
 static void MSAMRowListedNow(void);   // (Apple's pages that came up before our row was listed: their rows taken out now -- defined below)
 static void SetWindowsRowListed(void) {
@@ -186,13 +164,9 @@ static void SetWindowsRowListed(void) {
 }
 // Right after Status Bar (15-17's main list), unless it is there already.
 static void InsertDesktopRow(PSListController *list) {
-    NSArray *specs = [list specifiers];
-    NSInteger statusBar = NSNotFound;
-    for (NSUInteger i = 0; i < specs.count; i++) {
-        NSString *ident = [specs[i] identifier];
-        if ([ident isEqualToString:kDesktopRowID]) { gDesktopRowListed = YES; return; }
-        if ([ident isEqualToString:kRowID]) statusBar = (NSInteger)i;
-    }
+    NSArray *ids = MSBDMLIdentifiers(list, [list specifiers]);   // (read once, never the row Settings is filling in: common/MainListRows.h)
+    if (MSBDMLIndexOf(ids, kDesktopRowID, NO) != NSNotFound) { gDesktopRowListed = YES; return; }
+    NSInteger statusBar = MSBDMLLastIndexOf(ids, kRowID);
     Class detail = PrefsBundle() ? NSClassFromString(@"MSBDesktopListController") : Nil;
     if (statusBar == NSNotFound || !detail) return;
     [list insertSpecifier:MakeDesktopRow(detail) atIndex:statusBar + 1 animated:NO];
@@ -200,14 +174,9 @@ static void InsertDesktopRow(PSListController *list) {
 }
 // Right after Desktop (1.7.5), else right after Status Bar (15-17's main list), unless it is there already.
 static void InsertWindowsRow(PSListController *list) {
-    NSArray *specs = [list specifiers];
-    NSInteger statusBar = NSNotFound, desktop = NSNotFound;
-    for (NSUInteger i = 0; i < specs.count; i++) {
-        NSString *ident = [specs[i] identifier];
-        if ([ident isEqualToString:kWindowsRowID]) { SetWindowsRowListed(); return; }
-        if ([ident isEqualToString:kRowID]) statusBar = (NSInteger)i;
-        if ([ident isEqualToString:kDesktopRowID]) desktop = (NSInteger)i;
-    }
+    NSArray *ids = MSBDMLIdentifiers(list, [list specifiers]);   // (read once, never the row Settings is filling in: common/MainListRows.h)
+    if (MSBDMLIndexOf(ids, kWindowsRowID, NO) != NSNotFound) { SetWindowsRowListed(); return; }
+    NSInteger statusBar = MSBDMLLastIndexOf(ids, kRowID), desktop = MSBDMLLastIndexOf(ids, kDesktopRowID);
     Class detail = PrefsBundle() ? NSClassFromString(@"MSBWindowsListController") : Nil;
     if (statusBar == NSNotFound || !detail) return;
     [list insertSpecifier:MakeWindowsRow(detail) atIndex:(desktop != NSNotFound ? desktop : statusBar) + 1 animated:NO];
@@ -216,10 +185,13 @@ static void InsertWindowsRow(PSListController *list) {
 static void InsertRow(PSListController *list) {
     NSArray *specs = [list specifiers];
     WatchRowValue(list);
-    for (NSUInteger i = 0; i < specs.count; i++) if ([[specs[i] identifier] isEqualToString:kRowID]) { InsertDesktopRow(list); InsertWindowsRow(list); return; }   // already there
-    NSInteger anchor = AnchorIndex(specs, kDockRowID, nil);
+    // (the rows' identifiers read once, never the Apple Account row Settings is filling in on its own queue right after a reload -- reading every
+    //  row then crashed Settings, 17.5.1: common/MainListRows.h)
+    NSArray *ids = MSBDMLIdentifiers(list, specs);
+    if (MSBDMLIndexOf(ids, kRowID, NO) != NSNotFound) { InsertDesktopRow(list); InsertWindowsRow(list); return; }   // already there
+    NSInteger anchor = MSBDMLAnchor(ids, kDockRowID, nil);
     BOOL newOS = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17;   // (15/16: exactly as before)
-    if (anchor == NSNotFound && newOS) anchor = TopIndex(specs);   // (only ever the main list: this runs from PSUIPrefsListController alone)
+    if (anchor == NSNotFound && newOS) anchor = MSBDMLTop(MSBDMLCellTypes(list, specs));   // (only ever the main list: this runs from PSUIPrefsListController alone)
     Class detail = PrefsBundle() ? NSClassFromString(@"MSBRootListController") : Nil;   // the class only exists once the bundle is loaded
     if (anchor == NSNotFound || !PrefsBundle() || !detail) return;         // not the main list, or the page is missing
 
@@ -227,9 +199,12 @@ static void InsertRow(PSListController *list) {
     [list insertSpecifier:row atIndex:anchor animated:NO];
     if (newOS) {   // (the same page listed with the other tweaks by the postinst on 17+: hidden while our own row is there -- found by its id, or by our
         // bundle as it was listed before it had one; never another tweak's entry of the same name)
-        for (PSSpecifier *sp in [[list specifiers] copy]) {
-            if ([[sp identifier] isEqualToString:kRowID]) continue;
-            BOOL ours = [[sp identifier] isEqualToString:@"MSBD_PL_MacStatusBarPrefs"];
+        NSArray *now = [[list specifiers] copy], *nowIDs = MSBDMLIdentifiers(list, now);
+        for (NSUInteger i = 0; i < now.count; i++) {
+            PSSpecifier *sp = now[i];
+            NSString *ident = [nowIDs[i] isKindOfClass:[NSString class]] ? nowIDs[i] : nil;
+            if ([ident isEqualToString:kRowID] || !MSBDMLReadable(list, sp)) continue;   // (ours; or the row Settings is filling in: never read)
+            BOOL ours = [ident isEqualToString:@"MSBD_PL_MacStatusBarPrefs"];
             if (!ours && [[sp name] isEqualToString:@"Status Bar"]) { id b = [sp propertyForKey:@"bundle"] ?: [sp propertyForKey:@"lazy-bundle"]; ours = [b isKindOfClass:[NSString class]] && [(NSString *)b containsString:@"MacStatusBarPrefs"]; }
             if (ours) [list removeSpecifier:sp animated:NO];
         }
@@ -434,8 +409,7 @@ static void OpenPage(int attempt, uint32_t target) {
     //  here; a request that still comes -- an older SpringBoard part -- has no main list to pick our row from: left)
     if (MSBDG18Root()) { SBRowLog(@"iPadOS 18: a page request without a link: left (SpringBoard links to the page)"); return; }
     PSListController *list = gRowList;
-    PSSpecifier *row = nil;
-    for (PSSpecifier *sp in [list specifiers]) if ([[sp identifier] isEqualToString:PageRowID(target)]) { row = sp; break; }
+    PSSpecifier *row = MSBDMLRowFor(list, [list specifiers], PageRowID(target), NO);   // (never the row Settings is filling in: common/MainListRows.h)
     NSIndexPath *ip = row ? [list indexPathForSpecifier:row] : nil;
     UITableView *t = nil; @try { t = [list valueForKey:@"table"]; } @catch (NSException *e) {}
     if (!ip || ![t isKindOfClass:[UITableView class]]) {   // (a cold launch: the main list may not be built yet)

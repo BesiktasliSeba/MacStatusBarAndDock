@@ -37,6 +37,10 @@ static void DMMSWHomeSingle(void) {
 }
 
 // ---- the hooks: one replacement per signature the handler has had (iPadOS 15: ...WithSourceType:; 16: ...ForWindowScene:(withSourceType:)) ----
+// (a single press is also Home Minimizes Windows' Home -- HomeAway.h, StatusBar.x DMHomeAwayPress --, with the Mac Switcher on or off: what is
+//  over the screen is read before SpringBoard's press handling, which closes it; not Cmd-H's press, the same one: StatusBar.x DMHomeFromKeys)
+static BOOL DMHomeAwayPressCovered(void);
+static void DMHomeAwayPress(BOOL handled, BOOL coveredBefore);
 static BOOL (*o_MSWDoubleSceneSource)(id, SEL, id, long long);
 static BOOL DMMSWDoubleSceneSource(id self, SEL _cmd, id scene, long long source) { return DMMSWHomeDoubleTakesOver() ? YES : o_MSWDoubleSceneSource(self, _cmd, scene, source); }
 static BOOL (*o_MSWDoubleScene)(id, SEL, id);
@@ -46,26 +50,27 @@ static BOOL DMMSWDoubleSource(id self, SEL _cmd, long long source) { return DMMS
 static BOOL (*o_MSWDoublePlain)(id, SEL);
 static BOOL DMMSWDoublePlain(id self, SEL _cmd) { return DMMSWHomeDoubleTakesOver() ? YES : o_MSWDoublePlain(self, _cmd); }
 static BOOL (*o_MSWSingleSceneSource)(id, SEL, id, long long);
-static BOOL DMMSWSingleSceneSource(id self, SEL _cmd, id scene, long long source) { DMMSWHomeSingle(); return o_MSWSingleSceneSource(self, _cmd, scene, source); }
+static BOOL DMMSWSingleSceneSource(id self, SEL _cmd, id scene, long long source) { BOOL c = DMHomeAwayPressCovered(); DMMSWHomeSingle(); BOOL r = o_MSWSingleSceneSource(self, _cmd, scene, source); DMHomeAwayPress(r, c); return r; }
 static BOOL (*o_MSWSingleScene)(id, SEL, id);
-static BOOL DMMSWSingleScene(id self, SEL _cmd, id scene) { DMMSWHomeSingle(); return o_MSWSingleScene(self, _cmd, scene); }
+static BOOL DMMSWSingleScene(id self, SEL _cmd, id scene) { BOOL c = DMHomeAwayPressCovered(); DMMSWHomeSingle(); BOOL r = o_MSWSingleScene(self, _cmd, scene); DMHomeAwayPress(r, c); return r; }
 static BOOL (*o_MSWSingleSource)(id, SEL, long long);
-static BOOL DMMSWSingleSource(id self, SEL _cmd, long long source) { DMMSWHomeSingle(); return o_MSWSingleSource(self, _cmd, source); }
+static BOOL DMMSWSingleSource(id self, SEL _cmd, long long source) { BOOL c = DMHomeAwayPressCovered(); DMMSWHomeSingle(); BOOL r = o_MSWSingleSource(self, _cmd, source); DMHomeAwayPress(r, c); return r; }
 // (iPadOS 16.7.7: the source type is unsigned, B@:@Q -- read on the iPad 2)
 static BOOL (*o_MSWDoubleSceneSourceU)(id, SEL, id, unsigned long long);
 static BOOL DMMSWDoubleSceneSourceU(id self, SEL _cmd, id scene, unsigned long long source) { return DMMSWHomeDoubleTakesOver() ? YES : o_MSWDoubleSceneSourceU(self, _cmd, scene, source); }
 static BOOL (*o_MSWSingleSceneSourceU)(id, SEL, id, unsigned long long);
-static BOOL DMMSWSingleSceneSourceU(id self, SEL _cmd, id scene, unsigned long long source) { DMMSWHomeSingle(); return o_MSWSingleSceneSourceU(self, _cmd, scene, source); }
+static BOOL DMMSWSingleSceneSourceU(id self, SEL _cmd, id scene, unsigned long long source) { BOOL c = DMHomeAwayPressCovered(); DMMSWHomeSingle(); BOOL r = o_MSWSingleSceneSourceU(self, _cmd, scene, source); DMHomeAwayPress(r, c); return r; }
 // (iPadOS 15.6.1: the single press is -handleHomeButtonSinglePressUpWithSourceType: with an unsigned source, B@:Q -- read on the M1; our own
 //  Minimize reaches it through -[SpringBoard _simulateHomeButtonPressWithCompletion:])
 static BOOL (*o_MSWSingleSourceU)(id, SEL, unsigned long long);
-static BOOL DMMSWSingleSourceU(id self, SEL _cmd, unsigned long long source) { DMMSWHomeSingle(); return o_MSWSingleSourceU(self, _cmd, source); }
+static BOOL DMMSWSingleSourceU(id self, SEL _cmd, unsigned long long source) { BOOL c = DMHomeAwayPressCovered(); DMMSWHomeSingle(); BOOL r = o_MSWSingleSourceU(self, _cmd, source); DMHomeAwayPress(r, c); return r; }
 
-// Installed once, when the Mac Switcher is first switched on (off: every replacement goes straight to SpringBoard's own). Each found handler is
-// hooked (a variant can forward to another: the guards make that one action); none found = the presses stay iPadOS's own, logged.
+// Installed once, when the Mac Switcher or Home Minimizes Windows is first switched on (off: every replacement goes straight to SpringBoard's own).
+// Each found handler is hooked (a variant can forward to another: the guards make that one action); none found = the presses stay iPadOS's own,
+// logged.
 static void DMMSWHookHomeButton(void) {
     static BOOL done = NO;
-    if (done || !gMSWOn) return;
+    if (done || (!gMSWOn && !gHomeMinimizes)) return;
     done = YES;
     Class ui = objc_getClass("SBUIController");
     typedef struct { const char *sel; const char *types; IMP repl; IMP *orig; } DMMSWButtonHook;

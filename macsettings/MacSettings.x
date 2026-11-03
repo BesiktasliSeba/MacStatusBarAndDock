@@ -24,6 +24,7 @@
 #import "../common/General18Group.h"
 #import "../common/CCModuleRegister.h"   // (15-17: RAM & CPU in Settings > Control Center's list of controls)
 #import "../common/SidebarScroll.h"   // (the launch correction below leaves a scroll of ours alone)
+#import "../common/MainListRows.h"   // (the main list's rows read once, never the row Settings fills in on its own queue: 1.7.9)
 
 @interface PSSpecifier : NSObject
 + (instancetype)preferenceSpecifierNamed:(NSString *)name target:(id)target set:(SEL)set get:(SEL)get detail:(Class)detail cell:(long long)cell edit:(Class)edit;
@@ -112,16 +113,19 @@ static void MSSetHomeBar(BOOL on) {
 }
 
 // ---- the alert banners ("follow-ups") ----
-static BOOL IsFollowUp(id spec) { return [[spec identifier] hasPrefix:@"FollowUp"]; }
-static NSArray *WithoutFollowUps(NSArray *specs) {
+// (rows of the main list or rows on their way into it: read through MainListRows.h, never the row Settings is filling in on its own queue)
+static BOOL IsFollowUpID(id ident) { return [ident isKindOfClass:[NSString class]] && [ident hasPrefix:@"FollowUp"]; }
+static BOOL IsFollowUp(id list, id spec) { return spec && IsFollowUpID(MSBDMLIdentifiers(list, @[spec]).firstObject); }
+static NSArray *WithoutFollowUps(id list, NSArray *specs) {
+    NSArray *ids = MSBDMLIdentifiers(list, specs);
     NSMutableArray *kept = [NSMutableArray arrayWithCapacity:specs.count];
-    for (id sp in specs) if (!IsFollowUp(sp)) [kept addObject:sp];
+    for (NSUInteger i = 0; i < specs.count; i++) if (!IsFollowUpID(ids[i])) [kept addObject:specs[i]];
     return kept.count == specs.count ? specs : kept;
 }
 
-static void NoteFollowUps(NSArray *specs, NSString *how) {   // (debug log: which way an alert banner came)
+static void NoteFollowUps(id list, NSArray *specs, NSString *how) {   // (debug log: which way an alert banner came)
     if (!MSTestFlag("/tmp/macsettings-debug")) return;
-    NSUInteger n = 0; for (id sp in specs) if (IsFollowUp(sp)) n++;
+    NSUInteger n = 0; for (id ident in MSBDMLIdentifiers(list, specs)) if (IsFollowUpID(ident)) n++;
     if (n) MLog([NSString stringWithFormat:@"alert banners (%lu) arrived via %@: left out", (unsigned long)n, how]);
 }
 // iPadOS 18: Settings draws its list in SwiftUI (SettingsApp), so there is no PSUIPrefsListController and no FollowUp row for the filter above to
@@ -159,21 +163,15 @@ static void MSFollowUps18Install(void) {   // (once, where 18's list is SwiftUI;
 }
 // The Status Bar and Dock rows (Mac Status Bar, Mac Dock) add themselves "just before Accessibility", after the section marker put there, which would pull
 // them into the new section. Only those two rows are inserted in front of the marker instead. (Nothing else is touched: other tweaks insert whole
-// groups here, and moving those puts the table's section count out of step.) The list is read from a copy kept when it was handed out, not asked
-// for again, because asking for it in the middle of a table update is what crashed Settings before.
-static const void *kSpecsKey = &kSpecsKey;
+// groups here, and moving those puts the table's section count out of step.) The list is not asked for again (asking for it in the middle of a
+// table update is what crashed Settings before): the controller's own list as it is now, the one the index is into (common/MainListRows.h).
+// Until 1.7.9 it was a copy kept when the list was last handed out -- with Shuffle another array (Apple's 72 rows, Shuffle's 34 shown), after a
+// reload often an older one -- and walking it read the Apple Account row while Settings' loading queue was filling it in: Settings crashed
+// (17.5.1, Preferences-2026-11-02-153127.ips).
+static const void *kListPreparedKey = &kListPreparedKey;   // (on the controller: our -specifiers below has prepared a list of it)
 static NSInteger AdjustedIndex(id controller, NSArray *insertedSpecs, NSInteger index) {
-    if (!insertedSpecs.count) return index;
-    for (id sp in insertedSpecs) { NSString *i = [sp identifier]; if (![i isEqualToString:@"MAC_STATUS_BAR"] && ![i isEqualToString:@"DOCK_MAGNIFICATION"]) return index; }
-    NSArray *all = objc_getAssociatedObject(controller, kSpecsKey);
-    NSInteger group = NSNotFound, accessibility = NSNotFound;
-    for (NSUInteger i = 0; i < all.count; i++) {
-        NSString *ident = [all[i] identifier];
-        if ([ident isEqualToString:kAccessibilityGroupID]) group = i;
-        else if (group != NSNotFound && accessibility == NSNotFound && [ident caseInsensitiveCompare:@"ACCESSIBILITY"] == NSOrderedSame) accessibility = i;
-    }
-    if (group != NSNotFound && accessibility != NSNotFound && index > group && index <= accessibility) return group;
-    return index;
+    if (!MSBDMLGoesBeforeAccessibilityGroup(MSBDMLIdentifiers(controller, insertedSpecs))) return index;
+    return MSBDMLAccessibilityGroupIndex(MSBDMLIdentifiers(controller, MSBDMLLive(controller)), index, kAccessibilityGroupID);
 }
 
 // The Settings sidebar is a column of a split view. With a wide window it stays on screen next to the detail pane, so its bar can go; in a narrow
@@ -212,14 +210,17 @@ static void MSResyncSidebar(id controller) {
                 UIViewController *detail = split.viewControllers.lastObject;
                 if ([detail isKindOfClass:[UINavigationController class]]) detail = ((UINavigationController *)detail).viewControllers.firstObject;
                 id shown = [detail respondsToSelector:@selector(specifier)] ? ((id (*)(id, SEL))objc_msgSend)(detail, @selector(specifier)) : nil;
-                NSString *ident = [shown respondsToSelector:@selector(identifier)] ? [shown identifier] : nil;
-                if (ident.length && [c respondsToSelector:@selector(specifierForID:)]) selSpec = ((id (*)(id, SEL, id))objc_msgSend)(c, @selector(specifierForID:), ident);
+                // (the page's own row when it is that very row of the list; else the row of its identifier -- read through MainListRows.h, never
+                //  the row Settings fills in on its own queue: the Apple Account page shown is that row)
+                NSArray *now = MSBDMLLive(c);
+                if (shown && [now indexOfObjectIdenticalTo:shown] != NSNotFound) selSpec = shown;
+                else { NSString *ident = MSBDMLIdentifiers(c, shown ? @[shown] : @[]).firstObject; if ([ident isKindOfClass:[NSString class]] && ident.length) selSpec = MSBDMLRowFor(c, now, ident, NO); }
             }
         }
         [t reloadData];
         NSIndexPath *ip = selSpec && [c respondsToSelector:@selector(indexPathForSpecifier:)] ? ((id (*)(id, SEL, id))objc_msgSend)(c, @selector(indexPathForSpecifier:), selSpec) : nil;
         if ([ip isKindOfClass:[NSIndexPath class]] && ip.section < t.numberOfSections && ip.row < [t numberOfRowsInSection:ip.section]) [t selectRowAtIndexPath:ip animated:NO scrollPosition:UITableViewScrollPositionNone];
-        MLog([NSString stringWithFormat:@"sidebar table redrawn after a system insert%@", ip ? [NSString stringWithFormat:@" (row %@ kept selected)", [selSpec identifier]] : @""]);
+        if (MSTestFlag("/tmp/macsettings-debug")) MLog([NSString stringWithFormat:@"sidebar table redrawn after a system insert%@", ip ? [NSString stringWithFormat:@" (row %@ kept selected)", MSBDMLIdentifiers(c, @[selSpec]).firstObject] : @""]);
     });
 }
 %hook PSUIPrefsListController
@@ -228,18 +229,22 @@ static void MSResyncSidebar(id controller) {
     if (![specs isKindOfClass:[NSMutableArray class]]) return specs;
     static const void *kPreparedKey = &kPreparedKey;   // (a marker on the list itself: with no SSH and no Home Bar row there is no row to recognise it by)
     if (objc_getAssociatedObject(specs, kPreparedKey)) return specs;
-    for (id s in specs) if ([[s identifier] isEqualToString:kSwitchID] || [[s identifier] isEqualToString:kHomeBarSwitchID]) return specs;   // already done for this list
+    // (the rows' identifiers read once, never the Apple Account row Settings may be filling in on its own queue right now: common/MainListRows.h)
+    NSArray *ids = MSBDMLIdentifiers(self, specs);
+    if (MSBDMLIndexOf(ids, kSwitchID, NO) != NSNotFound || MSBDMLIndexOf(ids, kHomeBarSwitchID, NO) != NSNotFound) return specs;   // already done for this list
     objc_setAssociatedObject(specs, kPreparedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(self, kListPreparedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     // Alert banners already in a freshly built list (they normally come a moment later through the insert methods below, which drop them). Taken out
     // here only, while the list is new and before any table shows it -- never from a list a table is using.
-    NSArray *noFollowUps = WithoutFollowUps(specs);
-    if (noFollowUps != specs) { MLog([NSString stringWithFormat:@"alert banners left out of the new list: %lu", (unsigned long)(specs.count - noFollowUps.count)]); [specs setArray:noFollowUps]; }
-    NSUInteger bluetooth = NSNotFound, accessibility = NSNotFound;
-    for (NSUInteger i = 0; i < specs.count; i++) {
-        NSString *ident = [specs[i] identifier];
-        if (bluetooth == NSNotFound && [ident caseInsensitiveCompare:@"BLUETOOTH"] == NSOrderedSame) bluetooth = i;   // the first one: some lists have another row with that name further down
-        if (accessibility == NSNotFound && [ident caseInsensitiveCompare:@"ACCESSIBILITY"] == NSOrderedSame) accessibility = i;
+    NSMutableIndexSet *banners = [NSMutableIndexSet indexSet];
+    for (NSUInteger i = 0; i < ids.count; i++) if (IsFollowUpID(ids[i])) [banners addIndex:i];
+    if (banners.count) {
+        MLog([NSString stringWithFormat:@"alert banners left out of the new list: %lu", (unsigned long)banners.count]);
+        [specs removeObjectsAtIndexes:banners];
+        NSMutableArray *rest = [ids mutableCopy]; [rest removeObjectsAtIndexes:banners]; ids = rest;
     }
+    // (the first Bluetooth: some lists have another row with that name further down)
+    NSInteger bluetooth = MSBDMLIndexOf(ids, @"BLUETOOTH", YES), accessibility = MSBDMLIndexOf(ids, @"ACCESSIBILITY", YES);
     // Accessibility and below: a section of its own (inserted first, it is further down, so the index of Bluetooth stays valid)
     if (accessibility != NSNotFound && accessibility > 0) {
         PSSpecifier *group = [PSSpecifier groupSpecifierWithName:nil];
@@ -269,9 +274,8 @@ static void MSResyncSidebar(id controller) {
         if (MSPointerDeviceAttached()) [specs insertObject:MSPointerRowSpecifier(self) atIndex:next++];   // Pointer: only with a trackpad or mouse
         if (MSKeyboardAttached()) [specs insertObject:MSKeyboardRowSpecifier(self) atIndex:next];   // Keyboard: only with a hardware keyboard
     }
-    objc_setAssociatedObject(self, kSpecsKey, specs, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     MLog([NSString stringWithFormat:@"list prepared: bluetooth %ld accessibility %ld, home bar pill state %llu, pointer %d", (long)bluetooth, (long)accessibility, HBPillState(), MSPointerDeviceAttached()]);
-    if (MSTestFlag("/tmp/macsettings-debug")) { NSMutableString *ids = [NSMutableString string]; for (id sp in specs) [ids appendFormat:@" %@", [sp identifier]]; MLog([@"list ids:" stringByAppendingString:ids]); }
+    if (MSTestFlag("/tmp/macsettings-debug")) { NSMutableString *line = [NSMutableString string]; for (id ident in MSBDMLIdentifiers(self, specs)) [line appendFormat:@" %@", ident == [NSNull null] ? @"(not read)" : ident]; MLog([@"list ids:" stringByAppendingString:line]); }
     return specs;
 }
 // Bug (reported): the SSH row does read the live state fresh every time (dm_sshEnabled: opens the state file, not a cached value), but a PSSwitch cell
@@ -279,14 +283,15 @@ static void MSResyncSidebar(id controller) {
 // this list is already open left the switch showing stale (still on) until Settings was relaunched. Mac Status Bar's SSH menu posts the very same
 // Darwin notifications sshtoggled itself listens for (com.besiktasliseba.sshtoggle.enable/disable, see DMOpenSSHMenu in its Tweak.x), so listening for those
 // here and asking the list to redraw just that one row keeps the switch in step with whatever changed it, no relaunch needed. Read-only/UI-refresh
-// only: no alloc/init of a private class, `reloadSpecifier:`/`specifierForID:` are called on a list controller the OS already created and is
-// already showing, the same category as every other call in this file.
+// only: no alloc/init of a private class, `reloadSpecifier:` is called on a list controller the OS already created and is already showing, the
+// same category as every other call in this file. (The row is found by our own reading of the list, as it is now, never the row Settings is
+// filling in on its own queue -- common/MainListRows.h; Apple's -specifierForID: reads every row.)
 static __weak PSListController *gVisibleSSHList = nil;
 static void DMRefreshSSHRow(void) {
     PSListController *vc = gVisibleSSHList;
-    SEL specForID = NSSelectorFromString(@"specifierForID:"), reload = NSSelectorFromString(@"reloadSpecifier:");
-    if (!vc || ![vc respondsToSelector:specForID] || ![vc respondsToSelector:reload]) return;
-    id spec = ((id (*)(id, SEL, id))objc_msgSend)(vc, specForID, kSwitchID);
+    SEL reload = NSSelectorFromString(@"reloadSpecifier:");
+    if (!vc || ![vc respondsToSelector:reload]) return;
+    id spec = MSBDMLRowFor(vc, MSBDMLLive(vc), kSwitchID, NO);
     if (spec) { ((void (*)(id, SEL, id))objc_msgSend)(vc, reload, spec); MLog(@"SSH row refreshed from an outside change"); }
 }
 static void DMRefreshSSHRowWhenDone(void) {
@@ -322,9 +327,10 @@ static void DMRegisterSSHSync(void) {
 - (void)viewWillAppear:(BOOL)animated {
     %orig;
     UIViewController *vc = (UIViewController *)self;
-    NSArray *builtSpecs = objc_getAssociatedObject(self, kSpecsKey);
-    for (id s in builtSpecs) if ([[s identifier] isEqualToString:kSwitchID]) { gVisibleSSHList = (PSListController *)self; DMRegisterSSHSync(); break; }
-    if (builtSpecs) { MSPointerWatchSidebar((PSListController *)self); MSKeyboardWatchSidebar((PSListController *)self); }
+    if (objc_getAssociatedObject(self, kListPreparedKey)) {   // (our rows are in its list: read as it is now, never the row Settings is filling in)
+        if (MSBDMLIndexOf(MSBDMLIdentifiers(self, MSBDMLLive(self)), kSwitchID, NO) != NSNotFound) { gVisibleSSHList = (PSListController *)self; DMRegisterSSHSync(); }
+        MSPointerWatchSidebar((PSListController *)self); MSKeyboardWatchSidebar((PSListController *)self);
+    }
     if (MSSidebarBarCanGo(vc)) [vc.navigationController setNavigationBarHidden:YES animated:NO];
     objc_setAssociatedObject(self, kBarCanGoKey, @(MSSidebarBarCanGo(vc)), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     MSSearchSidebarChanged(vc);   // (the search field where the bar was)
@@ -387,77 +393,76 @@ static void DMRegisterSSHSync(void) {
     MSSearchSidebarChanged(vc);
 }
 - (void)insertContiguousSpecifiers:(NSArray *)specs atIndex:(NSInteger)index animated:(BOOL)animated {
-    if (MSTestFlag("/tmp/macsettings-debug")) { Dl_info di; const char *img = dladdr(__builtin_return_address(0), &di) ? di.dli_fname : "?"; NSMutableString *ids = [NSMutableString string]; for (id sp in specs) [ids appendFormat:@" %@", [sp identifier]]; MLog([NSString stringWithFormat:@"insert contiguous%@ at %ld from %s", ids, (long)index, img]); }
-    NSArray *kept = WithoutFollowUps(specs);
+    if (MSTestFlag("/tmp/macsettings-debug")) { Dl_info di; const char *img = dladdr(__builtin_return_address(0), &di) ? di.dli_fname : "?"; NSMutableString *ids = [NSMutableString string]; for (id ident in MSBDMLIdentifiers(self, specs)) [ids appendFormat:@" %@", ident]; MLog([NSString stringWithFormat:@"insert contiguous%@ at %ld from %s", ids, (long)index, img]); }
+    NSArray *kept = WithoutFollowUps(self, specs);
     NSInteger at = AdjustedIndex(self, kept, index);
     %orig(kept, at, animated);
     MSResyncSidebar(self);
 }
 - (void)insertContiguousSpecifiers:(NSArray *)specs afterSpecifierID:(NSString *)ident animated:(BOOL)animated {
-    NSArray *kept = WithoutFollowUps(specs);
+    NSArray *kept = WithoutFollowUps(self, specs);
     %orig(kept, ident, animated);
 }
 - (void)insertSpecifier:(id)spec atIndex:(NSInteger)index animated:(BOOL)animated {
-    if (MSTestFlag("/tmp/macsettings-debug")) { Dl_info di; const char *img = dladdr(__builtin_return_address(0), &di) ? di.dli_fname : "?"; MLog([NSString stringWithFormat:@"insert %@ at %ld from %s", [spec identifier], (long)index, img]); }
-    if (IsFollowUp(spec)) return;
+    if (MSTestFlag("/tmp/macsettings-debug")) { Dl_info di; const char *img = dladdr(__builtin_return_address(0), &di) ? di.dli_fname : "?"; MLog([NSString stringWithFormat:@"insert %@ at %ld from %s", MSBDMLIdentifiers(self, spec ? @[spec] : @[]).firstObject, (long)index, img]); }
+    if (IsFollowUp(self, spec)) return;
     index = AdjustedIndex(self, spec ? @[spec] : nil, index);
     // Settings puts VPN "right after Bluetooth" a moment after the list is built, which would land it in front of the SSH row: it goes after it.
-    if ([[spec identifier] isEqualToString:@"VPN"]) {
-        NSArray *all = ((id (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"specifiers"));
-        for (NSUInteger i = 0; i < all.count; i++)
-            if ([[all[i] identifier] isEqualToString:kSwitchID]) { if ((NSUInteger)index <= i) index = i + 1; break; }
+    if ([MSBDMLIdentifiers(self, spec ? @[spec] : @[]).firstObject isEqual:@"VPN"]) {
+        NSInteger ssh = MSBDMLIndexOf(MSBDMLIdentifiers(self, MSBDMLLive(self)), kSwitchID, NO);
+        if (ssh != NSNotFound && index <= ssh) index = ssh + 1;
     }
     %orig(spec, index, animated);
     MSResyncSidebar(self);
 }
 - (void)insertSpecifier:(id)spec afterSpecifierID:(NSString *)ident animated:(BOOL)animated {
-    if (MSTestFlag("/tmp/macsettings-debug")) { Dl_info di; const char *img = dladdr(__builtin_return_address(0), &di) ? di.dli_fname : "?"; MLog([NSString stringWithFormat:@"insert %@ after %@ from %s", [spec identifier], ident, img]); }
-    if (IsFollowUp(spec)) return;
+    if (MSTestFlag("/tmp/macsettings-debug")) { Dl_info di; const char *img = dladdr(__builtin_return_address(0), &di) ? di.dli_fname : "?"; MLog([NSString stringWithFormat:@"insert %@ after %@ from %s", MSBDMLIdentifiers(self, spec ? @[spec] : @[]).firstObject, ident, img]); }
+    if (IsFollowUp(self, spec)) return;
     %orig;
 }
 // The other ways a list can be handed rows (iPad 2 / iOS 16: the alert banners still showed although the inserts above drop them). Each one drops
 // the banners before Settings sees them, the same safe way: only the rows passed in are filtered, the live list is never edited. Debug builds log
 // which way a banner came (/tmp/macsettings-debug), and whether one is in the list afterwards.
 - (void)setSpecifiers:(NSArray *)specs {
-    NoteFollowUps(specs, @"setSpecifiers");
-    NSArray *kept = [specs isKindOfClass:[NSArray class]] ? WithoutFollowUps(specs) : specs;
+    NoteFollowUps(self, specs, @"setSpecifiers");
+    NSArray *kept = [specs isKindOfClass:[NSArray class]] ? WithoutFollowUps(self, specs) : specs;
     %orig(kept != specs && [specs isKindOfClass:[NSMutableArray class]] ? [kept mutableCopy] : kept);
 }
 - (void)addSpecifier:(id)spec animated:(BOOL)animated {
-    if (IsFollowUp(spec)) { NoteFollowUps(@[spec], @"addSpecifier"); return; }
+    if (IsFollowUp(self, spec)) { NoteFollowUps(self, @[spec], @"addSpecifier"); return; }
     %orig;
 }
 - (void)addSpecifiersFromArray:(NSArray *)specs animated:(BOOL)animated {
-    NoteFollowUps(specs, @"addSpecifiersFromArray");
-    NSArray *kept = WithoutFollowUps(specs);
+    NoteFollowUps(self, specs, @"addSpecifiersFromArray");
+    NSArray *kept = WithoutFollowUps(self, specs);
     if (!kept.count && specs.count) return;
     %orig(kept, animated);
 }
 - (void)insertSpecifier:(id)spec afterSpecifier:(id)after animated:(BOOL)animated {
-    if (IsFollowUp(spec)) { NoteFollowUps(@[spec], @"insertSpecifier:afterSpecifier"); return; }
+    if (IsFollowUp(self, spec)) { NoteFollowUps(self, @[spec], @"insertSpecifier:afterSpecifier"); return; }
     %orig;
 }
 - (void)insertSpecifier:(id)spec atEndOfGroup:(NSInteger)group animated:(BOOL)animated {
-    if (IsFollowUp(spec)) { NoteFollowUps(@[spec], @"insertSpecifier:atEndOfGroup"); return; }
+    if (IsFollowUp(self, spec)) { NoteFollowUps(self, @[spec], @"insertSpecifier:atEndOfGroup"); return; }
     %orig;
 }
 - (void)insertContiguousSpecifiers:(NSArray *)specs afterSpecifier:(id)after animated:(BOOL)animated {
-    NoteFollowUps(specs, @"insertContiguousSpecifiers:afterSpecifier");
-    NSArray *kept = WithoutFollowUps(specs);
+    NoteFollowUps(self, specs, @"insertContiguousSpecifiers:afterSpecifier");
+    NSArray *kept = WithoutFollowUps(self, specs);
     if (!kept.count && specs.count) return;
     %orig(kept, after, animated);
 }
 - (void)insertContiguousSpecifiers:(NSArray *)specs atEndOfGroup:(NSInteger)group animated:(BOOL)animated {
-    NoteFollowUps(specs, @"insertContiguousSpecifiers:atEndOfGroup");
-    NSArray *kept = WithoutFollowUps(specs);
+    NoteFollowUps(self, specs, @"insertContiguousSpecifiers:atEndOfGroup");
+    NSArray *kept = WithoutFollowUps(self, specs);
     if (!kept.count && specs.count) return;
     %orig(kept, group, animated);
 }
 // A replace of banners (Settings refreshing them): the old ones were never let in, so with nothing of ours to replace nothing is done; new banners
 // among the replacements are left out.
 - (void)replaceContiguousSpecifiers:(NSArray *)old withSpecifiers:(NSArray *)specs animated:(BOOL)animated {
-    NoteFollowUps(specs, [NSString stringWithFormat:@"replaceContiguousSpecifiers (replacing %lu rows, %lu of them not banners)", (unsigned long)old.count, (unsigned long)WithoutFollowUps(old).count]);
-    NSArray *oldKept = WithoutFollowUps(old), *kept = WithoutFollowUps(specs);
+    NoteFollowUps(self, specs, [NSString stringWithFormat:@"replaceContiguousSpecifiers (replacing %lu rows, %lu of them not banners)", (unsigned long)old.count, (unsigned long)WithoutFollowUps(self, old).count]);
+    NSArray *oldKept = WithoutFollowUps(self, old), *kept = WithoutFollowUps(self, specs);
     if (oldKept == old && kept == specs) {
         %orig(old, specs, animated);
         return;
@@ -468,8 +473,8 @@ static void DMRegisterSSHSync(void) {
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
     if (!MSTestFlag("/tmp/macsettings-debug")) return;
-    NSArray *all = ((id (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"specifiers"));
-    NSUInteger n = 0; for (id sp in all) if (IsFollowUp(sp)) n++;
+    NSArray *all = MSBDMLLive(self);
+    NSUInteger n = 0; for (id ident in MSBDMLIdentifiers(self, all)) if (IsFollowUpID(ident)) n++;
     MLog([NSString stringWithFormat:@"main list shown: %lu rows, alert banners in it: %lu", (unsigned long)all.count, (unsigned long)n]);
 }
 %new

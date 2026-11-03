@@ -6,6 +6,7 @@
 #import "../../common/LineSwitch.h"
 #import "../../common/MacDockActive.h"
 #import "../../common/NativeEmbed.h"
+#import "../../common/OwnPageState.h"   // (1.7.9: Finder as stored and the rows this page leaves out, shared with the Settings search)
 
 // The "Other Apps" row uses AltList's app picker (ATLApplicationListMultiSelectionController). That class only exists once
 // AltList's library is loaded, and this bundle is not linked against it, so load it as soon as the bundle is loaded.
@@ -85,12 +86,9 @@ MSBD_LINE_SWITCH_METHODS
 			for (NSUInteger i = 0; i < specs.count; i++) if ([[specs[i] identifier] isEqual:@"FINDER_GROUP"]) { at = i; break; }   // (after App Library: in front of Finder)
 			[specs insertObjects:hs atIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(at, hs.count)]];
 		}
-		// (Finder switched off in Mac Status Bar's settings: no Finder in the Dock, so no row for it)
-		CFPreferencesAppSynchronize(CFSTR("com.besiktasliseba.macstatusbar"));
-		CFPropertyListRef fe = CFPreferencesCopyValue(CFSTR("finderEnabled"), CFSTR("com.besiktasliseba.macstatusbar"), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-		BOOL finderOff = fe && CFGetTypeID(fe) == CFBooleanGetTypeID() && !CFBooleanGetValue(fe);
-		if (fe) CFRelease(fe);
-		if (finderOff) for (PSSpecifier *sp in [specs copy]) if ([sp.identifier isEqual:@"FINDER"] || [sp.identifier isEqual:@"FINDER_GROUP"]) [specs removeObject:sp];
+		// (Finder switched off in Mac Status Bar's settings: no Finder in the Dock, so no row for it -- Finder read as SpringBoard reads it, and the
+		//  Settings search leaves the row out the same way: common/OwnPageState.h, OwnPageRows.h)
+		if (!MSBDFinderStored()) for (PSSpecifier *sp in [specs copy]) if ([sp.identifier isEqual:kMSBDDockFinderRowID] || [sp.identifier isEqual:kMSBDDockFinderGroupID]) [specs removeObject:sp];
 		_specifiers = [self msbd_hideRowsWhenLineOff:specs offFooter:@"The Dock features are off. Turn them on to change their settings. Takes effect after a respring."];
 	}
 	return _specifiers;

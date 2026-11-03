@@ -60,7 +60,7 @@ check "  ... on 17/18 (the group on our Dock page) its footer says where the App
 check "the Settings search finds it, at its row: Apple's Home Screen page on 15/16, our Dock page's Home Screen group on 17/18" \
   "grep -q 'c.ownRows = MTSOwnRows();' $T && grep -q 'NSString \\*pane = os >= 17 ? @\"DOCK_MAGNIFICATION\" : @\"HOME_SCREEN_DOCK\"' $T && grep -q '@\"row\": @\"MSBD_LAST_PAGE_LIBRARY\", @\"title\": @\"Swipe Past Last Page Opens App Library\"' $T"
 check "  ... only while the Dock part runs (review m1): no row of ours in the index unless MSBDMacDockActive(), the check its page builds the row by (MacDock off, an untested iPadOS without Enable Anyway: no result for a page without the row)" \
-  "awk '/^static NSArray<NSDictionary \\*> \\*MTSOwnRows\\(void\\) \\{/{f=1; n=0} f{n++} f&&n==2&&/^    if \\(!MSBDMacDockActive\\(\\)\\) return @\\[\\];/{ok=1} f&&/^}/{exit} END{exit !ok}' $T \
+  "awk '/^static NSArray<NSDictionary \\*> \\*MTSOwnRows\\(void\\) \\{/{f=1} f&&/^    if \\(MSBDMacDockActive\\(\\)\\) \\{/{inb=1} f&&inb&&/MSBD_LAST_PAGE_LIBRARY/{ok=1} f&&inb&&/^    \\}/{inb=0} f&&!inb&&/MSBD_LAST_PAGE_LIBRARY/{bad=1} f&&/^}/{exit} END{exit !(ok && !bad)}' $T \
    && awk '/^static NSArray \\*DMHSSpecifiers\\(void\\) \\{/{f=1} f&&/BOOL dock = MSBDMacDockActive\\(\\)/{a=1} f&&/if \\(dock\\) \\{/{b=1} f&&b&&/MSBD_LAST_PAGE_LIBRARY/{c=1} f&&/^}/{exit} END{exit !(a && b && c)}' $R \
    && grep -q '^#import \"LineSwitch.h\"' $T && grep -q '^#import \"MacDockActive.h\"' $T \
    && awk '/^#import \"LineSwitch.h\"/{a=NR} /^#import \"MacDockActive.h\"/{b=NR} END{exit !(a && b > a)}' $T"

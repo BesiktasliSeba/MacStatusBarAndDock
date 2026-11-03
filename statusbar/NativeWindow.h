@@ -158,6 +158,7 @@ static UIWindow *DMNativeLayer(void) {
             class_addMethod(sub, @selector(canBecomeKeyWindow), (IMP)DMNativeYes, "B@:");
             class_addMethod(sub, @selector(layoutSubviews), (IMP)DMNativeLayerLayout, "v@:");
             class_addMethod(sub, NSSelectorFromString(@"_canBecomeKeyWindow"), (IMP)DMNativeYes, "B@:");
+            DMScrollTurnWindowClass(sub);   // (a trackpad's scroll in a turned window: UIKit is told the orientation it is shown in, StatusBar.x)
             objc_registerClassPair(sub);
         }
         UIWindow *w = ((id (*)(id, SEL, id, id))objc_msgSend)([sub alloc], initRole, @"SBFTraitsParticipantRoleRecordingIndicator", @"MacStatusBarNativeWindows");
@@ -191,6 +192,7 @@ static void DMNativeUpdateRotation(void) {
     CGPoint o = [l convertPoint:CGPointZero toCoordinateSpace:scr], x = [l convertPoint:CGPointMake(100, 0) toCoordinateSpace:scr];
     if (hypot(x.x - o.x, x.y - o.y) > 50.0) angle = -round(atan2(x.y - o.y, x.x - o.x) / M_PI_2) * M_PI_2;
     CGAffineTransform t = fabs(angle) > 0.01 ? CGAffineTransformMakeRotation(angle) : CGAffineTransformIdentity;
+    atomic_store(&gDMNativeScrollTurn, MSBDScrollTurnOrientation(angle));   // (a trackpad's scroll in the windows is turned as they are shown: DMScrollDeltaToFixed)
     CGRect b = CGRectMake(0, 0, fabs(angle) > 0.01 ? screen.width : win.width, fabs(angle) > 0.01 ? screen.height : win.height);
     if (CGAffineTransformEqualToTransform(gNativeRotator.transform, t) && CGRectEqualToRect(gNativeRotator.bounds, b)) return;
     gNativeRotator.transform = CGAffineTransformIdentity;
@@ -266,6 +268,7 @@ static void DMNativeTakeKeys(DMNativeWindow *w) {
 }
 static void DMNativeSetActive(DMNativeWindow *w) {
     if (!w) DMNativeFocus(NO);   // (no native window active: the keyboard goes back to the apps, whatever the path here)
+    if (w && w != gNativeActive) DMHomeFolderMovedOn(@"a native window was made active");   // (a folder the windows stepped aside for no longer counts, StatusBar.x)
     // (a native window made active -- touched, opened, brought forward -- has the keys again, not the desktop that was clicked meanwhile, 1.7.8)
     if (w) DMDesktopYieldKeys();
     if (w == gNativeActive) { if (w) DMNativeTakeKeys(w); DMNativeApplyLevel(); return; }

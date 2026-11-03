@@ -8,6 +8,7 @@
 #pragma once
 #import <Foundation/Foundation.h>
 #import <objc/message.h>
+#import "MainListRows.h"   // (the list's rows read once, never the row Settings fills in on its own queue: 1.7.9)
 
 typedef struct { const char *ident, *title, *apple[2]; } MSSGGroup;
 static const MSSGGroup kMSSGGroups[] = {
@@ -56,15 +57,16 @@ static inline NSArray<NSDictionary *> *MSSGPlan(NSArray *ids) {
 // Screen Time and General's group header), and each one is looked for in the live list again right before its call: both still there, and
 // next to each other for the single replace (else a replace of the first and a remove of the second). A row no longer there, or a call that
 // throws: that group stays as it is. makeRow(g, members) makes our row; done(g, members) hears of each group made. Returns how many were made.
+// The rows' identifiers are read once, never the row Settings fills in on its own queue (common/MainListRows.h: 1.7.9, 17.5.1 crash).
 static inline NSUInteger MSSGApplyPlan(id list, id (^makeRow)(int g, NSArray *members), void (^done)(int g, NSArray *members)) {
     SEL specsSel = NSSelectorFromString(@"specifiers"), replace = NSSelectorFromString(@"replaceContiguousSpecifiers:withSpecifiers:animated:"),
-        remove = NSSelectorFromString(@"removeSpecifier:animated:"), identSel = NSSelectorFromString(@"identifier");
+        remove = NSSelectorFromString(@"removeSpecifier:animated:");
     if (!list || ![list respondsToSelector:specsSel] || ![list respondsToSelector:replace] || ![list respondsToSelector:remove]) return 0;
     id live = ((id (*)(id, SEL))objc_msgSend)(list, specsSel);
     if (![live isKindOfClass:[NSArray class]]) return 0;
     NSArray *before = [(NSArray *)live copy];
     NSMutableArray *ids = [NSMutableArray array];
-    for (id sp in before) { id i = [sp respondsToSelector:identSel] ? ((id (*)(id, SEL))objc_msgSend)(sp, identSel) : nil; [ids addObject:[i isKindOfClass:[NSString class]] ? i : @""]; }
+    for (id i in MSBDMLIdentifiers(list, before)) [ids addObject:[i isKindOfClass:[NSString class]] ? i : @""];
     NSUInteger made = 0;
     for (NSDictionary *st in MSSGPlan(ids)) {
         NSUInteger fi = [st[@"first"] unsignedIntegerValue], si = [st[@"second"] unsignedIntegerValue];

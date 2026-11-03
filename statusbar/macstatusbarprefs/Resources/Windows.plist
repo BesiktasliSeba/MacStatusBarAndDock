@@ -145,6 +145,32 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
+			<string>Swiping up from the bottom or pressing the Home button minimizes the windows, so the Home Screen shows. Opening an app brings its window back.</string>
+			<key>id</key>
+			<string>HOME_WINDOWS_GROUP</string>
+			<key>stockHides</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>HOME_MINIMIZES_WINDOWS</string>
+			<key>key</key>
+			<string>homeMinimizesWindows</string>
+			<key>label</key>
+			<string>Home Minimizes Windows</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
 			<string>Apps lay themselves out to fit their window, like on a Mac. When off, an app keeps its full-screen layout and is scaled down to fit.</string>
 			<key>id</key>
 			<string>RESIZE_GROUP</string>
@@ -278,6 +304,30 @@
 			<string>prewarmApps</string>
 			<key>label</key>
 			<string>Prewarm Apps</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>iPadOS turns on tailspin, a performance trace for Apple's diagnostics, for a few days at a time. It holds tens of MB of memory and samples the whole system many times a second.</string>
+			<key>id</key>
+			<string>TAILSPIN_GROUP</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.tailspin.changed</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>KEEP_TAILSPIN_OFF</string>
+			<key>key</key>
+			<string>keepTailspinOff</string>
+			<key>label</key>
+			<string>Keep Tailspin Off</string>
 		</dict>
 	</array>
 	<key>title</key>

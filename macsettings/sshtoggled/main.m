@@ -1041,6 +1041,7 @@ static void WatchForMacStatusBarOff(void) {   // SpringBoard's pid is looked at 
 // Screen off (SpringBoard's own com.apple.springboard.hasBlankedScreen, state 1 = blank): the two checks rest, so the helper does not wake every
 // 2 s all night. The kernel file events stay armed (they cost nothing until something changes). Screen on: one look at once, then the checks go on.
 #include "SleepGuardDaemon.h"   // (battery drain F1: the screen-off look at powerd's assertions)
+#include "TailspinDaemon.h"      // (Keep Tailspin Off, 1.7.9: HangTracer's PDSEPrefAllowEnableTailspin kept false)
 static void WatchScreen(void) {
     static int token = 0; static BOOL paused = NO;
     void (^apply)(int) = ^(int t) {
@@ -1512,6 +1513,7 @@ static void Uninstall(void) {
     GiveBackStageManager(@"removal");
     GiveBackPointerAnimations(@"removal");   // (after the running SpringBoard's own give-back, posted above: whichever comes first, the other finds nothing to do)
     ForgetPrewarmPrefs(@"removal");
+    TGGiveBack(@"removal");   // (Keep Tailspin Off: our false in com.apple.da taken away, TailspinDaemon.h)
     NSString *status = DpkgStatus();
     if (MSBDPackageOnDisk(status, @"com.opa334.choicy")) {
         GiveBackChoicyEngines();
@@ -1688,6 +1690,7 @@ int main(int argc, char **argv) {
         if (argc > 1 && strcmp(argv[1], "--migrate") == 0) { Migrate(); return 0; }                      // (postinst, once: from the old separate packages)
         if (argc > 1 && strcmp(argv[1], "--after-install") == 0) { gTellSpringBoard = NO; KeepLinesDisabledAfterUpdate(); ApplyEnginesAtInstall(); return 0; }   // (postinst, every install/upgrade)
         if (argc > 1 && strcmp(argv[1], "--uninstall") == 0) { Uninstall(); return 0; }                    // (prerm, on removal only)
+        if (argc > 1 && strcmp(argv[1], "--tailspin-giveback") == 0) { TGGiveBack(argc > 2 ? [NSString stringWithFormat:@"prerm %s", argv[2]] : @"prerm"); return 0; }   // (prerm, every way out: TailspinDaemon.h)
         // (--resume <what>: this daemon started over after a cfprefsd restart, StartOverIfPrefsDaemonRestarted -- the same start, then that work again)
         const char *resume = (argc > 2 && strcmp(argv[1], "--resume") == 0) ? argv[2] : NULL;
         if (argc > 0 && argv[0] && argv[0][0] == '/' && strlen(argv[0]) < sizeof(gSelfPath)) strcpy(gSelfPath, argv[0]);
@@ -1721,6 +1724,7 @@ int main(int argc, char **argv) {
         WatchForMacStatusBarOff();
         WatchMacStatusBarConfig();
         SGStart();
+        TGStart();
         WatchScreen();
         dispatch_main();
     }

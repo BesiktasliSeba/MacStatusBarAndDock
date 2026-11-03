@@ -2,6 +2,28 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.7.9
+
+### New
+- Battery menu: tap the battery in the menu bar for Low Power Mode, Sleep Guard and Battery Settings. A new Control Center icon next to the clock opens Control Center. To go back, turn off Battery Menu in Settings > Status Bar.
+- Home Minimizes Windows (on by default): swipe up from the bottom or press the Home button to minimize your windows and see the Home Screen. Opening an app brings its window back. It's in Settings > Windows & Multitasking.
+- Folders in the Finder menu: choose Show in Finder Menu in a Home Screen folder's Haptic Touch menu to list it in the menu bar's Finder menu.
+- App Icon Corner Radius in Settings > Desktop: choose how round the desktop's app icons are, from square to circle.
+- Keep Tailspin Off in Settings > Windows & Multitasking (on by default on iPads with 2 GB of memory): stops an iPadOS diagnostics trace that uses tens of MB of memory.
+
+### Improvements
+- Battery Health and Sleep Guard now work even with another battery health tweak installed.
+- Sleep Guard's description in Settings now explains how it saves battery.
+- Settings search always finds the tweak's own settings.
+
+### Fixes
+- With Reduce Motion on, a steady swipe up goes Home instead of opening the Mac Switcher.
+- With a keyboard, opening a menu bar menu no longer makes the app behind it look inactive.
+- Settings on iPadOS 17 no longer crashes when you go back to it while it's loading.
+- With Aerial, locking the iPad no longer brings back windows you minimized, and windows on other desktops stay there.
+- On iPadOS 17 and 18, two-finger scrolling with a trackpad in the menu bar's Today panel scrolls up and down. It used to scroll sideways.
+- The menu bar stays in place and works while a Home Screen folder is open. It used to slide behind the folder and ignore the first tap.
+
 ## 1.7.8.2
 
 ### Fixes

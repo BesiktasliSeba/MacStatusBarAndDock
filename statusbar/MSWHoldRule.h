@@ -6,6 +6,8 @@
 // (lifted). An end SpringBoard makes itself with the finger still down -- with Reduce Motion it ends the gesture at the pause it reads, in the
 // middle of the update that read it, whichever modifier runs it -- brings no new touch, and a decision taken outside the end has none to measure:
 // both keep SpringBoard's own rule, as the rest would read ~0 ms there and every hold would go Home.
+// Reduce Motion's end with the finger still down is ours to allow (1.7.9): SpringBoard makes it only while the fingers rest at that touch
+// (DMMSWPauseResting) -- the same hold the lift asks for -- so a swipe still moving goes on to its lift.
 #ifndef MSWHOLDRULE_H
 #define MSWHOLDRULE_H
 #include <math.h>
@@ -40,6 +42,12 @@ static inline int DMMSWPauseHeld(const DMMSWPause *h, double *rest) {
     double r = h->last - h->since;
     if (rest) *rest = r;
     return h->held || (r >= kMSWRestNeeded && -h->y >= kMSWRestMinTravel);
+}
+// SpringBoard is about to end the gesture in the App Switcher with the fingers still down (Reduce Motion, at a pause it reads in the middle of
+// a move): 1 = they rest now -- inside kMSWRestSlop for kMSWRestNeeded up the screen at the latest touch, so their speed over that time is
+// under kMSWRestSlop / kMSWRestNeeded (~53 pt/s). A hold earlier in the gesture does not count: the fingers have moved on since.
+static inline int DMMSWPauseResting(const DMMSWPause *h) {
+    return h->on && h->last - h->since >= kMSWRestNeeded && -h->y >= kMSWRestMinTravel;
 }
 // SpringBoard asks what a swipe it ends in the App Switcher does (one gesture can have two modifiers that ask, and ask more than once):
 // 1 = Home -- a lift without a hold; 0 = SpringBoard's destination stands (a hold; not watched; no lift being handled). The first answer at a

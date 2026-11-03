@@ -72,6 +72,44 @@
 			<key>min</key>
 			<real>40</real>
 		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>id</key>
+			<string>DESKTOP_CORNER_GROUP</string>
+			<key>label</key>
+			<string>App Icon Corner Radius</string>
+			<key>footerText</key>
+			<string>Changes the corners of app icons on the desktop only. Folders, files and Home Screen icons are not affected. Until you move the slider, desktop app icons match your Home Screen app icons, icon theme included. Match Home Screen Icons brings that back.</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar.finder.pref</string>
+			<key>cell</key>
+			<string>PSSliderCell</string>
+			<key>default</key>
+			<real>0.225</real>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>DESKTOP_APP_CORNER</string>
+			<key>key</key>
+			<string>desktopAppIconCorner</string>
+			<key>max</key>
+			<real>0.5</real>
+			<key>min</key>
+			<real>0</real>
+		</dict>
+		<dict>
+			<key>action</key>
+			<string>msb_matchHomeScreenCorners:</string>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>id</key>
+			<string>DESKTOP_CORNER_MATCH</string>
+			<key>label</key>
+			<string>Match Home Screen Icons</string>
+		</dict>
 	</array>
 	<key>title</key>
 	<string>Desktop</string>

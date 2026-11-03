@@ -19,8 +19,11 @@
 #import "../SMSwitchOn.h"   // (DMSMConsentFrom: the stored Stage Manager answers, read as SpringBoard reads them)
 #import "../../common/MenuBarSize.h"   // (Menu Bar Size, 1.7.3: the stored value read as SpringBoard reads it)
 #import "../../common/DesktopIconSize.h"   // (the desktop's Icon Size, 1.7.5: its range, steps and the size in force, as SpringBoard reads them)
+#import "../../common/DesktopAppCorner.h"   // (the desktop's App Icon Corner Radius, 1.7.9: its steps, the Home Screen's shape SpringBoard published)
 #import "../../common/PrewarmArmed.h"   // (Prewarm Apps, 1.7.7: offered only where the prewarm block in dasd is armed)
 #import "../../common/PrewarmDefault.h"   // (Prewarm Apps, 1.7.7: never set, off on a 2 GB iPad and on with more, as SpringBoard reads it)
+#import "../../common/TailspinGuard.h"   // (Keep Tailspin Off, 1.7.9: never set, on with 2 GB; offered where the helper found it does something)
+#import "../../common/OwnPageState.h"   // (1.7.9: the conditions and rows this page leaves out, shared with the Settings search -- OwnPageRows.h)
 @interface PSListController (MSBURL)
 - (void)handleURL:(NSDictionary *)url withCompletion:(id)completion;   // (Settings' link to a place on a page: -handleURL:withCompletion: below)
 @end
@@ -160,11 +163,6 @@ static void MSBSetStageManagerConsent(CFStringRef key, int value) {
 // common/EngineBuilds.h).
 // "Installed" = its library is in TweakInject, as .dylib or as iCleaner's .disabled (Choicy's deny list does not make an engine uninstalled).
 // 0 = not installed, 1 = installed but not a tested build, 2 = installed and tested
-static NSString *MSBEngineLibraryPath(NSString *lib) {   // (its .dylib, or iCleaner's .disabled)
-	NSString *path = [[kMSBTweakDir stringByAppendingPathComponent:lib] stringByAppendingPathExtension:@"dylib"];
-	if (![[NSFileManager defaultManager] fileExistsAtPath:path]) path = [[kMSBTweakDir stringByAppendingPathComponent:lib] stringByAppendingPathExtension:@"disabled"];
-	return path;
-}
 // Stage Manager as the engine (iPadOS 16+): usable where Stage Manager runs -- natively (iPad Pro 2018 and later, M1/M2 iPads: iPad8/13/14,x) or
 // through TrollPad on older iPads.
 // (and where SpringBoard's self-check of the engine found the system methods it uses missing or different on this iPadOS version, it is not
@@ -178,23 +176,8 @@ static BOOL MSBStageManagerUnsupported(NSString **os) {   // (Stage Manager is h
 //  "stagemanager" as an iPad without Stage Manager: its row greyed and the why under the Native group, 1.5.2)
 static NSString *MSBEnginePretend(void) { return [NSString stringWithContentsOfFile:@"/tmp/msb-engine-notinstalled" encoding:NSUTF8StringEncoding error:nil]; }
 #endif
-static int MSBEngineState(NSString *engine) {
-#if DEBUG
-	if ([engine isEqualToString:@"stagemanager"] && [MSBEnginePretend() containsString:@"stagemanager"]) return 0;
-#endif
-	if ([engine isEqualToString:@"stagemanager"]) return MSBStageManagerAvailable() ? 2 : 0;
-	NSDictionary *mainLib = @{@"aerial": @"Aerial", @"milkyway": @"MilkyWay4", @"zetsu": @"Zetsu"};
-	NSString *lib = mainLib[engine];
-	if (!lib) return 2;
-#if DEBUG
-	NSString *pretend = MSBEnginePretend();   // (debug: test the GET button)
-	if ([pretend containsString:[engine stringByAppendingString:@"-untested"]]) return 1;   // (debug: test the "(untested version)" label)
-	if ([pretend containsString:engine]) return 0;
-#endif
-	NSString *path = MSBEngineLibraryPath(lib);
-	if (![[NSFileManager defaultManager] fileExistsAtPath:path]) return 0;
-	return MSBDEngineFileTested(lib, path) ? 2 : 1;
-}
+// (the rule, the debug pretend file included, is common/OwnPageState.h's: the Settings search asks the same one for the Windows group's rows)
+static int MSBEngineState(NSString *engine) { return MSBDEngineState(engine); }
 // An installed build our integration has not been tested with is still the user's to pick (1.5.0): it runs on its own -- MacStatusBar&Dock
 // doesn't drive its windows, but it never keeps it from loading either. Greyed and unselectable until 1.4.5, so an engine update (Aerial 5.1)
 // could not be picked, our exclusivity kept it out of SpringBoard, and its license (checked in SpringBoard) could not be activated (24 Oct).
@@ -218,23 +201,10 @@ static NSString *MSBEngineValueOf(PSSpecifier *s) {
 // The engine the Window Engine row shows as picked (-readPreferenceValue: below): the stored one when this iPadOS offers it and it is installed (an
 // untested build too: it is the one that loads, on its own); else the same single rule as SpringBoard and the helper (EngineBuilds.h: Aerial of any
 // build, else MilkyWay4, else Zetsu); "none" with no engine at all.
-static NSString *MSBEngineShown(id value, NSArray *offered) {
-	if ([value isKindOfClass:[NSString class]] && [offered containsObject:value] && MSBEngineState(value) >= 1) return value;
-	NSString *fallback = MSBDDefaultEngine(^BOOL(NSString *e) { return MSBEngineState(e) != 0; }, ^NSString *(NSString *lib) { return MSBEngineLibraryPath(lib); });
-	return fallback ?: @"none";
-}
+static NSString *MSBEngineShown(id value, NSArray *offered) { return MSBDEngineShown(value, offered); }   // (common/OwnPageState.h)
 // The same without the row (1.6.0: the row is on the Windows & Multitasking page, Report a Problem stays on the Status Bar page): the stored value or
 // the row's default, and the row's values (Windows.plist) less what -specifiers takes out on this iPadOS (Stage Manager before 16, MilkyWay4 on 16+).
-static NSString *MSBEngineShownWithoutRow(void) {
-	CFPreferencesAppSynchronize(CFSTR("com.besiktasliseba.macstatusbar"));
-	CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("windowEngine"), CFSTR("com.besiktasliseba.macstatusbar"), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-	NSString *stored = v && CFGetTypeID(v) == CFStringGetTypeID() ? [(__bridge NSString *)v copy] : @"aerial";
-	if (v) CFRelease(v);
-	NSMutableArray *offered = [@[@"aerial", @"milkyway", @"zetsu", @"stagemanager"] mutableCopy];
-	if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion < 16) [offered removeObject:@"stagemanager"];
-	else [offered removeObject:@"milkyway"];
-	return MSBEngineShown(stored, offered);
-}
+static NSString *MSBEngineShownWithoutRow(void) { return MSBDEngineShownWithoutRow(); }   // (common/OwnPageState.h: the search asks the same)
 @interface MSBEngineListController : PSListItemsController
 @end
 @implementation MSBEngineListController
@@ -393,13 +363,7 @@ static void MSBSaveBarColor(UIColor *c) {
 // translate it to and from the two strings the picker offers, so nothing else about the stored preference changes. While it is on, the groups
 // tagged stockHides in Root.plist (and their rows) are left out, the way Apple hides rows that depend on a switch. It takes effect after a
 // respring (StatusBar.x / StockBar.h), so a change still offers one.
-static BOOL MSBStockBarStored(void) {
-	CFPreferencesAppSynchronize(kMSBBarDomain);
-	CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("stockStatusBar"), kMSBBarDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-	BOOL on = v && CFGetTypeID(v) == CFBooleanGetTypeID() && CFBooleanGetValue(v);
-	if (v) CFRelease(v);
-	return on;
-}
+static BOOL MSBStockBarStored(void) { return MSBDStockBarStored(); }   // (common/OwnPageState.h: the Settings search reads it the same way)
 static void MSBSetStockBarStored(BOOL on) {
 	CFPreferencesSetValue(CFSTR("stockStatusBar"), on ? kCFBooleanTrue : kCFBooleanFalse, kMSBBarDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
 	CFPreferencesSynchronize(kMSBBarDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
@@ -429,6 +393,29 @@ static double MSBDesktopIconShownNow(void) {
 // (each read is a round trip to the preferences daemon, many a second -- 1.7.5 review). 0: "the Home Screen's", nothing stored.
 static double gMSBDesktopIconWritten = -1;
 
+// The desktop's App Icon Corner Radius (1.7.9 item 4): the stored fraction (nil: never set -- the Home Screen's shape, followed as it changes), the
+// Home Screen's shape as SpringBoard published it, and what the slider shows. Moving the slider always stores the user's own corner, even where the
+// Home Screen's is (KT 2 Nov: a later theme change must leave it alone); only Match Home Screen Icons removes it.
+static NSNumber *MSBDesktopCornerStored(void) {
+	CFPreferencesAppSynchronize(kMSBBarDomain);
+	CFPropertyListRef v = CFPreferencesCopyAppValue(CFSTR(MSBD_DESKTOP_CORNER_KEY), kMSBBarDomain);
+	NSNumber *n = v && CFGetTypeID(v) == CFNumberGetTypeID() ? [(__bridge NSNumber *)v copy] : nil;
+	if (v) CFRelease(v);
+	return n;
+}
+static uint64_t MSBDesktopThemeCornerNow(void) {
+	static int token = 0;
+	if (!token && notify_register_check(MSBD_DESKTOP_THEMECORNER_STATE, &token) != NOTIFY_STATUS_OK) token = 0;
+	uint64_t state = 0;
+	if (token) notify_get_state(token, &state);
+	return state;
+}
+static double MSBDesktopCornerShownNow(void) {
+	NSNumber *n = MSBDesktopCornerStored();
+	return MSBDDesktopCornerShown(n != nil, n.doubleValue, MSBDesktopThemeCornerNow());
+}
+static double gMSBDesktopCornerWritten = -2;   // (the step written last while the slider is dragged; -2 not read yet, -1 nothing stored)
+
 // Prewarm Apps as SpringBoard reads it (common/PrewarmDefault.h): a boolean stored, else the default for this iPad's RAM -- off with 2 GB (1.7.7).
 // The switch shows that (-readPreferenceValue: below); the default is never written, only a tap stores a value.
 static BOOL MSBPrewarmAppsInForce(void) {
@@ -437,6 +424,14 @@ static BOOL MSBPrewarmAppsInForce(void) {
 	int stored = MSBDPrewarmAppsStored(v);
 	if (v) CFRelease(v);
 	return MSBDPrewarmAppsOn(stored, MSBDPrewarmRAM()) != 0;
+}
+// Keep Tailspin Off as the root helper applies it (common/TailspinGuard.h): a boolean stored, else on with 2 GB of RAM (1.7.9). The same way.
+static BOOL MSBTailspinOffInForce(void) {
+	CFPreferencesAppSynchronize(kMSBBarDomain);
+	CFPropertyListRef v = CFPreferencesCopyValue(CFSTR(kMSBDTailspinKey), kMSBBarDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+	int stored = MSBDTailspinOffStored(v);
+	if (v) CFRelease(v);
+	return MSBDTailspinOffOn(stored, MSBDPrewarmRAM()) != 0;
 }
 
 // ---- Menu Bar Size (1.7.3, common/MenuBarSize.h): a "Menu Bar Size" row (Small / Medium / Large) in the Status Bar group, opening a three-item picker
@@ -462,6 +457,7 @@ static int MSBMenuBarSizeStored(void) {
 - (BOOL)msb_desktopPage;
 - (BOOL)msb_rootPage;
 - (void)msb_prewarmMaybeChanged;
+- (void)msb_tailspinMaybeChanged;
 @end
 // The Windows & Multitasking row is in Settings' list next to ours (StatusBarSettingsRow.x: the sidebar on 15-17, General's group on 18). Where it is
 // not -- the row tweak not loaded, or Settings' list not as expected, so this page came from PreferenceLoader's entry --, a link to that page takes
@@ -478,18 +474,13 @@ static BOOL MSBDesktopRowListed(void) {
 }
 static UIImage *MSBDesktopIcon(void) { return [UIImage imageNamed:@"desktop" inBundle:[NSBundle bundleForClass:[MSBRootListController class]] compatibleWithTraitCollection:nil]; }
 // Finder as stored (finderEnabled, on unless set): the desktop is Finder's, so its page notes when Finder is off.
-static BOOL MSBFinderStored(void) {
-	CFPreferencesAppSynchronize(CFSTR("com.besiktasliseba.macstatusbar"));
-	CFPropertyListRef v = CFPreferencesCopyAppValue(CFSTR("finderEnabled"), CFSTR("com.besiktasliseba.macstatusbar"));
-	BOOL on = !v || (CFGetTypeID(v) == CFBooleanGetTypeID() ? CFBooleanGetValue(v) : (CFGetTypeID(v) == CFNumberGetTypeID() ? [(__bridge NSNumber *)v boolValue] : YES));   // (as SpringBoard reads it)
-	if (v) CFRelease(v);
-	return on;
-}
+static BOOL MSBFinderStored(void) { return MSBDFinderStored(); }   // (as SpringBoard reads it: common/OwnPageState.h, the Dock page's and the search's too)
 
 @implementation MSBRootListController {
 	int _msbConsentToken, _msbSMOnToken;   // (Stage Manager's state and the consent answers, followed while the page exists)
 	NSMutableArray *_msbApplePages;   // (the Windows & Multitasking page: Apple's pages whose rows it shows, never shown themselves -- AppleMultitasking.h)
 	BOOL _msbPrewarmShown;   // (the Windows & Multitasking page: whether the prewarm block was armed when the list was built -- msb_prewarmMaybeChanged)
+	BOOL _msbTailspinShown;   // (... and whether the root helper found Keep Tailspin Off doing something then -- the same)
 }
 - (NSString *)msb_plistName { return @"Root"; }
 - (BOOL)msb_windowsPage { return NO; }
@@ -692,7 +683,7 @@ static void MSBFitValueLabels(UIView *v) {
 		dispatch_async(dispatch_get_main_queue(), ^{ MSBFitValueLabels(cell); });   // (the value label may be made during the first layout)
 		// (the desktop's Icon Size, 1.7.5: its value goes out while it is dragged -- the icons follow live -- whatever the cell's own default)
 		PSSpecifier *sp = [cell respondsToSelector:@selector(specifier)] ? [(PSTableCell *)cell specifier] : nil;
-		if ([[sp propertyForKey:@"key"] isEqual:@MSBD_DESKTOP_ICON_KEY]) {
+		if ([[sp propertyForKey:@"key"] isEqual:@MSBD_DESKTOP_ICON_KEY] || [[sp propertyForKey:@"key"] isEqual:@MSBD_DESKTOP_CORNER_KEY]) {   // (and App Icon Corner Radius, 1.7.9)
 			NSMutableArray *views = [NSMutableArray arrayWithObject:cell];
 			for (NSUInteger k = 0; k < views.count && k < 80; k++) { UIView *v = views[k]; if ([v isKindOfClass:[UISlider class]]) ((UISlider *)v).continuous = YES; else [views addObjectsFromArray:v.subviews]; }
 		}
@@ -734,13 +725,10 @@ static void MSBFitValueLabels(UIView *v) {
 		}
 		// The Control Center size only resizes BigSurCenter's own drop-down panel opened from our status bar; with the stock Control Center, or the
 		// stock status bar, it does nothing, so then its slider and its footer are left out of the Control Center group (Hide Grabber stays).
-		BOOL bigSur = NO;
-		for (NSString *dir in @[@"/var/jb/usr/lib/TweakInject", @"/var/jb/Library/MobileSubstrate/DynamicLibraries"])
-			if ([[NSFileManager defaultManager] fileExistsAtPath:[dir stringByAppendingPathComponent:@"BigSurCenter.dylib"]]) bigSur = YES;
-		if (!bigSur || MSBStockBarStored()) {
+		if (!MSBDBigSurCenterInstalled() || MSBStockBarStored()) {   // (common/OwnPageRows.h: the Settings search leaves it out the same way)
 			NSMutableArray *kept = [_specifiers mutableCopy];
 			for (PSSpecifier *spec in _specifiers) {
-				if ([[spec propertyForKey:@"key"] isEqual:@"controlCenterScale"]) [kept removeObject:spec];
+				if ([[spec propertyForKey:@"key"] isEqual:kMSBDCCScaleKey]) [kept removeObject:spec];
 				if ([spec.identifier isEqualToString:@"CC_GROUP"]) {
 					if ([spec respondsToSelector:@selector(removePropertyForKey:)]) [spec removePropertyForKey:@"footerText"]; else [spec setProperty:@"" forKey:@"footerText"];
 				}
@@ -765,22 +753,38 @@ static void MSBFitValueLabels(UIView *v) {
 			large = [large imageWithTintColor:[UIColor secondaryLabelColor] renderingMode:UIImageRenderingModeAlwaysOriginal];
 			if (small && large) { [spec setProperty:small forKey:@"leftImage"]; [spec setProperty:large forKey:@"rightImage"]; }
 		}
+		// The desktop's App Icon Corner Radius (1.7.9 item 4): a square and a circle at its ends, the same way. Where an icon theme gives app icons a
+		// shape of its own (no rounded square), its footer says what the slider does then (SpringBoard's reading, DesktopAppCorner.h).
+		for (PSSpecifier *spec in _specifiers) {
+			if ([[spec propertyForKey:@"key"] isEqual:@MSBD_DESKTOP_CORNER_KEY]) {
+				UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:17 weight:UIImageSymbolWeightRegular];
+				UIImage *square = [[UIImage systemImageNamed:@"square" withConfiguration:cfg] imageWithTintColor:[UIColor secondaryLabelColor] renderingMode:UIImageRenderingModeAlwaysOriginal];
+				UIImage *circle = [[UIImage systemImageNamed:@"circle" withConfiguration:cfg] imageWithTintColor:[UIColor secondaryLabelColor] renderingMode:UIImageRenderingModeAlwaysOriginal];
+				if (square && circle) { [spec setProperty:square forKey:@"leftImage"]; [spec setProperty:circle forKey:@"rightImage"]; }
+			}
+			int custom = 0;
+			if ([spec.identifier isEqualToString:@"DESKTOP_CORNER_GROUP"] && MSBDDesktopThemeCornerFromState(MSBDesktopThemeCornerNow(), &custom) >= 0 && custom) {
+				NSString *footer = [spec propertyForKey:@"footerText"];
+				if ([footer isKindOfClass:[NSString class]]) [spec setProperty:[footer stringByAppendingString:@"\n\nYour icon theme gives app icons a shape of its own. Moving the slider gives desktop app icons rounded corners instead."] forKey:@"footerText"];
+			}
+		}
 		// The desktop's icons on iPadOS 17+: offered, unless SpringBoard's check of the Home Screen parts they use failed on this iPadOS build
 		// (common/DesktopCheck.h) -- then they stay off there and the switch is left out. The Mac Switcher is offered on 17+ (off unless switched on,
 		// as everywhere). On 18+ both need SpringBoard's typed keyboard focus lock (StatusBar.x DMFocusLock18OK): left out where its check failed on
 		// this build.
 		if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17) {
-			BOOL noFocus18 = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 18 && MSBDFocusLockVerdict() == 0;
-			BOOL desktopFailed = noFocus18 || MSBDDesktopVerdict(NULL) == 0;
+			// (the conditions and the rows: common/OwnPageState.h, OwnPageRows.h -- the Settings search leaves them out the same way)
+			BOOL noFocus18 = MSBDFocusLock18Failed();
+			BOOL desktopFailed = MSBDDesktopRowsFailed();
 			NSMutableArray *kept = [_specifiers mutableCopy];
-			for (PSSpecifier *spec in _specifiers) if ((desktopFailed && ([[spec propertyForKey:@"key"] isEqual:@"desktopIcons"] || [[spec propertyForKey:@"key"] isEqual:@"desktopHideNames"] || [[spec propertyForKey:@"key"] isEqual:@"desktopIconSize"]
-			                                                               || [spec.identifier isEqualToString:@"DESKTOP_SIZE_GROUP"])) || (noFocus18 && [[spec propertyForKey:@"key"] isEqual:@"macSwitcher"])) [kept removeObject:spec];
+			for (PSSpecifier *spec in _specifiers) if ((desktopFailed && MSBDDesktopCheckRow([spec propertyForKey:@"key"], spec.identifier))
+			                                           || (noFocus18 && [[spec propertyForKey:@"key"] isEqual:kMSBDMacSwitcherKey])) [kept removeObject:spec];
 			if (desktopFailed && [self msb_desktopPage]) for (PSSpecifier *spec in kept) if ([spec.identifier isEqualToString:@"DESKTOP_GROUP"])   // (the page with nothing else: says why)
 				[spec setProperty:@"The desktop isn't available on this iPadOS version." forKey:@"footerText"];
 			if (noFocus18) {   // (and its group: Go to the App's Desktop, 1.7.1, is the Mac Switcher's)
 				BOOL inGroup = NO;
 				for (PSSpecifier *spec in _specifiers) {
-					if (spec.cellType == PSGroupCell) inGroup = [spec.identifier isEqualToString:@"MSW_GROUP"];
+					if (spec.cellType == PSGroupCell) inGroup = [spec.identifier isEqualToString:kMSBDMacSwitcherGroupID];
 					if (inGroup) [kept removeObject:spec];
 				}
 			}
@@ -854,7 +858,7 @@ static void MSBFitValueLabels(UIView *v) {
 			NSMutableArray *kept = [NSMutableArray array];
 			BOOL hiding = NO;
 			for (PSSpecifier *sp in _specifiers) {
-				if (sp.cellType == PSGroupCell) hiding = [sp.identifier isEqualToString:@"WINDOWS_GROUP"];
+				if (sp.cellType == PSGroupCell) hiding = [sp.identifier isEqualToString:kMSBDWindowsGroupID];
 				if ([sp.identifier isEqualToString:@"ENGINE_GROUP"]) [sp setProperty:onItsOwn ? [NSString stringWithFormat:@"%@ hasn't been tested with MacStatusBar&Dock yet, so it runs on its own and the window features are off.", MSBEngineNameVersion(engine)]
 				                                                                               : @"No tested window engine is installed, so the window features are off." forKey:@"footerText"];
 				if (!hiding) [kept addObject:sp];
@@ -870,14 +874,13 @@ static void MSBFitValueLabels(UIView *v) {
 			NSMutableArray *kept = [NSMutableArray array];
 			BOOL hiding = NO;
 			for (PSSpecifier *sp in _specifiers) {
-				if (sp.cellType == PSGroupCell) hiding = [sp.identifier isEqualToString:@"WINDOWS_GROUP"];
+				if (sp.cellType == PSGroupCell) hiding = [sp.identifier isEqualToString:kMSBDWindowsGroupID];
 				if ([sp.identifier isEqualToString:@"ENGINE_GROUP"])
 					[sp setProperty:MSBStageManagerOnState() == 2 ? @"Stage Manager is off, so apps open full screen. Tap Turn On Stage Manager, or turn it on in Control Center."
 					                                               : @"Apple's Stage Manager does the windowing, with the Mac look on top. Other engines are not loaded." forKey:@"footerText"];
 				// (the window handles are Stage Manager's own windows' too: their style and tint stay)
-				NSString *key = [sp propertyForKey:@"key"];
-				BOOL handles = [key isEqual:@"resizeHandleStyle"] || [key isEqual:@"tintResizeHandles"];
-				if (!hiding || handles || (sp.cellType == PSGroupCell && [sp.identifier isEqualToString:@"WINDOWS_GROUP"])) [kept addObject:sp];
+				BOOL handles = MSBDHandlesRow([sp propertyForKey:@"key"]);   // (common/OwnPageRows.h)
+				if (!hiding || handles || (sp.cellType == PSGroupCell && [sp.identifier isEqualToString:kMSBDWindowsGroupID])) [kept addObject:sp];
 				// (Stage Manager off -- the user said Not Now, declined Apple's introduction, or switched it off: nothing is written for them; this button is
 				//  their yes, and SpringBoard turns it on -- 1.5.1, consent)
 				if (sp == spec && MSBStageManagerOnState() == 2) {
@@ -918,7 +921,7 @@ static void MSBFitValueLabels(UIView *v) {
 			NSString *engine = [self readPreferenceValue:spec];
 			if ([engine isKindOfClass:[NSString class]] && [engine isEqualToString:@"stagemanager"]) break;
 			NSMutableArray *kept = [NSMutableArray array];
-			for (PSSpecifier *sp in _specifiers) if (![[sp propertyForKey:@"key"] isEqual:@"resizeHandleStyle"]) [kept addObject:sp];
+			for (PSSpecifier *sp in _specifiers) if (![[sp propertyForKey:@"key"] isEqual:kMSBDResizeHandlesKey]) [kept addObject:sp];
 			_specifiers = kept;
 			break;
 		}
@@ -931,7 +934,7 @@ static void MSBFitValueLabels(UIView *v) {
 			NSMutableArray *kept = [NSMutableArray array];
 			BOOL hiding = NO;
 			for (PSSpecifier *sp in _specifiers) {
-				if (sp.cellType == PSGroupCell) hiding = [sp.identifier isEqualToString:@"RESIZE_GROUP"];
+				if (sp.cellType == PSGroupCell) hiding = [sp.identifier isEqualToString:kMSBDResizeGroupID];
 				if (!hiding) [kept addObject:sp];
 			}
 			_specifiers = kept;
@@ -939,11 +942,11 @@ static void MSBFitValueLabels(UIView *v) {
 		}
 		// The Wi-Fi Menu on iPadOS 18+ needs SpringBoard's typed keyboard focus lock for its password sheet (WiFiMenu.h DMWiFiOSOK): its switch is
 		// left out where that check failed on this build.
-		if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 18 && MSBDFocusLockVerdict() == 0) {
+		if (MSBDFocusLock18Failed()) {
 			NSMutableArray *kept = [NSMutableArray array];
 			BOOL hiding = NO;
 			for (PSSpecifier *sp in _specifiers) {
-				if (sp.cellType == PSGroupCell) hiding = [sp.identifier isEqualToString:@"WIFI_GROUP"];
+				if (sp.cellType == PSGroupCell) hiding = [sp.identifier isEqualToString:kMSBDWiFiGroupID];
 				if (!hiding) [kept addObject:sp];
 			}
 			_specifiers = kept;
@@ -957,6 +960,18 @@ static void MSBFitValueLabels(UIView *v) {
 			BOOL hiding = NO;
 			for (PSSpecifier *sp in _specifiers) {
 				if (sp.cellType == PSGroupCell) hiding = !_msbPrewarmShown && [sp.identifier isEqualToString:@"PREWARM_GROUP"];
+				if (!hiding) [kept addObject:sp];
+			}
+			_specifiers = kept;
+		}
+		// Keep Tailspin Off (1.7.9) the same way: its group, footer and switch are left out where the root helper has not found perfdiagsselfenabled
+		// reading the key it sets (its state file, common/TailspinGuard.h). The Settings search leaves the row out the same way (MTSShownRows).
+		if ([self msb_windowsPage]) {
+			_msbTailspinShown = MSBDTailspinRowShown() != 0;
+			NSMutableArray *kept = [NSMutableArray array];
+			BOOL hiding = NO;
+			for (PSSpecifier *sp in _specifiers) {
+				if (sp.cellType == PSGroupCell) hiding = !_msbTailspinShown && [sp.identifier isEqualToString:@"TAILSPIN_GROUP"];
 				if (!hiding) [kept addObject:sp];
 			}
 			_specifiers = kept;
@@ -979,7 +994,7 @@ static void MSBFitValueLabels(UIView *v) {
 			PSSpecifier *report = nil;
 			for (PSSpecifier *spec in _specifiers) {
 				if (spec.cellType == PSGroupCell) hiding = [[spec propertyForKey:@"stockHides"] boolValue];
-				if ([spec.identifier isEqualToString:@"REPORT_PROBLEM"]) report = spec;
+				if ([spec.identifier isEqualToString:kMSBDReportRowID]) report = spec;
 				if (!hiding) [kept addObject:spec];
 			}
 			// Report a Problem stays reachable: its own group at the end (its usual group is about windows, hidden here)
@@ -1043,7 +1058,14 @@ static void MSBFitValueLabels(UIView *v) {
 	PSSpecifier *note = [PSSpecifier groupSpecifierWithID:@"MSB_WINDOWS_NOTE"];
 	[note setProperty:why forKey:@"footerText"];
 	if (MSBDLineEnabled(@"MacStatusBar") && !MSBStockBarStored()) return [[@[note] arrayByAddingObjectsFromArray:specs] mutableCopy];   // (greyed rows below)
-	return [@[note] mutableCopy];
+	// (Keep Tailspin Off stays under the note: the root helper applies it whatever the status bar does -- no stockHides on its group)
+	NSMutableArray *kept = [@[note] mutableCopy];
+	BOOL tailspin = NO;
+	for (PSSpecifier *sp in specs) {
+		if (sp.cellType == PSGroupCell) tailspin = MSBDBarOffKeepsGroup(sp.identifier);   // (common/OwnPageRows.h: Keep Tailspin Off's group)
+		if (tailspin) [kept addObject:sp];
+	}
+	return kept;
 }
 // The Desktop page (1.7.5) when its rows cannot work: MacStatusBar off -- only a note, as on the Windows & Multitasking page; MacStatusBar&Dock not
 // running on this iPadOS version or in safe mode -- the rows greyed (msbd_hideRowsWhenLineOff) under a note; Finder off -- the desktop is Finder's,
@@ -1105,17 +1127,46 @@ static void MSBFitValueLabels(UIView *v) {
 	if (!MSBDGateWanted()) on = finder = NO;   // (untested iPadOS / safe mode: every row greyed, LineSwitch.h -- these stay so)
 	for (PSSpecifier *spec in _specifiers) {
 		BOOL icons = [spec.identifier isEqualToString:@"DESKTOP_ICONS"];
-		if (!icons && ![spec.identifier isEqualToString:@"DESKTOP_HIDE_NAMES"] && ![spec.identifier isEqualToString:@"DESKTOP_ICON_SIZE"]) continue;
+		if (!icons && ![spec.identifier isEqualToString:@"DESKTOP_HIDE_NAMES"] && ![spec.identifier isEqualToString:@"DESKTOP_ICON_SIZE"]
+		    && ![spec.identifier isEqualToString:@"DESKTOP_APP_CORNER"]) continue;
 		if (icons && ![self msb_desktopPage]) continue;
 		[spec setProperty:@(icons ? finder : on) forKey:@"enabled"];
 		if (reload) [self reloadSpecifier:spec animated:YES];
 	}
+	[self msb_setCornerMatchRow:MSBDesktopCornerStored() != nil reload:reload];
+}
+// Match Home Screen Icons (1.7.9 item 4): there to use while a corner of the user's own is stored and the desktop's rows are on. When the slider's
+// first move stores one, only this row is reloaded: reloading the slider's own cell while it is dragged ended the drag (M1, 1.7.9~r03: Settings
+// sent one value as the finger went down and the next only as it lifted).
+- (void)msb_setCornerMatchRow:(BOOL)stored reload:(BOOL)reload {
+	PSSpecifier *match = [self specifierForID:@"DESKTOP_CORNER_MATCH"], *slider = [self specifierForID:@"DESKTOP_APP_CORNER"];
+	if (!match) return;
+	id rows = [slider propertyForKey:@"enabled"];
+	[match setProperty:@(stored && slider && (!rows || [rows boolValue])) forKey:@"enabled"];
+	if (reload) [self reloadSpecifier:match animated:YES];
+}
+// Match Home Screen Icons pressed: the user's corner removed -- the desktop's app icons have the Home Screen's shape again and follow it; the
+// slider goes back to where that shape is, and the row greys until the slider is moved again.
+- (void)msb_matchHomeScreenCorners:(PSSpecifier *)spec {
+	CFPreferencesSetAppValue(CFSTR(MSBD_DESKTOP_CORNER_KEY), NULL, kMSBBarDomain);
+	CFPreferencesAppSynchronize(kMSBBarDomain);
+	gMSBDesktopCornerWritten = -1;
+	notify_post("com.besiktasliseba.macstatusbar.finder.pref");
+	PSSpecifier *slider = [self specifierForID:@"DESKTOP_APP_CORNER"];
+	if (slider) [self reloadSpecifier:slider animated:YES];
+	[self msb_setCornerMatchRow:NO reload:YES];
 }
 
 // Back on the Windows & Multitasking page: Prewarm Apps comes or goes when the prewarm block's state changed since the list was built (a dasd
 // started again since, the quit set's file gone or back: common/PrewarmArmed.h) -- the list built again, as the Desktop page does for its note.
 - (void)msb_prewarmMaybeChanged {
 	if (!_specifiers || ![self msb_windowsPage] || (MSBDPrewarmAppsShown() != 0) == _msbPrewarmShown) return;
+	_specifiers = nil;
+	[self reloadSpecifiers];
+}
+// ... and Keep Tailspin Off when the root helper's answer changed since (an iPadOS update, the helper's first look after an install).
+- (void)msb_tailspinMaybeChanged {
+	if (!_specifiers || ![self msb_windowsPage] || (MSBDTailspinRowShown() != 0) == _msbTailspinShown) return;
 	_specifiers = nil;
 	[self reloadSpecifiers];
 }
@@ -1126,7 +1177,9 @@ static void MSBFitValueLabels(UIView *v) {
 	if ([[specifier propertyForKey:@"key"] isEqual:@"stockStatusBar"]) return MSBStockBarStored() ? @"stock" : @"mac";   // the row and its picker page show/pick these two strings
 	if ([[specifier propertyForKey:@"key"] isEqual:@(kMSBDMenuBarSizeKey)]) return @(MSBMenuBarSizeStored());   // (0 / 1 / 2: the crash guard's false is Small)
 	if ([[specifier propertyForKey:@"key"] isEqual:@MSBD_DESKTOP_ICON_KEY]) return @(MSBDesktopIconShownNow());   // (never set: the Home Screen's size, as SpringBoard uses it)
+	if ([[specifier propertyForKey:@"key"] isEqual:@MSBD_DESKTOP_CORNER_KEY]) return @(MSBDesktopCornerShownNow());   // (never set: the Home Screen's shape, as SpringBoard read it)
 	if ([[specifier propertyForKey:@"key"] isEqual:@"prewarmApps"]) return @(MSBPrewarmAppsInForce());   // (never set: off on a 2 GB iPad, as SpringBoard reads it)
+	if ([[specifier propertyForKey:@"key"] isEqual:@kMSBDTailspinKey]) return @(MSBTailspinOffInForce());   // (never set: on with 2 GB, as the root helper reads it)
 	id value = [super readPreferenceValue:specifier];
 	if (![[specifier propertyForKey:@"key"] isEqual:@"windowEngine"]) return value;
 	NSArray *offered = [specifier respondsToSelector:NSSelectorFromString(@"values")] ? ((id (*)(id, SEL))objc_msgSend)(specifier, NSSelectorFromString(@"values")) : nil;
@@ -1170,6 +1223,17 @@ static void MSBFitValueLabels(UIView *v) {
 		CFPreferencesSetAppValue(CFSTR(MSBD_DESKTOP_ICON_KEY), NULL, kMSBBarDomain);
 		CFPreferencesAppSynchronize(kMSBBarDomain);
 		notify_post("com.besiktasliseba.macstatusbar.finder.pref");
+		return;
+	}
+	if ([[specifier propertyForKey:@"key"] isEqual:@MSBD_DESKTOP_CORNER_KEY]) {   // (1.7.9: the slider, while it is dragged -- SpringBoard draws the app icons live)
+		double corner = [value respondsToSelector:@selector(doubleValue)] ? MSBDDesktopCornerSnap([value doubleValue]) : -1.0;
+		if (corner < 0.0) return;
+		if (gMSBDesktopCornerWritten < -1.5) { NSNumber *n = MSBDesktopCornerStored(); gMSBDesktopCornerWritten = n ? MSBDDesktopCornerSnap(n.doubleValue) : -1.0; }
+		if (corner == gMSBDesktopCornerWritten) return;   // (the same step: nothing written, nothing posted)
+		BOOL first = gMSBDesktopCornerWritten < 0.0;
+		gMSBDesktopCornerWritten = corner;
+		[super setPreferenceValue:@(corner) specifier:specifier];   // (always stored once moved, the Home Screen's own step too: the user's corner from now on)
+		if (first) [self msb_setCornerMatchRow:YES reload:YES];   // (Match Home Screen Icons can be used now -- that row only, never the slider being dragged)
 		return;
 	}
 	[super setPreferenceValue:value specifier:specifier];
@@ -1279,6 +1343,7 @@ static void MSBFitValueLabels(UIView *v) {
 - (void)viewWillAppear:(BOOL)animated {
 	[super viewWillAppear:animated];
 	[self msb_prewarmMaybeChanged];   // (Prewarm Apps where the prewarm block is armed now)
+	[self msb_tailspinMaybeChanged];   // (Keep Tailspin Off where the root helper found it doing something now)
 }
 @end
 
@@ -1294,11 +1359,14 @@ static void MSBFitValueLabels(UIView *v) {
 - (void)viewWillAppear:(BOOL)animated {
 	[super viewWillAppear:animated];
 	gMSBDesktopIconWritten = -1;   // (the slider's last step read from the store again: it may have changed elsewhere)
+	gMSBDesktopCornerWritten = -2;   // (the same for App Icon Corner Radius, 1.7.9)
 	PSSpecifier *shown = [self specifierForID:@"MSB_DESKTOP_NOTE"], *wanted = [[self msb_desktopPageNotes:@[]] firstObject];
 	NSString *a = [shown propertyForKey:@"footerText"], *b = [wanted propertyForKey:@"footerText"];
 	if ((a || b) && ![a isEqual:b]) { _specifiers = nil; [self reloadSpecifiers]; return; }
 	[self msb_updateDesktopNamesRow:YES];
 	PSSpecifier *size = [self specifierForID:@"DESKTOP_ICON_SIZE"];
 	if (size) [self reloadSpecifier:size animated:NO];
+	PSSpecifier *corner = [self specifierForID:@"DESKTOP_APP_CORNER"];   // (never set: where the Home Screen's shape is now -- a theme may have changed it)
+	if (corner) [self reloadSpecifier:corner animated:NO];
 }
 @end

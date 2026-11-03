@@ -24,6 +24,7 @@
 #include "DesktopNames.h"   // (which icons show their name: the record kept by name -- Foundation only, tested on the Mac: tools/test-desktopnames.sh)
 #include "DesktopHold.h"    // (a hold's menu, and whose a touch is: decided once -- plain C, tested on the Mac: tools/test-desktophold.sh)
 #include "../common/DesktopIconSize.h"   // (Settings > Desktop > Icon Size, 1.7.5: the side in force and the cell -- plain C, tools/test-desktopiconsize.sh)
+#include "DesktopCorner.h"  // (Settings > Desktop > App Icon Corner Radius, 1.7.9: the app icons' corners, the Home Screen's shape -- tools/test-desktopcorner.sh)
 
 @interface DMDesktopItemView : UIView
 @property (nonatomic, strong) DMFinderItem *item;
@@ -129,6 +130,8 @@ static int gDesktopLookRead, gDesktopFolderFrom;
 - (NSString *)dm_placeStringFor:(NSString *)path;
 - (void)dm_applyNames;   // (each icon's name shown or not, after Settings' Hide Desktop Icon Names or an icon's own Hide Name changed)
 - (void)dm_iconSizeChanged;   // (Settings' Icon Size changed -- live, while its slider is dragged: the icons, their cells and the grid follow)
+- (void)dm_appIconsRedraw;    // (the app icons' pictures again: Settings' App Icon Corner Radius changed -- live, while its slider is dragged)
+- (void)dm_themeRefreshed;    // (a theme engine refreshed its pictures: the Home Screen's shape read again, the app icons drawn again)
 - (NSString *)dm_diagLine;   // (untested iPadOS diagnostics, DMDesktopDiag: where it sits and what it found there; names and numbers only)
 - (void)dm_axOpen:(DMDesktopItemView *)v;
 #if DEBUG
@@ -694,6 +697,12 @@ static void DMDesktopEditHomeScreen(void) {
     } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[desktop] the app names' look could not be read: %@", e.reason]); }
     { static BOOL told; if (!told && sample) { told = YES; DMLog([NSString stringWithFormat:@"[desktop] the app names' look: font %@, colours %@", font ? @"read" : @"not readable (a stand-in)", text ? @"read" : @"stand-ins"]); } }
     if (sample) gDesktopLookRead = (font ? 1 : 0) | (text ? 2 : 0) | 4 | (best > 20.0 ? 8 : 0);
+    {   // (1.7.9 item 4: the Home Screen's app icon shape, where Settings' App Icon Corner Radius starts -- read again when it can have changed)
+        MSBDIconImageInfo home; NSString *from = DMDesktopHomeIconInfo(_list, sample, best, &home);
+        BOOL engine = gDesktopHomeEngine;
+        if (from) DMDesktopThemeCornerRead(home, from);
+        if (gDesktopHomeEngine != engine && gDesktopAppCorner >= 0) [self dm_appIconsRedraw];   // (18: the Home Screen's icons were read after these were drawn)
+    }
     _font = font ?: _font ?: [UIFont systemFontOfSize:12.0 weight:UIFontWeightMedium];
     _textColor = text ?: _textColor ?: [UIColor whiteColor];
     _shadowColor = shadow ?: _shadowColor ?: [UIColor colorWithWhite:0 alpha:0.5];
@@ -718,6 +727,23 @@ static void DMDesktopEditHomeScreen(void) {
         DMDesktop *s = ws; if (!s || mine != gen) return;
         for (DMFinderItem *it in s->_items) { DMDesktopItemView *v = s->_views[it.name]; if (v) v.icon.image = [s dm_imageFor:it view:v] ?: v.icon.image; }
     });
+}
+// The app icons drawn again (1.7.9 item 4): Settings' App Icon Corner Radius changed (one notification per 1 % step while its slider is dragged --
+// each picture is the app's picture before its mask, kept, with the new corner) or a theme engine refreshed its pictures. Folders and files stay.
+- (void)dm_appIconsRedraw {
+    NSUInteger n = 0;
+    for (DMFinderItem *it in _items) {
+        if (![it.name hasSuffix:@".app"]) continue;
+        DMDesktopItemView *v = _views[it.name];
+        if (!v) continue;
+        v.icon.image = [self dm_imageFor:it view:v] ?: v.icon.image;
+        n++;
+    }
+    DMLog([NSString stringWithFormat:@"[desktop] app icons drawn again (%lu): corner %@", (unsigned long)n, gDesktopAppCorner >= 0 ? [NSString stringWithFormat:@"%.2f of the side", gDesktopAppCorner] : @"the Home Screen's"]);
+}
+- (void)dm_themeRefreshed {
+    [self dm_measure];   // (the Home Screen's shape: read again, DesktopCorner.h -- gDesktopCornerGen moved on)
+    [self dm_appIconsRedraw];
 }
 // A folder's icon on the desktop, drawn the same on every iPad (not the Files app's icon, which a theme or iOS itself changes): a macOS folder,
 // light blue, its darker tab and back behind, two folds near the bottom (y down, s = the icon's side, laid out on a 256 grid)
@@ -772,6 +798,8 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
 }
 - (UIImage *)dm_imageFor:(DMFinderItem *)it view:(DMDesktopItemView *)v {
     if (it.dir && !it.package && ![it.name hasSuffix:@".app"]) return [self dm_folderImage];
+    // (an app, once Settings' App Icon Corner Radius was moved: its picture with that corner -- never set, the Home Screen's look below, as always)
+    if (gDesktopAppCorner >= 0) { UIImage *corner = DMDesktopAppCornerIcon(it, _side, gDesktopAppCorner); if (corner) return corner; }
     __weak DMDesktopItemView *wv = v; DMFinderItem *wit = it; CGFloat side = _side;
     UIImage *thumb = DMFinderThumb(it, side, ^{ DMDesktopItemView *x = wv; if (x && x.item == wit) x.icon.image = DMFinderThumb(wit, side, nil) ?: x.icon.image; });
     return thumb ?: DMFinderIconWithAlias(it, side);
@@ -1827,6 +1855,68 @@ static BOOL DMSBTextFieldTyping(UIResponder *except) {
                  if (fits) _places[x.item.name] = [self dm_fractionFor:c area:area];
                  [self dm_savePlaces]; [self dm_placeAgain]; } }
     else if ([act isEqualToString:@"folderimage"]) { _folderImage = nil; [self dm_list]; }
+    // ---- the app icons' corners (1.7.9 item 4, DesktopCorner.h) ----
+    else if ([act isEqualToString:@"corner"]) {   // corner: the corner in force, the Home Screen's shape read and where from, each app icon's picture source
+        DMLog([NSString stringWithFormat:@"[desktop] test corner: set %.4f, home %.4f custom %d (%@), info %.1f pt x%.0f r %.2f, gen %lu, force %d, side %.1f, engine: probe %d, Home Screen's icons %d",
+               gDesktopAppCorner, gDesktopThemeCorner, gDesktopThemeCustom, gDesktopThemeFrom, gDesktopThemeInfo.size.width, gDesktopThemeInfo.scale,
+               gDesktopThemeInfo.continuousCornerRadius, (unsigned long)gDesktopCornerGen, gDesktopCornerForce, _side, gDesktopProbeEngine, gDesktopHomeEngine]);
+        for (DMFinderItem *it in _items) if ([it.name hasSuffix:@".app"]) { NSString *from = nil; MSBDPaintedTile t; UIImage *a = DMDesktopAppArtwork(DMDesktopAppBundleID(it.path), it.path, [UIScreen mainScreen].scale, &from, &t);
+            CGRect part = a ? DMDesktopTileWindow(t, gDesktopAppCorner >= 0 ? gDesktopAppCorner : gDesktopThemeCorner, a.size.width * a.scale) : kDMDesktopWhole;
+            DMLog([NSString stringWithFormat:@"[desktop] test corner app %@ (%@): picture before the mask from %@ %@, shown %@; painted tile %@, part shown %@", [it.name hasPrefix:@"MSB"] || [it.name hasPrefix:@"Tips"] ? it.name : @"(other)",
+                   DMDesktopAppBundleID(it.path) ? @"has id" : @"no id", from, a ? NSStringFromCGSize(a.size) : @"-", NSStringFromCGSize(_views[it.name].icon.image.size),
+                   t.found ? [NSString stringWithFormat:@"%.3f %.3f %.3f %.3f corner %.3f", t.x0, t.y0, t.x1, t.y1, t.fraction] : @"none", NSStringFromCGRect(part)]); }
+    }
+    else if ([act isEqualToString:@"cornerprobe"]) {   // cornerprobe[:<side>]: the Home Screen's shape as read at that side (the Home Screen's by default) -> /tmp/msb-cornerprobe.png
+        MSBDIconImageInfo i = gDesktopThemeInfo;
+        if (arg.doubleValue > 8) { double k = i.size.width > 0 ? i.continuousCornerRadius / i.size.width : MSBD_DESKTOP_CORNER_IPADOS; i.size = CGSizeMake(arg.doubleValue, arg.doubleValue); i.continuousCornerRadius = k * arg.doubleValue; }
+        if (i.scale < 1) i.scale = [UIScreen mainScreen].scale;
+        BOOL engine = NO; UIImage *p = DMDesktopCornerProbe(i, &engine); double gap = 0, f = p ? DMDesktopReadEngineMask(p, &gap) : -1;
+        BOOL ok = p && [UIImagePNGRepresentation(p) writeToFile:@"/tmp/msb-cornerprobe.png" atomically:NO];
+        DMLog([NSString stringWithFormat:@"[desktop] test cornerprobe at %.1f pt (x%.0f, SpringBoard's corner %.2f): picture %@ %@, engine %d, asked %d, fit %.4f (radius %.2f pt) gap %.3f px custom %d, png %d",
+               i.size.width, i.scale, i.continuousCornerRadius, p ? NSStringFromCGSize(p.size) : @"none", p ? [NSString stringWithFormat:@"x%.0f", p.scale] : @"", engine, gDesktopProbeAsked, f, f * i.size.width, gap, MSBDCornerIsCustom(gap), ok]);
+    }
+    else if ([act isEqualToString:@"cornerart"] && v) {   // cornerart:<name>: that app's pictures -> /tmp/msb-corner-{art,home,shown}.png (before the mask, the Home Screen's, shown)
+        NSString *from = nil; NSString *bid = DMDesktopAppBundleID(v.item.path); MSBDPaintedTile t;
+        UIImage *a = DMDesktopAppArtwork(bid, v.item.path, [UIScreen mainScreen].scale, &from, &t), *h = DMFinderIcon(v.item, _side), *s = v.icon.image;
+        BOOL w1 = a && [UIImagePNGRepresentation(a) writeToFile:@"/tmp/msb-corner-art.png" atomically:NO], w2 = h && [UIImagePNGRepresentation(h) writeToFile:@"/tmp/msb-corner-home.png" atomically:NO];
+        BOOL w3 = s && [UIImagePNGRepresentation(s) writeToFile:@"/tmp/msb-corner-shown.png" atomically:NO];
+        double gap = 0, f = h ? DMDesktopReadEngineMask(h, &gap) : -1;
+        DMLog([NSString stringWithFormat:@"[desktop] test cornerart: before the mask from %@ %@ x%.0f; Home Screen's %@ x%.0f (its corner %.4f gap %.3f px); shown %@ x%.0f; png %d %d %d",
+               from, a ? NSStringFromCGSize(a.size) : @"-", a.scale, h ? NSStringFromCGSize(h.size) : @"-", h.scale, f, gap, s ? NSStringFromCGSize(s.size) : @"-", s.scale, w1, w2, w3]);
+    }
+    else if ([act isEqualToString:@"cornerab"] && v) {   // cornerab:<name>: that app at square, 0.2, the theme's and a circle, the whole picture over the painted tile -> /tmp/msb-corner-ab.png
+        NSString *from = nil; MSBDPaintedTile t; CGFloat sc = [UIScreen mainScreen].scale, n = 96;
+        UIImage *a = DMDesktopAppArtwork(DMDesktopAppBundleID(v.item.path), v.item.path, sc, &from, &t), *h = DMFinderIcon(v.item, n);
+        double theme = gDesktopThemeCorner >= 0 ? gDesktopThemeCorner : MSBD_DESKTOP_CORNER_IPADOS;
+        UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat preferredFormat]; fmt.scale = sc; fmt.opaque = NO;
+        UIImage *ab = !a ? nil : [[[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(5 * (n + 8), 2 * (n + 8)) format:fmt] imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+            double rs[4] = { 0, 0.2, theme, 0.5 };
+            [[UIColor colorWithWhite:0.5 alpha:1] setFill]; UIRectFill(CGRectMake(0, 0, 5 * (n + 8), 2 * (n + 8)));
+            [h drawInRect:CGRectMake(4 * (n + 8), 0, n, n)];   // (the Home Screen's look: what never set shows)
+            for (int row = 0; row < 2; row++) for (int k = 0; k < 4; k++) {
+                CGContextSaveGState(ctx.CGContext); CGContextTranslateCTM(ctx.CGContext, k * (n + 8), row * (n + 8));
+                DMDesktopCornerRender(ctx.CGContext, n, rs[k], a, row ? DMDesktopTileWindow(t, rs[k], a.size.width * a.scale) : kDMDesktopWhole, NULL);
+                CGContextRestoreGState(ctx.CGContext);
+            }
+        }];
+        BOOL ok = ab && [UIImagePNGRepresentation(ab) writeToFile:@"/tmp/msb-corner-ab.png" atomically:NO];
+        DMLog([NSString stringWithFormat:@"[desktop] test cornerab: from %@, painted tile %@, corners 0 / 0.2 / %.3f / 0.5, png %d", from,
+               t.found ? [NSString stringWithFormat:@"%.3f %.3f %.3f %.3f corner %.3f", t.x0, t.y0, t.x1, t.y1, t.fraction] : @"none", theme, ok]);
+    }
+    else if ([act isEqualToString:@"cornerstrip"]) {   // cornerstrip: our corner from 0 to 0.5 by 0.05, 128 px each -> /tmp/msb-cornerstrip.png; each one's filled share
+        int n = 128; unsigned char *a = calloc((size_t)n * n, 1); NSMutableString *areas = [NSMutableString string];
+        UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat preferredFormat]; fmt.scale = 1; fmt.opaque = NO;
+        UIImage *strip = [[[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(11 * (n + 8), n) format:fmt] imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+            for (int k = 0; k <= 10; k++) { CGContextSaveGState(ctx.CGContext); CGContextTranslateCTM(ctx.CGContext, k * (n + 8), 0);
+                DMDesktopCornerRender(ctx.CGContext, n, k * 0.05, nil, kDMDesktopWhole, [UIColor blackColor].CGColor); CGContextRestoreGState(ctx.CGContext); }
+        }];
+        for (int k = 0; k <= 50; k++) { DMDesktopCornerModel(NULL, k * 0.01, n, a); unsigned long s = 0; for (int i = 0; i < n * n; i++) s += a[i]; [areas appendFormat:@"%d:%.4f ", k, s / 255.0 / (n * n)]; }
+        free(a);
+        BOOL ok = [UIImagePNGRepresentation(strip) writeToFile:@"/tmp/msb-cornerstrip.png" atomically:NO];
+        DMLog([NSString stringWithFormat:@"[desktop] test cornerstrip png %d, filled share by corner (percent): %@", ok, areas]);
+    }
+    else if ([act isEqualToString:@"cornerforce"]) { gDesktopCornerForce = arg.intValue; [self dm_appIconsRedraw]; }   // cornerforce:<0|1|2>: auto, the .app's files only, none (rounder only)
+    else if ([act isEqualToString:@"cornerrefresh"]) { gDesktopCornerGen++; gFinderAppIconGen++; [self dm_themeRefreshed]; }   // cornerrefresh: as after a theme engine's refresh
     else if ([act isEqualToString:@"at"]) {   // at:<x>,<y>: what the desktop's drop test sees at that screen point
         NSArray *q = [arg componentsSeparatedByString:@","]; if (q.count != 2) return;
         CGPoint sp = CGPointMake([q[0] doubleValue], [q[1] doubleValue]);
@@ -1913,13 +2003,28 @@ static double DMDesktopIconSizePref(void) {
     if (v) CFRelease(v);
     return size;
 }
+// A theme engine's refresh (1.7.9 item 4: SnowBoard posts refreshComplete after any change of its themes, their order, a per-app choice): the
+// Home Screen's shape is read again (Settings' slider starts there), and the desktop's app icons are drawn again -- with the theme's new look
+// while the corner was never set; the picture before the mask with the user's own corner otherwise (the corner itself stays as the user set it).
+static void DMDesktopCornerWatch(void) {
+    static int token = 0;
+    if (token) return;
+    notify_register_dispatch(kMSBDIconThemeSnowBoardRefreshed, &token, dispatch_get_main_queue(), ^(int t) {
+        gDesktopCornerGen++; gFinderAppIconGen++;
+        DMLog([NSString stringWithFormat:@"[desktop] an icon theme engine refreshed its pictures (%lu): the Home Screen's shape is read again, the app icons drawn again", (unsigned long)gDesktopCornerGen]);
+        [gDesktop dm_themeRefreshed];
+    });
+}
 static void DMDesktopApplyPref(void) {
     gDesktopOn = DMDesktopPrefOn();
     BOOL hide = DMDesktopHideNamesPref();
     double size = DMDesktopIconSizePref();
-    DMLog([NSString stringWithFormat:@"[desktop] Show Desktop Icons %@, Hide Desktop Icon Names %@, Icon Size %@", gDesktopOn ? @"on" : @"off", hide ? @"on" : @"off",
-           size > 0 ? [NSString stringWithFormat:@"%.0f pt", size] : @"the Home Screen's"]);
+    double corner = DMDesktopCornerPref();
+    DMLog([NSString stringWithFormat:@"[desktop] Show Desktop Icons %@, Hide Desktop Icon Names %@, Icon Size %@, App Icon Corner Radius %@", gDesktopOn ? @"on" : @"off", hide ? @"on" : @"off",
+           size > 0 ? [NSString stringWithFormat:@"%.0f pt", size] : @"the Home Screen's", corner >= 0 ? [NSString stringWithFormat:@"%.2f of the side", corner] : @"the Home Screen's"]);
+    DMDesktopCornerWatch();
     if (size != gDesktopIconSize) { gDesktopIconSize = size; [gDesktop dm_iconSizeChanged]; }
+    if (corner != gDesktopAppCorner) { gDesktopAppCorner = corner; if (corner >= 0) DM_FEATURE_MARK("desktop-app-corner-set"); [gDesktop dm_appIconsRedraw]; }
     if (hide == gDesktopHideNames) return;
     gDesktopHideNames = hide;
     if (hide) DM_FEATURE_MARK("desktop-hide-names");

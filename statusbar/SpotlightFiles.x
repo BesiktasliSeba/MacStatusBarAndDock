@@ -253,10 +253,12 @@ static void SFReadFilesSwitch(NSString *why) {
 
 // ==== 2. Tweak Settings while Settings is closed ================================================================================================
 static int gSFArmedSeen = -1;   // (gSFQueue) whether Prewarm Apps' row was shown when the rows were last brought up to date (MTSShownRows); -1 not yet
+static int gSFTailspinSeen = -1;   // (gSFQueue) ... and Keep Tailspin Off's (1.7.9)
 static void SFTweakRefresh(NSString *why) {
     dispatch_async(gSFQueue, ^{
         @autoreleasepool {
             gSFArmedSeen = MSBDPrewarmAppsShown();
+            gSFTailspinSeen = MSBDTailspinRowShown();
             if (!MTSSpotlightSwitch()) { MTSSyncSpotlight(nil, NO, why); return; }   // (off, also by the stock bar or the guards: a donation made before goes)
             CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
             NSArray<MTIEntry *> *all = MTSShownRows(MTIBuild(MTSBaseConfig()));   // (not the rows their page leaves out now: TweakSpotlight.h)
@@ -275,6 +277,16 @@ static void SFArmedChanged(void) {
         if (gSFArmedSeen < 0 || now == gSFArmedSeen) return;   // (not made yet -- the start's refresh reads it then --, or the row stays as it is)
         SFLog([NSString stringWithFormat:@"the prewarm block's record: Prewarm Apps' row %@", now ? @"comes" : @"goes"]);
         SFTweakRefresh(@"the prewarm block's record changed");
+    });
+}
+// The root helper's Keep Tailspin Off state (common/TailspinGuard.h; it says when it wrote one) the same way: the rows follow when the row comes or
+// goes -- its first look after an install comes after this SpringBoard made the rows.
+static void SFTailspinChanged(void) {
+    dispatch_async(gSFQueue, ^{
+        int now = MSBDTailspinRowShown();
+        if (gSFTailspinSeen < 0 || now == gSFTailspinSeen) return;
+        SFLog([NSString stringWithFormat:@"the root helper's Keep Tailspin Off state: its row %@", now ? @"comes" : @"goes"]);
+        SFTweakRefresh(@"Keep Tailspin Off's state changed");
     });
 }
 static void SFWatchTweaks(void) {   // (PreferenceLoader's folder and the bundles folder: a tweak installed or removed -> 5 s after the last change)
@@ -429,6 +441,8 @@ static void SFTestPoll(void) {
     });
     int t4 = 0;
     notify_register_dispatch(kMSBDPrewarmArmedNote, &t4, dispatch_get_main_queue(), ^(int t) { SFArmedChanged(); });   // (dasd wrote a new record)
+    int t5 = 0;
+    notify_register_dispatch(kMSBDTailspinUpdated, &t5, dispatch_get_main_queue(), ^(int t) { SFTailspinChanged(); });   // (the root helper wrote its state)
     SFWatchTweaks();
     // (a short while after SpringBoard starts, out of the way of the start: the switches, and a tweak installed with this respring)
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 25 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{

@@ -12,8 +12,10 @@
 #import <unistd.h>
 #import "TweakIndex.h"
 #import "PrewarmArmed.h"   // (Prewarm Apps: offered only where the prewarm block is armed -- MTSShownRows)
+#import "TailspinGuard.h"  // (Keep Tailspin Off: offered only where the root helper found it doing something -- MTSShownRows)
 #import "LineSwitch.h"     // (MacDockActive.h asks it first: MSBDLineEnabled)
 #import "MacDockActive.h"  // (MTSOwnRows: the Dock part's rows only while it runs, as its page builds them)
+#import "OwnPageState.h"   // (MTSShownRows: our pages' rows as the pages show them now -- OwnPageRows.h, 1.7.9)
 
 #define kMTSSettingsDomain CFSTR("com.besiktasliseba.macsettings")
 #define kMTSBarDomain CFSTR("com.besiktasliseba.macstatusbar")
@@ -40,10 +42,15 @@ static BOOL MTSSpotlightSwitch(void) { return MTSBarInUse() && MTSBool(CFSTR("sp
 
 // The rows, without those of our own pages that their page leaves out right now (1.7.7 item 5): the Settings search and the Spotlight donation
 // list what the page shows. The index itself keeps every row, so a row that comes back needs no new index; this is asked at every search (cheap:
-// the state is read once). Now one: Windows & Multitasking > Prewarm Apps, left out where the prewarm block is not armed (common/PrewarmArmed.h;
-// the page: MSBRootListController.m).
+// the state is read at most once a second). On Windows & Multitasking: Prewarm Apps, left out where the prewarm block is not armed
+// (common/PrewarmArmed.h), and Keep Tailspin Off (1.7.9), left out where the root helper has not found perfdiagsselfenabled reading its key
+// (common/TailspinGuard.h); the page: MSBRootListController.m. And every other row a page of ours leaves out now (1.7.9, KT): the stock status
+// bar's groups, the rows below a switched-off MacStatusBar or MacDock, the desktop's where its check failed, the engine's groups, the Battery
+// Use group where it is not on Battery Health -- common/OwnPageRows.h, with the pages' own readers (OwnPageState.h).
 static NSArray<MTIEntry *> *MTSShownRows(NSArray<MTIEntry *> *rows) {
-    return !rows.count || MSBDPrewarmAppsShown() ? rows : MTIWithout(rows, @"MAC_WINDOWS", @"PREWARM_APPS");   // (the page's id, the row's id in Windows.plist)
+    if (rows.count && !MSBDTailspinRowShown()) rows = MTIWithout(rows, @"MAC_WINDOWS", @"KEEP_TAILSPIN_OFF");
+    if (rows.count && !MSBDPrewarmAppsShown()) rows = MTIWithout(rows, @"MAC_WINDOWS", @"PREWARM_APPS");   // (the page's id, the row's id in Windows.plist)
+    return rows.count ? MSBDOwnRowsShown(rows, MSBDOwnPagesNow()) : rows;
 }
 static uint64_t MTSHomeBarPill(void) {   // (MacSettings.x HBPillState: 1 = this iPad has no home bar, so no Home Bar row)
     static int token = 0;
@@ -57,11 +64,20 @@ static uint64_t MTSHomeBarPill(void) {   // (MacSettings.x HBPillState: 1 = this
 // 16 --, and on 17/18 on our Dock page, which shows that group there (Apple's page is a SwiftUI page there: msbdHomeScreenSpecifiersForOwnPage).
 // Only while the Dock part runs (MSBDMacDockActive, as DMHSSpecifiers builds the row): with MacDock switched off, or on an untested iPadOS
 // without Enable Anyway, a search result led to a page without the row (1.7.8 review m1).
+// And the Battery Use group's Sleep Guard (1.7.9) on Apple's Battery Health page (Battery Health & Charging from 16; macsettings/BatteryUse.x),
+// which our Settings part opens on iPad on 15-18 (BatteryHealth.x), with another battery health tweak too: opened at its group, as the battery
+// menu's Sleep Guard row opens it (common/BatteryHealthLink.h).
 static NSArray<NSDictionary *> *MTSOwnRows(void) {
-    if (!MSBDMacDockActive()) return @[];
+    NSMutableArray<NSDictionary *> *rows = [NSMutableArray array];
     NSInteger os = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion;
-    NSString *pane = os >= 17 ? @"DOCK_MAGNIFICATION" : @"HOME_SCREEN_DOCK", *paneTitle = os >= 17 ? @"Dock" : os == 16 ? @"Home Screen & Multitasking" : @"Home Screen";
-    return @[@{@"pane": pane, @"paneTitle": paneTitle, @"row": @"MSBD_LAST_PAGE_LIBRARY", @"title": @"Swipe Past Last Page Opens App Library", @"group": @"App Library"}];
+    if (MSBDMacDockActive()) {
+        NSString *pane = os >= 17 ? @"DOCK_MAGNIFICATION" : @"HOME_SCREEN_DOCK", *paneTitle = os >= 17 ? @"Dock" : os == 16 ? @"Home Screen & Multitasking" : @"Home Screen";
+        [rows addObject:@{@"pane": pane, @"paneTitle": paneTitle, @"row": @"MSBD_LAST_PAGE_LIBRARY", @"title": @"Swipe Past Last Page Opens App Library", @"group": @"App Library"}];
+    }
+    if (os >= 15 && os <= 18 && access("/System/Library/PreferenceBundles/BatteryUsageUI.bundle", F_OK) == 0)
+        [rows addObject:@{@"pane": @"BATTERY_USAGE", @"paneTitle": @"Battery", @"page": @"BATTERY_HEALTH", @"pageTitle": os >= 16 ? @"Battery Health & Charging" : @"Battery Health",
+                          @"row": @"MSBD_SLEEP_GUARD", @"title": @"Sleep Guard", @"group": @"Battery Use", @"link": @"BATTERY_HEALTH/MSBD_BATTERY_USE_GROUP"}];
+    return rows;
 }
 // The index's configuration: tweak pages (PreferenceLoader), our own pages and our rows of Settings' main list, as MacSettings.x adds them.
 // Pointer and Keyboard (only there while a trackpad or keyboard is attached) are added by the Settings search itself, never donated.

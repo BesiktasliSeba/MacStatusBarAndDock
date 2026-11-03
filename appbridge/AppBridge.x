@@ -587,12 +587,54 @@ static void MABSpotlightEsc(void) {
     if (r && ((id<UITextInput>)r).markedTextRange) return;   // (the composition's Esc: it cancels that)
     notify_post("com.besiktasliseba.macstatusbar.spotlight.esc");
 }
+// A menu of the bar is open and this app holds the keyboard (1.7.9, common/MenuKeys.h): SpringBoard left the keyboard focus here, so the app stays
+// active, as on a Mac, and the menu gets the keys that would reach the app -- Esc closes it, the rest do nothing -- from here. Shortcuts that act
+// before the app are not touched: iPadOS's own (SpringBoard's key commands) and ours in -sendEvent: (BrightnessKey's, TabMute's). The app says it
+// is here (its pid as the state of MSBD_BRIDGE_KEYS_FMT, at start); SpringBoard keeps the focus lock for an app that does not.
+#include "../common/MenuKeys.h"
+static int MABMenuHasKeys(void) {   // (SpringBoard's lease: asked only for a key the menu would take)
+    static int token = 0; uint64_t stamp = 0;
+    if (!token && notify_register_check(MSBD_MENU_KEYS_STATE, &token) != NOTIFY_STATUS_OK) token = 0;
+    if (token) notify_get_state(token, &stamp);
+    return MSBDMenuKeysFresh(stamp, CFAbsoluteTimeGetCurrent() * 1000.0);
+}
+static void MABPublishMenuKeys(void) {   // (once, in a real app's process: SpringBoard leaves a menu's keys only with an app that reads them)
+    NSString *bundle = [NSBundle mainBundle].bundleIdentifier;
+    if (!bundle.length || [bundle isEqualToString:@"com.apple.springboard"]) return;
+    uint32_t hash = 2166136261u;
+    for (const char *c = bundle.UTF8String; *c; c++) { hash ^= (uint8_t)*c; hash *= 16777619u; }
+    char name[96]; snprintf(name, sizeof name, MSBD_BRIDGE_KEYS_FMT, hash);
+    static int token = 0;   // (kept for the process's life: the state stays while it runs)
+    if (!token && notify_register_check(name, &token) != NOTIFY_STATUS_OK) { token = 0; return; }
+    notify_set_state(token, (uint64_t)getpid());
+}
+static MSBDMenuKeyHeld gMABMenuHeld;   // (main thread: the keys whose press the menu took)
+static BOOL MABInSpringBoard(void) {
+    static int sb = -1;
+    if (sb < 0) sb = [[NSBundle mainBundle].bundleIdentifier isEqualToString:@"com.apple.springboard"];
+    return sb == 1;
+}
 // Hardware keys reach an app as UIPhysicalKeyboardEvent through -[UIApplication handleKeyUIEvent:] (not sendEvent:). Esc is HID 41 (GraveEscape's grave
 // key reports 41 too). A handled Esc's key-down and key-up are not passed on.
 static void (*oMABHandleKeyUIEvent)(id, SEL, id);
 static BOOL gMABEscSwallowRelease = NO;
 static void hMABHandleKeyUIEvent(id self, SEL _cmd, id ev) {
     SEL kc = NSSelectorFromString(@"_keyCode"), down = NSSelectorFromString(@"_isKeyDown"), mods = NSSelectorFromString(@"_modifierFlags");
+    if ([ev respondsToSelector:kc] && [ev respondsToSelector:down] && !MABInSpringBoard()) {   // (SpringBoard's own keys: its key handler, DMOverlayPressesBegan)
+        int code = (int)((long long (*)(id, SEL))objc_msgSend)(ev, kc);
+        BOOL isDown = ((BOOL (*)(id, SEL))objc_msgSend)(ev, down);
+        long long m = [ev respondsToSelector:mods] ? ((long long (*)(id, SEL))objc_msgSend)(ev, mods) : 0;
+#if DEBUG
+        BOOL apps = MSBDMenuKeyIsApps(&gMABMenuHeld, code);   // (a key whose press the app got: for the log below)
+#endif
+        int act = MSBDMenuKeyAct(&gMABMenuHeld, code, isDown, m, MABMenuHasKeys);
+        if (act == MSBDMenuKeyClose) notify_post(MSBD_MENU_ESC);
+#if DEBUG
+        if (act != MSBDMenuKeyPass && MSTestFlag("/tmp/macstatusbar-debug")) MABLog([NSString stringWithFormat:@"menukeys: key 0x%x %@ %@", code, isDown ? @"down" : @"up", act == MSBDMenuKeyClose ? @"closes the menu" : @"taken by the menu"]);
+        else if (apps && MSTestFlag("/tmp/macstatusbar-debug") && MABMenuHasKeys()) MABLog([NSString stringWithFormat:@"menukeys: key 0x%x %@ left to the app (pressed before the menu opened)", code, isDown ? @"down again (a repeat)" : @"up"]);
+#endif
+        if (act != MSBDMenuKeyPass) return;
+    }
     if ([ev respondsToSelector:kc] && [ev respondsToSelector:down] && ((long long (*)(id, SEL))objc_msgSend)(ev, kc) == 41) {
         BOOL isDown = ((BOOL (*)(id, SEL))objc_msgSend)(ev, down);
         long long m = [ev respondsToSelector:mods] ? ((long long (*)(id, SEL))objc_msgSend)(ev, mods) : 0;
@@ -1304,6 +1346,91 @@ static void MABTestNotification(void) {
         [c addNotificationRequest:r withCompletionHandler:^(NSError *e) { MABLog([NSString stringWithFormat:@"testnotif: added %@", e ?: @"ok"]); }];
     }];
 }
+// focuswatch (1.7.9, the menu flicker): for a while, at every frame, what decides the app's focused look -- each window scene's "target of the
+// keyboard's deferring environment" (UIKit's -_isTargetOfKeyboardEventDeferringEnvironment: what turns the app's keyboard focus on and off), its key
+// window and that window's active appearance and focused item, and the selected cell of the leftmost list (selected / focused, its active
+// appearance, the colour its background resolves to) -- one line whenever any of it changes, with the local time in ms (SpringBoard's log clock),
+// and UIKit's own notifications as the scene becomes or stops being that target.
+#include <sys/time.h>
+static NSString *MABStampMs(void) {
+    struct timeval tv; gettimeofday(&tv, NULL); struct tm tmv; localtime_r(&tv.tv_sec, &tmv);
+    return [NSString stringWithFormat:@"%02d:%02d:%02d.%03d", tmv.tm_hour, tmv.tm_min, tmv.tm_sec, (int)(tv.tv_usec / 1000)];
+}
+static NSString *MABColorHex(UIColor *c) {
+    CGFloat r = 0, g = 0, b = 0, a = 0;
+    if (!c || ![c getRed:&r green:&g blue:&b alpha:&a]) return @"-";
+    return [NSString stringWithFormat:@"%02x%02x%02x/%02x", (int)lround(r * 255), (int)lround(g * 255), (int)lround(b * 255), (int)lround(a * 255)];
+}
+static UIView *MABLeftmostList(UIWindow *w) {
+    UIView *best = nil; CGFloat bestX = CGFLOAT_MAX;
+    NSMutableArray *stack = [NSMutableArray arrayWithObject:w];
+    while (stack.count) {
+        UIView *v = stack.lastObject; [stack removeLastObject]; [stack addObjectsFromArray:v.subviews];
+        if (!([v isKindOfClass:[UITableView class]] || [v isKindOfClass:[UICollectionView class]]) || v.hidden || v.alpha < 0.01) continue;
+        CGRect r = [v convertRect:v.bounds toView:nil];
+        if (r.size.width < 40 || r.size.height < 100) continue;
+        if (r.origin.x < bestX) { best = v; bestX = r.origin.x; }
+    }
+    return best;
+}
+static NSString *MABFocusState(void) {
+    NSMutableString *s = [NSMutableString string];
+    for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
+        if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+        UIWindowScene *ws = (UIWindowScene *)sc;
+        SEL tgt = NSSelectorFromString(@"_isTargetOfKeyboardEventDeferringEnvironment");
+        int target = [ws respondsToSelector:tgt] ? ((BOOL (*)(id, SEL))objc_msgSend)(ws, tgt) : -1;
+        UIWindow *key = nil;
+        for (UIWindow *w in ws.windows) if (w.isKeyWindow) { key = w; break; }
+        id item = key ? [UIFocusSystem focusSystemForEnvironment:key].focusedItem : nil;
+        [s appendFormat:@"[scene %p act %ld target %d key %@ appearance %ld focus %@", ws, (long)ws.activationState, target, key ? NSStringFromClass([key class]) : @"none",
+            key ? (long)key.traitCollection.activeAppearance : -9L, item ? NSStringFromClass([item class]) : @"none"];
+        UIView *list = key ? MABLeftmostList(key) : nil;
+        UIView *cell = nil;
+        if ([list isKindOfClass:[UITableView class]]) { NSIndexPath *ip = ((UITableView *)list).indexPathForSelectedRow; cell = ip ? [(UITableView *)list cellForRowAtIndexPath:ip] : nil; }
+        else if ([list isKindOfClass:[UICollectionView class]]) { NSIndexPath *ip = ((UICollectionView *)list).indexPathsForSelectedItems.firstObject; cell = ip ? [(UICollectionView *)list cellForItemAtIndexPath:ip] : nil; }
+        if (cell && [cell respondsToSelector:@selector(configurationState)]) {
+            UICellConfigurationState *cs = ((UICellConfigurationState * (*)(id, SEL))objc_msgSend)(cell, @selector(configurationState));
+            UIBackgroundConfiguration *bg = [cell respondsToSelector:@selector(backgroundConfiguration)] ? ((UIBackgroundConfiguration * (*)(id, SEL))objc_msgSend)(cell, @selector(backgroundConfiguration)) : nil;
+            [s appendFormat:@" | row %@ sel %d foc %d hl %d appearance %ld bg %@", NSStringFromClass([cell class]), cs.isSelected, cs.isFocused, cs.isHighlighted, (long)cs.traitCollection.activeAppearance,
+                bg ? MABColorHex([bg resolvedBackgroundColorForTintColor:cell.tintColor]) : @"-"];
+        } else [s appendFormat:@" | row %@", list ? @"none selected" : @"no list"];
+        [s appendString:@"]"];
+    }
+    return s;
+}
+@interface MABFocusWatcher : NSObject
+@property (nonatomic, strong) CADisplayLink *link;
+@property (nonatomic, copy) NSString *last;
+@property (nonatomic) CFTimeInterval until;
+@property (nonatomic) NSUInteger frames;
+@end
+@implementation MABFocusWatcher
+- (void)tick:(CADisplayLink *)l {
+    self.frames++;
+    NSString *now = MABFocusState();
+    if (![now isEqualToString:self.last ?: @""]) { self.last = now; MABLog([NSString stringWithFormat:@"focuswatch %@ %@", MABStampMs(), now]); }
+    if (CACurrentMediaTime() > self.until) { MABLog([NSString stringWithFormat:@"focuswatch %@ done (%lu frames)", MABStampMs(), (unsigned long)self.frames]); [l invalidate]; self.link = nil; }
+}
+@end
+static void MABFocusWatch(double seconds) {
+    static MABFocusWatcher *w = nil;
+    static BOOL observing = NO;
+    if (!observing) {
+        observing = YES;
+        for (NSString *n in @[@"_UISceneDidBecomeTargetOfKeyboardEventDeferringEnvironmentNotification", @"_UISceneDidResignTargetOfKeyboardEventDeferringEnvironmentNotification"])
+            [[NSNotificationCenter defaultCenter] addObserverForName:n object:nil queue:nil usingBlock:^(NSNotification *note) {
+                if (w.link) MABLog([NSString stringWithFormat:@"focuswatch %@ note %@ scene %p", MABStampMs(), [note.name substringFromIndex:8], note.object]);
+            }];
+    }
+    if (!w) w = [MABFocusWatcher new];
+    [w.link invalidate];
+    w.last = nil; w.frames = 0; w.until = CACurrentMediaTime() + MAX(1.0, MIN(120.0, seconds));
+    w.link = [CADisplayLink displayLinkWithTarget:w selector:@selector(tick:)];
+    if ([w.link respondsToSelector:@selector(setPreferredFrameRateRange:)]) w.link.preferredFrameRateRange = CAFrameRateRangeMake(60, 120, 120);
+    [w.link addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+    MABLog([NSString stringWithFormat:@"focuswatch %@ start (%.0f s)", MABStampMs(), seconds]);
+}
 static void MABRegisterFocus(void) {
     NSString *bundle = [NSBundle mainBundle].bundleIdentifier;
     if (!bundle.length || [bundle isEqualToString:@"com.apple.springboard"]) return;
@@ -1404,6 +1531,9 @@ static void MABRegisterFocus(void) {
     notify_register_dispatch(n2, &tokenTraitWatch, dispatch_get_main_queue(), ^(int t) { MABTraitWatch(12); });   // 12 s window: bracket a resize triggered from the SpringBoard side while this runs
     snprintf(n2, sizeof n2, "com.besiktasliseba.appbridge.traittrace.%08x", hash);
     notify_register_dispatch(n2, &tokenTraitTrace, dispatch_get_main_queue(), ^(int t) { static BOOL done; if (!done) { done = YES; MABInstallTraitTrace(); } });
+    static int tokenFocusWatch = 0;   // (1.7.9: 30 s of the app's focused look, frame by frame)
+    snprintf(n2, sizeof n2, "com.besiktasliseba.appbridge.focuswatch.%08x", hash);
+    notify_register_dispatch(n2, &tokenFocusWatch, dispatch_get_main_queue(), ^(int t) { MABFocusWatch(30); });
     static int tokenScroll = 0;
     snprintf(n2, sizeof n2, "com.besiktasliseba.appbridge.scroll.%08x", hash);
     notify_register_dispatch(n2, &tokenScroll, dispatch_get_main_queue(), ^(int t) { MABScrollBy(2000); });
@@ -2466,6 +2596,7 @@ static void MABRegisterFinderDrops(void) {
 #endif
         if (![UIApplication sharedApplication]) return;
         gMainScreen = [UIScreen mainScreen];
+        if (oMABHandleKeyUIEvent) MABPublishMenuKeys();   // (the menus' keys can stay here: the key hook is in)
         MABRegister();
         MABRegisterActions();
         MABInstallPopupGuard();   // apps with LNPopupController only (Sileo): popup bar present/dismiss one at a time

@@ -2,7 +2,7 @@
 # Mac test of the Battery Use group on the Battery Health page (macsettings/BatteryUse.x, battery drain F1): where it goes (test-batteryuse.m, the
 # real MSBUInsertIndex / MSBUHasGroup), and wiring: the Sleep Guard switch (our domain, on unless switched off, the helper told), the "iPad Can't
 # Sleep" row only while the helper says so, a fresh look asked only for an old state (no rebuild loop), the rebuild only while the page shows,
-# nothing while another battery health tweak owns the page.
+# there with another battery health tweak too (1.7.9), and Sleep Guard in our Settings search.
 set -e
 cd "$(dirname "$0")"
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
@@ -23,8 +23,15 @@ check "the page rebuilt on the helper's update only while it shows" \
   "grep -q 'if (page.isViewLoaded && page.view.window) \\[page reloadSpecifiers\\];' $U"
 check "the group put into the page's own list (its _specifiers), once" \
   "awk '/^- \\(id\\)specifiers \\{/,/^}/' $U | grep -q 'MSBUHasGroup(r)) return r;' && awk '/^- \\(id\\)specifiers \\{/,/^}/' $U | grep -q 'object_setIvarWithStrongDefault(self, iv, m);'"
-check "nothing while another battery health tweak owns the page (as BatteryHealth.x)" \
-  "awk '/^static void MSBUTryInit\\(void\\) \\{/,/^}/' $U | grep -q 'if (MSBDTweakPresent(\"BatteryHealthEnabler\", YES)) return;'"
+check "with another battery health tweak too: no step-aside, the page is ours (KT, 1.7.9; as BatteryHealth.x)" \
+  "awk '/^static void MSBUTryInit\\(void\\) \\{/,/^}/' $U | grep -q 'if (!class_getInstanceMethod(health, @selector(specifiers))' \
+   && ! awk '/^static void MSBUTryInit\\(void\\) \\{/,/^}/' $U | grep -q -i 'BatteryHealthEnabler\\|MSBDTweakPresent' && ! grep -q 'OtherTweaks.h' $U"
+check "the Settings search finds Sleep Guard: our index lists the row (its title and identifier as the page has them) on Battery > Battery Health (Battery Health & Charging from 16, Apple's BATTERY_HEALTH string read on 15.6.1, 16.7.7, 17.5.1, 18.5), opened at its group by the battery menu's own link" \
+  "grep -q '@\"pane\": @\"BATTERY_USAGE\", @\"paneTitle\": @\"Battery\", @\"page\": @\"BATTERY_HEALTH\", @\"pageTitle\": os >= 16 ? @\"Battery Health & Charging\" : @\"Battery Health\",' ../common/TweakSpotlight.h \
+   && grep -q '@\"row\": @\"MSBD_SLEEP_GUARD\", @\"title\": @\"Sleep Guard\", @\"group\": @\"Battery Use\", @\"link\": @\"BATTERY_HEALTH/MSBD_BATTERY_USE_GROUP\"' ../common/TweakSpotlight.h \
+   && $F | grep -q '\\[sw setIdentifier:@\"MSBD_SLEEP_GUARD\"\\];' && $F | grep -q 'PSSpecifier \\*sw = \\[PSSpecifier preferenceSpecifierNamed:@\"Sleep Guard\"' \
+   && $F | grep -q 'groupSpecifierWithName:@\"Battery Use\"\\];' && grep -q '#define MSBD_BH_PAGE \"BATTERY_HEALTH\"' ../common/BatteryHealthLink.h \
+   && grep -q 'return \\[@\"prefs:root=BATTERY_USAGE&path=\" MSBD_BH_PAGE' ../common/BatteryHealthLink.h"
 check "the helper and Settings use the same names (the state file, the check and update notifications)" \
   "grep -q '#define MSBD_SG_CHECK   \"com.besiktasliseba.sleepguard.check\"' $U && grep -q '#define MSBD_SG_CHECK   \"com.besiktasliseba.sleepguard.check\"' ../macsettings/sshtoggled/SleepGuardDaemon.h && grep -q '#define MSBD_SG_UPDATED \"com.besiktasliseba.sleepguard.updated\"' $U && grep -q '#define MSBD_SG_UPDATED \"com.besiktasliseba.sleepguard.updated\"' ../macsettings/sshtoggled/SleepGuardDaemon.h"
 check "BatteryUse.x is built into MacSettings" "grep -q '^MacSettings_FILES = .* BatteryUse.x' ../macsettings/Makefile"

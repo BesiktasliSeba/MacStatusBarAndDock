@@ -7,6 +7,7 @@
 // Whether a pointer device is attached comes from SpringBoard too (Darwin notification state com.besiktasliseba.macpointer.device, see Mac Status Bar's
 // MacPointer bridge), because the Settings app has no clean way of its own to ask.
 #import <UIKit/UIKit.h>
+#import "../common/MainListRows.h"   // (the sidebar read through it: never the row Settings fills in on its own queue, 1.7.9)
 #import <notify.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -181,15 +182,13 @@ void MSPointerWatchSidebar(PSListController *sidebar) {
     gMSSidebar = sidebar;
     // (a trackpad or mouse attached or detached before this list was watched -- Settings started on a page, its sidebar not shown yet: the row
     //  follows now, once, so it and the Ethernet row's rule, which follows from the start, never disagree -- 1.7.5, iPad 2 16.7.7)
-    BOOL shown = NO;
-    for (PSSpecifier *sp in [sidebar specifiers]) if ([[sp identifier] isEqualToString:kPointerRowID]) { shown = YES; break; }
+    BOOL shown = MSBDMLIndexOf(MSBDMLIdentifiers(sidebar, [sidebar specifiers]), kPointerRowID, NO) != NSNotFound;
     if (sidebar && shown != MSPointerDeviceAttached()) dispatch_async(dispatch_get_main_queue(), ^{ PSListController *l = gMSSidebar; if (l) MSReloadSidebarKeepingScroll(l); });
     static int token = 0;
     if (token) return;
     notify_register_dispatch(MSBD_POINTER_CHANGED, &token, dispatch_get_main_queue(), ^(int t) {
         PSListController *l = gMSSidebar;
-        BOOL shown = NO;
-        for (PSSpecifier *sp in [l specifiers]) if ([[sp identifier] isEqualToString:kPointerRowID]) { shown = YES; break; }
+        BOOL shown = MSBDMLIndexOf(MSBDMLIdentifiers(l, [l specifiers]), kPointerRowID, NO) != NSNotFound;
 #if DEBUG
         if (access("/tmp/macsettings-debug", F_OK) == 0) { FILE *f = fopen("/tmp/macsettings.log", "a"); if (f) { fprintf(f, "[pointer] device changed: sidebar %p, row shown %d, attached %d\n", (__bridge void *)l, shown, MSPointerDeviceAttached()); fclose(f); } }
 #endif
@@ -202,7 +201,7 @@ void MSPointerWatchSidebar(PSListController *sidebar) {
         PSListController *l = gMSSidebar;
         SEL r = NSSelectorFromString(@"reloadSpecifierID:");
         if (!l || ![l respondsToSelector:r]) return;
-        for (PSSpecifier *sp in [l specifiers]) if ([[sp identifier] isEqualToString:kPointerRowID]) { ((void (*)(id, SEL, id))objc_msgSend)(l, r, kPointerRowID); break; }
+        if (MSBDMLIndexOf(MSBDMLIdentifiers(l, [l specifiers]), kPointerRowID, NO) != NSNotFound) ((void (*)(id, SEL, id))objc_msgSend)(l, r, kPointerRowID);
     });
     static int pillToken = 0;
     notify_register_dispatch("com.besiktasliseba.machomebar.pill.changed", &pillToken, dispatch_get_main_queue(), ^(int t) {

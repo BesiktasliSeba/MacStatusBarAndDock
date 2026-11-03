@@ -162,6 +162,55 @@ int main(int argc, char **argv) {
         Expect([e.crumb isEqualToString:@"Home Screen & Multitasking"] && [e.keywords isEqualToArray:@[@"App Library"]], @"  ... the page as its breadcrumb, its group as a keyword");
         Expect([MTIMatch(withRows, @"last page", 0) containsObject:e] && [MTIMatch(withRows, @"app library", 0) containsObject:e], @"  ... found by its words and its group's");
         Expect(withRows.count == all.count + 1, @"  ... one row: a row without a title is left out");
+        // a row of ours on a page inside Apple's page (1.7.9: Sleep Guard on Battery > Battery Health), opened by our own link at its group
+        MTIConfig *pc = Config(root, @[@"en-US"]);
+        pc.ownRows = @[@{@"pane": @"BATTERY_USAGE", @"paneTitle": @"Battery", @"page": @"BATTERY_HEALTH", @"pageTitle": @"Battery Health", @"row": @"MSBD_SLEEP_GUARD",
+                         @"title": @"Sleep Guard", @"group": @"Battery Use", @"link": @"BATTERY_HEALTH/MSBD_BATTERY_USE_GROUP"},
+                       @{@"pane": @"BATTERY_USAGE", @"paneTitle": @"Battery", @"page": @"BATTERY_HEALTH", @"row": @"MSBD_NO_LINK", @"title": @"No Link Row"},
+                       @{@"pane": @"BATTERY_USAGE", @"paneTitle": @"Battery", @"row": @"MSBD_TOP", @"title": @"Top Row", @"link": @"IGNORED"}];
+        NSArray<MTIEntry *> *withPage = MTIBuild(pc);
+        e = Find(withPage, @"Battery", @"Sleep Guard");
+        Expect([e.uid isEqualToString:@"msbd-tweaksetting:root=BATTERY_USAGE&path=BATTERY_HEALTH/MSBD_BATTERY_USE_GROUP"] && e.depth == 3 && !e.opensPage,
+               [NSString stringWithFormat:@"a row on a page inside Apple's page, with a link: the link's path (uid %@)", e.uid]);
+        Expect([MTIPrefsURL(e.uid) isEqualToString:@"prefs:root=BATTERY_USAGE&path=BATTERY_HEALTH/MSBD_BATTERY_USE_GROUP"] && [MTIPaneOf(e.uid) isEqualToString:@"BATTERY_USAGE"],
+               @"  ... Settings' own URL: the pane, then the page and the group (the battery menu's Sleep Guard link)");
+        Expect([e.crumb isEqualToString:@"Battery → Battery Health"] && [e.keywords isEqualToArray:@[@"Battery Use"]] && [e.path isEqualToArray:@[@"BATTERY_HEALTH", @"MSBD_SLEEP_GUARD"]],
+               [NSString stringWithFormat:@"  ... both pages as its breadcrumb (%@), its group as a keyword, the row last in its path", e.crumb]);
+        Expect([MTIMatch(withPage, @"sleep", 0) containsObject:e] && [MTIMatch(withPage, @"sleep guard", 0) containsObject:e] && [MTIMatch(withPage, @"battery use", 0) containsObject:e]
+               && ![MTIMatch(withPage, @"guards sleep", 0) containsObject:e], @"  ... found by its words and its group's");
+        MTIEntry *e2 = Find(withPage, @"Battery", @"No Link Row"), *e3 = Find(withPage, @"Battery", @"Top Row");
+        Expect([e2.uid isEqualToString:@"msbd-tweaksetting:root=BATTERY_USAGE&path=BATTERY_HEALTH#MSBD_NO_LINK"] && [e2.crumb isEqualToString:@"Battery → BATTERY_HEALTH"] && e2.depth == 3,
+               [NSString stringWithFormat:@"  ... without a link: the page, at the row (uid %@, crumb %@)", e2.uid, e2.crumb]);
+        Expect([e3.uid isEqualToString:@"msbd-tweaksetting:root=BATTERY_USAGE#MSBD_TOP"] && e3.depth == 2, @"  ... a link without a page inside: not taken (the row on the pane itself, as before)");
+        Expect(MTIWithout(withPage, @"BATTERY_USAGE", @"MSBD_SLEEP_GUARD").count == withPage.count - 1 && withPage.count == all.count + 3, @"  ... left out by its row's identifier like any row");
+        // 1.7.9 (KT): the Settings search lists our own pages and rows always, other tweaks' only with Include Tweak Settings -- each row says whose
+        NSSet *ourPanes = [NSSet setWithArray:@[@"Status Bar", @"Desktop", @"Windows & Multitasking", @"SSH", @"Pointer"]];
+        NSUInteger oursN = 0, wrong = 0;
+        for (MTIEntry *x in all) { if (x.ours) oursN++; if (x.ours != [ourPanes containsObject:x.paneTitle]) wrong++; }
+        Expect(oursN > 0 && oursN < all.count && !wrong, [NSString stringWithFormat:@"ours: every row of our pages and our main-list rows, no other tweak's (%lu of %lu, %lu wrong)", (unsigned long)oursN, (unsigned long)all.count, (unsigned long)wrong]);
+        e = Find(withRows, @"Home Screen & Multitasking", @"Swipe Past Last Page Opens App Library");
+        Expect(e.ours && Find(withPage, @"Battery", @"Sleep Guard").ours && Find(withPage, @"Battery", @"Top Row").ours, @"  ... and our rows made in code on Apple's pages (Swipe Past Last Page, Sleep Guard)");
+        NSArray<MTIEntry *> *own = MTIListed(all, YES, NO), *others = MTIListed(all, NO, YES);
+        BOOL ownOK = own.count == oursN, othersOK = others.count == all.count - oursN;
+        for (MTIEntry *x in own) if (!x.ours) ownOK = NO;
+        for (MTIEntry *x in others) if (x.ours) othersOK = NO;
+        Expect(ownOK && [own.firstObject.title isEqualToString:@"Status Bar"], [NSString stringWithFormat:@"listed, Include Tweak Settings off: our rows alone (%lu)", (unsigned long)own.count]);
+        Expect(othersOK && [others.firstObject.title isEqualToString:@"Alpha"], [NSString stringWithFormat:@"listed, ours left out by the guard: the other tweaks' rows alone (%lu)", (unsigned long)others.count]);
+        Expect(MTIListed(all, YES, YES) == all && MTIListed(all, NO, NO).count == 0, @"listed: both, everything as it is; neither, nothing");
+        Expect([MTIListed(MTIMatch(withPage, @"sleep guard", 0), YES, NO) containsObject:Find(withPage, @"Battery", @"Sleep Guard")]
+               && [MTIListed(MTIMatch(all, @"show seconds", 0), YES, NO) containsObject:Find(all, @"Status Bar", @"Show Seconds")], @"  ... a search finds our rows with Include Tweak Settings off");
+        Expect(MTIListed(MTIMatch(all, @"turbo", 0), YES, NO).count == 0 && [MTIListed(MTIMatch(all, @"turbo", 0), YES, YES) containsObject:Find(all, @"Alpha", @"Turbo Mode")],
+               @"  ... and another tweak's row only with it on");
+        // our own rows alone, as TweakSearch.x builds them with both switches off: no PreferenceLoader folder read, the same rows as in the full index
+        MTIConfig *oc2 = Config(root, @[@"en-US"]); oc2.plDirs = @[];
+        NSArray<MTIEntry *> *ownOnly = MTIBuild(oc2);
+        BOOL sameRows = ownOnly.count == own.count;
+        for (NSUInteger i = 0; sameRows && i < own.count; i++) if (![ownOnly[i].uid isEqualToString:own[i].uid] || !ownOnly[i].ours) sameRows = NO;
+        Expect(sameRows, [NSString stringWithFormat:@"our rows built alone (no PreferenceLoader folder): the full index's own rows (%lu / %lu)", (unsigned long)ownOnly.count, (unsigned long)own.count]);
+        // the loop guard's mark (TweakSearch.x): which kind of build a start ended in
+        Expect(MTIGuardKind(nil) == 0 && MTIGuardKind(@NO) == 0 && MTIGuardKind(@0) == 0 && MTIGuardKind(@"1") == 0, @"guard mark: none (no mark, false, 0, not a number)");
+        Expect(MTIGuardKind(@1) == 1 && MTIGuardKind(@2) == 2 && MTIGuardKind(@YES) == 2 && MTIGuardKind(@7) == 2,
+               @"guard mark: 1 our own rows alone, 2 other tweaks' pages too; an older build's true and an unknown number count as 2");
         printf("test-tweakindex: %d/%d passed (%lu rows)\n", gN - gFail, gN, (unsigned long)all.count);
     }
     return gFail ? 1 : 0;

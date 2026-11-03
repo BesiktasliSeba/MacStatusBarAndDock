@@ -38,7 +38,7 @@ Updates come through Sileo, and the Apple menu shows Update Available when your 
 
 | On a Mac | In MacStatusBar&Dock |
 |---|---|
-| Menu bar with the Apple menu and app menus | The same, plus Wi-Fi, audio and VPN menus |
+| Menu bar with the Apple menu and app menus | The same, plus Wi-Fi, battery, audio and VPN menus |
 | Windows with traffic lights | Mac windows on Aerial, Zetsu, MilkyWay4 or Apple's Stage Manager |
 | Mission Control and Spaces | The Mac Switcher, with up to 8 desktops that slide with your fingers |
 | Finder and the desktop | A Finder window, and your files on the first Home Screen page |
@@ -53,12 +53,14 @@ The Mac look is on right after install, and most features have their own switch.
 - The Apple menu has About This iPad, App Store, Force Quit, Respring, Safe Mode, Lock Screen, Sleep and Shut Down. The app in front gets App, Edit, Go and Window menus.
 - Tap the clock to drop down your Today View widgets, with your notifications above them.
 - The Wi-Fi icon opens a Wi-Fi menu, so you can join a network without Control Center. The Audio menu gives each app its own volume, and apps can play at the same time. While a VPN is connected, it gets its own menu with Disconnect.
+- The battery opens a battery menu, as on a Mac, with Low Power Mode, Sleep Guard and Battery Settings, and a Control Center icon next to the clock opens Control Center. Battery Menu in Settings > Status Bar turns both off.
 - Right-to-left languages get a mirrored menu bar, as on a Mac. Status Bar Style switches back to the stock iPadOS bar.
 - Menu Bar Size in Settings > Status Bar: Medium and Large make the menu bar taller, with larger text, icons and menus that are easier to tap with a finger.
 
 ### Windows
 
 - Title bars, traffic lights, rounded corners and resize handles, on the engine you already use.
+- Swiping up from the bottom or pressing the Home button minimizes your windows so the Home Screen shows, and opening an app brings its window back. Home Minimizes Windows in Settings > Windows & Multitasking turns it off.
 - The Window menu has layouts (halves, quarters, Fill Screen, Center) and Fit to Window, which tiles your windows side by side. Layouts and tiles reach the screen's edges, from right under the menu bar down to the Dock.
 - A window you move or resize lines up with the screen edges, the menu bar, the Dock and other windows when you let go of it near them.
 - When you turn the iPad, a window in a layout (Fill Screen, a half or a quarter) takes the same layout in the new orientation, and any other window goes back to where it last was in that orientation.
@@ -80,11 +82,12 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 ### Finder and the desktop
 
 - A Finder window with a sidebar, list and icon views, Quick Look, Search, Undo and Put Back. Open it from the Dock or the Go menu.
+- Show in Finder Menu in a Home Screen folder's Haptic Touch menu lists the folder in the menu bar's Finder menu, where a tap opens it.
 - On My iPad shows the same folders as the Files app, with a folder for each app that shares its files there.
 - The Trash has an Empty button at the top right, and emptying the Trash plays a sound unless the iPad is muted.
 - Drag files between Finder windows, the desktop and the Downloads stack, or into an app, which gets a copy.
 - Share on an app, in Applications or any .app in Finder or on the desktop, hands it over as an .ipa named after the app and its version. For an App Store app, a note says first that the copy only opens on iPads signed in with the same Apple ID. Nothing is decrypted.
-- Files and folders from On My iPad > Desktop sit on the first Home Screen page, never over your apps. A long press or a right click opens their menus over your windows, and Hide Name hides an icon's name. In Settings > Desktop, Hide Desktop Icon Names hides them all and Icon Size sets their size.
+- Files and folders from On My iPad > Desktop sit on the first Home Screen page, never over your apps. A long press or a right click opens their menus over your windows, and Hide Name hides an icon's name. In Settings > Desktop, Hide Desktop Icon Names hides them all and Icon Size sets their size. App Icon Corner Radius there sets how round the desktop's app icons are, from square to circle.
 - Text files open in a small TextEdit window and save by themselves.
 - USB drives and SD cards show up under Locations. exFAT and FAT32 work (FAT32 can't hold files over 4 GB). APFS and Mac OS Extended should work but haven't been tested, and iPadOS doesn't read NTFS. An SSD may need a powered hub.
 - On iPadOS 16 to 18, each drive has an Eject button in Finder's sidebar, as on a Mac, and File > Eject and the drive's menu eject it too.
@@ -108,7 +111,7 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 
 ### Battery
 
-- Settings > Battery > Battery Health (Battery Health & Charging on iPadOS 17 and 18) opens on every iPad, as on an iPhone, with the battery's Maximum Capacity and Cycle Count. If another battery health tweak is installed, the page is left to it.
+- Settings > Battery > Battery Health (Battery Health & Charging on iPadOS 16 to 18) opens on every iPad, as on an iPhone, with the battery's Maximum Capacity and Cycle Count, also while another battery health tweak is installed.
 - Sleep Guard, in the page's Battery Use group and on unless you turn it off, lets the iPad sleep when a hold left behind by a process that's gone is the only thing keeping it awake with the screen off.
 - While the screen is off, the tweak's own timers stop, such as Activity Monitor's refresh and the RAM & CPU tile's.
 
@@ -117,7 +120,7 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 - The Status Bar, Desktop, Windows & Multitasking and Dock pages sit right below General and look like Apple's own pages. On iPadOS 18 they are in a group at the top of Settings > General.
 - On iPadOS 15 to 17 the sidebar is shorter: Notifications & Sounds and Focus & Screen Time each open Apple's two pages.
 - Ethernet is listed in the sidebar with or without an adapter, except while a trackpad or mouse and a keyboard are both connected and no adapter is.
-- A search field at the top of the Settings sidebar finds Apple's settings, like the search in System Settings on a Mac, and can find your tweaks' settings too.
+- A search field at the top of the Settings sidebar finds Apple's settings, like the search in System Settings on a Mac, and always finds MacStatusBar&Dock's own settings. Include Tweak Settings adds your other tweaks' settings.
 
 ### Also included
 
@@ -227,6 +230,7 @@ On iPads with 2 or 3 GB of memory:
 - Work with 2 or 3 windows at a time. Every window is a running app, and iPadOS closes apps in the background when memory runs short, so they reload when you go back.
 - Turn off what you don't use, such as Siri Suggestions (Settings > Siri & Search) and Handoff (Settings > General > AirPlay & Handoff).
 - Turn off Prewarm Apps in Settings > Windows & Multitasking, so iPadOS doesn't start apps in the background before you open them. It starts off on iPads with 2 GB of memory.
+- Keep Tailspin Off in Settings > Windows & Multitasking stops iPadOS from turning on tailspin, a diagnostics trace that holds tens of MB of memory. It's on by default on iPads with 2 GB of memory.
 
 ## In the works
 

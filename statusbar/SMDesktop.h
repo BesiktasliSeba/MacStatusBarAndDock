@@ -251,7 +251,8 @@ static BOOL DMSMDeskIsFaded(void) { return gSMDeskFaded; }   // (StatusBar.x rou
 static __weak UIWindow *gSMDeskFadedWindow;
 static CGFloat gSMDeskAlphaWas = 1.0;
 static void DMSMDeskSyncFade(void) {
-    BOOL want = gSMDeskHooked && !gSMDeskOff && DMSMEngine() && (DMLibraryVisible() || gHomeMenuOpen) && !DMSwitcherVisible() && DMSMWindowBundles().count > 0;
+    BOOL folder = DMHomeFolderShowing();   // (a Home Screen folder the user is looking at: 1.7.9, as in DMSyncWindowFade)
+    BOOL want = gSMDeskHooked && !gSMDeskOff && DMSMEngine() && (DMLibraryVisible() || gHomeMenuOpen || folder) && !DMSwitcherVisible() && DMSMWindowBundles().count > 0;
     if (want == gSMDeskFaded) return;
     UIWindow *w = want ? DMSMDeskSwitcherWindow() : gSMDeskFadedWindow;
     gSMDeskFaded = want;
@@ -259,9 +260,9 @@ static void DMSMDeskSyncFade(void) {
     if (want) { gSMDeskFadedWindow = w; gSMDeskAlphaWas = w.alpha > 0.01 ? w.alpha : 1.0; }
     CGFloat to = want ? 0.0 : gSMDeskAlphaWas;
     BOOL forSwitcher = !want && DMSwitcherVisible();   // (the App Switcher needs its window now: at once, no fade)
-    static BOOL fadedForMenu = NO;   // (for the log: a closing icon menu was called "App Library" -- the menu flag is already down by then)
-    if (want) fadedForMenu = gHomeMenuOpen;
-    DMLog([NSString stringWithFormat:@"[smdesk] %@ %@: windows %@", forSwitcher ? @"App Switcher" : ((want ? gHomeMenuOpen : fadedForMenu) ? @"Home Screen icon menu" : @"App Library"),
+    static NSString *fadedFor = @"App Library";   // (for the log: a closing icon menu was called "App Library" -- the menu flag is already down by then)
+    if (want) fadedFor = gHomeMenuOpen ? @"Home Screen icon menu" : (folder ? @"Home Screen folder" : @"App Library");
+    DMLog([NSString stringWithFormat:@"[smdesk] %@ %@: windows %@", forSwitcher ? @"App Switcher" : fadedFor,
         want ? @"is showing" : (forSwitcher ? @"is coming" : @"is gone"), want ? @"fade away" : @"come back"]);
     if (forSwitcher) { [w.layer removeAnimationForKey:@"opacity"]; w.alpha = to; }   // (only our own fade's animation)
     else {   // (with the App Library's own transition: about its length, StatusBar.x DMLibraryTransitionFade)

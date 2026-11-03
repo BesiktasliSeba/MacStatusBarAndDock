@@ -655,6 +655,7 @@ static DMFinderItem *DMFinderItemFor(NSString *path) {
     return it;
 }
 static UIImage *DMFinderIcon(DMFinderItem *it, CGFloat side);
+static NSUInteger gFinderAppIconGen;   // (+1 when an icon theme engine refreshed its pictures, DesktopCorner.h: apps' icons are asked again)
 static UIImage *DMFinderAppIcon(DMFinderItem *it, CGFloat side) {
     if (!it.app) return nil;
     DMFinderItem *a = [DMFinderItem new]; a.path = it.app; a.name = it.app.lastPathComponent; a.dir = YES;
@@ -689,7 +690,7 @@ static UIImage *DMFinderIcon(DMFinderItem *it, CGFloat side) {
     }
     if ([it.name hasSuffix:@".app"]) {   // an app: its own icon (read once per app and size: the Applications folder asked for each row, every scroll)
         static NSCache *appIcons; if (!appIcons) appIcons = [NSCache new];
-        NSString *ck = [NSString stringWithFormat:@"%@|%.0f", it.path, side];
+        NSString *ck = [NSString stringWithFormat:@"%@|%.0f|%lu", it.path, side, (unsigned long)gFinderAppIconGen];   // (and again after a theme's refresh)
         UIImage *cached = [appIcons objectForKey:ck]; if (cached) return cached;
         NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:[it.path stringByAppendingPathComponent:@"Info.plist"]];
         NSString *bid = info[@"CFBundleIdentifier"];
@@ -763,9 +764,9 @@ static void DMFinderThumbCancel(DMFinderItem *it, CGFloat side) {
     NSOperation *op = gFinderThumbOps[key];
     if (op && !op.isExecuting) { [op cancel]; [gFinderThumbOps removeObjectForKey:key]; }
 }
-static UIImage *DMFinderIconWithAlias(DMFinderItem *it, CGFloat side) {
-    UIImage *base = DMFinderIcon(it, side);
-    if (!it.alias || !base) return base;
+// A picture with an alias's arrow in its corner (an item that is a link).
+static UIImage *DMFinderAliasArrow(UIImage *base) {
+    if (!base) return nil;
     UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:base.size];
     return [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
         [base drawAtPoint:CGPointZero];
@@ -774,6 +775,10 @@ static UIImage *DMFinderIconWithAlias(DMFinderItem *it, CGFloat side) {
         [[UIColor whiteColor] setFill]; [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(1, base.size.height - a - 1, a, a) cornerRadius:a * 0.2] fill];
         [arrow drawInRect:CGRectMake(1, base.size.height - a - 1, a, a)];
     }];
+}
+static UIImage *DMFinderIconWithAlias(DMFinderItem *it, CGFloat side) {
+    UIImage *base = DMFinderIcon(it, side);
+    return it.alias ? DMFinderAliasArrow(base) : base;
 }
 // The list's columns for its width, like a Mac's list view keeping Name and dropping the others that no longer fit: x of Date, Size, Kind
 // (a negative x: that column is hidden) and the Name column's width.

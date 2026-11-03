@@ -1,7 +1,7 @@
 #!/bin/bash
 # Mac test of the Battery Health page on iPad (macsettings/BatteryHealth.x, 1.7.8): its figures (common/BatteryHealthFigures.h, test-batteryhealth.c),
 # then the wiring as built: Apple's isiPhone question answered "yes" only while the Battery page builds its Battery Health row, Apple's own answers
-# kept where it has them, each version's hooks only where that version has the method, and the page left to another battery health tweak.
+# kept where it has them, each version's hooks only where that version has the method, and the page ours with another battery health tweak too.
 set -e
 cd "$(dirname "$0")"
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
@@ -24,9 +24,9 @@ check "the figure is NominalChargeCapacity / DesignCapacity (AppleRawMaxCapacity
 check "every version's hook only where the method is (no %orig into nothing)" \
   "fn 'static void MSBHTryInit(void) {' $B | grep -q 'if (MSBHHas(resource, YES, \"getBatteryMaximumCapacityPercent\")) %init(MSBHCapacity);' && fn 'static void MSBHTryInit(void) {' $B | grep -q 'else if (MSBHHas(resource, YES, \"getBatteryMaximumCapacityPercentWithError:\")) %init(MSBHCapacity18);' && fn 'static void MSBHTryInit(void) {' $B | grep -q 'if (MSBHHas(resource, YES, \"isQMaxUnknown\")) %init(MSBHQMax);' && fn 'static void MSBHTryInit(void) {' $B | grep -q 'if (MSBHHas(health, NO, \"setUpChargingOptionsSpecifiers\")) %init(MSBHNoSmartCharging17);' && fn 'static void MSBHTryInit(void) {' $B | grep -q 'else if (MSBHHas(health, NO, \"smartChargingGroupSpecifier\")) %init(MSBHNoSmartCharging15);' && fn 'static void MSBHTryInit(void) {' $B | grep -q 'if (MSBHHas(health, NO, \"cleanEnergyChargingGroupSpecifier\")) %init(MSBHNoCleanEnergy);'"
 check "  ... and nothing at all on a page we do not know (no row builder, no isiPhone)" \
-  "fn 'static void MSBHTryInit(void) {' $B | grep -q 'if ((!gate15 && !gate17) || !MSBHHas(modeling, YES, \"isiPhone\")) { MSBHLog(@\"no row builder or isiPhone: Apple.s page untouched\"); return; }'"
-check "another battery health tweak loaded in Settings: nothing installed, the page is that tweak's" \
-  "fn 'static void MSBHTryInit(void) {' $B | grep -q 'if (MSBHOtherTweakLoaded()) { MSBHLog(@\"another battery health tweak is loaded: its page, nothing installed\"); return; }' && grep -q 'return MSBDTweakPresent(\"BatteryHealthEnabler\", YES);' $B"
+  "fn 'static void MSBHTryInit(void) {' $B | grep -q 'if ((!gate15 && !gate17) || !MSBHHas(modeling, YES, \"isiPhone\")) { gMSBHVerdict = 1; MSBHLog(@\"no row builder or isiPhone: Apple.s page untouched\"); return; }'"
+check "another battery health tweak loaded in Settings: everything installed all the same, the page is ours (KT, 1.7.9: no step-aside)" \
+  "fn 'static void MSBHTryInit(void) {' $B | tr -d '\\n' | grep -q 'done = YES;    BOOL gate15 = ' && ! grep -q -i 'MSBDTweakPresent\\|OtherTweakLoaded\\|OtherTweaks.h' $B"
 check "iPhone features left out: Peak Performance, Optimized Battery Charging (15/16 switch, 17/18 options), Clean Energy Charging" \
   "fn '- (id)peakPowerCapacityGroupSpecifier {' $B | grep -q '    return @\[\];' && fn '- (id)smartChargingGroupSpecifier {' $B | grep -q '    return @\[\];' && fn '- (id)setUpChargingOptionsSpecifiers {' $B | grep -q '    return @\[\];' && fn '- (id)cleanEnergyChargingGroupSpecifier {' $B | grep -q '    return @\[\];'"
 check "Cycle Count row under Maximum Capacity, read through a getter added to Apple's page class (stock title-value cell)" \

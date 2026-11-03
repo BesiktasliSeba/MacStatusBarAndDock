@@ -44,6 +44,7 @@ target finder pref com.besiktasliseba.macstatusbar finderEnabled 0 1 Finder|Find
 target showFinder pref com.besiktasliseba.dockmagnification showFinder 0 1 Show Finder in Dock|Finder in the Dock
 target showTrash pref com.besiktasliseba.dockmagnification showTrash 0 0 Show Trash in Dock|the Dock's Trash
 target wifiMenu pref com.besiktasliseba.macstatusbar wifiMenu 0 1 Wi-Fi Menu|the Wi-Fi menu
+target batteryMenu pref com.besiktasliseba.macstatusbar batteryMenu 0 1 Battery Menu|the battery menu
 target desktopIcons pref com.besiktasliseba.macstatusbar desktopIcons 0 1 Show Desktop Icons|the desktop
 target runningIndicator pref com.besiktasliseba.dockrunningindicator enabled 0 1 Show Indicators for Open Apps|the open-app indicators
 target macSwitcher pref com.besiktasliseba.macstatusbar macSwitcher 0 0 Mac Switcher|the Mac Switcher
@@ -116,7 +117,7 @@ file MacStatusBarCore ^DockTrash\.h$ showTrash
 # a drive's eject (DriveEject.h, 1.7.3: the sidebar's Eject button, File > Eject, the drives' menus, the bin's eject) is Finder's
 file MacStatusBarCore ^DriveEject\.h$ finder
 file MacStatusBarCore ^(Finder|NativeWindow)\.h$ finder
-# the text window (TextWindow.h) is Finder's; the desktop (Desktop.h, DesktopPlace.h, DesktopNames.h) and the Wi-Fi menu (WiFiMenu.h) have their
+# the text window (TextWindow.h) is Finder's; the desktop (Desktop.h, DesktopPlace.h, DesktopNames.h, DesktopCorner.h) and the Wi-Fi menu (WiFiMenu.h) have their
 # own switches (DesktopNames.h's functions under the Desktop.h rule: they may all be inlined, and a rule that matches nothing stops the build)
 file MacStatusBarCore ^TextWindow\.h$ finder
 # Activity Monitor in the App Library (AppLibraryApps.h: its icon's methods, the App Library's category and search hooks): its own switch; in the
@@ -124,13 +125,17 @@ file MacStatusBarCore ^TextWindow\.h$ finder
 sym MacStatusBarCore ^_*DMAL[A-Z] actmonLibrary
 file MacStatusBarCore ^AppLibraryApps\.h$ actmonLibrary
 file MacStatusBarCore ^ActMonDock\.h$ actmonLibrary
-# its picture as an app icon an icon theme can change (common/IconTheme.h, 1.7.5 item 7: in this library only Activity Monitor uses it)
+# its picture as an app icon an icon theme can change (common/IconTheme.h, 1.7.5 item 7: in this library Activity Monitor's; the desktop's corner
+# reading, 1.7.9 item 4, only makes one more such icon with it -- its own drawing and reading are DesktopCorner.h's, the desktop's)
 file MacStatusBarCore ^IconTheme\.h$ actmonLibrary
 sym MacStatusBarCore ^_?DMDesktop[A-Z] desktopIcons
-file MacStatusBarCore ^Desktop(Names)?\.h$ desktopIcons
+file MacStatusBarCore ^Desktop(Names|Corner)?\.h$ desktopIcons
 file MacStatusBarCore ^DesktopPlace\.h$ desktopIcons
 sym MacStatusBarCore ^_?DMWiFi[A-Z] wifiMenu
 file MacStatusBarCore ^WiFiMenu\.h$ wifiMenu
+# the battery menu and the Control Center icon (BatteryMenu.h, 1.7.9): Battery Menu's switch -- off, the battery is iOS's again and the icon goes
+sym MacStatusBarCore ^_*DMBatt[A-Z] batteryMenu
+file MacStatusBarCore ^BatteryMenu\.h$ batteryMenu
 # Spotlight (statusbar/SpotlightFiles.x): the tweak settings part (its own functions, its PreferenceLoader watcher, the shared index / donation headers), then the files part
 sym MacStatusBarCore ^_*SF(Tweak|WatchTweaks) spotlightTweakSettings
 file MacStatusBarCore ^Tweak(Index|Spotlight)\.h$ spotlightTweakSettings

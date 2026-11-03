@@ -742,6 +742,32 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
+			<string>The battery in the status bar opens a battery menu, and the Control Center icon next to the clock opens Control Center, like on a Mac.</string>
+			<key>id</key>
+			<string>BATTERY_MENU_GROUP</string>
+			<key>stockHides</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>BATTERY_MENU</string>
+			<key>key</key>
+			<string>batteryMenu</string>
+			<key>label</key>
+			<string>Battery Menu</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
 			<string>Skipping the Lock Screen only works when no passcode is set.</string>
 			<key>id</key>
 			<string>LOCK_GROUP</string>

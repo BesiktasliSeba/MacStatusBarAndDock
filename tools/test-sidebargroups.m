@@ -32,6 +32,19 @@ static NSArray *Ids(NSString *s) { return [s componentsSeparatedByString:@" "]; 
     [self.specifiers removeObjectAtIndex:at];
 }
 @end
+// (1.7.9: Settings' main list with the Apple Account row its loading queue fills in -- -_appleAccountSpecifier: the plan never reads that row)
+@interface FakeFilledSpec : FakeSpec
+@property (nonatomic) int reads;
+@end
+@implementation FakeFilledSpec
+- (NSString *)identifier { self.reads++; return [super identifier]; }
+@end
+@interface FakeRootList : FakeList
+@property (nonatomic, strong) id filled;
+@end
+@implementation FakeRootList
+- (id)_appleAccountSpecifier { return self.filled; }
+@end
 static FakeList *List(NSArray *ids) {
     FakeList *l = [FakeList new]; l.specifiers = [NSMutableArray array];
     for (NSString *i in ids) { FakeSpec *sp = [FakeSpec new]; sp.identifier = i; [l.specifiers addObject:sp]; }
@@ -78,6 +91,17 @@ int main(void) {
                 FakeSpec *r = [FakeSpec new]; r.identifier = @(kMSSGGroups[g].ident); return r;
             }, nil);
             Check(made == 1 && [IdsOf(l) isEqualToArray:Ids(@"G MAC_NOTIFICATIONS_SOUNDS DO_NOT_DISTURB X")], [NSString stringWithFormat:@"a row gone meanwhile: %@ (%lu made)", [IdsOf(l) componentsJoinedByString:@" "], (unsigned long)made]);
+        }
+        // the Apple Account row Settings fills in on its loading queue (1.7.9, 17.5.1 crash): never read, the groups made as before
+        {
+            FakeRootList *l = [FakeRootList new]; l.specifiers = [NSMutableArray array];
+            for (NSString *i in Ids(@"PRIMARY_APPLE_ACCOUNT_GROUP APPLE_ACCOUNT NOTIFICATIONS_GROUP_ID NOTIFICATIONS_ID Sounds DO_NOT_DISTURB SCREEN_TIME GENERAL_GROUP General")) {
+                FakeSpec *sp = [i isEqualToString:@"APPLE_ACCOUNT"] ? [FakeFilledSpec new] : [FakeSpec new]; sp.identifier = i; [l.specifiers addObject:sp];
+            }
+            FakeFilledSpec *acct = (FakeFilledSpec *)l.specifiers[1]; l.filled = acct;
+            NSUInteger made = MSSGApplyPlan(l, ^id(int g, NSArray *members) { FakeSpec *r = [FakeSpec new]; r.identifier = @(kMSSGGroups[g].ident); return r; }, nil);
+            Check(made == 2 && acct.reads == 0, [NSString stringWithFormat:@"the row Settings fills in is never read: %d reads, %lu groups made", acct.reads, (unsigned long)made]);
+            Check([IdsOf(l) isEqualToArray:Ids(@"PRIMARY_APPLE_ACCOUNT_GROUP APPLE_ACCOUNT NOTIFICATIONS_GROUP_ID MAC_NOTIFICATIONS_SOUNDS MAC_FOCUS_SCREEN_TIME GENERAL_GROUP General")], @"... and it stays where it is");
         }
         // a group with one of its rows missing stays as Apple has it (Screen Time not there: Focus alone)
         NSArray *noST = Apply(Ids(@"NOTIFICATIONS_GROUP_ID NOTIFICATIONS_ID Sounds DO_NOT_DISTURB GENERAL_GROUP General"));

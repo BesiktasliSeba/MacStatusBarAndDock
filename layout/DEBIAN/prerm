@@ -2,6 +2,10 @@
 # MacStatusBar&Dock prerm: the root helper is stopped first (so it cannot re-apply anything meanwhile). On removal (not on an upgrade) everything we
 # changed is given back: the window engines' own settings, our Choicy entries, the engines renamed for iCleaner Pro.
 /var/jb/usr/bin/launchctl unload /var/jb/Library/LaunchDaemons/com.besiktasliseba.sshtoggled.plist 2>/dev/null
+# Keep Tailspin Off's false in Apple's com.apple.da goes on every way out of this version, an upgrade or a downgrade too: an older version knows
+# nothing of it and left it there for good (a downgrade, then a removal: code review). The version that follows writes it again within seconds of
+# its postinst starting the helper, where its switch is on. Not on failed-upgrade: dpkg runs that while the helper on disk is the old version's.
+case "$1" in remove|purge|upgrade|deconfigure) [ -x /var/jb/usr/libexec/sshtoggled ] && /var/jb/usr/libexec/sshtoggled --tailspin-giveback "$1" ;; esac
 if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
     [ -x /var/jb/usr/libexec/sshtoggled ] && /var/jb/usr/libexec/sshtoggled --uninstall
 fi

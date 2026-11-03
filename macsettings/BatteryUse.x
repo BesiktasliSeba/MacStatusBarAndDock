@@ -5,7 +5,7 @@
 //    is gone (a SpringBoard that died with its start-up assertion: common/SleepGuard.h).
 //  - iPad Can't Sleep (a status row): only while one is stuck and the guard will not or could not clear it -- its reason as the value.
 // The page asks the helper for a fresh look when it builds the group with an old state (MSBD_SG_CHECK) and is rebuilt when the helper has written
-// a new one while the page shows (MSBD_SG_UPDATED). Like BatteryHealth.x: nothing here while another battery health tweak owns the page.
+// a new one while the page shows (MSBD_SG_UPDATED). With another battery health tweak too, as BatteryHealth.x: neither enabler adds a group there.
 // A group of our own put into the page's list by its own -specifiers (the page builds every group in code there, 15-18), not one of Apple's
 // group builders: the Charging group of the Charge Limit's job stays its own code.
 #import <UIKit/UIKit.h>
@@ -14,7 +14,6 @@
 #import <mach-o/dyld.h>
 #import <unistd.h>
 #import "../common/SleepGuard.h"
-#import "../common/OtherTweaks.h"   // (MSBDTweakPresent)
 
 #define MSBD_SG_CHECK   "com.besiktasliseba.sleepguard.check"
 #define MSBD_SG_UPDATED "com.besiktasliseba.sleepguard.updated"
@@ -53,8 +52,12 @@ static NSArray *MSBUSpecifiers(UIViewController *page) {
     if (time(NULL) - [st[@"checked"] doubleValue] > 60) notify_post(MSBD_SG_CHECK);   // (an old state: the helper looks; MSBD_SG_UPDATED rebuilds)
     PSSpecifier *g = [PSSpecifier groupSpecifierWithName:@"Battery Use"];
     [g setIdentifier:@"MSBD_BATTERY_USE_GROUP"];
-    NSMutableString *foot = [@"Lets iPad sleep with the screen off when a task left over from a restart would keep it awake. "
-                             "MacStatusBar&Dock also pauses its own clocks and checks while the screen is off." mutableCopy];
+    // (KT, 1.7.9: the footer says what it saves -- deep sleep, the processor, the battery -- not only what it does)
+    NSMutableString *foot = [@"Sometimes a process that has already quit, such as SpringBoard before a respring, leaves behind a request that keeps "
+                             "iPad awake. iPad then can't go into deep sleep with the screen off: the processor keeps running and the battery "
+                             "drains much faster than it does asleep, on some iPads by over 10% a day. Sleep Guard clears that leftover request when the screen goes off, so iPad "
+                             "sleeps and keeps its charge. It never acts while the screen is on or while something real keeps iPad awake, "
+                             "such as music, a download or a backup. MacStatusBar&Dock also pauses its own timers while the screen is off." mutableCopy];
     double cleared = [st[@"lastClear"] doubleValue];
     if (cleared > 0) [foot appendFormat:@" Last cleared %@.", [NSDateFormatter localizedStringFromDate:[NSDate dateWithTimeIntervalSince1970:cleared]
                                                                                               dateStyle:NSDateFormatterShortStyle timeStyle:NSDateFormatterShortStyle]];
@@ -110,13 +113,17 @@ static BOOL MSBUHasGroup(NSArray *specs) {
 %end
 %end
 
+// What the check below decided (1.7.9, for the Settings search: common/OwnPageState.h): 0 not yet (Apple's battery pages not loaded in this
+// process), 1 a page we do not know -- our group is not put in --, 2 our group goes into the page.
+static int gMSBUVerdict = 0;
+__attribute__((visibility("hidden"))) int MSBUGroupVerdict(void) { return gMSBUVerdict; }   // (TweakSearch.x)
 static void MSBUTryInit(void) {
     static BOOL done; if (done) return;
     Class health = objc_getClass("BatteryHealthUIController");
     if (!health) return;
     done = YES;
-    if (MSBDTweakPresent("BatteryHealthEnabler", YES)) return;   // (another battery health tweak owns the page: as BatteryHealth.x)
-    if (!class_getInstanceMethod(health, @selector(specifiers)) || !class_getInstanceVariable(health, "_specifiers")) return;   // (a page we do not know)
+    if (!class_getInstanceMethod(health, @selector(specifiers)) || !class_getInstanceVariable(health, "_specifiers")) { gMSBUVerdict = 1; return; }   // (a page we do not know)
+    gMSBUVerdict = 2;
     class_addMethod(health, sel_registerName("msbdCantSleepValue:"), (IMP)MSBUCantSleepGetter, "@24@0:8@16");
     int t = 0;
     notify_register_dispatch(MSBD_SG_UPDATED, &t, dispatch_get_main_queue(), ^(int tok) {

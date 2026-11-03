@@ -4,6 +4,7 @@
 // Top-Left Key as Escape (GraveEscape), Tab mutes (TabMute), Globe volume keys (VolumeGlobe) and the brightness keys (BrightnessKey). Each keeps its own
 // preference domain and its own "prefsChanged" notification, so every switch applies at once, with no respring. All are off for a new install.
 #import <UIKit/UIKit.h>
+#import "../common/MainListRows.h"   // (the sidebar read through it: never the row Settings fills in on its own queue, 1.7.9)
 #import <notify.h>
 #import <dlfcn.h>
 #import <objc/runtime.h>
@@ -203,16 +204,14 @@ void MSKeyboardWatchSidebar(PSListController *sidebar) {
     static __weak PSListController *gSidebar;
     gSidebar = sidebar;
     // (a keyboard attached or detached before this list was watched: the row follows now, once -- as the Pointer row, PointerSettings.x)
-    BOOL shown = NO;
-    for (PSSpecifier *sp in [sidebar specifiers]) if ([[sp identifier] isEqualToString:kKeyboardRowID]) { shown = YES; break; }
+    BOOL shown = MSBDMLIndexOf(MSBDMLIdentifiers(sidebar, [sidebar specifiers]), kKeyboardRowID, NO) != NSNotFound;
     if (sidebar && shown != MSKeyboardAttached()) dispatch_async(dispatch_get_main_queue(), ^{ PSListController *l = gSidebar; if (l) MSReloadSidebarKeepingScroll(l); });
     static int token = 0;
     if (token) return;
     notify_register_dispatch(MSBD_KEYBOARD_CHANGED, &token, dispatch_get_main_queue(), ^(int t) {
         PSListController *l = gSidebar;
         if (!l) return;
-        BOOL shown = NO;
-        for (PSSpecifier *sp in [l specifiers]) if ([[sp identifier] isEqualToString:kKeyboardRowID]) { shown = YES; break; }
+        BOOL shown = MSBDMLIndexOf(MSBDMLIdentifiers(l, [l specifiers]), kKeyboardRowID, NO) != NSNotFound;
         if (shown != MSKeyboardAttached()) MSReloadSidebarKeepingScroll(l);
     });
 }
