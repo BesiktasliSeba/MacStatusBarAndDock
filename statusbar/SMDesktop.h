@@ -353,6 +353,63 @@ static BOOL DMSMCardWriteDesk(id ctx, NSArray<NSArray *> *asked, NSArray<NSDicti
     DMLog([NSString stringWithFormat:@"[smcards] %@'s card: %@ instead of that window alone -- %@", DMSMKeyText(tapped), what, why]);
     return YES;
 }
+// -[SpringBoard launchApplicationWithIdentifier:suspended:] -- the call other tweaks' launchers make (GitHub #10: InstaLauncher 2) -- asks for the
+// app alone: an entity of it in role 1, nothing else in the context, no activating window (16.3.1 read; 17.5.1 the same). For an app whose window is
+// on the desktop that is the window's activation, and SpringBoard left it where it was in the order: behind a window covering it (17.5.1). It comes
+// to the front, as a launch with an activating window does (StatusBar.x DMSMJoinBringsForward): the desktop's whole stage, every window in its place
+// and this one in front (SMDeskJoin.h DMSMDeskCardPlan, as a card's tap), frontmost and activating. Only a plain one: one window of the desktop asked
+// for, no flags, not a switcher gesture's or the App Switcher's; a window in front already is left as SpringBoard built it.
+static BOOL DMSMJoinActivatesWindow(id ctx, NSArray<NSArray *> *asked, NSArray<NSDictionary *> *askedW, NSArray<NSArray *> *wins, int flags, id label, id identity) {
+    if (flags || asked.count != 1 || askedW.count != 1 || DMSMGestureCtx(ctx) || DMTestFlag("/tmp/msb-sm-launch-asbuilt")) return NO;
+    if ([label isKindOfClass:[NSString class]] && ([label hasSuffix:@"FluidSwitcherGestureAction"] || DMSMIsCardDismissLabel(label))) return NO;
+    SEL actS = NSSelectorFromString(@"activatingEntity");
+    if ([ctx respondsToSelector:actS] && DMSMSigOK(ctx, actS, DMSMSigObj(), "activatingEntity") && ((id (*)(id, SEL))objc_msgSend)(ctx, actS)) return NO;   // (SpringBoard's own launch shape: the launch join's)
+    NSString *k = askedW.firstObject[@"w"];
+    id askedE = asked.firstObject[1];
+    NSMutableArray<NSDictionary *> *deskW = [NSMutableArray array];
+    NSMutableDictionary<NSString *, NSArray *> *deskItem = [NSMutableDictionary dictionary];
+    long long times[64]; int n = 0, at = -1;
+    for (NSArray *w in wins) {
+        NSString *b = DMSMItemBundle(w[1]), *wk = w[3];
+        long long r = 0, t = 0;
+        if (!b.length || !wk.length || !DMSMStageRoleOfItem(w[0], w[1], &r) || !DMSMAttrLastInteractionTime(w[2], &t) || n >= 64) return NO;   // (unreadable: as built)
+        [deskW addObject:@{@"w": wk, @"b": b, @"r": @(r), @"t": @(t)}];
+        if (!deskItem[wk]) deskItem[wk] = w;
+        if (!deskItem[b] || t > DMSMAttrTimeOr(deskItem[b][2], 0)) deskItem[b] = w;   // (by app: the app's newest)
+        if (at < 0 && (DMSMKeyCovers(k, wk) || DMSMKeyCovers(wk, k))) at = n;
+        times[n++] = t;
+    }
+    if (at < 0) return NO;   // (not a window of the desktop: it joins it the usual way)
+    long long newest = 0; for (int i = 0; i < n; i++) newest = MAX(newest, times[i]);
+    if (MSBDSMNewestAlone(times, n, at)) { DMLog([NSString stringWithFormat:@"[smjoin] %@ asked for alone: in front already -- left as SpringBoard built it", DMSMKeyText(k)]); return NO; }
+    NSString *why = nil;
+    NSArray<NSArray *> *decision = DMSMDeskCardPlan(deskW, askedW, 0, &why);
+    if (!decision) return NO;
+    NSMutableArray<NSArray *> *plan = [NSMutableArray array];
+    id frontEntity = nil;
+    for (NSArray *d in decision) {
+        NSArray *w = deskItem[d[0]];
+        BOOL front = [d[2] boolValue];
+        id e = front && DMSMIsEntity(askedE) ? askedE : (w ? DMSMEntityForStageItem(w[0], w[1]) : nil), a = w[2];   // (the window asked for: SpringBoard's own entity of it)
+        if (front) { a = DMSMAttrWithLastInteractionTime(a, newest + 1); frontEntity = e; }
+        if (!e || !a) return NO;
+        [plan addObject:@[e, d[1], a]];
+    }
+    NSArray<NSArray *> *toWrite = DMSMPlanFitted(identity, plan);
+    NSString *bad = nil;
+    if (!frontEntity || !DMSMPlanValid(toWrite, nil, &bad)) { DMSMAPIFail(@"a window asked for alone (to the front of its desktop)", [NSString stringWithFormat:@"plan refused, left as SpringBoard built it (%@)", bad ?: @"no window in front"]); return NO; }
+    if (!DMSMCtxCanWrite(ctx)) return NO;
+    SEL setE = NSSelectorFromString(@"setEntity:forLayoutRole:");
+    void (^putBack)(void) = ^{ for (NSArray *a in asked) @try { ((void (*)(id, SEL, id, long long))objc_msgSend)(ctx, setE, a[1], [a[0] longLongValue]); } @catch (id y) {} };
+    @try { for (NSArray *a in asked) ((void (*)(id, SEL, id, long long))objc_msgSend)(ctx, setE, nil, [a[0] longLongValue]); }
+    @catch (NSException *x) { putBack(); DMSMAPIFail(@"a window asked for alone: unsetting SpringBoard's role", [NSString stringWithFormat:@"%@: put back", x.reason ?: @"exception"]); return NO; }
+    if (!DMSMWritePlan(ctx, toWrite, frontEntity)) { putBack(); DMLog([NSString stringWithFormat:@"[smjoin] %@ asked for alone: writing its desktop failed, SpringBoard's role put back", DMSMKeyText(k)]); return NO; }
+    DMSMCtxMarkActivating(ctx, frontEntity);   // (as Stage Manager's own bring-to-front names it: the activating window too)
+    DMSMCtxClearOtherRoles(ctx, toWrite);   // (the desktop's whole stage: nothing else comes with it)
+    DM_FEATURE_MARK("sm-launch-alone-brings-forward");
+    DMLog([NSString stringWithFormat:@"[smjoin] %@ asked for alone (%@): the desktop instead, that window in front -- %@", DMSMKeyText(k), [label isKindOfClass:[NSString class]] ? label : @"no label", why]);
+    return YES;
+}
 static BOOL DMSMJoinWindowCard(id ctx, NSArray<NSArray *> *asked, NSArray<NSDictionary *> *askedW, NSArray<NSArray *> *wins, int flags, id label, id identity) {
     NSString *tapped = flags ? nil : DMSMCardTapOf(askedW, label);
     return tapped && DMSMCardWriteDesk(ctx, asked, askedW, wins, identity, tapped, @"the desktop on screen");
@@ -473,6 +530,7 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
         if (!deskItem[b] || t > DMSMAttrTimeOr(deskItem[b][2], 0)) deskItem[b] = w;
     }
     if (DMSMJoinWindowCard(ctx, asked, askedW, wins, flags, label0, identity)) return;   // (one card per window: SMCards.h -- a window of the desktop)
+    if (DMSMJoinActivatesWindow(ctx, asked, askedW, wins, flags, label0, identity)) return;   // (a window of the desktop asked for alone: to the front, GitHub #10)
     NSString *why = nil;
     NSArray<NSArray *> *decision = DMSMDeskJoinPlan(deskW, askedW, flags, &why);
     // (which of SpringBoard's paths built it, for the log: the request's event label and source -- "DismissSwitcherNoninteractive" is the App

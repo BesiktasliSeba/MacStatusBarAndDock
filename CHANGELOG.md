@@ -2,6 +2,12 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.7.9.2
+
+### Fixes
+- Stage Manager engine: a drag on a window no longer resizes a smaller window behind it.
+- Stage Manager engine: apps opened from other launchers, links or Spotlight bring their window to the front, as the Dock does.
+
 ## 1.7.9.1
 
 ### Fixes

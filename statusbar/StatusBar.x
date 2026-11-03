@@ -1885,6 +1885,7 @@ static DMEngine DMActiveEngine(void) {
 #include "SMFit.h"         // (where a Stage Manager window may go: sizes in points of their own reference, fitted into the desktop, 3 Oct; Mac test tools/test-smfit.sh)
 #include "SMHomeRule.h"    // (the Home rule and the desktop choice, plain Foundation: sm-free 4 Oct, 1.3.8 logic test fixes; Mac test tools/test-smhomerule.sh)
 #include "SMSwitchOn.h"    // (when and how the engine switches Stage Manager on: unlocked only, Apple's first-time path only if no key says it was on; Mac test tools/test-smswitchon.sh)
+#include "SMFrontRule.h"   // (which window a finger's resize corner and a launch are for: covered spots, in front = newest alone; plain C, Mac test tools/test-smfront.sh)
 #include "JailbreakInfo.h"   // (which jailbreak runs, from its marker: About This iPad, the Shut Down question; plain Foundation, Mac test tools/test-jbinfo.sh)
 // ---- Stage Manager as the engine (iPadOS 16+, 2026-09-28, branch stage-manager) ----
 // Picked as "stagemanager" in Settings > Window Engine: Apple's own Stage Manager does the windowing (natively on M1/M2 iPads, through TrollPad on
@@ -24715,6 +24716,60 @@ static NSString *DMSMDebugStrips(NSString **verdict, BOOL coarse) {
 static id DMBarSizeObjectOf(id o, const char *name);   // (Menu Bar Size's battery: the battinfo trigger)
 static double DMBarSizeBatteryScale(id battery);
 #endif
+// ---- debug: a launch's transition context write by write (ctxtrace_<s>, GitHub #10 follow-up): which of SpringBoard's builders names the window it
+// activates, and where -- the activating window, the roles, a context of its own -- each with the object's address, so the finalize line (the
+// launch join's [smctx]) can be matched. Hooks go in at the first use and only log, while the time asked for runs.
+static CFTimeInterval gCtxTraceUntil = 0;
+static void (*o_CTSetAct)(id, SEL, id), (*o_CTSetRole)(id, SEL, id, long long), (*o_CTSetAppCtx)(id, SEL, id), (*o_CTModify)(id, SEL, id), (*o_CTFront)(id, SEL, id);
+static void (*o_CTActivateWE)(id, SEL, id, id, id, id);
+static NSString *DMCtxTraceName(id e) {
+    if (!e) return @"nil";
+    SEL ap = NSSelectorFromString(@"application");
+    id app = [e respondsToSelector:ap] ? ((id (*)(id, SEL))objc_msgSend)(e, ap) : nil;
+    id b = [app respondsToSelector:@selector(bundleIdentifier)] ? [app bundleIdentifier] : nil;
+    return b ? [NSString stringWithFormat:@"%@ (%p)", b, e] : [NSString stringWithFormat:@"%@ %p", NSStringFromClass([e class]), e];
+}
+static BOOL DMCtxTraceOn(void) { return CACurrentMediaTime() < gCtxTraceUntil; }
+static void h_CTSetAct(id self, SEL _cmd, id e) { if (DMCtxTraceOn()) DMLog([NSString stringWithFormat:@"[ctxtrace] context %p setActivatingEntity: %@", self, DMCtxTraceName(e)]); o_CTSetAct(self, _cmd, e); }
+static void h_CTSetRole(id self, SEL _cmd, id e, long long r) { if (DMCtxTraceOn()) DMLog([NSString stringWithFormat:@"[ctxtrace] context %p setEntity: %@ forLayoutRole: %lld", self, DMCtxTraceName(e), r]); o_CTSetRole(self, _cmd, e, r); }
+static void h_CTFront(id self, SEL _cmd, id e) { if (DMCtxTraceOn()) DMLog([NSString stringWithFormat:@"[ctxtrace] context %p _setRequestedFrontmostEntity: %@", self, DMCtxTraceName(e)]); o_CTFront(self, _cmd, e); }
+static void h_CTSetAppCtx(id self, SEL _cmd, id c) { if (DMCtxTraceOn()) DMLog([NSString stringWithFormat:@"[ctxtrace] request %p (%@) setApplicationContext: %p", self, NSStringFromClass([self class]), c]); o_CTSetAppCtx(self, _cmd, c); }
+static void h_CTModify(id self, SEL _cmd, id block) {
+    if (DMCtxTraceOn()) DMLog([NSString stringWithFormat:@"[ctxtrace] request %p (%@) modifyApplicationContext: begins", self, NSStringFromClass([self class])]);
+    o_CTModify(self, _cmd, block);
+    if (DMCtxTraceOn()) DMLog([NSString stringWithFormat:@"[ctxtrace] request %p modifyApplicationContext: done", self]);
+}
+static void h_CTActivateWE(id self, SEL _cmd, id entity, id icon, id location, id validator) {   // (-[SBUIController _activateWorkspaceEntity:fromIcon:location:validator:])
+    if (DMCtxTraceOn()) {
+        SEL d = NSSelectorFromString(@"deviceApplicationSceneEntity");
+        id dev = [entity respondsToSelector:d] ? ((id (*)(id, SEL))objc_msgSend)(entity, d) : nil;
+        DMLog([NSString stringWithFormat:@"[ctxtrace] SBUIController activates entity %@ (its device scene entity %@), icon %@, location %@, validator %@", DMCtxTraceName(entity), DMCtxTraceName(dev), icon ? NSStringFromClass([icon class]) : @"nil", location ?: @"nil", validator ? @"yes" : @"no"]);
+    }
+    o_CTActivateWE(self, _cmd, entity, icon, location, validator);
+}
+static void DMCtxTraceFor(double s) {
+    static BOOL hooked = NO;
+    if (!hooked) {
+        hooked = YES;
+        Class c = objc_getClass("SBWorkspaceApplicationSceneTransitionContext"), r = objc_getClass("SBWorkspaceTransitionRequest");
+        struct { Class k; const char *sel; IMP h; IMP *o; const char *enc; } t[] = {
+            { c, "setActivatingEntity:", (IMP)h_CTSetAct, (IMP *)&o_CTSetAct, "v24@0:8@16" },
+            { c, "setEntity:forLayoutRole:", (IMP)h_CTSetRole, (IMP *)&o_CTSetRole, "v32@0:8@16q24" },
+            { c, "_setRequestedFrontmostEntity:", (IMP)h_CTFront, (IMP *)&o_CTFront, "v24@0:8@16" },
+            { r, "setApplicationContext:", (IMP)h_CTSetAppCtx, (IMP *)&o_CTSetAppCtx, "v24@0:8@16" },
+            { r, "modifyApplicationContext:", (IMP)h_CTModify, (IMP *)&o_CTModify, "v24@0:8@?16" },
+            { objc_getClass("SBUIController"), "_activateWorkspaceEntity:fromIcon:location:validator:", (IMP)h_CTActivateWE, (IMP *)&o_CTActivateWE, "v48@0:8@16@24@32@?40" },
+        };
+        for (size_t i = 0; i < sizeof t / sizeof t[0]; i++) {
+            Method m = t[i].k ? class_getInstanceMethod(t[i].k, sel_registerName(t[i].sel)) : NULL;
+            const char *enc = m ? method_getTypeEncoding(m) : NULL;
+            if (!enc || strcmp(enc, t[i].enc)) { DMLog([NSString stringWithFormat:@"[ctxtrace] %s: %s -- not traced", t[i].sel, enc ?: "missing"]); continue; }
+            MSHookMessageEx(t[i].k, sel_registerName(t[i].sel), t[i].h, t[i].o);
+        }
+    }
+    gCtxTraceUntil = CACurrentMediaTime() + MAX(1.0, MIN(s, 120.0));
+    DMLog([NSString stringWithFormat:@"[ctxtrace] on for %.0f s", MAX(1.0, MIN(s, 120.0))]);
+}
 static void DMRunTrigger(NSString *cmd) {
     if ([cmd hasPrefix:@"seq:"]) {
         for (NSString *part in [[cmd substringFromIndex:4] componentsSeparatedByString:@";"]) {
@@ -29685,6 +29740,60 @@ static void DMRunTrigger(NSString *cmd) {
             DMLog([NSString stringWithFormat:@"[launchtime] %@: opened %d, %.3f s after the ask (SpringBoard's process before: %d)", bid, ok, CACurrentMediaTime() - t0, pid]);
         });
     }
+    else if ([cmd hasPrefix:@"launchvia_"]) {   // launchvia_<how>_<bundle or url>: open an app through one of the ways other launchers do (GitHub #10, a launcher tweak):
+        // ls (LaunchServices -openApplicationWithBundleID:), fbs (FrontBoard's FBSOpenApplicationService), sbapp (-[SpringBoard
+        // launchApplicationWithIdentifier:suspended:]), sbui / sbuiicon (-[SBUIController activateApplication:fromIcon:location:activationSettings:actions:],
+        // without an icon / with the app's icon at the Home Screen), icon (-[SBIcon launchFromLocation:context:], the icon's own launch without its view's tap), url (-[UIApplication
+        // openURL:options:completionHandler:] in SpringBoard) -- never our menus' or the Dock's own paths
+        NSString *rest = [cmd substringFromIndex:10];
+        NSRange us = [rest rangeOfString:@"_"];
+        NSString *how = us.location != NSNotFound ? [rest substringToIndex:us.location] : rest, *what = us.location != NSNotFound ? [rest substringFromIndex:us.location + 1] : @"";
+        id app = what.length ? ((id (*)(id, SEL, id))objc_msgSend)(DMCall(objc_getClass("SBApplicationController"), @"sharedInstance"), NSSelectorFromString(@"applicationWithBundleIdentifier:"), what) : nil;
+        if ([how isEqualToString:@"ls"]) dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            LSApplicationWorkspace *ws = [objc_getClass("LSApplicationWorkspace") defaultWorkspace];
+            BOOL ok = [ws respondsToSelector:@selector(openApplicationWithBundleID:)] && [ws openApplicationWithBundleID:what];
+            DMLog([NSString stringWithFormat:@"[launchvia] ls %@: %d", what, ok]);
+        });
+        else if ([how isEqualToString:@"fbs"]) dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            Class c = objc_getClass("FBSOpenApplicationService");
+            SEL mk = NSSelectorFromString(@"serviceWithDefaultShellEndpoint"), open = NSSelectorFromString(@"openApplication:withOptions:completion:");
+            id svc = [c respondsToSelector:mk] ? ((id (*)(id, SEL))objc_msgSend)(c, mk) : nil;
+            if (![svc respondsToSelector:open]) { DMLog(@"[launchvia] fbs: no FBSOpenApplicationService here"); return; }
+            ((void (*)(id, SEL, id, id, id))objc_msgSend)(svc, open, what, nil, ^(id process, NSError *err) { DMLog([NSString stringWithFormat:@"[launchvia] fbs %@: process %@ error %@", what, process ? @"yes" : @"no", err.localizedDescription ?: @"none"]); });
+        });
+        else if ([how isEqualToString:@"sbapp"]) {
+            SEL l = NSSelectorFromString(@"launchApplicationWithIdentifier:suspended:");
+            id sb = [UIApplication sharedApplication];
+            BOOL ok = [sb respondsToSelector:l] && ((BOOL (*)(id, SEL, id, BOOL))objc_msgSend)(sb, l, what, NO);
+            DMLog([NSString stringWithFormat:@"[launchvia] sbapp %@: %d", what, ok]);
+        }
+        else if ([how isEqualToString:@"sbui"] || [how isEqualToString:@"sbuiicon"]) {   // (sbuiicon: with the app's icon and the Home Screen as the location, as a launcher passes them)
+            id ui = DMCall(objc_getClass("SBUIController"), @"sharedInstance");
+            SEL a = NSSelectorFromString(@"activateApplication:fromIcon:location:activationSettings:actions:");
+            BOOL can = app && [ui respondsToSelector:a] && DMSMSigOK(ui, a, DMSMExpect(@encode(void), @encode(id), @encode(id), @encode(id), @encode(id), @encode(id), NULL), "activateApplication:fromIcon:location:activationSettings:actions:");
+            id icon = nil;
+            if ([how isEqualToString:@"sbuiicon"]) {
+                id model = DMCall(DMCall(DMCall(objc_getClass("SBIconController"), @"sharedInstance"), @"iconManager"), @"iconModel");
+                SEL ai = NSSelectorFromString(@"applicationIconForBundleIdentifier:");
+                icon = [model respondsToSelector:ai] ? ((id (*)(id, SEL, id))objc_msgSend)(model, ai, what) : nil;
+            }
+            if (can) ((void (*)(id, SEL, id, id, id, id, id))objc_msgSend)(ui, a, app, icon, icon ? @"SBIconLocationRoot" : nil, nil, nil);
+            DMLog([NSString stringWithFormat:@"[launchvia] %@ %@: %@", how, what, can ? (icon || [how isEqualToString:@"sbui"] ? @"asked" : @"asked, no icon found") : @"not here (app or method)"]);
+        }
+        else if ([how isEqualToString:@"icon"]) {
+            id model = DMCall(DMCall(DMCall(objc_getClass("SBIconController"), @"sharedInstance"), @"iconManager"), @"iconModel");
+            SEL ai = NSSelectorFromString(@"applicationIconForBundleIdentifier:"), lf = NSSelectorFromString(@"launchFromLocation:context:");
+            id icon = [model respondsToSelector:ai] ? ((id (*)(id, SEL, id))objc_msgSend)(model, ai, what) : nil;
+            if ([icon respondsToSelector:lf]) ((void (*)(id, SEL, id, id))objc_msgSend)(icon, lf, @"SBIconLocationRoot", nil);
+            DMLog([NSString stringWithFormat:@"[launchvia] icon %@: %@", what, [icon respondsToSelector:lf] ? @"asked" : @"no icon"]);
+        }
+        else if ([how isEqualToString:@"url"]) {
+            NSURL *u = [NSURL URLWithString:what];
+            if (u) [[UIApplication sharedApplication] openURL:u options:@{} completionHandler:^(BOOL ok) { DMLog([NSString stringWithFormat:@"[launchvia] url %@: %d", what, ok]); }];
+            else DMLog(@"[launchvia] url: not a URL");
+        }
+        else DMLog([NSString stringWithFormat:@"[launchvia] %@: unknown way (ls, fbs, sbapp, sbui, sbuiicon, icon, url)", how]);
+    }
     else if ([cmd isEqualToString:@"windowedstate"]) {   // windowedstate: the toggles and the windows
         DMLog([NSString stringWithFormat:@"[debug] windowedstate: engine %d, open as windows %d, fit %d, aerial toggle %d, stages %lu, front %@, level %.1f alpha %.2f hidden %d", (int)DMActiveEngine(), DMWindowedLaunchOn(), DMFitEnabled(), DMAerialToggleOn(), (unsigned long)DMAerialStages().count, [DMFrontApp() bundleIdentifier], DMWindowLayer().windowLevel, DMWindowLayer().alpha, DMWindowLayer().hidden]);
         for (UIView *st in DMAerialStages()) DMLog([NSString stringWithFormat:@"[debug]   stage %@ frame %@ hidden %d alpha %.2f minimized %d", DMStageBundle(st), NSStringFromCGRect(st.frame), st.hidden, st.alpha, DMStageMinimized(st)]);
@@ -29759,6 +29868,39 @@ static void DMRunTrigger(NSString *cmd) {
     }
     else if ([cmd hasPrefix:@"symbolize_"]) {   // symbolize_<hex>_<hex>...: name the Objective-C method each code address is in (nearest method start in its image) -- read-only
         for (NSString *hex in [[cmd substringFromIndex:10] componentsSeparatedByString:@"_"]) DMSymbolize(strtoull(hex.UTF8String, NULL, 16));
+    }
+    else if ([cmd hasPrefix:@"ctxtrace_"]) DMCtxTraceFor([[cmd substringFromIndex:9] doubleValue]);   // ctxtrace_<s>: for <s> seconds, every write of a launch's transition context (activating window, roles, requests) with the context's address -- read-only
+    else if ([cmd hasPrefix:@"blscan_"]) {   // blscan_<image name suffix>_<hex offset>: every b / bl in that image's code to that offset (an objc_msgSend$<selector> stub, a function),
+        // each named by the method it is in (as symbolize_) -- who calls a method, for reading a disassembly; read-only
+        NSArray *q = [[cmd substringFromIndex:7] componentsSeparatedByString:@"_"];
+        if (q.count < 2) return;
+        const struct mach_header_64 *mh = NULL;
+        for (uint32_t i = 0; i < _dyld_image_count() && !mh; i++) {
+            const char *n = _dyld_get_image_name(i);
+            if (n && [[NSString stringWithUTF8String:n] hasSuffix:[@"/" stringByAppendingString:q[0]]]) mh = (const struct mach_header_64 *)_dyld_get_image_header(i);
+        }
+        if (!mh || mh->magic != MH_MAGIC_64) { DMLog(@"[blscan] image not found"); return; }
+        const uint32_t *text = NULL; unsigned long size = 0;
+        const struct load_command *lc = (const struct load_command *)(mh + 1);
+        for (uint32_t i = 0; i < mh->ncmds && !text; i++, lc = (const struct load_command *)((const char *)lc + lc->cmdsize)) {
+            if (lc->cmd != LC_SEGMENT_64 || strcmp(((const struct segment_command_64 *)lc)->segname, "__TEXT")) continue;
+            const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+            const struct section_64 *sec = (const struct section_64 *)(seg + 1);
+            for (uint32_t j = 0; j < seg->nsects; j++) if (!strcmp(sec[j].sectname, "__text")) { text = (const uint32_t *)((uintptr_t)mh + (uintptr_t)(sec[j].addr - seg->vmaddr)); size = (unsigned long)sec[j].size; }
+        }
+        uintptr_t target = (uintptr_t)mh + (uintptr_t)strtoull([q[1] UTF8String], NULL, 16);
+        int hits = 0;
+        for (unsigned long i = 0; text && i < size / 4 && hits < 60; i++) {
+            uint32_t ins = text[i];
+            if ((ins & 0x7C000000) != 0x14000000) continue;   // (b / bl)
+            int64_t imm = ins & 0x3FFFFFF; if (imm & (1 << 25)) imm -= (1 << 26);
+            uintptr_t pc = (uintptr_t)&text[i];
+            if (pc + (uintptr_t)(imm * 4) != target) continue;
+            hits++;
+            DMLog([NSString stringWithFormat:@"[blscan] %s at 0x%lx", (ins & 0x80000000) ? "bl" : "b", (unsigned long)(pc - (uintptr_t)mh)]);
+            DMSymbolize(pc);
+        }
+        DMLog([NSString stringWithFormat:@"[blscan] %d call(s) of 0x%@ found (code %lu bytes)", hits, q[1], size]);
     }
     else if ([cmd hasPrefix:@"methodhunt_"]) {   // methodhunt_<Class>_<keyword>: the methods (instance and class) of a class and its superclasses whose name contains the keyword
         NSArray *q = [[cmd substringFromIndex:11] componentsSeparatedByString:@"_"];
@@ -38717,15 +38859,28 @@ static NSString *DMSMCardBundle(UIView *card) {   // "card:<bundle id>:<scene id
     NSArray *p = [ident componentsSeparatedByString:@":"];
     return p.count > 1 ? p[1] : nil;
 }
+// A window of the stage (map: its items' attributes) is in front: newer than every other window there (SMFrontRule.h MSBDSMNewestAlone -- a tie is
+// not in front: iPadOS 16.3.1 can leave two windows at one interaction time, and the stage keeps their old order then). newest: the stage's newest
+// time (a time that can't be read counts as 0, as before). NO when the window is not in the map.
+static BOOL DMSMItemInFront(NSDictionary *map, id item, long long *newest) {
+    long long times[64]; int n = 0, at = -1;
+    for (id it in map) {
+        if (n >= 64) break;
+        if (it == item || [it isEqual:item]) at = n;
+        times[n++] = DMSMAttrTimeOr(map[it], 0);
+    }
+    long long top = 0; for (int i = 0; i < n; i++) top = MAX(top, times[i]);
+    if (newest) *newest = top;
+    return MSBDSMNewestAlone(times, n, at);
+}
 static void DMSMBringToFront(NSString *key) {   // (newest interaction time in the stage -> in front, keyboard focus with it)
     if (DMGARefuses(@"a window brought forward")) return;   // (Guided Access keeps the iPad in one app: logic test 6 Oct, a played session)
     id stage = DMSMStageOf(key), attrs = nil;   // (its own stage, on whichever display)
     id item = DMSMItemFor(stage, key, &attrs);
     if (!item) return;
     NSDictionary *map = DMSMStageItemsMap(stage);
-    long long newest = 0; for (id it in map) newest = MAX(newest, DMSMAttrTimeOr(map[it], 0));
-    long long mine = 0;
-    if (!DMSMAttrLastInteractionTime(attrs, &mine) || mine >= newest) return;
+    long long newest = 0, mine = 0;
+    if (!DMSMAttrLastInteractionTime(attrs, &mine) || DMSMItemInFront(map, item, &newest)) return;   // (in front already, alone)
     // As Stage Manager brings a window forward itself -- a tap on it, a resize, a drag (-[SBFluidSwitcherViewController
     // appLayoutByBringingItemToFront:inAppLayout:] and -[SBMainSwitcherControllerCoordinator _configureRequest:forSwitcherTransitionRequest:
     // withEventLabel:], 16.3.1 read): the whole stage asked for, every window in its role with its own interaction time, this one with the newest
@@ -39836,6 +39991,43 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
 static void DMSMRepairRoles(id ctx);   // (SMLimit.h: one window, one role -- a window never in two roles of one layout state)
 static NSString *DMSMRemovingNow(void);   // (below SMLimit.h: the window our own Minimize is taking out, while its transition is due)
 static void DMSMPlacesInMinimize(id ctx, NSString *removedId);   // (below SMLimit.h: the windows left keep their own places in that transition)
+// An app whose window is on the desktop opened again some other way than its icon -- another tweak's launcher, Spotlight, a link, a notification,
+// our menus (LaunchServices), FrontBoard's open service, -[SBUIController activateApplication:...] (16.3.1 read): every one of them is a launch
+// SpringBoard builds with that window as the activating entity and no layout roles, and all of them meet here (-[SpringBoard
+// launchApplicationWithIdentifier:suspended:] names the app alone in role 1 instead: SMDesktop.h DMSMJoinActivatesWindow). Its window comes to the front, as a Dock
+// tap brings it (DMSMAddToStage -> DMSMBringToFront): left as SpringBoard built it, iPadOS 16.3.1 could give two windows one interaction time and
+// keep their old order, so the covered window stayed behind (GitHub #10, after 1.7.9.1: the Dock brought it forward, InstaLauncher 2 did not). So
+// the launch names the desktop's whole stage, every window in its role with its own time and this one at the newest + 1, frontmost -- the order the
+// Dock's tap asks for (DMSMRequestStageOrderAs), here in SpringBoard's own launch: one transition. A window in front already (newer than all the
+// others) and a stage a switcher gesture holds are left as SpringBoard built them; a window or role that can't be read leaves the whole launch as it was.
+static void DMSMJoinBringsForward(id ctx, id act, id mine, id desk, NSDictionary *map, id identity, BOOL held) {
+    NSString *key = DMSMItemKey(mine) ?: @"?";
+    long long newest = 0;
+    if (DMSMItemInFront(map, mine, &newest)) { DMLog([NSString stringWithFormat:@"[smjoin] %@: already on the desktop, in front", DMSMKeyText(key)]); return; }
+    if (held || DMTestFlag("/tmp/msb-sm-launch-asbuilt")) { DMLog([NSString stringWithFormat:@"[smjoin] %@: already on the desktop, behind -- left as SpringBoard built it (%@)", DMSMKeyText(key), held ? @"a switcher gesture holds the stage" : @"debug"]); return; }
+    NSMutableArray<NSArray *> *plan = [NSMutableArray array];
+    for (id it in map) {
+        long long role = 0;
+        if (!DMSMStageRoleOfItem(desk, it, &role) || role <= 0) return;
+        BOOL me = it == mine || [it isEqual:mine];
+        id e = me ? act : DMSMEntityForStageItem(desk, it);   // (the launch's own entity for its window: its activation settings stay with it)
+        id a = me ? DMSMAttrWithLastInteractionTime(map[it], newest + 1) : map[it];
+        if (!e || !a) return;
+        [plan addObject:@[e, @(role), a]];
+    }
+    NSArray<NSArray *> *toWrite = DMSMPlanFitted(identity, plan);
+    NSString *why = nil;
+    if (!DMSMPlanValid(toWrite, nil, &why)) { DMSMAPIFail(@"bringing a launched window forward", [NSString stringWithFormat:@"%@: plan refused, context left as it was (%@)", DMSMKeyText(key), why]); return; }
+    if (!DMSMWritePlan(ctx, toWrite, act)) { DMLog([NSString stringWithFormat:@"[smjoin] %@: writing the order failed, context emptied again (SpringBoard's own launch)", DMSMKeyText(key)]); return; }
+    {   // (the desktop and nothing else, as a launch's join leaves it: the roles of the desktop stage's own windows stay, every other one is emptied)
+        NSMutableSet<NSNumber *> *keep = [NSMutableSet set];
+        BOOL readAll = YES;
+        for (id it in DMSMStageItemsMap(desk)) { long long r = 0; if (DMSMStageRoleOfItem(desk, it, &r)) [keep addObject:@(r)]; else readAll = NO; }
+        if (readAll) DMSMCtxClearRolesExcept(ctx, toWrite, keep);
+    }
+    DM_FEATURE_MARK("sm-launch-brings-forward");
+    DMLog([NSString stringWithFormat:@"[smjoin] %@: already on the desktop, behind -- the launch brings it to the front (%lu windows, %lld)", DMSMKeyText(key), (unsigned long)toWrite.count, newest + 1]);
+}
 static void DMSMJoinDesktop(id ctx) {
     DM_FEATURE_MARK("sm-join-desktop");
     // (a Guided Access session: SpringBoard's transitions stay as Guided Access has them -- it limits the layout to the session's app, and joining
@@ -39881,6 +40073,20 @@ static void DMSMJoinDesktop(id ctx) {
         NSMutableArray *rs = [NSMutableArray array];
         for (NSArray *a in asked) { id e = a[1]; NSString *b = DMSMIsEntity(e) ? DMCall(DMCall(e, @"application"), @"bundleIdentifier") : NSStringFromClass([e class]); [rs addObject:[NSString stringWithFormat:@"%@ %@", a[0], b]]; }
         DMLog([NSString stringWithFormat:@"[smctx] activating %@: label %@, source %lld, roles {%@}", DMSMIsEntity(act0) ? DMCall(DMCall(act0, @"application"), @"bundleIdentifier") : (act0 ? NSStringFromClass([act0 class]) : @"none"), [label isKindOfClass:[NSString class]] ? label : @"none", source, [rs componentsJoinedByString:@", "]]);
+        // (GitHub #10: what a launch that names no activating window and no role holds instead -- the "requested" entities SpringBoard's own
+        //  builders can fill, read-only)
+        if (!act0 && !asked.count) {
+            NSString *(^nm)(id) = ^NSString *(id e) { return !e ? @"-" : (DMSMIsEntity(e) ? [NSString stringWithFormat:@"%@", DMCall(DMCall(e, @"application"), @"bundleIdentifier")] : NSStringFromClass([e class])); };
+            NSMutableArray *req2 = [NSMutableArray array];
+            SEL rr = NSSelectorFromString(@"requestedWorkspaceEntityForLayoutRole:");
+            if ([ctx respondsToSelector:rr] && DMSMSigOK(ctx, rr, DMSMSigObjLong(), "requestedWorkspaceEntityForLayoutRole:"))
+                for (long long r = 1; r <= 9; r++) { id e = ((id (*)(id, SEL, long long))objc_msgSend)(ctx, rr, r); if (e) [req2 addObject:[NSString stringWithFormat:@"%lld %@", r, nm(e)]]; }
+            id ra = [ctx respondsToSelector:NSSelectorFromString(@"requestedActivatingWorkspaceEntity")] ? DMCall(ctx, @"requestedActivatingWorkspaceEntity") : nil;
+            id attrs = [ctx respondsToSelector:NSSelectorFromString(@"requestedEntityIdentifierToLayoutAttributes")] ? DMCall(ctx, @"requestedEntityIdentifierToLayoutAttributes") : nil;
+            id appCtx = [req respondsToSelector:NSSelectorFromString(@"applicationContext")] ? DMCall(req, @"applicationContext") : nil;
+            DMLog([NSString stringWithFormat:@"[smctx]   requested roles {%@}, requested activating %@, attributes for %@, request %@ (its context %@)", [req2 componentsJoinedByString:@", "], nm(ra),
+                [attrs isKindOfClass:[NSDictionary class]] ? [[(NSDictionary *)attrs allKeys] componentsJoinedByString:@", "] : @"-", NSStringFromClass([req class]), appCtx == ctx ? @"this one" : (appCtx ? @"another" : @"none")]);
+        }
     }
 #endif
     if (asked.count) { DMSMJoinStageAsked(ctx, asked); return; }
@@ -39931,7 +40137,7 @@ static void DMSMJoinDesktop(id ctx) {
         BOOL appThere = NO;
         for (id it in map) {   // (already on the desktop -- that very window, or the app when windows are told apart by app: Stage Manager brings it forward)
             NSString *k = DMSMItemKey(it);
-            if (DMSMKeyCovers(key, k) || DMSMKeyCovers(k, key)) { DMLog([NSString stringWithFormat:@"[smjoin] %@: already on the desktop", DMSMKeyText(key)]); return; }
+            if (DMSMKeyCovers(key, k) || DMSMKeyCovers(k, key)) { DMSMJoinBringsForward(ctx, act, it, desk, map, identity, held); return; }   // (to the front, as a Dock tap brings it)
             if ([DMSMItemBundle(it) isEqualToString:bundle]) appThere = YES;
         }
         if (appThere) DM_FEATURE_MARK("sm-second-window-joins");   // (another window of an app on the desktop: it joins, M-2)
@@ -40518,6 +40724,9 @@ static void DMSMReapplyGrabbers(UIView *card) {   // (Settings > Resize Handles 
 %hook SBWorkspaceApplicationSceneTransitionContext
 - (void)finalize {
     id me = self;
+#if DEBUG
+    if (DMCtxTraceOn()) DMLog([NSString stringWithFormat:@"[ctxtrace] context %p finalize: activating %@", me, DMCtxTraceName([me respondsToSelector:NSSelectorFromString(@"activatingEntity")] ? DMCall(me, @"activatingEntity") : nil)]);
+#endif
     // (a switcher gesture's own transition: the stage it comes from is held until the gesture's transition is over -- SMGestureHold.h)
     BOOL gesture = DMSMFree() && DMSMGestureCtx(me);
     if (gesture) DMSMGestureHold(DMSMStageShownBefore(me));
@@ -41478,6 +41687,7 @@ static void DMSMSelfCheck(void) {
         DMSMAfterHomeInstall();     // (optional: the last window's stage taken out once the Home transition is over, SMAfterHome.h -- else 0.6 s after)
         DMSMCardsInstall();         // (optional: one App Switcher card per window, SMCards.h -- else a desktop of several windows is one card, as Apple has it)
         DMSMEdgesInstall();         // (optional: the top resize zone at our title bar's outer edge, SMResizeEdges.h -- else at the content's edge, as Apple has it)
+        DMSMTouchCornersInstall();  // (optional: a finger's resize corner only where no window in front covers it, SMResizeEdges.h -- else Apple's nearest corner)
         DMNativeSysGesturesInit();  // (Stage Manager's window drag leaves a drag on our title bar to the bar, 1.7.4 item 13 -- the hook Finder's windows use)
         DMSMResizeAnchorInstall(gSMLayoutGen);   // (optional: a corner drag keeps the opposite corner, SMResizeAnchor.h -- else 16 resizes around the centre)
 #if DEBUG

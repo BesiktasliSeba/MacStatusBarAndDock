@@ -14,9 +14,11 @@
 //   corners are at the bar's outer edge (5 pt into the bar) and the bar's sides resize sideways; never over our traffic lights (their buttons are
 //   theirs); the content's top edge is inside the window again. Our bar's own drag takes no pointer press while the pointer marks a resize band, so
 //   the live resize takes it (a finger still moves the window).
-//   Front to back (item 9): a window's zones answer only where no window in front of it covers the spot (DMSMEdgesCoveredBy, below).
+//   Front to back (item 9): a window's zones answer only where no window in front of it covers the spot (DMSMEdgesCoveredBy, below). The same
+//   for a FINGER's corner (1.7.9.2, GitHub #10: DMSMTouchCornersInstall, below).
 //   Capability-checked: all three of Apple's methods with the signatures written for, else the zones stay Apple's (logged once).
 #pragma once
+#include "SMFrontRule.h"
 
 static BOOL gSMEdgesHooked = NO;
 static CGFloat gSMEdgesGrow = 0;   // (while a page with our bar answers a pointer request: how far the window's top is above its content)
@@ -164,4 +166,76 @@ static void DMSMEdgesInstall(void) {
     MSHookMessageEx(object_getClass((id)helper), sh, (IMP)DMSMEdgesHelper, (IMP *)&o_SMEdgesHelper);
     gSMEdgesHooked = o_SMEdgesInsets && o_SMEdgesBegin && o_SMEdgesHelper;
     DMLog(gSMEdgesHooked ? @"[smengine] a window's top resize zone is at the title bar's outer edge (pointer)" : @"[smengine] the window-edge resize hooks did not all go in");
+}
+// ---- a finger's resize corner (1.7.9.2, GitHub #10) ----
+// Stage Manager's finger resize (-[SBFluidSwitcherGestureManager _shouldLiveResizeItemContainerGestureWithTouch:receiveTouch:], read on 16.3.1
+// 20D67 and 17.5.1) asks the switcher for the window whose CORNER is nearest the finger (-[SBFluidSwitcherViewController _itemContainerNearestLocation:
+// environment:prioritizeForegroundedItemContainers:]: the windows on screen sorted by the finger's distance to their nearest corner, the first one)
+// and takes the touch when the finger is in that window's corner zone (a square of 50 pt and the screen edge padding, 10 pt in from the corner); the
+// resize's own begin (-[SBLiveWindowResizeGestureWorkspaceTransaction _beginWithGesture:]) and its gesture's gates ask the same, and nothing else
+// does (16.3.1, 17.5.1). Which window the finger is ON is not asked: only the windows Stage Manager marks occluded in its stage are passed over
+// (-isOccludedInContinuousExposeStage, with "prioritize foregrounded"), and Stage Manager's own layout keeps a window's corners out from under the
+// others. Ours places windows freely, so a
+// small window behind a big one keeps its corners under it: a drag on the big window there resized the small one, which jumped to the front (GitHub
+// #10, iPad Air 5 16.3.1; the same on 17.5.1). While the switcher looks for that window, a window covered at the finger by a window in front of it
+// counts as occluded: Apple's own rule passes over it, and the nearest corner of the windows the finger can reach there is the one asked -- the window
+// in front keeps every zone of its own, a back window's corner that shows still takes the finger, a touch on the front window is that window's.
+// Optional: both methods with the signatures written for, else Apple's pick (logged once). Debug /tmp/msb-corners-anyorder: Apple's pick, to compare.
+static struct { BOOL on; __unsafe_unretained UIView *space; CGPoint at; } gSMNearAsk;
+// The card is covered at `at` (in space's points) by a window card in front of it, as drawn: the card and our title bar above it.
+static BOOL DMSMCardCoveredAt(UIView *card, CGPoint at, UIView *space) {
+    if (!card.window || !space || !isfinite(at.x) || !isfinite(at.y)) return NO;
+    CGRect fronts[32]; int n = 0;
+    for (UIView *other in gSMCards.allObjects) {
+        if (n >= 32) break;
+        if (other == card || other.window != card.window || !DMSMViewShown(other) || !DMSMViewInFrontOf(other, card)) continue;   // (StatusBar.x: shown on screen)
+        CGRect r = [other convertRect:other.bounds toView:space];
+        UIView *bar = objc_getAssociatedObject(other, kSMBarKey);
+        if (bar && !bar.hidden && bar.alpha >= 0.01 && [bar isDescendantOfView:other]) r = CGRectUnion(r, [bar convertRect:bar.bounds toView:space]);
+        fronts[n++] = r;
+    }
+    return MSBDSMCoveredAt(at, fronts, n);
+}
+static id (*o_SMNearest)(id, SEL, CGPoint, long long, BOOL);
+static id DMSMNearest(id self, SEL _cmd, CGPoint at, long long env, BOOL fore) {
+    if (!fore || gSMNearAsk.on || !DMSMFree() || ![self isKindOfClass:[UIViewController class]] || ![(UIViewController *)self isViewLoaded]) return o_SMNearest(self, _cmd, at, env, fore);
+#if DEBUG
+    if (DMTestFlag("/tmp/msb-corners-anyorder")) return o_SMNearest(self, _cmd, at, env, fore);
+#endif
+    gSMNearAsk.on = YES; gSMNearAsk.space = [(UIViewController *)self view]; gSMNearAsk.at = at;
+    id r = nil;
+    @try { r = o_SMNearest(self, _cmd, at, env, fore); }
+    @finally { gSMNearAsk.on = NO; gSMNearAsk.space = nil; }
+#if DEBUG
+    if (DMTestFlag("/tmp/msb-edgesdebug")) DMLog([NSString stringWithFormat:@"[edges] finger at %@: the nearest corner's window %@", NSStringFromCGPoint(at), [r isKindOfClass:[UIView class]] ? (DMSMCardKey((UIView *)r) ?: @"(no key)") : @"none"]);
+#endif
+    return r;
+}
+static BOOL (*o_SMOccluded)(id, SEL);
+static BOOL DMSMOccluded(id self, SEL _cmd) {
+    BOOL r = o_SMOccluded(self, _cmd);
+    if (r || !gSMNearAsk.on || ![self isKindOfClass:[UIView class]] || !DMSMCardCoveredAt((UIView *)self, gSMNearAsk.at, gSMNearAsk.space)) return r;
+    DM_FEATURE_MARK("sm-touch-corner-front-to-back");
+#if DEBUG
+    if (DMTestFlag("/tmp/msb-edgesdebug")) DMLog([NSString stringWithFormat:@"[edges] finger at %@: %@ is covered there -- its corners are passed over", NSStringFromCGPoint(gSMNearAsk.at), DMSMCardKey((UIView *)self) ?: @"a window"]);
+#endif
+    return YES;
+}
+static void DMSMTouchCornersInstall(void) {
+    static BOOL done = NO;
+    if (done) return;
+    done = YES;
+    Class vc = objc_getClass("SBFluidSwitcherViewController"), ic = objc_getClass("SBFluidSwitcherItemContainer");
+    SEL sn = sel_registerName("_itemContainerNearestLocation:environment:prioritizeForegroundedItemContainers:"), so = sel_registerName("isOccludedInContinuousExposeStage");
+    Method mn = vc ? class_getInstanceMethod(vc, sn) : NULL, mo = ic ? class_getInstanceMethod(ic, so) : NULL;
+    BOOL ok = mn && mo
+           && [DMSMSigOfMethod(mn) isEqualToString:DMSMExpect(@encode(id), @encode(CGPoint), @encode(long long), @encode(BOOL), NULL)]
+           && [DMSMSigOfMethod(mo) isEqualToString:DMSMExpect(@encode(BOOL), NULL)];
+    if (!ok) {
+        DMLog([NSString stringWithFormat:@"[smengine] a finger's resize corner is not looked for as expected here (nearest %d, occluded %d): a covered window's corner keeps Apple's pick", mn != NULL, mo != NULL]);
+        return;
+    }
+    MSHookMessageEx(vc, sn, (IMP)DMSMNearest, (IMP *)&o_SMNearest);
+    MSHookMessageEx(ic, so, (IMP)DMSMOccluded, (IMP *)&o_SMOccluded);
+    DMLog(o_SMNearest && o_SMOccluded ? @"[smengine] a finger's resize corner: only where no window in front covers it" : @"[smengine] the finger's resize corner hooks did not all go in");
 }
