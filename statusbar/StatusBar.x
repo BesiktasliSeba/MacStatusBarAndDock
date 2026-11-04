@@ -744,7 +744,15 @@ static NSString *DMBoolStr(id obj, NSString *name) {
 // asked once SpringBoard has made the Control Center window on its own (our SBControlCenterWindow hook sets gCCWindowSeen); before that the answer is
 // simply "not active".
 static BOOL gCCWindowSeen = NO;
-static id DMControlCenterController(void) { return MSBDControlCenterController(); }   // (15-17: the shared instance; 18: the main scene's, CCController.h)
+static id DMControlCenterController(void) {   // (15-17: the shared instance as SpringBoard made it, never made by us; 18: the main scene's -- CCController.h)
+#if DEBUG
+    if (DMTestFlag("/tmp/msb-ccquery-asbuilt")) {   // (debug: +sharedInstance, which makes it when it is not there, as before 1.8.0.1)
+        Class c = objc_getClass("SBControlCenterController"); SEL s = NSSelectorFromString(@"sharedInstance");
+        if (c && [(id)c respondsToSelector:s]) return ((id (*)(id, SEL))objc_msgSend)((id)c, s);
+    }
+#endif
+    return MSBDControlCenterController();
+}
 static BOOL DMControlCenterActive(void) {
     if (!gCCWindowSeen) return NO;
     id cc = DMControlCenterController();
@@ -1744,7 +1752,21 @@ static BOOL DMSBIs(NSString *name, const char *uikitName) { return [name isEqual
 static unsigned gSBItemHooks;   // (diagnostics: which item hook groups went on -- 1 VPN badge, 2 activity spinner, 4 pill, 8 pill 17+, 16 Wi-Fi item)
 // For windows only (nothing of ours is called on them): either family's status bar window.
 static BOOL DMSBIsBarWindowName(NSString *name) { return [name isEqualToString:@"UIStatusBarWindow"] || (DMSBUseSTUI() && [name isEqualToString:DMSBName("UIStatusBarWindow")]); }
-static BOOL DMStarting(void) { static BOOL over = NO; if (over) return NO; if (DMProcessAge() >= 8.0) { over = YES; return NO; } return YES; }
+// SpringBoard is still starting: the first 8 s after our constructor ran (1.8.0.1). It was the process's age from its exec, and a SpringBoard
+// spawned while the one before it was still going (an install's respring) ran its tweaks' constructors 10.4 s after that: everything that waits for
+// the start took SpringBoard for up from our first line, and our Control Center asked SpringBoard to make its controller before SpringBoard's
+// launch had made what that needs -- SpringBoard went down at its start (iPad 2 16.7.7, ElleKit's Safe Mode after it). Our constructor runs in
+// SpringBoard's own start, before its launch, however late that is. Debug /tmp/msb-starting-asbuilt: the process's age, as before.
+static CFTimeInterval gDMLoadedAt = 0;   // (our constructor's first line, CACurrentMediaTime: set in %ctor)
+static BOOL DMStarting(void) {
+    static BOOL over = NO;
+    if (over) return NO;
+#if DEBUG
+    if (DMTestFlag("/tmp/msb-starting-asbuilt")) { if (DMProcessAge() >= 8.0) { over = YES; return NO; } return YES; }
+#endif
+    if (gDMLoadedAt > 0 && CACurrentMediaTime() - gDMLoadedAt >= 8.0) { over = YES; return NO; }
+    return YES;
+}
 static BOOL DMAerialCompatible(void) {
     if (gAerialFlavor >= 0) return gAerialFlavor != 0;
     Class stage = objc_getClass("AerialStage");
@@ -42310,6 +42332,13 @@ void DMSMRunAction(UIAction *action, id sender) {
     if (h) h(action);
 }
 %ctor {
+#if DEBUG
+    {   // (debug /tmp/msb-slowstart, its seconds: this constructor runs that much later, as in a SpringBoard whose tweaks load late -- 1.8.0.1)
+        double late = [[NSString stringWithContentsOfFile:@"/tmp/msb-slowstart" encoding:NSUTF8StringEncoding error:nil] doubleValue];
+        if (late > 0 && late <= 15) { DMLog([NSString stringWithFormat:@"[start] debug: the constructor waits %.1f s (a late start; SpringBoard is %.1f s old)", late, DMProcessAge()]); usleep((useconds_t)(late * 1e6)); }
+    }
+#endif
+    gDMLoadedAt = CACurrentMediaTime();   // (SpringBoard is starting from here on: DMStarting)
 #if DEBUG
     DMTestFlagTurnsInit();   // (the test switches' look-once-per-turn, above)
 #endif

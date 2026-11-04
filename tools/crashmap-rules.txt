@@ -144,8 +144,9 @@ file MacStatusBarCore ^WiFiMenu\.h$ wifiMenu
 # the tick, RAM & CPU's add and the menus alike, so a crash under one of them (in Apple's +sharedInstance or a getter) is its caller's: transparent,
 # the caller one frame lower decides. (1.8.0~i11, M1: +[SBControlCenterController sharedInstance] entered again trapped under these three, on top of
 # our Control Center's sensor update, and the guard took Stock status bar mode instead of Control Center Style. In a release build
-# MSBDControlCenterController is inlined into DMControlCenterController, and into the Dock's one caller: the Dock goes as a whole either way.)
-sym MacStatusBarCore ^_?(MSBDControlCenterController|DMControlCenterController|DMControlCenterActive|DMCCTypes|DMCCGet|DMCCIvarOf)$ transparent
+# MSBDControlCenterController is inlined into DMControlCenterController, and into the Dock's one caller: the Dock goes as a whole either way.
+# 1.8.0.1: its way of asking, common/SBShared.h's MSBDSB..., the same.)
+sym MacStatusBarCore ^_?(MSBDControlCenterController|MSBDSBClassMethodIs|MSBDSBSharedIfExists|MSBDSBSharedIfExistsDepth|DMControlCenterController|DMControlCenterActive|DMCCTypes|DMCCGet|DMCCIvarOf)$ transparent
 # "is a hardware keyboard attached?" (DMHardwareKeyboardAttached and its once-only block: GraphicsServices' own flag) the same way: asked by the
 # keyboard pill, the window engines' keyboard code, the desktop's keys, the Wi-Fi menu, the menus' key rows, the Stage Manager desktop -- a crash
 # under it is its caller's. It sits at the end of the turn's section, whose rule (Windowing, 1.8.0) took it there (code review 1.8.0)

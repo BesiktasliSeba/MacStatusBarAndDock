@@ -2,6 +2,11 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.0.1
+
+### Fixes
+- With Control Center Style set to Mac, SpringBoard could crash and drop into Safe Mode at a slow start, most likely right after an install. It no longer does.
+
 ## 1.8.0
 
 ### New
