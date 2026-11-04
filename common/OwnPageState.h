@@ -10,6 +10,7 @@
 #import "DesktopCheck.h"            // (MSBDDesktopVerdict, MSBDFocusLockVerdict)
 #import "EngineBuilds.h"            // (MSBDEngineFileTested, MSBDDefaultEngine)
 #import "StageManagerAvailable.h"   // (MSBDStageManagerEngineUsable)
+#import "CCStyleNow.h"              // (MSBDCCStyleNow: the Control Center Style the page shows, 1.8.0)
 
 #define kMSBDOwnBarDomain CFSTR("com.besiktasliseba.macstatusbar")
 // "Status Bar Style: Stock" as stored (stockStatusBar, a boolean; off unless set): the stockHides groups go, on every page of ours.
@@ -27,12 +28,6 @@ static inline BOOL MSBDFinderStored(void) {
     BOOL on = !v || (CFGetTypeID(v) == CFBooleanGetTypeID() ? CFBooleanGetValue(v) : (CFGetTypeID(v) == CFNumberGetTypeID() ? [(__bridge NSNumber *)v boolValue] : YES));
     if (v) CFRelease(v);
     return on;
-}
-// BigSurCenter installed (its library in either tweak folder): Control Center's size only resizes its own drop-down panel.
-static inline BOOL MSBDBigSurCenterInstalled(void) {
-    for (NSString *dir in @[@"/var/jb/usr/lib/TweakInject", @"/var/jb/Library/MobileSubstrate/DynamicLibraries"])
-        if ([[NSFileManager defaultManager] fileExistsAtPath:[dir stringByAppendingPathComponent:@"BigSurCenter.dylib"]]) return YES;
-    return NO;
 }
 // iPadOS 18+ where SpringBoard's typed keyboard focus lock failed its check on this build (StatusBar.x DMFocusLock18OK): no Mac Switcher, no
 // Wi-Fi Menu, no desktop. And the desktop's own check (17+, DesktopCheck.h).
@@ -112,7 +107,7 @@ static inline MSBDOwnPages MSBDOwnPagesNow(void) {
     s.barLine = MSBDLineEnabled(@"MacStatusBar");
     s.dockLine = MSBDLineEnabled(@"MacDock");
     s.finder = MSBDFinderStored();
-    s.bigSurCenter = MSBDBigSurCenterInstalled();
+    s.ccStyle = MSBDCCStyleNow(YES);
     s.focus18Failed = MSBDFocusLock18Failed();
     s.desktopFailed = MSBDDesktopRowsFailed();
     NSString *engine = MSBDEngineShownWithoutRow();

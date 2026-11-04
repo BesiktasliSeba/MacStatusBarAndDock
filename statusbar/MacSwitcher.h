@@ -13,7 +13,6 @@
 // Every private call goes through a checked wrapper (class, selector and type encoding); a mismatch keeps the feature off.
 
 #include "MSWSlideMath.h"   // (the slide's arithmetic: the spring, its speed, the slot a taken slide goes to -- plain C, tools/test-mswslide.sh)
-#include "MSWHoldRule.h"    // (the hold that opens the view from a swipe up: rests of the fingers -- plain C, tools/test-mswhold.sh)
 #include "MSWKept.h"        // (the desktops kept while it is off and what of them comes back -- plain Foundation, tools/test-mswkept.sh)
 #include "MSWAppDesk.h"     // (where an app opens when its windows are on other desktops -- plain Foundation, tools/test-mswappdesk.sh)
 static BOOL gMSWOn = NO;                 // the switch is on, the iPadOS has what it needs (DMMSWOSOK), and the self-check passed
@@ -1164,8 +1163,8 @@ static void DMMSWApply(void) {
 //  again when it came; seen with a full-screen app dragged onto another desktop, 4 Oct)
 // Its window, if it has one, is left as it is while the engine takes it out (DMMSWApply: an away one stays hidden -- with the record gone the tick
 // took the dying window for a new one of the current desktop and showed it there for 0.2-1 s, 7 Oct).
-// A desktop's Fit to Window arrangement without app b; nil when b had no part in it. Its tiles close up as when a tiled window closes -- two or
-// more take the default tiles, one fills (DMFitPlanAfterLeave). Aerial / Zetsu / MilkyWay4: group, slots, free by app. A Stage Manager desktop's
+// A desktop's Fit to Window arrangement without app b; nil when b had no part in it. Its tiles close up as when a tiled window closes -- one fills,
+// the others keep their places (FitPlan.h MSBDFitPlanKeepingPlaces). Aerial / Zetsu / MilkyWay4: group, slots, free by app. A Stage Manager desktop's
 // arrangement (smslots / smfree, by window key) is the engine's own Fit tick's: one that no longer covers its windows is laid out the default way
 // when the desktop comes -- left as it is.
 static NSDictionary *DMMSWFitWithout(NSDictionary *fit, NSString *b) {
@@ -1176,7 +1175,7 @@ static NSDictionary *DMMSWFitWithout(NSDictionary *fit, NSString *b) {
     if ([group containsObject:b]) {
         NSMutableArray *left = [NSMutableArray array];
         for (id x in group) if ([x isKindOfClass:[NSString class]] && ![x isEqualToString:b]) [left addObject:x];
-        nf[@"group"] = left; nf[@"slots"] = left.count ? DMFitPlanAfterLeave(left) : @{};
+        nf[@"group"] = left; nf[@"slots"] = MSBDFitPlanKeepingPlaces(left, [fit[@"slots"] isKindOfClass:[NSDictionary class]] ? fit[@"slots"] : nil);
         changed = YES;
     }
     NSArray *free = [fit[@"free"] isKindOfClass:[NSArray class]] ? fit[@"free"] : nil;
@@ -2338,16 +2337,23 @@ static BOOL DMMSWFitBringHere(NSString *b, NSInteger fromId, BOOL join, NSString
     if (!DMFitEnabled()) return NO;
     if (wasFree) { if (!gFreeWindows) gFreeWindows = [NSMutableSet set]; [gFreeWindows addObject:b]; return NO; }
     if (!join) return NO;
-    NSMutableArray<NSString *> *group = [NSMutableArray array], *open = [NSMutableArray array];
+    NSMutableArray<NSString *> *group = [NSMutableArray array], *loose = [NSMutableArray array];
     for (NSString *x in gFitGroup) if (![x isEqualToString:b] && DMStageTakesPartInFit(DMStageForBundle(x))) [group addObject:x];
-    for (UIView *s in DMAerialStages()) { NSString *x = DMStageBundle(s); if (x.length && ![x isEqualToString:b] && !s.hidden && !DMStageMinimized(s)) [open addObject:x]; }
-    if (group.count >= 4 || open.count >= 4) {
+    // (the regular windows over the tiles here, newest -- front -- first: they join with it while there is room, a No Fit one not counted -- the
+    //  rule of a window that opens, FitPlan.h MSBDFitWhenOneOpens, as DMCascadeStage and the Stage Manager engine's Fit tick have it)
+    for (UIView *s in DMAerialStages().reverseObjectEnumerator) {
+        NSString *x = DMStageBundle(s);
+        if (x.length && ![x isEqualToString:b] && ![group containsObject:x] && ![loose containsObject:x] && DMStageTakesPartInFit(s)) [loose addObject:x];
+    }
+    NSArray<NSString *> *joined = MSBDFitWhenOneOpens(b, group, loose);
+    if (!joined) {
         gFitGroup = group;
-        DMLog([NSString stringWithFormat:@"[fit] %@ came from another desktop: four windows are tiled here already, it is a regular window over them", b]);
+        DMLog([NSString stringWithFormat:@"[fit] %@ came from another desktop: four windows take part here already, it is a regular window over them", b]);
         return NO;
     }
-    for (NSString *x in open) if (![group containsObject:x] && ![gFreeWindows containsObject:x]) [group addObject:x];
-    if (group.count > 3) [group removeObjectsInRange:NSMakeRange(3, group.count - 3)];   // (it and three others make four)
+    group = [joined mutableCopy];
+    [group removeObject:b];   // (the others: it goes in front of them below)
+    for (NSString *x in loose) [gFitSlots removeObjectForKey:x];   // (a regular window joins as a new one)
     if (group.count == 2 && askLeft && askRight && !(gSidePromptCtx && ![gSidePromptCtx[@"decided"] boolValue])) {   // (as DMCascadeStage asks a third window)
         NSString *s0 = DMSlotNameForFrame(DMStageForBundle(group[0]).frame), *s1 = DMSlotNameForFrame(DMStageForBundle(group[1]).frame);
         NSString *l = [s0 isEqualToString:@"left"] ? group[0] : ([s1 isEqualToString:@"left"] ? group[1] : nil);
@@ -2363,7 +2369,7 @@ static BOOL DMMSWFitBringHere(NSString *b, NSInteger fromId, BOOL join, NSString
     gFitGroup = group;
     DMFitWatchSync();   // (the closure check: the group as it is now)
     if (group.count < 2) { DMLog([NSString stringWithFormat:@"[fit] %@ came from another desktop: alone here, it keeps its size", b]); return NO; }
-    DMAssignDefaultSlots();   // (the default tiles for the count, newest first)
+    DMAssignTilesKeepingPlaces(b);   // (it takes the first tile, newest first; the windows here keep their places as far as they can -- FitPlan.h)
     DMLog([NSString stringWithFormat:@"[fit] %@ came from another desktop: %lu windows tiled here (%@ first)", b, (unsigned long)group.count, b]);
     return YES;
 }
@@ -3363,7 +3369,7 @@ static void DMMSWOwnHome(void) {
     gMSWOwnHomeAt = CACurrentMediaTime();
 }
 // Fit to Window per desktop (Aerial, Zetsu, MilkyWay4 / no engine): the window leaves this desktop's tiles and the rest close up -- as when a tiled window closes
-// (DMWatchFitClosures' rule: two or more take the default tiles, one fills the space) --, and it takes a place in the other desktop's tiles: in
+// (FitPlan.h, DMWatchFitClosures' rule: one fills the space, the others keep their places) --, and it takes a place in the other desktop's tiles: in
 // front (newest first) while there are fewer than four, tiled there when that desktop comes (DMMSWChangeDesktop); a free window (No Fit) stays
 // free there. YES when this desktop's windows were tiled again (their thumbnails move).
 static BOOL DMMSWFitMove(NSString *b, NSInteger toId) {
@@ -3375,7 +3381,7 @@ static BOOL DMMSWFitMove(NSString *b, NSInteger toId) {
         for (NSString *x in gFitGroup) { UIView *s = DMStageForBundle(x); if (s && DMStageTakesPartInFit(s)) [left addObject:x]; }
         gFitGroup = left;
         if (DMFitEnabled() && left.count) {
-            gFitSlots = [DMFitPlanAfterLeave(left) mutableCopy];   // (two or more: the default tiles; one fills -- the plan Stage Manager's drag takes too)
+            gFitSlots = [MSBDFitPlanKeepingPlaces(left, gFitSlots) mutableCopy];   // (one fills, the others keep their places -- the plan Stage Manager's drag takes too)
             gMoveKeepsOrder = YES; DMApplyGroupSlots(nil); gMoveKeepsOrder = NO;
             retiled = YES;
             DMLog([NSString stringWithFormat:@"[fit] %@ went to another desktop: %lu window(s) left here, tiled again to fill the space", b, (unsigned long)left.count]);
@@ -3391,9 +3397,13 @@ static BOOL DMMSWFitMove(NSString *b, NSInteger toId) {
     if (wasFree) [free addObject:b];
     else if (group.count < 4) [group insertObject:b atIndex:0];
     NSMutableDictionary<NSString *, NSString *> *slots = [NSMutableDictionary dictionary];
-    // (it joins in front: the default tiles, and alone there it fills -- Fit's rule, the plan Stage Manager's DMMSWSMFitJoin takes. No Fit, or four
-    //  tiles there already: that desktop's arrangement stays as it was, as there)
-    if ([group containsObject:b]) [slots addEntriesFromDictionary:DMFitPlanAfterLeave(group)];
+    // (it joins in front: the first tile, the windows there keeping their places, and alone there it fills -- Fit's rule, the plan Stage Manager's
+    //  DMMSWSMFitJoin takes. No Fit, or four tiles there already: that desktop's arrangement stays as it was, as there)
+    if ([group containsObject:b]) {   // (FitPlan.h: b is new there)
+        NSMutableDictionary *had = [fit[@"slots"] isKindOfClass:[NSDictionary class]] ? [fit[@"slots"] mutableCopy] : [NSMutableDictionary dictionary];
+        [had removeObjectForKey:b];
+        [slots addEntriesFromDictionary:MSBDFitPlanKeepingPlaces(group, had)];
+    }
     else if ([fit[@"slots"] isKindOfClass:[NSDictionary class]]) for (NSString *x in group) if ([fit[@"slots"][x] isKindOfClass:[NSString class]]) slots[x] = fit[@"slots"][x];
     if (!gMSWFit) gMSWFit = [NSMutableDictionary dictionary];
     gMSWFit[k] = @{@"group": group, @"slots": slots, @"free": free, @"fitOn": fit[@"fitOn"] ?: @NO};   // (made with Fit off there: its windows join when it comes)
@@ -4059,16 +4069,18 @@ static void DMMSWHookKeys(void) {
 // through SBHomeGestureSwitcherModifier (destination 0 stay, 1 previous app, 2 next app, 3 App Switcher, 4 Home). Two things make a difference
 // (found by reading SpringBoard on this device, 3 Oct; round 1 only touched the lift-off and so the App Switcher still flew in and a side swipe
 // still switched apps):
-//  1. The stock App Switcher's cards fly in DURING the hold, before any lift-off hook can act. They are started from the modifier's own display
-//     link / multitasking-start, both gated by -_hasPausedEnoughForFlyIn. So, while the feature is on, that returns NO and no stock card ever
-//     spreads. The destination the gesture ends at is computed by a SEPARATE object (SBHomeGestureFinalDestinationSwitcherModifier) and still
+//  1. The stock App Switcher's cards fly in DURING the hold, before any lift-off hook can act: the modifier goes into multitasking
+//     (_inMultitasking) once -_hasPausedEnoughForFlyIn says so, and its cards come in. That state is SpringBoard's own and stays so -- it is
+//     part of its decision (DMMSWVisible) --; while the feature is on, only what the gesture drags is drawn in multitasking, so no stock card
+//     ever spreads. The destination the gesture ends at is computed by a SEPARATE object (SBHomeGestureFinalDestinationSwitcherModifier) and
 //     reaches 3, which we act on.
 //  2. A destination becomes an action in ONE place: -[SBHomeGestureSwitcherModifier _responseForActivatingFinalDestination:], which builds the
 //     SBSwitcherTransitionRequest -- the App Switcher for 3, the PREVIOUS/NEXT APP'S LAYOUT for 1/2 (so a side swipe switches apps through the
 //     request's app layout, not its environment mode: rewriting the mode alone, as round 1 did, left the app switch in place). Here that method
 //     is given 0 (stay on the current layout: the app returns to where it was) for the destinations we take over, so SpringBoard never opens its
 //     App Switcher and never switches app, and our own view / desktop slide runs instead.
-//  - 3 (App Switcher): our Mac Switcher opens;
+//  - 3 (App Switcher): our Mac Switcher opens -- exactly where iPadOS would open its App Switcher, by SpringBoard's own speed and pause rule,
+//    with Reduce Motion too (KT 3 Nov, 1.8.0: like the App Switcher; 1.7.8's hold rule and 1.7.9's Reduce Motion pause check are gone);
 //  - 1 / 2 (side swipe) with more than one desktop: the desktop on that side slides in (none on that side: nothing happens); with one desktop,
 //    the stock previous / next app, untouched;
 //  - 0 and 4 (Home) are never touched; Control Center, Notification Center, Reachability and Slide Over are other recognisers, never here.
@@ -4082,29 +4094,32 @@ static BOOL gMSWTrackEnding = NO;          // (the followed gesture is ending: i
 //  nothing of ours: the Mac Switcher's hold, side swipe, Control-arrows and the App Switcher paths it takes over stand aside, so the gestures are
 //  SpringBoard's again, which Guided Access holds back. 1.3.7, audit M-7)
 static BOOL DMMSWGesturesOn(void) { return gMSWOn && !DMTestFlag("/tmp/msb-noswitcher") && !DMCoverSheetShown() && !DMMSWStockOnce() && !MSBDGuidedAccessActive(); }
-// Root cause 1: the stock fly-in during the hold. While the feature is on, SpringBoard is told the finger never paused enough to fly its cards in.
-static BOOL (*o_MSWFlyIn)(id, SEL);
+// Root cause 1: the stock cards in the hold. SpringBoard's multitasking (its fly-in, at a pause or a sharp slow-down) is part of its decision:
+// once in, the swipe ends in the App Switcher however the finger goes on (15.6.1: a hold, then a flick up at 2400 pt/s; the final destination
+// modifier said Home), so the Mac Switcher leaves that state alone -- 1.4 to 1.8.0 told SpringBoard the finger never paused, and those swipes
+// went Home (mswnative, 4 Nov: 7 of 8 such rows, none with the Mac Switcher off). While the gesture is ours and in multitasking, the switcher
+// draws only the app layout the gesture drags (its _selectedAppLayout, none over the Home Screen), so iPadOS's other cards never come in; a
+// side swipe before that (the previous app's card coming in) is drawn as Apple has it.
+static id (*o_MSWVisible)(id, SEL);
+static Ivar gMSWMultiIv, gMSWSelIv;   // (SBHomeGestureSwitcherModifier's _inMultitasking, _selectedAppLayout: types checked, DMMSWHookGestures)
 #if DEBUG
-static void DMMSWProbeFlyIn(id modifier, BOOL stock);   // (the probes, below: when SpringBoard's own rule would fly its cards in)
+static void DMMSWProbeFlyIn(id modifier, BOOL stock);   // (the probes, below: when SpringBoard's own rule flies its cards in)
 #endif
-static BOOL DMMSWFlyIn(id self, SEL _cmd) {
+static id DMMSWVisible(id self, SEL _cmd) {
     gMSWHomeMod = self;
-#if DEBUG
-    BOOL stock = o_MSWFlyIn(self, _cmd);   // (a query: reads the hold count and the acceleration dip, sets nothing)
-    DMMSWProbeFlyIn(self, stock);
-    return DMMSWGesturesOn() ? NO : stock;
-#else
-    return DMMSWGesturesOn() ? NO : o_MSWFlyIn(self, _cmd);
-#endif
+    id v = o_MSWVisible(self, _cmd);
+    if (!*((const BOOL *)((const char *)(__bridge const void *)self + ivar_getOffset(gMSWMultiIv))) || !DMMSWGesturesOn() || ![v isKindOfClass:[NSSet class]]) return v;
+    id dragged = object_getIvar(self, gMSWSelIv);
+    return dragged && [(NSSet *)v containsObject:dragged] ? [NSSet setWithObject:dragged] : [NSSet set];
 }
 // Root cause 2: the one place a final destination becomes a transition request. The taken-over destinations are given 0 (stay); our action runs.
 // With Reduce Motion on, SpringBoard runs the home gesture through SBReduceMotionHomeGestureSwitcherModifier instead (iPad 2, 16.7.7: Reduce Motion
 // is on there, the hooks above never ran, and the stock App Switcher came up on a hold): its own -_responseForActivatingFinalDestination: (no
 // fly-in there: the gesture goes to the App Switcher the moment it pauses) is taken over the same way, by the same code.
 // The same hook serves Home Minimizes Windows (1.7.9, HomeAway.h), with the Mac Switcher on or off: SpringBoard's own activation is reached
-// through a trampoline (DMMSWActOrig...) that sees the destination SpringBoard is finally given -- after the hold rule's Home, the takeover's
-// "stay" --, so a 4 there is the user's Home lift, whoever decided it. Installed once by whichever needs it first (DMMSWHookActivation); the
-// Mac Switcher's takeover acts only once its own hooks are in too (gMSWGestHooked: the fly-in, the completion's safety net).
+// through a trampoline (DMMSWActOrig...) that sees the destination SpringBoard is finally given (after the takeover's "stay"), so a 4 there is
+// the user's Home lift. Installed once by whichever needs it first (DMMSWHookActivation); the Mac Switcher's takeover acts only once its own
+// hooks are in too (gMSWGestHooked: the fly-in, the completion's safety net).
 static id (*o_MSWActivate)(id, SEL, long long), (*o_MSWActivateRM)(id, SEL, long long), (*o_MSWActivateCE)(id, SEL, long long);
 static BOOL gMSWActHooked = NO, gMSWGestHooked = NO;
 static void DMHomeAwayLift(void);   // (StatusBar.x, after DMMinimizeAllWindows: a Home lift -- Home Minimizes Windows)
@@ -4117,7 +4132,8 @@ static id DMMSWActivateRM(id self, SEL _cmd, long long dest) { return DMMSWActiv
 // iPadOS 17+ with Stage Manager on: the home gesture's decisions are SBContinuousExposeHomeGestureSwitcherModifier's own -- a sibling of
 // SBHomeGestureSwitcherModifier (both SBGestureSwitcherModifier), not a subclass, with the same two methods and types (17.5.1 probe) -- so the hold
 // opened Stage Manager's App Switcher instead of the Mac Switcher there (17.5.1, TrollPad, our Stage Manager engine; on 16.7.7 the home gesture
-// went through SBHomeGestureSwitcherModifier with Stage Manager on too). Taken over the same way, by the same code.
+// went through SBHomeGestureSwitcherModifier with Stage Manager on too). Taken over the same way, by the same code; its cards are still kept away
+// the 1.4 way, told the finger never paused (not yet measured against stock on 17 / 18 as the home gesture's were in 1.8.0).
 static BOOL (*o_MSWFlyInCE)(id, SEL);
 static BOOL DMMSWFlyInCE(id self, SEL _cmd) {
     gMSWHomeMod = self;
@@ -4329,7 +4345,7 @@ static void DMMSWStartPicture(id gesture) {
 }
 static void DMMSWTrackBegin(id gesture) {
     gMSWTrackV = 0;
-    if (gMSWTrack < 2) gMSWHomeMod = nil;   // (this gesture's modifier is seen again in DMMSWFlyIn / DMMSWActivateWith)
+    if (gMSWTrack < 2) gMSWHomeMod = nil;   // (this gesture's modifier is seen again in DMMSWVisible / DMMSWActivateWith)
     if (gMSWTrack == 2) return;   // (the fingers move a slide already)
     if (gMSWTrack == 1) DMMSWTrackDisarm();
     if (DMMSWGrabbable() && DMMSWGestureTypeOf(gesture) == 1) {   // (a slide on its way: the fingers may take it, once they go sideways)
@@ -4451,169 +4467,11 @@ static void DMMSWTrackFinish(NSInteger side, CGFloat v) {
     DMMSWMark([NSString stringWithFormat:@"lifted: back (%.0f pt/s)", v]);
     DMMSWSwBack(v);
 }
-// ---- the hold that opens the Mac Switcher (1.7.8, KT: Home and the switcher clearly apart for a finger without any attachment) ----
-// SpringBoard ends a swipe up in the App Switcher by SPEED alone: its final destination says App Switcher (3, "AppSwitcherByPausing") as soon as the
-// fingers go slower than an adaptive limit -- 265 pt/s (51 mm/s) on the A12Z, raised up to 1601 pt/s (308 mm/s) once the swipe slows down sharply
-// (its "acceleration dip") -- and that is what it has at the lift (read with the probes on 18.5 and in -[SBHomeGestureSettings setDefaultValues]).
-// No pause is needed: a swipe that slows to a stop and lifts at once, or a slow drag lifted at 150-300 pt/s, ends there (measured, 2 Nov: the same
-// with and without the Mac Switcher). iPadOS gives the finger a warning first: its cards fly in when the finger slows sharply or holds still for
-// 0.1 s (-_hasPausedEnoughForFlyIn: the dip, or the hold count over 0.1 s x the display rate at <= 17.3 pt/s, read live in SpringBoard), so a
-// Home swipe that is about to become the App Switcher shows it before the lift. The Mac Switcher keeps those cards away (DMMSWFlyIn), so that
-// warning was gone and a Home swipe that slowed down at its end opened the Mac Switcher out of nowhere. Now, for fingers on the screen, the
-// Mac Switcher asks for what the flying cards stand for -- a real hold: the fingers rest (inside kMSWRestSlop) for kMSWRestNeeded somewhere up
-// the screen (past kMSWRestMinTravel). A swipe SpringBoard ends in the App Switcher without one goes Home, as the swipe asked. A swipe up the
-// fingers flick on from after a hold goes Home as before (SpringBoard's own destination then), and the trackpad and a mouse (pointer touches)
-// keep SpringBoard's rule. The rule answers only at a lift: while the gesture's end is handled (DMMSWGEnd) and that end brought the lift's
-// touch. SpringBoard decides at the pause itself with Reduce Motion -- its modifier ends the gesture there, the finger still down (17.5.1) --
-// and an end like that brings no new touch, whichever modifier makes it, so SpringBoard's rule stays there (a rest read then would be ~0 ms,
-// and every hold would go Home); that end comes only while the fingers rest (DMMSWRMChange, 1.7.9). Measured from the gesture's own translation
-// (the event SpringBoard reads) and its touches' own time, at every update and at the end; the rule itself is MSWHoldRule.h (Mac-tested,
-// tools/test-mswhold.sh).
-static __weak id gMSWRestGesture;              // (the gesture watched)
-static DMMSWPause gMSWHold;                     // (its rests, its end and the lift's answer: MSWHoldRule.h)
-static SEL sMSWTouchType, sMSWPointerTouch, sMSWMouseEvent, sMSWTouchTime;
-static BOOL gMSWTouchTimeOK = NO;   // (the event has -lastTouchTimestamp: the time of its latest touch, as the touches carry it)
-// Fingers on the screen: the gesture event's touch type is a direct touch and it is no pointer touch or mouse event (each method checked once per
-// class; NO when one is missing -- SpringBoard's rule stays then).
-static BOOL DMMSWGestureIsFinger(id gesture) {
-    static Class ec = Nil; static BOOL ok = NO;
-    id ev = gesture && DMMSWHasMethod(object_getClass(gesture), @"gestureEvent", @"@@:") ? ((id (*)(id, SEL))objc_msgSend)(gesture, NSSelectorFromString(@"gestureEvent")) : nil;
-    if (!ev) return NO;
-    if (object_getClass(ev) != ec) {
-        ec = object_getClass(ev);
-        sMSWTouchType = NSSelectorFromString(@"touchType"); sMSWPointerTouch = NSSelectorFromString(@"isPointerTouch"); sMSWMouseEvent = NSSelectorFromString(@"isMouseEvent");
-        sMSWTouchTime = NSSelectorFromString(@"lastTouchTimestamp");
-        ok = DMMSWHasMethod(ec, @"touchType", @"q@:") && DMMSWHasMethod(ec, @"isPointerTouch", @"B@:") && DMMSWHasMethod(ec, @"isMouseEvent", @"B@:");
-        gMSWTouchTimeOK = DMMSWHasMethod(ec, @"lastTouchTimestamp", @"d@:");
-        DMLog([NSString stringWithFormat:@"[macswitcher] gesture event %@: touch type %d, touch time %d (the hold rule %@)", NSStringFromClass(ec), ok, gMSWTouchTimeOK, ok ? @"on for fingers" : @"off: SpringBoard's rule"]);
-    }
-    if (!ok) return NO;
-    return ((long long (*)(id, SEL))objc_msgSend)(ev, sMSWTouchType) == UITouchTypeDirect && !((BOOL (*)(id, SEL))objc_msgSend)(ev, sMSWPointerTouch)
-        && !((BOOL (*)(id, SEL))objc_msgSend)(ev, sMSWMouseEvent);
-}
-// The time of the gesture's latest touch (seconds since boot, as UITouch's): from its event where it has one, else now. A rest is measured
-// between touches, so a busy main thread between the last move and the lift (SpringBoard handling them late) does not make it longer.
-static CFTimeInterval DMMSWGestureTouchTime(id gesture) {
-    if (gMSWTouchTimeOK && DMMSWHasMethod(object_getClass(gesture), @"gestureEvent", @"@@:")) {
-        id ev = ((id (*)(id, SEL))objc_msgSend)(gesture, NSSelectorFromString(@"gestureEvent"));
-        double t = ev && object_getClass(ev) && [ev respondsToSelector:sMSWTouchTime] ? ((double (*)(id, SEL))objc_msgSend)(ev, sMSWTouchTime) : 0;
-        if (t > 0 && isfinite(t)) return t;
-    }
-    return CACurrentMediaTime();
-}
-static void DMMSWRestBegin(id gesture) {
-    gMSWRestGesture = nil; gMSWHold.on = 0;
-    CGPoint tr;
-#if DEBUG
-    if (DMTestFlag("/tmp/msw-nohold")) return;   // (debug comparison: SpringBoard's speed rule alone, as before 1.7.8)
-#endif
-    if (!DMMSWGesturesOn() || DMMSWGestureTypeOf(gesture) != 1 || !DMMSWGestureMotion(gesture, &tr, NULL) || !DMMSWGestureIsFinger(gesture)) return;
-    gMSWRestGesture = gesture; DMMSWPauseBegin(&gMSWHold, tr.x, tr.y, DMMSWGestureTouchTime(gesture));
-}
-static void DMMSWRestMoved(id gesture) {   // (an update: MSWHoldRule.h)
-    CGPoint tr;
-    if (!gesture || gesture != gMSWRestGesture || !DMMSWGestureMotion(gesture, &tr, NULL)) return;
-    DMMSWPauseMove(&gMSWHold, tr.x, tr.y, DMMSWGestureTouchTime(gesture));
-}
-static void DMMSWRestEnded(id gesture) {   // (the gesture's end, as SpringBoard starts handling it: the lift's touch, when it brought one)
-    CGPoint tr;
-    if (!gesture || gesture != gMSWRestGesture || !DMMSWGestureMotion(gesture, &tr, NULL)) return;
-    double before = gMSWHold.last, t = DMMSWGestureTouchTime(gesture);
-    DMMSWPauseEnd(&gMSWHold, tr.x, tr.y, t);
-#if DEBUG
-    id ev = DMMSWHasMethod(object_getClass(gesture), @"gestureEvent", @"@@:") ? ((id (*)(id, SEL))objc_msgSend)(gesture, NSSelectorFromString(@"gestureEvent")) : nil;
-    unsigned long long phase = ev && DMMSWHasMethod(object_getClass(ev), @"phase", @"Q@:") ? ((unsigned long long (*)(id, SEL))objc_msgSend)(ev, NSSelectorFromString(@"phase")) : 99;
-    DMLog([NSString stringWithFormat:@"[mswprobe] hold rule: the gesture's end -- its touch %.1f ms after the latest update's (lifted %d), event phase %llu", (t - before) * 1000.0, gMSWHold.lifted, phase]);
-#endif
-}
-// The lift's answer for a swipe SpringBoard ends in the App Switcher (MSWHoldRule.h DMMSWPauseSaysHome): YES = Home, a lift without a hold. Only for
-// the watched gesture (DMMSWRestBegin: fingers, the motion readable) and only while its end is handled with the lift's touch (DMMSWGEnd); the
-// first answer stands however often SpringBoard asks, from one modifier or two. Asked otherwise -- the finger still down -- SpringBoard's own.
-static BOOL DMMSWRestSaysHome(void) {
-    if (!gMSWRestGesture || !gMSWHold.on) return NO;
-    BOOL first = !gMSWHold.decided;
-    double rest = 0;
-    BOOL home = DMMSWPauseSaysHome(&gMSWHold, &rest) != 0;
-    int restMs = (int)(rest * 1000.0);
-    if (!gMSWHold.decided) {
-        static __weak id told;   // (once per gesture)
-        if (told != gMSWRestGesture) { told = gMSWRestGesture; DMLog([NSString stringWithFormat:@"[macswitcher] gesture ended on 3 with no lift to measure (its end handled %d, a new touch %d): SpringBoard's own rule", gMSWHold.ending, gMSWHold.lifted]); }
-        return NO;
-    }
-    if (!first) return home;
-    if (home) {
-        DM_FEATURE_MARK("mac-switcher-hold-rule");
-        DMLog([NSString stringWithFormat:@"[macswitcher] gesture ended on 3 without a hold (resting %d ms at %.0f pt up, a hold is %.0f ms): Home", restMs, -gMSWHold.y, kMSWRestNeeded * 1000.0]);
-    } else if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[macswitcher] gesture ended on 3 after a hold (resting %d ms at %.0f pt up, held earlier %d)", restMs, -gMSWHold.y, gMSWHold.held]);
-#if DEBUG
-    DMLog([NSString stringWithFormat:@"[mswprobe] hold rule: rest %d ms by the touches' time, %d ms by the clock now (touch time %d)", restMs, (int)((CACurrentMediaTime() - gMSWHold.since) * 1000.0), gMSWTouchTimeOK]);
-#endif
-    return home;
-}
-// ---- Reduce Motion: the pause SpringBoard ends a swipe at, checked (1.7.9) ----
-// With Reduce Motion on, SBReduceMotionHomeGestureSwitcherModifier ends a swipe up in the App Switcher with the finger still down: at each move
-// (-_updateForGestureDidChangeWithEvent:, read live on 17.5.1 and in iPadOS 15's binary) it ends the gesture once its final destination says
-// App Switcher and either the gesture's averaged speed is under kEndGestureForAppSwitcherMaximumVelocityThreshold (the card fly-in speed, set
-// as the modifier joins in: 17.3 pt/s on 17.5.1) or the final destination modifier has seen an "acceleration dip"
-// (-hasSeenAccelerationDipForAppSwitcher). The dip also raises the destination's pause speed to 1601 pt/s, so a steady drag whose speed wobbled
-// once, or a swipe slowing down at 1600 pt/s, ended in the Mac Switcher in the middle of the drag (1.7.8 regression: 300-600 pt/s drags on the
-// 17.5 and the iPad 2), and the speed test asks for no time still, so a stroke that stopped and lifted at once ended there too, with no lift
-// for the hold rule to answer. With the Mac Switcher on, for the watched fingers, that pause is ours to check: while the modifier handles a
-// move, its final destination reads App Switcher only when the fingers rest at that move's touch (MSWHoldRule.h DMMSWPauseResting -- the hold
-// the lift asks for), and then the dip reads seen, so a hold ends the gesture there, dip or not. A swipe that has not paused goes on, and its
-// lift decides (DMMSWRestSaysHome). Only that move handling sees this; SpringBoard's destination is its own everywhere else. A finger held
-// perfectly still sends no move: its hold opens the Mac Switcher at the next move (the rest it reports is the whole hold) or at the lift, as
-// with Reduce Motion off.
-static id (*o_MSWRMChange)(id, SEL, id);
-static long long (*o_MSWRMDest)(id, SEL);
-static BOOL (*o_MSWRMDip)(id, SEL);
-static __unsafe_unretained id gMSWRMFD;   // (the final destination modifier of the move being handled: set only inside DMMSWRMChange)
-static BOOL gMSWRMRest;                     // (the fingers rest at that move's touch)
-static long long gMSWRMSaw = -1;            // (that move's final destination, as SpringBoard has it)
-static id DMMSWRMChange(id self, SEL _cmd, id event) {
-    static Class owner = Nil; static Ivar fdIvar = NULL;
-    if (gMSWRMFD || !gMSWRestGesture || !gMSWHold.on) return o_MSWRMChange(self, _cmd, event);   // (watched: fingers, the gestures ours when it began)
-    if (object_getClass(self) != owner) {
-        owner = object_getClass(self); fdIvar = class_getInstanceVariable(owner, "_finalDestinationModifier");
-        if (fdIvar && ivar_getTypeEncoding(fdIvar)[0] != '@') fdIvar = NULL;
-    }
-    id fd = fdIvar ? object_getIvar(self, fdIvar) : nil;
-    if (!fd) return o_MSWRMChange(self, _cmd, event);
-    gMSWRMFD = fd; gMSWRMRest = DMMSWPauseResting(&gMSWHold) != 0; gMSWRMSaw = -1;
-    id r = nil;
-    @try { r = o_MSWRMChange(self, _cmd, event); }
-    @finally { gMSWRMFD = nil; }
-    return r;
-}
-static long long DMMSWRMDest(id self, SEL _cmd) {
-    long long d = o_MSWRMDest(self, _cmd);
-    if (!gMSWRMFD || self != gMSWRMFD) return d;
-    gMSWRMSaw = d;
-    if (d != 3 || gMSWRMRest) return d;
-    DM_FEATURE_MARK("mac-switcher-rm-pause");
-    return 4;   // (read there only to compare with the App Switcher: the fingers have not paused, so it is not that)
-}
-static BOOL DMMSWRMDip(id self, SEL _cmd) {
-    BOOL dip = o_MSWRMDip(self, _cmd);
-    if (!gMSWRMFD || self != gMSWRMFD) return dip;
-    if (gMSWRMSaw == 3 && (dip || gMSWRMRest)) {   // (SpringBoard reads a pause: logged once per gesture each way)
-        static __weak id toldMoving, toldRest;
-        if (!gMSWRMRest && toldMoving != gMSWRestGesture) {
-            toldMoving = gMSWRestGesture;
-            DMLog([NSString stringWithFormat:@"[macswitcher] Reduce Motion: SpringBoard reads a pause (App Switcher after a dip) while the fingers move (resting %d ms at %.0f pt up): the swipe goes on", (int)((gMSWHold.last - gMSWHold.since) * 1000.0), -gMSWHold.y]);
-        } else if (gMSWRMRest && toldRest != gMSWRestGesture) {
-            toldRest = gMSWRestGesture;
-            DMLog([NSString stringWithFormat:@"[macswitcher] Reduce Motion: the fingers rest %d ms at %.0f pt up: the swipe ends in the App Switcher there (dip %d)", (int)((gMSWHold.last - gMSWHold.since) * 1000.0), -gMSWHold.y, dip]);
-        }
-    }
-    return gMSWRMRest ? YES : dip;
-}
 static void (*o_MSWGBegin)(id, SEL, id, id), (*o_MSWGUpdate)(id, SEL, id, id), (*o_MSWGEnd)(id, SEL, id, id);
 static void DMMSWGBegin(id self, SEL _cmd, id transaction, id gesture) {
     static BOOL inside = NO;
     if (!inside) {
         inside = YES;
-        @try { DMMSWRestBegin(gesture); } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[macswitcher] hold watch threw %@", e]); gMSWRestGesture = nil; }
         @try { DMMSWTrackBegin(gesture); } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[macswitcher] tracker begin threw %@", e]); gMSWTrack = 0; }
         if (gMSWTrack == 1) { DMMSWRecBegin(@"gesture (followed)"); DMMSWRecordEvent(gesture, @"B"); }
         inside = NO;
@@ -4622,7 +4480,6 @@ static void DMMSWGBegin(id self, SEL _cmd, id transaction, id gesture) {
 }
 static void DMMSWGUpdate(id self, SEL _cmd, id transaction, id gesture) {
     static BOOL inside = NO;
-    if (!inside && gesture == gMSWRestGesture) DMMSWRestMoved(gesture);
     if (inside || (gMSWTrack != 1 && gMSWTrack != 2) || gesture != gMSWTrackGesture) { o_MSWGUpdate(self, _cmd, transaction, gesture); return; }
     inside = YES;
     BOOL swallow = NO;
@@ -4631,16 +4488,7 @@ static void DMMSWGUpdate(id self, SEL _cmd, id transaction, id gesture) {
     inside = NO;
     if (!swallow) o_MSWGUpdate(self, _cmd, transaction, gesture);
 }
-static void DMMSWGEndBody(id self, SEL _cmd, id transaction, id gesture);
-// The gesture's end: the hold rule's lift is handled inside it (SpringBoard's lift-off activation runs within its own end, DMMSWActivateWith),
-// then the tracker's end (the body).
 static void DMMSWGEnd(id self, SEL _cmd, id transaction, id gesture) {
-    BOOL watched = gesture && gesture == gMSWRestGesture && gMSWHold.on && !gMSWHold.ending;
-    if (watched) { DMMSWRestEnded(gesture); gMSWHold.ending = 1; }
-    DMMSWGEndBody(self, _cmd, transaction, gesture);
-    if (watched) gMSWHold.ending = 0;
-}
-static void DMMSWGEndBody(id self, SEL _cmd, id transaction, id gesture) {
     static BOOL inside = NO;
     if (inside || (gMSWTrack != 1 && gMSWTrack != 2) || gesture != gMSWTrackGesture) { o_MSWGEnd(self, _cmd, transaction, gesture); return; }
     inside = YES;
@@ -4716,9 +4564,6 @@ static id DMMSWActivateWith(id self, SEL _cmd, long long dest, id (*orig)(id, SE
         return r;
     }
     if (inside || (eff != 3 && eff != 1 && eff != 2) || !gMSWGestHooked || !DMMSWGesturesOn()) return orig(self, _cmd, dest);   // (gMSWGestHooked: hooked for Home Minimizes Windows alone, no takeover)
-    // (fingers: the Mac Switcher only after a hold -- answered at a lift only: with the finger still down, as Reduce Motion's end at the pause
-    //  that only a rest brings, DMMSWRMChange, SpringBoard's own rule stays, DMMSWRestSaysHome)
-    if (eff == 3 && dest == 3 && DMMSWRestSaysHome()) return orig(self, _cmd, 4);
     dispatch_block_t act = nil;
     if (eff == 3) act = ^{ gMSWGestureAt = CACurrentMediaTime(); DMMSWOpen(@"the App Switcher gesture"); };
     else if (DMMSWMulti()) {
@@ -4790,20 +4635,23 @@ static void DMMSWHookGestures(void) {
     // (iPadOS 17 -- 17.0.3 headers, 17.6.1 code, and 18.2 --: -handleTransitionRequestForGestureComplete: is the gesture MANAGER's, the coordinator
     //  has none. Asked only where neither of the two above is there, so 15/16 keep exactly the path they had.)
     BOOL okGM = !ok15 && !ok16 && DMMSWHasMethod(gm, @"handleTransitionRequestForGestureComplete:", @"v@:@");
-    BOOL flyIn = DMMSWHasMethod(c, @"_hasPausedEnoughForFlyIn", @"B@:"), dest = DMMSWHasMethod(c, @"_responseForActivatingFinalDestination:", @"@@:q");
-    if (!dest || !flyIn || (!ok15 && !ok16 && !okGM)) {
-        gMSWDiagGestures = [NSString stringWithFormat:@"none(flyin%d,dest%d,done0)", flyIn, dest];
+    Ivar multi = c ? class_getInstanceVariable(c, "_inMultitasking") : NULL, dragged = c ? class_getInstanceVariable(c, "_selectedAppLayout") : NULL;
+    BOOL cards = DMMSWHasMethod(c, @"visibleAppLayouts", @"@@:") && multi && !strcmp(ivar_getTypeEncoding(multi), "B") && dragged && ivar_getTypeEncoding(dragged)[0] == '@';
+    BOOL dest = DMMSWHasMethod(c, @"_responseForActivatingFinalDestination:", @"@@:q");
+    if (!dest || !cards || (!ok15 && !ok16 && !okGM)) {
+        gMSWDiagGestures = [NSString stringWithFormat:@"none(cards%d,dest%d,done0)", cards, dest];
         DMLog(@"[macswitcher] the gesture hooks are not as expected here: the gestures stay iPadOS's own");
         return;
     }
-    MSHookMessageEx(c, NSSelectorFromString(@"_hasPausedEnoughForFlyIn"), (IMP)DMMSWFlyIn, (IMP *)&o_MSWFlyIn);
+    gMSWMultiIv = multi; gMSWSelIv = dragged;
+    MSHookMessageEx(c, NSSelectorFromString(@"visibleAppLayouts"), (IMP)DMMSWVisible, (IMP *)&o_MSWVisible);
     DMMSWHookActivation();   // (the lift: also Home Minimizes Windows' -- in already when that came first)
     if (ok15) MSHookMessageEx(gm, NSSelectorFromString(@"completeGestureWithTransitionRequest:"), (IMP)DMMSWComplete15, (IMP *)&o_MSWComplete15);
     else if (ok16) MSHookMessageEx(co, NSSelectorFromString(@"handleTransitionRequestForGestureComplete:"), (IMP)DMMSWComplete15, (IMP *)&o_MSWComplete15);
     else MSHookMessageEx(gm, NSSelectorFromString(@"handleTransitionRequestForGestureComplete:"), (IMP)DMMSWComplete15, (IMP *)&o_MSWComplete15);
     gMSWGestHooked = YES;   // (the takeover: DMMSWActivateWith)
-    gMSWDiagGestures = ok15 ? @"flyin,dest,done:gm15" : ok16 ? @"flyin,dest,done:co16" : @"flyin,dest,done:gm17";
-    DMLog(@"[macswitcher] gesture hook installed (fly-in suppressed, destination remapped at the source)");
+    gMSWDiagGestures = ok15 ? @"cards,dest,done:gm15" : ok16 ? @"cards,dest,done:co16" : @"cards,dest,done:gm17";
+    DMLog(@"[macswitcher] gesture hook installed (iPadOS's cards kept out of its multitasking, destination remapped at the source)");
     // the side swipe that follows the fingers (the tracker): the gesture manager's begin / update / end of each gesture
     if (DMMSWHasMethod(gm, @"fluidSwitcherGestureTransaction:didBeginGesture:", @"v@:@@") && DMMSWHasMethod(gm, @"fluidSwitcherGestureTransaction:didUpdateGesture:", @"v@:@@")
         && DMMSWHasMethod(gm, @"fluidSwitcherGestureTransaction:didEndGesture:", @"v@:@@")) {
@@ -4813,21 +4661,11 @@ static void DMMSWHookGestures(void) {
         gMSWDiagGestures = [gMSWDiagGestures stringByAppendingString:@",track"];
         DMLog(@"[macswitcher] side swipes followed by the fingers (gesture updates hooked)");
     } else DMLog(@"[macswitcher] the gesture manager's updates are not as expected here: side swipes slide at the lift only");
-    Class rm = objc_getClass("SBReduceMotionHomeGestureSwitcherModifier");   // (Reduce Motion's own home gesture: its lift hooked by DMMSWHookActivation)
+    // (Reduce Motion's own home gesture: its lift hooked by DMMSWHookActivation -- its modifier ends a swipe at the pause it reads, the finger
+    //  still down, and the Mac Switcher opens there as its App Switcher would)
     if (o_MSWActivateRM) DMLog(@"[macswitcher] gesture hook installed for Reduce Motion's home gesture too");
     else DMLog(@"[macswitcher] Reduce Motion's home gesture is not as expected here: with Reduce Motion on, the gestures stay iPadOS's own");
-    // (Reduce Motion's end at a pause, the fingers still down: allowed only while they rest, DMMSWRMChange)
-    Class fdc = objc_getClass("SBHomeGestureFinalDestinationSwitcherModifier");
-    Ivar fdi = rm ? class_getInstanceVariable(rm, "_finalDestinationModifier") : NULL;
-    if (o_MSWActivateRM && DMMSWHasMethod(rm, @"_updateForGestureDidChangeWithEvent:", @"@@:@") && fdi && ivar_getTypeEncoding(fdi)[0] == '@'
-        && DMMSWHasMethod(fdc, @"currentFinalDestination", @"q@:") && DMMSWHasMethod(fdc, @"hasSeenAccelerationDipForAppSwitcher", @"B@:")) {
-        MSHookMessageEx(rm, NSSelectorFromString(@"_updateForGestureDidChangeWithEvent:"), (IMP)DMMSWRMChange, (IMP *)&o_MSWRMChange);
-        MSHookMessageEx(fdc, NSSelectorFromString(@"currentFinalDestination"), (IMP)DMMSWRMDest, (IMP *)&o_MSWRMDest);
-        MSHookMessageEx(fdc, NSSelectorFromString(@"hasSeenAccelerationDipForAppSwitcher"), (IMP)DMMSWRMDip, (IMP *)&o_MSWRMDip);
-        gMSWDiagGestures = [gMSWDiagGestures stringByAppendingString:@",rmpause"];
-        DMLog(@"[macswitcher] Reduce Motion's end at a pause hooked: only while the fingers rest");
-    } else if (o_MSWActivateRM) DMLog(@"[macswitcher] Reduce Motion's end at a pause is not as expected here: SpringBoard's own pause ends a swipe there");
-    Class ce = objc_getClass("SBContinuousExposeHomeGestureSwitcherModifier");   // (Stage Manager's own home gesture, iPadOS 17+: DMMSWActivateCE)
+    Class ce =objc_getClass("SBContinuousExposeHomeGestureSwitcherModifier");   // (Stage Manager's own home gesture, iPadOS 17+: DMMSWActivateCE)
     if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17 && DMMSWHasMethod(ce, @"_hasPausedEnoughForFlyIn", @"B@:")
         && DMMSWHasMethod(ce, @"_responseForActivatingFinalDestination:", @"@@:q")) {
         MSHookMessageEx(ce, NSSelectorFromString(@"_hasPausedEnoughForFlyIn"), (IMP)DMMSWFlyInCE, (IMP *)&o_MSWFlyInCE);   // (its lift: DMMSWHookActivation)
@@ -5118,6 +4956,7 @@ static BOOL DMMSWProbePaused(id self, SEL _cmd) {
     BOOL y = o_MSWPaused(self, _cmd);
     if (inside) return y;
     inside = YES;
+    DMMSWProbeFlyIn(self, y);   // (each display frame of a home gesture: SpringBoard's own answer, its hold count)
     if (y && !gMSWProbeHold) { gMSWProbeHold = YES; DMLog([NSString stringWithFormat:@"[mswprobe] HOLD (paused enough for the fly-in) at +%d ms, final destination %lld", DMMSWProbeMs(), gMSWProbeDest]); }
     inside = NO;
     return y;
@@ -5727,7 +5566,7 @@ static BOOL DMMSWTrigger(NSString *cmd) {
     }
     else if ([cmd hasPrefix:@"mswpath_"]) DMMSWPath([cmd substringFromIndex:8]);   // (measurement: a finger path at a steady 120 Hz, see DMMSWPath)
     else if ([cmd isEqualToString:@"msworig"]) {   // msworig: where the original code behind our gesture hooks is (for reading it in a disassembly; read-only)
-        NSDictionary *o = @{ @"_hasPausedEnoughForFlyIn (probe)": [NSValue valueWithPointer:(void *)o_MSWPaused], @"_hasPausedEnoughForFlyIn (fix)": [NSValue valueWithPointer:(void *)o_MSWFlyIn],
+        NSDictionary *o = @{ @"_hasPausedEnoughForFlyIn (probe)": [NSValue valueWithPointer:(void *)o_MSWPaused], @"visibleAppLayouts (fix)": [NSValue valueWithPointer:(void *)o_MSWVisible],
                              @"_responseForActivatingFinalDestination: (fix)": [NSValue valueWithPointer:(void *)o_MSWActivate], @"_responseForSBEventGestureEndWithEvent:finalDestination: (probe)": [NSValue valueWithPointer:(void *)o_MSWEndResponse],
                              @"FD currentFinalDestination (probe)": [NSValue valueWithPointer:(void *)o_MSWFinalDest],
                              @"completion (fix)": [NSValue valueWithPointer:(void *)o_MSWComplete15], @"completion (probe)": [NSValue valueWithPointer:(void *)o_MSWComplete],
@@ -5751,6 +5590,12 @@ static BOOL DMMSWTrigger(NSString *cmd) {
             [s appendFormat:@"\n  desktop %lu: screen %@", (unsigned long)d, NSStringFromCGRect([gMSWRoot convertRect:[gMSWDeskRects[d] CGRectValue] toCoordinateSpace:[UIScreen mainScreen].coordinateSpace])];
         if (gMSWRoot && !CGRectIsNull(gMSWPlusRect)) [s appendFormat:@"\n  plus: screen %@", NSStringFromCGRect([gMSWRoot convertRect:gMSWPlusRect toCoordinateSpace:[UIScreen mainScreen].coordinateSpace])];
         DMLog(s);
+    }
+    else if ([cmd isEqualToString:@"mswrow"] || [cmd isEqualToString:@"mswrow_close"]) {   // mswrow[_close]: what a gesture ended in -- iPadOS's main App Switcher
+                                                                                            // up, the Mac Switcher open, the front app -- then (_close) closes it
+        BOOL sw = DMMainSwitcherVisible(), msw = DMMSWIsOpen();
+        DMLog([NSString stringWithFormat:@"[mswrow] App Switcher %d, Mac Switcher %d, front %@", sw, msw, [DMFrontApp() bundleIdentifier] ?: @"-"]);
+        if ([cmd hasSuffix:@"_close"]) { if (msw) DMMSWClose(nil, NO); if (sw) DMCloseStockSwitcher(); }
     }
     else if ([cmd isEqualToString:@"mswfind"]) {
         SBApplication *front = DMFrontApp();

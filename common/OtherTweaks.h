@@ -2,9 +2,8 @@
 // We never change another tweak's settings. When its own switch for the same thing is on, our part steps aside (so the effect is applied once, by
 // one tweak, with no fight over the same view) and our Settings row says which tweak does it. Only settings whose domain, key and default were read
 // from the tweak itself are listed: Lynx 2 (com.mtac.lynxtwo, its Settings page and Lynx.dylib), Atria (me.lau.AtriaPrefs, its open source) and
-// Single Mute by 82Flex (SingleMute.dylib; com.82flex.singlemuteprefs "IsEnabled", on when missing -- its published Settings page) and Destra
-// (MacOSNotifications.dylib, package xyz.cypwn.macosnotifications; com.jaxroth.macosnotifications "enabled", on when missing -- read on the iPad 2,
-// where it squeezed our banners into its narrow right-hand strip, 2026-09-28).
+// Single Mute by 82Flex (SingleMute.dylib; com.82flex.singlemuteprefs "IsEnabled", on when missing -- its published Settings page). (Destra's
+// Mac-style banners, here until 1.8.0, are a Banner Style of their own since: common/BannerStyle.h, BannerStyleNow.h.)
 // In SpringBoard/Settings a tweak counts as there when its library is loaded (inProcess) or, in Settings, when its library file is installed.
 #pragma once
 #import <Foundation/Foundation.h>
@@ -13,7 +12,7 @@
 #include <sys/stat.h>
 #include <os/lock.h>
 
-typedef NS_ENUM(int, MSBDDuplicate) { kMSBDDupIconLabels, kMSBDDupPageDots, kMSBDDupCCGrabber, kMSBDDupLockStatusBar, kMSBDDupEthernetSection, kMSBDDupMuteIcon, kMSBDDupDockIndicators, kMSBDDupBanners };
+typedef NS_ENUM(int, MSBDDuplicate) { kMSBDDupIconLabels, kMSBDDupPageDots, kMSBDDupCCGrabber, kMSBDDupLockStatusBar, kMSBDDupEthernetSection, kMSBDDupMuteIcon, kMSBDDupDockIndicators };
 
 static BOOL gMSBDOtherInSettings = NO;   // (set while asking about an effect that happens in Settings itself: SpringBoard's own Choicy list does not apply)
 static inline BOOL MSBDTweakPresent(const char *lib, BOOL inProcess) {   // lib: "Lynx" -> Lynx.dylib
@@ -72,9 +71,6 @@ static inline NSString *MSBDOtherTweakDoing(MSBDDuplicate what, BOOL inProcess) 
         case kMSBDDupLockStatusBar: if (hasLynx && MSBDOtherPref(lynx, CFSTR("hideStatusOnLockScreen"), NO)) who = @"Lynx"; break;
         case kMSBDDupDockIndicators: if (hasLynx && MSBDOtherPref(lynx, CFSTR("showDockIndicators"), NO)) who = @"Lynx"; break;   // (missing: not counted -- only an explicit "on")
         case kMSBDDupEthernetSection: if (hasLynx && MSBDOtherPref(lynx, CFSTR("showSettingsEthernetSection"), YES)) who = @"Lynx"; break;   // (on by default in Lynx)
-        case kMSBDDupBanners:   // (Destra's Mac-style banners: it narrows the banner window itself, so both at once squeeze every banner)
-            if (MSBDTweakPresent("MacOSNotifications", inProcess)) { CFPreferencesAppSynchronize(CFSTR("com.jaxroth.macosnotifications")); if (MSBDOtherPref(CFSTR("com.jaxroth.macosnotifications"), CFSTR("enabled"), YES)) who = @"Destra"; }
-            break;
         case kMSBDDupMuteIcon:   // (its switch applies after a respring, like its library being loaded or not)
             if (MSBDTweakPresent("SingleMute", inProcess)) { CFPreferencesAppSynchronize(CFSTR("com.82flex.singlemuteprefs")); if (MSBDOtherPref(CFSTR("com.82flex.singlemuteprefs"), CFSTR("IsEnabled"), YES)) who = @"Single Mute"; }
             break;

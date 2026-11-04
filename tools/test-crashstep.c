@@ -89,6 +89,13 @@ int main(int argc, char **argv) {
         system("cp \"$FIX/step1b-core-banners.ips\" \"$REPORTS/SpringBoard-2026-09-26-100700.ips\"");
         Expect("and again: the whole tweak (action 3)", MSBDGuardEvaluate(&s) ? Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY) : 0, 3);
         Expect("  safe mode on", Num(MSBD_GATE_DOMAIN, MSBD_SAFE_KEY), 1);
+    } else if (!strcmp(scenario, "cclookup")) {   // reports: 10:00 + 10:01 traps under the shared Control Center lookups, in our Control Center's code
+        Expect("two crashes under the Control Center lookups: step 1b", MSBDGuardEvaluate(&s) ? Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY) : 0, 4);
+        Expect("  Control Center Style back to iPadOS's (false)", Num(TD, "controlCenterStyle"), 0);
+        Expect("  Stock status bar NOT switched on", Num(TD, "stockStatusBar"), -1);
+        Expect("  record: Control Center Style and its words", FileHas(MSBD_GUARD_RECORD, "feature " TD " controlCenterStyle 0 Control Center Style|our Control Center\n"), 1);
+        Expect("  record: no part line", FileHas(MSBD_GUARD_RECORD, "\npart "), 0);
+        Expect("  safe mode not on", Num(MSBD_GATE_DOMAIN, MSBD_SAFE_KEY), -1);
     } else if (!strcmp(scenario, "one")) {   // reports: 10:00 one banners crash only
         Expect("a single crash: nothing yet (two are needed)", MSBDGuardEvaluate(&s), 0);
         Expect("  banners untouched", Num(TD, "macBanners"), -1);

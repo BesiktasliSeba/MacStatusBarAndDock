@@ -47,6 +47,55 @@ run apple apple-only-our-class-in-reason.ips apple-only-our-class-in-reason.ips
 run mixed step1b-loader.ips step1b-dock-downloads.ips
 run recent step1b-core-banners.ips step1b-core-banners.ips
 run one step1b-core-banners.ips
+run cclookup step1b-core-cc-lookup.ips step1b-core-cc-lookup.ips
+echo "== Fit to Window in the rules (no build needed): every function of it window code, Resize Apps to Fit Windows only its own two"
+# (1.8.0 engine parity pass: ^_?DMFit took Fit's own functions to Resize Apps to Fit Windows, and the sections holding its tiles and the turn had no
+#  rule, so DMAssignDefaultSlots, DMSlotFrame, the closure watcher and DMRelayoutForOrientation fell to Stock status bar mode)
+python3 -I - crashmap-rules.txt ../statusbar/StatusBar.x <<'PY' || fails=1
+import re, sys
+rules, src = sys.argv[1], open(sys.argv[2], errors='replace').read()
+sym, sec = [], []
+for raw in open(rules):
+    line = re.split(r'\s+#', raw, 1)[0].strip()
+    f = line.split()
+    if len(f) == 4 and f[0] in ('sym', 'sec') and f[1] == 'MacStatusBarCore':
+        (sym if f[0] == 'sym' else sec).append((re.compile(f[2]), f[3]))
+def by_sym(name):   # (the first sym rule that matches wins, as make-crashmap.py: sym before sec before file)
+    for rx, t in sym:
+        if rx.search(name): return t
+    return None
+bad = 0
+def check(ok, what):
+    global bad
+    print(('PASS  ' if ok else 'FAIL  ') + what)
+    if not ok: bad += 1
+# Fit to Window's functions as StatusBar.x defines them (every DMFit... but Resize Apps to Fit Windows' own two, and its helpers by name), with blocks
+fit = sorted(set(re.findall(r'^(?:static |void |BOOL |CGRect )[^(=;]*?\b(DMFit[A-Z]\w*)\(', src, re.M)) - {'DMFitIfNeeded', 'DMFitWindowContent'})
+helpers = ['DMSetFitEnabled', 'DMInvalidateFitCache', 'DMStageTakesPartInFit', 'DMAssignDefaultSlots', 'DMAssignTilesKeepingPlaces', 'DMDefaultSlotNames',
+           'DMSlotFrame', 'DMSlotNameForFrame', 'DMTilesText', 'DMMirrorSlot', 'DMApplyGroupSlots', 'DMWatchFitClosures', 'DMWatchFitToggle',
+           'DMRelayoutForOrientation', 'DMRelayoutStageWhenLanded', 'DMRememberFitForFullScreen', 'DMSetSideChoiceGroup', 'DMSideChoiceFrame',
+           'DMApplySideChoice', 'DMPromptForSide', 'DMPromptForSideApply', 'DMPromptBeforeLaunch', 'DMThirdWindowSides', 'DMLaunchIntoTile',
+           'DMNoFitFrame', 'DMMarkFreeWindow', 'DMTileOpenWindows', 'DMSpreadFitGroup']
+missing = [h for h in helpers if not re.search(r'^static [^(=;]*?\b' + h + r'\(', src, re.M)]
+check(len(fit) >= 9 and not missing, 'Fit to Window\'s functions found in StatusBar.x: %d DMFit... (%s) and %d helpers%s' % (len(fit), ', '.join(fit), len(helpers), (' -- not found: ' + ', '.join(missing)) if missing else ''))
+wrong = [n for n in fit + helpers for v in ('_' + n, '___' + n + '_block_invoke', '___' + n + '_block_invoke_2.123') if by_sym(v) != 'windowingEnabled']
+check(not wrong, 'each of them, its blocks too, is Windowing by name, whatever section it sits in' + (' -- not: ' + ', '.join(wrong) if wrong else ''))
+flex = [n for n in ('_DMFitIfNeeded', '_DMFitWindowContent', '___DMFitIfNeeded_block_invoke', '___DMFitWindowContent_block_invoke') if by_sym(n) != 'flexResizeWindows']
+check(not flex, 'Resize Apps to Fit Windows keeps its own two (DMFitIfNeeded, DMFitWindowContent)' + (' -- not: ' + ', '.join(flex) if flex else ''))
+check(by_sym('_DMFitIfNeededX') != 'flexResizeWindows' and by_sym('_DMFitEnabled') == 'windowingEnabled', '  ... and only them (a longer name is Fit\'s)')
+# the three sections around Fit's tiles and the turn: window code, no section left to Stock status bar mode
+heads = [h.strip() for h in re.findall(r'^//\s?(?:----|====).*$', src, re.M)]
+want = [h for h in heads if re.match(r'^//\s?-+\s(Window Size \(Settings >|the screen turns \(portrait|SofaScore quick relaunch)', h)]
+got = [h for h in heads if any(rx.search(h) and t == 'windowingEnabled' for rx, t in sec)]
+check(len(want) == 3 and all(h in got for h in want), 'the sections of the Window menu\'s layouts, the turn and SofaScore\'s relaunch are Windowing (%d of 3 found)' % len(want))
+# "is a hardware keyboard attached?" (DMHardwareKeyboardAttached, at the end of the turn's section): asked by the keyboard pill, the engines' keyboard
+# code, the desktop's keys, the Wi-Fi menu, the menus' key rows -- its caller's, transparent, as the shared Control Center lookups (code review 1.8.0)
+kb = re.findall(r'^static BOOL (DMHardwareKeyboardAttached)\(void\) \{', src, re.M)
+check(kb == ['DMHardwareKeyboardAttached'], 'DMHardwareKeyboardAttached found in StatusBar.x')
+kbt = [by_sym(v) for v in ('_DMHardwareKeyboardAttached', '___DMHardwareKeyboardAttached_block_invoke', 'DMHardwareKeyboardAttached')]
+check(kbt == ['transparent'] * 3 and by_sym('_DMHardwareKeyboardAttachedX') != 'transparent', 'DMHardwareKeyboardAttached and its once-only block are transparent by name (the caller decides), not the turn section\'s Windowing (got %s)' % kbt)
+sys.exit(1 if bad else 0)
+PY
 echo "== the words (footer, notice, Report a Problem)"
 clang -fobjc-arc -Wall -Wno-unused-function -framework Foundation -DMSBD_GUARD_RECORD="\"$W/words-record.txt\"" -o "$W/tse" test-stepexplain.m
 "$W/tse" || fails=1
@@ -64,7 +113,7 @@ if [ -f "$MAP" ] && [ -n "$DSYM" ]; then
     python3 make-crash-fixture.py "$W/$n.ips" "$@" >/dev/null && "$W/tcf" "$MAP" "$W/$n.ips" "$want" || fails=1
   }
   D=com.besiktasliseba.macstatusbar
-  real core-banner "pref MacStatusBarCore $D macBanners 0 *" --symbol "$DSYM" MacStatusBarCore 'logos_method\$MacBanners\$'
+  real core-banner "pref MacStatusBarCore $D bannerStyle 0 *" --symbol "$DSYM" MacStatusBarCore 'logos_method\$MacBanners\$'
   real core-menu "pref MacStatusBarCore $D stockStatusBar 1 *" --symbol "$DSYM" MacStatusBarCore 'DMShowMenu|DMMenuWindow|DMMenu'
   # (auto-hide is off on this Mac, as for a new user: a crash in its code can't be the switch, so Stock status bar mode instead)
   real core-autohide "pref MacStatusBarCore $D stockStatusBar 1 *" --symbol "$DSYM" MacStatusBarCore '^_DMAutoHide'
@@ -124,8 +173,19 @@ if [ -f "$MAP" ] && [ -n "$DSYM" ]; then
   # (the Mac Switcher, 1.4: its Stage Manager desktops' functions and blocks, the Home button's blocks -> its own switch; the blocks fell to Stock
   #  status bar mode in the 1.4~int6 map. Its switch is off by default -- a crash then falls to Stock status bar mode -- so it is on for these lines,
   #  in this Mac's com.besiktasliseba.macstatusbar domain, which is removed again; skipped when the Mac has that domain already)
+  # the shared Control Center lookups (1.8.0: transparent), with a trap in Apple code above them: the caller one frame lower decides. Only the
+  # lookups this build has as functions (a release build inlines MSBDControlCenterController), in their calling order, then the caller.
+  LOOKS=$(nm -s __TEXT __text "$DSYM" | sed -n -E 's/^[0-9a-f]+ [tT] _(MSBDControlCenterController|DMControlCenterController|DMControlCenterActive|DMCCTypes|DMCCGet|DMCCIvarOf)$/\1/p')
+  cclook() {   # cclook <name> <expected answer> <caller regex> <lookup>...
+    local n=$1 want=$2 caller=$3 l top= more=(); shift 3
+    for l in "$@"; do echo "$LOOKS" | grep -qx "$l" || continue; if [ -z "$top" ]; then top="^_?$l\$"; else more+=(--then "^_?$l\$"); fi; done
+    [ -n "$top" ] || { echo "FAIL  $n: none of the lookups ($*) in this build"; fails=1; return; }
+    real "$n" "$want" --symbol "$DSYM" MacStatusBarCore "$top" "${more[@]}" --then "$caller" --apple-top
+  }
   if ! defaults read $D >/dev/null 2>&1; then
     MSW_DOMAIN_MADE=1; defaults write $D macSwitcher -bool YES
+    # (the Mac Switcher's Home button asks whether Control Center is up: its own switch)
+    cclook core-cclook-msw "pref MacStatusBarCore $D macSwitcher 0 *" '^_?DMMSWHomeDoubleTakesOver$' MSBDControlCenterController DMControlCenterController DMControlCenterActive
     real core-msw-sm "pref MacStatusBarCore $D macSwitcher 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMMSWSMJoin$'
     real core-msw-sm-block "pref MacStatusBarCore $D macSwitcher 0 *" --symbol "$DSYM" MacStatusBarCore '^___DMMSWSMSwitch_block_invoke'
     real core-msw-button-block "pref MacStatusBarCore $D macSwitcher 0 *" --symbol "$DSYM" MacStatusBarCore '^___DMMSWHomeDoubleTakesOver_block_invoke'
@@ -158,6 +218,52 @@ if [ -f "$MAP" ] && [ -n "$DSYM" ]; then
   real core-finder-drag "pref MacStatusBarCore $D finderEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMFinderDragMove'
   real core-finder-keys "pref MacStatusBarCore $D finderEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMNativeHandlePress'
   real dock-finder "pref DockMagnification com.besiktasliseba.dockmagnification showFinder 0 *" --map "$MAP" DockMagnification arm64e showFinder
+  # P4's trap (1.8.0~i11, M1): +[SBControlCenterController sharedInstance] entered again under MSBDControlCenterController <- DMControlCenterController
+  # <- DMControlCenterActive <- our Control Center's sensor update: Control Center Style back to iPadOS's, not Stock status bar mode (the lookups
+  # were the Stock status bar's code); a getter under our Control Center's code the same (DMCCGet was RAM & CPU's add's: the whole part)
+  cclook core-cclook-sensor "pref MacStatusBarCore $D controlCenterStyle 0 *" '^_?DMCCPSensorUpdate$' MSBDControlCenterController DMControlCenterController DMControlCenterActive
+  cclook core-cclook-getter "pref MacStatusBarCore $D controlCenterStyle 0 *" '^_?DMCCPAppleSize$' DMCCGet
+  # (the lookups' other callers: their own targets -- the battery menu's Control Center icon, the menu bar's hook keeping iOS's bar, the tick, RAM &
+  #  CPU's add's hooks; the tick and those hooks are pinned by their own rules: the engine notice's section and a %group header held them)
+  cclook core-cclook-battery "pref MacStatusBarCore $D batteryMenu 0 *" '^_?DMBattOpenControlCenter$' MSBDControlCenterController DMControlCenterController DMControlCenterActive
+  cclook core-cclook-keepbar "pref MacStatusBarCore $D stockStatusBar 1 *" 'logos_method\$_ungrouped\$UIStatusBar_Modern\$setAlpha\$$' MSBDControlCenterController DMControlCenterController DMControlCenterActive
+  cclook core-cclook-tick "pref MacStatusBarCore $D stockStatusBar 1 *" '^_?DMTickBody$' MSBDControlCenterController DMControlCenterController DMControlCenterActive
+  cclook core-cclook-autoadd "part MacStatusBarCore - - 0 the status bar|the Mac status bar" 'logos_method\$CCAutoAddWatch\$SBControlCenterController\$_willPresent$' DMCCGet
+  # "is a hardware keyboard attached?" (code review 1.8.0): transparent, so a trap under it is its caller's -- the desktop's keys and the Wi-Fi
+  # menu their own switches, the menus' key rows (a section with no rule) Stock status bar mode, the keyboard pill and the Stage Manager desktop
+  # Windowing -- not the turn section's Windowing for all. The callers this build has as functions (a release build inlines some).
+  KB=$(nm -s __TEXT __text "$DSYM" | sed -n -E 's/^[0-9a-f]+ [tT] _(DMHardwareKeyboardAttached|DMDesktopKeysFocus|DMWiFiShowPasswordSheet|DMShortcutRow|DMPlaceKeyboardPill|DMSMDeskOutsideTouch)$/\1/p')
+  if echo "$KB" | grep -qx DMHardwareKeyboardAttached; then
+    nkb=0
+    for c in "desktop desktopIcons 0 DMDesktopKeysFocus" "wifi wifiMenu 0 DMWiFiShowPasswordSheet" "menurow stockStatusBar 1 DMShortcutRow" "pill windowingEnabled 0 DMPlaceKeyboardPill" "smdesk windowingEnabled 0 DMSMDeskOutsideTouch"; do
+      read -r kn kt ko kf <<< "$c"
+      echo "$KB" | grep -qx "$kf" || continue
+      nkb=$((nkb+1)); real "core-hwkb-$kn" "pref MacStatusBarCore $D $kt $ko *" --symbol "$DSYM" MacStatusBarCore '^_?DMHardwareKeyboardAttached$' --then "^_?$kf\$" --apple-top
+    done
+    [ $nkb -ge 2 ] && echo "PASS  $nkb callers of DMHardwareKeyboardAttached in this build checked: each its own switch" || { echo "FAIL  only $nkb of its callers found in this build"; fails=1; }
+  else echo "PASS  DMHardwareKeyboardAttached inlined into its callers in this build: they decide (nothing of its own in the map)"; fi
+  real core-tick "pref MacStatusBarCore $D stockStatusBar 1 *" --symbol "$DSYM" MacStatusBarCore '^_?DMTickBody$'
+  real core-autoadd-hook "part MacStatusBarCore - - 0 the status bar|the Mac status bar" --symbol "$DSYM" MacStatusBarCore 'logos_method\$CCAutoAddWatch\$'
+  # (1.8.0, KT 3 Nov: our Control Center's Airplane Mode row -- the block that asks AppSupport's RadiosPreferences on our queue, the delegate it
+  #  tells -- is the tiles' code: Control Center Style back to iPadOS's, as for every Mac tile)
+  real core-cc-airplane "pref MacStatusBarCore $D controlCenterStyle 0 *" --symbol "$DSYM" MacStatusBarCore '^___DMCCTAirplaneSet_block_invoke'
+  real core-cc-airplane-delegate "pref MacStatusBarCore $D controlCenterStyle 0 *" --symbol "$DSYM" MacStatusBarCore 'DMCCTAirplaneDelegate airplaneModeChanged'
+  # (our Control Center's layout, common/CCLayout.h: not inlined in a release build -- MSBDCCLayout fell to Stock status bar mode)
+  real core-cc-layout "pref MacStatusBarCore $D controlCenterStyle 0 *" --symbol "$DSYM" MacStatusBarCore '^_?MSBDCCLayout$'
+  # Fit to Window (1.8.0 engine parity pass): its functions Windowing, by name -- ^_?DMFit took them to Resize Apps to Fit Windows, their sections fell
+  # to Stock status bar mode --, with the window code of the sections around them (the Window menu's layouts, the turn); Resize Apps to Fit Windows
+  # keeps its own two. Every one this build has as a function (a release build inlines some).
+  TEXT=$(nm -s __TEXT __text "$DSYM")
+  nfit=0
+  for f in DMFitGroupForget DMFitEnabled DMFitInto DMFitRepairOverlappingSlots DMFitWatchSync DMFitFullScreenAppGone DMFitRejoinAfterFullScreen DMAssignDefaultSlots DMAssignTilesKeepingPlaces \
+           DMSlotFrame DMSlotNameForFrame DMWatchFitClosures DMWatchFitToggle DMRelayoutForOrientation DMRelayoutStageWhenLanded DMApplyGroupSlots DMTileOpenWindows DMWindowLayout DMSendToWindow DMScaleFrame; do
+    echo "$TEXT" | grep -q " _$f\$" || continue
+    nfit=$((nfit+1)); real "core-fit-$f" "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore "^_?$f\$"
+  done
+  [ $nfit -ge 6 ] && echo "PASS  $nfit of Fit to Window's functions (and the window code around them) in this build checked: Windowing" || { echo "FAIL  only $nfit of Fit to Window's functions found in this build"; fails=1; }
+  for f in DMFitIfNeeded DMFitWindowContent; do
+    echo "$TEXT" | grep -q " _$f\$" && real "core-flex-$f" "pref MacStatusBarCore $D flexResizeWindows 0 *" --symbol "$DSYM" MacStatusBarCore "^_?$f\$"
+  done
 else
   echo "== (no built map: build the package to test it)"
 fi

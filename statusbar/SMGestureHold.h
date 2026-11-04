@@ -14,6 +14,10 @@
 // held stage (another Mac Switcher desktop's windows) go ahead at once.
 #pragma once
 #include <QuartzCore/QuartzCore.h>   // (CACurrentMediaTime)
+#include "SMGestureCap.h"            // (a window's live resize that never completes: let go a moment after its finger lifted, 1.8.0 item 7)
+#ifndef DM_FEATURE_MARK
+#define DM_FEATURE_MARK(name) do { } while (0)   // (the Mac tests that build SMEngineAPI.h; StatusBar.x's own marker is the one that ships)
+#endif
 
 static NSHashTable *gSMGestureTxs;                       // (the gesture transactions running now: SpringBoard's, weak)
 static NSMutableSet<NSString *> *gSMGestureHeld;         // (the windows of the stages they hold: their identifiers)
@@ -27,6 +31,59 @@ static const CFTimeInterval kSMGestureFallbackHold = 1.2;
 
 static void DMSMGestureFlushSoon(void);
 static void DMSMGestureFlush(void);
+// A transaction's getter of no arguments with that return type ('@', 'B'): asked only when it is there in that shape.
+static BOOL DMSMGTGetter(id t, SEL s, char ret) {
+    Method m = t ? class_getInstanceMethod(object_getClass(t), s) : NULL;
+    if (!m || method_getNumberOfArguments(m) != 2) return NO;
+    char r[8] = {0};
+    method_getReturnType(m, r, sizeof r);
+    return r[0] == ret;
+}
+// Whether a gesture transaction still holds its stage (SMGestureCap.h): a live resize (-isLiveResize, SBFluidSwitcherGestureWorkspaceTransaction's)
+// is let go once its finger -- the state of its own recognizer, SBSystemGestureWorkspaceTransaction's -gestureRecognizer: began or changed is
+// down -- has been up for the cap; every other transaction holds until SpringBoard completes it (DMSMGTDidComplete) or drops it. 16.7.7's shapes,
+// read on the iPad 2; a getter missing or of another shape keeps today's wait, and so does a recognizer that is not there or does not answer -state
+// (the finger counts as down: SMGestureCap.h MSBDGestureFingerDown).
+static const void *kSMGTUpSinceKey = &kSMGTUpSinceKey;
+#if DEBUG
+static NSMutableArray *gSMGTStuck;   // (debug /tmp/msb-gesture-stuck: a live resize SpringBoard completed, kept as one that never did -- the 18.5 story)
+#endif
+static BOOL DMSMGestureTxHolds(id t, BOOL complete) {
+#if DEBUG
+    if (complete && [gSMGTStuck containsObject:t]) complete = NO;
+    if (DMTestFlag("/tmp/msb-gesture-nocap")) return !complete;   // (debug: as before 1.8.0, no cap)
+#endif
+    SEL lr = NSSelectorFromString(@"isLiveResize"), gr = NSSelectorFromString(@"gestureRecognizer"), st = NSSelectorFromString(@"state");
+    BOOL live = !complete && DMSMGTGetter(t, lr, 'B') && ((BOOL (*)(id, SEL))objc_msgSend)(t, lr);
+    if (!live) return MSBDGestureTxHolds(complete, NO, YES, 0, 0);
+    BOOL down = YES;
+    if (DMSMGTGetter(t, gr, '@')) {
+        id r = ((id (*)(id, SEL))objc_msgSend)(t, gr);
+        BOOL readable = r && [r respondsToSelector:st];
+        down = MSBDGestureFingerDown(readable, readable ? ((long long (*)(id, SEL))objc_msgSend)(r, st) : 0);   // (began, changed: on it; possible, ended, cancelled, failed: up; no recognizer: down)
+    }
+    CFTimeInterval now = CACurrentMediaTime();
+    double up = MSBDGestureUpSince(down, [objc_getAssociatedObject(t, kSMGTUpSinceKey) doubleValue], now);
+    objc_setAssociatedObject(t, kSMGTUpSinceKey, up > 0 ? @(up) : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (MSBDGestureTxHolds(complete, YES, down, up, now)) return YES;
+#if DEBUG
+    [gSMGTStuck removeObject:t];
+#endif
+    DM_FEATURE_MARK("sm-gesture-lifted-cap");
+    DMLog([NSString stringWithFormat:@"[smgesture] SpringBoard's %@ has not completed %.1f s after its finger lifted: it no longer holds its stage, the %lu write(s) waiting for it run", NSStringFromClass(object_getClass(t)), now - up, (unsigned long)gSMAfterGesture.count]);
+    return NO;
+}
+// While writes wait for a live resize, its hold is looked at again every half second: the cap lets them go without a write or a gesture asking.
+static BOOL gSMGestureWatchSoon = NO;
+static BOOL DMSMGestureLive(void);
+static void DMSMGestureWatchCap(void) {
+    if (gSMGestureWatchSoon || !gSMGestureHooked || !gSMAfterGesture.count) return;
+    gSMGestureWatchSoon = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        gSMGestureWatchSoon = NO;
+        if (gSMAfterGesture.count && DMSMGestureLive()) DMSMGestureWatchCap();   // (DMSMGestureLive runs the writes once the last transaction let go)
+    });
+}
 static NSSet<NSString *> *DMSMStageWindowIds(id stage) {
     NSMutableSet<NSString *> *ids = [NSMutableSet set];
     for (id it in DMSMStageItemsMap(stage)) { NSString *u = DMSMItemUid(it); if (u) [ids addObject:u]; }
@@ -41,7 +98,8 @@ static BOOL DMSMGestureLive(void) {
     NSUInteger n = 0, dropped = 0;
     for (id t in gSMGestureTxs.allObjects) {
         SEL done = NSSelectorFromString(@"isComplete");
-        if ([t respondsToSelector:done] && ((BOOL (*)(id, SEL))objc_msgSend)(t, done)) { [gSMGestureTxs removeObject:t]; dropped++; continue; }
+        BOOL complete = [t respondsToSelector:done] && ((BOOL (*)(id, SEL))objc_msgSend)(t, done);
+        if (!DMSMGestureTxHolds(t, complete)) { [gSMGestureTxs removeObject:t]; dropped++; continue; }   // (complete, or a live resize up long enough)
         n++;
     }
     static NSUInteger lastN = 0;
@@ -114,7 +172,7 @@ static void DMSMGestureFlush(void) {
 }
 static void DMSMGestureFlushSoon(void) {
     if (!gSMAfterGesture.count) return;
-    if (gSMGestureHooked) { if (!DMSMGestureLive()) dispatch_async(dispatch_get_main_queue(), ^{ DMSMGestureFlush(); }); return; }
+    if (gSMGestureHooked) { if (!DMSMGestureLive()) dispatch_async(dispatch_get_main_queue(), ^{ DMSMGestureFlush(); }); else DMSMGestureWatchCap(); return; }
     CFTimeInterval wait = MAX(0.0, gSMGestureFallbackUntil - CACurrentMediaTime());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((wait + 0.02) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMSMGestureFlush(); });
 }

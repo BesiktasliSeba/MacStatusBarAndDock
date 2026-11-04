@@ -91,6 +91,38 @@
 			<key>PostNotification</key>
 			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
 			<key>cell</key>
+			<string>PSLinkListCell</string>
+			<key>default</key>
+			<string>default</string>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>detail</key>
+			<string>PSListItemsController</string>
+			<key>id</key>
+			<string>WINDOW_SIZE</string>
+			<key>key</key>
+			<string>windowSize</string>
+			<key>label</key>
+			<string>Window Size</string>
+			<key>staticTextMessage</key>
+			<string>The size an app's window opens at. A window that opens where it last was keeps its size.</string>
+			<key>validTitles</key>
+			<array>
+				<string>Small</string>
+				<string>Default</string>
+				<string>Large</string>
+			</array>
+			<key>validValues</key>
+			<array>
+				<string>small</string>
+				<string>default</string>
+				<string>large</string>
+			</array>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
 			<string>PSSwitchCell</string>
 			<key>default</key>
 			<true/>

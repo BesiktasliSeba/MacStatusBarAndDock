@@ -3,13 +3,17 @@
 # chosen place in one of our parts. For the Mac tests of the crash guard's step 1b (tools/test-crashstep.sh) and for device tests (copied to
 # /tmp/msb-fakecrash-report on a test build, see common/CrashGuard.h). No real data: every value is made up.
 #
-#   make-crash-fixture.py <out.ips> <Image> <uuid> <offset hex> [--exception] [--loader]
+#   make-crash-fixture.py <out.ips> <Image> <uuid> <offset hex>[,<offset hex>...] [--exception] [--loader] [--apple-top]
+#        several offsets: as many frames of ours, the first one on top (each the caller of the one above it)
 #   make-crash-fixture.py <out.ips> --map <CrashMap.txt> <Image> <arch> <target> [--exception]
 #        the first function range of <target> in <Image>'s <arch> slice of a built map (e.g. MacStatusBarCore arm64e macBanners)
-#   make-crash-fixture.py <out.ips> --symbol <dSYM DWARF file> <Image> <regex> [--exception]
-#        inside the first function whose name matches <regex> (the UUID is the dSYM's, i.e. the build's)
-# --exception: the crash is an uncaught exception: our frame is in the last exception backtrace (the faulting thread only has Apple's abort).
+#   make-crash-fixture.py <out.ips> --symbol <dSYM DWARF file> <Image> <regex> [--then <regex>]... [--exception] [--apple-top]
+#        inside the first function whose name matches <regex> (the UUID is the dSYM's, i.e. the build's); each --then adds a frame of ours below
+#        the ones before it, inside the first function matching that regex (its caller)
+# --exception: the crash is an uncaught exception: our frames are in the last exception backtrace (the faulting thread only has Apple's abort).
 # --loader: our frame is in the loader (MacStatusBar.dylib), which the guard cannot turn off on its own.
+# --apple-top: the crash is in Apple code our top frame called (a trap in libdispatch under a SpringBoard method, as a dispatch_once entered
+#        again), so Apple's frames are above ours on the crashing stack.
 import json, re, subprocess, sys
 
 def pick_from_map(path, image, arch, target):
@@ -31,10 +35,13 @@ def pick_from_map(path, image, arch, target):
             prev = (start, f[2])
     sys.exit('fixture: no %s range in %s %s' % (target, image, arch))
 
+_syms = {}
 def pick_from_symbol(dsym, regex):
-    out = subprocess.run(['dwarfdump', '--uuid', dsym], check=True, capture_output=True, text=True).stdout
-    uuid = re.search(r'UUID: ([0-9A-Fa-f-]+)', out).group(1).lower()
-    syms = subprocess.run(['nm', '-n', '-s', '__TEXT', '__text', dsym], check=True, capture_output=True, text=True).stdout.splitlines()
+    if dsym not in _syms:   # (read once: --then asks the same symbols again)
+        out = subprocess.run(['dwarfdump', '--uuid', dsym], check=True, capture_output=True, text=True).stdout
+        _syms[dsym] = (re.search(r'UUID: ([0-9A-Fa-f-]+)', out).group(1).lower(),
+                       subprocess.run(['nm', '-n', '-s', '__TEXT', '__text', dsym], check=True, capture_output=True, text=True).stdout.splitlines())
+    uuid, syms = _syms[dsym]
     for i, l in enumerate(syms):
         m = re.match(r'([0-9a-f]{16}) [tT] (.*)', l)
         if m and re.search(regex, m.group(2)):
@@ -43,15 +50,20 @@ def pick_from_symbol(dsym, regex):
 
 def main():
     a = sys.argv[1:]
-    exc = '--exception' in a; loader = '--loader' in a
-    a = [x for x in a if x not in ('--exception', '--loader')]
+    exc = '--exception' in a; loader = '--loader' in a; appletop = '--apple-top' in a
+    a = [x for x in a if x not in ('--exception', '--loader', '--apple-top')]
+    then = []   # (--then <regex>: the callers below the top frame, in order)
+    while '--then' in a:
+        i = a.index('--then'); then.append(a[i + 1]); del a[i:i + 2]
     out = a[0]; note = ''
     if a[1] == '--map':
-        image = a[3]; uuid, offset = pick_from_map(a[2], image, a[4], a[5]); note = 'map target ' + a[5]
+        image = a[3]; uuid, offset = pick_from_map(a[2], image, a[4], a[5]); note = 'map target ' + a[5]; offsets = [offset]
     elif a[1] == '--symbol':
-        image = a[3]; uuid, offset, sym = pick_from_symbol(a[2], a[4]); note = 'symbol ' + sym
+        image = a[3]; uuid, offset, sym = pick_from_symbol(a[2], a[4]); note = 'symbol ' + sym; offsets = [offset]
+        for rx in then:
+            _, o2, s2 = pick_from_symbol(a[2], rx); offsets.append(o2); note += ' <- ' + s2
     else:
-        image, uuid, offset = a[1], a[2].lower(), int(a[3], 16)
+        image, uuid, offsets = a[1], a[2].lower(), [int(x, 16) for x in a[3].split(',')]
     images = [
         {"source": "P", "arch": "arm64e", "base": 4294967296, "size": 16384, "uuid": "00000000-0000-0000-0000-00000000aaaa",
          "path": "/System/Library/CoreServices/SpringBoard.app/SpringBoard", "name": "SpringBoard"},
@@ -65,16 +77,19 @@ def main():
          "path": "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", "name": "CoreFoundation"},
         {"source": "P", "arch": "arm64e", "base": 8000000000, "size": 100000, "uuid": "00000000-0000-0000-0000-00000000eeee",
          "path": "/private/preboot/SYNTHETIC/jb-SYNTHETIC/procursus/usr/lib/TweakInject/MacStatusBar.dylib", "name": "MacStatusBar.dylib"},
+        {"source": "P", "arch": "arm64e", "base": 6300000000, "size": 300000, "uuid": "00000000-0000-0000-0000-00000000ffff",
+         "path": "/usr/lib/system/libdispatch.dylib", "name": "libdispatch.dylib"},
     ]
-    ours = {"imageOffset": offset, "imageIndex": 5 if loader else 2}
+    ours = [{"imageOffset": o, "imageIndex": 5 if loader else 2} for o in offsets]
+    top = [{"imageOffset": 6000, "symbol": "_dispatch_once_wait", "imageIndex": 6}, {"imageOffset": 7000, "imageIndex": 0}] if appletop else []
     if exc:
         fault = [{"imageOffset": 1000, "symbol": "__pthread_kill", "imageIndex": 1}, {"imageOffset": 2000, "symbol": "objc_exception_rethrow", "imageIndex": 4}]
-        backtrace = [{"imageOffset": 3000, "symbol": "__exceptionPreprocess", "imageIndex": 4}, ours, {"imageOffset": 4000, "imageIndex": 3}]
+        backtrace = [{"imageOffset": 3000, "symbol": "__exceptionPreprocess", "imageIndex": 4}] + top + ours + [{"imageOffset": 4000, "imageIndex": 3}]
     else:
-        fault = [ours, {"imageOffset": 4000, "imageIndex": 3}, {"imageOffset": 5000, "imageIndex": 0}]
+        fault = top + ours + [{"imageOffset": 4000, "imageIndex": 3}, {"imageOffset": 5000, "imageIndex": 0}]
         backtrace = None
     body = {"uptime": 100, "procRole": "Foreground", "incident": "SYNTHETIC-TEST-FIXTURE", "note": note,
-            "exception": {"type": "EXC_CRASH" if exc else "EXC_BAD_ACCESS", "signal": "SIGABRT" if exc else "SIGSEGV"},
+            "exception": {"type": "EXC_CRASH" if exc else "EXC_BREAKPOINT" if appletop else "EXC_BAD_ACCESS", "signal": "SIGABRT" if exc else "SIGTRAP" if appletop else "SIGSEGV"},
             "faultingThread": 1,
             "threads": [{"id": 1, "frames": [{"imageOffset": 1234, "symbol": "mach_msg_trap", "imageIndex": 1}]},
                         {"id": 2, "triggered": True, "queue": "com.apple.main-thread", "frames": fault}],
@@ -86,6 +101,6 @@ def main():
               "incident_id": "SYNTHETIC-TEST-FIXTURE", "name": "SpringBoard", "bundleID": "com.apple.springboard"}
     with open(out, 'w') as f:
         f.write(json.dumps(header) + '\n' + json.dumps(body, indent=1) + '\n')
-    print('%s: %s+0x%x uuid %s%s' % (out, image, offset, uuid, (' (' + note + ')') if note else ''))
+    print('%s: %s+%s uuid %s%s' % (out, image, ', +'.join('0x%x' % o for o in offsets), uuid, (' (' + note + ')') if note else ''))
 
 main()

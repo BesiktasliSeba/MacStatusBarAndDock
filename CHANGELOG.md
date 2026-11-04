@@ -2,6 +2,26 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.0
+
+### New
+- Mac Control Center: Airplane Mode, Wi-Fi, Bluetooth, Display, Sound and Now Playing as on a Mac, above your other controls. Choose Mac in Settings > Status Bar > Control Center Style (on iPadOS 18 it holds Apple's own controls).
+- Control Center Style also offers iPadOS and BigSurCenter, and only the chosen one loads. You keep your current one until you pick another.
+- Banner Style in Settings > Status Bar replaces Mac-Style Banners: Mac, iPadOS or Destra banners, and only the chosen style loads.
+- Window Size in Settings > Windows & Multitasking: new windows open Small, Default or Large, with every window engine.
+
+### Improvements
+- New windows open at the same size and step aside the same way with every engine, and the Window menu's Small and Large match Window Size.
+- Fit to Window works the same with every engine: windows keep their places when one closes or another joins, and a minimized window keeps its tile.
+- With Aerial, an app the green button takes out of full screen opens beside your windows, not on top of one, as with Zetsu and MilkyWay4.
+- With Aerial, Zetsu and MilkyWay4, apps opened from other launchers open in their window, as from the Dock, not full screen.
+- The menu bar's Control Center icon lights up while Control Center is open, and a second tap closes it.
+- Mac Switcher: a swipe up opens it the same way iPadOS opens the App Switcher.
+- Downgrading, or an untested iPadOS version where MacStatusBar&Dock stays off, gives back the tweaks it keeps from loading.
+
+### Fixes
+- On iPadOS 16, the first tap on the menu bar after a respring works. It used to do nothing.
+
 ## 1.7.9.2
 
 ### Fixes

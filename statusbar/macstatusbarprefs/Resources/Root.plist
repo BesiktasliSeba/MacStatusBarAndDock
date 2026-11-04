@@ -262,7 +262,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>Banners appear at the top right.</string>
+			<string>Only the chosen banner style is loaded.</string>
 			<key>id</key>
 			<string>BANNERS_GROUP</string>
 			<key>label</key>
@@ -272,15 +272,35 @@
 			<key>PostNotification</key>
 			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
 			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>default</key>
-			<true/>
+			<string>PSLinkListCell</string>
 			<key>defaults</key>
 			<string>com.besiktasliseba.macstatusbar</string>
+			<key>detail</key>
+			<string>MSBChoiceListController</string>
+			<key>id</key>
+			<string>BANNER_STYLE</string>
 			<key>key</key>
-			<string>macBanners</string>
+			<string>bannerStyle</string>
 			<key>label</key>
-			<string>Mac-Style Banners</string>
+			<string>Banner Style</string>
+			<key>shortTitles</key>
+			<array>
+				<string>Mac</string>
+				<string>iPadOS</string>
+				<string>Destra</string>
+			</array>
+			<key>validTitles</key>
+			<array>
+				<string>Mac</string>
+				<string>iPadOS</string>
+				<string>Destra</string>
+			</array>
+			<key>validValues</key>
+			<array>
+				<string>mac</string>
+				<string>stock</string>
+				<string>destra</string>
+			</array>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -440,11 +460,45 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>How large Control Center appears when you open it from the status bar.</string>
+			<string>Only the chosen Control Center is loaded.</string>
 			<key>id</key>
 			<string>CC_GROUP</string>
 			<key>label</key>
 			<string>Control Center</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSLinkListCell</string>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>detail</key>
+			<string>MSBChoiceListController</string>
+			<key>id</key>
+			<string>CC_STYLE</string>
+			<key>key</key>
+			<string>controlCenterStyle</string>
+			<key>label</key>
+			<string>Control Center Style</string>
+			<key>shortTitles</key>
+			<array>
+				<string>Mac</string>
+				<string>iPadOS</string>
+				<string>BigSurCenter</string>
+			</array>
+			<key>validTitles</key>
+			<array>
+				<string>Mac</string>
+				<string>iPadOS</string>
+				<string>BigSurCenter</string>
+			</array>
+			<key>validValues</key>
+			<array>
+				<string>mac</string>
+				<string>stock</string>
+				<string>bigsurcenter</string>
+			</array>
 		</dict>
 		<dict>
 			<key>PostNotification</key>
@@ -455,6 +509,8 @@
 			<true/>
 			<key>defaults</key>
 			<string>com.besiktasliseba.macccgrabber</string>
+			<key>id</key>
+			<string>CC_GRABBER</string>
 			<key>key</key>
 			<string>enabled</string>
 			<key>label</key>
@@ -742,7 +798,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>The battery in the status bar opens a battery menu, and the Control Center icon next to the clock opens Control Center, like on a Mac.</string>
+			<string>The battery in the status bar opens a battery menu, and the Control Center icon next to the clock opens Control Center, like on a Mac. With Control Center Style set to Mac, the icon shows when this is off too.</string>
 			<key>id</key>
 			<string>BATTERY_MENU_GROUP</string>
 			<key>stockHides</key>

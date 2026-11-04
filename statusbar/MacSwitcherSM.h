@@ -809,10 +809,11 @@ static BOOL DMMSWSMElsewhere(NSString *k) {
 // engine's Fit tick tiles the rest again) and is placed in the other desktop's when that desktop comes (DMMSWSMSwitch's Fit pass).
 static BOOL DMMSWSMDeskFull(NSInteger did) { return DMMSWSMDeskWindows(did).count >= DMSMWindowCap(); }
 static BOOL DMMSWSMDropRefused(NSInteger did) { return DMMSWSMDeskFull(did) && DMMSWSMAtCap(DMMSWSMCapDrop, NO) == DMMSWSMCapRefuse; }
-// Fit to Window per desktop: the window joins the other desktop's arrangement in front, default slots for the new count, tiled when that desktop
-// comes (its arrangement then covers exactly its windows: the engine's Fit tick keeps it) -- as the other engines do (DMMSWFitMove). Without this
-// the arriving desktop asked "Where should ... go?" for it as for a third window opened there (iPad 2, 4 Oct, sm27); a window put on a desktop by
-// hand is not one. A window left out of Fit (No Fit) stays out of it there. The order of the windows already tiled there: their slots' order.
+// Fit to Window per desktop: the window joins the other desktop's arrangement in front -- the first tile for the new count, the windows tiled there
+// keeping their places (FitPlan.h) --, tiled when that desktop comes (its arrangement then covers exactly its windows: the engine's Fit tick keeps
+// it) -- as the other engines do (DMMSWFitMove). Without this the arriving desktop asked "Where should ... go?" for it as for a third window opened
+// there (iPad 2, 4 Oct, sm27); a window put on a desktop by hand is not one. A window left out of Fit (No Fit) stays out of it there. The order of
+// the windows already tiled there: their slots' order.
 // Four tiles there already (Fit's own four: a desktop may hold more windows than that since 1.3.6): it is a regular window over them, the four
 // keep their places -- the other engines' rule (DMMSWFitMove; SMFitPlan.h's DMSMFitFourKept when that desktop comes).
 static void DMMSWSMFitJoin(NSString *b, NSInteger toId) {   // (b: the window's key -- Fit's slots are kept by window key, M-2)
@@ -836,7 +837,9 @@ static void DMMSWSMFitJoin(NSString *b, NSInteger toId) {   // (b: the window's 
         [group insertObject:b atIndex:0];
         // (its only tiled window: it fills that desktop when it comes -- Fit's own rule, as with the other engines (MacSwitcher.h DMMSWChangeDesktop:
         //  "one window fills the space"); it kept the tile it had on its old desktop, 1.4 logic test, iPad 2 7 Oct)
-        [slots addEntriesFromDictionary:DMFitPlanAfterLeave(group)];
+        NSMutableDictionary *had = [was mutableCopy];
+        [had removeObjectForKey:b];   // (new there: its tile on the other desktop is no place here)
+        [slots addEntriesFromDictionary:MSBDFitPlanKeepingPlaces(group, had)];
     } else {   // (Fit's four tiles taken there: its arrangement stays as it is)
         DMLog([NSString stringWithFormat:@"[macswitcher] Fit to Window on %@: four windows are tiled there already, %@ is a regular window over them", DMMSWDeskName([gMSWDesks indexOfObject:@(toId)]), DMSMKeyText(b)]);
         return;
@@ -847,7 +850,7 @@ static void DMMSWSMFitJoin(NSString *b, NSInteger toId) {   // (b: the window's 
     DMLog([NSString stringWithFormat:@"[macswitcher] Fit to Window on %@: %@ %@", DMMSWDeskName([gMSWDesks indexOfObject:@(toId)]), DMSMKeyText(b), what]);
 }
 // Fit to Window per desktop, a window brought from another desktop to the one on screen (1.7.1, DMMSWSMJoin / DMMSWSMAskedBringHere): it leaves
-// that desktop's arrangement, whose other tiles close up in their order as when a tiled window leaves (DMFitPlanAfterLeave -- the other engines'
+// that desktop's arrangement, whose other tiles close up, each keeping its place, as when a tiled window leaves (FitPlan.h -- the other engines'
 // DMMSWFitWithout), and here it is a window that joins the stage on screen (the engine's Fit tick tiles the new set); left out of Fit there (No
 // Fit), it is left out here too.
 static void DMMSWSMFitBringHere(NSString *k, NSInteger fromId) {   // (k: the window's key)
@@ -866,10 +869,11 @@ static void DMMSWSMFitBringHere(NSString *k, NSInteger fromId) {   // (k: the wi
             NSUInteger ix = [names indexOfObject:was[x]], iy = [names indexOfObject:was[y]];
             return ix < iy ? NSOrderedAscending : (ix > iy ? NSOrderedDescending : [x compare:y]);
         }]) if ([o isKindOfClass:[NSString class]] && ![o isEqualToString:k]) [left addObject:o];
-        slots = left.count ? DMFitPlanAfterLeave(left) : @{};
+        slots = MSBDFitPlanKeepingPlaces(left, was);
     }
     gMSWFit[fk] = @{@"smslots": slots, @"smfree": free};
     if (wasFree && DMFitEnabled()) { if (!gSMFreeWindows) gSMFreeWindows = [NSMutableSet set]; [gSMFreeWindows addObject:k]; }
+    [gSMFitLoose removeObject:k];   // (a regular window over that desktop's tiles is a window that opens here: it joins while there is room, FitPlan.h)
 }
 static void DMMSWSMMoveRecord(NSString *b, NSInteger toId) {   // (b: the dragged window's key -- the view's tile for a card, DMMSWSMCollect)
     if (!b.length || ![gMSWDesks containsObject:@(toId)]) return;
@@ -896,9 +900,9 @@ static void DMMSWSMMoveFinish(NSString *b, NSInteger toId) {
         if (!CGRectIsNull(r)) gMSWWinFrame[b] = NSStringFromCGRect(r);
         break;
     }
-    // Fit to Window: a tiled window leaving closes up the tiles left here as a tiled window closing does -- two or more take the default tiles, one
-    // fills the space (DMFitPlanAfterLeave, the plan DMMSWFitMove takes with the other engines). The engine's Fit tick lays them out once the window
-    // has left the stage: their arrangement covers exactly the windows left, so it is kept and applied (one window: SMFitTick's "fills" rule).
+    // Fit to Window: a tiled window leaving closes up the tiles left here as a tiled window closing does -- one fills the space, the others keep
+    // their places (FitPlan.h, the plan DMMSWFitMove takes with the other engines). The engine's Fit tick lays them out once the window has left
+    // the stage: their arrangement covers exactly the windows left, so it is kept and applied (one window: SMFitTick's "fills" rule).
     // Before, only the window's own slot went: the others kept their old tiles -- one of two tiled windows dragged away left the other at its half,
     // three left two quarters with the half empty (1.4 logic test, iPad 2 7 Oct; Aerial / Zetsu / MilkyWay4 re-tiled).
     BOOL wasTiled = gSMFitSlots[b] != nil;
@@ -922,7 +926,7 @@ static void DMMSWSMMoveFinish(NSString *b, NSInteger toId) {
         }];
         NSMutableArray<NSString *> *left = [NSMutableArray array];
         for (id it in items) [left addObject:DMSMItemKey(it)];
-        NSMutableDictionary<NSString *, NSString *> *plan = left.count ? [DMFitPlanAfterLeave(left) mutableCopy] : nil;
+        NSMutableDictionary<NSString *, NSString *> *plan = left.count ? [MSBDFitPlanKeepingPlaces(left, was) mutableCopy] : nil;
         for (NSString *k in full) {   // (its own tile when the new arrangement has it -- a quarter it had counts as its half in two halves --, by a swap)
             NSString *want = was[k], *now = plan[k];
             if (!want.length || !now.length || [want isEqualToString:now]) continue;

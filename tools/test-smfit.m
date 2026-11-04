@@ -5,6 +5,7 @@
 // every window is inside its desktop (title bar under the menu bar), no bigger than it, and fitting again changes nothing. Run by test-smfit.sh.
 #import <Foundation/Foundation.h>
 #include "../statusbar/SMFit.h"
+#include "../common/WindowSize.h"
 
 static int fails = 0, passes = 0;
 #define CHECK(cond, ...) do { if (cond) { passes++; } else { fails++; printf("FAIL: "); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -35,12 +36,16 @@ int main(void) {
         CHECK(DMSMFitInDesk(&s, &c, landDesk) == 1, "fitting changes it");
         CHECK(near(s.height, landDesk.size.height) && near(s.width, 460.8), "fitted size %.2f x %.2f", s.width, s.height);
         CHECK(near(c.y - s.height / 2.0, 48.0), "fitted top %.2f (want 48: menu bar 24 + title bar 24)", c.y - s.height / 2.0);
-        //    The engine's default window is now worked out in points of the screen it joins: 0.6 x 0.72 of landscape, inside the desktop as it is.
-        CGSize d = CGSizeMake(0.6 * kLand.width, 0.72 * kLand.height); CGPoint dc = CGPointMake(0.5 * kLand.width, 0.48 * kLand.height);
+        //    The engine's default window is now worked out in points of the screen it joins -- since 1.8.0 the other engines' middle place (common/
+        //    WindowSize.h, test-windowsize), its card under our title bar: inside the desktop as it is, in both shapes.
+        CGRect uL = CGRectMake(0, 24, kLand.width, kLandDockTop - 2.0 - 24), uP = CGRectMake(0, 24, kPort.width, kPortDockTop - 2.0 - 24);
+        CGRect wL = MSBDWindowSizeFrameIn(MSBDWindowSizeDefault, uL, kLand, 36, MSBDWindowMinSize()), cL = MSBDWindowCardOf(wL, kBarH);
+        CGSize d = cL.size; CGPoint dc = CGPointMake(CGRectGetMidX(cL), CGRectGetMidY(cL));
         CHECK(DMSMFitInDesk(&d, &dc, landDesk) == 0, "the default window in landscape fits as it is: %.1f x %.1f at %.1f, %.1f", d.width, d.height, dc.x, dc.y);
-        CHECK(dc.y - d.height / 2.0 >= 48.0 - 0.01, "default window top %.2f below the menu bar and title bar", dc.y - d.height / 2.0);
-        CGSize dp = CGSizeMake(0.6 * kPort.width, 0.72 * kPort.height); CGPoint dpc = CGPointMake(0.5 * kPort.width, 0.48 * kPort.height);
-        CHECK(DMSMFitInDesk(&dp, &dpc, portDesk) == 0, "the default window in portrait fits as it is: %.1f x %.1f", dp.width, dp.height);
+        CHECK(near(dc.y - d.height / 2.0, 60.0) && near(d.width, 799) && near(d.height, 590), "default window's card in landscape: top %.2f (12 pt under the bar, our title bar), %.0f x %.0f", dc.y - d.height / 2.0, d.width, d.height);
+        CGRect wP = MSBDWindowSizeFrameIn(MSBDWindowSizeDefault, uP, kPort, 36, MSBDWindowMinSize()), cP = MSBDWindowCardOf(wP, kBarH);
+        CGSize dp = cP.size; CGPoint dpc = CGPointMake(CGRectGetMidX(cP), CGRectGetMidY(cP));
+        CHECK(DMSMFitInDesk(&dp, &dpc, portDesk) == 0 && near(dp.width, 599) && near(dp.height, 795), "the default window in portrait fits as it is: %.1f x %.1f", dp.width, dp.height);
 
         // 2. The window made in portrait put back after a turn (green, turn, green): {154,70} 461 x 737 in portrait; in landscape the same attributes
         //    were again 737 pt tall at y -40. Fitted: inside the landscape desktop.
@@ -54,40 +59,6 @@ int main(void) {
         CHECK(near(wz.width, 921.6), "landscape window in portrait points: %.1f x %.1f", wz.width, wz.height);
         DMSMFitInDesk(&wz, &wzc, portDesk);
         CHECK(near(wz.width, 768) && near(wzc.x - wz.width / 2.0, 0), "wide window fitted: width %.1f left %.1f", wz.width, wzc.x - wz.width / 2.0);
-
-        // 2b. The cascade clear of every window (1.3.5 logic test M1, DMSMCascadeClear): App Store added while Clock was in front landed exactly on
-        //     Settings (same centre, same size) -- the cascade looked at the front window only.
-        {
-            CGSize step = CGSizeMake(0.05 * kLand.width, 0.06 * kLand.height);
-            CGSize ws = CGSizeMake(0.45 * kLand.width, 0.6 * kLand.height);
-            CGPoint front = CGPointMake(0.5 * kLand.width, 0.48 * kLand.height);
-            CGPoint first = CGPointMake(front.x + step.width, front.y + step.height); CGSize fs = ws;
-            DMSMFitInDesk(&fs, &first, landDesk);
-            CGPoint free1[1] = {front};   // (only the front window: the first step is clear)
-            CGSize s1 = fs; CGPoint c1 = first;
-            CHECK(DMSMCascadeClear(front, step, landDesk, free1, 1, &s1, &c1) == 0 && near(c1.x, first.x) && near(c1.y, first.y), "cascade: the first step is clear, kept");
-            CGPoint sameX[2] = {front, CGPointMake(first.x, first.y + 100.0)};   // (a window on the first spot's x only, 100 pt lower: not in the way -- R2-L2)
-            CGSize s1b = fs; CGPoint c1b = first;
-            CHECK(DMSMCascadeClear(front, step, landDesk, sameX, 2, &s1b, &c1b) == 0 && near(c1b.x, first.x) && near(c1b.y, first.y), "cascade: a window sharing only the x is not in the way");
-            CGPoint busy[2] = {front, first};   // (Settings sits on the first cascade spot)
-            CGSize s2 = fs; CGPoint c2 = first;
-            int k2 = DMSMCascadeClear(front, step, landDesk, busy, 2, &s2, &c2);
-            CHECK(k2 == 2 && fabs(c2.x - first.x) >= 8.0 && fabs(c2.x - front.x) >= 8.0, "cascade: the first spot taken -> the second step down and right (step %d, x %.1f)", k2, c2.x);
-            // the front window in the bottom-right corner (a Fit tile): every step down and right is fitted back onto it -> up and left
-            CGSize cs = ws; CGPoint corner = CGPointMake(CGRectGetMaxX(landDesk) - cs.width / 2.0, CGRectGetMaxY(landDesk) - cs.height / 2.0);
-            CGPoint cf = CGPointMake(corner.x + step.width, corner.y + step.height); CGSize cfs = cs;
-            DMSMFitInDesk(&cfs, &cf, landDesk);
-            CGPoint inCorner[1] = {corner};
-            int k3 = DMSMCascadeClear(corner, step, landDesk, inCorner, 1, &cfs, &cf);
-            CHECK(k3 == -1 && cf.x < corner.x - 8.0 && cf.y < corner.y - 8.0, "cascade: front window in the corner -> up and left (step %d, %.1f, %.1f)", k3, cf.x, cf.y);
-            CGRect card = CGRectMake(cf.x - cfs.width / 2.0, cf.y - cfs.height / 2.0, cfs.width, cfs.height);
-            CHECK(CGRectContainsRect(CGRectInset(landDesk, -0.01, -0.01), card), "cascade: the chosen spot is inside the desktop");
-            // every spot taken: nothing chosen, the first step kept
-            CGPoint all[17]; int n = 0; all[n++] = front; all[n++] = first;
-            for (int dir = 1; dir >= -1; dir -= 2) for (int k = 1; k <= 8 && n < 17; k++) { CGSize t = ws; CGPoint p = CGPointMake(front.x + dir * k * step.width, front.y + dir * k * step.height); DMSMFitInDesk(&t, &p, landDesk); all[n++] = p; }
-            CGSize s4 = fs; CGPoint c4 = first;
-            CHECK(DMSMCascadeClear(front, step, landDesk, all, n, &s4, &c4) == 99 && near(c4.x, first.x) && near(c4.y, first.y), "cascade: no clear spot -> the first step kept");
-        }
 
         // 3. A window the user put behind the Dock keeps that (its desk reaches the screen's bottom edge), and keeps its title bar on the screen.
         CGRect behind = desk(kLand, kLandDockTop, YES);

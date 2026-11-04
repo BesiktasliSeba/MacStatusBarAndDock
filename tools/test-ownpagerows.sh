@@ -13,22 +13,24 @@ P=../statusbar/macstatusbarprefs/MSBRootListController.m; DP=../dock/dockmagnifi
 S=../common/TweakSpotlight.h; L=../common/LineSwitch.h; I=../common/TweakIndex.h; T=../macsettings/TweakSearch.x
 check "the search (and Spotlight's Tweak Settings) list our pages' rows as the pages show them now, with the state the pages read" \
   "grep -q 'return rows.count ? MSBDOwnRowsShown(rows, MSBDOwnPagesNow()) : rows;' $S && grep -q '#import \"OwnPageState.h\"' $S"
-check "  ... the state from the pages' own readers: the stored style and Finder, the line switches, BigSurCenter, the 17 / 18 checks, the engine the row shows" \
+check "  ... the state from the pages' own readers: the stored style and Finder, the line switches, the Control Center Style, the 17 / 18 checks, the engine the row shows" \
   "awk '/^static inline MSBDOwnPages MSBDOwnPagesNow\\(void\\) \\{/,/^}/' $ST > \$W/now && grep -q 's.stockBar = MSBDStockBarStored();' \$W/now && grep -q 's.barLine = MSBDLineEnabled(@\"MacStatusBar\");' \$W/now \
-   && grep -q 's.dockLine = MSBDLineEnabled(@\"MacDock\");' \$W/now && grep -q 's.finder = MSBDFinderStored();' \$W/now && grep -q 's.bigSurCenter = MSBDBigSurCenterInstalled();' \$W/now \
+   && grep -q 's.dockLine = MSBDLineEnabled(@\"MacDock\");' \$W/now && grep -q 's.finder = MSBDFinderStored();' \$W/now && grep -q 's.ccStyle = MSBDCCStyleNow(YES);' \$W/now \
    && grep -q 's.focus18Failed = MSBDFocusLock18Failed();' \$W/now && grep -q 's.desktopFailed = MSBDDesktopRowsFailed();' \$W/now && grep -q 'NSString \\*engine = MSBDEngineShownWithoutRow();' \$W/now \
    && grep -q \"s.engineWorks = !\\[engine isEqualToString:@\\\"none\\\"\\] && MSBDEngineState(engine) == 2;\" \$W/now && grep -q 's.batteryUseOff = gMSBDOwnBatteryUseOff ? gMSBDOwnBatteryUseOff() : NO;' \$W/now"
 check "the Status Bar / Windows / Desktop pages read the same: the stored style and Finder, the engine's state and the engine shown" \
   "grep -q 'static BOOL MSBStockBarStored(void) { return MSBDStockBarStored(); }' $P && grep -q 'static BOOL MSBFinderStored(void) { return MSBDFinderStored(); }' $P \
    && grep -q 'static int MSBEngineState(NSString \\*engine) { return MSBDEngineState(engine); }' $P && grep -q 'static NSString \\*MSBEngineShown(id value, NSArray \\*offered) { return MSBDEngineShown(value, offered); }' $P \
    && grep -q 'static NSString \\*MSBEngineShownWithoutRow(void) { return MSBDEngineShownWithoutRow(); }' $P && ! grep -q 'MSBDEngineFileTested(lib, path)' $P"
-check "  ... and leave rows out by the same conditions and lists: Control Center's size, the desktop's rows and the Mac Switcher (17 / 18), the Wi-Fi Menu (18)" \
-  "grep -q 'if (!MSBDBigSurCenterInstalled() || MSBStockBarStored()) {' $P && grep -q 'isEqual:kMSBDCCScaleKey\\]) \\[kept removeObject:spec\\];' $P \
+check "  ... and leave rows out by the same conditions and lists: Control Center's size and Hide Grabber (the style), the desktop's rows and the Mac Switcher (17 / 18), the Wi-Fi Menu (18)" \
+  "grep -q 'static int MSBCCStyleShown(void) { return MSBDCCStyleNow(YES); }' $P && grep -q 'int ccStyle = MSBCCStyleShown();' $P \
+   && grep -q 'BOOL sizeSlider = MSBDCCSizeRowShown(ccStyle, MSBStockBarStored()), grabber = ccStyle == kMSBDCCStyleStock;' $P \
+   && grep -q 'isEqual:kMSBDCCScaleKey\\] && !sizeSlider) || (\\[spec.identifier isEqualToString:kMSBDCCGrabberRowID\\] && !grabber)) \\[kept removeObject:spec\\];' $P \
    && grep -q 'BOOL noFocus18 = MSBDFocusLock18Failed();' $P && grep -q 'BOOL desktopFailed = MSBDDesktopRowsFailed();' $P \
    && grep -q 'if ((desktopFailed && MSBDDesktopCheckRow(\\[spec propertyForKey:@\"key\"\\], spec.identifier))' $P && grep -q '(noFocus18 && \\[\\[spec propertyForKey:@\"key\"\\] isEqual:kMSBDMacSwitcherKey\\])' $P \
    && grep -q 'inGroup = \\[spec.identifier isEqualToString:kMSBDMacSwitcherGroupID\\];' $P && grep -q '^		if (MSBDFocusLock18Failed()) {' $P && grep -q 'hiding = \\[sp.identifier isEqualToString:kMSBDWiFiGroupID\\];' $P"
-check "  ... the engine's groups (the Windows group, the resize handles kept with Stage Manager, Resize Handles, Resize Apps), Report a Problem, Keep Tailspin Off" \
-  "[ \$(grep -c 'hiding = \\[sp.identifier isEqualToString:kMSBDWindowsGroupID\\];' $P) = 2 ] && grep -q 'BOOL handles = MSBDHandlesRow(\\[sp propertyForKey:@\"key\"\\]);' $P \
+check "  ... the engine's groups (the Windows group, the resize handles and Window Size kept with Stage Manager, Resize Handles, Resize Apps), Report a Problem, Keep Tailspin Off" \
+  "[ \$(grep -c 'hiding = \\[sp.identifier isEqualToString:kMSBDWindowsGroupID\\];' $P) = 2 ] && grep -q 'BOOL itsToo = MSBDStageManagerKeepsRow(\\[sp propertyForKey:@\"key\"\\]);' $P \
    && grep -q 'if (!\\[\\[sp propertyForKey:@\"key\"\\] isEqual:kMSBDResizeHandlesKey\\]) \\[kept addObject:sp\\];' $P && grep -q 'hiding = \\[sp.identifier isEqualToString:kMSBDResizeGroupID\\];' $P \
    && grep -q 'if (\\[spec.identifier isEqualToString:kMSBDReportRowID\\]) report = spec;' $P && grep -q 'tailspin = MSBDBarOffKeepsGroup(sp.identifier);' $P"
 check "the Dock page: no Finder group with Finder off, Finder read the same way; the line switch's rows go with it (LineSwitch.h, the index's line)" \

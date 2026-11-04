@@ -24,6 +24,11 @@
 #import "../../common/PrewarmDefault.h"   // (Prewarm Apps, 1.7.7: never set, off on a 2 GB iPad and on with more, as SpringBoard reads it)
 #import "../../common/TailspinGuard.h"   // (Keep Tailspin Off, 1.7.9: never set, on with 2 GB; offered where the helper found it does something)
 #import "../../common/OwnPageState.h"   // (1.7.9: the conditions and rows this page leaves out, shared with the Settings search -- OwnPageRows.h)
+#import "../../common/CCStyleNow.h"   // (Control Center Style, 1.8.0: the rule and what it is given; the choices' table, ExclusiveChoice.h)
+#import "../../common/ChoicePage.h"   // (1.8.0: what each row of a choice page shows -- Window Engine, Control Center Style, Banner Style)
+#import "../../common/BannerStyleNow.h"   // (Banner Style, 1.8.0 item 2: the rule and what it is given -- Mac, iPadOS or Destra)
+#import "../../common/WindowSize.h"   // (Window Size, 1.8.0 item 4: the stored text read as SpringBoard reads it; Default is never written)
+#import "../../common/CCLayout.h"   // (Control Center Size, 1.8.0: the slider's value never set -- ours 1, BigSurCenter's 0.82 -- as SpringBoard reads it)
 @interface PSListController (MSBURL)
 - (void)handleURL:(NSDictionary *)url withCompletion:(id)completion;   // (Settings' link to a place on a page: -handleURL:withCompletion: below)
 @end
@@ -48,82 +53,61 @@ __attribute__((constructor)) static void MSBLoadAltList(void) {
 //    Settings (running as mobile) cannot do it itself. With MacSettings installed, its root helper (sshtoggled) does it when asked with the
 //    notification com.besiktasliseba.msb.engines.apply (it re-reads the choice from our preferences itself); without it, Settings tells the user exactly which
 //    ones to switch off in iCleaner Pro and opens it.
+// 1.8.0: one table of the choices and their libraries for Settings and the root helper -- the window engines, Control Center Style's BigSurCenter
+// and, item 2, Destra -- with Choicy's lists recorded the same way (common/ExclusiveChoice.h).
 static NSString *const kMSBTweakDir = @"/var/jb/usr/lib/TweakInject";
-static NSString *const kMSBChoicyPrefs = @"/var/jb/var/mobile/Library/Preferences/com.opa334.choicyprefs.plist";
+static NSString *const kMSBChoicyPrefs = kMSBDExChoicyPrefs;
 static NSString *const kMSBChoicyBackup = @"/var/jb/var/mobile/Library/Preferences/MacStatusBar-ChoicyBackup.plist";
-static NSDictionary<NSString *, NSArray<NSString *> *> *MSBEngineLibraries(void) {
-	return @{@"aerial": @[@"Aerial"], @"milkyway": @[@"MilkyWay4", @"MilkyWay3SubModule"], @"zetsu": @[@"Zetsu"]};
-}
+static NSDictionary<NSString *, NSArray<NSString *> *> *MSBEngineLibraries(void) { return MSBDExValues(@"windowEngine"); }
 static BOOL MSBLibraryPresent(NSString *name, NSString *ext) {
 	return [[NSFileManager defaultManager] fileExistsAtPath:[[kMSBTweakDir stringByAppendingPathComponent:name] stringByAppendingPathExtension:ext]];
 }
 static BOOL MSBChoicyInstalled(void) { return MSBLibraryPresent(@"ChoicySB", @"dylib") || MSBLibraryPresent(@"Choicy", @"dylib"); }
 static BOOL MSBiCleanerInstalled(void) { return [[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb/Applications/iCleaner.app"]; }
-// The libraries of every installed engine other than `engine` (installed = its .dylib or an iCleaner-disabled .disabled is there).
-static NSArray<NSString *> *MSBOtherEngineLibraries(NSString *engine) {
+// The libraries of every installed option of `choice` other than `value` (installed = its .dylib or an iCleaner-disabled .disabled is there).
+static NSArray<NSString *> *MSBOtherChoiceLibraries(NSString *choice, NSString *value) {
 	NSMutableArray *out = [NSMutableArray array];
-	[MSBEngineLibraries() enumerateKeysAndObjectsUsingBlock:^(NSString *e, NSArray<NSString *> *libs, BOOL *stop) {
-		if ([e isEqualToString:engine]) return;
+	[MSBDExValues(choice) enumerateKeysAndObjectsUsingBlock:^(NSString *e, NSArray<NSString *> *libs, BOOL *stop) {
+		if ([e isEqualToString:value]) return;
 		for (NSString *l in libs) if (MSBLibraryPresent(l, @"dylib") || MSBLibraryPresent(l, @"disabled")) [out addObject:l];
 	}];
 	return [out sortedArrayUsingSelector:@selector(compare:)];
 }
+static NSArray<NSString *> *MSBOtherEngineLibraries(NSString *engine) { return MSBOtherChoiceLibraries(@"windowEngine", engine); }
 // Every change we make to Choicy's lists is RECORDED (kMSBChoicyChanges: list -> entry -> "added"/"removed", the net effect of all our changes), so
 // that if Mac Status Bar is ever switched off without being removed, MacSettings' root helper (sshtoggled) can undo exactly our changes and nothing
 // else -- only where an entry is still as we left it; everything the user changes in Choicy is theirs (2026-09-24).
-static NSString *const kMSBChoicyChanges = @"/var/jb/var/mobile/Library/Preferences/MacStatusBar-ChoicyChanges.plist";
-static void MSBRecordChange(NSMutableDictionary *record, NSString *listKey, NSString *entry, BOOL added) {
-	NSMutableDictionary *l = [record[listKey] isKindOfClass:[NSDictionary class]] ? [record[listKey] mutableCopy] : [NSMutableDictionary new];
-	NSString *before = l[entry];
-	if ((added && [before isEqual:@"removed"]) || (!added && [before isEqual:@"added"])) [l removeObjectForKey:entry];   // back to the user's own state
-	else l[entry] = added ? @"added" : @"removed";
-	if (l.count) record[listKey] = l; else [record removeObjectForKey:listKey];
-}
-static BOOL MSBSetMembershipRecorded(NSMutableArray *list, NSArray *add, NSArray *remove, NSString *listKey, NSMutableDictionary *record) {
-	BOOL changed = NO;
-	for (NSString *n in add) if (![list containsObject:n]) { [list addObject:n]; changed = YES; MSBRecordChange(record, listKey, n, YES); }
-	for (NSString *n in remove) if ([list containsObject:n]) { while ([list containsObject:n]) [list removeObject:n]; changed = YES; MSBRecordChange(record, listKey, n, NO); }
-	return changed;
-}
+static NSString *const kMSBChoicyChanges = kMSBDExChoicyRecord;
 // (Setups from before the record existed: it is made once from the copy of Choicy's settings we took before our first change, window-engine entries
-// only -- those are the only entries we ever change.)
+// only -- those were the only entries we changed before the record.)
 static NSMutableDictionary *MSBLoadChoicyRecord(NSDictionary *current) {
 	NSMutableDictionary *record = [[NSDictionary dictionaryWithContentsOfFile:kMSBChoicyChanges] mutableCopy];
 	if (record) return record;
 	record = [NSMutableDictionary new];
 	NSDictionary *orig = [NSDictionary dictionaryWithContentsOfFile:kMSBChoicyBackup];
 	if (!orig) return record;
-	NSArray *engines = @[@"Aerial", @"MilkyWay4", @"MilkyWay3SubModule", @"Zetsu"];
+	NSArray *engines = MSBDExLibs(@"windowEngine", nil);
 	NSDictionary *pairs = @{ @"globalDeniedTweaks": @[@"globalDeniedTweaks"], @"springboard.allowedTweaks": @[@"appSettings", @"com.apple.springboard", @"allowedTweaks"], @"springboard.deniedTweaks": @[@"appSettings", @"com.apple.springboard", @"deniedTweaks"] };
 	for (NSString *listKey in pairs) {
 		id a = current, b = orig;
 		for (NSString *k in pairs[listKey]) { a = [a isKindOfClass:[NSDictionary class]] ? a[k] : nil; b = [b isKindOfClass:[NSDictionary class]] ? b[k] : nil; }
 		NSArray *now = [a isKindOfClass:[NSArray class]] ? a : @[], *before = [b isKindOfClass:[NSArray class]] ? b : @[];
 		for (NSString *e in engines) {
-			if ([now containsObject:e] && ![before containsObject:e]) MSBRecordChange(record, listKey, e, YES);
-			if (![now containsObject:e] && [before containsObject:e]) MSBRecordChange(record, listKey, e, NO);
+			if ([now containsObject:e] && ![before containsObject:e]) MSBDExRecordChange(record, listKey, e, YES);
+			if (![now containsObject:e] && [before containsObject:e]) MSBDExRecordChange(record, listKey, e, NO);
 		}
 	}
 	return record;
 }
-// Choicy: deny the other engines, allow the picked one. Returns YES if Choicy's configuration had to change (a respring makes it real).
-static BOOL MSBChoicyApplyEngine(NSString *engine) {
-	NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:kMSBChoicyPrefs] mutableCopy] ?: [NSMutableDictionary new];
+// Choicy: only `value` of `choice` loads -- its libraries allowed, the other installed options' denied (Stage Manager as the engine, Mac or iPadOS as
+// the Control Center Style: every installed one denied). Returns YES if Choicy's configuration had to change (a respring makes it real).
+static BOOL MSBChoicyApplyChoice(NSString *choice, NSString *value) {
+	NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:kMSBChoicyPrefs] mutableCopy];
+	// (a Choicy file that is there but can't be read is left alone: a new one would replace the user's whole Choicy setup with our entries -- as
+	//  LineSwitch.h and the root helper do since 1.3.3; only a missing file starts empty)
+	if (!prefs) { if (access(kMSBChoicyPrefs.fileSystemRepresentation, F_OK) == 0) return NO; prefs = [NSMutableDictionary new]; }
 	NSMutableDictionary *record = MSBLoadChoicyRecord(prefs);
-	NSArray *keep = MSBEngineLibraries()[engine] ?: @[], *deny = MSBOtherEngineLibraries(engine);
-	NSMutableArray *global = [prefs[@"globalDeniedTweaks"] isKindOfClass:[NSArray class]] ? [prefs[@"globalDeniedTweaks"] mutableCopy] : [NSMutableArray new];
-	BOOL changed = MSBSetMembershipRecorded(global, deny, keep, @"globalDeniedTweaks", record);
-	prefs[@"globalDeniedTweaks"] = global;
-	NSMutableDictionary *apps = [prefs[@"appSettings"] isKindOfClass:[NSDictionary class]] ? [prefs[@"appSettings"] mutableCopy] : nil;
-	NSMutableDictionary *sb = [apps[@"com.apple.springboard"] isKindOfClass:[NSDictionary class]] ? [apps[@"com.apple.springboard"] mutableCopy] : nil;
-	if ([sb[@"customTweakConfigurationEnabled"] boolValue]) {   // SpringBoard's own list is in force: it must agree
-		NSInteger mode = sb[@"allowDenyMode"] ? [sb[@"allowDenyMode"] integerValue] : 1;
-		NSString *listKey = mode == 2 ? @"deniedTweaks" : @"allowedTweaks";
-		NSMutableArray *list = [sb[listKey] isKindOfClass:[NSArray class]] ? [sb[listKey] mutableCopy] : [NSMutableArray new];
-		NSString *rk = [@"springboard." stringByAppendingString:listKey];
-		BOOL c = mode == 2 ? MSBSetMembershipRecorded(list, [sb[@"overwriteGlobalTweakConfiguration"] boolValue] ? deny : @[], keep, rk, record) : MSBSetMembershipRecorded(list, keep, deny, rk, record);
-		if (c) { sb[listKey] = list; apps[@"com.apple.springboard"] = sb; prefs[@"appSettings"] = apps; changed = YES; }
-	}
+	BOOL changed = MSBDExChoicyApply(prefs, record, MSBDExLibs(choice, value ?: @""), MSBOtherChoiceLibraries(choice, value), @[], nil);
 	if (!changed) { if (![[NSFileManager defaultManager] fileExistsAtPath:kMSBChoicyChanges]) [record writeToFile:kMSBChoicyChanges atomically:YES]; return NO; }
 	if (![[NSFileManager defaultManager] fileExistsAtPath:kMSBChoicyBackup]) {
 		NSDictionary *orig = [NSDictionary dictionaryWithContentsOfFile:kMSBChoicyPrefs];
@@ -135,6 +119,7 @@ static BOOL MSBChoicyApplyEngine(NSString *engine) {
 	CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), CFSTR("com.opa334.choicyprefs/ReloadPrefs"), NULL, NULL, YES);
 	return YES;
 }
+static BOOL MSBChoicyApplyEngine(NSString *engine) { return MSBChoicyApplyChoice(@"windowEngine", engine); }
 static void MSBRespring(void) { MSBDRespring(); }   // (LineSwitch.h: with the VPN check first)
 // ---- Stage Manager consent (1.5.1, Havoc rule 2.5; statusbar/SMSwitchOn.h) ----
 // SpringBoard's reading of Stage Manager (StatusBar.x DMSMPublishOn): 1 on, 2 off, 0 not known.
@@ -173,7 +158,8 @@ static BOOL MSBStageManagerUnsupported(NSString **os) {   // (Stage Manager is h
 }
 #if DEBUG
 // (debug: /tmp/msb-engine-notinstalled names engines to show as not installed -- the GET button --, "<engine>-untested" as an untested build, and
-//  "stagemanager" as an iPad without Stage Manager: its row greyed and the why under the Native group, 1.5.2)
+//  "stagemanager" as an iPad without Stage Manager: its row greyed and the why under the Native group, 1.5.2; 1.8.0: "bigsurcenter" the same for
+//  the Control Center Style page, common/CCStyleNow.h)
 static NSString *MSBEnginePretend(void) { return [NSString stringWithContentsOfFile:@"/tmp/msb-engine-notinstalled" encoding:NSUTF8StringEncoding error:nil]; }
 #endif
 // (the rule, the debug pretend file included, is common/OwnPageState.h's: the Settings search asks the same one for the Windows group's rows)
@@ -191,7 +177,7 @@ static NSString *MSBEngineNameVersion(NSString *engine) {   // ("Aerial 5.1": th
 }
 // The Window Engine page's footer: a license is checked in SpringBoard, and only the picked engine loads there.
 static NSString *const kMSBLicenseHint = @"Activating an engine's license? Pick it here and respring first: only the picked engine loads, and its license is checked in SpringBoard.";
-// The engine a row of the Window Engine page stands for: PSListItemsController gives each row specifier its value as its only value (-itemsFromParent).
+// The value a row of a choice page stands for (an engine, a style): PSListItemsController gives each row specifier its value as its only value (-itemsFromParent).
 static NSString *MSBEngineValueOf(PSSpecifier *s) {
 	SEL vs = NSSelectorFromString(@"values");
 	id v = s && s.cellType != PSGroupCell && [s respondsToSelector:vs] ? ((id (*)(id, SEL))objc_msgSend)(s, vs) : nil;
@@ -205,14 +191,50 @@ static NSString *MSBEngineShown(id value, NSArray *offered) { return MSBDEngineS
 // The same without the row (1.6.0: the row is on the Windows & Multitasking page, Report a Problem stays on the Status Bar page): the stored value or
 // the row's default, and the row's values (Windows.plist) less what -specifiers takes out on this iPadOS (Stage Manager before 16, MilkyWay4 on 16+).
 static NSString *MSBEngineShownWithoutRow(void) { return MSBDEngineShownWithoutRow(); }   // (common/OwnPageState.h: the search asks the same)
-@interface MSBEngineListController : PSListItemsController
+// ---- Choice pages (1.8.0, from the Window Engine page of 1.5.2): a choice whose options are our own and Apple's -- "Native" -- and other tweaks'
+// -- "Third-Party": Window Engine (Stage Manager | Aerial, MilkyWay4, Zetsu), Control Center Style (Mac, iPadOS | BigSurCenter) and Banner Style
+// (Mac, iPadOS | Destra). What each row shows comes from common/ChoicePage.h, given the state read here (-msb_rowFor:): it can be picked, or it
+// is greyed -- with a GET button where a third-party option is not installed (its developer's page), or the reason where the checkmark would
+// be -- or it is left off the page. PSListItemsController makes one group of the row's values (-itemsFromParent); its own row specifiers are
+// regrouped here, a group with no row left out (iPadOS 15: no Native on the engine page). Its checkmark and pick go by the specifier's place in
+// the whole list (-setRowToSelect, -indexForIndexPath:, -listItemSelected:, read on 18.5), so they follow a row into the second group once the
+// selected row is worked out again. The engine page keeps its own class (MSBEngineListController: Settings' links open it by that name,
+// StatusBarSettingsRow.x).
+@interface MSBChoiceListController : PSListItemsController
 @end
-@implementation MSBEngineListController
-// The page in two groups (1.5.2, KT): "Native" -- Stage Manager, Apple's own windowing, natively or through TrollPad: on iPadOS 16 and later, its row
-// greyed where it can't run yet, with why under it -- and "Third-Party" -- the engines to install, as this iPad offers them, with the license hint
-// under them. A group with no row is left out (iPadOS 15: no Native). PSListItemsController makes one group of the row's values (-itemsFromParent);
-// its own row specifiers are regrouped here. Its checkmark and pick go by the specifier's place in the whole list (-setRowToSelect,
-// -indexForIndexPath:, -listItemSelected:, read on 18.5), so they follow a row into the second group once the selected row is worked out again.
+@implementation MSBChoiceListController
+- (NSString *)msb_choiceKey { id k = [self.specifier propertyForKey:@"key"]; return [k isKindOfClass:[NSString class]] ? k : nil; }
+- (NSDictionary *)msb_rowFor:(NSString *)value {
+	NSString *key = [self msb_choiceKey];
+	int os = (int)[NSProcessInfo processInfo].operatingSystemVersion.majorVersion;
+	if ([key isEqualToString:@"windowEngine"]) {   // (the package's version read only for an untested build's title, Stage Manager's state only for its row)
+		int st = MSBEngineState(value);
+		BOOL sm = [value isEqualToString:@"stagemanager"];
+		return MSBDChoiceEngineRow(value, st, st == 1 ? MSBEngineNameVersion(value) : nil, sm && MSBDStageManagerAvailable(), sm ? MSBDStageManagerVerdict(NULL, NULL) : 1);
+	}
+	if ([key isEqualToString:@kMSBDCCStyleKey]) return MSBDChoiceCCStyleRow(value, os, MSBDCCMacVerdictNow(NULL), MSBD_CC_MAC_BUILT, MSBDCCBigSurCenterInstalled(YES), MSBDStockBarStored());
+	if ([key isEqualToString:@kMSBDBannerStyleKey]) return MSBDChoiceBannerRow(value, MSBDDestraInstalled(YES));
+	return MSBDChoiceRowMake(2, YES, nil, nil, nil, NO);
+}
+// The groups' footers: why a native option is greyed; the Window Engine's license hint under Third-Party; Destra switched off in its own settings.
+- (NSString *)msb_footer:(BOOL)native {
+	NSString *key = [self msb_choiceKey];
+	if ([key isEqualToString:@"windowEngine"]) {
+		if (!native) return kMSBLicenseHint;
+		NSString *why = MSBDStageManagerFooter();   // (nil where Stage Manager can be picked)
+#if DEBUG
+		if ([MSBEnginePretend() containsString:@"stagemanager"]) why = MSBDStageManagerWhyText(2, 1, nil);
+#endif
+		return why;
+	}
+	if ([key isEqualToString:@kMSBDCCStyleKey] && native)
+		return MSBDChoiceCCStyleNativeFooter((int)[NSProcessInfo processInfo].operatingSystemVersion.majorVersion, MSBDCCMacVerdictNow(NULL), MSBD_CC_MAC_BUILT, MSBDOSVersionString(), MSBDStockBarStored());
+	if ([key isEqualToString:@kMSBDBannerStyleKey] && !native) {
+		BOOL installed = MSBDDestraInstalled(YES);
+		return MSBDChoiceBannerThirdPartyFooter(installed, installed && MSBDDestraOwnOn());
+	}
+	return nil;
+}
 - (NSMutableArray *)specifiers {
 	if (!_specifiers) {
 		NSArray *flat = [super specifiers];
@@ -220,17 +242,17 @@ static NSString *MSBEngineShownWithoutRow(void) { return MSBDEngineShownWithoutR
 		NSUInteger groups = 0;
 		for (PSSpecifier *s in flat) {
 			if (s.cellType == PSGroupCell) { groups++; continue; }
-			[([MSBEngineValueOf(s) isEqualToString:@"stagemanager"] ? native : thirdParty) addObject:s];
+			NSString *v = MSBEngineValueOf(s);
+			NSDictionary *row = v ? [self msb_rowFor:v] : nil;
+			if ([row[@"hidden"] boolValue]) continue;   // (not offered on this iPadOS: left off the page)
+			[(row && [row[@"native"] boolValue] ? native : thirdParty) addObject:s];
 		}
 		if (groups == 1 && flat.count && ((PSSpecifier *)flat[0]).cellType == PSGroupCell) {   // (the one-group page it makes; anything else stays as it is)
 			NSMutableArray *grouped = [NSMutableArray array];
 			if (native.count) {
-				PSSpecifier *g = [PSSpecifier groupSpecifierWithID:@"MSB_ENGINE_NATIVE"];
+				PSSpecifier *g = [PSSpecifier groupSpecifierWithID:@"MSB_ENGINE_NATIVE"];   // (the engine page's identifiers, kept)
 				g.name = @"Native";
-				NSString *why = MSBDStageManagerFooter();   // (nil where Stage Manager can be picked)
-#if DEBUG
-				if ([MSBEnginePretend() containsString:@"stagemanager"]) why = MSBDStageManagerWhyText(2, 1, nil);
-#endif
+				NSString *why = [self msb_footer:YES];
 				if (why) [g setProperty:why forKey:@"footerText"];
 				[grouped addObject:g];
 				[grouped addObjectsFromArray:native];
@@ -238,7 +260,8 @@ static NSString *MSBEngineShownWithoutRow(void) { return MSBDEngineShownWithoutR
 			if (thirdParty.count) {
 				PSSpecifier *g = [PSSpecifier groupSpecifierWithID:@"MSB_ENGINE_THIRD_PARTY"];
 				g.name = @"Third-Party";
-				[g setProperty:kMSBLicenseHint forKey:@"footerText"];
+				NSString *hint = [self msb_footer:NO];
+				if (hint) [g setProperty:hint forKey:@"footerText"];
 				[grouped addObject:g];
 				[grouped addObjectsFromArray:thirdParty];
 			}
@@ -256,18 +279,17 @@ static NSString *MSBEngineShownWithoutRow(void) { return MSBDEngineShownWithoutR
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
 	UITableViewCell *cell = [super tableView:tv cellForRowAtIndexPath:ip];
 	NSString *v = [self msb_valueForRow:ip];
-	int state = v ? MSBEngineState(v) : 2;
-	BOOL usable = state >= 1;   // (an untested build too: it runs on its own, and the row says so)
-	cell.userInteractionEnabled = usable || state == 0;   // (a not-installed row stays greyed and unselectable, but its GET button can be tapped)
+	NSDictionary *row = v ? [self msb_rowFor:v] : nil;
+	int state = row ? [row[@"state"] intValue] : 2;
+	BOOL usable = state >= 1;   // (an untested engine build too: it runs on its own, and the row says so)
+	cell.userInteractionEnabled = YES;   // (a greyed row can't be picked -- -willSelectRowAtIndexPath: --, but its GET button can be tapped)
 	cell.selectionStyle = usable ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
 	cell.textLabel.enabled = usable;
-	if (state == 1) cell.textLabel.text = [NSString stringWithFormat:@"%@ (Untested, Runs on Its Own)", MSBEngineNameVersion(v)];   // (never "Recommended": not tested)
-	// Requirement (2026-09-24): an engine this iOS supports but that is not installed gets an App Store-style GET button where the checkmark would be,
-	// opening the engine's official page (Aerial: the GitHub link in Aerial's own Settings bundle; Zetsu and MilkyWay4: their developers' own
-	// GitHub-hosted pages).
-	NSDictionary *pages = @{@"aerial": @"https://github.com/uz-ra", @"zetsu": @"https://dcsyhi1998.github.io/depiction/zetsu",
-	                        @"milkyway": @"https://akusio.github.io/"};
-	if (state == 0 && pages[v]) {
+	if ([row[@"title"] isKindOfClass:[NSString class]]) cell.textLabel.text = row[@"title"];
+	// Requirement (2026-09-24): an option this iOS supports but that is not installed gets an App Store-style GET button where the checkmark would be,
+	// opening its developer's own page (ChoicePage.h).
+	NSString *url = [row[@"url"] isKindOfClass:[NSString class]] ? row[@"url"] : nil, *reason = [row[@"reason"] isKindOfClass:[NSString class]] ? row[@"reason"] : nil;
+	if (state == 0 && url) {
 		UIButton *get = [UIButton buttonWithType:UIButtonTypeSystem];
 		[get setTitle:@"GET" forState:UIControlStateNormal];
 		get.titleLabel.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightBold];
@@ -276,14 +298,13 @@ static NSString *MSBEngineShownWithoutRow(void) { return MSBDEngineShownWithoutR
 		get.frame = CGRectMake(0, 0, 74.0, 28.0);
 		get.layer.cornerRadius = 14.0;
 		get.clipsToBounds = YES;
-		NSString *url = pages[v];
 		[get addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) {
 			[[UIApplication sharedApplication] openURL:[NSURL URLWithString:url] options:@{} completionHandler:nil];
 		}] forControlEvents:UIControlEventTouchUpInside];
 		cell.accessoryView = get;
-	} else if ([v isEqualToString:@"stagemanager"] && MSBDStageManagerAvailable() && MSBDStageManagerVerdict(NULL, NULL) != 1) {   // (greyed, and why, where the checkmark would be)
+	} else if (state == 0 && reason) {   // (greyed, and why, where the checkmark would be)
 		UILabel *why = [UILabel new];
-		why.text = MSBStageManagerUnsupported(NULL) ? @"Not Supported Yet" : @"Respring to Check";   // (not checked on this build: SpringBoard checks at its start)
+		why.text = reason;
 		why.font = [UIFont systemFontOfSize:15.0];
 		why.textColor = [UIColor secondaryLabelColor];
 		[why sizeToFit];
@@ -293,8 +314,13 @@ static NSString *MSBEngineShownWithoutRow(void) { return MSBDEngineShownWithoutR
 }
 - (NSIndexPath *)tableView:(UITableView *)tv willSelectRowAtIndexPath:(NSIndexPath *)ip {
 	NSString *v = [self msb_valueForRow:ip];
-	return (v && MSBEngineState(v) == 0) ? nil : ip;   // (not installed only: an untested build is picked as a plain engine)
+	return (v && [[self msb_rowFor:v][@"state"] intValue] == 0) ? nil : ip;   // (greyed only: an untested engine build is picked as a plain engine)
 }
+@end
+// The Window Engine page (Windows & Multitasking): the choice page under its own name.
+@interface MSBEngineListController : MSBChoiceListController
+@end
+@implementation MSBEngineListController
 @end
 
 // ---- Report a Problem (2026-09-25): opens a new GitHub issue in Safari, its text already filled in with what helps and nothing personal: the device
@@ -368,6 +394,48 @@ static void MSBSetStockBarStored(BOOL on) {
 	CFPreferencesSetValue(CFSTR("stockStatusBar"), on ? kCFBooleanTrue : kCFBooleanFalse, kMSBBarDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
 	CFPreferencesSynchronize(kMSBBarDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
 	notify_post("com.besiktasliseba.macstatusbar/prefsChanged");
+}
+
+// ---- Control Center Style (1.8.0 item 3, common/CCStyle.h): the row at the top of the Control Center group (Root.plist CC_STYLE: PSLinkListCell,
+// key controlCenterStyle, values mac / stock / bigsurcenter, detail MSBChoiceListController). It shows the rule's style (-readPreferenceValue:
+// below: the default is never written, and the style in force tapped again stores nothing); a pick stores its value, keeps BigSurCenter out of
+// SpringBoard or lets it in (Choicy at once; iCleaner Pro through the root helper: common/ExclusiveChoice.h) and offers the respring only when that
+// changes what loads -- Mac and iPadOS switch while SpringBoard runs, at the next opening of Control Center (statusbar/CCPanel.h). The group's other
+// rows go with the style: Hide Grabber is iPadOS's own Control Center's (its grabber line), the size slider BigSurCenter's (its drop-down panel from
+// our status bar: not with the stock status bar); the group's footer says only the chosen one loads, and what a respring still has to do.
+static int MSBCCStyleShown(void) { return MSBDCCStyleNow(YES); }   // (as the page shows it: the debug pretend included)
+static uint64_t MSBCCStyleSpringBoard(void) {   // (SpringBoard's word: its style in force and BigSurCenter loaded -- statusbar/CCStyleSB.h; 0 none)
+	int t = 0; uint64_t v = 0;
+	if (notify_register_check(kMSBDCCStyleState, &t) == NOTIFY_STATUS_OK) { notify_get_state(t, &v); notify_cancel(t); }
+	return v;
+}
+static NSString *MSBCCGroupFooter(int style, BOOL sizeSlider, BOOL sizeGreyed) {
+	NSMutableString *s = [NSMutableString stringWithString:@"Only the chosen Control Center is loaded."];
+	if (sizeSlider && style == kMSBDCCStyleBigSurCenter) [s appendString:@" The slider sets how large BigSurCenter appears when you open it from the status bar."];
+	else if (sizeSlider && sizeGreyed) [s appendString:@" The slider doesn't resize Control Center on iPadOS 18 yet."];
+	else if (sizeSlider) [s appendString:@" The slider sets how large Control Center appears."];
+	int note = MSBDCCStyleRespringNote(style, MSBDCCBigSurCenterInstalled(YES), MSBCCStyleSpringBoard());
+	if (note == 1) [s appendString:@" BigSurCenter stays loaded until you respring."];
+	else if (note == 2) [s appendString:@" BigSurCenter loads after a respring."];
+	return s;
+}
+
+// ---- Banner Style (1.8.0 item 2, common/BannerStyle.h): the Notifications group's row (Root.plist BANNER_STYLE: PSLinkListCell, key bannerStyle,
+// values mac / stock / destra, detail MSBChoiceListController) in place of the Mac-Style Banners switch. It shows the rule's style
+// (-readPreferenceValue: below: the default is never written -- ours for everyone, Mac, or iPadOS where an updater had turned the old switch off,
+// Destra installed or not --, and the style in force tapped again stores nothing); a pick stores its value, keeps Destra out of SpringBoard or
+// lets it in (Choicy at once; iCleaner Pro through the root helper: common/ExclusiveChoice.h) and offers the respring only when that changes what
+// loads -- Mac and iPadOS switch while SpringBoard runs, at the next banner. The group's footer: where ours appear, that only the chosen style
+// loads, Destra picked but off in its own settings, what a respring still has to do, or that Choicy is needed (common/ChoicePage.h).
+static int MSBBannerStyleShown(void) { return MSBDBannerStyleNow(YES); }   // (as the page shows it: the debug pretend included)
+static uint64_t MSBBannerStyleSpringBoard(void) {   // (SpringBoard's word: its style in force and Destra loaded -- statusbar/BannerStyleSB.h; 0 none)
+	int t = 0; uint64_t v = 0;
+	if (notify_register_check(kMSBDBannerStyleState, &t) == NOTIFY_STATUS_OK) { notify_get_state(t, &v); notify_cancel(t); }
+	return v;
+}
+static NSString *MSBBannerGroupFooter(int style) {
+	BOOL installed = MSBDDestraInstalled(YES), keeper = MSBChoicyInstalled() || MSBiCleanerInstalled();   // (keeper: something can keep Destra out)
+	return MSBDChoiceBannerGroupFooter(style, installed, installed && MSBDDestraOwnOn(), MSBDBannerRespringNote(style, installed, keeper, MSBBannerStyleSpringBoard()));
 }
 
 // The desktop's Icon Size (1.7.5 item 4): the stored number (nil: never set -- the Home Screen's own size, as before), and what the slider shows.
@@ -445,6 +513,24 @@ static int MSBMenuBarSizeStored(void) {
 	double d = 0.0; int isNumber = 0;
 	if (v) { if (CFGetTypeID(v) == CFNumberGetTypeID()) isNumber = CFNumberGetValue((CFNumberRef)v, kCFNumberDoubleType, &d); CFRelease(v); }
 	return MSBDMenuBarSizeFrom(isNumber, d);
+}
+// Control Center Size (1.8.0: BigSurCenter's panel and ours): the slider's value as SpringBoard reads it -- a stored number, else the chosen
+// Control Center's own size (ours 1, BigSurCenter's 0.82: common/CCLayout.h MSBDCCSizeShown).
+static double MSBCCSizeShown(void) {
+	CFPreferencesAppSynchronize(kMSBBarDomain);
+	CFPropertyListRef v = CFPreferencesCopyValue((__bridge CFStringRef)kMSBDCCScaleKey, kMSBBarDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+	double d = 0.0; int isNumber = 0;
+	if (v) { if (CFGetTypeID(v) == CFNumberGetTypeID()) isNumber = CFNumberGetValue((CFNumberRef)v, kCFNumberDoubleType, &d); CFRelease(v); }
+	return MSBDCCSizeShown(MSBCCStyleShown() == kMSBDCCStyleMac, isNumber, d);
+}
+// Window Size (1.8.0 item 4): Small / Default / Large as SpringBoard reads it (common/WindowSize.h); *stored: whether anything is stored at all.
+static int MSBWindowSizeStored(BOOL *stored) {
+	CFPreferencesAppSynchronize(kMSBBarDomain);
+	CFPropertyListRef v = CFPreferencesCopyValue(CFSTR(kMSBDWindowSizeKey), kMSBBarDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+	int size = MSBDWindowSizeFromStored(v);
+	if (stored) *stored = v != NULL;
+	if (v) CFRelease(v);
+	return size;
 }
 
 // ---- Two pages, one controller (1.6.0, KT): the Status Bar page (Root.plist) and the Windows & Multitasking page (Windows.plist: Windowing, Window
@@ -527,6 +613,123 @@ MSBD_LINE_SWITCH_METHODS
 		[alert addAction:[UIAlertAction actionWithTitle:@"Later" style:UIAlertActionStyleCancel handler:nil]];
 		[self presentViewController:alert animated:YES completion:nil];
 	});
+}
+
+// A Control Center Style picked (1.8.0): the group's rows and footer follow; BigSurCenter is kept out of SpringBoard or let in where it is installed,
+// and the respring is offered only when that changes what loads now (SpringBoard's word, else the style that was in force). Mac and iPadOS switch
+// while SpringBoard runs. As the engine pick: Choicy at once (recorded), iCleaner Pro through the root helper, else what to switch by hand.
+- (void)msb_ccStyleChanged:(int)style from:(int)before {
+	dispatch_async(dispatch_get_main_queue(), ^{ _specifiers = nil; [self reloadSpecifiers]; });   // (after the picker's own callback)
+	if (!MSBDGateWanted()) return;   // (untested iPadOS / safe mode: nothing may change Choicy or the libraries -- LineSwitch.h)
+	if (!MSBDCCBigSurCenterInstalled(NO)) return;   // (the real files: the debug pretend is only what the pages show)
+	BOOL want = MSBDCCStyleLoadsBigSurCenter(style);
+	uint64_t sb = MSBCCStyleSpringBoard();
+	BOOL loaded = sb ? MSBDCCStyleStateBSCLoaded(sb) : before == kMSBDCCStyleBigSurCenter;
+	NSString *name = @(MSBDCCStyleName(style)), *title = nil, *message = nil;
+	BOOL offerRespring = NO, offerICleaner = NO, viaHelper = NO;
+	if (MSBChoicyInstalled()) {
+		BOOL changed = MSBChoicyApplyChoice(@kMSBDCCStyleKey, @(MSBDCCStyleValue(style)));
+		if (want != loaded) {
+			title = @"Respring to Switch Control Center";
+			message = want ? (changed ? @"Choicy loads BigSurCenter again, and it takes over Control Center after a respring." : @"BigSurCenter takes over Control Center after a respring.")
+			        : changed ? [NSString stringWithFormat:@"Choicy now keeps BigSurCenter from loading, so the %@ Control Center is used after a respring.", name]
+			                  : [NSString stringWithFormat:@"BigSurCenter stops loading after a respring, and the %@ Control Center is used.", name];
+			offerRespring = YES;
+		}
+	} else if (MSBiCleanerInstalled() && access("/var/jb/usr/libexec/sshtoggled", X_OK) == 0) {
+		// MacSettings' root helper does iCleaner's renaming (it reads the style from our preferences itself; see sshtoggled/main.m)
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ notify_post("com.besiktasliseba.msb.engines.apply"); });
+		if (want != loaded) {
+			title = @"Respring to Switch Control Center";
+			message = want ? @"BigSurCenter loads again after a respring." : [NSString stringWithFormat:@"BigSurCenter stops loading after a respring, and the %@ Control Center is used.", name];
+			offerRespring = viaHelper = YES;
+		}
+	} else if (MSBiCleanerInstalled()) {
+		BOOL on = MSBLibraryPresent(@"BigSurCenter", @"dylib");
+		if (on != want) {
+			title = @"Switch BigSurCenter in iCleaner Pro";
+			message = [NSString stringWithFormat:@"iCleaner Pro manages which tweaks load. In iCleaner Pro > Tweaks, switch %@ BigSurCenter. Then respring.", want ? @"ON" : @"OFF"];
+			offerICleaner = YES;
+		}
+	} else if (!want && loaded) {
+		title = @"Choicy is needed";
+		message = @"Install Choicy (or iCleaner Pro) so MacStatusBar&Dock can stop BigSurCenter from loading. Until then BigSurCenter keeps Control Center.";
+	}
+	if (!title) return;
+	UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
+	if (offerRespring) [alert addAction:[UIAlertAction actionWithTitle:@"Respring Now" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+		if (!viaHelper) { MSBRespring(); return; }
+		// (iCleaner Pro: the helper renames within a moment; wait for it, at most 3 s, before the respring -- off the main thread, as LineSwitch.h)
+		dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+			for (int i = 0; i < 30 && MSBLibraryPresent(@"BigSurCenter", @"dylib") != want; i++) [NSThread sleepForTimeInterval:0.1];
+			dispatch_async(dispatch_get_main_queue(), ^{ MSBRespring(); });
+		});
+	}]];
+	if (offerICleaner) [alert addAction:[UIAlertAction actionWithTitle:@"Open iCleaner Pro" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+		[[UIApplication sharedApplication] openURL:[NSURL URLWithString:@"icleaner://"] options:@{} completionHandler:nil];
+	}]];
+	[alert addAction:[UIAlertAction actionWithTitle:offerRespring ? @"Later" : @"OK" style:UIAlertActionStyleCancel handler:nil]];
+	[self presentViewController:alert animated:YES completion:nil];
+}
+
+// A Banner Style picked (1.8.0): the group's footer follows; Destra is kept out of SpringBoard or let in where it is installed, and the respring is
+// offered only when that changes what loads now (SpringBoard's word, else the style that was in force). Mac and iPadOS switch while SpringBoard
+// runs. As the Control Center Style pick: Choicy at once (recorded), iCleaner Pro through the root helper, else what to switch by hand.
+- (void)msb_bannerStyleChanged:(int)style from:(int)before {
+	dispatch_async(dispatch_get_main_queue(), ^{ _specifiers = nil; [self reloadSpecifiers]; });   // (after the picker's own callback)
+	if (!MSBDGateWanted()) return;   // (untested iPadOS / safe mode: nothing may change Choicy or the libraries -- LineSwitch.h)
+	if (!MSBDDestraInstalled(NO)) return;   // (the real files: the debug pretend is only what the pages show)
+	BOOL want = MSBDBannerLoadsDestra(style), destraOn = MSBDDestraOwnOn();   // (Destra off in its own settings shows nothing: the alert says so)
+	uint64_t sb = MSBBannerStyleSpringBoard();
+	BOOL loaded = sb ? MSBDBannerStateDestraLoaded(sb) : before == kMSBDBannerDestra;
+	NSString *name = @(MSBDBannerStyleName(style)), *title = nil, *message = nil;
+	NSString *destraOff = @" It is turned off in its own settings: turn on Enabled in Settings > Destra to see its banners.";
+	BOOL offerRespring = NO, offerICleaner = NO, viaHelper = NO;
+	if (MSBChoicyInstalled()) {
+		BOOL changed = MSBChoicyApplyChoice(@kMSBDBannerStyleKey, @(MSBDBannerStyleValue(style)));
+		if (want != loaded) {
+			title = @"Respring to Switch Banners";
+			message = want ? (destraOn ? (changed ? @"Choicy loads Destra again, and it shows the banners after a respring." : @"Destra shows the banners after a respring.")
+			                           : [(changed ? @"Choicy loads Destra again after a respring." : @"Destra loads after a respring.") stringByAppendingString:destraOff])
+			        : changed ? [NSString stringWithFormat:@"Choicy now keeps Destra from loading, so the %@ banners are shown after a respring.", name]
+			                  : [NSString stringWithFormat:@"Destra stops loading after a respring, and the %@ banners are shown.", name];
+			offerRespring = YES;
+		}
+	} else if (MSBiCleanerInstalled() && access("/var/jb/usr/libexec/sshtoggled", X_OK) == 0) {
+		// MacSettings' root helper does iCleaner's renaming (it reads the style from our preferences itself; see sshtoggled/main.m)
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ notify_post("com.besiktasliseba.msb.engines.apply"); });
+		if (want != loaded) {
+			title = @"Respring to Switch Banners";
+			message = want ? [@"Destra loads again after a respring." stringByAppendingString:destraOn ? @"" : destraOff]
+			               : [NSString stringWithFormat:@"Destra stops loading after a respring, and the %@ banners are shown.", name];
+			offerRespring = viaHelper = YES;
+		}
+	} else if (MSBiCleanerInstalled()) {
+		BOOL on = MSBLibraryPresent(kMSBDDestraLib, @"dylib");
+		if (on != want) {
+			title = @"Switch Destra in iCleaner Pro";
+			message = [NSString stringWithFormat:@"iCleaner Pro manages which tweaks load. In iCleaner Pro > Tweaks, switch %@ MacOSNotifications (Destra). Then respring.", want ? @"ON" : @"OFF"];
+			offerICleaner = YES;
+		}
+	} else if (!want && loaded) {
+		title = @"Choicy is needed";
+		message = @"Install Choicy (or iCleaner Pro) so MacStatusBar&Dock can stop Destra from loading. Until then Destra keeps showing the banners.";
+	}
+	if (!title) return;
+	UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
+	if (offerRespring) [alert addAction:[UIAlertAction actionWithTitle:@"Respring Now" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+		if (!viaHelper) { MSBRespring(); return; }
+		// (iCleaner Pro: the helper renames within a moment; wait for it, at most 3 s, before the respring -- off the main thread, as LineSwitch.h)
+		dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+			for (int i = 0; i < 30 && MSBLibraryPresent(kMSBDDestraLib, @"dylib") != want; i++) [NSThread sleepForTimeInterval:0.1];
+			dispatch_async(dispatch_get_main_queue(), ^{ MSBRespring(); });
+		});
+	}]];
+	if (offerICleaner) [alert addAction:[UIAlertAction actionWithTitle:@"Open iCleaner Pro" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+		[[UIApplication sharedApplication] openURL:[NSURL URLWithString:@"icleaner://"] options:@{} completionHandler:nil];
+	}]];
+	[alert addAction:[UIAlertAction actionWithTitle:offerRespring ? @"Later" : @"OK" style:UIAlertActionStyleCancel handler:nil]];
+	[self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)msb_reportProblem:(PSSpecifier *)specifier {
@@ -723,15 +926,20 @@ static void MSBFitValueLabels(UIView *v) {
 				_specifiers = all;
 			}
 		}
-		// The Control Center size only resizes BigSurCenter's own drop-down panel opened from our status bar; with the stock Control Center, or the
-		// stock status bar, it does nothing, so then its slider and its footer are left out of the Control Center group (Hide Grabber stays).
-		if (!MSBDBigSurCenterInstalled() || MSBStockBarStored()) {   // (common/OwnPageRows.h: the Settings search leaves it out the same way)
+		// The Control Center group by its style (1.8.0): the size slider sizes BigSurCenter's own drop-down panel opened from our status bar and our
+		// own Control Center (Mac; greyed on iPadOS 18, not sized there yet) -- never with iPadOS's or the stock status bar --, Hide Grabber only
+		// iPadOS's own Control Center's line; the footer from the style (common/OwnPageRows.h: the Settings search leaves them out the same way).
+		// The Notifications group's footer from the Banner Style the same way.
+		if ([self msb_rootPage]) {
+			int ccStyle = MSBCCStyleShown();
+			BOOL sizeSlider = MSBDCCSizeRowShown(ccStyle, MSBStockBarStored()), grabber = ccStyle == kMSBDCCStyleStock;
+			BOOL sizeGreyed = sizeSlider && MSBDCCSizeRowGreyed(ccStyle, [NSProcessInfo processInfo].operatingSystemVersion.majorVersion);
 			NSMutableArray *kept = [_specifiers mutableCopy];
 			for (PSSpecifier *spec in _specifiers) {
-				if ([[spec propertyForKey:@"key"] isEqual:kMSBDCCScaleKey]) [kept removeObject:spec];
-				if ([spec.identifier isEqualToString:@"CC_GROUP"]) {
-					if ([spec respondsToSelector:@selector(removePropertyForKey:)]) [spec removePropertyForKey:@"footerText"]; else [spec setProperty:@"" forKey:@"footerText"];
-				}
+				if (([[spec propertyForKey:@"key"] isEqual:kMSBDCCScaleKey] && !sizeSlider) || ([spec.identifier isEqualToString:kMSBDCCGrabberRowID] && !grabber)) [kept removeObject:spec];
+				if ([[spec propertyForKey:@"key"] isEqual:kMSBDCCScaleKey] && sizeGreyed) [spec setProperty:@NO forKey:@"enabled"];
+				if ([spec.identifier isEqualToString:@"CC_GROUP"]) [spec setProperty:MSBCCGroupFooter(ccStyle, sizeSlider, sizeGreyed) forKey:@"footerText"];
+				if ([spec.identifier isEqualToString:@"BANNERS_GROUP"]) [spec setProperty:MSBBannerGroupFooter(MSBBannerStyleShown()) forKey:@"footerText"];
 			}
 			_specifiers = kept;
 		}
@@ -878,9 +1086,9 @@ static void MSBFitValueLabels(UIView *v) {
 				if ([sp.identifier isEqualToString:@"ENGINE_GROUP"])
 					[sp setProperty:MSBStageManagerOnState() == 2 ? @"Stage Manager is off, so apps open full screen. Tap Turn On Stage Manager, or turn it on in Control Center."
 					                                               : @"Apple's Stage Manager does the windowing, with the Mac look on top. Other engines are not loaded." forKey:@"footerText"];
-				// (the window handles are Stage Manager's own windows' too: their style and tint stay)
-				BOOL handles = MSBDHandlesRow([sp propertyForKey:@"key"]);   // (common/OwnPageRows.h)
-				if (!hiding || handles || (sp.cellType == PSGroupCell && [sp.identifier isEqualToString:kMSBDWindowsGroupID])) [kept addObject:sp];
+				// (the window handles and Window Size are Stage Manager's own windows' too: their style and tint, and the size new windows open at, stay)
+				BOOL itsToo = MSBDStageManagerKeepsRow([sp propertyForKey:@"key"]);   // (common/OwnPageRows.h)
+				if (!hiding || itsToo || (sp.cellType == PSGroupCell && [sp.identifier isEqualToString:kMSBDWindowsGroupID])) [kept addObject:sp];
 				// (Stage Manager off -- the user said Not Now, declined Apple's introduction, or switched it off: nothing is written for them; this button is
 				//  their yes, and SpringBoard turns it on -- 1.5.1, consent)
 				if (sp == spec && MSBStageManagerOnState() == 2) {
@@ -980,10 +1188,6 @@ static void MSBFitValueLabels(UIView *v) {
 		NSString *muteBy = MSBDOtherTweakDoing(kMSBDDupMuteIcon, NO);
 		if (muteBy) for (PSSpecifier *spec in _specifiers) if ([spec.identifier isEqualToString:@"AUDIO_GROUP"])
 			[spec setProperty:[NSString stringWithFormat:@"%@ is showing the mute icon.", muteBy] forKey:@"footerText"];
-		// Destra showing Mac-style banners: ours steps aside (both at once squeezed every banner), so the group says who does it.
-		NSString *bannersBy = MSBDOtherTweakDoing(kMSBDDupBanners, NO);
-		if (bannersBy) for (PSSpecifier *spec in _specifiers) if ([spec.identifier isEqualToString:@"BANNERS_GROUP"])
-			[spec setProperty:[NSString stringWithFormat:@"%@ is showing Mac-style banners.", bannersBy] forKey:@"footerText"];
 		// Lynx hiding the Lock Screen status bar: ours steps aside (LockStatusBar.x), so the group says who does it.
 		NSString *lockBy = MSBDOtherTweakDoing(kMSBDDupLockStatusBar, NO);
 		if (lockBy) for (PSSpecifier *spec in _specifiers) if ([spec.identifier isEqualToString:@"LOCK_GROUP"])
@@ -1180,6 +1384,10 @@ static void MSBFitValueLabels(UIView *v) {
 	if ([[specifier propertyForKey:@"key"] isEqual:@MSBD_DESKTOP_CORNER_KEY]) return @(MSBDesktopCornerShownNow());   // (never set: the Home Screen's shape, as SpringBoard read it)
 	if ([[specifier propertyForKey:@"key"] isEqual:@"prewarmApps"]) return @(MSBPrewarmAppsInForce());   // (never set: off on a 2 GB iPad, as SpringBoard reads it)
 	if ([[specifier propertyForKey:@"key"] isEqual:@kMSBDTailspinKey]) return @(MSBTailspinOffInForce());   // (never set: on with 2 GB, as the root helper reads it)
+	if ([[specifier propertyForKey:@"key"] isEqual:@kMSBDCCStyleKey]) return @(MSBDCCStyleValue(MSBCCStyleShown()));   // (never set: the rule's default, CCStyle.h)
+	if ([[specifier propertyForKey:@"key"] isEqual:@kMSBDBannerStyleKey]) return @(MSBDBannerStyleValue(MSBBannerStyleShown()));   // (never set: the rule's default, BannerStyle.h)
+	if ([[specifier propertyForKey:@"key"] isEqual:@kMSBDWindowSizeKey]) return @(MSBDWindowSizeName(MSBWindowSizeStored(NULL)));   // (never set, or anything but small / large: Default)
+	if ([[specifier propertyForKey:@"key"] isEqual:kMSBDCCScaleKey]) return @(MSBCCSizeShown());   // (never set: the chosen Control Center's own size, as SpringBoard reads it)
 	id value = [super readPreferenceValue:specifier];
 	if (![[specifier propertyForKey:@"key"] isEqual:@"windowEngine"]) return value;
 	NSArray *offered = [specifier respondsToSelector:NSSelectorFromString(@"values")] ? ((id (*)(id, SEL))objc_msgSend)(specifier, NSSelectorFromString(@"values")) : nil;
@@ -1208,6 +1416,38 @@ static void MSBFitValueLabels(UIView *v) {
 		if (size == MSBMenuBarSizeStored()) return;   // the size in force tapped again
 		[super setPreferenceValue:@(size) specifier:specifier];
 		[self msb_menuBarSizeChanged:size];
+		return;
+	}
+	if ([[specifier propertyForKey:@"key"] isEqual:@kMSBDCCStyleKey]) {   // (1.8.0: Mac / iPadOS / BigSurCenter from the Style page)
+		int style = [value isKindOfClass:[NSString class]] ? MSBDCCStyleFromStored((__bridge CFStringRef)value) : kMSBDCCStyleNone, before = MSBCCStyleShown();
+		if (!style || style == before) return;   // (the style in force tapped again: nothing stored -- the default stays unwritten)
+		// (the crash guard: Mac is the style's "on" -- a Mac that crashes SpringBoard right after the pick is set back to iPadOS's, common/CrashGuard.h)
+		MSBDNoteSwitch(@"com.besiktasliseba.macstatusbar", @kMSBDCCStyleKey, @"Control Center Style", before == kMSBDCCStyleMac, style == kMSBDCCStyleMac);
+		[super setPreferenceValue:value specifier:specifier];   // (stored, and SpringBoard told: its PostNotification)
+		[self msb_ccStyleChanged:style from:before];
+		return;
+	}
+	if ([[specifier propertyForKey:@"key"] isEqual:@kMSBDBannerStyleKey]) {   // (1.8.0: Mac / iPadOS / Destra from the Style page)
+		int style = [value isKindOfClass:[NSString class]] ? MSBDBannerStyleFromStored((__bridge CFStringRef)value) : kMSBDBannerNone, before = MSBBannerStyleShown();
+		if (!style || style == before) return;   // (the style in force tapped again: nothing stored -- the default stays unwritten)
+		// (the crash guard: Mac is the style's "on" -- a Mac that crashes SpringBoard right after the pick is set back to iPadOS's, common/CrashGuard.h)
+		MSBDNoteSwitch(@"com.besiktasliseba.macstatusbar", @kMSBDBannerStyleKey, @"Banner Style", before == kMSBDBannerMac, style == kMSBDBannerMac);
+		[super setPreferenceValue:value specifier:specifier];   // (stored, and SpringBoard told: its PostNotification)
+		[self msb_bannerStyleChanged:style from:before];
+		return;
+	}
+	if ([[specifier propertyForKey:@"key"] isEqual:@kMSBDWindowSizeKey]) {   // (1.8.0 item 4: Small / Default / Large from the picker page -- new windows open at it)
+		int size = [value isKindOfClass:[NSString class]] ? MSBDWindowSizeFromName([(NSString *)value UTF8String]) : MSBDWindowSizeDefault;
+		BOOL stored = NO;
+		int now = MSBWindowSizeStored(&stored);
+		if (size != MSBDWindowSizeDefault) {
+			if (size != now) [super setPreferenceValue:@(MSBDWindowSizeName(size)) specifier:specifier];   // (stored, and SpringBoard told: its PostNotification)
+			return;
+		}
+		if (!stored) return;   // (Default is never written: nothing stored, nothing to take away)
+		CFPreferencesSetValue(CFSTR(kMSBDWindowSizeKey), NULL, kMSBBarDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+		CFPreferencesSynchronize(kMSBBarDomain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+		notify_post("com.besiktasliseba.macstatusbar/prefsChanged");
 		return;
 	}
 	if ([[specifier propertyForKey:@"key"] isEqual:@MSBD_DESKTOP_ICON_KEY]) {   // (1.7.5: the slider, while it is dragged -- SpringBoard resizes the icons live)

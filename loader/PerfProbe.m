@@ -9,11 +9,14 @@
 //   - profile: the main thread's stack every 2 ms all the window long.
 // /tmp/msb-perfprobe may name the processes to measure (getprogname, one per line or space-separated); empty = SpringBoard only.
 // At the end the watchdog thread writes one summary (the main thread never touches the file) to /tmp/msb-perf-<process>.log, or to the app's own
-// tmp/ when /tmp is not writable (sandboxed apps). Frames in our parts and in other tweaks are named (dladdr); system frames by image + offset.
+// tmp/ when /tmp is not writable (sandboxed apps). Frames in our parts and in other tweaks are named (dladdr); system frames by image + offset
+// in the summary, and by function in the .stacks file ("F" lines: PPNameSystemFrames).
 #import <Foundation/Foundation.h>
 #import <QuartzCore/QuartzCore.h>
 #include <mach/mach.h>
 #include <mach/mach_time.h>
+#include <mach-o/loader.h>
+#include <objc/runtime.h>
 #include <pthread.h>
 #include <dlfcn.h>
 #include <notify.h>
@@ -181,9 +184,113 @@ static FILE *PPOpenLog(void) {
     if (!f) { snprintf(path, sizeof(path), "%s/msb-perf-%s.log", NSTemporaryDirectory().UTF8String, getprogname()); f = fopen(path, "a"); }
     return f;
 }
+// System frames named in this process, after the window (the watchdog thread; the main thread runs freely then): dladdr knows only a system
+// image's exported symbols, so a frame in one of Apple's methods took the nearest exported name. Each image a frame is in gives its functions'
+// starts (LC_FUNCTION_STARTS, read with vm_read: a wrong offset is a failed read, never a fault) and its classes' methods (the ObjC runtime,
+// instance and class methods, categories from other images included); a frame is named by the function it is in: a method whose
+// implementation starts there, else the exported symbol that starts there, else sub_<offset in the image>. "F <addr> <image>:<name>+<offset>".
+typedef struct { uintptr_t imp; __unsafe_unretained Class cls; SEL sel; uint8_t meta; } PPImp;
+typedef struct { uintptr_t base, end; const char *path; uintptr_t *starts; size_t nStarts; } PPImage;
+static int PPCmpPtr(const void *a, const void *b) { uintptr_t x = *(const uintptr_t *)a, y = *(const uintptr_t *)b; return x < y ? -1 : x > y; }
+static int PPCmpImp(const void *a, const void *b) { uintptr_t x = ((const PPImp *)a)->imp, y = ((const PPImp *)b)->imp; return x < y ? -1 : x > y; }
+static int PPRead(uintptr_t addr, void *buf, size_t n) { vm_size_t got = 0; return vm_read_overwrite(mach_task_self(), addr, n, (vm_address_t)buf, &got) == KERN_SUCCESS && got == n; }
+static void PPImageStarts(PPImage *im) {
+    struct mach_header_64 mh;
+    if (!PPRead(im->base, &mh, sizeof(mh)) || mh.magic != MH_MAGIC_64 || mh.sizeofcmds > 256 * 1024) return;
+    uint8_t *cmds = malloc(mh.sizeofcmds); if (!cmds) return;
+    if (!PPRead(im->base + sizeof(mh), cmds, mh.sizeofcmds)) { free(cmds); return; }
+    struct segment_command_64 text = { 0 }, le = { 0 }; struct linkedit_data_command fs = { 0 }; int haveText = 0, haveLe = 0, haveFs = 0;
+    for (uint32_t i = 0, off = 0; i < mh.ncmds && off + sizeof(struct load_command) <= mh.sizeofcmds; i++) {
+        struct load_command *lc = (struct load_command *)(cmds + off);
+        if (lc->cmdsize < sizeof(struct load_command) || off + lc->cmdsize > mh.sizeofcmds) break;
+        if (lc->cmd == LC_SEGMENT_64 && lc->cmdsize >= sizeof(struct segment_command_64)) {
+            struct segment_command_64 *sc = (struct segment_command_64 *)lc;
+            if (!strncmp(sc->segname, "__TEXT", 16)) { text = *sc; haveText = 1; } else if (!strncmp(sc->segname, "__LINKEDIT", 16)) { le = *sc; haveLe = 1; }
+        } else if (lc->cmd == LC_FUNCTION_STARTS && lc->cmdsize >= sizeof(struct linkedit_data_command)) { fs = *(struct linkedit_data_command *)lc; haveFs = 1; }
+        off += lc->cmdsize;
+    }
+    free(cmds);
+    if (!haveText) return;
+    im->end = im->base + text.vmsize;
+    if (!haveFs || !haveLe || !fs.datasize || fs.datasize > 16 * 1024 * 1024 || fs.dataoff < le.fileoff) return;
+    uintptr_t slide = im->base - (uintptr_t)text.vmaddr;   // (the shared cache's images: one linkedit for all, its file offsets the cache file's)
+    uint8_t *d = malloc(fs.datasize); if (!d) return;
+    if (!PPRead((uintptr_t)le.vmaddr + slide + (fs.dataoff - le.fileoff), d, fs.datasize)) { free(d); return; }
+    size_t cap = 4096, n = 0; uintptr_t *s = malloc(cap * sizeof(uintptr_t)), a = im->base;
+    for (uint32_t i = 0; s && i < fs.datasize; ) {
+        uint64_t v = 0; int shift = 0; uint8_t b;
+        do { b = d[i++]; v |= (uint64_t)(b & 0x7f) << shift; shift += 7; } while ((b & 0x80) && i < fs.datasize && shift < 64);
+        if (!v) break;
+        a += v;
+        if (a >= im->end) break;
+        if (n == cap) { cap *= 2; uintptr_t *t = realloc(s, cap * sizeof(uintptr_t)); if (!t) break; s = t; }
+        s[n++] = a;
+    }
+    free(d);
+    im->starts = s; im->nStarts = s ? n : 0;
+}
+static void PPNameSystemFrames(FILE *f) {
+    size_t cap = 0; for (int i = 0; i < gNSamples; i++) cap += gSamples[i].n;
+    uintptr_t *pcs = cap ? malloc(cap * sizeof(uintptr_t)) : NULL; if (!pcs) return;
+    size_t n = 0;
+    for (int i = 0; i < gNSamples; i++) for (int k = 0; k < gSamples[i].n; k++) pcs[n++] = gSamples[i].pc[k];
+    qsort(pcs, n, sizeof(uintptr_t), PPCmpPtr);
+    size_t u = 0; for (size_t i = 0; i < n; i++) if (!u || pcs[i] != pcs[u - 1]) pcs[u++] = pcs[i];
+    static PPImage imgs[256]; int nImg = 0;
+    size_t impCap = 65536, nImp = 0; PPImp *imps = malloc(impCap * sizeof(PPImp));
+    for (size_t i = 0; i < u; i++) {   // the system images the frames are in: their starts, their classes' methods
+        Dl_info di;
+        if (!dladdr((void *)pcs[i], &di) || !di.dli_fbase || !di.dli_fname || PPKind(di.dli_fname)) continue;
+        int have = 0; for (int j = 0; j < nImg; j++) if (imgs[j].base == (uintptr_t)di.dli_fbase) { have = 1; break; }
+        if (have || nImg >= 256) continue;
+        PPImage *im = &imgs[nImg++]; memset(im, 0, sizeof(*im)); im->base = (uintptr_t)di.dli_fbase; im->path = di.dli_fname;
+        PPImageStarts(im);
+        unsigned int nc = 0; const char **names = objc_copyClassNamesForImage(di.dli_fname, &nc);
+        for (unsigned int c = 0; names && imps && c < nc; c++) {
+            Class cls = objc_getClass(names[c]);
+            for (int meta = 0; cls && meta < 2; meta++) {
+                Class k = meta ? object_getClass(cls) : cls; unsigned int nm = 0;
+                Method *ml = k ? class_copyMethodList(k, &nm) : NULL;
+                for (unsigned int m = 0; ml && m < nm; m++) {
+                    if (nImp == impCap) { impCap *= 2; PPImp *t = realloc(imps, impCap * sizeof(PPImp)); if (!t) { nm = 0; break; } imps = t; }
+                    imps[nImp].imp = PP_STRIP(method_getImplementation(ml[m])); imps[nImp].cls = cls; imps[nImp].sel = method_getName(ml[m]); imps[nImp].meta = (uint8_t)meta; nImp++;
+                }
+                free(ml);
+            }
+        }
+        free(names);
+    }
+    if (imps) qsort(imps, nImp, sizeof(PPImp), PPCmpImp);
+    for (size_t i = 0; i < u; i++) {
+        uintptr_t pc = pcs[i]; Dl_info di;
+        if (!dladdr((void *)pc, &di) || !di.dli_fbase || !di.dli_fname || PPKind(di.dli_fname)) continue;
+        PPImage *im = NULL; for (int j = 0; j < nImg; j++) if (imgs[j].base == (uintptr_t)di.dli_fbase) { im = &imgs[j]; break; }
+        uintptr_t start = 0;   // the function the frame is in (its start), when the image lists its functions
+        if (im && im->nStarts) {
+            size_t lo = 0, hi = im->nStarts; while (lo < hi) { size_t mid = (lo + hi) / 2; if (im->starts[mid] <= pc) lo = mid + 1; else hi = mid; }
+            if (lo) start = im->starts[lo - 1];
+        }
+        const PPImp *best = NULL;   // the method whose implementation starts at or before the frame, nearest
+        if (imps && nImp) {
+            size_t lo = 0, hi = nImp; while (lo < hi) { size_t mid = (lo + hi) / 2; if (imps[mid].imp <= pc) lo = mid + 1; else hi = mid; }
+            if (lo) best = &imps[lo - 1];
+        }
+        uintptr_t sym = di.dli_saddr ? PP_STRIP(di.dli_saddr) : 0;
+        char name[300];
+        if (best && ((start && best->imp == start) || (!start && best->imp > sym && best->imp >= (uintptr_t)di.dli_fbase)))
+            snprintf(name, sizeof(name), "%s%c[%s %s]+%lu", start ? "" : "~", best->meta ? '+' : '-', class_getName(best->cls), sel_getName(best->sel), (unsigned long)(pc - best->imp));
+        else if (di.dli_sname && sym && (!start || sym == start)) snprintf(name, sizeof(name), "%s%s+%lu", start ? "" : "~", di.dli_sname, (unsigned long)(pc - sym));
+        else if (start) snprintf(name, sizeof(name), "sub_%lx+%lu", (unsigned long)(start - (uintptr_t)di.dli_fbase), (unsigned long)(pc - start));
+        else snprintf(name, sizeof(name), "?+0x%lx", (unsigned long)(pc - (uintptr_t)di.dli_fbase));
+        fprintf(f, "F %lx %s:%s\n", (unsigned long)pc, PPBase(di.dli_fname), name);
+    }
+    for (int j = 0; j < nImg; j++) { fprintf(f, "Y %lx %lu %s\n", (unsigned long)imgs[j].base, (unsigned long)imgs[j].nStarts, imgs[j].path); free(imgs[j].starts); }
+    free(imps); free(pcs);
+}
 // The samples' raw stacks (addresses), for naming system frames outside the process (the shared cache's ObjC methods are not in dladdr's
 // tables): /tmp/msb-perf-<process>.stacks, one line per sample ("S <window> <t ms> <s=stall|p> <r=running|w> addr..."), and each image once
-// ("I <base> <path>"; the shared cache sits at the same address in every process of a boot, so another process can name them).
+// ("I <base> <path>"; the shared cache sits at the same address in every process of a boot, so another process can name them); the system
+// frames named here as well ("F", PPNameSystemFrames; "Y <base> <functions> <path>": the images it read).
 static void PPWriteStacks(uint64_t win) {
     if (!gNSamples) return;
     char path[1024]; snprintf(path, sizeof(path), "/tmp/msb-perf-%s.stacks", getprogname());
@@ -224,6 +331,7 @@ static void PPWriteStacks(uint64_t win) {
         for (int k = 0; k < s->n; k++) fprintf(f, " %lx", (unsigned long)s->pc[k]);
         fprintf(f, "\n");
     }
+    PPNameSystemFrames(f);
     fclose(f);
 }
 static void PPWriteSummary(uint64_t win, uint64_t endTicks) {

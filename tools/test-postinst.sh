@@ -23,7 +23,9 @@ cat > "$R/usr/bin/launchctl" <<EOF
 #!/bin/sh
 echo "launchctl \$*" >> "$W/calls"
 EOF
-chmod +x "$R/usr/libexec/sshtoggled" "$R/usr/bin/launchctl" "$R/usr/bin/killall"
+# (dpkg --compare-versions as dpkg has it: no dpkg on this Mac -- tools/dpkg-compare-versions.py, its verrevcmp)
+printf '#!/bin/sh\n[ "$1" = --compare-versions ] && exec python3 -I "%s" "$2" "$3" "$4"\nexit 2\n' "$PWD/tools/dpkg-compare-versions.py" > "$R/usr/bin/dpkg"
+chmod +x "$R/usr/libexec/sshtoggled" "$R/usr/bin/launchctl" "$R/usr/bin/killall" "$R/usr/bin/dpkg"
 : > "$R/Library/LaunchDaemons/com.besiktasliseba.sshtoggled.plist"
 sed "s#/var/jb#$R#g" layout/DEBIAN/postinst > "$W/postinst"; chmod +x "$W/postinst"
 
@@ -42,10 +44,19 @@ run "configure on an iPhone (2): nothing set up"                     2   nosetup
 run "configure, helper failed (1): full setup, said so"             1   setup   configure 1.0.0
 run "configure, helper crashed (139): full setup"                   139 setup   configure 1.0.0
 run "configure, helper killed (137): full setup"                    137 setup   configure 1.0.0
-for a in abort-upgrade abort-remove abort-deconfigure; do
-    echo 0 > "$W/ipad-rc"; : > "$W/calls"; "$W/postinst" $a 1.0.1 >/dev/null 2>&1; prc=$?
-    if [ "$prc" = 0 ] && grep -q "launchctl load .*com.besiktasliseba.sshtoggled.plist" "$W/calls" && ! grep -q "^helper" "$W/calls"; then pass=$((pass+1)); echo "ok    $a: helper started again, nothing else run"
-    else fail=$((fail+1)); echo "FAIL  $a: $(tr '\n' ';' < "$W/calls")"; fi
+for c in "abort-upgrade 1.8.1" "abort-upgrade 1.8.0~r02" "abort-remove 1.0.1" "abort-deconfigure 1.0.1"; do
+    set -- $c
+    echo 0 > "$W/ipad-rc"; : > "$W/calls"; "$W/postinst" $1 $2 >/dev/null 2>&1; prc=$?
+    if [ "$prc" = 0 ] && grep -q "launchctl load .*com.besiktasliseba.sshtoggled.plist" "$W/calls" && ! grep -q "^helper" "$W/calls"; then pass=$((pass+1)); echo "ok    $1 $2: helper started again, nothing else run"
+    else fail=$((fail+1)); echo "FAIL  $1 $2: $(tr '\n' ';' < "$W/calls")"; fi
+done
+# a downgrade to a version before 1.8.0 that failed after the prerm gave BigSurCenter and Destra back (code review 1.8.0, 1): this version's choices
+# applied again (--after-install, as after an install) before the helper starts again
+for v in 1.7.9.2 1.0.1; do
+    echo 0 > "$W/ipad-rc"; : > "$W/calls"; "$W/postinst" abort-upgrade $v >/dev/null 2>&1; prc=$?
+    a=$(grep -n '^helper --after-install$' "$W/calls" | cut -d: -f1); l=$(grep -n "launchctl load .*com.besiktasliseba.sshtoggled.plist" "$W/calls" | cut -d: -f1)
+    if [ "$prc" = 0 ] && [ -n "$a" ] && [ -n "$l" ] && [ "$a" -lt "$l" ] && [ "$(grep -c '^helper' "$W/calls")" = 1 ]; then pass=$((pass+1)); echo "ok    abort-upgrade $v (a failed downgrade): the choices applied again, then the helper started"
+    else fail=$((fail+1)); echo "FAIL  abort-upgrade $v: $(tr '\n' ';' < "$W/calls")"; fi
 done
 : > "$W/calls"; "$W/postinst" triggered >/dev/null 2>&1
 [ ! -s "$W/calls" ] && { pass=$((pass+1)); echo "ok    other actions do nothing"; } || { fail=$((fail+1)); echo "FAIL  another action ran: $(cat "$W/calls")"; }

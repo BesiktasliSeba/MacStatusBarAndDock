@@ -49,14 +49,19 @@ int main(int argc, char **argv) {
         Expect([e.groupID isEqualToString:@"REPORT_GROUP"] && e.stockHides, @"index: Report a Problem in REPORT_GROUP (stockHides)");
         e = Row(W, @"Windows Behind Full-Screen Apps");
         Expect([e.groupID isEqualToString:@"WINDOWS_GROUP"] && e.stockHides && !e.belowLine, @"index: Windows & Multitasking has no line switch; WINDOWS_GROUP recorded");
+        e = Row(W, @"Window Size");   // (1.8.0 item 4: a picker in the Windows group, by its key and id; the search finds it as "Window Size" and by its group)
+        Expect([e.groupID isEqualToString:@"WINDOWS_GROUP"] && [e.key isEqualToString:kMSBDWindowSizeRowKey] && !e.opensPage && [e.path.lastObject isEqualToString:@"WINDOW_SIZE"]
+               && [e.uid isEqualToString:@"msbd-tweaksetting:root=MAC_WINDOWS#WINDOW_SIZE"] && [e.tokens containsString:@" window "] && [e.tokens containsString:@" size "] && [e.keywords containsObject:@"Windows"],
+               [NSString stringWithFormat:@"index: Window Size in the Windows group, a picker by its key (WINDOW_SIZE: %@, tokens %@)", e.uid, e.tokens]);
         e = Row(K, @"Magnify Icons"); MTIEntry *dl = Row(K, @"MacDock");
         Expect(e.belowLine && dl && !dl.belowLine && !e.stockHides, @"index: the Dock page's rows below MacDock's switch, the switch itself not");
         Expect(Row(D, @"Icon Size") && [Row(D, @"Icon Size").key isEqualToString:@"desktopIconSize"], @"index: the desktop's Icon Size slider, by its key");
 
         MSBDOwnPages base = {0};
         base.barLine = base.dockLine = base.finder = base.engineWorks = YES;   // (Aerial, everything on, no BigSurCenter, 15 / 16)
-        Shows(base, @"as installed", B, @[@"MacStatusBar", @"Show Seconds", @"Wi-Fi Menu", @"Battery Menu", @"Hide Grabber", @"Report a Problem…", @"Mac-Style Banners"], @[@"Control Center"]);
-        Shows(base, @"as installed", W, @[@"Windows Behind Full-Screen Apps", @"Tint Resize Handles", @"Home Minimizes Windows", @"Mac Switcher", @"Keep Tailspin Off", @"Prewarm Apps"],
+        base.ccStyle = kMSBDCCStyleStock;   // (Control Center Style: iPadOS's -- Hide Grabber, no size slider)
+        Shows(base, @"as installed", B, @[@"MacStatusBar", @"Show Seconds", @"Wi-Fi Menu", @"Battery Menu", @"Control Center Style", @"Hide Grabber", @"Report a Problem…", @"Banner Style"], @[@"Control Center"]);
+        Shows(base, @"as installed", W, @[@"Window Size", @"Windows Behind Full-Screen Apps", @"Tint Resize Handles", @"Home Minimizes Windows", @"Mac Switcher", @"Keep Tailspin Off", @"Prewarm Apps"],
               @[@"Resize Handles", @"Resize Apps to Fit Windows"]);
         Shows(base, @"as installed", D, @[@"Show Desktop Icons", @"Hide Desktop Icon Names", @"Icon Size", @"App Icon Corner Radius", @"Match Home Screen Icons"], @[]);
         Shows(base, @"as installed", K, @[@"MacDock", @"Magnify Icons", @"Show Finder in Dock", @"Show Trash in Dock"], @[]);
@@ -64,21 +69,33 @@ int main(int argc, char **argv) {
         Expect(MSBDOwnRowsShown(gAll, base).count == gAll.count - 3, [NSString stringWithFormat:@"as installed: only the three rows the pages leave out go (%lu of %lu listed)",
                                                                     (unsigned long)MSBDOwnRowsShown(gAll, base).count, (unsigned long)gAll.count]);
 
-        MSBDOwnPages s = base; s.bigSurCenter = YES;
-        Shows(s, @"BigSurCenter", B, @[@"Control Center"], @[]);
+        MSBDOwnPages s = base; s.ccStyle = kMSBDCCStyleBigSurCenter;   // (1.8.0: the rows go with the Control Center Style)
+        Shows(s, @"BigSurCenter", B, @[@"Control Center Style", @"Control Center"], @[@"Hide Grabber"]);
         s.stockBar = YES;
-        Shows(s, @"BigSurCenter + stock status bar", B, @[], @[@"Control Center"]);
+        Shows(s, @"BigSurCenter + stock status bar", B, @[@"Control Center Style"], @[@"Control Center", @"Hide Grabber"]);
+        s = base; s.ccStyle = kMSBDCCStyleMac;   // (1.8.0, KT 3 Nov: the size slider sizes ours too)
+        Shows(s, @"Mac Control Center", B, @[@"Control Center Style", @"Control Center"], @[@"Hide Grabber"]);
+        Expect(MSBDCCSizeRowGreyed(kMSBDCCStyleMac, 18) && !MSBDCCSizeRowGreyed(kMSBDCCStyleMac, 17) && !MSBDCCSizeRowGreyed(kMSBDCCStyleBigSurCenter, 18) && !MSBDCCSizeRowGreyed(kMSBDCCStyleStock, 18),
+               @"Control Center Size greyed only with ours on iPadOS 18 (not sized there yet), never with BigSurCenter");
+        Expect(MSBDCCSizeRowShown(kMSBDCCStyleMac, NO) && !MSBDCCSizeRowShown(kMSBDCCStyleMac, YES) && MSBDCCSizeRowShown(kMSBDCCStyleBigSurCenter, NO) && !MSBDCCSizeRowShown(kMSBDCCStyleStock, NO) && !MSBDCCSizeRowShown(kMSBDCCStyleNone, NO),
+               @"  ... shown with BigSurCenter or ours on our status bar, never with iPadOS's");
+        s = base; s.ccStyle = kMSBDCCStyleNone;   // (not known: both as before the style -- Hide Grabber shown, no size slider)
+        Shows(s, @"Control Center Style not known", B, @[@"Hide Grabber"], @[@"Control Center"]);
+        e = Row(B, @"Control Center Style");
+        Expect([e.groupID isEqualToString:@"CC_GROUP"] && [e.key isEqualToString:@"controlCenterStyle"] && !e.opensPage && [e.path.lastObject isEqualToString:@"CC_STYLE"],
+               @"index: Control Center Style in the Control Center group, a picker by its key (CC_STYLE)");
+        Expect([Row(B, @"Hide Grabber").path.lastObject isEqualToString:@"CC_GRABBER"], @"index: Hide Grabber by its id (CC_GRABBER)");
 
         s = base; s.stockBar = YES;   // (the stockHides groups go; Report a Problem stays in a group of its own)
-        Shows(s, @"stock status bar", B, @[@"MacStatusBar", @"Status Bar Style", @"Mac-Style Banners", @"Finder", @"Hide Grabber", @"Report a Problem…", @"Hide Status Bar on Lock Screen"],
+        Shows(s, @"stock status bar", B, @[@"MacStatusBar", @"Status Bar Style", @"Banner Style", @"Finder", @"Hide Grabber", @"Report a Problem…", @"Hide Status Bar on Lock Screen"],
               @[@"Show Seconds", @"Show Spotlight Search", @"Tweak Settings", @"Menu Bar Size", @"Apps", @"Show in App Library", @"Wi-Fi Menu", @"Battery Menu", @"Mix Audio Between Apps"]);
-        Shows(s, @"stock status bar", W, @[@"Keep Tailspin Off"], @[@"Enable Windowing", @"Window Engine", @"Home Minimizes Windows", @"Mac Switcher", @"Prewarm Apps", @"Tint Resize Handles"]);
+        Shows(s, @"stock status bar", W, @[@"Keep Tailspin Off"], @[@"Enable Windowing", @"Window Engine", @"Window Size", @"Home Minimizes Windows", @"Mac Switcher", @"Prewarm Apps", @"Tint Resize Handles"]);
         Shows(s, @"stock status bar", D, @[@"Show Desktop Icons", @"Icon Size"], @[]);
         Shows(s, @"stock status bar", K, @[@"Magnify Icons"], @[]);
 
         s = base; s.barLine = NO;   // (MacStatusBar off: its switch; Windows & Multitasking's note and Keep Tailspin Off; the Desktop page's note)
         Shows(s, @"MacStatusBar off", B, @[@"MacStatusBar"], @[@"Status Bar Style", @"Show Seconds", @"Finder", @"Report a Problem…", @"Hide Status Bar on Lock Screen"]);
-        Shows(s, @"MacStatusBar off", W, @[@"Keep Tailspin Off"], @[@"Enable Windowing", @"Home Minimizes Windows", @"Mac Switcher", @"Prewarm Apps"]);
+        Shows(s, @"MacStatusBar off", W, @[@"Keep Tailspin Off"], @[@"Enable Windowing", @"Window Size", @"Home Minimizes Windows", @"Mac Switcher", @"Prewarm Apps"]);
         Shows(s, @"MacStatusBar off", D, @[], @[@"Show Desktop Icons", @"Hide Desktop Icon Names", @"Icon Size", @"App Icon Corner Radius"]);
         Shows(s, @"MacStatusBar off", K, @[@"MacDock", @"Magnify Icons"], @[]);
         Expect(Listed(s, W, W) && Listed(s, D, D), @"MacStatusBar off: the pages themselves still listed (each opens, with its note)");
@@ -100,11 +117,11 @@ int main(int argc, char **argv) {
         Shows(s, @"18 without the focus lock", B, @[@"Battery Menu"], @[@"Wi-Fi Menu"]);
 
         s = base; s.stageManagerEngine = YES;   // (Stage Manager as the engine: the Windows group keeps the resize handles' rows)
-        Shows(s, @"Stage Manager engine", W, @[@"Resize Handles", @"Tint Resize Handles", @"Home Minimizes Windows"], @[@"Windows Behind Full-Screen Apps", @"Resize Apps to Fit Windows"]);
+        Shows(s, @"Stage Manager engine", W, @[@"Window Size", @"Resize Handles", @"Tint Resize Handles", @"Home Minimizes Windows"], @[@"Windows Behind Full-Screen Apps", @"Resize Apps to Fit Windows"]);
         s = base; s.engineWorks = NO;           // (no tested engine installed, or it runs on its own)
-        Shows(s, @"no working engine", W, @[@"Window Engine", @"Home Minimizes Windows"], @[@"Windows Behind Full-Screen Apps", @"Tint Resize Handles", @"Resize Handles"]);
+        Shows(s, @"no working engine", W, @[@"Window Engine", @"Home Minimizes Windows"], @[@"Window Size", @"Windows Behind Full-Screen Apps", @"Tint Resize Handles", @"Resize Handles"]);
         s = base; s.milkyWayEngine = YES;       // (MilkyWay4, 15 only)
-        Shows(s, @"MilkyWay4", W, @[@"Resize Apps to Fit Windows", @"Windows Behind Full-Screen Apps"], @[@"Resize Handles"]);
+        Shows(s, @"MilkyWay4", W, @[@"Window Size", @"Resize Apps to Fit Windows", @"Windows Behind Full-Screen Apps"], @[@"Resize Handles"]);
 
         s = base; s.batteryUseOff = YES;
         Expect(!Listed(s, @"Battery", @"Sleep Guard") && Listed(s, B, @"Battery Menu"), @"our Battery Use group not on Battery Health: Sleep Guard left out, nothing else");

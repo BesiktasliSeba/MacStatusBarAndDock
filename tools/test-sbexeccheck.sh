@@ -14,7 +14,7 @@ SB=../statusbar/StatusBar.x; B=../statusbar/BatteryMenu.h
 sbcode() { grep -rn "$1" ../statusbar ../dock ../common ../appbridge ../ccmodule ../spotlight ../prewarmblock ../loader --include=*.x --include=*.xm --include=*.h --include=*.m --include=*.c \
            | grep -v 'macstatusbarprefs/\|macstatusbarsettings/\|dockmagnificationprefs/\|dockmagnificationsettings/' | grep -v '^[^:]*:[0-9]*: *//'; }
 check "the engine respring question waits for the root helper where it is installed, read from its file's mode" \
-  "grep -q 'static BOOL DMEngineHelperInstalled(void) { struct stat st; return stat(\"/var/jb/usr/libexec/sshtoggled\", &st) == 0 && S_ISREG(st.st_mode) && (st.st_mode & S_IXUSR); }' $SB && grep -q 'if ((engines > 1 || gEngineAskNone || gEngineAskSMBack) && DMEngineHelperInstalled()) {' $SB"
+  "grep -q 'static BOOL DMEngineHelperInstalled(void) { struct stat st; return stat(\"/var/jb/usr/libexec/sshtoggled\", &st) == 0 && S_ISREG(st.st_mode) && (st.st_mode & S_IXUSR); }' $SB && grep -q 'BOOL engineAsk = engines > 1 || gEngineAskNone || gEngineAskSMBack;' $SB && grep -q 'if ((engineAsk || gEngineAskCC || gEngineAskBanners) && DMEngineHelperInstalled()) {' $SB"
 check "  ... and the battery menu's Charge Limit rows for the job the same way" \
   "grep -q 'static BOOL DMBattChargeJob(void) { struct stat st; return stat(MSBD_BATT_CHARGE_JOB, &st) == 0 && S_ISREG(st.st_mode) && (st.st_mode & S_IXUSR); }' $B"
 check "no exec check of a file of ours in /var/jb/usr/libexec in SpringBoard's code" \

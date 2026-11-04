@@ -18,7 +18,9 @@ setup() {
     printf '#!/bin/sh\necho "launchctl $*" >> "%s"\n' "$CALLS" > "$J/usr/bin/launchctl"
     # the 1.7.9 helper: --tailspin-giveback / --uninstall take our false away when the state says it is ours (TailspinDaemon.h TGGiveBack)
     printf '#!/bin/sh\necho "helper $*" >> "%s"\ncase "$1" in --tailspin-giveback|--uninstall) [ -f "%s" ] && grep -q owned "%s" && rm -f "%s"; rm -f "%s" ;; esac\n' "$CALLS" "$STATE" "$STATE" "$DA" "$STATE" > "$J/usr/libexec/sshtoggled"
-    chmod +x "$J/usr/bin/launchctl" "$J/usr/libexec/sshtoggled"
+    # (dpkg --compare-versions as dpkg has it: no dpkg on this Mac -- tools/dpkg-compare-versions.py, its verrevcmp)
+    printf '#!/bin/sh\n[ "$1" = --compare-versions ] && exec python3 -I "%s" "$2" "$3" "$4"\nexit 2\n' "$PWD/tools/dpkg-compare-versions.py" > "$J/usr/bin/dpkg"
+    chmod +x "$J/usr/bin/launchctl" "$J/usr/libexec/sshtoggled" "$J/usr/bin/dpkg"
     echo false > "$DA"; echo owned > "$STATE"   # (the 2 GB iPad: the helper wrote the false, ours)
 }
 pass=0; fail=0
@@ -41,6 +43,23 @@ setup; "$W/prerm" failed-upgrade 1.7.9 >/dev/null 2>&1
 [ -e "$DA" ] && ok "failed-upgrade: nothing given back (the old version's postinst abort-upgrade starts its helper again)" || bad "failed-upgrade: the false went"
 setup; echo someone-else > "$STATE"; "$W/prerm" upgrade 1.7.8.2 >/dev/null 2>&1
 [ -e "$DA" ] && ok "upgrade: a false that is not ours stays (only our record's)" || bad "upgrade: someone else's false was taken"
+
+# A downgrade to a version before 1.8.0 (code review 1.8.0, 1): BigSurCenter and Destra given back from our records (--giveback-styles, with the
+# version gone to), after the helper is stopped; never on an update to 1.8.0 or later -- its betas (1.8.0~...) too, which sort before 1.8.0 itself --,
+# on a removal (its --uninstall gives everything back), on deconfigure or failed-upgrade (the helper on disk is the old version's then).
+for c in "upgrade 1.7.9.2 yes" "upgrade 1.7.9 yes" "upgrade 1.7.8.2 yes" "upgrade 1.0 yes" "upgrade 1.8.0~r01 no" "upgrade 1.8.0~r01r no" "upgrade 1.8.0 no" \
+         "upgrade 1.8.0.1 no" "upgrade 1.8.1~b1 no" "upgrade 2.0 no" "remove 1.7.9.2 no" "purge 1.7.9.2 no" "deconfigure 1.7.9.2 no" "failed-upgrade 1.7.9.2 no"; do
+    set -- $c; setup; "$W/prerm" "$1" "$2" >/dev/null 2>&1; rc=$?
+    if [ "$3" = yes ]; then
+        g=$(grep -n "^helper --giveback-styles $2\$" "$CALLS" | head -1 | cut -d: -f1); u=$(grep -n '^launchctl unload' "$CALLS" | head -1 | cut -d: -f1)
+        [ $rc = 0 ] && [ -n "$g" ] && [ -n "$u" ] && [ "$u" -lt "$g" ] && ok "$1 to $2: BigSurCenter and Destra given back first (--giveback-styles $2, the helper stopped before)" \
+            || bad "$1 to $2: no --giveback-styles (calls: $(tr '\n' ';' < "$CALLS"))"
+    else
+        [ $rc = 0 ] && ! grep -q -- '--giveback-styles' "$CALLS" && ok "$1 $2: nothing given back for the styles" || bad "$1 $2: --giveback-styles ran (exit $rc)"
+    fi
+done
+setup; rm -f "$J/usr/bin/dpkg"; "$W/prerm" upgrade 1.7.9.2 >/dev/null 2>&1; rc=$?
+[ $rc = 0 ] && ! grep -q -- '--giveback-styles' "$CALLS" && grep -q '^helper --tailspin-giveback upgrade$' "$CALLS" && ok "no dpkg to ask (cannot happen under dpkg): nothing given back, the rest as before, exit 0" || bad "no dpkg: exit $rc, $(tr '\n' ';' < "$CALLS")"
 
 # dpkg's order for a downgrade (1.7.9 -> 1.7.8.2) and then the removal of 1.7.8.2: 1.7.9's prerm upgrade, 1.7.8.2's preinst, the unpack,
 # 1.7.9's postrm upgrade, 1.7.8.2's postinst configure (its helper knows nothing of the key); then 1.7.8.2's prerm remove, files out, its postrm remove

@@ -39,6 +39,7 @@ Updates come through Sileo, and the Apple menu shows Update Available when your 
 | On a Mac | In MacStatusBar&Dock |
 |---|---|
 | Menu bar with the Apple menu and app menus | The same, plus Wi-Fi, battery, audio and VPN menus |
+| Control Center | A Mac Control Center you can choose in Settings |
 | Windows with traffic lights | Mac windows on Aerial, Zetsu, MilkyWay4 or Apple's Stage Manager |
 | Mission Control and Spaces | The Mac Switcher, with up to 8 desktops that slide with your fingers |
 | Finder and the desktop | A Finder window, and your files on the first Home Screen page |
@@ -57,15 +58,23 @@ The Mac look is on right after install, and most features have their own switch.
 - Right-to-left languages get a mirrored menu bar, as on a Mac. Status Bar Style switches back to the stock iPadOS bar.
 - Menu Bar Size in Settings > Status Bar: Medium and Large make the menu bar taller, with larger text, icons and menus that are easier to tap with a finger.
 
+### Control Center
+
+- Control Center Style in Settings > Status Bar picks which Control Center opens: Mac, iPadOS or BigSurCenter. Only the chosen one loads, and until you pick one you keep the Control Center you had.
+- Mac is a Control Center like the Mac's: Airplane Mode, Wi-Fi, Bluetooth, Display, Sound and Now Playing at the top, and your other controls below. Wi-Fi and Bluetooth open a page of networks or devices, and Sound's page has a volume for each app.
+- On iPadOS 18, the Mac Control Center holds Apple's own controls, with + and the power button at its top.
+- The menu bar's Control Center icon lights up while Control Center is open, and a second tap closes it. The Control Center size slider sets how large the Mac Control Center (iPadOS 15 to 17) or BigSurCenter opens.
+
 ### Windows
 
 - Title bars, traffic lights, rounded corners and resize handles, on the engine you already use.
 - Swiping up from the bottom or pressing the Home button minimizes your windows so the Home Screen shows, and opening an app brings its window back. Home Minimizes Windows in Settings > Windows & Multitasking turns it off.
-- The Window menu has layouts (halves, quarters, Fill Screen, Center) and Fit to Window, which tiles your windows side by side. Layouts and tiles reach the screen's edges, from right under the menu bar down to the Dock.
+- The Window menu has layouts (halves, quarters, Fill Screen, Center) and Fit to Window, which tiles your windows side by side and keeps each one in its place when another closes or joins. Layouts and tiles reach the screen's edges, from right under the menu bar down to the Dock.
 - A window you move or resize lines up with the screen edges, the menu bar, the Dock and other windows when you let go of it near them.
 - When you turn the iPad, a window in a layout (Fill Screen, a half or a quarter) takes the same layout in the new orientation, and any other window goes back to where it last was in that orientation.
 - On iPads with a Home button, windows placed before 1.7.1 with a gap under the menu bar move up under it once.
 - Windows have a smallest size with every engine, as with Stage Manager: the app at least 320 x 300 points.
+- Window Size in Settings > Windows & Multitasking sets the size new windows open at: Small, Default or Large. New windows open and step aside from each other the same way with every engine.
 - With Aerial, Zetsu or MilkyWay4 on iPadOS 15 to 18, every app with a window has its card in iPadOS's App Switcher, as with Stage Manager. A tap on the card brings the window forward.
 - Only the window you're using keeps a text cursor, and Esc ends typing.
 - With the Stage Manager engine on iPadOS 16 to 18, windows float over your Home Screen and stay where you put them, and on iPadOS 16 an external display gets its own Mac desktop.
@@ -74,7 +83,7 @@ The Mac look is on right after install, and most features have their own switch.
 
 Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It takes the place of the App Switcher.
 
-- Open it with a swipe up and hold, a double press of the Home button, or Control-Up. With a finger, hold still for a moment before you lift: a swipe up that only slows down at its end goes Home. Your desktops are at the top, and the windows of the current one below.
+- Open it with a swipe up and pause, the same way iPadOS opens the App Switcher, a double press of the Home button, or Control-Up. Your desktops are at the top, and the windows of the current one below.
 - Tap + to add a desktop (up to 8). Switch with a four-finger swipe, a swipe along the bottom edge, three fingers on a trackpad, or Control-Left and Control-Right.
 - Drag a window onto another desktop to move it there. To remove a desktop, hold it and tap its remove button; its windows move to the desktop next to it.
 - It works with every window engine, and your desktops are still there after a respring. Show App Switcher in the Apple menu opens the iPadOS App Switcher once.
@@ -125,7 +134,7 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 ### Also included
 
 - A Mac pointer, with an I-beam over text
-- Mac-style notification banners and a mute icon
+- Mac-style notification banners, or iPadOS's or Destra's with Banner Style, and a mute icon
 - A Go menu with the apps you choose, and an auto-hiding menu bar
 - Home Screen options: page dots, app names, the Home Bar, and whether a swipe past the last page opens the App Library
 - Keyboard extras for keyboards without a function row
@@ -189,7 +198,7 @@ Tried it on another setup? A [compatibility report](https://github.com/Besiktasl
 - External displays: on iPadOS 15 the iPad is mirrored. On iPadOS 16 with engines other than Stage Manager, windows stay on the iPad; open apps from the display's App Library to use them there.
 - Finder can't show iCloud Drive (iPadOS doesn't allow it), drag and drop goes from Finder into apps but not back yet, and drives have been tested on iPadOS 15 only.
 - On iPadOS 15, Safari's sound can stop another app that plays alone, as on a stock iPad. Control Center's Now Playing shows one app at a time.
-- While Destra is on, it shows the notification banners instead.
+- On iPadOS 18, the Control Center size slider doesn't resize the Mac Control Center yet, and while it's open, the indicator for an app using the camera, microphone or location doesn't show.
 
 ## Troubleshooting
 
@@ -202,7 +211,7 @@ Tried it on another setup? A [compatibility report](https://github.com/Besiktasl
 | SpringBoard keeps crashing | Your jailbreak's Safe Mode starts by itself after quick crashes. Exit Safe Mode, and at the next start crash recovery turns off what crashed. The Apple menu also has Safe Mode. |
 | Black screen after a respring, with Aerial 5.0 or 5.1 | Aerial 5.0 and 5.1 go online while SpringBoard starts, and with a VPN on (or just turned off) it can hang. Restart the iPad and jailbreak again. Next time, don't respring while a VPN is on or was just turned off; MacStatusBar&Dock warns before resprings that go through iOS. |
 | The Status Bar and Dock pages are gone | Both MacStatusBar and MacDock were turned off. Turn them back on in Choicy (or iCleaner Pro), then respring. |
-| Several window engines installed | That's fine. Only the one picked in Window Engine loads. Leave the engines' entries in Choicy alone: MacStatusBar&Dock manages them. |
+| Several window engines, Control Centers or banner tweaks installed | That's fine. Only the one picked in Window Engine, Control Center Style or Banner Style loads. Leave their entries in Choicy alone: MacStatusBar&Dock manages them. |
 
 To uninstall, remove MacStatusBar&Dock in Sileo. It gives the window engines their own settings back, undoes its Choicy or iCleaner Pro changes, and sets an Auto-Lock of 2 hours to 1 hour, the longest iPadOS keeps on its own. Finder's Trash isn't visible in the Files app and stays behind, so empty it in Finder first.
 

@@ -6,6 +6,13 @@
 # nothing of it and left it there for good (a downgrade, then a removal: code review). The version that follows writes it again within seconds of
 # its postinst starting the helper, where its switch is on. Not on failed-upgrade: dpkg runs that while the helper on disk is the old version's.
 case "$1" in remove|purge|upgrade|deconfigure) [ -x /var/jb/usr/libexec/sshtoggled ] && /var/jb/usr/libexec/sshtoggled --tailspin-giveback "$1" ;; esac
+# A downgrade to a version before 1.8.0 (every 1.8.0 build, a ~ one too, is 1.8.0~ or later): BigSurCenter and Destra, which this version keeps out
+# of SpringBoard for Control Center Style and Banner Style, are given back from our records (our Choicy entries for them, their iCleaner Pro
+# renames); the engines' stay as the older version expects them. That version knows only the engines' entries: the other two stayed off for good
+# (code review 1.8.0, 1). A downgrade that then fails: the postinst's abort-upgrade applies this version's choices again.
+if [ "$1" = "upgrade" ] && [ -n "$2" ] && /var/jb/usr/bin/dpkg --compare-versions "$2" lt 1.8.0~ 2>/dev/null; then
+    [ -x /var/jb/usr/libexec/sshtoggled ] && /var/jb/usr/libexec/sshtoggled --giveback-styles "$2"
+fi
 if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
     [ -x /var/jb/usr/libexec/sshtoggled ] && /var/jb/usr/libexec/sshtoggled --uninstall
 fi

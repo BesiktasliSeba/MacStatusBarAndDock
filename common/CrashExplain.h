@@ -103,11 +103,13 @@ static inline BOOL MSBDGuardUntitledSwitch(NSDictionary *record, int action) {
 // Step 1b (action 4, CrashStep.h): what went off, from the record: its sentence ("SpringBoard crashed twice in the Dock, so MacDock was turned off
 // for now."), whether a part is no longer loaded (then "Turn Back On" brings it back), whether only Stock status bar mode was switched on.
 static inline BOOL MSBDStepIsStockBar(NSArray *feature) { return [feature[1] isEqualToString:@"stockStatusBar"] && [feature[2] intValue] == 1; }
+// (our own Control Center, 1.8.0: Control Center Style set back to iPadOS's -- the guard writes false, read as iPadOS's style, statusbar/CCPanel.h)
+static inline BOOL MSBDStepIsStockCC(NSArray *feature) { return [feature[1] isEqualToString:@"controlCenterStyle"] && [feature[2] intValue] == 0; }
 static inline NSString *MSBDStepSentence(NSDictionary *record) {
     NSMutableArray *wheres = [NSMutableArray array], *clauses = [NSMutableArray array];
     for (NSArray *f in record[@"features"]) {
         if (![wheres containsObject:f[4]]) [wheres addObject:f[4]];
-        [clauses addObject:MSBDStepIsStockBar(f) ? @"the stock status bar is used for now"
+        [clauses addObject:MSBDStepIsStockBar(f) ? @"the stock status bar is used for now" : MSBDStepIsStockCC(f) ? @"iPadOS's Control Center is used for now"
             : [NSString stringWithFormat:@"“%@” was turned %@", f[3], [f[2] intValue] ? @"on" : @"off"]];
     }
     for (NSArray *p in record[@"parts"]) {
@@ -301,7 +303,8 @@ static inline NSString *MSBDGuardActionWords(NSDictionary *record) {
     if (action == 4) {   // (step 1b: "turned off “Mac-Style Banners”", "switched to the stock status bar", "stopped loading MacDock (DockMagnification)")
         NSMutableArray *done = [NSMutableArray array];
         for (NSArray *f in record[@"features"])
-            [done addObject:MSBDStepIsStockBar(f) ? @"switched to the stock status bar" : [NSString stringWithFormat:@"turned %@ “%@”", [f[2] intValue] ? @"on" : @"off", f[3]]];
+            [done addObject:MSBDStepIsStockBar(f) ? @"switched to the stock status bar" : MSBDStepIsStockCC(f) ? @"switched to iPadOS's Control Center"
+                : [NSString stringWithFormat:@"turned %@ “%@”", [f[2] intValue] ? @"on" : @"off", f[3]]];
         for (NSArray *p in record[@"parts"]) [done addObject:[NSString stringWithFormat:@"stopped loading %@ (%@)", p[2], p[0]]];
         return [NSString stringWithFormat:@"%@ (only what crashed)", done.count ? [done componentsJoinedByString:@", "] : @"turned off what crashed"];
     }

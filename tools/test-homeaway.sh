@@ -44,7 +44,7 @@ check "  ... read by SpringBoard as a boolean, else ON (every user, updaters too
 check "our own simulated Home press (DMMinimize) is never the user's Home: marked while it runs and for a second after" \
   "fn $X 'static void DMMinimize(void) {' | awk '/gDMOwnHomeAt = CACurrentMediaTime\(\);/{a=NR} /gDMOwnHomeDepth\+\+;/{b=NR} /DMMinimizeBody\(\);/{c=NR} /gDMOwnHomeDepth--;/{d=NR} END{exit !(a && b > a && c > b && d > c)}' \
    && grep -q 'static BOOL DMHomeIsOurs(void) { return gDMOwnHomeDepth > 0 || CACurrentMediaTime() - gDMOwnHomeAt < 1.0; }' $X"
-check "the gesture's lift: whatever destination SpringBoard is finally given (the hold rule's Home, the takeover's stay), a 4 is a Home" \
+check "the gesture's lift: whatever destination SpringBoard is finally given (after the takeover's stay), a 4 is a Home" \
   "grep -q 'static id DMMSWActOrig(id self, SEL _cmd, long long dest) { if (dest == 4) DMHomeAwayLift(); return o_MSWActivate(self, _cmd, dest); }' $M \
    && grep -q 'static id DMMSWActOrigRM(id self, SEL _cmd, long long dest) { if (dest == 4) DMHomeAwayLift(); return o_MSWActivateRM(self, _cmd, dest); }' $M \
    && grep -q 'static id DMMSWActOrigCE(id self, SEL _cmd, long long dest) { if (dest == 4) DMHomeAwayLift(); return o_MSWActivateCE(self, _cmd, dest); }' $M \

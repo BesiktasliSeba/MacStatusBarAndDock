@@ -69,7 +69,7 @@ static void DMStockBarStart(void) {
     }
     if (!DMTestFlag("/tmp/msb-noorientnotes")) DMOrientationFeedWant(YES);   // (the Mac pointer's turn; while the screen is on, StatusBar.x)
     DMScreenPowerWatch();
-    DMBannersInit();
+    DMBannerStyleInit(YES);   // (Banner Style, 1.8.0: the Mac-style banners' hooks unless Destra is the style, BannerStyleSB.h)
     {   // Block Pointer Pull-Down (Settings > Pointer): the one hook and its one setting, followed live
         CFPreferencesAppSynchronize(MSB_DOMAIN);
         DMReadBlockPointerPull();

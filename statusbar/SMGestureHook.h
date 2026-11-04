@@ -36,6 +36,16 @@ static void DMSMGTBegin(id self, SEL _cmd) {
 static void DMSMGTDidComplete(id self, SEL _cmd) {
     o_SMGTDidComplete(self, _cmd);
     @try {
+#if DEBUG
+        SEL lr = NSSelectorFromString(@"isLiveResize");
+        if (DMTestFlag("/tmp/msb-gesture-stuck") && DMSMGTGetter(self, lr, 'B') && ((BOOL (*)(id, SEL))objc_msgSend)(self, lr)) {   // (test: as if it never completed)
+            if (!gSMGTStuck) gSMGTStuck = [NSMutableArray array];
+            [gSMGTStuck addObject:self];
+            DMLog([NSString stringWithFormat:@"[smgesture] (test) %@ completed after %.0f ms: kept as one that never completes, %lu write(s) waiting", NSStringFromClass(object_getClass(self)), (CACurrentMediaTime() - gSMGestureSince) * 1000.0, (unsigned long)gSMAfterGesture.count]);
+            DMSMGestureWatchCap();
+            return;
+        }
+#endif
         [gSMGestureTxs removeObject:self];
         if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[smgesture] %@ ended after %.0f ms: %lu write(s) waiting", NSStringFromClass(object_getClass(self)), (CACurrentMediaTime() - gSMGestureSince) * 1000.0, (unsigned long)gSMAfterGesture.count]);
         if (!DMSMGestureLive()) { if (gSMAfterGesture.count) DMSMGestureFlushSoon(); else gSMGestureHeld = nil; }

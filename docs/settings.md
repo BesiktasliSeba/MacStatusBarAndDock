@@ -22,15 +22,16 @@ On iPadOS 18, Settings has no room for tweak rows in its sidebar, so Status Bar,
 | Desktop and Downloads | Files in On My iPad > Desktop and Downloads in Spotlight: right away on iPadOS 15, once iPadOS indexes them on 16. Needs Files allowed in Settings > Siri & Search. | Off |
 | Menu Bar Size | Small is the standard size. Medium and Large make the menu bar taller, with larger text, icons and menus that are easier to tap with a finger. Window title bars keep their size (respring). | Small |
 | Automatically Hide and Show the Status Bar | Hides the menu bar until the pointer reaches the top edge. | Off |
-| Mac-Style Banners | Notification banners come in at the top right, like on a Mac. | On |
+| Banner Style | Mac: notification banners come in at the top right, like on a Mac. iPadOS: Apple's own banners. Destra: Destra's banners, while Destra is installed (a switch to or from it takes a respring). Only the chosen style loads. | Mac, or iPadOS if you had turned off Mac-Style Banners |
 | Go Menu > Apps | Choose and order the apps in the Go menu. | |
 | Finder | Off removes Finder completely, with its Dock icon and the desktop. | On |
 | Activity Monitor > Show in App Library | Activity Monitor as an app in the App Library, in its Utilities category and its search. A tap opens the Activity Monitor window, and Add to Dock in its menu puts it in the Dock. Off also takes it out of the Dock, and on puts it back. | On |
 | Report a Problem | Opens a filled-in GitHub issue in your browser. The report is part of the link, so GitHub receives it when the page opens. It is only posted if you submit it. | |
 | Background | Automatic: a color behind the menu bar, unless ColorBar15 already colors it. Also Always On or Off. | Automatic |
 | Color and opacity | The background color, used while the menu bar text is light. | 70% |
-| Hide Grabber | Hides the short line at the top right of Control Center. | On |
-| Control Center size (only with BigSurCenter) | How large Control Center opens from the menu bar. | 82% |
+| Control Center Style | Which Control Center opens. Mac: a Control Center like the Mac's, with Airplane Mode, Wi-Fi and Bluetooth (with pages for networks and devices), Display and Sound sliders (Sound's page has a volume for each app) and Now Playing above your other controls; on iPadOS 18 it holds Apple's own controls, with + and the power button at its top. Mac needs Status Bar Style Mac, and with it the menu bar's Control Center icon shows also while Battery Menu is off. iPadOS: Apple's own. BigSurCenter: while it's installed, with a GET button on iPadOS 15 and 16 while it isn't. Only the chosen one loads, and a switch to or from BigSurCenter takes a respring. | BigSurCenter if it's installed, else iPadOS |
+| Hide Grabber (with Control Center Style iPadOS) | Hides the short line at the top right of Control Center. | On |
+| Control Center size (with Mac or BigSurCenter) | How large Control Center opens. With Mac on iPadOS 18 it doesn't resize it yet. Not shown with Status Bar Style Stock. | 100% with Mac, 82% with BigSurCenter |
 | Haptic Touch Menus | Mac: slimmer long-press menus that turn compact with a trackpad or mouse. Stock: Apple's menus. | Mac |
 | Force Quit in App Menus | Force Quit in app icon menus. | On |
 | App Size in App Menus | The app's size at the top of its icon menu. | On |
@@ -45,7 +46,7 @@ On iPadOS 18, Settings has no room for tweak rows in its sidebar, so Status Bar,
 | Mix Audio Between Apps | Apps can play at the same time, each with its own volume in the Audio menu. | On |
 | Show Mute Icon | A mute icon in the menu bar while the iPad is muted. | On |
 | Wi-Fi Menu | The Wi-Fi icon opens a Wi-Fi menu. | On |
-| Battery Menu | The battery in the menu bar opens a battery menu, as on a Mac, with its level and power source, a Low Power Mode switch, Sleep Guard and Battery Settings. A Control Center icon next to the clock opens Control Center, and the swipe down from the top right still does. Off: a click on the battery opens Control Center, and there's no icon. | On, also after an update |
+| Battery Menu | The battery in the menu bar opens a battery menu, as on a Mac, with its level and power source, a Low Power Mode switch, Sleep Guard and Battery Settings. A Control Center icon next to the clock opens Control Center, and the swipe down from the top right still does. Off: a click on the battery opens Control Center, and there's no icon unless Control Center Style is Mac. The icon lights up while Control Center is open, and a second tap closes it. | On, also after an update |
 | Hide Status Bar on Lock Screen | No status bar on the Lock Screen, and no Control Center line at its top right. | Off |
 | Skip Lock Screen After Respring | Goes straight to the Home Screen after a respring. Works only without a passcode. | Off |
 
@@ -69,6 +70,7 @@ The window settings, on their own page between Desktop and Dock. On iPadOS 15 an
 |---|---|---|
 | Enable Windowing | Off: no window engine loads and every app opens full screen (respring). | On |
 | Window Engine | Which engine runs your windows. Only that one loads (respring). Apple's Stage Manager is listed under Native (not on iPadOS 15), Aerial, Zetsu and MilkyWay4 under Third-Party. With Stage Manager, MacStatusBar&Dock asks before it turns Stage Manager on, and if you say Not Now (or turn it off later), Turn On Stage Manager appears here. With another engine, Stage Manager stays off while it runs and comes back on as you had it when you turn off windowing. | Stage Manager where it runs (iPadOS 16.1 to 18), else Aerial |
+| Window Size | The size a new window opens at, with every engine: Small, Default or Large. A window that opens where it last was keeps its size. The Window menu's Small and Large are the same sizes. | Default |
 | Windows Behind Full-Screen Apps | A full-screen app comes in front of your windows, and Window > Bring All to Front brings them back. Off: windows stay in front. | On |
 | Resize Handles (Stage Manager engine only) | Mac handles, or Stage Manager's own. | Mac |
 | Tint Resize Handles | Resize handles take a soft version of each app's color. | Off |
@@ -174,8 +176,8 @@ These two live in the Window menu instead of Settings, so you can change them wh
 
 | Item | What it does | New install |
 |---|---|---|
-| Open Apps as Windows | Apps open as windows from anywhere: the Home Screen, the Dock, Spotlight, links and notifications. With Aerial it is Aerial's own Control Center toggle. | Off (Stage Manager engine: On) |
-| Fit to Window | Tiles your windows side by side, from edge to edge with 6 points between them. When a third app opens, you pick its side, or No Fit. Switched off, it spreads the windows back out at a normal size. | Off |
+| Open Apps as Windows | Apps open as windows from anywhere: the Home Screen, the Dock, Spotlight, links, notifications and other tweaks' launchers. With Aerial it is Aerial's own Control Center toggle. | Off (Stage Manager engine: On) |
+| Fit to Window | Tiles your windows side by side, from edge to edge with 6 points between them. When a third app opens, you pick its side, or No Fit. Windows keep their places when one closes or another joins, a minimized window keeps its tile, and a fifth window opens over the tiles. Switched off, it spreads the windows back out at a normal size. | Off |
 
 The Window menu also has Minimize All Windows, Bring All to Front or Send All to Back, the layouts (Fill Screen, Center, halves, quarters, Small, Large) and, with the Stage Manager engine and a display connected, Move to Other Display. Fill Screen, the halves and the quarters reach the screen's edges, from right under the menu bar down to the Dock.
 
@@ -187,6 +189,7 @@ These have no switch:
 - The Settings app has no large title and no alert banners over its sidebar, and Accessibility starts its own section.
 - Command-Tab brings an app's window to the front when it has one, and a quick Command-Tab from a window goes back to the app you used before. Activity Monitor is in Command-Tab too while its window is open.
 - Windows have a smallest size with every window engine, as with Stage Manager: the app at least 320 x 300 points, as far as the screen allows.
+- New windows open at the same place and size with every window engine, and a new window that would cover another steps aside from it.
 - A window you move or resize lines up with the screen edges, the menu bar, the Dock and other windows when you let go of it near them, with every window engine.
 - When you turn the iPad, a window in a layout (Fill Screen, a half or a quarter) takes the same layout in the new orientation, and any other window goes back to where it last was in that orientation, with every window engine.
 - With Aerial, Zetsu or MilkyWay4 on iPadOS 15 to 18, every app with a window has its card in iPadOS's App Switcher, with a picture of the window. A tap on the card brings the window forward.

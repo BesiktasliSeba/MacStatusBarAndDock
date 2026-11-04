@@ -9,10 +9,14 @@
 //     nothing. Without Choicy, the only way is iCleaner's own mechanism: <Engine>.dylib renamed to <Engine>.disabled in TweakInject (iCleaner's Tweaks page
 //     then shows the true state), which needs root. Mac Status Bar asks with the Darwin notification com.besiktasliseba.msb.engines.apply (when an engine is picked
 //     and at every SpringBoard start); "sshtoggled --restore-engines" (run by the prerm of Mac Status Bar and of MacSettings) renames back exactly what it
-//     renamed. Safety rules (requested: "as safe as possible, no issues with updated packages, the engine switched off as rarely as possible"):
+//     renamed. (1.8.0: Control Center Style's BigSurCenter and Banner Style's Destra the same way -- each loaded only while it is the style; one
+//     table of the choices and their libraries with Settings, common/ExclusiveChoice.h; a downgrade to an older version gives those two back first,
+//     --giveback-styles from the prerm.) Safety rules (requested: "as safe as possible, no issues
+//     with updated packages, the engine switched off as rarely as possible"):
 //      - acts only when Mac Status Bar is installed, Choicy is NOT and iCleaner Pro IS (with Choicy installed, anything we renamed earlier is given back);
-//      - a hard-coded list of engine library names (Aerial, MilkyWay4 + MilkyWay3SubModule, Zetsu); no paths from outside, no shell, no symlinks followed:
-//        every file is checked with lstat to be a regular file, and <name>.dylib must be in the owning engine package's dpkg file list;
+//      - a hard-coded list of library names (the table: Aerial, MilkyWay4 + MilkyWay3SubModule, Zetsu, BigSurCenter, MacOSNotifications); no paths
+//        from outside, no shell, no symlinks followed: every file is checked with lstat to be a regular file, and <name>.dylib must be in its
+//        package's dpkg file list (BigSurCenter's and Destra's package: whichever owns the library, LibraryOwner);
 //      - the notification carries nothing: every time, the CHOSEN engine is re-read from Mac Status Bar's own preferences and only the OTHER installed
 //        engines are disabled. The chosen engine is never disabled (if WE had disabled it earlier, it is enabled again). A spoofed or repeated notification
 //        can at most re-apply the correct state. No engine chosen or installed: everything we disabled is enabled again. Windowing switched off:
@@ -56,6 +60,8 @@
 #include "../../common/SSHSwitch.h"        // (the SSH state every switch reads, and its notification, 1.7.6; Mac-tested)
 #include "../../common/CCModuleList.h"     // (our Control Center controls' identifiers: taken out of the user's lists on removal)
 #include "../../common/CCAutoAdd.h"        // (RAM & CPU's once-only marker: forgotten on removal where the removal takes the control out, Mac-tested)
+#include "../../common/CCStyleNow.h"       // (Control Center Style, 1.8.0: the style and whether BigSurCenter may load; the choices' table, ExclusiveChoice.h)
+#include "../../common/BannerStyleNow.h"   // (Banner Style, 1.8.0: the style and whether Destra may load)
 #include <dlfcn.h>
 #include <grp.h>
 
@@ -246,13 +252,9 @@ static void ELog(NSString *fmt, ...) {
     NSDateFormatter *df = [NSDateFormatter new]; df.dateFormat = @"yyyy-MM-dd HH:mm:ss";
     fprintf(f, "%s %s\n", [df stringFromDate:[NSDate date]].UTF8String, line.UTF8String); fclose(f);
 }
-// engine key (Mac Status Bar's windowEngine preference) -> its libraries, and its package
-static NSDictionary<NSString *, NSArray<NSString *> *> *EngineLibs(void) {
-    return @{ @"aerial": @[@"Aerial"], @"milkyway": @[@"MilkyWay4", @"MilkyWay3SubModule"], @"zetsu": @[@"Zetsu"] };
-}
-static NSDictionary<NSString *, NSString *> *EnginePackage(void) {
-    return @{ @"aerial": @"jp.uzra.aerial", @"milkyway": @"jp.akusio.milkyway4", @"zetsu": @"jp.dcsyhi.zetsu" };
-}
+// engine key (Mac Status Bar's windowEngine preference) -> its libraries, and its package (the table, common/ExclusiveChoice.h)
+static NSDictionary<NSString *, NSArray<NSString *> *> *EngineLibs(void) { return MSBDExValues(@"windowEngine"); }
+static NSDictionary<NSString *, NSString *> *EnginePackage(void) { return MSBDExPackages(@"windowEngine"); }
 // dpkg's status file (often 1-3 MB): read again only when it changed (dpkg replaces it with a rename, so a new inode, mtime or size means new contents).
 static NSString *DpkgStatus(void) {
     static NSString *cache; static struct timespec mtime; static ino_t ino; static off_t size;
@@ -308,11 +310,32 @@ static BOOL OwnedByPackage(NSString *pkg, NSString *name) {
     for (NSString *line in [list componentsSeparatedByString:@"\n"]) if ([line isEqualToString:a] || [line isEqualToString:b]) return YES;
     return NO;
 }
-static NSMutableOrderedSet<NSString *> *LoadRecord(void) {
+static NSMutableOrderedSet<NSString *> *LoadRecord(void) {   // (only the table's libraries count: ExclusiveChoice.h)
     NSString *s = [NSString stringWithContentsOfFile:@ESTATEFILE encoding:NSUTF8StringEncoding error:nil];
-    NSMutableOrderedSet *set = [NSMutableOrderedSet orderedSet];
-    for (NSString *l in [s componentsSeparatedByString:@"\n"]) if (l.length && [@[@"Aerial", @"MilkyWay4", @"MilkyWay3SubModule", @"Zetsu"] containsObject:l]) [set addObject:l];
-    return set;
+    return [NSMutableOrderedSet orderedSetWithArray:MSBDExRenamesIn(s ?: @"")];
+}
+// The package that owns a library the table names no package for (BigSurCenter: more than one repository has it, under more than one name): the
+// one whose dpkg file list has its .dylib, in either tweak folder's spelling; nil for none. The lists are read again only when dpkg's status file
+// changed (about 400 small files on the iPad 2, a few tens of milliseconds), and only when the library is there at all.
+static NSString *LibraryOwner(NSString *name) {
+    static NSMutableDictionary<NSString *, NSString *> *owners; static struct timespec mtime; static ino_t ino; static off_t size;
+    struct stat st; memset(&st, 0, sizeof(st));
+    stat("/var/jb/var/lib/dpkg/status", &st);   // (dpkg replaces the file with a rename: a new inode, mtime or size means new lists)
+    if (!owners || st.st_ino != ino || st.st_size != size || st.st_mtimespec.tv_sec != mtime.tv_sec || st.st_mtimespec.tv_nsec != mtime.tv_nsec) {
+        owners = [NSMutableDictionary dictionary]; ino = st.st_ino; size = st.st_size; mtime = st.st_mtimespec;
+    }
+    if (owners[name]) return owners[name].length ? owners[name] : nil;
+    NSString *a = [NSString stringWithFormat:@"/var/jb/Library/MobileSubstrate/DynamicLibraries/%@.dylib", name], *b = [NSString stringWithFormat:@TWEAKDIR "/%@.dylib", name];
+    NSString *dir = @"/var/jb/var/lib/dpkg/info", *owner = @"", *file = [NSString stringWithFormat:@"/%@.dylib", name];
+    for (NSString *f in [[[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil] sortedArrayUsingSelector:@selector(compare:)]) {
+        if (![f hasSuffix:@".list"]) continue;
+        NSString *list = [NSString stringWithContentsOfFile:[dir stringByAppendingPathComponent:f] encoding:NSUTF8StringEncoding error:nil];
+        if (![list containsString:file]) continue;
+        for (NSString *line in [list componentsSeparatedByString:@"\n"]) if ([line isEqualToString:a] || [line isEqualToString:b]) { owner = [f stringByDeletingPathExtension]; break; }
+        if (owner.length) break;
+    }
+    owners[name] = owner;
+    return owner.length ? owner : nil;
 }
 static void SaveRecord(NSOrderedSet<NSString *> *set) {
     if (set.count == 0) { unlink(ESTATEFILE); return; }
@@ -380,15 +403,41 @@ static NSString *EngineToKeep(NSString *status, BOOL *windowing, BOOL *picked) {
         return YES;
     }, path);
 }
+// Control Center Style (1.8.0, common/CCStyle.h): the style for mobile by the one rule, from the real state -- BigSurCenter installed (its library,
+// .dylib or our .disabled, owned by a package on disk) and not switched off by the user themselves (in Choicy, or iCleaner Pro's rename, not ours:
+// ExclusiveChoice.h). *bscPackage: BigSurCenter's package, nil when it is not installed. BigSurCenter loads only with its own style.
+static int ChosenCCStyle(NSString *status, NSString **bscPackage) {
+    BOOL there = Exists(@TWEAKDIR "/BigSurCenter.dylib") || Exists(@TWEAKDIR "/BigSurCenter.disabled");
+    NSString *owner = there ? LibraryOwner(@"BigSurCenter") : nil;
+    BOOL installed = owner && MSBDPackageOnDisk(status, owner);
+    if (bscPackage) *bscPackage = installed ? owner : nil;
+    int verdict = MSBDCCMacVerdictNow(NULL);
+    return MSBDCCStyleChosen(MSBDCCStyleStoredFor(CFSTR("mobile")), installed, installed && MSBDExUserOffNow(@"BigSurCenter"),
+                             MSBDCCMacRuns((int)[NSProcessInfo processInfo].operatingSystemVersion.majorVersion, verdict, MSBDCCStockBarStoredFor(CFSTR("mobile"))));
+}
+// Banner Style (1.8.0, common/BannerStyle.h): the style for mobile by the one rule, from the real state -- Destra installed (its library, .dylib
+// or our .disabled, owned by a package on disk). A never-set style is ours (Mac, or iPadOS where the old switch was turned off), Destra installed
+// or not (KT 3 Nov), so Destra is kept out then. *destraPackage: Destra's package, nil when it is not installed. Destra loads only with its own
+// style.
+static int ChosenBannerStyle(NSString *status, NSString **destraPackage) {
+    BOOL there = Exists(@TWEAKDIR "/MacOSNotifications.dylib") || Exists(@TWEAKDIR "/MacOSNotifications.disabled");
+    NSString *owner = there ? LibraryOwner(@"MacOSNotifications") : nil;
+    BOOL installed = owner && MSBDPackageOnDisk(status, owner);
+    if (destraPackage) *destraPackage = installed ? owner : nil;
+    return MSBDBannerStyleChosen(MSBDBannerStyleStoredFor(CFSTR("mobile")), MSBDBannerLegacyFor(CFSTR("mobile")), installed);
+}
 // SpringBoard asks at every start; when this really changed which engines load, it is told (the state names that SpringBoard), and only then does it
-// ask for the respring that finishes the switch (StatusBar.x, DMCheckEngineWarnings).
+// ask for the respring that finishes the switch (StatusBar.x, DMCheckEngineWarnings). 1.8.0: the state says what changed too, above SpringBoard's
+// pid -- kChangedEngines, kChangedCCStyle (BigSurCenter kept out or let in: its own words in the question, statusbar/CCStyleSB.h), kChangedBanners
+// (Destra the same, statusbar/BannerStyleSB.h).
+enum { kChangedEngines = 1, kChangedCCStyle = 2, kChangedBanners = 4 };
 static int SpringBoardPid(time_t *started);   // (section 3)
 static BOOL gTellSpringBoard = YES;   // (NO in the postinst's run, ApplyEnginesAtInstall: the SpringBoard running then is the one being replaced)
-static void TellSpringBoardEnginesChanged(void) {
-    if (!gTellSpringBoard) return;
+static void TellSpringBoardChanged(unsigned what) {
+    if (!gTellSpringBoard || !what) return;
     static int token = 0;
     if (!token && notify_register_check("com.besiktasliseba.msb.engines.changed", &token) != NOTIFY_STATUS_OK) { token = 0; return; }
-    notify_set_state(token, (uint64_t)SpringBoardPid(NULL));
+    notify_set_state(token, ((uint64_t)what << 32) | (uint32_t)SpringBoardPid(NULL));
     notify_post("com.besiktasliseba.msb.engines.changed");
 }
 static void EnableOurs(NSString *name, NSMutableOrderedSet *record, NSString *why) {   // only a library WE disabled is renamed back
@@ -408,8 +457,23 @@ static void GiveBackAll(NSString *why) {
     for (NSString *n in [record array]) EnableOurs(n, record, why);
     SaveRecord(record);
 }
+// A library of `pkg` renamed to .disabled, as iCleaner Pro does, and recorded as ours (the checks below; anything unexpected is left alone, said
+// in the log). why: whose choice keeps it out. YES when it was renamed now.
+static BOOL DisableOurs(NSString *name, NSString *pkg, NSMutableOrderedSet *record, NSString *why) {
+    NSString *dylib = [NSString stringWithFormat:@TWEAKDIR "/%@.dylib", name], *disabled = [NSString stringWithFormat:@TWEAKDIR "/%@.disabled", name];
+    if (!Exists(dylib)) return NO;   // (already disabled, by us or by the user)
+    if (!IsRegular(dylib)) { ELog(@"%@: not a plain file -- left alone", name); return NO; }
+    if (!OwnedByPackage(pkg, name)) { ELog(@"%@: not in %@'s file list -- left alone", name, pkg); return NO; }
+    if (Exists(disabled) && !IsRegular(disabled)) { ELog(@"%@: its .disabled name is taken by something else -- left alone", name); return NO; }
+    BOOL stale = Exists(disabled);
+    if (rename(dylib.fileSystemRepresentation, disabled.fileSystemRepresentation) != 0) { ELog(@"%@: rename failed (%s) -- left alone", name, strerror(errno)); return NO; }
+    [record addObject:name];
+    ELog(@"%@: disabled (%@)%@", name, why, stale ? @" -- an update had brought it back: the new build replaced the stale .disabled copy" : @"");
+    return YES;
+}
 static BOOL MacStatusBarSwitchedOff(NSString *status, NSString **how);   // (section 3)
-static void ChoicyApplyChosenEngine(NSString *why);                      // (section 3)
+static void ChoicyApplyChoices(NSString *why);                      // (section 3)
+static void GiveBackChoicyEntriesOf(NSArray<NSString *> *libs, NSString *why);   // (section 3)
 // Is the tweak meant to run (VersionGate.h)? Not on an untested iPadOS without "Enable Anyway", not in the crash guard's safe mode: then only the
 // Settings rows load, and no other engine may be kept from loading. SpringBoard's decision at its start wins (what really runs); before it has
 // decided (the daemon's start at boot), the switches are read -- as mobile, since this helper runs as root (VersionGate's own reader reads the
@@ -480,19 +544,27 @@ static void ApplyEngines(NSString *reason) {
     if (asked) gPendingWork &= ~kWorkEngines;
     NSString *status = DpkgStatus();
     if (!PackageInstalled(status, @"com.besiktasliseba.macstatusbaranddock")) { GiveBackAll(@"Mac Status Bar is not installed"); ELog(@"%@: Mac Status Bar not installed -- nothing to do", reason); return; }
-    if (!TweakMeantToRun()) { GiveBackAll(@"MacStatusBar&Dock is off (untested iPadOS or safe mode)"); ELog(@"%@: MacStatusBar&Dock is off (untested iPadOS without Enable Anyway, or the crash guard's safe mode) -- no engine kept from loading", reason); return; }
+    if (!TweakMeantToRun()) {   // (nothing of the table kept from loading while ours does not run: the renames, and our Choicy entries -- every library's,
+                                //  the engines' too, the record kept for the next start's apply; 1.8.0 review 7: Choicy's stayed, BigSurCenter and Destra denied)
+        NSString *off = @"MacStatusBar&Dock is off (untested iPadOS or safe mode)";
+        GiveBackAll(off);
+        if (ChoicyInstalled(status)) GiveBackChoicyEntriesOf(MSBDExAllLibs(), off);
+        ELog(@"%@: MacStatusBar&Dock is off (untested iPadOS without Enable Anyway, or the crash guard's safe mode) -- no engine, BigSurCenter or Destra kept from loading", reason);
+        return;
+    }
     if (ChoicyInstalled(status)) {   // (Mac Status Bar asks at every SpringBoard start: its engine choice is made sure of in Choicy too -- safety net for a
                                      //  switch-on the watcher could not prepare before the respring; only our recorded engine entries change)
         GiveBackAll(@"Choicy is installed");
         NSString *how = nil;
-        if (([reason isEqualToString:@"request"] || [reason isEqualToString:@"manual"]) && !MacStatusBarSwitchedOff(status, &how)) ChoicyApplyChosenEngine([reason isEqualToString:@"manual"] ? @"manual" : @"Mac Status Bar started");
+        if (([reason isEqualToString:@"request"] || [reason isEqualToString:@"manual"]) && !MacStatusBarSwitchedOff(status, &how)) ChoicyApplyChoices([reason isEqualToString:@"manual"] ? @"manual" : @"Mac Status Bar started");
         return;
     }
     if (!ICleanerInstalled(status)) { ELog(@"%@: neither Choicy nor iCleaner Pro installed -- nothing to do", reason); return; }
     ApplyEngineRenames(reason, status);
 }
 // iCleaner Pro setups (no Choicy): every installed engine but the chosen one renamed to .disabled, as iCleaner does (ApplyEngines, and the postinst's
-// run: ApplyEnginesAtInstall).
+// run: ApplyEnginesAtInstall); and BigSurCenter while another Control Center Style is chosen, Destra while another Banner Style is (1.8.0). Each
+// choice on its own: no engine installed leaves the engines' renames given back and still decides BigSurCenter and Destra.
 static void ApplyEngineRenames(NSString *reason, NSString *status) {
     // (not while Mac Status Bar itself is switched off in iCleaner Pro: then the engines are the user's own -- RestoreForOff gave them back -- and the
     //  helper's start at the next boot renamed them again, so the user's other engines stayed off while Mac Status Bar was off)
@@ -506,32 +578,42 @@ static void ApplyEngineRenames(NSString *reason, NSString *status) {
     NSString *chosen = EngineToKeep(status, &windowing, &picked);
     NSDictionary *libs = EngineLibs(), *pkgs = EnginePackage();
     NSOrderedSet *before = LoadRecord();
-    if (!windowing) chosen = nil;   // (Enable Windowing off: no engine loads at all, every app opens full screen)
-    if (windowing && (!chosen || !libs[chosen])) {
-        GiveBackAll(@"no engine installed");
-        if (![LoadRecord() isEqual:before]) TellSpringBoardEnginesChanged();
-        ELog(@"%@: no engine installed -- nothing kept from loading", reason); return;
-    }
-    if (!windowing) ELog(@"%@: %@ -- every installed engine is kept from loading", reason, OffWhy());
-    else if (!picked) ELog(@"%@: no engine picked -- %@ is the default, as in SpringBoard", reason, chosen);
     NSMutableOrderedSet *record = LoadRecord();
-    if (chosen) for (NSString *n in libs[chosen]) EnableOurs(n, record, [NSString stringWithFormat:@"%@ is the chosen engine", chosen]);
-    for (NSString *engine in libs) {
-        if ([engine isEqualToString:chosen] || !MSBDPackageOnDisk(status, pkgs[engine])) continue;
-        for (NSString *name in libs[engine]) {
-            NSString *dylib = [NSString stringWithFormat:@TWEAKDIR "/%@.dylib", name], *disabled = [NSString stringWithFormat:@TWEAKDIR "/%@.disabled", name];
-            if (!Exists(dylib)) continue;   // (already disabled, by us or by the user)
-            if (!IsRegular(dylib)) { ELog(@"%@: not a plain file -- left alone", name); continue; }
-            if (!OwnedByPackage(pkgs[engine], name)) { ELog(@"%@: not in %@'s file list -- left alone", name, pkgs[engine]); continue; }
-            if (Exists(disabled) && !IsRegular(disabled)) { ELog(@"%@: its .disabled name is taken by something else -- left alone", name); continue; }
-            BOOL stale = Exists(disabled);
-            if (rename(dylib.fileSystemRepresentation, disabled.fileSystemRepresentation) != 0) { ELog(@"%@: rename failed (%s) -- left alone", name, strerror(errno)); continue; }
-            [record addObject:name];
-            ELog(@"%@: disabled (%@; %@)%@", name, chosen ? [chosen stringByAppendingString:@" is the chosen engine"] : OffWhy(), reason, stale ? @" -- an update had brought it back: the new build replaced the stale .disabled copy" : @"");
+    // (what loads before the renames, from the libraries' files themselves: what SpringBoard is told changed -- not the record: a library of ours the
+    //  user renamed back in iCleaner Pro and the helper renamed again is the same record and a different SpringBoard)
+    BOOL (^loads)(NSString *) = ^BOOL(NSString *n) { return Exists([NSString stringWithFormat:@TWEAKDIR "/%@.dylib", n]); };
+    NSMutableSet *loadedBefore = [NSMutableSet set];
+    for (NSString *n in MSBDExAllLibs()) if (loads(n)) [loadedBefore addObject:n];
+    BOOL (^moved)(NSArray *) = ^BOOL(NSArray *l) { for (NSString *n in l) if (loads(n) != [loadedBefore containsObject:n]) return YES; return NO; };
+    if (!windowing) chosen = nil;   // (Enable Windowing off: no engine loads at all, every app opens full screen)
+    if (windowing && (!chosen || !libs[chosen])) {   // (the engines' renames given back: nothing of them kept from loading)
+        for (NSString *n in MSBDExLibs(@"windowEngine", nil)) EnableOurs(n, record, @"no engine installed");
+        ELog(@"%@: no engine installed -- nothing kept from loading", reason);
+    } else {
+        if (!windowing) ELog(@"%@: %@ -- every installed engine is kept from loading", reason, OffWhy());
+        else if (!picked) ELog(@"%@: no engine picked -- %@ is the default, as in SpringBoard", reason, chosen);
+        if (chosen) for (NSString *n in libs[chosen]) EnableOurs(n, record, [NSString stringWithFormat:@"%@ is the chosen engine", chosen]);
+        for (NSString *engine in libs) {
+            if ([engine isEqualToString:chosen] || !MSBDPackageOnDisk(status, pkgs[engine])) continue;
+            for (NSString *name in libs[engine])
+                DisableOurs(name, pkgs[engine], record, [NSString stringWithFormat:@"%@; %@", chosen ? [chosen stringByAppendingString:@" is the chosen engine"] : OffWhy(), reason]);
         }
     }
+    unsigned what = moved(MSBDExLibs(@"windowEngine", nil)) ? kChangedEngines : 0;
+    // Control Center Style: BigSurCenter kept from loading unless it is the style (its package not installed: left as it is)
+    NSString *bsc = nil;
+    int style = ChosenCCStyle(status, &bsc);
+    if (bsc && MSBDCCStyleLoadsBigSurCenter(style)) EnableOurs(@"BigSurCenter", record, @"BigSurCenter is the Control Center Style");
+    else if (bsc) DisableOurs(@"BigSurCenter", bsc, record, [NSString stringWithFormat:@"the Control Center Style is %s; %@", MSBDCCStyleName(style), reason]);
+    if (moved(@[@"BigSurCenter"])) what |= kChangedCCStyle;
+    // Banner Style: Destra kept from loading unless it is the style (its package not installed: left as it is)
+    NSString *destra = nil;
+    int banners = ChosenBannerStyle(status, &destra);
+    if (destra && MSBDBannerLoadsDestra(banners)) EnableOurs(@"MacOSNotifications", record, @"Destra is the Banner Style");
+    else if (destra) DisableOurs(@"MacOSNotifications", destra, record, [NSString stringWithFormat:@"the Banner Style is %s; %@", MSBDBannerStyleName(banners), reason]);
+    if (moved(@[@"MacOSNotifications"])) what |= kChangedBanners;
     SaveRecord(record);
-    if (![record isEqual:before]) TellSpringBoardEnginesChanged();
+    if (what || ![record isEqual:before]) TellSpringBoardChanged(what ?: kChangedEngines);
 }
 
 // ---- 3. Mac Status Bar switched off without uninstalling it (2026-09-24) ------------------------------------------------------------------------
@@ -643,43 +725,9 @@ static void GiveBackEngineSettings(void) {
 // (entries the user added, removed or changed later stay as they are). No record = Choicy is left alone.
 #define CHOICYPREFS PREFSDIR "/com.opa334.choicyprefs.plist"
 #define CHOICYRECORD PREFSDIR "/MacStatusBar-ChoicyChanges.plist"
-static NSMutableArray *ChoicyList(NSMutableDictionary *prefs, NSString *listKey, BOOL create) {   // (mutable, stored back into prefs)
-    if ([listKey isEqualToString:@"globalDeniedTweaks"]) {
-        NSMutableArray *l = [prefs[listKey] isKindOfClass:[NSArray class]] ? [prefs[listKey] mutableCopy] : (create ? [NSMutableArray array] : nil);
-        if (l) prefs[listKey] = l;
-        return l;
-    }
-    NSString *key = [listKey hasPrefix:@"springboard."] ? [listKey substringFromIndex:12] : nil;
-    if (!key) return nil;
-    NSMutableDictionary *apps = [prefs[@"appSettings"] isKindOfClass:[NSDictionary class]] ? [prefs[@"appSettings"] mutableCopy] : nil;
-    NSMutableDictionary *sb = [apps[@"com.apple.springboard"] isKindOfClass:[NSDictionary class]] ? [apps[@"com.apple.springboard"] mutableCopy] : nil;
-    if (!sb) return nil;
-    NSMutableArray *l = [sb[key] isKindOfClass:[NSArray class]] ? [sb[key] mutableCopy] : (create ? [NSMutableArray array] : nil);
-    if (!l) return nil;
-    sb[key] = l; apps[@"com.apple.springboard"] = sb; prefs[@"appSettings"] = apps;
-    return l;
-}
-static NSArray *UndoOurChoicyChanges(NSMutableDictionary *prefs, NSDictionary *record) {   // returns what was undone (and what was left as the user has it)
-    NSMutableArray *log = [NSMutableArray array];
-    NSArray *engines = @[@"Aerial", @"MilkyWay4", @"MilkyWay3SubModule", @"Zetsu"];
-    for (NSString *listKey in record) {
-        NSDictionary *entries = [record[listKey] isKindOfClass:[NSDictionary class]] ? record[listKey] : nil;
-        for (NSString *entry in entries) {
-            if (![engines containsObject:entry]) { [log addObject:[NSString stringWithFormat:@"%@ %@: not a window engine -- left alone", listKey, entry]]; continue; }
-            NSString *did = entries[entry];
-            NSMutableArray *l = ChoicyList(prefs, listKey, [did isEqual:@"removed"]);
-            BOOL present = [l containsObject:entry];
-            if ([did isEqual:@"added"]) {
-                if (present) { [l removeObject:entry]; while ([l containsObject:entry]) [l removeObject:entry]; [log addObject:[NSString stringWithFormat:@"%@: removed %@ (we had added it)", listKey, entry]]; }
-                else [log addObject:[NSString stringWithFormat:@"%@: %@ already gone -- left as the user has it", listKey, entry]];
-            } else if ([did isEqual:@"removed"]) {
-                if (!present && l) { [l addObject:entry]; [log addObject:[NSString stringWithFormat:@"%@: added %@ back (we had removed it)", listKey, entry]]; }
-                else [log addObject:[NSString stringWithFormat:@"%@: %@ is back already -- left as the user has it", listKey, entry]];
-            }
-        }
-    }
-    return log;
-}
+// (the lists a record names and the give-back itself: common/ExclusiveChoice.h, the table's libraries only -- the window engines, BigSurCenter,
+//  Destra's: 1.8.0, so a switch-off or the removal never leaves BigSurCenter kept out of SpringBoard by us)
+static NSArray *UndoOurChoicyChanges(NSMutableDictionary *prefs, NSDictionary *record) { return MSBDExChoicyUndo(prefs, record); }   // (what was undone, and what was left as the user has it)
 static void GiveBackChoicyEngines(void) {
     NSDictionary *record = [NSDictionary dictionaryWithContentsOfFile:@CHOICYRECORD];
     if (!record) { ELog(@"MSB off: no record of our Choicy changes -- Choicy left as it is"); return; }
@@ -694,6 +742,41 @@ static void GiveBackChoicyEngines(void) {
     }
     AsMobile(^BOOL{ return unlink(CHOICYRECORD) == 0; });   // (Mac Status Bar makes a new record when it is on again and an engine is applied)
 }
+// Our Choicy entries for some libraries only given back, the rest of the record kept for what goes on managing it (ExclusiveChoice.h
+// MSBDExChoicyUndoOnly): a downgrade to a version before 1.8.0 (BigSurCenter's and Destra's, GiveBackStylesForDowngrade), safe mode and an untested
+// iPadOS (every library of the table, ApplyEngines). The record is written back, never deleted: without one, Settings makes a new one from its copy
+// of Choicy's settings from before our first change (MSBRootListController.m MSBLoadChoicyRecord).
+static void GiveBackChoicyEntriesOf(NSArray<NSString *> *libs, NSString *why) {
+    NSMutableDictionary *record = [[NSDictionary dictionaryWithContentsOfFile:@CHOICYRECORD] mutableCopy];
+    if (!record) return;   // (no record: nothing of ours in Choicy)
+    NSMutableDictionary *cur = [[NSDictionary dictionaryWithContentsOfFile:@CHOICYPREFS] mutableCopy];
+    if (!cur) { ELog(@"%@: Choicy's settings unreadable -- left as they are", why); return; }
+    NSDictionary *before = [cur copy], *recordBefore = [record copy];
+    NSArray *log = MSBDExChoicyUndoOnly(cur, record, libs);
+    if ([record isEqualToDictionary:recordBefore]) return;   // (no entry of ours for them)
+    ELog(@"%@: Choicy: %@", why, [log componentsJoinedByString:@"; "]);
+    if (![cur isEqualToDictionary:before]) {
+        AsMobile(^BOOL{ return [cur writeToFile:@CHOICYPREFS atomically:YES]; });
+        notify_post("com.opa334.choicyprefs/ReloadPrefs");
+    }
+    AsMobile(^BOOL{ return [record writeToFile:@CHOICYRECORD atomically:YES]; });
+}
+// A downgrade to a version before 1.8.0 (the prerm, --giveback-styles <version>): what this version keeps out of SpringBoard for Control Center
+// Style and Banner Style -- BigSurCenter and Destra -- given back from our records, our Choicy entries for them and their iCleaner Pro renames; the
+// window engines' stay in the records for the older version, which manages them the same way. That version knows only the engines: it never took
+// those two entries out, deleted the Choicy record at its removal and dropped the two from its rename record at its next save, so BigSurCenter and
+// Destra stayed off for good, and a later 1.8.0 took their .disabled for the user's own switch-off (code review 1.8.0, 1). A downgrade that fails
+// after this gets them kept out again: the postinst's abort-upgrade applies the choices again.
+static void GiveBackStylesForDowngrade(const char *to) {
+    NSString *why = [NSString stringWithFormat:@"downgrade to %s", to && *to ? to : "an older version"];
+    NSMutableArray *libs = [NSMutableArray arrayWithArray:MSBDExLibs(@"controlCenterStyle", nil)];
+    [libs addObjectsFromArray:MSBDExLibs(@"bannerStyle", nil)];
+    if (MSBDPackageOnDisk(DpkgStatus(), @"com.opa334.choicy")) GiveBackChoicyEntriesOf(libs, why);
+    NSMutableOrderedSet *record = LoadRecord();
+    for (NSString *n in libs) EnableOurs(n, record, why);
+    SaveRecord(record);
+    ELog(@"%@: BigSurCenter and Destra given back where we kept them out; the engines' entries left for that version", why);
+}
 #if DEBUG   // (a test tool: never in a release build)
 static void DryRunChoicy(const char *recordPath, const char *inPath, const char *outPath) {   // --dry-run-choicy <record> <choicy in> <out>: no real writes
     NSDictionary *record = [NSDictionary dictionaryWithContentsOfFile:@(recordPath)];
@@ -706,27 +789,22 @@ static void DryRunChoicy(const char *recordPath, const char *inPath, const char 
 // Switched on again: our engine choice is put back into Choicy right away (the same change Mac Status Bar's Settings makes when an engine is picked,
 // recorded the same way), so the user's one respring comes up with only the chosen engine loaded.
 #endif
-static void RecordChange(NSMutableDictionary *record, NSString *listKey, NSString *entry, BOOL added) {
-    NSMutableDictionary *l = [record[listKey] isKindOfClass:[NSDictionary class]] ? [record[listKey] mutableCopy] : [NSMutableDictionary dictionary];
-    NSString *before = l[entry];
-    if ((added && [before isEqual:@"removed"]) || (!added && [before isEqual:@"added"])) [l removeObjectForKey:entry]; else l[entry] = added ? @"added" : @"removed";
-    if (l.count) record[listKey] = l; else [record removeObjectForKey:listKey];
-}
-static BOOL SetMembershipRecorded(NSMutableArray *list, NSArray *add, NSArray *remove, NSString *listKey, NSMutableDictionary *record) {
-    BOOL changed = NO;
-    for (NSString *n in add) if (![list containsObject:n]) { [list addObject:n]; changed = YES; RecordChange(record, listKey, n, YES); }
-    for (NSString *n in remove) if ([list containsObject:n]) { while ([list containsObject:n]) [list removeObject:n]; changed = YES; RecordChange(record, listKey, n, NO); }
-    return changed;
-}
-static void ChoicyApplyChosenEngine(NSString *why) {
+// The choices put into Choicy (at every SpringBoard start, after an install, at a switch-on; Settings makes the same change at a pick, as mobile):
+// the window engine (only the chosen one loads; none with windowing off or Stage Manager as the engine), Control Center Style (BigSurCenter only
+// with its own style) and Banner Style (Destra only with its own, 1.8.0) -- one change through the table (common/ExclusiveChoice.h), recorded.
+// Each choice on its own: no engine installed leaves the engines' entries as they are and still decides BigSurCenter and Destra.
+static void ChoicyApplyChoices(NSString *why) {
     BOOL windowing = YES, picked = NO;
     NSString *status = DpkgStatus();
     NSString *chosen = EngineToKeep(status, &windowing, &picked);
     NSDictionary *libs = EngineLibs();
     if (!windowing) chosen = nil;   // (Enable Windowing off: every installed engine is denied, so every app opens full screen)
-    if (windowing && (!chosen || !libs[chosen])) { ELog(@"MSB on (%@): no engine installed -- Choicy left as it is", why); return; }
-    if (!windowing) ELog(@"MSB on (%@): %@ -- every installed engine kept from loading", why, OffWhy());
+    BOOL engines = !(windowing && (!chosen || !libs[chosen]));
+    if (!engines) ELog(@"MSB on (%@): no engine installed -- Choicy's engine entries left as they are", why);
+    else if (!windowing) ELog(@"MSB on (%@): %@ -- every installed engine kept from loading", why, OffWhy());
     else if (!picked) ELog(@"MSB on (%@): no engine picked -- %@ is the default, as in SpringBoard", why, chosen);
+    NSString *bsc = nil, *destra = nil;
+    int style = ChosenCCStyle(status, &bsc), banners = ChosenBannerStyle(status, &destra);
     NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:@CHOICYPREFS] mutableCopy];
     // (no settings file yet -- Choicy installed but never configured: it starts with our list, as Settings' engine pick and the line switches
     //  already did. Only a file that is there but can't be read is left alone. With none, nothing was kept from loading: KT installed Zetsu and
@@ -734,38 +812,40 @@ static void ChoicyApplyChosenEngine(NSString *why) {
     if (!prefs) {
         if (access(CHOICYPREFS, F_OK) == 0) { ELog(@"MSB on (%@): Choicy's settings unreadable -- left as they are", why); return; }
         prefs = [NSMutableDictionary dictionaryWithObject:@1 forKey:@"preferenceVersion"];
-        ELog(@"MSB on (%@): Choicy has no settings file yet -- it starts with the engine list", why);
+        ELog(@"MSB on (%@): Choicy has no settings file yet -- it starts with our list", why);
     }
     NSMutableDictionary *record = [[NSDictionary dictionaryWithContentsOfFile:@CHOICYRECORD] mutableCopy] ?: [NSMutableDictionary dictionary];
+    NSArray *engineLibs = MSBDExLibs(@"windowEngine", nil);
+    // (what loads before the change, from Choicy's lists themselves -- ExclusiveChoice.h MSBDExChoicyEntriesOf: what SpringBoard is told changed)
+    NSDictionary *prefsBefore = (__bridge_transfer NSDictionary *)CFPropertyListCreateDeepCopy(NULL, (__bridge CFDictionaryRef)prefs, kCFPropertyListImmutable);
     // only engines that are really installed are kept from loading (iPad 2: MilkyWay4 is not installed there, but its entries were added); an entry we
-    // added earlier for an engine that is not installed is taken out again (our own record says so)
+    // added earlier for an engine that is not installed is taken out again (our own record says so). The same for BigSurCenter and Destra.
     NSDictionary *pkgs = EnginePackage();
-    NSArray *keep = chosen ? libs[chosen] : @[]; NSMutableArray *deny = [NSMutableArray array], *notInstalled = [NSMutableArray array];
-    for (NSString *e in libs) if (![e isEqualToString:chosen]) [MSBDPackageOnDisk(status, pkgs[e]) ? deny : notInstalled addObjectsFromArray:libs[e]];
-    NSMutableArray *global = [prefs[@"globalDeniedTweaks"] isKindOfClass:[NSArray class]] ? [prefs[@"globalDeniedTweaks"] mutableCopy] : [NSMutableArray array];
-    BOOL changed = SetMembershipRecorded(global, deny, keep, @"globalDeniedTweaks", record);
-    NSDictionary *ours = [record[@"globalDeniedTweaks"] isKindOfClass:[NSDictionary class]] ? record[@"globalDeniedTweaks"] : @{};
-    NSMutableArray *undo = [NSMutableArray array];
-    for (NSString *n in notInstalled) if ([ours[n] isEqual:@"added"] && [global containsObject:n]) [undo addObject:n];
-    if (undo.count && SetMembershipRecorded(global, @[], undo, @"globalDeniedTweaks", record)) { changed = YES; ELog(@"MSB on (%@): not installed, our entries taken out again: %@", why, [undo componentsJoinedByString:@", "]); }
-    prefs[@"globalDeniedTweaks"] = global;
-    NSMutableDictionary *apps = [prefs[@"appSettings"] isKindOfClass:[NSDictionary class]] ? [prefs[@"appSettings"] mutableCopy] : nil;
-    NSMutableDictionary *sb = [apps[@"com.apple.springboard"] isKindOfClass:[NSDictionary class]] ? [apps[@"com.apple.springboard"] mutableCopy] : nil;
-    NSInteger mode = ChoicyMode(sb);
-    if ([sb[@"customTweakConfigurationEnabled"] boolValue] && !mode) ELog(@"MSB on (%@): Choicy's SpringBoard mode is unknown -- its SpringBoard list left as it is", why);
-    if ([sb[@"customTweakConfigurationEnabled"] boolValue] && mode) {
-        NSString *listKey = mode == 2 ? @"deniedTweaks" : @"allowedTweaks";
-        NSMutableArray *list = [sb[listKey] isKindOfClass:[NSArray class]] ? [sb[listKey] mutableCopy] : [NSMutableArray array];
-        NSString *rk = [@"springboard." stringByAppendingString:listKey];
-        BOOL c = mode == 2 ? SetMembershipRecorded(list, [sb[@"overwriteGlobalTweakConfiguration"] boolValue] ? deny : @[], keep, rk, record) : SetMembershipRecorded(list, keep, deny, rk, record);
-        if (c) { sb[listKey] = list; apps[@"com.apple.springboard"] = sb; prefs[@"appSettings"] = apps; changed = YES; }
+    NSMutableArray *keep = [NSMutableArray array], *deny = [NSMutableArray array], *notInstalled = [NSMutableArray array];
+    if (engines) {
+        if (chosen) [keep addObjectsFromArray:libs[chosen]];
+        for (NSString *e in libs) if (![e isEqualToString:chosen]) [MSBDPackageOnDisk(status, pkgs[e]) ? deny : notInstalled addObjectsFromArray:libs[e]];
     }
+    if (!bsc) [notInstalled addObject:@"BigSurCenter"];
+    else [MSBDCCStyleLoadsBigSurCenter(style) ? keep : deny addObject:@"BigSurCenter"];
+    if (!destra) [notInstalled addObject:@"MacOSNotifications"];
+    else [MSBDBannerLoadsDestra(banners) ? keep : deny addObject:@"MacOSNotifications"];
+    NSMutableArray *log = [NSMutableArray array];
+    BOOL changed = MSBDExChoicyApply(prefs, record, keep, deny, notInstalled, log);
+    for (NSString *l in log) ELog(@"MSB on (%@): %@", why, l);
     AsMobile(^BOOL{ return [record writeToFile:@CHOICYRECORD atomically:YES]; });
-    if (!changed) { ELog(@"MSB on (%@): Choicy already keeps %@ loading", why, chosen ? [@"only " stringByAppendingString:chosen] : @"no engine"); return; }
+    NSString *what = [NSString stringWithFormat:@"%@%@%@", engines ? (chosen ? [@"only " stringByAppendingString:chosen] : @"no engine") : @"the engines as they are",
+                      bsc ? (MSBDCCStyleLoadsBigSurCenter(style) ? @", BigSurCenter" : [NSString stringWithFormat:@", not BigSurCenter (Control Center Style %s)", MSBDCCStyleName(style)]) : @"",
+                      destra ? (MSBDBannerLoadsDestra(banners) ? @", Destra" : [NSString stringWithFormat:@", not Destra (Banner Style %s)", MSBDBannerStyleName(banners)]) : @""];
+    if (!changed) { ELog(@"MSB on (%@): Choicy already loads %@", why, what); return; }
     AsMobile(^BOOL{ return [prefs writeToFile:@CHOICYPREFS atomically:YES]; });
     notify_post("com.opa334.choicyprefs/ReloadPrefs");
-    TellSpringBoardEnginesChanged();
-    ELog(@"MSB on (%@): Choicy set to load %@ (recorded)", why, chosen ? [@"only " stringByAppendingString:chosen] : @"no engine");
+    BOOL (^moved)(NSArray *) = ^BOOL(NSArray *l) { return ![MSBDExChoicyEntriesOf(prefs, l) isEqualToString:MSBDExChoicyEntriesOf(prefsBefore, l)]; };
+    unsigned told = moved(engineLibs) ? kChangedEngines : 0;
+    if (bsc && moved(@[@"BigSurCenter"])) told |= kChangedCCStyle;
+    if (destra && moved(@[@"MacOSNotifications"])) told |= kChangedBanners;
+    TellSpringBoardChanged(told ?: kChangedEngines);
+    ELog(@"MSB on (%@): Choicy set to load %@ (recorded)", why, what);
 }
 // The fallback's alert (a system alert from this daemon is not shown on iOS 15): the Dock's SpringBoard part (common/OffAlert.h, MacDock line) shows it,
 // with the reason in the file below.
@@ -920,7 +1000,7 @@ static void PrepareForOn(NSString *why) {
     unlink(ESTATEDIR "/msb-off-alert");   // (plan 3d-7: switched on again, so no "Mac Status Bar Is Off" alert may be shown any more)
     notify_post(MS_AUTOLOCK_CHECK);   // (2 hours lowered at the switch-off: given back by the SpringBoard that keeps it)
     if (!TweakMeantToRun()) { ELog(@"%@: MacStatusBar&Dock is off (untested iPadOS or safe mode) -- no engine choice applied", why); return; }
-    if (MSBDPackageOnDisk(status, @"com.opa334.choicy")) ChoicyApplyChosenEngine(why);
+    if (MSBDPackageOnDisk(status, @"com.opa334.choicy")) ChoicyApplyChoices(why);
     else ApplyEngines(why);   // (iCleaner Pro setups: the other engines renamed again)
 }
 // The slow fallback (a switch-off the watcher missed, e.g. a respring before Choicy's change reached the disk): 95 s after SpringBoard starts, if Mac
@@ -1123,7 +1203,7 @@ static void ApplyEnginesAtInstall(void) {
     if (!TweakMeantToRun()) { ELog(@"install: MacStatusBar&Dock is off (untested iPadOS without Enable Anyway, or the crash guard's safe mode) -- no engine choice applied"); return; }
     NSString *status = DpkgStatus(), *how = nil;
     if (MacStatusBarSwitchedOff(status, &how)) { ELog(@"install: Mac Status Bar is switched off in %@ -- no engine choice applied", how); return; }
-    if (ChoicyInstalled(status)) { GiveBackAll(@"Choicy is installed"); ChoicyApplyChosenEngine(@"install"); return; }
+    if (ChoicyInstalled(status)) { GiveBackAll(@"Choicy is installed"); ChoicyApplyChoices(@"install"); return; }
     if (!ICleanerInstalled(status)) { ELog(@"install: neither Choicy nor iCleaner Pro installed -- nothing to do"); return; }
     ApplyEngineRenames(@"install", status);
 }
@@ -1493,8 +1573,8 @@ static void ForgetCCAutoAddWhereShown(void) {
     WriteMobilePrefsKey((__bridge NSString *)domain, kMSBDCCAutoAddDone, nil, NO);
     ELog(@"removal: RAM & CPU's Control Center marker \"%@\" cleared -- the removal takes the control out, the next install puts it back where there is room", marker);
 }
-// Removal (the prerm, not on an upgrade): everything we changed is given back -- the engines' own settings, our Choicy entries for the engines and
-// for the lines, the engines we renamed for iCleaner Pro -- and our lines' own .disabled files go (dpkg does not know them).
+// Removal (the prerm, not on an upgrade): everything we changed is given back -- the engines' own settings, our Choicy entries for the engines,
+// BigSurCenter (1.8.0) and the lines, the libraries we renamed for iCleaner Pro -- and our lines' own .disabled files go (dpkg does not know them).
 static void Uninstall(void) {
     ELog(@"removal: giving everything back");
     // Spotlight: the rows of tweak settings we donated into Settings' index are deleted by the running SpringBoard (statusbar/SpotlightFiles.x,
@@ -1658,6 +1738,16 @@ static void DryRunEngines(const char *statusPath, BOOL oldRule) {
     printf("dry run (%s rule): Choicy %s, windowing %d, engine kept loading: %s (picked %d), kept from loading: %s, counted as not installed: %s\n", oldRule ? "the old" : "the 1.4.1",
         ChoicyInstalled(status) ? "on the device" : "not counted", windowing, (chosen ?: @"none").UTF8String, picked,
         [deny componentsJoinedByString:@" "].UTF8String, [notInstalled componentsJoinedByString:@" "].UTF8String);
+    NSString *bsc = nil;   // (Control Center Style, 1.8.0: the same decision for BigSurCenter)
+    int style = ChosenCCStyle(status, &bsc);
+    printf("dry run: Control Center Style %s (stored %s), BigSurCenter %s%s\n", MSBDCCStyleName(style), MSBDCCStyleValue(MSBDCCStyleStoredFor(CFSTR("mobile"))) ?: "never set",
+        bsc ? [NSString stringWithFormat:@"installed (%@), ", bsc].UTF8String : "not installed", bsc ? (MSBDCCStyleLoadsBigSurCenter(style) ? "kept loading" : "kept from loading") : "");
+    NSString *destra = nil;   // (Banner Style, 1.8.0: the same decision for Destra)
+    int banners = ChosenBannerStyle(status, &destra), legacy = MSBDBannerLegacyFor(CFSTR("mobile"));
+    printf("dry run: Banner Style %s (stored %s, old switch %s), Destra %s%s\n", MSBDBannerStyleName(banners), MSBDBannerStyleValue(MSBDBannerStyleStoredFor(CFSTR("mobile"))) ?: "never set",
+        legacy == kMSBDBannerNone ? "never set" : legacy == kMSBDBannerMac ? "on" : "off",
+        destra ? [NSString stringWithFormat:@"installed (%@, its own switch %s), ", destra, MSBDDestraOwnOn() ? "on" : "off"].UTF8String : "not installed",
+        destra ? (MSBDBannerLoadsDestra(banners) ? "kept loading" : "kept from loading") : "");
     gDryOldRule = NO;
 }
 #endif
@@ -1673,7 +1763,7 @@ int main(int argc, char **argv) {
         if (argc > 1 && strcmp(argv[1], "--dasd-part-current") == 0) return DasdPartCurrent() ? 0 : 1;   // (postinst: dasd restarted only when it lacks the prewarm block just installed)
         if (!MSBDIsIPad()) {
             if (argc < 2) dispatch_main();
-            if (strcmp(argv[1], "--uninstall") != 0 && strcmp(argv[1], "--restore-engines") != 0 && strcmp(argv[1], "--restore-msb-off") != 0) return 0;
+            if (strcmp(argv[1], "--uninstall") != 0 && strcmp(argv[1], "--restore-engines") != 0 && strcmp(argv[1], "--restore-msb-off") != 0 && strcmp(argv[1], "--giveback-styles") != 0) return 0;
         }
         if (argc > 1 && strcmp(argv[1], "--restore-engines") == 0) { GiveBackAll(@"package removed"); return 0; }
         if (argc > 1 && strcmp(argv[1], "--apply-engines") == 0) { ApplyEngines(@"manual"); return 0; }
@@ -1690,6 +1780,7 @@ int main(int argc, char **argv) {
         if (argc > 1 && strcmp(argv[1], "--migrate") == 0) { Migrate(); return 0; }                      // (postinst, once: from the old separate packages)
         if (argc > 1 && strcmp(argv[1], "--after-install") == 0) { gTellSpringBoard = NO; KeepLinesDisabledAfterUpdate(); ApplyEnginesAtInstall(); return 0; }   // (postinst, every install/upgrade)
         if (argc > 1 && strcmp(argv[1], "--uninstall") == 0) { Uninstall(); return 0; }                    // (prerm, on removal only)
+        if (argc > 1 && strcmp(argv[1], "--giveback-styles") == 0) { GiveBackStylesForDowngrade(argc > 2 ? argv[2] : NULL); return 0; }   // (prerm, a downgrade to a version before 1.8.0)
         if (argc > 1 && strcmp(argv[1], "--tailspin-giveback") == 0) { TGGiveBack(argc > 2 ? [NSString stringWithFormat:@"prerm %s", argv[2]] : @"prerm"); return 0; }   // (prerm, every way out: TailspinDaemon.h)
         // (--resume <what>: this daemon started over after a cfprefsd restart, StartOverIfPrefsDaemonRestarted -- the same start, then that work again)
         const char *resume = (argc > 2 && strcmp(argv[1], "--resume") == 0) ? argv[2] : NULL;

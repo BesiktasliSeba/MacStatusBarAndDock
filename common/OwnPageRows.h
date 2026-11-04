@@ -9,6 +9,7 @@
 // (tools/test-ownpagerows.sh runs it over the real plists on the Mac).
 #pragma once
 #import <Foundation/Foundation.h>
+#include "CCStyle.h"   // (the Control Center Style's values: the rows that go with a style, 1.8.0)
 // (no TweakIndex.h here: the pages include this, and its helpers are plain static functions; MSBDOwnRowsShown below is there for an includer that
 //  has the index already -- common/TweakSpotlight.h, the Mac test)
 
@@ -17,11 +18,12 @@ typedef struct {
     BOOL barLine, dockLine;   // MacStatusBar / MacDock switched on (LineSwitch.h MSBDLineEnabled); off: the page shows its line switch only
                               // (Windows & Multitasking: its note and Keep Tailspin Off; Desktop: its note)
     BOOL finder;              // Finder on (finderEnabled, on unless set); off: the Dock page has no Finder group
-    BOOL bigSurCenter;        // BigSurCenter installed: Control Center's size slider resizes its panel (with our status bar only)
+    int ccStyle;              // the Control Center Style (common/CCStyle.h): BigSurCenter's has the size slider (with our status bar only), iPadOS's the
+                              // Hide Grabber switch, Mac neither (1.8.0); 0 not known: both as before the style (no slider, Hide Grabber shown)
     BOOL focus18Failed;       // iPadOS 18 without SpringBoard's typed keyboard focus lock (DesktopCheck.h): no Mac Switcher, Wi-Fi Menu or desktop
     BOOL desktopFailed;       // the desktop's check failed (17+), or the above: no desktop rows
     BOOL engineWorks;         // the engine the Window Engine row shows is installed and tested (2): else no Windows group
-    BOOL stageManagerEngine;  // ... it is Stage Manager: the Windows group keeps only the resize handles' rows, and Resize Handles is offered
+    BOOL stageManagerEngine;  // ... it is Stage Manager: the Windows group keeps only its windows' rows (resize handles, Window Size), and Resize Handles is offered
     BOOL milkyWayEngine;      // ... it is MilkyWay4: Resize Apps to Fit Windows is offered
     BOOL batteryUseOff;       // our Battery Use group (Sleep Guard) is not on Battery Health on this iPad (BatteryHealth.x / BatteryUse.x refused)
 } MSBDOwnPages;
@@ -35,18 +37,26 @@ typedef struct {
 #define kMSBDWindowsGroupID @"WINDOWS_GROUP"      // the switches that work through a third-party engine's windows
 #define kMSBDResizeGroupID  @"RESIZE_GROUP"       // Resize Apps to Fit Windows (MilkyWay4 only)
 #define kMSBDResizeHandlesKey @"resizeHandleStyle" // Resize Handles: ours or Stage Manager's (a choice with Stage Manager only)
-#define kMSBDCCScaleKey     @"controlCenterScale" // Control Center's size: BigSurCenter's panel only
+#define kMSBDWindowSizeRowKey @"windowSize"      // Window Size (1.8.0 item 4, common/WindowSize.h kMSBDWindowSizeKey): every engine's, Stage Manager's too
+#define kMSBDCCScaleKey     @"controlCenterScale" // Control Center Size: BigSurCenter's panel and ours (1.8.0)
+#define kMSBDCCGrabberRowID @"CC_GRABBER"         // Hide Grabber: iPadOS's own Control Center's line (1.8.0: with that style only)
 #define kMSBDTailspinGroupID @"TAILSPIN_GROUP"    // Keep Tailspin Off: the root helper applies it whatever the status bar does
 #define kMSBDDockFinderRowID @"FINDER"            // the Dock page's Show Finder in Dock (and its group)
 #define kMSBDDockFinderGroupID @"FINDER_GROUP"
+// Control Center Size (1.8.0, KT 3 Nov): with BigSurCenter (its drop-down panel from our status bar) and with ours (Mac), never with the stock
+// status bar (BigSurCenter's panel is not sized there, ours does not run); greyed with ours on iPadOS 18, where our panel is Apple's own 18 grid,
+// which is not sized yet (statusbar/CC18Shape.h).
+static inline BOOL MSBDCCSizeRowShown(int ccStyle, BOOL stockBar) { return (ccStyle == kMSBDCCStyleBigSurCenter || ccStyle == kMSBDCCStyleMac) && !stockBar; }
+static inline BOOL MSBDCCSizeRowGreyed(int ccStyle, long major) { return ccStyle == kMSBDCCStyleMac && major >= 18; }
 // The desktop's rows, left out where its check failed (17+): Show Desktop Icons, Hide Desktop Icon Names, Icon Size and App Icon Corner Radius
 // with their groups and Match Home Screen Icons (the page keeps DESKTOP_GROUP, whose footer says why). A row by its key or its own identifier.
 static inline BOOL MSBDDesktopCheckRow(NSString *key, NSString *ident) {
     return (key && [@[@"desktopIcons", @"desktopHideNames", @"desktopIconSize"] containsObject:key])
         || (ident && [@[@"DESKTOP_SIZE_GROUP", @"DESKTOP_CORNER_GROUP", @"DESKTOP_APP_CORNER", @"DESKTOP_CORNER_MATCH"] containsObject:ident]);
 }
-// With Stage Manager as the engine the Windows group keeps the resize handles' rows: they are Stage Manager's own windows' too.
+// With Stage Manager as the engine the Windows group keeps the rows that are Stage Manager's own windows' too: the resize handles' and Window Size.
 static inline BOOL MSBDHandlesRow(NSString *key) { return [key isEqualToString:kMSBDResizeHandlesKey] || [key isEqualToString:@"tintResizeHandles"]; }
+static inline BOOL MSBDStageManagerKeepsRow(NSString *key) { return MSBDHandlesRow(key) || [key isEqualToString:kMSBDWindowSizeRowKey]; }
 // MacStatusBar off: the Windows & Multitasking page keeps, under its note, the groups whose setting the root helper applies whatever the bar does.
 static inline BOOL MSBDBarOffKeepsGroup(NSString *groupID) { return [groupID isEqualToString:kMSBDTailspinGroupID]; }
 
@@ -64,10 +74,11 @@ static inline BOOL MSBDOwnRowHidden(MSBDOwnPages s, NSString *pane, NSString *gr
         if (desk) return YES;
     }
     if (s.stockBar && stockHides && ![ident isEqualToString:kMSBDReportRowID]) return YES;
-    if ([key isEqualToString:kMSBDCCScaleKey] && (!s.bigSurCenter || s.stockBar)) return YES;
+    if ([key isEqualToString:kMSBDCCScaleKey] && !MSBDCCSizeRowShown(s.ccStyle, s.stockBar)) return YES;
+    if ([ident isEqualToString:kMSBDCCGrabberRowID] && (s.ccStyle == kMSBDCCStyleMac || s.ccStyle == kMSBDCCStyleBigSurCenter)) return YES;
     if (s.desktopFailed && MSBDDesktopCheckRow(key, ident)) return YES;
     if (s.focus18Failed && ([key isEqualToString:kMSBDMacSwitcherKey] || [group isEqualToString:kMSBDMacSwitcherGroupID] || [group isEqualToString:kMSBDWiFiGroupID])) return YES;
-    if ([group isEqualToString:kMSBDWindowsGroupID] && (!s.engineWorks || (s.stageManagerEngine && !MSBDHandlesRow(key)))) return YES;
+    if ([group isEqualToString:kMSBDWindowsGroupID] && (!s.engineWorks || (s.stageManagerEngine && !MSBDStageManagerKeepsRow(key)))) return YES;
     if ([key isEqualToString:kMSBDResizeHandlesKey] && !s.stageManagerEngine) return YES;
     if ([group isEqualToString:kMSBDResizeGroupID] && !s.milkyWayEngine) return YES;
     return NO;

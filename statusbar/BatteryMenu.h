@@ -463,7 +463,7 @@ static void DMBattLayoutButton(UIView *fg, CGFloat left, CGFloat k) {
 // The Lock Screen's layout of a copy (StatusBar.x DMLayoutWithoutClock: only passive icons there): the battery is iOS's own -- no menu on the Lock
 // Screen -- and the Control Center icon goes, as the Spotlight icon does; both come back with the unlocked look's layout.
 static void DMBattLockLayout(UIView *fg) {
-    for (NSValue *k in @[[NSValue valueWithPointer:kCCIconKey], [NSValue valueWithPointer:kCCButtonKey], [NSValue valueWithPointer:kBattButtonKey]])
+    for (NSValue *k in @[[NSValue valueWithPointer:kCCIconKey], [NSValue valueWithPointer:kCCButtonKey], [NSValue valueWithPointer:kCCPillKey], [NSValue valueWithPointer:kBattButtonKey]])
         ((UIView *)objc_getAssociatedObject(fg, k.pointerValue)).hidden = YES;
     DMBattCoverAX(fg, @[], NO);
 }
@@ -503,13 +503,39 @@ static void DMBattOpenControlCenter(UIButton *btn) {
     }
     DMLog(@"[battmenu] Control Center icon: no way to open Control Center here");
 }
-// Lays out the bar's right end left of the clock (common/BatteryMenu.h MSBDBattRightSideLayout): the Control Center icon (Battery Menu on) and,
-// for the caller, where the Spotlight icon and its button go and where the status icons end. clockEdge: where the clock (and anything drawn with
-// it) starts, leading coordinates. The icon's picture is made once per copy (Menu Bar Size applies after a respring).
+// The icon is lit while Control Center is open, as a Mac's menu bar item is while its menu is: a rounded highlight behind it, the bar items' colour
+// at the menus' 25 % (the title pills', DMLayoutTitle), from Control Center's -_willPresent to its -_didDismiss (StatusBar.x, CCPresentSeen) --
+// whichever Control Center Style shows (Apple's covers the bar with its backdrop; ours and BigSurCenter's hang under it). A tap on the icon while
+// Control Center is open lands on Control Center's window, which closes it (a tap outside its panel): the icon toggles it.
+static BOOL gCCIconLit = NO;
+static void DMBattCCLightCopy(UIView *fg) {
+    UIView *pill = objc_getAssociatedObject(fg, kCCPillKey);
+    UIImageView *icon = objc_getAssociatedObject(fg, kCCIconKey);
+    if (!pill) return;
+    BOOL on = gCCIconLit && icon && !icon.hidden;
+    if (on) pill.backgroundColor = [icon.tintColor ?: [UIColor whiteColor] colorWithAlphaComponent:0.25];
+    if (pill.hidden == on) pill.hidden = !on;
+}
+static void DMBattCCLight(BOOL lit) {
+    if (lit == gCCIconLit) return;
+    gCCIconLit = lit;
+    for (UIView *fg in gCopies.allObjects) DMBattCCLightCopy(fg);
+}
+// Lays out the bar's right end left of the clock (common/BatteryMenu.h MSBDBattRightSideLayout): the Control Center icon (Battery Menu on, or our
+// own Control Center the style in force: KT 3 Nov, it is how a Mac opens it) and, for the caller, where the Spotlight icon and its button go and
+// where the status icons end. clockEdge: where the clock (and anything drawn with it) starts, leading coordinates. The icon's picture is made once
+// per copy (Menu Bar Size applies after a respring).
 static MSBDBattRightSide DMBattCCLayout(UIView *fg, BOOL rtl, CGFloat clockEdge, CGFloat midY, UIFont *timeFont, CGFloat k, BOOL spot, CGFloat spotW, CGFloat spotSlop, CGFloat gap) {
     UIImageView *icon = objc_getAssociatedObject(fg, kCCIconKey);
     UIButton *btn = objc_getAssociatedObject(fg, kCCButtonKey);
-    if (gBattMenuOn && !icon) {
+    UIView *pill = objc_getAssociatedObject(fg, kCCPillKey);
+    BOOL want = gBattMenuOn || DMCCPanelWanted();
+    if (want && !icon) {
+        pill = [UIView new];
+        pill.userInteractionEnabled = NO; pill.hidden = YES;
+        pill.layer.cornerCurve = kCACornerCurveContinuous;
+        [fg addSubview:pill];
+        objc_setAssociatedObject(fg, kCCPillKey, pill, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         icon = [UIImageView new];
         icon.contentMode = UIViewContentModeScaleAspectFit;
         icon.userInteractionEnabled = NO;
@@ -526,15 +552,19 @@ static MSBDBattRightSide DMBattCCLayout(UIView *fg, BOOL rtl, CGFloat clockEdge,
         [fg addSubview:btn];
         objc_setAssociatedObject(fg, kCCButtonKey, btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    BOOL show = gBattMenuOn && icon.image != nil;
+    BOOL show = want && icon.image != nil;
     CGFloat w = show ? ceil(icon.image.size.width) : 0.0, h = show ? ceil(icon.image.size.height) : 0.0;
     MSBDBattRightSide side = MSBDBattRightSideLayout(clockEdge, show, w, spot, spotW, gap, spotSlop);
     icon.hidden = btn.hidden = !show;
     if (show) {
         icon.frame = DMBarRect(fg, rtl, CGRectMake(side.ccLead, round(midY - h / 2.0), w, h));
         btn.frame = DMBarRect(fg, rtl, CGRectMake(side.ccBtnLead, 0, side.ccBtnTrail - side.ccBtnLead, fg.bounds.size.height));
-        [fg bringSubviewToFront:icon]; [fg bringSubviewToFront:btn];
+        // (the highlight: the glyph and 5 pt at each side, the bar's height less 3 pt top and bottom -- a title pill's insets -- x Menu Bar Size)
+        pill.frame = DMBarRect(fg, rtl, CGRectMake(side.ccLead - 5.0 * k, 3.0 * k, w + 10.0 * k, MAX(0.0, fg.bounds.size.height - 6.0 * k)));
+        pill.layer.cornerRadius = 5.0 * k;
+        [fg bringSubviewToFront:pill]; [fg bringSubviewToFront:icon]; [fg bringSubviewToFront:btn];
     }
+    DMBattCCLightCopy(fg);
     return side;
 }
 

@@ -73,7 +73,9 @@ PLIST
     if [ -x "$H" ] && "$H" --dasd-part-current; then :; else /var/jb/usr/bin/killall -9 dasd 2>/dev/null; fi
 elif [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-remove" ] || [ "$1" = "abort-deconfigure" ]; then
     # an upgrade or removal failed after the prerm stopped the helper (dpkg calls this on the version that stays): it is started again, so SSH
-    # toggling, engine exclusivity and the switch-off watcher do not stay dead until the next reboot
+    # toggling, engine exclusivity and the switch-off watcher do not stay dead until the next reboot. A downgrade to a version before 1.8.0 that failed:
+    # the prerm gave BigSurCenter and Destra back already, so this version's choices are applied again first, as after an install.
+    if [ "$1" = "abort-upgrade" ] && [ -n "$2" ] && [ -x "$H" ] && /var/jb/usr/bin/dpkg --compare-versions "$2" lt 1.8.0~ 2>/dev/null; then "$H" --after-install; fi
     P=/var/jb/Library/LaunchDaemons/com.besiktasliseba.sshtoggled.plist
     [ -f "$P" ] && $L load "$P" 2>/dev/null
 fi

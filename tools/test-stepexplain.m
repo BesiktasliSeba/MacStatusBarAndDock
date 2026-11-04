@@ -34,6 +34,11 @@ int main(void) {
         Expect(@"status bar: notice", MSBDGuardExplanation(4, NO, YES), @"SpringBoard crashed twice in the status bar, so the stock status bar is used for now. To try again, set Status Bar Style back to Mac in Settings.");
         Expect(@"status bar: notice title", MSBDGuardAlertTitle(4), @"Stock Status Bar in Use");
         Expect(@"status bar: Report a Problem line", MSBDGuardActionWords(MSBDCrashRecord()), @"switched to the stock status bar (only what crashed)");
+        Record(@"feature com.besiktasliseba.macstatusbar controlCenterStyle 0 Control Center Style|our Control Center\n");   // (1.8.0: tools/crashmap-rules.txt controlcenter)
+        Expect(@"our Control Center: footer", MSBDGuardExplanation(4, NO, NO), @"SpringBoard crashed twice in our Control Center, so iPadOS's Control Center is used for now. You can switch it back here; if this keeps happening, tap Report a Problem.");
+        Expect(@"our Control Center: notice", MSBDGuardExplanation(4, NO, YES), @"SpringBoard crashed twice in our Control Center, so iPadOS's Control Center is used for now. You can switch it back in Settings; if this keeps happening, tap Report a Problem.");
+        Expect(@"our Control Center: notice title", MSBDGuardAlertTitle(4), @"Feature Turned Off");
+        Expect(@"our Control Center: Report a Problem line", MSBDGuardActionWords(MSBDCrashRecord()), @"switched to iPadOS's Control Center (only what crashed)");
         Record(@"part DockMagnification the Dock|MacDock\n");
         Expect(@"Dock: footer", MSBDGuardExplanation(4, NO, NO), @"SpringBoard crashed twice in the Dock, so MacDock was turned off for now. Tap Turn Back On to try again, or Report a Problem.");
         Expect(@"Dock: untested iPadOS footer", MSBDGuardExplanation(4, YES, NO), @"SpringBoard crashed twice in the Dock, so MacDock was turned off for now. Turn Enable Anyway off and on to try again, or tap Report a Problem.");

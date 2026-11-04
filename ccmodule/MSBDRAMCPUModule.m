@@ -129,6 +129,11 @@ static void MSBDModuleLog(NSString *what) {   // (debug builds, with /tmp/macsta
     _tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(dm_tapped:)];
     _tap.delegate = self; _tap.cancelsTouchesInView = NO;
     [_compact addGestureRecognizer:_tap];
+    // (VoiceOver: the tile is one element with its numbers -- its lines were read one by one, the CPU's number left out: 15.6.1, 1.8.0 P4)
+    _compact.isAccessibilityElement = YES;
+    _compact.accessibilityLabel = @"RAM & CPU";
+    _compact.accessibilityTraits = UIAccessibilityTraitButton;
+    _compact.accessibilityHint = @"Opens the details.";
 
     _detail = [UIView new]; _detail.hidden = YES; [v addSubview:_detail];
     _title = [self label:_detail size:17 weight:UIFontWeightBold alpha:1.0 digits:NO]; _title.text = @"RAM & CPU";
@@ -215,6 +220,7 @@ static void MSBDModuleLog(NSString *what) {   // (debug builds, with /tmp/macsta
     _usedLabel.text = _haveMem ? [NSString stringWithFormat:@"%@ used", MSBDBytes(_mem.used)] : @"";
     NSString *cpu = _haveTicks && _cpu >= 0.0 ? [NSString stringWithFormat:@"%d%%", (int)lround(_cpu * 100.0)] : @"–";
     _cpuValue.text = cpu; _cpuValueBig.text = cpu;
+    _compact.accessibilityValue = _haveMem ? [NSString stringWithFormat:@"%@ available, %@ used, CPU %@", MSBDBytes(_mem.available), MSBDBytes(_mem.used), _haveTicks && _cpu >= 0.0 ? cpu : @"not read yet"] : nil;
     if (_haveMem) {
         _memValues[0].text = MSBDBytes(_mem.used); _memValues[1].text = MSBDBytes(_mem.available); _memValues[2].text = MSBDBytes(_mem.total);
         _memExtra.text = [NSString stringWithFormat:@"Wired %@  ·  Compressed %@  ·  Active %@", MSBDBytes(_mem.wired), MSBDBytes(_mem.compressed), MSBDBytes(_mem.active)];

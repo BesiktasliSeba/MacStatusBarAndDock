@@ -243,14 +243,16 @@ static void DMWiFiStartScanning(void) {
         if (DMNewOS()) gWiFiDiag.scans++;
         DMLog(@"[wifi] scanning started");
     }
-    // the watchdog: a scan never outlives its menu (a close path missed), and never runs longer than 30 s after the menu was opened
+    // the watchdog: a scan never outlives its menu (a close path missed) -- or our own Control Center's Wi-Fi page, which shows the same rows
+    // (CCTiles.h) --, and never runs longer than 30 s after it was opened
     if (!gWiFiWatchdog) {
         gWiFiWatchdog = [NSTimer timerWithTimeInterval:2.0 repeats:YES block:^(NSTimer *t) {
-            if (!gWiFiPanel.window) { DMWiFiStopScanning(@"watchdog: the menu is gone"); return; }
+            if (!gWiFiPanel.window && !DMCCTWiFiPageShown()) { DMWiFiStopScanning(@"watchdog: the menu is gone"); return; }
             if (CACurrentMediaTime() - gWiFiOpenedAt > 30.0) DMWiFiStopScanning(@"watchdog: 30 s");
         }];
         gWiFiWatchdog.tolerance = 0.5;
         [[NSRunLoop mainRunLoop] addTimer:gWiFiWatchdog forMode:NSRunLoopCommonModes];
+        DMGateTimer(gWiFiWatchdog);   // (with the screen off it waits: the menu and the page close then anyway)
     }
 }
 // Every menu close comes here (DMCloseOverlay, DMRemoveOverlayNow -- another title, the screen going off, ...): the Wi-Fi menu's scan stops with it.
@@ -422,8 +424,9 @@ static void DMWiFiRefreshIcon(UIView *fg) {
     _logTag = DMWiFiTag(name);
     _axSecure = secure; _axBars = bars;   // (read aloud with the name: "Secure network, signal strength 2 of 3 bars" -- 1.3.7, audit M-3)
     if (secure) {
-        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:9.0 weight:UIImageSymbolWeightSemibold];
-        _lockView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"lock.fill" withConfiguration:cfg]];
+        static UIImage *lock;   // (made once, for every row: a symbol is read from the system's glyphs each time one is made)
+        if (!lock) lock = [UIImage systemImageNamed:@"lock.fill" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:9.0 weight:UIImageSymbolWeightSemibold]];
+        _lockView = [[UIImageView alloc] initWithImage:lock];
         _lockView.contentMode = UIViewContentModeCenter;
         _lockView.userInteractionEnabled = NO;
         [self addSubview:_lockView];
@@ -980,7 +983,9 @@ static NSArray *DMWiFiMenuItems(NSString **signatureOut) {
                                      : route == DMWiFiRouteSettings ? ^{ DMLog([NSString stringWithFormat:@"[wifi] %@ is an enterprise network: Settings opened", DMWiFiTag(n)]); DMWiFiOpenSettings(n); }
                                      : ^{ DMWiFiJoin(r); };
                 (void)isKnown;
-                [items addObject:[[DMWiFiNetworkRow alloc] initWithName:n secure:secure bars:bars handler:DMCloseThen(act)]];
+                DMWiFiNetworkRow *row = [[DMWiFiNetworkRow alloc] initWithName:n secure:secure bars:bars handler:DMCloseThen(act)];
+                if (route != DMWiFiRouteJoin && DMRowsHostLocked()) { row.enabled = NO; [row refresh]; }   // (our Control Center on the Lock Screen: the sheet and Settings need the iPad unlocked)
+                [items addObject:row];
                 [sig appendFormat:@"%d%@%d%ld|", section, n, secure, (long)bars];
             }
         }
@@ -991,8 +996,8 @@ static NSArray *DMWiFiMenuItems(NSString **signatureOut) {
         }
     }
     [items addObject:[NSNull null]];
-    if (powered) [items addObject:[[DMRow alloc] initWithTitle:@"Other Networks…" enabled:YES handler:DMCloseThen(^{ DMWiFiOpenSettings(nil); })]];
-    [items addObject:[[DMRow alloc] initWithTitle:@"Wi-Fi Settings…" enabled:YES handler:DMCloseThen(^{ DMWiFiOpenSettings(nil); })]];
+    if (powered) [items addObject:[[DMRow alloc] initWithTitle:@"Other Networks…" enabled:!DMRowsHostLocked() handler:DMCloseThen(^{ DMWiFiOpenSettings(nil); })]];
+    [items addObject:[[DMRow alloc] initWithTitle:@"Wi-Fi Settings…" enabled:!DMRowsHostLocked() handler:DMCloseThen(^{ DMWiFiOpenSettings(nil); })]];
     if (signatureOut) *signatureOut = sig;
     return items;
 }
@@ -1032,6 +1037,7 @@ static void DMWiFiRebuildOpenMenu(void) {
 static void DMWiFiListChanged(void) {
     DMWiFiSheetCheckJoined();
     for (UIView *fg in gCopies.allObjects) if (objc_getAssociatedObject(fg, kWiFiIconKey)) [fg setNeedsLayout];
+    DMCCTWiFiListChanged();   // (our own Control Center's Wi-Fi row and page: CCTiles.h)
     if (!gWiFiPanel || gWiFiRebuildPending) return;
     gWiFiRebuildPending = YES;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ gWiFiRebuildPending = NO; DMWiFiRebuildOpenMenu(); });
