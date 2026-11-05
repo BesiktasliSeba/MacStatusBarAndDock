@@ -195,7 +195,7 @@ static NSArray<NSDictionary *> *DMSpotWindowRows(void) {
             else [others addObject:DMSpotRow(@"w", name, DMSpotWhere(did, mini), name, nil, b, ^{ DMSpotOnDesktopThen(did, ^{ DMSurfaceWindowForApp(b); }); })];
         }
         if (DMMSWMulti()) for (NSString *b in [[gMSWWinDesk allKeys] sortedArrayUsingSelector:@selector(compare:)]) {   // (closed by iPadOS while away: it comes back with its desktop)
-            if ([seen containsObject:b] || gMSWWinDesk[b].integerValue == cur || DMMSWElsewhereIndex(b) == NSNotFound) continue;
+            if (!DMSMKeyIsApp(b) || [seen containsObject:b] || gMSWWinDesk[b].integerValue == cur || DMMSWElsewhereIndex(b) == NSNotFound) continue;   // (a Stage Manager window's record: its app has a copy, DMMSWFoldWindowKeys)
             [seen addObject:b];
             NSString *name = DMMSWAppName(b);
             NSInteger did = gMSWWinDesk[b].integerValue;

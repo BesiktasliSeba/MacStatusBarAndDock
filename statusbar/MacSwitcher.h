@@ -14,6 +14,7 @@
 
 #include "MSWSlideMath.h"   // (the slide's arithmetic: the spring, its speed, the slot a taken slide goes to -- plain C, tools/test-mswslide.sh)
 #include "MSWKept.h"        // (the desktops kept while it is off and what of them comes back -- plain Foundation, tools/test-mswkept.sh)
+#include "MSWEngineRecords.h"   // (the window records across an engine change -- plain Foundation, tools/test-mswenginerecords.sh)
 #include "MSWAppDesk.h"     // (where an app opens when its windows are on other desktops -- plain Foundation, tools/test-mswappdesk.sh)
 static BOOL gMSWOn = NO;                 // the switch is on, the iPadOS has what it needs (DMMSWOSOK), and the self-check passed
 static BOOL gMSWGoToAppDesk = NO;        // Settings > Windows & Multitasking > Go to the App's Desktop (goToAppDesktop, off unless switched on, 1.7.1):
@@ -753,6 +754,9 @@ static NSMutableDictionary<NSString *, UIView *> *gMSWWinShots;      // app -> i
 static NSMutableDictionary<NSNumber *, NSArray *> *gMSWShotSet;      // desktop id -> its windows when its picture was taken (another set now: the picture is stale)
 static NSMutableDictionary<NSString *, NSDictionary *> *gMSWFit;    // desktop id ("2") -> its Fit to Window group, slots and free windows while away
 static NSMutableDictionary<NSString *, NSString *> *gMSWLeftSize;    // desktop id ("2") -> the screen's size when it was left (turned since: arranged on return)
+static NSMutableDictionary<NSString *, NSNumber *> *gMSWAsideDesk;   // another engine's windows while Stage Manager runs: app -> desktop id (MSWEngineRecords.h)
+static NSMutableDictionary<NSString *, NSString *> *gMSWAsideFrame;  // ... and their frames
+static BOOL gMSWKeysCopied = NO;                                     // (this stay on an engine of windows by app gave the apps their copies, DMMSWFoldWindowKeys)
 static const void *kMSWNativeDeskKey = &kMSWNativeDeskKey;
 static BOOL gMSWSwitching = NO, gMSWDesksDirty = NO;
 static BOOL gMSWSwInChange = NO;   // (a switch's windows change runs: the pictures of windows coming back are kept until the switch ends, DMMSWSwEnd)
@@ -773,18 +777,22 @@ static NSDictionary *gMSWKept;
 static NSString *DMMSWKeptPath(void) { return [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Preferences/com.besiktasliseba.macstatusbar.desktops-kept.plist"]; }
 static void DMMSWSwitchTo(NSUInteger to, NSString *why, void (^done)(void));
 
-// A desktop's windows now (its apps, sorted), to tell a stale picture.
+static BOOL DMMSWAppKeysOnly(void);
+// A desktop's windows now (its apps, sorted), to tell a stale picture. (With an engine of windows by app a Stage Manager window's record is no window here.)
 static NSArray *DMMSWWindowSet(NSInteger did) {
     NSMutableArray *a = [NSMutableArray array];
-    for (NSString *b in gMSWWinDesk) if (gMSWWinDesk[b].integerValue == did) [a addObject:b];
+    BOOL appsOnly = DMMSWAppKeysOnly();
+    for (NSString *b in gMSWWinDesk) if (gMSWWinDesk[b].integerValue == did && MSWRecordIsWindowHere(b, appsOnly)) [a addObject:b];
     return [a sortedArrayUsingSelector:@selector(compare:)];
 }
 static void DMMSWSave(void) {
     gMSWDesksDirty = NO;
     NSMutableArray *ids = [NSMutableArray array];
     for (NSNumber *n in gMSWDesks ?: @[@1]) [ids addObject:n];
-    NSDictionary *st = @{@"desktops": ids, @"current": @(DMMSWCurId()), @"windows": [gMSWWinDesk copy] ?: @{}, @"frames": [gMSWWinFrame copy] ?: @{},
-                         @"fullscreen": [gMSWFullScreen copy] ?: @{}, @"leftSizes": [gMSWLeftSize copy] ?: @{}, @"fit": [gMSWFit copy] ?: @{}};
+    NSMutableDictionary *st = [@{@"desktops": ids, @"current": @(DMMSWCurId()), @"windows": [gMSWWinDesk copy] ?: @{}, @"frames": [gMSWWinFrame copy] ?: @{},
+                                 @"fullscreen": [gMSWFullScreen copy] ?: @{}, @"leftSizes": [gMSWLeftSize copy] ?: @{}, @"fit": [gMSWFit copy] ?: @{}} mutableCopy];
+    if (gMSWAsideDesk.count) { st[@"asideWindows"] = [gMSWAsideDesk copy]; st[@"asideFrames"] = [gMSWAsideFrame copy] ?: @{}; }   // (only after an engine change)
+    if (gMSWKeysCopied) st[@"keysCopied"] = @YES;
     static NSDictionary *last;
     if ([st isEqualToDictionary:last]) return;
     last = st;
@@ -799,6 +807,7 @@ static void DMMSWLoad(void) {
     NSDictionary *st = [NSDictionary dictionaryWithContentsOfFile:DMMSWStatePath()];
     gMSWDesks = [NSMutableArray arrayWithObject:@1]; gMSWCur = 0;
     gMSWWinDesk = [NSMutableDictionary dictionary]; gMSWWinFrame = [NSMutableDictionary dictionary]; gMSWFullScreen = [NSMutableDictionary dictionary]; gMSWLeftSize = [NSMutableDictionary dictionary]; gMSWFit = [NSMutableDictionary dictionary];
+    gMSWAsideDesk = [NSMutableDictionary dictionary]; gMSWAsideFrame = [NSMutableDictionary dictionary]; gMSWKeysCopied = NO;
     if (!gMSWShots) gMSWShots = [NSMutableDictionary dictionary];
     if (!gMSWAwayNatives) gMSWAwayNatives = [NSMutableArray array];
     if ([st isKindOfClass:[NSDictionary class]]) {
@@ -815,6 +824,8 @@ static void DMMSWLoad(void) {
         NSDictionary *ls = st[@"leftSizes"];
         if ([ls isKindOfClass:[NSDictionary class]]) for (id k in ls) if ([k isKindOfClass:[NSString class]] && [ls[k] isKindOfClass:[NSString class]]) gMSWLeftSize[k] = ls[k];
         if ([fs isKindOfClass:[NSDictionary class]]) for (id k in fs) if ([k isKindOfClass:[NSString class]] && [fs[k] isKindOfClass:[NSString class]] && [gMSWDesks containsObject:@([k integerValue])]) gMSWFullScreen[k] = fs[k];
+        MSWAsideRead(st, gMSWAsideDesk, gMSWAsideFrame);
+        gMSWKeysCopied = [st[@"keysCopied"] isKindOfClass:[NSNumber class]] && [st[@"keysCopied"] boolValue];
     }
     DMLog([NSString stringWithFormat:@"[macswitcher] desktops loaded: %@, current %@ (%lu window records)", [gMSWDesks componentsJoinedByString:@","], DMMSWDeskName(gMSWCur), (unsigned long)gMSWWinDesk.count]);
 }
@@ -1017,8 +1028,10 @@ static void DMMSWCutOutsFrom(UIView *old, NSInteger fromId) {
 // a window Aerial showed again while away is hidden again) and at once by a switch. With one desktop (or the feature off) nothing is away.
 // Records made by the Stage Manager engine name each window by its own key, "<bundle>|<scene>" (SMWindowKey.h, since the 1.3.9 merge); the other
 // engines know one window per app and look records up by the app. After an engine change from Stage Manager (the desktops stay) such a record was
-// no app of theirs: DMMSWRelaunchClosed took it for an app closed while its desktop was away and asked to launch "<bundle>|<scene>". They become their
-// apps' records here (two windows of one app on two desktops: the app's window goes to one of them -- these engines have one window per app). Only
+// no app of theirs: DMMSWRelaunchClosed took it for an app closed while its desktop was away and asked to launch "<bundle>|<scene>". Their apps get a
+// copy here, once per stay on such an engine (two windows of one app on two desktops: the app's window goes to one of them -- these engines have one
+// window per app), and the records stay: those windows are still in Stage Manager's stages, and these records bring them back when it is the engine
+// again (MSWEngineRecords.h; moved to the apps, the current desktop's were forgotten at once: A12Z, re-check of 1.8.1). Only
 // while such an engine runs (DMActiveEngine): DMSMEngine() also reads NO for a moment with Stage Manager still the engine -- a Control Center tap
 // that Stage Manager is switched back on after, the extra respring after a package switch -- and folding then lost a window's own desktop (re-check).
 // (the records are by app now: an engine that keys windows by app runs -- Aerial, Zetsu, MilkyWay4 -- and Stage Manager is not the user's pick. In the
@@ -1053,20 +1066,35 @@ static void DMMSWZetsuReopen(UIWindow *w) {
     });
 }
 static void DMMSWFoldWindowKeys(void) {
-    NSMutableArray<NSString *> *wk = nil;
-    for (NSString *k in gMSWWinDesk) if (!DMSMKeyIsApp(k)) { if (!wk) wk = [NSMutableArray array]; [wk addObject:k]; }
-    if (!wk) return;
-    for (NSString *k in wk) {
-        NSString *b = DMSMKeyBundle(k);
-        if (b.length && !gMSWWinDesk[b]) { gMSWWinDesk[b] = gMSWWinDesk[k]; if (gMSWWinFrame[k]) gMSWWinFrame[b] = gMSWWinFrame[k]; }
-        [gMSWWinDesk removeObjectForKey:k]; [gMSWWinFrame removeObjectForKey:k]; [gMSWWinShots removeObjectForKey:k];
+    if (gMSWKeysCopied) return;
+    NSUInteger n = MSWRecordsCopyToApps(gMSWWinDesk, gMSWWinFrame);
+    if (!n) return;
+    gMSWKeysCopied = YES; gMSWDesksDirty = YES;
+    DMLog([NSString stringWithFormat:@"[macswitcher] %lu window record(s) of the Stage Manager engine: their apps have a copy now (this engine has one window per app), the records stay for when it is the engine again", (unsigned long)n]);
+}
+// An engine of windows by app starts its restore (StatusBar.x DMRestoreWindows; savedApps: the apps in its saved state, nil: nothing saved), before its
+// windows are made: one of another desktop is away from its first frame (DMMSWNewStage), and one with no record opens on the current desktop. So first what
+// Stage Manager's tick put aside, for those apps, the rest goes; then the apps' copies of Stage Manager's records for the others (code review 1.8.1.1, finding 2:
+// made only after the restore, a saved window with nothing aside opened on the current desktop, its app's copy no use by then). Not in a start where such an
+// engine only stands in for Stage Manager: no restore gets here then.
+void DMMSWRecordsBeforeRestore(NSArray<NSString *> *savedApps) {
+    if (gMSWAsideDesk.count) {
+        NSUInteger n = MSWRecordsFromAside(gMSWWinDesk, gMSWWinFrame, gMSWAsideDesk, gMSWAsideFrame, savedApps ?: @[], gMSWDesks);
+        DMLog([NSString stringWithFormat:@"[macswitcher] %lu of %lu window record(s) put aside while Stage Manager ran are back", (unsigned long)n, (unsigned long)gMSWAsideDesk.count]);
+        [gMSWAsideDesk removeAllObjects]; [gMSWAsideFrame removeAllObjects];
+        gMSWDesksDirty = YES;
     }
-    gMSWDesksDirty = YES;
-    DMLog([NSString stringWithFormat:@"[macswitcher] %lu window record(s) of the Stage Manager engine are their apps' records now (this engine has one window per app)", (unsigned long)wk.count]);
+    if (DMMSWAppKeysOnly()) DMMSWFoldWindowKeys();
+    if (gMSWDesksDirty) DMMSWSave();
 }
 static void DMMSWApply(void) {
-    if (DMSMEngine()) DMMSWSMApply();   // (Stage Manager: a desktop is a stage, MacSwitcherSM.h; below only the native windows apply there)
-    else if (DMMSWAppKeysOnly()) DMMSWFoldWindowKeys();   // (records by window key, from the Stage Manager engine before an engine change: by app here)
+    if (DMSMEngine()) {   // (Stage Manager: a desktop is a stage, MacSwitcherSM.h; below only the native windows apply there)
+        if (gMSWKeysCopied) { gMSWKeysCopied = NO; gMSWDesksDirty = YES; }   // (the stay on another engine is over)
+        DMMSWSMApply();
+    }
+    // (records by window key, from the Stage Manager engine before an engine change: their apps get a copy here, where this engine's restore has not made them,
+    //  DMMSWRecordsBeforeRestore: not before that, a record of its own put aside is the one that counts for its window)
+    else if (DMMSWAppKeysOnly() && gWindowSaveOn && !gRestoringWindows) DMMSWFoldWindowKeys();
     BOOL multi = DMMSWMulti();
     if (!multi && !gMSWAwayCount && !gMSWAwayNatives.count) return;
     NSInteger cur = DMMSWCurId();
@@ -1132,7 +1160,7 @@ static void DMMSWApply(void) {
     // comes back when its desktop does, DMMSWRelaunchClosed)
     if (multi && gWindowSaveOn && !gRestoringWindows && !DMSMEngine())
         // (a Stage Manager window's key "<bundle>|<scene>" is never an app of this engine's: kept -- re-check N-1)
-        for (NSString *b in gMSWWinDesk.allKeys) if (DMSMKeyIsApp(b) && ![alive containsObject:b] && gMSWWinDesk[b].integerValue == cur && CACurrentMediaTime() > gMSWRelaunching[b].doubleValue) { [gMSWWinDesk removeObjectForKey:b]; [gMSWWinFrame removeObjectForKey:b]; gMSWDesksDirty = YES; }
+        for (NSString *b in gMSWWinDesk.allKeys) if (MSWRecordClosedHere(b, gMSWWinDesk[b].integerValue, cur, alive) && CACurrentMediaTime() > gMSWRelaunching[b].doubleValue) { [gMSWWinDesk removeObjectForKey:b]; [gMSWWinFrame removeObjectForKey:b]; gMSWDesksDirty = YES; }
     BOOL nativesChanged = NO;
     for (DMNativeWindow *w in [gNativeWindows copy]) {
         NSNumber *d = objc_getAssociatedObject(w, kMSWNativeDeskKey);
@@ -2271,6 +2299,7 @@ static void DMMSWRemoveDesktop(NSUInteger i) {
     NSNumber *rid = gMSWDesks[i], *nid = gMSWDesks[nb];
     NSUInteger moved = 0;
     for (NSString *b in gMSWWinDesk.allKeys) if ([gMSWWinDesk[b] isEqual:rid]) { gMSWWinDesk[b] = nid; moved++; }
+    for (NSString *b in gMSWAsideDesk.allKeys) if ([gMSWAsideDesk[b] isEqual:rid]) gMSWAsideDesk[b] = nid;
     for (DMNativeWindow *w in [gMSWAwayNatives arrayByAddingObjectsFromArray:gNativeWindows ?: @[]]) if ([objc_getAssociatedObject(w, kMSWNativeDeskKey) isEqual:rid]) { objc_setAssociatedObject(w, kMSWNativeDeskKey, nid, OBJC_ASSOCIATION_RETAIN_NONATOMIC); moved++; }
     NSString *fs = gMSWFullScreen[rid.stringValue];
     if (fs && !gMSWFullScreen[nid.stringValue]) gMSWFullScreen[nid.stringValue] = fs;
@@ -2284,7 +2313,7 @@ static void DMMSWRemoveDesktop(NSUInteger i) {
     // (Stage Manager: shown together when the neighbour is on screen, MacSwitcherSM.h -- before the records go with the last but one desktop: the
     //  merge reads them, and found none, so removing Desktop 2 of two sent the iPad 2 to the Home Screen)
     if (DMSMEngine()) DMMSWSMMerged(nb);
-    if (gMSWDesks.count == 1) { [gMSWWinDesk removeAllObjects]; [gMSWWinFrame removeAllObjects]; [gMSWFullScreen removeAllObjects]; [gMSWLeftSize removeAllObjects]; [gMSWShots removeAllObjects]; [gMSWFit removeAllObjects]; }   // (one desktop: no records needed)
+    if (gMSWDesks.count == 1) { [gMSWWinDesk removeAllObjects]; [gMSWWinFrame removeAllObjects]; [gMSWFullScreen removeAllObjects]; [gMSWLeftSize removeAllObjects]; [gMSWShots removeAllObjects]; [gMSWFit removeAllObjects]; [gMSWAsideDesk removeAllObjects]; [gMSWAsideFrame removeAllObjects]; }   // (one desktop: no records needed)
     DMMSWApply();
     DMMSWSave();
     DMMSWRebuildOpen();
@@ -2472,7 +2501,7 @@ static void DMMSWCollapse(void) {
     if (!gMSWDesks) return;
     if (gMSWDesks.count > 1) DMLog(@"[macswitcher] one desktop again: every window on Desktop 1");
     gMSWDesks = [NSMutableArray arrayWithObject:@1]; gMSWCur = 0;
-    [gMSWWinDesk removeAllObjects]; [gMSWWinFrame removeAllObjects]; [gMSWFullScreen removeAllObjects]; [gMSWShots removeAllObjects]; [gMSWFit removeAllObjects];
+    [gMSWWinDesk removeAllObjects]; [gMSWWinFrame removeAllObjects]; [gMSWFullScreen removeAllObjects]; [gMSWShots removeAllObjects]; [gMSWFit removeAllObjects]; [gMSWAsideDesk removeAllObjects]; [gMSWAsideFrame removeAllObjects];
     DMMSWApply();
     DMMSWSave();
 }
@@ -2492,8 +2521,9 @@ static void DMMSWKeepForLater(void) {
     for (NSString *k in gMSWFit) fit[k] = gMSWFit[k];
     if (DMSMEngine()) fit[cur] = @{@"smslots": [gSMFitSlots copy] ?: @{}, @"smfree": [gSMFreeWindows allObjects] ?: @[]};   // (as DMMSWSMLeave keeps it)
     else fit[cur] = @{@"group": [gFitGroup copy] ?: @[], @"slots": [gFitSlots copy] ?: @{}, @"free": [gFreeWindows allObjects] ?: @[], @"fitOn": @(DMFitEnabled())};   // (as a switch away)
-    NSDictionary *st = @{@"desktops": [gMSWDesks copy], @"current": @(DMMSWCurId()), @"windows": [gMSWWinDesk copy] ?: @{}, @"frames": [gMSWWinFrame copy] ?: @{},
-                         @"fullscreen": [gMSWFullScreen copy] ?: @{}, @"leftSizes": [gMSWLeftSize copy] ?: @{}, @"fit": fit};
+    NSMutableDictionary *st = [@{@"desktops": [gMSWDesks copy], @"current": @(DMMSWCurId()), @"windows": [gMSWWinDesk copy] ?: @{}, @"frames": [gMSWWinFrame copy] ?: @{},
+                                 @"fullscreen": [gMSWFullScreen copy] ?: @{}, @"leftSizes": [gMSWLeftSize copy] ?: @{}, @"fit": fit} mutableCopy];
+    if (gMSWAsideDesk.count) { st[@"asideWindows"] = [gMSWAsideDesk copy]; st[@"asideFrames"] = [gMSWAsideFrame copy] ?: @{}; }   // (another engine's windows, MSWEngineRecords.h: code review 1.8.1.1, finding 4)
     gMSWKept = st;
     BOOL ok = [st writeToFile:path atomically:YES];
     DM_FEATURE_MARK("mac-switcher-desktops-kept");
@@ -2540,6 +2570,7 @@ static void DMMSWBringBack(void) {
     gMSWDesks = [r[@"desktops"] mutableCopy]; gMSWCur = [r[@"current"] unsignedIntegerValue];
     gMSWWinDesk = [r[@"windows"] mutableCopy]; gMSWWinFrame = [r[@"frames"] mutableCopy];
     gMSWFullScreen = [r[@"fullscreen"] mutableCopy]; gMSWLeftSize = [r[@"leftSizes"] mutableCopy]; gMSWFit = [r[@"fit"] mutableCopy];
+    MSWAsideRead(st, gMSWAsideDesk, gMSWAsideFrame);   // (a desktop that is gone by then: DMMSWRecordsBeforeRestore leaves its entries out)
     for (NSString *b in r[@"gone"]) for (NSString *dk in [gMSWFit allKeys]) { NSDictionary *x = DMMSWFitWithout(gMSWFit[dk], b); if (x) gMSWFit[dk] = x; }   // (their tiles close up)
     [gMSWShots removeAllObjects]; [gMSWShotSet removeAllObjects];
     gMSWDesksDirty = YES;
@@ -5317,6 +5348,8 @@ static BOOL DMMSWTrigger(NSString *cmd) {
     else if ([cmd isEqualToString:@"msw_desks"]) {
         NSMutableString *o = [NSMutableString stringWithFormat:@"[macswitcher] desktops %@ current %@ (id %ld), away stages %lu, away native %lu, switching %d", [gMSWDesks componentsJoinedByString:@","], DMMSWDeskName(gMSWCur), (long)DMMSWCurId(), (unsigned long)gMSWAwayCount, (unsigned long)gMSWAwayNatives.count, gMSWSwitching];
         for (NSString *b in gMSWWinDesk) [o appendFormat:@"\n  %@ -> %@", b, gMSWWinDesk[b]];
+        for (NSString *b in gMSWAsideDesk) [o appendFormat:@"\n  put aside %@ -> %@", b, gMSWAsideDesk[b]];
+        if (gMSWKeysCopied) [o appendString:@"\n  this stay gave the apps their copies"];
         for (NSString *k in gMSWFullScreen) [o appendFormat:@"\n  full screen on id %@: %@", k, gMSWFullScreen[k]];
         for (UIView *st in DMAerialStagesAll()) [o appendFormat:@"\n  stage %@ hidden %d away %d minimized %d", DMStageBundle(st), st.hidden, [objc_getAssociatedObject(st, kMSWAwayKey) boolValue], DMStageMinimized(st)];
         {   // (the desktops kept while the Mac Switcher is off, item 14: in this run, else the file)

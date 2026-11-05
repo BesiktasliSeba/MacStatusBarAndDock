@@ -11350,6 +11350,7 @@ static void DMRestoreLastFrames(NSDictionary *state) {
     }
     if (got.count) { DM_FEATURE_MARK("restore-green-places"); DMLog([NSString stringWithFormat:@"[restore] where the windows of apps not in a window were (their green brings them back there): %@", [got componentsJoinedByString:@", "]]); }
 }
+void DMMSWRecordsBeforeRestore(NSArray<NSString *> *savedApps);   // (MacSwitcher.h: the window records before this engine's windows are made, MSWEngineRecords.h)
 static void DMRestoreWindows(int attempt) {
     if (gWindowSaveOn || gRestoringWindows) return;
     // (a start whose engine only stands in for a picked Stage Manager -- DMSMStandInRun: the saved state is that engine's last real session's, maybe
@@ -11361,7 +11362,7 @@ static void DMRestoreWindows(int attempt) {
         else gWindowSaveOn = YES;
         return;
     }
-    if (access(DMWindowStatePath().fileSystemRepresentation, F_OK) != 0) { gWindowSaveOn = YES; return; }   // (nothing saved: nothing to wait for)
+    if (access(DMWindowStatePath().fileSystemRepresentation, F_OK) != 0) { DMMSWRecordsBeforeRestore(nil); gWindowSaveOn = YES; return; }   // (nothing saved: nothing to wait for)
     id lockMgr = DMSBManager("SBLockScreenManager");
     BOOL locked = [lockMgr respondsToSelector:NSSelectorFromString(@"isUILocked")] && ((BOOL (*)(id, SEL))objc_msgSend)(lockMgr, NSSelectorFromString(@"isUILocked"));
     if (locked || gOverlay) {   // wait for the unlock (the state file is read only after it)
@@ -11383,6 +11384,11 @@ static void DMRestoreWindows(int attempt) {
     NSDictionary *state = [NSDictionary dictionaryWithContentsOfFile:DMWindowStatePath()];
     DMRestoreLastFrames(state);   // (1.7.4 item 11: the green's places of the apps that were full screen)
     NSArray *wins = [state[@"windows"] isKindOfClass:[NSArray class]] ? state[@"windows"] : nil;
+    {
+        NSMutableArray<NSString *> *savedApps = [NSMutableArray array];
+        for (NSDictionary *w in wins) if ([w isKindOfClass:[NSDictionary class]] && [w[@"bundle"] isKindOfClass:[NSString class]]) [savedApps addObject:w[@"bundle"]];
+        DMMSWRecordsBeforeRestore(savedApps);   // (before their windows are made: one of another desktop is away from its first frame, DMMSWNewStage)
+    }
     if (!wins.count) { gWindowSaveOn = YES; return; }
     // a start that ended during the last restore skips it once (a crash loop must not repeat itself)
     struct stat st;
@@ -22167,9 +22173,12 @@ static const void *kHoldGaveUpKey = &kHoldGaveUpKey;      // (the safety release
 static __unsafe_unretained UIView *gDMBarLayingOut = nil;   // (the copy that pass is for: identity only, never messaged)
 static int gDMBarUpdateDepth = 0;   // (STUIStatusBar is placing its region items -- inside iOS's own constraint / layout pass: SBAttach17Regions)
 static void DMHoldStatusBarCopy(UIView *fg);
+static const void *kBarClosedUpKey = &kBarClosedUpKey;   // @YES: the copy's last layout had no clock, the icons closed up (DMLayoutWithoutClock); the full layout ends it
+static void DMClosedUpClockBack(UIView *fg);
 static void DMAttachIfFilledNow(UIView *fg, const char *why, BOOL now) {
     DM_FEATURE_MARK("statusbar-attach-17");
-    if (!DMSBUseSTUI() || !fg || !fg.window || objc_getAssociatedObject(fg, kLogoKey) || ![fg isKindOfClass:DMSBClass("_UIStatusBarForegroundView")]) return;
+    if (!DMSBUseSTUI() || !fg || !fg.window || ![fg isKindOfClass:DMSBClass("_UIStatusBarForegroundView")]) return;
+    if (objc_getAssociatedObject(fg, kLogoKey)) { DMClosedUpClockBack(fg); return; }   // (ours: laid out without its clock, and the clock is back)
     // (the copy whose own layout pass is running is left to that pass -- our own views added by it arrive here too: answering them with another
     //  layout recursed until the stack ran out, two SpringBoard crashes with debug twin 1.4.5-9, 24 Oct 03:23)
     if (gDMBarLayoutDepth > 0 && fg == gDMBarLayingOut) return;
@@ -22641,9 +22650,12 @@ static BOOL DMBarCopyIsCCDuplicate(UIView *fg) {
         if (laidOut && lockedNow) DMHideAppBarItemsOf(fg);
         if (laidOut) objc_setAssociatedObject(fg, kBarLaidOutLockedKey, @(lockedNow), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         if (laidOut && lockedNow) objc_setAssociatedObject(fg, kBarLookLockedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (the unlocked look is only whole with the clock: the full layout ends it)
+        if (laidOut) objc_setAssociatedObject(fg, kBarClosedUpKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (laidOut && !lockedNow && DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[lock] %p laid out without a clock, unlocked (in %@)", fg, NSStringFromClass([fg.window class])]);
         return;
     }
     objc_setAssociatedObject(fg, kNoClockLayoutKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(fg, kBarClosedUpKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     BOOL lookWasLocked = [objc_getAssociatedObject(fg, kBarLookLockedKey) boolValue];   // (the unlocked look coming back: DMBarFadeBack at the end)
     NSSet<NSValue *> *shownBefore = lookWasLocked ? DMBarShownItems(fg) : nil;
     UIView *trailing = DMTrailingContainer(fg);
@@ -22766,6 +22778,11 @@ static BOOL DMBarCopyIsCCDuplicate(UIView *fg) {
     BOOL newlyOurs = ![gCopies containsObject:fg];
     [gCopies addObject:fg];
     if (newlyOurs) DMSMMainBarChanged(fg);   // (the screen's own bar just became ours: a full-screen card's strip decides again, F1)
+    if (newlyOurs && objc_getAssociatedObject(fg, kHoldGaveUpKey)) {   // (a copy the safety release let go has no hold left to release, and that release is what asks the items again:
+        //  iOS's own Wi-Fi item stayed beside ours after a green tap on a window plain for 30 s or more, 18.5, v1811 note 1. Asked once: newlyOurs holds only for this pass)
+        __weak UIView *weakFg = fg;
+        dispatch_async(dispatch_get_main_queue(), ^{ if (weakFg) DMStockVPNRecheck(weakFg); });
+    }
     DMStartClockBalanceIfNeeded();   // a second status bar copy has just appeared (an app opening over another)
     SBApplication *frontApp = DMNativeActiveApp() ? nil : DMActiveApp();   // whichever app is frontmost, windowed or full screen (a native window: none)
     BOOL activeIsWindow = DMWindowsOwnStatusBar() || (frontApp && !DMFrontApp() && DMA5ComingBackTop());   // (a window on its way back after the unlock: still a window -- no lights in the bar)
@@ -22915,7 +22932,8 @@ static BOOL DMBarCopyIsCCDuplicate(UIView *fg) {
     // ---- the clock (date, then time, like macOS) at the far right; icons shift left to make room ----
     // The container that holds the time and date is moved to the right edge itself (labels moved
     // far outside their container's bounds were clipped away, leaving the clock slot blank).
-    CGFloat tw = DMLabelShown(timeLabel) ? timeLabel.bounds.size.width : 0.0;
+    // (BarUnlock.h MSBDTimeLabelWidth: a time label that has just arrived has iOS's text and width in this pass, the seconds of ours come after its region's next pass)
+    CGFloat tw = DMLabelShown(timeLabel) ? MSBDTimeLabelWidth(timeLabel.bounds.size.width, ceil([(UILabel *)timeLabel sizeThatFits:CGSizeMake(CGFLOAT_MAX, CGFLOAT_MAX)].width)) : 0.0;
     CGFloat dw = needProxy ? proxyW : (DMLabelShown(dateLabel) ? dateLabel.bounds.size.width : 0.0);
     CGFloat clockW = tw + dw + ((tw > 0 && dw > 0) ? kClockGap * k : 0.0);
     CGFloat rightEdge = trailing ? DMBarTrail(fg, rtl, DMBarUntransformed(trailing))   // (the trailing end of the status icons, before any shift)
@@ -23369,17 +23387,29 @@ static void DMBarLayoutAgainBeforeDraw(UIView *fg) {
     else if (!((BOOL (*)(id, SEL, id, unsigned long))objc_msgSend)([CATransaction class], add, again, 1ul))                //  after the layout pass, before the commit)
         objc_setAssociatedObject(fg, kAgainKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (that phase is over for this frame: not taken)
 }
+static void DMClockBackLayout(UIView *fg);
 static void DMClockBackNow(UIView *fg) {
     if (!fg || !fg.window || ![objc_getAssociatedObject(fg, kBarLookLockedKey) boolValue] || !objc_getAssociatedObject(fg, kLogoKey)) return;
     if (gDMBarLayoutDepth > 0 && fg == gDMBarLayingOut) return;   // (inside that copy's own layout pass: the pass lays it out)
     if (![fg isKindOfClass:DMSBClass("_UIStatusBarForegroundView")]) return;
     UIView *c = DMLeadingContainer(fg);
     if (!c || !DMFirstStringView(c) || DMBarLockedNow()) return;   // (the Lock Screen's copy has no time there; locked, the locked look stays)
+    DMClockBackLayout(fg);
+}
+// iPadOS 17+ (the time label's arrivals, DMAttachIfFilledNow; BarUnlock.h MSBDClosedUpBarLaidOutAgain): a copy of ours laid out without a clock, its time
+// back. Debug /tmp/msb-noclosedupback: as before, for comparison.
+static void DMClosedUpClockBack(UIView *fg) {
+    if (!objc_getAssociatedObject(fg, kBarClosedUpKey) || (gDMBarLayoutDepth > 0 && fg == gDMBarLayingOut)) return;
+    UIView *c = DMLeadingContainer(fg);
+    if (!MSBDClosedUpBarLaidOutAgain(YES, c && DMFirstStringView(c), DMBarLockedNow()) || DMTestFlag("/tmp/msb-noclosedupback")) return;
+    DMClockBackLayout(fg);
+}
+static void DMClockBackLayout(UIView *fg) {
     [fg setNeedsLayout];
-    BOOL now = gDMBarLayoutDepth == 0 && !fg.window.hidden;
+    BOOL now = gDMBarLayoutDepth == 0 && gDMBarUpdateDepth == 0 && !fg.window.hidden;   // (the bar still placing its items, 17+: a half-filled region, DMAttachIfFilledNow)
     if (now) [fg layoutIfNeeded];   // (outside any layout pass: now, before the frame is drawn; inside one, that pass lays it out)
     if (!DMTestFlag("/tmp/msb-noclockagain")) DMBarLayoutAgainBeforeDraw(fg);   // (debug: /tmp/msb-noclockagain = without the second layout, for comparison)
-    if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[lock] %p: its time label is back: laid out %@ (the locked look ends)", fg, now ? @"now" : @"in this layout pass"]);
+    if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[lock] %p: its time label is back: laid out %@ (its look without a clock ends)", fg, now ? @"now" : @"in this layout pass"]);
 }
 %group SBClockBack
 %hook _UIStatusBarStringView
@@ -23558,11 +23588,16 @@ static void DMCCRegionInit(void) {
     } else {
         objc_setAssociatedObject(me, kIntendedAlphaKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
+    CGFloat before = me.alpha;
     %orig(a);
+    if (MSBDScreenBarWentOff(before, me.alpha) && !DMTestFlag("/tmp/msb-nobaroff")) DMSMMainBarChanged(me);   // (BarUnlock.h; debug /tmp/msb-nobaroff: as before, for comparison)
 }
 - (void)setHidden:(BOOL)h {
-    if (((UIView *)self).hidden != h) DMWatchLog(@"UIStatusBar_Modern setHidden", self, h);
+    UIView *me = (UIView *)self;
+    if (me.hidden != h) DMWatchLog(@"UIStatusBar_Modern setHidden", self, h);
+    BOOL before = me.hidden;
     %orig;
+    if (!before && me.hidden && !DMTestFlag("/tmp/msb-nobaroff")) DMSMMainBarChanged(me);
 }
 %end
 
@@ -40019,7 +40054,8 @@ __attribute__((visibility("default"))) NSSet<NSString *> *MSBDAppsWithWindowsAwa
     NSMutableSet<NSString *> *out = [NSMutableSet set];
     if (DMMSWMulti()) {
         NSInteger cur = DMMSWCurId();
-        for (NSString *k in gMSWWinDesk) { NSString *b = DMSMKeyBundle(k); if (b.length && gMSWWinDesk[k].integerValue != cur) [out addObject:b]; }
+        BOOL appsOnly = DMMSWAppKeysOnly();   // (a Stage Manager window's record on Zetsu, Aerial or MilkyWay4 is no window there: no dot for an app iPadOS starts, code review 1.8.1.1, finding 3)
+        for (NSString *k in gMSWWinDesk) { NSString *b = DMSMKeyBundle(k); if (b.length && gMSWWinDesk[k].integerValue != cur && MSWRecordIsWindowHere(k, appsOnly)) [out addObject:b]; }
         for (NSString *d in gMSWFullScreen) { NSString *b = gMSWFullScreen[d]; if ([b isKindOfClass:[NSString class]] && b.length && d.integerValue != cur) [out addObject:b]; }
     }
     if (DMSMEngine()) for (NSString *k in DMSMMinimizedSet()) { NSString *b = DMSMKeyBundle(k); if (b.length) [out addObject:b]; }

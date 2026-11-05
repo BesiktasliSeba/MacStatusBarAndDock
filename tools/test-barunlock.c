@@ -28,6 +28,21 @@ int main(void) {
     Expect("  ... the pull committed (Notification Center down): locked look", MSBDBarLockedLook(0, MSBDCoverSheetCoversBarPulled(MSBDCoverSheetCoversBar(1, 1, 1), 0)), 1);
     Expect("the Lock Screen keeps the locked look whatever the pull state (UI locked)", MSBDBarLockedLook(1, MSBDCoverSheetCoversBarPulled(MSBDCoverSheetCoversBar(1, 1, 1), 1)), 1);
     Expect("nothing over the bar, no pull: unlocked look", MSBDBarLockedLook(0, MSBDCoverSheetCoversBarPulled(MSBDCoverSheetCoversBar(0, 0, 0), 0)), 0);
+    // the screen's own bar goes off, Stage Manager engine: a full-screen window's strip decides again (A12Z 18.5: a Notification Center pull let go left no menu bar)
+    Expect("the screen's bar goes off (1.00 -> 0.00, about 0.17 s after the Cover Sheet starts to leave): the strip decides again", MSBDScreenBarWentOff(1.0, 0.0), 1);
+    Expect("  ... 0.45 -> 0.00, in the pull's first frames: too", MSBDScreenBarWentOff(0.45, 0.0), 1);
+    Expect("  ... still shown (1.00 -> 0.45): no", MSBDScreenBarWentOff(1.0, 0.45), 0);
+    Expect("  ... coming on (0.00 -> 1.00): no, the strip's own layout hides it then", MSBDScreenBarWentOff(0.0, 1.0), 0);
+    Expect("  ... off and off: no", MSBDScreenBarWentOff(0.0, 0.0), 0);
+    // a copy of ours laid out without a clock (17.5.1: a pull let go left the time over the battery until the next minute)
+    Expect("closed up, not locked, its time label back: laid out again", MSBDClosedUpBarLaidOutAgain(1, 1, 0), 1);
+    Expect("  ... no time label yet: not yet", MSBDClosedUpBarLaidOutAgain(1, 0, 0), 0);
+    Expect("  ... locked: the locked look stays", MSBDClosedUpBarLaidOutAgain(1, 1, 1), 0);
+    Expect("  ... not closed up: nothing", MSBDClosedUpBarLaidOutAgain(0, 1, 0), 0);
+    // the time's width in our layout (A12Z 18.5, seconds on: laid out by iOS's 40 pt the group stood 26 pt too far right)
+    Expect("a label just arrived, 40 pt laid out, our text 66 pt: 66", MSBDTimeLabelWidth(40.0, 66.0) == 66.0, 1);
+    Expect("  ... laid out to its text: 66", MSBDTimeLabelWidth(66.0, 66.0) == 66.0, 1);
+    Expect("  ... laid out wider than its text: as laid out", MSBDTimeLabelWidth(70.0, 66.0) == 70.0, 1);
     // 1.7.4 (engine parity): the windows' follow-ups after a wake as the Cover Sheet starts to leave (the M1's wake: Zetsu's windows back 2.8 s
     // after the unlock, waiting for the Cover Sheet to be gone; Aerial's 0.9 s)
     Expect("the M1's wake: the screen was off, unlocked as the Cover Sheet starts to leave: the follow-ups run now", MSBDBackCueAtCoverLeave(1, 0, 0), 1);

@@ -243,11 +243,19 @@ static void DMMSWSMLeftOut(NSArray<NSString *> *keys, NSString *desk) {   // (ke
 //  - a window that appears in the stage in front and is in no record joins that stage's desktop (the current one, normally);
 //  - the stage in front belonging to another desktop (it came up by another way: Stage Manager's own, a respring) makes that desktop current;
 //  - several desktops' windows in the stage in front (should not happen: launches are joined here) are the current desktop's from then on;
-//  - a record whose window is in no stage any more (closed, quit) is forgotten.
+//  - a record whose window is in no stage any more (closed, quit) is forgotten; the app records in the file at the first tick are another engine's windows' first: put aside (MSWEngineRecords.h).
 static CFTimeInterval gMSWSMFirstTick = 0;
 static void DMMSWSMArrive(NSInteger toId);
 static void DMMSWSMApply(void) {
     if (!DMMSWMulti()) return;
+    {   // (once per start, before anything of this start can write an app's record: MSWEngineRecords.h)
+        static BOOL asideDone = NO;
+        if (!asideDone) {
+            asideDone = YES;
+            NSUInteger n = DMSMPerWindow() ? MSWRecordsPutAside(gMSWWinDesk, gMSWWinFrame, gMSWAsideDesk, gMSWAsideFrame) : 0;
+            if (n) { gMSWDesksDirty = YES; DMLog([NSString stringWithFormat:@"[macswitcher] %lu app record(s) in the desktops file put aside for their engine", (unsigned long)n]); }
+        }
+    }
     CFTimeInterval now = CACurrentMediaTime();
     static CFTimeInterval last = 0;
     if (!gMSWSMFirstTick) gMSWSMFirstTick = now;
@@ -310,13 +318,11 @@ static void DMMSWSMApply(void) {
         }
         for (NSString *k in gMSWWinDesk.allKeys) {
             if ([alive containsObject:k]) continue;   // (that window -- or, told apart by app, that app's window -- is there)
-            BOOL app = DMSMKeyIsApp(k);
-            BOOL taken = app && [aliveApps containsObject:k];   // (an app's record: its windows have their own records now)
-            // (a window's record while windows are told apart by app this time -- DMSMPerWindow off: the window keys are their apps' -- goes to its
-            //  app's record when the app is there, instead of being forgotten with its desktop)
-            BOOL folded = !app && !DMSMPerWindow() && [aliveApps containsObject:DMSMKeyBundle(k)];
-            if (folded && !gMSWWinDesk[DMSMKeyBundle(k)]) { gMSWWinDesk[DMSMKeyBundle(k)] = gMSWWinDesk[k]; if (gMSWWinFrame[k]) gMSWWinFrame[DMSMKeyBundle(k)] = gMSWWinFrame[k]; }
-            if (!taken && !folded) DMLog([NSString stringWithFormat:@"[macswitcher] %@'s window is in no stage any more (closed): its record is forgotten", DMSMKeyText(k)]);
+            // (a window's record while windows are told apart by app this time -- DMSMPerWindow off: the window keys are their apps' -- goes to its app's
+            //  record when the app is there, instead of being forgotten with its desktop)
+            MSWSMRecordFate fate = MSWSMRecordFateOf(k, DMSMPerWindow(), aliveApps);
+            if (fate == MSWSMRecordToApp && !gMSWWinDesk[DMSMKeyBundle(k)]) { gMSWWinDesk[DMSMKeyBundle(k)] = gMSWWinDesk[k]; if (gMSWWinFrame[k]) gMSWWinFrame[DMSMKeyBundle(k)] = gMSWWinFrame[k]; }
+            if (fate == MSWSMRecordClosed && !gMSWAsideDesk[k]) DMLog([NSString stringWithFormat:@"[macswitcher] %@'s window is in no stage any more (closed): its record is forgotten", DMSMKeyText(k)]);
             [gMSWWinDesk removeObjectForKey:k]; [gMSWWinFrame removeObjectForKey:k]; [gMSWWinShots removeObjectForKey:k];
             dirty = YES;
         }

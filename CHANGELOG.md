@@ -2,6 +2,15 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.1.1
+
+### Fixes
+- Changing the window engine from Stage Manager and back no longer empties the current desktop or leaves its window off the screen.
+- On iPadOS 18, letting go of a Notification Center pull over a full-screen app no longer leaves you without the menu bar.
+- On iPadOS 17, the same pull no longer collapses the right side of the menu bar.
+- On iPadOS 18, with seconds showing in the clock, the same pull no longer cuts off the time at the screen's edge.
+- On iPadOS 18, the menu bar no longer shows two Wi-Fi icons after the green button takes a window full screen.
+
 ## 1.8.1
 
 ### New

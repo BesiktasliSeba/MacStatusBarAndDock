@@ -34,7 +34,7 @@ check "kept as before: windows on screen (the Stage Manager restore set) and our
    && fnr 'static NSSet<NSString *> *RIRunningBundleIDs(void) {' | grep -q 'if (own.count) \[ids unionSet:own\];'"
 check "the windows away come from MacStatusBar (another desktop's records and full-screen app, the Stage Manager engine's minimized set, the other engines' minimized or hidden windows)" \
   "fnr 'static NSSet<NSString *> *RIRunningBundleIDs(void) {' | grep -q 'withWindowsAway = (NSSet \*(\*)(void))dlsym(RTLD_DEFAULT, \"MSBDAppsWithWindowsAway\");' \
-   && fns '__attribute__((visibility(\"default\"))) NSSet<NSString *> *MSBDAppsWithWindowsAway(void) {' | grep -q 'if (b.length && gMSWWinDesk\[k\].integerValue != cur) \[out addObject:b\];' \
+   && fns '__attribute__((visibility(\"default\"))) NSSet<NSString *> *MSBDAppsWithWindowsAway(void) {' | grep -q 'if (b.length && gMSWWinDesk\[k\].integerValue != cur && MSWRecordIsWindowHere(k, appsOnly)) \[out addObject:b\];' \
    && fns '__attribute__((visibility(\"default\"))) NSSet<NSString *> *MSBDAppsWithWindowsAway(void) {' | grep -q 'd.integerValue != cur) \[out addObject:b\];' \
    && fns '__attribute__((visibility(\"default\"))) NSSet<NSString *> *MSBDAppsWithWindowsAway(void) {' | grep -q 'if (DMSMEngine()) for (NSString \*k in DMSMMinimizedSet())' \
    && fns '__attribute__((visibility(\"default\"))) NSSet<NSString *> *MSBDAppsWithWindowsAway(void) {' | grep -q 'if (DMMSWMulti()) {' \
