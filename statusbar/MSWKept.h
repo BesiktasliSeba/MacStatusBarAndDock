@@ -109,9 +109,11 @@ static NSDictionary *MSWKeptBringBack(NSDictionary *kept, BOOL sm, BOOL told, NS
         }
         for (NSString *k in minimized) if ([k isKindOfClass:[NSString class]] && k.length && !MSWKeptRecordOf(windows, k, NULL)) { windows[k] = @1; fresh[k] = @1; }
     } else {
+        // (a record of its own aside, on a desktop that is there, is no new window: it comes back with that, MSWEngineRecords.h: code review 1.8.1.2, finding 2)
+        NSDictionary *aside = [kept[@"asideWindows"] isKindOfClass:[NSDictionary class]] ? kept[@"asideWindows"] : nil;
         for (NSString *b in windowApps) {
             if (![b isKindOfClass:[NSString class]] || !b.length || fresh[b]) continue;
-            BOOL known = NO;   // (an app's window recorded by a Stage Manager window key since an engine change is its app's: DMMSWFoldWindowKeys)
+            BOOL known = [aside[b] isKindOfClass:[NSNumber class]] && [desks containsObject:aside[b]];   // (an app's window recorded by a Stage Manager window key since an engine change is its app's: DMMSWFoldWindowKeys)
             for (NSString *k in windows) if ([DMSMKeyBundle(k) isEqualToString:b]) { known = YES; break; }
             if (!known) { windows[b] = @1; fresh[b] = @1; }
         }

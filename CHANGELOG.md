@@ -2,6 +2,11 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.1.2
+
+### Fixes
+- With Aerial 5.1, a window on another desktop is visible again after a respring or a window engine change. It used to stay invisible.
+
 ## 1.8.1.1
 
 ### Fixes

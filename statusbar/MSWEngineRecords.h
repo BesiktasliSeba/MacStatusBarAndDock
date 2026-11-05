@@ -18,7 +18,9 @@
 //  - Stage Manager's check of a record whose window is in no stage, as it always was: closed, or an app's record whose windows have their own: it goes.
 //    Where windows are known by app (DMSMPerWindow off) a window's record goes to its app's when the app is there.
 //  - An engine of windows by app is back: what was put aside comes back for the windows its saved state is about to bring back, on a desktop that is still
-//    there; a record the app has by now stays. The rest goes: those windows are gone.
+//    there; a record the app has by now stays. The rest goes: those windows are gone. Aside only after its restore -- the Mac Switcher on again there with its kept copy,
+//    no restore in this start --: the same for the windows it has then and those its saved state still holds (MacSwitcher.h DMMSWApply), so nothing aside outlives an
+//    engine's start.
 #pragma once
 #import <Foundation/Foundation.h>
 #include "SMWindowKey.h"
@@ -70,6 +72,19 @@ static void MSWAsideRead(NSDictionary *st, NSMutableDictionary<NSString *, NSNum
     NSDictionary *aw = st[@"asideWindows"], *af = st[@"asideFrames"];
     if ([aw isKindOfClass:[NSDictionary class]]) for (id k in aw) if ([k isKindOfClass:[NSString class]] && [aw[k] isKindOfClass:[NSNumber class]]) aside[k] = aw[k];
     if ([af isKindOfClass:[NSDictionary class]]) for (id k in af) if ([k isKindOfClass:[NSString class]] && [af[k] isKindOfClass:[NSString class]]) asideFrames[k] = af[k];
+}
+// A window here with no record (their tick, MacSwitcher.h DMMSWApply): its own entry aside on a desktop that is there -- the Mac Switcher on again during a restore: what is
+// aside is used up only after it, and a record of the current desktop made first would stay (code review 1.8.1.2, finding 2) --, else the current desktop.
+static NSNumber *MSWDeskForNewWindow(NSString *b, NSDictionary<NSString *, NSNumber *> *aside, NSArray<NSNumber *> *desks, NSInteger cur) {
+    NSNumber *d = aside[b];
+    return d && [desks containsObject:d] ? d : @(cur);
+}
+// The apps in a saved window state (StatusBar.x DMSaveWindowState's file), checked. Nothing there: none.
+static NSArray<NSString *> *MSWSavedApps(NSDictionary *state) {
+    NSMutableArray<NSString *> *apps = [NSMutableArray array];
+    NSArray *wins = [state isKindOfClass:[NSDictionary class]] && [state[@"windows"] isKindOfClass:[NSArray class]] ? state[@"windows"] : nil;
+    for (NSDictionary *w in wins) if ([w isKindOfClass:[NSDictionary class]] && [w[@"bundle"] isKindOfClass:[NSString class]]) [apps addObject:w[@"bundle"]];
+    return apps;
 }
 // What was put aside comes back for the apps in savedApps, on a desktop in desks. Returns how many; the caller lets the rest go.
 static NSUInteger MSWRecordsFromAside(NSMutableDictionary<NSString *, NSNumber *> *windows, NSMutableDictionary<NSString *, NSString *> *frames,

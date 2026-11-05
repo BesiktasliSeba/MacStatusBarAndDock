@@ -1093,8 +1093,18 @@ static void DMMSWApply(void) {
         DMMSWSMApply();
     }
     // (records by window key, from the Stage Manager engine before an engine change: their apps get a copy here, where this engine's restore has not made them,
-    //  DMMSWRecordsBeforeRestore: not before that, a record of its own put aside is the one that counts for its window)
-    else if (DMMSWAppKeysOnly() && gWindowSaveOn && !gRestoringWindows) DMMSWFoldWindowKeys();
+    //  DMMSWRecordsBeforeRestore: not before that, a record of its own put aside is the one that counts for its window. Something still aside with the restore over --
+    //  the Mac Switcher came on again here with what its kept copy had aside, or no restore came (still locked after 20 min, the engine up late) --: the same step, for
+    //  the windows there are now and those the saved state still holds, which come back at the next start. Left aside it lost to the app's copy now and beat the app's
+    //  newer record at the next change to Stage Manager: code review 1.8.1.1, second pass, A. Without the saved ones their desktops went: review 1.8.1.2, finding 1)
+    else if (DMMSWAppKeysOnly() && gWindowSaveOn && !gRestoringWindows) {
+        if (gMSWAsideDesk.count) {
+            NSMutableArray<NSString *> *windowApps = [NSMutableArray array];
+            for (UIView *st in DMAerialStagesAll()) { NSString *b = DMStageBundle(st); if (b.length) [windowApps addObject:b]; }
+            [windowApps addObjectsFromArray:MSWSavedApps([NSDictionary dictionaryWithContentsOfFile:DMWindowStatePath()])];
+            DMMSWRecordsBeforeRestore(windowApps);
+        } else DMMSWFoldWindowKeys();
+    }
     BOOL multi = DMMSWMulti();
     if (!multi && !gMSWAwayCount && !gMSWAwayNatives.count) return;
     NSInteger cur = DMMSWCurId();
@@ -1111,7 +1121,7 @@ static void DMMSWApply(void) {
             continue;                                             //  gone it was taken for a new window here and shown on this desktop, 7 Oct)
         }
         NSNumber *d = gMSWWinDesk[b];
-        if (multi && (!d || ![gMSWDesks containsObject:d])) { gMSWWinDesk[b] = d = @(cur); gMSWDesksDirty = YES; }
+        if (multi && (!d || ![gMSWDesks containsObject:d])) { gMSWWinDesk[b] = d = MSWDeskForNewWindow(b, gMSWAsideDesk, gMSWDesks, cur); gMSWDesksDirty = YES; }
         BOOL want = multi && d.integerValue != cur && !(gMSWDropHold && [b isEqualToString:gMSWDropHold]), is = [objc_getAssociatedObject(st, kMSWAwayKey) boolValue];
         if (want) {
             if (!is) {

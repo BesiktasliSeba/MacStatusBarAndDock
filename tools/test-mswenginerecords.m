@@ -4,7 +4,9 @@
 // for the windows it saved. Run by test-mswenginerecords.sh.
 #import <Foundation/Foundation.h>
 #include "../statusbar/MSWEngineRecords.h"
+#include "../statusbar/MSWKept.h"
 
+static const NSUInteger kMaxDesksForTest = 8;
 static int fails = 0, passes = 0;
 #define CHECK(cond, ...) do { if (cond) { passes++; } else { fails++; printf("FAIL: "); printf(__VA_ARGS__); printf("\n"); } } while (0)
 static NSString *K(NSString *b, NSString *s) { return [NSString stringWithFormat:@"%@|sceneID:%@-%@", b, b, s]; }
@@ -33,6 +35,19 @@ static void SMTickNext(NSMutableDictionary *windows, NSMutableDictionary *frames
 }
 static void SMTick(NSMutableDictionary *windows, NSMutableDictionary *frames, NSMutableDictionary *aside, NSMutableDictionary *asideFrames, NSArray *stageKeys) {
     SMTickNext(windows, frames, aside, asideFrames, stageKeys, YES);
+}
+// A tick of an engine of windows by app with its restore over: what is still aside first, for the apps with a window now and those the saved state still holds, the rest
+// goes; then the copies (MacSwitcher.h DMMSWApply, DMMSWRecordsBeforeRestore). state: the saved window state's file, nil: none.
+static void OtherEngineTickAfterRestoreSaved(NSMutableDictionary *windows, NSMutableDictionary *frames, NSMutableDictionary *aside, NSMutableDictionary *asideFrames, BOOL *copied, NSArray *windowApps, NSDictionary *state, NSArray *desks) {
+    if (aside.count) {
+        NSMutableArray *apps = [windowApps mutableCopy];
+        [apps addObjectsFromArray:MSWSavedApps(state)];
+        MSWRecordsFromAside(windows, frames, aside, asideFrames, apps, desks); [aside removeAllObjects]; [asideFrames removeAllObjects];
+    }
+    if (!*copied && MSWRecordsCopyToApps(windows, frames)) *copied = YES;
+}
+static void OtherEngineTickAfterRestore(NSMutableDictionary *windows, NSMutableDictionary *frames, NSMutableDictionary *aside, NSMutableDictionary *asideFrames, BOOL *copied, NSArray *windowApps, NSArray *desks) {
+    OtherEngineTickAfterRestoreSaved(windows, frames, aside, asideFrames, copied, windowApps, nil, desks);
 }
 
 int main(void) {
@@ -178,6 +193,87 @@ int main(void) {
         MSWAsideRead(@{@"asideWindows": @{CLOCK: @2, TIPS: @5}}, ra, rf);
         CHECK(MSWRecordsFromAside(wa, fa, ra, rf, @[CLOCK, TIPS], @[@1, @2]) == 1 && [wa isEqual:@{CLOCK: @2}], "after the off and on, Zetsu's restore: Clock on its desktop, a desktop that is gone left out");
 
+        // ---- aside with the restore over (code review 1.8.1.1, second pass, A) ----
+        // Zetsu's Clock on Desktop 3, Stage Manager with its Clock on Desktop 2, the Mac Switcher off, a change to Zetsu, on again: no restore comes in this start
+        NSArray *desks4 = @[@1, @2, @3, @4];
+        w = [@{clock: @2} mutableCopy]; f = [@{clock: @"{{5, 6}, {7, 8}}"} mutableCopy]; aside = [NSMutableDictionary dictionary]; af = [NSMutableDictionary dictionary]; copied = NO;
+        MSWAsideRead(@{@"asideWindows": @{CLOCK: @3, TIPS: @2}, @"asideFrames": @{CLOCK: @"{{1, 2}, {3, 4}}"}}, aside, af);
+        OtherEngineTickAfterRestore(w, f, aside, af, &copied, @[CLOCK], desks4);
+        CHECK([w[CLOCK] isEqual:@3] && [f[CLOCK] isEqual:@"{{1, 2}, {3, 4}}"], "A: the Mac Switcher on again on Zetsu: its window on its own Desktop 3, not its Stage Manager window's 2: %s", w.description.UTF8String);
+        CHECK([w[clock] isEqual:@2], "A: its Stage Manager window's record as it was");
+        CHECK(copied, "A: the stay's copies are done, none for Clock: it has its own");
+        CHECK(!aside.count && !af.count, "A: nothing stays aside, an app with no window now (Tips) included: %s", aside.description.UTF8String);
+        CHECK(!w[TIPS], "A: an app with no window now gets no record");
+        w[CLOCK] = @4;   // (moved to Desktop 4 on Zetsu)
+        OtherEngineTickAfterRestore(w, f, aside, af, &copied, @[CLOCK], desks4);
+        CHECK([w[CLOCK] isEqual:@4], "A: moved on Zetsu: later ticks leave it");
+        SMTick(w, f, aside, af, @[clock]);
+        CHECK([aside isEqual:@{CLOCK: @4}], "A: the next change to Stage Manager: the newer record goes aside, not the old one: %s", aside.description.UTF8String);
+        NSMutableDictionary *wz = [NSMutableDictionary dictionary], *fz = [NSMutableDictionary dictionary];
+        CHECK(MSWRecordsFromAside(wz, fz, aside, af, @[CLOCK], desks4) == 1 && [wz[CLOCK] isEqual:@4], "A: back on Zetsu: Clock on Desktop 4, where it was left");
+        // a record the app has by now stays; an entry for a desktop that is gone is let go
+        w = [@{CLOCK: @1} mutableCopy]; f = [NSMutableDictionary dictionary]; aside = [@{CLOCK: @3, SETTINGS: @9} mutableCopy]; af = [NSMutableDictionary dictionary]; copied = NO;
+        OtherEngineTickAfterRestore(w, f, aside, af, &copied, @[CLOCK, SETTINGS], @[@1, @2, @3]);
+        CHECK([w isEqual:@{CLOCK: @1}] && !aside.count, "A: a record the app has by now stays, a desktop that is gone is let go: %s", w.description.UTF8String);
+        // nothing aside: only the copies, as before
+        w = [@{clock: @2} mutableCopy]; f = [NSMutableDictionary dictionary]; aside = [NSMutableDictionary dictionary]; af = [NSMutableDictionary dictionary]; copied = NO;
+        OtherEngineTickAfterRestore(w, f, aside, af, &copied, @[], @[@1, @2]);
+        CHECK([w[CLOCK] isEqual:@2] && [w[clock] isEqual:@2] && copied, "A: nothing aside: the apps' copies, as before");
+
+        // ---- no restore in this start (still locked after 20 min, the engine up late; code review 1.8.1.2, finding 1): the saved windows come back at the next start ----
+        NSDictionary *savedState = @{@"windows": @[@{@"bundle": TIPS, @"frame": @"{{1, 2}, {3, 4}}"}, @{@"bundle": CLOCK}]};
+        CHECK(([MSWSavedApps(savedState) isEqual:@[TIPS, CLOCK]]), "the saved state's apps");
+        CHECK(!MSWSavedApps(nil).count && !MSWSavedApps(@{}).count && !MSWSavedApps(@{@"windows": @"no"}).count && !MSWSavedApps((NSDictionary *)@"no").count, "no state, or a bad one: none");
+        CHECK(([MSWSavedApps((@{@"windows": @[@"no", @{@"bundle": @1}, @{}, @{@"bundle": TIPS}]})) isEqual:@[TIPS]]), "a bad row is left out");
+        // Aerial, Tips on Desktop 2 and Settings saved nowhere, back from Stage Manager: no window open yet at this tick, Desktop 1 current
+        w = [NSMutableDictionary dictionary]; f = [NSMutableDictionary dictionary]; copied = NO;
+        aside = [@{TIPS: @2, CLOCK: @1, SETTINGS: @2} mutableCopy]; af = [@{TIPS: @"{{1, 2}, {3, 4}}"} mutableCopy];
+        OtherEngineTickAfterRestoreSaved(w, f, aside, af, &copied, @[], savedState, @[@1, @2]);
+        CHECK([w[TIPS] isEqual:@2] && [f[TIPS] isEqual:@"{{1, 2}, {3, 4}}"], "no restore: a saved window keeps its desktop and place, with no window open: %s", w.description.UTF8String);
+        CHECK([w[CLOCK] isEqual:@1], "no restore: the current desktop's too, until the rule for closed windows, as any record then");
+        CHECK(!w[SETTINGS], "no restore: an app in no saved state and with no window gets no record");
+        CHECK(!aside.count && !af.count, "no restore: nothing stays aside for a later change to Stage Manager");
+        OtherEngineTick(w, f, &copied, 1, [NSSet set]);
+        CHECK([w isEqual:@{TIPS: @2}], "no restore: later ticks: another desktop's stays, the current desktop's goes as closed: %s", w.description.UTF8String);
+        CHECK(MSWRecordsFromAside(w, f, aside, af, MSWSavedApps(savedState), @[@1, @2]) == 0 && [w[TIPS] isEqual:@2], "the next start's restore: Tips on Desktop 2 from its first frame");
+        // a window there and the saved state: each once
+        w = [NSMutableDictionary dictionary]; f = [NSMutableDictionary dictionary]; copied = NO; aside = [@{TIPS: @2} mutableCopy]; af = [NSMutableDictionary dictionary];
+        OtherEngineTickAfterRestoreSaved(w, f, aside, af, &copied, @[TIPS], savedState, @[@1, @2]);
+        CHECK([w isEqual:@{TIPS: @2}], "a window there that the saved state holds too: one record");
+
+        // ---- on again with a window whose record is aside (code review 1.8.1.2, finding 2) ----
+        // Aerial, Clock on Desktop 3, Tips on Desktop 2. Stage Manager: Clock has a window on Desktop 2, Tips has none. Mac Switcher off, a change back to Aerial, its restore
+        // brings both back, on again. Settings has a window opened meanwhile.
+        NSDictionary *kept = @{@"desktops": @[@1, @2, @3], @"current": @1, @"windows": @{clock: @2}, @"frames": @{clock: @"{{5, 6}, {7, 8}}"},
+                               @"asideWindows": @{CLOCK: @3, TIPS: @2}, @"asideFrames": @{TIPS: @"{{1, 2}, {3, 4}}"}};
+        NSArray *windowsNow = @[CLOCK, TIPS, SETTINGS];
+        NSDictionary *r = MSWKeptBringBack(kept, NO, YES, [NSSet set], [NSSet setWithArray:windowsNow], @[], NSNotFound, @[], windowsNow, nil, nil, @"{1194, 834}", kMaxDesksForTest);
+        CHECK(!r[@"fresh"][TIPS] && !r[@"windows"][TIPS], "on again: Tips, with its record aside and no Stage Manager window, is no new window: %s", [r[@"windows"] description].UTF8String);
+        CHECK([r[@"fresh"][SETTINGS] isEqual:@1], "on again: Settings, nothing aside, is new: Desktop 1, as before");
+        w = [r[@"windows"] mutableCopy]; f = [r[@"frames"] mutableCopy]; aside = [NSMutableDictionary dictionary]; af = [NSMutableDictionary dictionary]; copied = NO;
+        MSWAsideRead(kept, aside, af);
+        OtherEngineTickAfterRestore(w, f, aside, af, &copied, windowsNow, @[@1, @2, @3]);
+        CHECK([w[TIPS] isEqual:@2] && [f[TIPS] isEqual:@"{{1, 2}, {3, 4}}"], "on again, the tick: Tips on its own Desktop 2, with its place: %s", w.description.UTF8String);
+        CHECK([w[CLOCK] isEqual:@3] && [w[clock] isEqual:@2], "on again, the tick: Clock on its own Desktop 3, its Stage Manager window's record as it was");
+        CHECK([w[SETTINGS] isEqual:@1] && !aside.count, "on again, the tick: Settings on Desktop 1, nothing stays aside");
+        kept = @{@"desktops": @[@1, @2], @"current": @1, @"windows": @{}, @"asideWindows": @{TIPS: @3, CLOCK: @"no", SETTINGS: @2}};
+        r = MSWKeptBringBack(kept, NO, YES, [NSSet set], [NSSet setWithArray:windowsNow], @[], NSNotFound, @[], windowsNow, nil, nil, @"{1194, 834}", kMaxDesksForTest);
+        CHECK([r[@"fresh"][TIPS] isEqual:@1], "on again: aside on a desktop that is gone: new, Desktop 1, as before");
+        CHECK([r[@"fresh"][CLOCK] isEqual:@1], "on again: a bad entry aside: new, Desktop 1, as before");
+        CHECK(!r[@"fresh"][SETTINGS], "on again: a good entry beside them: not new");
+        kept = @{@"desktops": @[@1, @2], @"current": @1, @"windows": @{}, @"asideWindows": @"no"};
+        r = MSWKeptBringBack(kept, NO, YES, [NSSet set], [NSSet setWithObject:TIPS], @[], NSNotFound, @[], @[TIPS], nil, nil, @"{1194, 834}", kMaxDesksForTest);
+        CHECK([r[@"fresh"][TIPS] isEqual:@1], "on again: aside not a dictionary: new, as before");
+
+        // the narrower way: on again during a restore, a window restored after it: its tick comes before the step that uses up the aside
+        CHECK([MSWDeskForNewWindow(TIPS, @{TIPS: @2}, @[@1, @2], 1) isEqual:@2], "during a restore: a window with its entry aside goes on that desktop");
+        CHECK([MSWDeskForNewWindow(TIPS, @{TIPS: @9}, @[@1, @2], 1) isEqual:@1], "... a desktop that is gone: the current one");
+        CHECK([MSWDeskForNewWindow(TIPS, @{CLOCK: @2}, @[@1, @2], 2) isEqual:@2] && [MSWDeskForNewWindow(TIPS, nil, @[@1, @2], 1) isEqual:@1], "... nothing aside for it: the current one, as before");
+        w = [NSMutableDictionary dictionary]; f = [NSMutableDictionary dictionary]; aside = [@{TIPS: @2} mutableCopy]; af = [NSMutableDictionary dictionary]; copied = NO;
+        w[TIPS] = MSWDeskForNewWindow(TIPS, aside, @[@1, @2], 1);
+        OtherEngineTickAfterRestore(w, f, aside, af, &copied, @[TIPS], @[@1, @2]);
+        CHECK([w isEqual:@{TIPS: @2}] && !aside.count, "... and it stays when the aside is used up after the restore");
+
         // ---- as built ----
         NSString *header = [NSString stringWithContentsOfFile:@"../statusbar/MacSwitcher.h" encoding:NSUTF8StringEncoding error:nil];
         NSRange fold = [header rangeOfString:@"static void DMMSWFoldWindowKeys(void) {"];
@@ -197,6 +293,15 @@ int main(void) {
         NSString *beforeBody = before.location == NSNotFound ? @"" : [header substringWithRange:NSMakeRange(before.location, MIN((NSUInteger)800, header.length - before.location))];
         NSRange fromAside = [beforeBody rangeOfString:@"MSWRecordsFromAside("], copies = [beforeBody rangeOfString:@"DMMSWFoldWindowKeys();"];
         CHECK(fromAside.location != NSNotFound && copies.location != NSNotFound && fromAside.location < copies.location, "as built: before a restore, what was aside, then the copies");
+        NSRange apply = [header rangeOfString:@"static void DMMSWApply(void) {"];
+        NSString *applyBody = apply.location == NSNotFound ? @"" : [header substringWithRange:NSMakeRange(apply.location, MIN((NSUInteger)1800, header.length - apply.location))];
+        NSRange branch = [applyBody rangeOfString:@"else if (DMMSWAppKeysOnly() && gWindowSaveOn && !gRestoringWindows) {"], asideNow = [applyBody rangeOfString:@"if (gMSWAsideDesk.count) {"],
+                useUp = [applyBody rangeOfString:@"DMMSWRecordsBeforeRestore(windowApps);"], foldLater = [applyBody rangeOfString:@"} else DMMSWFoldWindowKeys();"], allStages = [applyBody rangeOfString:@"for (UIView *st in DMAerialStagesAll())"],
+                savedToo = [applyBody rangeOfString:@"[windowApps addObjectsFromArray:MSWSavedApps([NSDictionary dictionaryWithContentsOfFile:DMWindowStatePath()])];"];
+        CHECK(branch.location != NSNotFound && asideNow.location > branch.location && asideNow.location != NSNotFound && allStages.location != NSNotFound && allStages.location > asideNow.location
+              && useUp.location != NSNotFound && useUp.location > allStages.location && foldLater.location != NSNotFound && foldLater.location > useUp.location, "as built: the tick, its restore over: what is still aside, for every desktop's windows, before the copies");
+        CHECK(savedToo.location != NSNotFound && savedToo.location > allStages.location && savedToo.location < useUp.location, "as built: ... and for the saved state's (no restore in this start)");
+        CHECK([header rangeOfString:@"gMSWWinDesk[b] = d = MSWDeskForNewWindow(b, gMSWAsideDesk, gMSWDesks, cur);"].location != NSNotFound && [header rangeOfString:@"gMSWWinDesk[b] = d = @(cur);"].location == NSNotFound, "as built: a new window takes its entry aside before the current desktop");
         NSString *sbx = [NSString stringWithContentsOfFile:@"../statusbar/StatusBar.x" encoding:NSUTF8StringEncoding error:nil];
         CHECK([sbx rangeOfString:@"gMSWWinDesk[k].integerValue != cur && MSWRecordIsWindowHere(k, appsOnly)) [out addObject:b]"].location != NSNotFound, "as built: the Dock's dots of windows away leave a Stage Manager window's record out on such an engine");
         CHECK([sbx rangeOfString:@"DMMSWRecordsBeforeRestore(savedApps);"].location != NSNotFound && [sbx rangeOfString:@"DMMSWRecordsBeforeRestore(nil);"].location != NSNotFound, "as built: DMRestoreWindows asks for them");

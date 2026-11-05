@@ -33372,7 +33372,12 @@ static long long DMA5SceneContent(NSString *bundle) {   // (the app's scene: -1 
 }
 static void DMA5WatchSceneHost(UIView *stage, NSString *bundle, int tick, CFTimeInterval readyAt) {
     if (gAerialFlavor != 5 || !bundle.length) return;
-    if (!stage.superview || [objc_getAssociatedObject(stage, kStageClosingKey) boolValue] || DMStageForBundle(bundle) != stage) return;   // (closed, or another window now)
+    // (the app's window now: among every desktop's windows -- DMStageForBundle leaves out one of another Mac Switcher desktop -- and the last of them, back to front --
+    //  a window opened again comes while the one it replaces is still on its way out. Only a close ends the watch here: nothing else shows a window kept invisible.
+    //  Ended by this lookup it stayed at 0.02 for good, a restored window of another desktop after any respring and a reopened one, M1 5 Nov)
+    UIView *mine = nil;
+    for (UIView *s in DMAerialStagesAll()) if ([DMStageBundle(s) isEqualToString:bundle]) mine = s;
+    if (!stage.superview || [objc_getAssociatedObject(stage, kStageClosingKey) boolValue]) return;   // (closed)
     BOOL fakeEmpty = NO;
 #if DEBUG
     static double feUsed = 0;   // (the file's change time once it has been used: one reopen per writing of the file)
@@ -33395,8 +33400,10 @@ static void DMA5WatchSceneHost(UIView *stage, NSString *bundle, int tick, CFTime
         return;
     }
     { NSNumber *since = objc_getAssociatedObject(stage, kA5WaitShowKey); if (since && now - since.doubleValue > 20.0) DMA5ShowNow(stage, @"20 s without its app's picture"); }
-    BOOL away = DMStageMinimized(stage) || [objc_getAssociatedObject(stage, kMSWAwayKey) boolValue] || stage.alpha < 0.01;
-    if (away) {   // (minimized, on another desktop or kept invisible by the restore: looked at again once it is back)
+    BOOL away = mine != stage || DMStageMinimized(stage) || [objc_getAssociatedObject(stage, kMSWAwayKey) boolValue] || stage.alpha < 0.01;
+    // (another window of its app in front of it -- the one it replaces, raised on its way out by what still finds it first: DMFinishRestore, a Dock tap: review 1.8.1.2,
+    //  finding 3 --, minimized, on another desktop or kept invisible by the restore: looked at again once it is back)
+    if (away) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ UIView *st = ws; if (st) DMA5WatchSceneHost(st, bundle, tick, readyAt); });
         return;
     }
