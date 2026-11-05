@@ -48,6 +48,7 @@ static void DMWinCardTaken(UIView *stage) {   // (its card's picture is of now: 
     objc_setAssociatedObject(stage, kWinCardPicAtKey, @[@(CACurrentMediaTime()), DMWinCardShape(stage)], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 static void DMWinCardAdoptInstall(void);   // (below: SpringBoard's own pictures of the windows' scenes become their cards')
+static void DMWinCardBarsInstall(void);   // (below: a window's card keeps its title bar)
 // (an app being quit -- our red light, Force Quit, Activity Monitor's Quit (DMForceQuitBundle: Aerial's own close animation leaves no
 //  kStageClosingKey), or gone by itself: its window shows a moment longer, but nothing of it is pictured or adopted -- iPad 2 16.7.7, a red-light
 //  quit: SpringBoard's suspend picture of the dying app was placed, then "did not keep its window's picture" as it ended)
@@ -74,7 +75,7 @@ static id DMWinCardSwitcher(void) {
         && DMSMSigOK(sw, NSSelectorFromString(@"recentAppLayouts"), DMSMExpect(@encode(id), NULL), "recentAppLayouts");
     checked = ok ? 1 : 0;
     gWinCardScened = ok && scened;
-    if (ok) { DMInitSwitcherLog(); DMWinCardAdoptInstall(); }   // (the switcher's environment events: the cards' pictures as iPadOS's App Switcher comes, DMWinCardsSwitcherComing; SpringBoard's own pictures of the windows: DMWinCardAdopt)
+    if (ok) { DMInitSwitcherLog(); DMWinCardAdoptInstall(); DMWinCardBarsInstall(); }   // (the switcher's environment events: the cards' pictures as iPadOS's App Switcher comes, DMWinCardsSwitcherComing; SpringBoard's own pictures of the windows: DMWinCardAdopt; the cards' title bars)
     DMLog(ok ? [NSString stringWithFormat:@"[wincard] every window gets its App Switcher card (SpringBoard's own add and bring-to-front calls are here: %@)", scened ? @"the coordinator's, per screen" : @"the switcher view controller's"]
              : @"[wincard] SpringBoard's add / bring-to-front calls are not as read on 15.6.1 / 17.5.1: windows' App Switcher cards stay as iPadOS has them");
     return ok ? sw : nil;
@@ -392,6 +393,127 @@ BOOL DMWinCardPictureFlag(UIView *stage, NSString *b) { DMWinCardPictureNew(stag
 // comes several times).
 static NSPointerArray *gWinCardPicQueue;   // (this coming's windows still to picture, weakly: a window that closes meanwhile is left out)
 static BOOL gWinCardPicStepping = NO;
+// ---- a window's card keeps its title bar (1.8.1 item 7) ----
+// A card shows SpringBoard's picture of the app's scene, which has no title bar: the engines' title bars are ours, outside the scene. So the cards had
+// none, and the bars came back with the windows on the way out (KT, 4 Nov; Stage Manager's own cards: DMSMChrome). The card gets one of its own above
+// its picture, in the picture's scale, with the window's lights (colored on the active window's), as a window keeps its title bar in Mission Control on
+// a Mac. It lies in the card, above the picture's clipping; it takes no touch. Debug /tmp/msb-wincards-nobar: none, as before.
+@interface DMWinCardBar : UIView
+@property (nonatomic, copy) NSString *bundle;
+@property (nonatomic, weak) UIImageView *picture;
+@property (nonatomic) CGFloat pictureRadius;
+@end
+@implementation DMWinCardBar
+- (instancetype)initWithFrame:(CGRect)f {
+    if ((self = [super initWithFrame:f])) {
+        self.userInteractionEnabled = NO;
+        self.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
+        NSMutableArray *dots = [NSMutableArray array];
+        for (int i = 0; i < 3; i++) {
+            UIView *dot = DMMakeLightDot(i, NO, NULL);
+            dot.center = CGPointMake(4.0 + kLightCell * (i + 0.5), kStageBarHeight / 2.0);   // (where a window has them: DMAerial5Lights)
+            [self addSubview:dot]; [dots addObject:dot];
+        }
+        __weak DMWinCardBar *weakSelf = self;
+        DMLightGroupAttach(self, @[], dots, ^NSString *{ return weakSelf.bundle; });
+    }
+    return self;
+}
+@end
+static const void *kWinCardBarKey = &kWinCardBarKey;
+static const void *kWinCardBarLayoutKey = &kWinCardBarLayoutKey;   // (the card's layout the last answer was for, and when)
+static UIImageView *DMWinCardPictureView(UIView *card) {   // (the picture a card shows: the image in SpringBoard's snapshot view that is not hidden)
+    Class sc = objc_getClass("SBSwitcherSnapshotImageView");
+    NSMutableArray<UIView *> *todo = [NSMutableArray arrayWithObject:card];
+    for (int n = 0; todo.count && n < 120; n++) {
+        UIView *v = todo.firstObject; [todo removeObjectAtIndex:0];
+        if (v.hidden || [v isKindOfClass:[DMWinCardBar class]]) continue;
+        if (sc && [v isKindOfClass:sc]) {
+            NSMutableArray<UIView *> *in = [NSMutableArray arrayWithObject:v];
+            for (int m = 0; in.count && m < 16; m++) {
+                UIView *x = in.firstObject; [in removeObjectAtIndex:0];
+                if ([x isKindOfClass:[UIImageView class]] && !x.hidden && ((UIImageView *)x).image) return (UIImageView *)x;
+                [in addObjectsFromArray:x.subviews];
+            }
+            continue;
+        }
+        [todo addObjectsFromArray:v.subviews];
+    }
+    return nil;
+}
+static void DMWinCardBarShapePicture(DMWinCardBar *bar, UIImageView *picture, BOOL under) {   // (under the bar the picture has no rounded top corners)
+    if (!picture) return;
+    picture.layer.maskedCorners = under ? kCALayerMinXMaxYCorner | kCALayerMaxXMaxYCorner : kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner | kCALayerMinXMaxYCorner | kCALayerMaxXMaxYCorner;
+}
+static void DMWinCardBarSync(UIView *card) {
+    DMWinCardBar *bar = objc_getAssociatedObject(card, kWinCardBarKey);
+    NSString *b = nil;
+    if (!DMSMEngine() && DMActiveEngine() != DMEngineNone && !DMWinCardsOff() && !DMTestFlag("/tmp/msb-wincards-nobar") && [card respondsToSelector:NSSelectorFromString(@"appLayout")]) {
+        // (every layout of the card, every frame of its animation: its app is asked again only for another layout, or after half a second)
+        id layout = DMCall(card, @"appLayout");
+        NSArray *was = objc_getAssociatedObject(card, kWinCardBarLayoutKey);
+        CFTimeInterval now = CACurrentMediaTime();
+        if (was.count == 3 && (__bridge void *)layout == [was[0] pointerValue] && now - [was[1] doubleValue] < 0.5) b = [was[2] length] ? was[2] : nil;
+        else {
+            b = DMCardWindowApp(card);
+            objc_setAssociatedObject(card, kWinCardBarLayoutKey, @[[NSValue valueWithPointer:(__bridge void *)layout], @(now), b ?: @""], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
+    UIImageView *picture = b.length ? (bar.picture && bar.picture.window == card.window && !bar.picture.hidden && bar.picture.image ? bar.picture : DMWinCardPictureView(card)) : nil;
+    if (!picture || picture.bounds.size.width < 50.0) {
+        if (bar && !bar.hidden) { bar.hidden = YES; DMWinCardBarShapePicture(bar, bar.picture, NO); }
+        return;
+    }
+    if (!bar) {
+        bar = [[DMWinCardBar alloc] initWithFrame:CGRectMake(0, 0, 100.0, kStageBarHeight)];
+        objc_setAssociatedObject(card, kWinCardBarKey, bar, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        DM_FEATURE_MARK("window-app-switcher-card-bar");
+    }
+    if (picture != bar.picture) { DMWinCardBarShapePicture(bar, bar.picture, NO); bar.picture = picture; }
+    if (bar.superview != card) [card addSubview:bar];
+    if (card.subviews.lastObject != bar) [card bringSubviewToFront:bar];
+    BOOL dark = DMSystemInterfaceStyle() == UIUserInterfaceStyleDark;
+    if (bar.hidden || ![bar.bundle isEqualToString:b]) {
+        bar.hidden = NO; bar.bundle = b;
+        bar.backgroundColor = dark ? [UIColor colorWithWhite:0.19 alpha:1.0] : [UIColor colorWithWhite:0.91 alpha:1.0];   // (the windows' title bars')
+        [objc_getAssociatedObject(bar, kLightGroupKey) apply];
+    }
+    DMWinCardBarShapePicture(bar, picture, YES);
+    CGRect pic = [picture convertRect:picture.bounds toView:card];
+    double s, cx, cy; CGFloat w = picture.bounds.size.width;
+    MSBDWinCardBarPlace(pic.origin.x, pic.origin.y, pic.size.width, w, kStageBarHeight, &s, &cx, &cy);
+    [UIView performWithoutAnimation:^{
+        bar.bounds = CGRectMake(0, 0, w, kStageBarHeight);
+        bar.layer.cornerRadius = picture.layer.cornerRadius;
+        bar.layer.cornerCurve = picture.layer.cornerCurve;
+        bar.transform = CGAffineTransformMakeScale(s, s);
+        bar.center = CGPointMake(cx, cy);
+    }];
+}
+static void (*o_WinCardLayout)(id, SEL);
+static void DMWinCardLayout(id self, SEL _cmd) { o_WinCardLayout(self, _cmd); DMWinCardBarSync((UIView *)self); }
+static void (*o_WinCardSnapLayout)(id, SEL);
+static void DMWinCardSnapLayout(id self, SEL _cmd) { o_WinCardSnapLayout(self, _cmd); DMWinCardBarSync((UIView *)self); }
+static void DMWinCardBarsInstall(void) {   // (once, where the cards are on: DMWinCardSwitcher)
+    static BOOL done = NO;
+    if (done) return;
+    done = YES;
+    Class a = objc_getClass("SBFluidSwitcherItemContainer"), c = objc_getClass("SBReusableSnapshotItemContainer");   // (the second overrides -layoutSubviews without passing through the first)
+    if (a) MSHookMessageEx(a, @selector(layoutSubviews), (IMP)DMWinCardLayout, (IMP *)&o_WinCardLayout);
+    if (c) MSHookMessageEx(c, @selector(layoutSubviews), (IMP)DMWinCardSnapLayout, (IMP *)&o_WinCardSnapLayout);
+}
+static void DMWinCardBarsTick(void) {   // (the picture a card shows changes without a layout of the card: each 0.2 s tick while the App Switcher shows)
+    if (gEnvMode != 2) return;
+    id vc = DMMainSwitcherContent();
+    id vis = [vc respondsToSelector:NSSelectorFromString(@"visibleItemContainers")] ? DMCall(vc, @"visibleItemContainers") : nil;
+    NSArray *conts = [vis isKindOfClass:[NSDictionary class]] ? [(NSDictionary *)vis allValues] : ([vis isKindOfClass:[NSArray class]] ? vis : @[]);
+    for (UIView *c in conts) if ([c isKindOfClass:[UIView class]]) DMWinCardBarSync(c);
+}
+static void DMWinCardBarsSoon(int left) {   // (as the App Switcher comes its cards get their pictures over its first moments: about each frame for 0.6 s, then the tick)
+    if (gEnvMode != 2 || left <= 0) return;
+    DMWinCardBarsTick();
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.033 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMWinCardBarsSoon(left - 1); });
+}
 static void DMWinCardsPictureStep(void) {
     UIView *st = nil;
     while (!st && gWinCardPicQueue.count) { st = (__bridge UIView *)[gWinCardPicQueue pointerAtIndex:0]; [gWinCardPicQueue removePointerAtIndex:0]; }
@@ -407,6 +529,7 @@ static void DMWinCardsSwitcherComing(long long mode) {
     if (now - last < 1.0) return;
     last = now;
     if (!DMWinCardSwitcher()) return;
+    DMWinCardBarsSoon(18);
     NSArray<UIView *> *stages = DMAerialStagesAll();   // (back to front)
     NSUInteger n = stages.count;
     if (!n) return;
@@ -435,6 +558,7 @@ static void DMWinCardsSwitcherComing(long long mode) {
 // the windows changed, every 2 s anyway, or when the front window changed (0.46 ms a tick when it was read every time, M1 par08).
 static void DMWinCardsTick(void) {
     if (DMSMEngine() || DMActiveEngine() == DMEngineNone || DMWinCardsOff()) return;
+    DMWinCardBarsTick();
     NSArray<UIView *> *stages = DMAerialStagesAll();   // (every desktop's windows: a Stage Manager desktop's windows are cards too)
     static NSString *lastFront = nil, *picPending = nil; static CFTimeInterval frontSince = 0, lastScan = 0; static BOOL frontDone = NO, scanDue = YES;
     static NSArray *lastStages = nil;
@@ -518,7 +642,41 @@ static id DMWinCardItemFor(NSString *b, id *layoutOut) {
     }
     return nil;
 }
+// (debug: the visible card of an app in iPadOS's App Switcher -- the main switcher's item container whose layout's first app it is -- or nil)
+static UIView *DMWinCardContainerOf(NSString *b) {
+    id sw = DMSwitcherController(), vc = nil;
+    @try {
+        SEL forScene = NSSelectorFromString(@"switcherControllerForWindowScene:");
+        UIWindowScene *scene = MSBDMainWindowScene();
+        id sc = scene && [sw respondsToSelector:forScene] ? ((id (*)(id, SEL, id))objc_msgSend)(sw, forScene, scene) : sw;
+        vc = [sc respondsToSelector:NSSelectorFromString(@"contentViewController")] ? DMCall(sc, @"contentViewController") : nil;
+    } @catch (NSException *e) { vc = nil; }
+    id vis = [vc respondsToSelector:NSSelectorFromString(@"visibleItemContainers")] ? DMCall(vc, @"visibleItemContainers") : nil;
+    NSArray *conts = [vis isKindOfClass:[NSDictionary class]] ? [(NSDictionary *)vis allValues] : ([vis isKindOfClass:[NSArray class]] ? vis : @[]);
+    for (id c in conts) {
+        if (![c isKindOfClass:[UIView class]] || ![c respondsToSelector:NSSelectorFromString(@"appLayout")]) continue;
+        id items = DMCall(DMCall(c, @"appLayout"), @"allItems");
+        if ([items isKindOfClass:[NSArray class]] && [items count] && [DMSMItemBundle([items firstObject]) isEqualToString:b]) return c;
+    }
+    return nil;
+}
+static void DMWinCardTreeLog(UIView *v, int depth, NSMutableString *s) {
+    if (!v || depth > 14) return;
+    CGAffineTransform t = v.transform;
+    [s appendFormat:@"\n%*s%@ %p frame %@ bounds %@ hidden %d alpha %.2f clips %d%@", depth * 2, "", NSStringFromClass([v class]), v, NSStringFromCGRect(v.frame), NSStringFromCGRect(v.bounds), v.hidden, v.alpha, v.clipsToBounds,
+        CGAffineTransformIsIdentity(t) ? @"" : [NSString stringWithFormat:@" transform %@", NSStringFromCGAffineTransform(t)]];
+    if ([v isKindOfClass:[UIImageView class]]) { UIImage *im = ((UIImageView *)v).image; [s appendFormat:@" image %@", im ? NSStringFromCGSize(im.size) : @"none"]; }
+    for (UIView *sub in v.subviews) DMWinCardTreeLog(sub, depth + 1, s);
+}
 static BOOL DMWinCardTrigger(NSString *cmd) {
+    if ([cmd hasPrefix:@"wincardtree_"]) {   // wincardtree_<bundle>: that app's card in iPadOS's App Switcher, its view tree with frames (read-only)
+        NSString *b = [cmd substringFromIndex:12];
+        UIView *c = DMWinCardContainerOf(b);
+        NSMutableString *s = [NSMutableString stringWithFormat:@"[wincard] tree of %@'s card: %@", b, c ? [NSString stringWithFormat:@"on screen %@", NSStringFromCGRect([c convertRect:c.bounds toCoordinateSpace:[UIScreen mainScreen].coordinateSpace])] : @"no visible card"];
+        DMWinCardTreeLog(c, 0, s);
+        DMLog(s);
+        return YES;
+    }
     if ([cmd isEqualToString:@"wincards"]) {
         id sw = DMSwitcherController();
         NSArray *layouts = nil; DMWinCardList(sw, &layouts);

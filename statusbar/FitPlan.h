@@ -150,3 +150,19 @@ static NSArray<NSString *> *MSBDFitWhenOneOpens(NSString *fresh, NSArray<NSStrin
 static inline BOOL MSBDFitTileStaysAtTurn(BOOL there, BOOL leaving, BOOL noFit, BOOL onScreen, BOOL minimized) {
     return there && !leaving && !noFit && (onScreen || minimized);
 }
+
+// What waits for Fit's question for a third window, while it holds the app's launch (StatusBar.x DMPromptBeforeLaunch; ctx: the question's). An open's URL and actions (a link, a Spotlight
+// result) are handed to the window's scene, tried for 10 s: no scene exists until the question is answered, up to 12 s and more after a turn, so they start with the launch, not with the
+// request -- a link whose question was not answered, or answered after about 8 s, opened the app on its last page (code review 1.8.1, 2). YES when it waits (`then` runs after the launch).
+static inline BOOL MSBDFitHoldAfterLaunch(NSMutableDictionary *ctx, NSString *bundle, void (^then)(void)) {
+    if (!then || !bundle.length || !ctx || [ctx[@"decided"] boolValue] || !ctx[@"prelaunch"] || ![ctx[@"new"] isEqual:bundle]) return NO;
+    NSMutableArray *held = ctx[@"afterLaunch"] ?: [NSMutableArray array];
+    [held addObject:[then copy]];
+    ctx[@"afterLaunch"] = held;
+    return YES;
+}
+static inline void MSBDFitRunAfterLaunch(NSMutableDictionary *ctx) {
+    NSArray *held = ctx[@"afterLaunch"];
+    [ctx removeObjectForKey:@"afterLaunch"];
+    for (void (^then)(void) in held) then();
+}

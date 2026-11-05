@@ -30,4 +30,12 @@ static inline int MSBDZetsuReusesClosed(int asked, double askedAt, double closed
     return (asked && askedAt - closedAt >= MSBD_ZETSU_REUSE_AFTER_CLOSE && now - askedAt < MSBD_ZETSU_REUSE_AFTER_ASK) ? 1 : 0;
 }
 
+// 1.8.1 item 9 (1.8.0 regression, A12Z F2): a new Zetsu window is back at its own place -- where the app's window last was, which the cascade
+// leaves it at (1.7.5 item 13) -- only when the app had such a place before this window opened; a window that opens where new windows open is
+// moved off a window it covers (MSBDWindowCascadeIn: 50 right and 44 down), as Aerial's and Stage Manager's are. DMZetsuAdopt asked after its
+// move, and the move records where it put the window as the app's place: every new window counted as back at its own place and stayed over the
+// window under it. asked: a frame was asked for (the green light's way back, a Window menu layout: kept there by its own mark); hadPlace: the app
+// had a last place before this window opened.
+static inline int MSBDZetsuOpensAtOwnPlace(int asked, int hadPlace) { return !asked && hadPlace; }
+
 #endif

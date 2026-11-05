@@ -433,6 +433,30 @@ static BOOL DMSMCardsTrigger(NSString *cmd) {
         return YES;
     }
     if ([cmd isEqualToString:@"smcards_scroll"]) { DMSMCardsScrollToNewest(0); return YES; }   // smcards_scroll: the App Switcher to its newest card now (/tmp/msb-smcards-align: another alignment)
+    if ([cmd hasPrefix:@"smcards_frames_"]) {   // smcards_frames_<s>: for <s> seconds, each display frame on which something changed: the main switcher's shown list, each visible card's window(s), where it is on screen, its opacity (read-only)
+        CFTimeInterval until = CACurrentMediaTime() + [[cmd substringFromIndex:15] doubleValue];
+        __block NSString *last = nil;
+        DMBlockLink *l = [DMBlockLink new];
+        l.block = ^BOOL {
+            id v = DMMainSwitcherContent();
+            id vis = [v respondsToSelector:NSSelectorFromString(@"visibleItemContainers")] ? DMCall(v, @"visibleItemContainers") : nil;
+            NSArray *conts = [vis isKindOfClass:[NSDictionary class]] ? [(NSDictionary *)vis allValues] : ([vis isKindOfClass:[NSArray class]] ? vis : @[]);
+            NSMutableArray *rows = [NSMutableArray array];
+            for (UIView *c in conts) {
+                if (![c isKindOfClass:[UIView class]]) continue;
+                id al = [c respondsToSelector:NSSelectorFromString(@"appLayout")] ? DMCall(c, @"appLayout") : nil;
+                CALayer *p = c.layer.presentationLayer ?: c.layer, *wl = c.window.layer.presentationLayer ?: c.window.layer;
+                CGRect r = wl ? [p convertRect:p.bounds toLayer:wl] : p.frame;
+                [rows addObject:[NSString stringWithFormat:@"%p %@ %.0f,%.0f %.0fx%.0f a%.2f%@", c, al ? DMSMCardsText(@[al]) : @"?", r.origin.x, r.origin.y, r.size.width, r.size.height, p.opacity, c.hidden ? @" hidden" : @""]];
+            }
+            [rows sortUsingSelector:@selector(compare:)];
+            NSString *now = [NSString stringWithFormat:@"shown [%@] going %@ cards: %@", DMSMCardsText(DMCall(v, @"appLayouts")), DMSMCardsCtxState(DMSMCardsCtxState(v, @"layoutContext"), @"transitioningToLayoutState") ? @"yes" : @"no", [rows componentsJoinedByString:@" | "]];
+            if (![now isEqualToString:last ?: @""]) { last = now; DMLog([@"[smframes] " stringByAppendingString:now]); }
+            return CACurrentMediaTime() < until;
+        };
+        [l start];
+        return YES;
+    }
     if ([cmd isEqualToString:@"smcards_leaf"]) {
         for (id al in DMSMRecentStages() ?: @[]) {
             NSArray *items = DMCall(al, @"allItems");

@@ -20,6 +20,7 @@ MacStatusBar&Dock
 │   ├── DockMagnification   Dock, magnification, recent apps, Launchpad, Downloads stack, Trash
 │   ├── Home Screen parts   MacIconLabels, MacPageDots, MacFolderMenu, MacAppSizeMenu, ForceQuitMenu, MacAddToFolder
 │   ├── MacRAMCPU, MacSSH   the RAM & CPU and SSH controls, modules Control Center loads from the tweak's folder
+│   ├── MacConnectivity, MacDisplay, MacSound, MacNowPlaying   the Mac Control Center's tiles on iPadOS 18, modules too; MacStatusBarCore draws them
 │   └── MacHomeBar, MacLockStatusBar, MacCCGrabber, MacSettingsBadge, VolumeGlobeTweak
 │
 ├── Apps (apps, app extensions and XPC services that use UIKit, never bare daemons; MixAudio stays out of app extensions)
@@ -50,7 +51,7 @@ MacStatusBar&Dock
     └── gives the engines' settings back when the tweak is removed or switched off, and has SpringBoard lower a stored Auto-Lock of 2 hours then
 ```
 
-Every part can be traced to its process in `loader/Loader.c` (the `kPayloads` table), except MacRAMCPU and MacSSH, which Control Center loads itself, and the eject helper, a program of its own.
+Every part can be traced to its process in `loader/Loader.c` (the `kPayloads` table), except the Control Center modules above, which Control Center loads itself, and the eject helper, a program of its own.
 
 ## Where things are
 
@@ -59,7 +60,7 @@ Every part can be traced to its process in `loader/Loader.c` (the `kPayloads` ta
 | `loader/` | The two loaders and crash recovery's helpers |
 | `statusbar/` | MacStatusBarCore, the Status Bar and Windows & Multitasking pages, and MacPointer |
 | `dock/` | The Dock and its page |
-| `ccmodule/` | The RAM & CPU and SSH Control Center modules |
+| `ccmodule/` | The RAM & CPU, SSH and Mac tile Control Center modules |
 | `ejecthelper/` | The eject helper (`msbdeject`), which the root helper runs for Finder's Eject and the Dock's Trash |
 | `macsettings/` | The Settings app changes, the smaller Home Screen parts and the root helper (`sshtoggled/`) |
 | `appbridge/` | MacAppBridge, which runs inside apps |

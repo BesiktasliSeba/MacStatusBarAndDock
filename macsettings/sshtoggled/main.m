@@ -378,19 +378,16 @@ static NSString *ChosenEngine(BOOL *windowing) {   // read from Mac Status Bar's
 }
 // The engine to keep loading: the one picked in Settings while its package is installed (not MilkyWay4 on iPadOS 16: SpringBoard ignores that pick
 // there); otherwise the one SpringBoard uses when nothing is picked (EngineBuilds.h), so a fresh install with two engines gets exclusivity from its
-// first start. An engine the user switched off in Choicy or iCleaner Pro themselves (not by us) is never made the default. *picked says which.
-#define CHOICYRECORD_PATH "/var/jb/var/mobile/Library/Preferences/MacStatusBar-ChoicyChanges.plist"
+// first start. An engine the user switched off themselves (not by us) -- in Choicy's global list or SpringBoard's own, or with iCleaner Pro -- is
+// never made the default (ExclusiveChoice.h MSBDExEngineCanBeDefault: the same reader as Control Center Style's). *picked says which.
 static NSString *EngineToKeep(NSString *status, BOOL *windowing, BOOL *picked) {
     NSString *stored = ChosenEngine(windowing);
     NSDictionary *libs = EngineLibs(), *pkgs = EnginePackage();
     BOOL ios16 = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 16;
     *picked = stored && pkgs[stored] && MSBDPackageOnDisk(status, pkgs[stored]) && !(ios16 && [stored isEqualToString:@"milkyway"]);
     if (*picked) return stored;
-    NSDictionary *choicy = [NSDictionary dictionaryWithContentsOfFile:@"/var/jb/var/mobile/Library/Preferences/com.opa334.choicyprefs.plist"];
-    NSArray *denied = [choicy[@"globalDeniedTweaks"] isKindOfClass:[NSArray class]] ? choicy[@"globalDeniedTweaks"] : @[];
-    NSDictionary *record = [NSDictionary dictionaryWithContentsOfFile:@CHOICYRECORD_PATH];
-    NSDictionary *ours = [record[@"globalDeniedTweaks"] isKindOfClass:[NSDictionary class]] ? record[@"globalDeniedTweaks"] : @{};
-    NSOrderedSet *renamed = LoadRecord();
+    NSDictionary *choicy = [NSDictionary dictionaryWithContentsOfFile:kMSBDExChoicyPrefs], *record = [NSDictionary dictionaryWithContentsOfFile:kMSBDExChoicyRecord];
+    NSArray<NSString *> *renamed = [LoadRecord() array];
     NSString *(^path)(NSString *) = ^NSString *(NSString *lib) {
         NSString *dylib = [NSString stringWithFormat:@TWEAKDIR "/%@.dylib", lib];
         return Exists(dylib) ? dylib : [NSString stringWithFormat:@TWEAKDIR "/%@.disabled", lib];
@@ -398,9 +395,7 @@ static NSString *EngineToKeep(NSString *status, BOOL *windowing, BOOL *picked) {
     return MSBDDefaultEngine(^BOOL(NSString *e) {
         if (!MSBDPackageOnDisk(status, pkgs[e])) return NO;
         NSString *lib = libs[e][0];
-        if ([denied containsObject:lib] && ![ours[lib] isEqual:@"added"]) return NO;   // (denied in Choicy by the user)
-        if (!Exists([NSString stringWithFormat:@TWEAKDIR "/%@.dylib", lib]) && ![renamed containsObject:lib]) return NO;   // (switched off in iCleaner by the user)
-        return YES;
+        return MSBDExEngineCanBeDefault(lib, choicy, record, renamed, Exists([NSString stringWithFormat:@TWEAKDIR "/%@.dylib", lib]), Exists([NSString stringWithFormat:@TWEAKDIR "/%@.disabled", lib]));
     }, path);
 }
 // Control Center Style (1.8.0, common/CCStyle.h): the style for mobile by the one rule, from the real state -- BigSurCenter installed (its library,

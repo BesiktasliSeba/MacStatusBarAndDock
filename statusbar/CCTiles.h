@@ -624,6 +624,8 @@ static void DMCCTSetVolume(double v) {
 @end
 static NSHashTable<DMCCTTile *> *gCCTTiles;   // (ours, weak: CCPanel.h's gCCPTiles holds them)
 static DMCCTTile *DMCCTTileOf(int role) { for (DMCCTTile *t in gCCTTiles) if (t.role == role) return t; return nil; }
+// (15-17: one tile of a role. 18: one per module instance -- CC18Tiles.h --, the gallery's preview of it too: each is told)
+static NSArray<DMCCTTile *> *DMCCTTilesOf(int role) { NSMutableArray *a = [NSMutableArray array]; for (DMCCTTile *t in gCCTTiles) if (t.role == role) [a addObject:t]; return a; }
 
 // ---- Connectivity --------------------------------------------------------------------------------------------------------------------------
 // A row: its round button (the switch), its name, its line and, with a page, a chevron; a tap on the button switches, a tap elsewhere opens its
@@ -861,6 +863,7 @@ static NSArray *DMCCTBTPageItems(NSString **sigOut) {
         return;
     }
     self.page = kind;
+    gCCTConn = self;   // (the tile with the page: the scan's watchdog and the list's changes ask it)
     DMCCPanelOpenDetail(self);
     if (!self.pageView) self.page = -1;   // (not opened: a module expanded, another page open)
 }
@@ -918,22 +921,28 @@ static BOOL DMCCTWiFiPageShown(void) { DMCCTConnectivityTile *c = gCCTConn; retu
 static void DMCCTWiFiListChanged(void) { DMCCTStateChanged(kMSBDCCTRowWiFi); }
 // Airplane Mode's answer (its row has no page): shown at once while Control Center shows; closed, at the next presentation.
 static void DMCCTConnShow(void) {
-    DMCCTConnectivityTile *c = gCCTConn;
-    if (!c) return;
-    if (!gCCTShown) { c.old = YES; return; }
-    [c dm_refresh];
+    for (DMCCTTile *c in DMCCTTilesOf(MSBDCCRoleTileConnectivity)) {
+        if (!gCCTShown) { c.old = YES; continue; }
+        [c dm_refresh];
+    }
 }
 static void DMCCTStateChanged(int what) {   // (what: a row's kind, CCTileLogic.h kMSBDCCTRow... -- the Connectivity tile)
-    DMCCTConnectivityTile *c = gCCTConn;
-    if (!c) return;
-    if (!gCCTShown) { c.old = YES; return; }
+    NSArray<DMCCTTile *> *conn = DMCCTTilesOf(MSBDCCRoleTileConnectivity);
+    if (!conn.count) return;
+    if (!gCCTShown) { for (DMCCTTile *c in conn) c.old = YES; return; }
     gCCTChanged |= 1u << what;
     if (gCCTPageRebuildDue) return;
     gCCTPageRebuildDue = YES;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ gCCTPageRebuildDue = NO; if (gCCTShown) [gCCTConn dm_refresh]; });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        gCCTPageRebuildDue = NO;
+        if (!gCCTShown) return;
+        unsigned changed = gCCTChanged;   // (each tile takes it once: the one with a page follows it)
+        for (DMCCTTile *c in DMCCTTilesOf(MSBDCCRoleTileConnectivity)) { gCCTChanged = changed; [c dm_refresh]; }
+    });
 }
 
 // ---- Display and Sound -------------------------------------------------------------------------------------------------------------------
+static NSArray *DMCC18DisplayRows(void);   // (iPadOS 18: Display's page, CC18Tiles.h)
 // A wide tile: its title and chevron above the slider. Display's chevron and hold: Apple's Display module expanded from the tile; Sound's chevron:
 // our Sound page, its hold Apple's volume module expanded.
 @interface DMCCTWideTile : DMCCTTile
@@ -1037,11 +1046,12 @@ static void DMCCTStateChanged(int what) {   // (what: a row's kind, CCTileLogic.
 }
 - (void)dm_hold:(UILongPressGestureRecognizer *)g {
     if (g.state != UIGestureRecognizerStateBegan || _slider.tracking) return;
+    if (DMCC18TilesAreOurs()) { [self dm_details]; return; }   // (iPadOS 18: its page; Apple's module is no tile of the Mac layout)
     BOOL opened = DMCCPanelExpandModule(self.module);
     DMLog([NSString stringWithFormat:@"[cctiles] %@ held: Apple's %@ %@", self.tid, self.module, opened ? @"opened from it" : @"not there"]);
 }
 - (void)dm_details {
-    if (![self dm_display]) { DMCCPanelOpenDetail(self); return; }
+    if (![self dm_display] || DMCC18TilesAreOurs()) { DMCCPanelOpenDetail(self); return; }   // (Sound's page; iPadOS 18: Display's too, CC18Tiles.h)
     BOOL opened = DMCCPanelExpandModule(self.module);
     DMLog([NSString stringWithFormat:@"[cctiles] Display's details: Apple's module %@", opened ? @"opened from it" : @"not there, Settings"]);
     if (!opened && !DMCCPanelLocked()) DMCCTCloseThen(^{ DMOpenURL(@"prefs:root=DISPLAY", @"display settings"); })();
@@ -1049,6 +1059,7 @@ static void DMCCTStateChanged(int what) {   // (what: a row's kind, CCTileLogic.
 // Sound's page: the Audio menu's rows (Audio Mixing, the apps that play), Sound Settings…; as the open menu, its rows are those of when it
 // opened (an app's row follows whether it can be adjusted: DMAudioRefreshOpenRows).
 - (NSArray *)dm_pageItems:(NSString **)sigOut {
+    if ([self dm_display]) return DMCCTRows(^NSArray *{ return DMCC18DisplayRows(); });   // (iPadOS 18 only: tileDetailViewForWidth:)
     __block NSUInteger n = 0;
     NSArray *items = DMCCTRows(^NSArray *{
         NSMutableArray *it = [DMAudioMenuItems(&n) mutableCopy];
@@ -1060,31 +1071,31 @@ static void DMCCTStateChanged(int what) {   // (what: a row's kind, CCTileLogic.
     return items;
 }
 - (UIView *)tileDetailViewForWidth:(CGFloat)width {
-    if ([self dm_display]) return nil;
+    if ([self dm_display] && !DMCC18TilesAreOurs()) return nil;
     NSString *sig = nil;
     NSArray *items = [self dm_pageItems:&sig];
     self.pageSig = sig;
     self.pageView = DMCCTPageMake(items, width);
-    DMLog([NSString stringWithFormat:@"[cctiles] Sound page made (%lu rows)", (unsigned long)items.count]);
+    DMLog([NSString stringWithFormat:@"[cctiles] %@ page made (%lu rows)", [self tileDetailTitle], (unsigned long)items.count]);
     return self.pageView;
 }
-- (NSString *)tileDetailTitle { return @"Sound"; }
+- (NSString *)tileDetailTitle { return [self dm_display] ? @"Display" : @"Sound"; }
 - (void)tileDetailDidClose { self.pageView = nil; self.pageSig = nil; }
 @end
 // The system changed the brightness or the volume while Control Center shows (the keys, Auto-Brightness, another app): the slider follows,
 // unless a finger is on it; closed, the tile is only marked old (it is read at each presentation anyway).
 static void DMCCTLevelChanged(int role, double v, BOOL known) {
-    DMCCTWideTile *t = (DMCCTWideTile *)DMCCTTileOf(role);
-    if (!t) return;
-    if (CACurrentMediaTime() - t.lastSet < 0.4) return;   // (our own set coming back)
-    if (role == MSBDCCRoleTileSound) {   // (asked; the answer kept for the next presentation, shown now if Control Center shows)
-        __weak DMCCTWideTile *weak = t;
-        DMCCTVolumeAsk(^(double now, BOOL fine) { DMCCTWideTile *me = weak; if (fine && gCCTShown && me && !me.slider.tracking) { [me.slider dm_setValue:now]; [me dm_symbol]; } });
-        return;
+    for (DMCCTWideTile *t in (NSArray<DMCCTWideTile *> *)DMCCTTilesOf(role)) {
+        if (CACurrentMediaTime() - t.lastSet < 0.4) continue;   // (our own set coming back)
+        if (role == MSBDCCRoleTileSound) {   // (asked; the answer kept for the next presentation, shown now if Control Center shows)
+            __weak DMCCTWideTile *weak = t;
+            DMCCTVolumeAsk(^(double now, BOOL fine) { DMCCTWideTile *me = weak; if (fine && gCCTShown && me && !me.slider.tracking) { [me.slider dm_setValue:now]; [me dm_symbol]; } });
+            continue;
+        }
+        if (!gCCTShown) { t.old = YES; continue; }
+        [t.slider dm_setValue:known ? v : DMCCTBrightness()];
+        [t dm_symbol];
     }
-    if (!gCCTShown) { t.old = YES; return; }
-    [t.slider dm_setValue:known ? v : DMCCTBrightness()];
-    [t dm_symbol];
 }
 
 // ---- Now Playing -------------------------------------------------------------------------------------------------------------------------
@@ -1140,7 +1151,7 @@ static UIImage *DMCCTArtPlaceholder(CGFloat side) {
     self.view.layer.cornerRadius = DMCCTCorner();
     CGFloat s = DMCCTSize();
     MSBDCCTNowLayout L = MSBDCCTNowFrames(b.size.width / s, b.size.height / s, k);
-    _info.frame = CGRectMake(0, 0, L.play.origin.x * s, b.size.height);
+    _info.frame = DMCCTAt(L.info);
     _art.frame = DMCCTAt(L.art); _title.frame = DMCCTAt(L.title); _line.frame = DMCCTAt(L.line);
     _art.layer.cornerRadius = 6.0 * s;
     _play.frame = DMCCTAt(L.play); _next.frame = DMCCTAt(L.next);
@@ -1246,10 +1257,10 @@ static UIImage *DMCCTArtPlaceholder(CGFloat side) {
 
 // ---- the tiles' life ---------------------------------------------------------------------------------------------------------------------
 static void DMCCTMarkOld(int role) {
-    DMCCTTile *t = DMCCTTileOf(role);
-    if (!t) return;
-    if (!gCCTShown) { t.old = YES; return; }
-    [t dm_refresh];
+    for (DMCCTTile *t in DMCCTTilesOf(role)) {
+        if (!gCCTShown) { t.old = YES; continue; }
+        [t dm_refresh];
+    }
 }
 // The system's notifications, once (at the panel's build): they only mark a tile's state old while Control Center is closed.
 static void DMCCTObserve(void) {
@@ -1293,6 +1304,28 @@ static void DMCCTMakeTiles(void) {
     if (gCCTPart[kDMCCTPartVolume]) DMCCTVolumeAsk(nil);
     DM_FEATURE_MARK("cc-mac-tiles");
     DMLog([NSString stringWithFormat:@"[cctiles] %lu Mac tiles made", (unsigned long)tiles.count]);
+}
+// iPadOS 18 (CC18Tiles.h): a tile of a role for a module's host, as many as Control Center makes module instances (the gallery's previews too); what
+// the panel's build does here, once, at the first one (Control Center's build, hidden).
+static DMCCTTile *DMCCTMakeTileForRole(int role) {
+    DMCCTCheck();
+    if (!gCCTTiles) gCCTTiles = [NSHashTable weakObjectsHashTable];
+    DMCCTTile *t = nil;
+    if (role == MSBDCCRoleTileConnectivity) { DMCCTConnectivityTile *c = [DMCCTConnectivityTile new]; if (!gCCTConn) gCCTConn = c; t = c; }
+    else if (role == MSBDCCRoleTileDisplay || role == MSBDCCRoleTileSound) t = [[DMCCTWideTile alloc] initWithRole:role];
+    else if (role == MSBDCCRoleTileNowPlaying) t = [DMCCTNowPlayingTile new];
+    if (!t) return nil;
+    [gCCTTiles addObject:t]; t.old = YES;
+    static BOOL first = YES;
+    if (first) {
+        first = NO;
+        DMCCTObserve();
+        DMCCTBT();
+        DMCCTAirplaneRead(@"the first tile on 18");
+        if (gCCTPart[kDMCCTPartVolume]) DMCCTVolumeAsk(nil);
+        DM_FEATURE_MARK("cc-mac-tiles-18");
+    }
+    return t;
 }
 // Control Center about to show (CCPanel.h, before each tile's tileWillPresent) and closed (after each one's tileDidDismiss).
 static void DMCCTPanelWillPresent(void) { gCCTShown = YES; DMCCTAirplaneWatch(YES); }

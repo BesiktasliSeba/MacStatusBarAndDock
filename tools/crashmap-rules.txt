@@ -71,6 +71,10 @@ title MacHomeBar the Home Bar|the Home Bar
 title MacCCGrabber Control Center (grabber, RAM & CPU, SSH)|the Control Center grabber and our controls in Control Center
 title MacRAMCPU RAM & CPU in Control Center|RAM & CPU in Control Center
 title MacSSH the SSH control in Control Center|the SSH control in Control Center
+title MacConnectivity the Mac Connectivity control in Control Center|the Mac Connectivity control in Control Center
+title MacDisplay the Mac Display control in Control Center|the Mac Display control in Control Center
+title MacSound the Mac Sound control in Control Center|the Mac Sound control in Control Center
+title MacNowPlaying the Mac Now Playing control in Control Center|the Mac Now Playing control in Control Center
 
 # ---- the parts SpringBoard loads (loader/Loader.c): small ones as a whole ----
 image ForceQuitMenu forceQuitMenu
@@ -85,6 +89,10 @@ image MacCCGrabber part
 # Control Center's repository (common/CCModuleRegister.h), so the module is not loaded any more
 image MacRAMCPU part
 image MacSSH part
+image MacConnectivity part
+image MacDisplay part
+image MacSound part
+image MacNowPlaying part
 image MacHomeBar part
 image MacIconLabels part
 image MacLargeTitles part
@@ -125,6 +133,10 @@ file MacStatusBarCore ^(Finder|NativeWindow)\.h$ finder
 # the text window (TextWindow.h) is Finder's; the desktop (Desktop.h, DesktopPlace.h, DesktopNames.h, DesktopCorner.h) and the Wi-Fi menu (WiFiMenu.h) have their
 # own switches (DesktopNames.h's functions under the Desktop.h rule: they may all be inlined, and a rule that matches nothing stops the build)
 file MacStatusBarCore ^TextWindow\.h$ finder
+# (the section "Add a Control" shows for our Mac tiles on iPadOS 18, in AppLibraryApps.h because it is made with the gallery's sections: Control Center Style's, the switch that takes it
+# away -- with iPadOS's style there is no Mac layout, no such section, and its hook only passes through. Show in App Library's switch removes none of it: the hook goes in whatever that
+# says, and a crash there cost a second crash, then the whole status bar part; code review 1.8.1, 7)
+sym MacStatusBarCore ^_*DMAL(GalleryMerged|MacTiles[A-Z]) controlcenter
 # Activity Monitor in the App Library (AppLibraryApps.h: its icon's methods, the App Library's category and search hooks): its own switch; in the
 # Dock (ActMonDock.h, 1.7.3: the store's and the root folder's hooks, its menu) too -- it is the same icon, off with the same switch
 sym MacStatusBarCore ^_*DMAL[A-Z] actmonLibrary
@@ -168,7 +180,10 @@ file MacStatusBarCore ^(CCTiles|CCTileLogic)\.h$ controlcenter
 # on iPadOS 18 (CC18Shape.h, 1.8.0 P5b: Apple's own 18 grid re-shaped into the Mac panel): its functions, hooks and blocks (DMCC18...) and its
 # classes' methods -- the same, Control Center Style back to iPadOS's (its plain-C geometry is CCLayout.h's, above)
 sym MacStatusBarCore ^_*DMCC18[A-Z] controlcenter
-file MacStatusBarCore ^CC18Shape\.h$ controlcenter
+# (and the Mac layout it reads, common/CC18MacLayout.h, 1.8.1: made and read by the shape, the same; its functions mostly inlined into DMCC18MacLayoutURL, but what stays out of line in a
+# release build fell to Stock status bar mode, as CCLayout.h's did: one rule for the two, since a rule that matches nothing stops the build)
+file MacStatusBarCore ^(CC18Shape|CC18MacLayout)\.h$ controlcenter
+file MacStatusBarCore ^CC18Tiles\.h$ controlcenter
 # the battery menu and the Control Center icon (BatteryMenu.h, 1.7.9): Battery Menu's switch -- off, the battery is iOS's again and the icon goes
 sym MacStatusBarCore ^_*DMBatt[A-Z] batteryMenu
 file MacStatusBarCore ^BatteryMenu\.h$ batteryMenu
@@ -241,7 +256,7 @@ sym MacStatusBarCore ^_*DMFit(IfNeeded|WindowContent)(_block_invoke(_[0-9]+)?(\.
 # whatever section of StatusBar.x it sits. They fell to three switches: ^_?DMFit to Resize Apps to Fit Windows; DMAssignDefaultSlots, DMSlotFrame,
 # DMRelayoutForOrientation, DMAssignTilesKeepingPlaces and the closure watcher to Stock status bar mode (their sections had no rule); the rest to
 # Windowing (1.8.0 engine parity pass). The Stage Manager engine's Fit is DMSM... (below); where its windows go, FitPlan.h, is the file rule below.
-sym MacStatusBarCore ^_*(DMFit(?!IfNeeded|WindowContent)[A-Za-z]+|DMSetFitEnabled|DMInvalidateFitCache|DMStageTakesPartInFit|DMAssign(DefaultSlots|TilesKeepingPlaces)|DMDefaultSlotNames|DMSlot(Frame|NameForFrame)|DMTilesText|DMMirrorSlot|DMApplyGroupSlots|DMWatchFit(Closures|Toggle)|DMRelayout(ForOrientation|StageWhenLanded)|DMRememberFitForFullScreen|DMSetSideChoiceGroup|DMSideChoiceFrame|DMApplySideChoice|DMPromptForSide(Apply)?|DMPromptBeforeLaunch|DMThirdWindowSides|DMLaunchIntoTile|DMNoFitFrame|DMMarkFreeWindow|DMTileOpenWindows|DMSpreadFitGroup)(_block_invoke(_[0-9]+)?(\.[0-9]+)?)?$ windowingEnabled
+sym MacStatusBarCore ^_*(DMFit(?!IfNeeded|WindowContent)[A-Za-z]+|DMSetFitEnabled|DMInvalidateFitCache|DMStageTakesPartInFit|DMAssign(DefaultSlots|TilesKeepingPlaces)|DMDefaultSlotNames|DMSlot(Frame|NameForFrame)|DMTilesText|DMMirrorSlot|DMApplyGroupSlots|DMWatchFit(Closures|Toggle)|DMRelayout(ForOrientation|StageWhenLanded)|DMRememberFitForFullScreen|DMSetSideChoiceGroup|DMSideChoiceFrame|DMApplySideChoice|DMPromptForSide(Apply)?|DMPromptBeforeLaunch|DMThirdWindowSides|DMLaunchIntoTile|DMPreSideTileFor|DMNoFitFrame|DMMarkFreeWindow|DMTileOpenWindows|DMSpreadFitGroup)(_block_invoke(_[0-9]+)?(\.[0-9]+)?)?$ windowingEnabled
 # windowing: the engines (Aerial 3.0/5.0, MilkyWay4, Zetsu) and our window work
 sym MacStatusBarCore \$(Aerial\w*|Zetsu\w*|MilkyWay\w*|WindowLaunch|EngineMedusa|AppExitForget)\$ windowingEnabled
 # (AppExitForget: the app exit hook that forgets where a quit app's window was, out of the Aerial-only group since 1.4.2 so every engine has it)
@@ -249,8 +264,9 @@ sym MacStatusBarCore ^_?(DMZetsu|DMAerial|DMMilky|DMMinimize|DMSwap|DMCascade|DM
 # (the windows' App Switcher cards, 1.7.0: SpringBoard asked for each window's card and its picture -- window code, every function and block in it;
 #  the smallest window of the engines, 1.7.0, and the size a new window opens at, Window Size 1.8.0 (DMNewWindow...): plain functions, mostly inlined
 #  into the window code that calls them; where Fit to Window's windows go when its set changes, FitPlan.h 1.8.0: MSBDFit..., kept out of ^DMFit's
-#  Resize Apps to Fit Windows; which of SpringBoard's own launch calls open a window, SBLaunchRule.h 1.8.0 item 8)
-file MacStatusBarCore ^(WindowCards|WindowMinSize|WindowSize|FitPlan|SBLaunchRule)\.h$ windowingEnabled
+#  Resize Apps to Fit Windows; which of SpringBoard's own launch calls open a window, SBLaunchRule.h 1.8.0 item 8; Aerial 5's own settings held
+#  while it is our engine, AerialHeld.h 1.8.1 item 4)
+file MacStatusBarCore ^(WindowCards|WindowMinSize|WindowSize|FitPlan|SBLaunchRule|AerialHeld)\.h$ windowingEnabled
 # the Stage Manager engine (its functions, its hook groups, its source sections): windowing off -- the engine stops, the Mac status bar stays
 # (unnamed, it fell to the image's target: Stock status bar mode, which stopped the engine too but also took the menu bar; iPadOS 17 runs the
 # engine's 17 layout code untested, so a crash there must cost the engine, not the bar)

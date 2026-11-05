@@ -16,6 +16,41 @@
 #define kMSBDCCModuleDir @"/var/jb/usr/lib/MacStatusBarAndDock/ControlCenter"
 #define kMSBDCCSSHModuleID @"com.besiktasliseba.macstatusbaranddock.ssh"
 #define kMSBDCCSSHModuleDir @"/var/jb/usr/lib/MacStatusBarAndDock/ControlCenterSSH"
+// iPadOS 18 (1.8.1 item 1): our Mac tiles as Control Center modules of their own, four bundles in one folder of ours (ccmodule/MSBDMacTileModule.h;
+// drawn by the status bar part, statusbar/CC18Tiles.h). On 15-17 the panel draws them itself (statusbar/CCTiles.h): not in any list there.
+#define kMSBDCCMacConnectivityID @"com.besiktasliseba.macstatusbaranddock.mac-connectivity"
+#define kMSBDCCMacDisplayID @"com.besiktasliseba.macstatusbaranddock.mac-display"
+#define kMSBDCCMacSoundID @"com.besiktasliseba.macstatusbaranddock.mac-sound"
+#define kMSBDCCMacNowPlayingID @"com.besiktasliseba.macstatusbaranddock.mac-nowplaying"
+#define kMSBDCCMacTilesDir @"/var/jb/usr/lib/MacStatusBarAndDock/ControlCenterMac"
+#define kMSBDCCMacTileHostFn "MSBDCCMacTileHost"   // (the status bar part's exported function, found with dlsym: a module's content view controller)
+#define kMSBDCCRegisteredControlsFn "MSBDCCRegisteredControls"   // (MacCCGrabber's exported function, found with dlsym: our controls in the repository now)
+#define kMSBDCCMacLayoutInForceFn "MSBDCCMacLayoutInForce"   // (the status bar part's exported function, found with dlsym: Apple's grid has the Mac layout now, common/CC18MacLayout.h)
+static inline BOOL MSBDCCIsMacTile(NSString *mid) {
+    return [mid isEqual:kMSBDCCMacConnectivityID] || [mid isEqual:kMSBDCCMacDisplayID] || [mid isEqual:kMSBDCCMacSoundID] || [mid isEqual:kMSBDCCMacNowPlayingID];
+}
+// A gallery section of ours alone (its controls' modules, [NSNull null] for a control without one): the gallery makes one section per module, ours are shown as one
+// (statusbar/AppLibraryApps.h). Their order there: the panel's.
+static inline BOOL MSBDCCGallerySectionIsMacTiles(NSArray *moduleIDs) {
+    if (![moduleIDs isKindOfClass:[NSArray class]] || !moduleIDs.count) return NO;
+    for (id m in moduleIDs) if (!MSBDCCIsMacTile(m)) return NO;
+    return YES;
+}
+static inline NSInteger MSBDCCMacTileOrder(NSString *mid) { return [@[kMSBDCCMacConnectivityID, kMSBDCCMacDisplayID, kMSBDCCMacSoundID, kMSBDCCMacNowPlayingID] indexOfObject:mid]; }
+// A list of modules (the set or array Control Center's instance manager answers) without our Mac tiles; the list itself when it has none.
+static inline id MSBDCCWithoutMacTiles(id list) {
+    if ([list isKindOfClass:[NSSet class]]) { NSMutableSet *out = nil; for (id m in (NSSet *)list) if (MSBDCCIsMacTile(m)) { if (!out) out = [(NSSet *)list mutableCopy]; [out removeObject:m]; } return out ?: list; }
+    if ([list isKindOfClass:[NSArray class]]) { NSMutableArray *out = nil; for (id m in (NSArray *)list) if (MSBDCCIsMacTile(m)) { if (!out) out = [(NSArray *)list mutableCopy]; [out removeObject:m]; } return out ?: list; }
+    return list;
+}
+// The grid size each Mac tile is made at (as the state file names it; Control Center's class number for -moduleSettingsForModuleIdentifier:, 18.5:
+// 3 = 4 x 1, 4 = 2 x 2) and the sizes it answers (-supportedGridSizeClasses: 1 << the class): Connectivity 2 x 2 and 4 x 2, the rest 4 x 1 and 2 x 1;
+// Now Playing 4 x 1 and 2 x 2.
+static inline NSString *MSBDCCMacTileDefaultSize(NSString *mid) { return [mid isEqual:kMSBDCCMacConnectivityID] ? @"medium" : @"smallExtraWide"; }
+static inline long long MSBDCCMacTileDefaultClass(NSString *mid) { return [mid isEqual:kMSBDCCMacConnectivityID] ? 4 : 3; }
+#define kMSBDCCMacConnectivitySizes ((1ull << 4) | (1ull << 5))
+#define kMSBDCCMacSliderSizes ((1ull << 3) | (1ull << 2))
+#define kMSBDCCMacNowPlayingSizes ((1ull << 3) | (1ull << 4))
 #define kMSBDCCModuleStepFile "/var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-CrashStep.txt"   // (= CrashStep.h's MSBD_STEP_FILE)
 #define kMSBDMemoryMagicID @"com.sop.MemoryMagic"   // (Memory Magic, xyz.cypwn.memorymagic: the module the status bar part draws its RAM tile over)
 // 18: the app each control is shown with in "Add a Control" (CCModuleRegister.h, the module settings): RAM & CPU with Activity Monitor (1.7.6 item
@@ -28,7 +63,7 @@
 // Without it RAM & CPU stays with SpringBoard, as before 1.7.6: Activity Monitor is no installed app, its section would be a blank "RAM & CPU".
 #define kMSBDCCActivityMonitorSectionFn "MSBDCCActivityMonitorSectionReady"
 static inline NSString *MSBDCCContainerForModule(NSString *mid, BOOL activityMonitorSection) {
-    if ([mid isEqualToString:kMSBDCCSSHModuleID]) return kMSBDCCSettingsAppID;
+    if ([mid isEqualToString:kMSBDCCSSHModuleID] || MSBDCCIsMacTile(mid)) return kMSBDCCSettingsAppID;   // (the Mac tiles: Settings' section too, their switches' home)
     return activityMonitorSection ? kMSBDCCActivityMonitorID : @"com.apple.springboard";
 }
 // Is a gallery section (SBHApplicationWidgetCollection) Activity Monitor's, to be shown with its name and picture? The gallery makes each module
@@ -131,17 +166,26 @@ static inline BOOL MSBDCCModuleSkipped(void) { return MSBDCCModuleSkippedIn(kMSB
 
 // Our controls Control Center is to load now: each with its bundle in place, not on the skip list; SSH only with OpenSSH installed (as Settings'
 // SSH row). `root` is put in front of every path (the Mac test's own folder; "" on the iPad). Their folders and identifiers, in the same order.
-typedef struct { __unsafe_unretained NSString *identifier, *folder, *bundle; const char *part; BOOL needsSSH; } MSBDCCControl;   // (string literals)
-static inline void MSBDCCActiveControls(NSString *root, const char *stepFile, NSMutableArray<NSString *> *folders, NSMutableArray<NSString *> *identifiers) {
+typedef struct { __unsafe_unretained NSString *identifier, *folder, *bundle; const char *part; BOOL needsSSH; long minMajor; } MSBDCCControl;   // (string literals)
+static inline void MSBDCCActiveControlsOn(long major, NSString *root, const char *stepFile, NSMutableArray<NSString *> *folders, NSMutableArray<NSString *> *identifiers) {
     const MSBDCCControl controls[] = {
-        { kMSBDCCModuleID, kMSBDCCModuleDir, @"MacRAMCPU.bundle", "MacRAMCPU", NO },
-        { kMSBDCCSSHModuleID, kMSBDCCSSHModuleDir, @"MacSSH.bundle", "MacSSH", YES },
+        { kMSBDCCModuleID, kMSBDCCModuleDir, @"MacRAMCPU.bundle", "MacRAMCPU", NO, 0 },
+        { kMSBDCCSSHModuleID, kMSBDCCSSHModuleDir, @"MacSSH.bundle", "MacSSH", YES, 0 },
+        { kMSBDCCMacConnectivityID, kMSBDCCMacTilesDir, @"MacConnectivity.bundle", "MacConnectivity", NO, 18 },
+        { kMSBDCCMacDisplayID, kMSBDCCMacTilesDir, @"MacDisplay.bundle", "MacDisplay", NO, 18 },
+        { kMSBDCCMacSoundID, kMSBDCCMacTilesDir, @"MacSound.bundle", "MacSound", NO, 18 },
+        { kMSBDCCMacNowPlayingID, kMSBDCCMacTilesDir, @"MacNowPlaying.bundle", "MacNowPlaying", NO, 18 },
     };
     for (size_t i = 0; i < sizeof(controls) / sizeof(controls[0]); i++) {
+        if (major < controls[i].minMajor) continue;
         NSString *plist = [root stringByAppendingString:[controls[i].folder stringByAppendingPathComponent:[controls[i].bundle stringByAppendingPathComponent:@"Info.plist"]]];
         if (access(plist.fileSystemRepresentation, F_OK) != 0) continue;
         if (controls[i].needsSSH && access([root stringByAppendingString:@kMSBDSSHDaemon].fileSystemRepresentation, F_OK) != 0) continue;
         if (MSBDCCModuleSkippedIn(stepFile, controls[i].part)) continue;
-        [folders addObject:controls[i].folder]; [identifiers addObject:controls[i].identifier];
+        if (![folders containsObject:controls[i].folder]) [folders addObject:controls[i].folder];   // (the Mac tiles share one)
+        [identifiers addObject:controls[i].identifier];
     }
+}
+static inline void MSBDCCActiveControls(NSString *root, const char *stepFile, NSMutableArray<NSString *> *folders, NSMutableArray<NSString *> *identifiers) {
+    MSBDCCActiveControlsOn([NSProcessInfo processInfo].operatingSystemVersion.majorVersion, root, stepFile, folders, identifiers);
 }

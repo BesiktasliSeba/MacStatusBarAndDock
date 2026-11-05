@@ -199,6 +199,9 @@ int main(void) {
     Frame("  ... a content taller than the room: down to 12 pt over the bottom from there (it scrolls)", p, CGRectMake(698, 48, 318, 708));
     p = MSBDCCPanelFrameUnder(1024, 768, 20, 318, 622, 0, 833, 19, 20, 23);
     Frame("  ... its narrow look (the icon only) too", p, CGRectMake(698, 48, 318, 622));
+    Int("item 12 (15-17): a touch over our menu bar (20 pt on the iPad 2, our icon at y 10) is not the sensor indicator's", MSBDCCOverOurBar(10, 20), 1);
+    Int("  ... just under the bar (the indicator's own frame, y 19 to 42 on 16.7.7, from y 20 on): the indicator's", MSBDCCOverOurBar(20, 20) == 0 && MSBDCCOverOurBar(30, 20) == 0, 1);
+    Int("  ... nonsense: no", MSBDCCOverOurBar(NAN, 20) == 0 && MSBDCCOverOurBar(10, 0) == 0 && MSBDCCOverOurBar(10, NAN) == 0 && MSBDCCOverOurBar(-INFINITY, 20) == 0 && MSBDCCOverOurBar(-10, -5) == 0, 1);
     p = MSBDCCPanelFrameUnder(1024, 768, 20, 318, 622, 0, 400, 19, 80, 23);
     Frame("the indicator beside the panel's column: the panel under the bar, as without one", p, CGRectMake(698, 22, 318, 622));
     p = MSBDCCPanelFrameUnder(1024, 768, 20, 318, 622, 0, 618, 19, 80, 23);
@@ -383,6 +386,17 @@ int main(void) {
     Frame("  ... an empty page: the top row and the margins", MSBDCC18PanelFrame(grid, 39, 0), CGRectMake(1040, 39, 318, 64));
     Frame("  ... a negative height: as empty", MSBDCC18PanelFrame(grid, 39, -30), CGRectMake(1040, 39, 318, 64));
     Int("  ... nonsense: no panel", CGRectIsEmpty(MSBDCC18PanelFrame(grid, NAN, 522)) && CGRectIsEmpty(MSBDCC18PanelFrame(CGRectZero, 39, 522)), 1);
+    {   // One of our pages open when the grid moves (code review 1.8.1, 3): the panel's place and width, the page's height; else it closes
+        CGRect pg = CGRectZero, was = MSBDCC18PanelFrame(grid, 39, 0), moved = CGRectOffset(was, -342, 0);   // (landscape -> portrait on the A12Z: the grid 342 pt further left)
+        Int("a page follows the panel to its new place", MSBDCC18PageFrame(moved, was.size.width, 400, &pg), 1);
+        Frame("  ... its x and y, the panel's width, the page's own height", pg, CGRectMake(was.origin.x - 342, was.origin.y, was.size.width, 400));
+        Int("  ... a shorter room: the height given, not the panel's", MSBDCC18PageFrame(moved, was.size.width, 120, &pg) && pg.size.height == 120, 1);
+        Int("  ... half a point of rounding in the width still follows", MSBDCC18PageFrame(moved, was.size.width + 0.5, 400, &pg), 1);
+        Int("  ... a panel of another width: it closes (a page is laid out at its opening's width)", MSBDCC18PageFrame(moved, was.size.width + 40, 400, &pg), 0);
+        Int("  ... no panel any more: it closes", MSBDCC18PageFrame(MSBDCC18PanelFrame(CGRectZero, 39, 0), was.size.width, 400, &pg), 0);
+        Int("  ... nonsense heights: it closes", MSBDCC18PageFrame(moved, was.size.width, NAN, &pg) + MSBDCC18PageFrame(moved, was.size.width, 0, &pg), 0);
+        Int("  ... no place to write it: asked all the same", MSBDCC18PageFrame(moved, was.size.width, 400, NULL), 1);
+    }
     CGRect pf18 = MSBDCC18PanelFrame(grid, 39, 522), eb, pb;
     MSBDCC18TopRowFrames(pf18, 29, 29, 0, &eb, &pb);
     Frame("Apple's + in the top row at the tiles' leading edge, centred in the row", eb, CGRectMake(1052, 51.5, 29, 29));
@@ -410,6 +424,44 @@ int main(void) {
     Frame("  ... never narrower than the control", MSBDCC18DotsPillFrame(CGPointMake(100, 100), 40, 60), CGRectMake(80, 70, 40, 60));
     Frame("  ... right to left: around the dots at the panel's right", MSBDCC18DotsPillFrame(dc, MSBDCC18DotsWidth(1052), 158.5), CGRectMake(334, 310.75, 28, 158.5));
     Int("  ... nonsense: none", CGRectIsEmpty(MSBDCC18DotsPillFrame(CGPointMake(NAN, 1), 20, 100)) && CGRectIsEmpty(MSBDCC18DotsPillFrame(CGPointMake(1, 1), 0, 100)) && CGRectIsEmpty(MSBDCC18DotsPillFrame(CGPointMake(1, 1), 20, -5)) && CGRectIsEmpty(MSBDCC18DotsPillFrame(CGPointMake(1, 1), 20, NAN)), 1);
+    // ---- iPadOS 18: a pull's part past the full presentation, and Esc (1.8.1 items 14 and 10) ----
+    double pr, pg;
+    pr = 10.556; pg = 1.0;
+    Int("a pull far past the full presentation in the panel (A12Z 18.5: progress 10.6, paging 1.0): made again", MSBDCC18PullState(1, 1, &pr, &pg), 1);
+    Num("  ... with no paging part (Apple's shrank the pages about the screen's middle, the tiles out of the panel)", pg, 0.0);
+    Num("  ... and its progress at the full presentation (past 1 Apple's module views rubber-band down, out of the panel's bottom)", pr, 1.0);
+    pr = 3.048; pg = 0.511;
+    Int("  ... half way to the dots: made again", MSBDCC18PullState(1, 1, &pr, &pg) && pr == 1.0 && pg == 0.0, 1);
+    pr = 1.4; pg = 0.0;
+    Int("  ... past 1 before any paging part: made again, at 1", MSBDCC18PullState(1, 1, &pr, &pg) && pr == 1.0 && pg == 0.0, 1);
+    pr = 0.379; pg = 0.0;
+    Int("  ... on its way down (most steps): Apple's own state goes on, its progress kept", MSBDCC18PullState(1, 1, &pr, &pg) == 0 && pr == 0.379, 1);
+    pr = 1.0; pg = 0.0;
+    Int("  ... at the full presentation: Apple's own", MSBDCC18PullState(1, 1, &pr, &pg), 0);
+    pr = 10.0; pg = 1.0;
+    Int("  ... iPadOS's own Control Center (or edit mode): Apple's own, untouched", MSBDCC18PullState(0, 1, &pr, &pg) == 0 && pr == 10.0 && pg == 1.0, 1);
+    pr = 1.8; pg = 0.0;
+    Int("  ... a dismissal's state: Apple's own, untouched", MSBDCC18PullState(1, 0, &pr, &pg) == 0 && pr == 1.8, 1);
+    pr = 0.9; pg = NAN;
+    Int("  ... a nonsense paging part in the panel is made 0", MSBDCC18PullState(1, 1, &pr, &pg) && pg == 0.0 && pr == 0.9, 1);
+    Int("  ... nowhere to read: nothing", MSBDCC18PullState(1, 1, NULL, &pg) || MSBDCC18PullState(1, 1, &pr, NULL), 0);
+    // ---- iPadOS 18: Apple's sensor attribution in the panel's top row (1.8.1 item 2) ----
+    CGRect band18 = CGRectMake(0, kMSBDCCPad, 318, kMSBDCC18TopRow), e18r = CGRectMake(12, 12.5, 29, 29), p18r = CGRectMake(277, 12.5, 29, 29);
+    Frame("the Camera app's attribution (124 x 23, 18.5) centred between + and power on their middle (the A12Z's row: + {12, 12.5}, power {277, 12.5})", MSBDCC18SensorFrame(band18, e18r, p18r, 124, 23), CGRectMake(97, 15.5, 124, 23));
+    Frame("  ... right to left (+ at the right, power at the left): the same place", MSBDCC18SensorFrame(band18, p18r, e18r, 124, 23), CGRectMake(97, 15.5, 124, 23));
+    Frame("  ... wider than the room between them (8 pt clear of each): the room", MSBDCC18SensorFrame(band18, e18r, p18r, 300, 23), CGRectMake(49, 15.5, 220, 23));
+    Int("  ... a panel with no room between the buttons: none (Apple's place)", CGRectIsEmpty(MSBDCC18SensorFrame(CGRectMake(0, 12, 70, 30), CGRectMake(12, 12.5, 29, 29), CGRectMake(41, 12.5, 29, 29), 124, 23)), 1);
+    Int("  ... taller than the row: none", CGRectIsEmpty(MSBDCC18SensorFrame(band18, e18r, p18r, 124, 31)), 1);
+    Int("  ... nonsense: none", CGRectIsEmpty(MSBDCC18SensorFrame(band18, e18r, p18r, NAN, 23)) && CGRectIsEmpty(MSBDCC18SensorFrame(band18, e18r, p18r, 124, 0)) && CGRectIsEmpty(MSBDCC18SensorFrame(CGRectZero, e18r, p18r, 124, 23)) && CGRectIsEmpty(MSBDCC18SensorFrame(band18, CGRectZero, p18r, 124, 23)), 1);
+    CGRect row18 = CGRectMake(1040, 39, 318, kMSBDCCPad + kMSBDCC18TopRow);
+    Int("its touches in the panel: on the control within the top row", MSBDCC18SensorTouch(1, CGPointMake(1199, 66), row18), 1);
+    Int("  ... Apple's 20 pt more around it, below the row (the first tiles' top): not the control's", MSBDCC18SensorTouch(1, CGPointMake(1199, 95), row18), 0);
+    Int("  ... above the row (our menu bar: its Control Center icon): not the control's (1.8.1 item 12)", MSBDCC18SensorTouch(1, CGPointMake(1199, 30), row18), 0);
+    Int("  ... anything else of the header's: none", MSBDCC18SensorTouch(0, CGPointMake(1199, 66), row18), 0);
+    Int("Esc with nothing open: Control Center closes", MSBDCC18EscStep(0, 0), kMSBDCC18EscClose);
+    Int("  ... content Apple presents (an expanded module, the sensor list, edit mode, its gallery): it closes first (the 15-17 panel's page goes back first)", MSBDCC18EscStep(1, 0), kMSBDCC18EscClosePresented);
+    Int("  ... an expanded module is itself presented over Control Center on 18 (its container): still closed first", MSBDCC18EscStep(1, 1), kMSBDCC18EscClosePresented);
+    Int("  ... something else presented over Control Center keeps the key", MSBDCC18EscStep(0, 1), kMSBDCC18EscNone);
     printf("%d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }

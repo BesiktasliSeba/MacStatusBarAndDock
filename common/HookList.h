@@ -159,6 +159,7 @@ static const char *const kMSBDHookList[][4] = {   // class, selector, +/-, sourc
     {"PSListController", "addSpecifier:animated:", "-", "macsettings/NativeRows.x"},
     {"PSListController", "addSpecifiersFromArray:animated:", "-", "macsettings/NativeRows.x"},
     {"SBIconListPageControl", "layoutSubviews", "-", "macsettings/PageDots.x"},
+    {"SBIconListPageControl", "setHidden:", "-", "macsettings/PageDots.x"},
     {"PSUIPrefsListController", "removeSpecifier:animated:", "-", "macsettings/SidebarGroups.x"},
     {"PSUIPrefsListController", "removeSpecifierID:animated:", "-", "macsettings/SidebarGroups.x"},
     {"PSUIPrefsListController", "handleURL:withCompletion:", "-", "macsettings/SidebarGroups.x"},

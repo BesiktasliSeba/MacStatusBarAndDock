@@ -23,7 +23,14 @@
 //    status bar window over the Cover Sheet, the status icons on its band);
 //  - Apple's page dots beside the panel wherever Apple places them: each of its placements (its layout, a presentation step, its own handling
 //    of a touch on them) is turned into ours as Apple makes it; and a pull opens the panel on its page wherever it starts -- Apple's pull goes
-//    on into its paging when the finger, past the full presentation, is in the dots' area, which beside the panel lay under our status icons.
+//    on into its paging when the finger, past the full presentation, is in the dots' area, which beside the panel lay under our status icons;
+//    nothing goes on past the full presentation in the panel (Apple shrank its pages about the screen's middle as a paging hint and
+//    rubber-banded its tiles down: they slid out of the panel while the finger kept pulling);
+//  - Esc on a hardware keyboard goes one level back (what Apple presents closes: an expanded module, the sensor list, edit mode), else
+//    Control Center closes -- as the 15-17 panel's page and close;
+//  - Apple's sensor attribution (the camera or microphone in use: "Camera" with its dots, a tap opens Apple's list of the apps) in the panel's
+//    top row between + and power, as macOS shows what uses them at the top of its Control Center: Apple's header then shows, with nothing of its
+//    own but that control, and takes no touch but the control's within the row (an optional part of the table: without it, 1.8.0's panel).
 // Everything Apple's is asked through the checked table below (class, method, type encoding, instance variable), all or nothing: one row missing or
 // of another shape and nothing is hooked, Control Center stays iPadOS's, and the verdict says why (common/CCMacCheck.h's record, the one CCPanel.h
 // writes on 15-17: Settings' Style page, Report a Problem). Mac only when it is the style (common/CCStyle.h as SpringBoard reads it, CCStyleSB.h:
@@ -34,6 +41,7 @@
 #pragma once
 #include "../common/CCLayout.h"     // (the insets, the panel, its top row and the dots beside it -- plain C, tools/test-cclayout.sh)
 #include "../common/CCMacCheck.h"   // (the verdict's record: MSBD_CC_CHECK_KEY)
+#include "../common/CC18MacLayout.h" // (the Mac panel's own layout of tiles, 1.8.1 item 1)
 #include "../common/Diag.h"
 
 #define kDMCC18Main "CCUIMainViewController"
@@ -64,6 +72,12 @@ static __weak UIView *gCC18Edit, *gCC18Power;      // Apple's buttons while they
 static __weak UIView *gCC18ButtonsHome;            // ... the header they came from, and where in it
 static NSUInteger gCC18EditAt = NSNotFound, gCC18PowerAt = NSNotFound;
 static BOOL gCC18HidBack = NO, gCC18HidHeader = NO;   // what the shape hid (only that is shown again)
+static NSHashTable<UIView *> *gCC18HidHeaderParts;    // (the header's own views hidden while it shows only its sensor control: shown again)
+static NSURL *gCC18AppleDesired;                      // (Apple's own desired-state file, seen when the store changes: put back with its layout)
+static BOOL gCC18HaveSensor = NO;                     // Apple's sensor attribution rows passed: its control in the panel (DMCC18HeaderLook)
+static BOOL gCC18HaveTiles = NO;                      // the Mac layout's rows passed: Apple's grid reads the Mac panel's own layout of tiles (DMCC18StoreInit)
+static BOOL gCC18HavePull = NO;                       // the pull's rows passed: nothing past the full presentation in the panel (DMCC18PullState)
+static BOOL gCC18HaveEsc = NO;                        // Esc's rows passed: one level back or Control Center closes (DMCC18PanelEscape)
 static CGPoint gCC18DotsApple, gCC18DotsOurs;            // Apple's page dots: where Apple had them, where we put them (Apple's place back with its look)
 static CGRect gCC18DotsAppleBounds;                      // (and the size Apple gave them)
 static BOOL gCC18DotsMoved = NO;
@@ -105,6 +119,10 @@ static void (*o_DMCC18ExtendArea)(id, SEL, BOOL);
 static void (*o_DMCC18DotsSetCenter)(id, SEL, CGPoint);
 static void (*o_DMCC18DotsSetBounds)(id, SEL, CGRect);
 static void (*o_DMCC18DotsSetFrame)(id, SEL, CGRect);
+static id (*o_DMCC18PullState)(id, SEL, unsigned long long, BOOL, CGPoint);
+static CGRect (*o_DMCC18SensorFrame)(id, SEL);
+static UIView *(*o_DMCC18HeaderHit)(id, SEL, CGPoint, UIEvent *);
+static id (*o_DMCC18StoreInit)(id, SEL, NSURL *, NSURL *);
 static UIEdgeInsets DMCC18Insets(id self, SEL _cmd, CGSize size, CGRect bounds, UIEdgeInsets edge, long long orientation);
 static void DMCC18LayoutViews(id self, SEL _cmd);
 static void DMCC18MainLayout(id self, SEL _cmd);
@@ -124,7 +142,16 @@ static void DMCC18ExtendArea(id self, SEL _cmd, BOOL extend);
 static void DMCC18DotsSetCenter(id self, SEL _cmd, CGPoint c);
 static void DMCC18DotsSetBounds(id self, SEL _cmd, CGRect b);
 static void DMCC18DotsSetFrame(id self, SEL _cmd, CGRect f);
-typedef struct { const char *cls, *sel, *enc; void *fn; void **orig; const char *what; } DMCC18HookRow;
+static id DMCC18PullState(id self, SEL _cmd, unsigned long long type, BOOL interactive, CGPoint translation);
+static CGRect DMCC18SensorFrame(id self, SEL _cmd);
+static UIView *DMCC18HeaderHit(id self, SEL _cmd, CGPoint p, UIEvent *e);
+static id DMCC18StoreInit(id self, SEL _cmd, NSURL *current, NSURL *desired);
+static void DMCC18TilesWillPresent(void);   // (CC18Tiles.h)
+static void DMCC18TilesDidDismiss(void);
+static BOOL DMCC18PagePanelEscape(void);
+static void DMCC18PageFollowsPanel(void);
+enum { kDMCC18Core = 0, kDMCC18PartSensor, kDMCC18PartTiles, kDMCC18PartPull, kDMCC18PartEsc };   // (a part's rows not there: that part only is left out -- the rest of the panel goes on)
+typedef struct { const char *cls, *sel, *enc; void *fn; void **orig; const char *what; int part; } DMCC18HookRow;
 static DMCC18HookRow kDMCC18Hooks[] = {
     { kDMCC18Provider, "_edgeInsetsForContentSize:withinBounds:contentEdgeInsets:orientation:", kDMCC18InsetsT "104@0:8{CGSize=dd}16" kDMCC18RectT "32" kDMCC18InsetsT "64q96",
       (void *)DMCC18Insets, (void **)&o_DMCC18Insets, "where Apple lays its grid out (the Mac panel's place)" },
@@ -146,9 +173,13 @@ static DMCC18HookRow kDMCC18Hooks[] = {
     { "SBIconListPageControl", "setCenter:", "v32@0:8{CGPoint=dd}16", (void *)DMCC18DotsSetCenter, (void **)&o_DMCC18DotsSetCenter, "Apple places its page dots: beside the panel at once" },
     { "SBIconListPageControl", "setBounds:", "v48@0:8" kDMCC18RectT "16", (void *)DMCC18DotsSetBounds, (void **)&o_DMCC18DotsSetBounds, "(the same, their size)" },
     { "SBIconListPageControl", "setFrame:", "v48@0:8" kDMCC18RectT "16", (void *)DMCC18DotsSetFrame, (void **)&o_DMCC18DotsSetFrame, "(the same, their frame)" },
+    { kDMCC18Provider, "transitionStateForType:interactive:translation:", "@44@0:8Q16B24{CGPoint=dd}28", (void *)DMCC18PullState, (void **)&o_DMCC18PullState, "a pull's transition state: nothing past the full presentation in the panel (Apple's paging hint and rubber band took the tiles out of it)", kDMCC18PartPull },
+    { kDMCC18Header, "compactModeFrameForSensorView", kDMCC18RectT "16@0:8", (void *)DMCC18SensorFrame, (void **)&o_DMCC18SensorFrame, "Apple's sensor attribution in the panel's top row", kDMCC18PartSensor },
+    { kDMCC18Header, "hitTest:withEvent:", "@40@0:8{CGPoint=dd}16@32", (void *)DMCC18HeaderHit, (void **)&o_DMCC18HeaderHit, "the header takes only its sensor control's touches in the panel's row", kDMCC18PartSensor },
+    { "SBIconModelPropertyListFileStore", "initWithIconStateURL:desiredIconStateURL:", "@32@0:8@16@24", (void *)DMCC18StoreInit, (void **)&o_DMCC18StoreInit, "the Mac panel's own layout of tiles (Apple's file untouched)", kDMCC18PartTiles },
 };
 // The calls and reads (instance methods; "ivar": any object type, checked by class when read).
-typedef struct { const char *cls, *sel, *enc; BOOL ivar; const char *what; } DMCC18NeedRow;
+typedef struct { const char *cls, *sel, *enc; BOOL ivar; const char *what; BOOL meta; int part; } DMCC18NeedRow;   // (meta: a class method)
 static const DMCC18NeedRow kDMCC18Needs[] = {
     { "SBControlCenterController", "viewController", "@16@0:8", NO, "Apple's Control Center (a style change while running)" },
     { kDMCC18Main, "pagingViewController", "@16@0:8", NO, "Apple's pages" },
@@ -165,9 +196,29 @@ static const DMCC18NeedRow kDMCC18Needs[] = {
     { kDMCC18Header, "powerButton", "@16@0:8", NO, "Apple's power button (in the panel's top row)" },
     { "CCUIOverlayTransitionState", "presentationProgress", "d16@0:8", NO, "the presentation's progress" },
     { "CCUIOverlayTransitionState", "isInteractive", "B16@0:8", NO, "a finger pull" },
+    { "CCUIOverlayTransitionState", "progress", "d16@0:8", NO, "a pull's progress (at most the full presentation in the panel)", NO, kDMCC18PartPull },
+    { "CCUIOverlayTransitionState", "pagingProgress", "d16@0:8", NO, "a pull's paging part past the full presentation (none in the panel)", NO, kDMCC18PartPull },
+    { "CCUIOverlayTransitionState", "stateWithType:interactive:progress:pagingProgress:", "@44@0:8Q16B24d28d36", NO, "(Apple's own factory of a transition state: the pull's, made again)", YES, kDMCC18PartPull },
+    { kDMCC18Main, "canDismissPresentedContent", "B16@0:8", NO, "Esc: content Apple presents (an expanded module, the sensor list, edit mode: it closes first)", NO, kDMCC18PartEsc },
+    { kDMCC18Main, "dismissPresentedContentAnimated:completion:", "v28@0:8B16@?20", NO, "Esc: Apple's own closing of it", NO, kDMCC18PartEsc },
+    { "SBControlCenterController", "dismissAnimated:", "v20@0:8B16", NO, "Esc: Control Center closes (Apple's own animated dismissal)", NO, kDMCC18PartEsc },
+    { kDMCC18Header, "isDisplayingSensorStatus", "B16@0:8", NO, "Apple's sensor attribution shows (the camera or microphone in use)", NO, kDMCC18PartSensor },
+    { kDMCC18Header, "compactSensorAttributionControl", "@16@0:8", NO, "its control (in the panel's top row)", NO, kDMCC18PartSensor },
+    { kDMCC18Paging, "iconModel", "@16@0:8", NO, "Apple's model of the tiles (the layout that goes with the style)", NO, kDMCC18PartTiles },
+    { "SBHIconModel", "store", "@16@0:8", NO, "the file it reads and saves", NO, kDMCC18PartTiles },
+    { "SBHIconModel", "setStore:", "v24@0:8@16", NO, "(the other style's file)", NO, kDMCC18PartTiles },
+    { "SBHIconModel", "layout", "v16@0:8", NO, "(read again from it, as Apple's reset to the default layout)", NO, kDMCC18PartTiles },
+    { "SBHIconModel", "saveIconStateIfNeeded", "B16@0:8", NO, "(the file it leaves saved)", NO, kDMCC18PartTiles },
+    { "SBHIconModel", "isIconStateDirty", "B16@0:8", NO, "(... and clean)", NO, kDMCC18PartTiles },
+    { "SBHIconModel", "rootFolder", "@16@0:8", NO, "(the tiles' root folder)", NO, kDMCC18PartTiles },
+    { "SBFolder", "addFolderObserver:", "v24@0:8@16", NO, "(Control Center follows the new root folder)", NO, kDMCC18PartTiles },
+    { "SBFolder", "removeFolderObserver:", "v24@0:8@16", NO, "(... off the old one)", NO, kDMCC18PartTiles },
+    { "SBRootFolder", "setDelegate:", "v24@0:8@16", NO, "(... its delegate too)", NO, kDMCC18PartTiles },
+    { "SBIconModelPropertyListFileStore", "currentIconStateURL", "@16@0:8", NO, "(which file a store has)", NO, kDMCC18PartTiles },
+    { "SBIconModelPropertyListFileStore", "desiredIconStateURL", "@16@0:8", NO, "(and its desired state's)", NO, kDMCC18PartTiles },
     { "CALayer", "setHitTestsAsOpaque:", "v20@0:8B16", NO, "the routing layer (a tap outside closes Control Center, never reaches the app)" },
 };
-static NSString *DMCC18RowProblem(const char *cls, const char *sel, const char *enc, BOOL ivar) {
+static NSString *DMCC18RowProblem(const char *cls, const char *sel, const char *enc, BOOL ivar, BOOL meta) {
     Class c = objc_getClass(cls);
     if (!c) return @"class missing";
     if (ivar) {
@@ -176,7 +227,7 @@ static NSString *DMCC18RowProblem(const char *cls, const char *sel, const char *
         if (!t) return @"missing";
         return t[0] == '@' ? nil : [NSString stringWithFormat:@"is %s, not an object", t];
     }
-    Method m = class_getInstanceMethod(c, sel_registerName(sel));
+    Method m = meta ? class_getClassMethod(c, sel_registerName(sel)) : class_getInstanceMethod(c, sel_registerName(sel));
     const char *t = m ? method_getTypeEncoding(m) : NULL;
     if (!t) return @"missing";
     return strcmp(t, enc) ? [NSString stringWithFormat:@"is %s, we use %s", t, enc] : nil;
@@ -186,19 +237,35 @@ static NSString *DMCC18RowProblem(const char *cls, const char *sel, const char *
 static NSArray<NSString *> *DMCC18CheckAPI(NSUInteger *checked) {
     NSMutableArray *bad = [NSMutableArray array];
     NSUInteger n = 0;
+    BOOL sensor = YES, tiles = YES, pull = YES, esc = YES;
     for (size_t i = 0; i < sizeof(kDMCC18Hooks) / sizeof(kDMCC18Hooks[0]); i++) {
         n++;
-        NSString *p = DMCC18RowProblem(kDMCC18Hooks[i].cls, kDMCC18Hooks[i].sel, kDMCC18Hooks[i].enc, NO);
-        if (p) [bad addObject:[NSString stringWithFormat:@"-[%s %s] %@ (%s)", kDMCC18Hooks[i].cls, kDMCC18Hooks[i].sel, p, kDMCC18Hooks[i].what]];
+        NSString *p = DMCC18RowProblem(kDMCC18Hooks[i].cls, kDMCC18Hooks[i].sel, kDMCC18Hooks[i].enc, NO, NO);
+        if (!p) continue;
+        NSString *line = [NSString stringWithFormat:@"-[%s %s] %@ (%s)", kDMCC18Hooks[i].cls, kDMCC18Hooks[i].sel, p, kDMCC18Hooks[i].what];
+        if (kDMCC18Hooks[i].part == kDMCC18PartSensor) { sensor = NO; [gCC18CheckOptional addObject:line]; }
+        else if (kDMCC18Hooks[i].part == kDMCC18PartTiles) { tiles = NO; [gCC18CheckOptional addObject:line]; }
+        else if (kDMCC18Hooks[i].part == kDMCC18PartPull) { pull = NO; [gCC18CheckOptional addObject:line]; }
+        else if (kDMCC18Hooks[i].part == kDMCC18PartEsc) { esc = NO; [gCC18CheckOptional addObject:line]; }
+        else [bad addObject:line];
     }
     for (size_t i = 0; i < sizeof(kDMCC18Needs) / sizeof(kDMCC18Needs[0]); i++) {
         const DMCC18NeedRow *r = &kDMCC18Needs[i];
         n++;
-        NSString *p = DMCC18RowProblem(r->cls, r->sel, r->enc, r->ivar);
-        if (p) [bad addObject:[NSString stringWithFormat:@"%@ %@ (%s)", r->ivar ? [NSString stringWithFormat:@"%s.%s", r->cls, r->sel] : [NSString stringWithFormat:@"-[%s %s]", r->cls, r->sel], p, r->what]];
+        NSString *p = DMCC18RowProblem(r->cls, r->sel, r->enc, r->ivar, r->meta);
+        if (!p) continue;
+        NSString *line = [NSString stringWithFormat:@"%@ %@ (%s)", r->ivar ? [NSString stringWithFormat:@"%s.%s", r->cls, r->sel] : [NSString stringWithFormat:@"%c[%s %s]", r->meta ? '+' : '-', r->cls, r->sel], p, r->what];
+        if (r->part == kDMCC18PartSensor) { sensor = NO; [gCC18CheckOptional addObject:line]; }
+        else if (r->part == kDMCC18PartTiles) { tiles = NO; [gCC18CheckOptional addObject:line]; }
+        else if (r->part == kDMCC18PartPull) { pull = NO; [gCC18CheckOptional addObject:line]; }
+        else if (r->part == kDMCC18PartEsc) { esc = NO; [gCC18CheckOptional addObject:line]; }
+        else [bad addObject:line];
     }
+    gCC18HaveSensor = sensor; gCC18HaveTiles = tiles; gCC18HavePull = pull; gCC18HaveEsc = esc;
 #if DEBUG
     if (DMTestFlag("/tmp/msb-cc18-simulate-missing")) [bad addObject:@"-[CCUIOverlayStatusBarPresentationProvider layoutViews] missing (SIMULATED, debug)"];
+    if (DMTestFlag("/tmp/msb-cc18-simulate-nopull")) { gCC18HavePull = NO; [gCC18CheckOptional addObject:@"-[CCUIOverlayStatusBarPresentationProvider transitionStateForType:interactive:translation:] missing (SIMULATED, debug)"]; }
+    if (DMTestFlag("/tmp/msb-cc18-simulate-noesc")) { gCC18HaveEsc = NO; [gCC18CheckOptional addObject:@"-[CCUIMainViewController canDismissPresentedContent] missing (SIMULATED, debug)"]; }
 #endif
     if (checked) *checked = n;
     return bad;
@@ -206,15 +273,22 @@ static NSArray<NSString *> *DMCC18CheckAPI(NSUInteger *checked) {
 // The hooks, all or nothing, tried once (a second try would hook again the rows that went in: their originals would be our own functions). One
 // that did not take its hook: the shape stays off this run (the rows that went in only pass through) and the verdict says so. Main thread: at
 // the start, or when Mac is chosen while running.
+static BOOL DMCC18HookLeftOut(int part) {   // (Esc's part has no hook: its calls ask gCC18HaveEsc)
+    return (part == kDMCC18PartSensor && !gCC18HaveSensor) || (part == kDMCC18PartTiles && !gCC18HaveTiles) || (part == kDMCC18PartPull && !gCC18HavePull);
+}
 static BOOL DMCC18InstallHooks(void) {
     static BOOL tried = NO;
     if (gCC18Hooked) return YES;
     if (!gCC18Supported || tried) return NO;
     tried = YES;
-    for (size_t i = 0; i < sizeof(kDMCC18Hooks) / sizeof(kDMCC18Hooks[0]); i++)
-        MSHookMessageEx(objc_getClass(kDMCC18Hooks[i].cls), sel_registerName(kDMCC18Hooks[i].sel), (IMP)kDMCC18Hooks[i].fn, (IMP *)kDMCC18Hooks[i].orig);
+    int count = 0;
     for (size_t i = 0; i < sizeof(kDMCC18Hooks) / sizeof(kDMCC18Hooks[0]); i++) {
-        if (*kDMCC18Hooks[i].orig) continue;
+        if (DMCC18HookLeftOut(kDMCC18Hooks[i].part)) continue;
+        MSHookMessageEx(objc_getClass(kDMCC18Hooks[i].cls), sel_registerName(kDMCC18Hooks[i].sel), (IMP)kDMCC18Hooks[i].fn, (IMP *)kDMCC18Hooks[i].orig);
+        count++;
+    }
+    for (size_t i = 0; i < sizeof(kDMCC18Hooks) / sizeof(kDMCC18Hooks[0]); i++) {
+        if (*kDMCC18Hooks[i].orig || DMCC18HookLeftOut(kDMCC18Hooks[i].part)) continue;
         DMLog([NSString stringWithFormat:@"[cc18] the hook on -[%s %s] did not go in: the Mac shape stays off", kDMCC18Hooks[i].cls, kDMCC18Hooks[i].sel]);
         gCC18Supported = NO;
         DMCCPPublishVerdict(NO, [NSString stringWithFormat:@"%@: a system method our Control Center uses did not take its hook", DMCCPOSLabel()],
@@ -222,7 +296,7 @@ static BOOL DMCC18InstallHooks(void) {
         return NO;
     }
     gCC18Hooked = YES;
-    DMLog([NSString stringWithFormat:@"[cc18] hooks in (%d)", (int)(sizeof(kDMCC18Hooks) / sizeof(kDMCC18Hooks[0]))]);
+    DMLog([NSString stringWithFormat:@"[cc18] hooks in (%d; Apple's sensor attribution in the panel %d, the Mac layout %d, the pull's end %d, Esc %d)", count, gCC18HaveSensor, gCC18HaveTiles, gCC18HavePull, gCC18HaveEsc]);
     return YES;
 }
 
@@ -238,10 +312,11 @@ static UIViewController *DMCC18MainIfOurs(id vc) {
     if (gCC18Main != m) gCC18Main = m;
     return m;
 }
-// ... or, outside Apple's calls (a style change while running), the main scene's controller's: only once SpringBoard made Control Center itself.
+// ... or, outside Apple's calls (a style change while running, SpringBoard's first seconds too), the main scene's controller's as SpringBoard made it, nil before. Asking makes
+// nothing: the scene, its delegate, its context and -viewController only read theirs (18.5). As CCPanel.h's DMCCPFindOverlay (1.8.1 item 16): gCC18On means applied, or to be
+// applied as Apple builds it: Apple's -viewDidLoad makes the tiles' store (our hook picks the file then, DMCC18StoreInit), so a loaded view is the live steps, any other Apple's build.
 static UIViewController *DMCC18FindMain(void) {
     if (gCC18Main) return gCC18Main;
-    if (!gCCWindowSeen && DMStarting()) return nil;
     return DMCC18MainIfOurs(DMCCGet(DMControlCenterController(), @"viewController"));
 }
 static UIView *DMCC18ViewOf(id owner, NSString *getter) { id v = DMCCGet(owner, getter); return [v isKindOfClass:[UIView class]] ? v : nil; }
@@ -401,6 +476,52 @@ static void DMCC18DotsBack(UIViewController *m) {   // (iPadOS's look or edit mo
 }
 // The panel is the shape in force (DMCC18Views's rule): Mac, not editing, Apple's grid answered into its place.
 static BOOL DMCC18PanelInForce(void) { return gCC18On && !gCC18Editing && !CGRectIsEmpty(gCC18Grid); }
+// Apple's header in the panel: hidden (its status bar copy and labels: our bar shows; its + and power are in our row) -- unless it shows Apple's
+// sensor attribution (the camera or microphone in use): then the header shows with nothing of its own but that control, which sits in our top
+// row (DMCC18SensorFrame); its other views are hidden and remembered (shown again with Apple's look). Apple's list of the apps opens from the
+// control in a full-screen view of its own over the panel, not in the header (18.5).
+static BOOL DMCC18SensorShows(UIView *header) {
+    return gCC18HaveSensor && header && DMCCTypes(header, @"isDisplayingSensorStatus", "B16@0:8") && ((BOOL (*)(id, SEL))objc_msgSend)(header, NSSelectorFromString(@"isDisplayingSensorStatus"));
+}
+static void DMCC18HeaderLook(UIView *header) {
+    if (!header) return;
+    if (!DMCC18SensorShows(header)) {
+        if (!header.hidden) { header.hidden = YES; gCC18HidHeader = YES; }
+        return;
+    }
+    UIView *control = DMCC18ViewOf(header, @"compactSensorAttributionControl");
+    if (!gCC18HidHeaderParts) gCC18HidHeaderParts = [NSHashTable weakObjectsHashTable];
+    for (UIView *v in header.subviews) if (v != control && !v.hidden) { v.hidden = YES; [gCC18HidHeaderParts addObject:v]; }
+    if (header.hidden && gCC18HidHeader) { header.hidden = NO; gCC18HidHeader = NO; }   // (only a header the shape hid: one Apple hid stays so)
+}
+static void DMCC18HeaderPartsBack(UIView *header) {
+    BOOL any = gCC18HidHeaderParts.count > 0;
+    for (UIView *v in gCC18HidHeaderParts.allObjects) if (v.hidden) v.hidden = NO;
+    [gCC18HidHeaderParts removeAllObjects];
+    if (any) [header setNeedsLayout];   // (its control back at Apple's place: our answer stands only while the panel does)
+}
+// The sensor control's place in our row, in the header's space: centred between Apple's + and power (as they sit in the row, DMCC18PlaceButtons),
+// on their middle, at Apple's size or narrower (CCLayout.h MSBDCC18SensorFrame). Empty: no row, or no room.
+static CGRect DMCC18SensorRect(UIView *header, CGSize apple) {
+    if (!gCC18Row.superview || !header || !gCC18Edit || !gCC18Power) return CGRectZero;
+    CGRect panel = gCC18Material.frame, e, pw;
+    CGRect inRow = CGRectMake(0, 0, panel.size.width, panel.size.height);
+    MSBDCC18TopRowFrames(inRow, gCC18Edit.bounds.size.width, gCC18Edit.bounds.size.height, DMCC18RTL(), &e, &pw);
+    CGRect band = CGRectMake(0, kMSBDCCPad, panel.size.width, kMSBDCC18TopRow);
+    CGRect f = MSBDCC18SensorFrame(band, e, pw, apple.width, apple.height);
+    return CGRectIsEmpty(f) ? CGRectZero : [gCC18Row convertRect:f toView:header];
+}
+// After Apple's layout of its header: the control at our place (Apple's layout may place it without asking for its frame; its centre and size --
+// Apple's presentation may give it a transform of its own, as the buttons).
+static void DMCC18PlaceSensor(UIView *header) {
+    UIView *control = DMCC18ViewOf(header, @"compactSensorAttributionControl");
+    if (!control || control.superview != header || !DMCC18SensorShows(header)) return;
+    CGRect f = DMCC18SensorRect(header, control.bounds.size);
+    if (CGRectIsEmpty(f)) return;
+    CGPoint c = CGPointMake(CGRectGetMidX(f), CGRectGetMidY(f));
+    if (fabs(control.bounds.size.width - f.size.width) > 0.25) control.bounds = CGRectMake(control.bounds.origin.x, control.bounds.origin.y, f.size.width, control.bounds.size.height);
+    if (fabs(control.center.x - c.x) > 0.25 || fabs(control.center.y - c.y) > 0.25) control.center = c;
+}
 // The panel's views as the style, edit mode and an expansion want them -- after Apple's every layout, and when one of them changes.
 static void DMCC18Views(NSString *why) {
     UIViewController *m = gCC18Main;
@@ -408,11 +529,13 @@ static void DMCC18Views(NSString *why) {
     UIView *back = DMCC18ViewOf(m, @"overlayBackgroundView"), *header = DMCC18ViewOf(m, @"overlayHeaderView");
     BOOL mac = gCC18On && !gCC18Editing && !CGRectIsEmpty(gCC18Grid);
     if (!mac) {
-        BOOL had = gCC18Material.superview || gCC18Route.superview || gCC18Row.superview || gCC18HidBack || gCC18HidHeader;
+        if (gCCPDetail) DMCCPanelCloseDetail(NO);   // (the grid has no place in the panel any more, or edit mode came: never a page left floating with the material gone, CC18Tiles.h)
+        BOOL had = gCC18Material.superview || gCC18Route.superview || gCC18Row.superview || gCC18HidBack || gCC18HidHeader || gCC18HidHeaderParts.count;
         if (gCC18Edit || gCC18Power) DMCC18ButtonsBack();
         [gCC18Material removeFromSuperview]; [gCC18Route removeFromSuperview]; [gCC18Row removeFromSuperview]; [gCC18DotsPill removeFromSuperview];
         if (gCC18HidBack) { back.hidden = NO; gCC18HidBack = NO; }
         if (gCC18HidHeader) { header.hidden = NO; gCC18HidHeader = NO; }
+        DMCC18HeaderPartsBack(header);
         DMCC18DotsBack(m);
         if (had) DMLog([NSString stringWithFormat:@"[cc18] Apple's look (%@)", why]);
         return;
@@ -432,13 +555,15 @@ static void DMCC18Views(NSString *why) {
     }
     UIScrollView *sv = [DMCCGet(DMCCGet(m, @"pagingViewController"), @"scrollView") isKindOfClass:[UIScrollView class]] ? DMCCGet(DMCCGet(m, @"pagingViewController"), @"scrollView") : nil;
     BOOL scrolling = sv && (sv.isDragging || sv.isDecelerating);
-    if (!scrolling || CGRectIsEmpty(gCC18Material.frame)) DMCC18SetMaterialFrame(MSBDCC18PanelFrame(gCC18Grid, gCC18PanelTop, DMCC18RowsHeight(m)));   // (scrolling: the panel stays, DMCC18DidScroll)
+    if (gCCPDetail) DMCC18PageFollowsPanel();   // (one of our pages keeps its own height, wherever the grid is now: CC18Tiles.h)
+    else if (!scrolling || CGRectIsEmpty(gCC18Material.frame)) DMCC18SetMaterialFrame(MSBDCC18PanelFrame(gCC18Grid, gCC18PanelTop, DMCC18RowsHeight(m)));   // (scrolling: the panel stays, DMCC18DidScroll)
     if (header) DMCC18ButtonsIn(header);
     DMCC18PlaceButtons();
     DMCC18PlaceDots(m);
 
     if (back && !back.hidden && !gCC18Expanded) { back.hidden = YES; gCC18HidBack = YES; }
-    if (header && !header.hidden) { header.hidden = YES; gCC18HidHeader = YES; }
+    DMCC18HeaderLook(header);
+    if (header) DMCC18PlaceSensor(header);
 }
 // Apple's own layout again (its insets asked again: ours or Apple's), then our views -- a style change, a lock state or bar height the last
 // answer was not worked out for, edit mode's end.
@@ -567,7 +692,7 @@ static void DMCC18DidScroll(id self, SEL _cmd, id scrollView) {
     unsigned gen = ++gCC18SettleGen;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UIScrollView *sv = [scrollView isKindOfClass:[UIScrollView class]] ? scrollView : nil;
-        if (gen != gCC18SettleGen || !gCC18On || gCC18Editing || !gCC18Material.superview || (sv && (sv.isDragging || sv.isDecelerating))) return;
+        if (gen != gCC18SettleGen || !gCC18On || gCC18Editing || gCCPDetail || !gCC18Material.superview || (sv && (sv.isDragging || sv.isDecelerating))) return;
         CGRect f = MSBDCC18PanelFrame(gCC18Grid, gCC18PanelTop, DMCC18RowsHeight(gCC18Main));
         if (CGRectEqualToRect(f, gCC18Material.frame) || CGRectIsEmpty(f)) return;
         [UIView animateWithDuration:MSBReduceMotion() ? 0.2 : 0.25 delay:0 options:UIViewAnimationOptionBeginFromCurrentState animations:^{
@@ -580,6 +705,7 @@ static void DMCC18DidScroll(id self, SEL _cmd, id scrollView) {
 static void DMCC18WillPresentHook(id self, SEL _cmd) {
     o_DMCC18WillPresent(self, _cmd);
     gCC18Shown = YES;
+    DMCC18TilesWillPresent();
     if (!gCC18On || !gCC18Main.isViewLoaded) return;
     if (gCC18Expanded) DMCC18ExpandedReset();
     if (fabs(DMMenuBarHeight() - gCC18LaidBar) > 0.25 || CGRectIsEmpty(gCC18Grid)) DMCC18Relayout(@"the bar's height");
@@ -588,6 +714,8 @@ static void DMCC18WillPresentHook(id self, SEL _cmd) {
 static void DMCC18DidDismissHook(id self, SEL _cmd) {
     o_DMCC18DidDismiss(self, _cmd);
     gCC18Shown = NO;
+    if (gCCPDetail) DMCCPanelCloseDetail(NO);   // (one of our pages open as it closed: CC18Tiles.h)
+    DMCC18TilesDidDismiss();
     if (gCC18On && gCC18Expanded) DMCC18ExpandedReset();
     if (gCC18Pending) dispatch_async(dispatch_get_main_queue(), ^{ DMCC18ApplyStyle(@"Control Center closed"); });
 }
@@ -597,6 +725,25 @@ static void DMCC18HeaderLayout(id self, SEL _cmd) {
     if (!gCC18On || gCC18Editing || !gCC18Row.superview || self != DMCC18ViewOf(gCC18Main, @"overlayHeaderView")) return;
     DMCC18ButtonsIn(self);
     DMCC18PlaceButtons();
+    DMCC18HeaderLook(self);   // (Apple's sensor attribution came or went: the header lays itself out then)
+    DMCC18PlaceSensor(self);
+}
+// Apple's own place for its sensor control (Apple's header lays it out there; the list of the apps opens from it): in the panel, our top row's
+// middle (DMCC18SensorRect), at Apple's size or narrower; Apple's elsewhere.
+static CGRect DMCC18SensorFrame(id self, SEL _cmd) {
+    CGRect r = o_DMCC18SensorFrame(self, _cmd);
+    if (!DMCC18PanelInForce() || !gCC18Row.superview || self != DMCC18ViewOf(gCC18Main, @"overlayHeaderView")) return r;
+    CGRect f = DMCC18SensorRect(self, r.size);
+    return CGRectIsEmpty(f) ? r : f;
+}
+// The header's touches in the panel: its sensor control's, within our top row (Apple gives it 20 pt more on every side, which here reached into the
+// first row of tiles); nothing else of the header's (it shows nothing else: its touches go on to the tiles and the panel below it, as when it is
+// hidden). With Apple's sensor indicator, a tap on our menu bar's Control Center icon then closes Control Center (1.8.1 item 12, on 18).
+static UIView *DMCC18HeaderHit(id self, SEL _cmd, CGPoint p, UIEvent *e) {
+    UIView *r = o_DMCC18HeaderHit(self, _cmd, p, e);
+    if (!r || !DMCC18PanelInForce() || !gCC18Row.superview || self != DMCC18ViewOf(gCC18Main, @"overlayHeaderView")) return r;
+    UIView *control = DMCC18ViewOf(self, @"compactSensorAttributionControl");
+    return MSBDCC18SensorTouch(control && [r isDescendantOfView:control], p, [gCC18Row convertRect:gCC18Row.bounds toView:self]) ? r : nil;
 }
 
 // A tap in our panel (on the material between Apple's tiles, the top row's empty part) is not a tap outside Control Center: Apple takes a tap on
@@ -672,6 +819,121 @@ static void DMCC18ExtendArea(id self, SEL _cmd, BOOL extend) {
     if (extend && DMCC18PanelInForce() && [(UIView *)self isDescendantOfView:gCC18Main.viewIfLoaded]) extend = NO;
     o_DMCC18ExtendArea(self, _cmd, extend);
 }
+// ... and nothing past the full presentation in the panel: Apple's provider makes a transition state for each step of a finger pull, and past
+// the full presentation gives it a paging part (-pagingProgress, 0 to 1: how far the finger has gone on towards the page dots; read on 18.5), by
+// which Apple shrinks its pages as a paging hint (-_addPageContentTransformAnimationsToBatch:transitionState:: their scale to 0.8 and alpha to
+// 0.7, about the screen's middle), and its progress goes on past 1, by which Apple's module views rubber-band down (-_transformForTransitionState:
+// rubberBandingHeight:, less as the paging part grows). In the panel the grid sits at the right under our bar: its tiles slid left and down out
+// of the panel while the finger kept pulling and came back when it lifted (cc18dots' finding; without the paging part the rubber band alone took
+// them out of the panel's bottom). A presentation step's state is made again there by Apple's own factory with the step's type and finger, its
+// progress at most 1 and no paging part, as the 15-17 panel's motion stops at the full presentation (Apple's continuation into its paging then
+// ends at its own first test as well). Dismissal steps and iPadOS's own Control Center keep Apple's.
+#define kDMCC18PresentType 1ULL   // (Apple's transition type of a presentation: its provider gives only those states a paging part, 18.5)
+static id DMCC18PullState(id self, SEL _cmd, unsigned long long type, BOOL interactive, CGPoint translation) {
+    id s = o_DMCC18PullState(self, _cmd, type, interactive, translation);
+    if (!s || !DMCC18PanelInForce() || !DMCC18MainIfOurs(DMCCGet(self, @"viewProvider"))) return s;
+    double progress = ((double (*)(id, SEL))objc_msgSend)(s, NSSelectorFromString(@"progress")), paging = ((double (*)(id, SEL))objc_msgSend)(s, NSSelectorFromString(@"pagingProgress"));
+    if (!MSBDCC18PullState(1, type == kDMCC18PresentType, &progress, &paging)) return s;
+    id plain = ((id (*)(id, SEL, unsigned long long, BOOL, double, double))objc_msgSend)(objc_getClass("CCUIOverlayTransitionState"),
+        NSSelectorFromString(@"stateWithType:interactive:progress:pagingProgress:"), type, interactive, progress, paging);
+    return plain ?: s;
+}
+
+// Esc on a hardware keyboard while the panel shows (StatusBar.x's -[SpringBoard pressesBegan:withEvent:] hook, DMOverlayPressesBegan, after the
+// 15-17 panel's DMCCPanelEscape): Control Center's window has no first responder on 18, so Esc reaches SpringBoard as on 15-17 and went nowhere
+// (A12Z 18.5). One level back, as the 15-17 panel's page goes back first: what Apple counts as content it presents -- a module open expanded (a
+// UIKit presentation of its container on 18), the sensor list, edit mode, its gallery: -canDismissPresentedContent, read on 18.5 -- closes by
+// Apple's own -dismissPresentedContentAnimated:completion:, else Control Center closes (Apple's own animated dismissal, the 15-17 panel's).
+// Anything else presented over Control Center keeps the key. Esc alone; YES when taken.
+static BOOL DMCC18PanelEscape(NSSet<UIPress *> *presses) {
+    UIViewController *m = gCC18Main;
+    if (!gCC18On || !gCC18Shown || !m.viewIfLoaded.window || !DMControlCenterActive()) return NO;
+    for (UIPress *p in presses) {
+        if (p.key.keyCode != UIKeyboardHIDUsageKeyboardEscape || (p.key.modifierFlags & (UIKeyModifierCommand | UIKeyModifierControl | UIKeyModifierAlternate | UIKeyModifierShift))) continue;
+        if (DMCC18PagePanelEscape()) { DM_FEATURE_MARK("esc-closes-cc-18"); DMLog(@"[cc18] Esc: the page goes back"); return YES; }   // (one of our pages, CC18Tiles.h)
+        if (!gCC18HaveEsc) return NO;   // (its rows not as read, another 18.x: Apple's handling of the key, as before 1.8.1; an optional part of the table)
+        BOOL content = DMCCTypes(m, @"canDismissPresentedContent", "B16@0:8") && ((BOOL (*)(id, SEL))objc_msgSend)(m, NSSelectorFromString(@"canDismissPresentedContent"));
+        int step = MSBDCC18EscStep(content, m.presentedViewController != nil);
+        if (step == kMSBDCC18EscNone) return NO;
+        DM_FEATURE_MARK("esc-closes-cc-18");
+        DMLog([NSString stringWithFormat:@"[cc18] Esc: %@", step == kMSBDCC18EscClosePresented ? @"one level back (Apple's presented content closes)" : @"Control Center closes"]);
+        if (step == kMSBDCC18EscClosePresented && DMCCTypes(m, @"dismissPresentedContentAnimated:completion:", "v28@0:8B16@?20"))
+            ((void (*)(id, SEL, BOOL, id))objc_msgSend)(m, NSSelectorFromString(@"dismissPresentedContentAnimated:completion:"), YES, nil);
+        else DMCCPanelDismiss();
+        return YES;
+    }
+    return NO;
+}
+
+// ---- the Mac panel's own layout of tiles (1.8.1 item 1; common/CC18MacLayout.h) ------------------------------------------------------------------
+// While Mac is the style Apple's grid reads and saves a file of its own: made once from the user's layout, our Mac tiles at the top in place of the
+// Apple tiles they stand for; iPadOS's file is never touched (edit mode and the gallery save into the store the model has). Made with the data-protection
+// class Apple's own layout has (none: SpringBoard reads it before a first unlock). Any failure: Apple's file, and Mac as 1.8.0.
+static NSURL *DMCC18MacLayoutURL(void) {
+    NSString *mac = kMSBDCC18MacLayoutFile;
+    NSData *d = [NSData dataWithContentsOfFile:mac];
+    NSDictionary *have = d ? [NSPropertyListSerialization propertyListWithData:d options:NSPropertyListImmutable format:NULL error:nil] : nil;
+    NSArray *(*registered)(void) = (NSArray *(*)(void))dlsym(RTLD_DEFAULT, kMSBDCCRegisteredControlsFn);
+    NSArray *controls = registered ? registered() : nil;
+    BOOL sshInstalled = access(kMSBDSSHDaemon, F_OK) == 0;
+    if (!MSBDCC18MacLayoutReadable(have, controls, sshInstalled)) { DMLog(@"[cc18] the Mac layout stays unread: a module of ours is not in the repository"); return nil; }
+    int step = MSBDCC18MacFileStep(d || [[NSFileManager defaultManager] fileExistsAtPath:mac], have);
+    if (step == kMSBDCC18MacFileUse) return [NSURL fileURLWithPath:mac];
+    if (step == kMSBDCC18MacFileAppleForNow) { DMLog(@"[cc18] the Mac layout is there but could not be read or does not parse: Apple's file for now, nothing written over it"); return nil; }
+    if (!MSBDCC18MacLayoutMayBeMade(controls, sshInstalled)) { DMLog(@"[cc18] the Mac layout is not made now: RAM & CPU or SSH is off (the crash guard), its tile would be lost: Apple's file for that while"); return nil; }
+    d = [NSData dataWithContentsOfFile:kMSBDCC18AppleLayoutFile];
+    NSDictionary *state = d ? [NSPropertyListSerialization propertyListWithData:d options:NSPropertyListImmutable format:NULL error:nil] : nil;
+    NSDictionary *made = MSBDCC18MacLayoutFrom(state, 8, ^NSString *{ return [NSUUID UUID].UUIDString; });
+    NSData *out = made ? [NSPropertyListSerialization dataWithPropertyList:made format:NSPropertyListBinaryFormat_v1_0 options:0 error:nil] : nil;
+    BOOL ok = out && [out writeToFile:mac options:NSDataWritingAtomic | NSDataWritingFileProtectionNone error:nil];
+    DMLog([NSString stringWithFormat:@"[cc18] the Mac layout %@ from the user's (%lu pages)", ok ? @"made" : @"NOT made: Apple's file stays", (unsigned long)[made[@"iconLists"] count]]);
+    return ok ? [NSURL fileURLWithPath:mac] : nil;
+}
+static BOOL gCC18MacLayoutInForce = NO;   // (Apple's grid has the Mac layout now)
+__attribute__((visibility("default"))) BOOL MSBDCCMacLayoutInForce(void) { return gCC18MacLayoutInForce; }   // (kMSBDCCMacLayoutInForceFn: "Add a Control" offers our Mac tiles only then, CCModuleRegister.h)
+static id DMCC18StoreInit(id self, SEL _cmd, NSURL *current, NSURL *desired) {
+    if (gCC18On && gCC18HaveTiles && [current isKindOfClass:[NSURL class]] && [current.path isEqualToString:kMSBDCC18AppleLayoutFile]) {
+        NSURL *mac = DMCC18MacLayoutURL();
+        if (mac) { gCC18AppleDesired = desired; current = mac; desired = [NSURL fileURLWithPath:kMSBDCC18MacDesiredFile]; gCC18MacLayoutInForce = YES; DMLog(@"[cc18] Control Center's tiles read the Mac layout"); }
+    }
+    return o_DMCC18StoreInit(self, _cmd, current, desired);
+}
+// A style change while Control Center exists, in Apple's own steps for a layout changed under a live Control Center (-[CCUIPagingViewController resetToDefaultLayout],
+// 18.5): the model saves where it is and must be clean (-layout saves too: what is unsaved would go to the other file), gets the other file, Control Center leaves the
+// root folder, the model lays out again (-layout: a new root folder from the store; -reloadIcons only reloads its icons), Control Center takes the new root folder, its
+// controller shows it. Nothing started when a part of that is not there.
+static void DMCC18LayoutFollowsStyle(UIViewController *m) {
+    if (!gCC18HaveTiles || !o_DMCC18StoreInit || !m.isViewLoaded) return;
+    UIViewController *paging = DMCCGet(m, @"pagingViewController");
+    id model = DMCCGet(paging, @"iconModel");
+    Class storeClass = objc_getClass("SBIconModelPropertyListFileStore");
+    id store = DMCCGet(model, @"store"), root = DMCCGet(model, @"rootFolder");
+    if (!model || !root || !storeClass || ![store isKindOfClass:storeClass]) return;
+    NSURL *now = DMCCGet(store, @"currentIconStateURL");
+    NSURL *want = gCC18On ? DMCC18MacLayoutURL() : nil;
+    if (!want) want = [NSURL fileURLWithPath:kMSBDCC18AppleLayoutFile];
+    if ([now.path isEqualToString:want.path]) return;
+    UIViewController *folders = nil;
+    for (UIViewController *c in paging.childViewControllers) if (DMCCTypes(c, @"setFolder:", "v24@0:8@16")) { folders = c; break; }
+    if (!folders) { DMLog(@"[cc18] the layout stays: no root folder controller here"); return; }
+    ((BOOL (*)(id, SEL))objc_msgSend)(model, NSSelectorFromString(@"saveIconStateIfNeeded"));
+    if (((BOOL (*)(id, SEL))objc_msgSend)(model, NSSelectorFromString(@"isIconStateDirty"))) { DMLog(@"[cc18] the layout stays: not saved"); return; }
+    if ([now.path isEqualToString:kMSBDCC18AppleLayoutFile]) gCC18AppleDesired = DMCCGet(store, @"desiredIconStateURL");
+    NSURL *desired = [want.path isEqualToString:kMSBDCC18MacLayoutFile] ? [NSURL fileURLWithPath:kMSBDCC18MacDesiredFile] : gCC18AppleDesired;
+    id fresh = o_DMCC18StoreInit([storeClass alloc], NSSelectorFromString(@"initWithIconStateURL:desiredIconStateURL:"), want, desired);
+    if (!fresh) return;
+    void (*send)(id, SEL, id) = (void (*)(id, SEL, id))objc_msgSend;
+    send(root, NSSelectorFromString(@"setDelegate:"), nil);
+    send(root, NSSelectorFromString(@"removeFolderObserver:"), paging);
+    send(model, NSSelectorFromString(@"setStore:"), fresh);
+    gCC18MacLayoutInForce = [want.path isEqualToString:kMSBDCC18MacLayoutFile];
+    ((void (*)(id, SEL))objc_msgSend)(model, NSSelectorFromString(@"layout"));
+    id newRoot = DMCCGet(model, @"rootFolder");
+    send(newRoot, NSSelectorFromString(@"addFolderObserver:"), paging);
+    send(newRoot, NSSelectorFromString(@"setDelegate:"), paging);
+    send(folders, NSSelectorFromString(@"setFolder:"), newRoot);
+    DMLog([NSString stringWithFormat:@"[cc18] Control Center's tiles now read %@", want.lastPathComponent]);
+}
 
 // ---- turning it on and off -----------------------------------------------------------------------------------------------------------------
 static void DMCC18SetWanted(BOOL want) {
@@ -685,6 +947,7 @@ static void DMCC18SetWanted(BOOL want) {
 // second later -- no hook before Mac was ever chosen). The hooks go in the first time Mac is chosen and stay (they act only while it is). Mac
 // steps aside while another Control Center is loaded, as on 15-17 (CCPanel.h DMCCPOtherCC: BigSurCenter until the respring that keeps it out --
 // both reshaped the same Control Center; code review 1.8.0, 11).
+static BOOL gCC18InConstructor = NO;   // (the start's look: SpringBoard's launch has not begun, nothing is asked of it: DMCC18Init)
 static void DMCC18ApplyStyle(NSString *why) {
     BOOL want = gCC18Supported && DMCCStyleChosenNow() == kMSBDCCStyleMac && !DMCCPOtherCC();
     DMCC18SetWanted(want);
@@ -700,8 +963,9 @@ static void DMCC18ApplyStyle(NSString *why) {
     if (want && !DMCC18InstallHooks()) { DMCC18SetWanted(NO); return; }
     gCC18On = want;
     if (want) DM_FEATURE_MARK("cc-mac-18");
-    UIViewController *m = DMCC18FindMain();
+    UIViewController *m = gCC18InConstructor ? nil : DMCC18FindMain();
     gCC18Editing = m.isViewLoaded && DMCCTypes(m, @"isEditing", "B16@0:8") && ((BOOL (*)(id, SEL))objc_msgSend)(m, NSSelectorFromString(@"isEditing"));
+    if (m.isViewLoaded) DMCC18LayoutFollowsStyle(m);
     if (m.isViewLoaded) DMCC18Relayout(want ? @"Mac chosen" : @"iPadOS chosen");   // (else at Apple's build: our insets are asked then)
     DMLog([NSString stringWithFormat:@"[cc18] style %@ (%@)%@", want ? @"Mac" : @"iPadOS", why, m.isViewLoaded ? @"" : @": at Apple's build"]);
 }
@@ -726,7 +990,9 @@ static void DMCC18Init(void) {
     DMLog([NSString stringWithFormat:@"[cc18] API check: %@ (%lu rows, %.2f ms)", gCC18Supported ? @"passed" : reason, (unsigned long)checked, (CACurrentMediaTime() - t0) * 1000.0]);
     for (NSString *l in bad) DMLog([@"[cc18]   " stringByAppendingString:l]);
     if (!gCC18Supported) return;
+    gCC18InConstructor = YES;
     DMCC18ApplyStyle(@"start");
+    gCC18InConstructor = NO;
 }
 
 #if DEBUG
@@ -754,6 +1020,8 @@ static void DMCC18State(void) {
     UIPageControl *pc = [dots isKindOfClass:[UIPageControl class]] ? (UIPageControl *)dots : nil;
     DMLog([NSString stringWithFormat:@"[cc18] state: dots %@ in %@ (their capsule %@), page %ld of %ld; backdrop %@; header %@; rows on this page %.1f", DMCC18ScreenRect(dots), NSStringFromClass([dots.superview class]),
         DMCC18ScreenRect(gCC18DotsPill.superview ? gCC18DotsPill : nil), pc ? (long)pc.currentPage : -1L, pc ? (long)pc.numberOfPages : -1L, DMCC18ScreenRect(back), DMCC18ScreenRect(header), m ? DMCC18RowsHeight(m) : -1]);
+    DMLog([NSString stringWithFormat:@"[cc18] state: sensor part %d, attribution shows %d, its control %@ (Apple's place %@), the header's own views hidden by us %lu", gCC18HaveSensor, DMCC18SensorShows(header),
+        DMCC18ScreenRect(DMCC18ViewOf(header, @"compactSensorAttributionControl")), gCC18HaveSensor && o_DMCC18SensorFrame && header ? NSStringFromCGRect(o_DMCC18SensorFrame(header, NSSelectorFromString(@"compactModeFrameForSensorView"))) : @"-", (unsigned long)gCC18HidHeaderParts.count]);
 }
 // c18m_header: Apple's header's views (frames, hidden, alpha, constraints on them, Auto Layout) and its edge insets, read-only
 static void DMCC18Header(void) {
@@ -858,10 +1126,22 @@ static void DMCC18DebugTrigger(NSString *cmd) {
     else if ([cmd isEqualToString:@"c18m_tint"]) DMCC18Tint(NO, NO);
     else if ([cmd isEqualToString:@"c18m_fakeair_1"] || [cmd isEqualToString:@"c18m_fakeair_0"]) DMCC18Tint(YES, [cmd hasSuffix:@"_1"]);
     else if ([cmd isEqualToString:@"c18m_relayout"]) DMCC18Relayout(@"debug");
+    else if ([cmd hasPrefix:@"c18m_turnsim_"]) {   // c18m_turnsim_<dx|none>: what a turn does to an open page: the grid dx points further on (none: no place left for it), our views as after Apple's layout; c18m_relayout: the grid back
+        NSString *arg = [cmd substringFromIndex:13];
+        gCC18Grid = [arg isEqualToString:@"none"] ? CGRectZero : CGRectOffset(gCC18Grid, arg.doubleValue, 0);
+        DMCC18Views(@"a turn simulated");
+        DMLog([NSString stringWithFormat:@"[cc18] a turn simulated: grid %@, material %@ on the view %d, page %@", NSStringFromCGRect(gCC18Grid), NSStringFromCGRect(gCC18Material.frame), gCC18Material.superview != nil, gCCPDetail ? NSStringFromCGRect(gCCPDetail.frame) : @"closed"]);
+    }
+    else if ([cmd isEqualToString:@"c18m_layout"]) {   // the file Apple's model has, the model's page sizes (read-only)
+        UIViewController *m = DMCC18FindMain(); id model = DMCCGet(DMCCGet(m, @"pagingViewController"), @"iconModel"), store = DMCCGet(model, @"store");
+        DMLog([NSString stringWithFormat:@"[cc18] layout: model %@, store %@, file %@, desired %@", model ? NSStringFromClass([model class]) : @"-", store ? NSStringFromClass([store class]) : @"-", [DMCCGet(store, @"currentIconStateURL") path], [DMCCGet(store, @"desiredIconStateURL") path]]);
+    }
+    else if ([cmd isEqualToString:@"c18m_layout_forget"]) { [[NSFileManager defaultManager] removeItemAtPath:kMSBDCC18MacLayoutFile error:nil]; DMLog(@"[cc18] the Mac layout file removed"); }
+    else if ([cmd isEqualToString:@"c18m_layout_follow"]) DMCC18LayoutFollowsStyle(DMCC18FindMain());
     else if ([cmd isEqualToString:@"c18m_apply"]) DMCC18ApplyStyle(@"debug");
     else if ([cmd isEqualToString:@"c18m_api"]) {
-        for (size_t i = 0; i < sizeof(kDMCC18Hooks) / sizeof(kDMCC18Hooks[0]); i++) DMLog([NSString stringWithFormat:@"[cc18] api hook -[%s %s]: %@", kDMCC18Hooks[i].cls, kDMCC18Hooks[i].sel, DMCC18RowProblem(kDMCC18Hooks[i].cls, kDMCC18Hooks[i].sel, kDMCC18Hooks[i].enc, NO) ?: @"as expected"]);
-        for (size_t i = 0; i < sizeof(kDMCC18Needs) / sizeof(kDMCC18Needs[0]); i++) DMLog([NSString stringWithFormat:@"[cc18] api %s %s: %@", kDMCC18Needs[i].cls, kDMCC18Needs[i].sel, DMCC18RowProblem(kDMCC18Needs[i].cls, kDMCC18Needs[i].sel, kDMCC18Needs[i].enc, kDMCC18Needs[i].ivar) ?: @"as expected"]);
+        for (size_t i = 0; i < sizeof(kDMCC18Hooks) / sizeof(kDMCC18Hooks[0]); i++) DMLog([NSString stringWithFormat:@"[cc18] api hook -[%s %s]: %@", kDMCC18Hooks[i].cls, kDMCC18Hooks[i].sel, DMCC18RowProblem(kDMCC18Hooks[i].cls, kDMCC18Hooks[i].sel, kDMCC18Hooks[i].enc, NO, NO) ?: @"as expected"]);
+        for (size_t i = 0; i < sizeof(kDMCC18Needs) / sizeof(kDMCC18Needs[0]); i++) DMLog([NSString stringWithFormat:@"[cc18] api %s %s: %@", kDMCC18Needs[i].cls, kDMCC18Needs[i].sel, DMCC18RowProblem(kDMCC18Needs[i].cls, kDMCC18Needs[i].sel, kDMCC18Needs[i].enc, kDMCC18Needs[i].ivar, kDMCC18Needs[i].meta) ?: @"as expected"]);
     }
     else if ([cmd isEqualToString:@"c18m_open"] || [cmd isEqualToString:@"c18m_close"]) {   // (Apple's own present / dismiss, as our Control Center icon calls them)
         id cc = DMControlCenterController();

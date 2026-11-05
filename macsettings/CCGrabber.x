@@ -20,6 +20,9 @@
 // RAM & CPU is in Control Center's repository in this SpringBoard (all three repository methods taken, its bundle there, not off by step 1b): the
 // status bar part asks before it puts RAM & CPU in Control Center by itself (1.7.7 item 8, common/CCAutoAdd.h) -- found with dlsym, another part's
 __attribute__((visibility("default"))) BOOL MSBDCCRAMCPURegistered(void) { return gMSBDCCHooked == 3 && [gMSBDCCIdentifiers containsObject:kMSBDCCModuleID]; }
+// Our controls in the repository in this SpringBoard, nil when the repository's methods are not all taken (or this part is not loaded: dlsym finds nothing): the status
+// bar part reads the Mac layout only while the modules its tiles need are here (common/CC18MacLayout.h, 1.8.1 item 1)
+__attribute__((visibility("default"))) NSArray<NSString *> *MSBDCCRegisteredControls(void) { return gMSBDCCHooked == 3 ? gMSBDCCIdentifiers : nil; }
 
 // Settings > Status Bar > Control Center > Hide Grabber (1.3.3, audit L-2): on unless switched off -- the line stays hidden for everyone who had it
 // hidden before the switch existed. Read once and again after the switch posts its notification; switching it off shows the line again (the
@@ -69,9 +72,12 @@ static const void *kCCGHiddenByUsKey = &kCCGHiddenByUsKey;
 #if DEBUG
         log = ^(NSString *line) { MSBDCCDebugLog([@"[cctile] " stringByAppendingString:line]); };
 #endif
-        NSMutableArray *notes = [NSMutableArray array];
-        for (NSString *mid in gMSBDCCIdentifiers) [notes addObject:[mid isEqualToString:kMSBDCCSSHModuleID] ? kMSBDCCTileSSHNoteFile : kMSBDCCTileNoteFile];
-        MSBDCCTileKeepStartAll(kMSBDCCTileStateFile, notes, gMSBDCCIdentifiers, log);
+        NSMutableArray *notes = [NSMutableArray array], *kept = [NSMutableArray array];
+        for (NSString *mid in gMSBDCCIdentifiers) {
+            if (MSBDCCIsMacTile(mid)) continue;   // (never in iPadOS's layout by us, and the Mac layout is read only with them all here: common/CC18MacLayout.h)
+            [kept addObject:mid]; [notes addObject:[mid isEqualToString:kMSBDCCSSHModuleID] ? kMSBDCCTileSSHNoteFile : kMSBDCCTileNoteFile];
+        }
+        MSBDCCTileKeepStartAll(kMSBDCCTileStateFile, notes, kept, log);
     }
     // Removal (the prerm's root helper, sshtoggled --uninstall): our controls out of the user's list of controls on 15-17 (CCModuleRegister.h)
     int removingToken = 0;

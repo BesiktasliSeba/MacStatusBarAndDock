@@ -49,7 +49,8 @@ check "  ... the launch's open-in-tile: the same windows take part, a regular on
    && grep -q 'if (plan.count == part.count && how != DMSMFitFourKept && newAttrs) {' \$W/fn && grep -q 'if (!plan\[k\]) continue;   // (a regular window over the tiles' \$W/fn \
    && grep -q 'for (NSString \*k in fitPlanC) \[gSMFitLoose removeObject:k\];' \$W/fn"
 check "  ... its third-window question counts the windows that take part, as the other engines (a No Fit window is none)" \
-  "grep -q 'for (NSString \*k in stageKeys) if (!DMSMKeySetHas(gSMFreeWindows, k)) takingPart++;' \$W/fn && grep -q 'DMFitEnabled() && takingPart == 2 && gSMFitSlots.count == 2' \$W/fn && ! grep -q 'map.count == 2 && gSMFitSlots.count == 2' \$W/fn"
+  "grep -q 'DMSMFitAsksAbout(bundle, stageKeys, &leftB, &rightB)' \$W/fn && ! grep -q 'map.count == 2 && gSMFitSlots.count == 2' \$W/fn && awk '/^static BOOL DMSMFitAsksAbout\(/{f=1} f{print} f&&/^}/{exit}' $S > \$W/fa \
+   && grep -q 'for (NSString \*k in stageKeys) if (!DMSMKeySetHas(gSMFreeWindows, k)) takingPart++;' \$W/fa && grep -q '!DMFitEnabled() || takingPart != 2 || gSMFitSlots.count != 2' \$W/fa"
 check "  ... Stage Manager's own Close: the tiled windows close up in its transition, a regular or No Fit window keeps its own place" \
   "fn $S 'static void DMSMPlacesInClose(id ctx) {' && grep -q 'BOOL over = !gSMFitSlots\[k\] && !DMSMAttrsFullScreen(attrs) && (DMSMKeySetHas(gSMFitLoose, k) || DMSMKeySetHas(gSMFreeWindows, k));' \$W/fn \
    && grep -q 'if (!over && (!gSMFitSlots\[k\] || DMSMAttrsFullScreen(attrs) || DMSMKeySetHas(gSMFreeWindows, k))) fit = NO;' \$W/fn && grep -q 'if (!over) tiledStay++;' \$W/fn \

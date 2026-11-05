@@ -26,7 +26,9 @@ static void MABRegister(void) {
 }
 
 // Tells SpringBoard when this app was tapped or clicked (a click of a trackpad or a mouse at once, a finger tap when it did not move), so its window can be
-// raised; scrolling and dragging do not count. SpringBoard listens for "com.besiktasliseba.appbridge.touched.<hash>".
+// raised; scrolling and dragging do not count. SpringBoard listens for "com.besiktasliseba.appbridge.touched.<hash>". What a tap is: common/TapRule.h,
+// the same rule as the Stage Manager engine's (1.8.1).
+#include "../common/TapRule.h"
 static void MABTouched(void) {
     static uint32_t hash = 0; static char name[64]; static CFTimeInterval last = 0;
     if (!hash) {
@@ -669,7 +671,7 @@ static void MABInstallEscEndsTyping(void) {
             NSArray *start = gTouchStarts[key];
             if (start && t.phase == UITouchPhaseEnded) {
                 CGPoint p = [t locationInView:nil];
-                if (hypot(p.x - [start[0] doubleValue], p.y - [start[1] doubleValue]) < 12.0 && CACurrentMediaTime() - [start[2] doubleValue] < 0.8) MABTouched();   // a tap
+                if (MSBDTapLike(hypot(p.x - [start[0] doubleValue], p.y - [start[1] doubleValue]), CACurrentMediaTime() - [start[2] doubleValue])) MABTouched();   // a tap
             }
             [gTouchStarts removeObjectForKey:key];
         }

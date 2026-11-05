@@ -215,6 +215,13 @@ static inline BOOL MSBDExUserOff(NSString *lib, NSDictionary *choicy, NSDictiona
     if (!dylib && disabled && ![renamed containsObject:lib]) return YES;
     return NO;
 }
+// An engine's library may be the engines' default (sshtoggled EngineToKeep, when no engine is picked): there to load -- its .dylib, or a .disabled
+// (iCleaner Pro's: ours, or the user's) -- and not switched off by the user, by the same reader as Control Center Style's BigSurCenter (above). The
+// default had its own copy of the rule, which read Choicy's global list and iCleaner Pro only: an engine switched off for SpringBoard alone (Choicy's
+// custom configuration) could be made the default and loaded anyway (code review 1.8.0, note a; 1.8.1 item 3).
+static inline BOOL MSBDExEngineCanBeDefault(NSString *lib, NSDictionary *choicy, NSDictionary *record, NSArray<NSString *> *renamed, BOOL dylib, BOOL disabled) {
+    return (dylib || disabled) && !MSBDExUserOff(lib, choicy, record, renamed, dylib, disabled);
+}
 // The helper's record of its renames (one library a line; only the table's libraries count).
 static inline NSArray<NSString *> *MSBDExRenamesIn(NSString *text) {
     NSMutableArray *out = [NSMutableArray array];

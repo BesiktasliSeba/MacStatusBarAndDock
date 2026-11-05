@@ -82,7 +82,7 @@ check "the Audio menu and the Sound page have one builder (DMAudioMenuItems); th
   "grep -q '^static NSArray \*DMAudioMenuItems(NSUInteger \*countOut) {' $S && awk '/^static void DMOpenAudioMenu/{f=1} f&&/NSArray \*items = DMAudioMenuItems\(&n\);/{print \"ok\"; exit}' $S | grep -q ok \
    && grep -q 'NSMutableArray \*it = \[DMAudioMenuItems(&n) mutableCopy\];' $T"
 check "nothing runs while Control Center is closed: the observers only mark a tile's state old (a change of the volume asks the level again, off the main thread; Airplane Mode's preferences tell nothing then), no timer or display link of the tiles' own" \
-  "grep -q 'if (!gCCTShown) { c.old = YES; return; }' $T && grep -q 'if (!gCCTShown) { t.old = YES; return; }' $T && [ \$(grep -c 'if (!gCCTShown) { t.old = YES; return; }' $T) = 2 ] \
+  "grep -q 'if (!gCCTShown) { c.old = YES; continue; }' $T && grep -q 'if (!gCCTShown) { for (DMCCTTile \*c in conn) c.old = YES; return; }' $T && [ \$(grep -c 'if (!gCCTShown) { t.old = YES; continue; }' $T) = 2 ] \
    && ! grep -q 'NSTimer\|CADisplayLink\|scheduledTimer' $T && grep -q 'static void DMCCTPanelWillPresent(void) { gCCTShown = YES; DMCCTAirplaneWatch(YES); }' $T \
    && grep -q 'dispatch_async(dispatch_get_main_queue(), ^{ DMCCTLevelChanged(MSBDCCRoleTileSound, 0, NO); });' $T && grep -q 'static double DMCCTVolumeNow(BOOL \*ok) {   // (our queue only)' $T"
 check "the artwork is decoded off the main thread (MediaRemote answers on our queue), only when it is another picture" \

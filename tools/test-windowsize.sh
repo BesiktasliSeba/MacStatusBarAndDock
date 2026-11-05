@@ -32,8 +32,8 @@ check "the layouts keep theirs: the center layout from the same header (the same
    && ! awk '/^static CGRect DMLayoutFrameInArea\(NSString \*name, CGRect u, CGSize screen\) \{/,/^}/' $S | grep -q '0\.86\|0\.92' \
    && grep -q 'CGRect f = MSBDWindowSizeShapeIn(size, u, screen, top);' ../common/WindowSize.h"
 check "Zetsu: a new window asked for nowhere and with no last place opens at the new window (DMZetsuAdopt); its last place is kept" \
-  "fn 'static void DMZetsuAdopt(UIWindow *w) {' && grep -q 'CGRect target = asked ? askedFrame : (gLastWindowFrames\\[bundleID\\] ? gLastWindowFrames\\[bundleID\\].CGRectValue : DMNewWindowFrame());' \$W/fn \
-   && grep -q 'if (!asked && gLastWindowFrames\\[bundleID\\] && !CGRectIsNull(target)) DMMarkOwnPlace(w, target);' \$W/fn"
+  "fn 'static void DMZetsuAdopt(UIWindow *w) {' && grep -q 'NSValue \*lastPlace = gLastWindowFrames\\[bundleID\\];' \$W/fn && grep -q 'CGRect target = asked ? askedFrame : (inTile ? tile : (lastPlace ? lastPlace.CGRectValue : DMNewWindowFrame()));' \$W/fn \
+   && grep -q 'if (MSBDZetsuOpensAtOwnPlace(asked, lastPlace != nil) && !CGRectIsNull(target)) DMMarkOwnPlace(w, target);' \$W/fn"
 check "MilkyWay4: the same (DMEnlargeNewWindow), its own copy of the middle place gone; asked for or remembered first" \
   "fn 'static BOOL DMEnlargeNewWindow(UIView *window) {' && grep -q 'CGRect big = pending ? gPendingWindowFrame' \$W/fn && grep -q '               : (remembered && !CGRectIsNull(usable)) ? DMFitInto(remembered.CGRectValue, usable)' \$W/fn \
    && grep -q '               : DMNewWindowFrame();' \$W/fn && grep -q 'if (CGRectIsNull(big) || CGRectIsEmpty(big)) return NO;' \$W/fn && ! grep -q '0.78' \$W/fn"
@@ -43,7 +43,7 @@ check "Aerial: our launch opens at the new window (DMWindowedLaunch), and a wind
    && grep -q 'if ((gAerialFlavor == 5 || a3Sized) && !preLaunched) {' \$W/fn && grep -q 'CGRect want = remembered ? DMFitInto(remembered.CGRectValue, usable) : DMNewWindowFrame();' \$W/fn \
    && grep -q 'if (remembered) ownPlace = YES;' \$W/fn"
 check "  ... and every other way it opens one: into its tile (no frame), the side question not shown, the cold start of an app full screen first" \
-  "grep -q 'DMAerialTrigger(bundleID, CGRectIsNull(frame) ? DMNewWindowFrame() : frame);' $S && grep -q 'else launch(DMNewWindowFrame());' $S \
+  "grep -q 'if (CGRectIsNull(frame)) frame = DMNewWindowFrame();' $S && grep -q 'DMAerialTrigger(bundleID, frame);' $S && grep -q 'else launch(DMNewWindowFrame());' $S \
    && grep -q 'CGRect target = gLastWindowFrames\\[bundleID\\] ? gLastWindowFrames\\[bundleID\\].CGRectValue : DMNewWindowFrame();' $S"
 check "the green light's way back from full screen (Aerial, Zetsu, MilkyWay4): where the window last was, else the new window" \
   "fn 'static void DMWindowLayout(NSString *name) {' && grep -q 'if (gPreferRememberedFrame) target = gLastWindowFrames\\[bundleID\\] ? gLastWindowFrames\\[bundleID\\].CGRectValue : DMNewWindowFrame();' \$W/fn"
@@ -100,5 +100,5 @@ check "  ... with Stage Manager as the engine the row stays (its windows open at
    && grep -q '#define kMSBDWindowSizeRowKey @\"windowSize\"' $R && grep -q '#define kMSBDWindowSizeKey \"windowSize\"' ../common/WindowSize.h \
    && grep -q '(s.stageManagerEngine && !MSBDStageManagerKeepsRow(key))' $R && grep -q 'BOOL itsToo = MSBDStageManagerKeepsRow(\\[sp propertyForKey:@\"key\"\\]);' $P"
 check "the crash guard: a crash in this code is window code (windowing off), as the rest of the new window's" \
-  "grep -qxF 'file MacStatusBarCore ^(WindowCards|WindowMinSize|WindowSize|FitPlan|SBLaunchRule)\\.h\$ windowingEnabled' $C && grep -qF '|DMWindowed|DMNewWindow|DMInstallAppExitForget) windowingEnabled' $C"
+  "grep -qxF 'file MacStatusBarCore ^(WindowCards|WindowMinSize|WindowSize|FitPlan|SBLaunchRule|AerialHeld)\\.h\$ windowingEnabled' $C && grep -qF '|DMWindowed|DMNewWindow|DMInstallAppExitForget) windowingEnabled' $C"
 [ $fails = 0 ] && echo "test-windowsize: wiring checks pass" || { echo "test-windowsize: wiring checks FAILED"; exit 1; }

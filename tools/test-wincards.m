@@ -60,6 +60,17 @@ int main(void) {
         CHECK(k == 1 && ord[0] == 0, "the front window's picture current: only the others");
         CHECK(MSBDWinCardPictureOrder(NULL, 0, ord) == 0, "no windows: nothing");
     }
+    {   // the title bar on a window's card (iPad 2 16.7.7, Aerial 5.1: Tips' picture 597 x 768 in the 1024 x 768 card, a 509 pt wide window)
+        double s = 0, cx = 0, cy = 0;
+        MSBDWinCardBarPlace(213.5, 0, 597, 509, 24, &s, &cx, &cy);
+        CHECK(fabs(s - 597.0 / 509.0) < 1e-9, "the bar: in the picture's scale");
+        CHECK(fabs(cx - 512.0) < 1e-9, "the bar: over the picture's middle");
+        CHECK(fabs(cy - (0 - 12 * s)) < 1e-9, "the bar: wholly above the picture, its bottom on the picture's top");
+        MSBDWinCardBarPlace(0, 300, 1024, 1024, 24, &s, &cx, &cy);
+        CHECK(fabs(s - 1.0) < 1e-9 && fabs(cy - 288.0) < 1e-9, "a wide window's picture in the card's middle: the bar right above it, inside the card");
+        MSBDWinCardBarPlace(10, 10, 100, 0, 24, &s, &cx, &cy);
+        CHECK(s == 1.0, "no size known: no scale");
+    }
     printf("%s: %d checks, %d failed\n", fails ? "FAILED" : "ok", checks, fails);
     return fails ? 1 : 0;
 }

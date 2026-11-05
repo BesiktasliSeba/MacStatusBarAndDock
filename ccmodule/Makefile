@@ -9,7 +9,9 @@ include $(THEOS)/makefiles/common.mk
 # One bundle each for iPadOS 15-18, loaded by Control Center like Apple's modules, each from a folder of our own: common/CCModuleRegister.h puts
 # those folders and the modules' identifiers in Control Center's module repository (MacCCGrabber in SpringBoard, MacSettings in Settings on 15-17)
 # -- SSH's only with OpenSSH installed.
-BUNDLE_NAME = MacRAMCPU MacSSH
+# MacConnectivity, MacDisplay, MacSound, MacNowPlaying (1.8.1 item 1): our Mac tiles on iPadOS 18 as Control Center's own modules (only there: CCModuleList.h):
+# one small class each, the tile and its pages are the status bar part's (statusbar/CC18Tiles.h).
+BUNDLE_NAME = MacRAMCPU MacSSH MacConnectivity MacDisplay MacSound MacNowPlaying
 MacRAMCPU_FILES = MSBDRAMCPUModule.m
 MacRAMCPU_CFLAGS = -fobjc-arc
 MacRAMCPU_FRAMEWORKS = UIKit
@@ -21,5 +23,29 @@ MacSSH_FRAMEWORKS = UIKit
 MacSSH_PRIVATE_FRAMEWORKS = ControlCenterUIKit
 MacSSH_RESOURCE_DIRS = SSHResources
 MacSSH_INSTALL_PATH = /usr/lib/MacStatusBarAndDock/ControlCenterSSH
+
+MacConnectivity_FILES = MSBDMacConnectivityModule.m
+MacConnectivity_CFLAGS = -fobjc-arc
+MacConnectivity_FRAMEWORKS = UIKit
+MacConnectivity_RESOURCE_DIRS = MacTileResources/Connectivity
+MacConnectivity_INSTALL_PATH = /usr/lib/MacStatusBarAndDock/ControlCenterMac
+
+MacDisplay_FILES = MSBDMacDisplayModule.m
+MacDisplay_CFLAGS = -fobjc-arc
+MacDisplay_FRAMEWORKS = UIKit
+MacDisplay_RESOURCE_DIRS = MacTileResources/Display
+MacDisplay_INSTALL_PATH = /usr/lib/MacStatusBarAndDock/ControlCenterMac
+
+MacSound_FILES = MSBDMacSoundModule.m
+MacSound_CFLAGS = -fobjc-arc
+MacSound_FRAMEWORKS = UIKit
+MacSound_RESOURCE_DIRS = MacTileResources/Sound
+MacSound_INSTALL_PATH = /usr/lib/MacStatusBarAndDock/ControlCenterMac
+
+MacNowPlaying_FILES = MSBDMacNowPlayingModule.m
+MacNowPlaying_CFLAGS = -fobjc-arc
+MacNowPlaying_FRAMEWORKS = UIKit
+MacNowPlaying_RESOURCE_DIRS = MacTileResources/NowPlaying
+MacNowPlaying_INSTALL_PATH = /usr/lib/MacStatusBarAndDock/ControlCenterMac
 
 include $(THEOS_MAKE_PATH)/bundle.mk

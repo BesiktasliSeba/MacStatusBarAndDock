@@ -62,7 +62,7 @@ The Mac look is on right after install, and most features have their own switch.
 
 - Control Center Style in Settings > Status Bar picks which Control Center opens: Mac, iPadOS or BigSurCenter. Only the chosen one loads, and until you pick one you keep the Control Center you had.
 - Mac is a Control Center like the Mac's: Airplane Mode, Wi-Fi, Bluetooth, Display, Sound and Now Playing at the top, and your other controls below. Wi-Fi and Bluetooth open a page of networks or devices, and Sound's page has a volume for each app.
-- On iPadOS 18, the Mac Control Center holds Apple's own controls, with + and the power button at its top.
+- On iPadOS 18, + and the power button sit at its top, and Display's page has Dark Mode, Night Shift and True Tone. In edit mode you can resize or remove the tiles like Apple's, and Add a Control lists them under Mac Control Center. Mac has its own list of controls, made once from yours, so what you change there stays there and iPadOS's own list isn't changed.
 - The menu bar's Control Center icon lights up while Control Center is open, and a second tap closes it. The Control Center size slider sets how large the Mac Control Center (iPadOS 15 to 17) or BigSurCenter opens.
 
 ### Windows
@@ -198,7 +198,7 @@ Tried it on another setup? A [compatibility report](https://github.com/Besiktasl
 - External displays: on iPadOS 15 the iPad is mirrored. On iPadOS 16 with engines other than Stage Manager, windows stay on the iPad; open apps from the display's App Library to use them there.
 - Finder can't show iCloud Drive (iPadOS doesn't allow it), drag and drop goes from Finder into apps but not back yet, and drives have been tested on iPadOS 15 only.
 - On iPadOS 15, Safari's sound can stop another app that plays alone, as on a stock iPad. Control Center's Now Playing shows one app at a time.
-- On iPadOS 18, the Control Center size slider doesn't resize the Mac Control Center yet, and while it's open, the indicator for an app using the camera, microphone or location doesn't show.
+- On iPadOS 18, the Control Center size slider doesn't resize the Mac Control Center yet.
 
 ## Troubleshooting
 

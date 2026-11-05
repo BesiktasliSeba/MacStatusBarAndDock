@@ -64,28 +64,31 @@ def base(c, top, bottom, split=None):
     c.im.paste(bg, (0, 0), squircle_mask(c.n))
 
 def status_bar(px):
+    # the menu bar and, under it, a window filling the screen: its title bar runs edge to edge (KT, 5 Nov)
     c = Canvas(px)
     BAR = 8.0
-    base(c, hexc('#626E8E'), hexc('#323A52'), split=(BAR, hexc('#E2E5EE')))
+    light = hexc('#E2E5EE')
+    base(c, hexc('#626E8E'), hexc('#323A52'), split=(BAR, light))
     ink = hexc('#1F2230'); base_y = 5.55
     x = 3.1
     x += c.text(x, base_y + 0.1, '\uf8ff', 3.5, 500, ink) + 0.9        # the Apple menu
     c.text(x, base_y, 'Finder', 2.75, 700, ink)                          # the app's menu
-    # the status items on the right: Wi-Fi, then the battery
-    bx1, by = 25.9, 4.2
+    # the status items on the right, centred on the Finder text's capitals: Wi-Fi, then the battery
+    bx1, by = 25.9, base_y - 0.72 * 2.75 / 2
     c.rrect(bx1 - 4.0, by - 1.15, bx1, by + 1.15, 0.6, ink)                # battery outline
-    c.rrect(bx1 - 3.6, by - 0.75, bx1 - 0.4, by + 0.75, 0.3, hexc('#E2E5EE'))
+    c.rrect(bx1 - 3.6, by - 0.75, bx1 - 0.4, by + 0.75, 0.3, light)
     c.rrect(bx1 - 3.3, by - 0.45, bx1 - 1.2, by + 0.45, 0.2, ink)      # charge
     c.rrect(bx1 + 0.2, by - 0.45, bx1 + 0.65, by + 0.45, 0.2, ink)       # nub
-    wx, wy = 19.6, 5.65                                                   # Wi-Fi: three rings and a dot
+    wx, wy = 19.6, by + 1.45                                              # Wi-Fi: three rings and a dot
     for r in (2.4, 1.6, 0.85):
         c.wedge(wx, wy, r, 225, 315, ink)
-        c.wedge(wx, wy, r - 0.42, 225, 315, hexc('#E2E5EE'))
+        c.wedge(wx, wy, r - 0.42, 225, 315, light)
     c.wedge(wx, wy, 0.45, 225, 315, ink)
-    c.rrect(5.5, 11.0, 23.5, 24.3, 2.0, hexc('#A9B1C8', 120))           # a window
-    c.rrect_top(5.5, 11.0, 23.5, 14.1, 2.0, hexc('#C9CEDD', 150))
+    title = c.layer()                                                     # the title bar, clipped to the tile's corners
+    ImageDraw.Draw(title).rectangle(c.box(0, BAR, 29, 11.8), fill=hexc('#8A93AD'))
+    c.over(Image.composite(title, c.layer(), squircle_mask(c.n)))
     for i, col in enumerate(('#FF5F57', '#FEBC2E', '#28C840')):
-        c.ellipse(7.7 + i * 2.1, 12.55, 0.8, hexc(col))
+        c.ellipse(3.6 + i * 2.2, 9.9, 0.8, hexc(col))
     return c.out(px)
 
 def dock(px):
@@ -133,22 +136,24 @@ def windows(px):
     return c.out(px)
 
 def desktop(px):
-    # the Desktop page (1.7.5): a desktop's wallpaper with its icons where a Mac puts them, down a column at the top right -- a folder, then a
-    # document -- each with its name under it
+    # the Desktop page: a Mac display on a soft teal tile, its wallpaper with a desktop folder at the top right (KT, 5 Nov: calmer than 1.7.7's)
     c = Canvas(px)
-    base(c, hexc('#3FC9C3'), hexc('#167C8E'))
-    c.poly([(0, 21.0), (6.5, 18.2), (14.0, 19.6), (21.5, 17.4), (29, 18.6), (29, 29), (0, 29)], hexc('#FFFFFF', 34))   # a soft hill in the wallpaper
-    # the folder: its back with the tab, then its front (macOS's light blue)
-    c.rrect(14.2, 3.6, 19.4, 6.8, 1.0, hexc('#3E9FDB'))
-    c.rrect(14.2, 4.9, 25.6, 12.4, 1.3, hexc('#3E9FDB'))
-    c.rrect(14.2, 6.2, 25.6, 12.4, 1.3, hexc('#79CCF7'))
-    c.rrect(15.0, 13.3, 24.8, 14.4, 0.55, hexc('#FFFFFF', 215))      # its name
-    # the document: a sheet with its corner folded
-    c.poly([(16.4, 16.0), (21.6, 16.0), (23.4, 17.8), (23.4, 24.0), (16.4, 24.0)], hexc('#FFFFFF'))
-    c.poly([(21.6, 16.0), (21.6, 17.8), (23.4, 17.8)], hexc('#C9D3DA'))
-    for y in (19.2, 20.6, 22.0):                                      # its lines of text
-        c.rrect(17.6, y - 0.3, 22.2, y + 0.3, 0.3, hexc('#B8C4CC'))
-    c.rrect(15.0, 24.9, 24.8, 26.0, 0.55, hexc('#FFFFFF', 215))      # its name
+    base(c, hexc('#5FB3B3'), hexc('#33848C'))
+    frame = hexc('#F7F9FA')
+    c.poly([(12.7, 19.8), (16.3, 19.8), (17.5, 23.0), (11.5, 23.0)], frame)   # the stand
+    c.rrect(9.3, 22.8, 19.7, 24.1, 0.65, frame)                               # its foot
+    c.rrect(4.0, 5.7, 25.0, 19.9, 1.5, frame)                                 # the display
+    wall = Canvas.__new__(Canvas); wall.n = c.n; wall.k = c.k; wall.im = c.layer()
+    wall.rrect(4, 5, 25, 20, 0, hexc('#7E9CCB'))                              # the wallpaper
+    wall.ellipse(9.5, 22.6, 9.0, hexc('#8F88BC'))
+    wall.ellipse(20.0, 25.5, 10.6, hexc('#BC9DB9'))
+    x, y, w = 18.0, 8.1, 4.2; h = w * 0.74                                    # the folder, macOS's light blue: its back with the tab, then its front
+    wall.rrect(x, y, x + w * 0.46, y + h * 0.4, w * 0.09, hexc('#3E9FDB'))
+    wall.rrect(x, y + h * 0.16, x + w, y + h, w * 0.1, hexc('#3E9FDB'))
+    wall.rrect(x, y + h * 0.3, x + w, y + h, w * 0.1, hexc('#79CCF7'))
+    mask = Image.new('L', (c.n, c.n), 0)                                      # the screen's own rounded corners
+    ImageDraw.Draw(mask).rounded_rectangle(c.box(5.1, 6.8, 23.9, 18.8), radius=c.p(0.7), fill=255)
+    lay = c.layer(); lay.paste(wall.im, (0, 0), mask); c.over(lay)
     return c.out(px)
 
 ICONS = {

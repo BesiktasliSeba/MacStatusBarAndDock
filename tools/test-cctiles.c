@@ -132,6 +132,19 @@ int main(void) {
         char what[160]; snprintf(what, sizeof what, "Now Playing (321 x 69) at scale %.3f: the artwork, its two lines, play / pause and next side by side, inside", ks[s]);
         CHECK(ok, what);
     }
+    { MSBDCCTNowLayout L = MSBDCCTNowFrames(321, 69, 1.0); CHECK(near(L.info.size.width, L.play.origin.x) && near(L.info.size.height, 69) && near(L.info.origin.x, 0) && near(L.info.origin.y, 0), "  ... a tap anywhere but the buttons opens the player"); }
+    {   // (iPadOS 18's 2 x 2: 142 x 142)
+        MSBDCCTNowLayout L = MSBDCCTNowFrames(142, 142, 1.0);
+        CGRect tile = CGRectMake(0, 0, 142, 142);
+        CHECK(inside(L.art, tile) && inside(L.title, tile) && inside(L.line, tile) && inside(L.play, tile) && inside(L.next, tile), "Now Playing (2 x 2, 142 x 142): everything inside");
+        CHECK(CGRectGetMaxY(L.art) <= L.title.origin.y && CGRectGetMaxY(L.title) <= L.line.origin.y + 0.001 && CGRectGetMaxY(L.line) <= L.play.origin.y + 0.001 && L.title.size.width >= 100, "  ... the artwork, its two lines under it, the buttons along the bottom: nothing over anything");
+        CHECK(near(CGRectGetMaxX(L.play), L.next.origin.x) && L.play.size.width >= 44 && near(CGRectGetMaxX(L.next) - 71, 71 - L.play.origin.x), "  ... the buttons side by side, in the middle, full touch areas");
+        CHECK(near(L.info.size.width, 142) && near(L.info.size.height, L.play.origin.y), "  ... a tap above the buttons opens the player");
+    }
+    {   // (iPadOS 18's 4 x 1: 294 x 66, the wide layout)
+        MSBDCCTNowLayout L = MSBDCCTNowFrames(294, 66, 1.0);
+        CHECK(near(L.art.size.width, 42) && CGRectGetMaxX(L.art) < L.title.origin.x, "Now Playing (4 x 1, 294 x 66): the wide layout");
+    }
     int f = -1, sl = -1;
     MSBDCCTNowLines(0, 0, 0, 0, &f, &sl); CHECK(f == 5 && sl == 0, "its lines: nothing playing: \"Not Playing\" alone");
     MSBDCCTNowLines(1, 1, 1, 1, &f, &sl); CHECK(f == 1 && sl == 2, "  ... the title, then the artist");

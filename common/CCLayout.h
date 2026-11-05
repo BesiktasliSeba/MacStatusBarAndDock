@@ -249,6 +249,10 @@ static inline CGRect MSBDCCPanelFrame(double screenW, double screenH, double bar
 // indicator shows as on a stock iPad; beside it, the panel stays where MSBDCCPanelFrame puts it. As tall as its content either way, at most down to
 // kMSBDCCBottomMargin over the screen's bottom (the rest scrolls).
 #define kMSBDCCSensorGap 6.0
+// A touch at y (the overlay's space: the screen's, from its top) over our menu bar of height barH: Apple's sensor indicator, laid out under its own
+// lower status bar, takes a touch 20 pt beyond its frame on every side (-[CCUIHeaderPocketView hitTest:withEvent:]), which over our taller bar
+// took the tap on our Control Center icon (1.8.0 regression iPad 2, finding 3: 16.7.7 x 803 to 883 for the pill, our icon at x 876). Nonsense: no.
+static inline int MSBDCCOverOurBar(double y, double barH) { return isfinite(y) && isfinite(barH) && barH > 0 && y < barH; }
 static inline CGRect MSBDCCPanelFrameUnder(double screenW, double screenH, double barH, double width, double contentH, int rtl, double sx, double sy, double sw, double sh) {
     CGRect f = MSBDCCPanelFrame(screenW, screenH, barH, width, contentH, rtl);
     if (f.size.width <= 0 || !(sw > 0) || !(sh > 0) || !isfinite(sx) || !isfinite(sy) || !isfinite(sw) || !isfinite(sh)) return f;
@@ -383,6 +387,13 @@ static inline CGRect MSBDCC18PanelFrame(CGRect grid, double panelTop, double row
     double h = MSBDCC18TilesTop(panelTop) - panelTop + fmax(0.0, rowsH) + kMSBDCCPad;   // (a page with nothing on it: the top row and the margins)
     return CGRectMake(grid.origin.x - kMSBDCCPad, panelTop, grid.size.width + 2 * kMSBDCCPad, h);
 }
+// One of our pages open in the panel when the grid moves (the screen turned; statusbar/CC18Tiles.h): its frame -- the panel's place (panel: MSBDCC18PanelFrame's) and width, the page's own
+// height h. NO when it cannot follow: no panel any more, or a panel of another width (a page is laid out at the width it opened at, as on 15-17 for Control Center Size): it closes then.
+static inline int MSBDCC18PageFrame(CGRect panel, double openedWidth, double h, CGRect *out) {
+    if (CGRectIsEmpty(panel) || !isfinite(h) || !(h > 0) || !(fabs(panel.size.width - openedWidth) <= 0.5)) return 0;
+    if (out) *out = CGRectMake(panel.origin.x, panel.origin.y, panel.size.width, h);
+    return 1;
+}
 // Apple's + (edit) and power buttons in the panel's top row (bw x bh each, Apple's): the leading one's (+) frame and the trailing one's (power), at
 // the tiles' leading and trailing edges (the panel's margin in), centred in the row. In a right-to-left language Apple mirrors its own header:
 // + at the right, power at the left.
@@ -410,5 +421,43 @@ static inline CGRect MSBDCC18DotsPillFrame(CGPoint dots, double dw, double dh) {
     if (!isfinite(dots.x) || !isfinite(dots.y) || !isfinite(dw) || !isfinite(dh) || !(dw > 0) || !(dh > 0)) return CGRectZero;
     double w = fmax(dw, kMSBDCC18DotsMaxW);
     return CGRectMake(dots.x - w / 2.0, dots.y - dh / 2.0, w, dh);
+}
+// A finger pull's presentation state past the full presentation (read on 18.5): its paging part (-pagingProgress, 0 to 1: how far the finger has
+// gone on towards the page dots), by which Apple shrinks its pages as a paging hint (scale to 0.8, alpha to 0.7, about the screen's middle) and
+// hands the pull to its paging, and its overshoot (progress past 1), by which Apple's module views rubber-band down (less as the paging part
+// grows). In the panel nothing goes on past the full presentation, as the 15-17 panel's motion (MSBDCCMotion clamps the progress to 1): paging 0,
+// progress at most 1; a dismissal's states and iPadOS's own Control Center keep Apple's. *progress and *paging are the state's; 1 when it is to
+// be made again with them.
+static inline int MSBDCC18PullState(int panel, int presentation, double *progress, double *paging) {
+    if (!panel || !presentation || !progress || !paging) return 0;
+    int again = !(*paging == 0.0) || *progress > 1.0;
+    if (*progress > 1.0) *progress = 1.0;
+    *paging = 0.0;
+    return again;
+}
+// Apple's sensor attribution (the camera or the microphone in use, "Camera" with its two dots; 124 x 23 pt for the Camera app, 18.5) in the
+// panel's top row, as macOS shows what uses them at the top of its Control Center: centred between Apple's + and power buttons (edit and power:
+// their frames in the row's space, either side in a right-to-left language), kMSBDCC18SensorGap clear of them, at the size Apple gives it (w x h)
+// or narrower where the room is less; its middle on the row's. Empty when it does not fit (less than kMSBDCC18SensorMinW) or for nonsense.
+#define kMSBDCC18SensorGap 8.0
+#define kMSBDCC18SensorMinW 20.0
+static inline CGRect MSBDCC18SensorFrame(CGRect row, CGRect edit, CGRect power, double w, double h) {
+    if (!isfinite(w) || !isfinite(h) || !(w > 0) || !(h > 0) || CGRectIsEmpty(row) || CGRectIsEmpty(edit) || CGRectIsEmpty(power)) return CGRectZero;
+    double lo = fmin(CGRectGetMaxX(edit), CGRectGetMaxX(power)) + kMSBDCC18SensorGap, hi = fmax(CGRectGetMinX(edit), CGRectGetMinX(power)) - kMSBDCC18SensorGap;
+    double room = hi - lo;
+    if (!(room >= kMSBDCC18SensorMinW) || h > row.size.height) return CGRectZero;
+    double fw = fmin(w, room);
+    return CGRectMake((lo + hi) / 2.0 - fw / 2.0, CGRectGetMidY(row) - h / 2.0, fw, h);
+}
+// ... and its touches while the panel shows: on the control only within the panel's top row (Apple's header gives it 20 pt more on every side,
+// -[CCUIHeaderPocketView hitTest:withEvent:] read on 18.5, which in the panel reached into the first row of tiles); none of the header's elsewhere.
+static inline int MSBDCC18SensorTouch(int onControl, CGPoint p, CGRect row) { return onControl && CGRectContainsPoint(row, p); }
+// Esc while the panel shows (a hardware keyboard): one level back -- what Apple counts as content it presents (a module open expanded, the sensor
+// list, edit mode, its gallery; read on 18.5) is closed by Apple's own call --, else Control Center closes (as the 15-17 panel's page, then the
+// close). Anything else presented over Control Center keeps the key.
+enum { kMSBDCC18EscNone = 0, kMSBDCC18EscClosePresented = 1, kMSBDCC18EscClose = 2 };
+static inline int MSBDCC18EscStep(int presentedContent, int overPresented) {
+    if (presentedContent) return kMSBDCC18EscClosePresented;
+    return overPresented ? kMSBDCC18EscNone : kMSBDCC18EscClose;
 }
 #endif

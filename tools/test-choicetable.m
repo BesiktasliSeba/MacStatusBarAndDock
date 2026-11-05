@@ -215,6 +215,29 @@ int main(void) {
         NSMutableDictionary *dDeny = Deep(sbDeny0); [dDeny[@"appSettings"][@"com.apple.springboard"][@"deniedTweaks"] addObject:@"MacOSNotifications"];
         Expect(MSBDExUserOff(@"MacOSNotifications", dDeny, nil, @[], YES, NO), @"Destra in SpringBoard's own deny list: the user's too (the one reader for every library of the table)");
 
+        // ---- the engines' default (sshtoggled EngineToKeep, nothing picked): an engine the user switched off is never made the default -- by the same
+        //      reader, SpringBoard's own Choicy list included (1.8.1 item 3; before, the default read Choicy's global list and iCleaner Pro only) ----
+        NSMutableDictionary *eDeny = Deep(choicy0);   // (Aerial in SpringBoard's own deny list, custom configuration on: the user's)
+        eDeny[@"appSettings"][@"com.apple.springboard"][@"customTweakConfigurationEnabled"] = @YES;
+        [eDeny[@"appSettings"][@"com.apple.springboard"][@"deniedTweaks"] addObject:@"Aerial"];
+        // (Aerial's global entry is ours, record0: SpringBoard's own list alone decides below)
+        Expect(MSBDExEngineCanBeDefault(@"Aerial", choicy0, record0, @[], YES, NO), @"the engines' default: Aerial kept out by our own global entry only -- may be the default");
+        Expect(!MSBDExEngineCanBeDefault(@"Aerial", eDeny, record0, @[], YES, NO), @"  ... denied in SpringBoard's own Choicy list by the user: never the default (the bug: the old copy of the rule read the global list only)");
+        NSMutableDictionary *eAllow = Deep(choicy0);   // (allow mode: Zetsu left out of SpringBoard's own allow list by the user)
+        eAllow[@"appSettings"][@"com.apple.springboard"][@"customTweakConfigurationEnabled"] = @YES; eAllow[@"appSettings"][@"com.apple.springboard"][@"allowDenyMode"] = @1;
+        NSDictionary *zOurs = @{@"globalDeniedTweaks": @{@"Aerial": @"added", @"Zetsu": @"added"}};
+        Expect(!MSBDExEngineCanBeDefault(@"Zetsu", eAllow, zOurs, @[], YES, NO), @"  ... left out of SpringBoard's own allow list by the user: never the default");
+        Expect(MSBDExEngineCanBeDefault(@"Aerial", eAllow, record0, @[], YES, NO), @"  ... one in that allow list: may be the default");
+        Expect(MSBDExEngineCanBeDefault(@"Aerial", eDeny, @{@"globalDeniedTweaks": @{@"Aerial": @"added"}, @"springboard.deniedTweaks": @{@"Aerial": @"added"}}, @[], YES, NO),
+               @"  ... denied there by us (our \"added\"): may be the default");
+        Expect(!MSBDExEngineCanBeDefault(@"Zetsu", @{@"globalDeniedTweaks": @[@"Zetsu"]}, nil, @[], YES, NO)
+               && MSBDExEngineCanBeDefault(@"Zetsu", @{@"globalDeniedTweaks": @[@"Zetsu"]}, @{@"globalDeniedTweaks": @{@"Zetsu": @"added"}}, @[], YES, NO),
+               @"  ... Choicy's global list: the user's entry keeps it out, ours does not (as before)");
+        Expect(!MSBDExEngineCanBeDefault(@"Aerial", nil, nil, @[], NO, YES) && MSBDExEngineCanBeDefault(@"Aerial", nil, nil, @[@"Aerial"], NO, YES),
+               @"  ... iCleaner Pro's .disabled: the user's keeps it out, ours does not (as before)");
+        Expect(!MSBDExEngineCanBeDefault(@"Aerial", nil, nil, @[@"Aerial"], NO, NO) && MSBDExEngineCanBeDefault(@"Aerial", nil, nil, @[], YES, NO),
+               @"  ... no library to load: never; its .dylib in no list: the default may be it");
+
         // ---- Banner Style: an M1-like setup (Destra installed and loading, off in its own settings; Mac-Style Banners on; engines kept out). A user
         //      Destra showed the banners for (on in its own settings) is the same since KT 3 Nov: never set is ours, its switch not asked ----
         NSDictionary *m10 = @{@"globalDeniedTweaks": @[@"Rose", @"MilkyWay4", @"MilkyWay3SubModule", @"Zetsu"], @"preferenceVersion": @1,

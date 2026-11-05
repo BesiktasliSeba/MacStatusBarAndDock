@@ -55,6 +55,32 @@ int main(void) {
     CHECK(!Walk((const char *[]){other}, 1, ours) && !Walk(NULL, 0, ours), "  ... no engine there, or no callers: none");
     CHECK(!MSBDSBLaunchToWindow(0, 0, 0, 0, 1, Walk((const char *[]){other, zetsu, uikit}, 3, ours)), "Zetsu's call through another tweak's hook: left to SpringBoard (its window being built, never surfaced)");
     CHECK(MSBDSBLaunchToWindow(0, 0, 0, 0, 1, Walk((const char *[]){other, uikit}, 2, ours)), "  ... a launcher's through another hook: as a launch (its window forward, or a new window)");
+    // an open request from outside SpringBoard (SBMainWorkspace's hook: LaunchServices, links, Spotlight, notifications; 1.8.1 item 3)
+    // A tap in Notification Center or on the Lock Screen: two calls (code review 1.8.1, 1): SpringBoard's own first, for the unlock, then ours
+    CHECK(!MSBDSBOpenToWindow(0, 0, 0, 1, 1, 1) && MSBDSBOpenToWindow(0, 0, 0, 0, 1, 1), "the first call with the UI locked is SpringBoard's (for the unlock), the second, unlocked, with the Cover Sheet leaving, the window launch");
+    CHECK(MSBDSBOpenToWindow(0, 0, 0, 0, 1, 0), "an open request for an app with a window: its window comes forward");
+    CHECK(MSBDSBOpenToWindow(0, 0, 0, 0, 0, 1), "  ... an app that may open as a window (Open Apps as Windows): a new window");
+    CHECK(!MSBDSBOpenToWindow(0, 0, 0, 0, 0, 0), "  ... neither: SpringBoard's own open");
+    CHECK(!MSBDSBOpenToWindow(0, 0, 0, 1, 1, 0) && !MSBDSBOpenToWindow(0, 0, 0, 1, 0, 1), "the Lock Screen or the Cover Sheet up: SpringBoard's own open (it asks for the unlock first), window or not -- the launch call's rule");
+    CHECK(!MSBDSBOpenToWindow(1, 0, 0, 0, 1, 1), "AirDrop: SpringBoard's own (its options carry the file)");
+    CHECK(!MSBDSBOpenToWindow(0, 1, 0, 0, 1, 1), "a launch in the background: SpringBoard's own (nothing comes forward)");
+    CHECK(!MSBDSBOpenToWindow(0, 0, 1, 0, 1, 1), "our own full-screen launch: SpringBoard's own");
+    // the Stage Manager engine: which open requests may wait for Fit's question for a third window (a Spotlight pick, a link; 1.8.1)
+    // Fit's question closed by the screen going off (code review 1.8.1, 8)
+    CHECK(MSBDFitLaunchWaitsForBack(1, 1, 1, 0), "the screen off as the question closes: the launch it holds waits for the user");
+    CHECK(MSBDFitLaunchWaitsForBack(1, 0, 1, 0), "  ... on again but the user not back yet (the Lock Screen after a wake, no passcode: isUILocked may say no): waits");
+    CHECK(MSBDFitLaunchWaitsForBack(1, 0, 0, 1), "  ... locked with the screen's notification still to come: waits");
+    CHECK(!MSBDFitLaunchWaitsForBack(1, 0, 0, 0), "  ... answered with the user here: it starts");
+    CHECK(!MSBDFitLaunchWaitsForBack(0, 1, 1, 1), "no launch held (a window already up): nothing waits, the arrangement is applied");
+    CHECK(MSBDSMOpenMayAsk(0, 0, 0, 0, 1, 0, 0, 0), "Stage Manager: an open request for a new window's app may wait for the question");
+    CHECK(!MSBDSMOpenMayAsk(1, 0, 0, 0, 1, 0, 0, 0), "  ... not AirDrop's (left untouched)");
+    CHECK(!MSBDSMOpenMayAsk(0, 1, 0, 0, 1, 0, 0, 0), "  ... not a launch in the background");
+    CHECK(!MSBDSMOpenMayAsk(0, 0, 1, 0, 1, 0, 0, 0), "  ... not our own full-screen launch");
+    CHECK(!MSBDSMOpenMayAsk(0, 0, 0, 1, 1, 0, 0, 0), "  ... not with the Lock Screen or the Cover Sheet up");
+    CHECK(!MSBDSMOpenMayAsk(0, 0, 0, 0, 0, 0, 0, 0), "  ... not an app without an icon (a service)");
+    CHECK(!MSBDSMOpenMayAsk(0, 0, 0, 0, 1, 1, 0, 0), "  ... not a full-screen-only app (no window: no tile)");
+    CHECK(!MSBDSMOpenMayAsk(0, 0, 0, 0, 1, 0, 1, 0), "  ... not an app already on the desktop (it comes forward)");
+    CHECK(!MSBDSMOpenMayAsk(0, 0, 0, 0, 1, 0, 0, 1), "  ... not an app with a window on another desktop (that desktop comes)");
     printf("test-sblaunch: %d passed, %d failed\n", passes, fails);
     return fails ? 1 : 0;
 }

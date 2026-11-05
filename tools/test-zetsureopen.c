@@ -1,9 +1,12 @@
 // test-zetsureopen.c -- Mac test of a Zetsu reopen right after a close (statusbar/ZetsuReopen.h, used by StatusBar.x DMZetsuLaunch /
 // DMZetsuAskWhenClosed): 1.7.4 item 16, a reopen 0.2 s after closing an app's Zetsu window showed no window (Zetsu builds nothing for the app
 // while the closed window's controller is alive, ~0.7 s). The rule, then the wait as DMZetsuAskWhenClosed runs it (a look every 50 ms); then
-// item 18's rule for a closed controller's -setHost: (MSBDZetsuReusesClosed: Zetsu's reopen, never the closed window's own pending retry).
+// item 18's rule for a closed controller's -setHost: (MSBDZetsuReusesClosed: Zetsu's reopen, never the closed window's own pending retry); and
+// 1.8.1 item 9: a new window is back at its own place only when the app had one before it opened (MSBDZetsuOpensAtOwnPlace), so a first window
+// opening over another is moved off it 50 right and 44 down, as on Aerial and Stage Manager (common/WindowSize.h MSBDWindowCascadeIn).
 #include <stdio.h>
 #include "../statusbar/ZetsuReopen.h"
+#include "../common/WindowSize.h"
 static int fails = 0, checks = 0;
 static void Expect(const char *what, int ok) { checks++; if (!ok) fails++; printf("%s  %s\n", ok ? "PASS" : "FAIL", what); }
 // When Zetsu is asked (seconds after the close): a request at `request`, the closed controller gone at `gone` (-1: never).
@@ -36,6 +39,17 @@ int main(void) {
     Expect("-setHost: more than 1 s after the ask: not Zetsu taking that ask", MSBDZetsuReusesClosed(1, 0.6, 0.0, 1.65) == 0);
     Expect("no ask seen for the app: the mark stops it", MSBDZetsuReusesClosed(0, 0.0, 0.0, 0.3) == 0);
     Expect("an ask from before the close: the mark stops it", MSBDZetsuReusesClosed(1, -0.3, 0.0, 0.2) == 0);
+    // 1.8.1 item 9: own place only with a place from before the window opened (the A12Z's F2: a new Zetsu window over another stayed on it)
+    Expect("an app's first window (no place before it opened): not its own place", MSBDZetsuOpensAtOwnPlace(0, 0) == 0);
+    Expect("a window that comes back where the app's window last was: its own place", MSBDZetsuOpensAtOwnPlace(0, 1) == 1);
+    Expect("a frame asked for (the green light's way back, a Window menu layout): its own mark, not an own place", MSBDZetsuOpensAtOwnPlace(1, 1) == 0 && MSBDZetsuOpensAtOwnPlace(1, 0) == 0);
+    {   // the M1's middle place {131, 42, 931, 667} over a window at {175, 94.8}: moved on 50 / 44 as on Aerial and Stage Manager
+        CGRect desk = CGRectMake(0, 24, 1194, 740), base = CGRectMake(131, 42, 931, 667), other = CGRectMake(175, 94.8, 883, 609);
+        int how = 0; CGRect f = MSBDWindowCascadeIn(base, &other, 1, desk, MSBDZetsuOpensAtOwnPlace(0, 0), &how);
+        Expect("a first window opening over another is stepped off it (50 right, 44 down)", how != MSBDCascadeStays && how != MSBDCascadeOwnKept && !CGRectEqualToRect(f, base));
+        f = MSBDWindowCascadeIn(base, &other, 1, desk, MSBDZetsuOpensAtOwnPlace(0, 1), &how);
+        Expect("  ... a window back at its own place over another (corners apart) stays there, as before", how == MSBDCascadeOwnKept && CGRectEqualToRect(f, base));
+    }
     printf("%d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }

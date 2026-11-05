@@ -37,9 +37,10 @@ check "  ... and its one-window rule is the one the Mac test plays: the desktop'
   "grep -q 'if (one && gSMFitSlots.count == 1 && \[gSMFitSlots\[one\] isEqualToString:@\"fill\"\]) {' \$W/fn"
 check "No Fit is no longer forgotten for a window only out of sight (minimized, another desktop): the not-on-screen rule is gone" \
   "! grep -q 'if (!\[onScreen containsObject:b\] && !gSMFitPending\[b\]) \[gSMFreeWindows removeObject:b\];' $S"
-check "every way a window opens asks it first: SpringBoard's launches (DMSMJoinDesktop, before the Mac Switcher's join) and our icon taps (DMSMAddToStage, before Fit's question and the open-in-tile)" \
+check "every way a window opens asks it first: SpringBoard's launches (DMSMJoinDesktop, before the Mac Switcher's join) our icon taps (DMSMAddToStage, before Fit's question and the open-in-tile) and the opens from outside (DMSMOpenRequest, before Fit's question)" \
   "fn 'static void DMSMJoinDesktop(id ctx) {' && awk '/NSString \*key = DMSMEntityKey\(act\) \?: bundle;/{k=NR} /DMSMFitForgetClosed\(key\);/{c=NR} /if \(DMMSWSMJoin\(ctx, act, key\)\) return;/{j=NR} END{exit !(k && c == k + 1 && j == c + 1)}' \$W/fn \
-   && fn 'static BOOL DMSMAddToStage(NSString *bundle, UIView *from) {' && awk '/DMSMFitForgetClosed\(bundle\);/{c=NR} /DM_FEATURE_MARK\(\"sm-fit-ask-before-launch\"\);/{q=NR} /NSMutableDictionary \*slotsNow = gSMFitSlots/{o=NR} END{exit !(c && q > c && o > c)}' \$W/fn"
+   && fn 'static BOOL DMSMAddToStage(NSString *bundle, UIView *from) {' && awk '/DMSMFitForgetClosed\(bundle\);/{c=NR} /DMSMFitAsksAbout\(bundle, stageKeys, &leftB, &rightB\)/{q=NR} /NSMutableDictionary \*slotsNow = gSMFitSlots/{o=NR} END{exit !(c && q > c && o > c)}' \$W/fn \
+   && fn 'static void DMSMOpenRequest(id self, SEL _cmd, id request, id options, id settings, id origin, id result) {' && awk '/DMSMFitForgetClosed\(bundle\);/{c=NR} /DMSMFitAsksAbout\(bundle, stageKeys, &leftB, &rightB\)/{q=NR} END{exit !(c && q > c)}' \$W/fn"
 check "the rule lives in SMFitPlan.h with the window keys (SMWindowKey.h), declared ahead of its callers" \
   "grep -q '#include \"SMWindowKey.h\"' ../statusbar/SMFitPlan.h && grep -q 'static NSSet<NSString \*> \*DMSMFitClosedKeys(id<NSFastEnumeration> keys, NSSet<NSString \*> \*present, NSSet<NSString \*> \*pending) {' ../statusbar/SMFitPlan.h \
    && grep -q '^static void DMSMFitForgetClosed(NSString \*opening);' $S"

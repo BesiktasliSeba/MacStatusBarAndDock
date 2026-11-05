@@ -128,19 +128,33 @@ static inline MSBDCCTWideLayout MSBDCCTWideFrames(double w, double h, double k) 
 
 // ---- Now Playing (4 x 1) ----
 // The artwork (square, as tall as the tile less 12 pt each side), the title and the artist beside it, play / pause and next at the trailing side
-// (44 pt touch areas, symbols 20 pt x k).
-typedef struct { CGRect art, title, line, play, next; } MSBDCCTNowLayout;
+// (44 pt touch areas, symbols 20 pt x k). `info` is where a tap opens the player: all but the buttons. iPadOS 18's 2 x 2 size (a tile about as tall as it is wide,
+// CC18Tiles.h): the artwork at the top left, the two lines under it, the buttons along the bottom.
+typedef struct { CGRect art, title, line, play, next, info; } MSBDCCTNowLayout;
 static inline MSBDCCTNowLayout MSBDCCTNowFrames(double w, double h, double k) {
     MSBDCCTNowLayout L;
     if (!isfinite(k) || k <= 0.0) k = 1.0;
-    double m = 12.0, art = fmax(0.0, h - 2.0 * m), btn = fmin(44.0, h);
+    double m = 12.0;
+    double titleH = ceil(16.0 * k), lineH = ceil(15.0 * k);
+    if (w > 0.0 && h >= 0.8 * w) {
+        double btn = fmin(44.0, w / 2.0), art = fmax(0.0, fmin(48.0, h - 2.0 * m - btn - titleH - lineH));
+        L.art = CGRectMake(m, m, art, art);
+        L.play = CGRectMake(w / 2.0 - btn, h - btn - 2.0, btn, btn);
+        L.next = CGRectMake(w / 2.0, h - btn - 2.0, btn, btn);
+        L.title = CGRectMake(m, m + art + 4.0, fmax(0.0, w - 2.0 * m), titleH);
+        L.line = CGRectMake(m, m + art + 4.0 + titleH, fmax(0.0, w - 2.0 * m), lineH);
+        L.info = CGRectMake(0.0, 0.0, w, L.play.origin.y);
+        return L;
+    }
+    double art = fmax(0.0, h - 2.0 * m), btn = fmin(44.0, h);
     L.art = CGRectMake(m, (h - art) / 2.0, art, art);
     L.next = CGRectMake(w - m / 2.0 - btn, (h - btn) / 2.0, btn, btn);
     L.play = CGRectMake(L.next.origin.x - btn, (h - btn) / 2.0, btn, btn);
     double tx = m + art + 10.0, tw = fmax(0.0, L.play.origin.x - 4.0 - tx);
-    double titleH = ceil(16.0 * k), lineH = ceil(15.0 * k), ty = (h - titleH - lineH) / 2.0;
+    double ty = (h - titleH - lineH) / 2.0;
     L.title = CGRectMake(tx, ty, tw, titleH);
     L.line = CGRectMake(tx, ty + titleH, tw, lineH);
+    L.info = CGRectMake(0.0, 0.0, L.play.origin.x, h);
     return L;
 }
 // What its two lines say, from what Now Playing has: the title (else the app's name, else "Not Playing"), then the artist (else the album, else the

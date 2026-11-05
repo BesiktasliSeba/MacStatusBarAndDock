@@ -52,6 +52,7 @@ static id MSBDCCInit(id self, SEL _cmd, NSArray *dirs, id allowed) {
 //    that section (MSBDCCActivityMonitorSectionReady, whatever Show in App Library says); else SpringBoard as before.
 //  - SSH: 1 x 1, with Settings as its app (its switch is in Settings, as Remote Login is in a Mac's System Settings; the status bar part gives the
 //    section the Settings app's own icon).
+//  - Our Mac tiles (1.8.1 item 1): Connectivity 2 x 2, Display, Sound and Now Playing 4 x 1, with Settings as their app too.
 // Every other module's settings are as Control Center made them.
 #include <dlfcn.h>
 static NSString *MSBDCCGridSize(long long ccuiClass, NSString *fallback) {   // (Control Center's own name for a grid size class)
@@ -65,6 +66,7 @@ static NSString *MSBDCCGridSize(long long ccuiClass, NSString *fallback) {   // 
 }
 static NSString *MSBDCCSmallWide(void) { return MSBDCCGridSize(2, @"CCUIIconGridSizeClassSmallWide"); }   // (2: smallWide, as -supportedGridSizeClasses counts them)
 static NSString *MSBDCCSmall(void) { return MSBDCCGridSize(0, @"CCUIIconGridSizeClassSmall"); }           // (0: small, Control Center's own default)
+static NSString *MSBDCCMacTileClassName(NSString *mid) { return [mid isEqualToString:kMSBDCCMacConnectivityID] ? MSBDCCGridSize(4, @"CCUIIconGridSizeClassMedium") : MSBDCCGridSize(3, @"CCUIIconGridSizeClassSmallExtraWide"); }
 static NSString *MSBDCCContainerFor(NSString *mid) {   // (CCModuleList.h; Activity Monitor while the status bar part names its section)
     static BOOL (*ready)(void);
     if (!ready) ready = (BOOL (*)(void))dlsym(RTLD_DEFAULT, kMSBDCCActivityMonitorSectionFn);   // (found once the status bar part is loaded)
@@ -75,7 +77,7 @@ static id MSBDCCSettings(id self, SEL _cmd, NSString *mid) {
     id s = gMSBDCCOrigSettings(self, _cmd, mid);
     if (!s || ![mid isKindOfClass:[NSString class]] || ![gMSBDCCIdentifiers containsObject:mid]) return s;
     BOOL ram = [mid isEqualToString:kMSBDCCModuleID];
-    NSString *grid = ram ? MSBDCCSmallWide() : MSBDCCSmall(), *container = MSBDCCContainerFor(mid);
+    NSString *grid = ram ? MSBDCCSmallWide() : MSBDCCIsMacTile(mid) ? MSBDCCMacTileClassName(mid) : MSBDCCSmall(), *container = MSBDCCContainerFor(mid);
     static NSMutableDictionary *made; static dispatch_once_t once;   // (ours, made once each; asked from more than one queue)
     dispatch_once(&once, ^{ made = [NSMutableDictionary dictionary]; });
     SEL gs = NSSelectorFromString(@"gridSizeClass"), cs = NSSelectorFromString(@"moduleContainerBundleIdentifier");
@@ -97,7 +99,16 @@ static id MSBDCCSettings(id self, SEL _cmd, NSString *mid) {
         return mine;
     }
 }
-static void MSBDCCModuleSettingsHook(void) {   // (SpringBoard, 18: CCUIModuleSettingsManager lives in ControlCenterUI)
+// "Add a Control" offers every module the instance manager calls loadable (-[CCUIPagingViewController customApplicationWidgetCollectionsForControlsGalleryViewController:], 18.5). Our
+// Mac tiles only while Apple's grid has the Mac layout (the status bar part says so; without that part never): they are the Mac panel's, their pages open in it, and iPadOS's own
+// layout gets no tile of ours by accident. Modules load and tiles keep working from the repository, which keeps them all.
+static id (*gMSBDCCOrigLoadable)(id, SEL);
+static id MSBDCCLoadable(id self, SEL _cmd) {
+    id all = gMSBDCCOrigLoadable(self, _cmd);
+    BOOL (*inForce)(void) = (BOOL (*)(void))dlsym(RTLD_DEFAULT, kMSBDCCMacLayoutInForceFn);
+    return inForce && inForce() ? all : MSBDCCWithoutMacTiles(all);
+}
+static void MSBDCCModuleSettingsHook(void) {   // (SpringBoard, 18: CCUIModuleSettingsManager and CCUIModuleInstanceManager live in ControlCenterUI)
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         Class m = objc_getClass("CCUIModuleSettingsManager");
@@ -105,6 +116,10 @@ static void MSBDCCModuleSettingsHook(void) {   // (SpringBoard, 18: CCUIModuleSe
         Method mm = m ? class_getInstanceMethod(m, q) : NULL;
         if (mm && method_getTypeEncoding(mm) && !strcmp(method_getTypeEncoding(mm), "@24@0:8@16") && objc_getClass("CCUIModuleSettings"))
             MSHookMessageEx(m, q, (IMP)MSBDCCSettings, (IMP *)&gMSBDCCOrigSettings);
+        Class im = objc_getClass("CCUIModuleInstanceManager");
+        SEL lq = NSSelectorFromString(@"loadableModuleIdentifiers");
+        Method lm = im ? class_getInstanceMethod(im, lq) : NULL;
+        if (lm && method_getTypeEncoding(lm) && !strcmp(method_getTypeEncoding(lm), "@16@0:8")) MSHookMessageEx(im, lq, (IMP)MSBDCCLoadable, (IMP *)&gMSBDCCOrigLoadable);
     });
 }
 

@@ -70,5 +70,5 @@ check "no other site hands out the default tiles in an order: DMDefaultSlotNames
   "[ \$(grep -c 'DMDefaultSlotNames(' $S) = 4 ] && [ \$(grep -c 'DMDefaultSlotNames(' $MS) = 0 ] && [ \$(grep -c 'DMDefaultSlotNames(' $MSM) = 2 ] \
    && fn $S 'static void DMFitRepairOverlappingSlots(void) {' && grep -q 'NSArray \*names = DMDefaultSlotNames(g.count);' \$W/fn"
 check "a crash in the rule is the windowing's (the crash guard turns Windowing off), not Resize Apps to Fit Windows' (^DMFit)" \
-  "grep -q '^file MacStatusBarCore \^(WindowCards|WindowMinSize|WindowSize|FitPlan|SBLaunchRule)\\\\.h\$ windowingEnabled' crashmap-rules.txt && ! grep -q '^static[^(]* \*\?DMFit[A-Za-z]*(' ../statusbar/FitPlan.h"
+  "grep -q '^file MacStatusBarCore \^(WindowCards|WindowMinSize|WindowSize|FitPlan|SBLaunchRule|AerialHeld)\\\\.h\$ windowingEnabled' crashmap-rules.txt && ! grep -q '^static[^(]* \*\?DMFit[A-Za-z]*(' ../statusbar/FitPlan.h"
 [ $fails = 0 ] && echo "test-fitorder wiring: all passed" || { echo "test-fitorder wiring: FAILED"; exit 1; }

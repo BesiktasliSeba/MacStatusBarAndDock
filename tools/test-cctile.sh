@@ -63,7 +63,7 @@ check "start 12, the note readable again: put back, the layout exactly as before
 check "no layout at all: nothing written, nothing thrown" "rm -f '$S' && '$W/tcc' start '$S' '$W/n2.plist' | grep -q 'start: no layout' && [ ! -e '$S' ] && [ ! -e '$W/n2.plist' ]"
 # the part that runs it: only on 18 and later, only with our module in the repository, before Control Center reads its layout
 check "CCGrabber.x: started on 18 and later, once all three repository methods are taken, for the controls that load" \
-  "grep -q 'operatingSystemVersion.majorVersion >= 18 && gMSBDCCHooked == 3' ../macsettings/CCGrabber.x && awk '/^%ctor/{f=1} f&&/MSBDCCModuleRegisterWhenLoaded\\(\\)/{r=NR} f&&/MSBDCCTileKeepStartAll\\(kMSBDCCTileStateFile, notes, gMSBDCCIdentifiers/{k=NR} END{exit !(r && k && r < k)}' ../macsettings/CCGrabber.x"
+  "grep -q 'operatingSystemVersion.majorVersion >= 18 && gMSBDCCHooked == 3' ../macsettings/CCGrabber.x && awk '/^%ctor/{f=1} f&&/MSBDCCModuleRegisterWhenLoaded\\(\\)/{r=NR} f&&/MSBDCCTileKeepStartAll\\(kMSBDCCTileStateFile, notes, kept/{k=NR} END{exit !(r && k && r < k)}' ../macsettings/CCGrabber.x"
 # 1.7.6: two controls, each with its own note, one layout written at most
 S2="$W/ControlCenter/two.plist"; NR="$W/note-ram.plist"; NS="$W/note-ssh.plist"
 "$W/tcc" layout2 "$S2"; cp "$S2" "$W/two-original.plist"

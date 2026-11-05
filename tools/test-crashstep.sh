@@ -54,14 +54,18 @@ echo "== Fit to Window in the rules (no build needed): every function of it wind
 python3 -I - crashmap-rules.txt ../statusbar/StatusBar.x <<'PY' || fails=1
 import re, sys
 rules, src = sys.argv[1], open(sys.argv[2], errors='replace').read()
-sym, sec = [], []
+sym, sec, fil = [], [], []
 for raw in open(rules):
     line = re.split(r'\s+#', raw, 1)[0].strip()
     f = line.split()
-    if len(f) == 4 and f[0] in ('sym', 'sec') and f[1] == 'MacStatusBarCore':
-        (sym if f[0] == 'sym' else sec).append((re.compile(f[2]), f[3]))
+    if len(f) == 4 and f[0] in ('sym', 'sec', 'file') and f[1] == 'MacStatusBarCore':
+        (sym if f[0] == 'sym' else sec if f[0] == 'sec' else fil).append((re.compile(f[2]), f[3]))
 def by_sym(name):   # (the first sym rule that matches wins, as make-crashmap.py: sym before sec before file)
     for rx, t in sym:
+        if rx.search(name): return t
+    return None
+def by_file(name):
+    for rx, t in fil:
         if rx.search(name): return t
     return None
 bad = 0
@@ -74,7 +78,7 @@ fit = sorted(set(re.findall(r'^(?:static |void |BOOL |CGRect )[^(=;]*?\b(DMFit[A
 helpers = ['DMSetFitEnabled', 'DMInvalidateFitCache', 'DMStageTakesPartInFit', 'DMAssignDefaultSlots', 'DMAssignTilesKeepingPlaces', 'DMDefaultSlotNames',
            'DMSlotFrame', 'DMSlotNameForFrame', 'DMTilesText', 'DMMirrorSlot', 'DMApplyGroupSlots', 'DMWatchFitClosures', 'DMWatchFitToggle',
            'DMRelayoutForOrientation', 'DMRelayoutStageWhenLanded', 'DMRememberFitForFullScreen', 'DMSetSideChoiceGroup', 'DMSideChoiceFrame',
-           'DMApplySideChoice', 'DMPromptForSide', 'DMPromptForSideApply', 'DMPromptBeforeLaunch', 'DMThirdWindowSides', 'DMLaunchIntoTile',
+           'DMApplySideChoice', 'DMPromptForSide', 'DMPromptForSideApply', 'DMPromptBeforeLaunch', 'DMThirdWindowSides', 'DMLaunchIntoTile', 'DMPreSideTileFor',
            'DMNoFitFrame', 'DMMarkFreeWindow', 'DMTileOpenWindows', 'DMSpreadFitGroup']
 missing = [h for h in helpers if not re.search(r'^static [^(=;]*?\b' + h + r'\(', src, re.M)]
 check(len(fit) >= 9 and not missing, 'Fit to Window\'s functions found in StatusBar.x: %d DMFit... (%s) and %d helpers%s' % (len(fit), ', '.join(fit), len(helpers), (' -- not found: ' + ', '.join(missing)) if missing else ''))
@@ -94,6 +98,13 @@ kb = re.findall(r'^static BOOL (DMHardwareKeyboardAttached)\(void\) \{', src, re
 check(kb == ['DMHardwareKeyboardAttached'], 'DMHardwareKeyboardAttached found in StatusBar.x')
 kbt = [by_sym(v) for v in ('_DMHardwareKeyboardAttached', '___DMHardwareKeyboardAttached_block_invoke', 'DMHardwareKeyboardAttached')]
 check(kbt == ['transparent'] * 3 and by_sym('_DMHardwareKeyboardAttachedX') != 'transparent', 'DMHardwareKeyboardAttached and its once-only block are transparent by name (the caller decides), not the turn section\'s Windowing (got %s)' % kbt)
+# Control Center's gallery on iPadOS 18 (code review 1.8.1, 7): the section of our Mac tiles is Control Center Style's, whose switch takes it away, not Show in App Library's, whose switch
+# leaves the hook in; the rest of AppLibraryApps.h stays Show in App Library's. The Mac layout's header has a file rule: a function of it out of line in a release build fell to Stock status bar mode.
+gal = [by_sym(v) for v in ('_DMALGalleryMerged', '___DMALGalleryMerged_block_invoke', '_DMALMacTilesSection', '_DMALMacTilesImage', '___DMALMacTilesImage_block_invoke')]
+check(gal == ['controlcenter'] * 5, 'the Mac tiles\' section in the gallery, its blocks too, is Control Center Style (got %s)' % gal)
+act = [by_sym(v) for v in ('_DMALCollIcon', '_DMALReload', '_DMALGalleryIconInit', '_DMALGalleryModules', '_DMALMenuConfig')]
+check(act == ['actmonLibrary'] * 5, 'the rest of AppLibraryApps.h keeps Show in App Library (got %s)' % act)
+check(by_sym('_MSBDCC18MacLayoutFrom') is None and by_sym('_MSBDCC18GridPlace') is None and by_file('CC18MacLayout.h') == 'controlcenter' and by_file('CC18Shape.h') == 'controlcenter' and by_file('CC18Tiles.h') == 'controlcenter', 'common/CC18MacLayout.h\'s functions, out of line, are Control Center Style by their file, as CC18Shape.h\'s')
 sys.exit(1 if bad else 0)
 PY
 echo "== the words (footer, notice, Report a Problem)"
@@ -121,6 +132,9 @@ if [ -f "$MAP" ] && [ -n "$DSYM" ]; then
   # (the app exit hook, on every engine since 1.4.2 -- its own group, no longer AerialSpringBoard: Windowing, not Stock status bar mode)
   real core-appexit "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore 'logos_method\$AppExitForget\$'
   # the Stage Manager engine (its functions, its hook groups, the window fit and the stage-area hook, 1.3.2): Windowing off, the Mac status bar stays
+  # (iPadOS 18's gallery: the Mac tiles' section is Control Center Style's, code review 1.8.1, 7)
+  real core-gallery-merged "pref MacStatusBarCore $D controlCenterStyle 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMALGalleryMerged$'
+  real core-gallery-section "pref MacStatusBarCore $D controlCenterStyle 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMALMacTilesSection$'
   real core-sm-zoom "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMToggleZoom$'
   real core-sm-fit "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMAttrsFitScreen'
   real core-sm-hook16 "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMConstrainEdges16'

@@ -2,6 +2,26 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.1
+
+### New
+- Mac Control Center on iPadOS 18: Connectivity, Display, Sound and Now Playing are now Mac tiles above your other controls, and Wi-Fi, Bluetooth, Display and Sound open their own pages. Add a Control offers them too.
+
+### Improvements
+- About This iPad looks like macOS's About This Mac.
+- With the Stage Manager engine, a tap on a full-screen window keeps a smaller window in front of it, and a tap or slide on the menu bar no longer moves windows. A slide in a window behind no longer brings it forward.
+- Fit to Window asks where a third window goes before the app opens, with every engine, and a Spotlight pick no longer closes the question.
+- With the Mac Switcher off, windows keep their title bar in the App Switcher and come back smoothly.
+- With Zetsu, a new window now steps aside from the one under it, as with the other engines.
+- On iPadOS 18, Esc closes the Mac Control Center, a long pull no longer moves its tiles, and it shows which app is using the camera or microphone.
+- Haptic Touch menus: Aerial 5's Open in Aerial and Remove Stage State rows are hidden while Aerial is your window engine, and MilkyWay4's Launch As Window is hidden in the App Library.
+
+### Fixes
+- Show Page Dots off stays off: the dots no longer come back after closing a folder or entering edit mode.
+- With the Mac Control Center and Apple's camera, microphone or location indicator showing, a tap on the menu bar's Control Center icon closes Control Center instead of opening the privacy list.
+- A notification tap on the Lock Screen opens the app in its window instead of full screen.
+- After a respring, the first full-screen app opened from the Lock Screen shows the Mac menu bar instead of the stock one.
+
 ## 1.8.0.1
 
 ### Fixes

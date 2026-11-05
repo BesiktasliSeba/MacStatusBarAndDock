@@ -163,6 +163,7 @@ static void (*o_DMCCPSensorUpdate)(id, SEL);
 static void (*o_DMCCPSensorListOpen)(id, SEL);
 static void (*o_DMCCPSensorListClose)(id, SEL);
 static void (*o_DMCCPHeaderBarAlpha)(id, SEL, double);
+static UIView *(*o_DMCCPHeaderHit)(id, SEL, CGPoint, UIEvent *);
 static void DMCCPViewDidLoad(id self, SEL _cmd);
 static void DMCCPDidAdd(id self, SEL _cmd, id grid, id containerVC);
 static void DMCCPWillRemove(id self, SEL _cmd, id grid, id containerVC);
@@ -179,6 +180,7 @@ static void DMCCPSensorUpdate(id self, SEL _cmd);
 static void DMCCPSensorListOpen(id self, SEL _cmd);
 static void DMCCPSensorListClose(id self, SEL _cmd);
 static void DMCCPHeaderBarAlpha(id self, SEL _cmd, double a);
+static UIView *DMCCPHeaderHit(id self, SEL _cmd, CGPoint p, UIEvent *e);
 // A row's part: core rows (all or nothing), or an optional part that is only left out without its rows.
 enum { kDMCCPCore = 0, kDMCCPPartJoin, kDMCCPPartSensor, kDMCCPPartSensorList };
 typedef struct { const char *cls, *sel, *enc; void *fn; void **orig; int part; const char *what; } DMCCPHookRow;
@@ -196,6 +198,7 @@ static DMCCPHookRow kDMCCPHooks[] = {
     { kDMCCPProvider, "animationBatchForTransitionState:previousTransitionState:", "@32@0:8@16@24", (void *)DMCCPBatch, (void **)&o_DMCCPBatch, kDMCCPPartJoin, "the panel moves in Apple's own spring" },
     { kDMCCPOverlay, "_updateSensorActivityStatusForHeaderPocketView", "v16@0:8", (void *)DMCCPSensorUpdate, (void **)&o_DMCCPSensorUpdate, kDMCCPPartSensor, "the panel makes room for Apple's sensor indicator" },
     { "CCUIHeaderPocketView", "setStatusBarAlpha:", "v24@0:8d16", (void *)DMCCPHeaderBarAlpha, (void **)&o_DMCCPHeaderBarAlpha, kDMCCPPartSensor, "the header's copy of the status icons stays hidden (the panel under the indicator would show it)" },
+    { "CCUIHeaderPocketView", "hitTest:withEvent:", "@40@0:8{CGPoint=dd}16@32", (void *)DMCCPHeaderHit, (void **)&o_DMCCPHeaderHit, kDMCCPPartSensor, "a touch over our menu bar is not the sensor indicator's (its touch area reached our Control Center icon)" },
     { kDMCCPOverlay, "willOpenExpandedSensorAttributionViewController", "v16@0:8", (void *)DMCCPSensorListOpen, (void **)&o_DMCCPSensorListOpen, kDMCCPPartSensorList, "the panel steps back for Apple's list of the apps using a sensor" },
     { kDMCCPOverlay, "didCloseExpandedSensorAttributionViewController", "v16@0:8", (void *)DMCCPSensorListClose, (void **)&o_DMCCPSensorListClose, kDMCCPPartSensorList, "the panel back when that list closed" },
 };
@@ -480,6 +483,19 @@ static void DMCCPHeaderBarAlpha(id self, SEL _cmd, double a) {
     if (ours || k.kept) { MSBDCCKeepAsked(&k, a); DMCCPAppleBarSet(self, k); }   // (what Apple asks for is Apple's: the value handed back)
     o_DMCCPHeaderBarAlpha(self, _cmd, ours ? 0.0 : a);
 }
+// Apple's header gives its sensor indicator a touch area 20 pt beyond its frame on every side (its -hitTest:withEvent:; 16.7.7's x 803 to 883 for
+// the pill, 18.5's code the same) and lays it out under its own, lower status bar: over our taller menu bar that area took the tap on our Control
+// Center icon, which opened Apple's list of the apps instead of closing Control Center (1.8.0 regression iPad 2, finding 3; 1.8.1 item 12). While
+// the panel shows, a touch over our bar is the header's own (a tap outside it, as without the indicator); a touch on the indicator itself below the
+// bar stays the indicator's. The indicator: 15's -sensorStatusView, 16 / 17's compact attribution control (DMCCPSensorNow's reads).
+static UIView *DMCCPHeaderHit(id self, SEL _cmd, CGPoint p, UIEvent *e) {
+    UIView *r = o_DMCCPHeaderHit(self, _cmd, p, e);
+    if (!r || r == self || !gCCPOn || !((UIView *)gCCPHost).superview) return r;
+    UIView *sv = DMCCTypes(self, @"sensorStatusView", "@16@0:8") ? DMCCGet(self, @"sensorStatusView") : DMCCPIvarObject(self, "_compactSensorAttributionControl");
+    if (![sv isKindOfClass:[UIView class]] || ![r isDescendantOfView:sv]) return r;
+    UIView *top = gCCPOverlay.viewIfLoaded;   // (the overlay's space: the screen's, where our bar's height counts from its top)
+    return MSBDCCOverOurBar([(UIView *)self convertPoint:p toView:top].y, DMMenuBarHeight()) ? self : r;
+}
 static void DMCCPHeaderBarAway(void) {   // (at once, before Apple's next step: Apple's own setter, so the hook above never takes our 0 for Apple's)
     UIView *hp = DMCCPIvarObject(gCCPOverlay, "_headerPocketView");
     if (!gCCPHaveSensor || !o_DMCCPHeaderBarAlpha || ![hp isKindOfClass:[UIView class]] || !DMCCTypes(hp, @"statusBarAlpha", "d16@0:8")) return;
@@ -605,6 +621,7 @@ static void DMCCPanelDismiss(void);
 @end
 static BOOL DMCCPanelExpandModule(NSString *mid);
 static void DMCCPanelOpenDetail(id<DMCCTile> tile);
+static void DMCC18PageOpen(id<DMCCTile> tile);   // (iPadOS 18: CC18Tiles.h)
 @implementation DMCCPPlaceholderTile {
     int _role; NSString *_id, *_title, *_symbol, *_module;
     UIView *_view; UIImageView *_icon; UILabel *_label;
@@ -1293,6 +1310,7 @@ static void DMCCPDidDismissHook(id self, SEL _cmd) {
 // Apple's expanded view of an adopted module, opened out of its tile (ours for a stand-in): -[CCUIContentModuleContainerViewController
 // expandModule], what a hold on it does. NO when it cannot (not adopted, already open, not on this iPadOS).
 static BOOL DMCCPanelExpandModule(NSString *mid) {
+    if (DMCC18TilesAreOurs()) return DMCC18AppleModuleOpen(mid);   // (iPadOS 18: CC18Tiles.h)
     UIViewController *vc = mid ? [gCCPVCOf objectForKey:mid] : nil;
     if (!gCCPOn || !gCCPHaveExpand || !vc || gCCPExpanded || DMCCPExpandedNow(vc) || !DMCCTypes(vc, @"expandModule", "v16@0:8")) return NO;
     ((void (*)(id, SEL))objc_msgSend)(vc, NSSelectorFromString(@"expandModule"));
@@ -1315,6 +1333,7 @@ static void DMCCPAXMoveTo(UIView *v, BOOL pageOpen) {
 // height and cross-fades the tiles out and the page in; a back row (a chevron and the page's title) closes it. A page that needs Settings or our
 // menu window is not opened on the Lock Screen.
 static void DMCCPanelCloseDetail(BOOL animated) {
+    if (DMCC18TilesAreOurs()) { DMCC18PageClose(animated); return; }   // (iPadOS 18: CC18Tiles.h)
     UIView *page = gCCPDetail; id<DMCCTile> tile = gCCPDetailTile;
     if (!page) return;
     gCCPDetail = nil; gCCPDetailTile = nil;
@@ -1329,6 +1348,7 @@ static void DMCCPanelCloseDetail(BOOL animated) {
 // The open page's height changed (the tile filled it again: a scan's results, a device that connected): the panel follows in one animation, its top
 // where it is; the page scrolls when it is taller than the room.
 static void DMCCPanelDetailResized(void) {
+    if (DMCC18TilesAreOurs()) { DMCC18PageResized(); return; }   // (iPadOS 18: CC18Tiles.h)
     UIView *d = gCCPDetail, *page = gCCPDetailPage; UIScrollView *s = gCCPDetailScroll;
     if (!d || !page || !s || !gCCPPanel) return;
     CGFloat w = gCCPPanel.bounds.size.width, headerH = MSBDMenuRowScaled(gDMBarSize, 36.0), z = gCCPSize;
@@ -1344,6 +1364,7 @@ static void DMCCPanelDetailResized(void) {
     DMLog([NSString stringWithFormat:@"[ccpanel] %@'s page now %.0f pt", [gCCPDetailTile tileID], h]);
 }
 static void DMCCPanelOpenDetail(id<DMCCTile> tile) {
+    if (DMCC18TilesAreOurs()) { DMCC18PageOpen(tile); return; }   // (iPadOS 18: CC18Tiles.h)
     if (!gCCPOn || !gCCPPanel || !tile || gCCPDetail || gCCPExpanded || ![(id)tile respondsToSelector:@selector(tileDetailViewForWidth:)]) return;
     if (gCCPLocked && [(id)tile respondsToSelector:@selector(tileDetailNeedsUnlock)] && [tile tileDetailNeedsUnlock]) { DMLog([NSString stringWithFormat:@"[ccpanel] %@'s page needs the iPad unlocked", [tile tileID]]); return; }
     // (at Control Center Size under 1 the page is laid out at size 1 -- the panel's width over the size, w here -- and drawn at the size: its rows
@@ -1386,11 +1407,12 @@ static void DMCCPanelOpenDetail(id<DMCCTile> tile) {
 }
 
 // ---- turning it on and off -----------------------------------------------------------------------------------------------------------------
-// Control Center's overlay, only once SpringBoard made it itself (asking +sharedInstance early makes SpringBoard build Control Center and flash
-// it: gCCWindowSeen, DMControlCenterActive). nil before.
+// Control Center's overlay as SpringBoard made it, nil before. Asking makes nothing, at any time: the controller's lookup never makes it (common/SBShared.h, 1.8.0.1) and
+// -viewController only reads its variable (read on 15.6.1 and 18.5). It was refused for SpringBoard's first 8 s while Control Center's window had not been seen, from when asking
+// could make Control Center: a change to Mac there, with Apple's -viewDidLoad over before our hooks went in, was in force with nothing built, and every later look stopped at
+// want == gCCPOn until the next respring (review 1.8.0.1, 1.8.1 item 16). So gCCPOn means: applied, or to be applied by our hooks as Apple builds it (DMCCPApplyStyle).
 static UIViewController *DMCCPFindOverlay(void) {
     if (gCCPOverlay) return gCCPOverlay;
-    if (!gCCWindowSeen && DMStarting()) return nil;
     id ov = DMCCGet(DMControlCenterController(), @"viewController");
     return [ov isKindOfClass:objc_getClass(kDMCCPOverlay)] ? ov : nil;
 }
@@ -1491,6 +1513,7 @@ static void DMCCPSetWanted(BOOL want) {
 }
 // The style in force, applied while Control Center is closed (an open one keeps its look until it closes: DMCCPDidDismissHook). Mac needs the
 // check passed and no other Control Center loaded; the hooks go in the first time Mac is chosen and stay (they only act while it is).
+static BOOL gCCPInConstructor = NO;   // (the start's look: SpringBoard's launch has not begun, nothing is asked of it: DMCCPanelInit)
 static void DMCCPApplyStyle(NSString *why) {
     BOOL want = gCCPSupported && DMCCPStyleIsMac() && !DMCCPOtherCC();
     DMCCPSetWanted(want);
@@ -1507,7 +1530,7 @@ static void DMCCPApplyStyle(NSString *why) {
     if (!DMCCPInstallHooks()) { DMCCPSetWanted(NO); return; }
     DM_FEATURE_MARK("cc-mac");
     gCCPOn = YES;
-    UIViewController *ov = DMCCPFindOverlay();
+    UIViewController *ov = gCCPInConstructor ? nil : DMCCPFindOverlay();
     if (ov.isViewLoaded) DMCCPBuildLive(ov);   // (else built with Apple's: our -viewDidLoad and -didAdd... hooks)
     DMLog([NSString stringWithFormat:@"[ccpanel] style Mac (%@)%@", why, ov.isViewLoaded ? @": Apple's modules adopted now" : @": built when Apple builds Control Center"]);
 }
@@ -1590,7 +1613,9 @@ static void DMCCPanelInit(void) {
     for (NSString *l in bad) DMLog([@"[ccpanel]   " stringByAppendingString:l]);
     if (!gCCPSupported) return;
     if (DMCCPOtherCC()) DMLog(@"[ccpanel] BigSurCenter is loaded: ours stays off");
+    gCCPInConstructor = YES;
     DMCCPApplyStyle(@"start");
+    gCCPInConstructor = NO;
 }
 
 #if DEBUG

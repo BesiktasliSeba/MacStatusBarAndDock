@@ -488,7 +488,10 @@ static void DMALApplyPref(BOOL want) {
 //    (MSBDCCActivityMonitorSectionReady: this hook is in), not the App Library's icon class, which exists only while that setting is on (with it
 //    off RAM & CPU stayed with SpringBoard, and SpringBoard's whole section, other tweaks' controls too, was named Activity Monitor: 1.7.6 review).
 //    Only the section made for Activity Monitor (common/CCModuleList.h, MSBDCCGallerySectionIsActivityMonitor): never SpringBoard's.
-//  - Settings (SSH): the Settings app's icon from SpringBoard's own icon model (its name; the installed Settings app's picture).
+//  - Settings (SSH): the Settings app's icon from SpringBoard's own icon model (its name; the installed Settings app's picture). Settings' icon on one section only: the
+//    sheet takes a section's app for its identity, and two sections of one app made it throw (A12Z 18.5, 4 Nov).
+//  - Our Mac tiles (1.8.1, offered only with the Mac layout in force: common/CCModuleRegister.h): the gallery makes a section per module; they are shown as one, with a
+//    picture and a name of their own (DMALGalleryMerged, DMALMacTilesImage).
 // Every other section is made as the gallery makes it.
 static NSArray *DMALGalleryModules(id items) {   // (the module identifiers of a gallery section's controls; [NSNull null] for one without)
     if (![items isKindOfClass:[NSArray class]]) return nil;
@@ -503,10 +506,61 @@ static NSString *DMALGalleryOurs(NSArray *modules) {   // (the control of ours a
     for (id m in modules) if ([m isEqual:kMSBDCCModuleID] || [m isEqual:kMSBDCCSSHModuleID]) return m;
     return nil;
 }
+#define kDMALMacTilesName @"Mac Control Center"
+#define kDMALMacTilesSectionID @"3F0C8A5E-71B2-4C6D-9A1E-5D2E8B7F4C10"   // (its identity in the sheet: ours, the same each time)
+static UIImage *DMALMacTilesImage(void) {   // (kept here: a section holds its image only weakly, as RAM & CPU's)
+    static UIImage *picture;
+    if (picture) return picture;
+    CGSize size = CGSizeMake(40.0, 40.0);
+    UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat preferredFormat];
+    fmt.scale = [UIScreen mainScreen].scale; fmt.opaque = NO;
+    UIImage *symbol = [[UIImage systemImageNamed:@"switch.2" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:20.0 weight:UIImageSymbolWeightSemibold]] imageWithTintColor:[UIColor whiteColor] renderingMode:UIImageRenderingModeAlwaysOriginal];
+    picture = [[[UIGraphicsImageRenderer alloc] initWithSize:size format:fmt] imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, size.width, size.height) cornerRadius:9.0] addClip];
+        [[UIColor colorWithWhite:0.30 alpha:1.0] setFill];
+        UIRectFill(CGRectMake(0, 0, size.width, size.height));
+        CGSize n = symbol.size;
+        [symbol drawInRect:CGRectMake((size.width - n.width) / 2.0, (size.height - n.height) / 2.0, n.width, n.height)];
+    }];
+    return picture;
+}
+static __thread BOOL tDMALMakingOurs;   // (our own -initWithCustomImage:... comes back through here: made as asked then)
+// (noinline: its own range in the release crash map, test-crashstep -- Control Center Style's, while DMALCollIcon that may call it is Show in App Library's)
+__attribute__((noinline)) static id DMALMacTilesSection(id section, NSArray *items, id vendor) {   // (`section`: allocated; nil when it cannot be made so)
+    SEL custom = NSSelectorFromString(@"initWithCustomImage:iconBackgroundColor:displayName:galleryItems:vendorName:uniqueIdentifier:");
+    UIImage *picture = DMALMacTilesImage();
+    if (!picture || ![section respondsToSelector:custom]) return nil;
+    tDMALMakingOurs = YES;
+    id made = ((id (*)(id, SEL, id, id, id, id, id, id))objc_msgSend)(section, custom, picture, nil, kDMALMacTilesName, items, vendor, kDMALMacTilesSectionID);
+    tDMALMakingOurs = NO;
+    return made;
+}
+// The sections Control Center adds to the gallery (-[CCUIPagingViewController customApplicationWidgetCollectionsForControlsGalleryViewController:], 18.5): our Mac tiles' as one, in the panel's order.
+// Only with the Mac layout in force (they are offered only then, CCModuleRegister.h): iPadOS's style has nothing of this, so the crash guard's Control Center Style really removes it (tools/crashmap-rules.txt).
+__attribute__((visibility("default"))) BOOL MSBDCCMacLayoutInForce(void);   // (CC18Shape.h)
+static id (*o_DMALGalleryMerged)(id, SEL, id);
+static id DMALGalleryMerged(id self, SEL _cmd, id gallery) {
+    id all = o_DMALGalleryMerged(self, _cmd, gallery);
+    if (!MSBDCCMacLayoutInForce() || ![all isKindOfClass:[NSArray class]]) return all;
+    NSMutableArray *rest = [NSMutableArray array], *items = [NSMutableArray array];
+    id vendor = nil;
+    for (id c in (NSArray *)all) {
+        NSArray *its = DMCall(c, @"widgetDescriptors");
+        if (MSBDCCGallerySectionIsMacTiles(DMALGalleryModules(its))) { [items addObjectsFromArray:its]; if (!vendor) vendor = DMCall(c, @"vendorName"); }
+        else [rest addObject:c];
+    }
+    if (!items.count) return all;
+    [items sortUsingComparator:^NSComparisonResult(id a, id b) { NSInteger x = MSBDCCMacTileOrder(DMCall(a, @"moduleIdentifier")), y = MSBDCCMacTileOrder(DMCall(b, @"moduleIdentifier")); return x < y ? NSOrderedAscending : x > y ? NSOrderedDescending : NSOrderedSame; }];
+    id section = DMALMacTilesSection([NSClassFromString(@"SBHApplicationWidgetCollection") alloc], items, vendor);
+    if (!section) return all;
+    [rest addObject:section];
+    DM_FEATURE_MARK("cc-mac-tiles-gallery");
+    DMLog([NSString stringWithFormat:@"[applib] Control Center's gallery: our %lu Mac tiles in one section", (unsigned long)items.count]);
+    return rest;
+}
 static BOOL gDMALGalleryReady;   // (DMALGalleryIconInit's hook is in: RAM & CPU's module settings give it Activity Monitor as its app)
 __attribute__((visibility("default"))) BOOL MSBDCCActivityMonitorSectionReady(void) { return gDMALGalleryReady; }   // (kMSBDCCActivityMonitorSectionFn)
 static id (*o_DMALCollIcon)(id, SEL, id, id, id, id);
-static __thread BOOL tDMALMakingOurs;   // (our own -initWithCustomImage:... comes back through here: made as asked then)
 static id DMALCollIcon(id self, SEL _cmd, id icon, id items, id vendor, id uid) {
     static Class leaf; if (!leaf) leaf = objc_getClass("SBLeafIcon");
     // (a section is made again from the one shown -- with its icon, nil for a named one, and its name set afterwards: ours is made with its own
@@ -514,6 +568,10 @@ static id DMALCollIcon(id self, SEL _cmd, id icon, id items, id vendor, id uid) 
     BOOL bare = !tDMALMakingOurs && (!icon || (object_getClass(icon) == leaf && !DMCall(icon, @"activeDataSource")));
     NSArray *modules = bare ? DMALGalleryModules(items) : nil;
     NSString *ours = DMALGalleryOurs(modules);
+    if (!icon && MSBDCCGallerySectionIsMacTiles(modules)) {   // (the section of DMALGalleryMerged made again from the one shown)
+        id made = DMALMacTilesSection(self, items, vendor);
+        if (made) return made;
+    }
 #if DEBUG
     if (ours) DMLog([NSString stringWithFormat:@"[ccgallery] made: %@ icon %@ leaf %@ app %@ vendor %@ uid %@ controls %@", ours, icon ? NSStringFromClass([icon class]) : @"none", DMCall(icon, @"leafIdentifier"), DMCall(icon, @"applicationBundleID"), vendor, uid, [modules componentsJoinedByString:@" "]]);
 #endif
@@ -578,4 +636,5 @@ static void DMALGalleryDump(void) {
 static void DMALGalleryIconInit(void) {   // (SpringBoard's start, iPadOS 18 and later: the gallery is 18's)
     if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion < 18) return;
     gDMALGalleryReady = DMALHook(@"SBHApplicationWidgetCollection", @"initWithIcon:galleryItems:vendorName:uniqueIdentifier:", @"@@:@@@@", (IMP)DMALCollIcon, (IMP *)&o_DMALCollIcon);
+    DMALHook(@"CCUIPagingViewController", @"customApplicationWidgetCollectionsForControlsGalleryViewController:", @"@@:@", (IMP)DMALGalleryMerged, (IMP *)&o_DMALGalleryMerged);
 }

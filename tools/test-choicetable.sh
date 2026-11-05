@@ -64,4 +64,10 @@ check "  ... the partial give-back: ExclusiveChoice.h's, Choicy and the record w
    && grep -q 'AsMobile(^BOOL{ return \\[record writeToFile:@CHOICYRECORD atomically:YES\\]; });' \$W/gbe && ! grep -q 'unlink' \$W/gbe"
 check "safe mode and an untested iPadOS (not meant to run): our Choicy entries for every library of the table given back too, as the iCleaner Pro renames (review 7)" \
   "awk '/^static void ApplyEngines\\(NSString \\*reason\\)/,/^}/' $H > \$W/ae && awk '/if \\(!TweakMeantToRun\\(\\)\\) \\{/{t=NR} /GiveBackAll\\(off\\);/{g=NR} /if \\(ChoicyInstalled\\(status\\)\\) GiveBackChoicyEntriesOf\\(MSBDExAllLibs\\(\\), off\\);/{c=NR} /return;/{if (c && !r) r=NR} END{exit !(t && g > t && c > g && r > c)}' \$W/ae"
+check "the engines' default (EngineToKeep, nothing picked) asks ExclusiveChoice.h's reader, Choicy's settings and our record from its paths -- no copy of the rule of its own left (1.8.1 item 3)" \
+  "awk '/^static NSString \\*EngineToKeep\\(NSString \\*status, BOOL \\*windowing, BOOL \\*picked\\) \\{/,/^}/' $H > \$W/etk && [ -s \$W/etk ] \
+   && grep -q 'return MSBDExEngineCanBeDefault(lib, choicy, record, renamed, Exists(' \$W/etk \
+   && grep -q 'NSDictionary \\*choicy = \\[NSDictionary dictionaryWithContentsOfFile:kMSBDExChoicyPrefs\\], \\*record = \\[NSDictionary dictionaryWithContentsOfFile:kMSBDExChoicyRecord\\];' \$W/etk \
+   && grep -q 'NSArray<NSString \\*> \\*renamed = \\[LoadRecord() array\\];' \$W/etk && ! grep -q 'globalDeniedTweaks' \$W/etk \
+   && grep -q 'return (dylib || disabled) && !MSBDExUserOff(lib, choicy, record, renamed, dylib, disabled);' $X"
 [ $fails = 0 ] && echo "test-choicetable: wiring checks pass" || { echo "test-choicetable: wiring checks FAILED"; exit 1; }

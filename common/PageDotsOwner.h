@@ -19,3 +19,21 @@ static inline int MSBDPageDotsHomeScreens(const char *ownerImage) {
     //  SpringBoard.framework)
     return !strcmp(name, "SpringBoardHome") || !strcmp(name, "SpringBoard");
 }
+
+// The hidden flag a page control's -setHidden: stores (1.8.1 item 5). iPadOS shows the Home Screen's dots again through -setHidden: on paths that
+// lay nothing out after it, so the -layoutSubviews hide alone left them on the screen until the control's next layout (read in the M1's 15.6.1
+// SpringBoardHome and UIKitCore):
+//  - a turn of the screen: SBRootFolderController hides the dots for the turn and shows them at its end (-setPageControlHidden:NO, through
+//    SBFolderView to the control); the turn had laid the control out already;
+//  - the page editor closing: SBRootFolderView takes its page control back and sets it visible (-elementBorrowedAssertionDidInvalidate:);
+//  - UIPageControl itself, with hidesForSinglePage: a new page count (-setNumberOfPages:, edit mode's extra page) or hidesForSinglePage changing
+//    sets hidden from the count;
+//  - another tweak: ClassicFolders3 hides the Home Screen's page control while its folder is open and sets it visible when the folder closes --
+//    the M1's dots, seen now and then: they stayed until the next page swipe.
+// hide: Hide Page Dots is on and no other tweak does it; ownerImage: as MSBDPageDotsHomeScreens. Only a KNOWN owner keeps the dots hidden here: a
+// control whose folder view is not known yet stores what iPadOS asks, and its first layout decides, as before (so another part's page control,
+// such as iPadOS 18's Control Center glyphs, is never held hidden by an early call). requested: what iPadOS asks for.
+static inline int MSBDPageDotsStoreHidden(int hide, const char *ownerImage, int requested) {
+    if (!hide || !ownerImage || !*ownerImage) return requested;
+    return MSBDPageDotsHomeScreens(ownerImage) ? 1 : requested;
+}

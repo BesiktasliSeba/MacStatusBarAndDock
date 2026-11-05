@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 W=$(mktemp -d "${TMPDIR:-/tmp}/msbd-postrm.XXXXXX")
 trap 'rm -rf "$W"' EXIT
 J="$W/root/var/jb"; M="$W/root/var/mobile"
-sed -e "s#/var/jb#$J#g" -e "s#/var/mobile/Library/Caches#$M/Library/Caches#g" layout/DEBIAN/postrm > "$W/postrm"; chmod +x "$W/postrm"
+sed -e "s#/var/jb#$J#g" -e "s#/var/mobile/Library/Caches#$M/Library/Caches#g" -e "s#/var/mobile/Library/ControlCenter#$M/Library/ControlCenter#g" layout/DEBIAN/postrm > "$W/postrm"; chmod +x "$W/postrm"
 S="$J/var/lib/sshtoggled-engines"; P="$J/var/mobile/Library/Preferences"
 GONE="$S/msb-off-restored $S/msb-off-alert $S/msb-config $S/ssh-state $S/.ssh-state.Ab12Cd $S/eject-answer $S/.eject-answer.Xy34Zw $S/eject-dryrun
 $S/tailspin.plist $S/sleepguard.plist $J/var/log/msbd-sleepguard.log $J/var/log/msbd-sleepguard.log.old
@@ -23,6 +23,9 @@ setup() {
     rm -rf "$W/root"
     for f in $GONE $KEPT; do mkdir -p "$(dirname "$f")"; echo x > "$f"; done
 }
+# (18: the Mac panel's own layout of tiles goes with the package, iPadOS's own layout stays)
+GONE="$GONE $M/Library/ControlCenter/MacStatusBarAndDock-ControlsIconState.plist $M/Library/ControlCenter/MacStatusBarAndDock-ControlsDesiredIconState.plist"
+KEPT="$KEPT $M/Library/ControlCenter/ControlsIconState.plist $M/Library/ControlCenter/ModuleConfiguration.plist"
 pass=0; fail=0
 ok() { pass=$((pass+1)); echo "ok    $1"; }
 bad() { fail=$((fail+1)); echo "FAIL  $1"; }

@@ -68,4 +68,11 @@ static inline NSUInteger MSBDWinCardPictureOrder(const MSBDWinCardPicWindow *w, 
         }
     return k;
 }
+// The title bar on a window's card (1.8.1 item 7, WindowCards.h DMWinCardBarSync): above the picture, in the picture's scale. pic: the picture in the
+// card's space; imageWidth: its own width (the scene's); barHeight: a window's title bar. *s: its scale; *cx, *cy: its centre in the card's space.
+static inline void MSBDWinCardBarPlace(double picX, double picY, double picW, double imageWidth, double barHeight, double *s, double *cx, double *cy) {
+    *s = imageWidth > 0 ? picW / imageWidth : 1.0;
+    *cx = picX + picW / 2.0;
+    *cy = picY - barHeight * *s / 2.0;
+}
 #endif
