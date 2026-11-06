@@ -40,6 +40,29 @@ int main(void) {
     // iPad 2 (16), landscape: the fixed-space frame {360, 0, 408, 1024} (Desktop.h's note) turns into {0, 360, 1024, 408}
     CHECK(MSBDKeyboardNoteDocked(CGRectMake(360, 0, 408, 1024), CGRectMake(0, 360, 1024, 408), ipad2), "iPad 2 landscape keyboard (fixed space) is docked");
     CHECK(same(MSBDKeyboardNoteOnScreen(CGRectMake(360, 0, 408, 1024), CGRectMake(0, 360, 1024, 408), ipad2), CGRectMake(0, 360, 1024, 408)), "iPad 2: the interface frame is on the screen");
+    // the Downloads panel's keyboard (MSBDKeyboardPanelFrame; 1.8.2.2, code review 4): the reading that shows a keyboard, its part on the screen
+    CHECK(same(MSBDKeyboardPanelFrame(CGRectMake(360, 0, 408, 1024), CGRectMake(0, 360, 1024, 408), ipad2), CGRectMake(0, 360, 1024, 408)), "panel, 16.7.7: the keyboard across the bottom, sent in the fixed space");
+    CHECK(same(MSBDKeyboardPanelFrame(fullF, fullG, land), fullG), "panel, 18.5: the full keyboard, sent in the fixed space");
+    CHECK(same(MSBDKeyboardPanelFrame(barF, barG, land), barF), "panel, 18.5: the hardware keyboard's bar, sent in the interface's (A12Z F9: read as the fixed space it was 342 pt above the screen)");
+    CHECK(same(MSBDKeyboardPanelFrame(threeF, threeG, land), threeF), "panel, 18.5: the 3 pt keyboard, as before");
+    CHECK(same(MSBDKeyboardPanelFrame(goingF, goingG, land), CGRectZero), "panel: a keyboard going below the screen is none");
+    CHECK(same(MSBDKeyboardPanelFrame(goneF, goneG, land), CGRectZero), "panel: the zero frame is none");
+    CHECK(same(MSBDKeyboardPanelFrame(CGRectMake(0, 1024, 0, 0), CGRectMake(0, 1024, 0, 0), land), CGRectZero), "panel: 15.6.1's zero frame at the bottom is none");
+    // a floating keyboard (320 x 250 in landscape) sent in the fixed space on 15-17: read in the interface's it is 250 x 320, also wholly on the screen
+    CGRect floatF = CGRectMake(400, 204, 250, 320), floatG = CGRectMake(500, 400, 320, 250);
+    CHECK(same(MSBDKeyboardNoteOnScreen(floatF, floatG, ipad2), floatF), "the Dock's floor rule takes the first reading on the screen (a floating keyboard is never docked there)");
+    CHECK(same(MSBDKeyboardPanelFrame(floatF, floatG, ipad2), floatG), "panel, 16: a floating keyboard sent in the fixed space is the one wider than tall, not turned a quarter");
+    // the same keyboard sent in the interface's space (18): the fixed reading of it is the turned one
+    CGRect float18F = CGRectMake(600, 500, 320, 260), float18G = CGRectMake(500, 104, 260, 320);
+    CHECK(same(MSBDKeyboardPanelFrame(float18F, float18G, land), float18F), "panel, 18: a floating keyboard sent in the interface's space");
+    // a keyboard announced taller than it is shown (a hardware keyboard's bar as the full keyboard reaching below the screen): its part on the screen
+    CHECK(same(MSBDKeyboardPanelFrame(CGRectMake(713, 0, 313, 1024), CGRectMake(0, 713, 1024, 313), ipad2), CGRectMake(0, 713, 1024, 55)), "panel, 16: a keyboard reaching below the screen counts by its part on it (the bar's 55 pt)");
+    CHECK(same(MSBDKeyboardNoteOnScreen(CGRectMake(713, 0, 313, 1024), CGRectMake(0, 713, 1024, 313), ipad2), CGRectZero), "  ... which the floor rule's reading leaves out");
+    // an undocked keyboard across the width, above the bottom; portrait (the two spaces the same)
+    CHECK(same(MSBDKeyboardPanelFrame(CGRectMake(300, 0, 300, 1024), CGRectMake(0, 300, 1024, 300), ipad2), CGRectMake(0, 300, 1024, 300)), "panel, 16: an undocked keyboard, sent in the fixed space");
+    CHECK(same(MSBDKeyboardPanelFrame(CGRectMake(0, 1006, 1024, 360), CGRectMake(0, 1006, 1024, 360), port), CGRectMake(0, 1006, 1024, 360)), "panel: portrait, a docked keyboard");
+    CHECK(same(MSBDKeyboardPanelFrame(CGRectMake(352, 700, 320, 250), CGRectMake(352, 416, 320, 250), port), CGRectMake(352, 416, 320, 250)), "panel: portrait upside down, a floating keyboard (both readings wider than tall): the fixed space's");
+    CHECK(same(MSBDKeyboardPanelFrame(CGRectNull, CGRectNull, land), CGRectZero) && same(MSBDKeyboardPanelFrame(floatF, floatG, CGSizeZero), CGRectZero), "panel: nonsense gives none");
     // the decision
     CHECK(!MSBDKeyboardDockUnder(false, true, true, true, 0.0), "not our field: the Dock stays");
     CHECK(MSBDKeyboardDockUnder(true, true, true, false, 9.0), "the drawn keyboard is docked: under (no notification said so: 18's Show Keyboard)");

@@ -90,6 +90,54 @@ static inline double MSBDDockSideStripOf(CGRect platter, CGSize screen, int side
     double s = CGRectGetMaxX(platter);
     return s > 0.5 && CGRectGetMinX(platter) >= -0.5 ? s : -1.0;
 }
+// The strip as the Dock's thickness changes by itself (1.8.2.2, 17.5 F3 / A12Z F5): its recents growing or going, Apple's App Library icon switched, a Handoff tile.
+// Before, the desktop kept the thickest strip seen until our own next Position or Dock setting: a thinned Dock left 17.6 pt of the desktop unused (17.5, the recents
+// 4 -> 10), and a Dock thickened that way had windows under it until their next move (A12Z: a Fill window 1.2 pt under it after Show App Library in Dock went off).
+// Now the strip is the Dock's real thickness, taken once it is seen again unchanged 0.3 s later; meanwhile the thicker of the two counts, so no window is placed under
+// the Dock. While the Dock is away (over a full-screen app, at the other side for a moment, not laid out yet) the last thickness taken stands: the only memory left.
+// settled: the thickness taken (<= 0: none since the Dock last changed by our own setting or position); cand, candAt: a new thickness seen and when.
+// placed: with none taken, the strip the windows were last placed against (the caller's: SpringBoard's figure while the Dock was away at a Position change), <= 0
+// for none. The first thickness taken then is a change from it, followed as any other (code review 1.8.2.2, second pass 4: windows placed against the figure
+// while a full-screen app hid the Dock stayed short of it or under it once the Dock was measured).
+typedef struct { double settled, cand, candAt, placed; } MSBDDockStripState;
+enum { MSBDStripSame = 0, MSBDStripFirst = 1, MSBDStripCandidate = 2, MSBDStripChanged = 3 };
+#define kMSBDDockStripSettle 0.3   // (seen again unchanged this much later)
+#define kMSBDDockStripSame 0.25    // (within this: the same thickness)
+// One look. measured: the strip as drawn now (<= 0: no Dock lying at this side). Returns the strip to use. *event: MSBDStripChanged when a new thickness was just
+// taken over another one (the windows follow it; *was: the one before), MSBDStripFirst when the first was taken, MSBDStripCandidate when a different one is first
+// seen (the windows' layouts are the old desktop's until it is taken), else MSBDStripSame. fallback: with nothing taken and no Dock to measure.
+static inline double MSBDDockSideStripStep(MSBDDockStripState *st, double measured, double now, double fallback, int *event, double *was) {
+    if (event) *event = MSBDStripSame;
+    if (!st) return measured > 0 ? measured : fallback;
+    if (!(measured > 0) || !isfinite(measured)) return st->settled > 0 ? st->settled : fallback;
+    bool sameAsCand = fabs(st->cand - measured) <= kMSBDDockStripSame;
+    if (st->settled > 0 && fabs(measured - st->settled) <= kMSBDDockStripSame) { st->cand = -1.0; return st->settled; }
+    double base = st->settled > 0 ? st->settled : (st->placed > 0 && fabs(measured - st->placed) > kMSBDDockStripSame ? st->placed : 0.0);   // (what the windows stand against)
+    if (sameAsCand && now - st->candAt >= kMSBDDockStripSettle - 1e-9) {
+        st->settled = measured; st->cand = -1.0; st->placed = 0.0;
+        if (event) *event = base > 0 ? MSBDStripChanged : MSBDStripFirst;
+        if (was) *was = base;
+        return measured;
+    }
+    if (!sameAsCand) { st->cand = measured; st->candAt = now; if (event && base > 0) *event = MSBDStripCandidate; }
+    return base > 0 ? fmax(measured, base) : measured;
+}
+// The zoom of an app going Home into its side Dock icon on 15-17 (dock/Dock.x, the switcher's match-move response; code review 1.8.2.2, second pass 1 and 7). The
+// switcher starts a match-move of the zoom to the icon's own layer (active) and ends it (not active). Into a Dock at a side it is left out -- that layer is inside
+// the turned Dock -- and so is the end of one left out. The apps left out are kept as a set, and a new start always begins its app's cycle anew: a zoom cut short
+// (the app tapped again mid-zoom) may never send its end, and its record must not swallow a later end of that app, at a side or at the bottom.
+// active: a start; recorded: this app is in the set; intoSideDock: the zoom goes into the Dock (MSBDZoomLocationIsDock), the Dock stands at a side, on the main
+// screen's switcher. Returns 1 to leave the response out (0: SpringBoard's own). *setOp: +1 add the app to the set, -1 take it out, 0 nothing.
+static inline int MSBDZoomLeaveOut(bool active, bool recorded, bool intoSideDock, int *setOp) {
+    if (setOp) *setOp = 0;
+    if (!active) { if (recorded && setOp) *setOp = -1; return recorded ? 1 : 0; }   // (an end: only the one of an app left out)
+    if (intoSideDock) { if (!recorded && setOp) *setOp = 1; return 1; }
+    if (recorded && setOp) *setOp = -1;   // (a start that is SpringBoard's own: a record left from a zoom cut short goes)
+    return 0;
+}
+// Whether the switcher's icon location for the zoom is a Dock's (SBIconLocationFloatingDock, SBIconLocationFloatingDockSuggestions: its recents), not the Home
+// Screen's pages, a folder or the App Library.
+static inline bool MSBDZoomLocationIsDock(const char *location) { return location && strstr(location, "Dock") != NULL; }
 // The desktop of a screen with the Dock at a side: from `top` down to the screen's bottom edge, the strip and the gap kept out at the Dock's side.
 static inline CGRect MSBDDockSideDesktop(CGSize screen, int side, double strip, double top) {
     double keep = fmax(0.0, strip) + kMSBDDockSideGap;
@@ -163,6 +211,14 @@ static inline double MSBDBannerX(double screenWidth, int side, CGRect area, doub
     double bw = fmax(0.0, fmin(width, s.hi - s.lo));
     if (w) *w = bw;
     return rtl ? s.lo : s.hi - bw;
+}
+
+// ---- Fit to Window's question ----
+// Its title over the seam between its two panels, which stand in the desktop beside the Dock (1.8.2.2, M1 F2 / A12Z F7): centred on the screen it stood 26 to 34 pt
+// off the seam, over one panel. The title's x for one `width` wide over `seam`, kept `margin` inside the screen (nonsense: centred on the screen, as before).
+static inline double MSBDDockSideTitleX(double seam, double width, double screenWidth, double margin) {
+    if (!isfinite(seam) || !isfinite(width) || !isfinite(screenWidth) || !isfinite(margin)) return (screenWidth - width) / 2.0;
+    return fmax(margin, fmin(seam - width / 2.0, screenWidth - margin - width));
 }
 
 // ---- a window let go ----

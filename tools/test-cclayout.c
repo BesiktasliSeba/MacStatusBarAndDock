@@ -223,6 +223,18 @@ int main(void) {
     p = MSBDCCPanelFrameUnder(NAN, 768, 20, 318, 622, 0, 803, 19, 80, 23);
     Int("  ... no screen: no frame", CGRectIsEmpty(p), 1);
 
+    // ---- beside a Dock at the screen's side (Settings > Dock > Position, 1.8.2.2: M1 F3, 17.5 F2, A12Z F3) ----
+    // (the M1, 15.6.1, landscape 1194 x 834, 30 pt bar: a Right Dock's platter x 1144..1188, the desktop x 0..1142.01; the panel {868, 32, 318, 698} lay over the
+    //  platter by 42 x 691 pt. The span is the Today panel's, DockSide.h MSBDDockSideSpanWithin: its edge 10 pt inside the desktop, 12 pt clear of the platter)
+    p = MSBDCCPanelFrameWithin(1194, 834, 30, 318, 698, 0, 8, 1142.01 - 10.0);
+    Frame("the panel beside a Right Dock: its right edge 10 pt inside the desktop (12 pt clear of the platter at 1144)", p, CGRectMake(814.01, 32, 318, 698));
+    Int("  ... the old rule's place covered the platter (868..1186 against 1144): this one ends before it", CGRectGetMaxX(p) < 1144.0 && CGRectGetMaxX(MSBDCCPanelFrame(1194, 834, 30, 318, 698, 0)) > 1144.0, 1);
+    Frame("  ... the span from the screen's edges (8 pt): the very place it had", MSBDCCPanelFrameWithin(1194, 834, 30, 318, 698, 0, 8, 1186), MSBDCCPanelFrame(1194, 834, 30, 318, 698, 0));
+    Frame("  ... right to left the panel hangs at the span's low end (a Left Dock's desktop from 51.99: 61.99)", MSBDCCPanelFrameWithin(1194, 834, 30, 318, 698, 1, 61.99, 1186), CGRectMake(61.99, 32, 318, 698));
+    Frame("  ... a span with no numbers: the screen's edges, as before", MSBDCCPanelFrameWithin(1194, 834, 30, 318, 698, 0, NAN, NAN), MSBDCCPanelFrame(1194, 834, 30, 318, 698, 0));
+    Frame("  ... under the sensor indicator too (the 17.5, a Right Dock's desktop to 1294.7: the span to 1284.7)", MSBDCCPanelFrameUnderWithin(1366, 1024, 20, 345, 597, 0, 0, 0, 0, 0, 8, 1284.7), CGRectMake(939.7, 22, 345, 597));
+    Frame("  ... and the old name keeps its numbers", MSBDCCPanelFrameUnder(1024, 768, 20, 318, 622, 0, 803, 19, 80, 23), MSBDCCPanelFrameUnderWithin(1024, 768, 20, 318, 622, 0, 803, 19, 80, 23, 8, 1016));
+
     // ---- room for one more module (RAM & CPU put in Control Center by itself, 1.7.7 item 8, while the panel is Control Center) ----
     // (the iPad 2's 15 modules in its order with the four Mac tiles, 16.7.7: unit 66, spacing 10; 8 rows, a content of 622 pt -- as read there)
     MSBDCCMetrics m2 = { 66.0, 10.0, kMSBDCCPad };
@@ -367,6 +379,16 @@ int main(void) {
     Num("Medium: the tiles 7 pt higher (top inset 58)", in18.top, 58.0);
     MSBDCC18Insets(414, 624, 1366, 1024, e18, MSBDCC18TilesTop(MSBDCC18PanelTop(24)), 0, &in18);
     Num("Small: top inset 52", in18.top, 52.0);
+    // (18.5 beside a Right Dock, A12Z F3: the platter x 1300.2..1360 lay under the panel {1040, 39, 318, 661}. The desktop to 1298.22, the span to 1288.22: the
+    //  panel's trailing margin 1366 - 1288.22 = 77.78 instead of 8, its tiles 89.78 pt in from the screen's edge)
+    MSBDCCInsets inR;
+    Int("18 beside a Right Dock: insets answered with the Dock's margin", MSBDCC18InsetsMargin(414, 624, 1366, 1024, e18, MSBDCC18TilesTop(39), 0, 1366 - 1288.22, &inR), 1);
+    Frame("  ... the tiles end 12 pt inside the span (1288.22 - 12): clear of the Dock", MSBDCC18GridRect(414, 624, e18, inR), CGRectMake(1288.22 - 12.0 - 294.0, 91, 294, 598));
+    MSBDCC18Insets(414, 624, 1366, 1024, e18, MSBDCC18TilesTop(39), 0, &in18);
+    MSBDCCInsets inD; MSBDCC18InsetsMargin(414, 624, 1366, 1024, e18, MSBDCC18TilesTop(39), 0, 8.0, &inD);
+    Int("  ... the screen's own margin (8): the very insets it had", fabs(inD.top - in18.top) < 0.001 && fabs(inD.left - in18.left) < 0.001 && fabs(inD.right - in18.right) < 0.001 && fabs(inD.bottom - in18.bottom) < 0.001, 1);
+    Int("  ... a margin leaving the tiles no room: Apple's insets kept", MSBDCC18InsetsMargin(414, 624, 400, 1024, e18, 91, 0, 77.78, &inR), 0);
+    Int("  ... no number for the margin: Apple's insets kept", MSBDCC18InsetsMargin(414, 624, 1366, 1024, e18, 91, 0, NAN, &inR), 0);
     Int("portrait (1024 x 1366): answered", MSBDCC18Insets(414, 624, 1024, 1366, e18, 91, 0, &in18), 1);
     Frame("  ... the grid at the right, the same 20 pt in", MSBDCC18GridRect(414, 624, e18, in18), CGRectMake(710, 91, 294, 598));
     Num("  ... the four insets add up to the bounds less the content (width)", in18.left + in18.right, 1024.0 - 414.0);

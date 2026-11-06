@@ -2,6 +2,17 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.2.2
+
+### Fixes
+- With the Dock on the left or right, long-press menus on Dock icons read from top to bottom and point at their icon, and wide previews such as widgets stay on screen.
+- With the Dock on the right, the Mac Control Center no longer covers it.
+- With the Dock on the left or right, windows follow it when its size changes, for example when recent apps come and go.
+- With Stage Manager and the Dock on the left or right, minimizing the last window on a desktop now goes into its Dock icon.
+- With Zetsu and the Dock on the left or right, a minimized window comes back where it was.
+- With the Dock on the left or right, Fit to Window's question sits centred over its choices.
+- Typing in the Downloads stack's search with a hardware keyboard on iPadOS 18 no longer moves the panel off the screen.
+
 ## 1.8.2.1
 
 ### Fixes

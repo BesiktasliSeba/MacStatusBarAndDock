@@ -116,6 +116,73 @@ int main(void) {
     Num("  ... the anchor kept inside the panel", ay, 1.0);
     MSBDArrowSidePanelRelayout(CGRectMake(1282 - G - H - 360, 54, 360, 300), 300, 354, 60, R, W, &ay, &amid);
     Num("a stack near the top, under the bar (its middle 6 pt below the panel's top): the arrow off the top corner", amid, 54 + R + W / 2.0);
+    // ---- 1.8.2.2: the arrow at the icon's middle at the side Dock's two ends (iPad 2 F2, M1 F4) ----
+    // (the iPad 2, 16.7.7, 1024 x 768, a 20 pt bar: the Downloads stack at the Left Dock's bottom end, its middle at y 733.4; the panel 360 x 200, its corner 18,
+    //  kept 12 pt over the bottom (54..756); reach: the Dock's own end margin, 6 pt over the bottom)
+    CGRect stack = CGRectMake(17.0, 717.4, 32.0, 32.0), pb2 = CGRectMake(12, 54, 1000, 702), preach = CGRectMake(12, 54, 1000, 708);
+    m = MSBDArrowSideMenuFrame(CGRectMake(0, 0, 360, 200), stack, pb2, H, G, false, &dir);
+    Num("before: the panel held 12 pt over the bottom, its arrow 28 pt from the corner: 5.4 pt above the stack's middle", CGRectGetMinY(m) + MSBDArrowOffsetY(m, CGRectGetMidY(stack), 18.0, W), 728.0);
+    m = MSBDArrowSideMenuFrameReaching(CGRectMake(0, 0, 360, 200), stack, pb2, preach, H, G, 18.0, W, false, &dir);
+    Num("the panel goes down as far as its arrow needs (6.5 pt over the bottom, the Dock's margin 6)", CGRectGetMaxY(m), 761.5);
+    Num("  ... its arrow at the stack's middle", CGRectGetMinY(m) + MSBDArrowOffsetY(m, CGRectGetMidY(stack), 18.0, W), 733.4);
+    Int("  ... beside the Dock, pointing left", dir, MSBDArrowLeft);
+    // (the M1, 15.6.1, 1194 x 834, a 30 pt bar: Finder at the top of the Left Dock, its middle at y 61.1; its menu 250 x 97. UIKit's content bounds for our icons'
+    //  menus start 20 pt lower (50): held there, the arrow was 20 pt from the menu's top, at 70, 9 pt below Finder's middle. Now every Dock menu's room starts under
+    //  the bar, 33)
+    CGRect finder = CGRectMake(14.0, 46.85, 28.5, 28.5);
+    m = MSBDArrowSideMenuFrame(CGRectMake(0, 0, 250, 97), finder, CGRectMake(20, 50, 1154, 776), H, G, false, &dir);
+    Num("before: Finder's menu at UIKit's 50, its arrow at 70 (9 pt low)", CGRectGetMinY(m) + MSBDArrowOffsetY(m, CGRectGetMidY(finder), R, W), 70.0);
+    m = MSBDArrowSideMenuFrameReaching(CGRectMake(0, 0, 250, 97), finder, CGRectMake(20, 33, 1154, 793), CGRectMake(20, 33, 1154, 795), H, G, R, W, false, &dir);
+    Num("now: under the bar (33), the arrow at Finder's middle", CGRectGetMinY(m) + MSBDArrowOffsetY(m, CGRectGetMidY(finder), R, W), 61.1);
+    Num("  ... the menu where any icon's menu goes (its top at the bar's end + 3)", CGRectGetMinY(m), 33.0);
+    m = MSBDArrowSideMenuFrameReaching(CGRectMake(0, 0, 250, 97), finder, CGRectMake(20, 50, 1154, 776), CGRectMake(20, 33, 1154, 795), H, G, R, W, false, &dir);
+    Num("  ... held lower by its bounds, the menu still rises for its arrow, as far as under the bar", CGRectGetMinY(m) + MSBDArrowOffsetY(m, CGRectGetMidY(finder), R, W), 61.1);
+    // (the fullest Dock, the M1's 27 icons at Recent Apps 10: the Trash's middle 24.5 pt over the bottom, its menu 67 tall: the Dock's margin leaves it 1.5 pt short)
+    CGRect trash27 = CGRectMake(1160.0, 797.5, 24.0, 24.0);
+    m = MSBDArrowSideMenuFrameReaching(CGRectMake(0, 0, 250, 67), trash27, CGRectMake(8, 33, 1178, 793), CGRectMake(8, 33, 1178, 795), H, G, R, W, true, &dir);
+    Num("  ... at the reach's end (6 pt over the bottom) and no further", CGRectGetMaxY(m), 828.0);
+    Num("  ... the arrow as near the icon's middle as the corner lets it (1.5 pt)", CGRectGetMidY(trash27) - (CGRectGetMinY(m) + MSBDArrowOffsetY(m, CGRectGetMidY(trash27), R, W)), 1.5);
+    m = MSBDArrowSideMenuFrameReaching(CGRectMake(0, 0, 250, 200), CGRectMake(1282, 440, 60, 60), sideBounds, sideBounds, H, G, R, W, true, &dir);
+    Frame("an icon in the middle of the Dock: as before", m, MSBDArrowSideMenuFrame(CGRectMake(0, 0, 250, 200), CGRectMake(1282, 440, 60, 60), sideBounds, H, G, true, &dir));
+    m = MSBDArrowSideMenuFrameReaching(CGRectMake(0, 0, 1300, 200), sideIcon, sideBounds, sideBounds, H, G, R, W, true, &dir);
+    Int("  ... no room beside the Dock: no arrow, as before", dir, MSBDArrowNone);
+    m = MSBDArrowSideMenuFrameReaching(CGRectMake(0, 0, 250, 97), finder, CGRectMake(20, 50, 1154, 776), CGRectNull, H, G, R, W, false, &dir);
+    Num("  ... no reach given: within its bounds, as before", CGRectGetMinY(m), 50.0);
+
+    // ---- 1.8.2.2: a lifted picture too big for the side Dock's icon (M1 F1, A12Z F1) ----
+    // (the M1, Left: Sileo's widget 437 x 226.5 centred on Sileo's icon (28.3, 133.35) stood at x -190.2, y 20.1, under the bar and over its menu {62, 33, 250, 337})
+    CGRect m1b = CGRectMake(8, 33, 1178, 793);
+    int on = -1;
+    CGRect lp = MSBDArrowSidePreviewFrame(CGRectMake(-190.2, 20.1, 437, 226.5), CGPointMake(28.3, 133.35), 50.0, m1b, 1194, H, G, false, &on);
+    Int("Sileo's widget at the Left Dock: not on the icon", on, 0);
+    Frame("  ... beside the Dock, as the Bottom Dock's: from the bounds' left edge, level with the icon and under the bar", lp, CGRectMake(8, 33, 437, 226.5));
+    m = MSBDArrowSideMenuFrame(CGRectMake(0, 0, 250, 337), lp, m1b, H, G, false, &dir);
+    Frame("  ... its menu beside the picture, level with it", m, CGRectMake(457, 33, 250, 337));
+    Int("  ... the two apart and on the screen", CGRectGetMaxX(lp) < CGRectGetMinX(m) && CGRectGetMinX(lp) >= 0 && CGRectGetMaxX(m) <= 1194 && CGRectGetMinY(lp) >= 30 && CGRectGetMinY(m) >= 30, 1);
+    Num("  ... the arrow at the picture's middle, as at the bottom", CGRectGetMinY(m) + MSBDArrowOffsetY(m, CGRectGetMidY(lp), R, W), CGRectGetMidY(lp));
+    lp = MSBDArrowSidePreviewFrame(CGRectMake(947.2, 20.1, 437, 226.5), CGPointMake(1165.7, 133.35), 1144.0, m1b, 1194, H, G, true, &on);
+    Frame("  ... at the Right Dock: against the bounds' right edge", lp, CGRectMake(749, 33, 437, 226.5));
+    m = MSBDArrowSideMenuFrame(CGRectMake(0, 0, 250, 337), lp, m1b, H, G, true, &dir);
+    Frame("  ... the menu to its left", m, CGRectMake(487, 33, 250, 337));
+    // (the A12Z, 18.5, 1366 x 1024: Sileo's document preview 497 x 203 at x -212.3 at the Left Dock, its icon's middle (36.2, 175.7))
+    lp = MSBDArrowSidePreviewFrame(CGRectMake(-212.3, 74.2, 497, 203), CGPointMake(36.2, 175.7), 65.8, CGRectMake(8, 40, 1350, 976), 1366, H, G, false, &on);
+    Frame("the A12Z's document preview: beside the Dock, level with the icon", lp, CGRectMake(8, 74, 497, 203));
+    lp = MSBDArrowSidePreviewFrame(CGRectMake(11.8, 551.3, 33, 33), CGPointMake(28.3, 567.8), 50.0, m1b, 1194, H, G, false, &on);
+    Int("an icon-sized picture (Settings' on the M1) stays on its icon", on, 1);
+    Frame("  ... centred on it", lp, CGRectMake(11.8, 551.3, 33, 33));
+    lp = MSBDArrowSidePreviewFrame(CGRectMake(0, 0, 44, 44), CGPointMake(29.9, 500), 59.8, CGRectMake(8, 40, 1350, 976), 1366, H, G, false, &on);
+    Int("  ... with Gap to Screen Edge 0 too (the A12Z's 44 pt picture 7.9 pt from the edge)", on, 1);
+    lp = MSBDArrowSidePreviewFrame(CGRectMake(0, 0, 60, 60), CGPointMake(28.3, 400), 50.0, m1b, 1194, H, G, false, &on);
+    Int("  ... a picture that would reach the menu's place is moved", on, 0);
+    lp = MSBDArrowSidePreviewFrame(CGRectNull, CGPointMake(28.3, 400), 50.0, m1b, 1194, H, G, false, &on);
+    Int("  ... no picture: nothing moved", on, 1);
+
+    // ---- 1.8.2.2: the item order beside a side Dock (iPad 2 F1): every side menu takes the attachment of a menu below its source ----
+    Int("UIKit attached a menu above its source at its top edge (1): below is the bottom edge (4)", (int)MSBDCtxAttachmentBelow(1, true), 4);
+    Int("  ... or the other way round, at its bottom edge (4): below is 1", (int)MSBDCtxAttachmentBelow(4, true), 1);
+    Int("  ... a menu UIKit put below already keeps its attachment (top edge)", (int)MSBDCtxAttachmentBelow(1, false), 1);
+    Int("  ... (bottom edge)", (int)MSBDCtxAttachmentBelow(4, false), 4);
+    Int("  ... a side attachment or anything else: nothing changed", (int)(MSBDCtxAttachmentBelow(2, true) | MSBDCtxAttachmentBelow(8, false) | MSBDCtxAttachmentBelow(0, true)), 0);
     p = MSBDArrowPathCreate(W, H, 1.0, MSBDArrowRight, false);
     pb = CGPathGetPathBoundingBox(p);
     Frame("the right arrow's outline fills its view: the band on its left, 9 pt to the tip, 20 tall", pb, CGRectMake(0, 0, H + 1.0, W));

@@ -29,6 +29,34 @@ static inline CGRect MSBDKeyboardNoteOnScreen(CGRect f, CGRect g, CGSize screen)
     CGRect r = CGRectContainsRect(inside, f) ? f : (CGRectContainsRect(inside, g) ? g : CGRectZero);
     return CGRectIsEmpty(r) ? CGRectZero : r;
 }
+// The keyboard the Downloads panel stands above (dock/Downloads.m; 1.8.2.2, code review 4): the part of it on the screen (screen points), CGRectZero for none.
+// f: the announced frame read in the interface's space, g: read in the fixed space and turned into the interface's (as above). Which space a frame came in shows by
+// what it is in the right one, never by the iPadOS alone (18.5 announces its full keyboard in the fixed space and the hardware keyboard's bar in the interface's):
+//  - a docked keyboard or a hardware keyboard's bar lies across the screen's width and reaches its bottom edge, maybe announced taller than it is shown (a frame
+//    reaching below the screen: only its part on the screen counts -- its top is where the panel ends). A frame read in the wrong space is turned a quarter: it
+//    lies along a side edge, partly off the screen;
+//  - otherwise a floating, undocked or split keyboard, wholly on the screen, never taller than it is wide: a small one can lie on the screen read either way (a
+//    320 x 250 floating keyboard is 250 x 320 read in the wrong one), so the reading that is wider than tall counts; when both are (turned a half: portrait upside
+//    down), the fixed space, the one SpringBoard is told the frame in (15-17, and 18 for its full keyboard).
+// MSBDKeyboardNoteOnScreen (the Dock's floor, above) took the first reading that lay wholly on the screen: a small keyboard in the fixed space was read in the
+// interface's, and a keyboard announced taller than shown was no keyboard.
+static inline CGRect MSBDKeyboardPanelFrame(CGRect f, CGRect g, CGSize screen) {
+    if (!(screen.width > 0.0) || !(screen.height > 0.0)) return CGRectZero;
+    CGRect scr = CGRectMake(0, 0, screen.width, screen.height), inside = CGRectInset(scr, -1.0, -1.0);
+    CGRect r[2] = { g, f };   // (the fixed space first wherever both readings say the same)
+    for (int i = 0; i < 2; i++) {   // (across the bottom)
+        if (CGRectIsNull(r[i]) || CGRectIsEmpty(r[i])) continue;
+        CGRect on = CGRectIntersection(r[i], scr);
+        if (!CGRectIsNull(on) && !CGRectIsEmpty(on) && on.size.width >= screen.width - 1.0 && CGRectGetMaxY(on) >= screen.height - 1.0) return on;
+    }
+    for (int pass = 0; pass < 2; pass++)   // (wholly on the screen: wider than tall first)
+        for (int i = 0; i < 2; i++) {
+            if (CGRectIsNull(r[i]) || CGRectIsEmpty(r[i]) || !CGRectContainsRect(inside, r[i])) continue;
+            if (pass == 0 && !(r[i].size.width > r[i].size.height)) continue;
+            return CGRectIntersection(r[i], scr);
+        }
+    return CGRectZero;
+}
 static inline bool MSBDKeyboardDockUnder(bool ownField, bool drawnDocked, bool sawDrawnKeyboard, bool notedDocked, double secondsSinceNote) {
     if (!ownField) return false;
     if (drawnDocked) return true;

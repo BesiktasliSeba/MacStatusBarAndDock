@@ -61,6 +61,60 @@ static inline CGRect MSBDArrowSideMenuFrame(CGRect menu, CGRect source, CGRect b
     return CGRectMake(round(x * 2.0) / 2.0, round(y * 2.0) / 2.0, w, round(h * 2.0) / 2.0);
 }
 
+// The same, with the arrow reaching the source's middle at the Dock's two ends (1.8.2.2, iPad 2 F2): kept inside bounds, a menu or panel level with an icon near
+// the top or the bottom of a side Dock left the icon's middle closer to its end than the arrow may come (corner + arrowW / 2: never into the rounded corner), and
+// the arrow missed the icon by 5.4 pt (the Downloads panel, 12 pt over the screen's bottom with its 18 pt corner). Then the menu moves along the side just as far as
+// its arrow needs, never past reach (the screen's own limits: under the bar, the Dock's end margin over the bottom edge). Where even reach leaves no room the arrow
+// stays off the corner as before.
+static inline CGRect MSBDArrowSideMenuFrameReaching(CGRect menu, CGRect source, CGRect bounds, CGRect reach, CGFloat arrowH, CGFloat tipGap, CGFloat corner, CGFloat arrowW, bool dockAtRight, int *dir) {
+    int d = MSBDArrowNone;
+    CGRect f = MSBDArrowSideMenuFrame(menu, source, bounds, arrowH, tipGap, dockAtRight, &d);
+    if (dir) *dir = d;
+    if (d == MSBDArrowNone || CGRectIsNull(reach) || CGRectIsEmpty(reach) || !isfinite(reach.origin.y + reach.size.height + corner + arrowW)) return f;
+    CGFloat mid = CGRectGetMidY(source), lo = corner + arrowW / 2.0, h = f.size.height, y = f.origin.y;
+    if (h < 2.0 * lo) return f;
+    if (mid - y < lo) y = fmax(CGRectGetMinY(reach), floor((mid - lo) * 2.0) / 2.0);   // (an icon near the top: the menu up, under the bar at most)
+    else if (y + h - mid < lo) y = fmin(CGRectGetMaxY(reach) - h, ceil((mid + lo - h) * 2.0) / 2.0);   // (near the bottom: down, to the Dock's end margin at most)
+    else return f;
+    if (y < CGRectGetMinY(reach) - 0.001 || y + h > CGRectGetMaxY(reach) + 0.001) return f;   // (taller than reach: as it was)
+    f.origin.y = y;
+    return f;
+}
+
+// The lifted picture of a Dock menu with the Dock at a side (1.8.2.2, M1 F1 / A12Z F1). An icon-sized one stays centred on its icon, the menu beside the Dock. One
+// that centred on the icon would leave the screen or reach the menu's place -- an app's widget or document preview, Sileo's 437 and 497 pt -- stands as the Bottom
+// Dock's does turned to the side: as near the Dock's side as bounds allow, level with the icon and kept inside bounds along the side; the menu goes beside the
+// picture then (its source the picture, as at the bottom). Before, every picture was centred on its icon: Sileo's ran 190 pt off the screen, under the bar and over
+// its own menu. lifted: the picture as UIKit sized it; home: the icon's middle; inner: the Dock's inner edge (where the side menu's source ends); bounds: the menus'
+// room; screenW: the screen's width. *onIcon: 1 when it stays on the icon, 0 when it moved beside the Dock. The picture's frame (lifted unchanged for nonsense).
+static inline CGRect MSBDArrowSidePreviewFrame(CGRect lifted, CGPoint home, CGFloat inner, CGRect bounds, CGFloat screenW, CGFloat arrowH, CGFloat tipGap, bool dockAtRight, int *onIcon) {
+    if (onIcon) *onIcon = 1;
+    if (CGRectIsNull(lifted) || CGRectIsEmpty(lifted) || CGRectIsNull(bounds) || CGRectIsEmpty(bounds)) return lifted;
+    if (!isfinite(lifted.size.width + lifted.size.height + home.x + home.y + inner + screenW + bounds.origin.x + bounds.origin.y + bounds.size.width + bounds.size.height)) return lifted;
+    CGFloat w = lifted.size.width, h = lifted.size.height;
+    CGRect c = CGRectMake(home.x - w / 2.0, home.y - h / 2.0, w, h);   // (centred on the icon)
+    CGFloat menuAt = dockAtRight ? inner - tipGap - arrowH : inner + tipGap + arrowH;   // (where the menu beside the Dock begins)
+    bool fits = CGRectGetMinX(c) >= -0.5 && CGRectGetMaxX(c) <= screenW + 0.5 && (dockAtRight ? CGRectGetMinX(c) >= menuAt - 0.5 : CGRectGetMaxX(c) <= menuAt + 0.5);
+    if (fits) return c;
+    if (onIcon) *onIcon = 0;
+    CGFloat x = dockAtRight ? CGRectGetMaxX(bounds) - w : CGRectGetMinX(bounds);
+    if (w > bounds.size.width) x = CGRectGetMinX(bounds);
+    CGFloat y = h > bounds.size.height ? CGRectGetMinY(bounds) : fmax(CGRectGetMinY(bounds), fmin(home.y - h / 2.0, CGRectGetMaxY(bounds) - h));
+    return CGRectMake(round(x * 2.0) / 2.0, round(y * 2.0) / 2.0, w, h);
+}
+
+// The item order of a Dock menu beside a side Dock (1.8.2.2, iPad 2 F1): UIKit orders a menu from the edge it attached the menu to, the first item next to its source
+// -- bottom-up above the source, top-down below it -- and chose above or below by the room it saw, so beside a side Dock the order flipped at the Dock's middle (the
+// upper icons' menus top-down, the lower ones' bottom-up, Force Quit first). A Mac's side Dock menus all read top-down: every side menu takes the attachment UIKit
+// gives a menu below its source. attachment: UIKit's (a rectangle edge, top 1 or bottom 4, for the edge it chose for this menu); above: UIKit placed this menu above
+// its source. Returns the attachment a menu below has -- the one given when UIKit placed it below already, the other of the two when above --, 0 for any other value
+// (nothing to change).
+static inline unsigned long long MSBDCtxAttachmentBelow(unsigned long long attachment, bool above) {
+    if (attachment != 1 && attachment != 4) return 0;
+    if (!above) return attachment;
+    return attachment == 1 ? 4 : 1;
+}
+
 // The arrow's middle along the menu's edge, from the menu's left edge: under the source's middle, but at least corner + width / 2 in from each end
 // (never into the rounded corners); a menu too narrow for that: its middle.
 static inline CGFloat MSBDArrowOffset(CGRect menu, CGFloat sourceMidX, CGFloat corner, CGFloat arrowW) {

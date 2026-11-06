@@ -514,9 +514,19 @@ static void DMCCPHeaderBarAway(void) {   // (at once, before Apple's next step: 
 }
 // The panel's frame for a width and a content height: under our bar at the screen's side (CCLayout.h), below Apple's sensor indicator while that
 // shows over the panel's column.
+// (Settings > Dock > Position: beside a Dock at that side of the screen it keeps out of the Dock as the Today panel and the banners do, its edge on the Dock's side
+//  10 pt inside the desktop -- it lay over a Right Dock's upper half, M1 F3 / 17.5 F2, 1.8.2.2; at the bottom and on a TV as before. The span it was laid out in is
+//  kept, and a presentation after the Dock moved or changed lays it out again: DMCCPanelWillPresent)
+static MSBDPanelSpan DMCCPSpanNow(void) {
+    UIView *host = (UIView *)gCCPHost; CGSize screen = host.bounds.size;   // (the host: full screen, below)
+    int side = (!host.window || host.window.screen == [UIScreen mainScreen]) && CGSizeEqualToSize(screen, [UIScreen mainScreen].bounds.size) ? DMDockSideNow(screen) : MSBDDockBottom;
+    return MSBDDockSideSpanWithin(screen.width, side, side ? DMUsableArea() : CGRectNull, kMSBDCCSideMargin);
+}
+static MSBDPanelSpan gCCPLaidSpan = { -1.0, -1.0 };
 static CGRect DMCCPFrame(CGFloat width, CGFloat contentH) {
     CGRect s = gCCPSensor; CGSize screen = ((UIView *)gCCPHost).bounds.size;   // (the host: full screen, below)
-    return MSBDCCPanelFrameUnder(screen.width, screen.height, DMMenuBarHeight(), width, contentH, DMCCPRTL(), s.origin.x, s.origin.y, s.size.width, s.size.height);
+    MSBDPanelSpan span = DMCCPSpanNow();
+    return MSBDCCPanelFrameUnderWithin(screen.width, screen.height, DMMenuBarHeight(), width, contentH, DMCCPRTL(), s.origin.x, s.origin.y, s.size.width, s.size.height, span.lo, span.hi);
 }
 
 // ---- our views -----------------------------------------------------------------------------------------------------------------------------
@@ -1018,7 +1028,7 @@ static void DMCCPLayout(NSString *why) {
     MSBDCCScaleLayout(items, k, &r, size);
     gCCPSize = size;
     DMCCPChrome(size);
-    gCCPLaidBar = DMMenuBarHeight();
+    gCCPLaidBar = DMMenuBarHeight(); gCCPLaidSpan = DMCCPSpanNow();
     CGRect pf = DMCCPFrame(r.width, r.contentHeight);
     CGAffineTransform keep = gCCPPanel.transform; gCCPPanel.transform = CGAffineTransformIdentity;
     if (!gCCPDetail) gCCPPanel.frame = pf;
@@ -1297,8 +1307,10 @@ static void DMCCPWillPresent(void) {
     double engineMs = (CACurrentMediaTime() - te) * 1000.0;
 #endif
     gCCPSensorDue = gCCPHaveSensor;   // (Apple's sensor indicator: looked at in the first presentation step, DMCCPUpdate)
-    if (reordered || resized || engine || fabs(DMMenuBarHeight() - gCCPLaidBar) > 0.25)
-        DMCCPLayout(reordered ? @"the user's order changed" : resized ? @"a module's size changed" : engine ? @"the window engine changed" : @"the bar's height known");
+    MSBDPanelSpan span = DMCCPSpanNow();
+    BOOL dock = fabs(span.lo - gCCPLaidSpan.lo) > 0.25 || fabs(span.hi - gCCPLaidSpan.hi) > 0.25;   // (a side Dock moved or changed since: the panel keeps out of it)
+    if (reordered || resized || engine || dock || fabs(DMMenuBarHeight() - gCCPLaidBar) > 0.25)
+        DMCCPLayout(reordered ? @"the user's order changed" : resized ? @"a module's size changed" : engine ? @"the window engine changed" : dock ? @"the Dock beside it" : @"the bar's height known");
     BOOL locked = DMCCPLockedNow();
     BOOL lockChanged = locked != gCCPLocked; gCCPLocked = locked;
     DMCCTPanelWillPresent();

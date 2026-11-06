@@ -219,8 +219,8 @@ static void RIUpdate(UIView *iconView, NSSet<NSString *> *running) {   // (runni
             gDMDotGapBelowImage = y - bottom;   // (our own Dock icons, Finder, are only their picture: the same gap, so their dot lines up)
         }
     }
-    extern int gDockSideApplied;
-    int dockSide = iconView.window.screen == [UIScreen mainScreen] ? gDockSideApplied : 0;   // (a TV's Dock stays at its bottom)
+    extern int MSBDDockSideIconTurnSide(UIView *icon);
+    int dockSide = MSBDDockSideIconTurnSide(iconView);   // (Settings > Dock > Position: beside the picture where its content is turned upright -- by that turn itself, Dock.x: 1.8.2.2 M1 F5)
     dot.frame = dockSide ? MSBDDockSideDotFrame(dockSide, iconView.bounds.size.width, iconView.bounds.size.height, y, d) : CGRectMake((iconView.bounds.size.width - d) / 2.0, y, d, d);
     dot.layer.cornerRadius = d / 2.0;
     dot.hidden = NO;

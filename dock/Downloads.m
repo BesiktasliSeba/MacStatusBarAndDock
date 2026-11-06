@@ -28,6 +28,7 @@
 #import "../common/FocusLock.h"      // (MSBDFocusLock: SpringBoard holds the keyboard focus while the panel is open, so Esc reaches it -- 15-18)
 #include "../common/DockSide.h"   // (Settings > Dock > Position: the panel beside the Dock)
 #import "../common/MenuArrow.h"      // (the Mac's arrow under the panel, pointing at the stack: 1.7.5 item 5)
+#include "../statusbar/KeyboardDock.h"   // (MSBDKeyboardPanelFrame: the keyboard in whichever space shows one -- 1.8.2.2)
 
 @interface UIWindow (DMPrivateDL)
 + (NSArray *)allWindowsIncludingInternalWindows:(BOOL)internal onlyVisibleWindows:(BOOL)visible;
@@ -854,7 +855,10 @@ static BOOL DMDownloadsSwitcherVisible(void) {
     if (dockSide) {
         CGRect platter = [icon.superview convertRect:icon.superview.bounds toView:window], source = iconFrame;   // (from the Dock's inner edge, as the icons' menus: the arrow clear of the Dock)
         source.origin.x = dockSide == MSBDDockRight ? CGRectGetMinX(platter) : CGRectGetMaxX(platter) - source.size.width;
-        CGRect place = MSBDArrowSideMenuFrame(CGRectMake(0, 0, width, height), source, CGRectMake(12.0, 54.0, window.bounds.size.width - 24.0, window.bounds.size.height - 66.0), kMSBDArrowHeight, kMSBDArrowTipGap, dockSide == MSBDDockRight, &arrowDir);
+        // (and its arrow at the stack's middle at the Dock's bottom end: the panel goes as low as the Dock itself may, its end margin, when its arrow needs it --
+        //  kept 12 pt over the bottom, the arrow missed the iPad 2's stack by 5.4 pt, 1.8.2.2 F2)
+        CGRect place = MSBDArrowSideMenuFrameReaching(CGRectMake(0, 0, width, height), source, CGRectMake(12.0, 54.0, window.bounds.size.width - 24.0, window.bounds.size.height - 66.0),
+                                                      CGRectMake(12.0, 54.0, window.bounds.size.width - 24.0, window.bounds.size.height - kMSBDDockSideEndMargin - 54.0), kMSBDArrowHeight, kMSBDArrowTipGap, kPanelCorner, kMSBDArrowWidth, dockSide == MSBDDockRight, &arrowDir);
         if (arrowDir != MSBDArrowNone) { x = CGRectGetMinX(place); y = CGRectGetMinY(place); }
         else { arrowDir = MSBDArrowDown; x = dockSide == MSBDDockRight ? source.origin.x - gap - width : CGRectGetMaxX(source) + gap; y = MAX(54.0, window.bounds.size.height - 12.0 - height); }
     }
@@ -1296,9 +1300,13 @@ static BOOL DMDLHardwareKeyboard(void) {
     UIWindow *window = self.panel.window;
     if (!window) return;
     CGRect end = [n.userInfo[UIKeyboardFrameEndUserInfoKey] CGRectValue];
-    // (SpringBoard itself stays portrait -- only its windows turn -- so its keyboard frames come in the screen's fixed, portrait space: seen in landscape
-    // as {360, 0, 408, 1024} for a keyboard across the bottom. Read as interface space, that put the panel above the top of the screen.)
-    CGRect k = [window convertRect:end fromCoordinateSpace:window.screen.fixedCoordinateSpace];
+    // (a keyboard frame comes in the screen's fixed, portrait space or in the interface's, by the iPadOS and the kind of keyboard: 16.7.7 in landscape {360, 0,
+    //  408, 1024} for a keyboard across the bottom, 18.5 {0, 952.5, 1366, 71.5} for a hardware keyboard's bar. The reading that shows a keyboard counts -- across
+    //  the bottom, else a floating one wider than tall --, only its part on the screen (statusbar/KeyboardDock.h MSBDKeyboardPanelFrame). Read only as the fixed
+    //  space, 18.5's bar was a keyboard 342 pt above the screen and the panel went off the top, A12Z F9; read first in the interface's, a floating keyboard sent
+    //  in the fixed space on 15-17 was turned a quarter, and a keyboard announced taller than shown was none: code review 1.8.2.2, 4)
+    UIScreen *scr = window.screen ?: [UIScreen mainScreen];
+    CGRect k = MSBDKeyboardPanelFrame([window convertRect:end fromCoordinateSpace:scr.coordinateSpace], [window convertRect:end fromCoordinateSpace:scr.fixedCoordinateSpace], window.bounds.size);
     BOOL gone = [n.name isEqualToString:UIKeyboardWillHideNotification] || CGRectIsEmpty(k) || CGRectGetMinY(k) >= CGRectGetMaxY(window.bounds) - 1.0
              || !CGRectIntersectsRect(k, window.bounds);
     CGFloat top = gone ? CGFLOAT_MAX : CGRectGetMinY(k);

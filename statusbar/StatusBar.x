@@ -4207,6 +4207,10 @@ static const void *kZetsuBarPanKey = &kZetsuBarPanKey, *kZetsuBarStartKey = &kZe
     UIWindow *w = self.view.window;
     dispatch_async(dispatch_get_main_queue(), ^{   // (after Zetsu's own touch handling has placed it)
         if (!w || w.hidden || [objc_getAssociatedObject(w, kStageGestureKey) boolValue]) return;
+        // (only a window at its place: a tap on its yellow light ends here too, and the window flies into its Dock icon by then -- its frame the flight's.
+        //  Kept out of a side Dock, that flying frame moved the window by the Dock's room, and it came back from the Dock 54 to 66 pt toward the middle:
+        //  A12Z F8, M1, 1.8.2.2. Minimized by us or by Zetsu, or under a turn of ours, it is not where it stands.)
+        if ([objc_getAssociatedObject(w, kStageHiddenKey) boolValue] || DMStageMinimized(w) || !CGAffineTransformIsIdentity(w.transform)) return;
         {   // (Settings > Dock > Position: Zetsu's own drag, let go under a Dock at a screen side, as our pan's)
             CGRect kept = DMDockSideKept(w.frame, MSBDSnapMove);
             if (!CGRectEqualToRect(kept, w.frame)) { DMZetsuMove(w, kept, YES, nil); return; }
@@ -4456,6 +4460,7 @@ void DMZetsuAfterUnlock(void) {
 static CGRect DMUsableArea(void);
 static void DMApplyGroupSlots(UIView *fresh);
 static unsigned gDMDockGen = 0;   // (bumped when the Dock itself changes: its own apps, its size or gap -- DMWatchDockChanges)
+static unsigned gDMDockPlaceGen = 0;   // (bumped when Settings > Dock > Position changes: a side Dock's strip is measured afresh there, DMDockSideStripNow)
 static BOOL DMDockOnScreen(void);
 static CGFloat DMDockCenterX(void);
 static CGPoint DMScreenToNative(CGPoint s, long orientation, CGSize native);
@@ -7275,7 +7280,15 @@ static void DMSMTurnForgetClosed(void) {
     DMSMTurnForget(DMSMFitClosedKeys(keys, present, nil), @"closed");
 }
 static NSString *DMSMShapeKey(CGSize s) { return s.width > s.height ? @"L" : @"P"; }
+static BOOL DMLayoutNotesHeld(void);   // (below, with the turn)
 static void DMSMTurnNote(void) {
+    // (the desktop measured before the hold is asked: the measurement may itself see a side Dock change its thickness, and that holds the notes -- DMDockSideStripNow.
+    //  Held, the records stay the old desktop's until the windows are placed, as the other engines' notes do, DMNoteWindowLayouts; code review 1.8.2.2, 1. With a
+    //  side Dock only: at the bottom the notes are taken as in 1.8.2.1, second pass 5)
+    if (DMDockSideNow([UIScreen mainScreen].bounds.size)) {
+        (void)DMUsableArea();
+        if (DMLayoutNotesHeld()) return;
+    }
     NSDictionary<NSString *, NSValue *> *frames = DMSMOpenWindowFrames();
     if (!frames.count) return;
     (void)DMSMTurnLayouts();
@@ -7317,17 +7330,25 @@ static void DMDockChangedRelayout(NSString *why) {
     int position = DMDockPositionRead();
     CGSize scrNow = [UIScreen mainScreen].bounds.size;
     BOOL moved = gDMDockPosition >= 0 && MSBDDockSideMoved(gDMDockPosition, position, scrNow.width, scrNow.height);
+    if (gDMDockPosition >= 0 && position != gDMDockPosition) gDMDockPlaceGen++;   // (another Position: a side's strip is measured afresh)
     if (gDMDockPosition >= 0) { gDMDockPosition = position; DMSMHookBottomInsets17(); }
+    // (a Dock at a side that a setting of ours or a change of its own apps made thicker or thinner -- Icon Size, the gap, the apps it shows: the windows follow it
+    //  as when it changes by itself, through its strip (DMDockSideStripNow: a thickness that really changed, once it has settled, then every window on every
+    //  engine, DMDockSideThicknessChanged). Nothing is placed for a setting that leaves the thickness as it was (magnification, the Launchpad icon, the theme),
+    //  nor at each step of a slider: 1.8.2.2 placed every window at every such notification, code review 1.8.2.2, 3. At the bottom and at a Position change as
+    //  before: placed from here.)
+    BOOL side = !moved && gDMDockPosition >= 0 && MSBDDockSideFor(position, scrNow.width, scrNow.height) != MSBDDockBottom;
     // (Aerial, Zetsu, MilkyWay4: the layouts noted are the old place's until DMDockPositionMoved has placed the windows, as at a turn. A note in between measured
     //  a window in a layout against the new desktop, found it in none, and the window was only kept out: a half kept its width, M1 Aerial, 6 Nov)
     if (moved) DMLayoutNoteHold(2.4);
     gDMDockGen++;
     DM_FEATURE_MARK("dock-change-relayout");
-    DMLog([NSString stringWithFormat:@"[usable] the Dock changed (%@): its height is measured again; windows in a layout follow it %@", why, layouts]);
+    DMLog([NSString stringWithFormat:@"[usable] the Dock changed (%@): %@ %@", why, side ? @"beside the desktop: the windows follow its thickness if it changed, layouts" : @"its height is measured again; windows in a layout follow it", layouts]);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{   // (after the Dock's own resize animation)
         (void)DMUsableArea();   // (a first measurement of the new Dock; it counts once seen again 0.3 s later)
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             (void)DMUsableArea();
+            if (side) return;   // (followed by its strip, when its thickness changed: above)
             if (DMSMEngine()) { if (layouts.count) DMSMApplyLayouts(layouts); }
             else if (DMFitEnabled()) DMApplyGroupSlots(nil);
             if (moved) DMDockPositionMoved(layouts);
@@ -7463,11 +7484,17 @@ static int DMDockSideNow(CGSize screen) {
     }
     return MSBDDockSideFor(gDMDockPosition, screen.width, screen.height);
 }
-// (the Dock's thickness as drawn; while it is away where it last was, as the bottom's rule below: the thickest seen, once measured again 0.3 s later. A Dock
-//  standing at the other side is away for this one: at a Position change the Dock part may have moved it before the windows' layouts are read against the
-//  old side, regression 1.8.2.1 F1)
+// (the Dock's thickness as drawn, taken once measured again unchanged 0.3 s later, the thicker of the two meanwhile; while it is away, where it last was. Its own
+//  changes -- its recents, Apple's App Library icon, a Handoff tile -- are followed, and the windows with them (DMDockSideThicknessChanged); before, the thickest
+//  seen stood until our own next change, 17.5 F3 / A12Z F5, 1.8.2.2 (DockSide.h MSBDDockSideStripStep). A Dock standing at the other side is away for this one:
+//  at a Position change the Dock part may have moved it before the windows' layouts are read against the old side, regression 1.8.2.1 F1)
 static double gDMDockSideStrip = 0;
+static double gDMDockSideStripHeld = -1.0;   // (> 0: the strip the windows' layouts are read against before a change of thickness is followed)
+static MSBDDockStripState gDMDockStrip = { 0, -1.0, 0, 0 };   // (DockSide.h MSBDDockSideStripStep; placed: set by DMDockPositionMoved, below)
+static double gDMDockSideStripUsed = 0;   // (the strip the last look gave the desktop: what a placement just made stands against)
+static void DMDockSideThicknessChanged(double was, double now, int side);
 static double DMDockSideStripNow(CGSize screen, int side) {
+    if (gDMDockSideStripHeld > 0) return gDMDockSideStripHeld;
     double measured = -1.0; BOOL other = NO;
     for (UIWindow *w in DMAllWindows()) {
         if (![NSStringFromClass([w class]) isEqualToString:@"SBFloatingDockWindow"] || fabs(w.bounds.size.width - screen.width) >= 0.5 || fabs(w.bounds.size.height - screen.height) >= 0.5) continue;
@@ -7485,15 +7512,26 @@ static double DMDockSideStripNow(CGSize screen, int side) {
             [stack addObjectsFromArray:v.subviews];
         }
     }
-    static double cand = -1; static CFTimeInterval candAt = 0; static unsigned seenGen = 0; static int seenSide = 0;
-    if (seenGen != gDMDockGen || seenSide != side) { seenGen = gDMDockGen; seenSide = side; gDMDockSideStrip = 0; cand = -1; }
+    // (measured afresh at another Position or side only. A change of ours that leaves the Dock where it is -- Icon Size, the gap, the apps it shows -- is a change
+    //  of thickness as its own are, taken and followed below: before, every Dock setting started the strip over, so the windows had to be placed for each one,
+    //  thicker or not, code review 1.8.2.2, 3)
+    static unsigned seenPlace = 0; static int seenSide = 0;
+    MSBDDockStripState *st = &gDMDockStrip;
+    if (seenPlace != gDMDockPlaceGen || seenSide != side) { seenPlace = gDMDockPlaceGen; seenSide = side; gDMDockSideStrip = 0; st->settled = 0; st->cand = -1.0; st->placed = 0; }
     if (measured > 0) {
-        CFTimeInterval t = CACurrentMediaTime();
-        if (gDMDockSideStrip <= 0 || measured > gDMDockSideStrip + 0.25) {
-            if (fabs(cand - measured) <= 0.25 && t - candAt >= 0.3) { gDMDockSideStrip = measured; cand = -1; }
-            else if (fabs(cand - measured) > 0.25) { cand = measured; candAt = t; }
+        int event = MSBDStripSame; double was = 0;
+        double use = MSBDDockSideStripStep(st, measured, CACurrentMediaTime(), MAX(DMSpringBoardDockHeight(), 60.0), &event, &was);
+        gDMDockSideStrip = st->settled;
+        if (event == MSBDStripCandidate) DMLayoutNoteHold(1.0);   // (the windows' layouts stay the old desktop's while the new thickness is confirmed)
+        else if (event == MSBDStripChanged) {
+            // (held here, in the look that took it: that look may be a note pass's own -- DMNoteWindowLayouts measures the desktop it notes against --, and the
+            //  follow's hold a turn of the run loop later came after that pass had noted the windows against the new desktop: a Fill window 15.6 pt short of the
+            //  new Fill was in no layout and stayed short, a right half a thicker Dock pushed was only kept out over the left one. Code review 1.8.2.2, 1)
+            DMLayoutNoteHold(2.4);
+            double now = st->settled; int s = side; dispatch_async(dispatch_get_main_queue(), ^{ DMDockSideThicknessChanged(was, now, s); });
         }
-        return MAX(measured, gDMDockSideStrip);
+        gDMDockSideStripUsed = use;
+        return use;
     }
     if (other && DMTestFlag("/tmp/macstatusbar-debug")) {   // (debug: the Dock part and ours apart for a moment, once per change and side)
         static unsigned loggedGen = 0; static int loggedSide = -1;
@@ -7503,8 +7541,8 @@ static double DMDockSideStripNow(CGSize screen, int side) {
                    gDMDockSideStrip > 0 ? gDMDockSideStrip : MAX(DMSpringBoardDockHeight(), 60.0), gDMDockSideStrip > 0 ? @"as last seen there" : @"SpringBoard's figure"]);
         }
     }
-    if (gDMDockSideStrip > 0) return gDMDockSideStrip;
-    return MAX(DMSpringBoardDockHeight(), 60.0);   // (not seen yet: SpringBoard's figure)
+    gDMDockSideStripUsed = gDMDockSideStrip > 0 ? gDMDockSideStrip : MAX(DMSpringBoardDockHeight(), 60.0);   // (not seen yet: SpringBoard's figure)
+    return gDMDockSideStripUsed;
 }
 static CGRect DMDockSideDesktopOf(CGSize shape, int side) {   // (shape: the screen now, or the other turn of it: where the Dock last was)
     CGSize screen = [UIScreen mainScreen].bounds.size;
@@ -9871,7 +9909,11 @@ static void DMDesktopAreaChanged(void);
 static void DMMSWDockMovedRecords(void);   // (MacSwitcher.h: what is kept of the other desktops -- the windows' places, Finder's windows there)
 static void DMDockPositionMoved(NSDictionary<NSString *, NSString *> *layouts) {
     DM_FEATURE_MARK("dock-position-moved");
-    DMLog([NSString stringWithFormat:@"[dockside] the position changed: the desktop is now %@", NSStringFromCGRect(DMUsableArea())]);
+    // (no thickness taken since the Position changed -- the Dock away over a full-screen app --: the windows are placed against SpringBoard's figure, so the strip
+    //  keeps it, and the Dock's first measured thickness is a change from it, followed as any other. Before, the desktop moved to the real strip and no window
+    //  followed: a Fill window ended short of the Dock or under it, code review 1.8.2.2, second pass 4)
+    if (DMDockSideNow([UIScreen mainScreen].bounds.size) && gDMDockStrip.settled <= 0) gDMDockStrip.placed = gDMDockSideStripUsed;
+    DMLog([NSString stringWithFormat:@"[dockside] the Dock moved or changed its thickness: the desktop is now %@", NSStringFromCGRect(DMUsableArea())]);
     DMNativeLayoutForDesktop(NO);   // (Finder's windows, on every engine)
     DMDesktopAreaChanged();         // (and any desktop file under the Dock comes out of it: Desktop.h -dm_placesArea:)
     if (DMSMEngine()) {
@@ -9919,6 +9961,23 @@ static void DMDockPositionMoved(NSDictionary<NSString *, NSString *> *layouts) {
     }
     if (placed) { DM_FEATURE_MARK("dock-position-moved-hidden"); DMLog([NSString stringWithFormat:@"[dockside] %u window(s) not on screen (another desktop's, minimized) placed for the new desktop", placed]); }
     DMMSWDockMovedRecords();
+}
+// The Dock at its side changed its thickness (DMDockSideStripNow: its recents, Apple's App Library icon, a Handoff tile, a Dock setting of ours -- Icon Size,
+// the apps it shows; taken once settled): the desktop follows it, and every window with it on every engine, as a Position change places them -- a window in a
+// layout goes into the same layout of the new desktop (a Fill window wider or narrower), any other one is kept out of the Dock; the other desktops' and minimized
+// ones too. The layouts are read against the Dock as it was. Both ways: thinner (17.5 F3: the desktop had kept 17.6 pt of the old Dock), thicker (A12Z F5: a
+// Fill window 1.2 pt under it). 1.8.2.2.
+static void DMDockSideThicknessChanged(double was, double now, int side) {
+    if (DMDockSideNow([UIScreen mainScreen].bounds.size) != side) return;   // (turned or moved meanwhile: that change's own)
+    gDMDockSideStripHeld = was;   // (the layouts as they were: read against the Dock before the change)
+    NSDictionary *layouts = DMSMEngine() ? DMSMLayoutsNow() : nil;
+    gDMDockSideStripHeld = -1.0;
+    DMLayoutNoteHold(2.4);   // (the other engines' noted layouts stay the old desktop's until the windows are placed)
+    DM_FEATURE_MARK("dock-side-thickness-follow");
+    DMLog([NSString stringWithFormat:@"[dockside] the Dock's thickness changed: %.1f -> %.1f pt; the desktop follows it (%@), windows in a layout follow it %@", was, now, NSStringFromCGRect(DMUsableArea()), layouts]);
+    if (DMSMEngine()) { if (layouts.count) DMSMApplyLayouts(layouts); }
+    else if (DMFitEnabled()) DMApplyGroupSlots(nil);
+    DMDockPositionMoved(layouts);
 }
 static void DMRememberStageFrame(UIView *stage) {
     if (!stage || [objc_getAssociatedObject(stage, kStageEnteringKey) boolValue] || DMStageMinimized(stage)) return;
@@ -9982,12 +10041,16 @@ static CGRect DMScaleFrame(CGRect f, CGSize from, CGSize to) {
 // Held for a moment after every shape change (gLayoutNoteHold): the records are the old shape's until the turn has placed the windows.
 static CFTimeInterval gLayoutNoteHold = 0;
 static void DMLayoutNoteHold(CFTimeInterval seconds) { gLayoutNoteHold = MAX(gLayoutNoteHold, CACurrentMediaTime() + seconds); }
+static BOOL DMLayoutNotesHeld(void) { return CACurrentMediaTime() < gLayoutNoteHold; }
 static CGRect DMWindowSlotInArea(NSString *name, CGRect u, CGSize screen);
 static void DMNoteWindowLayouts(void) {
-    if (CACurrentMediaTime() < gLayoutNoteHold || gMSWSwitching || DMSwitcherVisible()) return;
+    if (DMLayoutNotesHeld() || gMSWSwitching || DMSwitcherVisible()) return;
     NSArray<UIView *> *stages = DMAerialStages();
     if (!stages.count) return;
     CGRect u = DMUsableArea(); CGSize scr = [UIScreen mainScreen].bounds.size;   // (one measurement for the nine: DMLayoutFrame measures again each time)
+    // (asked again after that measurement: it may itself have seen a side Dock change its thickness, and then the notes are held -- DMDockSideStripNow. Noted
+    //  against u, the new desktop, before the windows were placed, a Fill window was in no layout and did not follow, 17.5 F3 again; code review 1.8.2.2, 1)
+    if (DMLayoutNotesHeld()) return;
     CGRect t[kMSBDTurnLayoutCount];
     for (int i = 0; i < kMSBDTurnLayoutCount; i++) t[i] = DMA5StageFromWindow(DMWindowSlotInArea(@(kMSBDTurnLayouts[i]), u, scr));   // (= DMLayoutFrame)
     for (UIView *st in stages) {
@@ -18472,7 +18535,11 @@ static void DMShowSidePrompt(NSMutableDictionary *ctx, BOOL rebuilt) {
     q.accessibilityTraits = UIAccessibilityTraitHeader;
     [q sizeToFit];
     CGRect usable = DMLayoutFrame(@"fill");
-    pill.frame = CGRectMake((host.bounds.size.width - q.bounds.size.width - 44.0) / 2.0, usable.origin.y + 16.0, q.bounds.size.width + 44.0, 40.0);
+    CGFloat pillW = q.bounds.size.width + 44.0, pillX = (host.bounds.size.width - pillW) / 2.0;
+    // (Settings > Dock > Position: the panels stand in the desktop beside a side Dock, and the title over their seam, No Fit's middle -- centred on the screen it was
+    //  26 to 34 pt off it, over one panel, M1 F2 / A12Z F7, 1.8.2.2. At the bottom the seam is the screen's middle: as before.)
+    if (!DMIsExtMenuHost(host) && DMDockSideNow([UIScreen mainScreen].bounds.size)) pillX = MSBDDockSideTitleX(noFit.center.x, pillW, host.bounds.size.width, 12.0);
+    pill.frame = CGRectMake(pillX, usable.origin.y + 16.0, pillW, 40.0);
     pill.layer.cornerRadius = 20.0; pill.clipsToBounds = YES; pill.userInteractionEnabled = NO;
     q.frame = CGRectMake(22.0, 0, q.bounds.size.width, 40.0);
     [pill.contentView addSubview:q]; [o addSubview:pill];
@@ -18690,7 +18757,10 @@ static void DMSwapHalfWithQuarter(void) {
     q.accessibilityTraits = UIAccessibilityTraitHeader;
     [q sizeToFit];
     CGRect usable = DMLayoutFrame(@"fill");
-    pill.frame = CGRectMake((host.bounds.size.width - q.bounds.size.width - 44.0) / 2.0, usable.origin.y + 16.0, q.bounds.size.width + 44.0, 40.0);
+    CGFloat pillW = q.bounds.size.width + 44.0, pillX = (host.bounds.size.width - pillW) / 2.0;
+    // (beside a side Dock over the desktop's middle, as the side question's title: DMShowSidePrompt)
+    if (!DMIsExtMenuHost(host) && DMDockSideNow([UIScreen mainScreen].bounds.size)) pillX = MSBDDockSideTitleX(CGRectGetMidX(usable), pillW, host.bounds.size.width, 12.0);
+    pill.frame = CGRectMake(pillX, usable.origin.y + 16.0, pillW, 40.0);
     pill.layer.cornerRadius = 20.0; pill.clipsToBounds = YES; pill.userInteractionEnabled = NO;
     q.frame = CGRectMake(22.0, 0, q.bounds.size.width, 40.0);
     [pill.contentView addSubview:q]; [o addSubview:pill];
@@ -30693,9 +30763,9 @@ static void DMRunTrigger(NSString *cmd) {
         NSMutableString *out = [NSMutableString stringWithFormat:@"[zorient] screen %ld (real %ld), device %ld, bar over %@;",
             ((long (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"activeInterfaceOrientation")), DMRealInterfaceOrientation(),
             (long)[UIDevice currentDevice].orientation, gBarOverHidingApp ?: @"-"];
-        for (UIWindow *w in DMZetsuAllWindows()) [out appendFormat:@" %@ %ld hidden %d frame %@;", DMZetsuWindowBundle(w),
+        for (UIWindow *w in DMZetsuAllWindows()) [out appendFormat:@" %@ %ld hidden %d frame %@ transform %@ minimized %d;", DMZetsuWindowBundle(w),
             [w respondsToSelector:NSSelectorFromString(@"_windowInterfaceOrientation")] ? ((long (*)(id, SEL))objc_msgSend)(w, NSSelectorFromString(@"_windowInterfaceOrientation")) : -1L,
-            w.hidden, NSStringFromCGRect(w.frame)];
+            w.hidden, NSStringFromCGRect(w.frame), NSStringFromCGAffineTransform(w.transform), DMStageMinimized(w)];   // (the transform: Zetsu's title-bar watcher acts only on identity, code review 1.8.2.2, 7)
         DMLog(out);
     }
     else if ([cmd isEqualToString:@"zetsuinfo"]) {   // zetsuinfo: every ZetsuWindow (shown or not), back to front, with its state
@@ -37741,6 +37811,30 @@ static void DMCtxSidePreviewSize(id input) {
     CGSize want = CGSizeMake(tp.size.width * scale, tp.size.height * scale);
     if (isfinite(want.width) && isfinite(want.height) && want.width >= 8.0 && want.height >= 8.0) ((void (*)(id, SEL, CGSize))objc_msgSend)(input, spps, want);
 }
+// (Settings > Dock > Position: the item order of a menu beside a side Dock, 1.8.2.2 iPad 2 F1. UIKit orders a menu from the edge of its source it attached the menu to
+//  -- -[_UIContextMenuPresentationController _updateActionsViewReversesOrderForAttachment:] with the layout's anchor, 15.6.1 -- and attached it below the Dock's
+//  upper icons and above the lower ones, by the room it saw: moved beside the icon, the upper icons' menus read top-down and the lower ones' bottom-up, Force Quit
+//  first, the order flipping at the Dock's middle. A Mac's side Dock menus all read top-down: the layout's anchor takes the attachment UIKit gives a menu below its
+//  source (MenuArrow.h MSBDCtxAttachmentBelow), the rest of the anchor as UIKit made it. Shape-checked; another shape keeps UIKit's order, said once in a debug build.)
+typedef struct { unsigned long long attachment, alignment; double attachmentOffset, alignmentOffset; long long gravity; } DMCtxAnchor;
+#define DM_CTX_ANCHOR_GET "{?=QQddq}16@0:8"
+#define DM_CTX_ANCHOR_SET "v56@0:8{?=QQddq}16"
+static void DMCtxSideOrderTopDown(id out, BOOL uikitAbove, BOOL say) {
+    SEL g = NSSelectorFromString(@"anchor"), s = NSSelectorFromString(@"setAnchor:");
+    if (!DMCtxEncIs(out, g, DM_CTX_ANCHOR_GET) || !DMCtxEncIs(out, s, DM_CTX_ANCHOR_SET)) {
+        static BOOL told = NO;
+        if (!told && DMTestFlag("/tmp/macstatusbar-debug")) { told = YES; DMLog([NSString stringWithFormat:@"[ctxarrow] the layout's anchor is not as on 15.6.1 (%@): a side menu keeps UIKit's item order", NSStringFromClass([out class])]); }
+        return;
+    }
+    DMCtxAnchor a = ((DMCtxAnchor (*)(id, SEL))objc_msgSend)(out, g);
+    unsigned long long below = MSBDCtxAttachmentBelow(a.attachment, uikitAbove);
+    if (say) DMLog([NSString stringWithFormat:@"[ctxarrow] a side menu's anchor: attachment %llu alignment %llu offsets %.1f %.1f gravity %lld, UIKit put it %@ -> attachment %llu (top-down)",
+                    a.attachment, a.alignment, a.attachmentOffset, a.alignmentOffset, a.gravity, uikitAbove ? @"above its source" : @"below it", below ?: a.attachment]);
+    if (!below || below == a.attachment) return;
+    a.attachment = below;
+    ((void (*)(id, SEL, DMCtxAnchor))objc_msgSend)(out, s, a);
+    DM_FEATURE_MARK("dock-side-menu-top-down");
+}
 %group DockMenuArrow
 %hook _UIContextMenuLayoutArbiter
 - (id)computedLayoutWithInput:(id)input {
@@ -37766,9 +37860,12 @@ static void DMCtxSidePreviewSize(id input) {
     }
     CGRect src = DMCtxDockSource(container, input, previewAt);
     if (CGRectIsNull(src)) return out;
+    BOOL uikitAbove = CGRectGetMidY(menu) <= CGRectGetMidY(src);   // (where UIKit itself put the menu: above its source, or below)
     CGRect bounds = DMCtxEncIs(out, cb, DM_CTX_RECT_GET) ? ((CGRect (*)(id, SEL))objc_msgSend)(out, cb) : CGRectNull;
     if (CGRectIsNull(bounds) || bounds.size.width < 100.0 || bounds.size.height < 100.0) bounds = CGRectInset(container.bounds, 8.0, 8.0);
+    CGRect reach = CGRectNull;   // (beside a side Dock: how far the menu may move for its arrow to reach the icon's middle, MSBDArrowSideMenuFrameReaching)
     int dir = MSBDArrowNone;
+    BOOL movePreview = NO; CGFloat pdx = 0, pdy = 0;   // (beside a side Dock: the lifted picture's move, written once the menu is known to fit)
     static __weak UIView *loggedFor = nil;
     BOOL say = loggedFor != container && DMTestFlag("/tmp/macstatusbar-debug");
 #if DEBUG
@@ -37785,29 +37882,44 @@ static void DMCtxSidePreviewSize(id input) {
         //  20 pt inside the screen, and our own icons' lifted copies then showed the icon itself beside them)
         CGRect desk = [container convertRect:DMUsableArea() fromCoordinateSpace:container.window.screen.coordinateSpace];
         src.origin.x = dockSide == MSBDDockRight ? CGRectGetMaxX(desk) + kMSBDDockSideGap : CGRectGetMinX(desk) - kMSBDDockSideGap - src.size.width;
-        CGFloat barEnd = CGRectGetMinY(desk) + kMSBDArrowTipGap;
-        if (CGRectGetMinY(bounds) < barEnd) { bounds.size.height -= barEnd - CGRectGetMinY(bounds); bounds.origin.y = barEnd; }   // (Finder's, at the top of the Dock: under the menu bar)
-        CGFloat bottomEnd = CGRectGetMaxY(container.bounds) - 8.0;
-        if (CGRectGetMaxY(bounds) < bottomEnd) bounds.size.height = bottomEnd - CGRectGetMinY(bounds);   // (the Trash's, at the bottom of the Dock: no Dock below it, level with its icon)
+        // (the room along the side, the same for every Dock menu: from under the menu bar to 8 pt over the screen's bottom, where nothing is below the Dock's last
+        //  icon. UIKit's own content bounds are 20 pt narrower for Finder's and the Trash's menus (our icons' view): Finder's menu was held 20 pt under the bar,
+        //  its arrow 9 pt below Finder's middle, M1 F4 and iPad 2 F2, 1.8.2.2)
+        CGFloat barEnd = CGRectGetMinY(desk) + kMSBDArrowTipGap, bottomEnd = CGRectGetMaxY(container.bounds) - 8.0;
+        bounds.origin.y = barEnd; bounds.size.height = bottomEnd - barEnd;
+        reach = CGRectMake(bounds.origin.x, barEnd, bounds.size.width, CGRectGetMaxY(container.bounds) - kMSBDDockSideEndMargin - barEnd);
         CGPoint home = DMCtxDockHome(container, input);
         if (home.x > 0.0 && home.y > 0.0 && !CGRectIsNull(previewAt)) {
-            src.origin.y = home.y - src.size.height / 2.0;
-            CGFloat dx = home.x - CGRectGetMidX(previewAt), dy = home.y - CGRectGetMidY(previewAt);
-            previewAt = CGRectOffset(previewAt, dx, dy);
-            if (kind == DMCtxOutFrames) { if (DMCtxEncIs(out, NSSelectorFromString(@"setPreviewFrame:"), DM_CTX_RECT_SET)) ((void (*)(id, SEL, CGRect))objc_msgSend)(out, NSSelectorFromString(@"setPreviewFrame:"), previewAt); }
-            else if (DMCtxEncIs(out, NSSelectorFromString(@"setPreview:"), DM_CTX_PLACE_SET)) {
-                DMCtxPlace pv = DMCtxGetPlace(out, @"preview");
-                pv.center.x += dx; pv.center.y += dy;
-                ((void (*)(id, SEL, DMCtxPlace))objc_msgSend)(out, NSSelectorFromString(@"setPreview:"), pv);
-            }
+            // (an icon-sized lifted picture stays on its icon; a wider one -- an app's widget or document preview -- stands beside the Dock as at the bottom, and
+            //  the menu beside it: MSBDArrowSidePreviewFrame, M1 F1 / A12Z F1)
+            int onIcon = 1;
+            CGFloat inner = dockSide == MSBDDockRight ? CGRectGetMinX(src) : CGRectGetMaxX(src);
+            CGRect lifted = MSBDArrowSidePreviewFrame(previewAt, home, inner, bounds, CGRectGetWidth(container.bounds), kMSBDArrowHeight, kMSBDArrowTipGap, dockSide == MSBDDockRight, &onIcon);
+            if (onIcon) src.origin.y = home.y - src.size.height / 2.0;
+            else src = lifted;
+            if (!onIcon && say) DMLog([NSString stringWithFormat:@"[ctxarrow] a lifted picture %@ too big for the side Dock's icon: beside the Dock at %@, the menu beside it", NSStringFromCGRect(previewAt), NSStringFromCGRect(lifted)]);
+            pdx = CGRectGetMidX(lifted) - CGRectGetMidX(previewAt); pdy = CGRectGetMidY(lifted) - CGRectGetMidY(previewAt);
+            movePreview = YES;
         }
     }
-    CGRect f = dockSide ? MSBDArrowSideMenuFrame(menu, src, bounds, kMSBDArrowHeight, kMSBDArrowTipGap, dockSide == MSBDDockRight, &dir) : MSBDArrowMenuFrame(menu, src, bounds, kMSBDArrowHeight, kMSBDArrowTipGap, &dir);
+    CGRect f = dockSide ? MSBDArrowSideMenuFrameReaching(menu, src, bounds, reach, kMSBDArrowHeight, kMSBDArrowTipGap, kCtxMenuCorner, kMSBDArrowWidth, dockSide == MSBDDockRight, &dir) : MSBDArrowMenuFrame(menu, src, bounds, kMSBDArrowHeight, kMSBDArrowTipGap, &dir);
     if (dir == MSBDArrowNone) {
-        if (say) { loggedFor = container; DMLog([NSString stringWithFormat:@"[ctxarrow] a Dock menu %@ over %@ has no room for its arrow (bounds %@): UIKit's place", NSStringFromCGRect(menu), NSStringFromCGRect(src), NSStringFromCGRect(bounds)]); }
+        // (the picture is not moved either: UIKit's own place for the menu and its picture, laid out together. Moved beside the Dock before the menu was known
+        //  to fit next to it, a wide picture kept its new place over UIKit's menu; code review 1.8.2.2, 6)
+        if (say) { loggedFor = container; DMLog([NSString stringWithFormat:@"[ctxarrow] a Dock menu %@ over %@ has no room for its arrow (bounds %@): UIKit's place, its picture too", NSStringFromCGRect(menu), NSStringFromCGRect(src), NSStringFromCGRect(bounds)]); }
         return out;
     }
+    if (movePreview) {   // (the menu fits beside it: the picture goes where it was worked out for, on its icon or beside the Dock)
+        previewAt = CGRectOffset(previewAt, pdx, pdy);
+        if (kind == DMCtxOutFrames) { if (DMCtxEncIs(out, NSSelectorFromString(@"setPreviewFrame:"), DM_CTX_RECT_SET)) ((void (*)(id, SEL, CGRect))objc_msgSend)(out, NSSelectorFromString(@"setPreviewFrame:"), previewAt); }
+        else if (DMCtxEncIs(out, NSSelectorFromString(@"setPreview:"), DM_CTX_PLACE_SET)) {
+            DMCtxPlace pv = DMCtxGetPlace(out, @"preview");
+            pv.center.x += pdx; pv.center.y += pdy;
+            ((void (*)(id, SEL, DMCtxPlace))objc_msgSend)(out, NSSelectorFromString(@"setPreview:"), pv);
+        }
+    }
     BOOL sideways = dir == MSBDArrowRight || dir == MSBDArrowLeft;
+    if (sideways) DMCtxSideOrderTopDown(out, uikitAbove, say);   // (beside a side Dock every menu reads top-down, as a Mac's: iPad 2 F1, 1.8.2.2)
     CGFloat off = sideways ? MSBDArrowOffsetY(f, CGRectGetMidY(src), kCtxMenuCorner, kMSBDArrowWidth) : MSBDArrowOffset(f, CGRectGetMidX(src), kCtxMenuCorner, kMSBDArrowWidth);
     if (kind == DMCtxOutFrames) {
         ((void (*)(id, SEL, CGRect))objc_msgSend)(out, smf, f);

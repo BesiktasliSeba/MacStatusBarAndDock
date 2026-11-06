@@ -232,15 +232,22 @@ static inline int MSBDCCAXOrder(const MSBDCCItem *items, int n, int *order) {
 // Where the panel hangs on its screen (screenW x screenH, in the overlay's space): its top kMSBDCCBarGap under the menu bar (barH), under the
 // status icons -- at the right, or at the left in a right-to-left language (the bar is mirrored there, the icons at its left) --, kMSBDCCSideMargin
 // in from that edge; as tall as its content, at most down to kMSBDCCBottomMargin over the screen's bottom (the rest scrolls).
-static inline CGRect MSBDCCPanelFrame(double screenW, double screenH, double barH, double width, double contentH, int rtl) {
+// (lo, hi: the span across the screen the panel may use, its trailing edge at hi -- at lo with a right-to-left bar. kMSBDCCSideMargin from the screen's edges,
+//  MSBDCCPanelFrame below; beside a Dock at the screen's side the Today panel's span, common/DockSide.h MSBDDockSideSpanWithin: the panel covered a Right Dock by
+//  42 x 691 pt, M1 F3 / 17.5 F2 / A12Z F3, 1.8.2.2)
+static inline CGRect MSBDCCPanelFrameWithin(double screenW, double screenH, double barH, double width, double contentH, int rtl, double lo, double hi) {
     if (!isfinite(screenW) || !isfinite(screenH) || !isfinite(barH) || !isfinite(width) || !isfinite(contentH) || screenW <= 0 || screenH <= 0 || width <= 0) return CGRectZero;
+    if (!isfinite(lo) || !isfinite(hi)) { lo = kMSBDCCSideMargin; hi = screenW - kMSBDCCSideMargin; }
     double top = fmax(0.0, barH) + kMSBDCCBarGap;
     double room = screenH - top - kMSBDCCBottomMargin;
     double h = fmax(0.0, fmin(contentH, room));
-    double x = rtl ? kMSBDCCSideMargin : screenW - kMSBDCCSideMargin - width;
+    double x = rtl ? lo : hi - width;
     if (x + width > screenW) x = screenW - width;   // (no room for the margin: against the far edge)
     if (x < 0) x = 0;   // (a screen narrower than the panel: from its left edge)
     return CGRectMake(x, top, width, h);
+}
+static inline CGRect MSBDCCPanelFrame(double screenW, double screenH, double barH, double width, double contentH, int rtl) {
+    return MSBDCCPanelFrameWithin(screenW, screenH, barH, width, contentH, rtl, kMSBDCCSideMargin, screenW - kMSBDCCSideMargin);
 }
 
 // Where the panel hangs while iPadOS's sensor indicator shows in Control Center's header (the camera, the microphone or the location in use: a
@@ -253,8 +260,8 @@ static inline CGRect MSBDCCPanelFrame(double screenW, double screenH, double bar
 // lower status bar, takes a touch 20 pt beyond its frame on every side (-[CCUIHeaderPocketView hitTest:withEvent:]), which over our taller bar
 // took the tap on our Control Center icon (1.8.0 regression iPad 2, finding 3: 16.7.7 x 803 to 883 for the pill, our icon at x 876). Nonsense: no.
 static inline int MSBDCCOverOurBar(double y, double barH) { return isfinite(y) && isfinite(barH) && barH > 0 && y < barH; }
-static inline CGRect MSBDCCPanelFrameUnder(double screenW, double screenH, double barH, double width, double contentH, int rtl, double sx, double sy, double sw, double sh) {
-    CGRect f = MSBDCCPanelFrame(screenW, screenH, barH, width, contentH, rtl);
+static inline CGRect MSBDCCPanelFrameUnderWithin(double screenW, double screenH, double barH, double width, double contentH, int rtl, double sx, double sy, double sw, double sh, double lo, double hi) {
+    CGRect f = MSBDCCPanelFrameWithin(screenW, screenH, barH, width, contentH, rtl, lo, hi);
     if (f.size.width <= 0 || !(sw > 0) || !(sh > 0) || !isfinite(sx) || !isfinite(sy) || !isfinite(sw) || !isfinite(sh)) return f;
     if (sx + sw <= f.origin.x || sx >= f.origin.x + f.size.width) return f;   // (beside the panel's column: it shows already)
     double top = sy + sh + kMSBDCCSensorGap;
@@ -262,6 +269,9 @@ static inline CGRect MSBDCCPanelFrameUnder(double screenW, double screenH, doubl
     f.origin.y = top;
     f.size.height = fmax(0.0, fmin(contentH, screenH - top - kMSBDCCBottomMargin));
     return f;
+}
+static inline CGRect MSBDCCPanelFrameUnder(double screenW, double screenH, double barH, double width, double contentH, int rtl, double sx, double sy, double sw, double sh) {
+    return MSBDCCPanelFrameUnderWithin(screenW, screenH, barH, width, contentH, rtl, sx, sy, sw, sh, kMSBDCCSideMargin, screenW - kMSBDCCSideMargin);
 }
 
 // The panel during a presentation (Apple's transition state: progress 0 closed .. 1 open, past 1 while pulled further, below 0 never): it fades
@@ -359,12 +369,14 @@ static inline double MSBDCC18TilesTop(double panelTop) { return panelTop + kMSBD
 // (the content's own margins taken off: edge) -- with the four insets adding up to the bounds less the content, as Apple's layout takes them
 // (it placed the tiles exactly there, A12Z 18.5). The content may reach past the screen's edge by its own margin (a negative inset). 1 with
 // *out; 0 for nonsense input or tiles wider than the screen leaves room for (the caller keeps Apple's insets).
-static inline int MSBDCC18Insets(double contentW, double contentH, double boundsW, double boundsH, MSBDCCInsets edge, double tilesTop, int rtl, MSBDCCInsets *out) {
-    if (!out || !isfinite(contentW) || !isfinite(contentH) || !isfinite(boundsW) || !isfinite(boundsH) || !isfinite(tilesTop)) return 0;
+// (margin: the panel's trailing edge from the bounds' -- kMSBDCCSideMargin, MSBDCC18Insets below; beside a Dock at that side of the screen, the Dock's room and
+//  the Today panel's margin, as on 15-17: MSBDCCPanelFrameWithin, 1.8.2.2)
+static inline int MSBDCC18InsetsMargin(double contentW, double contentH, double boundsW, double boundsH, MSBDCCInsets edge, double tilesTop, int rtl, double margin, MSBDCCInsets *out) {
+    if (!out || !isfinite(contentW) || !isfinite(contentH) || !isfinite(boundsW) || !isfinite(boundsH) || !isfinite(tilesTop) || !isfinite(margin) || margin < 0) return 0;
     if (!isfinite(edge.top) || !isfinite(edge.left) || !isfinite(edge.bottom) || !isfinite(edge.right)) return 0;
     if (contentW <= 0 || contentH <= 0 || boundsW <= 0 || boundsH <= 0 || edge.top < 0 || edge.left < 0 || edge.bottom < 0 || edge.right < 0 || tilesTop < 0) return 0;
-    double side = kMSBDCCSideMargin + kMSBDCCPad, tilesW = contentW - edge.left - edge.right;
-    if (tilesW <= 0 || tilesW + 2 * side > boundsW || tilesTop >= boundsH) return 0;
+    double side = margin + kMSBDCCPad, tilesW = contentW - edge.left - edge.right;
+    if (tilesW <= 0 || tilesW + side + kMSBDCCSideMargin + kMSBDCCPad > boundsW || tilesTop >= boundsH) return 0;
     MSBDCCInsets r;
     r.top = tilesTop - edge.top;
     r.bottom = boundsH - contentH - r.top;
@@ -372,6 +384,9 @@ static inline int MSBDCC18Insets(double contentW, double contentH, double bounds
     else { r.right = side - edge.right; r.left = boundsW - contentW - r.right; }
     *out = r;
     return 1;
+}
+static inline int MSBDCC18Insets(double contentW, double contentH, double boundsW, double boundsH, MSBDCCInsets edge, double tilesTop, int rtl, MSBDCCInsets *out) {
+    return MSBDCC18InsetsMargin(contentW, contentH, boundsW, boundsH, edge, tilesTop, rtl, kMSBDCCSideMargin, out);
 }
 // The grid's columns as those insets place them (x and width of the tiles' area, the content's margins taken off) and the rows' area (y and the
 // content's full height of rows): the panel keeps the grid's width on every page (a page of one small tile is still the panel's width).

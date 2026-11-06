@@ -20,8 +20,8 @@ check "the 18.5 height limit: Apple's bottom insets are [0] with the Dock at a s
   "grep -q 'return DMSMFree() && DMDockSideNow(\[UIScreen mainScreen\].bounds.size) ? @\[@0.0\] : v;' $S && grep -q 'if (mb && \[DMSMSigOfMethod(mb) isEqualToString:list\]) MSHookMessageEx(c, bot, (IMP)DMSMBottomInsets17, (IMP \*)&o_SMBottomInsets17);' $S"
 check "the drop on every engine: moves and resizes, also with snapping off, keep out of the Dock (common/DockSide.h)" \
   "grep -q 'return DMDockSideKept(DMSnapFrameFor(DMStageBundle(st), window, how, others, n, DMUsableArea()), how);' $S && grep -q 'if (!st || (DMSnapOff() && !DMDockSideKeepsOut())) return;' $S && grep -q 'CGRect kept = DMDockSideKept(w.frame, MSBDSnapMove);' $S"
-check "the Dock's menus: beside it, the arrow on the facing edge" \
-  "grep -q 'CGRect f = dockSide ? MSBDArrowSideMenuFrame(menu, src, bounds, kMSBDArrowHeight, kMSBDArrowTipGap, dockSide == MSBDDockRight, &dir)' $S"
+check "the Dock's menus: beside it, the arrow on the facing edge, reaching the icon's middle at the Dock's ends (1.8.2.2, iPad 2 F2)" \
+  "grep -q 'CGRect f = dockSide ? MSBDArrowSideMenuFrameReaching(menu, src, bounds, reach, kMSBDArrowHeight, kMSBDArrowTipGap, kCtxMenuCorner, kMSBDArrowWidth, dockSide == MSBDDockRight, &dir)' $S"
 check "the finger: Apple's y rule no longer holds the Dock out at a side, nor puts it away for a tap on its own icons: the rest of Apple's rule alone (code review 1.8.2, 9)" \
   "grep -q 'g == ((id (\*)(id, SEL))objc_msgSend)(self, @selector(dismissFloatingDockSystemGestureRecognizer))) return DMDockSideDismissTouch(self, touch);' $D \
    && grep -q 'if (DMDockSideControls(self) && \[self respondsToSelector:@selector(dismissFloatingDockSystemGestureRecognizer)\]' $D && ! grep -q 'apple || DMDockSideDismissTouch' $D"
@@ -99,7 +99,8 @@ check "  ... the icons' step is measured in the side Dock's own layout only (a T
   "grep -q 'if (side) DMDockSideMeasureStep(platter);' $D && [ \$(grep -c 'DMDockSideMeasureStep(platter);' $D) = 1 ]"
 check "a Position change moves windows only when the Dock moved on the screen as it is (code review 1.8.2, 5): in portrait it stays at the bottom" \
   "fn 'static void DMDockChangedRelayout(NSString \*why) {' $S | grep -q 'BOOL moved = gDMDockPosition >= 0 && MSBDDockSideMoved(gDMDockPosition, position, scrNow.width, scrNow.height);' \
-   && fn 'static void DMDockChangedRelayout(NSString \*why) {' $S | grep -q 'if (moved) DMDockPositionMoved(layouts);' && [ \$(grep -c 'DMDockPositionMoved(layouts);' $S) = 1 ]"
+   && fn 'static void DMDockChangedRelayout(NSString \*why) {' $S | grep -qF 'if (moved) DMDockPositionMoved(layouts);' && fn 'static void DMDockChangedRelayout(NSString \*why) {' $S | grep -qF 'BOOL side = !moved && gDMDockPosition >= 0 && MSBDDockSideFor(position, scrNow.width, scrNow.height) != MSBDDockBottom;' && [ \$(grep -c 'DMDockPositionMoved(layouts);' $S) = 2 ] \
+   && [ \$(fn 'static void DMDockSideThicknessChanged(double was, double now, int side) {' $S | grep -c '^    DMDockPositionMoved(layouts);') = 1 ]"
 check "the pointer's reveal sends SpringBoard's present and dismiss as the Downloads panel does: asked first, an empty completion (code review 1.8.2, 8)" \
   "fn 'static void DMDockSideSend(id ctrl, NSString \*name) {' $D | grep -q 'if (\[ctrl respondsToSelector:s\]) ((void (\*)(id, SEL, BOOL, id))objc_msgSend)(ctrl, s, YES, ^{});' \
    && fn 'static void DMDockSidePointerSeen(CGPoint native) {' $D | grep -q 'DMDockSideSend(ctrl, @\"presentFloatingDockIfDismissedAnimated:completionHandler:\");' \
@@ -138,5 +139,77 @@ strip() { fn 'static double DMDockSideStripNow(CGSize screen, int side) {' $S; }
 check "  ... Stage Manager reads them at the change against the old side, and a Dock already at the other side is no strip of that side: the one last seen there is kept (regression 1.8.2.1 F1)" \
   "fn 'static void DMDockChangedRelayout(NSString \*why) {' $S | awk '/NSDictionary \*layouts = DMSMEngine\(\) \? DMSMLayoutsNow\(\) : nil;/{a=NR} /gDMDockPosition = position;/{b=NR} END{exit !(a && b > a)}' \
    && strip | grep -q 'double m = MSBDDockSideStripOf(r, screen, side);' && strip | grep -q 'if (m > 0) measured = m; else if' \
-   && strip | grep -q 'if (gDMDockSideStrip > 0) return gDMDockSideStrip;' && [ \$(grep -c 'MSBDDockSideStripOf(' $S) = 2 ]"
+   && strip | grep -qF 'gDMDockSideStripUsed = gDMDockSideStrip > 0 ? gDMDockSideStrip : MAX(DMSpringBoardDockHeight(), 60.0);' && [ \$(grep -c 'MSBDDockSideStripOf(' $S) = 2 ]"
+# ---- 1.8.2.2 ----
+arb() { fn '- (id)computedLayoutWithInput:(id)input {' $S; }
+check "1.8.2.2 iPad 2 F2 / M1 F4: every side Dock menu's room runs from under the bar to 8 pt over the bottom, Finder's and the Trash's too (UIKit's content bounds start 20 pt lower for our icons), and reaches the Dock's end margin when its arrow needs it" \
+  "arb | grep -qF 'bounds.origin.y = barEnd; bounds.size.height = bottomEnd - barEnd;' && arb | grep -qF 'reach = CGRectMake(bounds.origin.x, barEnd, bounds.size.width, CGRectGetMaxY(container.bounds) - kMSBDDockSideEndMargin - barEnd);' \
+   && ! arb | grep -qF 'if (CGRectGetMinY(bounds) < barEnd)'"
+check "  ... and the Downloads panel's arrow reaches the stack at the Dock's bottom end, its reach the Dock's own end margin" \
+  "grep -qF 'CGRect place = MSBDArrowSideMenuFrameReaching(CGRectMake(0, 0, width, height), source, CGRectMake(12.0, 54.0, window.bounds.size.width - 24.0, window.bounds.size.height - 66.0),' ../dock/Downloads.m \
+   && grep -qF 'CGRectMake(12.0, 54.0, window.bounds.size.width - 24.0, window.bounds.size.height - kMSBDDockSideEndMargin - 54.0), kMSBDArrowHeight, kMSBDArrowTipGap, kPanelCorner, kMSBDArrowWidth, dockSide == MSBDDockRight, &arrowDir);' ../dock/Downloads.m"
+check "1.8.2.2 M1 F1 / A12Z F1: a lifted picture too big for the side icon stands beside the Dock (MenuArrow.h) and the menu beside it; an icon-sized one stays on its icon" \
+  "arb | grep -qF 'CGRect lifted = MSBDArrowSidePreviewFrame(previewAt, home, inner, bounds, CGRectGetWidth(container.bounds), kMSBDArrowHeight, kMSBDArrowTipGap, dockSide == MSBDDockRight, &onIcon);' \
+   && arb | grep -qF 'if (onIcon) src.origin.y = home.y - src.size.height / 2.0;' && arb | grep -qF 'else src = lifted;' \
+   && arb | grep -qF 'pdx = CGRectGetMidX(lifted) - CGRectGetMidX(previewAt); pdy = CGRectGetMidY(lifted) - CGRectGetMidY(previewAt);'"
+check "  ... (code review 1.8.2.2, 6) the picture is moved only once the menu is known to fit beside it: with no room for the menu, UIKit's own place for both, never a moved picture over UIKit's menu" \
+  "arb | awk '/CGRect f = dockSide \? MSBDArrowSideMenuFrameReaching\(/{a=NR} /if \(dir == MSBDArrowNone\) \{/{b=NR} /if \(movePreview\) \{/{c=NR} /NSSelectorFromString\(@\"setPreviewFrame:\"\), previewAt\);/{d=NR; n++} /NSSelectorFromString\(@\"setPreview:\"\), pv\);/{e=NR; m++} END{exit !(a && b > a && c > b && d > c && e > c && n == 1 && m == 1)}'"
+check "1.8.2.2 iPad 2 F1: every menu beside a side Dock reads top-down: its anchor takes the attachment of a menu below its source (UIKit's own placement read first), shape-checked" \
+  "arb | grep -qF 'BOOL uikitAbove = CGRectGetMidY(menu) <= CGRectGetMidY(src);' && arb | grep -qF 'if (sideways) DMCtxSideOrderTopDown(out, uikitAbove, say);' \
+   && fn 'static void DMCtxSideOrderTopDown(id out, BOOL uikitAbove, BOOL say) {' $S | grep -qF 'if (!DMCtxEncIs(out, g, DM_CTX_ANCHOR_GET) || !DMCtxEncIs(out, s, DM_CTX_ANCHOR_SET)) {' \
+   && fn 'static void DMCtxSideOrderTopDown(id out, BOOL uikitAbove, BOOL say) {' $S | grep -qF 'unsigned long long below = MSBDCtxAttachmentBelow(a.attachment, uikitAbove);' \
+   && grep -qF '#define DM_CTX_ANCHOR_GET \"{?=QQddq}16@0:8\"' $S"
+check "1.8.2.2 M1 F2 / A12Z F7: Fit to Window's questions centre their title over the desktop beside a side Dock (the seam), at the bottom as before" \
+  "[ \$(grep -cF 'if (!DMIsExtMenuHost(host) && DMDockSideNow([UIScreen mainScreen].bounds.size)) pillX = MSBDDockSideTitleX(' $S) = 2 ] \
+   && grep -qF 'pillX = MSBDDockSideTitleX(noFit.center.x, pillW, host.bounds.size.width, 12.0);' $S && grep -qF 'pillX = MSBDDockSideTitleX(CGRectGetMidX(usable), pillW, host.bounds.size.width, 12.0);' $S \
+   && [ \$(grep -cF 'pill.frame = CGRectMake(pillX, usable.origin.y + 16.0, pillW, 40.0);' $S) = 2 ]"
+strip2() { fn 'static double DMDockSideStripNow(CGSize screen, int side) {' $S; }
+thick() { fn 'static void DMDockSideThicknessChanged(double was, double now, int side) {' $S; }
+check "1.8.2.2 17.5 F3 / A12Z F5: the strip is the Dock's real thickness (DockSide.h MSBDDockSideStripStep), the last one taken only while the Dock is away; a change it makes by itself is followed by the windows on every engine, their layouts read against the Dock before it" \
+  "strip2 | grep -qF 'double use = MSBDDockSideStripStep(st, measured, CACurrentMediaTime(), MAX(DMSpringBoardDockHeight(), 60.0), &event, &was);' \
+   && strip2 | grep -qF 'if (event == MSBDStripCandidate) DMLayoutNoteHold(1.0);' && strip2 | grep -qF 'DMDockSideThicknessChanged(was, now, s);' \
+   && strip2 | grep -qF 'if (gDMDockSideStripHeld > 0) return gDMDockSideStripHeld;' && ! strip2 | grep -qF 'measured > gDMDockSideStrip + 0.25' \
+   && thick | awk '/gDMDockSideStripHeld = was;/{a=NR} /NSDictionary \*layouts = DMSMEngine\(\) \? DMSMLayoutsNow\(\) : nil;/{b=NR} /gDMDockSideStripHeld = -1.0;/{c=NR} /if \(DMSMEngine\(\)\) \{ if \(layouts.count\) DMSMApplyLayouts\(layouts\); \}/{d=NR} /DMDockPositionMoved\(layouts\);/{e=NR} END{exit !(a && b == a + 1 && c == b + 1 && d > c && e > d)}'"
+check "1.8.2.2 M1 F5: a Dock icon's running dot goes where its content stands upright, by the turn itself (Dock.x MSBDDockSideIconTurnSide), apps' and Finder's; the turn first in a layout and on arriving in the side Dock, the dot following every change of the turn" \
+  "grep -qF 'int dockSide = MSBDDockSideIconTurnSide(iconView);' ../dock/RunningIndicator.m && grep -qF 'int dockSide = MSBDDockSideIconTurnSide(self);' ../dock/FinderIcon.m \
+   && ! grep -q 'gDockSideApplied' ../dock/RunningIndicator.m ../dock/FinderIcon.m \
+   && fn 'int MSBDDockSideIconTurnSide(UIView *icon) {' $D | grep -qF 'if (!ours || !CATransform3DEqualToTransform(icon.layer.sublayerTransform, ours.CATransform3DValue)) return 0;' \
+   && [ \$(fn 'static void DMDockSideStyleIcon(UIView *icon, int side) {' $D | grep -c 'DMDockSideDotFollows(icon);') = 3 ] \
+   && awk '/^%hook SBIconView/{h=1} h&&/^- \(void\)layoutSubviews \{/{f=1} f&&/DMDockSideStyleIcon\(\(UIView \*\)self, dock \? gDockSideApplied : 0\);/{a=NR} f&&/DMUpdateRunningIndicator\(\(UIView \*\)self\);/{b=NR} f&&/^}/{exit} END{exit !(a && b > a)}' $D \
+   && awk '/^%group DockSideTouches/{g=1} g&&/^- \(void\)didMoveToWindow \{/{w=1} g&&/^- \(void\)didMoveToSuperview \{/{u=1} g&&/^%end/{exit} END{exit !(w && u)}' $D"
+check "1.8.2.2 A12Z F8: Zetsu's title-bar watcher keeps out of a side Dock only a window at its place, never one flying into the Dock from its yellow light (it came back 54-66 pt toward the middle)" \
+  "awk '/^- \(void\)clamp \{/{f=1} f&&/if \(!w \|\| w.hidden \|\| \[objc_getAssociatedObject\(w, kStageGestureKey\) boolValue\]\) return;/{a=NR} f&&/if \(\[objc_getAssociatedObject\(w, kStageHiddenKey\) boolValue\] \|\| DMStageMinimized\(w\) \|\| !CGAffineTransformIsIdentity\(w.transform\)\) return;/{b=NR} f&&/CGRect kept = DMDockSideKept\(w.frame, MSBDSnapMove\);/{c=NR} f&&/^}/{exit} END{exit !(a && b == a + 4 && c > b)}' $S"
+relay() { fn 'static void DMDockChangedRelayout(NSString \*why) {' $S; }
+check "1.8.2.2 (code review 3): a Dock setting of ours or a change of its own apps beside a side Dock is followed through its strip as the Dock's own changes are: the windows are placed only when the thickness really changed and settled, once, on every engine; nothing for a setting that leaves it as it was or at each step of a slider" \
+  "relay | grep -qF 'BOOL side = !moved && gDMDockPosition >= 0 && MSBDDockSideFor(position, scrNow.width, scrNow.height) != MSBDDockBottom;' \
+   && relay | grep -qF 'if (moved) DMLayoutNoteHold(2.4);' && ! relay | grep -qF 'moved || side' \
+   && relay | awk '/\(void\)DMUsableArea\(\);/{n++; if (n == 2) a=NR} /if \(side\) return;/{b=NR} /if \(DMSMEngine\(\)\) \{ if \(layouts.count\) DMSMApplyLayouts\(layouts\); \}/{c=NR} /if \(moved\) DMDockPositionMoved\(layouts\);/{d=NR} END{exit !(a && b == a + 1 && c == b + 1 && d > c)}' \
+   && relay | awk '/if \(gDMDockPosition >= 0 && position != gDMDockPosition\) gDMDockPlaceGen\+\+;/{a=NR} /if \(gDMDockPosition >= 0\) \{ gDMDockPosition = position;/{b=NR} END{exit !(a && b == a + 1)}' \
+   && strip2 | grep -qF 'if (seenPlace != gDMDockPlaceGen || seenSide != side) { seenPlace = gDMDockPlaceGen; seenSide = side; gDMDockSideStrip = 0; st->settled = 0; st->cand = -1.0; st->placed = 0; }' \
+   && ! strip2 | grep -qF 'seenGen != gDMDockGen' && [ \$(grep -c 'gDMDockPlaceGen' $S) = 3 ]"
+check "1.8.2.2 17.5 F1 / A12Z F2: an app's zoom into its side Dock icon goes to the place SpringBoard works out: no match-move to an icon of the turned side Dock (-shouldMatchMoveIconZoomingView: NO there), shape-checked, hooked with a side chosen only; SpringBoard's own icon frame untouched" \
+  "fn '- (BOOL)shouldMatchMoveIconZoomingView:(UIView *)iconView {' $D | grep -qF 'if (!r || !gDockSideApplied || ![iconView isKindOfClass:[UIView class]] || !iconView.window || !DMIsDockIcon(iconView) || !DMDockSideInHost(iconView)) return r;' \
+   && fn '- (BOOL)shouldMatchMoveIconZoomingView:(UIView *)iconView {' $D | grep -qF 'return NO;' \
+   && grep -qF 'if (zm && !strcmp(method_getTypeEncoding(zm) ?: \"\", \"B24@0:8@16\")) %init(DockSideZoom);' $D \
+   && fn 'static void DMDockSideChoose(void) {' $D | grep -qF '%init(DockSideZoom);' && ! grep -q '_iconImageFrameForIconView' $D"
+notes() { fn 'static void DMNoteWindowLayouts(void) {' $S; }
+smnote() { fn 'static void DMSMTurnNote(void) {' $S; }
+check "1.8.2.2 (code review 1): a look that takes a new side Dock thickness holds the windows' layout notes in that same look, before the follow is sent; a note pass asks the hold again after its own measurement of the desktop (that measurement may be the look), on Aerial, Zetsu and MilkyWay4 and on Stage Manager's notes" \
+  "strip2 | awk '/else if \(event == MSBDStripChanged\) \{/{a=NR} /^            DMLayoutNoteHold\(2.4\);/{b=NR} /dispatch_async\(dispatch_get_main_queue\(\), \^\{ DMDockSideThicknessChanged\(was, now, s\); \}\);/{c=NR} END{exit !(a && b > a && c > b)}' \
+   && notes | awk 'NR == 2 && /^    if \(DMLayoutNotesHeld\(\) \|\| gMSWSwitching \|\| DMSwitcherVisible\(\)\) return;/{a=NR} /^    CGRect u = DMUsableArea\(\);/{b=NR} /^    if \(DMLayoutNotesHeld\(\)\) return;/{c=NR} /MSBDTurnLayoutIndex\(f, t, kMSBDTurnLayoutCount, kMSBDTurnLayoutTolerance\)/{d=NR} END{exit !(a && b > a && c > b && d > c)}' \
+   && smnote | awk '/^    if \(DMDockSideNow\(\[UIScreen mainScreen\]\.bounds\.size\)\) \{/{g=NR} /^        \(void\)DMUsableArea\(\);/{a=NR} /^        if \(DMLayoutNotesHeld\(\)\) return;/{b=NR} /DMSMOpenWindowFrames\(\);/{c=NR} /DMSMLayoutsFor\(frames\)/{d=NR} END{exit !(g && a == g + 1 && b == a + 1 && c > b && d > c)}' \
+   && grep -qF 'static BOOL DMLayoutNotesHeld(void) { return CACurrentMediaTime() < gLayoutNoteHold; }' $S"
+z17() { fn 'static BOOL DMDockSideZoomLeavesOut(id switcher, id response) {' $D; }
+check "1.8.2.2 (code review 2, second pass 1-3) 15-17: the switcher's match-move response: for an app whose zoom goes into the Dock at a side, on the main screen's switcher, left out, its end too; the decision DockSide.h's (a set of apps, a new start begins anew, never swallowing a later end at the bottom), the response's class asked first, shape-checked; 18 keeps its own hook, the other iPadOS's one missing by design in the diagnostics" \
+  "fn '- (void)_performModifierMatchMoveToIconViewResponse:(id)response {' $D | awk '/if \(DMDockSideZoomLeavesOut\(self, response\)\) \{/{a=NR} /^        return;/{b=NR} /^    %orig;/{c=NR} END{exit !(a && b > a && c > b)}' \
+   && z17 | awk '/if \(!rc \|\| !\[response isKindOfClass:rc\]\) return NO;/{a=NR} /NSSelectorFromString\(@\"appLayout\"\)/{b=NR} /BOOL recorded = \[gDMZoomLeftOut containsObject:layout\], into = NO;/{c=NR} /w && w.screen == \[UIScreen mainScreen\] \?/{d=NR} /into = \[loc isKindOfClass:\[NSString class\]\] && MSBDZoomLocationIsDock\(/{e=NR} /BOOL leave = MSBDZoomLeaveOut\(active, recorded, into, &op\) != 0;/{f=NR} END{exit !(a && b > a && c > b && d > c && e > d && f > e)}' \
+   && z17 | grep -qF 'if (op > 0) { if (!gDMZoomLeftOut) gDMZoomLeftOut = [NSMutableSet set];' && z17 | grep -qF 'else if (op < 0) [gDMZoomLeftOut removeObject:layout];' \
+   && ! grep -q 'gDMZoomUnmatchedLayout' $D \
+   && grep -qF 'else if (zp && zl && ra && rk && !strcmp(method_getTypeEncoding(zp) ?: \"\", \"v24@0:8@16\") && !strcmp(method_getTypeEncoding(zl) ?: \"\", \"@24@0:8@16\")' $D \
+   && grep -qF '&& !strcmp(method_getTypeEncoding(ra) ?: \"\", \"@16@0:8\") && !strcmp(method_getTypeEncoding(rk) ?: \"\", \"B16@0:8\")) {   // (15, 16, 17)' $D && grep -qF '%init(DockSideZoom17);' $D \
+   && grep -qF 'return c && ![c instancesRespondToSelector:sel_registerName(sel)] && [c instancesRespondToSelector:sel_registerName(other)];' ../statusbar/SMEngineAPI.h"
+check "1.8.2.2 (second pass 4): the windows placed against SpringBoard's figure while the Dock was away (no thickness taken since the Position changed) follow the Dock's first measured thickness: the strip keeps what they stand against, DMDockPositionMoved notes it" \
+  "fn 'static void DMDockPositionMoved(NSDictionary<NSString *, NSString *> *layouts) {' $S | grep -qF 'if (DMDockSideNow([UIScreen mainScreen].bounds.size) && gDMDockStrip.settled <= 0) gDMDockStrip.placed = gDMDockSideStripUsed;' \
+   && strip2 | grep -qF 'st->settled = 0; st->cand = -1.0; st->placed = 0; }' && [ \$(strip2 | grep -c 'gDMDockSideStripUsed = ') = 2 ] \
+   && grep -qF 'double base = st->settled > 0 ? st->settled : (st->placed > 0 && fabs(measured - st->placed) > kMSBDDockStripSame ? st->placed : 0.0);' ../common/DockSide.h"
 [ $fails = 0 ] && echo "test-dockside: site checks pass" || { echo "test-dockside: site checks FAILED"; exit 1; }

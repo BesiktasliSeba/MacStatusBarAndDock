@@ -1,17 +1,30 @@
 #!/usr/bin/env python3
 # make-hooklist.py -- every (class, selector) the tweak hooks with Logos (%hook ... %end), for the diagnostics on untested iPadOS versions
-# (common/HookList.h, generated; re-run after adding or removing hooks). Names only.
+# (common/HookList.h, generated; re-run after adding or removing hooks). Names only. Hooks inside #if DEBUG (debug builds only: never installed by a release
+# build) are left out, so a release's diagnostics never report them missing (code review 1.8.2.2, 9: the side Dock's zoom read-outs).
 import re, sys, os, glob
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 pairs = []
 for path in sorted(glob.glob(os.path.join(root, '**', '*.x'), recursive=True)):
     if '/.theos/' in path or '/packages/' in path: continue
     cls = None
+    cond = []   # (each open #if: 'debug' -- only in debug builds --, 'release' -- only in release builds --, or 'other')
     for line in open(path, errors='replace'):
+        d = re.match(r'\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b(.*)', line)
+        if d:
+            kind, rest = d.group(1), d.group(2).split('//')[0].split('/*')[0].strip()
+            if kind in ('if', 'ifdef', 'ifndef'):
+                debug = (kind == 'if' and rest == 'DEBUG') or (kind == 'ifdef' and rest == 'DEBUG')
+                release = (kind == 'if' and rest == '!DEBUG') or (kind == 'ifndef' and rest == 'DEBUG')
+                cond.append('debug' if debug else 'release' if release else 'other')
+            elif kind == 'else' and cond: cond[-1] = {'debug': 'release', 'release': 'debug'}.get(cond[-1], 'other')
+            elif kind == 'elif' and cond: cond[-1] = 'other'
+            elif kind == 'endif' and cond: cond.pop()
+            continue
         m = re.match(r'\s*%hook\s+([A-Za-z_][A-Za-z0-9_]*)', line)
         if m: cls = m.group(1); continue
         if re.match(r'\s*%end\b', line): cls = None; continue
-        if not cls: continue
+        if not cls or 'debug' in cond: continue
         m = re.match(r'\s*([-+])\s*\([^)]*\)\s*(.*)', line)
         if not m: continue
         kind, rest = m.group(1), m.group(2)

@@ -581,6 +581,17 @@ static void DMCC18Relayout(NSString *why) {
 // ---- the hooks -----------------------------------------------------------------------------------------------------------------------------
 // Where Apple puts its grid: these insets around the content's size (CCLayout.h). Only for our Control Center, with the Mac shape on and not
 // editing; Apple's answer otherwise, and wherever ours would not fit.
+// (the panel's trailing margin from the screen's edge: kMSBDCCSideMargin, or beside a Dock at that side the Dock's room and the Today panel's margin. The margin
+//  of the last answer is kept: a presentation after the Dock moved or changed lays the grid out again, DMCC18WillPresentHook)
+static double gCC18LaidMargin = -1;
+static CGSize gCC18LaidSize = {0, 0}; static BOOL gCC18LaidRTL = NO;   // (what that margin was worked out for: the presentation asks again for the same, code review 1.8.2.2, 5)
+static double DMCC18MarginFor(CGSize size, BOOL rtl) {
+    CGSize scr = [UIScreen mainScreen].bounds.size;
+    int side = fabs(size.width - scr.width) < 0.5 && fabs(size.height - scr.height) < 0.5 ? DMDockSideNow(scr) : MSBDDockBottom;
+    if (!side) return kMSBDCCSideMargin;
+    MSBDPanelSpan span = MSBDDockSideSpanWithin(size.width, side, DMUsableArea(), kMSBDCCSideMargin);
+    return fmax(kMSBDCCSideMargin, rtl ? span.lo : size.width - span.hi);
+}
 static UIEdgeInsets DMCC18Insets(id self, SEL _cmd, CGSize size, CGRect bounds, UIEdgeInsets edge, long long orientation) {
     UIEdgeInsets r = o_DMCC18Insets(self, _cmd, size, bounds, edge, orientation);
     if (!gCC18On || gCC18Editing) return r;
@@ -589,7 +600,10 @@ static UIEdgeInsets DMCC18Insets(id self, SEL _cmd, CGSize size, CGRect bounds, 
     double top = DMCC18PanelTopNow();
     MSBDCCInsets e = { edge.top, edge.left, edge.bottom, edge.right }, out;
     BOOL rtl = DMCC18RTL();
-    if (!MSBDCC18Insets(size.width, size.height, bounds.size.width, bounds.size.height, e, MSBDCC18TilesTop(top), rtl, &out)) {
+    // (Settings > Dock > Position: beside a Dock at the panel's side of the screen its edge stays 10 pt inside the desktop, as the Today panel's and 15-17's panel's,
+    //  DMCCPFrame -- it covered 13 of a Right Dock's 19 icons, A12Z F3, 1.8.2.2; at the bottom kMSBDCCSideMargin as before)
+    double margin = DMCC18MarginFor(bounds.size, rtl);
+    if (!MSBDCC18InsetsMargin(size.width, size.height, bounds.size.width, bounds.size.height, e, MSBDCC18TilesTop(top), rtl, margin, &out)) {
         static BOOL told = NO;
         if (!told) { told = YES; DMLog([NSString stringWithFormat:@"[cc18] the panel does not fit: content %@ in %@ (Apple's place)", NSStringFromCGSize(size), NSStringFromCGRect(bounds)]); }
         gCC18Grid = CGRectZero;
@@ -598,7 +612,7 @@ static UIEdgeInsets DMCC18Insets(id self, SEL _cmd, CGSize size, CGRect bounds, 
     CGRect g = MSBDCC18GridRect(size.width, size.height, e, out);
     gCC18Grid = CGRectOffset(g, bounds.origin.x, bounds.origin.y);
     gCC18PanelTop = top + bounds.origin.y; gCC18GridRTL = rtl;
-    gCC18LaidBar = DMMenuBarHeight();
+    gCC18LaidBar = DMMenuBarHeight(); gCC18LaidMargin = margin; gCC18LaidSize = bounds.size; gCC18LaidRTL = rtl;
     return UIEdgeInsetsMake(out.top, out.left, out.bottom, out.right);
 }
 static void DMCC18LayoutViews(id self, SEL _cmd) {
@@ -709,6 +723,14 @@ static void DMCC18WillPresentHook(id self, SEL _cmd) {
     if (!gCC18On || !gCC18Main.isViewLoaded) return;
     if (gCC18Expanded) DMCC18ExpandedReset();
     if (fabs(DMMenuBarHeight() - gCC18LaidBar) > 0.25 || CGRectIsEmpty(gCC18Grid)) DMCC18Relayout(@"the bar's height");
+    // (a side Dock moved or changed since: the margin asked again for the grid's bounds it was worked out for. Asked for the screen's size, a grid not as big as the
+    //  screen -- its margin the bottom's, 8 -- differed every time, and Control Center was laid out again at every opening; code review 1.8.2.2, 5)
+    else if (fabs(DMCC18MarginFor(gCC18LaidSize, gCC18LaidRTL) - gCC18LaidMargin) > 0.25) DMCC18Relayout(@"the Dock beside it");
+    // (laid out in the other turn of the screen -- portrait, then opened in landscape beside a side Dock --: the margin of the old size says nothing of the side, so
+    //  it is laid out again for this one; only for a laid size that is the screen turned, never at every opening; with a side Dock only, code review 1.8.2.2,
+    //  second pass 6)
+    else if (DMDockSideNow([UIScreen mainScreen].bounds.size) && CGSizeEqualToSize(gCC18LaidSize, CGSizeMake([UIScreen mainScreen].bounds.size.height, [UIScreen mainScreen].bounds.size.width))
+             && !CGSizeEqualToSize(gCC18LaidSize, [UIScreen mainScreen].bounds.size)) DMCC18Relayout(@"the screen turned since, the Dock beside it");
     else DMCC18Views(@"about to show");
 }
 static void DMCC18DidDismissHook(id self, SEL _cmd) {

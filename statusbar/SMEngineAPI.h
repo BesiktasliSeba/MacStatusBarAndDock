@@ -1446,6 +1446,13 @@ static BOOL DMSMHookNotForThisOS(const char *cls, const char *sel) {
         Class c = objc_getClass(cls);
         return c && ![c instancesRespondToSelector:sel_registerName(sel)];   // (the name that is not here: the other one is hooked)
     }
+    // (the side Dock's zoom into its icon, dock/Dock.x: 18 asks -shouldMatchMoveIconZoomingView:, 16 and 17 perform a match-move response; the one this iPadOS
+    //  lacks is missing by design while the other is here, 1.8.2.2)
+    if (!strcmp(cls, "SBFluidSwitcherViewController") && (!strcmp(sel, "shouldMatchMoveIconZoomingView:") || !strcmp(sel, "_performModifierMatchMoveToIconViewResponse:"))) {
+        Class c = objc_getClass(cls);
+        const char *other = !strcmp(sel, "shouldMatchMoveIconZoomingView:") ? "_performModifierMatchMoveToIconViewResponse:" : "shouldMatchMoveIconZoomingView:";
+        return c && ![c instancesRespondToSelector:sel_registerName(sel)] && [c instancesRespondToSelector:sel_registerName(other)];
+    }
     return NO;
 }
 static long long DMSMRoleOr(id stage, id item, long long dflt) { long long r = dflt; return DMSMStageRoleOfItem(stage, item, &r) ? r : dflt; }

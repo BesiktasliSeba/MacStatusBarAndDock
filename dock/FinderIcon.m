@@ -193,8 +193,8 @@ extern UITargetedPreview *MSBDDockSideIconPreview(UIView *icon, UIImage *picture
     uint64_t n = 0; if (token) notify_get_state(token, &n);
     CGFloat d = MAX(4.0, self.bounds.size.width * 0.045);
     extern CGFloat gDMDotGapBelowImage;   // (RunningIndicator.m: where the apps' dots sit below their pictures -- this view is only the picture)
-    extern int gDockSideApplied;
-    int dockSide = self.window.screen == [UIScreen mainScreen] ? gDockSideApplied : 0;   // (Settings > Dock > Position: at the screen's edge side, as the apps' dots)
+    extern int MSBDDockSideIconTurnSide(UIView *icon);
+    int dockSide = MSBDDockSideIconTurnSide(self);   // (Settings > Dock > Position: at the screen's edge side where the content is turned upright, as the apps' dots)
     self.dot.frame = dockSide ? MSBDDockSideDotFrame(dockSide, self.bounds.size.width, self.bounds.size.height, self.bounds.size.height + gDMDotGapBelowImage, d)
                               : CGRectMake((self.bounds.size.width - d) / 2.0, self.bounds.size.height + gDMDotGapBelowImage, d, d);
     self.dot.layer.cornerRadius = d / 2.0;

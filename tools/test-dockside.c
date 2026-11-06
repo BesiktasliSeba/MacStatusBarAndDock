@@ -219,6 +219,86 @@ int main(void) {
     Num("portrait (the Dock at the bottom there whatever is chosen): as before", MSBDBannerX(1024, MSBDDockBottom, CGRectNull, 360, false, &bw), 654);
     Num("a narrow screen: as wide as the room less the margins, as before", (MSBDBannerX(300, MSBDDockBottom, CGRectNull, 360, false, &bw), bw), 280);
     Num("a desktop not known (empty): the screen's margin", MSBDBannerX(1366, MSBDDockRight, CGRectZero, 360, false, &bw), 996);
+    // ---- 1.8.2.2: Fit to Window's question over its panels' seam beside a side Dock (M1 F2, A12Z F7) ----
+    Num("the M1 at Right: the title (270.5 pt) over the seam at 571, not the screen's middle 597", MSBDDockSideTitleX(571, 270.5, 1194, 12), 435.75);
+    Num("  ... at Left over 623", MSBDDockSideTitleX(623, 270.5, 1194, 12), 487.75);
+    Num("  ... at the bottom the seam is the screen's middle: the place it had", MSBDDockSideTitleX(597, 270.5, 1194, 12), (1194 - 270.5) / 2.0);
+    Num("  ... a title too wide to centre there stays 12 pt inside the screen", MSBDDockSideTitleX(100, 400, 1194, 12), 12);
+    Num("  ... nonsense: the screen's middle", MSBDDockSideTitleX(NAN, 270.5, 1194, 12), (1194 - 270.5) / 2.0);
+    // ---- 1.8.2.2: the strip follows the Dock's own changes of thickness, both ways (17.5 F3, A12Z F5) ----
+    MSBDDockStripState ss = { 0, -1, 0 };
+    int ev = -1; double was = -1;
+    Num("the first look at a Right Dock (the 17.5, 18 icons: 64.3 pt + its gap, 71.3): measured as it is", MSBDDockSideStripStep(&ss, 71.3, 10.0, 60, &ev, &was), 71.3);
+    Int("  ... nothing taken yet", ev, MSBDStripSame);
+    Num("  ... seen again 0.3 s later: taken", MSBDDockSideStripStep(&ss, 71.3, 10.3, 60, &ev, &was), 71.3);
+    Int("  ... the first one: nothing to follow", ev, MSBDStripFirst);
+    Num("its recents grow (4 -> 10): the Dock thins to 48.7 (55.7): the old thickness counts while the new one is confirmed", MSBDDockSideStripStep(&ss, 55.7, 20.0, 60, &ev, &was), 71.3);
+    Int("  ... the windows' layouts held for it", ev, MSBDStripCandidate);
+    Num("  ... seen unchanged 0.3 s later: the desktop follows it (before 1.8.2.2 it kept 71.3 until a Position change)", MSBDDockSideStripStep(&ss, 55.7, 20.3, 60, &ev, &was), 55.7);
+    Int("  ... a change: the windows follow", ev, MSBDStripChanged);
+    Num("  ... from the old thickness", was, 71.3);
+    Num("the other way (A12Z: Show App Library in Dock off, 59.8 -> 63.0 pt): the thicker one counts at once, no window placed under it", MSBDDockSideStripStep(&ss, 69.0, 30.0, 60, &ev, &was), 69.0);
+    Int("  ... confirmed first", ev, MSBDStripCandidate);
+    Num("  ... taken 0.3 s later", MSBDDockSideStripStep(&ss, 69.0, 30.31, 60, &ev, &was), 69.0);
+    Int("  ... and followed: the windows out from under it (a Fill window was 1.2 pt under it)", ev, MSBDStripChanged);
+    Num("  ... from 55.7", was, 55.7);
+    Num("a look 0.2 pt off (rounding): the same Dock", MSBDDockSideStripStep(&ss, 69.2, 31.0, 60, &ev, &was), 69.0);
+    Int("  ... nothing to follow", ev, MSBDStripSame);
+    Num("a thickness seen for less than 0.3 s (the Dock's own animation): not taken", MSBDDockSideStripStep(&ss, 60.0, 32.0, 60, &ev, &was), 69.0);
+    MSBDDockSideStripStep(&ss, 64.0, 32.2, 60, &ev, &was);
+    Num("  ... nor the next one either", MSBDDockSideStripStep(&ss, 69.0, 32.4, 60, &ev, &was), 69.0);
+    Int("  ... back where it was: nothing to follow", ev, MSBDStripSame);
+    Num("the Dock away (over a full-screen app): the thickness last taken", MSBDDockSideStripStep(&ss, -1.0, 40.0, 60, &ev, &was), 69.0);
+    MSBDDockStripState none = { 0, -1, 0 };
+    Num("  ... with none taken yet: SpringBoard's figure", MSBDDockSideStripStep(&none, -1.0, 40.0, 60, &ev, &was), 60.0);
+    Num("  ... no state: as measured", MSBDDockSideStripStep(NULL, 55.0, 40.0, 60, &ev, &was), 55.0);
+    // ---- 1.8.2.2, second pass 4: the first thickness after a Position change with the Dock away (M1: Settings full screen, the windows placed against 69.7) ----
+    MSBDDockStripState aw = { 0, -1, 0, 69.7 };   // (DMDockPositionMoved noted the figure the windows went against)
+    Num("the Dock back on the desktop, 50 pt: the thicker of the two while it is confirmed (no window under the Dock)", MSBDDockSideStripStep(&aw, 50.0, 50.0, 60, &ev, &was), 69.7);
+    Int("  ... the windows' notes held for it", ev, MSBDStripCandidate);
+    Num("  ... seen again 0.3 s later: taken", MSBDDockSideStripStep(&aw, 50.0, 50.3, 60, &ev, &was), 50.0);
+    Int("  ... a change, not a first: the windows follow (before: none did, a Fill window stayed short of the Dock)", ev, MSBDStripChanged);
+    Num("  ... from the figure they were placed against", was, 69.7);
+    Num("  ... which is forgotten once a thickness is taken", aw.placed, 0);
+    MSBDDockStripState aw2 = { 0, -1, 0, 50.1 };
+    MSBDDockStripState aw3 = { 0, -1, 0, 0 };
+    MSBDDockSideStripStep(&aw2, 50.0, 60.0, 60, &ev, &was);
+    Num("placed against the same thickness (0.1 pt off): a first, nothing to follow", MSBDDockSideStripStep(&aw2, 50.0, 60.3, 60, &ev, &was), 50.0);
+    Int("  ... first", ev, MSBDStripFirst);
+    Num("nothing placed since the change (the Dock seen at once): as before, measured as it is", MSBDDockSideStripStep(&aw3, 50.0, 70.0, 60, &ev, &was), 50.0);
+    Int("  ... no hold", ev, MSBDStripSame);
+    MSBDDockSideStripStep(&aw3, 50.0, 70.3, 60, &ev, &was);
+    Int("  ... then a first, nothing to follow", ev, MSBDStripFirst);
+    // ---- 1.8.2.2, second pass 1 and 7: the zoom's match-move left out on 15-17 (dock/Dock.x), a set of apps, each start a new cycle ----
+    int op = 9;
+    Int("a start into the side Dock: left out", MSBDZoomLeaveOut(true, false, true, &op), 1);
+    Int("  ... the app recorded", op, 1);
+    Int("  ... its end: left out too", MSBDZoomLeaveOut(false, true, false, &op), 1);
+    Int("  ... and the record gone", op, -1);
+    Int("an end of an app never left out: SpringBoard's own (at the bottom, any)", MSBDZoomLeaveOut(false, false, false, &op), 0);
+    Int("  ... nothing recorded", op, 0);
+    // (the zoom cut short -- the app tapped again mid-zoom: its end may never come; then the Dock at the bottom and the same app Home)
+    MSBDZoomLeaveOut(true, false, true, &op);
+    Int("cut short, later at the bottom: the same app's start is SpringBoard's own", MSBDZoomLeaveOut(true, true, false, &op), 0);
+    Int("  ... and the old record goes with it", op, -1);
+    Int("  ... so its end is SpringBoard's own too, never swallowed (before: it was, and the match-move was never ended)", MSBDZoomLeaveOut(false, false, false, &op), 0);
+    Int("cut short, again at a side: the new start left out, the record kept", MSBDZoomLeaveOut(true, true, true, &op), 1);
+    Int("  ... nothing added twice", op, 0);
+    // (two apps: A left out, B left out before A's end)
+    int inA = 0, inB = 0;
+    MSBDZoomLeaveOut(true, inA, true, &op); inA += op;
+    MSBDZoomLeaveOut(true, inB, true, &op); inB += op;
+    Int("two apps left out, A's end: left out", MSBDZoomLeaveOut(false, inA, false, &op), 1); inA += op;
+    Int("  ... B's end: left out too (before: B overwrote A's record, and A's end went to SpringBoard for a match-move never started)", MSBDZoomLeaveOut(false, inB, false, &op), 1); inB += op;
+    Int("  ... both records gone", inA + inB, 0);
+    Int("a start not into the side Dock (the Home Screen's page, another display's switcher): SpringBoard's own", MSBDZoomLeaveOut(true, false, false, &op), 0);
+    Int("  ... nothing recorded", op, 0);
+    Int("the Dock's location", MSBDZoomLocationIsDock("SBIconLocationFloatingDock"), 1);
+    Int("  ... its recents", MSBDZoomLocationIsDock("SBIconLocationFloatingDockSuggestions"), 1);
+    Int("  ... the Home Screen's page", MSBDZoomLocationIsDock("SBIconLocationRoot"), 0);
+    Int("  ... the App Library", MSBDZoomLocationIsDock("SBIconLocationAppLibrary"), 0);
+    Int("  ... none", MSBDZoomLocationIsDock(NULL), 0);
+
     printf("%s: %d/%d checks pass\n", fails ? "test-dockside FAILED" : "test-dockside", checks - fails, checks);
     return fails ? 1 : 0;
 }

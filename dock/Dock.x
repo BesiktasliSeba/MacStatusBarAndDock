@@ -473,7 +473,21 @@ static CATransform3D DMDockSideIconTurn(int side) { return CATransform3DMakeAffi
 // An icon's turn is ours alone (common/DockSide.h MSBDDockSideIconTurnStep): it goes on top of what the layer has -- another tweak's value, Atria's icon scale --,
 // which is kept and given back exactly; an icon we never turned is never written. Before, every icon's layout once a side had been used wrote the identity:
 // KT's Atria Home Screen icons lost their 0.819 scale, at Left, Right and back at Bottom (1.8.2 engines check, M1).
-static const void *kDockSideTurnUnder = &kDockSideTurnUnder, *kDockSideTurnOurs = &kDockSideTurnOurs;
+static const void *kDockSideTurnUnder = &kDockSideTurnUnder, *kDockSideTurnOurs = &kDockSideTurnOurs, *kDockSideTurnSide = &kDockSideTurnSide;
+// The side whose turn an icon's content carries now: ours there and still what its layer has; 0 for none (the bottom, a TV's Dock, an icon not turned yet). The
+// running dot goes where the content stands upright by this (RunningIndicator.m, FinderIcon.m), so the two never part: decided apart -- the dot by the icon's
+// screen and the side chosen, the turn by the icon's place in the side Dock, each at its own time -- a recents change at Right showed a Clock icon's dot under the
+// icon, the Bottom place (M1 F5, 1.8.2.2), and a Handoff tile not yet turned (its badge at the bottom left).
+int MSBDDockSideIconTurnSide(UIView *icon) {
+    NSValue *ours = icon ? objc_getAssociatedObject(icon, kDockSideTurnOurs) : nil;
+    if (!ours || !CATransform3DEqualToTransform(icon.layer.sublayerTransform, ours.CATransform3DValue)) return 0;
+    return [objc_getAssociatedObject(icon, kDockSideTurnSide) intValue];
+}
+extern void DMUpdateRunningIndicator(UIView *iconView);
+static void DMDockSideDotFollows(UIView *icon) {   // (its dot placed again for the turn it has now: an app icon's, or our own icon's -- Finder)
+    if ([icon isKindOfClass:objc_getClass("SBIconView")]) DMUpdateRunningIndicator(icon);
+    else if ([icon respondsToSelector:NSSelectorFromString(@"updateDot")]) ((void (*)(id, SEL))objc_msgSend)(icon, NSSelectorFromString(@"updateDot"));
+}
 static void DMDockSideStyleIcon(UIView *icon, int side) {
     CALayer *l = icon.layer;
     NSValue *ours = objc_getAssociatedObject(icon, kDockSideTurnOurs), *under = objc_getAssociatedObject(icon, kDockSideTurnUnder);
@@ -485,17 +499,23 @@ static void DMDockSideStyleIcon(UIView *icon, int side) {
             if (still && CATransform3DEqualToTransform(want, ours.CATransform3DValue)) return;   // (as it is)
             objc_setAssociatedObject(icon, kDockSideTurnUnder, [NSValue valueWithCATransform3D:below], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             objc_setAssociatedObject(icon, kDockSideTurnOurs, [NSValue valueWithCATransform3D:want], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(icon, kDockSideTurnSide, @(side), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             if (!CATransform3DEqualToTransform(l.sublayerTransform, want)) l.sublayerTransform = want;
+            DMDockSideDotFollows(icon);
             return;
         }
         case MSBDIconTurnGiveBack:
             if (under && !CATransform3DEqualToTransform(l.sublayerTransform, under.CATransform3DValue)) l.sublayerTransform = under.CATransform3DValue;
             objc_setAssociatedObject(icon, kDockSideTurnUnder, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             objc_setAssociatedObject(icon, kDockSideTurnOurs, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(icon, kDockSideTurnSide, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            DMDockSideDotFollows(icon);
             return;
         case MSBDIconTurnForget:   // (its owner set another value since: theirs)
             objc_setAssociatedObject(icon, kDockSideTurnUnder, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             objc_setAssociatedObject(icon, kDockSideTurnOurs, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(icon, kDockSideTurnSide, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            DMDockSideDotFollows(icon);
             return;
         default: return;   // (never turned: not ours to write)
     }
@@ -1717,11 +1737,11 @@ extern void DMStartRunningIndicatorPoll(void);
 - (void)layoutSubviews {
     %orig;
     DMLaunchpadRefresh((UIView *)self, gLaunchpadIcon, gLaunchpadClassic);   // only acts on the App Library icon
-    DMUpdateRunningIndicator((UIView *)self);   // only acts on Dock icons (checks internally)
     if (gDockSideEver) {   // (Position: a side Dock icon's content stands upright; one that left the Dock, or a Dock back at the bottom, gets back what it had; others are not touched)
         BOOL dock = gDockSideApplied && DMIsDockIcon((UIView *)self) && DMDockSideInHost((UIView *)self);   // (a TV's Dock icon: upright as its Dock)
-        DMDockSideStyleIcon((UIView *)self, dock ? gDockSideApplied : 0);
+        DMDockSideStyleIcon((UIView *)self, dock ? gDockSideApplied : 0);   // (first: the dot below goes where the content stands)
     }
+    DMUpdateRunningIndicator((UIView *)self);   // only acts on Dock icons (checks internally)
 }
 - (void)setTransform:(CGAffineTransform)t {
     %orig;
@@ -2879,8 +2899,120 @@ static NSString *DMK2Verdict(void) {
 }
 %end
 %end
+// (Settings > Dock > Position: the zoom of an app going Home into its side Dock icon -- Stage Manager's Home for the desktop's last window minimized, a full-screen
+//  app's Home --. SpringBoard's fluid switcher works out the icon picture's place right (-homeScreenIconFrameForAppLayout:, 18.5: the drawn 38.2 pt picture at the
+//  icon's middle), then match-moves the zoom to the icon's own layer (-shouldMatchMoveIconZoomingView: YES): a layer inside the turned Dock view, so the match takes
+//  the Dock's turn as well -- a mirror at Right, a rotation at Left -- and the window flew into the top-right corner at Right and off the bottom-left at Left (17.5 F1,
+//  A12Z F2, 1.8.2.2). An icon of the side Dock is not match-moved: the zoom goes to the place SpringBoard worked out. Shape-checked, hooked with Left or Right chosen
+//  only; any other icon as SpringBoard decides.)
+@interface SBFluidSwitcherViewController : UIViewController
+@end
+%group DockSideZoom
+%hook SBFluidSwitcherViewController
+- (BOOL)shouldMatchMoveIconZoomingView:(UIView *)iconView {
+    BOOL r = %orig;
+    if (!r || !gDockSideApplied || ![iconView isKindOfClass:[UIView class]] || !iconView.window || !DMIsDockIcon(iconView) || !DMDockSideInHost(iconView)) return r;
+    DM_FEATURE_MARK("dock-side-icon-zoom");
+    DMLog(@"[dockside] an app goes into its side Dock icon: zoomed to the place SpringBoard worked out, not match-moved to the turned icon");
+    return NO;
+}
+%end
+%end
+// (15, 16 and 17 match-move by a switcher modifier's response (SBMatchMoveToIconViewSwitcherEventResponse: an app layout, active to start it, not active to end
+//  it), with no -shouldMatchMoveIconZoomingView: to ask: the hook above was not installed there, and the desktop's last window minimized still flew into a corner --
+//  iPad 2 16.7.7, the top-right one at Right, as on the 17.5, code review 1.8.2.2, 2. The same answer: for an app whose zoom goes into the Dock (the switcher's
+//  own icon location for it) while the Dock stands at a side, on the main screen's switcher, the match-move is not started, and its end not sent for one that never
+//  started. The apps left out are a set, and an app's new start begins its cycle anew (DockSide.h MSBDZoomLeaveOut): a zoom cut short may never send its end, and a
+//  record kept from it swallowed that app's next end, at the bottom too -- code review 1.8.2.2, second pass 1. 15.6.1 has the response too: hooked there as well.)
+static NSMutableSet *gDMZoomLeftOut = nil;   // (the app layouts whose match-move was left out: their ends are left out too)
+static BOOL DMDockSideZoomLeavesOut(id switcher, id response) {
+    static Class rc = Nil;
+    if (!rc) rc = objc_getClass("SBMatchMoveToIconViewSwitcherEventResponse");
+    if (!rc || ![response isKindOfClass:rc]) return NO;   // (only the response the install read: second pass 2)
+    id layout = ((id (*)(id, SEL))objc_msgSend)(response, NSSelectorFromString(@"appLayout"));
+    BOOL active = ((BOOL (*)(id, SEL))objc_msgSend)(response, NSSelectorFromString(@"isActive"));
+    if (!layout) return NO;
+    BOOL recorded = [gDMZoomLeftOut containsObject:layout], into = NO;
+    if (active && gDockSideApplied) {
+        // (the main screen's switcher only, as the 18 hook's icon in our turned host: a Stage Manager display's own switcher zooms into its own Dock at its bottom,
+        //  second pass 3)
+        UIViewController *vc = [switcher isKindOfClass:[UIViewController class]] ? (UIViewController *)switcher : nil;
+        UIWindow *w = vc.isViewLoaded ? vc.view.window : nil;
+        id loc = w && w.screen == [UIScreen mainScreen] ? ((id (*)(id, SEL, id))objc_msgSend)(switcher, NSSelectorFromString(@"homeScreenIconLocationForAppLayout:"), layout) : nil;
+        into = [loc isKindOfClass:[NSString class]] && MSBDZoomLocationIsDock([(NSString *)loc UTF8String]);
+        DMLog([NSString stringWithFormat:@"[dockside] the switcher match-moves a zoom into its icon (location %@, main screen %d) with the Dock at a side", loc, w.screen == [UIScreen mainScreen]]);
+    }
+    int op = 0;
+    BOOL leave = MSBDZoomLeaveOut(active, recorded, into, &op) != 0;
+    if (op > 0) { if (!gDMZoomLeftOut) gDMZoomLeftOut = [NSMutableSet set]; if (gDMZoomLeftOut.count > 16) [gDMZoomLeftOut removeAllObjects]; [gDMZoomLeftOut addObject:layout]; }
+    else if (op < 0) [gDMZoomLeftOut removeObject:layout];
+    if (op < 0 && !leave) DMLog(@"[dockside] a match-move start of an app left out before (its zoom cut short): SpringBoard's own now, the old record gone");
+#if DEBUG
+    static BOOL told = NO;   // (once per SpringBoard: that the 15-17 hook acted here at all -- the M1's 15.6.1 too, second pass 8)
+    if (leave && !told) { told = YES; DMLog([NSString stringWithFormat:@"[dockside] the switcher's match-move response hook acted on this iPadOS (%@)", [UIDevice currentDevice].systemVersion]); }
+#endif
+    return leave;
+}
+%group DockSideZoom17
+%hook SBFluidSwitcherViewController
+- (void)_performModifierMatchMoveToIconViewResponse:(id)response {
+    if (DMDockSideZoomLeavesOut(self, response)) {
+        DM_FEATURE_MARK("dock-side-icon-zoom");
+        DMLog([NSString stringWithFormat:@"[dockside] an app goes into its side Dock icon: %@ match-move left out, zoomed to the place SpringBoard worked out", ((BOOL (*)(id, SEL))objc_msgSend)(response, NSSelectorFromString(@"isActive")) ? @"the" : @"the end of the"]);
+        return;
+    }
+    %orig;
+}
+%end
+%end
+#if DEBUG
+// (debug: what the switcher's zoom into a Dock icon asks, read while the Dock is at a side -- which of its questions carries the place)
+static NSString *DMZoomViewText(UIView *v) {
+    if (![v isKindOfClass:[UIView class]]) return v ? NSStringFromClass([v class]) : @"nil";
+    CGRect s = v.window ? [v convertRect:v.bounds toCoordinateSpace:[UIScreen mainScreen].coordinateSpace] : CGRectNull;
+    return [NSString stringWithFormat:@"%@ %p in %@ on screen %@ transform %@", NSStringFromClass([v class]), v, NSStringFromClass([v.window class]), NSStringFromCGRect(s), NSStringFromCGAffineTransform(v.transform)];
+}
+%group DockSideZoomDebug
+%hook SBFluidSwitcherViewController
+- (CGRect)homeScreenIconFrameForAppLayout:(id)layout {
+    CGRect r = %orig;
+    DMLog([NSString stringWithFormat:@"[zoomdebug] homeScreenIconFrameForAppLayout -> %@", NSStringFromCGRect(r)]);
+    return r;
+}
+- (id)homeScreenIconLocationForAppLayout:(id)layout {
+    id r = %orig;
+    DMLog([NSString stringWithFormat:@"[zoomdebug] homeScreenIconLocationForAppLayout -> %@", r]);
+    return r;
+}
+- (id)matchingIconZoomingViewForIconZoomingView:(UIView *)v {
+    id r = %orig;
+    DMLog([NSString stringWithFormat:@"[zoomdebug] matchingIconZoomingViewForIconZoomingView %@ -> %@", DMZoomViewText(v), DMZoomViewText(r)]);
+    return r;
+}
+- (id)iconZoomingViewContainerForIconZoomingView:(UIView *)v {
+    id r = %orig;
+    DMLog([NSString stringWithFormat:@"[zoomdebug] iconZoomingViewContainerForIconZoomingView %@ -> %@", DMZoomViewText(v), DMZoomViewText(r)]);
+    return r;
+}
+%end
+%end
+#endif
 %group DockSideTouches
 %hook SBIconView
+// (an icon view that comes into the side Dock without a layout of its own -- built and laid out before it was added, a recents change, a Handoff tile -- is turned
+//  upright as it arrives, its dot with it; one that leaves gets back what it had. Before, its content stood mirrored until its next layout: M1 F5, 1.8.2.2)
+- (void)didMoveToWindow {
+    %orig;
+    if (!gDockSideEver || !((UIView *)self).window) return;
+    BOOL dock = gDockSideApplied && DMIsDockIcon((UIView *)self) && DMDockSideInHost((UIView *)self);
+    DMDockSideStyleIcon((UIView *)self, dock ? gDockSideApplied : 0);
+}
+- (void)didMoveToSuperview {
+    %orig;
+    if (!gDockSideEver || !((UIView *)self).window) return;
+    BOOL dock = gDockSideApplied && DMIsDockIcon((UIView *)self) && DMDockSideInHost((UIView *)self);
+    DMDockSideStyleIcon((UIView *)self, dock ? gDockSideApplied : 0);
+}
 - (BOOL)pointInside:(CGPoint)p withEvent:(UIEvent *)e {
     BOOL r = %orig;
     if (!r || !gDockSideApplied || gDockSideStep <= 0 || !DMIsDockIcon((UIView *)self) || !DMDockSideInHost((UIView *)self)) return r;   // (a TV's Dock icon: its whole view)
@@ -2898,6 +3030,27 @@ static void DMDockSideChoose(void) {
             if ([objc_getClass("SBFloatingDockController") instancesRespondToSelector:@selector(gestureRecognizerShouldBegin:)]) %init(DockSidePointer);
             %init(DockSideTouches);
             if (objc_getClass("SBFolderContainerView")) %init(DockSideFolder);
+            Class swc = objc_getClass("SBFluidSwitcherViewController"), mmr = objc_getClass("SBMatchMoveToIconViewSwitcherEventResponse");
+            Method zm = class_getInstanceMethod(swc, NSSelectorFromString(@"shouldMatchMoveIconZoomingView:"));
+            Method zp = class_getInstanceMethod(swc, NSSelectorFromString(@"_performModifierMatchMoveToIconViewResponse:")), zl = class_getInstanceMethod(swc, NSSelectorFromString(@"homeScreenIconLocationForAppLayout:"));
+            Method ra = class_getInstanceMethod(mmr, NSSelectorFromString(@"appLayout")), rk = class_getInstanceMethod(mmr, NSSelectorFromString(@"isActive"));
+            if (zm && !strcmp(method_getTypeEncoding(zm) ?: "", "B24@0:8@16")) %init(DockSideZoom);   // (18)
+            else if (zp && zl && ra && rk && !strcmp(method_getTypeEncoding(zp) ?: "", "v24@0:8@16") && !strcmp(method_getTypeEncoding(zl) ?: "", "@24@0:8@16")
+                     && !strcmp(method_getTypeEncoding(ra) ?: "", "@16@0:8") && !strcmp(method_getTypeEncoding(rk) ?: "", "B16@0:8")) {   // (15, 16, 17)
+                %init(DockSideZoom17);
+                DMLog([NSString stringWithFormat:@"[dockside] the switcher's match-move response is hooked for the side Dock's zoom (iPadOS %@)", [UIDevice currentDevice].systemVersion]);
+            }
+            else DMLog(@"[dockside] the switcher's icon zoom is not as expected here: an app's zoom into a side Dock icon stays SpringBoard's");
+#if DEBUG
+            {
+                Class sw = objc_getClass("SBFluidSwitcherViewController");
+                const char *want[][2] = { {"homeScreenIconFrameForAppLayout:", "{CGRect={CGPoint=dd}{CGSize=dd}}24@0:8@16"}, {"homeScreenIconLocationForAppLayout:", "@24@0:8@16"},
+                    {"matchingIconZoomingViewForIconZoomingView:", "@24@0:8@16"}, {"iconZoomingViewContainerForIconZoomingView:", "@24@0:8@16"} };
+                BOOL all = sw != Nil;
+                for (int i = 0; i < 4 && all; i++) { Method m = class_getInstanceMethod(sw, sel_registerName(want[i][0])); all = m && !strcmp(method_getTypeEncoding(m) ?: "", want[i][1]); }
+                if (all) %init(DockSideZoomDebug);
+            }
+#endif
             Class hm = objc_getClass("SBHIconManager");
             Method hm1 = hm ? class_getInstanceMethod(hm, NSSelectorFromString(@"externalDockHeightForRootFolderController:")) : NULL, hm2 = hm ? class_getInstanceMethod(hm, NSSelectorFromString(@"maxExternalDockHeightForRootFolderController:")) : NULL;
             if (hm1 && hm2 && !strcmp(method_getTypeEncoding(hm1) ?: "", "d24@0:8@16") && !strcmp(method_getTypeEncoding(hm2) ?: "", "d24@0:8@16")) %init(DockSideHome);
