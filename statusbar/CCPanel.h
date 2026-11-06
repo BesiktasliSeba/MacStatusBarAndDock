@@ -153,6 +153,7 @@ static void (*o_DMCCPDidAdd)(id, SEL, id, id);
 static void (*o_DMCCPWillRemove)(id, SEL, id, id);
 static void (*o_DMCCPWillOpen)(id, SEL, id, id);
 static void (*o_DMCCPDidClose)(id, SEL, id, id);
+static void (*o_DMCCPDidFinish)(id, SEL, id, id);
 static void (*o_DMCCPUpdate)(id, SEL, id, id);
 static BOOL (*o_DMCCPTapBegin)(id, SEL, id);
 static CGRect (*o_DMCCPCompact)(id, SEL, id);
@@ -169,6 +170,7 @@ static void DMCCPDidAdd(id self, SEL _cmd, id grid, id containerVC);
 static void DMCCPWillRemove(id self, SEL _cmd, id grid, id containerVC);
 static void DMCCPWillOpen(id self, SEL _cmd, id grid, id module);
 static void DMCCPDidClose(id self, SEL _cmd, id grid, id module);
+static void DMCCPDidFinish(id self, SEL _cmd, id grid, id module);
 static void DMCCPUpdate(id self, SEL _cmd, id state, id completion);
 static BOOL DMCCPTapBegin(id self, SEL _cmd, id gr);
 static CGRect DMCCPCompact(id self, SEL _cmd, id containerVC);
@@ -182,7 +184,7 @@ static void DMCCPSensorListClose(id self, SEL _cmd);
 static void DMCCPHeaderBarAlpha(id self, SEL _cmd, double a);
 static UIView *DMCCPHeaderHit(id self, SEL _cmd, CGPoint p, UIEvent *e);
 // A row's part: core rows (all or nothing), or an optional part that is only left out without its rows.
-enum { kDMCCPCore = 0, kDMCCPPartJoin, kDMCCPPartSensor, kDMCCPPartSensorList };
+enum { kDMCCPCore = 0, kDMCCPPartJoin, kDMCCPPartSensor, kDMCCPPartSensorList, kDMCCPPartFinish };
 typedef struct { const char *cls, *sel, *enc; void *fn; void **orig; int part; const char *what; } DMCCPHookRow;
 static DMCCPHookRow kDMCCPHooks[] = {
     { kDMCCPOverlay, "viewDidLoad", "v16@0:8", (void *)DMCCPViewDidLoad, (void **)&o_DMCCPViewDidLoad, kDMCCPCore, "the panel built with Apple's Control Center" },
@@ -190,6 +192,7 @@ static DMCCPHookRow kDMCCPHooks[] = {
     { kDMCCPOverlay, "moduleCollectionViewController:willRemoveModuleContainerViewController:", "v32@0:8@16@24", (void *)DMCCPWillRemove, (void **)&o_DMCCPWillRemove, kDMCCPCore, "a module let go" },
     { kDMCCPOverlay, "moduleCollectionViewController:willOpenExpandedModule:", "v32@0:8@16@24", (void *)DMCCPWillOpen, (void **)&o_DMCCPWillOpen, kDMCCPCore, "an expanded module opens" },
     { kDMCCPOverlay, "moduleCollectionViewController:didCloseExpandedModule:", "v32@0:8@16@24", (void *)DMCCPDidClose, (void **)&o_DMCCPDidClose, kDMCCPCore, "it closed" },
+    { kDMCCPOverlay, "moduleCollectionViewController:didFinishInteractionWithModule:", "v32@0:8@16@24", (void *)DMCCPDidFinish, (void **)&o_DMCCPDidFinish, kDMCCPPartFinish, "a module Apple held (a press, its expanded view) goes where the panel laid it out meanwhile" },
     { kDMCCPOverlay, "_updatePresentationForTransitionState:withCompletionHander:", "v32@0:8@16@?24", (void *)DMCCPUpdate, (void **)&o_DMCCPUpdate, kDMCCPCore, "every presentation step" },
     { kDMCCPOverlay, "_dismissalTapGestureRecognizerShouldBegin:", "B24@0:8@16", (void *)DMCCPTapBegin, (void **)&o_DMCCPTapBegin, kDMCCPCore, "a tap in our panel is not outside" },
     { kDMCCPGrid, "compactModeFrameForContentModuleContainerViewController:", kDMCCPRectType "24@0:8@16", (void *)DMCCPCompact, (void **)&o_DMCCPCompact, kDMCCPCore, "expanded views from our tiles" },
@@ -228,14 +231,15 @@ static const DMCCPNeedRow kDMCCPNeeds[] = {
     { kDMCCPProvider, "_baseC2AnimationParametersForTransitionState:", "@24@0:8@16", YES, YES, NO, "Apple's spring for a step" },
     { "CCUIAnimationBatch", "addAnimation:", "v24@0:8@16", NO, YES, NO, "our animation in Apple's batch" },
     { "CCUIAnimation", "animationWithParameters:animations:", "@32@0:8@16@?24", YES, YES, NO, "an animation of Apple's kind" },
+    { kDMCCPGrid, "_updateModuleControllers", "v16@0:8", NO, YES, NO, "a module's own size change (Uptime's Module Size) reaches Apple's grid through ours" },
     { kDMCCPGrid, "_settingsManager", NULL, NO, YES, YES, "the user's order now (a reorder in Settings while running)" },
     { "CCUIModuleSettingsManager", "sortModuleIdentifiers:forInterfaceOrientation:", "@32@0:8@16q24", NO, YES, NO, "the user's order now (a reorder in Settings while running)" },
     { "CCUIHeaderPocketView", "statusBarAlpha", "d16@0:8", NO, YES, NO, "the header's own status bar alpha, handed back with iPadOS's look (the room made for the sensor indicator)" },
 };
-static BOOL gCCPHaveJoin = NO, gCCPHaveExpand = NO, gCCPHaveBlocking = NO, gCCPHaveOrder = NO;   // (the optional parts: all their rows here)
-static BOOL gCCPHaveSensor = NO, gCCPHaveSensorList = NO;
+static BOOL gCCPHaveJoin = NO, gCCPHaveExpand = NO, gCCPHaveBlocking = NO, gCCPHaveOrder = NO, gCCPHaveUpdate = NO;   // (the optional parts: all their rows here)
+static BOOL gCCPHaveSensor = NO, gCCPHaveSensorList = NO, gCCPHaveFinish = NO;
 static BOOL DMCCPHookPartHere(int part) {   // (an optional hook goes in only with all of its part's rows; core rows always)
-    return part == kDMCCPCore || (part == kDMCCPPartJoin && gCCPHaveJoin) || (part == kDMCCPPartSensor && gCCPHaveSensor) || (part == kDMCCPPartSensorList && gCCPHaveSensorList);
+    return part == kDMCCPCore || (part == kDMCCPPartJoin && gCCPHaveJoin) || (part == kDMCCPPartSensor && gCCPHaveSensor) || (part == kDMCCPPartSensorList && gCCPHaveSensorList) || (part == kDMCCPPartFinish && gCCPHaveFinish);
 }
 static NSString *DMCCPRowName(const char *cls, const char *sel, BOOL meta, BOOL ivar) { return ivar ? [NSString stringWithFormat:@"%s.%s", cls, sel] : [NSString stringWithFormat:@"%c[%s %s]", meta ? '+' : '-', cls, sel]; }
 // One row: nil when it is there as expected, else why not.
@@ -258,7 +262,7 @@ static NSString *DMCCPRowProblem(const char *cls, const char *sel, const char *e
 // debug /tmp/msb-ccp-simulate-missing: one core row pretends to be missing (the all-or-nothing path, Settings' greyed row).
 static NSArray<NSString *> *DMCCPCheckAPI(NSMutableArray<NSString *> *optionalMissing, NSUInteger *checked) {
     NSMutableArray *bad = [NSMutableArray array];
-    BOOL join = YES, expand = YES, blocking = YES, order = YES, sensor = YES, sensorList = YES;
+    BOOL join = YES, expand = YES, blocking = YES, order = YES, update = YES, sensor = YES, sensorList = YES, finish = YES;
     NSUInteger n = 0;
     for (size_t i = 0; i < sizeof(kDMCCPHooks) / sizeof(kDMCCPHooks[0]); i++) {
         n++;
@@ -268,7 +272,7 @@ static NSArray<NSString *> *DMCCPCheckAPI(NSMutableArray<NSString *> *optionalMi
         int part = kDMCCPHooks[i].part;
         if (part == kDMCCPCore) { [bad addObject:line]; continue; }
         [optionalMissing addObject:line];
-        if (part == kDMCCPPartJoin) join = NO; else if (part == kDMCCPPartSensor) sensor = NO; else sensorList = NO;
+        if (part == kDMCCPPartJoin) join = NO; else if (part == kDMCCPPartSensor) sensor = NO; else if (part == kDMCCPPartFinish) finish = NO; else sensorList = NO;
     }
     for (size_t i = 0; i < sizeof(kDMCCPNeeds) / sizeof(kDMCCPNeeds[0]); i++) {
         const DMCCPNeedRow *r = &kDMCCPNeeds[i];
@@ -281,14 +285,16 @@ static NSArray<NSString *> *DMCCPCheckAPI(NSMutableArray<NSString *> *optionalMi
         if (!strcmp(r->sel, "expandModule")) expand = NO;
         else if (!strcmp(r->sel, "topLevelBlockingGestureRecognizers")) blocking = NO;
         else if (!strcmp(r->sel, "_settingsManager") || !strcmp(r->sel, "sortModuleIdentifiers:forInterfaceOrientation:")) order = NO;
+        else if (!strcmp(r->sel, "_updateModuleControllers")) update = NO;
         else if (!strcmp(r->sel, "statusBarAlpha")) sensor = NO;   // (the header's copy is held at 0 only where Apple's own value can be handed back)
         else join = NO;
     }
 #if DEBUG
     if (DMTestFlag("/tmp/msb-ccp-simulate-missing")) [bad addObject:@"-[CCUIModularControlCenterOverlayViewController viewDidLoad] missing (SIMULATED, debug)"];
 #endif
-    gCCPHaveJoin = join; gCCPHaveExpand = expand; gCCPHaveBlocking = blocking; gCCPHaveOrder = order;
+    gCCPHaveJoin = join; gCCPHaveExpand = expand; gCCPHaveBlocking = blocking; gCCPHaveOrder = order; gCCPHaveUpdate = update;
     gCCPHaveSensor = sensor; gCCPHaveSensorList = sensorList && sensor;   // (the list's step back goes with the room made for the indicator)
+    gCCPHaveFinish = finish;
     if (checked) *checked = n;
     return bad;
 }
@@ -517,10 +523,29 @@ static CGRect DMCCPFrame(CGFloat width, CGFloat contentH) {
 // The panel's controller: Apple's container controllers become ITS children while their views are in its view (rule 1). Appearance stays
 // Apple's: its grid forwards it to its modules by hand from its own table (-childViewControllersForAppearancePropagation), so this one forwards
 // nothing.
+// It is the overlay's last child (DMCCPEnsurePanel adds it after Apple's grid), and modules made for Apple's Control Center take that child for
+// Apple's grid: Uptime's Module Size control saves the size, then sends Apple's -_updateModuleControllers, unchecked, to its expanded view's
+// presentingViewController.childViewControllers.lastObject (Apple's overlay's), so Apple's grid reads the modules' sizes again (CCSupport's
+// runtime ones). Ours did not answer it: "unrecognized selector", SpringBoard aborted, twice in a row, Safe Mode (M1 15.6.1, 1.8.2;
+// plans/v1821-uptime.md). So it answers there as Apple's grid: that call goes on to Apple's grid and the panel is laid out at Apple's new sizes
+// (the tile's new size at once, as on stock), and a call only Apple's grid answers goes to it (one no one answers still raises).
 @interface DMCCPPanelController : UIViewController
 @end
 @implementation DMCCPPanelController
 - (BOOL)shouldAutomaticallyForwardAppearanceMethods { return NO; }
+- (void)_updateModuleControllers {
+    UIViewController *g = gCCPGrid;
+    BOOL apple = gCCPHaveUpdate && g && DMCCTypes(g, @"_updateModuleControllers", "v16@0:8");
+    if (apple) ((void (*)(id, SEL))objc_msgSend)(g, _cmd);
+    DMLog([NSString stringWithFormat:@"[ccpanel] a module asked for Apple's grid's update (-_updateModuleControllers): %@", apple ? @"passed on to it" : @"not on this iPadOS"]);
+    DMCCPLayout(@"a module's size changed");   // (an expanded module's own place too: Apple's close goes to its new frame, DMCCPCompact)
+}
+- (id)forwardingTargetForSelector:(SEL)s {
+    // (only Apple's grid's own questions and actions: a setter of its (-setDelegate:, -setModuleCollectionView: ...) sent to us by a module that took us for
+    //  the grid would rewire Apple's grid quietly, so it raises as before. Code review 1.8.2.1, 1)
+    UIViewController *g = gCCPGrid;
+    return g && ![NSStringFromSelector(s) hasPrefix:@"set"] && [g respondsToSelector:s] ? g : [super forwardingTargetForSelector:s];
+}
 @end
 // The host: full screen on top of Apple's views. A touch outside the panel is not ours (Apple's grid and header take it: a tap outside, a swipe
 // up). With Apple's backdrop hidden, a fully transparent SpringBoard region over an app sent the touch to the app (and the tap did not close
@@ -1029,7 +1054,7 @@ static void DMCCPLayout(NSString *why) {
         if (cv.superview != gCCPScroll) { gCCPLaidSkipped = YES; continue; }   // (expanded, or on its way: Apple's for now, not even its hidden flag)
         cv.hidden = items[i].hidden;   // (a stand-in: hidden at its Mac tile's frame)
         SEL ig = NSSelectorFromString(@"ignoreFrameUpdates");
-        if (DMCCTypes(cv, @"ignoreFrameUpdates", "B16@0:8") && ((BOOL (*)(id, SEL))objc_msgSend)(cv, ig)) continue;
+        if (DMCCTypes(cv, @"ignoreFrameUpdates", "B16@0:8") && ((BOOL (*)(id, SEL))objc_msgSend)(cv, ig)) { gCCPLaidSkipped = YES; continue; }   // (Apple holds its frame: placed when Apple lets go, DMCCPDidFinish)
         DMCCPPlace(cv, items[i].frame, size);
     }
     // (assistive features read the panel in its order on the screen, row by row: CCLayout.h MSBDCCAXOrder)
@@ -1147,6 +1172,17 @@ static void DMCCPDidClose(id self, SEL _cmd, id grid, id module) {
     if (gCCPSize < 0.999 && !DMCCPContentFill(mid)) DMCCPContentFillSoon(mid, 10);
     // (laid out again when a layout passed it while it was Apple's, and at Control Center Size under 1: the container as Apple's own size again)
     if (gCCPLaidSkipped || gCCPSize < 0.999) DMCCPLayout(@"an expanded module back");
+}
+// Apple lets go of a module's container: the end of a press on it or of its expanded view (-[CCUIModuleCollectionViewController contentModule
+// ContainerViewController:didFinishInteractionWithModule:] clears the container's ignoreFrameUpdates, then tells its delegate; after a close that
+// is right after -didCloseExpandedModule:, in the same call, 15.6.1). A layout that passed it while Apple held its frame -- a module's own size
+// change while it was expanded (Uptime's Module Size): its new frame kept, the other tiles moved -- left it at its old frame, under its new
+// neighbours (16.7.7, 1.8.2.1~u01: Uptime 142 pt wide at 1x1, under the tile after it). Now it goes where that layout put it, and Apple's own
+// -layoutSubviews of the container fills it again at that size.
+static void DMCCPDidFinish(id self, SEL _cmd, id grid, id module) {
+    if (o_DMCCPDidFinish) o_DMCCPDidFinish(self, _cmd, grid, module);   // (code review 1.8.2.1, 2)
+    if (!gCCPOn || self != gCCPOverlay || !gCCPLaidSkipped) return;
+    DMCCPLayout(@"Apple let go of a module");
 }
 // Apple's sensor indicator (DMCCPSensorNow): looked at in a presentation's first step (DMCCPUpdate: the header has its presented layout then; laid out
 // at once, nothing shows yet -- an animation there would slide the panel in as Control Center comes, and its transform is Apple's drop then), after a

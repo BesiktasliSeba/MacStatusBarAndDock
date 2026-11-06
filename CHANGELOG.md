@@ -2,6 +2,13 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.2.1
+
+### Fixes
+- With Control Center Style set to Mac, changing a module's size from the module itself, such as Uptime's Module Size, no longer crashes SpringBoard.
+- After a respring, a window filling another desktop still fills it when you move the Dock with Position on Screen.
+- With Stage Manager, a window in half of the screen keeps its half when you move the Dock straight from one side to the other with Position on Screen.
+
 ## 1.8.2
 
 ### New

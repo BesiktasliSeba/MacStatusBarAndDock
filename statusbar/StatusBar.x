@@ -7197,14 +7197,90 @@ static NSDictionary<NSString *, NSString *> *DMSMLayoutsNow(void) { return DMSML
 // "L"). With them a turn puts a window into its layout, else where it was in that shape -- Clock, 1248 pt tall in portrait, squeezed to 883 in
 // landscape, came back 883 tall (17.5) -- and the hidden stages too: a hidden desktop's Fill window kept the portrait width after a round trip
 // (A12Z). In memory, as the other engines' (kStageByOrientKey); forgotten with the window (DMSMTurnForget).
+// 1.8.2.1 (plans/v1821-f1.md): the layouts are kept across a respring too, in the state file with the minimized set (DMSMStateWrite). The stages come
+// back after a respring, but a window not on screen is noted again only once it is: in memory only, a Fill window of another desktop was in no layout
+// after a respring, and a Position change only fitted it beside the Dock (on the other engines 1142 wide back at the bottom, regression 1.8.2 F1). Read
+// once (DMSMTurnLayouts), written when they change (DMSMTurnNote); a name that is no layout of TurnPlace.h is dropped as it is read. The file is
+// written as memory is; a window's records go only where it is known to have closed (DMSMTurnForget), memory and the file together.
 static NSMutableDictionary<NSString *, NSString *> *gSMTurnLayout;
+static NSDictionary<NSString *, NSString *> *gSMTurnLayoutWritten;   // (gSMTurnLayout as the file was last written with it)
 static NSMutableDictionary<NSString *, NSDictionary<NSString *, NSValue *> *> *gSMTurnFrames;
 static NSMutableDictionary<NSString *, NSValue *> *gSMTurnPlaced;   // (1.7.5 item 14: the whole frame a turn put a window in no layout back at -- TurnPlace.h MSBDTurnNoteIndex)
+static NSString *DMSMStatePath(void);
+static void DMSMStateWrite(void);
+static NSMutableDictionary<NSString *, NSString *> *DMSMTurnLayoutsFrom(NSDictionary *st) {   // (the state file's "layouts": window key -> a layout's name)
+    NSMutableDictionary<NSString *, NSString *> *out = [NSMutableDictionary dictionary];
+    NSDictionary *l = [st isKindOfClass:[NSDictionary class]] ? st[@"layouts"] : nil;
+    if ([l isKindOfClass:[NSDictionary class]]) for (id k in l) {
+        id v = l[k];
+        if ([k isKindOfClass:[NSString class]] && [(NSString *)k length] && [v isKindOfClass:[NSString class]] && MSBDTurnLayoutNamed([(NSString *)v UTF8String]) >= 0) out[k] = v;
+    }
+    return out;
+}
+static NSMutableDictionary<NSString *, NSString *> *DMSMTurnLayouts(void) {
+    if (!gSMTurnLayout) {
+        gSMTurnLayout = DMSMTurnLayoutsFrom([NSDictionary dictionaryWithContentsOfFile:DMSMStatePath()]);
+        gSMTurnLayoutWritten = [gSMTurnLayout copy];
+        NSMutableArray *names = [NSMutableArray array];
+        for (NSString *k in gSMTurnLayout) [names addObject:[NSString stringWithFormat:@"%@ %@", DMSMKeyText(k), gSMTurnLayout[k]]];
+        if (names.count) DMLog([NSString stringWithFormat:@"[sm] the windows' layouts from before the respring: %@", [names componentsJoinedByString:@", "]]);
+    }
+    return gSMTurnLayout;
+}
+// A closed window's turn records go with it (1.8.2.1 review, findings 1 and 2), as on the other engines, where they are its view's: the app's next
+// window on the same scene (its default one) is a new window, not in the old one's layout. Memory and the file together: the file was pruned on its
+// own at each write, against the stages as they were then, and a write inside a workspace transition could see a window for a moment in no stage.
+static void DMSMTurnForget(NSSet<NSString *> *keys, NSString *why) {
+    if (!keys.count) return;
+    NSMutableDictionary<NSString *, NSString *> *lays = DMSMTurnLayouts();
+    NSMutableArray<NSString *> *gone = [NSMutableArray array];
+    for (NSString *k in keys) {
+        if (lays[k]) [gone addObject:[NSString stringWithFormat:@"%@ %@", DMSMKeyText(k), lays[k]]];
+        [lays removeObjectForKey:k]; [gSMTurnFrames removeObjectForKey:k]; [gSMTurnPlaced removeObjectForKey:k];
+    }
+    if (!gone.count) return;
+    DM_FEATURE_MARK("sm-turn-notes-forgotten");
+    DMLog([NSString stringWithFormat:@"[sm] the layouts of windows that are gone dropped (%@): %@", why, [gone componentsJoinedByString:@", "]]);
+    DMSMStateWrite();
+}
+// Every window of these stages (SpringBoard's recent ones: the hidden too -- a minimized window, another Mac Switcher desktop's, one full screen);
+// nil when one of them can't be read, so that nothing is taken for closed (as Fit's look, DMSMFitForgetClosed).
+static NSSet<NSString *> *DMSMWindowKeysIn(NSArray *stages) {
+    if (!stages.count) return nil;
+    NSMutableSet<NSString *> *present = [NSMutableSet set];
+    for (id al in stages) {
+        NSDictionary *m = DMSMStageItemsMap(al);
+        if (!m) return nil;
+        for (id it in m) { NSString *k = DMSMItemKey(it); if (!k.length) return nil; [present addObject:k]; }
+    }
+    return present.count ? present : nil;
+}
+// A window closed by any way (its red light, the App Switcher, its app, a force quit): no stage has it any more (SMFitPlan.h DMSMFitClosedKeys, Fit's own
+// test). Looked at once the start has settled (SMHome.h, where the minimized marks of gone windows leave, or the first note), with nothing moving -- no
+// switcher, Mac Switcher slide, gesture or workspace transaction (DMSMWatchTurn) --, when the stages changed and at least once a second.
+static BOOL gSMTurnStartSettled = NO;
+static void DMSMTurnForgetClosed(void) {
+    if (!gSMTurnStartSettled || (!DMSMTurnLayouts().count && !gSMTurnFrames.count)) return;
+    NSArray *stages = DMSMRecentStages();
+    static NSArray *last = nil; static CFTimeInterval lastAt = 0;
+    CFTimeInterval now = CACurrentMediaTime();
+    BOOL same = last.count == stages.count && now - lastAt < 1.0;
+    for (NSUInteger i = 0; same && i < stages.count; i++) if (last[i] != stages[i]) same = NO;
+    if (same) return;
+    last = [stages copy]; lastAt = now;
+    NSSet<NSString *> *present = DMSMWindowKeysIn(stages);
+    if (!present) return;
+    NSMutableSet<NSString *> *keys = [NSMutableSet setWithArray:gSMTurnLayout.allKeys ?: @[]];
+    [keys addObjectsFromArray:gSMTurnFrames.allKeys ?: @[]];
+    DMSMTurnForget(DMSMFitClosedKeys(keys, present, nil), @"closed");
+}
 static NSString *DMSMShapeKey(CGSize s) { return s.width > s.height ? @"L" : @"P"; }
 static void DMSMTurnNote(void) {
     NSDictionary<NSString *, NSValue *> *frames = DMSMOpenWindowFrames();
     if (!frames.count) return;
-    if (!gSMTurnLayout) { gSMTurnLayout = [NSMutableDictionary dictionary]; gSMTurnFrames = [NSMutableDictionary dictionary]; }
+    (void)DMSMTurnLayouts();
+    gSMTurnStartSettled = YES;   // (a note is taken: the start is over -- where SMHome.h's own settled point never comes)
+    if (!gSMTurnFrames) gSMTurnFrames = [NSMutableDictionary dictionary];
     NSDictionary<NSString *, NSString *> *layouts = DMSMLayoutsFor(frames);
     CGSize scr = [UIScreen mainScreen].bounds.size;
     NSString *shape = DMSMShapeKey(scr);
@@ -7224,11 +7300,13 @@ static void DMSMTurnNote(void) {
         by[shape] = frames[b];
         gSMTurnFrames[b] = by;
     }
-    if (gSMTurnFrames.count > 64) {   // (windows closed long ago: only the ones still in a stage are kept)
-        NSMutableSet<NSString *> *alive = [NSMutableSet set];
-        for (id al in DMSMRecentStages()) for (id it in DMSMStageItemsMap(al)) { NSString *k = DMSMItemKey(it); if (k.length) [alive addObject:k]; }
-        for (NSString *k in [gSMTurnFrames allKeys]) if (![alive containsObject:k]) { [gSMTurnFrames removeObjectForKey:k]; [gSMTurnLayout removeObjectForKey:k]; [gSMTurnPlaced removeObjectForKey:k]; }
+    if (gSMTurnFrames.count > 64) {   // (windows closed long ago, one missed by the look above: only the ones still in a stage are kept -- the stages read)
+        NSSet<NSString *> *present = DMSMWindowKeysIn(DMSMRecentStages());
+        NSMutableSet<NSString *> *keys = [NSMutableSet setWithArray:gSMTurnFrames.allKeys];
+        [keys addObjectsFromArray:gSMTurnLayout.allKeys];
+        if (present) DMSMTurnForget(DMSMFitClosedKeys(keys, present, nil), @"more than 64 windows kept");
     }
+    if (![gSMTurnLayout isEqualToDictionary:gSMTurnLayoutWritten ?: @{}]) DMSMStateWrite();   // (kept across a respring, 1.8.2.1)
 }
 static void DMDockPositionMoved(NSDictionary<NSString *, NSString *> *layouts);   // (below)
 static void DMLayoutNoteHold(CFTimeInterval seconds);   // (below, with the turn)
@@ -7279,6 +7357,7 @@ static void DMSMWatchTurn(void) {
         // (the windows as they are placed: not under the App Switcher -- its cards are drawn small --, during a desktop's slide or a transition, or
         //  with the Home Screen in front, where no stage is shown: the records stay as they were)
         if (!turnPending && now - lastSnap >= 1.0 && !(gSidePromptCtx && ![gSidePromptCtx[@"decided"] boolValue]) && !DMSwitcherVisible() && !gMSWSwitching && DMFrontApp() && !DMSMWorkspaceBusy()) { lastSnap = now; DMSMTurnNote(); }
+        if (!turnPending && !DMSwitcherVisible() && !gMSWSwitching && !DMSMGestureLive() && !DMSMWorkspaceBusy()) DMSMTurnForgetClosed();   // (also with no app in front: a closed window's records go, 1.8.2.1)
         return;
     }
     BOOL first = CGSizeEqualToSize(lastScreen, CGSizeZero);
@@ -7286,7 +7365,7 @@ static void DMSMWatchTurn(void) {
     lastSnap = now + 1.5;   // (no new note until the turn has settled)
     if (first) return;
     DM_FEATURE_MARK("sm-turn-relayout");
-    NSDictionary<NSString *, NSString *> *layouts = [gSMTurnLayout copy] ?: @{};   // (the shape before the turn: kept until the body has run)
+    NSDictionary<NSString *, NSString *> *layouts = [DMSMTurnLayouts() copy];   // (the shape before the turn: kept until the body has run)
     NSDictionary<NSString *, NSDictionary *> *places = [gSMTurnFrames copy] ?: @{};
     turnPending = YES;
     unsigned gen = ++turnGen;   // (only this turn's body ends the wait: a body left by a second turn must not end the second one's)
@@ -7384,17 +7463,23 @@ static int DMDockSideNow(CGSize screen) {
     }
     return MSBDDockSideFor(gDMDockPosition, screen.width, screen.height);
 }
-// (the Dock's thickness as drawn; while it is away where it last was, as the bottom's rule below: the thickest seen, once measured again 0.3 s later)
+// (the Dock's thickness as drawn; while it is away where it last was, as the bottom's rule below: the thickest seen, once measured again 0.3 s later. A Dock
+//  standing at the other side is away for this one: at a Position change the Dock part may have moved it before the windows' layouts are read against the
+//  old side, regression 1.8.2.1 F1)
 static double gDMDockSideStrip = 0;
 static double DMDockSideStripNow(CGSize screen, int side) {
-    double measured = -1.0;
+    double measured = -1.0; BOOL other = NO;
     for (UIWindow *w in DMAllWindows()) {
         if (![NSStringFromClass([w class]) isEqualToString:@"SBFloatingDockWindow"] || fabs(w.bounds.size.width - screen.width) >= 0.5 || fabs(w.bounds.size.height - screen.height) >= 0.5) continue;
         NSMutableArray *stack = [NSMutableArray arrayWithObject:w];
         while (stack.count) {
             UIView *v = stack.lastObject; [stack removeLastObject];
             if ([NSStringFromClass([v class]) isEqualToString:@"SBFloatingDockPlatterView"]) {
-                if (!v.hidden && CGAffineTransformIsIdentity(v.transform)) { double m = MSBDDockSideStripOf([v convertRect:v.bounds toView:w], screen, side); if (m > 0) measured = m; }
+                if (!v.hidden && CGAffineTransformIsIdentity(v.transform)) {
+                    CGRect r = [v convertRect:v.bounds toView:w];
+                    double m = MSBDDockSideStripOf(r, screen, side);
+                    if (m > 0) measured = m; else if (MSBDDockSideStripOf(r, screen, side == MSBDDockLeft ? MSBDDockRight : MSBDDockLeft) > 0) other = YES;
+                }
                 continue;
             }
             [stack addObjectsFromArray:v.subviews];
@@ -7409,6 +7494,14 @@ static double DMDockSideStripNow(CGSize screen, int side) {
             else if (fabs(cand - measured) > 0.25) { cand = measured; candAt = t; }
         }
         return MAX(measured, gDMDockSideStrip);
+    }
+    if (other && DMTestFlag("/tmp/macstatusbar-debug")) {   // (debug: the Dock part and ours apart for a moment, once per change and side)
+        static unsigned loggedGen = 0; static int loggedSide = -1;
+        if (loggedGen != gDMDockGen || loggedSide != side) {
+            loggedGen = gDMDockGen; loggedSide = side;
+            DMLog([NSString stringWithFormat:@"[dockside] the %@ side's strip asked while the Dock stands at the other side: %.1f pt, %@", side == MSBDDockLeft ? @"left" : @"right",
+                   gDMDockSideStrip > 0 ? gDMDockSideStrip : MAX(DMSpringBoardDockHeight(), 60.0), gDMDockSideStrip > 0 ? @"as last seen there" : @"SpringBoard's figure"]);
+        }
     }
     if (gDMDockSideStrip > 0) return gDMDockSideStrip;
     return MAX(DMSpringBoardDockHeight(), 60.0);   // (not seen yet: SpringBoard's figure)
@@ -9743,6 +9836,18 @@ static const void *kStageGestureKey = &kStageGestureKey;   // a drag / resize by
 static const void *kStageIntentSizeKey = &kStageIntentSizeKey;    // the screen size the remembered frame belongs to
 static const void *kStageByOrientKey = &kStageByOrientKey;        // {"L": frame, "P": frame}: where the window is in each orientation
 static const void *kStageLayoutNameKey = &kStageLayoutNameKey;    // the layout it is in (TurnPlace.h), noted while the screen is still (DMNoteWindowLayouts)
+// The layout noted for a window comes back with it after a respring (1.8.2.1, plans/v1821-f1.md). A window that is not shown keeps the layout it had when it
+// was last on screen (only the shown ones are noted) and only its view held it: after a respring a Fill window of another desktop was in no layout, so a
+// Position change only kept it out of the Dock, and back at the bottom it stayed 1142 wide (M1, regression 1.8.2 F1). Saved with its place
+// (DMSaveWindowState), put back where the restore places it (DMRestoreStep); a name that is no layout here is neither saved nor put back.
+static NSString *DMStageLayoutNote(UIView *st) {
+    NSString *n = objc_getAssociatedObject(st, kStageLayoutNameKey);
+    return [n isKindOfClass:[NSString class]] && MSBDTurnLayoutNamed(n.UTF8String) >= 0 ? n : nil;
+}
+static void DMStageSetLayoutNote(UIView *st, id saved) {
+    NSString *n = [saved isKindOfClass:[NSString class]] && MSBDTurnLayoutNamed([(NSString *)saved UTF8String]) >= 0 ? [(NSString *)saved copy] : nil;
+    objc_setAssociatedObject(st, kStageLayoutNameKey, n, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
 static NSString *DMOrientKey(void) { CGSize s = [UIScreen mainScreen].bounds.size; return s.width > s.height ? @"L" : @"P"; }
 static void DMSetStageIntent(UIView *stage, CGRect frame) {
     // (a window opened in the last 2 s: the place we give it is held against Aerial's own late re-placements, see DMAerialMoveStage)
@@ -9780,7 +9885,7 @@ static void DMDockPositionMoved(NSDictionary<NSString *, NSString *> *layouts) {
             DMSMSetWindowGeometry(b, CGPointMake(CGRectGetMidX(card) / scr.width, CGRectGetMidY(card) / scr.height), CGSizeMake(card.size.width / scr.width, card.size.height / scr.height));
         }
         // (the stages not on screen: the layouts their windows had when last on screen, DMSMTurnNote; the ones read before the change for the stage on screen)
-        NSMutableDictionary<NSString *, NSString *> *noted = [gSMTurnLayout mutableCopy] ?: [NSMutableDictionary dictionary];
+        NSMutableDictionary<NSString *, NSString *> *noted = [DMSMTurnLayouts() mutableCopy];   // (also from before a respring, 1.8.2.1)
         if (layouts) [noted addEntriesFromDictionary:layouts];
         DMSMFitHiddenStages(frames.count ? DMSMWorkingStage() : nil, noted, nil);   // (the other desktops too, as a turn does)
         DMMSWDockMovedRecords();
@@ -11184,8 +11289,8 @@ static void DMSaveWindowState(void) {
     // count that as minimized), so a respring during a lock brought all windows back minimized (iPad 2 cross-test). The state from before the
     // lock stays in the file.
     if (!DMScreenOnAndUnlocked()) return;
-    // (perf step 7: a cheap signature of what is saved -- stages, frames, minimized flags, the Fit group and slots, the screen -- and the full
-    // pass only when it changed, or at least every 2 s)
+    // (perf step 7: a cheap signature of what is saved -- stages, frames, minimized flags, the layouts noted, the Fit group and slots, the screen -- and
+    // the full pass only when it changed, or at least every 2 s)
     {
         static NSUInteger lastSig = 0; static CFTimeInterval lastFull = 0;
         CFTimeInterval now = CACurrentMediaTime();
@@ -11195,7 +11300,7 @@ static void DMSaveWindowState(void) {
         for (UIView *st in DMAerialStagesAll())   /* (windows on other desktops too) */ {
             CGRect f = st.frame;
             h = h * 131 + (NSUInteger)(f.origin.x * 7 + f.origin.y * 13 + f.size.width * 17 + f.size.height * 19) + (DMStageMinimized(st) ? 1 : 0) + (NSUInteger)(__bridge void *)st
-                + (NSUInteger)(DMAutoHideShiftOf(st) * 5) + [objc_getAssociatedObject(st, kStageIntentKey) hash];
+                + (NSUInteger)(DMAutoHideShiftOf(st) * 5) + [objc_getAssociatedObject(st, kStageIntentKey) hash] + [objc_getAssociatedObject(st, kStageLayoutNameKey) hash];
         }
         if (h == lastSig && now - lastFull < 2.0) return;
         lastSig = h; lastFull = now;
@@ -11215,7 +11320,8 @@ static void DMSaveWindowState(void) {
             if (CGRectIsNull(old) || old.size.width < 150.0 || old.size.height < 150.0) return;   // nothing good to save: leave the file as it is
             f = old;
         }
-        [wins addObject:@{@"bundle": b, @"frame": NSStringFromCGRect(f), @"minimized": @(minimized)}];
+        NSString *lay = DMStageLayoutNote(st);   // (the layout it is in, 1.8.2.1: back with it after a respring, one on another desktop or minimized too)
+        [wins addObject:lay ? @{@"bundle": b, @"frame": NSStringFromCGRect(f), @"minimized": @(minimized), @"layout": lay} : @{@"bundle": b, @"frame": NSStringFromCGRect(f), @"minimized": @(minimized)}];
     }
     NSMutableDictionary *saving = [@{@"windows": wins, @"screen": NSStringFromCGSize([UIScreen mainScreen].bounds.size),
                                      @"fitGroup": gFitGroup ? [gFitGroup copy] : @[], @"fitSlots": gFitSlots ? [gFitSlots copy] : @{}} mutableCopy];
@@ -11483,6 +11589,7 @@ static void DMRestoreStep(NSArray *wins, NSUInteger i, NSDictionary *state, int 
             // (MilkyWay4's own minimized state is DMMinimizeWindow's: DMMinimizeStage's mark left the window hidden yet "not minimized" for
             //  DMStageMinimized, so the next save wrote it as an open window and the respring after that brought it back shown, M1 7 Oct)
             if (minimizedAgain) { Class mwc = objc_getClass("AXWindowView"); if (mwc && [stage isKindOfClass:mwc]) DMMinimizeWindow(stage); else DMMinimizeStage(stage); }
+            DMStageSetLayoutNote(stage, w[@"layout"]);   // (the layout it was in, 1.8.2.1: one away or minimized is not noted again until it is shown)
             [gRestoreHidden removeObject:bundle];
             DMRestoreAfterScene(bundle, 0, ^{ DMRestoreStep(wins, i + 1, state, 0); });   // (one app starting at a time)
         });
@@ -28699,8 +28806,9 @@ static void DMRunTrigger(NSString *cmd) {
         if (DMSMEngine()) {
             NSDictionary<NSString *, NSValue *> *frames = DMSMOpenWindowFrames();
             for (NSString *k in frames) [lines addObject:[NSString stringWithFormat:@"on screen %@ %@", DMSMKeyText(k), NSStringFromCGRect(frames[k].CGRectValue)]];
-            for (NSString *k in gSMTurnFrames) [lines addObject:[NSString stringWithFormat:@"kept %@: layout %@, P %@, L %@", DMSMKeyText(k), gSMTurnLayout[k] ?: @"-",
+            for (NSString *k in gSMTurnFrames) [lines addObject:[NSString stringWithFormat:@"kept %@: layout %@, P %@, L %@", DMSMKeyText(k), DMSMTurnLayouts()[k] ?: @"-",
                 gSMTurnFrames[k][@"P"] ? NSStringFromCGRect([gSMTurnFrames[k][@"P"] CGRectValue]) : @"-", gSMTurnFrames[k][@"L"] ? NSStringFromCGRect([gSMTurnFrames[k][@"L"] CGRectValue]) : @"-"]];
+            for (NSString *k in DMSMTurnLayouts()) if (!gSMTurnFrames[k]) [lines addObject:[NSString stringWithFormat:@"kept %@: layout %@ (no place noted since the start)", DMSMKeyText(k), gSMTurnLayout[k]]];
             for (id al in DMSMRecentStages()) {
                 if (!DMSMIsMainIdentity(DMSMStageDisplayIdentity(al))) continue;
                 NSDictionary *m = DMSMStageItemsMap(al);
@@ -38996,10 +39104,23 @@ static void DMSMPreZoomPrune(NSString *keep) {
     }
     if (gSMPreZoomPlaces.count < before) DMLog([NSString stringWithFormat:@"[smengine] places before full screen: %lu of windows that are gone dropped (%lu kept)", (unsigned long)(before - gSMPreZoomPlaces.count), (unsigned long)gSMPreZoomPlaces.count]);
 }
-static void DMSMStateWrite(void) {   // (the minimized set and the places before full screen, one file)
+// (1.8.2.1 review, finding 3: the file is written off the main thread, in order, as the window state and the desktops are; the minimized marks share it)
+static dispatch_queue_t DMSMStateWriteQueue(void) {
+    static dispatch_queue_t q; static dispatch_once_t once;
+    dispatch_once(&once, ^{ q = dispatch_queue_create("MacStatusBar.stagemanager.save", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0)); });
+    return q;
+}
+static void DMSMStateWrite(void) {   // (the minimized set, the places before full screen and the windows' layouts, one file)
+    // (made on the main thread, where all three are kept: a call from another thread is sent there -- 1.8.2.1 review, finding 4)
+    if (![NSThread isMainThread]) { dispatch_async(dispatch_get_main_queue(), ^{ DMSMStateWrite(); }); return; }
     NSMutableDictionary *st = [@{@"minimized": [[DMSMMinimizedSet() allObjects] sortedArrayUsingSelector:@selector(compare:)]} mutableCopy];
     if (DMSMPreZoomPlaces().count) st[@"preZoom"] = [gSMPreZoomPlaces copy];
-    [st writeToFile:DMSMStatePath() atomically:YES];
+    // (the layouts noted, 1.8.2.1: as they are in memory -- a window's go only where it is known to have closed, DMSMTurnForget)
+    gSMTurnLayoutWritten = [DMSMTurnLayouts() copy];
+    if (gSMTurnLayoutWritten.count) st[@"layouts"] = gSMTurnLayoutWritten;
+    NSDictionary *out = [st copy];   // (nothing in it changes after this: written as it is now)
+    NSString *path = DMSMStatePath();
+    dispatch_async(DMSMStateWriteQueue(), ^{ [out writeToFile:path atomically:YES]; });
 }
 static BOOL DMSMIsMinimized(NSString *key) { return DMSMKeySetHas(DMSMMinimizedSet(), key); }
 static BOOL DMSMOpensAsWindow(NSString *key, BOOL windowed, BOOL minimized);   // (below DMSMAddToStage: a minimized window comes back as that window)
@@ -40064,6 +40185,11 @@ static void DMSMForgetApp(NSString *bundle) {   // (the app quit: its windows' p
     // (and its minimized marks: none of its windows is left anywhere. With windows told apart, a minimized window's mark is that window's scene, and
     //  the app's next launch may open another scene -- the old mark stayed in the saved set for good, 1.3.9 device pass)
     DMSMSetMinimized(bundle, NO);
+    // (and its windows' layouts and places per shape: the app's next window on its default scene is a new window -- 1.8.2.1 review, finding 2)
+    NSMutableSet<NSString *> *mine = [NSMutableSet set];
+    for (NSString *k in DMSMTurnLayouts()) if ([DMSMKeyBundle(k) isEqualToString:bundle]) [mine addObject:k];
+    for (NSString *k in gSMTurnFrames) if ([DMSMKeyBundle(k) isEqualToString:bundle]) [mine addObject:k];
+    DMSMTurnForget(mine, @"its app quit");
 }
 // An open from outside SpringBoard -- a Spotlight pick, a link (SBMainWorkspace's -_handleOpenApplicationRequest:..., as the other engines' WindowLaunch
 // hook) -- that would make a third window next to two tiles: asked about first, as from the Dock or the App Library, and the request held for the answer

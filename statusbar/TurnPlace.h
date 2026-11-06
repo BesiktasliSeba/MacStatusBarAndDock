@@ -18,6 +18,7 @@
 #include <CoreGraphics/CoreGraphics.h>
 #include <stdbool.h>
 #include <math.h>
+#include <string.h>
 
 #define kMSBDTurnLayoutCount 9
 #define kMSBDTurnLayoutTolerance 6.0   // (a window counts as in a layout within 6 pt on each side: the Window menu's tick, DMCurrentLayoutName)
@@ -33,6 +34,13 @@ static inline int MSBDTurnLayoutIndex(CGRect f, const CGRect *layouts, int n, CG
         if (CGRectIsNull(t) || CGRectIsEmpty(t)) continue;
         if (fabs(t.origin.x - f.origin.x) < tol && fabs(t.origin.y - f.origin.y) < tol && fabs(t.size.width - f.size.width) < tol && fabs(t.size.height - f.size.height) < tol) return i;
     }
+    return -1;
+}
+// A layout noted for a window, as a saved record names it (1.8.2.1: the window state's "layout", the Stage Manager file's "layouts"): its index in
+// kMSBDTurnLayouts, else -1. A name that is no layout here (another build's, a damaged file) is never put back.
+static inline int MSBDTurnLayoutNamed(const char *name) {
+    if (!name) return -1;
+    for (int i = 0; i < kMSBDTurnLayoutCount; i++) if (!strcmp(name, kMSBDTurnLayouts[i])) return i;
     return -1;
 }
 

@@ -70,7 +70,7 @@ check "  ... one not shown (another desktop's, minimized into the Dock) placed w
    && moved | grep -q 'CGRect w = DMSnapWindowOfFrame(st, from);' && moved | grep -q 'if (!st.hidden) continue;' \
    && moved | grep -q 'CGRect t = name ? DMLayoutFrameWindow(name) : MSBDDockSideKeepOut(w, DMUsableArea(), MSBDDockKeepMove);'"
 check "  ... Stage Manager's stages not on screen into the layouts their windows had when last on screen, as the other engines' windows" \
-  "moved | grep -q 'NSMutableDictionary<NSString \*, NSString \*> \*noted = \[gSMTurnLayout mutableCopy\]' && moved | grep -q 'DMSMFitHiddenStages(frames.count ? DMSMWorkingStage() : nil, noted, nil);'"
+  "moved | grep -q 'NSMutableDictionary<NSString \*, NSString \*> \*noted = \[DMSMTurnLayouts() mutableCopy\];' && moved | grep -q 'DMSMFitHiddenStages(frames.count ? DMSMWorkingStage() : nil, noted, nil);'"
 check "  ... what the Mac Switcher keeps of the other desktops follows on every engine: the away windows' places, a closed app's place, Finder's windows there" \
   "[ \$(moved | grep -c 'DMMSWDockMovedRecords();') = 2 ] && fn 'static void DMMSWDockMovedRecords(void) {' $M | grep -q 'gMSWWinFrame\[b\] = NSStringFromCGRect(t); gMSWDesksDirty = YES;' \
    && fn 'static void DMMSWDockMovedRecords(void) {' $M | grep -q 'CGRect t = alive\[b\] ? alive\[b\].frame : CGRectIsNull(usable) ? f : MSBDDockSideKeepOut(f, usable, MSBDDockKeepMove);' \
@@ -134,4 +134,9 @@ check "an icon's turn is ours alone (1.8.2 engines check, M1: Atria's icon scale
    && ! grep -q 'icon.layer.sublayerTransform = want' $D"
 check "  ... the windows' noted layouts are held at a Position change until they are placed, as at a turn (a note in between found a half in no layout of the new desktop)" \
   "fn 'static void DMDockChangedRelayout(NSString \*why) {' $S | awk '/BOOL moved = gDMDockPosition >= 0 && MSBDDockSideMoved/{a=NR} /if \(moved\) DMLayoutNoteHold\(2.4\);/{b=NR} /dispatch_after/{if (!c) c=NR} END{exit !(a && b > a && c > b)}'"
+strip() { fn 'static double DMDockSideStripNow(CGSize screen, int side) {' $S; }
+check "  ... Stage Manager reads them at the change against the old side, and a Dock already at the other side is no strip of that side: the one last seen there is kept (regression 1.8.2.1 F1)" \
+  "fn 'static void DMDockChangedRelayout(NSString \*why) {' $S | awk '/NSDictionary \*layouts = DMSMEngine\(\) \? DMSMLayoutsNow\(\) : nil;/{a=NR} /gDMDockPosition = position;/{b=NR} END{exit !(a && b > a)}' \
+   && strip | grep -q 'double m = MSBDDockSideStripOf(r, screen, side);' && strip | grep -q 'if (m > 0) measured = m; else if' \
+   && strip | grep -q 'if (gDMDockSideStrip > 0) return gDMDockSideStrip;' && [ \$(grep -c 'MSBDDockSideStripOf(' $S) = 2 ]"
 [ $fails = 0 ] && echo "test-dockside: site checks pass" || { echo "test-dockside: site checks FAILED"; exit 1; }

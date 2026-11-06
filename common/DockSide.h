@@ -76,10 +76,16 @@ static inline double MSBDDockSidePlatterX(double screenHeight, double bar, doubl
 // ---- the strip and the desktop ----
 #define kMSBDDockSideGap 2.0   // (between the desktop and the Dock: what the bottom line keeps, DMUsableArea's gapToDock)
 // How far the Dock reaches into the screen from its side, read from the platter as drawn on the screen; -1 when that is no Dock lying at this side
-// (a Dock away, or still the other shape's: too long or short, or not on the screen).
+// (a Dock away, or still the other shape's: too long or short, or not on the screen; or standing at the other side, nearer the other edge). At a
+// Position change from one side to the other the Dock part moves the Dock in its own answer to the change, and ours reads the windows' layouts against
+// the old side; nothing orders the two answers. Where the Dock part's came first, the Dock already at the right was taken for a 1019.7 pt Left strip,
+// the old desktop 200 pt wide past the screen's right edge, and no window was in a layout: Stage Manager's left half stayed at x 57 at Right (regression
+// 1.8.2.1 F1, iPad 2 16.7.7, 4 of 4; the 17.5.1 read the Dock before it moved).
 static inline double MSBDDockSideStripOf(CGRect platter, CGSize screen, int side) {
     if ((side != MSBDDockLeft && side != MSBDDockRight) || CGRectIsNull(platter) || CGRectIsEmpty(platter)) return -1.0;
     if (platter.size.height <= platter.size.width || platter.size.width > screen.width * 0.25) return -1.0;
+    double toLeft = CGRectGetMinX(platter), toRight = screen.width - CGRectGetMaxX(platter);   // (how far it stands from each side edge)
+    if (side == MSBDDockRight ? !(toRight < toLeft) : !(toLeft < toRight)) return -1.0;
     if (side == MSBDDockRight) { double s = screen.width - CGRectGetMinX(platter); return s > 0.5 && CGRectGetMaxX(platter) <= screen.width + 0.5 ? s : -1.0; }
     double s = CGRectGetMaxX(platter);
     return s > 0.5 && CGRectGetMinX(platter) >= -0.5 ? s : -1.0;

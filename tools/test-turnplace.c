@@ -29,6 +29,11 @@ int main(void) {
     const char *want[9] = { "fill", "left", "right", "top", "bottom", "topleft", "topright", "bottomleft", "bottomright" };
     int same = 1; for (int i = 0; i < 9; i++) if (strcmp(kMSBDTurnLayouts[i], want[i])) same = 0;
     Int("the nine layouts a turn puts back, in the order Stage Manager's turn used", same, 1);
+    // ---- a layout's name as a saved record has it (1.8.2.1: kept across a respring, test-layoutnote) ----
+    Int("a saved 'fill' is the first layout", MSBDTurnLayoutNamed("fill"), 0);
+    Int("  ... 'bottomright' the last", MSBDTurnLayoutNamed("bottomright"), 8);
+    Int("  ... a centred size ('medium': it scales anyway) is no layout here", MSBDTurnLayoutNamed("medium"), -1);
+    Int("  ... nor another spelling ('Fill'), an empty name or none", MSBDTurnLayoutNamed("Fill") + MSBDTurnLayoutNamed("") + MSBDTurnLayoutNamed(NULL), -3);
     // ---- which layout a frame is in (17.5 portrait desktop: under the 24 pt bar, down to the Dock line 1292.37) ----
     CGRect p = CGRectMake(0, 24, 1024, 1292.37 - 24), tp[9]; Cut(p, tp);
     CGRect l = CGRectMake(0, 24, 1366, 941.47 - 24), tl[9]; Cut(l, tl);

@@ -64,6 +64,18 @@ int main(void) {
     Num("  ... a nonsense thick one: none", MSBDDockSideStripOf(CGRectMake(700, 0, 640, 1000), a12z, MSBDDockRight), -1);
     Num("an empty rect: none", MSBDDockSideStripOf(CGRectZero, a12z, MSBDDockRight), -1);
     Num("the bottom: none", MSBDDockSideStripOf(CGRectMake(6, 100, 94, 800), a12z, MSBDDockBottom), -1);
+    // (regression 1.8.2.1 F1, the iPad 2's Dock as drawn: 50.2 pt thick, KT's Gap to Screen Edge 4.3 pt; Left x 4.3..54.5, Right x 969.5..1019.7)
+    CGRect ipad2AtLeft = CGRectMake(4.3, 29.5, 50.2, 729), ipad2AtRight = CGRectMake(969.5, 29.5, 50.2, 729);
+    Num("the iPad 2's Dock at the left: its strip", MSBDDockSideStripOf(ipad2AtLeft, ipad2, MSBDDockLeft), 54.5);
+    Num("  ... at the right", MSBDDockSideStripOf(ipad2AtRight, ipad2, MSBDDockRight), 54.5);
+    Num("Left -> Right, the Left strip read with the Dock already at the right (the Dock part moved it first): none, not a 1019.7 pt strip", MSBDDockSideStripOf(ipad2AtRight, ipad2, MSBDDockLeft), -1);
+    Num("  ... Right -> Left the same", MSBDDockSideStripOf(ipad2AtLeft, ipad2, MSBDDockRight), -1);
+    Num("  ... the A12Z's Dock at the right read for the left: none", MSBDDockSideStripOf(CGRectMake(1266, 100, 94, 800), a12z, MSBDDockLeft), -1);
+    Num("  ... a Dock exactly in the middle is at no side: none", MSBDDockSideStripOf(CGRectMake(486.9, 29.5, 50.2, 729), ipad2, MSBDDockLeft), -1);
+    Num("the largest Gap to Screen Edge (40 pt): still the left's", MSBDDockSideStripOf(CGRectMake(40, 29.5, 50.2, 729), ipad2, MSBDDockLeft), 90.2);
+    Num("  ... and the right's", MSBDDockSideStripOf(CGRectMake(933.8, 29.5, 50.2, 729), ipad2, MSBDDockRight), 90.2);
+    Frame("  ... so the old desktop at that read is the strip as last seen at the left (the iPad 2's {56.48, 20, 967.52, 748}), not 200 pt past the right edge",
+        MSBDDockSideDesktop(ipad2, MSBDDockLeft, 54.5, 20), CGRectMake(56.5, 20, 967.5, 748));
     // ---- the desktop ----
     Frame("the Dock at the right: to the screen's bottom edge, the strip and the gap kept out at the right", MSBDDockSideDesktop(a12z, MSBDDockRight, 100, 24), CGRectMake(0, 24, 1264, 1000));
     Frame("the Dock at the left: the same at the left", MSBDDockSideDesktop(a12z, MSBDDockLeft, 100, 24), CGRectMake(102, 24, 1264, 1000));

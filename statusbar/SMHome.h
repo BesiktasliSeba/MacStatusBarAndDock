@@ -625,6 +625,11 @@ static void DMSMRestoreDesktopTick(void) {
             DMSMMinimizedDrop(gone);
             DMLog([NSString stringWithFormat:@"[smhome] after the start: %lu minimized mark(s) of windows that no longer exist dropped", (unsigned long)gone.count]);
         }
+        // (the windows' layouts the same way, memory and the file together -- one closed before the respring, an app quit from the App Switcher: 1.8.2.1
+        //  review, findings 1 and 2. A stage not read drops none, StatusBar.x DMSMWindowKeysIn. From here on a window that closes takes its own along)
+        gSMTurnStartSettled = YES;
+        NSSet<NSString *> *notesHere = DMSMWindowKeysIn(stages);
+        if (notesHere) DMSMTurnForget(DMSMFitClosedKeys([NSSet setWithArray:DMSMTurnLayouts().allKeys], notesHere, nil), @"after the start");
     }
     if (env != 1) { DMLog([NSString stringWithFormat:@"[smhome] after the start: not on the Home Screen (environment %lld) -- the desktop is as it was opened", env]); return; }
 #if DEBUG
