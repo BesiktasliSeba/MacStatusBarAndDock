@@ -223,6 +223,7 @@ static UIImage *DMTrashDarkened(UIImage *base) {
 
 // ---- the Dock icon ------------------------------------------------------------------------------------------------------------------------
 // The view Finder's drags look for (statusbar/Finder.h DMFDTrashIconAt, by its class name and -dm_trashTarget).
+extern UITargetedPreview *MSBDDockSideIconPreview(UIView *icon, UIImage *picture, UIPreviewParameters *parameters);   // (dock/Dock.x, Settings > Dock > Position)
 @interface DMTrashIconView : UIView <UIPointerInteractionDelegate, UIContextMenuInteractionDelegate, UIDropInteractionDelegate>
 @property (nonatomic, strong) UIImageView *image;
 @property (nonatomic) NSUInteger count;      // items in Finder's Trash (its published state)
@@ -333,7 +334,7 @@ static NSUInteger DMTrashPublishedCount(void) {
 - (void)tapped { DM_FEATURE_MARK("dock-trash-open"); DMLog(@"[trash] tapped: Finder opens the Trash"); notify_post(kMSBDTrashOpenName); }
 - (UIPointerStyle *)pointerInteraction:(UIPointerInteraction *)interaction styleForRegion:(UIPointerRegion *)region {
     if (!DMTrashIconLift()) return nil;
-    return [UIPointerStyle styleWithEffect:[UIPointerLiftEffect effectWithPreview:[[UITargetedPreview alloc] initWithView:self]] shape:nil];
+    return [UIPointerStyle styleWithEffect:[UIPointerLiftEffect effectWithPreview:MSBDDockSideIconPreview(self, self.image.image, nil) ?: [[UITargetedPreview alloc] initWithView:self]] shape:nil];
 }
 // A held finger or a right click: Open and Empty Trash, as the Trash's menu on a Mac (Empty Trash greyed when there is nothing in it).
 - (UIContextMenuConfiguration *)contextMenuInteraction:(UIContextMenuInteraction *)i configurationForMenuAtLocation:(CGPoint)p {
@@ -352,7 +353,7 @@ static NSUInteger DMTrashPublishedCount(void) {
     pp.backgroundColor = [UIColor clearColor];   // (the bin stands free: no platter of the menu's behind it)
     CGFloat r = MIN(self.bounds.size.width, self.bounds.size.height) * 0.2253;
     pp.visiblePath = [UIBezierPath bezierPathWithRoundedRect:self.bounds cornerRadius:r];
-    return [[UITargetedPreview alloc] initWithView:self parameters:pp];
+    return MSBDDockSideIconPreview(self, self.image.image, pp) ?: [[UITargetedPreview alloc] initWithView:self parameters:pp];   // (a copy with the Dock at a side: the view itself, through the turned Dock, came out as a thin line)
 }
 - (UITargetedPreview *)contextMenuInteraction:(UIContextMenuInteraction *)i previewForHighlightingMenuWithConfiguration:(UIContextMenuConfiguration *)c { return [self dm_menuPreview]; }
 - (UITargetedPreview *)contextMenuInteraction:(UIContextMenuInteraction *)i previewForDismissingMenuWithConfiguration:(UIContextMenuConfiguration *)c { return [self dm_menuPreview]; }

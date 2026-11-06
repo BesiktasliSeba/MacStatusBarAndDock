@@ -88,10 +88,11 @@ The window settings, on their own page between Desktop and Dock. On iPadOS 15 an
 | Setting | What it does | New install |
 |---|---|---|
 | MacDock | Turns off the Dock features (respring). | On |
-| Magnify Icons | Icons grow under your finger or pointer. The slider sets how much, from 1x to 2.5x. | On, 1.22x |
+| Position on Screen | Where the Dock sits: Bottom, Left or Right. Left and Right apply in landscape, and in portrait the Dock stays at the bottom. At a side, windows on every engine, Home Screen icons, the clock's Today drop-down and Mac-style banners keep clear of it, and over a full-screen app the pointer at that edge brings it out. A change applies at once. | Bottom |
+| Magnify Icons | Icons grow under the pointer, with a trackpad or mouse. The slider sets how much, from 1x to 2.5x. | On, 1.22x |
 | Icon Size | The size of the Dock icons, from 0.5x to 1.2x. | 0.85x |
 | Larger Dock in Portrait | A bigger Dock in portrait. | On |
-| Gap to Screen Edge | Space between the Dock and the bottom edge, from 0 to 24 pt. | 6 pt |
+| Gap to Screen Edge | Space between the Dock and the screen's edge, from 0 to 24 pt. | 6 pt |
 | Number of Recent Apps | Up to 10 recent apps after your own (respring). A suggested or Handoff app can appear too. None also turns off Apple's Show Suggested and Recent Apps in Dock. | 3 |
 | Show Indicators for Open Apps | A dot under apps that are open, also while their windows are on another desktop or minimized. An app iPadOS starts in the background by itself gets no dot until you open it. | On |
 | Show App Library in Dock | Apple's own switch, moved here while the Dock features are on. | Apple's setting |

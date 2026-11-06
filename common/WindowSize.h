@@ -54,7 +54,8 @@ static inline int MSBDWindowSizeFromStored(CFTypeRef v) {
 // The engines' middle place (the "center" layout, today's new window): 11% in from the screen's sides, `top` (12 pt under the iPad's menu bar,
 // MenuBarHeight.h MSBDMenuBarCenterTop; a TV's 36) and 80% of the screen's height, never past the desktop's bottom (the Dock).
 static inline CGRect MSBDWindowCenterIn(CGRect u, CGSize screen, double top) {
-    return CGRectMake(round(screen.width * 0.11), top, round(screen.width * 0.78), fmin(round(screen.height * 0.80), CGRectGetMaxY(u) - top));
+    double x = u.size.width < screen.width - 0.5 ? round(u.origin.x + (u.size.width - round(screen.width * 0.78)) / 2.0) : round(screen.width * 0.11);   // (a desktop narrower than the screen, the Dock at a side: in its middle)
+    return CGRectMake(x, top, round(screen.width * 0.78), fmin(round(screen.height * 0.80), CGRectGetMaxY(u) - top));
 }
 // A share of the desktop, centred in it (the Window menu's Medium; Window Size's Small and Large start from it).
 static inline CGRect MSBDWindowShareIn(CGRect u, double fw, double fh) {

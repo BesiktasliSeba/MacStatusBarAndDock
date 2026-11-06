@@ -105,6 +105,7 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 ### Dock
 
 - Magnification, dots under open apps, recent apps, and Finder and Launchpad at its start, like on a Mac.
+- Position on Screen in Settings > Dock puts the Dock on the left or right in landscape, and in portrait it stays at the bottom. Windows, Home Screen icons, the clock's Today drop-down and Mac-style banners keep clear of a side Dock, and over a full-screen app the pointer brings it out at that edge.
 - A Downloads stack with search, which you can drag files into and out of.
 - A Trash at its end, which you turn on in Settings > Dock. Drop files on it to move them to the Trash, a Dock app to take it out of the Dock, or a drive to eject it (iPadOS 16 to 18).
 - Haptic Touch menus get Force Quit, App Size and Add App to Folder on app icons, and a folder's menu lists its apps. Add App to Folder moves the app into a Home Screen folder or a new one, as a drag would, also from the App Library.

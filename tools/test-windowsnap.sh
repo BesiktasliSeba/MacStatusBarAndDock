@@ -10,7 +10,7 @@ fails=0
 check() { if eval "$2"; then echo "PASS  $1"; else echo "FAIL  $1"; fails=1; fi; }
 S=../statusbar/StatusBar.x
 check "the glue: an engine window as drawn on the screen (Aerial 5.x: the stage less its margins), the others on this desktop (not minimized, not closing, not hidden), the desktop every layout uses" \
-  "grep -q 'return DMActiveEngine() == DMEngineAerial ? DMA5WindowFromStage(f) : f;' $S && grep -q 'if (st.hidden || st.alpha < 0.05 || DMStageMinimized(st) || \[objc_getAssociatedObject(st, kStageClosingKey) boolValue\]) continue;' $S && grep -q 'return DMSnapFrameFor(DMStageBundle(st), window, how, others, n, DMUsableArea());' $S"
+  "grep -q 'return DMActiveEngine() == DMEngineAerial ? DMA5WindowFromStage(f) : f;' $S && grep -q 'if (st.hidden || st.alpha < 0.05 || DMStageMinimized(st) || \[objc_getAssociatedObject(st, kStageClosingKey) boolValue\]) continue;' $S && grep -q 'return DMDockSideKept(DMSnapFrameFor(DMStageBundle(st), window, how, others, n, DMUsableArea()), how);' $S"
 check "the glue: a move uses the move distance, a resize the resize distance, the 6 pt gap and the smallest window" \
   "grep -q 'MSBDSnapFrame(window, how, others, n, area, kMSBDSnapGap, move ? kMSBDSnapMoveDistance : kMSBDSnapResizeDistance, MSBDWindowMinSize(), &why);' $S"
 check "Aerial 5.x (none of its classes hooked): a drag let go snaps in our target after Aerial's, under the bar first" \

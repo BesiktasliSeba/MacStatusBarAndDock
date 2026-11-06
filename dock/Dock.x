@@ -18,6 +18,7 @@
 #import <sys/stat.h>
 #import <notify.h>
 #import <dlfcn.h>   // (1.7.3: MacStatusBar's Activity Monitor in the Dock, MSBDActMonDockRemove)
+#include "../common/DockSide.h"   // (Settings > Dock > Position, 1.8.2: the rules of the Dock at a screen side)
 
 // The Dock's layout numbers, as SBFloatingDockView fills them in -[getMetrics:forBounds:] (found by dumping it on the device):
 // frames inside the platter for the user icons, the recents, the App Library icon and the divider, the platter itself in
@@ -59,6 +60,8 @@ static BOOL    gBlockSwipeUp  = YES;    // stop an upward swipe on the Home Scre
 static BOOL    gPortraitLarger = YES;   // in portrait the (shrunk) Dock grows to the widest size that fits the screen
 static BOOL    gSwipeDownOpensLibrary = YES;   // a downward swipe on the Home Screen opens the App Library (our own replacement for Lynx's "replace Spotlight")
 static BOOL    gLastPageOpensLibrary = NO;     // swiping past the last Home Screen page opens the App Library, as iPadOS does (KT, 1.7.8: off unless switched on)
+static int     gDockPosition = MSBDDockBottom; // Settings > Dock > Position (1.8.2, common/DockSide.h): Left or Right apply in landscape; the bottom when the Dock part is off
+int            gDockSideApplied = 0;           // the side the Dock stands on now (0: the bottom, as ever); RunningIndicator.m and Downloads.m read it too
 
 // ===== logging (no system log on this setup) ==============================
 #import "DMLog.h"
@@ -200,6 +203,16 @@ static void DMLoadPrefs(void) {
     CFPropertyListRef tr = DMCopyPref(CFSTR("showTrash"));
     if (tr) { if (CFGetTypeID(tr) == CFBooleanGetTypeID()) trash = CFBooleanGetValue(tr); CFRelease(tr); }
     gShowTrash = trash && finderRuns;
+    {
+        int pos = MSBDDockBottom;
+        CFPropertyListRef dp = DMCopyPref(CFSTR(kMSBDDockPositionKey));
+        if (dp) {
+            char b[16];
+            if (CFGetTypeID(dp) == CFStringGetTypeID() && CFStringGetCString((CFStringRef)dp, b, sizeof b, kCFStringEncodingUTF8)) pos = MSBDDockPositionFromString(b);
+            CFRelease(dp);
+        }
+        gDockPosition = tweakOn ? pos : MSBDDockBottom;
+    }
     BOOL launchpad = YES;
     CFPropertyListRef lp = DMCopyPref(CFSTR("launchpadIcon"));
     if (lp) {
@@ -337,6 +350,8 @@ extern void DMDownloadsTouchBegan(UIView *view);
 - (UIGestureRecognizer *)dismissFloatingDockSystemGestureRecognizer;
 @end
 BOOL gDockHoverDismissBlocked = NO;   // (a hover dismissal was ignored while the panel was open: done once the panel closes, see Downloads.m)
+static BOOL DMDockSideDismissTouch(id controller, UITouch *touch);   // (Settings > Dock > Position, below)
+static BOOL DMDockSideControls(id controller);   // (... the controller of the Dock at a side)
 BOOL DMDockPointerHovering(void) { return gHovering; }
 %hook SBFloatingDockController
 // A finger on the screen outside the Dock (over a full-screen app) makes SpringBoard put the Dock away through its system "dismiss floating dock"
@@ -346,10 +361,21 @@ BOOL DMDockPointerHovering(void) { return gHovering; }
     extern BOOL DMDownloadsPanelContainsTouch(UITouch *touch);
     if (gKeepDockVisible && [self respondsToSelector:@selector(dismissFloatingDockSystemGestureRecognizer)]
         && g == ((id (*)(id, SEL))objc_msgSend)(self, @selector(dismissFloatingDockSystemGestureRecognizer)) && DMDownloadsPanelContainsTouch(touch)) return NO;
+    // (Apple's answer for that gesture compares the touch's y with the Dock's top, read on 18.5: with the Dock at a side nearly every touch on the app
+    //  was "on the Dock" and the Dock stayed out, and where it said yes the touch could be on the Dock's own icons -- its location means nothing across the
+    //  turned view, so a tap on an icon could put the Dock away (code review 1.8.2, 9). There the rest of Apple's rule decides alone, what it asks before the
+    //  y: the Dock out, no Today View, a touch on no part of the Dock)
+    if (DMDockSideControls(self) && [self respondsToSelector:@selector(dismissFloatingDockSystemGestureRecognizer)]
+        && g == ((id (*)(id, SEL))objc_msgSend)(self, @selector(dismissFloatingDockSystemGestureRecognizer))) return DMDockSideDismissTouch(self, touch);
     return %orig;
 }
 - (void)_handleDismissFloatingDockHoverGesture:(id)gesture {
     if (gKeepDockVisible) { gDockHoverDismissBlocked = YES; static int told = 0; if (told++ < 50) DMLog(@"[downloads] the pointer left the Dock while the panel is open: the Dock stays"); return; }
+    // (Settings > Dock > Position: Apple's rule here is the bottom's, read on 18.5 -- the pointer more than 1.5 Dock heights above the screen's bottom edge puts the
+    //  Dock away. With the Dock at a side that is a pointer anywhere above the bottom strip, on the side Dock itself too: brought out at the side's middle, it
+    //  went at once. There our look at the pointer decides, with Apple's distance from the side (DMDockSidePointerSeen), and a finger's Dock stays Apple's
+    //  tap-away. Code review 1.8.2, 1. A TV's Dock stays at its bottom with Apple's rule)
+    if (DMDockSideControls(self)) { static int told = 0; if (told++ < 20) DMLog(@"[dockside] Apple's hover dismissal (the bottom's rule) stands down for the Dock at a side"); return; }
     %orig;
 }
 %end
@@ -413,6 +439,560 @@ static void DMDockMirrorMetrics(DMDockMetrics *m) {
     m->libraryIcon = DMDockMirrorRect(m->libraryIcon, w); m->divider = DMDockMirrorRect(m->divider, w);
     CGFloat l = m->padding.left; m->padding.left = m->padding.right; m->padding.right = l;
 }
+// ---- Settings > Dock > Position (1.8.2, KT 5 Nov; common/DockSide.h; plans/dock-side-build.md) ----------------------------------------------------------
+// The Dock on the screen's left or right in landscape. Apple keeps the whole Dock in the Dock view controller's view: the root view controller gives that view
+// its bounds and centre (-[SBFloatingDockRootViewController viewDidLayoutSubviews]: setBounds:, setCenter:, never a frame), and inside it the Dock view
+// gets its place from those bounds and "away" as a plain translation (-[SBFloatingDockViewController viewDidLayoutSubviews]; read on 18.5 and 16.7.7). So
+// that one view (the "host") gets the other shape's bounds and a turn: Apple's code lays the Dock out at its bottom and slides it away downwards, and
+// that bottom is the screen's side. Everything along the Dock (the lists, a drop's place, the magnification: they read their own x) keeps working in its
+// own coordinates. Each icon's content is turned back with its layer's sublayerTransform, which leaves the view's own transform to the magnification and to
+// Apple. The App Library is not in the host and stays upright. On the bottom nothing of this runs: no hook is installed until Left or Right is chosen.
+static __weak UIWindow *gDockWindow;
+static BOOL DMDockOnMainScreen(UIWindow *w);
+static BOOL DMIsDockIcon(UIView *icon);
+static __weak UIView *gDockSideHost = nil;
+static __weak UIViewController *gDockSideRoot = nil;   // (Apple's root view controller for the Dock: the Dock window's own on 16 and 18, a child of it on 15.6.1)
+static BOOL gDockSideEver = NO;      // (a side was in use since SpringBoard started: icons may need their turn taken back)
+static CGFloat gDockSideStep = 0;    // (the distance between neighbouring icons along the Dock: MSBDDockIconTakesTouch)
+static void DMDockSidePointerArm(double seconds);
+static BOOL gDockSideAsAtBottom = NO;   // (a question about the Dock as it would be at the bottom, DMDockSideHeightAtBottom)
+static inline int DMDockSideOf(UIView *dockView) {
+    if (!gDockSideApplied || gDockSideAsAtBottom || !gDockSideHost) return 0;
+    for (UIView *v = dockView.superview; v; v = v.superview) if (v == gDockSideHost) return gDockSideApplied;
+    return 0;
+}
+// (a view in the Dock that stands at a side, the host: never in a TV's Dock, which has a platter of its own and stays at its bottom -- code review 1.8.2, 4)
+static inline BOOL DMDockSideInHost(UIView *v) { UIView *host = gDockSideHost; return host && [v isDescendantOfView:host]; }
+static double DMDockSideBar(void) {   // (the menu bar's height: MacStatusBar's, while it runs)
+    static double (*f)(void) = NULL; static int tries = 0;
+    if (!f && tries < 40) { tries++; f = (double (*)(void))dlsym(RTLD_DEFAULT, "MSBDMenuBarHeightNow"); }
+    double h = f ? f() : 24.0;
+    return isfinite(h) && h > 0 ? h : 24.0;
+}
+static CATransform3D DMDockSideIconTurn(int side) { return CATransform3DMakeAffineTransform(MSBDDockSideIconTransform(side)); }
+// An icon's turn is ours alone (common/DockSide.h MSBDDockSideIconTurnStep): it goes on top of what the layer has -- another tweak's value, Atria's icon scale --,
+// which is kept and given back exactly; an icon we never turned is never written. Before, every icon's layout once a side had been used wrote the identity:
+// KT's Atria Home Screen icons lost their 0.819 scale, at Left, Right and back at Bottom (1.8.2 engines check, M1).
+static const void *kDockSideTurnUnder = &kDockSideTurnUnder, *kDockSideTurnOurs = &kDockSideTurnOurs;
+static void DMDockSideStyleIcon(UIView *icon, int side) {
+    CALayer *l = icon.layer;
+    NSValue *ours = objc_getAssociatedObject(icon, kDockSideTurnOurs), *under = objc_getAssociatedObject(icon, kDockSideTurnUnder);
+    BOOL turned = ours != nil, still = turned && CATransform3DEqualToTransform(l.sublayerTransform, ours.CATransform3DValue);
+    switch (MSBDDockSideIconTurnStep(turned, still, side)) {
+        case MSBDIconTurnApply: {
+            CATransform3D below = MSBDDockSideIconTurnUnderKept(turned, still) ? (under ? under.CATransform3DValue : CATransform3DIdentity) : l.sublayerTransform;
+            CATransform3D want = CATransform3DConcat(below, DMDockSideIconTurn(side));
+            if (still && CATransform3DEqualToTransform(want, ours.CATransform3DValue)) return;   // (as it is)
+            objc_setAssociatedObject(icon, kDockSideTurnUnder, [NSValue valueWithCATransform3D:below], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(icon, kDockSideTurnOurs, [NSValue valueWithCATransform3D:want], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            if (!CATransform3DEqualToTransform(l.sublayerTransform, want)) l.sublayerTransform = want;
+            return;
+        }
+        case MSBDIconTurnGiveBack:
+            if (under && !CATransform3DEqualToTransform(l.sublayerTransform, under.CATransform3DValue)) l.sublayerTransform = under.CATransform3DValue;
+            objc_setAssociatedObject(icon, kDockSideTurnUnder, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(icon, kDockSideTurnOurs, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            return;
+        case MSBDIconTurnForget:   // (its owner set another value since: theirs)
+            objc_setAssociatedObject(icon, kDockSideTurnUnder, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(icon, kDockSideTurnOurs, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            return;
+        default: return;   // (never turned: not ours to write)
+    }
+}
+static BOOL DMDockSideIsOwnIcon(UIView *v) {
+    Class own[3] = { objc_getClass("DMFinderIconView"), objc_getClass("DMDownloadsIconView"), objc_getClass("DMTrashIconView") };
+    for (int i = 0; i < 3; i++) if (own[i] && [v isKindOfClass:own[i]]) return YES;
+    return NO;
+}
+static void DMDockSideStyleAll(UIView *root, int side) {
+    Class ic = objc_getClass("SBIconView");
+    for (UIView *v in root.subviews) {
+        if ((ic && [v isKindOfClass:ic]) || DMDockSideIsOwnIcon(v)) { DMDockSideStyleIcon(v, side); continue; }
+        DMDockSideStyleAll(v, side);
+    }
+}
+static void DMDockSideMeasureStep(UIView *platter) {   // (the shortest distance between neighbours in any row of the Dock)
+    Class ic = objc_getClass("SBIconView");
+    CGFloat step = 0;
+    NSMutableArray<NSArray<UIView *> *> *rows = [NSMutableArray arrayWithObject:platter.subviews];
+    for (UIView *v in platter.subviews) if (v.subviews.count && !(ic && [v isKindOfClass:ic]) && !DMDockSideIsOwnIcon(v)) [rows addObject:v.subviews];
+    for (NSArray<UIView *> *row in rows) {
+        NSMutableArray<NSNumber *> *xs = [NSMutableArray array];
+        for (UIView *v in row) if (ic && [v isKindOfClass:ic] && !v.hidden) [xs addObject:@(v.center.x)];
+        [xs sortUsingSelector:@selector(compare:)];
+        for (NSUInteger i = 1; i < xs.count; i++) { CGFloat d = xs[i].doubleValue - xs[i - 1].doubleValue; if (d > 8.0 && (step == 0 || d < step)) step = d; }
+    }
+    gDockSideStep = step;
+}
+// The host's bounds as Apple sets them (the root's own shape, every root layout): the other shape while a side is in use. Hooked on the host's own class the
+// first time a side is used: on 18.5 an SBHTouchPassThroughView, on 16.7.7 an SBFTouchPassThroughView like the root's, so the view is told apart by itself.
+static void (*o_DockSideHostSetBounds)(id, SEL, CGRect);
+static void DMDockSideHostSetBounds(id self, SEL _cmd, CGRect b) {
+    if (gDockSideApplied && self == gDockSideHost && b.size.width > b.size.height) b.size = CGSizeMake(b.size.height, b.size.width);
+    o_DockSideHostSetBounds(self, _cmd, b);
+}
+// A folder in the Dock opens in the Dock's own view, the host: its outer container is the host's child. Over the screen it stands upright and in the screen's shape with
+// the host's turn taken back.
+static void DMDockSideFoldersUpright(UIView *host, int side) {
+    Class fc = objc_getClass("SBFolderContainerView");
+    if (!fc) return;
+    CGSize s = host.bounds.size, want = side ? CGSizeMake(s.height, s.width) : s;
+    CGAffineTransform turn = MSBDDockSideIconTransform(side);
+    for (UIView *v in host.subviews) {
+        if (![v isKindOfClass:fc] || (CGAffineTransformEqualToTransform(v.transform, turn) && CGSizeEqualToSize(v.bounds.size, want))) continue;
+        DM_FEATURE_MARK("dock-side-folder");
+        [UIView performWithoutAnimation:^{
+            v.transform = turn;
+            v.bounds = CGRectMake(0, 0, want.width, want.height);
+            v.center = CGPointMake(s.width / 2.0, s.height / 2.0);
+        }];
+        DMLog([NSString stringWithFormat:@"[dockside] a folder's container in the Dock's view: bounds %@, transform %@", NSStringFromCGRect(v.bounds), NSStringFromCGAffineTransform(v.transform)]);
+    }
+}
+static void DMDockSideHomeRelayout(NSString *why);   // (the Home Screen's pages, below)
+// The Dock's own view in the host (SBFloatingDockView): the host's child, or deeper in views of the host's own kind.
+static UIView *DMDockSideDockViewIn(UIView *host) {
+    NSMutableArray<UIView *> *look = host ? [NSMutableArray arrayWithObject:host] : [NSMutableArray array];
+    while (look.count) {
+        UIView *v = look.firstObject; [look removeObjectAtIndex:0];
+        if ([NSStringFromClass([v class]) isEqualToString:@"SBFloatingDockView"]) return v;
+        if (v == host || [v isKindOfClass:[host class]]) [look addObjectsFromArray:v.subviews];
+    }
+    return nil;
+}
+static void DMDockSideApplyToRoot(UIViewController *root) {
+    if (!root.isViewLoaded) return;
+    UIWindow *w = root.view.window;
+    if (!w || !DMDockOnMainScreen(w)) return;   // (a TV's Dock stays at its bottom)
+    SEL vcSel = NSSelectorFromString(@"floatingDockViewController");
+    id dvc = [root respondsToSelector:vcSel] ? ((id (*)(id, SEL))objc_msgSend)(root, vcSel) : nil;
+    UIView *host = [dvc isKindOfClass:[UIViewController class]] ? ((UIViewController *)dvc).view : nil;
+    if (!host) return;
+    CGRect rb = root.view.bounds;
+    int side = MSBDDockSideFor(gDockPosition, rb.size.width, rb.size.height);
+    BOOL changed = side != gDockSideApplied || host != gDockSideHost;
+    if (!side && !changed) return;
+    if (!gDockWindow) gDockWindow = w;
+    // (on its class itself: under key-value observing the isa is a subclass made for the observers, and once they went the real class -- not hooked -- took
+    //  Apple's landscape bounds again, the Dock laid out the wrong way until a respring; code review 1.8.2, 11)
+    if (side && !o_DockSideHostSetBounds) MSHookMessageEx([host class], @selector(setBounds:), (IMP)DMDockSideHostSetBounds, (IMP *)&o_DockSideHostSetBounds);
+    gDockSideHost = host; gDockSideRoot = root; gDockSideApplied = side;
+    if (side) gDockSideEver = YES;
+    [UIView performWithoutAnimation:^{   // (no swing across the screen when a turn asks for it inside its own animation)
+        host.bounds = side ? CGRectMake(0, 0, rb.size.height, rb.size.width) : rb;
+        host.center = CGPointMake(CGRectGetMidX(rb), CGRectGetMidY(rb));
+        host.transform = MSBDDockSideHostTransform(side);
+        if (changed) {
+            DMDockSideStyleAll(host, side);
+            [host setNeedsLayout]; [host layoutIfNeeded];
+            // (and the Dock itself. Its layout reads the side (the platter in the room under the menu bar at a side, in the middle at the bottom; the icons'
+            //  size share), and UIKit lays it out only when its bounds change. Between portrait and a side they don't: the host's bounds at a side are the
+            //  other shape's, which are portrait's, so a turn changed only the host's turn and the Dock kept its other place until something laid it out
+            //  again: at a side 18.5 pt high, under the bar, after a layout in portrait; in portrait off the middle by as much after one at a side. A12Z 18.5)
+            UIView *dockView = DMDockSideDockViewIn(host);
+            [dockView setNeedsLayout]; [dockView layoutIfNeeded];
+        }
+    }];
+    DMDockSideFoldersUpright(host, side);
+    if (changed) {
+        DM_FEATURE_MARK("dock-side");
+#if DEBUG
+        UIView *dv = DMDockSideDockViewIn(host), *platter = nil; @try { platter = [dv valueForKey:@"mainPlatterView"]; } @catch (id e) {}
+        CGRect pr = [platter isKindOfClass:[UIView class]] ? [platter convertRect:platter.bounds toView:host] : CGRectNull;   // (the host's x runs along the Dock; the screen may still have the old turn here)
+        DMLog([NSString stringWithFormat:@"[dockside] side %d: host %@ bounds %@, root %@; the Dock laid out for it: its platter %.1f..%.1f along it", side, NSStringFromClass([host class]), NSStringFromCGRect(host.bounds), NSStringFromCGRect(rb), CGRectGetMinX(pr), CGRectGetMaxX(pr)]);
+#endif
+        if (side) DMDockSidePointerArm(0.25);
+        DMDockSideHomeRelayout(side ? @"the Dock at a side" : @"the Dock at the bottom");
+    }
+}
+// How tall the Dock would be at the bottom, for what is laid out around it there and stays put (the Home Screen's icons): Apple's own question to the Dock's view,
+// for the long side, answered as at the bottom. What that answer leaves in the slots is put back (they are the side Dock's). -1: the view can't say.
+static CGFloat DMDockSideHeightAtBottom(void) {
+    // (the host, held for this question: it is weak, and the side stays applied until the next root layout -- a Dock view controller made again in between,
+    //  a display or Stage Manager change, left it nil while the Home Screen and the desktop's files still asked: an array of nil, SpringBoard down. Code review
+    //  1.8.2, 3. No host: Apple's height)
+    UIView *host = gDockSideHost;
+    if (!host) return -1.0;
+    UIView *dockView = DMDockSideDockViewIn(host);
+    SEL q = NSSelectorFromString(@"contentHeightForBounds:");
+    Method m = dockView ? class_getInstanceMethod(object_getClass(dockView), q) : NULL;
+    if (!m || strcmp(method_getTypeEncoding(m) ?: "", "d48@0:8{CGRect={CGPoint=dd}{CGSize=dd}}16")) return -1.0;
+    CGSize s = host.bounds.size;
+    CGRect saveF = gFinderSlot, saveD = gDownloadsSlot, saveT = gTrashSlot, saveV = gDivider2Rect; BOOL saveA = gDivider2Alone, saveO = gDownloadsOwnSlot;
+    gDockSideAsAtBottom = YES;
+    CGFloat h = ((CGFloat (*)(id, SEL, CGRect))objc_msgSend)(dockView, q, CGRectMake(0, 0, MAX(s.width, s.height), MIN(s.width, s.height)));
+    gDockSideAsAtBottom = NO;
+    gFinderSlot = saveF; gDownloadsSlot = saveD; gTrashSlot = saveT; gDivider2Rect = saveV; gDivider2Alone = saveA; gDownloadsOwnSlot = saveO;
+    return isfinite(h) && h > 0.0 ? h : -1.0;
+}
+__attribute__((visibility("default"))) double MSBDDockHeightAtBottom(void) { return gDockSideApplied ? DMDockSideHeightAtBottom() : -1.0; }   // (MacStatusBar's desktop files: they stay where they are too)
+__attribute__((visibility("default"))) int MSBDDockPositionChosen(void) { return gDockPosition; }   // (MacSettings' icon places: the bottom, also with the Dock part off -- nothing of the side Dock there)
+static void DMDockSideRefresh(void) {
+    Class c = objc_getClass("SBFloatingDockWindow"), rc = objc_getClass("SBFloatingDockRootViewController");
+    for (UIWindow *x in [UIWindow allWindowsIncludingInternalWindows:YES onlyVisibleWindows:NO]) {
+        if (!c || !rc || ![x isKindOfClass:c] || !DMDockOnMainScreen(x) || !x.rootViewController) continue;
+        NSMutableArray<UIViewController *> *look = [NSMutableArray arrayWithObject:x.rootViewController];
+        while (look.count) {
+            UIViewController *vc = look.firstObject; [look removeObjectAtIndex:0];
+            if ([vc isKindOfClass:rc]) { DMDockSideApplyToRoot(vc); [vc.view setNeedsLayout]; break; }
+            [look addObjectsFromArray:vc.childViewControllers];
+        }
+    }
+}
+// ---- the Home Screen with the Dock at a side (common/DockSide.h MSBDDockSideHomeListFrame, KT 5 Nov) ----
+// No Home Screen icon, folder or widget under the Dock: the room the Dock takes from its side comes out of the free space beside the icons. Each page's icon list
+// is placed by SBRootFolderView's own -_iconListFrameForPageRect:atIndex: (hooked below, with a side chosen only): moved, its size kept, so iPadOS and any layout
+// tweak (Atria and the like lay out inside the list, by its insets) keep their layout's shape. The room is the Dock's at rest, as the side Dock last laid out:
+// its gap and its platter, so Icon Size, the gap and the apps it holds move the pages at once; the magnified icons grow over the Home Screen for a moment, as
+// on a Mac, and move nothing. In portrait and at the bottom the frames are iPadOS's own (decided by each page's own shape: a turn lays the pages out for the
+// new shape before the Dock hears of it).
+static id DMObj(id o, NSString *sel);   // (below)
+static id DMDockSideController(void);   // (below)
+static CGFloat gDockSideHomeRoom = 0;    // (how far the side Dock reaches into the screen at rest; 0 until it has laid out at a side)
+static BOOL gDockSideHomeHooked = NO, gDockSideHomeAsking = NO;
+static UIView *DMDockSideHomeRootView(void) {
+    Class c = objc_getClass("SBIconController"); SEL e = NSSelectorFromString(@"sharedInstanceIfExists");
+    id ic = c && [(id)c respondsToSelector:e] ? ((id (*)(id, SEL))objc_msgSend)((id)c, e) : DMObj((id)c, @"sharedInstance");   // (17+: never made by us)
+    id rfc = DMObj(DMObj(ic, @"iconManager"), @"rootFolderController");
+    id v = DMObj(rfc, @"rootFolderView") ?: DMObj(rfc, @"folderView");
+    return [v isKindOfClass:[UIView class]] ? v : nil;
+}
+#if DEBUG
+static void DMDockSideHomeCheck(NSString *why);   // (the safety check, below)
+#endif
+// The pages placed again: the room or the side changed (a setting, the Dock's apps, a turn). SpringBoard's own frame pass for its pages, inside a short animation.
+static void DMDockSideHomeRelayout(NSString *why) {
+    if (!gDockSideHomeHooked) return;
+    static BOOL pending = NO;
+    if (pending) return;
+    pending = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        pending = NO;
+        UIView *rfv = DMDockSideHomeRootView();
+        SEL upd = NSSelectorFromString(@"_updateIconListFrames");
+        Method m = rfv ? class_getInstanceMethod(object_getClass(rfv), upd) : NULL;
+        if (!m || strcmp(method_getTypeEncoding(m) ?: "", "v16@0:8")) return;
+        DM_FEATURE_MARK("dock-side-home");
+        static void (*followPage)(void) = NULL; static int tries = 0;   // (MacStatusBar's desktop files: they stay on their page of the screen, StatusBar's Desktop.h)
+        if (!followPage && tries < 40) { tries++; followPage = (void (*)(void))dlsym(RTLD_DEFAULT, "MSBDDesktopFollowPage"); }
+        [UIView animateWithDuration:0.3 delay:0 options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction animations:^{
+            ((void (*)(id, SEL))objc_msgSend)(rfv, upd);
+            [rfv setNeedsLayout];   // (its own pass too: Edit Home Screen's buttons, DMDockSideHomeEditButtons)
+            [rfv layoutIfNeeded];
+            if (followPage) followPage();
+        } completion:nil];
+        DMLog([NSString stringWithFormat:@"[dockside] the Home Screen's pages placed again (%@): the Dock %.1f pt in from the %@", why, gDockSideHomeRoom, gDockSideApplied == MSBDDockLeft ? @"left" : gDockSideApplied == MSBDDockRight ? @"right" : @"bottom (none)"]);
+#if DEBUG
+        DMDockSideHomeCheck(why);
+#endif
+    });
+}
+// The Dock at rest, from its side: the distance from its view's bottom (the screen's side edge) to its platter's inner edge, by the platter's place, not its
+// presentation (the magnification turns icons, never the platter). -1: not readable.
+static CGFloat DMDockSideRestingRoom(UIView *dockView, UIView *platter) {
+    UIView *sv = platter.superview;
+    if (!sv || !dockView) return -1.0;
+    CGPoint top = [sv convertPoint:CGPointMake(platter.center.x, platter.center.y - platter.bounds.size.height / 2.0) toView:dockView];
+    CGFloat room = CGRectGetMaxY(dockView.bounds) - top.y;
+    // (only the view's bottom counts, the screen's side edge: the view itself may be the gap and the platter exactly -- 18.5 -- or for a moment smaller than the
+    //  platter, which then reaches above its top -- 16.7.7 leaving Edit Home Screen, 52 pt for 54.5. A side Dock is never a quarter of its length thick.)
+    return isfinite(room) && room > 1.0 && room < dockView.bounds.size.width * 0.25 ? room : -1.0;
+}
+static void DMDockSideHomeRoomSeen(CGFloat room) {
+    if (!(room > 0.0) || fabs(room - gDockSideHomeRoom) <= 0.25) return;
+    DMLog([NSString stringWithFormat:@"[dockside] the Dock at rest reaches %.1f pt in from its side (was %.1f)", room, gDockSideHomeRoom]);
+    gDockSideHomeRoom = room;
+    DMDockSideHomeRelayout(@"the Dock's size");
+}
+// A side Dock laid out. Its size is taken while it is out; laid out while away it may be in another state -- the App Library makes it larger for drops, away
+// from the screen (M1 15.6.1: 48.4 pt against 46.1, A12Z 18.5: 63 against 59.8), back when it closes --, so that size waits and is taken when the Dock is out
+// again (-floatingDockRootViewControllerDidEndPresentationTransition:, below), unless it laid out again out first: a setting changed with the Dock away is
+// taken then. The Home Screen behind the App Library stays put. (The first size after a start is taken at once.)
+static CGFloat gDockSideHomeRoomAway = 0;
+static BOOL DMDockSidePresentedNow(void) {
+    id c = DMDockSideController(); SEL s = NSSelectorFromString(@"isFloatingDockPresented");
+    return [c respondsToSelector:s] && ((BOOL (*)(id, SEL))objc_msgSend)(c, s);
+}
+static void DMDockSideHomeLaidOut(CGFloat room) {
+    if (!(room > 0.0)) return;
+    if (DMDockSidePresentedNow() || !(gDockSideHomeRoom > 0.0)) { gDockSideHomeRoomAway = 0; DMDockSideHomeRoomSeen(room); }
+    else gDockSideHomeRoomAway = room;
+}
+static void DMDockSideHomeDockBack(void) {
+    if (!(gDockSideHomeRoomAway > 0.0) || !gDockSideApplied || !DMDockSidePresentedNow()) return;
+    CGFloat room = gDockSideHomeRoomAway; gDockSideHomeRoomAway = 0;
+    DMDockSideHomeRoomSeen(room);
+}
+// A page's icon list frame with the Dock at a side: the layout's free space read from that list's insets (as SpringBoard lays the icons out with them, Atria's
+// too), the room taken from it in each side's share. As iPadOS gives it in portrait, at the bottom, and before the side Dock has laid out once.
+static CGRect DMDockSideHomeFrame(UIView *rfv, CGRect f, unsigned long long index) {
+    if (gDockPosition == MSBDDockBottom || !(gDockSideHomeRoom > 0.0) || gDockSideHomeAsking) return f;
+    int side = MSBDDockSideFor(gDockPosition, f.size.width, f.size.height);
+    if (!side || (rfv.window && !DMDockOnMainScreen(rfv.window))) return f;
+    SEL at = NSSelectorFromString(@"iconListViewAtIndex:"), ins = NSSelectorFromString(@"layoutInsetsForOrientation:"), lo = NSSelectorFromString(@"layoutOrientation");
+    if (![rfv respondsToSelector:at]) return f;
+    gDockSideHomeAsking = YES;   // (nothing below may come back here)
+    UIView *list = ((id (*)(id, SEL, unsigned long long))objc_msgSend)(rfv, at, index);
+    if (![list respondsToSelector:ins]) list = ((id (*)(id, SEL, unsigned long long))objc_msgSend)(rfv, at, 0);   // (a page not made yet: the first page's layout)
+    Method m = [list isKindOfClass:[UIView class]] ? class_getInstanceMethod(object_getClass(list), ins) : NULL;
+    BOOL known = m && !strcmp(method_getTypeEncoding(m) ?: "", "{UIEdgeInsets=dddd}24@0:8q16");
+    UIEdgeInsets i = UIEdgeInsetsZero;
+    if (known) {
+        long long o = [list respondsToSelector:lo] ? ((long long (*)(id, SEL))objc_msgSend)(list, lo) : 3;
+        i = ((UIEdgeInsets (*)(id, SEL, long long))objc_msgSend)(list, ins, o == 3 || o == 4 ? o : 3);   // (the page is landscape: the landscape layout's)
+    }
+    gDockSideHomeAsking = NO;
+    if (!known) return f;   // (nothing to keep the layout's shape by: as iPadOS gives it)
+    double fl = 0, fr = 0;
+    MSBDDockSideHomeFree(i.left, i.right, rfv.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft, &fl, &fr);
+    return MSBDDockSideHomeListFrame(f, side, gDockSideHomeRoom, fl, fr);
+}
+// Edit Home Screen's own buttons (Add Widget at the top left, Done at the top right: SBRootFolderView's widgetButton and doneButton) keep out of the Dock the same
+// way: the one on the Dock's side moves over by the room after SpringBoard has laid the view out, from SpringBoard's own frame for it each time (the frame it
+// last had from SpringBoard is kept, so a layout that leaves it alone never moves it twice).
+static const void *kDockSideHomeButtonBase = &kDockSideHomeButtonBase, *kDockSideHomeButtonSet = &kDockSideHomeButtonSet;
+static void DMDockSideHomeEditButtons(UIView *rfv) {
+    CGSize b = rfv.bounds.size;
+    int side = gDockPosition != MSBDDockBottom && gDockSideHomeRoom > 0.0 ? MSBDDockSideFor(gDockPosition, b.width, b.height) : MSBDDockBottom;
+    for (NSString *k in @[@"widgetButton", @"doneButton"]) {
+        UIView *v = DMObj(rfv, k);
+        if (![v isKindOfClass:[UIView class]] || v.superview != rfv) continue;
+        NSValue *set = objc_getAssociatedObject(v, kDockSideHomeButtonSet), *base = objc_getAssociatedObject(v, kDockSideHomeButtonBase);
+        CGRect apple = set && base && CGRectEqualToRect(v.frame, set.CGRectValue) ? base.CGRectValue : v.frame;   // (moved by us and left so: SpringBoard's is the kept one)
+        CGRect f = apple;
+        if (side == MSBDDockLeft && CGRectGetMinX(f) < gDockSideHomeRoom) f.origin.x += gDockSideHomeRoom;
+        else if (side == MSBDDockRight && CGRectGetMaxX(f) > b.width - gDockSideHomeRoom) f.origin.x -= gDockSideHomeRoom;
+        if (CGRectEqualToRect(f, v.frame)) continue;
+        objc_setAssociatedObject(v, kDockSideHomeButtonBase, [NSValue valueWithCGRect:apple], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(v, kDockSideHomeButtonSet, [NSValue valueWithCGRect:f], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        v.frame = f;
+    }
+}
+#if DEBUG
+// The safety check (debug builds): a moment after a Home Screen layout with the Dock at a side, every icon of every page (shown or not: the list's model, where the
+// list puts it; a shown one where its view is) and the page dots, where they lie on the screen when their page shows, against the Dock at rest. Anything that
+// still reaches under it is logged with its page and place (no app names); otherwise one line with the nearest distance, when that changes.
+static void DMDockSideHomeCheckNow(NSString *why) {
+    UIView *rfv = DMDockSideHomeRootView();
+    int side = gDockSideApplied;
+    if (!rfv.window || !side || !(gDockSideHomeRoom > 0.0)) return;
+    UIScreen *screen = [UIScreen mainScreen]; id<UICoordinateSpace> scs = screen.coordinateSpace; CGFloat sw = screen.bounds.size.width;
+    UIScrollView *scroll = nil;
+    NSMutableArray<UIView *> *todo = [NSMutableArray arrayWithObject:rfv];
+    for (NSUInteger k = 0; k < todo.count && k < 400 && !scroll; k++) { UIView *v = todo[k]; if ([v isKindOfClass:objc_getClass("SBIconScrollView")]) scroll = (UIScrollView *)v; else [todo addObjectsFromArray:v.subviews]; }
+    CGFloat pw = scroll.bounds.size.width;
+    if (!scroll || pw < 100.0) return;
+    Class lc = objc_getClass("SBIconListView"), ivc = objc_getClass("SBIconView");
+    SEL rfi = NSSelectorFromString(@"rectForIcon:");
+    NSUInteger n = 0, pages = 0; CGFloat nearest = INFINITY;
+    NSMutableString *under = [NSMutableString string];
+    for (UIView *l in scroll.subviews) {
+        if (!lc || ![l isKindOfClass:lc] || l.hidden) continue;
+        long page = lround(l.frame.origin.x / pw);
+        CGFloat dx = scroll.bounds.origin.x - page * pw;   // (where it lies when its page shows)
+        NSMutableArray<NSValue *> *rects = [NSMutableArray array];
+        NSMutableSet *shown = [NSMutableSet set];
+        for (UIView *v in l.subviews) {
+            if (!ivc || ![v isKindOfClass:ivc] || v.hidden || v.alpha < 0.01 || v.bounds.size.width < 5.0) continue;
+            id icon = DMObj(v, @"icon"); if (icon) [shown addObject:icon];
+            [rects addObject:[NSValue valueWithCGRect:CGRectOffset([v convertRect:v.bounds toCoordinateSpace:scs], dx, 0)]];
+        }
+        Method rm = class_getInstanceMethod(object_getClass(l), rfi);
+        NSArray *icons = DMObj(DMObj(l, @"model"), @"icons");
+        if (rm && !strcmp(method_getTypeEncoding(rm) ?: "", "{CGRect={CGPoint=dd}{CGSize=dd}}24@0:8@16") && [icons isKindOfClass:[NSArray class]])
+            for (id icon in icons) if (![shown containsObject:icon]) [rects addObject:[NSValue valueWithCGRect:CGRectOffset([l convertRect:((CGRect (*)(id, SEL, id))objc_msgSend)(l, rfi, icon) toCoordinateSpace:scs], dx, 0)]];
+        if (rects.count) pages++;
+        NSUInteger k = 0;
+        for (NSValue *rv in rects) {
+            CGRect r = rv.CGRectValue; n++; k++;
+            CGFloat d = side == MSBDDockLeft ? CGRectGetMinX(r) - gDockSideHomeRoom : sw - gDockSideHomeRoom - CGRectGetMaxX(r);
+            nearest = MIN(nearest, d);
+            if (MSBDDockSideHomeUnder(r, sw, side, gDockSideHomeRoom)) [under appendFormat:@" page %ld #%lu at x %.1f..%.1f;", page + 1, (unsigned long)k, CGRectGetMinX(r), CGRectGetMaxX(r)];
+        }
+    }
+    [todo removeAllObjects]; [todo addObject:rfv];
+    for (NSUInteger k = 0; k < todo.count && k < 600; k++) {
+        UIView *v = todo[k]; NSString *cn = NSStringFromClass([v class]);
+        if (([cn containsString:@"PageControl"] || [cn containsString:@"ScrollAccessory"]) && !v.hidden && v.alpha > 0.01) {
+            if (MSBDDockSideHomeUnder([v convertRect:v.bounds toCoordinateSpace:scs], sw, side, gDockSideHomeRoom)) [under appendFormat:@" the page dots (%@);", cn];
+            continue;
+        }
+        if (![v isKindOfClass:[UIScrollView class]]) [todo addObjectsFromArray:v.subviews];
+    }
+    NSString *line = under.length ? [NSString stringWithFormat:@"[dockside] Home Screen check: UNDER THE DOCK (%.1f pt in from the %@):%@ (%lu icons on %lu pages)", gDockSideHomeRoom, side == MSBDDockLeft ? @"left" : @"right", under, (unsigned long)n, (unsigned long)pages]
+        : [NSString stringWithFormat:@"[dockside] Home Screen check: %lu icons on %lu pages clear of the Dock (%.1f pt in from the %@), the nearest %.1f pt from it", (unsigned long)n, (unsigned long)pages, gDockSideHomeRoom, side == MSBDDockLeft ? @"left" : @"right", nearest];
+    static NSString *last = nil;
+    if ([line isEqualToString:last]) return;
+    last = line;
+    DMLog([line stringByAppendingFormat:@" -- after %@", why]);
+}
+static void DMDockSideHomeCheck(NSString *why) {
+    static BOOL pending = NO;
+    if (pending || !gDockSideApplied) return;
+    pending = YES;
+    NSString *w = [why copy];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ pending = NO; DMDockSideHomeCheckNow(w); });
+}
+// (after every icon list's layout, with a side chosen only; outside Logos, so the debug-only hook stays out of the release diagnostics' list, common/HookList.h)
+static void (*o_DockSideHomeListLayout)(id, SEL);
+static void DMDockSideHomeListLayout(id self, SEL _cmd) {
+    o_DockSideHomeListLayout(self, _cmd);
+    if (gDockSideApplied && gDockSideHomeRoom > 0.0 && ((UIView *)self).window) DMDockSideHomeCheck(@"a Home Screen layout");
+}
+static void DMDockSideHomeCheckHook(void) {
+    Class c = objc_getClass("SBIconListView");
+    Method m = c ? class_getInstanceMethod(c, @selector(layoutSubviews)) : NULL;
+    if (m && !o_DockSideHomeListLayout && !strcmp(method_getTypeEncoding(m) ?: "", "v16@0:8")) MSHookMessageEx(c, @selector(layoutSubviews), (IMP)DMDockSideHomeListLayout, (IMP *)&o_DockSideHomeListLayout);
+}
+#endif
+// The controller of the Dock that stands at a side: the one whose Dock is on the iPad's own screen (a TV's Dock keeps its bottom, and Apple's rules there). One
+// whose Dock can't be told is taken for it.
+static BOOL DMDockSideControls(id controller) {
+    if (!gDockSideApplied) return NO;
+    SEL vcs = NSSelectorFromString(@"viewController");
+    id vc = [controller respondsToSelector:vcs] ? ((id (*)(id, SEL))objc_msgSend)(controller, vcs) : nil;
+    UIWindow *w = [vc isKindOfClass:[UIViewController class]] && ((UIViewController *)vc).isViewLoaded ? ((UIViewController *)vc).view.window : nil;
+    return !w || DMDockOnMainScreen(w);
+}
+// A finger on the app with the Dock out at a side (see -gestureRecognizer:shouldReceiveTouch:): what Apple asks before its y rule, read on 18.5 and in the
+// same order: the Dock is out, no Today View at the side, and the touch is on no part of the Dock.
+static BOOL DMDockSideDismissTouch(id controller, UITouch *touch) {
+    SEL pres = NSSelectorFromString(@"isFloatingDockPresented"), vcs = NSSelectorFromString(@"viewController");
+    if (![controller respondsToSelector:pres] || !((BOOL (*)(id, SEL))objc_msgSend)(controller, pres) || ![controller respondsToSelector:vcs]) return NO;
+    SEL hsc = NSSelectorFromString(@"homeScreenContextProvider"), ims = NSSelectorFromString(@"iconManager"), lead = NSSelectorFromString(@"isShowingLeadingCustomView");
+    id ctx = [controller respondsToSelector:hsc] ? ((id (*)(id, SEL))objc_msgSend)(controller, hsc) : nil;
+    id mgr = [ctx respondsToSelector:ims] ? ((id (*)(id, SEL))objc_msgSend)(ctx, ims) : nil;
+    if ([mgr respondsToSelector:lead] && ((BOOL (*)(id, SEL))objc_msgSend)(mgr, lead)) return NO;
+    id vc = ((id (*)(id, SEL))objc_msgSend)(controller, vcs);
+    UIView *v = [vc isKindOfClass:[UIViewController class]] && ((UIViewController *)vc).isViewLoaded ? ((UIViewController *)vc).view : nil;
+    if (!v) return YES;
+    // (the touch is the system gesture window's, in the display's own turn: -locationInView: of a view in another window came out as nonsense, A12Z {940, -1636} for
+    //  a touch at {1330, 470}, and a finger on an icon put the Dock away. Through the screen's space, as StatusBar.x reads such a touch)
+    UIWindow *tw = touch.window;
+    UIScreen *screen = v.window.screen ?: [UIScreen mainScreen];
+    CGPoint sp = tw ? [tw convertPoint:[touch locationInView:tw] toCoordinateSpace:screen.coordinateSpace] : [touch locationInView:nil];
+    return [v hitTest:[v convertPoint:sp fromCoordinateSpace:screen.coordinateSpace] withEvent:nil] == nil;
+}
+// The pointer. WORKAROUND, named: Apple's reveal is a hover gesture (-[SBFloatingDockController _presentFloatingDockIndirectPanGestureRecognizer], made for the
+// bottom edge) and hover can't be sent by code on 18.5, so its side-edge form could never be proved here. So the Dock follows the pointer's PLACE instead:
+// backboardd's position (BKSMousePointerService, as the auto-hiding bar reads it), which a real trackpad moves like any other pointer and which holds at the
+// screen's edge. Looked at off the main thread, only with a side in use, the screen on and a pointer attached, often near the side (MSBDDockPointerInterval).
+// The price against Apple's own gesture: no pull that follows the pointer, the Dock simply comes out; a person's check is in plans/dock-side-build.md. Apple's
+// conditions still decide whether it may come now (its -gestureRecognizerShouldBegin:, asked below), and its bottom-edge reveal stands down at a side.
+static BOOL gDockSideAskingApple = NO;
+static MSBDDockPointerState gDockSidePointer;
+static BOOL gDockSidePollArmed = NO;
+static NSString *gDockSidePointerApp = nil;   // (the full-screen app the pointer brought the Dock out over: its Dock goes again only while that app is in front)
+static NSString *DMDockSideFrontApp(void) {   // (SpringBoard's own answer, as the Downloads panel asks it; "" for the Home Screen)
+    id sb = [UIApplication sharedApplication]; SEL s = NSSelectorFromString(@"_accessibilityFrontMostApplication");
+    id app = [sb respondsToSelector:s] ? ((id (*)(id, SEL))objc_msgSend)(sb, s) : nil;
+    id b = [app respondsToSelector:@selector(bundleIdentifier)] ? ((id (*)(id, SEL))objc_msgSend)(app, @selector(bundleIdentifier)) : nil;
+    return [b isKindOfClass:[NSString class]] ? b : @"";
+}
+static id DMDockSideController(void) {
+    UIViewController *root = gDockSideRoot;
+    return [root respondsToSelector:@selector(delegate)] ? ((id (*)(id, SEL))objc_msgSend)(root, @selector(delegate)) : nil;
+}
+static BOOL DMDockSideMayCome(id ctrl) {
+    SEL rs = NSSelectorFromString(@"presentFloatingDockIndirectPanGestureRecognizer"), bs = @selector(gestureRecognizerShouldBegin:);
+    id g = [ctrl respondsToSelector:rs] ? ((id (*)(id, SEL))objc_msgSend)(ctrl, rs) : nil;
+    if (!g || ![ctrl respondsToSelector:bs]) return YES;
+    gDockSideAskingApple = YES;
+    BOOL may = ((BOOL (*)(id, SEL, id))objc_msgSend)(ctrl, bs, g);
+    gDockSideAskingApple = NO;
+    return may;
+}
+// (SpringBoard's own present and dismiss, sent as the Downloads panel sends them: asked first, with an empty completion -- a missing method was an unrecognized
+//  selector in SpringBoard, a completion called unchecked a crash; the reveal ran on 18.5 only. Code review 1.8.2, 8)
+static void DMDockSideSend(id ctrl, NSString *name) {
+    SEL s = NSSelectorFromString(name);
+    if ([ctrl respondsToSelector:s]) ((void (*)(id, SEL, BOOL, id))objc_msgSend)(ctrl, s, YES, ^{});
+    else { static int told = 0; if (told++ < 5) DMLog([NSString stringWithFormat:@"[dockside] the Dock's controller has no -%@ here: nothing sent", name]); }
+}
+static void DMDockSidePointerSeen(CGPoint native) {
+    // (a look that can't be made now is made again: with the host out of its window for a moment, or no root yet, the reveal stopped until the next turn, Position
+    //  change or screen sleep -- code review 1.8.2, 10. No side in use: the next one starts it)
+    if (!gDockSideApplied) return;
+    if (!gDockSideHost.window) { DMDockSidePointerArm(0.5); return; }
+    id ctrl = DMDockSideController();
+    SEL ps = NSSelectorFromString(@"isFloatingDockPresented"), hs = NSSelectorFromString(@"maximumFloatingDockHeight");
+    if (![ctrl respondsToSelector:ps]) { DMDockSidePointerArm(2.0); return; }
+    id app = [UIApplication sharedApplication];
+    SEL aio = NSSelectorFromString(@"activeInterfaceOrientation");
+    long o = [app respondsToSelector:aio] ? ((long (*)(id, SEL))objc_msgSend)(app, aio) : 3;
+    if (o != 3 && o != 4) o = 3;   // (a side is in use in landscape only; a landscape iPad that answers otherwise: its usual side)
+    CGSize s = gDockSideHost.window.bounds.size;
+    CGPoint p = MSBDDockPointerOnScreen(native, o, CGSizeMake(MIN(s.width, s.height), MAX(s.width, s.height)));
+    BOOL presented = ((BOOL (*)(id, SEL))objc_msgSend)(ctrl, ps);
+    SEL hcp = NSSelectorFromString(@"homeScreenContextProvider"), menus = NSSelectorFromString(@"areAnyIconViewContextMenusShowing");
+    id ctx = [ctrl respondsToSelector:hcp] ? ((id (*)(id, SEL))objc_msgSend)(ctrl, hcp) : nil;
+    BOOL stay = gKeepDockVisible || ([ctx respondsToSelector:menus] && ((BOOL (*)(id, SEL))objc_msgSend)(ctx, menus));
+    double h = [ctrl respondsToSelector:hs] ? ((double (*)(id, SEL))objc_msgSend)(ctrl, hs) : 90.0;
+    BOOL near = gDockSideApplied == MSBDDockRight ? p.x >= s.width - kMSBDDockPointerEdge : p.x <= kMSBDDockPointerEdge;
+    BOOL may = !presented && near && DMDockSideMayCome(ctrl);
+    // (the pointer's Dock goes again only over the app it came out over: after Cmd-H, or an app opened from it as a window, SpringBoard keeps it out on the
+    //  Home Screen or the desktop -- code review 1.8.2, 2. Asked only while it is the pointer's Dock)
+    BOOL sameApp = YES;
+    if (presented && gDockSidePointer.byPointer) {
+        NSString *front = DMDockSideFrontApp();
+        sameApp = [front isEqualToString:gDockSidePointerApp ?: @""];
+        if (!sameApp) DMLog([NSString stringWithFormat:@"[dockside] %@ is in front now, not %@: the Dock out is SpringBoard's, the pointer leaving keeps it", front.length ? front : @"the Home Screen", gDockSidePointerApp.length ? gDockSidePointerApp : @"the Home Screen"]);
+    }
+    switch (MSBDDockPointerStep(&gDockSidePointer, gDockSideApplied, p, s, presented, may, stay, h, CACurrentMediaTime(), sameApp)) {
+        case MSBDDockPointerComeOut:
+            DM_FEATURE_MARK("dock-side-pointer");
+            gDockSidePointerApp = [DMDockSideFrontApp() copy];
+            DMLog([NSString stringWithFormat:@"[dockside] the pointer at %@ reached the Dock's side: the Dock comes out (over %@)", NSStringFromCGPoint(p), gDockSidePointerApp.length ? gDockSidePointerApp : @"the Home Screen"]);
+            DMDockSideSend(ctrl, @"presentFloatingDockIfDismissedAnimated:completionHandler:");
+            break;
+        case MSBDDockPointerGoAway:
+            DMLog([NSString stringWithFormat:@"[dockside] the pointer at %@ has left: the Dock goes", NSStringFromCGPoint(p)]);
+            DMDockSideSend(ctrl, @"dismissFloatingDockIfPresentedAnimated:completionHandler:");
+            break;
+        default: break;
+    }
+    DMDockSidePointerArm(MSBDDockPointerInterval(gDockSideApplied, p, s, presented, gDockSidePointer.byPointer));
+}
+static void DMDockSidePointerLook(void) {
+    gDockSidePollArmed = NO;
+    if (!gDockSideApplied) { gDockSidePointer.atEdge = NO; gDockSidePointer.byPointer = NO; return; }   // (the next side in use starts it again)
+    static int blank = 0;
+    if (!blank) notify_register_dispatch("com.apple.springboard.hasBlankedScreen", &blank, dispatch_get_main_queue(), ^(int t) { uint64_t b = 0; notify_get_state(t, &b); if (!b) DMDockSidePointerArm(0.25); });
+    uint64_t off = 0; notify_get_state(blank, &off);
+    if (off) return;   // (screen off: its return starts it again)
+    id pm = [[UIApplication sharedApplication] respondsToSelector:NSSelectorFromString(@"mousePointerManager")] ? ((id (*)(id, SEL))objc_msgSend)([UIApplication sharedApplication], NSSelectorFromString(@"mousePointerManager")) : nil;
+    SEL att = NSSelectorFromString(@"isHardwarePointingDeviceAttached");
+    if ([pm respondsToSelector:att] && !((BOOL (*)(id, SEL))objc_msgSend)(pm, att)) { DMDockSidePointerArm(2.0); return; }   // (no trackpad or mouse: asked again now and then)
+    static dispatch_queue_t q;
+    if (!q) q = dispatch_queue_create("com.besiktasliseba.dockside.pointer", DISPATCH_QUEUE_SERIAL);
+    dispatch_async(q, ^{
+        Class c = objc_getClass("BKSMousePointerService");
+        id svc = c && [(id)c respondsToSelector:@selector(sharedInstance)] ? ((id (*)(id, SEL))objc_msgSend)((id)c, @selector(sharedInstance)) : nil;
+        SEL gp = sel_registerName("globalPointerPosition");
+        Method m = svc ? class_getInstanceMethod(object_getClass(svc), gp) : NULL;
+        BOOL known = m && !strcmp(method_getTypeEncoding(m) ?: "", "{CGPoint=dd}16@0:8");
+        CGPoint n = known ? ((CGPoint (*)(id, SEL))objc_msgSend)(svc, gp) : CGPointMake(NAN, NAN);
+        dispatch_async(dispatch_get_main_queue(), ^{ if (known) DMDockSidePointerSeen(n); else DMDockSidePointerArm(5.0); });
+    });
+}
+static void DMDockSidePointerArm(double seconds) {
+    if (gDockSidePollArmed || !gDockSideApplied) return;
+    gDockSidePollArmed = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(seconds * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMDockSidePointerLook(); });
+}
+// The picture an icon of ours is lifted as for its menu (and the pointer's lift), with the Dock at a side: a plain copy of its picture over its place in the
+// window, because a preview of the view itself is worked out through the turned view and came out as a thin line (Trash, 18.5, Right). nil on the bottom.
+__attribute__((visibility("default"))) UITargetedPreview *MSBDDockSideIconPreview(UIView *icon, UIImage *picture, UIPreviewParameters *parameters) {
+    if (!gDockSideApplied || !icon.window || !picture || !DMDockSideInHost(icon)) return nil;
+    UIView *over = icon.window.rootViewController.view ?: icon.superview;   // (the Dock window's root view: upright, and a view in a window as UIKit asks of a target; a window itself has none)
+    CGRect r = [icon convertRect:icon.bounds toView:over];
+    UIImageView *copy = [[UIImageView alloc] initWithImage:picture];
+    copy.bounds = CGRectMake(0, 0, r.size.width, r.size.height);
+    copy.contentMode = UIViewContentModeScaleAspectFit;
+    UIPreviewTarget *target = [[UIPreviewTarget alloc] initWithContainer:over center:CGPointMake(CGRectGetMidX(r), CGRectGetMidY(r))];
+    return [[UITargetedPreview alloc] initWithView:copy parameters:parameters ?: [UIPreviewParameters new] target:target];
+}
 %hook SBFloatingDockView
 - (void)layoutSubviews {
     UIView *outerLayout = gDMDockInLayout;
@@ -430,6 +1010,20 @@ static void DMDockMirrorMetrics(DMDockMetrics *m) {
     DMReadIconCornerRatio((UIView *)self);
     if (platter) DMFinderIconAttach(platter, gFinderSlot, gShowFinder && gFinderSlot.size.width > 0);
     DMSecondDividerAttach((UIView *)self);
+    if (platter && gDockSideEver) {   // (the icons' turn, and each one's share of the row: new icons and a changed Dock too)
+        int side = DMDockSideOf((UIView *)self);
+        DMDockSideStyleAll(platter, side);
+        if (side) DMDockSideMeasureStep(platter);   // (the side Dock's own rows: a TV's Dock lays out with its own, wider step)
+        if (side) {   // (the Home Screen keeps out of the Dock at rest)
+#if DEBUG
+            CGFloat r = DMDockSideRestingRoom((UIView *)self, platter);
+            if (fabs(r - gDockSideHomeRoom) > 0.25) DMLog([NSString stringWithFormat:@"[dockside] room %.1f from: dock view bounds %@ center %@ transform %@, platter %@ in %@, host bounds %@, presented %d", r, NSStringFromCGRect(((UIView *)self).bounds),
+                NSStringFromCGPoint(((UIView *)self).center), NSStringFromCGAffineTransform(((UIView *)self).transform), NSStringFromCGRect(platter.frame), NSStringFromClass([platter.superview class]), NSStringFromCGRect(gDockSideHost.bounds),
+                [DMDockSideController() respondsToSelector:NSSelectorFromString(@"isFloatingDockPresented")] && ((BOOL (*)(id, SEL))objc_msgSend)(DMDockSideController(), NSSelectorFromString(@"isFloatingDockPresented"))]);
+#endif
+            DMDockSideHomeLaidOut(DMDockSideRestingRoom((UIView *)self, platter));
+        }
+    }
 }
 - (void)updateDividerVisualStyling {   // (light / dark and material changes restyle the Dock's own divider: the second one follows)
     %orig;
@@ -451,7 +1045,9 @@ static void DMDockMirrorMetrics(DMDockMetrics *m) {
 // Icon size: scale every number of the layout together, so the icons, the spacing and the background (platter) shrink as
 // one and stay centred. The platter's bottom edge stays where it was (the gap above), so a smaller Dock never floats up.
 - (void)getMetrics:(DMDockMetrics *)m forBounds:(CGRect)bounds {
-    %orig;
+    int dockSide = DMDockSideOf((UIView *)self);   // (the host has the short side as its width; the root still asks for its own, longer one: one answer for both)
+    if (dockSide && bounds.size.width > gDockSideHost.bounds.size.width) bounds.size.width = gDockSideHost.bounds.size.width;
+    %orig(m, bounds);
 #if DEBUG
     if (gDMStockMetricsOnly) return;
 #endif
@@ -569,12 +1165,21 @@ static void DMDockMirrorMetrics(DMDockMetrics *m) {
         m->platter.origin.x -= extra / 2.0;
     }
     CGFloat f = gIconSize;
+    if (dockSide) {
+        // (Settings > Dock > Position: the host's short width gets Apple's smaller Dock, A12Z 46 pt icons against 62 at the long width. Icon Size means the same icon as at
+        //  the bottom: Apple's answer for the long width gives the share, and the fit below takes over when a Dock that big doesn't fit)
+        DMDockMetrics longDock; memset(&longDock, 0, sizeof(longDock));
+        CGRect longBounds = CGRectMake(0, 0, gDockSideHost.bounds.size.height, gDockSideHost.bounds.size.width);
+        %orig(&longDock, longBounds);
+        CGFloat share = m->userList.size.height >= 8.0 ? longDock.userList.size.height / m->userList.size.height : 1.0;
+        if (isfinite(share) && share > 1.0 && share < 2.0) f *= share;
+    }
     // Auto-fit, like macOS (2026-09-25): the Icon Size is the largest the Dock gets; when the whole Dock (apps, divider, recents, Downloads, App
     // Library) would not fit the screen minus the side margins, it gets just small enough to fit -- in both orientations, re-worked out at every
     // layout (apps or recents added or removed, a turn). Room is kept at both ends for the magnification: the end icons grow in place by
     // (magnification - 1) x their width, half on each side, and must stay on the screen.
     CGFloat headroom = gEnabled ? MAX(0.0, gMagnification - 1.0) * (slot.size.width >= 1.0 ? slot.size.width : hiddenSide) : 0.0;   // (no end icon: the icon size)
-    CGFloat room = (bounds.size.width - 50.0) / (m->platter.size.width + headroom);
+    CGFloat room = (dockSide ? MSBDDockSideLength(bounds.size.width, DMDockSideBar()) : bounds.size.width - 50.0) / (m->platter.size.width + headroom);
     // Portrait: the screen is narrower, so a Dock this tweak has shrunk looks small. It grows to the widest size that still fits (at most
     // 1.2 times the stock size). Only while the tweak is shrinking the Dock at all; a size of 1.0 or more is left alone.
     // Portrait is read from the bounds asked about (the Dock spans its screen's width: narrower than the screen's long side = portrait), never from
@@ -582,6 +1187,7 @@ static void DMDockMirrorMetrics(DMDockMetrics *m) {
     // and the same bounds must always get the same answer (K-2: the portrait size stayed on in landscape after a turn, iPad 2: 974 pt instead of 831).
     UIScreen *dockScreen = ((UIView *)self).window.windowScene.screen ?: [UIScreen mainScreen];
     BOOL portraitBounds = bounds.size.width < MAX(dockScreen.bounds.size.width, dockScreen.bounds.size.height) - 1.0;
+    if (dockSide) portraitBounds = NO;   // (the short side of a landscape screen is no portrait Dock)
     if (gPortraitLarger && f < 1.0 && portraitBounds) f = MIN(room, 1.2);
     if (f > room) f = room;
     static CGFloat lastF = -1; static CGFloat lastW = -1;
@@ -597,6 +1203,7 @@ static void DMDockMirrorMetrics(DMDockMetrics *m) {
 #endif
         gDownloadsSlot = CGRectZero; gTrashSlot = CGRectZero; gDivider2Rect = CGRectZero;
         if (rtl) { DMDockMirrorMetrics(m); if (gFinderSlot.size.width > 0.0) gFinderSlot = DMDockMirrorRect(gFinderSlot, m->platter.size.width); }
+        if (dockSide) m->platter.origin.x = MSBDDockSidePlatterX(bounds.size.width, DMDockSideBar(), m->platter.size.width);
         return;
     }
     CGRect (^scaled)(CGRect) = ^CGRect(CGRect r) { return CGRectMake(r.origin.x * f, r.origin.y * f, r.size.width * f, r.size.height * f); };
@@ -649,6 +1256,7 @@ static void DMDockMirrorMetrics(DMDockMetrics *m) {
     // It is its own setting (Settings: its own group, not under Magnification): applied whenever the Dock part is on, with Magnify Icons on or off -- it
     // used to wait for magnification, so with Magnify Icons off the Dock stayed at iPadOS's own height whatever the slider said (K-2 report: 18.5 pt).
     if (gTweakOn && isfinite(gBottomGap)) { DM_FEATURE_MARK("dock-bottom-gap"); m->platter.origin.y = CGRectGetMaxY(bounds) - gBottomGap - m->platter.size.height; }
+    if (dockSide) m->platter.origin.x = MSBDDockSidePlatterX(bounds.size.width, DMDockSideBar(), m->platter.size.width);   // (in the room under the menu bar)
 #if DEBUG
     if (CACurrentMediaTime() < gDMMetricsLogUntil) {
         NSArray *st = [NSThread callStackSymbols];
@@ -777,8 +1385,11 @@ static BOOL DMDockNeedsFloat(UIView *dockWindow) {
     if (CGRectIsNull(dock)) return NO;   // (no Dock on the screen: nothing to keep above the windows)
     UIScreen *dockScreen = [dockWindow isKindOfClass:[UIWindow class]] ? DMDockScreenOf((UIWindow *)dockWindow) : nil;
     {   // (room above the platter for the magnified icons, M1 26 Sep; with magnification off, only a small margin)
-        CGFloat lift = gEnabled ? MAX(12.0, dock.size.height * (MAX(gMagnification, 1.0) - 1.0) + 6.0) : 4.0;
-        dock.origin.y -= lift; dock.size.height += lift;
+        int side = gDockSideApplied && [dockWindow isKindOfClass:[UIWindow class]] && DMDockOnMainScreen((UIWindow *)dockWindow) ? gDockSideApplied : 0;   // (a Dock at a side: on the screen's side of it)
+        CGFloat lift = gEnabled ? MAX(12.0, (side ? dock.size.width : dock.size.height) * (MAX(gMagnification, 1.0) - 1.0) + 6.0) : 4.0;
+        if (side == MSBDDockRight) { dock.origin.x -= lift; dock.size.width += lift; }
+        else if (side == MSBDDockLeft) dock.size.width += lift;
+        else { dock.origin.y -= lift; dock.size.height += lift; }
     }
     for (UIWindow *w in [UIWindow allWindowsIncludingInternalWindows:YES onlyVisibleWindows:NO]) {
         if (w.hidden || w.alpha < 0.05) continue;
@@ -927,10 +1538,12 @@ static void DMRefreshLaunchpadIcons(void) {
     }
 }
 static void DMLastPageApply(NSString *why);   // (below, with the App Library's last page)
+static void DMDockSideChoose(void);   // (Position: below, with its hooks)
 static void DMPrefsChanged(CFNotificationCenterRef c, void *o, CFNotificationName n,
                            const void *obj, CFDictionaryRef info) {
     BOOL lastPage = gLastPageOpensLibrary;
     DMLoadPrefs();
+    DMDockSideChoose();
     DMRelayoutDock();
     DMRefreshLaunchpadIcons();
     if (lastPage != gLastPageOpensLibrary) DMLastPageApply(@"switched in Settings");
@@ -1105,6 +1718,10 @@ extern void DMStartRunningIndicatorPoll(void);
     %orig;
     DMLaunchpadRefresh((UIView *)self, gLaunchpadIcon, gLaunchpadClassic);   // only acts on the App Library icon
     DMUpdateRunningIndicator((UIView *)self);   // only acts on Dock icons (checks internally)
+    if (gDockSideEver) {   // (Position: a side Dock icon's content stands upright; one that left the Dock, or a Dock back at the bottom, gets back what it had; others are not touched)
+        BOOL dock = gDockSideApplied && DMIsDockIcon((UIView *)self) && DMDockSideInHost((UIView *)self);   // (a TV's Dock icon: upright as its Dock)
+        DMDockSideStyleIcon((UIView *)self, dock ? gDockSideApplied : 0);
+    }
 }
 - (void)setTransform:(CGAffineTransform)t {
     %orig;
@@ -1477,6 +2094,21 @@ static void DMDesktopTouchGivenAway(UIGestureRecognizer *gesture) {
     if (!given && tries < 40) { tries++; given = (void (*)(UIGestureRecognizer *))dlsym(RTLD_DEFAULT, "MSBDDesktopTouchGivenAway"); }
     if (given) given(gesture);
 }
+// KT, 1.8.2: a trackpad's two-finger scroll down over the Home Screen beside a window opened the App Library -- the scroll moves this view's pan
+// as a finger does (SwipeDownRule.h). With a window of ours on screen it is nothing now, as on a Mac's desktop; a finger, and a scroll with no
+// window shown, as before. A window of ours: MacStatusBar's (MSBDWindowOnScreen: the window engine's on the desktop on screen, or a native one),
+// found with dlsym (MacStatusBar may load after the Dock; without it, no window of ours).
+#import "SwipeDownRule.h"
+static BOOL DMOurWindowOnScreen(void) {
+    static BOOL (*shown)(void) = NULL; static int tries = 0;
+    if (!shown && tries < 40) { tries++; shown = (BOOL (*)(void))dlsym(RTLD_DEFAULT, "MSBDWindowOnScreen"); }
+    return shown && shown();
+}
+#if DEBUG
+static BOOL DMSwipeScrollOld(void) { return access("/tmp/msb-swipescroll-old", F_OK) == 0; }   // (tests: as before 1.8.2, to compare)
+#else
+static BOOL DMSwipeScrollOld(void) { return NO; }
+#endif
 %hook SBSearchScrollView
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gesture {
     if (DMPanStartedOnDesktopIcon(gesture)) { DMLog(@"[swipe-down] a drag from a desktop icon: not a swipe"); return NO; }
@@ -1494,6 +2126,21 @@ static void DMDesktopTouchGivenAway(UIGestureRecognizer *gesture) {
             DM_FEATURE_MARK("swipe-down-yields-to-top-pull");
             DMLog(@"[swipe-down] a pull from the top edge (Notification Center / Control Center) reached the Home Screen too: not a swipe down");
             return NO;
+        }
+        // (what drives the pan: UIKit's own scroll event on it, where -_activeEventOfType: is as on 17.6.1 -- UIEventTypeScroll, 10 --, else its touches)
+        SEL ae = NSSelectorFromString(@"_activeEventOfType:");
+        Method aem = class_getInstanceMethod([gesture class], ae);
+        BOOL askable = aem && !strcmp(method_getTypeEncoding(aem) ?: "", "@24@0:8q16");
+        id scroll = askable ? ((id (*)(id, SEL, long long))objc_msgSend)(gesture, ae, 10) : nil;
+#if DEBUG
+        DMLog([NSString stringWithFormat:@"[swipe-down] debug: a downward pan on the search view: touches %lu, scroll event %@, a window of ours on screen %d",
+               (unsigned long)gesture.numberOfTouches, scroll ? NSStringFromClass([scroll class]) : (askable ? @"none" : @"(not askable)"), DMOurWindowOnScreen()]);
+#endif
+        if (!DMSwipeDownTakesPan(gesture.numberOfTouches, askable, scroll != nil, DMOurWindowOnScreen()) && !DMSwipeScrollOld()) {   // (a pointer's scroll beside a window of ours: nothing)
+            DM_FEATURE_MARK("swipe-down-scroll-beside-window");
+            static int skipped = 0;
+            if (skipped++ < 20) DMLog(@"[swipe-down] a pointer's scroll down over the Home Screen with a window of ours on screen: not a swipe down, no App Library");
+            return NO;   // (nor Spotlight's pull)
         }
         static int logged = 0;
         if (logged++ < 20) DMLog(@"[swipe-down] genuine downward drag on the Home Screen search view -> opening the App Library");
@@ -2153,6 +2800,124 @@ static NSString *DMK2Verdict(void) {
 }
 #endif
 
+// Position's hooks (see above): installed the first time Left or Right is chosen, never on the bottom.
+%group DockSideRoot
+%hook SBFloatingDockRootViewController
+- (void)viewDidLayoutSubviews {
+    %orig;
+    DMDockSideApplyToRoot((UIViewController *)self);
+}
+%end
+%end
+%group DockSidePointer
+%hook SBFloatingDockController
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)g {
+    // (Apple's reveal at the bottom edge stands down at a side; our look at the pointer asks Apple's conditions through here)
+    if (gDockSideApplied && !gDockSideAskingApple) {
+        SEL rs = NSSelectorFromString(@"presentFloatingDockIndirectPanGestureRecognizer");
+        if ([self respondsToSelector:rs] && g == ((id (*)(id, SEL))objc_msgSend)(self, rs)) return NO;
+    }
+    return %orig;
+}
+%end
+%end
+// (the Home Screen's icons stay where they are, KT 5 Nov: their rows are spaced by the Dock's height, and at a side that is another height than at the bottom)
+%group DockSideHome
+%hook SBHIconManager
+- (double)externalDockHeightForRootFolderController:(id)c {
+    CGFloat h = gDockSideApplied ? DMDockSideHeightAtBottom() : -1.0;
+    double apple = %orig;
+#if DEBUG
+    static double lastH = -2, lastApple = -2;
+    if (h != lastH || apple != lastApple) { lastH = h; lastApple = apple; DMLog([NSString stringWithFormat:@"[dockside] the Home Screen asks the Dock's height: Apple's %.1f, as at the bottom %.1f", apple, h]); }
+#endif
+    return h > 0.0 ? h : apple;
+}
+- (double)maxExternalDockHeightForRootFolderController:(id)c {
+    CGFloat h = gDockSideApplied ? DMDockSideHeightAtBottom() : -1.0;
+    double apple = %orig;
+#if DEBUG
+    static double lastH = -2, lastApple = -2;
+    if (h != lastH || apple != lastApple) { lastH = h; lastApple = apple; DMLog([NSString stringWithFormat:@"[dockside] the Home Screen asks the Dock's greatest height: Apple's %.1f, as at the bottom %.1f", apple, h]); }
+#endif
+    return h > 0.0 ? h : apple;
+}
+%end
+%end
+// (the Dock out again after it was away: a size it laid out with meanwhile is taken now, DMDockSideHomeLaidOut)
+%group DockSideHomeBack
+%hook SBFloatingDockController
+- (void)floatingDockRootViewControllerDidEndPresentationTransition:(id)root {
+    %orig;
+    DMDockSideHomeDockBack();
+}
+%end
+%end
+// (each page's icon list placed beside the Dock: DMDockSideHomeFrame above)
+%group DockSideHomeLists
+%hook SBRootFolderView
+- (CGRect)_iconListFrameForPageRect:(CGRect)page atIndex:(unsigned long long)index {
+    CGRect f = %orig;
+    return DMDockSideHomeFrame((UIView *)self, f, index);
+}
+%end
+%end
+%group DockSideHomeButtons   // (Edit Home Screen's buttons beside the Dock: DMDockSideHomeEditButtons above)
+%hook SBRootFolderView
+- (void)_layoutSubviews {
+    %orig;
+    DMDockSideHomeEditButtons((UIView *)self);
+}
+%end
+%end
+%group DockSideFolder
+%hook SBFolderContainerView
+- (void)didMoveToSuperview {
+    %orig;
+    UIView *me = (UIView *)self;
+    if (gDockSideHost && me.superview == gDockSideHost) DMDockSideFoldersUpright(gDockSideHost, gDockSideApplied);
+}
+%end
+%end
+%group DockSideTouches
+%hook SBIconView
+- (BOOL)pointInside:(CGPoint)p withEvent:(UIEvent *)e {
+    BOOL r = %orig;
+    if (!r || !gDockSideApplied || gDockSideStep <= 0 || !DMIsDockIcon((UIView *)self) || !DMDockSideInHost((UIView *)self)) return r;   // (a TV's Dock icon: its whole view)
+    return MSBDDockIconTakesTouch(p, ((UIView *)self).bounds, gDockSideStep);
+}
+%end
+%end
+static void DMDockSideChoose(void) {
+    if (gDockPosition != MSBDDockBottom) {
+        static BOOL installed = NO;
+        if (!installed) {
+            installed = YES;
+            DM_FEATURE_MARK("dock-side-hooks");
+            if (objc_getClass("SBFloatingDockRootViewController")) %init(DockSideRoot);
+            if ([objc_getClass("SBFloatingDockController") instancesRespondToSelector:@selector(gestureRecognizerShouldBegin:)]) %init(DockSidePointer);
+            %init(DockSideTouches);
+            if (objc_getClass("SBFolderContainerView")) %init(DockSideFolder);
+            Class hm = objc_getClass("SBHIconManager");
+            Method hm1 = hm ? class_getInstanceMethod(hm, NSSelectorFromString(@"externalDockHeightForRootFolderController:")) : NULL, hm2 = hm ? class_getInstanceMethod(hm, NSSelectorFromString(@"maxExternalDockHeightForRootFolderController:")) : NULL;
+            if (hm1 && hm2 && !strcmp(method_getTypeEncoding(hm1) ?: "", "d24@0:8@16") && !strcmp(method_getTypeEncoding(hm2) ?: "", "d24@0:8@16")) %init(DockSideHome);
+            else DMLog(@"[dockside] the Home Screen's Dock height is not as expected here: its icons may move a little with the Dock at a side");
+            Class rv = objc_getClass("SBRootFolderView");
+            Method lf = rv ? class_getInstanceMethod(rv, NSSelectorFromString(@"_iconListFrameForPageRect:atIndex:")) : NULL;
+            if (lf && !strcmp(method_getTypeEncoding(lf) ?: "", "{CGRect={CGPoint=dd}{CGSize=dd}}56@0:8{CGRect={CGPoint=dd}{CGSize=dd}}16Q48")) { %init(DockSideHomeLists); gDockSideHomeHooked = YES; }
+            else DMLog(@"[dockside] the Home Screen's page frames are not as expected here: its icons stay where they are with the Dock at a side");
+            Method lay = rv ? class_getInstanceMethod(rv, NSSelectorFromString(@"_layoutSubviews")) : NULL;
+            if (gDockSideHomeHooked && lay && !strcmp(method_getTypeEncoding(lay) ?: "", "v16@0:8")) %init(DockSideHomeButtons);
+            Method back = class_getInstanceMethod(objc_getClass("SBFloatingDockController"), NSSelectorFromString(@"floatingDockRootViewControllerDidEndPresentationTransition:"));
+            if (gDockSideHomeHooked && back && !strcmp(method_getTypeEncoding(back) ?: "", "v24@0:8@16")) %init(DockSideHomeBack);
+            else if (gDockSideHomeHooked) DMLog(@"[dockside] the Dock's presentation end is not as expected here: a size it takes while away waits for its next layout");
+#if DEBUG
+            DMDockSideHomeCheckHook();
+#endif
+        }
+    }
+    if (gDockPosition != MSBDDockBottom || gDockSideApplied) DMDockSideRefresh();
+}
 %ctor {
     %init;
     {   // (1.7.5 items 12 / 16: a pull from the top edge is never a swipe down -- where the tongue's pull start is as on 15-18)
@@ -2327,6 +3092,7 @@ static NSString *DMK2Verdict(void) {
 #endif
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ %init(SwipeUpFix); });
     DMLoadPrefs();
+    if (gDockPosition != MSBDDockBottom) DMDockSideChoose();   // (Position: its hooks before the Dock is laid out)
     DMLastPageInit();   // (after the switch is read: the App Library's last page, KT 1.7.8)
     DMStartRunningIndicatorPoll();   // periodic dot resync (RunningIndicator.m) -- catches Force Quit All / 3D-Touch quit / App Switcher, not just layoutSubviews
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,

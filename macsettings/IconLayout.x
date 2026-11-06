@@ -19,6 +19,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <mach-o/dyld.h>
+#import <dlfcn.h>
 
 static void ILMLog(NSString *line) {   // (debug builds only: release builds write no /tmp log)
 #if DEBUG
@@ -69,6 +70,12 @@ static BOOL ILEditing(UIView *list) {
     return [list respondsToSelector:sel] && ((BOOL (*)(id, SEL))objc_msgSend)(list, sel);
 }
 static Class ILIconViewClass(void) { static Class c; if (!c) c = objc_getClass("SBIconView"); return c; }
+// The Dock part's chosen position (Settings > Dock > Position: 0 the bottom, also when the Dock part is off or not loaded). Found with dlsym, the parts load apart.
+static int ILDockPosition(void) {
+    static int (*chosen)(void) = NULL; static int tries = 0;
+    if (!chosen && tries < 40) { tries++; chosen = (int (*)(void))dlsym(RTLD_DEFAULT, "MSBDDockPositionChosen"); }
+    return chosen ? chosen() : 0;
+}
 
 static void ILAfterLayout(UIView *list) {
     if (MSTestFlag("/tmp/macsettings-noiconfix")) return;
@@ -79,6 +86,11 @@ static void ILAfterLayout(UIView *list) {
     ILLoad();
     Class iconViewClass = ILIconViewClass();
     if (o == 3 || o == 4) {   // landscape: remember where each icon is
+        // (not from a list narrower than its page: the Dock at a screen side with icons too wide to stay as they are -- Settings > Dock > Position, the Dock part's
+        //  DMDockSideHomeFrame -- lays them out again in the room beside it, not where this layout puts them. A list only moved beside the Dock keeps them. Only
+        //  with Left or Right chosen: at the bottom a layout tweak's narrower list is learnt as before, code review 1.8.2, 12)
+        UIView *page = list.superview;
+        if (ILDockPosition() != 0 && [page isKindOfClass:[UIScrollView class]] && fabs(list.bounds.size.width - page.bounds.size.width) > 0.5) return;
         BOOL changed = NO;
         for (UIView *iv in list.subviews) {
             if (![iv isKindOfClass:iconViewClass] || iv.hidden) continue;

@@ -96,6 +96,12 @@ static void DMBannerDebug(NSString *what);   // (Mac-style banners block, near t
 static BOOL DMAutoHideActive(void);          // (auto-hiding status bar block, near the end)
 static BOOL DMAutoHideHandlePointerPull(void);
 static CGFloat DMTopLimit(void);
+static int gDMDockPosition = -1;   // (Settings > Dock > Position, near DMUsableArea; -1: not read yet)
+static int DMDockPositionRead(void);
+static void DMSMHookBottomInsets17(void);   // (Apple's bottom limit for a window, hooked from the first Left or Right: with the Stage Manager engine's 17 hooks)
+static int DMDockSideNow(CGSize screen);   // (the side the Dock stands on, 0 at the bottom)
+static CGRect DMDockSideDesktopOf(CGSize shape, int side);
+static CGRect DMDockSideKept(CGRect window, unsigned how);
 #include "../common/MenuBarHeight.h"   // (the bar's height and the geometry from it, Mac-tested)
 #include "../common/MenuBarSize.h"     // (Settings > Status Bar > Menu Bar Size, 1.7.3: Small / Medium / Large, Mac-tested)
 static CGFloat DMMenuBarHeight(void);   // (our menu bar's height on the iPad's screen: 24 pt on Face ID iPads, 20 pt on Home-button iPads -- near DMTopLimit)
@@ -700,6 +706,7 @@ static BOOL gKbBarOnly = NO;   // a hardware keyboard is attached and only the a
 #include "WindowMinSize.h"   // (the smallest window of the engines, as Stage Manager's: 1.7.0 -- plain C, tools/test-winminsize.sh)
 #include "../common/WindowSize.h"   // (the size a new window opens at, Window Size, on every engine: 1.8.0 item 4 -- plain C, tools/test-windowsize.sh)
 #include "WindowSnap.h"      // (window snapping on every engine, 1.7.3 item 3 -- plain C, tools/test-windowsnap.sh; the glue: DMSnapMoveEnded)
+#include "../common/DockSide.h"   // (Settings > Dock > Position, 1.8.2: the Dock at a screen side -- plain C, tools/test-dockside.sh)
 #include "TurnPlace.h"       // (one turn rule, Fit's spread and the saved frames across engines, 1.7.4 items 4, 5, 7, 11, 14 -- plain C, tools/test-turnplace.sh)
 #include "DisplayTurn.h"     // (the screen against the display's own space: a window's frame for its app, a still's turn, 1.7.7 -- plain C, tools/test-displayturn.sh)
 static BOOL DMSnapOff(void);
@@ -4200,6 +4207,10 @@ static const void *kZetsuBarPanKey = &kZetsuBarPanKey, *kZetsuBarStartKey = &kZe
     UIWindow *w = self.view.window;
     dispatch_async(dispatch_get_main_queue(), ^{   // (after Zetsu's own touch handling has placed it)
         if (!w || w.hidden || [objc_getAssociatedObject(w, kStageGestureKey) boolValue]) return;
+        {   // (Settings > Dock > Position: Zetsu's own drag, let go under a Dock at a screen side, as our pan's)
+            CGRect kept = DMDockSideKept(w.frame, MSBDSnapMove);
+            if (!CGRectEqualToRect(kept, w.frame)) { DMZetsuMove(w, kept, YES, nil); return; }
+        }
         CGFloat top = DMTopLimit();
         if (w.frame.origin.y >= top - 0.5) return;
         CGRect f = w.frame; CGFloat was = f.origin.y; f.origin.y = top;
@@ -6838,11 +6849,13 @@ static BOOL DMStageMinimized(UIView *stage) {
     return found ? minimized : [DMStageValue(stage, @[@"_isMinimized"]) boolValue];
 }   // Aerial shows a minimized stage as an app-icon chip
 static const void *kStageClosingKey;   // (defined below)
-static UIView *DMTopStage(void) {   // the frontmost Aerial stage that is showing (not one that is on its way out to full screen)
+static UIScreen *DMSnapScreenOf(UIView *v);   // (below, with snapping)
+static UIView *DMTopStageOn(UIScreen *screen) {   // the frontmost Aerial stage that is showing (not one that is on its way out to full screen), on that screen (nil: any)
     UIView *top = nil;
-    for (UIView *s in DMAerialStages()) if (!s.hidden && s.alpha > 0.05 && !DMStageMinimized(s) && DMStageBundle(s).length && ![objc_getAssociatedObject(s, kStageClosingKey) boolValue]) top = s;
+    for (UIView *s in DMAerialStages()) if (!s.hidden && s.alpha > 0.05 && !DMStageMinimized(s) && DMStageBundle(s).length && ![objc_getAssociatedObject(s, kStageClosingKey) boolValue] && (!screen || DMSnapScreenOf(s) == screen)) top = s;
     return top;
 }
+static UIView *DMTopStage(void) { return DMTopStageOn(nil); }
 static UIView *DMStageForBundle(NSString *bundleID) {
     for (UIView *s in DMAerialStages()) if ([DMStageBundle(s) isEqualToString:bundleID]) return s;
     return nil;
@@ -6978,15 +6991,15 @@ static CGRect DMA5WindowFromStage(CGRect f);
 static BOOL DMSnapOff(void) { return DMTestFlag("/tmp/msb-nosnap"); }
 static UIScreen *DMSnapScreenOf(UIView *v) { return v.window.screen ?: ([v isKindOfClass:[UIWindow class]] ? ((UIWindow *)v).screen : nil) ?: [UIScreen mainScreen]; }
 // An engine window's frame as drawn -- title bar and app -- in the screen's points (Aerial 5.x: its stage is the window grown by margins).
-static CGRect DMSnapWindowOf(UIView *st) {
+static CGRect DMSnapWindowOfFrame(UIView *st, CGRect f) {   // (... for a frame of its engine's: where a window not shown comes back, DMDockPositionMoved)
     if (!st) return CGRectNull;
-    CGRect f = st.frame;
     if (![st isKindOfClass:[UIWindow class]]) {   // (Zetsu's windows are UIWindows: their frame is in the screen's space already)
         if (!st.superview) return CGRectNull;
         f = [st.superview convertRect:f toCoordinateSpace:DMSnapScreenOf(st).coordinateSpace];
     }
     return DMActiveEngine() == DMEngineAerial ? DMA5WindowFromStage(f) : f;
 }
+static CGRect DMSnapWindowOf(UIView *st) { return st ? DMSnapWindowOfFrame(st, st.frame) : CGRectNull; }
 // The engine's own frame (in its superview) for a window frame on the screen: the reverse of DMSnapWindowOf.
 static CGRect DMSnapEngineFrameFor(UIView *st, CGRect window) {
     CGRect f = DMActiveEngine() == DMEngineAerial ? DMA5StageFromWindow(window) : window;
@@ -7017,19 +7030,33 @@ static CGRect DMSnapFrameFor(NSString *who, CGRect window, unsigned how, const C
     }
     return s;
 }
+// Settings > Dock > Position, on Aerial, Zetsu and MilkyWay4: a window let go under the Dock at a screen side comes out of it, as Stage Manager's own area does
+// (DMSMAttrsFitScreen): a move keeps its size, a resize its other sides (common/DockSide.h). On the bottom nothing changes: a window may lie behind the Dock.
+static BOOL DMDockSideKeepsOut(void) { return DMDockSideNow([UIScreen mainScreen].bounds.size) != MSBDDockBottom; }
+static CGRect DMDockSideKept(CGRect window, unsigned how) {
+    if (!DMDockSideKeepsOut() || CGRectIsNull(window)) return window;
+    unsigned sides = (how & MSBDSnapMove) == MSBDSnapMove ? MSBDDockKeepMove : (how & MSBDSnapLeft ? MSBDDockKeepLeft : 0) | (how & MSBDSnapRight ? MSBDDockKeepRight : 0) | (how & MSBDSnapBottom ? MSBDDockKeepBottom : 0);
+    CGRect s = MSBDDockSideKeepOut(window, DMUsableArea(), sides);
+    if (!CGRectEqualToRect(s, window)) { DM_FEATURE_MARK("dock-side-keep-out"); DMLog([NSString stringWithFormat:@"[dockside] a window let go at %@ under the Dock: %@", NSStringFromCGRect(window), NSStringFromCGRect(s)]); }
+    return s;
+}
 static CGRect DMSnapEngineWindow(UIView *st, CGRect window, unsigned how) {
     CGRect others[32];
     int n = DMSnapOthers(st, others, 32);
-    return DMSnapFrameFor(DMStageBundle(st), window, how, others, n, DMUsableArea());
+    return DMDockSideKept(DMSnapFrameFor(DMStageBundle(st), window, how, others, n, DMUsableArea()), how);
 }
 // A move by hand of an Aerial, Zetsu or MilkyWay4 window has ended: it goes to its snapped place, as our own moves go (DMAerialMoveStage: animated,
 // the app's place updated, then remembered), and the windows' state is saved again.
+static void DMSnapMoveEngineTo(UIView *st, CGRect s);
 static void DMSnapMoveEnded(UIView *st) {
-    if (!st || DMSnapOff()) return;
+    if (!st || (DMSnapOff() && !DMDockSideKeepsOut())) return;
     CGRect w = DMSnapWindowOf(st);
     if (CGRectIsNull(w) || CGRectIsEmpty(w)) return;
     CGRect s = DMSnapEngineWindow(st, w, MSBDSnapMove);
     if (CGRectEqualToRect(s, w)) return;
+    DMSnapMoveEngineTo(st, s);
+}
+static void DMSnapMoveEngineTo(UIView *st, CGRect s) {   // (a window, as drawn on the screen, to that place on its engine)
     CGRect target = DMSnapEngineFrameFor(st, s);
     if (DMActiveEngine() == DMEngineMilkyWay) {   // (only its place changes: no veil over the app, which DMAerialMoveStage puts up for a size change)
         MSBAnimate(0.36, 0, 1.0, UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction, ^{ DMSetStageFrameSafe(st, target); [st layoutIfNeeded]; },
@@ -7203,8 +7230,19 @@ static void DMSMTurnNote(void) {
         for (NSString *k in [gSMTurnFrames allKeys]) if (![alive containsObject:k]) { [gSMTurnFrames removeObjectForKey:k]; [gSMTurnLayout removeObjectForKey:k]; [gSMTurnPlaced removeObjectForKey:k]; }
     }
 }
+static void DMDockPositionMoved(NSDictionary<NSString *, NSString *> *layouts);   // (below)
+static void DMLayoutNoteHold(CFTimeInterval seconds);   // (below, with the turn)
 static void DMDockChangedRelayout(NSString *why) {
     NSDictionary *layouts = DMSMEngine() ? DMSMLayoutsNow() : nil;   // (before the usable area forgets the old Dock)
+    // (Settings > Dock > Position: up to here the windows' layouts were read against the old place. Moved for the screen as it is: in portrait the Dock stays
+    //  at the bottom, and a change made there moves no window -- code review 1.8.2, 5)
+    int position = DMDockPositionRead();
+    CGSize scrNow = [UIScreen mainScreen].bounds.size;
+    BOOL moved = gDMDockPosition >= 0 && MSBDDockSideMoved(gDMDockPosition, position, scrNow.width, scrNow.height);
+    if (gDMDockPosition >= 0) { gDMDockPosition = position; DMSMHookBottomInsets17(); }
+    // (Aerial, Zetsu, MilkyWay4: the layouts noted are the old place's until DMDockPositionMoved has placed the windows, as at a turn. A note in between measured
+    //  a window in a layout against the new desktop, found it in none, and the window was only kept out: a half kept its width, M1 Aerial, 6 Nov)
+    if (moved) DMLayoutNoteHold(2.4);
     gDMDockGen++;
     DM_FEATURE_MARK("dock-change-relayout");
     DMLog([NSString stringWithFormat:@"[usable] the Dock changed (%@): its height is measured again; windows in a layout follow it %@", why, layouts]);
@@ -7214,6 +7252,7 @@ static void DMDockChangedRelayout(NSString *why) {
             (void)DMUsableArea();
             if (DMSMEngine()) { if (layouts.count) DMSMApplyLayouts(layouts); }
             else if (DMFitEnabled()) DMApplyGroupSlots(nil);
+            if (moved) DMDockPositionMoved(layouts);
         });
     });
 }
@@ -7315,8 +7354,73 @@ static void DMWatchDockChanges(void) {
     if (lastCount >= 0 && n != lastCount) DMDockChangedRelayout([NSString stringWithFormat:@"%ld -> %ld apps", (long)lastCount, (long)n]);
     lastCount = n;
 }
+// ---- Settings > Dock > Position (1.8.2; common/DockSide.h, the Dock's own part: dock/Dock.x) ----
+// With the Dock at a screen side there is no Dock at the bottom: the desktop reaches the screen's bottom edge and keeps out the strip the Dock takes at its side.
+// One function decides, the usable area below (every layout, tile, snap, new window and menu on every engine), and Stage Manager's own stage area asks it
+// (DMSMOurStageArea). On the bottom none of this runs. The position is read when the Dock's settings change (DMDockChangedRelayout) and held here, so what the
+// windows were laid out against can be told from what they go to.
+static int DMDockPositionRead(void) {
+    CFStringRef dom = CFSTR("com.besiktasliseba.dockmagnification");
+    CFPreferencesAppSynchronize(dom);
+    int pos = MSBDDockBottom;
+    CFPropertyListRef v = CFPreferencesCopyValue(CFSTR(kMSBDDockPositionKey), dom, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    if (v) {
+        char b[16];
+        if (CFGetTypeID(v) == CFStringGetTypeID() && CFStringGetCString((CFStringRef)v, b, sizeof b, kCFStringEncodingUTF8)) pos = MSBDDockPositionFromString(b);
+        CFRelease(v);
+    }
+    CFPropertyListRef on = CFPreferencesCopyValue(CFSTR("tweakEnabled"), dom, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    if (on) { if (CFGetTypeID(on) == CFBooleanGetTypeID() && !CFBooleanGetValue(on)) pos = MSBDDockBottom; CFRelease(on); }   // (the Dock part off: the Dock as iPadOS draws it)
+    return dlsym(RTLD_DEFAULT, "MSBDDockSideIconPreview") ? pos : MSBDDockBottom;   // (MacDock not loaded: the same)
+}
+static int DMDockSideNow(CGSize screen) {
+    if (gDMDockPosition < 0) {
+        static CFTimeInterval tried = 0; CFTimeInterval now = CACurrentMediaTime();
+        if (now - tried < 1.0) return MSBDDockBottom;
+        tried = now;
+        if (!dlsym(RTLD_DEFAULT, "MSBDDockSideIconPreview")) return MSBDDockBottom;   // (the Dock part may load later, or not at all)
+        gDMDockPosition = DMDockPositionRead();
+        DMSMHookBottomInsets17();
+    }
+    return MSBDDockSideFor(gDMDockPosition, screen.width, screen.height);
+}
+// (the Dock's thickness as drawn; while it is away where it last was, as the bottom's rule below: the thickest seen, once measured again 0.3 s later)
+static double gDMDockSideStrip = 0;
+static double DMDockSideStripNow(CGSize screen, int side) {
+    double measured = -1.0;
+    for (UIWindow *w in DMAllWindows()) {
+        if (![NSStringFromClass([w class]) isEqualToString:@"SBFloatingDockWindow"] || fabs(w.bounds.size.width - screen.width) >= 0.5 || fabs(w.bounds.size.height - screen.height) >= 0.5) continue;
+        NSMutableArray *stack = [NSMutableArray arrayWithObject:w];
+        while (stack.count) {
+            UIView *v = stack.lastObject; [stack removeLastObject];
+            if ([NSStringFromClass([v class]) isEqualToString:@"SBFloatingDockPlatterView"]) {
+                if (!v.hidden && CGAffineTransformIsIdentity(v.transform)) { double m = MSBDDockSideStripOf([v convertRect:v.bounds toView:w], screen, side); if (m > 0) measured = m; }
+                continue;
+            }
+            [stack addObjectsFromArray:v.subviews];
+        }
+    }
+    static double cand = -1; static CFTimeInterval candAt = 0; static unsigned seenGen = 0; static int seenSide = 0;
+    if (seenGen != gDMDockGen || seenSide != side) { seenGen = gDMDockGen; seenSide = side; gDMDockSideStrip = 0; cand = -1; }
+    if (measured > 0) {
+        CFTimeInterval t = CACurrentMediaTime();
+        if (gDMDockSideStrip <= 0 || measured > gDMDockSideStrip + 0.25) {
+            if (fabs(cand - measured) <= 0.25 && t - candAt >= 0.3) { gDMDockSideStrip = measured; cand = -1; }
+            else if (fabs(cand - measured) > 0.25) { cand = measured; candAt = t; }
+        }
+        return MAX(measured, gDMDockSideStrip);
+    }
+    if (gDMDockSideStrip > 0) return gDMDockSideStrip;
+    return MAX(DMSpringBoardDockHeight(), 60.0);   // (not seen yet: SpringBoard's figure)
+}
+static CGRect DMDockSideDesktopOf(CGSize shape, int side) {   // (shape: the screen now, or the other turn of it: where the Dock last was)
+    CGSize screen = [UIScreen mainScreen].bounds.size;
+    double strip = CGSizeEqualToSize(shape, screen) ? DMDockSideStripNow(shape, side) : (gDMDockSideStrip > 0 ? gDMDockSideStrip : MAX(DMSpringBoardDockHeight(), 60.0));
+    return MSBDDockSideDesktop(shape, side, strip, DMTopLimit());
+}
 static CGRect DMUsableArea(void) {
     CGSize screen = [UIScreen mainScreen].bounds.size;
+    { int dockSide = DMDockSideNow(screen); if (dockSide) return DMDockSideDesktopOf(screen, dockSide); }   // (the Dock at a screen side: above)
     // Landscape assumes the Dock's top is at most 84 pt above the bottom edge (and moves up if it is higher). In portrait the Dock is
     // shorter than that, which left a strip of unused screen above it: there the Dock's real top is used.
     BOOL portrait = screen.width < screen.height;
@@ -9651,6 +9755,65 @@ static void DMSetStageIntent(UIView *stage, CGRect frame) {
     NSMutableDictionary *by = objc_getAssociatedObject(stage, kStageByOrientKey);
     if (!by) { by = [NSMutableDictionary dictionary]; objc_setAssociatedObject(stage, kStageByOrientKey, by, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
     by[DMOrientKey()] = [NSValue valueWithCGRect:frame];
+}
+// The Dock moved in Settings: a window in a layout has followed (above, and Fit's tiles) or follows here; any other that lies under the Dock now comes out of it.
+// Every desktop's windows, on every engine (code review 1.8.2, 6: Stage Manager fitted its stages not on screen, while Aerial's, Zetsu's and MilkyWay4's
+// windows of another Mac Switcher desktop and minimized ones came back under the Dock): a window that is not shown is placed now, without a move, as a turn
+// places one (DMRelayoutForOrientation) -- into its layout of the new desktop, else kept inside it; Stage Manager's stages the same, in the model, each window
+// into the layout it was in when last on screen (a Fill window of another desktop is Fill beside the Dock there, as on the other engines).
+static void DMNativeLayoutForDesktop(BOOL log);
+static void DMDesktopAreaChanged(void);
+static void DMMSWDockMovedRecords(void);   // (MacSwitcher.h: what is kept of the other desktops -- the windows' places, Finder's windows there)
+static void DMDockPositionMoved(NSDictionary<NSString *, NSString *> *layouts) {
+    DM_FEATURE_MARK("dock-position-moved");
+    DMLog([NSString stringWithFormat:@"[dockside] the position changed: the desktop is now %@", NSStringFromCGRect(DMUsableArea())]);
+    DMNativeLayoutForDesktop(NO);   // (Finder's windows, on every engine)
+    DMDesktopAreaChanged();         // (and any desktop file under the Dock comes out of it: Desktop.h -dm_placesArea:)
+    if (DMSMEngine()) {
+        NSDictionary<NSString *, NSValue *> *frames = DMSMOpenWindowFrames();
+        CGRect area = DMSMUsableAreaForIdentity(nil, NULL); CGSize scr = [UIScreen mainScreen].bounds.size;
+        for (NSString *b in frames) {
+            CGRect f = frames[b].CGRectValue;
+            if (layouts[b] || CGRectEqualToRect(CGRectIntegral(f), CGRectIntegral(CGRectMake(0, -kSMBarH, scr.width, scr.height + kSMBarH))) || CGRectContainsRect(CGRectInset(area, -1.0, -1.0), f)) continue;
+            CGRect k = MSBDDockSideKeepOut(f, area, MSBDDockKeepMove);
+            CGRect card = CGRectMake(k.origin.x, k.origin.y + kSMBarH, k.size.width, k.size.height - kSMBarH);
+            DMSMSetWindowGeometry(b, CGPointMake(CGRectGetMidX(card) / scr.width, CGRectGetMidY(card) / scr.height), CGSizeMake(card.size.width / scr.width, card.size.height / scr.height));
+        }
+        // (the stages not on screen: the layouts their windows had when last on screen, DMSMTurnNote; the ones read before the change for the stage on screen)
+        NSMutableDictionary<NSString *, NSString *> *noted = [gSMTurnLayout mutableCopy] ?: [NSMutableDictionary dictionary];
+        if (layouts) [noted addEntriesFromDictionary:layouts];
+        DMSMFitHiddenStages(frames.count ? DMSMWorkingStage() : nil, noted, nil);   // (the other desktops too, as a turn does)
+        DMMSWDockMovedRecords();
+        return;
+    }
+    CGSize scr = [UIScreen mainScreen].bounds.size;
+    unsigned placed = 0;
+    for (UIView *st in DMAerialStagesAll()) {
+        BOOL away = [objc_getAssociatedObject(st, kMSWAwayKey) boolValue];
+        if ([objc_getAssociatedObject(st, kStageClosingKey) boolValue] || (!away && DMFitEnabled() && [gFitGroup containsObject:DMStageBundle(st) ?: @""])) continue;   // (leaving; this desktop's tiles: Fit's own)
+        NSString *name = objc_getAssociatedObject(st, kStageLayoutNameKey);
+        if (!away && !st.hidden && !DMStageMinimized(st)) {   // (on screen: moved there)
+            CGRect w = DMSnapWindowOf(st);
+            if (CGRectIsNull(w) || CGRectIsEmpty(w)) continue;
+            CGRect t = name ? DMLayoutFrameWindow(name) : MSBDDockSideKeepOut(w, DMUsableArea(), MSBDDockKeepMove);   // (kept inside the new desktop, as a turn keeps windows inside: back at the bottom, above the Dock)
+            if (!CGRectIsNull(t) && !CGRectEqualToRect(t, w)) DMSnapMoveEngineTo(st, t);
+            continue;
+        }
+        if (!st.hidden) continue;   // (the engine's own minimized form, Aerial's round icon or Zetsu's pill, or on its way into the Dock: the engine brings it back)
+        // (another desktop's, or minimized into the Dock: from where it comes back -- its kept place, for this shape -- to where it now goes)
+        NSValue *was = objc_getAssociatedObject(st, kStageIntentKey), *forSize = objc_getAssociatedObject(st, kStageIntentSizeKey);
+        CGRect from = was && (!forSize || CGSizeEqualToSize(forSize.CGSizeValue, scr)) ? was.CGRectValue : st.frame;
+        CGRect w = DMSnapWindowOfFrame(st, from);
+        if (CGRectIsNull(w) || CGRectIsEmpty(w)) continue;
+        CGRect t = name ? DMLayoutFrameWindow(name) : MSBDDockSideKeepOut(w, DMUsableArea(), MSBDDockKeepMove);
+        if (CGRectIsNull(t) || CGRectIsEmpty(t) || CGRectEqualToRect(t, w)) continue;
+        CGRect f = DMSnapEngineFrameFor(st, t);
+        gStageFrameBypass = YES; DMSetStageFrameSafe(st, f); gStageFrameBypass = NO;
+        DMSetStageIntent(st, f);
+        placed++;
+    }
+    if (placed) { DM_FEATURE_MARK("dock-position-moved-hidden"); DMLog([NSString stringWithFormat:@"[dockside] %u window(s) not on screen (another desktop's, minimized) placed for the new desktop", placed]); }
+    DMMSWDockMovedRecords();
 }
 static void DMRememberStageFrame(UIView *stage) {
     if (!stage || [objc_getAssociatedObject(stage, kStageEnteringKey) boolValue] || DMStageMinimized(stage)) return;
@@ -17611,6 +17774,7 @@ static void DMNativeStepBackForOpen(NSString *what) {
 #include "ProcList.h"       // (the process snapshot for Activity Monitor: the same stats reads as the RAM & CPU tile)
 #include "ActivityMonitor.h"   // (the Activity Monitor window: CPU and Memory tabs, 1.7.0)
 #include "Desktop.h"        // (Finder's desktop: the Desktop folder's icons on the Home Screen's first page)
+static void DMDesktopAreaChanged(void) { [gDesktop setNeedsLayout]; }
 #include "DockTrash.h"      // (the Dock's Trash, 1.7.0: Finder's side -- the bin's state, its tap and menu, drops and Eject)
 #include "MacSwitcher.h"    // (Mac Switcher: our Mission Control, 1.4)
 #include "WindowCards.h"    // (iPadOS's App Switcher cards for the engines' windows, as Stage Manager's: 1.7.0, engine parity)
@@ -21275,9 +21439,11 @@ static BOOL DMOpenTodayPanel(UIButton *clockBtn) {
     if (dockTop < top + 150.0 || dockTop > host.bounds.size.height) dockTop = host.bounds.size.height - (portrait ? 110.0 : 96.0);
     if (DMIsExtMenuHost(host)) dockTop = host.bounds.size.height - 96.0;   // (on an external display: that display's height, not the iPad's Dock)
     CGFloat maxH = MIN(dockTop - top - 10.0, host.bounds.size.height * 0.72);   // (clear of the Dock, with a margin; a bit smaller than all the room: the owner)
-    CGFloat x = MIN(CGRectGetMaxX(anchor) + 4.0, host.bounds.size.width - 6.0) - W;
-    if (DMBarRTL(fg)) x = MIN(anchor.origin.x - 4.0, host.bounds.size.width - 6.0 - W);   // (a right-to-left language: the clock is at the left end, the panel hangs from its left edge)
-    UIView *panel = [[DMTouchSinkView alloc] initWithFrame:CGRectMake(MAX(6.0, x), top, W, maxH)];
+    // (it hangs from the clock's right end; a right-to-left language: the clock is at the left end, the panel hangs from its left edge. With the Dock at a side it
+    //  keeps out of it as it keeps above a Dock at the bottom, common/DockSide.h: before, its right part lay over the top of a Right Dock, A12Z 18.5)
+    MSBDPanelSpan span = MSBDDockSidePanelSpan(host.bounds.size.width, DMIsExtMenuHost(host) ? MSBDDockBottom : DMDockSideNow([UIScreen mainScreen].bounds.size), DMUsableArea());   // (the side DMUsableArea reads)
+    CGFloat x = MSBDPanelHungX(anchor.origin.x, CGRectGetMaxX(anchor), W, span, DMBarRTL(fg));
+    UIView *panel = [[DMTouchSinkView alloc] initWithFrame:CGRectMake(x, top, W, maxH)];
     panel.accessibilityLabel = @"Notifications and widgets"; panel.accessibilityContainerType = UIAccessibilityContainerTypeSemanticGroup;   // (assistive features: the group's name, as the clock's hint says)
     panel.layer.shadowColor = [[UIColor blackColor] CGColor]; panel.layer.shadowOpacity = 0.35; panel.layer.shadowRadius = 16.0; panel.layer.shadowOffset = CGSizeMake(0, 8);
     // The look of our Control Center panel: its thin dark blur with a dark tint in Dark Mode (light in Light Mode), 14 pt corners, a hairline
@@ -21406,7 +21572,7 @@ static BOOL DMOpenTodayPanel(UIButton *clockBtn) {
             v.autoresizingMask = UIViewAutoresizingFlexibleHeight;
             if (colW + 2.0 * inset < pf.size.width - 1.0) {
                 pf.size.width = colW + 2.0 * inset;
-                if (!DMBarRTL(fg)) pf.origin.x = MAX(6.0, right - pf.size.width);   // (it hangs from the clock: its right edge stays; right-to-left the clock is at the left end and the left edge stays)
+                if (!DMBarRTL(fg)) pf.origin.x = MAX(span.lo, right - pf.size.width);   // (it hangs from the clock: its right edge stays; right-to-left the clock is at the left end and the left edge stays)
                 panel.frame = pf;
             }
             if (fabs(v.frame.origin.x + colX - inset) > 0.5) { CGRect vf = v.frame; vf.origin.x = inset - colX; v.frame = vf; }   // (colX is in the Today View's own space)
@@ -25414,6 +25580,228 @@ static void DMCtxTraceFor(double s) {
     gCtxTraceUntil = CACurrentMediaTime() + MAX(1.0, MIN(s, 120.0));
     DMLog([NSString stringWithFormat:@"[ctxtrace] on for %.0f s", MAX(1.0, MIN(s, 120.0))]);
 }
+#if DEBUG
+// hsread: the Home Screen against the Dock (Settings > Dock > Position, 1.8.2): the Dock's platter on the screen, the root folder's view, scroll view and page
+// dots, every page's icon list (frame and insets, its grid) and each icon view, folder and widget where it lies on the screen when its page shows, with how many
+// reach under the Dock; page 1's desktop files too. Read-only.
+static NSString *DMHSRectText(CGRect r) { return CGRectIsNull(r) ? @"-" : [NSString stringWithFormat:@"%.1f,%.1f %.1fx%.1f", r.origin.x, r.origin.y, r.size.width, r.size.height]; }
+// (a struct as its type encoding lays it out: every number in order, the nesting kept, from a buffer that method filled)
+static const char *DMHSStructText(const char *enc, const uint8_t *buf, size_t *off, NSMutableString *out) {
+    while (*enc && *enc != '}') {
+        char c = *enc;
+        if (c == '{') {
+            const char *eq = strchr(enc, '='); if (!eq) return enc + strlen(enc);
+            [out appendString:@"{"]; enc = DMHSStructText(eq + 1, buf, off, out); [out appendString:@"}"]; if (*enc == '}') enc++;
+            continue;
+        }
+        size_t sz = 0, al = 0;
+        switch (c) { case 'd': sz = al = 8; break; case 'f': sz = al = 4; break; case 'q': case 'Q': sz = al = 8; break; case 'i': case 'I': sz = al = 4; break; case 's': case 'S': sz = al = 2; break; case 'c': case 'C': case 'B': sz = al = 1; break; default: break; }
+        if (!sz) { enc++; continue; }
+        *off = (*off + al - 1) / al * al;
+        if (c == 'd') [out appendFormat:@"%.1f ", *(const double *)(buf + *off)];
+        else if (c == 'f') [out appendFormat:@"%.1f ", *(const float *)(buf + *off)];
+        else if (c == 'q') [out appendFormat:@"%lld ", *(const long long *)(buf + *off)];
+        else if (c == 'Q') { unsigned long long v = *(const unsigned long long *)(buf + *off); if (v > 1000000) [out appendString:@"big "]; else [out appendFormat:@"%llu ", v]; }
+        else if (c == 'i' || c == 'I') [out appendFormat:@"%d ", *(const int *)(buf + *off)];
+        else if (c == 's' || c == 'S') [out appendFormat:@"%u ", (unsigned)*(const unsigned short *)(buf + *off)];
+        else [out appendFormat:@"%u ", (unsigned)*(const unsigned char *)(buf + *off)];
+        *off += sz; enc++;
+    }
+    return enc;
+}
+// (a method that fills a struct through its pointer argument -- v24@0:8^{...}16, or with one more integer argument --: its numbers, read-only)
+static NSString *DMHSFilled(id obj, NSString *selName, BOOL extraArg, unsigned long long arg) {
+    SEL sel = NSSelectorFromString(selName);
+    Method m = obj ? class_getInstanceMethod(object_getClass(obj), sel) : NULL;
+    const char *enc = m ? method_getTypeEncoding(m) : NULL;
+    const char *ps = enc ? strstr(enc, "^{") : NULL;
+    if (!ps || enc[0] != 'v' || method_getNumberOfArguments(m) != (extraArg ? 4u : 3u)) return @"-";
+    if (extraArg) { char t[8] = {0}; method_getArgumentType(m, 3, t, sizeof t); if (t[0] != 'Q' && t[0] != 'q') return @"-"; }
+    NSUInteger size = 0, align = 0;
+    const char *se = ps + 1; int depth = 0; const char *e = se;
+    for (; *e; e++) { if (*e == '{') depth++; else if (*e == '}' && --depth == 0) { e++; break; } }
+    NSString *structEnc = [[NSString alloc] initWithBytes:se length:(NSUInteger)(e - se) encoding:NSASCIIStringEncoding];
+    @try { NSGetSizeAndAlignment(structEnc.UTF8String, &size, &align); } @catch (id x) { return @"?"; }
+    if (!size || size > 4096) return @"?";
+    uint8_t *buf = calloc(1, size + 64);
+    if (extraArg) ((void (*)(id, SEL, void *, unsigned long long))objc_msgSend)(obj, sel, buf, arg);
+    else ((void (*)(id, SEL, void *))objc_msgSend)(obj, sel, buf);
+    NSMutableString *out = [NSMutableString string]; size_t off = 0;
+    const char *eq = strchr(structEnc.UTF8String, '=');
+    if (eq) DMHSStructText(eq + 1, buf, &off, out);
+    free(buf);
+    return out;
+}
+static NSString *DMHSInsetsOf(id obj, NSString *selName, BOOL withOrientation, long long o) {
+    SEL sel = NSSelectorFromString(selName);
+    Method m = obj ? class_getInstanceMethod(object_getClass(obj), sel) : NULL;
+    if (!m || strncmp(method_getTypeEncoding(m) ?: "", "{UIEdgeInsets", 13)) return @"-";
+    UIEdgeInsets i = withOrientation ? ((UIEdgeInsets (*)(id, SEL, long long))objc_msgSend)(obj, sel, o) : ((UIEdgeInsets (*)(id, SEL))objc_msgSend)(obj, sel);
+    return [NSString stringWithFormat:@"%.1f,%.1f,%.1f,%.1f", i.top, i.left, i.bottom, i.right];
+}
+static void DMHSRead(void) {
+    id im = DMCall(DMSBManager("SBIconController"), @"iconManager");
+    UIViewController *rfc = DMCall(im, @"rootFolderController");
+    if (![rfc isKindOfClass:[UIViewController class]] || !rfc.isViewLoaded) { DMLog(@"[hsread] no root folder controller"); return; }
+    UIScreen *screen = [UIScreen mainScreen]; id<UICoordinateSpace> scs = screen.coordinateSpace; CGSize S = screen.bounds.size;
+    CGRect platter = CGRectNull;
+    for (UIWindow *w in DMAllWindows()) {
+        if (![NSStringFromClass([w class]) isEqualToString:@"SBFloatingDockWindow"] || (w.screen && w.screen != screen)) continue;
+        NSMutableArray<UIView *> *todo = [NSMutableArray arrayWithObject:w];
+        while (todo.count) { UIView *v = todo.lastObject; [todo removeLastObject]; if ([NSStringFromClass([v class]) isEqualToString:@"SBFloatingDockPlatterView"]) { if (!v.hidden) platter = [v convertRect:v.bounds toCoordinateSpace:scs]; continue; } [todo addObjectsFromArray:v.subviews]; }
+    }
+    id dc = DMFloatingDockController();
+    BOOL presented = [dc respondsToSelector:NSSelectorFromString(@"isFloatingDockPresented")] && ((BOOL (*)(id, SEL))objc_msgSend)(dc, NSSelectorFromString(@"isFloatingDockPresented"));
+    int side = DMDockSideNow(S);
+    double (*atBottom)(void) = (double (*)(void))dlsym(RTLD_DEFAULT, "MSBDDockHeightAtBottom");
+    // (the band the Dock takes at its side, the gap kept: what nothing of the Home Screen may reach into)
+    CGRect band = CGRectNull;
+    if (side && !CGRectIsNull(platter)) band = side == MSBDDockLeft ? CGRectMake(0, 0, CGRectGetMaxX(platter) + kMSBDDockSideGap, S.height) : CGRectMake(CGRectGetMinX(platter) - kMSBDDockSideGap, 0, S.width - CGRectGetMinX(platter) + kMSBDDockSideGap, S.height);
+    UIView *rfv = DMCall(rfc, @"rootFolderView") ?: DMCall(rfc, @"folderView");
+    NSMutableString *o = [NSMutableString stringWithFormat:@"[hsread] screen %.0fx%.0f orientation %ld side %d dock platter %@ presented %d strip %.1f at-bottom height %.1f; Apple's floatingDockHeight %.1f; root view %@ %@", S.width, S.height, (long)DMRealInterfaceOrientation(), side,
+        DMHSRectText(platter), presented, side ? DMDockSideStripNow(S, side) : 0.0, atBottom ? atBottom() : -2.0, DMSpringBoardDockHeight(), NSStringFromClass([rfv class]), rfv ? DMHSRectText([rfv convertRect:rfv.bounds toCoordinateSpace:scs]) : @"-"];
+    SEL ext = NSSelectorFromString(@"externalDockHeightForRootFolderController:"), mext = NSSelectorFromString(@"maxExternalDockHeightForRootFolderController:");
+    if ([im respondsToSelector:ext]) [o appendFormat:@"; asked: external Dock height %.1f, max %.1f", ((double (*)(id, SEL, id))objc_msgSend)(im, ext, rfc), [im respondsToSelector:mext] ? ((double (*)(id, SEL, id))objc_msgSend)(im, mext, rfc) : -1.0];
+    for (NSString *k in @[@"dockHeight", @"dockOffscreenFraction", @"isDockExternal", @"dockEdge"]) {
+        Method m = rfv ? class_getInstanceMethod([rfv class], NSSelectorFromString(k)) : NULL;
+        const char *enc = m ? method_getTypeEncoding(m) : NULL;
+        if (enc && enc[0] == 'd') [o appendFormat:@"; %@ %.1f", k, ((double (*)(id, SEL))objc_msgSend)(rfv, NSSelectorFromString(k))];
+        else if (enc && (enc[0] == 'B' || enc[0] == 'q' || enc[0] == 'Q')) [o appendFormat:@"; %@ %lld", k, (long long)((long long (*)(id, SEL))objc_msgSend)(rfv, NSSelectorFromString(k))];
+    }
+    if (rfv) for (NSNumber *edge in @[@4, @2, @8]) [o appendFormat:@"\n[hsread] Apple's root metrics, Dock edge %@: %@", edge, DMHSFilled(rfv, @"getMetrics:dockEdge:", YES, edge.unsignedLongLongValue)];
+    if (rfv) [o appendFormat:@"\n[hsread] Apple's root metrics now: %@", DMHSFilled(rfv, @"getMetrics:", NO, 0)];
+    UIScrollView *scroll = nil;
+    NSMutableArray<UIView *> *todo = rfv ? [NSMutableArray arrayWithArray:rfv.subviews] : [NSMutableArray array];
+    NSMutableString *kids = [NSMutableString string];
+    for (UIView *k in rfv.subviews) [kids appendFormat:@" %@%@ %@;", NSStringFromClass([k class]), k.hidden || k.alpha < 0.01 ? @"(hidden)" : @"", DMHSRectText([k convertRect:k.bounds toCoordinateSpace:scs])];
+    for (NSUInteger i = 0; i < todo.count && i < 400 && !scroll; i++) { UIView *v = todo[i]; if ([v isKindOfClass:objc_getClass("SBIconScrollView")]) scroll = (UIScrollView *)v; else [todo addObjectsFromArray:v.subviews]; }
+    [o appendFormat:@"\n[hsread] root view's children:%@", kids];
+    NSMutableString *dots = [NSMutableString string];
+    [todo removeAllObjects]; if (rfv) [todo addObject:rfv];
+    for (NSUInteger i = 0; i < todo.count && i < 600; i++) {
+        UIView *v = todo[i]; NSString *cn = NSStringFromClass([v class]);
+        if ([cn containsString:@"PageControl"] || [cn containsString:@"ScrollAccessory"]) { CGRect r = [v convertRect:v.bounds toCoordinateSpace:scs]; [dots appendFormat:@" %@%@ %@%@;", cn, v.hidden || v.alpha < 0.01 ? @"(hidden)" : @"", DMHSRectText(r), !CGRectIsNull(band) && CGRectIntersectsRect(r, band) && !v.hidden ? @" UNDER THE DOCK" : @""]; continue; }
+        if (![v isKindOfClass:[UIScrollView class]]) [todo addObjectsFromArray:v.subviews];
+    }
+    [o appendFormat:@"\n[hsread] page dots:%@", dots.length ? dots : @" none found"];
+    if (!scroll) { [o appendString:@"\n[hsread] no icon scroll view"]; DMLog(o); return; }
+    CGFloat pw = scroll.bounds.size.width;
+    [o appendFormat:@"\n[hsread] scroll %@ on screen %@ offset %.1f,%.1f content %.0fx%.0f inset %@", NSStringFromClass([scroll class]), DMHSRectText([scroll convertRect:scroll.bounds toCoordinateSpace:scs]), scroll.contentOffset.x, scroll.contentOffset.y, scroll.contentSize.width, scroll.contentSize.height, NSStringFromUIEdgeInsets(scroll.contentInset)];
+    Class lc = objc_getClass("SBIconListView"), ic = objc_getClass("SBIconView");
+    NSMutableArray<UIView *> *lists = [NSMutableArray array];
+    for (UIView *l in scroll.subviews) if (lc && [l isKindOfClass:lc]) [lists addObject:l];
+    [lists sortUsingComparator:^NSComparisonResult(UIView *a, UIView *b) { return a.frame.origin.x < b.frame.origin.x ? NSOrderedAscending : a.frame.origin.x > b.frame.origin.x ? NSOrderedDescending : NSOrderedSame; }];
+    NSUInteger totalIcons = 0, totalUnder = 0, totalModel = 0, totalModelUnder = 0;
+    for (UIView *l in lists) {
+        long page = pw > 0 ? lround(l.frame.origin.x / pw) : 0;
+        CGFloat dx = scroll.bounds.origin.x - page * pw;   // (where it lies when its page shows)
+        CGRect lr = CGRectOffset([scroll convertRect:l.frame toCoordinateSpace:scs], dx, 0);
+        NSString *ins = @"-";
+        Method mi = class_getInstanceMethod([l class], NSSelectorFromString(@"layoutInsets"));
+        if (mi && !strncmp(method_getTypeEncoding(mi) ?: "", "{UIEdgeInsets", 13)) ins = NSStringFromUIEdgeInsets(((UIEdgeInsets (*)(id, SEL))objc_msgSend)(l, NSSelectorFromString(@"layoutInsets")));
+        NSString *grid = @"";
+        for (NSString *k in @[@"iconColumnsForCurrentOrientation", @"iconRowsForCurrentOrientation"]) {
+            Method m = class_getInstanceMethod([l class], NSSelectorFromString(k));
+            if (m && strchr("QqIi", (method_getTypeEncoding(m) ?: "?")[0])) grid = [grid stringByAppendingFormat:@"%@%llu", grid.length ? @"x" : @"", (unsigned long long)((unsigned long long (*)(id, SEL))objc_msgSend)(l, NSSelectorFromString(k))];
+        }
+        NSMutableString *icons = [NSMutableString string];
+        NSUInteger n = 0, under = 0; CGFloat minX = INFINITY, maxX = -INFINITY, minY = INFINITY, maxY = -INFINITY, clear = INFINITY;
+        for (UIView *v in l.subviews) {
+            if (!ic || ![v isKindOfClass:ic] || v.hidden || v.alpha < 0.01 || v.bounds.size.width < 5.0) continue;
+            CGRect r = CGRectOffset([v convertRect:v.bounds toCoordinateSpace:scs], dx, 0);
+            CGRect img = r;
+            Method fm = class_getInstanceMethod([v class], NSSelectorFromString(@"iconImageFrame"));
+            if (fm && !strncmp(method_getTypeEncoding(fm) ?: "", "{CGRect", 7)) img = CGRectOffset([v convertRect:((CGRect (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"iconImageFrame")) toCoordinateSpace:scs], dx, 0);
+            id icon = DMCall(v, @"icon");
+            NSString *kind = [icon isKindOfClass:objc_getClass("SBFolderIcon")] ? @"F" : [NSStringFromClass([icon class]) containsString:@"Widget"] ? @"W" : [icon isKindOfClass:objc_getClass("SBApplicationIcon")] ? @"a" : @"?";
+            BOOL hit = !CGRectIsNull(band) && CGRectIntersectsRect(r, band);
+            n++; if (hit) under++;
+            minX = MIN(minX, CGRectGetMinX(img)); maxX = MAX(maxX, CGRectGetMaxX(img)); minY = MIN(minY, CGRectGetMinY(img)); maxY = MAX(maxY, CGRectGetMaxY(img));
+            if (side == MSBDDockLeft && !CGRectIsNull(band)) clear = MIN(clear, CGRectGetMinX(r) - CGRectGetMaxX(band));
+            if (side == MSBDDockRight && !CGRectIsNull(band)) clear = MIN(clear, CGRectGetMinX(band) - CGRectGetMaxX(r));
+            [icons appendFormat:@" %@%@ %.1f,%.1f,%.1fx%.1f", kind, hit ? @"!" : @"", img.origin.x, img.origin.y, img.size.width, img.size.height];
+        }
+        totalIcons += n; totalUnder += under;
+        [o appendFormat:@"\n[hsread] page %ld: %@ on screen %@ insets %@ grid %@ icons %lu, under the Dock %lu%@; images x %.1f..%.1f y %.1f..%.1f", page + 1, NSStringFromClass([l class]), DMHSRectText(lr), ins, grid.length ? grid : @"?", (unsigned long)n, (unsigned long)under,
+            isfinite(clear) ? [NSString stringWithFormat:@" (nearest view %.1f from the Dock's band)", clear] : @"", minX, maxX, minY, maxY];
+        [o appendFormat:@"\n[hsread]   p%ld:%@", page + 1, icons];
+        {   // (the list's insets as SpringBoard asks them, and every icon of its model where the list puts it -- shown or not)
+            long long lo = [l respondsToSelector:NSSelectorFromString(@"layoutOrientation")] ? ((long long (*)(id, SEL))objc_msgSend)(l, NSSelectorFromString(@"layoutOrientation")) : 0;
+            long long mode = [l respondsToSelector:NSSelectorFromString(@"layoutInsetsMode")] ? ((long long (*)(id, SEL))objc_msgSend)(l, NSSelectorFromString(@"layoutInsetsMode")) : -1;
+            [o appendFormat:@"\n[hsread]   p%ld list: orientation %lld, layoutInsetsForOrientation %@, additional %@, mode %lld, layout %@; metrics parameters: %@", page + 1, lo, DMHSInsetsOf(l, @"layoutInsetsForOrientation:", YES, lo), DMHSInsetsOf(l, @"additionalLayoutInsets", NO, 0), mode,
+                NSStringFromClass([DMCall(l, @"layout") class]), DMHSFilled(l, @"getLayoutMetricsParameters:", NO, 0)];
+            NSArray *micons = DMCall(DMCall(l, @"model"), @"icons");
+            SEL rfi = NSSelectorFromString(@"rectForIcon:");
+            Method rm = class_getInstanceMethod([l class], rfi);
+            if ([micons isKindOfClass:[NSArray class]] && rm && !strncmp(method_getTypeEncoding(rm) ?: "", "{CGRect", 7)) {
+                NSMutableString *ms = [NSMutableString string]; NSUInteger mu = 0;
+                for (id icon in micons) {
+                    CGRect r = ((CGRect (*)(id, SEL, id))objc_msgSend)(l, rfi, icon);
+                    CGRect sr = CGRectOffset([l convertRect:r toCoordinateSpace:scs], dx, 0);
+                    BOOL hit = !CGRectIsNull(band) && CGRectIntersectsRect(sr, band); if (hit) mu++;
+                    NSString *kind = [icon isKindOfClass:objc_getClass("SBFolderIcon")] ? @"F" : [NSStringFromClass([icon class]) containsString:@"Widget"] ? @"W" : [icon isKindOfClass:objc_getClass("SBApplicationIcon")] ? @"a" : @"?";
+                    [ms appendFormat:@" %@%@ %.1f,%.1f,%.1fx%.1f", kind, hit ? @"!" : @"", sr.origin.x, sr.origin.y, sr.size.width, sr.size.height];
+                }
+                totalModel += micons.count; totalModelUnder += mu;
+                [o appendFormat:@"\n[hsread]   p%ld model %lu icons, under the Dock %lu:%@", page + 1, (unsigned long)micons.count, (unsigned long)mu, ms];
+            }
+        }
+        Class dk = objc_getClass("DMDesktop"), dik = objc_getClass("DMDesktopItemView");
+        for (UIView *d in l.subviews) {
+            if (!dk || ![d isKindOfClass:dk]) continue;
+            NSUInteger dn = 0, du = 0; NSMutableString *fs = [NSMutableString string];
+            for (UIView *it in d.subviews) {
+                if (!dik || ![it isKindOfClass:dik] || it.hidden) continue;
+                CGRect r = CGRectOffset([it convertRect:it.bounds toCoordinateSpace:scs], dx, 0);
+                BOOL hit = !CGRectIsNull(band) && CGRectIntersectsRect(r, band);
+                dn++; if (hit) du++;
+                [fs appendFormat:@" %@%.1f,%.1f", hit ? @"!" : @"", CGRectGetMidX(r), CGRectGetMidY(r)];
+            }
+            [o appendFormat:@"\n[hsread]   desktop on page %ld: %@ files %lu, under the Dock %lu; centres:%@", page + 1, DMHSRectText(CGRectOffset([d convertRect:d.bounds toCoordinateSpace:scs], dx, 0)), (unsigned long)dn, (unsigned long)du, fs];
+        }
+    }
+    [o appendFormat:@"\n[hsread] total: %lu icon views on %lu pages, %lu under the Dock; model: %lu icons, %lu under the Dock", (unsigned long)totalIcons, (unsigned long)lists.count, (unsigned long)totalUnder, (unsigned long)totalModel, (unsigned long)totalModelUnder];
+    DMLog(o);
+}
+// hshit: the page that shows, by code (no touches sent): a touch at each icon's middle -- what the window's hit test reaches -- and a drop there -- the grid place
+// the list's own -coordinateAtPoint: gives and the icon it holds -- each against that icon (a drag in Edit Home Screen ends by those two). Read-only.
+static void DMHSHit(void) {
+    UIView *rfv = DMCall(DMCall(DMCall(DMSBManager("SBIconController"), @"iconManager"), @"rootFolderController"), @"rootFolderView");
+    UIScreen *screen = [UIScreen mainScreen]; id<UICoordinateSpace> scs = screen.coordinateSpace;
+    UIScrollView *scroll = nil;
+    NSMutableArray<UIView *> *todo = rfv ? [NSMutableArray arrayWithObject:rfv] : [NSMutableArray array];
+    for (NSUInteger i = 0; i < todo.count && i < 400 && !scroll; i++) { UIView *v = todo[i]; if ([v isKindOfClass:objc_getClass("SBIconScrollView")]) scroll = (UIScrollView *)v; else [todo addObjectsFromArray:v.subviews]; }
+    if (!scroll || !rfv.window) { DMLog(@"[hshit] no Home Screen"); return; }
+    Class lc = objc_getClass("SBIconListView"), ic = objc_getClass("SBIconView");
+    SEL cap = NSSelectorFromString(@"coordinateAtPoint:"), iac = NSSelectorFromString(@"iconAtCoordinate:metrics:"), lm = NSSelectorFromString(@"layoutMetrics");
+    typedef struct { long long a, b; } DMHSCoord;
+    NSUInteger n = 0, touchOK = 0, dropOK = 0, dropAsked = 0; NSMutableString *bad = [NSMutableString string];
+    for (UIView *l in scroll.subviews) {
+        if (!lc || ![l isKindOfClass:lc] || l.hidden || !CGRectIntersectsRect(l.frame, scroll.bounds)) continue;
+        Method mc = class_getInstanceMethod(object_getClass(l), cap), mi = class_getInstanceMethod(object_getClass(l), iac);
+        BOOL canDrop = mc && mi && !strcmp(method_getTypeEncoding(mc) ?: "", "{SBIconCoordinate=qq}32@0:8{CGPoint=dd}16") && !strcmp(method_getTypeEncoding(mi) ?: "", "@40@0:8{SBIconCoordinate=qq}16@32") && [l respondsToSelector:lm];
+        id metrics = canDrop ? DMCall(l, @"layoutMetrics") : nil;
+        for (UIView *v in l.subviews) {
+            if (!ic || ![v isKindOfClass:ic] || v.hidden || v.alpha < 0.01) continue;
+            CGRect r = [v convertRect:v.bounds toCoordinateSpace:scs];
+            CGPoint c = CGPointMake(CGRectGetMidX(r), CGRectGetMidY(r));
+            if (!CGRectContainsPoint(screen.bounds, c)) continue;
+            n++;
+            UIView *hit = [rfv.window hitTest:[rfv.window convertPoint:c fromCoordinateSpace:scs] withEvent:nil];
+            BOOL t = hit && [hit isDescendantOfView:v]; if (t) touchOK++;
+            BOOL d = NO;
+            if (metrics) {
+                dropAsked++;
+                DMHSCoord co = ((DMHSCoord (*)(id, SEL, CGPoint))objc_msgSend)(l, cap, [l convertPoint:c fromCoordinateSpace:scs]);
+                id at = ((id (*)(id, SEL, DMHSCoord, id))objc_msgSend)(l, iac, co, metrics);
+                d = at && at == DMCall(v, @"icon"); if (d) dropOK++;
+            }
+            if (!t || (metrics && !d)) [bad appendFormat:@" icon at %.0f,%.0f: touch %@, drop %@;", c.x, c.y, t ? @"ok" : NSStringFromClass([hit class]), metrics ? (d ? @"ok" : @"ANOTHER PLACE") : @"-"];
+        }
+    }
+    DMLog([NSString stringWithFormat:@"[hshit] %lu icons on the page that shows: a touch at the middle reaches the icon for %lu, a drop there lands on its own place for %lu of %lu%@", (unsigned long)n, (unsigned long)touchOK, (unsigned long)dropOK, (unsigned long)dropAsked, bad]);
+}
+#endif
 static void DMRunTrigger(NSString *cmd) {
     if ([cmd hasPrefix:@"seq:"]) {
         for (NSString *part in [[cmd substringFromIndex:4] componentsSeparatedByString:@";"]) {
@@ -27385,6 +27773,158 @@ static void DMRunTrigger(NSString *cmd) {
         CFRelease(ev);
         DMLog(out);
     }
+    else if ([cmd hasPrefix:@"scrollhid_"]) {   // scrollhid_<x>_<y>_<dx>_<dy>_<count>[_dry|_send][_fixed|_norm][_w=<window class>]: a trackpad's two-finger scroll as SpringBoard gets one
+        // from backboardd -- a scroll HID event with a pointer event inside (UIKitCore 17.6.1, -[UIScrollEvent _setHIDEvent:]), its pointer attributes
+        // naming the window (the Home Screen's by default) -- at screen point x, y, handed to UIKit's own event queue (-[UIApplication _enqueueHIDEvent:]):
+        // began, <count> changes of (dx, dy) 16 ms apart, ended. UIKit's whole path from there on is its own (the scroll event, the window's hit test, the
+        // pans under the pointer, their delegates). _dry: nothing sent -- the event read by a UIScrollEvent of its own (window, place, deltas, the
+        // recognisers it would reach, -_gestureRecognizersForWindow:), for each way of giving the pointer's place. (debug, 1.8.2: backboardd does not
+        // route an injected scroll, test of the swipe down beside a window)
+        NSArray *a = [[cmd substringFromIndex:10] componentsSeparatedByString:@"_"];
+        if (a.count < 5) { DMLog(@"[scrollhid] usage: scrollhid_<x>_<y>_<dx>_<dy>_<count>[_dry|_send][_fixed|_norm][_w=<window class>]"); return; }
+        double x = [a[0] doubleValue], y = [a[1] doubleValue], dx = [a[2] doubleValue], dy = [a[3] doubleValue];
+        int count = MAX(1, MIN(60, [a[4] intValue]));
+        NSArray *opts = [a subarrayWithRange:NSMakeRange(5, a.count - 5)];
+        BOOL dry = [opts containsObject:@"dry"];
+        NSString *wantClass = @"SBHomeScreenWindow";
+        for (NSString *o in opts) if ([o hasPrefix:@"w="] && o.length > 2) wantClass = [o substringFromIndex:2];
+        UIWindow *target = nil;
+        for (UIWindow *w in DMAllWindows()) if (!w.hidden && [NSStringFromClass([w class]) isEqualToString:wantClass]) { target = w; break; }
+        void *iokit = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY);
+        void *bks = dlopen("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices", RTLD_LAZY);
+        void *(*mkScroll)(CFAllocatorRef, uint64_t, double, double, double, uint32_t) = iokit ? dlsym(iokit, "IOHIDEventCreateScrollEvent") : NULL;
+        // (the pointer event inside: 18.5's IOKit has no IOHIDEventCreatePointerEvent -- the relative one makes the same pointer event, kIOHIDEventTypePointer,
+        //  whose place fields are then written as the absolute place)
+        void *(*mkPointer)(CFAllocatorRef, uint64_t, double, double, double, uint32_t, uint32_t, uint32_t) = iokit ? dlsym(iokit, "IOHIDEventCreatePointerEvent") : NULL;
+        if (!mkPointer && iokit) mkPointer = dlsym(iokit, "IOHIDEventCreateRelativePointerEvent");
+        void (*setFloat)(void *, uint32_t, double) = iokit ? dlsym(iokit, "IOHIDEventSetFloatValue") : NULL;
+        double (*getFloat)(void *, uint32_t) = iokit ? dlsym(iokit, "IOHIDEventGetFloatValue") : NULL;
+        uint32_t (*getType)(void *) = iokit ? dlsym(iokit, "IOHIDEventGetType") : NULL;
+        void (*append)(void *, void *, uint32_t) = iokit ? dlsym(iokit, "IOHIDEventAppendEvent") : NULL;
+        void (*setPhase)(void *, uint32_t) = iokit ? dlsym(iokit, "IOHIDEventSetPhase") : NULL;
+        void (*setAttrs)(void *, id) = bks ? dlsym(bks, "BKSHIDEventSetAttributes") : NULL;
+        Class pa = objc_getClass("BKSHIDEventPointerAttributes"), tk = objc_getClass("BKSHIDEventDeferringToken"), se = objc_getClass("UIScrollEvent");
+        SEL ctxSel = NSSelectorFromString(@"_contextId"), tokSel = NSSelectorFromString(@"tokenForIdentifierOfCAContext:"), enqSel = NSSelectorFromString(@"_enqueueHIDEvent:");
+        if (!target || !mkScroll || !mkPointer || !append || !setPhase || !setAttrs || !pa || !tk || !se || ![target respondsToSelector:ctxSel] || ![tk respondsToSelector:tokSel]
+            || ![[UIApplication sharedApplication] respondsToSelector:enqSel]) {
+            DMLog([NSString stringWithFormat:@"[scrollhid] not here: window %@ %p, calls %d %d %d %d %d, classes %d %d %d, enqueue %d", wantClass, target, mkScroll != NULL, mkPointer != NULL, append != NULL,
+                   setPhase != NULL, setAttrs != NULL, pa != Nil, tk != Nil, se != Nil, [[UIApplication sharedApplication] respondsToSelector:enqSel]]);
+            return;
+        }
+        unsigned int ctx = ((unsigned int (*)(id, SEL))objc_msgSend)(target, ctxSel);
+        id attrs = [pa new];
+        @try {
+            [attrs setValue:((id (*)(id, SEL, unsigned int))objc_msgSend)(tk, tokSel, ctx) forKey:@"token"];   // (the window the event is for: -_windowServerHitTestWindow)
+            [attrs setValue:@11 forKey:@"source"];                                                              // (a pointer device: a trackpad with its surface, a continuous scroll)
+            [attrs setValue:@100.0 forKey:@"digitizerSurfaceWidth"]; [attrs setValue:@70.0 forKey:@"digitizerSurfaceHeight"];
+        } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[scrollhid] attributes not set: %@", e.reason]); return; }
+        // (the pointer's place: interface points as given, or the screen's fixed space, or that normalized)
+        UIScreen *scr = [UIScreen mainScreen];
+        CGPoint (^place)(NSString *) = ^CGPoint(NSString *how) {
+            if ([how isEqualToString:@"points"]) return CGPointMake(x, y);
+            CGPoint f = [scr.coordinateSpace convertPoint:CGPointMake(x, y) toCoordinateSpace:scr.fixedCoordinateSpace];
+            if ([how isEqualToString:@"fixed"]) return f;
+            CGSize s = scr.fixedCoordinateSpace.bounds.size;
+            return CGPointMake(s.width > 0 ? f.x / s.width : 0, s.height > 0 ? f.y / s.height : 0);
+        };
+        void *(^make)(uint32_t, double, double, CGPoint) = ^void *(uint32_t phase, double ddx, double ddy, CGPoint p) {
+            uint64_t ts = mach_absolute_time();
+            void *sc = mkScroll(kCFAllocatorDefault, ts, ddx, ddy, 0, 0), *pt = mkPointer(kCFAllocatorDefault, ts, p.x, p.y, 0, 0, 0, 0);
+            if (!sc || !pt) { if (sc) CFRelease(sc); if (pt) CFRelease(pt); return NULL; }
+            if (setFloat) { setFloat(pt, 17 << 16, p.x); setFloat(pt, (17 << 16) | 1, p.y); }   // (kIOHIDEventFieldPointerX / Y: the place)
+            setPhase(sc, phase);
+            setAttrs(pt, attrs); setAttrs(sc, attrs);   // (the pointer event's attributes: the scroll's kind; the event's: its window)
+            append(sc, pt, 0); CFRelease(pt);
+            return sc;
+        };
+        UIView *search = nil, *icons = nil;
+        NSMutableArray<UIView *> *todo = [NSMutableArray arrayWithObject:target];
+        while (todo.count && (!search || !icons)) {
+            UIView *v = todo.lastObject; [todo removeLastObject];
+            NSString *cn = NSStringFromClass([v class]);
+            if (!search && [cn isEqualToString:@"SBSearchScrollView"]) search = v;
+            if (!icons && [cn isEqualToString:@"SBIconScrollView"]) icons = v;
+            [todo addObjectsFromArray:v.subviews];
+        }
+        NSString *mask = [NSString stringWithFormat:@"search view %@ pan mask %ld, icon scroll view %@ pan mask %ld", search ? @"found" : @"missing",
+                          search ? (long)((UIScrollView *)search).panGestureRecognizer.allowedScrollTypesMask : -1L, icons ? @"found" : @"missing",
+                          icons ? (long)((UIScrollView *)icons).panGestureRecognizer.allowedScrollTypesMask : -1L];
+        if (dry) {
+            SEL initSel = NSSelectorFromString(@"_init"), setHID = NSSelectorFromString(@"_setHIDEvent:"), wsSel = NSSelectorFromString(@"_windowServerHitTestWindow");
+            SEL grSel = NSSelectorFromString(@"_gestureRecognizersForWindow:"), typeSel = NSSelectorFromString(@"_scrollType"), accSel = NSSelectorFromString(@"acceleratedDelta");
+            SEL inViewSel = NSSelectorFromString(@"_adjustedAcceleratedDeltaInView:");
+            NSMutableString *out = [NSMutableString stringWithFormat:@"[scrollhid] dry, point %.0f,%.0f into %@ (context %u); %@:", x, y, wantClass, ctx, mask];
+            {   // (what was made: the two events' types and the pointer event's place read back)
+                void *probe = make(1, 0, 0, CGPointMake(x, y));
+                void *(*children)(void *) = dlsym(iokit, "IOHIDEventGetChildren");
+                CFArrayRef kids = probe && children ? (CFArrayRef)children(probe) : NULL;
+                void *kid = kids && CFArrayGetCount(kids) ? (void *)CFArrayGetValueAtIndex(kids, 0) : NULL;
+                [out appendFormat:@" made: scroll event type %u, %ld child(ren), the first of type %u at %.1f,%.1f;", probe && getType ? getType(probe) : 0, kids ? (long)CFArrayGetCount(kids) : -1L,
+                    kid && getType ? getType(kid) : 0, kid && getFloat ? getFloat(kid, 17 << 16) : -1, kid && getFloat ? getFloat(kid, (17 << 16) | 1) : -1];
+                if (probe) CFRelease(probe);
+            }
+            for (NSString *how in @[@"points", @"fixed", @"norm"]) {
+                CGPoint p = place(how);
+                id e = [se instancesRespondToSelector:initSel] ? ((id (*)(id, SEL))objc_msgSend)([se alloc], initSel) : nil;
+                void *began = make(1, 0, 0, p), *changed = make(2, dx, dy, p);
+                if (!e || !began || !changed || ![e respondsToSelector:setHID]) { [out appendFormat:@" %@: no event;", how]; if (began) CFRelease(began); if (changed) CFRelease(changed); continue; }
+                @try {
+                    ((void (*)(id, SEL, void *))objc_msgSend)(e, setHID, began);
+                    id named = [e respondsToSelector:wsSel] ? ((id (*)(id, SEL))objc_msgSend)(e, wsSel) : nil;
+                    CGPoint loc = [e respondsToSelector:@selector(locationInView:)] ? ((CGPoint (*)(id, SEL, id))objc_msgSend)(e, @selector(locationInView:), target) : CGPointMake(-1, -1);
+                    long long ph = [e respondsToSelector:@selector(phase)] ? ((long long (*)(id, SEL))objc_msgSend)(e, @selector(phase)) : -1;
+                    Method tm = class_getInstanceMethod(se, typeSel); const char *te = tm ? method_getTypeEncoding(tm) : "";
+                    long long kind = !tm ? -1 : (te[0] == 'B' || te[0] == 'c') ? (long long)((BOOL (*)(id, SEL))objc_msgSend)(e, typeSel) : ((long long (*)(id, SEL))objc_msgSend)(e, typeSel);
+                    NSMutableArray *grs = [NSMutableArray array];
+                    id set = [e respondsToSelector:grSel] ? ((id (*)(id, SEL, id))objc_msgSend)(e, grSel, target) : nil;
+                    for (UIGestureRecognizer *g in ([set conformsToProtocol:@protocol(NSFastEnumeration)] ? set : @[]))
+                        [grs addObject:[NSString stringWithFormat:@"%@ on %@", NSStringFromClass([g class]), NSStringFromClass([g.view class])]];
+                    ((void (*)(id, SEL, void *))objc_msgSend)(e, setHID, changed);
+                    CGVector acc = [e respondsToSelector:accSel] ? ((CGVector (*)(id, SEL))objc_msgSend)(e, accSel) : (CGVector){0, 0};
+                    CGVector inSearch = search && [e respondsToSelector:inViewSel] ? ((CGVector (*)(id, SEL, id))objc_msgSend)(e, inViewSel, search) : (CGVector){0, 0};
+                    [out appendFormat:@" %@ %.3f,%.3f: named %@, at %.1f,%.1f in it, phase %lld, kind %lld, delta %.1f,%.1f, in the search view %.1f,%.1f, reaches [%@];",
+                        how, p.x, p.y, NSStringFromClass([named class]), loc.x, loc.y, ph, kind, acc.dx, acc.dy, inSearch.dx, inSearch.dy, [grs componentsJoinedByString:@", "]];
+                    ((void (*)(id, SEL, void *))objc_msgSend)(e, setHID, NULL);
+                } @catch (NSException *x) { [out appendFormat:@" %@: %@;", how, x.reason]; }
+                CFRelease(began); CFRelease(changed);
+            }
+            DMLog(out);
+            return;
+        }
+        NSString *how = [opts containsObject:@"fixed"] ? @"fixed" : [opts containsObject:@"norm"] ? @"norm" : @"points";
+        CGPoint p = place(how);
+        int steps = count + 2;
+        // (_send: one UIScrollEvent of our own given each phase and sent with -[UIApplication sendEvent:], where UIKit's queue would not take it)
+        BOOL direct = [opts containsObject:@"send"];
+        SEL initSel = NSSelectorFromString(@"_init"), setHID = NSSelectorFromString(@"_setHIDEvent:"), cleanSel = NSSelectorFromString(@"_cleanupAfterDispatch");
+        id own = direct && [se instancesRespondToSelector:initSel] && [se instancesRespondToSelector:setHID] ? ((id (*)(id, SEL))objc_msgSend)([se alloc], initSel) : nil;
+        if (direct && !own) { DMLog(@"[scrollhid] no UIScrollEvent of our own here"); return; }
+        for (int i = 0; i < steps; i++)
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 0.016 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                uint32_t phase = i == 0 ? 1 : i == steps - 1 ? 4 : 2;   // (began, changed, ended)
+                void *ev = make(phase, phase == 2 ? dx : 0, phase == 2 ? dy : 0, p);
+                if (!ev) return;
+                if (own) {
+                    @try {
+                        ((void (*)(id, SEL, void *))objc_msgSend)(own, setHID, ev);
+                        [[UIApplication sharedApplication] sendEvent:(UIEvent *)own];
+                        if ([own respondsToSelector:cleanSel]) ((void (*)(id, SEL))objc_msgSend)(own, cleanSel);
+                        if (phase == 4) ((void (*)(id, SEL, void *))objc_msgSend)(own, setHID, NULL);
+                    } @catch (NSException *x) { DMLog([NSString stringWithFormat:@"[scrollhid] sent phase %u: %@", phase, x.reason]); }
+                } else ((void (*)(id, SEL, void *))objc_msgSend)([UIApplication sharedApplication], enqSel, ev);
+                CFRelease(ev);
+            });
+        DMLog([NSString stringWithFormat:@"[scrollhid] %d changes of (%g, %g) at %.0f,%.0f (%@ %.3f,%.3f) into %@ (context %u), %@; %@", count, dx, dy, x, y, how, p.x, p.y, wantClass, ctx,
+               own ? @"sent with -sendEvent:" : @"enqueued", mask]);
+    }
+    else if ([cmd isEqualToString:@"windowonscreen"]) {   // windowonscreen: the Dock's swipe down asks this (MSBDWindowOnScreen), with what it is made of (read-only; 1.8.2)
+        BOOL MSBDWindowOnScreen(void);
+        NSUInteger shown = 0; for (DMNativeWindow *w in gNativeWindows) if (!w.hidden) shown++;
+        UIView *top = DMSMEngine() ? nil : DMTopStage();
+        DMLog([NSString stringWithFormat:@"[windowonscreen] %d: engine %@, Stage Manager's window keys %@, top stage %@, native windows shown %lu (layer %@, away %d)", MSBDWindowOnScreen(),
+               DMSMEngine() ? @"Stage Manager" : @[@"none", @"MilkyWay", @"Aerial", @"Zetsu"][DMActiveEngine()], DMSMEngine() ? [DMSMWindowKeys() componentsJoinedByString:@","] : @"-",
+               top ? DMStageBundle(top) : @"none", (unsigned long)shown, gNativeLayer ? (gNativeLayer.hidden ? @"hidden" : @"shown") : @"none", gNativeAway]);
+    }
 #endif
     else if ([cmd hasPrefix:@"ptrmove_"]) {   // ptrmove_<dx>_<dy>_<senderhex>[_<buttons>][_abs]: inject one relative pointer (mouse) event from that HID sender (debug, MacPointer tests)
         NSArray *a = [[cmd substringFromIndex:8] componentsSeparatedByString:@"_"];
@@ -28039,6 +28579,98 @@ static void DMRunTrigger(NSString *cmd) {
     else if ([cmd hasPrefix:@"smfront_"]) DMSMBringToFront(DMSMDebugKey([cmd substringFromIndex:8]));   // smfront_<bundle>[@<n>]: that window to the front of its stage, as a Dock tap on an app already there brings it (DMSMAddToStage)
     else if ([cmd isEqualToString:@"smwins"]) DMSMDebugWindows();   // smwins: every recent stage's windows by key (M-2), front, full screen, minimized
 #if DEBUG
+    else if ([cmd isEqualToString:@"iconsub"]) {   // iconsub: the icons' own layer sublayer transforms, counted by value (Atria's icon scale lies there, a side Dock's turn on top): the Home Screen's page on screen and the Dock -- read-only, no names
+        Class ic = objc_getClass("SBIconView");
+        NSMutableString *o = [NSMutableString stringWithString:@"[iconsub]"];
+        void (^count)(NSString *, NSArray<UIView *> *) = ^(NSString *what, NSArray<UIView *> *views) {
+            NSMutableDictionary<NSString *, NSNumber *> *seen = [NSMutableDictionary dictionary]; NSUInteger n = 0;
+            for (UIView *v in views) {
+                if (!ic || ![v isKindOfClass:ic] || v.hidden) continue;
+                CATransform3D t = v.layer.sublayerTransform; n++;
+                NSString *k = [NSString stringWithFormat:@"{%.4f %.4f %.4f %.4f}", t.m11, t.m12, t.m21, t.m22];
+                seen[k] = @(seen[k].integerValue + 1);
+            }
+            [o appendFormat:@" %@: %lu icons", what, (unsigned long)n];
+            for (NSString *k in [seen.allKeys sortedArrayUsingSelector:@selector(compare:)]) [o appendFormat:@" %@ x%@", k, seen[k]];
+            [o appendString:@";"];
+        };
+        UIViewController *rfc = DMCall(DMCall(DMSBManager("SBIconController"), @"iconManager"), @"rootFolderController");
+        UIView *rfv = DMCall(rfc, @"rootFolderView") ?: DMCall(rfc, @"folderView");
+        UIView *list = DMCall(rfv, @"currentIconListView");
+        count(@"the Home Screen's page on screen", [list isKindOfClass:[UIView class]] ? list.subviews : @[]);
+        NSMutableArray<UIView *> *dock = [NSMutableArray array];
+        for (UIWindow *w in DMAllWindows()) {
+            if (![NSStringFromClass([w class]) isEqualToString:@"SBFloatingDockWindow"]) continue;
+            NSMutableArray<UIView *> *todo = [NSMutableArray arrayWithObject:w];
+            while (todo.count) { UIView *v = todo.lastObject; [todo removeLastObject]; if (ic && [v isKindOfClass:ic]) [dock addObject:v]; else [todo addObjectsFromArray:v.subviews]; }
+        }
+        count(@"the Dock", dock);
+        DMLog(o);
+    }
+    else if ([cmd isEqualToString:@"dsdock"]) {   // dsdock: every Dock icon: where it is on the screen, and what a touch at its middle would reach through the turned Dock
+        Class ic = objc_getClass("SBIconView");
+        for (UIWindow *w in DMAllWindows()) {
+            if (![NSStringFromClass([w class]) isEqualToString:@"SBFloatingDockWindow"]) continue;
+            id<UICoordinateSpace> scr = w.screen.coordinateSpace;
+            NSMutableString *o = [NSMutableString stringWithFormat:@"[dsdock] window %@ hidden %d level %.0f transform %@", NSStringFromCGRect(w.bounds), w.hidden, w.windowLevel, NSStringFromCGAffineTransform(w.transform)];
+            UIViewController *root = w.rootViewController;
+            for (UIViewController *child in root.childViewControllers) if ([child isKindOfClass:objc_getClass("SBFloatingDockRootViewController")]) root = child;   // (15.6.1: a child of the window's own)
+            id dvc = nil; @try { dvc = [root valueForKey:@"floatingDockViewController"]; } @catch (id x) {}
+            UIView *host = [dvc isKindOfClass:[UIViewController class]] ? ((UIViewController *)dvc).view : nil;
+            UIView *dv = nil; @try { dv = [dvc valueForKey:@"dockView"]; } @catch (id x) {}
+            [o appendFormat:@"\n  root view %@ bounds %@; host %@ bounds %@ center %@ transform %@; dock view bounds %@ center %@ transform %@; on screen %@", NSStringFromClass([root.view class]), NSStringFromCGRect(root.view.bounds), NSStringFromClass([host class]), NSStringFromCGRect(host.bounds), NSStringFromCGPoint(host.center), NSStringFromCGAffineTransform(host.transform), NSStringFromCGRect(dv.bounds), NSStringFromCGPoint(dv.center), NSStringFromCGAffineTransform(dv.transform), dv ? NSStringFromCGRect([dv convertRect:dv.bounds toCoordinateSpace:scr]) : @"-"];
+            NSMutableArray<UIView *> *todo = [NSMutableArray arrayWithObject:w]; int n = 0, bad = 0;
+            while (todo.count) {
+                UIView *v = todo.lastObject; [todo removeLastObject];
+                NSString *cn = NSStringFromClass([v class]);
+                if ([cn isEqualToString:@"SBFloatingDockPlatterView"]) [o appendFormat:@"\n  platter bounds %@ on screen %@", NSStringFromCGRect(v.bounds), NSStringFromCGRect([v convertRect:v.bounds toCoordinateSpace:scr])];
+                BOOL isIcon = (ic && [v isKindOfClass:ic]) || [cn isEqualToString:@"DMFinderIconView"] || [cn isEqualToString:@"DMDownloadsIconView"] || [cn isEqualToString:@"DMTrashIconView"];
+                if (!isIcon) { [todo addObjectsFromArray:v.subviews]; continue; }
+                if (v.hidden || v.bounds.size.width < 5.0) continue;
+                CGRect r = [v convertRect:v.bounds toCoordinateSpace:scr];
+                CGPoint c = CGPointMake(CGRectGetMidX(r), CGRectGetMidY(r));
+                UIView *hit = [w hitTest:[w convertPoint:c fromCoordinateSpace:scr] withEvent:nil];
+                UIView *a = hit; while (a && a != v) a = a.superview;
+                id icon = nil; if (ic && [v isKindOfClass:ic]) @try { icon = [v valueForKey:@"icon"]; } @catch (id x) {}
+                NSString *name = nil; @try { name = [icon valueForKey:@"applicationBundleID"]; } @catch (id x) {}
+                n++; if (!a) bad++;
+                [o appendFormat:@"\n  %@ %@ on screen %.0f,%.0f %.0f x %.0f; a touch at its middle reaches %@ (%@)", cn, name ?: NSStringFromClass([icon class]), r.origin.x, r.origin.y, r.size.width, r.size.height, NSStringFromClass([hit class]), a ? @"ok" : @"ANOTHER VIEW"];
+            }
+            [o appendFormat:@"\n  %d icons, %d reached by a touch at their middle", n, n - bad];
+            DMLog(o);
+        }
+    }
+    else if ([cmd isEqualToString:@"dsptr"]) {   // dsptr: the pointer on the screen, Apple's pointer reveal and whether the Dock is out
+        id svc = DMCall(objc_getClass("BKSMousePointerService"), @"sharedInstance");
+        CGPoint n = svc ? ((CGPoint (*)(id, SEL))objc_msgSend)(svc, sel_registerName("globalPointerPosition")) : CGPointZero;
+        long or = DMRealInterfaceOrientation(); CGSize s = [UIScreen mainScreen].bounds.size, nat = CGSizeMake(MIN(s.width, s.height), MAX(s.width, s.height));
+        CGPoint p = MSBDDockPointerOnScreen(n, or, nat);
+        id ctrl = DMFloatingDockController();
+        NSMutableString *o = [NSMutableString stringWithFormat:@"[dsptr] pointer native %@ -> screen %@, orientation %ld; controller %@", NSStringFromCGPoint(n), NSStringFromCGPoint(p), or, NSStringFromClass([ctrl class])];
+        #define DSB(name) ([ctrl respondsToSelector:NSSelectorFromString(@name)] && ((BOOL (*)(id, SEL))objc_msgSend)(ctrl, NSSelectorFromString(@name)))
+        [o appendFormat:@", presented %d, fully %d, by pointer %d", DSB("isFloatingDockPresented"), DSB("isFloatingDockFullyPresented"), DSB("wasFloatingDockPresentedByPointer")];
+        #undef DSB
+        Ivar iv = ctrl ? class_getInstanceVariable(object_getClass(ctrl), "_presentFloatingDockIndirectPanGestureRecognizer") : NULL;
+        id g = iv ? object_getIvar(ctrl, iv) : nil;
+        if (g) {
+            unsigned long e = [g respondsToSelector:NSSelectorFromString(@"edges")] ? ((unsigned long (*)(id, SEL))objc_msgSend)(g, NSSelectorFromString(@"edges")) : 0;
+            unsigned long ae = [g respondsToSelector:NSSelectorFromString(@"activatedEdge")] ? ((unsigned long (*)(id, SEL))objc_msgSend)(g, NSSelectorFromString(@"activatedEdge")) : 0;
+            [o appendFormat:@"; recognizer %@ edges %lu activated %lu state %ld view %@ enabled %d", NSStringFromClass([g class]), e, ae, (long)((UIGestureRecognizer *)g).state, NSStringFromClass([((UIGestureRecognizer *)g).view class]), ((UIGestureRecognizer *)g).enabled];
+        } else [o appendString:@"; no recognizer"];
+        DMLog(o);
+    }
+    else if ([cmd isEqualToString:@"hsread"]) DMHSRead();
+    else if ([cmd isEqualToString:@"hshit"]) DMHSHit();   // hshit: the page that shows: a touch and a drop at each icon's middle, by code (read-only)   // hsread: the Home Screen's pages, icons, folders, widgets and page dots against the Dock at its side (read-only)
+    else if ([cmd isEqualToString:@"dsread"]) {   // dsread: every open window of the stage as drawn on the screen, against the screen, the usable area and Stage Manager's stage area
+        CGSize scr = [UIScreen mainScreen].bounds.size;
+        NSMutableString *o = [NSMutableString stringWithFormat:@"[dsread] screen %@ side %d usable %@ desk %@", NSStringFromCGSize(scr), DMDockSideNow(scr), NSStringFromCGRect(DMUsableArea()), NSStringFromCGRect(DMSMUsableAreaForIdentity(nil, NULL))];
+        NSDictionary<NSString *, NSValue *> *frames = DMSMOpenWindowFrames();
+        for (NSString *k in frames) {
+            CGRect f = frames[k].CGRectValue;
+            [o appendFormat:@"\n  %@ window %@ -> x %.1f..%.1f y %.1f..%.1f (right gap %.1f, bottom gap %.1f, left gap %.1f)", DMSMKeyText(k), NSStringFromCGRect(f), CGRectGetMinX(f), CGRectGetMaxX(f), CGRectGetMinY(f), CGRectGetMaxY(f), scr.width - CGRectGetMaxX(f), scr.height - CGRectGetMaxY(f), CGRectGetMinX(f)];
+        }
+        DMLog(o);
+    }
     else if ([cmd isEqualToString:@"smfit"]) DMSMFitDebugState();   // smfit: Fit to Window's memory with the Stage Manager engine -- the tiles, No Fit, full screen's, the desktops remembered (read-only)
     else if ([cmd isEqualToString:@"smgtx"]) {   // smgtx: the switcher gesture transactions the gesture hold counts (SMGestureHold.h) and SpringBoard's own words for each (read-only)
         NSArray *txs = gSMGestureTxs.allObjects;
@@ -34931,16 +35563,20 @@ static BOOL DMIsNotificationBannerVC(id vc) {
     for (UIViewController *c = vc; c; c = c.childViewControllers.firstObject) if ([NSStringFromClass([c class]) hasPrefix:@"NCNotification"]) return YES;
     return [NSStringFromClass([vc class]) hasPrefix:@"NCNotification"];
 }
-static const CGFloat kDMBannerWidth = 360, kDMBannerRight = 10;
+static const CGFloat kDMBannerWidth = 360;   // (10 pt from the screen's edge, common/DockSide.h kMSBDBannerScreenMargin)
 // 8 pt under our status bar: 24 + 8 at Small (a Home-button iPad's 20 pt bar too, as before), the bar's own height + 8 at Medium and Large (1.7.3)
 static CGFloat DMBannerTop(void) { return MSBDMenuBarFixedSite(gDMBarSize, DMMenuBarHeight()) + 8.0; }
 // (a right-to-left language: mirrored -- top left, in from and out to the left, a leftward swipe, the Close button at the top right -- as the
 //  clock and its Today panel are at the left end of the menu bar there, 1.3.3)
 static BOOL DMBannerRTL(void) { static int v = -1; if (v < 0) v = [UIApplication sharedApplication].userInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft; return v == 1; }
+// (Settings > Dock > Position: with the Dock at a side a banner keeps out of it as the Today panel does, common/DockSide.h MSBDBannerX -- before, it lay over the
+//  top of a Right Dock. On the iPad's own screen, a container of its size; at the bottom, in portrait and elsewhere 10 pt from the screen's edge, as before)
 static CGRect DMBannerPresentedFrame(CGRect stock, CGRect cb) {
-    CGFloat w = MIN(kDMBannerWidth, cb.size.width - 2 * kDMBannerRight);
-    CGFloat x = DMBannerRTL() ? CGRectGetMinX(cb) + kDMBannerRight : CGRectGetMaxX(cb) - w - kDMBannerRight;
-    return CGRectMake(x, CGRectGetMinY(cb) + DMBannerTop(), w, stock.size.height);
+    CGSize main = [UIScreen mainScreen].bounds.size;
+    int side = fabs(cb.size.width - main.width) < 0.5 && fabs(cb.size.height - main.height) < 0.5 ? DMDockSideNow(main) : MSBDDockBottom;
+    double w = 0;
+    double x = MSBDBannerX(cb.size.width, side, side ? DMUsableArea() : CGRectNull, kDMBannerWidth, DMBannerRTL(), &w);
+    return CGRectMake(CGRectGetMinX(cb) + x, CGRectGetMinY(cb) + DMBannerTop(), w, stock.size.height);
 }
 static CGRect DMBannerDismissedFrame(CGRect stock, CGRect cb) {
     CGRect p = DMBannerPresentedFrame(stock, cb);
@@ -35469,6 +36105,7 @@ static CGFloat DMMenuBarHeight(void) {
     return DMMenuBarUnknownHeight();
 }
 static CGFloat DMMenuBarKnownHeight(void) { return gDMMenuBarH; }
+__attribute__((visibility("default"))) double MSBDMenuBarHeightNow(void) { return DMMenuBarHeight(); }   // (the Dock part: a side Dock keeps off the bar, Settings > Dock > Position)
 static CGFloat DMMenuBarStockHeight(void) { return gDMMenuBarStockH; }
 
 // ===== Menu Bar Size (1.7.3; Settings > Status Bar > Menu Bar Size, common/MenuBarSize.h) =========================================================
@@ -36891,6 +37528,18 @@ static CGRect DMCtxDockSource(UIView *container, id input, CGRect pf) {
     if (!(s.width >= 8.0) || !(s.height >= 8.0)) return CGRectNull;
     return CGRectMake(c.x - s.width / 2.0, c.y - s.height / 2.0, s.width, s.height);
 }
+// Where the icon a Dock menu lifts is, in the container's space (CGPointZero with nothing to go by: a side Dock's menu then stays with UIKit's numbers).
+static CGPoint DMCtxDockHome(UIView *container, id input) {
+    id preview = [input respondsToSelector:NSSelectorFromString(@"sourcePreview")] ? DMCall(input, @"sourcePreview") : nil;
+    if (![preview isKindOfClass:[UITargetedPreview class]]) return CGPointZero;
+    UIView *in = ((UITargetedPreview *)preview).target.container;
+    UIScreen *screen = container.window.screen ?: [UIScreen mainScreen];
+    if (!in.window) {
+        if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[ctxarrow] the lifted icon's target %@ is in no window", NSStringFromClass([in class])]);
+        return CGPointZero;
+    }
+    return [container convertPoint:[in convertPoint:((UITargetedPreview *)preview).target.center toCoordinateSpace:screen.coordinateSpace] fromCoordinateSpace:screen.coordinateSpace];   // (through the screen: it may be another window, or the turned Dock)
+}
 // The menu's own material: the biggest blur view in it (UIKit's list background, 15.6.1 and 18.5), not inside our arrow.
 static UIVisualEffectView *DMCtxMenuBackdrop(UIView *menu) {
     UIVisualEffectView *best = nil; CGFloat bestArea = 0;
@@ -36951,7 +37600,8 @@ static void DMCtxPlaceArrow(UIView *menu) {
             }
         }
     }
-    CGRect f = CGRectMake(round((off - W / 2.0) * 2.0) / 2.0, dir == MSBDArrowDown ? sz.height - o : -H, W, H + o);
+    BOOL sideways = dir == MSBDArrowRight || dir == MSBDArrowLeft;
+    CGRect f = sideways ? CGRectMake(dir == MSBDArrowRight ? sz.width - o : -H, round((off - W / 2.0) * 2.0) / 2.0, H + o, W) : CGRectMake(round((off - W / 2.0) * 2.0) / 2.0, dir == MSBDArrowDown ? sz.height - o : -H, W, H + o);
     NSNumber *was = objc_getAssociatedObject(arrow, &kCtxArrowRecKey);
     if (redraw || arrow.hidden || !CGRectEqualToRect(arrow.frame, f) || was.intValue != dir) {
         arrow.hidden = NO;
@@ -36970,9 +37620,23 @@ static void DMCtxPlaceArrow(UIView *menu) {
     }
     if (arrow.superview == menu && menu.subviews.firstObject != arrow) [menu sendSubviewToBack:arrow];
 }
+// (Settings > Dock > Position: an app icon's lifted picture with the Dock at a side. UIKit measures its size through the turned Dock and comes to a line, 18.5's Right
+//  1.5 x 44, 16.7.7 1 x 1: on 16.7.7 nothing lifted. What the input says goes in right: the preview's size at its target's scale, a turn's no matter.)
+static void DMCtxSidePreviewSize(id input) {
+    SEL pps = NSSelectorFromString(@"preferredPreviewSize"), spps = NSSelectorFromString(@"setPreferredPreviewSize:");
+    if (!DMCtxEncIs(input, pps, "{CGSize=dd}16@0:8") || !DMCtxEncIs(input, spps, "v32@0:8{CGSize=dd}16")) return;
+    UITargetedPreview *tp = [input respondsToSelector:NSSelectorFromString(@"sourcePreview")] ? DMCall(input, @"sourcePreview") : nil;
+    if (![tp isKindOfClass:[UITargetedPreview class]] || !DMCtxInDockWindow(tp.target.container) || !DMDockSideNow(tp.target.container.window.bounds.size)) return;
+    CGSize pref = ((CGSize (*)(id, SEL))objc_msgSend)(input, pps);
+    if (pref.width >= 8.0 && pref.height >= 8.0) return;
+    CGFloat scale = hypot(tp.target.transform.a, tp.target.transform.b);
+    CGSize want = CGSizeMake(tp.size.width * scale, tp.size.height * scale);
+    if (isfinite(want.width) && isfinite(want.height) && want.width >= 8.0 && want.height >= 8.0) ((void (*)(id, SEL, CGSize))objc_msgSend)(input, spps, want);
+}
 %group DockMenuArrow
 %hook _UIContextMenuLayoutArbiter
 - (id)computedLayoutWithInput:(id)input {
+    DMCtxSidePreviewSize(input);
     id out = %orig;
     UIView *container = DMCall(self, @"containerView");
     if (![container isKindOfClass:[UIView class]]) return out;
@@ -36997,14 +37661,46 @@ static void DMCtxPlaceArrow(UIView *menu) {
     CGRect bounds = DMCtxEncIs(out, cb, DM_CTX_RECT_GET) ? ((CGRect (*)(id, SEL))objc_msgSend)(out, cb) : CGRectNull;
     if (CGRectIsNull(bounds) || bounds.size.width < 100.0 || bounds.size.height < 100.0) bounds = CGRectInset(container.bounds, 8.0, 8.0);
     int dir = MSBDArrowNone;
-    CGRect f = MSBDArrowMenuFrame(menu, src, bounds, kMSBDArrowHeight, kMSBDArrowTipGap, &dir);
     static __weak UIView *loggedFor = nil;
     BOOL say = loggedFor != container && DMTestFlag("/tmp/macstatusbar-debug");
+#if DEBUG
+    if (say) {
+        UITargetedPreview *tp = DMCall(input, @"sourcePreview");
+        CGSize pref = CGSizeZero; SEL pps = NSSelectorFromString(@"preferredPreviewSize");
+        if ([input respondsToSelector:pps]) pref = ((CGSize (*)(id, SEL))objc_msgSend)(input, pps);
+        DMLog([NSString stringWithFormat:@"[ctxarrow] UIKit's lifted picture at %@; preview view %@ bounds %@ size %@, its target's transform %@, preferred size %@, in %@ %@", NSStringFromCGRect(previewAt), NSStringFromClass([tp.view class]), NSStringFromCGRect(tp.view.bounds), NSStringFromCGSize(tp.size), NSStringFromCGAffineTransform(tp.target.transform), NSStringFromCGSize(pref), NSStringFromClass([tp.target.container class]), NSStringFromCGRect(tp.target.container.bounds)]);
+    }
+#endif
+    int dockSide = container.window.screen == [UIScreen mainScreen] ? DMDockSideNow(container.window.bounds.size) : MSBDDockBottom;   // (Settings > Dock > Position: beside the Dock, as a Mac's side Dock)
+    if (dockSide) {
+        // (from the Dock's inner edge, level with the icon, whatever UIKit measured the lifted icon as; and the lifted picture stays over its icon: UIKit keeps it
+        //  20 pt inside the screen, and our own icons' lifted copies then showed the icon itself beside them)
+        CGRect desk = [container convertRect:DMUsableArea() fromCoordinateSpace:container.window.screen.coordinateSpace];
+        src.origin.x = dockSide == MSBDDockRight ? CGRectGetMaxX(desk) + kMSBDDockSideGap : CGRectGetMinX(desk) - kMSBDDockSideGap - src.size.width;
+        CGFloat barEnd = CGRectGetMinY(desk) + kMSBDArrowTipGap;
+        if (CGRectGetMinY(bounds) < barEnd) { bounds.size.height -= barEnd - CGRectGetMinY(bounds); bounds.origin.y = barEnd; }   // (Finder's, at the top of the Dock: under the menu bar)
+        CGFloat bottomEnd = CGRectGetMaxY(container.bounds) - 8.0;
+        if (CGRectGetMaxY(bounds) < bottomEnd) bounds.size.height = bottomEnd - CGRectGetMinY(bounds);   // (the Trash's, at the bottom of the Dock: no Dock below it, level with its icon)
+        CGPoint home = DMCtxDockHome(container, input);
+        if (home.x > 0.0 && home.y > 0.0 && !CGRectIsNull(previewAt)) {
+            src.origin.y = home.y - src.size.height / 2.0;
+            CGFloat dx = home.x - CGRectGetMidX(previewAt), dy = home.y - CGRectGetMidY(previewAt);
+            previewAt = CGRectOffset(previewAt, dx, dy);
+            if (kind == DMCtxOutFrames) { if (DMCtxEncIs(out, NSSelectorFromString(@"setPreviewFrame:"), DM_CTX_RECT_SET)) ((void (*)(id, SEL, CGRect))objc_msgSend)(out, NSSelectorFromString(@"setPreviewFrame:"), previewAt); }
+            else if (DMCtxEncIs(out, NSSelectorFromString(@"setPreview:"), DM_CTX_PLACE_SET)) {
+                DMCtxPlace pv = DMCtxGetPlace(out, @"preview");
+                pv.center.x += dx; pv.center.y += dy;
+                ((void (*)(id, SEL, DMCtxPlace))objc_msgSend)(out, NSSelectorFromString(@"setPreview:"), pv);
+            }
+        }
+    }
+    CGRect f = dockSide ? MSBDArrowSideMenuFrame(menu, src, bounds, kMSBDArrowHeight, kMSBDArrowTipGap, dockSide == MSBDDockRight, &dir) : MSBDArrowMenuFrame(menu, src, bounds, kMSBDArrowHeight, kMSBDArrowTipGap, &dir);
     if (dir == MSBDArrowNone) {
         if (say) { loggedFor = container; DMLog([NSString stringWithFormat:@"[ctxarrow] a Dock menu %@ over %@ has no room for its arrow (bounds %@): UIKit's place", NSStringFromCGRect(menu), NSStringFromCGRect(src), NSStringFromCGRect(bounds)]); }
         return out;
     }
-    CGFloat off = MSBDArrowOffset(f, CGRectGetMidX(src), kCtxMenuCorner, kMSBDArrowWidth);
+    BOOL sideways = dir == MSBDArrowRight || dir == MSBDArrowLeft;
+    CGFloat off = sideways ? MSBDArrowOffsetY(f, CGRectGetMidY(src), kCtxMenuCorner, kMSBDArrowWidth) : MSBDArrowOffset(f, CGRectGetMidX(src), kCtxMenuCorner, kMSBDArrowWidth);
     if (kind == DMCtxOutFrames) {
         ((void (*)(id, SEL, CGRect))objc_msgSend)(out, smf, f);
         SEL anchorFor = NSSelectorFromString(@"_computedMenuAnchorPointForMenuFrame:previewFrame:"), setAnchor = NSSelectorFromString(@"setMenuAnchorPoint:");
@@ -37014,7 +37710,7 @@ static void DMCtxPlaceArrow(UIView *menu) {
         }
     } else {   // (18.5: the place's centre for this frame, its anchor -- where it pops up from and goes back to -- at the arrow's tip)
         place.bounds.size = f.size;
-        place.anchorPoint = CGPointMake(f.size.width > 0 ? off / f.size.width : 0.5, dir == MSBDArrowDown ? 1.0 : 0.0);
+        place.anchorPoint = sideways ? CGPointMake(dir == MSBDArrowRight ? 1.0 : 0.0, f.size.height > 0 ? off / f.size.height : 0.5) : CGPointMake(f.size.width > 0 ? off / f.size.width : 0.5, dir == MSBDArrowDown ? 1.0 : 0.0);
         place.center.x = f.origin.x + place.anchorPoint.x * f.size.width;
         place.center.y = f.origin.y + place.anchorPoint.y * f.size.height;
         ((void (*)(id, SEL, DMCtxPlace))objc_msgSend)(out, NSSelectorFromString(@"setMenu:"), place);
@@ -37024,7 +37720,7 @@ static void DMCtxPlaceArrow(UIView *menu) {
     if (say) {
         loggedFor = container;
         DMLog([NSString stringWithFormat:@"[ctxarrow] a Dock menu: UIKit's %@ over its source %@ -> %@ (bounds %@), the arrow %@ %.1f pt from its left edge (the source's middle %.1f)",
-               NSStringFromCGRect(menu), NSStringFromCGRect(src), NSStringFromCGRect(f), NSStringFromCGRect(bounds), dir == MSBDArrowDown ? @"down" : @"up", off, CGRectGetMidX(src)]);
+               NSStringFromCGRect(menu), NSStringFromCGRect(src), NSStringFromCGRect(f), NSStringFromCGRect(bounds), dir == MSBDArrowDown ? @"down" : dir == MSBDArrowUp ? @"up" : dir == MSBDArrowRight ? @"right (from its top edge)" : @"left (from its top edge)", off, sideways ? CGRectGetMidY(src) : CGRectGetMidX(src)]);
     }
     return out;
 }
@@ -38174,7 +38870,9 @@ static BOOL DMSMWindowDragLeavesTouch(id manager, UIGestureRecognizer *g, UITouc
     if (!platter || platter.hidden) return h;
     id<UICoordinateSpace> scr = (me.screen ?: [UIScreen mainScreen]).coordinateSpace;
     CGPoint sp = [me convertPoint:point toCoordinateSpace:scr];
-    if (sp.y >= CGRectGetMinY([platter convertRect:platter.bounds toCoordinateSpace:scr])) return h;
+    CGRect pr = [platter convertRect:platter.bounds toCoordinateSpace:scr];
+    int dockSide = me.screen == [UIScreen mainScreen] ? DMDockSideNow(me.bounds.size) : MSBDDockBottom;   // (Settings > Dock > Position: the same band, on the screen's side of its inner edge)
+    if (dockSide ? (dockSide == MSBDDockRight ? sp.x >= CGRectGetMinX(pr) : sp.x <= CGRectGetMaxX(pr)) : sp.y >= CGRectGetMinY(pr)) return h;
     return DMNativeWindowAtScreenPoint(sp) ? nil : h;
 }
 %end
@@ -39878,6 +40576,7 @@ static BOOL DMSMSnapMoveTarget(NSString *key, UIView *card, CGPoint t, CGPoint *
             NSNumber *dock = gSMDockHeightBySize[NSStringFromCGSize(scn.bounds.size)];
             CGFloat line = scn.bounds.size.height - (dock ? dock.doubleValue : 117.0) - 2.0;
             if (!gSMBehindDock) gSMBehindDock = [NSMutableSet set];
+            if (DMDockSideNow(scn.bounds.size)) line = scn.bounds.size.height + 1000.0;   // (Settings > Dock > Position: no Dock at the bottom to lie behind)
             if (w.length) { if (CGRectGetMaxY(onScreen) + t.y > line + 4.0) [gSMBehindDock addObject:w]; else DMSMKeySetRemove(gSMBehindDock, w); }
         }
         // (the place asked for is the dropped card's MIDDLE, read from the card drawn where the drag ends -- 1.7.4 item 13: not card.center + t,
@@ -40020,15 +40719,16 @@ static UIView *DMSMCardFor(NSString *key) {
     }
     return anyOfApp;
 }
-static NSArray<NSString *> *DMSMWindowKeys(void) {   // (the windows on screen, one key each -- windows only: not a full-screen app)
+static NSArray<NSString *> *DMSMWindowKeysOn(UIScreen *screen) {   // (the windows on screen, one key each -- windows only: not a full-screen app; on that screen, nil: any)
     NSMutableOrderedSet<NSString *> *out = [NSMutableOrderedSet orderedSet];
     for (DMSMTitleBar *bar in gSMBars) {
         UIView *card = bar.card;
         NSString *k = card ? DMSMCardKey(card) : nil;
-        if (k && card.window && !card.window.hidden && card.alpha > 0.01 && !DMSMCardIsFullSize(card)) [out addObject:k];
+        if (k && card.window && !card.window.hidden && card.alpha > 0.01 && !DMSMCardIsFullSize(card) && (!screen || DMSnapScreenOf(card) == screen)) [out addObject:k];
     }
     return out.array;
 }
+static NSArray<NSString *> *DMSMWindowKeys(void) { return DMSMWindowKeysOn(nil); }
 static NSArray<NSString *> *DMSMWindowBundles(void) {   // (... and their apps, each once)
     NSMutableOrderedSet<NSString *> *out = [NSMutableOrderedSet orderedSet];
     for (NSString *k in DMSMWindowKeys()) { NSString *b = DMSMKeyBundle(k); if (b) [out addObject:b]; }
@@ -40068,6 +40768,19 @@ __attribute__((visibility("default"))) NSSet<NSString *> *MSBDAppsWithWindowsAwa
     if (DMSMEngine()) for (NSString *k in DMSMMinimizedSet()) { NSString *b = DMSMKeyBundle(k); if (b.length) [out addObject:b]; }
     else for (UIView *st in DMAerialStagesAll()) { if (!(DMStageMinimized(st) || st.hidden)) continue; NSString *b = DMStageBundle(st); if (b.length) [out addObject:b]; }
     return out;
+}
+// For the Dock's swipe down (dock/Dock.x, via dlsym; KT, 1.8.2): a window of ours on screen -- the window engine's on the desktop shown (Stage
+// Manager's windows, not a full-screen one; Aerial's, Zetsu's or MilkyWay4's top shown stage, not minimized or closing) or a native one (Finder,
+// Activity Monitor, TextEdit) while their layer is shown. A trackpad's two-finger scroll down over the Home Screen beside it is then not the swipe
+// down that opens the App Library (dock/SwipeDownRule.h).
+// On the iPad's own screen only: with windows on an external display alone (Stage Manager's cards in the TV's switcher), a scroll down on the iPad's empty Home
+// Screen opened nothing (code review 1.8.2, 13).
+__attribute__((visibility("default"))) BOOL MSBDWindowOnScreen(void) {
+    UIScreen *main = [UIScreen mainScreen];
+    if (DMSMEngine() ? DMSMWindowKeysOn(main).count > 0 : DMTopStageOn(main) != nil) return YES;
+    if (!gNativeLayer || gNativeLayer.hidden || gNativeAway || DMSnapScreenOf(gNativeLayer) != main) return NO;
+    for (DMNativeWindow *w in gNativeWindows) if (!w.hidden) return YES;
+    return NO;
 }
 static UIView *DMSMCardOfView(UIView *v);   // (below, with the title bars)
 void DMSMRefreshBars(void) {
@@ -41866,6 +42579,20 @@ static CGRect DMSMOurStageArea(CGRect r, CGRect b, double dock, BOOL strip, BOOL
     // (a full-screen layout -- Apple gives it the whole screen -- is left exactly as Apple has it: 1.1.0 shortened it to end above the Dock too,
     //  and a full-screen Safari came up 648 pt tall with its top cut off, iPad 2 29 Sep 08:09)
     BOOL fullScreenLayout = CGRectEqualToRect(CGRectIntegral(r), CGRectIntegral(b));
+    // (Settings > Dock > Position: with the Dock at a screen side the area reaches the bottom edge and keeps out of its strip, as DMUsableArea has it, for this
+    //  screen in either turn; during a title-bar drag the whole width, as the bottom's rule: the window is put back at the drop, DMSMAttrsFitScreen)
+    CGSize mainSize = [UIScreen mainScreen].bounds.size;
+    int dockSide = CGSizeEqualToSize(b.size, mainSize) || CGSizeEqualToSize(b.size, CGSizeMake(mainSize.height, mainSize.width)) ? DMDockSideNow(b.size) : MSBDDockBottom;
+    if (dockSide && DMSMFree() && !fullScreenLayout && !CGRectIsEmpty(r) && !CGRectIsEmpty(b)) {
+        BOOL dragging = CACurrentMediaTime() < gSMDragUntil;
+        CGRect u = DMDockSideDesktopOf(b.size, dockSide);
+        CGFloat x0 = dragging ? CGRectGetMinX(b) : CGRectGetMinX(u), x1 = dragging ? CGRectGetMaxX(b) : CGRectGetMaxX(u);
+        CGRect o = CGRectMake(x0, CGRectGetMinY(r), x1 - x0, MAX(100.0, CGRectGetMaxY(b) - CGRectGetMinY(r)));
+        static NSString *lastSide;
+        NSString *l = [NSString stringWithFormat:@"[sm] stage area %@ with the Dock at a side (Apple's %@, bounds %@, dock %.0f, side %d)", NSStringFromCGRect(o), NSStringFromCGRect(apple), NSStringFromCGRect(b), dock, dockSide];
+        if (![l isEqualToString:lastSide]) { lastSide = l; DMLog(l); }
+        return o;
+    }
     if (DMSMFree() && !fullScreenLayout && !CGRectIsEmpty(r) && !CGRectIsEmpty(b)) {
         BOOL dragging = CACurrentMediaTime() < gSMDragUntil;
         CGFloat line = CGRectGetMaxY(b) - dock - 2.0;
@@ -42131,6 +42858,11 @@ static void DMSMReapplyGrabbers(UIView *card) {   // (Settings > Resize Handles 
     //  taller than the area once the Dock is up, and Stage Manager kept its bottom above the Dock by pushing its top under the menu bar -- the
     //  title bar and traffic lights hidden, iPad 2 29 Sep 21:12, Reynard)
     NSNumber *dock = gSMDockHeightBySize[NSStringFromCGSize(b.size)];
+    {   // (Settings > Dock > Position: no Dock at the bottom, the strip kept out at the side)
+        CGSize main = [UIScreen mainScreen].bounds.size;
+        int dockSide = CGSizeEqualToSize(b.size, main) || CGSizeEqualToSize(b.size, CGSizeMake(main.height, main.width)) ? DMDockSideNow(b.size) : MSBDDockBottom;
+        if (dockSide) { dock = nil; maxW = MIN(maxW, DMDockSideDesktopOf(b.size, dockSide).size.width); maxH = MIN(maxH, CGRectGetHeight(b) - (DMSMTopBarOf(b.size) + kSMBarH)); }
+    }
     if (dock.doubleValue > 0 && CGRectGetHeight(b) > 0) maxH = MIN(maxH, CGRectGetHeight(b) - dock.doubleValue - 2.0 - (DMSMTopBarOf(b.size) + kSMBarH));
     CGSize r = CGSizeMake(MIN(size.width, maxW), MIN(size.height, maxH));
     // (and never smaller than the lists' first sizes, as Apple's own rounding: those are the smallest window -- DMSMFineGrid, 1.7.0 -- here as small
@@ -42518,6 +43250,11 @@ static void DMSMRefitOldTopTick(void) {
     if (DMSMSigOK(self, minSel, DMSMSigMinGrid(), "minGridSizeForBounds:")) mn = ((CGSize (*)(id, SEL, CGRect, long long, id, double, id))objc_msgSend)(self, minSel, b, o, info, sc, a);
     CGFloat maxW = CGRectGetWidth(b) > 0 ? CGRectGetWidth(b) : size.width, maxH = CGRectGetHeight(b) > 0 ? CGRectGetHeight(b) : size.height;
     NSNumber *dock = gSMDockHeightBySize[NSStringFromCGSize(b.size)];
+    {   // (Settings > Dock > Position, as -_nearestGridSizeForSize:)
+        CGSize main = [UIScreen mainScreen].bounds.size;
+        int dockSide = CGSizeEqualToSize(b.size, main) || CGSizeEqualToSize(b.size, CGSizeMake(main.height, main.width)) ? DMDockSideNow(b.size) : MSBDDockBottom;
+        if (dockSide) { dock = nil; maxW = MIN(maxW, DMDockSideDesktopOf(b.size, dockSide).size.width); maxH = MIN(maxH, CGRectGetHeight(b) - (DMSMTopBarOf(b.size) + kSMBarH)); }
+    }
     if (dock.doubleValue > 0 && CGRectGetHeight(b) > 0) maxH = MIN(maxH, CGRectGetHeight(b) - dock.doubleValue - 2.0 - (DMSMTopBarOf(b.size) + kSMBarH));
     CGSize r = CGSizeMake(MIN(size.width, maxW), MIN(size.height, maxH));
     if (isfinite(mn.width) && isfinite(mn.height)) r = CGSizeMake(MAX(r.width, mn.width), MAX(r.height, mn.height));
@@ -42736,8 +43473,40 @@ static BOOL DMSMEdgeReachOurs17(void) {
     if (gSMEdgeReach17 < 100000 && ++gSMEdgeReach17 == 1) DMSM17DiagSoon();
     return YES;
 }
-static id DMSMLeadingInsets17(id self, SEL _cmd, id cfg) { id v = o_SMLeadingInsets17(self, _cmd, cfg); return DMSMEdgeReachOurs17() ? @[@0.0] : v; }
-static id DMSMTrailingInsets17(id self, SEL _cmd, id cfg) { id v = o_SMTrailingInsets17(self, _cmd, cfg); return DMSMEdgeReachOurs17() ? @[@0.0] : v; }
+// Settings > Dock > Position: the Dock's side has our desktop's limit, the strip it takes, not 0; and the bottom's list, [padding + Dock, padding] (A12Z 18.5: [141.5, 61]),
+// is no longer "less than our Dock takes" with no Dock at the bottom: left alone it cut Fill 30 pt short of the bottom (window height at most the screen less the
+// top's and the bottom's padding). There it is [0]: the screen's bottom edge is the limit and the place a resized bottom side snaps to.
+static NSArray *DMSMSideInsets17(BOOL leading) {
+    CGSize scr = [UIScreen mainScreen].bounds.size;
+    int dockSide = DMDockSideNow(scr);
+    if (dockSide) {
+        BOOL rtl = [UIApplication sharedApplication].userInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft;
+        BOOL atLeft = rtl ? !leading : leading;
+        if (atLeft == (dockSide == MSBDDockLeft)) { CGRect u = DMUsableArea(); return @[@(atLeft ? CGRectGetMinX(u) : scr.width - CGRectGetMaxX(u))]; }
+    }
+    return @[@0.0];
+}
+static id DMSMLeadingInsets17(id self, SEL _cmd, id cfg) { id v = o_SMLeadingInsets17(self, _cmd, cfg); return DMSMEdgeReachOurs17() ? DMSMSideInsets17(YES) : v; }
+static id DMSMTrailingInsets17(id self, SEL _cmd, id cfg) { id v = o_SMTrailingInsets17(self, _cmd, cfg); return DMSMEdgeReachOurs17() ? DMSMSideInsets17(NO) : v; }
+static id (*o_SMBottomInsets17)(id, SEL, id);
+static id DMSMBottomInsets17(id self, SEL _cmd, id cfg) {
+    id v = o_SMBottomInsets17(self, _cmd, cfg);
+    return DMSMFree() && DMDockSideNow([UIScreen mainScreen].bounds.size) ? @[@0.0] : v;
+}
+// (hooked from the first Left or Right on, once the 17 / 18 hooks are in -- never at the bottom, where nothing of the side Dock is hooked: code review 1.8.2, 12.
+//  Asked by DMSMHookEdgeReach17 and wherever the position is read, DMDockSideNow and DMDockChangedRelayout)
+static BOOL gSMEdgeReach17In = NO;
+static void DMSMHookBottomInsets17(void) {
+    static BOOL done = NO;
+    if (done || !gSMEdgeReach17In || (gDMDockPosition != MSBDDockLeft && gDMDockPosition != MSBDDockRight)) return;
+    done = YES;
+    Class c = objc_getClass("SBContinuousExposeAutoLayoutController");
+    SEL bot = NSSelectorFromString(@"validBottomStageAreaInsetsWithConfiguration:");
+    Method mb = c ? class_getInstanceMethod(c, bot) : NULL;
+    NSString *list = DMSMExpect(@encode(id), @encode(id), NULL);
+    if (mb && [DMSMSigOfMethod(mb) isEqualToString:list]) MSHookMessageEx(c, bot, (IMP)DMSMBottomInsets17, (IMP *)&o_SMBottomInsets17);
+    else DMLog(@"[smengine] iPadOS 17's bottom insets for windows are not as expected here: with the Dock at a screen side a window stays Stage Manager's padding short of the bottom");
+}
 // 1.7.5 item 9: Stage Manager's own resize snap (17 / 18) takes a dragged side to the nearest place when it is closer than stageInterItemSpacing +
 // stageOcclusionDodgingPeekLength (-[SBItemResizeGestureSwitcherModifier _responseForGestureUpdateAtGestureEnd:], 18.5 disassembled: the nearest
 // side over the stage's windows, then "nearest < spacing + peek length", the peek length read there for nothing else). With our engine the spacing is
@@ -42816,6 +43585,8 @@ static void DMSMHookEdgeReach17(void) {
         MSHookMessageEx(c, lead, (IMP)DMSMLeadingInsets17, (IMP *)&o_SMLeadingInsets17);
         MSHookMessageEx(c, trail, (IMP)DMSMTrailingInsets17, (IMP *)&o_SMTrailingInsets17);
     } else DMLog(@"[smengine] iPadOS 17's side insets for windows are not as expected here: windows keep Stage Manager's side padding (48 pt from the sides)");
+    gSMEdgeReach17In = YES;
+    DMSMHookBottomInsets17();   // (Settings > Dock > Position: Apple's bottom limit for a window, with Left or Right chosen only)
     if (mp && [DMSMSigOfMethod(mp) isEqualToString:DMSMSigDouble()]) MSHookMessageEx(a, peek, (IMP)DMSMPeekLength17, (IMP *)&o_SMPeekLength17);
     else DMLog(@"[smengine] iPadOS 17's occlusion peek is not as expected here: with two or more windows a window stays 44 pt short of the full width");
 }

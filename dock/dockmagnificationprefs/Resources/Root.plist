@@ -27,6 +27,44 @@
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>Left and Right apply in landscape. In portrait the Dock stays at the bottom.</string>
+			<key>label</key>
+			<string>Position</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.dockmagnification/prefsChanged</string>
+			<key>cell</key>
+			<string>PSLinkListCell</string>
+			<key>default</key>
+			<string>bottom</string>
+			<key>defaults</key>
+			<string>com.besiktasliseba.dockmagnification</string>
+			<key>detail</key>
+			<string>PSListItemsController</string>
+			<key>key</key>
+			<string>dockPosition</string>
+			<key>label</key>
+			<string>Position on Screen</string>
+			<key>validTitles</key>
+			<array>
+				<string>Bottom</string>
+				<string>Left</string>
+				<string>Right</string>
+			</array>
+			<key>validValues</key>
+			<array>
+				<string>bottom</string>
+				<string>left</string>
+				<string>right</string>
+			</array>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>Magnification shows with a trackpad or mouse.</string>
 			<key>label</key>
 			<string>Magnification</string>
 		</dict>

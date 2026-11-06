@@ -645,7 +645,13 @@ static CGRect DMNativeClamp(CGRect f, CGSize minSize) {
     CGPoint d = [g translationInView:self.superview];
     CGRect f = _panStart; f.origin.x += d.x; f.origin.y += d.y;
     self.frame = DMNativeClamp(f, self.minSize);
-    if (g.state == UIGestureRecognizerStateEnded) { self.restoreFrame = CGRectNull; self.layoutName = nil; }
+    if (g.state == UIGestureRecognizerStateEnded) { self.restoreFrame = CGRectNull; self.layoutName = nil; [self dm_keepOutOfSideDock:MSBDSnapMove]; }
+}
+// (Settings > Dock > Position: let go under a Dock at a screen side it comes out of it, as an engine's window does: DMDockSideKept. On the bottom nothing changes.)
+- (void)dm_keepOutOfSideDock:(unsigned)how {
+    CGRect kept = DMDockSideKept(self.frame, how);
+    if (CGRectEqualToRect(kept, self.frame)) return;
+    MSBAnimate(0.25, 0, 1.0, UIViewAnimationOptionCurveEaseOut, ^{ self.frame = kept; }, nil);
 }
 // A resize by a bottom corner (tag 0 left: the right edge stays; 1 right): never below the minimum size, never wider than the desktop, never past
 // its bottom (a window dragged low got 40 pt tall -- its content laid out with negative heights; the left grip made it 4760 pt wide).
@@ -663,7 +669,7 @@ static CGRect DMNativeResized(CGRect start, CGPoint d, int tag, CGSize minSize, 
     if (g.state == UIGestureRecognizerStateBegan) { _panStart = self.frame; DMNativeSetActive(self); }
     CGPoint d = [g translationInView:self.superview];
     self.frame = DMNativeResized(_panStart, d, (int)g.view.tag, self.minSize, DMNativeDesktop());
-    if (g.state == UIGestureRecognizerStateEnded) { self.restoreFrame = CGRectNull; self.layoutName = nil; }
+    if (g.state == UIGestureRecognizerStateEnded) { self.restoreFrame = CGRectNull; self.layoutName = nil; [self dm_keepOutOfSideDock:(g.view.tag == 0 ? MSBDSnapLeft : MSBDSnapRight) | MSBDSnapBottom]; }
 }
 - (void)show {
     UIView *host = DMNativeHost();
@@ -904,19 +910,20 @@ static BOOL DMNativeWindowKeys(DMNativeWindow *w, UIKey *key) {
 // The layer turned with the iPad: every native window kept inside the new desktop -- at once (in the rotation's own animation), and once more
 // when the turn has settled: the usable desktop (above the Dock, which moves after the turn) was still the old one's height at first (a Left
 // Half window in portrait was only 745 pt tall, M1 30 Sep).
+static void DMNativeLayoutOneForDesktop(DMNativeWindow *w, CGRect desk) {   // (one window; also one of another Mac Switcher desktop when the Dock moves, MacSwitcher.h)
+    if (!CGRectIsNull(w.restoreFrame)) { w.frame = CGRectInset(desk, 4.0, 4.0); return; }   // (zoomed: fills the new desktop)
+    if (w.layoutName) {   // (put in a layout from the Window menu -- Right Half...: laid out again for the new desktop, like the engines' tiles)
+        CGRect f = DMLayoutFrameInArea(w.layoutName, desk, [UIScreen mainScreen].bounds.size);
+        if (!CGRectIsNull(f) && !CGRectIsEmpty(f)) { w.frame = f; return; }
+    }
+    CGRect f = DMNativeClamp(w.frame, w.minSize);   // (anywhere else: kept whole on the new desktop when it fits -- a turn left windows mostly off screen)
+    f.origin.x = MAX(CGRectGetMinX(desk), MIN(f.origin.x, CGRectGetMaxX(desk) - f.size.width));
+    f.origin.y = MAX(CGRectGetMinY(desk), MIN(f.origin.y, CGRectGetMaxY(desk) - f.size.height));
+    w.frame = f;
+}
 static void DMNativeLayoutForDesktop(BOOL log) {
     CGRect desk = DMNativeDesktop();
-    for (DMNativeWindow *w in gNativeWindows) {
-        if (!CGRectIsNull(w.restoreFrame)) { w.frame = CGRectInset(desk, 4.0, 4.0); continue; }   // (zoomed: fills the new desktop)
-        if (w.layoutName) {   // (put in a layout from the Window menu -- Right Half...: laid out again for the new desktop, like the engines' tiles)
-            CGRect f = DMLayoutFrameInArea(w.layoutName, desk, [UIScreen mainScreen].bounds.size);
-            if (!CGRectIsNull(f) && !CGRectIsEmpty(f)) { w.frame = f; continue; }
-        }
-        CGRect f = DMNativeClamp(w.frame, w.minSize);   // (anywhere else: kept whole on the new desktop when it fits -- a turn left windows mostly off screen)
-        f.origin.x = MAX(CGRectGetMinX(desk), MIN(f.origin.x, CGRectGetMaxX(desk) - f.size.width));
-        f.origin.y = MAX(CGRectGetMinY(desk), MIN(f.origin.y, CGRectGetMaxY(desk) - f.size.height));
-        w.frame = f;
-    }
+    for (DMNativeWindow *w in gNativeWindows) DMNativeLayoutOneForDesktop(w, desk);
     if (log && gNativeWindows.count) DMLog([NSString stringWithFormat:@"[native] turned: %lu window(s) laid out for the new desktop %@", (unsigned long)gNativeWindows.count, NSStringFromCGRect(desk)]);
 }
 static void DMNativeRelayoutForTurn(void) {

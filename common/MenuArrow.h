@@ -18,7 +18,7 @@
 #define kMSBDArrowShoulder 3.0      // where the arrow leaves the edge: a rounded shoulder this wide on each side, so the edge flows into it
 #define kMSBDArrowMinMenuHeight 44.0   // a menu squeezed shorter than this to make room for the arrow keeps its own place and has no arrow
 
-enum { MSBDArrowNone = 0, MSBDArrowDown = 1, MSBDArrowUp = 2 };   // on the menu's bottom edge pointing down / on its top edge pointing up
+enum { MSBDArrowNone = 0, MSBDArrowDown = 1, MSBDArrowUp = 2, MSBDArrowRight = 3, MSBDArrowLeft = 4 };   // on the menu's bottom edge pointing down / on its top edge pointing up / on its right edge pointing right / on its left edge pointing left (the Dock at a screen side, 1.8.2)
 
 // Where a menu goes for its source (both in the same space): centred over the source's middle and kept inside bounds sideways; the edge facing the
 // source (the bottom when the menu opened above it, as UIKit put it: menu.midY above source.midY) arrowH + tipGap from the source, the menu's
@@ -45,6 +45,22 @@ static inline CGRect MSBDArrowMenuFrame(CGRect menu, CGRect source, CGRect bound
     return CGRectMake(round(x * 2.0) / 2.0, round(y * 2.0) / 2.0, w, round(h * 2.0) / 2.0);
 }
 
+// The same with the Dock at the screen's side (1.8.2, common/DockSide.h), as a Mac's side Dock: the menu beside its source, on the side the screen has room
+// (dockAtRight: to its left, the arrow on the menu's right edge pointing right; else to its right, the arrow on its left edge), level with the source's
+// middle and kept inside bounds up and down (taller than bounds: its top at theirs, shortened, it scrolls). The menu's facing edge arrowH + tipGap from the
+// source. *dir: MSBDArrowRight / MSBDArrowLeft, or MSBDArrowNone with the menu returned unchanged.
+static inline CGRect MSBDArrowSideMenuFrame(CGRect menu, CGRect source, CGRect bounds, CGFloat arrowH, CGFloat tipGap, bool dockAtRight, int *dir) {
+    if (dir) *dir = MSBDArrowNone;
+    if (CGRectIsNull(menu) || CGRectIsEmpty(menu) || CGRectIsNull(source) || CGRectIsNull(bounds) || CGRectIsEmpty(bounds)) return menu;
+    if (!isfinite(menu.origin.x + menu.origin.y + menu.size.width + menu.size.height + source.origin.x + source.origin.y + source.size.width + source.size.height)) return menu;
+    CGFloat w = menu.size.width, h = fmin(menu.size.height, bounds.size.height);
+    CGFloat x = dockAtRight ? CGRectGetMinX(source) - tipGap - arrowH - w : CGRectGetMaxX(source) + tipGap + arrowH;
+    if (h < kMSBDArrowMinMenuHeight - 0.001 || x < CGRectGetMinX(bounds) - 0.5 || x + w > CGRectGetMaxX(bounds) + 0.5) return menu;   // (no room: as it was, without an arrow)
+    CGFloat y = fmax(CGRectGetMinY(bounds), fmin(CGRectGetMidY(source) - h / 2.0, CGRectGetMaxY(bounds) - h));
+    if (dir) *dir = dockAtRight ? MSBDArrowRight : MSBDArrowLeft;
+    return CGRectMake(round(x * 2.0) / 2.0, round(y * 2.0) / 2.0, w, round(h * 2.0) / 2.0);
+}
+
 // The arrow's middle along the menu's edge, from the menu's left edge: under the source's middle, but at least corner + width / 2 in from each end
 // (never into the rounded corners); a menu too narrow for that: its middle.
 static inline CGFloat MSBDArrowOffset(CGRect menu, CGFloat sourceMidX, CGFloat corner, CGFloat arrowW) {
@@ -53,11 +69,38 @@ static inline CGFloat MSBDArrowOffset(CGRect menu, CGFloat sourceMidX, CGFloat c
     return fmax(lo, fmin(x, hi));
 }
 
+// The same along a side edge, from the menu's top edge: level with the source's middle (the Dock at a screen side).
+static inline CGFloat MSBDArrowOffsetY(CGRect menu, CGFloat sourceMidY, CGFloat corner, CGFloat arrowW) {
+    CGFloat lo = corner + arrowW / 2.0, hi = menu.size.height - corner - arrowW / 2.0, y = sourceMidY - CGRectGetMinY(menu);
+    if (!isfinite(y) || hi < lo) return menu.size.height / 2.0;
+    return fmax(lo, fmin(y, hi));
+}
+
+// A panel with a side arrow laid out again at another height, its bottom at `bottom` (the Downloads stack's panel beside a side Dock: a search grows it upwards,
+// the on-screen keyboard lifts it): the arrow stays level with its source -- its middle at the source's middle, never into the rounded corners
+// (MSBDArrowOffsetY against the new frame) --, and the point the panel pops up from and goes back into stays at the source's level (its anchor along the
+// height, kept inside the panel). Kept at its share of the old height, the arrow left the stack as the panel grew (code review 1.8.2, 7). panel: its frame
+// before (its x and width are kept). Returns the new frame; *anchorY: the anchor's share of the new height; *arrowMidY: the arrow's middle.
+static inline CGRect MSBDArrowSidePanelRelayout(CGRect panel, CGFloat height, CGFloat bottom, CGFloat sourceMidY, CGFloat corner, CGFloat arrowW, CGFloat *anchorY, CGFloat *arrowMidY) {
+    CGRect f = CGRectMake(panel.origin.x, bottom - height, panel.size.width, height);
+    if (anchorY) *anchorY = height > 0.0 && isfinite(sourceMidY) ? fmax(0.0, fmin(1.0, (sourceMidY - CGRectGetMinY(f)) / height)) : 1.0;
+    if (arrowMidY) *arrowMidY = CGRectGetMinY(f) + MSBDArrowOffsetY(f, sourceMidY, corner, arrowW);
+    return f;
+}
+
 // The arrow's outline in its own view, which is arrowW wide and arrowH + overlap tall and sits on the menu's edge with `overlap` points over the menu
 // (they cover the edge's own outline there, so menu and arrow read as one shape): down -- the band at the top, the tip at the bottom middle; up --
 // mirrored. The sides leave the edge with rounded shoulders and meet in a rounded tip. Returns a new path (the caller releases it); stroke: only
 // the two sides and the tip (for a border drawn like the menu's; the band's edges are inside the menu's own).
+// (right and left: the same arrow turned, in a view arrowH + overlap wide and arrowW tall, the band on the menu's side)
 static inline CGPathRef MSBDArrowPathCreate(CGFloat arrowW, CGFloat arrowH, CGFloat overlap, int dir, bool strokeOnly) {
+    if (dir == MSBDArrowRight || dir == MSBDArrowLeft) {
+        CGPathRef down = MSBDArrowPathCreate(arrowW, arrowH, overlap, MSBDArrowDown, strokeOnly);
+        CGAffineTransform t = dir == MSBDArrowRight ? CGAffineTransformMake(0, 1, 1, 0, 0, 0) : CGAffineTransformMake(0, 1, -1, 0, fmax(0.0, overlap) + arrowH, 0);
+        CGPathRef turned = CGPathCreateCopyByTransformingPath(down, &t);
+        CGPathRelease(down);
+        return turned;
+    }
     CGMutablePathRef p = CGPathCreateMutable();
     if (!(arrowW > 0) || !(arrowH > 0) || (dir != MSBDArrowDown && dir != MSBDArrowUp)) return p;
     CGFloat s = fmin(kMSBDArrowShoulder, arrowW / 4.0), o = fmax(0.0, overlap), r = kMSBDArrowTipRadius;

@@ -14,6 +14,7 @@
 #import <dlfcn.h>
 #import "../common/OtherTweaks.h"   // (Lynx 2 drawing its own Dock indicators: ours steps aside)
 #import "DMLog.h"
+#include "../common/DockSide.h"   // (Settings > Dock > Position: the dot at the screen's edge side of the picture)
 #include "RunningDotRule.h"   // (which running app has the dot: its process seen on screen, or a window of it away -- Mac test tools/test-runningdot.sh)
 
 @interface UIWindow (DMPrivate)
@@ -218,7 +219,9 @@ static void RIUpdate(UIView *iconView, NSSet<NSString *> *running) {   // (runni
             gDMDotGapBelowImage = y - bottom;   // (our own Dock icons, Finder, are only their picture: the same gap, so their dot lines up)
         }
     }
-    dot.frame = CGRectMake((iconView.bounds.size.width - d) / 2.0, y, d, d);
+    extern int gDockSideApplied;
+    int dockSide = iconView.window.screen == [UIScreen mainScreen] ? gDockSideApplied : 0;   // (a TV's Dock stays at its bottom)
+    dot.frame = dockSide ? MSBDDockSideDotFrame(dockSide, iconView.bounds.size.width, iconView.bounds.size.height, y, d) : CGRectMake((iconView.bounds.size.width - d) / 2.0, y, d, d);
     dot.layer.cornerRadius = d / 2.0;
     dot.hidden = NO;
     [iconView bringSubviewToFront:dot];

@@ -1361,6 +1361,31 @@ static void DMMSWRelaunchClosed(void) {
         DMMSWRelaunchAt(b, [deadMW containsObject:b]);
     }
 }
+// Settings > Dock > Position moved the Dock (StatusBar.x DMDockPositionMoved; code review 1.8.2, 6): what is kept of the other desktops follows it. Aerial,
+// Zetsu, MilkyWay4: the place each away window has now (the slide draws it there, DMMSWDeskPicture), and the place a window whose app iPadOS closed
+// meanwhile opens again at (DMMSWRelaunchAt), kept out of the Dock as the windows are (Stage Manager fits a plan as it is asked, DMSMPlanFitted). Every
+// engine: Finder's windows there are laid out for the new desktop, as the ones on screen are (DMNativeLayoutForDesktop).
+static void DMMSWDockMovedRecords(void) {
+    NSInteger cur = DMMSWCurId();
+    if (!DMSMEngine() && gMSWWinFrame.count) {
+        NSMutableDictionary<NSString *, UIView *> *alive = [NSMutableDictionary dictionary];
+        for (UIView *st in DMAerialStagesAll()) { NSString *b = DMStageBundle(st); if (b.length) alive[b] = st; }
+        CGRect usable = DMLayoutFrame(@"fill");   // (the engine's own frame for the desktop, as the records are its frames)
+        for (NSString *b in [gMSWWinFrame allKeys]) {
+            NSNumber *d = gMSWWinDesk[b];
+            if (!d || d.integerValue == cur) continue;
+            CGRect f = CGRectFromString(gMSWWinFrame[b]);
+            CGRect t = alive[b] ? alive[b].frame : CGRectIsNull(usable) ? f : MSBDDockSideKeepOut(f, usable, MSBDDockKeepMove);
+            if (CGRectIsNull(t) || CGRectIsEmpty(t) || CGRectEqualToRect(t, f)) continue;
+            gMSWWinFrame[b] = NSStringFromCGRect(t); gMSWDesksDirty = YES;
+        }
+    }
+    if (gMSWAwayNatives.count) {
+        CGRect desk = DMNativeDesktop();
+        for (DMNativeWindow *w in gMSWAwayNatives) DMNativeLayoutOneForDesktop(w, desk);
+    }
+    if (gMSWDesksDirty) DMMSWSave();
+}
 
 // ==== the Spaces slide: how a desktop switch looks (every engine) ===============================================================================
 // As on a Mac, the desktop that is left and the one that comes lie side by side and move together: with the fingers while a side swipe is held

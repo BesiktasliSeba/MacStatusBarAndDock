@@ -26,6 +26,7 @@
 #import "../common/GuidedAccess.h"   // (MSBDGuidedAccessActive: no panel while a Guided Access session keeps the iPad in one app, 1.3.7)
 #import "../common/AXText.h"         // (MSBDAXJoin: a row read as one element, 1.3.7)
 #import "../common/FocusLock.h"      // (MSBDFocusLock: SpringBoard holds the keyboard focus while the panel is open, so Esc reaches it -- 15-18)
+#include "../common/DockSide.h"   // (Settings > Dock > Position: the panel beside the Dock)
 #import "../common/MenuArrow.h"      // (the Mac's arrow under the panel, pointing at the stack: 1.7.5 item 5)
 
 @interface UIWindow (DMPrivateDL)
@@ -493,6 +494,8 @@ static NSString *DMAgeText(NSDate *date) {
 @property (nonatomic, strong) UIScrollView *list;
 @property (nonatomic, strong) UILabel *emptyLabel;
 @property (nonatomic) CGFloat openListH, openBottom, keyboardTop;  // (layout: the list height and panel bottom it opened with, the keyboard's top edge)
+@property (nonatomic) int arrowDir;                                  // (the arrow's direction: down, or right / left beside a side Dock)
+@property (nonatomic) CGFloat stackMidY;                             // (beside a side Dock: the stack's middle, which the arrow stays level with)
 @property (nonatomic) CGRect keyboardFrame;                         // (the on-screen keyboard in the panel window's coordinates, empty when none)
 @property (nonatomic, strong) id focusLock;                         // SpringBoard's keyboard focus, held while the field is being typed in
 @property (nonatomic, strong) id openFocusLock;                     // SpringBoard's keyboard focus, held while the panel is open (a hardware keyboard)
@@ -538,13 +541,15 @@ static NSString *DMAgeText(NSDate *date) {
 // the panel's (the stack's middle on the panel's bottom edge), so the same pop-up, move and fade look like one shape.
 static const CGFloat kPanelCorner = 18.0;   // (the panel's corner radius, -presentItems:)
 static const CGFloat kPanelArrowBand = 1.0;   // (the arrow's band over the panel's edge: covers the 0.5 pt border there)
-static UIView *DMPanelArrowMake(void) {
+// (dir: MSBDArrowDown, or with the Dock at a screen side MSBDArrowRight / MSBDArrowLeft on the panel's side edge)
+static UIView *DMPanelArrowMake(int dir) {
     const CGFloat W = kMSBDArrowWidth, H = kMSBDArrowHeight, o = kPanelArrowBand;
-    UIView *arrow = [[UIView alloc] initWithFrame:CGRectMake(0, 0, W, H + o)];
+    BOOL sideways = dir == MSBDArrowRight || dir == MSBDArrowLeft;
+    UIView *arrow = [[UIView alloc] initWithFrame:sideways ? CGRectMake(0, 0, H + o, W) : CGRectMake(0, 0, W, H + o)];
     arrow.userInteractionEnabled = NO; arrow.accessibilityElementsHidden = YES;
     UIVisualEffectView *fx = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThickMaterial]];   // (the panel's)
     fx.frame = arrow.bounds; fx.userInteractionEnabled = NO;
-    CGPathRef fill = MSBDArrowPathCreate(W, H, o, MSBDArrowDown, false), sides = MSBDArrowPathCreate(W, H, o, MSBDArrowDown, true);
+    CGPathRef fill = MSBDArrowPathCreate(W, H, o, dir, false), sides = MSBDArrowPathCreate(W, H, o, dir, true);
     UIView *mask = [[UIView alloc] initWithFrame:fx.bounds];
     CAShapeLayer *shape = [CAShapeLayer layer];
     shape.frame = mask.bounds; shape.path = fill; shape.fillColor = [UIColor blackColor].CGColor;
@@ -552,7 +557,8 @@ static UIView *DMPanelArrowMake(void) {
     fx.maskView = mask;   // (a blur view is masked through its mask view)
     [arrow addSubview:fx];
     CAShapeLayer *line = [CAShapeLayer layer];   // (the panel's border, 0.5 pt inside its edge: the sides' line a quarter point up to meet it)
-    line.frame = CGRectOffset(arrow.bounds, 0, -0.25); line.path = sides; line.fillColor = nil;
+    line.frame = dir == MSBDArrowRight ? CGRectOffset(arrow.bounds, -0.25, 0) : dir == MSBDArrowLeft ? CGRectOffset(arrow.bounds, 0.25, 0) : CGRectOffset(arrow.bounds, 0, -0.25);
+    line.path = sides; line.fillColor = nil;
     line.strokeColor = [UIColor colorWithWhite:0.5 alpha:0.35].CGColor; line.lineWidth = 0.5;
     [arrow.layer addSublayer:line];
     CGPathRelease(fill); CGPathRelease(sides);
@@ -835,15 +841,26 @@ static BOOL DMDownloadsSwitcherVisible(void) {
     // It gets as tall as the room above the Dock allows (never under the status bar), at most 10 rows before it scrolls.
     const CGFloat width = 360.0, pad = 8.0, rowH = 56.0, headerH = 42.0, gap = kMSBDArrowHeight + kMSBDArrowTipGap, footerH = 30.0, searchH = kSearchRowH;   // (gap: the arrow, its tip 3 pt above the stack)
     CGRect iconFrame = [icon.superview convertRect:icon.frame toView:window];
-    CGFloat room = iconFrame.origin.y - gap - 54.0;   // 54: keeps clear of the status bar
+    extern int gDockSideApplied;
+    int dockSide = window.screen == [UIScreen mainScreen] ? gDockSideApplied : 0;   // (Settings > Dock > Position: beside the Dock, level with the stack; the whole height to grow in)
+    CGFloat room = dockSide ? window.bounds.size.height - 12.0 - 54.0 : iconFrame.origin.y - gap - 54.0;   // 54: keeps clear of the status bar
     NSUInteger fit = (NSUInteger)MAX(1.0, floor((room - headerH - footerH - searchH - 2 * pad) / rowH));
     NSUInteger visible = items.count ? MIN(MIN(items.count, fit), 10) : 0;
     CGFloat listH = items.count ? visible * rowH : 64.0;
     CGFloat height = headerH + pad + listH + pad + footerH + searchH;
     CGFloat x = MIN(MAX(CGRectGetMidX(iconFrame) - width / 2.0, 12.0), window.bounds.size.width - width - 12.0);
     CGFloat y = iconFrame.origin.y - gap - height;
+    int arrowDir = MSBDArrowDown;
+    if (dockSide) {
+        CGRect platter = [icon.superview convertRect:icon.superview.bounds toView:window], source = iconFrame;   // (from the Dock's inner edge, as the icons' menus: the arrow clear of the Dock)
+        source.origin.x = dockSide == MSBDDockRight ? CGRectGetMinX(platter) : CGRectGetMaxX(platter) - source.size.width;
+        CGRect place = MSBDArrowSideMenuFrame(CGRectMake(0, 0, width, height), source, CGRectMake(12.0, 54.0, window.bounds.size.width - 24.0, window.bounds.size.height - 66.0), kMSBDArrowHeight, kMSBDArrowTipGap, dockSide == MSBDDockRight, &arrowDir);
+        if (arrowDir != MSBDArrowNone) { x = CGRectGetMinX(place); y = CGRectGetMinY(place); }
+        else { arrowDir = MSBDArrowDown; x = dockSide == MSBDDockRight ? source.origin.x - gap - width : CGRectGetMaxX(source) + gap; y = MAX(54.0, window.bounds.size.height - 12.0 - height); }
+    }
     self.items = items; self.results = items; self.searchIndex = nil;
     self.openListH = listH; self.openBottom = y + height; self.keyboardTop = CGFLOAT_MAX;
+    self.arrowDir = arrowDir; self.stackMidY = CGRectGetMidY(iconFrame);
 
     UIVisualEffectView *panel = [[DMDownloadsPanelView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThickMaterial]];
     panel.accessibilityViewIsModal = YES;   // (assistive features stay in the panel while it is open; the escape gesture closes it)
@@ -931,24 +948,29 @@ static BOOL DMDownloadsSwitcherVisible(void) {
 
     panel.frame = CGRectMake(x, y, width, height);
     panel.alpha = 0.0;
-    panel.layer.anchorPoint = CGPointMake((CGRectGetMidX(iconFrame) - x) / width, 1.0);
+    // (the point it pops up from: the arrow's tip, level with the stack)
+    panel.layer.anchorPoint = arrowDir == MSBDArrowDown ? CGPointMake((CGRectGetMidX(iconFrame) - x) / width, 1.0) : CGPointMake(arrowDir == MSBDArrowRight ? 1.0 : 0.0, (CGRectGetMidY(iconFrame) - y) / height);
     panel.frame = CGRectMake(x, y, width, height);   // the anchor point moved the frame; put it back
     BOOL rm = MSBReduceMotion();   // (Reduce Motion: the panel fades in with only a tiny scale, the rows with it: no pop-up from the icon)
     panel.transform = rm ? CGAffineTransformMakeScale(kMSBRMScale, kMSBRMScale) : CGAffineTransformMakeScale(0.9, 0.9);
     [window addSubview:panel];
     self.panel = panel;
     {   // the arrow under the panel, pointing at the stack: under its middle, never into the rounded corners (MSBDArrowOffset)
-        UIView *arrow = DMPanelArrowMake();
-        CGFloat off = MSBDArrowOffset(CGRectMake(x, y, width, height), CGRectGetMidX(iconFrame), kPanelCorner, kMSBDArrowWidth);
-        CGRect af = CGRectMake(x + off - kMSBDArrowWidth / 2.0, y + height - kPanelArrowBand, kMSBDArrowWidth, kMSBDArrowHeight + kPanelArrowBand);
-        arrow.layer.anchorPoint = CGPointMake((CGRectGetMidX(iconFrame) - af.origin.x) / af.size.width, kPanelArrowBand / af.size.height);   // (the panel's anchor point)
+        UIView *arrow = DMPanelArrowMake(arrowDir);
+        BOOL sideways = arrowDir != MSBDArrowDown;
+        CGFloat off = sideways ? MSBDArrowOffsetY(CGRectMake(x, y, width, height), CGRectGetMidY(iconFrame), kPanelCorner, kMSBDArrowWidth) : MSBDArrowOffset(CGRectMake(x, y, width, height), CGRectGetMidX(iconFrame), kPanelCorner, kMSBDArrowWidth);
+        CGRect af = !sideways ? CGRectMake(x + off - kMSBDArrowWidth / 2.0, y + height - kPanelArrowBand, kMSBDArrowWidth, kMSBDArrowHeight + kPanelArrowBand)
+                  : arrowDir == MSBDArrowRight ? CGRectMake(x + width - kPanelArrowBand, y + off - kMSBDArrowWidth / 2.0, kMSBDArrowHeight + kPanelArrowBand, kMSBDArrowWidth)
+                  : CGRectMake(x - kMSBDArrowHeight, y + off - kMSBDArrowWidth / 2.0, kMSBDArrowHeight + kPanelArrowBand, kMSBDArrowWidth);
+        CGPoint panelAnchorAt = sideways ? CGPointMake(arrowDir == MSBDArrowRight ? x + width : x, CGRectGetMidY(iconFrame)) : CGPointMake(CGRectGetMidX(iconFrame), y + height);
+        arrow.layer.anchorPoint = CGPointMake((panelAnchorAt.x - af.origin.x) / af.size.width, (panelAnchorAt.y - af.origin.y) / af.size.height);   // (the panel's anchor point)
         arrow.frame = af;   // (after the anchor point, as for the panel)
         arrow.alpha = 0.0; arrow.transform = panel.transform;
         [window insertSubview:arrow aboveSubview:panel];   // (above: its band hides the panel's border where they join)
         self.arrow = arrow;
         DM_FEATURE_MARK("downloads-arrow");
-        DMLog([NSString stringWithFormat:@"[downloads] the arrow: %.1f pt from the panel's left edge (the stack's middle %.1f, panel %@), tip %.1f pt above the stack",
-               off, CGRectGetMidX(iconFrame), NSStringFromCGRect(CGRectMake(x, y, width, height)), CGRectGetMinY(iconFrame) - CGRectGetMaxY(af)]);
+        DMLog([NSString stringWithFormat:@"[downloads] the arrow: %.1f pt from the panel's %@ edge (the stack's middle %.1f, panel %@), %.1f pt from the stack",
+               off, sideways ? @"top" : @"left", sideways ? CGRectGetMidY(iconFrame) : CGRectGetMidX(iconFrame), NSStringFromCGRect(CGRectMake(x, y, width, height)), sideways ? (arrowDir == MSBDArrowRight ? CGRectGetMinX(iconFrame) - CGRectGetMaxX(af) : CGRectGetMinX(af) - CGRectGetMaxX(iconFrame)) : CGRectGetMinY(iconFrame) - CGRectGetMaxY(af)]);
     }
     UIView *arrowNow = self.arrow;
     [self startDockWatch];
@@ -964,7 +986,8 @@ static BOOL DMDownloadsSwitcherVisible(void) {
     // the visible rows pop up one after another from the icon, newest first
     if (!rm) for (NSUInteger k = 0; k < rows.count; k++) {
         UIView *row = rows[k];
-        row.alpha = 0.0; row.transform = CGAffineTransformMakeTranslation(0, 26.0 + 10.0 * k);
+        // (from the icon: up from below, or from the Dock's side)
+        row.alpha = 0.0; row.transform = dockSide ? CGAffineTransformMakeTranslation((dockSide == MSBDDockRight ? 1.0 : -1.0) * (26.0 + 10.0 * k), 0) : CGAffineTransformMakeTranslation(0, 26.0 + 10.0 * k);
         [UIView animateWithDuration:0.26 delay:0.015 * k usingSpringWithDamping:0.88 initialSpringVelocity:0 options:0 animations:^{
             row.alpha = 1.0; row.transform = CGAffineTransformIdentity;
         } completion:nil];
@@ -1116,12 +1139,40 @@ static BOOL DMIsTypingInKeyboard(UIWindow *w) {
     CGFloat height = listH + chrome;
     // (the anchor point is at the bottom edge: the frame is set through bounds and position so the pop-up transform stays untouched)
     CGRect b = panel.bounds; b.size.height = height;
-    CGPoint pos = panel.layer.position; pos.y = bottom;
+    if (self.arrowDir == MSBDArrowRight || self.arrowDir == MSBDArrowLeft) { [self relayoutBesideDockTo:b bottom:bottom animated:animated]; return; }
+    CGPoint pos = panel.layer.position; pos.y = bottom - height * (1.0 - panel.layer.anchorPoint.y);   // (the bottom edge, whatever the anchor: beside a side Dock it is level with the stack)
+    CGFloat moved = pos.y - panel.layer.position.y;
     if (CGRectEqualToRect(b, panel.bounds) && CGPointEqualToPoint(pos, panel.layer.position)) { [self pinListToBottom]; return; }
     UIView *arrow = self.arrow;   // (its anchor is on the panel's bottom edge: it moves with it; while the keyboard lifts the panel off the stack it goes)
     CGFloat arrowAlpha = bottom >= self.openBottom - 0.5 ? panel.alpha : 0.0;
     void (^apply)(void) = ^{ panel.bounds = b; panel.layer.position = pos; [panel layoutIfNeeded]; [self pinListToBottom];
-                             arrow.layer.position = CGPointMake(arrow.layer.position.x, pos.y); arrow.alpha = arrowAlpha; };
+                             arrow.layer.position = CGPointMake(arrow.layer.position.x, arrow.layer.position.y + moved); arrow.alpha = arrowAlpha; };
+    if (animated && !MSBReduceMotion()) [UIView animateWithDuration:0.18 delay:0 options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionCurveEaseOut animations:apply completion:nil];
+    else apply();
+}
+// The same beside a side Dock (Settings > Dock > Position): the arrow on the panel's side edge stays level with the stack, and the panel pops up from it and
+// goes back into it, its anchor at the stack's level (MenuArrow.h MSBDArrowSidePanelRelayout). The anchor moved first, where the panel and the arrow are
+// now, so nothing jumps; then the new size and places. Moved by the change of the old anchor's place, the arrow left the stack as a search grew the panel
+// upwards (code review 1.8.2, 7).
+- (void)relayoutBesideDockTo:(CGRect)b bottom:(CGFloat)bottom animated:(BOOL)animated {
+    UIView *panel = self.panel, *arrow = self.arrow;
+    CALayer *pl = panel.layer, *al = arrow.layer;
+    CGRect was = CGRectMake(pl.position.x - pl.anchorPoint.x * pl.bounds.size.width, pl.position.y - pl.anchorPoint.y * pl.bounds.size.height, pl.bounds.size.width, pl.bounds.size.height);
+    CGFloat anchorY = 1.0, arrowMidY = 0.0;
+    CGRect f = MSBDArrowSidePanelRelayout(was, b.size.height, bottom, self.stackMidY, kPanelCorner, kMSBDArrowWidth, &anchorY, &arrowMidY);
+    CGPoint pos = CGPointMake(pl.position.x, CGRectGetMinY(f) + anchorY * b.size.height);   // (x: the panel's edge facing the Dock, its anchor's)
+    CGRect aw = al ? CGRectMake(al.position.x - al.anchorPoint.x * al.bounds.size.width, al.position.y - al.anchorPoint.y * al.bounds.size.height, al.bounds.size.width, al.bounds.size.height) : CGRectNull;
+    CGRect af = al ? CGRectMake(aw.origin.x, arrowMidY - aw.size.height / 2.0, aw.size.width, aw.size.height) : CGRectNull;
+    CGPoint aAnchor = al && af.size.width > 0 && af.size.height > 0 ? CGPointMake((pos.x - af.origin.x) / af.size.width, (pos.y - af.origin.y) / af.size.height) : CGPointMake(0.5, 0.5);
+    BOOL same = CGRectEqualToRect(b, panel.bounds) && CGPointEqualToPoint(pos, pl.position) && fabs(anchorY - pl.anchorPoint.y) < 0.0001 && (!al || CGPointEqualToPoint(aAnchor, al.anchorPoint));
+    if (same) { [self pinListToBottom]; return; }
+    CGFloat arrowAlpha = bottom >= self.openBottom - 0.5 ? panel.alpha : 0.0;   // (while the keyboard lifts the panel off the stack the arrow goes)
+    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    pl.anchorPoint = CGPointMake(pl.anchorPoint.x, anchorY); pl.position = CGPointMake(pl.position.x, CGRectGetMinY(was) + anchorY * was.size.height);
+    if (al) { al.anchorPoint = aAnchor; al.position = CGPointMake(aw.origin.x + aAnchor.x * aw.size.width, aw.origin.y + aAnchor.y * aw.size.height); }
+    [CATransaction commit];
+    void (^apply)(void) = ^{ panel.bounds = b; pl.position = pos; [panel layoutIfNeeded]; [self pinListToBottom];
+                             al.position = pos; arrow.alpha = arrowAlpha; };   // (the arrow's anchor is the panel's: one shape)
     if (animated && !MSBReduceMotion()) [UIView animateWithDuration:0.18 delay:0 options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionCurveEaseOut animations:apply completion:nil];
     else apply();
 }
@@ -1360,7 +1411,8 @@ static BOOL DMDLHardwareKeyboard(void) {
 }
 - (UIPointerStyle *)pointerInteraction:(UIPointerInteraction *)interaction styleForRegion:(UIPointerRegion *)region {
     if (!DMDockIconLift()) return nil;
-    UITargetedPreview *preview = [[UITargetedPreview alloc] initWithView:self];
+    extern UITargetedPreview *MSBDDockSideIconPreview(UIView *icon, UIImage *picture, UIPreviewParameters *parameters);   // (dock/Dock.x: a copy with the Dock at a side)
+    UITargetedPreview *preview = MSBDDockSideIconPreview(self, self.image.image, nil) ?: [[UITargetedPreview alloc] initWithView:self];
     return [UIPointerStyle styleWithEffect:[UIPointerLiftEffect effectWithPreview:preview] shape:nil];
 }
 @end

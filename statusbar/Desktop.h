@@ -134,6 +134,7 @@ static int gDesktopLookRead, gDesktopFolderFrom;
 - (void)dm_themeRefreshed;    // (a theme engine refreshed its pictures: the Home Screen's shape read again, the app icons drawn again)
 - (NSString *)dm_diagLine;   // (untested iPadOS diagnostics, DMDesktopDiag: where it sits and what it found there; names and numbers only)
 - (void)dm_axOpen:(DMDesktopItemView *)v;
+- (void)dm_followPage;   // (its frame: its page of the screen, wherever page 1's list lies -- DMDesktopPageFrameIn)
 #if DEBUG
 - (void)dm_debug:(NSString *)spec;
 #endif
@@ -148,6 +149,9 @@ static BOOL DMDesktopHasKeysNow(void) { return gDesktop && [gDesktop dm_hasKeys]
 static void DMDesktopYieldKeys(void) { if (gDesktop && [gDesktop dm_ownsKeys]) [gDesktop dm_setHasKeys:NO]; }
 // ... and the Dock's swipe down fired for that touch: the desktop lets it go (decided once per touch, DesktopHold.h -- 1.7.8).
 __attribute__((visibility("default"))) void MSBDDesktopTouchGivenAway(UIGestureRecognizer *g) { if (gDesktop && g) [gDesktop dm_touchGivenAwayFor:g]; }
+// ... and the Dock at a screen side moved the Home Screen's pages (Settings > Dock > Position, 1.8.2): the desktop stays on its page of the screen, in the same
+// animation (DMDesktopPageFrameIn).
+__attribute__((visibility("default"))) void MSBDDesktopFollowPage(void) { [gDesktop dm_followPage]; }
 
 // SpringBoard's keyboard focus while a name is edited on the desktop (the Home Screen has no keyboard of its own), as the Dock's Downloads search
 // takes it: given back when the editing ends.
@@ -507,6 +511,15 @@ static BOOL DMDesktopRenameFieldTouch(UITouch *t) {
 }
 
 // ---- where it is: page 1 of the Home Screen ----
+// The desktop covers its page of the screen: the list's own bounds, or, where the list lies off its page (the Dock at a screen side moves each page's icon list
+// away from it, dock/Dock.x DMDockSideHomeFrame), the page's place in the list -- so the files keep to the screen, and to the Dock's own rule, as ever.
+static CGRect DMDesktopPageFrameIn(UIView *list) {
+    UIView *scroll = list.superview;
+    CGFloat pw = scroll.bounds.size.width;
+    if (!list || ![scroll isKindOfClass:[UIScrollView class]] || pw < 100.0) return list.bounds;
+    CGRect page = CGRectMake(round(list.frame.origin.x / pw) * pw, list.frame.origin.y, pw, list.frame.size.height);
+    return CGRectEqualToRect(page, list.frame) ? list.bounds : [list convertRect:page fromView:scroll];
+}
 // Page 1's icon list: the root folder view's own first icon list (-iconListViewAtIndex:0; the Today View page, when it is a page, is no icon list).
 // Where that is not answered, the icon list (SBIconListView) in the root folder's scroll view (SBIconScrollView) nearest the start: the leftmost, the
 // rightmost in a right-to-left language, where iPadOS lays the pages out from the right (iPad 2, Hebrew: page 1 at x 3072, page 4 at x 768 -- before
@@ -586,7 +599,7 @@ static void DMDesktopEditHomeScreen(void) {
         if (found && found != list) {
             [self dm_detach];
             _list = found;
-            self.frame = found.bounds;
+            self.frame = DMDesktopPageFrameIn(found);
             [found insertSubview:self atIndex:0];   // (behind the app icons and widgets)
             [self dm_addMenu:_bgMenu to:found];
             _iconSig = nil;
@@ -612,7 +625,7 @@ static void DMDesktopEditHomeScreen(void) {
     //  menu closed, -dm_detach -- kept the Dock's window low until the next desktop menu closed; the same safety as the Home Screen icon menus')
     if (!_menuOpen && self.window && [gDockUnderReasons containsObject:@"menu"] && !(_menuClosing && CACurrentMediaTime() - _menuClosingAt < 1.0)
         && !DMDesktopMenuShown(self.window)) { DMDesktopDockUnder(@"menu", NO, 0); DMLog(@"[desktop] a menu went without its close finishing: the Dock back (safety reset)"); }
-    if (!CGRectEqualToRect(self.frame, _list.bounds)) self.frame = _list.bounds;
+    [self dm_followPage];
     if (CACurrentMediaTime() - _sigAt > 1.0) {   // (an app icon or widget added, moved or removed on page 1: icons that would be under it move)
         _sigAt = CACurrentMediaTime();
         NSString *sig = [self dm_iconSignature];
@@ -629,11 +642,12 @@ static void DMDesktopEditHomeScreen(void) {
         }
     }
 }
+- (void)dm_followPage { if (_list && self.superview == _list) { CGRect f = DMDesktopPageFrameIn(_list); if (!CGRectEqualToRect(self.frame, f)) self.frame = f; } }
 - (NSArray<NSValue *> *)dm_occupied {   // page 1's app icons, folders and widgets (icon views), a little larger: never under a desktop icon
     NSMutableArray *a = [NSMutableArray array];
     Class iv = objc_getClass("SBIconView");   // (not the list's invisible focus guides: they pushed icons off where they were dropped)
     for (UIView *v in _list.subviews) if (v != self && !v.hidden && v.alpha > 0.01 && v.bounds.size.width > 8.0 && ((iv && [v isKindOfClass:iv]) || [NSStringFromClass([v class]) containsString:@"Widget"]))
-        [a addObject:[NSValue valueWithCGRect:CGRectInset(v.frame, -4.0, -4.0)]];
+        [a addObject:[NSValue valueWithCGRect:CGRectInset([_list convertRect:v.frame toView:self], -4.0, -4.0)]];   // (in the desktop's own space: the page's)
     // the page dots (SpringBoard's scroll accessory, above the Dock): it is above the desktop and takes the touches there -- an icon placed on it
     // could not be pressed, a long press started the Home Screen's editing instead (iPad 2 landscape, dots at {444, 622, 136.5, 40})
     UIView *root = _list.superview;
@@ -642,7 +656,7 @@ static void DMDesktopEditHomeScreen(void) {
     for (NSUInteger k = 0; k < todo.count && k < 60; k++) {
         UIView *x = todo[k];
         if (x.hidden || x.alpha < 0.01) continue;
-        if ([NSStringFromClass([x class]) containsString:@"ScrollAccessoryView"]) { if (x.bounds.size.width > 8.0) [a addObject:[NSValue valueWithCGRect:CGRectInset([x convertRect:x.bounds toView:_list], -4.0, -4.0)]]; continue; }
+        if ([NSStringFromClass([x class]) containsString:@"ScrollAccessoryView"]) { if (x.bounds.size.width > 8.0) [a addObject:[NSValue valueWithCGRect:CGRectInset([x convertRect:x.bounds toView:self], -4.0, -4.0)]]; continue; }
         if (![x isKindOfClass:[UIScrollView class]]) [todo addObjectsFromArray:x.subviews];   // (not into the pages themselves)
     }
     return a;
@@ -927,8 +941,21 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
     DMPlacerInitDir(pl, area, _cellW, _cellH, r, (int)occ.count, self.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft);
     free(r);
 }
-- (CGPoint)dm_pointFor:(NSArray<NSNumber *> *)f area:(CGRect)a { return CGPointMake(a.origin.x + f[0].doubleValue * a.size.width, a.origin.y + f[1].doubleValue * a.size.height); }
-- (NSArray<NSNumber *> *)dm_fractionFor:(CGPoint)c area:(CGRect)a { return @[@(MAX(0.0, MIN(1.0, (c.x - a.origin.x) / MAX(1.0, a.size.width)))), @(MAX(0.0, MIN(1.0, (c.y - a.origin.y) / MAX(1.0, a.size.height))))]; }
+// A saved place is a share of this. With the Dock at a screen side (Settings > Dock > Position): the area as it would be with the Dock at the bottom, so the desktop's icons
+// stay where they are (KT 5 Nov), and one that would lie under the Dock goes to the nearest free spot (the placer keeps to -dm_area); back at the bottom it returns.
+- (CGRect)dm_placesArea:(CGRect)a {
+    CGSize scr = [UIScreen mainScreen].bounds.size;
+    if (!DMDockSideNow(scr)) return a;
+    static double (*atBottom)(void) = NULL;
+    if (!atBottom) atBottom = (double (*)(void))dlsym(RTLD_DEFAULT, "MSBDDockHeightAtBottom");
+    double h = atBottom ? atBottom() : -1.0;
+    if (!(h > 0.0)) return a;
+    CGFloat top = DMTopLimit();
+    CGRect r = CGRectIntersection(CGRectInset(CGRectMake(0, top, scr.width, scr.height - h - kMSBDDockSideGap - top), 6.0, 4.0), self.bounds);
+    return CGRectIsNull(r) || r.size.height < 100.0 ? a : r;
+}
+- (CGPoint)dm_pointFor:(NSArray<NSNumber *> *)f area:(CGRect)a { a = [self dm_placesArea:a]; return CGPointMake(a.origin.x + f[0].doubleValue * a.size.width, a.origin.y + f[1].doubleValue * a.size.height); }
+- (NSArray<NSNumber *> *)dm_fractionFor:(CGPoint)c area:(CGRect)a { a = [self dm_placesArea:a]; return @[@(MAX(0.0, MIN(1.0, (c.x - a.origin.x) / MAX(1.0, a.size.width)))), @(MAX(0.0, MIN(1.0, (c.y - a.origin.y) / MAX(1.0, a.size.height))))]; }
 // The icons are placed again when something a pass depends on changed -- the files, page 1's app icons and widgets, the page's size, an icon's
 // size, a drag that ended --, not on every layout UIKit asks for (adding the selection rectangle, the rename field or a menu's anchor lays the
 // view out too). Never while the Home Screen is being arranged (the icons are hidden) or while page 1 isn't showing: then when it shows again
@@ -941,6 +968,7 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
 }
 - (void)layoutSubviews {
     [super layoutSubviews];
+    [self dm_followPage];   // (a turn or a moved list: still its page of the screen before anything is placed)
     if (!_list || !_items) return;
     CGRect area = [self dm_area];
     if (!_placeDirty && CGRectEqualToRect(area, _placedArea) && _placedCell.width == _cellW && _placedCell.height == _cellH) return;

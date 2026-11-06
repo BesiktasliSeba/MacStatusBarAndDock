@@ -4,6 +4,7 @@
 // (com.besiktasliseba.macstatusbar.finder.dock: open windows come forward, a minimized one comes back, none -> a new window), and Finder
 // publishes how many windows it has open (the state of com.besiktasliseba.macstatusbar.finder.windows) for the dot under the icon.
 #import <UIKit/UIKit.h>
+#include "../common/DockSide.h"   // (Settings > Dock > Position)
 #import <objc/runtime.h>
 #include <notify.h>
 // With the Mac pointer (Settings > Pointer > Pointer Style: Mac, the default) the Dock's icons don't lift under the pointer, as SpringBoard's own icons
@@ -122,6 +123,7 @@ static UIImage *DMFinderThemedImage(void) {
     return nil;
 }
 
+extern UITargetedPreview *MSBDDockSideIconPreview(UIView *icon, UIImage *picture, UIPreviewParameters *parameters);   // (dock/Dock.x, Settings > Dock > Position)
 @interface DMFinderIconView : UIView <UIPointerInteractionDelegate, UIContextMenuInteractionDelegate>
 @property (nonatomic, strong) UIImageView *image;
 @property (nonatomic, strong) UIView *dot;
@@ -191,7 +193,10 @@ static UIImage *DMFinderThemedImage(void) {
     uint64_t n = 0; if (token) notify_get_state(token, &n);
     CGFloat d = MAX(4.0, self.bounds.size.width * 0.045);
     extern CGFloat gDMDotGapBelowImage;   // (RunningIndicator.m: where the apps' dots sit below their pictures -- this view is only the picture)
-    self.dot.frame = CGRectMake((self.bounds.size.width - d) / 2.0, self.bounds.size.height + gDMDotGapBelowImage, d, d);
+    extern int gDockSideApplied;
+    int dockSide = self.window.screen == [UIScreen mainScreen] ? gDockSideApplied : 0;   // (Settings > Dock > Position: at the screen's edge side, as the apps' dots)
+    self.dot.frame = dockSide ? MSBDDockSideDotFrame(dockSide, self.bounds.size.width, self.bounds.size.height, self.bounds.size.height + gDMDotGapBelowImage, d)
+                              : CGRectMake((self.bounds.size.width - d) / 2.0, self.bounds.size.height + gDMDotGapBelowImage, d, d);
     self.dot.layer.cornerRadius = d / 2.0;
     self.dot.hidden = n == 0;
     [self bringSubviewToFront:self.dot];
@@ -199,7 +204,7 @@ static UIImage *DMFinderThemedImage(void) {
 - (void)tapped { notify_post(kFinderDockTap); }
 - (UIPointerStyle *)pointerInteraction:(UIPointerInteraction *)interaction styleForRegion:(UIPointerRegion *)region {
     if (!DMDockIconLift()) return nil;
-    return [UIPointerStyle styleWithEffect:[UIPointerLiftEffect effectWithPreview:[[UITargetedPreview alloc] initWithView:self]] shape:nil];
+    return [UIPointerStyle styleWithEffect:[UIPointerLiftEffect effectWithPreview:MSBDDockSideIconPreview(self, self.image.image, nil) ?: [[UITargetedPreview alloc] initWithView:self]] shape:nil];
 }
 - (UIContextMenuConfiguration *)contextMenuInteraction:(UIContextMenuInteraction *)i configurationForMenuAtLocation:(CGPoint)p {
     return [UIContextMenuConfiguration configurationWithIdentifier:nil previewProvider:nil actionProvider:^UIMenu *(NSArray *s) {
@@ -212,6 +217,14 @@ static UIImage *DMFinderThemedImage(void) {
         ]];
     }];
 }
+// (with the Dock at a side: a copy of the picture, MSBDDockSideIconPreview; on the bottom UIKit's own, as ever)
+- (UITargetedPreview *)dm_sidePreview {
+    UIPreviewParameters *pp = [UIPreviewParameters new];
+    pp.backgroundColor = [UIColor clearColor];
+    return MSBDDockSideIconPreview(self, self.image.image, pp);
+}
+- (UITargetedPreview *)contextMenuInteraction:(UIContextMenuInteraction *)i previewForHighlightingMenuWithConfiguration:(UIContextMenuConfiguration *)c { return [self dm_sidePreview]; }
+- (UITargetedPreview *)contextMenuInteraction:(UIContextMenuInteraction *)i previewForDismissingMenuWithConfiguration:(UIContextMenuConfiguration *)c { return [self dm_sidePreview]; }
 @end
 
 // ---- called from Tweak.x ----

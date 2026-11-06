@@ -2,6 +2,15 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.2
+
+### New
+- Position on Screen in Settings > Dock puts the Dock on the left or right in landscape, leaving your windows more height. In portrait it stays at the bottom.
+- Windows on every engine, Home Screen icons, the clock's Today drop-down and Mac-style banners keep clear of a side Dock. Over a full-screen app, move the pointer to that edge to bring the Dock out.
+
+### Fixes
+- With a trackpad, a two-finger scroll down over the Home Screen beside a window no longer opens the App Library.
+
 ## 1.8.1.2
 
 ### Fixes
