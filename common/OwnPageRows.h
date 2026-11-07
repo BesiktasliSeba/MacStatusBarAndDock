@@ -22,8 +22,10 @@ typedef struct {
                               // Hide Grabber switch, Mac neither (1.8.0); 0 not known: both as before the style (no slider, Hide Grabber shown)
     BOOL focus18Failed;       // iPadOS 18 without SpringBoard's typed keyboard focus lock (DesktopCheck.h): no Mac Switcher, Wi-Fi Menu or desktop
     BOOL desktopFailed;       // the desktop's check failed (17+), or the above: no desktop rows
-    BOOL engineWorks;         // the engine the Window Engine row shows is installed and tested (2): else no Windows group
-    BOOL stageManagerEngine;  // ... it is Stage Manager: the Windows group keeps only its windows' rows (resize handles, Window Size), and Resize Handles is offered
+    BOOL engineWorks;         // the engine the Window Engine row shows is installed and tested (2): else the Windows group goes, but for Double-Tap a
+                              //  Title Bar to (our own windows use it without an engine too), and New Windows Open at Fill with it
+    BOOL stageManagerEngine;  // ... it is Stage Manager: the Windows group keeps only its windows' rows (resize handles, Window Size, Double-Tap a Title
+                              //  Bar to), and Resize Handles is offered
     BOOL milkyWayEngine;      // ... it is MilkyWay4: Resize Apps to Fit Windows is offered
     BOOL batteryUseOff;       // our Battery Use group (Sleep Guard) is not on Battery Health on this iPad (BatteryHealth.x / BatteryUse.x refused)
 } MSBDOwnPages;
@@ -36,8 +38,11 @@ typedef struct {
 #define kMSBDMacSwitcherKey @"macSwitcher"
 #define kMSBDWindowsGroupID @"WINDOWS_GROUP"      // the switches that work through a third-party engine's windows
 #define kMSBDResizeGroupID  @"RESIZE_GROUP"       // Resize Apps to Fit Windows (MilkyWay4 only)
+#define kMSBDNewWindowsFillGroupID @"NEW_WINDOWS_FILL_GROUP" // New Windows Open at Fill: the windows an engine opens (none without one, audit 1.8.3 M4)
 #define kMSBDResizeHandlesKey @"resizeHandleStyle" // Resize Handles: ours or Stage Manager's (a choice with Stage Manager only)
 #define kMSBDWindowSizeRowKey @"windowSize"      // Window Size (1.8.0 item 4, common/WindowSize.h kMSBDWindowSizeKey): every engine's, Stage Manager's too
+#define kMSBDTitleDoubleTapRowKey @"titleBarDoubleTap" // Double-Tap a Title Bar to (1.8.3 item 8, statusbar/TitleBarRule.h kMSBDTitleDoubleTapKey): every
+                                                   // engine's, Stage Manager's too
 #define kMSBDCCScaleKey     @"controlCenterScale" // Control Center Size: BigSurCenter's panel and ours (1.8.0)
 #define kMSBDCCGrabberRowID @"CC_GRABBER"         // Hide Grabber: iPadOS's own Control Center's line (1.8.0: with that style only)
 #define kMSBDTailspinGroupID @"TAILSPIN_GROUP"    // Keep Tailspin Off: the root helper applies it whatever the status bar does
@@ -54,9 +59,17 @@ static inline BOOL MSBDDesktopCheckRow(NSString *key, NSString *ident) {
     return (key && [@[@"desktopIcons", @"desktopHideNames", @"desktopIconSize"] containsObject:key])
         || (ident && [@[@"DESKTOP_SIZE_GROUP", @"DESKTOP_CORNER_GROUP", @"DESKTOP_APP_CORNER", @"DESKTOP_CORNER_MATCH"] containsObject:ident]);
 }
-// With Stage Manager as the engine the Windows group keeps the rows that are Stage Manager's own windows' too: the resize handles' and Window Size.
+// With Stage Manager as the engine the Windows group keeps the rows that are Stage Manager's own windows' too: the resize handles', Window Size and
+// Double-Tap a Title Bar to (our title bar on its windows does what the row says, statusbar/TitleBarTap.h; until 1.8.3.1 the row was left out of the
+// page and the search, GitHub #11). The group's other row goes: Windows Behind Full-Screen Apps sets the other engines' window layer (StatusBar.x
+// DMDesiredWindowLevel); Stage Manager keeps its own order.
 static inline BOOL MSBDHandlesRow(NSString *key) { return [key isEqualToString:kMSBDResizeHandlesKey] || [key isEqualToString:@"tintResizeHandles"]; }
-static inline BOOL MSBDStageManagerKeepsRow(NSString *key) { return MSBDHandlesRow(key) || [key isEqualToString:kMSBDWindowSizeRowKey]; }
+static inline BOOL MSBDStageManagerKeepsRow(NSString *key) {
+    return MSBDHandlesRow(key) || [key isEqualToString:kMSBDWindowSizeRowKey] || [key isEqualToString:kMSBDTitleDoubleTapRowKey];
+}
+// With no working engine (none installed, or the one that would run is an untested build) the Windows group goes but for Double-Tap a Title Bar
+// to: Finder's and TextEdit's windows are ours and do what it says without an engine too (statusbar/TitleBarTap.h DMTitleTapNative; 1.8.3.1).
+static inline BOOL MSBDNoEngineKeepsRow(NSString *key) { return [key isEqualToString:kMSBDTitleDoubleTapRowKey]; }
 // MacStatusBar off: the Windows & Multitasking page keeps, under its note, the groups whose setting the root helper applies whatever the bar does.
 static inline BOOL MSBDBarOffKeepsGroup(NSString *groupID) { return [groupID isEqualToString:kMSBDTailspinGroupID]; }
 
@@ -78,7 +91,8 @@ static inline BOOL MSBDOwnRowHidden(MSBDOwnPages s, NSString *pane, NSString *gr
     if ([ident isEqualToString:kMSBDCCGrabberRowID] && (s.ccStyle == kMSBDCCStyleMac || s.ccStyle == kMSBDCCStyleBigSurCenter)) return YES;
     if (s.desktopFailed && MSBDDesktopCheckRow(key, ident)) return YES;
     if (s.focus18Failed && ([key isEqualToString:kMSBDMacSwitcherKey] || [group isEqualToString:kMSBDMacSwitcherGroupID] || [group isEqualToString:kMSBDWiFiGroupID])) return YES;
-    if ([group isEqualToString:kMSBDWindowsGroupID] && (!s.engineWorks || (s.stageManagerEngine && !MSBDStageManagerKeepsRow(key)))) return YES;
+    if ([group isEqualToString:kMSBDWindowsGroupID] && ((!s.engineWorks && !MSBDNoEngineKeepsRow(key)) || (s.stageManagerEngine && !MSBDStageManagerKeepsRow(key)))) return YES;
+    if ([group isEqualToString:kMSBDNewWindowsFillGroupID] && !s.engineWorks) return YES;   // (every window it sizes is an engine's: StatusBar.x DMOpeningWindowFrame)
     if ([key isEqualToString:kMSBDResizeHandlesKey] && !s.stageManagerEngine) return YES;
     if ([group isEqualToString:kMSBDResizeGroupID] && !s.milkyWayEngine) return YES;
     return NO;

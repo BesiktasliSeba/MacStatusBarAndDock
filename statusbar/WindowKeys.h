@@ -163,7 +163,7 @@ static void DMWindowBackFromTile(NSString *why) {
         if (act != kMSBDWinPrevNothing) objc_setAssociatedObject(nw, &kWinPrevKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         if (act != kMSBDWinPrevBack) { DMLog([NSString stringWithFormat:@"[winkeys] %@: %@ has no size from before a tile to go back to", why, nw.title ?: @"our window"]); return; }
         nw.restoreFrame = CGRectNull; nw.layoutName = nil;
-        CGRect f = rec.CGRectValue;
+        CGRect f = MSBDWinPrevBackFrame(rec.CGRectValue, DMLayoutFrameInArea(@"fill", DMNativeDesktop(), [UIScreen mainScreen].bounds.size), nw.minSize);   // (inside today's desktop, audit 1.8.3 M5)
         DMTitleRecordNativeTo(nw, f);   // (a placement of ours: the title bar's frame from before follows it, P4-1)
         MSBAnimate(0.2, 0, 0, UIViewAnimationOptionCurveEaseOut, ^{ nw.frame = f; }, nil);
         return;
@@ -178,10 +178,12 @@ static void DMWindowBackFromTile(NSString *why) {
         int act = MSBDWinPrevOnReturn(now && DMWinTiledSM(now.CGRectValue, stage), rec != nil);
         if (act != kMSBDWinPrevNothing) [gSMWinPrev removeObjectForKey:key];
         if (act != kMSBDWinPrevBack) { DMLog([NSString stringWithFormat:@"[winkeys] %@: %@ has no size from before a tile to go back to", why, DMSMKeyText(key)]); return; }
-        DMTitleRecordSMTo(key, stage, rec.CGRectValue);   // (as above)
-        BOOL ok = DMSMApplyPlacesIn(@{key: rec}, stage);
+        CGSize scr = CGSizeZero; CGRect u = DMSMUsableAreaForStage(stage, &scr);
+        CGRect f = MSBDWinPrevBackFrame(rec.CGRectValue, DMSMLayoutFrameIn(@"fill", u, scr), CGSizeZero);   // (inside today's stage area -- Stage Manager keeps its own minimum --, audit 1.8.3 M5)
+        DMTitleRecordSMTo(key, stage, f);   // (as above)
+        BOOL ok = DMSMApplyPlacesIn(@{key: [NSValue valueWithCGRect:f]}, stage);
         if (ok) DMSMFitLetGo(key);   // (placed by the user: no longer one of Fit to Window's tiles, as below)
-        DMLog([NSString stringWithFormat:@"[winkeys] %@: %@ back to %@ (%@)", why, DMSMKeyText(key), NSStringFromCGRect(rec.CGRectValue), ok ? @"done" : @"not in the stage"]);
+        DMLog([NSString stringWithFormat:@"[winkeys] %@: %@ back to %@ (%@)", why, DMSMKeyText(key), NSStringFromCGRect(f), ok ? @"done" : @"not in the stage"]);
         return;
     }
     UIView *v = DMActiveEngine() == DMEngineZetsu ? DMZetsuWindowFor(bundleID) : DMActiveEngine() == DMEngineAerial ? DMStageForBundle(bundleID) : DMFindMilkyWayWindow(bundleID);
@@ -190,7 +192,7 @@ static void DMWindowBackFromTile(NSString *why) {
     int act = MSBDWinPrevOnReturn(DMWinTiledEngine(v.frame), rec != nil);
     if (act != kMSBDWinPrevNothing) objc_setAssociatedObject(v, &kWinPrevKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (act != kMSBDWinPrevBack) { DMLog([NSString stringWithFormat:@"[winkeys] %@: %@ has no size from before a tile to go back to", why, bundleID]); return; }
-    CGRect f = rec.CGRectValue;
+    CGRect f = MSBDWinPrevBackFrame(rec.CGRectValue, DMLayoutFrame(@"fill"), DMEngineWindowMin());   // (inside today's desktop, audit 1.8.3 M5)
     DMFitGroupForget(bundleID);   // (placed by the user: no longer one of Fit to Window's tiles, as a layout of its own)
     DMTitleRecordEngineTo(v, f);   // (as above)
     DMAerialMoveStage(v, f, nil);

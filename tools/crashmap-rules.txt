@@ -60,8 +60,8 @@ target actmonLibrary pref com.besiktasliseba.macstatusbar activityMonitorInLibra
 target controlcenter pref com.besiktasliseba.macstatusbar controlCenterStyle 0 1 Control Center Style|our Control Center
 
 # The parts in words, for the guard's explanation: title <Image> <where it crashed>|<what was turned off> ("SpringBoard crashed twice in the
-# Dock, so MacDock was turned off for now."). A part without a title is named by its file name.
-title DockMagnification the Dock|MacDock
+# Dock, so the Dock was turned off for now."). A part without a title is named by its file name.
+title DockMagnification the Dock|the Dock
 title MacStatusBarCore the status bar|the Mac status bar
 title MixAudio the audio mixing|audio mixing
 title MacIconLabels the Home Screen icon labels|the icon labels

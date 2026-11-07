@@ -90,6 +90,18 @@ int main(void) {
     Yes("Globe-Control-R in a tile with a record: back", MSBDWinPrevOnReturn(true, true) == kMSBDWinPrevBack);
     Yes("  ... moved out of its tile by hand since: the record only goes", MSBDWinPrevOnReturn(false, true) == kMSBDWinPrevDrop);
     Yes("  ... no record: nothing", MSBDWinPrevOnReturn(true, false) == kMSBDWinPrevNothing && MSBDWinPrevOnReturn(false, false) == kMSBDWinPrevNothing);
+    {   // (audit 1.8.3 M5: the record goes back inside today's desktop -- made before a turn it stood partly off the screen)
+        CGRect landFill = CGRectMake(0, 30, 1194, 732.27), portRec = CGRectMake(0, 500, 700, 600), inside = CGRectMake(131, 42, 931, 667);
+        CGSize min = CGSizeMake(320, 324);
+        CGRect b = MSBDWinPrevBackFrame(portRec, landFill, min);
+        Yes("Globe-Control-R with a record from portrait, now in landscape (M1): inside the desktop at its own size ({0,162.27 700x600}), not off its bottom (y 1100 on a 834 pt screen)",
+            CGRectEqualToRect(b, CGRectMake(0, 762.27 - 600, 700, 600)) && CGRectGetMaxY(b) <= CGRectGetMaxY(landFill) + 0.001);
+        Yes("  ... a record inside the desktop comes back exactly", CGRectEqualToRect(MSBDWinPrevBackFrame(inside, landFill, min), inside));
+        CGRect tall = MSBDWinPrevBackFrame(CGRectMake(20, 40, 760, 1100), landFill, min);
+        Yes("  ... a portrait window taller than the landscape desktop: as tall as the desktop, inside it", tall.size.height == landFill.size.height && tall.origin.y == landFill.origin.y && tall.size.width == 760 && tall.origin.x == 20);
+        Yes("  ... left of the screen after the Dock went to the right: pulled in", MSBDWinPrevBackFrame(CGRectMake(-200, 100, 600, 400), landFill, min).origin.x == 0);
+        Yes("  ... no desktop known: the record as it is", CGRectEqualToRect(MSBDWinPrevBackFrame(portRec, CGRectNull, min), portRec));
+    }
     Yes("in a tile: each side within 16 pt of the tile's", MSBDWinNear(CGRectMake(0, 30, 590, 730), CGRectMake(10, 40, 580, 720)) && !MSBDWinNear(CGRectMake(0, 30, 590, 730), CGRectMake(0, 30, 610, 730)));
     printf("%d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;

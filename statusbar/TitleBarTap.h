@@ -8,8 +8,9 @@
 //  - Stage Manager: the title bar is ours (DMSMTitleBar): nothing before;
 //  - Aerial 5.x and 3.0: the title strip of the window's stage (where a drag moves the window, DMA5DragAllowedAt / Aerial 3.0's top bar): Aerial 5.0
 //    did nothing on a double tap there (M1, 15.6.1);
-//  - MilkyWay4: its title bar (AXWindowView -titleBar) had none: its own double tap (-sizeChangeDoubleTap:, maximize and back) is on the resize
-//    grip in the window's corner, which keeps it (M1, 15.6.1, 7 Nov);
+//  - MilkyWay4: its title bar (AXWindowView -titleBar) had none: its own double tap (-sizeChangeDoubleTap:) is on the resize grip in the
+//    window's corner, which keeps it; it turns MilkyWay4's aspect-ratio lock on or off and is no maximize (MilkyWay4's maximize is its green
+//    light, -maxButtonAction:, which ours turns into full screen) (M1, 15.6.1, 7 Nov);
 //  - Zetsu: its top bar (the controller's -menu, where our lights are) had none either (M1, 7 Nov).
 //  A double tap of the engine's own on the bar itself, should a version add one, is switched off while ours is there: one double tap, one action.
 // Each gets one double-tap recogniser of ours, which waits for nothing and lets every other recogniser go on (the window's drag, a tap that

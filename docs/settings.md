@@ -71,11 +71,11 @@ The window settings, on their own page between Desktop and Dock. On iPadOS 15 an
 | Enable Windowing | Off: no window engine loads and every app opens full screen (respring). | On |
 | Window Engine | Which engine runs your windows. Only that one loads (respring). Apple's Stage Manager is listed under Native (not on iPadOS 15), Aerial, Zetsu and MilkyWay4 under Third-Party. With Stage Manager, MacStatusBar&Dock asks before it turns Stage Manager on, and if you say Not Now (or turn it off later), Turn On Stage Manager appears here. With another engine, Stage Manager stays off while it runs and comes back on as you had it when you turn off windowing. | Stage Manager where it runs (iPadOS 16.1 to 18), else Aerial |
 | Window Size | The size a new window opens at, with every engine: Small, Default or Large. A window that opens where it last was keeps its size. The Window menu's Small and Large are the same sizes. | Default |
-| Double-Tap a Title Bar to | What a double tap on a window's title bar does, as on a Mac, with every engine. Fill or Zoom: the window fills the desktop, and a second double tap gives it its size from before. Minimize: the window goes into its app's icon in the Dock. | Do Nothing (Finder and TextEdit windows zoom until you pick one) |
+| Double-Tap a Title Bar to | What a double tap on a window's title bar does, as on a Mac, with every engine. Fill or Zoom: the window fills the desktop, and a second double tap gives it its size from before. Minimize: the window goes into its app's icon in the Dock. With no window engine, it sets Finder and TextEdit windows. | Do Nothing (Finder and TextEdit windows zoom until you pick one) |
 | Windows Behind Full-Screen Apps | A full-screen app comes in front of your windows, and Window > Bring All to Front brings them back. Off: windows stay in front. | On |
 | Resize Handles (Stage Manager engine only) | Mac handles, or Stage Manager's own. | Mac |
 | Tint Resize Handles | Resize handles take a soft version of each app's color. | Off |
-| New Windows Open at Fill | New windows fill the desktop, with every engine, and Fit to Window doesn't tile them. A window that opens where it last was keeps its place. | Off |
+| New Windows Open at Fill | New windows fill the desktop, with every engine, and Fit to Window doesn't tile them. A window that opens where it last was keeps its place. Hidden while no window engine runs. | Off |
 | Home Minimizes Windows | Swiping up from the bottom or pressing the Home button minimizes the windows of the desktop you're on, so the Home Screen shows. Opening an app brings its window back. Keyboard shortcuts for Home, such as Command-H, leave the windows as they are. Off: the windows stay when you go Home. | On, also after an update |
 | Resize Apps to Fit Windows (MilkyWay4 only) | Apps lay themselves out for the window. Off: the full-screen layout, scaled down. | On |
 | Turn Off Traffic Lights | Hides the window buttons in the menu bar for full-screen apps. | Off |
@@ -89,7 +89,7 @@ The window settings, on their own page between Desktop and Dock. On iPadOS 15 an
 
 | Setting | What it does | New install |
 |---|---|---|
-| MacDock | Turns off the Dock features (respring). | On |
+| Mac-Style Dock | Turns off the Dock features (respring). | On |
 | Position on Screen | Where the Dock sits: Bottom, Left or Right. Left and Right apply in landscape, and in portrait the Dock stays at the bottom. At a side, windows on every engine, Home Screen icons, the clock's Today drop-down and Mac-style banners keep clear of it, and over a full-screen app the pointer at that edge brings it out. A change applies at once. | Bottom |
 | Magnify Icons | Icons grow under the pointer, with a trackpad or mouse. The slider sets how much, from 1x to 2.5x. | On, 1.22x |
 | Icon Size | The size of the Dock icons, from 0.5x to 1.2x. | 0.85x |

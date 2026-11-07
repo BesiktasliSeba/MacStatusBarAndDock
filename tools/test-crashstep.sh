@@ -107,6 +107,12 @@ check(act == ['actmonLibrary'] * 5, 'the rest of AppLibraryApps.h keeps Show in 
 check(by_sym('_MSBDCC18MacLayoutFrom') is None and by_sym('_MSBDCC18GridPlace') is None and by_file('CC18MacLayout.h') == 'controlcenter' and by_file('CC18Shape.h') == 'controlcenter' and by_file('CC18Tiles.h') == 'controlcenter', 'common/CC18MacLayout.h\'s functions, out of line, are Control Center Style by their file, as CC18Shape.h\'s')
 sys.exit(1 if bad else 0)
 PY
+echo "== the parts' names in the guard's words"
+# (the Dock part is "the Dock": "SpringBoard crashed twice in the Dock, so the Dock was turned off for now." -- never MacDock, the name of
+#  another tweak, in a text the user reads)
+if grep -qx 'title DockMagnification the Dock|the Dock' crashmap-rules.txt && ! grep -E '^title ' crashmap-rules.txt | grep -q 'MacDock'; then
+  echo "PASS  the Dock part is \"the Dock\" in the guard's words (footer, notice, Report a Problem), never MacDock"
+else echo "FAIL  the Dock part's title in crashmap-rules.txt names MacDock"; fails=1; fi
 echo "== the words (footer, notice, Report a Problem)"
 clang -fobjc-arc -Wall -Wno-unused-function -framework Foundation -DMSBD_GUARD_RECORD="\"$W/words-record.txt\"" -o "$W/tse" test-stepexplain.m
 "$W/tse" || fails=1
@@ -223,7 +229,7 @@ if [ -f "$MAP" ] && [ -n "$DSYM" ]; then
   real core-context "part MacStatusBarCore - - 0 the status bar|the Mac status bar" --symbol "$DSYM" MacStatusBarCore 'logos_method\$MacContextMenus\$'
   real core-today "pref MacStatusBarCore $D clockOpensToday 0 *" --map "$MAP" MacStatusBarCore arm64 clockOpensToday
   real dock-downloads "pref DockMagnification com.besiktasliseba.dockmagnification showDownloads 0 *" --map "$MAP" DockMagnification arm64e showDownloads
-  real dock-part "part DockMagnification - - 0 the Dock|MacDock" --map "$MAP" DockMagnification arm64 part
+  real dock-part "part DockMagnification - - 0 the Dock|the Dock" --map "$MAP" DockMagnification arm64 part
   # Finder (Finder.h / NativeWindow.h / its glue in StatusBar.x): Finder's own switch, not the whole status bar; FinderIcon.m: the Dock's Finder
   real core-finder-window "pref MacStatusBarCore $D finderEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^-\[DMFinderWindow dm_run'
   real core-finder-native "pref MacStatusBarCore $D finderEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMNativeTouchBegan'

@@ -69,7 +69,7 @@ check "  ... the window keys' Center and Return to Previous Size (our windows, S
   "fn 'static void DMCenterFrontWindow(NSString *why) {' $K && before 'DMTitleRecordNativeTo(nw, f);' 'nw.frame = f;' \
    && before 'DMTitleRecordSMTo(key, stage, f);' 'DMSMApplyPlacesIn(@{key: [NSValue valueWithCGRect:f]}, stage);' && before 'DMTitleRecordEngineTo(v, f);' 'DMAerialMoveStage(v, f, nil);' \
    && fn 'static void DMWindowBackFromTile(NSString *why) {' $K && before 'DMTitleRecordNativeTo(nw, f);' 'nw.frame = f;' \
-   && before 'DMTitleRecordSMTo(key, stage, rec.CGRectValue);' 'DMSMApplyPlacesIn(@{key: rec}, stage);' && before 'DMTitleRecordEngineTo(v, f);' 'DMAerialMoveStage(v, f, nil);' \
+   && before 'DMTitleRecordSMTo(key, stage, f);' 'DMSMApplyPlacesIn(@{key: [NSValue valueWithCGRect:f]}, stage);' && before 'DMTitleRecordEngineTo(v, f);' 'DMAerialMoveStage(v, f, nil);' \
    && fn 'static void DMArrangeWindows(const char *const *slots, int count, NSString *why) {' $K && before 'DMTitleRecordSMPlan(plan, stage);' 'BOOL ok = DMSMApplyLayoutsIn(plan, stage);' \
    && before 'DMTitleRecordEngineTo(s, f);' 'DMAerialMoveStage(s, f, nil);'"
 check "  ... the Window menu's Swap rows (two windows, a half and two quarters), on Stage Manager and the engines" \

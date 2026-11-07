@@ -2,6 +2,16 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.3.1
+
+### Fixes
+- Double-Tap a Title Bar to now shows in Settings > Windows & Multitasking with Stage Manager as the window engine, and with no window engine, where it sets Finder and TextEdit windows.
+- New Windows Open at Fill no longer shows in Settings > Windows & Multitasking while no window engine runs, since it does nothing then.
+- With an accessibility feature such as Full Keyboard Access on, the green button of Finder and TextEdit windows no longer sits below the other two.
+- Globe-Control-R (Return to Previous Size) now brings a window back fully on screen after you turn the iPad.
+- With the Dock on the left or right, Finder, Downloads and the Trash now stand upright in Edit Home Screen, and keep their size when the pointer is over the Dock.
+- The Dock's switch in Settings > Dock is now called Mac-Style Dock.
+
 ## 1.8.3
 
 ### New

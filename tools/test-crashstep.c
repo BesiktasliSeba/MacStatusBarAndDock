@@ -54,7 +54,7 @@ int main(int argc, char **argv) {
         Expect("  Stock status bar NOT switched on (1b only once per row)", Num(TD, "stockStatusBar"), -1);
     } else if (!strcmp(scenario, "parts")) {   // reports: 10:00 Dock crash, 10:01 MixAudio crash
         Expect("Dock + MixAudio crashes: step 1b", MSBDGuardEvaluate(&s) ? Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY) : 0, 4);
-        Expect("  record: the Dock part", FileHas(MSBD_GUARD_RECORD, "part DockMagnification the Dock|MacDock\n"), 1);
+        Expect("  record: the Dock part", FileHas(MSBD_GUARD_RECORD, "part DockMagnification the Dock|the Dock\n"), 1);
         Expect("  record: the MixAudio part", FileHas(MSBD_GUARD_RECORD, "part MixAudio its part MixAudio|MixAudio\n"), 1);
         Expect("  record: no switch line", FileHas(MSBD_GUARD_RECORD, "\nfeature "), 0);
         Expect("  skip list names MixAudio", FileHas(MSBD_STEP_FILE, "skip MixAudio"), 1);
@@ -64,9 +64,9 @@ int main(int argc, char **argv) {
         system("cp \"$FIX/step1b-core-banners.ips\" \"$REPORTS/SpringBoard-2026-09-26-102000.ips\"; cp \"$FIX/step1b-core-banners.ips\" \"$REPORTS/SpringBoard-2026-09-26-102100.ips\"");
         Expect("a later row (banners crashes): step 1b again", MSBDGuardEvaluate(&s2) ? Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY) : 0, 4);
         Expect("  record: the banners switch", FileHas(MSBD_GUARD_RECORD, "feature " TD " macBanners 0 "), 1);
-        Expect("  record: still names the Dock part (its Turn Back On)", FileHas(MSBD_GUARD_RECORD, "part DockMagnification the Dock|MacDock\n"), 1);
+        Expect("  record: still names the Dock part (its Turn Back On)", FileHas(MSBD_GUARD_RECORD, "part DockMagnification the Dock|the Dock\n"), 1);
         Expect("  record: still names the MixAudio part", FileHas(MSBD_GUARD_RECORD, "part MixAudio its part MixAudio|MixAudio\n"), 1);
-        Expect("  skip list keeps both parts", FileHas(MSBD_STEP_FILE, "skip DockMagnification the Dock|MacDock\n") && FileHas(MSBD_STEP_FILE, "skip MixAudio its part MixAudio|MixAudio\n"), 1);
+        Expect("  skip list keeps both parts", FileHas(MSBD_STEP_FILE, "skip DockMagnification the Dock|the Dock\n") && FileHas(MSBD_STEP_FILE, "skip MixAudio its part MixAudio|MixAudio\n"), 1);
     } else if (!strcmp(scenario, "apple")) {   // reports: 10:00 + 10:01 Apple-only
         Expect("two Apple-only crashes: the guard acts", MSBDGuardEvaluate(&s), 1);
         Expect("  straight to the whole tweak (action 2)", Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY), 2);

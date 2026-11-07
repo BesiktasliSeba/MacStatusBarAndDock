@@ -23,6 +23,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <math.h>
+#include "WindowMinSize.h"   // (MSBDWindowMinFit: Return to Previous Size's frame inside today's desktop)
 
 // The keys (a press's key: MSBDWinKeyFor -- the arrows by their place, F, C and R by the letter the layout types).
 enum { kMSBDWinKeyLeft = 0, kMSBDWinKeyRight, kMSBDWinKeyUp, kMSBDWinKeyDown, kMSBDWinKeyF, kMSBDWinKeyC, kMSBDWinKeyR, kMSBDWinKeyCount };
@@ -139,6 +140,10 @@ static inline int MSBDWinPrevOnReturn(bool tiledNow, bool hasRecord) {
     if (!hasRecord) return kMSBDWinPrevNothing;
     return tiledNow ? kMSBDWinPrevBack : kMSBDWinPrevDrop;
 }
+// Where Globe-Control-R puts the window: its record, inside today's desktop (fill: the Fill frame now; min: the smallest a window may be). A
+// record made before a turn (portrait {0,500 700x600} on a landscape screen 834 pt tall) or before the Dock moved to a side was applied as it
+// was and stood partly off the screen; it is pulled inside now, at its own size where that fits (audit 1.8.3 M5). Inside already: exactly it.
+static inline CGRect MSBDWinPrevBackFrame(CGRect rec, CGRect fill, CGSize min) { return MSBDWindowMinFit(rec, fill, min); }
 
 
 #endif

@@ -1043,7 +1043,9 @@ static void MSBFitValueLabels(UIView *v) {
 			}
 		}
 		// No working engine (none installed, or the one that would run is an untested build, which runs on its own): the Window Engine row says
-		// "None" and the Windows group (whose switches only work through an engine) is left out, with a short note (StatusBar.x shows the dots then).
+		// "None" and the Windows group (whose switches only work through an engine) is left out, with a short note (StatusBar.x shows the dots then),
+		// but for Double-Tap a Title Bar to, which Finder's and TextEdit's windows use without an engine too: it stays in the group, with a line
+		// saying so (common/OwnPageRows.h MSBDNoEngineKeepsRow; 1.8.3.1).
 		for (PSSpecifier *spec in [_specifiers copy]) {
 			if (![[spec propertyForKey:@"key"] isEqual:@"windowEngine"]) continue;
 			NSString *engine = [self readPreferenceValue:spec];
@@ -1067,14 +1069,18 @@ static void MSBFitValueLabels(UIView *v) {
 			BOOL hiding = NO;
 			for (PSSpecifier *sp in _specifiers) {
 				if (sp.cellType == PSGroupCell) hiding = [sp.identifier isEqualToString:kMSBDWindowsGroupID];
+				if (sp.cellType == PSGroupCell && [sp.identifier isEqualToString:kMSBDNewWindowsFillGroupID]) { hiding = YES; continue; }   // (New Windows Open at Fill: the windows an engine opens -- audit 1.8.3 M4)
 				if ([sp.identifier isEqualToString:@"ENGINE_GROUP"]) [sp setProperty:onItsOwn ? [NSString stringWithFormat:@"%@ hasn't been tested with MacStatusBar&Dock yet, so it runs on its own and the window features are off.", MSBEngineNameVersion(engine)]
 				                                                                               : @"No tested window engine is installed, so the window features are off." forKey:@"footerText"];
-				if (!hiding) [kept addObject:sp];
+				BOOL windowsGroup = sp.cellType == PSGroupCell && [sp.identifier isEqualToString:kMSBDWindowsGroupID];
+				if (windowsGroup) [sp setProperty:@"Finder and TextEdit windows still use this setting." forKey:@"footerText"];
+				if (!hiding || windowsGroup || MSBDNoEngineKeepsRow([sp propertyForKey:@"key"])) [kept addObject:sp];
 			}
 			_specifiers = kept;
 			break;
 		}
-		// Stage Manager as the engine: the Windows group's switches work through a third-party engine's windows, so it is left out.
+		// Stage Manager as the engine: the Windows group's rows that work through a third-party engine's windows are left out (common/OwnPageRows.h
+		// MSBDStageManagerKeepsRow keeps the rest).
 		for (PSSpecifier *spec in [_specifiers copy]) {
 			if (![[spec propertyForKey:@"key"] isEqual:@"windowEngine"]) continue;
 			NSString *engine = [self readPreferenceValue:spec];
@@ -1086,7 +1092,8 @@ static void MSBFitValueLabels(UIView *v) {
 				if ([sp.identifier isEqualToString:@"ENGINE_GROUP"])
 					[sp setProperty:MSBStageManagerOnState() == 2 ? @"Stage Manager is off, so apps open full screen. Tap Turn On Stage Manager, or turn it on in Control Center."
 					                                               : @"Apple's Stage Manager does the windowing, with the Mac look on top. Other engines are not loaded." forKey:@"footerText"];
-				// (the window handles and Window Size are Stage Manager's own windows' too: their style and tint, and the size new windows open at, stay)
+				// (the window handles, Window Size and Double-Tap a Title Bar to are Stage Manager's own windows' too: their style and tint, the size new
+				//  windows open at and what a double tap on a title bar does stay -- the last was left out until 1.8.3.1, GitHub #11)
 				BOOL itsToo = MSBDStageManagerKeepsRow([sp propertyForKey:@"key"]);   // (common/OwnPageRows.h)
 				if (!hiding || itsToo || (sp.cellType == PSGroupCell && [sp.identifier isEqualToString:kMSBDWindowsGroupID])) [kept addObject:sp];
 				// (Stage Manager off -- the user said Not Now, declined Apple's introduction, or switched it off: nothing is written for them; this button is

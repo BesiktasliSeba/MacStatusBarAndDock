@@ -268,6 +268,7 @@ extern void DMFinderIconAttach(UIView *platter, CGRect slot, BOOL show);
 extern UIView *DMFinderIcon(UIView *platter);
 extern void DMEditProxiesApply(UIView *platter, BOOL editing, BOOL animated, BOOL launchpadClassic, BOOL logAlways);   // (EditProxy.m: Edit Home Screen, 1.8.3 item 5)
 extern BOOL DMEditProxiesOn(UIView *platter);   // (that Dock editing now)
+extern BOOL DMEditProxyIs(UIView *v);   // (one of those icon views)
 extern void DMEditProxiesThemeChangedAll(void);
 extern NSString *const DMIconThemeChangedNotification;   // (IconTheme.m: a theme engine refreshed its pictures)
 extern CGFloat gDMIconCornerRatio;   // (FinderIcon.m: SpringBoard's app icon corner as a share of the icon's width)
@@ -499,6 +500,7 @@ static BOOL gDMTurnOurs = NO;   // (debug: a write of the turn's is ours -- the 
 #define DM_TURN_OURS(...) do { __VA_ARGS__ } while (0)
 #endif
 static void DMDockSideStyleIcon(UIView *icon, int side) {
+    if (DMEditProxyIs(icon)) return;   // (Edit Home Screen's icon views of ours: our items' are in their own view, which is turned; the Launchpad one has the App Library icon's turn, copied -- EditProxy.m EPFollow. A turn of ours on top turned them twice, on their side: audit 1.8.3 M2)
     CALayer *l = icon.layer;
     NSValue *ours = objc_getAssociatedObject(icon, kDockSideTurnOurs), *under = objc_getAssociatedObject(icon, kDockSideTurnUnder);
     BOOL turned = ours != nil, still = turned && CATransform3DEqualToTransform(l.sublayerTransform, ours.CATransform3DValue);
@@ -529,6 +531,12 @@ static void DMDockSideStyleIcon(UIView *icon, int side) {
             return;
         default: return;   // (never turned: not ours to write)
     }
+}
+// The turn a Dock icon's content has for its Dock's side now, by the rule SBIconView's layout hook turns them (below): beside a side Dock in the
+// host, else none (the bottom, a TV's Dock). For EditProxy.m's Launchpad icon view in Edit Home Screen, which takes its turn from here: copied from
+// the App Library icon's layer, a Dock layout caught that one without its turn and ours came out turned (M1 1.8.3.1 F-5).
+CATransform3D DMDockSideTurnFor(UIView *icon) {
+    return DMDockSideIconTurn(icon && gDockSideApplied && DMIsDockIcon(icon) && DMDockSideInHost(icon) ? gDockSideApplied : 0);
 }
 static BOOL DMDockSideIsOwnIcon(UIView *v) {
     Class own[3] = { objc_getClass("DMFinderIconView"), objc_getClass("DMDownloadsIconView"), objc_getClass("DMTrashIconView") };
@@ -1582,6 +1590,7 @@ static void DMPrefsChanged(CFNotificationCenterRef c, void *o, CFNotificationNam
 
 static void DMCollectIcons(UIView *root, Class iconClass, NSMutableArray *out) {
     for (UIView *v in root.subviews) {
+        if (DMEditProxyIs(v)) continue;   // (Edit Home Screen's icon views: each keeps the size and place EditProxy.m fits it to, our items' scale with their own view -- a magnification of their own replaced that, full size and off centre: audit 1.8.3 M1)
         if ([v isKindOfClass:iconClass]) [out addObject:v];
         else DMCollectIcons(v, iconClass, out);
     }
@@ -1756,12 +1765,13 @@ extern void DMStartRunningIndicatorPoll(void);
 }
 - (void)setTransform:(CGAffineTransform)t {
     %orig;
-    if (gHovering && !gApplying && !gLink && DMIsDockIcon((UIView *)self)) {
+    BOOL dockIcon = DMIsDockIcon((UIView *)self) && !DMEditProxyIs((UIView *)self);   // (Edit Home Screen's icon views set their own fit: not a magnified icon reset, audit 1.8.3 M1)
+    if (gHovering && !gApplying && !gLink && dockIcon) {
         // (the link rests while the pointer rests on the Dock: something else reset a magnified icon, so it runs again and puts the scale back)
         dispatch_async(dispatch_get_main_queue(), ^{ if (gHovering && !gLink) [(SBFloatingDockPlatterView *)gLinkPlatter dm_startLink]; });
     }
     static int external = 0;
-    if (gHovering && !gApplying && external < 40 && DMIsDockIcon((UIView *)self)) {
+    if (gHovering && !gApplying && external < 40 && dockIcon) {
         external++;
         DMLog([NSString stringWithFormat:@"[foreign setTransform] a=%.3f d=%.3f tx=%.1f ty=%.1f",
                t.a, t.d, t.tx, t.ty]);

@@ -76,10 +76,12 @@ static inline int MSBDTitleRecordOnPlace(bool keepsFrames, bool toFill, bool atF
     return MSBDTitleBackTakes(atFillNow) ? kMSBDTitleRecordTake : kMSBDTitleRecordKeep;
 }
 // At a double tap the frame from before counts only while the window is still at the Fill frame it was kept with. Moved since by something that is
-// neither ours nor a hand -- the engine's own maximize, a turn, the Dock moving --, the window is somewhere the frame was not kept for: it is dropped,
-// and the double tap fills (nothing to go back to). Left, as it cannot be known: a move of the engine's own -- MilkyWay4's own double tap on its
-// resize grip, maximize and back, the one such move under ours (the lights and the title bars' double taps are ours on every engine) -- that
-// takes the window off that very Fill frame and back to it, with no move by hand between, keeps the frame from before.
+// neither ours nor a hand -- a turn, the Dock moving, an engine's own move --, the window is somewhere the frame was not kept for: it is dropped,
+// and the double tap fills (nothing to go back to). Left, as it cannot be known: a move that is neither ours nor a hand and takes the window off
+// that very Fill frame and back to it, with no move by hand between, keeps the frame from before. None such is known on Aerial, Zetsu or
+// MilkyWay4 (read on the M1, 15.6.1, 7 Nov): the lights and the title bars' double taps are ours on every engine; MilkyWay4's maximize is its
+// green light (-maxButtonAction:), which ours turns into full screen, and its own double tap on the resize grip (-sizeChangeDoubleTap:) turns
+// its aspect-ratio lock on or off.
 static inline bool MSBDTitleRecordHolds(bool hasRecord, bool atRecordedFill) { return hasRecord && atRecordedFill; }
 // A double tap while SpringBoard is busy: what passes by itself in a moment (a transition -- the first of the two taps can be what brought the
 // window forward: Stage Manager's activation is a workspace transition, and the double tap came in the middle of it and was refused, iPad 2,

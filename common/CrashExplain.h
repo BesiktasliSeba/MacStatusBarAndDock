@@ -100,7 +100,7 @@ static inline BOOL MSBDGuardUntitledSwitch(NSDictionary *record, int action) {
     return NO;
 }
 
-// Step 1b (action 4, CrashStep.h): what went off, from the record: its sentence ("SpringBoard crashed twice in the Dock, so MacDock was turned off
+// Step 1b (action 4, CrashStep.h): what went off, from the record: its sentence ("SpringBoard crashed twice in the Dock, so the Dock was turned off
 // for now."), whether a part is no longer loaded (then "Turn Back On" brings it back), whether only Stock status bar mode was switched on.
 static inline BOOL MSBDStepIsStockBar(NSArray *feature) { return [feature[1] isEqualToString:@"stockStatusBar"] && [feature[2] intValue] == 1; }
 // (our own Control Center, 1.8.0: Control Center Style set back to iPadOS's -- the guard writes false, read as iPadOS's style, statusbar/CCPanel.h)
@@ -300,7 +300,7 @@ static inline NSString *MSBDGuardActionWords(NSDictionary *record) {
         NSArray *titles = MSBDGuardSwitchTitles(record, 1);
         return titles.count ? [NSString stringWithFormat:@"turned off %@", MSBDQuotedList(titles)] : @"turned off the switches turned on last";
     }
-    if (action == 4) {   // (step 1b: "turned off “Mac-Style Banners”", "switched to the stock status bar", "stopped loading MacDock (DockMagnification)")
+    if (action == 4) {   // (step 1b: "turned off “Mac-Style Banners”", "switched to the stock status bar", "stopped loading the Dock (DockMagnification)")
         NSMutableArray *done = [NSMutableArray array];
         for (NSArray *f in record[@"features"])
             [done addObject:MSBDStepIsStockBar(f) ? @"switched to the stock status bar" : MSBDStepIsStockCC(f) ? @"switched to iPadOS's Control Center"

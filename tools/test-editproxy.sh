@@ -58,4 +58,22 @@ check "a theme engine reloading one of our icons' pictures itself (SnowBoard's p
    && grep -q 'if (!reloadToken) notify_register_dispatch(kMSBDIconThemeReloaded, &reloadToken, dispatch_get_main_queue(), ^(int t) {' ../common/IconTheme.h"
 check "a theme refreshed while editing: each icon view shows the new picture" \
   "fn 'void DMEditProxiesThemeChanged(UIView *platter) {' $E && grep -q 'EPObj(proxy, @\"setIcon:\", icon);' \$W/fn && grep -q 'DMEditProxiesThemeChangedAll();   // (SnowBoard refreshed' $D && grep -q 'void DMEditProxiesThemeChangedAll(void) { for (UIView \*p in \[gEPEditingPlatters allObjects\]) DMEditProxiesThemeChanged(p); }' $E"
+check "beside a side Dock each icon view of ours is turned once: the side Dock's turn passes our items' icon views by (their own views turn them already) and leaves the Launchpad one the App Library icon's turn, copied (audit 1.8.3 M2: they were turned twice, lying on their side)" \
+  "grep -q 'BOOL DMEditProxyIs(UIView \*v) { return v && objc_getAssociatedObject(v, kEPItemKey) != nil; }' $E && grep -q 'extern BOOL DMEditProxyIs(UIView \*v);' $D \
+   && fn 'static void DMDockSideStyleIcon(UIView *icon, int side) {' $D && sed -n 2p \$W/fn | grep -q 'if (DMEditProxyIs(icon)) return;' \
+   && [ \$(grep -c 'sublayerTransform' $E) = 1 ] && fn 'static void EPFollow(UIView *proxy, UIView *library) {' $E && grep -q 'proxy.layer.sublayerTransform = DMDockSideTurnFor(library);' \$W/fn"
+check "the Launchpad icon view's turn by the Dock's side (the rule every Dock icon's turn has), never copied from the App Library icon's layer; its size from that icon's picture as drawn (the Dock's scale over it), measured once the Dock's layout is done, never in the middle of one (1.8.3.1 F-5, M1: a Dock layout while editing caught that icon without its turn, ours came out turned and too big; its iconImageFrame is the whole 61 pt icon, twice the 30 pt picture)" \
+  "fn 'static void EPFollow(UIView *proxy, UIView *library) {' $E && grep -q 'proxy.layer.sublayerTransform = DMDockSideTurnFor(library);' \$W/fn \
+   && ! grep -q 'library.layer.sublayerTransform' \$W/fn && ! grep -q 'NSSelectorFromString(@\"iconImageFrame\")' \$W/fn \
+   && grep -q 'UIView \*drawn = DMLaunchpadOverlayOf(library);' \$W/fn && grep -q 'CGRect r = \[img convertRect:img.bounds toView:library\];' \$W/fn && grep -q 'EPFit(proxy, want, t);' \$W/fn \
+   && grep -q 'extern CATransform3D DMDockSideTurnFor(UIView \*icon);' $E \
+   && fn 'static void EPFollowSettled(UIView *proxy, UIView *library) {' $E && grep -q 'dispatch_async(dispatch_get_main_queue(), \^{' \$W/fn && grep -q 'EPFollow(p, l);' \$W/fn \
+   && fn 'static void EPCoverLibrary(UIView *library, int item, BOOL editing, BOOL animated, UIView *platter) {' $E \
+   && grep -q 'if (made) EPFollow(proxy, library);   // (placed at once when it is new' \$W/fn && grep -q 'EPFollowSettled(proxy, library);' \$W/fn \
+   && fn 'CATransform3D DMDockSideTurnFor(UIView *icon) {' $D && grep -q 'return DMDockSideIconTurn(icon && gDockSideApplied && DMIsDockIcon(icon) && DMDockSideInHost(icon) ? gDockSideApplied : 0);' \$W/fn \
+   && grep -q 'BOOL dock = gDockSideApplied && DMIsDockIcon((UIView \*)self) && DMDockSideInHost((UIView \*)self);' $D"
+check "the hover magnification passes Edit Home Screen's icon views by: each keeps the size and place it is fitted to (EPFit), and our items' scale with their own view; their own writes start no magnification again (audit 1.8.3 M1: they jumped to full icon size, off centre)" \
+  "fn 'static void DMCollectIcons(UIView *root, Class iconClass, NSMutableArray *out) {' $D && sed -n 3p \$W/fn | grep -q 'if (DMEditProxyIs(v)) continue;' \
+   && fn '- (void)setTransform:(CGAffineTransform)t {' $D && grep -q 'BOOL dockIcon = DMIsDockIcon((UIView \*)self) && !DMEditProxyIs((UIView \*)self);' \$W/fn \
+   && [ \$(grep -c 'gHovering && !gApplying.*&& dockIcon' \$W/fn) = 2 ] && ! grep -q 'DMIsDockIcon((UIView \*)self)) {' \$W/fn"
 exit $fails

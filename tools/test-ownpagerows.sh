@@ -29,7 +29,7 @@ check "  ... and leave rows out by the same conditions and lists: Control Center
    && grep -q 'BOOL noFocus18 = MSBDFocusLock18Failed();' $P && grep -q 'BOOL desktopFailed = MSBDDesktopRowsFailed();' $P \
    && grep -q 'if ((desktopFailed && MSBDDesktopCheckRow(\\[spec propertyForKey:@\"key\"\\], spec.identifier))' $P && grep -q '(noFocus18 && \\[\\[spec propertyForKey:@\"key\"\\] isEqual:kMSBDMacSwitcherKey\\])' $P \
    && grep -q 'inGroup = \\[spec.identifier isEqualToString:kMSBDMacSwitcherGroupID\\];' $P && grep -q '^		if (MSBDFocusLock18Failed()) {' $P && grep -q 'hiding = \\[sp.identifier isEqualToString:kMSBDWiFiGroupID\\];' $P"
-check "  ... the engine's groups (the Windows group, the resize handles and Window Size kept with Stage Manager, Resize Handles, Resize Apps), Report a Problem, Keep Tailspin Off" \
+check "  ... the engine's groups (the Windows group, the resize handles, Window Size and Double-Tap a Title Bar to kept with Stage Manager, Resize Handles, Resize Apps), Report a Problem, Keep Tailspin Off" \
   "[ \$(grep -c 'hiding = \\[sp.identifier isEqualToString:kMSBDWindowsGroupID\\];' $P) = 2 ] && grep -q 'BOOL itsToo = MSBDStageManagerKeepsRow(\\[sp propertyForKey:@\"key\"\\]);' $P \
    && grep -q 'if (!\\[\\[sp propertyForKey:@\"key\"\\] isEqual:kMSBDResizeHandlesKey\\]) \\[kept addObject:sp\\];' $P && grep -q 'hiding = \\[sp.identifier isEqualToString:kMSBDResizeGroupID\\];' $P \
    && grep -q 'if (\\[spec.identifier isEqualToString:kMSBDReportRowID\\]) report = spec;' $P && grep -q 'tailspin = MSBDBarOffKeepsGroup(sp.identifier);' $P"
@@ -45,4 +45,30 @@ check "Sleep Guard only where our Battery Use group is on Battery Health, as our
   "grep -q 'gMSBDOwnBatteryUseOff = MTSBatteryUseOff;' $T && grep -q 'static BOOL MTSBatteryUseOff(void) { return MSBHPageVerdict() == 1 || MSBUGroupVerdict() == 1; }' $T \
    && grep -q '{ gMSBHVerdict = 1; MSBHLog(@\"no row builder or isiPhone: Apple.s page untouched\"); return; }' ../macsettings/BatteryHealth.x && grep -q '^    gMSBHVerdict = 2;' ../macsettings/BatteryHealth.x \
    && grep -q '{ gMSBUVerdict = 1; return; }' ../macsettings/BatteryUse.x && grep -q '^    gMSBUVerdict = 2;' ../macsettings/BatteryUse.x"
+check "Double-Tap a Title Bar to stays with Stage Manager as the engine, on the page and in the search (GitHub #11): the rule's key is the setting's and the page row's, and Stage Manager's windows have our title bar's double tap" \
+  "grep -q '#define kMSBDTitleDoubleTapRowKey @\"titleBarDoubleTap\"' $R && grep -q '#define kMSBDTitleDoubleTapKey \"titleBarDoubleTap\"' ../statusbar/TitleBarRule.h \
+   && awk '/^static inline BOOL MSBDStageManagerKeepsRow\\(NSString \\*key\\) \\{/,/^}/' $R | grep -q '\\[key isEqualToString:kMSBDTitleDoubleTapRowKey\\]' \
+   && grep -q '(s.stageManagerEngine && !MSBDStageManagerKeepsRow(key))' $R && grep -q 'BOOL itsToo = MSBDStageManagerKeepsRow(\\[sp propertyForKey:@\"key\"\\]);' $P \
+   && grep -q 'case kDMTitleSM: {' ../statusbar/TitleBarTap.h && grep -q 'act = ^(NSString \\*why) { DMTitleTapSMWindow(key, why); };' ../statusbar/TitleBarTap.h \
+   && plutil -convert json -o - ../statusbar/macstatusbarprefs/Resources/Windows.plist | python3 -c 'import json,sys; it=json.load(sys.stdin)[\"items\"]; g=None; r=[]
+for x in it:
+    g = x.get(\"id\") if x.get(\"cell\")==\"PSGroupCell\" else g
+    r += [g] if x.get(\"key\")==\"titleBarDoubleTap\" and x.get(\"id\")==\"TITLE_BAR_DOUBLE_TAP\" else []
+sys.exit(0 if r==[\"WINDOWS_GROUP\"] else 1)'"
+check "with no working engine Double-Tap a Title Bar to stays, as Finder's and TextEdit's windows use it: on the page, in its group with a line saying so, and in the search; the rest of the Windows group goes (1.8.3.1)" \
+  "grep -q 'static inline BOOL MSBDNoEngineKeepsRow(NSString \\*key) { return \\[key isEqualToString:kMSBDTitleDoubleTapRowKey\\]; }' $R \
+   && grep -q '((!s.engineWorks && !MSBDNoEngineKeepsRow(key)) || (s.stageManagerEngine && !MSBDStageManagerKeepsRow(key)))' $R \
+   && grep -q 'BOOL windowsGroup = sp.cellType == PSGroupCell && \\[sp.identifier isEqualToString:kMSBDWindowsGroupID\\];' $P \
+   && grep -q 'if (!hiding || windowsGroup || MSBDNoEngineKeepsRow(\\[sp propertyForKey:@\"key\"\\])) \\[kept addObject:sp\\];' $P \
+   && [ \$(grep -c 'Finder and TextEdit windows still use this setting.' $P) = 1 ] \
+   && grep -q 'if (windowsGroup) \\[sp setProperty:@\"Finder and TextEdit windows still use this setting.\" forKey:@\"footerText\"\\];' $P \
+   && grep -q 'DMTitleTapAttach(_titleBar, kDMTitleNative);' ../statusbar/NativeWindow.h && grep -q 'CGRect fill = DMLayoutFrameInArea(@\"fill\", DMNativeDesktop(), \\[UIScreen mainScreen\\].bounds.size);' ../statusbar/TitleBarTap.h"
+check "with no working engine New Windows Open at Fill goes too, on the page (its group and row) and in the search: every window it sizes is an engine's (audit 1.8.3 M4)" \
+  "grep -q '#define kMSBDNewWindowsFillGroupID @\"NEW_WINDOWS_FILL_GROUP\"' $R && grep -q 'if (\\[group isEqualToString:kMSBDNewWindowsFillGroupID\\] && !s.engineWorks) return YES;' $R \
+   && grep -q 'if (sp.cellType == PSGroupCell && \\[sp.identifier isEqualToString:kMSBDNewWindowsFillGroupID\\]) { hiding = YES; continue; }' $P \
+   && plutil -convert json -o - ../statusbar/macstatusbarprefs/Resources/Windows.plist | python3 -c 'import json,sys; it=json.load(sys.stdin)[\"items\"]; g=None; r=[]
+for x in it:
+    g = x.get(\"id\") if x.get(\"cell\")==\"PSGroupCell\" else g
+    r += [g] if x.get(\"key\")==\"newWindowsFill\" else []
+sys.exit(0 if r==[\"NEW_WINDOWS_FILL_GROUP\"] else 1)'"
 [ $fails = 0 ] && echo "test-ownpagerows: wiring checks pass" || { echo "test-ownpagerows: wiring checks FAILED"; exit 1; }

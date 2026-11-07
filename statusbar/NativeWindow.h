@@ -608,9 +608,14 @@ __attribute__((noinline)) static void DMNativeTouchBegan(UITouch *t) {   // (kep
     _content.frame = self.fullSizeContent ? b : CGRectMake(0, th, b.size.width, b.size.height - th);
     [_chrome.contentView bringSubviewToFront:_titleBar];
     _lights.frame = CGRectMake(8.0, 0, kLightCell * 3.0, th);
-    for (UIButton *btn in _lights.subviews) {
+    // (each light's own dot, kept from -init, centred in its button's cell -- never found as the button's first subview: with an assistive feature
+    //  running, UIKit puts a view of its own first in the red and yellow buttons when the light group reads their labels, so their dots stayed at
+    //  the top left of their cells as made, 4 pt left of and 20 pt above where they belong; green, its label set first, was right -- GitHub #11,
+    //  Finder's Trash on 16.3.1, seen on the M1 with Full Keyboard Access on)
+    for (UIView *dot in _dots) {
+        UIView *btn = dot.superview;
         btn.frame = CGRectMake(btn.tag * kLightCell, 0, kLightCell, th);
-        UIView *dot = btn.subviews.firstObject; dot.center = CGPointMake(kLightCell / 2.0, th / 2.0);
+        dot.center = CGPointMake(kLightCell / 2.0, th / 2.0);
     }
     [_titleBar bringSubviewToFront:_lights];
     _titleLabel.hidden = !self.showsTitle;

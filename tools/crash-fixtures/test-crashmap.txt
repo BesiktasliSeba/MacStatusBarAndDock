@@ -12,7 +12,7 @@ P DockMagnification part
 P ForceQuitMenu forceQuitMenu
 P MacStatusBarCore stock
 P MixAudio part
-N DockMagnification the Dock|MacDock
+N DockMagnification the Dock|the Dock
 N MacStatusBarCore the status bar|the Mac status bar
 U DockMagnification 22222222-2222-2222-2222-222222222222 arm64e
 R 8000 part

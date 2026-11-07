@@ -102,6 +102,9 @@ static void MSBDRespringNow(void) {
 // Every respring from our Settings pages. (The VPN check, VPNRespring.h, is SpringBoard's: its restart gate holds this request while a respring could
 // hang, and asks there.)
 static void MSBDRespring(void) { MSBDRespringNow(); }
+// A line as its switch names it, for the alerts below: the Dock's switch is "Mac-Style Dock" (as "Mac-Style Banners"). "MacDock" is the line's
+// name (its library, as Choicy and iCleaner Pro list it) and another tweak's name too: never in a text the user reads (1.8.3.1).
+static inline NSString *MSBDLineTitle(NSString *line) { return [line isEqualToString:@"MacDock"] ? @"Mac-Style Dock" : line; }
 // The switch changed: apply it, then offer the respring that makes it real.
 static void MSBDSetLine(NSString *line, BOOL on, UIViewController *presenter, void (^refresh)(void)) {
 	NSString *title = nil, *message = nil;
@@ -109,7 +112,7 @@ static void MSBDSetLine(NSString *line, BOOL on, UIViewController *presenter, vo
 	if (MSBDChoicyInstalled()) {
 		MSBDChoicySetLine(line, on);
 		respring = MSBDLineEnabled(line) == on;
-		if (!respring) { title = @"Could Not Change"; message = [NSString stringWithFormat:@"Choicy still keeps %@ %@. Check Choicy's settings for SpringBoard.", line, on ? @"off" : @"on"]; }
+		if (!respring) { title = @"Could Not Change"; message = [NSString stringWithFormat:@"Choicy still keeps %@ %@. Check Choicy's settings for SpringBoard.", MSBDLineTitle(line), on ? @"off" : @"on"]; }
 	} else if (MSBDFileExists(@"/var/jb/usr/libexec/sshtoggled")) {
 		CFPreferencesSetValue((__bridge CFStringRef)[@"line" stringByAppendingString:line], on ? kCFBooleanTrue : kCFBooleanFalse, MSBD_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
 		CFPreferencesSynchronize(MSBD_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
@@ -118,11 +121,11 @@ static void MSBDSetLine(NSString *line, BOOL on, UIViewController *presenter, vo
 	} else { title = @"Choicy or iCleaner Pro Needed"; message = @"Switch it in Choicy or iCleaner Pro."; }
 	if (respring) {
 		title = @"Respring to Finish";
-		message = on ? [NSString stringWithFormat:@"%@ turns on after a respring.", line] : [NSString stringWithFormat:@"%@ turns off after a respring.", line];
+		message = on ? [NSString stringWithFormat:@"%@ turns on after a respring.", MSBDLineTitle(line)] : [NSString stringWithFormat:@"%@ turns off after a respring.", MSBDLineTitle(line)];
 		// Both lines off: no part of ours loads in Settings any more, so both pages (and this switch) are gone after the respring (Loader.c)
 		NSString *other = [line isEqualToString:@"MacDock"] ? @"MacStatusBar" : @"MacDock";
 		if (!on && !MSBDLineEnabled(other))
-			message = [message stringByAppendingFormat:@" With %@ off too, both pages leave Settings. To turn them back on, use %@.", other, MSBDChoicyInstalled() ? @"Choicy" : @"iCleaner Pro"];
+			message = [message stringByAppendingFormat:@" With %@ off too, both pages leave Settings. To turn them back on, use %@.", MSBDLineTitle(other), MSBDChoicyInstalled() ? @"Choicy" : @"iCleaner Pro"];
 	}
 	UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
 	if (respring) [alert addAction:[UIAlertAction actionWithTitle:@"Respring Now" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {

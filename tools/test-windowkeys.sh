@@ -12,6 +12,13 @@ fails=0
 check() { if eval "$2"; then echo "PASS  $1"; else echo "FAIL  $1"; fails=1; fi; }
 K=../statusbar/WindowKeys.h; A=../statusbar/WindowAPI.h; S=../statusbar/StatusBar.x; KB=../macsettings/KeyboardSettings.x; G=../macsettings/AppleGroups18.x
 fn() { awk -v head="$1" 'index($0, head) == 1 {f=1} f {print} f && /^}/ {exit}' $2 > "$W/fn"; }
+check "Globe-Control-R puts the record back inside today's desktop on every path -- our own windows, Stage Manager, the engines --: one made before a turn stood partly off the screen (audit 1.8.3 M5)" \
+  "fn 'static void DMWindowBackFromTile(NSString *why) {' $K \
+   && grep -q 'CGRect f = MSBDWinPrevBackFrame(rec.CGRectValue, DMLayoutFrameInArea(@\"fill\", DMNativeDesktop(), \\[UIScreen mainScreen\\].bounds.size), nw.minSize);' \$W/fn \
+   && grep -q 'CGRect f = MSBDWinPrevBackFrame(rec.CGRectValue, DMSMLayoutFrameIn(@\"fill\", u, scr), CGSizeZero);' \$W/fn \
+   && grep -q 'BOOL ok = DMSMApplyPlacesIn(@{key: \\[NSValue valueWithCGRect:f\\]}, stage);' \$W/fn && grep -q 'DMTitleRecordSMTo(key, stage, f);' \$W/fn \
+   && grep -q 'CGRect f = MSBDWinPrevBackFrame(rec.CGRectValue, DMLayoutFrame(@\"fill\"), DMEngineWindowMin());' \$W/fn \
+   && ! grep -q 'CGRect f = rec.CGRectValue;' \$W/fn && ! grep -q 'DMSMApplyPlacesIn(@{key: rec}, stage)' \$W/fn"
 check "the keys from SpringBoard's own presses (the Globe chords iPadOS hands to SpringBoard; none of them is one of its key commands), each row matched by its key -- the arrows' place, the letter the layout types -- and the exact modifiers" \
   "fn 'static void DMWindowKeysInstall(void) {' $K && grep -q 'MSHookMessageEx(sb, @selector(pressesBegan:withEvent:), (IMP)DMWinKeysPressesBegan, (IMP \*)&o_WinKeysPressesBegan);' \$W/fn \
    && fn 'static void DMWinKeysPressesBegan(id self, SEL _cmd, NSSet<UIPress \*> \*presses, UIPressesEvent \*event) {' $K \
@@ -55,7 +62,7 @@ check "Return to Previous Size: the record taken where a layout of the Window me
   "fn 'static void DMWindowLayout(NSString *name) {' $S && grep -q 'if (!gPreferRememberedFrame && MSBDWinIsTileName(name.UTF8String)) {' \$W/fn \
    && fn 'static void DMNativeLayout(DMNativeWindow *w, NSString *name) {' $A && grep -q 'if (MSBDWinIsTileName(name.UTF8String)) DMWinPrevNoteNative(w);' \$W/fn"
 check "  ... going back: only while the window is still in a tile (the rule), on every engine with its own move" \
-  "fn 'static void DMWindowBackFromTile(NSString *why) {' $K && [ \$(grep -c 'MSBDWinPrevOnReturn(' \$W/fn) = 3 ] && grep -q 'DMSMApplyPlacesIn(@{key: rec}, stage);' \$W/fn && grep -q 'DMAerialMoveStage(v, f, nil);' \$W/fn"
+  "fn 'static void DMWindowBackFromTile(NSString *why) {' $K && [ \$(grep -c 'MSBDWinPrevOnReturn(' \$W/fn) = 3 ] && grep -q 'DMSMApplyPlacesIn(@{key: \\[NSValue valueWithCGRect:f\\]}, stage);' \$W/fn && grep -q 'DMAerialMoveStage(v, f, nil);' \$W/fn"
 check "the arrangements: Stage Manager's windows in one request, the others' the front window by the Window menu's way, the next windows newest first, out of Fit's tiles" \
   "fn 'static void DMArrangeWindows(const char *const *slots, int count, NSString *why) {' $K && grep -q 'BOOL ok = DMSMApplyLayoutsIn(plan, stage);' \$W/fn \
    && grep -q 'for (UIView \*s in \[DMAerialStages() reverseObjectEnumerator\]) {' \$W/fn && grep -q 'DMFitGroupForget(DMStageBundle(s));' \$W/fn && grep -q 'gMoveKeepsOrder = YES;' \$W/fn"

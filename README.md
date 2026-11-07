@@ -1,6 +1,6 @@
 # MacStatusBar&Dock
 
-A macOS-style desktop for jailbroken iPads: a Mac menu bar with real app menus, Mac windows on the window engine you choose, Mission Control with desktops, a Finder and a magnifying Dock. It works with your fingers or with a trackpad or mouse, in every orientation.
+A MacBook-style desktop for your jailbroken iPad. It brings a Mac menu bar with real app menus, Mac windows on the window engine you choose, Mission Control with desktops, a Finder and a magnifying Dock. It works with your fingers or with a trackpad or mouse, in every orientation.
 
 | | |
 |---|---|

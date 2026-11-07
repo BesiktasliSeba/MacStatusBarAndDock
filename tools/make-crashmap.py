@@ -12,7 +12,7 @@
 #   T <target> pref <domain> <key> <off 0|1> <default 0|1> <row title>|<where>   a switch: set to <off>; <default> = its value when never set
 #   T <target> part                                          the part (image) is not loaded any more (loader skip list)
 #   P <Image> <target>                                       an image's own target (a small part; or a big one's fallback)
-#   N <Image> <where>|<what>                                 the part in words ("the Dock|MacDock"), for the guard's explanation
+#   N <Image> <where>|<what>                                 the part in words ("the Dock|the Dock"), for the guard's explanation
 #   U <Image> <uuid> <arch>                                  a function map follows for this slice ...
 #   R <start hex> <target>                                   ... address ranges (image offsets), each up to the next R line; "-" = nothing
 import os, re, subprocess, sys

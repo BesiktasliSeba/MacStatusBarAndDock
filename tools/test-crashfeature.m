@@ -30,8 +30,8 @@ int main(int argc, char **argv) {
         NSString *(^fx)(NSString *) = ^(NSString *n) { return [dir stringByAppendingPathComponent:n]; };
         NSString *D = @"com.besiktasliseba.test-crashstep";
         SetPref(@"macBanners", nil); SetPref(@"stockStatusBar", nil); SetPref(@"showDownloads", nil); SetPref(@"forceQuitEnabled", nil); SetPref(@"controlCenterStyle", nil);
-        Expect(@"MacDock: the Dock part as a whole", fx(@"step1b-dock.ips"), map, @"part DockMagnification - - 0 the Dock|MacDock");
-        Expect(@"MacDock: Downloads code -> Show Downloads off", fx(@"step1b-dock-downloads.ips"), map, [NSString stringWithFormat:@"pref DockMagnification %@ showDownloads 0 Show Downloads in Dock|the Dock's Downloads", D]);
+        Expect(@"the Dock part as a whole", fx(@"step1b-dock.ips"), map, @"part DockMagnification - - 0 the Dock|the Dock");
+        Expect(@"the Dock: Downloads code -> Show Downloads off", fx(@"step1b-dock-downloads.ips"), map, [NSString stringWithFormat:@"pref DockMagnification %@ showDownloads 0 Show Downloads in Dock|the Dock's Downloads", D]);
         Expect(@"small part without a switch -> the part", fx(@"step1b-small-part.ips"), map, @"part MixAudio - - 0 its part MixAudio|MixAudio");
         Expect(@"small part with a switch -> its switch", fx(@"step1b-small-part-switch.ips"), map, [NSString stringWithFormat:@"pref ForceQuitMenu %@ forceQuitEnabled 0 Force Quit in App Menus|the Force Quit menu item", D]);
         Expect(@"core, banners function -> Mac-Style Banners off", fx(@"step1b-core-banners.ips"), map, [NSString stringWithFormat:@"pref MacStatusBarCore %@ macBanners 0 Mac-Style Banners|the Mac-style banners", D]);

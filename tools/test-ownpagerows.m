@@ -53,18 +53,21 @@ int main(int argc, char **argv) {
         Expect([e.groupID isEqualToString:@"WINDOWS_GROUP"] && [e.key isEqualToString:kMSBDWindowSizeRowKey] && !e.opensPage && [e.path.lastObject isEqualToString:@"WINDOW_SIZE"]
                && [e.uid isEqualToString:@"msbd-tweaksetting:root=MAC_WINDOWS#WINDOW_SIZE"] && [e.tokens containsString:@" window "] && [e.tokens containsString:@" size "] && [e.keywords containsObject:@"Windows"],
                [NSString stringWithFormat:@"index: Window Size in the Windows group, a picker by its key (WINDOW_SIZE: %@, tokens %@)", e.uid, e.tokens]);
-        e = Row(K, @"Magnify Icons"); MTIEntry *dl = Row(K, @"MacDock");
-        Expect(e.belowLine && dl && !dl.belowLine && !e.stockHides, @"index: the Dock page's rows below MacDock's switch, the switch itself not");
+        e = Row(W, @"Double-Tap a Title Bar to");   // (1.8.3 item 8: a picker in the Windows group, by its key and id)
+        Expect([e.groupID isEqualToString:@"WINDOWS_GROUP"] && [e.key isEqualToString:@"titleBarDoubleTap"] && !e.opensPage && [e.path.lastObject isEqualToString:@"TITLE_BAR_DOUBLE_TAP"],
+               [NSString stringWithFormat:@"index: Double-Tap a Title Bar to in the Windows group, a picker by its key (TITLE_BAR_DOUBLE_TAP: %@)", e.uid]);
+        e = Row(K, @"Magnify Icons"); MTIEntry *dl = Row(K, @"Mac-Style Dock");
+        Expect(e.belowLine && dl && !dl.belowLine && !e.stockHides, @"index: the Dock page's rows below its Mac-Style Dock switch, the switch itself not");
         Expect(Row(D, @"Icon Size") && [Row(D, @"Icon Size").key isEqualToString:@"desktopIconSize"], @"index: the desktop's Icon Size slider, by its key");
 
         MSBDOwnPages base = {0};
         base.barLine = base.dockLine = base.finder = base.engineWorks = YES;   // (Aerial, everything on, no BigSurCenter, 15 / 16)
         base.ccStyle = kMSBDCCStyleStock;   // (Control Center Style: iPadOS's -- Hide Grabber, no size slider)
         Shows(base, @"as installed", B, @[@"MacStatusBar", @"Show Seconds", @"Wi-Fi Menu", @"Battery Menu", @"Control Center Style", @"Hide Grabber", @"Report a Problem…", @"Banner Style"], @[@"Control Center"]);
-        Shows(base, @"as installed", W, @[@"Window Size", @"Windows Behind Full-Screen Apps", @"Tint Resize Handles", @"Home Minimizes Windows", @"Mac Switcher", @"Keep Tailspin Off", @"Prewarm Apps"],
+        Shows(base, @"as installed", W, @[@"Window Size", @"Double-Tap a Title Bar to", @"New Windows Open at Fill", @"Windows Behind Full-Screen Apps", @"Tint Resize Handles", @"Home Minimizes Windows", @"Mac Switcher", @"Keep Tailspin Off", @"Prewarm Apps"],
               @[@"Resize Handles", @"Resize Apps to Fit Windows"]);
         Shows(base, @"as installed", D, @[@"Show Desktop Icons", @"Hide Desktop Icon Names", @"Icon Size", @"App Icon Corner Radius", @"Match Home Screen Icons"], @[]);
-        Shows(base, @"as installed", K, @[@"MacDock", @"Magnify Icons", @"Show Finder in Dock", @"Show Trash in Dock"], @[]);
+        Shows(base, @"as installed", K, @[@"Mac-Style Dock", @"Magnify Icons", @"Show Finder in Dock", @"Show Trash in Dock"], @[]);
         Expect(Listed(base, @"Battery", @"Sleep Guard") && Listed(base, @"SSH", @"SSH"), @"as installed: Sleep Guard and our main-list rows listed");
         Expect(MSBDOwnRowsShown(gAll, base).count == gAll.count - 3, [NSString stringWithFormat:@"as installed: only the three rows the pages leave out go (%lu of %lu listed)",
                                                                     (unsigned long)MSBDOwnRowsShown(gAll, base).count, (unsigned long)gAll.count]);
@@ -89,20 +92,20 @@ int main(int argc, char **argv) {
         s = base; s.stockBar = YES;   // (the stockHides groups go; Report a Problem stays in a group of its own)
         Shows(s, @"stock status bar", B, @[@"MacStatusBar", @"Status Bar Style", @"Banner Style", @"Finder", @"Hide Grabber", @"Report a Problem…", @"Hide Status Bar on Lock Screen"],
               @[@"Show Seconds", @"Show Spotlight Search", @"Tweak Settings", @"Menu Bar Size", @"Apps", @"Show in App Library", @"Wi-Fi Menu", @"Battery Menu", @"Mix Audio Between Apps"]);
-        Shows(s, @"stock status bar", W, @[@"Keep Tailspin Off"], @[@"Enable Windowing", @"Window Engine", @"Window Size", @"Home Minimizes Windows", @"Mac Switcher", @"Prewarm Apps", @"Tint Resize Handles"]);
+        Shows(s, @"stock status bar", W, @[@"Keep Tailspin Off"], @[@"Enable Windowing", @"Window Engine", @"Window Size", @"Double-Tap a Title Bar to", @"Home Minimizes Windows", @"Mac Switcher", @"Prewarm Apps", @"Tint Resize Handles"]);
         Shows(s, @"stock status bar", D, @[@"Show Desktop Icons", @"Icon Size"], @[]);
         Shows(s, @"stock status bar", K, @[@"Magnify Icons"], @[]);
 
         s = base; s.barLine = NO;   // (MacStatusBar off: its switch; Windows & Multitasking's note and Keep Tailspin Off; the Desktop page's note)
         Shows(s, @"MacStatusBar off", B, @[@"MacStatusBar"], @[@"Status Bar Style", @"Show Seconds", @"Finder", @"Report a Problem…", @"Hide Status Bar on Lock Screen"]);
-        Shows(s, @"MacStatusBar off", W, @[@"Keep Tailspin Off"], @[@"Enable Windowing", @"Window Size", @"Home Minimizes Windows", @"Mac Switcher", @"Prewarm Apps"]);
+        Shows(s, @"MacStatusBar off", W, @[@"Keep Tailspin Off"], @[@"Enable Windowing", @"Window Size", @"Double-Tap a Title Bar to", @"Home Minimizes Windows", @"Mac Switcher", @"Prewarm Apps"]);
         Shows(s, @"MacStatusBar off", D, @[], @[@"Show Desktop Icons", @"Hide Desktop Icon Names", @"Icon Size", @"App Icon Corner Radius"]);
-        Shows(s, @"MacStatusBar off", K, @[@"MacDock", @"Magnify Icons"], @[]);
+        Shows(s, @"MacStatusBar off", K, @[@"Mac-Style Dock", @"Magnify Icons"], @[]);
         Expect(Listed(s, W, W) && Listed(s, D, D), @"MacStatusBar off: the pages themselves still listed (each opens, with its note)");
 
         s = base; s.dockLine = NO;
-        Shows(s, @"MacDock off", K, @[@"MacDock"], @[@"Magnify Icons", @"Number of Recent Apps", @"Show Finder in Dock", @"Show Downloads in Dock", @"Show Trash in Dock"]);
-        Shows(s, @"MacDock off", B, @[@"Show Seconds"], @[]);
+        Shows(s, @"Mac-Style Dock off", K, @[@"Mac-Style Dock"], @[@"Magnify Icons", @"Number of Recent Apps", @"Show Finder in Dock", @"Show Downloads in Dock", @"Show Trash in Dock"]);
+        Shows(s, @"Mac-Style Dock off", B, @[@"Show Seconds"], @[]);
 
         s = base; s.finder = NO;
         Shows(s, @"Finder off", K, @[@"Magnify Icons", @"Show Trash in Dock"], @[@"Show Finder in Dock"]);
@@ -116,12 +119,35 @@ int main(int argc, char **argv) {
         Shows(s, @"18 without the focus lock", W, @[@"Home Minimizes Windows"], @[@"Mac Switcher", @"Go to the App's Desktop"]);
         Shows(s, @"18 without the focus lock", B, @[@"Battery Menu"], @[@"Wi-Fi Menu"]);
 
-        s = base; s.stageManagerEngine = YES;   // (Stage Manager as the engine: the Windows group keeps the resize handles' rows)
-        Shows(s, @"Stage Manager engine", W, @[@"Window Size", @"Resize Handles", @"Tint Resize Handles", @"Home Minimizes Windows"], @[@"Windows Behind Full-Screen Apps", @"Resize Apps to Fit Windows"]);
-        s = base; s.engineWorks = NO;           // (no tested engine installed, or it runs on its own)
-        Shows(s, @"no working engine", W, @[@"Window Engine", @"Home Minimizes Windows"], @[@"Window Size", @"Windows Behind Full-Screen Apps", @"Tint Resize Handles", @"Resize Handles"]);
+        s = base; s.stageManagerEngine = YES;   // (Stage Manager as the engine: the Windows group keeps the rows of Stage Manager's own windows -- the resize
+                                                //  handles', Window Size and Double-Tap a Title Bar to: GitHub #11, it was left out of the page and the search)
+        Shows(s, @"Stage Manager engine", W, @[@"Window Size", @"Double-Tap a Title Bar to", @"Resize Handles", @"Tint Resize Handles", @"Home Minimizes Windows", @"New Windows Open at Fill"],
+              @[@"Windows Behind Full-Screen Apps", @"Resize Apps to Fit Windows"]);
+        Expect(MSBDStageManagerKeepsRow(@"titleBarDoubleTap") && MSBDStageManagerKeepsRow(@"windowSize") && MSBDStageManagerKeepsRow(@"resizeHandleStyle")
+               && MSBDStageManagerKeepsRow(@"tintResizeHandles") && !MSBDStageManagerKeepsRow(@"windowsBehindApps") && !MSBDStageManagerKeepsRow(nil),
+               @"Stage Manager keeps the Windows group's rows its own windows use (Window Size, Double-Tap a Title Bar to, the handles'), not Windows Behind Full-Screen Apps (the other engines' window layer's)");
+        {   // (every row of the real Windows group decided on purpose for Stage Manager: a row added there later fails here until it is)
+            NSArray<MTIEntry *> *shown = MSBDOwnRowsShown(gAll, s);
+            NSMutableArray<NSString *> *kept = [NSMutableArray array], *left = [NSMutableArray array];
+            for (MTIEntry *r in gAll) if (r.ours && r.depth >= 2 && [r.paneTitle isEqualToString:W] && [r.groupID isEqualToString:@"WINDOWS_GROUP"]) [[shown containsObject:r] ? kept : left addObject:r.title];
+            Expect([kept isEqualToArray:@[@"Window Size", @"Double-Tap a Title Bar to", @"Resize Handles", @"Tint Resize Handles"]] && [left isEqualToArray:@[@"Windows Behind Full-Screen Apps"]],
+                   [NSString stringWithFormat:@"Stage Manager engine: each row of the Windows group kept or left out on purpose (kept %@; left out %@)", [kept componentsJoinedByString:@", "], [left componentsJoinedByString:@", "]]);
+        }
+        s = base; s.engineWorks = NO;           // (no tested engine installed, or it runs on its own: the Windows group goes but for Double-Tap a Title Bar to,
+                                                //  which our own windows -- Finder, TextEdit -- use without an engine too; 1.8.3.1)
+        Shows(s, @"no working engine", W, @[@"Window Engine", @"Double-Tap a Title Bar to", @"Home Minimizes Windows"], @[@"Window Size", @"Windows Behind Full-Screen Apps", @"Tint Resize Handles", @"Resize Handles"]);
+        Shows(s, @"no working engine", W, @[], @[@"New Windows Open at Fill"]);   // (every window it sizes is an engine's: nothing to fill -- audit 1.8.3 M4)
+        {   // (every row of the real Windows group decided on purpose with no working engine)
+            NSArray<MTIEntry *> *shown = MSBDOwnRowsShown(gAll, s);
+            NSMutableArray<NSString *> *kept = [NSMutableArray array], *left = [NSMutableArray array];
+            for (MTIEntry *r in gAll) if (r.ours && r.depth >= 2 && [r.paneTitle isEqualToString:W] && [r.groupID isEqualToString:@"WINDOWS_GROUP"]) [[shown containsObject:r] ? kept : left addObject:r.title];
+            Expect([kept isEqualToArray:@[@"Double-Tap a Title Bar to"]] && [left isEqualToArray:@[@"Window Size", @"Windows Behind Full-Screen Apps", @"Resize Handles", @"Tint Resize Handles"]],
+                   [NSString stringWithFormat:@"no working engine: each row of the Windows group kept or left out on purpose (kept %@; left out %@)", [kept componentsJoinedByString:@", "], [left componentsJoinedByString:@", "]]);
+        }
+        s.stageManagerEngine = YES;             // (Stage Manager shown but not working: the same, our own windows' row stays)
+        Shows(s, @"Stage Manager, not working", W, @[@"Double-Tap a Title Bar to"], @[@"Window Size", @"Windows Behind Full-Screen Apps", @"Tint Resize Handles", @"New Windows Open at Fill"]);
         s = base; s.milkyWayEngine = YES;       // (MilkyWay4, 15 only)
-        Shows(s, @"MilkyWay4", W, @[@"Window Size", @"Resize Apps to Fit Windows", @"Windows Behind Full-Screen Apps"], @[@"Resize Handles"]);
+        Shows(s, @"MilkyWay4", W, @[@"Window Size", @"Double-Tap a Title Bar to", @"Resize Apps to Fit Windows", @"Windows Behind Full-Screen Apps"], @[@"Resize Handles"]);
 
         s = base; s.batteryUseOff = YES;
         Expect(!Listed(s, @"Battery", @"Sleep Guard") && Listed(s, B, @"Battery Menu"), @"our Battery Use group not on Battery Health: Sleep Guard left out, nothing else");

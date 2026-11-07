@@ -96,7 +96,7 @@ check "  ... Default is never written: picked, a stored value is taken away and 
    && grep -q 'notify_post(\"com.besiktasliseba.macstatusbar/prefsChanged\");' \$W/set && ! grep -q '\"default\"' \$W/set \
    && grep -q 'if (\\[\\[specifier propertyForKey:@\"key\"\\] isEqual:@kMSBDWindowSizeKey\\]) return @(MSBDWindowSizeName(MSBWindowSizeStored(NULL)));' $P"
 check "  ... with Stage Manager as the engine the row stays (its windows open at it too), on the page and in the Settings search; the same key" \
-  "grep -q 'static inline BOOL MSBDStageManagerKeepsRow(NSString \\*key) { return MSBDHandlesRow(key) || \\[key isEqualToString:kMSBDWindowSizeRowKey\\]; }' $R \
+  "awk '/^static inline BOOL MSBDStageManagerKeepsRow\\(NSString \\*key\\) \\{/,/^}/' $R | grep -q 'MSBDHandlesRow(key) || \\[key isEqualToString:kMSBDWindowSizeRowKey\\]' \
    && grep -q '#define kMSBDWindowSizeRowKey @\"windowSize\"' $R && grep -q '#define kMSBDWindowSizeKey \"windowSize\"' ../common/WindowSize.h \
    && grep -q '(s.stageManagerEngine && !MSBDStageManagerKeepsRow(key))' $R && grep -q 'BOOL itsToo = MSBDStageManagerKeepsRow(\\[sp propertyForKey:@\"key\"\\]);' $P"
 check "the crash guard: a crash in this code is window code (windowing off), as the rest of the new window's" \

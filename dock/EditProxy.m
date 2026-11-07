@@ -20,6 +20,7 @@ extern UIView *DMFinderIcon(UIView *platter);
 extern UIView *DMDownloadsIcon(UIView *platter);
 extern UIView *DMTrashIcon(UIView *platter);
 extern UIView *DMLaunchpadOverlayOf(UIView *iconView);   // (Launchpad.m: our Launchpad picture over the App Library icon)
+extern CATransform3D DMDockSideTurnFor(UIView *icon);   // (Dock.x: the turn a Dock icon's content has for its Dock's side now)
 
 static const void *kEPProxyKey = &kEPProxyKey;   // (on our view, or on the App Library icon: the icon view standing in for it)
 static const void *kEPSavedKey = &kEPSavedKey;   // (what editing set aside: recognizers' enabled, interactions, subviews' hidden)
@@ -240,8 +241,10 @@ static void EPUndoOurs(UIView *v) {
 // The App Library icon (Launchpad): SpringBoard's own; ours goes beside it, in its place, while it hides.
 static void EPFollow(UIView *proxy, UIView *library) {
     if (!proxy || !library || !library.superview) return;
-    // (its place, our picture as big as the App Library icon's own picture is drawn -- that one has the Dock's scale over it --, the icon's own
-    //  transform -- the hover magnification -- and turn on top, as the App Library icon has them)
+    // (its place, our picture as big as the App Library icon's own picture is drawn -- that one has the Dock's scale over it: its iconImageFrame
+    //  is the whole 61 pt icon, twice the 30 pt picture at a side --, the icon's own transform -- the hover magnification -- on top, and the turn
+    //  every Dock icon has beside a side Dock, by the Dock's side (Dock.x DMDockSideTurnFor, DMDockSideStyleIcon's rule), never copied from that
+    //  icon's layer: a Dock layout while editing ran this before it had its turn back, and ours came out turned -- M1 1.8.3.1 F-5)
     CGAffineTransform t = library.transform;
     CGRect box = CGRectMake(library.center.x - library.bounds.size.width / 2.0, library.center.y - library.bounds.size.height / 2.0, library.bounds.size.width, library.bounds.size.height);
     UIView *img = EPHas(library, @"_iconImageView", "@16@0:8") ? ((id (*)(id, SEL))objc_msgSend)(library, NSSelectorFromString(@"_iconImageView")) : nil;
@@ -253,7 +256,21 @@ static void EPFollow(UIView *proxy, UIView *library) {
         want = CGRectMake(box.origin.x + r.origin.x - library.bounds.origin.x, box.origin.y + r.origin.y - library.bounds.origin.y, r.size.width, r.size.height);
     }
     EPFit(proxy, want, t);
-    proxy.layer.sublayerTransform = library.layer.sublayerTransform;   // (its turn beside a side Dock)
+    proxy.layer.sublayerTransform = DMDockSideTurnFor(library);
+}
+// The same once the layout this call came in has finished: the App Library icon's picture is then where its own layout put it. In the middle of a
+// Dock layout while editing it was half laid out, and ours, fitted to it, came out too big (M1 1.8.3.1 F-5). One a run loop turn.
+static const void *kEPFollowDueKey = &kEPFollowDueKey;
+static void EPFollowSettled(UIView *proxy, UIView *library) {
+    if (!proxy || !library || objc_getAssociatedObject(proxy, kEPFollowDueKey)) return;
+    objc_setAssociatedObject(proxy, kEPFollowDueKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak UIView *wp = proxy, *wl = library;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIView *p = wp, *l = wl;
+        if (!p) return;
+        objc_setAssociatedObject(p, kEPFollowDueKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (l && p.superview && objc_getAssociatedObject(l, kEPProxyKey) == p) EPFollow(p, l);
+    });
 }
 // (the end of editing for the App Library icon: its icon view gone, shown again if we hid it, its own jiggle stopped, its taps back)
 static void EPUndoLibrary(UIView *library) {
@@ -269,18 +286,21 @@ static void EPCoverLibrary(UIView *library, int item, BOOL editing, BOOL animate
     if (proxy && editing && [objc_getAssociatedObject(proxy, kEPItemKey) intValue] != item) {
         [proxy removeFromSuperview]; objc_setAssociatedObject(library, kEPProxyKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); proxy = nil;
     }
+    BOOL made = NO;
     if (editing && !proxy && library.superview) {
         proxy = EPMakeProxy(item, library);
         if (proxy) {
             [library.superview insertSubview:proxy aboveSubview:library];
             objc_setAssociatedObject(library, kEPProxyKey, proxy, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            made = YES;
         }
     }
     int how = MSBDEditHow(editing, proxy != nil);
     if (how == kMSBDEditNone) { EPUndoLibrary(library); return; }
     [EPChanged(platter, kEPLibraryKey, YES) addObject:library];
     if (how == kMSBDEditCover) {
-        EPFollow(proxy, library);
+        if (made) EPFollow(proxy, library);   // (placed at once when it is new, as editing begins; at every Dock layout after, once that layout is done)
+        EPFollowSettled(proxy, library);
         if (!library.hidden) { library.hidden = YES; objc_setAssociatedObject(library, kEPHidKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }   // (only what we hid comes back)
         EPEditing(proxy, YES, animated); EPNoDrag(proxy);
     }
@@ -321,6 +341,9 @@ void DMEditProxiesApply(UIView *platter, BOOL editing, BOOL animated, BOOL launc
     }
 }
 BOOL DMEditProxiesOn(UIView *platter) { return platter && [objc_getAssociatedObject(platter, kEPEditingKey) boolValue]; }
+// One of these icon views (Dock.x: the side Dock's turn and the hover magnification pass them by -- each has its place, its scale and its turn
+// from here and from the view it is in, audit 1.8.3 M1 and M2).
+BOOL DMEditProxyIs(UIView *v) { return v && objc_getAssociatedObject(v, kEPItemKey) != nil; }
 // A theme engine refreshed its pictures while editing: each icon view asks its icon again.
 void DMEditProxiesThemeChanged(UIView *platter) {
     if (!DMEditProxiesOn(platter)) return;
