@@ -70,6 +70,11 @@ int main(void) {
         CHECK(fabs(s - 1.0) < 1e-9 && fabs(cy - 288.0) < 1e-9, "a wide window's picture in the card's middle: the bar right above it, inside the card");
         MSBDWinCardBarPlace(10, 10, 100, 0, 24, &s, &cx, &cy);
         CHECK(s == 1.0, "no size known: no scale");
+        // (the M1, 7 Nov: a full-screen app's card, its picture 4.5 pt under the top of the screen -- the bar's lower 4.5 pt over the menu bar)
+        MSBDWinCardBarPlace(0, 4.5, 1194, 1194, 24, &s, &cx, &cy);
+        CHECK(fabs((cy + 12.0) - 4.5) < 1e-9, "a picture 4.5 pt under the card's top: the bar's bottom 4.5 pt into the screen (the line KT saw)");
+        CHECK(MSBDWinCardBarShown(2), "the bar on the App Switcher's cards (environment 2)");
+        CHECK(!MSBDWinCardBarShown(3) && !MSBDWinCardBarShown(1) && !MSBDWinCardBarShown(0), "  ... never on the card of the app in front, nor at Home, nor before the first switcher event");
     }
     printf("%s: %d checks, %d failed\n", fails ? "FAILED" : "ok", checks, fails);
     return fails ? 1 : 0;

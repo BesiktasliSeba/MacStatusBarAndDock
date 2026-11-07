@@ -266,6 +266,10 @@ static CGRect gDownloadsSlot = {{0, 0}, {0, 0}};   // where the Downloads icon g
 static CGRect gFinderSlot = {{0, 0}, {0, 0}};      // where the Finder icon goes: the Dock's first place (set by getMetrics)
 extern void DMFinderIconAttach(UIView *platter, CGRect slot, BOOL show);
 extern UIView *DMFinderIcon(UIView *platter);
+extern void DMEditProxiesApply(UIView *platter, BOOL editing, BOOL animated, BOOL launchpadClassic, BOOL logAlways);   // (EditProxy.m: Edit Home Screen, 1.8.3 item 5)
+extern BOOL DMEditProxiesOn(UIView *platter);   // (that Dock editing now)
+extern void DMEditProxiesThemeChangedAll(void);
+extern NSString *const DMIconThemeChangedNotification;   // (IconTheme.m: a theme engine refreshed its pictures)
 extern CGFloat gDMIconCornerRatio;   // (FinderIcon.m: SpringBoard's app icon corner as a share of the icon's width)
 // SpringBoard's app icon corner for the Dock (K-4): -[SBFloatingDockView _iconImageInfo] (15-18: {size, scale, continuous corner radius}) -- the
 // Finder picture's corners follow it. Read only when the method returns exactly that structure.
@@ -488,6 +492,12 @@ static void DMDockSideDotFollows(UIView *icon) {   // (its dot placed again for 
     if ([icon isKindOfClass:objc_getClass("SBIconView")]) DMUpdateRunningIndicator(icon);
     else if ([icon respondsToSelector:NSSelectorFromString(@"updateDot")]) ((void (*)(id, SEL))objc_msgSend)(icon, NSSelectorFromString(@"updateDot"));
 }
+#if DEBUG
+static BOOL gDMTurnOurs = NO;   // (debug: a write of the turn's is ours -- the turn watch, "turnwatch" in /tmp/dockmag-escape, logs every other one)
+#define DM_TURN_OURS(...) do { gDMTurnOurs = YES; __VA_ARGS__ gDMTurnOurs = NO; } while (0)
+#else
+#define DM_TURN_OURS(...) do { __VA_ARGS__ } while (0)
+#endif
 static void DMDockSideStyleIcon(UIView *icon, int side) {
     CALayer *l = icon.layer;
     NSValue *ours = objc_getAssociatedObject(icon, kDockSideTurnOurs), *under = objc_getAssociatedObject(icon, kDockSideTurnUnder);
@@ -500,12 +510,12 @@ static void DMDockSideStyleIcon(UIView *icon, int side) {
             objc_setAssociatedObject(icon, kDockSideTurnUnder, [NSValue valueWithCATransform3D:below], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             objc_setAssociatedObject(icon, kDockSideTurnOurs, [NSValue valueWithCATransform3D:want], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             objc_setAssociatedObject(icon, kDockSideTurnSide, @(side), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            if (!CATransform3DEqualToTransform(l.sublayerTransform, want)) l.sublayerTransform = want;
+            DM_TURN_OURS(if (!CATransform3DEqualToTransform(l.sublayerTransform, want)) l.sublayerTransform = want;);
             DMDockSideDotFollows(icon);
             return;
         }
         case MSBDIconTurnGiveBack:
-            if (under && !CATransform3DEqualToTransform(l.sublayerTransform, under.CATransform3DValue)) l.sublayerTransform = under.CATransform3DValue;
+            DM_TURN_OURS(if (under && !CATransform3DEqualToTransform(l.sublayerTransform, under.CATransform3DValue)) l.sublayerTransform = under.CATransform3DValue;);
             objc_setAssociatedObject(icon, kDockSideTurnUnder, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             objc_setAssociatedObject(icon, kDockSideTurnOurs, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             objc_setAssociatedObject(icon, kDockSideTurnSide, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -1029,6 +1039,7 @@ __attribute__((visibility("default"))) UITargetedPreview *MSBDDockSideIconPrevie
     if (platter) DMTrashAttach(platter, gTrashSlot, gShowTrash && gTrashSlot.size.width > 0);
     DMReadIconCornerRatio((UIView *)self);
     if (platter) DMFinderIconAttach(platter, gFinderSlot, gShowFinder && gFinderSlot.size.width > 0);
+    if (platter && DMEditProxiesOn(platter)) DMEditProxiesApply(platter, YES, NO, gLaunchpadClassic, NO);   // (Edit Home Screen: the items' icon views follow this layout)
     DMSecondDividerAttach((UIView *)self);
     if (platter && gDockSideEver) {   // (the icons' turn, and each one's share of the row: new icons and a changed Dock too)
         int side = DMDockSideOf((UIView *)self);
@@ -3020,12 +3031,37 @@ static NSString *DMZoomViewText(UIView *v) {
 }
 %end
 %end
+// A recents icon fading in (-[SBFloatingDockSuggestionsViewController _fadeInIcon:isReplacing:completion:]: a Handoff tile coming, the app's own
+// icon back when the tile goes, a recents change) has its layer's sublayerTransform set again inside that call by Atria, which lays its icon
+// scale there -- read on the M1 with the turn watch (1.8.3 item 7, regression-1.8.2.2-m1.md F1): set to the identity by Atria.dylib, under
+// -_fadeInIcon:isReplacing:completion: from -dockSuggestionsModel:didInsertItem:atIndex:involvesContinuity:, after our arrival hooks had turned
+// it. Our turn goes on top of what is under it (DMDockSideStyleIcon), so once that call is over the recents' icons are turned again, over the
+// value just written, and once more on the next turn of the main loop for a write made right after it. Hooked on that exact type only.
+static void (*o_DockFadeIn)(id, SEL, id, BOOL, id);
+static void DMDockFadeIn(id self, SEL _cmd, id icon, BOOL replacing, id completion) {
+    o_DockFadeIn(self, _cmd, icon, replacing, completion);
+    if (!gDockSideApplied) return;
+    UIViewController *vc = self;
+    UIView *root = [vc isViewLoaded] ? vc.view : nil;
+    if (!root) return;
+    DMDockSideStyleAll(root, gDockSideApplied);
+    __weak UIView *weakRoot = root;
+    dispatch_async(dispatch_get_main_queue(), ^{ UIView *r = weakRoot; if (r && gDockSideApplied) DMDockSideStyleAll(r, gDockSideApplied); });
+}
+static void DMDockSideHookFadeIn(void) {
+    Class c = objc_getClass("SBFloatingDockSuggestionsViewController");
+    SEL sel = NSSelectorFromString(@"_fadeInIcon:isReplacing:completion:");
+    Method m = c ? class_getInstanceMethod(c, sel) : NULL;
+    if (!m || strcmp(method_getTypeEncoding(m) ?: "", "v36@0:8@16B24@?28")) { DMLog(@"[dockside] the recents' fade-in is not as read here: a recents icon is turned at its next layout"); return; }
+    MSHookMessageEx(c, sel, (IMP)DMDockFadeIn, (IMP *)&o_DockFadeIn);
+}
 static void DMDockSideChoose(void) {
     if (gDockPosition != MSBDDockBottom) {
         static BOOL installed = NO;
         if (!installed) {
             installed = YES;
             DM_FEATURE_MARK("dock-side-hooks");
+            DMDockSideHookFadeIn();
             if (objc_getClass("SBFloatingDockRootViewController")) %init(DockSideRoot);
             if ([objc_getClass("SBFloatingDockController") instancesRespondToSelector:@selector(gestureRecognizerShouldBegin:)]) %init(DockSidePointer);
             %init(DockSideTouches);
@@ -3071,8 +3107,37 @@ static void DMDockSideChoose(void) {
     }
     if (gDockPosition != MSBDDockBottom || gDockSideApplied) DMDockSideRefresh();
 }
+// ---- Edit Home Screen (1.8.3 item 5): our items as Apple's Dock icons while the Home Screen is in edit mode (EditProxy.m, EditProxyRule.h) ----
+// The Dock's own controller is told when editing starts and ends (-[SBFloatingDockViewController setEditing:animated:], 15-18): its Dock's
+// platter then covers our items with icon views of SpringBoard's own. Hooked on that exact type only.
+static void (*o_DockSetEditing)(id, SEL, BOOL, BOOL);
+static UIView *DMEditPlatterOf(UIViewController *vc) {
+    Class pc = objc_getClass("SBFloatingDockPlatterView");
+    UIView *root = [vc isViewLoaded] ? vc.view : nil;
+    NSMutableArray<UIView *> *todo = root ? [NSMutableArray arrayWithObject:root] : [NSMutableArray array];
+    while (todo.count) { UIView *v = todo.lastObject; [todo removeLastObject]; if (pc && [v isKindOfClass:pc]) return v; [todo addObjectsFromArray:v.subviews]; }
+    return nil;
+}
+static const void *kDMEditPlatterKey = &kDMEditPlatterKey;   // (on a Dock controller: its platter, weakly -- the end of editing undoes that Dock's only)
+static void DMDockSetEditing(id self, SEL _cmd, BOOL editing, BOOL animated) {
+    o_DockSetEditing(self, _cmd, editing, animated);
+    UIView *platter = DMEditPlatterOf(self);
+    NSHashTable *box = objc_getAssociatedObject(self, kDMEditPlatterKey);
+    if (platter) { box = [NSHashTable weakObjectsHashTable]; [box addObject:platter]; objc_setAssociatedObject(self, kDMEditPlatterKey, box, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
+    DMEditProxiesApply(platter ?: box.anyObject, editing, animated, gLaunchpadClassic, YES);   // (not found now: the one this controller had; the end puts back what it changed there)
+}
+static void DMEditHook(void) {
+    Class c = objc_getClass("SBFloatingDockViewController");
+    Method m = c ? class_getInstanceMethod(c, @selector(setEditing:animated:)) : NULL;
+    if (!m || strcmp(method_getTypeEncoding(m) ?: "", "v24@0:8B16B20")) { DMLog(@"[editmode] the Dock's controller is not as read here: our items stay as they are in Edit Home Screen"); return; }
+    MSHookMessageEx(c, @selector(setEditing:animated:), (IMP)DMDockSetEditing, (IMP *)&o_DockSetEditing);
+    [[NSNotificationCenter defaultCenter] addObserverForName:DMIconThemeChangedNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) {
+        DMEditProxiesThemeChangedAll();   // (SnowBoard refreshed: every editing Dock's icon views show the new pictures at once)
+    }];
+}
 %ctor {
     %init;
+    DMEditHook();
     {   // (1.7.5 items 12 / 16: a pull from the top edge is never a swipe down -- where the tongue's pull start is as on 15-18)
         Method m = class_getInstanceMethod(objc_getClass("SBGrabberTongue"), NSSelectorFromString(@"_pullGestureBegan:"));
         const char *enc = m ? method_getTypeEncoding(m) : NULL;
@@ -3130,6 +3195,15 @@ static void DMDockSideChoose(void) {
             } else if (!strcmp(word, "dots")) {   // debug (1.7.8.1): every running app as the running dot's rule reads it (RunningIndicator.m)
                 extern void DMRunningDotsDebug(void);
                 DMRunningDotsDebug();
+            } else if (!strcmp(word, "turnwatch") || !strcmp(word, "turnwatch0")) {   // debug (1.8.3 item 7): every write of a Dock icon's turn that is not ours, and who wrote it
+                extern void DMDockTurnWatch(BOOL on);
+                DMDockTurnWatch(!strcmp(word, "turnwatch"));
+            } else if (!strcmp(word, "turns")) {   // debug (1.8.3 item 7): every icon view in the Dock window, where it is, and its turn
+                extern void DMDockTurnsDump(void);
+                DMDockTurnsDump();
+            } else if (!strcmp(word, "editprobe")) {   // debug (1.8.3 item 5): each icon view of the Dock in Edit Home Screen -- its editing, jitter, location, delegate
+                extern void DMDockEditProbe(void);
+                DMDockEditProbe();
             } else if (!strcmp(word, "k2")) {   // debug (K-2): the whole Dock layout in one dump (DMK2Dump)
                 DMK2Dump();
                 DMLog([@"[k2] verdict: " stringByAppendingString:DMK2Verdict()]);
@@ -3252,3 +3326,84 @@ static void DMDockSideChoose(void) {
                                     DMPrefsChanged, DM_NOTIFY, NULL,
                                     CFNotificationSuspensionBehaviorCoalesce);
 }
+
+#if DEBUG
+// ---- debug (1.8.3 item 7): a side Dock icon left unturned (a Handoff tile at Right on Aerial, regression-1.8.2.2-m1.md F1) ----
+// turnwatch: CALayer's -setSublayerTransform: watched for the Dock window's icon views; each write that is not the turn's own (DM_TURN_OURS) is
+// logged with its value and the calls that made it. turnwatch0: off. Hooked only on the first "turnwatch": nothing of this in a release build.
+static void (*o_DMTurnWatchSet)(CALayer *, SEL, CATransform3D);
+static BOOL gDMTurnWatchOn = NO;
+static void DMTurnWatchSet(CALayer *self, SEL _cmd, CATransform3D t) {
+    o_DMTurnWatchSet(self, _cmd, t);
+    if (!gDMTurnWatchOn || gDMTurnOurs) return;
+    id d = self.delegate;
+    Class ic = objc_getClass("SBIconView");
+    if (!ic || ![d isKindOfClass:ic]) return;
+    UIView *v = d;
+    if (!v.window || ![NSStringFromClass([v.window class]) containsString:@"FloatingDock"]) return;
+    NSArray<NSString *> *calls = [NSThread callStackSymbols];
+    NSMutableString *by = [NSMutableString string];
+    for (NSUInteger i = 1; i < calls.count && i < 12; i++) [by appendFormat:@"\n    %@", calls[i]];
+    id icon = nil; @try { icon = [v valueForKey:@"icon"]; } @catch (id e) {}
+    id ident = nil; @try { ident = [icon valueForKey:@"applicationBundleID"] ?: [icon valueForKey:@"leafIdentifier"]; } @catch (id e) {}
+    DMLog([NSString stringWithFormat:@"[turnwatch] %@ (%@, %@) sublayerTransform set to {%.2f %.2f %.2f %.2f}, in the platter %d, in the host %d, by:%@", NSStringFromClass([v class]),
+           NSStringFromClass([icon class]), ident ?: @"?", t.m11, t.m12, t.m21, t.m22, DMIsDockIcon(v), DMDockSideInHost(v), by]);
+}
+void DMDockTurnWatch(BOOL on) {
+    if (on && !o_DMTurnWatchSet) MSHookMessageEx([CALayer class], @selector(setSublayerTransform:), (IMP)DMTurnWatchSet, (IMP *)&o_DMTurnWatchSet);
+    gDMTurnWatchOn = on;
+    DMLog([NSString stringWithFormat:@"[turnwatch] %@", on ? @"on: writes of a Dock icon's turn that are not ours are logged" : @"off"]);
+}
+// turns: each SBIconView (and our own icons) in the Dock window: its class, its icon's, the views up to the Dock's, whether it counts as a side Dock
+// icon, the side its turn is for, and its sublayerTransform.
+void DMDockTurnsDump(void) {
+    UIWindow *w = gDockWindow;
+    if (!w) { DMLog(@"[turns] no Dock window"); return; }
+    Class ic = objc_getClass("SBIconView");
+    NSMutableArray<UIView *> *todo = [NSMutableArray arrayWithObject:w], *icons = [NSMutableArray array];
+    while (todo.count) { UIView *v = todo.lastObject; [todo removeLastObject]; if ((ic && [v isKindOfClass:ic]) || DMDockSideIsOwnIcon(v)) [icons addObject:v]; else [todo addObjectsFromArray:v.subviews]; }
+    NSMutableString *o = [NSMutableString stringWithFormat:@"[turns] side %d, host %@: %lu icon views", gDockSideApplied, gDockSideHost ? NSStringFromClass([gDockSideHost class]) : @"none", (unsigned long)icons.count];
+    for (UIView *v in icons) {
+        id icon = nil; @try { icon = [v valueForKey:@"icon"]; } @catch (id e) {}
+        id ident = nil; @try { ident = [icon valueForKey:@"applicationBundleID"] ?: [icon valueForKey:@"leafIdentifier"]; } @catch (id e) {}
+        NSMutableString *up = [NSMutableString string];
+        for (UIView *s = v.superview; s && s != gDockSideHost; s = s.superview) [up appendFormat:@" < %@", NSStringFromClass([s class])];
+        CATransform3D t = v.layer.sublayerTransform;
+        [o appendFormat:@"\n  %@ (%@ %@) hidden %d alpha %.2f: platter %d, host %d, turn side %d, sublayer {%.2f %.2f %.2f %.2f}%@", NSStringFromClass([v class]), NSStringFromClass([icon class]), ident ?: @"-",
+         v.hidden, v.alpha, DMIsDockIcon(v), DMDockSideInHost(v), MSBDDockSideIconTurnSide(v), t.m11, t.m12, t.m21, t.m22, up];
+    }
+    DMLog(o);
+}
+// editprobe: each SBIconView (and our own icons) in the Dock window: its class, its icon's, editing, the jitter animations on its layer and its image
+// view's, its location, delegate, list layout provider, close box, superview -- what Edit Home Screen does to the Dock's icons (1.8.3 item 5).
+void DMDockEditProbe(void) {
+    UIWindow *w = gDockWindow;
+    if (!w) { DMLog(@"[editprobe] no Dock window"); return; }
+    Class ic = objc_getClass("SBIconView");
+    id mgr = DMObj(DMObj((id)objc_getClass("SBIconController"), @"sharedInstance"), @"iconManager");
+    NSMutableArray<UIView *> *todo = [NSMutableArray arrayWithObject:w], *icons = [NSMutableArray array];
+    while (todo.count) { UIView *v = todo.lastObject; [todo removeLastObject]; if ((ic && [v isKindOfClass:ic]) || DMDockSideIsOwnIcon(v)) [icons addObject:v]; [todo addObjectsFromArray:v.subviews]; }
+    BOOL editing = [mgr respondsToSelector:@selector(isEditing)] && ((BOOL (*)(id, SEL))objc_msgSend)(mgr, @selector(isEditing));
+    NSMutableString *o = [NSMutableString stringWithFormat:@"[editprobe] icon manager %@ editing %d: %lu icon views", NSStringFromClass([mgr class]), editing, (unsigned long)icons.count];
+    for (UIView *v in icons) {
+        id icon = nil, loc = nil, del = nil, prov = nil; BOOL ed = NO, allows = NO, box = NO;
+        @try { icon = [v valueForKey:@"icon"]; } @catch (id e) {}
+        @try { loc = [v valueForKey:@"location"]; } @catch (id e) {}
+        @try { del = [v valueForKey:@"delegate"]; } @catch (id e) {}
+        @try { prov = [v valueForKey:@"listLayoutProvider"]; } @catch (id e) {}
+        if ([v respondsToSelector:@selector(isEditing)]) ed = ((BOOL (*)(id, SEL))objc_msgSend)(v, @selector(isEditing));
+        SEL ae = NSSelectorFromString(@"allowsEditingAnimation"), cb = NSSelectorFromString(@"allowsCloseBox");
+        if ([v respondsToSelector:ae]) allows = ((BOOL (*)(id, SEL))objc_msgSend)(v, ae);
+        if ([v respondsToSelector:cb]) box = ((BOOL (*)(id, SEL))objc_msgSend)(v, cb);
+        UIView *img = nil; SEL iv = NSSelectorFromString(@"_iconImageView"); if ([v respondsToSelector:iv]) img = ((id (*)(id, SEL))objc_msgSend)(v, iv);
+        if (!img) { @try { id i2 = [v valueForKey:@"image"]; if ([i2 isKindOfClass:[UIView class]]) img = i2; } @catch (id e) {} }   // (our own views' picture)
+        CGRect onScreen = [v convertRect:v.bounds toView:nil], imgOnScreen = img ? [img convertRect:img.bounds toView:nil] : CGRectNull;
+        [o appendFormat:@"\n  %@ (%@) editing %d allowsEditingAnimation %d closeBox %d loc %@ delegate %@ provider %@ super %@; anims %@ / image %@; at %@, picture at %@%@",
+         NSStringFromClass([v class]), NSStringFromClass([icon class]), ed, allows, box, loc, NSStringFromClass([del class]), NSStringFromClass([prov class]), NSStringFromClass([v.superview class]),
+         [v.layer.animationKeys componentsJoinedByString:@","] ?: @"-", [img.layer.animationKeys componentsJoinedByString:@","] ?: @"-",
+         NSStringFromCGRect(CGRectIntegral(onScreen)), NSStringFromCGRect(CGRectIntegral(imgOnScreen)), v.hidden ? @" HIDDEN" : @""];
+    }
+    DMLog(o);
+}
+#endif
+

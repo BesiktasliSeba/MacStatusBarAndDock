@@ -71,9 +71,11 @@ The window settings, on their own page between Desktop and Dock. On iPadOS 15 an
 | Enable Windowing | Off: no window engine loads and every app opens full screen (respring). | On |
 | Window Engine | Which engine runs your windows. Only that one loads (respring). Apple's Stage Manager is listed under Native (not on iPadOS 15), Aerial, Zetsu and MilkyWay4 under Third-Party. With Stage Manager, MacStatusBar&Dock asks before it turns Stage Manager on, and if you say Not Now (or turn it off later), Turn On Stage Manager appears here. With another engine, Stage Manager stays off while it runs and comes back on as you had it when you turn off windowing. | Stage Manager where it runs (iPadOS 16.1 to 18), else Aerial |
 | Window Size | The size a new window opens at, with every engine: Small, Default or Large. A window that opens where it last was keeps its size. The Window menu's Small and Large are the same sizes. | Default |
+| Double-Tap a Title Bar to | What a double tap on a window's title bar does, as on a Mac, with every engine. Fill or Zoom: the window fills the desktop, and a second double tap gives it its size from before. Minimize: the window goes into its app's icon in the Dock. | Do Nothing (Finder and TextEdit windows zoom until you pick one) |
 | Windows Behind Full-Screen Apps | A full-screen app comes in front of your windows, and Window > Bring All to Front brings them back. Off: windows stay in front. | On |
 | Resize Handles (Stage Manager engine only) | Mac handles, or Stage Manager's own. | Mac |
 | Tint Resize Handles | Resize handles take a soft version of each app's color. | Off |
+| New Windows Open at Fill | New windows fill the desktop, with every engine, and Fit to Window doesn't tile them. A window that opens where it last was keeps its place. | Off |
 | Home Minimizes Windows | Swiping up from the bottom or pressing the Home button minimizes the windows of the desktop you're on, so the Home Screen shows. Opening an app brings its window back. Keyboard shortcuts for Home, such as Command-H, leave the windows as they are. Off: the windows stay when you go Home. | On, also after an update |
 | Resize Apps to Fit Windows (MilkyWay4 only) | Apps lay themselves out for the window. Off: the full-screen layout, scaled down. | On |
 | Turn Off Traffic Lights | Hides the window buttons in the menu bar for full-screen apps. | Off |
@@ -150,6 +152,13 @@ For keyboards without a function row, like the original Magic Keyboard for iPad.
 | Globe + Option/Control for Volume | Volume keys. Needs the Globe key set to Globe in Modifier Keys. | Off |
 | Shift + =/- for Screen Brightness | Screen brightness keys. | Off |
 | Shift + Option/Control for Backlight | Keyboard backlight keys, on keyboards with a backlight. | Off |
+
+At the end of the page, after Apple's Hardware Keyboard settings:
+
+| Setting | What it does | New install |
+|---|---|---|
+| Window Tiling Shortcuts | macOS 15's keys for tiling the front window, with Globe and Control held: an arrow key for that half of the screen, F to fill it, C to center the window at its own size, R to give it back the size it had before. Add Shift to arrange it with the window behind it, or Option and Shift for three windows. They work with every window engine and on Finder and TextEdit windows. On a keyboard without a Globe key, set another key to Globe in Modifier Keys. While this is on, the Globe volume keys and the backlight keys act when you let go of them. | Off |
+| KeyPilot (under Custom Shortcuts) | KeyPilot by wanghuangjie is a separate tweak for your own keyboard shortcuts for apps, window layouts and URLs. Its window layouts use MacStatusBar&Dock's windows. GET opens its page while it isn't installed, and OPEN opens it once it is. | |
 
 ## Control Center
 

@@ -75,6 +75,10 @@ The Mac look is on right after install, and most features have their own switch.
 - On iPads with a Home button, windows placed before 1.7.1 with a gap under the menu bar move up under it once.
 - Windows have a smallest size with every engine, as with Stage Manager: the app at least 320 x 300 points.
 - Window Size in Settings > Windows & Multitasking sets the size new windows open at: Small, Default or Large. New windows open and step aside from each other the same way with every engine.
+- New Windows Open at Fill in Settings > Windows & Multitasking makes new windows fill the desktop, and Fit to Window leaves them out. A window that opens where it last was keeps its place.
+- Double-Tap a Title Bar to in Settings > Windows & Multitasking picks what a double tap on a window's title bar does, as on a Mac: Fill, Zoom, Minimize or Do Nothing. After Fill or Zoom, a second double tap gives the window its size from before.
+- Window Tiling Shortcuts in Settings > Keyboard turns on macOS 15's Globe-Control keys for the front window: an arrow key for half the screen, F to fill it, C to center it and R to put it back, and Shift or Option-Shift with an arrow to arrange two or three windows. On a keyboard without a Globe key, set another key to Globe in Modifier Keys.
+- [KeyPilot](https://github.com/wanghuangjie/KeyPilot) by wanghuangjie is the companion tweak for shortcuts of your own, app launching and URL actions, and its window layouts use MacStatusBar&Dock's windows. Settings > Keyboard has a row to get or open it.
 - With Aerial, Zetsu or MilkyWay4 on iPadOS 15 to 18, every app with a window has its card in iPadOS's App Switcher, as with Stage Manager. A tap on the card brings the window forward.
 - Only the window you're using keeps a text cursor, and Esc ends typing.
 - With the Stage Manager engine on iPadOS 16 to 18, windows float over your Home Screen and stay where you put them, and on iPadOS 16 an external display gets its own Mac desktop.
@@ -111,6 +115,7 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 - Haptic Touch menus get Force Quit, App Size and Add App to Folder on app icons, and a folder's menu lists its apps. Add App to Folder moves the app into a Home Screen folder or a new one, as a drag would, also from the App Library.
 - Menus that open from the Dock and the Downloads stack sit over their icon with the Mac's arrow pointing at it.
 - On iPadOS 15 to 17, icon themes such as SnowBoard's change Finder, Launchpad, Downloads, the Trash and Activity Monitor like any app icon. The identifiers are under [For theme makers](#for-theme-makers).
+- In Edit Home Screen, Finder, Launchpad, Downloads and the Trash jiggle with the other Dock icons and don't open when tapped. On iPadOS 15 to 17, SnowBoard's double-tap menu works on them too.
 
 ### Activity Monitor and RAM & CPU
 
@@ -289,3 +294,5 @@ And thanks to these tweaks for setting the bar:
 - **Single Mute** by 82Flex, for the mute icon
 
 This tweak does not include or modify any of their files.
+
+Thanks to wanghuangjie ([KeyPilot](https://github.com/wanghuangjie/KeyPilot)) for the window API design and its first version.

@@ -705,6 +705,19 @@ static BOOL gKbBarOnly = NO;   // a hardware keyboard is attached and only the a
 #include "KeyboardDock.h"   // (MSBDOwnBarUnderDockFloor: the Dock's floor steps aside for our own fields' input bar -- plain C, tools/test-kbdock.sh)
 #include "WindowMinSize.h"   // (the smallest window of the engines, as Stage Manager's: 1.7.0 -- plain C, tools/test-winminsize.sh)
 #include "../common/WindowSize.h"   // (the size a new window opens at, Window Size, on every engine: 1.8.0 item 4 -- plain C, tools/test-windowsize.sh)
+#include "FitQuestionPlace.h"   // (where Fit to Window's questions draw: the windows' frames on every engine, 1.8.3 item 6 -- plain C, tools/test-fitpanels.sh)
+#include "WindowKeysRule.h"   // (Window Tiling Keys: macOS 15's tiling shortcuts and Return to Previous Size, 1.8.3 item 3 -- plain C, tools/test-windowkeys.sh)
+#include "../common/ModifierTap.h"   // (the volume and backlight chords beside those keys, and the switch's name -- plain C, tools/test-modifiertap.sh)
+#include "TitleBarRule.h"   // (a double tap on a window's title bar: Fill, Zoom, Minimize or nothing, as macOS's setting, 1.8.3 item 8 -- plain C, tools/test-titlebar.sh)
+static void DMTitleTapAttach(UIView *bar, int kind);   // (TitleBarTap.h, at the end: our double tap on a title bar, once)
+// (WindowKeys.h: the title bar's frame from before -- Fill's and Zoom's way back -- follows every placement of ours, TitleBarRule.h
+//  MSBDTitleRecordOnPlace, and is dropped by a move or a resize by hand: review 1.8.3 P4-1)
+static void DMTitleRecordEngineTo(UIView *v, CGRect to);
+static void DMTitleRecordSMTo(NSString *key, id stage, CGRect to);
+static void DMTitleRecordSMPlan(NSDictionary *plan, id stage);
+static void DMTitleRecordMovedView(UIView *v);
+static void DMTitleRecordMovedSM(NSString *key);
+static void DMTitleTapSettingChanged(void);   // (TitleBarTap.h: the setting changed -- the engines' own bar double taps off or back on with it)
 #include "WindowSnap.h"      // (window snapping on every engine, 1.7.3 item 3 -- plain C, tools/test-windowsnap.sh; the glue: DMSnapMoveEnded)
 #include "../common/DockSide.h"   // (Settings > Dock > Position, 1.8.2: the Dock at a screen side -- plain C, tools/test-dockside.sh)
 #include "TurnPlace.h"       // (one turn rule, Fit's spread and the saved frames across engines, 1.7.4 items 4, 5, 7, 11, 14 -- plain C, tools/test-turnplace.sh)
@@ -3406,6 +3419,7 @@ static BOOL DMMilkyWayTakeAskedFrame(NSString *bundleID, CGRect *frame) {
 static CGRect DMFitInto(CGRect f, CGRect usable);
 static CGRect DMLayoutFrame(NSString *name);
 static CGRect DMNewWindowFrame(void);   // (where a new window opens, at Window Size's size: defined with the layouts)
+static CGRect DMOpeningWindowFrame(void);   // (... or at Fill with New Windows Open at Fill: defined with it)
 static void DMMarkOwnPlace(UIView *stage, CGRect frame);   // (1.7.5 item 13: opened at its own last place, DMCascadeStage)
 static BOOL DMEnlargeNewWindow(UIView *window) {
     CGSize screen = [UIScreen mainScreen].bounds.size;
@@ -3424,7 +3438,7 @@ static BOOL DMEnlargeNewWindow(UIView *window) {
     CGRect usable = remembered ? DMLayoutFrame(@"fill") : CGRectNull;
     CGRect big = pending ? gPendingWindowFrame
                : (remembered && !CGRectIsNull(usable)) ? DMFitInto(remembered.CGRectValue, usable)
-               : DMNewWindowFrame();
+               : DMOpeningWindowFrame();   // (Window Size's window, or Fill: New Windows Open at Fill)
     if (CGRectIsNull(big) || CGRectIsEmpty(big)) return NO;
     if (remembered && !pending) DMMarkOwnPlace(window, big);
     if (CGRectEqualToRect(window.frame, big)) return NO;
@@ -4138,6 +4152,7 @@ static CGPoint DMPanDownPointOnScreen(UIPanGestureRecognizer *g, UIWindow *w, CG
         DM_FEATURE_MARK("zetsu-corner-min-size");
         if (!self.atMinimum) { self.atMinimum = YES; DMLog([NSString stringWithFormat:@"[minsize] %@: the corner stops at the smallest a window may be (%@)", DMZetsuWindowBundle(w), NSStringFromCGSize(f.size)]); }
     }
+    if (g.state == UIGestureRecognizerStateEnded) DMTitleRecordMovedView(w);   // (a resize by hand: the title bar's frame from before is older, P4-1)
     if (g.state == UIGestureRecognizerStateEnded) f = DMSnapEngineWindow(w, f, (self.left ? MSBDSnapLeft : MSBDSnapRight) | MSBDSnapBottom);   // (1.7.3 item 3: let go, its two sides line up with what is near)
     [UIView performWithoutAnimation:^{ w.frame = f; [w layoutIfNeeded]; DMZetsuFitStack(w); }];
     {   // (iPad 2, 2026-09-24) the app follows the drag every 0.1 s (the 0.2 s watcher alone left a strip of Zetsu's grey at the moving edge)
@@ -4293,6 +4308,7 @@ static void DMZetsuInstallLights(UIWindow *w) {
         objc_setAssociatedObject(w, kZetsuLightsKey, lights, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     if (lights.superview != menu) [menu addSubview:lights];
+    DMTitleTapAttach(menu, kDMTitleZetsu);   // (its top bar's double tap ours: TitleBarTap.h)
     lights.frame = CGRectMake(4.0, round((menu.bounds.size.height - lights.bounds.size.height) / 2.0), lights.bounds.size.width, lights.bounds.size.height);
     [menu bringSubviewToFront:lights];
     if ([toolbar isKindOfClass:[UIView class]]) for (NSString *k in @[@"close_menu", @"mini_menu", @"killapp_menu"]) {
@@ -4340,7 +4356,7 @@ static void DMZetsuAdopt(UIWindow *w) {
     CGRect tile = CGRectNull;   // (Fit's third window asked about before its launch: it opens in its tile, and the cascade applies the choice, 1.8.1 item 13)
     BOOL inTile = !asked && DMPreSideTileFor(bundleID, &tile);
     if (inTile) lastPlace = nil;
-    CGRect target = asked ? askedFrame : (inTile ? tile : (lastPlace ? lastPlace.CGRectValue : DMNewWindowFrame()));
+    CGRect target = asked ? askedFrame : (inTile ? tile : (lastPlace ? lastPlace.CGRectValue : DMOpeningWindowFrame()));   // (or Fill: New Windows Open at Fill)
     DMLog([NSString stringWithFormat:@"[zetsu] new window for %@ at %@ -> %@%@%@", bundleID, NSStringFromCGRect(w.frame), NSStringFromCGRect(target), asked ? @" (asked for)" : (inTile ? @" (its tile: asked before its launch)" : @""), gRestoringWindowsFlag() ? @" (being restored)" : @""]);
     DMZetsuInstallLights(w);
     DMZetsuSyncAppOrientation(w);
@@ -7054,6 +7070,7 @@ static CGRect DMSnapEngineWindow(UIView *st, CGRect window, unsigned how) {
 // the app's place updated, then remembered), and the windows' state is saved again.
 static void DMSnapMoveEngineTo(UIView *st, CGRect s);
 static void DMSnapMoveEnded(UIView *st) {
+    DMTitleRecordMovedView(st);   // (a move by hand: the title bar's frame from before is older, P4-1)
     if (!st || (DMSnapOff() && !DMDockSideKeepsOut())) return;
     CGRect w = DMSnapWindowOf(st);
     if (CGRectIsNull(w) || CGRectIsEmpty(w)) return;
@@ -7716,6 +7733,18 @@ static CGRect DMWindowSlotInArea(NSString *name, CGRect u, CGSize screen) {
 // (DMNoFitFrame); our Stage Manager engine the same through DMSMNewWindowFrameIn (DMSMJoinAttributes). Default (never written): the middle place as
 // before; Small and Large: common/WindowSize.h. A window back where it last was keeps that place (1.7.5 item 13): it is never asked for here.
 static int gWindowSizeChoice = MSBDWindowSizeDefault;   // (the stored windowSize: DMLoadPrefs)
+// New Windows Open at Fill (Settings > Windows & Multitasking, 1.8.3 item 2; KeyPilot's author's design, off unless switched on): a window that
+// opens without a place of its own opens at the Fill layout instead of Window Size's size, applied where it joins or is adopted (the windowed launch,
+// Aerial's cascade, Zetsu's and MilkyWay4's new window, the Stage Manager join), never on a layout pass; Fit to Window leaves it out (no side
+// question). common/WindowSize.h MSBDNewWindowAtFill.
+static BOOL gNewWindowsFill = NO;   // (the stored newWindowsFill: DMLoadPrefs)
+// Window Tiling Keys (Settings > Keyboard, 1.8.3 item 3, off unless switched on): WindowKeys.h, at the end.
+static BOOL gWindowKeysOn = NO;   // (the stored windowTilingKeys: DMLoadPrefs)
+static void DMWindowKeysApply(void);
+static void DMWindowKeysPublish(void);   // (WindowKeys.h: the keys offered or not, for the volume and backlight chords)
+static void DMKeyPilotOpenWatch(void);   // (WindowAPI.h: Settings' KeyPilot OPEN, when Settings cannot open the app)
+// Double-Tap a Title Bar to (Settings > Windows & Multitasking, 1.8.3 item 8): TitleBarRule.h / TitleBarTap.h. Never set: Zoom, as macOS.
+static int gTitleDoubleTap = kMSBDTitleNeverSet;   // (the stored titleBarDoubleTap: DMLoadPrefs; never set: nothing on app windows, Zoom on ours, TitleBarRule.h)
 static CGRect DMNewWindowFrameWindow(void) {   // (the whole window, our title bar on top, on the iPad's screen)
     if (gWindowSizeChoice == MSBDWindowSizeDefault) return DMLayoutFrameWindow(@"center");
     DM_FEATURE_MARK("window-size-open");
@@ -7727,11 +7756,44 @@ static CGRect DMNewWindowFrameWindow(void) {   // (the whole window, our title b
     return MSBDWindowSizeFrameIn(gWindowSizeChoice, u, scr, DMCenterTopFor(scr), MSBDWindowMinSize());
 }
 static CGRect DMNewWindowFrame(void) { return DMA5StageFromWindow(DMNewWindowFrameWindow()); }   // (the engine's frame: Aerial 5.x's stage, else the window)
+// Where a window that opens with no place of its own goes (the engine's frame): Window Size's window, or the Fill layout with New Windows Open at Fill
+// (common/WindowSize.h MSBDNewWindowAtFill). The windowed launch, the green light's way back for a window that never had a place, Aerial's cascade,
+// Zetsu's and MilkyWay4's new window; Stage Manager's join: DMSMJoinAttributes. Window Size's other uses (No Fit's window, a window put back at
+// the standard place) stay Window Size's.
+static CGRect DMOpeningWindowFrame(void) {
+    if (!MSBDNewWindowAtFill(gNewWindowsFill, false, false)) return DMNewWindowFrame();
+    DM_FEATURE_MARK("new-windows-fill");
+    return DMLayoutFrame(@"fill");
+}
 // Puts the active app's window at a layout, smoothly. A window slides and resizes there; a full-screen app is first turned into
 // a window (the usual green-button transition) that opens straight at that place and size.
 static NSMutableArray<NSString *> *gFitGroup = nil;   // apps whose windows Fit to Window tiles, newest first (at most four)
 static NSMutableDictionary<NSString *, NSString *> *gFitSlots = nil;   // bundle id -> the slot (layout name) of its tile
 static void DMFitGroupForget(NSString *bundleID) { if (bundleID.length) { [gFitGroup removeObject:bundleID]; [gFitSlots removeObjectForKey:bundleID]; } }
+// The same with the Stage Manager engine, for a window placed by the user (a Window menu layout, the window keys, the window API, a title bar's
+// double tap): its tile goes and it is a regular window over the tiles, as the other engines leave it (gSMFitLoose: Fit keeps it where it was put
+// at a turn or a minimize, and it joins the tiles again with the next window that opens with room -- SMFitPlan.h DMSMFitTakingPart, the other
+// engines' DMCascadeStage rule: every open window takes part, also one given a layout by hand). The other tiles keep theirs. Before, Fit put it
+// back into its old tile at its next look: Clock tiled left with Globe-Control-Left was in its Fit half on the right again after a turn (iPad 2,
+// 16.7.7, 7 Nov); and then (review 1.8.3 P2-1) it was made a No Fit window for good, which the next window left out. A No Fit window stays one.
+// A key of the app's (its front window not known): the app's newest window, the one the layout moved -- not every window of the app.
+static NSString *DMSMWindowKeyOf(NSString *key) {
+    if (!DMSMKeyIsApp(key)) return key;
+    id it = DMSMItemFor(DMSMStageOf(key), key, nil);
+    NSString *k = it ? DMSMItemKey(it) : nil;
+    return k.length ? k : key;
+}
+static void DMSMFitLetGo(NSString *key) {
+    if (!key.length || !DMFitEnabled()) return;
+    key = DMSMWindowKeyOf(key);
+    if (DMSMKeySetHas(gSMFreeWindows, key)) return;   // (No Fit's: it stays out)
+    BOOL tiled = NO;
+    for (NSString *k in [gSMFitSlots allKeys]) if ([k isEqualToString:key] || DMSMKeyCovers(k, key)) { [gSMFitSlots removeObjectForKey:k]; tiled = YES; }
+    if (DMSMKeySetHas(gSMFitLoose, key)) return;
+    if (!gSMFitLoose) gSMFitLoose = [NSMutableSet set];
+    [gSMFitLoose addObject:key];
+    DMLog([NSString stringWithFormat:@"[sm] Fit to Window: %@ placed by the user -- %@a regular window over the tiles, it joins them again with the next window that opens", DMSMKeyText(key), tiled ? @"out of its tile, " : @""]);
+}
 // The default slots for n windows, newest first: two are the halves, three are a left half with the right half split, four are the quarters.
 static NSArray<NSString *> *DMDefaultSlotNames(NSUInteger n) { return MSBDFitDefaultTiles(n); }   // (FitPlan.h: one list with the rule)
 // The group tiled afresh in the default tiles, newest first, no tile kept: Fit to Window switched on with windows open (DMTileOpenWindows), a
@@ -7803,6 +7865,7 @@ static BOOL DMWorkspaceIdle(void) {
     SEL s = NSSelectorFromString(@"currentTransaction");
     return !ws || ![ws respondsToSelector:s] || !((id (*)(id, SEL))objc_msgSend)(ws, s);
 }
+static void DMWinPrevNoteActive(NSString *bundleID, NSString *smKey);   // (WindowAPI.h: Return to Previous Size's record of the window's frame before a tile)
 static void DMWindowLayout(NSString *name) {
     CGRect target = DMLayoutFrame(name);
     SBApplication *app = DMActiveApp();
@@ -7817,6 +7880,12 @@ static void DMWindowLayout(NSString *name) {
         DMLog([NSString stringWithFormat:@"[fullscreenonly] %@ cannot live in a window: layout %@ ignored, it stays full screen", bundleID, name]);
         return;
     }
+    // (Return to Previous Size, the window keys' Globe-Control-R: a window tiled from no tile keeps its frame from before -- WindowAPI.h; not the
+    //  green light's way back)
+    if (!gPreferRememberedFrame && MSBDWinIsTileName(name.UTF8String)) {
+        NSString *k = DMSMEngine() ? DMSMFrontWindowKey() : nil;
+        DMWinPrevNoteActive(bundleID, k && [DMSMKeyBundle(k) isEqualToString:bundleID] ? k : bundleID);
+    }
     if (DMSMEngine()) {   // Stage Manager: the window's place in the stage (the frame is the whole window; the card is below our title bar)
         NSString *smKey = DMSMFrontWindowKey();   // (the active app's front window: that window, M-2)
         if (![DMSMKeyBundle(smKey) isEqualToString:bundleID]) smKey = bundleID;
@@ -7824,7 +7893,9 @@ static void DMWindowLayout(NSString *name) {
         CGRect w = DMSMLayoutFrameIn(name, DMSMUsableAreaForStage(DMSMStageOf(smKey), &scr), scr);   // (on the screen its stage is on: the iPad or the TV)
         if (CGRectIsNull(w) || scr.width < 1.0 || scr.height < 1.0) return;
         CGRect c = CGRectMake(w.origin.x, w.origin.y + kSMBarH, w.size.width, w.size.height - kSMBarH);
+        DMTitleRecordSMTo(smKey, DMSMStageOf(smKey), w);   // (a placement of ours: the title bar's frame from before follows it, P4-1)
         BOOL ok = DMSMSetWindowGeometry(smKey, CGPointMake(CGRectGetMidX(c) / scr.width, CGRectGetMidY(c) / scr.height), CGSizeMake(c.size.width / scr.width, c.size.height / scr.height));
+        if (ok) DMSMFitLetGo(smKey);   // (placed by a layout of its own: no longer part of the tiling, as below)
         DMLog([NSString stringWithFormat:@"[sm] layout %@ for %@ -> window %@ (%@)", name, bundleID, NSStringFromCGRect(w), ok ? @"done" : @"not in the stage"]);
         return;
     }
@@ -7834,12 +7905,13 @@ static void DMWindowLayout(NSString *name) {
     // window" (gPreferRememberedFrame) returns it to its tile.
     if (!gPreferRememberedFrame) DMFitForgetFullScreenTile(bundleID);
     // (the green light: where the window last was, else where a new window opens -- Window Size, DMNewWindowFrame: the middle place at Default)
-    if (gPreferRememberedFrame) target = gLastWindowFrames[bundleID] ? gLastWindowFrames[bundleID].CGRectValue : DMNewWindowFrame();
+    if (gPreferRememberedFrame) target = gLastWindowFrames[bundleID] ? gLastWindowFrames[bundleID].CGRectValue : DMOpeningWindowFrame();   // (or Fill: New Windows Open at Fill)
     if (DMActiveEngine() == DMEngineZetsu) {   // a Zetsu window slides there; a full-screen app is turned into a window that opens there
         UIWindow *zw = DMZetsuWindowFor(bundleID);
         DMLog([NSString stringWithFormat:@"[window] Zetsu layout %@ for %@ -> %@ (%@)", name, bundleID, NSStringFromCGRect(target), zw ? @"moving its window" : @"opening a window"]);
         if (zw && !DMStageMinimized(zw)) {
             if (DMFrontApp()) { gWindowsPinnedForward = YES; DMApplyWindowLevel(); }
+            DMTitleRecordEngineTo(zw, target);   // (as above)
             DMZetsuMove(zw, target, YES, ^{ DMLog([NSString stringWithFormat:@"[window] Zetsu layout done, window %@", NSStringFromCGRect(zw.frame)]); });
         } else if ([[DMFrontApp() bundleIdentifier] isEqualToString:bundleID]) {
             // (asked for -- kept there, left out of the cascade and of Fit to Window's tiles -- only at a place that is the user's: a layout picked
@@ -7856,6 +7928,7 @@ static void DMWindowLayout(NSString *name) {
         UIView *stage = DMStageForBundle(bundleID);
         DMLog([NSString stringWithFormat:@"[window] Aerial layout %@ for %@ -> %@ (%@)", name, bundleID, NSStringFromCGRect(target), stage ? @"moving its stage" : @"opening a stage"]);
         if (stage) {
+            DMTitleRecordEngineTo(stage, target);   // (as above)
             DMAerialMoveStage(stage, target, ^{ DMLog([NSString stringWithFormat:@"[window] Aerial layout done, stage %@", NSStringFromCGRect(stage.frame)]); });
             // (held like the fly-in: Aerial's own late re-placement of a window reaching past the screen's edges is undone before it is drawn)
             if (gAerialFlavor == 5 && !DMTestFlag("/tmp/msb-a5-nohold")) DMA5HoldStageAt(stage, target, CACurrentMediaTime() + 1.5);
@@ -7914,6 +7987,7 @@ static void DMWindowLayout(NSString *name) {
     }
 #endif
     if (window && !DMWindowMinimized(window)) {
+        DMTitleRecordEngineTo(window, target);   // (as above)
         [window.superview bringSubviewToFront:window];
         if (DMFrontApp()) { gWindowsPinnedForward = YES; DMApplyWindowLevel(); }
         DMShowMilkyWayVeil(window);   // Window menu layouts (Fill/Center/halves/...) are exactly the "grey bars" case: cover the content while it catches up
@@ -8205,6 +8279,7 @@ static char kMWDownKey, kMWWatchedKey, kMWOffsetKey;
         DMMWKeepMinSize(win);   // (never smaller than a window may be, the catch-up included; before 1.7.0: not applied below 200 x 150)
         DMMWKeepStepRecord(win);   // (and MilkyWay's record of the step not smaller than the window: above)
     }
+    if (g.state == UIGestureRecognizerStateEnded) DMTitleRecordMovedView(win);   // (a resize by hand: the title bar's frame from before is older, P4-1)
     if (g.state == UIGestureRecognizerStateEnded && !DMSnapOff()) {   // (1.7.3 item 3: let go, the handle's two sides -- right, bottom -- line up with what is near)
         UIScreen *scr = DMSnapScreenOf(win);
         CGRect w = [win.superview convertRect:win.frame toCoordinateSpace:scr.coordinateSpace];
@@ -8270,6 +8345,7 @@ static void DMRestyleWindowButtons(AXWindowView *w) {
         BOOL dark = DMSystemInterfaceStyle() == UIUserInterfaceStyleDark;
         if ([bar isKindOfClass:[UIView class]]) bar.backgroundColor = dark ? [UIColor colorWithWhite:0.19 alpha:1.0] : [UIColor colorWithWhite:0.91 alpha:1.0];
         if ([bar isKindOfClass:[UIView class]]) [DMMWResizeCatchUp watchTitleBar:bar];
+        DMTitleTapAttach(bar, kDMTitleMilkyWay);   // (its double tap ours, MilkyWay4's own switched off: TitleBarTap.h)
         if ([label isKindOfClass:[UIView class]]) { label.hidden = YES; label.alpha = 0.0; }
     } @catch (id e) {}
     NSArray *names = @[@"closeButton", @"minButton", @"maxButton"];
@@ -8996,6 +9072,7 @@ static void DMFitRejoinAfterFullScreen(NSString *bundleID) {
     for (NSString *b in g) {   // the others move back into their tiles (the returning window is already flying into its own)
         UIView *st = DMStageForBundle(b); CGRect f = DMSlotFrame(b);
         if (!st || CGRectIsNull(f) || (flying && st == back)) continue;
+        DMTitleRecordEngineTo(st, f);   // (as Fit's other placements, P4-1)
         DMAerialMoveStage(st, f, nil);
     }
     gMoveKeepsOrder = NO;
@@ -9005,6 +9082,7 @@ static void DMFitRejoinAfterFullScreen(NSString *bundleID) {
             if (!st || CGRectIsNull(f) || ![gFitGroup containsObject:bundleID]) return;
             if (fabs(f.origin.x - st.frame.origin.x) <= 1.0 && fabs(f.origin.y - st.frame.origin.y) <= 1.0 && fabs(f.size.width - st.frame.size.width) <= 1.0) return;
             DMLog([NSString stringWithFormat:@"[fit] %@ landed at %@, not in its tile: moved into it", bundleID, NSStringFromCGRect(st.frame)]);
+            DMTitleRecordEngineTo(st, f);   // (as Fit's other placements, P4-1)
             gMoveKeepsOrder = YES; DMAerialMoveStage(st, f, nil); gMoveKeepsOrder = NO;
         });
     }
@@ -9232,6 +9310,7 @@ static void DMApplyGroupSlots(UIView *fresh) {
             // picked ~1 s after the prompt opened left the window in the middle, M1 and iPad 2, logic test 1.0.6. A Zetsu window's too: the passes that put
             // its windows back at their place after an unlock read it (DMZetsuAfterUnlock), and a launch Fit's question held as the screen went off slides
             // the tiles just then: the two old tiles went back to their old frames, the new window under one of them, 1.8.1 regression)
+            DMTitleRecordEngineTo(s, f);   // (Fit to Window's placement: the title bar's frame from before follows it, P4-1)
             DMSetStageIntent(s, f);
             DMAerialMoveStage(s, f, nil);
         }
@@ -9287,7 +9366,7 @@ static void DMApplySideChoice(UIView *stage, NSString *newBundle, NSString *left
     if ([side isEqualToString:@"none"]) {   // No Fit: the window goes to the middle, the two tiles stay
         DMMarkFreeWindow(newBundle);
         CGRect c = DMNoFitFrame();
-        if (stage && !CGRectIsNull(c)) { DMSetStageIntent(stage, c); DMAerialMoveStage(stage, c, nil); }
+        if (stage && !CGRectIsNull(c)) { DMSetStageIntent(stage, c); DMTitleRecordEngineTo(stage, c); DMAerialMoveStage(stage, c, nil); }   // (as Fit's other placements, P4-1)
         return;
     }
     DMSetSideChoiceGroup(newBundle, leftBundle, rightBundle, side);
@@ -9345,6 +9424,13 @@ static const void *kStageOwnPlaceKey = &kStageOwnPlaceKey;   // (1.7.5 item 13: 
 static void DMMarkOwnPlace(UIView *stage, CGRect frame) {
     if (stage && !CGRectIsNull(frame)) objc_setAssociatedObject(stage, kStageOwnPlaceKey, [NSValue valueWithCGRect:frame], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
+// Opens at a place of its own: we hold where its window last was (gLastWindowFrames, kept until the app quits). New Windows Open at Fill asks it
+// before the launch (Fit's side question, DMThirdWindowSides) and as the window comes (DMCascadeStage's Fill decision): one answer on every engine
+// (review 1.8.3 F5: Aerial 3.0's cascade took its window with a last place for one without, so it opened at Fill out of Fit, where the question
+// before had counted it in). Only that decision: the cascade's own place stays 1.8.2.2's (review P2-4). Zetsu's and MilkyWay4's adoption records the
+// new place as it moves the window, so the cascade reads their own-place mark, made from this same record before the move (DMMarkOwnPlace). Stage
+// Manager's own: DMSMOpensAtOwnSize.
+static BOOL DMOpensAtOwnPlace(NSString *bundleID) { return bundleID.length && gLastWindowFrames[bundleID] != nil; }
 static void DMMarkStagePlaced(UIView *stage, CGRect frame) {
     if (!stage) return;
     objc_setAssociatedObject(stage, kStageCascadedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -9403,14 +9489,14 @@ static void DMCascadeStage(UIView *stage) {
                     && fabs(ownMark.CGRectValue.size.width - base.size.width) <= 1.0 && fabs(ownMark.CGRectValue.size.height - base.size.height) <= 1.0;
     // (Aerial 3.0 opens the window of an icon tap at its own size -- nothing of ours asked for it: at Window Size's Small or Large it gets that size
     //  here, as on 5.x; at Default, and where we last had its window, it stays as 3.0 has always opened it)
-    BOOL a3Sized = gAerialFlavor == 3 && DMActiveEngine() == DMEngineAerial && gWindowSizeChoice != MSBDWindowSizeDefault && !gLastWindowFrames[me];
+    BOOL a3Sized = gAerialFlavor == 3 && DMActiveEngine() == DMEngineAerial && (gWindowSizeChoice != MSBDWindowSizeDefault || gNewWindowsFill) && !gLastWindowFrames[me];
     if ((gAerialFlavor == 5 || a3Sized) && !preLaunched) {
         NSValue *remembered = gLastWindowFrames[me];
         if (remembered) ownPlace = YES;
-        CGRect want = remembered ? DMFitInto(remembered.CGRectValue, usable) : DMNewWindowFrame();   // (where a new window opens: Window Size)
+        CGRect want = remembered ? DMFitInto(remembered.CGRectValue, usable) : DMOpeningWindowFrame();   // (where a new window opens: Window Size, or Fill)
         if (!CGRectIsNull(want) && (fabs(want.size.width - base.size.width) > 4.0 || fabs(want.size.height - base.size.height) > 4.0 || fabs(want.origin.x - base.origin.x) > 4.0 || fabs(want.origin.y - base.origin.y) > 4.0)) {
             DMLog([NSString stringWithFormat:@"[cascade] %@: Aerial %@ opened it at its own place %@, moved to %@ %@", me, a3Sized ? @"3.0" : @"5.x", NSStringFromCGRect(base),
-                   remembered ? @"where we last had it" : [NSString stringWithFormat:@"where a new window opens (Window Size %s)", MSBDWindowSizeName(gWindowSizeChoice)], NSStringFromCGRect(want)]);
+                   remembered ? @"where we last had it" : gNewWindowsFill ? @"Fill (New Windows Open at Fill)" : [NSString stringWithFormat:@"where a new window opens (Window Size %s)", MSBDWindowSizeName(gWindowSizeChoice)], NSStringFromCGRect(want)]);
             gStageFrameBypass = YES;
             [UIView performWithoutAnimation:^{ DMSetStageFrameSafe(stage, want); [stage layoutIfNeeded]; }];
             gStageFrameBypass = NO;
@@ -9419,6 +9505,27 @@ static void DMCascadeStage(UIView *stage) {
         }
     }
 
+    // New Windows Open at Fill (1.8.3 item 2, common/WindowSize.h): a window that opens with no place of its own is at Fill -- the launch asked for it
+    // there; one an engine opened elsewhere by itself (MilkyWay4's own, Aerial 3.0's at its size) is put there now, before it is drawn --, and Fit to
+    // Window leaves it out: no side question, no tile taken from the others; a free window as No Fit's is. A place of its own here is also, on
+    // Aerial, a last place we hold (DMOpensAtOwnPlace), as the question before the launch counts it (review 1.8.3 F5) -- for this decision only:
+    // the cascade below keeps 1.8.2.2's own place (review P2-4: Aerial 3.0 does not reopen a window at our last frame, so holding one is no sign
+    // that it stands there; with the new switches off the cascade is 1.8.2.2's).
+    if (MSBDNewWindowAtFill(gNewWindowsFill, ownPlace || (DMActiveEngine() == DMEngineAerial && DMOpensAtOwnPlace(me)), preLaunched)) {
+        DM_FEATURE_MARK("new-windows-fill-adopt");
+        if (fabs(base.origin.x - usable.origin.x) > 1.0 || fabs(base.origin.y - usable.origin.y) > 1.0 || fabs(base.size.width - usable.size.width) > 1.0 || fabs(base.size.height - usable.size.height) > 1.0) {
+            if (DMIsZetsuWindow(stage)) DMZetsuMove((UIWindow *)stage, usable, NO, nil);
+            else {
+                gStageFrameBypass = YES;
+                [UIView performWithoutAnimation:^{ DMSetStageFrameSafe(stage, usable); [stage layoutIfNeeded]; }];
+                gStageFrameBypass = NO;
+            }
+        }
+        if (!DMIsZetsuWindow(stage)) DMSetStageIntent(stage, usable);
+        if (fitOn) DMMarkFreeWindow(me);
+        DMLog([NSString stringWithFormat:@"[cascade] %@ opens at Fill %@ (New Windows Open at Fill%@)", me, NSStringFromCGRect(usable), fitOn ? @"; Fit to Window leaves it out" : @""]);
+        return;
+    }
     if (fitOn && [gFreeWindows containsObject:me]) goto regularWindow;   // (a free window, No Fit)
     if (fitOn) {
         if (!gFitGroup) gFitGroup = [NSMutableArray array];
@@ -9624,6 +9731,7 @@ static void DMStyleStage(UIView *stage) {
         objc_setAssociatedObject(stage, kStageLightsKey, lights, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [stage addSubview:lights];
     }
+    DMTitleTapAttach(stage, kDMTitleAerial);   // (Aerial 3.0's title strip: its double tap, TitleBarTap.h)
     lights.frame = CGRectMake(4.0, 0, 3 * kLightCell, kStageBarHeight);
     [stage bringSubviewToFront:lights];
     if ([objc_getAssociatedObject(stage, kStageDropKey) boolValue]) {   // the lights arrive from the status bar
@@ -10850,7 +10958,7 @@ static void DMSpreadFitGroup(void) {
     if (CGRectIsNull(size) || CGRectIsEmpty(u)) return;
     for (NSUInteger i = 0; i < stages.count; i++) {   // (TurnPlace.h: the same spread as the Stage Manager engine's, DMSMSpreadFit)
         CGRect f = MSBDSpreadFrame((int)i, (int)stages.count, u, size.size);
-        if (!CGRectIsNull(f)) DMAerialMoveStage(stages[i], f, nil);
+        if (!CGRectIsNull(f)) { DMTitleRecordEngineTo(stages[i], f); DMAerialMoveStage(stages[i], f, nil); }   // (as Fit's other placements, P4-1)
     }
     // stacked like a Mac cascade: the oldest at the back, the newest in front, so each older window shows its own title bar above the next one
     SEL front = DMAerialSel(@"_bringStageToFrontIfNeeded");
@@ -12320,6 +12428,7 @@ static BOOL DMAerialPanBefore(UIView *stage, UIPanGestureRecognizer *g) {
 static void DMAerialGestureAfter(UIView *stage, UIGestureRecognizerState s, BOOL wasPan) {
     if (s == UIGestureRecognizerStateEnded || s == UIGestureRecognizerStateCancelled || s == UIGestureRecognizerStateFailed) {
         objc_setAssociatedObject(stage, kStageGestureKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (s == UIGestureRecognizerStateEnded) DMTitleRecordMovedView(stage);   // (a move or a resize by hand: the title bar's frame from before is older, P4-1)
         if (wasPan && s == UIGestureRecognizerStateEnded) {   // (1.7.3 item 3: let go, it lines up with what is near -- the desktop's edges, the windows around)
             if (DMA5MacGeometry() && stage.frame.origin.y < DMTopLimit()) { CGRect f = stage.frame; f.origin.y = DMTopLimit(); stage.frame = f; }   // (under the bar first, as -dragTrace: keeps it)
             DMSnapMoveEnded(stage);
@@ -12496,6 +12605,7 @@ static BOOL DMThirdWindowSides(NSString *bundleID, NSString **leftOut, NSString 
     DMEngine engine = DMActiveEngine();
     if (!bundleID.length || (engine != DMEngineAerial && engine != DMEngineZetsu && engine != DMEngineMilkyWay) || !DMFitEnabled() || DMStageForBundle(bundleID) || DMAppNeedsFullScreen(bundleID)) return NO;
     if (gSidePromptCtx && ![gSidePromptCtx[@"decided"] boolValue]) return NO;   // (a question is already up)
+    if (!MSBDFitTakesOpening(YES, MSBDNewWindowAtFill(gNewWindowsFill, DMOpensAtOwnPlace(bundleID), NO))) return NO;   // (it opens at Fill: Fit leaves it out, no question)
     NSMutableArray<UIView *> *open = [NSMutableArray array];
     for (UIView *st in DMAerialStages()) if (DMStageTakesPartInFit(st) && ![DMStageBundle(st) isEqualToString:bundleID]) [open addObject:st];
     if (open.count != 2) return NO;
@@ -17034,7 +17144,7 @@ static BOOL DMWindowedLaunch(NSString *bundleID) {
         DMDismissLibraryForWindow(bundleID);
         return YES;
     }
-    CGRect target = DMNewWindowFrame();   // (where a new window opens: Window Size -- Aerial 5.x's own remembered frame is corrected by DMCascadeStage)
+    CGRect target = DMOpeningWindowFrame();   // (where a new window opens: Window Size, or Fill -- Aerial 5.x's own remembered frame is corrected by DMCascadeStage)
     if (CGRectIsNull(target)) { [gWindowLaunchUntil removeObjectForKey:bundleID]; return NO; }
     if (DMAerialWarmStartIfNeeded(bundleID)) { DMDismissLibraryForWindow(bundleID); return YES; }
     DMLog([NSString stringWithFormat:@"[windowed] open %@ as an Aerial window", bundleID]);
@@ -17081,7 +17191,7 @@ BOOL DMAerialWarmStartIfNeeded(NSString *bundleID) {
     extern void DMWhenAppDrawn(NSString *bundleID, BOOL needFront, double timeout, void (^done)(BOOL ready));
     DMWhenAppDrawn(bundleID, YES, 5.0, ^(BOOL drawn) {
         if (![[DMFrontApp() bundleIdentifier] isEqualToString:bundleID]) { finish(@"not in front after 5 s: left as it is"); return; }
-        CGRect target = gLastWindowFrames[bundleID] ? gLastWindowFrames[bundleID].CGRectValue : DMNewWindowFrame();
+        CGRect target = gLastWindowFrames[bundleID] ? gLastWindowFrames[bundleID].CGRectValue : DMOpeningWindowFrame();   // (or Fill: New Windows Open at Fill)
         DMLog([NSString stringWithFormat:@"[windowed] %@: in front and %@ after %.2f s; now into a window at %@", bundleID, drawn ? @"drawn" : @"(timed out waiting for its first frame)", CACurrentMediaTime() - began, NSStringFromCGRect(target)]);
         void (^open)(void) = ^{
             DMAerialTrigger(bundleID, target);
@@ -17994,6 +18104,7 @@ static NSUInteger DMNativeVisibleWindowCount(void) {
     return n;
 }
 static void DMMinimizeAllWindows(void);
+static void DMNativeLayout(DMNativeWindow *w, NSString *name);   // (WindowAPI.h: one of the Window menu's layouts for one of our windows)
 // The Window menu while a native window is active: Minimize / Zoom / Minimize All Windows, the same layouts as for app windows (placed in the
 // desktop above the Dock), and the native windows by name -- a minimized one comes back from here.
 static void DMOpenNativeWindowMenu(UIButton *btn) {
@@ -18010,13 +18121,7 @@ static void DMOpenNativeWindowMenu(UIButton *btn) {
     for (NSArray *sec in sections) {
         for (NSArray *e in sec) {
             NSString *name = e[1];
-            [items addObject:R(e[0], nil, ^{
-                CGRect f = DMLayoutFrameInArea(name, DMNativeDesktop(), [UIScreen mainScreen].bounds.size);
-                if (CGRectIsNull(f) || CGRectIsEmpty(f)) return;
-                w.restoreFrame = CGRectNull;
-                w.layoutName = [name isEqualToString:@"center"] ? nil : name;   // (kept for a turn: DMNativeRelayoutForTurn)
-                MSBAnimate(0.2, 0, 0, UIViewAnimationOptionCurveEaseOut, ^{ w.frame = f; }, nil);
-            })];
+            [items addObject:R(e[0], nil, ^{ DMNativeLayout(w, name); })];   // (WindowAPI.h: also the window API's and the window keys')
         }
         [items addObject:[NSNull null]];
     }
@@ -18379,8 +18484,10 @@ static void DMOpenGoMenu(UIButton *btn) {
 // ---- "which side?" for a third window ----------------------------------------------------------------------------------------------------
 // Two windows each cover a side of the screen and a third one opens: the two halves light up as targets, over the dimmed screen, and one tap picks the
 // side the new window goes on (that side is split in two, the new window on top). Tapping elsewhere, or waiting, uses the default arrangement.
+// (a panel is where the window goes: the window's own frame for that layout, as every engine draws it -- FitQuestionPlace.h; Aerial 5.x's larger
+//  stage made its panels 6 pt wider at each side and 9 pt taller than Stage Manager's, 1.8.3 item 6)
 static UIControl *DMSidePanel(NSString *side, NSString *title, NSString *subtitle) {
-    CGRect f = CGRectInset(DMLayoutFrame(side), 12.0, 12.0);
+    CGRect f = MSBDFitQuestionPanel(DMLayoutFrameWindow(side));
     UIControl *panel = [[UIControl alloc] initWithFrame:f];
     panel.layer.cornerRadius = 24.0; panel.layer.cornerCurve = kCACornerCurveContinuous;
     panel.layer.borderWidth = 2.0; panel.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.35].CGColor;
@@ -18534,12 +18641,12 @@ static void DMShowSidePrompt(NSMutableDictionary *ctx, BOOL rebuilt) {
     UILabel *q = [UILabel new]; q.text = [NSString stringWithFormat:@"Where should %@ go?", newName]; q.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold]; q.textColor = [UIColor labelColor];
     q.accessibilityTraits = UIAccessibilityTraitHeader;
     [q sizeToFit];
-    CGRect usable = DMLayoutFrame(@"fill");
+    CGRect usable = DMLayoutFrameWindow(@"fill");   // (the windows' desktop, as the panels: FitQuestionPlace.h)
     CGFloat pillW = q.bounds.size.width + 44.0, pillX = (host.bounds.size.width - pillW) / 2.0;
     // (Settings > Dock > Position: the panels stand in the desktop beside a side Dock, and the title over their seam, No Fit's middle -- centred on the screen it was
     //  26 to 34 pt off it, over one panel, M1 F2 / A12Z F7, 1.8.2.2. At the bottom the seam is the screen's middle: as before.)
     if (!DMIsExtMenuHost(host) && DMDockSideNow([UIScreen mainScreen].bounds.size)) pillX = MSBDDockSideTitleX(noFit.center.x, pillW, host.bounds.size.width, 12.0);
-    pill.frame = CGRectMake(pillX, usable.origin.y + 16.0, pillW, 40.0);
+    pill.frame = CGRectMake(pillX, MSBDFitQuestionTitleY(usable), pillW, 40.0);
     pill.layer.cornerRadius = 20.0; pill.clipsToBounds = YES; pill.userInteractionEnabled = NO;
     q.frame = CGRectMake(22.0, 0, q.bounds.size.width, 40.0);
     [pill.contentView addSubview:q]; [o addSubview:pill];
@@ -18631,7 +18738,7 @@ static BOOL DMSwapAvailable(BOOL horizontal) {
 static void DMSwapWindows(BOOL horizontal) {
     if (DMSMEngine()) {
         NSMutableDictionary *plan = [NSMutableDictionary dictionary];
-        if (DMSMSwapPlan(horizontal, plan)) DMSMApplyLayouts(plan);
+        if (DMSMSwapPlan(horizontal, plan)) { DMTitleRecordSMPlan(plan, DMSMWorkingStage()); DMSMApplyLayouts(plan); }   // (each a placement of ours, P4-1)
         return;
     }
     NSMutableArray<UIView *> *stages = [NSMutableArray array]; NSMutableArray<NSString *> *slots = [NSMutableArray array];
@@ -18639,6 +18746,7 @@ static void DMSwapWindows(BOOL horizontal) {
     gMoveKeepsOrder = YES;
     for (NSUInteger i = 0; i < stages.count; i++) {
         NSString *b = DMStageBundle(stages[i]);
+        DMTitleRecordEngineTo(stages[i], DMLayoutFrame(slots[i]));   // (a placement of ours, P4-1)
         DMAerialMoveStage(stages[i], DMLayoutFrame(slots[i]), nil);
         if (gFitGroup && [gFitGroup containsObject:b]) { if (!gFitSlots) gFitSlots = [NSMutableDictionary dictionary]; gFitSlots[b] = slots[i]; }
     }
@@ -18709,6 +18817,7 @@ static void DMApplyHalfQuarterSwap(UIView *half, NSString *halfSlot, UIView *qua
     if (!half || !quarter) return;
     gMoveKeepsOrder = YES;
     NSString *hb = DMStageBundle(half), *qb = DMStageBundle(quarter);
+    DMTitleRecordEngineTo(half, DMLayoutFrame(quarterSlot)); DMTitleRecordEngineTo(quarter, DMLayoutFrame(halfSlot));   // (placements of ours, P4-1)
     DMAerialMoveStage(half, DMLayoutFrame(quarterSlot), nil);
     DMAerialMoveStage(quarter, DMLayoutFrame(halfSlot), nil);
     if (gFitGroup) {
@@ -18725,7 +18834,7 @@ static void DMSwapHalfWithQuarter(void) {
     if (DMSMEngine()) {
         if (!DMSMHalfQuarterPlan(&halfB, &halfSlot, &quarterBs, &slots)) return;
         NSString *hb = halfB, *hs = halfSlot; NSArray *qb = quarterBs, *qs = slots;
-        apply = ^(NSInteger i) { DMSMApplyLayouts(@{hb: qs[i], qb[i]: hs}); };
+        apply = ^(NSInteger i) { NSDictionary *plan = @{hb: qs[i], qb[i]: hs}; DMTitleRecordSMPlan(plan, DMSMWorkingStage()); DMSMApplyLayouts(plan); };   // (placements of ours, P4-1)
     } else {
         UIView *half = nil; NSArray<UIView *> *quarters = nil;
         if (!DMHalfQuarterPlan(&half, &halfSlot, &quarters, &slots)) return;
@@ -18756,11 +18865,11 @@ static void DMSwapHalfWithQuarter(void) {
     UILabel *q = [UILabel new]; q.text = [NSString stringWithFormat:@"Which app should trade places with %@?", halfName]; q.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold]; q.textColor = [UIColor labelColor];
     q.accessibilityTraits = UIAccessibilityTraitHeader;
     [q sizeToFit];
-    CGRect usable = DMLayoutFrame(@"fill");
+    CGRect usable = DMLayoutFrameWindow(@"fill");   // (the windows' desktop, as the panels: FitQuestionPlace.h)
     CGFloat pillW = q.bounds.size.width + 44.0, pillX = (host.bounds.size.width - pillW) / 2.0;
     // (beside a side Dock over the desktop's middle, as the side question's title: DMShowSidePrompt)
     if (!DMIsExtMenuHost(host) && DMDockSideNow([UIScreen mainScreen].bounds.size)) pillX = MSBDDockSideTitleX(CGRectGetMidX(usable), pillW, host.bounds.size.width, 12.0);
-    pill.frame = CGRectMake(pillX, usable.origin.y + 16.0, pillW, 40.0);
+    pill.frame = CGRectMake(pillX, MSBDFitQuestionTitleY(usable), pillW, 40.0);
     pill.layer.cornerRadius = 20.0; pill.clipsToBounds = YES; pill.userInteractionEnabled = NO;
     q.frame = CGRectMake(22.0, 0, q.bounds.size.width, 40.0);
     [pill.contentView addSubview:q]; [o addSubview:pill];
@@ -21993,6 +22102,23 @@ static void DMLoadPrefs(void) {
         if (size != gWindowSizeChoice) DMLog([NSString stringWithFormat:@"[winsize] Window Size: %s (new windows from now on)", MSBDWindowSizeName(size)]);
         gWindowSizeChoice = size;
     }
+    {   // New Windows Open at Fill (Windows & Multitasking, 1.8.3 item 2) and Window Tiling Keys (Keyboard, item 3): off unless switched on
+        BOOL fill = NO, keys = NO;
+        CFPropertyListRef fr = CFPreferencesCopyValue(CFSTR(kMSBDNewWindowsFillKey), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        if (fr) { if (CFGetTypeID(fr) == CFBooleanGetTypeID()) fill = CFBooleanGetValue(fr); CFRelease(fr); }
+        CFPropertyListRef kr = CFPreferencesCopyValue(CFSTR(kMSBDWindowKeysKey), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        if (kr) { if (CFGetTypeID(kr) == CFBooleanGetTypeID()) keys = CFBooleanGetValue(kr); CFRelease(kr); }
+        if (fill != gNewWindowsFill) DMLog([NSString stringWithFormat:@"[winsize] New Windows Open at Fill %@", fill ? @"on" : @"off"]);
+        if (keys != gWindowKeysOn) DMLog([NSString stringWithFormat:@"[winkeys] Window Tiling Keys %@", keys ? @"on" : @"off"]);
+        CFPropertyListRef tr = CFPreferencesCopyValue(CFSTR(kMSBDTitleDoubleTapKey), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        int title = MSBDTitleActionFromStored(tr && CFGetTypeID(tr) == CFStringGetTypeID() ? [(__bridge NSString *)tr UTF8String] : NULL);
+        if (tr) CFRelease(tr);
+        BOOL titleChanged = title != gTitleDoubleTap;
+        if (titleChanged) DMLog([NSString stringWithFormat:@"[titlebar] Double-Tap a Title Bar to: %s", MSBDTitleActionName(title)]);
+        gNewWindowsFill = fill; gWindowKeysOn = keys; gTitleDoubleTap = title;
+        DMWindowKeysApply();
+        if (titleChanged) DMTitleTapSettingChanged();
+    }
     {   // Resize Handles (Stage Manager engine): ours (default) or Stage Manager's own
         CFPropertyListRef hs = CFPreferencesCopyValue(CFSTR("resizeHandleStyle"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
         gSMAppleHandles = hs && CFGetTypeID(hs) == CFStringGetTypeID() && [(__bridge NSString *)hs isEqualToString:@"stagemanager"];
@@ -24831,6 +24957,10 @@ static BOOL DMSafeRead(uintptr_t addr, void *out, size_t len) {
     return vm_read_overwrite(mach_task_self(), (vm_address_t)addr, (vm_size_t)len, (vm_address_t)out, &got) == KERN_SUCCESS && got == len;
 }
 static void DMRunTrigger(NSString *cmd);
+#if DEBUG
+static void DMWindowAPITestCall(NSString *what);   // (WindowAPI.h: the window API called as KeyPilot calls it)
+static void DMWindowKeysDebug(NSString *cmd);      // (WindowKeys.h)
+#endif
 static NSArray<NSDictionary *> *gSpotItems;   // (SpotlightBridge.h, for the spot* triggers)
 static uint64_t gSpotGen;
 static CFTimeInterval gSpotWrittenAt;
@@ -28392,6 +28522,10 @@ static void DMRunTrigger(NSString *cmd) {
         }
         DMFakeResize(dx, dy);
     }
+#if DEBUG
+    else if ([cmd hasPrefix:@"kpapi_"]) DMWindowAPITestCall([cmd substringFromIndex:6]);   // kpapi_<layout|null|home|env|offmain_<layout>|syms>: the window API called as KeyPilot calls it (WindowAPI.h)
+    else if ([cmd isEqualToString:@"winkeys"] || [cmd hasPrefix:@"winkey_"]) DMWindowKeysDebug(cmd);   // winkeys / winkey_<n>: Window Tiling Keys (WindowKeys.h)
+#endif
     else if ([cmd hasPrefix:@"winlayout_"]) DMWindowLayout([cmd substringFromIndex:10]);   // winlayout_<name>: fill/center/left/right/top/bottom/topleft/topright/bottomleft/bottomright/small/large — the same thing the Window menu rows do, for testing the Sileo queue bug's full-screen->windowed repro
     else if ([cmd isEqualToString:@"cards"]) {   // cards: the App Switcher's card list from every place it can be read (read-only)
         id co = DMSwitcherController();
@@ -30920,6 +31054,8 @@ static void DMRunTrigger(NSString *cmd) {
         }
     }
     else if ([cmd hasPrefix:@"openapp_"]) DMOpenApp([cmd substringFromIndex:8]);   // openapp_<bundle>: open an app the way our menus do (debug)
+    else if ([cmd hasPrefix:@"openfull_"]) DMOpenFullScreen([cmd substringFromIndex:9]);   // openfull_<bundle>: open an app full screen, not in a window (debug: the window API's environment 3)
+    else if ([cmd hasPrefix:@"prewarmforget_"]) DMPrewarmQuitClear([cmd substringFromIndex:14]);   // prewarmforget_<bundle>: off the prewarm quit set (debug: a test's leftover)
     else if ([cmd hasPrefix:@"fopen_"]) [DMFinderFront() dm_openNamed:[cmd substringFromIndex:6]];   // fopen_<name>: open that item in the front Finder window, as a double click (debug)
     else if ([cmd isEqualToString:@"fview"]) [DMFinderFront() dm_toggleView];
     else if ([cmd hasPrefix:@"fdo_"]) [DMFinderFront() dm_debugDo:[cmd substringFromIndex:4]];   // fdo_<action>[:<arg>]: a file operation in the front Finder window (Finder.h -dm_debugDo:)
@@ -32652,6 +32788,7 @@ static char kA5MinWatchedKey, kA5MinDragKey, kA5MinFirstKey;   // (kA5MinFirstKe
     // (1.7.3 item 3: as the finger lifts, the corner's two sides line up with what is near -- the desktop's edges, the windows around --, the same
     //  way: the offset of Aerial's last step, so the frame it ends at and the size it gives the app from inside its own handler are the snapped ones.
     //  Behind Aerial's step -- its targets could not be read -- the frame is put there after it instead.)
+    if (s == UIGestureRecognizerStateEnded) DMTitleRecordMovedView(stage);   // (a resize by hand: the title bar's frame from before is older, P4-1)
     if (s == UIGestureRecognizerStateEnded && !DMSnapOff()) {
         BOOL left = [drag[@"left"] boolValue];
         CGPoint fin = [g locationInView:stage.superview], o = *co;
@@ -33281,6 +33418,7 @@ static void DMA5DragFollow(UIView *stage, UIPanGestureRecognizer *g, BOOL began)
 }
 @end
 static void DMAerial5DragGuard(UIView *stage) {
+    DMTitleTapAttach(stage, kDMTitleAerial);   // (its title strip's double tap: TitleBarTap.h; once)
     UIPanGestureRecognizer *drag = DMA5AerialDrag(stage);
     if (!drag) return;
     if (!objc_getAssociatedObject(drag, @selector(dragTrace:))) { [drag addTarget:[DMA5DragGuard shared] action:@selector(dragTrace:)]; objc_setAssociatedObject(drag, @selector(dragTrace:), @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
@@ -35143,6 +35281,7 @@ static void DMTickBody(void) {
     DM_PERF("t-today", DMWatchTodayView());
     { static int n = 0; if (++n % 10 == 1 && DMProcessAge() > 8.0) DMApplyHomeScreenTodayPage(); }   // (~every 2 s once SpringBoard is up: the Home Screen may be rebuilt)
     if (gHomeMinimizes && DMProcessAge() > 8.0) DMHomeAwayScanKeys();   // (once: SpringBoard's other Home key commands, Globe-H's, marked as Cmd-H's)
+    DMWindowKeysPublish();   // (Window Tiling Keys offered or not, told to the volume and backlight chords when it changes: the engine settles after a respring)
     static BOOL engineLogged = NO;   // once per SpringBoard start: which engine is picked, and which engine libraries really loaded (engine exclusivity check)
     if (!engineLogged && CACurrentMediaTime() > 0) {
         engineLogged = YES;
@@ -40078,10 +40217,14 @@ static BOOL gSMSkipFitAsk = NO;   // (the launch after the Fit question: not ask
 // it opened while the question was up and could end up behind the two tiles, needing another tap in the Dock (iPad 2, 29 Sep).
 // (the stage's windows that take part, as the other engines count them: a No Fit window there is none -- with one on the desktop the third window
 //  was tiled without the question, where Aerial, Zetsu and MilkyWay4 ask; a regular window over the tiles is one, it joins with the new one)
+static BOOL DMSMOpensAtOwnSize(NSString *key);   // (below, with the join)
 static BOOL DMSMFitAsksAbout(NSString *bundle, NSArray<NSString *> *stageKeys, NSString **leftOut, NSString **rightOut) {
     NSUInteger takingPart = 0;
     for (NSString *k in stageKeys) if (!DMSMKeySetHas(gSMFreeWindows, k)) takingPart++;
     if (gSMSkipFitAsk || !DMFitEnabled() || takingPart != 2 || gSMFitSlots.count != 2 || DMSMKeySetHas(gSMFreeWindows, bundle) || gSMFitPending[bundle] || (gSidePromptCtx && ![gSidePromptCtx[@"decided"] boolValue])) return NO;   // (gSMFitPending: asked already, its launch on the way)
+    // (New Windows Open at Fill: a window with no size of its own opens at Fill, which Fit leaves out: no question, as on the other engines,
+    //  DMThirdWindowSides -- the very answer its join gives, DMSMOpensAtOwnSize)
+    if (!MSBDFitTakesOpening(YES, MSBDNewWindowAtFill(gNewWindowsFill, DMSMOpensAtOwnSize(bundle), NO))) return NO;
     NSString *leftB = nil, *rightB = nil;   // (the two tiled windows' keys)
     for (NSString *k in stageKeys) { NSString *slot = gSMFitSlots[k]; if ([slot isEqualToString:@"left"]) leftB = k; else if ([slot isEqualToString:@"right"]) rightB = k; }
     if (!leftB || !rightB) return NO;
@@ -40115,7 +40258,7 @@ static void DMSMFitAskThen(NSString *bundle, NSString *leftB, NSString *rightB, 
         __block void (^wait)(void);
         void (^w)(void) = ^{
             if ([DMSMWindowBundles() containsObject:newB]) {
-                if (DMSMKeySetHas(gSMFreeWindows, newB)) { id st = DMSMFrontStage(); DMSMApplyPlacesIn(@{newB: DMSMNoFitPlace(st)}, st); }   // (newB: the app's newest window = the new one; the middle place, or Window Size's window)
+                if (DMSMKeySetHas(gSMFreeWindows, newB)) { id st = DMSMFrontStage(); DMTitleRecordSMPlan(@{newB: DMSMNoFitPlace(st)}, st); DMSMApplyPlacesIn(@{newB: DMSMNoFitPlace(st)}, st); }   // (newB: the app's newest window = the new one; the middle place, or Window Size's window)
                 else DMSMFitTick(YES);
                 wait = nil; return;
             }
@@ -40287,6 +40430,24 @@ static BOOL DMSMRequestWindow(NSString *key, id attrs, long policy) {
 // keeps its size. So the attributes a window had before Zoom are kept, and the second press puts them back into the stage (the switcher model's
 // replaceAppLayout:withAppLayout:) and asks for the window again. A window maximized before we saw it gets the size of another, un-maximized window.
 static NSMutableDictionary<NSString *, id> *gSMPreZoom;   // (window key -> its attributes before full screen)
+// A Stage Manager window's own attributes to open with: its own last window's (one made full screen by our green button: its window from before).
+static id DMSMOwnAttrsFor(NSString *key, BOOL windowed, id *ownItemOut) {
+    id own = nil;
+    id ownItem = DMSMItemFor(DMSMStageOf(key), key, &own);
+    if (ownItemOut) *ownItemOut = ownItem;
+    NSString *preKey = DMSMKeyLookup(gSMPreZoom, ownItem ? DMSMItemKey(ownItem) : key);
+    if (own && DMSMAttrsFullScreen(own) && windowed && preKey) own = gSMPreZoom[preKey];   // (full screen by our green button: its window size from before)
+    return own;
+}
+// ... a size of its own in them: a window's (not full screen), one Stage Manager can give (not one it works out itself, type 3).
+static BOOL DMSMAttrsOwnSize(id attrs) {
+    DMSMAttributedSize sz = { CGSizeZero, CGRectZero, 0 };
+    return attrs && !DMSMAttrsFullScreen(attrs) && DMSMAttrAttributedSize(attrs, &sz) && sz.type != 3 && sz.normalizedSize.width > 0 && sz.normalizedSize.height > 0;
+}
+// A window opens at a size of its own (Stage Manager): else where a new window opens, Window Size's window or Fill. One answer before the launch
+// (Fit's side question, DMSMFitAsksAbout) and as it joins (DMSMJoinAttributes): review 1.8.3 F5 -- the question counted a full-screen window's size
+// from before, or a size Stage Manager works out itself, otherwise than the join did.
+static BOOL DMSMOpensAtOwnSize(NSString *key) { return DMSMAttrsOwnSize(DMSMOwnAttrsFor(key, YES, NULL)); }
 static void DMSMForgetApp(NSString *bundle) {   // (the app quit: its windows' places from before full screen go -- every window of it)
     bundle = DMSMKeyBundle(bundle);
     if (!bundle.length) return;
@@ -40376,11 +40537,8 @@ static id DMSMJoinAttributes(NSString *key, id frontAttrs, BOOL windowed, long n
     // (key: the joining window -- its own last place is that window's; a NEW window of an app (a second scene) has none and is cascaded, it no
     //  longer opens exactly on the app's other window; an app key: the app's newest window's, as before)
     NSString *bundle = DMSMKeyBundle(key) ?: key;
-    id own = nil;
-    id ownStage = DMSMStageOf(key);
-    id ownItem = DMSMItemFor(ownStage, key, &own);
-    NSString *preKey = DMSMKeyLookup(gSMPreZoom, ownItem ? DMSMItemKey(ownItem) : key);
-    if (own && DMSMAttrsFullScreen(own) && windowed && preKey) own = gSMPreZoom[preKey];   // (full screen by our green button: its window size from before)
+    id ownItem = nil;
+    id own = DMSMOwnAttrsFor(key, windowed, &ownItem);   // (full screen by our green button: its window size from before)
     id base = (own && (!DMSMAttrsFullScreen(own) || !windowed)) ? own : (frontAttrs ?: own);   // (no front window: its own attributes, re-made a window below)
     if (!base) {   // (nothing to start from -- an app with no stage left, on an empty desktop: new attributes, the default window below)
         base = DMSMAttrNew();
@@ -40390,15 +40548,17 @@ static id DMSMJoinAttributes(NSString *key, id frontAttrs, BOOL windowed, long n
     // (what Stage Manager has, read through the checked wrappers: a size or center it can't give sensibly counts as none -- the default window)
     DMSMAttributedSize sz = { CGSizeZero, CGRectZero, 0 };
     CGPoint c = CGPointMake(0.5, 0.48);
-    BOOL haveSize = DMSMAttrAttributedSize(base, &sz), haveCenter = DMSMAttrCenter(base, &c);
+    (void)DMSMAttrAttributedSize(base, &sz);   // (read: whether it is a size of its own is DMSMAttrsOwnSize's, below)
+    BOOL haveCenter = DMSMAttrCenter(base, &c);
     if (!haveCenter) c = CGPointMake(0.5, 0.48);
     long policy = windowed ? 0 : 2;
     if (!windowed) { sz.normalizedSize = CGSizeMake(1.0, 1.0); sz.type = 3; c = CGPointMake(0.5, 0.5); }
     else {
         // (no size of its own -- nothing to start from, a full-screen window's, a size Stage Manager works out itself, or a window joining a desktop
         //  that has a front window (base is then the front window's): it opens where a new window opens on every engine, below)
-        BOOL dflt = !haveSize || DMSMAttrsFullScreen(base) || sz.type == 3 || sz.normalizedSize.width <= 0 || sz.normalizedSize.height <= 0;
-        BOOL fresh = dflt || base != own;
+        // (base is own exactly when own is a window's: then fresh is own's size unusable; else base is the front window's, a new one, or a full-screen
+        //  one -- fresh. The one predicate the side question asks before the launch: DMSMOpensAtOwnSize)
+        BOOL fresh = !DMSMAttrsOwnSize(own);
         // Worked out in points of the screen it joins and handed over as fractions of THAT screen, its reference set to it. Stage Manager reads a size
         // as a fraction of the reference rectangle kept WITH the attributes, and this used to set the reference only when there was none: the default
         // window, meant for the screen as it is, kept the full-screen attributes' portrait reference in landscape and came out 461 x 737 pt in the
@@ -40416,21 +40576,29 @@ static id DMSMJoinAttributes(NSString *key, id frontAttrs, BOOL windowed, long n
                 // DMCascadeStage moves Aerial's, Zetsu's and MilkyWay4's by (common/WindowSize.h MSBDWindowCascadeIn). Until 1.8.0 Stage Manager had a
                 // default of its own (60% x 72% of the screen) and gave a window joining a desktop the front window's size, cascaded 5% x 6% of the
                 // screen from the front window's centre until clear of every window's centre (1.3.5 logic test M1: on the front window's spot only).
-                CGRect opening = DMSMNewWindowFrameIn(u, scr);
+                // New Windows Open at Fill (1.8.3 item 2): the Fill layout instead, not moved on (it is the desktop), and Fit to Window leaves it out --
+                // a free window as No Fit's (DMSMFitTick), as on the other engines (DMCascadeStage).
+                BOOL atFill = MSBDNewWindowAtFill(gNewWindowsFill, false, false);
+                CGRect opening = atFill ? DMSMLayoutFrameIn(@"fill", u, scr) : DMSMNewWindowFrameIn(u, scr);
                 if (CGRectIsNull(opening)) return nil;   // (no desktop to open it in -- never seen: Stage Manager's own launch, as for attributes refused)
                 CGRect others[32]; int n = 0;
                 NSDictionary *sm = DMSMStageItemsMap(stage);
                 for (id it in sm) {   // (every other window of the desktop -- the app's other windows too; a full-screen one is no window there, as on the others)
-                    if (n >= 32 || it == ownItem || DMSMKeyCovers(key, DMSMItemKey(it)) || DMSMAttrsFullScreen(sm[it])) continue;
+                    if (atFill || n >= 32 || it == ownItem || DMSMKeyCovers(key, DMSMItemKey(it)) || DMSMAttrsFullScreen(sm[it])) continue;
                     CGRect o = DMSMWindowFrameOfAttrs(sm[it], scr);
                     if (!CGRectIsNull(o)) others[n++] = o;
                 }
                 int how = MSBDCascadeStays;
-                CGRect placed = MSBDWindowCascadeIn(opening, others, n, u, NO, &how);
+                CGRect placed = atFill ? opening : MSBDWindowCascadeIn(opening, others, n, u, NO, &how);
                 if (how != MSBDCascadeStays && how != MSBDCascadeNoRoom) DM_FEATURE_MARK("sm-window-cascade-engines");
-                DMLog([NSString stringWithFormat:@"[smjoin] %@: no size of its own -- Window Size %s at %@%@", bundle, MSBDWindowSizeName(gWindowSizeChoice), NSStringFromCGRect(opening),
+                if (atFill) {
+                    DM_FEATURE_MARK("new-windows-fill-sm");
+                    if (DMFitEnabled()) { if (!gSMFreeWindows) gSMFreeWindows = [NSMutableSet set]; [gSMFreeWindows addObject:key]; }
+                }
+                DMLog([NSString stringWithFormat:@"[smjoin] %@: no size of its own -- %@ at %@%@%@", bundle, atFill ? @"Fill (New Windows Open at Fill)" : [NSString stringWithFormat:@"Window Size %s", MSBDWindowSizeName(gWindowSizeChoice)], NSStringFromCGRect(opening),
                        how == MSBDCascadeStays ? @"" : how == MSBDCascadeNoRoom ? @" (over another window: no clear place, kept there)"
-                       : [NSString stringWithFormat:@", over another window: moved %@ step %d to %@", how > 0 ? @"down and right" : @"up and left", abs(how), NSStringFromCGRect(placed)]]);
+                       : [NSString stringWithFormat:@", over another window: moved %@ step %d to %@", how > 0 ? @"down and right" : @"up and left", abs(how), NSStringFromCGRect(placed)],
+                       atFill && DMFitEnabled() ? @"; Fit to Window leaves it out" : @""]);
                 CGRect card = MSBDWindowCardOf(placed, kSMBarH);   // (the card: under our title bar)
                 pts = card.size; cp = CGPointMake(CGRectGetMidX(card), CGRectGetMidY(card));
             }
@@ -40745,6 +40913,7 @@ static BOOL DMSMSnapMoveTarget(NSString *key, UIView *card, CGPoint t, CGPoint *
         [self addGestureRecognizer:pan];
         UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(dm_tap:)];
         [self addGestureRecognizer:tap];
+        DMTitleTapAttach(self, kDMTitleSM);   // (a double tap: Fill, Zoom, Minimize or nothing, as the setting says -- TitleBarTap.h)
         __weak DMSMTitleBar *weakSelf = self;   // (grey on an inactive window, symbols on hover or press: the shared light behaviour)
         NSMutableArray *dots = [NSMutableArray array];
         for (UIButton *b in ls) [dots addObject:b.subviews.firstObject];
@@ -40808,6 +40977,7 @@ static BOOL DMSMSnapMoveTarget(NSString *key, UIView *card, CGPoint t, CGPoint *
     if (g.state == UIGestureRecognizerStateChanged) card.transform = CGAffineTransformMakeTranslation(t.x, t.y);
     if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) {
         gSMDragUntil = CACurrentMediaTime() + 1.0;
+        DMTitleRecordMovedSM(w);   // (a move by hand: the title bar's frame from before is older, P4-1)
         {   // (put behind the Dock by hand, or not: recorded now, not guessed later from sizes -- logic review R2)
             UIScreen *scn = card.window.screen ?: [UIScreen mainScreen];
             CGRect onScreen = [card convertRect:card.bounds toCoordinateSpace:scn.coordinateSpace];
@@ -41760,6 +41930,7 @@ static void DMSMFitTick(BOOL force) {
             }
             // (laid out for another screen shape -- the iPad turned while SpringBoard restarted: the same tiles, laid out for this screen)
             NSDictionary<NSString *, NSString *> *tiles = DMSMFitTilesFromPlaces(map, items, bundles);
+            if (tiles) DMTitleRecordSMPlan(tiles, DMSMFrontStage());   // (Fit to Window's placements: the title bar's frame from before follows them, P4-1)
             if (tiles && DMSMApplyLayoutsIn(tiles, DMSMFrontStage())) {
                 DM_FEATURE_MARK("sm-fit-respring-turned");
                 gSMFitSlots = [tiles mutableCopy]; lastSet = set;
@@ -41825,6 +41996,7 @@ static void DMSMFitTick(BOOL force) {
             NSMutableDictionary<NSString *, NSString *> *plan = [NSMutableDictionary dictionary];
             for (NSString *b in bundles) plan[b] = gSMFitSlots[b];
             DMLog([NSString stringWithFormat:@"[sm] Fit to Window: %lu minimized window(s) keep their tiles -- the %lu on screen keep theirs", (unsigned long)(gSMFitSlots.count - bundles.count), (unsigned long)bundles.count]);
+            DMTitleRecordSMPlan(plan, DMSMFrontStage());   // (as above)
             DMSMApplyLayoutsIn(plan, DMSMFrontStage());
             return;
         }
@@ -41857,6 +42029,7 @@ static void DMSMFitTick(BOOL force) {
         }
         if (one && gSMFitSlots.count == 1 && [gSMFitSlots[one] isEqualToString:@"fill"]) {
             DMLog([NSString stringWithFormat:@"[sm] Fit to Window: %@ fills the space (the desktop's only tiled window)", DMSMKeyText(one)]);
+            DMTitleRecordSMPlan(@{ one: @"fill" }, DMSMFrontStage());   // (as above: one window at Fill, the frame it had is its way back)
             DMSMApplyLayoutsIn(@{ one: @"fill" }, DMSMFrontStage());
         }
         return;
@@ -41883,7 +42056,7 @@ static void DMSMFitTick(BOOL force) {
                 if ([side isEqualToString:@"none"]) {   // No Fit: in the middle, left out of Fit to Window; the two tiles stay
                     if (!gSMFreeWindows) gSMFreeWindows = [NSMutableSet set];
                     [gSMFreeWindows addObject:newB];
-                    { id st = DMSMFrontStage(); DMSMApplyPlacesIn(@{newB: DMSMNoFitPlace(st)}, st); }   // (the middle place, or Window Size's window)
+                    { id st = DMSMFrontStage(); DMTitleRecordSMPlan(@{newB: DMSMNoFitPlace(st)}, st); DMSMApplyPlacesIn(@{newB: DMSMNoFitPlace(st)}, st); }   // (the middle place, or Window Size's window)
                     DMLog([NSString stringWithFormat:@"[sm] Fit to Window: %@ free in the middle (No Fit)", newB]);
                     return;
                 }
@@ -41921,6 +42094,7 @@ static void DMSMFitTick(BOOL force) {
     }
     if (how == DMSMFitDefault) gSMFitSlots = [plan mutableCopy];
     DMLog([NSString stringWithFormat:@"[sm] Fit to Window: %lu windows tiled%@", (unsigned long)plan.count, how == DMSMFitKept ? @" (the chosen arrangement)" : @""]);
+    DMTitleRecordSMPlan(plan, DMSMFrontStage());   // (as Fit's other placements, P4-1)
     DMSMApplyLayoutsIn(plan, DMSMFrontStage());   // (the iPad's desktop, the one counted above)
 }
 // Fit to Window switched off (1.7.4 item 4, TurnPlace.h): the tiled windows of the desktop on screen spread back to a normal window size, as with our
@@ -41967,6 +42141,7 @@ static void DMSMSpreadFit(int tries) {
         if (k && !CGRectIsNull(f)) plan[k] = [NSValue valueWithCGRect:f];
     }
     DM_FEATURE_MARK("sm-fit-off-spread");
+    DMTitleRecordSMPlan(plan, stage);   // (as Fit's other placements, P4-1)
     BOOL ok = DMSMApplyPlacesIn(plan, stage);
     DMLog([NSString stringWithFormat:@"[sm] Fit to Window off: %lu windows back to a normal size, spread apart (%@)", (unsigned long)plan.count, ok ? @"asked" : @"refused"]);
 }
@@ -44321,6 +44496,7 @@ void DMSMRunAction(UIAction *action, id sender) {
     if (!DMCtorSkip("autohide")) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMAutoHideStart(); });   // auto-hiding status bar (off by default)
     { int t = 0; notify_register_dispatch("com.besiktasliseba.macstatusbaranddock.opendownloadsfrom", &t, dispatch_get_main_queue(), ^(int tok) {   // the Dock's "Downloads From…"
         DMOpenSettingsLink(@"prefs:root=DOCK_MAGNIFICATION&path=DOWNLOADS"); }); }
+    DMKeyPilotOpenWatch();   // (Settings > Keyboard's KeyPilot row: its OPEN, when Settings cannot open the app itself -- WindowAPI.h)
     { int t = 0; if (notify_register_check("com.besiktasliseba.macstatusbar.alive", &t) == NOTIFY_STATUS_OK) notify_set_state(t, (uint64_t)getpid()); }   // heartbeat: MacSettings' root helper (sshtoggled) sees Mac Status Bar is running (see its "switched off" check)
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, DMPrefsChanged, MSB_NOTIFY, NULL,
                                     CFNotificationSuspensionBehaviorCoalesce);
@@ -44335,3 +44511,8 @@ void DMSMRunAction(UIAction *action, id sender) {
 #endif
         DMEnsureLogo(0); DMTick(); });
 }
+
+// The window API (1.8.3 item 1: KeyPilot's bridge, V1) and Window Tiling Keys (item 3), at the end: they use the engines' helpers above.
+#include "WindowAPI.h"
+#include "WindowKeys.h"
+#include "TitleBarTap.h"

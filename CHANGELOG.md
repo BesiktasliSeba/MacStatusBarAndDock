@@ -2,6 +2,26 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.3
+
+### New
+- Window Tiling Shortcuts in Settings > Keyboard, off until you turn it on: macOS 15's Globe-Control keys tile the front window, such as Globe-Control-Left for the left half or Globe-Control-F to fill the screen.
+- The shortcuts use the Globe key. On a keyboard without one, set another key to Globe in Modifier Keys on the same page.
+- New Windows Open at Fill in Settings > Windows & Multitasking: new windows fill the desktop, and Fit to Window doesn't tile them. Off until you turn it on.
+- Double-Tap a Title Bar to in Settings > Windows & Multitasking: pick Fill, Zoom or Minimize, as on a Mac, and a double tap on a window's title bar does it with every engine. It starts at Do Nothing.
+- Other tweaks can now tile windows and go Home through MacStatusBar&Dock. KeyPilot by wanghuangjie is the first: it adds your own shortcuts for apps, window layouts and URLs, and Settings > Keyboard has a row to get or open it.
+- In Edit Home Screen, the Dock's Finder, Launchpad, Downloads and Trash jiggle with your other icons and no longer open when tapped. On iPadOS 15 to 17, SnowBoard's double-tap menu works on them too.
+
+### Fixes
+- With Aerial 5, Fit to Window's question now lines up with your windows, as with the other engines.
+- With the Dock on the left or right, Handoff and recent app icons no longer show up sideways.
+- With Stage Manager and Fit to Window, a window you place with the Window menu now stays there when you turn the iPad, and joins the tiles again when the next window opens, as with the other engines.
+- The Globe + Option/Control volume keys now change the volume once for every tap. Some taps used to do nothing.
+- A full-screen app no longer shows a thin dark line above the menu bar.
+
+### Thanks
+- Thanks to wanghuangjie ([KeyPilot](https://github.com/wanghuangjie/KeyPilot)) for the window API design and its first version.
+
 ## 1.8.2.2
 
 ### Fixes

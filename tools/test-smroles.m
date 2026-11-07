@@ -162,6 +162,18 @@ int main(void) {
             CHECK(DMSMFitTilesFromCentres(@{@"a": @[@0.2, @0.3], @"b": @[@0.3, @0.6], @"c": @[@0.25, @0.8], @"d": @[@0.8, @0.5]}) == nil, "four not two by two: none");
             CHECK(DMSMFitTilesFromCentres(@{@"a": @[@(NAN), @0.3], @"b": @[@0.7, @0.3]}) == nil && DMSMFitTilesFromCentres(@{}) == nil, "no centre, no windows: none");
         }
+        {   // A window placed by the user (DMSMFitLetGo, review 1.8.3 P2-1): out of its tile, a regular window over the tiles -- the other engines'
+            // rule. At a look with no new window (a turn, a minimize) it stays out; the next window that opens takes it back into the tiles with it.
+            NSSet *after = nil;
+            NSArray *part = DMSMFitTakingPart(@[@"clock|a", @"notes|b"], @{@"notes|b": @"right"}, [NSSet setWithObject:@"clock|a"], &after);
+            CHECK([part isEqualToArray:@[@"notes|b"]] && [after containsObject:@"clock|a"], "placed by the user: out of the tiles at a look with no new window (%s)", part.description.UTF8String);
+            part = DMSMFitTakingPart(@[@"safari|c", @"clock|a", @"notes|b"], @{@"notes|b": @"right"}, [NSSet setWithObject:@"clock|a"], &after);
+            CHECK(part.count == 3 && [part containsObject:@"safari|c"] && [part containsObject:@"clock|a"] && [part containsObject:@"notes|b"] && ![after containsObject:@"clock|a"],
+                  "placed by the user: back in the tiles with the next window that opens (%s)", part.description.UTF8String);
+            NSDictionary *plan = MSBDFitPlanKeepingPlaces(part, @{@"notes|b": @"right"});
+            CHECK(plan.count == 3 && [plan[@"safari|c"] isEqualToString:@"left"] && [plan[@"clock|a"] isEqualToString:@"topright"] && [plan[@"notes|b"] isEqualToString:@"bottomright"],
+                  "  ... the new one in the first tile, the tiled one on its side (%s)", plan.description.UTF8String);
+        }
         printf("test-smroles: %d passed, %d failed\n", passes, fails);
     }
     return fails ? 1 : 0;

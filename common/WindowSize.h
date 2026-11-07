@@ -149,4 +149,18 @@ static inline CGRect MSBDWindowNoFitIn(CGRect center, CGRect u) {
     return CGRectIntegral(CGRectMake(CGRectGetMidX(u) - w / 2.0, CGRectGetMidY(u) - h / 2.0, w, h));
 }
 
+// ---- New Windows Open at Fill (Settings > Windows & Multitasking, 1.8.3 item 2; KeyPilot's author's design, wanghuangjie; off unless switched on) ----
+// A window that opens with no place of its own (as Window Size sizes it: an app's first window, its next one once the app has quit, a full-screen app
+// sent to a window it never had) opens at the Fill layout -- the desktop between the menu bar and the Dock, beside a side Dock -- instead of Window
+// Size's window, on every engine. Applied where a window opens: the windowed launch, Aerial's cascade, Zetsu's and MilkyWay4's new window, the Stage
+// Manager join -- never on a layout pass, so a layout picked afterwards (the Window menu, the window keys, KeyPilot) stays. It is in the Fill layout:
+// it follows the Dock and the screen as Fill does. A window coming back to its own place keeps it, and one asked to a frame goes there, as before.
+// Fit to Window: its switch stays the user's. A window that opens at Fill is not tiled by it -- no side question, never another window's tile taken --
+// and stays out of its tiles as No Fit's window does (each engine's free windows); every other window as before.
+#define kMSBDNewWindowsFillKey "newWindowsFill"   // (com.besiktasliseba.macstatusbar: a boolean; never set -- the default -- is off)
+// Where a window that opens goes: YES the Fill layout, NO as before (Window Size's window, or its own place, or the frame asked for).
+static inline bool MSBDNewWindowAtFill(bool fillOn, bool ownPlace, bool askedFor) { return fillOn && !ownPlace && !askedFor; }
+// Whether Fit to Window takes a window that opens into its tiles (or asks the side question for it): not one that opens at Fill.
+static inline bool MSBDFitTakesOpening(bool fitOn, bool atFill) { return fitOn && !atFill; }
+
 #endif

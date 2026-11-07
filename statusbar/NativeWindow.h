@@ -578,9 +578,7 @@ __attribute__((noinline)) static void DMNativeTouchBegan(UITouch *t) {   // (kep
     UIPanGestureRecognizer *move = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(dm_move:)];
     move.maximumNumberOfTouches = 1;
     [_titleBar addGestureRecognizer:move];
-    UITapGestureRecognizer *dbl = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(zoom)];
-    dbl.numberOfTapsRequired = 2;
-    [_titleBar addGestureRecognizer:dbl];
+    DMTitleTapAttach(_titleBar, kDMTitleNative);   // (a double tap: Settings > Windows & Multitasking > Double-Tap a Title Bar to -- Zoom unless changed, as before: TitleBarTap.h)
     for (int side = 0; side < 2; side++) {   // resize grips: both bottom corners, as in our other windows
         UIView *g = DMMakeResizeGrip();
         g.transform = CGAffineTransformMakeRotation(side == 0 ? -M_PI_4 : M_PI_4);
@@ -645,7 +643,7 @@ static CGRect DMNativeClamp(CGRect f, CGSize minSize) {
     CGPoint d = [g translationInView:self.superview];
     CGRect f = _panStart; f.origin.x += d.x; f.origin.y += d.y;
     self.frame = DMNativeClamp(f, self.minSize);
-    if (g.state == UIGestureRecognizerStateEnded) { self.restoreFrame = CGRectNull; self.layoutName = nil; [self dm_keepOutOfSideDock:MSBDSnapMove]; }
+    if (g.state == UIGestureRecognizerStateEnded) { self.restoreFrame = CGRectNull; self.layoutName = nil; DMTitleRecordMovedView(self); [self dm_keepOutOfSideDock:MSBDSnapMove]; }   // (moved by hand: no way back of the title bar's from before it, P4-1)
 }
 // (Settings > Dock > Position: let go under a Dock at a screen side it comes out of it, as an engine's window does: DMDockSideKept. On the bottom nothing changes.)
 - (void)dm_keepOutOfSideDock:(unsigned)how {
@@ -669,7 +667,7 @@ static CGRect DMNativeResized(CGRect start, CGPoint d, int tag, CGSize minSize, 
     if (g.state == UIGestureRecognizerStateBegan) { _panStart = self.frame; DMNativeSetActive(self); }
     CGPoint d = [g translationInView:self.superview];
     self.frame = DMNativeResized(_panStart, d, (int)g.view.tag, self.minSize, DMNativeDesktop());
-    if (g.state == UIGestureRecognizerStateEnded) { self.restoreFrame = CGRectNull; self.layoutName = nil; [self dm_keepOutOfSideDock:(g.view.tag == 0 ? MSBDSnapLeft : MSBDSnapRight) | MSBDSnapBottom]; }
+    if (g.state == UIGestureRecognizerStateEnded) { self.restoreFrame = CGRectNull; self.layoutName = nil; DMTitleRecordMovedView(self); [self dm_keepOutOfSideDock:(g.view.tag == 0 ? MSBDSnapLeft : MSBDSnapRight) | MSBDSnapBottom]; }   // (as a move)
 }
 - (void)show {
     UIView *host = DMNativeHost();

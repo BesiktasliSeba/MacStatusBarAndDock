@@ -86,6 +86,7 @@ static CGPoint DMSMRASnapEnd(unsigned long long edge, CGRect start, CGPoint at) 
         CGRect f = frames[k].CGRectValue, c = CGRectMake(f.origin.x, f.origin.y + kSMBarH, f.size.width, f.size.height - kSMBarH);
         if (MSBDSnapHeldSidesMatch(c, start, how)) {   // (the window being resized: not a neighbour of its own)
             mine++;
+            DMTitleRecordMovedSM(k);   // (a resize by hand: the title bar's frame from before is older -- review 1.8.3 P4-1; 17 and 18's own resize: TitleBarRule.h)
             UIView *own = DMSMCardFor(k);
             if ((own.window.screen ?: [UIScreen mainScreen]) != [UIScreen mainScreen]) offIPad = YES;
             continue;

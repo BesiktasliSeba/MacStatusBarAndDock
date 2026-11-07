@@ -1,0 +1,162 @@
+static void DMCascadeStage(UIView *stage) {
+    extern BOOL gRestoringWindowsFlag(void);
+    if (gRestoringWindowsFlag()) return;   // windows being brought back after a respring are put where they were, not tiled or cascaded
+    extern BOOL DMSofaRelaunchKeepsFrame(NSString *bundleID);
+    if (DMSofaRelaunchKeepsFrame(DMStageBundle(stage))) {   // SofaScore's quick relaunch reopens it exactly where it was (no remembered frame, no tiling)
+        extern CGRect DMSofaRelaunchPlaced(UIView *stage);
+        CGRect f = DMSofaRelaunchPlaced(stage), cur = stage.frame;
+        objc_setAssociatedObject(stage, kStageCascadedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        DMSetStageIntent(stage, f);
+        if (fabs(f.origin.x - cur.origin.x) > 1.0 || fabs(f.origin.y - cur.origin.y) > 1.0 || fabs(f.size.width - cur.size.width) > 1.0 || fabs(f.size.height - cur.size.height) > 1.0) {
+            DMLog([NSString stringWithFormat:@"[sofa] relaunch: the engine reopened it at %@, put back at %@", NSStringFromCGRect(cur), NSStringFromCGRect(f)]);
+            gMoveKeepsOrder = YES; DMAerialMoveStage(stage, f, nil); gMoveKeepsOrder = NO;
+        }
+        return;
+    }
+    if ([objc_getAssociatedObject(stage, kStageCascadedKey) boolValue]) {
+        extern void DMA5HoldEntranceFrameNow(UIView *stage);
+        if (objc_getAssociatedObject(stage, kA5EntranceTargetKey)) {   // (just flown in from full screen: put back at once, no move animation)
+            DMA5HoldEntranceFrameNow(stage);
+            if (objc_getAssociatedObject(stage, kA5EntranceTargetKey)) return;   // (still held; a hold that has just ended falls through to the check below)
+        }
+        NSValue *intent = objc_getAssociatedObject(stage, kStageIntentKey);
+        CGRect want = intent ? intent.CGRectValue : CGRectNull, f = stage.frame;
+        if (!CGRectIsNull(want) && !DMStageMinimized(stage) && !DMIsZetsuWindow(stage) && !DMStageStillZooming(stage)
+            && (fabs(want.origin.x - f.origin.x) > 1.0 || fabs(want.origin.y - f.origin.y) > 1.0 || fabs(want.size.width - f.size.width) > 1.0 || fabs(want.size.height - f.size.height) > 1.0)) {
+            DMLog([NSString stringWithFormat:@"[cascade] %@: moved from where it was placed (%@ -> %@): put back", DMStageBundle(stage), NSStringFromCGRect(want), NSStringFromCGRect(f)]);
+            DMAerialMoveStage(stage, want, nil);
+        }
+        return;
+    }
+    objc_setAssociatedObject(stage, kStageCascadedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    UIWindow *win = [stage isKindOfClass:[UIWindow class]] ? (UIWindow *)stage : (stage.window ?: DMWindowLayer());   // (a Zetsu window IS a UIWindow)
+    NSMutableArray<UIView *> *others = [NSMutableArray array];
+    for (UIView *s in DMAerialStages()) if (s != stage && !s.hidden && !DMStageMinimized(s) && DMStageBundle(s).length) [others addObject:s];
+    NSString *me = DMStageBundle(stage);
+    CGRect base = stage.frame, usable = DMLayoutFrame(@"fill");
+    BOOL fitOn = DMFitEnabled();
+    DMLog([NSString stringWithFormat:@"[cascade] %@ frame %@, %lu other windows, fit to window %d", me, NSStringFromCGRect(base), (unsigned long)others.count, fitOn]);
+    if (!win || !me.length || CGRectIsNull(usable) || CGRectIsEmpty(base)) { DMLog([NSString stringWithFormat:@"[cascade] %@: nothing to do (window %d, usable %@)", me, win != nil, NSStringFromCGRect(usable)]); return; }
+    // Aerial 5.0 remembers every app's last window frame itself and reopens the app there (requested: Settings, opened as the only window with Fit to
+    // Window off, came back at the half-screen size it last had while tiled -- log: our size 841x607 sent, then Aerial's own 481x559). On 3.0 a
+    // hook kept Aerial from doing that; on 5.0 nothing of Aerial's may be hooked, so the new window is moved here instead: to where we last had
+    // it (kept until the app quits, like on 3.0), or else to our default place. Fit to Window and the overlap nudge below then work from that.
+    // (launched straight into its place after the side question: its frame is already the one we asked for -- the tile, or No Fit's centred
+    //  frame -- so Aerial 5.0's remembered frame is not "corrected" to the default place / an old tile; logic test 1.0.7)
+    BOOL preLaunched = [gPreSideBundle isEqualToString:me] && CACurrentMediaTime() < gPreSideUntil;
+    NSValue *ownMark = objc_getAssociatedObject(stage, kStageOwnPlaceKey);   // (Zetsu, MilkyWay4: opened at its own last place -- DMMarkOwnPlace)
+    objc_setAssociatedObject(stage, kStageOwnPlaceKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    BOOL ownPlace = ownMark && fabs(ownMark.CGRectValue.origin.x - base.origin.x) <= 1.0 && fabs(ownMark.CGRectValue.origin.y - base.origin.y) <= 1.0
+                    && fabs(ownMark.CGRectValue.size.width - base.size.width) <= 1.0 && fabs(ownMark.CGRectValue.size.height - base.size.height) <= 1.0;
+    // (Aerial 3.0 opens the window of an icon tap at its own size -- nothing of ours asked for it: at Window Size's Small or Large it gets that size
+    //  here, as on 5.x; at Default, and where we last had its window, it stays as 3.0 has always opened it)
+    BOOL a3Sized = gAerialFlavor == 3 && DMActiveEngine() == DMEngineAerial && gWindowSizeChoice != MSBDWindowSizeDefault && !gLastWindowFrames[me];
+    if ((gAerialFlavor == 5 || a3Sized) && !preLaunched) {
+        NSValue *remembered = gLastWindowFrames[me];
+        if (remembered) ownPlace = YES;
+        CGRect want = remembered ? DMFitInto(remembered.CGRectValue, usable) : DMNewWindowFrame();   // (where a new window opens: Window Size)
+        if (!CGRectIsNull(want) && (fabs(want.size.width - base.size.width) > 4.0 || fabs(want.size.height - base.size.height) > 4.0 || fabs(want.origin.x - base.origin.x) > 4.0 || fabs(want.origin.y - base.origin.y) > 4.0)) {
+            DMLog([NSString stringWithFormat:@"[cascade] %@: Aerial %@ opened it at its own place %@, moved to %@ %@", me, a3Sized ? @"3.0" : @"5.x", NSStringFromCGRect(base),
+                   remembered ? @"where we last had it" : [NSString stringWithFormat:@"where a new window opens (Window Size %s)", MSBDWindowSizeName(gWindowSizeChoice)], NSStringFromCGRect(want)]);
+            gStageFrameBypass = YES;
+            [UIView performWithoutAnimation:^{ DMSetStageFrameSafe(stage, want); [stage layoutIfNeeded]; }];
+            gStageFrameBypass = NO;
+            DMSetStageIntent(stage, want);
+            base = want;
+        }
+    }
+
+    if (fitOn && [gFreeWindows containsObject:me]) goto regularWindow;   // (a free window, No Fit)
+    if (fitOn) {
+        if (!gFitGroup) gFitGroup = [NSMutableArray array];
+        // Windows that have gone, and windows that are minimized, hidden or closing: they are not on screen, so they don't take a tile. (Bug, the owner:
+        // with one app minimized, every app opened on its own was still squeezed into half the screen -- log: "0 other windows" then "2 windows
+        // tiled" -- because a minimized window still has its stage, so the old "has it gone?" test kept it in the group.)
+        for (NSString *b in [gFitGroup copy]) if (!DMStageTakesPartInFit(DMStageForBundle(b))) [gFitGroup removeObject:b];
+        [gFitGroup removeObject:me];
+        // Requirement: with four windows already tiled into the quarters, a fifth (and every one after it) opens as a regular window over them and the four
+        // keep their places. Before, the "every open window takes part" step below pulled the extra windows into the group and trimmed it back to
+        // three plus the new one, so the newest window replaced a tile.
+        // (also counted from the windows actually open: after a respring the restored windows are put back where they were but are not in
+        // gFitGroup yet, and a fifth window then joined the tiling and took the top-left quarter from one of the four -- Phase 2b, M1)
+        // Every window that is open takes part, also one that was dragged, resized or given a layout by hand (those are taken out of the group
+        // when that happens, so a moved first window used to make the next launch open untiled), or that was open before Fit to Window went on:
+        // the regular windows over the tiles join with this one while there is room (the one rule of every engine, FitPlan.h MSBDFitWhenOneOpens --
+        // newest first, the front one first; a No Fit window does not count: it was one of the four here, where Stage Manager tiles a fourth).
+        NSMutableArray<NSString *> *loose = [NSMutableArray array];
+        for (UIView *o in others.reverseObjectEnumerator) {
+            NSString *b = DMStageBundle(o);
+            if (b.length && ![b isEqualToString:me] && ![gFitGroup containsObject:b] && ![loose containsObject:b] && DMStageTakesPartInFit(o)) [loose addObject:b];
+        }
+        NSArray<NSString *> *joined = MSBDFitWhenOneOpens(me, gFitGroup, loose);
+        if (DMTestFlag("/tmp/msb-fitloose-asbuilt"))   // (debug: as before 1.8.0 -- a No Fit window counted among the four, the regular windows back to front)
+            joined = others.count >= 4 ? nil : MSBDFitWhenOneOpens(me, gFitGroup, [[loose reverseObjectEnumerator] allObjects]);
+        if (!joined) {
+            DMLog([NSString stringWithFormat:@"[aerial] Fit to Window: four windows take part already (%lu tiled, %lu regular over them), %@ opens as a regular window over them", (unsigned long)gFitGroup.count, (unsigned long)loose.count, me]);
+            goto regularWindow;
+        }
+        gFitGroup = [joined mutableCopy];
+        [gFitGroup removeObject:me];   // (the others: this window goes in front of them below)
+        for (NSString *b in loose) [gFitSlots removeObjectForKey:b];   // (a regular window joins as a new one: a tile it had before is no place of it now)
+        // Two windows each cover a side and a third opens: ask on which side it goes.
+        if (gFitGroup.count == 2) {
+            UIView *a = DMStageForBundle(gFitGroup[0]), *b = DMStageForBundle(gFitGroup[1]);
+            NSString *sa = a ? DMSlotNameForFrame(a.frame) : nil, *sb = b ? DMSlotNameForFrame(b.frame) : nil;
+            NSString *leftBundle = [sa isEqualToString:@"left"] ? gFitGroup[0] : ([sb isEqualToString:@"left"] ? gFitGroup[1] : nil);
+            NSString *rightBundle = [sa isEqualToString:@"right"] ? gFitGroup[0] : ([sb isEqualToString:@"right"] ? gFitGroup[1] : nil);
+            if (leftBundle && rightBundle) {
+                if ([gPreSideBundle isEqualToString:me] && CACurrentMediaTime() < gPreSideUntil) {   // (asked before the launch: the choice is applied, not asked again)
+                    NSString *side = gPreSide.length ? gPreSide : nil; gPreSideBundle = nil;
+                    if ([side isEqualToString:@"none"]) { DMMarkFreeWindow(me); if (!DMIsZetsuWindow(stage)) DMSetStageIntent(stage, base); goto regularWindow; }   // (No Fit: an ordinary window in the middle)
+                    DMApplySideChoice(stage, me, leftBundle, rightBundle, side);
+                    return;
+                }
+                DMPromptForSide(stage, me, leftBundle, rightBundle); return;
+            }
+        }
+        [gFitGroup insertObject:me atIndex:0];   // (it and at most three others: MSBDFitWhenOneOpens)
+        if (gFitGroup.count >= 2) {
+            DMAssignTilesKeepingPlaces(me);   // (it takes the first tile, the regular windows that joined the next ones; the others keep their places as far as they can -- FitPlan.h)
+            DMApplyGroupSlots(stage);
+            SEL front = DMAerialSel(@"_bringStageToFrontIfNeeded");
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{   // (the active window, on every engine: DMApplySideChoice)
+                if (DMIsZetsuWindow(stage)) DMZetsuRaise((UIWindow *)stage);
+                else if ([stage respondsToSelector:front]) ((void (*)(id, SEL))objc_msgSend)(stage, front);
+                else if (DMActiveEngine() == DMEngineMilkyWay && stage.superview && !stage.hidden) { [stage.superview bringSubviewToFront:stage]; DMApplyWindowLevel(); }
+            });
+            DMLog([NSString stringWithFormat:@"[aerial] Fit to Window: %lu windows tiled (%@ first)", (unsigned long)gFitGroup.count, me]);
+            return;
+        }
+        // the first window: opens as usual (below, it is only kept off any other window)
+    } else {
+        gFitGroup = nil; gFitSlots = nil;   // Fit to Window is off: nothing is tiled any more
+    }
+regularWindow:;
+    if ([gFreeWindows containsObject:me]) return;   // (No Fit: it stays in the middle, where it was opened, even over the tiles)
+
+    // Kept off the other windows by the engines' one rule (common/WindowSize.h MSBDWindowCascadeIn, our Stage Manager engine's too: DMSMJoinAttributes):
+    // over another window it is moved on 50 pt right and 44 down a step, or up and left, until its corner is clear of every other window's, inside
+    // the desktop -- it no longer reaches 30 pt past the desktop's bottom, under the Dock, as Stage Manager's windows never did.
+    // (1.7.5 item 13: a window back at its own last place -- where we last had it, kept until the app quits -- stays there, over whatever it was over
+    //  before, as a Mac app's window comes back at its saved frame; only a window that would sit right on another one (their top-left corners within
+    //  34 pt: its title bar hidden under the other's) is still moved on. Before, a Zetsu window reopened right after its close went from {250, 124}
+    //  to {300, 152} "so it does not sit over another window" -- A12Z 18.5, 1.7.4 R1 --, and the other engines' the same.)
+    CGRect otherFrames[32]; int nOthers = 0;
+    for (UIView *o in others) if (nOthers < 32) otherFrames[nOthers++] = o.frame;
+    int how = MSBDCascadeStays;
+    CGRect pick = MSBDWindowCascadeIn(base, otherFrames, nOthers, usable, ownPlace, &how);
+    if (how == MSBDCascadeOwnKept) {
+        DM_FEATURE_MARK("cascade-keeps-own-place");
+        DMLog([NSString stringWithFormat:@"[cascade] %@ came back at its own last place %@: kept there", me, NSStringFromCGRect(base)]);
+        return;
+    }
+    if (CGRectEqualToRect(pick, base)) return;
+    DMLog([NSString stringWithFormat:@"[aerial] new window of %@ placed at %@ (was %@) so it does not sit over another window", me, NSStringFromCGRect(pick), NSStringFromCGRect(base)]);
+    if (DMIsZetsuWindow(stage)) { DMZetsuMove((UIWindow *)stage, pick, NO, nil); return; }
+    gStageFrameBypass = YES;
+    [UIView performWithoutAnimation:^{ DMSetStageFrameSafe(stage, pick); [stage layoutIfNeeded]; }];
+    gStageFrameBypass = NO;
+    // (an intended place set above (Aerial 5.0: the default place) follows the nudge: the check when the app attaches otherwise put the window
+    // back over the other one, M1 logic test 1.0.6, Twitter with Fit to Window off)
+    if (objc_getAssociatedObject(stage, kStageIntentKey)) DMSetStageIntent(stage, pick);
+}

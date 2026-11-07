@@ -32,21 +32,21 @@ check "the layouts keep theirs: the center layout from the same header (the same
    && ! awk '/^static CGRect DMLayoutFrameInArea\(NSString \*name, CGRect u, CGSize screen\) \{/,/^}/' $S | grep -q '0\.86\|0\.92' \
    && grep -q 'CGRect f = MSBDWindowSizeShapeIn(size, u, screen, top);' ../common/WindowSize.h"
 check "Zetsu: a new window asked for nowhere and with no last place opens at the new window (DMZetsuAdopt); its last place is kept" \
-  "fn 'static void DMZetsuAdopt(UIWindow *w) {' && grep -q 'NSValue \*lastPlace = gLastWindowFrames\\[bundleID\\];' \$W/fn && grep -q 'CGRect target = asked ? askedFrame : (inTile ? tile : (lastPlace ? lastPlace.CGRectValue : DMNewWindowFrame()));' \$W/fn \
+  "fn 'static void DMZetsuAdopt(UIWindow *w) {' && grep -q 'NSValue \*lastPlace = gLastWindowFrames\\[bundleID\\];' \$W/fn && grep -q 'CGRect target = asked ? askedFrame : (inTile ? tile : (lastPlace ? lastPlace.CGRectValue : DMOpeningWindowFrame()));' \$W/fn \
    && grep -q 'if (MSBDZetsuOpensAtOwnPlace(asked, lastPlace != nil) && !CGRectIsNull(target)) DMMarkOwnPlace(w, target);' \$W/fn"
 check "MilkyWay4: the same (DMEnlargeNewWindow), its own copy of the middle place gone; asked for or remembered first" \
   "fn 'static BOOL DMEnlargeNewWindow(UIView *window) {' && grep -q 'CGRect big = pending ? gPendingWindowFrame' \$W/fn && grep -q '               : (remembered && !CGRectIsNull(usable)) ? DMFitInto(remembered.CGRectValue, usable)' \$W/fn \
-   && grep -q '               : DMNewWindowFrame();' \$W/fn && grep -q 'if (CGRectIsNull(big) || CGRectIsEmpty(big)) return NO;' \$W/fn && ! grep -q '0.78' \$W/fn"
+   && grep -q '               : DMOpeningWindowFrame();   // (Window Size.s window, or Fill: New Windows Open at Fill)' \$W/fn && grep -q 'if (CGRectIsNull(big) || CGRectIsEmpty(big)) return NO;' \$W/fn && ! grep -q '0.78' \$W/fn"
 check "Aerial: our launch opens at the new window (DMWindowedLaunch), and a window Aerial opens itself is moved there -- 5.x always (its own remembered frame), 3.0 at Small / Large with no last place of ours" \
-  "fn 'static BOOL DMWindowedLaunch(NSString *bundleID) {' && grep -q 'CGRect target = DMNewWindowFrame();' \$W/fn \
-   && fn 'static void DMCascadeStage(UIView *stage) {' && grep -q 'BOOL a3Sized = gAerialFlavor == 3 && DMActiveEngine() == DMEngineAerial && gWindowSizeChoice != MSBDWindowSizeDefault && !gLastWindowFrames\\[me\\];' \$W/fn \
-   && grep -q 'if ((gAerialFlavor == 5 || a3Sized) && !preLaunched) {' \$W/fn && grep -q 'CGRect want = remembered ? DMFitInto(remembered.CGRectValue, usable) : DMNewWindowFrame();' \$W/fn \
+  "fn 'static BOOL DMWindowedLaunch(NSString *bundleID) {' && grep -q 'CGRect target = DMOpeningWindowFrame();' \$W/fn \
+   && fn 'static void DMCascadeStage(UIView *stage) {' && grep -q 'BOOL a3Sized = gAerialFlavor == 3 && DMActiveEngine() == DMEngineAerial && (gWindowSizeChoice != MSBDWindowSizeDefault || gNewWindowsFill) && !gLastWindowFrames\\[me\\];' \$W/fn \
+   && grep -q 'if ((gAerialFlavor == 5 || a3Sized) && !preLaunched) {' \$W/fn && grep -q 'CGRect want = remembered ? DMFitInto(remembered.CGRectValue, usable) : DMOpeningWindowFrame();' \$W/fn \
    && grep -q 'if (remembered) ownPlace = YES;' \$W/fn"
 check "  ... and every other way it opens one: into its tile (no frame), the side question not shown, the cold start of an app full screen first" \
   "grep -q 'if (CGRectIsNull(frame)) frame = DMNewWindowFrame();' $S && grep -q 'DMAerialTrigger(bundleID, frame);' $S && grep -q 'else launch(DMNewWindowFrame());' $S \
-   && grep -q 'CGRect target = gLastWindowFrames\\[bundleID\\] ? gLastWindowFrames\\[bundleID\\].CGRectValue : DMNewWindowFrame();' $S"
+   && grep -q 'CGRect target = gLastWindowFrames\\[bundleID\\] ? gLastWindowFrames\\[bundleID\\].CGRectValue : DMOpeningWindowFrame();' $S"
 check "the green light's way back from full screen (Aerial, Zetsu, MilkyWay4): where the window last was, else the new window" \
-  "fn 'static void DMWindowLayout(NSString *name) {' && grep -q 'if (gPreferRememberedFrame) target = gLastWindowFrames\\[bundleID\\] ? gLastWindowFrames\\[bundleID\\].CGRectValue : DMNewWindowFrame();' \$W/fn"
+  "fn 'static void DMWindowLayout(NSString *name) {' && grep -q 'if (gPreferRememberedFrame) target = gLastWindowFrames\\[bundleID\\] ? gLastWindowFrames\\[bundleID\\].CGRectValue : DMOpeningWindowFrame();' \$W/fn"
 check "No Fit: the new window at Small / Large (DMNoFitFrame), Stage Manager's too (DMSMNoFitPlace at both questions); at Default one rule on every engine (MSBDWindowNoFitIn: Stage Manager's was the middle place itself)" \
   "fn 'static CGRect DMNoFitFrame(void) {' && grep -q 'if (gWindowSizeChoice != MSBDWindowSizeDefault) return DMNewWindowFrame();' \$W/fn \
    && grep -q 'return MSBDWindowNoFitIn(DMLayoutFrame(@\"center\"), DMLayoutFrame(@\"fill\"));' \$W/fn \
@@ -55,10 +55,10 @@ check "No Fit: the new window at Small / Large (DMNoFitFrame), Stage Manager's t
    && grep -q 'return CGRectIsNull(f) ? @\"center\" : \\[NSValue valueWithCGRect:f\\];' \$W/fn"
 check "the middle place is asked for nowhere else as a new window's (only No Fit's own default, DMNoFitFrame)" "[ \$(grep -c 'DMLayoutFrame(@\"center\")' $S) = 1 ] && fn 'static CGRect DMNoFitFrame(void) {' && grep -q 'DMLayoutFrame(@\"center\")' \$W/fn"
 check "Stage Manager: a window with no size of its own -- nothing to start from, a full-screen one's, or one joining a desktop with a front window -- opens at the engines' new window (Default too), kept off the desktop's other windows by the engines' rule; its own is kept" \
-  "fn 'static id DMSMJoinAttributes(NSString *key, id frontAttrs, BOOL windowed, long newest, id stage) {' && grep -q 'BOOL fresh = dflt || base != own;' \$W/fn && grep -q '            if (fresh) {' \$W/fn \
-   && grep -q 'CGRect opening = DMSMNewWindowFrameIn(u, scr);' \$W/fn && grep -q 'if (CGRectIsNull(opening)) return nil;' \$W/fn \
-   && grep -q 'if (n >= 32 || it == ownItem || DMSMKeyCovers(key, DMSMItemKey(it)) || DMSMAttrsFullScreen(sm\\[it\\])) continue;' \$W/fn \
-   && grep -q 'CGRect o = DMSMWindowFrameOfAttrs(sm\\[it\\], scr);' \$W/fn && grep -q 'CGRect placed = MSBDWindowCascadeIn(opening, others, n, u, NO, &how);' \$W/fn \
+  "fn 'static id DMSMJoinAttributes(NSString *key, id frontAttrs, BOOL windowed, long newest, id stage) {' && grep -q 'BOOL fresh = !DMSMAttrsOwnSize(own);' \$W/fn && grep -q '            if (fresh) {' \$W/fn \
+   && grep -q 'CGRect opening = atFill ? DMSMLayoutFrameIn(@\"fill\", u, scr) : DMSMNewWindowFrameIn(u, scr);' \$W/fn && grep -q 'if (CGRectIsNull(opening)) return nil;' \$W/fn \
+   && grep -q 'if (atFill || n >= 32 || it == ownItem || DMSMKeyCovers(key, DMSMItemKey(it)) || DMSMAttrsFullScreen(sm\\[it\\])) continue;' \$W/fn \
+   && grep -q 'CGRect o = DMSMWindowFrameOfAttrs(sm\\[it\\], scr);' \$W/fn && grep -q 'CGRect placed = atFill ? opening : MSBDWindowCascadeIn(opening, others, n, u, NO, &how);' \$W/fn \
    && grep -q 'CGRect card = MSBDWindowCardOf(placed, kSMBarH);' \$W/fn && grep -q 'pts = card.size; cp = CGPointMake(CGRectGetMidX(card), CGRectGetMidY(card));' \$W/fn \
    && grep -q 'CGSize pts = DMSMFitSizeInPoints(sz.normalizedSize, sz.referenceBounds, 0, scr);' \$W/fn && grep -q '} else if (fresh) return nil;' \$W/fn \
    && ! grep -q 'CGSizeMake(0.6\\|0.6 \\* scr\\|BOOL cascaded\\|DMSMCascadeClear(' \$W/fn && ! grep -q 'DMSMCascadeClear' ../statusbar/SMFit.h \

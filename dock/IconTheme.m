@@ -19,6 +19,17 @@ UIImage *DMIconThemePicture(MSBDIconItem item, CGSize size, BOOL *themed) {
     return MSBDIconThemePicture(item, size, [UIScreen mainScreen].scale, gDMIconCornerRatio * side, themed);
 }
 NSUInteger DMIconThemeGeneration(void) { return gMSBDIconGeneration; }
+// Ask every item's picture again (a theme engine changed one icon's picture without telling: SnowBoard's per-icon menu, EditProxy.m).
+void DMIconThemeAskAgain(NSString *why) {
+    gMSBDIconGeneration++;
+    DMLog([NSString stringWithFormat:@"[icontheme] %@: the Dock's items ask again (%lu)", why, (unsigned long)gMSBDIconGeneration]);
+    [[NSNotificationCenter defaultCenter] postNotificationName:kMSBDIconThemeChanged object:nil];
+}
+id DMIconThemeIcon(MSBDIconItem item) {
+    if (![NSThread isMainThread] || !DMIconThemeOn()) return nil;
+    NSString *ident = MSBDIconID(item);
+    return ident ? [MSBDIconFor(ident) firstObject] : nil;
+}
 
 #if DEBUG
 // ---- debug ("ithm" in /tmp/dockmag-escape): what each item's app-icon chain gives now and what is on screen -- for each identifier its picture's

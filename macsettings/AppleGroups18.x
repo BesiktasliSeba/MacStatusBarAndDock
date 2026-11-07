@@ -32,6 +32,7 @@
 @end
 
 NSArray *MSKeysGroupSpecifiers(id target, NSString *title, NSArray *native, id linkTarget);   // (KeyboardSettings.x)
+NSArray *MSKeysShortcutSpecifiers(id target);                                                 // (KeyboardSettings.x: Window Tiling Keys, Custom Shortcuts)
 void MSKeysOpenModifierKeysOn(PSListController *page);                                       // (KeyboardSettings.x)
 NSArray *MSPointerOwnSpecifiers(id target, BOOL onApplePage);                                 // (PointerSettings.x)
 
@@ -93,7 +94,8 @@ static G18Kind G18KindOf(id page) {
 static NSArray *G18Rows(PSListController *page, G18Kind kind, NSArray *apple) {
     MSG18Prefs *prefs = objc_getAssociatedObject(page, kG18PrefsKey);
     if (!prefs) { prefs = [MSG18Prefs new]; prefs.page = page; objc_setAssociatedObject(page, kG18PrefsKey, prefs, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
-    return kind == G18Keyboard ? MSKeysGroupSpecifiers(prefs, @"Mac Keys", apple, prefs) : MSPointerOwnSpecifiers(prefs, YES);
+    // (the keyboard's: Mac Keys, then Window Tiling Keys and Custom Shortcuts -- 1.8.3 --, one block at the top of Apple's page)
+    return kind == G18Keyboard ? [MSKeysGroupSpecifiers(prefs, @"Mac Keys", apple, prefs) arrayByAddingObjectsFromArray:MSKeysShortcutSpecifiers(prefs)] : MSPointerOwnSpecifiers(prefs, YES);
 }
 // What our rows show, as a string: each row's id (or name) and cell type, and each group's footer. Equal: nothing to put in again.
 static NSString *G18Signature(NSArray *rows) {

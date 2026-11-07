@@ -123,6 +123,40 @@
 			<key>PostNotification</key>
 			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
 			<key>cell</key>
+			<string>PSLinkListCell</string>
+			<key>default</key>
+			<string>none</string>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>detail</key>
+			<string>PSListItemsController</string>
+			<key>id</key>
+			<string>TITLE_BAR_DOUBLE_TAP</string>
+			<key>key</key>
+			<string>titleBarDoubleTap</string>
+			<key>label</key>
+			<string>Double-Tap a Title Bar to</string>
+			<key>staticTextMessage</key>
+			<string>What a double tap on a window's title bar does, as on a Mac. With Fill or Zoom, double-tap again to go back to the size the window had before.</string>
+			<key>validTitles</key>
+			<array>
+				<string>Fill</string>
+				<string>Zoom</string>
+				<string>Minimize</string>
+				<string>Do Nothing</string>
+			</array>
+			<key>validValues</key>
+			<array>
+				<string>fill</string>
+				<string>zoom</string>
+				<string>minimize</string>
+				<string>none</string>
+			</array>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
 			<string>PSSwitchCell</string>
 			<key>default</key>
 			<true/>
@@ -172,6 +206,32 @@
 			<string>tintResizeHandles</string>
 			<key>label</key>
 			<string>Tint Resize Handles</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>New windows fill the desktop, and Fit to Window doesn't tile them.</string>
+			<key>id</key>
+			<string>NEW_WINDOWS_FILL_GROUP</string>
+			<key>stockHides</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>NEW_WINDOWS_FILL</string>
+			<key>key</key>
+			<string>newWindowsFill</string>
+			<key>label</key>
+			<string>New Windows Open at Fill</string>
 		</dict>
 		<dict>
 			<key>cell</key>

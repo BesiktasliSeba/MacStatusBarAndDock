@@ -8,6 +8,10 @@ void DMIconThemeSetDrawer(MSBDIconItem item, DMIconDrawer drawer);
 // The item's picture at that size, with the screen's scale and SpringBoard's Dock corner (themed: a theme's picture, not ours shaped by an engine).
 UIImage *DMIconThemePicture(MSBDIconItem item, CGSize size, BOOL *themed);
 BOOL DMIconThemeOn(void);
+// The item's app icon itself (MSBDThemableIcon, by its own identifier), for an icon view of SpringBoard's (EditProxy.m); nil where the path is off.
+id DMIconThemeIcon(MSBDIconItem item);
+// Every item's picture asked again (a theme engine changed one without its refresh note: SnowBoard's per-icon menu).
+void DMIconThemeAskAgain(NSString *why);
 // Bumped (and DMIconThemeChangedNotification posted) when a theme engine refreshed its icons: ask again.
 NSUInteger DMIconThemeGeneration(void);
 extern NSString *const DMIconThemeChangedNotification;

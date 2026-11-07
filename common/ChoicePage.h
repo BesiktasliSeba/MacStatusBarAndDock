@@ -19,6 +19,21 @@
 // BigSurCenter's: its developer's own page (nicho1asdev, on the Havoc repository), whichever repository an installed copy came from.
 #define kMSBDChoiceGetBigSurCenter @"https://havoc.app/package/bigsurcenter"
 
+// KeyPilot (Settings > Keyboard > Custom Shortcuts, 1.8.3, KT 6 Nov): wanghuangjie's tweak for shortcuts of your own -- opening apps, window layouts
+// (through this tweak's window API, statusbar/WindowAPIRule.h) and URLs -- as the companion for what this tweak leaves out (no custom shortcuts of
+// ours). Its row, as the choice pages' third-party rows: "KeyPilot", "by wanghuangjie" under it, and where the checkmark would be an App Store-style
+// button -- GET while it is not installed (its developer's page: GitHub Releases today), OPEN once it is (its app, by bundle ID: it has no URL
+// scheme). Installed: its app registered (KeyPilot's package brings its app and its tweak; the tweak file alone has nothing to open). OPEN asks
+// Settings to open the app; when Settings cannot, SpringBoard opens it if it has it (Darwin kMSBDKeyPilotOpenNote, statusbar/WindowAPI.h
+// DMKeyPilotOpenWatch).
+#define kMSBDKeyPilotApp       @"com.whj.keypilot.app"
+#define kMSBDKeyPilotOpenNote  "com.besiktasliseba.macstatusbar.keypilot.open"
+#define kMSBDChoiceGetKeyPilot @"https://github.com/wanghuangjie/KeyPilot/releases"
+static inline NSDictionary *MSBDKeyPilotRow(BOOL installed) {
+    if (installed) return @{@"title": @"KeyPilot", @"subtitle": @"by wanghuangjie", @"button": @"OPEN", @"app": kMSBDKeyPilotApp};
+    return @{@"title": @"KeyPilot", @"subtitle": @"by wanghuangjie", @"button": @"GET", @"url": kMSBDChoiceGetKeyPilot};
+}
+
 static inline NSDictionary *MSBDChoiceRowMake(int state, BOOL native, NSString *title, NSString *reason, NSString *url, BOOL hidden) {
     NSMutableDictionary *r = [NSMutableDictionary dictionaryWithDictionary:@{@"state": @(state), @"native": @(native), @"hidden": @(hidden)}];
     if (title) r[@"title"] = title;

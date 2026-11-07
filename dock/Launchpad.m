@@ -165,6 +165,11 @@ static const void *kAskedKey = &kAskedKey;       // what the overlay's app-icon 
 
 // The App Library picture's own views (its mini app grid, its platter) hidden while Launchpad shows a picture with see-through parts (a theme's
 // mask, the round rocket shaped by a theme engine), and back when it doesn't.
+// Our Launchpad picture over the App Library icon, as drawn (EditProxy.m: Edit Home Screen's icon view takes its place and size); nil when none.
+UIView *DMLaunchpadOverlayOf(UIView *iconView) {
+    UIView *imageView = iconView ? DMIconImageView(iconView) : nil;
+    return imageView ? objc_getAssociatedObject(imageView, kOverlayKey) : nil;
+}
 static void DMLaunchpadHideOwn(UIView *imageView, UIView *overlay, BOOL hide) {
     NSHashTable *hidden = objc_getAssociatedObject(imageView, kHiddenKey);
     if (!hide) {

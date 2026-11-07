@@ -69,6 +69,16 @@ Every part can be traced to its process in `loader/Loader.c` (the `kPayloads` ta
 | `layout/DEBIAN/` | The install and removal scripts |
 | `tools/` | Mac tests and build helpers |
 
+## Window API for other tweaks (V1)
+
+Other tweaks in SpringBoard can lay out the front window and go Home through three C functions exported by MacStatusBarCore.dylib (`/var/jb/usr/lib/MacStatusBarAndDock/MacStatusBarCore.dylib`; find them with `dlopen(path, RTLD_LAZY | RTLD_NOLOAD)` and `dlsym`). Call them on SpringBoard's main thread. V1 is stable: its names, arguments and return codes will not change, and a V2 would come next to it.
+
+- `int MSBDKeyPilotLayoutV1(const char *layout)`: `left`, `right`, `top`, `bottom`, `topleft`, `topright`, `bottomleft`, `bottomright`, `fill`, `center`, `small` or `large`, the Window menu's layouts for the front window, with every window engine. With Finder or TextEdit in front, that window takes the layout, also with no window engine. Returns 0 dispatched, 1 not on the main thread, 2 unknown layout, 3 no window engine, 4 no active app, 5 the app only runs full screen, 6 locked or busy (the Lock Screen or Notification Center, a transition, a switcher, Control Center, Guided Access, one of the tweak's menus, or windows the tweak is about to place). The checks run in the order 1, 2, 6, 3, 4, 5. 0 does not mean the window has moved yet.
+- `int MSBDKeyPilotHomeV1(void)`: Home, with every window minimized, with every window engine. Returns 0 dispatched, 1 not on the main thread, 6 locked or in Guided Access. A second call within a second is the same Home, and at the Home Screen it only minimizes the windows.
+- `int MSBDKeyPilotHomeEnvironmentV1(void)`: 1 Home Screen, 2 App Switcher, 3 an app; -1 not on the main thread or unknown, -2 locked.
+
+The API was designed by wanghuangjie for [KeyPilot](https://github.com/wanghuangjie/KeyPilot), and its names, arguments and return codes are his: see [WINDOW_MANAGEMENT.md](https://github.com/wanghuangjie/KeyPilot/blob/main/integrations/WINDOW_MANAGEMENT.md). The code is in `statusbar/WindowAPI.h` and `statusbar/WindowAPIRule.h`, and `tools/test-windowapi.sh` tests its rules.
+
 ## Building
 
 You need macOS with [Theos](https://theos.dev), the iPhoneOS 16.5 SDK, GNU Make 4.x and Python 3. Build from a git checkout, so the package can record the commit it was built from (`BuildInfo.txt`).

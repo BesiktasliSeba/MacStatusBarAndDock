@@ -445,10 +445,15 @@ static void DMWinCardBarShapePicture(DMWinCardBar *bar, UIImageView *picture, BO
     if (!picture) return;
     picture.layer.maskedCorners = under ? kCALayerMinXMaxYCorner | kCALayerMaxXMaxYCorner : kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner | kCALayerMinXMaxYCorner | kCALayerMaxXMaxYCorner;
 }
+static NSHashTable<DMWinCardBar *> *gWinCardBars;   // (every card's bar, weakly: all hidden at once as the App Switcher goes)
+static void DMWinCardBarsHideAll(void) {
+    for (DMWinCardBar *bar in [gWinCardBars allObjects]) if (!bar.hidden) { bar.hidden = YES; DMWinCardBarShapePicture(bar, bar.picture, NO); }
+}
 static void DMWinCardBarSync(UIView *card) {
     DMWinCardBar *bar = objc_getAssociatedObject(card, kWinCardBarKey);
     NSString *b = nil;
-    if (!DMSMEngine() && DMActiveEngine() != DMEngineNone && !DMWinCardsOff() && !DMTestFlag("/tmp/msb-wincards-nobar") && [card respondsToSelector:NSSelectorFromString(@"appLayout")]) {
+    // (only while iPadOS's App Switcher shows: WindowCardPlan.h MSBDWinCardBarShown -- the card of a full-screen app kept it, a line at the top)
+    if (MSBDWinCardBarShown(gEnvMode) && !DMSMEngine() && DMActiveEngine() != DMEngineNone && !DMWinCardsOff() && !DMTestFlag("/tmp/msb-wincards-nobar") && [card respondsToSelector:NSSelectorFromString(@"appLayout")]) {
         // (every layout of the card, every frame of its animation: its app is asked again only for another layout, or after half a second)
         id layout = DMCall(card, @"appLayout");
         NSArray *was = objc_getAssociatedObject(card, kWinCardBarLayoutKey);
@@ -467,6 +472,8 @@ static void DMWinCardBarSync(UIView *card) {
     if (!bar) {
         bar = [[DMWinCardBar alloc] initWithFrame:CGRectMake(0, 0, 100.0, kStageBarHeight)];
         objc_setAssociatedObject(card, kWinCardBarKey, bar, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (!gWinCardBars) gWinCardBars = [NSHashTable weakObjectsHashTable];
+        [gWinCardBars addObject:bar];
         DM_FEATURE_MARK("window-app-switcher-card-bar");
     }
     if (picture != bar.picture) { DMWinCardBarShapePicture(bar, bar.picture, NO); bar.picture = picture; }
@@ -524,6 +531,7 @@ static void DMWinCardsPictureStep(void) {
 }
 static void DMWinCardsSwitcherComing(long long mode) {
     static CFTimeInterval last = 0;
+    if (!MSBDWinCardBarShown(mode)) DMWinCardBarsHideAll();   // (the App Switcher goes: its cards' bars go with it, also the card of the app it opens)
     if (mode != 2 || DMSMEngine() || DMActiveEngine() == DMEngineNone || DMWinCardsOff()) return;
     CFTimeInterval now = CACurrentMediaTime();
     if (now - last < 1.0) return;

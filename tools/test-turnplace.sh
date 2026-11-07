@@ -65,7 +65,7 @@ check "1.7.5 item 11: a restored window saved as a window gets its Aerial stage 
 check "1.7.5 item 11: the green's places a restore turned with the old margins are turned again when Aerial's margins are learned" \
   "grep -q 'gLastWindowFrames\[b\] = \[NSValue valueWithCGRect:MSBDStageFromWindowFrame(rec\[1\].CGRectValue, nm)\];' $S && grep -q 'gA5ProvisionalLast\[b\] = @\[\[NSValue valueWithCGRect:f\], \[NSValue valueWithCGRect:DMA5WindowFromStage(f)\]\];' $S"
 # 1.7.5 item 13: a window back at its own last place is not moved by the new-window cascade unless it would sit right on another one
-check "1.7.5 item 13: a window that comes back at its own last place (Aerial 5's remembered frame, Zetsu's and MilkyWay4's marks) stays there unless its corner is on another window's (the engines' one cascade rule since 1.8.0, common/WindowSize.h MSBDWindowCascadeIn, test-windowsize)" \
+check "1.7.5 item 13: a window that comes back at its own last place (Aerial 5.x's remembered frame, Zetsu's and MilkyWay4's marks) stays there unless its corner is on another window's (the engines' one cascade rule since 1.8.0, common/WindowSize.h MSBDWindowCascadeIn, test-windowsize)" \
   "grep -q 'if (remembered) ownPlace = YES;' $S && grep -q 'if (MSBDZetsuOpensAtOwnPlace(asked, lastPlace != nil) && !CGRectIsNull(target)) DMMarkOwnPlace(w, target);' $S && grep -q 'if (remembered && !pending) DMMarkOwnPlace(window, big);' $S \
    && grep -q 'CGRect pick = MSBDWindowCascadeIn(base, otherFrames, nOthers, usable, ownPlace, &how);' $S && grep -q 'if (how == MSBDCascadeOwnKept) {' $S \
    && grep -q 'if (own && !MSBDWindowCornerTaken(base, others, n)) { if (how) \*how = MSBDCascadeOwnKept; return base; }' ../common/WindowSize.h"

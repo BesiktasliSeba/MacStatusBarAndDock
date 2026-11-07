@@ -31,6 +31,8 @@
 #import <dlfcn.h>
 #include <notify.h>
 #include <sys/stat.h>
+#include "../common/ModifierTap.h"   // (1.8.3: while Window Tiling Keys are offered, Shift + Option / Control act at their key's release, never inside a shortcut)
+#include <unistd.h>
 
 @interface UIPhysicalKeyboardEvent : UIEvent
 - (long long)_modifierFlags;
@@ -206,6 +208,18 @@ static void AdjustKeyboardBacklight(float delta) {
 // ---- keys ------------------------------------------------------------------------------------------------
 static unsigned short gLastCode = 0;
 static unsigned long long gLastFlags = 0;
+// Window Tiling Keys (Settings > Keyboard, 1.8.3): Globe-Control-Shift-arrows hold Shift and Control (and Option) too, so with them on the backlight
+// chords wait for their key's release and are dropped when any other key went down meanwhile (common/ModifierTap.h). SpringBoard only.
+static BOOL gDeferChords = NO;
+static MSBDModTap gChordTap;
+// (only while SpringBoard offers the window keys -- their switch on and a window engine of ours running, MacStatusBarCore's state --; else the old
+//  path, as in 1.8.2.2)
+static void ReadWindowKeysOffered(int token) {
+    uint64_t st = 0;
+    BOOL on = token && notify_get_state(token, &st) == NOTIFY_STATUS_OK && MSBDWindowKeysOfferedIn(st, getpid());
+    gDeferChords = on;
+    if (!on) gChordTap.armed = false;
+}
 
 // Hardening: the private key-event getters are checked once per process before they are ever called.
 static BOOL KeyEventAPIPresent(void) {
@@ -236,6 +250,19 @@ static BOOL KeyEventAPIPresent(void) {
             BOOL isDuplicate = (code == gLastCode && flags == gLastFlags);
             gLastCode = code;
             gLastFlags = flags;
+            // (Window Tiling Keys offered: the chord at its key's release, as a tap -- the key down waits, swallowed as before; another key ends it, and
+            //  with both chord keys held -- this event's flags -- neither is a tap, however often the event is handed over: ModifierTap.h)
+            if (gDeferChords) {
+                BOOL chord = (flags & SHIFT_FLAG) && (code == OPTION_KEYCODE || code == CONTROL_KEYCODE);
+                if ([key _isKeyDown]) {
+                    if (MSBDModTapDown(&gChordTap, code, chord, MSBDModTapOtherHeld(code, flags), YES) == kMSBDModTapWait) { Debug(@"[key] Shift+Option/Control down: waits for its release (Window Tiling Keys offered)"); return; }
+                } else if (MSBDModTapUp(&gChordTap, code) == kMSBDModTapActOnRelease) {
+                    Debug([NSString stringWithFormat:@"[key] Shift+%@ released (a tap) -> keyboard backlight %@", code == OPTION_KEYCODE ? @"Option" : @"Control", code == OPTION_KEYCODE ? @"up" : @"down"]);
+                    AdjustKeyboardBacklight(code == OPTION_KEYCODE ? BACKLIGHT_STEP : -BACKLIGHT_STEP);
+                }
+                %orig;
+                return;
+            }
             // (on the key going down only: Option's or Control's release -- Shift still held, flags without that key, so not a duplicate --
             //  stepped the backlight a second time, two steps per press; 17.5.1, 24 Oct)
             if (!isDuplicate && (flags & SHIFT_FLAG) && [key _isKeyDown]) {
@@ -306,6 +333,9 @@ static void PublishSwitches(void) {
     static int upToken = 0, downToken = 0, prefsToken = 0;
     notify_register_dispatch(kPrefsChanged, &prefsToken, dispatch_get_main_queue(), ^(int t) { PublishSwitches(); if (BacklightKeysOff()) GiveBackAutoBrightness(); });
     PublishSwitches();
+    static int keysToken = 0, usedToken = 0;   // (Window Tiling Keys: offered or not, and each key that ran -- no tap for the chord it began with)
+    if (notify_register_dispatch(kMSBDWindowKeysOfferedNote, &keysToken, dispatch_get_main_queue(), ^(int t) { ReadWindowKeysOffered(t); }) == NOTIFY_STATUS_OK) ReadWindowKeysOffered(keysToken);
+    notify_register_dispatch(kMSBDModTapUsedNote, &usedToken, dispatch_get_main_queue(), ^(int t) { MSBDModTapUsed(&gChordTap); });
     // (automatic keyboard brightness still to give back from before -- the keys switched off while SpringBoard was not running, or no keyboard was
     //  there --: a little after the start, not from the constructor)
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ if (BacklightKeysOff()) GiveBackAutoBrightness(); });

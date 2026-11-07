@@ -458,5 +458,7 @@ static const char *const kMSBDHookList[][4] = {   // class, selector, +/-, sourc
     {"SBVolumeControl", "initWithHUDController:ringerControl:telephonyManager:conferenceManager:", "-", "tabmute/TabMute.x"},
     {"SBVolumeControl", "elasticValueViewControllerCurrentValue:", "-", "tabmute/TabMute.x"},
     {"SBRingerControl", "initWithHUDController:soundController:", "-", "tabmute/TabMute.x"},
+    {"SpringBoard", "pressesEnded:withEvent:", "-", "volumeglobe/VolumeGlobe.x"},
+    {"SpringBoard", "pressesCancelled:withEvent:", "-", "volumeglobe/VolumeGlobe.x"},
     {"UIKeyShortcutHUDService", "_canSummonHUDWithModifierFlag:", "-", "volumeglobe/VolumeGlobe.x"},
 };

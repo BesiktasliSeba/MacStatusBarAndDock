@@ -72,6 +72,12 @@ int main(void) {
         Expect([MSBDChoiceBannerGroupFooter(kMSBDBannerDestra, YES, YES, 2) isEqual:@"Only the chosen banner style is loaded. Destra loads after a respring."], @"  ... Destra picked, not loaded yet: after a respring");
         Expect([MSBDChoiceBannerGroupFooter(kMSBDBannerMac, YES, YES, 3) isEqual:@"Banners appear at the top right. Only the chosen banner style is loaded. Install Choicy (or iCleaner Pro) so MacStatusBar&Dock can stop Destra from loading."],
                @"  ... Destra still loaded with nothing to keep it out: Choicy is needed (the pick's alert's words), not a respring");
+        // ---- KeyPilot on the Keyboard page (1.8.3): its name and developer, GET to its page while not installed, OPEN its app once it is ----
+        NSDictionary *kpGet = MSBDKeyPilotRow(NO), *kpOpen = MSBDKeyPilotRow(YES);
+        Expect([kpGet[@"title"] isEqual:@"KeyPilot"] && [kpGet[@"subtitle"] isEqual:@"by wanghuangjie"], @"KeyPilot: its name, \"by wanghuangjie\" under it");
+        Expect([kpGet[@"button"] isEqual:@"GET"] && [kpGet[@"url"] isEqual:@"https://github.com/wanghuangjie/KeyPilot/releases"] && !kpGet[@"app"], @"  ... not installed: GET, its releases page");
+        Expect([kpOpen[@"button"] isEqual:@"OPEN"] && [kpOpen[@"app"] isEqual:@"com.whj.keypilot.app"] && !kpOpen[@"url"], @"  ... installed: OPEN, its app by bundle ID (no URL scheme)");
+        Expect([kpOpen[@"title"] isEqual:@"KeyPilot"] && [kpOpen[@"subtitle"] isEqual:@"by wanghuangjie"], @"  ... the same name either way");
         printf("test-choicepage: %d/%d passed\n", gN - gFail, gN);
     }
     return gFail ? 1 : 0;

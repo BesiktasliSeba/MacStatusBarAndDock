@@ -136,6 +136,19 @@ static void MSBDIconThemeAppOverrides(Class c, Class from) {
     MSBDIconAddIf(c, from, @"isApplicationIcon", @"B@:", (IMP)MSBDIconNo);
     MSBDIconAddIf(c, from, @"iconImageCacheIdentifier", @"@@:", (IMP)MSBDIconCacheID);
 }
+// A theme engine reloads one icon's picture itself (SnowBoard's per-icon menu: -reloadIconImage on the icon it was opened for, no refresh note):
+// SpringBoard's reload, then every library of ours told (kMSBDIconThemeReloaded, below), once per turn of the main loop, so the views that draw
+// these icons ask again -- live, as an app's own icon changes (1.8.3 item 5).
+#define kMSBDIconThemeReloaded "com.besiktasliseba.macstatusbar.icontheme.reloaded"
+static void MSBDIconReload(id self, SEL _cmd) {
+    Class mine = objc_getClass("MSBDThemableIcon");
+    struct objc_super sup = { self, mine ? class_getSuperclass(mine) : class_getSuperclass(object_getClass(self)) };
+    ((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(&sup, _cmd);
+    static BOOL pending = NO;
+    if (pending) return;
+    pending = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{ pending = NO; notify_post(kMSBDIconThemeReloaded); });
+}
 static Class MSBDIconThemableClass(void) {
     Class have = objc_getClass("MSBDThemableIcon");
     if (have) return have;
@@ -145,6 +158,7 @@ static Class MSBDIconThemableClass(void) {
     MSBDIconThemeAppOverrides(k, app);
     for (NSString *s in @[@"isUninstallSupported", @"canBeAddedToMultiItemDrag", @"canBeAddedToSubfolder", @"isTimedOut", @"isProgressPaused"]) MSBDIconAddIf(k, app, s, @"B@:", (IMP)MSBDIconNo);
     MSBDIconAddIf(k, app, @"badgeNumberOrString", @"@@:", (IMP)MSBDIconNil);
+    MSBDIconAddIf(k, app, @"reloadIconImage", @"v@:", (IMP)MSBDIconReload);   // (the picture reloaded by a theme engine: our views told)
     objc_registerClassPair(k);
     return k;
 }
@@ -273,7 +287,12 @@ __attribute__((unused)) static UIImage *MSBDIconThemePicture(MSBDIconItem item, 
 #define kMSBDIconThemeChanged @"MSBDIconThemeChanged"
 static NSUInteger gMSBDIconGeneration = 0;
 __attribute__((unused)) static void MSBDIconThemeWatch(void) {
-    static int token = 0;
+    static int token = 0, reloadToken = 0;
+    if (!reloadToken) notify_register_dispatch(kMSBDIconThemeReloaded, &reloadToken, dispatch_get_main_queue(), ^(int t) {
+        gMSBDIconGeneration++;
+        DMLog([NSString stringWithFormat:@"[icontheme] a theme engine reloaded one of our icons' pictures: the items ask again (%lu)", (unsigned long)gMSBDIconGeneration]);
+        [[NSNotificationCenter defaultCenter] postNotificationName:kMSBDIconThemeChanged object:nil];
+    });
     if (token) return;
     notify_register_dispatch(kMSBDIconThemeSnowBoardRefreshed, &token, dispatch_get_main_queue(), ^(int t) {
         gMSBDIconGeneration++;

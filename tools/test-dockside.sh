@@ -162,7 +162,7 @@ check "1.8.2.2 iPad 2 F1: every menu beside a side Dock reads top-down: its anch
 check "1.8.2.2 M1 F2 / A12Z F7: Fit to Window's questions centre their title over the desktop beside a side Dock (the seam), at the bottom as before" \
   "[ \$(grep -cF 'if (!DMIsExtMenuHost(host) && DMDockSideNow([UIScreen mainScreen].bounds.size)) pillX = MSBDDockSideTitleX(' $S) = 2 ] \
    && grep -qF 'pillX = MSBDDockSideTitleX(noFit.center.x, pillW, host.bounds.size.width, 12.0);' $S && grep -qF 'pillX = MSBDDockSideTitleX(CGRectGetMidX(usable), pillW, host.bounds.size.width, 12.0);' $S \
-   && [ \$(grep -cF 'pill.frame = CGRectMake(pillX, usable.origin.y + 16.0, pillW, 40.0);' $S) = 2 ]"
+   && [ \$(grep -cF 'pill.frame = CGRectMake(pillX, MSBDFitQuestionTitleY(usable), pillW, 40.0);' $S) = 2 ]"
 strip2() { fn 'static double DMDockSideStripNow(CGSize screen, int side) {' $S; }
 thick() { fn 'static void DMDockSideThicknessChanged(double was, double now, int side) {' $S; }
 check "1.8.2.2 17.5 F3 / A12Z F5: the strip is the Dock's real thickness (DockSide.h MSBDDockSideStripStep), the last one taken only while the Dock is away; a change it makes by itself is followed by the windows on every engine, their layouts read against the Dock before it" \
@@ -212,4 +212,8 @@ check "1.8.2.2 (second pass 4): the windows placed against SpringBoard's figure 
   "fn 'static void DMDockPositionMoved(NSDictionary<NSString *, NSString *> *layouts) {' $S | grep -qF 'if (DMDockSideNow([UIScreen mainScreen].bounds.size) && gDMDockStrip.settled <= 0) gDMDockStrip.placed = gDMDockSideStripUsed;' \
    && strip2 | grep -qF 'st->settled = 0; st->cand = -1.0; st->placed = 0; }' && [ \$(strip2 | grep -c 'gDMDockSideStripUsed = ') = 2 ] \
    && grep -qF 'double base = st->settled > 0 ? st->settled : (st->placed > 0 && fabs(measured - st->placed) > kMSBDDockStripSame ? st->placed : 0.0);' ../common/DockSide.h"
+check "1.8.3 item 7 (regression-1.8.2.2-m1.md F1): a recents icon fading in -- a Handoff tile, the app's own icon back -- is turned again once SpringBoard's fade-in is over (Atria sets the icon's layer value inside it), over the value written, and on the next turn of the main loop; the fade-in hooked on its exact type only, with a side chosen" \
+  "awk '/^static void DMDockFadeIn\(id self, SEL _cmd, id icon, BOOL replacing, id completion\) \{/{f=1} f{print} f && /^}/{exit}' $D > \$W/fi && grep -q 'o_DockFadeIn(self, _cmd, icon, replacing, completion);' \$W/fi && grep -q 'DMDockSideStyleAll(root, gDockSideApplied);' \$W/fi \
+   && grep -q 'dispatch_async(dispatch_get_main_queue(), ^{ UIView \*r = weakRoot; if (r && gDockSideApplied) DMDockSideStyleAll(r, gDockSideApplied); });' \$W/fi \
+   && grep -q 'if (!m || strcmp(method_getTypeEncoding(m) ?: \"\", \"v36@0:8@16B24@?28\"))' $D && grep -q '            DMDockSideHookFadeIn();' $D"
 [ $fails = 0 ] && echo "test-dockside: site checks pass" || { echo "test-dockside: site checks FAILED"; exit 1; }

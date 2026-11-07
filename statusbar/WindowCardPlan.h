@@ -68,6 +68,11 @@ static inline NSUInteger MSBDWinCardPictureOrder(const MSBDWinCardPicWindow *w, 
         }
     return k;
 }
+// The title bar on a window's card is for iPadOS's App Switcher (environment 2) only. Outside it -- the card of the app in front, full screen; the
+// Home Screen -- it is hidden: a full-screen app's card kept the bar from its launch (the card shows the app's picture for a moment), placed above
+// that picture, out of sight only while the picture was flush with the top of the screen; 4.5 pt lower (M1, Aerial, Medium menu bar, a third-party
+// app in full screen, KT 7 Nov), its lower edge stayed over the menu bar as a line, and the card, reused, took it to the next full-screen app.
+static inline bool MSBDWinCardBarShown(long long envMode) { return envMode == 2; }
 // The title bar on a window's card (1.8.1 item 7, WindowCards.h DMWinCardBarSync): above the picture, in the picture's scale. pic: the picture in the
 // card's space; imageWidth: its own width (the scene's); barHeight: a window's title bar. *s: its scale; *cx, *cy: its centre in the card's space.
 static inline void MSBDWinCardBarPlace(double picX, double picY, double picW, double imageWidth, double barHeight, double *s, double *cx, double *cy) {
