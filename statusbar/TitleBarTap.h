@@ -21,21 +21,36 @@
 static char kTitleTapKindKey, kTitleTapMineKey;   // (the frame from before: kWinZoomKey, WindowKeys.h)
 
 // ---- one double tap on one window ----
+// Fill takes the window to the Fill layout; Zoom grows it as far as it fits with its own shape, centred (TitleBarRule.h MSBDTitleZoomFrame, 1.8.4.1
+// item 1: in the window's own frames -- Aerial 5.x's window inside its stage --, at least the smallest window there: the app's and the engine's,
+// Stage Manager's own width, our windows' minSize). Both in the desktop every layout is cut from: under the menu bar, above the Dock or beside it
+// at a side, down to the edge while the Dock hides itself, Stage Manager's stage area. Both go back with the record kept with the frame they put
+// the window at.
 static void DMTitleTapNative(DMNativeWindow *w, NSString *why) {
     int action = MSBDTitleActionFor(gTitleDoubleTap, true);   // (our own window: Zoom while never set, as before 1.8.3)
-    if (action == kMSBDTitleZoom) { [w zoom]; return; }   // (its own zoom: the desktop and back, as before)
+    if (action == kMSBDTitleZoom && gTitleDoubleTap == kMSBDTitleNeverSet) { [w zoom]; return; }   // (never set: its own zoom, the desktop and back, as before -- its green light's)
     if (action == kMSBDTitleMinimize) { [w minimize]; return; }
-    if (action != kMSBDTitleFill) return;
+    if (action != kMSBDTitleFill && action != kMSBDTitleZoom) return;
     CGRect fill = DMLayoutFrameInArea(@"fill", DMNativeDesktop(), [UIScreen mainScreen].bounds.size);
-    BOOL atFill = MSBDWinNear(w.frame, fill);
-    NSValue *rec = DMTitleRecordHeldView(w, w.frame, w.title ?: @"our window");   // (the frame it had just before Fill -- a tile too, regression F2 -- while it holds, P4-1)
-    int step = MSBDTitleStep(action, atFill, rec != nil);
+    BOOL zoom = action == kMSBDTitleZoom;
+    CGRect target = zoom ? MSBDTitleZoomFrame(w.frame, fill, w.minSize) : fill;   // (Zoom: its shape kept, as far as it fits)
+    if (CGRectIsNull(target)) return;
+    BOOL atTarget = MSBDWinNear(w.frame, target);
+    NSValue *rec = DMTitleRecordHeldView(w, w.frame, w.title ?: @"our window");   // (the frame it had just before Fill or Zoom -- a tile too, regression F2 -- while it holds, P4-1)
+    int step = MSBDTitleStep(action, atTarget, rec != nil);
     if (step == kMSBDTitleBack) {
         w.restoreFrame = CGRectNull; w.layoutName = nil;
         CGRect f = rec.CGRectValue;
         DMTitleRecordNativeTo(w, f);   // (back: dropped)
         MSBAnimate(0.2, 0, 0, UIViewAnimationOptionCurveEaseOut, ^{ w.frame = f; }, nil);
         DMLog([NSString stringWithFormat:@"[titlebar] %@: %@ back to %@", why, w.title ?: @"our window", NSStringFromCGRect(f)]);
+        return;
+    }
+    if (zoom) {
+        w.restoreFrame = CGRectNull; w.layoutName = nil;   // (in no layout: a turn keeps it whole on the new desktop, as a window placed by hand)
+        DMTitleRecordView(w, w.frame, target, target);   // (its record kept with the zoomed frame: taken from elsewhere, kept there)
+        MSBAnimate(0.2, 0, 0, UIViewAnimationOptionCurveEaseOut, ^{ w.frame = target; }, nil);
+        DMLog([NSString stringWithFormat:@"[titlebar] %@: %@ zoomed to %@ (its shape kept)", why, w.title ?: @"our window", NSStringFromCGRect(target)]);
         return;
     }
     DMNativeLayout(w, @"fill");   // (the frame from before taken there, as for every Fill of ours; Return to Previous Size's too, while the window keys want it)
@@ -50,10 +65,13 @@ static void DMTitleTapSMWindow(NSString *key, NSString *why) {
     NSValue *now = DMSMOpenWindowFrames()[key];
     if (!now || !DMSMItemFor(stage, key, &attrs) || !attrs || DMSMAttrsFullScreen(attrs)) { DMLog([NSString stringWithFormat:@"[titlebar] %@: %@ has no window to fill (full screen or away)", why, DMSMKeyText(key)]); return; }
     CGSize scr = CGSizeZero; CGRect u = DMSMUsableAreaForStage(stage, &scr);
-    BOOL atFill = MSBDWinNear(now.CGRectValue, DMSMLayoutFrameIn(@"fill", u, scr));
     BOOL zoom = action == kMSBDTitleZoom;
+    CGSize least = CGSizeMake(MAX(DMSMMinWindowWidth(scr), kMSBDWindowMinWidth), kMSBDWindowMinAppHeight + kSMBarH);   // (Stage Manager's smallest window, as its tiles': DMSMLayoutFrameIn)
+    CGRect target = zoom ? MSBDTitleZoomFrame(now.CGRectValue, DMSMLayoutFrameIn(@"fill", u, scr), least) : DMSMLayoutFrameIn(@"fill", u, scr);   // (Zoom: its shape kept, as far as it fits in the stage area)
+    if (CGRectIsNull(target)) return;
+    BOOL atTarget = MSBDWinNear(now.CGRectValue, target);
     NSValue *rec = DMTitleRecordHeldSM(key, now.CGRectValue);   // (Fill's and Zoom's: the frame it had just before -- a Fit tile too, regression F2 -- while it holds, P4-1)
-    int step = MSBDTitleStep(action, atFill, rec != nil);
+    int step = MSBDTitleStep(action, atTarget, rec != nil);
     for (NSString *k in [gSMTurnPlaced allKeys]) if (DMSMKeyCovers(key, k)) [gSMTurnPlaced removeObjectForKey:k];   // (placed now, as a layout)
     if (step == kMSBDTitleBack) {
         DMTitleRecordSMTo(key, stage, rec.CGRectValue);   // (back: dropped)
@@ -62,11 +80,18 @@ static void DMTitleTapSMWindow(NSString *key, NSString *why) {
         DMLog([NSString stringWithFormat:@"[titlebar] %@: %@ back to %@ (%@)", why, DMSMKeyText(key), NSStringFromCGRect(rec.CGRectValue), ok ? @"done" : @"not in the stage"]);
         return;
     }
+    if (zoom) {
+        DMTitleRecordSMAt(key, stage, target, target);   // (its record kept with the zoomed frame: taken from elsewhere, kept there)
+        BOOL ok = DMSMApplyPlacesIn(@{key: [NSValue valueWithCGRect:target]}, stage);
+        if (ok) DMSMFitLetGo(key);   // (as above)
+        DMLog([NSString stringWithFormat:@"[titlebar] %@: %@ zoomed to %@ (its shape kept%@)", why, DMSMKeyText(key), NSStringFromCGRect(target), ok ? @"" : @", not in the stage"]);
+        return;
+    }
     DMTitleRecordSMTo(key, stage, DMSMLayoutFrameIn(@"fill", u, scr));   // (to Fill: the frame now kept, MSBDTitleBackTakes -- as for every Fill of ours)
-    if (!zoom) DMWinPrevNoteSM(key, stage);   // (Fill: Return to Previous Size's record as the Window menu's Fill takes it, while the keys want it)
+    DMWinPrevNoteSM(key, stage);   // (Fill: Return to Previous Size's record as the Window menu's Fill takes it, while the keys want it)
     BOOL ok = DMSMApplyLayoutsIn(@{key: @"fill"}, stage);
     if (ok) DMSMFitLetGo(key);   // (as above)
-    DMLog([NSString stringWithFormat:@"[titlebar] %@: %@ at Fill (%@%@)", why, DMSMKeyText(key), zoom ? @"Zoom" : @"Fill", ok ? @"" : @", not in the stage"]);
+    DMLog([NSString stringWithFormat:@"[titlebar] %@: %@ at Fill%@", why, DMSMKeyText(key), ok ? @"" : @" (not in the stage)"]);
 }
 // Aerial's, Zetsu's and MilkyWay4's windows: the engine's window view of that app.
 static void DMTitleTapEngineWindow(NSString *bundleID, NSString *why) {
@@ -81,17 +106,22 @@ static void DMTitleTapEngineWindow(NSString *bundleID, NSString *why) {
     }
     CGRect fill = DMLayoutFrame(@"fill");   // (the engine's frames: Aerial 5.x's stage)
     if (CGRectIsNull(fill)) return;
-    BOOL atFill = MSBDWinNear(v.frame, fill), zoom = action == kMSBDTitleZoom;
+    BOOL zoom = action == kMSBDTitleZoom;
+    // (Zoom: the window's own shape -- Aerial 5.x's window inside its stage, the stage around the zoomed window --, at least the engines' smallest window)
+    CGRect target = zoom ? DMA5StageFromWindow(MSBDTitleZoomFrame(DMA5WindowFromStage(v.frame), DMLayoutFrameWindow(@"fill"), MSBDWindowMinSize())) : fill;
+    if (CGRectIsNull(target)) return;
+    BOOL atTarget = MSBDWinNear(v.frame, target);
     NSValue *rec = DMTitleRecordHeldView(v, v.frame, bundleID);   // (Fill's and Zoom's: the frame it had just before -- a Fit tile too, regression F2 -- while it holds, P4-1)
-    int step = MSBDTitleStep(action, atFill, rec != nil);
-    CGRect to = step == kMSBDTitleBack ? rec.CGRectValue : fill;
-    DMTitleRecordEngineTo(v, to);   // (to Fill: the frame now kept, MSBDTitleBackTakes; back: dropped -- as for every placement of ours)
+    int step = MSBDTitleStep(action, atTarget, rec != nil);
+    CGRect to = step == kMSBDTitleBack ? rec.CGRectValue : target;
+    if (step == kMSBDTitleToZoom) DMTitleRecordView(v, v.frame, to, to);   // (Zoom's record kept with the zoomed frame: taken from elsewhere, kept there)
+    else DMTitleRecordEngineTo(v, to);   // (to Fill: the frame now kept, MSBDTitleBackTakes; back: dropped -- as for every placement of ours)
     if (step != kMSBDTitleBack && !zoom) DMWinPrevNoteView(v, DMWinTiledEngine(v.frame), v.frame);   // (Fill: Return to Previous Size's record, as the Window menu's Fill)
     objc_setAssociatedObject(v, &kStageTurnPlacedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (placed now, as a layout)
     DMFitGroupForget(bundleID);   // (placed by the user: no longer one of Fit to Window's tiles, as a layout of its own)
     DMAerialMoveStage(v, to, nil);
     if (DMActiveEngine() == DMEngineAerial && gAerialFlavor == 5 && !DMTestFlag("/tmp/msb-a5-nohold")) DMA5HoldStageAt(v, to, CACurrentMediaTime() + 1.5);   // (as a Window menu layout)
-    DMLog([NSString stringWithFormat:@"[titlebar] %@: %@ %@ %@ (%@)", why, bundleID, step == kMSBDTitleBack ? @"back to" : @"at Fill", NSStringFromCGRect(to), zoom ? @"Zoom" : @"Fill"]);
+    DMLog([NSString stringWithFormat:@"[titlebar] %@: %@ %@ %@ (%@)", why, bundleID, step == kMSBDTitleBack ? @"back to" : zoom ? @"zoomed to" : @"at Fill", NSStringFromCGRect(to), zoom ? @"Zoom, its shape kept" : @"Fill"]);
 }
 
 // ---- the recogniser ----
@@ -117,18 +147,24 @@ static void DMTitleTapWhenFree(void (^act)(NSString *), int tries) {
         }
     }
 }
+// A touch on the bar the recogniser is on: every touch there, but Aerial's stage only in its title strip.
+static BOOL DMTitleTapOnBar(UIGestureRecognizer *g, UITouch *touch) {
+    if ([objc_getAssociatedObject(g, &kTitleTapKindKey) intValue] != kDMTitleAerial) return YES;
+    UIView *stage = g.view;
+    CGPoint p = [touch locationInView:stage];
+    return gAerialFlavor == 5 ? DMA5DragAllowedAt(stage, p) : (p.y >= -12.0 && p.y < kStageBarHeight);
+}
 @interface DMTitleTapTarget : NSObject <UIGestureRecognizerDelegate>
 + (instancetype)shared;
 @end
 @implementation DMTitleTapTarget
 + (instancetype)shared { static DMTitleTapTarget *t; static dispatch_once_t once; dispatch_once(&once, ^{ t = [DMTitleTapTarget new]; }); return t; }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldReceiveTouch:(UITouch *)touch {
+    if (!DMTitleTapOnBar(g, touch)) return NO;   // (Aerial's stage: its title strip only)
+    // (any touch on a window's title bar, its lights too -- Aerial 5.x's and 3.0's strip, Zetsu's top bar, MilkyWay4's bar, which no app hears of: a
+    //  window Keep Covered Windows in Front kept above another is the active one now, as a tap in it makes it -- KeepCovered.h, review 1.8.4.1 M1)
+    DMKeepCoveredByHand(g.view);
     for (UIView *v = touch.view; v && v != g.view; v = v.superview) if ([v isKindOfClass:[UIControl class]]) return NO;   // (a traffic light, a button of the bar)
-    if ([objc_getAssociatedObject(g, &kTitleTapKindKey) intValue] == kDMTitleAerial) {   // (the stage: its title strip only)
-        UIView *stage = g.view;
-        CGPoint p = [touch locationInView:stage];
-        return gAerialFlavor == 5 ? DMA5DragAllowedAt(stage, p) : (p.y >= -12.0 && p.y < kStageBarHeight);
-    }
     return YES;
 }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other { return YES; }

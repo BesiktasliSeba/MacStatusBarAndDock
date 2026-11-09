@@ -1,8 +1,10 @@
 #import <objc/message.h>
 #import <Foundation/Foundation.h>
 #import <dlfcn.h>
+#import <notify.h>
 #import "DMRootListController.h"
 #import <Preferences/PSSpecifier.h>
+#import "../../common/DockAppLibrary.h"   // (1.8.4.1 item 2: Apple's App Library switch on this page applies at once)
 #import "../../common/LineSwitch.h"
 #import "../../common/MacDockActive.h"
 #import "../../common/NativeEmbed.h"
@@ -72,7 +74,9 @@ MSBD_LINE_SWITCH_METHODS
 				if (g.cellType != PSGroupCell || ![g.name isEqualToString:@"App Library"]) continue;
 				[specs insertObject:lib.firstObject atIndex:i + 1];
 				NSString *home = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 16 ? @"Home Screen & Multitasking" : @"Home Screen";
-				[g setProperty:[NSString stringWithFormat:@"Home Screen options are in %@.", home] forKey:@"footerText"];
+				// (iPadOS 15: SpringBoard reads this setting at its start and its Dock doesn't follow a change: its own getter still gave the old value right after its own setter, M1 15.6.1, plans/regression-1.8.4.1-evidence/m1/applib-z03-2.txt)
+				BOOL respring = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion < 16;
+				[g setProperty:[NSString stringWithFormat:@"Home Screen options are in %@.%@", home, respring ? @" Show App Library in Dock takes effect after a respring." : @""] forKey:@"footerText"];
 				break;
 			}
 		}
@@ -92,6 +96,27 @@ MSBD_LINE_SWITCH_METHODS
 		_specifiers = [self msbd_hideRowsWhenLineOff:specs offFooter:@"The Dock features are off. Turn them on to change their settings. Takes effect after a respring."];
 	}
 	return _specifiers;
+}
+
+// Apple's App Library switch above is Apple's own row: it writes as on Apple's page, and nothing of ours hears of it. With a window engine Settings is a
+// window, so the full-screen transition after which SpringBoard puts its parked Dock change in never came, and the icon stayed until a respring (KT
+// 7 Nov, the M1, 15.6.1). Its switch gets one more target -- after Apple's own, never in its place -- that tells the Dock part, which then lays the
+// Dock out with it at once (common/DockAppLibrary.h, Dock.x DMAppLibraryInDockChanged). Cells are reused, for any row of their kind: ours comes off
+// every row's control and goes back on the App Library row's only, once -- a cell that had that row before must not tell SpringBoard when another
+// row's switch on it is flipped (review 1.8.4.1 L1).
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+	UITableViewCell *cell = [super tableView:tableView cellForRowAtIndexPath:indexPath];
+	SEL specSel = NSSelectorFromString(@"specifier"), controlSel = NSSelectorFromString(@"control");   // (PSTableCell's row, PSControlTableCell's switch)
+	id control = [cell respondsToSelector:controlSel] ? ((id (*)(id, SEL))objc_msgSend)(cell, controlSel) : nil;
+	if (![control isKindOfClass:[UIControl class]]) return cell;
+	[(UIControl *)control removeTarget:self action:@selector(msbd_appLibrarySwitched:) forControlEvents:UIControlEventValueChanged];
+	PSSpecifier *sp = [cell respondsToSelector:specSel] ? ((id (*)(id, SEL))objc_msgSend)(cell, specSel) : nil;
+	if ([sp isKindOfClass:[PSSpecifier class]] && [sp.identifier isEqualToString:@kMSBDDockAppLibraryRowID])
+		[(UIControl *)control addTarget:self action:@selector(msbd_appLibrarySwitched:) forControlEvents:UIControlEventValueChanged];
+	return cell;
+}
+- (void)msbd_appLibrarySwitched:(id)sender {
+	notify_post(kMSBDDockAppLibraryNote);   // (the Dock part looks three times over the next second: SpringBoard hears of Apple's write in its own time)
 }
 
 // Number of Recent Apps and Apple's "Show Suggested and Recent Apps in Dock" (com.apple.springboard SBRecentsEnabled) stay in step while MacDock is

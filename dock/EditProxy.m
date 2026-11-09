@@ -280,6 +280,10 @@ static void EPFollow(UIView *proxy, UIView *library) {
     }
     EPFit(proxy, want, t);
     proxy.layer.sublayerTransform = DMDockSideTurnFor(library);
+    // (fitted at its rest size: under a resting pointer -- the Dock's link at rest -- the magnification is put back on it at once, else it waited for the
+    //  pointer to move: review 1.8.4 L1-L4 L-1, with the hover held through UIKit's cancel, Dock.x DMDockHoverReapply)
+    extern void DMDockHoverReapply(void);
+    DMDockHoverReapply();
 }
 // The same once the layout this call came in has finished: the App Library icon's picture is then where its own layout put it. In the middle of a
 // Dock layout while editing it was half laid out, and ours, fitted to it, came out too big (M1 1.8.3.1 F-5). One a run loop turn.

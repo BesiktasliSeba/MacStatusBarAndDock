@@ -2,6 +2,21 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.4.1
+
+### New
+- Keep Covered Windows in Front in Settings > Windows & Multitasking, off until you turn it on: when a window comes forward, a smaller window it would cover completely stays in front of it, so you don't lose it behind the bigger one. It works with Aerial, Zetsu and MilkyWay4, and its row isn't shown with Stage Manager.
+
+### Improvements
+- With Double-Tap a Title Bar to set to Zoom in Settings > Windows & Multitasking, a double tap now makes the window as large as it fits while keeping its shape, centred. Fill still fills the desktop edge to edge, and a second double tap gives the window its size from before.
+- Icon Size in Settings > Dock now says that the Dock stops growing once it fills the screen.
+
+### Fixes
+- A window hidden behind a bigger one now comes back with its Dock icon, Command-Tab or the Mac Switcher. Window > Bring All to Front brings the front app's windows above the others, and the Window menu lists them so you can pick one.
+- With Stage Manager, turning the iPad keeps the window you're using in front, and right after a respring that changed the Dock's auto-hide, a turn keeps your windows in their layouts.
+- Show App Library in Dock applies at once on iPadOS 16 and later. On iPadOS 15 it takes effect after a respring, and Settings > Dock now says so.
+- The Dock's magnification now stays under a resting pointer, also when the Dock changes under it, and still eases out when you tap the screen.
+
 ## 1.8.4
 
 ### New

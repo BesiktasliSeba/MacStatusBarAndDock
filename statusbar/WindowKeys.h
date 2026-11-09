@@ -89,12 +89,15 @@ static void DMTitleRecordMovedSM(NSString *key) {
     key = DMSMWindowKeyOf(key);
     if (key.length) [gSMWinZoom removeObjectForKey:key];
 }
-// A placement of ours is about to move this window from now to `to`; fill: the Fill frame where it is. (A setting that keeps no frames: dropped,
-// and nothing read -- every placement of ours passes here.)
+// A placement of ours is about to move this window from now to `to`; fill: the Fill frame where it is (the title bar's own Zoom: the zoomed frame,
+// the one its record is kept with -- TitleBarRule.h, 1.8.4.1 item 1). (A setting that keeps no frames: dropped, and nothing read -- every placement
+// of ours passes here.) Placed again at the very frame its record was kept with, while it is there (Center on a zoomed window): kept.
 static void DMTitleRecordView(UIView *v, CGRect now, CGRect to, CGRect fill) {
     if (!v) return;
+    NSArray<NSValue *> *had = objc_getAssociatedObject(v, &kWinZoomKey);
+    BOOL stays = [had isKindOfClass:[NSArray class]] && had.count == 2 && MSBDWinNear(to, had[1].CGRectValue) && MSBDWinNear(now, had[1].CGRectValue);
     int r = (CGRectIsNull(fill) || CGRectIsNull(to)) ? kMSBDTitleRecordDrop
-          : MSBDTitleRecordOnPlace(MSBDTitleKeepsFrames(gTitleDoubleTap), MSBDWinNear(to, fill), MSBDWinNear(now, fill));
+          : MSBDTitleRecordOnPlaceAt(MSBDTitleKeepsFrames(gTitleDoubleTap), MSBDWinNear(to, fill), MSBDWinNear(now, fill), stays);
     if (r == kMSBDTitleRecordTake) objc_setAssociatedObject(v, &kWinZoomKey, DMTitleRecordPair(now, fill), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     else if (r == kMSBDTitleRecordDrop) DMTitleRecordMovedView(v);
 }
@@ -108,21 +111,26 @@ static void DMTitleRecordNativeTo(DMNativeWindow *w, CGRect to) {   // (our own 
     if (!MSBDTitleKeepsFrames(gTitleDoubleTap)) { DMTitleRecordMovedView(w); return; }
     DMTitleRecordView(w, w.frame, to, DMLayoutFrameInArea(@"fill", DMNativeDesktop(), [UIScreen mainScreen].bounds.size));
 }
-static void DMTitleRecordSMTo(NSString *key, id stage, CGRect to) {   // (Stage Manager: the whole window, title bar included)
+// (Stage Manager: the whole window, title bar included. fill: the stage's Fill, or -- the title bar's own Zoom -- the zoomed frame, as above;
+//  CGRectNull: the stage's Fill)
+static void DMTitleRecordSMAt(NSString *key, id stage, CGRect to, CGRect fill) {
     if (!MSBDTitleKeepsFrames(gTitleDoubleTap)) { DMTitleRecordMovedSM(key); return; }
     key = DMSMWindowKeyOf(key);
     if (!key.length) return;
     NSValue *now = DMSMOpenWindowFrames()[key];
     if (!stage) stage = DMSMStageOf(key);
-    CGSize scr = CGSizeZero; CGRect u = DMSMUsableAreaForStage(stage, &scr), fill = DMSMLayoutFrameIn(@"fill", u, scr);
+    if (CGRectIsNull(fill)) { CGSize scr = CGSizeZero; CGRect u = DMSMUsableAreaForStage(stage, &scr); fill = DMSMLayoutFrameIn(@"fill", u, scr); }
+    NSArray<NSValue *> *had = gSMWinZoom[key];
+    BOOL stays = now && [had isKindOfClass:[NSArray class]] && had.count == 2 && MSBDWinNear(to, had[1].CGRectValue) && MSBDWinNear(now.CGRectValue, had[1].CGRectValue);
     int r = (!now || CGRectIsNull(to) || CGRectIsNull(fill)) ? kMSBDTitleRecordDrop
-          : MSBDTitleRecordOnPlace(YES, MSBDWinNear(to, fill), MSBDWinNear(now.CGRectValue, fill));
+          : MSBDTitleRecordOnPlaceAt(YES, MSBDWinNear(to, fill), MSBDWinNear(now.CGRectValue, fill), stays);
     if (r == kMSBDTitleRecordDrop) { [gSMWinZoom removeObjectForKey:key]; return; }
     if (r != kMSBDTitleRecordTake) return;
     DMSMRecordsPrune(gSMWinZoom);
     if (!gSMWinZoom) gSMWinZoom = [NSMutableDictionary dictionary];
     gSMWinZoom[key] = DMTitleRecordPair(now.CGRectValue, fill);
 }
+static void DMTitleRecordSMTo(NSString *key, id stage, CGRect to) { DMTitleRecordSMAt(key, stage, to, CGRectNull); }   // (every placement of ours: the stage's Fill)
 // Stage Manager: a plan of layouts (key -> layout name) or places (key -> frame) about to be applied in a stage, each window as above.
 static void DMTitleRecordSMPlan(NSDictionary *plan, id stage) {
     if (!plan.count || (!MSBDTitleKeepsFrames(gTitleDoubleTap) && !gSMWinZoom.count)) return;

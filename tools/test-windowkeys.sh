@@ -86,7 +86,7 @@ check "Stage Manager: a window placed by the user leaves its Fit to Window tile 
    && fn 'static void DMWindowBackFromTile(NSString *why) {' $K && grep -q 'if (ok) DMSMFitLetGo(key);' \$W/fn \
    && fn 'static void DMCenterFrontWindow(NSString *why) {' $K && grep -q 'if (ok) DMSMFitLetGo(key);' \$W/fn \
    && fn 'static void DMArrangeWindows(const char *const *slots, int count, NSString *why) {' $K && grep -q 'if (ok) for (NSString \*k in plan) DMSMFitLetGo(k);' \$W/fn \
-   && fn 'static void DMTitleTapSMWindow(NSString *key, NSString *why) {' ../statusbar/TitleBarTap.h && [ \$(grep -c 'if (ok) DMSMFitLetGo(key);' \$W/fn) = 2 ]"
+   && fn 'static void DMTitleTapSMWindow(NSString *key, NSString *why) {' ../statusbar/TitleBarTap.h && [ \$(grep -c 'if (ok) DMSMFitLetGo(key);' \$W/fn) = 3 ]"   # (Fill, Zoom -- its own place since 1.8.4.1 item 1 -- and back)
 check "the switch: Settings > Keyboard, off by default, posted to SpringBoard and read with the other preferences" \
   "grep -q 'PSSpecifier \*keys = MSKeySwitch(target, @\"Window Tiling Shortcuts\", @kMSBDWindowKeysDomain, @kMSBDWindowKeysKey);' $KB \
    && grep -q 'CFPropertyListRef kr = CFPreferencesCopyValue(CFSTR(kMSBDWindowKeysKey), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);' $S \

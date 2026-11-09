@@ -5,7 +5,7 @@
 set -e
 cd "$(dirname "$0")"
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
-clang -O2 -Wall -Wno-unused-function -o "$W/ttb" test-titlebar.c
+clang -O2 -Wall -Wno-unused-function -framework CoreGraphics -o "$W/ttb" test-titlebar.c
 "$W/ttb"
 fails=0
 check() { if eval "$2"; then echo "PASS  $1"; else echo "FAIL  $1"; fails=1; fi; }
@@ -34,8 +34,8 @@ check "Fill and Zoom go back with the frame the window had just before -- taken 
    && has 'DMAerialMoveStage(v, to, nil);' && has 'DMFitGroupForget(bundleID);' \
    && fn 'static void DMTitleTapSMWindow(NSString *key, NSString *why) {' $B && has 'NSValue *rec = DMTitleRecordHeldSM(key, now.CGRectValue);' && ! grep -q 'gSMWinPrev\[key\]' \$W/fn \
    && has 'DMTitleRecordSMTo(key, stage, DMSMLayoutFrameIn(@\"fill\", u, scr));' && has 'DMTitleRecordSMTo(key, stage, rec.CGRectValue);' \
-   && has 'if (!zoom) DMWinPrevNoteSM(key, stage);' && has 'BOOL ok = DMSMApplyLayoutsIn(@{key: @\"fill\"}, stage);' \
-   && fn 'static void DMTitleTapNative(DMNativeWindow *w, NSString *why) {' $B && has 'if (action == kMSBDTitleZoom) { [w zoom]; return; }' && has 'NSValue *rec = DMTitleRecordHeldView(w, w.frame, w.title ?: @\"our window\");' \
+   && before 'if (zoom) {' 'DMWinPrevNoteSM(key, stage);   // (Fill:' && has 'BOOL ok = DMSMApplyLayoutsIn(@{key: @\"fill\"}, stage);' \
+   && fn 'static void DMTitleTapNative(DMNativeWindow *w, NSString *why) {' $B && has 'if (action == kMSBDTitleZoom && gTitleDoubleTap == kMSBDTitleNeverSet) { [w zoom]; return; }' && has 'NSValue *rec = DMTitleRecordHeldView(w, w.frame, w.title ?: @\"our window\");' \
    && has 'DMTitleRecordNativeTo(w, f);' && has 'DMNativeLayout(w, @\"fill\");' \
    && fn 'static void DMWindowKeysApply(void) {' $K && has 'if (!MSBDTitleKeepsFrames(gTitleDoubleTap)) gSMWinZoom = nil;'"
 check "  ... Minimize as each engine minimizes a window; nothing while SpringBoard is busy or in Guided Access" \
@@ -48,7 +48,8 @@ check "  ... a double tap during a transition (its own first tap's activation) w
    && grep -q 'if (w) DMTitleTapNative(w, why);' \$W/fn"
 check "Stage Manager's Fill / Zoom records (the frame from before and the Fill it was kept with, by window): pruned of closed windows at each take, as Return to Previous Size's, dropped when the setting is neither Fill nor Zoom; a bar that knows only its app names the app's newest window (review 1.8.3 P2-5)" \
   "fn 'static void DMTitleTapSMWindow(NSString *key, NSString *why) {' $B && has 'key = DMSMWindowKeyOf(key);' \
-   && fn 'static void DMTitleRecordSMTo(NSString *key, id stage, CGRect to) {' $K && has 'key = DMSMWindowKeyOf(key);' && has 'DMSMRecordsPrune(gSMWinZoom);' && has 'gSMWinZoom[key] = DMTitleRecordPair(now.CGRectValue, fill);' \
+   && fn 'static void DMTitleRecordSMAt(NSString *key, id stage, CGRect to, CGRect fill) {' $K && has 'key = DMSMWindowKeyOf(key);' && has 'DMSMRecordsPrune(gSMWinZoom);' && has 'gSMWinZoom[key] = DMTitleRecordPair(now.CGRectValue, fill);' \
+   && grep -qF 'static void DMTitleRecordSMTo(NSString *key, id stage, CGRect to) { DMTitleRecordSMAt(key, stage, to, CGRectNull); }' $K \
    && fn 'static void DMWindowKeysApply(void) {' $K && has 'if (!MSBDTitleKeepsFrames(gTitleDoubleTap)) gSMWinZoom = nil;'"
 check "the setting read with the others; never set (KT, review 1.8.3 P2-3): an app's window does nothing on every engine, our own windows zoom as before 1.8.3" \
   "grep -q 'int title = MSBDTitleActionFromStored(tr && CFGetTypeID(tr) == CFStringGetTypeID() ? \[(__bridge NSString \*)tr UTF8String\] : NULL);' $S && grep -q 'static int gTitleDoubleTap = kMSBDTitleNeverSet;' $S \
@@ -103,7 +104,7 @@ check "  ... at a double tap the frame from before counts only while the window 
    && [ \$(grep -c 'gSMWinZoom\[key\] = ' $K) = 1 ] && [ \$(grep -c 'objc_setAssociatedObject([a-z]*, &kWinZoomKey' $K) = 3 ] \
    && fn 'static NSValue *DMTitleRecordHeldView(UIView *v, CGRect now, NSString *who) {' $K && has 'if (MSBDTitleRecordHolds(rec != nil, rec && MSBDWinNear(now, rec[1].CGRectValue))) return rec[0];' \
    && fn 'static NSValue *DMTitleRecordHeldSM(NSString *key, CGRect now) {' $K && has 'if (MSBDTitleRecordHolds(rec != nil, rec && MSBDWinNear(now, rec[1].CGRectValue))) return rec[0];' \
-   && fn 'static void DMTitleRecordView(UIView *v, CGRect now, CGRect to, CGRect fill) {' $K && has 'MSBDTitleRecordOnPlace(MSBDTitleKeepsFrames(gTitleDoubleTap), MSBDWinNear(to, fill), MSBDWinNear(now, fill));'"
+   && fn 'static void DMTitleRecordView(UIView *v, CGRect now, CGRect to, CGRect fill) {' $K && has 'MSBDTitleRecordOnPlaceAt(MSBDTitleKeepsFrames(gTitleDoubleTap), MSBDWinNear(to, fill), MSBDWinNear(now, fill), stays);'"
 check "1.8.3 L1: our own windows' Zoom (the green light, a title bar's Zoom) keeps the frame from before in step too, before it moves the window, both ways" \
   "fn '- (void)zoom {' $N && before 'DMTitleRecordNativeTo(self, d);' 'self.frame = d;' && before 'DMTitleRecordNativeTo(self, r);' 'self.frame = r;' \
    && grep -qF 'static void DMTitleRecordNativeTo(DMNativeWindow *w, CGRect to);' $N"
@@ -112,10 +113,26 @@ check "1.8.3 L2: a resize by hand drops the frame from before however it ends: S
    && fn 'static id DMSMRAGesture(id self, SEL _cmd, id event) {' $R && before 'id r = o_SMRAGesture(self, _cmd, event);' 'if (read && phase == 1 && DMTitleRecordSMAny()) {' \
    && has 'DMSMRARead(self, gSMRAStartIv, &st, sizeof st) && DMSMRectSane(st)) DMSMRADropTitleRecord(e, st);'"
 check "  ... and a move or a resize by hand that is cut short (cancelled) drops it too: Zetsu's and MilkyWay4's pans (move, corner, handle), Aerial's" \
-  "fn 'static void DMTitleRecordHandEnded(UIView *v, UIGestureRecognizerState s) {' $S && has 'if (s == UIGestureRecognizerStateEnded || s == UIGestureRecognizerStateCancelled) DMTitleRecordMovedView(v);' \
+  "fn 'static void DMTitleRecordHandEnded(UIView *v, UIGestureRecognizerState s) {' $S && has 'if (s == UIGestureRecognizerStateEnded || s == UIGestureRecognizerStateCancelled) { DMTitleRecordMovedView(v);' \
    && grep -qF 'else DMTitleRecordHandEnded(w, g.state);   // (a move by hand cut short' $S && grep -qF 'else DMTitleRecordHandEnded(win, g.state);   // (a move by hand cut short' $S \
    && [ \$(grep -c 'DMTitleRecordHandEnded(stage, g.state);   // (a move by hand cut short' $S) = 2 ] && [ \$(grep -c 'DMTitleRecordHandEnded(' $S) = 9 ] \
    && ! grep -q 'if (g.state == UIGestureRecognizerStateEnded) DMTitleRecordMovedView(' $S && ! grep -q 'if (s == UIGestureRecognizerStateEnded) DMTitleRecordMovedView(' $S"
 check "P4-2: TitleBarTap.h's header says Fill and Zoom go back with their own frame from before (not Return to Previous Size's record)" \
   "! grep -qF \"Fill's way back is Return to\" $B && grep -qF 'Fill and Zoom go back with their own frame' $B"
+check "1.8.4.1 item 1: Zoom keeps the window's shape on every window -- our own (their minSize; never set, their own zoom as before), Stage Manager's (its stage area's Fill, its smallest window), Aerial's, Zetsu's and MilkyWay4's (the engines' smallest window, Aerial 5.x's window inside its stage) --, its record kept with the zoomed frame; Fill stays Fill" \
+  "fn 'static void DMTitleTapNative(DMNativeWindow *w, NSString *why) {' $B && has 'CGRect target = zoom ? MSBDTitleZoomFrame(w.frame, fill, w.minSize) : fill;' && has 'DMTitleRecordView(w, w.frame, target, target);' \
+   && has 'w.frame = target;' && before 'if (zoom) {' 'DMNativeLayout(w, @\"fill\");' \
+   && fn 'static void DMTitleTapSMWindow(NSString *key, NSString *why) {' $B && has 'CGSize least = CGSizeMake(MAX(DMSMMinWindowWidth(scr), kMSBDWindowMinWidth), kMSBDWindowMinAppHeight + kSMBarH);' \
+   && has 'CGRect target = zoom ? MSBDTitleZoomFrame(now.CGRectValue, DMSMLayoutFrameIn(@\"fill\", u, scr), least) : DMSMLayoutFrameIn(@\"fill\", u, scr);' \
+   && has 'DMTitleRecordSMAt(key, stage, target, target);' && has 'BOOL ok = DMSMApplyPlacesIn(@{key: [NSValue valueWithCGRect:target]}, stage);' \
+   && fn 'static void DMTitleTapEngineWindow(NSString *bundleID, NSString *why) {' $B \
+   && has 'CGRect target = zoom ? DMA5StageFromWindow(MSBDTitleZoomFrame(DMA5WindowFromStage(v.frame), DMLayoutFrameWindow(@\"fill\"), MSBDWindowMinSize())) : fill;' \
+   && has 'if (step == kMSBDTitleToZoom) DMTitleRecordView(v, v.frame, to, to);' && has 'CGRect to = step == kMSBDTitleBack ? rec.CGRectValue : target;' \
+   && [ \$(grep -c 'int step = MSBDTitleStep(action, atTarget, rec != nil);' $B) = 3 ] && [ \$(grep -c 'BOOL atTarget = MSBDWinNear(' $B) = 3 ] && ! grep -q 'atFill' $B"
+check "  ... a placement of ours to the frame a record was kept with, where the window is, keeps it (Center on a zoomed window), on the engines, our own windows and Stage Manager" \
+  "fn 'static void DMTitleRecordView(UIView *v, CGRect now, CGRect to, CGRect fill) {' $K && has 'BOOL stays = [had isKindOfClass:[NSArray class]] && had.count == 2 && MSBDWinNear(to, had[1].CGRectValue) && MSBDWinNear(now, had[1].CGRectValue);' \
+   && fn 'static void DMTitleRecordSMAt(NSString *key, id stage, CGRect to, CGRect fill) {' $K && has 'BOOL stays = now && [had isKindOfClass:[NSArray class]] && had.count == 2 && MSBDWinNear(to, had[1].CGRectValue) && MSBDWinNear(now.CGRectValue, had[1].CGRectValue);' \
+   && has 'MSBDTitleRecordOnPlaceAt(YES, MSBDWinNear(to, fill), MSBDWinNear(now.CGRectValue, fill), stays);'"
+check "  ... the Settings row says what each does (Fill: the desktop; Zoom: as large as it fits, keeping its shape), no em dash" \
+  "grep -qF 'Fill makes the window fill the desktop. Zoom makes it as large as it fits, keeping its shape. Double-tap again to go back to the size the window had before.' $PL && ! grep -q \$'\\xe2\\x80\\x94' $PL"
 exit $fails

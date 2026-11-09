@@ -142,6 +142,9 @@ static NSArray<NSString *> *DMChosenApps(void) {
 static NSArray<DMDownloadSource *> *DMSources(void) {
     NSMutableArray *sources = [NSMutableArray array];
     BOOL includeSafari = YES;
+    // (Downloads From's rows post nothing: they are read here, at each use -- the Safari row read fresh too, as the apps' list below is: it was read
+    //  before that synchronised the domain, so a change came one use late. Sweep of the Dock page, 1.8.4.1 item 2)
+    CFPreferencesAppSynchronize(DM_DOMAIN);
     CFPropertyListRef s = CFPreferencesCopyValue(CFSTR("downloadsSafari"), DM_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     if (s) { if (CFGetTypeID(s) == CFBooleanGetTypeID()) includeSafari = CFBooleanGetValue(s); CFRelease(s); }
     if (includeSafari) {

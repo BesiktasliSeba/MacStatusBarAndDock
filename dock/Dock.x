@@ -22,6 +22,8 @@
 #include "../common/DockBounce.h"   // (Settings > Dock > Animate Opening Applications, 1.8.4 item 2: the bounce's rules -- Bounce.m draws it)
 #include "../common/DockStyle.h"    // (Settings > Dock > Dock Style, 1.8.4 item 3: Glass Shelf and Frosted -- DockStyle.m draws them)
 #include "../common/DockAutoHide.h" // (Settings > Dock > Automatically Hide and Show the Dock, 1.8.4 item 4 -- DockAutoHide.m)
+#include "../common/DockAppLibrary.h"   // (Apple's Show App Library in Dock from our Dock page, at once: 1.8.4.1 item 2)
+#include "../common/DockHover.h"   // (the hover magnification held through UIKit's cancel under a resting pointer: 1.8.4.1)
 extern void DMDockStyleApply(UIView *platter);
 extern void DMDockStyleFollow(UIView *platter);
 extern void DMDockStyleSetChoice(int style);
@@ -84,6 +86,7 @@ void DMLogWrite(NSString *line) {
 #endif
 
 static CGFloat gInfluence = 0.0;     // 0...1: how much of the magnification is applied right now
+static CFTimeInterval gDMDockTouchAt = -1.0;   // (the last touch SpringBoard saw begin: a hover cancel just after it is the touch's, common/DockHover.h)
 #if DEBUG
 static CFTimeInterval gDMMetricsLogUntil = 0;   // (debug, K-2: every -getMetrics:forBounds: call is logged until then -- "metricslog" in /tmp/dockmag-escape)
 static BOOL gDMStockMetricsOnly = NO;           // (debug, K-2 "k2" dump: one -getMetrics:forBounds: call with SpringBoard's own numbers, none of ours)
@@ -386,7 +389,8 @@ extern void DMDownloadsTouchBegan(UIView *view);
 BOOL gDockHoverDismissBlocked = NO;   // (a hover dismissal was ignored while the panel was open: done once the panel closes, see Downloads.m)
 static BOOL DMDockSideDismissTouch(id controller, UITouch *touch);   // (Settings > Dock > Position, below)
 static BOOL DMDockSideControls(id controller);   // (... the controller of the Dock at a side)
-BOOL DMDockPointerHovering(void) { return gHovering; }
+static BOOL gHoverEasedByTouch = NO;   // (a touch eased the magnification out with the pointer still on the Dock: Downloads asks about the pointer, not the magnification, review 1.8.4.1 L4)
+BOOL DMDockPointerHovering(void) { return gHovering || gHoverEasedByTouch; }
 %hook SBFloatingDockController
 // A finger on the screen outside the Dock (over a full-screen app) makes SpringBoard put the Dock away through its system "dismiss floating dock"
 // gesture -- a finger scroll inside the open Downloads panel counted as that, and the Dock left with the panel (M1 regression pass, 0.3.18-14). While
@@ -1703,6 +1707,96 @@ static void DMHoverDebugLine(UIView *platter, UIGestureRecognizer *g) {
 }
 #endif
 
+// ---- the hover held through UIKit's cancel while the pointer rests over the platter (1.8.4.1, spec item 4; the rules and why: common/DockHover.h) ----
+// A Dock layout of SpringBoard's own (its recents, a Handoff tile) or a Dock setting under a resting pointer: UIKit cancels the platter's hover and the
+// magnification eased out until the pointer moved. Held instead: backboardd's place of the pointer is read (off the main thread, as the side Dock's reveal
+// reads it) and, while it is over the platter, the magnification stays there; UIKit's own hover beginning again takes over; elsewhere, unknown, no pointing
+// device, the screen off or the Dock gone, it eases out as before.
+static BOOL gHoverHeld = NO;
+static int gHoverHoldLooks = 0;
+static unsigned gHoverHoldGen = 0;   // (each hold's own chain of looks: a look of an earlier hold's stops -- one backboardd read at a time, review 1.8.4.1 L3)
+static __weak UIView *gHoverHoldPlatter = nil;
+static void DMDockHoverLook(unsigned gen);
+static void DMDockHoverHoldEnd(UIView *platter, NSString *why) {
+    gHoverHeld = NO;
+    DMLog([NSString stringWithFormat:@"[hover] held after UIKit's cancel: ends (%@)", why]);
+    gHovering = NO;
+    if (platter) [(SBFloatingDockPlatterView *)platter dm_startLink];   // (the link eases the magnification out)
+}
+static BOOL DMDockHoverTracking(UIView *platter) {
+    UIGestureRecognizer *g = objc_getAssociatedObject(platter, kHoverKey);
+    return g.state == UIGestureRecognizerStateBegan || g.state == UIGestureRecognizerStateChanged;
+}
+static void DMDockHoverLook(unsigned gen) {
+    UIView *platter = gHoverHoldPlatter;
+    if (!gHoverHeld || gen != gHoverHoldGen) return;   // (ended, or a later hold has its own looks)
+    if (!platter.window) { DMDockHoverHoldEnd(platter, @"the Dock is gone"); return; }
+    if (DMDockScreenBlank()) { DMDockHoverHoldEnd(platter, @"the screen is off"); return; }
+    if (DMDockHoverTracking(platter)) { gHoverHeld = NO; DMLog(@"[hover] UIKit has the pointer again"); return; }
+    id app = [UIApplication sharedApplication];
+    SEL pms = NSSelectorFromString(@"mousePointerManager"), att = NSSelectorFromString(@"isHardwarePointingDeviceAttached"), aio = NSSelectorFromString(@"activeInterfaceOrientation");
+    id pm = [app respondsToSelector:pms] ? ((id (*)(id, SEL))objc_msgSend)(app, pms) : nil;
+    BOOL attached = ![pm respondsToSelector:att] || ((BOOL (*)(id, SEL))objc_msgSend)(pm, att);
+    long o = [app respondsToSelector:aio] ? ((long (*)(id, SEL))objc_msgSend)(app, aio) : 1;
+    CGSize s = platter.window.bounds.size, native = CGSizeMake(MIN(s.width, s.height), MAX(s.width, s.height));
+    static dispatch_queue_t q;
+    if (!q) q = dispatch_queue_create("com.besiktasliseba.dock.hoverhold", DISPATCH_QUEUE_SERIAL);
+    dispatch_async(q, ^{
+        Class c = objc_getClass("BKSMousePointerService");
+        id svc = c && [(id)c respondsToSelector:@selector(sharedInstance)] ? ((id (*)(id, SEL))objc_msgSend)((id)c, @selector(sharedInstance)) : nil;
+        SEL gp = sel_registerName("globalPointerPosition");
+        Method m = svc ? class_getInstanceMethod(object_getClass(svc), gp) : NULL;
+        BOOL known = m && !strcmp(method_getTypeEncoding(m) ?: "", "{CGPoint=dd}16@0:8");   // (as the side Dock's reveal reads it: that shape only)
+        CGPoint n = known ? ((CGPoint (*)(id, SEL))objc_msgSend)(svc, gp) : CGPointMake(NAN, NAN);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIView *pl = gHoverHoldPlatter;
+            if (!gHoverHeld || gen != gHoverHoldGen || pl != platter || !pl.window) return;
+            CGPoint p = CGPointMake(NAN, NAN);
+            if (known) p = [pl convertPoint:MSBDDockPointerOnScreen(n, o, native) fromCoordinateSpace:(pl.window.screen ?: [UIScreen mainScreen]).coordinateSpace];
+            switch (MSBDHoverHoldStep(DMDockHoverTracking(pl), known, attached, MSBDHoverInside(p, pl.bounds))) {
+                case MSBDHoverHoldUIKit: gHoverHeld = NO; DMLog(@"[hover] UIKit has the pointer again"); break;
+                case MSBDHoverHoldKeep: {
+                    DM_FEATURE_MARK("dock-hover-held");
+                    gFocusX = p.x;
+                    if (!gLink) [(SBFloatingDockPlatterView *)pl dm_startLink];   // (the icons put back at the pointer, then the link rests again)
+                    double next = MSBDHoverHoldInterval(gHoverHoldLooks++);
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(next * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMDockHoverLook(gen); });
+                    break;
+                }
+                default: DMDockHoverHoldEnd(pl, known ? @"the pointer is no longer over the Dock" : @"the pointer's place can't be read here"); break;
+            }
+        });
+    });
+}
+// A touch SpringBoard sees (the UIApplication hook below): a finger hides the pointer and a click is the user's. A cancel just after it is not held, a hold
+// already running is over (the cancel and the touch reach SpringBoard in either order), and the magnification eases out even where UIKit doesn't cancel the
+// hover for it (a click on a Dock icon, the 17.5 on Stage Manager); the pointer moving brings it back.
+static void DMDockHoverTouchBegan(void) {
+    gDMDockTouchAt = CACurrentMediaTime();
+    if (gHoverHeld) { gHoverEasedByTouch = YES; DMDockHoverHoldEnd(gHoverHoldPlatter, @"a touch or a click"); return; }
+    if (gHovering && gEnabled && gLinkPlatter) {
+        DMLog(@"[hover] a touch or a click with the magnification on: eases out");
+        gHovering = NO;
+        gHoverEasedByTouch = YES;
+        [(SBFloatingDockPlatterView *)gLinkPlatter dm_startLink];
+    }
+}
+// UIKit ended the platter's hover: YES when that is held (a cancel with no touch just before it, with the magnification on, on the iPad's own screen -- backboardd's place is the iPad's).
+static BOOL DMDockHoverHold(UIView *platter, UIGestureRecognizer *g) {
+    if (!MSBDHoverHoldsAfter((long)g.state, gHovering && gEnabled, gDMDockTouchAt < 0 ? -1.0 : CACurrentMediaTime() - gDMDockTouchAt) || !platter.window) return NO;
+    if (platter.window.screen && platter.window.screen != [UIScreen mainScreen]) return NO;
+    gHoverHeld = YES; gHoverHoldLooks = 0; gHoverHoldPlatter = platter; gHoverHoldGen++;
+    DMLog([NSString stringWithFormat:@"[hover] cancelled by UIKit with the magnification on, %.3f s after the last touch: held while the pointer is over the Dock", gDMDockTouchAt < 0 ? -1.0 : CACurrentMediaTime() - gDMDockTouchAt]);
+    DMDockHoverLook(gHoverHoldGen);
+    return YES;
+}
+// (EditProxy.m EPFollow: a Dock layout while editing put the Launchpad stand-in back at its rest size under a resting pointer -- review 1.8.4 L1-L4 L-1 --:
+//  one more pass of the link puts the magnification back on it, as a reset icon's transform is, the SBIconView hook below)
+void DMDockHoverReapply(void) {
+    UIView *pl = gLinkPlatter;
+    if (gHovering && !gLink && pl.window) [(SBFloatingDockPlatterView *)pl dm_startLink];
+}
+
 %hook SBFloatingDockPlatterView
 
 // Dock Style (1.8.4 item 3): our look at the back of the platter, laid out with it; Default: nothing of ours (DockStyle.m)
@@ -1740,6 +1834,8 @@ static void DMHoverDebugLine(UIView *platter, UIGestureRecognizer *g) {
             if (gesture.state == UIGestureRecognizerStateBegan) DMHoverDebugLine(self, gesture);
 #endif
             CGFloat x = [gesture locationInView:self].x;
+            gHoverHeld = NO;   // (UIKit has the pointer again: a hold after its cancel ends here)
+            gHoverEasedByTouch = NO;
             if (!gHovering) {
                 DMLog(@"[hover] began");
                 gStatFrames = 0; gStatMaxJump = 0.0;
@@ -1751,12 +1847,14 @@ static void DMHoverDebugLine(UIView *platter, UIGestureRecognizer *g) {
             break;
         }
         default:   // ended / cancelled / failed: the cursor left the dock; the display link eases the effect out
+            if (DMDockHoverHold(self, gesture)) break;   // (UIKit's cancel under a resting pointer -- a Dock layout or setting: held while the pointer is over the Dock)
             DMLog([NSString stringWithFormat:@"[hover] ended (state %ld) after %ld frames, largest scale change between frames %.4f",
                    (long)gesture.state, (long)gStatFrames, gStatMaxJump]);
 #if DEBUG
             DMHoverDebugLine(self, gesture);
 #endif
             gHovering = NO;
+            gHoverEasedByTouch = NO;
             [self dm_startLink];
             break;
     }
@@ -2146,6 +2244,8 @@ static void DMHandleEscapePresses(NSSet<UIPress *> *presses) {
     if (event.type == UIEventTypePresses) DMHandleEscapePresses([(UIPressesEvent *)event allPresses]);
     // (the Downloads panel closes on a touch anywhere else in SpringBoard's windows)
     if (event.type == UIEventTypeTouches) for (UITouch *t in event.allTouches) if (t.phase == UITouchPhaseBegan) { DMDownloadsTouchBegan(t.view); break; }
+    // (a finger or Pencil on the screen, a click; never a finger on the trackpad or a scroll, UITouchTypeIndirect: the pointer stays where it is, review 1.8.4.1 pass 2 H1)
+    if (event.type == UIEventTypeTouches) for (UITouch *t in event.allTouches) if (t.phase == UITouchPhaseBegan && t.type != UITouchTypeIndirect) { DMDockHoverTouchBegan(); break; }
     %orig;
 }
 %end
@@ -2466,6 +2566,111 @@ static void DMFlushDeferredDockIconsAfter(NSString *why, double delay, int tries
 // MacStatusBar's Activity Monitor in the recents (1.7.7, statusbar/ActMonDock.h: its running entry): its own changes of the shown list are run the
 // same way (found with dlsym).
 __attribute__((visibility("default"))) void MSBDDockRecentsFlush(NSString *why) { DMFlushDeferredDockIcons(why); }
+// ---- Apple's "Show App Library in Dock" from our Dock page, at once (1.8.4.1 item 2; common/DockAppLibrary.h) ----
+// Our page posts kMSBDDockAppLibraryNote once Apple's own switch has written its value. Each of the Dock's view controllers that has icon updates parked
+// runs them -- the no-argument call SpringBoard makes when a full-screen layout transition ends, which window engines never make (15.6.1: the App
+// Library icon stayed until a respring) --, unless a transition is running (its own end runs them); then the Dock is laid out again. Only Apple's two
+// methods, in their shapes, on the view controllers of the Dock's windows; nothing is made or changed of Apple's. The recents' own are left to their own
+// step above (DMFlushDeferredDockIcons: once the fade of an icon they removed has ended -- a recent swapped in by a window just opened, then the switch
+// flipped within the fade: run during it, review 1.8.4.1 L2).
+static void DMDockRunParkedUpdates(NSString *why) {
+    SEL pendingSel = sel_registerName("deferredIconUpdates"), perform = sel_registerName("_performDeferredIconUpdates");
+    SEL coordSel = sel_registerName("layoutStateTransitionCoordinator"), busySel = sel_registerName("isTransitioning");
+    NSMutableArray *todo = [NSMutableArray array];
+    id sugg = gDMSuggestionsVC;
+    DMFlushDeferredDockIcons(why);   // (the recents', after any fade)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    for (UIWindow *w in [UIWindow allWindowsIncludingInternalWindows:YES onlyVisibleWindows:NO])
+        if ([NSStringFromClass([w class]) isEqualToString:@"SBFloatingDockWindow"] && w.rootViewController) [todo addObject:w.rootViewController];
+#pragma clang diagnostic pop
+    NSHashTable *seen = [NSHashTable weakObjectsHashTable];
+    while (todo.count) {
+        UIViewController *vc = todo.lastObject; [todo removeLastObject];
+        if (![vc isKindOfClass:[UIViewController class]] || [seen containsObject:vc]) continue;
+        [seen addObject:vc];
+        [todo addObjectsFromArray:vc.childViewControllers];
+        if (vc == sugg) continue;   // (the recents': above, after any fade)
+        Method mp = class_getInstanceMethod(object_getClass(vc), pendingSel), mr = class_getInstanceMethod(object_getClass(vc), perform);
+        const char *ep = mp ? method_getTypeEncoding(mp) : NULL, *er = mr ? method_getTypeEncoding(mr) : NULL;
+        if (!ep || !er || strcmp(ep, "@16@0:8") || strcmp(er, "v16@0:8")) continue;   // (only Apple's two methods, in their shapes)
+        @try {
+            id list = ((id (*)(id, SEL))objc_msgSend)(vc, pendingSel);
+            long pending = [list isKindOfClass:[NSArray class]] ? (long)[(NSArray *)list count] : -1;
+            id coord = [vc respondsToSelector:coordSel] ? ((id (*)(id, SEL))objc_msgSend)(vc, coordSel) : nil;
+            BOOL busy = coord && [coord respondsToSelector:busySel] && ((BOOL (*)(id, SEL))objc_msgSend)(coord, busySel);
+            if (MSBDDockRunParked(pending, busy)) {
+                ((void (*)(id, SEL))objc_msgSend)(vc, perform);
+                DM_FEATURE_MARK("dock-app-library-live");
+                DMLog([NSString stringWithFormat:@"[applib] %@: %@ ran its %ld parked icon update(s)", why, NSStringFromClass([vc class]), pending]);
+            } else if (pending > 0) DMLog([NSString stringWithFormat:@"[applib] %@: %@ has %ld parked, left to the running transition", why, NSStringFromClass([vc class]), pending]);
+        } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[applib] %@: %@: %@", why, NSStringFromClass([vc class]), e.reason]); }
+    }
+}
+#if DEBUG
+// (debug: the switch as SpringBoard's own defaults answer it, and the App Library icon in the Dock -- there, its place, shown -- at each pass: on 15.6.1
+//  this tells whether SpringBoard heard the change and whether running its parked updates put it in, the device check of item 2)
+static void DMAppLibraryDebugLine(NSString *why) {
+    NSMutableString *o = [NSMutableString stringWithFormat:@"[applib] %@:", why];
+    Class d = objc_getClass("SBDefaults");
+    id local = d && [(id)d respondsToSelector:@selector(localDefaults)] ? ((id (*)(id, SEL))objc_msgSend)((id)d, @selector(localDefaults)) : nil;
+    id fd = [local respondsToSelector:NSSelectorFromString(@"floatingDockDefaults")] ? ((id (*)(id, SEL))objc_msgSend)(local, NSSelectorFromString(@"floatingDockDefaults")) : nil;
+    if ([fd respondsToSelector:NSSelectorFromString(@"appLibraryEnabled")]) [o appendFormat:@" SpringBoard's floating Dock defaults say %d;", ((BOOL (*)(id, SEL))objc_msgSend)(fd, NSSelectorFromString(@"appLibraryEnabled"))];   // (a defaults object's property is added when first asked: responds, no method to look up before)
+    else [o appendString:@" no appLibraryEnabled getter;"];
+    int found = 0;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    for (UIWindow *w in [UIWindow allWindowsIncludingInternalWindows:YES onlyVisibleWindows:NO]) {
+#pragma clang diagnostic pop
+        if (![NSStringFromClass([w class]) isEqualToString:@"SBFloatingDockWindow"]) continue;
+        NSMutableArray *todo = [NSMutableArray arrayWithObject:w];
+        while (todo.count) {
+            UIView *v = todo.lastObject; [todo removeLastObject];
+            id icon = [v respondsToSelector:NSSelectorFromString(@"icon")] ? ((id (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"icon")) : nil;
+            if ([NSStringFromClass([icon class]) isEqualToString:@"SBHLibraryPodIndicatorIcon"]) {
+                found++;
+                [o appendFormat:@" icon view %p in %@ at %@ hidden %d alpha %.2f;", v, NSStringFromClass([v.superview class]), NSStringFromCGRect([v convertRect:v.bounds toView:w]), v.hidden, v.alpha];
+                continue;
+            }
+            [todo addObjectsFromArray:v.subviews];
+        }
+    }
+    if (!found) [o appendString:@" no App Library icon view in the Dock"];
+    // (what the Dock's own view controller makes of it: read only, BOOL getters in their shape. On 15.6.1 the row wrote the key, the icon stayed and no update was parked)
+    NSMutableArray *vcs = [NSMutableArray array];
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    for (UIWindow *w in [UIWindow allWindowsIncludingInternalWindows:YES onlyVisibleWindows:NO])
+        if ([NSStringFromClass([w class]) isEqualToString:@"SBFloatingDockWindow"] && w.rootViewController) [vcs addObject:w.rootViewController];
+#pragma clang diagnostic pop
+    while (vcs.count) {
+        UIViewController *vc = vcs.lastObject; [vcs removeLastObject];
+        [vcs addObjectsFromArray:vc.childViewControllers];
+        if (![NSStringFromClass([vc class]) isEqualToString:@"SBFloatingDockViewController"]) continue;
+        for (NSString *name in @[@"isLibraryPodIconEnabled", @"isLibraryPodIconVisible", @"isLibraryPodIconEffectivelyVisible"]) {
+            Method bm = class_getInstanceMethod(object_getClass(vc), NSSelectorFromString(name));
+            const char *be = bm ? method_getTypeEncoding(bm) : NULL;
+            if (be && !strcmp(be, "B16@0:8")) [o appendFormat:@" %@ %d;", name, ((BOOL (*)(id, SEL))objc_msgSend)(vc, NSSelectorFromString(name))];
+            else [o appendFormat:@" no %@;", name];
+        }
+    }
+    DMLog(o);
+}
+#endif
+static void DMAppLibraryInDockChanged(CFNotificationCenterRef c, void *o, CFNotificationName n, const void *obj, CFDictionaryRef info) {
+    for (int i = 0; i < kMSBDDockAppLibraryPassCount; i++) {
+        int pass = i + 1;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kMSBDDockAppLibraryPassAt[i] * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            NSString *why = [NSString stringWithFormat:@"Show App Library in Dock changed in Settings (pass %d)", pass];
+            DMDockRunParkedUpdates(why);
+            DMRelayoutDock();   // (Finder, Downloads, the Trash, a side Dock's room and Edit Home Screen's stand-ins follow this layout)
+            DMRefreshLaunchpadIcons();
+#if DEBUG
+            DMAppLibraryDebugLine(why);
+#endif
+        });
+    }
+}
 static unsigned long long DMRecentsPlaces(void) { long n = DMRecentsCount(); return n > 0 ? (unsigned long long)n + 1 : 0; }
 static unsigned long long DMRecentsMaxFor(unsigned long long stockMax) {
     long n = DMRecentsCount();
@@ -3484,6 +3689,9 @@ extern void DMBounceTapped(UIView *iconView, NSString *bid);
     DMStartRunningIndicatorPoll();   // periodic dot resync (RunningIndicator.m) -- catches Force Quit All / 3D-Touch quit / App Switcher, not just layoutSubviews
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
                                     DMPrefsChanged, DM_NOTIFY, NULL,
+                                    CFNotificationSuspensionBehaviorCoalesce);
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,   // (Apple's App Library switch on our Dock page: 1.8.4.1 item 2)
+                                    DMAppLibraryInDockChanged, CFSTR(kMSBDDockAppLibraryNote), NULL,
                                     CFNotificationSuspensionBehaviorCoalesce);
 }
 

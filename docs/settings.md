@@ -73,11 +73,12 @@ The window settings, on their own page between Desktop and Dock. On iPadOS 15 an
 | Enable Windowing | Off: no window engine loads and every app opens full screen (respring). | On |
 | Window Engine | Which engine runs your windows. Only that one loads (respring). Apple's Stage Manager is listed under Native (not on iPadOS 15), Aerial, Zetsu and MilkyWay4 under Third-Party. With Stage Manager, MacStatusBar&Dock asks before it turns Stage Manager on, and if you say Not Now (or turn it off later), Turn On Stage Manager appears here. With another engine, Stage Manager stays off while it runs and comes back on as you had it when you turn off windowing. | Stage Manager where it runs (iPadOS 16.1 to 18), else Aerial |
 | Window Size | The size a new window opens at, with every engine: Small, Default or Large. A window that opens where it last was keeps its size. The Window menu's Small and Large are the same sizes. | Default |
-| Double-Tap a Title Bar to | What a double tap on a window's title bar does, as on a Mac, with every engine. Fill or Zoom: the window fills the desktop, and a second double tap gives it its size from before. Minimize: the window goes into its app's icon in the Dock. With no window engine, it sets Finder and TextEdit windows. | Do Nothing (Finder and TextEdit windows zoom until you pick one) |
+| Double-Tap a Title Bar to | What a double tap on a window's title bar does, as on a Mac, with every engine. Fill: the window fills the desktop. Zoom: the window becomes as large as it fits while keeping its shape, centred. After Fill or Zoom, a second double tap gives it its size from before. Minimize: the window goes into its app's icon in the Dock. With no window engine, it sets Finder and TextEdit windows. | Do Nothing (Finder and TextEdit windows zoom until you pick one) |
 | Windows Behind Full-Screen Apps | A full-screen app comes in front of your windows, and Window > Bring All to Front brings them back. Off: windows stay in front. | On |
 | Resize Handles (Stage Manager engine only) | Mac handles, or Stage Manager's own. | Mac |
 | Tint Resize Handles | Resize handles take a soft version of each app's color. | Off |
 | New Windows Open at Fill | New windows fill the desktop, with every engine, and Fit to Window doesn't tile them. A window that opens where it last was keeps its place. Hidden while no window engine runs. | Off |
+| Keep Covered Windows in Front | When a window comes forward, a smaller window it would cover completely stays in front of it, so it isn't lost behind the bigger one. Aerial, Zetsu and MilkyWay4 only: hidden with the Stage Manager engine and while no window engine runs. | Off |
 | Home Minimizes Windows | Swiping up from the bottom or pressing the Home button minimizes the windows of the desktop you're on, so the Home Screen shows. Opening an app brings its window back. Keyboard shortcuts for Home, such as Command-H, leave the windows as they are. Off: the windows stay when you go Home. | On, also after an update |
 | Resize Apps to Fit Windows (MilkyWay4 only) | Apps lay themselves out for the window. Off: the full-screen layout, scaled down. | On |
 | Turn Off Traffic Lights | Hides the window buttons in the menu bar for full-screen apps. | Off |
@@ -95,14 +96,14 @@ The window settings, on their own page between Desktop and Dock. On iPadOS 15 an
 | Position on Screen | Where the Dock sits: Bottom, Left or Right. Left and Right apply in landscape, and in portrait the Dock stays at the bottom. At a side, windows on every engine, Home Screen icons, the clock's Today drop-down and Mac-style banners keep clear of it, and over a full-screen app the pointer at that edge brings it out. A change applies at once. | Bottom |
 | Dock Style | Default: the Dock as before. Glass Shelf: the glass Dock of Mac OS X 10.5 to 10.9, with the icons' reflections and glowing lights under open apps, and a dark panel at the sides as it was then. Frosted: the flat Dock of 10.10 to 10.15. | Default |
 | Magnify Icons | Icons grow under the pointer, with a trackpad or mouse. The slider sets how much, from 1x to 2.5x. | On, 1.22x |
-| Icon Size | The size of the Dock icons, from 0.5x to 1.2x. | 0.85x |
+| Icon Size | The size of the Dock icons, from 0.5x to 1.2x. The Dock stops growing once it fills the screen. | 0.85x |
 | Larger Dock in Portrait | A bigger Dock in portrait. | On |
 | Gap to Screen Edge | Space between the Dock and the screen's edge, from 0 to 24 pt. | 6 pt |
 | Automatically Hide and Show the Dock | The Dock hides until you swipe up from the bottom of the screen or move the pointer to the edge where it sits, like on a Mac, with every window engine. Windows can use the room it leaves, and it shows while you edit the Home Screen. With the Stage Manager engine it takes the place of Stage Manager's own Dock option, which follows it. | Off, also after an update |
 | Animate Opening Applications | An app's icon bounces in the Dock while the app opens, like on a Mac. An app that's already open comes forward without a bounce. Nothing bounces while Reduce Motion is on. | On, also after an update |
 | Number of Recent Apps | Up to 10 recent apps after your own (respring). A suggested or Handoff app can appear too. None also turns off Apple's Show Suggested and Recent Apps in Dock. | 3 |
 | Show Indicators for Open Apps | A dot under apps that are open, also while their windows are on another desktop or minimized. An app iPadOS starts in the background by itself gets no dot until you open it. | On |
-| Show App Library in Dock | Apple's own switch, moved here while the Dock features are on. | Apple's setting |
+| Show App Library in Dock | Apple's own switch, moved here while the Dock features are on. A change applies at once, except on iPadOS 15, where it takes effect after a respring. | Apple's setting |
 | Launchpad Icon | A Launchpad icon that opens the App Library. | On |
 | Style | The Launchpad icon: Classic (Rocket) or Grid. | Classic |
 | Next to Finder | Launchpad sits next to Finder at the start of the Dock. Off: at the end. | On |
@@ -195,7 +196,7 @@ These two live in the Window menu instead of Settings, so you can change them wh
 | Open Apps as Windows | Apps open as windows from anywhere: the Home Screen, the Dock, Spotlight, links, notifications and other tweaks' launchers. With Aerial it is Aerial's own Control Center toggle. | Off (Stage Manager engine: On) |
 | Fit to Window | Tiles your windows side by side, from edge to edge with 6 points between them. When a third app opens, you pick its side, or No Fit. Windows keep their places when one closes or another joins, a minimized window keeps its tile, and a fifth window opens over the tiles. Switched off, it spreads the windows back out at a normal size. | Off |
 
-The Window menu also has Minimize All Windows, Bring All to Front or Send All to Back, the layouts (Fill Screen, Center, halves, quarters, Small, Large) and, with the Stage Manager engine and a display connected, Move to Other Display. Fill Screen, the halves and the quarters reach the screen's edges, from right under the menu bar down to the Dock.
+The Window menu also has Minimize All Windows, Bring All to Front or Send All to Back, the layouts (Fill Screen, Center, halves, quarters, Small, Large) and, with the Stage Manager engine and a display connected, Move to Other Display. At its end it lists the front app's windows, and a pick brings that window to the front. Fill Screen, the halves and the quarters reach the screen's edges, from right under the menu bar down to the Dock.
 
 ## Always on
 

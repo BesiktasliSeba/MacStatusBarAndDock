@@ -135,7 +135,7 @@
 			<key>label</key>
 			<string>Double-Tap a Title Bar to</string>
 			<key>staticTextMessage</key>
-			<string>What a double tap on a window's title bar does, as on a Mac. With Fill or Zoom, double-tap again to go back to the size the window had before.</string>
+			<string>What a double tap on a window's title bar does, as on a Mac. Fill makes the window fill the desktop. Zoom makes it as large as it fits, keeping its shape. Double-tap again to go back to the size the window had before.</string>
 			<key>validTitles</key>
 			<array>
 				<string>Fill</string>
@@ -230,6 +230,32 @@
 			<string>newWindowsFill</string>
 			<key>label</key>
 			<string>New Windows Open at Fill</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>When a window comes to the front, any smaller window it would cover completely stays in front of it, so it's never lost behind a bigger window.</string>
+			<key>id</key>
+			<string>KEEP_COVERED_GROUP</string>
+			<key>stockHides</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>KEEP_COVERED</string>
+			<key>key</key>
+			<string>keepCoveredInFront</string>
+			<key>label</key>
+			<string>Keep Covered Windows in Front</string>
 		</dict>
 		<dict>
 			<key>cell</key>

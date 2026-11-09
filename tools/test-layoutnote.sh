@@ -71,6 +71,11 @@ has() { grep -qF "$2" "$1"; }
   # (1.8.4 F2 and the review of its fixes, H1 and M1: the start's step for Stage Manager, and Stage Manager's start tick, as the source has them)
   if has "$S" 'static BOOL DMDockRoomChangedSinceSave(void) {'; then cutfn "$S" 'static BOOL DMDockRoomChangedSinceSave(void) {'
   else echo 'static BOOL DMDockRoomChangedSinceSave(void) { return NO; }   // (not in this source)'; fi
+  if has "$S" 'static void DMSMRoomWaitLift(void) {'; then   # (1.8.4.1 item 8: the windows placed while the room waits)
+    grep -F 'static NSMutableDictionary<NSString *, id> *gSMRoomWaitLayouts;' "$S"
+    fn "$S" 'static NSDictionary<NSString *, NSString *> *DMSMRoomWaitMerged(NSDictionary<NSString *, NSString *> *notes) {'
+    fn "$S" 'static void DMSMRoomWaitLift(void) {'
+  fi
   if has "$S" 'static void DMDockRoomAfterStartSMTry(int tries) {'; then
     echo 'static void DMDockRoomAfterStartSMTry(int tries);'
     fn "$S" 'static void DMDockRoomAfterStartSM(void) {'
@@ -107,7 +112,7 @@ check "  ... the notes are taken from the windows on screen only, as before (the
 check "Stage Manager: the layouts written with the state file when they change, read once at the start (both readers, the turn and the Position change, ask the accessor)" \
   "note | grep -qF 'if (![gSMTurnLayout isEqualToDictionary:gSMTurnLayoutWritten ?: @{}]) DMSMStateWrite();' \
    && note | grep -qF '(void)DMSMTurnLayouts();' && note | grep -qF 'if (!gSMTurnFrames) gSMTurnFrames = [NSMutableDictionary dictionary];' \
-   && grep -qF 'NSDictionary<NSString *, NSString *> *layouts = [DMSMTurnLayouts() copy];   // (the shape before the turn' $S \
+   && grep -qF 'NSDictionary<NSString *, NSString *> *layouts = [DMSMRoomWaitMerged(DMSMTurnLayouts()) copy];   // (the shape before the turn' $S \
    && fn $S 'static void DMDockPositionMoved(NSDictionary<NSString *, NSString *> *layouts) {' | grep -qF 'NSMutableDictionary<NSString *, NSString *> *noted = [DMSMTurnLayouts() mutableCopy];' \
    && ! grep -qE '\[gSMTurnLayout (copy\] \?: @\{\}|mutableCopy\] \?:)' $S"
 check "review findings 1, 3, 4: the writer writes the notes as memory has them (no look at the stages of its own), made on the main thread (a call from another thread sent there), written on a serial queue" \

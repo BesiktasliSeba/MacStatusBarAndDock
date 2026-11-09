@@ -11,8 +11,13 @@
 // TextEdit) keep the Zoom their title bar always had; once a choice is made, every window follows it. One setting: its never-set state is its own.
 // Fill and Zoom go back the way a Mac does: a second double tap on a window that is still at Fill gives it the frame it had just before -- before
 // whichever placement put it at Fill (MSBDTitleRecordOnPlace).
+// Zoom keeps the window's shape (1.8.4.1 item 1, KT 7 Nov ~21:50: in 1.8.3 Zoom and Fill both filled the desktop): it grows the window as far as
+// it fits on the desktop with its own aspect ratio, centred there (MSBDTitleZoomFrame); Fill stays edge to edge. Both go back on a second double
+// tap, Zoom from the very frame it zoomed to (its record is kept with that frame, as Fill's with the Fill frame).
 #ifndef MSBD_TITLE_BAR_RULE_H
 #define MSBD_TITLE_BAR_RULE_H
+#include <CoreGraphics/CoreGraphics.h>
+#include <math.h>
 #include <stdbool.h>
 #include <string.h>
 
@@ -44,16 +49,38 @@ static inline const char *MSBDTitleActionName(int action) {
         default: return "?";
     }
 }
-// What one double tap does now: Fill and Zoom take the window to Fill, or -- at Fill already, with a frame from before kept -- back to that frame;
-// Minimize minimizes it; Do Nothing nothing. (At Fill with no frame from before -- opened there --: Fill again, so it stays.)
-enum { kMSBDTitleDoNothing = 0, kMSBDTitleToFill, kMSBDTitleBack, kMSBDTitleDoMinimize };
-static inline int MSBDTitleStep(int action, bool atFill, bool hasRecord) {
+// What one double tap does now: Fill takes the window to Fill and Zoom to its zoomed frame (MSBDTitleZoomFrame), or -- at that frame already,
+// with a frame from before kept -- back to that frame; Minimize minimizes it; Do Nothing nothing. (At Fill or at its zoomed frame with no frame
+// from before -- opened there --: the same again, so it stays.) atTarget: at the frame this choice puts the window at now (Fill's frame, or the
+// zoomed frame of where it is).
+enum { kMSBDTitleDoNothing = 0, kMSBDTitleToFill, kMSBDTitleBack, kMSBDTitleDoMinimize, kMSBDTitleToZoom };
+static inline int MSBDTitleStep(int action, bool atTarget, bool hasRecord) {
     switch (action) {
-        case kMSBDTitleFill:
-        case kMSBDTitleZoom: return atFill && hasRecord ? kMSBDTitleBack : kMSBDTitleToFill;
+        case kMSBDTitleFill: return atTarget && hasRecord ? kMSBDTitleBack : kMSBDTitleToFill;
+        case kMSBDTitleZoom: return atTarget && hasRecord ? kMSBDTitleBack : kMSBDTitleToZoom;
         case kMSBDTitleMinimize: return kMSBDTitleDoMinimize;
         default: return kMSBDTitleDoNothing;
     }
+}
+// Zoom's frame (KT, 7 Nov ~21:50): the window grown -- or shrunk, where it is bigger than the desktop (after a turn) -- as far as it fits in the
+// desktop with its own aspect ratio, and centred there: the side it reaches is the desktop's edge to edge, exactly; the other is in whole points,
+// centred. desk: the Fill layout's frame in the window's own frames (under the menu bar, above the Dock, beside a Dock at a side; on Stage Manager
+// its stage area's Fill); window: the whole window, our title bar included (the shape the user sees). min: the smallest the window may be there
+// (the app's and the engine's: WindowMinSize.h, Stage Manager's minimum width, our own windows' minSize): a side under it is grown to it -- never
+// past the desktop -- and the shape gives way only then. A window shaped like the desktop zooms to Fill; a window at its zoomed frame stays there
+// (the frame is its own zoomed frame). Nothing to zoom (no window, an empty desktop): CGRectNull.
+static inline CGRect MSBDTitleZoomFrame(CGRect window, CGRect desk, CGSize min) {
+    if (CGRectIsNull(window) || CGRectIsNull(desk) || CGRectIsEmpty(window) || CGRectIsEmpty(desk)) return CGRectNull;
+    if (!isfinite(window.size.width) || !isfinite(window.size.height) || !isfinite(desk.size.width) || !isfinite(desk.size.height)) return CGRectNull;
+    CGFloat w, h;
+    if (desk.size.width * window.size.height <= desk.size.height * window.size.width) {   // (the width reaches the desktop's sides first)
+        w = desk.size.width; h = round(window.size.height * desk.size.width / window.size.width);
+    } else {   // (the height reaches its top and bottom first)
+        h = desk.size.height; w = round(window.size.width * desk.size.height / window.size.height);
+    }
+    w = fmin(fmax(w, min.width), desk.size.width);
+    h = fmin(fmax(h, min.height), desk.size.height);
+    return CGRectMake(desk.origin.x + round((desk.size.width - w) / 2.0), desk.origin.y + round((desk.size.height - h) / 2.0), w, h);
 }
 // Fill and Zoom keep the frame the window had just before (macOS's user frame): taken at every double tap that fills it from a frame that is not
 // Fill, whatever the window was -- free, a half, a Fit to Window tile --, so the next double tap gives that frame back. (1.8.3 regression F2, iPad 2:
@@ -75,7 +102,18 @@ static inline int MSBDTitleRecordOnPlace(bool keepsFrames, bool toFill, bool atF
     if (!keepsFrames || !toFill) return kMSBDTitleRecordDrop;
     return MSBDTitleBackTakes(atFillNow) ? kMSBDTitleRecordTake : kMSBDTitleRecordKeep;
 }
-// At a double tap the frame from before counts only while the window is still at the Fill frame it was kept with. Moved since by something that is
+// Zoom's record is kept with the zoomed frame the title bar put the window at (1.8.4.1 item 1): the title bar's own Zoom is a placement "to Fill"
+// with that frame as its Fill (taken from a frame that is not it, kept where it is already). Every other placement of ours keeps it in step as
+// above -- to Fill from the zoomed frame takes the zoomed frame as the way back, as a Mac's Fill after a Zoom --, and one more case, for both
+// records: a placement to the very frame the record was kept with while the window is there (Center at its size on a zoomed window, which is centred
+// already; a Fill of ours at Fill) moves nothing, so the record is kept. stays: the window has a record, and is at the frame it was kept with, and
+// is placed there again.
+static inline int MSBDTitleRecordOnPlaceAt(bool keepsFrames, bool toFill, bool atFillNow, bool stays) {
+    if (keepsFrames && stays) return kMSBDTitleRecordKeep;
+    return MSBDTitleRecordOnPlace(keepsFrames, toFill, atFillNow);
+}
+// At a double tap the frame from before counts only while the window is still at the Fill frame it was kept with (Zoom's: the zoomed frame it was
+// kept with). Moved since by something that is
 // neither ours nor a hand -- a turn, the Dock moving, an engine's own move --, the window is somewhere the frame was not kept for: it is dropped,
 // and the double tap fills (nothing to go back to). Left, as it cannot be known: a move that is neither ours nor a hand and takes the window off
 // that very Fill frame and back to it, with no move by hand between, keeps the frame from before. None such is known on Aerial, Zetsu or

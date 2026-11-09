@@ -599,6 +599,7 @@ static BOOL DMSMApplyLayouts(NSDictionary<NSString *, NSString *> *keyToLayout);
 static BOOL DMSMApplyLayoutsIn(NSDictionary<NSString *, NSString *> *keyToLayout, id stage);
 static BOOL DMSMApplyPlacesIn(NSDictionary<NSString *, id> *bundleToLayout, id stage);   // (... each place a layout's name, or the whole window's frame)
 static BOOL DMSMApplyPlacesIn(NSDictionary<NSString *, id> *keyToPlace, id stage);   // (... a layout's name, or a frame of the whole window)
+static BOOL DMSMApplyPlacesMarkedIn(NSDictionary<NSString *, id> *keyToPlace, id stage, NSSet<NSString *> *placedByUser);   // (the same; the windows named in the set as the user's, DMSMAttrPlacedByUser)
 static id DMSMNoFitPlace(id stage);   // (No Fit's free window: the middle place with room around it, or Window Size's window)
 static id DMSMAttrsForLayoutIn(id attrs, NSString *name, id stage);   // (a window at a layout slot on its stage's screen)
 static id DMSMAttrsForFrameIn(id attrs, CGRect w, id stage);   // (... at a frame of the whole window, our title bar included)
@@ -725,6 +726,12 @@ static BOOL gKbBarOnly = NO;   // a hardware keyboard is attached and only the a
 #include "WindowKeysRule.h"   // (Window Tiling Keys: macOS 15's tiling shortcuts and Return to Previous Size, 1.8.3 item 3 -- plain C, tools/test-windowkeys.sh)
 #include "../common/ModifierTap.h"   // (the volume and backlight chords beside those keys, and the switch's name -- plain C, tools/test-modifiertap.sh)
 #include "TitleBarRule.h"   // (a double tap on a window's title bar: Fill, Zoom, Minimize or nothing, as macOS's setting, 1.8.3 item 8 -- plain C, tools/test-titlebar.sh)
+#include "../common/WindowOrder.h"   // (windows brought to the front as on a Mac, and Keep Covered Windows in Front: 1.8.4.1 items 6 and 7 -- plain C, tools/test-windoworder.sh)
+static UIView *DMKeepCoveredActive(UIView *top);   // (KeepCovered.h, at the end: the active window while windows it covers are kept above it)
+static void DMKeepCoveredTouched(UIView *s);   // (... a window touched where it is)
+static void DMKeepCoveredTick(void);   // (... every tick while the switch is on)
+static void DMKeepCoveredByHand(UIView *v);   // (... a window handled by hand: its title bar touched, a move or a resize by hand ended)
+static void DMKeepCoveredReset(void);   // (... the switch turned on or off: nothing kept from before)
 static void DMTitleTapAttach(UIView *bar, int kind);   // (TitleBarTap.h, at the end: our double tap on a title bar, once)
 // (WindowKeys.h: the title bar's frame from before -- Fill's and Zoom's way back -- follows every placement of ours, TitleBarRule.h
 //  MSBDTitleRecordOnPlace, and is dropped by a move or a resize by hand: review 1.8.3 P4-1)
@@ -734,9 +741,10 @@ static void DMTitleRecordSMPlan(NSDictionary *plan, id stage);
 static void DMTitleRecordMovedView(UIView *v);
 static void DMTitleRecordMovedSM(NSString *key);
 static BOOL DMTitleRecordSMAny(void);   // (WindowKeys.h: a Stage Manager window has a title bar's frame from before)
-// A move or a resize by hand has ended -- also cut short (cancelled): the window moved all the same (review 1.8.3 L2: only an end dropped it).
+// A move or a resize by hand has ended -- also cut short (cancelled): the window moved all the same (review 1.8.3 L2: only an end dropped it). A window
+// Keep Covered Windows in Front kept above another is an ordinary one again (KeepCovered.h, review 1.8.4.1 M1).
 static void DMTitleRecordHandEnded(UIView *v, UIGestureRecognizerState s) {
-    if (s == UIGestureRecognizerStateEnded || s == UIGestureRecognizerStateCancelled) DMTitleRecordMovedView(v);
+    if (s == UIGestureRecognizerStateEnded || s == UIGestureRecognizerStateCancelled) { DMTitleRecordMovedView(v); DMKeepCoveredByHand(v); }
 }
 static void DMTitleTapSettingChanged(void);   // (TitleBarTap.h: the setting changed -- the engines' own bar double taps off or back on with it)
 #include "WindowSnap.h"      // (window snapping on every engine, 1.7.3 item 3 -- plain C, tools/test-windowsnap.sh; the glue: DMSnapMoveEnded)
@@ -3324,6 +3332,7 @@ static void DMRestoreStage(UIView *stage) {
 // a full-screen app if needed) and report YES so the caller skips the full-screen launch.
 static BOOL DMMSWLaunchSwitches(NSString *bundleID);   // (MacSwitcher.h)
 static BOOL DMMSWWindowElsewhere(NSString *bundleID);   // (MacSwitcher.h: its window is on another desktop)
+static void DMEngineRaise(UIView *stage, NSString *why);   // (WindowFront.h: a window to the front, reliably -- 1.8.4.1 item 6)
 static BOOL DMSurfaceWindowForApp(NSString *bundleID) {
     if (gForceFullScreenLaunch || !bundleID.length || DMActiveEngine() == DMEngineNone) return NO;
     if (DMMSWLaunchSwitches(bundleID)) return YES;   // (its window, or its full-screen app, is on another desktop: that desktop comes, as on a Mac)
@@ -3348,11 +3357,13 @@ static BOOL DMSurfaceWindowForApp(NSString *bundleID) {
         gFullScreenActivatedBundle = nil;   // (opening an app makes it the status bar's app, as on a Mac, even when its window was already on top:
         // the full-screen app behind that had reclaimed the bar with a tap kept it, M1 portrait, 26 Sep)
         DMApplyWindowLevel();
-        SEL front = DMAerialSel(@"_bringStageToFrontIfNeeded"), restore = DMAerialSel(@"restoreFromMinimize");
+        SEL restore = DMAerialSel(@"restoreFromMinimize");
         DMEnforceStageFrame(stage, @"a relaunch");   // it comes back exactly where it was put
         if ([objc_getAssociatedObject(stage, kStageHiddenKey) boolValue]) DMRestoreStage(stage);
         else if (minimized && [stage respondsToSelector:restore]) ((void (*)(id, SEL))objc_msgSend)(stage, restore);   // Aerial's own chip
-        if ([stage respondsToSelector:front]) ((void (*)(id, SEL))objc_msgSend)(stage, front);
+        // (its window above the others, as a Mac's Dock icon and Command-Tab do: Aerial's own raise, and where that did not take -- a window clicked
+        //  in front of it since, KT 8 Nov --, its place in the layer: WindowFront.h, 1.8.4.1 item 6)
+        DMEngineRaise(stage, [NSString stringWithFormat:@"%@ opened (its Dock icon, Command-Tab, the Mac Switcher)", bundleID]);
         DMDismissLibraryForWindow(bundleID);
         return YES;
     }
@@ -4744,6 +4755,7 @@ static void DMWatchZetsu(void) {
                     DMLog([NSString stringWithFormat:@"[zetsu] %@ moved by hand %@ -> %@: remembered, no longer tiled", b, NSStringFromCGRect(was), NSStringFromCGRect(f)]);
                     DMRememberStageFrame(w);
                     DMFitGroupForget(b);
+                    DMKeepCoveredByHand(w);   // (a window Keep Covered Windows in Front kept above another: an ordinary one again, review 1.8.4.1 M1)
                     DMSaveWindowState();
                 } else if (b.length) seen[b] = now;
             }
@@ -4766,7 +4778,7 @@ static SBApplication *DMActiveApp(void) {
         if (zapp) return zapp;
     }
     if (DMActiveEngine() == DMEngineAerial || DMActiveEngine() == DMEngineZetsu) {
-        UIView *stage = DMWindowsOwnStatusBar() ? DMTopStage() : nil;
+        UIView *stage = DMWindowsOwnStatusBar() ? DMKeepCoveredActive(DMTopStage()) : nil;   // (the top window; with Keep Covered Windows in Front, the one that came forward under the windows it kept above it)
         SBApplication *staged = stage ? DMAppForBundle(DMStageBundle(stage)) : nil;
         if (staged) return staged;
         SBApplication *front = DMFrontApp();
@@ -4780,7 +4792,7 @@ static SBApplication *DMActiveApp(void) {
         if (gPendingFrontBundle.length && CACurrentMediaTime() < gPendingFrontUntil) return DMAppForBundle(gPendingFrontBundle);
         return nil;
     }
-    UIView *top = DMWindowsOwnStatusBar() ? DMTopWindow() : nil;
+    UIView *top = DMWindowsOwnStatusBar() ? DMKeepCoveredActive(DMTopWindow()) : nil;   // (as above, MilkyWay4)
     if (top) {
         SBApplication *windowed = DMAppForBundle([(AXWindowView *)top bundleIdentifier]);
         if (windowed) return windowed;
@@ -7103,6 +7115,7 @@ static CGRect DMSnapEngineWindow(UIView *st, CGRect window, unsigned how) {
 static void DMSnapMoveEngineTo(UIView *st, CGRect s);
 static void DMSnapMoveEnded(UIView *st) {
     DMTitleRecordMovedView(st);   // (a move by hand: the title bar's frame from before is older, P4-1)
+    DMKeepCoveredByHand(st);   // (a window Keep Covered Windows in Front kept above another: an ordinary one again, review 1.8.4.1 M1)
     if (!st || (DMSnapOff() && !DMDockSideKeepsOut())) return;
     CGRect w = DMSnapWindowOf(st);
     if (CGRectIsNull(w) || CGRectIsEmpty(w)) return;
@@ -7333,6 +7346,35 @@ static void DMSMTurnForgetClosed(void) {
 }
 static NSString *DMSMShapeKey(CGSize s) { return s.width > s.height ? @"L" : @"P"; }
 static BOOL DMLayoutNotesHeld(void);   // (below, with the turn)
+// While the windows wait to follow the Dock's room (DMDockRoomAfterStartSM, up to 20 min if the desktop never comes back) the notes from before the start stay as they are:
+// measured against the room as it is, a window placed for the other one is in no layout. A window that does sit in a layout of the room as it is was put there since the
+// start: kept here, apart from those notes, so a turn in the wait doesn't lose it (NSNull: it left the layout it was noted in here). 1.8.4.1 item 8, review of the 1.8.4 fixes L2.
+static NSMutableDictionary<NSString *, id> *gSMRoomWaitLayouts;
+static NSDictionary<NSString *, NSString *> *DMSMRoomWaitMerged(NSDictionary<NSString *, NSString *> *notes) {
+    if (!gSMRoomWaitLayouts.count) return notes;
+    if (gDMWindowsRoomPending < 0) { gSMRoomWaitLayouts = nil; return notes; }   // (the wait ended some other way: what it kept is over)
+    NSMutableDictionary *m = [notes mutableCopy] ?: [NSMutableDictionary dictionary];
+    for (NSString *k in gSMRoomWaitLayouts) { id v = gSMRoomWaitLayouts[k]; if ([v isKindOfClass:[NSString class]]) m[k] = v; else [m removeObjectForKey:k]; }
+    return m;
+}
+static void DMSMRoomWaitNote(NSDictionary<NSString *, NSValue *> *frames) {
+    NSDictionary<NSString *, NSString *> *now = DMSMLayoutsFor(frames);
+    CGSize scr = [UIScreen mainScreen].bounds.size;
+    CGRect whole = CGRectMake(0, -kSMBarH, scr.width, scr.height + kSMBarH);
+    if (!gSMRoomWaitLayouts) gSMRoomWaitLayouts = [NSMutableDictionary dictionary];
+    for (NSString *b in frames) {
+        if (CGRectEqualToRect(CGRectIntegral(frames[b].CGRectValue), CGRectIntegral(whole))) continue;   // (full screen: as DMSMTurnNote)
+        if (now[b]) gSMRoomWaitLayouts[b] = now[b];
+        else if (gSMRoomWaitLayouts[b]) gSMRoomWaitLayouts[b] = [NSNull null];
+    }
+}
+// The windows are placed for the room as it is: the wait is over, what it kept joins the notes.
+static void DMSMRoomWaitLift(void) {
+    NSDictionary<NSString *, NSString *> *merged = DMSMRoomWaitMerged([DMSMTurnLayouts() copy]);
+    if (gSMTurnLayout && merged) [gSMTurnLayout setDictionary:merged];
+    gSMRoomWaitLayouts = nil;
+    gDMWindowsRoomPending = -1;
+}
 static void DMSMTurnNote(void) {
     // (the desktop measured before the hold is asked: the measurement may itself see a side Dock change its thickness, and that holds the notes -- DMDockSideStripNow.
     //  Held, the records stay the old desktop's until the windows are placed, as the other engines' notes do, DMNoteWindowLayouts; code review 1.8.2.2, 1. With a
@@ -7346,7 +7388,7 @@ static void DMSMTurnNote(void) {
     (void)DMSMTurnLayouts();
     // (the windows placed for another answer of the Dock's auto-hide than the one taken now: the notes from before the start stay as they are until the
     //  windows are placed for the room as it is -- measured now, a Fill window was in no layout and lost its note, F2; DMDockRoomAfterStartSM)
-    if (DMDockRoomChangedSinceSave()) return;
+    if (DMDockRoomChangedSinceSave()) { DMSMRoomWaitNote(frames); return; }
     gSMTurnStartSettled = YES;   // (a note is taken: the start is over -- where SMHome.h's own settled point never comes)
     if (!gSMTurnFrames) gSMTurnFrames = [NSMutableDictionary dictionary];
     NSDictionary<NSString *, NSString *> *layouts = DMSMLayoutsFor(frames);
@@ -7449,7 +7491,8 @@ static void DMSMWatchTurn(void) {
     lastSnap = now + 1.5;   // (no new note until the turn has settled)
     if (first) return;
     DM_FEATURE_MARK("sm-turn-relayout");
-    NSDictionary<NSString *, NSString *> *layouts = [DMSMTurnLayouts() copy];   // (the shape before the turn: kept until the body has run)
+    BOOL roomWait = DMDockRoomChangedSinceSave();   // (a turn while the windows wait for the Dock's room: it places them for the room as it is, and that ends the wait. 1.8.4.1 item 8)
+    NSDictionary<NSString *, NSString *> *layouts = [DMSMRoomWaitMerged(DMSMTurnLayouts()) copy];   // (the shape before the turn: kept until the body has run)
     NSDictionary<NSString *, NSDictionary *> *places = [gSMTurnFrames copy] ?: @{};
     turnPending = YES;
     unsigned gen = ++turnGen;   // (only this turn's body ends the wait: a body left by a second turn must not end the second one's)
@@ -7472,7 +7515,10 @@ static void DMSMWatchTurn(void) {
         NSUInteger tiled = 0; for (NSString *b in gSMFitSlots) if (![gSMFreeWindows containsObject:b]) tiled++;
         BOOL fitRetiles = DMFitEnabled() && tiled >= 2;   // (Fit to Window lays its tiles out again itself, DMSMFitTick)
         for (NSString *b in frames) if (layouts[b] && !(fitRetiles && gSMFitSlots[b])) put[b] = layouts[b];
-        if (put.count) DMSMApplyLayouts(put);
+        // (the windows that move go in ONE request for the whole stage, with the layouts, which keeps the newest window in front. Asked for one by one, each became
+        //  the stage's frontmost -- DMSMRequestWindow marks the window it names: the cause of the Dock Position bug fixed in 1.8.4. 1.8.4.1 item 14)
+        NSMutableDictionary<NSString *, id> *allPlaces = [put mutableCopy];
+        NSMutableSet<NSString *> *movedByTurn = [NSMutableSet set];
         CGRect area = DMSMUsableAreaForIdentity(nil, NULL);   // (the iPad's desktop as Stage Manager's stage area has it: under the menu bar at 24)
         NSMutableArray<NSString *> *back = [NSMutableArray array];
         for (NSString *b in frames) {
@@ -7490,12 +7536,14 @@ static void DMSMWatchTurn(void) {
             CGFloat w = MIN(f.size.width, area.size.width), h = MIN(f.size.height, area.size.height);
             CGFloat x = MIN(MAX(f.origin.x, CGRectGetMinX(area)), CGRectGetMaxX(area) - w), y = MIN(MAX(f.origin.y, CGRectGetMinY(area)), CGRectGetMaxY(area) - h);
             if (why == MSBDTurnRemembered) gSMTurnPlaced[b] = [NSValue valueWithCGRect:CGRectMake(x, y, w, h)];   // (1.7.5 item 14: in no layout while it stays there)
-            CGRect card = CGRectMake(x, y + kSMBarH, w, h - kSMBarH);
-            DMSMSetWindowGeometry(b, CGPointMake(CGRectGetMidX(card) / scr.width, CGRectGetMidY(card) / scr.height), CGSizeMake(card.size.width / scr.width, card.size.height / scr.height));
+            allPlaces[b] = [NSValue valueWithCGRect:CGRectMake(x, y, w, h)];   // (the whole window, our title bar included)
+            [movedByTurn addObject:b];   // (the user's place on iPadOS 17 and later, as a move by hand has it: DMSMAttrPlacedByUser)
         }
+        BOOL placed = !allPlaces.count || DMSMApplyPlacesMarkedIn(allPlaces, DMSMWorkingStage(), movedByTurn);   // (refused: the wait for the Dock's room stays, review 1.8.4.1 pass 2 L2)
         if (back.count) DM_FEATURE_MARK("sm-turn-remembered-place");
         DMLog([NSString stringWithFormat:@"[sm] the iPad turned: windows back in their layouts %@, back where they were in this shape: %@; the others kept inside the desktop", put, back.count ? [back componentsJoinedByString:@", "] : @"none"]);
         DMSMFitHiddenStages(frames.count ? DMSMWorkingStage() : nil, layouts, places);   // (and every stage not on screen, in the model)
+        if (placed && roomWait && frames.count && DMDockRoomChangedSinceSave()) { DMSMRoomWaitLift(); DMSMStateWrite(); DMLog(@"[autohide] a turn placed the windows for the Dock's room as it is: the wait is over"); }
     };
     relayout = body;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ if (relayout) relayout(0); });
@@ -7932,6 +7980,7 @@ static int gWindowSizeChoice = MSBDWindowSizeDefault;   // (the stored windowSiz
 // Aerial's cascade, Zetsu's and MilkyWay4's new window, the Stage Manager join), never on a layout pass; Fit to Window leaves it out (no side
 // question). common/WindowSize.h MSBDNewWindowAtFill.
 static BOOL gNewWindowsFill = NO;   // (the stored newWindowsFill: DMLoadPrefs)
+static BOOL gKeepCoveredInFront = NO;   // (the stored keepCoveredInFront, Keep Covered Windows in Front, 1.8.4.1 item 7: DMLoadPrefs; KeepCovered.h)
 // Window Tiling Keys (Settings > Keyboard, 1.8.3 item 3, off unless switched on): WindowKeys.h, at the end.
 static BOOL gWindowKeysOn = NO;   // (the stored windowTilingKeys: DMLoadPrefs)
 static void DMWindowKeysApply(void);
@@ -11263,14 +11312,11 @@ static void DMRaiseStageForBundle(NSString *bundle) {
     UIView *stage = DMStageForBundle(bundle);
     if (stage && !stage.hidden && !DMStageMinimized(stage) && ![objc_getAssociatedObject(stage, kStageClosingKey) boolValue]) {
         gFullScreenActivatedBundle = nil;   // a window was tapped: the status bar goes back to following windows, whatever last reclaimed it
-        if (DMTopStage() == stage) return;   // already in front
-        if (DMIsZetsuWindow(stage)) {   // (Zetsu itself raises a window only for a tap on its title bar: a tap inside the app left it behind and the
-            DMZetsuRaise((UIWindow *)stage);   //  menu bar on the window in front, iPadOS 17.5.1, 24 Oct. So it is raised here, as Aerial's are)
-            DMApplyWindowLevel();
-        } else {
-            SEL front = DMAerialSel(@"_bringStageToFrontIfNeeded");
-            if ([stage respondsToSelector:front]) ((void (*)(id, SEL))objc_msgSend)(stage, front);
-        }
+        if (DMTopStage() == stage) { DMKeepCoveredTouched(stage); return; }   // already in front (Keep Covered Windows in Front: a kept window touched is the active one now)
+        // (Zetsu itself raises a window only for a tap on its title bar: a tap inside the app left it behind and the menu bar on the window in front,
+        //  iPadOS 17.5.1, 24 Oct. So it is raised here, as Aerial's are; Aerial's own raise checked -- WindowFront.h, 1.8.4.1 item 6)
+        DMEngineRaise(stage, [NSString stringWithFormat:@"a tap or click in %@'s window", bundle]);
+        if (DMIsZetsuWindow(stage)) DMApplyWindowLevel();
         DMLog([NSString stringWithFormat:@"[focus] a tap or click in the window of %@ brought it to the front", bundle]);
         DMResignWindowedKeyboards(bundle);   // the window that had the keyboard gives it up (with a hardware keyboard too: only the front window keeps a cursor)
         DMKeyboardFocusBehindWindows();   // (the window now in front may take the keyboard, the one before it no longer: at once, not at the next tick)
@@ -19289,6 +19335,8 @@ static void DMHomeAwayScanKeys(void) {   // (once, with SpringBoard up and Home 
     }
     DMLog([NSString stringWithFormat:@"[homeaway] SpringBoard's key commands for H:%@ -- %d other action(s) marked as the keyboard's", seen.length ? seen : @" none", gDMHomeKeysCount]);
 }
+static void DMBringAllToFrontNow(void);   // (WindowFront.h: Window > Bring All to Front, as on a Mac -- 1.8.4.1 item 6)
+static NSArray *DMWindowListRows(void);   // (... the Window menu's list of the front app's windows)
 static void DMOpenWindowMenu(UIButton *btn) {
     if (DMTitleTapWithMenuOpen(btn)) return;
     if (DMNativeActiveApp()) { DMOpenNativeWindowMenu(btn); return; }   // (our Finder window in front: the Window menu is about it)
@@ -19317,12 +19365,13 @@ static void DMOpenWindowMenu(UIButton *btn) {
         fitRow.checked = fit;
         [items addObject:fitRow];
         [items addObject:[[DMRow alloc] initWithTitle:@"Minimize All Windows" enabled:DMVisibleWindowCount() + DMNativeVisibleWindowCount() > 0 handler:DMCloseThen(^{ DMMinimizeAllWindows(); })]];
-        // Windows tucked behind (or pulled in front of) a full-screen app, from here (like macOS's own Window menu "Bring All to Front"), not from the app
-        // name menu, which is about the app itself, not its windows. Which of the two this offers follows where the windows already are.
-        // (also after a Dock tap brought the full-screen app over the windows with Windows Behind Full-Screen Apps off: DMBringFullScreenAppForward)
-        if ((gWindowsBehindApps || gFullScreenRaised) && DMVisibleWindowCount() > 0)
-            [items addObject:[[DMRow alloc] initWithTitle:(gWindowsPinnedForward ? @"Send All to Back" : @"Bring All to Front") enabled:YES
-                                                  handler:DMCloseThen(^{ DMToggleWindowsForward(); })]];
+        // Bring All to Front, as on a Mac: the front app's windows above the other apps' windows -- and the windows tucked behind a full-screen app over it,
+        // as this row did alone before 1.8.4.1 (WindowFront.h DMBringAllToFrontNow; item 6). Send All to Back, ours: the windows behind the full-screen app
+        // again, offered while they are pinned in front of it (also after a Dock tap brought the full-screen app over the windows with Windows Behind
+        // Full-Screen Apps off: DMBringFullScreenAppForward).
+        if (DMVisibleWindowCount() > 0) [items addObject:[[DMRow alloc] initWithTitle:@"Bring All to Front" enabled:YES handler:DMCloseThen(^{ DMBringAllToFrontNow(); })]];
+        if ((gWindowsBehindApps || gFullScreenRaised) && gWindowsPinnedForward && DMVisibleWindowCount() > 0)
+            [items addObject:[[DMRow alloc] initWithTitle:@"Send All to Back" enabled:YES handler:DMCloseThen(^{ DMToggleWindowsForward(); })]];
     } else if (DMSMEngine()) {   // (the same rows as with our other engines)
         DMRow *openRow = [[DMRow alloc] initWithTitle:@"Open Apps as Windows" enabled:YES handler:DMCloseThen(^{
             BOOL now = !DMWindowedLaunchOn();
@@ -19346,10 +19395,11 @@ static void DMOpenWindowMenu(UIButton *btn) {
                 NSString *k = DMSMFrontWindowKey();   // (the active app's front window, M-2)
                 DMSMWindowAction([DMSMKeyBundle(k) isEqualToString:active] ? k : active, @"moveToDisplay");
             })]];
-        if (DMSMFullScreenBundle().length && DMVisibleWindowCount() > 0) {   // (a full-screen app with windows: which of them is in front)
-            BOOL behind = DMSMWindowsBehindFullScreen();
-            [items addObject:[[DMRow alloc] initWithTitle:(behind ? @"Bring All to Front" : @"Send All to Back") enabled:YES handler:DMCloseThen(^{ DMSMWindowsForward(behind); })]];
-        }
+        // (Bring All to Front as with the other engines -- the front app's windows above the others, or the windows over a full-screen app first; Send
+        //  All to Back while the windows are in front of one: WindowFront.h, 1.8.4.1 item 6)
+        if (DMVisibleWindowCount() > 0) [items addObject:[[DMRow alloc] initWithTitle:@"Bring All to Front" enabled:YES handler:DMCloseThen(^{ DMBringAllToFrontNow(); })]];
+        if (DMSMFullScreenBundle().length && DMVisibleWindowCount() > 0 && !DMSMWindowsBehindFullScreen())
+            [items addObject:[[DMRow alloc] initWithTitle:@"Send All to Back" enabled:YES handler:DMCloseThen(^{ DMSMWindowsForward(NO); })]];
     }
     NSString *currentLayout = DMCurrentLayoutName();
     for (NSArray *section in sections) {
@@ -19367,6 +19417,8 @@ static void DMOpenWindowMenu(UIButton *btn) {
         [items addObject:[[DMRow alloc] initWithTitle:@"Swap Left and Right" enabled:DMSwapAvailable(YES) handler:DMCloseThen(^{ DMSwapWindows(YES); })]];
         [items addObject:[[DMRow alloc] initWithTitle:@"Swap Half and Quarter" enabled:DMHalfQuarterAvailable() handler:DMCloseThen(^{ DMSwapHalfWithQuarter(); })]];
     }
+    NSArray *listed = DMWindowListRows();   // (the front app's windows, as a Mac's Window menu lists them: a pick brings one to the front -- WindowFront.h)
+    if (listed.count) { [items addObject:[NSNull null]]; [items addObjectsFromArray:listed]; }
     DMPresentMenu(btn, kWinLabelKey, kWinPillKey, items);
     DMLog([NSString stringWithFormat:@"[window] menu opened (active app %@)", [DMActiveApp() bundleIdentifier]]);
 }
@@ -22362,6 +22414,15 @@ static void DMLoadPrefs(void) {
         gNewWindowsFill = fill; gWindowKeysOn = keys; gTitleDoubleTap = title;
         DMWindowKeysApply();
         if (titleChanged) DMTitleTapSettingChanged();
+        // Keep Covered Windows in Front (Windows & Multitasking, 1.8.4.1 item 7): off unless switched on (common/WindowOrder.h, KeepCovered.h)
+        CFPropertyListRef kc = CFPreferencesCopyValue(CFSTR(kMSBDKeepCoveredKey), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        BOOL keepCovered = kc && CFGetTypeID(kc) == CFBooleanGetTypeID() && CFBooleanGetValue(kc);
+        if (kc) CFRelease(kc);
+        if (keepCovered != gKeepCoveredInFront) {
+            DMLog([NSString stringWithFormat:@"[keepcovered] Keep Covered Windows in Front %@", keepCovered ? @"on" : @"off"]);
+            DMKeepCoveredReset();   // (nothing kept from before the change, review 1.8.4.1 L5)
+        }
+        gKeepCoveredInFront = keepCovered;
     }
     {   // Resize Handles (Stage Manager engine): ours (default) or Stage Manager's own
         CFPropertyListRef hs = CFPreferencesCopyValue(CFSTR("resizeHandleStyle"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
@@ -35553,6 +35614,7 @@ static void DMTickBody(void) {
     { static int n = 0; if (++n % 10 == 1 && DMProcessAge() > 8.0) DMApplyHomeScreenTodayPage(); }   // (~every 2 s once SpringBoard is up: the Home Screen may be rebuilt)
     if (gHomeMinimizes && DMProcessAge() > 8.0) DMHomeAwayScanKeys();   // (once: SpringBoard's other Home key commands, Globe-H's, marked as Cmd-H's)
     DMWindowKeysPublish();   // (Window Tiling Keys offered or not, told to the volume and backlight chords when it changes: the engine settles after a respring)
+    DMKeepCoveredTick();   // (Keep Covered Windows in Front, off unless switched on: a window the engine brought forward itself, Stage Manager's front window)
     static BOOL engineLogged = NO;   // once per SpringBoard start: which engine is picked, and which engine libraries really loaded (engine exclusivity check)
     if (!engineLogged && CACurrentMediaTime() > 0) {
         engineLogged = YES;
@@ -41855,14 +41917,17 @@ static BOOL DMSMAttrsSamePlace(id a, id b, CGSize screen) {
 }
 static BOOL DMSMApplyLayoutsIn(NSDictionary<NSString *, NSString *> *bundleToLayout, id stage) { return DMSMApplyPlacesIn(bundleToLayout, stage); }   // (window key -> layout; an app key: the app's newest window)
 // (each place a layout's name, or the whole window's frame as an NSValue -- Fit to Window's spread, DMSMSpreadFit)
-static BOOL DMSMApplyPlacesIn(NSDictionary<NSString *, id> *bundleToLayout, id stage) {
+static BOOL DMSMApplyPlacesIn(NSDictionary<NSString *, id> *bundleToLayout, id stage) { return DMSMApplyPlacesMarkedIn(bundleToLayout, stage, nil); }
+static BOOL DMSMApplyPlacesMarkedIn(NSDictionary<NSString *, id> *bundleToLayout, id stage, NSSet<NSString *> *placedByUser) {
     NSDictionary *map = DMSMStageItemsMap(stage);
     if (!map.count || !bundleToLayout.count) return NO;
+    NSMutableSet *usersItems = placedByUser.count ? [NSMutableSet set] : nil;
     // (which window each key names -- each window gets its own layout: two windows of one app took the same tile, M-2)
     NSMutableDictionary *layoutOf = [NSMutableDictionary dictionary];   // (item -> layout)
     for (NSString *k in [bundleToLayout.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
         id it = DMSMItemFor(stage, k, nil);
         if (it && !layoutOf[it]) layoutOf[it] = bundleToLayout[k];
+        if (it && [placedByUser containsObject:k]) [usersItems addObject:it];
         if (it) DMSMKeySetRemove(gSMBehindDock, DMSMItemKey(it));   // (placed by a layout: no longer behind the Dock)
     }
     NSMutableArray *plan = [NSMutableArray array];   // [entity, role, attrs]
@@ -41874,6 +41939,7 @@ static BOOL DMSMApplyPlacesIn(NSDictionary<NSString *, id> *bundleToLayout, id s
         id name = layoutOf[it];
         if (name) {
             id na = [name isKindOfClass:[NSValue class]] ? DMSMAttrsForFrameIn(a, [(NSValue *)name CGRectValue], stage) : DMSMAttrsForLayoutIn(a, name, stage);
+            if (na && [usersItems containsObject:it]) na = DMSMAttrPlacedByUser(na);
             if (na) { if (!DMSMAttrsSamePlace(na, a, scr)) moves = YES; a = na; }
         }
         long long role = DMSMRoleOr(stage, it, 0);
@@ -43781,8 +43847,8 @@ static void DMDockRoomAfterStartSMTry(int tries) {
     if (at == MSBDRoomUnknown) return;   // (the Dock part never answered: the room stays pending, and is written as it was saved -- M1)
     BOOL changed = at == MSBDRoomChanged;
     int was = gDMWindowsRoomPending;
-    NSDictionary<NSString *, NSString *> *layouts = [DMSMTurnLayouts() copy];
-    gDMWindowsRoomPending = -1;   // (placed for the answer taken now from here on; the notes are taken again)
+    NSDictionary<NSString *, NSString *> *layouts = [DMSMRoomWaitMerged(DMSMTurnLayouts()) copy];   // (with the windows placed since the start: item 8)
+    DMSMRoomWaitLift();   // (placed for the answer taken now from here on; the notes are taken again)
     if (changed) {
         DM_FEATURE_MARK("dock-room-changed-at-start");
         DMLog([NSString stringWithFormat:@"[autohide] the windows were placed with the Dock %@, it %@ now (switched while SpringBoard was not running): they follow the room as it is, layouts %@",
@@ -44852,3 +44918,5 @@ void DMSMRunAction(UIAction *action, id sender) {
 #include "WindowAPI.h"
 #include "WindowKeys.h"
 #include "TitleBarTap.h"
+#include "WindowFront.h"   // (windows brought to the front as on a Mac, on every engine: 1.8.4.1 item 6)
+#include "KeepCovered.h"   // (Keep Covered Windows in Front, off unless switched on: 1.8.4.1 item 7)

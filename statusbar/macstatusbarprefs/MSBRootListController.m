@@ -1072,6 +1072,7 @@ static void MSBFitValueLabels(UIView *v) {
 			for (PSSpecifier *sp in _specifiers) {
 				if (sp.cellType == PSGroupCell) hiding = [sp.identifier isEqualToString:kMSBDWindowsGroupID];
 				if (sp.cellType == PSGroupCell && [sp.identifier isEqualToString:kMSBDNewWindowsFillGroupID]) { hiding = YES; continue; }   // (New Windows Open at Fill: the windows an engine opens -- audit 1.8.3 M4)
+				if (sp.cellType == PSGroupCell && [sp.identifier isEqualToString:kMSBDKeepCoveredGroupID]) { hiding = YES; continue; }   // (Keep Covered Windows in Front: the engines' windows -- 1.8.4.1 item 7)
 				if ([sp.identifier isEqualToString:@"ENGINE_GROUP"]) [sp setProperty:onItsOwn ? [NSString stringWithFormat:@"%@ hasn't been tested with MacStatusBar&Dock yet, so it runs on its own and the window features are off.", MSBEngineNameVersion(engine)]
 				                                                                               : @"No tested window engine is installed, so the window features are off." forKey:@"footerText"];
 				BOOL windowsGroup = sp.cellType == PSGroupCell && [sp.identifier isEqualToString:kMSBDWindowsGroupID];
@@ -1091,6 +1092,7 @@ static void MSBFitValueLabels(UIView *v) {
 			BOOL hiding = NO;
 			for (PSSpecifier *sp in _specifiers) {
 				if (sp.cellType == PSGroupCell) hiding = [sp.identifier isEqualToString:kMSBDWindowsGroupID];
+				if (sp.cellType == PSGroupCell && [sp.identifier isEqualToString:kMSBDKeepCoveredGroupID]) { hiding = YES; continue; }   // (Keep Covered Windows in Front: not on Stage Manager for now, statusbar/KeepCovered.h)
 				if ([sp.identifier isEqualToString:@"ENGINE_GROUP"])
 					[sp setProperty:MSBStageManagerOnState() == 2 ? @"Stage Manager is off, so apps open full screen. Tap Turn On Stage Manager, or turn it on in Control Center."
 					                                               : @"Apple's Stage Manager does the windowing, with the Mac look on top. Other engines are not loaded." forKey:@"footerText"];

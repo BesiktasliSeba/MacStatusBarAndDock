@@ -74,6 +74,9 @@ target animateOpening pref com.besiktasliseba.dockmagnification animateOpening 0
 # the Dock hiding itself (1.8.4 item 4, dock/DockAutoHide.m): its switch, off unless switched on (with the Stage Manager engine, Apple's own Dock tick
 # follows it at the next start: StatusBar.x DMDockAutoHideSyncSM)
 target autoHideDock pref com.besiktasliseba.dockmagnification autoHideDock 0 0 Automatically Hide and Show the Dock|the Dock hiding itself
+# windows covered by the window that came forward kept in front of it (1.8.4.1 item 7, statusbar/KeepCovered.h): its switch, off unless switched on: a
+# crash in it sets it off (0)
+target keepCoveredInFront pref com.besiktasliseba.macstatusbar keepCoveredInFront 0 0 Keep Covered Windows in Front|the covered windows kept in front
 
 # The parts in words, for the guard's explanation: title <Image> <where it crashed>|<what was turned off> ("SpringBoard crashed twice in the
 # Dock, so the Dock was turned off for now."). A part without a title is named by its file name.
@@ -229,6 +232,9 @@ file MacStatusBarCore ^SpotlightBridge\.h$ spotlightActions
 # functions and their blocks (a block's symbol is the function's name with "___" before it, as in 1.3.6 R3-L3: in the 1.4~int6 release map every
 # block of MacSwitcherSM.h and MacSwitcherButton.h -- the desktop switch's, the notice's, the drag's move, the Home double press -- fell to Stock
 # status bar mode, the whole Mac status bar; MacSwitcher.h's were caught by its file rule)
+# Keep Covered Windows in Front (1.8.4.1 item 7): its functions (two kept out of line, so the map always has them) and their blocks
+sym MacStatusBarCore ^_*DMKeepCovered[A-Z] keepCoveredInFront
+file MacStatusBarCore ^KeepCovered\.h$ keepCoveredInFront
 sym MacStatusBarCore ^_?DMMSWPressesBegan$ transparent   # (its key pass-through is on every key press stack)
 sym MacStatusBarCore ^_*DMMSW[A-Z] macSwitcher
 file MacStatusBarCore ^MacSwitcher(SM|Button)?\.h$ macSwitcher
