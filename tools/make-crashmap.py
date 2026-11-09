@@ -9,7 +9,8 @@
 # The build fails when a slice has no matching dSYM or a rule matches no function at all (a renamed section header, a renamed function).
 #
 # Output (plain text, read by loader/CrashFeatureHelper.m only after a crash that counted against us):
-#   T <target> pref <domain> <key> <off 0|1> <default 0|1> <row title>|<where>   a switch: set to <off>; <default> = its value when never set
+#   T <target> pref <domain> <key> <off 0|1> <default 0|1> [offtext=<text>[,<text>...]] <row title>|<where>   a switch: set to <off>; <default>
+#                                                            = its value when never set; offtext: the stored texts that count as <off> (CrashFeature.h)
 #   T <target> part                                          the part (image) is not loaded any more (loader skip list)
 #   P <Image> <target>                                       an image's own target (a small part; or a big one's fallback)
 #   N <Image> <where>|<what>                                 the part in words ("the Dock|the Dock"), for the guard's explanation

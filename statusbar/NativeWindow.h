@@ -58,6 +58,7 @@ static void DMNativeMenuBarChanged(void);
 @end
 // A sheet, like a Mac's: a panel dropping from under the title bar over the dimmed window (UIKit alerts presented on the layer would not turn
 // with the Home Screen, see DMNativeUpdateRotation). field: the text of a text field in it, or nil for none. then: the action's handler.
+static void DMTitleRecordNativeTo(DMNativeWindow *w, CGRect to);   // (WindowKeys.h: the title bar's frame from before, in step with -zoom too)
 @interface DMNativeWindow (Sheet)
 - (void)sheetTitle:(NSString *)title message:(NSString *)message field:(NSString *)field action:(NSString *)action destructive:(BOOL)destructive then:(void (^)(NSString *text))then;
 - (void)sheetTitle:(NSString *)title message:(NSString *)message field:(NSString *)field action:(NSString *)action destructive:(BOOL)destructive then:(void (^)(NSString *text))then cancel:(void (^)(void))cancel;
@@ -754,11 +755,20 @@ static CGRect DMNativeDockTarget(void) {
     DMNativeSetActive(next);
     DMNativeApplyLevel();
 }
+// (a placement of ours like the Window menu's: the title bar's frame from before follows it -- zoomed from elsewhere, that frame is the way back;
+//  back from the zoom, none -- WindowKeys.h DMTitleRecordNativeTo, review 1.8.3 L1)
 - (void)zoom {
     self.layoutName = nil;
-    if (!CGRectIsNull(self.restoreFrame)) { CGRect r = self.restoreFrame; self.restoreFrame = CGRectNull; MSBAnimate(0.2, 0, 0, UIViewAnimationOptionCurveEaseOut, ^{ self.frame = DMNativeClamp(r, self.minSize); }, nil); return; }
+    if (!CGRectIsNull(self.restoreFrame)) {
+        CGRect r = DMNativeClamp(self.restoreFrame, self.minSize);
+        self.restoreFrame = CGRectNull;
+        DMTitleRecordNativeTo(self, r);
+        MSBAnimate(0.2, 0, 0, UIViewAnimationOptionCurveEaseOut, ^{ self.frame = r; }, nil);
+        return;
+    }
     self.restoreFrame = self.frame;
     CGRect d = CGRectInset(DMNativeDesktop(), 4.0, 4.0);
+    DMTitleRecordNativeTo(self, d);
     MSBAnimate(0.2, 0, 0, UIViewAnimationOptionCurveEaseOut, ^{ self.frame = d; }, nil);
 }
 @end

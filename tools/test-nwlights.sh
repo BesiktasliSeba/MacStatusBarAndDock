@@ -21,10 +21,12 @@ check "  ... and never finds a dot by its place among a button's subviews (UIKit
 check "  ... the dots as made (12 pt at the top left of a 20 x 52 cell) are where the report saw red and yellow: 4 pt left, 20 pt up" \
   "python3 -I -c 'cell, th, dot = 20.0, 52.0, 12.0; made = (dot / 2, dot / 2); centred = (cell / 2, th / 2); import sys; sys.exit(0 if (made[0] - centred[0], made[1] - centred[1]) == (-4.0, -20.0) else 1)' \
    && grep -q 'static const CGFloat kLightCell = 20.0;' $S && grep -q 'static const CGFloat kLightDot = 12.0;' $S && grep -q 'self.titleBarHeight = 52.0;' ../statusbar/Finder.h"
-# The other sets of lights take their dots right after making them, before the light group reads any label, and centre them as they are made:
-# nothing of UIKit's is in the buttons yet (Aerial's stage lights, our Stage Manager title bar).
-check "the other lights take each dot before the light group reads the labels (Aerial's stage lights, our Stage Manager title bar)" \
-  "awk '/^- \\(instancetype\\)initWithStage:\\(UIView \\*\\)stage \\{/{f=1} f&&/\\[dots addObject:b.subviews.firstObject\\]/{a=NR} f&&/DMLightGroupAttach\\(self, self.subviews, dots,/{b=NR} f&&/^}/{exit} END{exit !(a && b > a)}' $S \
-   && awk '/for \\(UIButton \\*b in ls\\) \\[dots addObject:b.subviews.firstObject\\];/{a=NR} /DMLightGroupAttach\\(self, ls, dots,/{b=NR} END{exit !(a && b == a + 1)}' $S"
+# The other sets of lights keep each dot as they make it (review 1.8.3.1 L4): Aerial's stage lights and our Stage Manager title bar found it
+# again as its button's first subview, before the light group read any label -- safe then, but one look later in a layout would bring #11 back.
+check "the other lights keep each dot as made, in the loop that makes it, and never look it up among a button's subviews (Aerial's stage lights, our Stage Manager title bar)" \
+  "awk '/^- \\(instancetype\\)initWithStage:\\(UIView \\*\\)stage \\{/{f=1} f{print} f&&/^}/{exit}' $S | grep -q '\\[buttons addObject:b\\]; \\[dots addObject:dot\\];' \
+   && awk '/^- \\(instancetype\\)initWithStage:\\(UIView \\*\\)stage \\{/{f=1} f{print} f&&/^}/{exit}' $S | grep -q 'DMLightGroupAttach(self, buttons, dots,' \
+   && grep -q '\\[self addSubview:b\\]; \\[ls addObject:b\\]; \\[dots addObject:dot\\];' $S && grep -q 'DMLightGroupAttach(self, ls, dots,' $S \
+   && ! grep -q 'addObject:b.subviews.firstObject' $S"
 
 [ $fails = 0 ] && echo "test-nwlights: all checks pass" || { echo "test-nwlights: FAILED"; exit 1; }

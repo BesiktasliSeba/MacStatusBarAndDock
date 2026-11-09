@@ -824,6 +824,42 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
+			<string>Calls, timers, music and other Live Activities show next to the status icons, like on a Mac. Tap one to control it.</string>
+			<key>id</key>
+			<string>LIVE_ACTIVITIES_GROUP</string>
+			<key>stockHides</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>LIVE_ACTIVITIES</string>
+			<key>key</key>
+			<string>liveActivities</string>
+			<key>label</key>
+			<string>Live Activities in Menu Bar</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSLinkCell</string>
+			<key>detail</key>
+			<string>MSBLiveActivitiesListController</string>
+			<key>id</key>
+			<string>LIVE_ACTIVITIES_PAGE</string>
+			<key>label</key>
+			<string>Activities</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
 			<string>Skipping the Lock Screen only works when no passcode is set.</string>
 			<key>id</key>
 			<string>LOCK_GROUP</string>

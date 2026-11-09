@@ -17,8 +17,8 @@ check "the Dock controller's edit mode, on its exact type only, then our items c
   "fn 'static void DMEditHook(void) {' $D && grep -q 'if (!m || strcmp(method_getTypeEncoding(m) ?: \"\", \"v24@0:8B16B20\"))' \$W/fn \
    && grep -q 'MSHookMessageEx(c, @selector(setEditing:animated:), (IMP)DMDockSetEditing, (IMP \*)&o_DockSetEditing);' \$W/fn \
    && fn 'static void DMDockSetEditing(id self, SEL _cmd, BOOL editing, BOOL animated) {' $D && grep -q 'o_DockSetEditing(self, _cmd, editing, animated);' \$W/fn \
-   && grep -q 'DMEditProxiesApply(platter ?: box.anyObject, editing, animated, gLaunchpadClassic, YES);' \$W/fn && grep -q '    DMEditHook();' $D"
-check "  ... and followed at every Dock layout while that Dock edits" "grep -q 'if (platter && DMEditProxiesOn(platter)) DMEditProxiesApply(platter, YES, NO, gLaunchpadClassic, NO);' $D"
+   && grep -q 'DMEditProxiesApply(platter ?: box.anyObject, editing, animated, gLaunchpadIcon, gLaunchpadClassic, YES);' \$W/fn && grep -q '    DMEditHook();' $D"
+check "  ... and followed at every Dock layout while that Dock edits" "grep -q 'if (platter && DMEditProxiesOn(platter)) DMEditProxiesApply(platter, YES, NO, gLaunchpadIcon, gLaunchpadClassic, NO);' $D"
 check "SpringBoard's icon view as the Dock's own: its init's exact type, the provider and location of an Apple icon of the Dock, the item's own app icon" \
   "fn 'static UIView *EPMakeProxy(int item, UIView *model) {' $E && grep -q 'strcmp(method_getTypeEncoding(m) ?: \"\", \"@32@0:8Q16@24\")' \$W/fn \
    && grep -q 'id icon = DMIconThemeIcon((MSBDIconItem)item);' \$W/fn && grep -q 'id provider = EPGet(model, @\"listLayoutProvider\"), location = EPGet(model, @\"location\");' \$W/fn \
@@ -33,12 +33,19 @@ check "our views while editing: their recognizers off, their menus out, their pi
   "fn 'static void EPQuiet(UIView *v, BOOL quiet, UIView *keep, UIView *keepToo) {' $E && grep -q 'g.enabled = NO;' \$W/fn && grep -q '\[v removeInteraction:i\];' \$W/fn \
    && grep -q '((UIGestureRecognizer \*)p\[0\]).enabled = \[p\[1\] boolValue\];' \$W/fn && grep -q 'if (!\[v.interactions containsObject:i\]) \[v addInteraction:i\];' \$W/fn \
    && grep -q 'for (UIView \*s in saved\[@\"hidden\"\]) s.hidden = NO;' \$W/fn"
+check "audit 1.8.3 L7: the App Library icon gets our Launchpad stand-in only while our Launchpad picture is on (the switch passed from the Dock); off, it edits as Apple's own, one covered before given back" \
+  "fn 'void DMEditProxiesApply(UIView *platter, BOOL editing, BOOL animated, BOOL launchpadIcon, BOOL launchpadClassic, BOOL logAlways) {' $E \
+   && grep -q 'if (launchpadIcon) EPCoverLibrary(library, MSBDEditIconItem(kMSBDEditLaunchpad, launchpadClassic, full), editing, animated, platter);' \$W/fn \
+   && grep -q 'else if (library && (objc_getAssociatedObject(library, kEPProxyKey) || \[objc_getAssociatedObject(library, kEPHidKey) boolValue\])) EPUndoLibrary(library);' \$W/fn \
+   && [ \"\$(grep -c 'DMEditProxiesApply(.*gLaunchpadIcon, gLaunchpadClassic' $D)\" = 2 ]"
+check "audit 1.8.3 L6: set aside already and now with nothing to keep (its own jiggle after a stand-in): what the stand-in had hidden shows again, and is not shown twice later" \
+  "fn 'static void EPQuiet(UIView *v, BOOL quiet, UIView *keep, UIView *keepToo) {' $E && awk '/if \\(saved\\) \\{/{a=NR} /if \\(!keep\\) \\{ for \\(UIView \\*s in saved\\[@\"hidden\"\\]\\) s.hidden = NO; saved\\[@\"hidden\"\\] = @\\[\\]; \\}/{b=NR} END{exit !(a && b > a)}' \$W/fn"
 check "  ... SpringBoard's icon view inside our view (it moves, grows and turns with it), editing; the App Library icon hidden under ours beside it" \
   "fn 'static void EPCoverOurs(UIView *v, int view, int item, UIView *model, BOOL editing, BOOL animated, UIView *platter) {' $E && grep -q '\[v addSubview:proxy\];' \$W/fn && grep -q 'EPEditing(proxy, YES, animated);' \$W/fn \
    && fn 'static void EPCoverLibrary(UIView *library, int item, BOOL editing, BOOL animated, UIView *platter) {' $E && grep -q '\[library.superview insertSubview:proxy aboveSubview:library\];' \$W/fn && grep -q 'library.hidden = YES;' \$W/fn \
    && fn 'static void EPUndoLibrary(UIView *library) {' $E && grep -q 'library.hidden = NO;' \$W/fn"
 check "the end of editing puts back every view it changed from what was kept of it (weakly), with the platter its controller had when none is found then -- the App Library icon shown again only if we hid it (review 1.8.3 P2-7); only that Dock's: another Dock still editing keeps its own, and each Dock's edit state is its own (review P3-1)" \
-  "fn 'void DMEditProxiesApply(UIView *platter, BOOL editing, BOOL animated, BOOL launchpadClassic, BOOL logAlways) {' $E && ! grep -q 'if (!platter) return;' \$W/fn \
+  "fn 'void DMEditProxiesApply(UIView *platter, BOOL editing, BOOL animated, BOOL launchpadIcon, BOOL launchpadClassic, BOOL logAlways) {' $E && ! grep -q 'if (!platter) return;' \$W/fn \
    && grep -q 'for (UIView \*v in \[EPChanged(platter, kEPOursKey, NO) allObjects\]) EPUndoOurs(v);' \$W/fn && grep -q 'for (UIView \*l in \[EPChanged(platter, kEPLibraryKey, NO) allObjects\]) EPUndoLibrary(l);' \$W/fn \
    && grep -q 'objc_setAssociatedObject(platter, kEPEditingKey, editing ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);' \$W/fn && ! grep -q 'gEPOurs\|gEPLibrary\|gEPEditing\b' $E \
    && grep -q 'BOOL DMEditProxiesOn(UIView \*platter) { return platter && \[objc_getAssociatedObject(platter, kEPEditingKey) boolValue\]; }' $E \
@@ -51,7 +58,7 @@ check "  ... no label on them (the Dock's icons have none); the App Library's st
   "fn 'static void EPNoLabel(UIView *v) {' $E && grep -q 'EPBool(v, @\"configureForLabelAllowed:\", NO);' \$W/fn && grep -q 'EPDouble(v, @\"setIconLabelAlpha:\", 0.0);' \$W/fn \
    && grep -q 'UIView \*drawn = DMLaunchpadOverlayOf(library);' $E && grep -q '^UIView \*DMLaunchpadOverlayOf(UIView \*iconView) {' ../dock/Launchpad.m"
 check "editing ended: every item's picture asked again (SnowBoard's per-icon menu changes one without its refresh note)" \
-  "fn 'void DMEditProxiesApply(UIView *platter, BOOL editing, BOOL animated, BOOL launchpadClassic, BOOL logAlways) {' $E && grep -q 'if (!editing && was) DMIconThemeAskAgain(@\"Edit Home Screen ended\");' \$W/fn \
+  "fn 'void DMEditProxiesApply(UIView *platter, BOOL editing, BOOL animated, BOOL launchpadIcon, BOOL launchpadClassic, BOOL logAlways) {' $E && grep -q 'if (!editing && was) DMIconThemeAskAgain(@\"Edit Home Screen ended\");' \$W/fn \
    && fn 'void DMIconThemeAskAgain(NSString *why) {' $T && grep -q 'gMSBDIconGeneration++;' \$W/fn"
 check "a theme engine reloading one of our icons' pictures itself (SnowBoard's per-icon menu, no refresh note): every library's views told, live" \
   "grep -q 'MSBDIconAddIf(k, app, @\"reloadIconImage\", @\"v@:\", (IMP)MSBDIconReload);' ../common/IconTheme.h && grep -q 'notify_post(kMSBDIconThemeReloaded);' ../common/IconTheme.h \
@@ -76,4 +83,20 @@ check "the hover magnification passes Edit Home Screen's icon views by: each kee
   "fn 'static void DMCollectIcons(UIView *root, Class iconClass, NSMutableArray *out) {' $D && sed -n 3p \$W/fn | grep -q 'if (DMEditProxyIs(v)) continue;' \
    && fn '- (void)setTransform:(CGAffineTransform)t {' $D && grep -q 'BOOL dockIcon = DMIsDockIcon((UIView \*)self) && !DMEditProxyIs((UIView \*)self);' \$W/fn \
    && [ \$(grep -c 'gHovering && !gApplying.*&& dockIcon' \$W/fn) = 2 ] && ! grep -q 'DMIsDockIcon((UIView \*)self)) {' \$W/fn"
+check "L1 (review 1.8.3.1): in Edit Home Screen the Launchpad stand-in magnifies on hover, from the hidden App Library icon's centre, over its fit" \
+  "fn 'static void EPFit(UIView *proxy, CGRect want, CGAffineTransform over) {' $E && grep -q 'objc_setAssociatedObject(proxy, kEPFitKey, \\[NSValue valueWithBytes:&fit objCType:@encode(EPFitInfo)\\]' \$W/fn \
+   && grep -q 'MSBDEditProxyCentre(fit.mid.x, fit.off.x, k, 1.0)' \$W/fn \
+   && fn 'void DMEditProxyMagnify(UIView *library, CGFloat s) {' $E && grep -q 'CGAffineTransformMakeScale(f.k \\* s, f.k \\* s), f.over' \$W/fn && grep -q 'MSBDEditProxyCentre(f.mid.x, f.off.x, f.k, s)' \$W/fn \
+   && fn 'static void EPFollow(UIView *proxy, UIView *library) {' $E && grep -q 'CGAffineTransform t = CGAffineTransformIdentity;' \$W/fn \
+   && fn '- (void)dm_apply {' $D && grep -q 'if (gInfluence > 0.0) { CGPoint c = \\[icon.superview convertPoint:icon.center toView:self\\]; s = DMScale(gSmoothX - c.x); }' \$W/fn \
+   && grep -q 'DMEditProxyMagnify(icon, s);' \$W/fn"
+TR=../dock/TrashIcon.m
+check "N2 (regression 1.8.4, W-1 on the iPad 2): the Trash filled or emptied while the Home Screen is edited shows its new picture on its stand-in at once -- the count draws the bin again, its new picture lays the Dock out again while editing, and that layout makes the stand-in again for the Trash's new item" \
+  "awk '/^- \(void\)dm_setCount:\(NSUInteger\)n \{/,/^\}/' $TR | grep -q '\[self dm_refreshLook:YES\]' \
+   && awk '/^- \(void\)dm_refreshLook:\(BOOL\)animated \{/,/^\}/' $TR | grep -q 'completion:\^(BOOL finished) { DMDockItemPictureChanged(self); }' \
+   && fn 'void DMDockItemPictureChanged(UIView *item) {' $D && grep -q 'if (dc && \[v isKindOfClass:dc\]) dock = v;' \$W/fn && grep -q 'if (platter && dock && DMEditProxiesOn(platter)) \[dock setNeedsLayout\];' \$W/fn \
+   && grep -q 'if (platter && DMEditProxiesOn(platter)) DMEditProxiesApply(platter, YES, NO, gLaunchpadIcon, gLaunchpadClassic, NO);' $D \
+   && fn 'void DMEditProxiesApply(UIView *platter, BOOL editing, BOOL animated, BOOL launchpadIcon, BOOL launchpadClassic, BOOL logAlways) {' $E && grep -q 'BOOL full = \[EPGet(trash, @\"count\") integerValue\] > 0;' \$W/fn \
+   && grep -q 'if (trash) EPCoverOurs(trash, kMSBDEditTrash, MSBDEditIconItem(kMSBDEditTrash, launchpadClassic, full), model, editing, animated, platter);' \$W/fn \
+   && fn 'static void EPCoverOurs(UIView *v, int view, int item, UIView *model, BOOL editing, BOOL animated, UIView *platter) {' $E && grep -q 'if (proxy && editing && \[objc_getAssociatedObject(proxy, kEPItemKey) intValue\] != item) {' \$W/fn"
 exit $fails

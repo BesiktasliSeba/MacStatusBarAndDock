@@ -93,16 +93,25 @@ static inline BOOL MSBDFeatureTopFrameIn(NSDictionary *body, NSString *map, NSSt
 
 // (The map lookup, MSBDFeatureMapTarget, is in CrashBlame.h: the classifier needs it too, for the transparent hooks.)
 
-// A switch's value now (its default when never set).
-static inline BOOL MSBDFeaturePrefValue(NSString *domain, NSString *key, BOOL def) {
+// A switch's value now (its default when never set). A text (a list row's choice) reads as the default -- or, where the rule names the texts that
+// count as off (offtext=<text>[,<text>...]: Dock Style's "default"; the Banner and Control Center Styles' "stock", and Control Center's
+// "bigsurcenter"), as off for those and on for any other (review 1.8.4 P2-L1: Default was read as on, so a crash pinned there set nothing that was
+// not set already, and the whole tweak went after the next crash instead of the part).
+static inline BOOL MSBDFeaturePrefValue(NSString *domain, NSString *key, BOOL def, BOOL off, NSArray<NSString *> *offTexts) {
     CFPreferencesAppSynchronize((__bridge CFStringRef)domain);
     CFPropertyListRef v = CFPreferencesCopyValue((__bridge CFStringRef)key, (__bridge CFStringRef)domain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     BOOL on = def;
-    if (v) { if (CFGetTypeID(v) == CFBooleanGetTypeID()) on = CFBooleanGetValue(v); else if (CFGetTypeID(v) == CFNumberGetTypeID()) on = [(__bridge NSNumber *)v boolValue]; CFRelease(v); }
+    if (v) {
+        if (CFGetTypeID(v) == CFBooleanGetTypeID()) on = CFBooleanGetValue(v);
+        else if (CFGetTypeID(v) == CFNumberGetTypeID()) on = [(__bridge NSNumber *)v boolValue];
+        else if (offTexts.count && CFGetTypeID(v) == CFStringGetTypeID()) on = [offTexts containsObject:(__bridge NSString *)v] ? off : !off;
+        CFRelease(v);
+    }
     return on;
 }
 
-// The answer for one report and map: YES with *action = "pref <image> <domain> <key> <value> <row title>|<where>" or
+// The answer for one report and map: YES with *action = "pref <image> <domain> <key> <value> [text=<off text>] <row title>|<where>" (text: the
+// list row's choice to store instead of the value -- its rule's first off text, so Settings shows a choice: Dock Style "default") or
 // "part <image> - - 0 <where>|<what>"; NO with *action = why not.
 // *detail gets where it was found (for the log).
 static inline BOOL MSBDFeatureForReport(NSData *report, NSString *map, NSString **action, NSString **detail) {
@@ -124,8 +133,15 @@ static inline BOOL MSBDFeatureForReport(NSData *report, NSString *map, NSString 
     for (NSArray *try in @[spec, isPref && fallback && ![fallback isEqualToString:target] && targets[fallback] ? targets[fallback] : @[]]) {
         if (try.count < 5 || ![try[0] isEqualToString:@"pref"]) continue;
         NSString *domain = try[1], *key = try[2]; BOOL off = [try[3] boolValue], def = [try[4] boolValue];
-        NSString *title = try.count > 5 ? [[try subarrayWithRange:NSMakeRange(5, try.count - 5)] componentsJoinedByString:@" "] : [NSString stringWithFormat:@"%@|%@", key, key];
-        if (MSBDFeaturePrefValue(domain, key, def) != off) { *action = [NSString stringWithFormat:@"pref %@ %@ %@ %d %@", image, domain, key, off, title]; return YES; }
+        NSUInteger at = 5;
+        NSArray<NSString *> *offTexts = nil;   // (the texts that count as off; the first is the one written to turn it off)
+        if (try.count > at && [try[at] hasPrefix:@"offtext="]) offTexts = [[try[at++] substringFromIndex:8] componentsSeparatedByString:@","];
+        NSString *title = try.count > at ? [[try subarrayWithRange:NSMakeRange(at, try.count - at)] componentsJoinedByString:@" "] : [NSString stringWithFormat:@"%@|%@", key, key];
+        if (MSBDFeaturePrefValue(domain, key, def, off, offTexts) != off) {
+            NSString *text = offTexts.firstObject.length ? [@" text=" stringByAppendingString:offTexts.firstObject] : @"";
+            *action = [NSString stringWithFormat:@"pref %@ %@ %@ %d%@ %@", image, domain, key, off, text, title];
+            return YES;
+        }
         *detail = [*detail stringByAppendingFormat:@" (%@ already %@)", key, off ? @"on" : @"off"];
     }
     *action = [NSString stringWithFormat:@"part %@ - - 0 %@", image, partTitle.length ? partTitle : [NSString stringWithFormat:@"its part %@|%@", image, image]];

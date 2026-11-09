@@ -1,7 +1,8 @@
 // test-prefsforget.m -- Mac test of common/PrefsForget.h (1.7.8): a preferences domain emptied through cfprefsd, against the Mac's own cfprefsd
 // (the same CoreFoundation calls and the same kind of daemon as on iPadOS). First the 1.7.7 finding itself: a domain's plist deleted by hand while
 // cfprefsd holds it -- the keys come back to the next reader. Then the removal through cfprefsd: no key listed, none read back, and no file left.
-// A scratch domain of its own, removed at the end. Run by test-prefsforget.sh.
+// A scratch domain of its own, named by test-prefsforget.sh (argv[1]), which removes it again at the end -- cfprefsd's late write of the emptied
+// domain included: it wrote an empty plist a few seconds after this test ended, and 328 of them were left in ~/Library/Preferences by 7 Nov.
 #import <Foundation/Foundation.h>
 #include <unistd.h>
 #include "../common/PrefsForget.h"
@@ -14,9 +15,10 @@ static NSString *Read(CFStringRef d, CFStringRef k) {
     if (v) CFRelease(v);
     return s;
 }
-int main(void) {
+int main(int argc, char **argv) {
     @autoreleasepool {
-        NSString *name = [NSString stringWithFormat:@"com.besiktasliseba.msbdtest.prefsforget.%d", getpid()];
+        NSString *name = argc > 1 ? @(argv[1]) : [NSString stringWithFormat:@"com.besiktasliseba.msbdtest.prefsforget.%d", getpid()];
+        printf("scratch domain: %s\n", name.UTF8String);
         CFStringRef d = (__bridge CFStringRef)name;
         NSString *file = [NSString stringWithFormat:@"%@/Library/Preferences/%@.plist", NSHomeDirectory(), name];
         CFPreferencesSetValue(CFSTR("quitSet"), CFSTR("old"), d, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);

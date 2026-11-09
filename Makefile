@@ -8,6 +8,8 @@ include $(THEOS)/makefiles/common.mk
 # The two lines Choicy / iCleaner Pro show: small loaders (loader/Loader.c) for the parts ("payloads") built by the subprojects below.
 TWEAK_NAME = MacStatusBar MacDock
 MacStatusBar_FILES = loader/Loader.c
+# The version the parts carry (the crash guard's record, BuildInfo.txt): control's Version. A dev build gives its own as a make argument --
+# gmake package MSBD_BUILD_VERSION=1.8.4~x07 --, which overrides this line; one in the environment does not (verify-release.sh compares them).
 MSBD_BUILD_VERSION := $(shell sed -n 's/^Version: //p' control)
 MacStatusBar_CFLAGS = -DMSBD_LINE_DOCK=0 -DMSBD_BUILD_VERSION='"$(MSBD_BUILD_VERSION)"'
 MacDock_FILES = loader/Loader.c

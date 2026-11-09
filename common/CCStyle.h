@@ -5,10 +5,10 @@
 // go with a style, MSBRootListController.m), the root helper (whether BigSurCenter loads, macsettings/sshtoggled) and the Settings search
 // (common/OwnPageState.h). Plain C with CoreFoundation (Mac test tools/test-ccstyle.sh); the readers of the state on the iPad are
 // common/CCStyleNow.h.
-//  - Stored (controlCenterStyle, com.besiktasliseba.macstatusbar): the text "mac", "stock" or "bigsurcenter", written only by a tap on the Style
-//    page; the default is never written. False (or 0) is iPadOS's: the crash guard writes it when our Control Center crashed SpringBoard
-//    (tools/crashmap-rules.txt "controlcenter"; and step 1's switches turned on just before it, where Mac counts as the style's "on").
-//    Anything else counts as never set.
+//  - Stored (controlCenterStyle, com.besiktasliseba.macstatusbar): the text "mac", "stock" or "bigsurcenter", written by a tap on the Style page,
+//    and "stock" by the crash guard when our Control Center crashed SpringBoard (step 1b: tools/crashmap-rules.txt "controlcenter", its off
+//    text); the default is never written. False (or 0) is iPadOS's too: step 1 writes it for the switches turned on just before a crash, where
+//    Mac counts as the style's "on" (and step 1b wrote it before 1.8.4). Anything else counts as never set.
 //  - The rule. A stored style that can be had is the style: iPadOS always; BigSurCenter while it is installed; Mac where it runs, else iPadOS
 //    (a Mac chosen where ours can't run is Apple's Control Center, never BigSurCenter: the user chose against that one). Never set, or
 //    BigSurCenter stored but gone: BigSurCenter where it is installed and the user has not switched it off in Choicy or iCleaner Pro

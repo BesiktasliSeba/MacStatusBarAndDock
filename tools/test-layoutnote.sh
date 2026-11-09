@@ -13,6 +13,7 @@ SRC=${MSBD_TEST_SRC:-../statusbar}
 S=$SRC/StatusBar.x
 H=$SRC/SMHome.h
 fn() { awk -v s="$2" 'index($0, s) == 1 {f=1} f {print} f && /^}/ {exit}' "$1"; }   # one function of a file, from its first line
+cutfn() { awk -v s="$2" '!f && index($0, s) == 1 {f=1} f {print; n += gsub(/\{/, "{"); n -= gsub(/\}/, "}"); if (n <= 0) exit}' "$1"; }   # the same, by its braces (a one-line function too)
 has() { grep -qF "$2" "$1"; }
 {
   cp "$SRC/TurnPlace.h" "$W/TurnPlace.h"
@@ -40,6 +41,9 @@ has() { grep -qF "$2" "$1"; }
   grep -F 'static NSMutableDictionary<NSString *, NSDictionary<NSString *, NSValue *> *> *gSMTurnFrames;' "$S"
   grep -F 'static NSMutableDictionary<NSString *, NSValue *> *gSMTurnPlaced;' "$S"
   echo 'static void DMSMStateWrite(void);'
+  # (1.8.4 F2: the Dock's room the windows are placed for, as the source has it; an older source: none)
+  if has "$S" 'static int gDMWindowsRoomPending = -1;'; then grep -F 'static int gDMWindowsRoomPending = -1;' "$S"; grep -F 'static int DMDockRoomSaved(void) { return' "$S"
+  else echo 'static int gDMWindowsRoomPending = -1;   // (not in this source)'; echo 'static int DMDockRoomSaved(void) { return -1; }   // (not in this source: none saved)'; fi
   if has "$S" 'static NSMutableDictionary<NSString *, NSString *> *DMSMTurnLayouts(void) {'; then
     grep -F 'static NSDictionary<NSString *, NSString *> *gSMTurnLayoutWritten;' "$S"
     fn "$S" 'static NSMutableDictionary<NSString *, NSString *> *DMSMTurnLayoutsFrom(NSDictionary *st) {'
@@ -64,6 +68,19 @@ has() { grep -qF "$2" "$1"; }
   else echo 'static dispatch_queue_t DMSMStateWriteQueue(void) { static dispatch_queue_t q; static dispatch_once_t once; dispatch_once(&once, ^{ q = dispatch_queue_create("old", DISPATCH_QUEUE_SERIAL); }); return q; }   // (not in this source: written at once)'; fi
   fn "$S" 'static void DMSMStateWrite(void) {'
   fn "$S" 'static void DMSMForgetApp(NSString *bundle) {'
+  # (1.8.4 F2 and the review of its fixes, H1 and M1: the start's step for Stage Manager, and Stage Manager's start tick, as the source has them)
+  if has "$S" 'static BOOL DMDockRoomChangedSinceSave(void) {'; then cutfn "$S" 'static BOOL DMDockRoomChangedSinceSave(void) {'
+  else echo 'static BOOL DMDockRoomChangedSinceSave(void) { return NO; }   // (not in this source)'; fi
+  if has "$S" 'static void DMDockRoomAfterStartSMTry(int tries) {'; then
+    echo 'static void DMDockRoomAfterStartSMTry(int tries);'
+    fn "$S" 'static void DMDockRoomAfterStartSM(void) {'
+    fn "$S" 'static void DMDockRoomAfterStartSMTry(int tries) {'
+  else echo 'static void DMDockRoomAfterStartSMTry(int tries) { (void)tries; }   // (not in this source: nothing follows the room)'; echo 'static void DMDockRoomAfterStartSM(void) { }   // (not in this source)'; fi
+  if has "$H" 'static void DMSMRoomTick(void) {'; then fn "$H" 'static void DMSMRoomTick(void) {'
+  else   # (1.8.4 b had its tick's room step inline in DMSMRestoreDesktopTick: it is stood in for by what it did; an older source: none)
+    if has "$H" 'if (!DMSMFree()) gDMWindowsRoomPending = -1;'; then echo 'static void DMSMRoomTick(void) { if (gDMWindowsRoomPending >= 0 && (!gSMHomeOn || !DMSMFree()) && !DMSMFree()) gDMWindowsRoomPending = -1; }   // (1.8.4 b, inline)'
+    else echo 'static void DMSMRoomTick(void) { }   // (not in this source)'; fi
+  fi
 } > "$W/layoutnote-gen.h"
 cp "$SRC/SMWindowKey.h" "$W/SMWindowKey.h"
 clang -fobjc-arc -Wall -Wno-unused-function -Wno-unused-variable -I"$W" -framework Foundation -framework CoreGraphics -o "$W/t" test-layoutnote.m
@@ -79,6 +96,12 @@ check "  ... a change of the note alone is saved at the next tick (the save's si
   "save | grep -qF '[objc_getAssociatedObject(st, kStageIntentKey) hash] + [objc_getAssociatedObject(st, kStageLayoutNameKey) hash];'"
 check "the restore puts it back where it places the window, after the place and the minimize, before the next app (one away or minimized is not noted again until it is shown)" \
   "fn $S 'static void DMRestoreStep(NSArray *wins, NSUInteger i, NSDictionary *state, int waited) {' | awk '/else DMAerialMoveStage\(stage, place, nil\);/{a=NR} /if \(minimizedAgain\) \{ Class mwc = objc_getClass\(\"AXWindowView\"\);/{b=NR} /DMStageSetLayoutNote\(stage, w\[@\"layout\"\]\);/{c=NR} /DMRestoreAfterScene\(bundle, 0, \^\{ DMRestoreStep\(wins, i \+ 1, state, 0\); \}\);   \/\/ \(one app/{d=NR} END{exit !(a && b && c && d && a < b && b < c && c < d)}'"
+check "N1 (regression 1.8.4, iPad 2 Aerial 5.1): a window the restore minimizes again keeps the place it is given there as where it comes back, Aerial's remembered frame with it and no hold (opened later it came back at the frame Aerial's fit-to-screen pass had shrunk it to, out of its layout)" \
+  "fn $S 'static void DMRestoreStep(NSArray *wins, NSUInteger i, NSDictionary *state, int waited) {' | awk '/DMSetStageFrameSafe\(stage, place\)/{a=NR} /if \(minimizedAgain\) DMKeepStagePlace\(stage, place\);/{b=NR} /DMMinimizeStage\(stage\);/{c=NR} END{exit !(a && b > a && c > b)}' \
+   && fn $S 'static void DMKeepStagePlace(UIView *stage, CGRect frame) {' | grep -qF 'DMAerial5SyncState(stage, frame);' \
+   && fn $S 'static void DMKeepStagePlace(UIView *stage, CGRect frame) {' | grep -qF 'objc_setAssociatedObject(stage, kStageIntentKey, [NSValue valueWithCGRect:frame], OBJC_ASSOCIATION_RETAIN_NONATOMIC);' \
+   && ! fn $S 'static void DMKeepStagePlace(UIView *stage, CGRect frame) {' | grep -qF 'DMA5HoldStageAt' \
+   && fn $S 'static void DMSetStageIntent(UIView *stage, CGRect frame) {' | awk '/DMA5HoldStageAt\(stage, frame/{a=NR} /DMKeepStagePlace\(stage, frame\);/{b=NR} END{exit !(a && b > a)}'"
 check "  ... the notes are taken from the windows on screen only, as before (the rule that leaves a window not shown with what it had)" \
   "fn $S 'static void DMNoteWindowLayouts(void) {' | grep -qF 'NSArray<UIView *> *stages = DMAerialStages();' && fn $S 'static void DMNoteWindowLayouts(void) {' | grep -qF 'if (st.hidden || DMStageMinimized(st) ||'"
 check "Stage Manager: the layouts written with the state file when they change, read once at the start (both readers, the turn and the Position change, ask the accessor)" \

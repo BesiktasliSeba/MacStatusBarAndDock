@@ -212,6 +212,7 @@ static BOOL MTIFilterPasses(id f, double cf) {
 @property (nonatomic, copy) NSString *arrow;   // " → ", or " ← " for a right-to-left language (as Apple's breadcrumbs)
 @property (nonatomic) BOOL ours;               // (the pages being added now are our own: their entries say so)
 @property (nonatomic) BOOL belowLine, lineNext; // (the page being walked: past its line switch / the line switch was the row just seen)
+@property (nonatomic) BOOL underStock;          // (the page being walked opens from a group marked stockHides: its rows go with that group, 1.8.4)
 @end
 
 static NSString *MTISupportName(NSString *bundleName) {   // "ChoicyPrefs" -> "Choicy"
@@ -375,7 +376,7 @@ static NSString *MTICleanTitle(NSString *t) {
         e.uid = [self uidForPane:pane path:e.path rootRow:NO opensPage:link];
         e.tokens = MTITokens(title, kw);
         e.ours = self.ours;
-        e.groupID = groupID; e.stockHides = groupStock; e.key = MTIStr(it[@"key"]); e.belowLine = self.belowLine;
+        e.groupID = groupID; e.stockHides = groupStock || self.underStock; e.key = MTIStr(it[@"key"]); e.belowLine = self.belowLine;
         [self.out addObject:e];
         (*count)++;
         // the page a link row opens, when it is one of this bundle's plists (found as MTISubPlist says): its rows too
@@ -385,8 +386,11 @@ static NSString *MTICleanTitle(NSString *t) {
             if (subItems) {
                 [free removeObject:sub];
                 NSString *subTable = MTIStr(pages[sub][@"stringsTable"]) ?: MTIStr(pages[sub][@"localizationTable"]) ?: sub;
+                BOOL wasUnder = self.underStock;   // (a page opened from a group the stock status bar hides is hidden with it: the Activities page, 1.8.4)
+                self.underStock = wasUnder || groupStock;
                 [self walkItems:subItems pane:pane paneTitle:paneTitle icon:icon bundle:bundle table:subTable support:support crumbs:[crumbs arrayByAddingObject:title]
                            path:e.path pages:pages free:free depth:depth + 1 count:count];
+                self.underStock = wasUnder;
             }
         }
     }
@@ -396,7 +400,7 @@ static NSString *MTICleanTitle(NSString *t) {
         support:(NSString *)support pages:(NSDictionary *)pages mainName:(NSString *)mainName {
     if (!pane.length || !title.length || [self.panes containsObject:pane] || [self full]) return;   // (the same identifier twice: Settings finds the first)
     [self.panes addObject:pane];
-    self.belowLine = NO; self.lineNext = NO;
+    self.belowLine = NO; self.lineNext = NO; self.underStock = NO;
     [self addPane:pane title:title icon:icon];
     if (![items isKindOfClass:[NSArray class]]) return;
     NSMutableArray *free = [NSMutableArray arrayWithArray:pages.allKeys ?: @[]];

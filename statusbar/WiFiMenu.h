@@ -418,7 +418,7 @@ static void DMWiFiRefreshIcon(UIView *fg) {
 @end
 @implementation DMWiFiNetworkRow
 - (instancetype)initWithName:(NSString *)name secure:(BOOL)secure bars:(NSInteger)bars handler:(dispatch_block_t)handler {
-    self = [super initWithTitle:name enabled:YES handler:handler];
+    self = [super initWithTitle:MSBDShotWiFiName(name) enabled:YES handler:handler];   // (the screenshot mode's neutral name: debug builds only, ShotMode.h)
     if (!self) return nil;
     self.label.lineBreakMode = NSLineBreakByTruncatingTail;
     _logTag = DMWiFiTag(name);
@@ -757,7 +757,7 @@ static void DMWiFiShowPasswordSheet(id record, BOOL fake) {
     icon.frame = CGRectMake((W - icon.image.size.width) / 2.0, y, icon.image.size.width, icon.image.size.height);
     [box.contentView addSubview:icon]; y = CGRectGetMaxY(icon.frame) + 10.0;
     UILabel *t = [UILabel new];
-    t.text = sh.ssid; t.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold]; t.textColor = [UIColor labelColor];
+    t.text = MSBDShotWiFiName(sh.ssid); t.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold]; t.textColor = [UIColor labelColor];
     t.textAlignment = NSTextAlignmentCenter; t.numberOfLines = 2; t.lineBreakMode = NSLineBreakByTruncatingMiddle;
     CGFloat th = ceil([t sizeThatFits:CGSizeMake(W - 2 * pad, 60)].height);
     t.frame = CGRectMake(pad, y, W - 2 * pad, th); [box.contentView addSubview:t]; y += th + 4.0;

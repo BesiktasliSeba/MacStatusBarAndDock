@@ -598,11 +598,22 @@ static BOOL DMSMSwitchOnSettled(void) {
     if (!((BOOL (*)(id, SEL))objc_msgSend)(sc, ui)) return NO;
     return !DMSMWorkspaceBusy() && CACurrentMediaTime() - gSwitcherEventAt >= 0.35;
 }
+// A room pending since the start (regression 1.8.4 F2; StatusBar.x DMDockRoomAfterStartSM), as DockAutoHide.h MSBDRoomTick has it: only with the
+// Stage Manager engine -- this tick runs on any iPad that can run Stage Manager, and another engine's restore has the room (the review of the fixes,
+// H1: it dropped the room Aerial's restore had just read).
+static void DMSMRoomTick(void) {
+    if (gDMWindowsRoomPending < 0) return;   // (nothing pending: nothing asked -- the tick runs for SpringBoard's whole life; the re-review's Low 2)
+    int a = MSBDRoomTick(gDMWindowsRoomPending, DMSMEngine(), DMSMFree(), gSMHomeOn && gSMHomeStart > 0,
+                         DMProcessAge() > 10.0 && !gDMScreenOff && !DMSMHomeUILocked() && !DMCoverSheetShown());
+    if (a == MSBDRoomTickDrop) gDMWindowsRoomPending = -1;
+    else if (a == MSBDRoomTickFollow) DMDockRoomAfterStartSM();
+}
 static void DMSMRestoreDesktopTick(void) {
+    DMSMRoomTick();
     if (gSMRestoreDone || !gSMHomeOn || !DMSMFree() || gSMHomeStart <= 0) return;
     CFTimeInterval age = CACurrentMediaTime() - gSMHomeStart;
     if (age < 6.0) return;
-    if (age > 1200.0) { gSMRestoreDone = YES; DMLog(@"[smhome] the desktop was not brought back: no Home Screen within 20 min of the start"); return; }
+    if (age > 1200.0) { gSMRestoreDone = YES; if (DMSMEngine()) gDMWindowsRoomPending = -1; DMLog(@"[smhome] the desktop was not brought back: no Home Screen within 20 min of the start"); return; }
     if (gDMScreenOff || DMSMHomeUILocked() || DMCoverSheetShown() || gOverlay) return;
     if (!DMSMSwitchOnSettled()) {   // (Stage Manager still being switched on by SpringBoard: the desktop is asked for once that is over)
         DM_FEATURE_MARK("sm-desktop-waits-switch-on");
@@ -613,6 +624,9 @@ static void DMSMRestoreDesktopTick(void) {
     long long env = 0; id shown = nil;
     if (!DMSMHomeStateOf(DMSMHomeCurrentState(), &env, &shown)) return;   // (not readable yet)
     gSMRestoreDone = YES;
+    // (the windows placed for another answer of the Dock's auto-hide than the one taken now follow the room as it is, once the desktop below is back:
+    //  StatusBar.x DMDockRoomAfterStartSM, regression 1.8.4 F2)
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMDockRoomAfterStartSM(); });
     {   // (the saved minimized marks of windows that are gone -- their stage removed, e.g. the app quit from the App Switcher: a window's scene ends
         //  with it -- leave the saved set now that SpringBoard's stages are read; the set only grew, 1.3.9 logic test L-3. SMWindowKey.h DMSMKeysGone)
         NSArray *stages = DMSMRecentStages();

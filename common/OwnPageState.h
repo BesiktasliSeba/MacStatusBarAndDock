@@ -29,6 +29,17 @@ static inline BOOL MSBDFinderStored(void) {
     if (v) CFRelease(v);
     return on;
 }
+// Live Activities' Timers row (the Activities page): only where this iPadOS version is in the timers list, as SpringBoard runs the timers source
+// (common/LiveActivities.h; review 1.8.4 P2-L3: no switch that does nothing).
+static inline BOOL MSBDLATimersRowShown(void) {
+    NSOperatingSystemVersion v = [NSProcessInfo processInfo].operatingSystemVersion;
+    return MSBDLATimersListed(v.majorVersion, v.minorVersion, v.patchVersion) != 0;
+}
+// ... and its Apps row (with the group's footer about it): only where other apps' activities are listed, never on 15/16 (the same reason).
+static inline BOOL MSBDLAAppsRowShown(void) {
+    NSOperatingSystemVersion v = [NSProcessInfo processInfo].operatingSystemVersion;
+    return MSBDLAAppsListed(v.majorVersion, v.minorVersion, v.patchVersion) != 0;
+}
 // iPadOS 18+ where SpringBoard's typed keyboard focus lock failed its check on this build (StatusBar.x DMFocusLock18OK): no Mac Switcher, no
 // Wi-Fi Menu, no desktop. And the desktop's own check (17+, DesktopCheck.h).
 static inline BOOL MSBDFocusLock18Failed(void) { return [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 18 && MSBDFocusLockVerdict() == 0; }
@@ -115,6 +126,8 @@ static inline MSBDOwnPages MSBDOwnPagesNow(void) {
     s.stageManagerEngine = [engine isEqualToString:@"stagemanager"];
     s.milkyWayEngine = [engine isEqualToString:@"milkyway"];
     s.batteryUseOff = gMSBDOwnBatteryUseOff ? gMSBDOwnBatteryUseOff() : NO;
+    s.laTimersListed = MSBDLATimersRowShown();
+    s.laAppsListed = MSBDLAAppsRowShown();
     os_unfair_lock_lock(&lock);
     last = s; at = now;
     os_unfair_lock_unlock(&lock);

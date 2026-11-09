@@ -84,6 +84,9 @@ static void EPNoDrag(UIView *v) {
 // scaled down to ours as a whole, its picture (-iconImageFrame) centred where our view's picture is. No content scale of its own over it
 // (setIconContentScalingEnabled: NO: Atria's Dock scale on the M1). Worked out again at every Dock layout while editing.
 typedef struct { CGSize size; double scale; double continuousCornerRadius; } EPImageInfo;
+// (an icon view's fit, kept for the hover magnification: its scale, its picture's centre, its own centre's offset from that picture, the transform over it)
+typedef struct { CGFloat k; CGPoint mid, off; CGAffineTransform over; } EPFitInfo;
+static const void *kEPFitKey = &kEPFitKey;
 static void EPFit(UIView *proxy, CGRect want, CGAffineTransform over) {
     if (!(want.size.width > 4.0) || !(want.size.height > 4.0)) return;
     proxy.transform = CGAffineTransformIdentity;
@@ -99,8 +102,21 @@ static void EPFit(UIView *proxy, CGRect want, CGAffineTransform over) {
     }
     CGFloat k = want.size.width / img.size.width;
     CGPoint bc = CGPointMake(CGRectGetMidX(proxy.bounds), CGRectGetMidY(proxy.bounds)), ic = CGPointMake(CGRectGetMidX(img), CGRectGetMidY(img));
-    proxy.center = CGPointMake(CGRectGetMidX(want) + (bc.x - ic.x) * k, CGRectGetMidY(want) + (bc.y - ic.y) * k);
+    EPFitInfo fit = { k, CGPointMake(CGRectGetMidX(want), CGRectGetMidY(want)), CGPointMake(bc.x - ic.x, bc.y - ic.y), over };
+    objc_setAssociatedObject(proxy, kEPFitKey, [NSValue valueWithBytes:&fit objCType:@encode(EPFitInfo)], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    proxy.center = CGPointMake(MSBDEditProxyCentre(fit.mid.x, fit.off.x, k, 1.0), MSBDEditProxyCentre(fit.mid.y, fit.off.y, k, 1.0));
     proxy.transform = CGAffineTransformConcat(CGAffineTransformMakeScale(k, k), over);
+}
+// Dock.x dm_apply, at each frame of the hover while editing: the hidden App Library icon's magnification s, from its own centre, on its Launchpad
+// stand-in, over the stand-in's fit (EditProxyRule.h MSBDEditProxyCentre; review 1.8.3.1 L1: it stayed at rest size while the rest grew). Nothing
+// for an icon with no stand-in.
+void DMEditProxyMagnify(UIView *library, CGFloat s) {
+    UIView *proxy = library ? objc_getAssociatedObject(library, kEPProxyKey) : nil;
+    NSValue *v = proxy.superview ? objc_getAssociatedObject(proxy, kEPFitKey) : nil;
+    if (!v) return;
+    EPFitInfo f; [v getValue:&f size:sizeof f];
+    proxy.center = CGPointMake(MSBDEditProxyCentre(f.mid.x, f.off.x, f.k, s), MSBDEditProxyCentre(f.mid.y, f.off.y, f.k, s));
+    proxy.transform = CGAffineTransformConcat(CGAffineTransformMakeScale(f.k * s, f.k * s), f.over);
 }
 
 // ---- the icon view for one item ----
@@ -176,7 +192,12 @@ static UIView *EPModelIcon(UIView *platter, UIView **libraryOut) {
 static void EPQuiet(UIView *v, BOOL quiet, UIView *keep, UIView *keepToo) {
     NSMutableDictionary *saved = objc_getAssociatedObject(v, kEPSavedKey);
     if (quiet) {
-        if (saved) return;   // (set aside already)
+        if (saved) {   // (set aside already)
+            // (now with nothing to keep -- the stand-in that covered it is gone and the view jiggles itself: what was hidden under the stand-in shows
+            //  again. A Trash refill while editing, its stand-in not made again: the Trash stayed blank until editing ended -- audit 1.8.3 L6)
+            if (!keep) { for (UIView *s in saved[@"hidden"]) s.hidden = NO; saved[@"hidden"] = @[]; }
+            return;
+        }
         saved = [NSMutableDictionary dictionary];
         NSMutableArray *grs = [NSMutableArray array], *interactions = [NSMutableArray array], *hidden = [NSMutableArray array];
         for (UIGestureRecognizer *g in v.gestureRecognizers) { [grs addObject:@[g, @(g.enabled)]]; g.enabled = NO; }
@@ -244,8 +265,10 @@ static void EPFollow(UIView *proxy, UIView *library) {
     // (its place, our picture as big as the App Library icon's own picture is drawn -- that one has the Dock's scale over it: its iconImageFrame
     //  is the whole 61 pt icon, twice the 30 pt picture at a side --, the icon's own transform -- the hover magnification -- on top, and the turn
     //  every Dock icon has beside a side Dock, by the Dock's side (Dock.x DMDockSideTurnFor, DMDockSideStyleIcon's rule), never copied from that
-    //  icon's layer: a Dock layout while editing ran this before it had its turn back, and ours came out turned -- M1 1.8.3.1 F-5)
-    CGAffineTransform t = library.transform;
+    //  icon's layer: a Dock layout while editing ran this before it had its turn back, and ours came out turned -- M1 1.8.3.1 F-5. The hover
+    //  magnification comes from the Dock's own pass, DMEditProxyMagnify: the App Library icon hides while editing, so its transform has none, and
+    //  one copied as editing began would have been doubled -- review 1.8.3.1 L1)
+    CGAffineTransform t = CGAffineTransformIdentity;
     CGRect box = CGRectMake(library.center.x - library.bounds.size.width / 2.0, library.center.y - library.bounds.size.height / 2.0, library.bounds.size.width, library.bounds.size.height);
     UIView *img = EPHas(library, @"_iconImageView", "@16@0:8") ? ((id (*)(id, SEL))objc_msgSend)(library, NSSelectorFromString(@"_iconImageView")) : nil;
     CGRect want = box;
@@ -308,7 +331,7 @@ static void EPCoverLibrary(UIView *library, int item, BOOL editing, BOOL animate
 }
 
 // ---- the edit mode's start and end, and every Dock layout while it lasts ----
-void DMEditProxiesApply(UIView *platter, BOOL editing, BOOL animated, BOOL launchpadClassic, BOOL logAlways) {
+void DMEditProxiesApply(UIView *platter, BOOL editing, BOOL animated, BOOL launchpadIcon, BOOL launchpadClassic, BOOL logAlways) {
     UIView *library = nil, *model = nil, *finder = nil, *downloads = nil, *trash = nil;
     if (platter) {
         model = EPModelIcon(platter, &library);
@@ -317,7 +340,10 @@ void DMEditProxiesApply(UIView *platter, BOOL editing, BOOL animated, BOOL launc
         if (finder) EPCoverOurs(finder, kMSBDEditFinder, MSBDEditIconItem(kMSBDEditFinder, launchpadClassic, full), model, editing, animated, platter);
         if (downloads) EPCoverOurs(downloads, kMSBDEditDownloads, MSBDEditIconItem(kMSBDEditDownloads, launchpadClassic, full), model, editing, animated, platter);
         if (trash) EPCoverOurs(trash, kMSBDEditTrash, MSBDEditIconItem(kMSBDEditTrash, launchpadClassic, full), model, editing, animated, platter);
-        EPCoverLibrary(library, MSBDEditIconItem(kMSBDEditLaunchpad, launchpadClassic, full), editing, animated, platter);
+        // (the App Library icon gets our Launchpad stand-in only while it shows our Launchpad picture; with that picture off it is Apple's own icon and
+        //  edits as Apple's -- it was hidden for our tile while editing and back after, audit 1.8.3 L7 -- and one covered before is given back)
+        if (launchpadIcon) EPCoverLibrary(library, MSBDEditIconItem(kMSBDEditLaunchpad, launchpadClassic, full), editing, animated, platter);
+        else if (library && (objc_getAssociatedObject(library, kEPProxyKey) || [objc_getAssociatedObject(library, kEPHidKey) boolValue])) EPUndoLibrary(library);
     }
     BOOL was = platter && [objc_getAssociatedObject(platter, kEPEditingKey) boolValue];
     if (!editing && platter) {   // (this Dock's end: every view editing changed in it, from what was kept of it; another Dock still editing keeps its own)

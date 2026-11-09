@@ -191,6 +191,22 @@ static void DMLaunchpadSetDrawers(void) {
 }
 static __weak UIView *gDMLaunchpadIconView;   // (the App Library icon last refreshed: laid out again when a theme engine refreshed its icons)
 
+// What the tile shows -- the picture Glass Shelf's reflection and Edit Home Screen's stand-in copy: our picture and its shape, or the App Library
+// icon's own. A change lays the Dock out again for them (Dock.x DMDockItemPictureChanged; regression 1.8.4 F1: Launchpad Icon switched in
+// Settings, the reflection kept the picture before until some later layout).
+typedef struct { const void *overlay, *image; BOOL in, masks; NSUInteger ownHidden; double radius, overlayRadius; } DMLaunchpadShown;
+static DMLaunchpadShown DMLaunchpadShownNow(UIView *imageView) {
+    UIImageView *o = objc_getAssociatedObject(imageView, kOverlayKey);
+    NSHashTable *hidden = objc_getAssociatedObject(imageView, kHiddenKey);
+    return (DMLaunchpadShown){ (__bridge const void *)o, (__bridge const void *)o.image, o.superview == imageView, imageView.layer.masksToBounds, hidden.count,
+                               imageView.layer.cornerRadius, o.layer.cornerRadius };
+}
+static BOOL DMLaunchpadShownSame(DMLaunchpadShown a, DMLaunchpadShown b) {
+    return a.overlay == b.overlay && a.image == b.image && a.in == b.in && a.masks == b.masks && a.ownHidden == b.ownHidden && a.radius == b.radius
+        && a.overlayRadius == b.overlayRadius;
+}
+static void DMLaunchpadDraw(UIView *imageView, UIImageView *overlay, BOOL enabled, BOOL classic);
+
 // Called from -[SBIconView layoutSubviews]: only the App Library indicator icon is touched. `classic` = the round rocket
 // icon, otherwise the silver grid tile. The round one also clips the original (square) picture underneath to a circle.
 void DMLaunchpadRefresh(UIView *iconView, BOOL enabled, BOOL classic) {
@@ -205,6 +221,11 @@ void DMLaunchpadRefresh(UIView *iconView, BOOL enabled, BOOL classic) {
     static BOOL watching;
     if (!watching) { watching = YES; [[NSNotificationCenter defaultCenter] addObserverForName:DMIconThemeChangedNotification object:nil queue:nil usingBlock:^(NSNotification *n) { [gDMLaunchpadIconView setNeedsLayout]; }]; }
 
+    DMLaunchpadShown before = DMLaunchpadShownNow(imageView);
+    DMLaunchpadDraw(imageView, overlay, enabled, classic);
+    if (!DMLaunchpadShownSame(before, DMLaunchpadShownNow(imageView))) DMDockItemPictureChanged(iconView);   // (its reflection and its stand-in follow)
+}
+static void DMLaunchpadDraw(UIView *imageView, UIImageView *overlay, BOOL enabled, BOOL classic) {
     // remember how the picture was clipped before we touched it, so turning the feature off puts it back
     NSArray *saved = objc_getAssociatedObject(imageView, kSavedShapeKey);
     if (!saved) {

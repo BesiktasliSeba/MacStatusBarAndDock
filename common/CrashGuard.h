@@ -249,6 +249,25 @@ static inline void MSBDGuardSetPref(const char *domain, const char *key, int kin
     dlclose(cf);
 }
 
+// Writes a text in the current user's domain (a list row's choice: the crash guard's step 1b sets Dock Style to "default", a Style to "stock").
+static inline void MSBDGuardSetPrefText(const char *domain, const char *key, const char *text) {
+    void *cf = dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", RTLD_LAZY | RTLD_NOLOAD);
+    if (!cf) return;
+    const void *(*mk)(const void *, const char *, unsigned int) = (const void *(*)(const void *, const char *, unsigned int))dlsym(cf, "CFStringCreateWithCString");
+    void (*set)(const void *, const void *, const void *, const void *, const void *) = (void (*)(const void *, const void *, const void *, const void *, const void *))dlsym(cf, "CFPreferencesSetValue");
+    unsigned char (*sync)(const void *, const void *, const void *) = (unsigned char (*)(const void *, const void *, const void *))dlsym(cf, "CFPreferencesSynchronize");
+    void (*rel)(const void *) = (void (*)(const void *))dlsym(cf, "CFRelease");
+    const void **user = (const void **)dlsym(cf, "kCFPreferencesCurrentUser"), **host = (const void **)dlsym(cf, "kCFPreferencesAnyHost");
+    if (mk && set && sync && rel && user && host) {
+        const void *k = mk(NULL, key, 0x08000100), *d = mk(NULL, domain, 0x08000100), *v = mk(NULL, text, 0x08000100);   // (kCFStringEncodingUTF8)
+        if (k && d && v) { set(k, v, d, *user, *host); sync(d, *user, *host); }
+        if (v) rel(v);
+        if (k) rel(k);
+        if (d) rel(d);
+    }
+    dlclose(cf);
+}
+
 // Step 1: the switches noted as turned on at or after `since` go off again (only our own domains); returns how many. The list is used up either way.
 // `record` (n bytes) gets a "switch <domain> <key> <row title>" line for each, for the guard's record.
 static inline int MSBDGuardSwitchOffRecent(long since, char *record, size_t rn) {

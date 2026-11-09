@@ -38,9 +38,10 @@ check "the Dock page: no Finder group with Finder off, Finder read the same way;
    && grep -q 'isEqualToString:@\"MSBD_LINE\"\\]) { at = i; break; }' $L && grep -q '#define kMTILineRowID @\"MSBD_LINE\"' $I && grep -q '#define kMSBDLineRowID      @\"MSBD_LINE\"' $R \
    && plutil -convert json -o - ../statusbar/macstatusbarprefs/Resources/Root.plist | python3 -c 'import json,sys; it=json.load(sys.stdin)[\"items\"]; sys.exit(0 if [x.get(\"lineName\") for x in it if x.get(\"id\")==\"MSBD_LINE\"]==[\"MacStatusBar\"] else 1)' \
    && plutil -convert json -o - ../dock/dockmagnificationprefs/Resources/Root.plist | python3 -c 'import json,sys; it=json.load(sys.stdin)[\"items\"]; sys.exit(0 if [x.get(\"lineName\") for x in it if x.get(\"id\")==\"MSBD_LINE\"]==[\"MacDock\"] else 1)'"
-check "the index records each row's group, the group's stockHides, its key and whether it is below its page's line switch" \
-  "awk '/^- \\(void\\)walkItems:/,/^}/' $I > \$W/walk && grep -q 'groupID = MTIStr(it\\[@\"id\"\\]); groupStock = ' \$W/walk && grep -q 'e.groupID = groupID; e.stockHides = groupStock; e.key = MTIStr(it\\[@\"key\"\\]); e.belowLine = self.belowLine;' \$W/walk \
-   && grep -q 'if (depth == 2 && \\[MTIStr(it\\[@\"id\"\\]) isEqualToString:kMTILineRowID\\]) self.lineNext = YES;' \$W/walk && awk '/^- \\(void\\)addPage:/,/^}/' $I | grep -q 'self.belowLine = NO; self.lineNext = NO;'"
+check "the index records each row's group, the group's stockHides (a page's rows also its link's group's), its key and whether it is below its page's line switch" \
+  "awk '/^- \\(void\\)walkItems:/,/^}/' $I > \$W/walk && grep -q 'groupID = MTIStr(it\\[@\"id\"\\]); groupStock = ' \$W/walk && grep -q 'e.groupID = groupID; e.stockHides = groupStock || self.underStock; e.key = MTIStr(it\\[@\"key\"\\]); e.belowLine = self.belowLine;' \$W/walk \
+   && grep -q 'self.underStock = wasUnder || groupStock;' \$W/walk && grep -q 'self.underStock = wasUnder;' \$W/walk \
+   && grep -q 'if (depth == 2 && \\[MTIStr(it\\[@\"id\"\\]) isEqualToString:kMTILineRowID\\]) self.lineNext = YES;' \$W/walk && awk '/^- \\(void\\)addPage:/,/^}/' $I | grep -q 'self.belowLine = NO; self.lineNext = NO; self.underStock = NO;'"
 check "Sleep Guard only where our Battery Use group is on Battery Health, as our own battery parts decided once Apple's pages loaded" \
   "grep -q 'gMSBDOwnBatteryUseOff = MTSBatteryUseOff;' $T && grep -q 'static BOOL MTSBatteryUseOff(void) { return MSBHPageVerdict() == 1 || MSBUGroupVerdict() == 1; }' $T \
    && grep -q '{ gMSBHVerdict = 1; MSBHLog(@\"no row builder or isiPhone: Apple.s page untouched\"); return; }' ../macsettings/BatteryHealth.x && grep -q '^    gMSBHVerdict = 2;' ../macsettings/BatteryHealth.x \

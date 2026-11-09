@@ -56,8 +56,10 @@ check "the setting read with the others; never set (KT, review 1.8.3 P2-3): an a
    && fn 'static void DMTitleTapSMWindow(NSString *key, NSString *why) {' $B && grep -q 'int action = MSBDTitleActionFor(gTitleDoubleTap, false);' \$W/fn \
    && fn 'static void DMTitleTapEngineWindow(NSString *bundleID, NSString *why) {' $B && grep -q 'int action = MSBDTitleActionFor(gTitleDoubleTap, false);' \$W/fn \
    && fn '- (void)doubleTap:(UITapGestureRecognizer *)g {' $B && awk '/MSBDTitleActionFor\\(gTitleDoubleTap, kind == kDMTitleNative\\) == kMSBDTitleNothing\\) return;/{a=NR} /DMGARefuses/{b=NR} /DMTitleTapWhenFree\\(act, 0\\);/{c=NR} END{exit !(a && b && c && a < b && b < c)}' \$W/fn"
-check "the Settings row: Windows & Multitasking under Window Size, Apple's four choices, Do Nothing shown while never set (review 1.8.3 P2-3), posted to SpringBoard" \
-  "plutil -convert json -o - $PL | python3 -c 'import json,sys; it=json.load(sys.stdin)[\"items\"]; k=[x.get(\"key\") for x in it]; r=[x for x in it if x.get(\"key\")==\"titleBarDoubleTap\"]; sys.exit(0 if len(r)==1 and k.index(\"titleBarDoubleTap\")==k.index(\"windowSize\")+1 and r[0][\"validValues\"]==[\"fill\",\"zoom\",\"minimize\",\"none\"] and r[0][\"validTitles\"]==[\"Fill\",\"Zoom\",\"Minimize\",\"Do Nothing\"] and r[0][\"default\"]==\"none\" and r[0][\"PostNotification\"]==\"com.besiktasliseba.macstatusbar/prefsChanged\" and r[0][\"label\"]==\"Double-Tap a Title Bar to\" else 1)'"
+check "audit 1.8.3 L9: never set, a double tap on our own window's title bar goes to its own Zoom at once (as in 1.8.2.2), before Guided Access and SpringBoard's busy state are asked" \
+  "fn '- (void)doubleTap:(UITapGestureRecognizer *)g {' $B && awk '/if \\(kind == kDMTitleNative && gTitleDoubleTap == kMSBDTitleNeverSet\\) \\{/{x=NR} /if \\(v\\) DMTitleTapNative\\(\\(DMNativeWindow \\*\\)v, @\"double tap on the title bar \\(never set: Zoom\\)\"\\);/{y=NR} /DMGARefuses/{b=NR} END{exit !(x && y > x && b > y)}' \$W/fn"
+check "the Settings row: Windows & Multitasking under Window Size, Apple's four choices, nothing ticked while never set (audit 1.8.3 L1: never set, app windows do nothing and our own windows Zoom, so Do Nothing ticked was not true), posted to SpringBoard" \
+  "plutil -convert json -o - $PL | python3 -c 'import json,sys; it=json.load(sys.stdin)[\"items\"]; k=[x.get(\"key\") for x in it]; r=[x for x in it if x.get(\"key\")==\"titleBarDoubleTap\"]; sys.exit(0 if len(r)==1 and k.index(\"titleBarDoubleTap\")==k.index(\"windowSize\")+1 and r[0][\"validValues\"]==[\"fill\",\"zoom\",\"minimize\",\"none\"] and r[0][\"validTitles\"]==[\"Fill\",\"Zoom\",\"Minimize\",\"Do Nothing\"] and \"default\" not in r[0] and r[0][\"PostNotification\"]==\"com.besiktasliseba.macstatusbar/prefsChanged\" and r[0][\"label\"]==\"Double-Tap a Title Bar to\" else 1)'"
 check "P4-1: the Window menu's layouts keep the title bar's frame from before in step on every engine, before each moves its window -- Stage Manager, Zetsu, Aerial, MilkyWay4 --; the window keys' and the window API's layouts are the same calls (DMLayoutFrontWindow), our own windows' through DMNativeLayout (review 1.8.3 P4-1: only the title bar's double tap wrote or cleared it)" \
   "fn 'static void DMWindowLayout(NSString *name) {' $S && before 'DMTitleRecordSMTo(smKey, DMSMStageOf(smKey), w);' 'BOOL ok = DMSMSetWindowGeometry(smKey,' \
    && before 'DMTitleRecordEngineTo(zw, target);' 'DMZetsuMove(zw, target, YES,' && before 'DMTitleRecordEngineTo(stage, target);' 'DMAerialMoveStage(stage, target,' \
@@ -89,12 +91,12 @@ check "  ... Fit to Window's placements: the engines' (its tiles, the side picke
    && fn 'static void DMSMSpreadFit(int tries) {' $S && before 'DMTitleRecordSMPlan(plan, stage);' 'BOOL ok = DMSMApplyPlacesIn(plan, stage);'"
 check "  ... and a move or a resize by hand drops it (a frame from before is never older than the window's last move by hand): every engine's move (DMSnapMoveEnded, first), Zetsu's corner, MilkyWay4's handle, Aerial 5.x's corner, Aerial 3.0's drag and resize, Stage Manager's title bar drag and 16's resize, our own windows' move and resize" \
   "fn 'static void DMSnapMoveEnded(UIView *st) {' $S && sed -n 2p \$W/fn | grep -qF 'DMTitleRecordMovedView(st);' \
-   && grep -A1 -F 'if (g.state == UIGestureRecognizerStateEnded) DMTitleRecordMovedView(w);' $S | grep -qF 'f = DMSnapEngineWindow(w, f, (self.left' \
-   && grep -A1 -F 'if (g.state == UIGestureRecognizerStateEnded) DMTitleRecordMovedView(win);' $S | grep -qF \"the handle's two sides\" \
-   && grep -A1 -F 'if (s == UIGestureRecognizerStateEnded) DMTitleRecordMovedView(stage);   // (a resize by hand' $S | grep -qF 'if (s == UIGestureRecognizerStateEnded && !DMSnapOff()) {' \
-   && fn 'static void DMAerialGestureAfter(UIView *stage, UIGestureRecognizerState s, BOOL wasPan) {' $S && has 'if (s == UIGestureRecognizerStateEnded) DMTitleRecordMovedView(stage);' \
+   && grep -A1 -F 'DMTitleRecordHandEnded(w, g.state);   // (a resize by hand' $S | grep -qF 'f = DMSnapEngineWindow(w, f, (self.left' \
+   && grep -A1 -F 'DMTitleRecordHandEnded(win, g.state);   // (a resize by hand' $S | grep -qF \"the handle's two sides\" \
+   && grep -A1 -F 'DMTitleRecordHandEnded(stage, s);   // (a resize by hand' $S | grep -qF 'if (s == UIGestureRecognizerStateEnded && !DMSnapOff()) {' \
+   && fn 'static void DMAerialGestureAfter(UIView *stage, UIGestureRecognizerState s, BOOL wasPan) {' $S && has 'DMTitleRecordHandEnded(stage, s);' \
    && grep -A1 -F 'gSMDragUntil = CACurrentMediaTime() + 1.0;' $S | grep -qF 'DMTitleRecordMovedSM(w);' \
-   && grep -A2 -F 'if (MSBDSnapHeldSidesMatch(c, start, how)) {' $R | grep -qF 'DMTitleRecordMovedSM(k);' \
+   && fn 'static void DMSMRADropTitleRecord(unsigned long long edge, CGRect start) {' $R && has 'if (MSBDSnapHeldSidesMatch(c, start, how)) DMTitleRecordMovedSM(k);' \
    && [ \$(grep -c 'self.restoreFrame = CGRectNull; self.layoutName = nil; DMTitleRecordMovedView(self);' $N) = 2 ]"
 check "  ... at a double tap the frame from before counts only while the window is still at the Fill it was kept with (else dropped: the engine's own maximize, a turn); the title bar's own placements go through the same rule, and nothing else writes the records" \
   "[ \$(grep -c 'DMTitleRecordHeld' $B) = 3 ] && ! grep -q 'objc_setAssociatedObject([a-z]*, &kWinZoomKey' $B && ! grep -qE 'gSMWinZoom\[[a-zA-Z]+\] = ' $B \
@@ -102,6 +104,18 @@ check "  ... at a double tap the frame from before counts only while the window 
    && fn 'static NSValue *DMTitleRecordHeldView(UIView *v, CGRect now, NSString *who) {' $K && has 'if (MSBDTitleRecordHolds(rec != nil, rec && MSBDWinNear(now, rec[1].CGRectValue))) return rec[0];' \
    && fn 'static NSValue *DMTitleRecordHeldSM(NSString *key, CGRect now) {' $K && has 'if (MSBDTitleRecordHolds(rec != nil, rec && MSBDWinNear(now, rec[1].CGRectValue))) return rec[0];' \
    && fn 'static void DMTitleRecordView(UIView *v, CGRect now, CGRect to, CGRect fill) {' $K && has 'MSBDTitleRecordOnPlace(MSBDTitleKeepsFrames(gTitleDoubleTap), MSBDWinNear(to, fill), MSBDWinNear(now, fill));'"
+check "1.8.3 L1: our own windows' Zoom (the green light, a title bar's Zoom) keeps the frame from before in step too, before it moves the window, both ways" \
+  "fn '- (void)zoom {' $N && before 'DMTitleRecordNativeTo(self, d);' 'self.frame = d;' && before 'DMTitleRecordNativeTo(self, r);' 'self.frame = r;' \
+   && grep -qF 'static void DMTitleRecordNativeTo(DMNativeWindow *w, CGRect to);' $N"
+check "1.8.3 L2: a resize by hand drops the frame from before however it ends: Stage Manager 16's with Snapping off (before its return), where any Stage Manager resize begins (17 and 18's own too, under 16 pt as well)" \
+  "fn 'static CGPoint DMSMRASnapEnd(unsigned long long edge, CGRect start, CGPoint at) {' $R && before 'DMSMRADropTitleRecord(edge, start);' 'if (DMSnapOff()) return at;' \
+   && fn 'static id DMSMRAGesture(id self, SEL _cmd, id event) {' $R && before 'id r = o_SMRAGesture(self, _cmd, event);' 'if (read && phase == 1 && DMTitleRecordSMAny()) {' \
+   && has 'DMSMRARead(self, gSMRAStartIv, &st, sizeof st) && DMSMRectSane(st)) DMSMRADropTitleRecord(e, st);'"
+check "  ... and a move or a resize by hand that is cut short (cancelled) drops it too: Zetsu's and MilkyWay4's pans (move, corner, handle), Aerial's" \
+  "fn 'static void DMTitleRecordHandEnded(UIView *v, UIGestureRecognizerState s) {' $S && has 'if (s == UIGestureRecognizerStateEnded || s == UIGestureRecognizerStateCancelled) DMTitleRecordMovedView(v);' \
+   && grep -qF 'else DMTitleRecordHandEnded(w, g.state);   // (a move by hand cut short' $S && grep -qF 'else DMTitleRecordHandEnded(win, g.state);   // (a move by hand cut short' $S \
+   && [ \$(grep -c 'DMTitleRecordHandEnded(stage, g.state);   // (a move by hand cut short' $S) = 2 ] && [ \$(grep -c 'DMTitleRecordHandEnded(' $S) = 9 ] \
+   && ! grep -q 'if (g.state == UIGestureRecognizerStateEnded) DMTitleRecordMovedView(' $S && ! grep -q 'if (s == UIGestureRecognizerStateEnded) DMTitleRecordMovedView(' $S"
 check "P4-2: TitleBarTap.h's header says Fill and Zoom go back with their own frame from before (not Return to Previous Size's record)" \
   "! grep -qF \"Fill's way back is Return to\" $B && grep -qF 'Fill and Zoom go back with their own frame' $B"
 exit $fails

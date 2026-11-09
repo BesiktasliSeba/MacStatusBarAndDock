@@ -63,6 +63,8 @@ int main(int argc, char **argv) {
         MSBDOwnPages base = {0};
         base.barLine = base.dockLine = base.finder = base.engineWorks = YES;   // (Aerial, everything on, no BigSurCenter, 15 / 16)
         base.ccStyle = kMSBDCCStyleStock;   // (Control Center Style: iPadOS's -- Hide Grabber, no size slider)
+        base.laTimersListed = YES;          // (Live Activities' timers proven on this iPadOS: the Activities page has its Timers row)
+        base.laAppsListed = YES;            // (... and other apps' activities: its Apps row)
         Shows(base, @"as installed", B, @[@"MacStatusBar", @"Show Seconds", @"Wi-Fi Menu", @"Battery Menu", @"Control Center Style", @"Hide Grabber", @"Report a Problem…", @"Banner Style"], @[@"Control Center"]);
         Shows(base, @"as installed", W, @[@"Window Size", @"Double-Tap a Title Bar to", @"New Windows Open at Fill", @"Windows Behind Full-Screen Apps", @"Tint Resize Handles", @"Home Minimizes Windows", @"Mac Switcher", @"Keep Tailspin Off", @"Prewarm Apps"],
               @[@"Resize Handles", @"Resize Apps to Fit Windows"]);
@@ -93,6 +95,11 @@ int main(int argc, char **argv) {
         Shows(s, @"stock status bar", B, @[@"MacStatusBar", @"Status Bar Style", @"Banner Style", @"Finder", @"Hide Grabber", @"Report a Problem…", @"Hide Status Bar on Lock Screen"],
               @[@"Show Seconds", @"Show Spotlight Search", @"Tweak Settings", @"Menu Bar Size", @"Apps", @"Show in App Library", @"Wi-Fi Menu", @"Battery Menu", @"Mix Audio Between Apps"]);
         Shows(s, @"stock status bar", W, @[@"Keep Tailspin Off"], @[@"Enable Windowing", @"Window Engine", @"Window Size", @"Double-Tap a Title Bar to", @"Home Minimizes Windows", @"Mac Switcher", @"Prewarm Apps", @"Tint Resize Handles"]);
+        // (1.8.4: the Activities page opens from a group the stock status bar hides: its rows go with it -- the index gives a page's rows the
+        //  stockHides of the group its link is in)
+        Shows(s, @"stock status bar", B, @[], @[@"Live Activities in Menu Bar", @"Activities", @"Now Playing", @"Timers", @"Calls"]);
+        Expect(Row(B, @"Calls").stockHides && [Row(B, @"Calls").groupID isEqualToString:@"LIVE_ACTIVITIES_KINDS"],
+               @"index: the Activities page's rows carry the stockHides of the group their page opens from (their own group's id kept)");
         Shows(s, @"stock status bar", D, @[@"Show Desktop Icons", @"Icon Size"], @[]);
         Shows(s, @"stock status bar", K, @[@"Magnify Icons"], @[]);
 
@@ -148,6 +155,30 @@ int main(int argc, char **argv) {
         Shows(s, @"Stage Manager, not working", W, @[@"Double-Tap a Title Bar to"], @[@"Window Size", @"Windows Behind Full-Screen Apps", @"Tint Resize Handles", @"New Windows Open at Fill"]);
         s = base; s.milkyWayEngine = YES;       // (MilkyWay4, 15 only)
         Shows(s, @"MilkyWay4", W, @[@"Window Size", @"Double-Tap a Title Bar to", @"Resize Apps to Fit Windows", @"Windows Behind Full-Screen Apps"], @[@"Resize Handles"]);
+
+        s = base; s.laTimersListed = NO;   // (1.8.4, review P2-L3: this iPadOS not in Live Activities' timers list -- every version but the device pass's)
+        e = Row(B, @"Timers");
+        Expect(e && e.depth == 3 && [e.path.firstObject isEqualToString:@"LIVE_ACTIVITIES_PAGE"] && [e.key isEqualToString:kMSBDLATimersRowKey], @"index: the Activities page's Timers, by its key, on its page");
+        Shows(s, @"timers not listed", B, @[@"Live Activities in Menu Bar", @"Activities", @"Now Playing", @"Calls"], @[@"Timers"]);
+        Expect(MSBDOwnRowsShown(gAll, s).count == MSBDOwnRowsShown(gAll, base).count - 1, @"timers not listed: only the Timers row goes");
+        Shows(base, @"timers listed", B, @[@"Timers"], @[]);
+        // (KT's yes, 7 Nov: the builds the device pass proved show the Timers row, every other one leaves it out -- the list the page and the search read)
+        s = base; s.laTimersListed = MSBDLATimersListed(17, 5, 1) != 0;
+        Shows(s, @"17.5.1 (proved on the 17.5)", B, @[@"Timers", @"Now Playing", @"Calls"], @[]);
+        s = base; s.laTimersListed = MSBDLATimersListed(18, 5, 0) != 0;
+        Shows(s, @"18.5 (proved on the A12Z)", B, @[@"Timers", @"Now Playing", @"Calls"], @[]);
+        s = base; s.laTimersListed = MSBDLATimersListed(16, 7, 7) != 0;
+        Shows(s, @"16.7.7 (not listed: no +isActiveTimer:)", B, @[@"Now Playing", @"Calls"], @[@"Timers"]);
+        s = base; s.laTimersListed = MSBDLATimersListed(17, 6, 1) != 0;
+        Shows(s, @"17.6.1 (not tested)", B, @[@"Now Playing", @"Calls"], @[@"Timers"]);
+        s = base; s.laTimersListed = MSBDLATimersListed(18, 5, 1) != 0;
+        Shows(s, @"18.5.1 (not tested)", B, @[@"Now Playing", @"Calls"], @[@"Timers"]);
+        MTIEntry *appsRow = nil;   // (the Activities page's Apps -- the Status Bar page has another row called Apps, the Go menu's)
+        for (MTIEntry *x in gAll) if ([x.paneTitle isEqualToString:B] && [x.title isEqualToString:@"Apps"] && [x.path.firstObject isEqualToString:@"LIVE_ACTIVITIES_PAGE"]) appsRow = x;
+        Expect(appsRow && [appsRow.key isEqualToString:kMSBDLAAppsRowKey], @"index: the Activities page's Apps, by its key, on its page");
+        s = base; s.laAppsListed = NO;    // (other apps' activities not listed: every version until the device pass; 15/16 always)
+        Expect(appsRow && ![MSBDOwnRowsShown(gAll, s) containsObject:appsRow] && [MSBDOwnRowsShown(gAll, base) containsObject:appsRow], @"apps not listed: the Activities page's Apps left out (listed: shown)");
+        Expect(MSBDOwnRowsShown(gAll, s).count == MSBDOwnRowsShown(gAll, base).count - 1, @"apps not listed: only that row goes (the Go menu's Apps stays)");
 
         s = base; s.batteryUseOff = YES;
         Expect(!Listed(s, @"Battery", @"Sleep Guard") && Listed(s, B, @"Battery Menu"), @"our Battery Use group not on Battery Health: Sleep Guard left out, nothing else");

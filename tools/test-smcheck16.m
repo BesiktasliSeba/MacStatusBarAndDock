@@ -56,6 +56,7 @@ typedef struct { CGSize normalizedSize; CGRect referenceBounds; long long type; 
 - (CGSize)CGSizeValue { return NSSizeToCGSize(self.sizeValue); }
 @end
 #include "../common/StageManagerAvailable.h"
+static NSSet *DMSMCardsHeld(void) { return nil; }   // (SMCards.h's: no gesture modifier holds a stage here)
 #include "../statusbar/SMEngineAPI.h"
 static void DMSM17DiagSoon(void) {}
 

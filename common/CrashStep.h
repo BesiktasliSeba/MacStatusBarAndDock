@@ -148,14 +148,19 @@ static inline int MSBDGuardStepFeature(long t0, long since, int again, char *rec
         char kind[8], image[64], domain[128], key[128]; int value = 0, at = 0;
         if (sscanf(actions[i], "%7s %63s %127s %127s %d %n", kind, image, domain, key, &value, &at) < 5) continue;
         const char *title = at > 0 ? actions[i] + at : "";
+        char text[64] = "";   // (a list row's off text, CrashFeature.h: stored instead of the value, so Settings shows a choice -- Dock Style "default")
+        int tn = 0;
+        if (strncmp(title, "text=", 5) == 0 && sscanf(title + 5, "%63s %n", text, &tn) >= 1) title += 5 + tn;
         size_t l = record ? strlen(record) : 0;
         if (strcmp(kind, "pref") == 0 && strncmp(domain, "com.besiktasliseba.", 19) == 0) {
-            MSBDGuardSetPref(domain, key, kMSBDBool, value);
+            if (text[0]) MSBDGuardSetPrefText(domain, key, text);
+            else MSBDGuardSetPref(domain, key, kMSBDBool, value);
             char note[300];
             snprintf(note, sizeof(note), "%s/prefsChanged", domain);   // (a part that is running applies it at once)
             notify_post(note);
             if (record) snprintf(record + l, rn - l, "feature %s %s %d %s\n", domain, key, value, title);
-            MSBDGuardLog("step 1b: switched %s %s %s", domain, key, value ? "on" : "off");
+            if (text[0]) MSBDGuardLog("step 1b: set %s %s to \"%s\" (off)", domain, key, text);
+            else MSBDGuardLog("step 1b: switched %s %s %s", domain, key, value ? "on" : "off");
         } else if (strcmp(kind, "part") == 0) {
             int have = -1;
             for (int j = 0; j < kept; j++) if (strcmp(keep[j], image) == 0) have = j;

@@ -19,6 +19,13 @@
 #import <notify.h>
 #import <dlfcn.h>   // (1.7.3: MacStatusBar's Activity Monitor in the Dock, MSBDActMonDockRemove)
 #include "../common/DockSide.h"   // (Settings > Dock > Position, 1.8.2: the rules of the Dock at a screen side)
+#include "../common/DockBounce.h"   // (Settings > Dock > Animate Opening Applications, 1.8.4 item 2: the bounce's rules -- Bounce.m draws it)
+#include "../common/DockStyle.h"    // (Settings > Dock > Dock Style, 1.8.4 item 3: Glass Shelf and Frosted -- DockStyle.m draws them)
+#include "../common/DockAutoHide.h" // (Settings > Dock > Automatically Hide and Show the Dock, 1.8.4 item 4 -- DockAutoHide.m)
+extern void DMDockStyleApply(UIView *platter);
+extern void DMDockStyleFollow(UIView *platter);
+extern void DMDockStyleSetChoice(int style);
+extern void DMDockStyleRefreshAll(void);
 
 // The Dock's layout numbers, as SBFloatingDockView fills them in -[getMetrics:forBounds:] (found by dumping it on the device):
 // frames inside the platter for the user icons, the recents, the App Library icon and the divider, the platter itself in
@@ -249,6 +256,27 @@ static void DMLoadPrefs(void) {
     CFPropertyListRef lpl = DMCopyPref(CFSTR("lastPageOpensLibrary"));
     gLastPageOpensLibrary = lpl && CFGetTypeID(lpl) == CFBooleanGetTypeID() && CFBooleanGetValue(lpl);
     if (lpl) CFRelease(lpl);
+    {   // Animate Opening Applications (1.8.4 item 2): on unless switched off, for every user (KT 7 Nov; common/DockBounce.h); with the Dock part on only
+        extern void DMBounceSetOn(BOOL on);
+        CFPropertyListRef ao = DMCopyPref(CFSTR(kMSBDAnimateOpeningKey));
+        BOOL isBool = ao && CFGetTypeID(ao) == CFBooleanGetTypeID();
+        DMBounceSetOn(MSBDAnimateOpeningOn(isBool, isBool && CFBooleanGetValue(ao)) && tweakOn);
+        if (ao) CFRelease(ao);
+    }
+    {   // Automatically Hide and Show the Dock (1.8.4 item 4): off unless switched on (common/DockAutoHide.h); with the Dock part on only
+        extern void DMDockAutoHideSetOn(BOOL on);
+        CFPropertyListRef ah = DMCopyPref(CFSTR(kMSBDAutoHideKey));
+        BOOL isBool = ah && CFGetTypeID(ah) == CFBooleanGetTypeID();
+        DMDockAutoHideSetOn(MSBDAutoHideOn(MSBDAutoHideStored(isBool, isBool && CFBooleanGetValue(ah))) && tweakOn);
+        if (ah) CFRelease(ah);
+    }
+    {   // Dock Style (1.8.4 item 3): "glass" or "frosted", else Default (iPadOS's own platter); Default with the Dock part off
+        CFPropertyListRef ds = DMCopyPref(CFSTR(kMSBDDockStyleKey));
+        char b[16] = {0};
+        int style = (ds && CFGetTypeID(ds) == CFStringGetTypeID() && CFStringGetCString((CFStringRef)ds, b, sizeof b, kCFStringEncodingUTF8)) ? MSBDDockStyleFromString(b) : MSBDDockStyleDefault;
+        if (ds) CFRelease(ds);
+        DMDockStyleSetChoice(tweakOn ? style : MSBDDockStyleDefault);
+    }
 
     DMLog([NSString stringWithFormat:@"[prefs] enabled=%d magnification=%.3f iconSize=%.2f bottomGap=%.1f blockSwipeUp=%d downloads=%d trash=%d launchpad=%d swipeDownOpensLibrary=%d lastPageOpensLibrary=%d", enabled, mag, gIconSize, gBottomGap, blockUp, downloads, gShowTrash, launchpad, swipeDown, gLastPageOpensLibrary]);
 }
@@ -266,9 +294,10 @@ static CGRect gDownloadsSlot = {{0, 0}, {0, 0}};   // where the Downloads icon g
 static CGRect gFinderSlot = {{0, 0}, {0, 0}};      // where the Finder icon goes: the Dock's first place (set by getMetrics)
 extern void DMFinderIconAttach(UIView *platter, CGRect slot, BOOL show);
 extern UIView *DMFinderIcon(UIView *platter);
-extern void DMEditProxiesApply(UIView *platter, BOOL editing, BOOL animated, BOOL launchpadClassic, BOOL logAlways);   // (EditProxy.m: Edit Home Screen, 1.8.3 item 5)
+extern void DMEditProxiesApply(UIView *platter, BOOL editing, BOOL animated, BOOL launchpadIcon, BOOL launchpadClassic, BOOL logAlways);   // (EditProxy.m: Edit Home Screen, 1.8.3 item 5)
 extern BOOL DMEditProxiesOn(UIView *platter);   // (that Dock editing now)
 extern BOOL DMEditProxyIs(UIView *v);   // (one of those icon views)
+extern void DMEditProxyMagnify(UIView *library, CGFloat s);   // (the App Library icon's magnification on its Launchpad stand-in while editing)
 extern void DMEditProxiesThemeChangedAll(void);
 extern NSString *const DMIconThemeChangedNotification;   // (IconTheme.m: a theme engine refreshed its pictures)
 extern CGFloat gDMIconCornerRatio;   // (FinderIcon.m: SpringBoard's app icon corner as a share of the icon's width)
@@ -468,6 +497,7 @@ static inline int DMDockSideOf(UIView *dockView) {
 }
 // (a view in the Dock that stands at a side, the host: never in a TV's Dock, which has a platter of its own and stays at its bottom -- code review 1.8.2, 4)
 static inline BOOL DMDockSideInHost(UIView *v) { UIView *host = gDockSideHost; return host && [v isDescendantOfView:host]; }
+int DMDockStylePlatterSide(UIView *platter) { return gDockSideApplied && platter && DMDockSideInHost(platter) ? gDockSideApplied : 0; }   // (DockStyle.m: Glass Shelf's side look)
 static double DMDockSideBar(void) {   // (the menu bar's height: MacStatusBar's, while it runs)
     static double (*f)(void) = NULL; static int tries = 0;
     if (!f && tries < 40) { tries++; f = (double (*)(void))dlsym(RTLD_DEFAULT, "MSBDMenuBarHeightNow"); }
@@ -1047,7 +1077,7 @@ __attribute__((visibility("default"))) UITargetedPreview *MSBDDockSideIconPrevie
     if (platter) DMTrashAttach(platter, gTrashSlot, gShowTrash && gTrashSlot.size.width > 0);
     DMReadIconCornerRatio((UIView *)self);
     if (platter) DMFinderIconAttach(platter, gFinderSlot, gShowFinder && gFinderSlot.size.width > 0);
-    if (platter && DMEditProxiesOn(platter)) DMEditProxiesApply(platter, YES, NO, gLaunchpadClassic, NO);   // (Edit Home Screen: the items' icon views follow this layout)
+    if (platter && DMEditProxiesOn(platter)) DMEditProxiesApply(platter, YES, NO, gLaunchpadIcon, gLaunchpadClassic, NO);   // (Edit Home Screen: the items' icon views follow this layout)
     DMSecondDividerAttach((UIView *)self);
     if (platter && gDockSideEver) {   // (the icons' turn, and each one's share of the row: new icons and a changed Dock too)
         int side = DMDockSideOf((UIView *)self);
@@ -1553,6 +1583,23 @@ static void DMRelayoutDock(void) {
         }
     }
 }
+// One of our Dock items changed its picture with no layout of the Dock to follow (the Trash filled or emptied, the Launchpad tile switched in
+// Settings, a theme engine's new picture): the Dock lays out again where something shows that picture -- Glass Shelf's reflection (the platter's
+// layout, DockStyle.m) and, while the Home Screen is edited, the item's stand-in (the Dock's layout, EditProxy.m). Both kept the old picture until
+// some later layout (regression 1.8.4: D-1 on the A12Z, W-1 on the iPad 2). Called once the new picture is set (after a cross-fade: at its end).
+extern BOOL DMDockStyleReflects(UIView *platter);
+extern void DMDockStylePictureDirty(UIView *platter, UIView *icon);
+void DMDockItemPictureChanged(UIView *item) {
+    Class dc = objc_getClass("SBFloatingDockView"), pc = objc_getClass("SBFloatingDockPlatterView");
+    UIView *platter = nil, *dock = nil;
+    for (UIView *v = item.superview; v && !dock; v = v.superview) {
+        if (!platter && pc && [v isKindOfClass:pc]) platter = v;
+        if (dc && [v isKindOfClass:dc]) dock = v;
+    }
+    // (its reflection taken again at the platter's next layout, whatever its picture's value says: DockStyle.m, the review of the fixes M2)
+    if (platter && DMDockStyleReflects(platter)) { DMDockStylePictureDirty(platter, item); [platter setNeedsLayout]; }
+    if (platter && dock && DMEditProxiesOn(platter)) [dock setNeedsLayout];   // (the stand-ins follow each Dock layout while editing: DMEditProxiesApply)
+}
 
 static void DMRelayoutDock(void);
 extern void DMLaunchpadRefresh(UIView *iconView, BOOL enabled, BOOL classic);
@@ -1581,10 +1628,22 @@ static void DMDockSideChoose(void);   // (Position: below, with its hooks)
 static void DMPrefsChanged(CFNotificationCenterRef c, void *o, CFNotificationName n,
                            const void *obj, CFDictionaryRef info) {
     BOOL lastPage = gLastPageOpensLibrary;
+#if DEBUG
+#define DM_PREFS_STEP(name) DMLog(@"[prefs-step] " name)   // (debug: which step of a settings change cancels an active hover)
+#else
+#define DM_PREFS_STEP(name) do {} while (0)
+#endif
+    DM_PREFS_STEP("load");
     DMLoadPrefs();
+    DM_PREFS_STEP("side");
     DMDockSideChoose();
+    DM_PREFS_STEP("relayout");
     DMRelayoutDock();
+    DM_PREFS_STEP("style");
+    DMDockStyleRefreshAll();   // (Dock Style: every platter takes the look now)
+    DM_PREFS_STEP("launchpad");
     DMRefreshLaunchpadIcons();
+    DM_PREFS_STEP("done");
     if (lastPage != gLastPageOpensLibrary) DMLastPageApply(@"switched in Settings");
 }
 
@@ -1612,8 +1671,45 @@ static BOOL DMIsDockIcon(UIView *icon) {
 - (void)dm_stopLink;
 @end
 
+#if DEBUG
+// (debug, review 1.8.4 Pass 4's watch item: a hover that ends within frames of its start while the pointer stands still -- the Dock moving under it? At
+//  UIKit's Began and at the end: the pointer in the window, the platter's frame (model) and as drawn (the presentation tree), what UIKit hit-tests there and
+//  whether that is in the platter, and whether this Dock counts as presented)
+extern NSArray *DMDockAutoHideControllers(void);   // (DockAutoHide.m)
+static void DMHoverDebugLine(UIView *platter, UIGestureRecognizer *g) {
+    UIWindow *w = platter.window;
+    CGPoint p = [g locationInView:nil];
+    UIView *hit = w ? [w hitTest:p withEvent:nil] : nil;
+    CALayer *pl = platter.layer.presentationLayer;
+    CGRect pres = pl ? [pl convertRect:pl.bounds toLayer:nil] : CGRectNull;
+    int presented = -1;
+    for (id ctrl in DMDockAutoHideControllers()) {
+        SEL fw = sel_registerName("floatingDockWindow"), ip = sel_registerName("isFloatingDockPresented");
+        Method mw = class_getInstanceMethod(object_getClass(ctrl), fw), mp = class_getInstanceMethod(object_getClass(ctrl), ip);
+        if (!mw || !mp || strcmp(method_getTypeEncoding(mw) ?: "", "@16@0:8") || strcmp(method_getTypeEncoding(mp) ?: "", "B16@0:8")) continue;
+        if (((id (*)(id, SEL))objc_msgSend)(ctrl, fw) != w) continue;
+        presented = ((BOOL (*)(id, SEL))objc_msgSend)(ctrl, ip);
+        break;
+    }
+    DMLog([NSString stringWithFormat:@"[hover] %ld t %.3f p %@ frame %@ pres %@ hit %@ inside %d presented %d", (long)g.state, CACurrentMediaTime(), NSStringFromCGPoint(p),
+           NSStringFromCGRect([platter convertRect:platter.bounds toView:nil]), NSStringFromCGRect(pres), hit ? NSStringFromClass([hit class]) : @"nil",
+           hit ? (int)[hit isDescendantOfView:platter] : 0, presented]);
+    if (g.state == UIGestureRecognizerStateCancelled) {   // (who cancelled it: a Dock settings change did, 6 of 6 on the M1 -- the frames above this one)
+        NSArray<NSString *> *st = [NSThread callStackSymbols];
+        NSMutableString *o = [NSMutableString stringWithString:@"[hover] cancelled from:"];
+        for (NSUInteger i = 2; i < st.count && i < 22; i++) [o appendFormat:@"\n  %@", [st[i] substringFromIndex:MIN((NSUInteger)4, st[i].length)]];
+        DMLog(o);
+    }
+}
+#endif
+
 %hook SBFloatingDockPlatterView
 
+// Dock Style (1.8.4 item 3): our look at the back of the platter, laid out with it; Default: nothing of ours (DockStyle.m)
+- (void)layoutSubviews {
+    %orig;
+    DMDockStyleApply((UIView *)self);
+}
 - (void)setHidden:(BOOL)hidden {
     if (gKeepDockVisible && hidden) return;
     %orig;
@@ -1640,6 +1736,9 @@ static BOOL DMIsDockIcon(UIView *icon) {
     switch (gesture.state) {
         case UIGestureRecognizerStateBegan:
         case UIGestureRecognizerStateChanged: {
+#if DEBUG
+            if (gesture.state == UIGestureRecognizerStateBegan) DMHoverDebugLine(self, gesture);
+#endif
             CGFloat x = [gesture locationInView:self].x;
             if (!gHovering) {
                 DMLog(@"[hover] began");
@@ -1654,6 +1753,9 @@ static BOOL DMIsDockIcon(UIView *icon) {
         default:   // ended / cancelled / failed: the cursor left the dock; the display link eases the effect out
             DMLog([NSString stringWithFormat:@"[hover] ended (state %ld) after %ld frames, largest scale change between frames %.4f",
                    (long)gesture.state, (long)gStatFrames, gStatMaxJump]);
+#if DEBUG
+            DMHoverDebugLine(self, gesture);
+#endif
             gHovering = NO;
             [self dm_startLink];
             break;
@@ -1736,9 +1838,16 @@ static BOOL DMIsDockIcon(UIView *icon) {
                 t = CGAffineTransformMakeScale(s, s);
             }
             icon.transform = t;
+            if (icon.hidden && icon.superview) {   // (Edit Home Screen: the App Library icon hides under our Launchpad stand-in, which takes the
+                                                   //  magnification it would get, from its own centre -- review 1.8.3.1 L1; no other icon has one)
+                CGFloat s = 1.0;
+                if (gInfluence > 0.0) { CGPoint c = [icon.superview convertPoint:icon.center toView:self]; s = DMScale(gSmoothX - c.x); }
+                DMEditProxyMagnify(icon, s);
+            }
         }
     }];
     gApplying = NO;
+    DMDockStyleFollow(self);   // (Glass Shelf: the reflections follow the icons' scale)
 
     gStatFrames++;
     CGFloat jump = fabs(centreScale - gStatLastScale);
@@ -3131,10 +3240,12 @@ static UIView *DMEditPlatterOf(UIViewController *vc) {
 static const void *kDMEditPlatterKey = &kDMEditPlatterKey;   // (on a Dock controller: its platter, weakly -- the end of editing undoes that Dock's only)
 static void DMDockSetEditing(id self, SEL _cmd, BOOL editing, BOOL animated) {
     o_DockSetEditing(self, _cmd, editing, animated);
+    extern void DMDockAutoHideSetEditing(BOOL editing);   // (DockAutoHide.m: a Dock that hides itself shows while the Home Screen is edited)
+    DMDockAutoHideSetEditing(editing);
     UIView *platter = DMEditPlatterOf(self);
     NSHashTable *box = objc_getAssociatedObject(self, kDMEditPlatterKey);
     if (platter) { box = [NSHashTable weakObjectsHashTable]; [box addObject:platter]; objc_setAssociatedObject(self, kDMEditPlatterKey, box, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
-    DMEditProxiesApply(platter ?: box.anyObject, editing, animated, gLaunchpadClassic, YES);   // (not found now: the one this controller had; the end puts back what it changed there)
+    DMEditProxiesApply(platter ?: box.anyObject, editing, animated, gLaunchpadIcon, gLaunchpadClassic, YES);   // (not found now: the one this controller had; the end puts back what it changed there)
 }
 static void DMEditHook(void) {
     Class c = objc_getClass("SBFloatingDockViewController");
@@ -3145,9 +3256,30 @@ static void DMEditHook(void) {
         DMEditProxiesThemeChangedAll();   // (SnowBoard refreshed: every editing Dock's icon views show the new pictures at once)
     }];
 }
+// Animate Opening Applications (1.8.4 item 2, Bounce.m): a Dock icon's tap, where every icon tap starts (before 15/16's -_handleTap and 17's
+// -_handleTapWithModifierFlags:, and the engines' hooks on those). Asked before the tap goes on -- the app is not running yet --, started after it.
+// Installed only where the method has its 15-18 shape (%ctor).
+extern NSString *DMBounceTapWanted(UIView *iconView, UIGestureRecognizer *g);
+extern void DMBounceTapped(UIView *iconView, NSString *bid);
+%group DMBounceTap
+%hook SBIconView
+- (void)tapGestureDidChange:(UIGestureRecognizer *)g {
+    NSString *bid = DMBounceTapWanted((UIView *)self, g);
+    %orig;
+    DMBounceTapped((UIView *)self, bid);
+}
+%end
+%end
 %ctor {
     %init;
     DMEditHook();
+    {   // (Animate Opening Applications: the icon tap's recognizer action, in its 15-18 shape -- v@:@ with any frame sizes)
+        Method m = class_getInstanceMethod(objc_getClass("SBIconView"), NSSelectorFromString(@"tapGestureDidChange:"));
+        char shape[32] = {0}; size_t n = 0;
+        for (const char *e = m ? method_getTypeEncoding(m) : ""; e && *e && n + 1 < sizeof shape; e++) if (*e < '0' || *e > '9') shape[n++] = *e;
+        if (!strcmp(shape, "v@:@")) %init(DMBounceTap);
+        else DMLog([NSString stringWithFormat:@"[bounce] -[SBIconView tapGestureDidChange:] is %s here: Dock icons do not bounce", m ? shape : "missing"]);
+    }
     {   // (1.7.5 items 12 / 16: a pull from the top edge is never a swipe down -- where the tongue's pull start is as on 15-18)
         Method m = class_getInstanceMethod(objc_getClass("SBGrabberTongue"), NSSelectorFromString(@"_pullGestureBegan:"));
         const char *enc = m ? method_getTypeEncoding(m) : NULL;
@@ -3202,6 +3334,9 @@ static void DMEditHook(void) {
             } else if (!strcmp(word, "ithm")) {   // debug (1.7.5 item 7): the items' app-icon pictures, asked and on screen (IconTheme.m)
                 extern void DMIconThemeDebug(void);
                 DMIconThemeDebug();
+            } else if (!strncmp(word, "bounce_", 7)) {   // debug (1.8.4 item 2): bounce_<bundle> -- that app's Dock icon bounces as if tapped while it opens (Bounce.m)
+                extern void DMBounceDebug(NSString *bid);
+                DMBounceDebug([NSString stringWithUTF8String:word + 7]);
             } else if (!strcmp(word, "dots")) {   // debug (1.7.8.1): every running app as the running dot's rule reads it (RunningIndicator.m)
                 extern void DMRunningDotsDebug(void);
                 DMRunningDotsDebug();
@@ -3211,6 +3346,21 @@ static void DMEditHook(void) {
             } else if (!strcmp(word, "turns")) {   // debug (1.8.3 item 7): every icon view in the Dock window, where it is, and its turn
                 extern void DMDockTurnsDump(void);
                 DMDockTurnsDump();
+            } else if (!strcmp(word, "stylepics")) {   // debug (1.8.4 device pass): each Dock icon's picture as Glass Shelf's reflections see it
+                extern void DMDockStylePicsDebug(void);
+                DMDockStylePicsDebug();
+            } else if (!strcmp(word, "dockasserts")) {   // debug (1.8.4 item 4): the Dock controllers' behavior assertions by level, read only
+                extern void DMDockAssertsDebug(void);
+                DMDockAssertsDebug();
+            } else if (!strcmp(word, "dockask")) {   // debug (1.8.4 item 4): what Apple's rules answer now for the pointer's reveal (its should-begin, the home gesture's owner), read only
+                extern void DMDockAskDebug(void);
+                DMDockAskDebug();
+            } else if (!strcmp(word, "smdock")) {   // debug (1.8.4 item 4): Stage Manager's Dock tick as SpringBoard holds it now (its defaults, the switcher's prefersDockHidden), read only
+                extern void DMSMDockDebug(void);
+                DMSMDockDebug();
+            } else if (!strcmp(word, "smdockset0") || !strcmp(word, "smdockset1")) {   // debug (1.8.4 item 4): Stage Manager's Dock tick set through SpringBoard's own defaults (setChamoisHideDock:)
+                extern void DMSMDockSetDebug(BOOL hide);
+                DMSMDockSetDebug(word[9] == '1');
             } else if (!strcmp(word, "editprobe")) {   // debug (1.8.3 item 5): each icon view of the Dock in Edit Home Screen -- its editing, jitter, location, delegate
                 extern void DMDockEditProbe(void);
                 DMDockEditProbe();
@@ -3338,6 +3488,144 @@ static void DMEditHook(void) {
 }
 
 #if DEBUG
+// ---- debug (1.8.4 item 4): dockasserts, read only ----
+// Each SBFloatingDockController (the one of each Dock window) with what it shows (presented, fully, gesture possible, by the pointer, the active
+// assertion) and every SBFloatingDockBehaviorAssertion it holds, level by level (its _floatingDockBehaviorAssertionsByLevel pointer array, each
+// entry a collection of assertions or one): level, progress, gesture possible, reason. Only Apple's getters, in their shapes; nothing is created.
+void DMDockAssertsDebug(void) {
+    BOOL (^shape)(id, const char *, const char *) = ^BOOL(id o, const char *sel, const char *enc) {
+        Method m = o ? class_getInstanceMethod(object_getClass(o), sel_registerName(sel)) : NULL;
+        return m && method_getTypeEncoding(m) && !strcmp(method_getTypeEncoding(m), enc);
+    };
+    NSString *(^one)(id) = ^NSString *(id a) {
+        if (!a) return @"-";
+        unsigned long long lv = shape(a, "level", "Q16@0:8") ? ((unsigned long long (*)(id, SEL))objc_msgSend)(a, sel_registerName("level")) : 999;
+        double pr = shape(a, "progress", "d16@0:8") ? ((double (*)(id, SEL))objc_msgSend)(a, sel_registerName("progress")) : -1;
+        BOOL gp = shape(a, "gesturePossible", "B16@0:8") && ((BOOL (*)(id, SEL))objc_msgSend)(a, sel_registerName("gesturePossible"));
+        id rs = shape(a, "reason", "@16@0:8") ? ((id (*)(id, SEL))objc_msgSend)(a, sel_registerName("reason")) : nil;
+        return [NSString stringWithFormat:@"%@ %p level %llu progress %.2f gesture %d reason \"%@\"", NSStringFromClass([a class]), a, lv, pr, gp, rs ?: @"-"];
+    };
+    int n = 0;
+    extern NSArray *DMDockAutoHideControllers(void);   // (DockAutoHide.m: each Dock window's controller, and the icon controller's on 15)
+    for (id ctrl in DMDockAutoHideControllers()) {
+        UIWindow *w = shape(ctrl, "floatingDockWindow", "@16@0:8") ? ((id (*)(id, SEL))objc_msgSend)(ctrl, sel_registerName("floatingDockWindow")) : nil;
+        n++;
+        BOOL (^b)(const char *) = ^BOOL(const char *sel) { return shape(ctrl, sel, "B16@0:8") && ((BOOL (*)(id, SEL))objc_msgSend)(ctrl, sel_registerName(sel)); };
+        id active = shape(ctrl, "activeAssertion", "@16@0:8") ? ((id (*)(id, SEL))objc_msgSend)(ctrl, sel_registerName("activeAssertion")) : nil;
+        NSMutableString *o = [NSMutableString stringWithFormat:@"[dockasserts] %@ %p (screen %@, window level %.0f): presented %d fully %d gesture possible %d by pointer %d; active %@",
+            NSStringFromClass([ctrl class]), ctrl, NSStringFromCGSize(w.screen.bounds.size), w.windowLevel, b("isFloatingDockPresented"), b("isFloatingDockFullyPresented"),
+            b("isGesturePossible"), b("wasFloatingDockPresentedByPointer"), one(active)];
+        Ivar iv = class_getInstanceVariable(object_getClass(ctrl), "_floatingDockBehaviorAssertionsByLevel");
+        const char *t = iv ? ivar_getTypeEncoding(iv) : NULL;
+        int levels = MSBDAutoHideLevelsOf(t);   // (0: not exactly that shape, not read -- DockAutoHide.h, as DockAutoHide.m)
+        if (levels > 0) {
+            // (a C array of pointer arrays, one per level, in the controller itself: read at the ivar's offset, as ivar_getTypeEncoding has it)
+            __unsafe_unretained id *byLevel = (__unsafe_unretained id *)(void *)((char *)(__bridge void *)ctrl + ivar_getOffset(iv));
+            for (int i = 0; i < levels; i++) {
+                id e = byLevel[i];
+                if (![e isKindOfClass:[NSPointerArray class]]) continue;
+                NSPointerArray *pa = e;
+                for (NSUInteger k = 0; k < pa.count; k++) { id a = (__bridge id)[pa pointerAtIndex:k]; if (a) [o appendFormat:@"\n  [%d] %@", i, one(a)]; }
+            }
+        } else [o appendFormat:@"\n  (no _floatingDockBehaviorAssertionsByLevel as expected here: %s)", t ?: "absent"];
+        for (NSString *name in @[@"_activeGestureFloatingDockBehaviorAssertion", @"_todayViewFloatingDockBehaviorAssertion", @"_openFolderOverHomeScreenFloatingDockBehaviorAssertion"]) {
+            Ivar v2 = class_getInstanceVariable(object_getClass(ctrl), name.UTF8String);
+            const char *t2 = v2 ? ivar_getTypeEncoding(v2) : NULL;
+            if (t2 && t2[0] == '@') [o appendFormat:@"\n  %@: %@", name, one(object_getIvar(ctrl, v2))];
+        }
+        DMLog(o);
+    }
+    if (!n) DMLog(@"[dockasserts] no Dock controller found");
+}
+// dockask: each Dock controller's answers now -- gesture possible, Apple's _allowGestureRecognizers and _canPresentFloatingDock, its z-stack participant's
+// ownsHomeGesture (the pointer's reveal needs it) and its description, and the should-begin of the pointer's reveal (as DMDockSideMayCome asks it). Read only.
+void DMDockAskDebug(void) {
+    BOOL (^shape)(id, const char *, const char *) = ^BOOL(id o, const char *sel, const char *enc) {
+        Method m = o ? class_getInstanceMethod(object_getClass(o), sel_registerName(sel)) : NULL;
+        return m && method_getTypeEncoding(m) && !strcmp(method_getTypeEncoding(m), enc);
+    };
+    extern NSArray *DMDockAutoHideControllers(void);
+    for (id ctrl in DMDockAutoHideControllers()) {
+        UIWindow *w = shape(ctrl, "floatingDockWindow", "@16@0:8") ? ((id (*)(id, SEL))objc_msgSend)(ctrl, sel_registerName("floatingDockWindow")) : nil;
+        int (^b)(id, const char *) = ^int(id o, const char *sel) { return shape(o, sel, "B16@0:8") ? ((BOOL (*)(id, SEL))objc_msgSend)(o, sel_registerName(sel)) : -1; };
+        Ivar zi = class_getInstanceVariable(object_getClass(ctrl), "_zStackParticipant");
+        id zp = zi && ivar_getTypeEncoding(zi) && ivar_getTypeEncoding(zi)[0] == '@' ? object_getIvar(ctrl, zi) : nil;
+        id pan = shape(ctrl, "presentFloatingDockIndirectPanGestureRecognizer", "@16@0:8") ? ((id (*)(id, SEL))objc_msgSend)(ctrl, sel_registerName("presentFloatingDockIndirectPanGestureRecognizer")) : nil;
+        int begin = pan && shape(ctrl, "gestureRecognizerShouldBegin:", "B24@0:8@16") ? ((BOOL (*)(id, SEL, id))objc_msgSend)(ctrl, @selector(gestureRecognizerShouldBegin:), pan) : -1;
+        NSString *zd = [[zp description] stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
+        DMLog([NSString stringWithFormat:@"[dockask] %@ %p (screen %@): presented %d gesture possible %d allow gestures %d can present %d; pointer reveal should begin %d; z-stack %@ owns home gesture %d: %@",
+            NSStringFromClass([ctrl class]), ctrl, NSStringFromCGSize(w.screen.bounds.size), b(ctrl, "isFloatingDockPresented"), b(ctrl, "isGesturePossible"), b(ctrl, "_allowGestureRecognizers"),
+            b(ctrl, "_canPresentFloatingDock"), begin, zp ? NSStringFromClass([zp class]) : @"-", b(zp, "ownsHomeGesture"), zd.length > 700 ? [zd substringToIndex:700] : (zd ?: @"-")]);
+    }
+}
+// smdock: Stage Manager's Dock tick as SpringBoard holds it -- +[SBDefaults localDefaults]'s app switcher defaults (chamoisHideDock, as its own getter
+// answers), the stored value (CFPreferences), and each SBFluidSwitcherViewController found under the windows' view controllers (prefersDockHidden). Read only.
+void DMSMDockDebug(void) {
+    NSMutableString *o = [NSMutableString stringWithString:@"[smdock]"];
+    CFPreferencesAppSynchronize(CFSTR("com.apple.springboard"));
+    CFPropertyListRef v = CFPreferencesCopyAppValue(CFSTR("SBChamoisHideDock"), CFSTR("com.apple.springboard"));
+    [o appendFormat:@" stored %@;", v ? (__bridge id)v : @"(absent)"];
+    if (v) CFRelease(v);
+    Class d = objc_getClass("SBDefaults");
+    id local = d && [(id)d respondsToSelector:@selector(localDefaults)] ? ((id (*)(id, SEL))objc_msgSend)((id)d, @selector(localDefaults)) : nil;
+    for (NSString *name in @[@"appSwitcherDefaults", @"switcherDefaults", @"chamoisDefaults", @"floatingDockDefaults"]) {
+        SEL s = NSSelectorFromString(name);
+        id dom = [local respondsToSelector:s] ? ((id (*)(id, SEL))objc_msgSend)(local, s) : nil;
+        if (!dom) continue;
+        [o appendFormat:@" %@ %@", name, NSStringFromClass([dom class])];
+        for (NSString *g in @[@"chamoisHideDock", @"chamoisHideDockExternal", @"chamoisHideStrips"]) {
+            Method m = class_getInstanceMethod(object_getClass(dom), NSSelectorFromString(g));
+            const char *e = m ? method_getTypeEncoding(m) : NULL;
+            if (e && (!strcmp(e, "B16@0:8") || !strcmp(e, "B@:"))) [o appendFormat:@" %@ %d", g, ((BOOL (*)(id, SEL))objc_msgSend)(dom, NSSelectorFromString(g))];   // (a defaults domain's getter)
+            else if (e) [o appendFormat:@" %@ (%s)", g, e];
+        }
+        [o appendString:@";"];
+    }
+    {   // (Stage Manager's settings: +[SBAppSwitcherDomain rootSettings].chamoisSettings, its cached ticks)
+        Class dc = objc_getClass("SBAppSwitcherDomain");
+        id rs = dc && [(id)dc respondsToSelector:NSSelectorFromString(@"rootSettings")] ? ((id (*)(id, SEL))objc_msgSend)((id)dc, NSSelectorFromString(@"rootSettings")) : nil;
+        id cs = [rs respondsToSelector:NSSelectorFromString(@"chamoisSettings")] ? ((id (*)(id, SEL))objc_msgSend)(rs, NSSelectorFromString(@"chamoisSettings")) : nil;
+        [o appendFormat:@" chamoisSettings %@ %p", cs ? NSStringFromClass([cs class]) : @"-", cs];
+        for (NSString *iv in @[@"_cachedChamoisHideDock", @"_cachedChamoisHideDockExternal", @"_cachedChamoisHideStrips"]) {
+            Ivar i = cs ? class_getInstanceVariable(object_getClass(cs), iv.UTF8String) : NULL;
+            const char *t = i ? ivar_getTypeEncoding(i) : NULL;
+            if (t && !strcmp(t, "B")) [o appendFormat:@" %@ %d", iv, *((BOOL *)(void *)((char *)(__bridge void *)cs + ivar_getOffset(i)))];
+        }
+        [o appendString:@";"];
+    }
+    NSMutableArray *stack = [NSMutableArray array];
+    for (UIWindow *w in [UIWindow allWindowsIncludingInternalWindows:YES onlyVisibleWindows:NO]) if (w.rootViewController) [stack addObject:w.rootViewController];
+    Class fs = objc_getClass("SBFluidSwitcherViewController");
+    int seen = 0;
+    while (stack.count && seen < 2000) {
+        UIViewController *vc = stack.lastObject; [stack removeLastObject]; seen++;
+        if (fs && [vc isKindOfClass:fs]) {
+            Method m = class_getInstanceMethod(object_getClass(vc), sel_registerName("prefersDockHidden"));
+            const char *e = m ? method_getTypeEncoding(m) : NULL;
+            UIWindowScene *scene = vc.viewIfLoaded.window.windowScene;
+            [o appendFormat:@" %@ %p (scene %p, screen %@) prefersDockHidden %d;", NSStringFromClass([vc class]), vc, scene, scene ? NSStringFromCGSize(scene.screen.bounds.size) : @"-",
+                e && !strcmp(e, "B16@0:8") ? ((BOOL (*)(id, SEL))objc_msgSend)(vc, sel_registerName("prefersDockHidden")) : -1];
+        }
+        [stack addObjectsFromArray:vc.childViewControllers];
+        if (vc.presentedViewController) [stack addObject:vc.presentedViewController];
+    }
+    DMLog(o);
+}
+// smdockset0 / smdockset1: Stage Manager's own Dock tick set through SpringBoard's setter, as Control Center's Stage Manager options set it (a device test of
+// "Apple's tick moved: our switch follows", StatusBar.x DMDockAutoHideSyncSM). Debug only.
+static id DMSMAppSwitcherDefaultsDebug(void) {
+    Class d = objc_getClass("SBDefaults");
+    id local = d && [(id)d respondsToSelector:@selector(localDefaults)] ? ((id (*)(id, SEL))objc_msgSend)((id)d, @selector(localDefaults)) : nil;
+    return [local respondsToSelector:NSSelectorFromString(@"appSwitcherDefaults")] ? ((id (*)(id, SEL))objc_msgSend)(local, NSSelectorFromString(@"appSwitcherDefaults")) : nil;
+}
+void DMSMDockSetDebug(BOOL hide) {
+    id dom = DMSMAppSwitcherDefaultsDebug();
+    SEL s = NSSelectorFromString(@"setChamoisHideDock:");
+    if (![dom respondsToSelector:s]) { DMLog(@"[smdock] no -setChamoisHideDock: here"); return; }
+    DMLog([NSString stringWithFormat:@"[smdock] setChamoisHideDock:%d through SpringBoard's defaults", hide]);
+    ((void (*)(id, SEL, BOOL))objc_msgSend)(dom, s, hide);
+    DMSMDockDebug();
+}
 // ---- debug (1.8.3 item 7): a side Dock icon left unturned (a Handoff tile at Right on Aerial, regression-1.8.2.2-m1.md F1) ----
 // turnwatch: CALayer's -setSublayerTransform: watched for the Dock window's icon views; each write that is not the turn's own (DM_TURN_OURS) is
 // logged with its value and the calls that made it. turnwatch0: off. Hooked only on the first "turnwatch": nothing of this in a release build.

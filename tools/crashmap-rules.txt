@@ -1,8 +1,11 @@
 # crashmap-rules.txt -- what the crash guard's step 1b (common/CrashStep.h) turns off when a SpringBoard crash points at one of our parts.
 # Read by tools/make-crashmap.py at package time; the result (CrashMap.txt) ships next to the parts.
 #
-# target <name> pref <domain> <key> <off> <default> <row title>|<where>   a switch in Settings: set to <off> (0/1); <default> = its value when
-#                                                     never set; the row's title and where the crash was, for the guard's explanation
+# target <name> pref <domain> <key> <off> <default> [offtext=<text>[,<text>...]] <row title>|<where>   a switch in Settings: set to <off> (0/1);
+#                                                     <default> = its value when never set; a stored text reads as <default>, or with offtext as
+#                                                     <off> for those texts and on for any other (a list row's choice: Dock Style's "default"), and
+#                                                     the guard then stores the first off text instead of <off>, so Settings shows a choice; the
+#                                                     row's title and where the crash was, for the guard's explanation
 # target <name> part                                  the part that crashed is not loaded in SpringBoard any more (until the guard's note is cleared)
 # image <Image> <target> [map]                        what a crash in that part turns off; "map": a function map is built (the target is then the
 #                                                     fallback for code no rule below names)
@@ -22,9 +25,9 @@ target part part
 # so it never decides a crash by itself (common/CrashBlame.h): any other non-Apple code below it is blamed instead, and step 1b passes over it
 target transparent transparent
 target stock pref com.besiktasliseba.macstatusbar stockStatusBar 1 0 Status Bar Style|the status bar
-# our banners (1.8.0: Banner Style, common/BannerStyle.h): the style back to iPadOS's -- the guard writes false, which the rule reads as iPadOS's;
-# the stored text "mac" is no number, so it reads as the default 1 ("on") and the guard can set it off (as Control Center Style below)
-target macBanners pref com.besiktasliseba.macstatusbar bannerStyle 0 1 Banner Style|the Mac-style banners
+# our banners (1.8.0: Banner Style, common/BannerStyle.h): the style back to iPadOS's ("stock" stored). "stock" reads as off; "mac" and "destra" as on
+# (Destra stored but uninstalled is ours), and nothing stored too (ours for everyone, KT 3 Nov) -- review 1.8.4 P2-L1's rule for list rows
+target macBanners pref com.besiktasliseba.macstatusbar bannerStyle 0 1 offtext=stock Banner Style|the Mac-style banners
 target autoHideStatusBar pref com.besiktasliseba.macstatusbar autoHideStatusBar 0 0 Automatically Hide and Show the Status Bar|the auto-hiding status bar
 target menuBarSize pref com.besiktasliseba.macstatusbar menuBarSize 0 0 Menu Bar Size|the larger menu bar
 target tidyKeyboardPill pref com.besiktasliseba.macstatusbar tidyKeyboardPill 0 0 Keyboard Button in Status Bar|the keyboard button
@@ -55,9 +58,22 @@ target spotlightTweakSettings pref com.besiktasliseba.macstatusbar spotlightTwea
 target spotlightActions pref com.besiktasliseba.macstatusbar spotlightActions 0 0 Actions|our actions in Spotlight
 target spotlightWindows pref com.besiktasliseba.macstatusbar spotlightWindows 0 0 Windows|our windows in Spotlight
 target actmonLibrary pref com.besiktasliseba.macstatusbar activityMonitorInLibrary 0 1 Show in App Library|Activity Monitor in the App Library
-# our own Control Center (1.8.0, statusbar/CCPanel.h; on 18 CC18Shape.h): Control Center Style back to iPadOS's -- the guard writes false, which CCPanel.h (and P1's
-# common/CCStyle.h) read as iPadOS's style; the stored text "mac" is no number, so it reads as the default 1 ("on") and the guard can set it off
-target controlcenter pref com.besiktasliseba.macstatusbar controlCenterStyle 0 1 Control Center Style|our Control Center
+# our own Control Center (1.8.0, statusbar/CCPanel.h; on 18 CC18Shape.h): Control Center Style back to iPadOS's ("stock" stored). Ours runs only with "mac":
+# "stock" and "bigsurcenter" read as off, and nothing stored too (never ours unless picked, KT 3 Nov; common/CCStyle.h) -- review 1.8.4 P2-L1's rule
+target controlcenter pref com.besiktasliseba.macstatusbar controlCenterStyle 0 0 offtext=stock,bigsurcenter Control Center Style|our Control Center
+# Live Activities in the menu bar (1.8.4 item 1, statusbar/LiveActivities.h): its switch; other apps' activities (LiveActivityApps.h, iPadOS 17/18:
+# SpringBoard's activity manager and the hosted views) only their own kind's switch, Apps
+target liveActivities pref com.besiktasliseba.macstatusbar liveActivities 0 1 Live Activities in Menu Bar|the Live Activities in the menu bar
+target liveActivitiesApps pref com.besiktasliseba.macstatusbar liveActivitiesApps 0 1 Apps|other apps' Live Activities in the menu bar
+# the Dock's older styles (1.8.4 item 3, dock/DockStyle.m): Dock Style back to Default -- the guard stores "default", as Settings does for Default.
+# That text, or no value, reads as off -- a crash pinned there with Default is not Dock Style's (the part goes at once) --, and "glass" or
+# "frosted" reads as on (review 1.8.4 P2-L1)
+target dockStyle pref com.besiktasliseba.dockmagnification dockStyle 0 0 offtext=default Dock Style|the older Dock style
+# the Dock's launch bounce (1.8.4 item 2, dock/Bounce.m): its switch, on unless switched off (KT 7 Nov): a crash in it sets it off (0)
+target animateOpening pref com.besiktasliseba.dockmagnification animateOpening 0 1 Animate Opening Applications|the Dock's launch bounce
+# the Dock hiding itself (1.8.4 item 4, dock/DockAutoHide.m): its switch, off unless switched on (with the Stage Manager engine, Apple's own Dock tick
+# follows it at the next start: StatusBar.x DMDockAutoHideSyncSM)
+target autoHideDock pref com.besiktasliseba.dockmagnification autoHideDock 0 0 Automatically Hide and Show the Dock|the Dock hiding itself
 
 # The parts in words, for the guard's explanation: title <Image> <where it crashed>|<what was turned off> ("SpringBoard crashed twice in the
 # Dock, so the Dock was turned off for now."). A part without a title is named by its file name.
@@ -117,6 +133,15 @@ file DockMagnification ^Launchpad\.m$ launchpadIcon
 file DockMagnification ^RunningIndicator\.m$ runningIndicator
 file DockMagnification ^FinderIcon\.m$ showFinder
 file DockMagnification ^TrashIcon\.m$ showTrash
+# 1.8.4: Dock Style (DockStyle.m) and the launch bounce (Bounce.m). Their hooks -- the platter's layout and the icon tap, which every user's Dock
+# runs through -- only pass the call on to Apple and call those files' functions: transparent, so a crash in Apple's code under them is decided
+# by the frame below, as before 1.8.4, never pinned on a style or the bounce (review 1.8.4 P2-L1)
+sym DockMagnification \$SBFloatingDockPlatterView\$layoutSubviews$ transparent
+sym DockMagnification \$SBIconView\$tapGestureDidChange\$$ transparent
+file DockMagnification ^DockStyle\.m$ dockStyle
+file DockMagnification ^Bounce\.m$ animateOpening
+# (1.8.4 item 4: the Home Screen's Dock assertion's two getters, hooked only once the switch was on)
+file DockMagnification ^DockAutoHide\.m$ autoHideDock
 
 # ---- the status bar (MacStatusBarCore): by feature; anything else = Stock status bar mode ----
 image MacStatusBarCore stock map
@@ -187,6 +212,12 @@ file MacStatusBarCore ^CC18Tiles\.h$ controlcenter
 # the battery menu and the Control Center icon (BatteryMenu.h, 1.7.9): Battery Menu's switch -- off, the battery is iOS's again and the icon goes
 sym MacStatusBarCore ^_*DMBatt[A-Z] batteryMenu
 file MacStatusBarCore ^BatteryMenu\.h$ batteryMenu
+# Live Activities in the menu bar (1.8.4): its functions and blocks (DMLA..., not DMLAApps...) and LiveActivities.h's methods (the pills, the cards, the
+# sources; common/LiveActivities.h's rules, inlined into them in a release build) -- Live Activities in Menu Bar off; other apps' activities
+# (LiveActivityApps.h: DMLAApps... and the observer's and host delegate's methods) -- only Apps off
+sym MacStatusBarCore ^_*DMLA(?!Apps)[A-Z] liveActivities
+file MacStatusBarCore ^LiveActivityApps\.h$ liveActivitiesApps
+file MacStatusBarCore ^LiveActivities\.h$ liveActivities
 # Spotlight (statusbar/SpotlightFiles.x): the tweak settings part (its own functions, its PreferenceLoader watcher, the shared index / donation headers), then the files part
 sym MacStatusBarCore ^_*SF(Tweak|WatchTweaks) spotlightTweakSettings
 file MacStatusBarCore ^Tweak(Index|Spotlight)\.h$ spotlightTweakSettings
@@ -293,6 +324,8 @@ sec MacStatusBarCore Stage\sManager\sswitched\soff windowingEnabled
 sec MacStatusBarCore Stage\sManager\s(as\sthe\sengine|engine) windowingEnabled
 # (the engine's own headers: the checked API, the window fit, the Home Screen behind the windows, the desktop join, the window roles and one window
 #  per role, the windows staying at Home and its rule, the window keys (M-2) -- every function and block in them, whatever its name)
+# (the App Switcher's snapshot cache's guard, SMGestureHook.h: passes the call on to Apple's; a crash in Apple's code under it is not the engine's)
+sym MacStatusBarCore ^_?DMSMCacheRange$ transparent
 file MacStatusBarCore ^(SMEngineAPI|SMFit|SMDesktop|SMDeskJoin|SMRoles|SMLimit|SMFitPlan|SMRoleRepair|SMHome|SMHomeRule|SMWindowKey|SMGestureHold|SMGestureCap|SMGestureHook|SMAfterHome|SMCards|SMCardPlan|SMResizeEdges|SMResizeAnchor|SMResizeAnchorMath)\.h$ windowingEnabled
 sec MacStatusBarCore iPadOS\s17's\slayout\sengine windowingEnabled
 # three sections of StatusBar.x around Fit's tiles and the turn: window code (the Window menu's layouts and what they send the app, the lights'

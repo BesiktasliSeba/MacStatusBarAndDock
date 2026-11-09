@@ -2,8 +2,8 @@
 // of ours did this crash come from, and what turns it off? (common/CrashFeature.h)
 #import "../common/CrashFeature.h"
 
-// Returns 1 and puts "pref <image> <domain> <key> <value>" or "part <image> - - -" into `action`; 0 and the reason otherwise. `detail` gets where
-// the crash was found (image + offset, which stack, map or fallback), for the log.
+// Returns 1 and puts "pref <image> <domain> <key> <value> [text=<off text>] <title>" or "part <image> - - 0 <title>" into `action`; 0 and the
+// reason otherwise. `detail` gets where the crash was found (image + offset, which stack, map or fallback), for the log.
 __attribute__((visibility("default"))) int MSBDCrashFeature(const char *report, const char *mapPath, char *action, size_t an, char *detail, size_t dn) {
     @autoreleasepool {
         NSString *a = @"unreadable", *d = @"";

@@ -22,6 +22,10 @@ int main(void) {
     Int("no drag (no place in SpringBoard's icon model to go to)", MSBDEditDrag(), 0);
     Int("own jiggle: 1.5 degrees each way", (int)(kMSBDEditJiggleRadians * 1800.0 / M_PI + 0.5), 15);
     Int("  ... the views not in step (each starts at another point of the swing)", MSBDEditJigglePhase(kMSBDEditFinder) != MSBDEditJigglePhase(kMSBDEditTrash), 1);
+    // the Launchpad stand-in and the hover magnification (review 1.8.3.1 L1)
+    Int("L1: no magnification (s 1): the stand-in's centre where its fit put it (its picture's centre plus its offset, k times)", (int)(MSBDEditProxyCentre(100.0, 10.0, 0.5, 1.0) * 1000.0 + 0.5), 105000);
+    Int("  ... magnified 1.6 times: the offset grows with it, so its picture stays centred on the App Library icon's place", (int)(MSBDEditProxyCentre(100.0, 10.0, 0.5, 1.6) * 1000.0 + 0.5), 108000);
+    Int("  ... no offset: the centre stays put whatever the scale", (int)(MSBDEditProxyCentre(240.5, 0.0, 0.7, 1.9) * 1000.0 + 0.5), 240500);
     printf("%d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }

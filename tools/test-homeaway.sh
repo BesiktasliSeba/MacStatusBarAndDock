@@ -41,9 +41,18 @@ check "  ... read by SpringBoard as a boolean, else ON (every user, updaters too
    && fn $X 'static void DMLoadPrefs(' | grep -q 'if (hm) { DMMSWHookActivation(); DMHomeAwayHookDismissTap(); DMHomeAwayHookKeys(); }' \
    && fn $X 'static void DMLoadPrefs(' | awk '/gHomeMinimizes = hm;/{a=NR} /DMMSWHookHomeButton\(\);/{b=NR} END{exit !(a && b > a)}' \
    && fn $Bt 'static void DMMSWHookHomeButton(void) {' | grep -q 'if (done || (!gMSWOn && !gHomeMinimizes)) return;'"
-check "our own simulated Home press (DMMinimize) is never the user's Home: marked while it runs and for a second after" \
-  "fn $X 'static void DMMinimize(void) {' | awk '/gDMOwnHomeAt = CACurrentMediaTime\(\);/{a=NR} /gDMOwnHomeDepth\+\+;/{b=NR} /DMMinimizeBody\(\);/{c=NR} /gDMOwnHomeDepth--;/{d=NR} END{exit !(a && b > a && c > b && d > c)}' \
-   && grep -q 'static BOOL DMHomeIsOurs(void) { return gDMOwnHomeDepth > 0 || CACurrentMediaTime() - gDMOwnHomeAt < 1.0; }' $X"
+# (our own Home's mark, run as built: DMOwnHome and DMHomeIsOurs cut out of StatusBar.x, a stand-in clock -- the review of the 1.8.4 fixes, L1 and L3)
+{ grep -F 'static CFTimeInterval gDMOwnHomeAt = -100;' $X; grep -F 'static int gDMOwnHomeDepth = 0;' $X; grep -F 'static BOOL DMHomeIsOurs(void) { return' $X
+  if grep -q '^static void DMOwnHome(void (^home)(void)) {' $X; then fn $X 'static void DMOwnHome(void (^home)(void)) {'
+  else echo 'static void DMOwnHome(void (^home)(void)) { home(); }   // (not in this source: our Home marked by DMMinimize only)'; fi; } > "$W/ownhome-gen.h"
+check "our own Home (DMOwnHome: Minimize, Aerial's way into a window) is never the user's Home: marked while it runs and for a second from its start, the mark ended whatever happens in it (test-ownhome.m, run as built)" \
+  "clang -fobjc-arc -Wall -Wno-unused-function -I\"\$W\" -framework Foundation -o \"\$W/toh\" test-ownhome.m && \"\$W/toh\" > \"\$W/toh.out\" 2>&1 && grep -q 'test-ownhome: all pass' \"\$W/toh.out\" \
+   && grep -q '^static void DMMinimize(void) { DMOwnHome(^{ DMMinimizeBody(); }); }' $X"
+check "F3 (regression 1.8.4, A12Z, engine parity): Aerial's way into a window goes home as our own Home too -- the Window menu's layouts, the green light and the window keys' arrangements from a full-screen app (its quiet transition or -_returnToHomeScreenWithCompletion:), and a cold start that goes full screen first: no other window minimized (Zetsu and MilkyWay4 go through DMMinimize)" \
+  "fn $X 'static void DMWindowLayout(NSString *name) {' | tr -d '\n' | grep -q 'DMOwnHome(^{   // (our own Home on the way into the window, not the user.s: regression 1.8.4 F3)                quiet = DMMSWQuietTransition(nil, @\"green: the full-screen app back into its window\");                if (!quiet && canHome) ((void (\\*)(id, SEL, id))objc_msgSend)(ui, goHome, ^{});            });' \
+   && [ \"\$(grep -c 'objc_msgSend)(ui, goHome, ^{})' $X)\" = 2 ] && [ \"\$(grep -c 'DMMSWQuietTransition(nil, @\"green' $X)\" = 1 ] \
+   && fn $X 'BOOL DMAerialWarmStartIfNeeded(NSString *bundleID) {' | grep -q 'else DMOwnHome(^{ ((void (\\*)(id, SEL, id))objc_msgSend)(ui, goHome, ^{}); });' \
+   && fn $X 'static void DMSendToWindow(NSString *bundleID) {' | grep -c 'DMMinimize();' | grep -q '^2$'"
 check "the gesture's lift: whatever destination SpringBoard is finally given (after the takeover's stay), a 4 is a Home" \
   "grep -q 'static id DMMSWActOrig(id self, SEL _cmd, long long dest) { if (dest == 4) DMHomeAwayLift(); return o_MSWActivate(self, _cmd, dest); }' $M \
    && grep -q 'static id DMMSWActOrigRM(id self, SEL _cmd, long long dest) { if (dest == 4) DMHomeAwayLift(); return o_MSWActivateRM(self, _cmd, dest); }' $M \

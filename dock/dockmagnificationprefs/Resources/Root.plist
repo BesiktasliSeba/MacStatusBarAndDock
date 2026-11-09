@@ -64,6 +64,44 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
+			<string>Glass Shelf is the Dock of Mac OS X 10.5 to 10.9, a dark panel at the sides as it was then. Frosted is the Dock of 10.10 to 10.15.</string>
+			<key>id</key>
+			<string>DOCK_STYLE_GROUP</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.dockmagnification/prefsChanged</string>
+			<key>cell</key>
+			<string>PSLinkListCell</string>
+			<key>default</key>
+			<string>default</string>
+			<key>defaults</key>
+			<string>com.besiktasliseba.dockmagnification</string>
+			<key>detail</key>
+			<string>PSListItemsController</string>
+			<key>id</key>
+			<string>DOCK_STYLE</string>
+			<key>key</key>
+			<string>dockStyle</string>
+			<key>label</key>
+			<string>Dock Style</string>
+			<key>validTitles</key>
+			<array>
+				<string>Default</string>
+				<string>Glass Shelf</string>
+				<string>Frosted</string>
+			</array>
+			<key>validValues</key>
+			<array>
+				<string>default</string>
+				<string>glass</string>
+				<string>frosted</string>
+			</array>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
 			<string>Magnification shows with a trackpad or mouse.</string>
 			<key>label</key>
 			<string>Magnification</string>
@@ -127,6 +165,8 @@
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>In portrait, the Dock uses all its room. Icon Size applies in landscape, or with this switch off.</string>
 			<key>label</key>
 			<string>Portrait</string>
 		</dict>
@@ -167,6 +207,54 @@
 			<real>0.0</real>
 			<key>showValue</key>
 			<true/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>The Dock hides until you swipe up from the bottom of the screen or move the pointer to the edge where it sits, like on a Mac. Windows can use the room it leaves.</string>
+			<key>id</key>
+			<string>AUTO_HIDE_DOCK_GROUP</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.dockmagnification/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.dockmagnification</string>
+			<key>id</key>
+			<string>AUTO_HIDE_DOCK</string>
+			<key>key</key>
+			<string>autoHideDock</string>
+			<key>label</key>
+			<string>Automatically Hide and Show the Dock</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>An app's icon bounces in the Dock while the app opens, like on a Mac.</string>
+			<key>id</key>
+			<string>ANIMATE_OPENING_GROUP</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.dockmagnification/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.dockmagnification</string>
+			<key>id</key>
+			<string>ANIMATE_OPENING</string>
+			<key>key</key>
+			<string>animateOpening</string>
+			<key>label</key>
+			<string>Animate Opening Applications</string>
 		</dict>
 		<dict>
 			<key>cell</key>

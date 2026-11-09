@@ -46,5 +46,9 @@ static inline bool MSBDEditDrag(void) { return false; }       // (no drag)
 #define kMSBDEditJiggleRadians (1.5 * M_PI / 180.0)
 #define kMSBDEditJiggleSeconds 0.27
 static inline double MSBDEditJigglePhase(int view) { return view < 0 ? 0.0 : fmod(view * 0.37, 1.0); }
+// The Launchpad stand-in and the hover magnification (review 1.8.3.1 L1): the App Library icon hides under it while editing, so the magnification that
+// icon would get -- its scale s from its own centre, as every Dock icon's -- is put on the stand-in over the fit it was given (scale k, its picture's
+// centre kept): along each axis the stand-in's centre is its picture's centre plus its own offset from that picture, k * s times (s 1: the fit alone).
+static inline double MSBDEditProxyCentre(double pictureMid, double offset, double k, double s) { return pictureMid + offset * k * s; }
 
 #endif

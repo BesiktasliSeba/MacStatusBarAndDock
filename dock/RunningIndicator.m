@@ -124,6 +124,7 @@ static NSSet<NSString *> *RIRunningBundleIDs(void) {
 }
 
 static const void *kDotKey = &kDotKey;
+UIView *DMRunningDotOf(UIView *iconView) { return iconView ? objc_getAssociatedObject(iconView, kDotKey) : nil; }   // (Bounce.m: the dot holds still while its icon bounces)
 // Where a running dot sits below a Dock app's picture (its top, from the picture's bottom edge), as last measured on a real Dock icon: our own
 // Dock icons (Finder) are only as tall as their picture, so they put their dot at this distance below themselves, where the apps' dots are.
 CGFloat gDMDotGapBelowImage = 3.0;
@@ -223,6 +224,8 @@ static void RIUpdate(UIView *iconView, NSSet<NSString *> *running) {   // (runni
     int dockSide = MSBDDockSideIconTurnSide(iconView);   // (Settings > Dock > Position: beside the picture where its content is turned upright -- by that turn itself, Dock.x: 1.8.2.2 M1 F5)
     dot.frame = dockSide ? MSBDDockSideDotFrame(dockSide, iconView.bounds.size.width, iconView.bounds.size.height, y, d) : CGRectMake((iconView.bounds.size.width - d) / 2.0, y, d, d);
     dot.layer.cornerRadius = d / 2.0;
+    extern void DMDockStyleDot(UIView *dot, UIView *iconView, CGFloat d);
+    DMDockStyleDot(dot, iconView, d);   // (Dock Style, 1.8.4: Glass Shelf's lights; Default and Frosted keep this dot)
     dot.hidden = NO;
     [iconView bringSubviewToFront:dot];
 }
@@ -251,6 +254,7 @@ static void RIResyncDock(void) {
     NSSet *running = RIWanted() ? RIRunningBundleIDs() ?: [NSSet set] : nil;   // (once per pass, not once per icon)
     for (UIView *iconView in icons) RIUpdate(iconView, running);
 }
+void DMRunningIndicatorResyncAll(void) { RIResyncDock(); }   // (DockStyle.m: a Dock Style change draws every dot again at once)
 #if DEBUG
 // debug ("dots" in /tmp/dockmag-escape, Dock.x's debug poll; 1.7.8.1): every running app as the dot rule reads it -- pid, on screen now, the pid
 // remembered as seen, a window away -- and whether it has the dot (after one read of the running apps, which also updates what is remembered).

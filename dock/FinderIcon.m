@@ -161,6 +161,11 @@ extern UITargetedPreview *MSBDDockSideIconPreview(UIView *icon, UIImage *picture
 - (BOOL)accessibilityActivate { [self tapped]; return YES; }
 - (void)layoutSubviews {
     [super layoutSubviews];
+    UIImage *was = self.image.image;
+    [self dm_layoutPicture];
+    if (self.image.image != was) DMDockItemPictureChanged(self);   // (its reflection and its Edit Home Screen stand-in follow: regression 1.8.4)
+}
+- (void)dm_layoutPicture {
     self.image.frame = self.bounds;
     // (1.7.5: the app icon's picture -- a theme's, or the face as SpringBoard / a theme engine shapes an app's own icon; its corners are its own)
     if (!CGSizeEqualToSize(self.themeSize, self.bounds.size) || self.themeGeneration != DMIconThemeGeneration() || !self.image.image) {
@@ -198,6 +203,8 @@ extern UITargetedPreview *MSBDDockSideIconPreview(UIView *icon, UIImage *picture
     self.dot.frame = dockSide ? MSBDDockSideDotFrame(dockSide, self.bounds.size.width, self.bounds.size.height, self.bounds.size.height + gDMDotGapBelowImage, d)
                               : CGRectMake((self.bounds.size.width - d) / 2.0, self.bounds.size.height + gDMDotGapBelowImage, d, d);
     self.dot.layer.cornerRadius = d / 2.0;
+    extern void DMDockStyleDot(UIView *dot, UIView *iconView, CGFloat d);
+    DMDockStyleDot(self.dot, self, d);   // (Dock Style, 1.8.4: Glass Shelf's lights; Default and Frosted keep this dot)
     self.dot.hidden = n == 0;
     [self bringSubviewToFront:self.dot];
 }

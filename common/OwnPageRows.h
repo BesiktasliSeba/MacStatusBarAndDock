@@ -10,6 +10,7 @@
 #pragma once
 #import <Foundation/Foundation.h>
 #include "CCStyle.h"   // (the Control Center Style's values: the rows that go with a style, 1.8.0)
+#include "LiveActivities.h"   // (Live Activities' Timers row: its key, and the versions where timers run -- 1.8.4, plain C)
 // (no TweakIndex.h here: the pages include this, and its helpers are plain static functions; MSBDOwnRowsShown below is there for an includer that
 //  has the index already -- common/TweakSpotlight.h, the Mac test)
 
@@ -28,6 +29,9 @@ typedef struct {
                               //  Bar to), and Resize Handles is offered
     BOOL milkyWayEngine;      // ... it is MilkyWay4: Resize Apps to Fit Windows is offered
     BOOL batteryUseOff;       // our Battery Use group (Sleep Guard) is not on Battery Health on this iPad (BatteryHealth.x / BatteryUse.x refused)
+    BOOL laTimersListed;      // this iPadOS version is in Live Activities' timers list (LiveActivities.h kMSBDLATimersChecked): else the Activities
+                              // page has no Timers row -- a switch that would do nothing (review 1.8.4 P2-L3)
+    BOOL laAppsListed;        // ... in the other apps' listing's list (kMSBDLAAppsListChecked, 17 and later only): else no Apps row
 } MSBDOwnPages;
 
 // The rows each condition takes, by the identifiers and keys in our plists (the pages and the rule below ask these).
@@ -48,6 +52,8 @@ typedef struct {
 #define kMSBDTailspinGroupID @"TAILSPIN_GROUP"    // Keep Tailspin Off: the root helper applies it whatever the status bar does
 #define kMSBDDockFinderRowID @"FINDER"            // the Dock page's Show Finder in Dock (and its group)
 #define kMSBDDockFinderGroupID @"FINDER_GROUP"
+#define kMSBDLATimersRowKey @MSBD_LA_TIMERS_KEY  // the Activities page's Timers (Live Activities in Menu Bar, 1.8.4)
+#define kMSBDLAAppsRowKey   @MSBD_LA_APPS_KEY    // ... and its Apps (other apps' Live Activities, 17 and later)
 // Control Center Size (1.8.0, KT 3 Nov): with BigSurCenter (its drop-down panel from our status bar) and with ours (Mac), never with the stock
 // status bar (BigSurCenter's panel is not sized there, ours does not run); greyed with ours on iPadOS 18, where our panel is Apple's own 18 grid,
 // which is not sized yet (statusbar/CC18Shape.h).
@@ -90,6 +96,8 @@ static inline BOOL MSBDOwnRowHidden(MSBDOwnPages s, NSString *pane, NSString *gr
     if ([key isEqualToString:kMSBDCCScaleKey] && !MSBDCCSizeRowShown(s.ccStyle, s.stockBar)) return YES;
     if ([ident isEqualToString:kMSBDCCGrabberRowID] && (s.ccStyle == kMSBDCCStyleMac || s.ccStyle == kMSBDCCStyleBigSurCenter)) return YES;
     if (s.desktopFailed && MSBDDesktopCheckRow(key, ident)) return YES;
+    if (bar && !s.laTimersListed && [key isEqualToString:kMSBDLATimersRowKey]) return YES;
+    if (bar && !s.laAppsListed && [key isEqualToString:kMSBDLAAppsRowKey]) return YES;
     if (s.focus18Failed && ([key isEqualToString:kMSBDMacSwitcherKey] || [group isEqualToString:kMSBDMacSwitcherGroupID] || [group isEqualToString:kMSBDWiFiGroupID])) return YES;
     if ([group isEqualToString:kMSBDWindowsGroupID] && ((!s.engineWorks && !MSBDNoEngineKeepsRow(key)) || (s.stageManagerEngine && !MSBDStageManagerKeepsRow(key)))) return YES;
     if ([group isEqualToString:kMSBDNewWindowsFillGroupID] && !s.engineWorks) return YES;   // (every window it sizes is an engine's: StatusBar.x DMOpeningWindowFrame)

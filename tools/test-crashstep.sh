@@ -48,6 +48,7 @@ run mixed step1b-loader.ips step1b-dock-downloads.ips
 run recent step1b-core-banners.ips step1b-core-banners.ips
 run one step1b-core-banners.ips
 run cclookup step1b-core-cc-lookup.ips step1b-core-cc-lookup.ips
+run dockstyle step1b-dock-style.ips step1b-dock-style.ips
 echo "== Fit to Window in the rules (no build needed): every function of it window code, Resize Apps to Fit Windows only its own two"
 # (1.8.0 engine parity pass: ^_?DMFit took Fit's own functions to Resize Apps to Fit Windows, and the sections holding its tiles and the turn had no
 #  rule, so DMAssignDefaultSlots, DMSlotFrame, the closure watcher and DMRelayoutForOrientation fell to Stock status bar mode)
@@ -130,6 +131,13 @@ if [ -f "$MAP" ] && [ -n "$DSYM" ]; then
     python3 make-crash-fixture.py "$W/$n.ips" "$@" >/dev/null && "$W/tcf" "$MAP" "$W/$n.ips" "$want" || fails=1
   }
   D=com.besiktasliseba.macstatusbar
+  ccmac() {   # ccmac <real|cclook> <args...>: a line in our Control Center's code, with Control Center Style "mac" stored (ours runs only when picked,
+              # KT 3 Nov: nothing stored is not ours) -- in this Mac's $D domain, made for it and removed again; skipped when the Mac has that domain
+    if defaults read $D >/dev/null 2>&1; then echo "SKIP  $2: this Mac has a $D domain (not touched)"; return; fi
+    MSW_DOMAIN_MADE=1; defaults write $D controlCenterStyle -string mac
+    "$@"
+    defaults delete $D >/dev/null 2>&1 || true
+  }
   real core-banner "pref MacStatusBarCore $D bannerStyle 0 *" --symbol "$DSYM" MacStatusBarCore 'logos_method\$MacBanners\$'
   real core-menu "pref MacStatusBarCore $D stockStatusBar 1 *" --symbol "$DSYM" MacStatusBarCore 'DMShowMenu|DMMenuWindow|DMMenu'
   # (auto-hide is off on this Mac, as for a new user: a crash in its code can't be the switch, so Stock status bar mode instead)
@@ -139,8 +147,8 @@ if [ -f "$MAP" ] && [ -n "$DSYM" ]; then
   real core-appexit "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore 'logos_method\$AppExitForget\$'
   # the Stage Manager engine (its functions, its hook groups, the window fit and the stage-area hook, 1.3.2): Windowing off, the Mac status bar stays
   # (iPadOS 18's gallery: the Mac tiles' section is Control Center Style's, code review 1.8.1, 7)
-  real core-gallery-merged "pref MacStatusBarCore $D controlCenterStyle 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMALGalleryMerged$'
-  real core-gallery-section "pref MacStatusBarCore $D controlCenterStyle 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMALMacTilesSection$'
+  ccmac real core-gallery-merged "pref MacStatusBarCore $D controlCenterStyle 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMALGalleryMerged$'
+  ccmac real core-gallery-section "pref MacStatusBarCore $D controlCenterStyle 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMALMacTilesSection$'
   real core-sm-zoom "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMToggleZoom$'
   real core-sm-fit "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMAttrsFitScreen'
   real core-sm-hook16 "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMSMConstrainEdges16'
@@ -230,6 +238,19 @@ if [ -f "$MAP" ] && [ -n "$DSYM" ]; then
   real core-today "pref MacStatusBarCore $D clockOpensToday 0 *" --map "$MAP" MacStatusBarCore arm64 clockOpensToday
   real dock-downloads "pref DockMagnification com.besiktasliseba.dockmagnification showDownloads 0 *" --map "$MAP" DockMagnification arm64e showDownloads
   real dock-part "part DockMagnification - - 0 the Dock|the Dock" --map "$MAP" DockMagnification arm64 part
+  # Dock Style (1.8.4, review P2-L1): this Mac has no Dock Style stored (Default): a crash in its code is not Dock Style's -- the part
+  real dock-style "part DockMagnification - - 0 the Dock|the Dock" --map "$MAP" DockMagnification arm64e dockStyle
+  # the Dock's two 1.8.4 hooks (the platter's layout, the icon tap) are transparent: Apple's crash under one of them alone is the part's, never
+  # Dock Style's or the bounce's (the symbols of the Dock part of the build the map was made from)
+  DSYMD=
+  for o in ../.theos/obj ../.theos/obj/debug; do
+    d=$o/arm64e/DockMagnification.dylib.dSYM/Contents/Resources/DWARF/DockMagnification.dylib
+    [ -f "$d" ] && grep -q "$(dwarfdump --uuid "$d" | awk '{print tolower($2)}')" "$MAP" && DSYMD=$d
+  done
+  if [ -n "$DSYMD" ]; then
+    real dock-hook-layout "part DockMagnification - - 0 the Dock|the Dock" --symbol "$DSYMD" DockMagnification 'SBFloatingDockPlatterView\$layoutSubviews$' --apple-top
+    real dock-hook-tap "part DockMagnification - - 0 the Dock|the Dock" --symbol "$DSYMD" DockMagnification 'SBIconView\$tapGestureDidChange\$$' --apple-top
+  else echo "FAIL  no DockMagnification symbols for the built map"; fails=1; fi
   # Finder (Finder.h / NativeWindow.h / its glue in StatusBar.x): Finder's own switch, not the whole status bar; FinderIcon.m: the Dock's Finder
   real core-finder-window "pref MacStatusBarCore $D finderEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^-\[DMFinderWindow dm_run'
   real core-finder-native "pref MacStatusBarCore $D finderEnabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_?DMNativeTouchBegan'
@@ -241,8 +262,8 @@ if [ -f "$MAP" ] && [ -n "$DSYM" ]; then
   # P4's trap (1.8.0~i11, M1): +[SBControlCenterController sharedInstance] entered again under MSBDControlCenterController <- DMControlCenterController
   # <- DMControlCenterActive <- our Control Center's sensor update: Control Center Style back to iPadOS's, not Stock status bar mode (the lookups
   # were the Stock status bar's code); a getter under our Control Center's code the same (DMCCGet was RAM & CPU's add's: the whole part)
-  cclook core-cclook-sensor "pref MacStatusBarCore $D controlCenterStyle 0 *" '^_?DMCCPSensorUpdate$' MSBDControlCenterController DMControlCenterController DMControlCenterActive
-  cclook core-cclook-getter "pref MacStatusBarCore $D controlCenterStyle 0 *" '^_?DMCCPAppleSize$' DMCCGet
+  ccmac cclook core-cclook-sensor "pref MacStatusBarCore $D controlCenterStyle 0 *" '^_?DMCCPSensorUpdate$' MSBDControlCenterController DMControlCenterController DMControlCenterActive
+  ccmac cclook core-cclook-getter "pref MacStatusBarCore $D controlCenterStyle 0 *" '^_?DMCCPAppleSize$' DMCCGet
   # (the lookups' other callers: their own targets -- the battery menu's Control Center icon, the menu bar's hook keeping iOS's bar, the tick, RAM &
   #  CPU's add's hooks; the tick and those hooks are pinned by their own rules: the engine notice's section and a %group header held them)
   cclook core-cclook-battery "pref MacStatusBarCore $D batteryMenu 0 *" '^_?DMBattOpenControlCenter$' MSBDControlCenterController DMControlCenterController DMControlCenterActive
@@ -266,10 +287,12 @@ if [ -f "$MAP" ] && [ -n "$DSYM" ]; then
   real core-autoadd-hook "part MacStatusBarCore - - 0 the status bar|the Mac status bar" --symbol "$DSYM" MacStatusBarCore 'logos_method\$CCAutoAddWatch\$'
   # (1.8.0, KT 3 Nov: our Control Center's Airplane Mode row -- the block that asks AppSupport's RadiosPreferences on our queue, the delegate it
   #  tells -- is the tiles' code: Control Center Style back to iPadOS's, as for every Mac tile)
-  real core-cc-airplane "pref MacStatusBarCore $D controlCenterStyle 0 *" --symbol "$DSYM" MacStatusBarCore '^___DMCCTAirplaneSet_block_invoke'
-  real core-cc-airplane-delegate "pref MacStatusBarCore $D controlCenterStyle 0 *" --symbol "$DSYM" MacStatusBarCore 'DMCCTAirplaneDelegate airplaneModeChanged'
+  ccmac real core-cc-airplane "pref MacStatusBarCore $D controlCenterStyle 0 *" --symbol "$DSYM" MacStatusBarCore '^___DMCCTAirplaneSet_block_invoke'
+  ccmac real core-cc-airplane-delegate "pref MacStatusBarCore $D controlCenterStyle 0 *" --symbol "$DSYM" MacStatusBarCore 'DMCCTAirplaneDelegate airplaneModeChanged'
   # (our Control Center's layout, common/CCLayout.h: not inlined in a release build -- MSBDCCLayout fell to Stock status bar mode)
-  real core-cc-layout "pref MacStatusBarCore $D controlCenterStyle 0 *" --symbol "$DSYM" MacStatusBarCore '^_?MSBDCCLayout$'
+  ccmac real core-cc-layout "pref MacStatusBarCore $D controlCenterStyle 0 *" --symbol "$DSYM" MacStatusBarCore '^_?MSBDCCLayout$'
+  # (nothing stored -- this Mac --: our Control Center is not the style, so a crash in its code is not Control Center Style's: Stock status bar mode)
+  real core-cc-layout-unset "pref MacStatusBarCore $D stockStatusBar 1 *" --symbol "$DSYM" MacStatusBarCore '^_?MSBDCCLayout$'
   # Fit to Window (1.8.0 engine parity pass): its functions Windowing, by name -- ^_?DMFit took them to Resize Apps to Fit Windows, their sections fell
   # to Stock status bar mode --, with the window code of the sections around them (the Window menu's layouts, the turn); Resize Apps to Fit Windows
   # keeps its own two. Every one this build has as a function (a release build inlines some).

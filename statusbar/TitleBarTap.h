@@ -136,6 +136,13 @@ static void DMTitleTapWhenFree(void (^act)(NSString *), int tries) {
     if (g.state != UIGestureRecognizerStateEnded) return;
     int kind = [objc_getAssociatedObject(g, &kTitleTapKindKey) intValue];
     if (MSBDTitleActionFor(gTitleDoubleTap, kind == kDMTitleNative) == kMSBDTitleNothing) return;   // (Do Nothing: nothing at all -- never set, an app's window)
+    // (never set, on one of our own windows: its own Zoom at once, as in 1.8.2.2 -- not held back by a Guided Access session or by SpringBoard's
+    //  busy state, which only the placements of an app's window wait on; audit 1.8.3 L9)
+    if (kind == kDMTitleNative && gTitleDoubleTap == kMSBDTitleNeverSet) {
+        UIView *v = g.view; while (v && ![v isKindOfClass:[DMNativeWindow class]]) v = v.superview;
+        if (v) DMTitleTapNative((DMNativeWindow *)v, @"double tap on the title bar (never set: Zoom)");
+        return;
+    }
     if (DMGARefuses(@"window title bar")) return;
     // (the window is the one tapped: read now, acted on now or once SpringBoard is free -- DMTitleTapWhenFree)
     void (^act)(NSString *) = nil;

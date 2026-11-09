@@ -42,6 +42,32 @@ static void DMSMSetMinimized(NSString *key, BOOL on) { if (!on) [gUnminimized ad
 #define DM_FEATURE_MARK(name) do { } while (0)
 static CFTimeInterval CACurrentMediaTime(void) { return CFAbsoluteTimeGetCurrent(); }   // (QuartzCore's, as far as the look's once a second goes)
 
+// (Settings > Dock > Automatically Hide and Show the Dock, 1.8.4 F2: the answer taken now, and the engine -- the reader takes the room the windows were
+//  placed for from Stage Manager's file only with the Stage Manager engine)
+static int gDMDockAutoHideTaken = -1;
+static BOOL gTestSMEngine = YES;
+static int gAsked = 0;   // (what Stage Manager's tick asked: the re-review's Low 2)
+static BOOL DMSMEngine(void) { gAsked++; return gTestSMEngine; }
+// (the review of the fixes, H1 and M1: the Dock part's answer -- -1 while it is not loaded --, and what the start's step and the tick call)
+#include "../common/DockAutoHide.h"
+static int gTestRoomNow = -1;
+static int DMDockRoomNow(void) { return gTestRoomNow; }
+static BOOL DMDockAutoHideLive(BOOL *loaded) { if (loaded) *loaded = gTestRoomNow >= 0; return gTestRoomNow > 0; }   // (what 1.8.4 b read instead)
+static BOOL DMDockAutoHides(void) { return gTestRoomNow > 0; }
+static BOOL gTestBusy = NO;
+static BOOL DMSMWorkspaceBusy(void) { return gTestBusy; }
+static BOOL DMSwitcherVisible(void) { return NO; }
+static NSDictionary *gApplied; static int gPasses = 0, gMoves = 0;
+static BOOL DMSMApplyLayouts(NSDictionary<NSString *, NSString *> *layouts) { gApplied = [layouts copy]; return YES; }
+static void DMDockAutoHideSMPass(void) { gPasses++; }
+static void DMDockPositionMoved(NSDictionary<NSString *, NSString *> *layouts) { (void)layouts; gMoves++; }
+static BOOL gSMHomeOn = NO; static CFTimeInterval gSMHomeStart = 0; static BOOL gTestSMFree = NO;   // (SMHome.h's: an Aerial start below)
+static BOOL DMSMFree(void) { gAsked++; return gTestSMFree; }
+static double DMProcessAge(void) { gAsked++; return 30.0; }
+static BOOL gDMScreenOff = NO;
+static BOOL DMSMHomeUILocked(void) { gAsked++; return NO; }
+static BOOL DMCoverSheetShown(void) { gAsked++; return NO; }
+static void RunFor(double seconds) { CFRunLoopRunInMode(kCFRunLoopDefaultMode, seconds, false); }   // (the main queue's blocks: the step's retries)
 #include "layoutnote-gen.h"   // (the code as built)
 
 static NSString *Note(UIView *st) { return objc_getAssociatedObject(st, kStageLayoutNameKey); }
@@ -166,6 +192,59 @@ int main(int argc, char **argv) {
         [@{@"minimized": @[], @"layouts": @[tipsK, @"fill"]} writeToFile:gPath atomically:YES];
         Respring();
         Expect(DMSMTurnLayouts().count == 0, @"  ... and \"layouts\" that are not a dictionary give none");
+        // regression 1.8.4 F2: the Dock's room the windows are placed for (Automatically Hide and Show the Dock) is kept with the notes, and read back at
+        // the start, so a start where it changed meanwhile -- the crash guard turned it off -- places the windows for the room as it is
+        unlink(gPath.fileSystemRepresentation); Respring(); gDMWindowsRoomPending = -1; gDMDockAutoHideTaken = 1; gTestRoomNow = 1;   // (auto-hide on: Fill with the freed room)
+        DMSMStateWrite(); file = File();
+        Expect([file[@"dockAutoHide"] isEqual:@1], [NSString stringWithFormat:@"1.8.4 F2: the state file keeps the Dock's room the windows are placed for (auto-hide on: %@)", file[@"dockAutoHide"] ?: @"none"]);
+        Respring(); gDMDockAutoHideTaken = 0; gTestRoomNow = 0;   // (the next start: the crash guard turned it off)
+        (void)DMSMTurnLayouts();
+        Expect(gDMWindowsRoomPending == 1, [NSString stringWithFormat:@"  ... read back at the start as the room they were placed for (%d), to tell it from the answer taken now (0)", gDMWindowsRoomPending]);
+        DMSMStateWrite(); file = File();
+        Expect([file[@"dockAutoHide"] isEqual:@1], @"  ... and written as that until the windows are placed for the room as it is (a write meanwhile keeps it)");
+        gDMWindowsRoomPending = -1; DMSMStateWrite(); file = File();
+        Expect([file[@"dockAutoHide"] isEqual:@0], @"  ... then as the answer taken now (0)");
+        gTestSMEngine = NO; Respring(); gDMWindowsRoomPending = -1; (void)DMSMTurnLayouts();
+        Expect(gDMWindowsRoomPending == -1, @"  ... read only with the Stage Manager engine (another engine's start leaves Stage Manager's file alone)");
+        gTestSMEngine = YES; gDMDockAutoHideTaken = -1;
+        // the review of the fixes, M1: the start's step for Stage Manager reads the room saved with the notes before it compares -- nothing read the file
+        // before it (every window minimized or on another desktop: no note was taken)
+        NSDictionary *saved = @{@"minimized": @[], @"layouts": @{tipsK: @"fill"}, @"dockAutoHide": @1};
+        [saved writeToFile:gPath atomically:YES]; Respring(); gDMWindowsRoomPending = -1; gTestRoomNow = 0; gDMDockAutoHideTaken = 0; gApplied = nil; gMoves = gPasses = 0;
+        DMDockRoomAfterStartSMTry(0); file = File();
+        Expect([gApplied isEqualToDictionary:@{tipsK: @"fill"}] && gMoves == 1, [NSString stringWithFormat:@"M1: placed with the Dock hiding itself and shown now, the start's step puts Tips into Fill for the room as it is, the rest kept out of the Dock (layouts %@, moves %d)", gApplied ?: @"none", gMoves]);
+        Expect(gDMWindowsRoomPending == -1 && [file[@"dockAutoHide"] isEqual:@0], [NSString stringWithFormat:@"  ... then nothing pending, and the answer they are placed for now written (%@)", file[@"dockAutoHide"] ?: @"none"]);
+        [saved writeToFile:gPath atomically:YES]; Respring(); gDMWindowsRoomPending = -1; gTestRoomNow = -1; gDMDockAutoHideTaken = -1; gApplied = nil; gMoves = gPasses = 0;
+        DMDockRoomAfterStartSMTry(30); file = File();   // (its last try)
+        Expect(!gApplied && gMoves == 0 && gDMWindowsRoomPending == 1, [NSString stringWithFormat:@"M1: the Dock part's answer not known (not loaded): nothing placed, the room stays pending (%d)", gDMWindowsRoomPending]);
+        DMSMStateWrite(); file = File();
+        Expect([file[@"dockAutoHide"] isEqual:@1], [NSString stringWithFormat:@"  ... and a write meanwhile keeps the saved answer: the key is never dropped (%@)", file[@"dockAutoHide"] ?: @"dropped"]);
+        [saved writeToFile:gPath atomically:YES]; Respring(); gDMWindowsRoomPending = -1; gTestRoomNow = 1; gDMDockAutoHideTaken = 1; gApplied = nil; gMoves = gPasses = 0;
+        DMDockRoomAfterStartSMTry(0); file = File();
+        Expect(!gApplied && gMoves == 0 && gPasses == 0 && gDMWindowsRoomPending == -1 && [file[@"dockAutoHide"] isEqual:@1], @"  ... the same answer as saved: nothing placed, nothing pending, the answer written as it was");
+        // the review of the fixes, H1: Stage Manager's start tick runs on an iPad that can run Stage Manager whichever engine is picked -- an Aerial start's
+        // restore has read the room (pending): the tick leaves it to that restore
+        gTestSMEngine = NO; gTestSMFree = NO; gSMHomeOn = NO; gSMHomeStart = 0; gDMWindowsRoomPending = 1; gTestRoomNow = 0; gApplied = nil; gMoves = 0;
+        for (int i = 0; i < 25; i++) DMSMRoomTick();
+        Expect(gDMWindowsRoomPending == 1 && !gApplied && gMoves == 0, [NSString stringWithFormat:@"H1: an Aerial start: Stage Manager's tick leaves the room pending for Aerial's restore (%d after 25 ticks)", gDMWindowsRoomPending]);
+        gTestSMEngine = YES; gTestSMFree = YES; gSMHomeOn = YES; gSMHomeStart = 1; DMSMRoomTick();
+        Expect(gDMWindowsRoomPending == 1 && !gApplied, @"  ... the Stage Manager engine: kept for the desktop's own step (it follows once the desktop is back)");
+        // the re-review of the fixes, Low 2: nothing pending, the tick asks nothing (it runs for SpringBoard's whole life)
+        gDMWindowsRoomPending = -1; gAsked = 0;
+        for (int i = 0; i < 25; i++) DMSMRoomTick();
+        Expect(gAsked == 0, [NSString stringWithFormat:@"Low 2: nothing pending: the tick asks nothing (%d questions in 25 ticks)", gAsked]);
+        // L3: where the desktop's own step does not run, the tick follows through the start step's own entry; while the Dock part does not answer, its
+        // retries wait, then place the windows for the room as it is (the step's retry chain as built, from the room the file was read with)
+        [saved writeToFile:gPath atomically:YES]; Respring(); gDMWindowsRoomPending = -1; (void)DMSMTurnLayouts();   // (the file read: pending 1)
+        gTestSMEngine = YES; gTestSMFree = YES; gSMHomeOn = NO; gSMHomeStart = 0; gTestRoomNow = -1; gApplied = nil; gMoves = 0;
+        DMSMRoomTick();
+        Expect(gDMWindowsRoomPending == 1 && !gApplied && gMoves == 0, @"  ... where that step does not run here, the tick follows through the start step's entry: the Dock part not answering, nothing placed yet");
+        RunFor(1.2); gTestRoomNow = 0; RunFor(1.5); file = File();
+        Expect([gApplied isEqualToDictionary:@{tipsK: @"fill"}] && gMoves == 1 && gDMWindowsRoomPending == -1 && [file[@"dockAutoHide"] isEqual:@0],
+               [NSString stringWithFormat:@"  ... its retries place the windows for the room as it is once it answers (Tips into Fill: %@), and write the answer (%@)", gApplied ?: @"nothing", file[@"dockAutoHide"] ?: @"none"]);
+        gDMWindowsRoomPending = 1; gTestSMFree = NO; DMSMRoomTick();
+        Expect(gDMWindowsRoomPending == -1, @"  ... Stage Manager's own placing (ours off): dropped, no layouts of ours to follow");
+        gTestSMEngine = YES; gTestSMFree = NO; gSMHomeOn = NO; gSMHomeStart = 0; gTestRoomNow = -1; gDMDockAutoHideTaken = -1;
         method_setImplementation(wm, (IMP)o_writeToFile);
         unlink(gPath.fileSystemRepresentation);
     }

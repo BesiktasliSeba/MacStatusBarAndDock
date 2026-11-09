@@ -57,6 +57,7 @@ The Mac look is on right after install, and most features have their own switch.
 - The battery opens a battery menu, as on a Mac, with Low Power Mode, Sleep Guard and Battery Settings, and a Control Center icon next to the clock opens Control Center. Battery Menu in Settings > Status Bar turns both off.
 - Right-to-left languages get a mirrored menu bar, as on a Mac. Status Bar Style switches back to the stock iPadOS bar.
 - Menu Bar Size in Settings > Status Bar: Medium and Large make the menu bar taller, with larger text, icons and menus that are easier to tap with a finger.
+- Live Activities in Menu Bar in Settings > Status Bar shows what's playing and your calls as small pills next to the status icons, as on a Mac. A tap on one opens a card to control it. On iPadOS 17.5.1 and 18.5, Clock timers show there too.
 
 ### Control Center
 
@@ -110,6 +111,9 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 
 - Magnification, dots under open apps, recent apps, and Finder and Launchpad at its start, like on a Mac.
 - Position on Screen in Settings > Dock puts the Dock on the left or right in landscape, and in portrait it stays at the bottom. Windows, Home Screen icons, the clock's Today drop-down and Mac-style banners keep clear of a side Dock, and over a full-screen app the pointer brings it out at that edge.
+- Dock Style in Settings > Dock: Default, Glass Shelf (the glass Dock of Mac OS X 10.5 to 10.9, with its reflections) or Frosted (the flat Dock of 10.10 to 10.15).
+- Automatically Hide and Show the Dock in Settings > Dock hides it until you swipe up from the bottom or move the pointer to its edge, with every window engine. It replaces Stage Manager's own Dock option.
+- An app's icon bounces in the Dock while the app opens, as on a Mac, except while Reduce Motion is on. Animate Opening Applications in Settings > Dock turns it off.
 - A Downloads stack with search, which you can drag files into and out of.
 - A Trash at its end, which you turn on in Settings > Dock. Drop files on it to move them to the Trash, a Dock app to take it out of the Dock, or a drive to eject it (iPadOS 16 to 18).
 - Haptic Touch menus get Force Quit, App Size and Add App to Folder on app icons, and a folder's menu lists its apps. Add App to Folder moves the app into a Home Screen folder or a new one, as a drag would, also from the App Library.

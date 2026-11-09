@@ -341,7 +341,7 @@ static BOOL DMCCTBTDeviceConnected(id d) {
 #endif
     return ((BOOL (*)(id, SEL))objc_msgSend)(d, @selector(connected));
 }
-static NSString *DMCCTBTDeviceName(id d) { id n = DMCall(d, @"name"); return [n isKindOfClass:[NSString class]] && [n length] ? n : @"Unnamed Device"; }
+static NSString *DMCCTBTDeviceName(id d) { id n = DMCall(d, @"name"); return [n isKindOfClass:[NSString class]] && [n length] ? MSBDShotBTName(n) : @"Unnamed Device"; }
 static void DMCCTStateChanged(int what);
 static void DMCCTBTSetPower(BOOL on) {
 #if DEBUG
@@ -818,7 +818,7 @@ static NSArray *DMCCTBTPageItems(NSString **sigOut) {
     CFTimeInterval tw = CACurrentMediaTime();
     int wl = MSBDCCTWiFiLine(pw, as, net.length > 0);
     w.on = pw; w.usable = YES;
-    w.line.text = wl == 2 ? net : wl == 1 ? @"Not Connected" : @"Off";
+    w.line.text = wl == 2 ? MSBDShotWiFiName(net) : wl == 1 ? @"Not Connected" : @"Off";
     int bl = MSBDCCTBluetoothLine(gCCTPart[kDMCCTPartBT] && DMCCTBTAvailable(), DMCCTBTPowered());
     b.on = bl == 1; b.usable = bl != 3;
     b.line.text = bl == 1 ? @"On" : bl == 0 ? @"Off" : @"Unavailable";

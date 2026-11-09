@@ -15,3 +15,6 @@ void DMIconThemeAskAgain(NSString *why);
 // Bumped (and DMIconThemeChangedNotification posted) when a theme engine refreshed its icons: ask again.
 NSUInteger DMIconThemeGeneration(void);
 extern NSString *const DMIconThemeChangedNotification;
+// An item's picture changed with no layout of the Dock to follow (Dock.x): the Dock lays out again where something shows that picture -- Glass
+// Shelf's reflection, the Edit Home Screen stand-in (regression 1.8.4). Called once the new picture is set; after a cross-fade, at its end.
+void DMDockItemPictureChanged(UIView *item);

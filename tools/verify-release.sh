@@ -36,6 +36,10 @@ else
     [ -n "$HEAD" ] && [ "$C" = "$HEAD" ] && ok "built from $HEAD (the tree's HEAD)" || bad "built from ${C:-?}, but the tree is at ${HEAD:-?} (stale package: build again with FINALPACKAGE=1)"
     [ "$(sed -n 's/^dirty //p' "$BI")" = 0 ] && ok "built from a clean tree" || bad "built with uncommitted changes in the tree (commit first, then build)"
     [ "$(sed -n 's/^debug //p' "$BI")" = 0 ] && ok "not a debug build" || bad "a DEBUG build (test code compiled in): build with FINALPACKAGE=1"
+    # (the version the parts carry -- the crash guard's record, BuildInfo.txt -- is the package's: control's Version, or for a dev build the
+    #  MSBD_BUILD_VERSION it was given as a make argument; one from the environment was overridden by the Makefile, so x builds said 1.8.3)
+    BV=$(sed -n 's/^version //p' "$BI")
+    [ "$BV" = "$V" ] && ok "the parts carry the package's version ($V)" || bad "the parts carry version ${BV:-?}, the package is $V (pass MSBD_BUILD_VERSION=$V to make as an argument)"
 fi
 [ -z "$(git -C "$TREE" status --porcelain --untracked-files=no 2>/dev/null)" ] || echo "  note: the tree has uncommitted changes now (the package is compared with HEAD)"
 
@@ -68,11 +72,11 @@ if [ -s "$P/CrashMap.txt" ]; then
 fi
 
 echo "== test machinery left in the binaries"
-# Every /tmp path and debug-only name. A release build must have none, except these, which are real release features (allowed, only in
+# Every /tmp path and debug-only name (the screenshot mode's flag, msb-shotmode, by name too: common/ShotMode.h). A release build must have none, except these, which are real release features (allowed, only in
 # MacStatusBarCore.dylib): /tmp/macstatusbar-restore-guard, /tmp/macstatusbar-menuwindow-guard, /tmp/macstatusbar-aerial5-probation,
 # /tmp/macstatusbar-smrestore-guard (the Stage Manager desktop brought back after a respring, SMHome.h) -- the status bar's own crash-loop guards
 # (they must live in /tmp so a reboot clears them; StatusBar.x).
-PAT='unlockpass_|tapsys|dragsys|devorient_|memdump_|mpdump_|a5trace_|keys_|macstatusbar-trigger|macstatusbar-debug|/tmp/|dockmag\.log|macsettings-debug|tabmute-debug|brightnesskey-debug|msb-engine-notinstalled|sshtoggled-pretend|pretend-nochoicy|macpointer\.(cmd|pagereq)|appbridge\.(dumpcls|dumpctrl|keycmds|testnotif|typetest)|fakeversion|fakemodel|fakecrash|--dry-run-choicy|--dpkg-busy|appstate\.|\[trigger\]|\[debug\]|skiplock|DM_LOCK_BYPASS'
+PAT='msb-shotmode|unlockpass_|tapsys|dragsys|devorient_|memdump_|mpdump_|a5trace_|keys_|macstatusbar-trigger|macstatusbar-debug|/tmp/|dockmag\.log|macsettings-debug|tabmute-debug|brightnesskey-debug|msb-engine-notinstalled|sshtoggled-pretend|pretend-nochoicy|macpointer\.(cmd|pagereq)|appbridge\.(dumpcls|dumpctrl|keycmds|testnotif|typetest)|fakeversion|fakemodel|fakecrash|--dry-run-choicy|--dpkg-busy|appstate\.|\[trigger\]|\[debug\]|skiplock|DM_LOCK_BYPASS'
 ALLOW_CORE='^/tmp/macstatusbar-(restore-guard|menuwindow-guard|aerial5-probation|smrestore-guard)$'
 while IFS= read -r f; do
     file "$f" | grep -q Mach-O || continue

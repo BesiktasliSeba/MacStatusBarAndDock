@@ -314,6 +314,9 @@ static NSString *DMSMCardTapOf(NSArray<NSDictionary *> *askedW, id label) {   //
 }
 // wins: the desktop's windows, @[stage, item, attributes, key] each (DMMSWSMDeskWindows' shape); what: which desktop, for the log.
 static BOOL DMSMCardWriteDesk(id ctx, NSArray<NSArray *> *asked, NSArray<NSDictionary *> *askedW, NSArray<NSArray *> *wins, id identity, NSString *tapped, NSString *what) {
+    // (a stage a switcher gesture still holds: writing the desktop here makes a new stage sharing its windows, and SpringBoard drops the held one while it is looked
+    //  up -- GitHub #12. Left to the desktop's join rule, which leaves SpringBoard's switch as built and joins right after the gesture)
+    if (DMSMGestureCtx(ctx)) { DMLog([NSString stringWithFormat:@"[smcards] %@'s card: a switcher gesture still holds its stage -- left to the desktop's join rule", DMSMKeyText(tapped)]); return NO; }
     NSMutableArray<NSDictionary *> *deskW = [NSMutableArray array];
     NSMutableDictionary<NSString *, NSArray *> *deskItem = [NSMutableDictionary dictionary];
     long long newest = 0;

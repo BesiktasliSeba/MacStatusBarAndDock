@@ -300,10 +300,12 @@ static NSUInteger DMTrashPublishedCount(void) {
 - (void)dm_refreshLook:(BOOL)animated {
     UIImage *want = [self dm_lookImage];
     if (!want || self.image.image == want) return;
+    // (then the Dock lays out again for it -- Glass Shelf's reflection, the Edit Home Screen stand-in, regression 1.8.4 --; after a cross-fade at its
+    //  end: a reflection taken during one would keep a mix of both pictures)
     if (animated && self.image.image && self.window) {   // (empty <-> full, bin <-> Eject: a short cross-fade, also with Reduce Motion)
         [UIView transitionWithView:self.image duration:MSBReduceMotion() ? kMSBRMDuration : 0.18 options:UIViewAnimationOptionTransitionCrossDissolve | UIViewAnimationOptionAllowUserInteraction
-                        animations:^{ self.image.image = want; } completion:nil];
-    } else self.image.image = want;
+                        animations:^{ self.image.image = want; } completion:^(BOOL finished) { DMDockItemPictureChanged(self); }];
+    } else { self.image.image = want; DMDockItemPictureChanged(self); }
 }
 - (void)dm_setCount:(NSUInteger)n {
     if (n == self.count) return;

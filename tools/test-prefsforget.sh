@@ -4,11 +4,21 @@
 # rm'd by the postrm -- then the wiring in the helper and the scripts.
 set -e
 cd "$(dirname "$0")"
-W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
+# The test's scratch domain is this script's own, and goes again at the end, also after a failure: defaults delete makes cfprefsd write the emptied
+# domain now (it did a few seconds after the test ended, an empty plist each run), and the file is removed after it.
+PD=com.besiktasliseba.msbdtest.prefsforget.$$
+PF="$HOME/Library/Preferences/$PD.plist"
+cleanpf() { defaults delete "$PD" >/dev/null 2>&1 || true; rm -f "$PF"; }
+W=$(mktemp -d); trap 'rm -rf "$W"; cleanpf' EXIT
 clang -O2 -fobjc-arc -Wall -Wno-unused-function -framework Foundation -o "$W/tpf" test-prefsforget.m
-"$W/tpf"
+if ! "$W/tpf" "$PD" > "$W/out"; then cat "$W/out"; exit 1; fi
+cat "$W/out"
 fails=0
 check() { if eval "$2"; then echo "PASS  $1"; else echo "FAIL  $1"; fails=1; fi; }
+cleanpf; python3 -c 'import time; time.sleep(3)'   # (cfprefsd's late write came about 2.5 s after the test)
+check "the scratch domain is this script's own and leaves no file in ~/Library/Preferences, cfprefsd's late write of the emptied domain included" \
+  "grep -qx \"scratch domain: $PD\" \"$W/out\" && [ ! -e \"$PF\" ]"
+cleanpf
 H=../macsettings/sshtoggled/main.m; R=../layout/DEBIAN/postrm; Q=../layout/DEBIAN/prerm
 check "the removal (the prerm's --uninstall) empties the prewarm domains through cfprefsd" \
   "awk '/^static void Uninstall\(void\) \{/{f=1} f&&/ForgetPrewarmPrefs\(@\"removal\"\);/{print \"ok\"; exit}' $H | grep -q ok && grep -q 'sshtoggled --uninstall' $Q"

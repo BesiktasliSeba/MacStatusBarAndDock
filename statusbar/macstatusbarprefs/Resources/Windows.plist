@@ -124,8 +124,6 @@
 			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
 			<key>cell</key>
 			<string>PSLinkListCell</string>
-			<key>default</key>
-			<string>none</string>
 			<key>defaults</key>
 			<string>com.besiktasliseba.macstatusbar</string>
 			<key>detail</key>

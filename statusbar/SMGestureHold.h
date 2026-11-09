@@ -28,6 +28,9 @@ static CFTimeInterval gSMGestureFallbackUntil = 0;       // (no hooks: a gesture
 static const CFTimeInterval kSMAfterGestureMaxWait = 3.0;   // (a write of the engine's own still waiting this long is no longer what the user wants;
                                                              //  the user's own actions have no such limit: DMSMAfterGestureUsers)
 static const CFTimeInterval kSMGestureFallbackHold = 1.2;
+static NSSet *DMSMCardsHeld(void);                       // (SMCards.h: the stages the main switcher's gesture modifiers hold now; nil: none)
+static CFTimeInterval gSMGestureEndedAt = 0;             // (the last gesture's transaction ended then: DMSMGestureModifierHolds)
+static const CFTimeInterval kSMModifierHoldMax = 5.0;
 
 static void DMSMGestureFlushSoon(void);
 static void DMSMGestureFlush(void);
@@ -102,6 +105,7 @@ static BOOL DMSMGestureLive(void) {
         if (!DMSMGestureTxHolds(t, complete)) { [gSMGestureTxs removeObject:t]; dropped++; continue; }   // (complete, or a live resize up long enough)
         n++;
     }
+    if (dropped) gSMGestureEndedAt = CACurrentMediaTime();
     static NSUInteger lastN = 0;
     BOOL ended = lastN > 0 && n == 0 && (dropped || gSMGestureTxs.count == 0);
     lastN = n;
@@ -117,9 +121,23 @@ static BOOL DMSMGestureHoldsAny(NSSet<NSString *> *ids) {
     return ids.count && DMSMGestureLive() && [gSMGestureHeld intersectsSet:ids];
 }
 static BOOL DMSMGestureHoldsStage(id stage) { return DMSMIsStage(stage) && DMSMGestureHoldsAny(DMSMStageWindowIds(stage)); }
-// A transition context that is a switcher gesture's own end ("FinalFluidSwitcherGestureAction", read on 16.7.7), or any context while one runs.
+// The gesture's transaction is over, its modifier is not (GitHub #12, 16.3.1): after a hold into the App Switcher SpringBoard's modifier stays in the main
+// switcher's tree until the switcher has settled and goes on looking its stage up in the list with no not-found check (-[SBHomeGestureToSwitcherSwitcherModifier
+// appLayoutsToCacheSnapshots]). A card tapped in that moment, joined to the desktop, made a new stage sharing the held stage's windows: SpringBoard dropped the
+// held one, and the range exception followed. So a stage a gesture's modifier holds counts as held (DMSMCardsHeld, the reading the App Switcher's cards use) --
+// for a few seconds after a gesture's end only: a modifier kept for good (an iPadOS not read) holds nothing back.
+static BOOL DMSMGestureModifierHolds(void) {
+    if (gSMGestureEndedAt <= 0 || CACurrentMediaTime() - gSMGestureEndedAt > kSMModifierHoldMax) return NO;
+    return DMSMCardsHeld().count > 0;
+}
+// A transition context that is a switcher gesture's own end ("FinalFluidSwitcherGestureAction", read on 16.7.7), or any context while one runs or while its
+// modifier still holds a stage (above).
 static BOOL DMSMGestureCtx(id ctx) {
     if (DMSMGestureLive()) return YES;
+    if (DMSMGestureModifierHolds()) {
+        DMLog(@"[smgesture] the gesture's transaction is over, its modifier still holds a stage: this context counts as the gesture's");
+        return YES;
+    }
     SEL rq = NSSelectorFromString(@"request"), lb = NSSelectorFromString(@"eventLabel");
     id req = ctx && [ctx respondsToSelector:rq] ? ((id (*)(id, SEL))objc_msgSend)(ctx, rq) : nil;
     id label = req && [req respondsToSelector:lb] ? ((id (*)(id, SEL))objc_msgSend)(req, lb) : nil;
@@ -158,6 +176,14 @@ static void DMSMAfterGestureUsers(NSString *what, dispatch_block_t block) {
 static void DMSMGestureFlush(void) {
     if (DMSMGestureLive()) {   // (another gesture began meanwhile: its end flushes; without the hooks, the moment after it)
         if (!gSMGestureHooked) DMSMGestureFlushSoon();
+        return;
+    }
+    if (gSMAfterGesture.count && DMSMGestureModifierHolds()) {   // (its modifier still holds a stage: a write now would drop that stage from under it -- GitHub #12)
+        static BOOL again = NO;
+        if (!again) {
+            again = YES;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ again = NO; DMSMGestureFlush(); });
+        }
         return;
     }
     gSMGestureHeld = nil;

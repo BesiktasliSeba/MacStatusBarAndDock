@@ -47,6 +47,8 @@ On iPadOS 18, Settings has no room for tweak rows in its sidebar, so Status Bar,
 | Show Mute Icon | A mute icon in the menu bar while the iPad is muted. | On |
 | Wi-Fi Menu | The Wi-Fi icon opens a Wi-Fi menu. | On |
 | Battery Menu | The battery in the menu bar opens a battery menu, as on a Mac, with its level and power source, a Low Power Mode switch, Sleep Guard and Battery Settings. A Control Center icon next to the clock opens Control Center, and the swipe down from the top right still does. Off: a click on the battery opens Control Center, and there's no icon unless Control Center Style is Mac. The icon lights up while Control Center is open, and a second tap closes it. | On, also after an update |
+| Live Activities in Menu Bar | What's playing and your calls show as small pills next to the status icons, like on a Mac, and on iPadOS 17.5.1 and 18.5 Clock timers too. A tap on one opens a card to control it, and the card's title opens the app. One that has ended stays greyed out for a few minutes, then goes. Not shown with Status Bar Style Stock. | On, also after an update |
+| Activities | Turns Now Playing and Calls off one by one, and Timers on iPadOS 17.5.1 and 18.5, where timers show. | All on |
 | Hide Status Bar on Lock Screen | No status bar on the Lock Screen, and no Control Center line at its top right. | Off |
 | Skip Lock Screen After Respring | Goes straight to the Home Screen after a respring. Works only without a passcode. | Off |
 
@@ -91,10 +93,13 @@ The window settings, on their own page between Desktop and Dock. On iPadOS 15 an
 |---|---|---|
 | Mac-Style Dock | Turns off the Dock features (respring). | On |
 | Position on Screen | Where the Dock sits: Bottom, Left or Right. Left and Right apply in landscape, and in portrait the Dock stays at the bottom. At a side, windows on every engine, Home Screen icons, the clock's Today drop-down and Mac-style banners keep clear of it, and over a full-screen app the pointer at that edge brings it out. A change applies at once. | Bottom |
+| Dock Style | Default: the Dock as before. Glass Shelf: the glass Dock of Mac OS X 10.5 to 10.9, with the icons' reflections and glowing lights under open apps, and a dark panel at the sides as it was then. Frosted: the flat Dock of 10.10 to 10.15. | Default |
 | Magnify Icons | Icons grow under the pointer, with a trackpad or mouse. The slider sets how much, from 1x to 2.5x. | On, 1.22x |
 | Icon Size | The size of the Dock icons, from 0.5x to 1.2x. | 0.85x |
 | Larger Dock in Portrait | A bigger Dock in portrait. | On |
 | Gap to Screen Edge | Space between the Dock and the screen's edge, from 0 to 24 pt. | 6 pt |
+| Automatically Hide and Show the Dock | The Dock hides until you swipe up from the bottom of the screen or move the pointer to the edge where it sits, like on a Mac, with every window engine. Windows can use the room it leaves, and it shows while you edit the Home Screen. With the Stage Manager engine it takes the place of Stage Manager's own Dock option, which follows it. | Off, also after an update |
+| Animate Opening Applications | An app's icon bounces in the Dock while the app opens, like on a Mac. An app that's already open comes forward without a bounce. Nothing bounces while Reduce Motion is on. | On, also after an update |
 | Number of Recent Apps | Up to 10 recent apps after your own (respring). A suggested or Handoff app can appear too. None also turns off Apple's Show Suggested and Recent Apps in Dock. | 3 |
 | Show Indicators for Open Apps | A dot under apps that are open, also while their windows are on another desktop or minimized. An app iPadOS starts in the background by itself gets no dot until you open it. | On |
 | Show App Library in Dock | Apple's own switch, moved here while the Dock features are on. | Apple's setting |

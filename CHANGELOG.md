@@ -2,6 +2,29 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.4
+
+### New
+- Live Activities in Menu Bar in Settings > Status Bar, on by default: what's playing and your calls show as small pills next to the status icons, as on a Mac, and a tap on one opens a card to control it.
+- On iPadOS 17.5.1 and 18.5, Clock timers show there too, and you can drag the time bar in the card of what's playing to skip ahead or back.
+- One that has ended stays greyed out for a few minutes, then goes. Activities, under the switch, turns each kind off.
+- Animate Opening Applications in Settings > Dock, on by default: an app's icon bounces in the Dock while the app opens, as on a Mac. Nothing bounces while Reduce Motion is on.
+- Dock Style in Settings > Dock: Default, Glass Shelf (the glass Dock of Mac OS X 10.5 to 10.9, with its reflections) or Frosted (the flat Dock of 10.10 to 10.15).
+- Automatically Hide and Show the Dock (Settings > Dock). The Dock hides until you swipe up from the bottom or move the pointer to its edge, with every window engine. It's off until you turn it on, and it replaces Stage Manager's own Dock option.
+
+### Fixes
+- Globe-Control keys that Window Tiling Shortcuts can't act on at that moment now go on to iPadOS, so iPadOS 15's own Split View keys work.
+- With Stage Manager and windows of several apps, Globe-Control-C and Globe-Control-R now act on the front window, and the Shift arrangements take in the other apps' windows behind it.
+- With a keyboard layout such as Turkish F, Window Tiling Shortcuts now use the key that types F, C or R, wherever it sits.
+- Finder and TextEdit windows zoom at once again on a title-bar double tap, and after Zoom, Globe-Control-R gives them their size from before.
+- After you move or resize a window by hand, Globe-Control-R no longer takes it back to an older size.
+- In Edit Home Screen, Launchpad grows with the other Dock icons under the pointer again, and a Trash that fills up while you edit shows that it's full.
+- With Launchpad Icon off in Settings > Dock, the App Library icon keeps its own look in Edit Home Screen.
+- With Stage Manager, tapping an app in the App Switcher right after a swipe up no longer crashes SpringBoard.
+- With Aerial, arranging windows from a full-screen app no longer minimizes the windows behind it, and a window minimized before a respring comes back where it was.
+- With Stage Manager, moving the Dock to the left or right no longer brings the window behind to the front.
+- On a TV with Stage Manager, the green button goes to full screen at the first press.
+
 ## 1.8.3.1
 
 ### Fixes

@@ -69,9 +69,24 @@ static CGRect DMSMRAArea(id self, SEL _cmd) {   // -[SBChamoisOverlappingModel s
 // TV's window too (16 with an extended display), and the working stage can be the TV's -- the area here is the iPad's desktop and the neighbours
 // another screen's points, so a TV's side was pulled up to 10 pt onto a line of the iPad's (its Dock line, its right edge) and never onto the TV's
 // own. A TV's window is left as Apple's step has it, as a move leaves it (DMSMSnapMoveTarget); so is one that is not found (1.7.3 review).
+// A resize by hand of the working stage's window whose held sides are start's: the title bar's frame from before is older (review 1.8.3 P4-1) --
+// at 16's last step, also with Snapping off, and where any resize begins, 17 and 18's own too, whatever size it ends at (L2).
+static void DMSMRADropTitleRecord(unsigned long long edge, CGRect start) {
+    if (!DMTitleRecordSMAny()) return;   // (none kept: nothing to read)
+    MSBDResizeSides sd = MSBDResizeSidesOf(edge);
+    unsigned how = (sd.left ? MSBDSnapLeft : 0) | (sd.right ? MSBDSnapRight : 0) | (sd.top ? MSBDSnapTop : 0) | (sd.bottom ? MSBDSnapBottom : 0);
+    if (!how) return;
+    NSDictionary<NSString *, NSValue *> *frames = DMSMOpenWindowFrames();
+    for (NSString *k in frames) {
+        CGRect f = frames[k].CGRectValue, c = CGRectMake(f.origin.x, f.origin.y + kSMBarH, f.size.width, f.size.height - kSMBarH);
+        if (MSBDSnapHeldSidesMatch(c, start, how)) DMTitleRecordMovedSM(k);
+    }
+}
 static CGPoint DMSMRASnapEnd(unsigned long long edge, CGRect start, CGPoint at) {
     MSBDResizeSides sd = MSBDResizeSidesOf(edge);
-    if (DMSnapOff() || !(sd.left || sd.right || sd.top || sd.bottom)) return at;
+    if (!(sd.left || sd.right || sd.top || sd.bottom)) return at;
+    DMSMRADropTitleRecord(edge, start);   // (Snapping on or off: review 1.8.3 L2 -- the off case returned before the drop)
+    if (DMSnapOff()) return at;
     CGRect card = start;
     if (sd.left) { card.origin.x = at.x; card.size.width = CGRectGetMaxX(start) - at.x; }
     if (sd.right) card.size.width = at.x - start.origin.x;
@@ -86,7 +101,6 @@ static CGPoint DMSMRASnapEnd(unsigned long long edge, CGRect start, CGPoint at) 
         CGRect f = frames[k].CGRectValue, c = CGRectMake(f.origin.x, f.origin.y + kSMBarH, f.size.width, f.size.height - kSMBarH);
         if (MSBDSnapHeldSidesMatch(c, start, how)) {   // (the window being resized: not a neighbour of its own)
             mine++;
-            DMTitleRecordMovedSM(k);   // (a resize by hand: the title bar's frame from before is older -- review 1.8.3 P4-1; 17 and 18's own resize: TitleBarRule.h)
             UIView *own = DMSMCardFor(k);
             if ((own.window.screen ?: [UIScreen mainScreen]) != [UIScreen mainScreen]) offIPad = YES;
             continue;
@@ -234,6 +248,12 @@ static id DMSMRAGesture(id self, SEL _cmd, id event) {   // -[SBItemResizeGestur
         DMLog([NSString stringWithFormat:@"[smresize] began: finger %@, translation %@, touched down %@", NSStringFromCGPoint(at), NSStringFromCGPoint(t), gSMRADown.mod == self ? NSStringFromCGPoint(gSMRADown.down) : @"unknown"]);
 #endif
     id r = o_SMRAGesture(self, _cmd, event);
+    // (a resize began: by hand -- the title bar's frame from before of the window being resized is older, on 16, 17 and 18 alike, whatever size it
+    //  ends at: 17 and 18 resize as Apple has them, with no last step of ours to drop it at; review 1.8.3 L2)
+    if (read && phase == 1 && DMTitleRecordSMAny()) {
+        unsigned long long e = 0; CGRect st = CGRectNull;
+        if (DMSMRARead(self, gSMRAEdgeIv, &e, sizeof e) && e >= 1 && e <= 8 && DMSMRARead(self, gSMRAStartIv, &st, sizeof st) && DMSMRectSane(st)) DMSMRADropTitleRecord(e, st);
+    }
     // (17.5.1 measures the edge adjustment -- each step's side = the finger plus it -- as the side minus the finger where the gesture BEGAN, once the
     //  pan had gone its start distance: the side then keeps that much more distance from the finger for the whole drag than it had where the finger
     //  touched down (17.5: {17, 21} for a corner grabbed 6 pt in; a late start {60, 83}), behind the finger in the drag's first direction -- in past

@@ -1,7 +1,8 @@
 // test-smbartouch.m -- Mac test of what a touch on the menu bar is with the Stage Manager engine (1.8.1, GitHub #10): the code as built. test-smbartouch.sh cuts DMSMMainBarOn,
 // DMSMMainBarShown, DMSMStripIsMenuBar, DMSMScreenPointOnMenuBar, DMSMTouchOnMenuBar, DMSMIsWindowDrag, DMSMWindowDragLeavesTouch and DMSMUnpinBegin out of statusbar/StatusBar.x into
 // smbartouch-gen.h, and this file gives them stand-ins for UIKit and SpringBoard. iPadOS 17 and 18 leave the screen's own bar on over a full-screen window with a window in front of it: a
-// point on that bar read as not on the menu bar, and a slide along it began Stage Manager's window drag, which brought the full-screen window over the small one.
+// point on that bar read as not on the menu bar, and a slide along it began Stage Manager's window drag, which brought the full-screen window over the small one. 1.8.4 device pass (A12Z
+// 18.5): with one of our menus or cards open, a drag on it over a window's top part (the Now Playing card's scrubber) moved that window: such a touch stays out of the drag too.
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <objc/message.h>
@@ -63,6 +64,11 @@ static BOOL DMSBUseSTUI(void) { return gSTUI; }
 static BOOL DMSMFree(void) { return gFree; }
 static BOOL DMSMOverWindows(void) { return gOverWindows; }
 static BOOL DMSMTouchFullScreenOwn(UITouch *t) { return gFullOwn; }
+static BOOL gMenuOpen = NO;
+static UIScreen *gMenuScreen = nil;   // (the screen our open menu is on: nil the iPad's)
+static BOOL DMSMOurMenuOpen(void) { return gMenuOpen; }   // (the code before review 1.8.4 P3-L3 asked this: any screen)
+static UIScreen *DMSMTouchScreen(id t) { return ([t isKindOfClass:[UITouch class]] ? ((UITouch *)t).window.screen : nil) ?: [UIScreen mainScreen]; }
+static BOOL DMSMOurMenuOpenOn(UIScreen *screen) { return gMenuOpen && (screen ?: [UIScreen mainScreen]) == (gMenuScreen ?: [UIScreen mainScreen]); }
 static BOOL DMSMInFullScreenCard(UIView *v) { return v.inFullCard; }
 static BOOL DMTestFlag(const char *f) { return gAsBuilt && strcmp(f, "/tmp/msb-sm-bartouch-asbuilt") == 0; }
 static void DMLog(NSString *s) { }
@@ -92,7 +98,7 @@ int main(void) { @autoreleasepool {
     UIView *gv = [UIView new]; gv.superview = gw; drag.view = gv;
     o_SMUnpinBegin = AppleBegin;
     NSMutableArray *keep;
-    #define RESET() do { keep = [NSMutableArray array]; gCopies = [NSHashTable weakObjectsHashTable]; gAllBarCopies = [NSHashTable weakObjectsHashTable]; gEnvMode = 3; gSTUI = YES; gFree = YES; gOverWindows = NO; gFullOwn = NO; gAppleAnswer = YES; gAppleAsked = 0; gAsBuilt = NO; } while (0)
+    #define RESET() do { keep = [NSMutableArray array]; gCopies = [NSHashTable weakObjectsHashTable]; gAllBarCopies = [NSHashTable weakObjectsHashTable]; gEnvMode = 3; gSTUI = YES; gFree = YES; gOverWindows = NO; gFullOwn = NO; gAppleAnswer = YES; gAppleAsked = 0; gAsBuilt = NO; gMenuOpen = NO; gMenuScreen = nil; } while (0)
 
     // iPadOS 17 and 18: a full-screen window with a smaller one in front. The screen's own bar shows; the card's strip is there, hidden.
     RESET();
@@ -109,6 +115,22 @@ int main(void) { @autoreleasepool {
     gFree = NO; Expect(!DMSMWindowDragLeavesTouch(mgr, drag, Touch(600, 18)), @"  ... and not without the engine (Apple's layout)"); gFree = YES;
     Expect(!DMSMWindowDragLeavesTouch(mgr, drag, Touch(600, 45)), @"  ... a touch under the bar stays the drag's while it is no full-screen window under windows");
     gFullOwn = YES; Expect(DMSMWindowDragLeavesTouch(mgr, drag, Touch(600, 45)), @"  ... a touch on a full-screen window under windows stays out of it from its start"); gFullOwn = NO;
+    // one of our menus, cards or dialogs open: its catch-all takes every point, so the touch is the menu's (1.8.4 device pass, A12Z 18.5: the card's scrubber moved a window)
+    gMenuOpen = YES;
+    Expect(DMSMWindowDragLeavesTouch(mgr, drag, Touch(600, 45)), @"one of our menus or cards open: a touch on a window's top part stays out of the window drag (the card's scrubber, a menu's row)");
+    Expect(DMSMWindowDragLeavesTouch(mgr, drag, Touch(600, 400)), @"  ... anywhere else too (the catch-all's, which closes the menu)");
+    Expect(!DMSMWindowDragLeavesTouch(mgr, other, Touch(600, 45)), @"  ... no other recogniser of the manager's is asked to (the Home and App Switcher swipes stay)");
+    gFree = NO; Expect(!DMSMWindowDragLeavesTouch(mgr, drag, Touch(600, 45)), @"  ... and not without the engine (Apple's layout)"); gFree = YES;
+    // review 1.8.4 P3-L3: only on the screen the menu is open on (a menu on the TV has no catch-all on the iPad, and the other way round)
+    UIScreen *tvScreen = [UIScreen new];
+    gMenuScreen = tvScreen;
+    Expect(!DMSMWindowDragLeavesTouch(mgr, drag, Touch(600, 45)), @"P3-L3: a menu open on the TV: a touch on the iPad's window top stays the window drag's");
+    UITouch *tvTouch = Touch(600, 45); tvTouch.window.screen = tvScreen;
+    Expect(DMSMWindowDragLeavesTouch(mgr, drag, tvTouch), @"  ... a touch on the TV, where the menu is: left out of the TV's window drag");
+    gMenuScreen = nil;
+    Expect(!DMSMWindowDragLeavesTouch(mgr, drag, tvTouch), @"  ... a menu open on the iPad: the TV's window drag keeps its touch");
+    gMenuOpen = NO;
+    Expect(!DMSMWindowDragLeavesTouch(mgr, drag, Touch(600, 45)), @"  ... closed again: the touch is the window drag's");
     // the begin question: its own start, with no touch at hand
     drag.now = CGPointMake(900, 18); drag.moved = CGPointMake(300, 0); gAppleAsked = 0;
     Expect(!DMSMUnpinBegin(mgr, NULL, drag) && gAppleAsked == 0, @"the begin question: a start on the bar: no, Apple's not asked");

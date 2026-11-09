@@ -30,7 +30,7 @@ check "  ... with an app in front backboardd hands SpringBoard only the keys its
    && grep -q 'UIKeyCommand \*c = \[UIKeyCommand keyCommandWithInput:DMWinKeyInput(kMSBDWinKeyRows\[i\].key) modifierFlags:(UIKeyModifierFlags)kMSBDWinKeyRows\[i\].mods action:sel\];' \$W/fn \
    && fn 'static void DMWindowKeysPublish(void) {' $K && grep -q 'if (now != registered && DMWindowKeysRegister(now)) registered = now;' \$W/fn \
    && fn 'static BOOL DMWindowKeysRegister(BOOL offered) {' $K && grep -q '_updateSerializableKeyCommandsForResponder:' \$W/fn \
-   && fn 'static void DMWinKeyRun(size_t i) {' $K && grep -q 'if (i == lastRow && at - lastAt < 0.15) return;' \$W/fn"
+   && fn 'static BOOL DMWinKeyRun(size_t i) {' $K && grep -q 'if (i == lastRow && at - lastAt < 0.15) return YES;' \$W/fn"
 check "  ... ours never handed on; presses that came with one of ours and are none of ours handed on without it (review 1.8.3 F1); none of ours: the set as it came" \
   "fn 'static void DMWinKeysPressesBegan(id self, SEL _cmd, NSSet<UIPress \*> \*presses, UIPressesEvent \*event) {' $K \
    && grep -q 'if (row < 0) { if (!others) others = \[NSMutableSet set\]; \[others addObject:p\]; continue; }' \$W/fn \
@@ -38,9 +38,21 @@ check "  ... ours never handed on; presses that came with one of ours and are no
    && grep -q 'if (others.count) o_WinKeysPressesBegan(self, _cmd, others, event);' \$W/fn && ! grep -q 'if (ours) return;' \$W/fn"
 check "  ... taken only with the switch on and an engine of ours running -- or one of our own windows in front, with no engine too, as the Window menu and the window API lay it out (review 1.8.3 P2-9) -- (each press asks); one of ours is not handed on (iPadOS's own same keys -- 15's Split View -- do not run under it)" \
   "grep -q 'static BOOL DMWinKeysWanted(void) { return gWindowKeysOn && (DMActiveEngine() != DMEngineNone || DMSMEngine() || DMNativeActiveApp() != nil); }' $K && grep -q 'if (presses.count && DMWinKeysWanted()) {' $K \
-   && fn 'static void DMWinKeyRun(size_t i) {' $K && grep -q 'if (!DMNativeActiveApp() && !(DMActiveEngine() != DMEngineNone || DMSMEngine())) return;' \$W/fn"
+   && fn 'static BOOL DMWinKeyRun(size_t i) {' $K && grep -q 'if (!DMNativeActiveApp() && !(DMActiveEngine() != DMEngineNone || DMSMEngine())) return NO;' \$W/fn"
+check "audit 1.8.3 L2: a key that can't act now (the switch off, SpringBoard busy, no engine and none of our windows) is handed on, not swallowed; one that acted (or the same key again) is not" \
+  "fn 'static BOOL DMWinKeyRun(size_t i) {' $K && grep -q 'if (i >= kMSBDWinKeyRowCount || !gWindowKeysOn) return NO;' \$W/fn && grep -q 'not now (%@): the key goes on\", title, busy\]); return NO; }' \$W/fn \
+   && awk '/^static BOOL DMWinKeyRun\(size_t i\) \{/{f=1} f&&/^}/{print prev; exit} f{prev=\$0}' $K | grep -q 'return YES;' \
+   && fn 'static void DMWinKeysPressesBegan(id self, SEL _cmd, NSSet<UIPress \*> \*presses, UIPressesEvent \*event) {' $K \
+   && grep -q 'if (!DMWinKeyRun((size_t)row)) { if (!others) others = \[NSMutableSet set\]; \[others addObject:p\]; }' \$W/fn"
+check "audit 1.8.3 L3: on Stage Manager an app's key (the front window another app's) is its newest window before the open frames and the records are read -- Return to Previous Size, Center, the arrangements and the record a layout takes" \
+  "fn 'static void DMWinPrevNoteSM(NSString \*key, id stage) {' $K && awk '/key = DMSMWindowKeyOf\(key\);/{a=NR} /DMSMOpenWindowFrames\(\)\[key\]/{b=NR} END{exit !(a && b > a)}' \$W/fn \
+   && [ \"\$(grep -c 'if (!\[DMSMKeyBundle(key) isEqualToString:bundleID\]) key = bundleID;' $K)\" = \"\$(grep -A1 'if (!\[DMSMKeyBundle(key) isEqualToString:bundleID\]) key = bundleID;' $K | grep -c 'key = DMSMWindowKeyOf(key);')\" ] \
+   && grep -A1 'if (!\[DMSMKeyBundle(frontKey) isEqualToString:front\]) frontKey = front;' $K | grep -q 'frontKey = DMSMWindowKeyOf(frontKey);'"
+check "audit 1.8.3 L4: the arrangements' windows behind are other apps' only on every engine -- Stage Manager leaves out every window of the front app, as Aerial, Zetsu and MilkyWay4 do" \
+  "fn 'static void DMArrangeWindows(const char \*const \*slots, int count, NSString \*why) {' $K && grep -q 'if (k && \[onScreen containsObject:k\] && !\[DMSMKeyBundle(k) isEqualToString:front\] && !DMSMAttrsFullScreen(map\[it\])) \[items addObject:it\];' \$W/fn \
+   && grep -q '|| !b.length || \[b isEqualToString:front\]) continue;' \$W/fn && ! grep -q '!DMSMKeyCovers(frontKey, k)' \$W/fn"
 check "a key: the volume and backlight chords told (no tap), nothing while SpringBoard is busy, then the row's action -- the Window menu's layout, an arrangement, the way back" \
-  "fn 'static void DMWinKeyRun(size_t i) {' $K && grep -q 'notify_post(kMSBDModTapUsedNote);' \$W/fn && grep -q 'NSString \*busy = DMWindowAPIBusyWhy();' \$W/fn \
+  "fn 'static BOOL DMWinKeyRun(size_t i) {' $K && grep -q 'notify_post(kMSBDModTapUsedNote);' \$W/fn && grep -q 'NSString \*busy = DMWindowAPIBusyWhy();' \$W/fn \
    && grep -q 'case kMSBDWinKeyActLayout: DMLayoutFrontWindow(@(a.slots\[0\]), title); break;' \$W/fn && grep -q 'case kMSBDWinKeyActArrange: DMArrangeWindows(a.slots, a.count, title); break;' \$W/fn \
    && grep -q 'case kMSBDWinKeyActPrevious: DMWindowBackFromTile(title); break;' \$W/fn && grep -q 'case kMSBDWinKeyActCenter: DMCenterFrontWindow(title); break;' \$W/fn"
 check "Globe-Control-C centres the window at its own size (macOS 15's Center), on every engine and our own windows; the Window menu's Center is its middle place as before" \

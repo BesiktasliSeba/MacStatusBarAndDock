@@ -71,6 +71,12 @@ int main(void) {
     Yes("a layout with no Latin letter there (Russian: \"\xd0\xb0\" at F's place): the QWERTY place, as macOS falls back", MSBDWinKeyFor(0x09, "\xd0\xb0") == kMSBDWinKeyF && MSBDWinKeyFor(0x06, "\xd1\x81") == kMSBDWinKeyC && MSBDWinKeyFor(0x15, "\xd0\xba") == kMSBDWinKeyR);
     Yes("  ... no character read (none, or empty): the place", MSBDWinKeyFor(0x09, 0) == kMSBDWinKeyF && MSBDWinKeyFor(0x15, "") == kMSBDWinKeyR);
     Yes("  ... another place with no Latin letter: none of ours", MSBDWinKeyFor(0x04, "\xd1\x84") < 0);
+    Yes("audit 1.8.3 L5: Turkish F's dotless i at R's place (0x15 types \"\xc4\xb1\"): none of ours -- not a second R", MSBDWinKeyFor(0x15, "\xc4\xb1") < 0);
+    Yes("  ... other Latin letters past ASCII at the three places (\"\xc4\x9f\", \"\xc3\xa9\", \"\xc5\x9f\", \"\xe1\xba\xa1\"): none of ours", MSBDWinKeyFor(0x09, "\xc4\x9f") < 0 && MSBDWinKeyFor(0x06, "\xc3\xa9") < 0
+        && MSBDWinKeyFor(0x15, "\xc5\x9f") < 0 && MSBDWinKeyFor(0x09, "\xe1\xba\xa1") < 0);
+    Yes("  ... another script still falls back to the place: Cyrillic, Greek, Arabic, Hebrew", MSBDWinKeyFor(0x15, "\xd0\xba") == kMSBDWinKeyR && MSBDWinKeyFor(0x15, "\xcf\x81") == kMSBDWinKeyR
+        && MSBDWinKeyFor(0x09, "\xd8\xa8") == kMSBDWinKeyF && MSBDWinKeyFor(0x06, "\xd7\x91") == kMSBDWinKeyC);
+    Yes("  ... two characters, or bytes that are no UTF-8: the place, as before", MSBDWinKeyFor(0x15, "ab") == kMSBDWinKeyR && MSBDWinKeyFor(0x09, "\xc4") == kMSBDWinKeyF);
     Yes("the arrows by their place whatever they type", MSBDWinKeyFor(0x50, "UIKeyInputLeftArrow") == kMSBDWinKeyLeft && MSBDWinKeyFor(0x4F, 0) == kMSBDWinKeyRight && MSBDWinKeyFor(0x52, "x") == kMSBDWinKeyUp && MSBDWinKeyFor(0x51, "") == kMSBDWinKeyDown);
     Yes("Dvorak's Globe-Control-F as pressed (0x1C typing f, 0x840000): Fill's row", MSBDWinKeyRowFor(MSBDWinKeyFor(0x1C, "f"), 0x840000) == 0);
     Yes("  ... its Globe-Control-U (0x09 typing u): no row", MSBDWinKeyRowFor(MSBDWinKeyFor(0x09, "u"), 0x840000) < 0);

@@ -25,6 +25,12 @@ static long Num(const char *domain, const char *key) {   // (-1 = not set; boole
     if (v) CFRelease(v);
     return n;
 }
+static int StrIs(const char *domain, const char *key, const char *want) {   // (the value stored is the text `want`)
+    CFPropertyListRef v = Get(domain, key); char buf[128] = "";
+    int is = v && CFGetTypeID(v) == CFStringGetTypeID() && CFStringGetCString(v, buf, sizeof buf, kCFStringEncodingUTF8) && !strcmp(buf, want);
+    if (v) CFRelease(v);
+    return is;
+}
 static int FileHas(const char *path, const char *text) {
     FILE *f = fopen(path, "r"); char buf[2000]; size_t n = f ? fread(buf, 1, sizeof(buf) - 1, f) : 0; if (f) fclose(f); buf[n] = 0;
     return f && strstr(buf, text) != NULL;
@@ -90,12 +96,21 @@ int main(int argc, char **argv) {
         Expect("and again: the whole tweak (action 3)", MSBDGuardEvaluate(&s) ? Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY) : 0, 3);
         Expect("  safe mode on", Num(MSBD_GATE_DOMAIN, MSBD_SAFE_KEY), 1);
     } else if (!strcmp(scenario, "cclookup")) {   // reports: 10:00 + 10:01 traps under the shared Control Center lookups, in our Control Center's code
+        CFPreferencesSetValue(CFSTR("controlCenterStyle"), CFSTR("mac"), CFSTR(TD), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);   // (ours: picked)
+        CFPreferencesSynchronize(CFSTR(TD), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
         Expect("two crashes under the Control Center lookups: step 1b", MSBDGuardEvaluate(&s) ? Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY) : 0, 4);
-        Expect("  Control Center Style back to iPadOS's (false)", Num(TD, "controlCenterStyle"), 0);
+        Expect("  Control Center Style back to iPadOS's: \"stock\" stored, its off text (Settings shows iPadOS)", StrIs(TD, "controlCenterStyle", "stock"), 1);
         Expect("  Stock status bar NOT switched on", Num(TD, "stockStatusBar"), -1);
         Expect("  record: Control Center Style and its words", FileHas(MSBD_GUARD_RECORD, "feature " TD " controlCenterStyle 0 Control Center Style|our Control Center\n"), 1);
         Expect("  record: no part line", FileHas(MSBD_GUARD_RECORD, "\npart "), 0);
         Expect("  safe mode not on", Num(MSBD_GATE_DOMAIN, MSBD_SAFE_KEY), -1);
+    } else if (!strcmp(scenario, "dockstyle")) {   // reports: 10:00 + 10:01 crashes in Dock Style's code, with Glass Shelf chosen
+        CFPreferencesSetValue(CFSTR("dockStyle"), CFSTR("glass"), CFSTR(TD), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        CFPreferencesSynchronize(CFSTR(TD), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        Expect("two crashes in Dock Style's code: step 1b", MSBDGuardEvaluate(&s) ? Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY) : 0, 4);
+        Expect("  Dock Style back to Default: \"default\" stored, as Settings stores it (never false: the row would show no choice)", StrIs(TD, "dockStyle", "default"), 1);
+        Expect("  record: Dock Style and its words", FileHas(MSBD_GUARD_RECORD, "feature " TD " dockStyle 0 Dock Style|the older Dock style\n"), 1);
+        Expect("  record: no part line", FileHas(MSBD_GUARD_RECORD, "\npart "), 0);
     } else if (!strcmp(scenario, "one")) {   // reports: 10:00 one banners crash only
         Expect("a single crash: nothing yet (two are needed)", MSBDGuardEvaluate(&s), 0);
         Expect("  banners untouched", Num(TD, "macBanners"), -1);

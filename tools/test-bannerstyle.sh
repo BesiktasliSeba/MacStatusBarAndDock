@@ -98,8 +98,8 @@ check "the root helper: the style read for mobile by the same rule; Destra kept 
    && grep -q 'else \\[MSBDBannerLoadsDestra(banners) ? keep : deny addObject:@\"MacOSNotifications\"\\];' $H && grep -q 'if (!destra) \\[notInstalled addObject:@\"MacOSNotifications\"\\];' $H \
    && grep -q 'if (destra && MSBDBannerLoadsDestra(banners)) EnableOurs(@\"MacOSNotifications\", record, @\"Destra is the Banner Style\");' $H \
    && grep -q 'enum { kChangedEngines = 1, kChangedCCStyle = 2, kChangedBanners = 4 };' $H && [ \$(grep -c 'kChangedBanners;' $H) = 2 ]"
-check "the crash guard: a crash in our banners (their hooks, DMBanner..., BannerStyleSB.h) sets Banner Style back to iPadOS's (false), not the old switch" \
-  "grep -q '^target macBanners pref com.besiktasliseba.macstatusbar bannerStyle 0 1 Banner Style|the Mac-style banners$' crashmap-rules.txt \
+check "the crash guard: a crash in our banners (their hooks, DMBanner..., BannerStyleSB.h) sets Banner Style back to iPadOS's, not the old switch; \"stock\" stored counts as off (offtext)" \
+  "grep -q '^target macBanners pref com.besiktasliseba.macstatusbar bannerStyle 0 1 offtext=stock Banner Style|the Mac-style banners$' crashmap-rules.txt \
    && grep -q '^file MacStatusBarCore \\^BannerStyleSB\\\\\\.h\\$ macBanners$' crashmap-rules.txt && grep -q '^sym MacStatusBarCore \\^_?DMBanner macBanners$' crashmap-rules.txt"
 check "nothing writes the default: no bannerStyle or macBanners written by SpringBoard, the helper or our Settings code (only the row's own store, at a tap)" \
   "! grep -n 'CFPreferencesSet[A-Za-z]*Value(CFSTR(\"bannerStyle\")\\|CFPreferencesSet[A-Za-z]*Value(CFSTR(kMSBDBannerStyleKey)\\|CFPreferencesSet[A-Za-z]*Value(CFSTR(\"macBanners\")\\|CFPreferencesSet[A-Za-z]*Value(CFSTR(kMSBDBannerLegacyKey)' $SB $B $H $P $K ../common/*.h"

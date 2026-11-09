@@ -29,9 +29,26 @@ int main(int argc, char **argv) {
         NSString *map = [NSString stringWithContentsOfFile:[dir stringByAppendingPathComponent:@"test-crashmap.txt"] encoding:NSUTF8StringEncoding error:nil];
         NSString *(^fx)(NSString *) = ^(NSString *n) { return [dir stringByAppendingPathComponent:n]; };
         NSString *D = @"com.besiktasliseba.test-crashstep";
-        SetPref(@"macBanners", nil); SetPref(@"stockStatusBar", nil); SetPref(@"showDownloads", nil); SetPref(@"forceQuitEnabled", nil); SetPref(@"controlCenterStyle", nil);
+        SetPref(@"macBanners", nil); SetPref(@"stockStatusBar", nil); SetPref(@"showDownloads", nil); SetPref(@"forceQuitEnabled", nil); SetPref(@"controlCenterStyle", nil); SetPref(@"dockStyle", nil);
         Expect(@"the Dock part as a whole", fx(@"step1b-dock.ips"), map, @"part DockMagnification - - 0 the Dock|the Dock");
         Expect(@"the Dock: Downloads code -> Show Downloads off", fx(@"step1b-dock-downloads.ips"), map, [NSString stringWithFormat:@"pref DockMagnification %@ showDownloads 0 Show Downloads in Dock|the Dock's Downloads", D]);
+        // Dock Style (1.8.4, review P2-L1): Settings stores "default" for Default, read as off (the rule's offtext=default) -- a crash in its code with
+        // Default is not Dock Style's, the part goes; "glass" reads as on, set back to Default. The platter's layout hook is transparent: alone under
+        // Apple's crash, the part (never a style); over another frame of ours, that frame decides.
+        NSString *dockPart = @"part DockMagnification - - 0 the Dock|the Dock", *dockStyle = [NSString stringWithFormat:@"pref DockMagnification %@ dockStyle 0 text=default Dock Style|the older Dock style", D];
+        Expect(@"Dock Style's code, never set (Default) -> the part", fx(@"step1b-dock-style.ips"), map, dockPart);
+        SetPref(@"dockStyle", @"default");
+        Expect(@"  ... Default as Settings stores it (\"default\") -> the part", fx(@"step1b-dock-style.ips"), map, dockPart);
+        SetPref(@"dockStyle", @"glass");
+        Expect(@"  ... Glass Shelf -> Dock Style back to Default (\"default\" stored, as Settings stores it)", fx(@"step1b-dock-style.ips"), map, dockStyle);
+        SetPref(@"dockStyle", @"frosted");
+        Expect(@"  ... Frosted -> the same", fx(@"step1b-dock-style.ips"), map, dockStyle);
+        SetPref(@"dockStyle", @NO);
+        Expect(@"  ... set back by the guard before (false) -> the part", fx(@"step1b-dock-style.ips"), map, dockPart);
+        SetPref(@"dockStyle", @"glass");
+        Expect(@"the platter's layout hook alone under Apple's crash -> the part, never a style", fx(@"step1b-dock-hook.ips"), map, dockPart);
+        SetPref(@"dockStyle", nil);
+        Expect(@"  ... over Downloads' code -> Show Downloads (the frame below decides)", fx(@"step1b-dock-hook-downloads.ips"), map, [NSString stringWithFormat:@"pref DockMagnification %@ showDownloads 0 Show Downloads in Dock|the Dock's Downloads", D]);
         Expect(@"small part without a switch -> the part", fx(@"step1b-small-part.ips"), map, @"part MixAudio - - 0 its part MixAudio|MixAudio");
         Expect(@"small part with a switch -> its switch", fx(@"step1b-small-part-switch.ips"), map, [NSString stringWithFormat:@"pref ForceQuitMenu %@ forceQuitEnabled 0 Force Quit in App Menus|the Force Quit menu item", D]);
         Expect(@"core, banners function -> Mac-Style Banners off", fx(@"step1b-core-banners.ips"), map, [NSString stringWithFormat:@"pref MacStatusBarCore %@ macBanners 0 Mac-Style Banners|the Mac-style banners", D]);
@@ -48,15 +65,21 @@ int main(int argc, char **argv) {
         Expect(@"loader on top -> nothing (step 2)", fx(@"step1b-loader.ips"), map, @"NO: MacStatusBar cannot be turned off on its own");
         // The shared Control Center lookups (1.8.0, CCController.h / StatusBar.x: transparent) on top of our Control Center's code, under a trap in
         // Apple's +sharedInstance (1.8.0~i11): the caller one frame lower decides -- Control Center Style back to iPadOS's, not Stock status bar mode.
-        NSString *cc = [NSString stringWithFormat:@"pref MacStatusBarCore %@ controlCenterStyle 0 Control Center Style|our Control Center", D];
+        // Ours runs only with "mac" stored (KT 3 Nov: never ours unless picked): the rule's offtext=stock,bigsurcenter and nothing stored read as off.
+        NSString *cc = [NSString stringWithFormat:@"pref MacStatusBarCore %@ controlCenterStyle 0 text=stock Control Center Style|our Control Center", D];   // (stored: "stock", its first off text)
+        NSString *stockBar = [NSString stringWithFormat:@"pref MacStatusBarCore %@ stockStatusBar 1 Status Bar Style|the status bar", D];
+        SetPref(@"controlCenterStyle", @"mac");   // (the Style page's text: ours, the guard can set it back)
         Expect(@"core, Control Center lookups on top -> the caller's", fx(@"step1b-core-cc-lookup.ips"), map, cc);
         Expect(@"  ... without the lookups passed over: Stock (the i11 case)", fx(@"step1b-core-cc-lookup.ips"),
-               [map stringByReplacingOccurrencesOfString:@"R 12000 transparent" withString:@"R 12000 stock"], [NSString stringWithFormat:@"pref MacStatusBarCore %@ stockStatusBar 1 Status Bar Style|the status bar", D]);
-        SetPref(@"controlCenterStyle", @"mac");   // (the Style page's text: read as on, the guard can set it off)
-        Expect(@"  ... Control Center Style Mac (stored) -> the same", fx(@"step1b-core-cc-lookup.ips"), map, cc);
+               [map stringByReplacingOccurrencesOfString:@"R 12000 transparent" withString:@"R 12000 stock"], stockBar);
         SetPref(@"controlCenterStyle", @NO);
-        Expect(@"  ... already iPadOS's -> Stock status bar instead", fx(@"step1b-core-cc-lookup.ips"), map, [NSString stringWithFormat:@"pref MacStatusBarCore %@ stockStatusBar 1 Status Bar Style|the status bar", D]);
+        Expect(@"  ... already iPadOS's (false) -> Stock status bar instead", fx(@"step1b-core-cc-lookup.ips"), map, stockBar);
+        SetPref(@"controlCenterStyle", @"stock");
+        Expect(@"  ... iPadOS's as the Style page stores it (\"stock\") -> the same", fx(@"step1b-core-cc-lookup.ips"), map, stockBar);
+        SetPref(@"controlCenterStyle", @"bigsurcenter");
+        Expect(@"  ... BigSurCenter (\"bigsurcenter\": ours does not run) -> the same", fx(@"step1b-core-cc-lookup.ips"), map, stockBar);
         SetPref(@"controlCenterStyle", nil);
+        Expect(@"  ... nothing stored (never ours unless picked) -> the same", fx(@"step1b-core-cc-lookup.ips"), map, stockBar);
         // (nothing of ours but the lookups: as a pass-through hook alone, the part)
         Expect(@"core, only the Control Center lookups -> the part", fx(@"step1b-core-cc-lookup-only.ips"), map, @"part MacStatusBarCore - - 0 the status bar|the Mac status bar");
         Expect(@"Apple-only report -> nothing (step 2)", fx(@"apple-only-our-class-in-reason.ips"), map, @"NO: none of our code on the crash stacks*");
@@ -71,7 +94,7 @@ int main(int argc, char **argv) {
         SetPref(@"forceQuitEnabled", @NO);
         Expect(@"small part's switch already off -> the part", fx(@"step1b-small-part-switch.ips"), map, @"part ForceQuitMenu - - 0 its part ForceQuitMenu|ForceQuitMenu");
         SetPref(@"forceQuitEnabled", nil);
-        SetPref(@"macBanners", nil); SetPref(@"stockStatusBar", nil); SetPref(@"controlCenterStyle", nil);
+        SetPref(@"macBanners", nil); SetPref(@"stockStatusBar", nil); SetPref(@"controlCenterStyle", nil); SetPref(@"dockStyle", nil);
     }
     return fails ? 1 : 0;
 }

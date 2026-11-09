@@ -541,6 +541,7 @@ static int MSBWindowSizeStored(BOOL *stored) {
 - (NSString *)msb_plistName;
 - (BOOL)msb_windowsPage;
 - (BOOL)msb_desktopPage;
+- (BOOL)msb_liveActivitiesPage;
 - (BOOL)msb_rootPage;
 - (void)msb_prewarmMaybeChanged;
 - (void)msb_tailspinMaybeChanged;
@@ -571,7 +572,8 @@ static BOOL MSBFinderStored(void) { return MSBDFinderStored(); }   // (as Spring
 - (NSString *)msb_plistName { return @"Root"; }
 - (BOOL)msb_windowsPage { return NO; }
 - (BOOL)msb_desktopPage { return NO; }
-- (BOOL)msb_rootPage { return ![self msb_windowsPage] && ![self msb_desktopPage]; }   // (the Status Bar page itself)
+- (BOOL)msb_liveActivitiesPage { return NO; }
+- (BOOL)msb_rootPage { return ![self msb_windowsPage] && ![self msb_desktopPage] && ![self msb_liveActivitiesPage]; }   // (the Status Bar page itself)
 
 MSBD_LINE_SWITCH_METHODS
 
@@ -1218,6 +1220,21 @@ static void MSBFitValueLabels(UIView *v) {
 		_specifiers = [self msbd_hideRowsWhenLineOff:_specifiers offFooter:@"Everything except the Dock is off. Turn it on to change its settings. Takes effect after a respring."];
 		if ([self msb_windowsPage]) _specifiers = [self msb_windowsPageNotes:_specifiers];
 		if ([self msb_desktopPage]) _specifiers = [self msb_desktopPageNotes:_specifiers];
+		// The Activities page's Timers row only where SpringBoard runs the timers source, its Apps row (and the group's footer about apps) only where
+		// it lists other apps' activities -- this iPadOS version in common/LiveActivities.h's lists, filled by the device pass; Apps never on 15/16:
+		// no switch that does nothing (review 1.8.4 P2-L3). The search leaves them out the same way (OwnPageRows.h).
+		if ([self msb_rootPage]) for (PSSpecifier *sp in _specifiers) if ([sp.identifier isEqualToString:@"LIVE_ACTIVITIES_GROUP"])   // (its words: what this iPadOS shows)
+			[sp setProperty:@(MSBDLAGroupFooter(MSBDLATimersRowShown(), MSBDLAAppsRowShown())) forKey:@"footerText"];
+		if ([self msb_liveActivitiesPage] && (!MSBDLATimersRowShown() || !MSBDLAAppsRowShown())) {
+			BOOL timers = MSBDLATimersRowShown(), apps = MSBDLAAppsRowShown();
+			NSMutableArray *kept = [_specifiers mutableCopy];
+			for (PSSpecifier *sp in _specifiers) {
+				id key = [sp propertyForKey:@"key"];
+				if ((!timers && [key isEqual:kMSBDLATimersRowKey]) || (!apps && [key isEqual:kMSBDLAAppsRowKey])) [kept removeObject:sp];
+				if (!apps && [sp.identifier isEqualToString:@"LIVE_ACTIVITIES_KINDS"]) [sp removePropertyForKey:@"footerText"];   // ("Apps show their own...")
+			}
+			_specifiers = kept;
+		}
 		// Apple's own multitasking settings, live and still Apple's, after ours (AppleMultitasking.h: per iPadOS version where Apple keeps them; 16: General's
 		// Picture in Picture and Gestures). Only while this page is the place for them -- the same answer that takes Apple's rows out of their page
 		// (StatusBarSettingsRow.x) -- and only an entry whose page is there with the rows it must have.
@@ -1616,4 +1633,13 @@ static void MSBFitValueLabels(UIView *v) {
 	PSSpecifier *corner = [self specifierForID:@"DESKTOP_APP_CORNER"];   // (never set: where the Home Screen's shape is now -- a theme may have changed it)
 	if (corner) [self reloadSpecifier:corner animated:NO];
 }
+@end
+
+// ---- The Activities page (1.8.4 item 1): the Status Bar page's controller with LiveActivities.plist -- what Live Activities in Menu Bar shows: Now
+// Playing, Timers, Calls and Apps, each on unless switched off (SpringBoard: StatusBar.x DMLoadPrefs, statusbar/LiveActivities.h) ----
+@interface MSBLiveActivitiesListController : MSBRootListController
+@end
+@implementation MSBLiveActivitiesListController
+- (NSString *)msb_plistName { return @"LiveActivities"; }
+- (BOOL)msb_liveActivitiesPage { return YES; }
 @end

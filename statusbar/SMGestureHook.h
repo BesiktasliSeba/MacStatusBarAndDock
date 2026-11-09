@@ -47,6 +47,7 @@ static void DMSMGTDidComplete(id self, SEL _cmd) {
         }
 #endif
         [gSMGestureTxs removeObject:self];
+        gSMGestureEndedAt = CACurrentMediaTime();   // (its modifier may hold the stage a moment longer: SMGestureHold.h DMSMGestureModifierHolds)
         if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[smgesture] %@ ended after %.0f ms: %lu write(s) waiting", NSStringFromClass(object_getClass(self)), (CACurrentMediaTime() - gSMGestureSince) * 1000.0, (unsigned long)gSMAfterGesture.count]);
         if (!DMSMGestureLive()) { if (gSMAfterGesture.count) DMSMGestureFlushSoon(); else gSMGestureHeld = nil; }
         DMSMBarsSettleSoon(@"a switcher gesture's end");   // (the top bar decided again once everything has settled: StatusBar.x)
@@ -196,12 +197,41 @@ static void DMSMSwipeHookInstall(void) {   // (iPadOS 16's home gesture modifier
     if (mce && [DMSMSigOfMethod(mce) isEqualToString:want]) MSHookMessageEx(ce, a, (IMP)DMSMSwipeActivateCE, (IMP *)&o_SMSwipeActivateCE);
     DMLog([NSString stringWithFormat:@"[smswipe] a swipe to the previous app: a Stage Manager stage of minimized windows, or an app with a window of another engine, is not one to go to (%@%@)", o_SMSwipeActivate ? @"home gesture" : @"-", o_SMSwipeActivateCE ? @", Stage Manager's home gesture" : @""]);
 }
+// A guard behind the hold above (GitHub #12, 16.3.1; iPadOS 16's method, 17 and 18 cache through -appLayoutsToCacheFullsizeSnapshots): SpringBoard's modifiers
+// give this method a visible range that starts at [appLayouts indexOfObject:] of their own stage, with no not-found check, and -[NSArray subarrayWithRange:] then
+// throws. A range that starts past the list caches no snapshots (a few not cached ahead); any other goes on as SpringBoard built it. Every time it fires it is a
+// stage that left the list under a modifier: logged each time in a debug build, and once in the verdict Report a Problem shows in a release build.
+static id (*o_SMCacheRange)(id, SEL, NSRange, unsigned long long, BOOL);
+static id DMSMCacheRange(id self, SEL _cmd, NSRange visible, unsigned long long count, BOOL biasForward) {
+    NSArray *outside = nil;
+    @try {
+        SEL list = NSSelectorFromString(@"appLayouts");
+        id all = [self respondsToSelector:list] && DMSMSigOK(self, list, DMSMSigObj(), "appLayouts") ? ((id (*)(id, SEL))objc_msgSend)(self, list) : nil;
+        if ([all isKindOfClass:[NSArray class]] && visible.location >= ((NSArray *)all).count) {
+            outside = all;
+            DM_FEATURE_MARK("sm-snapshot-cache-guard");
+            DMLog([NSString stringWithFormat:@"[smgesture] %@: the snapshots' visible range starts at %lu of %lu app layouts: none cached (a stage left the list under its modifier)",
+                   NSStringFromClass(object_getClass(self)), (unsigned long)visible.location, (unsigned long)outside.count]);
+            DMSMAPIFail(@"the App Switcher's snapshot cache", @"a visible range past the switcher's list: none cached");
+        }
+    } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[smgesture] the snapshot cache's guard: %@", e.reason]); }
+    return outside ? @[] : o_SMCacheRange(self, _cmd, visible, count, biasForward);
+}
+static void DMSMCacheRangeInstall(void) {   // (iPadOS 16 only, the method in the shape read on 16.7.7: else SpringBoard's as it is)
+    if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion != 16) return;
+    Class c = objc_getClass("SBSwitcherModifier");
+    SEL s = sel_registerName("appLayoutsToCacheSnapshotsWithVisibleRange:numberOfSnapshotsToCache:biasForward:");
+    Method m = c ? class_getInstanceMethod(c, s) : NULL;
+    if (!m || strcmp(method_getTypeEncoding(m) ?: "", "@48@0:8{_NSRange=QQ}16Q32B40")) { DMLog(@"[smgesture] the snapshots' cache method is not as read on 16.7.7 here: no guard on it"); return; }
+    MSHookMessageEx(c, s, (IMP)DMSMCacheRange, (IMP *)&o_SMCacheRange);
+}
 // From the Stage Manager engine's start (StatusBar.x, with %init(SMEngine)): the engine only, never on iPadOS 15 or with another engine.
 static void DMSMGestureHoldInstall(void) {
     static BOOL done = NO;
     if (done) return;
     done = YES;
     DMSMSwipeHookInstall();
+    DMSMCacheRangeInstall();
     Class c = objc_getClass("SBFluidSwitcherGestureWorkspaceTransaction");
     SEL b = sel_registerName("_begin"), d = sel_registerName("_didComplete");
     if (!DMSMGTVoidMethod(c, b) || !DMSMGTVoidMethod(c, d)) {

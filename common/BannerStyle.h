@@ -5,9 +5,10 @@
 // statusbar/BannerStyleSB.h), Settings (the row, its page, the group's footer, MSBRootListController.m) and the root helper (whether Destra loads,
 // macsettings/sshtoggled). Plain C with CoreFoundation (Mac test tools/test-bannerstyle.sh); the readers of the state on the iPad are
 // common/BannerStyleNow.h.
-//  - Stored (bannerStyle, com.besiktasliseba.macstatusbar): the text "mac", "stock" or "destra", written only by a tap on the Style page; the
-//    default is never written. False (or 0) is iPadOS's: the crash guard writes it when our banners crashed SpringBoard (tools/crashmap-rules.txt
-//    "macBanners"; and step 1's switches turned on just before it, where Mac counts as the style's "on"). Anything else counts as never set.
+//  - Stored (bannerStyle, com.besiktasliseba.macstatusbar): the text "mac", "stock" or "destra", written by a tap on the Style page, and "stock"
+//    by the crash guard when our banners crashed SpringBoard (step 1b: tools/crashmap-rules.txt "macBanners", its off text); the default is never
+//    written. False (or 0) is iPadOS's too: step 1 writes it for the switches turned on just before a crash, where Mac counts as the style's "on"
+//    (and step 1b wrote it before 1.8.4). Anything else counts as never set.
 //  - The rule. A stored style that can be had is the style: Mac and iPadOS always; Destra while it is installed (the pick wins over a switch-off
 //    of the user's own in Choicy: the pick lets it in again). Never set, or Destra stored but gone: ours for everyone (KT 3 Nov ~14:15) -- Mac,
 //    also where Destra is installed and showed its banners before 1.8.0 (it is kept out then, as with any Mac or iPadOS pick), unless the old

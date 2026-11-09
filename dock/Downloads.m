@@ -1369,6 +1369,11 @@ static BOOL DMDLHardwareKeyboard(void) {
 - (BOOL)accessibilityActivate { DM_FEATURE_MARK("ax-dock-items"); [self tapped]; return YES; }
 - (void)layoutSubviews {
     [super layoutSubviews];
+    UIImage *was = self.image.image;
+    [self dm_layoutPicture];
+    if (self.image.image != was) DMDockItemPictureChanged(self);   // (its reflection and its Edit Home Screen stand-in follow: regression 1.8.4)
+}
+- (void)dm_layoutPicture {
     self.image.frame = self.bounds;
     // (1.7.5: the app icon's picture -- a theme's, or the folder as SpringBoard / a theme engine shapes an app's own icon; else drawn here)
     if (!CGSizeEqualToSize(self.themeSize, self.bounds.size) || self.themeGeneration != DMIconThemeGeneration() || !self.image.image) {

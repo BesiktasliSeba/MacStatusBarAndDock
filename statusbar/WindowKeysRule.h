@@ -78,22 +78,42 @@ static inline int MSBDWinKeyForHIDUsage(long usage) {
         default: return -1;
     }
 }
+// A UTF-8 string that is one character: its code point; else -1 (none, more than one, or not UTF-8).
+static inline long MSBDOneCodePoint(const char *s) {
+    const unsigned char *u = (const unsigned char *)s;
+    if (!u || !u[0]) return -1;
+    long c; int n;
+    if (u[0] < 0x80) { c = u[0]; n = 1; }
+    else if ((u[0] & 0xE0) == 0xC0) { c = u[0] & 0x1F; n = 2; }
+    else if ((u[0] & 0xF0) == 0xE0) { c = u[0] & 0x0F; n = 3; }
+    else if ((u[0] & 0xF8) == 0xF0) { c = u[0] & 0x07; n = 4; }
+    else return -1;
+    for (int i = 1; i < n; i++) { if ((u[i] & 0xC0) != 0x80) return -1; c = (c << 6) | (u[i] & 0x3F); }
+    return u[n] ? -1 : c;
+}
+// A letter of the Latin script past ASCII: Latin-1's letters, Latin Extended-A and -B, the IPA extensions, Latin Extended Additional, -C, -D, -E.
+static inline int MSBDLatinLetter(long c) {
+    return (c >= 0xC0 && c <= 0x24F && c != 0xD7 && c != 0xF7) || (c >= 0x250 && c <= 0x2AF) || (c >= 0x1E00 && c <= 0x1EFF)
+        || (c >= 0x2C60 && c <= 0x2C7F) || (c >= 0xA720 && c <= 0xA7FF) || (c >= 0xAB30 && c <= 0xAB6F);
+}
 // The key a press is, as macOS reads its shortcuts: the arrows by their place (the same keys on every layout); F, C and R by the letter the keyboard
 // layout types on the key (chars: UIKey.charactersIgnoringModifiers, UTF-8) -- Dvorak's F is where QWERTY has Y, Colemak's R where it has S;
-// AZERTY and QWERTZ have the three where QWERTY does. A key that types another ASCII character is none of them (Dvorak's U, where QWERTY has F).
-// A layout that types no ASCII letter there (Russian, Greek, Arabic, ...), or no character read: the key's place, its QWERTY letter, as macOS
-// falls back to a Latin layout for its shortcuts.
+// AZERTY and QWERTZ have the three where QWERTY does. A key that types another letter of the Latin script is none of them (Dvorak's U, where
+// QWERTY has F; Turkish F's dotless i, where QWERTY has R -- audit 1.8.3 L5: it acted as R too). A layout of another script there (Russian,
+// Greek, Arabic, ...), or no character read: the key's place, its QWERTY letter, as macOS falls back to a Latin layout for its shortcuts.
 static inline int MSBDWinKeyFor(long usage, const char *chars) {
     int at = MSBDWinKeyForHIDUsage(usage);
     if (at >= kMSBDWinKeyLeft && at <= kMSBDWinKeyDown) return at;
-    if (chars && chars[0] && !chars[1] && (unsigned char)chars[0] < 0x80) {   // (one ASCII character: what this layout types there)
-        switch (chars[0]) {
+    long c = MSBDOneCodePoint(chars);
+    if (c >= 0 && c < 0x80) {   // (one ASCII character: what this layout types there)
+        switch (c) {
             case 'f': case 'F': return kMSBDWinKeyF;
             case 'c': case 'C': return kMSBDWinKeyC;
             case 'r': case 'R': return kMSBDWinKeyR;
             default: return -1;
         }
     }
+    if (c >= 0 && MSBDLatinLetter(c)) return -1;   // (another Latin letter: this layout's own key, not one of ours)
     return at;
 }
 // The row of a key with these modifiers (as pressed: other bits are ignored, the modifiers must be exactly a row's), or -1.

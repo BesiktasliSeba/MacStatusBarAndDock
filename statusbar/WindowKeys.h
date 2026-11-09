@@ -60,6 +60,7 @@ static void DMSMRecordsPrune(NSMutableDictionary *map) {
 static void DMWinPrevPruneSM(void) { DMSMRecordsPrune(gSMWinPrev); }
 static void DMWinPrevNoteSM(NSString *key, id stage) {
     if (!DMWinPrevWanted()) return;
+    key = DMSMWindowKeyOf(key);   // (an app's key -- the front window was another app's: its newest window, as the open frames are keyed; audit 1.8.3 L3)
     NSValue *f = key ? DMSMOpenWindowFrames()[key] : nil;
     if (!f || !MSBDWinPrevTake(DMWinTiledSM(f.CGRectValue, stage))) return;
     DMWinPrevPruneSM();
@@ -82,6 +83,7 @@ static char kWinZoomKey;
 static NSArray<NSValue *> *DMTitleRecordPair(CGRect before, CGRect fill) { return @[[NSValue valueWithCGRect:before], [NSValue valueWithCGRect:fill]]; }
 // A move or a resize by hand has ended: the frame from before is from before that move (dropped).
 static void DMTitleRecordMovedView(UIView *v) { if (v) objc_setAssociatedObject(v, &kWinZoomKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
+static BOOL DMTitleRecordSMAny(void) { return gSMWinZoom.count > 0; }
 static void DMTitleRecordMovedSM(NSString *key) {
     if (!gSMWinZoom.count) return;
     key = DMSMWindowKeyOf(key);
@@ -173,6 +175,7 @@ static void DMWindowBackFromTile(NSString *why) {
     if (DMSMEngine()) {
         NSString *key = DMSMFrontWindowKey();
         if (![DMSMKeyBundle(key) isEqualToString:bundleID]) key = bundleID;
+        key = DMSMWindowKeyOf(key);   // (the app's key: its newest window -- the open frames and the records are by window key; audit 1.8.3 L3)
         id stage = DMSMStageOf(key);
         NSValue *now = DMSMOpenWindowFrames()[key], *rec = gSMWinPrev[key];
         int act = MSBDWinPrevOnReturn(now && DMWinTiledSM(now.CGRectValue, stage), rec != nil);
@@ -218,6 +221,7 @@ static void DMCenterFrontWindow(NSString *why) {
     if (DMSMEngine()) {
         NSString *key = DMSMFrontWindowKey();
         if (![DMSMKeyBundle(key) isEqualToString:bundleID]) key = bundleID;
+        key = DMSMWindowKeyOf(key);   // (as above: Center found "no window" for an app's key, audit 1.8.3 L3)
         id stage = DMSMStageOf(key), attrs = nil;
         NSValue *now = DMSMOpenWindowFrames()[key];
         if (!now || !DMSMItemFor(stage, key, &attrs) || !attrs || DMSMAttrsFullScreen(attrs)) { DMLog([NSString stringWithFormat:@"[winkeys] %@: %@ has no window to centre (full screen or away)", why, DMSMKeyText(key)]); return; }
@@ -255,11 +259,14 @@ static void DMArrangeWindows(const char *const *slots, int count, NSString *why)
     if (DMSMEngine()) {
         NSString *frontKey = DMSMFrontWindowKey();
         if (![DMSMKeyBundle(frontKey) isEqualToString:front]) frontKey = front;
+        frontKey = DMSMWindowKeyOf(frontKey);   // (as above, audit 1.8.3 L3)
         id stage = DMSMStageOf(frontKey);
         NSDictionary *map = DMSMStageItemsMap(stage);
         NSSet *onScreen = [NSSet setWithArray:DMSMWindowKeys()];
         NSMutableArray *items = [NSMutableArray array];
-        for (id it in map) { NSString *k = DMSMItemKey(it); if (k && [onScreen containsObject:k] && !DMSMKeyCovers(frontKey, k) && !DMSMAttrsFullScreen(map[it])) [items addObject:it]; }
+        // (the windows behind: other apps' only -- every window of the front app is left out, as the other engines leave it out below, where an app
+        //  has one window; two Safari windows and Notes: Safari next to Notes on every engine. Audit 1.8.3 L4: here only the front window was)
+        for (id it in map) { NSString *k = DMSMItemKey(it); if (k && [onScreen containsObject:k] && ![DMSMKeyBundle(k) isEqualToString:front] && !DMSMAttrsFullScreen(map[it])) [items addObject:it]; }
         [items sortUsingComparator:^NSComparisonResult(id a, id b) {   // (newest first: the window behind the front one first)
             long ta = DMSMAttrTimeOr(map[a], 0), tb = DMSMAttrTimeOr(map[b], 0);
             return ta > tb ? NSOrderedAscending : (ta < tb ? NSOrderedDescending : NSOrderedSame);
@@ -317,7 +324,8 @@ static void DMArrangeWindows(const char *const *slots, int count, NSString *why)
 //    reads its shortcuts: the arrows by their place, F, C and R by the letter the keyboard layout types (WindowKeysRule.h MSBDWinKeyFor). A key
 //    command that does run (another iPadOS) runs the same row, once.
 // A press that is one of ours runs its row and is not handed on, so iPadOS's own handling of the same keys (15's Split View tiles for
-// Globe-Control-Left / Right) does not run under it; presses that came with it and are none of ours are handed on without it (review 1.8.3 F1: the
+// Globe-Control-Left / Right) does not run under it -- unless the row can't act now, then it is handed on (audit 1.8.3 L2); presses that came
+// with it and are none of ours are handed on without it (review 1.8.3 F1: the
 // whole set went on, ours too). Offered while the switch is on and a window engine of ours runs, or our own window is in front (P2-9). One press may come twice (VolumeGlobe.x: with an
 // app in front): once.
 static void (*o_WinKeysPressesBegan)(id, SEL, NSSet *, UIPressesEvent *);
@@ -325,20 +333,22 @@ static NSArray *(*o_WinKeysKeyCommands)(id, SEL);
 static NSArray<UIKeyCommand *> *gWinKeyCmds;   // (one per row, kMSBDWinKeyRows' order)
 static BOOL DMWinKeysWanted(void) { return gWindowKeysOn && (DMActiveEngine() != DMEngineNone || DMSMEngine() || DMNativeActiveApp() != nil); }
 // A row's action, unless SpringBoard is busy (WindowAPI.h: as the window API waits). Once per key: the same row asked again within 0.15 s is the
-// same key, reported both as a key command and as a press.
-static void DMWinKeyRun(size_t i) {
-    if (i >= kMSBDWinKeyRowCount || !gWindowKeysOn) return;
-    static size_t lastRow = (size_t)-1;
-    static CFTimeInterval lastAt = -100;
-    CFTimeInterval at = CACurrentMediaTime();
-    if (i == lastRow && at - lastAt < 0.15) return;
-    lastRow = i; lastAt = at;
+// same key, reported both as a key command and as a press. YES: the key is ours -- it acted, or it is that same key again; NO: it can't act now
+// (the switch off, SpringBoard busy -- the App Switcher, Control Center, one of our menus --, no engine of ours and none of our own windows in
+// front), so a press goes on to whoever else wants it: iPadOS 15's own Split View keys among them (audit 1.8.3 L2: swallowed, it did nothing).
+static BOOL DMWinKeyRun(size_t i) {
+    if (i >= kMSBDWinKeyRowCount || !gWindowKeysOn) return NO;
     MSBDWinKeyAction a = kMSBDWinKeyRows[i].act;
     NSString *title = @(a.title);
     notify_post(kMSBDModTapUsedNote);   // (the Globe and Control it began with are no volume or backlight tap)
     NSString *busy = DMWindowAPIBusyWhy();
-    if (busy) { DMLog([NSString stringWithFormat:@"[winkeys] %@: not now (%@)", title, busy]); return; }
-    if (!DMNativeActiveApp() && !(DMActiveEngine() != DMEngineNone || DMSMEngine())) return;
+    if (busy) { DMLog([NSString stringWithFormat:@"[winkeys] %@: not now (%@): the key goes on", title, busy]); return NO; }
+    if (!DMNativeActiveApp() && !(DMActiveEngine() != DMEngineNone || DMSMEngine())) return NO;
+    static size_t lastRow = (size_t)-1;
+    static CFTimeInterval lastAt = -100;
+    CFTimeInterval at = CACurrentMediaTime();
+    if (i == lastRow && at - lastAt < 0.15) return YES;
+    lastRow = i; lastAt = at;
     DM_FEATURE_MARK("window-tiling-keys");
     switch (a.kind) {
         case kMSBDWinKeyActLayout: DMLayoutFrontWindow(@(a.slots[0]), title); break;
@@ -347,6 +357,7 @@ static void DMWinKeyRun(size_t i) {
         case kMSBDWinKeyActPrevious: DMWindowBackFromTile(title); break;
         default: break;
     }
+    return YES;
 }
 static void DMWinKeysPressesBegan(id self, SEL _cmd, NSSet<UIPress *> *presses, UIPressesEvent *event) {
     if (presses.count && DMWinKeysWanted()) {
@@ -364,7 +375,7 @@ static void DMWinKeysPressesBegan(id self, SEL _cmd, NSSet<UIPress *> *presses, 
             //  VolumeGlobe's log, one press object for two taps 4 s apart)
             if (p.timestamp == lastTime && (long)k.keyCode == lastCode) continue;
             lastTime = p.timestamp; lastCode = (long)k.keyCode;
-            DMWinKeyRun((size_t)row);
+            if (!DMWinKeyRun((size_t)row)) { if (!others) others = [NSMutableSet set]; [others addObject:p]; }   // (it can't act now: handed on)
         }
         if (others.count == presses.count) { o_WinKeysPressesBegan(self, _cmd, presses, event); return; }   // (none of ours: as it came)
         if (others.count) o_WinKeysPressesBegan(self, _cmd, others, event);   // (ours taken out, the others handed on)
