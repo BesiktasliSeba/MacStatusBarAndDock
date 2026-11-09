@@ -11,7 +11,17 @@ A MacBook-style desktop for your jailbroken iPad. It brings a Mac menu bar with 
 | Window engine | Optional: Aerial, Zetsu, MilkyWay4 or Apple's Stage Manager. See [Window engines](#window-engines). |
 | License | Free and open source (GPL-3.0-only). |
 
-[Install](#install) · [Features](#features) · [Window engines](#window-engines) · [Compatibility](#compatibility) · [Troubleshooting](#troubleshooting) · [Privacy](#privacy) · [Report a bug](#report-a-bug) · [Settings reference](./docs/settings.md) · [Changelog](./CHANGELOG.md)
+[Screenshots](#screenshots) · [Install](#install) · [Features](#features) · [Window engines](#window-engines) · [Compatibility](#compatibility) · [Troubleshooting](#troubleshooting) · [Privacy](#privacy) · [Report a bug](#report-a-bug) · [Settings reference](./docs/settings.md) · [Changelog](./CHANGELOG.md)
+
+## Screenshots
+
+<table>
+<tr><td width="50%"><img src="./images/screenshot-01-apple-menu.jpg" alt="The Apple menu open over Calendar, Clock and Tips windows"><br>Real menus and Mac windows</td><td width="50%"><img src="./images/screenshot-02-live-activities.jpg" alt="A timer and music in the menu bar, with the Now Playing card open"><br>Live Activities in the menu bar</td></tr>
+<tr><td width="50%"><img src="./images/screenshot-03-live-activities-close-up.jpg" alt="Close-up of the menu bar pills and the Now Playing card"><br>Timer and music pills, close up</td><td width="50%"><img src="./images/screenshot-04-dock-styles.jpg" alt="The three Dock styles: Glass Shelf, Frosted and Default"><br>Three Dock styles</td></tr>
+<tr><td width="50%"><img src="./images/screenshot-05-side-dock.jpg" alt="The Dock on the left side of the screen, magnifying under the pointer"><br>Dock on the side, with magnification</td><td width="50%"><img src="./images/screenshot-06-window-tiling.jpg" alt="The Window menu with its tiling options over three tiled windows"><br>Window tiling from the Window menu</td></tr>
+<tr><td width="50%"><img src="./images/screenshot-07-about-this-ipad.jpg" alt="The About This iPad window"><br>About This iPad</td><td width="50%"><img src="./images/screenshot-08-mission-control.jpg" alt="Mission Control with three windows and two desktops"><br>Mission Control with desktops</td></tr>
+<tr><td width="50%"><img src="./images/screenshot-09-finder.jpg" alt="A Finder window showing the Desktop folder"><br>Finder and desktop files</td><td width="50%"><img src="./images/screenshot-10-control-center.jpg" alt="The Mac-style Control Center"><br>Control Center</td></tr>
+</table>
 
 ## Install
 
