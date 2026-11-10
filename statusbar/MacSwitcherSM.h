@@ -548,6 +548,7 @@ static void DMMSWSMAimChange(NSUInteger gen);
 static void DMMSWSMSwitch(NSUInteger to, NSString *why, NSString *launching, CGFloat v, void (^done)(void)) {
     BOOL fromGesture = gMSWTrackCommit && gMSWSlRoot != nil;
     if (to >= gMSWDesks.count || to == gMSWCur || gMSWSwitching || gMSWTrack == 2 || (gMSWTrack == 3 && !fromGesture)) { if (done) done(); return; }
+    DMSMStripPresentationEnd(@"a desktop slides in");   // (a strip a swipe brought out goes before the stages change: StatusBar.x)
     gMSWSwitching = YES;
     gMSWSMQuietUntil = CACurrentMediaTime() + 5.0;   // (DMMSWSMApply stays out of it until the slide is over)
     CFTimeInterval t0 = CACurrentMediaTime();

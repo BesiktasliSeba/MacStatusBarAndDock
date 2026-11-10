@@ -72,6 +72,7 @@ static void DMTitleTapSMWindow(NSString *key, NSString *why) {
     BOOL atTarget = MSBDWinNear(now.CGRectValue, target);
     NSValue *rec = DMTitleRecordHeldSM(key, now.CGRectValue);   // (Fill's and Zoom's: the frame it had just before -- a Fit tile too, regression F2 -- while it holds, P4-1)
     int step = MSBDTitleStep(action, atTarget, rec != nil);
+    DMSMStripPresentationEnd([NSString stringWithFormat:@"%@ on %@", why, DMSMKeyText(key)]);   // (a strip a swipe brought out goes before the window's frame changes, as for a light: review 1.8.4.4 L3)
     for (NSString *k in [gSMTurnPlaced allKeys]) if (DMSMKeyCovers(key, k)) [gSMTurnPlaced removeObjectForKey:k];   // (placed now, as a layout)
     if (step == kMSBDTitleBack) {
         DMTitleRecordSMTo(key, stage, rec.CGRectValue);   // (back: dropped)

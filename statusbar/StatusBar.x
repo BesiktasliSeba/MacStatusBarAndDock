@@ -626,6 +626,13 @@ static BOOL DMSMWindowsBehindFullScreen(void);
 static void DMSMWindowsForward(BOOL forward);
 static void DMSMBringToFront(NSString *key);
 static void DMSMActivateOnTouch(UIEvent *event);
+static BOOL DMSMStripPresentationEnd(NSString *why);   // (Recent Apps with Left-Edge Swipe: a strip a swipe brought out goes, as an app's touch has it; YES: one was out)
+static BOOL DMSMStripPresented(void);                  // (Stage Manager presents a strip now: its own answer)
+static BOOL DMSMStripHoldsBack(NSString *what, dispatch_block_t act);   // (an action SpringBoard lays out waits while a strip is still presented: YES, it waits)
+static void DMSMStripTouch(UIEvent *event);
+#if DEBUG
+static NSString *DMSMStripStateText(void);   // (debug trigger smstripshown)
+#endif
 static BOOL gSMKeyboardShown = NO;   // (a DOCKED on-screen keyboard is up: set by -[SBFluidSwitcherViewController _keyboardWillShow:])
 static CGRect gSMKeyboardFrame;      // (its frame on the screen, while up)
 static NSMutableSet<NSString *> *gSMBehindDock;   // (windows the user dragged down behind the Dock -- recorded at the drag's end, logic review R2; window keys)
@@ -1391,6 +1398,10 @@ static void DMForceQuitBundle(NSString *bundleID) {
     if (!bundleID.length) return;
     if (DMGARefuses([@"force quit " stringByAppendingString:bundleID])) return;   // (the app Guided Access keeps the iPad in, or any other)
     if (DMWaitForContextMenu([@"force quit " stringByAppendingString:bundleID], ^{ DMForceQuitBundle(bundleID); })) return;
+    // (Stage Manager as the engine: a strip a swipe brought out goes first, and the force quit runs once Stage Manager no longer presents it. Its
+    //  windows leave their stages, hidden ones too (DMSMTakeOutOfHiddenStages: the very stages the strip shows as cards), and the app's stage is
+    //  deleted: review 1.8.4.4 L2. A key's Force Quit (Spotlight's row, Return) has no touch that put the strip away)
+    if (DMSMStripHoldsBack([@"force quit " stringByAppendingString:bundleID], ^{ DMForceQuitBundle(bundleID); })) return;
     if (!gAppQuitAt) gAppQuitAt = [NSMutableDictionary dictionary];
     gAppQuitAt[bundleID] = @(CACurrentMediaTime());
     DMPrewarmQuitAdd(bundleID);   // (our red light / Force Quit, going ahead now -- not one Guided Access refused, logic test W3: not prewarmed again
@@ -25428,6 +25439,15 @@ static void DMCaptureExternalDisplay(void) {
     id mode = DMCall(disp, @"currentMode");
     long w = mode ? ((long (*)(id, SEL))objc_msgSend)(mode, NSSelectorFromString(@"width")) : 0, h = mode ? ((long (*)(id, SEL))objc_msgSend)(mode, NSSelectorFromString(@"height")) : 0;
     if (w <= 0 || h <= 0 || w > 8000 || h > 8000) { DMLog([NSString stringWithFormat:@"[tvshot] odd size %ld x %ld", w, h]); return; }
+    // (the picture as SpringBoard draws it: a 4K TV at 2560 x 1440 points is drawn at 2x, 5120 x 2880, and scaled to its 3840 x 2160 mode on the way out;
+    //  a surface of the mode's size held only the top left 1920 x 1080 points -- A12Z, 10 Nov: no status icons, no Dock. The extended screen's own
+    //  pixels when they are more than the mode's)
+    long mw = w, mh = h;
+    for (UIScreen *sc in [UIScreen screens]) {
+        if (sc == [UIScreen mainScreen] || sc.mirroredScreen) continue;
+        CGSize n = sc.nativeBounds.size;
+        if (n.width > w && n.height > h && n.width <= 8000 && n.height <= 8000 && fabs(n.width / n.height - (double)mw / (double)mh) < 0.01) { w = (long)n.width; h = (long)n.height; }
+    }
     void (*render)(mach_port_t, CFStringRef, void *, int, int) = dlsym(RTLD_DEFAULT, "CARenderServerRenderDisplay");
     void *(*create)(CFDictionaryRef) = dlsym(RTLD_DEFAULT, "IOSurfaceCreate");
     int (*lock)(void *, uint32_t, uint32_t *) = dlsym(RTLD_DEFAULT, "IOSurfaceLock");
@@ -25456,7 +25476,7 @@ static void DMCaptureExternalDisplay(void) {
     }
     if (src) CGContextRelease(src);
     CGColorSpaceRelease(cs); CFRelease(surf);
-    DMLog([NSString stringWithFormat:@"[tvshot] %@ (%ld x %ld): %@", name, w, h, ok ? @"written /tmp/macstatusbar-tv.png" : @"FAILED"]);
+    DMLog([NSString stringWithFormat:@"[tvshot] %@ (%ld x %ld, mode %ld x %ld): %@", name, w, h, mw, mh, ok ? @"written /tmp/macstatusbar-tv.png" : @"FAILED"]);
 }
 // burst_<frames>_<ms>_<div>[_<x>_<y>_<w>_<h>][|<trigger>] (debug): the iPad's own screen, frame by frame, from the render server on a background
 // queue -- what an animation really shows (a stray line, a flash, a jump), which one rawshot can't catch. Every <ms> ms, <frames> frames of the
@@ -29606,6 +29626,7 @@ static void DMRunTrigger(NSString *cmd) {
         DMLog([NSString stringWithFormat:@"[debug] switcher / status bar window layer speed %.2f", f]);
     }
     else if ([cmd isEqualToString:@"smrefreshbars"]) { DMLog(@"[smstrips] DMSMRefreshBars now (debug: a front-window change landing at this moment)"); DMSMRefreshBars(); }   // smrealhome: our own real Home, as an empty Mac Switcher desktop asks for it (SMHome.h; waits for a running switcher gesture)
+    else if ([cmd isEqualToString:@"smstripshown"]) DMLog([NSString stringWithFormat:@"[smstripshown] %@", DMSMStripStateText()]);   // smstripshown: each switcher's strip presented or not, Apple's own answer (read-only)
     else if ([cmd isEqualToString:@"smstrips"]) {   // smstrips: the top bar now -- every status bar copy in a window card and the screen's own (read-only)
         NSString *verdict = nil, *s = DMSMDebugStrips(&verdict, NO);
         DMLog([NSString stringWithFormat:@"[smstrips] front %@ | top bar: %@ | %@", DMSMKeyText(DMSMFrontWindowKey()), verdict ?: @"NONE", s]);
@@ -40207,6 +40228,11 @@ static BOOL DMSMWindowActionAs(NSString *key, NSString *name, BOOL users) {
         else DMSMAfterGesture(what, ^{ DMSMWindowActionAs(k, n, NO); });
         return YES;
     }
+    // (a strip a swipe brought out goes first, as a touch in the app would end it: SpringBoard can't lay out a closing window under it. While Stage
+    //  Manager still presents it, the action waits for it to go: DMSMStripHoldsBack. Not while a switcher gesture holds the stage: an app's touch
+    //  can't come then either, and the action asked again after the gesture ends it then, review 1.8.4.4 L1)
+    NSString *sk = [key copy], *sn = [name copy];
+    if (DMSMStripHoldsBack(what, ^{ DMSMWindowActionAs(sk, sn, users); })) return YES;
     id vc = DMSMTopAffordanceFor(wk);
     id action = vc ? DMCall(vc, [name stringByAppendingString:@"Action"]) : nil;
     DMLog([NSString stringWithFormat:@"[smengine] %@ on %@: %@%@", name, DMSMKeyText(wk), [action isKindOfClass:[UIAction class]] ? [(UIAction *)action title] : @"not available", last ? @" (the desktop's last window)" : @""]);
@@ -40230,7 +40256,8 @@ static BOOL DMSMWindowActionAs(NSString *key, NSString *name, BOOL users) {
         DMSMGoHomeForReal(@"the desktop's last window closes");   // (a real Home: the Home rule keeps windows on screen, this one goes -- SMHome.h)
         // (taken out once that Home transition is over: its end puts the stage it left back into the App Switcher -- a removal before it left a
         //  black card of the quit app there, 1.5.2; SMAfterHome.h)
-        DMSMAfterOurHome([NSString stringWithFormat:@"%@'s removal", DMSMKeyText(wk)], closing, ^{
+        NSString *removal = [NSString stringWithFormat:@"%@'s removal", DMSMKeyText(wk)];
+        void (^takeOut)(BOOL) = ^(BOOL homeEnded) {   // (homeEnded: it runs because the Home transition was seen to end, DMSMAfterHomeEnded)
             DMSMSetMinimized(wk, NO);
             // (a window's own Close does nothing once its stage is no longer shown -- tested 07:10: the stage stayed and came back with the next
             // app. Its stage holds only this window: that stage is taken out the way the App Switcher closes one window -- SpringBoard's
@@ -40241,7 +40268,7 @@ static BOOL DMSMWindowActionAs(NSString *key, NSString *name, BOOL users) {
             // (on screen now: after the Home transition was seen to end, the user opened the app again -- left open, never closed or quit behind
             //  their back; with no end of a Home seen, the Home never came -- its own Close, which works on a window that is shown)
             BOOL shown = st && DMFrontApp() && [DMSMFrontStage() isEqual:st];
-            if (shown && DMSMAfterHomeEnded()) {
+            if (shown && homeEnded) {
                 DMLog([NSString stringWithFormat:@"[smengine] %@ is on screen again (opened again after the Home Screen): left open", DMSMKeyText(wk)]);
                 return;
             }
@@ -40257,6 +40284,12 @@ static BOOL DMSMWindowActionAs(NSString *key, NSString *name, BOOL users) {
                 DMSMRunAction(action, vc);
                 DMLog([NSString stringWithFormat:@"[smengine] %@ closed from the Home Screen (its own Close%@)", DMSMKeyText(wk), can ? @"; SpringBoard took nothing out" : (shown ? @"; it is on screen again" : (st ? @"; its stage holds other windows now" : @"; its stage is not in the switcher"))]);
             }
+        };
+        // (a strip swiped out since the light was pressed, during the Home transition, goes before the window is taken out, and the removal waits
+        //  while Stage Manager still presents it, as the action itself did: review 1.8.4.4 L2)
+        DMSMAfterOurHome(removal, closing, ^{
+            BOOL ended = DMSMAfterHomeEnded();
+            if (!DMSMStripHoldsBack(removal, ^{ takeOut(ended); })) takeOut(ended);
         });
         return YES;
     }
@@ -41129,6 +41162,9 @@ static BOOL DMSMRequestStageOrderAs(id stage, NSDictionary *timeByItem, id front
 }
 static BOOL DMSMToggleZoom(NSString *key) {
     DM_FEATURE_MARK("sm-zoom-toggle");
+    // (a strip a swipe brought out goes first, as for the other lights: a window going full screen or coming back while the stage stood aside for
+    //  the strip, and the strip still out after it, review 1.8.4.4 L3. No window leaves its stage here: no waiting)
+    DMSMStripPresentationEnd([NSString stringWithFormat:@"zoom on %@", DMSMKeyText(key)]);
     id stage = DMSMStageOf(key), attrs = nil;   // (its own stage, on whichever display)
     id item = DMSMItemFor(stage, key, &attrs);
     if (!item || !attrs) return NO;
@@ -43031,7 +43067,7 @@ static void DMSMLogIconTap(NSString *bundle, UIView *icon, NSString *how) {
 // build's own sendEvent: hook, so the feature never shipped in 1.1.0/1.1.1 (logic test K1).
 %hook SpringBoard
 - (void)sendEvent:(UIEvent *)event {
-    if (event.type == UIEventTypeTouches && DMSMEngine()) DMSMActivateOnTouch(event);
+    if (event.type == UIEventTypeTouches && DMSMEngine()) { DMSMActivateOnTouch(event); DMSMStripTouch(event); }
     %orig;
 }
 %end
@@ -43064,12 +43100,29 @@ static BOOL DMSMFree(void) { return DMSMEngine() && !DMTestFlag("/tmp/msb-sm-app
 static BOOL (*o_SMStripRevealBegin)(id, SEL, id);
 static BOOL gSMStripRevealing = NO, gSMStripBaseKnown = NO, gSMStripRose = NO;   // (a swipe's reveal of the strip is under way, DMSMStripIsRevealed)
 static double gSMStripRevealAt = 0, gSMStripBaseX = 0;
+// The swipe that brings the strip out still has its finger on it (its recognizer began or changed): the strip is left to it meanwhile. Put away from
+// under the finger, the swipe's next move or its end could bring it out again while an action went ahead (review 1.8.4.4 L1).
+static __weak UIGestureRecognizer *gSMStripRevealGesture;
+static BOOL DMSMStripSwipeHeld(void) {
+    UIGestureRecognizer *g = gSMStripRevealGesture;
+    if (!g) return NO;
+    UIGestureRecognizerState s = g.state;
+    return s == UIGestureRecognizerStateBegan || s == UIGestureRecognizerStateChanged;
+}
+static BOOL DMSMStripEndKnown(void);   // (below: Stage Manager's own end of a presented strip, there as read)
 static BOOL DMSMStripRevealBegin(id self, SEL _cmd, id g) {
     // (Settings > Recent Apps with Left-Edge Swipe, 1.8.4.2, off unless switched on: Apple's gate decides -- not over the Mac Switcher's view)
     // (the Dock at Left stands on that edge: the strip's cards came out under it, iPad 2 s02, 10 Nov; the swipe stays the Dock's there)
     if (DMSMFree() && (!gSMStripSwipe || gMSWOpen || gMSWSwitching || DMDockSideNow([UIScreen mainScreen].bounds.size) == MSBDDockLeft)) { DM_FEATURE_MARK("sm-no-strip-reveal"); return NO; }
+    // (iPadOS 17 and 18: only where our surfaces can put the strip away again (DMSMStripPresentationEnd). Without that end a strip the swipe brings
+    //  out stays under our lights, keys and menus, and on 18.5 a window closed there ended in SpringBoard's own assertion: review 1.8.4.4 M1. 16 ran
+    //  without the end: as before. Said once, by DMSMStripEndKnown)
+    if (DMSMFree() && DMNewOS() && !DMSMStripEndKnown()) { DM_FEATURE_MARK("sm-no-strip-reveal-no-end"); return NO; }
     BOOL begins = o_SMStripRevealBegin(self, _cmd, g);
-    if (begins && DMSMFree() && gSMStripSwipe) { gSMStripRevealing = YES; gSMStripBaseKnown = NO; gSMStripRose = NO; gSMStripRevealAt = CACurrentMediaTime(); DM_FEATURE_MARK("sm-strip-swipe-reveal"); }
+    if (begins && DMSMFree() && gSMStripSwipe) {
+        gSMStripRevealing = YES; gSMStripBaseKnown = NO; gSMStripRose = NO; gSMStripRevealAt = CACurrentMediaTime(); DM_FEATURE_MARK("sm-strip-swipe-reveal");
+        gSMStripRevealGesture = [g isKindOfClass:[UIGestureRecognizer class]] ? g : nil;
+    }
     return begins;
 }
 // With the strip's gesture held off, the same swipe in from the left edge went on to Stage Manager's window drag (the split-view "unpin" recognizer,
@@ -43221,9 +43274,14 @@ static void DMSMStripDebugLog(NSString *what, double o) {
 #endif
 // Recent Apps with Left-Edge Swipe (1.8.4.2): while a swipe has the strip out, its stages are drawn as Apple has them (the two hooks here hide them only for a strip that stays hidden: the
 // strip came out empty, review 1.8.4.2 H1, iPad 2). Out or not is the strip's own place: a swipe's reveal starts at the place it has when the gate opens; it is over once the strip is back there.
-static BOOL DMSMStripIsRevealed(id mod) {
-    if (!gSMStripRevealing) return NO;
+static BOOL DMSMStripPresentedFor(id stage);   // (below: Stage Manager's own answer, where it has one, from the switcher of that stage's display)
+static BOOL DMSMStripIsRevealed(id mod, id al) {
     if (!gSMStripSwipe) { gSMStripRevealing = NO; return NO; }
+    // (a strip a swipe brought out and Stage Manager now presents: out, whatever its place says -- on 18.5 the place was back at once while Stage
+    //  Manager still presented it, so its cards were not drawn, A12Z s02, 10 Nov. Asked of the display the stage al is on: the other display's
+    //  strip stays hidden, and a stage leaving it is not drawn going into it, review 1.8.4.4 L4)
+    if (DMSMStripPresentedFor(al)) return YES;
+    if (!gSMStripRevealing) return NO;
     static SEL originSel; if (!originSel) originSel = NSSelectorFromString(@"_appStripOriginX");
     Method m = class_getInstanceMethod(object_getClass(mod), originSel);
     if (!m || strcmp(method_getTypeEncoding(m) ?: "", "d16@0:8") != 0) {   // (no such place here: the swipe's first 30 s)
@@ -43236,9 +43294,142 @@ static BOOL DMSMStripIsRevealed(id mod) {
     else if (gSMStripRose || CACurrentMediaTime() - gSMStripRevealAt > 3.0) { gSMStripRevealing = NO; DMLog(@"[smengine] the strip is hidden again"); }
     return gSMStripRevealing;
 }
+// A strip a swipe brought out stays out until something ends it. Stage Manager ends it in -[SBFluidSwitcherViewController eventSource:userTouchedApplication:]
+// -- a touch in an app: it clears the switcher's strips presentation and lays the stage out again without the strip (18.5's SpringBoard.framework, read
+// 10 Nov) -- and through a strip card's own tap. Our engine adds surfaces Stage Manager knows nothing of: the desktop, the Dock's touches outside every
+// window, the menu bar, our title bars and lights, our menus and keys, the Mac Switcher. A touch or action there left the strip presented, so:
+//  - on 18.5 a window closed with our light (or a key, a menu) while the strip was out ended in SpringBoard's own assertion: the closing modifier asks
+//    -[SBFullScreenContinuousExposeSwitcherModifier frameForLayoutRole:inAppLayout:withBounds:], which, while the strip is presented over a hidden strip
+//    (continuousExposeStripProgress 1, prefersStripHidden), finds the window's item in the auto-layout space of the stage that contains it -- after
+//    the close that stage no longer has it, and -[SBContinuousExposeAutoLayoutSpace autoLayoutItemForDisplayItem:] asserts (A12Z z04, 10 Nov 05:57);
+//  - a tap on the empty desktop left the strip out (iPad 2, 1.8.4.3's Low).
+// They now end it as a touch in an app does: Apple's own method, which reads none of its arguments. Only with the switch on, only where both methods
+// are there as read; else nothing changes.
+static NSHashTable *gSMSwitcherVCs;   // (the switchers that asked prefersStripHidden: one per display)
+static void DMSMNoteSwitcherVC(id vc) {
+    if (!vc) return;
+    if (!gSMSwitcherVCs) gSMSwitcherVCs = [NSHashTable weakObjectsHashTable];
+    if (![gSMSwitcherVCs containsObject:vc]) [gSMSwitcherVCs addObject:vc];
+}
+static SEL gSMStripProgSel, gSMStripTouchedSel;
+static BOOL DMSMStripEndKnown(void) {
+    static int ok = -1;
+    if (ok >= 0) return ok;
+    Class c = objc_getClass("SBFluidSwitcherViewController");
+    gSMStripProgSel = NSSelectorFromString(@"continuousExposeStripProgress"); gSMStripTouchedSel = NSSelectorFromString(@"eventSource:userTouchedApplication:");
+    Method mp = c ? class_getInstanceMethod(c, gSMStripProgSel) : NULL, mt = c ? class_getInstanceMethod(c, gSMStripTouchedSel) : NULL;
+    ok = mp && mt && [DMSMSigOfMethod(mp) isEqualToString:DMSMExpect(@encode(double), NULL)] && [DMSMSigOfMethod(mt) isEqualToString:DMSMExpect(@encode(void), @encode(id), @encode(id), NULL)];
+    if (!ok) DMLog(DMNewOS() ? @"[smengine] the strip's end on an app touch is not as expected here: Recent Apps with Left-Edge Swipe leaves the strip hidden on this iPadOS (a strip nothing of ours can put away is 18.5's assertion on a window closed under it)"
+                             : @"[smengine] the strip's end on an app touch is not as expected here: a strip a swipe brought out stays until Stage Manager ends it");
+    return ok;
+}
+// (stage: only the switcher of the display that stage is on, each display has a strip of its own (review 1.8.4.4 L4); nil: any display's. A switcher
+//  on no screen now counts for every display, as before)
+static BOOL DMSMStripPresentedFor(id stage) {
+    if (!gSMStripSwipe || !gSMSwitcherVCs.count || !DMSMStripEndKnown()) return NO;
+    for (id vc in gSMSwitcherVCs.allObjects) {
+        if (!(((double (*)(id, SEL))objc_msgSend)(vc, gSMStripProgSel) > 0.0)) continue;
+        UIScreen *sc = stage && [vc isKindOfClass:[UIViewController class]] ? ((UIViewController *)vc).viewIfLoaded.window.screen : nil;
+        if (!sc) return YES;
+        id identity = DMSMStageDisplayIdentity(stage);
+        if (sc == [UIScreen mainScreen] ? DMSMIsMainIdentity(identity) : (identity && [identity isEqual:DMSMIdentityOfScreen(sc)])) return YES;
+    }
+    return NO;
+}
+static BOOL DMSMStripPresented(void) { return DMSMStripPresentedFor(nil); }
+// YES: a strip was out, and it was asked to go. Gone or not is Stage Manager's own answer after the ask (DMSMStripPresented): its end may run its
+// course, and an iPadOS whose end reads the app it is given may do nothing (review 1.8.4.4 M1); the log says which. While the swipe's finger is
+// still on the strip it is not asked (DMSMStripSwipeHeld): YES all the same, the strip is out.
+static BOOL DMSMStripPresentationEnd(NSString *why) {
+    if (!DMSMFree() || !gSMStripSwipe || !gSMSwitcherVCs.count || !DMSMStripEndKnown()) return NO;
+    BOOL out = NO, asked = NO, held = DMSMStripSwipeHeld();
+    for (id vc in gSMSwitcherVCs.allObjects) {
+        double p = ((double (*)(id, SEL))objc_msgSend)(vc, gSMStripProgSel);
+        if (!(p > 0.0)) continue;
+        out = YES;
+        if (held) continue;
+        ((void (*)(id, SEL, id, id))objc_msgSend)(vc, gSMStripTouchedSel, nil, nil);
+        asked = YES;
+    }
+    if (!asked) return out;
+    gSMStripRevealing = NO;
+    DM_FEATURE_MARK("sm-strip-ended-by-ours");
+    DMLog([NSString stringWithFormat:@"[smengine] the strip a swipe brought out %@ (%@), as a touch in an app puts it away", DMSMStripPresented() ? @"is asked to go, Stage Manager still presents it" : @"is put away", why ?: @"?"]);
+    return YES;
+}
+// A window action SpringBoard lays out (a close, a minimize, a move to the other display) never runs under a presented strip (review 1.8.4.4 M1): the
+// strip is asked to go first, and while Stage Manager still presents it (its end running its course, an iPadOS whose end does not take) the action
+// waits, a quarter second at a time, and runs once the strip is gone. Still out a second later: the action is left, and the log says so (on 18.5 a
+// close under it ended in SpringBoard's own assertion, A12Z z04: a click lost is the lesser harm). Asked for again while it waits (a second click on
+// the light): one action, as DMSMAfterGestureUsers has it. NO: no strip is out (never with the switch off or another engine), the caller goes on.
+static NSMutableSet<NSString *> *gSMStripWaiting;   // (the actions waiting for the strip to go, by name)
+// (step: the quarter seconds waited with no finger on the strip, the second counts from the finger's lift, L1; ticks: all of them, 30 s at most)
+static void DMSMStripWaitStep(NSString *what, dispatch_block_t act, int step, int ticks) {
+    BOOL held = DMSMStripSwipeHeld();
+    DMSMStripPresentationEnd(what);   // (asked again: the first ask may not have taken, or the swipe's finger was still on it)
+    if (!DMSMStripPresented()) {
+        [gSMStripWaiting removeObject:what];
+        DMLog([NSString stringWithFormat:@"[smengine] %@: the strip is gone (%.2f s), it goes ahead", what, ticks * 0.25]);
+        act();
+        return;
+    }
+    if ((!held && step >= 4) || ticks >= 120) {
+        [gSMStripWaiting removeObject:what];
+        DM_FEATURE_MARK("sm-strip-action-left");
+        DMLog([NSString stringWithFormat:@"[smengine] %@: Stage Manager still presents the strip %.2f s after it was asked to go: left (SpringBoard can't lay out a window leaving under it)", what, ticks * 0.25]);
+        return;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMSMStripWaitStep(what, act, held ? step : step + 1, ticks + 1); });
+}
+static BOOL DMSMStripHoldsBack(NSString *what, dispatch_block_t act) {
+    if (!DMSMFree() || !act) return NO;
+    DMSMStripPresentationEnd(what);
+    if (!DMSMStripPresented()) return NO;
+    if (!gSMStripWaiting) gSMStripWaiting = [NSMutableSet set];
+    if ([gSMStripWaiting containsObject:what]) { DMLog([NSString stringWithFormat:@"[smengine] %@: asked for again while it waits for the strip to go: one action", what]); return YES; }
+    NSString *w = [what copy];
+    dispatch_block_t a = [act copy];
+    [gSMStripWaiting addObject:w];
+    DM_FEATURE_MARK("sm-strip-action-waits");
+    BOOL held = DMSMStripSwipeHeld();
+    DMLog([NSString stringWithFormat:@"[smengine] %@: Stage Manager still presents the strip%@, it waits for the strip to go", w, held ? @" (its swipe's finger is on it)" : @""]);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMSMStripWaitStep(w, a, held ? 0 : 1, 1); });
+    return YES;
+}
+#if DEBUG
+static NSString *DMSMStripStateText(void) {
+    NSMutableString *t = [NSMutableString stringWithFormat:@"switch %d, ours revealing %d, swipe's finger on it %d, end known %d;", gSMStripSwipe, gSMStripRevealing, DMSMStripSwipeHeld(), gSMSwitcherVCs.count ? DMSMStripEndKnown() : -1];
+    for (id vc in gSMSwitcherVCs.allObjects) {
+        double p = DMSMStripEndKnown() ? ((double (*)(id, SEL))objc_msgSend)(vc, gSMStripProgSel) : -1;
+        UIScreen *sc = [vc isKindOfClass:[UIViewController class]] ? ((UIViewController *)vc).view.window.screen : nil;
+        [t appendFormat:@" switcher %p (%@) strip progress %.2f;", vc, sc == [UIScreen mainScreen] ? @"iPad" : sc ? @"other screen" : @"no screen", p];
+    }
+    return t;
+}
+#endif
+// A finger, pointer or pencil that comes down on one of our surfaces outside Stage Manager's own window: the Home Screen and desktop, the Dock, the menu
+// bar, our menus. A touch on a strip card or in an app is Stage Manager's own (the app's ends the strip there already). Not our title bars: the stage
+// stands aside for a presented strip, and ending it at the touch slid the window back from under the finger, so a tap on a light missed it (A12Z s03,
+// 10 Nov); a light's action ends the strip itself, just before it acts (DMSMWindowActionAs).
+static void DMSMStripTouch(UIEvent *event) {
+    if (!gSMStripSwipe || !gSMSwitcherVCs.count) return;
+    for (UITouch *t in event.allTouches) {
+        if (t.phase != UITouchPhaseBegan) continue;
+        UIWindow *w = t.window;
+        if (!w) continue;   // (none of our surfaces: each is a window. SpringBoard has such touches (DMSMTouchTarget), and one may be a strip card's copy, review 1.8.4.4 L5)
+        NSString *wc = NSStringFromClass([w class]);
+        // (the system gestures' own copy of a touch says nothing of where it landed: a strip card's tap has one too, and the card must stay Stage
+        //  Manager's -- A12Z s02, 10 Nov; a touch in an app reaches SpringBoard only as that copy, and Stage Manager ends the strip for it itself)
+        if ([wc isEqualToString:@"_UISystemGestureWindow"]) continue;
+        if ([wc isEqualToString:@"SBMainSwitcherWindow"]) continue;
+        NSString *where = [NSString stringWithFormat:@"a touch in %@", wc];
+        dispatch_async(dispatch_get_main_queue(), ^{ DMSMStripPresentationEnd(where); });
+        return;
+    }
+}
 static double DMSMStripOpacity(id self, SEL _cmd, long long role, id al, unsigned long long i) {
     double o = o_SMStripOpacity(self, _cmd, role, al, i);
-    if (o > 0.0 && DMSMFree() && !DMSMStripDebugApple() && !DMSMStripIsRevealed(self) && DMSMStripOffStage(self, al)) {
+    if (o > 0.0 && DMSMFree() && !DMSMStripDebugApple() && !DMSMStripIsRevealed(self, al) && DMSMStripOffStage(self, al)) {
         DM_FEATURE_MARK("sm-strip-stages-not-drawn");
         DMSMStripDebugLog([NSString stringWithFormat:@"stage %p window card (role %lld)", al, role], o);
         return 0.0;
@@ -43247,9 +43438,10 @@ static double DMSMStripOpacity(id self, SEL _cmd, long long role, id al, unsigne
 }
 static double DMSMStripIconOpacity(id self, SEL _cmd, unsigned long long i) {
     double o = o_SMStripIconOpacity(self, _cmd, i);
-    if (o <= 0.0 || !DMSMFree() || DMSMStripDebugApple() || DMSMStripIsRevealed(self)) return o;
+    if (o <= 0.0 || !DMSMFree() || DMSMStripDebugApple()) return o;
     NSArray *als = ((id (*)(id, SEL))objc_msgSend)(self, gSMStripLayoutsSel);
-    if (![als isKindOfClass:[NSArray class]] || i >= als.count || !DMSMStripOffStage(self, als[i])) return o;
+    id al = [als isKindOfClass:[NSArray class]] && i < als.count ? als[i] : nil;
+    if (DMSMStripIsRevealed(self, al) || !al || !DMSMStripOffStage(self, al)) return o;
     DMSMStripDebugLog([NSString stringWithFormat:@"stage %p icons and title", als[i]], o);
     return 0.0;
 }
@@ -43409,6 +43601,7 @@ static BOOL DMSMDockOwnsKeyboard(void) {
     // (Recent Apps with Left-Edge Swipe keeps this YES too: a hidden strip is what Apple's own swipe reveals for a moment and hides again after a pick
     //  or a tap elsewhere. Passing Stage Manager's own answer during a reveal left the strip out for good, iPad 2 s01, 10 Nov; its cards are drawn
     //  during a reveal by DMSMStripIsRevealed)
+    if (DMSMFree() && gSMStripSwipe) DMSMNoteSwitcherVC(self);   // (each display's switcher: a strip a swipe brought out is ended there, DMSMStripPresentationEnd)
     return DMSMFree() ? YES : %orig;
 }
 %end

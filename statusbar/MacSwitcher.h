@@ -3051,6 +3051,10 @@ static void DMMSWOpen(NSString *why) {
     if ((DMSwitcherVisible() && !DMMSWGestureGrace()) || DMCoverSheetShown() || gMSWSwitching || gMSWTrack >= 2) { DMLog(@"[macswitcher] not opened: the App Switcher or the Lock Screen is up, or a desktop is sliding in"); return; }
     UIWindow *w = DMMSWLayer();
     if (!w) return;
+    // (a strip a swipe brought out goes first: the view shows the desktops' windows, StatusBar.x. No picture of the desktop is kept from a moment the
+    //  strip was out, the gesture's start included: it would show the strip and the stage pushed aside for it, review 1.8.4.4 L7. A switch from the
+    //  view takes the screen under the view then, as when no picture is kept)
+    BOOL stripOut = DMSMStripPresentationEnd(@"the Mac Switcher opens");
     // (the desktop under the view, as a picture: the left desktop's for a switch from the strip -- the one from the start of the gesture that
     //  opens the view when there is one, as SpringBoard's card moved after it; else the screen now, before the view is drawn: a cheap picture)
     //  F5: the screen picture is asked for without waiting (DMMSWScreenPictureAsync, our window left out) -- UIKit's waiting one once held
@@ -3060,17 +3064,17 @@ static void DMMSWOpen(NSString *why) {
     //  picture -- the screen before the gesture --, and since K-1 that picture exists with one desktop too; 1.4.1 logic test L-4. Debug
     //  /tmp/msw-liftany = before.)
     BOOL byGesture = DMMSWGestureGrace() || DMTestFlag("/tmp/msw-liftany");
-    BOOL lift = byGesture && gMSWLiftPic && gMSWLiftPicId == DMMSWCurId() && (CACurrentMediaTime() - gMSWLiftPicAt < 2.0 || (DMMSWGestureGrace() && gMSWLiftPicGen == gMSWTrackPicGen));
+    BOOL lift = !stripOut && byGesture && gMSWLiftPic && gMSWLiftPicId == DMMSWCurId() && (CACurrentMediaTime() - gMSWLiftPicAt < 2.0 || (DMMSWGestureGrace() && gMSWLiftPicGen == gMSWTrackPicGen));
     DMMSWOpenShotDrop();
     gMSWOpenShotId = DMMSWCurId();
     // (opened by the hold: the picture from the gesture's start, taken before SpringBoard moved anything (DMMSWTrackBegin / DMMSWStartPicture) --
     //  the screen now is SpringBoard's own return from the hold still on screen (the Home Screen zoomed, K-1). It belongs to the gesture that opened
     //  the view whatever its age: a hold may last more than 2 s.)
 #if DEBUG
-    if (DMMSWGestureGrace()) DMLog([NSString stringWithFormat:@"[macswitcher] opened by the hold: the desktop's picture %@", lift ? @"from the gesture's start" : @"none from its start: the screen now"]);
+    if (DMMSWGestureGrace()) DMLog([NSString stringWithFormat:@"[macswitcher] opened by the hold: the desktop's picture %@", lift ? @"from the gesture's start" : (stripOut ? @"none, the strip was out" : @"none from its start: the screen now")]);
 #endif
     if (lift) gMSWOpenShot = gMSWLiftPic;
-    else {
+    else if (!stripOut) {
         NSUInteger gen = gMSWOpenShotGen;
         NSInteger did = DMMSWCurId();
         BOOL asked = DMMSWAsyncScreenOn() && DMMSWScreenPictureAsync(gMSWWindow ? @[gMSWWindow] : @[], ^(UIView *pic, double ms) {

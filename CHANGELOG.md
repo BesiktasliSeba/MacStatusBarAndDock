@@ -2,6 +2,14 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.4.4
+
+### Improvements
+- On an external display, everything on the menu bar now follows Menu Bar Size in Settings > Status Bar, not only the Apple logo, and windows there start below it.
+
+### Fixes
+- With Recent Apps with Left-Edge Swipe, a tap on the desktop or the Dock, or opening the Mac Switcher, now puts the strip of recent apps away. It used to stay out.
+
 ## 1.8.4.3
 
 ### New
