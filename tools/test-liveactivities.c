@@ -99,16 +99,18 @@ int main(void) {
     check("a connected call: its time", MSBDLACallText(1, 0, 0, &word) == 1);
     check("  ... held: \"On Hold\"", MSBDLACallText(1, 1, 0, &word) == 0 && !strcmp(word, "On Hold"));
     check("  ... not connected yet: \"Calling\" (ours) or \"Incoming\"", MSBDLACallText(0, 0, 0, &word) == 0 && !strcmp(word, "Calling") && MSBDLACallText(0, 0, 1, &word) == 0 && !strcmp(word, "Incoming"));
+    check("a timer active by its state (16.7.7): running or paused, not stopped; a state number not found never matches",
+          MSBDLATimerActiveByState(3, 2, 3) && MSBDLATimerActiveByState(2, 2, 3) && !MSBDLATimerActiveByState(1, 2, 3) && !MSBDLATimerActiveByState(-1, -1, -1) && !MSBDLATimerActiveByState(3, -1, -1));
     // ---- where the timers source and the seek run (review 1.8.4 M1, P2-L3): the lists SpringBoard and Settings ask, the versions the device pass
-    //      proved (KT's yes, 7 Nov): 17.5.1 (the 17.5) and 18.5 (the A12Z); every other version off until it is tested
+    //      proved: 15.6.1 (the M1), 16.7.7 (the iPad 2), 17.5.1 (the 17.5) and 18.5 (the A12Z); every other version off until it is tested
     long tried[][3] = { { 15, 6, 1 }, { 16, 7, 7 }, { 17, 5, 1 }, { 18, 5, 0 }, { 0, 0, 0 } };
-    check("timers and the seek listed for 17.5.1 and 18.5, as the device pass proved them", MSBDLATimersListed(17, 5, 1) && MSBDLATimersListed(18, 5, 0)
+    check("timers and the seek listed for 15.6.1, 16.7.7, 17.5.1 and 18.5, as the device passes proved them", MSBDLATimersListed(15, 6, 1) && MSBDLASeekListed(15, 6, 1) && MSBDLATimersListed(16, 7, 7) && MSBDLASeekListed(16, 7, 7) && MSBDLATimersListed(17, 5, 1) && MSBDLATimersListed(18, 5, 0)
           && MSBDLASeekListed(17, 5, 1) && MSBDLASeekListed(18, 5, 0));
-    long off[][3] = { { 15, 6, 1 }, { 16, 7, 7 }, { 17, 5, 0 }, { 17, 5, 2 }, { 17, 6, 1 }, { 18, 5, 1 }, { 18, 6, 0 }, { 18, 7, 2 }, { 26, 0, 0 }, { 0, 0, 0 } };
+    long off[][3] = { { 15, 6, 0 }, { 16, 7, 6 }, { 17, 5, 0 }, { 17, 5, 2 }, { 17, 6, 1 }, { 18, 5, 1 }, { 18, 6, 0 }, { 18, 7, 2 }, { 26, 0, 0 }, { 0, 0, 0 } };
     int anyOff = 0;
     for (size_t i = 0; i < sizeof off / sizeof off[0]; i++) if (MSBDLATimersListed(off[i][0], off[i][1], off[i][2]) || MSBDLASeekListed(off[i][0], off[i][1], off[i][2])) anyOff = 1;
-    check("  ... and for no other version (15.6.1, 16.7.7 whose MobileTimer lacks +isActiveTimer:, 17.5, 17.5.2, 17.6.1, 18.5.1, 18.6, 18.7.2, 26): off, no Timers row", !anyOff);
-    check("  ... exactly those two rows in each list", sizeof kMSBDLATimersChecked / sizeof kMSBDLATimersChecked[0] == 2 && sizeof kMSBDLASeekChecked / sizeof kMSBDLASeekChecked[0] == 2);
+    check("  ... and for no other version (15.6, 16.7.6, 17.5, 17.5.2, 17.6.1, 18.5.1, 18.6, 18.7.2, 26): off, no Timers row", !anyOff);
+    check("  ... exactly those four rows in each list", sizeof kMSBDLATimersChecked / sizeof kMSBDLATimersChecked[0] == 4 && sizeof kMSBDLASeekChecked / sizeof kMSBDLASeekChecked[0] == 4);
     int noApps = 1;
     for (int i = 0; i < 4; i++) if (MSBDLAAppsListed(tried[i][0], tried[i][1], tried[i][2]) || MSBDLAAppsHostListed(tried[i][0], tried[i][1], tried[i][2])) noApps = 0;
     check("  ... other apps' activities (the listing, the live view) listed for none either: off, and no Apps row in Settings", noApps);

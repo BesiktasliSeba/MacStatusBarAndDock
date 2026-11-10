@@ -168,7 +168,7 @@ int main(int argc, char **argv) {
         s = base; s.laTimersListed = MSBDLATimersListed(18, 5, 0) != 0;
         Shows(s, @"18.5 (proved on the A12Z)", B, @[@"Timers", @"Now Playing", @"Calls"], @[]);
         s = base; s.laTimersListed = MSBDLATimersListed(16, 7, 7) != 0;
-        Shows(s, @"16.7.7 (not listed: no +isActiveTimer:)", B, @[@"Now Playing", @"Calls"], @[@"Timers"]);
+        Shows(s, @"16.7.7 (proved on the iPad 2)", B, @[@"Timers", @"Now Playing", @"Calls"], @[]);
         s = base; s.laTimersListed = MSBDLATimersListed(17, 6, 1) != 0;
         Shows(s, @"17.6.1 (not tested)", B, @[@"Now Playing", @"Calls"], @[@"Timers"]);
         s = base; s.laTimersListed = MSBDLATimersListed(18, 5, 1) != 0;

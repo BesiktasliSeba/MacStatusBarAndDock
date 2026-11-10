@@ -45,14 +45,14 @@ $(stanza com.opa334.choicy install ok $st)"
 done
 check "Choicy absent from the status file -> refused" 1 "$ALT"
 check "no status file entries at all -> refused" 1 ""
-# iCleaner Pro instead of Choicy (both package names)
+# iCleaner Pro instead of Choicy
 check "iCleaner Pro (exile90) unpacked -> goes on" 0 "$ALT
 $(stanza com.exile90.icleanerpro install ok unpacked)"
-check "iCleaner Pro (cypwn) installed -> goes on" 0 "$ALT
+check "iCleaner Pro only under another package ID -> refused" 1 "$ALT
 $(stanza xyz.cypwn.icleanerpro install ok installed)"
 check "Choicy config-files, iCleaner Pro installed -> goes on" 0 "$ALT
 $(stanza com.opa334.choicy deinstall ok config-files)
-$(stanza xyz.cypwn.icleanerpro install ok installed)"
+$(stanza com.exile90.icleanerpro install ok installed)"
 # AltList (finding 9)
 for st in installed unpacked half-configured triggers-awaited triggers-pending; do
     check "AltList $st -> goes on" 0 "$CHO

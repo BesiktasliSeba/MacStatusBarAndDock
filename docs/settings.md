@@ -47,8 +47,9 @@ On iPadOS 18, Settings has no room for tweak rows in its sidebar, so Status Bar,
 | Show Mute Icon | A mute icon in the menu bar while the iPad is muted. | On |
 | Wi-Fi Menu | The Wi-Fi icon opens a Wi-Fi menu. | On |
 | Battery Menu | The battery in the menu bar opens a battery menu, as on a Mac, with its level and power source, a Low Power Mode switch, Sleep Guard and Battery Settings. A Control Center icon next to the clock opens Control Center, and the swipe down from the top right still does. Off: a click on the battery opens Control Center, and there's no icon unless Control Center Style is Mac. The icon lights up while Control Center is open, and a second tap closes it. | On, also after an update |
-| Live Activities in Menu Bar | What's playing and your calls show as small pills next to the status icons, like on a Mac, and on iPadOS 17.5.1 and 18.5 Clock timers too. A tap on one opens a card to control it, and the card's title opens the app. One that has ended stays greyed out for a few minutes, then goes. Not shown with Status Bar Style Stock. | On, also after an update |
-| Activities | Turns Now Playing and Calls off one by one, and Timers on iPadOS 17.5.1 and 18.5, where timers show. | All on |
+| Battery Percentage in Icon | The battery level as a number inside the menu bar's battery icon. If Battery Percentage is on in Settings > Battery, the number stays beside the icon instead. Not shown with Status Bar Style Stock. | Off |
+| Live Activities in Menu Bar | What's playing and your calls show as small pills next to the status icons, like on a Mac, and on iPadOS 15.6.1, 16.7.7, 17.5.1 and 18.5 Clock timers too. A tap on one opens a card to control it, and the card's title opens the app. One that has ended stays greyed out for a few minutes, then goes. Not shown with Status Bar Style Stock. | On, also after an update |
+| Activities | Turns Now Playing and Calls off one by one, and Timers on iPadOS 15.6.1, 16.7.7, 17.5.1 and 18.5, where timers show. | All on |
 | Hide Status Bar on Lock Screen | No status bar on the Lock Screen, and no Control Center line at its top right. | Off |
 | Skip Lock Screen After Respring | Goes straight to the Home Screen after a respring. Works only without a passcode. | Off |
 

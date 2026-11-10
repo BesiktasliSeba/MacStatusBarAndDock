@@ -636,7 +636,7 @@ static void DMAMCmdTabSelected(id self, SEL _cmd, id vc, id item) {
 }
 static void (*o_DMAMCmdTabLaunch)(id, SEL);
 static void DMAMCmdTabLaunch(id self, SEL _cmd) {
-    id item = DMCall(DMALIvarObj(self, "_commandTabViewController"), @"selectedApplicationDisplayItem");
+    id item = DMCmdTabSelectedItem(DMALIvarObj(self, "_commandTabViewController"));
     if (DMAMCmdTabPicked(self, item)) return;
     o_DMAMCmdTabLaunch(self, _cmd);
     DMAMCmdTabOtherPicked(item);
@@ -650,7 +650,7 @@ static void DMAMCmdTabActivate(id self, SEL _cmd, BOOL forward) {
     id before = DMALIvarObj(self, "_commandTabViewController");
     o_DMAMCmdTabActivate(self, _cmd, forward);
     id vc = DMALIvarObj(self, "_commandTabViewController");
-    if (before || !vc || !forward || !gDMAMCmdTabReady || !DMAMActiveNow() || !DMAMIsRecentsItem(DMCall(vc, @"selectedApplicationDisplayItem"))) return;
+    if (before || !vc || !forward || !gDMAMCmdTabReady || !DMAMActiveNow() || !DMAMIsRecentsItem(DMCmdTabSelectedItem(vc))) return;
     if (!DMMSWHasMethod(object_getClass(self), @"next", @"v@:")) return;
     ((void (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"next"));
     DMLog(@"[amcmdtab] Command-Tab started on Activity Monitor, the active window: its first pick is the next app");
@@ -659,7 +659,7 @@ static void DMAMCmdTabActivate(id self, SEL _cmd, BOOL forward) {
 static void (*o_DMAMCmdTabRemove)(id, SEL);
 static void DMAMCmdTabRemove(id self, SEL _cmd) {
     id vc = DMALIvarObj(self, "_commandTabViewController");
-    id item = DMCall(vc, @"selectedApplicationDisplayItem");
+    id item = DMCmdTabSelectedItem(vc);
     if (!DMAMIsRecentsItem(item)) { o_DMAMCmdTabRemove(self, _cmd); return; }
     DMLog(@"[amcmdtab] Command-Q on Activity Monitor in the switcher: its window closes");
     if ([vc respondsToSelector:NSSelectorFromString(@"removeDisplayItem:")]) ((void (*)(id, SEL, id))objc_msgSend)(vc, NSSelectorFromString(@"removeDisplayItem:"), item);

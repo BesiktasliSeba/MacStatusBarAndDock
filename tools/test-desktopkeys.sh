@@ -19,7 +19,7 @@ check "the keys flag is only ever set through -dm_setHasKeys: (which takes or gi
 check "  ... set where the desktop takes the keys: an icon's tap, the selection rectangle, an icon's menu, a drag" \
   "[ \$(grep -c '\\[self dm_setHasKeys:YES\\]' $D) -ge 5 ]"
 check "the focus is taken only with an app in front and a hardware keyboard, once" \
-  "fn 'static void DMDesktopKeysFocus(BOOL take) {' | grep -q 'if (gDesktopKeysLock || !front.length || !DMHardwareKeyboardAttached()) return;'"
+  "fn 'static void DMDesktopKeysFocus(BOOL take) {' | grep -qF 'if (gDesktopKeysLock || !DMHardwareKeyboardAttached() || (!front.length && !DMDesktopKeysElsewhere())) return;'"
 check "  ... through the shared focus lock (common/FocusLock.h), not the one a rename takes (our on-screen keyboard goes with that one)" \
   "fn 'static void DMDesktopKeysFocus(BOOL take) {' | grep -q 'gDesktopKeysLock = MSBDFocusLock(' && fn 'static void DMDesktopKeysFocus(BOOL take) {' | grep -q 'MSBDFocusUnlock(l)'"
 check "given back: a touch elsewhere" \

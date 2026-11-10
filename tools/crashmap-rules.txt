@@ -50,6 +50,7 @@ target showFinder pref com.besiktasliseba.dockmagnification showFinder 0 1 Show 
 target showTrash pref com.besiktasliseba.dockmagnification showTrash 0 0 Show Trash in Dock|the Dock's Trash
 target wifiMenu pref com.besiktasliseba.macstatusbar wifiMenu 0 1 Wi-Fi Menu|the Wi-Fi menu
 target batteryMenu pref com.besiktasliseba.macstatusbar batteryMenu 0 1 Battery Menu|the battery menu
+target batteryPercentInside pref com.besiktasliseba.macstatusbar batteryPercentInside 0 0 Battery Percentage in Icon|the number inside the battery icon
 target desktopIcons pref com.besiktasliseba.macstatusbar desktopIcons 0 1 Show Desktop Icons|the desktop
 target runningIndicator pref com.besiktasliseba.dockrunningindicator enabled 0 1 Show Indicators for Open Apps|the open-app indicators
 target macSwitcher pref com.besiktasliseba.macstatusbar macSwitcher 0 0 Mac Switcher|the Mac Switcher
@@ -213,6 +214,7 @@ sym MacStatusBarCore ^_*DMCC18[A-Z] controlcenter
 file MacStatusBarCore ^(CC18Shape|CC18MacLayout)\.h$ controlcenter
 file MacStatusBarCore ^CC18Tiles\.h$ controlcenter
 # the battery menu and the Control Center icon (BatteryMenu.h, 1.7.9): Battery Menu's switch -- off, the battery is iOS's again and the icon goes
+sym MacStatusBarCore ^_*DMBattInside[A-Z] batteryPercentInside
 sym MacStatusBarCore ^_*DMBatt[A-Z] batteryMenu
 file MacStatusBarCore ^BatteryMenu\.h$ batteryMenu
 # Live Activities in the menu bar (1.8.4): its functions and blocks (DMLA..., not DMLAApps...) and LiveActivities.h's methods (the pills, the cards, the

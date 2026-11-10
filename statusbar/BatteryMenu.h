@@ -431,6 +431,78 @@ static void DMBattCoverAX(UIView *fg, NSArray<UIView *> *views, BOOL cover) {
 // Places the battery's button over iOS's battery item in a status bar copy (Battery Menu on; hidden otherwise, the bar then exactly as before).
 // `left`: where the status icons start (leading coordinates, DMBarRTL); our Wi-Fi icon's button ends 2 pt (x k) before it. The full bar's height,
 // as our other icons' buttons; 4 pt (x k) past the item at each side (common/BatteryMenu.h MSBDBattButtonSpan).
+// ---- the battery percentage inside the icon (Settings > Status Bar, 1.8.4.2; off by default; the rules: common/BatteryInside.h) ------------------
+// Our number on top of the battery view, on every iPadOS: iPadOS's own showsPercentage drew nothing on the static battery view of 17.5.1 and 18.5, and on 16.7.7 the bar's own
+// update took it back after a Low Power Mode change or a respring (device pass, 9 Nov). Read at each bar layout and when the power state changes. The inline charging bolt, which sits
+// where the number goes, is switched off while the number shows wherever the view has that switch; where it hasn't, the bolt wins while charging.
+static BOOL gBattInsideOn = NO;
+static const void *kBattInsideLabelKey = &kBattInsideLabelKey, *kBattInsideBoltKey = &kBattInsideBoltKey;
+static CFTimeInterval gBattInsideReadAt = -100;   // (set back by the power state's changes, DMBattInsideApplyPref)
+static DMBattInfo DMBattInsideNow(void) {   // (a bar is laid out often: asked once every 5 s, or when the power state says so)
+    static DMBattInfo cached;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - gBattInsideReadAt > 5.0) { cached = DMBattNow(); gBattInsideReadAt = now; }
+    return cached;
+}
+__attribute__((noinline)) static void DMBattInsideOne(UIView *v, BOOL shown, DMBattInfo b) {
+    static NSString *const boltSet = @"setShowsInlineChargingIndicator:", *const boltGet = @"showsInlineChargingIndicator";
+    UILabel *label = objc_getAssociatedObject(v, kBattInsideLabelKey);
+    BOOL canHideBolt = DMBattTypes(v, boltSet, "v20@0:8B16") && DMBattTypes(v, boltGet, "B16@0:8");
+    BOOL show = b.known && MSBDBattInsideShows(shown, 0, 1, b.charging && !canHideBolt);
+    if (canHideBolt) {   // (the bolt back as it was once the number goes; off while it shows, again at each read: the bar's own updates may put it back)
+        NSNumber *was = objc_getAssociatedObject(v, kBattInsideBoltKey);
+        BOOL now = ((BOOL (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(boltGet));
+        if (show && now) { if (!was) objc_setAssociatedObject(v, kBattInsideBoltKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC); ((void (*)(id, SEL, BOOL))objc_msgSend)(v, NSSelectorFromString(boltSet), NO); }
+        else if (!show && was) { objc_setAssociatedObject(v, kBattInsideBoltKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); ((void (*)(id, SEL, BOOL))objc_msgSend)(v, NSSelectorFromString(boltSet), YES); }
+    }
+    if (!show) { label.hidden = YES; return; }
+    if (!label) {
+        label = [UILabel new]; label.textAlignment = NSTextAlignmentCenter; label.adjustsFontSizeToFitWidth = YES; label.minimumScaleFactor = 0.7; label.baselineAdjustment = UIBaselineAdjustmentAlignCenters;
+        label.userInteractionEnabled = NO; label.isAccessibilityElement = NO;
+        objc_setAssociatedObject(v, kBattInsideLabelKey, label, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [v addSubview:label];
+        DMLog([NSString stringWithFormat:@"[battinside] %@: our number on top of it", NSStringFromClass([v class])]);
+    }
+    CGSize size = v.bounds.size;
+    double level = b.percent / 100.0;
+    char text[8]; MSBDBattInsideText(level, text, sizeof text);
+    UIColor *icon = DMBattTypes(v, @"fillColor", "@16@0:8") ? ((UIColor *(*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"fillColor")) : v.tintColor;
+    CGFloat white = 1, alpha = 1; if (![icon getWhite:&white alpha:&alpha]) { CGFloat r = 1, g = 1, bl = 1; [icon getRed:&r green:&g blue:&bl alpha:&alpha]; white = 0.299 * r + 0.587 * g + 0.114 * bl; }
+    label.font = [UIFont systemFontOfSize:MAX(6.0, size.height * MSBD_BATT_INSIDE_FONT_SHARE) weight:UIFontWeightBold];
+    label.text = [NSString stringWithUTF8String:text];
+    label.textColor = MSBDBattInsideTextIsDark(level, white > 0.5) ? [UIColor blackColor] : [UIColor whiteColor];
+    label.frame = CGRectMake(0, 0, size.width * MSBD_BATT_INSIDE_BODY_SHARE, size.height);
+    label.hidden = NO;
+}
+__attribute__((noinline)) static void DMBattInsideBar(UIView *fg) {
+    static BOOL everOn = NO;
+    if (gBattInsideOn) everOn = YES;
+    if (!everOn) return;   // (never switched on since this start: nothing of ours is on any battery)
+    NSArray<UIView *> *views = DMBattItemViews(fg);
+    BOOL iosOwn = NO;
+    for (UIView *v in views) if ([v isKindOfClass:[UILabel class]]) iosOwn = YES;
+    DMBattInfo b = DMBattInsideNow();
+    BOOL shown = MSBDBattInsideShows(gBattInsideOn, iosOwn, 0, b.charging);
+    for (UIView *v in views) if (![v isKindOfClass:[UILabel class]]) DMBattInsideOne(v, shown, b);
+}
+static void DMBattInsideEveryBar(void) {
+    for (NSHashTable *copies in @[gCopies ?: [NSHashTable weakObjectsHashTable], gAllBarCopies ?: [NSHashTable weakObjectsHashTable]]) for (UIView *fg in copies.allObjects) DMBattInsideBar(fg);
+}
+static void DMBattInsideApplyPref(BOOL on) {
+    static BOOL first = YES, observing = NO;
+    if (on == gBattInsideOn && !first) return;
+    BOOL logIt = !first || on;
+    first = NO; gBattInsideOn = on;
+    if (logIt) DMLog([NSString stringWithFormat:@"[battinside] Battery Percentage in Icon %@", on ? @"on" : @"off"]);
+    if (on && !observing) {
+        observing = YES;
+        int t = 0;
+        notify_register_dispatch("com.apple.system.powersources", &t, dispatch_get_main_queue(), ^(int tok) { gBattInsideReadAt = -100; DMBattInsideEveryBar(); });
+        [[NSNotificationCenter defaultCenter] addObserverForName:NSProcessInfoPowerStateDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *note) { dispatch_async(dispatch_get_main_queue(), ^{ gBattInsideReadAt = -100; DMBattInsideEveryBar(); }); }];
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{ DMBattInsideEveryBar(); });
+}
+
 static void DMBattLayoutButton(UIView *fg, CGFloat left, CGFloat k) {
     UIButton *btn = objc_getAssociatedObject(fg, kBattButtonKey);
     NSArray<UIView *> *views = gBattMenuOn && left < CGFLOAT_MAX ? DMBattItemViews(fg) : @[];

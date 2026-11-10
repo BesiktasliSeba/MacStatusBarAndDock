@@ -16,10 +16,6 @@ if [ "$1" = "configure" ]; then
             echo "MacStatusBar&Dock: the iPad check could not run (code $rc); setting up as on an iPad." >&2
         fi
     fi
-    # the old packages' helper, if its package did not stop it (it is the same program under its old name)
-    OLD=/var/jb/Library/LaunchDaemons/com.kaan.sshtoggled.plist
-    [ -f "$OLD" ] && $L unload "$OLD" 2>/dev/null
-    $L remove com.kaan.sshtoggled 2>/dev/null
     [ -x "$H" ] && "$H" --welcome-check "$2"   # (first: before anything of ours is written; $2 = the version upgraded from, empty on a first install)
     [ -x "$H" ] && "$H" --defaults-check "$2"   # (new defaults for new installs only: decided now, before anything of ours is written ...)
     [ -x "$H" ] && "$H" --migrate

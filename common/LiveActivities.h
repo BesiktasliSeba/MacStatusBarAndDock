@@ -29,8 +29,8 @@ static inline int MSBDLASwitchOn(int isBool, int value) { return isBool ? value 
 // Listed after the 1.8.4 device pass (KT's yes, 7 Nov): 17.5.1 (the 17.5) and 18.5 (the A12Z). Not 16.7.7: its MobileTimer has no
 // +[MTTimer isActiveTimer:], so the timers source does not run there.
 typedef struct { int major, minor, patch; } MSBDLAVersion;
-static const MSBDLAVersion kMSBDLATimersChecked[] = { { 17, 5, 1 }, { 18, 5, 0 } };
-static const MSBDLAVersion kMSBDLASeekChecked[] = { { 17, 5, 1 }, { 18, 5, 0 } };
+static const MSBDLAVersion kMSBDLATimersChecked[] = { { 15, 6, 1 }, { 16, 7, 7 }, { 17, 5, 1 }, { 18, 5, 0 } };
+static const MSBDLAVersion kMSBDLASeekChecked[] = { { 15, 6, 1 }, { 16, 7, 7 }, { 17, 5, 1 }, { 18, 5, 0 } };
 static inline int MSBDLAVersionListed(const MSBDLAVersion *list, size_t n, long major, long minor, long patch) {
     for (size_t i = 0; i < n; i++) if (list[i].major == major && list[i].minor == minor && list[i].patch == patch) return 1;
     return 0;
@@ -131,6 +131,10 @@ static inline void MSBDLATextShape(const char *text, char *buf, size_t n) {
 // fire date (negative: no fire date -- a paused timer has none); remaining: MTTimer's own remaining time (a paused timer's); firing: it rings now.
 // Returns 1 running, 2 paused, 3 ringing (the timer's end: shown ended), 0 nothing to show; *left: the seconds the pill counts.
 enum { kMSBDLATimerNone = 0, kMSBDLATimerRunning = 1, kMSBDLATimerPaused = 2, kMSBDLATimerRinging = 3 };
+// A timer's -state against MobileTimer's state numbers by name (16.7.7 has no +isActiveTimer:): running or paused is active. -1: a number not found.
+static inline int MSBDLATimerActiveByState(long long state, long long paused, long long running) {
+    return (paused >= 0 && state == paused) || (running >= 0 && state == running);
+}
 static inline int MSBDLATimerState(int active, int firing, double fireIn, double remaining, double *left) {
     *left = 0.0;
     if (firing) return kMSBDLATimerRinging;

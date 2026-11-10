@@ -112,15 +112,15 @@ check "the timer manager is ours, made once and kept (never freed); SpringBoard'
   "grep -q 'static id gLATimerMgr = nil;   // (ours, kept for SpringBoard.s life)' $L && fn $L 'static void DMLAApplyPrefs(' | grep -q 'DMLAAppsApply(on && apps);'"
 
 # ---- review 1.8.4 M1: nothing new is started in SpringBoard where it is unproven (an empty version list keeps it off, on by default too)
-check "M1: the timers source runs only on an iPadOS version in kMSBDLATimersChecked (the versions a real Clock timer has run on: 17.5.1, 18.5), before anything of MobileTimer is asked" \
-  "grep -q '^static const MSBDLAVersion kMSBDLATimersChecked\\[\\] = { { 17, 5, 1 }, { 18, 5, 0 } };' ../common/LiveActivities.h && fn $L 'static void DMLATimersStart(' | grep -q 'if (!DMLATimersAllowed())' \
+check "M1: the timers source runs only on an iPadOS version in kMSBDLATimersChecked (the versions a real Clock timer has run on: 16.7.7, 17.5.1, 18.5), before anything of MobileTimer is asked" \
+  "grep -q '^static const MSBDLAVersion kMSBDLATimersChecked\\[\\] = { { 15, 6, 1 }, { 16, 7, 7 }, { 17, 5, 1 }, { 18, 5, 0 } };' ../common/LiveActivities.h && fn $L 'static void DMLATimersStart(' | grep -q 'if (!DMLATimersAllowed())' \
    && fn $L 'static BOOL DMLATimersAllowed(' | grep -q 'return MSBDLATimersListed(v.majorVersion, v.minorVersion, v.patchVersion) != 0;' \
    && awk '/^static void DMLATimersStart\\(/,/^}/' $L | awk '/DMLATimersAllowed/{a=NR} /dlopen|DMLATypesOK|alloc\\]/{if(!b)b=NR} END{exit !(a && b && a < b)}'"
 check "  ... MobileTimer's -init must be its own (not NSObject's, whose encoding is the same): the row is marked own and checked against the class's own list" \
   "grep -q '{ \"MTTimerManager\", \"init\", \"@16@0:8\", NO, NO, YES },' $L && fn $L 'static BOOL DMLAOwnMethod(' | grep -q 'class_copyMethodList(c, &n)' \
    && fn $L 'static BOOL DMLATypesOK(' | grep -q 'rows\\[i\\].own && !DMLAOwnMethod('"
-check "  ... the scrubber's seek (MRMediaRemoteSetElapsedTime, a call 1.8.3 never made) only where kMSBDLASeekChecked lists the version (17.5.1, 18.5); else the scrubber only shows" \
-  "grep -q '^static const MSBDLAVersion kMSBDLASeekChecked\\[\\] = { { 17, 5, 1 }, { 18, 5, 0 } };' ../common/LiveActivities.h && fn $L 'static void DMLANowPlayingSeek(' | grep -q 'if (!DMLASeekAllowed()) return;' \
+check "  ... the scrubber's seek (MRMediaRemoteSetElapsedTime, a call 1.8.3 never made) only where kMSBDLASeekChecked lists the version (16.7.7, 17.5.1, 18.5); else the scrubber only shows" \
+  "grep -q '^static const MSBDLAVersion kMSBDLASeekChecked\\[\\] = { { 15, 6, 1 }, { 16, 7, 7 }, { 17, 5, 1 }, { 18, 5, 0 } };' ../common/LiveActivities.h && fn $L 'static void DMLANowPlayingSeek(' | grep -q 'if (!DMLASeekAllowed()) return;' \
    && fn $L 'static BOOL DMLASeekAllowed(' | grep -q 'return MSBDLASeekListed(v.majorVersion, v.minorVersion, v.patchVersion) != 0;' \
    && fn $L 'static DMLASection \\*DMLANowSectionFor(' | grep -q 's.scrub.userInteractionEnabled = DMLASeekAllowed();'"
 check "  ... calls: TUCallCenter is never made by us -- read only after it has posted a call notification of its own" \

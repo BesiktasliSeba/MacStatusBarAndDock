@@ -7,7 +7,7 @@ A MacBook-style desktop for your jailbroken iPad. It brings a Mac menu bar with 
 | Device | iPad only. On an iPhone it does nothing, even on one made to look like an iPad. Builds with the iPad check removed are not made or supported by us. |
 | iPadOS | 15 to 18. On newer versions it stays off until you turn on Enable Anyway. |
 | Jailbreak | Rootless. The test iPads use Dopamine and palera1n. |
-| Needs | A hooking platform (ElleKit, libhooker or Substrate), Choicy or iCleaner Pro, and AltList. Sileo installs what's missing. |
+| Needs | A hooking platform (ElleKit, libhooker or Substrate), Choicy or the official iCleaner Pro, and AltList. Sileo installs what's missing. |
 | Window engine | Optional: Aerial, Zetsu, MilkyWay4 or Apple's Stage Manager. See [Window engines](#window-engines). |
 | License | Free and open source (GPL-3.0-only). |
 
@@ -67,7 +67,8 @@ The Mac look is on right after install, and most features have their own switch.
 - The battery opens a battery menu, as on a Mac, with Low Power Mode, Sleep Guard and Battery Settings, and a Control Center icon next to the clock opens Control Center. Battery Menu in Settings > Status Bar turns both off.
 - Right-to-left languages get a mirrored menu bar, as on a Mac. Status Bar Style switches back to the stock iPadOS bar.
 - Menu Bar Size in Settings > Status Bar: Medium and Large make the menu bar taller, with larger text, icons and menus that are easier to tap with a finger.
-- Live Activities in Menu Bar in Settings > Status Bar shows what's playing and your calls as small pills next to the status icons, as on a Mac. A tap on one opens a card to control it. On iPadOS 17.5.1 and 18.5, Clock timers show there too.
+- Live Activities in Menu Bar in Settings > Status Bar shows what's playing and your calls as small pills next to the status icons, as on a Mac. A tap on one opens a card to control it. On iPadOS 15.6.1, 16.7.7, 17.5.1 and 18.5, Clock timers show there too.
+- Battery Percentage in Icon in Settings > Status Bar shows the battery level as a number inside the battery icon.
 
 ### Control Center
 
@@ -107,12 +108,16 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 ### Finder and the desktop
 
 - A Finder window with a sidebar, list and icon views, Quick Look, Search, Undo and Put Back. Open it from the Dock or the Go menu.
+- Finder shows folder sizes in its list and in Get Info, worked out in the background.
+- Click a column header in Finder's list to sort by Name, Date Modified, Size or Kind, and click it again to reverse the order. You can also sort from the View menu.
+- Quick Look also previews Office files and CSV, and you can move between previews with the arrow keys or a swipe.
 - Show in Finder Menu in a Home Screen folder's Haptic Touch menu lists the folder in the menu bar's Finder menu, where a tap opens it.
 - On My iPad shows the same folders as the Files app, with a folder for each app that shares its files there.
 - The Trash has an Empty button at the top right, and emptying the Trash plays a sound unless the iPad is muted.
 - Drag files between Finder windows, the desktop and the Downloads stack, or into an app, which gets a copy.
 - Share on an app, in Applications or any .app in Finder or on the desktop, hands it over as an .ipa named after the app and its version. For an App Store app, a note says first that the copy only opens on iPads signed in with the same Apple ID. Nothing is decrypted.
 - Files and folders from On My iPad > Desktop sit on the first Home Screen page, never over your apps. A long press or a right click opens their menus over your windows, and Hide Name hides an icon's name. In Settings > Desktop, Hide Desktop Icon Names hides them all and Icon Size sets their size. App Icon Corner Radius there sets how round the desktop's app icons are, from square to circle.
+- On the desktop, with an item selected, the arrow keys move the selection and Space opens Quick Look, as in Finder.
 - Text files open in a small TextEdit window and save by themselves.
 - USB drives and SD cards show up under Locations. exFAT and FAT32 work (FAT32 can't hold files over 4 GB). APFS and Mac OS Extended should work but haven't been tested, and iPadOS doesn't read NTFS. An SSD may need a powered hub.
 - On iPadOS 16 to 18, each drive has an Eject button in Finder's sidebar, as on a Mac, and File > Eject and the drive's menu eject it too.

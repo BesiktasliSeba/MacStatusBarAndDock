@@ -8,6 +8,7 @@
 #import <ImageIO/ImageIO.h>
 #import <PDFKit/PDFKit.h>   // (declarations only: PDFKit, AVKit and AVFoundation are opened at their first use, not linked -- SpringBoard
 #import <AVKit/AVKit.h>     //  loaded them at every start for a window most people open rarely; see DMFinderClass)
+#import <QuickLook/QuickLook.h>   // (the same for QuickLook, 1.8.4.2: Quick Look's own viewer for the files ours don't show, DMQuickLookWindow)
 #include <sys/clonefile.h>
 #include <sys/xattr.h>
 #include <sys/stat.h>
@@ -20,6 +21,10 @@
 #import "../common/DriveEject.h"        // (a drive's name, MSBDDriveName: its volume's label, not the folder it is mounted on -- 1.7.3)
 #include "FinderApps.h"   // (Applications: each row is the app's .app, not its bundle container -- Foundation only, tools/test-finderapps.sh; 1.7.6)
 #include "FinderIPA.h"    // (an app shared or handed over goes as an .ipa: its name, Payload layout, FairPlay check -- tools/test-finderipa.sh; 1.7.7)
+#include "../common/FolderSize.h"   // (a folder's size: the walk, its caps, kept or not, what the list shows -- tools/test-foldersize.sh; 1.8.4.2)
+#include "../common/PreviewPick.h"  // (Quick Look: our own viewer or iPadOS's for a file -- tools/test-previewpick.sh; 1.8.4.2)
+#include "../common/PreviewStep.h"  // (Quick Look: the arrows and swipes move through the Finder window's items -- tools/test-previewstep.sh; 1.8.4.2)
+#include "../common/FinderSort.h"   // (sorting: the keys, the headers' clicks, the order -- tools/test-findersort.sh; 1.8.4.2)
 
 static NSString *const kFinderTrash = @"/var/mobile/.Trash";
 static NSString *const kFinderLiveFiles = @"/var/mobile/Library/LiveFiles";   // (external drives: <LiveFiles>/<provider>/<volume>, see DMFinderDrives)
@@ -31,6 +36,15 @@ static Class DMFinderClass(NSString *name) {
         for (NSString *f in @[@"PDFKit", @"AVFoundation", @"AVKit"]) dlopen([NSString stringWithFormat:@"/System/Library/Frameworks/%@.framework/%@", f, f].UTF8String, RTLD_LAZY);
     });
     return NSClassFromString(name);
+}
+// Quick Look's viewer (QLPreviewController), opened apart from those the first time a file is shown in it (1.8.4.2 item 2): a PDF's thumbnail
+// opens PDFKit, it never loads QuickLook into SpringBoard. Opened, not linked, for the same reason (the Makefile leaves it out).
+static Class DMFinderQLClass(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        if (!dlopen("/System/Library/Frameworks/QuickLook.framework/QuickLook", RTLD_LAZY)) DMLog(@"[quicklook] QuickLook.framework could not be opened: our own viewers only");
+    });
+    return NSClassFromString(@"QLPreviewController");
 }
 
 // ---- paths ------------------------------------------------------------------------------------------------------------------------------------
@@ -548,6 +562,8 @@ static unsigned long long DMFinderFreeSpace(NSString *dir) {
 @property (nonatomic, copy) NSString *stub;  // (that placeholder's path; `path` is where the file will be once downloaded)
 @property (nonatomic) unsigned long long size;
 @property (nonatomic, strong) NSDate *date;
+@property (nonatomic, strong) NSDate *created, *added;   // (Date Created, Date Added: for Sort By; nil where the volume doesn't keep them)
+@property (nonatomic) NSInteger order, nameRank;          // (its place as the folder lists it -- Sort By None -- and by name, DMFinderList)
 @end
 @implementation DMFinderItem
 @end
@@ -564,7 +580,7 @@ static NSString *DMFinderStubName(NSString *name) {
     return nil;
 }
 static NSArray<DMFinderItem *> *DMFinderList(NSString *path, BOOL hidden, NSError **err) {
-    NSArray *keys = @[NSURLIsDirectoryKey, NSURLFileSizeKey, NSURLContentModificationDateKey, NSURLIsPackageKey, NSURLIsSymbolicLinkKey];
+    NSArray *keys = @[NSURLIsDirectoryKey, NSURLFileSizeKey, NSURLContentModificationDateKey, NSURLIsPackageKey, NSURLIsSymbolicLinkKey, NSURLCreationDateKey, NSURLAddedToDirectoryDateKey];
     path = DMFinderNorm(path);
     BOOL icloud = DMFinderInICloud(path);   // (iCloud Drive: the placeholders of files not downloaded are hidden files -- shown by their real names)
     NSDirectoryEnumerationOptions o = hidden || icloud ? 0 : NSDirectoryEnumerationSkipsHiddenFiles;
@@ -595,6 +611,7 @@ static NSArray<DMFinderItem *> *DMFinderList(NSString *path, BOOL hidden, NSErro
             NSDictionary *pl = [NSDictionary dictionaryWithContentsOfFile:it.path];
             it.cloud = YES; it.stub = it.path; it.name = stubName; it.path = [path stringByAppendingPathComponent:stubName];
             it.size = [pl[@"NSURLFileSizeKey"] unsignedLongLongValue]; it.date = v[NSURLContentModificationDateKey];
+            it.created = v[NSURLCreationDateKey]; it.added = v[NSURLAddedToDirectoryDateKey];
             it.kind = DMFinderKind(it.path, NO); it.display = it.name;
             [out addObject:it];
             continue;
@@ -605,6 +622,7 @@ static NSArray<DMFinderItem *> *DMFinderList(NSString *path, BOOL hidden, NSErro
         it.package = [v[NSURLIsPackageKey] boolValue];
         it.size = [v[NSURLFileSizeKey] unsignedLongLongValue];
         it.date = v[NSURLContentModificationDateKey];
+        it.created = v[NSURLCreationDateKey]; it.added = v[NSURLAddedToDirectoryDateKey];
         it.kind = DMFinderKind(it.path, it.dir);
         it.display = it.name;
         if (containers && it.dir && it.name.length == 36) { NSString *n = DMFinderContainerName(it.path); if (n) it.display = n; }
@@ -622,17 +640,22 @@ static NSArray<DMFinderItem *> *DMFinderList(NSString *path, BOOL hidden, NSErro
     if (mine && [rn isEqualToString:DMFinderReal(mine)]) {   // (On My iPad: the apps' shared Documents folders too, as the Files app lists them)
         for (NSDictionary *f in DMFinderAppFolders()) {
             if ([f[@"e"] boolValue]) continue;
-            NSDictionary *v = [[NSURL fileURLWithPath:f[@"p"]] resourceValuesForKeys:@[NSURLContentModificationDateKey] error:nil];
+            NSDictionary *v = [[NSURL fileURLWithPath:f[@"p"]] resourceValuesForKeys:@[NSURLContentModificationDateKey, NSURLCreationDateKey, NSURLAddedToDirectoryDateKey] error:nil];
             DMFinderItem *it = [DMFinderItem new];
             it.path = f[@"p"]; it.name = it.path.lastPathComponent; it.display = f[@"t"]; it.appFolder = f[@"b"];
             it.dir = YES; it.kind = @"Folder"; it.date = v[NSURLContentModificationDateKey];
+            it.created = v[NSURLCreationDateKey]; it.added = v[NSURLAddedToDirectoryDateKey];
             it.locked = access(it.path.fileSystemRepresentation, R_OK | X_OK) != 0;
             [out addObject:it];
         }
     }
     if ([path isEqualToString:kFinderTrash])   // (the Trash shows the connected drives' Trashes too, as a Mac's does; each item keeps its place on the drive)
         for (NSString *t in DMFinderDriveTrashes()) { if (!DMFinderDriveTrashIsSound(t)) continue; NSArray *more = DMFinderList(t, hidden, NULL); if (more) [out addObjectsFromArray:more]; }
+    // (by name, as Finder always listed: the window sorts it again by its folder's choice, DMFinderSorted -- with the place each item had in the
+    //  folder's own listing (Sort By None) and its place by name kept on it, so that sort never compares names again)
+    for (NSUInteger i = 0; i < out.count; i++) ((DMFinderItem *)out[i]).order = (NSInteger)i;
     [out sortUsingComparator:^NSComparisonResult(DMFinderItem *a, DMFinderItem *b) { return [a.display localizedStandardCompare:b.display]; }];
+    for (NSUInteger i = 0; i < out.count; i++) ((DMFinderItem *)out[i]).nameRank = (NSInteger)i;
     return out;
 }
 // One item from its path, as a listing makes it (a drag that starts outside a Finder window: the Dock's Downloads stack), or nil when it is gone.
@@ -792,7 +815,189 @@ static DMFinderCols DMFinderColumns(CGFloat w) {
     c.nameW = right - 44.0 - 6.0;
     return c;
 }
-static NSString *DMFinderSize(DMFinderItem *it) { return it.dir ? @"--" : [NSByteCountFormatter stringFromByteCount:(long long)it.size countStyle:NSByteCountFormatterCountStyleFile]; }
+// ---- folder sizes (1.8.4.2 item 1) ------------------------------------------------------------------------------------------------------------
+// A folder's size in the list's Size column and in Get Info, as a Mac's Finder with Calculate all sizes: "--" until it is worked out, then the
+// size (Get Info: "Calculating…" meanwhile). The rules and the walk are common/FolderSize.h (Mac-tested, tools/test-foldersize.sh): no links
+// followed, the folder's own volume only, a cap of entries and seconds. Here the scheduling, all of it on the main thread except the walk:
+//  - one folder at a time, on a queue of its own, at utility priority (the root, /var/jb or a slow drive never hold SpringBoard or each other
+//    for longer than the cap); the rows the list shows ask (a row scrolled away before its turn is dropped from the line), Get Info goes first;
+//  - kept per folder with the folder's date (gFinderSizes); every listing of a window checks its rows' kept sizes again with one stat each, on the
+//    queue, and walks only a folder whose date changed (or whose size is older than kMSBDFolderSizeMaxAge);
+//  - a window's folders are dropped from the line, and its walk under way stopped, when it closes or shows another folder (DMFinderSizeCancel).
+// The icon view shows no sizes, as on a Mac (only the list asks).
+static NSMutableDictionary<NSString *, NSDictionary *> *gFinderSizes;   // folder -> {b: bytes, s: MSBD_FS_*, d: its date (stat), at: when}
+static const void *kFinderCellSizePathKey = &kFinderCellSizePathKey;   // (a list row's folder, as it was given to the cell: a row's number means another folder after a re-sort)
+static NSMutableSet<NSString *> *gFinderSizeLineKeys;   // (one "window|folder" per entry of the line: a big folder sorted by size asks thousands of times)
+static NSMutableArray<NSDictionary *> *gFinderSizeLine;   // waiting: {p: folder, o: the window that asked (identity only), i: from Get Info}
+static NSString *gFinderSizeWalking; static const void *gFinderSizeWalkingOwner;
+static volatile int gFinderSizeStop;   // (the walk under way stops at its next entry)
+static NSString *DMFinderSizeText(DMFinderItem *it, BOOL info) {
+    if (!it.dir) return [NSByteCountFormatter stringFromByteCount:(long long)it.size countStyle:NSByteCountFormatterCountStyleFile];
+    NSDictionary *kept = it.path ? gFinderSizes[it.path] : nil;
+    int show = MSBDFolderSizeShow(MSBDFolderSizeWanted(it.dir, it.alias, it.locked, it.cloud), kept ? [kept[@"s"] intValue] : MSBD_FS_NONE, info);
+    if (show == MSBD_FS_SHOW_BYTES) return [NSByteCountFormatter stringFromByteCount:[kept[@"b"] longLongValue] countStyle:NSByteCountFormatterCountStyleFile];
+    return show == MSBD_FS_SHOW_CALCULATING ? @"Calculating…" : @"--";
+}
+static NSString *DMFinderSize(DMFinderItem *it) { return DMFinderSizeText(it, NO); }
+static void DMFinderSizeDone(NSString *path, int state, const void *owner);   // (the Finder windows show it: below, after DMFinderWindow)
+static NSSet<NSString *> *DMFinderShownFolders(void);   // (every path an open Finder window lists: below, after DMFinderWindow)
+// Past the limit the oldest sizes go, never one a window lists: a window sorted by size reads all of its folders' (common/FolderSize.h).
+static void DMFinderSizesMakeRoom(void) {
+    static long trimAt = MSBD_FS_KEPT_LIMIT;
+    if ((long)gFinderSizes.count <= trimAt) return;
+    NSSet<NSString *> *shown = DMFinderShownFolders();
+    NSMutableArray<NSString *> *removable = [NSMutableArray array];
+    for (NSString *p in gFinderSizes) if (![shown containsObject:p]) [removable addObject:p];
+    NSDictionary *sizes = gFinderSizes;
+    [removable sortUsingComparator:^NSComparisonResult(NSString *a, NSString *b) { return [sizes[a][@"at"] compare:sizes[b][@"at"]]; }];
+    long drop = MSBDFolderSizeEvictCount((long)gFinderSizes.count, (long)removable.count);
+    [gFinderSizes removeObjectsForKeys:[removable subarrayWithRange:NSMakeRange(0, (NSUInteger)drop)]];
+    trimAt = MSBDFolderSizeNextTrim((long)gFinderSizes.count);
+}
+static NSString *DMFinderSizeLineKey(NSDictionary *ask) { return [NSString stringWithFormat:@"%p|%@", [ask[@"o"] pointerValue], ask[@"p"]]; }
+static void DMFinderSizeNext(void) {
+    if (gFinderSizeWalking || !gFinderSizeLine.count) return;
+    static dispatch_queue_t q; if (!q) q = dispatch_queue_create("com.besiktasliseba.finder.foldersizes", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0));
+    NSDictionary *next = gFinderSizeLine.firstObject; [gFinderSizeLine removeObjectAtIndex:0]; [gFinderSizeLineKeys removeObject:DMFinderSizeLineKey(next)];
+    NSString *path = next[@"p"];
+    gFinderSizeWalking = path; gFinderSizeWalkingOwner = [next[@"o"] pointerValue]; gFinderSizeStop = 0;
+    NSDictionary *kept = gFinderSizes[path];
+    dispatch_async(q, ^{
+        struct stat st; BOOL there = lstat(path.fileSystemRepresentation, &st) == 0 && S_ISDIR(st.st_mode);
+        double date = there ? (double)st.st_mtimespec.tv_sec + (double)st.st_mtimespec.tv_nsec / 1e9 : 0, now = CFAbsoluteTimeGetCurrent();
+        NSDictionary *got = kept;
+        if (!there) got = @{@"b": @0, @"s": @(MSBD_FS_UNREADABLE), @"d": @0, @"at": @(now)};
+        else if (!MSBDFolderSizeFresh(kept != nil, [kept[@"d"] doubleValue], date, [kept[@"at"] doubleValue], now, kMSBDFolderSizeMaxAge)) {
+            MSBDFolderSizeResult r = MSBDFolderSizeWalk(path.fileSystemRepresentation, 0, 0, &gFinderSizeStop);
+            got = @{@"b": @(r.bytes), @"s": @(r.state), @"d": @(date), @"at": @(now), @"n": @(r.entries), @"t": @(CFAbsoluteTimeGetCurrent() - now)};
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            const void *owner = gFinderSizeWalkingOwner;
+            gFinderSizeWalking = nil; gFinderSizeWalkingOwner = NULL;
+            int state = [got[@"s"] intValue];
+            if (state == MSBD_FS_CAPPED && got != kept) DMLog([NSString stringWithFormat:@"[finder] folder size: capped after %@ entries (%.1f s), shown as Calculating", got[@"n"], [got[@"t"] doubleValue]]);
+            if (state != MSBD_FS_CANCELLED && got != kept) {
+                if (!gFinderSizes) gFinderSizes = [NSMutableDictionary dictionary];
+                gFinderSizes[path] = got;
+                DMFinderSizesMakeRoom();
+            }
+            DMFinderSizeDone(path, state, owner);
+            DMFinderSizeNext();
+        });
+    });
+}
+// A folder's size wanted (main thread): by a list row (info NO) or Get Info (info YES, first in line). Once per folder in the line.
+static void DMFinderSizeAsk(NSString *path, id owner, BOOL info) {
+    if (!path.length) return;
+    DM_FEATURE_MARK("finder-folder-sizes");
+    if (!gFinderSizeLine) { gFinderSizeLine = [NSMutableArray array]; gFinderSizeLineKeys = [NSMutableSet set]; }
+    if ([gFinderSizeWalking isEqualToString:path] && !gFinderSizeStop) return;   // (a walk being stopped: asked again, it comes after it)
+    NSDictionary *ask = @{@"p": path, @"o": [NSValue valueWithPointer:(__bridge const void *)owner], @"i": @(info)};
+    // (once per folder and window: another window's ask may leave the line -- its row scrolled away -- and this one must stay; a second walk of
+    //  the same folder is one stat, the first one's size being kept)
+    NSString *key = DMFinderSizeLineKey(ask);
+    if ([gFinderSizeLineKeys containsObject:key]) for (NSUInteger k = 0; k < gFinderSizeLine.count; k++) if ([gFinderSizeLine[k][@"p"] isEqualToString:path] && [gFinderSizeLine[k][@"o"] pointerValue] == (__bridge const void *)owner) {
+        if (!info) return;
+        [gFinderSizeLine removeObjectAtIndex:k]; break;   // (Get Info asks for one already in line: it goes first now)
+    }
+    [gFinderSizeLineKeys addObject:key];
+    if (info) [gFinderSizeLine insertObject:ask atIndex:0]; else [gFinderSizeLine addObject:ask];
+    DMFinderSizeNext();
+}
+// A window's asks dropped: all of them (path nil: it closes or shows another folder -- its walk under way stops too), or a row's that scrolled
+// away (Get Info's stay).
+// Sorting by size left: the rest of the window's folders leave the line (Get Info's stay, a walk under way stops and its row or sheet asks again).
+static void DMFinderSizeCancelRows(id owner) {
+    const void *o = (__bridge const void *)owner;
+    NSIndexSet *drop = [gFinderSizeLine indexesOfObjectsPassingTest:^BOOL(NSDictionary *a, NSUInteger i, BOOL *stop) { return [a[@"o"] pointerValue] == o && ![a[@"i"] boolValue]; }];
+    if (drop.count) { for (NSDictionary *a in [gFinderSizeLine objectsAtIndexes:drop]) [gFinderSizeLineKeys removeObject:DMFinderSizeLineKey(a)]; [gFinderSizeLine removeObjectsAtIndexes:drop]; }
+    if (gFinderSizeWalking && gFinderSizeWalkingOwner == o) gFinderSizeStop = 1;
+}
+static void DMFinderSizeCancel(id owner, NSString *path) {
+    const void *o = (__bridge const void *)owner;
+    NSIndexSet *drop = [gFinderSizeLine indexesOfObjectsPassingTest:^BOOL(NSDictionary *a, NSUInteger i, BOOL *stop) {
+        return [a[@"o"] pointerValue] == o && (path ? ([a[@"p"] isEqualToString:path] && ![a[@"i"] boolValue]) : YES);
+    }];
+    if (drop.count) { for (NSDictionary *a in [gFinderSizeLine objectsAtIndexes:drop]) [gFinderSizeLineKeys removeObject:DMFinderSizeLineKey(a)]; [gFinderSizeLine removeObjectsAtIndexes:drop]; }
+    if (!path && gFinderSizeWalking && gFinderSizeWalkingOwner == o) gFinderSizeStop = 1;
+}
+// ---- sorting (1.8.4.2 item 4) ----------------------------------------------------------------------------------------------------------------
+// As a Mac's Finder: a list column's header sorts by it (again: the other way round, a chevron in it); View > Sort By (the menu bar's View menu,
+// and the window's own menu on empty space) for the icons too. The rules: common/FinderSort.h (Mac-tested, tools/test-findersort.sh). The choice
+// is kept per folder, as Finder's view options are (com.besiktasliseba.macstatusbar finderSortViews: folder -> {s: "modified-", t: when}; Name A
+// to Z, the default, is not stored), and Keep Folders on Top is Finder's setting (Settings > Finder, finderFoldersOnTop, off as on a Mac).
+// Sorting by size uses the folder sizes (above): every folder of the window is worked out, and the order follows as they come in.
+static NSMutableDictionary<NSString *, NSDictionary *> *gFinderSortViews;
+static BOOL gFinderFoldersOnTop, gFinderSortRead;
+static void DMFinderSortReadPrefs(void) {
+    CFPreferencesAppSynchronize(MSB_DOMAIN);
+    CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("finderFoldersOnTop"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    gFinderFoldersOnTop = v && ((CFGetTypeID(v) == CFBooleanGetTypeID() && CFBooleanGetValue(v)) || (CFGetTypeID(v) == CFNumberGetTypeID() && [(__bridge NSNumber *)v boolValue]));
+    if (v) CFRelease(v);
+    if (!gFinderSortRead) {   // (the folders' choices: read once -- only this SpringBoard writes them)
+        CFPropertyListRef s = CFPreferencesCopyValue(CFSTR("finderSortViews"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        NSDictionary *d = (__bridge_transfer id)s;
+        gFinderSortViews = [d isKindOfClass:[NSDictionary class]] ? [d mutableCopy] : [NSMutableDictionary dictionary];
+    }
+    gFinderSortRead = YES;
+}
+static MSBDSortChoice DMFinderSortFor(NSString *folder) {
+    if (!gFinderSortRead) DMFinderSortReadPrefs();
+    NSDictionary *e = folder.length ? gFinderSortViews[folder] : nil;
+    NSString *s = [e isKindOfClass:[NSDictionary class]] && [e[@"s"] isKindOfClass:[NSString class]] ? e[@"s"] : nil;
+    return MSBDSortRead(s.UTF8String);
+}
+static void DMFinderSortKeep(NSString *folder, MSBDSortChoice c) {
+    if (!folder.length) return;
+    if (!gFinderSortRead) DMFinderSortReadPrefs();
+    char buf[32];
+    if (MSBDSortIsDefault(c) || !MSBDSortStore(c, buf, sizeof buf)) [gFinderSortViews removeObjectForKey:folder];
+    else gFinderSortViews[folder] = @{@"s": [NSString stringWithUTF8String:buf] ?: @"name", @"t": @(CFAbsoluteTimeGetCurrent())};
+    if (gFinderSortViews.count > 400) {   // (the 100 folders sorted longest ago forget it)
+        NSArray *old = [gFinderSortViews keysSortedByValueUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) { return [a[@"t"] compare:b[@"t"]]; }];
+        [gFinderSortViews removeObjectsForKeys:[old subarrayWithRange:NSMakeRange(0, 100)]];
+    }
+    CFPreferencesSetValue(CFSTR("finderSortViews"), gFinderSortViews.count ? (__bridge CFPropertyListRef)[gFinderSortViews copy] : NULL, MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    CFPreferencesSynchronize(MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+}
+// A folder's size as Size sorts it: known only once worked out (a file's is its own).
+static BOOL DMFinderSortSize(DMFinderItem *it, unsigned long long *bytes) {
+    if (!it.dir) { *bytes = it.size; return YES; }
+    NSDictionary *kept = it.path ? gFinderSizes[it.path] : nil;
+    if (!kept || !MSBDFolderSizeWanted(it.dir, it.alias, it.locked, it.cloud) || [kept[@"s"] intValue] != MSBD_FS_DONE) return NO;
+    *bytes = [kept[@"b"] unsignedLongLongValue];
+    return YES;
+}
+// The items in the order a choice gives (main thread: names come ranked from the listing, kinds are ranked here -- a few dozen at most).
+static NSArray<DMFinderItem *> *DMFinderSorted(NSArray<DMFinderItem *> *items, MSBDSortChoice c) {
+    if (!gFinderSortRead) DMFinderSortReadPrefs();
+    long n = (long)items.count;
+    if (n < 2) return items ?: @[];
+    NSArray *kinds = [[[NSSet setWithArray:[items valueForKey:@"kind"]] allObjects] sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
+        return [a isKindOfClass:[NSString class]] && [b isKindOfClass:[NSString class]] ? [(NSString *)a localizedStandardCompare:b] : NSOrderedSame;
+    }];
+    NSMutableDictionary *kindRank = [NSMutableDictionary dictionary];
+    for (NSUInteger k = 0; k < kinds.count; k++) kindRank[kinds[k]] = @(k);
+    MSBDSortItem *s = (MSBDSortItem *)calloc((size_t)n, sizeof(MSBDSortItem));
+    long *order = (long *)malloc((size_t)n * sizeof(long));
+    if (!s || !order) { free(s); free(order); return items; }
+    for (long i = 0; i < n; i++) {
+        DMFinderItem *it = items[(NSUInteger)i];
+        s[i].index = (long)it.order; s[i].nameRank = (long)it.nameRank;
+        s[i].kindRank = it.kind ? [kindRank[it.kind] longValue] : -1;
+        s[i].folder = it.dir && !it.package;
+        s[i].hasModified = it.date != nil; s[i].modified = it.date.timeIntervalSinceReferenceDate;
+        s[i].hasCreated = it.created != nil; s[i].created = it.created.timeIntervalSinceReferenceDate;
+        s[i].hasAdded = it.added != nil; s[i].added = it.added.timeIntervalSinceReferenceDate;
+        unsigned long long b = 0; s[i].hasSize = DMFinderSortSize(it, &b); s[i].size = b;
+    }
+    NSMutableArray *out = [NSMutableArray arrayWithCapacity:(NSUInteger)n];
+    if (MSBDSortOrder(s, n, c, gFinderFoldersOnTop, order)) for (long i = 0; i < n; i++) [out addObject:items[(NSUInteger)order[i]]];
+    else [out addObjectsFromArray:items];
+    free(s); free(order);
+    return out;
+}
+static void DMFinderSortChanged(void);   // (Keep Folders on Top changed in Settings: every Finder window sorts again -- after DMFinderWindow)
 static NSString *DMFinderDate(NSDate *d) {
     static NSDateFormatter *f; if (!f) { f = [NSDateFormatter new]; f.dateStyle = NSDateFormatterMediumStyle; f.timeStyle = NSDateFormatterShortStyle; f.doesRelativeDateFormatting = YES; }
     return d ? [f stringFromDate:d] : @"--";
@@ -830,10 +1035,23 @@ static NSString *DMFinderFreeName(NSString *dir, NSString *name, NSString *suffi
 // nowhere (a tap on its Done button reached no window at all), so it could not even be closed. Our own Quick Look is a native window, like a
 // Mac's Quick Look window, that shows what a Finder needs in-process: pictures, text (plists -- binary ones too --, JSON, logs, scripts, code),
 // PDFs (PDFKit), audio and video (AVKit). Anything else shows its icon, kind and size, with Share.
+// 1.8.4.2 (item 2): what ours doesn't show -- Office, iWork, RTF, HTML, CSV, USDZ... -- is shown by Apple's QLPreviewController after all, not
+// presented but embedded in this window (a child view controller, -dm_quickLookView:): the window, its keys and its close are ours, so it can
+// always be closed. Which viewer for a file: common/PreviewPick.h (Mac-tested).
 @class DMFinderWindow;
 static DMFinderWindow *DMFinderFront(void);
-@interface DMQuickLookWindow : DMNativeWindow
+// 1.8.4.2 (item 3): the Finder window a Quick Look window was opened from, which it moves through as Space-preview on a Mac (common/PreviewStep.h).
+@protocol DMQuickLookBrowser <NSObject>
+- (NSString *)dm_previewStep:(int)move;            // (the selection moved by an arrow or a swipe, MSBD_STEP_*: the item now selected, nil if it stayed)
+- (void)dm_previewSelect:(NSString *)path;         // (Quick Look's own viewer paged to this item: the selection follows)
+- (NSArray<NSString *> *)dm_previewPaths;          // (the items shown, in their order)
+@optional
+- (void)dm_previewClosed;                          // (closed by a key, and the browser is no window to activate: the desktop, which takes the keys back)
+@end
+@interface DMQuickLookWindow : DMNativeWindow <QLPreviewControllerDataSource, UIGestureRecognizerDelegate>
 @property (nonatomic, copy) NSString *file;
+@property (nonatomic, weak) id<DMQuickLookBrowser> browser;
+- (void)dm_show:(NSString *)path;
 @end
 static BOOL DMQLIsText(NSString *path, UTType *t) {
     struct stat st; if (stat(path.fileSystemRepresentation, &st) != 0 || !S_ISREG(st.st_mode)) return NO;   // (a FIFO or a device: never read)
@@ -907,21 +1125,183 @@ static void DMQLPDFGeometryHook(void) {   // (once PDFKit is loaded: at the firs
     MSHookMessageEx(c, from, (IMP)DMQLFromRoot, (IMP *)&o_DMQLFromRoot);
     DMLog(@"[quicklook] PDF pages in our windows: PDFKit's visible part measured in the window");
 }
+// What MSBDPreviewPick decides by (common/PreviewPick.h): what the file is, and whether Quick Look can show it. A link is looked at through
+// (an alias to a file previews the file); a package (iWork's folders, .rtfd) is a file here, an app is not.
+static unsigned DMQLFlags(NSString *path, UTType *t, unsigned extra) {   // (extra: MSBD_PVF_UNREADABLE, once ImageIO has tried)
+    struct stat st; BOOL dir = stat(path.fileSystemRepresentation, &st) == 0 && S_ISDIR(st.st_mode);
+    NSNumber *pkg = nil; if (dir) [[NSURL fileURLWithPath:path] getResourceValue:&pkg forKey:NSURLIsPackageKey error:nil];
+    if (dir && (!pkg.boolValue || [path.pathExtension.lowercaseString isEqualToString:@"app"])) return MSBD_PVF_DIR;
+    unsigned f = extra;
+    if ([t conformsToType:UTTypeImage]) f |= MSBD_PVF_IMAGE;
+    if ([t conformsToType:UTTypePDF]) f |= MSBD_PVF_PDF;
+    if ([t conformsToType:UTTypeAudiovisualContent]) f |= MSBD_PVF_MEDIA;
+    if (!dir && DMQLIsText(path, t)) f |= MSBD_PVF_TEXT;
+    if (MSBDPreviewRichExt(path.pathExtension.UTF8String)) f |= MSBD_PVF_RICH;
+#if DEBUG
+    if (DMTestFlag("/tmp/msb-qloff")) f |= MSBD_PVF_QL_OFF;   // (debug: our own viewers only, as before 1.8.4.2)
+    if (DMTestFlag("/tmp/msb-qlall")) f |= MSBD_PVF_QL_ALL;   // (debug: Quick Look for all it can show, to compare)
+#endif
+    if (f & MSBD_PVF_QL_OFF) return f;
+    // (asked only when it may be shown in it: QuickLook stays out of SpringBoard for pictures, PDFs, media and text)
+    BOOL mayUse = (f & (MSBD_PVF_RICH | MSBD_PVF_QL_ALL | MSBD_PVF_UNREADABLE)) || !(f & (MSBD_PVF_IMAGE | MSBD_PVF_PDF | MSBD_PVF_MEDIA | MSBD_PVF_TEXT));
+    Class qc = mayUse ? DMFinderQLClass() : Nil;
+    if (qc && [qc respondsToSelector:@selector(canPreviewItem:)] && [qc canPreviewItem:[NSURL fileURLWithPath:path]]) f |= MSBD_PVF_QL;
+    return f;
+}
 @implementation DMQuickLookWindow {
     AVPlayer *_player;
+    QLPreviewController *_ql;     // (Quick Look's viewer: a child of the layer's root view controller while this window has it, its view in our content)
+    NSArray<NSURL *> *_qlItems;   // (what it pages through, QLPreviewControllerDataSource)
+    int _shown;                   // (the viewer showing, MSBD_PV_*)
+    BOOL _qlObserved, _qlSetting; CFTimeInterval _qlPagedAt;   // (Quick Look paging by itself: watched, the Finder's selection follows, -dm_quickLookPaged)
 }
-- (instancetype)initWithFile:(NSString *)path {
+static char kDMQLIndexContext;
+static NSString *const kDMQLSwipe = @"com.besiktasliseba.quicklook.swipe";
+- (instancetype)initWithFile:(NSString *)path { return [self initWithFile:path browser:nil]; }
+- (instancetype)initWithFile:(NSString *)path browser:(id<DMQuickLookBrowser>)browser {
     CGRect d = DMNativeDesktop();
     CGFloat w = MIN(680.0, d.size.width - 60.0), h = MIN(560.0, d.size.height - 40.0);
     self = [super initWithTitle:path.lastPathComponent frame:CGRectMake(CGRectGetMidX(d) - w / 2.0, CGRectGetMidY(d) - h / 2.0, w, h)];
     if (!self) return nil;
-    _file = [path copy];
+    self.browser = browser;
     self.appName = @"Finder";
     self.minSize = CGSizeMake(300.0, 220.0);
+    for (NSNumber *dir in @[@(UISwipeGestureRecognizerDirectionLeft), @(UISwipeGestureRecognizerDirectionRight)]) {   // (item 3: a swipe moves to the next / last item)
+        UISwipeGestureRecognizer *s = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(dm_swipe:)];
+        s.direction = dir.unsignedIntegerValue; s.name = kDMQLSwipe; s.delegate = self; s.cancelsTouchesInView = NO;
+        [self.contentView addGestureRecognizer:s];
+    }
+    [self dm_show:path];
+    return self;
+}
+- (void)dealloc { if (_qlObserved) { @try { [_ql removeObserver:self forKeyPath:@"currentPreviewItemIndex" context:&kDMQLIndexContext]; } @catch (NSException *e) {} } }
+// ---- moving between items (1.8.4.2 item 3): the arrows (-dm_handleKey:) and swipes move the Finder window's selection, the preview follows it
+- (BOOL)dm_step:(int)move {
+    id<DMQuickLookBrowser> b = self.browser;
+    if (!b) return NO;   // (opened from a menu, or its Finder window closed: nothing to move through)
+    NSString *to = [b dm_previewStep:move];   // (the Finder window selects it, and shows it here: -dm_follow:)
+    if (to) DMLog([NSString stringWithFormat:@"[quicklook] moved (%d) to another item", move]);
+    return YES;
+}
+// The Finder window's selection is now this item (an arrow here, or a click, an arrow or a search there): shown in its viewer.
+- (void)dm_follow:(NSString *)path {
+    if (!path.length || [path isEqualToString:_file]) return;
+    [self dm_show:path];
+}
+// A swipe: never in the way of a scroll -- not over a control (a video's scrubber), not where the content scrolls sideways (a zoomed PDF).
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldReceiveTouch:(UITouch *)t {
+    if (![g.name isEqualToString:kDMQLSwipe]) return YES;
+    for (UIView *v = t.view; v && v != self.contentView; v = v.superview) {
+        if ([v isKindOfClass:[UIControl class]]) return NO;
+        if ([v isKindOfClass:[UIScrollView class]]) { UIScrollView *s = (UIScrollView *)v; if (s.contentSize.width > s.bounds.size.width + 1.0) return NO; }
+    }
+    return YES;
+}
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)o { return [g.name isEqualToString:kDMQLSwipe]; }
+- (void)dm_swipe:(UISwipeGestureRecognizer *)g {
+    if (g.state != UIGestureRecognizerStateEnded) return;
+    int move = g.direction == UISwipeGestureRecognizerDirectionLeft ? MSBD_STEP_SWIPE_NEXT : MSBD_STEP_SWIPE_PREV;
+    if (_shown != MSBD_PV_QUICKLOOK) { [self dm_step:move]; return; }
+    // (Quick Look's viewer pages by a swipe itself where its touches reach it: ours waits a moment and moves only if it didn't -- never twice)
+    //  (its index read now and again then: a page that settles late, or that changes its index without telling KVO, is seen either way)
+    CFTimeInterval at = CACurrentMediaTime();
+    NSInteger was = _ql.currentPreviewItemIndex;
+    __weak DMQuickLookWindow *ws = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        DMQuickLookWindow *s = ws; if (!s || s->_qlPagedAt >= at - 0.2) return;
+        if (s->_ql && s->_shown == MSBD_PV_QUICKLOOK && s->_ql.currentPreviewItemIndex != was) { [s dm_quickLookPaged]; return; }
+        [s dm_step:move];
+    });
+}
+- (void)observeValueForKeyPath:(NSString *)kp ofObject:(id)o change:(NSDictionary *)change context:(void *)ctx {
+    if (ctx != &kDMQLIndexContext) { [super observeValueForKeyPath:kp ofObject:o change:change context:ctx]; return; }
+    if (_qlSetting) return;   // (our own move)
+    __weak DMQuickLookWindow *ws = self;
+    dispatch_async(dispatch_get_main_queue(), ^{ [ws dm_quickLookPaged]; });
+}
+- (void)dm_quickLookPaged {   // (Quick Look's viewer paged to another item by itself: the window and the Finder's selection follow)
+    if (!_ql || _shown != MSBD_PV_QUICKLOOK) return;
+    NSInteger i = _ql.currentPreviewItemIndex;
+    if (i < 0 || i >= (NSInteger)_qlItems.count) return;
+    NSString *p = DMFinderNorm(_qlItems[(NSUInteger)i].path);
+    if (!p.length || [p isEqualToString:_file]) return;
+    _qlPagedAt = CACurrentMediaTime();
+    _file = [p copy]; self.title = p.lastPathComponent;
+    [self.browser dm_previewSelect:p];
+}
+// Quick Look's viewer in this window: a child view controller of the layer's root view controller (never presented: a presented one took every
+// touch, NativeWindow.h), its view in our content, as Files and Mail embed it. Where its file is drawn by QuickLookUIService, the touches for
+// that part may not reach it in SpringBoard's windows (see above); the window itself -- closing, moving, the keys (-dm_handleKey:) -- is ours.
+- (UIView *)dm_quickLookView:(NSString *)path {
+    Class qc = DMFinderQLClass();
+    UIViewController *root = gNativeLayer.rootViewController;
+    if (!qc || !root) return nil;
+    NSURL *u = [NSURL fileURLWithPath:path isDirectory:NO];
+    NSUInteger i = _qlItems ? [_qlItems indexOfObject:u] : NSNotFound;   // (never asked of nil: nil answers 0, so the first file left the list empty and Quick Look said "No file to preview")
+    if (i == NSNotFound) {   // (item 3: the Finder window's files in its order, Quick Look's multi-item data source -- its own paging goes through them too)
+        NSMutableArray<NSURL *> *a = [NSMutableArray array];
+        for (NSString *p in [self.browser dm_previewPaths] ?: @[]) [a addObject:[NSURL fileURLWithPath:p isDirectory:NO]];   // (files only: no folder is ever paged to)
+        i = [a indexOfObject:u];
+        if (i == NSNotFound) { a = [NSMutableArray arrayWithObject:u]; i = 0; }
+        _qlItems = a;
+        _qlSetting = YES; [_ql reloadData]; _qlSetting = NO;
+    }
+    if (!_ql) {
+        @try {
+            _ql = [qc new];
+            _ql.dataSource = self;
+            [root addChildViewController:_ql];
+            _ql.view.frame = self.contentView.bounds;
+            [self.contentView addSubview:_ql.view];
+            [_ql didMoveToParentViewController:root];
+            [_ql addObserver:self forKeyPath:@"currentPreviewItemIndex" options:NSKeyValueObservingOptionNew context:&kDMQLIndexContext];
+            _qlObserved = YES;
+            DMLog(@"[quicklook] Quick Look's viewer in our window");
+        } @catch (NSException *e) {
+            DMLog([NSString stringWithFormat:@"[quicklook] Quick Look's viewer could not be shown: %@", e.reason]);
+            [self dm_quickLookRemove];
+            return nil;
+        }
+    }
+    _qlSetting = YES;
+    if (_ql.currentPreviewItemIndex != (NSInteger)i) _ql.currentPreviewItemIndex = (NSInteger)i;
+    _qlSetting = NO;
+    _ql.view.hidden = NO;
+    return _ql.view;
+}
+- (void)dm_quickLookRemove {
+    if (!_ql) return;
+    if (_qlObserved) { @try { [_ql removeObserver:self forKeyPath:@"currentPreviewItemIndex" context:&kDMQLIndexContext]; } @catch (NSException *e) {} _qlObserved = NO; }
+    [_ql willMoveToParentViewController:nil];
+    [_ql.view removeFromSuperview];
+    [_ql removeFromParentViewController];
+    _ql.dataSource = nil; _ql = nil;
+}
+- (NSInteger)numberOfPreviewItemsInPreviewController:(QLPreviewController *)c { return (NSInteger)_qlItems.count; }
+- (id<QLPreviewItem>)previewController:(QLPreviewController *)c previewItemAtIndex:(NSInteger)i {
+    return i >= 0 && i < (NSInteger)_qlItems.count ? _qlItems[i] : [NSURL fileURLWithPath:_file ?: @"/"];
+}
+// The file shown, in the viewer MSBDPreviewPick chooses (common/PreviewPick.h). Shown again with another file (item 3: the selection moved),
+// the window keeps its place and size; what showed before goes (a playing video stops), Quick Look's viewer stays for the next one.
+- (void)dm_show:(NSString *)path extra:(unsigned)extra {
+    [_player pause]; _player = nil;
+    DMFinderSizeCancel(self, nil);   // (the folder shown before: its size no longer wanted here)
+    objc_setAssociatedObject(self, @selector(initWithFile:), nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    for (UIView *o in [self.contentView.subviews copy]) {
+        if (o.tag != 100) continue;
+        if (o == _ql.view) { o.hidden = YES; o.tag = 0; } else [o removeFromSuperview];
+    }
+    _file = [path copy];
+    self.title = path.lastPathComponent;
     UIView *c = self.contentView;
     UTType *t = [UTType typeWithFilenameExtension:path.pathExtension];
+    unsigned flags = DMQLFlags(path, t, extra);
+    int pick = MSBDPreviewPick(flags);
+    __weak DMQuickLookWindow *ws = self;
     UIView *v = nil;
-    if ([t conformsToType:UTTypeImage]) {
+    if (pick == MSBD_PV_QUICKLOOK) { v = [self dm_quickLookView:path]; if (!v) pick = MSBDPreviewPick((flags & ~MSBD_PVF_QL) | MSBD_PVF_QL_OFF); }
+    if (v) {   // (Quick Look's viewer)
+    } else if (pick == MSBD_PV_IMAGE) {
         UIImageView *iv = [UIImageView new]; iv.contentMode = UIViewContentModeScaleAspectFit; iv.backgroundColor = [UIColor systemBackgroundColor]; iv.accessibilityIgnoresInvertColors = YES;
         iv.isAccessibilityElement = YES; iv.accessibilityLabel = path.lastPathComponent; iv.accessibilityTraits = UIAccessibilityTraitImage;   // (1.3.7, audit M-3)
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{   // (a thumbnail of at most 2048 px: a big photo never loads whole)
@@ -930,10 +1310,14 @@ static void DMQLPDFGeometryHook(void) {   // (once PDFKit is loaded: at the firs
             UIImage *img = cg ? [UIImage imageWithCGImage:cg] : nil;
             if (cg) CGImageRelease(cg);
             if (src) CFRelease(src);
-            dispatch_async(dispatch_get_main_queue(), ^{ iv.image = img; });
+            dispatch_async(dispatch_get_main_queue(), ^{
+                iv.image = img;
+                DMQuickLookWindow *s = ws;   // (a picture ImageIO can't read -- SVG, some RAW --: Quick Look's viewer, when it can show it)
+                if (!img && s && [s.file isEqualToString:path] && [s.contentView viewWithTag:100] == iv) [s dm_show:path extra:MSBD_PVF_UNREADABLE];
+            });
         });
         v = iv;
-    } else if ([t conformsToType:UTTypePDF] && DMFinderClass(@"PDFView")) {   // (the document is opened in the background, then shown)
+    } else if (pick == MSBD_PV_PDF && DMFinderClass(@"PDFView")) {   // (the document is opened in the background, then shown)
         DMQLPDFGeometryHook();   // (its visible part measured in our window, see there)
         PDFView *pv = [DMFinderClass(@"PDFView") new]; pv.autoScales = YES;
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
@@ -941,13 +1325,13 @@ static void DMQLPDFGeometryHook(void) {   // (once PDFKit is loaded: at the firs
             dispatch_async(dispatch_get_main_queue(), ^{ pv.document = doc; });
         });
         v = pv;
-    } else if ([t conformsToType:UTTypeAudiovisualContent] && DMFinderClass(@"AVPlayerViewController")) {
+    } else if (pick == MSBD_PV_MEDIA && DMFinderClass(@"AVPlayerViewController")) {
         AVPlayerViewController *pvc = [DMFinderClass(@"AVPlayerViewController") new];
         _player = [DMFinderClass(@"AVPlayer") playerWithURL:[NSURL fileURLWithPath:path]];
         pvc.player = _player;
         objc_setAssociatedObject(self, @selector(initWithFile:), pvc, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (kept alive with the window)
         v = pvc.view;
-    } else if (DMQLIsText(path, t)) {   // (read in the background, at most 512 KB: a 4 MB log parsed on the main thread held SpringBoard)
+    } else if (pick == MSBD_PV_TEXT) {   // (read in the background, at most 512 KB: a 4 MB log parsed on the main thread held SpringBoard)
         UITextView *tv = [UITextView new]; tv.editable = NO;
         tv.font = [UIFont monospacedSystemFontOfSize:12.0 weight:UIFontWeightRegular];
         tv.textContainerInset = UIEdgeInsetsMake(10, 8, 10, 8);
@@ -957,36 +1341,55 @@ static void DMQLPDFGeometryHook(void) {   // (once PDFKit is loaded: at the firs
             dispatch_async(dispatch_get_main_queue(), ^{ tv.text = text; });
         });
         v = tv;
-    } else {   // (no preview: the icon, the kind and the size, like a Mac's Quick Look for a file it can't show)
+    } else {   // (no preview: the icon, the kind and the size, like a Mac's Quick Look for a file it can't show -- a folder too, with its size)
         UIView *box = [UIView new]; box.backgroundColor = [UIColor systemBackgroundColor];
-        DMFinderItem *it = [DMFinderItem new]; it.path = path; it.name = path.lastPathComponent;
-        NSDictionary *a = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil];
-        it.size = [a fileSize]; it.kind = DMFinderKind(path, NO);
-        UIImageView *iv = [[UIImageView alloc] initWithImage:DMFinderIcon(it, 128.0)]; iv.contentMode = UIViewContentModeScaleAspectFit; iv.tag = 1; iv.accessibilityIgnoresInvertColors = YES;
+        DMFinderItem *it = DMFinderItemFor(path);
+        if (!it) { it = [DMFinderItem new]; it.path = path; it.name = path.lastPathComponent; it.display = it.name; it.kind = DMFinderKind(path, NO); }
+        UIImageView *iv = [[UIImageView alloc] initWithImage:DMFinderIconWithAlias(it, 128.0)]; iv.contentMode = UIViewContentModeScaleAspectFit; iv.tag = 1; iv.accessibilityIgnoresInvertColors = YES;
         UILabel *l = [UILabel new]; l.numberOfLines = 0; l.textAlignment = NSTextAlignmentCenter; l.tag = 2;
-        l.text = [NSString stringWithFormat:@"%@\n%@ – %@", it.name, it.kind, DMFinderSize(it)]; l.font = [UIFont systemFontOfSize:13.0];
+        l.text = [NSString stringWithFormat:@"%@\n%@ – %@", it.display ?: it.name, it.kind, DMFinderSizeText(it, YES)]; l.font = [UIFont systemFontOfSize:13.0];
         [box addSubview:iv]; [box addSubview:l];
+        if (it.dir && MSBDFolderSizeWanted(it.dir, it.alias, it.locked, it.cloud)) DMFinderSizeAsk(it.path, self, YES);   // (-dm_folderSizeDone:state: shows it)
         v = box;
     }
+    _shown = v == _ql.view ? MSBD_PV_QUICKLOOK : pick;
     v.tag = 100;
-    [c addSubview:v];
-    return self;
+    if (v.superview != c) [c addSubview:v];
+    [self setNeedsLayout];
+}
+- (void)dm_show:(NSString *)path { [self dm_show:path extra:0]; }
+// A folder's size is in (DMFinderSizeDone): the folder shown here says it.
+- (void)dm_folderSizeDone:(NSString *)path state:(int)state {
+    if (_shown != MSBD_PV_INFO || ![path isEqualToString:DMFinderNorm(_file)]) return;
+    if (state == MSBD_FS_CANCELLED) { DMFinderSizeAsk(path, self, YES); return; }
+    DMFinderItem *it = DMFinderItemFor(path);
+    UILabel *l = [[self.contentView viewWithTag:100] viewWithTag:2];
+    if (it && [l isKindOfClass:[UILabel class]]) l.text = [NSString stringWithFormat:@"%@\n%@ – %@", it.display ?: it.name, it.kind, DMFinderSizeText(it, YES)];
 }
 - (void)layoutSubviews {
     [super layoutSubviews];
     UIView *v = [self.contentView viewWithTag:100];
     v.frame = self.contentView.bounds;
-    UIView *iv = [v viewWithTag:1], *l = [v viewWithTag:2];
+    if (_ql.view && _ql.view != v) _ql.view.frame = self.contentView.bounds;
+    UIView *iv = _shown == MSBD_PV_INFO ? [v viewWithTag:1] : nil, *l = _shown == MSBD_PV_INFO ? [v viewWithTag:2] : nil;   // (only our info view: Quick Look's or PDFKit's views may use these tags)
     if (iv && l) { CGRect b = v.bounds; iv.frame = CGRectMake(CGRectGetMidX(b) - 64, CGRectGetMidY(b) - 110, 128, 128); l.frame = CGRectMake(20, CGRectGetMidY(b) + 30, b.size.width - 40, 60); }
 }
-- (void)close { [_player pause]; _player = nil; [super close]; }
-- (BOOL)dm_handleKey:(UIKey *)key {   // (Space, Esc or Command-W close it again, as on a Mac)
+- (void)close { [_player pause]; _player = nil; DMFinderSizeCancel(self, nil); [self dm_quickLookRemove]; [super close]; }
+- (BOOL)dm_handleKey:(UIKey *)key {   // (Space, Esc or Command-W close it again, as on a Mac; the arrows move through the Finder window's items)
     UIKeyModifierFlags m = key.modifierFlags & (UIKeyModifierCommand | UIKeyModifierShift | UIKeyModifierAlternate | UIKeyModifierControl);
     long c = (long)key.keyCode;
     if ((m == 0 && (c == UIKeyboardHIDUsageKeyboardSpacebar || c == UIKeyboardHIDUsageKeyboardEscape)) || (m == UIKeyModifierCommand && c == UIKeyboardHIDUsageKeyboardW)) {
+        id<DMQuickLookBrowser> b = self.browser;   // (back to the window it was opened from, as on a Mac -- the desktop is no window: it takes the keys back)
+        DMNativeWindow *f = [(id)b isKindOfClass:[DMNativeWindow class]] ? (DMNativeWindow *)b : b ? nil : (DMNativeWindow *)DMFinderFront();
         [self close];
-        DMNativeWindow *f = (DMNativeWindow *)DMFinderFront(); if (f && !f.hidden) [f activate];
+        if (f && !f.hidden) [f activate];
+        else if ([(id)b respondsToSelector:@selector(dm_previewClosed)]) [b dm_previewClosed];
         return YES;
+    }
+    if (m == 0) {
+        int move = c == UIKeyboardHIDUsageKeyboardUpArrow ? MSBD_STEP_UP : c == UIKeyboardHIDUsageKeyboardDownArrow ? MSBD_STEP_DOWN
+                 : c == UIKeyboardHIDUsageKeyboardLeftArrow ? MSBD_STEP_LEFT : c == UIKeyboardHIDUsageKeyboardRightArrow ? MSBD_STEP_RIGHT : 0;
+        if (move) return [self dm_step:move];
     }
     return NO;
 }
@@ -1035,11 +1438,21 @@ static void DMQuickLookProbe(void) {
     }
 }
 #endif
-static void DMQuickLookOpen(NSString *path) {
+// Quick Look for a file; from a Finder window (browser), the one Quick Look window of that Finder window shows it (item 3: it moves with the selection).
+static void DMQuickLookOpenFrom(NSString *path, id<DMQuickLookBrowser> browser) {
     DM_FEATURE_MARK("finder-quick-look");
-    for (DMNativeWindow *w in gNativeWindows) if ([w isKindOfClass:[DMQuickLookWindow class]] && [((DMQuickLookWindow *)w).file isEqualToString:path]) { [w show]; return; }
-    [[[DMQuickLookWindow alloc] initWithFile:path] show];
+    for (DMNativeWindow *w in gNativeWindows) {
+        if (![w isKindOfClass:[DMQuickLookWindow class]]) continue;
+        DMQuickLookWindow *q = (DMQuickLookWindow *)w;
+        if (!(browser && q.browser == browser) && ![q.file isEqualToString:path]) continue;
+        if (browser) q.browser = browser;
+        [q dm_follow:path];
+        [w show];
+        return;
+    }
+    [[[DMQuickLookWindow alloc] initWithFile:path browser:browser] show];
 }
+static void DMQuickLookOpen(NSString *path) { DMQuickLookOpenFrom(path, nil); }
 
 // ---- the "Trash emptied" sound (1.7.2) --------------------------------------------------------------------------------------------------------
 // Played once Empty Trash really erased something: Finder's Empty button, its File menu and the Dock's Trash all end in -emptyTrash. Apple's macOS
@@ -1068,7 +1481,7 @@ static NSUInteger DMDockTrashCountNow(void);   // (DockTrash.h: what Finder's Tr
 
 // ---- the window -----------------------------------------------------------------------------------------------------------------------------
 @interface DMFinderWindow : DMNativeWindow <UITableViewDataSource, UITableViewDelegate, UICollectionViewDataSource, UICollectionViewDelegate,
-                                             UIContextMenuInteractionDelegate, UISearchBarDelegate, UIGestureRecognizerDelegate, UITextFieldDelegate>
+                                             UIContextMenuInteractionDelegate, UISearchBarDelegate, UIGestureRecognizerDelegate, UITextFieldDelegate, DMQuickLookBrowser>
 @property (nonatomic, copy) NSString *path;
 - (void)go:(NSString *)path;
 - (void)goBack; - (void)goForward; - (void)goUp;
@@ -1081,6 +1494,11 @@ static NSUInteger DMDockTrashCountNow(void);   // (DockTrash.h: what Finder's Tr
 - (void)open:(DMFinderItem *)it; - (void)getInfo:(DMFinderItem *)it; - (void)newFolder; - (void)dm_newTextFile;   // (one item; New Folder in this window's folder)
 - (void)dm_renameSelected; - (void)dm_duplicateSelected; - (void)dm_trashSelected;
 - (void)dm_setIcons:(BOOL)icons; - (BOOL)dm_showsHidden; - (void)dm_toggleHidden;
+- (MSBDSortChoice)dm_sort;                                  // (how this folder is sorted: common/FinderSort.h)
+- (void)dm_sortBy:(int)key;                                 // (View > Sort By: MSBD_SORT_*; the same key again keeps its direction)
+- (void)dm_sortAgain;                                       // (Keep Folders on Top changed: the same choice, sorted again)
+- (void)dm_setSort:(MSBDSortChoice)c; - (void)dm_applySort:(MSBDSortChoice)c; - (void)dm_showSort;   // (a new choice, kept and shown; the headers)
+- (void)dm_resortKeepingPlace:(BOOL)keep; - (void)dm_resortSoon; - (void)dm_sortSizesSoon;
 - (NSArray<UIKeyCommand *> *)dm_keyCommands;
 - (BOOL)dm_handleKey:(UIKey *)key;
 - (void)refresh;
@@ -2061,7 +2479,9 @@ static NSArray *DMFinderMenuRows(UIMenu *menu, UIControl *o) {
             [rows addObject:r];
         } else if ([e isKindOfClass:[UIAction class]]) {
             UIAction *a = (UIAction *)e;
-            [rows addObject:[[DMRow alloc] initWithTitle:a.title enabled:!(a.attributes & UIMenuElementAttributesDisabled) handler:DMCloseThen(^{ DMFinderRunAction(a); })]];
+            DMRow *r = [[DMRow alloc] initWithTitle:a.title enabled:!(a.attributes & UIMenuElementAttributesDisabled) handler:DMCloseThen(^{ DMFinderRunAction(a); })];
+            if (a.state == UIMenuElementStateOn) r.checked = YES;   // (a ticked action: Sort By's choice, 1.8.4.2)
+            [rows addObject:r];
         }
     }
     return rows;
@@ -2196,9 +2616,11 @@ static NSError *DMFinderRemove(NSString *p) {   // (deletes ONLY inside Finder's
     return e ?: ce;
 }
 // Every Finder window showing one of these folders reads it again.
+static void (*gFinderDesktopFoldersChanged)(NSSet<NSString *> *folders);   // (set by Desktop.h: the desktop reads its folder again too)
 static void DMFinderRefreshFolders(NSSet<NSString *> *dirs) {
     NSMutableSet *want = [NSMutableSet set];
     for (NSString *d in dirs) { [want addObject:DMFinderNorm(d)]; [want addObject:DMFinderReal(d)]; if (DMFinderDriveTrashOf(DMFinderReal(d))) [want addObject:kFinderTrash]; }   // (a drive's Trash: the Trash shows it)
+    if (gFinderDesktopFoldersChanged) gFinderDesktopFoldersChanged(want);
     for (DMNativeWindow *w in [gNativeWindows copy]) {
         if (![w isKindOfClass:NSClassFromString(@"DMFinderWindow")]) continue;
         NSString *p = [(id)w path];
@@ -2249,6 +2671,15 @@ static void DMFinderDrivesCheck(NSString *why);
     unsigned long long _free;     // (the free space where the open folder is, for the status line; ULLONG_MAX: unknown)
     DMFinderItem *_sideDrive; CGPoint _sideStart; BOOL _sideLifted; __weak UIView *_sideCell;   // (a drive held in the sidebar, -dm_sideDragPress:)
     NSUInteger _sideSerial;   // (that hold's number: held still, its menu opens -- unless it moved or ended first)
+    NSMutableSet<NSString *> *_sizeChecked;   // (folders whose kept size this listing has checked: a row asks again only after the next listing, DMFinderSizeAsk)
+    NSMapTable<NSString *, UILabel *> *_infoSizes;   // (Get Info sheets waiting for a folder's size: their message, by the folder)
+    NSMutableDictionary<NSString *, NSString *> *_infoTexts;   // (that message, with the size's place marked "\x01")
+    MSBDSortChoice _sort;   // (this folder's sort, DMFinderSortFor; 1.8.4.2 item 4)
+    NSDictionary<NSString *, NSNumber *> *_rowOfPath; NSArray *_rowOfPathItems;   // (path -> row of _items, made again when _items is another array: a size in costs no walk of the rows)
+    NSMutableSet<NSString *> *_sizeArrived;   // (folders whose size came in since the last sort: they may move, so none is the place the view keeps)
+    NSUInteger _sizeListing;   // (this window's listings: a background check of kept sizes for an older listing is dropped)
+    BOOL _resortShownOnly;   // (a re-sort under the user: only the view on screen is reloaded, toggleView reloads both)
+    BOOL _sortPending;      // (sizes came in while sorting by size: sorted again shortly, once for several)
 }
 - (instancetype)initWithTitle:(NSString *)title frame:(CGRect)frame {
     self = [super initWithTitle:title frame:frame];
@@ -2303,12 +2734,20 @@ static void DMFinderDrivesCheck(NSString *why);
     _list.separatorStyle = UITableViewCellSeparatorStyleNone;
     [c addSubview:_list];
     _header = [UIView new]; _header.backgroundColor = [UIColor systemBackgroundColor];
+    NSInteger hcol = 0;
     for (NSString *t in @[@"Name", @"Date Modified", @"Size", @"Kind"]) {
         UILabel *h = [UILabel new]; h.text = t; h.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightMedium]; h.textColor = [UIColor secondaryLabelColor];
+        h.tag = 21 + hcol++;   // (column 0-3: MSBDSortColumnKey)
         [_header addSubview:h];
     }
     UIView *line = [UIView new]; line.backgroundColor = [UIColor separatorColor]; line.tag = 9; [_header addSubview:line];
     [c addSubview:_header];
+    {   // (a click -- a tap -- on a column's header sorts by it; again, the other way round: 1.8.4.2 item 4)
+        UITapGestureRecognizer *ht = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(dm_headerTap:)];
+        ht.name = @"dm.finder.header";
+        [_header addGestureRecognizer:ht];
+    }
+    _sort = kMSBDSortDefault;
     // The Trash's bar (1.7.2): a Mac's Finder has an Empty button at the top right of the Trash window, between the toolbar and the files. Empty
     // runs Finder's own Empty Trash (its question first); it is greyed while the Trash holds nothing (what Empty would erase: every drive's Trash
     // and hidden items too, counted as the folder is read). The folder's name stays in the toolbar alone (a "Trash" in the bar as well read as
@@ -2425,7 +2864,7 @@ static void DMFinderDrivesCheck(NSString *why);
       NSInteger i = 0;
       for (UIView *v in _header.subviews) {
           if (v.tag == 9) { v.frame = CGRectMake(0, hh - 0.5, w, 0.5); continue; }
-          CGFloat x = [xs[i] doubleValue]; v.hidden = x < 0; v.frame = CGRectMake(MAX(x, 0), 0, i == 0 ? cols.nameW : 140, hh); i++;
+          CGFloat x = [xs[i] doubleValue]; v.hidden = x < 0; v.frame = CGRectMake(MAX(x, 0), 0, i == 0 ? cols.nameW : (i == 1 ? 172.0 : (i == 2 ? 60.0 : 84.0)), hh); i++;   // (the cells' own widths: VoiceOver activates a header at its centre, which then lies in its column)
       } }
     CGRect area = CGRectMake(x, tb + hh, b.size.width - x, b.size.height - tb - hh - st);
     BOOL widthChanged = fabs(_list.frame.size.width - area.size.width) > 0.5;
@@ -2457,7 +2896,9 @@ static void DMFinderDrivesCheck(NSString *why);
 }
 - (void)load:(NSString *)path {
     path = DMFinderNorm(path);
+    if (![path isEqualToString:self.path]) DMFinderSizeCancel(self, nil);   // (another folder: the last one's sizes are no longer wanted)
     self.path = path;
+    _sort = DMFinderSortFor(path); [self dm_showSort];   // (the folder's own sort, as its view options on a Mac)
     NSString *name = [path isEqualToString:@"/"] ? @"iPad" : path.lastPathComponent;
     for (NSDictionary *sec in _places) for (NSDictionary *r in sec[@"rows"]) if ([r[@"p"] isEqualToString:path]) name = r[@"t"];
     if ([path.stringByDeletingLastPathComponent hasSuffix:@"/Application"] && path.lastPathComponent.length == 36) name = DMFinderContainerName(path) ?: name;
@@ -2570,9 +3011,13 @@ static void DMFinderDrivesCheck(NSString *why);
     if (DMFinderOnGoneDrive(p)) { [self dm_driveGone]; return; }
     if ([p isEqualToString:kFinderTrash]) { [self dm_watch:p]; [self dm_list]; }
 }
-- (void)close { [self dm_endRename:NO]; if (_watch) { dispatch_source_cancel(_watch); _watch = nil; } for (dispatch_source_t m in _watchMore) dispatch_source_cancel(m); _watchMore = nil; [super close]; }
+- (void)close { [self dm_endRename:NO]; DMFinderSizeCancel(self, nil); if (_watch) { dispatch_source_cancel(_watch); _watch = nil; } for (dispatch_source_t m in _watchMore) dispatch_source_cancel(m); _watchMore = nil; [super close]; }
 - (void)setItems:(NSArray *)items error:(NSError *)err {
-    _all = items ?: @[];
+    _all = DMFinderSorted(items ?: @[], _sort);   // (listed by name; shown in this folder's order, 1.8.4.2 item 4)
+    if (!_sizeChecked) _sizeChecked = [NSMutableSet set];
+    _sizeListing++;
+    [_sizeChecked removeAllObjects];   // (each listing checks its folders' kept sizes again: a folder changed shows its new size)
+    [self dm_sortSizesSoon];   // (sorted by size: every folder's size, after the rows on screen have asked for theirs)
     {   // (On My iPad: the listing has read the apps' folders -- the watch covers them all, and an app folder's window takes its name)
         NSString *mine = DMFinderOnMyIPad();
         os_unfair_lock_lock(&gFinderAppFoldersLock); NSUInteger apps = gFinderAppFoldersCache.count; os_unfair_lock_unlock(&gFinderAppFoldersLock);
@@ -2608,7 +3053,7 @@ static void DMFinderDrivesCheck(NSString *why);
     _statusBase = _status.text;
     [self reload];
 }
-- (void)reload { [_list reloadData]; [_grid reloadData]; [self dm_showSelection]; }
+- (void)reload { if (!_resortShownOnly || !_icons) [_list reloadData]; if (!_resortShownOnly || _icons) [_grid reloadData]; [self dm_showSelection]; }
 - (void)refresh { [self dm_list]; }
 - (void)searchBar:(UISearchBar *)sb textDidChange:(NSString *)t { [self applySearch]; }
 - (void)searchBarSearchButtonClicked:(UISearchBar *)sb { [sb resignFirstResponder]; }
@@ -2685,6 +3130,8 @@ static void DMFinderDrivesCheck(NSString *why);
     d.frame = CGRectMake(cols.date, 0, 172, h); z.frame = CGRectMake(cols.size, 0, 60, h); k.frame = CGRectMake(cols.kind, 0, 84, h);
     d.hidden = cols.date < 0; z.hidden = cols.size < 0; k.hidden = cols.kind < 0;
     n.text = it.display; d.text = DMFinderDate(it.date); z.text = DMFinderSize(it); k.text = it.kind;
+    objc_setAssociatedObject(cell, kFinderCellSizePathKey, it.dir ? it.path : nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    if (it.dir && cols.size >= 0 && MSBDFolderSizeWanted(it.dir, it.alias, it.locked, it.cloud) && ![_sizeChecked containsObject:it.path]) DMFinderSizeAsk(it.path, self, NO);   // (its size, in the background: DMFinderSizeAsk)
     n.textColor = it.locked ? [UIColor secondaryLabelColor] : [UIColor labelColor];
     for (UILabel *l in @[d, z, k]) l.textColor = [UIColor secondaryLabelColor];
     cell.textLabel.text = nil; cell.detailTextLabel.text = nil; cell.imageView.image = nil;
@@ -2709,6 +3156,12 @@ static void DMFinderDrivesCheck(NSString *why);
 }
 - (void)tableView:(UITableView *)tv didEndDisplayingCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)ip {
     if (tv == _list && ip.row < (NSInteger)_items.count) DMFinderThumbCancel(_items[ip.row], 18.0);   // (scrolled away before its thumbnail was made)
+    if (tv == _list && _sort.key != MSBD_SORT_SIZE) {   // (or its size: out of the line -- unless the order needs it; the cell's own folder, and only if no row on screen still shows it)
+        NSString *gone = objc_getAssociatedObject(cell, kFinderCellSizePathKey);
+        BOOL shown = gone == nil;
+        if (gone) for (UITableViewCell *c in _list.visibleCells) if (c != cell && [objc_getAssociatedObject(c, kFinderCellSizePathKey) isEqual:gone]) { shown = YES; break; }
+        if (!shown) DMFinderSizeCancel(self, gone);
+    }
 }
 - (void)collectionView:(UICollectionView *)cv didEndDisplayingCell:(UICollectionViewCell *)cell forItemAtIndexPath:(NSIndexPath *)ip {
     if (ip.item < (NSInteger)_items.count) DMFinderThumbCancel(_items[ip.item], 56.0);
@@ -2765,6 +3218,42 @@ static void DMFinderDrivesCheck(NSString *why);
     }
     NSUInteger n = [self dm_selectedItems].count;
     _status.text = n > 1 ? [NSString stringWithFormat:@"%lu of %lu selected", (unsigned long)n, (unsigned long)_items.count] : _statusBase;
+    if (n == 1) [[self dm_quickLookWindow] dm_follow:[self dm_selectedItem].path];   // (Quick Look open: it shows the item now selected, 1.8.4.2 item 3)
+}
+// ---- Quick Look moving with the selection (1.8.4.2 item 3) ------------------------------------------------------------------------------------
+// As Space-preview on a Mac: this window's Quick Look window shows the selected item, whatever moved the selection -- an arrow in Quick Look
+// (-dm_previewStep:, common/PreviewStep.h), a swipe there, an arrow or a click here, Quick Look's own paging (-dm_previewSelect:).
+- (DMQuickLookWindow *)dm_quickLookWindow {
+    for (DMNativeWindow *w in gNativeWindows) if ([w isKindOfClass:[DMQuickLookWindow class]] && ((DMQuickLookWindow *)w).browser == (id)self && !w.hidden) return (DMQuickLookWindow *)w;
+    return nil;
+}
+- (NSInteger)dm_gridColumns {   // (the icons in the grid's first row: Up and Down move by that many)
+    NSInteger n = [_grid numberOfItemsInSection:0], cols = 0; CGFloat y0 = 0;
+    for (NSInteger i = 0; i < n && i < 200; i++) {
+        UICollectionViewLayoutAttributes *a = [_grid layoutAttributesForItemAtIndexPath:[NSIndexPath indexPathForItem:i inSection:0]];
+        if (!a) break;
+        if (i == 0) y0 = a.frame.origin.y; else if (fabs(a.frame.origin.y - y0) > 1.0) break;
+        cols++;
+    }
+    return MAX(cols, (NSInteger)1);
+}
+- (NSString *)dm_previewStep:(int)move {
+    NSInteger i = -1;
+    for (NSInteger k = 0; _selected && k < (NSInteger)_items.count; k++) if ([_items[k].path isEqualToString:_selected]) { i = k; break; }
+    long to = MSBDPreviewStep(move, _icons, _icons ? (long)[self dm_gridColumns] : 1, (long)i, (long)_items.count);
+    if (to < 0 || to == i) return nil;
+    NSString *p = _items[(NSUInteger)to].path;
+    [self dm_setSelection:@[p] anchor:p];   // (the preview follows, -dm_showSelection)
+    [self dm_scrollToPath:p];
+    return p;
+}
+- (void)dm_previewSelect:(NSString *)path {
+    for (DMFinderItem *it in _items) if ([it.path isEqualToString:path]) { [self dm_setSelection:@[path] anchor:path]; [self dm_scrollToPath:path]; return; }
+}
+- (NSArray<NSString *> *)dm_previewPaths {   // (Quick Look's own viewer pages through the files and documents (iWork's packages too), never a folder or an app)
+    NSMutableArray *a = [NSMutableArray array];
+    for (DMFinderItem *it in _items) if ((!it.dir || (it.package && ![it.name.pathExtension.lowercaseString isEqualToString:@"app"])) && !it.cloud && !it.app) [a addObject:it.path];
+    return a;
 }
 - (void)dm_scrollToPath:(NSString *)path {
     for (NSInteger i = 0; i < (NSInteger)_items.count; i++) if ([_items[i].path isEqualToString:path]) {
@@ -2859,7 +3348,11 @@ static void DMFinderDrivesCheck(NSString *why);
 - (NSArray<NSString *> *)dm_selectedPaths { return [[self dm_selectedItems] valueForKey:@"path"]; }
 - (void)dm_newFolder { [self newFolder]; }
 - (void)dm_openSelected { for (DMFinderItem *it in [self dm_selectedItems]) [self open:it]; }
-- (void)dm_quickLookSelected { DMFinderItem *it = [self dm_selectedItems].firstObject; if (it) [self quickLook:it]; }
+- (void)dm_quickLookSelected {   // (Space: Quick Look; Space again, while it is open, closes it -- as on a Mac)
+    DMQuickLookWindow *q = [self dm_quickLookWindow];
+    if (q) { [q close]; [self activate]; return; }
+    DMFinderItem *it = [self dm_selectedItem]; if (it) [self quickLook:it];
+}
 - (void)dm_infoSelected { for (DMFinderItem *it in [self dm_selectedItems]) [self getInfo:it]; }
 - (void)dm_renameSelected { if ([self dm_selectedItems].count != 1) return; DMFinderItem *it = [self dm_selectedItem]; if (it) [self dm_rename:it]; }
 - (void)dm_duplicateSelected { NSArray *p = [self dm_selectedPaths]; if (p.count) [self dm_duplicateItems:p]; }
@@ -2870,6 +3363,153 @@ static void DMFinderDrivesCheck(NSString *why);
 - (void)dm_setIcons:(BOOL)icons { if (_icons != icons) [self toggleView]; }
 - (BOOL)dm_showsHidden { return _hidden; }
 - (void)dm_toggleHidden { _hidden = !_hidden; [self refresh]; }
+// ---- sorting (1.8.4.2 item 4: the rules are common/FinderSort.h; the choice kept per folder, DMFinderSortFor / DMFinderSortKeep) --------------
+- (MSBDSortChoice)dm_sort { return _sort; }
+- (void)dm_sortBy:(int)key { [self dm_setSort:MSBDSortPick(_sort, key)]; }
+- (void)dm_sortAgain { [self dm_resortKeepingPlace:YES]; }
+- (void)dm_addListedPathsTo:(NSMutableSet<NSString *> *)set { for (DMFinderItem *it in _all) if (it.path) [set addObject:it.path]; }
+// A click on a column's header: its key, or the other way round (MSBDSortClick). The column is the rightmost header starting left of the click
+// (the icons' room before Name is Name's).
+- (void)dm_headerTap:(UITapGestureRecognizer *)g {
+    if (g.state != UIGestureRecognizerStateEnded || _icons) return;
+    CGPoint p = [g locationInView:_header];
+    NSInteger col = 0; CGFloat best = -1.0;
+    for (NSInteger i = 0; i < 4; i++) {
+        UIView *h = [_header viewWithTag:21 + i];
+        if (!h || h.hidden) continue;
+        CGFloat x = i == 0 ? 0.0 : h.frame.origin.x - 4.0;
+        if (p.x >= x && x >= best) { best = x; col = i; }
+    }
+    [self dm_setSort:MSBDSortClick(_sort, MSBDSortColumnKey((int)col))];
+}
+// A new choice: kept for the folder, and every window showing that folder follows (a folder's view options, as on a Mac).
+- (void)dm_setSort:(MSBDSortChoice)c {
+    if (!MSBDSortValid(c) || !self.path) return;
+    DMFinderSortKeep(self.path, c);
+    DMLog([NSString stringWithFormat:@"[finder] sort by %s, %@", MSBDSortTitle(c.key), c.ascending ? @"ascending" : @"descending"]);
+    for (DMNativeWindow *w in [gNativeWindows copy])
+        if ([w isKindOfClass:[DMFinderWindow class]] && [((DMFinderWindow *)w).path isEqualToString:self.path]) [(DMFinderWindow *)w dm_applySort:c];
+    if (![gNativeWindows containsObject:self]) [self dm_applySort:c];
+}
+- (void)dm_applySort:(MSBDSortChoice)c {
+    BOOL leftSize = _sort.key == MSBD_SORT_SIZE && c.key != MSBD_SORT_SIZE;
+    if (leftSize) DMFinderSizeCancelRows(self);   // (the whole window's folders were only wanted for that order; before the reload, whose rows ask again)
+    _sort = c;
+    [self dm_showSort];
+    [self dm_resortKeepingPlace:NO];
+    if (leftSize && !_icons) for (NSIndexPath *ip in _list.indexPathsForVisibleRows) if (ip.row < (NSInteger)_items.count) {   // (the same order: no reload to ask for the rows on screen)
+        DMFinderItem *it = _items[ip.row];
+        if (it.dir && DMFinderColumns(_list.bounds.size.width).size >= 0 && MSBDFolderSizeWanted(it.dir, it.alias, it.locked, it.cloud) && ![_sizeChecked containsObject:it.path]) DMFinderSizeAsk(it.path, self, NO);
+    }
+    [self dm_sortSizesSoon];
+}
+// The headers: the sorted column darker, with the chevron (up: ascending), as a Mac's list shows it.
+- (void)dm_showSort {
+    NSInteger on = MSBDSortChevronColumn(_sort);
+    NSArray *titles = @[@"Name", @"Date Modified", @"Size", @"Kind"];
+    for (NSInteger i = 0; i < 4; i++) {
+        UILabel *h = (UILabel *)[_header viewWithTag:21 + i];
+        if (![h isKindOfClass:[UILabel class]]) continue;
+        BOOL active = i == on;
+        UIFont *font = [UIFont systemFontOfSize:11.0 weight:active ? UIFontWeightSemibold : UIFontWeightMedium];
+        NSDictionary *at = @{NSFontAttributeName: font, NSForegroundColorAttributeName: active ? [UIColor labelColor] : [UIColor secondaryLabelColor]};
+        NSMutableAttributedString *s = [[NSMutableAttributedString alloc] initWithString:titles[i] attributes:at];
+        if (active) {
+            UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:8.0 weight:UIImageSymbolWeightBold];
+            UIImage *chev = [[UIImage systemImageNamed:_sort.ascending ? @"chevron.up" : @"chevron.down" withConfiguration:cfg] imageWithTintColor:[UIColor secondaryLabelColor] renderingMode:UIImageRenderingModeAlwaysOriginal];
+            if (chev) {
+                [s appendAttributedString:[[NSAttributedString alloc] initWithString:@"  " attributes:at]];
+                [s appendAttributedString:[NSAttributedString attributedStringWithAttachment:[NSTextAttachment textAttachmentWithImage:chev]]];
+            }
+        }
+        h.attributedText = s;
+        h.isAccessibilityElement = YES; h.accessibilityLabel = titles[i];
+        h.accessibilityTraits = UIAccessibilityTraitButton | UIAccessibilityTraitHeader;
+        h.accessibilityValue = active ? (_sort.ascending ? @"Sorted ascending" : @"Sorted descending") : nil;
+    }
+}
+- (CGRect)dm_rectOfIndex:(NSInteger)i {
+    if (_icons) return [_grid layoutAttributesForItemAtIndexPath:[NSIndexPath indexPathForItem:i inSection:0]].frame;
+    return [_list rectForRowAtIndexPath:[NSIndexPath indexPathForRow:i inSection:0]];
+}
+// Sorted again. keep: the order changed under the user (sizes came in) -- the first item on screen stays where it is, so nothing jumps (at the
+// very top, the top stays shown); the selection is by path, it stays. Not keep: the user chose another order -- the selection is scrolled to,
+// else the top.
+- (void)dm_resortKeepingPlace:(BOOL)keep {
+    NSArray *sorted = DMFinderSorted(_all, _sort);
+    if ([sorted isEqualToArray:_all]) { [_sizeArrived removeAllObjects]; return; }
+    if (keep && (_renameField || _band || _dragLifted)) { [self dm_resortSoon]; return; }   // (a name being edited, a band or a drag under way: after it)
+    UIScrollView *sv = _icons ? (UIScrollView *)_grid : (UIScrollView *)_list;
+    if (keep && (sv.isTracking || sv.isDecelerating)) { [self dm_resortSoon]; return; }   // (never under a scroll)
+    if (!keep) [self dm_endRename:YES];
+    CGFloat top = -sv.adjustedContentInset.top;
+    NSString *anchor = nil; CGFloat dy = 0;
+    if (keep && sv.contentOffset.y > top + 1.0) {
+        NSIndexPath *first = nil;
+        for (NSIndexPath *ip in [(_icons ? _grid.indexPathsForVisibleItems : _list.indexPathsForVisibleRows) sortedArrayUsingSelector:@selector(compare:)])   // (the first on screen that stays where it is: one whose size just came in may be about to move far away, and the view would follow it)
+            if (ip.item < (NSInteger)_items.count && ![_sizeArrived containsObject:_items[ip.item].path]) { first = ip; break; }
+        if (first && first.item < (NSInteger)_items.count) { anchor = _items[first.item].path; dy = [self dm_rectOfIndex:first.item].origin.y - sv.contentOffset.y; }
+    }
+    _all = sorted;
+    [_sizeArrived removeAllObjects];
+    _resortShownOnly = keep;   // (sizes coming in, every 0.35 s at most: the view not on screen waits for toggleView)
+    [self applySearch];   // (the search's results in the new order; it reloads and shows the selection)
+    _resortShownOnly = NO;
+    [sv layoutIfNeeded];
+    if (anchor) {
+        for (NSInteger i = 0; i < (NSInteger)_items.count; i++) if ([_items[i].path isEqualToString:anchor]) {
+            CGFloat maxY = MAX(top, sv.contentSize.height - sv.bounds.size.height + sv.adjustedContentInset.bottom);
+            sv.contentOffset = CGPointMake(sv.contentOffset.x, MIN(MAX([self dm_rectOfIndex:i].origin.y - dy, top), maxY));
+            break;
+        }
+    } else if (!keep) {
+        if (_selected) [self dm_scrollToPath:_selected]; else sv.contentOffset = CGPointMake(sv.contentOffset.x, top);
+    }
+}
+- (void)dm_resortSoon {   // (several sizes in a row: one sort)
+    if (_sortPending) return;
+    _sortPending = YES;
+    __weak DMFinderWindow *ws = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        DMFinderWindow *s = ws; if (!s) return;
+        s->_sortPending = NO;
+        [s dm_resortKeepingPlace:YES];   // (any order: Keep Folders on Top changed during a rename or a scroll too; nothing happens if it's the same)
+    });
+}
+// Sorted by size: every folder's size is wanted, not only the rows on screen (as a Mac's Calculate all sizes); asked after the visible rows asked
+// for theirs, so those come first.
+- (void)dm_sortSizesSoon {
+    if (_sort.key != MSBD_SORT_SIZE) return;
+    __weak DMFinderWindow *ws = self; NSString *path = self.path;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        DMFinderWindow *s = ws; if (!s || ![s.path isEqualToString:path] || s->_sort.key != MSBD_SORT_SIZE) return;
+        // (a size kept is checked for the whole window in one background pass, one stat each and one hop back: only those not fresh go in the walking line)
+        NSMutableDictionary<NSString *, NSDictionary *> *kept = [NSMutableDictionary dictionary];
+        for (DMFinderItem *it in s->_all) {
+            if (!it.dir || !MSBDFolderSizeWanted(it.dir, it.alias, it.locked, it.cloud) || [s->_sizeChecked containsObject:it.path]) continue;
+            NSDictionary *k = gFinderSizes[it.path];
+            if (k) kept[it.path] = k; else DMFinderSizeAsk(it.path, s, NO);
+        }
+        if (!kept.count) return;
+        NSUInteger listing = s->_sizeListing;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            NSMutableSet<NSString *> *fresh = [NSMutableSet set]; NSMutableArray<NSString *> *stale = [NSMutableArray array];
+            double now = CFAbsoluteTimeGetCurrent();
+            for (NSString *p in kept) {
+                struct stat st; NSDictionary *k = kept[p];
+                BOOL there = lstat(p.fileSystemRepresentation, &st) == 0 && S_ISDIR(st.st_mode);
+                double date = there ? (double)st.st_mtimespec.tv_sec + (double)st.st_mtimespec.tv_nsec / 1e9 : 0;
+                if (there && MSBDFolderSizeFresh(1, [k[@"d"] doubleValue], date, [k[@"at"] doubleValue], now, kMSBDFolderSizeMaxAge)) [fresh addObject:p]; else [stale addObject:p];
+            }
+            dispatch_async(dispatch_get_main_queue(), ^{
+                DMFinderWindow *w = ws; if (!w || w->_sizeListing != listing || w->_sort.key != MSBD_SORT_SIZE || ![w.path isEqualToString:path]) return;
+                [w->_sizeChecked unionSet:fresh];
+                for (NSString *p in stale) DMFinderSizeAsk(p, w, NO);
+                if (fresh.count) [w dm_resortSoon];
+            });
+        });
+    });
+}
 // Keys, with a hardware keyboard, while this window is the active one (the layer's first responder asks, NativeWindow.h): a Mac Finder's.
 - (void)dm_selectStep:(NSInteger)d {
     if (!_items.count) return;
@@ -3086,6 +3726,11 @@ static void DMFinderDrivesCheck(NSString *why);
         if (!_trashBar.hidden && _emptyButton.enabled) [_emptyButton sendActionsForControlEvents:UIControlEventTouchUpInside];
     }
     else if ([act isEqualToString:@"hidden"]) [self dm_toggleHidden];
+    else if ([act isEqualToString:@"sort"]) {   // sort:<name|kind|added|modified|created|size|none>[-]: that order (1.8.4.2), the first items logged
+        if (arg.length) [self dm_setSort:MSBDSortRead(arg.UTF8String)];
+        NSArray *first = [[_items valueForKey:@"name"] subarrayWithRange:NSMakeRange(0, MIN((NSUInteger)12, _items.count))];
+        DMLog([NSString stringWithFormat:@"[finder] test sort: %s %@, folders on top %d: %@", MSBDSortTitle(_sort.key), _sort.ascending ? @"ascending" : @"descending", gFinderFoldersOnTop, [first componentsJoinedByString:@", "]]);
+    }
     else if ([act isEqualToString:@"drives"]) {   // (the drives now, the sidebar's Locations, and the policy for this folder -- names of drives only)
         DMFinderDrivesForget();
         for (NSDictionary *d in DMFinderDrives()) DMLog([NSString stringWithFormat:@"[finder] test drive: %@ at %@ from %@ type %@ fat %@ trash %@", d[@"t"], d[@"p"], d[@"from"], d[@"type"], d[@"fat"], DMFinderDriveTrash(d[@"p"])]);
@@ -3171,7 +3816,7 @@ static void DMFinderDrivesCheck(NSString *why);
     if (ok) { _status.text = [NSString stringWithFormat:@"Downloading “%@” from iCloud…", it.name]; return; }
     [self sheetTitle:[NSString stringWithFormat:@"“%@” is in iCloud", it.name] message:@"It isn't downloaded to this iPad yet, and Finder can't download it. Open it once in the Files app to download it." field:nil action:@"OK" destructive:NO then:^(NSString *t) {}];
 }
-- (void)quickLook:(DMFinderItem *)it { if (it.cloud) { [self dm_download:it]; return; } DMQuickLookOpen(it.path); }
+- (void)quickLook:(DMFinderItem *)it { if (it.cloud) { [self dm_download:it]; return; } DMQuickLookOpenFrom(it.path, self); }
 - (void)alertTitle:(NSString *)t message:(NSString *)m field:(NSString *)fieldText action:(NSString *)a destructive:(BOOL)d then:(void (^)(NSString *text))then {
     [self sheetTitle:t message:m field:fieldText action:a destructive:d then:then];   // (a sheet in the window, not a UIKit alert: see NativeWindow.h)
 }
@@ -3583,29 +4228,65 @@ static NSString *DMFinderResolveTyped(NSString *p) {
 }
 - (void)paste { [self dm_pasteInto:self.path]; }
 - (void)getInfo:(DMFinderItem *)it {
-    if (it.dir) {   // (a folder's size: everything inside, counted off the main thread -- a big folder took seconds)
-        __weak DMFinderWindow *ws = self;
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-            unsigned long long total = 0; NSUInteger n = 0;
-            NSDirectoryEnumerator *en = [[NSFileManager defaultManager] enumeratorAtPath:it.path];
-            while ([en nextObject]) { total += [en.fileAttributes fileSize]; if (++n > 50000) break; }
-            dispatch_async(dispatch_get_main_queue(), ^{ [ws showInfo:it size:total]; });
-        });
+    if (it.dir) {   // (a folder's size: shown at once -- kept, or "Calculating…" until the walk is in, first in line; DMFinderSizeAsk, 1.8.4.2)
+        [self showInfo:it sizeText:DMFinderSizeText(it, YES)];
+        if (MSBDFolderSizeWanted(it.dir, it.alias, it.locked, it.cloud)) DMFinderSizeAsk(it.path, self, YES);
         return;
     }
-    [self showInfo:it size:it.size];
+    [self showInfo:it sizeText:DMFinderSizeText(it, YES)];
+}
+// A folder's size is in (or its walk stopped): its row in the list, and a Get Info sheet waiting for it, show it.
+- (void)dm_folderSizeDone:(NSString *)path state:(int)state {
+    if (_rowOfPathItems != _items) {
+        NSMutableDictionary *rows = [NSMutableDictionary dictionaryWithCapacity:_items.count];
+        for (NSInteger i = (NSInteger)_items.count - 1; i >= 0; i--) if (_items[i].path) rows[_items[i].path] = @(i);   // (from the end: the first row with a path, as a walk from the top finds)
+        _rowOfPath = rows; _rowOfPathItems = _items;
+    }
+    NSNumber *rowNumber = path ? _rowOfPath[path] : nil;
+    NSInteger row = rowNumber ? rowNumber.integerValue : NSNotFound;
+    DMFinderItem *it = row != NSNotFound ? _items[row] : ([_infoSizes objectForKey:path] ? DMFinderItemFor(path) : nil);
+    if (state == MSBD_FS_CANCELLED) {   // (stopped for another window: asked again while this one shows it)
+        if (row != NSNotFound && (([_list.indexPathsForVisibleRows containsObject:[NSIndexPath indexPathForRow:row inSection:0]] && !_icons) || _sort.key == MSBD_SORT_SIZE)) DMFinderSizeAsk(path, self, NO);
+        if ([_infoSizes objectForKey:path]) DMFinderSizeAsk(path, self, YES);
+        return;
+    }
+    if (row != NSNotFound) {
+        [_sizeChecked addObject:path];
+        UITableViewCell *cell = [_list cellForRowAtIndexPath:[NSIndexPath indexPathForRow:row inSection:0]];
+        UILabel *z = [cell.contentView viewWithTag:13];
+        if (z) { z.text = DMFinderSize(it); cell.accessibilityValue = MSBDAXItemValue(it.kind, DMFinderSize(it), DMFinderDate(it.date)); }
+        if (_sort.key == MSBD_SORT_SIZE) { if (!_sizeArrived) _sizeArrived = [NSMutableSet set]; [_sizeArrived addObject:path]; [self dm_resortSoon]; }   // (sorted by size: the folder takes its place, as on a Mac)
+    }
+    UILabel *m = [_infoSizes objectForKey:path]; NSString *text = _infoTexts[path];
+    if (m && text && it) {
+        m.text = [text stringByReplacingOccurrencesOfString:@"\x01" withString:DMFinderSizeText(it, YES)];
+        [m.superview setNeedsLayout];
+    }
+    [_infoSizes removeObjectForKey:path]; [_infoTexts removeObjectForKey:path];
 }
 // (Get Info is a sheet: the system share sheet and UIKit alerts can't be used from SpringBoard's windows -- presented from the layer the share
 //  sheet came up off-screen on iPadOS 15 in landscape and took every touch; embedded in the turned container its presenter threw while
 //  appearing and SpringBoard crashed (M1, 30 Sep 14:42). Share is our own menu, DMFinderShareTo.)
-- (void)showInfo:(DMFinderItem *)it size:(unsigned long long)size {
+- (void)showInfo:(DMFinderItem *)it sizeText:(NSString *)sizeText {
     NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:it.path error:nil];
     NSString *origin = DMFinderInTrash(it.path) ? DMFinderOrigin(it.path) : nil;
-    NSString *m = [NSString stringWithFormat:@"Kind: %@\nSize: %@\nWhere: %@\nModified: %@\nOwner: %@ (%@)%@%@", it.kind,
-                   [NSByteCountFormatter stringFromByteCount:(long long)size countStyle:NSByteCountFormatterCountStyleFile], DMFinderNorm(it.path.stringByDeletingLastPathComponent),
+    NSString *t = [NSString stringWithFormat:@"Kind: %@\nSize: \x01\nWhere: %@\nModified: %@\nOwner: %@ (%@)%@%@", it.kind,
+                   DMFinderNorm(it.path.stringByDeletingLastPathComponent),
                    DMFinderDate(it.date), attrs[NSFileOwnerAccountName] ?: @"?", [NSString stringWithFormat:@"%lo", [attrs[NSFilePosixPermissions] unsignedLongValue]],
                    it.cloud ? @"\nIn iCloud, not downloaded" : @"", origin ? [@"\nFrom: " stringByAppendingString:origin.stringByDeletingLastPathComponent] : @""];
-    [self alertTitle:it.display message:m field:nil action:@"Copy Path" destructive:NO then:^(NSString *t) { [UIPasteboard generalPasteboard].string = it.path; }];
+    NSString *m = [t stringByReplacingOccurrencesOfString:@"\x01" withString:sizeText ?: @"--"];
+    [self alertTitle:it.display message:m field:nil action:@"Copy Path" destructive:NO then:^(NSString *x) { [UIPasteboard generalPasteboard].string = it.path; }];
+    if (!MSBDFolderSizeWanted(it.dir, it.alias, it.locked, it.cloud)) return;
+    // (a folder: its size is checked again (a kept one may be old) -- the sheet's message shows the new one once it is in, -dm_folderSizeDone:state:)
+    DMNativeSheet *sh = nil; for (UIView *v in self.subviews) if ([v isKindOfClass:[DMNativeSheet class]]) sh = (DMNativeSheet *)v;
+    NSMutableArray<UIView *> *todo = sh ? [NSMutableArray arrayWithObject:sh] : [NSMutableArray array];
+    for (NSUInteger k = 0; k < todo.count && k < 200; k++) {
+        UIView *v = todo[k]; [todo addObjectsFromArray:v.subviews];
+        if (![v isKindOfClass:[UILabel class]] || ![((UILabel *)v).text isEqualToString:m]) continue;
+        if (!_infoSizes) { _infoSizes = [NSMapTable strongToWeakObjectsMapTable]; _infoTexts = [NSMutableDictionary dictionary]; }
+        [_infoSizes setObject:(UILabel *)v forKey:it.path]; _infoTexts[it.path] = t;
+        break;
+    }
 }
 // long-press / right-click menus: on an item, or on the folder's empty space
 - (DMFinderItem *)itemAt:(CGPoint)p in:(UIView *)v {
@@ -3688,6 +4369,16 @@ static NSString *DMFinderResolveTyped(NSString *p) {
             [top addObject:p];
             [mid addObject:A(w->_hidden ? @"Hide Hidden Files" : @"Show Hidden Files", @"eye.slash", ^{ w->_hidden = !w->_hidden; [w refresh]; })];
             [mid addObject:A(w->_icons ? @"as List" : @"as Icons", w->_icons ? @"list.bullet" : @"square.grid.2x2", ^{ [w toggleView]; })];
+            {   // (Sort By, as a Mac's menu on a window's empty space: the folder's sort ticked -- 1.8.4.2 item 4)
+                NSMutableArray *sorts = [NSMutableArray array]; MSBDSortChoice now = [w dm_sort];
+                for (int k = 0; k < MSBD_SORT_MENU_COUNT; k++) {
+                    int key = kMSBDSortMenuKeys[k];
+                    UIAction *s = A(@(MSBDSortTitle(key)), nil, ^{ [w dm_sortBy:key]; });
+                    s.state = now.key == key ? UIMenuElementStateOn : UIMenuElementStateOff;
+                    [sorts addObject:s];
+                }
+                [mid addObject:[UIMenu menuWithTitle:@"Sort By" image:[UIImage systemImageNamed:@"arrow.up.arrow.down"] identifier:nil options:0 children:sorts]];
+            }
             [mid addObject:A(@"Copy Path", @"link", ^{ [UIPasteboard generalPasteboard].string = w.path; })];
             if ([w dm_canUndo]) [top addObject:A([w dm_undoTitle], @"arrow.uturn.backward", ^{ [w dm_undo]; })];
             if ([w.path isEqualToString:kFinderTrash]) { UIAction *e = A(@"Empty Trash…", @"trash.slash", ^{ [w emptyTrash]; }); e.attributes = UIMenuElementAttributesDestructive; [end addObject:e]; }
@@ -3934,6 +4625,25 @@ static NSString *DMFinderResolveTyped(NSString *p) {
 - (UITargetedPreview *)contextMenuInteraction:(UIContextMenuInteraction *)i previewForHighlightingMenuWithConfiguration:(UIContextMenuConfiguration *)c { return [self dm_previewFor:i config:c]; }
 - (UITargetedPreview *)contextMenuInteraction:(UIContextMenuInteraction *)i previewForDismissingMenuWithConfiguration:(UIContextMenuConfiguration *)c { return [self dm_previewFor:i config:c]; }
 @end
+static NSSet<NSString *> *DMFinderShownFolders(void) {
+    NSMutableSet<NSString *> *shown = [NSMutableSet set];
+    for (DMNativeWindow *w in [gNativeWindows copy]) if ([w isKindOfClass:[DMFinderWindow class]]) [(DMFinderWindow *)w dm_addListedPathsTo:shown];
+    return shown;
+}
+static void DMFinderSizeDone(NSString *path, int state, const void *owner) {   // (every Finder and Quick Look window: the folder may be shown in several)
+    for (DMNativeWindow *w in [gNativeWindows copy]) {
+        if (state == MSBD_FS_CANCELLED && (__bridge const void *)w == owner) continue;   // (its own walk, stopped as it closed or left the folder: not asked again)
+        if ([w isKindOfClass:[DMFinderWindow class]]) [(DMFinderWindow *)w dm_folderSizeDone:path state:state];
+        else if ([w isKindOfClass:[DMQuickLookWindow class]]) [(DMQuickLookWindow *)w dm_folderSizeDone:path state:state];
+    }
+}
+static void DMFinderSortChanged(void) {   // (Finder's settings changed -- DMFinderApplyPref: Keep Folders on Top sorts every window again)
+    BOOL was = gFinderFoldersOnTop, read = gFinderSortRead;
+    DMFinderSortReadPrefs();
+    if (read && was == gFinderFoldersOnTop) return;
+    DMLog([NSString stringWithFormat:@"[finder] Keep Folders on Top %@", gFinderFoldersOnTop ? @"on" : @"off"]);
+    for (DMNativeWindow *w in [gNativeWindows copy]) if ([w isKindOfClass:[DMFinderWindow class]]) [(DMFinderWindow *)w dm_sortAgain];
+}
 
 // ---- Finder's file operations outside a Finder window ---------------------------------------------------------------------------------------
 // A drag out of the Dock's Downloads stack, a drop on that stack, the desktop's own files (DMDesktop): the same operations as in a Finder window

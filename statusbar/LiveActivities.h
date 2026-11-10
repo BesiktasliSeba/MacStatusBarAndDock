@@ -363,7 +363,8 @@ static const DMLANeedRow kDMLATimerNeeds[] = {
     { "MTTimerManager", "pauseCurrentTimer", "@16@0:8", NO, YES },
     { "MTTimerManager", "resumeCurrentTimer", "@16@0:8", NO, YES },
     { "MTTimerManager", "stopCurrentTimer", "@16@0:8", NO, YES },
-    { "MTTimer", "isActiveTimer:", "B24@0:8@16", YES, NO },
+    { "MTTimer", "isActiveTimer:", "B24@0:8@16", YES, YES },   // (not on 16.7.7: -state read by its name there, DMLATimerActive)
+    { "MTTimer", "state", "Q16@0:8", NO, YES },
     { "MTTimer", "remainingTime", "d16@0:8", NO, NO },
     { "MTTimer", "fireDate", "@16@0:8", NO, NO },
     { "MTTimer", "timerID", "@16@0:8", NO, NO },
@@ -396,6 +397,14 @@ static BOOL DMLATimerActsOn(DMLAItem *it) {
 }
 // The card's buttons: a fake, a timer acted on by itself, else only MobileTimer's current timer.
 static BOOL DMLATimerHasButtons(DMLAItem *it) { return it.fake || DMLATimerActsOn(it) || it.current; }
+// Whether a timer is running or paused: +isActiveTimer: where MobileTimer has it, else its -state against the states by their names (16.7.7 has no
+// +isActiveTimer:). Whether this can be told at all: DMLATimersStart turns the timers off where neither is there.
+static BOOL DMLATimerHasActive(void) { return DMLATypes(objc_getClass("MTTimer"), "isActiveTimer:", "B24@0:8@16", YES); }
+static BOOL DMLATimerHasState(void) { return gLATimerPaused >= 0 && gLATimerRunning >= 0 && DMLATypes(objc_getClass("MTTimer"), "state", "Q16@0:8", NO); }
+static BOOL DMLATimerActive(id t) {
+    if (DMLATimerHasActive()) return ((BOOL (*)(id, SEL, id))objc_msgSend)((id)objc_getClass("MTTimer"), sel_registerName("isActiveTimer:"), t);
+    return MSBDLATimerActiveByState((long long)((unsigned long long (*)(id, SEL))objc_msgSend)(t, sel_registerName("state")), gLATimerPaused, gLATimerRunning);
+}
 static BOOL gLATimersStarted = NO, gLATimersOK = NO;
 static unsigned gLATimerGen = 0;
 static BOOL DMLATimerHas(const char *cls, const char *sel, const char *types, BOOL meta) { return DMLATypes(objc_getClass(cls), sel, types, meta); }
@@ -424,7 +433,7 @@ static void DMLATimersApply(NSArray *timers) {
     BOOL changed = NO;
     for (id t in timers) {
         if (![t isKindOfClass:tc]) continue;
-        BOOL active = ((BOOL (*)(id, SEL, id))objc_msgSend)((id)tc, sel_registerName("isActiveTimer:"), t);
+        BOOL active = DMLATimerActive(t);
         BOOL firing = hasFiring && ((BOOL (*)(id, SEL))objc_msgSend)(t, sel_registerName("isFiring"));
         id fire = ((id (*)(id, SEL))objc_msgSend)(t, sel_registerName("fireDate"));
         double fireIn = [fire isKindOfClass:[NSDate class]] ? [(NSDate *)fire timeIntervalSinceNow] : -1.0;
@@ -494,10 +503,11 @@ static void DMLATimersStart(void) {
     DMLog([NSString stringWithFormat:@"[liveact] timers: MobileTimer %@%@", gLATimersOK ? @"ready" : @"not all there: off",
         missing.count ? [@"; missing: " stringByAppendingString:[missing componentsJoinedByString:@", "]] : @""]);
     if (!gLATimersOK) return;
+    DMLATimerStatesRead();
+    if (!DMLATimerHasActive() && !DMLATimerHasState()) { gLATimersOK = NO; DMLog(@"[liveact] timers: can't tell a running timer here (no +isActiveTimer:, no -state by name): off"); return; }
     Class mc = objc_getClass("MTTimerManager");
     gLATimerMgr = [[mc alloc] init];   // (-init with the types above: its connection to the timer server, as every client of MobileTimer makes it)
     if (!gLATimerMgr) { gLATimersOK = NO; DMLog(@"[liveact] timers: no timer manager made: off"); return; }
-    DMLATimerStatesRead();
     DMLog([NSString stringWithFormat:@"[liveact] timers: states by name: stopped %lld, paused %lld, running %lld (a card's timer acted on by itself: %@)", gLATimerStopped, gLATimerPaused, gLATimerRunning,
         gLATimerStopped >= 0 && gLATimerPaused >= 0 && gLATimerRunning >= 0 && DMLATypes(objc_getClass("MTTimer"), "timerByUpdatingWithState:", "@24@0:8Q16", NO) && DMLATypes(objc_getClass("MTTimerManager"), "updateTimer:", "@24@0:8@16", NO) ? @"yes" : @"no, the current timer only"]);
     const char *path = "/System/Library/PrivateFrameworks/MobileTimer.framework/MobileTimer";

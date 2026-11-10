@@ -58,6 +58,7 @@
 #import "../common/Relaunch.h"       // (MSBDRelaunchLikeSbreload: our Respring where SpringBoard may not start sbreload -- iPadOS 18)
 #import "StartupAssertion.h"         // (MSBDGiveBackStartupAssertion: SpringBoard's start-up power assertion given back once it is up, 1.7.8)
 #import "../common/SSHSwitch.h"      // (SSH: its state, asking, the helper's notification -- one logic with Settings and the Control Center control, 1.7.6)
+#import "../common/BatteryInside.h"  // (the battery percentage inside the icon, 1.8.4.2)
 #import "../common/BatteryMenu.h"    // (the battery menu and the Control Center icon: their places in the bar, the Charge Limit job's words -- Mac-tested, 1.7.9)
 #import "../common/SleepGuard.h"     // (the battery menu's Sleep Guard row: the guard's switch and the helper's state file, as Settings shows them)
 #import "../common/FinderFolders.h"  // (the Home Screen folders attached to the Finder menu: the record, the rows' order and titles -- Mac-tested, 1.7.9)
@@ -764,6 +765,21 @@ static id DMCall(id obj, NSString *name) {
     SEL sel = NSSelectorFromString(name);
     if (!obj || ![obj respondsToSelector:sel]) return nil;
     return ((id (*)(id, SEL))objc_msgSend)(obj, sel);
+}
+#include "../common/CmdTabSelection.h"
+// The Command-Tab switcher's selected item, nil when it has none: SpringBoard's getter is objectAtIndex: on the list and raises when the list is empty (M1 15.6.1, 9 Nov, NSRangeException).
+static id DMCmdTabSelectedItem(id vc) {
+    if (!vc) return nil;
+    Class c = object_getClass(vc);
+    Ivar li = class_getInstanceVariable(c, "_recentDisplayItems");
+    id list = li ? object_getIvar(vc, li) : nil;
+    bool listKnown = li && (!list || [list isKindOfClass:[NSOrderedSet class]] || [list isKindOfClass:[NSArray class]]);
+    Ivar si = class_getInstanceVariable(c, "_selectedIndex");
+    const char *type = si ? ivar_getTypeEncoding(si) : NULL;
+    bool indexKnown = type && (!strcmp(type, "Q") || !strcmp(type, "q"));
+    size_t index = indexKnown ? *(size_t *)((uint8_t *)(__bridge void *)vc + ivar_getOffset(si)) : 0;
+    if (!MSBDCmdTabSelectionReadable(listKnown, listKnown ? [(NSOrderedSet *)list count] : 0, indexKnown, index)) return nil;
+    return DMCall(vc, @"selectedApplicationDisplayItem");
 }
 // SpringBoard's managers (lock screen, backlight, Cover Sheet). iPadOS 17+: asked the way SpringBoard itself asks, +sharedInstanceIfExists -- the first
 // +sharedInstance creates the manager and crashes on purpose when that is too early, and its -init can run our hooks again inside that same run-once
@@ -14510,7 +14526,7 @@ static void DMCoverSheetPutAway(NSString *bundleID) {
 }
 - (void)launchCurrentSelectedApplication {
     id vc = nil; Ivar iv = class_getInstanceVariable(object_getClass((id)self), "_commandTabViewController"); if (iv) vc = object_getIvar((id)self, iv);
-    id item = [vc respondsToSelector:NSSelectorFromString(@"selectedApplicationDisplayItem")] ? DMCall(vc, @"selectedApplicationDisplayItem") : nil;
+    id item = DMCmdTabSelectedItem(vc);
     id pick = DMCmdTabPick((id)self, item);
     if (DMAMCmdTabPicked((id)self, pick)) return;   // (Activity Monitor's item, as above)
     if (item) DMNativeStepBack(@"an app picked in Command-Tab");   // (an app comes forward over the native windows, as from the Dock)
@@ -18423,12 +18439,23 @@ static void DMOpenNativeWindowMenu(UIButton *btn) {
 static void DMOpenFinderViewMenu(UIButton *btn) {
     if (DMTitleTapWithMenuOpen(btn)) return;
     DMFinderWindow *f = DMFinderFront();
-    NSArray *items = @[
+    NSMutableArray *items = [NSMutableArray arrayWithArray:@[
         DMFinderRow(@"as Icons", @"⌘1", f != nil, ^(DMFinderWindow *w) { [w dm_setIcons:YES]; }),
         DMFinderRow(@"as List", @"⌘2", f != nil, ^(DMFinderWindow *w) { [w dm_setIcons:NO]; }),
         [NSNull null],
-        DMFinderRow([f dm_showsHidden] ? @"Hide Hidden Files" : @"Show Hidden Files", @"⇧⌘.", f != nil, ^(DMFinderWindow *w) { [w dm_toggleHidden]; }),
-    ];
+    ]];
+    // Sort By (1.8.4.2 item 4): the front window's folder, its choice ticked; the list's and the icons' alike. Our bar menus have no submenus, so
+    // its keys are a group under a "Sort By" heading (the window's own menu on empty space has the Mac's Sort By submenu, Finder.h).
+    [items addObject:[[DMRow alloc] initWithTitle:@"Sort By" enabled:NO handler:nil]];
+    MSBDSortChoice now = f ? [f dm_sort] : kMSBDSortDefault;
+    for (int k = 0; k < MSBD_SORT_MENU_COUNT; k++) {
+        int key = kMSBDSortMenuKeys[k];
+        DMRow *r = DMFinderRow(@(MSBDSortTitle(key)), nil, f != nil, ^(DMFinderWindow *w) { [w dm_sortBy:key]; });
+        r.checked = f != nil && now.key == key;
+        [items addObject:r];
+    }
+    [items addObject:[NSNull null]];
+    [items addObject:DMFinderRow([f dm_showsHidden] ? @"Hide Hidden Files" : @"Show Hidden Files", @"⇧⌘.", f != nil, ^(DMFinderWindow *w) { [w dm_toggleHidden]; })];
     DMPresentMenu(btn, kViewLabelKey, kViewPillKey, items);
 }
 static NSString *DMNativeActiveAppName(void) { return DMNativeActiveApp().appName; }
@@ -22469,6 +22496,11 @@ static void DMLoadPrefs(void) {
         DMBattApplyPref(MSBDBattMenuOn(isBool, isBool && CFBooleanGetValue(bmRef)));
         if (bmRef) CFRelease(bmRef);
     }
+    {   // Battery Percentage in Icon (1.8.4.2): off unless switched on (BatteryMenu.h, common/BatteryInside.h)
+        CFPropertyListRef bi = CFPreferencesCopyValue(CFSTR(kMSBDBatteryInsideKey), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        DMBattInsideApplyPref(bi && CFGetTypeID(bi) == CFBooleanGetTypeID() && CFBooleanGetValue(bi));
+        if (bi) CFRelease(bi);
+    }
     {   // Live Activities in Menu Bar (1.8.4 item 1) and its page's kinds: each on unless switched off, updaters too (LiveActivities.h DMLAApplyPrefs:
         // applied once SpringBoard has been up 8 s; common/LiveActivities.h MSBDLASwitchOn)
         static const char *const laKeys[5] = { MSBD_LA_KEY, MSBD_LA_NP_KEY, MSBD_LA_TIMERS_KEY, MSBD_LA_CALLS_KEY, MSBD_LA_APPS_KEY };
@@ -23879,6 +23911,7 @@ static BOOL DMBarCopyIsCCDuplicate(UIView *fg) {
         }
         // The battery's button (Settings > Status Bar > Battery Menu): over iOS's own battery item, which then opens our battery menu (BatteryMenu.h)
         DMBattLayoutButton(fg, left, k);
+        DMBattInsideBar(fg);   // (Battery Percentage in Icon: Settings > Status Bar, off by default)
         // Wi-Fi icon (Settings > Status Bar > Wi-Fi Menu): our own item nearest the status icons, like a Mac's Wi-Fi menu extra beside Control
         // Center; iOS's own Wi-Fi item is left out of our bars then (DMHideStockWiFi). It stays with Wi-Fi off (the empty fan). Tapping it opens its menu.
         left = DMWiFiLayoutIcon(fg, left, timeCentre.y, k);
@@ -31671,7 +31704,7 @@ static void DMRunTrigger(NSString *cmd) {
         for (NSInteger i = 1; i < n; i++) ((void (*)(id, SEL))objc_msgSend)(ct, NSSelectorFromString(@"next"));
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             id vc = nil; Ivar iv = class_getInstanceVariable(object_getClass(ct), "_commandTabViewController"); if (iv) vc = object_getIvar(ct, iv);
-            id item = [vc respondsToSelector:NSSelectorFromString(@"selectedApplicationDisplayItem")] ? DMCall(vc, @"selectedApplicationDisplayItem") : nil;
+            id item = DMCmdTabSelectedItem(vc);
             DMLog([NSString stringWithFormat:@"[cmdtab] cmdtab_%ld: Command let go on %@", (long)n, [item respondsToSelector:@selector(bundleIdentifier)] ? [item bundleIdentifier] : item]);
             ((void (*)(id, SEL))objc_msgSend)(ct, NSSelectorFromString(@"launchCurrentSelectedApplication"));
         });
@@ -39599,6 +39632,7 @@ static void DMFinderApplyPref(void) {
         DMFinderDockInit();     // (the Dock's Finder icon: its taps, and Finder's window count for its dot)
     }
     DMDesktopApplyPref();   // (Show Desktop Icons: the same notification -- the tick puts the desktop up or takes it away)
+    DMFinderSortChanged();  // (Keep Folders on Top: the same notification -- Finder's windows sort again, 1.8.4.2 item 4)
     if (on == gFinderOn) return;
     gFinderOn = on;
     DMDockTrashApplyPref();   // (the Dock's Trash follows Finder: DockTrash.h)

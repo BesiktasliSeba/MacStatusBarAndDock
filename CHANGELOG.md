@@ -2,6 +2,20 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.4.2
+
+### New
+- Finder now shows folder sizes in its list and in Get Info, worked out in the background, so you can keep working while they come in.
+- Quick Look in Finder now previews Office files and CSV too, and you can move between previews with the arrow keys or a swipe.
+- Finder sorts by Name, Date Modified, Size or Kind: click a column header to sort by it, and click it again to reverse the order. You can also sort from the View menu.
+- On the desktop, with an item selected, the arrow keys move the selection and Space opens Quick Look, as in Finder.
+- Battery Percentage in Icon in Settings > Status Bar, off until you turn it on: the battery level shows as a number inside the menu bar's battery icon.
+- Clock timers in the menu bar, and dragging the time bar in the card of what's playing, now work on iPadOS 15.6.1 and 16.7.7 too, as on 17.5.1 and 18.5.
+
+### Fixes
+- An app you drag from Finder to the desktop now gets its real icon as soon as it's copied, instead of staying white.
+- MacStatusBar&Dock now needs Choicy or the official iCleaner Pro.
+
 ## 1.8.4.1
 
 ### New

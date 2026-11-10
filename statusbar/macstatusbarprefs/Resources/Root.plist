@@ -323,6 +323,8 @@
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>Keep Folders on Top: in Finder windows sorted by name, folders come before files, as on a Mac.</string>
 			<key>id</key>
 			<string>FINDER_GROUP</string>
 			<key>label</key>
@@ -343,6 +345,22 @@
 			<string>finderEnabled</string>
 			<key>label</key>
 			<string>Finder</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar.finder.pref</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>FINDER_FOLDERS_ON_TOP</string>
+			<key>key</key>
+			<string>finderFoldersOnTop</string>
+			<key>label</key>
+			<string>Keep Folders on Top</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -819,6 +837,32 @@
 			<string>batteryMenu</string>
 			<key>label</key>
 			<string>Battery Menu</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>Shows the battery level as a number inside the battery icon. If Battery Percentage is on in Settings &gt; Battery, the number stays beside the icon instead.</string>
+			<key>id</key>
+			<string>BATTERY_INSIDE_GROUP</string>
+			<key>stockHides</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>BATTERY_INSIDE</string>
+			<key>key</key>
+			<string>batteryPercentInside</string>
+			<key>label</key>
+			<string>Battery Percentage in Icon</string>
 		</dict>
 		<dict>
 			<key>cell</key>

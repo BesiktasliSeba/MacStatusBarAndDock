@@ -205,10 +205,10 @@ static void DMDesktopThemeCornerRead(MSBDIconImageInfo home, NSString *infoFrom)
 static NSString *DMDesktopAppBundleID(NSString *appPath) {
     static NSCache *ids; if (!ids) ids = [NSCache new];
     id hit = [ids objectForKey:appPath];
-    if (hit) return hit == [NSNull null] ? nil : hit;
+    if (hit) return hit;
     NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:[appPath stringByAppendingPathComponent:@"Info.plist"]];
     NSString *bid = [info isKindOfClass:[NSDictionary class]] && [info[@"CFBundleIdentifier"] isKindOfClass:[NSString class]] ? info[@"CFBundleIdentifier"] : nil;
-    [ids setObject:bid ?: (id)[NSNull null] forKey:appPath];
+    if (bid) [ids setObject:bid forKey:appPath];   // (not when there is none yet: an .app being copied says it once its Info.plist has come)
     return bid;
 }
 // The .app's own icon files (its Info.plist's primary icon: CFBundleIcons~ipad / CFBundleIcons, the older CFBundleIconFiles / CFBundleIconFile):

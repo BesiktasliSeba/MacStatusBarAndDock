@@ -23,6 +23,8 @@
 #include "DesktopRename.h"  // (the window a name is typed in: its level and the field's place -- plain C, tested on the Mac: tools/test-deskrename.sh)
 #include "DesktopNames.h"   // (which icons show their name: the record kept by name -- Foundation only, tested on the Mac: tools/test-desktopnames.sh)
 #include "DesktopHold.h"    // (a hold's menu, and whose a touch is: decided once -- plain C, tested on the Mac: tools/test-desktophold.sh)
+#include "../common/DesktopArrows.h"   // (the arrow keys move the selection, 1.8.4.2)
+#include "../common/DesktopSettle.h"   // (an item still arriving is listed again until it has settled, 1.8.4.2)
 #include "../common/DesktopIconSize.h"   // (Settings > Desktop > Icon Size, 1.7.5: the side in force and the cell -- plain C, tools/test-desktopiconsize.sh)
 #include "DesktopCorner.h"  // (Settings > Desktop > App Icon Corner Radius, 1.7.9: the app icons' corners, the Home Screen's shape -- tools/test-desktopcorner.sh)
 
@@ -108,7 +110,7 @@ static double gDesktopIconSize = 0;   // (Settings > Desktop > Icon Size, 1.7.5:
 //  4 an app icon view to read them from, 8 the picture size from an icon view -- and where the folders' picture came from: 4 drawn, the folder
 //  icon of 1.4 (1-3 were the Files app's Home Screen icon, iOS's own Files icon, none, before it was drawn))
 static int gDesktopLookRead, gDesktopFolderFrom;
-@interface DMDesktop : UIView <UIGestureRecognizerDelegate, UITextFieldDelegate, UIContextMenuInteractionDelegate>
+@interface DMDesktop : UIView <UIGestureRecognizerDelegate, UITextFieldDelegate, UIContextMenuInteractionDelegate, DMQuickLookBrowser>
 @property (nonatomic, copy) NSString *folder;
 - (instancetype)initWithFolder:(NSString *)folder;
 - (void)dm_tick;
@@ -134,6 +136,7 @@ static int gDesktopLookRead, gDesktopFolderFrom;
 - (void)dm_themeRefreshed;    // (a theme engine refreshed its pictures: the Home Screen's shape read again, the app icons drawn again)
 - (NSString *)dm_diagLine;   // (untested iPadOS diagnostics, DMDesktopDiag: where it sits and what it found there; names and numbers only)
 - (void)dm_axOpen:(DMDesktopItemView *)v;
+- (void)dm_foldersChanged:(NSSet<NSString *> *)folders;
 - (void)dm_followPage;   // (its frame: its page of the screen, wherever page 1's list lies -- DMDesktopPageFrameIn)
 #if DEBUG
 - (void)dm_debug:(NSString *)spec;
@@ -175,6 +178,14 @@ static void DMDesktopFocus(BOOL take) {
 static id gDesktopKeysLock;
 static NSString *gDesktopKeysFront;   // (the app in front when it was taken: another one in front gives it back)
 static BOOL DMHardwareKeyboardAttached(void);
+static id DMKeyboardFocusController(void);
+// (no app active does not mean SpringBoard has the keys: after Home with a Zetsu window on the desktop, M1 15.6.1, nothing is active and the window's scene keeps the
+//  focus, "external scene with focus": the arrows and Space reached it, not the desktop)
+static BOOL DMDesktopKeysElsewhere(void) {
+    id kfc = DMKeyboardFocusController();
+    SEL s = NSSelectorFromString(@"externalSceneWithFocus");
+    return kfc && [kfc respondsToSelector:s] && ((id (*)(id, SEL))objc_msgSend)(kfc, s) != nil;
+}
 static void DMDesktopKeysFocus(BOOL take) {
     if (!take) {
         id l = gDesktopKeysLock; gDesktopKeysLock = nil; gDesktopKeysFront = nil;
@@ -182,12 +193,12 @@ static void DMDesktopKeysFocus(BOOL take) {
         return;
     }
     NSString *front = [DMActiveApp() bundleIdentifier];
-    if (gDesktopKeysLock || !front.length || !DMHardwareKeyboardAttached()) return;
+    if (gDesktopKeysLock || !DMHardwareKeyboardAttached() || (!front.length && !DMDesktopKeysElsewhere())) return;
     DM_FEATURE_MARK("desktop-keys-focus");
     NSString *how = nil;
     gDesktopKeysLock = MSBDFocusLock(gDesktop.window.windowScene, @"MacStatusBar Desktop selection", &how);
-    gDesktopKeysFront = gDesktopKeysLock ? front : nil;
-    DMLog([NSString stringWithFormat:@"[desktop] keyboard focus to SpringBoard while the desktop has the keys (an app in front): %@%@", gDesktopKeysLock ? NSStringFromClass([gDesktopKeysLock class]) : @"no lock", how ? [NSString stringWithFormat:@" (the %@ call)", how] : @""]);
+    gDesktopKeysFront = gDesktopKeysLock ? (front ?: @"") : nil;   // (@"": taken with no app active, DMDesktopKeysElsewhere; an app coming to the front still gives it back)
+    DMLog([NSString stringWithFormat:@"[desktop] keyboard focus to SpringBoard while the desktop has the keys: %@%@", gDesktopKeysLock ? NSStringFromClass([gDesktopKeysLock class]) : @"no lock", how ? [NSString stringWithFormat:@" (the %@ call)", how] : @""]);
 }
 
 // The Dock's window under the Home Screen's, for as long as any reason holds (a desktop menu is up, our own on-screen keyboard is up); its own
@@ -234,6 +245,7 @@ static BOOL DMDesktopMenuShown(UIWindow *w) {
 // 150 pt (DMDockedKeyboardShown) -- after every notification, again while the keyboard settles, and every 0.5 s while the Dock is under it.
 static BOOL DMDesktopOwnKeyboard(void) { return gNativeFocusLock != nil || gDesktopFocusLock != nil; }
 static NSString *DMDesktopPlaceFor(NSString *path);
+static void DMDesktopFoldersChanged(NSSet<NSString *> *folders);
 static void DMDesktopKeyboardMoved(void);  // (a name being edited stays above it: -dm_fitRenameField)
 static CGRect DMDockedKeyboardShown(BOOL *sawHost) {   // (screen points; empty when no docked keyboard shows. sawHost: any keyboard host on screen)
     Class host = objc_getClass("UIInputSetHostView");
@@ -448,6 +460,7 @@ static BOOL DMDesktopRenameFieldTouch(UITouch *t) {
     NSMutableSet<NSString *> *_back;                       // names back from the Trash in the last listing (placed last)
     NSMutableOrderedSet<NSString *> *_sel;                 // selected paths
     dispatch_source_t _watch; BOOL _watchPending, _listing, _relist;
+    NSSet<NSString *> *_noBundle; NSMutableSet<NSString *> *_drawnNoBundle; NSMutableDictionary<NSString *, NSNumber *> *_noBundleSince; NSMutableDictionary<NSString *, NSDictionary *> *_writing; BOOL _arrivingPending;   // (items still arriving: common/DesktopSettle.h)
     CGFloat _side, _cellW, _cellH; UIFont *_font; UIColor *_textColor, *_shadowColor;
     UIImage *_folderImage; CGFloat _folderImageSide;
     NSString *_iconSig; CFTimeInterval _sigAt, _listAt;
@@ -852,7 +865,9 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
         NSArray<DMFinderItem *> *listed = missing ? nil : DMFinderList(folder, NO, NULL), *items = listed ?: @[];
         BOOL failed = !missing && !listed;   // (the folder there but not read: not taken for an empty desktop by the Hide Name record)
         NSMutableDictionary *inodes = [NSMutableDictionary dictionary], *returned = [NSMutableDictionary dictionary];
+        NSMutableSet *noBundle = [NSMutableSet set];   // (a copied .app listed before its Info.plist has come: common/DesktopSettle.h)
         for (DMFinderItem *it in items) {
+            if ([it.name hasSuffix:@".app"] && ![[NSDictionary dictionaryWithContentsOfFile:[it.path stringByAppendingPathComponent:@"Info.plist"]][@"CFBundleIdentifier"] isKindOfClass:[NSString class]]) [noBundle addObject:it.name];
             struct stat st; if (lstat(it.path.fileSystemRepresentation, &st) == 0) inodes[it.name] = @((unsigned long long)st.st_ino);
             char buf[64]; ssize_t n = getxattr(it.path.fileSystemRepresentation, kFinderDesktopPlaceAttr, buf, sizeof buf - 1, 0, XATTR_NOFOLLOW);   // (back from the Trash)
             if (n > 0) { buf[n] = 0; NSArray *q = [[NSString stringWithUTF8String:buf] componentsSeparatedByString:@","];
@@ -866,6 +881,7 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
             if (DMWaitForOwnMenus(@"desktop-list", ^{ [ws dm_list]; })) return;
             if (missing != s->_folderMissing) DMLog(missing ? @"[desktop] the Desktop folder is missing: no icons, their places kept" : @"[desktop] the Desktop folder is back");
             s->_folderMissing = missing; s->_listFailed = failed;
+            s->_noBundle = noBundle;
             [s dm_setItems:items inodes:inodes returned:returned];
             if (s->_relist) { s->_relist = NO; [s dm_list]; }
         });
@@ -917,6 +933,9 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
             v.alpha = 0; [UIView animateWithDuration:0.2 animations:^{ v.alpha = 1; }];
         }
         BOOL newItem = v.item == nil || ![v.item.path isEqualToString:it.path] || ![v.item.date isEqual:it.date];
+        BOOL noBundle = [_noBundle containsObject:it.name];
+        if (!noBundle && [_drawnNoBundle containsObject:it.name]) { newItem = YES; [_drawnNoBundle removeObject:it.name]; DMLog(@"[desktop] an app listed while it was being copied: its picture drawn again"); }
+        if (noBundle) { if (!_drawnNoBundle) _drawnNoBundle = [NSMutableSet set]; [_drawnNoBundle addObject:it.name]; }
         v.item = it; v.side = _side;
         v.label.font = _font; v.label.text = it.display;
         v.textColor = _textColor;
@@ -929,7 +948,44 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
     [self setNeedsLayout];
     [self layoutIfNeeded];
     if (_renameWhenListed && _views[_renameWhenListed.lastPathComponent]) { NSString *r = _renameWhenListed; _renameWhenListed = nil; [self dm_beginRename:r]; }
+    [self dm_listAgainWhileArriving];
 }
+// An item still being written is listed again until it has settled: the listing that finds its new date or its Info.plist draws its picture
+// (common/DesktopSettle.h says why nothing else would). No listing at all once nothing is arriving.
+- (void)dm_listAgainWhileArriving {
+    NSTimeInterval now = [NSDate date].timeIntervalSince1970;   // (against the items' dates; how long things have lasted: a clock that can't be set back)
+    CFTimeInterval mono = CACurrentMediaTime();
+    if (!_writing) _writing = [NSMutableDictionary dictionary];
+    if (!_noBundleSince) _noBundleSince = [NSMutableDictionary dictionary];
+    NSSet *names = [NSSet setWithArray:[_items valueForKey:@"name"] ?: @[]];
+    for (NSString *n in [_noBundleSince allKeys]) if (![_noBundle containsObject:n] || ![names containsObject:n]) [_noBundleSince removeObjectForKey:n];
+    for (NSString *n in [_drawnNoBundle copy]) if (![names containsObject:n]) [_drawnNoBundle removeObject:n];
+    for (NSString *n in [_writing allKeys]) if (![names containsObject:n] || mono - [_writing[n][@"l"] doubleValue] > MSBD_SETTLE_WRITE_FORGET) [_writing removeObjectForKey:n];
+    BOOL arriving = NO;
+    for (DMFinderItem *it in _items) {
+        BOOL app = [it.name hasSuffix:@".app"], whole = ![_noBundle containsObject:it.name];
+        if (app && !whole && !_noBundleSince[it.name]) _noBundleSince[it.name] = @(mono);
+        double date = it.date.timeIntervalSince1970, writtenFor = 0; BOOL grew = NO;
+        if (MSBDDesktopRecentlyWritten(now, date)) {   // (how long this item has been written to, and whether it's still growing: a document that autosaves stops counting, a download doesn't)
+            NSDictionary *w = _writing[it.name];
+            writtenFor = w ? mono - [w[@"t"] doubleValue] : 0;
+            grew = w && it.size > [w[@"s"] unsignedLongLongValue];
+            _writing[it.name] = @{@"t": w ? w[@"t"] : @(mono), @"s": @(it.size), @"l": @(mono)};
+        }
+        NSNumber *since = _noBundleSince[it.name];
+        if (MSBDDesktopStillArriving(now, date, app, whole, since ? mono - since.doubleValue : 0, writtenFor, grew)) arriving = YES;
+    }
+    if (!arriving || _arrivingPending) return;
+    _arrivingPending = YES;
+    __weak DMDesktop *ws = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(MSBD_SETTLE_EVERY * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        DMDesktop *s = ws; if (!s) return;
+        s->_arrivingPending = NO;
+        [s dm_list];
+    });
+}
+// Finder finished a move or copy that touched these folders: a long copy can settle after the listings above have stopped.
+- (void)dm_foldersChanged:(NSSet<NSString *> *)folders { if ([folders containsObject:DMFinderNorm(_folder)] || [folders containsObject:DMFinderReal(_folder)]) [self dm_list]; }
 
 // ---- placing the icons (DesktopPlace.h) ----
 // One placer per pass, made once from page 1's app icons, widgets and page dots (and, outside a layout pass, the icons that stay put).
@@ -1784,6 +1840,65 @@ static BOOL DMSBTextFieldTyping(UIResponder *except) {
 - (BOOL)dm_hasKeys { return (_hasKeys || _renameField || (!gNativeActive && !DMActiveApp())) && self.window && self.userInteractionEnabled && !_editing && !DMSBTextFieldTyping(_renameField); }
 - (void)dm_setHasKeys:(BOOL)has { _hasKeys = has; DMDesktopKeysFocus(has); }   // (and SpringBoard's keyboard focus with them, DMDesktopKeysFocus)
 - (BOOL)dm_ownsKeys { return _hasKeys; }   // (clicked last: given back when a native window is made active, DMDesktopYieldKeys)
+// ---- the arrow keys and Quick Look on the desktop (1.8.4.2, KT 9 Nov; the rule: common/DesktopArrows.h) ------------------------------------
+- (NSArray<DMDesktopItemView *> *)dm_arrowViews {   // (the icons that are there to move to, in reading order: not one being dragged or hidden)
+    NSMutableArray<DMDesktopItemView *> *shown = [NSMutableArray array];
+    for (DMFinderItem *it in _items) { DMDesktopItemView *v = _views[it.name]; if (v && !v.hidden && v.alpha > 0.5 && ![_dragViews containsObject:v]) [shown addObject:v]; }
+    long n = (long)shown.count;
+    if (n < 2) return shown;
+    double *x = malloc(sizeof(double) * n), *y = malloc(sizeof(double) * n); long *o = malloc(sizeof(long) * n);
+    for (long i = 0; i < n; i++) { x[i] = shown[i].center.x; y[i] = shown[i].center.y; }
+    MSBDDesktopReadingOrder(x, y, n, _cellH, o);
+    NSMutableArray<DMDesktopItemView *> *ordered = [NSMutableArray arrayWithCapacity:n];
+    for (long i = 0; i < n; i++) [ordered addObject:shown[o[i]]];
+    free(x); free(y); free(o);
+    return ordered;
+}
+// One step from the icon selected last: that icon alone is the selection then, and an open Quick Look follows it. The path now selected, nil if it stayed.
+- (NSString *)dm_stepSelection:(int)move {
+    if (_editing || _renameField) return nil;
+    NSArray<DMDesktopItemView *> *views = [self dm_arrowViews];
+    long n = (long)views.count, from = -1;
+    if (!n) return nil;
+    NSString *last = _sel.lastObject;
+    for (long i = 0; last && i < n; i++) if ([views[i].item.path isEqualToString:last]) { from = i; break; }
+    long to = -1;
+    if (move == MSBD_STEP_SWIPE_NEXT || move == MSBD_STEP_SWIPE_PREV) to = MSBDPreviewStep(move, 0, 1, from, n);
+    else {
+        double *x = malloc(sizeof(double) * n), *y = malloc(sizeof(double) * n);
+        for (long i = 0; i < n; i++) { x[i] = views[i].center.x; y[i] = views[i].center.y; }
+        to = MSBDDesktopArrowTarget(move, x, y, n, from, _cellW, _cellH);
+        free(x); free(y);
+    }
+    if (to < 0 || to >= n || (to == from && _sel.count == 1)) return nil;
+    NSString *p = views[to].item.path;
+    [self dm_select:@[p]];
+    [[self dm_quickLookWindow] dm_follow:p];
+    return p;
+}
+// (YES only when the selection moved: otherwise the key goes on as it did before the desktop had arrows; nothing under the Cover Sheet or the App Switcher, whose keys these are)
+- (BOOL)dm_arrow:(int)move { DM_FEATURE_MARK("desktop-arrow-keys"); if (DMCoverSheetShown() || DMSwitcherVisible()) return NO; return [self dm_stepSelection:move] != nil; }
+- (DMQuickLookWindow *)dm_quickLookWindow {
+    for (DMNativeWindow *w in gNativeWindows) if ([w isKindOfClass:[DMQuickLookWindow class]] && ((DMQuickLookWindow *)w).browser == (id)self && !w.hidden) return (DMQuickLookWindow *)w;
+    return nil;
+}
+// Space: Quick Look on the selected icon; Space again while it is open closes it, as in Finder.
+- (void)dm_quickLookSelected:(NSArray<DMFinderItem *> *)sel {
+    DMQuickLookWindow *q = [self dm_quickLookWindow];
+    if (q) { [q close]; return; }
+    DMFinderItem *it = sel.firstObject;
+    for (DMFinderItem *x in sel) if ([x.path isEqualToString:_sel.lastObject]) it = x;
+    if (it) DMQuickLookOpenFrom(it.path, self);
+}
+// (DMQuickLookBrowser: Quick Look opened from the desktop moves through its icons as from a Finder window, and hands the keys back when closed by a key)
+- (NSString *)dm_previewStep:(int)move { return [self dm_stepSelection:move]; }
+- (void)dm_previewSelect:(NSString *)path { if (_views[path.lastPathComponent]) [self dm_select:@[path]]; }
+- (NSArray<NSString *> *)dm_previewPaths {   // (files and documents, in reading order; never a folder or an app, as Finder's)
+    NSMutableArray *a = [NSMutableArray array];
+    for (DMDesktopItemView *v in [self dm_arrowViews]) { DMFinderItem *it = v.item; if ((!it.dir || (it.package && ![it.name.pathExtension.lowercaseString isEqualToString:@"app"])) && !it.cloud && !it.app) [a addObject:it.path]; }
+    return a;
+}
+- (void)dm_previewClosed { [self dm_setHasKeys:YES]; }
 - (BOOL)dm_handleKey:(UIKey *)key {
     UIKeyModifierFlags m = key.modifierFlags & (UIKeyModifierCommand | UIKeyModifierShift | UIKeyModifierAlternate | UIKeyModifierControl);
     BOOL cmd = m == UIKeyModifierCommand, cmdShift = m == (UIKeyModifierCommand | UIKeyModifierShift), none = m == 0;
@@ -1796,10 +1911,13 @@ static BOOL DMSBTextFieldTyping(UIResponder *except) {
     NSArray<DMFinderItem *> *sel = [self dm_selectedItems];
     DMFinderWindow *ops = DMFinderOps();
     switch (c) {
-        case UIKeyboardHIDUsageKeyboardSpacebar: if (none && sel.count) { DMQuickLookOpen(sel.firstObject.path); return YES; } break;
+        case UIKeyboardHIDUsageKeyboardSpacebar: if (none && sel.count) { [self dm_quickLookSelected:sel]; return YES; } break;
         case UIKeyboardHIDUsageKeyboardReturnOrEnter: if (none && sel.count == 1) { [self dm_beginRename:sel.firstObject.path]; return YES; } break;
         case UIKeyboardHIDUsageKeyboardO: if (cmd && sel.count) { [self dm_openItems:sel]; return YES; } break;
-        case UIKeyboardHIDUsageKeyboardDownArrow: if (cmd && sel.count) { [self dm_openItems:sel]; return YES; } break;
+        case UIKeyboardHIDUsageKeyboardDownArrow: if (cmd && sel.count) { [self dm_openItems:sel]; return YES; } if (none) return [self dm_arrow:MSBD_STEP_DOWN]; break;
+        case UIKeyboardHIDUsageKeyboardUpArrow: if (none) return [self dm_arrow:MSBD_STEP_UP]; break;
+        case UIKeyboardHIDUsageKeyboardLeftArrow: if (none) return [self dm_arrow:MSBD_STEP_LEFT]; break;
+        case UIKeyboardHIDUsageKeyboardRightArrow: if (none) return [self dm_arrow:MSBD_STEP_RIGHT]; break;
         case UIKeyboardHIDUsageKeyboardDeleteOrBackspace: if (cmd && sel.count) { [self dm_trash:sel]; return YES; } break;
         case UIKeyboardHIDUsageKeyboardI: if (cmd && sel.count) { for (DMFinderItem *x in sel) [ops getInfo:x]; return YES; } break;
         case UIKeyboardHIDUsageKeyboardZ: if (cmd && [ops dm_canUndo]) { ops.path = _folder; [ops dm_undo]; return YES; } break;
@@ -2163,6 +2281,7 @@ static void DMDesktopTick(void) {
         gDesktop = [[DMDesktop alloc] initWithFolder:folder];
         DMDesktopHookFocusGuides();
         gFinderDesktopPlaceFor = DMDesktopPlaceFor;
+        gFinderDesktopFoldersChanged = DMDesktopFoldersChanged;
         DMFinderOpsHost *ops = (DMFinderOpsHost *)DMFinderOps();
         ops.path = folder;
         __weak DMDesktop *wd = gDesktop;
@@ -2230,4 +2349,5 @@ static void DMDesktopStartEarly(void) {
 }
 static void DMDesktopKeyboardMoved(void) { [gDesktop dm_fitRenameField]; }
 static void DMDesktopAXOpen(DMDesktopItemView *v) { DMDesktop *d = (DMDesktop *)v.superview; if ([d isKindOfClass:[DMDesktop class]]) [d dm_axOpen:v]; }
+static void DMDesktopFoldersChanged(NSSet<NSString *> *folders) { [gDesktop dm_foldersChanged:folders]; }   // (Finder.h DMFinderRefreshFolders)
 static NSString *DMDesktopPlaceFor(NSString *path) { return [gDesktop dm_placeStringFor:path]; }   // (Finder.h gFinderDesktopPlaceFor)

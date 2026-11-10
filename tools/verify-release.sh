@@ -93,10 +93,9 @@ echo "$fout" | grep -v '^FEATURES:' | sed 's/^  */  /'
 [ $frc = 0 ] && ok "$(echo "$fout" | grep '^FEATURES:')" || bad "feature markers missing from the release binaries (listed above)"
 
 echo "== personal name"
-# Allowed: the old package IDs (com.kaan.*) in the control's Conflicts/Replaces/Provides and in the maintainer scripts (the migration from the old
-# packages), and the string "kaan." in sshtoggled (MigOldPrefix: the old preference domains' prefix, only read for the one-time migration).
+# Allowed: only the string "kaan." in sshtoggled (MigOldPrefix: the old preference domains' prefix, only read for the one-time migration).
 for f in c/*; do
-    left=$(sed -E 's/com\.kaan\.[a-z]+//g' "$f" | grep -i -n kaan)
+    left=$(grep -i -n kaan "$f")
     [ -z "$left" ] || bad "${f#c/}: $left"
 done
 while IFS= read -r f; do
