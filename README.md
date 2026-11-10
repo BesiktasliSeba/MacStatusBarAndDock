@@ -70,6 +70,7 @@ The Mac look is on right after install, and most features have their own switch.
 - Live Activities in Menu Bar in Settings > Status Bar shows what's playing and your calls as small pills next to the status icons, as on a Mac. A tap on one opens a card to control it. On iPadOS 15.6.1, 16.7.7, 17.5.1 and 18.5, Clock timers show there too.
 - Battery Percentage in Icon in Settings > Status Bar shows the battery level as a number inside the battery icon.
 - Over a full-screen app or game that hides the menu bar, push the pointer to the top edge or swipe down from the very top to show it, with the app's red, yellow and green buttons. The red one leaves the app, and the bar hides again by itself.
+- Show Apps' Own Menus in Settings > Status Bar: with an app in front, the menu bar also shows the app's own menus, such as Safari's File, View, History, Bookmarks and Tabs, as on a Mac. A command you tap runs in the app, as its keyboard shortcut would.
 
 ### Control Center
 
@@ -91,9 +92,9 @@ The Mac look is on right after install, and most features have their own switch.
 - New Windows Open at Fill in Settings > Windows & Multitasking makes new windows fill the desktop, and Fit to Window leaves them out. A window that opens where it last was keeps its place.
 - Double-Tap a Title Bar to in Settings > Windows & Multitasking picks what a double tap on a window's title bar does, as on a Mac: Fill, Zoom, Minimize or Do Nothing. After Fill or Zoom, a second double tap gives the window its size from before.
 - Keep Covered Windows in Front in Settings > Windows & Multitasking: when a window comes forward, a smaller window it would cover completely stays in front of it. It works with Aerial, Zetsu and MilkyWay4, and its row isn't shown with Stage Manager.
-- Recent Apps with Left-Edge Swipe in Settings > Windows & Multitasking: with Stage Manager on iPadOS 16, a swipe from the left edge brings back the strip of recent apps; tap one to open it. With the Dock on the left, the left edge stays the Dock's.
+- Recent Apps with Left-Edge Swipe in Settings > Windows & Multitasking: with Stage Manager on iPadOS 16 to 18, a swipe from the left edge brings back the strip of recent apps; tap one to open it. With the Dock on the left, the left edge stays the Dock's.
 - Window Tiling Shortcuts in Settings > Keyboard turns on macOS 15's Globe-Control keys for the front window: an arrow key for half the screen, F to fill it, C to center it and R to put it back, and Shift or Option-Shift with an arrow to arrange two or three windows. On a keyboard without a Globe key, set another key to Globe in Modifier Keys.
-- [KeyPilot](https://github.com/wanghuangjie/KeyPilot) by wanghuangjie is the companion tweak for shortcuts of your own, app launching and URL actions, and its window layouts use MacStatusBar&Dock's windows. Settings > Keyboard has a row to get or open it.
+- Custom Shortcuts in Settings > Keyboard: record a key combination to open an app or a link, arrange the front window or go Home. It's based on [KeyPilot](https://github.com/wanghuangjie/KeyPilot) by wanghuangjie. While KeyPilot itself is installed, its shortcuts work, Custom Shortcuts waits, and you can import KeyPilot's shortcuts.
 - With Aerial, Zetsu or MilkyWay4 on iPadOS 15 to 18, every app with a window has its card in iPadOS's App Switcher, as with Stage Manager. A tap on the card brings the window forward.
 - Only the window you're using keeps a text cursor, and Esc ends typing.
 - With the Stage Manager engine on iPadOS 16 to 18, windows float over your Home Screen and stay where you put them, and on iPadOS 16 an external display gets its own Mac desktop.
@@ -120,10 +121,12 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 - Share on an app, in Applications or any .app in Finder or on the desktop, hands it over as an .ipa named after the app and its version. For an App Store app, a note says first that the copy only opens on iPads signed in with the same Apple ID. Nothing is decrypted.
 - Files and folders from On My iPad > Desktop sit on the first Home Screen page, never over your apps. A long press or a right click opens their menus over your windows, and Hide Name hides an icon's name. In Settings > Desktop, Hide Desktop Icon Names hides them all and Icon Size sets their size. App Icon Corner Radius there sets how round the desktop's app icons are, from square to circle.
 - On the desktop, with an item selected, the arrow keys move the selection and Space opens Quick Look, as in Finder.
+- Desktop Picture in Settings > Desktop puts a picture behind the first Home Screen page, where the desktop is: one from Photos, one from On My iPad > MacStatusBar&Dock > Wallpapers (add your Mac's wallpapers there with the Files app, AirDrop or Add from Files), or one of iPadOS's own still wallpapers. The Lock Screen and the other pages keep your wallpaper.
 - Text files open in a small TextEdit window and save by themselves.
 - USB drives and SD cards show up under Locations. exFAT and FAT32 work (FAT32 can't hold files over 4 GB). APFS and Mac OS Extended should work but haven't been tested, and iPadOS doesn't read NTFS. An SSD may need a powered hub.
 - On iPadOS 16 to 18, each drive has an Eject button in Finder's sidebar, as on a Mac, and File > Eject and the drive's menu eject it too.
 - Finder only changes files in your own places: On My iPad, the apps' Documents folders, drives and its Trash. Everything else can be opened and copied, but not changed.
+- With the official iCleaner Pro installed, Finder's sidebar has an iCleaner row: it runs iCleaner's clean, or a clean and respring, from a Mac-style panel and shows how much space was freed. It cleans what you chose in iCleaner's own settings.
 
 ### Dock
 
@@ -238,7 +241,7 @@ Tried it on another setup? A [compatibility report](https://github.com/Besiktasl
 | A feature turned itself off | Automatic Crash Recovery turned it off after crashes. Settings > Status Bar says what and why. Tap Turn Back On to try again, or Report a Problem. |
 | SpringBoard keeps crashing | Your jailbreak's Safe Mode starts by itself after quick crashes. Exit Safe Mode, and at the next start crash recovery turns off what crashed. The Apple menu also has Safe Mode. |
 | Black screen after a respring, with Aerial 5.0 or 5.1 | Aerial 5.0 and 5.1 go online while SpringBoard starts, and with a VPN on (or just turned off) it can hang. Restart the iPad and jailbreak again. Next time, don't respring while a VPN is on or was just turned off; MacStatusBar&Dock warns before resprings that go through iOS. |
-| The Status Bar and Dock pages are gone | Both MacStatusBar and MacDock were turned off. Turn them back on in Choicy (or iCleaner Pro), then respring. |
+| The Status Bar and Dock pages are gone | Both MacStatusBar and Mac-Style Dock were turned off. Turn the tweak's two entries back on in Choicy (or iCleaner Pro), then respring. |
 | Several window engines, Control Centers or banner tweaks installed | That's fine. Only the one picked in Window Engine, Control Center Style or Banner Style loads. Leave their entries in Choicy alone: MacStatusBar&Dock manages them. |
 
 To uninstall, remove MacStatusBar&Dock in Sileo. It gives the window engines their own settings back, undoes its Choicy or iCleaner Pro changes, and sets an Auto-Lock of 2 hours to 1 hour, the longest iPadOS keeps on its own. Finder's Trash isn't visible in the Files app and stays behind, so empty it in Finder first.
@@ -318,3 +321,5 @@ And thanks to these tweaks for setting the bar:
 This tweak does not include or modify any of their files.
 
 Thanks to wanghuangjie ([KeyPilot](https://github.com/wanghuangjie/KeyPilot)) for the window API design and its first version.
+
+Custom Shortcuts is based on [KeyPilot](https://github.com/wanghuangjie/KeyPilot) by wanghuangjie, used under the MIT License. Its license is in Settings > Status Bar > Acknowledgements.

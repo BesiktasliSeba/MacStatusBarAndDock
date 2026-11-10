@@ -72,6 +72,7 @@ PAYLOADS = BrightnessKeyTweak DockMagnification DockMagnificationSettings ForceQ
 internal-stage::
 	$(ECHO_NOTHING)set -e; T="$(THEOS_STAGING_DIR)"; D="$$T/Library/MobileSubstrate/DynamicLibraries"; P="$$T/usr/lib/MacStatusBarAndDock"; \
 	mkdir -p "$$P"; \
+	mkdir -p "$$P/third_party/KeyPilot"; cp -f third_party/KeyPilot/LICENSE "$$P/third_party/KeyPilot/LICENSE"; \
 	for n in $(PAYLOADS); do mv -f "$$D/$$n.dylib" "$$P/$$n.dylib"; rm -f "$$D/$$n.plist"; done; \
 	left=$$(ls "$$D" | grep -v -E '^(MacStatusBar|MacDock)\.(dylib|plist)$$' || true); [ -z "$$left" ] || { echo "unexpected files in the tweak folder: $$left"; exit 1; }; \
 	python3 tools/make-crashmap.py tools/crashmap-rules.txt "$(THEOS_OBJ_DIR)" "$$P" . "$$P/CrashMap.txt"; \

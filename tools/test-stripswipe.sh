@@ -15,9 +15,9 @@ check "the Settings row: off by default, in a group with a footer, no em dash" \
   "python3 -I -c \"import plistlib,sys; it=plistlib.load(open('$P','rb'))['items']; i=[x.get('id') for x in it].index('STRIP_SWIPE'); s=it[i]; g=it[i-1]; sys.exit(0 if s['key']=='smStripSwipe' and s['default'] is False and g.get('id')=='STRIP_SWIPE_GROUP' and '\\u2014' not in g['footerText'] else 1)\""
 check "shown with Stage Manager as the engine only, in the page and the search" \
   "grep -qF 'if ([group isEqualToString:kMSBDStripSwipeGroupID] && (!s.engineWorks || !s.stageManagerEngine || !MSBDStripSwipeOS([NSProcessInfo processInfo].operatingSystemVersion.majorVersion))) return YES;' $R && grep -qF 'inStripSwipe = [sp.identifier isEqualToString:kMSBDStripSwipeGroupID];' $M"
-check "  ... and only on iPadOS 16 (18.5: SpringBoard's own assertion on a window closed with the strip out; 17 untried): row and switch" \
-  "grep -qF 'static inline BOOL MSBDStripSwipeOS(long major) { return major == 16; }' $R && grep -qF 'if (!MSBDStripSwipeOS([NSProcessInfo processInfo].operatingSystemVersion.majorVersion)) {' $M \
-   && grep -qF 'if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion != 16) stripSwipe = NO;' ../statusbar/StatusBar.x"
+check "  ... and only on iPadOS 16 to 18: row and switch" \
+  "grep -qF 'static inline BOOL MSBDStripSwipeOS(long major) { return major >= 16 && major <= 18; }' $R && grep -qF 'if (!MSBDStripSwipeOS([NSProcessInfo processInfo].operatingSystemVersion.majorVersion)) {' $M \
+   && grep -qF 'if (stripMajor < 16 || stripMajor > 18) stripSwipe = NO;' ../statusbar/StatusBar.x"
 check "a strip a swipe brought out is put away by our surfaces as a touch in an app puts it away (Apple's own method, the switch on only)" \
   "grep -qF 'gSMStripTouchedSel = NSSelectorFromString(@\"eventSource:userTouchedApplication:\");' $S && grep -qF 'if (!DMSMFree() || !gSMStripSwipe || !gSMSwitcherVCs.count || !DMSMStripEndKnown()) return NO;' $S \
    && grep -qF 'DMSMActivateOnTouch(event); DMSMStripTouch(event);' $S && grep -qF 'if (DMSMStripHoldsBack(what, ^{ DMSMWindowActionAs(sk, sn, users); })) return YES;' $S \
@@ -54,7 +54,7 @@ check "the strip's end: after the switcher gesture's deferrals, and not while it
   "grep -A 12 'if (last && DMSMGestureLive()) {' $S | grep -qF 'if (DMSMStripHoldsBack(what, ^{ DMSMWindowActionAs(sk, sn, users); })) return YES;' \
    && ! grep -B 3 'if (DMSMGestureHoldsStage(DMSMStageOf(key))) {' $S | grep -qF 'DMSMStripHoldsBack' \
    && grep -qF 'gSMStripRevealGesture = [g isKindOfClass:[UIGestureRecognizer class]] ? g : nil;' $S && grep -qF 'return s == UIGestureRecognizerStateBegan || s == UIGestureRecognizerStateChanged;' $S \
-   && grep -qF 'BOOL out = NO, asked = NO, held = DMSMStripSwipeHeld();' $S && grep -qF 'DMSMStripWaitStep(what, act, held ? step : step + 1, ticks + 1);' $S"
+   && grep -qF 'BOOL out = NO, asked = NO, held = !force && DMSMStripSwipeHeld();' $S && grep -qF 'DMSMStripWaitStep(what, act, held ? step : step + 1, ticks + 1);' $S"
 # (review 1.8.4.4 L2) The desktop's last window, taken out after the Home transition, and a force quit (a key's too: no touch put the strip away)
 # wait for the strip as the action does; the removal keeps whether the Home was seen to end.
 check "the last window's removal after Home and a force quit wait for the strip too" \
@@ -65,4 +65,23 @@ check "the last window's removal after Home and a force quit wait for the strip 
 check "the green light and the title bar's double tap put the strip away first" \
   "grep -A 4 '^static BOOL DMSMToggleZoom(NSString \*key) {' $S | grep -qF 'DMSMStripPresentationEnd([NSString stringWithFormat:@\"zoom on %@\", DMSMKeyText(key)]);' \
    && grep -A 1 'int step = MSBDTitleStep(action, atTarget, rec != nil);' ../statusbar/TitleBarTap.h | grep -qF 'DMSMStripPresentationEnd([NSString stringWithFormat:@\"%@ on %@\", why, DMSMKeyText(key)]);'"
+# (1.8.4.5) SpringBoard's own window removals (iPadOS's Command-W, an app ending its scene, the switcher's delete, a force quit) put a presented strip
+# away before the transition is laid out: the switcher's animation for a workspace request that names leaving scenes; on 17 and 18 no reveal without it.
+check "SpringBoard's own window removals put the strip away first, and 17/18 reveal nothing without that" \
+  "grep -qF 'if (DMSMFree() && DMNewOS() && gSMStripSwipe && DMSMStripPresented()) {' $S && grep -qF 'NSUInteger n = DMSMRequestRemovals(request);' $S \
+   && grep -qF 'SEL s = NSSelectorFromString(@\"animationControllerForTransitionRequest:\");' $S && grep -qF 'MSHookMessageEx(c, s, (IMP)DMSMAnimForRequest, (IMP *)&o_SMAnimForRequest);' $S \
+   && grep -qF 'ents = NSSelectorFromString(@\"entitiesWithRemovalContexts\");' $S && grep -qF 'return o_SMAnimForRequest(self, _cmd, request);' $S \
+   && grep -qF 'if (DMSMFree() && DMNewOS() && gSMStripSwipe && !o_SMAnimForRequest) { DM_FEATURE_MARK(\"sm-no-strip-reveal-no-removal-end\"); return NO; }' $S \
+   && grep -A 2 'DMSMHookStripRemovalEnd();' $S | grep -qF '}'"
+check "review 1.8.4.5 M1: a strip still presented right after the ask on 17/18 stops the swipe for this iPadOS build (kept in prefs, cleared by turning the switch on)" \
+  "grep -qF 'if (still) DMSMStripNoteSlowEnd(why);' $S && grep -qF 'if (!DMNewOS() || DMSMStripEndSlow()) return;' $S \
+   && grep -qF 'CFPreferencesSetValue(MSBD_STRIP_SLOW_KEY, (__bridge CFStringRef)b, MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);' $S \
+   && grep -qF 'if (DMSMFree() && DMNewOS() && gSMStripSwipe && DMSMStripEndSlow()) { DM_FEATURE_MARK(\"sm-no-strip-reveal-slow-end\"); return NO; }' $S \
+   && grep -qF 'if (stripLoaded && stripSwipe && !gSMStripSwipe) DMSMStripClearSlowEnd();' $S"
+check "review 1.8.4.5 L1: SpringBoard's removal asks even with the swipe's finger on the strip, cancels that gesture, and holds new reveals for a second" \
+  "grep -qF 'if (g && DMSMStripSwipeHeld()) { g.enabled = NO; g.enabled = YES; }' $S && grep -qF 'gSMStripRemovalUntil = CACurrentMediaTime() + 1.0;' $S \
+   && grep -qF 'if (DMSMFree() && gSMStripSwipe && CACurrentMediaTime() < gSMStripRemovalUntil) { DM_FEATURE_MARK(\"sm-no-strip-reveal-removal\"); return NO; }' $S"
+check "review 1.8.4.5 L3: the leaving scenes read with signature and type checks, both accessors required before the hook" \
+  "grep -qF 'DMSMSigOK(request, ac, DMSMSigObj(), \"applicationContext\")' $S && grep -qF 'return [list isKindOfClass:[NSArray class]] ? [list count] : 0;' $S \
+   && grep -qF '|| !ma || ![DMSMSigOfMethod(ma) isEqualToString:DMSMSigObj()] || !me || ![DMSMSigOfMethod(me) isEqualToString:DMSMSigObj()]) {' $S"
 exit $fails

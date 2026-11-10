@@ -2,6 +2,17 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.5
+
+### New
+- Desktop Picture in Settings > Desktop puts a picture behind the first Home Screen page, where the desktop is: one from Photos, one you add in the Files app, such as your Mac's wallpapers, or one of iPadOS's own. The Lock Screen and your other pages keep your wallpaper.
+- Show Apps' Own Menus in Settings > Status Bar, off until you turn it on: the menu bar also shows the app's own menus, such as Safari's File, View, History, Bookmarks and Tabs, as on a Mac. Tap a command to run it, no keyboard needed.
+- Custom Shortcuts in Settings > Keyboard, off until you turn it on: record a key combination to open an app or a link, arrange the front window or go Home. It's based on KeyPilot by wanghuangjie, and while KeyPilot is installed you can import its shortcuts.
+- With the official iCleaner Pro installed, Finder's sidebar has an iCleaner row: it runs a clean, or a clean and respring, from a Mac-style panel and shows how much space was freed.
+
+### Improvements
+- Recent Apps with Left-Edge Swipe in Settings > Windows & Multitasking now works on iPadOS 16 to 18 with Stage Manager, not only on iPadOS 16.
+
 ## 1.8.4.4
 
 ### Improvements

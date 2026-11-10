@@ -262,6 +262,32 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
+			<string>With an app in front, the menu bar also shows the app’s own menus, like File, View and History, as on a Mac. A command you choose runs in the app, as its keyboard shortcut would.</string>
+			<key>id</key>
+			<string>APP_OWN_MENUS_GROUP</string>
+			<key>stockHides</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>APP_OWN_MENUS</string>
+			<key>key</key>
+			<string>appOwnMenus</string>
+			<key>label</key>
+			<string>Show Apps' Own Menus</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
 			<string>Only the chosen banner style is loaded.</string>
 			<key>id</key>
 			<string>BANNERS_GROUP</string>

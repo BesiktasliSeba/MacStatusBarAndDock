@@ -52,6 +52,8 @@ target wifiMenu pref com.besiktasliseba.macstatusbar wifiMenu 0 1 Wi-Fi Menu|the
 target batteryMenu pref com.besiktasliseba.macstatusbar batteryMenu 0 1 Battery Menu|the battery menu
 target batteryPercentInside pref com.besiktasliseba.macstatusbar batteryPercentInside 0 0 Battery Percentage in Icon|the number inside the battery icon
 target desktopIcons pref com.besiktasliseba.macstatusbar desktopIcons 0 1 Show Desktop Icons|the desktop
+# Desktop Picture (1.8.6, statusbar/DesktopWallpaper.h): a path, not a switch -- the guard stores "none", which SpringBoard and Settings read as None
+target desktopWallpaper pref com.besiktasliseba.macstatusbar desktopWallpaperPath 0 0 offtext=none Desktop Picture|the desktop picture
 target runningIndicator pref com.besiktasliseba.dockrunningindicator enabled 0 1 Show Indicators for Open Apps|the open-app indicators
 target macSwitcher pref com.besiktasliseba.macstatusbar macSwitcher 0 0 Mac Switcher|the Mac Switcher
 target spotlightFiles pref com.besiktasliseba.macstatusbar spotlightFiles 0 0 Desktop and Downloads|Spotlight's Desktop and Downloads
@@ -78,6 +80,9 @@ target autoHideDock pref com.besiktasliseba.dockmagnification autoHideDock 0 0 A
 # windows covered by the window that came forward kept in front of it (1.8.4.1 item 7, statusbar/KeepCovered.h): its switch, off unless switched on: a
 # crash in it sets it off (0)
 target keepCoveredInFront pref com.besiktasliseba.macstatusbar keepCoveredInFront 0 0 Keep Covered Windows in Front|the covered windows kept in front
+# the apps' own menus in the menu bar (1.8.5 item 3: statusbar/AppMenus.h in SpringBoard; appbridge/AppMenus.h, whose snapshots run in the apps and
+# which in SpringBoard only registers): its switch, off unless switched on (owner's rule for new behaviour): a crash in it sets it off (0)
+target appOwnMenus pref com.besiktasliseba.macstatusbar appOwnMenus 0 0 Show Apps' Own Menus|the apps' own menus in the menu bar
 
 # The parts in words, for the guard's explanation: title <Image> <where it crashed>|<what was turned off> ("SpringBoard crashed twice in the
 # Dock, so the Dock was turned off for now."). A part without a title is named by its file name.
@@ -129,6 +134,8 @@ sym MacAppBridge \$UIApplication\$sendEvent\$$ transparent
 sym TabMuteTweak \$UIApplication\$sendEvent\$$ transparent
 sym VolumeGlobeTweak \$SpringBoard\$pressesBegan\$withEvent\$$ transparent
 sym DockMagnification \$(UIApplication\$sendEvent|UIResponder\$pressesBegan\$withEvent)\$$ transparent
+# MacAppBridge's part of the apps' own menus in the menu bar (appbridge/AppMenus.h, 1.8.5 item 3): Show Apps' Own Menus, not the whole part
+file MacAppBridge ^AppMenus\.h$ appOwnMenus
 
 # ---- the Dock (MacDock line): by source file; the Dock itself = the part ----
 image DockMagnification part map
@@ -174,6 +181,8 @@ file MacStatusBarCore ^ActMonDock\.h$ actmonLibrary
 # its picture as an app icon an icon theme can change (common/IconTheme.h, 1.7.5 item 7: in this library Activity Monitor's; the desktop's corner
 # reading, 1.7.9 item 4, only makes one more such icon with it -- its own drawing and reading are DesktopCorner.h's, the desktop's)
 file MacStatusBarCore ^IconTheme\.h$ actmonLibrary
+sym MacStatusBarCore ^_?DMWP[A-Z] desktopWallpaper
+file MacStatusBarCore ^DesktopWallpaper\.h$ desktopWallpaper
 sym MacStatusBarCore ^_?DMDesktop[A-Z] desktopIcons
 file MacStatusBarCore ^Desktop(Names|Corner)?\.h$ desktopIcons
 file MacStatusBarCore ^DesktopPlace\.h$ desktopIcons
@@ -223,6 +232,9 @@ file MacStatusBarCore ^BatteryMenu\.h$ batteryMenu
 sym MacStatusBarCore ^_*DMLA(?!Apps)[A-Z] liveActivities
 file MacStatusBarCore ^LiveActivityApps\.h$ liveActivitiesApps
 file MacStatusBarCore ^LiveActivities\.h$ liveActivities
+# the apps' own menus in the menu bar (AppMenus.h, 1.8.5 item 3: the app's answers, its titles' slots, its menus and rows): Show Apps' Own Menus off,
+# not Stock status bar mode (their glue in StatusBar.x's layout and Edit menu stays the status bar's)
+file MacStatusBarCore ^AppMenus\.h$ appOwnMenus
 # Spotlight (statusbar/SpotlightFiles.x): the tweak settings part (its own functions, its PreferenceLoader watcher, the shared index / donation headers), then the files part
 sym MacStatusBarCore ^_*SF(Tweak|WatchTweaks) spotlightTweakSettings
 file MacStatusBarCore ^Tweak(Index|Spotlight)\.h$ spotlightTweakSettings

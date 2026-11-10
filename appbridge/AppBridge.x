@@ -620,6 +620,7 @@ static BOOL MABInSpringBoard(void) {
 // key reports 41 too). A handled Esc's key-down and key-up are not passed on.
 static void (*oMABHandleKeyUIEvent)(id, SEL, id);
 static BOOL gMABEscSwallowRelease = NO;
+static void MABMenusChanged(void);   // (AppMenus.h: a shortcut or Return the app got may change what it offers now)
 static void hMABHandleKeyUIEvent(id self, SEL _cmd, id ev) {
     SEL kc = NSSelectorFromString(@"_keyCode"), down = NSSelectorFromString(@"_isKeyDown"), mods = NSSelectorFromString(@"_modifierFlags");
     if ([ev respondsToSelector:kc] && [ev respondsToSelector:down] && !MABInSpringBoard()) {   // (SpringBoard's own keys: its key handler, DMOverlayPressesBegan)
@@ -636,6 +637,7 @@ static void hMABHandleKeyUIEvent(id self, SEL _cmd, id ev) {
         else if (apps && MSTestFlag("/tmp/macstatusbar-debug") && MABMenuHasKeys()) MABLog([NSString stringWithFormat:@"menukeys: key 0x%x %@ left to the app (pressed before the menu opened)", code, isDown ? @"down again (a repeat)" : @"up"]);
 #endif
         if (act != MSBDMenuKeyPass) return;
+        if (isDown && ((m & (UIKeyModifierCommand | UIKeyModifierControl)) || code == 0x28 || code == 0x58)) MABMenusChanged();   // (a new tab, a page loading)
     }
     if ([ev respondsToSelector:kc] && [ev respondsToSelector:down] && ((long long (*)(id, SEL))objc_msgSend)(ev, kc) == 41) {
         BOOL isDown = ((BOOL (*)(id, SEL))objc_msgSend)(ev, down);
@@ -2212,6 +2214,7 @@ static void MABStartTintReports(void) {
 #ifndef DM_FEATURE_MARK
 #define DM_FEATURE_MARK(name) do { static const char *const dmFeatureMark = "msbd-feature:" name; __asm__ volatile("" :: "r"(dmFeatureMark)); } while (0)   // (release-build feature marker, see statusbar/StatusBar.x)
 #endif
+#include "AppMenus.h"   // (the app's own menus in the menu bar, 1.8.5 item 3: what it offers, and a picked row performed)
 #if DEBUG
 #define MABDropLog(...) MABLog(__VA_ARGS__)
 #else
@@ -2601,6 +2604,7 @@ static void MABRegisterFinderDrops(void) {
         if (oMABHandleKeyUIEvent) MABPublishMenuKeys();   // (the menus' keys can stay here: the key hook is in)
         MABRegister();
         MABRegisterActions();
+        MABRegisterMenus();   // (its own menus for the menu bar: AppMenus.h)
         MABInstallPopupGuard();   // apps with LNPopupController only (Sileo): popup bar present/dismiss one at a time
         MABInstallMessagesBarFix();   // ChatKit only (Messages): the message bar's height in a window shorter than the screen
         MABRegisterScreenCompat();   // no-op for every app except the small allowlist (see above) — registers only, installs much later

@@ -45,7 +45,7 @@ check "the switch: Settings' Battery Menu (batteryMenu, on by default, hidden wi
 check "the crash guard: a crash in the menu's code turns Battery Menu off" \
   "grep -q '^target batteryMenu pref com.besiktasliseba.macstatusbar batteryMenu 0 1 Battery Menu|the battery menu$' crashmap-rules.txt && grep -q '^file MacStatusBarCore ^BatteryMenu\\\\.h\$ batteryMenu$' crashmap-rules.txt"
 check "the battery and the icon are our controls: the status bar's own region action (Control Center for a click) is not run on them" \
-  "fn $X 'static BOOL DMPointOverOurControl(' | grep -q 'kSpotButtonKey, kClockButtonKey, kBattButtonKey, kCCButtonKey };'"
+  "fn $X 'static BOOL DMPointOverOurControl(' | grep -q 'kSpotButtonKey, kClockButtonKey, kBattButtonKey, kCCButtonKey, DM_AM_BUTTONS };'"
 check "the right end from MSBDBattRightSideLayout: the icon left of the clock, then Spotlight's icon and touch area, then the status icons" \
   "grep -q 'MSBDBattRightSide side = DMBattCCLayout(fg, rtl, clockEdge, timeCentre.y, timeFont, k, gShowSpotlight, spotW, kSpotHitSlop \\* k, kSpotClockGap \\* k);' $X \
    && grep -q 'spotBtn.frame = DMBarRect(fg, rtl, CGRectMake(side.spotBtnLead, 0, side.spotBtnTrail - side.spotBtnLead, fg.bounds.size.height));' $X \

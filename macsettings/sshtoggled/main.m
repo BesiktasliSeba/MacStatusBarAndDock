@@ -56,6 +56,7 @@
 #include "../../common/PrefsForget.h"       // (MSBDForgetPrefsDomain: a domain emptied through cfprefsd, at a removal -- Mac-tested)
 #include "../../statusbar/SMSwitchOn.h"     // (DMSMConsentFrom: the Stage Manager consent values)
 #include "../../common/DriveEject.h"       // (a drive ejected for Finder: the request, its checks, msbdeject's run and the answer, Mac-tested)
+#include "../../common/ICleaner.h"         // (iCleaner in Finder, 1.8.5: the request, iCleaner's run and the answer, Mac-tested)
 #include "../AutoLockLongest.h"            // (MS_AUTOLOCK_CHECK: removal and switch-off tell SpringBoard to look at the stored Auto-Lock)
 #include "../../common/SSHSwitch.h"        // (the SSH state every switch reads, and its notification, 1.7.6; Mac-tested)
 #include "../../common/CCModuleList.h"     // (our Control Center controls' identifiers: taken out of the user's lists on removal)
@@ -1718,6 +1719,84 @@ static void EjectRequest(NSString *why) {
     });
 }
 
+// ---- 6. iCleaner in Finder (1.8.5) ---------------------------------------------------------------------------------------------------------------
+// Finder's iCleaner panel asks for a clean (common/ICleaner.h has the channel and its rules); this job runs the official iCleaner Pro's own command
+// line -- exactly `iCleaner -clean -printresults`, with the user's own iCleaner settings -- one clean at a time, on a queue of its own, and answers
+// with the space freed. It is never stopped (kMSBDICleanTimeout 0): a clean may be removing packages through dpkg, and a kill halfway could leave
+// dpkg half-configured; Finder stops waiting on its own (kMSBDICleanWait). Only the official package (com.exile90.icleanerpro), only its own binary: a regular file of root's, at
+// the path its package lists. Nothing else is ever run from here for it, and nothing of iCleaner's is changed.
+static dispatch_queue_t gICleanQueue;
+static volatile int gICleanBusy = 0;
+static BOOL gICleanAgain = NO;
+static void ICleanWriteAnswer(NSString *rid, NSString *line) {
+    mkdir(ESTATEDIR, 0755);
+    NSData *d = MSBDEjectAnswerData(rid, line);
+    char tmp[] = ESTATEDIR "/.iclean-answer.XXXXXX";
+    int fd = mkstemp(tmp);
+    if (fd < 0) { dispatch_async(dispatch_get_main_queue(), ^{ ELog(@"iclean: the answer could not be written (%s)", strerror(errno)); }); return; }
+    BOOL ok = write(fd, d.bytes, d.length) == (ssize_t)d.length;
+    fchmod(fd, 0644);
+    close(fd);
+    if (!ok || rename(tmp, kMSBDICleanAnswerFile) != 0) { unlink(tmp); dispatch_async(dispatch_get_main_queue(), ^{ ELog(@"iclean: the answer could not be written"); }); return; }
+    notify_post(kMSBDICleanAnswerName);
+}
+// The official iCleaner Pro is installed and the binary is its own: listed in its package's file list, a regular file (not a link) of root's.
+static NSString *ICleanUnusable(void) {
+    if (!MSBDPackageOnDisk(DpkgStatus(), kMSBDICleanPackage)) return @"iCleaner Pro isn’t installed";
+    NSString *list = [NSString stringWithContentsOfFile:[NSString stringWithFormat:@"/var/jb/var/lib/dpkg/info/%@.list", kMSBDICleanPackage] encoding:NSUTF8StringEncoding error:nil];
+    if (![[list componentsSeparatedByString:@"\n"] containsObject:@kMSBDICleanBinary]) return @"iCleaner Pro’s program isn’t where its package puts it";
+    struct stat st;
+    if (lstat(kMSBDICleanBinary, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != 0) return @"iCleaner Pro’s program isn’t where its package puts it";
+    return nil;
+}
+#if DEBUG
+// Tests: with the ROOT-owned flag ESTATEDIR/iclean-dryrun (mobile can't make it), iCleaner is NOT run: the flag's own text is taken as its printed
+// results after 3 s (the panel's waiting, its result and its errors, without cleaning the test iPad). Debug builds only.
+static NSData *ICleanDryRunOutput(void) {
+    struct stat st;
+    if (lstat(ESTATEDIR "/iclean-dryrun", &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != 0 || st.st_size > 4096) return nil;
+    return [NSData dataWithContentsOfFile:@ESTATEDIR "/iclean-dryrun"] ?: [NSData data];
+}
+#else
+static NSData *ICleanDryRunOutput(void) { return nil; }
+#endif
+static void ICleanRequest(NSString *why) {
+    if (gICleanBusy) { gICleanAgain = YES; return; }
+    CFStringRef key = CFSTR(kMSBDICleanRequestKey), dom = CFSTR(kMSBDEjectDomain);
+    CFPreferencesSynchronize(dom, CFSTR("mobile"), kCFPreferencesAnyHost);
+    CFPropertyListRef v = CFPreferencesCopyValue(key, dom, CFSTR("mobile"), kCFPreferencesAnyHost);
+    if (!v) return;   // (nothing asked: a repeated or spoofed post)
+    CFPreferencesSetValue(key, NULL, dom, CFSTR("mobile"), kCFPreferencesAnyHost);   // (taken away at once: no later post can replay it)
+    CFPreferencesSynchronize(dom, CFSTR("mobile"), kCFPreferencesAnyHost);
+    NSString *rid = nil, *bad = nil;
+    BOOL good = MSBDICleanRequestFrom((__bridge id)v, [[NSDate date] timeIntervalSince1970], &rid, &bad);
+    CFRelease(v);
+    if (!rid) { ELog(@"iclean (%@): a request that isn't one of Finder's -- ignored", why); return; }
+    if (!good) { ELog(@"iclean (%@): refused -- %@", why, bad); ICleanWriteAnswer(rid, [@"error: " stringByAppendingString:bad]); return; }
+    NSData *dry = ICleanDryRunOutput();
+    NSString *no = dry ? nil : ICleanUnusable();
+    if (no) { ELog(@"iclean (%@): refused -- %@", why, no); ICleanWriteAnswer(rid, [@"error: " stringByAppendingString:no]); return; }
+    gICleanBusy = 1;
+    dispatch_async(gICleanQueue, ^{
+        @autoreleasepool {
+            NSString *line = nil;
+            if (dry) { sleep(3); line = MSBDICleanAnswerFromOutput(0, dry, NO, 0); line = [line hasPrefix:@"ok "] ? [line stringByAppendingString:@" test=1"] : line; }
+            else {
+                char *args[] = { "iCleaner", "-clean", "-printresults", NULL };
+                NSData *out = nil; int status = -1; BOOL late = NO;
+                int rc = MSBDRunHelperTimed(kMSBDICleanBinary, args, kMSBDICleanTimeout, &out, &status, &late);
+                line = MSBDICleanAnswerFromOutput(rc, out, late, status);
+            }
+            ICleanWriteAnswer(rid, line);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                ELog(@"iclean (%@)%@: %@", why, dry ? @" (test run: iCleaner not run)" : @"", line);
+                gICleanBusy = 0;
+                if (gICleanAgain) { gICleanAgain = NO; ICleanRequest(@"a request that came meanwhile"); }
+            });
+        }
+    });
+}
+
 #if DEBUG
 // --dry-run-engines <status file> [--old]: the engine choice the postinst would make with that dpkg status text (the real preferences, Choicy's
 // settings and the tweak folder are read; nothing is written) -- an engine "unpacked" in it is the same Sileo run as ours (M-1).
@@ -1790,6 +1869,9 @@ int main(int argc, char **argv) {
         int t3, t4, t5, t6, alive;
         gEjectQueue = dispatch_queue_create("msbd.eject", DISPATCH_QUEUE_SERIAL);
         notify_register_dispatch(kMSBDEjectRequestName, &t6, dispatch_get_main_queue(), ^(int t) { EjectRequest(@"Finder"); });   // (section 5)
+        int t7;
+        gICleanQueue = dispatch_queue_create("msbd.iclean", DISPATCH_QUEUE_SERIAL);
+        notify_register_dispatch(kMSBDICleanRequestName, &t7, dispatch_get_main_queue(), ^(int t) { ICleanRequest(@"Finder"); });   // (section 6)
         if (notify_register_check(kMSBDEjectHelperState, &alive) == NOTIFY_STATUS_OK) notify_set_state(alive, (uint64_t)getpid());   // (kept for the daemon's life)
         notify_register_dispatch("com.besiktasliseba.sshtoggle.changed", &t4, dispatch_get_main_queue(), ^(int t) { SSHRequest(-1); });
         notify_register_dispatch("com.besiktasliseba.msb.engines.apply", &t3, dispatch_get_main_queue(), ^(int t) {
@@ -1806,6 +1888,7 @@ int main(int argc, char **argv) {
         if (resume && strstr(resume, "lines")) ApplyLines(@"Settings");
         if (resume && strstr(resume, "ssh")) SSHRequest(-1);
         if (resume && strstr(resume, "eject")) EjectRequest(@"Finder (after starting over)");
+        ICleanRequest(@"daemon start");   // (a request left while the helper was not running: answered, or refused as too old)
         EjectRequest(@"daemon start");   // (a request left while the helper was not running -- an install's restart: answered now, Finder may still wait)
         WatchForMacStatusBarOff();
         WatchMacStatusBarConfig();

@@ -386,6 +386,12 @@ static const void *kFilePillKey = &kFilePillKey;
 static const void *kViewLabelKey = &kViewLabelKey;
 static const void *kViewButtonKey = &kViewButtonKey;
 static const void *kViewPillKey = &kViewPillKey;
+#include "../common/AppMenuRules.h"   // (the app's own menus in the bar, 1.8.5 item 3: their titles take these slots -- statusbar/AppMenus.h)
+static char gAMLabelKeys[kMSBDAppMenuSlots], gAMButtonKeys[kMSBDAppMenuSlots], gAMPillKeys[kMSBDAppMenuSlots];
+_Static_assert(kMSBDAppMenuSlots == 7, "the slot lists below name seven");
+#define DM_AM_LABELS  (const void *)&gAMLabelKeys[0], (const void *)&gAMLabelKeys[1], (const void *)&gAMLabelKeys[2], (const void *)&gAMLabelKeys[3], (const void *)&gAMLabelKeys[4], (const void *)&gAMLabelKeys[5], (const void *)&gAMLabelKeys[6]
+#define DM_AM_BUTTONS (const void *)&gAMButtonKeys[0], (const void *)&gAMButtonKeys[1], (const void *)&gAMButtonKeys[2], (const void *)&gAMButtonKeys[3], (const void *)&gAMButtonKeys[4], (const void *)&gAMButtonKeys[5], (const void *)&gAMButtonKeys[6]
+#define DM_AM_PILLS   (const void *)&gAMPillKeys[0], (const void *)&gAMPillKeys[1], (const void *)&gAMPillKeys[2], (const void *)&gAMPillKeys[3], (const void *)&gAMPillKeys[4], (const void *)&gAMPillKeys[5], (const void *)&gAMPillKeys[6]
 static const void *kAudioPillKey = &kAudioPillKey;
 static const void *kHoverHandlerKey = &kHoverHandlerKey;
 static const void *kBackgroundKey = &kBackgroundKey;
@@ -6417,6 +6423,8 @@ static void DMHideAppBarItemsOf(UIView *fg) {   // (one copy: its traffic lights
         &kGoLabelKey, &kGoButtonKey, &kGoPillKey, &kWinLabelKey, &kWinButtonKey, &kWinPillKey, &kAudioLabelKey, &kAudioButtonKey, &kAudioPillKey,
         &kFileLabelKey, &kFileButtonKey, &kFilePillKey, &kViewLabelKey, &kViewButtonKey, &kViewPillKey };
     for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) ((UIView *)objc_getAssociatedObject(fg, *(const void **)keys[i])).hidden = YES;
+    const void *am[] = { DM_AM_LABELS, DM_AM_BUTTONS, DM_AM_PILLS };   // (the app's own menus' titles: AppMenus.h)
+    for (size_t i = 0; i < sizeof(am) / sizeof(am[0]); i++) ((UIView *)objc_getAssociatedObject(fg, am[i])).hidden = YES;
 }
 static void DMHideAppBarItemsNow(void) {
     for (UIView *fg in gCopies.allObjects) {
@@ -8026,6 +8034,7 @@ static BOOL gWindowKeysOn = NO;   // (the stored windowTilingKeys: DMLoadPrefs)
 static void DMWindowKeysApply(void);
 static void DMWindowKeysPublish(void);   // (WindowKeys.h: the keys offered or not, for the volume and backlight chords)
 static void DMKeyPilotOpenWatch(void);   // (WindowAPI.h: Settings' KeyPilot OPEN, when Settings cannot open the app)
+static void DMCustomShortcutsStart(void);   // (CustomShortcuts.h: Custom Shortcuts, 1.8.5 item 2)
 // Double-Tap a Title Bar to (Settings > Windows & Multitasking, 1.8.3 item 8): TitleBarRule.h / TitleBarTap.h. Never set: Zoom, as macOS.
 static int gTitleDoubleTap = kMSBDTitleNeverSet;   // (the stored titleBarDoubleTap: DMLoadPrefs; never set: nothing on app windows, Zoom on ours, TitleBarRule.h)
 static CGRect DMNewWindowFrameWindow(void) {   // (the whole window, our title bar on top, on the iPad's screen)
@@ -8457,6 +8466,7 @@ UIColor *DMIconAccent(NSString *bundleID) {
 static BOOL gTintGrips = YES;
 static BOOL gSMAppleHandles = NO;   // (Stage Manager engine: Settings > Resize Handles = Stage Manager)
 static BOOL gSMStripSwipe = NO;     // (Stage Manager engine: Settings > Recent Apps with Left-Edge Swipe, off unless switched on)
+static void DMSMStripClearSlowEnd(void);   // (below, by DMSMStripRevealBegin: review 1.8.4.5 M1's stop for a slow end, cleared when the switch is turned on)
 static UIColor *DMResizeGripColorFor(NSString *bundleID, BOOL dark) {
     if (!gTintGrips || !bundleID.length) return DMResizeGripColor(dark);
     static NSMutableDictionary<NSString *, NSNumber *> *tokens;
@@ -18363,6 +18373,7 @@ static BOOL gNativeAway = NO;   // (the native windows are faded out for the App
 static BOOL gFinderOn = NO;
 #include "NativeWindow.h"   // (our own Mac windows in SpringBoard, 2026-09-30)
 #include "Finder.h"         // (the first one: Finder)
+#include "AppMenus.h"       // (the app's own menus in the menu bar: File, View, History... as the app in front offers them -- 1.8.5 item 3)
 // Our own code opens an app or a link for the user (a menu row, a notice's button, Take Me There, Choose Engine, Edit Go Menu…, Finder or Spotlight
 // opening an app): that app comes forward, as on a Mac, so an active native window (Finder) steps back -- also when the app is the one already in
 // front behind it, whose coming forward the front-app watcher (DMNativeTick) can't see as a change (iPad 2 16.7.7, 1.6.0, Stage Manager and Zetsu:
@@ -18380,6 +18391,7 @@ static void DMNativeStepBackForOpen(NSString *what) {
 #include "ProcList.h"       // (the process snapshot for Activity Monitor: the same stats reads as the RAM & CPU tile)
 #include "ActivityMonitor.h"   // (the Activity Monitor window: CPU and Memory tabs, 1.7.0)
 #include "Desktop.h"        // (Finder's desktop: the Desktop folder's icons on the Home Screen's first page)
+#include "DesktopWallpaper.h"   // (Settings > Desktop > Desktop Picture: our picture behind page 1, 1.8.6)
 static void DMDesktopAreaChanged(void) { [gDesktop setNeedsLayout]; }
 #include "DockTrash.h"      // (the Dock's Trash, 1.7.0: Finder's side -- the bin's state, its tap and menu, drops and Eject)
 #include "MacSwitcher.h"    // (Mac Switcher: our Mission Control, 1.4)
@@ -18487,6 +18499,7 @@ static NSString *DMNativeActiveAppName(void) { return DMNativeActiveApp().appNam
 // (every tick: the native windows' level follows the engine's window layer, which moves; after a turn they are kept inside the new desktop)
 static void DMNativeTick(void) {
     DMDesktopTick();   // (the desktop: on page 1 while wanted, out of the way in jiggle mode)
+    DMWPTick();        // (the desktop picture: behind page 1 while one is chosen -- DesktopWallpaper.h)
     if (gNativeFocusLock && !DMNativeActiveApp()) DMNativeFocus(NO);   // (safety net: the keyboard lock is only ever held while a native window is active)
     if (!gNativeLayer || gNativeLayer.hidden) return;
     {   // (the App Library, a Home Screen icon menu or the App Switcher takes over the screen: the native windows fade out of its way, like the
@@ -18678,6 +18691,17 @@ static void DMOpenEditMenu(UIButton *btn) {
             DMLog(@"[edit] clipboard cleared");
         })],
     ];
+    {   // (the app's own Edit commands that ours doesn't have -- Find Next, Paste and Match Style... --: under Find, as a Mac app's Edit menu has them; AppMenus.h)
+        NSArray *extras = DMAMEditExtras(activeBundle);
+        NSUInteger at = [items indexOfObjectPassingTest:^BOOL(id o, NSUInteger i, BOOL *stop) { return [o isKindOfClass:[DMRow class]] && [((DMRow *)o).label.text isEqualToString:@"Find…"]; }];
+        if (extras.count && at != NSNotFound) {
+            NSMutableArray *m = [items mutableCopy];
+            [m insertObject:[NSNull null] atIndex:at + 1];
+            [m insertObjects:extras atIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(at + 2, extras.count)]];
+            items = m;
+        }
+        if (activeBundle.length) DMAMAsk(activeBundle, NO);
+    }
     DMPresentMenu(btn, kEditLabelKey, kEditPillKey, items);
     DMLog(@"[edit] menu opened");
 }
@@ -20260,6 +20284,7 @@ static void DMOpenMenuForButton(UIButton *b) {
     else if (b == objc_getAssociatedObject(fg, kAudioButtonKey)) DMOpenAudioMenu(b);
     else if (b == objc_getAssociatedObject(fg, kFileButtonKey)) DMOpenFinderFileMenu(b);
     else if (b == objc_getAssociatedObject(fg, kViewButtonKey)) DMOpenFinderViewMenu(b);
+    else if (DMAMSlotOf(b) >= 0) DMOpenAppOwnMenu(b);   // (one of the app's own menus: AppMenus.h)
 }
 
 // A finger (or a click) on another title while a menu is open opens that title's menu at once, like macOS; before, the catch-all took the tap and
@@ -20276,7 +20301,7 @@ static void DMOpenMenuForButton(UIButton *b) {
     UIView *fg = self.fg, *host = self.host;
     if (!fg || !host) return nil;
     const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, kSSHButtonKey, kVPNButtonKey, kWiFiButtonKey,
-                           kBattButtonKey, kCCButtonKey };   // (the Control Center icon too: like a Mac's, a click on it with a menu open opens Control Center)
+                           kBattButtonKey, kCCButtonKey, DM_AM_BUTTONS };   // (the Control Center icon too: like a Mac's, a click on it with a menu open opens Control Center)
     for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
         UIButton *b = objc_getAssociatedObject(fg, keys[i]);
         if (!b || b.hidden || b == self.current || b.frame.size.width < 1.0) continue;
@@ -20346,7 +20371,7 @@ static void DMAttachMenuHover(UIControl *overlay, UIView *fg, UIView *host, UIBu
         UIView *fg = weakFg, *host = weakHost;
         if (!fg || !host) return;
         CGPoint p = [g locationInView:host];
-        const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey };
+        const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, DM_AM_BUTTONS };
         for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
             UIButton *b = objc_getAssociatedObject(fg, keys[i]);
             if (!b || b.hidden || b == weakCurrent) continue;
@@ -20614,6 +20639,7 @@ static UIView *DMDateStringView(UIView *container) {
 // Creates (once) and lays out one menu title in the status bar: a label, a transparent tap button over it,
 // and a highlight pill for while its menu is open. Returns the title's right edge, or -1 if there is no room.
 // (x and maxRight in leading coordinates, DMBarRTL: in a right-to-left language the titles go left from the logo)
+#define kTitleMinShown 30.0   // (the least room a title is shown in; the app's own menus leave at least this to Go, Window and Audio: AppMenus.h)
 static CGFloat DMLayoutTitle(UIView *fg, BOOL rtl, const void *labelKey, const void *buttonKey, const void *pillKey,
                              NSString *text, UIFontWeight weight, UIFont *baseFont,
                              CGFloat centreY, CGFloat x, CGFloat maxRight, void (^onTap)(UIButton *)) {
@@ -20644,7 +20670,7 @@ static CGFloat DMLayoutTitle(UIView *fg, BOOL rtl, const void *labelKey, const v
         objc_setAssociatedObject(fg, buttonKey, btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     CGFloat maxW = maxRight - x;
-    BOOL show = text.length && maxW >= 30.0;
+    BOOL show = text.length && maxW >= kTitleMinShown;
     label.hidden = btn.hidden = !show;
     if (!show) { pill.hidden = YES; return -1.0; }
     // (S-5, 1.3.3: the bar is laid out again many times while an app opens or closes -- the title's font, text and measured size are only made
@@ -20806,7 +20832,7 @@ static UIColor *DMBarItemColor(UIView *fg, UIView *timeLabel) {
 // background: our bar's background follows too (not on the Lock Screen's layout, which never drew one)
 static void DMApplyBarItemColor(UIView *fg, UIColor *c, BOOL background) {
     if (!fg || !c) return;
-    const void *labels[] = { kLogoKey, kAppLabelKey, kFileLabelKey, kEditLabelKey, kViewLabelKey, kGoLabelKey, kWinLabelKey, kAudioLabelKey, kDateProxyKey };
+    const void *labels[] = { kLogoKey, kAppLabelKey, kFileLabelKey, kEditLabelKey, kViewLabelKey, kGoLabelKey, kWinLabelKey, kAudioLabelKey, kDateProxyKey, DM_AM_LABELS };
     const void *icons[] = { kSpotIconKey, kWiFiIconKey, kVPNIconKey, kMuteIconKey, kSSHIconKey, kCCIconKey };
     for (size_t i = 0; i < sizeof labels / sizeof labels[0]; i++) {
         UILabel *l = objc_getAssociatedObject(fg, labels[i]);
@@ -22477,13 +22503,18 @@ static void DMLoadPrefs(void) {
         gKeepCoveredInFront = keepCovered;
     }
     {   // Recent Apps with Left-Edge Swipe (Stage Manager engine, 1.8.4.2): off unless switched on (DMSMStripRevealBegin)
+        static BOOL stripLoaded = NO;
         CFPropertyListRef sw = CFPreferencesCopyValue(CFSTR("smStripSwipe"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
         BOOL stripSwipe = sw && CFGetTypeID(sw) == CFBooleanGetTypeID() && CFBooleanGetValue(sw);
         if (sw) CFRelease(sw);
-        // (only on the iPadOS versions where it has been run through: 16. On 18.5 a window closed with the strip out ended in SpringBoard's own
-        //  assertion; 17 untried -- common/OwnPageRows.h MSBDStripSwipeOS, which leaves the row out there too)
-        if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion != 16) stripSwipe = NO;
+        // (only on iPadOS 16 to 18, where Stage Manager has its strip: the rule of common/OwnPageRows.h MSBDStripSwipeOS, which leaves the row out
+        //  elsewhere and is not included here)
+        long stripMajor = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion;
+        if (stripMajor < 16 || stripMajor > 18) stripSwipe = NO;
         if (stripSwipe != gSMStripSwipe) DMLog([NSString stringWithFormat:@"[smengine] Recent Apps with Left-Edge Swipe %@", stripSwipe ? @"on" : @"off"]);
+        // (turned on again by the user, not at a start: a stop for a slow end on this build is cleared, DMSMStripEndSlow, review 1.8.4.5 M1)
+        if (stripLoaded && stripSwipe && !gSMStripSwipe) DMSMStripClearSlowEnd();
+        stripLoaded = YES;
         gSMStripSwipe = stripSwipe;
     }
     {   // Resize Handles (Stage Manager engine): ours (default) or Stage Manager's own
@@ -22511,6 +22542,12 @@ static void DMLoadPrefs(void) {
         if (!escToken) notify_register_check("com.besiktasliseba.appbridge.escends", &escToken);
         uint64_t want = esc ? 1 : 2;
         if (escToken && want != escPublished) { notify_set_state(escToken, want); escPublished = want; DMLog([NSString stringWithFormat:@"[prefs] Esc Ends Typing in Windows: %@", esc ? @"on" : @"off"]); }
+    }
+    {   // Show Apps' Own Menus (1.8.5 item 3, AppMenus.h): off unless switched on; published for MacAppBridge in every app as well (DMAMApplyPref)
+        CFPropertyListRef amRef = CFPreferencesCopyValue(CFSTR("appOwnMenus"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        BOOL amOn = amRef && CFGetTypeID(amRef) == CFBooleanGetTypeID() && CFBooleanGetValue(amRef);
+        if (amRef) CFRelease(amRef);
+        DMAMApplyPref(amOn);
     }
     {
         BOOL mute = YES;   // Show Mute Icon: on unless switched off
@@ -23096,7 +23133,10 @@ static NSArray<NSValue *> *DMBarFadeBackKeys(void) {
     static NSArray *keys; static dispatch_once_t once;
     dispatch_once(&once, ^{ keys = @[[NSValue valueWithPointer:kLightsKey], [NSValue valueWithPointer:kAppLabelKey], [NSValue valueWithPointer:kFileLabelKey], [NSValue valueWithPointer:kEditLabelKey],
         [NSValue valueWithPointer:kViewLabelKey], [NSValue valueWithPointer:kGoLabelKey], [NSValue valueWithPointer:kWinLabelKey], [NSValue valueWithPointer:kAudioLabelKey],
-        [NSValue valueWithPointer:kDateProxyKey], [NSValue valueWithPointer:kSpotIconKey], [NSValue valueWithPointer:kCCIconKey]]; });
+        [NSValue valueWithPointer:kDateProxyKey], [NSValue valueWithPointer:kSpotIconKey], [NSValue valueWithPointer:kCCIconKey],
+        [NSValue valueWithPointer:&gAMLabelKeys[0]], [NSValue valueWithPointer:&gAMLabelKeys[1]], [NSValue valueWithPointer:&gAMLabelKeys[2]],
+        [NSValue valueWithPointer:&gAMLabelKeys[3]], [NSValue valueWithPointer:&gAMLabelKeys[4]], [NSValue valueWithPointer:&gAMLabelKeys[5]],
+        [NSValue valueWithPointer:&gAMLabelKeys[6]]]; });
     return keys;
 }
 static NSSet<NSValue *> *DMBarShownItems(UIView *fg) {   // (which of those show now)
@@ -23483,7 +23523,7 @@ static BOOL DMBarCopyIsCCDuplicate(UIView *fg) {
         DMSBDiagStep(@"b-narrow");
         // A copy that has collapsed (an app card being dismissed, say) must not leave our
         // views behind at their old positions, or a stale app name lingers that nobody updates.
-        const void *keys[] = { kSSHIconKey, kSSHButtonKey, kVPNIconKey, kVPNButtonKey, kWiFiIconKey, kWiFiButtonKey, kBattButtonKey, kCCIconKey, kCCButtonKey, kCCPillKey, kMuteIconKey, kLogoKey, kButtonKey, kPillKey, kAppLabelKey, kAppButtonKey, kAppPillKey, kDateProxyKey, kClockButtonKey, kSpotIconKey, kSpotButtonKey, kEditLabelKey, kEditButtonKey, kEditPillKey, kGoLabelKey, kGoButtonKey, kGoPillKey, kWinLabelKey, kWinButtonKey, kWinPillKey, kAudioLabelKey, kAudioButtonKey, kAudioPillKey, kBackgroundKey, kLightsKey , kFileLabelKey, kFileButtonKey, kFilePillKey, kViewLabelKey, kViewButtonKey, kViewPillKey };
+        const void *keys[] = { kSSHIconKey, kSSHButtonKey, kVPNIconKey, kVPNButtonKey, kWiFiIconKey, kWiFiButtonKey, kBattButtonKey, kCCIconKey, kCCButtonKey, kCCPillKey, kMuteIconKey, kLogoKey, kButtonKey, kPillKey, kAppLabelKey, kAppButtonKey, kAppPillKey, kDateProxyKey, kClockButtonKey, kSpotIconKey, kSpotButtonKey, kEditLabelKey, kEditButtonKey, kEditPillKey, kGoLabelKey, kGoButtonKey, kGoPillKey, kWinLabelKey, kWinButtonKey, kWinPillKey, kAudioLabelKey, kAudioButtonKey, kAudioPillKey, kBackgroundKey, kLightsKey , kFileLabelKey, kFileButtonKey, kFilePillKey, kViewLabelKey, kViewButtonKey, kViewPillKey, DM_AM_LABELS, DM_AM_BUTTONS, DM_AM_PILLS };
         for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
             ((UIView *)objc_getAssociatedObject(fg, keys[i])).hidden = YES;
         DMLAHidePills(fg);   // (the Live Activities' pills too)
@@ -23694,6 +23734,21 @@ static BOOL DMBarCopyIsCCDuplicate(UIView *fg) {
     BOOL finderTitles = DMNativeActiveApp() != nil && appRight > 0;   // (our Finder in front: File and View too, like a Mac's Finder)
     if (!finderTitles) for (NSValue *k in @[[NSValue valueWithPointer:kFileLabelKey], [NSValue valueWithPointer:kFileButtonKey], [NSValue valueWithPointer:kViewLabelKey], [NSValue valueWithPointer:kViewButtonKey]])
         ((UIView *)objc_getAssociatedObject(fg, k.pointerValue)).hidden = YES;
+    // The app's own menus (1.8.5 item 3, AppMenus.h): File before Edit, the others after it, in the room our own titles after them leave (Go,
+    // Window while windowing, Audio while something plays). A title that doesn't fit whole is left out with the ones after it. Not for our Finder
+    // window: it has its own File and View. Only with Show Apps' Own Menus on (off: none of it, the bar as before).
+    NSString *amBundle = (gAMOn && !finderTitles && appRight > 0 && frontApp) ? [frontApp bundleIdentifier] : nil;
+    if (amBundle) DMAMFrontSeen(frontApp);   // (asked when it comes to the front, or while no answer from its process is in)
+    else if (gAMOn && !frontApp) DMAMFrontSeen(nil);   // (none in front -- the Home Screen, our Finder window --: the same app coming back is asked again)
+    NSArray<NSString *> *amWant = amBundle ? DMAMTitles(amBundle) : @[];
+    NSMutableArray<NSString *> *amShown = [NSMutableArray array];
+    CGFloat amGap = kTitleGap * k, amReserve = 0;
+    if (amWant.count) {
+        // (each of ours: its width, but never less than DMLayoutTitle needs to show it -- Go's 19 pt alone left it hidden, review M3)
+        amReserve = MAX(DMAMTitleWidth(@"Go", timeFont), kTitleMinShown) + amGap;
+        if (DMActiveEngine() != DMEngineNone || DMSMEngine() || DMNativeActiveApp()) amReserve += MAX(DMAMTitleWidth(@"Window", timeFont), kTitleMinShown) + amGap;
+        if (gAudioTabShown) amReserve += MAX(DMAMTitleWidth(@"Audio", timeFont), kTitleMinShown) + amGap;
+    }
     if (appRight > 0) {
         leftEnd = appRight;
         CGFloat editStart = appRight + kTitleGap * k;
@@ -23701,6 +23756,12 @@ static BOOL DMBarCopyIsCCDuplicate(UIView *fg) {
             CGFloat fileRight = DMLayoutTitle(fg, rtl, kFileLabelKey, kFileButtonKey, kFilePillKey, @"File", UIFontWeightRegular, timeFont,
                                               timeCentre.y, appRight + kTitleGap * k, titleMaxRight, ^(UIButton *b) { DMOpenFinderFileMenu(b); });
             if (fileRight > 0) editStart = fileRight + kTitleGap * k;
+        } else if ([amWant containsObject:kMSBDAppMenuFile]
+                   && editStart + DMAMTitleWidth(kMSBDAppMenuFile, timeFont) <= titleMaxRight - amReserve - MAX(DMAMTitleWidth(@"Edit", timeFont), kTitleMinShown) - amGap) {
+            NSUInteger slot = amShown.count;
+            CGFloat r = DMLayoutTitle(fg, rtl, &gAMLabelKeys[slot], &gAMButtonKeys[slot], &gAMPillKeys[slot], kMSBDAppMenuFile, UIFontWeightRegular, timeFont,
+                                      timeCentre.y, editStart, titleMaxRight, ^(UIButton *b) { DMOpenAppOwnMenu(b); });
+            if (r > 0) { [amShown addObject:kMSBDAppMenuFile]; editStart = r + amGap; }
         }
         CGFloat editRight = DMLayoutTitle(fg, rtl, kEditLabelKey, kEditButtonKey, kEditPillKey, @"Edit", UIFontWeightRegular, timeFont,
                                           timeCentre.y, editStart, titleMaxRight,
@@ -23711,6 +23772,16 @@ static BOOL DMBarCopyIsCCDuplicate(UIView *fg) {
             if (viewRight > 0) editRight = viewRight;
         }
         if (editRight > 0) {
+            for (NSString *t in amWant) {
+                if ([t isEqualToString:kMSBDAppMenuFile] || amShown.count >= kMSBDAppMenuSlots) continue;
+                CGFloat x = editRight + amGap;
+                if (x + DMAMTitleWidth(t, timeFont) > titleMaxRight - amReserve) break;
+                NSUInteger slot = amShown.count;
+                CGFloat r = DMLayoutTitle(fg, rtl, &gAMLabelKeys[slot], &gAMButtonKeys[slot], &gAMPillKeys[slot], t, UIFontWeightRegular, timeFont,
+                                          timeCentre.y, x, titleMaxRight, ^(UIButton *b) { DMOpenAppOwnMenu(b); });
+                if (r <= 0) break;
+                [amShown addObject:t]; editRight = r;
+            }
             leftEnd = editRight;
             CGFloat goRight = DMLayoutTitle(fg, rtl, kGoLabelKey, kGoButtonKey, kGoPillKey, @"Go", UIFontWeightRegular, timeFont,
                                             timeCentre.y, editRight + kTitleGap * k, titleMaxRight,
@@ -23761,6 +23832,8 @@ static BOOL DMBarCopyIsCCDuplicate(UIView *fg) {
         ((UIView *)objc_getAssociatedObject(fg, kAudioLabelKey)).hidden = YES;
         ((UIView *)objc_getAssociatedObject(fg, kAudioButtonKey)).hidden = YES;
     }
+    objc_setAssociatedObject(fg, kAMShownKey, [amShown copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    DMAMHideSlots(fg, amShown.count);   // (the slots not used now: an app with fewer menus, another app, no room)
 
     // ---- the date, when the status bar has dropped its own date label ----
     // After Control Center the in-app status bar removes the date item and only adds it back a
@@ -24332,7 +24405,7 @@ static BOOL DMPointOverOurControl(UIView *bar, UIGestureRecognizer *g) {
     UIView *lightsView = objc_getAssociatedObject(fg, kLightsKey);
     if (lightsView && !lightsView.hidden && CGRectContainsPoint(lightsView.frame, p)) return YES;
     const void *keys[] = { kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, kSSHButtonKey,
-                           kVPNButtonKey, kWiFiButtonKey, kSpotButtonKey, kClockButtonKey, kBattButtonKey, kCCButtonKey };   // (the battery: our menu, not Control Center, while Battery Menu is on)
+                           kVPNButtonKey, kWiFiButtonKey, kSpotButtonKey, kClockButtonKey, kBattButtonKey, kCCButtonKey, DM_AM_BUTTONS };   // (the battery: our menu, not Control Center, while Battery Menu is on)
 #if DEBUG
     if (DMTestFlag("/tmp/msb-bar-apple-actions")) {   // (tests: the set before 1.7.1 -- the clock and the icons left to iPadOS's region actions)
         const void *old[] = { kAppButtonKey, kEditButtonKey, kGoButtonKey, kSpotButtonKey };
@@ -24361,7 +24434,7 @@ static UIView *DMBarControlAtScreenPoint(CGPoint p) {
         UIView *lightsView = objc_getAssociatedObject(fg, kLightsKey);
         if (lightsView && !lightsView.hidden && CGRectContainsPoint(lightsView.frame, q)) return lightsView;
         const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, kSSHButtonKey,
-                               kVPNButtonKey, kWiFiButtonKey, kSpotButtonKey, kClockButtonKey, kBattButtonKey, kCCButtonKey };
+                               kVPNButtonKey, kWiFiButtonKey, kSpotButtonKey, kClockButtonKey, kBattButtonKey, kCCButtonKey, DM_AM_BUTTONS };
         for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
             UIButton *b = objc_getAssociatedObject(fg, keys[i]);
             if (b && !b.hidden && b.alpha > 0.05 && CGRectContainsPoint(b.frame, q)) return b;
@@ -25357,6 +25430,7 @@ static void DMRunTrigger(NSString *cmd);
 #if DEBUG
 static void DMWindowAPITestCall(NSString *what);   // (WindowAPI.h: the window API called as KeyPilot calls it)
 static void DMWindowKeysDebug(NSString *cmd);      // (WindowKeys.h)
+static void DMCustomShortcutsDebug(NSString *cmd); // (CustomShortcuts.h)
 #endif
 static NSArray<NSDictionary *> *gSpotItems;   // (SpotlightBridge.h, for the spot* triggers)
 static uint64_t gSpotGen;
@@ -26914,6 +26988,34 @@ static void DMRunTrigger(NSString *cmd) {
         }
         DMLog([NSString stringWithFormat:@"[idle] experiment %@ (%lu gated timers, orientation notifications %d)", w, (unsigned long)gDMGatedTimers.count, [UIDevice currentDevice].generatesDeviceOrientationNotifications]);
     }   // idleprobe: what keeps the screen drawing while idle (running per-frame watchers, animated layers, run loop wakes)
+    else if ([cmd hasPrefix:@"appmenu_"] || [cmd isEqualToString:@"appmenusask"] || [cmd hasPrefix:@"appmenupick_"]) {   // the app's own menus (AppMenus.h, debug):
+        // appmenusask: ask the app in front again and log its menus; appmenu_<slot>: open that title's menu; appmenupick_<menu>_<n>: pick its n-th row (0 = first, separators not counted)
+        NSString *bundle = [DMActiveApp() bundleIdentifier];
+        UIView *fg = nil;
+        for (UIView *v in gCopies.allObjects) if (v.window && !v.window.hidden && v.bounds.size.width > 300) { fg = v; break; }
+        if ([cmd isEqualToString:@"appmenusask"]) {
+            DMAMAsk(bundle, YES);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                NSMutableString *o = [NSMutableString stringWithFormat:@"[appmenus] %@: shown %@ |", bundle, [(NSArray *)objc_getAssociatedObject(fg, kAMShownKey) componentsJoinedByString:@","]];
+                for (NSDictionary *m in gAMSnap[bundle][@"m"]) { [o appendFormat:@" %@:", m[@"t"]]; for (NSDictionary *r in m[@"r"]) if (!r[@"s"]) [o appendFormat:@" %08x%@%@", [r[@"x"] unsignedIntValue], r[@"h"] ? [@" " stringByAppendingString:r[@"h"]] : @"", [r[@"e"] boolValue] ? @"" : @"(off)"]; }   // (rows by key, not title: L9)
+                DMLog(o);
+            });
+        } else if ([cmd hasPrefix:@"appmenu_"]) {
+            NSInteger i = [[cmd substringFromIndex:8] integerValue];
+            UIButton *b = (fg && i >= 0 && i < kMSBDAppMenuSlots) ? objc_getAssociatedObject(fg, &gAMButtonKeys[i]) : nil;
+            if (b && !b.hidden) DMOpenAppOwnMenu(b); else DMLog([NSString stringWithFormat:@"[appmenus] slot %ld not shown", (long)i]);
+        } else {
+            NSArray *a = [[cmd substringFromIndex:12] componentsSeparatedByString:@"_"];
+            NSInteger n = a.count > 1 ? [a[1] integerValue] : 0, seen = 0;
+            for (id r in (a.count ? DMAMRows(bundle, a[0]) : @[])) {
+                if (![r isKindOfClass:[DMRow class]]) continue;
+                if (seen++ != n) continue;
+                DMLog([NSString stringWithFormat:@"[appmenus] debug pick: %@ > row %ld (enabled %d)", a[0], (long)n, ((DMRow *)r).enabled]);   // (its place, not its title: L9)
+                if (((DMRow *)r).enabled && ((DMRow *)r).handler) ((DMRow *)r).handler();
+                break;
+            }
+        }
+    }
     else if ([cmd isEqualToString:@"edit"] || [cmd isEqualToString:@"finder"] || [cmd isEqualToString:@"app"] || [cmd isEqualToString:@"go"]) {
         UIView *fg = nil;
         for (UIView *v in gCopies.allObjects) if (v.window && !v.window.hidden && v.bounds.size.width > 300) { fg = v; break; }
@@ -28931,6 +29033,7 @@ static void DMRunTrigger(NSString *cmd) {
 #if DEBUG
     else if ([cmd hasPrefix:@"kpapi_"]) DMWindowAPITestCall([cmd substringFromIndex:6]);   // kpapi_<layout|null|home|env|offmain_<layout>|syms>: the window API called as KeyPilot calls it (WindowAPI.h)
     else if ([cmd isEqualToString:@"winkeys"] || [cmd hasPrefix:@"winkey_"]) DMWindowKeysDebug(cmd);   // winkeys / winkey_<n>: Window Tiling Keys (WindowKeys.h)
+    else if ([cmd isEqualToString:@"cshort"] || [cmd hasPrefix:@"cshort_"]) DMCustomShortcutsDebug(cmd);   // cshort / cshort_<n>: Custom Shortcuts (CustomShortcuts.h)
 #endif
     else if ([cmd hasPrefix:@"winlayout_"]) DMWindowLayout([cmd substringFromIndex:10]);   // winlayout_<name>: fill/center/left/right/top/bottom/topleft/topright/bottomleft/bottomright/small/large — the same thing the Window menu rows do, for testing the Sileo queue bug's full-screen->windowed repro
     else if ([cmd isEqualToString:@"cards"]) {   // cards: the App Switcher's card list from every place it can be read (read-only)
@@ -30490,9 +30593,10 @@ static void DMRunTrigger(NSString *cmd) {
     else if ([cmd isEqualToString:@"menutitles"]) {   // menutitles: every menu title on the screen, as "name x y" centres in screen points (for finger-tap stress tests)
         NSMutableString *o = [NSMutableString stringWithString:@"[menutitles]"];
         const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, kSSHButtonKey, kVPNButtonKey, kWiFiButtonKey, kClockButtonKey,
-                               kBattButtonKey, kCCButtonKey, kSpotButtonKey };
+                               kBattButtonKey, kCCButtonKey, kSpotButtonKey, DM_AM_BUTTONS };
         // (one name per key, in the same order: the list once had 9 names for 11 keys and read past its end -- an exception in SpringBoard)
-        static const char *names[] = { "apple", "app", "file", "edit", "view", "go", "window", "audio", "ssh", "vpn", "wifi", "clock", "battery", "cc", "spotlight" };
+        static const char *names[] = { "apple", "app", "file", "edit", "view", "go", "window", "audio", "ssh", "vpn", "wifi", "clock", "battery", "cc", "spotlight",
+                                       "appmenu0", "appmenu1", "appmenu2", "appmenu3", "appmenu4", "appmenu5", "appmenu6" };
         _Static_assert(sizeof(names) / sizeof(names[0]) == sizeof(keys) / sizeof(keys[0]), "menutitles: one name per key");
         for (UIView *fg in gCopies.allObjects) {
             if (!fg.window || fg.window.hidden || fg.hidden || DMEffectiveAlpha(fg) < 0.5) continue;
@@ -30509,7 +30613,7 @@ static void DMRunTrigger(NSString *cmd) {
     else if ([cmd isEqualToString:@"menucheck"]) {   // menucheck: regression check -- opens every status bar menu from every visible status bar copy, one after another
         // (0.5 s apart), and [menugeo] asserts each menu hangs directly under its title on the screen; ends with a PASS/FAIL count and the menu closed.
         NSMutableArray *jobs = [NSMutableArray array];
-        const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, kSSHButtonKey, kVPNButtonKey, kWiFiButtonKey, kBattButtonKey };
+        const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, kSSHButtonKey, kVPNButtonKey, kWiFiButtonKey, kBattButtonKey, DM_AM_BUTTONS };
         for (UIView *fg in gCopies.allObjects) {
             if (!fg.window || fg.window.hidden || fg.hidden || fg.alpha < 0.01) continue;
             for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
@@ -30540,7 +30644,7 @@ static void DMRunTrigger(NSString *cmd) {
         double ms = a.count > 0 ? MAX(30.0, [a[0] doubleValue]) : 150.0;
         int steps = a.count > 1 ? MAX(1, MIN(200, [a[1] intValue])) : 12;
         NSMutableArray<UIButton *> *titles = [NSMutableArray array];
-        const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey };
+        const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kAudioButtonKey, DM_AM_BUTTONS };
         for (UIView *fg in gCopies.allObjects) {
             if (!fg.window || fg.window.hidden || fg.hidden || DMEffectiveAlpha(fg) < 0.5) continue;
             for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
@@ -43110,6 +43214,43 @@ static BOOL DMSMStripSwipeHeld(void) {
     return s == UIGestureRecognizerStateBegan || s == UIGestureRecognizerStateChanged;
 }
 static BOOL DMSMStripEndKnown(void);   // (below: Stage Manager's own end of a presented strip, there as read)
+// Fail closed at run time too (review 1.8.4.5 M1). On iPadOS 17 and 18 a strip Stage Manager still presents right after it was asked to go (an iPadOS
+// whose end does not take at once, where 18.5's and 17.5.1's did) leaves SpringBoard's own window removals to be laid out under it: 18.5's and
+// 17.5.1's assertion. The first such end turns the swipe off for this iPadOS build, kept in our prefs (MSBD_STRIP_SLOW_KEY: the build it was seen on),
+// so a crash it may still lead to isn't repeated after the respring. Turning the switch off and on again clears it (DMLoadPrefs); a new iPadOS build
+// starts clean. 16 ran without it: as before.
+#define MSBD_STRIP_SLOW_KEY CFSTR("smStripEndSlowBuild")
+static int gSMStripSlowEnd = -1;   // (-1: not read yet; 1: seen on this build)
+static BOOL DMSMStripEndSlow(void) {
+    if (gSMStripSlowEnd < 0) {
+        CFPropertyListRef v = CFPreferencesCopyValue(MSBD_STRIP_SLOW_KEY, MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        NSString *b = MSBDOSBuild();
+        gSMStripSlowEnd = (v && CFGetTypeID(v) == CFStringGetTypeID() && b && [(__bridge NSString *)v isEqualToString:b]) ? 1 : 0;
+        if (v) CFRelease(v);
+    }
+    return gSMStripSlowEnd == 1;
+}
+static void DMSMStripNoteSlowEnd(NSString *where) {
+    if (!DMNewOS() || DMSMStripEndSlow()) return;
+    gSMStripSlowEnd = 1;
+    NSString *b = MSBDOSBuild();
+    if (b) {
+        CFPreferencesSetValue(MSBD_STRIP_SLOW_KEY, (__bridge CFStringRef)b, MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        CFPreferencesSynchronize(MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    }
+    DM_FEATURE_MARK("sm-strip-end-slow");
+    DMLog([NSString stringWithFormat:@"[smengine] Stage Manager still presents the strip right after it was asked to go (%@): Recent Apps with Left-Edge Swipe brings no strip out on this iPadOS build (%@) until the switch is turned off and on again", where ?: @"?", b ?: @"?"]);
+}
+static void DMSMStripClearSlowEnd(void) {
+    if (gSMStripSlowEnd == 0) return;
+    gSMStripSlowEnd = 0;
+    CFPreferencesSetValue(MSBD_STRIP_SLOW_KEY, NULL, MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    CFPreferencesSynchronize(MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+}
+// A window SpringBoard removes was just seen (DMSMAnimForRequest): no new reveal until its transition has been laid out, about a second (review
+// 1.8.4.5 L1: a swipe begun between the switcher's animation and its block brought the strip out under the delete's layout)
+static double gSMStripRemovalUntil = 0;
+static id (*o_SMAnimForRequest)(id, SEL, id);   // (below, DMSMHookStripRemovalEnd: SpringBoard's own window removals put the strip away first; set once hooked)
 static BOOL DMSMStripRevealBegin(id self, SEL _cmd, id g) {
     // (Settings > Recent Apps with Left-Edge Swipe, 1.8.4.2, off unless switched on: Apple's gate decides -- not over the Mac Switcher's view)
     // (the Dock at Left stands on that edge: the strip's cards came out under it, iPad 2 s02, 10 Nov; the swipe stays the Dock's there)
@@ -43118,6 +43259,13 @@ static BOOL DMSMStripRevealBegin(id self, SEL _cmd, id g) {
     //  out stays under our lights, keys and menus, and on 18.5 a window closed there ended in SpringBoard's own assertion: review 1.8.4.4 M1. 16 ran
     //  without the end: as before. Said once, by DMSMStripEndKnown)
     if (DMSMFree() && DMNewOS() && !DMSMStripEndKnown()) { DM_FEATURE_MARK("sm-no-strip-reveal-no-end"); return NO; }
+    // (and only where SpringBoard's own window removals put it away first, DMSMHookStripRemovalEnd: on 17.5.1 a Command-W under it was the same
+    //  assertion, s05. Our hook is in place before the first swipe can begin: it is installed with this gate)
+    if (DMSMFree() && DMNewOS() && gSMStripSwipe && !o_SMAnimForRequest) { DM_FEATURE_MARK("sm-no-strip-reveal-no-removal-end"); return NO; }
+    // (nor where Stage Manager's end was seen not to take at once on this build, DMSMStripEndSlow, review 1.8.4.5 M1; nor while a window SpringBoard
+    //  removes is being laid out, L1)
+    if (DMSMFree() && DMNewOS() && gSMStripSwipe && DMSMStripEndSlow()) { DM_FEATURE_MARK("sm-no-strip-reveal-slow-end"); return NO; }
+    if (DMSMFree() && gSMStripSwipe && CACurrentMediaTime() < gSMStripRemovalUntil) { DM_FEATURE_MARK("sm-no-strip-reveal-removal"); return NO; }
     BOOL begins = o_SMStripRevealBegin(self, _cmd, g);
     if (begins && DMSMFree() && gSMStripSwipe) {
         gSMStripRevealing = YES; gSMStripBaseKnown = NO; gSMStripRose = NO; gSMStripRevealAt = CACurrentMediaTime(); DM_FEATURE_MARK("sm-strip-swipe-reveal");
@@ -43339,10 +43487,11 @@ static BOOL DMSMStripPresentedFor(id stage) {
 static BOOL DMSMStripPresented(void) { return DMSMStripPresentedFor(nil); }
 // YES: a strip was out, and it was asked to go. Gone or not is Stage Manager's own answer after the ask (DMSMStripPresented): its end may run its
 // course, and an iPadOS whose end reads the app it is given may do nothing (review 1.8.4.4 M1); the log says which. While the swipe's finger is
-// still on the strip it is not asked (DMSMStripSwipeHeld): YES all the same, the strip is out.
-static BOOL DMSMStripPresentationEnd(NSString *why) {
+// still on the strip it is not asked (DMSMStripSwipeHeld): YES all the same, the strip is out -- unless forced (a window SpringBoard removes can't
+// wait for the finger: review 1.8.4.5 L1). Still presented right after the ask on 17 or 18: the swipe stops for this build (DMSMStripNoteSlowEnd, M1).
+static BOOL DMSMStripPresentationEndEx(NSString *why, BOOL force) {
     if (!DMSMFree() || !gSMStripSwipe || !gSMSwitcherVCs.count || !DMSMStripEndKnown()) return NO;
-    BOOL out = NO, asked = NO, held = DMSMStripSwipeHeld();
+    BOOL out = NO, asked = NO, held = !force && DMSMStripSwipeHeld();
     for (id vc in gSMSwitcherVCs.allObjects) {
         double p = ((double (*)(id, SEL))objc_msgSend)(vc, gSMStripProgSel);
         if (!(p > 0.0)) continue;
@@ -43354,9 +43503,12 @@ static BOOL DMSMStripPresentationEnd(NSString *why) {
     if (!asked) return out;
     gSMStripRevealing = NO;
     DM_FEATURE_MARK("sm-strip-ended-by-ours");
-    DMLog([NSString stringWithFormat:@"[smengine] the strip a swipe brought out %@ (%@), as a touch in an app puts it away", DMSMStripPresented() ? @"is asked to go, Stage Manager still presents it" : @"is put away", why ?: @"?"]);
+    BOOL still = DMSMStripPresented();
+    DMLog([NSString stringWithFormat:@"[smengine] the strip a swipe brought out %@ (%@), as a touch in an app puts it away", still ? @"is asked to go, Stage Manager still presents it" : @"is put away", why ?: @"?"]);
+    if (still) DMSMStripNoteSlowEnd(why);
     return YES;
 }
+static BOOL DMSMStripPresentationEnd(NSString *why) { return DMSMStripPresentationEndEx(why, NO); }
 // A window action SpringBoard lays out (a close, a minimize, a move to the other display) never runs under a presented strip (review 1.8.4.4 M1): the
 // strip is asked to go first, and while Stage Manager still presents it (its end running its course, an iPadOS whose end does not take) the action
 // waits, a quarter second at a time, and runs once the strip is gone. Still out a second later: the action is left, and the log says so (on 18.5 a
@@ -43380,6 +43532,59 @@ static void DMSMStripWaitStep(NSString *what, dispatch_block_t act, int step, in
         return;
     }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMSMStripWaitStep(what, act, held ? step : step + 1, ticks + 1); });
+}
+// SpringBoard's own window removals put a presented strip away first too. Our window actions wait for the strip (DMSMStripHoldsBack), but SpringBoard
+// removes windows on its own: iPadOS's Command-W (the app asks for its scene's end), an app ending its scene, the switcher's delete, a force quit. On
+// 17.5.1 a Command-W with the strip out ended in the same assertion as 18.5's (s05, 10 Nov 14:12: -[SBContinuousExposeAutoLayoutSpace
+// autoLayoutItemForDisplayItem:] from -[SBWindowDeleteSwitcherModifier frameForLayoutRole:inAppLayout:withBounds:], under -[SBFluidSwitcherViewController
+// performTransitionWithContext:animated:completion:] in the block of -animationControllerForTransitionRequest:). Every one of them is a workspace
+// transition whose request names the leaving scenes (-[SBWorkspaceTransitionRequest applicationContext] -entitiesWithRemovalContexts: what
+// -[SBMainSwitcherControllerCoordinator transitionEventForContext:identifier:phase:animated:] turns into the event's removal contexts, and those into the
+// window-delete modifier), and the switcher is asked for that transition's animation before any of it is laid out. There the strip is put away as a
+// touch in an app puts it away (DMSMStripPresentationEnd: Stage Manager's own end, which clears the presentation at once), so the delete's layout runs
+// with no strip presented, as with Apple's own UI, where every close begins with a touch in the app or on the strip. Only with the switch on, the
+// engine ours and a strip out; a request of another kind, or accessors not there, leave the transition as it was (and are said once).
+// (the number of leaving scenes the request names, read as the other removal readers read them: DMSMPlacesInClose; 0 for a request of another kind
+//  or none named. Both accessors are checked once at install, DMSMHookStripRemovalEnd: review 1.8.4.5 L3)
+static NSUInteger DMSMRequestRemovals(id request) {
+    static SEL ac, ents; if (!ac) { ac = NSSelectorFromString(@"applicationContext"); ents = NSSelectorFromString(@"entitiesWithRemovalContexts"); }
+    id ctx = [request respondsToSelector:ac] && DMSMSigOK(request, ac, DMSMSigObj(), "applicationContext") ? ((id (*)(id, SEL))objc_msgSend)(request, ac) : nil;
+    if (!ctx) return 0;
+    id list = [ctx respondsToSelector:ents] && DMSMSigOK(ctx, ents, DMSMSigObj(), "entitiesWithRemovalContexts") ? ((id (*)(id, SEL))objc_msgSend)(ctx, ents) : nil;
+    return [list isKindOfClass:[NSArray class]] ? [list count] : 0;
+}
+static id DMSMAnimForRequest(id self, SEL _cmd, id request) {
+    // (17 and 18 only: 16 ran 1.8.4.4 without it, a Command-W under the strip there does no harm, review 1.8.4.5 L4)
+    if (DMSMFree() && DMNewOS() && gSMStripSwipe && DMSMStripPresented()) {
+        NSUInteger n = DMSMRequestRemovals(request);
+        if (!n) DMLog(@"[smengine] a transition under the strip names no leaving scene: left as it is");   // (review 1.8.4.5 L2: which ones)
+        else {
+            DM_FEATURE_MARK("sm-strip-ended-before-removal");
+            gSMStripRemovalUntil = CACurrentMediaTime() + 1.0;
+            // (the swipe's finger still on the strip: its gesture is cancelled, so its lift can't bring the strip out again under the delete, L1)
+            UIGestureRecognizer *g = gSMStripRevealGesture;
+            if (g && DMSMStripSwipeHeld()) { g.enabled = NO; g.enabled = YES; }
+            DMSMStripPresentationEndEx([NSString stringWithFormat:@"a window SpringBoard removes, %lu leaving", (unsigned long)n], YES);
+            if (DMSMStripPresented()) DMLog(@"[smengine] a window SpringBoard removes: Stage Manager still presents the strip after it was asked to go");
+        }
+    }
+    return o_SMAnimForRequest(self, _cmd, request);
+}
+static void DMSMHookStripRemovalEnd(void) {
+    Class c = objc_getClass("SBFluidSwitcherViewController");
+    SEL s = NSSelectorFromString(@"animationControllerForTransitionRequest:");
+    Method m = c ? class_getInstanceMethod(c, s) : NULL;
+    // (and the request's leaving scenes readable as read: without them every removal would read "none" and the strip stay out under it, so no hook,
+    //  and on 17 and 18 the swipe brings nothing out: review 1.8.4.5 L3)
+    Class rq = objc_getClass("SBWorkspaceTransitionRequest"), cx = objc_getClass("SBWorkspaceApplicationSceneTransitionContext");
+    Method ma = rq ? class_getInstanceMethod(rq, NSSelectorFromString(@"applicationContext")) : NULL;
+    Method me = cx ? class_getInstanceMethod(cx, NSSelectorFromString(@"entitiesWithRemovalContexts")) : NULL;
+    if (!m || ![DMSMSigOfMethod(m) isEqualToString:DMSMExpect(@encode(id), @encode(id), NULL)]
+        || !ma || ![DMSMSigOfMethod(ma) isEqualToString:DMSMSigObj()] || !me || ![DMSMSigOfMethod(me) isEqualToString:DMSMSigObj()]) {
+        DMLog(@"[smengine] the switcher's transition animation or a request's leaving scenes are not as expected here: SpringBoard's own window removals don't put a swipe's strip away first");
+        return;
+    }
+    MSHookMessageEx(c, s, (IMP)DMSMAnimForRequest, (IMP *)&o_SMAnimForRequest);
 }
 static BOOL DMSMStripHoldsBack(NSString *what, dispatch_block_t act) {
     if (!DMSMFree() || !act) return NO;
@@ -43497,6 +43702,7 @@ static void DMSMHookStripReveal(void) {
     if (!m || ![DMSMSigOfMethod(m) isEqualToString:want]) { DMLog([NSString stringWithFormat:@"[smengine] the strip's reveal gesture is not as expected here: left as Apple has it%@", o_SMUnpinBegin ? @" (no window drag starts in its edge zone)" : @""]); return; }
     MSHookMessageEx(gm, s, (IMP)DMSMStripRevealBegin, (IMP *)&o_SMStripRevealBegin);
     DMLog([NSString stringWithFormat:@"[smengine] the strip's reveal gesture is held off while Stage Manager is the engine%@", o_SMUnpinBegin ? @" (and no window drag starts in its edge zone)" : @""]);
+    DMSMHookStripRemovalEnd();
 }
 // Stage Manager keeps overlapping windows 48 pt short of each screen edge (and above its Dock): with our engine a window may be as big as the screen
 // (Fill Screen, a window dragged to the edges), like a Mac window.
@@ -45038,6 +45244,7 @@ void DMSMRunAction(UIAction *action, id sender) {
     DMMSWInstallProbes();   // (Mac Switcher Phase 1a: read-only gesture logging, debug builds only)
 #endif
     { static int finderPrefToken; notify_register_dispatch("com.besiktasliseba.macstatusbar.finder.pref", &finderPrefToken, dispatch_get_main_queue(), ^(int t) { DMFinderApplyPref(); }); }
+    { static int wallpaperPrefToken; notify_register_dispatch(kMSBDWallpaperNotify, &wallpaperPrefToken, dispatch_get_main_queue(), ^(int t) { DMWPApplyPref(); DMWPTick(); }); }   // (Desktop Picture, DesktopWallpaper.h)
     // SSH (1.7.6): the root helper says when it has written OpenSSH's state (common/SSHSwitch.h): the menu bar's SSH icon follows at once, whoever
     // switched -- Settings, this bar's menu or the Control Center control (the once-a-second read stays for a helper from before)
     { static int sshStateToken; notify_register_dispatch(kMSBDSSHStateNote, &sshStateToken, dispatch_get_main_queue(), ^(int t) {
@@ -45188,6 +45395,7 @@ void DMSMRunAction(UIAction *action, id sender) {
     { int t = 0; notify_register_dispatch("com.besiktasliseba.macstatusbaranddock.opendownloadsfrom", &t, dispatch_get_main_queue(), ^(int tok) {   // the Dock's "Downloads From…"
         DMOpenSettingsLink(@"prefs:root=DOCK_MAGNIFICATION&path=DOWNLOADS"); }); }
     DMKeyPilotOpenWatch();   // (Settings > Keyboard's KeyPilot row: its OPEN, when Settings cannot open the app itself -- WindowAPI.h)
+    if (!DMCtorSkip("shortcuts")) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMCustomShortcutsStart(); });   // Custom Shortcuts (off by default; CustomShortcuts.h)
     { int t = 0; if (notify_register_check("com.besiktasliseba.macstatusbar.alive", &t) == NOTIFY_STATUS_OK) notify_set_state(t, (uint64_t)getpid()); }   // heartbeat: MacSettings' root helper (sshtoggled) sees Mac Status Bar is running (see its "switched off" check)
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, DMPrefsChanged, MSB_NOTIFY, NULL,
                                     CFNotificationSuspensionBehaviorCoalesce);
@@ -45206,6 +45414,7 @@ void DMSMRunAction(UIAction *action, id sender) {
 // The window API (1.8.3 item 1: KeyPilot's bridge, V1) and Window Tiling Keys (item 3), at the end: they use the engines' helpers above.
 #include "WindowAPI.h"
 #include "WindowKeys.h"
+#include "CustomShortcuts.h"   // (Custom Shortcuts, off unless switched on: 1.8.5 item 2, based on KeyPilot by wanghuangjie)
 #include "TitleBarTap.h"
 #include "WindowFront.h"   // (windows brought to the front as on a Mac, on every engine: 1.8.4.1 item 6)
 #include "KeepCovered.h"   // (Keep Covered Windows in Front, off unless switched on: 1.8.4.1 item 7)

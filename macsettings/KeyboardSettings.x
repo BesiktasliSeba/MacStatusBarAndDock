@@ -131,6 +131,7 @@ static BOOL MSKeyPilotInstalled(void) {
 #endif
     return MSKeyPilotAppRegistered();
 }
+BOOL MSKeyPilotIsInstalled(void) { return MSKeyPilotInstalled(); }   // (CustomShortcuts.x: ours wait and its shortcuts can be imported)
 // GET: its page. OPEN: its app, by bundle ID, off the main queue as the Folder menu opens an app (FolderMenu.x), the answer taken -- Settings may not
 // be let open an app (review 1.8.3 F4: only SpringBoard's use was proven): then SpringBoard opens it, which can (kMSBDKeyPilotOpenNote).
 static void MSKeyPilotAct(NSDictionary *row) {
@@ -242,7 +243,9 @@ static Class MSKeyPilotCellClass(void) {
     objc_registerClassPair(c);
     return c;
 }
-// Window Tiling Keys (the Mac's own Globe-Control shortcuts: statusbar/WindowKeysRule.h) and, below them, the companion for keys of your own.
+PSSpecifier *MSCustomShortcutsRowSpecifier(void);   // (CustomShortcuts.x: the row to the Custom Shortcuts page)
+// Window Tiling Keys (the Mac's own Globe-Control shortcuts: statusbar/WindowKeysRule.h) and, below them, keys of your own: Custom Shortcuts (1.8.5,
+// based on KeyPilot), with KeyPilot's own row while it is installed (OPEN; ours wait then: CustomShortcuts.x).
 NSArray *MSKeysShortcutSpecifiers(id target) {
     NSMutableArray *s = [NSMutableArray array];
     PSSpecifier *g = MSKeyGroup(nil, @"Tile the front window as on a Mac: Globe-Control and an arrow key for half the screen, F to fill it, C to center it, R for its size before. Add Shift to arrange it with the window behind it, or Option-Shift for three windows.");
@@ -251,9 +254,13 @@ NSArray *MSKeysShortcutSpecifiers(id target) {
     PSSpecifier *keys = MSKeySwitch(target, @"Window Tiling Shortcuts", @kMSBDWindowKeysDomain, @kMSBDWindowKeysKey);
     [keys setIdentifier:@"MAC_WINDOW_KEYS"];
     [s addObject:keys];
-    PSSpecifier *cg = MSKeyGroup(@"Custom Shortcuts", @"Make your own keyboard shortcuts for apps, window layouts and URLs. Its window layouts use MacStatusBar&Dock's windows.");
+    BOOL kpInstalled = MSKeyPilotInstalled();
+    PSSpecifier *cg = MSKeyGroup(nil, kpInstalled ? @"Make your own keyboard shortcuts for apps, URLs, window layouts and Home. While KeyPilot is installed, its shortcuts work and Custom Shortcuts waits."
+                                                  : @"Make your own keyboard shortcuts for apps, URLs, window layouts and Home.");
     [cg setIdentifier:@"MAC_CUSTOM_SHORTCUTS_GROUP"];
     [s addObject:cg];
+    [s addObject:MSCustomShortcutsRowSpecifier()];
+    if (!kpInstalled) return s;
     // (a title-value row: a static text row is drawn disabled -- its name grey -- and takes no touch, so its button did nothing: iPad 2, 16.7.7)
     PSSpecifier *kp = [PSSpecifier preferenceSpecifierNamed:@"KeyPilot" target:target set:nil get:nil detail:nil cell:kCellTitleValue edit:nil];
     [kp setProperty:@YES forKey:@"enabled"];

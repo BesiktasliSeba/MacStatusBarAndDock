@@ -22,6 +22,7 @@ On iPadOS 18, Settings has no room for tweak rows in its sidebar, so Status Bar,
 | Desktop and Downloads | Files in On My iPad > Desktop and Downloads in Spotlight: right away on iPadOS 15, once iPadOS indexes them on 16. Needs Files allowed in Settings > Siri & Search. | Off |
 | Menu Bar Size | Small is the standard size. Medium and Large make the menu bar taller, with larger text, icons and menus that are easier to tap with a finger. Window title bars keep their size (respring). | Small |
 | Automatically Hide and Show the Status Bar | Hides the menu bar until the pointer reaches the top edge. | Off |
+| Show Apps' Own Menus | With an app in front, the menu bar also shows the app's own menus, like File, View and History, as on a Mac. A command you choose runs in the app, as its keyboard shortcut would. Only the menus that fit beside the tweak's own are shown. | Off |
 | Banner Style | Mac: notification banners come in at the top right, like on a Mac. iPadOS: Apple's own banners. Destra: Destra's banners, while Destra is installed (a switch to or from it takes a respring). Only the chosen style loads. | Mac, or iPadOS if you had turned off Mac-Style Banners |
 | Go Menu > Apps | Choose and order the apps in the Go menu. | |
 | Finder | Off removes Finder completely, with its Dock icon and the desktop. | On |
@@ -52,13 +53,15 @@ On iPadOS 18, Settings has no room for tweak rows in its sidebar, so Status Bar,
 | Activities | Turns Now Playing and Calls off one by one, and Timers on iPadOS 15.6.1, 16.7.7, 17.5.1 and 18.5, where timers show. | All on |
 | Hide Status Bar on Lock Screen | No status bar on the Lock Screen, and no Control Center line at its top right. | Off |
 | Skip Lock Screen After Respring | Goes straight to the Home Screen after a respring. Works only without a passcode. | Off |
+| Acknowledgements | The work this tweak builds on, with each license: KeyPilot by wanghuangjie, the base of Custom Shortcuts. | |
 
 ## Settings > Desktop
 
-The desktop's settings, on their own page between Status Bar and Windows & Multitasking. The desktop is Finder's: while Finder is off, these rows are greyed out.
+The desktop's settings, on their own page between Status Bar and Windows & Multitasking. The desktop is Finder's: while Finder is off, the desktop icons' rows are greyed out.
 
 | Setting | What it does | New install |
 |---|---|---|
+| Desktop Picture | A picture behind the first page of the Home Screen, where the desktop is. The other pages keep your iPadOS wallpaper, and so does the Lock Screen. Pick None, a picture from Photos, one from Mac Wallpapers (the pictures in On My iPad > MacStatusBar&Dock > Wallpapers; add your Mac's wallpapers there with the Files app, AirDrop or Add from Files) or one of iPadOS's own still wallpapers. Your iPadOS wallpaper itself isn't changed. | None |
 | Show Desktop Icons | Files and folders from On My iPad > Desktop on the first Home Screen page. They are separate from your app icons, which stay as they are. | On |
 | Hide Desktop Icon Names | Hides the names under every desktop icon. VoiceOver still reads them. An icon's own menu has Hide Name for just that icon. Greyed out while Show Desktop Icons is off. | Off |
 | Icon Size | The size of the desktop icons, from 40 to 96 points. The icons change as you drag the slider, their names and spacing follow, and every icon keeps its place. Home Screen app icons stay as they are. | The Home Screen's icon size |
@@ -80,7 +83,7 @@ The window settings, on their own page between Desktop and Dock. On iPadOS 15 an
 | Tint Resize Handles | Resize handles take a soft version of each app's color. | Off |
 | New Windows Open at Fill | New windows fill the desktop, with every engine, and Fit to Window doesn't tile them. A window that opens where it last was keeps its place. Hidden while no window engine runs. | Off |
 | Keep Covered Windows in Front | When a window comes forward, a smaller window it would cover completely stays in front of it, so it isn't lost behind the bigger one. Aerial, Zetsu and MilkyWay4 only: hidden with the Stage Manager engine and while no window engine runs. | Off |
-| Recent Apps with Left-Edge Swipe | Swiping in from the left edge shows Stage Manager's recent apps, and a tap on one opens it. With the Dock at Left, that swipe stays the Dock's. Stage Manager engine on iPadOS 16 only: hidden with Aerial, Zetsu and MilkyWay4, while no window engine runs, and on iPadOS 17 and 18. | Off |
+| Recent Apps with Left-Edge Swipe | Swiping in from the left edge shows Stage Manager's recent apps, and a tap on one opens it. With the Dock at Left, that swipe stays the Dock's. Stage Manager engine on iPadOS 16 to 18: hidden with Aerial, Zetsu and MilkyWay4 and while no window engine runs. | Off |
 | Home Minimizes Windows | Swiping up from the bottom or pressing the Home button minimizes the windows of the desktop you're on, so the Home Screen shows. Opening an app brings its window back. Keyboard shortcuts for Home, such as Command-H, leave the windows as they are. Off: the windows stay when you go Home. | On, also after an update |
 | Resize Apps to Fit Windows (MilkyWay4 only) | Apps lay themselves out for the window. Off: the full-screen layout, scaled down. | On |
 | Turn Off Traffic Lights | Hides the window buttons in the menu bar for full-screen apps. | Off |
@@ -166,7 +169,8 @@ At the end of the page, after Apple's Hardware Keyboard settings:
 | Setting | What it does | New install |
 |---|---|---|
 | Window Tiling Shortcuts | macOS 15's keys for tiling the front window, with Globe and Control held: an arrow key for that half of the screen, F to fill it, C to center the window at its own size, R to give it back the size it had before. Add Shift to arrange it with the window behind it, or Option and Shift for three windows. They work with every window engine and on Finder and TextEdit windows. On a keyboard without a Globe key, set another key to Globe in Modifier Keys. While this is on, the Globe volume keys and the backlight keys act when you let go of them. | Off |
-| KeyPilot (under Custom Shortcuts) | KeyPilot by wanghuangjie is a separate tweak for your own keyboard shortcuts for apps, window layouts and URLs. Its window layouts use MacStatusBar&Dock's windows. GET opens its page while it isn't installed, and OPEN opens it once it is. | |
+| Custom Shortcuts | Your own keyboard shortcuts. Record a key combination with Command, Option, Control or Globe, then pick what it does: open an app, open a URL, arrange the front window (one of the Window menu's layouts) or go Home. Keys that Window Tiling Shortcuts, the Mac Switcher or another of your shortcuts use are refused as you record them. Based on KeyPilot by wanghuangjie. | Off |
+| KeyPilot (only while it's installed) | Opens KeyPilot, the separate tweak by wanghuangjie. While it's installed, its shortcuts work and Custom Shortcuts waits. Import KeyPilot's Shortcuts, on the Custom Shortcuts page, copies them there (shell commands aren't imported). | |
 
 ## Control Center
 
@@ -215,3 +219,4 @@ These have no switch:
 - On iPads with a Home button, windows placed before 1.7.1 with a gap under the menu bar move up under it once.
 - In portrait, a Home Screen page whose icon layout only fits landscape (for example one tuned with Atria, which keeps one layout for both orientations) keeps its landscape positions, so no icon ends up off the screen. Pages that fit in portrait are left as they are, and so is editing the Home Screen.
 - Over a full-screen app or game that hides the menu bar, push the pointer to the top edge or swipe down from the very top to show it, with the app's red, yellow and green buttons. The red one leaves the app, and the bar hides again by itself.
+- With the official iCleaner Pro installed, Finder's sidebar has an iCleaner row: it runs iCleaner's clean, or a clean and respring, from a Mac-style panel and shows how much space was freed. It cleans what you chose in iCleaner's own settings.

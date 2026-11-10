@@ -17,7 +17,7 @@ check "the three functions, his names and signatures, default visibility (KeyPil
    && grep -q '^__attribute__((visibility(\"default\"), used)) int MSBDKeyPilotHomeV1(void) {' $A \
    && grep -q '^__attribute__((visibility(\"default\"), used)) int MSBDKeyPilotHomeEnvironmentV1(void) {' $A"
 check "  ... in MacStatusBarCore (StatusBar.x's own translation unit, at its end), and the build fails when one is not exported in either slice" \
-  "tail -6 $S | grep -q '#include \"WindowAPI.h\"' && grep -q 'for s in MSBDKeyPilotLayoutV1 MSBDKeyPilotHomeV1 MSBDKeyPilotHomeEnvironmentV1; do for a in arm64 arm64e; do' $M \
+  "tail -12 $S | grep -q '#include \"WindowAPI.h\"' && grep -q 'for s in MSBDKeyPilotLayoutV1 MSBDKeyPilotHomeV1 MSBDKeyPilotHomeEnvironmentV1; do for a in arm64 arm64e; do' $M \
    && grep -q 'nm -gU -arch \$\$a \"\$\$P/MacStatusBarCore.dylib\" | grep -q \" T _\$\$s\$\$\" ||' $M"
 check "the layout: the rule's codes in its order, nothing of SpringBoard's read off the main thread, the Window menu's own way when dispatched" \
   "fn '__attribute__((visibility(\"default\"), used)) int MSBDKeyPilotLayoutV1(const char *layout) {' $A && grep -q 'MSBDWinAPIFacts f = { .mainThread = \[NSThread isMainThread\] };' \$W/fn \

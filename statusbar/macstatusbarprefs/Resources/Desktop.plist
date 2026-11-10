@@ -8,6 +8,24 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
+			<string>A picture behind the first page of the Home Screen, where the desktop is. The other pages keep your iPadOS wallpaper.</string>
+			<key>id</key>
+			<string>DESKTOP_PICTURE_GROUP</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSLinkCell</string>
+			<key>detail</key>
+			<string>MSBWallpaperController</string>
+			<key>id</key>
+			<string>DESKTOP_PICTURE</string>
+			<key>label</key>
+			<string>Desktop Picture</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
 			<string>Desktop icons show the files and folders in On My iPad &gt; Desktop on the first page of the Home Screen. They are separate from your app icons, which stay as they are.</string>
 			<key>id</key>
 			<string>DESKTOP_GROUP</string>

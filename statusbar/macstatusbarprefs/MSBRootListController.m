@@ -11,6 +11,7 @@
 #import <Preferences/PSTableCell.h>
 #import "MSBRootListController.h"
 #import "../../common/LineSwitch.h"
+#import "MSBAcknowledgementsController.h"   // (Acknowledgements, 1.8.5: KeyPilot)
 #import "../../common/AppleMultitasking.h"   // (Apple's multitasking settings on the Windows & Multitasking page, 1.6.0: AppleMultitaskingTable.h)
 #import "../../common/EngineBuilds.h"
 #import "../../common/StageManagerAvailable.h"
@@ -1285,6 +1286,13 @@ static void MSBFitValueLabels(UIView *v) {
 			PSSpecifier *note = [PSSpecifier groupSpecifierWithID:@"MSBD_OTHER_CRASH"];
 			[note setProperty:other forKey:@"footerText"];
 			_specifiers = [[_specifiers arrayByAddingObject:note] mutableCopy];
+		}
+		// Acknowledgements (1.8.5): at the very end of the Status Bar page, whatever is hidden above (the stock bar, the line off).
+		if ([self msb_rootPage]) {
+			PSSpecifier *ag = [PSSpecifier groupSpecifierWithID:@"ACK_GROUP"];
+			PSSpecifier *ack = [PSSpecifier preferenceSpecifierNamed:@"Acknowledgements" target:self set:NULL get:NULL detail:[MSBAcknowledgementsController class] cell:PSLinkCell edit:Nil];
+			ack.identifier = @"ACKNOWLEDGEMENTS";
+			_specifiers = [[_specifiers arrayByAddingObjectsFromArray:@[ag, ack]] mutableCopy];
 		}
 		[self msb_updateSearchTweaksRow:NO];
 		[self msb_updateGoToDesktopRow:NO];

@@ -448,6 +448,7 @@ static NSArray<NSDictionary *> *DMFinderSidebar(void) {
     [locs addObject:@{@"t": @"Trash", @"p": kFinderTrash, @"i": @"trash"}];
     return @[@{@"h": @"Favorites", @"rows": favs}, @{@"h": @"Locations", @"rows": locs}];
 }
+#include "ICleanerPanel.h"   // (iCleaner in Finder, 1.8.5: the sidebar row a window shows, DMFinderSidebarForWindow, and its panel)
 
 // ---- where Finder may change things -----------------------------------------------------------------------------------------------------------
 // SpringBoard runs unsandboxed: without a rule, a drag that drifted onto a folder could move /var/mobile/Library (Safe Mode, a respring loop).
@@ -2690,7 +2691,7 @@ static void DMFinderDrivesCheck(NSString *why);
     self.titleBarHeight = 52.0; self.fullSizeContent = YES; self.showsTitle = NO;   // (a Mac Finder: one unified toolbar, the sidebar up to the top)
     _history = [NSMutableArray array]; _hpos = -1;
     DMFinderWatchDrives();
-    _places = DMFinderSidebar();
+    _places = DMFinderSidebarForWindow();
     UIView *c = self.contentView;
     c.backgroundColor = [UIColor clearColor];
     // sidebar (translucent, like a Mac's), under the title bar's traffic lights
@@ -3007,7 +3008,7 @@ static void DMFinderDrivesCheck(NSString *why);
 // The connected drives changed (DMFinderWatchDrives): the sidebar shows them; a window showing a drive that is gone goes to a safe place; the Trash
 // is read again (its drive items come and go with their drives).
 - (void)dm_drivesChanged {
-    _places = DMFinderSidebar();
+    _places = DMFinderSidebarForWindow();
     [_sidebar reloadData];
     NSString *p = self.path;
     if (DMFinderOnGoneDrive(p)) { [self dm_driveGone]; return; }
@@ -3142,7 +3143,13 @@ static void DMFinderDrivesCheck(NSString *why);
     return cell;
 }
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
-    if (tv == _sidebar) { [tv deselectRowAtIndexPath:ip animated:YES]; [self go:_places[ip.section][@"rows"][ip.row][@"p"]]; return; }
+    if (tv == _sidebar) {
+        [tv deselectRowAtIndexPath:ip animated:YES];
+        NSDictionary *r = _places[ip.section][@"rows"][ip.row];
+        if ([r[@"tool"] isEqualToString:@"iclean"]) { DMICleanOpenPanel(); return; }   // (iCleaner's row: its panel, no place to go)
+        if (r[@"p"]) [self go:r[@"p"]];
+        return;
+    }
 }
 // (the list's and the icons' own selection by touch stays out: -dm_click: decides, -dm_showSelection shows it)
 - (NSIndexPath *)tableView:(UITableView *)tv willSelectRowAtIndexPath:(NSIndexPath *)ip { return tv == _sidebar ? ip : nil; }
@@ -4415,7 +4422,7 @@ static NSString *DMFinderResolveTyped(NSString *p) {
             UITableViewCell *c = [_sidebar cellForRowAtIndexPath:[NSIndexPath indexPathForRow:r inSection:sec]];
             if (!c) continue;
             CGPoint p = [c convertPoint:sp fromCoordinateSpace:c.window.screen.coordinateSpace];
-            if ([c pointInside:p withEvent:nil]) return rows[r][@"p"];
+            if ([c pointInside:p withEvent:nil]) return rows[r][@"p"] ?: self.path;   // (a tool row, iCleaner's: no place, the window's folder as anywhere else)
         }
     }
     return self.path;

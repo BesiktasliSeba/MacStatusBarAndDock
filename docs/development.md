@@ -4,7 +4,7 @@ How MacStatusBar&Dock is put together, and how to build and test it. Before you 
 
 ## How it's built
 
-iOS injects only two small loaders, the two entries Choicy and iCleaner Pro show: `MacStatusBar.dylib` and `MacDock.dylib`. Each loader looks at the process it was loaded into and loads only the parts meant for that process, from the tweak's own folder (`/var/jb/usr/lib/MacStatusBarAndDock/`).
+iOS injects only two small loaders, the two entries Choicy and iCleaner Pro show: `MacStatusBar.dylib` and the Dock's loader beside it. Each loader looks at the process it was loaded into and loads only the parts meant for that process, from the tweak's own folder (`/var/jb/usr/lib/MacStatusBarAndDock/`).
 
 - On an iPhone nothing is loaded.
 - On an iPadOS version that hasn't been tested, only the Settings pages are loaded, unless you choose Enable Anyway.
