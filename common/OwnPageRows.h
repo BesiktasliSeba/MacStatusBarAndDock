@@ -43,6 +43,11 @@ typedef struct {
 #define kMSBDWindowsGroupID @"WINDOWS_GROUP"      // the switches that work through a third-party engine's windows
 #define kMSBDResizeGroupID  @"RESIZE_GROUP"       // Resize Apps to Fit Windows (MilkyWay4 only)
 #define kMSBDNewWindowsFillGroupID @"NEW_WINDOWS_FILL_GROUP" // New Windows Open at Fill: the windows an engine opens (none without one, audit 1.8.3 M4)
+#define kMSBDStripSwipeGroupID @"STRIP_SWIPE_GROUP"  // Recent Apps with Left-Edge Swipe (1.8.4.2): Stage Manager as the engine only
+// ... and only on the iPadOS versions where a device has run it through (iPad 2, 16.7.7). On 18.5 closing a window while the swipe had the strip out
+// ended in SpringBoard's own assertion (-[SBContinuousExposeAutoLayoutSpace autoLayoutItemForDisplayItem:], from its window-delete layout; A12Z,
+// 10 Nov, z04); 17 has not been tried. Elsewhere the switch is neither shown nor read (StatusBar.x DMLoadPrefs).
+static inline BOOL MSBDStripSwipeOS(long major) { return major == 16; }
 #define kMSBDKeepCoveredGroupID @"KEEP_COVERED_GROUP"  // Keep Covered Windows in Front (1.8.4.1 item 7): the engines' windows, every engine's (none without one)
 #define kMSBDResizeHandlesKey @"resizeHandleStyle" // Resize Handles: ours or Stage Manager's (a choice with Stage Manager only)
 #define kMSBDWindowSizeRowKey @"windowSize"      // Window Size (1.8.0 item 4, common/WindowSize.h kMSBDWindowSizeKey): every engine's, Stage Manager's too
@@ -102,6 +107,7 @@ static inline BOOL MSBDOwnRowHidden(MSBDOwnPages s, NSString *pane, NSString *gr
     if (s.focus18Failed && ([key isEqualToString:kMSBDMacSwitcherKey] || [group isEqualToString:kMSBDMacSwitcherGroupID] || [group isEqualToString:kMSBDWiFiGroupID])) return YES;
     if ([group isEqualToString:kMSBDWindowsGroupID] && ((!s.engineWorks && !MSBDNoEngineKeepsRow(key)) || (s.stageManagerEngine && !MSBDStageManagerKeepsRow(key)))) return YES;
     if ([group isEqualToString:kMSBDNewWindowsFillGroupID] && !s.engineWorks) return YES;   // (every window it sizes is an engine's: StatusBar.x DMOpeningWindowFrame)
+    if ([group isEqualToString:kMSBDStripSwipeGroupID] && (!s.engineWorks || !s.stageManagerEngine || !MSBDStripSwipeOS([NSProcessInfo processInfo].operatingSystemVersion.majorVersion))) return YES;   // (Stage Manager's own strip: statusbar/StatusBar.x DMSMStripRevealBegin)
     if ([group isEqualToString:kMSBDKeepCoveredGroupID] && (!s.engineWorks || s.stageManagerEngine)) return YES;   // (every window it keeps in front is an engine's: statusbar/KeepCovered.h; not Stage Manager for now, kDMKeepCoveredOnStageManager says why)
     if ([key isEqualToString:kMSBDResizeHandlesKey] && !s.stageManagerEngine) return YES;
     if ([group isEqualToString:kMSBDResizeGroupID] && !s.milkyWayEngine) return YES;

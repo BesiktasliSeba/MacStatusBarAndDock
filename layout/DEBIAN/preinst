@@ -16,7 +16,7 @@ if [ "$1" = "install" ] || [ "$1" = "upgrade" ]; then
         return 1
     }
     if ! present com.opa334.choicy com.exile90.icleanerpro; then
-        echo "MacStatusBar&Dock needs Choicy (or iCleaner Pro). Install Choicy from a package manager (Sileo, Zebra), then install this again."
+        echo "MacStatusBar&Dock needs Choicy, or iCleaner Pro from its developer's repository. Install Choicy from a package manager (Sileo, Zebra), then install this again."
         echo "Nothing was changed."
         exit 1
     fi

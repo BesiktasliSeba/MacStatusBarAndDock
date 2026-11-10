@@ -69,6 +69,7 @@ The Mac look is on right after install, and most features have their own switch.
 - Menu Bar Size in Settings > Status Bar: Medium and Large make the menu bar taller, with larger text, icons and menus that are easier to tap with a finger.
 - Live Activities in Menu Bar in Settings > Status Bar shows what's playing and your calls as small pills next to the status icons, as on a Mac. A tap on one opens a card to control it. On iPadOS 15.6.1, 16.7.7, 17.5.1 and 18.5, Clock timers show there too.
 - Battery Percentage in Icon in Settings > Status Bar shows the battery level as a number inside the battery icon.
+- Over a full-screen app or game that hides the menu bar, push the pointer to the top edge or swipe down from the very top to show it, with the app's red, yellow and green buttons. The red one leaves the app, and the bar hides again by itself.
 
 ### Control Center
 
@@ -90,6 +91,7 @@ The Mac look is on right after install, and most features have their own switch.
 - New Windows Open at Fill in Settings > Windows & Multitasking makes new windows fill the desktop, and Fit to Window leaves them out. A window that opens where it last was keeps its place.
 - Double-Tap a Title Bar to in Settings > Windows & Multitasking picks what a double tap on a window's title bar does, as on a Mac: Fill, Zoom, Minimize or Do Nothing. After Fill or Zoom, a second double tap gives the window its size from before.
 - Keep Covered Windows in Front in Settings > Windows & Multitasking: when a window comes forward, a smaller window it would cover completely stays in front of it. It works with Aerial, Zetsu and MilkyWay4, and its row isn't shown with Stage Manager.
+- Recent Apps with Left-Edge Swipe in Settings > Windows & Multitasking: with Stage Manager on iPadOS 16, a swipe from the left edge brings back the strip of recent apps; tap one to open it. With the Dock on the left, the left edge stays the Dock's.
 - Window Tiling Shortcuts in Settings > Keyboard turns on macOS 15's Globe-Control keys for the front window: an arrow key for half the screen, F to fill it, C to center it and R to put it back, and Shift or Option-Shift with an arrow to arrange two or three windows. On a keyboard without a Globe key, set another key to Globe in Modifier Keys.
 - [KeyPilot](https://github.com/wanghuangjie/KeyPilot) by wanghuangjie is the companion tweak for shortcuts of your own, app launching and URL actions, and its window layouts use MacStatusBar&Dock's windows. Settings > Keyboard has a row to get or open it.
 - With Aerial, Zetsu or MilkyWay4 on iPadOS 15 to 18, every app with a window has its card in iPadOS's App Switcher, as with Stage Manager. A tap on the card brings the window forward.

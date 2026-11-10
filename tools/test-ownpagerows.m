@@ -71,7 +71,7 @@ int main(int argc, char **argv) {
         Shows(base, @"as installed", D, @[@"Show Desktop Icons", @"Hide Desktop Icon Names", @"Icon Size", @"App Icon Corner Radius", @"Match Home Screen Icons"], @[]);
         Shows(base, @"as installed", K, @[@"Mac-Style Dock", @"Magnify Icons", @"Show Finder in Dock", @"Show Trash in Dock"], @[]);
         Expect(Listed(base, @"Battery", @"Sleep Guard") && Listed(base, @"SSH", @"SSH"), @"as installed: Sleep Guard and our main-list rows listed");
-        Expect(MSBDOwnRowsShown(gAll, base).count == gAll.count - 3, [NSString stringWithFormat:@"as installed: only the three rows the pages leave out go (%lu of %lu listed)",
+        Expect(MSBDOwnRowsShown(gAll, base).count == gAll.count - 4, [NSString stringWithFormat:@"as installed: only the four rows the pages leave out go (Stage Manager's left-edge swipe among them; %lu of %lu listed)",
                                                                     (unsigned long)MSBDOwnRowsShown(gAll, base).count, (unsigned long)gAll.count]);
 
         MSBDOwnPages s = base; s.ccStyle = kMSBDCCStyleBigSurCenter;   // (1.8.0: the rows go with the Control Center Style)

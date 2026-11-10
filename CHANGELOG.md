@@ -2,6 +2,20 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.4.3
+
+### New
+- When a full-screen app or game hides the menu bar, push the pointer to the top edge or swipe down from the very top to show it, with the app's red, yellow and green buttons. The red one leaves the app, and the bar hides again by itself.
+- Recent Apps with Left-Edge Swipe, a switch in Settings > Windows & Multitasking, off until you turn it on, with Stage Manager on iPadOS 16: a swipe from the left edge brings back the strip of recent apps; tap one to open it. With the Dock on the left, the left edge stays the Dock's.
+
+### Improvements
+- On iPadOS 16 to 18, Respring in the Apple menu now restarts SpringBoard once instead of twice, so the iPad is ready sooner.
+
+### Fixes
+- On the desktop, the arrow keys now keep working after Quick Look closes, and a click into a window gives that window the keys, even where a desktop icon is behind it.
+- In Finder, moving between Quick Look previews now includes files added to the folder while Quick Look is open, and skips files removed from it.
+- If neither Choicy nor the official iCleaner Pro is installed, the install now says which iCleaner Pro to get.
+
 ## 1.8.4.2
 
 ### New

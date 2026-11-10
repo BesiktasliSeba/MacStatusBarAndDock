@@ -128,15 +128,18 @@ static void DMRefitTopDone(int part);
 // Menu Bar Size (1.7.3): the size in force -- the stored one when iOS's bar could be made that size at the start (DMBarSizeInit, near DMTopLimit),
 // else Small. Read once per SpringBoard: a change applies after a respring.
 static int gDMBarSize = MSBDMenuBarSmall;
-// The size of a status bar copy: the size in force on the iPad's own screen, Small on a TV's bar (it keeps the normal bar). Our items on it (gaps,
-// touch areas, the traffic lights, our icons) are today's x its scale -- exactly 1 at Small: every item as before.
+// The size of a status bar copy: the size in force, on the iPad's own screen and on a TV's bar alike (1.8.4.3 item 10a, KT: at Large the TV's bar grew
+// only its Apple logo, everything else stayed Small, so it was misaligned). Our items on it (gaps, touch areas, the traffic lights, our icons) are
+// today's x its scale -- exactly 1 at Small: every item as before.
 static int DMBarCopySize(UIView *fg) {
-    if (gDMBarSize == MSBDMenuBarSmall) return MSBDMenuBarSmall;
-    UIScreen *s = fg.window.screen;
-    return s && s != [UIScreen mainScreen] ? MSBDMenuBarSmall : gDMBarSize;
+    (void)fg;
+    return gDMBarSize;
 }
 static CGFloat DMBarItemScale(UIView *fg) { return MSBDMenuBarSizeScale(DMBarCopySize(fg)); }
 static CGFloat DMMenuRowH(void) { return MSBDMenuRowHeight(gDMBarSize); }   // (a menu row: 30 pt at Small, 33 Medium, 36 Large)
+// A TV's menu bar height: iOS's 24 pt at Small, the size's at Medium and Large (the TV's bar follows Menu Bar Size since 1.8.4.3 item 10a), so the TV's
+// windows, layouts and Center start under it (review 1.8.4.3 M2).
+static CGFloat DMTVBarHeight(void) { return MSBDMenuBarSizeHeight(gDMBarSize, 24.0); }
 static CGFloat DMMenuTextPt(void) { return MSBDMenuTextSize(gDMBarSize); }  // (a menu row's title: 14 pt at Small, 15 Medium, 16 Large)
 static CGFloat DMAutoHideShiftOf(UIView *stage);
 static CGFloat DMAutoHideTitleShiftOf(UIView *stage);   // (step 2: how far only its title bar has slid down: 0 normally)
@@ -929,9 +932,12 @@ static BOOL DMGARefuses(NSString *what) {
     return YES;
 }
 static void DMSaveWindowState(void);
-// sbreload where SpringBoard may start it (15-17); where it may not (18: EPERM for anything under /var/jb, as the eject), SpringBoard sends itself the
-// one request sbreload would have sent (common/Relaunch.h). Until 1.7.4 the fallback was -_relaunchSpringBoardNow, which is gone since iPadOS 17: on
-// 18 every Respring of ours did nothing, and Safe Mode's marker stayed for whatever respring came next (1.7.4 item 6).
+// SpringBoard sends itself the one request sbreload sends (common/Relaunch.h: reason "respring", options 5), on every iPadOS; sbreload itself only where
+// this iPadOS has no such request. Until 1.8.4.3 sbreload came first where SpringBoard may start it (15-17), and that restarted SpringBoard twice on
+// 16 and 17: sbreload stops SpringBoard and backboardd through launchd when they haven't restarted 2 s after its request, and on the A12Z (18.5, run
+// by hand) the new SpringBoard and backboardd came up and were stopped again 2 s later, the second pair 5 s on (pid poll, 10 Nov: 7 s and a second
+// fade to black lost on every respring); the request alone gave one start. (18 refuses SpringBoard's spawn of sbreload anyway: EPERM.) Until 1.7.4
+// the fallback was -_relaunchSpringBoardNow, gone since iPadOS 17 (1.7.4 item 6).
 // SpringBoard's start-up power assertion (iPadOS 16-18, StartupAssertion.h) given back: a minute after the start, and before any respring of ours.
 static void DMGiveBackStartupAssertionNow(NSString *when) {
     NSString *what = nil;
@@ -943,18 +949,19 @@ static void DMRespring(void) {
     DMLog(@"[action] respring");
     DMSaveWindowState();   // the windows come back after the respring
     DMGiveBackStartupAssertionNow(@"before our respring");   // (this SpringBoard's start-up assertion would outlive it: battery drain F1b)
+    if (!DMTestFlag("/tmp/msb-sbreload")) {   // (debug: /tmp/msb-sbreload takes the old sbreload path, for comparing)
+        DM_FEATURE_MARK("respring-relaunch-action");
+        if (MSBDRelaunchLikeSbreload()) { DMLog(@"[action] respring: SpringBoard's relaunch asked for directly (as sbreload asks)"); return; }
+    }
     const char *sbreload = "/var/jb/usr/bin/sbreload";
     int err = access(sbreload, X_OK) == 0 ? 0 : errno;
-    if (!err && !DMTestFlag("/tmp/msb-nosbreload")) {   // (debug: /tmp/msb-nosbreload takes the request path on any version)
+    if (!err) {
         pid_t pid;
         char *argv[] = { (char *)"sbreload", NULL };
         err = posix_spawn(&pid, sbreload, NULL, NULL, argv, environ);
         if (!err) { DMLog([NSString stringWithFormat:@"[action] respring: sbreload started (pid %d)", pid]); return; }
     }
-    DM_FEATURE_MARK("respring-relaunch-action");
-    BOOL sent = MSBDRelaunchLikeSbreload();
-    DMLog([NSString stringWithFormat:@"[action] respring: sbreload not started (%s): %@", err ? strerror(err) : "debug switch",
-           sent ? @"SpringBoard's relaunch asked for directly (as sbreload asks)" : @"no relaunch action on this iPadOS -- nothing done"]);
+    DMLog([NSString stringWithFormat:@"[action] respring: no relaunch action on this iPadOS and sbreload not started (%s) -- nothing done", strerror(err)]);
 }
 
 // ElleKit (Dopamine's injector) checks for this marker file when SpringBoard is
@@ -2623,6 +2630,12 @@ static void DMWatchSofaScore(void);
 static void DMWatchZetsu(void);
 static void DMWatchBarOverHidingApp(void);   // (with the GameStatusBar hooks, near the end)
 static NSString *gBarOverHidingApp = nil;    // the app whose hidden status bar is shown over it right now (GameStatusBar)
+static void DMBarOverHidingApply(void);      // (the same, without the tick's look at a gesture-shown bar: BarReveal.h shows and ends it through this)
+static void DMBarRevealTick(NSString *front);   // (BarReveal.h, at the end: the menu bar over such an app on a deliberate gesture, 1.8.4.3 item 12)
+static BOOL DMBarRevealWants(NSString *front);
+static BOOL DMBarRevealPointerPull(void);
+static void DMBarNoteOrigHidden(id provider, BOOL hidden);
+static void DMBarRevealInit(void);
 static void DMSyncWindowsForLibraryBody(void);
 static void DMSyncWindowFade(void);
 // ---- performance measurement (watcher plan step 0; measurement only) ----
@@ -7939,9 +7952,9 @@ static CGRect DMLayoutFrameWindow(NSString *name) { return DMWindowSlotInArea(na
 // exactly that much -- the right and bottom tiles start g after the left and top ones and take the rest (a fractional usable height made the
 // bottom gap up to 1.5 pt wider when both halves were cut alike).
 static const CGFloat kLayoutTileGap = 6.0;
-static CGFloat DMCenterTopFor(CGSize screen) {   // the middle place's top on that screen: 12 pt under the menu bar (36 on a 24 pt bar); a TV keeps 36
+static CGFloat DMCenterTopFor(CGSize screen) {   // the middle place's top on that screen: 12 pt under the menu bar (36 on a 24 pt bar), the TV's too
     CGSize main = [UIScreen mainScreen].bounds.size;
-    return CGSizeEqualToSize(screen, main) || CGSizeEqualToSize(screen, CGSizeMake(main.height, main.width)) ? MSBDMenuBarCenterTop(DMMenuBarHeight()) : 36.0;
+    return CGSizeEqualToSize(screen, main) || CGSizeEqualToSize(screen, CGSizeMake(main.height, main.width)) ? MSBDMenuBarCenterTop(DMMenuBarHeight()) : MSBDMenuBarCenterTop(DMTVBarHeight());
 }
 static CGRect DMLayoutFrameInArea(NSString *name, CGRect u, CGSize screen) {   // (u: the usable desktop of that screen -- the iPad's, or the TV's)
     CGFloat g = kLayoutTileGap;
@@ -8432,6 +8445,7 @@ UIColor *DMIconAccent(NSString *bundleID) {
 // grey one (X), keeps the neutral grip.
 static BOOL gTintGrips = YES;
 static BOOL gSMAppleHandles = NO;   // (Stage Manager engine: Settings > Resize Handles = Stage Manager)
+static BOOL gSMStripSwipe = NO;     // (Stage Manager engine: Settings > Recent Apps with Left-Edge Swipe, off unless switched on)
 static UIColor *DMResizeGripColorFor(NSString *bundleID, BOOL dark) {
     if (!gTintGrips || !bundleID.length) return DMResizeGripColor(dark);
     static NSMutableDictionary<NSString *, NSNumber *> *tokens;
@@ -22451,6 +22465,16 @@ static void DMLoadPrefs(void) {
         }
         gKeepCoveredInFront = keepCovered;
     }
+    {   // Recent Apps with Left-Edge Swipe (Stage Manager engine, 1.8.4.2): off unless switched on (DMSMStripRevealBegin)
+        CFPropertyListRef sw = CFPreferencesCopyValue(CFSTR("smStripSwipe"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        BOOL stripSwipe = sw && CFGetTypeID(sw) == CFBooleanGetTypeID() && CFBooleanGetValue(sw);
+        if (sw) CFRelease(sw);
+        // (only on the iPadOS versions where it has been run through: 16. On 18.5 a window closed with the strip out ended in SpringBoard's own
+        //  assertion; 17 untried -- common/OwnPageRows.h MSBDStripSwipeOS, which leaves the row out there too)
+        if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion != 16) stripSwipe = NO;
+        if (stripSwipe != gSMStripSwipe) DMLog([NSString stringWithFormat:@"[smengine] Recent Apps with Left-Edge Swipe %@", stripSwipe ? @"on" : @"off"]);
+        gSMStripSwipe = stripSwipe;
+    }
     {   // Resize Handles (Stage Manager engine): ours (default) or Stage Manager's own
         CFPropertyListRef hs = CFPreferencesCopyValue(CFSTR("resizeHandleStyle"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
         gSMAppleHandles = hs && CFGetTypeID(hs) == CFStringGetTypeID() && [(__bridge NSString *)hs isEqualToString:@"stagemanager"];
@@ -23535,7 +23559,7 @@ static BOOL DMBarCopyIsCCDuplicate(UIView *fg) {
     UIColor *barColor = DMBarItemColor(fg, timeLabel);   // (the one colour of every item of ours, put on them at the end of this layout)
     // Size the logo so its visible shape is as tall as the bar allows (minus a small margin), and
     // centre that shape vertically in the bar. (Menu Bar Size, 1.7.3: at Medium and Large 1.25 x the text instead -- MenuBarSize.h -- and every gap
-    // and touch area of ours below x the size's scale, k: 1 at Small and on a TV's bar)
+    // and touch area of ours below x the size's scale, k: 1 at Small, the iPad's and a TV's bar alike)
     int copySize = DMBarCopySize(fg);
     CGFloat k = MSBDMenuBarSizeScale(copySize);
     CGRect ink100;
@@ -35980,6 +36004,7 @@ static void DMScreenPowerResume(void) {   // (the screen came on: see DMScreenPo
 %hook SBCoverSheetSystemGesturesDelegate
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gr {
     UIGestureRecognizer *indirect = [self respondsToSelector:@selector(indirectPresentGestureRecognizer)] ? [self indirectPresentGestureRecognizer] : nil;   // (a private selector: guarded)
+    if (!gStockBar && gr != nil && indirect && gr == indirect && DMBarRevealPointerPull()) return NO;   // a full-screen app that hides the bar: the push shows it over the app (BarReveal.h)
     if (!gStockBar && gr != nil && indirect && gr == indirect && DMAutoHideHandlePointerPull()) return NO;   // auto-hiding status bar: the push shows our bar instead (like macOS)
     if (gBlockPointerPull && gr != nil && indirect && gr == indirect) return NO;
     BOOL r = %orig;
@@ -36801,15 +36826,12 @@ static CGFloat DMMenuBarStockHeight(void) { return gDMMenuBarStockH; }
 //    height SpringBoard writes into every app's scene (-[SBDeviceApplicationSceneHandle _defaultStatusBarHeights]) -- where an app takes its status
 //    bar's height and its top safe area from, so a full-screen app's content starts under the taller bar with no code in the app;
 //  - +baselineOffset (where the text sits), -normalFont / -clockFont (12 pt Medium), -styleAttributesForStyle: (the icons' scale).
-// At Medium and Large these are the size's (MenuBarSize.h); a TV's provider is left as it is (it keeps the normal bar, as a Mac's second display has
-// no notch bar). Nothing is hooked at Small. A family is hooked only when every method is there, its own, with the types read (15.6.1's UIKit, 17's
+// At Medium and Large these are the size's (MenuBarSize.h), a TV's provider (_ExternalPad) included since 1.8.4.3 (item 10a: the TV's bar follows
+// Menu Bar Size, its text, icons and height with our items, so it lines up). Nothing is hooked at Small. A family is hooked only when every method is there, its own, with the types read (15.6.1's UIKit, 17's
 // headers); the size is in force only when the family of SpringBoard's own bars went on (DMSBUseSTUI), else everything stays Small, ours included.
 static __thread int gDMBarFontDepth = 0;   // (a font asked for inside another font hook -- -clockFont made from -normalFont -- is left to the outer one)
-static BOOL DMBarSizeClass(Class c) {   // a provider whose bar takes the size: any but a TV's
-    if (gDMBarSize == MSBDMenuBarSmall || !c) return NO;
-    static Class extUIKit, extSTUI; static BOOL looked = NO;
-    if (!looked) { looked = YES; extUIKit = objc_getClass("_UIStatusBarVisualProvider_ExternalPad"); extSTUI = objc_getClass("STUIStatusBarVisualProvider_ExternalPad"); }
-    return !((extUIKit && [c isSubclassOfClass:extUIKit]) || (extSTUI && [c isSubclassOfClass:extSTUI]));
+static BOOL DMBarSizeClass(Class c) {   // a provider whose bar takes the size: every one of the hooked families, a TV's included (1.8.4.3 item 10a)
+    return gDMBarSize != MSBDMenuBarSmall && c;
 }
 static BOOL DMBarSizeFontWanted(id provider) { return !gDMBarFontDepth && DMBarSizeClass(object_getClass(provider)); }
 // A provider's +height: the size's, except for a TV's and while SpringBoard works out the settings of a scene that is not under the bar (a window:
@@ -37080,7 +37102,7 @@ static void DMBarSizeBatteryInit(BOOL stui) {
 // {880.5, 680}}, is 680 x 880.5 there, on a display 1366 x 1024 in that space: 143.5 pt short of its height). Not the frame's origin: an Aerial window's
 // scene on 15 has it on the screen, not in the display's portrait space (M1: App Store's {{406, 249.8}, {512, 788}} was read as on the top edge).
 @class SBDeviceApplicationSceneHandle, CSTeachableMomentsContainerView;
-// (1: a window, not under the bar; 0: under the bar; -1: not known -- no frame or display yet, a TV's scene, not as read)
+// (1: a window, not under the bar; 0: under the bar; -1: not known -- no frame or display yet, not as read)
 static int DMBarSizeSceneWindowState(id settings) {
     if (gDMBarSize == MSBDMenuBarSmall || !settings) return -1;
     SEL bs = @selector(bounds), os = @selector(interfaceOrientation), ds = NSSelectorFromString(@"displayConfiguration");
@@ -37091,7 +37113,7 @@ static int DMBarSizeSceneWindowState(id settings) {
     SEL ms = NSSelectorFromString(@"isMainDisplay");
     Method mm = disp ? class_getInstanceMethod(object_getClass(disp), ms) : NULL, bm = disp ? class_getInstanceMethod(object_getClass(disp), bs) : NULL;
     if (!mm || !bm || strcmp(method_getTypeEncoding(mm) ?: "", "B16@0:8") || strncmp(method_getTypeEncoding(bm) ?: "", "{CGRect=", 8)) return -1;
-    if (!((BOOL (*)(id, SEL))objc_msgSend)(disp, ms)) return -1;   // (a TV's scene: its bar is the normal one anyway)
+    (void)mm;   // (a TV's scene is told the same way since its bar takes the size too, 1.8.4.3 item 10a: a window there keeps iOS's own height)
     CGRect own = ((CGRect (*)(id, SEL))objc_msgSend)(settings, bs), b = ((CGRect (*)(id, SEL))objc_msgSend)(disp, bs);
     if (CGRectIsEmpty(own) || CGRectIsEmpty(b)) return -1;   // (no frame yet: as under the bar; the next request decides again)
     long o = ((long (*)(id, SEL))objc_msgSend)(settings, os);
@@ -38613,6 +38635,7 @@ static BOOL DMBarProviderIsFor(id p, NSString *bundle) {
     return [sid containsString:[NSString stringWithFormat:@":%@-", bundle]] || [sid hasSuffix:bundle];   // ("sceneID:<bundle>-default")
 }
 static BOOL DMBarHiddenAnswer(id provider, BOOL hidden) {
+    if (hidden || [gHiddenBarProviders containsObject:provider]) DMBarNoteOrigHidden(provider, hidden);   // (the app's own answer, for BarReveal.h)
     if (!hidden) return NO;
     if (!gHiddenBarProviders) gHiddenBarProviders = [NSHashTable weakObjectsHashTable];
     [gHiddenBarProviders addObject:provider];
@@ -38647,10 +38670,22 @@ static void DMBarHiddenChanged(NSString *bundle) {   // tells SpringBoard's obse
     }
     DMLog([NSString stringWithFormat:@"[gamebar] %@: status bar %@ (%lu observers told)", bundle, [gBarOverHidingApp isEqualToString:bundle] ? @"shown over the app (a window is in front of it)" : @"back to the app's own choice", (unsigned long)told]);
 }
+// The app whose bar this is about: SpringBoard's front app, or, with the Stage Manager engine, the stage's full-screen window's app when that window is
+// the front one. SpringBoard names the stage's other app there (iPad 2, 16.7.7, 10 Nov: Flappy Bird full screen with its green light in a stage
+// shared with Clock, front app com.apple.mobiletimer), so the bar over it never came.
+static NSString *DMBarFrontBundle(void) {
+    if (DMSMEngine() && DMSMFrontIsFullScreen()) { NSString *b = DMSMFullScreenBundle(); if (b.length) return b; }
+    return [DMFrontApp() bundleIdentifier];
+}
 static void DMWatchBarOverHidingApp(void) {   // every tick
+    DMBarRevealTick(DMBarFrontBundle());   // (a bar shown by a gesture over such an app: whether it goes, and the pointer watched)
+    DMBarOverHidingApply();
+}
+static void DMBarOverHidingApply(void) {
     NSString *want = nil;
-    NSString *fb = [DMFrontApp() bundleIdentifier];
-    if (fb.length && gHiddenBarProviders.count && !DMTestFlag("/tmp/msb-nogamebar") && DMActiveEngine() != DMEngineNone
+    NSString *fb = DMBarFrontBundle();
+    if (DMBarRevealWants(fb)) want = fb;   // (shown by the pointer at the top edge or a swipe down from it: BarReveal.h)
+    else if (fb.length && gHiddenBarProviders.count && !DMTestFlag("/tmp/msb-nogamebar") && DMActiveEngine() != DMEngineNone
         && ![gFullScreenActivatedBundle isEqualToString:fb]   // (the app was tapped: it has the focus)
         && DMFullScreenAppInFront() && DMVisibleWindowCount() > 0
         && DMDesiredWindowLevel() > kMilkyWayBackLevel + 0.01   // (the windows are in front of it, not behind)
@@ -41846,9 +41881,9 @@ static NSDictionary<NSString *, NSValue *> *DMSMOpenWindowFrames(void) {   // (t
 // Dock height for that screen size, from the stage-area pass), so TV windows no longer reach under the TV's Dock.
 static CGRect DMSMUsableAreaForIdentity(id identity, CGSize *screenOut);
 static CGRect DMSMUsableAreaForStage(id stage, CGSize *screenOut) { return DMSMUsableAreaForIdentity(DMSMStageDisplayIdentity(stage), screenOut); }
-static CGFloat DMSMTopBarOf(CGSize size) {   // the menu bar's height on the screen of that size: the iPad's (DMMenuBarHeight), a TV's 24 (as below)
+static CGFloat DMSMTopBarOf(CGSize size) {   // the menu bar's height on the screen of that size: the iPad's (DMMenuBarHeight), a TV's (DMTVBarHeight)
     CGSize main = [UIScreen mainScreen].bounds.size;
-    return CGSizeEqualToSize(size, main) || CGSizeEqualToSize(size, CGSizeMake(main.height, main.width)) ? DMMenuBarHeight() : 24.0;
+    return CGSizeEqualToSize(size, main) || CGSizeEqualToSize(size, CGSizeMake(main.height, main.width)) ? DMMenuBarHeight() : DMTVBarHeight();
 }
 static CGRect DMSMUsableAreaForIdentity(id identity, CGSize *screenOut) {   // (the same for the display a plan is asked on)
     if (!DMSMIsMainIdentity(identity)) {
@@ -41856,7 +41891,7 @@ static CGRect DMSMUsableAreaForIdentity(id identity, CGSize *screenOut) {   // (
             if (![DMSMIdentityOfScreen(sc) isEqual:identity]) continue;
             CGSize size = sc.bounds.size;
             NSNumber *dock = gSMDockHeightBySize[NSStringFromCGSize(size)];
-            CGFloat dh = dock ? dock.doubleValue : round(size.height * 0.2), top = 24.0;
+            CGFloat dh = dock ? dock.doubleValue : round(size.height * 0.2), top = DMTVBarHeight();
             if (screenOut) *screenOut = size;
             return CGRectMake(0, top, size.width, MAX(100.0, size.height - dh - 2.0 - top));
         }
@@ -43027,9 +43062,15 @@ static BOOL DMSMFree(void) { return DMSMEngine() && !DMTestFlag("/tmp/msb-sm-app
 // aside for it). The gesture's own gate answers NO while our engine runs. Optional (not in the start-up check): a gate of another name or signature
 // on another iPadOS leaves the strip's gesture as Apple has it, and says so.
 static BOOL (*o_SMStripRevealBegin)(id, SEL, id);
+static BOOL gSMStripRevealing = NO, gSMStripBaseKnown = NO, gSMStripRose = NO;   // (a swipe's reveal of the strip is under way, DMSMStripIsRevealed)
+static double gSMStripRevealAt = 0, gSMStripBaseX = 0;
 static BOOL DMSMStripRevealBegin(id self, SEL _cmd, id g) {
-    if (DMSMFree()) { DM_FEATURE_MARK("sm-no-strip-reveal"); return NO; }
-    return o_SMStripRevealBegin(self, _cmd, g);
+    // (Settings > Recent Apps with Left-Edge Swipe, 1.8.4.2, off unless switched on: Apple's gate decides -- not over the Mac Switcher's view)
+    // (the Dock at Left stands on that edge: the strip's cards came out under it, iPad 2 s02, 10 Nov; the swipe stays the Dock's there)
+    if (DMSMFree() && (!gSMStripSwipe || gMSWOpen || gMSWSwitching || DMDockSideNow([UIScreen mainScreen].bounds.size) == MSBDDockLeft)) { DM_FEATURE_MARK("sm-no-strip-reveal"); return NO; }
+    BOOL begins = o_SMStripRevealBegin(self, _cmd, g);
+    if (begins && DMSMFree() && gSMStripSwipe) { gSMStripRevealing = YES; gSMStripBaseKnown = NO; gSMStripRose = NO; gSMStripRevealAt = CACurrentMediaTime(); DM_FEATURE_MARK("sm-strip-swipe-reveal"); }
+    return begins;
 }
 // With the strip's gesture held off, the same swipe in from the left edge went on to Stage Manager's window drag (the split-view "unpin" recognizer,
 // which is also how every window is moved by its title bar, so it stays): a window touching the left edge -- ours may, Fit's left tile does;
@@ -43178,9 +43219,26 @@ static void DMSMStripDebugLog(NSString *what, double o) {
 #define DMSMStripDebugApple() NO
 #define DMSMStripDebugLog(...) do {} while (0)
 #endif
+// Recent Apps with Left-Edge Swipe (1.8.4.2): while a swipe has the strip out, its stages are drawn as Apple has them (the two hooks here hide them only for a strip that stays hidden: the
+// strip came out empty, review 1.8.4.2 H1, iPad 2). Out or not is the strip's own place: a swipe's reveal starts at the place it has when the gate opens; it is over once the strip is back there.
+static BOOL DMSMStripIsRevealed(id mod) {
+    if (!gSMStripRevealing) return NO;
+    if (!gSMStripSwipe) { gSMStripRevealing = NO; return NO; }
+    static SEL originSel; if (!originSel) originSel = NSSelectorFromString(@"_appStripOriginX");
+    Method m = class_getInstanceMethod(object_getClass(mod), originSel);
+    if (!m || strcmp(method_getTypeEncoding(m) ?: "", "d16@0:8") != 0) {   // (no such place here: the swipe's first 30 s)
+        if (CACurrentMediaTime() - gSMStripRevealAt > 30.0) gSMStripRevealing = NO;
+        return gSMStripRevealing;
+    }
+    double x = ((double (*)(id, SEL))objc_msgSend)(mod, originSel);
+    if (!gSMStripBaseKnown) { gSMStripBaseKnown = YES; gSMStripBaseX = x; }
+    if (x > gSMStripBaseX + 1.0) gSMStripRose = YES;
+    else if (gSMStripRose || CACurrentMediaTime() - gSMStripRevealAt > 3.0) { gSMStripRevealing = NO; DMLog(@"[smengine] the strip is hidden again"); }
+    return gSMStripRevealing;
+}
 static double DMSMStripOpacity(id self, SEL _cmd, long long role, id al, unsigned long long i) {
     double o = o_SMStripOpacity(self, _cmd, role, al, i);
-    if (o > 0.0 && DMSMFree() && !DMSMStripDebugApple() && DMSMStripOffStage(self, al)) {
+    if (o > 0.0 && DMSMFree() && !DMSMStripDebugApple() && !DMSMStripIsRevealed(self) && DMSMStripOffStage(self, al)) {
         DM_FEATURE_MARK("sm-strip-stages-not-drawn");
         DMSMStripDebugLog([NSString stringWithFormat:@"stage %p window card (role %lld)", al, role], o);
         return 0.0;
@@ -43189,7 +43247,7 @@ static double DMSMStripOpacity(id self, SEL _cmd, long long role, id al, unsigne
 }
 static double DMSMStripIconOpacity(id self, SEL _cmd, unsigned long long i) {
     double o = o_SMStripIconOpacity(self, _cmd, i);
-    if (o <= 0.0 || !DMSMFree() || DMSMStripDebugApple()) return o;
+    if (o <= 0.0 || !DMSMFree() || DMSMStripDebugApple() || DMSMStripIsRevealed(self)) return o;
     NSArray *als = ((id (*)(id, SEL))objc_msgSend)(self, gSMStripLayoutsSel);
     if (![als isKindOfClass:[NSArray class]] || i >= als.count || !DMSMStripOffStage(self, als[i])) return o;
     DMSMStripDebugLog([NSString stringWithFormat:@"stage %p icons and title", als[i]], o);
@@ -43348,6 +43406,9 @@ static BOOL DMSMDockOwnsKeyboard(void) {
     %orig(DMSMFree() ? (showing && gSMKeyboardShown) : showing);
 }
 - (BOOL)prefersStripHidden {
+    // (Recent Apps with Left-Edge Swipe keeps this YES too: a hidden strip is what Apple's own swipe reveals for a moment and hides again after a pick
+    //  or a tap elsewhere. Passing Stage Manager's own answer during a reveal left the strip out for good, iPad 2 s01, 10 Nov; its cards are drawn
+    //  during a reveal by DMSMStripIsRevealed)
     return DMSMFree() ? YES : %orig;
 }
 %end
@@ -44801,6 +44862,7 @@ void DMSMRunAction(UIAction *action, id sender) {
     }); }
     dispatch_async(dispatch_get_main_queue(), ^{ DMDesktopStartEarly(); });   // (the desktop as soon as page 1 of the Home Screen is on screen, Desktop.h)
     if (!DMCtorSkip("pointerpull")) DMPointerPullInit();
+    if (!DMCtorSkip("barreveal")) DMBarRevealInit();   // (the menu bar over a full-screen app that hides it, on a deliberate gesture: BarReveal.h)
     if (!DMCtorSkip("ccseen")) DMCCPresentSeenInit();   // (Control Center seen from its controller too: F13)
     if (!DMCtorSkip("ccpanel")) DMCCPanelInit();   // (our own Control Center: its API check on 15-17, its hooks only with Control Center Style Mac -- CCPanel.h)
     if (!DMCtorSkip("cc18")) DMCC18Init();   // (... and on 18: its own check, its hooks only with Control Center Style Mac -- CC18Shape.h)
@@ -44954,3 +45016,4 @@ void DMSMRunAction(UIAction *action, id sender) {
 #include "TitleBarTap.h"
 #include "WindowFront.h"   // (windows brought to the front as on a Mac, on every engine: 1.8.4.1 item 6)
 #include "KeepCovered.h"   // (Keep Covered Windows in Front, off unless switched on: 1.8.4.1 item 7)
+#include "BarReveal.h"   // (the menu bar over a full-screen app that hides it: the pointer at the top edge or a swipe down, 1.8.4.3 item 12)

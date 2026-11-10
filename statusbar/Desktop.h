@@ -181,6 +181,7 @@ static BOOL DMHardwareKeyboardAttached(void);
 static id DMKeyboardFocusController(void);
 // (no app active does not mean SpringBoard has the keys: after Home with a Zetsu window on the desktop, M1 15.6.1, nothing is active and the window's scene keeps the
 //  focus, "external scene with focus": the arrows and Space reached it, not the desktop)
+static BOOL DMDesktopCoveredAt(CGPoint sp);   // (below: a window of any engine covers the point)
 static BOOL DMDesktopKeysElsewhere(void) {
     id kfc = DMKeyboardFocusController();
     SEL s = NSSelectorFromString(@"externalSceneWithFocus");
@@ -601,6 +602,9 @@ static void DMDesktopEditHomeScreen(void) {
         DMLog(@"[desktop] another app came to the front: the desktop's keys go");
         [self dm_setHasKeys:NO];
     }
+    // (no app active and the desktop has the keys, but no lock yet: a window's scene took the focus back after the lock was asked for -- Quick Look closed
+    //  and SpringBoard's focus went to the Zetsu window a moment later, review 1.8.4.2 pass 2 L1; DMDesktopKeysFocus returns at once when nothing is to be taken)
+    if (_hasKeys && !gDesktopKeysLock && !DMActiveApp()) DMDesktopKeysFocus(YES);
     UIView *list = _list;
     BOOL ok = list && self.superview == list && list.window && list.superview;
     if (ok) {   // (still page 1: no list further left in the same scroll view -- a page was added, moved or hidden)
@@ -1306,7 +1310,8 @@ static void DMDesktopDrawFolder(CGContextRef c, CGFloat s) {
     CGPoint sp = t.window ? [t.window convertPoint:[t locationInView:nil] toCoordinateSpace:t.window.screen.coordinateSpace] : [t locationInView:nil];
     if (_renameField && DMPointOnOwnKeyboard(sp)) return;   // (typing the new name on the on-screen keyboard)
     if ([NSStringFromClass([t.window class]) isEqualToString:@"_UISystemGestureWindow"] || (gOverlay && gOverlay.window == t.window)) {
-        if ([self dm_shownAt:sp] && [self dm_itemViewAtScreen:sp]) return;
+        if ([self dm_shownAt:sp] && !DMDesktopCoveredAt(sp) && [self dm_itemViewAtScreen:sp]) return;   // (not an icon hidden under a window: a click into that window's
+                                                                                                         //  app takes the keys from the desktop, review 1.8.4.2 pass 2 L2)
         if (gOverlay) return;
         if (_renameField && _renameField.window && CGRectContainsPoint(CGRectInset([_renameField convertRect:_renameField.bounds toCoordinateSpace:(_renameField.window.screen ?: [UIScreen mainScreen]).coordinateSpace], -4, -4), sp)) return;
     }

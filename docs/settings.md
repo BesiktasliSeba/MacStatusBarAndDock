@@ -80,6 +80,7 @@ The window settings, on their own page between Desktop and Dock. On iPadOS 15 an
 | Tint Resize Handles | Resize handles take a soft version of each app's color. | Off |
 | New Windows Open at Fill | New windows fill the desktop, with every engine, and Fit to Window doesn't tile them. A window that opens where it last was keeps its place. Hidden while no window engine runs. | Off |
 | Keep Covered Windows in Front | When a window comes forward, a smaller window it would cover completely stays in front of it, so it isn't lost behind the bigger one. Aerial, Zetsu and MilkyWay4 only: hidden with the Stage Manager engine and while no window engine runs. | Off |
+| Recent Apps with Left-Edge Swipe | Swiping in from the left edge shows Stage Manager's recent apps, and a tap on one opens it. With the Dock at Left, that swipe stays the Dock's. Stage Manager engine on iPadOS 16 only: hidden with Aerial, Zetsu and MilkyWay4, while no window engine runs, and on iPadOS 17 and 18. | Off |
 | Home Minimizes Windows | Swiping up from the bottom or pressing the Home button minimizes the windows of the desktop you're on, so the Home Screen shows. Opening an app brings its window back. Keyboard shortcuts for Home, such as Command-H, leave the windows as they are. Off: the windows stay when you go Home. | On, also after an update |
 | Resize Apps to Fit Windows (MilkyWay4 only) | Apps lay themselves out for the window. Off: the full-screen layout, scaled down. | On |
 | Turn Off Traffic Lights | Hides the window buttons in the menu bar for full-screen apps. | Off |
@@ -213,3 +214,4 @@ These have no switch:
 - With Aerial, Zetsu or MilkyWay4 on iPadOS 15 to 18, every app with a window has its card in iPadOS's App Switcher, with a picture of the window. A tap on the card brings the window forward.
 - On iPads with a Home button, windows placed before 1.7.1 with a gap under the menu bar move up under it once.
 - In portrait, a Home Screen page whose icon layout only fits landscape (for example one tuned with Atria, which keeps one layout for both orientations) keeps its landscape positions, so no icon ends up off the screen. Pages that fit in portrait are left as they are, and so is editing the Home Screen.
+- Over a full-screen app or game that hides the menu bar, push the pointer to the top edge or swipe down from the very top to show it, with the app's red, yellow and green buttons. The red one leaves the app, and the bar hides again by itself.

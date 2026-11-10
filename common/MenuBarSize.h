@@ -4,7 +4,7 @@
 //    1.7.3 runs then: StatusBar.x puts no hook on iOS's bar and every number below is the one before.
 //  - Medium: a 30 pt bar, text and icons x 1.125 (13.5 pt text), menu rows 33 pt.
 //  - Large: a 37 pt bar (a notch MacBook's menu bar), text and icons x 1.25 (15 pt text), menu rows 36 pt.
-//  Medium and Large are the same on every iPad, Face ID or Home button. The windows' title bars stay 24 pt at every size, and a TV keeps the normal bar.
+//  Medium and Large are the same on every iPad, Face ID or Home button. The windows' title bars stay 24 pt at every size; a TV's bar takes the size too (1.8.4.3).
 //  The root of it is iOS's own bar made taller in SpringBoard (StatusBar.x DMBarSizeInit: the bar's visual provider's height, text and icon scale):
 //  SpringBoard sizes every copy of the bar from it and hands the height to every app, whose content then starts under it. iOS works a bar's height
 //  out once and gives it to an app when its scene starts, so a new size applies from the next SpringBoard start (Settings offers the respring).

@@ -1237,12 +1237,14 @@ static NSString *const kDMQLSwipe = @"com.besiktasliseba.quicklook.swipe";
     UIViewController *root = gNativeLayer.rootViewController;
     if (!qc || !root) return nil;
     NSURL *u = [NSURL fileURLWithPath:path isDirectory:NO];
-    NSUInteger i = _qlItems ? [_qlItems indexOfObject:u] : NSNotFound;   // (never asked of nil: nil answers 0, so the first file left the list empty and Quick Look said "No file to preview")
-    if (i == NSNotFound) {   // (item 3: the Finder window's files in its order, Quick Look's multi-item data source -- its own paging goes through them too)
-        NSMutableArray<NSURL *> *a = [NSMutableArray array];
-        for (NSString *p in [self.browser dm_previewPaths] ?: @[]) [a addObject:[NSURL fileURLWithPath:p isDirectory:NO]];   // (files only: no folder is ever paged to)
-        i = [a indexOfObject:u];
-        if (i == NSNotFound) { a = [NSMutableArray arrayWithObject:u]; i = 0; }
+    // (item 3: the Finder window's files in its order, Quick Look's multi-item data source -- its own paging goes through them too; built again whenever
+    //  the window's files or their order changed since, a file added, gone, renamed or a re-sort: review 1.8.4.2 pass 2 L4. Never asked of nil: nil
+    //  answers 0, so the first file left the list empty and Quick Look said "No file to preview")
+    NSMutableArray<NSURL *> *a = [NSMutableArray array];
+    for (NSString *p in [self.browser dm_previewPaths] ?: @[]) [a addObject:[NSURL fileURLWithPath:p isDirectory:NO]];   // (files only: no folder is ever paged to)
+    if (![a containsObject:u]) a = [NSMutableArray arrayWithObject:u];
+    NSUInteger i = [a indexOfObject:u];
+    if (!_qlItems || ![_qlItems isEqualToArray:a]) {
         _qlItems = a;
         _qlSetting = YES; [_ql reloadData]; _qlSetting = NO;
     }

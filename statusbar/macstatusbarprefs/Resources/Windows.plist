@@ -261,6 +261,32 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
+			<string>Swiping in from the left edge shows Stage Manager's recent apps. With the Dock at Left, that swipe stays the Dock's.</string>
+			<key>id</key>
+			<string>STRIP_SWIPE_GROUP</string>
+			<key>stockHides</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>STRIP_SWIPE</string>
+			<key>key</key>
+			<string>smStripSwipe</string>
+			<key>label</key>
+			<string>Recent Apps with Left-Edge Swipe</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
 			<string>Swiping up from the bottom or pressing the Home button minimizes the windows, so the Home Screen shows. Opening an app brings its window back.</string>
 			<key>id</key>
 			<string>HOME_WINDOWS_GROUP</string>

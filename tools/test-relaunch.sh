@@ -13,10 +13,10 @@ for v in "1 1 1" "1 0 1" "1 1 0" "0 0 0"; do
 done
 check() { if eval "$2"; then echo "PASS  $1"; else echo "FAIL  $1"; fails=1; fi; }
 DMR="awk '/^static void DMRespring\\(void\\) \\{/,/^}/' ../statusbar/StatusBar.x"
-check "DMRespring: sbreload is started first (15-17 respring as before), the relaunch request only after its spawn failed" \
-  "$DMR | awk '/posix_spawn\\(/{s=NR} /MSBDRelaunchLikeSbreload\\(\\)/{r=NR} END{exit !(s && r && s < r)}'"
-check "DMRespring: a started sbreload returns before the request (never both)" \
-  "$DMR | grep -q 'if (!err) {.*return; }'"
+check "DMRespring: the relaunch request first on every iPadOS (one start; sbreload's own stop 2 s on restarted SpringBoard a second time on 16-18, 1.8.4.3), sbreload only where there is no request" \
+  "$DMR | awk '/posix_spawn\\(/{s=NR} /MSBDRelaunchLikeSbreload\\(\\)/{r=NR} END{exit !(s && r && r < s)}'"
+check "DMRespring: a sent request returns before sbreload (never both)" \
+  "$DMR | grep -q 'if (MSBDRelaunchLikeSbreload()) {.*return; }'"
 check "the old fallback -_relaunchSpringBoardNow (gone since iPadOS 17) is not called from SpringBoard's Respring any more" \
   "! $DMR | grep -q '_relaunchSpringBoardNow'"
 check "the request path carries a release feature marker" \

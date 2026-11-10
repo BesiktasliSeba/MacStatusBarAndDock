@@ -49,7 +49,7 @@ check "  ... our own moves of its index are not taken for its paging; the observ
    && m $H '- (void)dm_quickLookRemove {' | grep -q 'removeObserver:self forKeyPath:@\"currentPreviewItemIndex\" context:&kDMQLIndexContext'"
 check "the Finder's own keys are as before (its arrows still move by one)" \
   "fn $H '- (void)dm_selectStep:(NSInteger)d {' | grep -q 'i = MAX(0, MIN((NSInteger)_items.count - 1, i < 0 ? 0 : i + d));'"
-check "the first file of a window builds the viewer's list (a nil list answers 0, not NSNotFound: Quick Look had nothing to show)" \
-  "fn $H '- (UIView *)dm_quickLookView:(NSString *)path {' | grep -qF 'NSUInteger i = _qlItems ? [_qlItems indexOfObject:u] : NSNotFound;'"
+check "the viewer's list is built from the window's files at the first file and again when they changed (a nil list answered 0: Quick Look had nothing to show; a stale one paged to old files)" \
+  "fn $H '- (UIView *)dm_quickLookView:(NSString *)path {' | grep -qF 'if (!_qlItems || ![_qlItems isEqualToArray:a]) {' && fn $H '- (UIView *)dm_quickLookView:(NSString *)path {' | grep -qF 'if (![a containsObject:u]) a = [NSMutableArray arrayWithObject:u];'"
 check "no em dash in the feature's files" "! grep -q \$'\\xe2\\x80\\x94' ../common/PreviewStep.h test-previewstep.c test-previewstep.sh"
 [ $fails = 0 ] && echo "test-previewstep: all checks pass" || { echo "test-previewstep: checks FAILED"; exit 1; }

@@ -31,7 +31,7 @@ check "  ... and leave rows out by the same conditions and lists: Control Center
    && grep -q 'inGroup = \\[spec.identifier isEqualToString:kMSBDMacSwitcherGroupID\\];' $P && grep -q '^		if (MSBDFocusLock18Failed()) {' $P && grep -q 'hiding = \\[sp.identifier isEqualToString:kMSBDWiFiGroupID\\];' $P"
 check "  ... the engine's groups (the Windows group, the resize handles, Window Size and Double-Tap a Title Bar to kept with Stage Manager, Resize Handles, Resize Apps), Report a Problem, Keep Tailspin Off" \
   "[ \$(grep -c 'hiding = \\[sp.identifier isEqualToString:kMSBDWindowsGroupID\\];' $P) = 2 ] && grep -q 'BOOL itsToo = MSBDStageManagerKeepsRow(\\[sp propertyForKey:@\"key\"\\]);' $P \
-   && grep -q 'if (!\\[\\[sp propertyForKey:@\"key\"\\] isEqual:kMSBDResizeHandlesKey\\]) \\[kept addObject:sp\\];' $P && grep -q 'hiding = \\[sp.identifier isEqualToString:kMSBDResizeGroupID\\];' $P \
+   && grep -qF 'if (!inStripSwipe && ![[sp propertyForKey:@\"key\"] isEqual:kMSBDResizeHandlesKey]) [kept addObject:sp];' $P && grep -q 'hiding = \\[sp.identifier isEqualToString:kMSBDResizeGroupID\\];' $P \
    && grep -q 'if (\\[spec.identifier isEqualToString:kMSBDReportRowID\\]) report = spec;' $P && grep -q 'tailspin = MSBDBarOffKeepsGroup(sp.identifier);' $P"
 check "the Dock page: no Finder group with Finder off, Finder read the same way; the line switch's rows go with it (LineSwitch.h, the index's line)" \
   "grep -q 'if (!MSBDFinderStored()) for (PSSpecifier \\*sp in \\[specs copy\\]) if (\\[sp.identifier isEqual:kMSBDDockFinderRowID\\] || \\[sp.identifier isEqual:kMSBDDockFinderGroupID\\]) \\[specs removeObject:sp\\];' $DP \

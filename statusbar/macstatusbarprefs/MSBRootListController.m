@@ -1138,9 +1138,25 @@ static void MSBFitValueLabels(UIView *v) {
 		for (PSSpecifier *spec in [_specifiers copy]) {
 			if (![[spec propertyForKey:@"key"] isEqual:@"windowEngine"]) continue;
 			NSString *engine = [self readPreferenceValue:spec];
-			if ([engine isKindOfClass:[NSString class]] && [engine isEqualToString:@"stagemanager"]) break;
+			if ([engine isKindOfClass:[NSString class]] && [engine isEqualToString:@"stagemanager"]) {
+				// (Stage Manager: its Resize Handles stay; Recent Apps with Left-Edge Swipe only where it has been run through, OwnPageRows.h MSBDStripSwipeOS)
+				if (!MSBDStripSwipeOS([NSProcessInfo processInfo].operatingSystemVersion.majorVersion)) {
+					NSMutableArray *kept = [NSMutableArray array];
+					BOOL inStripSwipe = NO;
+					for (PSSpecifier *sp in _specifiers) {
+						if (sp.cellType == PSGroupCell) inStripSwipe = [sp.identifier isEqualToString:kMSBDStripSwipeGroupID];
+						if (!inStripSwipe) [kept addObject:sp];
+					}
+					_specifiers = kept;
+				}
+				break;
+			}
 			NSMutableArray *kept = [NSMutableArray array];
-			for (PSSpecifier *sp in _specifiers) if (![[sp propertyForKey:@"key"] isEqual:kMSBDResizeHandlesKey]) [kept addObject:sp];
+			BOOL inStripSwipe = NO;   // (Recent Apps with Left-Edge Swipe, its group and row: Stage Manager's strip, as Resize Handles)
+			for (PSSpecifier *sp in _specifiers) {
+				if (sp.cellType == PSGroupCell) inStripSwipe = [sp.identifier isEqualToString:kMSBDStripSwipeGroupID];
+				if (!inStripSwipe && ![[sp propertyForKey:@"key"] isEqual:kMSBDResizeHandlesKey]) [kept addObject:sp];
+			}
 			_specifiers = kept;
 			break;
 		}

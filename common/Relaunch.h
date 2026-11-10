@@ -2,8 +2,8 @@
 // sbreload (uikittools-ng 2.1.7 / 2.1.8, disassembled 31 Oct 2026) does not kill anything: it sends SpringBoard one SBSRelaunchAction through
 // FBSSystemService -- reason "respring", options 5 (the render server restarted too, a fade to black) -- and SpringBoard's restart manager carries
 // it out in order (its own state written, then the restart). Only when SpringBoard or backboardd has not restarted 2 s later does it stop them through
-// launchd. iPadOS 18 refuses SpringBoard's spawn of anything under /var/jb (EPERM: the eject in 1.7.3 item 7, sbreload alike), so our Respring sends
-// that same action itself (statusbar/StatusBar.x DMRespring): SpringBoard's restart manager takes it from SpringBoard as from sbreload.
+// launchd -- and on 16-18 that stop hits the new ones (a second start every respring: pid poll on the A12Z, 10 Nov). Our Respring sends that same
+// action itself on every iPadOS (statusbar/StatusBar.x DMRespring): SpringBoard's restart manager takes it from SpringBoard as from sbreload, one start.
 // Mac test: tools/test-relaunch.sh.
 #pragma once
 #import <Foundation/Foundation.h>

@@ -17,7 +17,7 @@ has() { grep -qF -- "$1" "$W/fn"; }
 before() { awk -v a="$1" -v b="$2" 'index($0, a) && !x {x=NR} index($0, b) && !y {y=NR} END{exit !(x && y && x < y)}' "$W/fn"; }
 check "the switch: off unless switched on, read with the other window settings (a boolean only)" \
   "grep -qF 'static BOOL gKeepCoveredInFront = NO;' $S && grep -qF 'CFPropertyListRef kc = CFPreferencesCopyValue(CFSTR(kMSBDKeepCoveredKey), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);' $S \
-   && grep -qF 'BOOL keepCovered = kc && CFGetTypeID(kc) == CFBooleanGetTypeID() && CFBooleanGetValue(kc);' $S && tail -1 $S | grep -qF '#include \"KeepCovered.h\"'"
+   && grep -qF 'BOOL keepCovered = kc && CFGetTypeID(kc) == CFBooleanGetTypeID() && CFBooleanGetValue(kc);' $S && tail -2 $S | grep -qF '#include \"KeepCovered.h\"'"
 check "Aerial, Zetsu, MilkyWay4: after every raise of ours (DMEngineRaise: a tap or click, the Dock icon, Command-Tab, the Mac Switcher, our menus) the rule runs, never from inside its own raises" \
   "fn 'static void DMEngineRaise(UIView *stage, NSString *why) {' $F && sed -n '\$p' \$W/fn | grep -q '^}' && grep -qF '    DMKeepCoveredAfterRaise(stage, why);   // (the windows it covers' \$W/fn \
    && fn '__attribute__((noinline)) static void DMKeepCoveredAfterRaise(UIView *w, NSString *why) {' $K && has 'if (!gKeepCoveredInFront || gDMKeepCoveredBusy || !w || DMSMEngine() || DMActiveEngine() == DMEngineNone || gMSWOpen) return;' \
