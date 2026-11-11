@@ -61,6 +61,8 @@ static BOOL    gTweakOn = YES;          // the Dock part's own switch (Settings 
 static BOOL    gShowDownloads = YES;    // the Downloads stack in the Dock
 static BOOL    gShowFinder = YES;       // Finder as the Dock's first item, like a Mac (FinderIcon.m)
 static BOOL    gShowTrash = NO;         // the Trash at the Dock's right end, after Downloads, like a Mac (TrashIcon.m; Settings > Dock > Show Trash in Dock, off by default)
+static BOOL    gTrashFinderRuns = NO;   // (Finder runs, so a Trash may show at all: an external display's Dock shows it even with the switch off, DMDockShowsTrash)
+static BOOL DMDockShowsTrash(UIView *dockView);   // (the Trash on this Dock: below, after DMDockOnMainScreen)
 static BOOL    gEscapeClosesLibrary = YES;   // pressing Escape closes the App Library
 static BOOL    gLaunchpadIcon = YES;    // the App Library icon drawn like macOS Launchpad
 static BOOL    gLaunchpadClassic = YES; // round rocket (YES) or the silver grid tile (NO)
@@ -208,11 +210,13 @@ static void DMLoadPrefs(void) {
         }
     }
     gShowFinder = finder && finderRuns;
-    // Show Trash in Dock (off unless set): the Trash is Finder's (statusbar/DockTrash.h), so it is there only while Finder runs, as Finder's icon
-    BOOL trash = NO;
+    // Show Trash in Dock (on unless switched off since 1.8.6 -- new installs; an update keeps it off where it was never set: the root helper's
+    // OldDefaults writes NO, KT 10 Nov): the Trash is Finder's (statusbar/DockTrash.h), so it is there only while Finder runs, as Finder's icon
+    BOOL trash = YES;
     CFPropertyListRef tr = DMCopyPref(CFSTR("showTrash"));
     if (tr) { if (CFGetTypeID(tr) == CFBooleanGetTypeID()) trash = CFBooleanGetValue(tr); CFRelease(tr); }
     gShowTrash = trash && finderRuns;
+    gTrashFinderRuns = finderRuns;
     {
         int pos = MSBDDockBottom;
         CFPropertyListRef dp = DMCopyPref(CFSTR(kMSBDDockPositionKey));
@@ -351,7 +355,7 @@ static void DMCopyDividerLook(UIView *from, UIView *to) {
 static void DMSecondDividerAttach(UIView *dockView) {
     UIView *native = DMNativeDivider(dockView);
     UIView *mine = objc_getAssociatedObject(dockView, kDivider2Key);
-    BOOL want = native.superview && (gShowDownloads || gShowTrash) && gDivider2Rect.size.height > 1.0 && (gDivider2Alone || !native.hidden);
+    BOOL want = native.superview && (gShowDownloads || DMDockShowsTrash(dockView)) && gDivider2Rect.size.height > 1.0 && (gDivider2Alone || !native.hidden);
     if (!want) { mine.hidden = YES; return; }
     if (!mine) {
         mine = [[UIView alloc] initWithFrame:gDivider2Rect];
@@ -487,6 +491,15 @@ static void DMDockMirrorMetrics(DMDockMetrics *m) {
 // Apple. The App Library is not in the host and stays upright. On the bottom nothing of this runs: no hook is installed until Left or Right is chosen.
 static __weak UIWindow *gDockWindow;
 static BOOL DMDockOnMainScreen(UIWindow *w);
+// The Trash on a given Dock (1.8.6, KT 10 Nov): the iPad's Dock follows Show Trash in Dock; an external display's Dock (a TV) shows it by default even
+// with the switch off, as a Mac's desktop always has it (the per-display switch comes with 1.8.7's Display Settings). Only while Finder runs (the
+// Trash is Finder's). A Dock not in a window yet counts as the iPad's.
+static BOOL DMDockShowsTrash(UIView *dockView) {
+    if (gShowTrash) return YES;
+    if (!gTrashFinderRuns) return NO;
+    UIWindow *w = dockView.window;
+    return w && !DMDockOnMainScreen(w);
+}
 static BOOL DMIsDockIcon(UIView *icon);
 static __weak UIView *gDockSideHost = nil;
 static __weak UIViewController *gDockSideRoot = nil;   // (Apple's root view controller for the Dock: the Dock window's own on 16 and 18, a child of it on 15.6.1)
@@ -1078,7 +1091,7 @@ __attribute__((visibility("default"))) UITargetedPreview *MSBDDockSideIconPrevie
     // again here for this view's own bounds, the ones the layout above just used (K-2: a slot from another answer sits off the platter).
     { DMDockMetrics own; memset(&own, 0, sizeof(own)); [(SBFloatingDockView *)self getMetrics:&own forBounds:((UIView *)self).bounds]; }
     if (platter) DMDownloadsAttach(platter, gDownloadsSlot, gShowDownloads);
-    if (platter) DMTrashAttach(platter, gTrashSlot, gShowTrash && gTrashSlot.size.width > 0);
+    if (platter) DMTrashAttach(platter, gTrashSlot, DMDockShowsTrash((UIView *)self) && gTrashSlot.size.width > 0);
     DMReadIconCornerRatio((UIView *)self);
     if (platter) DMFinderIconAttach(platter, gFinderSlot, gShowFinder && gFinderSlot.size.width > 0);
     if (platter && DMEditProxiesOn(platter)) DMEditProxiesApply(platter, YES, NO, gLaunchpadIcon, gLaunchpadClassic, NO);   // (Edit Home Screen: the items' icon views follow this layout)
@@ -1196,7 +1209,8 @@ __attribute__((visibility("default"))) UITargetedPreview *MSBDDockSideIconPrevie
     // Launchpad at the start, as on a Mac; with the App Library icon kept at the end (iPadOS's place, Next to Finder off) that icon stays the last.
     // With Downloads off the Trash takes the slot Downloads would have had. Both go after the second divider.
     CGRect slot = lpLeft ? libEnd : m->libraryIcon;
-    BOOL wantEnd = gShowDownloads || gShowTrash;   // (the Dock's end group: Downloads and / or the Trash)
+    BOOL showTrash = DMDockShowsTrash((UIView *)self);   // (this Dock's: a TV's shows it by default)
+    BOOL wantEnd = gShowDownloads || showTrash;   // (the Dock's end group: Downloads and / or the Trash)
     // Without the App Library icon (its spot 0 wide) Downloads takes a whole icon's spot of the Dock's size (DMDockHiddenLibrarySide) at the end of the
     // lists, level with the apps, as the App Library icon sits when it is there. Without it iOS ends the lists at the platter's end (18.2's class
     // method: the lists carry a spacing on both sides, the platter is the icons plus a spacing at each end), so the platter grows by the icon plus the
@@ -1215,7 +1229,7 @@ __attribute__((visibility("default"))) UITargetedPreview *MSBDDockSideIconPrevie
         }
     }
     BOOL endOn = wantEnd && slot.size.width >= 1.0;
-    BOOL downloadsOn = endOn && gShowDownloads, trashOn = endOn && gShowTrash;
+    BOOL downloadsOn = endOn && gShowDownloads, trashOn = endOn && showTrash;
     MSBDDockEnd endLayout = MSBDDockEndLayout(slot.origin.x, slot.size.width, m->spacing, ownExtra, downloadsOn, trashOn);   // (unscaled; Trash off: the Downloads slot of before)
     // The second divider (see gDivider2Rect): with Downloads. After the recents (the recents list at least half an icon wide) it is a second line;
     // with no recents the Dock hides its own line and ours is the only one, between the apps and Downloads (as on macOS). Its gap is one spacing
@@ -2200,17 +2214,31 @@ static id DMLibraryPresenter(void) {
     DMLog([NSString stringWithFormat:@"[escape] App Library presenter %@", found ? @"found" : @"NOT found"]);
     return found;
 }
-BOOL DMDismissAppLibraryIfShowing(void) {
-    id presenter = DMLibraryPresenter();
+static BOOL DMDismissLibraryOf(id presenter, NSString *where) {
     SEL showing = NSSelectorFromString(@"isPresentingLibrary");
     if (![presenter respondsToSelector:showing] || !((BOOL (*)(id, SEL))objc_msgSend)(presenter, showing)) return NO;
     for (NSString *name in @[@"dismissLibraryWithAnimation:completion:", @"dismissLibraryAnimated:completion:"]) {
         SEL s = NSSelectorFromString(name);
-        if ([presenter respondsToSelector:s]) { DMLog([NSString stringWithFormat:@"[escape] closing the App Library via %@", name]); ((void (*)(id, SEL, BOOL, id))objc_msgSend)(presenter, s, YES, nil); return YES; }
+        if ([presenter respondsToSelector:s]) { DMLog([NSString stringWithFormat:@"[escape] closing the App Library (%@) via %@", where, name]); ((void (*)(id, SEL, BOOL, id))objc_msgSend)(presenter, s, YES, nil); return YES; }
     }
     SEL toggle = NSSelectorFromString(@"toggleLibraryPresentedInForegroundWithAnimation:completion:");
-    if ([presenter respondsToSelector:toggle]) { DMLog(@"[escape] closing the App Library via toggle"); ((void (*)(id, SEL, BOOL, id))objc_msgSend)(presenter, toggle, YES, nil); return YES; }
+    if ([presenter respondsToSelector:toggle]) { DMLog([NSString stringWithFormat:@"[escape] closing the App Library (%@) via toggle", where]); ((void (*)(id, SEL, BOOL, id))objc_msgSend)(presenter, toggle, YES, nil); return YES; }
     return NO;
+}
+BOOL DMDismissAppLibraryIfShowing(void) {
+    id presenter = DMLibraryPresenter();
+    BOOL closed = DMDismissLibraryOf(presenter, @"the iPad's");
+    // (1.8.6, tv-parity row 39: another display (the TV) has its own App Library -- each SBWindowScene's -modalLibraryController and its
+    //  -libraryPresenter (-[SBIconController createModalLibraryControllerForWindowScene:], 18.5). Only the iPad's was ever asked, so Escape never
+    //  closed the TV's. Every other window scene's presenter is asked the same way; the iPad's own is the one found above)
+    SEL mlc = NSSelectorFromString(@"modalLibraryController"), lp = NSSelectorFromString(@"libraryPresenter");
+    for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
+        if (![sc isKindOfClass:[UIWindowScene class]] || ((UIWindowScene *)sc).screen == [UIScreen mainScreen] || ![sc respondsToSelector:mlc]) continue;
+        id ctrl = ((id (*)(id, SEL))objc_msgSend)(sc, mlc);
+        id other = [ctrl respondsToSelector:lp] ? ((id (*)(id, SEL))objc_msgSend)(ctrl, lp) : nil;
+        if (other && other != presenter && DMDismissLibraryOf(other, @"another display's")) closed = YES;
+    }
+    return closed;
 }
 // Same presenter, the other direction: used by the swipe-down-opens-App-Library feature below.
 BOOL DMPresentAppLibrary(void) {

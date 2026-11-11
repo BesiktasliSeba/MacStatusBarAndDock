@@ -11,7 +11,9 @@
 //    bar mode (stockStatusBar);
 //  - a part as a whole ("skip"): it is not loaded in SpringBoard any more. Listed in MSBD_STEP_FILE, honoured by the loaders (MSBDCrashSkipped)
 //    while the crash guard's note (crashGuardAction) is there; once the note is cleared (Turn Back On, Enable Anyway, a later Settings action) the
-//    part loads again and the loader removes the list.
+//    part loads again and the loader removes the list;
+//  - a piece of a part that has no Settings row of its own (the battery icon's plug during a charge hold): on the same list under its target's
+//    name, which that piece's code reads (MSBDCrashSkipped), and recorded as a part -- so the pages offer Turn Back On for it too.
 // A switch that is already off cannot be the cause: the part goes instead.
 //
 // What it did goes into the guard's record (CrashGuard.h, MSBD_GUARD_RECORD; crashGuardAction = 4), which the footer, the notice and Report a

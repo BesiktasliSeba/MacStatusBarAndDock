@@ -12,13 +12,13 @@
 // the room our own titles leave: ours (Go, Window, Audio) are laid out first, and an app title that doesn't fit whole is left out, last ones first
 // (DMAMFitTitles) -- the bar never gets more crowded than the room it has.
 //
-// Settings > Status Bar > Show Apps' Own Menus, off unless switched on (gAMOn, DMAMApplyPref): off, no app is asked, no title shows, nothing is
+// Settings > Status Bar > Show Apps' Own Menus, on unless switched off (1.8.6; gAMOn, DMAMApplyPref): off, no app is asked, no title shows, nothing is
 // added under our Edit menu's Find, and MacAppBridge makes no snapshot in any app -- the bar is as it was before the feature.
 #include <notify.h>
 #include <sys/stat.h>
 
-static BOOL gAMOn = NO;                                               // Show Apps' Own Menus (DMAMApplyPref, from DMLoadPrefs)
-#define kDMAMSwitchName "com.besiktasliseba.appbridge.appmenus"        // (published for MacAppBridge in every app: 1 on, 2 off; never published is off)
+static BOOL gAMOn = YES;                                              // Show Apps' Own Menus (DMAMApplyPref, from DMLoadPrefs; on unless switched off)
+#define kDMAMSwitchName "com.besiktasliseba.appbridge.appmenus"        // (published for MacAppBridge in every app: 1 on, 2 off; never published is on)
 static NSMutableDictionary<NSString *, NSDictionary *> *gAMSnap;      // bundle -> the app's last answer (tmp/msb-menus.plist in its container)
 static NSMutableDictionary<NSString *, NSNumber *> *gAMAskedAt;       // bundle -> when it was last asked (CACurrentMediaTime)
 static NSMutableDictionary<NSString *, NSNumber *> *gAMReadyTokens;   // bundle -> its "menusready" registration (kept: one per app)

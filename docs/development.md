@@ -30,7 +30,7 @@ MacStatusBar&Dock
 │   └── MacLargeTitles
 │
 ├── Settings app
-│   └── MacSettings, MacEthernetFix, the Status Bar, Desktop, Windows & Multitasking and Dock pages, and the Battery Health page with its Battery Use group
+│   └── MacSettings, MacEthernetFix, the Status Bar, Desktop, Windows & Multitasking and Dock pages, and the Battery Health page with its Charging and Battery Use groups
 │
 ├── pointeruid (the pointer)
 │   └── MacPointer          the Mac pointer
@@ -42,16 +42,20 @@ MacStatusBar&Dock
 ├── Eject helper (msbdeject, a small program the root helper starts)
 │   └── ejects a USB drive or SD card for Finder's Eject and the Dock's Trash, which SpringBoard isn't allowed to do
 │
+├── Charge helper (msbdcharge, a launch daemon of its own, running only while a Charge Limit or Run on Power Adapter is set)
+│   └── holds charging at the limit or at the level of the plug-in, lets the iPad use its battery down to the limit, and gives charging back to iPadOS when both are off or the tweak is removed
+│
 └── Root helper (sshtoggled, a small launch daemon)
     ├── SSH on and off from Settings and Control Center, with each switch's result in its state file for every switch to show
     ├── which window engine, Control Center and banner tweak loads (Choicy's list, or iCleaner Pro's renaming without Choicy)
     ├── a drive's eject for Finder: it checks that the folder is a connected drive's, then runs the eject helper
     ├── Sleep Guard: with the screen off, has launchd start powerd over when a power assertion of a process that's gone is the only one keeping the iPad awake
+    ├── starts the charge helper when Settings sets a Charge Limit or Run on Power Adapter
     ├── Keep Tailspin Off: keeps PDSEPrefAllowEnableTailspin false in com.apple.da, so perfdiagsselfenabled doesn't turn tailspin on, and takes that value away when switched off or removed
     └── gives the engines' settings back when the tweak is removed or switched off, and has SpringBoard lower a stored Auto-Lock of 2 hours then
 ```
 
-Every part can be traced to its process in `loader/Loader.c` (the `kPayloads` table), except the Control Center modules above, which Control Center loads itself, and the eject helper, a program of its own.
+Every part can be traced to its process in `loader/Loader.c` (the `kPayloads` table), except the Control Center modules above, which Control Center loads itself, and the eject and charge helpers, programs of their own.
 
 ## Where things are
 
@@ -62,6 +66,7 @@ Every part can be traced to its process in `loader/Loader.c` (the `kPayloads` ta
 | `dock/` | The Dock and its page |
 | `ccmodule/` | The RAM & CPU, SSH and Mac tile Control Center modules |
 | `ejecthelper/` | The eject helper (`msbdeject`), which the root helper runs for Finder's Eject and the Dock's Trash |
+| `chargehelper/` | The charge helper (`msbdcharge`) for Charge Limit and Run on Power Adapter |
 | `macsettings/` | The Settings app changes, the smaller Home Screen parts and the root helper (`sshtoggled/`) |
 | `appbridge/` | MacAppBridge, which runs inside apps |
 | `mixaudio/`, `forcequitmenu/`, `graveescape/`, `tabmute/`, `volumeglobe/`, `brightnesskey/` | The smaller parts |

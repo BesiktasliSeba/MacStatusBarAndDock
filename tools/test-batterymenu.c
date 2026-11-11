@@ -64,6 +64,8 @@ int main(void) {
     check("Charge to Full Now / the monthly full charge: \"Charging to 100%\" / \"Monthly Charge to 100%\"",
           !strcmp(LINE(MSBDChargeStateWord(kMSBDChargeStateToFull, 80, 1), 90), "Charging to 100%")
           && !strcmp(LINE(MSBDChargeStateWord(kMSBDChargeStateMonthlyFull, 80, 1), 99), "Monthly Charge to 100%"));
+    check("the hold does not take with this adapter (the job gave it up, iPadOS charges as always): \"Charging Can't Be Paused\"",
+          !strcmp(LINE(MSBDChargeStateWord(kMSBDChargeStateCantHold, 80, 1), 84), "Charging Can't Be Paused"));
     check("no line: off the cable, the limit off, the job not running (no word), paused (Stopped), nothing to do (Off)",
           !MSBDBattChargeLine(MSBDChargeStateWord(kMSBDChargeStateOnHold, 80, 0), 80, t, sizeof t)
           && !MSBDBattChargeLine(MSBDChargeStateWord(kMSBDChargeStateOff, kMSBDChargeLimitOff, 1), 80, t, sizeof t)
@@ -85,6 +87,24 @@ int main(void) {
     check("Charge to Full Now offered while the job holds below full on the cable, not while it charges to full",
           MSBDChargeOffersFullNow(hold, 80) && !MSBDChargeOffersFullNow(MSBDChargeStateWord(kMSBDChargeStateToFull, 80, 1), 80)
           && !MSBDChargeOffersFullNow(MSBDChargeStateWord(kMSBDChargeStateOnHold, 80, 0), 80));
+    // ---- the battery glyph (1.8.6): a plug while on the adapter and not charging, iOS's bolt while charging, iOS's battery otherwise
+    check("the plug: Charge Limit on hold at 80 % on the adapter", MSBDBattHoldPlug(MSBDChargeStateWord(kMSBDChargeStateOnHold, 80, 1)));
+    check("  ... using the battery down to the limit while plugged in (the adapter cut), and Run on Power Adapter (its hold at the plug-in level, 55)",
+          MSBDBattHoldPlug(MSBDChargeStateWord(kMSBDChargeStateComingDown, 80, 1)) && MSBDBattHoldPlug(MSBDChargeStateWord(kMSBDChargeStateOnHold, 55, 1)));
+    check("  ... not while charging (to the limit, to full, the monthly full charge, or a hold this adapter ignores): iOS's bolt",
+          !MSBDBattHoldPlug(MSBDChargeStateWord(kMSBDChargeStateCharging, 80, 1)) && !MSBDBattHoldPlug(MSBDChargeStateWord(kMSBDChargeStateToFull, 80, 1))
+          && !MSBDBattHoldPlug(MSBDChargeStateWord(kMSBDChargeStateMonthlyFull, 80, 1)) && !MSBDBattHoldPlug(MSBDChargeStateWord(kMSBDChargeStateCantHold, 80, 1)));
+    check("  ... not unplugged, with no job (word 0), with the limit off, or paused: iOS's battery as it is",
+          !MSBDBattHoldPlug(MSBDChargeStateWord(kMSBDChargeStateOnHold, 80, 0)) && !MSBDBattHoldPlug(0)
+          && !MSBDBattHoldPlug(MSBDChargeStateWord(kMSBDChargeStateOnHold, kMSBDChargeLimitOff, 1)) && !MSBDBattHoldPlug(MSBDChargeStateWord(kMSBDChargeStateStopped, 80, 1)));
+    MSBDBattPlugBox pb = MSBDBattPlugPlace(26.5, 12);   // (the iPad 2's bar battery at Small, 16.7.7)
+    check("the plug in the iPad 2's battery (26.5 x 12): 7.44 pt high, 1.5 times as wide, centred on the body (not the pin), a 1.2 pt gap around it",
+          near(pb.h, 7.44) && near(pb.w, 11.16) && near(pb.x + pb.w / 2, 26.5 * 0.905 / 2) && near(pb.y + pb.h / 2, 6) && near(pb.halo, 1.2));
+    MSBDBattPlugBox tiny = MSBDBattPlugPlace(10, 12), none = MSBDBattPlugPlace(0, 12);
+    check("  ... a narrow battery: the plug at most 80 % of the body's width, still 1.5 to 1; an empty view: no plug",
+          near(tiny.w, 10 * 0.905 * 0.8) && near(tiny.w, tiny.h * 1.5) && none.w == 0 && none.h == 0);
+    MSBDBattPlugBox big = MSBDBattPlugPlace(26.5 * 1.35, 12 * 1.35);
+    check("  ... at a larger Menu Bar Size it grows with the battery", near(big.h, pb.h * 1.35) && near(big.x, pb.x * 1.35));
     printf("(with the Charge Limit's job: its line and row checked)\n");
 #else
     printf("(no Charge Limit job in this tree: its line and row are not compiled)\n");

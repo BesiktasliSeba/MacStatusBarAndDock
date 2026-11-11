@@ -616,6 +616,82 @@ static BOOL MABInSpringBoard(void) {
     if (sb < 0) sb = [[NSBundle mainBundle].bundleIdentifier isEqualToString:@"com.apple.springboard"];
     return sb == 1;
 }
+// Custom Shortcuts in the app with the keyboard (1.8.6, the KeyPilot author's report: with an app in front SpringBoard got only the chords backboardd
+// routes to its key commands; common/CustomShortcutsRule.h "In the app with the keyboard"). The rules SpringBoard published (statusbar/
+// CustomShortcuts.h DMCSPublishStates) are read at start, when Settings changes them (kMSBDCSChanged) and when SpringBoard has published them again
+// (kMSBDCSRulesState posted); a key-down that is one of them posts its run name and is kept from the app, with its repeats and its key-up
+// (MSBDCSKeyAct). SpringBoard's word is asked only then: taken (the wanted state: the switch on, KeyPilot not installed, and SpringBoard's run gate
+// open, a hardware keyboard attached, MSBDCSAppsWanted: with the wanted state 0 the key is the app's, never kept for a run SpringBoard refuses),
+// Settings not recording a shortcut (the keys are the recording's), and the rules still the ones read (their generation and count).
+#include "../common/CustomShortcutsRule.h"
+static uint64_t gMABCSRules[kMSBDCSMaxRules];   // (main thread: the rules as published, MSBDCSPack)
+static unsigned gMABCSCount;
+static uint64_t gMABCSRulesState;               // (the rules' state they were read at: the count and the generation)
+static MSBDCSKeyHeld gMABCSHeld;                // (main thread: the keys a shortcut took, and the app's)
+static int gMABCSRuleTokens[kMSBDCSMaxRules], gMABCSRulesToken, gMABCSWantedToken, gMABCSRecToken;
+static uint64_t MABCSState(int *token, const char *name) {
+    if (!*token && notify_register_check(name, token) != NOTIFY_STATUS_OK) { *token = 0; return 0; }
+    uint64_t st = 0;
+    notify_get_state(*token, &st);
+    return st;
+}
+static void MABCSRead(void) {
+    uint64_t rs = MABCSState(&gMABCSRulesToken, kMSBDCSRulesState);
+    unsigned n = MSBDCSRulesCount(rs);
+    for (unsigned i = 0; i < kMSBDCSMaxRules; i++) {
+        if (i >= n) { gMABCSRules[i] = 0; continue; }   // (no token for a rule that is not there: the switch off costs an app two states)
+        char name[96]; snprintf(name, sizeof name, kMSBDCSRuleStateFmt, i);
+        gMABCSRules[i] = MABCSState(&gMABCSRuleTokens[i], name);
+    }
+    gMABCSCount = n;
+    gMABCSRulesState = rs;
+}
+static int MABCSConfirm(long usage, unsigned long long flags, int rule) {   // (a key-down the rules match: MSBDCSKeyAct's confirm)
+    if (MABCSState(&gMABCSRecToken, kMSBDCSRecordingNote) != 0) return -1;
+    if (MABCSState(&gMABCSWantedToken, kMSBDCSWantedState) != 1) return -1;
+    if (MABCSState(&gMABCSRulesToken, kMSBDCSRulesState) != gMABCSRulesState) {   // (published again, its post not here yet)
+        MABCSRead();
+        rule = MSBDCSMatch(gMABCSRules, gMABCSCount, usage, flags);
+    }
+    return rule;
+}
+// The keyboard left this app (it resigned active, its scene deactivated, or no window of it is key any more: Stage Manager and Split View move
+// the keyboard that way): a shortcut key whose key-up goes where the keyboard is now is not held here, so the same key typed back in this app is
+// the app's (review 1.8.6, L: a lost key-up kept a plain 'h' from the app for 2.5 s). MSBDCSKeyForget.
+static BOOL MABCSAppHasKeyWindow(void) {
+    for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
+        if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+        for (UIWindow *w in ((UIWindowScene *)sc).windows) if (w.isKeyWindow) return YES;
+    }
+    return NO;
+}
+static void MABCSKeyboardGone(void) { MSBDCSKeyForget(&gMABCSHeld); }
+static void MABCSStart(void) {   // (once, in a real app's process with the key hook in)
+    static int tokChanged = 0, tokRules = 0;
+    notify_register_dispatch(kMSBDCSChanged, &tokChanged, dispatch_get_main_queue(), ^(int t) { MABCSRead(); });
+    notify_register_dispatch(kMSBDCSRulesState, &tokRules, dispatch_get_main_queue(), ^(int t) { MABCSRead(); });
+    NSNotificationCenter *nc = [NSNotificationCenter defaultCenter]; NSOperationQueue *mq = [NSOperationQueue mainQueue];
+    [nc addObserverForName:UIApplicationWillResignActiveNotification object:nil queue:mq usingBlock:^(NSNotification *n) { MABCSKeyboardGone(); }];
+    [nc addObserverForName:UISceneWillDeactivateNotification object:nil queue:mq usingBlock:^(NSNotification *n) { MABCSKeyboardGone(); }];
+    [nc addObserverForName:UIWindowDidResignKeyNotification object:nil queue:mq usingBlock:^(NSNotification *n) {
+        dispatch_async(dispatch_get_main_queue(), ^{ if (!MABCSAppHasKeyWindow()) MABCSKeyboardGone(); });   // (a window of this app taking key after it: still here)
+    }];
+    MABCSRead();
+}
+// Whether the key event is a shortcut's (run or kept from the app). First in the key hook: a shortcut wins over the menus' keys and the app's own.
+static BOOL MABCSTakesKey(int code, BOOL isDown, long long m) {
+    if (!gMABCSCount && !MSBDCSKeyBit(gMABCSHeld.held, code)) return NO;   // (no shortcuts: nothing asked, nothing kept)
+    int rule = -1;
+    int act = MSBDCSKeyAct(&gMABCSHeld, gMABCSRules, gMABCSCount, code, isDown, (unsigned long long)m, CACurrentMediaTime() * 1000.0, MABCSConfirm, &rule);
+    if (act == MSBDCSKeyRun) {
+        char name[96]; snprintf(name, sizeof name, kMSBDCSRunFmt, (unsigned)rule);
+        notify_post(name);
+#if DEBUG
+        if (MSTestFlag("/tmp/macstatusbar-debug")) MABLog([NSString stringWithFormat:@"shortcuts: key 0x%x mods 0x%llx is rule %d: run, kept from the app", code, (unsigned long long)m, rule]);
+#endif
+    }
+    return act != MSBDCSKeyPass;
+}
 // Hardware keys reach an app as UIPhysicalKeyboardEvent through -[UIApplication handleKeyUIEvent:] (not sendEvent:). Esc is HID 41 (GraveEscape's grave
 // key reports 41 too). A handled Esc's key-down and key-up are not passed on.
 static void (*oMABHandleKeyUIEvent)(id, SEL, id);
@@ -627,6 +703,7 @@ static void hMABHandleKeyUIEvent(id self, SEL _cmd, id ev) {
         int code = (int)((long long (*)(id, SEL))objc_msgSend)(ev, kc);
         BOOL isDown = ((BOOL (*)(id, SEL))objc_msgSend)(ev, down);
         long long m = [ev respondsToSelector:mods] ? ((long long (*)(id, SEL))objc_msgSend)(ev, mods) : 0;
+        if (MABCSTakesKey(code, isDown, m)) return;   // (Custom Shortcuts first: a global shortcut wins, as on a Mac, a menu open or not)
 #if DEBUG
         BOOL apps = MSBDMenuKeyIsApps(&gMABMenuHeld, code);   // (a key whose press the app got: for the log below)
 #endif
@@ -2602,6 +2679,7 @@ static void MABRegisterFinderDrops(void) {
         if (![UIApplication sharedApplication]) return;
         gMainScreen = [UIScreen mainScreen];
         if (oMABHandleKeyUIEvent) MABPublishMenuKeys();   // (the menus' keys can stay here: the key hook is in)
+        if (oMABHandleKeyUIEvent && !MABInSpringBoard()) MABCSStart();   // (Custom Shortcuts in the app with the keyboard; SpringBoard has its own ways)
         MABRegister();
         MABRegisterActions();
         MABRegisterMenus();   // (its own menus for the menu bar: AppMenus.h)

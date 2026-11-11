@@ -12,8 +12,8 @@
 // validates as disabled (-validateCommand:) is kept greyed, as a Mac menu shows it; hidden ones are left out. Which menu each goes in:
 // common/AppMenuRules.h. Nothing is changed in the app: the menu is read, a picked command is sent as its own shortcut sends it.
 //
-// Only with Settings > Status Bar > Show Apps' Own Menus on (off unless switched on). The app can't read our preferences (sandbox): SpringBoard
-// publishes the switch as the notify state of "com.besiktasliseba.appbridge.appmenus" (1 on, 2 off; 0, never published, is off), as it does for
+// Only with Settings > Status Bar > Show Apps' Own Menus on (on unless switched off, 1.8.6). The app can't read our preferences (sandbox): SpringBoard
+// publishes the switch as the notify state of "com.besiktasliseba.appbridge.appmenus" (1 on, 2 off; 0, never published, is on), as it does for
 // Esc Ends Typing. Off, an ask or a pick does nothing at all: no snapshot, no file, no answer.
 #include "../common/AppMenuRules.h"
 
@@ -21,7 +21,7 @@ static BOOL MABMenusOn(void) {
     static int token = 0; uint64_t state = 0;
     if (!token && notify_register_check("com.besiktasliseba.appbridge.appmenus", &token) != NOTIFY_STATUS_OK) token = 0;
     if (token) notify_get_state(token, &state);
-    return state == 1;
+    return state != 2;   // (only a published off is off: the switch's default is on)
 }
 
 // What the app offers may have changed without a tap (SpringBoard's "touched"): a shortcut from a hardware keyboard (⌘T, ⌘W), Return in a field (a

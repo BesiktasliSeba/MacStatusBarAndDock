@@ -47,7 +47,9 @@
 #include "../../common/DeviceGate.h"
 #include "../../common/EngineBuilds.h"
 #include "../../common/VersionGate.h"
+#include "../../common/ChargeLimit.h"
 #include "../../common/WelcomeRule.h"     // (MSBDWelcomeAtInstall: the welcome's install-time decision, Mac-tested)
+#include "../../common/DefaultsRule.h"    // (which defaults entries an install writes: a reinstall after a removal is an update, Mac-tested)
 #include "../../common/DpkgState.h"
 #include "../../common/StageManagerAvailable.h"
 #include "../../common/PointerAnim.h"       // (DMPtrAnimDecide: Pointer Animations given back as SpringBoard does it, Mac-tested)
@@ -1427,8 +1429,10 @@ static void EnableAnywayClearIfTested(void) {
 // right after the welcome check (the same test, before anything of ours is written), the writes after the move from the old packages (so a moved
 // setting wins). Done at most once: the marker file, and defaultsVersion in our settings (which survives a purge). What was written is logged and
 // listed in MIGDIR/defaults-frozen. Each entry names the version that changed its default: an update freezes only what changed after the version
-// it had already settled (v2 keys are not written again on a device that ran v2; a v2 first install keeps its new v2 defaults).
-#define DEFAULTSVERSION 3
+// it had already settled (v2 keys are not written again on a device that ran v2; a v2 first install keeps its new v2 defaults). A device that
+// settled a version before is an update whatever dpkg says (a reinstall after a removal: common/DefaultsRule.h). Some versions also bring a value
+// for EVERY device (DefaultsForAll), written once over what is stored, first install or update.
+#define DEFAULTSVERSION 4   // (4: 1.8.6, Show Trash in Dock on for new installs, KT 10 Nov; Show Apps' Own Menus on for everyone, KT 10 Nov ~00:02)
 #define DEFAULTSDECISION MIGDIR "/defaults-decision"
 static NSArray<NSArray *> *OldDefaults(void) {   // domain, key, the value it had before, the version that changed it
     // (the Go menu's old app list is not frozen: the only devices that ever had it have their list stored, so new installs get the neutral seed)
@@ -1437,7 +1441,12 @@ static NSArray<NSArray *> *OldDefaults(void) {   // domain, key, the value it ha
               @[@"com.besiktasliseba.dockmagnification", @"dockRecentsCount", @4, @2],
               @[@"com.besiktasliseba.macpagedots", @"enabled", @YES, @2],       // (YES = page dots hidden)
               @[@"com.besiktasliseba.maciconlabels", @"enabled", @YES, @2],     // (YES = app names hidden)
-              @[@"com.besiktasliseba.macstatusbar", @"skipLockAfterRespring", @YES, @3] ];   // (every build before v3 skipped it, with no passcode)
+              @[@"com.besiktasliseba.macstatusbar", @"skipLockAfterRespring", @YES, @3],   // (every build before v3 skipped it, with no passcode)
+              @[@"com.besiktasliseba.dockmagnification", @"showTrash", @NO, @4] ];   // (1.8.6: Show Trash in Dock on for new installs; an update keeps it off)
+}
+static NSArray<NSArray *> *DefaultsForAll(void) {   // domain, key, the value every device gets once (over what is stored), the version that brought it
+    // (1.8.6: Show Apps' Own Menus on for everyone, also where 1.8.5 had it off -- it shipped off; switched off after that, it stays off)
+    return @[ @[@"com.besiktasliseba.macstatusbar", @"appOwnMenus", @YES, @4] ];
 }
 static NSString *DefaultsMarker(int version) { return [NSString stringWithFormat:@MIGDIR "/defaults-v%d", version]; }
 static NSInteger DefaultsDone(void) {   // the newest defaults version this device has settled (0: none)
@@ -1450,8 +1459,9 @@ static NSInteger DefaultsDone(void) {   // the newest defaults version this devi
 }
 static BOOL DefaultsSettled(void) { return DefaultsDone() >= DEFAULTSVERSION; }
 // Old defaults are frozen only on a REAL upgrade: dpkg names an old version of this package, or the old separate packages were here (their marker
-// or their settings). Leftover files of ours alone (a reinstall after removal, settings a cleaner left behind) get the new defaults: public users
-// only ever had the new ones (every public install settles v3 at its first install).
+// or their settings), or this device settled a defaults version before (FreezeOldDefaults: MSBDDefaultsFirstInstall -- a reinstall after a removal
+// keeps defaultsVersion, and a 1.8.5 user had Show Trash in Dock off). Other leftover files of ours alone (settings a cleaner left behind without
+// defaultsVersion) get the new defaults.
 static NSString *FreezeReason(const char *oldVersion) {
     if (oldVersion && *oldVersion) return [NSString stringWithFormat:@"upgrade from %s", oldVersion];
     if ([[NSString stringWithContentsOfFile:@MIGDIR "/old-packages" encoding:NSUTF8StringEncoding error:nil] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]].length) return @"the old packages were installed";
@@ -1470,16 +1480,20 @@ static void DefaultsCheck(const char *oldVersion) {
 }
 static void FreezeOldDefaults(void) {
     NSInteger done = DefaultsDone();
-    // (a reinstall after a removal lands here too: defaultsVersion survives a purge, so it gets no Stage Manager default and, on iPadOS 16,
-    //  the "update" notice instead of the first-install welcome -- intended: that iPad had the tweak before, logic test F12)
+    // (a reinstall after a removal lands here too: defaultsVersion survives a purge, so it is an update for the defaults -- the old defaults of
+    //  the versions after the one it settled, no Stage Manager default and, on iPadOS 16, the "update" notice instead of the first-install welcome
+    //  -- intended: that iPad had the tweak before, logic test F12; review of 1.8.6: a 1.8.5 reinstall kept the Trash off)
     if (done >= DEFAULTSVERSION) { ELog(@"defaults: v%d settled before (an update, or a reinstall after removal) -- nothing to do", DEFAULTSVERSION); return; }
     NSString *decision = [NSString stringWithContentsOfFile:@DEFAULTSDECISION encoding:NSUTF8StringEncoding error:nil];
     unlink(DEFAULTSDECISION);
     if (!decision) decision = @"freeze: no decision recorded";   // (when in doubt, the user keeps what they had)
-    BOOL fresh = [decision isEqualToString:@"fresh"];
+    BOOL fresh = MSBDDefaultsFirstInstall([decision isEqualToString:@"fresh"], (long)done);
+    if (!fresh && [decision isEqualToString:@"fresh"]) decision = [NSString stringWithFormat:@"freeze: a reinstall (v%ld settled before)", (long)done];
     NSMutableArray *frozen = [NSMutableArray array];
-    if (!fresh) for (NSArray *e in OldDefaults())
-        if ([e[3] integerValue] > done && WriteMobilePrefsKey(e[0], e[1], e[2], YES)) [frozen addObject:[NSString stringWithFormat:@"%@ %@", e[0], e[1]]];
+    for (NSArray *e in OldDefaults())
+        if (MSBDDefaultsFreezes([e[3] integerValue], (long)done, fresh) && WriteMobilePrefsKey(e[0], e[1], e[2], YES)) [frozen addObject:[NSString stringWithFormat:@"%@ %@", e[0], e[1]]];
+    for (NSArray *e in DefaultsForAll())
+        if (MSBDDefaultsForAll([e[3] integerValue], (long)done) && WriteMobilePrefsKey(e[0], e[1], e[2], NO)) ELog(@"defaults: %@ %@ set to %@ for every device (v%@)", e[0], e[1], e[2], e[3]);
     WriteMobilePrefsKey(@"com.besiktasliseba.macstatusbaranddock", @"defaultsVersion", @DEFAULTSVERSION, NO);
     NSString *list = frozen.count ? [[frozen componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"] : @"";
     [list writeToFile:DefaultsMarker(DEFAULTSVERSION) atomically:YES encoding:NSUTF8StringEncoding error:nil];
@@ -1825,6 +1839,34 @@ static void DryRunEngines(const char *statusPath, BOOL oldRule) {
     gDryOldRule = NO;
 }
 #endif
+// ---- 7. the Charge Limit's job (chargehelper/, 1.8.6) --------------------------------------------------------------------------------------------
+// The job runs only while a Charge Limit or Run on Power Adapter is set: it ends by itself when neither is (chargehelper/main.m EndIdle), and
+// launchd restarts it only after a crash. Settings, as mobile, can't start a root job; this helper does, when the settings say one of the two
+// is set. A start of a running job is nothing to launchd, so no need to know whether it runs.
+static BOOL ChargeJobWanted(void) {
+    CFStringRef d = CFSTR(MSBD_CHARGE_DOMAIN);
+    CFPreferencesSynchronize(d, CFSTR("mobile"), kCFPreferencesAnyHost);
+    BOOL want = NO;
+    CFPropertyListRef v = CFPreferencesCopyValue(CFSTR(MSBD_CHARGE_LIMIT_KEY), d, CFSTR("mobile"), kCFPreferencesAnyHost);
+    if (v && CFGetTypeID(v) == CFNumberGetTypeID()) { int n = 0; CFNumberGetValue((CFNumberRef)v, kCFNumberIntType, &n); want = MSBDChargeLimitOn(MSBDChargeLimitFromPref(n)); }
+    if (v) CFRelease(v);
+#if DEBUG
+    v = CFPreferencesCopyValue(CFSTR(MSBD_CHARGE_TEST_LIMIT_KEY), d, CFSTR("mobile"), kCFPreferencesAnyHost);
+    if (v && CFGetTypeID(v) == CFNumberGetTypeID()) { int n = 0; CFNumberGetValue((CFNumberRef)v, kCFNumberIntType, &n); if (MSBDChargeTestLimit(n)) want = YES; }
+    if (v) CFRelease(v);
+#endif
+    v = CFPreferencesCopyValue(CFSTR(MSBD_CHARGE_ADAPTER_KEY), d, CFSTR("mobile"), kCFPreferencesAnyHost);
+    if (v && CFGetTypeID(v) == CFBooleanGetTypeID() && CFBooleanGetValue((CFBooleanRef)v)) want = YES;
+    if (v) CFRelease(v);
+    return want;
+}
+static void ChargeJobKick(NSString *why) {
+    if (!ChargeJobWanted()) return;
+    char *argv[] = { LAUNCHCTL, "start", "com.besiktasliseba.chargelimit", NULL };
+    int rc = run(argv);
+    if (rc != 0) ELog(@"%@: the Charge Limit's job could not be started (launchctl %d)", why, rc);
+}
+
 int main(int argc, char **argv) {
     @autoreleasepool {
         // (this helper's own child, as mobile: first, so nothing at all -- no preferences read -- runs as root in this process before it drops to mobile)
@@ -1888,6 +1930,12 @@ int main(int argc, char **argv) {
         if (resume && strstr(resume, "lines")) ApplyLines(@"Settings");
         if (resume && strstr(resume, "ssh")) SSHRequest(-1);
         if (resume && strstr(resume, "eject")) EjectRequest(@"Finder (after starting over)");
+        int t8;   // (section 7: every row of the tweak posts this note; the charge rows among them)
+        notify_register_dispatch(MSBD_CHARGE_PREFS_CHANGED, &t8, dispatch_get_main_queue(), ^(int t) {
+            static CFAbsoluteTime last = 0; static BOOL pending = NO;
+            Debounced(&last, &pending, ^{ @autoreleasepool { ChargeJobKick(@"settings"); } });
+        });
+        ChargeJobKick(@"daemon start");   // (a job that ended while this helper was away, a setting made then: started)
         ICleanRequest(@"daemon start");   // (a request left while the helper was not running: answered, or refused as too old)
         EjectRequest(@"daemon start");   // (a request left while the helper was not running -- an install's restart: answered now, Finder may still wait)
         WatchForMacStatusBarOff();

@@ -22,7 +22,7 @@ On iPadOS 18, Settings has no room for tweak rows in its sidebar, so Status Bar,
 | Desktop and Downloads | Files in On My iPad > Desktop and Downloads in Spotlight: right away on iPadOS 15, once iPadOS indexes them on 16. Needs Files allowed in Settings > Siri & Search. | Off |
 | Menu Bar Size | Small is the standard size. Medium and Large make the menu bar taller, with larger text, icons and menus that are easier to tap with a finger. Window title bars keep their size (respring). | Small |
 | Automatically Hide and Show the Status Bar | Hides the menu bar until the pointer reaches the top edge. | Off |
-| Show Apps' Own Menus | With an app in front, the menu bar also shows the app's own menus, like File, View and History, as on a Mac. A command you choose runs in the app, as its keyboard shortcut would. Only the menus that fit beside the tweak's own are shown. | Off |
+| Show Apps' Own Menus | With an app in front, the menu bar also shows the app's own menus, like File, View and History, as on a Mac. A command you choose runs in the app, as its keyboard shortcut would. Only the menus that fit beside the tweak's own are shown. | On (the update to 1.8.6 turns it on once, also where it was off) |
 | Banner Style | Mac: notification banners come in at the top right, like on a Mac. iPadOS: Apple's own banners. Destra: Destra's banners, while Destra is installed (a switch to or from it takes a respring). Only the chosen style loads. | Mac, or iPadOS if you had turned off Mac-Style Banners |
 | Go Menu > Apps | Choose and order the apps in the Go menu. | |
 | Finder | Off removes Finder completely, with its Dock icon and the desktop. | On |
@@ -47,7 +47,7 @@ On iPadOS 18, Settings has no room for tweak rows in its sidebar, so Status Bar,
 | Mix Audio Between Apps | Apps can play at the same time, each with its own volume in the Audio menu. | On |
 | Show Mute Icon | A mute icon in the menu bar while the iPad is muted. | On |
 | Wi-Fi Menu | The Wi-Fi icon opens a Wi-Fi menu. | On |
-| Battery Menu | The battery in the menu bar opens a battery menu, as on a Mac, with its level and power source, a Low Power Mode switch, Sleep Guard and Battery Settings. A Control Center icon next to the clock opens Control Center, and the swipe down from the top right still does. Off: a click on the battery opens Control Center, and there's no icon unless Control Center Style is Mac. The icon lights up while Control Center is open, and a second tap closes it. | On, also after an update |
+| Battery Menu | The battery in the menu bar opens a battery menu, as on a Mac, with its level and power source, a Low Power Mode switch, Charge Limit and what it's doing (such as Charging On Hold at 80%), Sleep Guard and Battery Settings. A Control Center icon next to the clock opens Control Center, and the swipe down from the top right still does. Off: a click on the battery opens Control Center, and there's no icon unless Control Center Style is Mac. The icon lights up while Control Center is open, and a second tap closes it. | On, also after an update |
 | Battery Percentage in Icon | The battery level as a number inside the menu bar's battery icon. If Battery Percentage is on in Settings > Battery, the number stays beside the icon instead. Not shown with Status Bar Style Stock. | Off |
 | Live Activities in Menu Bar | What's playing and your calls show as small pills next to the status icons, like on a Mac, and on iPadOS 15.6.1, 16.7.7, 17.5.1 and 18.5 Clock timers too. A tap on one opens a card to control it, and the card's title opens the app. One that has ended stays greyed out for a few minutes, then goes. Not shown with Status Bar Style Stock. | On, also after an update |
 | Activities | Turns Now Playing and Calls off one by one, and Timers on iPadOS 15.6.1, 16.7.7, 17.5.1 and 18.5, where timers show. | All on |
@@ -61,7 +61,7 @@ The desktop's settings, on their own page between Status Bar and Windows & Multi
 
 | Setting | What it does | New install |
 |---|---|---|
-| Desktop Picture | A picture behind the first page of the Home Screen, where the desktop is. The other pages keep your iPadOS wallpaper, and so does the Lock Screen. Pick None, a picture from Photos, one from Mac Wallpapers (the pictures in On My iPad > MacStatusBar&Dock > Wallpapers; add your Mac's wallpapers there with the Files app, AirDrop or Add from Files) or one of iPadOS's own still wallpapers. Your iPadOS wallpaper itself isn't changed. | None |
+| Desktop Picture | A picture behind the first page of the Home Screen, where the desktop is. The other pages keep your iPadOS wallpaper, and so does the Lock Screen. On iPadOS 18, an external display shows it too. Pick None, a picture from Photos, one from Mac Wallpapers (the pictures in On My iPad > MacStatusBar&Dock > Wallpapers; add your Mac's wallpapers there with the Files app, AirDrop or Add from Files) or one of iPadOS's own still wallpapers. Your iPadOS wallpaper itself isn't changed. | None |
 | Show Desktop Icons | Files and folders from On My iPad > Desktop on the first Home Screen page. They are separate from your app icons, which stay as they are. | On |
 | Hide Desktop Icon Names | Hides the names under every desktop icon. VoiceOver still reads them. An icon's own menu has Hide Name for just that icon. Greyed out while Show Desktop Icons is off. | Off |
 | Icon Size | The size of the desktop icons, from 40 to 96 points. The icons change as you drag the slider, their names and spacing follow, and every icon keeps its place. Home Screen app icons stay as they are. | The Home Screen's icon size |
@@ -70,7 +70,7 @@ The desktop's settings, on their own page between Status Bar and Windows & Multi
 
 ## Settings > Windows & Multitasking
 
-The window settings, on their own page between Desktop and Dock. On iPadOS 15 and 16 the page also shows Apple's Picture in Picture and Gestures settings, which leave General while they are here. On iPadOS 17 and 18, Multitasking & Gestures at the end of the page opens Apple's own page.
+The window settings, on their own page between Desktop and Dock. After Enable Windowing and Window Engine they come in groups: Windows, the Mac Switcher, Window Behavior, Traffic Lights, Multitasking and Advanced. On iPadOS 15 and 16 the page also shows Apple's Picture in Picture and Gestures settings, which leave General while they are here. On iPadOS 17 and 18, Multitasking & Gestures at the end of the page opens Apple's own page.
 
 | Setting | What it does | New install |
 |---|---|---|
@@ -81,15 +81,18 @@ The window settings, on their own page between Desktop and Dock. On iPadOS 15 an
 | Windows Behind Full-Screen Apps | A full-screen app comes in front of your windows, and Window > Bring All to Front brings them back. Off: windows stay in front. | On |
 | Resize Handles (Stage Manager engine only) | Mac handles, or Stage Manager's own. | Mac |
 | Tint Resize Handles | Resize handles take a soft version of each app's color. | Off |
-| New Windows Open at Fill | New windows fill the desktop, with every engine, and Fit to Window doesn't tile them. A window that opens where it last was keeps its place. Hidden while no window engine runs. | Off |
-| Keep Covered Windows in Front | When a window comes forward, a smaller window it would cover completely stays in front of it, so it isn't lost behind the bigger one. Aerial, Zetsu and MilkyWay4 only: hidden with the Stage Manager engine and while no window engine runs. | Off |
+| Mac Switcher | Desktops and Mission Control in place of the App Switcher. Turning it off keeps your desktops for when you turn it on again. | Off |
+| Go to the App's Desktop | With the Mac Switcher on, opening an app whose window is on another desktop takes you to that desktop. Off: the window comes to the desktop you're on. | Off |
+| Swipe Up to Quit | With the Mac Switcher on, flicking a window up quits its app, as in the App Switcher, and so does swiping it up with two fingers on a trackpad. Dragging a window onto a desktop still moves it there, and a hold before you move or a slow drag doesn't quit. The tweak's own windows, such as Finder's, aren't quit this way. Greyed out while the Mac Switcher is off. | On |
 | Recent Apps with Left-Edge Swipe | Swiping in from the left edge shows Stage Manager's recent apps, and a tap on one opens it. With the Dock at Left, that swipe stays the Dock's. Stage Manager engine on iPadOS 16 to 18: hidden with Aerial, Zetsu and MilkyWay4 and while no window engine runs. | Off |
+| New Windows Open at Fill | New windows fill the desktop, with every engine, and Fit to Window doesn't tile them. A window that opens where it last was keeps its place. Hidden while no window engine runs. | Off |
+| Snap Windows to Edges | A window you move or resize lines up with the screen's edges, the menu bar, the Dock and the windows next to it when you let go of it near them, with every window engine and on an external display. Off: a window you move stays where you let go, but a Dock on the left or right still keeps windows out of its place, and with the Stage Manager engine on iPadOS 17 and 18, iPadOS itself still lines up a side you resize. Hidden while no window engine runs. | On |
+| Keep Covered Windows in Front | When a window comes forward, a smaller window it would cover completely stays in front of it, so it isn't lost behind the bigger one. Aerial, Zetsu and MilkyWay4 only: hidden with the Stage Manager engine and while no window engine runs. | Off |
 | Home Minimizes Windows | Swiping up from the bottom or pressing the Home button minimizes the windows of the desktop you're on, so the Home Screen shows. Opening an app brings its window back. Keyboard shortcuts for Home, such as Command-H, leave the windows as they are. Off: the windows stay when you go Home. | On, also after an update |
 | Resize Apps to Fit Windows (MilkyWay4 only) | Apps lay themselves out for the window. Off: the full-screen layout, scaled down. | On |
 | Turn Off Traffic Lights | Hides the window buttons in the menu bar for full-screen apps. | Off |
+| Magnify Traffic Lights | Touching a window's red, yellow and green buttons with a finger grows them into a small pill with their symbols, the one under your finger the biggest. Slide to another, lift to use it, or lift away to cancel. A quick tap works as before, and a drag that starts on the buttons opens them instead of moving the window. With every window engine, on Finder and TextEdit windows and on the menu bar's buttons for a full-screen app. A trackpad or mouse keeps the Mac's hover, and its click is a plain click. | On |
 | Hide Multitasking Dots | Hides the three dots at the top of apps while windowing runs. | On |
-| Mac Switcher | Desktops and Mission Control in place of the App Switcher. Turning it off keeps your desktops for when you turn it on again. | Off |
-| Go to the App's Desktop | With the Mac Switcher on, opening an app whose window is on another desktop takes you to that desktop. Off: the window comes to the desktop you're on. | Off |
 | Prewarm Apps | iPadOS starts some apps in the background before you open them, so they open faster. Off: no app is started before you open it, which keeps that memory free on an iPad with little RAM. Shown only where the tweak can control prewarming on that iPad. | On, Off on iPads with 2 GB of memory |
 | Keep Tailspin Off | iPadOS turns on tailspin, a performance trace for Apple's diagnostics, for a few days at a time. It holds tens of MB of memory and samples the whole system many times a second. On: iPadOS doesn't turn it on. Shown only where the tweak can control it on that iPad. | Off, On on iPads with 2 GB of memory |
 
@@ -112,11 +115,11 @@ The window settings, on their own page between Desktop and Dock. On iPadOS 15 an
 | Launchpad Icon | A Launchpad icon that opens the App Library. | On |
 | Style | The Launchpad icon: Classic (Rocket) or Grid. | Classic |
 | Next to Finder | Launchpad sits next to Finder at the start of the Dock. Off: at the end. | On |
-| Escape Closes App Library | Esc closes the App Library. | On |
+| Escape Closes App Library | Esc closes the App Library, also on an external display. | On |
 | Show Finder in Dock | Finder as the first Dock icon. Not shown while Finder is off. | On |
 | Show Downloads in Dock | The Downloads stack at the end of the Dock. | On |
 | Downloads From | Which apps' downloads the stack shows: Safari, plus other apps you pick. | Safari |
-| Show Trash in Dock | A Trash at the end of the Dock, after Downloads, while Finder is on. It looks full when Finder's Trash has items, a tap opens it in Finder, and a long press or a right click offers Open and Empty Trash, which asks first. Drop files on it to move them to the Trash, a Dock app to take it out of the Dock, or a drive from Finder's sidebar to eject it (iPadOS 16 to 18). | Off |
+| Show Trash in Dock | A Trash at the end of the Dock, after Downloads, while Finder is on. It looks full when Finder's Trash has items, a tap opens it in Finder, and a long press or a right click offers Open and Empty Trash, which asks first. Drop files on it to move them to the Trash, a Dock app to take it out of the Dock, or a drive from Finder's sidebar to eject it (iPadOS 16 to 18). An external display's Dock shows the Trash also while this is off. | On (an update keeps what you had) |
 
 ## Settings > Home Screen & Multitasking
 
@@ -182,10 +185,13 @@ At the end of the page, after Apple's Hardware Keyboard settings:
 
 ## Settings > Battery > Battery Health
 
-On iPad, MacStatusBar&Dock opens Apple's Battery Health page (Battery Health & Charging on iPadOS 16 to 18), with the battery's Maximum Capacity and a Cycle Count row. Rows for iPhone-only features, such as Peak Performance Capability, are left out. It's the tweak's own page, with the group below, also while another battery health tweak is installed. The battery menu's Sleep Guard row opens it.
+On iPad, MacStatusBar&Dock opens Apple's Battery Health page (Battery Health & Charging on iPadOS 16 to 18), with the battery's Maximum Capacity and a Cycle Count row. Rows for iPhone-only features, such as Peak Performance Capability, are left out. It's the tweak's own page, with the groups below, also while another battery health tweak is installed. The battery menu's Sleep Guard row opens it.
 
 | Setting | What it does | New install |
 |---|---|---|
+| Charge Limit | In the Charging group. While the iPad stays plugged in, charging stops at the level you pick, to reduce battery wear, and starts again 5% lower: Off, 80%, 85%, 90% or 95%. Plugged in above the limit, the iPad uses its battery down to it first, and about once a month it charges to 100% to keep its battery reading accurate. The group's footer says what it's doing now. With some fast USB-C adapters, an iPad plugged in above the limit stays there until it's unplugged, and if the iPad can't pause charging with an adapter, the footer says so and it charges as usual until it's unplugged. The battery menu shows the limit too. | Off |
+| Run on Power Adapter | While the iPad is plugged in, it runs on the power adapter and its battery keeps the charge it had, never above Charge Limit. Below 20%, the iPad charges to 20% first. Under heavy load the battery can still help the adapter in short bursts. | Off |
+| Charge to Full Now | Shown while Charge Limit or Run on Power Adapter keeps the iPad from charging to full: the iPad charges to 100% until it's unplugged. The battery menu has it too. | |
 | Sleep Guard | In the Battery Use group. With the screen off, when the only thing keeping the iPad awake is a hold left behind by a process that's gone, such as a SpringBoard from before a respring, it clears that hold so the iPad can sleep. Never with the screen on or while something else keeps the iPad awake, and at most once in 30 minutes and 6 times a day. While a hold is stuck and not cleared, an iPad Can't Sleep row shows since when. | On |
 
 ## Elsewhere in Settings
@@ -213,10 +219,11 @@ These have no switch:
 - Command-Tab brings an app's window to the front when it has one, and a quick Command-Tab from a window goes back to the app you used before. Activity Monitor is in Command-Tab too while its window is open.
 - Windows have a smallest size with every window engine, as with Stage Manager: the app at least 320 x 300 points, as far as the screen allows.
 - New windows open at the same place and size with every window engine, and a new window that would cover another steps aside from it.
-- A window you move or resize lines up with the screen edges, the menu bar, the Dock and other windows when you let go of it near them, with every window engine.
 - When you turn the iPad, a window in a layout (Fill Screen, a half or a quarter) takes the same layout in the new orientation, and any other window goes back to where it last was in that orientation, with every window engine.
 - With Aerial, Zetsu or MilkyWay4 on iPadOS 15 to 18, every app with a window has its card in iPadOS's App Switcher, with a picture of the window. A tap on the card brings the window forward.
 - On iPads with a Home button, windows placed before 1.7.1 with a gap under the menu bar move up under it once.
 - In portrait, a Home Screen page whose icon layout only fits landscape (for example one tuned with Atria, which keeps one layout for both orientations) keeps its landscape positions, so no icon ends up off the screen. Pages that fit in portrait are left as they are, and so is editing the Home Screen.
 - Over a full-screen app or game that hides the menu bar, push the pointer to the top edge or swipe down from the very top to show it, with the app's red, yellow and green buttons. The red one leaves the app, and the bar hides again by itself.
 - With the official iCleaner Pro installed, Finder's sidebar has an iCleaner row: it runs iCleaner's clean, or a clean and respring, from a Mac-style panel and shows how much space was freed. It cleans what you chose in iCleaner's own settings.
+- While Charge Limit or Run on Power Adapter holds the charge, the battery menu says what it's doing, such as Charging On Hold at 80%, and on iPadOS 16 and 17 the menu bar's battery shows a plug instead of the charging bolt, as on a Mac.
+- On an external display with Stage Manager, apps you open there join its desktop as windows at your Window Size, windows snap to its edges, its menu bar and its Dock, and closing the last window leaves its desktop empty. Its Dock has the Trash, Escape closes its App Library, and on iPadOS 18 it shows your Desktop Picture.

@@ -503,6 +503,134 @@ static void DMBattInsideApplyPref(BOOL on) {
     dispatch_async(dispatch_get_main_queue(), ^{ DMBattInsideEveryBar(); });
 }
 
+// ---- the battery glyph during a charge hold (1.8.6; the rule: common/BatteryMenu.h MSBDBattHoldPlug) ------------------------------------------------
+// iOS draws its charging bolt (and the green fill) for every state but 0 (on battery) -- on a hold too, since iPadOS reads the adapter as charging:
+// the bolt said "charging" while the battery stayed at 80 %. While the Charge Limit's job holds (or uses the battery down to the limit, or Run on Power
+// Adapter holds), our bars' batteries are kept at state 0 -- iOS's own look on battery -- and get a plug where the bolt goes, cut through the fill with
+// a gap around it as iOS cuts its bolt: a Mac's "on the power adapter, not charging". The state iOS sets meanwhile is kept and given back when the hold
+// ends. Only the batteries of our bars (DMBattItemViews of our copies, the TV's too); with the number inside the icon (Battery Percentage in Icon), the
+// number takes the plug's place as it takes the bolt's.
+#if MSBD_BATT_CHARGE
+static BOOL gBattHoldPlug = NO;
+static const void *kBattHoldMarkKey = &kBattHoldMarkKey, *kBattHoldOwnKey = &kBattHoldOwnKey, *kBattHoldPlugKey = &kBattHoldPlugKey, *kBattHoldMaskKey = &kBattHoldMaskKey;
+static void DMBattHoldHookInit(void);   // (StatusBar.x: the battery's -setChargingState: hook, made the first time a hold is seen)
+static BOOL DMBattHoldCan(UIView *v) {
+    return DMBattTypes(v, @"setChargingState:", "v24@0:8q16") && DMBattTypes(v, @"chargingState", "q16@0:8");
+}
+// The hook's question: a battery we keep at state 0 takes `state` as iOS's own (given back later) and is set to 0 instead.
+static BOOL DMBattHoldTakes(id battery, long long *state) {
+    if (!objc_getAssociatedObject(battery, kBattHoldMarkKey)) return NO;
+    objc_setAssociatedObject(battery, kBattHoldOwnKey, @(*state), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    *state = 0;
+    return YES;
+}
+static UIBezierPath *DMBattPlugPath(CGRect r) {   // a plug lying towards the pin: its cord, its body, two prongs (unit 1.5 x 1)
+    CGFloat u = r.size.height, x = r.origin.x, y = r.origin.y;
+    UIBezierPath *p = [UIBezierPath bezierPathWithRect:CGRectMake(x, y + u * 0.42, u * 0.36, u * 0.16)];
+    [p appendPath:[UIBezierPath bezierPathWithRoundedRect:CGRectMake(x + u * 0.3, y + u * 0.1, u * 0.75, u * 0.8) cornerRadius:u * 0.18]];
+    [p appendPath:[UIBezierPath bezierPathWithRect:CGRectMake(x + u * 1.05, y + u * 0.24, u * 0.45, u * 0.14)]];
+    [p appendPath:[UIBezierPath bezierPathWithRect:CGRectMake(x + u * 1.05, y + u * 0.62, u * 0.45, u * 0.14)]];
+    return p;
+}
+static void DMBattHoldUnmask(UIView *v) {
+    CALayer *m = objc_getAssociatedObject(v, kBattHoldMaskKey);
+    if (m) { if (v.layer.mask == m) v.layer.mask = nil; objc_setAssociatedObject(v, kBattHoldMaskKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }   // (only ours)
+    CAShapeLayer *plug = objc_getAssociatedObject(v, kBattHoldPlugKey);
+    plug.hidden = YES;
+}
+__attribute__((noinline)) static void DMBattHoldOne(UIView *v, BOOL hold) {
+    if (!DMBattHoldCan(v)) {
+        static BOOL told = NO;
+        if (hold && !told) { told = YES; DMLog([NSString stringWithFormat:@"[battplug] %@: -chargingState / -setChargingState: are %s / %s here, not as read: iOS's bolt stays", NSStringFromClass([v class]), DMBattTypesOf(v, @"chargingState"), DMBattTypesOf(v, @"setChargingState:")]); }
+        return;
+    }
+    SEL get = NSSelectorFromString(@"chargingState"), set = NSSelectorFromString(@"setChargingState:");
+    BOOL marked = objc_getAssociatedObject(v, kBattHoldMarkKey) != nil;
+    if (!hold) {
+        if (!marked) return;
+        NSNumber *own = objc_getAssociatedObject(v, kBattHoldOwnKey);
+        objc_setAssociatedObject(v, kBattHoldMarkKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(v, kBattHoldOwnKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        DMBattHoldUnmask(v);
+        ((void (*)(id, SEL, long long))objc_msgSend)(v, set, own ? own.longLongValue : 0);   // (iOS's state back: its bolt, if it charges now)
+        [v setNeedsLayout];
+        return;
+    }
+    if (!marked) {
+        DMBattHoldHookInit();
+        objc_setAssociatedObject(v, kBattHoldOwnKey, @(((long long (*)(id, SEL))objc_msgSend)(v, get)), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(v, kBattHoldMarkKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (((long long (*)(id, SEL))objc_msgSend)(v, get) != 0) { long long s = 0; ((void (*)(id, SEL, long long))objc_msgSend)(v, set, s); [v layoutIfNeeded]; }
+    UILabel *number = objc_getAssociatedObject(v, kBattInsideLabelKey);
+    CGSize size = v.bounds.size;
+    MSBDBattPlugBox b = MSBDBattPlugPlace(size.width, size.height);
+    if ((number && !number.hidden) || b.w <= 0) { DMBattHoldUnmask(v); return; }   // (the number inside the icon takes the plug's place)
+    CGRect plugRect = CGRectMake(b.x, b.y, b.w, b.h);
+    UIBezierPath *path = DMBattPlugPath(plugRect);
+    CAShapeLayer *plug = objc_getAssociatedObject(v, kBattHoldPlugKey);
+    if (!plug) {
+        plug = [CAShapeLayer layer];
+        objc_setAssociatedObject(v, kBattHoldPlugKey, plug, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        DMLog([NSString stringWithFormat:@"[battplug] %@: a plug where the bolt goes while the battery is on hold", NSStringFromClass([v class])]);
+    }
+    UIColor *icon = DMBattTypes(v, @"fillColor", "@16@0:8") ? ((UIColor *(*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"fillColor")) : v.tintColor;
+    plug.fillColor = (icon ?: [UIColor whiteColor]).CGColor;
+    plug.path = path.CGPath; plug.frame = v.layer.bounds; plug.contentsScale = v.window.screen.scale ?: 2.0; plug.hidden = NO;
+    if (plug.superlayer != v.layer || v.layer.sublayers.lastObject != plug) [v.layer addSublayer:plug];   // (on top of iOS's layers)
+    // the gap: one mask on the battery view's own layer -- everything shown but a band around the plug, the plug itself kept -- so it outlives iOS's
+    // redraws of its own layers (a level change dropped masks set on them: the plug, the fill's colour, disappeared into the fill at 83 %, iPad 2)
+    CALayer *m = objc_getAssociatedObject(v, kBattHoldMaskKey);
+    if (v.layer.mask && v.layer.mask != m) { DMBattHoldUnmask(v); return; }   // (a mask of iOS's own on the view: left as it is, no plug)
+    CGFloat scale = plug.contentsScale;
+    UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat preferredFormat]; fmt.scale = scale; fmt.opaque = NO;
+    UIImage *img = [[[UIGraphicsImageRenderer alloc] initWithSize:size format:fmt] imageWithActions:^(UIGraphicsImageRendererContext *c) {
+        [[UIColor whiteColor] setFill]; UIRectFill(CGRectMake(0, 0, size.width, size.height));
+        UIBezierPath *cut = DMBattPlugPath(plugRect);
+        cut.lineWidth = b.halo * 2; cut.lineJoinStyle = kCGLineJoinRound;
+        CGContextSetBlendMode(c.CGContext, kCGBlendModeClear);
+        [[UIColor whiteColor] setStroke]; [cut stroke];   // (the band, on both sides of the outline...)
+        CGContextSetBlendMode(c.CGContext, kCGBlendModeNormal);
+        [cut fill];                                       // (... the plug's inside back: the band stays only outside it)
+    }];
+    if (!m) { m = [CALayer layer]; objc_setAssociatedObject(v, kBattHoldMaskKey, m, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
+    m.frame = v.layer.bounds; m.contents = (__bridge id)img.CGImage; m.contentsScale = scale;
+    if (v.layer.mask != m) v.layer.mask = m;
+}
+static void DMBattHoldWatch(void);
+static CFTimeInterval gBattHoldJobAt = -100; static BOOL gBattHoldJob = NO;
+__attribute__((noinline)) static void DMBattHoldBar(UIView *fg) {
+    CFTimeInterval now = CACurrentMediaTime();
+    // (turned off by the crash guard after a crash in it -- a piece of the status bar, CrashStep.h: on its skip list until Turn Back On clears the
+    //  guard's note; read once per SpringBoard, as the loaders read the list -- iOS's battery as it is then)
+    static int skipped = -1;
+    if (skipped < 0) skipped = MSBDCrashSkipped(MSBD_BATT_HOLD_PIECE);
+    if (skipped) return;
+    if (now - gBattHoldJobAt > 10.0) { gBattHoldJob = DMBattChargeJob(); gBattHoldJobAt = now; }   // (installed or not: read every 10 s at most)
+    if (gBattHoldJob) DMBattHoldWatch();
+    BOOL hold = gBattHoldJob && MSBDBattHoldPlug(DMBattChargeWord());
+    if (hold != gBattHoldPlug) {
+        gBattHoldPlug = hold;
+        DMLog([NSString stringWithFormat:@"[battplug] %@", hold ? @"on the adapter, not charging: the bars' batteries show a plug" : @"no hold: iOS's battery as it is"]);
+    }
+    static BOOL everOn = NO;
+    if (hold) everOn = YES;
+    if (!everOn) return;   // (no hold since this start: nothing of ours on any battery)
+    for (UIView *v in DMBattItemViews(fg)) if (![v isKindOfClass:[UILabel class]]) DMBattHoldOne(v, hold);
+}
+static void DMBattHoldEveryBar(void) {
+    for (NSHashTable *copies in @[gCopies ?: [NSHashTable weakObjectsHashTable], gAllBarCopies ?: [NSHashTable weakObjectsHashTable]]) for (UIView *fg in copies.allObjects) DMBattHoldBar(fg);
+}
+static void DMBattHoldWatch(void) {   // (the job's state changes: every bar at once, not at its next layout)
+    static BOOL watching = NO;
+    if (watching) return;
+    watching = YES;
+    int t = 0;
+    notify_register_dispatch(MSBD_CHARGE_STATE, &t, dispatch_get_main_queue(), ^(int tok) { DMBattHoldEveryBar(); });
+    notify_register_dispatch("com.apple.system.powersources", &t, dispatch_get_main_queue(), ^(int tok) { DMBattHoldEveryBar(); });
+}
+#endif
+
 static void DMBattLayoutButton(UIView *fg, CGFloat left, CGFloat k) {
     UIButton *btn = objc_getAssociatedObject(fg, kBattButtonKey);
     NSArray<UIView *> *views = gBattMenuOn && left < CGFLOAT_MAX ? DMBattItemViews(fg) : @[];
@@ -752,6 +880,9 @@ static BOOL DMBattTrigger(NSString *cmd) {
         gBattFakeWord = strtoull([[cmd substringFromIndex:14] UTF8String], NULL, 16);
         DMLog([NSString stringWithFormat:@"[battmenu] test state word %llx", gBattFakeWord]);
         DMBattMenuChanged();
+#if MSBD_BATT_CHARGE
+        DMBattHoldEveryBar();   // (the bars' batteries as with that word: the plug, 1.8.6)
+#endif
         return YES;
     }
     if ([cmd isEqualToString:@"battmenu_rows"]) { DMBattLogMenu(@"now", DMBattMenuItems(NULL)); return YES; }   // what the menu would show now

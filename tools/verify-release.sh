@@ -53,7 +53,8 @@ done
 echo "== every part is there"
 L=d/var/jb/Library/MobileSubstrate/DynamicLibraries; P=d/var/jb/usr/lib/MacStatusBarAndDock
 need="$L/MacStatusBar.dylib $L/MacStatusBar.plist $L/MacDock.dylib $L/MacDock.plist $P/MacCrashBlame.dylib $P/MacCrashNotice.dylib $P/CrashMap.txt
-      d/var/jb/usr/libexec/sshtoggled d/var/jb/Library/LaunchDaemons/com.besiktasliseba.sshtoggled.plist d/var/jb/usr/libexec/msbdeject"
+      d/var/jb/usr/libexec/sshtoggled d/var/jb/Library/LaunchDaemons/com.besiktasliseba.sshtoggled.plist d/var/jb/usr/libexec/msbdeject
+      d/var/jb/usr/libexec/msbdcharge d/var/jb/Library/LaunchDaemons/com.besiktasliseba.chargelimit.plist"
 for n in $(sed -n '/^PAYLOADS *=/,/^$/p' "$TREE/Makefile" | sed 's/PAYLOADS *=//; s/\\//g'); do need="$need $P/$n.dylib"; done
 missing=""; for f in $need; do [ -s "$f" ] || missing="$missing ${f#d}"; done
 [ -z "$missing" ] && ok "$(echo $need | wc -w | tr -d ' ') files" || bad "missing or empty:$missing"

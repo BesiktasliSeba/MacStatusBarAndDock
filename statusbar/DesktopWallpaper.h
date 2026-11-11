@@ -23,8 +23,11 @@
 // Memory: one decoded picture per screen, at the screen's own pixels, only of the part shown (MSBDWallpaperPart); decoded again off the main
 // thread when the screen turns (a portrait and a landscape part differ) or the appearance changes and the picture has a dark version. None set: no
 // view, no picture, nothing watched.
-// Per screen: a plane is one screen's (gWPPlanes, keyed by the wallpaper controller's window); the iPad's own screen now, an external display's
-// wallpaper controller can get its own later (1.9.0).
+// Per screen: the iPad's own screen (gWPPlane, page 1 only) and an external display (gWPTVPlane, KT 10 Nov: the picture on every display, as a
+// Mac does). 18.5 draws a TV's wallpaper in its own view controller, SBExternalDisplayWallpaperViewController (SpringBoard, its wallpaperContainerView),
+// in a window on the TV's screen: ours goes in as its container's last subview, so it is above iPadOS's picture there and below the TV's windows.
+// The TV has no Home Screen pages: shown whenever a picture is chosen. Decoded once at the TV's own pixels (its mode, not the larger render size of
+// a 4K TV at @2x); gone with the TV, picture and all. Where no such controller exists (15/16 without Stage Manager's TV desktop), nothing is drawn.
 #include "../common/DesktopWallpaper.h"
 #import <ImageIO/ImageIO.h>
 
@@ -47,6 +50,9 @@ static NSString *gWPSig;               // (the files in force as they are: path,
                                        //  shown anew when the choice is made again, review 1.8.6 L8)
 static BOOL gWPRead = NO;
 static DMWPPlane *gWPPlane;            // (the iPad's own screen)
+static DMWPPlane *gWPTVPlane;          // (an external display's desktop: KT 10 Nov)
+static __weak UIView *gWPTVHost;        // (the TV wallpaper view controller's container it is in)
+static NSString *gWPTVNote;             // (where it went on the TV, or why not: logged once per change)
 static __weak UIView *gWPHost;          // (the Home Screen variant's view it is in)
 static __weak id gWPVariantOwner;       // (15/16's shared view: the object whose ivar held it, asked for the active variant too -- review 1.8.6 M1)
 static __weak UIScrollView *gWPScroll;  // (the Home Screen's icon scroll view, watched)
@@ -59,7 +65,16 @@ static NSString *DMWPReadPath(const char *key) {
     if (v) CFRelease(v);
     return MSBDWallpaperPathAllowed(s) ? s : nil;   // (anything else -- the crash guard's "none", a path outside our three places -- is None)
 }
+static void DMWPRemoveTV(NSString *why) {
+    if (!gWPTVPlane) return;
+    [gWPTVPlane removeFromSuperview];
+    gWPTVPlane.image = nil;
+    gWPTVPlane = nil;
+    gWPTVNote = nil;
+    DMLog([NSString stringWithFormat:@"[wallpaper] desktop picture on the external display removed (%@)", why]);
+}
 static void DMWPRemove(NSString *why) {
+    DMWPRemoveTV(why);
     if (!gWPPlane) return;
     [gWPPlane removeFromSuperview];
     gWPPlane.image = nil;
@@ -84,6 +99,7 @@ static void DMWPApplyPref(void) {
     if (!light) { DMWPRemove(@"None"); return; }
     DM_FEATURE_MARK("desktop-picture");
     gWPPlane.shownPath = nil; gWPPlane.failedPath = nil;   // (a new picture, or the same file changed: decoded at the next tick)
+    gWPTVPlane.shownPath = nil; gWPTVPlane.failedPath = nil;
 }
 
 // ---- where: the Home Screen variant's view ----
@@ -255,6 +271,7 @@ static BOOL DMWPSharedHomeNow(void) {
     return NO;
 }
 static void DMWPUpdateAlpha(void) {
+    if (gWPTVPlane) { double ta = gWPTVPlane.image ? 1.0 : 0.0; if (fabs(gWPTVPlane.alpha - ta) > 0.001) gWPTVPlane.alpha = ta; }   // (no pages on a TV)
     DMWPPlane *p = gWPPlane;
     if (!p) return;
     double a = p.image ? DMWPPageOneShown() : 0.0;
@@ -309,9 +326,8 @@ static CGImageRef DMWPDecode(NSString *path, CGSize points, CGFloat scale) CF_RE
     CGContextRelease(ctx);
     return img;
 }
-static BOOL DMWPDarkNow(UIView *v) {   // (the iPad's Light / Dark appearance: the screen's, which every window follows)
-    UIScreen *sc = v.window.screen ?: [UIScreen mainScreen];
-    return sc.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark;
+static BOOL DMWPDarkNow(UIView *v) {   // (the iPad's Light / Dark appearance: its own screen's, which every window follows -- a TV's picture too)
+    return [UIScreen mainScreen].traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark;
 }
 static BOOL DMWPSameShape(CGSize a, CGSize b) { return a.width > 0 && b.width > 0 && b.height > 0 && fabs(a.width / a.height - b.width / b.height) < 0.02; }
 // The picture to show now: the dark one in Dark appearance when there is one and it could be read, else the light one.
@@ -327,7 +343,19 @@ static void DMWPDecodeIfNeeded(DMWPPlane *p) {
     if ([p.failedPath isEqualToString:path] && DMWPSameShape(pts, p.failedFor)) return;   // (could not be read: not again at every tick, M2)
     if ([p.shownPath isEqualToString:path] && DMWPSameShape(pts, p.shownFor) && p.image) return;
     p.decoding = YES;
-    CGFloat scale = p.window.screen.scale ?: [UIScreen mainScreen].scale;
+    UIScreen *scr = p.window.screen ?: [UIScreen mainScreen];
+    CGFloat scale = scr.scale ?: [UIScreen mainScreen].scale;
+    if (scr != [UIScreen mainScreen]) {   // (a TV: its own pixels, not the render size -- a 4K TV at 2560x1440 pt is drawn at 2x, 5120 px, and sent out at
+        //  its 3840 x 2160 mode; UIScreen's currentMode says the render size there, the display's own mode the TV's -- A12Z, 10 Nov, d01)
+        CGFloat px = 0;
+        id disp = [scr respondsToSelector:NSSelectorFromString(@"_display")] ? DMCall(scr, @"_display") : nil;
+        id mode = disp ? DMCall(disp, @"currentMode") : nil;
+        SEL ws = NSSelectorFromString(@"width"), hs = NSSelectorFromString(@"height");
+        if ([mode respondsToSelector:ws] && [mode respondsToSelector:hs]) px = MAX(((long (*)(id, SEL))objc_msgSend)(mode, ws), ((long (*)(id, SEL))objc_msgSend)(mode, hs));
+        if (px <= 0 && scr.currentMode) px = MAX(scr.currentMode.size.width, scr.currentMode.size.height);
+        CGFloat pt = MAX(scr.bounds.size.width, scr.bounds.size.height);
+        if (pt > 0 && px > 0 && px / pt > 0.5 && px / pt < scale) scale = px / pt;
+    }
     __weak DMWPPlane *wp = p;
     CFTimeInterval t0 = CACurrentMediaTime();
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
@@ -336,13 +364,13 @@ static void DMWPDecodeIfNeeded(DMWPPlane *p) {
             DMWPPlane *q = wp;
             if (q) {
                 q.decoding = NO;
-                if (img && q == gWPPlane && [path isEqualToString:DMWPWantedPath(q)]) {
+                if (img && (q == gWPPlane || q == gWPTVPlane) && [path isEqualToString:DMWPWantedPath(q)]) {
                     q.image = [UIImage imageWithCGImage:img scale:scale orientation:UIImageOrientationUp];
                     q.shownPath = path; q.shownFor = pts;
-                    DMLog([NSString stringWithFormat:@"[wallpaper] %@ decoded for %.0fx%.0f pt at @%.0fx: %zux%zu px (%.0f ms)", path.lastPathComponent, pts.width, pts.height, scale,
+                    DMLog([NSString stringWithFormat:@"[wallpaper] %@ decoded for %@%.0fx%.0f pt at @%.2gx: %zux%zu px (%.0f ms)", path.lastPathComponent, q == gWPTVPlane ? @"the external display, " : @"", pts.width, pts.height, scale,
                            CGImageGetWidth(img), CGImageGetHeight(img), (CACurrentMediaTime() - t0) * 1000.0]);
                     DMWPUpdateAlpha();
-                } else if (!img && q == gWPPlane) {
+                } else if (!img && (q == gWPPlane || q == gWPTVPlane)) {
                     q.failedPath = path; q.failedFor = pts;   // (not tried again until the choice, the file or the screen's shape changes: M2)
                     BOOL darkFails = [path isEqualToString:gWPDark];
                     if (!darkFails) { q.image = nil; q.shownPath = nil; DMWPUpdateAlpha(); }   // (no picture before it left on screen: iPadOS's shows, L1)
@@ -353,12 +381,58 @@ static void DMWPDecodeIfNeeded(DMWPPlane *p) {
         });
     });
 }
-static void DMWPPlaneLaidOut(DMWPPlane *p) { if (p == gWPPlane) DMWPDecodeIfNeeded(p); }
+static void DMWPPlaneLaidOut(DMWPPlane *p) { if (p == gWPPlane || p == gWPTVPlane) DMWPDecodeIfNeeded(p); }
+
+// ---- an external display's desktop (18.5: SBExternalDisplayWallpaperViewController in a window on the TV's screen) ----
+static UIView *DMWPFindTVHost(NSString **note) {
+    NSMutableArray *seen = [NSMutableArray array];
+    for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
+        if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+        for (UIWindow *w in ((UIWindowScene *)sc).windows) {
+            if (!w.screen || w.screen == [UIScreen mainScreen]) continue;
+            UIView *v = DMWPViewOfController(w, @"SBExternalDisplayWallpaperViewController");
+            if (!v) { if (seen.count < 12) [seen addObject:NSStringFromClass([w class])]; continue; }
+            UIResponder *vc = v.nextResponder;
+            SEL cs = NSSelectorFromString(@"wallpaperContainerView");
+            id c = [vc respondsToSelector:cs] ? ((id (*)(id, SEL))objc_msgSend)(vc, cs) : nil;
+            UIView *host = [c isKindOfClass:[UIView class]] && ((UIView *)c).window == w ? c : v;
+            *note = [NSString stringWithFormat:@"on the external display: in %@ (%@ > SBExternalDisplayWallpaperViewController%@)", NSStringFromClass([host class]), NSStringFromClass([w class]), host == v ? @"" : @" > wallpaperContainerView"];
+            return host;
+        }
+    }
+    *note = seen.count ? [NSString stringWithFormat:@"on the external display: no wallpaper view controller in its windows (%@): not drawn there", [seen componentsJoinedByString:@", "]] : nil;
+    return nil;
+}
+static void DMWPTVTick(void) {
+    UIView *host = gWPTVHost;
+    if (!gWPTVPlane || gWPTVPlane.superview != host || !host || !host.window) {
+        static CFTimeInterval tried; if (CACurrentMediaTime() - tried < 1.0) return; tried = CACurrentMediaTime();
+        NSString *note = nil;
+        host = DMWPFindTVHost(&note);
+        if (note && ![note isEqualToString:gWPTVNote]) { gWPTVNote = note; DMLog([NSString stringWithFormat:@"[wallpaper] desktop picture %@", note]); }
+        if (!host) { if (gWPTVPlane) DMWPRemoveTV(@"no external display desktop now"); return; }   // (the TV gone: its picture freed)
+        if (!gWPTVPlane) {
+            gWPTVPlane = [[DMWPPlane alloc] initWithFrame:host.bounds];
+            gWPTVPlane.contentMode = UIViewContentModeScaleAspectFill;
+            gWPTVPlane.clipsToBounds = YES;
+            gWPTVPlane.userInteractionEnabled = NO;
+            gWPTVPlane.accessibilityIgnoresInvertColors = YES;
+            gWPTVPlane.alpha = 0.0;
+        }
+        gWPTVHost = host;
+        [host addSubview:gWPTVPlane];
+    }
+    if (host.subviews.lastObject != gWPTVPlane) [host bringSubviewToFront:gWPTVPlane];
+    if (!CGAffineTransformIsIdentity(gWPTVPlane.transform)) gWPTVPlane.transform = CGAffineTransformIdentity;
+    if (!CGRectEqualToRect(gWPTVPlane.frame, host.bounds)) gWPTVPlane.frame = host.bounds;   // (a TV doesn't turn: its desktop's own bounds)
+    DMWPDecodeIfNeeded(gWPTVPlane);
+}
 
 // ---- every tick (DMNativeTick, 0.2 s): in place while set, gone when not ----
 static void DMWPTick(void) {
     if (!gWPRead) DMWPApplyPref();
-    if (!gWPLight || DMCtorSkip("wallpaper")) { if (gWPPlane) DMWPRemove(@"off"); DMWPWatchScroll(nil); return; }
+    if (!gWPLight || DMCtorSkip("wallpaper")) { if (gWPPlane || gWPTVPlane) DMWPRemove(@"off"); DMWPWatchScroll(nil); return; }
+    DMWPTVTick();      // (an external display's desktop: the same picture, KT 10 Nov)
     UIView *host = gWPHost;
     if (!gWPPlane || gWPPlane.superview != host || !host || !host.window) {
         static CFTimeInterval tried; if (CACurrentMediaTime() - tried < 1.0) return; tried = CACurrentMediaTime();

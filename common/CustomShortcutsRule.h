@@ -7,8 +7,9 @@
 // and the window action names with their aliases (KPWindowActions.m) are his, ported here; its author allowed the integration (KT, 7 Nov 2026).
 // Differences from KeyPilot, on purpose (plans/keypilot-integration-study.md): Globe is part of a shortcut's match (KeyPilot's mask drops it, so a
 // rule on Control-Left also fired on Globe-Control-Left), Caps Lock is not (a rule must not stop working while Caps Lock is on), shortcuts that
-// clash with this tweak's own keys are refused when recorded, there are no shell actions, and the keys come to SpringBoard as its own key commands
-// (no key hook in every app).
+// clash with this tweak's own keys are refused when recorded, and there are no shell actions. As KeyPilot's, the keys are matched in the app that
+// has the keyboard (1.8.6: through MacAppBridge's existing key hook, "In the app with the keyboard" below), and SpringBoard also takes them from its
+// own presses and its key commands.
 //
 // Portions: Copyright (c) 2026 wanghuangjie. MIT License:
 //   Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the
@@ -24,6 +25,7 @@
 #ifndef MSBD_CUSTOM_SHORTCUTS_RULE_H
 #define MSBD_CUSTOM_SHORTCUTS_RULE_H
 #include <stdbool.h>
+#include <stdint.h>
 #include <string.h>
 #include <strings.h>
 #include "../statusbar/WindowKeysRule.h"   // (the modifier flags, and Window Tiling Shortcuts' rows: a shortcut on one of them is refused)
@@ -79,6 +81,176 @@ static inline int MSBDCSCheck(long usage, const char *chars, unsigned long long 
 // Two shortcuts are the same: the same key (its usage) and the same modifiers.
 static inline bool MSBDCSSame(long usageA, unsigned long long flagsA, long usageB, unsigned long long flagsB) {
     return usageA == usageB && MSBDCSMods(flagsA) == MSBDCSMods(flagsB);
+}
+
+// ---- In the app with the keyboard (1.8.6, the KeyPilot author's report: with an app in front the shortcuts did nothing) ----
+// SpringBoard gets no keys while an app has the keyboard, only the key commands backboardd agrees to route to it: chords with Command, Control or
+// Globe whose key UIKit can name, so Option-only chords (Option-J) and F-keys never came. So, as KeyPilot does, the app with the keyboard matches
+// the shortcuts itself: MacAppBridge's -[UIApplication handleKeyUIEvent:] hook (appbridge/AppBridge.x, already in every UIKit app), first in that
+// hook, so a shortcut wins over the app's own shortcut and its typing, as a Mac's global shortcuts do. The app's sandbox can't read our preferences,
+// so SpringBoard publishes the rules as Darwin notify states (KeyPilot's way): one per rule (MSBDCSPack), the count with a generation, and whether
+// the apps take them at all (MSBDCSWantedNow, worked out in SpringBoard: the sandbox can't look for KeyPilot's files). A match posts the rule's own
+// run name, SpringBoard runs it (MSBDCSRunOnceNow drops the same key come both ways), and the key-down, its repeats and its key-up are
+// kept from the app as a pair (MSBDCSKeyAct, common/MenuKeys.h's held keys). Apps without our bridge (the recovery apps: loader/Loader.c) keep only
+// SpringBoard's key commands.
+#define kMSBDCSRuleStateFmt "com.besiktasliseba.customshortcuts.rule.%u"   // (rule n, 0..63: MSBDCSPack; 0 for none)
+#define kMSBDCSRulesState   "com.besiktasliseba.customshortcuts.rules"     // (MSBDCSRulesNext: the count and a generation; posted once all are set)
+#define kMSBDCSWantedState  "com.besiktasliseba.customshortcuts.wanted"    // (1: the apps take the shortcuts; 0 or never set: they don't)
+#define kMSBDCSRunFmt       "com.besiktasliseba.customshortcuts.run.%u"    // (posted by the app: run rule n; a name per rule, so no state from the sandbox)
+// A rule as one uint64: its HID usage (bits 0-15), its modifiers as MSBDCSMods keeps them (in their own bits, 17-23) and on (bit 32). 0: none.
+#define kMSBDCSPackUsage 0xFFFFULL
+#define kMSBDCSPackOn    (1ULL << 32)
+static inline uint64_t MSBDCSPack(long usage, unsigned long long flags, bool on) {
+    if (usage <= 0 || usage > (long)kMSBDCSPackUsage) return 0;
+    return (uint64_t)usage | MSBDCSMods(flags) | (on ? kMSBDCSPackOn : 0);
+}
+static inline long MSBDCSPackedUsage(uint64_t p) { return (long)(p & kMSBDCSPackUsage); }
+static inline unsigned long long MSBDCSPackedMods(uint64_t p) { return MSBDCSMods(p); }
+// A rule that can match: on, a key, and no bit we never write (a state some other code set is not a rule).
+static inline bool MSBDCSPackedOn(uint64_t p) {
+    return (p & kMSBDCSPackOn) && MSBDCSPackedUsage(p) > 0 && !(p & ~(kMSBDCSPackUsage | (uint64_t)kMSBDModMask | kMSBDCSPackOn));
+}
+// The rules' state: the count (bits 0-7, at most kMSBDCSMaxRules) and a generation (bits 8-63, 1 or more once published, so 0 is never published).
+// Each publish takes the next generation, so an app that read the rules before can tell they changed.
+static inline unsigned MSBDCSRulesCount(uint64_t s) { unsigned c = (unsigned)(s & 0xFF); return c > kMSBDCSMaxRules ? kMSBDCSMaxRules : c; }
+static inline uint64_t MSBDCSRulesGen(uint64_t s) { return s >> 8; }
+static inline uint64_t MSBDCSRulesNext(uint64_t previous, unsigned count) {
+    uint64_t g = MSBDCSRulesGen(previous) + 1;
+    if (g >= (1ULL << 56)) g = 1;
+    return (g << 8) | (count > kMSBDCSMaxRules ? kMSBDCSMaxRules : count);
+}
+// Whether the shortcuts are taken (SpringBoard's presses and key commands, and the apps through the wanted state): the switch on, KeyPilot not
+// installed (it runs its own: both would run each key), a rule, and Settings not recording one (the keys go to the recording).
+static inline bool MSBDCSWantedNow(bool switchOn, bool keyPilot, unsigned count, bool recording) { return switchOn && !keyPilot && count > 0 && !recording; }
+// The apps' wanted state (kMSBDCSWantedState): the shortcuts taken (MSBDCSWantedNow) and SpringBoard's run gate for a run an app posts open (a
+// hardware keyboard attached: statusbar/CustomShortcuts.h DMCSRunFromApp). SpringBoard publishes this one answer and its run gate asks the same
+// one, so an app keeps a key from itself only when SpringBoard will run it (1.8.6 i05, iPad 2 and 17.5 with keys injected and no keyboard: the
+// app matched Option-J and kept it, SpringBoard refused the run, the key was lost and nothing ran). With no keyboard every key goes to the app.
+static inline bool MSBDCSAppsWanted(bool taken, bool keyboard) { return taken && keyboard; }
+// The published rules are what SpringBoard means (1.8.6 i05, M1 and A12Z: the last rule turned off or deleted kept its keys from every app and
+// nothing ran, until a respring; the check compared the slots below the new count and never the count, so a list one shorter, the others
+// unchanged, was "the same"). Same: published before, the live rules' state the one SpringBoard wrote last (its generation), its count the count
+// meant now, and each slot below that count the rule meant. slot(i, ctx): the live slot i, read only while all before it matched. A slot past
+// the count is no rule to the apps (MSBDCSRulesCount); a publish clears those that were read before (MSBDCSSlotsToWrite).
+static inline bool MSBDCSPublishedSame(bool published, uint64_t live, uint64_t written, unsigned count, const uint64_t *meant,
+                                       uint64_t (*slot)(unsigned i, void *ctx), void *ctx) {
+    if (!published || live != written || MSBDCSRulesCount(live) != count) return false;
+    for (unsigned i = 0; i < count && i < kMSBDCSMaxRules; i++) if (slot(i, ctx) != meant[i]) return false;
+    return true;
+}
+// The slots a publish writes: the ones meant now and every one an app may have read before, the count SpringBoard wrote last and the count
+// published (after a respring SpringBoard wrote none yet), the ones past the new count set to 0.
+static inline unsigned MSBDCSSlotsToWrite(unsigned count, unsigned lastCount, uint64_t live) {
+    unsigned n = count, lc = MSBDCSRulesCount(live);
+    if (lastCount > n) n = lastCount;
+    if (lc > n) n = lc;
+    return n > kMSBDCSMaxRules ? kMSBDCSMaxRules : n;
+}
+// A chord a shortcut can be: one with Control, Option, Command or Globe (MSBDCSCheck). Plain typing, Shift included, is never asked about.
+static inline bool MSBDCSChord(unsigned long long flags) { return (MSBDCSMods(flags) & (kMSBDModControl | kMSBDModOption | kMSBDModCommand | kMSBDModGlobe)) != 0; }
+// The rule a key-down is, from the published rules, or -1 (the first one, as SpringBoard's DMCSRuleFor: the key's usage and the modifiers by
+// MSBDCSSame, so Caps Lock and the keypad bit don't count).
+static inline int MSBDCSMatch(const uint64_t *rules, unsigned count, long usage, unsigned long long flags) {
+    if (!rules || usage <= 0 || !MSBDCSChord(flags)) return -1;
+    if (count > kMSBDCSMaxRules) count = kMSBDCSMaxRules;
+    for (unsigned i = 0; i < count; i++)
+        if (MSBDCSPackedOn(rules[i]) && MSBDCSSame(MSBDCSPackedUsage(rules[i]), MSBDCSPackedMods(rules[i]), usage, flags)) return (int)i;
+    return -1;
+}
+// The keys the app's check has seen go down (usages 0-255; the keyboard page's keys are all below): held, a shortcut's (its repeats and key-up
+// kept from the app with it); app, the app's (its repeats stay the app's, even if a modifier pressed meanwhile makes them look like a shortcut).
+// at: when each last came; mods: the modifiers a shortcut's key went down with. A key whose key-up never came here (the keyboard went to another
+// app before it, which a shortcut that opens an app or goes Home can do) is forgotten when this app loses the keyboard (MSBDCSKeyForget: the
+// bridge's resign-active, scene-deactivate and key-window observers). As a second guard, a shortcut key's key-down is its repeat only while the
+// shortcut's Control, Option, Command or Globe are still down, or within kMSBDCSRepeatMs of the last one (Option let go while the key repeats:
+// still the shortcut's), and never more than kMSBDCSHeldLostMs after it. So a plain 'h' typed after Option-H, its key-up gone elsewhere, is the
+// app's (review 1.8.6, L).
+#define kMSBDCSHeldLostMs 2500.0
+#define kMSBDCSRepeatMs 800.0   // (a held key's repeats come every ~0.1 s; the first after the delay before repeating)
+typedef struct { uint64_t held[4]; uint64_t app[4]; double at[256]; unsigned long long mods[256]; } MSBDCSKeyHeld;
+static inline void MSBDCSKeyForget(MSBDCSKeyHeld *h) { if (h) memset(h, 0, sizeof *h); }   // (the keyboard went elsewhere: no key is down here now)
+static inline int MSBDCSKeyBit(const uint64_t set[4], long u) { return u >= 0 && u < 256 && ((set[u >> 6] >> (u & 63)) & 1); }
+static inline void MSBDCSKeySetBit(uint64_t set[4], long u, int on) {
+    if (u < 0 || u >= 256) return;
+    uint64_t bit = (uint64_t)1 << (u & 63);
+    if (on) set[u >> 6] |= bit; else set[u >> 6] &= ~bit;
+}
+enum { MSBDCSKeyPass = 0, MSBDCSKeyRun = 1, MSBDCSKeyTake = 2 };
+// What the app does with a key event: pass it on (MSBDCSKeyPass), keep it from the app (MSBDCSKeyTake: a shortcut's repeat or key-up), or run rule
+// *runRule and keep the key-down from the app (MSBDCSKeyRun). confirm is asked only for a key-down the published rules match (so typing pays
+// nothing more): SpringBoard's word now (taken, not recording) and the rules read again if they changed since; it answers the rule to run, or -1.
+static inline int MSBDCSKeyAct(MSBDCSKeyHeld *h, const uint64_t *rules, unsigned count, long usage, int isDown, unsigned long long flags, double nowMs,
+                               int (*confirm)(long usage, unsigned long long flags, int rule), int *runRule) {
+    if (runRule) *runRule = -1;
+    if (!h || usage <= 0 || usage >= 256) return MSBDCSKeyPass;
+    if (MSBDCSKeyBit(h->held, usage)) {
+        if (!isDown) { MSBDCSKeySetBit(h->held, usage, 0); return MSBDCSKeyTake; }
+        double gap = nowMs - h->at[usage];
+        unsigned long long chord = h->mods[usage] & (kMSBDModControl | kMSBDModOption | kMSBDModCommand | kMSBDModGlobe);
+        bool chordDown = (MSBDCSMods(flags) & chord) == chord;
+        if (gap <= kMSBDCSHeldLostMs && (chordDown || gap <= kMSBDCSRepeatMs)) { h->at[usage] = nowMs; return MSBDCSKeyTake; }   // (a repeat)
+        MSBDCSKeySetBit(h->held, usage, 0);   // (its key-up went elsewhere: a new press)
+    }
+    if (MSBDCSKeyBit(h->app, usage)) {
+        if (!isDown) { MSBDCSKeySetBit(h->app, usage, 0); return MSBDCSKeyPass; }
+        if (nowMs - h->at[usage] <= kMSBDCSHeldLostMs) { h->at[usage] = nowMs; return MSBDCSKeyPass; }
+        MSBDCSKeySetBit(h->app, usage, 0);
+    }
+    if (!isDown) return MSBDCSKeyPass;   // (a key-up nobody saw go down: the app's, as before)
+    int i = MSBDCSMatch(rules, count, usage, flags);
+    if (i >= 0 && confirm) i = confirm(usage, flags, i);
+    h->at[usage] = nowMs;
+    if (i < 0 || i >= kMSBDCSMaxRules) { MSBDCSKeySetBit(h->app, usage, 1); return MSBDCSKeyPass; }
+    MSBDCSKeySetBit(h->held, usage, 1);
+    h->mods[usage] = MSBDCSMods(flags);
+    if (runRule) *runRule = i;
+    return MSBDCSKeyRun;
+}
+// SpringBoard's run gate (statusbar/CustomShortcuts.h DMCSRunOnce and DMCSRunFromApp). A key comes two ways: SpringBoard's own (its presses and
+// its key commands, one way: a held key's repeats come too, every ~0.1 s, and a press can come as both) and an app's post (MSBDCSKeyAct: once per
+// real press, the repeats kept in the app). The app keeps every key it posts, so SpringBoard drops a post only when it is a key already run
+// (review 1.8.6, L: a second Option-J 0.3 s after the first, or Option-1 then Option-2 0.2 s apart, were kept by the app and never run).
+//  - Once per key (MSBDCSRunOnceNow): the same rule come the other way within kMSBDCSSameKeyMs of an arrival not yet paired is that key again
+//    (the two arrive together: a chord with Command, Control or Globe can come as a key command and as the app's post); SpringBoard's own way,
+//    the same rule within kMSBDCSSameKeyMs of its last arrival, is a repeat (each moves the time on, so a held URL shortcut opens one tab; review
+//    1.8.5-k M2, as on the Home Screen). An app's post is never its own repeat: a second press of the same shortcut runs again at any pace.
+//  - The posts' rate (MSBDCSFromAppTake): any process can post the run names (a loop posting run.0 and run.1 in turn ran the shortcuts hundreds of
+//    times a second on SpringBoard's main thread; review 1.8.6, L), so they run from a bucket of kMSBDCSFromAppBurst, one back every
+//    kMSBDCSFromAppEveryMs: presses by hand, kMSBDCSFromAppEveryMs or more apart, always run, a few quicker ones too, and a flood runs at most
+//    kMSBDCSFromAppBurst at once, then one each kMSBDCSFromAppEveryMs. A post the bucket refuses takes nothing from it.
+enum { kMSBDCSWaySpringBoard = 0, kMSBDCSWayApp = 1 };
+#define kMSBDCSSameKeyMs 500.0
+#define kMSBDCSFromAppBurst 4.0
+#define kMSBDCSFromAppEveryMs 150.0
+typedef struct { bool seen, paired; unsigned rule; double atMs; } MSBDCSArrival;   // (paired: the other way's arrival of the same key came)
+typedef struct { MSBDCSArrival way[2]; } MSBDCSRunOnceState;                       // (all 0: nothing came yet)
+// Whether rule's arrival by way (kMSBDCSWaySpringBoard, kMSBDCSWayApp) at nowMs runs: false for a key already run.
+static inline bool MSBDCSRunOnceNow(MSBDCSRunOnceState *o, unsigned rule, int way, double nowMs) {
+    if (!o || (way != kMSBDCSWaySpringBoard && way != kMSBDCSWayApp)) return false;
+    MSBDCSArrival *mine = &o->way[way], *other = &o->way[1 - way];
+    if (other->seen && !other->paired && other->rule == rule && nowMs - other->atMs < kMSBDCSSameKeyMs) {   // (the same key, the other way)
+        other->paired = true;
+        *mine = (MSBDCSArrival){ true, true, rule, nowMs };
+        return false;
+    }
+    if (way == kMSBDCSWaySpringBoard && mine->seen && mine->rule == rule && nowMs - mine->atMs < kMSBDCSSameKeyMs) {   // (a repeat)
+        mine->atMs = nowMs;
+        return false;
+    }
+    *mine = (MSBDCSArrival){ true, false, rule, nowMs };
+    return true;
+}
+typedef struct { bool started; double tokens, atMs; } MSBDCSFromAppBucket;   // (all 0: full at the first post)
+// Whether a run an app posted at nowMs may run now (one taken from the bucket if so).
+static inline bool MSBDCSFromAppTake(MSBDCSFromAppBucket *b, double nowMs) {
+    if (!b) return false;
+    if (!b->started) { b->started = true; b->tokens = kMSBDCSFromAppBurst; b->atMs = nowMs; }
+    double t = b->tokens + (nowMs > b->atMs ? (nowMs - b->atMs) / kMSBDCSFromAppEveryMs : 0);
+    if (t > kMSBDCSFromAppBurst) t = kMSBDCSFromAppBurst;
+    b->tokens = t; b->atMs = nowMs;
+    if (t < 1.0) return false;
+    b->tokens = t - 1.0;
+    return true;
 }
 
 // The actions (KeyPilot's spelling). shell: and sh: are refused (they would run commands from inside SpringBoard); a bare word (KeyPilot reads it
@@ -164,6 +336,12 @@ static inline BOOL MSBDCSRuleUsable(NSDictionary *r) {
     //  Switcher key would take that key from typing everywhere; review 1.8.5-k L1)
     id key = r[@"key"];
     return MSBDCSCheck([code longValue], [key isKindOfClass:[NSString class]] ? [key UTF8String] : "", [mods unsignedLongLongValue]) == kMSBDCSOK;
+}
+// A rule as the apps get it (MSBDCSPack): 0 for one that is not a dictionary with a key code and modifiers.
+static inline uint64_t MSBDCSPackRule(NSDictionary *r) {
+    if (![r isKindOfClass:[NSDictionary class]] || ![r[@"keyCode"] isKindOfClass:[NSNumber class]] || ![r[@"modifiers"] isKindOfClass:[NSNumber class]]) return 0;
+    id on = r[@"enabled"];
+    return MSBDCSPack([r[@"keyCode"] longValue], [r[@"modifiers"] unsignedLongLongValue], !on || [on boolValue]);
 }
 // The key's name, as KeyPilot shows it (KPShared.m KPKeyName): the arrows as arrows, the named keys by name, a character in capitals.
 static inline NSString *MSBDCSKeyName(long usage, NSString *key) {

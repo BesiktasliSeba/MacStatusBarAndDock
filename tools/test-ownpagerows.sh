@@ -31,15 +31,15 @@ check "  ... and leave rows out by the same conditions and lists: Control Center
    && grep -q 'inGroup = \\[spec.identifier isEqualToString:kMSBDMacSwitcherGroupID\\];' $P && grep -q '^		if (MSBDFocusLock18Failed()) {' $P && grep -q 'hiding = \\[sp.identifier isEqualToString:kMSBDWiFiGroupID\\];' $P"
 check "  ... the engine's groups (the Windows group, the resize handles, Window Size and Double-Tap a Title Bar to kept with Stage Manager, Resize Handles, Resize Apps), Report a Problem, Keep Tailspin Off" \
   "[ \$(grep -c 'hiding = \\[sp.identifier isEqualToString:kMSBDWindowsGroupID\\];' $P) = 2 ] && grep -q 'BOOL itsToo = MSBDStageManagerKeepsRow(\\[sp propertyForKey:@\"key\"\\]);' $P \
-   && grep -qF 'if (!inStripSwipe && ![[sp propertyForKey:@\"key\"] isEqual:kMSBDResizeHandlesKey]) [kept addObject:sp];' $P && grep -q 'hiding = \\[sp.identifier isEqualToString:kMSBDResizeGroupID\\];' $P \
-   && grep -q 'if (\\[spec.identifier isEqualToString:kMSBDReportRowID\\]) report = spec;' $P && grep -q 'tailspin = MSBDBarOffKeepsGroup(sp.identifier);' $P"
+   && grep -qF 'if (![sp.identifier isEqualToString:kMSBDStripSwipeRowID] && ![[sp propertyForKey:@\"key\"] isEqual:kMSBDResizeHandlesKey]) [kept addObject:sp];' $P && grep -qF 'if (![[sp propertyForKey:@\"key\"] isEqual:kMSBDResizeRowKey]) [kept addObject:sp];' $P \
+   && grep -q 'if (\\[spec.identifier isEqualToString:kMSBDReportRowID\\]) report = spec;' $P && grep -qF 'if (MSBDBarOffKeepsRow(sp.identifier) || (sp.cellType == PSGroupCell && [sp.identifier isEqualToString:kMSBDAdvancedGroupID])) [kept addObject:sp];' $P"
 check "the Dock page: no Finder group with Finder off, Finder read the same way; the line switch's rows go with it (LineSwitch.h, the index's line)" \
   "grep -q 'if (!MSBDFinderStored()) for (PSSpecifier \\*sp in \\[specs copy\\]) if (\\[sp.identifier isEqual:kMSBDDockFinderRowID\\] || \\[sp.identifier isEqual:kMSBDDockFinderGroupID\\]) \\[specs removeObject:sp\\];' $DP \
    && grep -q 'isEqualToString:@\"MSBD_LINE\"\\]) { at = i; break; }' $L && grep -q '#define kMTILineRowID @\"MSBD_LINE\"' $I && grep -q '#define kMSBDLineRowID      @\"MSBD_LINE\"' $R \
    && plutil -convert json -o - ../statusbar/macstatusbarprefs/Resources/Root.plist | python3 -c 'import json,sys; it=json.load(sys.stdin)[\"items\"]; sys.exit(0 if [x.get(\"lineName\") for x in it if x.get(\"id\")==\"MSBD_LINE\"]==[\"MacStatusBar\"] else 1)' \
    && plutil -convert json -o - ../dock/dockmagnificationprefs/Resources/Root.plist | python3 -c 'import json,sys; it=json.load(sys.stdin)[\"items\"]; sys.exit(0 if [x.get(\"lineName\") for x in it if x.get(\"id\")==\"MSBD_LINE\"]==[\"MacDock\"] else 1)'"
-check "the index records each row's group, the group's stockHides (a page's rows also its link's group's), its key and whether it is below its page's line switch" \
-  "awk '/^- \\(void\\)walkItems:/,/^}/' $I > \$W/walk && grep -q 'groupID = MTIStr(it\\[@\"id\"\\]); groupStock = ' \$W/walk && grep -q 'e.groupID = groupID; e.stockHides = groupStock || self.underStock; e.key = MTIStr(it\\[@\"key\"\\]); e.belowLine = self.belowLine;' \$W/walk \
+check "the index records each row's group, the group's stockHides (a page's rows also its link's group's; 1.8.6: a row's own, Prewarm Apps in Advanced), its key and whether it is below its page's line switch" \
+  "awk '/^- \\(void\\)walkItems:/,/^}/' $I > \$W/walk && grep -q 'groupID = MTIStr(it\\[@\"id\"\\]); groupStock = ' \$W/walk && grep -q 'e.groupID = groupID; e.stockHides = groupStock || rowStock || self.underStock; e.key = MTIStr(it\\[@\"key\"\\]); e.belowLine = self.belowLine;' \$W/walk \
    && grep -q 'self.underStock = wasUnder || groupStock;' \$W/walk && grep -q 'self.underStock = wasUnder;' \$W/walk \
    && grep -q 'if (depth == 2 && \\[MTIStr(it\\[@\"id\"\\]) isEqualToString:kMTILineRowID\\]) self.lineNext = YES;' \$W/walk && awk '/^- \\(void\\)addPage:/,/^}/' $I | grep -q 'self.belowLine = NO; self.lineNext = NO; self.underStock = NO;'"
 check "Sleep Guard only where our Battery Use group is on Battery Health, as our own battery parts decided once Apple's pages loaded" \
@@ -64,12 +64,12 @@ check "with no working engine Double-Tap a Title Bar to stays, as Finder's and T
    && [ \$(grep -c 'Finder and TextEdit windows still use this setting.' $P) = 1 ] \
    && grep -q 'if (windowsGroup) \\[sp setProperty:@\"Finder and TextEdit windows still use this setting.\" forKey:@\"footerText\"\\];' $P \
    && grep -q 'DMTitleTapAttach(_titleBar, kDMTitleNative);' ../statusbar/NativeWindow.h && grep -q 'CGRect fill = DMLayoutFrameInArea(@\"fill\", DMNativeDesktop(), \\[UIScreen mainScreen\\].bounds.size);' ../statusbar/TitleBarTap.h"
-check "with no working engine New Windows Open at Fill goes too, on the page (its group and row) and in the search: every window it sizes is an engine's (audit 1.8.3 M4)" \
-  "grep -q '#define kMSBDNewWindowsFillGroupID @\"NEW_WINDOWS_FILL_GROUP\"' $R && grep -q 'if (\\[group isEqualToString:kMSBDNewWindowsFillGroupID\\] && !s.engineWorks) return YES;' $R \
-   && grep -q 'if (sp.cellType == PSGroupCell && \\[sp.identifier isEqualToString:kMSBDNewWindowsFillGroupID\\]) { hiding = YES; continue; }' $P \
+check "with no working engine New Windows Open at Fill and Snap Windows to Edges (1.8.6) go too, on the page (their rows; Window Behavior stays) and in the search: every window they size or snap is an engine's (audit 1.8.3 M4)" \
+  "grep -q '#define kMSBDNewWindowsFillRowID @\"NEW_WINDOWS_FILL\"' $R && grep -qF 'if (([ident isEqualToString:kMSBDNewWindowsFillRowID] || [ident isEqualToString:kMSBDSnapRowID]) && !s.engineWorks) return YES;' $R \
+   && grep -qF 'if ([sp.identifier isEqualToString:kMSBDNewWindowsFillRowID] || [sp.identifier isEqualToString:kMSBDSnapRowID] || [sp.identifier isEqualToString:kMSBDKeepCoveredRowID]) continue;' $P \
    && plutil -convert json -o - ../statusbar/macstatusbarprefs/Resources/Windows.plist | python3 -c 'import json,sys; it=json.load(sys.stdin)[\"items\"]; g=None; r=[]
 for x in it:
     g = x.get(\"id\") if x.get(\"cell\")==\"PSGroupCell\" else g
     r += [g] if x.get(\"key\")==\"newWindowsFill\" else []
-sys.exit(0 if r==[\"NEW_WINDOWS_FILL_GROUP\"] else 1)'"
+sys.exit(0 if r==[\"WINDOW_BEHAVIOR_GROUP\"] else 1)'"
 [ $fails = 0 ] && echo "test-ownpagerows: wiring checks pass" || { echo "test-ownpagerows: wiring checks FAILED"; exit 1; }

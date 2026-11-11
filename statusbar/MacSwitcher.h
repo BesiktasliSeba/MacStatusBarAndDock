@@ -16,7 +16,10 @@
 #include "MSWKept.h"        // (the desktops kept while it is off and what of them comes back -- plain Foundation, tools/test-mswkept.sh)
 #include "MSWEngineRecords.h"   // (the window records across an engine change -- plain Foundation, tools/test-mswenginerecords.sh)
 #include "MSWAppDesk.h"     // (where an app opens when its windows are on other desktops -- plain Foundation, tools/test-mswappdesk.sh)
+#include "MSWFlick.h"       // (Swipe Up to Quit: a flick or a two-finger swipe that quits, against a drag that moves -- plain C, tools/test-mswflick.sh)
 static BOOL gMSWOn = NO;                 // the switch is on, the iPadOS has what it needs (DMMSWOSOK), and the self-check passed
+static BOOL gMSWSwipeQuit = YES;         // Settings > Windows & Multitasking > Swipe Up to Quit (mswSwipeUpQuit, on unless switched off, 1.8.6, KT 10 Nov):
+                                         //  in the view, a window flicked up (or swiped up with two fingers on a trackpad) quits its app, as in the App Switcher
 static BOOL gMSWGoToAppDesk = NO;        // Settings > Windows & Multitasking > Go to the App's Desktop (goToAppDesktop, off unless switched on, 1.7.1):
                                          //  opening an app whose windows are all on other desktops goes to its desktop; off, its window comes here
 // Where it runs: iPadOS 15/16 (tested), and 17 (every class, method and type encoding it calls is in iPadOS 17's SpringBoard and UIKit -- 17.0.3
@@ -47,6 +50,7 @@ static UIView *gMSWPlusView;                       // "+"
 static NSMutableArray<UIView *> *gMSWStripPortals; // the current desktop's live tile's portals (let go when the strip is laid out again)
 static CGRect gMSWArea;                            // where the window thumbnails are laid out (DMMSWArrange), root coordinates
 static CGFloat gMSWStripH = 0, gMSWTitleH = 26.0;
+static const CGFloat kMSWStripGap = kMSBDMSWStripGap, kMSWStripLabelH = kMSBDMSWStripLabelH;   // the strip: between two desktops' tiles; a desktop's name, kMSBDMSWStripLabelTop under its tile (MSWFlick.h)
 static CFTimeInterval gMSWOwnHomeAt = 0;           // (the Mac Switcher asked for the Home Screen itself while its view stays open: MacSwitcherButton.h)
 // ---- a window dragged onto another desktop (the drag section, after the view's taps) ----
 static const NSInteger kMSWDropNew = -1, kMSWDropNone = -2;   // (a drop target: a desktop's place, "+" -- a new desktop --, or nothing)
@@ -389,6 +393,13 @@ static void DMMSWTapped(UITapGestureRecognizer *g);
 static void DMMSWHover(UIHoverGestureRecognizer *g);
 static void DMMSWHold(UILongPressGestureRecognizer *g);
 static void DMMSWDragPan(UIPanGestureRecognizer *g);   // (the drag section)
+// (Swipe Up to Quit: the trackpad's two-finger swipe. Its functions, DMMSWFlickEnd and DMMSWFlickQuit too, are kept out of line, so the crash map
+//  always has them under their own names and a crash in them turns off Swipe Up to Quit, not the whole Mac Switcher -- tools/crashmap-rules.txt)
+__attribute__((noinline)) static void DMMSWScrollPan(UIPanGestureRecognizer *g);
+__attribute__((noinline)) static BOOL DMMSWScrollMayBegin(UIPanGestureRecognizer *g);
+static UIPanGestureRecognizer *gMSWScrollPanGR;
+static DMMSWTile *gMSWScrollTile;   // (the thumbnail the two-finger swipe carries)
+static CFTimeInterval gMSWFlickDownAt = 0, gMSWFlickBeganAt = 0;   // (the drag's finger: when it touched down, when it first moved past the slop)
 static void DMMSWDragFrame(void);
 static BOOL DMMSWDragMayBegin(UIPanGestureRecognizer *g);
 static BOOL DMMSWHoldMayBegin(UILongPressGestureRecognizer *g);
@@ -402,10 +413,12 @@ static BOOL gMSWDragPointer = NO;   // (it is the pointer's: SpringBoard does no
 - (void)hover:(UIHoverGestureRecognizer *)g { DMMSWHover(g); }
 - (void)hold:(UILongPressGestureRecognizer *)g { DMMSWHold(g); }
 - (void)pan:(UIPanGestureRecognizer *)g { DMMSWDragPan(g); }
+- (void)scroll:(UIPanGestureRecognizer *)g { DMMSWScrollPan(g); }
 - (void)dragFrame:(CADisplayLink *)link { DMMSWDragFrame(); }
 // (the drag begins only on a window's thumbnail; the hold that shows the remove buttons only on a desktop -- it no longer takes a finger held on a
 //  window, which may then still be dragged)
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)g {
+    if (g == gMSWScrollPanGR) return DMMSWScrollMayBegin((UIPanGestureRecognizer *)g);
     if ([g isKindOfClass:[UIPanGestureRecognizer class]]) return DMMSWDragMayBegin((UIPanGestureRecognizer *)g);
     if ([g isKindOfClass:[UILongPressGestureRecognizer class]]) return DMMSWHoldMayBegin((UILongPressGestureRecognizer *)g);
     return YES;
@@ -415,6 +428,7 @@ static BOOL gMSWDragPointer = NO;   // (it is the pointer's: SpringBoard does no
         static int has = -1;
         if (has < 0) has = DMMSWHasMethod([UITouch class], @"_isPointerTouch", @"B@:");
         gMSWDragTouchType = touch.type;
+        gMSWFlickDownAt = CACurrentMediaTime();   // (Swipe Up to Quit: a flick has no hold before it moves -- MSWFlick.h)
         gMSWDragPointer = touch.type == UITouchTypeIndirectPointer || (has > 0 && ((BOOL (*)(id, SEL))objc_msgSend)(touch, NSSelectorFromString(@"_isPointerTouch")));
     }
     return YES;
@@ -2853,11 +2867,11 @@ static void DMMSWSlShared(UIView *pic) {
 // The strip's places for `count` desktops (and "+" while there is room for another and withPlus): each desktop's tile (appended to rects), "+"
 // (CGRectNull: none) and, returned, the strip's height. b: the root's bounds.
 static CGFloat DMMSWStripLayout(CGRect b, NSUInteger count, BOOL withPlus, NSMutableArray<NSValue *> *rects, CGRect *plus) {
-    CGFloat stripH = MIN(150.0, MAX(96.0, b.size.height * 0.15)), labelH = 18.0;
+    CGFloat stripH = MIN(150.0, MAX(96.0, b.size.height * 0.15)), labelH = kMSWStripLabelH;
     CGFloat thumbH = stripH - labelH - 22.0, thumbW = thumbH * b.size.width / b.size.height;
     BOOL hasPlus = withPlus && count < kMSWMaxDesks;
     NSUInteger n = MAX((NSUInteger)1, count), tiles = n + (hasPlus ? 1 : 0);
-    CGFloat gap = 30.0;
+    CGFloat gap = kMSWStripGap;
     if (tiles * thumbW + (tiles - 1) * gap > b.size.width - 40.0) { CGFloat k = (b.size.width - 40.0 - (tiles - 1) * gap) / (tiles * thumbW); thumbW *= k; thumbH *= k; }
     CGFloat x0 = (b.size.width - (tiles * thumbW + (tiles - 1) * gap)) / 2.0;
     for (NSUInteger i = 0; i < n; i++) [rects addObject:[NSValue valueWithCGRect:CGRectIntegral(CGRectMake(x0 + i * (thumbW + gap), 12.0, thumbW, thumbH))]];
@@ -2871,7 +2885,7 @@ static UIView *DMMSWBuildStrip(UIView *root, CGRect b) {
     CGRect plusRect = CGRectNull;
     // (desktops with every engine: DMMSWDesktopsHere is NO only while the Mac Switcher is off -- the desktop on screen alone then, and no "+")
     BOOL desks = DMMSWDesktopsHere();
-    CGFloat stripH = DMMSWStripLayout(b, desks ? gMSWDesks.count : 1, desks, rects, &plusRect), labelH = 18.0;
+    CGFloat stripH = DMMSWStripLayout(b, desks ? gMSWDesks.count : 1, desks, rects, &plusRect), labelH = kMSWStripLabelH;
     UIView *strip = [[UIView alloc] initWithFrame:CGRectMake(0, 0, b.size.width, stripH)];
     strip.userInteractionEnabled = NO;
     NSUInteger n = rects.count;
@@ -2920,7 +2934,7 @@ static UIView *DMMSWBuildStrip(UIView *root, CGRect b) {
         [strip addSubview:clip];
         [gMSWDeskClips addObject:clip];
         UILabel *dl = DMMSWLabel(DMMSWDeskName(i), 12.0, UIFontWeightMedium);
-        dl.frame = CGRectMake(CGRectGetMinX(r) - 20, CGRectGetMaxY(r) + 3.0, r.size.width + 40, labelH);
+        dl.frame = CGRectMake(CGRectGetMinX(r) - 20, CGRectGetMaxY(r) + kMSBDMSWStripLabelTop, r.size.width + 40, labelH);
         [strip addSubview:dl];
         [gMSWDeskLabels addObject:dl];
         // the remove button (not on Desktop 1): shown while the pointer is over the desktop, or after a held finger
@@ -3001,6 +3015,15 @@ static void DMMSWBuild(BOOL animated) {
     pan.allowedTouchTypes = @[@(UITouchTypeDirect), @(UITouchTypeIndirect), @(UITouchTypeIndirectPointer), @(UITouchTypePencil)];
     pan.delegate = gMSWTarget;
     [root addGestureRecognizer:pan];
+    // Swipe Up to Quit by trackpad: two fingers swiped up over a thumbnail, as in the App Switcher (scroll events only, never a touch). Continuous
+    // scrolls only, a trackpad's or a Magic Mouse's swipe: a mouse wheel's notches (discrete) do nothing in the view, as before 1.8.6 (with every
+    // scroll type a few notches down over a thumbnail quit its app)
+    UIPanGestureRecognizer *scroll = [[UIPanGestureRecognizer alloc] initWithTarget:gMSWTarget action:@selector(scroll:)];
+    scroll.allowedTouchTypes = @[];
+    if ([scroll respondsToSelector:@selector(setAllowedScrollTypesMask:)]) scroll.allowedScrollTypesMask = UIScrollTypeMaskContinuous;
+    scroll.delegate = gMSWTarget;
+    [root addGestureRecognizer:scroll];
+    gMSWScrollPanGR = scroll;
     gMSWAllX = NO;
 
     // in: the windows fly from where they are to their places, the strip comes down, the background fades in
@@ -3245,11 +3268,14 @@ static BOOL DMMSWDragMayBegin(UIPanGestureRecognizer *g) {
 static BOOL DMMSWHoldMayBegin(UILongPressGestureRecognizer *g) {
     return gMSWRoot && !gMSWDragTile && !gMSWDropping && DMMSWDeskAt([g locationInView:gMSWRoot]) >= 0;
 }
-// What a window let go at p goes to: a desktop's place, kMSWDropNew ("+", or the strip's empty end right of the last desktop), or kMSWDropNone.
+// What a window let go at p goes to: a desktop's place (its tile, 6 pt round it, and its name under it: MSWFlick.h MSBDMSWDropOnDesk -- 1.8.6,
+// a slow drag let go on the name went back to its place), kMSWDropNew ("+", or the strip's empty end right of the last desktop), or kMSWDropNone.
 static NSInteger DMMSWDropTargetAt(CGPoint p) {
     if (!gMSWDeskRects.count || p.y > gMSWStripH + 4.0) return kMSWDropNone;
-    NSInteger di = DMMSWDeskAt(p);
-    if (di >= 0) return di;
+    for (NSUInteger i = 0; i < gMSWDeskRects.count; i++) {
+        CGRect r = [gMSWDeskRects[i] CGRectValue];
+        if (MSBDMSWDropOnDesk(p.x, p.y, CGRectGetMinX(r), CGRectGetMinY(r), CGRectGetMaxX(r), CGRectGetMaxY(r))) return (NSInteger)i;
+    }
     if (CGRectIsNull(gMSWPlusRect)) return kMSWDropNone;
     return p.x > CGRectGetMaxX([gMSWDeskRects.lastObject CGRectValue]) + 6.0 ? kMSWDropNew : kMSWDropNone;
 }
@@ -3384,7 +3410,7 @@ static void DMMSWDragAbort(void) {
 }
 static void DMMSWDragReset(void) {   // (the view's content goes: nothing of a drag is left)
     [gMSWDragLink invalidate]; gMSWDragLink = nil;
-    gMSWDragTile = nil; gMSWDragShadow = nil; gMSWDropping = NO; gMSWDragTarget = kMSWDropNone;
+    gMSWDragTile = nil; gMSWDragShadow = nil; gMSWDropping = NO; gMSWDragTarget = kMSWDropNone; gMSWScrollTile = nil; gMSWScrollPanGR = nil;
     [gMSWDropHilite removeFromSuperview]; gMSWDropHilite = nil;
 }
 // A refused drop: the desktop shakes its head (Reduce Motion: its border flashes red once instead).
@@ -3823,6 +3849,107 @@ static void DMMSWDragEnd(CGPoint p, BOOL cancelled) {
     }
     DMMSWDrop(t, target);
 }
+// ---- Swipe Up to Quit (1.8.6, KT 10 Nov): a window flicked up in the view quits its app, as the App Switcher's swipe-up does ----
+// The rule (when a flick quits, when a drag moves) is MSWFlick.h's. The quit is our Force Quit (StatusBar.x DMForceQuitBundle): the app ends as the
+// App Switcher ends it, its desktop records, Fit arrangement and kept file go (DMMSWForgetApp), and every window of the app goes with it. Our own
+// windows (Finder, Activity Monitor: native) are no app of their own to quit: never by a flick.
+__attribute__((noinline)) static BOOL DMMSWFlickable(DMMSWTile *t) { return gMSWSwipeQuit && t && t.kind != DMMSWKindNative && t.bundle.length > 0; }
+// The thumbnail flies off the top from where it is now; the app's other thumbnails in the view fade; the others close up; then the quit.
+__attribute__((noinline)) static void DMMSWFlickQuit(DMMSWTile *t, NSString *how) {
+    if (!t || !gMSWRoot) return;
+    NSString *b = [t.bundle copy];
+    [gMSWTiles removeObjectIdenticalTo:t];
+    NSMutableArray<DMMSWTile *> *others = [NSMutableArray array];
+    for (DMMSWTile *o in [gMSWTiles copy]) if (o.kind != DMMSWKindNative && [o.bundle isEqualToString:b]) { [others addObject:o]; [gMSWTiles removeObjectIdenticalTo:o]; }
+    CGRect at = [t.inner convertRect:t.inner.bounds toView:gMSWRoot];
+    CGFloat up = CGRectGetMaxY(at) + 60.0;
+    UIView *label = t.label;
+    [UIView animateWithDuration:MSBReduceMotion() ? 0.15 : 0.28 delay:0 options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionBeginFromCurrentState animations:^{
+        if (!MSBReduceMotion()) t.transform = CGAffineTransformTranslate(t.transform, 0, -up);
+        t.alpha = 0; label.alpha = 0;
+        for (DMMSWTile *o in others) { o.alpha = 0; o.label.alpha = 0; }
+    } completion:^(BOOL f) {
+        [t removeFromSuperview]; [label removeFromSuperview];
+        for (DMMSWTile *o in others) { [o.label removeFromSuperview]; [o removeFromSuperview]; }
+    }];
+    DMMSWLayOutTiles();
+    DM_FEATURE_MARK("mac-switcher-swipe-up-quit");
+    DMLog([NSString stringWithFormat:@"[macswitcher] swipe up to quit: %@ (%@)%@", b, how, others.count ? [NSString stringWithFormat:@", its %lu other window(s) in the view too", (unsigned long)others.count] : @""]);
+    DMForceQuitBundle(b);
+}
+// A flick let go at p is over the desktops in the strip (MSWFlick.h MSBDMSWFlickOverStrip): a desktop or "+" (a drag let go there moves), or the
+// strip round them -- a desktop's name, the gaps between the desktops, the strip's end right of the last one (where "+" stands, also when the most
+// desktops are open and it is gone). Thrown at a desktop and let go a little off it is never a quit (the drag's way back, as before 1.8.6).
+static BOOL DMMSWFlickOverDesks(CGPoint p) {
+    if (DMMSWDropTargetAt(p) != kMSWDropNone) return YES;
+    if (!gMSWDeskRects.count) return NO;
+    CGRect first = [gMSWDeskRects.firstObject CGRectValue], last = [gMSWDeskRects.lastObject CGRectValue];
+    return MSBDMSWFlickOverStrip(p.x, p.y, CGRectGetMinX(first), MSBDMSWNamesMaxY(CGRectGetMaxY(last)), kMSWStripGap);
+}
+// The drag's lift: YES when it was a flick that quit (MSWFlick.h), NO for today's drop or way back.
+__attribute__((noinline)) static BOOL DMMSWFlickEnd(UIPanGestureRecognizer *g) {
+    DMMSWTile *t = gMSWDragTile;
+    if (!DMMSWFlickable(t) || !gMSWRoot) return NO;
+    CGPoint p = [g locationInView:gMSWRoot], v = [g velocityInView:gMSWRoot], tr = [g translationInView:gMSWRoot];
+    CFTimeInterval now = CACurrentMediaTime();
+    MSBDMSWFlick f = { .held = gMSWFlickDownAt > 0 && gMSWFlickBeganAt >= gMSWFlickDownAt ? gMSWFlickBeganAt - gMSWFlickDownAt : 9.0,
+                       .duration = gMSWFlickDownAt > 0 ? now - gMSWFlickDownAt : 9.0, .vx = v.x, .vy = v.y, .dx = tr.x, .dy = tr.y,
+                       .overDesk = DMMSWFlickOverDesks(p), .pointer = gMSWDragPointer };
+    if (!MSBDMSWFlickQuits(f)) {
+        if (f.vy < -400 && f.dy < -30) DMLog([NSString stringWithFormat:@"[macswitcher] %@ went up but is no flick to quit (held %.2f s, %.2f s, speed %.0f,%.0f, rise %.0f%@%@): a drag", t.title, f.held, f.duration, f.vx, f.vy, -f.dy, f.overDesk ? @", over the desktops" : @"", f.pointer ? @", the pointer" : @""]);
+        return NO;
+    }
+    gMSWDragTile = nil;
+    [gMSWDragLink invalidate]; gMSWDragLink = nil;
+    [gMSWDragShadow removeFromSuperview]; gMSWDragShadow = nil;
+    gMSWDragTarget = kMSWDropNone; DMMSWDropHighlight(kMSWDropNone);
+    DMMSWFlickQuit(t, [NSString stringWithFormat:@"a flick: held %.2f s, %.2f s, speed %.0f pt/s up", f.held, f.duration, -f.vy]);
+    return YES;
+}
+// The trackpad: two fingers swiped up over a thumbnail carry it up (the App Switcher's way); far enough or flicked: quit; else back to its place.
+__attribute__((noinline)) static BOOL DMMSWScrollMayBegin(UIPanGestureRecognizer *g) {
+    if (!gMSWRoot || !gMSWOpen || gMSWClosing || gMSWSwitching || gMSWDropping || gMSWDragTile || gMSWScrollTile || gMSWTurnAt > 0) return NO;
+    return DMMSWFlickable(DMMSWTileAt([g locationInView:gMSWRoot]));
+}
+__attribute__((noinline)) static void DMMSWScrollPan(UIPanGestureRecognizer *g) {
+    if (!gMSWRoot) return;
+    switch (g.state) {
+        case UIGestureRecognizerStateBegan: {
+            DMMSWTile *t = DMMSWTileAt([g locationInView:gMSWRoot]);
+            if (!DMMSWFlickable(t)) return;
+            gMSWScrollTile = t;
+            DMLog([NSString stringWithFormat:@"[macswitcher] two-finger swipe over %@ begins", t.title]);
+            [gMSWRoot bringSubviewToFront:t];
+            gMSWHilite.hidden = YES;
+            break;
+        }
+        case UIGestureRecognizerStateChanged: {
+            DMMSWTile *t = gMSWScrollTile;
+            if (!t) return;
+            CGFloat dy = MIN(0.0, [g translationInView:gMSWRoot].y);
+            t.transform = CGAffineTransformMakeTranslation(0, dy);
+            t.label.alpha = MAX(0.0, 1.0 + dy / 60.0);
+            break;
+        }
+        case UIGestureRecognizerStateEnded:
+        case UIGestureRecognizerStateCancelled:
+        case UIGestureRecognizerStateFailed: {
+            DMMSWTile *t = gMSWScrollTile;
+            gMSWScrollTile = nil;
+            if (!t) return;
+            CGPoint tr = [g translationInView:gMSWRoot], v = [g velocityInView:gMSWRoot];
+            if (g.state == UIGestureRecognizerStateEnded && [gMSWTiles indexOfObjectIdenticalTo:t] != NSNotFound && MSBDMSWScrollQuits(tr.x, tr.y, v.y, t.layoutRect.size.height)) {
+                DMMSWFlickQuit(t, [NSString stringWithFormat:@"the trackpad's two-finger swipe: up %.0f pt, %.0f pt/s", -tr.y, -v.y]);
+                return;
+            }
+            DMLog([NSString stringWithFormat:@"[macswitcher] two-finger swipe over %@ let go (%@): %.0f,%.0f pt, %.0f pt/s up: back to its place", t.title, g.state == UIGestureRecognizerStateEnded ? @"ended" : @"cancelled", tr.x, tr.y, -v.y]);
+            UILabel *l = t.label;
+            MSBAnimate(0.34, 0, 0.84, UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction, ^{ t.transform = CGAffineTransformIdentity; l.alpha = 1; }, nil);
+            break;
+        }
+        default: break;
+    }
+}
 static void DMMSWDragPan(UIPanGestureRecognizer *g) {
     switch (g.state) {
         case UIGestureRecognizerStateBegan: {
@@ -3830,6 +3957,7 @@ static void DMMSWDragPan(UIPanGestureRecognizer *g) {
             CGPoint now = [g locationInView:gMSWRoot], tr = [g translationInView:gMSWRoot];
             CGPoint start = CGPointMake(now.x - tr.x, now.y - tr.y);
             DMMSWTile *t = DMMSWTileAt(start);
+            gMSWFlickBeganAt = CACurrentMediaTime();
             if (DMMSWDragAllowed(t)) DMMSWDragStart(t, start, now);
             break;
         }
@@ -3840,6 +3968,7 @@ static void DMMSWDragPan(UIPanGestureRecognizer *g) {
             DMMSWDragFrame();
             break;
         case UIGestureRecognizerStateEnded:
+            if (gMSWDragTile && gMSWRoot && DMMSWFlickEnd(g)) break;   // (Swipe Up to Quit: a flick up, not a drag)
             if (gMSWDragTile && gMSWRoot) DMMSWDragEnd([g locationInView:gMSWRoot], NO);
             break;
         case UIGestureRecognizerStateCancelled:
@@ -5384,6 +5513,13 @@ static BOOL DMMSWTrigger(NSString *cmd) {
     }
     else if ([cmd hasPrefix:@"msw_desk_"]) DMMSWSwitchTo((NSUInteger)[[cmd substringFromIndex:9] integerValue], @"trigger", nil);   // msw_desk_<place from 0>
     else if ([cmd hasPrefix:@"msw_remove_"]) DMMSWRemoveDesktop((NSUInteger)[[cmd substringFromIndex:11] integerValue]);
+    else if ([cmd isEqualToString:@"msw_tiles"]) {   // msw_tiles: each thumbnail's place in the view and the strip's desktops (Swipe Up to Quit's rows: where to put a finger)
+        NSMutableString *o = [NSMutableString stringWithFormat:@"[macswitcher] tiles open %d swipe-quit %d strip %.0f", gMSWOpen, gMSWSwipeQuit, gMSWStripH];
+        for (NSUInteger i = 0; i < gMSWTiles.count; i++) { DMMSWTile *t = gMSWTiles[i]; [o appendFormat:@"\n  tile %lu %@ kind %ld %@", (unsigned long)i, t.bundle ?: @"(native)", (long)t.kind, NSStringFromCGRect(t.layoutRect)]; }
+        for (NSUInteger i = 0; i < gMSWDeskRects.count; i++) [o appendFormat:@"\n  desk %lu %@", (unsigned long)i, NSStringFromCGRect([gMSWDeskRects[i] CGRectValue])];
+        [o appendFormat:@"\n  plus %@", NSStringFromCGRect(gMSWPlusRect)];
+        DMLog(o);
+    }
     else if ([cmd isEqualToString:@"msw_desks"]) {
         NSMutableString *o = [NSMutableString stringWithFormat:@"[macswitcher] desktops %@ current %@ (id %ld), away stages %lu, away native %lu, switching %d", [gMSWDesks componentsJoinedByString:@","], DMMSWDeskName(gMSWCur), (long)DMMSWCurId(), (unsigned long)gMSWAwayCount, (unsigned long)gMSWAwayNatives.count, gMSWSwitching];
         for (NSString *b in gMSWWinDesk) [o appendFormat:@"\n  %@ -> %@", b, gMSWWinDesk[b]];

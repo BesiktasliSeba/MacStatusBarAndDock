@@ -509,7 +509,7 @@
 			<key>cell</key>
 			<string>PSSwitchCell</string>
 			<key>default</key>
-			<false/>
+			<true/>
 			<key>defaults</key>
 			<string>com.besiktasliseba.dockmagnification</string>
 			<key>id</key>

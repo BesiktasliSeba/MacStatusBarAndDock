@@ -22,6 +22,12 @@ check "page 1 only: the alpha follows the icon scroll view's position against pa
   "fn 'static double DMWPPageOneShown(void) {' | grep -q 'fabs(sc.contentOffset.x - pageX) / pw' && grep -q 'addObserver:gWPWatch forKeyPath:@\"contentOffset\"' $D && fn 'static void DMWPTick(void) {' | grep -q 'DMWPUpdateAlpha();'"
 check "laid out as the interface is turned (the wallpaper window does not turn): the screen's interface space mapped into the host, quarter turns only" \
   "fn 'static void DMWPFollowTurn(DMWPPlane *p, UIView *host) {' | grep -q 'convertPoint:CGPointZero fromCoordinateSpace:ui' && fn 'static void DMWPFollowTurn(DMWPPlane *p, UIView *host) {' | grep -q 'fabs(t.a \\* t.d - t.b \\* t.c) != 1.0' && fn 'static void DMWPTick(void) {' | grep -q 'DMWPFollowTurn(gWPPlane, host);'"
+check "the TV (KT 10 Nov): the same picture in SBExternalDisplayWallpaperViewController's container on the TV's screen, its last subview, every tick" \
+  "fn 'static UIView *DMWPFindTVHost(NSString **note) {' | grep -q 'DMWPViewOfController(w, @\"SBExternalDisplayWallpaperViewController\")' && fn 'static UIView *DMWPFindTVHost(NSString **note) {' | grep -q 'w.screen == \[UIScreen mainScreen\]) continue;' && fn 'static void DMWPTVTick(void) {' | grep -q '\[host addSubview:gWPTVPlane\];' && fn 'static void DMWPTick(void) {' | grep -q 'DMWPTVTick();'"
+check "  ... no pages on the TV (shown with its picture), gone with the TV (picture freed), None removes it too" \
+  "fn 'static void DMWPUpdateAlpha(void) {' | grep -q 'gWPTVPlane.image ? 1.0 : 0.0' && fn 'static void DMWPTVTick(void) {' | grep -q 'DMWPRemoveTV(@\"no external display desktop now\")' && fn 'static void DMWPRemove(NSString \*why) {' | grep -q 'DMWPRemoveTV(why);'"
+check "  ... decoded at the TV's own pixels (its mode), light or dark as the iPad's own screen" \
+  "fn 'static void DMWPDecodeIfNeeded(DMWPPlane \*p) {' | grep -q 'DMCall(disp, @\"currentMode\")' && fn 'static BOOL DMWPDarkNow(UIView \*v) {' | grep -q '\[UIScreen mainScreen\].traitCollection.userInterfaceStyle'"
 check "touches never stop at the picture" "grep -q 'hitTest:(CGPoint)p withEvent:(UIEvent \\*)e { return nil; }' $D"
 check "the picture: decoded off the main thread, the part shown at the screen's pixels" \
   "fn 'static void DMWPDecodeIfNeeded(DMWPPlane *p) {' | grep -q 'dispatch_get_global_queue' && fn 'static CGImageRef DMWPDecode(' | grep -q 'MSBDWallpaperPart(path, iw, ih, spw, sph)' && fn 'static CGImageRef DMWPDecode(' | grep -q 'MSBDWallpaperDecodeSize(part, spw, sph)'"

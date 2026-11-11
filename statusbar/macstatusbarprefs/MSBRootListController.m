@@ -534,6 +534,7 @@ static int MSBWindowSizeStored(BOOL *stored) {
 	return size;
 }
 
+static NSMutableArray *MSBComposeGroupFooters(NSArray *specs);   // (1.8.6: the grouped footers, below msb_windowsPageNotes)
 // ---- Two pages, one controller (1.6.0, KT): the Status Bar page (Root.plist) and the Windows & Multitasking page (Windows.plist: Windowing, Window
 // Engine with its notes and Turn On Stage Manager, Windows, Resize Apps to Fit Windows, Traffic Lights, Multitasking), its own row next to Status Bar
 // (StatusBarSettingsRow.x). MSBWindowsListController (below) is this controller with the other plist: every rule here works on the rows it finds, so
@@ -992,11 +993,12 @@ static void MSBFitValueLabels(UIView *v) {
 			                                           || (noFocus18 && [[spec propertyForKey:@"key"] isEqual:kMSBDMacSwitcherKey])) [kept removeObject:spec];
 			if (desktopFailed && [self msb_desktopPage]) for (PSSpecifier *spec in kept) if ([spec.identifier isEqualToString:@"DESKTOP_GROUP"])   // (the page with nothing else: says why)
 				[spec setProperty:@"The desktop isn't available on this iPadOS version." forKey:@"footerText"];
-			if (noFocus18) {   // (and its group: Go to the App's Desktop, 1.7.1, is the Mac Switcher's)
+			if (noFocus18) {   // (and its group's rows: Go to the App's Desktop, 1.7.1, and Swipe Up to Quit, 1.8.6, are the Mac Switcher's; Recent Apps
+				               //  with Left-Edge Swipe, grouped there since 1.8.6, is Stage Manager's strip and stays; an empty group goes, msb_composeFooters)
 				BOOL inGroup = NO;
 				for (PSSpecifier *spec in _specifiers) {
 					if (spec.cellType == PSGroupCell) inGroup = [spec.identifier isEqualToString:kMSBDMacSwitcherGroupID];
-					if (inGroup) [kept removeObject:spec];
+					if (inGroup && spec.cellType != PSGroupCell && ![spec.identifier isEqualToString:kMSBDStripSwipeRowID]) [kept removeObject:spec];
 				}
 			}
 			_specifiers = kept;
@@ -1072,8 +1074,9 @@ static void MSBFitValueLabels(UIView *v) {
 			BOOL hiding = NO;
 			for (PSSpecifier *sp in _specifiers) {
 				if (sp.cellType == PSGroupCell) hiding = [sp.identifier isEqualToString:kMSBDWindowsGroupID];
-				if (sp.cellType == PSGroupCell && [sp.identifier isEqualToString:kMSBDNewWindowsFillGroupID]) { hiding = YES; continue; }   // (New Windows Open at Fill: the windows an engine opens -- audit 1.8.3 M4)
-				if (sp.cellType == PSGroupCell && [sp.identifier isEqualToString:kMSBDKeepCoveredGroupID]) { hiding = YES; continue; }   // (Keep Covered Windows in Front: the engines' windows -- 1.8.4.1 item 7)
+				// (New Windows Open at Fill: the windows an engine opens -- audit 1.8.3 M4; Snap Windows to Edges: an engine's windows -- 1.8.6; Keep Covered
+				//  Windows in Front: the engines' windows -- 1.8.4.1 item 7. Rows of Window Behavior since 1.8.6: the row goes, its group stays)
+				if ([sp.identifier isEqualToString:kMSBDNewWindowsFillRowID] || [sp.identifier isEqualToString:kMSBDSnapRowID] || [sp.identifier isEqualToString:kMSBDKeepCoveredRowID]) continue;
 				if ([sp.identifier isEqualToString:@"ENGINE_GROUP"]) [sp setProperty:onItsOwn ? [NSString stringWithFormat:@"%@ hasn't been tested with MacStatusBar&Dock yet, so it runs on its own and the window features are off.", MSBEngineNameVersion(engine)]
 				                                                                               : @"No tested window engine is installed, so the window features are off." forKey:@"footerText"];
 				BOOL windowsGroup = sp.cellType == PSGroupCell && [sp.identifier isEqualToString:kMSBDWindowsGroupID];
@@ -1093,7 +1096,7 @@ static void MSBFitValueLabels(UIView *v) {
 			BOOL hiding = NO;
 			for (PSSpecifier *sp in _specifiers) {
 				if (sp.cellType == PSGroupCell) hiding = [sp.identifier isEqualToString:kMSBDWindowsGroupID];
-				if (sp.cellType == PSGroupCell && [sp.identifier isEqualToString:kMSBDKeepCoveredGroupID]) { hiding = YES; continue; }   // (Keep Covered Windows in Front: not on Stage Manager for now, statusbar/KeepCovered.h)
+				if ([sp.identifier isEqualToString:kMSBDKeepCoveredRowID]) continue;   // (Keep Covered Windows in Front: not on Stage Manager for now, statusbar/KeepCovered.h)
 				if ([sp.identifier isEqualToString:@"ENGINE_GROUP"])
 					[sp setProperty:MSBStageManagerOnState() == 2 ? @"Stage Manager is off, so apps open full screen. Tap Turn On Stage Manager, or turn it on in Control Center."
 					                                               : @"Apple's Stage Manager does the windowing, with the Mac look on top. Other engines are not loaded." forKey:@"footerText"];
@@ -1143,21 +1146,14 @@ static void MSBFitValueLabels(UIView *v) {
 				// (Stage Manager: its Resize Handles stay; Recent Apps with Left-Edge Swipe only where it has been run through, OwnPageRows.h MSBDStripSwipeOS)
 				if (!MSBDStripSwipeOS([NSProcessInfo processInfo].operatingSystemVersion.majorVersion)) {
 					NSMutableArray *kept = [NSMutableArray array];
-					BOOL inStripSwipe = NO;
-					for (PSSpecifier *sp in _specifiers) {
-						if (sp.cellType == PSGroupCell) inStripSwipe = [sp.identifier isEqualToString:kMSBDStripSwipeGroupID];
-						if (!inStripSwipe) [kept addObject:sp];
-					}
+					for (PSSpecifier *sp in _specifiers) if (![sp.identifier isEqualToString:kMSBDStripSwipeRowID]) [kept addObject:sp];
 					_specifiers = kept;
 				}
 				break;
 			}
 			NSMutableArray *kept = [NSMutableArray array];
-			BOOL inStripSwipe = NO;   // (Recent Apps with Left-Edge Swipe, its group and row: Stage Manager's strip, as Resize Handles)
-			for (PSSpecifier *sp in _specifiers) {
-				if (sp.cellType == PSGroupCell) inStripSwipe = [sp.identifier isEqualToString:kMSBDStripSwipeGroupID];
-				if (!inStripSwipe && ![[sp propertyForKey:@"key"] isEqual:kMSBDResizeHandlesKey]) [kept addObject:sp];
-			}
+			for (PSSpecifier *sp in _specifiers)   // (Recent Apps with Left-Edge Swipe: Stage Manager's strip, as Resize Handles)
+				if (![sp.identifier isEqualToString:kMSBDStripSwipeRowID] && ![[sp propertyForKey:@"key"] isEqual:kMSBDResizeHandlesKey]) [kept addObject:sp];
 			_specifiers = kept;
 			break;
 		}
@@ -1168,11 +1164,7 @@ static void MSBFitValueLabels(UIView *v) {
 			NSString *engine = [self readPreferenceValue:spec];
 			if ([engine isKindOfClass:[NSString class]] && [engine isEqualToString:@"milkyway"]) break;
 			NSMutableArray *kept = [NSMutableArray array];
-			BOOL hiding = NO;
-			for (PSSpecifier *sp in _specifiers) {
-				if (sp.cellType == PSGroupCell) hiding = [sp.identifier isEqualToString:kMSBDResizeGroupID];
-				if (!hiding) [kept addObject:sp];
-			}
+			for (PSSpecifier *sp in _specifiers) if (![[sp propertyForKey:@"key"] isEqual:kMSBDResizeRowKey]) [kept addObject:sp];
 			_specifiers = kept;
 			break;
 		}
@@ -1193,11 +1185,7 @@ static void MSBFitValueLabels(UIView *v) {
 		if ([self msb_windowsPage]) {
 			_msbPrewarmShown = MSBDPrewarmAppsShown() != 0;
 			NSMutableArray *kept = [NSMutableArray array];
-			BOOL hiding = NO;
-			for (PSSpecifier *sp in _specifiers) {
-				if (sp.cellType == PSGroupCell) hiding = !_msbPrewarmShown && [sp.identifier isEqualToString:@"PREWARM_GROUP"];
-				if (!hiding) [kept addObject:sp];
-			}
+			for (PSSpecifier *sp in _specifiers) if (_msbPrewarmShown || ![sp.identifier isEqualToString:kMSBDPrewarmRowID]) [kept addObject:sp];
 			_specifiers = kept;
 		}
 		// Keep Tailspin Off (1.7.9) the same way: its group, footer and switch are left out where the root helper has not found perfdiagsselfenabled
@@ -1205,11 +1193,7 @@ static void MSBFitValueLabels(UIView *v) {
 		if ([self msb_windowsPage]) {
 			_msbTailspinShown = MSBDTailspinRowShown() != 0;
 			NSMutableArray *kept = [NSMutableArray array];
-			BOOL hiding = NO;
-			for (PSSpecifier *sp in _specifiers) {
-				if (sp.cellType == PSGroupCell) hiding = !_msbTailspinShown && [sp.identifier isEqualToString:@"TAILSPIN_GROUP"];
-				if (!hiding) [kept addObject:sp];
-			}
+			for (PSSpecifier *sp in _specifiers) if (_msbTailspinShown || ![sp.identifier isEqualToString:kMSBDTailspinRowID]) [kept addObject:sp];
 			_specifiers = kept;
 		}
 		// Single Mute installed and switched on: it shows the mute icon and ours steps aside (OtherTweaks.h), so the switch says who does it.
@@ -1227,7 +1211,7 @@ static void MSBFitValueLabels(UIView *v) {
 			for (PSSpecifier *spec in _specifiers) {
 				if (spec.cellType == PSGroupCell) hiding = [[spec propertyForKey:@"stockHides"] boolValue];
 				if ([spec.identifier isEqualToString:kMSBDReportRowID]) report = spec;
-				if (!hiding) [kept addObject:spec];
+				if (!hiding && !(spec.cellType != PSGroupCell && [[spec propertyForKey:@"stockHides"] boolValue])) [kept addObject:spec];   // (1.8.6: a row marked on its own, in a mixed group)
 			}
 			// Report a Problem stays reachable: its own group at the end (its usual group is about windows, hidden here)
 			if (report && ![kept containsObject:report] && ![[kept valueForKey:@"identifier"] containsObject:@"MSBD_GUARD_REPORT"]) {
@@ -1238,6 +1222,7 @@ static void MSBFitValueLabels(UIView *v) {
 		}
 		_specifiers = [self msbd_hideRowsWhenLineOff:_specifiers offFooter:@"Everything except the Dock is off. Turn it on to change its settings. Takes effect after a respring."];
 		if ([self msb_windowsPage]) _specifiers = [self msb_windowsPageNotes:_specifiers];
+		if ([self msb_windowsPage]) _specifiers = MSBComposeGroupFooters(_specifiers);   // (1.8.6: the grouped rows' footers, from the rows shown)
 		if ([self msb_desktopPage]) _specifiers = [self msb_desktopPageNotes:_specifiers];
 		// The Activities page's Timers row only where SpringBoard runs the timers source, its Apps row (and the group's footer about apps) only where
 		// it lists other apps' activities -- this iPadOS version in common/LiveActivities.h's lists, filled by the device pass; Apps never on 15/16:
@@ -1300,6 +1285,48 @@ static void MSBFitValueLabels(UIView *v) {
 	}
 	return _specifiers;
 }
+// 1.8.6 (KT 10 Nov): the single-switch groups of the Windows & Multitasking page are grouped (Mac Switcher, Window Behavior, Advanced). Each grouped
+// footer says a sentence per switch, only for the switches the page shows now (a row left out for this engine or iPadOS takes its sentence with it);
+// a group left with no row goes. The words are the single groups' footers of 1.8.5.
+static NSString *MSBGroupedRowSentence(NSString *rowKey) {
+	static NSDictionary<NSString *, NSString *> *words;
+	static dispatch_once_t once;
+	dispatch_once(&once, ^{ words = @{
+		@"goToAppDesktop": @"Go to the App's Desktop: opening an app whose window is on another desktop takes you there. When it's off, the window comes to the desktop you're on.",
+		@"mswSwipeUpQuit": @"Swipe Up to Quit: flicking a window up in the Mac Switcher, or swiping it up with two fingers on a trackpad, quits the app, as in the App Switcher. Drag a window to move it to another desktop.",
+		@"smStripSwipe": @"Recent Apps with Left-Edge Swipe: swiping in from the left edge shows Stage Manager's recent apps. With the Dock at Left, that swipe stays the Dock's.",
+		@"newWindowsFill": @"New Windows Open at Fill: new windows fill the desktop, and Fit to Window doesn't tile them.",
+		@"snapWindowsToEdges": @"Snap Windows to Edges: a window you move or resize lines up with the screen's edges, the menu bar, the Dock and the windows next to it. When it's off, a window stays where you let go.",
+		@"keepCoveredInFront": @"Keep Covered Windows in Front: when a window comes to the front, any smaller window it would cover completely stays in front of it, so it's never lost behind a bigger window.",
+		@"homeMinimizesWindows": @"Home Minimizes Windows: swiping up from the bottom or pressing the Home button minimizes the windows, so the Home Screen shows. Opening an app brings its window back.",
+		@"flexResizeWindows": @"Resize Apps to Fit Windows: apps lay themselves out to fit their window, like on a Mac. When it's off, an app keeps its full-screen layout and is scaled down to fit.",
+		@"hideTrafficLights": @"Turn Off Traffic Lights: hides the window buttons in the status bar for full-screen apps.",
+		@"magnifyTrafficLights": @"Magnify Traffic Lights: touching a window's buttons with a finger makes them bigger, so you can pick one. Slide to another, lift to use it, or lift away to cancel.",
+		@"prewarmApps": @"Prewarm Apps: iPadOS starts some apps in the background before you open them, so they open faster. Turn this off to keep that memory free on an iPad with little RAM.",
+		@"keepTailspinOff": @"Keep Tailspin Off: iPadOS turns on tailspin, a performance trace for Apple's diagnostics, for a few days at a time. It holds tens of MB of memory and samples the whole system many times a second.",
+	}; });
+	return [rowKey isKindOfClass:[NSString class]] ? words[rowKey] : nil;
+}
+static NSMutableArray *MSBComposeGroupFooters(NSArray *specs) {
+	NSSet *grouped = [NSSet setWithObjects:kMSBDMacSwitcherGroupID, kMSBDWindowBehaviorGroupID, kMSBDTrafficLightsGroupID, kMSBDAdvancedGroupID, nil];
+	NSMutableArray *out = [NSMutableArray arrayWithCapacity:specs.count];
+	for (NSUInteger i = 0; i < specs.count; i++) {
+		PSSpecifier *g = specs[i];
+		if (g.cellType != PSGroupCell || ![grouped containsObject:g.identifier ?: @""]) { [out addObject:g]; continue; }
+		NSMutableArray *lines = [NSMutableArray array];
+		NSUInteger rows = 0;
+		for (NSUInteger j = i + 1; j < specs.count && ((PSSpecifier *)specs[j]).cellType != PSGroupCell; j++) {
+			rows++;
+			NSString *line = MSBGroupedRowSentence([specs[j] propertyForKey:@"key"]);
+			if (line) [lines addObject:line];
+		}
+		if (!rows) continue;   // (every row left out here: the group goes too)
+		if (lines.count) [g setProperty:[lines componentsJoinedByString:@"\n\n"] forKey:@"footerText"];
+		else [g removePropertyForKey:@"footerText"];
+		[out addObject:g];
+	}
+	return out;
+}
 // The Windows & Multitasking page when its rows cannot work: MacStatusBar off (its switch is on the Status Bar page) -- only a note, as that page
 // shows only its switch then; the stock status bar -- its rows are left out as on the Status Bar page (stockHides), and a note says what runs;
 // MacStatusBar&Dock not running on this iPadOS version or in safe mode -- the rows are greyed (msbd_hideRowsWhenLineOff), a note says where to look.
@@ -1314,11 +1341,8 @@ static void MSBFitValueLabels(UIView *v) {
 	if (MSBDLineEnabled(@"MacStatusBar") && !MSBStockBarStored()) return [[@[note] arrayByAddingObjectsFromArray:specs] mutableCopy];   // (greyed rows below)
 	// (Keep Tailspin Off stays under the note: the root helper applies it whatever the status bar does -- no stockHides on its group)
 	NSMutableArray *kept = [@[note] mutableCopy];
-	BOOL tailspin = NO;
-	for (PSSpecifier *sp in specs) {
-		if (sp.cellType == PSGroupCell) tailspin = MSBDBarOffKeepsGroup(sp.identifier);   // (common/OwnPageRows.h: Keep Tailspin Off's group)
-		if (tailspin) [kept addObject:sp];
-	}
+	for (PSSpecifier *sp in specs)   // (common/OwnPageRows.h: Keep Tailspin Off, with its group's header -- Advanced -- whose footer then says only its part)
+		if (MSBDBarOffKeepsRow(sp.identifier) || (sp.cellType == PSGroupCell && [sp.identifier isEqualToString:kMSBDAdvancedGroupID])) [kept addObject:sp];
 	return kept;
 }
 // The Desktop page (1.7.5) when its rows cannot work: MacStatusBar off -- only a note, as on the Windows & Multitasking page; MacStatusBar&Dock not
@@ -1362,10 +1386,9 @@ static void MSBFitValueLabels(UIView *v) {
 	if (v) CFRelease(v);
 	if (!MSBDGateWanted()) on = NO;   // (untested iPadOS / safe mode: every row greyed, LineSwitch.h -- this one stays so)
 	for (PSSpecifier *spec in _specifiers) {
-		if (![spec.identifier isEqualToString:@"MSW_GO_TO_APP_DESKTOP"]) continue;
+		if (![spec.identifier isEqualToString:@"MSW_GO_TO_APP_DESKTOP"] && ![spec.identifier isEqualToString:@"MSW_SWIPE_UP_QUIT"]) continue;   // (and Swipe Up to Quit, 1.8.6)
 		[spec setProperty:@(on) forKey:@"enabled"];
 		if (reload) [self reloadSpecifier:spec animated:YES];
-		break;
 	}
 }
 

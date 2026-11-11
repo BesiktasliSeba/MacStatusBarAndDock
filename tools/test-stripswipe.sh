@@ -11,10 +11,10 @@ check "the gate: off, held off as before; on, Apple's decides, never over the Ma
 check "the strip stays hidden for Stage Manager, also during a reveal" "grep -qF 'return DMSMFree() ? YES : %orig;' $S && ! grep -qF 'during the swipe.s reveal Stage Manager says strip hidden' $S"
 check "off unless switched on, a boolean only" "grep -qF 'static BOOL gSMStripSwipe = NO;' $S && grep -qF 'BOOL stripSwipe = sw && CFGetTypeID(sw) == CFBooleanGetTypeID() && CFBooleanGetValue(sw);' $S"
 check "a window drag still can't start in the edge zone" "grep -qF '(IMP)DMSMUnpinBegin' $S"
-check "the Settings row: off by default, in a group with a footer, no em dash" \
-  "python3 -I -c \"import plistlib,sys; it=plistlib.load(open('$P','rb'))['items']; i=[x.get('id') for x in it].index('STRIP_SWIPE'); s=it[i]; g=it[i-1]; sys.exit(0 if s['key']=='smStripSwipe' and s['default'] is False and g.get('id')=='STRIP_SWIPE_GROUP' and '\\u2014' not in g['footerText'] else 1)\""
-check "shown with Stage Manager as the engine only, in the page and the search" \
-  "grep -qF 'if ([group isEqualToString:kMSBDStripSwipeGroupID] && (!s.engineWorks || !s.stageManagerEngine || !MSBDStripSwipeOS([NSProcessInfo processInfo].operatingSystemVersion.majorVersion))) return YES;' $R && grep -qF 'inStripSwipe = [sp.identifier isEqualToString:kMSBDStripSwipeGroupID];' $M"
+check "the Settings row: off by default, in the Mac Switcher's group since 1.8.6, its sentence in the group's footer, no em dash" \
+  "python3 -I -c \"import plistlib,sys; it=plistlib.load(open('$P','rb'))['items']; i=[x.get('id') for x in it].index('STRIP_SWIPE'); s=it[i]; g=[x for x in it[:i] if x.get('cell')=='PSGroupCell'][-1]; sys.exit(0 if s['key']=='smStripSwipe' and s['default'] is False and g.get('id')=='MSW_GROUP' and 'Recent Apps with Left-Edge Swipe:' in g['footerText'] and '\\u2014' not in g['footerText'] else 1)\""
+check "shown with Stage Manager as the engine only, in the page and the search (its row; the Mac Switcher's group stays)" \
+  "grep -qF 'if ([ident isEqualToString:kMSBDStripSwipeRowID] && (!s.engineWorks || !s.stageManagerEngine || !MSBDStripSwipeOS([NSProcessInfo processInfo].operatingSystemVersion.majorVersion))) return YES;' $R && grep -qF 'for (PSSpecifier *sp in _specifiers) if (![sp.identifier isEqualToString:kMSBDStripSwipeRowID]) [kept addObject:sp];' $M"
 check "  ... and only on iPadOS 16 to 18: row and switch" \
   "grep -qF 'static inline BOOL MSBDStripSwipeOS(long major) { return major >= 16 && major <= 18; }' $R && grep -qF 'if (!MSBDStripSwipeOS([NSProcessInfo processInfo].operatingSystemVersion.majorVersion)) {' $M \
    && grep -qF 'if (stripMajor < 16 || stripMajor > 18) stripSwipe = NO;' ../statusbar/StatusBar.x"

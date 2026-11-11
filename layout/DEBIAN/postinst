@@ -44,6 +44,12 @@ PLIST
     fi
     $L unload /var/jb/Library/LaunchDaemons/com.besiktasliseba.sshtoggled.plist 2>/dev/null
     $L load /var/jb/Library/LaunchDaemons/com.besiktasliseba.sshtoggled.plist 2>/dev/null
+    # the Charge Limit's job (chargehelper/): (re)started; it holds nothing unless a Charge Limit is set in Settings > Battery. Asked to let go of
+    # its hold and cut first (--stop, as the prerm does): a dpkg --configure run again has no prerm before it, and the unload alone ends the job
+    # without a SIGTERM it sees, its hold left with powerd (the M1, 5-7 Nov: charging off until a reboot)
+    [ -x /var/jb/usr/libexec/msbdcharge ] && /var/jb/usr/libexec/msbdcharge --stop >/dev/null 2>&1
+    $L unload /var/jb/Library/LaunchDaemons/com.besiktasliseba.chargelimit.plist 2>/dev/null
+    $L load /var/jb/Library/LaunchDaemons/com.besiktasliseba.chargelimit.plist 2>/dev/null
     # the system pointer process keeps the Mac pointer code it loaded at start, and a respring does not restart it on iPadOS 16: it is stopped
     # here (launchd starts it again at once) so an install or update reaches the pointer without a reboot. A plain kill is ignored: -9.
     /var/jb/usr/bin/killall -9 pointeruid 2>/dev/null
@@ -73,6 +79,8 @@ elif [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-remove" ] || [ "$1" = "abort-
     # the prerm gave BigSurCenter and Destra back already, so this version's choices are applied again first, as after an install.
     if [ "$1" = "abort-upgrade" ] && [ -n "$2" ] && [ -x "$H" ] && /var/jb/usr/bin/dpkg --compare-versions "$2" lt 1.8.0~ 2>/dev/null; then "$H" --after-install; fi
     P=/var/jb/Library/LaunchDaemons/com.besiktasliseba.sshtoggled.plist
+    [ -f "$P" ] && $L load "$P" 2>/dev/null
+    P=/var/jb/Library/LaunchDaemons/com.besiktasliseba.chargelimit.plist   # (and the Charge Limit's job)
     [ -f "$P" ] && $L load "$P" 2>/dev/null
 fi
 exit 0

@@ -65,10 +65,9 @@ static CGRect DMSMRAArea(id self, SEL _cmd) {   // -[SBChamoisOverlappingModel s
 // desktop's edges or the stage's other windows' sides; 17 and 18 snap a resized side themselves and are left as Apple has them). at: the location
 // the step reads, which is where it puts the dragged sides; start: the card as the drag began (the switcher's points: the screen's); the window as
 // drawn is the card with our title bar above it. The window being resized is the one whose held sides are start's (WindowSnap.h
-// MSBDSnapHeldSidesMatch). Only a window of the iPad's own screen found that way among the working stage's windows is snapped: this step runs for a
-// TV's window too (16 with an extended display), and the working stage can be the TV's -- the area here is the iPad's desktop and the neighbours
-// another screen's points, so a TV's side was pulled up to 10 pt onto a line of the iPad's (its Dock line, its right edge) and never onto the TV's
-// own. A TV's window is left as Apple's step has it, as a move leaves it (DMSMSnapMoveTarget); so is one that is not found (1.7.3 review).
+// MSBDSnapHeldSidesMatch). This step runs for a TV's window too (16 with an extended display), and the working stage can be the TV's: until 1.8.6
+// a TV's window was left as Apple's step has it (the area here was the iPad's desktop and the neighbours another screen's points, so a TV's side
+// was pulled up to 10 pt onto a line of the iPad's); now it snaps to its own screen's desktop and windows. One not found is left (1.7.3 review).
 // A resize by hand of the working stage's window whose held sides are start's: the title bar's frame from before is older (review 1.8.3 P4-1) --
 // at 16's last step, also with Snapping off, and where any resize begins, 17 and 18's own too, whatever size it ends at (L2).
 static void DMSMRADropTitleRecord(unsigned long long edge, CGRect start) {
@@ -95,24 +94,26 @@ static CGPoint DMSMRASnapEnd(unsigned long long edge, CGRect start, CGPoint at) 
     if (!(card.size.width > 0) || !(card.size.height > 0)) return at;
     CGRect window = CGRectMake(card.origin.x, card.origin.y - kSMBarH, card.size.width, card.size.height + kSMBarH);
     unsigned how = (sd.left ? MSBDSnapLeft : 0) | (sd.right ? MSBDSnapRight : 0) | (sd.top ? MSBDSnapTop : 0) | (sd.bottom ? MSBDSnapBottom : 0);
-    CGRect others[32]; int n = 0, mine = 0; BOOL offIPad = NO;
+    // (1.8.6, tv-parity row 22: a TV's window snaps too -- to the TV's desktop and the TV's other windows, as a move does (DMSMSnapMoveTarget):
+    //  the neighbours are the windows drawn on the resized window's own screen, the area that display's; before, a TV's window was left as is)
+    CGRect others[32]; int n = 0, mine = 0;
+    UIScreen *scr = nil;
     NSDictionary<NSString *, NSValue *> *frames = DMSMOpenWindowFrames();
     for (NSString *k in frames) {
         CGRect f = frames[k].CGRectValue, c = CGRectMake(f.origin.x, f.origin.y + kSMBarH, f.size.width, f.size.height - kSMBarH);
-        if (MSBDSnapHeldSidesMatch(c, start, how)) {   // (the window being resized: not a neighbour of its own)
-            mine++;
-            UIView *own = DMSMCardFor(k);
-            if ((own.window.screen ?: [UIScreen mainScreen]) != [UIScreen mainScreen]) offIPad = YES;
-            continue;
-        }
-        if (n < 32) others[n++] = f;
+        if (MSBDSnapHeldSidesMatch(c, start, how)) { mine++; scr = DMSMCardFor(k).window.screen ?: [UIScreen mainScreen]; }   // (the window being resized)
     }
-    if (!mine || offIPad) {   // (a TV's window, or one not found on the working stage: left as Apple's step has it)
+    if (mine != 1 || !scr) {   // (none of the working stage's windows, or two alike: left as Apple's step has it)
         static int told = 0;
-        if (told < 4) { told++; DMLog([NSString stringWithFormat:@"[snap] a Stage Manager window's resize ended %@: not snapped (the iPad's own windows only)", offIPad ? @"on another screen" : @"where none of the working stage's windows is"]); }
+        if (told < 4) { told++; DMLog([NSString stringWithFormat:@"[snap] a Stage Manager window's resize ended where %@: not snapped", mine ? @"two of the working stage's windows match" : @"none of the working stage's windows is"]); }
         return at;
     }
-    CGRect s = DMSnapFrameFor(@"a Stage Manager window", window, how, others, n, DMSMUsableAreaForIdentity(nil, NULL));
+    for (NSString *k in frames) {
+        CGRect f = frames[k].CGRectValue, c = CGRectMake(f.origin.x, f.origin.y + kSMBarH, f.size.width, f.size.height - kSMBarH);
+        if (MSBDSnapHeldSidesMatch(c, start, how)) continue;   // (not a neighbour of its own)
+        if (n < 32 && (DMSMCardFor(k).window.screen ?: [UIScreen mainScreen]) == scr) others[n++] = f;
+    }
+    CGRect s = DMSnapFrameFor(@"a Stage Manager window", window, how, others, n, DMSMUsableAreaForIdentity(scr == [UIScreen mainScreen] ? nil : DMSMIdentityOfScreen(scr), NULL));
     if (CGRectEqualToRect(s, window)) return at;
     if (sd.left) at.x = CGRectGetMinX(s);
     if (sd.right) at.x = CGRectGetMaxX(s);

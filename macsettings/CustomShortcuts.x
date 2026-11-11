@@ -241,6 +241,17 @@ static void MSCSSetRecording(BOOL on) {
     [super viewDidLoad];
     [self msLoadRule];
     self.title = _index >= 0 ? @"Edit Shortcut" : @"New Shortcut";
+    // (Settings leaving the front, by Home, a swipe up, Cmd-Tab or another window, sends no viewWillDisappear: the recording stops then too, or the
+    // shortcuts waited for it everywhere until Settings recorded again, also after Settings was closed; review 1.8.6, L. SpringBoard also ends a
+    // recording when Settings is not in front: statusbar/CustomShortcuts.h DMCSFrontChanged. Selector observers go with the page by themselves.)
+    NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
+    [nc addObserver:self selector:@selector(msLeftFront:) name:UIApplicationWillResignActiveNotification object:nil];
+    [nc addObserver:self selector:@selector(msLeftFront:) name:UISceneWillDeactivateNotification object:nil];
+}
+- (void)msLeftFront:(NSNotification *)n {
+    if (!_recording) return;
+    [self msStopRecording];
+    [self reloadSpecifiers];
 }
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
@@ -318,7 +329,7 @@ static void MSCSSetRecording(BOOL on) {
     if (_index >= 0 && _index < (NSInteger)rules.count) { [rules removeObjectAtIndex:(NSUInteger)_index]; MSCSSaveRules(rules); }
     [self.navigationController popViewControllerAnimated:YES];
 }
-// ---- recording: the page takes the keyboard's presses; SpringBoard's shortcuts wait meanwhile (kMSBDCSRecordingNote) ----
+// ---- recording: the page takes the keyboard's presses; the shortcuts wait meanwhile, SpringBoard's and the apps' (kMSBDCSRecordingNote) ----
 - (BOOL)canBecomeFirstResponder { return YES; }
 - (void)msRecord:(PSSpecifier *)s {
     if (_recording) { [self msStopRecording]; [self reloadSpecifiers]; return; }
@@ -386,7 +397,7 @@ static void MSCSSetRecording(BOOL on) {
         BOOL kp = MSKeyPilotIsInstalled();
         NSMutableArray *s = [NSMutableArray array];
         PSSpecifier *g = [PSSpecifier groupSpecifierWithName:nil];
-        NSString *foot = @"Your own keyboard shortcuts open an app or a URL, arrange the front window, or go Home. Custom Shortcuts is based on KeyPilot by wanghuangjie.";
+        NSString *foot = @"Your own keyboard shortcuts open an app or a URL, arrange the front window, or go Home, whichever app is in front. In Sileo, Filza and other recovery apps, only shortcuts with Command, Control or Globe work. Custom Shortcuts is based on KeyPilot by wanghuangjie.";
         if (kp) foot = [foot stringByAppendingString:@" While KeyPilot is installed, its own shortcuts work and these wait, so each key does one thing."];
         [g setProperty:foot forKey:@"footerText"];
         [s addObject:g];

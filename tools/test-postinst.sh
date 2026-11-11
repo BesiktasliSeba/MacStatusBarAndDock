@@ -27,6 +27,7 @@ EOF
 printf '#!/bin/sh\n[ "$1" = --compare-versions ] && exec python3 -I "%s" "$2" "$3" "$4"\nexit 2\n' "$PWD/tools/dpkg-compare-versions.py" > "$R/usr/bin/dpkg"
 chmod +x "$R/usr/libexec/sshtoggled" "$R/usr/bin/launchctl" "$R/usr/bin/killall" "$R/usr/bin/dpkg"
 : > "$R/Library/LaunchDaemons/com.besiktasliseba.sshtoggled.plist"
+: > "$R/Library/LaunchDaemons/com.besiktasliseba.chargelimit.plist"
 sed "s#/var/jb#$R#g" layout/DEBIAN/postinst > "$W/postinst"; chmod +x "$W/postinst"
 
 pass=0; fail=0
@@ -35,7 +36,7 @@ run() {   # run <name> <is-ipad exit code> <expected: setup|nosetup> <postinst a
     echo "$rc" > "$W/ipad-rc"; : > "$W/calls"
     out=$("$W/postinst" "$@" 2>&1); prc=$?
     local setup=nosetup
-    grep -q -- "--after-install" "$W/calls" && grep -q "launchctl load .*com.besiktasliseba.sshtoggled.plist" "$W/calls" && setup=setup
+    grep -q -- "--after-install" "$W/calls" && grep -q "launchctl load .*com.besiktasliseba.sshtoggled.plist" "$W/calls" && grep -q "launchctl load .*com.besiktasliseba.chargelimit.plist" "$W/calls" && setup=setup
     if [ "$setup" = "$want" ] && [ "$prc" = 0 ]; then pass=$((pass+1)); printf 'ok    %s\n' "$name"
     else fail=$((fail+1)); printf 'FAIL  %s (got %s, postinst exit %s)\n%s\n' "$name" "$setup" "$prc" "$(sed 's/^/        /' "$W/calls")"; fi
 }
@@ -47,7 +48,7 @@ run "configure, helper killed (137): full setup"                    137 setup   
 for c in "abort-upgrade 1.8.1" "abort-upgrade 1.8.0~r02" "abort-remove 1.0.1" "abort-deconfigure 1.0.1"; do
     set -- $c
     echo 0 > "$W/ipad-rc"; : > "$W/calls"; "$W/postinst" $1 $2 >/dev/null 2>&1; prc=$?
-    if [ "$prc" = 0 ] && grep -q "launchctl load .*com.besiktasliseba.sshtoggled.plist" "$W/calls" && ! grep -q "^helper" "$W/calls"; then pass=$((pass+1)); echo "ok    $1 $2: helper started again, nothing else run"
+    if [ "$prc" = 0 ] && grep -q "launchctl load .*com.besiktasliseba.sshtoggled.plist" "$W/calls" && grep -q "launchctl load .*com.besiktasliseba.chargelimit.plist" "$W/calls" && ! grep -q "^helper" "$W/calls"; then pass=$((pass+1)); echo "ok    $1 $2: helper and Charge Limit job started again, nothing else run"
     else fail=$((fail+1)); echo "FAIL  $1 $2: $(tr '\n' ';' < "$W/calls")"; fi
 done
 # a downgrade to a version before 1.8.0 that failed after the prerm gave BigSurCenter and Destra back (code review 1.8.0, 1): this version's choices
@@ -55,7 +56,7 @@ done
 for v in 1.7.9.2 1.0.1; do
     echo 0 > "$W/ipad-rc"; : > "$W/calls"; "$W/postinst" abort-upgrade $v >/dev/null 2>&1; prc=$?
     a=$(grep -n '^helper --after-install$' "$W/calls" | cut -d: -f1); l=$(grep -n "launchctl load .*com.besiktasliseba.sshtoggled.plist" "$W/calls" | cut -d: -f1)
-    if [ "$prc" = 0 ] && [ -n "$a" ] && [ -n "$l" ] && [ "$a" -lt "$l" ] && [ "$(grep -c '^helper' "$W/calls")" = 1 ]; then pass=$((pass+1)); echo "ok    abort-upgrade $v (a failed downgrade): the choices applied again, then the helper started"
+    if [ "$prc" = 0 ] && [ -n "$a" ] && [ -n "$l" ] && [ "$a" -lt "$l" ] && [ "$(grep -c '^helper' "$W/calls")" = 1 ] && grep -q "launchctl load .*com.besiktasliseba.chargelimit.plist" "$W/calls"; then pass=$((pass+1)); echo "ok    abort-upgrade $v (a failed downgrade): the choices applied again, then the helper and the Charge Limit job started"
     else fail=$((fail+1)); echo "FAIL  abort-upgrade $v: $(tr '\n' ';' < "$W/calls")"; fi
 done
 : > "$W/calls"; "$W/postinst" triggered >/dev/null 2>&1
@@ -105,5 +106,11 @@ dasd "dasd: the helper crashed (139): restarted" 139 kill
 dasd "dasd: no helper to ask: restarted" none kill
 echo 0 > "$W/dasd-rc"; : > "$W/calls"; "$W/postinst" configure 1.7.1 >/dev/null 2>&1
 qs "dasd: the helper is asked after the quit set's file is settled (a dasd started again reads the right file)" 'awk "/--quit-set-kept/{q=NR} /--dasd-part-current/{d=NR} END{exit !(q && d && q < d)}" "$W/calls"'
+# the Charge Limit's job, restarted by configure: asked to let go first (msbdcharge --stop), then unloaded -- a dpkg --configure run again has no
+# prerm before it, and the unload alone ends the job with its hold up (the M1's dead-owner holds, 5-7 Nov)
+printf '#!/bin/sh\necho "msbdcharge $*" >> "%s"\n' "$W/calls" > "$R/usr/libexec/msbdcharge"; chmod +x "$R/usr/libexec/msbdcharge"
+echo 0 > "$W/ipad-rc"; : > "$W/calls"; "$W/postinst" configure 1.8.5 >/dev/null 2>&1
+qs "the Charge Limit's job: msbdcharge --stop before its unload" 'awk "/^msbdcharge --stop/{s=NR} /launchctl unload .*chargelimit/{u=NR} END{exit !(s && u && s < u)}" "$W/calls"'
+rm -f "$R/usr/libexec/msbdcharge"
 echo "postinst: $pass passed, $fail failed"
 [ "$fail" = 0 ]

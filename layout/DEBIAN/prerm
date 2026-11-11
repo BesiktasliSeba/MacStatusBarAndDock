@@ -2,6 +2,13 @@
 # MacStatusBar&Dock prerm: the root helper is stopped first (so it cannot re-apply anything meanwhile). On removal (not on an upgrade) everything we
 # changed is given back: the window engines' own settings, our Choicy entries, the engines renamed for iCleaner Pro.
 /var/jb/usr/bin/launchctl unload /var/jb/Library/LaunchDaemons/com.besiktasliseba.sshtoggled.plist 2>/dev/null
+# The Charge Limit's job is stopped too, then charging is handed back to iPadOS: the PMU iPads' inhibit key does not end with the job
+# (chargehelper/main.m). On an upgrade as well: the new postinst starts it again. Before the unload the job lets go of its hold and adapter cut
+# itself (--stop): the unload ends it without a SIGTERM it sees, and a hold still raised then can stay with powerd after its death (the M1, 5-7
+# Nov: charging stayed off with the job removed until a reboot).
+[ -x /var/jb/usr/libexec/msbdcharge ] && /var/jb/usr/libexec/msbdcharge --stop >/dev/null 2>&1
+/var/jb/usr/bin/launchctl unload /var/jb/Library/LaunchDaemons/com.besiktasliseba.chargelimit.plist 2>/dev/null
+[ -x /var/jb/usr/libexec/msbdcharge ] && /var/jb/usr/libexec/msbdcharge --reset >/dev/null 2>&1
 # Keep Tailspin Off's false in Apple's com.apple.da goes on every way out of this version, an upgrade or a downgrade too: an older version knows
 # nothing of it and left it there for good (a downgrade, then a removal: code review). The version that follows writes it again within seconds of
 # its postinst starting the helper, where its switch is on. Not on failed-upgrade: dpkg runs that while the helper on disk is the old version's.

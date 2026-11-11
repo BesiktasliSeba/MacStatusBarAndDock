@@ -12,6 +12,7 @@
 #   T <target> pref <domain> <key> <off 0|1> <default 0|1> [offtext=<text>[,<text>...]] <row title>|<where>   a switch: set to <off>; <default>
 #                                                            = its value when never set; offtext: the stored texts that count as <off> (CrashFeature.h)
 #   T <target> part                                          the part (image) is not loaded any more (loader skip list)
+#   T <target> piece <where>|<what>                          code with no Settings row: on the skip list as <target> (its code reads it)
 #   P <Image> <target>                                       an image's own target (a small part; or a big one's fallback)
 #   N <Image> <where>|<what>                                 the part in words ("the Dock|the Dock"), for the guard's explanation
 #   U <Image> <uuid> <arch>                                  a function map follows for this slice ...

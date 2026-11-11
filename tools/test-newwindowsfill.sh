@@ -31,7 +31,7 @@ check "Aerial, Zetsu, MilkyWay4: where a window is adopted (DMCascadeStage) one 
    && awk '/if \(MSBDNewWindowAtFill\(gNewWindowsFill, ownPlace \|\| /{a=NR} /if \(fitOn && \[gFreeWindows containsObject:me\]\) goto regularWindow;/{b=NR} END{exit !(a && b > a)}' \$W/fn \
    && grep -q '(gWindowSizeChoice != MSBDWindowSizeDefault || gNewWindowsFill) && !gLastWindowFrames\\[me\\];' \$W/fn"
 check "Stage Manager: the join's window with no size of its own is Fill, not moved on, out of Fit's tiles (a free window)" \
-  "fn 'static id DMSMJoinAttributes(NSString *key, id frontAttrs, BOOL windowed, long newest, id stage) {' && grep -q 'BOOL atFill = MSBDNewWindowAtFill(gNewWindowsFill, false, false);' \$W/fn \
+  "fn 'static id DMSMJoinAttributesOn(NSString *key, id frontAttrs, BOOL windowed, long newest, id stage, id identity) {' && grep -q 'BOOL atFill = MSBDNewWindowAtFill(gNewWindowsFill, false, false);' \$W/fn \
    && grep -q 'CGRect placed = atFill ? opening : MSBDWindowCascadeIn(opening, others, n, u, NO, &how);' \$W/fn \
    && grep -q 'if (DMFitEnabled()) { if (!gSMFreeWindows) gSMFreeWindows = \\[NSMutableSet set\\]; \\[gSMFreeWindows addObject:key\\]; }' \$W/fn"
 check "no side question for a window that opens at Fill, before its launch on every engine" \
@@ -56,7 +56,7 @@ check "with every new switch off the cascade (Aerial 3.0 and 5.x, Zetsu, MilkyWa
   "fill_off_is_1822 && fn 'static CGRect DMOpeningWindowFrame(void) {' && grep -q 'if (!MSBDNewWindowAtFill(gNewWindowsFill, false, false)) return DMNewWindowFrame();' \$W/fn"
 check "  ... Stage Manager's: the side question and the join read the same size of its own (its own window's, one from before our full screen; not one Stage Manager works out itself)" \
   "grep -q 'static BOOL DMSMOpensAtOwnSize(NSString \\*key) { return DMSMAttrsOwnSize(DMSMOwnAttrsFor(key, YES, NULL)); }' $S \
-   && fn 'static id DMSMJoinAttributes(NSString *key, id frontAttrs, BOOL windowed, long newest, id stage) {' && grep -q 'id own = DMSMOwnAttrsFor(key, windowed, &ownItem);' \$W/fn && grep -q 'BOOL fresh = !DMSMAttrsOwnSize(own);' \$W/fn \
+   && fn 'static id DMSMJoinAttributesOn(NSString *key, id frontAttrs, BOOL windowed, long newest, id stage, id identity) {' && grep -q 'id own = DMSMOwnAttrsFor(key, windowed, &ownItem);' \$W/fn && grep -q 'BOOL fresh = !DMSMAttrsOwnSize(own);' \$W/fn \
    && fn 'static BOOL DMSMAttrsOwnSize(id attrs) {' && grep -q 'return attrs && !DMSMAttrsFullScreen(attrs) && DMSMAttrAttributedSize(attrs, &sz) && sz.type != 3 && sz.normalizedSize.width > 0 && sz.normalizedSize.height > 0;' \$W/fn"
 check "never on a layout pass: the layouts and Fit's own tiling ask no opening frame" \
   "fn 'static void DMApplyGroupSlots(UIView *fresh) {' && ! grep -q 'gNewWindowsFill\\|DMOpeningWindowFrame' \$W/fn && fn 'static void DMSMFitTick(BOOL force) {' && ! grep -q 'gNewWindowsFill' \$W/fn"

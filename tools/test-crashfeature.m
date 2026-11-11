@@ -53,6 +53,14 @@ int main(int argc, char **argv) {
         Expect(@"small part with a switch -> its switch", fx(@"step1b-small-part-switch.ips"), map, [NSString stringWithFormat:@"pref ForceQuitMenu %@ forceQuitEnabled 0 Force Quit in App Menus|the Force Quit menu item", D]);
         Expect(@"core, banners function -> Mac-Style Banners off", fx(@"step1b-core-banners.ips"), map, [NSString stringWithFormat:@"pref MacStatusBarCore %@ macBanners 0 Mac-Style Banners|the Mac-style banners", D]);
         Expect(@"core, banners (exception backtrace) -> banners off", fx(@"step1b-core-banners-exception.ips"), map, [NSString stringWithFormat:@"pref MacStatusBarCore %@ macBanners 0 Mac-Style Banners|the Mac-style banners", D]);
+        // A piece (review of 1.8.6: the battery icon's plug, no Settings row): on the skip list under its target's name, recorded as a part (Turn Back
+        // On), whatever is stored; the same report with the banners' target made a piece of the core
+        NSString *pieceMap = [map stringByReplacingOccurrencesOfString:@"T macBanners pref com.besiktasliseba.test-crashstep macBanners 0 1 Mac-Style Banners|the Mac-style banners"
+                                                            withString:@"T macBanners piece the banners|the Mac-style banners"];
+        Expect(@"core, a piece's code -> the piece as a part (its target's name)", fx(@"step1b-core-banners.ips"), pieceMap, @"part macBanners - - 0 the banners|the Mac-style banners");
+        SetPref(@"macBanners", @NO);
+        Expect(@"  ... a stored switch of the same name changes nothing", fx(@"step1b-core-banners.ips"), pieceMap, @"part macBanners - - 0 the banners|the Mac-style banners");
+        SetPref(@"macBanners", nil);
         Expect(@"core, menu function -> Stock status bar", fx(@"step1b-core-menu.ips"), map, [NSString stringWithFormat:@"pref MacStatusBarCore %@ stockStatusBar 1 Status Bar Style|the status bar", D]);
         Expect(@"core, another build (UUID not in map) -> fallback Stock", fx(@"step1b-core-other-build.ips"), map, [NSString stringWithFormat:@"pref MacStatusBarCore %@ stockStatusBar 1 Status Bar Style|the status bar", D]);
         // A watchdog report (stacks only in a stackshot, CrashBlame.h): stuck in our core -> its part's fallback, like a crash there.

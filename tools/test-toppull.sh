@@ -16,5 +16,5 @@ check "  ... the other order: an App Library the swipe down opened just before t
 check "  ... hooked only where the pull start has the known type" \
   "grep -q 'if (enc && !strcmp(enc, \"v24@0:8@16\")) %init(TopPullYield);' $K"
 check "item 12: Stage Manager engine: an app activated while the App Library shows (our menus, Spotlight, a link) closes the App Library, as an icon tap does" \
-  "grep -q 'if (DMLibraryVisible()) { NSString \*b = \[bundle copy\]; dispatch_async(dispatch_get_main_queue(), ^{ DMSMLibraryLaunched(b); }); }' $S"
+  "grep -q 'if (!tv \&\& DMLibraryVisible()) { NSString \*b = \[bundle copy\]; dispatch_async(dispatch_get_main_queue(), ^{ DMSMLibraryLaunched(b); }); }' $S"
 [ $fails = 0 ] && echo "test-toppull: site checks pass" || { echo "test-toppull: site checks FAILED"; exit 1; }

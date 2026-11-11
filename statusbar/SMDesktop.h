@@ -292,7 +292,7 @@ static long long DMSMCtxLong(id ctx, NSString *name, long long dflt) {
     if (![ctx respondsToSelector:s] || !DMSMSigOK(ctx, s, DMSMSigTime(), name.UTF8String)) return dflt;
     return ((long long (*)(id, SEL))objc_msgSend)(ctx, s);
 }
-static void DMSMDeskJoinDone(NSArray<NSString *> *fresh, NSArray<NSString *> *leftOut, NSArray<NSDictionary *> *deskW, id desk, BOOL windowed, NSSet<NSString *> *asWindow, NSString *how);
+static void DMSMDeskJoinDone(NSArray<NSString *> *fresh, NSArray<NSString *> *leftOut, NSArray<NSDictionary *> *deskW, id desk, BOOL windowed, NSSet<NSString *> *asWindow, BOOL tv, NSString *how);
 // asked: @[role, entity] of every role the context has set (roles 1 up to the highest window role -- 1-9 on 16.7.7, SMRoles.h -- read by
 // DMSMJoinDesktop). Stage Manager is about to show another stage than
 // the desktop (DMSMDeskJoinPlan decides): instead the desktop's windows and the new ones, the new ones in front -- as a launch joins it. The plan
@@ -448,7 +448,14 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
 #endif
     int flags = 0;
     id identity = DMCall(ctx, @"displayIdentity");
-    if (!DMSMIsMainIdentity(identity)) flags |= DMSMJoinNotMain;
+    // (1.8.6, tv-parity-audit row 27: a stage SpringBoard asks for on the TV -- Command-Tab, the App Switcher's card -- joins the TV's desktop as the
+    //  iPad's do; the Mac Switcher's desktops stay the iPad's. DMSMJoinNotMain only where the TV's desktop can't be read. Review of 1.8.6: so on the
+    //  TV none of the Mac Switcher's paths runs, as a TV launch has it (!tv && DMMSWSMJoin): no "another desktop's window" (DMSMJoinOtherDesk, which
+    //  alone leads to DMMSWSMAskedBringHere, DMSMJoinWindowCardGo and DMSMJoinMinimizedGo, each writing an iPad desktop's windows into the TV's
+    //  transition), no minimized window reopened on its iPad desktop, no new iPad desktop for a full TV desktop (DMMSWSMAskedFull), and nothing
+    //  recorded on the iPad's current desktop after the join (DMSMDeskJoinDone): the TV's desktop joins as SpringBoard asked.)
+    BOOL tv = !DMSMIsMainIdentity(identity);
+    if (tv) DM_FEATURE_MARK("sm-join-asked-tv");
     long long env = DMSMCtxLong(ctx, @"requestedUnlockedEnvironmentMode", 0);
     if (env == 1) flags |= DMSMJoinToHome;
     if (env == 2) flags |= DMSMJoinToSwitcher;
@@ -476,7 +483,7 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
             NSString *k = DMSMEntityKey(e) ?: b;   // (the window: two windows of one app are two -- M-2)
             [askedW addObject:@{@"w": k, @"b": b, @"r": @(r)}];
             if (!reopenAsk && DMSMIsMinimized(k)) reopenAsk = k;   // (1.7.4 item 1: opened again below, when it is a plain activation of it)
-            if (DMSMDeskOnOtherDesktop(k)) flags |= DMSMJoinOtherDesk;
+            if (!tv && DMSMDeskOnOtherDesktop(k)) flags |= DMSMJoinOtherDesk;
             if (!askedEntity[k]) askedEntity[k] = e;
             if (!askedEntity[b]) askedEntity[b] = e;   // (by app, when the decision compares apps: the first of the app's)
             [seen addObject:[NSString stringWithFormat:@"%lld %@", r, DMSMKeyText(k)]];
@@ -492,7 +499,7 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
     // (1.7.4 item 1: a minimized window of another desktop asked for alone -- not by a switcher gesture, which shows it SpringBoard's way and
     //  DMSMShownByGesture unmarks it then -- with Go to the App's Desktop on: a window of its desktop again, that desktop's switch below)
     NSString *reopened = nil;
-    if (reopenAsk && askedW.count == 1 && !(flags & ~DMSMJoinOtherDesk) && !([label0 isKindOfClass:[NSString class]] && [label0 isEqualToString:@"FinalFluidSwitcherGestureAction"])
+    if (!tv && reopenAsk && askedW.count == 1 && !(flags & ~DMSMJoinOtherDesk) && !([label0 isKindOfClass:[NSString class]] && [label0 isEqualToString:@"FinalFluidSwitcherGestureAction"])
         && !DMSMGestureCtx(ctx) && DMSMJoinMinimizedReopen(reopenAsk)) { reopened = reopenAsk; if (DMSMDeskOnOtherDesktop(reopened)) flags |= DMSMJoinOtherDesk; }
     // (1.7.1: a window of another desktop that an app switch asks for -- an App Switcher card, nothing else in the context -- comes to the desktop
     //  on screen unless Go to the App's Desktop is on, as a launch's does: MacSwitcherSM.h DMMSWSMAskedBringHere. A switcher gesture's end stays
@@ -513,13 +520,13 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
     // stages until it is shown.
     NSMutableSet<NSString *> *askedK = [NSMutableSet set];   // (the windows asked for: their keys -- an app key where windows are told apart by app, M-2)
     for (NSDictionary *w in askedW) [askedK addObject:w[@"w"]];
-    NSArray<NSArray *> *mswWins = DMMSWSMAskedDeskWindows();
+    NSArray<NSArray *> *mswWins = tv ? nil : DMMSWSMAskedDeskWindows();
     NSMutableArray<NSArray *> *wins = [NSMutableArray array];
     id desk = nil;   // (the stage of the desktop's newest window: its screen, and where new windows cascade from)
     if (mswWins) { [wins addObjectsFromArray:mswWins]; desk = mswWins.firstObject[0]; }
     else {
         NSMutableDictionary *map = nil;
-        desk = DMSMDesktopFor(DMSMStageShownBefore(ctx), askedK, &map);
+        desk = DMSMDesktopFor(tv ? nil : DMSMStageShownBefore(ctx), askedK, &map, tv ? identity : nil);
         for (id it in map) { NSString *k = DMSMItemKey(it); if (k) [wins addObject:@[desk, it, map[it], k]]; }
     }
     NSMutableArray<NSDictionary *> *deskW = [NSMutableArray array];
@@ -582,7 +589,7 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
     // (a full desktop: the plan keeps its newest windows and leaves the oldest out -- with the Mac Switcher on, what it answers for a full desktop
     //  comes first: today the new windows open on a new desktop instead, MacSwitcherSM.h DMMSWSMAtCap)
     NSArray<NSString *> *leftOut = DMSMDeskJoinLeftOut(deskW, decision);
-    if (leftOut.count && DMMSWSMAskedFull(ctx, asked, freshB, askedEntity, identity, frontB)) return;
+    if (!tv && leftOut.count && DMMSWSMAskedFull(ctx, asked, freshB, askedEntity, identity, frontB)) return;   // (the TV: its oldest left out, as a TV launch)
     NSMutableArray<NSArray *> *plan = [NSMutableArray array];
     NSMutableArray<NSString *> *fresh = [NSMutableArray array];
     id frontEntity = nil; long k = 0;
@@ -622,7 +629,7 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
         DMLog([NSString stringWithFormat:@"[smjoin] SpringBoard asked for another stage at a switcher gesture's end (%@): left as it built it while the gesture holds the desktop's stage -- it joins the desktop right after (%@)", askedText, why]);
         DMSMAfterGestureOnce(@"the desktop join", ^{
             if (!DMSMRequestPlan(identity, DMSMIsMainIdentity(identity), @"MSBDJoinAfterGesture", planC, DMSMNewWindowRoles(), frontC, YES)) { DMLog(@"[smjoin] after the gesture: the desktop could not be asked for -- left as it is"); return; }
-            DMSMDeskJoinDone(freshC, leftOutC, deskWC, deskC, windowed, asWinC, @"after the switcher gesture");
+            DMSMDeskJoinDone(freshC, leftOutC, deskWC, deskC, windowed, asWinC, tv, @"after the switcher gesture");
 #if DEBUG
             DMSMTestBarRefreshSoon("/tmp/msb-test-barrefresh-join", @"the join after the gesture");
 #endif
@@ -641,15 +648,16 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
         DMLog([NSString stringWithFormat:@"[smjoin] another stage asked for (%@): writing the desktop failed, SpringBoard's roles put back", askedText]);
         return;
     }
-    DMSMDeskJoinDone(fresh, leftOut, deskW, desk, windowed, asWin, [NSString stringWithFormat:@"SpringBoard asked for another stage (%@): it joins the desktop instead -- %@", askedText, why]);
+    DMSMDeskJoinDone(fresh, leftOut, deskW, desk, windowed, asWin, tv, [NSString stringWithFormat:@"SpringBoard asked for another stage (%@): it joins the desktop instead -- %@", askedText, why]);
 }
-// (after a join: the new windows are no longer minimized ones, one full-screen app at a time, Mac Switcher's records, and the log line)
-static void DMSMDeskJoinDone(NSArray<NSString *> *fresh, NSArray<NSString *> *leftOut, NSArray<NSDictionary *> *deskW, id desk, BOOL windowed, NSSet<NSString *> *asWindow, NSString *how) {
+// (after a join: the new windows are no longer minimized ones, one full-screen app at a time, Mac Switcher's records (the iPad's: tv, none), and the log line)
+static void DMSMDeskJoinDone(NSArray<NSString *> *fresh, NSArray<NSString *> *leftOut, NSArray<NSDictionary *> *deskW, id desk, BOOL windowed, NSSet<NSString *> *asWindow, BOOL tv, NSString *how) {
     NSMutableArray<NSString *> *freshText = [NSMutableArray array];
     for (NSString *b in fresh) { DMSMSetMinimized(b, NO); [freshText addObject:DMSMKeyText(b)]; }   // (opened again: no longer a minimized window)
     if (!windowed && desk) for (NSString *b in fresh) if (![asWindow containsObject:b]) DMSMDismissOtherFullScreen(desk, b);   // (full screen: one full-screen app at a time, as a launch; a minimized window back as a window leaves it)
     DMSMMarkLeftOut(leftOut, @"a stage joined to a full desktop");   // (minimized with the Mac Switcher or not: the restore must not take one for the desktop)
-    DMMSWSMAskedJoined(fresh, leftOut);   // (Mac Switcher: recorded on the current desktop; a full desktop's left-out windows minimized and said)
+    if (tv) DMMSWSMLeftOut(leftOut, nil);   // (the TV: no Mac Switcher desktop of its own -- its left-out windows minimized and said, as a TV launch's)
+    else DMMSWSMAskedJoined(fresh, leftOut);   // (Mac Switcher: recorded on the current desktop; a full desktop's left-out windows minimized and said)
     DM_FEATURE_MARK("sm-join-asked-stage");
     for (NSString *b in fresh) {   // (a window of an app already on the desktop joined it: M-2's case)
         if (DMSMKeyIsApp(b)) continue;

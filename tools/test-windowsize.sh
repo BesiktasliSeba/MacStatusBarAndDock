@@ -55,7 +55,7 @@ check "No Fit: the new window at Small / Large (DMNoFitFrame), Stage Manager's t
    && grep -q 'return CGRectIsNull(f) ? @\"center\" : \\[NSValue valueWithCGRect:f\\];' \$W/fn"
 check "the middle place is asked for nowhere else as a new window's (only No Fit's own default, DMNoFitFrame)" "[ \$(grep -c 'DMLayoutFrame(@\"center\")' $S) = 1 ] && fn 'static CGRect DMNoFitFrame(void) {' && grep -q 'DMLayoutFrame(@\"center\")' \$W/fn"
 check "Stage Manager: a window with no size of its own -- nothing to start from, a full-screen one's, or one joining a desktop with a front window -- opens at the engines' new window (Default too), kept off the desktop's other windows by the engines' rule; its own is kept" \
-  "fn 'static id DMSMJoinAttributes(NSString *key, id frontAttrs, BOOL windowed, long newest, id stage) {' && grep -q 'BOOL fresh = !DMSMAttrsOwnSize(own);' \$W/fn && grep -q '            if (fresh) {' \$W/fn \
+  "fn 'static id DMSMJoinAttributesOn(NSString *key, id frontAttrs, BOOL windowed, long newest, id stage, id identity) {' && grep -q 'BOOL fresh = !DMSMAttrsOwnSize(own);' \$W/fn && grep -q '            if (fresh) {' \$W/fn \
    && grep -q 'CGRect opening = atFill ? DMSMLayoutFrameIn(@\"fill\", u, scr) : DMSMNewWindowFrameIn(u, scr);' \$W/fn && grep -q 'if (CGRectIsNull(opening)) return nil;' \$W/fn \
    && grep -q 'if (atFill || n >= 32 || it == ownItem || DMSMKeyCovers(key, DMSMItemKey(it)) || DMSMAttrsFullScreen(sm\\[it\\])) continue;' \$W/fn \
    && grep -q 'CGRect o = DMSMWindowFrameOfAttrs(sm\\[it\\], scr);' \$W/fn && grep -q 'CGRect placed = atFill ? opening : MSBDWindowCascadeIn(opening, others, n, u, NO, &how);' \$W/fn \

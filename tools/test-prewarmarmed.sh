@@ -26,12 +26,12 @@ cp ../prewarmblock/* "$W/tree/prewarmblock/"; cp ../common/*.h "$W/tree/common/"
 id1=$("$W/tree/tools/prewarm-part-id.sh" "$W/tree/prewarmblock" d); echo '// a change' >> "$W/tree/common/PrewarmArmed.h"
 check "the part's build ID counts the record's header (a change to it restarts dasd at the install)" "[ -n '$id1' ] && [ \"\$('$W/tree/tools/prewarm-part-id.sh' '$W/tree/prewarmblock' d)\" != '$id1' ]"
 P=../statusbar/macstatusbarprefs/MSBRootListController.m
-check "Settings: Windows & Multitasking leaves out the Prewarm Apps group (its footer and switch) while the block is not armed, by the state read as the list is built" \
-  "awk '/if \\(\\[self msb_windowsPage\\]\\) \\{/{f=1} f&&/_msbPrewarmShown = MSBDPrewarmAppsShown\\(\\) != 0;/{r=1} r&&/hiding = !_msbPrewarmShown && \\[sp.identifier isEqualToString:@\"PREWARM_GROUP\"\\];/{h=1} h&&/if \\(!hiding\\) \\[kept addObject:sp\\];/{print \"ok\"; exit}' $P | grep -q ok"
+check "Settings: Windows & Multitasking leaves out the Prewarm Apps row (its sentence goes from Advanced's footer with it, 1.8.6) while the block is not armed, by the state read as the list is built" \
+  "grep -q '_msbPrewarmShown = MSBDPrewarmAppsShown() != 0;' $P && grep -qF 'for (PSSpecifier *sp in _specifiers) if (_msbPrewarmShown || ![sp.identifier isEqualToString:kMSBDPrewarmRowID]) [kept addObject:sp];' $P && grep -qF '@\"prewarmApps\": @\"Prewarm Apps:' $P"
 check "  ... back on the page, built again when the state changed since (a dasd started again)" \
   "awk '/^@implementation MSBWindowsListController/,/^@end/' $P | grep -q '\\[self msb_prewarmMaybeChanged\\];' && awk '/^- \\(void\\)msb_prewarmMaybeChanged \\{/,/^}/' $P | grep -q '(MSBDPrewarmAppsShown() != 0) == _msbPrewarmShown) return;'"
-check "Windows.plist: the switch is the only row of its group, so the group's going takes the row and its footer" \
-  "plutil -convert json -o - ../statusbar/macstatusbarprefs/Resources/Windows.plist | python3 -c 'import json,sys; it=json.load(sys.stdin)[\"items\"]; g=[n for n,x in enumerate(it) if x.get(\"id\")==\"PREWARM_GROUP\"]; sys.exit(0 if len(g)==1 and g[0]+1<len(it) and it[g[0]+1].get(\"id\")==\"PREWARM_APPS\" and (g[0]+2==len(it) or it[g[0]+2].get(\"cell\")==\"PSGroupCell\") and it[g[0]].get(\"cell\")==\"PSGroupCell\" and it[g[0]].get(\"footerText\") else 1)'"
+check "Windows.plist: the switch is in Advanced (1.8.6) with Keep Tailspin Off, hidden on its own with the stock status bar (the row's stockHides; the group has none: Keep Tailspin Off stays)" \
+  "plutil -convert json -o - ../statusbar/macstatusbarprefs/Resources/Windows.plist | python3 -c 'import json,sys; it=json.load(sys.stdin)[\"items\"]; i=[n for n,x in enumerate(it) if x.get(\"id\")==\"PREWARM_APPS\"]; g=[x for x in it[:i[0]] if x.get(\"cell\")==\"PSGroupCell\"][-1] if len(i)==1 else {}; sys.exit(0 if len(i)==1 and g.get(\"id\")==\"ADVANCED_GROUP\" and not g.get(\"stockHides\") and it[i[0]].get(\"stockHides\") is True and \"Prewarm Apps:\" in g.get(\"footerText\",\"\") else 1)'"
 S=../common/TweakSpotlight.h
 check "search: MTSShownRows leaves out MAC_WINDOWS's PREWARM_APPS exactly while the page does (MSBDPrewarmAppsShown)" \
   "grep -q 'if (rows.count && !MSBDPrewarmAppsShown()) rows = MTIWithout(rows, @\"MAC_WINDOWS\", @\"PREWARM_APPS\");' $S"

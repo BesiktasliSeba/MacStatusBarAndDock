@@ -11,14 +11,18 @@
 // Left out, as they are iPhone features that do nothing on iPad: Peak Performance Capability (performance management) and Apple's Optimized
 // Battery Charging switch (PowerUI runs its "unsupported" manager on iPad: +[PowerUISmartChargeUtilities isOBCSupported] is [self isiPhone]) --
 // on 17 / 18 its charging options group and Clean Energy Charging. Added: a Cycle Count row (the battery service's CycleCount) under Maximum
-// Capacity, on every version; and the header says what Apple's iPad page says there (MSBHSetHeaderText), not its iPhone text.
+// Capacity, on every version; and the header says what Apple's iPad page says there (MSBHSetHeaderText), not its iPhone text. And, where the
+// Charge Limit's job is installed (chargehelper/), our Charging group in Peak Performance's place, right under Maximum Capacity and Cycle Count:
+// Charge Limit (Off, 80, 85, 90, 95 %), Run on Power Adapter (off unless set), Charge to Full Now while it holds the battery below full, and a
+// footer saying what it does now.
 // With another tweak that opens this page all of this is installed too, and the page is ours (KT, 1.7.9: ours is the default even with another
 // battery health tweak). The two read on KT's iPads (plans/battery-charging.md, section 1) hook some of the same methods without a row of their
 // own on the page: PoomSmart's Battery Health Enabler 1.0.0 rebuilds the 15 / 16 row builder as Apple's (one group, one Battery Health row) and
 // Brend0n's BatteryHealthEnabler 0.0.1 answers isiPhone "yes" inside BatteryUsageUI, so either way the one builder makes the one row, whichever
 // hook runs first (ours only lets that builder ask), and their state getters answer what ours answer once there is a figure (service state 0,
 // performance management 2, PoomSmart's battery check 1). Ours alone: Maximum Capacity, Cycle Count, the iPad header text, Peak Performance and
-// Optimized Battery Charging left out (PoomSmart's greyed switch goes with Apple's group) and our groups after them (BatteryUse.x).
+// Optimized Battery Charging left out (PoomSmart's greyed switch goes with Apple's group), our Charging group in Peak Performance's place
+// and our groups after them (BatteryUse.x).
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -26,7 +30,9 @@
 #import <dlfcn.h>
 #import <unistd.h>
 #import <os/lock.h>
+#import <notify.h>
 #import "../common/BatteryHealthFigures.h"
+#import "../common/ChargeLimit.h"
 
 @interface PSSpecifier : NSObject
 - (id)propertyForKey:(NSString *)key;
@@ -34,9 +40,14 @@
 + (instancetype)groupSpecifierWithID:(NSString *)identifier;
 - (void)setIdentifier:(NSString *)identifier;
 - (void)setProperty:(id)value forKey:(NSString *)key;
+- (void)setValues:(NSArray *)values titles:(NSArray *)titles shortTitles:(NSArray *)shortTitles;
+- (void)setButtonAction:(SEL)action;
+@end
+@interface UIViewController (MSBHPage)
+- (void)reloadSpecifiers;
 @end
 
-enum { kMSBHCellTitleValue = 4 };
+enum { kMSBHCellLinkList = 2, kMSBHCellTitleValue = 4, kMSBHCellSwitch = 6, kMSBHCellButton = 13 };
 
 static void MSBHLog(NSString *line) {   // (debug builds only, with /tmp/macsettings-debug: release builds write no /tmp log)
 #if DEBUG
@@ -149,6 +160,81 @@ static void MSBHSetHeaderText(id specs, Class page) {
     }
 }
 
+// ---- our Charging group (common/ChargeLimit.h): only where the Charge Limit's job is installed. Its row is a stock list of Apple's own kind
+// (PSListItemsController), read and written by Apple's page itself through our domain, which posts the job's settings notification.
+#define kMSBHChargeJob "/var/jb/usr/libexec/msbdcharge"
+static __weak UIViewController *gMSBHChargingPage;   // the page showing the group: rebuilt when the job's state changes
+static BOOL gMSBHChargingStale;                      // ... or when it comes back into view, if the state changed while it was covered
+static uint64_t MSBHChargeWord(void) {
+    int t = 0; uint64_t w = 0;
+    if (notify_register_check(MSBD_CHARGE_STATE, &t) == NOTIFY_STATUS_OK) { notify_get_state(t, &w); notify_cancel(t); }
+    return w;
+}
+static int MSBHChargeLimitPref(void) {
+    CFPropertyListRef v = CFPreferencesCopyAppValue(CFSTR(MSBD_CHARGE_LIMIT_KEY), CFSTR(MSBD_CHARGE_DOMAIN));
+    int n = kMSBDChargeLimitOff;
+    if (v && CFGetTypeID(v) == CFNumberGetTypeID()) CFNumberGetValue((CFNumberRef)v, kCFNumberIntType, &n);
+    if (v) CFRelease(v);
+    return n;
+}
+static BOOL MSBHChargeComeDownPref(void) {
+    CFPropertyListRef v = CFPreferencesCopyAppValue(CFSTR(MSBD_CHARGE_COMEDOWN_KEY), CFSTR(MSBD_CHARGE_DOMAIN));
+    BOOL on = v && CFGetTypeID(v) == CFBooleanGetTypeID() ? CFBooleanGetValue((CFBooleanRef)v) : kMSBDChargeComeDownDefault;
+    if (v) CFRelease(v);
+    return on;
+}
+static BOOL MSBHChargeAdapterPref(void) {   // (Run on Power Adapter: missing = off)
+    CFPropertyListRef v = CFPreferencesCopyAppValue(CFSTR(MSBD_CHARGE_ADAPTER_KEY), CFSTR(MSBD_CHARGE_DOMAIN));
+    BOOL on = v && CFGetTypeID(v) == CFBooleanGetTypeID() && CFBooleanGetValue((CFBooleanRef)v);
+    if (v) CFRelease(v);
+    return on;
+}
+static NSArray *MSBHChargingSpecifiers(UIViewController *page) {
+    if (access(kMSBHChargeJob, X_OK) != 0) return @[];
+    gMSBHChargingPage = page; gMSBHChargingStale = NO;
+    uint64_t w = MSBHChargeWord();
+    int pref = MSBHChargeLimitPref();
+    char text[600]; MSBDChargeFooterText(w, pref, MSBHChargeComeDownPref(), MSBHChargeAdapterPref(), text, sizeof text);
+    PSSpecifier *g = [PSSpecifier groupSpecifierWithID:@"MSBD_CHARGING_GROUP"];   // (later rows of ours about charging and sleep join this group)
+    [g setProperty:[NSString stringWithUTF8String:text] forKey:@"footerText"];
+    PSSpecifier *limit = [PSSpecifier preferenceSpecifierNamed:@"Charge Limit" target:page set:@selector(setPreferenceValue:specifier:) get:@selector(readPreferenceValue:)
+                                                        detail:NSClassFromString(@"PSListItemsController") cell:kMSBHCellLinkList edit:Nil];
+    [limit setProperty:@MSBD_CHARGE_LIMIT_KEY forKey:@"key"];
+    [limit setProperty:@MSBD_CHARGE_DOMAIN forKey:@"defaults"];
+    [limit setProperty:@(kMSBDChargeLimitOff) forKey:@"default"];
+    [limit setProperty:@MSBD_CHARGE_PREFS_CHANGED forKey:@"PostNotification"];
+    NSArray *titles = @[@"Off", @"80%", @"85%", @"90%", @"95%"];
+    [limit setValues:@[@(kMSBDChargeLimitOff), @80, @85, @90, @95] titles:titles shortTitles:titles];
+    [limit setIdentifier:@"MSBD_CHARGE_LIMIT"];
+    // Run on Power Adapter (common/ChargeLimit.h MSBDChargeAdapterLimit): a stock switch, read and written by Apple's page through our domain like
+    // the limit's row; off unless set
+    PSSpecifier *adapter = [PSSpecifier preferenceSpecifierNamed:@"Run on Power Adapter" target:page set:@selector(setPreferenceValue:specifier:) get:@selector(readPreferenceValue:)
+                                                          detail:Nil cell:kMSBHCellSwitch edit:Nil];
+    [adapter setProperty:@MSBD_CHARGE_ADAPTER_KEY forKey:@"key"];
+    [adapter setProperty:@MSBD_CHARGE_DOMAIN forKey:@"defaults"];
+    [adapter setProperty:@NO forKey:@"default"];
+    [adapter setProperty:@MSBD_CHARGE_PREFS_CHANGED forKey:@"PostNotification"];
+    [adapter setIdentifier:@"MSBD_CHARGE_RUN_ON_ADAPTER"];
+    NSMutableArray *specs = [NSMutableArray arrayWithObjects:g, limit, adapter, nil];
+    if (MSBDChargeOffersFullNow(w, pref)) {
+        PSSpecifier *full = [PSSpecifier preferenceSpecifierNamed:@"Charge to Full Now" target:page set:NULL get:NULL detail:Nil cell:kMSBHCellButton edit:Nil];
+        [full setButtonAction:sel_registerName("msbdChargeToFullNow:")];
+        [full setIdentifier:@"MSBD_CHARGE_FULL_NOW"];
+        [specs addObject:full];
+    }
+    return specs;
+}
+static void MSBHChargeToFullNow(id self, SEL _cmd, id specifier) {
+    notify_post(MSBD_CHARGE_FULL_NOW);
+    MSBHLog(@"Charge to Full Now");
+}
+static void MSBHChargingChanged(void) {   // (the job's state word or our setting changed)
+    UIViewController *page = gMSBHChargingPage;
+    if (!page) return;
+    if (page.isViewLoaded && page.view.window) [page reloadSpecifiers];
+    else gMSBHChargingStale = YES;
+}
+
 // ---- the page's data: ours only where Apple's is missing
 // (debug builds, with /tmp/macsettings-debug: Apple's own answer and ours, each time either changes -- how each iPadOS answers on iPad)
 static int MSBHAnswer(NSString *what, int apple, int ours) {
@@ -185,8 +271,12 @@ static int MSBHAnswer(NSString *what, int apple, int ours) {
     MSBHSetHeaderText(r, [(id)self class]);
     return r;
 }
-- (id)peakPowerCapacityGroupSpecifier {   // (performance management: an iPhone feature)
-    return @[];
+- (id)peakPowerCapacityGroupSpecifier {   // (performance management, an iPhone feature: our Charging group instead, where the job is installed)
+    return MSBHChargingSpecifiers((UIViewController *)self);
+}
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
+    if (gMSBHChargingStale && gMSBHChargingPage == (UIViewController *)self) { gMSBHChargingStale = NO; [(UIViewController *)self reloadSpecifiers]; }
 }
 - (id)chargeCapacityGroupSpecifier {
     id r = %orig;
@@ -275,6 +365,12 @@ static void MSBHTryInit(void) {
     if ((!gate15 && !gate17) || !MSBHHas(modeling, YES, "isiPhone")) { gMSBHVerdict = 1; MSBHLog(@"no row builder or isiPhone: Apple's page untouched"); return; }   // (a page we do not know)
     gMSBHVerdict = 2;
     class_addMethod(health, sel_registerName("msbdCycleCount:"), (IMP)MSBHCycleCountValue, "@24@0:8@16");
+    class_addMethod(health, sel_registerName("msbdChargeToFullNow:"), (IMP)MSBHChargeToFullNow, "v24@0:8@16");
+    if (access(kMSBHChargeJob, X_OK) == 0) {   // (the group follows the job's state and our setting while it is shown)
+        int t1 = 0, t2 = 0;
+        notify_register_dispatch(MSBD_CHARGE_STATE, &t1, dispatch_get_main_queue(), ^(int t) { MSBHChargingChanged(); });
+        notify_register_dispatch(MSBD_CHARGE_PREFS_CHANGED, &t2, dispatch_get_main_queue(), ^(int t) { MSBHChargingChanged(); });
+    }
     if (gate15) %init(MSBHGate15); else %init(MSBHGate17);
     %init(MSBHIsPhone);
     if (MSBHHas(resource, YES, "getBatteryHealthServiceState") && MSBHHas(resource, YES, "genuineBatteryStatus") && MSBHHas(resource, YES, "getManagementState")
@@ -288,9 +384,9 @@ static void MSBHTryInit(void) {
     else if (MSBHHas(health, NO, "smartChargingGroupSpecifier")) %init(MSBHNoSmartCharging15);
     if (MSBHHas(health, NO, "cleanEnergyChargingGroupSpecifier")) %init(MSBHNoCleanEnergy);
     MSBHFigures f = MSBHFiguresNow();
-    MSBHLog([NSString stringWithFormat:@"installed (row builder %@, capacity getter %@, charging group %@): Maximum Capacity %d %%, Cycle Count %d",
+    MSBHLog([NSString stringWithFormat:@"installed (row builder %@, capacity getter %@, Apple's charging group %@, our Charging group %@): Maximum Capacity %d %%, Cycle Count %d",
              gate15 ? @"15/16" : @"17/18", MSBHHas(resource, YES, "getBatteryMaximumCapacityPercent") ? @"15-17" : @"18", MSBHHas(health, NO, "setUpChargingOptionsSpecifiers") ? @"17/18" : @"15/16",
-             f.percent, f.cycles]);
+             access(kMSBHChargeJob, X_OK) == 0 ? @"yes" : @"no (no job)", f.percent, f.cycles]);
 }
 static void MSBHBundleLoaded(CFNotificationCenterRef center, void *observer, CFNotificationName name, const void *object, CFDictionaryRef info) {
     MSBHTryInit();

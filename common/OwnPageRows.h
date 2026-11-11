@@ -38,25 +38,35 @@ typedef struct {
 #define kMSBDLineRowID      @"MSBD_LINE"          // a page's MacStatusBar / MacDock switch (LineSwitch.h; TweakIndex.h kMTILineRowID)
 #define kMSBDReportRowID    @"REPORT_PROBLEM"     // Report a Problem: with the stock status bar, in a group of its own instead of its group
 #define kMSBDWiFiGroupID    @"WIFI_GROUP"         // the Wi-Fi Menu (18: SpringBoard's typed keyboard focus lock for its password sheet)
-#define kMSBDMacSwitcherGroupID @"MSW_GROUP"      // the Mac Switcher and Go to the App's Desktop (18: the same lock)
+#define kMSBDMacSwitcherGroupID @"MSW_GROUP"      // the Mac Switcher, Go to the App's Desktop and Swipe Up to Quit (18: the same lock); and, since
+                                                 // 1.8.6, Recent Apps with Left-Edge Swipe (Stage Manager's strip: not the lock's, kMSBDStripSwipeRowID)
 #define kMSBDMacSwitcherKey @"macSwitcher"
 #define kMSBDWindowsGroupID @"WINDOWS_GROUP"      // the switches that work through a third-party engine's windows
-#define kMSBDResizeGroupID  @"RESIZE_GROUP"       // Resize Apps to Fit Windows (MilkyWay4 only)
-#define kMSBDNewWindowsFillGroupID @"NEW_WINDOWS_FILL_GROUP" // New Windows Open at Fill: the windows an engine opens (none without one, audit 1.8.3 M4)
-#define kMSBDStripSwipeGroupID @"STRIP_SWIPE_GROUP"  // Recent Apps with Left-Edge Swipe (1.8.4.2): Stage Manager as the engine only
+// 1.8.6 (KT 10 Nov): the single-switch groups are grouped -- Window Behavior (New Windows Open at Fill, Snap Windows to Edges, Keep Covered Windows
+// in Front, Home Minimizes Windows, Resize Apps to Fit Windows), the Mac Switcher's group (+ Recent Apps with Left-Edge Swipe) and Advanced
+// (Prewarm Apps, Keep Tailspin Off). The rules below go by each row's own identifier now, not by a group of its own; the pages compose each
+// grouped footer from the rows they show (MSBRootListController.m msb_composeFooters).
+#define kMSBDWindowBehaviorGroupID @"WINDOW_BEHAVIOR_GROUP"
+#define kMSBDTrafficLightsGroupID @"TRAFFIC_LIGHTS_GROUP"   // Traffic Lights: Turn Off Traffic Lights and Magnify Traffic Lights (1.8.6), one footer sentence each
+#define kMSBDAdvancedGroupID @"ADVANCED_GROUP"
+#define kMSBDResizeRowKey   @"flexResizeWindows"  // Resize Apps to Fit Windows (MilkyWay4 only)
+#define kMSBDNewWindowsFillRowID @"NEW_WINDOWS_FILL" // New Windows Open at Fill: the windows an engine opens (none without one, audit 1.8.3 M4)
+#define kMSBDSnapRowID      @"SNAP_EDGES"         // Snap Windows to Edges (1.8.6): an engine's windows (none without one)
+#define kMSBDStripSwipeRowID @"STRIP_SWIPE"       // Recent Apps with Left-Edge Swipe (1.8.4.2): Stage Manager as the engine only
 // ... on iPadOS 16 to 18. 1.8.4.3 had it on 16 only: on 18.5 closing a window while the swipe had the strip out ended in SpringBoard's own assertion
 // (-[SBContinuousExposeAutoLayoutSpace autoLayoutItemForDisplayItem:], from its window-delete layout; A12Z, 10 Nov, z04). Its cause, a strip left
 // presented by a touch or action on our surfaces, is fixed at the source (StatusBar.x DMSMStripPresentationEnd, 1.8.4.4). Elsewhere the switch is
 // neither shown nor read (StatusBar.x DMLoadPrefs).
 static inline BOOL MSBDStripSwipeOS(long major) { return major >= 16 && major <= 18; }
-#define kMSBDKeepCoveredGroupID @"KEEP_COVERED_GROUP"  // Keep Covered Windows in Front (1.8.4.1 item 7): the engines' windows, every engine's (none without one)
+#define kMSBDKeepCoveredRowID @"KEEP_COVERED"     // Keep Covered Windows in Front (1.8.4.1 item 7): the engines' windows, every engine's (none without one)
 #define kMSBDResizeHandlesKey @"resizeHandleStyle" // Resize Handles: ours or Stage Manager's (a choice with Stage Manager only)
 #define kMSBDWindowSizeRowKey @"windowSize"      // Window Size (1.8.0 item 4, common/WindowSize.h kMSBDWindowSizeKey): every engine's, Stage Manager's too
 #define kMSBDTitleDoubleTapRowKey @"titleBarDoubleTap" // Double-Tap a Title Bar to (1.8.3 item 8, statusbar/TitleBarRule.h kMSBDTitleDoubleTapKey): every
                                                    // engine's, Stage Manager's too
 #define kMSBDCCScaleKey     @"controlCenterScale" // Control Center Size: BigSurCenter's panel and ours (1.8.0)
 #define kMSBDCCGrabberRowID @"CC_GRABBER"         // Hide Grabber: iPadOS's own Control Center's line (1.8.0: with that style only)
-#define kMSBDTailspinGroupID @"TAILSPIN_GROUP"    // Keep Tailspin Off: the root helper applies it whatever the status bar does
+#define kMSBDTailspinRowID  @"KEEP_TAILSPIN_OFF"  // Keep Tailspin Off: the root helper applies it whatever the status bar does
+#define kMSBDPrewarmRowID   @"PREWARM_APPS"
 #define kMSBDDockFinderRowID @"FINDER"            // the Dock page's Show Finder in Dock (and its group)
 #define kMSBDDockFinderGroupID @"FINDER_GROUP"
 #define kMSBDLATimersRowKey @MSBD_LA_TIMERS_KEY  // the Activities page's Timers (Live Activities in Menu Bar, 1.8.4)
@@ -83,8 +93,9 @@ static inline BOOL MSBDStageManagerKeepsRow(NSString *key) {
 // With no working engine (none installed, or the one that would run is an untested build) the Windows group goes but for Double-Tap a Title Bar
 // to: Finder's and TextEdit's windows are ours and do what it says without an engine too (statusbar/TitleBarTap.h DMTitleTapNative; 1.8.3.1).
 static inline BOOL MSBDNoEngineKeepsRow(NSString *key) { return [key isEqualToString:kMSBDTitleDoubleTapRowKey]; }
-// MacStatusBar off: the Windows & Multitasking page keeps, under its note, the groups whose setting the root helper applies whatever the bar does.
-static inline BOOL MSBDBarOffKeepsGroup(NSString *groupID) { return [groupID isEqualToString:kMSBDTailspinGroupID]; }
+// MacStatusBar off: the Windows & Multitasking page keeps, under its note, the rows whose setting the root helper applies whatever the bar does
+// (Keep Tailspin Off, with its group's header: Advanced).
+static inline BOOL MSBDBarOffKeepsRow(NSString *ident) { return [ident isEqualToString:kMSBDTailspinRowID]; }
 
 // Whether a row of one of our pages is left out in state s. pane: the page (MAC_STATUS_BAR, MAC_WINDOWS, MAC_DESKTOP, DOCK_MAGNIFICATION); group:
 // its group's identifier (nil: none); stockHides: that group's flag; key, ident: the row's own (nil: none); belowLine: it comes after the page's
@@ -96,7 +107,7 @@ static inline BOOL MSBDOwnRowHidden(MSBDOwnPages s, NSString *pane, NSString *gr
     if (!bar && !windows && !desk) return NO;
     if (!s.barLine) {   // (MacStatusBar off: the Status Bar page keeps its switch; Windows & Multitasking its note and Keep Tailspin Off; Desktop its note)
         if (bar && belowLine) return YES;
-        if (windows && !MSBDBarOffKeepsGroup(group)) return YES;
+        if (windows && !MSBDBarOffKeepsRow(ident)) return YES;
         if (desk) return YES;
     }
     if (s.stockBar && stockHides && ![ident isEqualToString:kMSBDReportRowID]) return YES;
@@ -105,13 +116,13 @@ static inline BOOL MSBDOwnRowHidden(MSBDOwnPages s, NSString *pane, NSString *gr
     if (s.desktopFailed && MSBDDesktopCheckRow(key, ident)) return YES;
     if (bar && !s.laTimersListed && [key isEqualToString:kMSBDLATimersRowKey]) return YES;
     if (bar && !s.laAppsListed && [key isEqualToString:kMSBDLAAppsRowKey]) return YES;
-    if (s.focus18Failed && ([key isEqualToString:kMSBDMacSwitcherKey] || [group isEqualToString:kMSBDMacSwitcherGroupID] || [group isEqualToString:kMSBDWiFiGroupID])) return YES;
+    if (s.focus18Failed && ([key isEqualToString:kMSBDMacSwitcherKey] || ([group isEqualToString:kMSBDMacSwitcherGroupID] && ![ident isEqualToString:kMSBDStripSwipeRowID]) || [group isEqualToString:kMSBDWiFiGroupID])) return YES;
     if ([group isEqualToString:kMSBDWindowsGroupID] && ((!s.engineWorks && !MSBDNoEngineKeepsRow(key)) || (s.stageManagerEngine && !MSBDStageManagerKeepsRow(key)))) return YES;
-    if ([group isEqualToString:kMSBDNewWindowsFillGroupID] && !s.engineWorks) return YES;   // (every window it sizes is an engine's: StatusBar.x DMOpeningWindowFrame)
-    if ([group isEqualToString:kMSBDStripSwipeGroupID] && (!s.engineWorks || !s.stageManagerEngine || !MSBDStripSwipeOS([NSProcessInfo processInfo].operatingSystemVersion.majorVersion))) return YES;   // (Stage Manager's own strip: statusbar/StatusBar.x DMSMStripRevealBegin)
-    if ([group isEqualToString:kMSBDKeepCoveredGroupID] && (!s.engineWorks || s.stageManagerEngine)) return YES;   // (every window it keeps in front is an engine's: statusbar/KeepCovered.h; not Stage Manager for now, kDMKeepCoveredOnStageManager says why)
+    if (([ident isEqualToString:kMSBDNewWindowsFillRowID] || [ident isEqualToString:kMSBDSnapRowID]) && !s.engineWorks) return YES;   // (every window they size or snap is an engine's: StatusBar.x DMOpeningWindowFrame, DMSnapOff's ends)
+    if ([ident isEqualToString:kMSBDStripSwipeRowID] && (!s.engineWorks || !s.stageManagerEngine || !MSBDStripSwipeOS([NSProcessInfo processInfo].operatingSystemVersion.majorVersion))) return YES;   // (Stage Manager's own strip: statusbar/StatusBar.x DMSMStripRevealBegin)
+    if ([ident isEqualToString:kMSBDKeepCoveredRowID] && (!s.engineWorks || s.stageManagerEngine)) return YES;   // (every window it keeps in front is an engine's: statusbar/KeepCovered.h; not Stage Manager for now, kDMKeepCoveredOnStageManager says why)
     if ([key isEqualToString:kMSBDResizeHandlesKey] && !s.stageManagerEngine) return YES;
-    if ([group isEqualToString:kMSBDResizeGroupID] && !s.milkyWayEngine) return YES;
+    if ([key isEqualToString:kMSBDResizeRowKey] && !s.milkyWayEngine) return YES;
     return NO;
 }
 #ifdef kMTIPrefix   // (common/TweakIndex.h included first)

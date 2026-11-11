@@ -43,6 +43,13 @@ defaults delete com.besiktasliseba.macstatusbaranddock crashGuardAction
 "$W/tcs" skip MixAudio && r=0 || r=$?; [ $r = 20 ] && echo "PASS  note cleared: MixAudio loads again" || { echo "FAIL  MixAudio after clearing ($r)"; fails=1; }
 [ ! -e "$W/step.txt" ] && echo "PASS  note cleared: the skip list is removed" || { echo "FAIL  skip list still there"; fails=1; }
 rm -f "$W/step.txt"; "$W/tcs" skip MixAudio && r=0 || r=$?; [ $r = 20 ] && echo "PASS  no skip list: everything loads" || { echo "FAIL  no list ($r)"; fails=1; }
+# a piece (review of 1.8.6: the battery icon's plug, statusbar/BatteryMenu.h reads it by its target's name): off while the note is there, back once
+# it is cleared (Turn Back On)
+printf 'row 1\nskip batteryHoldPlug the battery icon|the plug in the battery icon during a charge hold\n' > "$W/step.txt"
+defaults write com.besiktasliseba.macstatusbaranddock crashGuardAction -int 4
+"$W/tcs" skip batteryHoldPlug && r=0 || r=$?; [ $r = 10 ] && echo "PASS  the plug (a piece) stays off while the note is there" || { echo "FAIL  the plug's skip ($r)"; fails=1; }
+defaults delete com.besiktasliseba.macstatusbaranddock crashGuardAction
+"$W/tcs" skip batteryHoldPlug && r=0 || r=$?; [ $r = 20 ] && [ ! -e "$W/step.txt" ] && echo "PASS  note cleared (Turn Back On): the plug comes back, the list goes" || { echo "FAIL  the plug after clearing ($r)"; fails=1; }
 run apple apple-only-our-class-in-reason.ips apple-only-our-class-in-reason.ips
 run mixed step1b-loader.ips step1b-dock-downloads.ips
 run recent step1b-core-banners.ips step1b-core-banners.ips
@@ -106,6 +113,22 @@ check(gal == ['controlcenter'] * 5, 'the Mac tiles\' section in the gallery, its
 act = [by_sym(v) for v in ('_DMALCollIcon', '_DMALReload', '_DMALGalleryIconInit', '_DMALGalleryModules', '_DMALMenuConfig')]
 check(act == ['actmonLibrary'] * 5, 'the rest of AppLibraryApps.h keeps Show in App Library (got %s)' % act)
 check(by_sym('_MSBDCC18MacLayoutFrom') is None and by_sym('_MSBDCC18GridPlace') is None and by_file('CC18MacLayout.h') == 'controlcenter' and by_file('CC18Shape.h') == 'controlcenter' and by_file('CC18Tiles.h') == 'controlcenter', 'common/CC18MacLayout.h\'s functions, out of line, are Control Center Style by their file, as CC18Shape.h\'s')
+# Swipe Up to Quit (review 1.8.6, gestures): both halves are its switch's -- the finger's flick and the trackpad's two-finger swipe, their blocks, the
+# two-finger pan's forwarder and the rule's own functions --; the rest of the Mac Switcher (its drag among them) stays the Mac Switcher's
+msw = open('../statusbar/MacSwitcher.h', errors='replace').read() + open('../statusbar/MSWFlick.h', errors='replace').read()
+quit = ['DMMSWFlickEnd', 'DMMSWFlickQuit', 'DMMSWFlickable', 'DMMSWFlickOverDesks', 'DMMSWScrollPan', 'DMMSWScrollMayBegin', 'MSBDMSWFlickQuits', 'MSBDMSWFlickOverStrip', 'MSBDMSWScrollQuits']
+gone = [n for n in quit if not re.search(r'^(?:__attribute__\(\(noinline\)\) )?static [^(=;]*?\b' + n + r'\(', msw, re.M)]
+# (kept out of line in a release build, so the map has them by name: the swipe's own functions in MacSwitcher.h)
+inl = [n for n in ('DMMSWFlickEnd', 'DMMSWFlickQuit', 'DMMSWFlickable', 'DMMSWScrollPan', 'DMMSWScrollMayBegin') if not re.search(r'^__attribute__\(\(noinline\)\) static [^(=;]*?\b' + n + r'\([^;]*\{', msw, re.M)]
+check(not inl, 'the swipe\'s functions in MacSwitcher.h are kept out of line (a crash map has them by name)' + (' -- not: ' + ', '.join(inl) if inl else ''))
+if '- (void)scroll:(UIPanGestureRecognizer *)g { DMMSWScrollPan(g); }' not in msw: gone.append('-[DMMSWTarget scroll:]')
+check(not gone, 'Swipe Up to Quit\'s functions found in MacSwitcher.h and MSWFlick.h' + (' -- not found: ' + ', '.join(gone) if gone else ''))
+wrong = [v for n in quit for v in ('_' + n, '___' + n + '_block_invoke', '___' + n + '_block_invoke_2') if by_sym(v) != 'mswSwipeUpQuit']
+if by_sym('-[DMMSWTarget scroll:]') != 'mswSwipeUpQuit': wrong.append('-[DMMSWTarget scroll:]')
+check(not wrong, 'each of them, its blocks too, and the two-finger pan\'s -[DMMSWTarget scroll:] is Swipe Up to Quit by name' + (' -- not: ' + ', '.join(wrong) if wrong else ''))
+rest = [by_sym(v) for v in ('_DMMSWDragEnd', '_DMMSWDragPan', '___DMMSWDrop_block_invoke', '_DMMSWTapped')]
+check(rest == ['macSwitcher'] * 4 and by_sym('-[DMMSWTarget pan:]') is None and by_sym('-[DMMSWTarget scroll:x]') is None and by_file('MacSwitcher.h') == 'macSwitcher',
+      'the rest of the Mac Switcher stays its own (the drag, the drop, the taps by name; the pan\'s other forwarders by MacSwitcher.h; got %s)' % rest)
 sys.exit(1 if bad else 0)
 PY
 echo "== the parts' names in the guard's words"

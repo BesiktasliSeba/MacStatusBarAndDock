@@ -209,183 +209,11 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>New windows fill the desktop, and Fit to Window doesn't tile them.</string>
-			<key>id</key>
-			<string>NEW_WINDOWS_FILL_GROUP</string>
-			<key>stockHides</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>PostNotification</key>
-			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>default</key>
-			<false/>
-			<key>defaults</key>
-			<string>com.besiktasliseba.macstatusbar</string>
-			<key>id</key>
-			<string>NEW_WINDOWS_FILL</string>
-			<key>key</key>
-			<string>newWindowsFill</string>
-			<key>label</key>
-			<string>New Windows Open at Fill</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>footerText</key>
-			<string>When a window comes to the front, any smaller window it would cover completely stays in front of it, so it's never lost behind a bigger window.</string>
-			<key>id</key>
-			<string>KEEP_COVERED_GROUP</string>
-			<key>stockHides</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>PostNotification</key>
-			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>default</key>
-			<false/>
-			<key>defaults</key>
-			<string>com.besiktasliseba.macstatusbar</string>
-			<key>id</key>
-			<string>KEEP_COVERED</string>
-			<key>key</key>
-			<string>keepCoveredInFront</string>
-			<key>label</key>
-			<string>Keep Covered Windows in Front</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>footerText</key>
-			<string>Swiping in from the left edge shows Stage Manager's recent apps. With the Dock at Left, that swipe stays the Dock's.</string>
-			<key>id</key>
-			<string>STRIP_SWIPE_GROUP</string>
-			<key>stockHides</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>PostNotification</key>
-			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>default</key>
-			<false/>
-			<key>defaults</key>
-			<string>com.besiktasliseba.macstatusbar</string>
-			<key>id</key>
-			<string>STRIP_SWIPE</string>
-			<key>key</key>
-			<string>smStripSwipe</string>
-			<key>label</key>
-			<string>Recent Apps with Left-Edge Swipe</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>footerText</key>
-			<string>Swiping up from the bottom or pressing the Home button minimizes the windows, so the Home Screen shows. Opening an app brings its window back.</string>
-			<key>id</key>
-			<string>HOME_WINDOWS_GROUP</string>
-			<key>stockHides</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>PostNotification</key>
-			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>default</key>
-			<true/>
-			<key>defaults</key>
-			<string>com.besiktasliseba.macstatusbar</string>
-			<key>id</key>
-			<string>HOME_MINIMIZES_WINDOWS</string>
-			<key>key</key>
-			<string>homeMinimizesWindows</string>
-			<key>label</key>
-			<string>Home Minimizes Windows</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>footerText</key>
-			<string>Apps lay themselves out to fit their window, like on a Mac. When off, an app keeps its full-screen layout and is scaled down to fit.</string>
-			<key>id</key>
-			<string>RESIZE_GROUP</string>
-			<key>stockHides</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>PostNotification</key>
-			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>default</key>
-			<true/>
-			<key>defaults</key>
-			<string>com.besiktasliseba.macstatusbar</string>
-			<key>key</key>
-			<string>flexResizeWindows</string>
-			<key>label</key>
-			<string>Resize Apps to Fit Windows</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>footerText</key>
-			<string>Hides the window buttons in the status bar for full-screen apps.</string>
-			<key>label</key>
-			<string>Traffic Lights</string>
-			<key>stockHides</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>PostNotification</key>
-			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>default</key>
-			<false/>
-			<key>defaults</key>
-			<string>com.besiktasliseba.macstatusbar</string>
-			<key>key</key>
-			<string>hideTrafficLights</string>
-			<key>label</key>
-			<string>Turn Off Traffic Lights</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>footerText</key>
-			<string>The dots stay visible while windowing is off or no window engine runs.</string>
-			<key>label</key>
-			<string>Multitasking</string>
-			<key>stockHides</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>PostNotification</key>
-			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>default</key>
-			<true/>
-			<key>defaults</key>
-			<string>com.besiktasliseba.macstatusbar</string>
-			<key>key</key>
-			<string>hideMultitaskingDots</string>
-			<key>label</key>
-			<string>Hide Multitasking Dots</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>footerText</key>
-			<string>When Go to the App's Desktop is on, opening an app whose window is on another desktop takes you there. When it's off, the window comes to the desktop you're on.</string>
+			<string>Go to the App's Desktop: opening an app whose window is on another desktop takes you there. When it's off, the window comes to the desktop you're on.
+
+Swipe Up to Quit: flicking a window up in the Mac Switcher, or swiping it up with two fingers on a trackpad, quits the app, as in the App Switcher. Drag a window to move it to another desktop.
+
+Recent Apps with Left-Edge Swipe: swiping in from the left edge shows Stage Manager's recent apps. With the Dock at Left, that swipe stays the Dock's.</string>
 			<key>id</key>
 			<string>MSW_GROUP</string>
 			<key>stockHides</key>
@@ -422,14 +250,216 @@
 			<string>Go to the App's Desktop</string>
 		</dict>
 		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>MSW_SWIPE_UP_QUIT</string>
+			<key>key</key>
+			<string>mswSwipeUpQuit</string>
+			<key>label</key>
+			<string>Swipe Up to Quit</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>STRIP_SWIPE</string>
+			<key>key</key>
+			<string>smStripSwipe</string>
+			<key>label</key>
+			<string>Recent Apps with Left-Edge Swipe</string>
+		</dict>
+		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>iPadOS starts some apps in the background before you open them, so they open faster. Turn this off to keep that memory free on an iPad with little RAM.</string>
+			<string>New Windows Open at Fill: new windows fill the desktop, and Fit to Window doesn't tile them.
+
+Snap Windows to Edges: a window you move or resize lines up with the screen's edges, the menu bar, the Dock and the windows next to it. When it's off, a window stays where you let go.
+
+Keep Covered Windows in Front: when a window comes to the front, any smaller window it would cover completely stays in front of it, so it's never lost behind a bigger window.
+
+Home Minimizes Windows: swiping up from the bottom or pressing the Home button minimizes the windows, so the Home Screen shows. Opening an app brings its window back.
+
+Resize Apps to Fit Windows: apps lay themselves out to fit their window, like on a Mac. When it's off, an app keeps its full-screen layout and is scaled down to fit.</string>
 			<key>id</key>
-			<string>PREWARM_GROUP</string>
+			<string>WINDOW_BEHAVIOR_GROUP</string>
+			<key>label</key>
+			<string>Window Behavior</string>
 			<key>stockHides</key>
 			<true/>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>NEW_WINDOWS_FILL</string>
+			<key>key</key>
+			<string>newWindowsFill</string>
+			<key>label</key>
+			<string>New Windows Open at Fill</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>SNAP_EDGES</string>
+			<key>key</key>
+			<string>snapWindowsToEdges</string>
+			<key>label</key>
+			<string>Snap Windows to Edges</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>KEEP_COVERED</string>
+			<key>key</key>
+			<string>keepCoveredInFront</string>
+			<key>label</key>
+			<string>Keep Covered Windows in Front</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>HOME_MINIMIZES_WINDOWS</string>
+			<key>key</key>
+			<string>homeMinimizesWindows</string>
+			<key>label</key>
+			<string>Home Minimizes Windows</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>RESIZE_APPS</string>
+			<key>key</key>
+			<string>flexResizeWindows</string>
+			<key>label</key>
+			<string>Resize Apps to Fit Windows</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>Turn Off Traffic Lights: hides the window buttons in the status bar for full-screen apps.
+
+Magnify Traffic Lights: touching a window's buttons with a finger makes them bigger, so you can pick one. Slide to another, lift to use it, or lift away to cancel.</string>
+			<key>id</key>
+			<string>TRAFFIC_LIGHTS_GROUP</string>
+			<key>label</key>
+			<string>Traffic Lights</string>
+			<key>stockHides</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>key</key>
+			<string>hideTrafficLights</string>
+			<key>label</key>
+			<string>Turn Off Traffic Lights</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>LIGHTS_MAGNIFY</string>
+			<key>key</key>
+			<string>magnifyTrafficLights</string>
+			<key>label</key>
+			<string>Magnify Traffic Lights</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>The dots stay visible while windowing is off or no window engine runs.</string>
+			<key>label</key>
+			<string>Multitasking</string>
+			<key>stockHides</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>key</key>
+			<string>hideMultitaskingDots</string>
+			<key>label</key>
+			<string>Hide Multitasking Dots</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>Prewarm Apps: iPadOS starts some apps in the background before you open them, so they open faster. Turn this off to keep that memory free on an iPad with little RAM.
+
+Keep Tailspin Off: iPadOS turns on tailspin, a performance trace for Apple's diagnostics, for a few days at a time. It holds tens of MB of memory and samples the whole system many times a second.</string>
+			<key>id</key>
+			<string>ADVANCED_GROUP</string>
+			<key>label</key>
+			<string>Advanced</string>
 		</dict>
 		<dict>
 			<key>PostNotification</key>
@@ -446,14 +476,8 @@
 			<string>prewarmApps</string>
 			<key>label</key>
 			<string>Prewarm Apps</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>footerText</key>
-			<string>iPadOS turns on tailspin, a performance trace for Apple's diagnostics, for a few days at a time. It holds tens of MB of memory and samples the whole system many times a second.</string>
-			<key>id</key>
-			<string>TAILSPIN_GROUP</string>
+			<key>stockHides</key>
+			<true/>
 		</dict>
 		<dict>
 			<key>PostNotification</key>

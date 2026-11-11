@@ -82,8 +82,34 @@ static inline int MSBDBattChargeLine(uint64_t word, int soc, char *buf, size_t n
         case kMSBDChargeStateComingDown: snprintf(buf, n, "Using Battery Until %d%%", at); return 1;
         case kMSBDChargeStateToFull: snprintf(buf, n, "Charging to 100%%"); return 1;
         case kMSBDChargeStateMonthlyFull: snprintf(buf, n, "Monthly Charge to 100%%"); return 1;
+        case kMSBDChargeStateCantHold: snprintf(buf, n, "Charging Can't Be Paused"); return 1;   // (the hold lets charge in with this adapter: as always)
         default: return 0;
     }
+}
+// ---- the battery glyph in the bar (1.8.6): on the power adapter but not charging -- Charge Limit holding the battery or using it down to the limit,
+// Run on Power Adapter -- the battery shows a plug where iOS draws its charging bolt, as a Mac's menu bar battery does; charging shows the bolt (iOS's
+// own); unplugged, no job, or a job that only charges as usual: iOS's battery as it is.
+#define MSBD_BATT_HOLD_PIECE "batteryHoldPlug"   // (no Settings row: the crash guard turns it off as a piece, its target in tools/crashmap-rules.txt, until Turn Back On)
+static inline int MSBDBattHoldPlug(uint64_t word) {
+    if (!((word >> 17) & 1) || !MSBDChargeWordPlugged(word) || !MSBDChargeLimitOn(MSBDChargeWordLimit(word))) return 0;
+    int s = MSBDChargeWordState(word);
+    return s == kMSBDChargeStateOnHold || s == kMSBDChargeStateComingDown;
+}
+// The plug's place in a battery view w x h: centred on the body (the pin takes the view's last MSBD_BATT_PLUG_BODY_SHARE), its height a share of the
+// view's, 1.5 times as wide as high (cord, plug body, two prongs towards the pin); `halo`: the gap cut around it through the fill, as around iOS's bolt.
+#define MSBD_BATT_PLUG_BODY_SHARE 0.905
+#define MSBD_BATT_PLUG_HEIGHT_SHARE 0.62
+#define MSBD_BATT_PLUG_HALO_SHARE 0.1
+typedef struct { double x, y, w, h, halo; } MSBDBattPlugBox;
+static inline MSBDBattPlugBox MSBDBattPlugPlace(double w, double h) {
+    MSBDBattPlugBox b = { 0, 0, 0, 0, 0 };
+    if (!(w > 0 && h > 0)) return b;
+    b.h = h * MSBD_BATT_PLUG_HEIGHT_SHARE; b.w = b.h * 1.5;
+    double body = w * MSBD_BATT_PLUG_BODY_SHARE;
+    if (b.w > body * 0.8) { b.w = body * 0.8; b.h = b.w / 1.5; }   // (a narrow battery: the plug never reaches its outline)
+    b.x = (body - b.w) / 2.0; b.y = (h - b.h) / 2.0;
+    b.halo = h * MSBD_BATT_PLUG_HALO_SHARE; if (b.halo < 0.75) b.halo = 0.75;
+    return b;
 }
 // The Charge Limit row's value: the limit as set ("Off", "80%"), or "Not Running" while one is set but the job is not running (no state word, a
 // start loop, or the tweak not meant to run -- Settings' footer: "Charge Limit is not running right now.").

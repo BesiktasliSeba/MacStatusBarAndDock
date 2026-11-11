@@ -74,6 +74,46 @@ __attribute__((noinline)) static BOOL DMSMRequestRealHome(NSString *why) {   // 
         return wrote;
     } @catch (NSException *e) { DMSMAPIFail(@"a real Home", e.reason ?: @"exception"); return NO; }
 }
+// The same for another display (the TV): its desktop emptied by a transition on THAT display whose activating entity is the Home Screen's (or the
+// empty workspace's), as the iPad's Home empties the iPad. 1.8.6: closing the TV desktop's last window brought Stage Manager's previous TV stage
+// forward (an old hidden window) because the iPad's rule -- the Home Screen first, the close after -- had no TV equivalent.
+__attribute__((noinline)) static BOOL DMSMRequestDisplayHome(id identity, NSString *why, BOOL emptyEntity) {
+    if (!identity || DMSMIsMainIdentity(identity)) return NO;
+    id ent = DMCall(objc_getClass(emptyEntity ? "SBEmptyWorkspaceEntity" : "SBHomeScreenEntity"), @"entity");
+    if (!ent) { DMSMAPIFail(@"a TV Home", emptyEntity ? @"no empty workspace entity" : @"no Home Screen entity"); return NO; }
+    id cfg = nil;
+    for (UIScreen *sc in [UIScreen screens]) {
+        id c = [sc respondsToSelector:NSSelectorFromString(@"displayConfiguration")] ? DMCall(sc, @"displayConfiguration") : nil;
+        if (c && [DMCall(c, @"identity") isEqual:identity]) cfg = c;
+    }
+    id ws = DMCall(objc_getClass("SBMainWorkspace"), @"sharedInstance");
+    SEL sel = NSSelectorFromString(@"requestTransitionWithOptions:displayConfiguration:builder:");
+    if (!cfg || !ws || ![ws respondsToSelector:sel] || !DMSMSigOK(ws, sel, DMSMSigRequestOnDisplay(), "requestTransitionWithOptions:displayConfiguration:builder:")) return NO;
+    __block BOOL built = NO, wrote = NO;
+    void (^builder)(id) = ^(id req) {
+        built = YES;
+        SEL lab = NSSelectorFromString(@"setEventLabel:"), mod = NSSelectorFromString(@"modifyApplicationContext:");
+        if (![req respondsToSelector:lab] || !DMSMSigOK(req, lab, DMSMSigVoidObj(), "setEventLabel:")) return;
+        if (![req respondsToSelector:mod] || !DMSMSigOK(req, mod, DMSMSigVoidObj(), "modifyApplicationContext:")) return;
+        ((void (*)(id, SEL, id))objc_msgSend)(req, lab, @"MSBDDisplayHome");
+        ((void (*)(id, SEL, id))objc_msgSend)(req, mod, ^(id ctx) {
+            SEL setAct = NSSelectorFromString(@"setActivatingEntity:");
+            if (![ctx respondsToSelector:setAct] || !DMSMSigOK(ctx, setAct, DMSMSigVoidObj(), "setActivatingEntity:")) return;
+            @try {
+                ((void (*)(id, SEL, id))objc_msgSend)(ctx, setAct, ent); DMSMCtxMarkOurs(ctx); wrote = YES;
+#if DEBUG
+                SEL setMode = NSSelectorFromString(@"setRequestedUnlockedEnvironmentMode:");
+                if (gDMSMDisplayHomeMode && DMSMSigOK(ctx, setMode, DMSMSigVoidLong(), "setRequestedUnlockedEnvironmentMode:")) ((void (*)(id, SEL, long long))objc_msgSend)(ctx, setMode, gDMSMDisplayHomeMode);
+#endif
+            } @catch (id e) {}
+        });
+    };
+    @try {
+        BOOL taken = ((BOOL (*)(id, SEL, unsigned long long, id, id))objc_msgSend)(ws, sel, 0ULL, cfg, builder);
+        DMLog([NSString stringWithFormat:@"[smhome] a Home on the TV (%@, %@): taken %d, built %d, written %d", why ?: @"?", emptyEntity ? @"empty" : @"home", taken, built, wrote]);
+        return taken && (!built || wrote);
+    } @catch (NSException *e) { DMSMAPIFail(@"a TV Home", e.reason ?: @"exception"); return NO; }
+}
 static void DMSMGoHomeForReal(NSString *why) {
     // (while a switcher gesture's transaction runs, our Home request waits for its end like every other write of ours (SMGestureHold.h): a request
     //  of our own in the middle of it interrupts SpringBoard's gesture transition. Deferred, not refused: the user still gets the Home Screen --
@@ -672,7 +712,7 @@ static void DMSMRestoreDesktopTick(void) {
     }
     // The desktop: the most recent stage on the iPad with a window that is not minimized, not an app in full screen sent to the background (as the
     // joins have it: StatusBar.x DMSMDesktopFor; minimized windows are known across a respring: DMSMMinimizedSet, one entry per window).
-    id desk = DMSMDesktopFor(nil, nil, NULL);
+    id desk = DMSMDesktopFor(nil, nil, NULL, nil);
     if (!desk) { DMLog(@"[smhome] after the start: no desktop with windows to bring back"); return; }
     NSDictionary *map = DMSMStageItemsMap(desk);
     NSMutableDictionary<NSString *, id> *byId = [NSMutableDictionary dictionary];

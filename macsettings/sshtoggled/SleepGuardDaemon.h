@@ -32,7 +32,6 @@ struct sg_proc_bsdinfo {   // (sys/proc_info.h's proc_bsdinfo: the iOS SDK has n
 
 #define MSBD_SG_CHECK   "com.besiktasliseba.sleepguard.check"     // (Settings: look now)
 #define MSBD_SG_UPDATED "com.besiktasliseba.sleepguard.updated"   // (posted after the state file is written)
-#define MSBD_SG_POWERD  "com.besiktasliseba.sleepguard.powerd-restarted"   // (posted after powerd was started over)
 
 static void SGLog(NSString *fmt, ...) NS_FORMAT_FUNCTION(1, 2);
 static void SGLog(NSString *fmt, ...) {

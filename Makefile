@@ -51,6 +51,8 @@ endif
 SUBPROJECTS += statusbar macsettings dock appbridge mixaudio forcequitmenu graveescape tabmute volumeglobe brightnesskey spotlight prewarmblock ccmodule
 # The Dock's Trash ejects a drive dropped on it through this helper (it has StorageKit's eject entitlement; SpringBoard does not): ejecthelper/.
 SUBPROJECTS += ejecthelper
+# The Charge Limit's job (launchd com.besiktasliseba.chargelimit, root): holds the battery at the limit set in Settings: chargehelper/.
+SUBPROJECTS += chargehelper
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 include $(THEOS_MAKE_PATH)/library.mk

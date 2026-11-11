@@ -7,6 +7,8 @@
 #                                                     the guard then stores the first off text instead of <off>, so Settings shows a choice; the
 #                                                     row's title and where the crash was, for the guard's explanation
 # target <name> part                                  the part that crashed is not loaded in SpringBoard any more (until the guard's note is cleared)
+# target <name> piece <where>|<what>                  code with no Settings row (a piece of a part): on the skip list as <name>, which that code reads
+#                                                     (MSBDCrashSkipped), off until Turn Back On clears the guard's note, as a part
 # image <Image> <target> [map]                        what a crash in that part turns off; "map": a function map is built (the target is then the
 #                                                     fallback for code no rule below names)
 # sym <Image> <regex> <target>                        a function whose symbol name matches (Logos hooks carry their %group: $MacBanners$...)
@@ -35,6 +37,7 @@ target windowingEnabled pref com.besiktasliseba.macstatusbar windowingEnabled 0 
 target windowsBehindApps pref com.besiktasliseba.macstatusbar windowsBehindApps 0 1 Windows Behind Full-Screen Apps|the windows behind full-screen apps
 target flexResizeWindows pref com.besiktasliseba.macstatusbar flexResizeWindows 0 1 Resize Apps to Fit Windows|the window resizing
 target hideTrafficLights pref com.besiktasliseba.macstatusbar hideTrafficLights 1 0 Turn Off Traffic Lights|the traffic lights
+target magnifyTrafficLights pref com.besiktasliseba.macstatusbar magnifyTrafficLights 0 1 Magnify Traffic Lights|the traffic lights' magnifier
 target clockOpensToday pref com.besiktasliseba.macstatusbar clockOpensToday 0 1 Clock Opens Today View|the Today View
 target todayNotifications pref com.besiktasliseba.macstatusbar todayNotifications 0 1 Notifications in Today View|the notifications in the Today View
 target showMuteIcon pref com.besiktasliseba.macstatusbar showMuteIcon 0 1 Show Mute Icon|the mute icon
@@ -47,15 +50,19 @@ target showDownloads pref com.besiktasliseba.dockmagnification showDownloads 0 1
 target launchpadIcon pref com.besiktasliseba.dockmagnification launchpadIcon 0 1 Launchpad Icon|Launchpad
 target finder pref com.besiktasliseba.macstatusbar finderEnabled 0 1 Finder|Finder
 target showFinder pref com.besiktasliseba.dockmagnification showFinder 0 1 Show Finder in Dock|Finder in the Dock
-target showTrash pref com.besiktasliseba.dockmagnification showTrash 0 0 Show Trash in Dock|the Dock's Trash
+target showTrash pref com.besiktasliseba.dockmagnification showTrash 0 1 Show Trash in Dock|the Dock's Trash
 target wifiMenu pref com.besiktasliseba.macstatusbar wifiMenu 0 1 Wi-Fi Menu|the Wi-Fi menu
 target batteryMenu pref com.besiktasliseba.macstatusbar batteryMenu 0 1 Battery Menu|the battery menu
+# the plug in the battery icon during a charge hold (1.8.6) has no Settings row: a piece, which Turn Back On brings back (review of 1.8.6: a hidden
+# switch stored off had no way back, and the guard's words pointed to a row that does not exist)
+target batteryHoldPlug piece the battery icon|the plug in the battery icon during a charge hold
 target batteryPercentInside pref com.besiktasliseba.macstatusbar batteryPercentInside 0 0 Battery Percentage in Icon|the number inside the battery icon
 target desktopIcons pref com.besiktasliseba.macstatusbar desktopIcons 0 1 Show Desktop Icons|the desktop
 # Desktop Picture (1.8.6, statusbar/DesktopWallpaper.h): a path, not a switch -- the guard stores "none", which SpringBoard and Settings read as None
 target desktopWallpaper pref com.besiktasliseba.macstatusbar desktopWallpaperPath 0 0 offtext=none Desktop Picture|the desktop picture
 target runningIndicator pref com.besiktasliseba.dockrunningindicator enabled 0 1 Show Indicators for Open Apps|the open-app indicators
 target macSwitcher pref com.besiktasliseba.macstatusbar macSwitcher 0 0 Mac Switcher|the Mac Switcher
+target mswSwipeUpQuit pref com.besiktasliseba.macstatusbar mswSwipeUpQuit 0 1 Swipe Up to Quit|the Mac Switcher's swipe up to quit
 target spotlightFiles pref com.besiktasliseba.macstatusbar spotlightFiles 0 0 Desktop and Downloads|Spotlight's Desktop and Downloads
 target spotlightTweakSettings pref com.besiktasliseba.macstatusbar spotlightTweakSettings 0 0 Tweak Settings|Spotlight's tweak settings
 target spotlightActions pref com.besiktasliseba.macstatusbar spotlightActions 0 0 Actions|our actions in Spotlight
@@ -82,7 +89,7 @@ target autoHideDock pref com.besiktasliseba.dockmagnification autoHideDock 0 0 A
 target keepCoveredInFront pref com.besiktasliseba.macstatusbar keepCoveredInFront 0 0 Keep Covered Windows in Front|the covered windows kept in front
 # the apps' own menus in the menu bar (1.8.5 item 3: statusbar/AppMenus.h in SpringBoard; appbridge/AppMenus.h, whose snapshots run in the apps and
 # which in SpringBoard only registers): its switch, off unless switched on (owner's rule for new behaviour): a crash in it sets it off (0)
-target appOwnMenus pref com.besiktasliseba.macstatusbar appOwnMenus 0 0 Show Apps' Own Menus|the apps' own menus in the menu bar
+target appOwnMenus pref com.besiktasliseba.macstatusbar appOwnMenus 0 1 Show Apps' Own Menus|the apps' own menus in the menu bar
 
 # The parts in words, for the guard's explanation: title <Image> <where it crashed>|<what was turned off> ("SpringBoard crashed twice in the
 # Dock, so the Dock was turned off for now."). A part without a title is named by its file name.
@@ -178,11 +185,14 @@ sym MacStatusBarCore ^_*DMAL(GalleryMerged|MacTiles[A-Z]) controlcenter
 sym MacStatusBarCore ^_*DMAL[A-Z] actmonLibrary
 file MacStatusBarCore ^AppLibraryApps\.h$ actmonLibrary
 file MacStatusBarCore ^ActMonDock\.h$ actmonLibrary
+# the end of the Charge Limit's adapter cut kept quiet (ChargeQuiet.x, 1.7.8 item 5): with either bar style, so Stock mode would not stop it -- the part
+file MacStatusBarCore ^ChargeQuiet\.x$ part
 # its picture as an app icon an icon theme can change (common/IconTheme.h, 1.7.5 item 7: in this library Activity Monitor's; the desktop's corner
 # reading, 1.7.9 item 4, only makes one more such icon with it -- its own drawing and reading are DesktopCorner.h's, the desktop's)
 file MacStatusBarCore ^IconTheme\.h$ actmonLibrary
 sym MacStatusBarCore ^_?DMWP[A-Z] desktopWallpaper
 file MacStatusBarCore ^DesktopWallpaper\.h$ desktopWallpaper
+file MacStatusBarCore ^LightMagnify\.h$ magnifyTrafficLights
 sym MacStatusBarCore ^_?DMDesktop[A-Z] desktopIcons
 file MacStatusBarCore ^Desktop(Names|Corner)?\.h$ desktopIcons
 file MacStatusBarCore ^DesktopPlace\.h$ desktopIcons
@@ -223,6 +233,7 @@ sym MacStatusBarCore ^_*DMCC18[A-Z] controlcenter
 file MacStatusBarCore ^(CC18Shape|CC18MacLayout)\.h$ controlcenter
 file MacStatusBarCore ^CC18Tiles\.h$ controlcenter
 # the battery menu and the Control Center icon (BatteryMenu.h, 1.7.9): Battery Menu's switch -- off, the battery is iOS's again and the icon goes
+sym MacStatusBarCore ^_*DMBattHold[A-Z] batteryHoldPlug
 sym MacStatusBarCore ^_*DMBattInside[A-Z] batteryPercentInside
 sym MacStatusBarCore ^_*DMBatt[A-Z] batteryMenu
 file MacStatusBarCore ^BatteryMenu\.h$ batteryMenu
@@ -250,6 +261,12 @@ file MacStatusBarCore ^SpotlightBridge\.h$ spotlightActions
 sym MacStatusBarCore ^_*DMKeepCovered[A-Z] keepCoveredInFront
 file MacStatusBarCore ^KeepCovered\.h$ keepCoveredInFront
 sym MacStatusBarCore ^_?DMMSWPressesBegan$ transparent   # (its key pass-through is on every key press stack)
+# Swipe Up to Quit (1.8.6, MacSwitcher.h DMMSWFlick*, MSWFlick.h): its own switch, before the Mac Switcher's rule takes the whole view. Both halves:
+# the finger's flick (DMMSWFlick*, DMMSWFlickable) and the trackpad's two-finger swipe (DMMSWScroll*, its pan's -[DMMSWTarget scroll:]), with their
+# blocks and the rule's own functions should they stay out of line (MSBDMSWFlick*, MSBDMSWScroll*). MacSwitcher.h keeps the swipe's functions out of
+# line (in a 1.8.6 integration build DMMSWScrollPan was inlined into -[DMMSWTarget scroll:]; review 1.8.6, gestures: a crash in the two-finger
+# swipe turned off the whole Mac Switcher)
+sym MacStatusBarCore ^(_*(DMMSW|MSBDMSW)(Flick|Scroll)(able|[A-Z])|-\[DMMSWTarget\sscroll:\]$) mswSwipeUpQuit
 sym MacStatusBarCore ^_*DMMSW[A-Z] macSwitcher
 file MacStatusBarCore ^MacSwitcher(SM|Button)?\.h$ macSwitcher
 # what Stock status bar mode keeps running (StockBar.h): no switch of its own, so the part

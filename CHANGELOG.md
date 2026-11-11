@@ -2,6 +2,34 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.6
+
+### New
+- Charge Limit in Settings > Battery > Battery Health (Battery Health & Charging on iPadOS 16 to 18), off until you pick a limit: while the iPad stays plugged in, charging stops at 80, 85, 90 or 95% and starts again 5% lower, so the battery wears less. Plugged in above the limit, the iPad uses its battery down to it first.
+- Run on Power Adapter, on the same page and off until you turn it on: while the iPad is plugged in, the power adapter runs it and the battery keeps the charge it had, as on a Mac. The battery rests and goes through hardly any charge cycles.
+- While either one holds the charge, I measured 0 mA going into or out of the battery on all four test iPads, iPadOS 15 to 18.
+- Current limits: under heavy load the battery can still help the adapter in short bursts, and with some fast USB-C adapters an iPad plugged in above the limit stays there until you unplug it, instead of coming down. Where an iPad can't pause charging with an adapter, Settings and the battery menu say so and it charges as usual.
+- Swipe Up to Quit in the Mac Switcher, on by default: flick a window up to quit its app, as in the App Switcher, or swipe it up with two fingers on a trackpad. Dragging a window to a desktop still moves it. The switch is in Settings > Windows & Multitasking.
+- Magnify Traffic Lights in Settings > Windows & Multitasking, on by default: touch a window's red, yellow and green buttons with a finger and they grow, with their symbols, so the one you want is easy to hit. Slide to another, lift to use it, or lift away to cancel. A click with a trackpad or mouse stays a plain click. A drag that starts on the buttons now opens them instead of moving the window, so start the drag elsewhere on the title bar.
+- Snap Windows to Edges in Settings > Windows & Multitasking, on by default: turn it off and a window you move stays where you let go. With the Stage Manager engine on iPadOS 17 and 18, iPadOS itself still lines up a side you resize.
+
+### Improvements
+- Show Apps' Own Menus is now on by default, and the update turns it on for everyone, so Safari, Chrome, Reynard and other apps show their own menus in the menu bar. You can turn it off in Settings > Status Bar.
+- While charging is held, the battery menu says Charging On Hold, and on iPadOS 16 and 17 the menu bar's battery shows a plug instead of the charging bolt, as on a Mac.
+- Settings > Windows & Multitasking is regrouped: the Mac Switcher's switches, with Recent Apps with Left-Edge Swipe, come right after Windows, the switches for how windows behave are together under Window Behavior, and Prewarm Apps and Keep Tailspin Off are under Advanced. Your settings stay as they were.
+- Show Trash in Dock in Settings > Dock is now on for new installs. An update keeps your Dock as it was.
+- On an external display with Stage Manager, an app you open there now joins that display's desktop as a window, at your Window Size and next to the windows already there. It used to open alone.
+- Windows on an external display now snap to its edges, its menu bar, its Dock and its other windows, as on the iPad.
+- On iPadOS 18, Desktop Picture now shows on an external display too, as on a Mac.
+- An external display's Dock now has the Trash, as a Mac's desktop always does, also while Show Trash in Dock is off for the iPad.
+
+### Fixes
+- Custom Shortcuts now work with any app in front, not only on the Home Screen, also the ones that use only Option.
+- In the Mac Switcher, a window let go on a desktop's name now moves to that desktop. It used to go back to its place.
+- On an external display, closing the last window now leaves that display's desktop empty. The window used to stay open, or an older one came back.
+- Escape now closes the App Library on an external display too.
+- The Downloads stack in an external display's Dock now stays open with that Dock, instead of closing with the iPad's.
+
 ## 1.8.5
 
 ### New

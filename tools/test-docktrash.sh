@@ -9,12 +9,13 @@ clang -O2 -fobjc-arc -Wall -Wno-unused-function -framework Foundation -o "$W/tdt
 fails=0
 check() { if eval "$2"; then echo "PASS  $1"; else echo "FAIL  $1"; fails=1; fi; }
 P=../dock/dockmagnificationprefs/Resources/Root.plist
-check "Settings > Dock > Show Trash in Dock, off by default" \
-  "python3 -c \"import plistlib,sys; it=[x for x in plistlib.load(open('$P','rb'))['items'] if x.get('key')=='showTrash']; sys.exit(0 if len(it)==1 and it[0].get('default') is False and it[0].get('label')=='Show Trash in Dock' and it[0].get('PostNotification')=='com.besiktasliseba.dockmagnification/prefsChanged' else 1)\""
-check "the Dock reads showTrash, off unless set" "grep -q 'DMCopyPref(CFSTR(\"showTrash\"))' ../dock/Dock.x && grep -q 'BOOL trash = NO;' ../dock/Dock.x"
+check "Settings > Dock > Show Trash in Dock, on by default (1.8.6: new installs; updaters keep it off, the root helper's OldDefaults)" \
+  "python3 -c \"import plistlib,sys; it=[x for x in plistlib.load(open('$P','rb'))['items'] if x.get('key')=='showTrash']; sys.exit(0 if len(it)==1 and it[0].get('default') is True and it[0].get('label')=='Show Trash in Dock' and it[0].get('PostNotification')=='com.besiktasliseba.dockmagnification/prefsChanged' else 1)\""
+check "the Dock reads showTrash, on unless switched off (an update has NO written where it was never set)" "grep -q 'DMCopyPref(CFSTR(\"showTrash\"))' ../dock/Dock.x && grep -q 'BOOL trash = YES;' ../dock/Dock.x && grep -qF '@[@\"com.besiktasliseba.dockmagnification\", @\"showTrash\", @NO, @4]' ../macsettings/sshtoggled/main.m && grep -q '^#define DEFAULTSVERSION 4' ../macsettings/sshtoggled/main.m"
+check "an external display's Dock (a TV) shows the Trash by default even with the switch off, while Finder runs (1.8.6, KT 10 Nov)" "grep -q '^static BOOL DMDockShowsTrash(UIView \*dockView) {' ../dock/Dock.x && grep -q 'return w && !DMDockOnMainScreen(w);' ../dock/Dock.x && grep -qF 'DMTrashAttach(platter, gTrashSlot, DMDockShowsTrash((UIView *)self)' ../dock/Dock.x && grep -qF 'trashOn = endOn && showTrash;' ../dock/Dock.x && grep -qF 'BOOL on = gFinderOn && (DMDockTrashPrefOn() || DMDockTrashExternalDisplay());' ../statusbar/DockTrash.h && grep -q 'UIScreenDidConnectNotification, UIScreenDidDisconnectNotification\]) *// (a TV' ../statusbar/DockTrash.h"
 check "Finder reads the same switch" "grep -q 'CFSTR(\"showTrash\")' ../statusbar/DockTrash.h"
 check "the crash guard turns the Trash off (not the whole Dock or Finder)" \
-  "grep -q '^target showTrash pref com.besiktasliseba.dockmagnification showTrash 0 0 ' crashmap-rules.txt && grep -q '^file DockMagnification ^TrashIcon' crashmap-rules.txt && grep -q '^file MacStatusBarCore ^DockTrash' crashmap-rules.txt"
+  "grep -q '^target showTrash pref com.besiktasliseba.dockmagnification showTrash 0 1 ' crashmap-rules.txt && grep -q '^file DockMagnification ^TrashIcon' crashmap-rules.txt && grep -q '^file MacStatusBarCore ^DockTrash' crashmap-rules.txt"
 check "no raw Trash notification names outside the shared header" \
   "! grep -n 'finder\.trash' ../dock/*.m ../dock/*.x ../statusbar/*.h ../statusbar/*.x | grep -v 'kMSBDTrash'"
 check "Finder's drag asks the bin first (move and drop)" "grep -q 'UIView \*bin = DMFDTrashIconAt(sp);' ../statusbar/Finder.h && grep -q 'if (DMFDTrashIconAt(sp)) {' ../statusbar/Finder.h"

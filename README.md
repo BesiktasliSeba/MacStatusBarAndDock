@@ -1,4 +1,12 @@
-# MacStatusBar&Dock
+<p align="center"><img src="./images/icon.png" width="128" alt="MacStatusBar&amp;Dock icon"></p>
+
+<h1 align="center">MacStatusBar&amp;Dock</h1>
+
+<p align="center">A Mac desktop on your jailbroken iPad.</p>
+
+<p align="center"><a href="#install">Install</a> · <a href="#features">Features</a> · <a href="https://besiktasliseba.github.io/repo/">Sileo repo</a> · <a href="CHANGELOG.md">Changelog</a> · <a href="#report-a-bug">Report a bug</a></p>
+
+<p align="center"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fbesiktasliseba.github.io%2Frepo%2Fbadges%2Fhavoc-downloads.json" alt="Havoc downloads"> <img src="https://img.shields.io/badge/iPadOS-15%20to%2018-blue" alt="iPadOS 15 to 18"> <img src="https://img.shields.io/badge/jailbreak-rootless-blue" alt="Rootless"> <img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="License GPL-3.0"></p>
 
 A MacBook-style desktop for your jailbroken iPad. It brings a Mac menu bar with real app menus, Mac windows on the window engine you choose, Mission Control with desktops, a Finder and a magnifying Dock. It works with your fingers or with a trackpad or mouse, in every orientation.
 
@@ -48,6 +56,7 @@ Updates come through Sileo, and the Apple menu shows Update Available when your 
 
 | On a Mac | In MacStatusBar&Dock |
 |---|---|
+| A charge limit, with the Mac running on its power adapter | Charge Limit and Run on Power Adapter in Settings > Battery |
 | Menu bar with the Apple menu and app menus | The same, plus Wi-Fi, battery, audio and VPN menus |
 | Control Center | A Mac Control Center you can choose in Settings |
 | Windows with traffic lights | Mac windows on Aerial, Zetsu, MilkyWay4 or Apple's Stage Manager |
@@ -57,14 +66,22 @@ Updates come through Sileo, and the Apple menu shows Update Available when your 
 | Activity Monitor | An Activity Monitor window with your processes' CPU, memory and disk use, also in the App Library and the Dock |
 | Search in System Settings | A search field at the top of the Settings sidebar |
 
-The Mac look is on right after install, and most features have their own switch. Some extras start off, such as the Mac Switcher, the Dock's Trash, the auto-hiding menu bar, seconds in the clock, tinted resize handles, the keyboard extras and the Lock Screen options. The [Settings reference](./docs/settings.md) shows how each switch starts.
+The Mac look is on right after install, and most features have their own switch. Some extras start off, such as Charge Limit, the Mac Switcher, the auto-hiding menu bar, seconds in the clock, tinted resize handles, the keyboard extras and the Lock Screen options. The [Settings reference](./docs/settings.md) shows how each switch starts.
+
+### Charge Limit and Run on Power Adapter
+
+- Charge Limit in Settings > Battery > Battery Health (Battery Health & Charging on iPadOS 16 to 18) stops charging at 80, 85, 90 or 95% while the iPad stays plugged in, and starts again 5% lower. Plugged in above the limit, the iPad uses its battery down to the limit first, and about once a month it charges to 100% to keep its battery reading accurate.
+- Run on Power Adapter, on the same page: while the iPad is plugged in, the power adapter runs it and the battery keeps the charge it had, as on a Mac. Below 20%, it charges to 20% first. Both are off until you turn them on.
+- While either one holds the charge, the battery rests: almost no charge cycles and less wear. I measured 0 mA going into or out of the battery during the hold on all four test iPads, iPadOS 15 to 18.
+- The battery menu shows where charging stands, such as Charging On Hold at 80%, and has Charge to Full Now for the days you need a full battery. On iPadOS 16 and 17, while charging is held, the menu bar's battery shows a plug instead of the charging bolt.
+- Current limits: under heavy load the battery can still help the adapter in short bursts. With some fast USB-C adapters, an iPad plugged in above the limit stays there until you unplug it, instead of coming down. If an iPad can't pause charging with an adapter, Settings and the battery menu say so and it charges as usual.
 
 ### Menu bar
 
 - The Apple menu has About This iPad, App Store, Force Quit, Respring, Safe Mode, Lock Screen, Sleep and Shut Down. The app in front gets App, Edit, Go and Window menus.
 - Tap the clock to drop down your Today View widgets, with your notifications above them.
 - The Wi-Fi icon opens a Wi-Fi menu, so you can join a network without Control Center. The Audio menu gives each app its own volume, and apps can play at the same time. While a VPN is connected, it gets its own menu with Disconnect.
-- The battery opens a battery menu, as on a Mac, with Low Power Mode, Sleep Guard and Battery Settings, and a Control Center icon next to the clock opens Control Center. Battery Menu in Settings > Status Bar turns both off.
+- The battery opens a battery menu, as on a Mac, with Low Power Mode, Charge Limit, Sleep Guard and Battery Settings, and a Control Center icon next to the clock opens Control Center. Battery Menu in Settings > Status Bar turns both off.
 - Right-to-left languages get a mirrored menu bar, as on a Mac. Status Bar Style switches back to the stock iPadOS bar.
 - Menu Bar Size in Settings > Status Bar: Medium and Large make the menu bar taller, with larger text, icons and menus that are easier to tap with a finger.
 - Live Activities in Menu Bar in Settings > Status Bar shows what's playing and your calls as small pills next to the status icons, as on a Mac. A tap on one opens a card to control it. On iPadOS 15.6.1, 16.7.7, 17.5.1 and 18.5, Clock timers show there too.
@@ -82,9 +99,10 @@ The Mac look is on right after install, and most features have their own switch.
 ### Windows
 
 - Title bars, traffic lights, rounded corners and resize handles, on the engine you already use.
+- Magnify Traffic Lights in Settings > Windows & Multitasking: touch a window's red, yellow and green buttons with a finger and they grow, with their symbols, so the one you want is easy to hit. Slide to another, lift to use it, or lift away to cancel. A click with a trackpad or mouse stays a plain click, and a drag that starts on the buttons opens them instead of moving the window.
 - Swiping up from the bottom or pressing the Home button minimizes your windows so the Home Screen shows, and opening an app brings its window back. Home Minimizes Windows in Settings > Windows & Multitasking turns it off.
 - The Window menu has layouts (halves, quarters, Fill Screen, Center) and Fit to Window, which tiles your windows side by side and keeps each one in its place when another closes or joins. Layouts and tiles reach the screen's edges, from right under the menu bar down to the Dock.
-- A window you move or resize lines up with the screen edges, the menu bar, the Dock and other windows when you let go of it near them.
+- A window you move or resize lines up with the screen edges, the menu bar, the Dock and other windows when you let go of it near them. Snap Windows to Edges in Settings > Windows & Multitasking turns it off.
 - When you turn the iPad, a window in a layout (Fill Screen, a half or a quarter) takes the same layout in the new orientation, and any other window goes back to where it last was in that orientation.
 - On iPads with a Home button, windows placed before 1.7.1 with a gap under the menu bar move up under it once.
 - Windows have a smallest size with every engine, as with Stage Manager: the app at least 320 x 300 points.
@@ -97,7 +115,8 @@ The Mac look is on right after install, and most features have their own switch.
 - Custom Shortcuts in Settings > Keyboard: record a key combination to open an app or a link, arrange the front window or go Home. It's based on [KeyPilot](https://github.com/wanghuangjie/KeyPilot) by wanghuangjie. While KeyPilot itself is installed, its shortcuts work, Custom Shortcuts waits, and you can import KeyPilot's shortcuts.
 - With Aerial, Zetsu or MilkyWay4 on iPadOS 15 to 18, every app with a window has its card in iPadOS's App Switcher, as with Stage Manager. A tap on the card brings the window forward.
 - Only the window you're using keeps a text cursor, and Esc ends typing.
-- With the Stage Manager engine on iPadOS 16 to 18, windows float over your Home Screen and stay where you put them, and on iPadOS 16 an external display gets its own Mac desktop.
+- With the Stage Manager engine on iPadOS 16 to 18, windows float over your Home Screen and stay where you put them, and an external display gets its own Mac desktop (tried on iPadOS 16 and 18).
+- On an external display with Stage Manager, apps you open there join its desktop as windows at your Window Size, windows snap to its edges, its menu bar and its Dock, and closing the last window leaves its desktop empty. Its Dock has the Trash, Escape closes its App Library, and on iPadOS 18 it shows your Desktop Picture.
 
 ### Mac Switcher (Mission Control and Spaces)
 
@@ -106,6 +125,7 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 - Open it with a swipe up and pause, the same way iPadOS opens the App Switcher, a double press of the Home button, or Control-Up. Your desktops are at the top, and the windows of the current one below.
 - Tap + to add a desktop (up to 8). Switch with a four-finger swipe, a swipe along the bottom edge, three fingers on a trackpad, or Control-Left and Control-Right.
 - Drag a window onto another desktop to move it there. To remove a desktop, hold it and tap its remove button; its windows move to the desktop next to it.
+- Flick a window up to quit its app, as in the App Switcher, or swipe it up with two fingers on a trackpad. Swipe Up to Quit in Settings > Windows & Multitasking turns it off.
 - It works with every window engine, and your desktops are still there after a respring. Show App Switcher in the Apple menu opens the iPadOS App Switcher once.
 
 ### Finder and the desktop
@@ -136,7 +156,7 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 - Automatically Hide and Show the Dock in Settings > Dock hides it until you swipe up from the bottom or move the pointer to its edge, with every window engine. It replaces Stage Manager's own Dock option.
 - An app's icon bounces in the Dock while the app opens, as on a Mac, except while Reduce Motion is on. Animate Opening Applications in Settings > Dock turns it off.
 - A Downloads stack with search, which you can drag files into and out of.
-- A Trash at its end, which you turn on in Settings > Dock. Drop files on it to move them to the Trash, a Dock app to take it out of the Dock, or a drive to eject it (iPadOS 16 to 18).
+- A Trash at its end, on for new installs (Show Trash in Dock in Settings > Dock). Drop files on it to move them to the Trash, a Dock app to take it out of the Dock, or a drive to eject it (iPadOS 16 to 18).
 - Haptic Touch menus get Force Quit, App Size and Add App to Folder on app icons, and a folder's menu lists its apps. Add App to Folder moves the app into a Home Screen folder or a new one, as a drag would, also from the App Library.
 - Menus that open from the Dock and the Downloads stack sit over their icon with the Mac's arrow pointing at it.
 - On iPadOS 15 to 17, icon themes such as SnowBoard's change Finder, Launchpad, Downloads, the Trash and Activity Monitor like any app icon. The identifiers are under [For theme makers](#for-theme-makers).
@@ -151,7 +171,7 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 
 ### Battery
 
-- Settings > Battery > Battery Health (Battery Health & Charging on iPadOS 16 to 18) opens on every iPad, as on an iPhone, with the battery's Maximum Capacity and Cycle Count, also while another battery health tweak is installed.
+- Settings > Battery > Battery Health (Battery Health & Charging on iPadOS 16 to 18) opens on every iPad, as on an iPhone, with the battery's Maximum Capacity and Cycle Count, Charge Limit and Run on Power Adapter, also while another battery health tweak is installed.
 - Sleep Guard, in the page's Battery Use group and on unless you turn it off, lets the iPad sleep when a hold left behind by a process that's gone is the only thing keeping it awake with the screen off.
 - While the screen is off, the tweak's own timers stop, such as Activity Monitor's refresh and the RAM & CPU tile's.
 
@@ -187,7 +207,7 @@ The menu bar and the Dock work on their own. App windows come from a window engi
 
 | Engine | iPadOS | Notes |
 |---|---|---|
-| Stage Manager, by Apple | 16, 17, 18 | Needs Stage Manager on the iPad (TrollPad adds it to older iPads). A new install on iPadOS 16.1 to 18 starts with it where it runs. Up to 7 windows per desktop. The only engine that gives an external display its own desktop (tried on 16). Tested on 16.7.7, 17.5.1 and 18.5. |
+| Stage Manager, by Apple | 16, 17, 18 | Needs Stage Manager on the iPad (TrollPad adds it to older iPads). A new install on iPadOS 16.1 to 18 starts with it where it runs. Up to 7 windows per desktop. The only engine that gives an external display its own desktop (tried on 16 and 18). Tested on 16.7.7, 17.5.1 and 18.5. |
 | Aerial 5.1, 5.0 or 3.0, by uz.ra | 15, 16 (17 and 18: 5.1) | Aerial 5.0 and 5.1 have to be activated in their own settings before they open windows. |
 | Zetsu 1.6.6 or 1.6.2, by Dcsyhi | 15, 16 (17 and 18: 1.6.6) | A good alternative. Desktops were tested with 1.6.6. |
 | MilkyWay4 0.1.1, by akusio | 15 | Adds the Resize Apps to Fit Windows switch. |
@@ -216,7 +236,7 @@ Which one? On an iPad with Stage Manager (or TrollPad) on iPadOS 16.1 to 18, a n
 
 - iPad Pro (M2) with the Stage Manager engine: offered on 16.1 and later, and as "Untested" on 16.0, where a user confirmed the basics (windows, resizing, traffic lights). On 16.3.1 a user confirmed it runs.
 - iPadOS 17: tested on 17.5.1 with the Stage Manager engine (Stage Manager through TrollPad), Aerial 5.1 and Zetsu, together with the desktop, Finder, the Wi-Fi menu, the Mac Switcher and the Spotlight extras. The Home Screen options are on the Dock page in Settings there. iPads with Stage Manager of their own on 17 and external displays on 17 haven't been tried yet; reports are welcome.
-- iPadOS 18: tested on 18.5 with the Stage Manager engine (an iPad with Stage Manager of its own), Aerial 5.1 and Zetsu, together with the desktop, Finder, the Wi-Fi menu, the Mac Switcher and RAM & CPU. Settings has no room for tweak rows in its sidebar there, so the tweak's pages and rows are in a group at the top of Settings > General. The tweak's search field in the Settings sidebar is for iPadOS 15 to 17. External displays on 18 haven't been tried yet.
+- iPadOS 18: tested on 18.5 with the Stage Manager engine (an iPad with Stage Manager of its own), Aerial 5.1 and Zetsu, together with the desktop, Finder, the Wi-Fi menu, the Mac Switcher and RAM & CPU. Settings has no room for tweak rows in its sidebar there, so the tweak's pages and rows are in a group at the top of Settings > General. The tweak's search field in the Settings sidebar is for iPadOS 15 to 17. An external display was tried on 18.5 with the Stage Manager engine.
 
 Tried it on another setup? A [compatibility report](https://github.com/BesiktasliSeba/MacStatusBarAndDock/issues/new?template=compatibility.yml) (works or doesn't) helps fill in this table.
 
@@ -226,7 +246,7 @@ Tried it on another setup? A [compatibility report](https://github.com/Besiktasl
 - Apple's Stage Manager stays off while another window engine runs, because two window systems would fight over the same apps. To use it, pick Stage Manager as the engine.
 - With the Stage Manager engine, a desktop holds up to 7 windows.
 - Some apps, like many games, only run full screen. The camera works only full screen (iPadOS pauses it in a window), and Photos opened from the Camera stays full screen.
-- External displays: on iPadOS 15 the iPad is mirrored. On iPadOS 16 with engines other than Stage Manager, windows stay on the iPad; open apps from the display's App Library to use them there.
+- External displays: on iPadOS 15 the iPad is mirrored. On iPadOS 16 to 18 with engines other than Stage Manager, windows stay on the iPad; open apps from the display's App Library to use them there.
 - Finder can't show iCloud Drive (iPadOS doesn't allow it), drag and drop goes from Finder into apps but not back yet, and drives have been tested on iPadOS 15 only.
 - On iPadOS 15, Safari's sound can stop another app that plays alone, as on a stock iPad. Control Center's Now Playing shows one app at a time.
 - On iPadOS 18, the Control Center size slider doesn't resize the Mac Control Center yet.

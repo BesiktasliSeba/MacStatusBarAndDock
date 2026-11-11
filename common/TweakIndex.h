@@ -376,7 +376,8 @@ static NSString *MTICleanTitle(NSString *t) {
         e.uid = [self uidForPane:pane path:e.path rootRow:NO opensPage:link];
         e.tokens = MTITokens(title, kw);
         e.ours = self.ours;
-        e.groupID = groupID; e.stockHides = groupStock || self.underStock; e.key = MTIStr(it[@"key"]); e.belowLine = self.belowLine;
+        BOOL rowStock = [it[@"stockHides"] isKindOfClass:[NSNumber class]] && [it[@"stockHides"] boolValue];   // (1.8.6: a row of a mixed group, Prewarm Apps in Advanced)
+        e.groupID = groupID; e.stockHides = groupStock || rowStock || self.underStock; e.key = MTIStr(it[@"key"]); e.belowLine = self.belowLine;
         [self.out addObject:e];
         (*count)++;
         // the page a link row opens, when it is one of this bundle's plists (found as MTISubPlist says): its rows too

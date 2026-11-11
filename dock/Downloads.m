@@ -619,7 +619,22 @@ static const CGFloat kPanelWindowLevel = 1036.0;
 // -[SBWindowScene floatingDockController]. Bug (iPad 2 on 16.7.7): tapping the Downloads icon resprung SpringBoard twice -- the old
 // `valueForKey:@"_floatingDockController"` threw NSUnknownKeyException (valueForUndefinedKey:) on 16 and nothing caught it. Now the ivar is only
 // read if it exists, then the Dock window's own scene is asked, and if neither answers the Dock-visibility step is simply skipped.
+// 1.8.6 (tv-parity row 41): another display (the TV) has its own Dock and its own controller. Asked with the window the panel hangs from, the
+// controller is that window's own scene's -- the panel opened from the TV's Dock holds and lets go of the TV's Dock, no longer the iPad's (it closed
+// with the iPad's Dock and kept the TV's from hiding). nil: as before (15's one controller, else the first scene that has a Dock).
+static id DMFloatingDockControllerFor(UIWindow *w) {
+    SEL sceneCtrl = NSSelectorFromString(@"floatingDockController");
+    UIWindowScene *ws = w.windowScene;
+    if (ws && ws.screen != [UIScreen mainScreen] && [ws respondsToSelector:sceneCtrl]) {
+        id ctrl = ((id (*)(id, SEL))objc_msgSend)(ws, sceneCtrl);
+        if (ctrl) { static __weak id told; if (told != ctrl) { told = ctrl; DMLog(@"[downloads] the panel holds another display's Dock (its own window scene's controller)"); } return ctrl; }
+    }
+    return nil;
+}
+static __weak UIWindow *gDMDockHostWindow = nil;   // (the window the open panel hangs from: its screen's Dock is the one held)
 static id DMFloatingDockControllerObj(void) {
+    id own = DMFloatingDockControllerFor(gDMDockHostWindow);
+    if (own) return own;
     Class icClass = objc_getClass("SBIconController");
     id ic = (icClass && [(id)icClass respondsToSelector:@selector(sharedInstance)]) ? ((id (*)(id, SEL))objc_msgSend)((id)icClass, @selector(sharedInstance)) : nil;
     if (ic) {
@@ -660,6 +675,7 @@ static void DMFloatingDockDismiss(void) {
 - (void)raiseHostWindow:(UIWindow *)window {
     if (!self.hostWindow) {
         self.hostWindow = window; self.savedLevel = window.windowLevel;
+        gDMDockHostWindow = window;   // (its screen's Dock: DMFloatingDockControllerObj)
         self.presentedDockOurselves = !DMFloatingDockIsPresented();   // only ours to dismiss later if it wasn't already up (e.g. we're on the Home Screen)
         if (self.presentedDockOurselves) DMFloatingDockPresent();
     }
@@ -678,6 +694,7 @@ static void DMFloatingDockDismiss(void) {
         DMFloatingDockDismiss();
     }
     gDockHoverDismissBlocked = NO;
+    gDMDockHostWindow = nil;
 }
 
 // The panel and the Dock are one unit (2026-09-24): while the panel is open, it is checked 10 times a second that the Dock is still really on
@@ -1474,8 +1491,11 @@ void DMDownloadsStartDebugPolling(void) {
         struct stat st;
         if (stat("/tmp/dockmag-tap", &st) != 0 || st.st_mtimespec.tv_sec == last) return;
         last = st.st_mtimespec.tv_sec;
+        NSString *which = [[NSString stringWithContentsOfFile:@"/tmp/dockmag-tap" encoding:NSUTF8StringEncoding error:nil] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        BOOL tvOnly = [which isEqualToString:@"tv"];   // ("tv": the Downloads icon in another display's Dock, 1.8.6 row 41)
         for (UIWindow *w in [UIWindow allWindowsIncludingInternalWindows:YES onlyVisibleWindows:NO]) {
             if (![NSStringFromClass([w class]) isEqualToString:@"SBFloatingDockWindow"]) continue;
+            if (tvOnly && (w.screen ?: [UIScreen mainScreen]) == [UIScreen mainScreen]) continue;
             NSMutableArray *stack = [NSMutableArray arrayWithObject:w];
             while (stack.count) {
                 UIView *v = stack.lastObject; [stack removeLastObject];

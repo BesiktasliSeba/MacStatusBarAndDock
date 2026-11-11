@@ -48,7 +48,7 @@ check "  ... asked once: not again for the launch after the answer (gSMSkipFitAs
   "fn 'static BOOL DMSMFitAsksAbout(NSString *bundle, NSArray<NSString *> *stageKeys, NSString **leftOut, NSString **rightOut) {' | grep -q 'gSMSkipFitAsk ||' && fn 'static BOOL DMSMFitAsksAbout(NSString *bundle, NSArray<NSString *> *stageKeys, NSString **leftOut, NSString **rightOut) {' | grep -q 'gSMFitPending\[bundle\]'"
 check "  ... the answer's launch opens straight into its tile, the other windows moving in the same plan (a choice made only: Fit's look otherwise)" \
   "fn 'static NSArray<NSArray *> *DMSMFitPlanInTiles(NSArray<NSArray *> *plan, id act, NSString *key, NSString *bundle, id desk) {' | grep -q 'if (!gSMFitPending\[bundle\]' \
-   && fn 'static void DMSMJoinDesktop(id ctx) {' | grep -q 'NSArray<NSArray \*> \*inTiles = DMSMFitPlanInTiles(plan, act, key, bundle, desk);' \
+   && fn 'static void DMSMJoinDesktop(id ctx) {' | grep -q 'NSArray<NSArray \*> \*inTiles = tv ? nil : DMSMFitPlanInTiles(plan, act, key, bundle, desk);' \
    && fn 'static void DMSMJoinDesktop(id ctx) {' | awk '/DMSMFitPlanInTiles\(plan, act, key, bundle, desk\)/{a=NR} /DMSMPlanFitted\(identity, plan\)/{b=NR} END{exit !(a && b > a)}'"
 check "a tile is a window's intended place from the start of its slide, a Zetsu window's too: the back-to-its-place passes after an unlock read it, and a launch Fit's question held for the unlock slides the tiles just then" \
   "fn 'static void DMApplyGroupSlots(UIView *fresh) {' | grep -B1 -F 'DMAerialMoveStage(s, f, nil);' | grep -qE '^ +DMSetStageIntent\(s, f\);\$' && fn 'void DMZetsuAfterUnlock(void) {' | grep -qF 'NSValue *intent = objc_getAssociatedObject(w, kStageIntentKey);'"

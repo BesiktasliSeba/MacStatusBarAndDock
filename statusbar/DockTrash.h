@@ -11,7 +11,7 @@ static BOOL DMDockTrashPrefOn(void) {
     CFStringRef dom = CFSTR("com.besiktasliseba.dockmagnification");
     CFPreferencesAppSynchronize(dom);
     CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("showTrash"), dom, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-    BOOL on = v && CFGetTypeID(v) == CFBooleanGetTypeID() && CFBooleanGetValue(v);
+    BOOL on = !(v && CFGetTypeID(v) == CFBooleanGetTypeID() && !CFBooleanGetValue(v));   // (on unless switched off since 1.8.6: dock/Dock.x, new installs)
     if (v) CFRelease(v);
     return on;
 }
@@ -102,9 +102,12 @@ static void DMDockTrashDrivesChanged(void) {
     DMDockTrashWatchFolders();
     DMDockTrashRecount(@"the drives changed");
 }
-// The Dock's switch (its settings post the Dock's change) or Finder's own: the watch runs only while the bin is wanted.
+// An external display is connected (a TV): its Dock shows the Trash by default even with the switch off (dock/Dock.x DMDockShowsTrash, 1.8.6), so
+// the bin's state, Open, Empty and drops are served then too.
+static BOOL DMDockTrashExternalDisplay(void) { return [UIScreen screens].count > 1; }
+// The Dock's switch (its settings post the Dock's change), Finder's own, or a display coming or going: the watch runs only while a bin is wanted.
 static void DMDockTrashApplyPref(void) {
-    BOOL on = gFinderOn && DMDockTrashPrefOn();
+    BOOL on = gFinderOn && (DMDockTrashPrefOn() || DMDockTrashExternalDisplay());
     if (on == gDockTrashOn) { if (on) DMDockTrashRecount(@"settings"); return; }
     gDockTrashOn = on;
     DMLog([NSString stringWithFormat:@"[trash] the Dock's Trash is %@", on ? @"on: Finder watches its Trash for the bin" : @"off"]);
@@ -275,6 +278,8 @@ static void DMDockTrashInit(void) {
     notify_register_dispatch(kMSBDTrashOpenName, &t1, dispatch_get_main_queue(), ^(int t) { DMDockTrashOpen(); });
     notify_register_dispatch(kMSBDTrashEmptyName, &t2, dispatch_get_main_queue(), ^(int t) { DMDockTrashEmpty(); });
     notify_register_dispatch("com.besiktasliseba.dockmagnification/prefsChanged", &t3, dispatch_get_main_queue(), ^(int t) { DMDockTrashApplyPref(); });
+    for (NSString *n in @[UIScreenDidConnectNotification, UIScreenDidDisconnectNotification])   // (a TV's Dock has the bin by default)
+        [[NSNotificationCenter defaultCenter] addObserverForName:n object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) { DMDockTrashApplyPref(); }];
     DMDockTrashApplyPref();
 }
 

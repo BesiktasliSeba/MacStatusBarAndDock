@@ -112,7 +112,7 @@ static inline BOOL MSBDFeaturePrefValue(NSString *domain, NSString *key, BOOL de
 
 // The answer for one report and map: YES with *action = "pref <image> <domain> <key> <value> [text=<off text>] <row title>|<where>" (text: the
 // list row's choice to store instead of the value -- its rule's first off text, so Settings shows a choice: Dock Style "default") or
-// "part <image> - - 0 <where>|<what>"; NO with *action = why not.
+// "part <image> - - 0 <where>|<what>" (a piece: "part <its target> - - 0 <where>|<what>"); NO with *action = why not.
 // *detail gets where it was found (for the log).
 static inline BOOL MSBDFeatureForReport(NSData *report, NSString *map, NSString **action, NSString **detail) {
     *detail = @"";
@@ -127,6 +127,14 @@ static inline BOOL MSBDFeatureForReport(NSData *report, NSString *map, NSString 
     *detail = [NSString stringWithFormat:@"%@+0x%llx (%@; %@) -> %@", image, offset, where, how, target ?: @"nothing"];
     NSArray *spec = target ? targets[target] : nil;
     if (!spec.count) { *action = [NSString stringWithFormat:@"%@ cannot be turned off on its own", image]; return NO; }
+    // A piece (review of 1.8.6): code with no Settings row of its own (the battery icon's plug during a charge hold) goes off as a part does -- on
+    // the skip list under its target's name, which that code reads (MSBDCrashSkipped), and with Turn Back On to bring it back -- never as a stored
+    // switch nobody can switch back.
+    if ([spec[0] isEqualToString:@"piece"]) {
+        NSString *title = spec.count > 1 ? [[spec subarrayWithRange:NSMakeRange(1, spec.count - 1)] componentsJoinedByString:@" "] : [NSString stringWithFormat:@"%@|%@", target, target];
+        *action = [NSString stringWithFormat:@"part %@ - - 0 %@", target, title];
+        return YES;
+    }
     // A switch that is already off cannot be the cause: then the part's own fallback (for the status bar: Stock status bar mode), then the part.
     NSString *fallback = MSBDFeatureMapTarget(map, image, @"", 0, &targets, &how, &partTitle);
     BOOL isPref = [spec[0] isEqualToString:@"pref"];   // (a "part" target is the part, no fallback)

@@ -19,6 +19,8 @@
 #define MSBD_SG_STATE    MSBD_SG_STATEDIR "/sleepguard.plist"  // (written by the helper, read by Settings and by the helper's next start)
 #define MSBD_SG_LOG      "/var/jb/var/log/msbd-sleepguard.log"
 #define MSBD_SG_CHARGEJOB "msbdcharge"                         // (the Charge Limit's job: re-raises its own after a powerd restart)
+#define MSBD_SG_POWERD   "com.besiktasliseba.sleepguard.powerd-restarted"   // (posted after the guard, or msbdcharge --reset, started powerd over: the
+                                                                            // charge job raises its own anew)
 
 enum { kMSBDSGConfirmSeconds = 60, kMSBDSGMinGapSeconds = 1800, kMSBDSGMaxPerDay = 6, kMSBDSGLiveRetrySeconds = 300 };
 

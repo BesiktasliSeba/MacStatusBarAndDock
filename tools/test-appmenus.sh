@@ -56,17 +56,18 @@ check "a menu opens under the slot that shows its title once the fresh answer is
 check "debug logs name a row by its key or place, never its title (user content: L9)" \
   "grep -qF '[appmenus] %@ > row %08x picked: sent to %@\", menu, key, b' $M && grep -qF 'appmenus: row %08x (%@) sent to %@: %d\", key,' $A && grep -qF 'appmenus:   %@ > %08x %@%@%@\", m[@\"t\"], [r[@\"x\"] unsignedIntValue],' $A && grep -qF '[appmenus] debug pick: %@ > row %ld (enabled %d)' $S"
 check "the release marker" "grep -qF 'DM_FEATURE_MARK(\"app-own-menus\");' $A"
-# Show Apps' Own Menus (review 1.8.5 item 3, M6): a switch, off unless switched on; off, no title, no Edit extras, no ask, and no snapshot in any app
+# Show Apps' Own Menus (review 1.8.5 item 3, M6): a switch, on unless switched off (1.8.6, KT 10 Nov; the 1.8.6 update writes it on once for every
+# device, test-defaultsrule); off, no title, no Edit extras, no ask, and no snapshot in any app
 P=../statusbar/macstatusbarprefs/Resources/Root.plist; R=crashmap-rules.txt
-check "the switch in Settings > Status Bar: Show Apps' Own Menus, off unless switched on, applied when changed" \
-  "python3 -I -c 'import plistlib,sys; it=plistlib.load(open(sys.argv[1],\"rb\"))[\"items\"]; r=[x for x in it if x.get(\"key\")==\"appOwnMenus\"]; sys.exit(0 if len(r)==1 and r[0].get(\"cell\")==\"PSSwitchCell\" and r[0].get(\"default\") is False and r[0].get(\"label\")==\"Show Apps\x27 Own Menus\" and r[0].get(\"defaults\")==\"com.besiktasliseba.macstatusbar\" and r[0].get(\"PostNotification\")==\"com.besiktasliseba.macstatusbar/prefsChanged\" else 1)' $P"
-check "SpringBoard reads it (off unless a stored yes) and publishes it for every app" \
-  "grep -qF 'CFPreferencesCopyValue(CFSTR(\"appOwnMenus\"), MSB_DOMAIN' $S && grep -qF 'BOOL amOn = amRef && CFGetTypeID(amRef) == CFBooleanGetTypeID() && CFBooleanGetValue(amRef);' $S && grep -qF 'DMAMApplyPref(amOn);' $S && grep -qF '#define kDMAMSwitchName \"com.besiktasliseba.appbridge.appmenus\"' $M"
+check "the switch in Settings > Status Bar: Show Apps' Own Menus, on unless switched off, applied when changed" \
+  "python3 -I -c 'import plistlib,sys; it=plistlib.load(open(sys.argv[1],\"rb\"))[\"items\"]; r=[x for x in it if x.get(\"key\")==\"appOwnMenus\"]; sys.exit(0 if len(r)==1 and r[0].get(\"cell\")==\"PSSwitchCell\" and r[0].get(\"default\") is True and r[0].get(\"label\")==\"Show Apps\x27 Own Menus\" and r[0].get(\"defaults\")==\"com.besiktasliseba.macstatusbar\" and r[0].get(\"PostNotification\")==\"com.besiktasliseba.macstatusbar/prefsChanged\" else 1)' $P"
+check "SpringBoard reads it (on unless a stored no) and publishes it for every app" \
+  "grep -qF 'CFPreferencesCopyValue(CFSTR(\"appOwnMenus\"), MSB_DOMAIN' $S && grep -qF 'BOOL amOn = YES;' $S && grep -qF 'if (amRef) { if (CFGetTypeID(amRef) == CFBooleanGetTypeID()) amOn = CFBooleanGetValue(amRef); CFRelease(amRef); }' $S && grep -qF 'static BOOL gAMOn = YES; ' $M && grep -qF 'DMAMApplyPref(amOn);' $S && grep -qF '#define kDMAMSwitchName \"com.besiktasliseba.appbridge.appmenus\"' $M"
 check "off: no titles (the layout), no Edit extras, no ask, no answer read" \
   "grep -qF 'NSString *amBundle = (gAMOn && !finderTitles' $S && grep -qF 'return gAMOn && bundle.length ? DMAMRows(bundle, kMSBDAppMenuEdit) : @[];' $M && grep -qF 'if (!gAMOn || !bundle.length) return;' $M && grep -qF 'if (!gAMOn) return;   // (an answer that comes in after the switch went off)' $M"
-check "off: the app makes no snapshot and performs no row (only state 1 is on; never published is off)" \
-  "grep -qF 'return state == 1;' $A && grep -A1 -F 'notify_register_dispatch(name, &tokenAsk' $A | grep -qF 'if (!MABMenusOn()) return;' && grep -A1 -F 'static void MABMenuPerform(uint64_t state) {' $A | grep -qF 'if (!MABMenusOn()) return;'"
+check "off: the app makes no snapshot and performs no row (only a published off, state 2, is off; never published is on)" \
+  "grep -qF 'return state != 2;' $A && ! grep -qF 'return state == 1;' $A && grep -A1 -F 'notify_register_dispatch(name, &tokenAsk' $A | grep -qF 'if (!MABMenusOn()) return;' && grep -A1 -F 'static void MABMenuPerform(uint64_t state) {' $A | grep -qF 'if (!MABMenusOn()) return;'"
 check "the crash guard turns the switch off for a crash in either side, not the whole status bar" \
-  "grep -qF 'target appOwnMenus pref com.besiktasliseba.macstatusbar appOwnMenus 0 0 Show Apps' $R && grep -qxF 'file MacStatusBarCore ^AppMenus\\.h\$ appOwnMenus' $R && grep -qxF 'file MacAppBridge ^AppMenus\\.h\$ appOwnMenus' $R"
+  "grep -qF 'target appOwnMenus pref com.besiktasliseba.macstatusbar appOwnMenus 0 1 Show Apps' $R && grep -qxF 'file MacStatusBarCore ^AppMenus\\.h\$ appOwnMenus' $R && grep -qxF 'file MacAppBridge ^AppMenus\\.h\$ appOwnMenus' $R"
 check "no em dash in the new files" "! grep -q \$'\\xe2\\x80\\x94' ../common/AppMenuRules.h $A $M test-appmenus.m"
 [ "$fails" = 0 ] && echo "test-appmenus: all pass" || { echo "test-appmenus: FAILED"; exit 1; }
