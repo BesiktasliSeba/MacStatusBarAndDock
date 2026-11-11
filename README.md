@@ -332,6 +332,8 @@ MacStatusBar&Dock gives a Mac look to windows from these engines. Thanks to thei
 - **MilkyWay4** by akusio
 - **Zetsu** by Dcsyhi
 
+[VirtualMac](https://github.com/nfzerox/VirtualMacOniPad) by nfzerox, which runs macOS itself on an iPad, inspired me to make this tweak.
+
 And thanks to these tweaks for setting the bar:
 
 - **Arrow, Finally.** by Andy Ching, for the Mac pointer
@@ -339,6 +341,8 @@ And thanks to these tweaks for setting the bar:
 - **Single Mute** by 82Flex, for the mute icon
 
 This tweak does not include or modify any of their files.
+
+Thanks to Duy Tran (khanhduytran0) for [TrollPad](https://github.com/khanhduytran0/TrollPad), which brings Stage Manager and other iPad features to iPads that don't have them, so the Stage Manager engine runs there too.
 
 Thanks to wanghuangjie ([KeyPilot](https://github.com/wanghuangjie/KeyPilot)) for the window API design and its first version.
 
