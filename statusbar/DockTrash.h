@@ -102,9 +102,13 @@ static void DMDockTrashDrivesChanged(void) {
     DMDockTrashWatchFolders();
     DMDockTrashRecount(@"the drives changed");
 }
-// An external display is connected (a TV): its Dock shows the Trash by default even with the switch off (dock/Dock.x DMDockShowsTrash, 1.8.6), so
-// the bin's state, Open, Empty and drops are served then too.
-static BOOL DMDockTrashExternalDisplay(void) { return [UIScreen screens].count > 1; }
+// A connected display (a TV) whose Dock shows the Trash: its own Show Trash in Dock, ON by default even with the iPad's off (dock/Dock.x
+// DMDockShowsTrash; 1.8.7 per display, DisplayPrefs.h), so the bin's state, Open, Empty and drops are served then too.
+static BOOL DMDockTrashExternalDisplay(void) {
+    BOOL ipad = DMDockTrashPrefOn();
+    for (UIScreen *s in DMDispScreens()) if (s != [UIScreen mainScreen] && DMDispBool(s, "dock", "showTrash", ipad)) return YES;
+    return NO;
+}
 // The Dock's switch (its settings post the Dock's change), Finder's own, or a display coming or going: the watch runs only while a bin is wanted.
 static void DMDockTrashApplyPref(void) {
     BOOL on = gFinderOn && (DMDockTrashPrefOn() || DMDockTrashExternalDisplay());
@@ -280,6 +284,8 @@ static void DMDockTrashInit(void) {
     notify_register_dispatch("com.besiktasliseba.dockmagnification/prefsChanged", &t3, dispatch_get_main_queue(), ^(int t) { DMDockTrashApplyPref(); });
     for (NSString *n in @[UIScreenDidConnectNotification, UIScreenDidDisconnectNotification])   // (a TV's Dock has the bin by default)
         [[NSNotificationCenter defaultCenter] addObserverForName:n object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) { DMDockTrashApplyPref(); }];
+    static int t4;   // (1.8.7: a display's own Show Trash in Dock changed; the layer's cache read first, as the order of two observers is not known)
+    notify_register_dispatch(MSBD_DISP_NOTIFY, &t4, dispatch_get_main_queue(), ^(int t) { DMDispReload(); DMDockTrashApplyPref(); });
     DMDockTrashApplyPref();
 }
 

@@ -36,11 +36,23 @@ static int FileHas(const char *path, const char *text) {
     return f && strstr(buf, text) != NULL;
 }
 #define TD "com.besiktasliseba.test-crashstep"
+#define TDD "com.besiktasliseba.test-crashstep.displays"   // (= MSBD_DISP_DOMAIN here, and TD is its part msb: tools/test-crashstep.sh)
+static void SetBool(const char *domain, const char *key, int on) {
+    CFStringRef d = CFStringCreateWithCString(NULL, domain, kCFStringEncodingUTF8), k = CFStringCreateWithCString(NULL, key, kCFStringEncodingUTF8);
+    CFPreferencesSetValue(k, on ? kCFBooleanTrue : kCFBooleanFalse, d, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    CFPreferencesSynchronize(d, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    CFRelease(d); CFRelease(k);
+}
 int main(int argc, char **argv) {
     if (argc == 3 && strcmp(argv[1], "skip") == 0) return MSBDCrashSkipped(argv[2]) ? 10 : 20;   // (a loader's view, in a fresh process)
     const char *scenario = argc > 1 ? argv[1] : "";
     MSBDGuardState s = { .pid = 1, .stage = 0, .fakes = 0, .t0 = At(10, 0) + 10, .ta = 0 };
     if (!strcmp(scenario, "banners")) {   // reports: 10:00 + 10:01 banners crashes; later 10:05 a menu crash
+        // (1.8.7: per-display overrides of the crashing switch on two displays and "any", and other keys that must stay)
+        SetBool(TDD, "u-4C2D0372-0000-0000-0120-0103808E5078/msb/macBanners", 1); SetBool(TDD, "u-14803875-6ED1-428A-B223-8B1C4562A66C/msb/macBanners", 0);
+        SetBool(TDD, "any/msb/macBanners", 1); SetBool(TDD, "u-4C2D0372-0000-0000-0120-0103808E5078/msb/autoHideStatusBar", 1);
+        SetBool(TDD, "u-4C2D0372-0000-0000-0120-0103808E5078/dock/macBanners", 1); SetBool(TDD, "u-4C2D0372-0000-0000-0120-0103808E5078/info", 1);
+        SetBool(TDD, "displaySettings", 1); SetBool(TDD, "any/msb/macBannersX", 1);
         Expect("two banners crashes: the guard acts", MSBDGuardEvaluate(&s), 1);
         Expect("  as step 1b (action 4)", Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY), 4);
         Expect("  Mac-Style Banners switched off", Num(TD, "macBanners"), 0);
@@ -50,6 +62,11 @@ int main(int argc, char **argv) {
         Expect("  record: the switch and its words", FileHas(MSBD_GUARD_RECORD, "feature " TD " macBanners 0 Mac-Style Banners|the Mac-style banners\n"), 1);
         Expect("  record: no part line", FileHas(MSBD_GUARD_RECORD, "\npart "), 0);
         Expect("  record: our frames are listed", FileHas(MSBD_GUARD_RECORD, "\nframe "), 1);
+        Expect("  1.8.7: every display's override of Mac-Style Banners cleared (the TV's, the iPad 2's TV's, any display's)",
+               Num(TDD, "u-4C2D0372-0000-0000-0120-0103808E5078/msb/macBanners") == -1 && Num(TDD, "u-14803875-6ED1-428A-B223-8B1C4562A66C/msb/macBanners") == -1 && Num(TDD, "any/msb/macBanners") == -1, 1);
+        Expect("  ... another key of that display kept (its auto-hide)", Num(TDD, "u-4C2D0372-0000-0000-0120-0103808E5078/msb/autoHideStatusBar"), 1);
+        Expect("  ... the same name in another part kept (dock/macBanners)", Num(TDD, "u-4C2D0372-0000-0000-0120-0103808E5078/dock/macBanners"), 1);
+        Expect("  ... the registry, the master switch and a longer key kept", Num(TDD, "u-4C2D0372-0000-0000-0120-0103808E5078/info") == 1 && Num(TDD, "displaySettings") == 1 && Num(TDD, "any/msb/macBannersX") == 1, 1);
         Expect("  no skip list entries", FileHas(MSBD_STEP_FILE, "skip "), 0);
         Expect("  step 1b is not repeated in the same row", MSBDGuardStepFeature(s.t0, s.t0 - 30, 0, NULL, 0), 0);
         s.ta = At(10, 4);   // (as if 1b acted at 10:04; the script adds a crash at 10:05)
@@ -114,6 +131,39 @@ int main(int argc, char **argv) {
     } else if (!strcmp(scenario, "one")) {   // reports: 10:00 one banners crash only
         Expect("a single crash: nothing yet (two are needed)", MSBDGuardEvaluate(&s), 0);
         Expect("  banners untouched", Num(TD, "macBanners"), -1);
+    } else if (!strcmp(scenario, "dispon")) {   // reports: 10:00 + 10:01 banners crashes, Mac-Style Banners off on the iPad and on for the TV only (1.8.7 review)
+        const char *tv = "u-4C2D0372-0000-0000-0120-0103808E5078/msb/macBanners";
+        SetBool(TD, "macBanners", 0); SetBool(TDD, tv, 1); SetBool(TDD, "u-4C2D0372-0000-0000-0120-0103808E5078/info", 1);
+        Expect("two banners crashes with the switch on for the TV only: step 1b", MSBDGuardEvaluate(&s) ? Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY) : 0, 4);
+        Expect("  the switch, not the part's fallback: record names Mac-Style Banners", FileHas(MSBD_GUARD_RECORD, "feature " TD " macBanners 0 Mac-Style Banners|the Mac-style banners\n"), 1);
+        Expect("  ... Stock status bar NOT switched on", Num(TD, "stockStatusBar"), -1);
+        Expect("  ... the TV's own cleared (the TV follows the iPad's off)", Num(TDD, tv), -1);
+        Expect("  ... the iPad's still off", Num(TD, "macBanners"), 0);
+        Expect("  ... the registry kept", Num(TDD, "u-4C2D0372-0000-0000-0120-0103808E5078/info"), 1);
+    } else if (!strcmp(scenario, "dispdefault")) {   // step 1b's per-display part for a row whose display default is on (Show Trash in Dock), 1.8.7 review
+        const char *a = "u-4C2D0372-0000-0000-0120-0103808E5078", *b = "u-14803875-6ED1-428A-B223-8B1C4562A66C";
+        char k[200];
+        snprintf(k, sizeof k, "%s/info", a); SetBool(TDD, k, 1);
+        snprintf(k, sizeof k, "%s/info", b); SetBool(TDD, k, 1);
+        snprintf(k, sizeof k, "%s/dock/showTrash", b); SetBool(TDD, k, 1);
+        SetBool(TDD, "any/dock/showTrash", 1);
+        snprintf(k, sizeof k, "%s/dock/showFinder", a); SetBool(TDD, k, 1);
+        snprintf(k, sizeof k, "%s/msb/showTrash", a); SetBool(TDD, k, 1);
+        Expect("Show Trash in Dock set off by step 1b: every display's changed", MSBDGuardDispClear(MSBD_DISP_DOCK_DOMAIN, "showTrash", 0) >= 3, 1);
+        snprintf(k, sizeof k, "%s/dock/showTrash", a);
+        Expect("  a remembered display with no own (its Trash on by its default): its own written off", Num(TDD, k), 0);
+        snprintf(k, sizeof k, "%s/dock/showTrash", b);
+        Expect("  a display's own on: set off (not cleared: its default is on)", Num(TDD, k), 0);
+        Expect("  any display's own: set off", Num(TDD, "any/dock/showTrash"), 0);
+        snprintf(k, sizeof k, "%s/dock/showFinder", a);
+        Expect("  another key kept", Num(TDD, k), 1);
+        snprintf(k, sizeof k, "%s/msb/showTrash", a);
+        Expect("  the same name in another part kept", Num(TDD, k), 1);
+        snprintf(k, sizeof k, "%s/info", a);
+        Expect("  the registry kept", Num(TDD, k), 1);
+        Expect("a row with no display default (Show Downloads): its overrides cleared, no display given one", (SetBool(TDD, "any/dock/showDownloads", 1), MSBDGuardDispClear(MSBD_DISP_DOCK_DOMAIN, "showDownloads", 0)), 1);
+        snprintf(k, sizeof k, "%s/dock/showDownloads", a);
+        Expect("  ... cleared, none written", Num(TDD, "any/dock/showDownloads") == -1 && Num(TDD, k) == -1, 1);
     } else { fprintf(stderr, "unknown scenario\n"); return 2; }
     return fails ? 1 : 0;
 }

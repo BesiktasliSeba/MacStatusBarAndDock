@@ -113,12 +113,13 @@ static NSArray<NSDictionary *> *DMSpotActionRows(void) {
     NSMutableDictionary *show = [DMSpotRow(@"a", @"Show Desktop", @"Puts every window aside", @"show desktop hide windows", @"menubar.dock.rectangle", nil, ^{ DMSpotShowDesktop(); }) mutableCopy];
     show[@"clear"] = @YES;
     [rows addObject:show];
-    if (DMMSWMulti()) {   // (the Mac Switcher's desktops, two or more: each by its id, so a desktop removed meanwhile is never mistaken for another)
+    if (DMMSWForMain() && DMMSWMulti()) {   // (the Mac Switcher's desktops, two or more: each by its id, so a desktop removed meanwhile is never mistaken for another -- the iPad's, 1.8.7)
         for (NSUInteger i = 0; i < gMSWDesks.count; i++) {
             NSNumber *did = gMSWDesks[i];
             BOOL cur = i == gMSWCur;
             NSMutableDictionary *desk = [DMSpotRow(@"a", DMMSWDeskName(i), cur ? @"The current desktop" : @"Mac Switcher", [NSString stringWithFormat:@"desktop %lu space %lu", (unsigned long)i + 1, (unsigned long)i + 1],
                                       @"rectangle.on.rectangle", nil, ^{
+                if (!DMMSWForMain()) return;
                 NSUInteger at = [gMSWDesks indexOfObject:did];
                 if (at == NSNotFound || at == gMSWCur) return;
                 DMMSWSwitchTo(at, @"Spotlight", nil);
@@ -150,25 +151,26 @@ static NSArray<NSDictionary *> *DMSpotActionRows(void) {
 // ---- the windows: every engine's windows and Finder's, on this desktop and the others, minimized ones too ----
 static NSString *DMSpotWhere(NSInteger did, BOOL minimized) {   // ("Desktop 2", "Minimized", "Desktop 2 · Minimized"; "Window" with one desktop)
     NSMutableArray *p = [NSMutableArray array];
-    if (DMMSWMulti()) { NSUInteger i = [gMSWDesks indexOfObject:@(did)]; [p addObject:DMMSWDeskName(i == NSNotFound ? gMSWCur : i)]; }
+    if (DMMSWForMain() && DMMSWMulti()) { NSUInteger i = [gMSWDesks indexOfObject:@(did)]; [p addObject:DMMSWDeskName(i == NSNotFound ? gMSWCur : i)]; }
     if (minimized) [p addObject:@"Minimized"];
     return p.count ? [p componentsJoinedByString:@" · "] : @"Window";
 }
 // (a window of another desktop: that desktop first, then the window -- the Mac Switcher's switch, which every engine has)
 static void DMSpotOnDesktopThen(NSInteger did, dispatch_block_t then) {
-    NSUInteger at = DMMSWMulti() ? [gMSWDesks indexOfObject:@(did)] : NSNotFound;
+    NSUInteger at = DMMSWForMain() && DMMSWMulti() ? [gMSWDesks indexOfObject:@(did)] : NSNotFound;
     if (at == NSNotFound || at == gMSWCur) { then(); return; }
     DMMSWSwitchTo(at, @"Spotlight", then);
 }
 static NSArray<NSDictionary *> *DMSpotWindowRows(void) {
     NSMutableArray *rows = [NSMutableArray array], *others = [NSMutableArray array];
+    BOOL mainDesks = DMMSWForMain();   // (the iPad's desktops, 1.8.7: while another display's session runs, the windows on screen only)
     NSInteger cur = DMMSWCurId();
     // (an app hidden with AppHider is never named here, as Finder and Force Quit Applications leave it out: its window is simply not listed)
     NSMutableSet *seen = [NSMutableSet setWithSet:DMFinderHiddenApps() ?: [NSSet set]];
     if (DMSMEngine()) {   // Stage Manager: each window by its own key (two windows of one app are two rows, M-2)
         NSMutableArray<NSArray *> *wins = [NSMutableArray array];   // @[key, desktop id, minimized]
         for (NSString *k in DMSMWindowKeys()) [wins addObject:@[k, @(cur), @NO]];
-        if (DMMSWMulti()) for (NSNumber *d in gMSWDesks) if (d.integerValue != cur) for (NSArray *w in DMMSWSMDeskWindows(d.integerValue)) [wins addObject:@[w[3], d, @NO]];
+        if (mainDesks && DMMSWMulti()) for (NSNumber *d in gMSWDesks) if (d.integerValue != cur) for (NSArray *w in DMMSWSMDeskWindows(d.integerValue)) [wins addObject:@[w[3], d, @NO]];
         for (NSString *k in [[DMSMMinimizedSet() allObjects] sortedArrayUsingSelector:@selector(compare:)]) [wins addObject:@[k, DMMSWSMRecordOf(k) ?: @(cur), @YES]];
         for (NSArray *w in wins) {
             NSString *k = w[0], *b = DMSMKeyBundle(k);

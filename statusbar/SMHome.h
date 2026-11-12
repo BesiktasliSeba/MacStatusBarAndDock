@@ -338,7 +338,7 @@ __attribute__((noinline)) static void DMSMHomeKeepsDesktop(id ctx) {   // (noinl
         //  named it: the next app opened there joined it and brought it back full screen behind the new window, and so did a switch back to that
         //  desktop and the restore after a respring -- the 1.3.8 logic test's H-3 on the Mac Switcher's own path, which joins by its records, not by
         //  StatusBar.x DMSMDesktopFor. As with Aerial's Mac Switcher, Home takes a full-screen app off its desktop.)
-        if ([why isEqualToString:kDMSMHomeOnlyFullScreen] && DMMSWMulti()) {
+        if ([why isEqualToString:kDMSMHomeOnlyFullScreen] && DMMSWForMain() && DMMSWMulti()) {   // (1.8.7: the iPad's desktops; none while another display's session runs)
             NSMutableArray<NSString *> *away = [NSMutableArray array];
             for (NSDictionary *w in windows) { NSString *k = DMSMItemKey(byId[w[@"id"]]); if (k.length) { DMSMSetMinimized(k, YES); [away addObject:DMSMKeyText(k)]; } }   // (each window by its key, as below)
             if (away.count) DMLog([NSString stringWithFormat:@"[smhome] Home: %@ to the background (Mac Switcher desktops: no longer one of %@'s windows)", [away componentsJoinedByString:@", "], DMMSWDeskName(gMSWCur)]);
@@ -663,6 +663,9 @@ static void DMSMRestoreDesktopTick(void) {
     }
     long long env = 0; id shown = nil;
     if (!DMSMHomeStateOf(DMSMHomeCurrentState(), &env, &shown)) return;   // (not readable yet)
+    // (1.8.7: the iPad's desktops in use for it; while the Mac Switcher runs on another display -- opened there within 6 s of the start -- it waits
+    //  for the next tick after that: it read that display's current desktop and asked for its windows on the iPad, 1.8.7 review)
+    if (!DMMSWForMain()) return;
     gSMRestoreDone = YES;
     // (the windows placed for another answer of the Dock's auto-hide than the one taken now follow the room as it is, once the desktop below is back:
     //  StatusBar.x DMDockRoomAfterStartSM, regression 1.8.4 F2)

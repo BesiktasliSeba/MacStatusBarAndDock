@@ -90,6 +90,17 @@ int main(void) {
     check("  ... the Stage Manager engine: its own placing drops it; ours waits for the desktop's own step, else follows once the start has settled",
           MSBDRoomTick(1, 1, 0, 1, 1) == MSBDRoomTickDrop && MSBDRoomTick(1, 1, 1, 1, 1) == MSBDRoomTickKeep && MSBDRoomTick(1, 1, 1, 0, 0) == MSBDRoomTickKeep
           && MSBDRoomTick(1, 1, 1, 0, 1) == MSBDRoomTickFollow && MSBDRoomTick(-1, 1, 1, 0, 1) == MSBDRoomTickKeep);
+    // 1.8.7 per display: the in-app Dock answer's preference part for one stage's display (MSBDAutoHideInAppPref: other display, Apple's preference, the iPad's
+    // switch, that display's own answer)
+    check("1.8.7: the iPad's own stage as in 1.8.4: Apple's preference or our switch",
+          !MSBDAutoHideInAppPref(0, 0, 0, 0) && MSBDAutoHideInAppPref(0, 1, 0, 0) && MSBDAutoHideInAppPref(0, 0, 1, 0) && MSBDAutoHideInAppPref(0, 1, 1, 1));
+    check("  ... a TV with no setting of its own (its answer the iPad's): as the iPad's, the tick synced with the switch either way",
+          MSBDAutoHideInAppPref(1, 1, 1, 1) && !MSBDAutoHideInAppPref(1, 0, 0, 0));
+    check("  ... the TV switched on for itself, the iPad's off: the TV's Dock hides", MSBDAutoHideInAppPref(1, 0, 0, 1));
+    check("  ... the TV switched off for itself, the iPad's on (Apple's tick follows the iPad's switch): the TV keeps its Dock", !MSBDAutoHideInAppPref(1, 1, 1, 0));
+    check("  ... a tick our switch could not take (hides with the iPad's switch off): it still hides the TV's, as the iPad's", MSBDAutoHideInAppPref(1, 1, 0, 0));
+    check("  ... the room of each display by its own answer: the TV's to its bottom edge while it hides, the iPad's above its Dock",
+          MSBDAutoHideRoomEdge(MSBDAutoHideInAppPref(1, 0, 0, 1), 1312.8, 1440.0) == 1440.0 && MSBDAutoHideRoomEdge(0, 930.0, 1024.0) == 930.0);
     printf("%d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }

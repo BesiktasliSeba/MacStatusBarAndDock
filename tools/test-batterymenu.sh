@@ -48,7 +48,7 @@ check "the battery and the icon are our controls: the status bar's own region ac
   "fn $X 'static BOOL DMPointOverOurControl(' | grep -q 'kSpotButtonKey, kClockButtonKey, kBattButtonKey, kCCButtonKey, DM_AM_BUTTONS };'"
 check "the right end from MSBDBattRightSideLayout: the icon left of the clock, then Spotlight's icon and touch area, then the status icons" \
   "grep -q 'MSBDBattRightSide side = DMBattCCLayout(fg, rtl, clockEdge, timeCentre.y, timeFont, k, gShowSpotlight, spotW, kSpotHitSlop \\* k, kSpotClockGap \\* k);' $X \
-   && grep -q 'spotBtn.frame = DMBarRect(fg, rtl, CGRectMake(side.spotBtnLead, 0, side.spotBtnTrail - side.spotBtnLead, fg.bounds.size.height));' $X \
+   && grep -q 'spotBtn.frame = DMBarRect(fg, rtl, CGRectMake(side.spotBtnLead, 0, side.spotBtnTrail - side.spotBtnLead, barH));' $X \
    && grep -q 'CGFloat iconsEnd = side.iconsEnd;' $X && fn $B 'static MSBDBattRightSide DMBattCCLayout(' | grep -q 'MSBDBattRightSideLayout(clockEdge, show, w, spot, spotW, gap, spotSlop);'"
 check "the battery's button laid out where the status icons start, before our Wi-Fi icon takes its place; its area from MSBDBattButtonSpan" \
   "awk '/DMBattLayoutButton\\(fg, left, k\\);/{a=NR} /left = DMWiFiLayoutIcon\\(fg, left, timeCentre.y, k\\);/{b=NR} END{exit !(a && b == a + 7)}' $X \

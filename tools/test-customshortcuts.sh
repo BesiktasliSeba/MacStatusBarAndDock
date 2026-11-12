@@ -115,7 +115,7 @@ check "  ... a recording with Settings not in front is ended by SpringBoard (che
    && grep -q 'DMCSStateSet(&token, kMSBDCSRecordingNote, 0);' \$W/fn && grep -q 'notify_post(kMSBDCSRecordingNote);' \$W/fn \
    && fn 'static BOOL DMCSSettingsInFront(void) {' $C && grep -q 'com.apple.Preferences' \$W/fn \
    && fn 'static void DMCSFrontChanged(void) {' $C && grep -q 'DMCSRecordingCheck();' \$W/fn \
-   && grep -q 'notify_register_dispatch(kMSBDCSRecordingNote, &rec, dispatch_get_main_queue(), ^(int t) { DMCSPublish(); DMCSRecordingCheck(); });' $C"
+   && grep -q 'notify_register_dispatch(kMSBDCSRecordingNote, &rec, dispatch_get_main_queue(), ^(int t) { DMCSPublish(); DMWindowKeysYoursChanged(); DMMSWKeysRefresh(); DMCSRecordingCheck(); });' $C"
 check "  ... and Settings' page stops recording when Settings leaves the front (resign active, scene deactivate), not only when the page goes" \
   "fn '- (void)viewDidLoad {' $P && grep -q 'addObserver:self selector:@selector(msLeftFront:) name:UIApplicationWillResignActiveNotification object:nil' \$W/fn \
    && grep -q 'addObserver:self selector:@selector(msLeftFront:) name:UISceneWillDeactivateNotification object:nil' \$W/fn \
@@ -131,19 +131,20 @@ check "  ... the key commands kept for apps without our bridge, made sturdier: t
    && grep -q 'modifierFlags:(UIKeyModifierFlags)MSBDCSMods(\[gCSRules\[i\]\[@\"modifiers\"\] unsignedLongLongValue\])' $C"
 check "  ... the debug dump shows what the apps read (wanted, count, generation, each rule's state) and SpringBoard's keyboard" \
   "fn 'static void DMCustomShortcutsDebug(NSString \*cmd) {' $C && grep -q 'published: wanted' \$W/fn && grep -q 'kMSBDCSRuleStateFmt' \$W/fn && grep -q 'DMCSKeyboard(), DMCSAppsTaken()' \$W/fn"
-check "Settings: recording takes the page's presses while SpringBoard's shortcuts wait; Escape stops; this tweak's own keys and a second use of the same keys refused, in words" \
+check "Settings: recording takes the page's presses while SpringBoard's shortcuts wait; Escape stops; a second use of the same keys refused, in words; a built-in one's keys taken, said (1.8.7: test-keyboardchords.sh)" \
   "fn '- (void)pressesBegan:(NSSet<UIPress \*> \*)presses withEvent:(UIPressesEvent \*)event {' $P && grep -q 'int why = MSBDCSCheck(usage, chars.UTF8String, mods);' \$W/fn \
-   && grep -q 'is a Window Tiling Shortcut' \$W/fn && grep -q 'switches desktops in the Mac Switcher' \$W/fn && grep -q 'is already one of your shortcuts' \$W/fn \
+   && grep -q '_message = MSKeysBuiltinNote(usage, _rule\[@\"key\"\], mods);' \$W/fn && ! grep -q 'Choose other keys' \$W/fn && grep -q 'is already one of your shortcuts' \$W/fn \
    && fn '- (void)msRecord:(PSSpecifier \*)s {' $P && grep -q 'MSCSSetRecording(YES);' \$W/fn && fn '- (void)msStopRecording {' $P && grep -q 'MSCSSetRecording(NO);' \$W/fn"
-check "  ... the switch off by default, its own domain and notification; the import copies KeyPilot's rules without shell commands and says what it left out" \
-  "grep -q '\[sw setProperty:@NO forKey:@\"default\"\];' $P && grep -q '\[sw setProperty:@kMSBDCSChanged forKey:@\"PostNotification\"\];' $P \
+check "  ... the switch on by default (1.8.7, new installs; updates keep theirs: test-defaultsrule.sh), read so where it is read; its own domain and notification; the import copies KeyPilot's rules without shell commands and says what it left out" \
+  "grep -q '\[sw setProperty:@YES forKey:@\"default\"\];' $P && grep -q 'BOOL on = v ? (CFGetTypeID(v) == CFBooleanGetTypeID() && CFBooleanGetValue(v)) : YES;' $P \
+   && grep -q 'gCSSwitch = sw ? (CFGetTypeID(sw) == CFBooleanGetTypeID() && CFBooleanGetValue(sw)) : YES;' $C && grep -q '\[sw setProperty:@kMSBDCSChanged forKey:@\"PostNotification\"\];' $P \
    && fn '- (void)msImport:(PSSpecifier \*)s {' $P && grep -q 'MSBDCSImport(MSCSKeyPilotRules(), MSCSRules(), &shell, &other);' \$W/fn && grep -q 'shell command' \$W/fn \
    && grep -q 'if (kind == kMSBDCSActShell) { shell++; continue; }' $R"
 check "  ... the page says the shortcuts work with any app in front, and that in recovery apps (no bridge) only Command, Control or Globe ones do" \
   "grep -q 'whichever app is in front. In Sileo, Filza and other recovery apps, only shortcuts with Command, Control or Globe work.' $P"
 check "  ... the credit on the page; the Keyboard page's row to it, KeyPilot's own row (OPEN) only while it is installed" \
   "grep -q 'Custom Shortcuts is based on KeyPilot by wanghuangjie.' $P && fn 'NSArray \*MSKeysShortcutSpecifiers(id target) {' $KB && grep -q '\[s addObject:MSCustomShortcutsRowSpecifier()\];' \$W/fn \
-   && grep -q 'if (!kpInstalled) return s;' \$W/fn"
+   && grep -q 'if (kpInstalled) \[s addObject:MSKeyPilotRowSpecifier(target)\];' \$W/fn"
 check "  ... the layouts' page from Settings' own values and titles (plain validValues / validTitles properties crashed its choice page, M1 k02)" \
   "grep -q '\[l setValues:vals titles:tits shortTitles:tits\];' $P && ! grep -q 'forKey:@\"validValues\"' $P"
 check "Acknowledgements at the end of the Status Bar page: KeyPilot, its license as the package carries it, its page" \

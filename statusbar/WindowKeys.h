@@ -1,4 +1,4 @@
-// WindowKeys.h -- Window Tiling Keys (Settings > Keyboard, 1.8.3 item 3, off unless switched on): macOS 15's fixed tiling shortcuts, the Globe key for
+// WindowKeys.h -- Window Tiling Keys (Settings > Keyboard, 1.8.3 item 3; on for new installs since 1.8.7): macOS 15's fixed tiling shortcuts, the Globe key for
 // the Mac's Fn (the set, the clashes and why: WindowKeysRule.h). Included at the end of StatusBar.x, after WindowAPI.h, whose ways they use: the
 // Window menu's layouts for the front window, the arrangements of two and three windows, Return to Previous Size.
 // Also here: Return to Previous Size's records (taken by the Window menu's layouts, StatusBar.x DMWindowLayout, and WindowAPI.h DMNativeLayout, only
@@ -8,7 +8,8 @@
 // and a window engine of ours runs, or one of our own windows is the front one (the keys offered: told to the volume and backlight chords,
 // DMWindowKeysPublish; our own windows with no engine as the Window menu and the window API lay them out, review 1.8.3 P2-9); iPadOS's own handling of the
 // same keys (15's Split View for Globe-Control-Left / Right) does not run under them. Each key tells the chords it ran (common/ModifierTap.h: no
-// volume step for the Globe and Control it began with).
+// volume step for the Globe and Control it began with). A row one of your own shortcuts lands on is yours (1.8.7, common/KeyboardChords.h: the
+// press handed on to it, the row's key command left out of SpringBoard's list).
 #pragma once
 #include "WindowKeysRule.h"
 #include "../common/ModifierTap.h"
@@ -339,6 +340,7 @@ static void DMArrangeWindows(const char *const *slots, int count, NSString *why)
 static void (*o_WinKeysPressesBegan)(id, SEL, NSSet *, UIPressesEvent *);
 static NSArray *(*o_WinKeysKeyCommands)(id, SEL);
 static NSArray<UIKeyCommand *> *gWinKeyCmds;   // (one per row, kMSBDWinKeyRows' order)
+static BOOL DMCSRecording(void);   // (CustomShortcuts.h: Settings records a shortcut -- the keys are Settings' then: no row runs, no key command of ours)
 static BOOL DMWinKeysWanted(void) { return gWindowKeysOn && (DMActiveEngine() != DMEngineNone || DMSMEngine() || DMNativeActiveApp() != nil); }
 // A row's action, unless SpringBoard is busy (WindowAPI.h: as the window API waits). Once per key: the same row asked again within 0.15 s is the
 // same key, reported both as a key command and as a press. YES: the key is ours -- it acted, or it is that same key again; NO: it can't act now
@@ -378,6 +380,14 @@ static void DMWinKeysPressesBegan(id self, SEL _cmd, NSSet<UIPress *> *presses, 
 #if DEBUG
             if (k && ((unsigned long long)k.modifierFlags & (kMSBDModGlobe | kMSBDModControl))) DMLog([NSString stringWithFormat:@"[winkeys] press: key 0x%lx, types \"%@\", modifiers 0x%llx -> row %d", (long)k.keyCode, k.charactersIgnoringModifiers ?: @"", (unsigned long long)k.modifierFlags, row]);
 #endif
+            // (one of your own shortcuts on these keys: yours, handed on to it -- Custom Shortcuts' hook or KeyPilot's: KeyboardChords.h)
+            if (row >= 0 && MSBDKCYoursTakes(&gKCYours, (long)k.keyCode, (unsigned long long)k.modifierFlags)) {
+#if DEBUG
+                DMLog([NSString stringWithFormat:@"[winkeys] row %d is one of your own shortcuts: handed on", row]);
+#endif
+                row = -1;
+            }
+            if (row >= 0 && DMCSRecording()) row = -1;   // (Settings records a shortcut: the press is its own, handed on -- review 1.8.7)
             if (row < 0) { if (!others) others = [NSMutableSet set]; [others addObject:p]; continue; }
             // (the same press handed over again: its time and key -- not the object, which UIKit hands out again for a later press: read on 15.6.1,
             //  VolumeGlobe's log, one press object for two taps 4 s apart)
@@ -391,12 +401,15 @@ static void DMWinKeysPressesBegan(id self, SEL _cmd, NSSet<UIPress *> *presses, 
     }
     o_WinKeysPressesBegan(self, _cmd, presses, event);
 }
-// Our key commands in SpringBoard's own list while the keys are offered (for backboardd: the keys an app in front does not get).
+// Our key commands in SpringBoard's own list while the keys are offered (for backboardd: the keys an app in front does not get), but the rows
+// one of your own shortcuts lands on (its key command, or the app's own check, has them: KeyboardChords.h), and none while Settings records a
+// shortcut (review 1.8.7: a key command of ours took Globe-Control-F from the recorder, Fill tiled Settings and the recording kept waiting).
 static NSArray *DMWinKeysKeyCommands(id self, SEL _cmd) {
     NSArray *orig = o_WinKeysKeyCommands(self, _cmd);
     if (gWinKeyCmds.count != kMSBDWinKeyRowCount || !DMWinKeysWanted()) return orig;
+    if (DMCSRecording()) return orig;   // (Settings records a shortcut: none of ours, so backboardd hands the keys to Settings -- review 1.8.7)
     NSMutableArray *all = [NSMutableArray arrayWithArray:[orig isKindOfClass:[NSArray class]] ? orig : @[]];
-    [all addObjectsFromArray:gWinKeyCmds];
+    for (size_t i = 0; i < kMSBDWinKeyRowCount; i++) if (!MSBDKCYoursTakesWinRow(&gKCYours, (int)i)) [all addObject:gWinKeyCmds[i]];
     return all;
 }
 // A key command of ours ran (its selector: dm_winKey<n>:): its row.
@@ -407,7 +420,8 @@ static void DMWinKeyCommandFired(id self, SEL _cmd, id sender) {
 #if DEBUG
     DMLog([NSString stringWithFormat:@"[winkeys] key command %@ ran", s]);
 #endif
-    if (i >= 0 && i < (NSInteger)kMSBDWinKeyRowCount) DMWinKeyRun((size_t)i);
+    if (DMCSRecording()) return;   // (Settings records a shortcut: a registration not yet made again)
+    if (i >= 0 && i < (NSInteger)kMSBDWinKeyRowCount && !MSBDKCYoursTakesWinRow(&gKCYours, (int)i)) DMWinKeyRun((size_t)i);   // (yours: its own key command runs)
 }
 static NSString *DMWinKeyInput(int key) {
     switch (key) {
@@ -425,14 +439,14 @@ static NSString *DMWinKeyInput(int key) {
 // _updateSerializableKeyCommandsForResponder:], MacSwitcher.h): registered again each time the keys are offered or taken back (DMWindowKeysPublish).
 // YES once done -- or when there is nothing to do here (no key commands of ours, UIKit's call not as read); NO while SpringBoard's application is
 // not up yet (the switch is read in the constructor): asked again at the next tick.
-static BOOL DMWindowKeysRegister(BOOL offered) {
+static BOOL DMWindowKeysRegister(int offered) {
     if (gWinKeyCmds.count != kMSBDWinKeyRowCount) return YES;
     UIApplication *app = [UIApplication sharedApplication];
     if (!app) return NO;
     if (!DMMSWHasMethod(object_getClass(app), @"_updateSerializableKeyCommandsForResponder:", @"v@:@")) return YES;
     @try { ((void (*)(id, SEL, id))objc_msgSend)(app, NSSelectorFromString(@"_updateSerializableKeyCommandsForResponder:"), nil); }
     @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[winkeys] the key commands' registration refused: %@", e.reason]); return YES; }
-    DMLog([NSString stringWithFormat:@"[winkeys] key commands registered again: %@", offered ? @"Globe-Control with the arrows, F, C, R; with Shift; with Option-Shift" : @"none of ours"]);
+    DMLog([NSString stringWithFormat:@"[winkeys] key commands registered again: %@", offered == 1 ? @"Globe-Control with the arrows, F, C, R; with Shift; with Option-Shift" : offered == 2 ? @"none of ours (Settings records a shortcut)" : @"none of ours"]);
     return YES;
 }
 // Once, the first time the switch is on: SpringBoard's presses hooked and our key commands added to its list (their exact types only).
@@ -466,8 +480,10 @@ static void DMWindowKeysInstall(void) {
 // key's release only then (common/ModifierTap.h; review 1.8.3 F8: they waited with the switch on and no engine, for keys that could not act). Set as
 // a state with SpringBoard's pid, posted when it changes: the switch read (DMWindowKeysApply), the engine known or changed (each tick: it settles a
 // few seconds after a respring, DMActiveEngine).
+static int gWinKeysRegistered = -1;   // (what backboardd was last told: 1 offered, 0 not, 2 offered but Settings records a shortcut; -1 to tell it again)
 static void DMWindowKeysPublish(void) {
-    static int token = 0, last = -1, registered = -1;
+    static int token = 0, last = -1;
+    int registered = gWinKeysRegistered;
     if (!token && notify_register_check(kMSBDWindowKeysOfferedNote, &token) != NOTIFY_STATUS_OK) { token = 0; return; }
     int now = DMWinKeysWanted() ? 1 : 0;
     if (now != last) {
@@ -476,7 +492,14 @@ static void DMWindowKeysPublish(void) {
         notify_post(kMSBDWindowKeysOfferedNote);
         DMLog([NSString stringWithFormat:@"[winkeys] the keys are %@ (the volume and backlight chords %@)", now ? @"offered" : @"not offered", now ? @"act at their release" : @"act as their key goes down"]);
     }
-    if (now != registered && DMWindowKeysRegister(now)) registered = now;   // (and backboardd told which keys SpringBoard takes from an app in front)
+    int told = now && DMCSRecording() ? 2 : now;   // (a recording's start and end told too, also from the tick: Custom Shortcuts skipped by the crash guard)
+    if (told != registered && DMWindowKeysRegister(told)) gWinKeysRegistered = told;   // (and backboardd told which keys SpringBoard takes from an app in front)
+}
+// Your own shortcuts changed (CustomShortcuts.h DMCSLoad), or a recording in Settings began or ended: the rows they take come out of the key
+// commands, the others back in: told again.
+static void DMWindowKeysYoursChanged(void) {
+    gWinKeysRegistered = -1;
+    DMWindowKeysPublish();
 }
 // The switch read (DMLoadPrefs): the hook installed when first on; each press asks the switch and the engine. Off, the records go too.
 static void DMWindowKeysApply(void) {
@@ -494,8 +517,10 @@ static void DMWindowKeysDebug(NSString *cmd) {
         int t = 0; uint64_t st = 0;
         BOOL read = notify_register_check(kMSBDWindowKeysOfferedNote, &t) == NOTIFY_STATUS_OK && notify_get_state(t, &st) == NOTIFY_STATUS_OK;
         if (t) notify_cancel(t);
-        NSMutableString *o = [NSMutableString stringWithFormat:@"[winkeys] switch %d, taken now %d, hooked %d, offered to the chords %@, records %lu on Stage Manager; SpringBoard's key commands with Globe or Control:",
-                              gWindowKeysOn, DMWinKeysWanted(), o_WinKeysPressesBegan != NULL, read ? (MSBDWindowKeysOfferedIn(st, getpid()) ? @"yes" : @"no") : @"unread", (unsigned long)gSMWinPrev.count];
+        NSMutableString *yours = [NSMutableString string];
+        for (size_t i = 0; i < kMSBDWinKeyRowCount; i++) if (MSBDKCYoursTakesWinRow(&gKCYours, (int)i)) [yours appendFormat:@" %zu", i];
+        NSMutableString *o = [NSMutableString stringWithFormat:@"[winkeys] switch %d, taken now %d, hooked %d, offered to the chords %@, records %lu on Stage Manager, rows yours:%@; SpringBoard's key commands with Globe or Control:",
+                              gWindowKeysOn, DMWinKeysWanted(), o_WinKeysPressesBegan != NULL, read ? (MSBDWindowKeysOfferedIn(st, getpid()) ? @"yes" : @"no") : @"unread", (unsigned long)gSMWinPrev.count, yours.length ? yours : @" none"];
         for (UIKeyCommand *c in [[UIApplication sharedApplication] keyCommands]) {
             if (![c isKindOfClass:[UIKeyCommand class]] || !((unsigned long long)c.modifierFlags & (kMSBDModGlobe | kMSBDModControl))) continue;
             [o appendFormat:@"\n  %@ mod 0x%llx -> %@%@", c.input, (unsigned long long)c.modifierFlags, NSStringFromSelector(c.action), c.discoverabilityTitle.length ? [NSString stringWithFormat:@" (%@)", c.discoverabilityTitle] : @""];

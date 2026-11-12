@@ -34,8 +34,8 @@ check "  ... active where it is: the active window (DMSMFrontWindowKey) while it
    && fn $X 'static void DMSMFullScreenActivate(' | grep -qF 'gSMFullActive = [key copy]; gSMFullActiveOver = [DMSMNewestKeyNow() copy];'"
 check "  ... any window brought forward (the Dock, a launch, the Mac Switcher, Command-Tab, the Window menu, a tap on a window in front) ends it" \
   "fn $X 'static void DMSMBringToFront(' | grep -qF 'if (gSMFullActive) DMSMFullScreenActiveEnd();'"
-check "the menu bar: a full-screen window's strip only while it is the menu bar, on that screen, not in the App Switcher" \
-  "fn $X 'static BOOL DMSMScreenPointOnMenuBar(' | grep -qF '!DMSMStripIsMenuBar(fg)) continue;' && fn $X 'static BOOL DMSMScreenPointOnMenuBar(' | grep -qF 'if (gEnvMode == 2 || !screen' \
+check "the menu bar: a full-screen window's strip only while it is the menu bar, on that screen, not in that screen's App Switcher (test-smbarhome)" \
+  "fn $X 'static BOOL DMSMScreenPointOnMenuBar(' | grep -qF '!DMSMStripIsMenuBar(fg)) continue;' && fn $X 'static BOOL DMSMScreenPointOnMenuBar(' | grep -qF '|| DMSMScreenInSwitcher(screen)) return NO;' \
    && fn $X 'static BOOL DMSMScreenPointOnMenuBar(' | grep -qF '(w.screen ?: [UIScreen mainScreen]) != screen' && fn $X 'static BOOL DMSMScreenPointOnMenuBar(' | grep -qF '[NSStringFromClass([w class]) isEqualToString:@\"SBMainSwitcherWindow\"]'"
 check "Stage Manager's tap-to-front passes over the menu bar (when it would begin, and at the touch)" \
   "fn $X 'static BOOL DMSMTapForwardBegin(' | grep -qF 'DMSMGestureOnMenuBar(g)) { DM_FEATURE_MARK(\"sm-menubar-tap-not-forward\"); return NO; }' && fn $X 'static BOOL DMSMTapForwardTouch(' | grep -qF '[touch isKindOfClass:[UITouch class]] && (DMSMTouchOnMenuBar(touch) ||'"

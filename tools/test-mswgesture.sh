@@ -24,9 +24,10 @@ check "  ... Home and stay go through as SpringBoard decided them (Home Minimize
 check "with Reduce Motion, the Mac Switcher opens where its modifier ends the gesture: the same lift, by the same code" \
   "grep -q 'static id DMMSWActivateRM(id self, SEL _cmd, long long dest) { return DMMSWActivateWith(self, _cmd, dest, DMMSWActOrigRM); }' $M \
    && fn $M 'static void DMMSWHookActivation(void) {' | grep -q 'MSHookMessageEx(rm, NSSelectorFromString(@\"_responseForActivatingFinalDestination:\"), (IMP)DMMSWActivateRM, (IMP \*)&o_MSWActivateRM);'"
-check "the gesture's updates and end reach SpringBoard as they are, but for a side swipe's slide that follows the fingers" \
+check "the gesture's updates and end reach SpringBoard as they are, but for a side swipe's slide that follows the fingers (1.8.7: the end of a push from another display noted first, test-pointerregion)" \
   "fn $M 'static void DMMSWGUpdate(id self, SEL _cmd, id transaction, id gesture) {' | sed -n 3p | grep -q 'if (inside || (gMSWTrack != 1 && gMSWTrack != 2) || gesture != gMSWTrackGesture) { o_MSWGUpdate(self, _cmd, transaction, gesture); return; }' \
-   && fn $M 'static void DMMSWGEnd(id self, SEL _cmd, id transaction, id gesture) {' | sed -n 3p | grep -q 'if (inside || (gMSWTrack != 1 && gMSWTrack != 2) || gesture != gMSWTrackGesture) { o_MSWGEnd(self, _cmd, transaction, gesture); return; }'"
+   && fn $M 'static void DMMSWGEnd(id self, SEL _cmd, id transaction, id gesture) {' | sed -n 3p | grep -q 'if (gesture && gesture == gMSWFromOther && gMSWFromOtherAt > 0) gMSWFromOtherEnd = CACurrentMediaTime();' \
+   && fn $M 'static void DMMSWGEnd(id self, SEL _cmd, id transaction, id gesture) {' | sed -n 4p | grep -q 'if (inside || (gMSWTrack != 1 && gMSWTrack != 2) || gesture != gMSWTrackGesture) { o_MSWGEnd(self, _cmd, transaction, gesture); return; }'"
 check "  ... and its fly-in and multitasking: the home gesture's -_hasPausedEnoughForFlyIn is not hooked (the debug probe only reads it)" \
   "! grep -q 'MSHookMessageEx(c, NSSelectorFromString(@\"_hasPausedEnoughForFlyIn\")' $M && ! grep -q 'DMMSWFlyIn(id self' $M"
 check "iPadOS's cards are only not drawn: in multitasking, while the gesture is ours, the switcher draws just the app layout it drags" \

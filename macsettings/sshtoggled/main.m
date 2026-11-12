@@ -1432,7 +1432,8 @@ static void EnableAnywayClearIfTested(void) {
 // it had already settled (v2 keys are not written again on a device that ran v2; a v2 first install keeps its new v2 defaults). A device that
 // settled a version before is an update whatever dpkg says (a reinstall after a removal: common/DefaultsRule.h). Some versions also bring a value
 // for EVERY device (DefaultsForAll), written once over what is stored, first install or update.
-#define DEFAULTSVERSION 4   // (4: 1.8.6, Show Trash in Dock on for new installs, KT 10 Nov; Show Apps' Own Menus on for everyone, KT 10 Nov ~00:02)
+#define DEFAULTSVERSION 5   // (4: 1.8.6, Show Trash in Dock on for new installs, KT 10 Nov; Show Apps' Own Menus on for everyone, KT 10 Nov ~00:02;
+                            //  5: 1.8.7, Window Tiling Shortcuts and Custom Shortcuts on for new installs, KT 11 Nov ~02:10)
 #define DEFAULTSDECISION MIGDIR "/defaults-decision"
 static NSArray<NSArray *> *OldDefaults(void) {   // domain, key, the value it had before, the version that changed it
     // (the Go menu's old app list is not frozen: the only devices that ever had it have their list stored, so new installs get the neutral seed)
@@ -1442,7 +1443,11 @@ static NSArray<NSArray *> *OldDefaults(void) {   // domain, key, the value it ha
               @[@"com.besiktasliseba.macpagedots", @"enabled", @YES, @2],       // (YES = page dots hidden)
               @[@"com.besiktasliseba.maciconlabels", @"enabled", @YES, @2],     // (YES = app names hidden)
               @[@"com.besiktasliseba.macstatusbar", @"skipLockAfterRespring", @YES, @3],   // (every build before v3 skipped it, with no passcode)
-              @[@"com.besiktasliseba.dockmagnification", @"showTrash", @NO, @4] ];   // (1.8.6: Show Trash in Dock on for new installs; an update keeps it off)
+              @[@"com.besiktasliseba.dockmagnification", @"showTrash", @NO, @4],   // (1.8.6: Show Trash in Dock on for new installs; an update keeps it off)
+              // (1.8.7: Window Tiling Shortcuts and Custom Shortcuts on for new installs; an update keeps what it had, off where never set. The five
+              //  key extras -- Top-Left Key as Escape, Tab, Globe volume, the two brightness pairs -- stay off for everyone: their default is unchanged)
+              @[@"com.besiktasliseba.macstatusbar", @"windowTilingKeys", @NO, @5],
+              @[@"com.besiktasliseba.customshortcuts", @"enabled", @NO, @5] ];
 }
 static NSArray<NSArray *> *DefaultsForAll(void) {   // domain, key, the value every device gets once (over what is stored), the version that brought it
     // (1.8.6: Show Apps' Own Menus on for everyone, also where 1.8.5 had it off -- it shipped off; switched off after that, it stays off)

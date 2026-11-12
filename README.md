@@ -88,6 +88,7 @@ The Mac look is on right after install, and most features have their own switch.
 - Battery Percentage in Icon in Settings > Status Bar shows the battery level as a number inside the battery icon.
 - Over a full-screen app or game that hides the menu bar, push the pointer to the top edge or swipe down from the very top to show it, with the app's red, yellow and green buttons. The red one leaves the app, and the bar hides again by itself.
 - Show Apps' Own Menus in Settings > Status Bar: with an app in front, the menu bar also shows the app's own menus, such as Safari's File, View, History, Bookmarks and Tabs, as on a Mac. A command you tap runs in the app, as its keyboard shortcut would.
+- While a display is connected, the menu bar has a Display menu with the display's name and resolution, whether it mirrors the iPad or is a desktop of its own, and, on iPadOS 16 to 18, Display Settings.
 
 ### Control Center
 
@@ -113,10 +114,12 @@ The Mac look is on right after install, and most features have their own switch.
 - Recent Apps with Left-Edge Swipe in Settings > Windows & Multitasking: with Stage Manager on iPadOS 16 to 18, a swipe from the left edge brings back the strip of recent apps; tap one to open it. With the Dock on the left, the left edge stays the Dock's.
 - Window Tiling Shortcuts in Settings > Keyboard turns on macOS 15's Globe-Control keys for the front window: an arrow key for half the screen, F to fill it, C to center it and R to put it back, and Shift or Option-Shift with an arrow to arrange two or three windows. On a keyboard without a Globe key, set another key to Globe in Modifier Keys.
 - Custom Shortcuts in Settings > Keyboard: record a key combination to open an app or a link, arrange the front window or go Home. It's based on [KeyPilot](https://github.com/wanghuangjie/KeyPilot) by wanghuangjie. While KeyPilot itself is installed, its shortcuts work, Custom Shortcuts waits, and you can import KeyPilot's shortcuts.
+- Window Tiling Shortcuts and Custom Shortcuts are on for new installs, and an update keeps your setting. A shortcut you record can take keys a built-in one uses, and Settings > Keyboard says which keys are shared.
 - With Aerial, Zetsu or MilkyWay4 on iPadOS 15 to 18, every app with a window has its card in iPadOS's App Switcher, as with Stage Manager. A tap on the card brings the window forward.
 - Only the window you're using keeps a text cursor, and Esc ends typing.
 - With the Stage Manager engine on iPadOS 16 to 18, windows float over your Home Screen and stay where you put them, and an external display gets its own Mac desktop (tried on iPadOS 16 and 18).
 - On an external display with Stage Manager, apps you open there join its desktop as windows at your Window Size, windows snap to its edges, its menu bar and its Dock, and closing the last window leaves its desktop empty. Its Dock has the Trash, Escape closes its App Library, and on iPadOS 18 it shows your Desktop Picture.
+- Display Settings, in the menu bar's Display menu or in Settings > Desktop > Displays, gives an external display its own Menu Bar Size, auto-hiding menu bar, Dock (size, magnification, auto-hide and Trash), Window Size and New Windows Open at Fill. A display follows your iPad's settings until you change one for it, and Use iPad Settings puts them back.
 
 ### Mac Switcher (Mission Control and Spaces)
 
@@ -126,6 +129,7 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 - Tap + to add a desktop (up to 8). Switch with a four-finger swipe, a swipe along the bottom edge, three fingers on a trackpad, or Control-Left and Control-Right.
 - Drag a window onto another desktop to move it there. To remove a desktop, hold it and tap its remove button; its windows move to the desktop next to it.
 - Flick a window up to quit its app, as in the App Switcher, or swipe it up with two fingers on a trackpad. Swipe Up to Quit in Settings > Windows & Multitasking turns it off.
+- With the Stage Manager engine, an external display has desktops of its own, as on a Mac. Open the Mac Switcher there from that display's Apple menu or with Control-Up, and Control-Left and Control-Right switch its desktops.
 - It works with every window engine, and your desktops are still there after a respring. Show App Switcher in the Apple menu opens the iPadOS App Switcher once.
 
 ### Finder and the desktop
@@ -227,6 +231,7 @@ Which one? On an iPad with Stage Manager (or TrollPad) on iPadOS 16.1 to 18, a n
 | iPad Pro 10.5" | 16.6.1 | rootless | not reported | Reported working by a user |
 | iPad (5th generation) | 16.7.16 | rootless | not reported | Reported working by a user |
 | iPad mini 4 | 15.8.8 | rootless | not reported | Reported running by a user |
+| iPad (6th generation) | 15.7 | rootless | not reported | Reported running by a user |
 | iPad Pro (M2, 2022) | 16.0 to 16.6 | Dopamine | Zetsu, Aerial | Reported by users with Zetsu or Aerial. Stage Manager engine: see below |
 | iPad Pro 12.9" (M1, 2021) | 17.0 | rootless | Zetsu 1.6.6 | Reported working since 1.2.4 |
 | iPad Pro 12.9" (M1, 2021) | 16.1.1 | Dopamine | Stage Manager, Zetsu | Reported by a user |
@@ -247,6 +252,7 @@ Tried it on another setup? A [compatibility report](https://github.com/Besiktasl
 - With the Stage Manager engine, a desktop holds up to 7 windows.
 - Some apps, like many games, only run full screen. The camera works only full screen (iPadOS pauses it in a window), and Photos opened from the Camera stays full screen.
 - External displays: on iPadOS 15 the iPad is mirrored. On iPadOS 16 to 18 with engines other than Stage Manager, windows stay on the iPad; open apps from the display's App Library to use them there.
+- Over Apple's Lightning Digital AV Adapter, a TV's own display settings and desktops last until you plug it in again. AirPlay and USB-C keep them.
 - Finder can't show iCloud Drive (iPadOS doesn't allow it), drag and drop goes from Finder into apps but not back yet, and drives have been tested on iPadOS 15 only.
 - On iPadOS 15, Safari's sound can stop another app that plays alone, as on a stock iPad. Control Center's Now Playing shows one app at a time.
 - On iPadOS 18, the Control Center size slider doesn't resize the Mac Control Center yet.

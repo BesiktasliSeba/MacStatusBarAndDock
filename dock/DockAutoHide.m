@@ -24,6 +24,15 @@ static BOOL gDockAutoHide = NO;   // (the switch, as DMLoadPrefs reads it: with 
 static BOOL gDockAutoHideEditing = NO;   // (the Home Screen is being edited: the Dock shows meanwhile -- DockAutoHide.h MSBDAutoHideHomeHides)
 // (asked by the status bar part: the room for windows and Stage Manager's in-app answer follow the Dock as it really behaves -- StatusBar.x DMDockAutoHides)
 __attribute__((visibility("default"))) BOOL MSBDDockAutoHides(void) { return gDockAutoHide; }
+// 1.8.7 (per display, plans/design-1.8.7-displays.md section 5): one display's answer. The iPad's own screen (or none): the switch, as above. Another display (a
+// TV): its own Automatically Hide and Show the Dock, the iPad's answer until changed for it, with the Dock part on (Dock.x DMDispDockBool, the Dock part's
+// per-display layer). On a TV the Dock hides through Stage Manager's in-app answer for that display's stage (StatusBar.x), not through the Home Screen's
+// assertion below, which stays the iPad's.
+extern BOOL DMDispDockBool(UIScreen *s, const char *key, BOOL ipad);
+__attribute__((visibility("default"))) BOOL MSBDDockAutoHidesOn(UIScreen *s) {
+    if (!s || s == [UIScreen mainScreen]) return gDockAutoHide;
+    return DMDispDockBool(s, kMSBDAutoHideKey, gDockAutoHide);
+}
 
 static BOOL DMAutoHideShape(id o, const char *sel, const char *enc) {
     Method m = o ? class_getInstanceMethod(object_getClass(o), sel_registerName(sel)) : NULL;

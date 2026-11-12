@@ -18,17 +18,18 @@ before() { awk -v a="$1" -v b="$2" 'index($0, a) && !x {x=NR} index($0, b) && !y
 check "the platter's hover: UIKit's end is held first (before the ease-out); UIKit's Began or Changed ends a hold" \
   "grep -qF '#include \"../common/DockHover.h\"' $D && fnin '- (void)dm_hover:(UIHoverGestureRecognizer *)gesture {' $D \
    && before 'if (DMDockHoverHold(self, gesture)) break;' 'gHovering = NO;' && before 'gHoverHeld = NO;   // (UIKit has the pointer again' 'gHovering = YES;'"
-check "  ... held only for a cancel with the magnification on, on the iPad's own screen; then the pointer looked for" \
-  "fn 'static BOOL DMDockHoverHold(UIView *platter, UIGestureRecognizer *g) {' $D && has 'if (!MSBDHoverHoldsAfter((long)g.state, gHovering && gEnabled, gDMDockTouchAt < 0 ? -1.0 : CACurrentMediaTime() - gDMDockTouchAt) || !platter.window) return NO;' \
+check "  ... held only for a cancel with the magnification on (1.8.7: the hovered Dock's display's, test-displayreaders), on the iPad's own screen; then the pointer looked for" \
+  "fn 'static BOOL DMDockHoverHold(UIView *platter, UIGestureRecognizer *g) {' $D && has 'if (!MSBDHoverHoldsAfter((long)g.state, gHovering && gHoverMagOn, gDMDockTouchAt < 0 ? -1.0 : CACurrentMediaTime() - gDMDockTouchAt) || !platter.window) return NO;' \
    && has 'if (platter.window.screen && platter.window.screen != [UIScreen mainScreen]) return NO;' && before 'gHoverHeld = YES;' 'DMDockHoverLook(gHoverHoldGen);' \
    && has 'gHoverHeld = YES; gHoverHoldLooks = 0; gHoverHoldPlatter = platter; gHoverHoldGen++;'"
 check "  ... one chain of looks at a time: each hold its own, a look of an earlier hold's stops at once and after its read (review 1.8.4.1 L3: a cancel, a move, a cancel again ran two chains, two reads a second)" \
   "grep -qF 'static void DMDockHoverLook(unsigned gen);' $D && fn 'static void DMDockHoverLook(unsigned gen) {' $D && has 'if (!gHoverHeld || gen != gHoverHoldGen) return;' \
    && has 'if (!gHoverHeld || gen != gHoverHoldGen || pl != platter || !pl.window) return;' && has 'dispatch_get_main_queue(), ^{ DMDockHoverLook(gen); });' \
    && [ \$(grep -c 'DMDockHoverLook(' $D) = 4 ]"
-check "  ... each look: backboardd's place off the main thread, in its shape only, turned to the screen and into the platter; kept, UIKit's, or the ease-out (MSBDHoverHoldStep); less often while the pointer rests; ended with the screen off or the Dock gone" \
+check "  ... each look: backboardd's place off the main thread, in its shape only, in the iPad's own region for a Dock on the iPad (1.8.7, test-pointerregion), turned to the screen and into the platter; kept, UIKit's, or the ease-out (MSBDHoverHoldStep); less often while the pointer rests; ended with the screen off or the Dock gone" \
   "fn 'static void DMDockHoverLook(unsigned gen) {' $D && has 'dispatch_async(q, ^{' && has 'BOOL known = m && !strcmp(method_getTypeEncoding(m) ?: \"\", \"{CGPoint=dd}16@0:8\");' \
-   && has 'p = [pl convertPoint:MSBDDockPointerOnScreen(n, o, native) fromCoordinateSpace:(pl.window.screen ?: [UIScreen mainScreen]).coordinateSpace];' \
+   && has 'p = [pl convertPoint:MSBDDockPointerOnScreen(m, o, native) fromCoordinateSpace:(pl.window.screen ?: [UIScreen mainScreen]).coordinateSpace];' \
+   && has 'if (known && onIPad && DMDockPointerOnIPad(n, &m) <= 0) m = CGPointMake(NAN, NAN);' \
    && has 'switch (MSBDHoverHoldStep(DMDockHoverTracking(pl), known, attached, MSBDHoverInside(p, pl.bounds))) {' && has 'double next = MSBDHoverHoldInterval(gHoverHoldLooks++);' \
    && has 'if (DMDockScreenBlank()) { DMDockHoverHoldEnd(platter, @\"the screen is off\"); return; }' && has 'if (!platter.window) { DMDockHoverHoldEnd(platter, @\"the Dock is gone\"); return; }' \
    && has 'gFocusX = p.x;' && has 'if (!gLink) [(SBFloatingDockPlatterView *)pl dm_startLink];'"

@@ -78,6 +78,7 @@ has() { grep -qF "$2" "$1"; }
   fi
   if has "$S" 'static void DMDockRoomAfterStartSMTry(int tries) {'; then
     echo 'static void DMDockRoomAfterStartSMTry(int tries);'
+    if has "$S" 'static int gSMIPadDesktopScope = 0;'; then grep -F 'static int gSMIPadDesktopScope = 0;' "$S"; fi   # (1.8.7: the iPad's own stage while its room changes)
     fn "$S" 'static void DMDockRoomAfterStartSM(void) {'
     fn "$S" 'static void DMDockRoomAfterStartSMTry(int tries) {'
   else echo 'static void DMDockRoomAfterStartSMTry(int tries) { (void)tries; }   // (not in this source: nothing follows the room)'; echo 'static void DMDockRoomAfterStartSM(void) { }   // (not in this source)'; fi

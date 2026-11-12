@@ -343,7 +343,7 @@ static CGFloat DMWiFiLayoutIcon(UIView *fg, CGFloat left, CGFloat midY, CGFloat 
     left -= 8.0 * k + w;
     BOOL rtl = DMBarRTL(fg);
     icon.frame = DMBarRect(fg, rtl, CGRectMake(left, round(midY - h / 2.0), w, h));
-    btn.frame = DMBarRect(fg, rtl, CGRectMake(left - 6.0 * k, 0, w + 12.0 * k, fg.bounds.size.height));
+    btn.frame = DMBarRect(fg, rtl, CGRectMake(left - 6.0 * k, 0, w + 12.0 * k, DMBarCopyHeight(fg)));
     icon.hidden = btn.hidden = NO;
     [fg bringSubviewToFront:icon]; [fg bringSubviewToFront:btn];
     return left;
@@ -367,10 +367,10 @@ static void DMWiFiRefreshIcon(UIView *fg) {
 @implementation DMWiFiHeaderRow
 - (instancetype)initWithTitle:(NSString *)title {
     self = [super initWithTitle:title enabled:NO handler:nil];
-    if (self) self.label.font = [UIFont systemFontOfSize:MSBDMenuTextScaled(gDMBarSize, 12.0) weight:UIFontWeightSemibold];
+    if (self) self.label.font = [UIFont systemFontOfSize:MSBDMenuTextScaled(DMMenuSize(), 12.0) weight:UIFontWeightSemibold];
     return self;
 }
-- (CGFloat)dmRowHeight { return MSBDMenuRowScaled(gDMBarSize, kWiFiHeaderH); }   // (Menu Bar Size, 1.7.3: with the menu's rows)
+- (CGFloat)dmRowHeight { return MSBDMenuRowScaled(DMMenuSize(), kWiFiHeaderH); }   // (Menu Bar Size, 1.7.3: with the menu's rows)
 - (void)refresh { [super refresh]; self.label.textColor = [UIColor secondaryLabelColor]; }
 - (UIAccessibilityTraits)accessibilityTraits { return UIAccessibilityTraitHeader; }   // (a heading, not a dimmed button: 1.3.7, audit M-3)
 @end
@@ -401,7 +401,7 @@ static void DMWiFiRefreshIcon(UIView *fg) {
     [self addSubview:_toggle];
     return self;
 }
-- (CGFloat)dmRowHeight { return MSBDMenuRowScaled(gDMBarSize, kWiFiSwitchRowH); }
+- (CGFloat)dmRowHeight { return MSBDMenuRowScaled(DMMenuSize(), kWiFiSwitchRowH); }
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGSize s = self.toggle.bounds.size;   // (unscaled; the transform shrinks it around its centre)
@@ -958,10 +958,11 @@ static NSArray *DMWiFiMenuItems(NSString **signatureOut) {
         NSMutableArray *known = [NSMutableArray array], *other = [NSMutableArray array];
         for (id r in sorted) [(DMWiFiRecKnown(r) ? known : other) addObject:r];
         // (as many rows as fit on the screen under the menu bar: the rest are in Settings, "Other Networks…". Menu Bar Size, 1.7.3: under the
-        //  bar's height at Medium and Large -- 40 = a 24 pt bar + 16 at Small, as before --, with the menu's taller rows)
+        //  bar's height at Medium and Large -- 40 = a 24 pt bar + 16 at Small, as before --, with the menu's taller rows. 1.8.7: the screen the menu
+        //  is on and the size of its bar, a TV's own -- audit R4)
         CGFloat rowH = DMMenuRowH(), sepH = DMMenuSepH();
-        CGFloat room = [UIScreen mainScreen].bounds.size.height - (MSBDMenuBarFixedSite(gDMBarSize, DMMenuBarHeight()) + 16.0) - 12.0 - 2.0 * kPanelPad - MSBDMenuRowScaled(gDMBarSize, kWiFiSwitchRowH) - 2.0 * sepH - 2.0 * rowH - (curName.length ? rowH + sepH : 0.0);
-        NSInteger fit = MAX(2, (NSInteger)floor((room - 2.0 * MSBDMenuRowScaled(gDMBarSize, kWiFiHeaderH)) / rowH));
+        CGFloat room = DMMenuScreenHeight() - (MSBDMenuBarFixedSite(DMMenuSize(), DMMenuBarHeightHere()) + 16.0) - 12.0 - 2.0 * kPanelPad - MSBDMenuRowScaled(DMMenuSize(), kWiFiSwitchRowH) - 2.0 * sepH - 2.0 * rowH - (curName.length ? rowH + sepH : 0.0);
+        NSInteger fit = MAX(2, (NSInteger)floor((room - 2.0 * MSBDMenuRowScaled(DMMenuSize(), kWiFiHeaderH)) / rowH));
         if (known.count + other.count > (NSUInteger)fit) {
             NSUInteger k = MIN(known.count, (NSUInteger)MAX(1, fit / 2));
             if (other.count < (NSUInteger)(fit - k)) k = MIN(known.count, (NSUInteger)fit - other.count);
@@ -1024,7 +1025,7 @@ static void DMWiFiRebuildOpenMenu(void) {
     NSArray *items = DMWiFiMenuItems(&sig);
     if ([sig isEqualToString:gWiFiMenuSignature]) return;
     gWiFiMenuSignature = sig;
-    UIView *panel = DMMakePanel(items);
+    UIView *panel = DMMakePanelLike(items, old);   // (fitted to the room the open one had: StatusBar.x DMMakeFitPanel)
     CGRect f = panel.frame; f.origin = old.frame.origin;
     if ([UIApplication sharedApplication].userInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft) f.origin.x = CGRectGetMaxX(old.frame) - f.size.width;   // (hung from its title's right edge: that edge stays)
     panel.frame = f;

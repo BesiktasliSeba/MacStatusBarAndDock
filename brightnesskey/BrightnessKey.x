@@ -10,7 +10,8 @@
 // that has keyboard focus:
 //  - Every process: Shift + the =/+ key or the -/_ key is swallowed (down and up, so no "+" or "_" is typed) and
 //    posts a Darwin notification; SpringBoard changes the screen brightness. Held keys auto-repeat, so holding
-//    ramps the brightness. Combinations that also hold Control, Option or Command are left alone.
+//    ramps the brightness. Combinations that also hold Control, Option, Command or Globe are left alone (Globe since 1.8.7: Globe-Shift-= is
+//    free for a shortcut of yours, common/KeyboardChords.h), and so is Shift + = or - when one of your own shortcuts (KeyPilot's) is on it.
 //    Known limit: this runs in the focused app, and our loader keeps every app-side part out of the recovery apps
 //    (Sileo, Zebra, Filza, TrollStore and the like), so Shift + =/- does not change the brightness while one of those
 //    is in front. (The backlight combo below is handled in SpringBoard, so it works whatever is in front.)
@@ -32,6 +33,7 @@
 #include <notify.h>
 #include <sys/stat.h>
 #include "../common/ModifierTap.h"   // (1.8.3: while Window Tiling Keys are offered, Shift + Option / Control act at their key's release, never inside a shortcut)
+#include "../common/KeyboardChords.h"   // (1.8.7: the same while one of your own shortcuts starts with them; Shift + =/- left to yours)
 #include <unistd.h>
 
 @interface UIPhysicalKeyboardEvent : UIEvent
@@ -52,6 +54,7 @@
 #define CONTROL_FLAG 0x40000
 #define OPTION_FLAG  0x80000
 #define COMMAND_FLAG 0x100000
+#define GLOBE_FLAG   0x800000
 #define CONTROL_KEYCODE 224   // left Control
 #define OPTION_KEYCODE  226   // left Option
 #define KEY_MINUS  45         // HID 0x2D  - and _
@@ -81,6 +84,13 @@ static BOOL SwitchedOff(const char *stateName, int *token) {   // (off unless Sp
 }
 static BOOL ScreenKeysOff(void)   { static int t = 0; return SwitchedOff(kScreenOnState, &t); }
 static BOOL BacklightKeysOff(void) { static int t = 0; return SwitchedOff(kBacklightOnState, &t); }
+// SpringBoard's state for the key tweaks (common/KeyboardChords.h kMSBDKCYoursState), read where it is asked: at a Shift + =/- press.
+static uint64_t YoursState(void) {
+    static int t = 0;
+    if (!t && notify_register_check(kMSBDKCYoursState, &t) != NOTIFY_STATUS_OK) { t = 0; return 0; }
+    uint64_t st = 0;
+    return notify_get_state(t, &st) == NOTIFY_STATUS_OK ? st : 0;
+}
 
 #if DEBUG   // (the /tmp/brightnesskey-debug log exists only in debug builds; in a release build the calls and their arguments compile away)
 static void DebugWrite(NSString *line) {
@@ -211,14 +221,23 @@ static unsigned long long gLastFlags = 0;
 // Window Tiling Keys (Settings > Keyboard, 1.8.3): Globe-Control-Shift-arrows hold Shift and Control (and Option) too, so with them on the backlight
 // chords wait for their key's release and are dropped when any other key went down meanwhile (common/ModifierTap.h). SpringBoard only.
 static BOOL gDeferChords = NO;
+static BOOL gKeysOffered = NO, gYoursWait = NO;   // (the window keys offered; a shortcut of yours starting with Shift + Option / Control)
 static MSBDModTap gChordTap;
 // (only while SpringBoard offers the window keys -- their switch on and a window engine of ours running, MacStatusBarCore's state --; else the old
 //  path, as in 1.8.2.2)
 static void ReadWindowKeysOffered(int token) {
     uint64_t st = 0;
     BOOL on = token && notify_get_state(token, &st) == NOTIFY_STATUS_OK && MSBDWindowKeysOfferedIn(st, getpid());
-    gDeferChords = on;
-    if (!on) gChordTap.armed = false;
+    gKeysOffered = on;
+    gDeferChords = gKeysOffered || gYoursWait;
+    if (!gDeferChords) gChordTap.armed = false;
+}
+// One of your own shortcuts starts with Shift + Option or Shift + Control (SpringBoard's state, common/KeyboardChords.h): the chords wait the same.
+static void ReadYoursWait(int token) {
+    uint64_t st = 0;
+    gYoursWait = token && notify_get_state(token, &st) == NOTIFY_STATUS_OK && (st & kMSBDKCYoursBacklightWaits);
+    gDeferChords = gKeysOffered || gYoursWait;
+    if (!gDeferChords) gChordTap.armed = false;
 }
 
 // Hardening: the private key-event getters are checked once per process before they are ever called.
@@ -239,8 +258,9 @@ static BOOL KeyEventAPIPresent(void) {
         unsigned long long flags = (unsigned long long)[key _modifierFlags];
         unsigned short code = [key _keyCode];
 
-        // Shift + = / Shift + -: screen brightness, in every process (swallowed so nothing is typed)
-        if ((code == KEY_EQUALS || code == KEY_MINUS) && (flags & SHIFT_FLAG) && !(flags & (CONTROL_FLAG | OPTION_FLAG | COMMAND_FLAG)) && !ScreenKeysOff()) {
+        // Shift + = / Shift + -: screen brightness, in every process (swallowed so nothing is typed), unless it is one of your own shortcuts
+        if ((code == KEY_EQUALS || code == KEY_MINUS) && (flags & SHIFT_FLAG) && !(flags & (CONTROL_FLAG | OPTION_FLAG | COMMAND_FLAG | GLOBE_FLAG)) && !ScreenKeysOff()
+            && !MSBDKCScreenKeyYours(YoursState(), code)) {
             if ([key _isKeyDown]) notify_post(code == KEY_EQUALS ? kScreenUp : kScreenDown);
             return;
         }
@@ -333,9 +353,10 @@ static void PublishSwitches(void) {
     static int upToken = 0, downToken = 0, prefsToken = 0;
     notify_register_dispatch(kPrefsChanged, &prefsToken, dispatch_get_main_queue(), ^(int t) { PublishSwitches(); if (BacklightKeysOff()) GiveBackAutoBrightness(); });
     PublishSwitches();
-    static int keysToken = 0, usedToken = 0;   // (Window Tiling Keys: offered or not, and each key that ran -- no tap for the chord it began with)
+    static int keysToken = 0, usedToken = 0, yoursToken = 0;   // (Window Tiling Keys: offered or not, and each key that ran -- no tap for the chord it began with)
     if (notify_register_dispatch(kMSBDWindowKeysOfferedNote, &keysToken, dispatch_get_main_queue(), ^(int t) { ReadWindowKeysOffered(t); }) == NOTIFY_STATUS_OK) ReadWindowKeysOffered(keysToken);
     notify_register_dispatch(kMSBDModTapUsedNote, &usedToken, dispatch_get_main_queue(), ^(int t) { MSBDModTapUsed(&gChordTap); });
+    if (notify_register_dispatch(kMSBDKCYoursState, &yoursToken, dispatch_get_main_queue(), ^(int t) { ReadYoursWait(t); }) == NOTIFY_STATUS_OK) ReadYoursWait(yoursToken);
     // (automatic keyboard brightness still to give back from before -- the keys switched off while SpringBoard was not running, or no keyboard was
     //  there --: a little after the start, not from the constructor)
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ if (BacklightKeysOff()) GiveBackAutoBrightness(); });

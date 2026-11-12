@@ -5,11 +5,13 @@
 #import <UIKit/UIKit.h>
 #include <notify.h>
 #include "../common/ModifierTap.h"   // (1.8.3: while Window Tiling Keys are offered, the chords act at their key's release, never inside a Globe-Control shortcut)
+#include "../common/KeyboardChords.h"   // (1.8.7: the same while one of your own shortcuts starts with Globe + Option / Control: kMSBDKCYoursState)
 
 #define kPrefsChanged "com.besiktasliseba.volumeglobetweak/prefsChanged"   // posted by the Settings switch
 #define kPrefsDomain  CFSTR("com.besiktasliseba.volumeglobetweak")
 static BOOL gEnabled = NO;
-static BOOL gDefer = NO;   // (Window Tiling Keys offered: Globe-Control-arrows begin with this very chord -- common/ModifierTap.h)
+static BOOL gDefer = NO;   // (Window Tiling Keys offered, or a shortcut of yours starting with this very chord -- common/ModifierTap.h, KeyboardChords.h)
+static BOOL gOffered = NO, gYoursWait = NO;
 static MSBDModTap gTap;
 static void ReadSwitch(void) {
     CFPreferencesAppSynchronize(kPrefsDomain);
@@ -24,8 +26,17 @@ static void ReadSwitch(void) {
 static void ReadOffered(int token) {
     uint64_t st = 0;
     BOOL offered = token && notify_get_state(token, &st) == NOTIFY_STATUS_OK && MSBDWindowKeysOfferedIn(st, getpid());
-    gDefer = offered;
-    if (!offered) gTap.armed = false;
+    gOffered = offered;
+    gDefer = gOffered || gYoursWait;
+    if (!gDefer) gTap.armed = false;
+}
+// One of your own shortcuts (Custom Shortcuts, KeyPilot's) starts with Globe + Option or Globe + Control (SpringBoard's state for the key tweaks,
+// common/KeyboardChords.h): the chord waits for its release as with the window keys, so Globe-Option-J opens what it opens and the volume stays.
+static void ReadYours(int token) {
+    uint64_t st = 0;
+    gYoursWait = token && notify_get_state(token, &st) == NOTIFY_STATUS_OK && (st & kMSBDKCYoursVolumeWaits);
+    gDefer = gOffered || gYoursWait;
+    if (!gDefer) gTap.armed = false;
 }
 
 @interface UIPhysicalKeyboardEvent : UIEvent
@@ -60,7 +71,7 @@ static BOOL DMGlobeVolumePress(UIPress *p) {
     if (!chord) return NO;
     if (tap == kMSBDModTapWait) {
 #if DEBUG
-        if (access("/tmp/macstatusbar-debug", F_OK) == 0) { FILE *f = fopen("/tmp/volumeglobe.log", "a"); if (f) { fprintf(f, "key %ld down (flags 0x%llx): waits for its release (Window Tiling Keys offered)\n", (long)key.keyCode, (unsigned long long)key.modifierFlags); fclose(f); } }
+        if (access("/tmp/macstatusbar-debug", F_OK) == 0) { FILE *f = fopen("/tmp/volumeglobe.log", "a"); if (f) { fprintf(f, "key %ld down (flags 0x%llx): waits for its release (Window Tiling Keys offered, or a shortcut of yours starts with it)\n", (long)key.keyCode, (unsigned long long)key.modifierFlags); fclose(f); } }
 #endif
         return YES;
     }
@@ -133,8 +144,9 @@ static void DMGlobeVolumeRelease(UIPress *p) {
 %ctor {
     %init;
     ReadSwitch();
-    static int token = 0, offeredToken = 0, usedToken = 0;
+    static int token = 0, offeredToken = 0, usedToken = 0, yoursToken = 0;
     notify_register_dispatch(kPrefsChanged, &token, dispatch_get_main_queue(), ^(int t) { ReadSwitch(); });
     if (notify_register_dispatch(kMSBDWindowKeysOfferedNote, &offeredToken, dispatch_get_main_queue(), ^(int t) { ReadOffered(t); }) == NOTIFY_STATUS_OK) ReadOffered(offeredToken);   // (the window keys offered or not)
     notify_register_dispatch(kMSBDModTapUsedNote, &usedToken, dispatch_get_main_queue(), ^(int t) { MSBDModTapUsed(&gTap); });   // (a window key ran: no tap)
+    if (notify_register_dispatch(kMSBDKCYoursState, &yoursToken, dispatch_get_main_queue(), ^(int t) { ReadYours(t); }) == NOTIFY_STATUS_OK) ReadYours(yoursToken);   // (a shortcut of yours starts with the chord)
 }

@@ -70,6 +70,7 @@ static BOOL DMSMOurMenuOpen(void) { return gMenuOpen; }   // (the code before re
 static UIScreen *DMSMTouchScreen(id t) { return ([t isKindOfClass:[UITouch class]] ? ((UITouch *)t).window.screen : nil) ?: [UIScreen mainScreen]; }
 static BOOL DMSMOurMenuOpenOn(UIScreen *screen) { return gMenuOpen && (screen ?: [UIScreen mainScreen]) == (gMenuScreen ?: [UIScreen mainScreen]); }
 static BOOL DMSMInFullScreenCard(UIView *v) { return v.inFullCard; }
+static BOOL DMSMScreenInSwitcher(UIScreen *screen) { return gEnvMode == 2; }   // (1.8.7: that screen's own switcher; its rule per display is test-smbarhome's)
 static BOOL DMTestFlag(const char *f) { return gAsBuilt && strcmp(f, "/tmp/msb-sm-bartouch-asbuilt") == 0; }
 static void DMLog(NSString *s) { }
 #define DM_FEATURE_MARK(x) do { } while (0)

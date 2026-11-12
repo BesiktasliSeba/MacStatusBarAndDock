@@ -909,7 +909,7 @@ static CGFloat DMLALayoutPills(UIView *fg, CGFloat left, CGFloat midY, CGFloat k
     if (!items.count) { for (DMLAPill *p in pills) p.hidden = YES; return left; }
     if (!pills) { pills = [NSMutableArray array]; objc_setAssociatedObject(fg, kLAPillsKey, pills, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
     BOOL rtl = DMBarRTL(fg);
-    CGFloat H = MIN(round(18.0 * k), fg.bounds.size.height - 4.0);
+    CGFloat H = MIN(round(18.0 * k), DMBarCopyHeight(fg) - 4.0);
     if (H < 10.0) { for (DMLAPill *p in pills) p.hidden = YES; return left; }
     // (each item's pill, made or reused by its uid; their widths)
     NSMutableDictionary<NSString *, DMLAPill *> *byUid = [NSMutableDictionary dictionary];

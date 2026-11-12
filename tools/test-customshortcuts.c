@@ -1,5 +1,5 @@
 // test-customshortcuts.c -- Mac test of Custom Shortcuts' rules (1.8.5 item 2, common/CustomShortcutsRule.h): which keys may be a shortcut (a
-// modifier needed, this tweak's own keys refused, Globe part of the match, Caps Lock not), the actions run (KeyPilot's spelling, no shell), the
+// modifier needed, Escape refused -- this tweak's own keys allowed since 1.8.7, yours winning: test-keyboardchords.c --, Globe part of the match, Caps Lock not), the actions run (KeyPilot's spelling, no shell), the
 // window layouts by KeyPilot's names and aliases, each one the window API's; and (1.8.6) the match in the app with the keyboard: a rule packed into
 // its Darwin state and back for all 64 slots, the count and generation, the wanted rule, the match (Caps Lock and the keypad bit left out, Globe
 // in), and the key-down, its repeats and its key-up kept from the app as a pair; a shortcut key whose key-up went elsewhere is no repeat of a plain
@@ -72,13 +72,12 @@ int main(void) {
     T("a modifier key on its own is no key yet; the Globe key on its own neither (usage 3 with the Globe flag, as it reaches an app)", MSBDCSCheck(0xE3, "", CMD) == kMSBDCSNoKey && MSBDCSCheck(0xE0, "", CTL) == kMSBDCSNoKey
       && MSBDCSCheck(0x03, "", GLB) == kMSBDCSNoKey && MSBDCSCheck(0x03, "", GLB | CTL) == kMSBDCSNoKey);
     T("Escape, with any modifier, refused (it stops the recording)", MSBDCSCheck(kMSBDCSHIDEscape, "\x1b", CMD) == kMSBDCSEscape);
-    T("Window Tiling Shortcuts refused: Globe-Control-Left, -F (by the letter typed), -Shift-Up, -Option-Shift-Down", MSBDCSCheck(kMSBDCSHIDLeft, "", GLB | CTL) == kMSBDCSWindowTiling
-      && MSBDCSCheck(0x09, "f", GLB | CTL) == kMSBDCSWindowTiling && MSBDCSCheck(kMSBDCSHIDUp, "", GLB | CTL | SHF) == kMSBDCSWindowTiling
-      && MSBDCSCheck(kMSBDCSHIDDown, "", GLB | CTL | OPT | SHF) == kMSBDCSWindowTiling);
-    T("  ... on another layout, Globe-Control and the key that types F is the tiling key (AZERTY's F is where QWERTY's F is; Dvorak's U types u: not ours)", MSBDCSCheck(0x18, "f", GLB | CTL) == kMSBDCSWindowTiling && MSBDCSCheck(0x09, "u", GLB | CTL) == kMSBDCSOK);
-    T("  ... Globe-Control-Option-Left (no Shift) is not one of them", MSBDCSCheck(kMSBDCSHIDLeft, "", GLB | CTL | OPT) == kMSBDCSOK);
-    T("the Mac Switcher's Control-Left / -Right / -Up refused; Control-Down is free", MSBDCSCheck(kMSBDCSHIDLeft, "", CTL) == kMSBDCSMacSwitcher && MSBDCSCheck(kMSBDCSHIDRight, "", CTL) == kMSBDCSMacSwitcher
-      && MSBDCSCheck(kMSBDCSHIDUp, "", CTL) == kMSBDCSMacSwitcher && MSBDCSCheck(kMSBDCSHIDDown, "", CTL) == kMSBDCSOK);
+    // (1.8.7: a built-in one's keys may be yours -- yours wins, the built-in one off for them: common/KeyboardChords.h, test-keyboardchords.c)
+    T("Window Tiling Shortcuts' keys may be recorded now (1.8.5 refused them): Globe-Control-Left, -F, -Shift-Up, -Option-Shift-Down", MSBDCSCheck(kMSBDCSHIDLeft, "", GLB | CTL) == kMSBDCSOK
+      && MSBDCSCheck(0x09, "f", GLB | CTL) == kMSBDCSOK && MSBDCSCheck(kMSBDCSHIDUp, "", GLB | CTL | SHF) == kMSBDCSOK
+      && MSBDCSCheck(kMSBDCSHIDDown, "", GLB | CTL | OPT | SHF) == kMSBDCSOK);
+    T("the Mac Switcher's Control-Left / -Right / -Up may be recorded now (1.8.5 refused them); Control-Down too", MSBDCSCheck(kMSBDCSHIDLeft, "", CTL) == kMSBDCSOK && MSBDCSCheck(kMSBDCSHIDRight, "", CTL) == kMSBDCSOK
+      && MSBDCSCheck(kMSBDCSHIDUp, "", CTL) == kMSBDCSOK && MSBDCSCheck(kMSBDCSHIDDown, "", CTL) == kMSBDCSOK);
     T("Globe is part of the match (KeyPilot's mask dropped it): Control-K and Globe-Control-K are two shortcuts", !MSBDCSSame(0x0E, CTL, 0x0E, GLB | CTL) && MSBDCSSame(0x0E, CTL, 0x0E, CTL));
     T("Caps Lock is not: a shortcut still matches with Caps Lock on", MSBDCSSame(0x0E, CMD, 0x0E, CMD | CAPS) && MSBDCSMods(CMD | CAPS) == CMD);
     T("actions: app:, open:, url: with a scheme, window:, system:home", MSBDCSActionKind("app:com.apple.calculator") == kMSBDCSActApp && MSBDCSActionKind("open:com.apple.calculator") == kMSBDCSActApp

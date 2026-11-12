@@ -70,7 +70,7 @@ static void DMWindowAPIHome(NSString *why) {
         //  with its own app and the others stay away, and the Home that takes the stage away is a real one of ours, which the rule leaves as it is)
         for (DMNativeWindow *nw in [gNativeWindows copy]) if (!nw.hidden && nw.superview) [nw minimize];
         NSMutableArray<NSString *> *names = [NSMutableArray array];
-        if (DMFrontApp()) for (id it in DMSMStageItemsMap(DMSMFrontStage())) { NSString *k = DMSMItemKey(it); if (k.length) { DMSMSetMinimized(k, YES); [names addObject:DMSMKeyText(k)]; } }
+        for (id it in DMSMStageItemsMap(DMSMIPadStageShown())) { NSString *k = DMSMItemKey(it); if (k.length) { DMSMSetMinimized(k, YES); [names addObject:DMSMKeyText(k)]; } }
         DMLog([NSString stringWithFormat:@"[winapi] %@: Home, %@ minimized", why, names.count ? [names componentsJoinedByString:@", "] : @"no window"]);
         DMSMGoHomeForReal(why);
         dispatch_async(dispatch_get_main_queue(), ^{ DMSMHomeAfterKeep(NO); });   // (our open menu and the Downloads panel close, as at every Home)

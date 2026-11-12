@@ -7,7 +7,7 @@ cd "$(dirname "$0")"
 FIXDIR="$PWD/crash-fixtures"
 W=$(mktemp -d); export FIX="$FIXDIR" REPORTS="$W/reports"
 cleanup() {   # (the domains go, and their empty files -- com.besiktasliseba.macstatusbar only when this script made it, for the Mac Switcher lines)
-  for d in com.besiktasliseba.macstatusbaranddock com.besiktasliseba.test-crashstep ${MSW_DOMAIN_MADE:+com.besiktasliseba.macstatusbar}; do
+  for d in com.besiktasliseba.macstatusbaranddock com.besiktasliseba.test-crashstep com.besiktasliseba.test-crashstep.displays com.besiktasliseba.test-crashstep.dock ${MSW_DOMAIN_MADE:+com.besiktasliseba.macstatusbar}; do
     defaults delete $d >/dev/null 2>&1 || true
     defaults read $d >/dev/null 2>&1 || rm -f ~/Library/Preferences/$d.plist
   done
@@ -17,18 +17,22 @@ if defaults read com.besiktasliseba.macstatusbaranddock >/dev/null 2>&1; then ec
 trap cleanup EXIT
 fails=0
 echo "== lookup (synthetic map)"
-clang -fobjc-arc -Wall -Wno-unused-function -framework Foundation -o "$W/tcf" test-crashfeature.m
-"$W/tcf" "$FIXDIR" || fails=1
+TDISP=(-DMSBD_DISP_DOMAIN='"com.besiktasliseba.test-crashstep.displays"' -DMSBD_DISP_MSB_DOMAIN='"com.besiktasliseba.test-crashstep"' -DMSBD_DISP_DOCK_DOMAIN='"com.besiktasliseba.test-crashstep.dock"')   # (1.8.7: the displays domain and its parts' domains, test ones)
+clang -fobjc-arc -Wall -Wno-unused-function -framework Foundation "${TDISP[@]}" -o "$W/tcf-synthetic" test-crashfeature.m
+"$W/tcf-synthetic" "$FIXDIR" || fails=1
+clang -fobjc-arc -Wall -Wno-unused-function -framework Foundation -o "$W/tcf" test-crashfeature.m   # (the real domains: a built map's cases below)
 echo "== guard order"
-clang -fobjc-arc -dynamiclib -framework Foundation -framework CoreFoundation -DMSBD_CRASHMAP="\"$FIXDIR/test-crashmap.txt\"" -o "$W/MacCrashBlame.dylib" ../loader/CrashBlameHelper.m ../loader/CrashFeatureHelper.m
+clang -fobjc-arc -dynamiclib -framework Foundation -framework CoreFoundation -DMSBD_CRASHMAP="\"$FIXDIR/test-crashmap.txt\"" "${TDISP[@]}" -o "$W/MacCrashBlame.dylib" ../loader/CrashBlameHelper.m ../loader/CrashFeatureHelper.m
 clang -Wall -Wno-unused-function -framework CoreFoundation -DMSBD_GUARD_REPORTS="\"$REPORTS\"" -DMSBD_GUARD_VERDICTS="\"$W/verdicts.txt\"" \
   -DMSBD_GUARD_BLAME_LIB="\"$W/MacCrashBlame.dylib\"" -DMSBD_STEP_FILE="\"$W/step.txt\"" -DMSBD_CRASHMAP="\"$FIXDIR/test-crashmap.txt\"" \
   -DMSBD_GUARD_RECORD="\"$W/record.txt\"" -DMSBD_GUARD_RECENT="\"$W/recent.txt\"" \
+  -DMSBD_DISP_DOMAIN="\"com.besiktasliseba.test-crashstep.displays\"" -DMSBD_DISP_MSB_DOMAIN="\"com.besiktasliseba.test-crashstep\"" \
   -o "$W/tcs" test-crashstep.c
 run() {   # run <scenario> <fixture for 10:00> [<fixture for 10:01>]
   rm -rf "$REPORTS" "$W/verdicts.txt" "$W/step.txt" "$W/record.txt" "$W/recent.txt"; mkdir -p "$REPORTS"
   [ "$1" = recent ] && echo "$(date -j -f '%Y-%m-%d %H:%M:%S' '2026-09-26 09:59:30' +%s) com.besiktasliseba.test-crashstep recentSwitch Recent Switch" > "$W/recent.txt"
   defaults delete com.besiktasliseba.macstatusbaranddock >/dev/null 2>&1 || true; defaults delete com.besiktasliseba.test-crashstep >/dev/null 2>&1 || true
+  defaults delete com.besiktasliseba.test-crashstep.displays >/dev/null 2>&1 || true
   cp "$FIXDIR/$2" "$REPORTS/SpringBoard-2026-09-26-100000.ips"
   [ -n "$3" ] && cp "$FIXDIR/$3" "$REPORTS/SpringBoard-2026-09-26-100100.ips"
   echo "-- $1"; "$W/tcs" "$1" || fails=1
@@ -56,6 +60,8 @@ run recent step1b-core-banners.ips step1b-core-banners.ips
 run one step1b-core-banners.ips
 run cclookup step1b-core-cc-lookup.ips step1b-core-cc-lookup.ips
 run dockstyle step1b-dock-style.ips step1b-dock-style.ips
+run dispon step1b-core-banners.ips step1b-core-banners-exception.ips
+run dispdefault step1b-core-banners.ips
 echo "== Fit to Window in the rules (no build needed): every function of it window code, Resize Apps to Fit Windows only its own two"
 # (1.8.0 engine parity pass: ^_?DMFit took Fit's own functions to Resize Apps to Fit Windows, and the sections holding its tiles and the turn had no
 #  rule, so DMAssignDefaultSlots, DMSlotFrame, the closure watcher and DMRelayoutForOrientation fell to Stock status bar mode)
@@ -137,6 +143,104 @@ echo "== the parts' names in the guard's words"
 if grep -qx 'title DockMagnification the Dock|the Dock' crashmap-rules.txt && ! grep -E '^title ' crashmap-rules.txt | grep -q 'MacDock'; then
   echo "PASS  the Dock part is \"the Dock\" in the guard's words (footer, notice, Report a Problem), never MacDock"
 else echo "FAIL  the Dock part's title in crashmap-rules.txt names MacDock"; fails=1; fi
+echo "== the per-display settings in the rules (1.8.7, plans/design-1.8.7-displays.md section 8)"
+python3 -I - crashmap-rules.txt ../common/DisplayPrefs.h <<'PY' || fails=1
+import re, sys
+rules, prefs = sys.argv[1], open(sys.argv[2]).read()
+targets, sym, fil, dsym = {}, [], [], []
+for raw in open(rules):
+    line = re.split(r'\s+#', raw, 1)[0].strip()
+    if not line or line.startswith('#'): continue
+    f = line.split()
+    if f[0] == 'target': targets[f[1]] = f[2:]
+    elif len(f) == 4 and f[0] in ('sym', 'file') and f[1] == 'MacStatusBarCore': (sym if f[0] == 'sym' else fil).append((re.compile(f[2]), f[3]))
+    elif len(f) == 4 and f[0] == 'sym' and f[1] == 'DockMagnification': dsym.append((re.compile(f[2]), f[3]))
+def first(rs, name):
+    for rx, t in rs:
+        if rx.search(name): return t
+    return None
+bad = 0
+def check(ok, what):
+    global bad
+    print(('PASS  ' if ok else 'FAIL  ') + what)
+    if not ok: bad += 1
+dom = re.search(r'#define MSBD_DISP_DOMAIN "([^"]+)"', prefs).group(1)
+check(targets.get('displaySettings') == ['pref', dom, 'displaySettings', '0', '1', 'Display', 'Settings|the', 'per-display', 'settings'],
+      'the layer\'s master switch: Display Settings in the displays domain (%s), set off (0), on when never set (1: absent is on)' % dom)
+check(targets.get('displayScale', [None])[0:5] == ['pref', dom, 'displayScale', '0', '1'], 'More Space has its own switch in the same domain')
+got = [first(sym, n) for n in ('_DMDispReload', '_DMDispRegistryUpdate', '___DMDispInit_block_invoke', '___DMDispAskNames_block_invoke_2', '_DMDispBool', '_DMDispWrite', '_DMDispBoolForKey', '_DMDispValueForKey')]
+check(got == ['displaySettings'] * 8, 'the layer\'s functions and blocks by name (DMDisp...): Display Settings, no earlier rule takes them (got %s)' % got)
+got = [first(sym, n) for n in ('_DMDispKeyOfScreen', '_DMDispDesktopScreen', '_MSBDDispGet', '_MSBDDispKeyOfScreen', '_MSBDDispConfigOfScreen')]
+check(got == ['transparent'] * 5, '  ... the display key\'s derivation is passed over (Menu Bar Size, the TV\'s auto-hide and the Dock\'s auto-hide look keys up too, whatever the switch says): the caller decides (got %s)' % got)
+got = [first(sym, n) for n in ('_DMDispKeyOfScreenX', '_DMDispDesktopScreens', '_DMDispScreens', '_DMDispKeyOfIdentity')]
+check(got == ['displaySettings'] * 4, '  ... and only those: the layer\'s other DMDisp... stay Display Settings\' (got %s)' % got)
+got = [first(dsym, n) for n in ('_DMDispKeyOfScreen', '_MSBDDispGet', '_DMDispBool', '_DMDispNum', '_DMDispReload', '___DMDispInit_block_invoke')]
+check(got == ['transparent', 'transparent'] + ['displaySettings'] * 4, '  ... the Dock part\'s the same: its key derivation passed over, its getters and cache Display Settings\' (got %s)' % got)
+check(first(sym, '_DMDisplayString') != 'displaySettings' and first(sym, '_DMDisposeX') != 'displaySettings', '  ... and only them (DMDisplay..., DMDispose... are not the layer)')
+got = [first(fil, n) for n in ('DisplayPrefs.h', 'DisplayIdentity.h', 'DisplayRows.h', 'DisplaySettings.h')]
+check(got == ['displaySettings'] * 4, 'its files (both DisplayPrefs.h, DisplayIdentity.h; DisplayRows.h, DisplaySettings.h from later commits): Display Settings (got %s)' % got)
+got = [first(fil, 'SceneLayer.h'), first(sym, '_DMSceneLayerInScene'), first(sym, '___DMSceneLayerInScene_block_invoke'), first(sym, '_DMSceneLayersRelease')]
+check(got == [None] * 4, '  ... not the per-scene layer helper (SceneLayer.h: 1.8.6\'s menu window on another display and the TV\'s strip, the status bar\'s: Stock status bar mode, as 1.8.6; got %s)' % got)
+check(first(fil, 'DisplayTurn.h') != 'displaySettings' and first(fil, 'DisplaySpike.h') != 'displaySettings', '  ... not the screen turn\'s DisplayTurn.h or the debug spike\'s file')
+got = [first(sym, n) for n in ('_DMDispPanelSendEvent', '_DMDispPanelTouch', '_DMDispPanelKeys')]
+check(got == ['transparent', 'displaySettings', 'displaySettings'], 'the TV panel\'s -[SpringBoard sendEvent:] pass-through is passed over (on every touch stack), what it calls is Display Settings\' (got %s)' % got)
+got = [first(fil, n) for n in ('MSWDisplays.h', 'MacSwitcher.h', 'MacSwitcherSM.h', 'MacSwitcherButton.h')]
+check(got == ['macSwitcher'] * 4, 'the Mac Switcher\'s desktops per display (MSWDisplays.h) are the Mac Switcher\'s, with its other files (got %s)' % got)
+sys.exit(1 if bad else 0)
+PY
+echo "== Window Tiling Shortcuts and Custom Shortcuts in the rules (review of 1.8.7: on for new installs, no rule named them; crashmap-keys-check.py)"
+python3 -I crashmap-keys-check.py crashmap-rules.txt .. || fails=1
+# made to fail: the rules without either switch's sym rule, with the file rule the review first suggested (it takes the title bar's records), without
+# the rules' plain functions passed over, or with a switch that reads off when never set (step 1b would pass over it): each must fail the check
+M3=$(mktemp -d)
+grep -v '^sym MacStatusBarCore ^_\*(DMWinKey(' crashmap-rules.txt > "$M3/nowin.txt"
+grep -v '^sym MacStatusBarCore ^_\*(DMCS(' crashmap-rules.txt > "$M3/nocs.txt"
+{ echo 'file MacStatusBarCore ^WindowKeys\.h$ windowTilingKeys'; cat crashmap-rules.txt; } > "$M3/winfile.txt"
+grep -v '^file MacStatusBarCore ^(WindowKeysRule|' crashmap-rules.txt > "$M3/notransparent.txt"
+sed 's/^target customShortcuts pref com.besiktasliseba.customshortcuts enabled 0 1 /target customShortcuts pref com.besiktasliseba.customshortcuts enabled 0 0 /' crashmap-rules.txt > "$M3/default0.txt"
+for m in nowin nocs winfile notransparent default0; do
+  if cmp -s crashmap-rules.txt "$M3/$m.txt"; then echo "FAIL  made to fail ($m): the change did not apply"; fails=1
+  elif python3 -I crashmap-keys-check.py "$M3/$m.txt" .. >/dev/null; then echo "FAIL  made to fail ($m): the check still passes"; fails=1
+  else echo "PASS  made to fail ($m): the check fails"; fi
+done
+rm -rf "$M3"
+echo "== every switch the guard sets off can be switched back on (review of 1.8.7: displaySettings / displayScale had no row; 1.8.6's batteryHoldPlug the same)"
+python3 -I - crashmap-rules.txt .. <<'PY' || fails=1
+import re, sys, glob, os, plistlib
+rules, root = sys.argv[1], sys.argv[2]
+targets = [m.groups() for m in re.finditer(r'^target (\S+) pref (\S+) (\S+) ', open(rules).read(), re.M)]
+bundles = [os.path.join(root, 'statusbar/macstatusbarprefs'), os.path.join(root, 'dock/dockmagnificationprefs'), os.path.join(root, 'macsettings')]   # (macsettings: the Keyboard page's rows, Window Tiling Shortcuts and Custom Shortcuts)
+rows = set()
+def walk(o):
+    if isinstance(o, dict):
+        if isinstance(o.get('key'), str) and isinstance(o.get('defaults'), str): rows.add((o['defaults'], o['key']))
+        for v in o.values(): walk(v)
+    elif isinstance(o, list):
+        for v in o: walk(v)
+for b in bundles:
+    for p in glob.glob(os.path.join(b, '**/*.plist'), recursive=True):
+        try: walk(plistlib.load(open(p, 'rb')))
+        except Exception: pass
+code = ''.join(open(f, errors='ignore').read() for b in bundles for f in glob.glob(os.path.join(b, '**/*.[mhx]'), recursive=True))
+defines = {}   # (a key's name through a #define of the common or status bar headers: kMSBDWallpaperPathKey, MSBD_DISP_MASTER_KEY ...)
+for f in glob.glob(os.path.join(root, 'common/*.h')) + glob.glob(os.path.join(root, 'statusbar/*.h')):
+    for m in re.finditer(r'^#define (\w+) +"([^"]+)"', open(f, errors='ignore').read(), re.M): defines.setdefault(m.group(2), set()).add(m.group(1))
+missing = []
+for name, dom, key in targets:
+    if (dom, key) in rows or ('"%s"' % key) in code or any(re.search(r'\b%s\b' % d, code) for d in defines.get(key, ())): continue
+    missing.append('%s (%s %s)' % (name, dom, key))
+ok = not missing and len(targets) >= 40
+print(('PASS  ' if ok else 'FAIL  ') + 'every pref target (%d) has a row in Settings that writes its key (a piece is brought back by Turn Back On)%s' % (len(targets), ' -- none for: ' + ', '.join(missing) if missing else ''))
+m = open(os.path.join(root, 'statusbar/macstatusbarprefs/MSBRootListController.m')).read()
+ok2 = 'set:@selector(msb_setDisplaySwitch:specifier:)' in m and '[master setProperty:@MSBD_DISP_MASTER_KEY forKey:@"msbdSwitch"];' in m and '[scale setProperty:@MSBD_DISP_SCALE_SWITCH_KEY forKey:@"msbdSwitch"];' in m
+print(('PASS  ' if ok2 else 'FAIL  ') + '  ... Display Settings and More Space: their switches in Settings > Desktop > Displays')
+sys.exit(0 if ok and ok2 else 1)
+PY
+M2=$(mktemp -d); mkdir -p "$M2/statusbar" "$M2/dock" "$M2/common"; cp -R ../statusbar/macstatusbarprefs "$M2/statusbar/"; cp -R ../dock/dockmagnificationprefs "$M2/dock/"; cp -R ../macsettings "$M2/"; cp ../common/*.h "$M2/common/"; cp ../statusbar/*.h "$M2/statusbar/"
+sed -i '' 's/@MSBD_DISP_MASTER_KEY forKey/@"x" forKey/' "$M2/statusbar/macstatusbarprefs/MSBRootListController.m"
+if sed -n '/^python3 -I - crashmap-rules.txt \.\. <<.PY/,/^PY$/p' test-crashstep.sh | sed '1d;$d' | python3 -I - crashmap-rules.txt "$M2" >/dev/null; then echo "FAIL  made to fail: Display Settings' switch row taken out, and the check still passes"; fails=1
+else echo "PASS  made to fail: Display Settings' switch row taken out: the check fails"; fi
+rm -rf "$M2"
 echo "== the words (footer, notice, Report a Problem)"
 clang -fobjc-arc -Wall -Wno-unused-function -framework Foundation -DMSBD_GUARD_RECORD="\"$W/words-record.txt\"" -o "$W/tse" test-stepexplain.m
 "$W/tse" || fails=1
@@ -165,6 +269,31 @@ if [ -f "$MAP" ] && [ -n "$DSYM" ]; then
   real core-menu "pref MacStatusBarCore $D stockStatusBar 1 *" --symbol "$DSYM" MacStatusBarCore 'DMShowMenu|DMMenuWindow|DMMenu'
   # (auto-hide is off on this Mac, as for a new user: a crash in its code can't be the switch, so Stock status bar mode instead)
   real core-autohide "pref MacStatusBarCore $D stockStatusBar 1 *" --symbol "$DSYM" MacStatusBarCore '^_DMAutoHide'
+  # the per-display settings (1.8.7): the registry and a getter are Display Settings' (nothing stored on this Mac: on); the display key's derivation is
+  # its caller's (under a getter: Display Settings; under the TV's auto-hide: auto-hide, off here, so Stock status bar mode); the per-scene layer
+  # helper (1.8.6's TV menu window, the TV's strip) the status bar's: Stock status bar mode, as 1.8.6
+  DD=com.besiktasliseba.macstatusbar.displays
+  if defaults read $DD >/dev/null 2>&1; then echo "SKIP  the per-display settings' built-map cases: this Mac has a $DD domain (not touched)"; else
+    real core-disp-registry "pref MacStatusBarCore $DD displaySettings 0 *" --symbol "$DSYM" MacStatusBarCore '^_DMDispRegistryUpdate$'
+    real core-disp-getter-key "pref MacStatusBarCore $DD displaySettings 0 *" --symbol "$DSYM" MacStatusBarCore '^_DMDispKeyOfScreen$' --then '^_DMDispBool$'
+    real core-disp-autohide-key "pref MacStatusBarCore $D stockStatusBar 1 *" --symbol "$DSYM" MacStatusBarCore '^_DMDispKeyOfScreen$' --then '^_DMAutoHide'
+    real core-scenelayer "pref MacStatusBarCore $D stockStatusBar 1 *" --symbol "$DSYM" MacStatusBarCore '^___DMSceneLayerInScene_block_invoke$'
+  fi
+  # Window Tiling Shortcuts and Custom Shortcuts (review of 1.8.7): never set on this Mac, so on (their default 1): a crash in their key code is their
+  # own switch's, not Stock status bar mode; a rule's plain function is its caller's; the title bar's records in WindowKeys.h, the shortcuts' load and
+  # Yours over a built-in stay with the status bar. (A map built before these rules has no target for them: skipped, as a stale build.)
+  if ! grep -q '^T windowTilingKeys ' "$MAP"; then echo "SKIP  the keyboard shortcuts' built-map cases: the map was built before their rules"
+  elif defaults read $D windowTilingKeys >/dev/null 2>&1 || defaults read com.besiktasliseba.customshortcuts >/dev/null 2>&1; then echo "SKIP  the keyboard shortcuts' built-map cases: this Mac has their switches set (not touched)"
+  else
+    real core-winkeys "pref MacStatusBarCore $D windowTilingKeys 0 *" --symbol "$DSYM" MacStatusBarCore '^_DMWinKeyRun$'
+    real core-winkeys-arrange "pref MacStatusBarCore $D windowTilingKeys 0 *" --symbol "$DSYM" MacStatusBarCore '^___DMArrangeWindows_block_invoke$'
+    real core-winkeys-press "pref MacStatusBarCore $D windowTilingKeys 0 *" --symbol "$DSYM" MacStatusBarCore '^_MSBDWinKeyFor$' --then '^_DMWinKeysPressesBegan$'
+    real core-cshort "pref MacStatusBarCore com.besiktasliseba.customshortcuts enabled 0 *" --symbol "$DSYM" MacStatusBarCore '^_DMCSRunOnce$'
+    real core-cshort-app "pref MacStatusBarCore com.besiktasliseba.customshortcuts enabled 0 *" --symbol "$DSYM" MacStatusBarCore '^___DMCSPublishStates_block_invoke$'
+    real core-titlerecord "pref MacStatusBarCore $D stockStatusBar 1 *" --symbol "$DSYM" MacStatusBarCore '^_DMTitleRecordView$'
+    real core-cshort-load "pref MacStatusBarCore $D stockStatusBar 1 *" --symbol "$DSYM" MacStatusBarCore '^_DMCSLoad$'
+    real core-kc-yours "pref MacStatusBarCore $D stockStatusBar 1 *" --symbol "$DSYM" MacStatusBarCore '^_DMKCYoursPublish$'
+  fi
   real core-aerial "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore 'logos_method\$AerialStyle\$'
   # (the app exit hook, on every engine since 1.4.2 -- its own group, no longer AerialSpringBoard: Windowing, not Stock status bar mode)
   real core-appexit "pref MacStatusBarCore $D windowingEnabled 0 *" --symbol "$DSYM" MacStatusBarCore 'logos_method\$AppExitForget\$'

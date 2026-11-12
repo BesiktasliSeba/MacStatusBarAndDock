@@ -23,6 +23,29 @@ static inline int MSBDMenuBarSizeFrom(int isNumber, double value) {
     return value == 1.0 ? MSBDMenuBarMedium : value == 2.0 ? MSBDMenuBarLarge : MSBDMenuBarSmall;
 }
 
+// Menu Bar Size per display (1.8.7, plans/design-1.8.7-displays.md section 5): a TV's bar takes the TV's own size (its override in the displays domain,
+// the iPad's until changed for it), the iPad's bar the iPad's. iOS takes a bar's size when the bar is made, so a display's size applies at its next
+// connect (or a respring), as the iPad's applies after a respring.
+//  - iOS's providers are hooked at the start when the iPad's size, or any remembered display's own size, is not Small (one read of the displays
+//    domain); a display's size first set above Small with nothing hooked hooks them at that moment, for its next connect.
+static inline int MSBDMenuBarHooksWanted(int ipadSize, int anyDisplayAboveSmall) { return ipadSize != MSBDMenuBarSmall || anyDisplayAboveSmall; }
+//  - the size a provider's bar takes: nothing hooked, Small (iOS's own numbers); a TV's provider (_ExternalPad, either family) the TV's size, every
+//    other the iPad's -- so the iPad at Small with the hooks in gets iOS's own numbers.
+static inline int MSBDMenuBarSizeOfProvider(int hooksIn, int isExternal, int ipadSize, int tvSize) {
+    if (!hooksIn) return MSBDMenuBarSmall;
+    return isExternal ? tvSize : ipadSize;
+}
+//  - a bar's height asked for a scene on another display (R6, A12Z 18.5): SpringBoard makes a TV's bar at the height the TV's window scene's status bar
+//    manager answers (UIKit's -[UIStatusBarManager defaultStatusBarHeight]), and UIKit works that out with no screen, so the iPad's own provider
+//    answers it (the main screen's), with the iPad's size. Such a question is the TV's, whichever provider answers it: it takes the TV's size.
+static inline int MSBDMenuBarAskIsExternal(int providerIsExternal, int askedForExternal) { return providerIsExternal || askedForExternal; }
+//  - a TV's size, taken when it connects and held until it goes: its own (an override, read as the iPad's stored value is) or else the iPad's in
+//    force; Small when nothing was hooked as it connected (its bar was made with iOS's own numbers, and stays so until it connects again).
+static inline int MSBDMenuBarTVSizeAtConnect(int hooksIn, int hasOverride, int overrideSize, int ipadSize) {
+    if (!hooksIn) return MSBDMenuBarSmall;
+    return hasOverride ? overrideSize : ipadSize;
+}
+
 // iOS's bar on the iPad's own screen. Its height: the size's (Small: iOS's own, `stock`); its text and icons: x the scale; its text's baseline (from
 // the bar's top): the middle of the text's capitals on the middle of the bar -- SF Pro's capitals are 0.7046 of the point size, and this rule gives
 // iOS's own 16 for its 24 pt bar and 14 for its 20 pt one (+[_UIStatusBarVisualProvider_RoundedPad / _Pad baselineOffset], 12 pt text, 15.6.1).
@@ -62,15 +85,25 @@ static inline double MSBDMenuRowHeight(int size) { return size == MSBDMenuBarLar
 static inline double MSBDMenuTextSize(int size) { return size == MSBDMenuBarLarge ? 16.0 : size == MSBDMenuBarMedium ? 15.0 : 14.0; }
 static inline double MSBDMenuRowScaled(int size, double small) { return size == MSBDMenuBarSmall ? small : round(small * MSBDMenuRowHeight(size) / 30.0); }
 static inline double MSBDMenuTextScaled(int size, double small) { return size == MSBDMenuBarSmall ? small : round(2.0 * small * MSBDMenuTextSize(size) / 14.0) / 2.0; }
-// A menu hanging from the bar that is taller than the room under it (StatusBar.x DMMakeBarMenuPanel: from the menu's top to the screen's bottom less a
-// margin) gets shorter rows -- whole points, never shorter than Small's 30 --, so every row stays on the screen: the Window menu at Large on the iPad
-// 2's 768 pt landscape screen (19 rows of 36 pt, 5 separators of 13 pt, 12 pt of pads: 761 pt from y 39) ran 32 pt past its bottom, its last row out
-// of reach (1.7.3 device pass). rows: its plain rows; other: everything else in it (separators, rows with heights of their own, the pads). A menu that
-// fits keeps rowH; at Small nothing changes (30 already).
+// A menu taller than the room under it (StatusBar.x DMMakeFitPanel: a bar menu from its top to its display's bottom less a margin, the desktop's
+// context menu inside its window) gets shorter rows -- whole points, down to kMSBDMenuRowFloor, a Mac menu's own row (22 pt; its text keeps its size)
+// --, so every row stays on its display: the Window menu at Large on the iPad 2's 768 pt landscape screen (19 rows of 36 pt, 5 separators of 13 pt,
+// 12 pt of pads: 761 pt from y 39) ran 32 pt past its bottom, its last row out of reach (1.7.3 device pass); on the iPad 2's 540 pt AirPlay TV desktop
+// it was 708 pt from y 22 (1.8.7). rows: its plain rows; other: everything else in it (separators, rows with heights of their own, the pads). A menu
+// that fits keeps rowH, at every size (the iPad's menus as before).
+#define kMSBDMenuRowFloor 22.0
 static inline double MSBDMenuRowFit(double rowH, int rows, double other, double room) {
     if (rows <= 0 || !(room > 0) || rows * rowH + other <= room) return rowH;
-    double smallest = fmin(rowH, MSBDMenuRowHeight(MSBDMenuBarSmall));
+    double smallest = fmin(rowH, kMSBDMenuRowFloor);
     return fmax(fmin(floor((room - other) / rows), rowH), smallest);
+}
+// Still taller than the room with its rows at the floor: the menu is as tall as the room and its rows scroll (StatusBar.x DMMakePanelIn). Its height
+// for contentH: contentH when it fits or no room is known; else the room, though never shorter than kMSBDMenuScrollMin (a few rows: a scroller that
+// shows one row helps no one) unless the menu itself is shorter.
+#define kMSBDMenuScrollMin 120.0
+static inline double MSBDMenuFitHeight(double contentH, double room) {
+    if (!(room > 0) || !(contentH > room)) return contentH;
+    return fmax(room, fmin(contentH, kMSBDMenuScrollMin));
 }
 
 // BigSurCenter's Control Center panel rests 20 pt below the screen's top (StatusBar.x DMScalePanelView), right under iOS's own bar; under the taller

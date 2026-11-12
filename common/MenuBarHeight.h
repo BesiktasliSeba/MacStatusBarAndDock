@@ -19,6 +19,21 @@ static inline double MSBDMenuBarHeightOf(double providerHeight, double viewHeigh
     if (MSBDMenuBarPlausible(viewHeight)) return viewHeight;
     return 0.0;
 }
+// The height our items in one bar copy are laid out in (StatusBar.x DMBarCopyHeight; 1.8.7, Reddit: an iPad 6 on 15.7 showed a huge Apple logo while
+// taking a screenshot with the corner swipe). iOS lays a bar's items out from its top in its visual provider's +height, and a copy's own height is
+// that -- except where SpringBoard gives a copy a taller frame: the corner swipe's screenshot puts up a placeholder of the screenshot editor's chrome
+// with a status bar the size of the whole screen (SBInteractiveScreenshotGestureRootViewController's _chromePlaceholderStatusBar, 1194 x 834 on the
+// M1 in landscape), and our logo was sized and centred on that: its ink is the height less 9 pt at Small -- 825 pt there, 759 on an iPad 6 in
+// landscape --, and at every size it sat at mid-screen, while iOS's own items stayed at the top. So: a copy taller than any bar (over 40 pt, the
+// most a bar is: MSBDMenuBarPlausible) takes its provider's height when that is a bar's height, else the bar height known from the iPad's own bar
+// (known, 0: not known). Every bar-sized copy keeps its own height, as before, even where it differs from its provider's: a TV's bar on a Face ID
+// iPad is 24 pt over _UIStatusBarVisualProvider_ExternalPad's +height 20 at Small, and its logo and touch areas are the 24 pt bar's.
+static inline double MSBDMenuBarCopyHeight(double providerHeight, double viewHeight, double known) {
+    if (!(viewHeight > 40.0)) return viewHeight;   // (a bar's own height, or none yet: as before)
+    if (MSBDMenuBarPlausible(providerHeight)) return providerHeight;
+    if (MSBDMenuBarPlausible(known)) return known;
+    return viewHeight;
+}
 // The geometry from the bar's height: the top windows and tiles may reach -- right under the bar (24 on a 24 pt bar), since 1.7.2: one point into the
 // bar before (23), where a window over the bar covered the foot of its text (KT 31 Oct, M1: the "g" of "Settings" under a filled window); Stage
 // Manager's stage always started at the bar's height --, the "center" layout's and MilkyWay4's default top (36: 12 pt under the bar), a touch on

@@ -25,11 +25,11 @@ check "the keys from SpringBoard's own presses (the Globe chords iPadOS hands to
    && grep -q 'int row = k ? MSBDWinKeyRowFor(MSBDWinKeyFor((long)k.keyCode, k.charactersIgnoringModifiers.UTF8String), (unsigned long long)k.modifierFlags) : -1;' \$W/fn \
    && grep -q 'if (p.timestamp == lastTime && (long)k.keyCode == lastCode) continue;' \$W/fn && ! grep -q 'p == lastPress' \$W/fn"
 check "  ... with an app in front backboardd hands SpringBoard only the keys its key commands name (15.6.1: Globe-Control-F went to the app): our fifteen in SpringBoard's own list while offered, registered again at each change; a key command that runs runs the same row, once" \
-  "fn 'static NSArray *DMWinKeysKeyCommands(id self, SEL _cmd) {' $K && grep -q 'if (gWinKeyCmds.count != kMSBDWinKeyRowCount || !DMWinKeysWanted()) return orig;' \$W/fn && grep -q '\[all addObjectsFromArray:gWinKeyCmds\];' \$W/fn \
+  "fn 'static NSArray *DMWinKeysKeyCommands(id self, SEL _cmd) {' $K && grep -q 'if (gWinKeyCmds.count != kMSBDWinKeyRowCount || !DMWinKeysWanted()) return orig;' \$W/fn && grep -q 'if (!MSBDKCYoursTakesWinRow(&gKCYours, (int)i)) \[all addObject:gWinKeyCmds\[i\]\];' \$W/fn \
    && fn 'static void DMWindowKeysInstall(void) {' $K && grep -q 'MSHookMessageEx(sb, @selector(keyCommands), (IMP)DMWinKeysKeyCommands, (IMP \*)&o_WinKeysKeyCommands);' \$W/fn \
    && grep -q 'UIKeyCommand \*c = \[UIKeyCommand keyCommandWithInput:DMWinKeyInput(kMSBDWinKeyRows\[i\].key) modifierFlags:(UIKeyModifierFlags)kMSBDWinKeyRows\[i\].mods action:sel\];' \$W/fn \
-   && fn 'static void DMWindowKeysPublish(void) {' $K && grep -q 'if (now != registered && DMWindowKeysRegister(now)) registered = now;' \$W/fn \
-   && fn 'static BOOL DMWindowKeysRegister(BOOL offered) {' $K && grep -q '_updateSerializableKeyCommandsForResponder:' \$W/fn \
+   && fn 'static void DMWindowKeysPublish(void) {' $K && grep -q 'if (told != registered && DMWindowKeysRegister(told)) gWinKeysRegistered = told;' \$W/fn \
+   && fn 'static BOOL DMWindowKeysRegister(int offered) {' $K && grep -q '_updateSerializableKeyCommandsForResponder:' \$W/fn \
    && fn 'static BOOL DMWinKeyRun(size_t i) {' $K && grep -q 'if (i == lastRow && at - lastAt < 0.15) return YES;' \$W/fn"
 check "  ... ours never handed on; presses that came with one of ours and are none of ours handed on without it (review 1.8.3 F1); none of ours: the set as it came" \
   "fn 'static void DMWinKeysPressesBegan(id self, SEL _cmd, NSSet<UIPress \*> \*presses, UIPressesEvent \*event) {' $K \
@@ -87,11 +87,11 @@ check "Stage Manager: a window placed by the user leaves its Fit to Window tile 
    && fn 'static void DMCenterFrontWindow(NSString *why) {' $K && grep -q 'if (ok) DMSMFitLetGo(key);' \$W/fn \
    && fn 'static void DMArrangeWindows(const char *const *slots, int count, NSString *why) {' $K && grep -q 'if (ok) for (NSString \*k in plan) DMSMFitLetGo(k);' \$W/fn \
    && fn 'static void DMTitleTapSMWindow(NSString *key, NSString *why) {' ../statusbar/TitleBarTap.h && [ \$(grep -c 'if (ok) DMSMFitLetGo(key);' \$W/fn) = 3 ]"   # (Fill, Zoom -- its own place since 1.8.4.1 item 1 -- and back)
-check "the switch: Settings > Keyboard, off by default, posted to SpringBoard and read with the other preferences" \
-  "grep -q 'PSSpecifier \*keys = MSKeySwitch(target, @\"Window Tiling Shortcuts\", @kMSBDWindowKeysDomain, @kMSBDWindowKeysKey);' $KB \
+check "the switch: Settings > Keyboard, on by default (1.8.7, new installs; updates keep theirs: test-defaultsrule.sh) in Settings and SpringBoard alike, posted to SpringBoard and read with the other preferences" \
+  "grep -q 'PSSpecifier \*keys = MSKeySwitchDefault(target, @\"Window Tiling Shortcuts\", @kMSBDWindowKeysDomain, @kMSBDWindowKeysKey, YES);' $KB \
    && grep -q 'CFPropertyListRef kr = CFPreferencesCopyValue(CFSTR(kMSBDWindowKeysKey), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);' $S \
-   && grep -q '\[s setProperty:@NO forKey:@\"default\"\];' $KB"
-check "  ... at the end of our Keyboard page (after Apple's rows); on 18 with Mac Keys at the top of Apple's page" \
-  "grep -q '\[s addObjectsFromArray:MSKeysShortcutSpecifiers(self)\];' $KB && awk '/if \(hw.count\) \[s addObjectsFromArray:hw\];/{a=NR} /\[s addObjectsFromArray:MSKeysShortcutSpecifiers\(self\)\];/{b=NR} END{exit !(a && b > a)}' $KB \
-   && grep -q 'MSKeysGroupSpecifiers(prefs, @\"Mac Keys\", apple, prefs) arrayByAddingObjectsFromArray:MSKeysShortcutSpecifiers(prefs)' $G"
+   && grep -q 'BOOL fill = NO, keys = YES;' $S && grep -q '\[s setProperty:@(on) forKey:@\"default\"\];' $KB"
+check "  ... at the top of our Keyboard page with your own shortcuts (before the Mac keys and Apple's rows: KT 12 Nov, test-keyboardorder.sh); on 18 the same at the top of Apple's page, Mac Keys after them" \
+  "grep -q 'NSMutableArray \*s = \[NSMutableArray arrayWithArray:MSKeysShortcutSpecifiers(self)\];' $KB && awk '/if \(hw.count\) \[s addObjectsFromArray:hw\];/{a=NR} /arrayWithArray:MSKeysShortcutSpecifiers\(self\)\];/{b=NR} END{exit !(a && b && b < a)}' $KB \
+   && grep -q '\[MSKeysShortcutSpecifiers(prefs) arrayByAddingObjectsFromArray:MSKeysGroupSpecifiers(prefs, @\"Mac Keys\", apple, prefs)\]' $G"
 exit $fails

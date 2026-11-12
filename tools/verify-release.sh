@@ -75,10 +75,11 @@ fi
 echo "== test machinery left in the binaries"
 # Every /tmp path and debug-only name (the screenshot mode's flag, msb-shotmode, by name too: common/ShotMode.h). A release build must have none, except these, which are real release features (allowed, only in
 # MacStatusBarCore.dylib): /tmp/macstatusbar-restore-guard, /tmp/macstatusbar-menuwindow-guard, /tmp/macstatusbar-aerial5-probation,
-# /tmp/macstatusbar-smrestore-guard (the Stage Manager desktop brought back after a respring, SMHome.h) -- the status bar's own crash-loop guards
-# (they must live in /tmp so a reboot clears them; StatusBar.x).
+# /tmp/macstatusbar-smrestore-guard (the Stage Manager desktop brought back after a respring, SMHome.h), /tmp/macstatusbar-mswtv-guard (another
+# display's current desktop brought back after a start or its connect, 1.8.7: MacSwitcherSM.h DMMSWSMBringBackOn) -- the status bar's own crash-loop
+# guards (they must live in /tmp so a reboot clears them; StatusBar.x).
 PAT='msb-shotmode|unlockpass_|tapsys|dragsys|devorient_|memdump_|mpdump_|a5trace_|keys_|macstatusbar-trigger|macstatusbar-debug|/tmp/|dockmag\.log|macsettings-debug|tabmute-debug|brightnesskey-debug|msb-engine-notinstalled|sshtoggled-pretend|pretend-nochoicy|macpointer\.(cmd|pagereq)|appbridge\.(dumpcls|dumpctrl|keycmds|testnotif|typetest)|fakeversion|fakemodel|fakecrash|--dry-run-choicy|--dpkg-busy|appstate\.|\[trigger\]|\[debug\]|skiplock|DM_LOCK_BYPASS'
-ALLOW_CORE='^/tmp/macstatusbar-(restore-guard|menuwindow-guard|aerial5-probation|smrestore-guard)$'
+ALLOW_CORE='^/tmp/macstatusbar-(restore-guard|menuwindow-guard|aerial5-probation|smrestore-guard|mswtv-guard)$'
 while IFS= read -r f; do
     file "$f" | grep -q Mach-O || continue
     printf "  %9d  %-66s %s\n" "$(stat -f %z "$f")" "${f#d/}" "$(lipo -archs "$f" 2>/dev/null)"

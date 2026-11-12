@@ -89,6 +89,17 @@ static inline int MSBDAutoHideLevelsOf(const char *encoding) {
 // bottom, or the Dock's side), as a zoomed window on a Mac with the Dock hidden.
 static inline double MSBDAutoHideRoomEdge(int autoHide, double dockEdge, double screenEdge) { return autoHide ? screenEdge : dockEdge; }
 
+// ---- per display (1.8.7, plans/design-1.8.7-displays.md section 5): the in-app Dock answer for one stage's display ------------------------------------
+// With the Stage Manager engine each display's stage has its own switcher modifier, which asks whether its Dock goes away in an app (S5 reading, A12Z 18.5: the
+// TV's Dock hid with the iPad's shown, and the other way). Its preference part: on the iPad's own stage Apple's "hide Dock" preference (Stage Manager's tick)
+// or our switch, as in 1.8.4. On another display's stage that display's own switch (the iPad's answer until changed for it), and Apple's preference only
+// where it hides beyond the iPad's switch it is kept equal to (MSBDAutoHideSync): the tick follows the iPad, so a TV switched off for itself keeps its Dock
+// while the iPad's hides; a tick our switch could not take still hides it, as on the iPad.
+static inline int MSBDAutoHideInAppPref(int otherDisplay, int applePrefers, int ipadHides, int displayHides) {
+    if (!otherDisplay) return applePrefers || ipadHides;
+    return displayHides || (applePrefers && !ipadHides);
+}
+
 // ---- the room the windows are placed for (regression 1.8.4 F2; the review of the fixes, H1 and M1) ----
 // The answer the room for windows stands on (1: the Dock hides itself) is saved with the windows (the window state, Stage Manager's state file) and
 // compared at the start with the one taken then. Switched while SpringBoard was not running -- the crash guard's step at a start turns the switch off

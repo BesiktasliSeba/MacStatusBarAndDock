@@ -128,6 +128,26 @@
 			<key>label</key>
 			<string>Match Home Screen Icons</string>
 		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>id</key>
+			<string>DISPLAYS_GROUP</string>
+			<key>label</key>
+			<string>Displays</string>
+			<key>footerText</key>
+			<string>Settings for a TV or monitor connected to this iPad. A display starts with your iPad's settings and keeps following them until you change one for that display. Connect a display or start AirPlay to change its settings.</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSLinkCell</string>
+			<key>detail</key>
+			<string>MSBDisplayListController</string>
+			<key>id</key>
+			<string>DISPLAY_SETTINGS</string>
+			<key>label</key>
+			<string>Display Settings</string>
+		</dict>
 	</array>
 	<key>title</key>
 	<string>Desktop</string>

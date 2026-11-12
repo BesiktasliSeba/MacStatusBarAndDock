@@ -1,4 +1,4 @@
-// CustomShortcutsRule.h -- Custom Shortcuts (Settings > Keyboard, 1.8.5 item 2, off unless switched on): keyboard shortcuts of your own that open an
+// CustomShortcutsRule.h -- Custom Shortcuts (Settings > Keyboard, 1.8.5 item 2; on for new installs since 1.8.7): keyboard shortcuts of your own that open an
 // app, open a URL, lay out the front window or go Home. Plain C (an Objective-C part at the end), so the Mac test (tools/test-customshortcuts.c)
 // runs these very rules; SpringBoard runs the shortcuts (statusbar/CustomShortcuts.h), Settings records them (macsettings/CustomShortcuts.x).
 //
@@ -6,8 +6,9 @@
 // enabled), the actions' spelling (app:, url:, window:, system:home), the 64-rule limit, the key names and the shortcut's display order (KPShared.m),
 // and the window action names with their aliases (KPWindowActions.m) are his, ported here; its author allowed the integration (KT, 7 Nov 2026).
 // Differences from KeyPilot, on purpose (plans/keypilot-integration-study.md): Globe is part of a shortcut's match (KeyPilot's mask drops it, so a
-// rule on Control-Left also fired on Globe-Control-Left), Caps Lock is not (a rule must not stop working while Caps Lock is on), shortcuts that
-// clash with this tweak's own keys are refused when recorded, and there are no shell actions. As KeyPilot's, the keys are matched in the app that
+// rule on Control-Left also fired on Globe-Control-Left), Caps Lock is not (a rule must not stop working while Caps Lock is on), a shortcut on
+// the same keys as one of this tweak's own wins over it, the built-in one off for those keys (1.8.7: common/KeyboardChords.h; 1.8.5 refused
+// them), and there are no shell actions. As KeyPilot's, the keys are matched in the app that
 // has the keyboard (1.8.6: through MacAppBridge's existing key hook, "In the app with the keyboard" below), and SpringBoard also takes them from its
 // own presses and its key commands.
 //
@@ -28,11 +29,11 @@
 #include <stdint.h>
 #include <string.h>
 #include <strings.h>
-#include "../statusbar/WindowKeysRule.h"   // (the modifier flags, and Window Tiling Shortcuts' rows: a shortcut on one of them is refused)
+#include "../statusbar/WindowKeysRule.h"   // (the modifier flags)
 
 // The preferences: their own domain, read by SpringBoard at each change (the notification) and written by Settings.
 #define kMSBDCSDomain   "com.besiktasliseba.customshortcuts"
-#define kMSBDCSEnabled  "enabled"        // (the switch: off unless switched on)
+#define kMSBDCSEnabled  "enabled"        // (the switch: never set, on -- 1.8.7, new installs; an update keeps what it had: the defaults v5)
 #define kMSBDCSRules    "rules"          // (an array of rules, each {key, keyCode, modifiers, action, enabled}, as KeyPilot's)
 #define kMSBDCSChanged  "com.besiktasliseba.customshortcuts/prefsChanged"
 // Darwin state while Settings records a shortcut: 1, else 0. SpringBoard runs none of the shortcuts then (a key already taken by one of them would
@@ -53,8 +54,6 @@ enum {
     kMSBDCSOK = 0,
     kMSBDCSNoKey,          // (a modifier alone, or no key)
     kMSBDCSNeedsModifier,  // (no Command, Option, Control or Globe: the key would stop typing; Shift alone is typing too)
-    kMSBDCSWindowTiling,   // (one of Window Tiling Shortcuts' Globe-Control keys)
-    kMSBDCSMacSwitcher,    // (the Mac Switcher's Control-Left, -Right, -Up)
     kMSBDCSEscape,         // (Escape: it cancels the recording, and closes our menus and panels)
     kMSBDCSTaken,          // (another custom shortcut has it)
 };
@@ -68,14 +67,14 @@ enum { kMSBDCSHIDA = 0x04, kMSBDCSHIDZ = 0x1D, kMSBDCSHID1 = 0x1E, kMSBDCSHID0 =
 static inline bool MSBDCSIsModifierKey(long usage) { return (usage >= 0xE0 && usage <= 0xE7) || usage == 0x39 || (usage >= 0x0 && usage <= 0x3); }
 
 // A recorded key: whether it may be a shortcut. usage: the press's HID usage; chars: what the key types without modifiers (UTF-8); flags: the
-// press's modifier flags.
+// press's modifier flags. A built-in feature's keys may be (1.8.7: Window Tiling's, the Mac Switcher's Control-arrows were refused): yours wins
+// there, the built-in one off for those keys, and the recorder says so (common/KeyboardChords.h).
 static inline int MSBDCSCheck(long usage, const char *chars, unsigned long long flags) {
     unsigned long long m = MSBDCSMods(flags);
     if (MSBDCSIsModifierKey(usage)) return kMSBDCSNoKey;
     if (usage == kMSBDCSHIDEscape) return kMSBDCSEscape;
     if (!(m & (kMSBDModControl | kMSBDModOption | kMSBDModCommand | kMSBDModGlobe))) return kMSBDCSNeedsModifier;
-    if (MSBDWinKeyRowFor(MSBDWinKeyFor(usage, chars), m) >= 0) return kMSBDCSWindowTiling;
-    if (m == kMSBDModControl && (usage == kMSBDCSHIDLeft || usage == kMSBDCSHIDRight || usage == kMSBDCSHIDUp)) return kMSBDCSMacSwitcher;
+    (void)chars;
     return kMSBDCSOK;
 }
 // Two shortcuts are the same: the same key (its usage) and the same modifiers.
@@ -332,8 +331,8 @@ static inline BOOL MSBDCSRuleUsable(NSDictionary *r) {
     if (on && ![on boolValue]) return NO;
     int k = MSBDCSActionKind([act UTF8String]);
     if (!(k == kMSBDCSActApp || k == kMSBDCSActURL || k == kMSBDCSActWindow || k == kMSBDCSActHome)) return NO;
-    // (the record-time rules too: a rule written some other way with no Command, Option, Control or Globe, Escape, or a Window Tiling or Mac
-    //  Switcher key would take that key from typing everywhere; review 1.8.5-k L1)
+    // (the record-time rules too: a rule written some other way with no Command, Option, Control or Globe, or Escape, would take that key from
+    //  typing everywhere; review 1.8.5-k L1)
     id key = r[@"key"];
     return MSBDCSCheck([code longValue], [key isKindOfClass:[NSString class]] ? [key UTF8String] : "", [mods unsignedLongLongValue]) == kMSBDCSOK;
 }

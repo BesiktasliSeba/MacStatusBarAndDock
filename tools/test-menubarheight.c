@@ -187,8 +187,21 @@ int main(void) {
     Expect("Large, iPad 2 portrait (1024 pt): 36 pt rows (it fits)", MSBDMenuRowFit(36.0, 19, 77.0, 1024.0 - 39.0 - 6.0), 36.0);
     Expect("Large, the M1 landscape (834 pt): 36 pt rows (761 pt from 39 ends at 800)", MSBDMenuRowFit(36.0, 19, 77.0, 834.0 - 39.0 - 6.0), 36.0);
     Expect("Medium, iPad 2 landscape: 33 pt rows (19 x 33 + 5 x 12 + 12 = 699 from 32: fits)", MSBDMenuRowFit(33.0, 19, 5 * 12.0 + 12.0, 768.0 - 32.0 - 6.0), 33.0);
-    Expect("Small: 30 pt rows whatever the room (as before)", MSBDMenuRowFit(30.0, 40, 100.0, 500.0), 30.0);
-    Expect("Large, a room so small even 30 pt rows do not fit: never below Small's 30", MSBDMenuRowFit(36.0, 30, 100.0, 700.0), 30.0);
+    // (1.8.7: every menu on every display fits -- rows down to a Mac menu's 22 pt, then it scrolls; MSBDMenuFitHeight)
+    Expect("Small, a room it fits: 30 pt rows (as before)", MSBDMenuRowFit(30.0, 19, 77.0, 1024.0 - 26.0 - 6.0), 30.0);
+    Expect("Small, a room it does not fit (40 rows in 500 pt): 22 pt rows, the floor (was 30, off the screen)", MSBDMenuRowFit(30.0, 40, 100.0, 500.0), 22.0);
+    Expect("Large, 30 rows in 700 pt: 20 would fit, never below the floor's 22", MSBDMenuRowFit(36.0, 30, 100.0, 700.0), 22.0);
+    Expect("Large, 30 rows in 900 pt: 26 pt rows (floor((900 - 100) / 30))", MSBDMenuRowFit(36.0, 30, 100.0, 900.0), 26.0);
+    // the iPad 2's 540 pt AirPlay TV desktop (1.8.7 B pass): the Window menu 21 rows, 6 separators, 12 pt of pads = 708 pt at Small from y 22
+    Expect("the iPad 2's TV at Small: the Window menu's rows at the floor, 22", MSBDMenuRowFit(30.0, 21, 6 * 11.0 + 12.0, 540.0 - 22.0 - 6.0), 22.0);
+    Expect("  ... still 540 pt at the floor in 512 pt of room: it scrolls, 512 pt tall", MSBDMenuFitHeight(21 * 22.0 + 78.0, 512.0), 512.0);
+    Expect("  ... and ends on the TV (22 + 512 <= 540 - 6)", 22.0 + MSBDMenuFitHeight(21 * 22.0 + 78.0, 512.0) <= 534.0, 1.0);
+    Expect("the iPad 2's TV at Large: rows at the floor and a scroller of the room (540 - 39 - 6)", MSBDMenuFitHeight(21 * MSBDMenuRowFit(36.0, 21, 6 * 13.0 + 12.0, 495.0) + 90.0, 495.0), 495.0);
+    Expect("Medium, a 600 pt room: 25 pt rows and no scroller (21 x 25 + 72 = 597)", MSBDMenuFitHeight(21 * MSBDMenuRowFit(33.0, 21, 6 * 12.0 + 12.0 - 12.0, 600.0) + 72.0, 600.0), 597.0);
+    Expect("a menu that fits keeps its height", MSBDMenuFitHeight(500.0, 723.0), 500.0);
+    Expect("no room known: its height", MSBDMenuFitHeight(900.0, 0.0), 900.0);
+    Expect("a room too small for a scroller: never shorter than 120 pt", MSBDMenuFitHeight(400.0, 60.0), 120.0);
+    Expect("  ... nor taller than the menu itself", MSBDMenuFitHeight(100.0, 60.0), 100.0);
     Expect("a menu of separators only: as it is", MSBDMenuRowFit(36.0, 0, 100.0, 50.0), 36.0);
     Expect("no room known: as it is", MSBDMenuRowFit(36.0, 19, 77.0, 0.0), 36.0);
     // BigSurCenter's Control Center panel under the taller bar (MSBDCCPanelShift, StatusBar.x DMScalePanelView)
@@ -202,6 +215,33 @@ int main(void) {
     Expect("  ... keeping its bottom: 6 pt above the bottom half at 659 (moved down 17 pt it covered 11 pt of it)", y + h, 653.0);
     y = 659.0; h = 633.37; Expect("  ... the bottom half is left where it is", MSBDMenuBarRefitSize(&y, &h, 20.0, 37.0, 1292.37, 324.0), 0.0);
     y = 30.0; h = 1210.0; Expect("Medium -> Small, 17.5: a window at Medium's top (30) goes up to 20", (MSBDMenuBarRefitSize(&y, &h, 30.0, 20.0, 1292.37, 324.0), y), 20.0);
+
+    // ---- 1.8.7 Menu Bar Size per display (plans/design-1.8.7-displays.md section 5) ----
+    Expect("hooks: the iPad at Small and no display's own above it: nothing hooked (as before)", MSBDMenuBarHooksWanted(MSBDMenuBarSmall, 0), 0.0);
+    Expect("hooks: the iPad at Large: hooked (as before)", MSBDMenuBarHooksWanted(MSBDMenuBarLarge, 0), 1.0);
+    Expect("hooks: the iPad at Small, a TV's own Large: hooked", MSBDMenuBarHooksWanted(MSBDMenuBarSmall, 1), 1.0);
+    Expect("provider: nothing hooked, any bar: Small (iOS's own numbers)", MSBDMenuBarSizeOfProvider(0, 1, MSBDMenuBarLarge, MSBDMenuBarLarge), MSBDMenuBarSmall);
+    Expect("provider: the iPad at Small with the hooks in (for a TV at Large): the iPad's bar gets iOS's own numbers", MSBDMenuBarSizeOfProvider(1, 0, MSBDMenuBarSmall, MSBDMenuBarLarge), MSBDMenuBarSmall);
+    Expect("  ... its height iOS's 24", MSBDMenuBarSizeHeight(MSBDMenuBarSizeOfProvider(1, 0, MSBDMenuBarSmall, MSBDMenuBarLarge), 24.0), 24.0);
+    Expect("  ... its baseline iOS's 16", MSBDMenuBarSizeBaseline(MSBDMenuBarSizeOfProvider(1, 0, MSBDMenuBarSmall, MSBDMenuBarLarge), 16.0), 16.0);
+    Expect("  ... its text and icons x 1", MSBDMenuBarSizeScale(MSBDMenuBarSizeOfProvider(1, 0, MSBDMenuBarSmall, MSBDMenuBarLarge)), 1.0);
+    Expect("provider: the TV's (an _ExternalPad) takes the TV's Large: 37 pt", MSBDMenuBarSizeHeight(MSBDMenuBarSizeOfProvider(1, 1, MSBDMenuBarSmall, MSBDMenuBarLarge), 24.0), 37.0);
+    Expect("provider: the iPad at Large, the TV's own Small: the TV's bar iOS's 24", MSBDMenuBarSizeHeight(MSBDMenuBarSizeOfProvider(1, 1, MSBDMenuBarLarge, MSBDMenuBarSmall), 24.0), 24.0);
+    Expect("  ... the iPad's 37", MSBDMenuBarSizeHeight(MSBDMenuBarSizeOfProvider(1, 0, MSBDMenuBarLarge, MSBDMenuBarSmall), 24.0), 37.0);
+    // R6: the TV's bar is made at the height its scene's status bar manager answers, which the iPad's provider (the main screen's) works out
+    Expect("asked for a TV (its manager), the iPad's provider answering, the iPad at Large, the TV's own Small: iOS's 24, not the iPad's 37",
+           MSBDMenuBarSizeHeight(MSBDMenuBarSizeOfProvider(1, MSBDMenuBarAskIsExternal(0, 1), MSBDMenuBarLarge, MSBDMenuBarSmall), 24.0), 24.0);
+    Expect("  ... the iPad at Small, the TV's own Large: 37", MSBDMenuBarSizeHeight(MSBDMenuBarSizeOfProvider(1, MSBDMenuBarAskIsExternal(0, 1), MSBDMenuBarSmall, MSBDMenuBarLarge), 24.0), 37.0);
+    Expect("  ... the TV's own Medium: 30", MSBDMenuBarSizeHeight(MSBDMenuBarSizeOfProvider(1, MSBDMenuBarAskIsExternal(0, 1), MSBDMenuBarLarge, MSBDMenuBarMedium), 24.0), 30.0);
+    Expect("  ... the same size as the iPad's (KT's setup): what it was (37 at Large)", MSBDMenuBarSizeHeight(MSBDMenuBarSizeOfProvider(1, MSBDMenuBarAskIsExternal(0, 1), MSBDMenuBarLarge, MSBDMenuBarLarge), 24.0), 37.0);
+    Expect("  ... a Home-button iPad at Large, the TV's own Small: iOS's 20 (its provider's own)", MSBDMenuBarSizeHeight(MSBDMenuBarSizeOfProvider(1, MSBDMenuBarAskIsExternal(0, 1), MSBDMenuBarLarge, MSBDMenuBarSmall), 20.0), 20.0);
+    Expect("  ... nothing hooked: Small", MSBDMenuBarSizeOfProvider(0, MSBDMenuBarAskIsExternal(0, 1), MSBDMenuBarLarge, MSBDMenuBarLarge), MSBDMenuBarSmall);
+    Expect("asked for the iPad (its own manager), the iPad's provider: the iPad's size, whatever the TV's", MSBDMenuBarSizeOfProvider(1, MSBDMenuBarAskIsExternal(0, 0), MSBDMenuBarLarge, MSBDMenuBarSmall), MSBDMenuBarLarge);
+    Expect("  ... the TV's provider asked by anyone: the TV's", MSBDMenuBarSizeOfProvider(1, MSBDMenuBarAskIsExternal(1, 0), MSBDMenuBarLarge, MSBDMenuBarSmall), MSBDMenuBarSmall);
+    Expect("TV at connect: no override: the iPad's in force (Large)", MSBDMenuBarTVSizeAtConnect(1, 0, MSBDMenuBarSmall, MSBDMenuBarLarge), MSBDMenuBarLarge);
+    Expect("TV at connect: its own Medium", MSBDMenuBarTVSizeAtConnect(1, 1, MSBDMenuBarMedium, MSBDMenuBarLarge), MSBDMenuBarMedium);
+    Expect("TV at connect: its own Small, the iPad at Large: Small", MSBDMenuBarTVSizeAtConnect(1, 1, MSBDMenuBarSmall, MSBDMenuBarLarge), MSBDMenuBarSmall);
+    Expect("TV at connect: nothing hooked as it connected: Small whatever its own (held until it connects again)", MSBDMenuBarTVSizeAtConnect(0, 1, MSBDMenuBarLarge, MSBDMenuBarSmall), MSBDMenuBarSmall);
     printf("%d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }

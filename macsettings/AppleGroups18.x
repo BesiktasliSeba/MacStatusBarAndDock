@@ -1,6 +1,7 @@
 // AppleGroups18.x -- iPadOS 18 (1.6.0, KT's goal): our keyboard and pointer settings with Apple's own, as a group at the top of Apple's pages:
-//   General > Keyboard > Hardware Keyboard (TIHardwareKeyboardController, KeyboardSettings.bundle): "Mac Keys" -- Top-Left Key as Escape, Tab mute,
-//     Globe volume, the two brightness pairs -- with the footer our Keyboard page has (its hint's "Modifier Keys" link opens Apple's row below);
+//   General > Keyboard > Hardware Keyboard (TIHardwareKeyboardController, KeyboardSettings.bundle): your own shortcuts (KeyPilot first) and Window
+//     Tiling Keys, then "Mac Keys" -- Top-Left Key as Escape, Tab mute, Globe volume, the two brightness pairs -- with the footer our Keyboard page
+//     has (its hint's "Modifier Keys" link opens Apple's row below);
 //   General > Trackpad / Mouse (PSGMousePointerViewController): "Mac Pointer" -- Pointer Style, then (Mac pointer) Hide in Virtual Mac and Use
 //     Pointer Control Style, and Block Pointer Pull-Down.
 // Apple's rows stay as they are. Why only 18: 18 builds Settings' root list in SwiftUI (no PSUIPrefsListController), so our sidebar rows with their
@@ -32,7 +33,7 @@
 @end
 
 NSArray *MSKeysGroupSpecifiers(id target, NSString *title, NSArray *native, id linkTarget);   // (KeyboardSettings.x)
-NSArray *MSKeysShortcutSpecifiers(id target);                                                 // (KeyboardSettings.x: Window Tiling Keys, Custom Shortcuts)
+NSArray *MSKeysShortcutSpecifiers(id target);                                                 // (KeyboardSettings.x: Custom Shortcuts -- KeyPilot first --, Window Tiling Keys)
 void MSKeysOpenModifierKeysOn(PSListController *page);                                       // (KeyboardSettings.x)
 NSArray *MSPointerOwnSpecifiers(id target, BOOL onApplePage);                                 // (PointerSettings.x)
 
@@ -94,8 +95,9 @@ static G18Kind G18KindOf(id page) {
 static NSArray *G18Rows(PSListController *page, G18Kind kind, NSArray *apple) {
     MSG18Prefs *prefs = objc_getAssociatedObject(page, kG18PrefsKey);
     if (!prefs) { prefs = [MSG18Prefs new]; prefs.page = page; objc_setAssociatedObject(page, kG18PrefsKey, prefs, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
-    // (the keyboard's: Mac Keys, then Window Tiling Keys and Custom Shortcuts -- 1.8.3 --, one block at the top of Apple's page)
-    return kind == G18Keyboard ? [MSKeysGroupSpecifiers(prefs, @"Mac Keys", apple, prefs) arrayByAddingObjectsFromArray:MSKeysShortcutSpecifiers(prefs)] : MSPointerOwnSpecifiers(prefs, YES);
+    // (the keyboard's, one block at the top of Apple's page as on our own page, KT 12 Nov: your own shortcuts -- KeyPilot first --, Window Tiling Keys,
+    //  then Mac Keys)
+    return kind == G18Keyboard ? [MSKeysShortcutSpecifiers(prefs) arrayByAddingObjectsFromArray:MSKeysGroupSpecifiers(prefs, @"Mac Keys", apple, prefs)] : MSPointerOwnSpecifiers(prefs, YES);
 }
 // What our rows show, as a string: each row's id (or name) and cell type, and each group's footer. Equal: nothing to put in again.
 static NSString *G18Signature(NSArray *rows) {
@@ -141,7 +143,10 @@ static void G18Watch(void) {
     if (done) return;
     done = YES;
     static BOOL pending = NO;
-    for (NSString *n in @[@"com.besiktasliseba.macstatusbar/prefsChanged", @"com.besiktasliseba.volumeglobetweak/prefsChanged", @"com.besiktasliseba.brightnesskeytweak/prefsChanged"]) {
+    // (1.8.7: the footers also say which feature has keys two of them claim -- Top-Left Key as Escape, Tab, Custom Shortcuts: KeyboardSettings.x)
+    for (NSString *n in @[@"com.besiktasliseba.macstatusbar/prefsChanged", @"com.besiktasliseba.volumeglobetweak/prefsChanged", @"com.besiktasliseba.brightnesskeytweak/prefsChanged",
+                          @"com.besiktasliseba.graveescapetweak/prefsChanged", @"com.besiktasliseba.tabmutetweak/prefsChanged", @"com.besiktasliseba.customshortcuts/prefsChanged",
+                          @"com.besiktasliseba.macstatusbar.windowkeys.offered"]) {   // (SpringBoard's offered state, common/ModifierTap.h: Window Tiling's footer follows it)
         int t = 0;
         notify_register_dispatch(n.UTF8String, &t, dispatch_get_main_queue(), ^(int token) {
             if (pending) return;

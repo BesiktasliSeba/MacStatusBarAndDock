@@ -60,14 +60,15 @@ check "L3 (review 1.8.4 Pass 4): hooks that could not be made (the Dock part say
    && fn $S 'static int DMDockAutoHideHooks(' | grep -q 'dlsym(RTLD_DEFAULT, \"MSBDDockAutoHideHooks\")' \
    && fn $S 'static int DMDockAutoHideStoredOn(' | grep -q 'return MSBDAutoHideOn(ours) && partOn && loaded && MSBDAutoHideCanAct(DMDockAutoHideHooks());' \
    && fn $S 'static void DMDockAutoHideSyncSM(' | grep -q 'if (!MSBDAutoHideCanAct(DMDockAutoHideHooks())) {'"
-check "the room for windows down to the screen's edge while it hides: the desktop at the bottom, the side's desktop, Stage Manager's stage area" \
+check "the room for windows down to the screen's edge while it hides: the desktop at the bottom, the side's desktop, Stage Manager's stage area (1.8.7: by the pass's display)" \
   "fn $S 'static CGRect DMUsableArea(' | grep -q 'if (DMDockAutoHides()) {' && fn $S 'static CGRect DMDockSideDesktopOf(' | grep -q 'if (DMDockAutoHides()) {' \
-   && fn $S 'static CGRect DMSMOurStageArea(' | grep -q 'MSBDAutoHideRoomEdge(DMDockAutoHides(), line, CGRectGetMaxY(b))'"
+   && fn $S 'static CGRect DMSMOurStageArea(' | grep -q 'MSBDAutoHideRoomEdge(DMDockAutoHidesOnSize(b.size), line, CGRectGetMaxY(b))'"
 check "  ... and Stage Manager's own bottom limit for a window (17 / 18) is the screen's edge then, as with the Dock at a side (Fill came out 30 pt short)" \
-  "fn $S 'static id DMSMBottomInsets17(' | grep -q 'DMSMFree() && (DMDockSideNow(\[UIScreen mainScreen\].bounds.size) || DMDockAutoHides()) ? @\[@0.0\] : v;' \
-   && fn $S 'static void DMSMHookBottomInsets17(' | grep -q 'gDMDockPosition != MSBDDockRight && gDMDockAutoHideTaken <= 0)) return;'"
+  "fn $S 'static id DMSMBottomInsets17(' | grep -q 'DMSMFree() && (DMDockSideNow(\[UIScreen mainScreen\].bounds.size) || hides) ? @\[@0.0\] : v;' \
+   && fn $S 'static id DMSMBottomInsets17(' | grep -q 'BOOL hides = DMSMCfgBounds(cfg, &b) ? DMDockAutoHidesOnSize(b.size) : DMDockAutoHides();' \
+   && fn $S 'static void DMSMHookBottomInsets17(' | grep -q 'gDMDockPosition != MSBDDockRight && gDMDockAutoHideTaken <= 0 && !DMDockAutoHideAnyTakenOn())) return;'"
 check "Stage Manager engine: the Dock hidden in a stage too (the switcher's in-app answer), also where Apple's tick can't follow" \
-  "awk '/^- \\(BOOL\\)shouldConfigureInAppDockHiddenAssertion \\{/,/^}/' $S | grep -q 'BOOL r = keyboard || full || prefers || autoHide;'"
+  "awk '/^- \\(BOOL\\)shouldConfigureInAppDockHiddenAssertion \\{/,/^}/' $S | grep -q 'BOOL r = keyboard || full || MSBDAutoHideInAppPref(otherDisplay, prefers, autoHide, displayHides);'"
 check "the tick's sync: only with the Stage Manager engine, through SpringBoard's own getter and setter, by the rules, written once per switch value" \
   "fn $S 'static void DMDockAutoHideSyncSM(' | grep -q 'if (gDMAutoHideSyncing || !DMSMEngine()) return;' \
    && fn $S 'static void DMDockAutoHideSyncSM(' | grep -q 'int step = MSBDAutoHideSync(ours, apple, synced), after = apple;' \
@@ -111,6 +112,34 @@ check "  ... Aerial, Zetsu, MilkyWay4: the restore brings each window saved in a
    && fn $S 'static void DMFinishRestore(NSDictionary *state) {' | awk '/if \(DMDockRoomChangedSinceSave\(\)\) \{/{a=NR} /DMDockPositionMoved\(nil\);/{b=NR} /gDMWindowsRoomPending = -1;/{c=NR} END{exit !(a && b > a && c > b)}' \
    && fn $S 'static void DMDockChangedRelayout(NSString *why) {' | grep -qF 'if (ahChanged) gDMWindowsRoomPending = -1;' \
    && fn $S 'static void DMDockChangedRelayout(NSString *why) {' | grep -qF 'if (ahChanged && DMSMEngine()) DMSMStateWrite();'"
+# ---- 1.8.7: per display (plans/design-1.8.7-displays.md section 5: through Stage Manager, not the Home Screen's assertion) ----
+check "1.8.7: the Dock part answers per screen (MSBDDockAutoHidesOn): the iPad's own screen the switch as before, another display its own setting from the iPad's answer, the Dock part on" \
+  "grep -q '^__attribute__((visibility(\"default\"))) BOOL MSBDDockAutoHidesOn(UIScreen \*s) {' $A && fn $A '__attribute__((visibility(\"default\"))) BOOL MSBDDockAutoHidesOn(' | grep -q 'if (!s || s == \[UIScreen mainScreen\]) return gDockAutoHide;' \
+   && fn $A '__attribute__((visibility(\"default\"))) BOOL MSBDDockAutoHidesOn(' | grep -q 'return DMDispDockBool(s, kMSBDAutoHideKey, gDockAutoHide);' \
+   && grep -qF 'BOOL DMDispDockBool(UIScreen *s, const char *key, BOOL ipad) { return gTweakOn && DMDispBool(s, \"dock\", key, ipad); }' $D"
+check "  ... the status bar part asks it for that screen, taken per display as the iPad's (first ask, then at a change), forgotten when a display comes or goes" \
+  "fn $S 'static BOOL DMDockAutoHideLiveOn(' | grep -q 'dlsym(RTLD_DEFAULT, \"MSBDDockAutoHidesOn\")' && fn $S 'static BOOL DMDockAutoHidesOn(' | grep -q 'if (!k) return DMDockAutoHides();' \
+   && fn $S 'static BOOL DMDockAutoHidesOn(' | grep -q 'gDMDockAutoHideTakenOn\[k\] = @(v);' && grep -q 'usingBlock:^(NSNotification \*note) { DMDockAutoHideForgetDisplays(); }\];' $S"
+check "  ... Stage Manager's in-app answer by its own stage's display (S5), the TV's desktop and Apple's bottom limit by their display" \
+  "awk '/^- \\(BOOL\\)shouldConfigureInAppDockHiddenAssertion \\{/,/^}/' $S | grep -q 'BOOL displayHides = otherDisplay ? DMDockAutoHidesForIdentity(ownDisplay) : autoHide;' \
+   && fn $S 'static CGRect DMSMUsableAreaForIdentity(id identity, CGSize \*screenOut) {' | grep -q 'CGFloat bottom = MSBDAutoHideRoomEdge(DMDockAutoHidesOn(sc), size.height - dh - 2.0, size.height);' \
+   && fn $S 'static UIScreen \*DMSMScreenOfSize(CGSize size) {' | grep -q 'connectedScenes'"
+check "  ... a display's change (its own, or the iPad's it follows): its windows in a layout read against the old room, the answer taken, then into the same layouts (or its stage laid out again); at the displays domain's note and the Dock's" \
+  "fn $S 'static void DMDockAutoHideDisplaysFollow(' | grep -q 'NSDictionary \*layouts = DMSMEngine() ? DMSMLayoutsOnScreen(s, &stage) : @{};' \
+   && fn $S 'static void DMDockAutoHideDisplaysFollow(' | grep -q 'gDMDockAutoHideTakenOn\[c\[0\]\] = @(v);' && fn $S 'static void DMDockAutoHideDisplaysFollow(' | grep -q 'if (layouts.count) DMSMApplyLayoutsIn(layouts, stage);' \
+   && fn $S 'static void DMDockAutoHideDisplaysFollow(' | grep -q 'DMSMSpotlightHolds() || DMGARefuses(' && fn $S 'static void DMDockChangedRelayout(' | grep -q 'DMDockAutoHideDisplaysFollow(ahWant, why);' \
+   && grep -q 'notify_register_dispatch(MSBD_DISP_NOTIFY, &dtoken, dispatch_get_main_queue(), ^(int t) { DMDispReload(); DMDockAutoHideDisplaysFollow(DMDockAutoHideStoredOn(), @\"a display' $S \
+   && fn $S 'static BOOL DMDockAutoHideWantOn(' | grep -q 'return loaded && DMDockPartSwitchedOn() && DMDispBool(s, \"dock\", kMSBDAutoHideKey, ipadWant != 0);'"
+check "  ... the Home Screen's assertion stays the iPad's (a TV's Dock hides through Stage Manager only)" "! grep -q 'DMDispDockBool\|MSBDDockAutoHidesOn' <(fn $A 'static double DMAutoHideProgress(') && ! fn $A 'static BOOL DMAutoHideGesture(' | grep -q 'MSBDDockAutoHidesOn'"
+mutant() {   # <name> <old> <new>: common/DockAutoHide.h with one rule broken must fail the C test
+  local M="$W/m-$1"; mkdir -p "$M/common" "$M/tools"; cp test-dockautohide.c "$M/tools/"
+  python3 -I -c 'import sys; s=open(sys.argv[1]).read(); assert s.count(sys.argv[3])==1, "mutant site not found"; open(sys.argv[2],"w").write(s.replace(sys.argv[3], sys.argv[4]))' ../common/DockAutoHide.h "$M/common/DockAutoHide.h" "$2" "$3" || return 1
+  clang -std=c11 -O1 -Wall -o "$M/t" "$M/tools/test-dockautohide.c" 2>/dev/null || return 1
+  ! "$M/t" > /dev/null
+}
+check "made to fail: a TV's Dock by the iPad's switch only (its own setting ignored)" "mutant tvown '    return displayHides || (applePrefers && !ipadHides);' '    return applePrefers || ipadHides;'"
+check "made to fail: Apple's tick taken on a TV even where it is only the iPad's switch (a TV switched off would still hide)" "mutant tvtick '    return displayHides || (applePrefers && !ipadHides);' '    return displayHides || applePrefers;'"
+check "made to fail: the iPad's stage taking a display's answer" "mutant ipad '    if (!otherDisplay) return applePrefers || ipadHides;' '    if (!otherDisplay) return displayHides;'"
 check "a release-build feature marker when it goes on" "fn $A 'void DMDockAutoHideSetOn(' | grep -q 'DM_FEATURE_MARK(\"dock-auto-hide\");'"
 check "no em dash in the rules, the code, the test or the Settings text" "! grep -q \$'\\xe2\\x80\\x94' ../common/DockAutoHide.h test-dockautohide.c test-dockautohide.sh $A $P"
 [ $fails = 0 ] && echo "test-dockautohide: all checks pass" || { echo "test-dockautohide: checks FAILED"; exit 1; }

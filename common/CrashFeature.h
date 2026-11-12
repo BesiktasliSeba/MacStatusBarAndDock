@@ -14,6 +14,7 @@
 // Cost: only after a crash that counted against us: one report parse (as CrashBlame.h) and one read of the map (~15 KB).
 #pragma once
 #import "CrashBlame.h"
+#include "DisplayPrefs.h"   // (1.8.7: a switch a display turns on for itself, MSBDFeatureDispOn)
 
 // The report body (the JSON object after the header line), as MSBDBlameReportData reads it.
 static inline NSDictionary *MSBDFeatureBody(NSData *data) {
@@ -97,17 +98,59 @@ static inline BOOL MSBDFeatureTopFrameIn(NSDictionary *body, NSString *map, NSSt
 // count as off (offtext=<text>[,<text>...]: Dock Style's "default"; the Banner and Control Center Styles' "stock", and Control Center's
 // "bigsurcenter"), as off for those and on for any other (review 1.8.4 P2-L1: Default was read as on, so a crash pinned there set nothing that was
 // not set already, and the whole tweak went after the next crash instead of the part).
+// One stored value read so (*known NO: nothing that reads as a value of the switch -- then `def`).
+static inline BOOL MSBDFeatureValueOn(CFPropertyListRef v, BOOL def, BOOL off, NSArray<NSString *> *offTexts, BOOL *known) {
+    BOOL on = def, k = NO;
+    if (v) {
+        if (CFGetTypeID(v) == CFBooleanGetTypeID()) { on = CFBooleanGetValue(v); k = YES; }
+        else if (CFGetTypeID(v) == CFNumberGetTypeID()) { on = [(__bridge NSNumber *)v boolValue]; k = YES; }
+        else if (offTexts.count && CFGetTypeID(v) == CFStringGetTypeID()) { on = [offTexts containsObject:(__bridge NSString *)v] ? off : !off; k = YES; }
+    }
+    if (known) *known = k;
+    return on;
+}
 static inline BOOL MSBDFeaturePrefValue(NSString *domain, NSString *key, BOOL def, BOOL off, NSArray<NSString *> *offTexts) {
     CFPreferencesAppSynchronize((__bridge CFStringRef)domain);
     CFPropertyListRef v = CFPreferencesCopyValue((__bridge CFStringRef)key, (__bridge CFStringRef)domain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-    BOOL on = def;
-    if (v) {
-        if (CFGetTypeID(v) == CFBooleanGetTypeID()) on = CFBooleanGetValue(v);
-        else if (CFGetTypeID(v) == CFNumberGetTypeID()) on = [(__bridge NSNumber *)v boolValue];
-        else if (offTexts.count && CFGetTypeID(v) == CFStringGetTypeID()) on = [offTexts containsObject:(__bridge NSString *)v] ? off : !off;
-        CFRelease(v);
-    }
+    BOOL on = MSBDFeatureValueOn(v, def, off, offTexts, NULL);
+    if (v) CFRelease(v);
     return on;
+}
+// 1.8.7 (the per-display settings, plans/design-1.8.7-displays.md section 8): is a switch of KT's domains (part msb or dock, DisplayPrefs.h) on for a
+// display though the iPad's key is off? A display's own override of it ("<display>/<part>/<key>" in the displays domain) that reads on, as the iPad's
+// key is read, while the layer's master switch is on (off: every override dormant); or the row's display default when it is not the off value (Show
+// Trash in Dock: ON on every display, whatever the master switch) for a remembered display ("<display>/info") with no override of its own read. Then
+// the path that crashed can run on that display -- Menu Bar Size above Small for a TV with the iPad at Small, the TV's auto-hide, the TV's Trash with
+// the iPad's off -- so the switch is still the answer: step 1b sets the iPad's key (no change there) and every display's (CrashStep.h
+// MSBDGuardDispClear). Without it a crash on a display-only path took the part's fallback (Stock status bar mode), then the part, and the TV's
+// override that ran it stayed (review of 1.8.7).
+static inline BOOL MSBDFeatureDispOn(NSString *domain, NSString *key, BOOL off, NSArray<NSString *> *offTexts) {
+    const char *part = MSBDDispPartOfDomain(domain.UTF8String);
+    if (!part || !key.length) return NO;
+    CFStringRef dom = CFSTR(MSBD_DISP_DOMAIN);
+    CFPreferencesSynchronize(dom, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    NSDictionary *all = CFBridgingRelease(CFPreferencesCopyMultiple(NULL, dom, kCFPreferencesCurrentUser, kCFPreferencesAnyHost));
+    if (![all isKindOfClass:[NSDictionary class]] || !all.count) return NO;
+    id master = all[@MSBD_DISP_MASTER_KEY];
+    BOOL layerOn = ![master isKindOfClass:[NSNumber class]] || [master boolValue];
+    NSMutableSet<NSString *> *own = [NSMutableSet set];   // (the displays whose own override is read: their display default does not stand)
+    for (NSString *flat in all) {
+        char display[128];
+        if (!layerOn || ![flat isKindOfClass:[NSString class]] || !MSBDDispFlatIs(flat.UTF8String, part, key.UTF8String)
+            || !MSBDDispFlatSplit(flat.UTF8String, display, sizeof display, NULL, 0, NULL, 0)) continue;
+        BOOL known = NO, on = MSBDFeatureValueOn((__bridge CFPropertyListRef)all[flat], !off, off, offTexts, &known);
+        if (!known) continue;   // (a value of another type reads as not set)
+        if (on != off) return YES;
+        [own addObject:@(display)];
+    }
+    int def = 0;
+    if (!MSBDDispDisplayDefault(part, key.UTF8String, &def) || (def != 0) == off) return NO;
+    for (NSString *k in all) {
+        if (![k isKindOfClass:[NSString class]] || ![k hasSuffix:@MSBD_DISP_INFO_SUFFIX]) continue;
+        NSString *d = [k substringToIndex:k.length - strlen(MSBD_DISP_INFO_SUFFIX)];
+        if (MSBDDispKeyValid(d.UTF8String) && ![own containsObject:d]) return YES;
+    }
+    return NO;
 }
 
 // The answer for one report and map: YES with *action = "pref <image> <domain> <key> <value> [text=<off text>] <row title>|<where>" (text: the
@@ -135,7 +178,8 @@ static inline BOOL MSBDFeatureForReport(NSData *report, NSString *map, NSString 
         *action = [NSString stringWithFormat:@"part %@ - - 0 %@", target, title];
         return YES;
     }
-    // A switch that is already off cannot be the cause: then the part's own fallback (for the status bar: Stock status bar mode), then the part.
+    // A switch that is already off cannot be the cause: then the part's own fallback (for the status bar: Stock status bar mode), then the part. Off
+    // means off on every display too (1.8.7: a display's own override, or the row's display default, runs the path with the iPad's key off).
     NSString *fallback = MSBDFeatureMapTarget(map, image, @"", 0, &targets, &how, &partTitle);
     BOOL isPref = [spec[0] isEqualToString:@"pref"];   // (a "part" target is the part, no fallback)
     for (NSArray *try in @[spec, isPref && fallback && ![fallback isEqualToString:target] && targets[fallback] ? targets[fallback] : @[]]) {
@@ -145,7 +189,7 @@ static inline BOOL MSBDFeatureForReport(NSData *report, NSString *map, NSString 
         NSArray<NSString *> *offTexts = nil;   // (the texts that count as off; the first is the one written to turn it off)
         if (try.count > at && [try[at] hasPrefix:@"offtext="]) offTexts = [[try[at++] substringFromIndex:8] componentsSeparatedByString:@","];
         NSString *title = try.count > at ? [[try subarrayWithRange:NSMakeRange(at, try.count - at)] componentsJoinedByString:@" "] : [NSString stringWithFormat:@"%@|%@", key, key];
-        if (MSBDFeaturePrefValue(domain, key, def, off, offTexts) != off) {
+        if (MSBDFeaturePrefValue(domain, key, def, off, offTexts) != off || MSBDFeatureDispOn(domain, key, off, offTexts)) {   // (1.8.7: or on for a display)
             NSString *text = offTexts.firstObject.length ? [@" text=" stringByAppendingString:offTexts.firstObject] : @"";
             *action = [NSString stringWithFormat:@"pref %@ %@ %@ %d%@ %@", image, domain, key, off, text, title];
             return YES;

@@ -279,7 +279,7 @@ static void DMSMDeskSyncFade(void) {
 // Whether that window lives on another desktop than the one on screen: MacSwitcherSM.h's records answer it, per window (SMWindowKey.h: two windows
 // of one app can be on two desktops) -- a window recorded on another desktop means SpringBoard's stage request IS that desktop's switch, which the
 // Mac Switcher follows; it must not be folded into the desktop on screen. (One desktop, or the Mac Switcher off: never.)
-static BOOL DMSMDeskOnOtherDesktop(NSString *key) { return DMMSWSMElsewhere(key); }   // (MacSwitcherSM.h: recorded on another desktop)
+static BOOL DMSMDeskOnOtherDesktop(NSString *key) { return DMMSWForMain() && DMMSWSMElsewhere(key); }   // (the iPad's desktops, 1.8.7: MacSwitcher.h DMMSWForMain)   // (MacSwitcherSM.h: recorded on another desktop)
 // A BOOL answer of a workspace entity (-isEmptyWorkspaceEntity, -isHomeScreenEntity...), typed and checked: never through DMCall, which takes the
 // result for an object -- YES (0x1) was retained as one and crashed SpringBoard in its start-up transition to the Home Screen, whose roles hold
 // empty entities (iPad 2, 4 Oct, 1.3.2-11+debug: EXC_BAD_ACCESS at 0x1 in objc_retain from DMCall, DMSMJoinStageAsked).
@@ -428,7 +428,7 @@ static BOOL DMSMJoinWindowCardGo(id ctx, NSArray<NSArray *> *asked, NSArray<NSDi
 // and MilkyWay4 open it: no longer minimized (DMSMJoinMinimizedReopen, before the flags are read: it is then a window of another desktop), and that
 // desktop's windows come with it in front (DMSMJoinMinimizedGo; a card tap: DMSMJoinWindowCardGo). It came here. Off: it comes here, as before.
 static BOOL DMSMJoinMinimizedReopen(NSString *k) {
-    if (!gMSWOn || !gMSWGoToAppDesk || !DMSMEngine() || !DMMSWMulti() || gMSWSwitching || !k.length || !DMSMIsMinimized(k)) return NO;
+    if (!gMSWOn || !gMSWGoToAppDesk || !DMSMEngine() || gMSWSwitching || !k.length || !DMSMIsMinimized(k) || !DMMSWForMain() || !DMMSWMulti()) return NO;
     NSNumber *did = DMMSWSMRecordOf(k);
     if (!did || did.integerValue == DMMSWCurId() || ![gMSWDesks containsObject:did]) return NO;
     DMSMSetMinimized(k, NO);
@@ -508,6 +508,9 @@ __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray
         && DMMSWSMAskedBringHere(ctx, asked, askedW, askedEntity, identity)) return;
     if (DMSMJoinWindowCardGo(ctx, asked, askedW, flags, label0, identity)) return;   // (one card per window, SMCards.h: Go on -- its own desktop comes)
     if (reopened && DMSMJoinMinimizedGo(ctx, asked, askedW, flags, identity, reopened)) return;   // (1.7.4 item 1: a minimized one by another way, Command-Tab)
+    // (1.8.7: the TV with Mac Switcher desktops of its own -- a stage of another of its desktops, or an empty current desktop there: as SpringBoard
+    //  built it, MacSwitcherSM.h DMMSWSMAskedLeaveOn)
+    if (tv) { NSMutableArray *ks = [NSMutableArray array]; for (NSDictionary *w in askedW) [ks addObject:w[@"w"]]; if (DMMSWSMAskedLeaveOn(identity, ks)) return; }
     NSString *early = nil;
     if (!DMSMDeskJoinPlan(@[], askedW, flags, &early) && ![early isEqualToString:@"no desktop to keep"]) {
         DMLog([NSString stringWithFormat:@"[smjoin] roles already set (%@; %@): left as SpringBoard built it -- %@", [seen componentsJoinedByString:@", "], [label0 isKindOfClass:[NSString class]] ? label0 : @"no label", early]);

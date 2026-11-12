@@ -15,6 +15,7 @@
 //  - a piece of a part that has no Settings row of its own (the battery icon's plug during a charge hold): on the same list under its target's
 //    name, which that piece's code reads (MSBDCrashSkipped), and recorded as a part -- so the pages offer Turn Back On for it too.
 // A switch that is already off cannot be the cause: the part goes instead.
+// A switch it sets also loses every display's override of it (1.8.7, the per-display settings: MSBDGuardDispClear), so a TV keeps no crashing path.
 //
 // What it did goes into the guard's record (CrashGuard.h, MSBD_GUARD_RECORD; crashGuardAction = 4), which the footer, the notice and Report a
 // Problem put in words (CrashExplain.h):
@@ -23,6 +24,7 @@
 //   again 1                                              it came after step 1 (SpringBoard crashed again, not twice)
 // Cost: nothing on a normal start (the loaders try to open MSBD_STEP_FILE once, which does not exist); the map is read only after crashes that count.
 #pragma once
+#include "DisplayPrefs.h"   // (1.8.7: a switch set here also loses its per-display overrides, MSBDGuardDispClear)
 
 #define MSBD_GUARD_ACTION_FEATURE 4
 #ifndef MSBD_STEP_FILE   // (overridable for the Mac test, tools/test-crashstep.c)
@@ -79,6 +81,68 @@ static inline int MSBDCrashSkipped(const char *name) {
     }
     for (int i = 0; i < count; i++) if (strcmp(list[i], name) == 0) { MSBDGuardLog("step 1b: %s not loaded (it crashed SpringBoard)", name); return 1; }
     return 0;
+}
+
+// The per-display settings (1.8.7, plans/design-1.8.7-displays.md section 8): when step 1b sets a switch K of one of KT's domains (part P: msb or
+// dock, DisplayPrefs.h), every display's override of it ("*/P/K" in the displays domain) goes too, so an override on a TV cannot keep a crashing
+// path on; the displays then follow the iPad's key, as it is switched back on. A row whose display default is not the switch's off value (Show Trash
+// in Dock: ON on every display) would stay on without an override, so there every remembered display ("<display>/info") gets the off value as its
+// own override instead (review of 1.8.7: the TV's Trash, on by its default with the iPad's off, kept the crashing path); its own row in Display
+// Settings switches it on again. Other keys and other displays' other keys stay. Returns how many changed.
+static inline int MSBDGuardDispClear(const char *domain, const char *key, int value) {
+    const char *part = MSBDDispPartOfDomain(domain);
+    if (!part || !key) return 0;
+    void *cf = dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", RTLD_LAZY | RTLD_NOLOAD);
+    if (!cf) return 0;
+    const void *(*mk)(const void *, const char *, unsigned int) = (const void *(*)(const void *, const char *, unsigned int))dlsym(cf, "CFStringCreateWithCString");
+    const void *(*list)(const void *, const void *, const void *) = (const void *(*)(const void *, const void *, const void *))dlsym(cf, "CFPreferencesCopyKeyList");
+    long (*count)(const void *) = (long (*)(const void *))dlsym(cf, "CFArrayGetCount");
+    const void *(*at)(const void *, long) = (const void *(*)(const void *, long))dlsym(cf, "CFArrayGetValueAtIndex");
+    unsigned char (*cstr)(const void *, char *, long, unsigned int) = (unsigned char (*)(const void *, char *, long, unsigned int))dlsym(cf, "CFStringGetCString");
+    unsigned long (*typeOf)(const void *) = (unsigned long (*)(const void *))dlsym(cf, "CFGetTypeID");
+    unsigned long (*strType)(void) = (unsigned long (*)(void))dlsym(cf, "CFStringGetTypeID");
+    void (*set)(const void *, const void *, const void *, const void *, const void *) = (void (*)(const void *, const void *, const void *, const void *, const void *))dlsym(cf, "CFPreferencesSetValue");
+    unsigned char (*sync)(const void *, const void *, const void *) = (unsigned char (*)(const void *, const void *, const void *))dlsym(cf, "CFPreferencesSynchronize");
+    void (*rel)(const void *) = (void (*)(const void *))dlsym(cf, "CFRelease");
+    const void **user = (const void **)dlsym(cf, "kCFPreferencesCurrentUser"), **host = (const void **)dlsym(cf, "kCFPreferencesAnyHost");
+    const void **yes = (const void **)dlsym(cf, "kCFBooleanTrue"), **no = (const void **)dlsym(cf, "kCFBooleanFalse");
+    int def = 0, setOff = MSBDDispDisplayDefault(part, key, &def) && (def != 0) != (value != 0);   // (the display default is on: written off, not cleared)
+    int n = 0;
+    if (mk && list && count && at && cstr && typeOf && strType && set && sync && rel && user && host && (!setOff || (yes && no))) {
+        const void *d = mk(NULL, MSBD_DISP_DOMAIN, 0x08000100);   // (kCFStringEncodingUTF8)
+        if (d) {
+            sync(d, *user, *host);
+            const void *keys = list(d, *user, *host);
+            const void *offValue = setOff ? (value ? *yes : *no) : NULL;
+            for (long i = 0, c = keys ? count(keys) : 0; i < c; i++) {
+                const void *k = at(keys, i); char flat[256];
+                if (!k || typeOf(k) != strType() || !cstr(k, flat, sizeof flat, 0x08000100)) continue;
+                size_t fl = strlen(flat), sl = strlen(MSBD_DISP_INFO_SUFFIX);
+                if (setOff && fl > sl && strcmp(flat + fl - sl, MSBD_DISP_INFO_SUFFIX) == 0) {   // (a remembered display: its own override, off)
+                    char display[128], own[MSBD_DISP_FLAT_MAX + 1];
+                    if (fl - sl >= sizeof display) continue;
+                    memcpy(display, flat, fl - sl); display[fl - sl] = 0;
+                    if (!MSBDDispFlatKey(own, sizeof own, display, part, key)) continue;
+                    const void *ok = mk(NULL, own, 0x08000100);
+                    if (!ok) continue;
+                    set(ok, offValue, d, *user, *host); rel(ok);
+                    MSBDGuardLog("step 1b: the per-display setting %s set %s (its display default is on)", own, value ? "on" : "off");
+                    n++;
+                    continue;
+                }
+                if (!MSBDDispFlatIs(flat, part, key)) continue;
+                set(k, offValue, d, *user, *host);   // (cleared; a row with a display default: set to the off value)
+                if (setOff) MSBDGuardLog("step 1b: the per-display change %s set %s", flat, value ? "on" : "off");
+                else MSBDGuardLog("step 1b: the per-display change %s cleared", flat);
+                n++;
+            }
+            if (keys) rel(keys);
+            if (n) { sync(d, *user, *host); notify_post(MSBD_DISP_NOTIFY); MSBDGuardLog("step 1b: per-display changes of %s %s (%d)", key, setOff ? "set off" : "cleared", n); }
+            rel(d);
+        }
+    }
+    dlclose(cf);
+    return n;
 }
 
 // Asks MacCrashBlame.dylib what one report points at: 1 with `action` (see CrashFeatureHelper.m), 0 if nothing, -1 if the helper is missing.
@@ -160,6 +224,7 @@ static inline int MSBDGuardStepFeature(long t0, long since, int again, char *rec
             char note[300];
             snprintf(note, sizeof(note), "%s/prefsChanged", domain);   // (a part that is running applies it at once)
             notify_post(note);
+            MSBDGuardDispClear(domain, key, value);   // (and every display's override of it: the displays follow the iPad's key)
             if (record) snprintf(record + l, rn - l, "feature %s %s %d %s\n", domain, key, value, title);
             if (text[0]) MSBDGuardLog("step 1b: set %s %s to \"%s\" (off)", domain, key, text);
             else MSBDGuardLog("step 1b: switched %s %s %s", domain, key, value ? "on" : "off");

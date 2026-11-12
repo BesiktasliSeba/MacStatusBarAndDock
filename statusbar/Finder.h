@@ -2446,7 +2446,7 @@ static void DMFinderRunAction(UIAction *a) {
 static NSArray *DMFinderMenuRows(UIMenu *menu, UIControl *o);
 static void DMFinderMenuPanel(UIControl *o, NSArray *rows, CGRect anchor, BOOL beside, NSInteger tag) {
     for (UIView *v in [o.subviews copy]) if (v.tag >= tag) [v removeFromSuperview];
-    UIView *panel = DMMakePanel(rows);
+    UIView *panel = DMMakeFitPanel(rows, o.bounds.size.height - 32.0);   // (as tall as fits between the clamps below at most: shorter rows, then it scrolls)
     panel.tag = tag;
     CGSize b = o.bounds.size; CGRect pf = panel.frame;
     if (beside) {   // (a submenu: to the right of its row, or to the left when there is no room)

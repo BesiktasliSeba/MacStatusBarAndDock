@@ -1,4 +1,4 @@
-// CustomShortcuts.x -- Settings > Keyboard > Custom Shortcuts (1.8.5 item 2, off unless switched on): make your own keyboard shortcuts, each opening
+// CustomShortcuts.x -- Settings > Keyboard > Custom Shortcuts (1.8.5 item 2; on for new installs since 1.8.7): make your own keyboard shortcuts, each opening
 // an app or a URL, laying out the front window or going Home. The rules: common/CustomShortcutsRule.h; SpringBoard runs them
 // (statusbar/CustomShortcuts.h). Based on KeyPilot by wanghuangjie (MIT; the notice in CustomShortcutsRule.h and third_party/KeyPilot/LICENSE): its
 // rule format and actions; its app's recording page is rebuilt here as Settings pages, its app picker as AltList's (a dependency already).
@@ -10,6 +10,8 @@
 #import <dlfcn.h>
 #import "../common/ChoicePage.h"            // (kMSBDKeyPilotApp)
 #import "../common/CustomShortcutsRule.h"
+#import "../common/KeyboardChords.h"        // (1.8.7: a shortcut on a built-in one's keys wins, and the recorder says so)
+#import "../common/ModifierTap.h"           // (kMSBDModTapUsedNote: a chord the recorder takes is no volume or backlight tap)
 
 @interface PSSpecifier : NSObject
 + (instancetype)preferenceSpecifierNamed:(NSString *)name target:(id)target set:(SEL)set get:(SEL)get detail:(Class)detail cell:(long long)cell edit:(Class)edit;
@@ -35,6 +37,7 @@
 
 enum { kCSCellLinkList = 2, kCSCellTitleValue = 4, kCSCellSwitch = 6, kCSCellButton = 13 };
 BOOL MSKeyPilotIsInstalled(void);   // (KeyboardSettings.x: its app registered)
+NSString *MSKeysBuiltinNote(long usage, NSString *key, unsigned long long mods);   // (KeyboardSettings.x: what it shares with a built-in one that is on)
 
 // ---- the rules, as stored ----
 static NSArray<NSDictionary *> *MSCSRules(void) {
@@ -49,10 +52,10 @@ static void MSCSSaveRules(NSArray *rules) {
     CFPreferencesAppSynchronize(CFSTR(kMSBDCSDomain));
     notify_post(kMSBDCSChanged);
 }
-static BOOL MSCSSwitchOn(void) {
+static BOOL MSCSSwitchOn(void) {   // (never set: on -- 1.8.7, new installs; an update had off written where it was never set)
     CFPreferencesAppSynchronize(CFSTR(kMSBDCSDomain));
     CFPropertyListRef v = CFPreferencesCopyValue(CFSTR(kMSBDCSEnabled), CFSTR(kMSBDCSDomain), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-    BOOL on = v && CFGetTypeID(v) == CFBooleanGetTypeID() && CFBooleanGetValue(v);
+    BOOL on = v ? (CFGetTypeID(v) == CFBooleanGetTypeID() && CFBooleanGetValue(v)) : YES;
     if (v) CFRelease(v);
     return on;
 }
@@ -60,6 +63,12 @@ static NSArray *MSCSKeyPilotRules(void) {
     CFPreferencesAppSynchronize(CFSTR(kMSBDCSKeyPilotDomain));
     NSArray *a = CFBridgingRelease(CFPreferencesCopyValue(CFSTR(kMSBDCSKeyPilotRules), CFSTR(kMSBDCSKeyPilotDomain), kCFPreferencesCurrentUser, kCFPreferencesAnyHost));
     return [a isKindOfClass:[NSArray class]] ? a : @[];
+}
+// Your own shortcuts now, as SpringBoard reads them (statusbar/CustomShortcuts.h DMKCYoursLoad): ours while the switch is on and KeyPilot is not
+// installed, KeyPilot's while it is (KeyboardSettings.x's footers).
+void MSCSYoursNow(MSBDKCYoursSet *y) {
+    BOOL kp = MSKeyPilotIsInstalled();
+    MSBDKCYoursFromRules(y, MSCSRules(), MSCSSwitchOn() && !kp, kp ? MSCSKeyPilotRules() : @[], kp);
 }
 // An app's name, from its bundle ID (the system's app record), or the ID.
 static NSString *MSCSAppName(NSString *bundleID) {
@@ -138,7 +147,10 @@ static void MSCSSetRecording(BOOL on) {
         [self msLoadRule];
         NSMutableArray *s = [NSMutableArray array];
         PSSpecifier *g = [PSSpecifier groupSpecifierWithName:nil];
-        [g setProperty:_recording ? @"Press the keys of your shortcut, with Command, Option, Control or Globe. Esc stops." : (_message ?: @"Tap Shortcut, then press the keys.") forKey:@"footerText"];
+        // (not recording: why the last keys could not be it, or what the shortcut's keys share with a built-in one that is on, 1.8.7)
+        NSString *shared = _message || _recording || [_rule[@"keyCode"] longValue] <= 0 ? nil
+            : MSKeysBuiltinNote([_rule[@"keyCode"] longValue], [_rule[@"key"] isKindOfClass:[NSString class]] ? _rule[@"key"] : @"", [_rule[@"modifiers"] unsignedLongLongValue]);
+        [g setProperty:_recording ? @"Press the keys of your shortcut, with Command, Option, Control or Globe. Esc stops." : (_message ?: shared ?: @"Tap Shortcut, then press the keys.") forKey:@"footerText"];
         [s addObject:g];
         // (a title-value row, its keys at its right; a tap starts the recording: -tableView:didSelectRowAtIndexPath: below)
         PSSpecifier *k = [PSSpecifier preferenceSpecifierNamed:@"Shortcut" target:self set:nil get:@selector(msShortcutValue:) detail:nil cell:kCSCellTitleValue edit:nil];
@@ -355,6 +367,10 @@ static void MSCSSetRecording(BOOL on) {
         NSString *chars = k.charactersIgnoringModifiers ?: @"";
         int why = MSBDCSCheck(usage, chars.UTF8String, mods);
         if (why == kMSBDCSNoKey) continue;   // (a modifier on its own: wait for the key)
+        // (the key came here, not to SpringBoard, and no shortcut ran: the Globe + Control or Shift + Option held for it is no volume or backlight
+        //  tap -- told as a window key or a shortcut tells it, common/ModifierTap.h. 1.8.7 kb01, M1: recording Globe-Control-F stepped the volume
+        //  down at Control's release, the taps waiting while Window Tiling Shortcuts is offered)
+        notify_post(kMSBDModTapUsedNote);
         if (why == kMSBDCSEscape) { _message = nil; [self msStopRecording]; [self reloadSpecifiers]; return; }
         if (why == kMSBDCSOK) {
             NSArray *rules = MSCSRules();
@@ -366,14 +382,14 @@ static void MSCSSetRecording(BOOL on) {
         NSString *keys = MSBDCSShortcutText(usage, chars, mods);
         switch (why) {
             case kMSBDCSNeedsModifier: _message = [NSString stringWithFormat:@"%@ types text. Add Command, Option, Control or Globe.", keys]; break;
-            case kMSBDCSWindowTiling: _message = [NSString stringWithFormat:@"%@ is a Window Tiling Shortcut. Choose other keys.", keys]; break;
-            case kMSBDCSMacSwitcher: _message = [NSString stringWithFormat:@"%@ switches desktops in the Mac Switcher. Choose other keys.", keys]; break;
             case kMSBDCSTaken: _message = [NSString stringWithFormat:@"%@ is already one of your shortcuts.", keys]; break;
             default: {
-                _message = nil;
+                // (keys a built-in one has -- Window Tiling's, the Mac Switcher's, the key left of 1 as Escape, a volume or backlight tap it starts
+                //  with --: yours wins, said here; 1.8.5 refused Window Tiling's and the Mac Switcher's: common/KeyboardChords.h)
                 _rule[@"keyCode"] = @(usage);
                 _rule[@"modifiers"] = @(mods);
                 _rule[@"key"] = chars.length == 1 ? chars.lowercaseString : @"";
+                _message = MSKeysBuiltinNote(usage, _rule[@"key"], mods);
                 [self msSave];
                 break;
             }
@@ -397,14 +413,14 @@ static void MSCSSetRecording(BOOL on) {
         BOOL kp = MSKeyPilotIsInstalled();
         NSMutableArray *s = [NSMutableArray array];
         PSSpecifier *g = [PSSpecifier groupSpecifierWithName:nil];
-        NSString *foot = @"Your own keyboard shortcuts open an app or a URL, arrange the front window, or go Home, whichever app is in front. In Sileo, Filza and other recovery apps, only shortcuts with Command, Control or Globe work. Custom Shortcuts is based on KeyPilot by wanghuangjie.";
+        NSString *foot = @"Your own keyboard shortcuts open an app or a URL, arrange the front window, or go Home, whichever app is in front. In Sileo, Filza and other recovery apps, only shortcuts with Command, Control or Globe work. A shortcut of yours wins over a built-in one with the same keys. Custom Shortcuts is based on KeyPilot by wanghuangjie.";
         if (kp) foot = [foot stringByAppendingString:@" While KeyPilot is installed, its own shortcuts work and these wait, so each key does one thing."];
         [g setProperty:foot forKey:@"footerText"];
         [s addObject:g];
         PSSpecifier *sw = [PSSpecifier preferenceSpecifierNamed:@"Custom Shortcuts" target:self set:@selector(setPreferenceValue:specifier:) get:@selector(readPreferenceValue:) detail:nil cell:kCSCellSwitch edit:nil];
         [sw setProperty:@kMSBDCSEnabled forKey:@"key"];
         [sw setProperty:@kMSBDCSDomain forKey:@"defaults"];
-        [sw setProperty:@NO forKey:@"default"];
+        [sw setProperty:@YES forKey:@"default"];   // (1.8.7: on unless switched off -- with no shortcut it takes no key)
         [sw setProperty:@kMSBDCSChanged forKey:@"PostNotification"];
         [sw setIdentifier:@"CS_SWITCH"];
         [s addObject:sw];

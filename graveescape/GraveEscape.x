@@ -17,6 +17,10 @@
 //  3. Dock menus (bottom of file): their menu is in a non-key window, so even a real Escape never passes through it; SpringBoard is asked to dismiss
 //     it directly. Unchanged -- it already acts on a real Escape (HID 0x29), which the mapping now delivers.
 //
+// Yours over it (1.8.7, common/KeyboardChords.h): the key left of 1 with modifiers one of your own shortcuts is on (Custom Shortcuts', KeyPilot's)
+// stays itself, so the shortcut runs; SpringBoard says which (kMSBDKCYoursState). In Settings, while a shortcut is recorded, the key with Control,
+// Option or Globe stays itself too, so one can be recorded on it (bare or with Shift it is still Escape, which stops the recording).
+//
 // The getters need each other's original values (keyCode wants the modifier flags, and the reverse); a per-thread guard makes any nested call return
 // the ORIGINAL value, so they never recurse.
 
@@ -25,6 +29,7 @@
 #import <objc/runtime.h>
 #include <notify.h>
 #include <dlfcn.h>
+#include "../common/KeyboardChords.h"   // (yours over the key: kMSBDKCYoursState, MSBDKCTopLeftYours; Settings' recording: kMSBDCSRecordingNote)
 
 #define kHIDGrave 53
 #define kHIDEscape 41
@@ -64,6 +69,8 @@ static BOOL inSpringBoard(void) {
 static volatile BOOL gEnabled = NO;
 static volatile BOOL gHIDActive = NO;
 static volatile long long gLayout = 0;
+static volatile uint64_t gYours = 0;          // (SpringBoard's state for the key tweaks: the modifiers on this key one of your shortcuts takes)
+static volatile BOOL gRecording = NO;         // (Settings only: a shortcut is being recorded)
 static BOOL GEOn(void) { return gEnabled; }
 // The getters are the mechanism (see the top): on while the switch is on, unless the debug-only HID mapping is the mechanism (/tmp/msb-ge-hid).
 static BOOL GEUIKitRemap(void) { return gEnabled && !gHIDActive; }
@@ -80,6 +87,8 @@ static BOOL GEHIDWanted(void) {
 static void ReadState(int token) { uint64_t v = 0; gEnabled = notify_get_state(token, &v) == NOTIFY_STATUS_OK && v == 1; }
 static void ReadHIDActive(int token) { uint64_t v = 0; gHIDActive = notify_get_state(token, &v) == NOTIFY_STATUS_OK && v == 1; }
 static void ReadLayout(int token) { uint64_t v = 0; gLayout = notify_get_state(token, &v) == NOTIFY_STATUS_OK && v <= 3 ? (long long)v : 0; }
+static void ReadYours(int token) { uint64_t v = 0; gYours = notify_get_state(token, &v) == NOTIFY_STATUS_OK ? v : 0; }
+static void ReadRecording(int token) { uint64_t v = 0; gRecording = notify_get_state(token, &v) == NOTIFY_STATUS_OK && v != 0; }
 static void GEUpdateMapping(void);   // (SpringBoard, defined below)
 static void PublishSwitch(void) {   // (SpringBoard)
     static int token = 0;
@@ -95,7 +104,10 @@ static void PublishSwitch(void) {   // (SpringBoard)
 }
 
 static BOOL isRemapped(long long origKeyCode, long long origFlags) {
-	return origKeyCode == GEGetterKey() && !(origFlags & kModCommand);
+	if (origKeyCode != GEGetterKey() || (origFlags & kModCommand)) return NO;
+	if (MSBDKCTopLeftYours(gYours, (long)origKeyCode, (unsigned long long)origFlags)) return NO;   // (one of your own shortcuts: the key stays itself)
+	if (gRecording && MSBDKCTopLeftRecordable((unsigned long long)origFlags)) return NO;              // (Settings recording one on it)
+	return YES;
 }
 
 // ---------------------------------------------------------------------------
@@ -405,6 +417,11 @@ static id iconManagerOf(id iconController) {
 	if (notify_register_dispatch(kHIDActiveState, &hidToken, dispatch_get_main_queue(), ^(int t) { ReadHIDActive(t); }) == NOTIFY_STATUS_OK) ReadHIDActive(hidToken);
 	// and of the attached keyboard's layout (which key is the top-left one)
 	if (notify_register_dispatch(kLayoutState, &layoutToken, dispatch_get_main_queue(), ^(int t) { ReadLayout(t); }) == NOTIFY_STATUS_OK) ReadLayout(layoutToken);
+	// and of what your own shortcuts take of the key (SpringBoard's state), and in Settings whether one is being recorded
+	static int yoursToken = 0, recToken = 0;
+	if (notify_register_dispatch(kMSBDKCYoursState, &yoursToken, dispatch_get_main_queue(), ^(int t) { ReadYours(t); }) == NOTIFY_STATUS_OK) ReadYours(yoursToken);
+	if ([[[NSBundle mainBundle] bundleIdentifier] isEqualToString:@"com.apple.Preferences"]
+	    && notify_register_dispatch(kMSBDCSRecordingNote, &recToken, dispatch_get_main_queue(), ^(int t) { ReadRecording(t); }) == NOTIFY_STATUS_OK) ReadRecording(recToken);
 	if (inSpringBoard()) {
 		static int prefsToken = 0, removeToken = 0;
 		notify_register_dispatch(kPrefsChanged, &prefsToken, dispatch_get_main_queue(), ^(int t) { PublishSwitch(); });

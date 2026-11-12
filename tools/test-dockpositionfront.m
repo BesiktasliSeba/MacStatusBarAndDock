@@ -31,6 +31,7 @@ static NSDictionary<NSString *, NSValue *> *DMSMOpenWindowFrames(void) { return 
 static CGRect DMSMUsableAreaForIdentity(id i, CGSize *s) { (void)i; (void)s; return gArea; }
 static BOOL DMSMSetWindowGeometry(NSString *key, CGPoint c, CGSize s) { (void)c; (void)s; gOneByOne++; gFront = key; return YES; }
 static BOOL DMSMApplyPlacesIn(NSDictionary<NSString *, id> *places, id stage) { (void)stage; gWhole++; gPlaces = places; return YES; }
+static int gSMIPadDesktopScope = 0;   // (1.8.7: the iPad's own stage while its desktop changes; DMSMWorkingStage answers it in StatusBar.x)
 static id DMSMWorkingStage(void) { return @"stage"; }
 static NSMutableDictionary *DMSMTurnLayouts(void) { return [NSMutableDictionary dictionary]; }
 static void DMSMFitHiddenStages(id o, NSDictionary *l, NSDictionary *p) { (void)o; (void)l; (void)p; }

@@ -18,10 +18,10 @@ check "VolumeGlobe: the volume steps only for a chord that acts now (the keys no
   "awk '/^static BOOL DMGlobeVolumePress\\(UIPress \\*p\\) \\{/{f=1} f{print} f && /^}/{exit}' $V > \$W/vg && grep -q 'if (tap != kMSBDModTapActNow) {' \$W/vg \
    && awk '/if \\(tap != kMSBDModTapActNow\\) \\{/{a=NR} /DMGlobeVolumeStep\\(step\\);/{b=NR} END{exit !(a && b && a < b)}' \$W/vg"
 check "  ... waiting only while SpringBoard offers the window keys (their switch on and a window engine of ours: review 1.8.3 F8), not from the switch alone" \
-  "grep -q 'BOOL offered = token && notify_get_state(token, &st) == NOTIFY_STATUS_OK && MSBDWindowKeysOfferedIn(st, getpid());' $V && grep -q 'gDefer = offered;' $V \
+  "grep -q 'BOOL offered = token && notify_get_state(token, &st) == NOTIFY_STATUS_OK && MSBDWindowKeysOfferedIn(st, getpid());' $V && grep -q 'gOffered = offered;' $V && grep -q 'gDefer = gOffered || gYoursWait;' $V \
    && grep -q 'notify_register_dispatch(kMSBDWindowKeysOfferedNote, &offeredToken, dispatch_get_main_queue(), ^(int t) { ReadOffered(t); })' $V \
    && ! grep -q 'kMSBDWindowKeysKey\|kMSBDWindowKeysChanged' $V \
-   && grep -q 'BOOL on = token && notify_get_state(token, &st) == NOTIFY_STATUS_OK && MSBDWindowKeysOfferedIn(st, getpid());' $B && grep -q 'gDeferChords = on;' $B \
+   && grep -q 'BOOL on = token && notify_get_state(token, &st) == NOTIFY_STATUS_OK && MSBDWindowKeysOfferedIn(st, getpid());' $B && grep -q 'gKeysOffered = on;' $B && grep -q 'gDeferChords = gKeysOffered || gYoursWait;' $B \
    && grep -q 'notify_register_dispatch(kMSBDWindowKeysOfferedNote, &keysToken, dispatch_get_main_queue(), ^(int t) { ReadWindowKeysOffered(t); })' $B \
    && ! grep -q 'kMSBDWindowKeysKey\|kMSBDWindowKeysChanged' $B"
 check "  ... with the keys off the press acts at once, as before (the same press twice still one step)" \

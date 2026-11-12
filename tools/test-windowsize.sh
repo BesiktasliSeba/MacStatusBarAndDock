@@ -51,12 +51,12 @@ check "No Fit: the new window at Small / Large (DMNoFitFrame), Stage Manager's t
   "fn 'static CGRect DMNoFitFrame(void) {' && grep -q 'if (gWindowSizeChoice != MSBDWindowSizeDefault) return DMNewWindowFrame();' \$W/fn \
    && grep -q 'return MSBDWindowNoFitIn(DMLayoutFrame(@\"center\"), DMLayoutFrame(@\"fill\"));' \$W/fn \
    && [ \$(grep -c 'DMSMApplyPlacesIn(@{newB: DMSMNoFitPlace(st)}, st);' $S) = 2 ] && ! grep -q 'DMSMApplyLayoutsIn(@{newB: @\"center\"}' $S \
-   && fn 'static id DMSMNoFitPlace(id stage) {' && grep -q 'CGRect f = gWindowSizeChoice != MSBDWindowSizeDefault ? DMSMNewWindowFrameIn(u, scr) : MSBDWindowNoFitIn(DMSMLayoutFrameIn(@\"center\", u, scr), u);' \$W/fn \
+   && fn 'static id DMSMNoFitPlace(id stage) {' && grep -q 'CGRect f = DMWindowSizeChoiceFor(identity) != MSBDWindowSizeDefault ? DMSMNewWindowFrameIn(u, scr, identity) : MSBDWindowNoFitIn(DMSMLayoutFrameIn(@\"center\", u, scr), u);' \$W/fn \
    && grep -q 'return CGRectIsNull(f) ? @\"center\" : \\[NSValue valueWithCGRect:f\\];' \$W/fn"
 check "the middle place is asked for nowhere else as a new window's (only No Fit's own default, DMNoFitFrame)" "[ \$(grep -c 'DMLayoutFrame(@\"center\")' $S) = 1 ] && fn 'static CGRect DMNoFitFrame(void) {' && grep -q 'DMLayoutFrame(@\"center\")' \$W/fn"
 check "Stage Manager: a window with no size of its own -- nothing to start from, a full-screen one's, or one joining a desktop with a front window -- opens at the engines' new window (Default too), kept off the desktop's other windows by the engines' rule; its own is kept" \
   "fn 'static id DMSMJoinAttributesOn(NSString *key, id frontAttrs, BOOL windowed, long newest, id stage, id identity) {' && grep -q 'BOOL fresh = !DMSMAttrsOwnSize(own);' \$W/fn && grep -q '            if (fresh) {' \$W/fn \
-   && grep -q 'CGRect opening = atFill ? DMSMLayoutFrameIn(@\"fill\", u, scr) : DMSMNewWindowFrameIn(u, scr);' \$W/fn && grep -q 'if (CGRectIsNull(opening)) return nil;' \$W/fn \
+   && grep -q 'CGRect opening = atFill ? DMSMLayoutFrameIn(@\"fill\", u, scr) : DMSMNewWindowFrameIn(u, scr, onDisplay);' \$W/fn && grep -q 'if (CGRectIsNull(opening)) return nil;' \$W/fn \
    && grep -q 'if (atFill || n >= 32 || it == ownItem || DMSMKeyCovers(key, DMSMItemKey(it)) || DMSMAttrsFullScreen(sm\\[it\\])) continue;' \$W/fn \
    && grep -q 'CGRect o = DMSMWindowFrameOfAttrs(sm\\[it\\], scr);' \$W/fn && grep -q 'CGRect placed = atFill ? opening : MSBDWindowCascadeIn(opening, others, n, u, NO, &how);' \$W/fn \
    && grep -q 'CGRect card = MSBDWindowCardOf(placed, kSMBarH);' \$W/fn && grep -q 'pts = card.size; cp = CGPointMake(CGRectGetMidX(card), CGRectGetMidY(card));' \$W/fn \
@@ -64,10 +64,10 @@ check "Stage Manager: a window with no size of its own -- nothing to start from,
    && ! grep -q 'CGSizeMake(0.6\\|0.6 \\* scr\\|BOOL cascaded\\|DMSMCascadeClear(' \$W/fn && ! grep -q 'DMSMCascadeClear' ../statusbar/SMFit.h \
    && fn 'static CGRect DMSMWindowFrameOfAttrs(id attrs, CGSize scr) {' && grep -q 'return MSBDWindowOfCard(CGPointMake(c.x \\* scr.width, c.y \\* scr.height), pts, kSMBarH);' \$W/fn"
 check "  ... at every choice, Default the middle place (Stage Manager's own 60% x 72% gone), the engines' rule with Stage Manager's smallest window" \
-  "fn 'static CGRect DMSMNewWindowFrameIn(CGRect u, CGSize scr) {' && grep -q 'if (CGRectIsNull(u) || CGRectIsEmpty(u) || scr.width < 1.0 || scr.height < 1.0) return CGRectNull;' \$W/fn \
-   && ! grep -q 'gWindowSizeChoice == MSBDWindowSizeDefault' \$W/fn \
+  "fn 'static CGRect DMSMNewWindowFrameIn(CGRect u, CGSize scr, id identity) {' && grep -q 'if (CGRectIsNull(u) || CGRectIsEmpty(u) || scr.width < 1.0 || scr.height < 1.0) return CGRectNull;' \$W/fn \
+   && ! grep -q 'gWindowSizeChoice' \$W/fn && grep -q 'int choice = DMWindowSizeChoiceFor(identity);' \$W/fn \
    && grep -q 'CGSize least = CGSizeMake(MAX(DMSMMinWindowWidth(scr), kMSBDWindowMinWidth), kMSBDWindowMinAppHeight + kSMBarH);' \$W/fn \
-   && grep -q 'return MSBDWindowSizeFrameIn(gWindowSizeChoice, u, scr, DMCenterTopFor(scr), least);' \$W/fn"
+   && grep -q 'return MSBDWindowSizeFrameIn(choice, u, scr, DMCenterTopFor(scr), least);' \$W/fn"
 check "the engines' one cascade: DMCascadeStage hands the rule every other window's frame, the desktop and its own place (Aerial, Zetsu, MilkyWay4) -- its own old loop gone" \
   "fn 'static void DMCascadeStage(UIView *stage) {' && grep -q 'for (UIView \\*o in others) if (nOthers < 32) otherFrames\\[nOthers++\\] = o.frame;' \$W/fn \
    && grep -q 'CGRect pick = MSBDWindowCascadeIn(base, otherFrames, nOthers, usable, ownPlace, &how);' \$W/fn && grep -q 'if (how == MSBDCascadeOwnKept) {' \$W/fn \

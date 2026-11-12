@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <CoreFoundation/CoreFoundation.h>
 #include "../common/CrashGuard.h"
 static int fails = 0;
 static void Expect(const char *what, int got, int want) { printf("%s  %-60s got %d, want %d\n", got == want ? "PASS" : "FAIL", what, got, want); if (got != want) fails++; }
@@ -75,6 +76,32 @@ int main(void) {
     Expect("a mark from 2020: before this boot", MSBDGuardMarkBeforeBoot(), 1);
     unlink(MSBD_GUARD_FILE);
     Expect("no mark: nothing to say", MSBDGuardMarkBeforeBoot(), 0);
+    // 1.8.7: a switch turned on for one display, noted by its flat key (common/DisplayPrefs.h MSBDDispNoteRecent, the format of the guard's own
+    // list): step 1 turns that override off in the displays domain and posts it, with no change to the guard. The flat key at its longest (127)
+    // comes through the guard's sscanf whole; a 128-character one is never written (it would come through cut and set another key).
+    {
+        char id62[63], key[60], flat[160], flat128[200], rec2[1536], want[400];
+        memset(id62, 'A', 62); id62[62] = 0; memset(key, 'k', 57); key[57] = 0;   // ("u-" 62 + "/dock/" + 57 = 127)
+        char display[80]; snprintf(display, sizeof display, "u-%s", id62);
+        Expect("the longest flat key (127)", (long)MSBDDispFlatKey(flat, sizeof flat, display, "dock", key), 127);
+        snprintf(flat128, sizeof flat128, "%sk", flat);
+        unlink(MSBD_GUARD_RECENT);
+        Expect("noted for the guard", MSBDDispNoteRecent(MSBD_GUARD_RECENT, now, flat, "Automatically Hide and Show the Dock", 1), 1);
+        Expect("a 128-character key is not noted", MSBDDispNoteRecent(MSBD_GUARD_RECENT, now, flat128, "Too Long", 1), 0);
+        Expect("step 1: the display's switch turned off", MSBDGuardSwitchOffRecent(now - 120, rec2, sizeof(rec2)), 1);
+        snprintf(want, sizeof want, "switch %s %s Automatically Hide and Show the Dock\n", MSBD_DISP_DOMAIN, flat);
+        Expect("  ... its record line names the domain and the whole flat key, with the row title", strstr(rec2, want) != NULL, 1);
+        CFStringRef k = CFStringCreateWithCString(NULL, flat, kCFStringEncodingUTF8), d = CFStringCreateWithCString(NULL, MSBD_DISP_DOMAIN, kCFStringEncodingUTF8);
+        CFPreferencesSynchronize(d, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        CFPropertyListRef v = CFPreferencesCopyValue(k, d, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        Expect("  ... false written into that override (the display takes off, the iPad untouched)", v && CFGetTypeID(v) == CFBooleanGetTypeID() && !CFBooleanGetValue(v), 1);
+        if (v) CFRelease(v);
+        CFArrayRef keys = CFPreferencesCopyKeyList(d, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        Expect("  ... and nothing else in the displays domain (no cut key)", keys ? (long)CFArrayGetCount(keys) : 0, 1);
+        if (keys) CFRelease(keys);
+        CFRelease(k); CFRelease(d);
+        Expect("  ... the list used up", access(MSBD_GUARD_RECENT, F_OK), -1);
+    }
 #else
     Expect("helper missing: every report counts (the old behaviour)", MSBDGuardCrashes(0), 4);
     Expect("helper missing: no verdicts kept (judged once it is there)", Lines(MSBD_GUARD_VERDICTS), 0);

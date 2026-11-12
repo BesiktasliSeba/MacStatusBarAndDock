@@ -2,6 +2,29 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.7
+
+### New
+- Display Settings for an external display: its Menu Bar Size, auto-hiding menu bar, Dock (size, magnification, auto-hide and Trash), Window Size and New Windows Open at Fill can each differ from the iPad's, as on a Mac. Open it from the menu bar's new Display menu or in Settings > Desktop > Displays.
+- A display starts with your iPad's settings and follows them until you change one for it, and Use iPad Settings puts them all back. Each display you connect keeps its own.
+- With the Stage Manager engine, an external display now has desktops of its own in the Mac Switcher, as on a Mac. Open it there from that display's Apple menu or with Control-Up, and Control-Left and Control-Right switch its desktops.
+
+### Improvements
+- On an external display, the auto-hiding menu bar now hides and comes back with the pointer on that display, apart from the iPad's menu bar.
+- Settings > Keyboard now starts with your own shortcuts: KeyPilot's row while it's installed, then Custom Shortcuts and Window Tiling Shortcuts. The Mac key switches follow them.
+- Window Tiling Shortcuts and Custom Shortcuts are now on for new installs. An update keeps your setting.
+- Custom Shortcuts can now record keys that a built-in shortcut uses, such as Window Tiling's: yours takes their place, and Settings says which one. The footers in Settings > Keyboard say which keys are shared.
+
+### Fixes
+- With the Stage Manager engine, pushing the pointer to an external display's bottom edge while a window is open on the iPad no longer crashes SpringBoard into Safe Mode.
+- On an external display, windows keep their title bar and red, yellow and green buttons when the iPad goes to its Home Screen. They used to lose them.
+- A screenshot taken by swiping in from a bottom corner no longer shows a huge Apple logo on the screen, as a user reported.
+- Menus taller than the screen, such as the Window menu on a small external display, now fit and scroll. Their last rows used to be out of reach.
+- With an external display connected, the iPad's auto-hidden menu bar comes back again when the pointer reaches its top edge.
+- With an external display connected, the Mac Switcher on the iPad shows your wallpaper behind it again instead of a blur.
+- Pushing the pointer down from an external display onto the iPad no longer opens the Mac Switcher there.
+- With an app in front on an external display, switching the iPad to an empty desktop in the Mac Switcher now stays there. It used to take another desktop for the current one a moment later.
+
 ## 1.8.6
 
 ### New

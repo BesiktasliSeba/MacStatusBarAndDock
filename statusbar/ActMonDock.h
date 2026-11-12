@@ -606,7 +606,7 @@ static void DMAMBringForward(NSString *why) {
     for (DMNativeWindow *w in [gMSWAwayNatives copy]) {
         if (![w isKindOfClass:[DMActivityMonitorWindow class]]) continue;
         NSNumber *did = objc_getAssociatedObject(w, kMSWNativeDeskKey);
-        NSUInteger at = DMMSWMulti() && [did isKindOfClass:[NSNumber class]] ? [gMSWDesks indexOfObject:did] : NSNotFound;
+        NSUInteger at = DMMSWForMain() && DMMSWMulti() && [did isKindOfClass:[NSNumber class]] ? [gMSWDesks indexOfObject:did] : NSNotFound;   // (the iPad's desktops, 1.8.7)
         __weak DMNativeWindow *ww = w;
         void (^then)(void) = ^{ DMNativeWindow *x = ww; if (x && [gNativeWindows containsObject:x]) [x show]; };
         DMLog([NSString stringWithFormat:@"[amcmdtab] its window is on another desktop: that desktop, then the window (%@)", why]);

@@ -17,7 +17,72 @@
 #include "MSWEngineRecords.h"   // (the window records across an engine change -- plain Foundation, tools/test-mswenginerecords.sh)
 #include "MSWAppDesk.h"     // (where an app opens when its windows are on other desktops -- plain Foundation, tools/test-mswappdesk.sh)
 #include "MSWFlick.h"       // (Swipe Up to Quit: a flick or a two-finger swipe that quits, against a drag that moves -- plain C, tools/test-mswflick.sh)
-static BOOL gMSWOn = NO;                 // the switch is on, the iPadOS has what it needs (DMMSWOSOK), and the self-check passed
+#include "MSWDisplays.h"    // (the desktops per display and their file, version 2 -- plain Foundation, tools/test-mswdisplays.sh; 1.8.7)
+
+// ==== which display's desktops (1.8.7, plans/design-1.8.7-displays.md section 7) ================================================================
+// The desktops and the current desktop are a model per display (MSWDisplays.h): the iPad's (gMSWMain) and each other display's (gMSWModels, by
+// display key). gMSWModel is the one the code works on now; gMSWDesks and gMSWCur below are its desktops and current place, so every line that read
+// the one list before reads the model in use. It is the iPad's but while the Mac Switcher works on another display, and is re-pointed only
+// between sessions (no view open, no switch, no slide, no gesture followed, no drop landing: DMMSWSessionIdle). Everything deferred in this file and
+// MacSwitcherSM.h goes through DMMSWAfter / DMMSWAsync, which run it with the model it was asked under and put back the one in use after: a
+// switch's or a view's later step never lands on another display's desktops (tools/test-mswdisplays.sh: no raw dispatch_after or main-queue
+// dispatch_async left in either file).
+// (the iPad's model is made the first time anything reads it: gMSWMain is never nil where it is read. Read raw, a nil model's ivar was a NULL
+//  dereference -- the debug trigger mswmem with the Mac Switcher not on since the start crashed SpringBoard: 1.8.7 review)
+static DMMSWModel *gMSWMainModel;
+static DMMSWModel *DMMSWMainModel(void) {
+    if (!gMSWMainModel) { gMSWMainModel = [DMMSWModel new]; gMSWMainModel.key = kMSWDispMain; }
+    return gMSWMainModel;
+}
+#define gMSWMain (DMMSWMainModel())                              // the iPad's desktops
+static NSMutableDictionary<NSString *, DMMSWModel *> *gMSWModels;  // another display's desktops, by its display key (common/DisplayPrefs.h)
+static DMMSWModel *gMSWModel;                                    // the desktops in use now
+static NSInteger gMSWNextDesk = kMSWDispBase + 1;                // (the next id of another display's desktop: MSWDispNextId)
+static DMMSWModel *DMMSWM(void) {
+    if (!gMSWModel) gMSWModel = gMSWMain;
+    return gMSWModel;
+}
+#define gMSWDesks (DMMSWM()->desks)   // the desktops' ids of the model in use, in strip order
+#define gMSWCur (DMMSWM()->cur)       // its current desktop's place
+// A deferred step runs under the model it was asked under. While a session runs on another display's model it waits until that session has ended
+// (looked at 4 times a second): the session's view, switch and slide are that display's, and the step of the other display's took them for its own
+// -- a drop's Recollect a second later rebuilt the TV's open view from the iPad's windows, a picture answer became the TV view's opening picture
+// (1.8.7 review). A session's own steps, and a step asked with no model, run at once.
+static BOOL DMMSWSessionIdle(void);   // (the sessions, below)
+static void DMMSWRunUnder(DMMSWModel *m, dispatch_block_t b) {
+    if (m && m != DMMSWM() && !DMMSWSessionIdle()) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMMSWRunUnder(m, b); });
+        return;
+    }
+    DMMSWModel *was = gMSWModel;
+    if (m) gMSWModel = m;
+    b();
+    if (m && gMSWModel == m) gMSWModel = was;   // (a block that started a session on another model keeps it: that session puts it back)
+}
+static dispatch_block_t DMMSWModelBlock(DMMSWModel *m, dispatch_block_t b) {
+    if (!b) return b;
+    return ^{ DMMSWRunUnder(m, b); };
+}
+static void DMMSWAfter(double seconds, dispatch_block_t b) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(seconds * NSEC_PER_SEC)), dispatch_get_main_queue(), DMMSWModelBlock(gMSWModel, b)); }
+static void DMMSWAsync(dispatch_block_t b) { dispatch_async(dispatch_get_main_queue(), DMMSWModelBlock(gMSWModel, b)); }
+// (from another thread: the model read on the main thread before, nil for a block that touches no desktops)
+static void DMMSWAsyncWith(DMMSWModel *m, dispatch_block_t b) { dispatch_async(dispatch_get_main_queue(), DMMSWModelBlock(m, b)); }
+// The display of the model in use (1.8.7 commit 15, Stage Manager only: another display's desktops are its own stages, MacSwitcherSM.h): the iPad's
+// screen, or the screen of SpringBoard's window scene on that display (its shell UI one, where its bar, Dock and windows are: DMDispDesktopScreen;
+// never the first other UIScreen, which has no scene -- S1). nil for a display that is not connected now (its desktops stay, unused).
+static BOOL DMMSWIsMain(void) { return DMMSWM() == gMSWMain; }
+static void DMMSWSessionEndSoon(void);   // (the sessions, below DMMSWOpen)
+static void DMMSWClearMine(void);        // (below DMMSWCollapse: the model in use's own records and entries go)
+static UIScreen *DMMSWScreenOf(DMMSWModel *m) { return !m || m == gMSWMain ? [UIScreen mainScreen] : DMDispDesktopScreen(m.key, DMDispScreens()); }
+static UIScreen *DMMSWScreen(void) { return DMMSWScreenOf(DMMSWM()) ?: [UIScreen mainScreen]; }
+static id DMMSWIdentity(void) { return DMSMIdentityOfScreen(DMMSWScreen()); }   // (its display identity: what its stages' requests name)
+// A stage of the model's display (each stage knows its display, SBAppLayout -preferredDisplayIdentity; the iPad's: its own or none).
+static BOOL DMMSWStageHere(id al) {
+    id i = DMSMStageDisplayIdentity(al);
+    return DMMSWIsMain() ? DMSMIsMainIdentity(i) : [i isEqual:DMMSWIdentity()];
+}
+
+static BOOL gMSWOn = NO;                // the switch is on, the iPadOS has what it needs (DMMSWOSOK), and the self-check passed
 static BOOL gMSWSwipeQuit = YES;         // Settings > Windows & Multitasking > Swipe Up to Quit (mswSwipeUpQuit, on unless switched off, 1.8.6, KT 10 Nov):
                                          //  in the view, a window flicked up (or swiped up with two fingers on a trackpad) quits its app, as in the App Switcher
 static BOOL gMSWGoToAppDesk = NO;        // Settings > Windows & Multitasking > Go to the App's Desktop (goToAppDesktop, off unless switched on, 1.7.1):
@@ -360,8 +425,24 @@ static void DMMSWPlace(UIView *inner, CGRect from, CGRect to) {
 }
 
 // ---- the layer window, turned with the screen ----
+// The iPad's (gMSWMainWindow), or another display's: a window of ours in SpringBoard's window scene there at the same level (SceneLayer.h, role
+// "macswitcher": made at first use, let go with its display -- DMMSWTVLayerGone ends a session that was on it). gMSWWindow is the model in use's.
+static UIWindow *gMSWMainWindow;
+static id DMMSWTVLayerHit(UIWindow *self, SEL _cmd, CGPoint p, UIEvent *e) {   // (a window's own hit test: it takes touches while it is interactive, as the iPad's)
+    struct objc_super sup = { self, [UIWindow class] };
+    return ((id (*)(struct objc_super *, SEL, CGPoint, UIEvent *))objc_msgSendSuper)(&sup, _cmd, p, e);
+}
+static void DMMSWTVLayerGone(NSArray<UIWindow *> *gone);   // (below, with the sessions)
 static UIWindow *DMMSWLayer(void) {
-    if (gMSWWindow) return gMSWWindow;
+    if (!DMMSWIsMain()) {
+        if (!DMMSWSelfCheck()) return nil;
+        UIScreen *s = DMMSWScreenOf(DMMSWM());
+        UIWindow *w = s && s != [UIScreen mainScreen] ? DMSceneLayer(s, @"macswitcher", kMenuWindowLevel - 0.5, (DMSceneLayerKind){ "MSBSceneMacSwitcherWindow", (IMP)DMMSWTVLayerHit, NULL, "macswitcher" },
+                                                                    ^(NSArray<UIWindow *> *gone) { DMMSWTVLayerGone(gone); }) : nil;
+        gMSWWindow = w;
+        return w;
+    }
+    if (gMSWMainWindow) { gMSWWindow = gMSWMainWindow; return gMSWWindow; }
     if (!DMMSWSelfCheck()) return nil;
     @try {
         Class base = objc_getClass("SBMainScreenActiveInterfaceOrientationWindow");
@@ -369,16 +450,17 @@ static UIWindow *DMMSWLayer(void) {
         w.backgroundColor = [UIColor clearColor];
         w.windowLevel = kMenuWindowLevel - 0.5;   // (over every app window, Finder and the Dock; our menu window stays above)
         w.hidden = YES;
-        gMSWWindow = w;
+        gMSWWindow = gMSWMainWindow = w;
         DMSnapInvalidate();
         DMLog([NSString stringWithFormat:@"[macswitcher] layer window made: %@ frame %@", NSStringFromClass([w class]), NSStringFromCGRect(w.frame)]);
     } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[macswitcher] layer window failed: %@", e]); }
     return gMSWWindow;
 }
 // The content's bounds and turn: the screen as it is seen now (iPadOS 16 keeps this window class portrait while the scene turns; 15 turns it).
-static void DMMSWTurnIn(UIWindow *l, UIView *root) {
-    CGSize screen = [UIScreen mainScreen].bounds.size, win = l.bounds.size;
-    id<UICoordinateSpace> scr = [UIScreen mainScreen].coordinateSpace;
+static void DMMSWTurnIn(UIWindow *l, UIView *root) {   // (another display's: never turned, its window is its screen)
+    UIScreen *on = DMMSWScreen();
+    CGSize screen = on.bounds.size, win = l.bounds.size;
+    id<UICoordinateSpace> scr = on.coordinateSpace;
     CGPoint o = [l convertPoint:CGPointZero toCoordinateSpace:scr], x = [l convertPoint:CGPointMake(100, 0) toCoordinateSpace:scr];
     CGFloat angle = hypot(x.x - o.x, x.y - o.y) > 50.0 ? -round(atan2(x.y - o.y, x.x - o.x) / M_PI_2) * M_PI_2 : 0;
     BOOL turned = fabs(angle) > 0.01;
@@ -453,7 +535,7 @@ static NSArray<UIWindow *> *DMMSWScreenWindows(void) {
     //  the Home Screen and the wallpaper in Desktop 1's thumbnail; DMMSWBuild also drops any window that does not land on the screen exactly)
     NSSet *skip = [NSSet setWithObjects:@"UITextEffectsWindow", @"_UISystemGestureWindow", @"SBRecordingIndicatorWindow", @"UIRemoteKeyboardWindow", @"SBRootSceneWindow", nil];
     for (UIWindow *w in DMAllWindows()) {
-        if (w == gMSWWindow || w.hidden || w.alpha < 0.01 || w.windowLevel >= gMSWWindow.windowLevel || w.screen != [UIScreen mainScreen]) continue;
+        if (w == gMSWWindow || w.hidden || w.alpha < 0.01 || w.windowLevel >= gMSWWindow.windowLevel || w.screen != DMMSWScreen()) continue;   // (the display the view is on)
         if ([skip containsObject:NSStringFromClass([w class])] || [NSStringFromClass([w class]) containsString:@"Screenshot"]) continue;
         [list addObject:w];
     }
@@ -488,6 +570,9 @@ static UIView *DMMSWWallpaperImageView(UIView *wall);   // (below: the view whos
 static UIView *DMMSWWallpaperView(void) {
     Class wvc = objc_getClass("SBWWallpaperViewController"), wv = objc_getClass("SBFWallpaperView");
     for (UIWindow *w in DMAllWindows()) {
+        // (the iPad's own: with a TV connected its wallpaper window came first -- 2560 x 1440 for a 1366 x 1024 iPad, "does not fit", and the iPad's
+        //  view fell back to the live blur, 1.8.6 with a TV and 1.8.7 d20-d26; read on the A12Z, 11 Nov)
+        if (w.screen && w.screen != [UIScreen mainScreen]) continue;
         NSString *wc = NSStringFromClass([w class]);
         if (wvc && wv && [wc isEqualToString:@"_SBWallpaperWindow"] && [w.rootViewController isKindOfClass:wvc]) {   // (iPadOS 15)
             UIView *v = DMMSWHasMethod(wvc, @"homescreenWallpaperView", @"@@:") ? DMCall(w.rootViewController, @"homescreenWallpaperView") : nil;
@@ -609,7 +694,9 @@ static UIView *DMMSWBuildRoot(void) {
     CGRect b = root.bounds;
     // the background: the Home Screen wallpaper, lightly dimmed; the live blur of the screen only when the wallpaper can't be read
     NSString *why = nil;
-    UIView *wall = DMMSWWallpaperBackground(root, &why);
+    // (another display: the live blur of what it shows -- the wallpaper read here is the iPad's, laid out for the iPad's screen)
+    UIView *wall = DMMSWIsMain() ? DMMSWWallpaperBackground(root, &why) : nil;
+    if (!DMMSWIsMain()) why = @"another display";
     UIView *back = nil;
     if (wall) {
         back = [[UIView alloc] initWithFrame:b];
@@ -686,7 +773,7 @@ static BOOL DMMSWAsyncPicturesOK(void) {
     id c = _context; uint32_t s = _slot;
     if (!c || !s) return;
     void (^del)(void) = ^{ @try { ((void (*)(id, SEL, unsigned int))objc_msgSend)(c, NSSelectorFromString(@"deleteSlot:"), s); } @catch (id e) {} };
-    if ([NSThread isMainThread]) del(); else dispatch_async(dispatch_get_main_queue(), del);
+    if ([NSThread isMainThread]) del(); else DMMSWAsyncWith(nil, del);   // (from the picture queue: no desktops in it)
 }
 @end
 static const void *kMSWSlotKey = &kMSWSlotKey;
@@ -723,12 +810,13 @@ static BOOL DMMSWPictureAsync(UIView *v, void (^done)(UIView *pic, double ms)) {
     if (gMSWSnapKeyIgnoreAX) opts[gMSWSnapKeyIgnoreAX] = @YES;
     CFTimeInterval t0 = CACurrentMediaTime();
     UIView *keep = v;   // (the layer stays alive until the server has drawn it)
+    DMMSWModel *asked = gMSWModel;   // (the answer comes back under the model it was asked under)
     dispatch_async(DMMSWPicQueue(), ^{
         uint32_t slot = 0; BOOL ok = NO;
         @try { slot = ((uint32_t (*)(id, SEL, CGSize, BOOL))objc_msgSend)(slotCtx, NSSelectorFromString(@"createImageSlot:hasAlpha:"), px, YES); } @catch (id e) { slot = 0; }
         if (slot) { opts[gMSWSnapKeyDest] = @(slot); ok = gMSWSnapFn(MACH_PORT_NULL, opts); }
         if (DMTestFlag("/tmp/msw-slowpic")) usleep(450000);   // (debug: a server that answers late -- the waits and their limits are tried with it)
-        dispatch_async(dispatch_get_main_queue(), ^{
+        DMMSWAsyncWith(asked, ^{
             (void)keep;
             double ms = (CACurrentMediaTime() - t0) * 1000.0;
             DMMSWSlotHolder *h = nil;
@@ -757,8 +845,7 @@ static BOOL DMMSWPictureAsync(UIView *v, void (^done)(UIView *pic, double ms)) {
 // Saved in com.besiktasliseba.macstatusbar.desktops.plist (the desktops, the current one, the window records); the windows themselves come back
 // with the window state as before, then the records hide the ones of other desktops. Settings off: everything on Desktop 1 again, the desktops
 // kept for when it is on again (DMMSWKeepForLater / DMMSWBringBack, 1.5.2 item 14).
-static NSMutableArray<NSNumber *> *gMSWDesks;                        // the desktops' ids, in strip order
-static NSUInteger gMSWCur = 0;                                       // the current desktop's place
+// (gMSWDesks, the desktops' ids in strip order, and gMSWCur, the current desktop's place: the model in use's, at the top of this file)
 static NSMutableDictionary<NSString *, NSNumber *> *gMSWWinDesk;     // app -> its window's desktop id
 static NSMutableDictionary<NSString *, NSString *> *gMSWWinFrame;    // app -> its window's frame when it went away (an app iPadOS closed meanwhile comes back there)
 static NSMutableDictionary<NSString *, NSString *> *gMSWFullScreen;  // desktop id ("2") -> the app that was full screen when it was left
@@ -778,13 +865,20 @@ static NSMutableDictionary<NSString *, NSNumber *> *gMSWRelaunching;   // app ->
 static NSMutableDictionary<NSString *, NSNumber *> *gMSWQuitting;      // app -> until when its force-quit window, still in the engine's layer while
                                                                        //  it goes, is left as it is (DMMSWForgetApp, DMMSWApply)
 static const NSUInteger kMSWMaxDesks = 8;
+// A new desktop's id for the model in use: the iPad's the lowest free number from 2, as always; another display's the next id above 1000, never one
+// given before (MSWDisplays.h). DMMSWDeskAdded puts it at the end of the strip.
+static NSInteger DMMSWNewDeskId(void) {
+    if (DMMSWIsMain()) { NSInteger nid = 2; while ([gMSWDesks containsObject:@(nid)]) nid++; return nid; }
+    return MSWDispNextId(MSWDispAllIds(gMSWMain, gMSWModels), gMSWNextDesk);
+}
+static void DMMSWDeskAdded(NSInteger nid) { [gMSWDesks addObject:@(nid)]; if (!DMMSWIsMain()) gMSWNextDesk = MAX(gMSWNextDesk, nid + 1); }
 static NSInteger DMMSWCurId(void) { return gMSWDesks.count ? gMSWDesks[MIN(gMSWCur, gMSWDesks.count - 1)].integerValue : 1; }
 // (every engine: Aerial, Zetsu and MilkyWay4 by the same records and the same away windows -- each engine's window is one of DMAerialStagesAll()'s
 //  "stages": an AerialStage, a ZetsuWindow, an AXWindowView --; Stage Manager by its stages, MacSwitcherSM.h; no engine: Finder's windows)
 static BOOL DMMSWDesktopsHere(void) { return gMSWOn; }
 static BOOL DMMSWMulti(void) { return DMMSWDesktopsHere() && gMSWDesks.count > 1; }
 static NSString *DMMSWDeskName(NSUInteger i) { return [NSString stringWithFormat:@"Desktop %lu", (unsigned long)i + 1]; }
-static NSString *DMMSWStatePath(void) { return [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Preferences/com.besiktasliseba.macstatusbar.desktops.plist"]; }
+static NSString *DMMSWStatePath(void) { return [NSHomeDirectory() stringByAppendingPathComponent:@MSBD_MSW_STATE_FILE]; }   // (common/DisplayPrefs.h: the registry reads it too)
 // The desktops kept while the Mac Switcher is off (DMMSWKeepForLater / DMMSWBringBack): a file of their own beside the desktops file, written as it
 // goes off and read once as it comes on -- nothing in between touches it (a respring, a save of the one desktop). gMSWKept: the same, in this run.
 static NSDictionary *gMSWKept;
@@ -801,12 +895,15 @@ static NSArray *DMMSWWindowSet(NSInteger did) {
 }
 static void DMMSWSave(void) {
     gMSWDesksDirty = NO;
+    DMMSWM();
+    // (version 1's keys are the iPad's desktops whatever model is in use -- MSWDisplays.h --, the records flat; version 2 adds the other displays')
     NSMutableArray *ids = [NSMutableArray array];
-    for (NSNumber *n in gMSWDesks ?: @[@1]) [ids addObject:n];
-    NSMutableDictionary *st = [@{@"desktops": ids, @"current": @(DMMSWCurId()), @"windows": [gMSWWinDesk copy] ?: @{}, @"frames": [gMSWWinFrame copy] ?: @{},
+    for (NSNumber *n in gMSWMain->desks ?: @[@1]) [ids addObject:n];
+    NSMutableDictionary *st = [@{@"desktops": ids, @"current": @(MSWDispCurId(gMSWMain)), @"windows": [gMSWWinDesk copy] ?: @{}, @"frames": [gMSWWinFrame copy] ?: @{},
                                  @"fullscreen": [gMSWFullScreen copy] ?: @{}, @"leftSizes": [gMSWLeftSize copy] ?: @{}, @"fit": [gMSWFit copy] ?: @{}} mutableCopy];
     if (gMSWAsideDesk.count) { st[@"asideWindows"] = [gMSWAsideDesk copy]; st[@"asideFrames"] = [gMSWAsideFrame copy] ?: @{}; }   // (only after an engine change)
     if (gMSWKeysCopied) st[@"keysCopied"] = @YES;
+    MSWDispWrite(st, gMSWModels, gMSWNextDesk);
     static NSDictionary *last;
     if ([st isEqualToDictionary:last]) return;
     last = st;
@@ -815,33 +912,37 @@ static void DMMSWSave(void) {
     dispatch_once(&once, ^{ q = dispatch_queue_create("MacStatusBar.macswitcher.save", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0)); });
     NSString *path = DMMSWStatePath();
     dispatch_async(q, ^{ [st writeToFile:path atomically:YES]; });
-    DMLog([NSString stringWithFormat:@"[macswitcher] desktops saved: %@, current %ld, %lu window records", [ids componentsJoinedByString:@","], (long)DMMSWCurId(), (unsigned long)gMSWWinDesk.count]);
+    DMLog([NSString stringWithFormat:@"[macswitcher] desktops saved: %@, current %ld, %lu window records%@", [ids componentsJoinedByString:@","], (long)MSWDispCurId(gMSWMain), (unsigned long)gMSWWinDesk.count,
+           gMSWModels.count ? [NSString stringWithFormat:@"; %lu other display(s)", (unsigned long)gMSWModels.count] : @""]);
 }
 static void DMMSWLoad(void) {
     NSDictionary *st = [NSDictionary dictionaryWithContentsOfFile:DMMSWStatePath()];
-    gMSWDesks = [NSMutableArray arrayWithObject:@1]; gMSWCur = 0;
+    // (the iPad's desktops as version 1 read them; the other displays' from version 2's "displays" -- MSWDisplays.h; the model in use the iPad's)
+    DMMSWM();
+    if (!gMSWModels) gMSWModels = [NSMutableDictionary dictionary];
+    MSWDispRead(st, kMSWMaxDesks, gMSWMain, gMSWModels, &gMSWNextDesk);
+    gMSWModel = gMSWMain;
     gMSWWinDesk = [NSMutableDictionary dictionary]; gMSWWinFrame = [NSMutableDictionary dictionary]; gMSWFullScreen = [NSMutableDictionary dictionary]; gMSWLeftSize = [NSMutableDictionary dictionary]; gMSWFit = [NSMutableDictionary dictionary];
     gMSWAsideDesk = [NSMutableDictionary dictionary]; gMSWAsideFrame = [NSMutableDictionary dictionary]; gMSWKeysCopied = NO;
     if (!gMSWShots) gMSWShots = [NSMutableDictionary dictionary];
     if (!gMSWAwayNatives) gMSWAwayNatives = [NSMutableArray array];
     if ([st isKindOfClass:[NSDictionary class]]) {
-        NSArray *ids = st[@"desktops"];
-        if ([ids isKindOfClass:[NSArray class]]) for (id n in ids) if ([n isKindOfClass:[NSNumber class]] && [n integerValue] > 1 && ![gMSWDesks containsObject:n] && gMSWDesks.count < kMSWMaxDesks) [gMSWDesks addObject:@([n integerValue])];
-        NSNumber *cur = st[@"current"];
-        NSUInteger i = [cur isKindOfClass:[NSNumber class]] ? [gMSWDesks indexOfObject:@(cur.integerValue)] : NSNotFound;
-        gMSWCur = i == NSNotFound ? 0 : i;
         NSDictionary *w = st[@"windows"], *f = st[@"frames"], *fs = st[@"fullscreen"];
-        if ([w isKindOfClass:[NSDictionary class]]) for (id k in w) if ([k isKindOfClass:[NSString class]] && [w[k] isKindOfClass:[NSNumber class]] && [gMSWDesks containsObject:w[k]]) gMSWWinDesk[k] = w[k];
+        // (a record of a desktop of any display's -- 1.8.6 kept only the iPad's, and with one model in use that is what this keeps)
+        if ([w isKindOfClass:[NSDictionary class]]) for (id k in w) if ([k isKindOfClass:[NSString class]] && [w[k] isKindOfClass:[NSNumber class]] && MSWDispDeskKnown(w[k], gMSWMain, gMSWModels)) gMSWWinDesk[k] = w[k];
         if ([f isKindOfClass:[NSDictionary class]]) for (id k in f) if ([k isKindOfClass:[NSString class]] && [f[k] isKindOfClass:[NSString class]]) gMSWWinFrame[k] = f[k];
         NSDictionary *fit = st[@"fit"];
         if ([fit isKindOfClass:[NSDictionary class]]) for (id k in fit) if ([k isKindOfClass:[NSString class]] && [fit[k] isKindOfClass:[NSDictionary class]]) gMSWFit[k] = fit[k];
         NSDictionary *ls = st[@"leftSizes"];
         if ([ls isKindOfClass:[NSDictionary class]]) for (id k in ls) if ([k isKindOfClass:[NSString class]] && [ls[k] isKindOfClass:[NSString class]]) gMSWLeftSize[k] = ls[k];
-        if ([fs isKindOfClass:[NSDictionary class]]) for (id k in fs) if ([k isKindOfClass:[NSString class]] && [fs[k] isKindOfClass:[NSString class]] && [gMSWDesks containsObject:@([k integerValue])]) gMSWFullScreen[k] = fs[k];
+        if ([fs isKindOfClass:[NSDictionary class]]) for (id k in fs) if ([k isKindOfClass:[NSString class]] && [fs[k] isKindOfClass:[NSString class]] && MSWDispDeskKnown(@([k integerValue]), gMSWMain, gMSWModels)) gMSWFullScreen[k] = fs[k];
         MSWAsideRead(st, gMSWAsideDesk, gMSWAsideFrame);
         gMSWKeysCopied = [st[@"keysCopied"] isKindOfClass:[NSNumber class]] && [st[@"keysCopied"] boolValue];
     }
-    DMLog([NSString stringWithFormat:@"[macswitcher] desktops loaded: %@, current %@ (%lu window records)", [gMSWDesks componentsJoinedByString:@","], DMMSWDeskName(gMSWCur), (unsigned long)gMSWWinDesk.count]);
+    NSMutableArray *others = [NSMutableArray array];
+    for (NSString *k in [gMSWModels.allKeys sortedArrayUsingSelector:@selector(compare:)]) [others addObject:[NSString stringWithFormat:@"%@: %@", k, [gMSWModels[k]->desks componentsJoinedByString:@","]]];
+    DMLog([NSString stringWithFormat:@"[macswitcher] desktops loaded: %@, current %@ (%lu window records)%@", [gMSWDesks componentsJoinedByString:@","], DMMSWDeskName(gMSWCur), (unsigned long)gMSWWinDesk.count,
+           others.count ? [NSString stringWithFormat:@"; other displays %@ (next id %ld)", [others componentsJoinedByString:@"; "], (long)gMSWNextDesk] : @""]);
 }
 
 // Keyboard focus never stays on another desktop: while a window is away, SpringBoard's keyboard focus controller is told to keep focus off its
@@ -929,11 +1030,12 @@ static BOOL DMMSWScreenPictureAsync(NSArray<UIWindow *> *exclude, void (^done)(U
     if ([name isKindOfClass:[NSString class]]) opts[gMSWSnapKeyName] = name;
     opts[gMSWSnapKeyTransform] = [NSValue valueWithCATransform3D:CATransform3DMakeAffineTransform(a)];
     CFTimeInterval t0 = CACurrentMediaTime();
+    DMMSWModel *asked = gMSWModel;   // (the answer comes back under the model it was asked under)
     dispatch_async(DMMSWPicQueue(), ^{
         uint32_t slot = 0; BOOL ok = NO;
         @try { slot = ((uint32_t (*)(id, SEL, CGSize, BOOL))objc_msgSend)(slotCtx, NSSelectorFromString(@"createImageSlot:hasAlpha:"), px, NO); } @catch (id e) { slot = 0; }
         if (slot) { opts[gMSWSnapKeyDest] = @(slot); ok = gMSWSnapFn(MACH_PORT_NULL, opts); }
-        dispatch_async(dispatch_get_main_queue(), ^{
+        DMMSWAsyncWith(asked, ^{
             double ms = (CACurrentMediaTime() - t0) * 1000.0;
             DMMSWSlotHolder *h = nil;
             if (slot) { h = [DMMSWSlotHolder new]; h.context = slotCtx; h.slot = slot; }
@@ -1069,7 +1171,7 @@ static void DMMSWZetsuReopen(UIWindow *w) {
     DMZetsuTap(w);
     gZetsuReopenedAt = CACurrentMediaTime();
     __weak UIWindow *ww = w;
-    for (NSNumber *delay in @[@0.6, @1.6]) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    for (NSNumber *delay in @[@0.6, @1.6]) DMMSWAfter(delay.doubleValue, ^{
         UIWindow *x = ww;
         NSValue *intent = x ? objc_getAssociatedObject(x, kStageIntentKey) : nil;
         if (!intent || x.hidden || DMStageMinimized(x) || [objc_getAssociatedObject(x, kMSWAwayKey) boolValue]) return;
@@ -1101,7 +1203,9 @@ void DMMSWRecordsBeforeRestore(NSArray<NSString *> *savedApps) {
     if (DMMSWAppKeysOnly()) DMMSWFoldWindowKeys();
     if (gMSWDesksDirty) DMMSWSave();
 }
+static BOOL DMMSWForMain(void);   // (the sessions, below DMMSWOpen)
 static void DMMSWApply(void) {
+    if (!DMMSWForMain()) return;   // (1.8.7: the iPad's desktops -- another display's session runs: next tick)
     if (DMSMEngine()) {   // (Stage Manager: a desktop is a stage, MacSwitcherSM.h; below only the native windows apply there)
         if (gMSWKeysCopied) { gMSWKeysCopied = NO; gMSWDesksDirty = YES; }   // (the stay on another engine is over)
         DMMSWSMApply();
@@ -1346,7 +1450,7 @@ static void DMMSWRelaunchAt(NSString *b, BOOL afterMWClose) {
         //  remembered frame, which their adoption takes. DMLaunchIntoTile is Aerial's: under Zetsu nothing opened, iPad 2 7 Oct.)
         if (placed) { if (!gLastWindowFrames) gLastWindowFrames = [NSMutableDictionary dictionary]; gLastWindowFrames[b] = [NSValue valueWithCGRect:f]; }
         if (e == DMEngineZetsu) DMZetsuLaunch(b);
-        else if (afterMWClose) { NSString *bb = [b copy]; dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMLaunchAsWindow(bb); }); }   // (once MilkyWay's close is through)
+        else if (afterMWClose) { NSString *bb = [b copy]; DMMSWAfter(0.4, ^{ DMLaunchAsWindow(bb); }); }   // (once MilkyWay's close is through)
         else DMLaunchAsWindow(b);
     } else if (placed) DMLaunchIntoTile(b, f); else DMOpenApp(b);
 }
@@ -1489,6 +1593,7 @@ static void DMMSWSlDrop(void) {
     [gMSWSlRoot removeFromSuperview];
     gMSWSlRoot = nil; gMSWSlStrip = nil; gMSWSlOld = nil; gMSWSlSide[0] = gMSWSlSide[1] = nil;
     if (!gMSWOpen) gMSWWindow.hidden = YES;
+    DMMSWSessionEndSoon();
 }
 // The layer window shown -- measured on the M1, the render server drew no frame for ~13 ms after the window came up in the frame the motion began
 // in; so a gesture that may become a slide shows it (empty, touches going through) when it begins, and a slide from rest starts moving a frame
@@ -1497,7 +1602,7 @@ static BOOL DMMSWLayerUp(BOOL interactive) {
     UIWindow *w = DMMSWLayer();
     if (!w) return NO;
     w.userInteractionEnabled = interactive;
-    if (w.hidden) { w.hidden = NO; gMSWSlFresh = YES; dispatch_async(dispatch_get_main_queue(), ^{ gMSWSlFresh = NO; }); }
+    if (w.hidden) { w.hidden = NO; gMSWSlFresh = YES; DMMSWAsync(^{ gMSWSlFresh = NO; }); }
     return YES;
 }
 // The slide comes up: the left desktop's picture covers the screen; the pictures of the desktops on its left and right (nil: none) wait beside it.
@@ -1656,7 +1761,7 @@ static void DMMSWSlLive(NSInteger side, CGFloat v, void (^done)(void)) {
 // @@:@{CGRect}), the call -snapshotViewAfterScreenUpdates: is built on. The desktop under the open view, e.g. once a window was dragged away from
 // it (the picture from when the view opened still shows that window). nil when UIKit has no such call.
 static UIView *DMMSWScreenWithoutView(void) {
-    UIScreen *s = [UIScreen mainScreen];
+    UIScreen *s = DMMSWScreen();   // (the display the view is on)
     static int has = -1;
     if (has < 0) has = DMMSWHasMethod([UIScreen class], @"_snapshotExcludingWindows:withRect:", @"@@:@{CGRect={CGPoint=dd}{CGSize=dd}}");
     if (has <= 0) return nil;
@@ -1667,7 +1772,7 @@ static UIView *DMMSWScreenWithoutView(void) {
 }
 // The left desktop's picture kept from the view's opening or the gesture's start (nil: none fits -- DMMSWSwitchRun asks for the screen then).
 static UIView *DMMSWLeftPictureKept(BOOL wasOpen, NSString **src) {
-    CGSize screen = [UIScreen mainScreen].bounds.size;
+    CGSize screen = DMMSWScreen().bounds.size;
     UIView *pic = nil;
     if (wasOpen && gMSWOpenShot && gMSWOpenShotId == DMMSWCurId() && CGSizeEqualToSize(gMSWOpenShot.bounds.size, screen)) { pic = gMSWOpenShot; *src = @"when the Mac Switcher opened"; }
     else if (!wasOpen && gMSWLiftPic && CACurrentMediaTime() - gMSWLiftPicAt < 2.0 && gMSWLiftPicId == DMMSWCurId() && CGSizeEqualToSize(gMSWLiftPic.bounds.size, screen)) { pic = gMSWLiftPic; *src = @"when the gesture began"; }
@@ -1679,7 +1784,7 @@ static UIView *DMMSWLeftPictureKept(BOOL wasOpen, NSString **src) {
 static UIView *DMMSWLeftPictureNow(BOOL wasOpen, NSString **src) {
     UIView *pic = nil;
     if (wasOpen) { pic = DMMSWScreenWithoutView(); if (pic) *src = @"now, without the view"; }
-    if (!pic) { DMMSWSpanBegin(); pic = [[UIScreen mainScreen] snapshotViewAfterScreenUpdates:wasOpen]; DMMSWSpanEnd(@"left picture (the screen now)"); *src = wasOpen ? @"now, the screen as drawn" : @"now"; }
+    if (!pic) { DMMSWSpanBegin(); pic = [DMMSWScreen() snapshotViewAfterScreenUpdates:wasOpen]; DMMSWSpanEnd(@"left picture (the screen now)"); *src = wasOpen ? @"now, the screen as drawn" : @"now"; }
     return pic;
 }
 // Stage Manager's switch (MacSwitcherSM.h): the kept picture, else the screen now the waiting way -- as before (the iPad 2's path is not changed here).
@@ -1859,7 +1964,7 @@ static NSString *DMMSWChangeDesktop(NSUInteger from, NSUInteger to) {
         CGSize was = CGSizeFromString(leftAt);                                                                    //  for the new shape, as a turn arranges the shown ones)
         DMLog([NSString stringWithFormat:@"[macswitcher] %@ was left at %@, the screen is %@ now: its windows are arranged for the turn", DMMSWDeskName(to), leftAt, NSStringFromCGSize(screen)]);
         DMLayoutNoteHold(2.4);   // (the layouts its windows had when it was left are what the turn puts back: TurnPlace.h, 1.7.4)
-        dispatch_async(dispatch_get_main_queue(), ^{ DMRelayoutForOrientation(was, [UIScreen mainScreen].bounds.size); });   // (its Fit group is tiled again there)
+        DMMSWAsync(^{ DMRelayoutForOrientation(was, [UIScreen mainScreen].bounds.size); });   // (its Fit group is tiled again there)
     } else if (DMFitEnabled() && gFitGroup.count >= 1 && gFitSlots[gFitGroup[0]]) {   // (its Fit group, tiled again for the screen as it is; a filling one fills)
         DMLog([NSString stringWithFormat:@"[macswitcher] %@'s Fit to Window group (%@) tiled again", DMMSWDeskName(to), [gFitGroup componentsJoinedByString:@", "]]);
         gMoveKeepsOrder = YES; DMApplyGroupSlots(nil); gMoveKeepsOrder = NO;
@@ -1945,12 +2050,12 @@ static void DMMSWWhenDrawn(NSString *wantFront, BOOL (^landed)(void), BOOL (^gon
         BOOL l = landed();
         if (l && !landedAt) landedAt = CACurrentMediaTime();
         BOOL ready = l && frontOK && still >= 3 && DMMSWSpringBoardIdle() && DMMSWWindowsShown();
-        if (!ready && !(landedAt && CACurrentMediaTime() - landedAt > 1.2)) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NSEC_PER_SEC / 120)), dispatch_get_main_queue(), poll); return; }
+        if (!ready && !(landedAt && CACurrentMediaTime() - landedAt > 1.2)) { DMMSWAfter(1.0 / 120.0, poll); return; }
         poll = nil;
         then(ready ? [NSString stringWithFormat:@"drawn after %d frames", frames] : [NSString stringWithFormat:@"not settled after %d frames (front %@, still %d, idle %d, windows shown %d): shown anyway", frames, frontOK ? @"ok" : @"not yet", still, DMMSWSpringBoardIdle(), DMMSWWindowsShown()]);
     };
     poll = p;
-    dispatch_async(dispatch_get_main_queue(), poll);
+    DMMSWAsync(poll);
 }
 
 // The switch to the desktop at place `to`: the slide (begun by the fingers -- the tracker --, or here from rest) goes there at speed v; a frame
@@ -1999,7 +2104,7 @@ static void DMMSWSwitchRun(NSUInteger to, NSString *why, CGFloat v, void (^done)
             DMMSWSwitchGo(to, whyCopy, v, done, NO, t0, DMMSWLeftFromParts(fsPic, fsPic ? fsv : nil));
         };
         if (fsv && DMMSWPictureAsync(fsv, ^(UIView *pic, double ms) { go(pic, pic ? [NSString stringWithFormat:@"the full-screen app's picture in %.1f ms", ms] : @"the full-screen app's picture not drawn"); })) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ go(nil, @"the full-screen app's picture not in within 0.3 s"); });
+            DMMSWAfter(0.3, ^{ go(nil, @"the full-screen app's picture not in within 0.3 s"); });
             return;
         }
         go(nil, fb ? @"no picture of its full-screen app could be asked" : @"no full-screen app");
@@ -2019,7 +2124,7 @@ static void DMMSWSwitchRun(NSUInteger to, NSString *why, CGFloat v, void (^done)
             go(pic, pic ? [NSString stringWithFormat:@"now, asked without waiting (%.1f ms)", ms] : @"not drawn: drawn from its parts");
         });
         if (asked) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ if (!went) DMLog(@"[macswitcher] the screen's picture did not come within 0.3 s: the left desktop slides drawn from its parts"); go(nil, @"none within 0.3 s: drawn from its parts"); });
+            DMMSWAfter(0.3, ^{ if (!went) DMLog(@"[macswitcher] the screen's picture did not come within 0.3 s: the left desktop slides drawn from its parts"); go(nil, @"none within 0.3 s: drawn from its parts"); });
             return;
         }
     }
@@ -2059,7 +2164,7 @@ static void DMMSWRunPendingLaunch(NSString *why) {
     NSString *launch = gMSWPendingLaunch; BOOL tap = gMSWPendingLaunchTap;
     gMSWPendingLaunch = nil; gMSWPendingLaunchTap = NO;
     if (!launch.length) return;
-    dispatch_async(dispatch_get_main_queue(), ^{
+    DMMSWAsync(^{
         DMLog([NSString stringWithFormat:@"[macswitcher] %@, opened while the desktop slid in: now (%@)", launch, why]);
         BOOL was = gIconTapLaunch; gIconTapLaunch = tap;
         BOOL opened = DMWindowedLaunch(launch);
@@ -2072,7 +2177,7 @@ static BOOL DMMSWSwRedirect(NSInteger side, CGFloat v, NSString *why);
 static UIView *DMMSWSlEnsurePic(NSInteger k, NSUInteger place) {
     UIView *have = DMMSWSlPicAt(k);
     if (have || !gMSWSlStrip || place >= gMSWDesks.count) return have;
-    UIView *pic = DMMSWDeskPicture(place, [UIScreen mainScreen].bounds);
+    UIView *pic = DMMSWDeskPicture(place, DMMSWScreen().bounds);
     if (!pic) return nil;
     if (k == -1 || k == 1) gMSWSlSide[k > 0 ? 1 : 0] = pic;
     else { if (!gMSWSlMore) gMSWSlMore = [NSMutableDictionary dictionary]; gMSWSlMore[@(k)] = pic; }
@@ -2115,7 +2220,7 @@ static void DMMSWSwAim(CGFloat v, BOOL wasOpen) {
     }
     if (wasOpen) gMSWSwViewGoneAt = CACurrentMediaTime() + kMSWViewFade;
     delay = MAX(delay, MAX(1.0 / 60.0, gMSWSwViewGoneAt - CACurrentMediaTime()));   // (a redirect right after a tap in the strip waits for the view too)
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMMSWSwChange(gen, CACurrentMediaTime()); });
+    DMMSWAfter(delay, ^{ DMMSWSwChange(gen, CACurrentMediaTime()); });
 }
 // The switch itself, the left desktop's picture in hand (old; from the gesture: the slide that follows the fingers is up already).
 static void DMMSWSwitchGo(NSUInteger to, NSString *why, CGFloat v, void (^done)(void), BOOL fromGesture, CFTimeInterval t0, UIView *old) {
@@ -2155,7 +2260,7 @@ static void DMMSWSwChange(NSUInteger gen, CFTimeInterval since) {
     // (the change of a redirected switch whose change before asked for a workspace transition -- a full-screen app sent Home or opened -- waits
     //  while SpringBoard still runs one, at most 0.4 s: SpringBoard runs one transition after another; a gesture's own end needs no wait)
     if (gMSWCur != gMSWSwTo && gMSWSwChanged && gMSWChangeAskedWS && !DMMSWSpringBoardIdle() && CACurrentMediaTime() - since < 0.4) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NSEC_PER_SEC / 120)), dispatch_get_main_queue(), ^{ DMMSWSwChange(gen, since); });
+        DMMSWAfter(1.0 / 120.0, ^{ DMMSWSwChange(gen, since); });
         return;
     }
     NSUInteger at = gMSWCur, to = gMSWSwTo;
@@ -2172,8 +2277,8 @@ static void DMMSWSwChange(NSUInteger gen, CFTimeInterval since) {
         gMSWFreshPics = nil;
         t3 = CACurrentMediaTime();
         DMMSWMark([NSString stringWithFormat:@"windows changed (%.1f ms)", (t3 - t2) * 1000]);
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ DMMSWMark(@"after the change's commit"); });
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(120 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ DMMSWSpanEnd(@"the windows change and 120 ms after it"); });
+        DMMSWAfter(0.001, ^{ DMMSWMark(@"after the change's commit"); });
+        DMMSWAfter(0.12, ^{ DMMSWSpanEnd(@"the windows change and 120 ms after it"); });
     } else fs = DMFullScreenAppInFront() ? [DMFrontApp() bundleIdentifier] : nil;   // (back where it is: what is in front stays)
     NSString *head;
     if (gMSWSwFrom == to) head = [NSString stringWithFormat:@"[macswitcher] %@ back to %@ (%@%@)", gMSWSwWhy, DMMSWDeskName(to), gMSWSwRedirects ? [NSString stringWithFormat:@"%lu redirect(s), ", (unsigned long)gMSWSwRedirects] : @"", at != to ? @"windows changed back" : @"nothing changed"];
@@ -2273,7 +2378,7 @@ static BOOL DMMSWSwRedirect(NSInteger side, CGFloat v, NSString *why) {
 // or the view is up). The screen's picture is asked without waiting; the bump plays when it is in, on our layer window (a switch asked meanwhile
 // takes the slide over).
 static void DMMSWBump(NSInteger side) {
-    if (!side || gMSWSwitching || gMSWSlRoot || gMSWOpen || MSBReduceMotion() || !DMMSWAsyncScreenOn()) return;
+    if (!side || gMSWSwitching || gMSWSlRoot || gMSWOpen || MSBReduceMotion() || !DMMSWAsyncScreenOn() || !DMMSWIsMain()) return;   // (the picture without waiting is the iPad's screen's)
     DMMSWScreenPictureAsync(gMSWWindow ? @[gMSWWindow] : @[], ^(UIView *pic, double ms) {
         if (!pic || gMSWSwitching || gMSWSlRoot || gMSWOpen || !DMMSWSlBegin(pic, nil, nil)) return;
         UIView *strip = gMSWSlStrip; NSUInteger gen = gMSWSlGen;
@@ -2304,9 +2409,8 @@ static void DMMSWSideRequest(NSInteger side, CGFloat v, NSString *why) {
 // the app windows stayed, M1 report 27 Oct). Its id, or 0 (the Mac Switcher is off, or already the most).
 static NSInteger DMMSWMakeDesktop(void) {
     if (!DMMSWDesktopsHere() || gMSWDesks.count >= kMSWMaxDesks) return 0;
-    NSInteger nid = 2;
-    while ([gMSWDesks containsObject:@(nid)]) nid++;
-    if (gMSWDesks.count == 1) {
+    NSInteger nid = DMMSWNewDeskId();
+    if (gMSWDesks.count == 1 && DMMSWIsMain()) {   // (the engines' and Finder's windows are the iPad's)
         NSNumber *first = gMSWDesks.firstObject ?: @1;
         gMSWWinDesk = gMSWWinDesk ?: [NSMutableDictionary dictionary];
         for (UIView *st in DMAerialStagesAll()) { NSString *b = DMStageBundle(st); if (b.length) gMSWWinDesk[b] = first; }
@@ -2321,7 +2425,7 @@ static NSInteger DMMSWMakeDesktop(void) {
     //  state saved by builds before that)
     NSString *nk = [@(nid) stringValue];
     [gMSWLeftSize removeObjectForKey:nk]; [gMSWFit removeObjectForKey:nk]; [gMSWFullScreen removeObjectForKey:nk]; [gMSWShots removeObjectForKey:@(nid)]; [gMSWShotSet removeObjectForKey:@(nid)];
-    [gMSWDesks addObject:@(nid)];
+    DMMSWDeskAdded(nid);
     DMLog([NSString stringWithFormat:@"[macswitcher] %@ made", DMMSWDeskName(gMSWDesks.count - 1)]);
     return nid;
 }
@@ -2362,7 +2466,7 @@ static void DMMSWRemoveDesktop(NSUInteger i) {
     // (Stage Manager: shown together when the neighbour is on screen, MacSwitcherSM.h -- before the records go with the last but one desktop: the
     //  merge reads them, and found none, so removing Desktop 2 of two sent the iPad 2 to the Home Screen)
     if (DMSMEngine()) DMMSWSMMerged(nb);
-    if (gMSWDesks.count == 1) { [gMSWWinDesk removeAllObjects]; [gMSWWinFrame removeAllObjects]; [gMSWFullScreen removeAllObjects]; [gMSWLeftSize removeAllObjects]; [gMSWShots removeAllObjects]; [gMSWFit removeAllObjects]; [gMSWAsideDesk removeAllObjects]; [gMSWAsideFrame removeAllObjects]; }   // (one desktop: no records needed)
+    if (gMSWDesks.count == 1) DMMSWClearMine();   // (one desktop: no records needed -- this display's; another display's stay, 1.8.7)
     DMMSWApply();
     DMMSWSave();
     DMMSWRebuildOpen();
@@ -2502,7 +2606,7 @@ static BOOL DMMSWBringHere(NSString *b, NSDictionary *w) {
     if (tiled) { gMoveKeepsOrder = YES; DMApplyGroupSlots(st); gMoveKeepsOrder = NO; }   // (it straight into its tile, the others close up)
     if (askL && askR) {   // (after the launch's own path has brought it forward)
         NSString *bb = [b copy];
-        dispatch_async(dispatch_get_main_queue(), ^{ if (DMStageForBundle(bb) == st) DMPromptForSide(st, bb, askL, askR); });
+        DMMSWAsync(^{ if (DMStageForBundle(bb) == st) DMPromptForSide(st, bb, askL, askR); });
     }
     DMMSWSave();
     DMLog([NSString stringWithFormat:@"[macswitcher] %@ opened: its window was on %@ -- it comes to %@ (Go to the App's Desktop is off)", b, from, here]);
@@ -2545,12 +2649,26 @@ static BOOL DMMSWLaunchSwitches(NSString *b) {
     });
     return YES;
 }
-// Settings off (or the self-check): everything on Desktop 1 again (what it had is kept first, DMMSWKeepForLater below).
+// The flat entries of the model in use's desktops go -- its window records with their frames, full-screen apps, sizes, Fit and pictures; for the
+// iPad's also those of no model (stale ones: 1.8.6 cleared every entry) and the other engines' records aside --; another display's stay (1.8.7).
+static void DMMSWClearMine(void) {
+    DMMSWModel *me = DMMSWM();
+    BOOL (^mine)(id) = ^BOOL(id d) { DMMSWModel *o = MSWDispOwner(d, gMSWMain, gMSWModels); return o == me || (!o && me == gMSWMain); };
+    for (NSString *k in [gMSWWinDesk.allKeys copy]) if (mine(gMSWWinDesk[k])) [gMSWWinDesk removeObjectForKey:k];
+    for (NSString *k in [gMSWWinFrame.allKeys copy]) if (!gMSWWinDesk[k] || mine(gMSWWinDesk[k])) [gMSWWinFrame removeObjectForKey:k];
+    for (NSMutableDictionary *d in @[gMSWFullScreen ?: @{}.mutableCopy, gMSWFit ?: @{}.mutableCopy, gMSWLeftSize ?: @{}.mutableCopy])
+        for (NSString *k in [d.allKeys copy]) if (mine(@(k.integerValue))) [d removeObjectForKey:k];
+    for (NSNumber *k in [gMSWShots.allKeys copy]) if (mine(k)) { [gMSWShots removeObjectForKey:k]; [gMSWShotSet removeObjectForKey:k]; }
+    if (me == gMSWMain) { [gMSWAsideDesk removeAllObjects]; [gMSWAsideFrame removeAllObjects]; }
+}
+// Settings off (or the self-check): everything on Desktop 1 again (what it had is kept first, DMMSWKeepForLater below). The iPad's: another
+// display's desktops stay as they are, in the desktops file, for when it is on again (1.8.7).
 static void DMMSWCollapse(void) {
     if (!gMSWDesks) return;
+    DMMSWForMain();
     if (gMSWDesks.count > 1) DMLog(@"[macswitcher] one desktop again: every window on Desktop 1");
     gMSWDesks = [NSMutableArray arrayWithObject:@1]; gMSWCur = 0;
-    [gMSWWinDesk removeAllObjects]; [gMSWWinFrame removeAllObjects]; [gMSWFullScreen removeAllObjects]; [gMSWShots removeAllObjects]; [gMSWFit removeAllObjects]; [gMSWAsideDesk removeAllObjects]; [gMSWAsideFrame removeAllObjects];
+    DMMSWClearMine();
     DMMSWApply();
     DMMSWSave();
 }
@@ -2560,6 +2678,7 @@ static void DMMSWCollapse(void) {
 // (DMMSWKeptPath): the desktops, the windows on each with their places, each desktop's full-screen app, the screen size it was left at and its Fit
 // to Window arrangement -- the desktop on screen's own too, live until then. Nothing is kept with one desktop.
 static void DMMSWKeepForLater(void) {
+    DMMSWForMain();   // (the iPad's: another display's session was ended first, DMMSWEndOtherDisplay)
     NSString *path = DMMSWKeptPath();
     if (gMSWDesks.count < 2) {
         if (gMSWKept || [[NSFileManager defaultManager] fileExistsAtPath:path]) { gMSWKept = nil; [[NSFileManager defaultManager] removeItemAtPath:path error:nil]; }
@@ -2583,6 +2702,7 @@ static void DMMSWKeepForLater(void) {
 // A quit through the tweak already went from the kept file (DMMSWKeptForget); the check here catches every other way a window went. The desktops
 // file already holding several desktops (written meanwhile) wins: the kept copy goes.
 static void DMMSWBringBack(void) {
+    if (!DMMSWForMain()) return;   // (the iPad's, at the switch's on: no session runs then)
     NSString *path = DMMSWKeptPath();
     NSDictionary *st = gMSWKept;
     BOOL file = [[NSFileManager defaultManager] fileExistsAtPath:path];
@@ -2616,12 +2736,20 @@ static void DMMSWBringBack(void) {
     NSDictionary *r = MSWKeptBringBack(st, sm, told, aliveKeys, aliveApps, stages, front, sm ? [DMSMMinimizedSet() allObjects] : @[], windowApps,
                                        running, quit, NSStringFromCGSize([UIScreen mainScreen].bounds.size), kMSWMaxDesks);
     if (!r) return;
+    // (1.8.7: another display's entries stay as they are -- its desktops were never collapsed)
+    NSMutableDictionary *ow = [NSMutableDictionary dictionary], *of = [NSMutableDictionary dictionary], *ofs = [NSMutableDictionary dictionary], *ols = [NSMutableDictionary dictionary], *ofit = [NSMutableDictionary dictionary];
+    BOOL (^other)(id) = ^BOOL(id d) { DMMSWModel *o = MSWDispOwner(d, gMSWMain, gMSWModels); return o && o != gMSWMain; };
+    for (NSString *k in gMSWWinDesk) if (other(gMSWWinDesk[k])) { ow[k] = gMSWWinDesk[k]; if (gMSWWinFrame[k]) of[k] = gMSWWinFrame[k]; }
+    for (NSString *k in gMSWFullScreen) if (other(@(k.integerValue))) ofs[k] = gMSWFullScreen[k];
+    for (NSString *k in gMSWLeftSize) if (other(@(k.integerValue))) ols[k] = gMSWLeftSize[k];
+    for (NSString *k in gMSWFit) if (other(@(k.integerValue))) ofit[k] = gMSWFit[k];
     gMSWDesks = [r[@"desktops"] mutableCopy]; gMSWCur = [r[@"current"] unsignedIntegerValue];
     gMSWWinDesk = [r[@"windows"] mutableCopy]; gMSWWinFrame = [r[@"frames"] mutableCopy];
     gMSWFullScreen = [r[@"fullscreen"] mutableCopy]; gMSWLeftSize = [r[@"leftSizes"] mutableCopy]; gMSWFit = [r[@"fit"] mutableCopy];
+    [gMSWWinDesk addEntriesFromDictionary:ow]; [gMSWWinFrame addEntriesFromDictionary:of]; [gMSWFullScreen addEntriesFromDictionary:ofs]; [gMSWLeftSize addEntriesFromDictionary:ols]; [gMSWFit addEntriesFromDictionary:ofit];
     MSWAsideRead(st, gMSWAsideDesk, gMSWAsideFrame);   // (a desktop that is gone by then: DMMSWRecordsBeforeRestore leaves its entries out)
     for (NSString *b in r[@"gone"]) for (NSString *dk in [gMSWFit allKeys]) { NSDictionary *x = DMMSWFitWithout(gMSWFit[dk], b); if (x) gMSWFit[dk] = x; }   // (their tiles close up)
-    [gMSWShots removeAllObjects]; [gMSWShotSet removeAllObjects];
+    for (NSNumber *k in [gMSWShots.allKeys copy]) if (!other(k)) { [gMSWShots removeObjectForKey:k]; [gMSWShotSet removeObjectForKey:k]; }
     gMSWDesksDirty = YES;
     NSDictionary<NSString *, NSNumber *> *fresh = r[@"fresh"];
     NSMutableArray<NSString *> *freshNames = [NSMutableArray array];
@@ -2917,6 +3045,9 @@ static UIView *DMMSWBuildStrip(UIView *root, CGRect b) {
             NSNumber *did = gMSWDesks.count > i ? gMSWDesks[i] : nil;
             UIView *shot = did ? gMSWShots[did] : nil;
             if (did && (!shot || ![gMSWShotSet[did] isEqualToArray:DMMSWWindowSet(did.integerValue)]) && (shot || DMMSWWindowSet(did.integerValue).count)) shot = DMMSWComposedDesktop(did.integerValue, b);   // (stale or none)
+            // (its wallpaper, below, taken now if no view took it yet, as the slide takes it: another display's view takes none -- its background is
+            //  the live blur -- and its empty desktop not seen since the start was black, iPad 2 over AirPlay d27)
+            if (!shot && !gMSWWallContents) DMMSWWallLazy();
             if (shot) {   // (as it was left: scaled to fill the tile)
                 [shot removeFromSuperview];
                 shot.transform = CGAffineTransformIdentity;
@@ -3060,13 +3191,158 @@ static void DMMSWTeardown(void) {
     gMSWOpen = NO; gMSWClosing = NO; gMSWTurnAt = 0;
     DMMSWFocus(NO);
     DMMenuKeyboardOrder();   // (a windowed app's keyboard goes back to its level)
-    DMLog([NSString stringWithFormat:@"[macswitcher] closed: %lu portals let go", (unsigned long)n]);
+    DMLog([NSString stringWithFormat:@"[macswitcher] closed: %lu portals let go%@", (unsigned long)n, DMMSWIsMain() ? @"" : [NSString stringWithFormat:@" (%@)", DMMSWM().key]]);
+    DMMSWSessionEndSoon();
 }
 static BOOL DMMSWIsOpen(void) { return gMSWOpen; }
 
 static CFTimeInterval gMSWGestureAt = 0;   // (a gesture just opened the view: SpringBoard's own switcher is still on its way back for a moment)
 static BOOL DMMSWGestureGrace(void) { return CACurrentMediaTime() - gMSWGestureAt < 1.5; }
-static void DMMSWOpen(NSString *why) {
+
+// ==== sessions on a display (1.8.7 commit 15; design section 7: one session at a time, on the display it was asked from) =========================
+// A session: the view open or closing, a switch, a slide, a gesture followed, a drop landing. The model in use changes only while none runs: a request
+// for another display's Mac Switcher then waits until it ends (logged; the tick takes it), and a step of the iPad's that reads its desktops (a launch's
+// join, SpringBoard's own transitions, the tick, Spotlight, Command-Tab) runs on the iPad's model -- with another display's session running it is left
+// to the engine's own way as with one desktop, and the tick records what it did afterwards (DMMSWForMain).
+static BOOL DMMSWSessionIdle(void) { return !gMSWOpen && !gMSWClosing && !gMSWSwitching && !gMSWSlRoot && !gMSWTrack && !gMSWDropping && !gMSWDragTile && !gMSWDropFinish; }
+// The model of a display's screen (nil or the iPad's: the iPad's), made the first time that display's Mac Switcher is asked for (make: its Desktop 1
+// gets the next id; at most 8 other displays, the one used longest ago forgotten). nil: no model to have (a screen with no key, the engine not Stage Manager).
+static DMMSWModel *DMMSWModelOfScreen(UIScreen *s, BOOL make) {
+    DMMSWM();
+    if (!s || s == [UIScreen mainScreen]) return gMSWMain;
+    NSString *k = DMDispKeyOfScreen(s);
+    if (!k.length) return nil;
+    if (!gMSWModels) gMSWModels = [NSMutableDictionary dictionary];
+    DMMSWModel *m = gMSWModels[k];
+    if (m || !make) return m;
+    m = MSWDispNewModel(k, MSWDispAllIds(gMSWMain, gMSWModels), &gMSWNextDesk, [[NSDate date] timeIntervalSince1970]);
+    if (!m) return nil;
+    gMSWModels[k] = m;
+    for (NSString *gone in MSWDispTrim(gMSWModels, k, kMSWDispMaxDisplays, gMSWWinDesk)) DMLog([NSString stringWithFormat:@"[macswitcher] more than %lu other displays: %@'s desktops forgotten (used longest ago, plain ones first)", (unsigned long)kMSWDispMaxDisplays, gone]);
+    DMLog([NSString stringWithFormat:@"[macswitcher] desktops for %@ made: Desktop 1 is %@", k, m->desks.firstObject]);
+    DMMSWSave();
+    return m;
+}
+// The model in use becomes m (only between sessions). Another display's needs its screen connected and its layer window; the iPad's layer window is
+// hidden while it is not in use, and the other way round.
+static BOOL DMMSWUse(DMMSWModel *m, NSString *why) {
+    if (!m) return NO;
+    if (m == DMMSWM()) { if (!m || m == gMSWMain) gMSWWindow = gMSWMainWindow; return YES; }
+    if (!DMMSWSessionIdle()) { DMLog([NSString stringWithFormat:@"[macswitcher] %@: %@'s Mac Switcher is busy -- not now", why ?: @"?", DMMSWIsMain() ? @"the iPad" : DMMSWM().key]); return NO; }
+    if (m != gMSWMain && !DMMSWScreenOf(m)) { DMLog([NSString stringWithFormat:@"[macswitcher] %@: %@ is not connected", why ?: @"?", m.key]); return NO; }
+    if (gMSWWindow && !gMSWWindow.hidden) gMSWWindow.hidden = YES;
+    gMSWModel = m;
+    if (m == gMSWMain) gMSWWindow = gMSWMainWindow;
+    else { m.lastSeen = [[NSDate date] timeIntervalSince1970]; gMSWWindow = nil; DMMSWLayer(); }
+    return YES;
+}
+// The iPad's desktops for a step of the iPad's: YES with the iPad's model in use (made so when no session runs), NO while another display's runs.
+static BOOL DMMSWForMain(void) { return DMMSWIsMain() || DMMSWUse(gMSWMain, @"a step of the iPad's"); }
+// A session ended: the iPad's model in use again (a moment later, so the step that ended it finishes on its own model first).
+static void DMMSWSessionEndSoon(void) {
+    if (DMMSWIsMain()) return;
+    DMMSWAsyncWith(nil, ^{ if (!DMMSWIsMain() && DMMSWSessionIdle()) DMMSWUse(gMSWMain, @"the session on another display ended"); });
+}
+// A session on another display ends at once (its display went, or the Mac Switcher went off): the view, the slide and the switch go -- a switch's
+// later steps find their aim given up (DMMSWSMAbort) --, the iPad's model in use. Its desktops stay.
+static void DMMSWTeardown(void);
+static void DMMSWSMAbort(void);   // (MacSwitcherSM.h)
+static void DMMSWEndOtherDisplay(NSString *why) {
+    if (DMMSWIsMain()) return;
+    DMLog([NSString stringWithFormat:@"[macswitcher] %@: the Mac Switcher on %@ ends now", why, DMMSWM().key ?: @"another display"]);
+    if (gMSWOpen) DMMSWTeardown();
+    DMMSWSlDrop();
+    if (gMSWSwitching) DMMSWSMAbort();
+    gMSWSwitching = NO; gMSWTrack = 0;
+    if (gMSWWindow) gMSWWindow.hidden = YES;
+    gMSWModel = gMSWMain; gMSWWindow = gMSWMainWindow;
+}
+// Another display's layer window went with its display: a session on it ends at once (nothing of it can be seen or finished there).
+static void DMMSWTVLayerGone(NSArray<UIWindow *> *gone) {
+    if (!gMSWWindow || [gone indexOfObjectIdenticalTo:gMSWWindow] == NSNotFound || DMMSWIsMain()) return;
+    DMMSWEndOtherDisplay(@"its display went");
+}
+// Forget This Display (Settings > Desktop > Displays) and the registry's 9th: a display no longer remembered in the displays domain (no "<key>/info")
+// and not connected loses its desktops here too (MSWDispForget). Only while the per-display settings keep the registry (their master switch on).
+static void DMMSWForgetGone(void) {
+    if (!gMSWModels.count || !gDMDispLayerOn) return;
+    CFStringRef dom = CFSTR(MSBD_DISP_DOMAIN);
+    CFPreferencesSynchronize(dom, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    NSArray *keys = CFBridgingRelease(CFPreferencesCopyKeyList(dom, kCFPreferencesCurrentUser, kCFPreferencesAnyHost));
+    if (![keys isKindOfClass:[NSArray class]]) return;
+    NSSet *keySet = [NSSet setWithArray:keys];
+    BOOL changed = NO;
+    for (NSString *k in [gMSWModels.allKeys copy]) {
+        if ([keySet containsObject:[k stringByAppendingString:@MSBD_DISP_INFO_SUFFIX]] || DMMSWScreenOf(gMSWModels[k]) || gMSWModels[k] == DMMSWM()) continue;
+        NSArray *ids = MSWDispForget(gMSWModels, k, gMSWWinDesk, gMSWWinFrame, @[gMSWFullScreen ?: [NSMutableDictionary dictionary], gMSWFit ?: [NSMutableDictionary dictionary], gMSWLeftSize ?: [NSMutableDictionary dictionary]]);
+        for (NSNumber *n in ids) { [gMSWShots removeObjectForKey:n]; [gMSWShotSet removeObjectForKey:n]; }
+        DMLog([NSString stringWithFormat:@"[macswitcher] %@ is no longer remembered: its %lu desktop(s) forgotten", k, (unsigned long)ids.count]);
+        changed = YES;
+    }
+    if (changed) DMMSWSave();
+}
+static void DMMSWWatchDisplays(void) {
+    static BOOL once = NO; static int token = 0;
+    if (once) return;
+    once = YES;
+    notify_register_dispatch(MSBD_DISP_NOTIFY, &token, dispatch_get_main_queue(), ^(int t) { DMMSWForgetGone(); });
+}
+// The other display's desktop screen (SpringBoard's window scene there, with a display key), nil with the iPad alone (iPadOS drives one other display).
+static UIScreen *DMMSWOtherScreen(void) {
+    @try {
+        for (UIScene *sc in [UIApplication sharedApplication].connectedScenes)
+            if ([sc isKindOfClass:[UIWindowScene class]] && ((UIWindowScene *)sc).screen && ((UIWindowScene *)sc).screen != [UIScreen mainScreen] && DMDispKeyOfScreen(((UIWindowScene *)sc).screen)) return ((UIWindowScene *)sc).screen;
+    } @catch (NSException *e) {}
+    return nil;
+}
+// 1.8.7 commit 16: the display the Mac Switcher's keys act on (Control-Up / Left / Right; MSWDisplays.h MSWDispKeysOnOther): a session's display; else the
+// display of the scene with the keyboard focus (SpringBoard's keyboard focus controller's -externalSceneWithFocus, its window's card on which screen);
+// else the display the pointer was on last (PointerRegion.h: its hovers on each display's system gestures window); else the iPad. Stage Manager only
+// (another display has no desktops of its own otherwise). nil: the iPad. *why: which of them decided.
+static UIScreen *DMMSWKeysScreen(NSString **why) {
+    UIScreen *other = DMSMEngine() ? DMMSWOtherScreen() : nil;
+    int session = DMMSWSessionIdle() ? -1 : (DMMSWIsMain() ? 0 : 1), focus = -1;
+    NSString *fk = nil;
+    if (other && session < 0) {
+        id kfc = DMKeyboardFocusController();
+        id focused = nil; NSString *ident = nil;
+        @try { focused = [kfc respondsToSelector:NSSelectorFromString(@"externalSceneWithFocus")] ? DMCall(kfc, @"externalSceneWithFocus") : nil; ident = focused ? [focused valueForKey:@"identifier"] : nil; } @catch (id e) { focused = nil; }
+        NSString *b = DMBundleOfSceneID(focused);
+        fk = b.length && [ident isKindOfClass:[NSString class]] ? DMSMKeyMake(b, ident) : nil;
+        UIView *card = fk ? DMSMCardFor(fk) : nil;
+        if (!card && b.length) card = DMSMCardFor(b);   // (windows told apart by app: the app's)
+        UIScreen *cs = card.window.screen;
+        if (cs) focus = cs == [UIScreen mainScreen] ? 0 : 1;
+    }
+    BOOL onOther = MSWDispKeysOnOther(session, focus, DMPtrOtherDisplayAt(), gDMPtrAnyAt, other != nil);
+    if (why) *why = !other ? @"the iPad alone" : session >= 0 ? @"the session's display" : focus >= 0 ? [NSString stringWithFormat:@"the keyboard focus (%@)", DMSMKeyText(fk) ?: @"?"]
+                  : onOther ? @"the pointer was there last" : @"the iPad (no focus, the pointer last on the iPad)";
+    if (session >= 0) return session == 1 ? DMMSWScreen() : nil;
+    return onOther ? other : nil;
+}
+// A request for another display's view while a session runs: kept, and opened by the tick once none runs (one at a time, the last asked).
+static DMMSWModel *gMSWPendingOpen; static NSString *gMSWPendingWhy; static CFTimeInterval gMSWPendingAt = 0;
+static void DMMSWOpenNow(NSString *why);
+// The Mac Switcher asked for on a display (nil: the iPad). Another display's needs the Stage Manager engine (the other engines' windows never reach
+// it, tv-parity-audit row 30): with another engine, the iPad's opens.
+static void DMMSWOpenOn(UIScreen *s, NSString *why) {
+    DMMSWM();
+    if (s && s != [UIScreen mainScreen] && !DMSMEngine()) { DMLog([NSString stringWithFormat:@"[macswitcher] %@ on another display: its desktops need the Stage Manager engine -- the iPad's opens", why]); s = nil; }
+    DMMSWModel *m = gMSWOn ? DMMSWModelOfScreen(s, YES) : gMSWMain;
+    if (!m) { DMLog([NSString stringWithFormat:@"[macswitcher] not opened (%@): that display has no key to keep desktops by", why]); return; }
+    if (m != DMMSWM()) {
+        if (!DMMSWSessionIdle()) {
+            gMSWPendingOpen = m; gMSWPendingWhy = [why copy]; gMSWPendingAt = CACurrentMediaTime();
+            DMLog([NSString stringWithFormat:@"[macswitcher] %@ on %@: the Mac Switcher on %@ is still busy -- it opens there when that ends", why, m == gMSWMain ? @"the iPad" : m.key, DMMSWIsMain() ? @"the iPad" : DMMSWM().key]);
+            return;
+        }
+        if (!DMMSWUse(m, why)) return;
+    }
+    if (m != gMSWMain) DM_FEATURE_MARK("msw-tv");
+    DMMSWOpenNow(why);
+}
+static void DMMSWOpen(NSString *why) { DMMSWOpenOn(nil, why); }
+static void DMMSWOpenNow(NSString *why) {
     DM_FEATURE_MARK("mac-switcher");
     if (!gMSWOn) { DMLog([NSString stringWithFormat:@"[macswitcher] not opened (%@): switched off", why]); return; }
     if (DMMSWIsOpen()) { if (!gMSWClosing) DMMSWClose(nil, YES); return; }   // (opened again while open: it closes, like the Mission Control key)
@@ -3100,14 +3376,16 @@ static void DMMSWOpen(NSString *why) {
     else if (!stripOut) {
         NSUInteger gen = gMSWOpenShotGen;
         NSInteger did = DMMSWCurId();
-        BOOL asked = DMMSWAsyncScreenOn() && DMMSWScreenPictureAsync(gMSWWindow ? @[gMSWWindow] : @[], ^(UIView *pic, double ms) {
+        BOOL asked = DMMSWAsyncScreenOn() && DMMSWIsMain() && DMMSWScreenPictureAsync(gMSWWindow ? @[gMSWWindow] : @[], ^(UIView *pic, double ms) {
             BOOL use = pic && gen == gMSWOpenShotGen && gMSWOpen && DMMSWCurId() == did;
             if (use) gMSWOpenShot = pic;
             DMLog([NSString stringWithFormat:@"[macswitcher] the view's picture of the desktop under it: %@ after %.1f ms (asked without waiting)", !pic ? @"not drawn" : use ? @"in" : @"no longer needed", ms]);
         });
-        if (!asked) {
+        if (!asked) {   // (another display: its screen the waiting way -- the picture without waiting is read for the iPad's screen only)
+            // (without our window: the screen's picture is drawn at the commit, after the window below is shown and the view built in it -- the
+            //  TV's Desktop 1 kept the Mac Switcher itself as its thumbnail at "+", iPad 2 over AirPlay d27)
             DMMSWSpanBegin();
-            gMSWOpenShot = [[UIScreen mainScreen] snapshotViewAfterScreenUpdates:NO];
+            gMSWOpenShot = DMMSWScreenWithoutView() ?: [DMMSWScreen() snapshotViewAfterScreenUpdates:NO];
             DMMSWSpanEnd(@"the view's open picture (the screen now)");
         }
     }
@@ -3444,7 +3722,7 @@ static UIView *DMMSWTilePicture(DMMSWTile *t) {
         UIView *pic = DMMSWSMCardPicture(t.source, &r);
         if (!pic || CGRectIsNull(r)) return nil;
         pic.userInteractionEnabled = NO;
-        pic.frame = [gMSWRoot convertRect:r fromCoordinateSpace:[UIScreen mainScreen].coordinateSpace];
+        pic.frame = [gMSWRoot convertRect:r fromCoordinateSpace:DMMSWScreen().coordinateSpace];
         return pic;
     }
     UIView *portal = DMMSWTilePortal(t);
@@ -3459,10 +3737,37 @@ static UIView *DMMSWTilePicture(DMMSWTile *t) {
 // ---- the move itself (engine-neutral) ----
 // The Home Screen comes under the open view (a full-screen app went to another desktop): the same simulated press as Minimize, which the Home
 // button's handlers (MacSwitcherButton.h) do not take for the user's -- the view stays open.
+static void DMMSWFocusAgain(NSString *why);
 static void DMMSWOwnHome(void) {
     gMSWOwnHomeAt = CACurrentMediaTime();
     DMMinimize();
     gMSWOwnHomeAt = CACurrentMediaTime();
+    DMMSWFocusAgain(@"a full-screen app went to another desktop");
+}
+// The view's keyboard focus again after a Home of ours under the open view (1.8.7, A12Z d39 with the 4K TV): a drop that leaves the iPad's desktop
+// empty goes Home for real (MacSwitcherSM.h DMMSWSMMoveFinish -> DMMSWSMShowDesk, or DMMSWOwnHome above). With an app open on another display,
+// iPadOS's Home then gives the keyboard focus to that display's scene (kbfocus: "external scene with focus" com.apple.tips) although the lock the
+// view took at its open is still held, and Esc went to the TV's app: the view stayed open (a click or Control-Up still closed it). The lock was
+// taken once, before SpringBoard's Home re-chose the focus. Once that Home's transition is over (no workspace transaction, at most 2 s), a new lock
+// is taken and then the old one given back, so SpringBoard holds the focus again for as long as the view stays open (no moment without one).
+// With the iPad alone the new lock changes nothing. Not taken when the view is closing or closed (DMMSWFocus(NO) gave its lock back).
+static void DMMSWFocusAgain(NSString *why) {
+    if (!gMSWOpen || gMSWClosing || !gMSWFocusLock) return;
+    __block int tries = 0;
+    __block void (^step)(void);
+    void (^s)(void) = ^{
+        if (!gMSWOpen || gMSWClosing || !gMSWFocusLock) { step = nil; return; }
+        if (DMSMWorkspaceBusy() && ++tries < 8) { DMMSWAfter(0.25, step); return; }
+        step = nil;
+        NSString *how = nil;
+        id lock = MSBDFocusLock(gMSWWindow.windowScene, @"MacStatusBar Mac Switcher", &how);
+        if (!lock) { DMLog([NSString stringWithFormat:@"[macswitcher] keyboard focus after our Home (%@): no new lock, the open's kept", why]); return; }
+        id old = gMSWFocusLock; gMSWFocusLock = lock;
+        MSBDFocusUnlock(old);
+        DMLog([NSString stringWithFormat:@"[macswitcher] keyboard focus to SpringBoard again after our Home (%@): %@ (the %@ call)", why, NSStringFromClass([lock class]), how ?: @"?"]);
+    };
+    step = s;
+    DMMSWAfter(0.25, step);
 }
 // Fit to Window per desktop (Aerial, Zetsu, MilkyWay4 / no engine): the window leaves this desktop's tiles and the rest close up -- as when a tiled window closes
 // (FitPlan.h, DMWatchFitClosures' rule: one fills the space, the others keep their places) --, and it takes a place in the other desktop's tiles: in
@@ -3544,7 +3849,7 @@ static NSInteger DMMSWMoveRecords(DMMSWTile *t, NSUInteger to, BOOL *retiled, DM
     if (retiled) *retiled = NO;
     if (info) *info = (DMMSWMoveInfo){ NO, NO };
     if (!t || !DMMSWDesktopsHere() || (to < gMSWDesks.count && to == gMSWCur)) return 0;
-    CGRect bounds = gMSWRoot ? gMSWRoot.bounds : [UIScreen mainScreen].bounds;
+    CGRect bounds = gMSWRoot ? gMSWRoot.bounds : DMMSWScreen().bounds;
     NSInteger toId = to < gMSWDesks.count ? gMSWDesks[to].integerValue : 0;
     UIView *shot = toId ? gMSWShots[@(toId)] : nil;   // (that desktop's picture as it was left: still true until now? read before the records change)
     BOOL shotOK = shot && [gMSWShotSet[@(toId)] isEqualToArray:DMMSWWindowSet(toId)] && CGSizeEqualToSize(shot.bounds.size, bounds.size);
@@ -3647,7 +3952,7 @@ static void DMMSWDropFinishNow(void) { dispatch_block_t f = gMSWDropFinish; gMSW
 static void DMMSWDeskTakesWindow(NSInteger toId, UIView *pic, DMMSWMoveInfo info) {
     if (!toId || ![gMSWDesks containsObject:@(toId)] || toId == DMMSWCurId()) return;
     NSNumber *key = @(toId);
-    CGRect bounds = gMSWRoot ? gMSWRoot.bounds : [UIScreen mainScreen].bounds;
+    CGRect bounds = gMSWRoot ? gMSWRoot.bounds : DMMSWScreen().bounds;
     if (!gMSWShots) gMSWShots = [NSMutableDictionary dictionary];
     if (!gMSWShotSet) gMSWShotSet = [NSMutableDictionary dictionary];
     UIView *base = info.shotOK ? gMSWShots[key] : DMMSWComposedDesktop(toId, bounds);
@@ -3796,7 +4101,7 @@ static void DMMSWDrop(DMMSWTile *t, NSInteger target) {
     gMSWDropFinish = ^{   // (once landed -- or at once when the view goes or a switch starts first)
         DMMSWMoveFinish(t, toId, info, !dropPicAsked ? nil : (dropPic ?: (id)[NSNull null]));
         if (DMSMEngine() && t.kind != DMMSWKindNative)   // (Stage Manager lays its stage out anew a moment later: the thumbnails follow)
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ if (gMSWOpen && !gMSWClosing && !gMSWDropping && !gMSWDragTile) DMMSWRecollect(); });
+            DMMSWAfter(1.0, ^{ if (gMSWOpen && !gMSWClosing && !gMSWDropping && !gMSWDragTile) DMMSWRecollect(); });
     };
     [UIView animateWithDuration:rm ? kMSBRMDuration : 0.3 delay:0 options:UIViewAnimationOptionCurveEaseInOut | UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction animations:^{
         if (rm) t.alpha = 0;   // (Reduce Motion: it fades where it is)
@@ -3821,10 +4126,10 @@ static void DMMSWDrop(DMMSWTile *t, NSInteger target) {
         __block void (^poll)(void);
         void (^p)(void) = ^{
             if (dropPicIn || !gMSWDropFinish || CACurrentMediaTime() - w0 > 0.25) { poll = nil; landed(); return; }
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NSEC_PER_SEC / 120)), dispatch_get_main_queue(), poll);
+            DMMSWAfter(1.0 / 120.0, poll);
         };
         poll = p;
-        dispatch_async(dispatch_get_main_queue(), poll);
+        DMMSWAsync(poll);
     }];
     [CATransaction flush];   // (the flight to the render server now)
     if (added) DMMSWStripRefresh((NSInteger)to, -1);   // (the tiles make room for the new desktop; its tile shows once the window is in it)
@@ -4043,18 +4348,27 @@ static void DMMSWStockTick(void) {
 // A turn: the thumbnails go at once (measured mid-turn they came out sideways: the engine's windows turn after the screen does) and the view is
 // laid out again once the screen has kept its shape for 0.8 s.
 static void DMMSWKeysRefresh(void);
+static void DMMSWSMApplyDisplays(void);   // (MacSwitcherSM.h: the other displays' records follow what they show)
 static void DMMSWTick(void) {
     DMMSWStockTick();   // (iPadOS's own App Switcher asked for from the menu: is it still up)
     DMMSWKeysRefresh();   // (the Control-arrows SpringBoard is to get: registered again when that changes)
-    if (!gMSWSwitching) DMMSWApply();   // (desktops: cheap with one desktop and nothing away)
+    // (1.8.7: no session runs -- the iPad's model in use again; a display's view asked for while one ran opens now, if asked within 5 s)
+    if (DMMSWSessionIdle()) {
+        if (!DMMSWIsMain()) DMMSWUse(gMSWMain, @"the session on another display ended");
+        DMMSWModel *p = gMSWPendingOpen; NSString *why = gMSWPendingWhy;
+        gMSWPendingOpen = nil; gMSWPendingWhy = nil;
+        if (p && gMSWOn && CACurrentMediaTime() - gMSWPendingAt < 5.0 && DMMSWUse(p, why)) { DMMSWOpenNow([NSString stringWithFormat:@"%@, asked while busy", why]); return; }
+    }
+    if (!gMSWSwitching && DMMSWIsMain()) DMMSWApply();   // (desktops: cheap with one desktop and nothing away; the iPad's, while no other display's session runs)
+    if (DMMSWSessionIdle() && DMSMEngine()) DMMSWSMApplyDisplays();   // (1.8.7: each other display's desktops, while no session runs)
     if (gMSWTrack) DMMSWTrackTick();
     if (gMSWLiftPic && !gMSWLiftPic.superview && CACurrentMediaTime() - gMSWLiftPicAt > 2.5 && !DMMSWGestureAlive(gMSWLiftPicGesture)) gMSWLiftPic = nil;   // (nothing took the gesture's picture)
     if (!gMSWOpen || gMSWClosing) return;
     if (!gMSWOn || (DMSwitcherVisible() && !DMMSWGestureGrace()) || DMCoverSheetShown()) { DMLog(@"[macswitcher] the App Switcher / Lock Screen came up or the switch went off: closed"); DMMSWClose(nil, NO); return; }
-    CGSize screen = [UIScreen mainScreen].bounds.size;
+    CGSize screen = DMMSWScreen().bounds.size;
     BOOL portraitNow = screen.height > screen.width, portraitBuilt = gMSWBuiltSize.height > gMSWBuiltSize.width;
     CFTimeInterval now = CACurrentMediaTime();
-    if (portraitNow != portraitBuilt || DMMSWTurnKey() != gMSWBuiltTurn) {
+    if (portraitNow != portraitBuilt || (DMMSWIsMain() && DMMSWTurnKey() != gMSWBuiltTurn)) {   // (another display is never turned: the iPad's turn is not its)
 #if DEBUG
         if (DMTestFlag("/tmp/msw-oldturn")) {   // (test: the first build's behaviour, laid out again at once, mid-turn -- the 3 Oct stall hunt)
             DMLog(@"[macswitcher] (msw-oldturn) the screen turned: laid out again at once");
@@ -4113,6 +4427,46 @@ static BOOL DMMSWShowAppSwitcher(void) {
     return ok;
 }
 
+// 1.8.7 commit 16: the App Switcher of another display (the TV's Apple menu): that display's own -- 16 / 17 the coordinator's per-scene call with its
+// window scene, 18 its scene's own switcher controller (-toggleMainSwitcherWithSource:animated:, as DMToggleMainSwitcher18 asks the iPad's; the TV's
+// switcher controller is there, the S3 reading). Each call's shape checked; none there: the row is disabled. nil: the iPad's, as before.
+static id DMMSWSwitcherOf(UIScreen *s, SEL *how) {   // (the object to ask and its toggle, for another display's scene)
+    UIWindowScene *scene = s ? DMSceneLayerSceneOf(s) : nil;
+    if (!scene) return nil;
+    Class co = objc_getClass("SBMainSwitcherControllerCoordinator");
+    if (DMMSWHasMethod(co, @"toggleMainSwitcherNoninteractivelyWithSource:animated:windowScene:", @"B@:qB@")) { id c = DMSwitcherController(); if ([c isKindOfClass:co]) { *how = NSSelectorFromString(@"toggleMainSwitcherNoninteractivelyWithSource:animated:windowScene:"); return c; } return nil; }
+    id coord = DMSMCoordinator();
+    SEL forScene = NSSelectorFromString(@"switcherControllerForWindowScene:");
+    if (!coord || ![coord respondsToSelector:forScene] || !DMSMSigOK(coord, forScene, DMSMSigObjObj(), "switcherControllerForWindowScene:")) return nil;
+    id ctl = nil; @try { ctl = ((id (*)(id, SEL, id))objc_msgSend)(coord, forScene, scene); } @catch (id e) { ctl = nil; }
+    if (!ctl || !DMMSWHasMethod(object_getClass(ctl), @"toggleMainSwitcherWithSource:animated:", @"B@:qB")) return nil;
+    *how = NSSelectorFromString(@"toggleMainSwitcherWithSource:animated:");
+    return ctl;
+}
+static BOOL DMMSWAppSwitcherAvailableOn(UIScreen *s) {
+    if (!s || s == [UIScreen mainScreen]) return DMMSWAppSwitcherAvailable();
+    SEL how = NULL;
+    return DMSMEngine() && DMMSWSwitcherOf(s, &how) != nil;
+}
+static BOOL DMMSWShowAppSwitcherOn(UIScreen *s) {
+    if (!s || s == [UIScreen mainScreen]) return DMMSWShowAppSwitcher();
+    if (DMSwitcherVisible()) { DMLog(@"[macswitcher] Show App Switcher (the other display): an App Switcher is already showing"); return NO; }
+    SEL how = NULL;
+    id target = DMSMEngine() ? DMMSWSwitcherOf(s, &how) : nil;
+    if (!target) { DMLog(@"[macswitcher] Show App Switcher (the other display): not possible there"); return NO; }
+    if (DMMSWIsOpen()) DMMSWClose(nil, NO);
+    gMSWStockAskedAt = CACurrentMediaTime(); gMSWStockSeen = NO; gMSWStockGoneTicks = 0;   // (this once iPadOS's own: the takeovers stand aside, as on the iPad)
+    DM_FEATURE_MARK("msw-tv-stock-once");
+    BOOL ok = NO;
+    @try {
+        if (how == NSSelectorFromString(@"toggleMainSwitcherWithSource:animated:")) ok = ((BOOL (*)(id, SEL, long long, BOOL))objc_msgSend)(target, how, 1, YES);
+        else ok = ((BOOL (*)(id, SEL, long long, BOOL, id))objc_msgSend)(target, how, 1, YES, DMSceneLayerSceneOf(s));
+    } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[macswitcher] Show App Switcher (the other display) failed: %@", e]); ok = NO; }
+    DMLog([NSString stringWithFormat:@"[macswitcher] Show App Switcher on the other display (%@): %@", NSStringFromSelector(how), ok ? @"asked" : @"not taken"]);
+    if (!ok) DMMSWStockEnd(@"was not asked for");
+    return ok;
+}
+
 // ---- iPadOS's own App Switcher never comes by another way while the Mac Switcher is on (audit M-4) ----
 // The gestures and the Home button's double press are taken over at their source (above; MacSwitcherButton.h). Every other way asks SpringBoard's
 // switcher controller directly: AssistiveTouch's App Switcher (its menu or a custom action), Back Tap, Voice Control's "Open App Switcher" and
@@ -4133,7 +4487,7 @@ static BOOL DMMSWStockAskTakenOver(NSString *how) {
     DMLog([NSString stringWithFormat:@"[macswitcher] %@: the Mac Switcher instead of iPadOS's App Switcher%@", how, DMTestFlag("/tmp/msw-wsprobe") ? DMMSWProbeStackN(12) : @""]);
 #endif
     NSString *h = [how copy];
-    dispatch_async(dispatch_get_main_queue(), ^{ DMMSWOpen(h); });   // (after the caller's own handling: a toggle, as the Home button's double press)
+    DMMSWAsync(^{ DMMSWOpen(h); });   // (after the caller's own handling: a toggle, as the Home button's double press)
     return YES;
 }
 static BOOL (*o_MSWSwToggle)(id, SEL, long long, BOOL), (*o_MSWSwActivate)(id, SEL, long long, BOOL), (*o_MSWSwToggleScene)(id, SEL, long long, BOOL, id);
@@ -4191,24 +4545,45 @@ static void DMMSWPressesBegan(id self, SEL _cmd, NSSet<UIPress *> *presses, UIPr
 // Control's key does). They are key commands of SpringBoard's own, next to its system shortcuts (-[SpringBoard keyCommands]: Command-Tab,
 // Command-Space, Globe-H ...). Left / Right only while there is more than one desktop (with one, the keys stay the app's: a terminal's word
 // jumps, a text field's line start / end); Up while the Mac Switcher is on. None while iPadOS's own switcher is asked for from the Apple menu, on
-// the Lock Screen, or with the Mac Switcher off.
+// the Lock Screen, with the Mac Switcher off, or while Settings records a shortcut (so the recorder gets them: review 1.8.7). One that one of
+// your own shortcuts is on is yours (1.8.7, common/KeyboardChords.h): left out of the list, its own key command or the app's check has it.
 static NSArray *(*o_MSWKeyCommands)(id, SEL);
 static NSArray<UIKeyCommand *> *gMSWKeyCmds;   // Control-Left, Control-Right, Control-Up
+static BOOL DMCSRecording(void);   // (CustomShortcuts.h: Settings records a shortcut -- none of the three then, so Settings gets the keys: review 1.8.7)
 // What the key commands offer now: 0 none, 1 Control-Up, 2 all three. One answer for SpringBoard's -keyCommands (DMMSWKeyCommands) and the
 // registration refresh (DMMSWKeysRefresh): none while iPadOS's own switcher is up by a way the Mac Switcher did not take over -- e.g. opened during
 // a Guided Access session that has ended since: a Control-arrow switched the desktops under it (1.4 logic test); the hook still listed the arrows
 // then and a re-registration by UIKit delivered one (the re-check). DMMSWOpen stands aside the same way.
+// 1.8.7: the desktops Control-Left / Control-Right switch now (MSWDisplays.h MSWDispArrowsOn): the keys' display's (DMMSWKeysScreen) with two or
+// more; another display's with one, between sessions: the iPad's with two or more, as 1.8.6 switched the iPad's whichever display the app with the
+// keyboard was on; else none -- the keys are not offered and stay the app's. They were offered while any display had two desktops and then taken
+// from the app for nothing on a display with one (the TV's one desktop with the iPad's two: 1.8.6 switched the iPad's; 1.8.7 review). *on: the
+// other display's screen when its desktops are the ones (nil: the iPad's); *why: the keys' rule's answer.
+static DMMSWModel *DMMSWArrowsModel(UIScreen **onOut, NSString **why) {
+    UIScreen *on = DMMSWKeysScreen(why);
+    DMMSWModel *om = on && DMSMEngine() && DMMSWDesktopsHere() ? DMMSWModelOfScreen(on, NO) : nil;
+    int a = MSWDispArrowsOn(on != nil, DMMSWSessionIdle(), om ? om->desks.count : 0, DMMSWDesktopsHere() ? gMSWMain->desks.count : 0);
+    if (onOut) *onOut = a == 1 ? on : nil;
+    if (a == 0 && on && why) *why = [NSString stringWithFormat:@"%@; one desktop there: the iPad's", *why ?: @"?"];
+    return a == 1 ? om : a == 0 ? gMSWMain : nil;
+}
 static int DMMSWKeysWanted(void) {
     if (!DMMSWGesturesOn() || (DMSwitcherVisible() && !DMMSWGestureGrace())) return 0;
-    return DMMSWMulti() ? 2 : 1;
+    return DMMSWArrowsModel(NULL, NULL) ? 2 : 1;
 }
+// Control-Left (0), -Right (1), -Up (2): one of your own shortcuts is on it.
+static BOOL DMMSWKeyYours(NSUInteger i) {
+    static const long usages[3] = { kMSBDCSHIDLeft, kMSBDCSHIDRight, kMSBDCSHIDUp };
+    return i < 3 && MSBDKCYoursTakes(&gKCYours, usages[i], kMSBDModControl);
+}
+static int DMMSWKeysYoursBits(void) { return (DMMSWKeyYours(0) ? 1 : 0) | (DMMSWKeyYours(1) ? 2 : 0) | (DMMSWKeyYours(2) ? 4 : 0); }
 static NSArray *DMMSWKeyCommands(id self, SEL _cmd) {
     NSArray *orig = o_MSWKeyCommands(self, _cmd);
     int want = gMSWKeyCmds.count == 3 ? DMMSWKeysWanted() : 0;
-    if (!want) return orig;
+    if (!want || DMCSRecording()) return orig;
     NSMutableArray *all = [NSMutableArray arrayWithArray:[orig isKindOfClass:[NSArray class]] ? orig : @[]];
-    if (want == 2) { [all addObject:gMSWKeyCmds[0]]; [all addObject:gMSWKeyCmds[1]]; }
-    [all addObject:gMSWKeyCmds[2]];
+    if (want == 2) { if (!DMMSWKeyYours(0)) [all addObject:gMSWKeyCmds[0]]; if (!DMMSWKeyYours(1)) [all addObject:gMSWKeyCmds[1]]; }
+    if (!DMMSWKeyYours(2)) [all addObject:gMSWKeyCmds[2]];
     return all;
 }
 // SpringBoard gets the keys its key commands name, whichever app has the keyboard, because UIKit registers that list with backboardd
@@ -4216,27 +4591,42 @@ static NSArray *DMMSWKeyCommands(id self, SEL _cmd) {
 // per deferring environment, -registerKeyCommands:) -- only when its first responder changes. So the list stayed as it was registered: back to one
 // desktop, Control-Left / Control-Right still went to SpringBoard and no app got them (M1 7 Oct). When what we offer changes (DMMSWTick, 4 times a
 // second: the desktops, the switch, the Lock Screen, iPadOS's switcher this once) the registration is made again (a nil responder: always).
-static int gMSWKeysOffered = -1;   // (0 none, 1 Control-Up, 2 all three)
+static int gMSWKeysOffered = -1;   // (0 none, 1 Control-Up, 2 all three; with the ones yours have, DMMSWKeysYoursBits, from bit 4; bit 8: Settings records)
 static void DMMSWKeysRefresh(void) {
     if (gMSWKeyCmds.count != 3) return;
-    int want = DMMSWKeysWanted();
+    int want = DMMSWKeysWanted() | (DMMSWKeysYoursBits() << 4) | (DMCSRecording() ? 1 << 8 : 0);
     if (want == gMSWKeysOffered) return;
     gMSWKeysOffered = want;   // (also the first look: the hook may have come after UIKit's first registration at start)
     UIApplication *app = [UIApplication sharedApplication];
     SEL upd = NSSelectorFromString(@"_updateSerializableKeyCommandsForResponder:");
     if (!DMMSWHasMethod(object_getClass(app), @"_updateSerializableKeyCommandsForResponder:", @"v@:@")) return;
     @try { ((void (*)(id, SEL, id))objc_msgSend)(app, upd, nil); } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[macswitcher] the key commands' registration refused: %@", e.reason]); return; }
-    DMLog([NSString stringWithFormat:@"[macswitcher] key commands registered again: %@", want == 2 ? @"Control-Left / Control-Right / Control-Up" : want == 1 ? @"Control-Up" : @"none"]);
+    DMLog([NSString stringWithFormat:@"[macswitcher] key commands registered again: %@%@", (want & 256) ? @"none (Settings records a shortcut)" : (want & 15) == 2 ? @"Control-Left / Control-Right / Control-Up" : (want & 15) == 1 ? @"Control-Up" : @"none",
+                                     !(want & 256) && (want >> 4) ? [NSString stringWithFormat:@" (but yours: %d)", want >> 4] : @""]);
 }
 static void DMMSWControlKey(id self, SEL _cmd, id sender) {
     NSString *name = NSStringFromSelector(_cmd);
     NSInteger side = [name isEqualToString:@"dm_mswControlLeft:"] ? -1 : [name isEqualToString:@"dm_mswControlRight:"] ? 1 : 0;
     NSString *key = side < 0 ? @"Control-Left" : side > 0 ? @"Control-Right" : @"Control-Up";
-    if (!DMMSWGesturesOn()) return;
+    if (!DMMSWGesturesOn() || DMCSRecording()) return;   // (Settings records a shortcut: a registration not yet made again)
+    if (DMMSWKeyYours(side < 0 ? 0 : side > 0 ? 1 : 2)) return;   // (one of your own shortcuts: its key command runs it; a registration not yet made again)
     if (DMSwitcherVisible() && !DMMSWGestureGrace()) { DMLog([NSString stringWithFormat:@"[macswitcher] %@: iPadOS's App Switcher is up -- nothing switches under it", key]); return; }
     DM_FEATURE_MARK("mac-switcher-control-keys");
-    if (!side) { DMLog(@"[macswitcher] Control-Up: the Mac Switcher"); DMMSWOpen(@"Control-Up"); return; }
-    if (!DMMSWMulti()) return;
+    // (1.8.7: on the display the keys are for -- the session's, the keyboard focus's, the pointer's last, else the iPad's: DMMSWKeysScreen;
+    //  Control-Left / Right: the desktops DMMSWArrowsModel gives -- that display's with two or more, else the iPad's with two or more)
+    NSString *why = nil;
+    if (!side) {
+        UIScreen *on = DMMSWKeysScreen(&why);
+        if (on) DM_FEATURE_MARK("msw-tv-keys");
+        DMLog([NSString stringWithFormat:@"[macswitcher] Control-Up: the Mac Switcher%@", on ? [NSString stringWithFormat:@" on the other display (%@)", why] : @""]); DMMSWOpenOn(on, @"Control-Up"); return;
+    }
+    UIScreen *on = nil;
+    DMMSWModel *m = DMMSWArrowsModel(&on, &why);
+    if (!m) { DMMSWKeysRefresh(); return; }   // (no desktops for them now -- the focus or the pointer moved since they were offered: offered again, the app's)
+    if (on) DM_FEATURE_MARK("msw-tv-keys");
+    if (m != DMMSWM() && !DMMSWUse(m, key)) return;
+    if (on) DMLog([NSString stringWithFormat:@"[macswitcher] %@ on the other display (%@)", key, why]);
+    else if ([why rangeOfString:@"; one desktop there"].location != NSNotFound) DMLog([NSString stringWithFormat:@"[macswitcher] %@ on the iPad (%@)", key, why]);
     if (gMSWOpen && gMSWSwitching) return;   // (the view is fading over a slide already)
     DMMSWSideRequest(side, 0, side < 0 ? @"Control-Left" : @"Control-Right");
 }
@@ -4667,11 +5057,88 @@ static void DMMSWTrackFinish(NSInteger side, CGFloat v) {
     DMMSWSwBack(v);
 }
 static void (*o_MSWGBegin)(id, SEL, id, id), (*o_MSWGUpdate)(id, SEL, id, id), (*o_MSWGEnd)(id, SEL, id, id);
+// ---- a pointer push from another display (1.8.7, the iPad 2's AirPlay B pass, row 6.6): with the TV above the iPad, one push down from the TV's
+// bottom carried on across the iPad and past its bottom edge, where iPadOS read its pointer gesture (the indirect bottom-edge pan) and our Mac Switcher
+// opened. A gesture that is that pan and began within a moment of the pointer's last sight on another display (PointerRegion.h, common/PointerRegion.h
+// MSBDPtrArrivedFromOther) is not ours: nothing of ours runs at its lift and SpringBoard is told "stay" (DMMSWActivateWith). Finger, four-finger and
+// trackpad swipes are never this pan. Read from the gesture manager's own pan (its ivar, checked): where it is not there, every gesture is as before. ----
+static __weak id gMSWFromOther;                // the gesture that came from another display
+static CFTimeInterval gMSWFromOtherAt = 0, gMSWFromOtherEnd = 0;   // when it began; when it ended (0: not yet)
+static BOOL DMMSWPointerPush(id manager) {   // (the gesture beginning is iPadOS's pointer push at the iPad's bottom edge: its indirect pan, began or changed)
+    static Class ivc = Nil; static Ivar iv = NULL;
+    Class c = object_getClass(manager);
+    if (c != ivc) {
+        ivc = c; iv = class_getInstanceVariable(c, "_indirectBottomEdgePanGestureRecognizer");
+        const char *t = iv ? ivar_getTypeEncoding(iv) : NULL;
+        if (!t || t[0] != '@') iv = NULL;
+    }
+    id g = iv ? object_getIvar(manager, iv) : nil;
+    if (![g isKindOfClass:[UIGestureRecognizer class]]) return NO;
+    // (the pan of another display's own gesture manager -- a push at the TV's bottom edge with the pointer there -- is that display's: it never
+    //  came from another display. Its hovers kept "last seen on another display" fresh, and the TV's push opened nothing; 1.8.7 review)
+    UIScreen *on = ((UIGestureRecognizer *)g).view.window.screen;
+    if (on && on != [UIScreen mainScreen]) return NO;
+    UIGestureRecognizerState st = ((UIGestureRecognizer *)g).state;
+    return st == UIGestureRecognizerStateBegan || st == UIGestureRecognizerStateChanged;
+}
+static BOOL DMMSWFromOtherNow(void) {   // (the lift of that gesture: still held, or ended a moment ago)
+    if (gMSWFromOtherAt <= 0) return NO;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - gMSWFromOtherAt > 20.0) { gMSWFromOtherAt = 0; return NO; }
+    id g = gMSWFromOther;
+    return gMSWFromOtherEnd > 0 ? now - gMSWFromOtherEnd < 0.5 : (g ? DMMSWGestureAlive(g) : now - gMSWFromOtherAt < 5.0);
+}
+// 1.8.7 commit 16: the display a switcher gesture is SpringBoard's on -- the window scene whose own switcher (the coordinator's per-scene controller,
+// or its content view controller) holds this gesture manager in one of its object ivars, read as raw pointers (nothing retained). A touch on the
+// iPad's screen is the iPad's manager's; a trackpad's three-finger swipe is whichever display SpringBoard hands it to. nil: the iPad's (also when
+// nothing is found: as before). Stage Manager with another display only.
+static UIScreen *gMSWGestureScreen; static CFTimeInterval gMSWGestureScreenAt = 0;   // (the display of the gesture that began last)
+static BOOL DMMSWHolds(id o, id manager) {
+    for (Class c = object_getClass(o); c && c != [NSObject class]; c = class_getSuperclass(c)) {
+        unsigned n = 0; Ivar *ivs = class_copyIvarList(c, &n);
+        BOOL hit = NO;
+        for (unsigned i = 0; i < n && !hit; i++) {
+            const char *t = ivar_getTypeEncoding(ivs[i]);
+            if (!t || t[0] != '@') continue;
+            void *p = *(void **)((char *)(__bridge void *)o + ivar_getOffset(ivs[i]));
+            if (p == (__bridge void *)manager) hit = YES;
+        }
+        free(ivs);
+        if (hit) return YES;
+    }
+    return NO;
+}
+static UIScreen *DMMSWGestureScreen(id manager) {
+    UIScreen *other = DMSMEngine() ? DMMSWOtherScreen() : nil;
+    if (!manager || !other) return nil;
+    id coord = DMSMCoordinator();
+    SEL forScene = NSSelectorFromString(@"switcherControllerForWindowScene:");
+    if (!coord || ![coord respondsToSelector:forScene] || !DMSMSigOK(coord, forScene, DMSMSigObjObj(), "switcherControllerForWindowScene:")) return nil;
+    @try {
+        for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
+            if (![sc isKindOfClass:[UIWindowScene class]] || ((UIWindowScene *)sc).screen != other) continue;
+            id ctl = ((id (*)(id, SEL, id))objc_msgSend)(coord, forScene, sc);
+            id cvc = [ctl respondsToSelector:NSSelectorFromString(@"contentViewController")] ? DMCall(ctl, @"contentViewController") : nil;
+            if ((ctl && DMMSWHolds(ctl, manager)) || (cvc && DMMSWHolds(cvc, manager))) return other;
+        }
+    } @catch (NSException *e) {}
+    return nil;
+}
 static void DMMSWGBegin(id self, SEL _cmd, id transaction, id gesture) {
     static BOOL inside = NO;
     if (!inside) {
         inside = YES;
-        @try { DMMSWTrackBegin(gesture); } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[macswitcher] tracker begin threw %@", e]); gMSWTrack = 0; }
+        CFTimeInterval now = CACurrentMediaTime();
+        gMSWGestureScreen = DMMSWGesturesOn() ? DMMSWGestureScreen(self) : nil; gMSWGestureScreenAt = now;
+        if (gMSWGestureScreen) DMLog(@"[macswitcher] a switcher gesture on the other display: its own Mac Switcher at the lift (not followed by a slide)");
+        // (only a push the iPad's own gesture manager reads: one SpringBoard gives another display is that display's, gMSWGestureScreen)
+        BOOL other = !gMSWGestureScreen && DMMSWGesturesOn() && MSBDPtrArrivedFromOther(DMPtrOtherDisplayAt(), now) && DMMSWPointerPush(self);
+        if (other) {
+            gMSWFromOther = gesture; gMSWFromOtherAt = now; gMSWFromOtherEnd = 0;
+            DMLog([NSString stringWithFormat:@"[macswitcher] a pointer push at the bottom edge %.0f ms after the pointer left another display: it came from there, not ours", (now - DMPtrOtherDisplayAt()) * 1000.0]);
+        }
+        // (1.8.7: a touch on the iPad's screen is the iPad's -- its desktops in use, made so between sessions; while another display's session runs it is not followed)
+        if (!other && !gMSWGestureScreen && DMMSWForMain()) @try { DMMSWTrackBegin(gesture); } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[macswitcher] tracker begin threw %@", e]); gMSWTrack = 0; }
         if (gMSWTrack == 1) { DMMSWRecBegin(@"gesture (followed)"); DMMSWRecordEvent(gesture, @"B"); }
         inside = NO;
     }
@@ -4689,6 +5156,7 @@ static void DMMSWGUpdate(id self, SEL _cmd, id transaction, id gesture) {
 }
 static void DMMSWGEnd(id self, SEL _cmd, id transaction, id gesture) {
     static BOOL inside = NO;
+    if (gesture && gesture == gMSWFromOther && gMSWFromOtherAt > 0) gMSWFromOtherEnd = CACurrentMediaTime();   // (its lift comes now: DMMSWFromOtherNow)
     if (inside || (gMSWTrack != 1 && gMSWTrack != 2) || gesture != gMSWTrackGesture) { o_MSWGEnd(self, _cmd, transaction, gesture); return; }
     inside = YES;
     DMMSWRecordEvent(gesture, @"E");
@@ -4762,10 +5230,32 @@ static id DMMSWActivateWith(id self, SEL _cmd, long long dest, id (*orig)(id, SE
         DMLog([NSString stringWithFormat:@"[macswitcher] gesture ended on %lld while the slide follows it: stay", eff]);
         return r;
     }
+    // (1.8.7: a pointer push that came from another display is not the user's gesture on the iPad, whatever iPadOS made of it -- nothing of ours,
+    //  no App Switcher, no app switch and no Home (row 6.6, iPad 2 over the cable on d39: such a push ended on Home took the iPad Home and Home
+    //  Minimizes Windows minimized Tips): SpringBoard is told stay. 4 is never given in its place, nor is Home Minimizes Windows' lift run)
+    if (!inside && eff >= 1 && eff <= 4 && gMSWGestHooked && DMMSWGesturesOn() && DMMSWFromOtherNow()) {
+        gMSWFromOtherAt = 0;
+        inside = YES;
+        id r = orig(self, _cmd, 0);
+        inside = NO;
+        DMLog([NSString stringWithFormat:@"[macswitcher] gesture ended on %lld from a pointer that came from another display: stay, nothing opened", eff]);
+        return r;
+    }
     if (inside || (eff != 3 && eff != 1 && eff != 2) || !gMSWGestHooked || !DMMSWGesturesOn()) return orig(self, _cmd, dest);   // (gMSWGestHooked: hooked for Home Minimizes Windows alone, no takeover)
     dispatch_block_t act = nil;
-    if (eff == 3) act = ^{ gMSWGestureAt = CACurrentMediaTime(); DMMSWOpen(@"the App Switcher gesture"); };
-    else if (DMMSWMulti()) {
+    // (1.8.7: a gesture SpringBoard gave another display -- its own Mac Switcher there, its own desktops: DMMSWGestureScreen at the gesture's start)
+    UIScreen *gs = gMSWGestureScreen && CACurrentMediaTime() - gMSWGestureScreenAt < 20.0 ? gMSWGestureScreen : nil;
+    DMMSWModel *gm = gs ? DMMSWModelOfScreen(gs, NO) : nil;
+    if (eff == 3 && gs) act = ^{ gMSWGestureAt = CACurrentMediaTime(); DM_FEATURE_MARK("msw-tv-gesture"); DMMSWOpenOn(gs, @"the App Switcher gesture on the other display"); };
+    else if (gs) {
+        if (gm && gm->desks.count >= 2) {
+            BOOL fingerRight = DMMSWFingersWentRight(self, eff);
+            NSInteger side = fingerRight ? -1 : 1;
+            act = ^{ if (gm != DMMSWM() && !DMMSWUse(gm, @"a side swipe on the other display")) return; DM_FEATURE_MARK("msw-tv-gesture"); DMMSWSideRequest(side, 0, fingerRight ? @"swipe right (the other display)" : @"swipe left (the other display)"); };
+        }
+    }
+    else if (eff == 3) act = ^{ gMSWGestureAt = CACurrentMediaTime(); DMMSWOpen(@"the App Switcher gesture"); };
+    else if (DMMSWForMain() && DMMSWMulti()) {   // (the iPad's desktops, 1.8.7)
         // (which way, as on a Mac -- the desktop follows the fingers: moving left brings the desktop on the right, moving right the one on the left;
         //  touch and trackpad alike, DMMSWFingersWentRight). A side swipe the slide did not follow (a quick flick, Reduce Motion, the tracker off)
         // slides from rest at the fingers' speed; one made while a switch is still on its way sends that slide on at once (DMMSWSideRequest).
@@ -4783,7 +5273,7 @@ static id DMMSWActivateWith(id self, SEL _cmd, long long dest, id (*orig)(id, SE
         lastAct = CACurrentMediaTime();
         DM_FEATURE_MARK("mac-switcher-gestures");
         DMLog([NSString stringWithFormat:@"[macswitcher] gesture ended on %lld: stay instead, ours runs", eff]);
-        dispatch_async(dispatch_get_main_queue(), act);
+        DMMSWAsync(act);
     }
     return r;
 }
@@ -4884,10 +5374,11 @@ static void DMMSWApplyPref(BOOL want) {
     if (on == gMSWOn) return;
     gMSWOn = on;
     DMLog([NSString stringWithFormat:@"[macswitcher] Mac Switcher %@", on ? @"on" : @"off"]);
-    if (on) { DMMSWHookKeys(); DMMSWHookGestures(); DMMSWHookStockPaths(); DMMSWWatchMemory(); DMMSWLoad(); DMMSWBringBack(); }   // (the desktops kept at the last off, item 14)
-    if (!on) dispatch_async(dispatch_get_main_queue(), ^{
+    if (on) { DMMSWHookKeys(); DMMSWHookGestures(); DMMSWHookStockPaths(); DMMSWWatchMemory(); DMMSWLoad(); DMMSWBringBack(); DMMSWWatchDisplays(); }   // (the desktops kept at the last off, item 14)
+    if (!on) DMMSWAsync(^{
         if (gMSWOn) return;   // (on again before this ran: nothing to take down -- collapsed now, the desktops just loaded would go)
         DMMSWDropFinishNow();
+        DMMSWEndOtherDisplay(@"the Mac Switcher went off");   // (1.8.7: a session on another display ends at once; the iPad's model in use)
         if (DMMSWIsOpen()) DMMSWClose(nil, NO);
         if (gMSWTrack && !gMSWSwitching) { DMMSWSlDrop(); gMSWTrack = 0; gMSWTrackPic = nil; }   // (a slide following the fingers goes with the switch)
         gMSWLiftPic = nil; DMMSWOpenShotDrop();
@@ -5394,7 +5885,7 @@ static void DMMSWPointerPath(NSArray<NSValue *> *pts) {
         }
         usleep(40000);
         CGPoint endAt = where();
-        dispatch_async(dispatch_get_main_queue(), ^{ DMLog([NSString stringWithFormat:@"[mswpath] pointer hovered from %@ to %@ (the path: %@ -> %@)", NSStringFromCGPoint(startAt), NSStringFromCGPoint(endAt), NSStringFromCGPoint(first), NSStringFromCGPoint([pts.lastObject CGPointValue])]); });
+        DMMSWAsyncWith(nil, ^{ DMLog([NSString stringWithFormat:@"[mswpath] pointer hovered from %@ to %@ (the path: %@ -> %@)", NSStringFromCGPoint(startAt), NSStringFromCGPoint(endAt), NSStringFromCGPoint(first), NSStringFromCGPoint([pts.lastObject CGPointValue])]); });
     });
 }
 static void DMMSWPath(NSString *spec) {
@@ -5480,6 +5971,38 @@ static UIWindow *gMSWProbeWindow;
 static UIView *gMSWProbeRoot, *gMSWProbePortal;
 static BOOL DMMSWTrigger(NSString *cmd) {
     if ([cmd isEqualToString:@"msw_open"]) DMMSWOpen(@"trigger");
+    else if ([cmd isEqualToString:@"msw_tv_open"]) {   // msw_tv_open: the Mac Switcher on the TV (as its Apple menu's row)
+        UIScreen *tv = DMMSWOtherScreen();
+        if (!tv) DMLog(@"[macswitcher] msw_tv_open: no other display"); else DMMSWOpenOn(tv, @"trigger (the TV)");
+    }
+    else if ([cmd isEqualToString:@"msw_keys_display"]) {   // msw_keys_display: the display the Mac Switcher's keys act on now, and why (DMMSWKeysScreen; read only)
+        NSString *why = nil; UIScreen *on = DMMSWKeysScreen(&why);
+        DMLog([NSString stringWithFormat:@"[macswitcher] the keys act on %@ (%@); pointer last on the other display %.1f s ago, on any %.1f s ago", on ? @"the other display" : @"the iPad", why,
+               DMPtrOtherDisplayAt() > 0 ? CACurrentMediaTime() - DMPtrOtherDisplayAt() : -1.0, gDMPtrAnyAt > 0 ? CACurrentMediaTime() - gDMPtrAnyAt : -1.0]);
+    }
+    else if ([cmd isEqualToString:@"msw_tv_appswitcher"]) DMMSWShowAppSwitcherOn(DMMSWOtherScreen());   // msw_tv_appswitcher: the TV's Apple menu's Show App Switcher
+    else if ([cmd isEqualToString:@"msw_tv_desks"]) {   // msw_tv_desks: every display's desktops, the model in use, and the TV's desktops' windows (read with its model, between sessions)
+        NSMutableString *o = [NSMutableString stringWithFormat:@"[macswitcher] models: in use %@, idle %d, next id %ld; iPad %@ (current %@)", DMMSWM().key, DMMSWSessionIdle(), (long)gMSWNextDesk,
+            [gMSWMain->desks componentsJoinedByString:@","], @(MSWDispCurId(gMSWMain))];
+        for (NSString *k in gMSWModels) {
+            DMMSWModel *m = gMSWModels[k];
+            [o appendFormat:@"\n  %@: %@ (current %@, last used %.0f, connected %d)", k, [m->desks componentsJoinedByString:@","], @(MSWDispCurId(m)), m.lastSeen, DMMSWScreenOf(m) != nil];
+            if (!DMMSWScreenOf(m) || !DMMSWSessionIdle() || !DMMSWIsMain()) continue;
+            gMSWModel = m;
+            @try {
+                id shown = DMMSWSMShownOn(DMMSWIdentity());
+                for (NSNumber *d in m->desks) {
+                    NSMutableArray *names = [NSMutableArray array];
+                    for (NSArray *w in DMMSWSMDeskWindows(d.integerValue)) [names addObject:DMSMKeyText(w[3])];
+                    [o appendFormat:@"\n    %@ (%@): %@", DMMSWDeskName([m->desks indexOfObject:d]), d, names.count ? [names componentsJoinedByString:@", "] : @"no window"];
+                }
+                NSMutableArray *sh = [NSMutableArray array]; for (id it in DMSMStageItemsMap(shown)) [sh addObject:DMSMKeyText(DMSMItemKey(it))];
+                [o appendFormat:@"\n    shows %@", shown ? [sh componentsJoinedByString:@", "] : @"its empty desktop"];
+            } @finally { gMSWModel = gMSWMain; }
+        }
+        for (NSString *b in gMSWWinDesk) { DMMSWModel *own = MSWDispOwner(gMSWWinDesk[b], gMSWMain, gMSWModels); if (own && own != gMSWMain) [o appendFormat:@"\n  record %@ -> %@ (%@)", DMSMKeyText(b), gMSWWinDesk[b], own.key]; }
+        DMLog(o);
+    }
     else if ([cmd isEqualToString:@"mswwall"]) {   // mswwall: the wallpaper view the Mac Switcher takes its picture from, and that picture's layer (debug)
         UIView *wall = DMMSWWallpaperView(), *iv = wall ? DMMSWWallpaperImageView(wall) : nil;
         id c = iv.layer.contents;
@@ -5586,7 +6109,7 @@ static BOOL DMMSWTrigger(NSString *cmd) {
             c.center = CGPointMake(root.bounds.size.width - 230, root.bounds.size.height - 170);
             c.layer.borderColor = [UIColor magentaColor].CGColor; c.layer.borderWidth = 3.0 / k;
             [root addSubview:c];
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [root removeFromSuperview]; gMSWProbeWindow.hidden = YES; });
+            DMMSWAfter(6.0, ^{ [root removeFromSuperview]; gMSWProbeWindow.hidden = YES; });
         });
     }
     else if ([cmd isEqualToString:@"mswpics"] || [cmd isEqualToString:@"mswopenshot"] || [cmd hasPrefix:@"mswshot_"]) {   // mswpics: the screen's picture asked without waiting (our window left out);
@@ -5611,7 +6134,7 @@ static BOOL DMMSWTrigger(NSString *cmd) {
             holder.center = CGPointMake(root.bounds.size.width - 250, root.bounds.size.height - 185);
             holder.layer.borderColor = [UIColor greenColor].CGColor; holder.layer.borderWidth = 3.0 / k;
             [root addSubview:holder];
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [root removeFromSuperview]; gMSWProbeWindow.hidden = YES; });
+            DMMSWAfter(6.0, ^{ [root removeFromSuperview]; gMSWProbeWindow.hidden = YES; });
         };
         if ([cmd isEqualToString:@"mswopenshot"]) { UIView *o = gMSWOpenShot; if (!o) DMLog(@"[mswpic] no open picture"); else { UIView *copy = [[UIView alloc] initWithFrame:o.bounds]; copy.layer.contents = o.layer.contents; if (!copy.layer.contents) { DMLog(@"[mswpic] the open picture has no plain contents (a UIKit picture): not shown"); } else show(copy, 0); } return YES; }
         if ([cmd hasPrefix:@"mswshot_"]) {   // mswshot_<desktop id>: that desktop's kept picture (its thumbnail, and the slide's picture of it) in the probe corner for 6 s
@@ -5648,7 +6171,7 @@ static BOOL DMMSWTrigger(NSString *cmd) {
                 [o appendFormat:@" %@ hidden %d alpha %.2f drawn %.2f, %ld/%ld animating", cn, w.hidden, w.alpha, wp.opacity, (long)anim, (long)layers];
             }
             DMLog(o);
-            if ((CACurrentMediaTime() - t0) * 1000.0 < ms) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(50 * NSEC_PER_MSEC)), dispatch_get_main_queue(), tick);
+            if ((CACurrentMediaTime() - t0) * 1000.0 < ms) DMMSWAfter(0.05, tick);
             else tick = nil;
         };
         tick();
@@ -5682,7 +6205,7 @@ static BOOL DMMSWTrigger(NSString *cmd) {
             holder.transform = CGAffineTransformMakeScale(k, k); holder.center = CGPointMake(root.bounds.size.width - 250, root.bounds.size.height - 185);
             holder.layer.borderColor = [UIColor magentaColor].CGColor; holder.layer.borderWidth = 3.0 / k;
             [root addSubview:holder];
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [root removeFromSuperview]; gMSWProbeWindow.hidden = YES; });
+            DMMSWAfter(6.0, ^{ [root removeFromSuperview]; gMSWProbeWindow.hidden = YES; });
         }
     }
     else if ([cmd hasPrefix:@"mswburst_"]) {   // mswburst_<n>_<every ms>[_<delay ms>]: n pictures of the whole screen (nothing left out, asked without waiting -- the
@@ -5730,10 +6253,10 @@ static BOOL DMMSWTrigger(NSString *cmd) {
             }
             for (UIView *older in [gMSWProbeWindow.subviews copy]) if (older != root) [older removeFromSuperview];   // (only the newest grid)
             DMLog([NSString stringWithFormat:@"[mswburst] %ld pictures shown (times %@ ms)", (long)n, [times componentsJoinedByString:@","]]);
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(12 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [root removeFromSuperview]; if (!gMSWProbeWindow.subviews.count) gMSWProbeWindow.hidden = YES; });
+            DMMSWAfter(12.0, ^{ [root removeFromSuperview]; if (!gMSWProbeWindow.subviews.count) gMSWProbeWindow.hidden = YES; });
         };
         for (NSInteger i = 0; i < n; i++) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((delay + i * every) * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+            DMMSWAfter((delay + i * every) / 1000.0, ^{
                 double at = (CACurrentMediaTime() - t0) * 1000.0;
                 BOOL asked = DMMSWScreenPictureAsync(@[], ^(UIView *pic, double ms) {
                     if (pic) pics[i] = pic;
@@ -5768,7 +6291,7 @@ static BOOL DMMSWTrigger(NSString *cmd) {
             pic.center = CGPointMake(root.bounds.size.width - 230, root.bounds.size.height - 170);
             pic.layer.borderColor = [UIColor greenColor].CGColor; pic.layer.borderWidth = 3.0 / k;
             [root addSubview:pic];
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [root removeFromSuperview]; gMSWProbeWindow.hidden = YES; DMLog(@"[mswpic] probe picture removed"); });
+            DMMSWAfter(6.0, ^{ [root removeFromSuperview]; gMSWProbeWindow.hidden = YES; DMLog(@"[mswpic] probe picture removed"); });
         });
         DMLog([NSString stringWithFormat:@"[mswpic] %@: %@ (%.2f ms on the main thread)", b, asked ? @"asked" : @"could not be asked", (CACurrentMediaTime() - t0) * 1000]);
     }

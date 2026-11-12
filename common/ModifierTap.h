@@ -11,7 +11,8 @@
 // flags (the other key's flag set), not by what went before: on the M1 each press comes twice, and the second Option of Globe-Control-Option found
 // nothing armed and waited again, so the volume went up at Option's release (1.8.3 regression F1, M1).
 // Only taken while the keys are offered: the switch on and a window engine of ours running (kMSBDWindowKeysOfferedNote's state, set by SpringBoard's
-// MacStatusBarCore), else the chords act as their key goes down, as in 1.8.2.2.
+// MacStatusBarCore), or while one of your own shortcuts starts with the chord (1.8.7: common/KeyboardChords.h kMSBDKCYoursState), else the chords
+// act as their key goes down, as in 1.8.2.2.
 #ifndef MSBD_MODIFIER_TAP_H
 #define MSBD_MODIFIER_TAP_H
 #include <stdbool.h>
@@ -23,7 +24,8 @@
 #define kMSBDWindowKeysOfferedNote "com.besiktasliseba.macstatusbar.windowkeys.offered"
 static inline bool MSBDWindowKeysOfferedIn(unsigned long long state, int pid) { return (state & 1ULL) && (long long)(state >> 32) == (long long)pid; }
 static inline unsigned long long MSBDWindowKeysOfferedState(bool offered, int pid) { return ((unsigned long long)(unsigned)pid << 32) | (offered ? 1ULL : 0ULL); }
-// Window Tiling Keys' switch (Settings > Keyboard): com.besiktasliseba.macstatusbar, a boolean, never set -- the default -- off; its notification.
+// Window Tiling Keys' switch (Settings > Keyboard): com.besiktasliseba.macstatusbar, a boolean, never set -- the default -- on (1.8.7, new
+// installs; an update had off written where it was never set: sshtoggled's defaults v5); its notification.
 #define kMSBDWindowKeysKey "windowTilingKeys"
 #define kMSBDWindowKeysDomain "com.besiktasliseba.macstatusbar"
 #define kMSBDWindowKeysChanged "com.besiktasliseba.macstatusbar/prefsChanged"

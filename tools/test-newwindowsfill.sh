@@ -31,7 +31,7 @@ check "Aerial, Zetsu, MilkyWay4: where a window is adopted (DMCascadeStage) one 
    && awk '/if \(MSBDNewWindowAtFill\(gNewWindowsFill, ownPlace \|\| /{a=NR} /if \(fitOn && \[gFreeWindows containsObject:me\]\) goto regularWindow;/{b=NR} END{exit !(a && b > a)}' \$W/fn \
    && grep -q '(gWindowSizeChoice != MSBDWindowSizeDefault || gNewWindowsFill) && !gLastWindowFrames\\[me\\];' \$W/fn"
 check "Stage Manager: the join's window with no size of its own is Fill, not moved on, out of Fit's tiles (a free window)" \
-  "fn 'static id DMSMJoinAttributesOn(NSString *key, id frontAttrs, BOOL windowed, long newest, id stage, id identity) {' && grep -q 'BOOL atFill = MSBDNewWindowAtFill(gNewWindowsFill, false, false);' \$W/fn \
+  "fn 'static id DMSMJoinAttributesOn(NSString *key, id frontAttrs, BOOL windowed, long newest, id stage, id identity) {' && grep -q 'BOOL atFill = MSBDNewWindowAtFill(DMNewWindowsFillFor(onDisplay), false, false);' \$W/fn \
    && grep -q 'CGRect placed = atFill ? opening : MSBDWindowCascadeIn(opening, others, n, u, NO, &how);' \$W/fn \
    && grep -q 'if (DMFitEnabled()) { if (!gSMFreeWindows) gSMFreeWindows = \\[NSMutableSet set\\]; \\[gSMFreeWindows addObject:key\\]; }' \$W/fn"
 check "no side question for a window that opens at Fill, before its launch on every engine" \

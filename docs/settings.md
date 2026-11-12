@@ -68,6 +68,24 @@ The desktop's settings, on their own page between Status Bar and Windows & Multi
 | App Icon Corner Radius | How round the corners of the app icons on the desktop are, from square to a circle. The icons change as you drag the slider. Folders, files and Home Screen icons keep their look. Until you move it, desktop app icons have the same shape as your Home Screen icons, icon theme included. | The Home Screen icons' shape |
 | Match Home Screen Icons | Gives desktop app icons your Home Screen icons' shape again, and they follow it from then on. | |
 
+At the end of the page, Displays: settings for a TV or monitor connected to the iPad by HDMI, USB-C or AirPlay.
+
+| Setting | What it does | New install |
+|---|---|---|
+| Display Settings | Lets each external display have settings of its own (below). Off: every display uses your iPad's settings. | On |
+| A display's row | One for each display you've connected, up to 8. A connected one opens that display's settings, the same page as Display Settings in the menu bar's Display menu. One that isn't connected says Not Connected and has Forget This Display, which deletes its settings. On iPadOS 15 a display mirrors the iPad, so it has nothing to set. | |
+
+A display's settings, on iPadOS 16 to 18 while it's a desktop of its own. Each starts as your iPad's setting and follows it until you change it for that display. A row you changed has Use the iPad's Setting under it, and Use iPad Settings puts every row back. Each row shows only where it applies.
+
+| Setting | What it does | New display |
+|---|---|---|
+| Menu Bar Size | Small, Medium or Large for that display's menu bar. A change applies the next time the display connects. | The iPad's |
+| Automatically Hide and Show the Menu Bar | That display's menu bar hides until the pointer reaches its top edge. | The iPad's |
+| Dock Size, Magnification and Magnification Amount | The size of that display's Dock icons and how they magnify. | The iPad's |
+| Automatically Hide and Show the Dock | That display's Dock hides until the pointer reaches its edge. With the Stage Manager engine. | The iPad's |
+| Show Trash in Dock | The Trash at the end of that display's Dock. While Finder is on. | On, also when it's off on the iPad |
+| Window Size and New Windows Open at Fill | How new windows open on that display. With the Stage Manager engine. | The iPad's |
+
 ## Settings > Windows & Multitasking
 
 The window settings, on their own page between Desktop and Dock. After Enable Windowing and Window Engine they come in groups: Windows, the Mac Switcher, Window Behavior, Traffic Lights, Multitasking and Advanced. On iPadOS 15 and 16 the page also shows Apple's Picture in Picture and Gestures settings, which leave General while they are here. On iPadOS 17 and 18, Multitasking & Gestures at the end of the page opens Apple's own page.
@@ -119,7 +137,7 @@ The window settings, on their own page between Desktop and Dock. After Enable Wi
 | Show Finder in Dock | Finder as the first Dock icon. Not shown while Finder is off. | On |
 | Show Downloads in Dock | The Downloads stack at the end of the Dock. | On |
 | Downloads From | Which apps' downloads the stack shows: Safari, plus other apps you pick. | Safari |
-| Show Trash in Dock | A Trash at the end of the Dock, after Downloads, while Finder is on. It looks full when Finder's Trash has items, a tap opens it in Finder, and a long press or a right click offers Open and Empty Trash, which asks first. Drop files on it to move them to the Trash, a Dock app to take it out of the Dock, or a drive from Finder's sidebar to eject it (iPadOS 16 to 18). An external display's Dock shows the Trash also while this is off. | On (an update keeps what you had) |
+| Show Trash in Dock | A Trash at the end of the Dock, after Downloads, while Finder is on. It looks full when Finder's Trash has items, a tap opens it in Finder, and a long press or a right click offers Open and Empty Trash, which asks first. Drop files on it to move them to the Trash, a Dock app to take it out of the Dock, or a drive from Finder's sidebar to eject it (iPadOS 16 to 18). An external display's Dock shows the Trash also while this is off, unless you switch it off in that display's settings. | On (an update keeps what you had) |
 
 ## Settings > Home Screen & Multitasking
 
@@ -157,6 +175,14 @@ On iPadOS 15 to 17, Notifications and Sounds share one row, Notifications & Soun
 
 ### Keyboard
 
+From the top of the page: your own shortcuts, Window Tiling Shortcuts, then the keys for keyboards without a function row, and after them Apple's Hardware Keyboard settings. A shortcut of yours wins over a built-in one with the same keys, which is then off for those keys, and the footers say which keys are shared.
+
+| Setting | What it does | New install |
+|---|---|---|
+| KeyPilot (only while it's installed) | Opens KeyPilot, the separate tweak by wanghuangjie. While it's installed, its shortcuts work and Custom Shortcuts waits. Import KeyPilot's Shortcuts, on the Custom Shortcuts page, copies them there (shell commands aren't imported). | |
+| Custom Shortcuts | Your own keyboard shortcuts. Record a key combination with Command, Option, Control or Globe, then pick what it does: open an app, open a URL, arrange the front window (one of the Window menu's layouts) or go Home. Keys another of your shortcuts has are refused. If a built-in shortcut has them, such as Window Tiling's or the Mac Switcher's Control-arrows, Settings says so and yours takes their place. Esc can't be a shortcut. Based on KeyPilot by wanghuangjie. | On (an update keeps what you had) |
+| Window Tiling Shortcuts | macOS 15's keys for tiling the front window, with Globe and Control held: an arrow key for that half of the screen, F to fill it, C to center the window at its own size, R to give it back the size it had before. Add Shift to arrange it with the window behind it, or Option and Shift for three windows. They work with every window engine and on Finder and TextEdit windows. On a keyboard without a Globe key, set another key to Globe in Modifier Keys. While this is on, the Globe volume keys and the backlight keys act when you let go of them. | On (an update keeps what you had) |
+
 For keyboards without a function row, like the original Magic Keyboard for iPad. They apply at once.
 
 | Setting | What it does | New install |
@@ -166,14 +192,6 @@ For keyboards without a function row, like the original Magic Keyboard for iPad.
 | Globe + Option/Control for Volume | Volume keys. Needs the Globe key set to Globe in Modifier Keys. | Off |
 | Shift + =/- for Screen Brightness | Screen brightness keys. | Off |
 | Shift + Option/Control for Backlight | Keyboard backlight keys, on keyboards with a backlight. | Off |
-
-At the end of the page, after Apple's Hardware Keyboard settings:
-
-| Setting | What it does | New install |
-|---|---|---|
-| Window Tiling Shortcuts | macOS 15's keys for tiling the front window, with Globe and Control held: an arrow key for that half of the screen, F to fill it, C to center the window at its own size, R to give it back the size it had before. Add Shift to arrange it with the window behind it, or Option and Shift for three windows. They work with every window engine and on Finder and TextEdit windows. On a keyboard without a Globe key, set another key to Globe in Modifier Keys. While this is on, the Globe volume keys and the backlight keys act when you let go of them. | Off |
-| Custom Shortcuts | Your own keyboard shortcuts. Record a key combination with Command, Option, Control or Globe, then pick what it does: open an app, open a URL, arrange the front window (one of the Window menu's layouts) or go Home. Keys that Window Tiling Shortcuts, the Mac Switcher or another of your shortcuts use are refused as you record them. Based on KeyPilot by wanghuangjie. | Off |
-| KeyPilot (only while it's installed) | Opens KeyPilot, the separate tweak by wanghuangjie. While it's installed, its shortcuts work and Custom Shortcuts waits. Import KeyPilot's Shortcuts, on the Custom Shortcuts page, copies them there (shell commands aren't imported). | |
 
 ## Control Center
 
@@ -227,3 +245,4 @@ These have no switch:
 - With the official iCleaner Pro installed, Finder's sidebar has an iCleaner row: it runs iCleaner's clean, or a clean and respring, from a Mac-style panel and shows how much space was freed. It cleans what you chose in iCleaner's own settings.
 - While Charge Limit or Run on Power Adapter holds the charge, the battery menu says what it's doing, such as Charging On Hold at 80%, and on iPadOS 16 and 17 the menu bar's battery shows a plug instead of the charging bolt, as on a Mac.
 - On an external display with Stage Manager, apps you open there join its desktop as windows at your Window Size, windows snap to its edges, its menu bar and its Dock, and closing the last window leaves its desktop empty. Its Dock has the Trash, Escape closes its App Library, and on iPadOS 18 it shows your Desktop Picture.
+- While a display is connected, the menu bar has a Display menu with the display's name and resolution, whether it mirrors the iPad or is a desktop of its own, and, on iPadOS 16 to 18, Display Settings.

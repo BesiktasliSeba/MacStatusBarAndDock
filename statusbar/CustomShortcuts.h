@@ -1,4 +1,4 @@
-// CustomShortcuts.h -- Custom Shortcuts (Settings > Keyboard, 1.8.5 item 2, off unless switched on): your own keyboard shortcuts, run in SpringBoard.
+// CustomShortcuts.h -- Custom Shortcuts (Settings > Keyboard, 1.8.5 item 2; on for new installs since 1.8.7): your own keyboard shortcuts, run in SpringBoard.
 // Each opens an app, opens a URL, lays out the front window or goes Home. The rules (format, actions, clashes): common/CustomShortcutsRule.h. Based
 // on KeyPilot by wanghuangjie (MIT; its notice there and in third_party/KeyPilot/LICENSE).
 // Included at the end of StatusBar.x, after WindowAPI.h and WindowKeys.h, whose ways it uses: the window API's layouts and Home (the same calls
@@ -14,6 +14,10 @@
 //    Globe whose key UIKit names (DMCSKeyInput) to SpringBoard, so there only those work (Settings' page says so).
 // Not run: with the switch off, while KeyPilot is installed (it runs its own; both would run each key), while Settings records a shortcut
 // (kMSBDCSRecordingNote), or for a rule that is off.
+// Yours over a built-in (1.8.7, common/KeyboardChords.h): the rules taken and KeyPilot's are read into gKCYours (DMCSLoad), which Window Tiling's
+// rows and the Mac Switcher's Control-arrows leave to them, and published for the key tweaks in every app (kMSBDKCYoursState: the key left of 1,
+// Tab, Shift + =/-, and the volume and backlight taps waiting for their release). With the switch on and no rule, nothing is yours: the state 0,
+// as with the switch off, no hook, no key command, no key changed.
 #pragma once
 #include "../common/CustomShortcutsRule.h"
 #include "../common/InputDevices.h"   // (MSBD_KEYBOARD_CHANGED only: GraphicsServices' post when a hardware keyboard comes or goes)
@@ -305,11 +309,60 @@ static void DMCSPublish(void) {
     } else DMLog(@"[shortcuts] -_updateSerializableKeyCommandsForResponder: differs here: the key commands not registered (the apps' own check still takes the shortcuts)");
     DMLog([NSString stringWithFormat:@"[shortcuts] %@ (%lu shortcuts, %lu key commands)", now ? @"taken" : @"not taken", (unsigned long)gCSRules.count, (unsigned long)gCSKeyCmds.count]);
 }
+// ---- Yours over a built-in (common/KeyboardChords.h) ----
+// KeyPilot's rules, while it is installed: its preferences, read as Settings' import reads them (com.whj.keypilot "Rules"); KeyPilot posts
+// com.whj.keypilot/reload when they change.
+#define kMSBDKCKeyPilotReload "com.whj.keypilot/reload"
+static NSArray *DMKCKeyPilotRules(void) {
+    if (!gCSKeyPilot) return @[];
+    CFPreferencesAppSynchronize(CFSTR(kMSBDCSKeyPilotDomain));
+    NSArray *a = CFBridgingRelease(CFPreferencesCopyValue(CFSTR(kMSBDCSKeyPilotRules), CFSTR(kMSBDCSKeyPilotDomain), kCFPreferencesCurrentUser, kCFPreferencesAnyHost));
+    return [a isKindOfClass:[NSArray class]] ? a : @[];
+}
+// The state for the key tweaks (kMSBDKCYoursState), written when it is not what SpringBoard means: at each read, and on any post of it (any
+// process can write a Darwin state: a forged one is put back, as the apps' rules are, DMCSPublishStates) and when the app in front changes.
+static void DMKCYoursPublish(void) {
+    static int token = 0;
+    uint64_t want = MSBDKCYoursState(&gKCYours);
+    if (DMCSStateGet(&token, kMSBDKCYoursState) == want) return;
+    DMCSStateSet(&token, kMSBDKCYoursState, want);
+    notify_post(kMSBDKCYoursState);
+    DMLog([NSString stringWithFormat:@"[shortcuts] yours for the key tweaks: 0x%llx", (unsigned long long)want]);
+}
+static void DMWindowKeysYoursChanged(void);   // (WindowKeys.h)
+static void DMMSWKeysRefresh(void);          // (MacSwitcher.h)
+static void DMKCYoursLoad(void) {
+    MSBDKCYoursFromRules(&gKCYours, gCSRules, gCSSwitch && !gCSKeyPilot, DMKCKeyPilotRules(), gCSKeyPilot);
+    DMKCYoursPublish();
+    // (what the window keys and the Control-arrows leave to yours: Window Tiling's rows, bits 0-14, and Control-Left / -Right / -Up, 16-18)
+    static uint64_t lastSig = 0;   // (0: nothing yours, as their key commands were made: with no shortcut of yours nothing is registered again)
+    uint64_t sig = 0;
+    for (int r = 0; r < (int)kMSBDWinKeyRowCount; r++) if (MSBDKCYoursTakesWinRow(&gKCYours, r)) sig |= 1ULL << r;
+    static const long arrows[3] = { kMSBDCSHIDLeft, kMSBDCSHIDRight, kMSBDCSHIDUp };
+    for (int i = 0; i < 3; i++) if (MSBDKCYoursTakes(&gKCYours, arrows[i], kMSBDModControl)) sig |= 1ULL << (16 + i);
+    if (sig != lastSig) {
+        lastSig = sig;
+        DMWindowKeysYoursChanged();   // (Window Tiling's key commands without the rows yours take)
+        DMMSWKeysRefresh();           // (the Mac Switcher's Control-arrows the same)
+        if (gKCYours.n) DMLog([NSString stringWithFormat:@"[shortcuts] %u of your own shortcuts (Custom Shortcuts %d, KeyPilot %d) win over the built-in keys on the same chords", gKCYours.n, gCSSwitch && !gCSKeyPilot, gCSKeyPilot]);
+    }
+    // KeyPilot runs its rules itself: a tap held for one of them is no volume or backlight tap (common/ModifierTap.h), told from its own run
+    // names, which the app with the keyboard posts as one matches (com.whj.keypilot/execute/<n>, KeyPilot's own; only listened to).
+    static BOOL kpRuns = NO;
+    if (gCSKeyPilot && !kpRuns) {
+        kpRuns = YES;
+        for (unsigned i = 0; i < kMSBDCSMaxRules; i++) {
+            char name[96]; snprintf(name, sizeof name, "com.whj.keypilot/execute/%u", i);
+            int t = 0;
+            notify_register_dispatch(name, &t, dispatch_get_main_queue(), ^(int tk) { notify_post(kMSBDModTapUsedNote); });
+        }
+    }
+}
 // The switch and the rules read (at start, at each change; Settings posts kMSBDCSChanged).
 static void DMCSLoad(void) {
     CFPreferencesAppSynchronize(CFSTR(kMSBDCSDomain));
     CFPropertyListRef sw = CFPreferencesCopyValue(CFSTR(kMSBDCSEnabled), CFSTR(kMSBDCSDomain), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-    gCSSwitch = sw && CFGetTypeID(sw) == CFBooleanGetTypeID() && CFBooleanGetValue(sw);
+    gCSSwitch = sw ? (CFGetTypeID(sw) == CFBooleanGetTypeID() && CFBooleanGetValue(sw)) : YES;   // (never set: on -- 1.8.7, new installs; an update had off written)
     if (sw) CFRelease(sw);
     NSArray *rules = CFBridgingRelease(CFPreferencesCopyValue(CFSTR(kMSBDCSRules), CFSTR(kMSBDCSDomain), kCFPreferencesCurrentUser, kCFPreferencesAnyHost));
     NSMutableArray *usable = [NSMutableArray array];
@@ -323,6 +376,7 @@ static void DMCSLoad(void) {
     if (gCSSwitch && usable.count && DMCSInstall()) DMCSMakeKeyCommands();
     else gCSKeyCmds = nil;
     DMCSPublish();
+    DMKCYoursLoad();
 }
 // A recording belongs to Settings in front. Settings closed or left while recording (Home, a swipe up, killed in the background) left the state
 // at 1 and every shortcut waiting, in SpringBoard and in the apps, until Settings recorded again (review 1.8.6, L; Settings' page also stops it
@@ -344,6 +398,7 @@ static void DMCSRecordingCheck(void) {
 static void DMCSFrontChanged(void) {   // (the 0.2 s tick: the app in front changed)
     if (!gCSStarted) return;
     DMCSPublishStates();   // (an app that just started read the states: forged ones are put back and posted, so it reads them again)
+    DMKCYoursPublish();
     DMCSRecordingCheck();
 }
 // A hardware keyboard came or went: the apps' wanted state follows (DMCSAppsTaken), so with none they pass every key on. GraphicsServices posts
@@ -357,14 +412,24 @@ static void DMCSKeyboardTick(void) {
     last = now;
     DMCSPublishStates();
 }
+// Custom Shortcuts not started (the crash guard's skip list, StatusBar.x): nothing is yours, so the key tweaks are told so -- a state an earlier
+// SpringBoard left would keep the key left of 1 or Tab from them for shortcuts that do not run now.
+static void DMKCYoursNone(void) {
+    MSBDKCYoursClear(&gKCYours);
+    DMKCYoursPublish();
+}
 static void DMCustomShortcutsStart(void) {
     static int token = 0, rec = 0, rules = 0, wanted = 0, keyboard = 0;
     if (token) return;
     notify_register_dispatch(kMSBDCSChanged, &token, dispatch_get_main_queue(), ^(int t) { DMCSLoad(); });
-    notify_register_dispatch(kMSBDCSRecordingNote, &rec, dispatch_get_main_queue(), ^(int t) { DMCSPublish(); DMCSRecordingCheck(); });   // (recording: our key commands out, then back)
+    // (recording: our key commands out, then back -- Window Tiling's and the Mac Switcher's too, so the recorder gets their keys: review 1.8.7)
+    notify_register_dispatch(kMSBDCSRecordingNote, &rec, dispatch_get_main_queue(), ^(int t) { DMCSPublish(); DMWindowKeysYoursChanged(); DMMSWKeysRefresh(); DMCSRecordingCheck(); });
     notify_register_dispatch(kMSBDCSRulesState, &rules, dispatch_get_main_queue(), ^(int t) { DMCSPublishStates(); });     // (a post of the apps' states: still ours?)
     notify_register_dispatch(kMSBDCSWantedState, &wanted, dispatch_get_main_queue(), ^(int t) { DMCSPublishStates(); });
     notify_register_dispatch(MSBD_KEYBOARD_CHANGED, &keyboard, dispatch_get_main_queue(), ^(int t) { DMCSKeyboardTick(); });   // (a keyboard came or went)
+    static int kpReload = 0, yours = 0;
+    notify_register_dispatch(kMSBDKCKeyPilotReload, &kpReload, dispatch_get_main_queue(), ^(int t) { DMCSLoad(); });   // (KeyPilot's rules changed)
+    notify_register_dispatch(kMSBDKCYoursState, &yours, dispatch_get_main_queue(), ^(int t) { DMKCYoursPublish(); });   // (still ours?)
     gCSStarted = YES;
     DMCSLoad();
 }

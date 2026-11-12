@@ -29,6 +29,7 @@
 #import "../../common/ChoicePage.h"   // (1.8.0: what each row of a choice page shows -- Window Engine, Control Center Style, Banner Style)
 #import "../../common/BannerStyleNow.h"   // (Banner Style, 1.8.0 item 2: the rule and what it is given -- Mac, iPadOS or Destra)
 #import "../../common/WindowSize.h"   // (Window Size, 1.8.0 item 4: the stored text read as SpringBoard reads it; Default is never written)
+#import "../../common/DisplayRowStore.h"   // (Settings > Desktop > Displays, 1.8.7: the displays SpringBoard remembers, their rows and the one writer of a display's change)
 #import "../../common/CCLayout.h"   // (Control Center Size, 1.8.0: the slider's value never set -- ours 1, BigSurCenter's 0.82 -- as SpringBoard reads it)
 @interface PSListController (MSBURL)
 - (void)handleURL:(NSDictionary *)url withCompletion:(id)completion;   // (Settings' link to a place on a page: -handleURL:withCompletion: below)
@@ -1660,13 +1661,265 @@ static NSMutableArray *MSBComposeGroupFooters(NSArray *specs) {
 }
 @end
 
+// ---- Settings > Desktop > Displays (1.8.7 commit 12; plans/design-1.8.7-displays.md section 6): the last group of the Desktop page lists every
+// remembered display (the registry SpringBoard writes, common/DisplayRowStore.h); a connected one opens its page (MSBDisplayListController), the same
+// rows as the Display Settings window (common/DisplayRows.h) written through the same writer; one not connected is greyed, "Not Connected", with Forget
+// This Display. With no display connected the group is greyed and says so; iPadOS 15: the rows are greyed with the mirror footer (the display mirrors
+// on every engine there). Settings has no screens: what it knows of a display is what SpringBoard wrote. The page follows the displays domain live.
+// The page's conditions, as SpringBoard reads them for its window (statusbar/DisplaySettings.h DMDispCtxFor).
+static MSBDDispCtx MSBDispCtxFor(NSDictionary *all, NSDictionary *info) {
+	MSBDOwnPages own = MSBDOwnPagesNow();
+	MSBDDispCtx c;
+	c.osMajor = (int)[NSProcessInfo processInfo].operatingSystemVersion.majorVersion;
+	c.extended = c.osMajor >= 16 && [info[@"desktop"] isKindOfClass:[NSNumber class]] && [info[@"desktop"] boolValue];
+	c.ourBar = own.barLine && !own.stockBar;
+	c.ourDock = MSBDDispStoreOurDock(own.dockLine);   // (its line on and its own switch on: as SpringBoard's window reads it, DisplayRowStore.h)
+	c.smEngine = own.stageManagerEngine;
+	c.finder = own.finder;
+	c.scales = (int)MSBDDispStoreScaleChoices(all, info, NULL).count;   // (More Space, commit 13: a choice only where iPadOS lists 2+)
+	c.release = MSBD_DISP_RELEASE;
+	return c;
+}
+// The Displays group's rows, in place of the plist's placeholder row (DISPLAY_SETTINGS, which the Settings search indexes with the group's title).
+static NSArray<PSSpecifier *> *MSBDisplaysGroup(PSListController *target, PSSpecifier *group) {
+	NSDictionary *all = MSBDDispStoreAll();
+	NSArray *connected = MSBDDispStoreConnected(all), *remembered = MSBDDispStoreRemembered(all);
+	BOOL layerOn = MSBDDispStoreLayerOn(all), os15 = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion < 16;
+	NSMutableArray *rows = [NSMutableArray array];
+	// (the displays domain's two switches first: Display Settings, and More Space where it means something -- the crash guard's targets, switched back on here)
+	PSSpecifier *master = [PSSpecifier preferenceSpecifierNamed:@MSBD_DISP_TEXT_SWITCH target:target set:@selector(msb_setDisplaySwitch:specifier:) get:@selector(msb_displaySwitch:) detail:Nil cell:PSSwitchCell edit:Nil];
+	[master setProperty:@MSBD_DISP_MASTER_KEY forKey:@"msbdSwitch"];
+	[rows addObject:master];
+	if (MSBDDispStoreScaleSwitchShown(all)) {
+		PSSpecifier *scale = [PSSpecifier preferenceSpecifierNamed:@MSBD_DISP_TEXT_SCALE_SWITCH target:target set:@selector(msb_setDisplaySwitch:specifier:) get:@selector(msb_displaySwitch:) detail:Nil cell:PSSwitchCell edit:Nil];
+		[scale setProperty:@MSBD_DISP_SCALE_SWITCH_KEY forKey:@"msbdSwitch"];
+		[scale setProperty:@"DISPLAY_MORE_SPACE" forKey:@"id"];
+		[scale setProperty:@(layerOn) forKey:@"enabled"];
+		[rows addObject:scale];
+	}
+	for (NSString *d in remembered) {
+		NSDictionary *info = MSBDDispStoreInfo(all, d);
+		BOOL on = [connected containsObject:d];
+		PSSpecifier *row = [PSSpecifier preferenceSpecifierNamed:MSBDDispStoreName(info) target:target set:NULL get:@selector(msb_displayStatus:)
+		                                                  detail:on ? NSClassFromString(@"MSBDisplayListController") : Nil cell:on ? PSLinkListCell : PSTitleValueCell edit:Nil];
+		[row setProperty:d forKey:@"msbdDisplay"];
+		[row setProperty:[@"DISPLAY_" stringByAppendingString:d] forKey:@"id"];
+		[row setProperty:@(on && layerOn && !os15) forKey:@"enabled"];
+		[rows addObject:row];
+		if (!on) {
+			PSSpecifier *forget = [PSSpecifier preferenceSpecifierNamed:@MSBD_DISP_TEXT_FORGET target:target set:NULL get:NULL detail:Nil cell:PSButtonCell edit:Nil];
+			forget.buttonAction = @selector(msb_forgetDisplay:);
+			[forget setProperty:d forKey:@"msbdDisplay"];
+			[forget setProperty:[@"FORGET_" stringByAppendingString:d] forKey:@"id"];
+			[rows addObject:forget];
+		}
+	}
+	[master setProperty:@"DISPLAY_SETTINGS" forKey:@"id"];   // (the search's result lands on the group's first row: the switch, there with no display remembered too)
+	NSMutableString *footer = [NSMutableString stringWithString:@MSBD_DISP_TEXT_GROUP];
+	if (!layerOn) [footer setString:@MSBD_DISP_TEXT_OFF];
+	else if (os15) [footer appendFormat:@" %s", MSBD_DISP_TEXT_MIRROR];
+	else if (!connected.count) [footer appendFormat:@" %s", MSBD_DISP_TEXT_NONE];
+	[group setProperty:footer forKey:@"footerText"];
+	return rows;
+}
+
+@interface MSBDisplayListController : PSListController
+@end
+@implementation MSBDisplayListController {
+	int _tokens[3];
+	NSString *_display;
+}
+- (void)viewDidLoad {
+	[super viewDidLoad];
+	const char *names[3] = { MSBD_DISP_NOTIFY, "com.besiktasliseba.macstatusbar/prefsChanged", "com.besiktasliseba.dockmagnification/prefsChanged" };
+	__weak MSBDisplayListController *weakSelf = self;
+	for (int i = 0; i < 3; i++) notify_register_dispatch(names[i], &_tokens[i], dispatch_get_main_queue(), ^(int t) { [weakSelf msb_follow]; });
+}
+- (void)dealloc { for (int i = 0; i < 3; i++) if (_tokens[i]) notify_cancel(_tokens[i]); }
+// (live: a change from the window, the iPad's own settings or a display gone shows at once; a display gone leaves the page)
+- (void)msb_follow {
+	if (![MSBDDispStoreConnected(MSBDDispStoreAll()) containsObject:_display ?: @""] && self.navigationController.topViewController == self) { [self.navigationController popViewControllerAnimated:YES]; return; }
+	_specifiers = nil; [self reloadSpecifiers];
+}
+- (NSArray *)specifiers {
+	if (_specifiers) return _specifiers;
+	_display = [[self.specifier propertyForKey:@"msbdDisplay"] copy];
+	NSDictionary *all = MSBDDispStoreAll(), *info = MSBDDispStoreInfo(all, _display);
+	BOOL layerOn = MSBDDispStoreLayerOn(all), connected = [MSBDDispStoreConnected(all) containsObject:_display ?: @""];
+	MSBDDispCtx ctx = MSBDispCtxFor(all, info);
+	self.title = MSBDDispStoreName(info);
+	NSMutableArray *specs = [NSMutableArray array];
+	PSSpecifier *top = [PSSpecifier groupSpecifierWithID:@"DISPLAY_TOP"];
+	NSString *mode = MSBDDispStoreMode(info);
+	top.name = mode ? [NSString stringWithFormat:@"%@, %@", MSBDDispStoreName(info), mode] : MSBDDispStoreName(info);   // (the header: the display's name and mode)
+	NSString *topText = @(MSBDDispTopText(layerOn, connected, ctx.extended));
+	if (ctx.extended && MSBDDispStoreOverscanTip(info)) topText = [topText stringByAppendingFormat:@" %s", MSBD_DISP_TEXT_OVERSCAN];   // (iPadOS does not shrink the picture: commit 13)
+	[top setProperty:topText forKey:@"footerText"];
+	[specs addObject:top];
+	BOOL anyOwn = MSBDDispStoreHasOwn(all, _display);   // (its rows' changes, shown or not, never More Space's records: as the window)
+	for (int i = 0; i < MSBD_DISP_ROW_COUNT; i++) {
+		const MSBDDispRow *r = MSBDDispRowAt(i);
+		if (!MSBDDispRowShown(r, &ctx)) continue;
+		BOOL enabled = MSBDDispRowEnabled(r, &ctx, connected, layerOn);
+		if (enabled && r->dependsOn) { const MSBDDispRow *dep = MSBDDispRowFor(r->part, r->dependsOn); if (dep && ![MSBDDispRowShownValue(all, _display, dep, NULL) boolValue]) enabled = NO; }
+		if (r->kind == kMSBDRowScale) {   // (More Space, commit 13: Apple's own scales; SpringBoard sets the one asked for by a request key)
+			NSArray<NSArray *> *choices = MSBDDispStoreScaleChoices(all, info, NULL);
+			PSSpecifier *g = [PSSpecifier groupSpecifierWithID:@"RESOLUTION_GROUP"];
+			if (r->footer) [g setProperty:@(r->footer) forKey:@"footerText"];
+			[specs addObject:g];
+			PSSpecifier *s = [PSSpecifier preferenceSpecifierNamed:@(r->title) target:self set:@selector(msb_set:specifier:) get:@selector(msb_get:) detail:[PSListItemsController class] cell:PSLinkListCell edit:Nil];
+			[s setProperty:@(r->rowId) forKey:@"id"]; [s setProperty:@(r->rowId) forKey:@"msbdRow"]; [s setProperty:@(enabled) forKey:@"enabled"];
+			NSMutableArray *values = [NSMutableArray array], *titles = [NSMutableArray array];
+			for (NSArray *c in choices) { [values addObject:c[0]]; [titles addObject:c[1]]; }
+			SEL sv = NSSelectorFromString(@"setValues:titles:shortTitles:");
+			if ([s respondsToSelector:sv]) ((void (*)(id, SEL, id, id, id))objc_msgSend)(s, sv, values, titles, titles);
+			[s setProperty:values forKey:@"validValues"]; [s setProperty:titles forKey:@"validTitles"];
+			[specs addObject:s];
+			continue;
+		}
+		int from = 0;
+		id v = MSBDDispRowShownValue(all, _display, r, &from);
+		BOOL changed = from == kMSBDDispFromOverride;
+		int def = 0; BOOL hasDef = MSBDDispDisplayDefault(r->part, r->key, &def);
+		NSString *back = hasDef ? @MSBD_DISP_TEXT_DEFAULT_ON : [@"iPad: " stringByAppendingString:MSBDDispRowValueText(r, MSBDDispRowIPadValue(r))];
+		PSSpecifier *g = [PSSpecifier groupSpecifierWithID:[NSString stringWithFormat:@"%s_GROUP", r->rowId]];
+		if (r->kind == kMSBDRowSlider) g.name = @(r->title);   // (a slider cell has no title of its own: its group's header names it, as the Dock page's Size; a group's header is its name -- "label" is only the plist's key for it)
+		NSMutableArray *notes = [NSMutableArray array];
+		if (r->footer) [notes addObject:@(r->footer)];
+		if (changed) [notes addObject:[NSString stringWithFormat:@"Changed for this display. %@.", back]];
+		if (notes.count) [g setProperty:[notes componentsJoinedByString:@" "] forKey:@"footerText"];
+		[specs addObject:g];
+		PSCellType cell = r->kind == kMSBDRowSwitch ? PSSwitchCell : r->kind == kMSBDRowSlider ? PSSliderCell : PSLinkListCell;
+		PSSpecifier *s = [PSSpecifier preferenceSpecifierNamed:@(r->title) target:self set:@selector(msb_set:specifier:) get:@selector(msb_get:)
+		                                                detail:(r->kind == kMSBDRowChoice ? [PSListItemsController class] : Nil) cell:cell edit:Nil];
+		[s setProperty:@(r->rowId) forKey:@"id"];
+		[s setProperty:@(r->rowId) forKey:@"msbdRow"];
+		[s setProperty:@(enabled) forKey:@"enabled"];
+		if (r->kind == kMSBDRowSlider) { [s setProperty:@(r->lo) forKey:@"min"]; [s setProperty:@(r->hi) forKey:@"max"]; [s setProperty:@YES forKey:@"showValue"]; }
+		if (r->kind == kMSBDRowChoice) {
+			NSMutableArray *titles = [NSMutableArray array], *values = [NSMutableArray array];
+			for (int k = 0; k < r->choices; k++) { [titles addObject:@(r->choiceTitles[k])]; [values addObject:r->choiceValues[0] ? (id)@(r->choiceValues[k]) : (id)@(k)]; }
+			SEL sv = NSSelectorFromString(@"setValues:titles:shortTitles:");   // (Preferences' own, as the Window Engine row uses it)
+			if ([s respondsToSelector:sv]) ((void (*)(id, SEL, id, id, id))objc_msgSend)(s, sv, values, titles, titles);
+			[s setProperty:values forKey:@"validValues"]; [s setProperty:titles forKey:@"validTitles"];
+		}
+		(void)v;
+		[specs addObject:s];
+		if (changed) {
+			PSSpecifier *reset = [PSSpecifier preferenceSpecifierNamed:[NSString stringWithFormat:@"%s (%@)", MSBD_DISP_TEXT_RESET, back] target:self set:NULL get:NULL detail:Nil cell:PSButtonCell edit:Nil];
+			reset.buttonAction = @selector(msb_reset:);
+			[reset setProperty:@(r->rowId) forKey:@"msbdRow"];
+			[reset setProperty:[NSString stringWithFormat:@"%s_RESET", r->rowId] forKey:@"id"];
+			[reset setProperty:@(enabled || (connected && layerOn)) forKey:@"enabled"];
+			[specs addObject:reset];
+		}
+	}
+	[specs addObject:[PSSpecifier groupSpecifierWithID:@"USE_IPAD_GROUP"]];
+	PSSpecifier *use = [PSSpecifier preferenceSpecifierNamed:@MSBD_DISP_TEXT_USE_IPAD target:self set:NULL get:NULL detail:Nil cell:PSButtonCell edit:Nil];
+	use.buttonAction = @selector(msb_useIPad:);
+	[use setProperty:@"USE_IPAD" forKey:@"id"];
+	[use setProperty:@(anyOwn && layerOn) forKey:@"enabled"];
+	[specs addObject:use];
+	_specifiers = specs;
+	return _specifiers;
+}
+- (id)msb_get:(PSSpecifier *)spec {
+	const MSBDDispRow *r = MSBDDispRowById([[spec propertyForKey:@"msbdRow"] UTF8String]);
+	if (r && r->kind == kMSBDRowScale) { NSDictionary *all = MSBDDispStoreAll(); int now = 0; MSBDDispStoreScaleChoices(all, MSBDDispStoreInfo(all, _display), &now); return @(now); }
+	return r ? MSBDDispRowShownValue(MSBDDispStoreAll(), _display, r, NULL) : nil;
+}
+// A change for this display: the override through the one writer (common/DisplayRowStore.h), the switch's old state for the crash guard.
+- (void)msb_set:(id)value specifier:(PSSpecifier *)spec {
+	const MSBDDispRow *r = MSBDDispRowById([[spec propertyForKey:@"msbdRow"] UTF8String]);
+	if (!r || !_display) return;
+	if (r->kind == kMSBDRowScale) {   // (Settings has no display service: SpringBoard sets it, then asks keep or revert on the iPad's screen)
+		if ([value isKindOfClass:[NSNumber class]]) MSBDDispStoreWrite(_display, "disp", MSBD_DISP_SCALE_REQUEST_KEY, value, NO, nil);
+		return;
+	}
+	id stored = r->kind == kMSBDRowSlider ? @(MSBDDispSliderValue(r, [value doubleValue])) : MSBDDispRowForm(r, value);
+	if (r->kind == kMSBDRowSwitch) stored = [value boolValue] ? (__bridge id)kCFBooleanTrue : (__bridge id)kCFBooleanFalse;
+	if (!stored) return;
+	BOOL was = r->kind == kMSBDRowSwitch && [MSBDDispRowShownValue(MSBDDispStoreAll(), _display, r, NULL) boolValue];
+	MSBDDispStoreWrite(_display, r->part, r->key, stored, was, @(r->title));
+	if (r->kind != kMSBDRowSlider) { _specifiers = nil; [self reloadSpecifiers]; }   // (the dot's footer and the reset row; a slider follows at its note)
+}
+- (void)msb_reset:(PSSpecifier *)spec {
+	const MSBDDispRow *r = MSBDDispRowById([[spec propertyForKey:@"msbdRow"] UTF8String]);
+	if (!r || !_display) return;
+	BOOL was = r->kind == kMSBDRowSwitch && [MSBDDispRowShownValue(MSBDDispStoreAll(), _display, r, NULL) boolValue];
+	MSBDDispStoreWrite(_display, r->part, r->key, nil, was, @(r->title));
+	_specifiers = nil; [self reloadSpecifiers];
+}
+- (void)msb_useIPad:(PSSpecifier *)spec {
+	UIAlertController *a = [UIAlertController alertControllerWithTitle:@MSBD_DISP_TEXT_USE_IPAD message:@MSBD_DISP_TEXT_USE_IPAD_ASK preferredStyle:UIAlertControllerStyleAlert];
+	[a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+	[a addAction:[UIAlertAction actionWithTitle:@MSBD_DISP_TEXT_USE_IPAD style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) {
+		MSBDDispStoreUseIPad(self->_display);
+		self->_specifiers = nil; [self reloadSpecifiers];
+	}]];
+	[self presentViewController:a animated:YES completion:nil];
+}
+@end
+
 // ---- The Desktop page (1.7.5 item 1): the Status Bar page's controller with Desktop.plist -- Show Desktop Icons and Hide Desktop Icon Names
 // (moved here from the Status Bar page's Finder group, same keys), Icon Size (item 4) ----
 @interface MSBDesktopListController : MSBRootListController
 @end
-@implementation MSBDesktopListController
+@implementation MSBDesktopListController {
+	int _msbDispToken;   // (1.8.7: the displays domain's note, while the page lives)
+}
 - (NSString *)msb_plistName { return @"Desktop"; }
 - (BOOL)msb_desktopPage { return YES; }
+// (1.8.7) the Displays group: the plist's placeholder row (DISPLAY_SETTINGS) becomes one row per remembered display (MSBDisplaysGroup), each time the
+// list is built; it follows the displays domain (a display connecting or going, a name read, a change from the window)
+- (NSArray *)specifiers {
+	BOOL fresh = _specifiers == nil;
+	NSArray *specs = [super specifiers];
+	if (!fresh) return specs;
+	NSMutableArray *m = [specs mutableCopy];
+	PSSpecifier *group = nil; NSUInteger at = NSNotFound;
+	for (NSUInteger i = 0; i < m.count; i++) {
+		PSSpecifier *x = m[i];
+		if ([x.identifier isEqualToString:@"DISPLAYS_GROUP"]) group = x;
+		else if (group && [x.identifier isEqualToString:@"DISPLAY_SETTINGS"]) at = i;
+	}
+	if (group && at != NSNotFound) {
+		[m removeObjectAtIndex:at];
+		NSArray *rows = MSBDisplaysGroup(self, group);
+		[m insertObjects:rows atIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(at, rows.count)]];
+	}
+	_specifiers = m;
+	return _specifiers;
+}
+- (void)viewDidLoad {
+	[super viewDidLoad];
+	__weak MSBDesktopListController *weakSelf = self;
+	notify_register_dispatch(MSBD_DISP_NOTIFY, &_msbDispToken, dispatch_get_main_queue(), ^(int t) { MSBDesktopListController *me = weakSelf; if (me) { me->_specifiers = nil; [me reloadSpecifiers]; } });
+}
+- (void)dealloc { if (_msbDispToken) notify_cancel(_msbDispToken); }
+// The displays domain's switches (Display Settings, More Space): written through the store, the crash guard's RecentlyOn line for one turned on, as every
+// switch of Settings (LineSwitch.h MSBDNoteSwitch).
+- (id)msb_displaySwitch:(PSSpecifier *)spec { return @(MSBDDispStoreSwitchOn(MSBDDispStoreAll(), [[spec propertyForKey:@"msbdSwitch"] UTF8String])); }
+- (void)msb_setDisplaySwitch:(id)value specifier:(PSSpecifier *)spec {
+	NSString *key = [spec propertyForKey:@"msbdSwitch"];
+	BOOL was = MSBDDispStoreSwitchOn(MSBDDispStoreAll(), key.UTF8String), on = [value boolValue];
+	if (!MSBDDispStoreSetSwitch(key.UTF8String, on)) return;
+	MSBDNoteSwitch(@MSBD_DISP_DOMAIN, key, spec.name, was, on);
+}
+- (id)msb_displayStatus:(PSSpecifier *)spec {   // (a remembered display's row: Connected or Not Connected)
+	return [MSBDDispStoreConnected(MSBDDispStoreAll()) containsObject:[spec propertyForKey:@"msbdDisplay"] ?: @""] ? @"Connected" : @MSBD_DISP_TEXT_NOT_CONNECTED;
+}
+- (void)msb_forgetDisplay:(PSSpecifier *)spec {   // (Forget This Display: asked first; its settings go, a display connected is never forgotten)
+	NSString *d = [spec propertyForKey:@"msbdDisplay"];
+	NSString *name = MSBDDispStoreName(MSBDDispStoreInfo(MSBDDispStoreAll(), d));
+	UIAlertController *a = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"Forget %@?", name] message:@MSBD_DISP_TEXT_FORGET_ASK preferredStyle:UIAlertControllerStyleAlert];
+	[a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+	[a addAction:[UIAlertAction actionWithTitle:@MSBD_DISP_TEXT_FORGET style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) {
+		MSBDDispStoreForget(d);
+		self->_specifiers = nil; [self reloadSpecifiers];
+	}]];
+	[self presentViewController:a animated:YES completion:nil];
+}
 // Back on the page: Finder, MacStatusBar or the gate changed elsewhere -- the note comes or goes (built again); otherwise the greyed rows follow
 // Finder and Show Desktop Icons, and the slider shows the size in force (the Home Screen's may have been measured since).
 - (void)viewWillAppear:(BOOL)animated {

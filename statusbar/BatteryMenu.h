@@ -251,7 +251,7 @@ static void DMBattOpenSettings(NSString *group, NSString *why) { DMOpenURL(group
     [self addSubview:_toggle];
     return self;
 }
-- (CGFloat)dmRowHeight { return MSBDMenuRowScaled(gDMBarSize, kBattSwitchRowH); }
+- (CGFloat)dmRowHeight { return MSBDMenuRowScaled(DMMenuSize(), kBattSwitchRowH); }
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGSize s = self.toggle.bounds.size;   // (unscaled; the transform shrinks it around its centre)
@@ -326,7 +326,7 @@ static void DMBattRebuildOpenMenu(void) {
     NSArray *items = DMBattMenuItems(&sig);
     if ([sig isEqualToString:gBattMenuSignature]) return;
     gBattMenuSignature = sig;
-    UIView *panel = DMMakePanel(items);
+    UIView *panel = DMMakePanelLike(items, old);   // (fitted to the room the open one had: StatusBar.x DMMakeFitPanel)
     CGRect f = panel.frame; f.origin = old.frame.origin;
     if ([UIApplication sharedApplication].userInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft) f.origin.x = CGRectGetMaxX(old.frame) - f.size.width;   // (hung from its right edge then: that edge stays)
     panel.frame = f;
@@ -654,7 +654,7 @@ static void DMBattLayoutButton(UIView *fg, CGFloat left, CGFloat k) {
         [fg addSubview:btn];
         objc_setAssociatedObject(fg, kBattButtonKey, btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    btn.frame = DMBarRect(fg, rtl, CGRectMake(a, 0, b - a, fg.bounds.size.height));
+    btn.frame = DMBarRect(fg, rtl, CGRectMake(a, 0, b - a, DMBarCopyHeight(fg)));
     btn.hidden = NO;
     [fg bringSubviewToFront:btn];
     DMBattCoverAX(fg, views, YES);
@@ -758,9 +758,9 @@ static MSBDBattRightSide DMBattCCLayout(UIView *fg, BOOL rtl, CGFloat clockEdge,
     icon.hidden = btn.hidden = !show;
     if (show) {
         icon.frame = DMBarRect(fg, rtl, CGRectMake(side.ccLead, round(midY - h / 2.0), w, h));
-        btn.frame = DMBarRect(fg, rtl, CGRectMake(side.ccBtnLead, 0, side.ccBtnTrail - side.ccBtnLead, fg.bounds.size.height));
+        btn.frame = DMBarRect(fg, rtl, CGRectMake(side.ccBtnLead, 0, side.ccBtnTrail - side.ccBtnLead, DMBarCopyHeight(fg)));
         // (the highlight: the glyph and 5 pt at each side, the bar's height less 3 pt top and bottom -- a title pill's insets -- x Menu Bar Size)
-        pill.frame = DMBarRect(fg, rtl, CGRectMake(side.ccLead - 5.0 * k, 3.0 * k, w + 10.0 * k, MAX(0.0, fg.bounds.size.height - 6.0 * k)));
+        pill.frame = DMBarRect(fg, rtl, CGRectMake(side.ccLead - 5.0 * k, 3.0 * k, w + 10.0 * k, MAX(0.0, DMBarCopyHeight(fg) - 6.0 * k)));
         pill.layer.cornerRadius = 5.0 * k;
         [fg bringSubviewToFront:pill]; [fg bringSubviewToFront:icon]; [fg bringSubviewToFront:btn];
     }

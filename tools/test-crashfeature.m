@@ -14,10 +14,11 @@ static void Expect(NSString *what, NSString *fixture, NSString *map, NSString *w
     printf("%s  %-58s %s%s\n", pass ? "PASS" : "FAIL", what.UTF8String, got.UTF8String, pass ? "" : [NSString stringWithFormat:@"   (want %@)", want].UTF8String);
     if (!pass) fails++;
 }
-static void SetPref(NSString *key, id value) {
-    CFPreferencesSetValue((__bridge CFStringRef)key, (__bridge CFPropertyListRef)value, CFSTR("com.besiktasliseba.test-crashstep"), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-    CFPreferencesSynchronize(CFSTR("com.besiktasliseba.test-crashstep"), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+static void SetIn(NSString *domain, NSString *key, id value) {
+    CFPreferencesSetValue((__bridge CFStringRef)key, (__bridge CFPropertyListRef)value, (__bridge CFStringRef)domain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    CFPreferencesSynchronize((__bridge CFStringRef)domain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
 }
+static void SetPref(NSString *key, id value) { SetIn(@"com.besiktasliseba.test-crashstep", key, value); }
 int main(int argc, char **argv) {
     @autoreleasepool {
         if (argc == 4) {   // (a real build's map: <map> <fixture> <expected answer>)
@@ -102,6 +103,42 @@ int main(int argc, char **argv) {
         SetPref(@"forceQuitEnabled", @NO);
         Expect(@"small part's switch already off -> the part", fx(@"step1b-small-part-switch.ips"), map, @"part ForceQuitMenu - - 0 its part ForceQuitMenu|ForceQuitMenu");
         SetPref(@"forceQuitEnabled", nil);
+        // 1.8.7 (the per-display settings, review): a switch off on the iPad but on for a display is still the answer -- step 1b sets it and every
+        // display's (CrashStep.h MSBDGuardDispClear) -- not the part's fallback. The displays domain and the Dock's are test ones here
+        // (tools/test-crashstep.sh: com.besiktasliseba.test-crashstep.displays, .dock; the test domain is part msb).
+        NSString *DD = @"com.besiktasliseba.test-crashstep.displays", *DK = @"com.besiktasliseba.test-crashstep.dock", *TV = @"u-4C2D0372-0000-0000-0120-0103808E5078";
+        NSString *bannersOff = [NSString stringWithFormat:@"pref MacStatusBarCore %@ macBanners 0 Mac-Style Banners|the Mac-style banners", D];
+        NSString *stockOn = [NSString stringWithFormat:@"pref MacStatusBarCore %@ stockStatusBar 1 Status Bar Style|the status bar", D];
+        NSString *tvBanners = [TV stringByAppendingString:@"/msb/macBanners"];
+        SetPref(@"macBanners", @NO); SetPref(@"stockStatusBar", nil);
+        Expect(@"display: the iPad's off, no display's -> Stock status bar (as before)", fx(@"step1b-core-banners.ips"), map, stockOn);
+        SetIn(DD, tvBanners, @YES);
+        Expect(@"  ... the TV's own on -> the switch (step 1b clears the TV's)", fx(@"step1b-core-banners.ips"), map, bannersOff);
+        SetIn(DD, tvBanners, @2);
+        Expect(@"  ... a number above 0 (Menu Bar Size above Small) -> the switch", fx(@"step1b-core-banners.ips"), map, bannersOff);
+        SetIn(DD, @"displaySettings", @NO);
+        Expect(@"  ... Display Settings off (every override dormant) -> Stock status bar", fx(@"step1b-core-banners.ips"), map, stockOn);
+        SetIn(DD, @"displaySettings", nil); SetIn(DD, tvBanners, @NO);
+        Expect(@"  ... the TV's own off -> Stock status bar", fx(@"step1b-core-banners.ips"), map, stockOn);
+        SetIn(DD, tvBanners, @"on");
+        Expect(@"  ... the TV's of another type (reads as not set) -> Stock status bar", fx(@"step1b-core-banners.ips"), map, stockOn);
+        SetIn(DD, tvBanners, nil); SetIn(DD, [TV stringByAppendingString:@"/dock/macBanners"], @YES); SetIn(DD, [TV stringByAppendingString:@"/msb/macBannersX"], @YES);
+        Expect(@"  ... another part's or another key's on -> Stock status bar", fx(@"step1b-core-banners.ips"), map, stockOn);
+        SetIn(DD, [TV stringByAppendingString:@"/dock/macBanners"], nil); SetIn(DD, [TV stringByAppendingString:@"/msb/macBannersX"], nil);
+        // A row whose display default is on (Show Trash in Dock): with the iPad's off, a remembered display shows it (the same report, its target made
+        // the Dock's showTrash in the test Dock domain)
+        NSString *trashMap = [map stringByReplacingOccurrencesOfString:@"T showDownloads pref com.besiktasliseba.test-crashstep showDownloads 0 1 Show Downloads in Dock|the Dock's Downloads"
+                                                            withString:@"T showDownloads pref com.besiktasliseba.test-crashstep.dock showTrash 0 1 Show Trash in Dock|the Dock's Trash"];
+        NSString *trashOff = @"pref DockMagnification com.besiktasliseba.test-crashstep.dock showTrash 0 Show Trash in Dock|the Dock's Trash";
+        SetIn(DK, @"showTrash", @NO);
+        Expect(@"display default: the iPad's Trash off, no display remembered -> the part", fx(@"step1b-dock-downloads.ips"), trashMap, dockPart);
+        SetIn(DD, [TV stringByAppendingString:@"/info"], @{@"name": @"SAMSUNG"});
+        Expect(@"  ... a display remembered (its Trash on by default) -> Show Trash in Dock", fx(@"step1b-dock-downloads.ips"), trashMap, trashOff);
+        SetIn(DD, @"displaySettings", @NO);
+        Expect(@"  ... with Display Settings off too (the default stands) -> the same", fx(@"step1b-dock-downloads.ips"), trashMap, trashOff);
+        SetIn(DD, @"displaySettings", nil); SetIn(DD, [TV stringByAppendingString:@"/dock/showTrash"], @NO);
+        Expect(@"  ... that display's own off -> the part", fx(@"step1b-dock-downloads.ips"), trashMap, dockPart);
+        SetIn(DD, [TV stringByAppendingString:@"/dock/showTrash"], nil); SetIn(DD, [TV stringByAppendingString:@"/info"], nil); SetIn(DK, @"showTrash", nil);
         SetPref(@"macBanners", nil); SetPref(@"stockStatusBar", nil); SetPref(@"controlCenterStyle", nil); SetPref(@"dockStyle", nil);
     }
     return fails ? 1 : 0;

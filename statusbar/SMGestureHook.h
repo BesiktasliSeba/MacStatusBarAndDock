@@ -157,11 +157,74 @@ static id DMSMSwipeActivateCE(id self, SEL _cmd, long long dest) { return DMSMSw
 // iPad 2 26 Oct: "selected -"). Then the desktop on screen is the stage it takes, as with a window under the finger: a side swipe goes to the
 // stage next to it; a swipe up for Home keeps the windows still (SMHome.h B2) and the Home rule keeps them; a hold takes the desktop's card into
 // the App Switcher (the Mac Switcher instead, with it on).
+// Only for a gesture on the iPad's own screen (1.8.7, iPad 2 16.7.7 d41 07:46:54, Safe Mode): every display has its own switcher and its own gesture
+// transaction, and the desktop taken is the iPad's stage, which is in no other display's list. A push at the TV's bottom edge with no TV stage under
+// the pointer, while the iPad showed a window, gave the TV's transaction the iPad's stage; SpringBoard looked it up in the TV switcher's list
+// (-indexOfObject:, no not-found check), and -[SBSwitcherModifier appLayoutsToCacheSnapshotsWithVisibleRange:...] threw NSRangeException
+// {NSNotFound, 1}. Another display's gesture keeps SpringBoard's own pick (its own desktop is not taken: the TV's switcher would need its own
+// stage in its own list, never read there). Which display: three reads of the transaction, each 1 the iPad's, 0 another display's, -1 not read
+// here. The rule (plain C, Mac test test-smgesturedisplay): taken only when no read says another display and one says the iPad's -- or none
+// could be read and the iPad has no other display (as before: the iPad alone).
+static BOOL DMSMGestureTakesOnIPad(int controller, int request, int screen, BOOL otherDisplay) {
+    if (controller == 0 || request == 0 || screen == 0) return NO;
+    if (controller == 1 || request == 1 || screen == 1) return YES;
+    return !otherDisplay;
+}
+// (1) the switcher the transaction serves: -[SBFluidSwitcherGestureWorkspaceTransaction switcherController] (18.5's: its
+//     -initWithTransitionRequest:switcherController:delegate:, and -selectedAppLayoutForGestureRecognizer: reads its windowManagementStyle), the
+//     coordinator's switcher of one of SpringBoard's window scenes, on the iPad's screen or on another. Anything else is not read.
+static int DMSMGestureReadController(id tx) {
+    SEL s = NSSelectorFromString(@"switcherController"), forScene = NSSelectorFromString(@"switcherControllerForWindowScene:");
+    if (![tx respondsToSelector:s] || !DMSMSigOK(tx, s, DMSMSigObj(), "switcherController")) return -1;
+    id its = ((id (*)(id, SEL))objc_msgSend)(tx, s), coord = DMSMCoordinator();
+    if (!its || ![coord respondsToSelector:forScene] || !DMSMSigOK(coord, forScene, DMSMSigObjObj(), "switcherControllerForWindowScene:")) return -1;
+    for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
+        if (![sc isKindOfClass:[UIWindowScene class]] || ((id (*)(id, SEL, id))objc_msgSend)(coord, forScene, sc) != its) continue;
+        UIScreen *on = ((UIWindowScene *)sc).screen;
+        return !on ? -1 : (on == [UIScreen mainScreen] ? 1 : 0);
+    }
+    return -1;
+}
+// (2) the display its transition request names: -[SBWorkspaceTransaction transitionRequest], -[SBWorkspaceTransitionRequest displayConfiguration]
+//     (both on 18.5), its identity: the iPad's screen's, or another screen's.
+static int DMSMGestureReadRequest(id tx) {
+    SEL tr = NSSelectorFromString(@"transitionRequest"), dc = NSSelectorFromString(@"displayConfiguration");
+    if (![tx respondsToSelector:tr] || !DMSMSigOK(tx, tr, DMSMSigObj(), "transitionRequest")) return -1;
+    id req = ((id (*)(id, SEL))objc_msgSend)(tx, tr);
+    if (![req respondsToSelector:dc] || !DMSMSigOK(req, dc, DMSMSigObj(), "displayConfiguration")) return -1;
+    id cfg = ((id (*)(id, SEL))objc_msgSend)(req, dc);
+    id ident = [cfg respondsToSelector:NSSelectorFromString(@"identity")] ? DMCall(cfg, @"identity") : nil, mainIdent = DMSMIdentityOfScreen([UIScreen mainScreen]);
+    if (!ident || !mainIdent) return -1;
+    if ([ident isEqual:mainIdent]) return 1;
+    for (UIScreen *s in DMDispScreens()) if (s != [UIScreen mainScreen] && [ident isEqual:DMSMIdentityOfScreen(s)]) return 0;
+    return -1;
+}
+// (3) the screen of the recognizer's window (as the Mac Switcher tells the TV's pointer push: MacSwitcher.h DMMSWPointerPush).
+static int DMSMGestureReadScreen(id recognizer) {
+    UIScreen *on = [recognizer isKindOfClass:[UIGestureRecognizer class]] ? ((UIGestureRecognizer *)recognizer).view.window.screen : nil;
+    return !on ? -1 : (on == [UIScreen mainScreen] ? 1 : 0);
+}
+static BOOL DMSMGestureOtherDisplay(void) {   // (SpringBoard has a window scene on a screen other than the iPad's)
+    for (UIScene *sc in [UIApplication sharedApplication].connectedScenes)
+        if ([sc isKindOfClass:[UIWindowScene class]] && ((UIWindowScene *)sc).screen != [UIScreen mainScreen]) return YES;
+    return NO;
+}
 static id (*o_SMGestureTakes)(id, SEL, id);
 static id DMSMGestureTakes(id self, SEL _cmd, id recognizer) {
     id taken = o_SMGestureTakes(self, _cmd, recognizer);
     if (taken || !DMSMFree() || !gSMDeskHooked || gSMDeskOff) return taken;
     @try {
+        int ctl = DMSMGestureReadController(self), req = DMSMGestureReadRequest(self), scr = DMSMGestureReadScreen(recognizer);
+        BOOL other = DMSMGestureOtherDisplay();
+        if (!DMSMGestureTakesOnIPad(ctl, req, scr, other)) {
+            static BOOL told = NO;   // (none read with another display: said once per start in a release build -- the desktop is not taken while it is there)
+            if (DMTestFlag("/tmp/macstatusbar-debug") || (!told && ctl < 0 && req < 0 && scr < 0)) {
+                told = YES;
+                DMLog([NSString stringWithFormat:@"[smgesture] no stage under the finger, a gesture %@: SpringBoard's own pick (switcher %d, request %d, screen %d)",
+                       ctl < 0 && req < 0 && scr < 0 ? @"whose display could not be read with another display there" : @"on another display", ctl, req, scr]);
+            }
+            return taken;
+        }
         id desk = DMSMShownMainStage();   // (the iPad's stage on screen, in application mode; nil at the Home Screen or in the App Switcher)
         NSDictionary *m = desk ? DMSMStageItemsMap(desk) : nil;
         BOOL windows = NO;
@@ -197,16 +260,18 @@ static void DMSMSwipeHookInstall(void) {   // (iPadOS 16's home gesture modifier
     if (mce && [DMSMSigOfMethod(mce) isEqualToString:want]) MSHookMessageEx(ce, a, (IMP)DMSMSwipeActivateCE, (IMP *)&o_SMSwipeActivateCE);
     DMLog([NSString stringWithFormat:@"[smswipe] a swipe to the previous app: a Stage Manager stage of minimized windows, or an app with a window of another engine, is not one to go to (%@%@)", o_SMSwipeActivate ? @"home gesture" : @"-", o_SMSwipeActivateCE ? @", Stage Manager's home gesture" : @""]);
 }
-// A guard behind the hold above (GitHub #12, 16.3.1; iPadOS 16's method, 17 and 18 cache through -appLayoutsToCacheFullsizeSnapshots): SpringBoard's modifiers
+// A guard behind the hold above (GitHub #12, 16.3.1; iPadOS 16, see its install below): SpringBoard's modifiers
 // give this method a visible range that starts at [appLayouts indexOfObject:] of their own stage, with no not-found check, and -[NSArray subarrayWithRange:] then
 // throws. A range that starts past the list caches no snapshots (a few not cached ahead); any other goes on as SpringBoard built it. Every time it fires it is a
 // stage that left the list under a modifier: logged each time in a debug build, and once in the verdict Report a Problem shows in a release build.
 static id (*o_SMCacheRange)(id, SEL, NSRange, unsigned long long, BOOL);
+static SEL gSMCacheList;   // (-[SBSwitcherModifier appLayouts], an object getter: its shape checked once at the install -- the hook runs at every snapshot
+                           //  cache update of every modifier class, too many classes for a check per class)
 static id DMSMCacheRange(id self, SEL _cmd, NSRange visible, unsigned long long count, BOOL biasForward) {
     NSArray *outside = nil;
     @try {
-        SEL list = NSSelectorFromString(@"appLayouts");
-        id all = [self respondsToSelector:list] && DMSMSigOK(self, list, DMSMSigObj(), "appLayouts") ? ((id (*)(id, SEL))objc_msgSend)(self, list) : nil;
+        SEL list = gSMCacheList;
+        id all = list && [self respondsToSelector:list] ? ((id (*)(id, SEL))objc_msgSend)(self, list) : nil;
         if ([all isKindOfClass:[NSArray class]] && visible.location >= ((NSArray *)all).count) {
             outside = all;
             DM_FEATURE_MARK("sm-snapshot-cache-guard");
@@ -217,13 +282,26 @@ static id DMSMCacheRange(id self, SEL _cmd, NSRange visible, unsigned long long 
     } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[smgesture] the snapshot cache's guard: %@", e.reason]); }
     return outside ? @[] : o_SMCacheRange(self, _cmd, visible, count, biasForward);
 }
-static void DMSMCacheRangeInstall(void) {   // (iPadOS 16 only, the method in the shape read on 16.7.7: else SpringBoard's as it is)
+// (iPadOS 16 only: 18.5's SpringBoard checks for NSNotFound itself -- -[SBHomeGestureSwitcherModifier appLayoutsToCacheSnapshots] gives 0 for it, the
+//  range method returns none for it, and -appLayoutsToCacheFullsizeSnapshots clips its range: read in 18.5's SpringBoard, 22F76.) The method's
+//  argument types are compared, not its encoding's frame offsets: 1.8.4 to 1.8.7 compared the whole string with "@48@0:8{_NSRange=QQ}16Q32B40", but
+//  the compiler writes "@44@0:8{_NSRange=QQ}16Q32B40" (a BOOL argument counts 4 bytes in the frame size), so the guard was never installed on any
+//  iPad ("not as read on 16.7.7 here" at every start of the iPad 2 16.7.7, d41) and the TV gesture's crash above went straight to SpringBoard's throw.
+static void DMSMCacheRangeInstall(void) {
     if ([NSProcessInfo processInfo].operatingSystemVersion.majorVersion != 16) return;
     Class c = objc_getClass("SBSwitcherModifier");
     SEL s = sel_registerName("appLayoutsToCacheSnapshotsWithVisibleRange:numberOfSnapshotsToCache:biasForward:");
     Method m = c ? class_getInstanceMethod(c, s) : NULL;
-    if (!m || strcmp(method_getTypeEncoding(m) ?: "", "@48@0:8{_NSRange=QQ}16Q32B40")) { DMLog(@"[smgesture] the snapshots' cache method is not as read on 16.7.7 here: no guard on it"); return; }
+    NSString *have = DMSMSigOfMethod(m), *want = DMSMExpect(@encode(id), @encode(NSRange), @encode(unsigned long long), @encode(BOOL), NULL);
+    SEL list = sel_registerName("appLayouts");
+    NSString *listHave = c ? DMSMSigOfMethod(class_getInstanceMethod(c, list)) : nil;
+    if (![have isEqualToString:want] || ![listHave isEqualToString:DMSMSigObj()]) {
+        DMLog([NSString stringWithFormat:@"[smgesture] the snapshots' cache method is not as expected here (%@, not %@; its list %@): no guard on it", have ?: @"missing", want, listHave ?: @"missing"]);
+        return;
+    }
+    gSMCacheList = list;
     MSHookMessageEx(c, s, (IMP)DMSMCacheRange, (IMP *)&o_SMCacheRange);
+    DMLog(o_SMCacheRange ? @"[smgesture] the snapshots' cache: a visible range past the switcher's list caches none (GitHub #12 guard)" : @"[smgesture] the snapshots' cache guard did not go in");
 }
 // From the Stage Manager engine's start (StatusBar.x, with %init(SMEngine)): the engine only, never on iPadOS 15 or with another engine.
 static void DMSMGestureHoldInstall(void) {

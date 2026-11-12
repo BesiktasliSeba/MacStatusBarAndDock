@@ -17,8 +17,9 @@
 //     that is ignored (first ReadyDelay seconds, and only real changes count), or every respring would mute the audio.
 //     The apps cannot do any of this themselves; these controllers belong to SpringBoard.
 //
-// Only a bare Tab is taken. With Shift, Control, Option or Command held (Shift+Tab, Cmd+Tab app switching, Ctrl+Tab in
-// browsers) the key is left alone. Caps Lock is ignored.
+// Only a bare Tab is taken. With Shift, Control, Option, Command or Globe held (Shift+Tab, Cmd+Tab app switching, Ctrl+Tab in
+// browsers; Globe since 1.8.7, so Globe-Tab is free for a shortcut of yours) the key is left alone. Caps Lock is ignored. A bare Tab one of your
+// own shortcuts is on (KeyPilot's: Custom Shortcuts need a modifier) is left to it (common/KeyboardChords.h, SpringBoard's kMSBDKCYoursState).
 //
 // The Settings switch (Settings > Keyboard, shown while a hardware keyboard is attached; off for a new install): apps cannot easily read
 // Settings' data, so SpringBoard reads the switch and publishes it as Darwin notification state (kEnabledState, 1 = on; unset = off); every app
@@ -32,9 +33,10 @@
 #include <string.h>
 #import <dlfcn.h>
 #include <notify.h>
+#include "../common/KeyboardChords.h"   // (a bare Tab that is one of your own shortcuts: kMSBDKCYoursState)
 
 #define kHIDTab 43                // HID keyboard usage 0x2B
-#define kBlockingModifiers 0x1E0000   // Shift 0x20000, Control 0x40000, Option 0x80000, Command 0x100000
+#define kBlockingModifiers 0x9E0000   // Shift 0x20000, Control 0x40000, Option 0x80000, Command 0x100000, Globe 0x800000
 #define kToggleNotification "com.besiktasliseba.tabmutetweak.toggle"
 #define kEnabledState       "com.besiktasliseba.tabmutetweak.enabled"        // notification state: 1 = switched on in Settings (unset = off)
 #define kPrefsChanged       "com.besiktasliseba.tabmutetweak/prefsChanged"   // posted by the Settings switch
@@ -63,6 +65,14 @@ static BOOL TabMuteSwitchedOff(void) {   // (off unless SpringBoard has publishe
     dispatch_once(&once, ^{ notify_register_check(kEnabledState, &token); });
     uint64_t state = 0;
     return !(token != 0 && notify_get_state(token, &state) == NOTIFY_STATUS_OK && state == 1);
+}
+
+// A bare Tab is one of your own shortcuts (SpringBoard's state for the key tweaks), asked at a Tab press only.
+static BOOL TabIsYours(void) {
+    static int token = 0;
+    if (!token && notify_register_check(kMSBDKCYoursState, &token) != NOTIFY_STATUS_OK) { token = 0; return NO; }
+    uint64_t st = 0;
+    return notify_get_state(token, &st) == NOTIFY_STATUS_OK && (st & kMSBDKCYoursTab);
 }
 
 static BOOL AppIsExcluded(void) {
@@ -97,7 +107,7 @@ static BOOL FullKeyboardAccessOn(void) {
 - (void)sendEvent:(UIEvent *)event {
     if ([event isKindOfClass:%c(UIPhysicalKeyboardEvent)] && KeyEventAPIPresent() && !AppIsExcluded() && !TabMuteSwitchedOff()) {
         UIPhysicalKeyboardEvent *key = (UIPhysicalKeyboardEvent *)event;
-        if ([key _keyCode] == kHIDTab && ([key _modifierFlags] & kBlockingModifiers) == 0 && !FullKeyboardAccessOn()) {
+        if ([key _keyCode] == kHIDTab && ([key _modifierFlags] & kBlockingModifiers) == 0 && !FullKeyboardAccessOn() && !TabIsYours()) {
             if ([key _isKeyDown] && ![key _isARepeat]) notify_post(kToggleNotification);
             return;   // swallowed: the app never sees this Tab
         }

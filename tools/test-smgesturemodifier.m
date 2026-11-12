@@ -27,10 +27,28 @@ static NSSet *DMSMCardsHeld(void) { gHeldAsked++; return gHeldNow; }
 @interface FakeTx : NSObject @property (nonatomic) BOOL isComplete; @end @implementation FakeTx @end
 @interface FakeMod : NSObject @property (nonatomic, strong) NSArray *appLayouts; @end @implementation FakeMod @end
 @interface FakeOther : NSObject @end @implementation FakeOther @end
+// (the install's classes: SpringBoard's SBSwitcherModifier as 16.7.7 has it -- its list and the range method --, one with another count type, one with no list)
+static int gOwnCalls = 0;
+@interface SBSwitcherModifier : NSObject @property (nonatomic, strong) NSArray *appLayouts; @end
+@implementation SBSwitcherModifier
+- (id)appLayoutsToCacheSnapshotsWithVisibleRange:(NSRange)r numberOfSnapshotsToCache:(unsigned long long)n biasForward:(BOOL)b {
+    (void)n; (void)b; gOwnCalls++;
+    return [self.appLayouts subarrayWithRange:r];   // (SpringBoard's own: throws for a range past the list, as on the iPad)
+}
+@end
+@interface TestModWrongArgs : NSObject @property (nonatomic, strong) NSArray *appLayouts; @end
+@implementation TestModWrongArgs
+- (id)appLayoutsToCacheSnapshotsWithVisibleRange:(NSRange)r numberOfSnapshotsToCache:(long long)n biasForward:(BOOL)b { (void)r; (void)n; (void)b; return nil; }
+@end
+@interface TestModNoList : NSObject @end
+@implementation TestModNoList
+- (id)appLayoutsToCacheSnapshotsWithVisibleRange:(NSRange)r numberOfSnapshotsToCache:(unsigned long long)n biasForward:(BOOL)b { (void)r; (void)n; (void)b; return nil; }
+@end
 static int gOriginals = 0;
 static id FakeOriginal(id self, SEL _cmd, NSRange r, unsigned long long n, BOOL b) { (void)self; (void)_cmd; (void)r; (void)n; (void)b; gOriginals++; return @[@"SpringBoard's own"]; }
 static void Pump(double seconds) { CFRunLoopRunInMode(kCFRunLoopDefaultMode, seconds, false); }
 int main(void) { @autoreleasepool {
+    setvbuf(stdout, NULL, _IOLBF, 0);   // (a made-to-fail copy may end in a crash: its lines before are kept)
     gLog = [NSMutableArray array];
     gSMGestureHooked = YES;   // (the transaction's hooks are in, as on every iPadOS the engine runs on)
     NSSet *stage = [NSSet setWithObject:@"Tips+Files"];
@@ -73,7 +91,7 @@ int main(void) { @autoreleasepool {
     gHeldNow = nil;
 
     // ---- the snapshot cache's guard, iPadOS 16 ----
-    o_SMCacheRange = FakeOriginal;
+    o_SMCacheRange = FakeOriginal; gSMCacheList = @selector(appLayouts);
     FakeMod *mod = [FakeMod new]; mod.appLayouts = @[@"Clock", @"Tips+Files"];
     NSUInteger logged = gLog.count;
     id got = DMSMCacheRange(mod, _cmd_stub, NSMakeRange(NSNotFound, 1), 3, YES);
@@ -85,6 +103,25 @@ int main(void) { @autoreleasepool {
     Expect([got isEqual:@[@"SpringBoard's own"]] && gOriginals == 1 && gLog.count == logged + 2, @"  ... a range inside the list: SpringBoard's own, nothing logged");
     got = DMSMCacheRange([FakeOther new], _cmd_stub, NSMakeRange(9, 1), 3, YES);
     Expect([got isEqual:@[@"SpringBoard's own"]] && gOriginals == 2, @"  ... a modifier with no list of that shape: SpringBoard's own");
+
+    // ---- the guard's install (1.8.7: the iPad 2 16.7.7 logged "not as read on 16.7.7 here" at every start -- the guard was never in) ----
+    o_SMCacheRange = NULL; gSMCacheList = NULL; gHooks = 0;
+    Expect([DMSMNormEncoding("@44@0:8{_NSRange=QQ}16Q32B40") isEqualToString:@"@@:{QQ}QB"] && [DMSMNormEncoding("@48@0:8{_NSRange=QQ}16Q32B40") isEqualToString:@"@@:{QQ}QB"],
+           @"the install compares argument types: the iOS compiler's encoding (@44, a BOOL counted 4) and the one read wrongly before (@48) are the same shape");
+    gTestClass = "TestModWrongArgs"; gTestMajor = 16; DMSMCacheRangeInstall();
+    Expect(gHooks == 0 && !o_SMCacheRange, @"  ... a method of another shape (a signed count): not hooked, SpringBoard's as it is");
+    gTestClass = "TestModNoList"; DMSMCacheRangeInstall();
+    Expect(gHooks == 0 && !o_SMCacheRange, @"  ... a modifier with no list to read: not hooked");
+    gTestClass = "SBSwitcherModifier"; gTestMajor = 17; DMSMCacheRangeInstall(); gTestMajor = 18; DMSMCacheRangeInstall();
+    Expect(gHooks == 0 && !o_SMCacheRange, @"  ... iPadOS 17 and 18: not hooked (18.5's SpringBoard checks NSNotFound itself; 17 not read)");
+    gTestMajor = 16; DMSMCacheRangeInstall();
+    Expect(gHooks == 1 && o_SMCacheRange && gSMCacheList == @selector(appLayouts), @"iPadOS 16, the method as SpringBoard's (its argument types, whatever the frame offsets): hooked, the list it reads set");
+    SBSwitcherModifier *sb = [SBSwitcherModifier new]; sb.appLayouts = @[@"Tips", @"Clock", @"Files"];
+    id r = nil; BOOL threw = NO; gOwnCalls = 0;
+    @try { r = [sb appLayoutsToCacheSnapshotsWithVisibleRange:NSMakeRange(NSNotFound, 1) numberOfSnapshotsToCache:3 biasForward:YES]; } @catch (NSException *e) { threw = YES; }
+    Expect(!threw && [r isEqual:@[]] && gOwnCalls == 0, @"  ... the d41 crash's call (range {NSNotFound, 1} over 3 app layouts): none cached, no NSRangeException");
+    @try { r = [sb appLayoutsToCacheSnapshotsWithVisibleRange:NSMakeRange(1, 2) numberOfSnapshotsToCache:3 biasForward:NO]; } @catch (NSException *e) { threw = YES; }
+    Expect(!threw && [r isEqual:@[@"Clock", @"Files"]] && gOwnCalls == 1, @"  ... a range inside the list: SpringBoard's own answer");
     printf("%s: %d checks, %d failed\n", fails ? "test-smgesturemodifier run FAILED" : "test-smgesturemodifier run: all pass", checks, fails);
     return fails ? 1 : 0;
 } }

@@ -56,6 +56,10 @@ target batteryMenu pref com.besiktasliseba.macstatusbar batteryMenu 0 1 Battery 
 # the plug in the battery icon during a charge hold (1.8.6) has no Settings row: a piece, which Turn Back On brings back (review of 1.8.6: a hidden
 # switch stored off had no way back, and the guard's words pointed to a row that does not exist)
 target batteryHoldPlug piece the battery icon|the plug in the battery icon during a charge hold
+# the pointer's place while another display shares it (1.8.7, statusbar/PointerRegion.h: the iPad's own region in backboardd's pointer space and the
+# pointer's last sight on another display, from hovers on each display's system gestures window) has no Settings row: a piece; off, nothing of it runs
+# and the iPad's region is read as before 1.8.7
+target pointerRegion piece the pointer with another display|the pointer's place with another display
 target batteryPercentInside pref com.besiktasliseba.macstatusbar batteryPercentInside 0 0 Battery Percentage in Icon|the number inside the battery icon
 target desktopIcons pref com.besiktasliseba.macstatusbar desktopIcons 0 1 Show Desktop Icons|the desktop
 # Desktop Picture (1.8.6, statusbar/DesktopWallpaper.h): a path, not a switch -- the guard stores "none", which SpringBoard and Settings read as None
@@ -87,9 +91,20 @@ target autoHideDock pref com.besiktasliseba.dockmagnification autoHideDock 0 0 A
 # windows covered by the window that came forward kept in front of it (1.8.4.1 item 7, statusbar/KeepCovered.h): its switch, off unless switched on: a
 # crash in it sets it off (0)
 target keepCoveredInFront pref com.besiktasliseba.macstatusbar keepCoveredInFront 0 0 Keep Covered Windows in Front|the covered windows kept in front
+# the window tiling keys (1.8.3, statusbar/WindowKeys.h) and your own shortcuts (1.8.5, statusbar/CustomShortcuts.h): on for new installs since 1.8.7
+# (defaults v5: never set reads as on, StatusBar.x DMLoadPrefs and CustomShortcuts.h DMCSLoad, so their default here is 1). A crash in their key code
+# sets their own switch off (review of 1.8.7: no rule named them, so it took Stock status bar mode, the whole Mac status bar)
+target windowTilingKeys pref com.besiktasliseba.macstatusbar windowTilingKeys 0 1 Window Tiling Shortcuts|the window tiling shortcuts
+target customShortcuts pref com.besiktasliseba.customshortcuts enabled 0 1 Custom Shortcuts|your own keyboard shortcuts
 # the apps' own menus in the menu bar (1.8.5 item 3: statusbar/AppMenus.h in SpringBoard; appbridge/AppMenus.h, whose snapshots run in the apps and
 # which in SpringBoard only registers): its switch, off unless switched on (owner's rule for new behaviour): a crash in it sets it off (0)
 target appOwnMenus pref com.besiktasliseba.macstatusbar appOwnMenus 0 1 Show Apps' Own Menus|the apps' own menus in the menu bar
+# the per-display settings (1.8.7, plans/design-1.8.7-displays.md section 8): the layer's master switch, in its own domain (absent or true: on;
+# off: every display takes the iPad's settings again, the display defaults stand, the overrides are kept). A switch turned on for one display is
+# in the guard's RecentlyOn list by its flat key (common/DisplayPrefs.h MSBDDispNoteRecent: step 1 sets that override off), and a switch step 1b
+# sets loses every display's override of it (CrashStep.h MSBDGuardDispClear). More Space (Apple's own scale call, commit 13) has its own switch.
+target displaySettings pref com.besiktasliseba.macstatusbar.displays displaySettings 0 1 Display Settings|the per-display settings
+target displayScale pref com.besiktasliseba.macstatusbar.displays displayScale 0 1 More Space|the display's scale choice
 
 # The parts in words, for the guard's explanation: title <Image> <where it crashed>|<what was turned off> ("SpringBoard crashed twice in the
 # Dock, so the Dock was turned off for now."). A part without a title is named by its file name.
@@ -160,6 +175,14 @@ file DockMagnification ^DockStyle\.m$ dockStyle
 file DockMagnification ^Bounce\.m$ animateOpening
 # (1.8.4 item 4: the Home Screen's Dock assertion's two getters, hooked only once the switch was on)
 file DockMagnification ^DockAutoHide\.m$ autoHideDock
+# (1.8.7 commit 5: the Dock part's own per-display layer -- its cache, the getters, the display key: dock/DisplayPrefs.h and DMDisp... by name, as in
+#  MacStatusBarCore -- sets the layer's master switch, Display Settings, not the Dock)
+#  The display key's derivation (DMDispKeyOfScreen, out of line, and DisplayIdentity.h's private calls, MSBDDisp...) is passed over: the feature that
+#  asked for a key decides -- a getter's frame (DMDispBool / DMDispNum, out of line) is Display Settings', whose switch off makes the getters derive
+#  no key (review of 1.8.7: with it off the same path ran again and the guard's next step took the Dock)
+sym DockMagnification ^_*(DMDispKeyOfScreen$|MSBDDisp[A-Z]) transparent
+sym DockMagnification ^_*DMDisp[A-Z] displaySettings
+file DockMagnification ^(DisplayPrefs|DisplayIdentity)\.h$ displaySettings
 
 # ---- the status bar (MacStatusBarCore): by feature; anything else = Stock status bar mode ----
 image MacStatusBarCore stock map
@@ -170,6 +193,26 @@ sym MacStatusBarCore \$DMNativeHooks\$ finder
 sym MacStatusBarCore \$DMNativeSysGestures\$ finder
 sym MacStatusBarCore ^_?DM(Finder|Native|OpenFinder|OpenNativeWindow)[A-Z] finder
 file MacStatusBarCore ^DockTrash\.h$ showTrash
+# the per-display settings layer (1.8.7: the registry, the caches and the getters, the display key, and from later commits the rows, the Display
+# Settings window and the per-scene layer): its master switch, Display Settings. Its functions and blocks by name too (DMDisp...: a function of it
+# inlined into StatusBar.x keeps its name in its blocks). The Dock part's own copy (dock/DisplayPrefs.h, its cache and getters): the same rules
+# in the Dock's section.
+# What it names is what its switch turns off (review of 1.8.7: the registry, the names and the getters' key derivation ran with it off, so the guard's
+# step for it never helped and the next crash took Stock status bar mode or the part): off, the registry and its names do not run and the getters
+# derive no key (statusbar/DisplayPrefs.h). The display key's derivation (DMDispKeyOfScreen, DMDispDesktopScreen, out of line; DisplayIdentity.h's
+# private calls, MSBDDisp...) also serves Menu Bar Size's, the TV's auto-hide's and the Dock auto-hide's own lookups, which run whatever the switch
+# says: passed over, so the feature that asked decides (a getter's frame, out of line: Display Settings). The per-scene layer helper (SceneLayer.h)
+# is not the layer's: it carries 1.8.6's menu window on another display (unmapped then: Stock status bar mode, kept) and the TV's auto-hide strip,
+# which runs only with the Mac status bar that Stock status bar mode switches off; a file rule can't tell a role, so it stays with the status bar.
+# The TV panel's pass-through of -[SpringBoard sendEvent:] (DMDispPanelSendEvent, on every touch stack once a panel opened) is transparent like the
+# other sendEvent: hooks; what it calls to tell a click in the panel from one elsewhere (DMDispPanelTouch) is Display Settings'.
+sym MacStatusBarCore ^_*(DMDisp(KeyOfScreen|DesktopScreen|PanelSendEvent)$|MSBDDisp[A-Z]) transparent
+sym MacStatusBarCore ^_*DMDisp[A-Z] displaySettings
+# More Space (1.8.7 commit 13, statusbar/MoreSpace.h and its rules common/DisplayScale.h): Apple's scale call, its own switch displayScale
+sym MacStatusBarCore ^_*DMMoreSpace[A-Z] displayScale
+file MacStatusBarCore ^(MoreSpace|DisplayScale)\.h$ displayScale
+file MacStatusBarCore ^(DisplayPrefs|DisplayIdentity|DisplayRows|DisplayRowStore|DisplaySettings)\.h$ displaySettings
+file MacStatusBarCore ^PointerRegion\.h$ pointerRegion
 # a drive's eject (DriveEject.h, 1.7.3: the sidebar's Eject button, File > Eject, the drives' menus, the bin's eject) is Finder's
 file MacStatusBarCore ^DriveEject\.h$ finder
 file MacStatusBarCore ^(Finder|NativeWindow)\.h$ finder
@@ -260,6 +303,20 @@ file MacStatusBarCore ^SpotlightBridge\.h$ spotlightActions
 # Keep Covered Windows in Front (1.8.4.1 item 7): its functions (two kept out of line, so the map always has them) and their blocks
 sym MacStatusBarCore ^_*DMKeepCovered[A-Z] keepCoveredInFront
 file MacStatusBarCore ^KeepCovered\.h$ keepCoveredInFront
+# Window Tiling Shortcuts and Custom Shortcuts (review of 1.8.7): by name, only the code each switch stops. Switched off, SpringBoard's presses and key
+# commands are not hooked at the next start (DMWindowKeysInstall, DMCSInstall: only while on) and the rest asks the switch first. Window Tiling's:
+# a row's run (DMWinKeyRun) and the steps it runs (Return to Previous Size, Center, the arrangements, their blocks), its press and key command hooks
+# and their registration (nothing to register while off), Return to Previous Size's records (DMWinPrevNote..., taken only while on). Custom Shortcuts': a rule's run, a press's match, its hooks and key
+# commands, the apps' run names (DMCSRunFromApp, DMCSPublishStates' block: registered only while on). Not by file, as these switches do not stop the
+# rest: WindowKeys.h also holds the title bar's Fill / Zoom records (DMTitleRecord..., Double-Tap a Title Bar's), the tile test its callers run
+# either way (DMWinTile...) and the keys' publish on the tick; CustomShortcuts.h its load, the states for the apps, the recording check and the
+# tick (run with the switch off), and Yours over a built-in (DMKC...: KeyPilot's rules while it is installed, whatever this switch says). Those
+# stay with the status bar (Stock status bar mode stops them: DMLoadPrefs and DMCustomShortcutsStart run after its return in the constructor).
+# The rules' plain functions (WindowKeysRule.h, CustomShortcutsRule.h, common/KeyboardChords.h; out of line in a debug build, MSBDWinKeyFor in a
+# release one too) are passed over: their caller decides, as for the display key's derivation.
+sym MacStatusBarCore ^_*(DMWinKey(Run|Input|sPressesBegan|sKeyCommands|CommandFired)|DMWindowKeys(Install|Register)|DMWindowBackFromTile|DMCenterFrontWindow|DMArrangeWindows|DMWinPrev(Note(View|Native|SM|Active)|PruneSM))(_block_invoke(_[0-9]+)?(\.[0-9]+)?)?$ windowTilingKeys
+sym MacStatusBarCore ^_*(DMCS(Run|RunOnce|RunFromApp|RuleFor|PressesBegan|KeyCommands|KeyCommandFired|Install|MakeKeyCommands|KeyInput)|DMCSPublishStates_block_invoke)(_block_invoke)?(_[0-9]+)?(\.[0-9]+)?$ customShortcuts
+file MacStatusBarCore ^(WindowKeysRule|CustomShortcutsRule|KeyboardChords)\.h$ transparent
 sym MacStatusBarCore ^_?DMMSWPressesBegan$ transparent   # (its key pass-through is on every key press stack)
 # Swipe Up to Quit (1.8.6, MacSwitcher.h DMMSWFlick*, MSWFlick.h): its own switch, before the Mac Switcher's rule takes the whole view. Both halves:
 # the finger's flick (DMMSWFlick*, DMMSWFlickable) and the trackpad's two-finger swipe (DMMSWScroll*, its pan's -[DMMSWTarget scroll:]), with their
@@ -268,7 +325,8 @@ sym MacStatusBarCore ^_?DMMSWPressesBegan$ transparent   # (its key pass-through
 # swipe turned off the whole Mac Switcher)
 sym MacStatusBarCore ^(_*(DMMSW|MSBDMSW)(Flick|Scroll)(able|[A-Z])|-\[DMMSWTarget\sscroll:\]$) mswSwipeUpQuit
 sym MacStatusBarCore ^_*DMMSW[A-Z] macSwitcher
-file MacStatusBarCore ^MacSwitcher(SM|Button)?\.h$ macSwitcher
+# (MSWDisplays.h, 1.8.7: the Mac Switcher's desktops per display, the same switch)
+file MacStatusBarCore ^(MacSwitcher(SM|Button)?|MSWDisplays)\.h$ macSwitcher
 # what Stock status bar mode keeps running (StockBar.h): no switch of its own, so the part
 sym MacStatusBarCore \$(MacContextMenus|MacContextMenus15|PreviewTargetGuard|StockCCTiles)\$ part
 sec MacStatusBarCore Haptic\sTouch\smenus part
@@ -293,7 +351,7 @@ sec MacStatusBarCore Auto-hiding\sstatus\sbar autoHideStatusBar
 sec MacStatusBarCore only\sthe\stitle\sbar\sslides autoHideStatusBar
 # Menu Bar Size (1.7.3): iOS's bar made taller at Medium / Large -- the providers' hooks (%group MenuBarSize*) and the code of their section: back to
 # Small (menuBarSize 0: the crash guard writes false, which SpringBoard and Settings read as Small; at Small none of it is hooked)
-sym MacStatusBarCore \$MenuBarSize(UIKit|STUI|Scenes|SceneFrames|Grabber|Battery|BatteryBolt|BatteryStaticBolt|BatteryItem)(Clock)?\$ menuBarSize
+sym MacStatusBarCore \$MenuBarSize(UIKit|STUI|Scenes|SceneFrames|Grabber|Battery|BatteryBolt|BatteryStaticBolt|BatteryItem|Manager|SceneBar)(Clock)?\$ menuBarSize
 sec MacStatusBarCore ^(//\s=+\sMenu\sBar\sSize\s|%group\sMenuBarSize) menuBarSize
 # the keyboard section (its header names the keyboard button, but the code under it runs for the window engines whether the button is on or not:
 # the keyboard turned for a window app's side, the Dock's level while a keyboard is up, MilkyWay's and Aerial's keyboard windows, the Fit to Window

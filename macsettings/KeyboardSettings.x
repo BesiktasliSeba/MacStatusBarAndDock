@@ -1,8 +1,14 @@
 #import <unistd.h>
+#import <signal.h>
+#import <errno.h>
 // Keyboard (MacStatusBar&Dock, 2026-09-25): a "Keyboard" row in the Settings sidebar, shown only while a hardware keyboard is attached (like the
 // Pointer row with a pointer), opening a small stock-looking page with the switches of the keyboard features that used to be separate tweaks:
 // Top-Left Key as Escape (GraveEscape), Tab mutes (TabMute), Globe volume keys (VolumeGlobe) and the brightness keys (BrightnessKey). Each keeps its own
-// preference domain and its own "prefsChanged" notification, so every switch applies at once, with no respring. All are off for a new install.
+// preference domain and its own "prefsChanged" notification, so every switch applies at once, with no respring. All are off for a new install;
+// Window Tiling Shortcuts and Custom Shortcuts are on for one (1.8.7, KT 11 Nov; an update keeps what it had: sshtoggled's defaults v5).
+// Where two keyboard features claim the same keys, the footers say which has them (1.8.7: common/KeyboardChords.h, the one table).
+// The page, top to bottom (KT 12 Nov): your own shortcuts -- KeyPilot's row first while it is installed, then Custom Shortcuts --, Window Tiling
+// Shortcuts, the five Mac key switches, then Apple's Hardware Keyboard rows.
 #import <UIKit/UIKit.h>
 #import "../common/MainListRows.h"   // (the sidebar read through it: never the row Settings fills in on its own queue, 1.7.9)
 #import <notify.h>
@@ -12,6 +18,7 @@
 #import "../common/InputDevices.h"   // (MSBDKeyboardAttached: read the same way by the Ethernet row's rule, EthernetFix.x -- 1.7.5)
 #import "../common/ChoicePage.h"     // (KeyPilot's row, 1.8.3: GET or OPEN, as the choice pages' third-party rows)
 #import "../common/ModifierTap.h"    // (Window Tiling Keys' switch: its key, domain and notification)
+#import "../common/KeyboardChords.h" // (1.8.7: every keyboard feature's chords, and who has the ones two of them claim)
 #import <objc/message.h>
 
 @interface PSSpecifier : NSObject
@@ -45,14 +52,15 @@ static UIImage *MSKeyboardIcon(void) {   // a 29 pt rounded square with the keyb
     }];
 }
 
-static PSSpecifier *MSKeySwitch(id target, NSString *label, NSString *domain, NSString *key) {
+static PSSpecifier *MSKeySwitchDefault(id target, NSString *label, NSString *domain, NSString *key, BOOL on) {
     PSSpecifier *s = [PSSpecifier preferenceSpecifierNamed:label target:target set:@selector(setPreferenceValue:specifier:) get:@selector(readPreferenceValue:) detail:nil cell:kCellSwitch edit:nil];
     [s setProperty:key forKey:@"key"];
     [s setProperty:domain forKey:@"defaults"];
-    [s setProperty:@NO forKey:@"default"];
+    [s setProperty:@(on) forKey:@"default"];
     [s setProperty:[domain stringByAppendingString:@"/prefsChanged"] forKey:@"PostNotification"];
     return s;
 }
+static PSSpecifier *MSKeySwitch(id target, NSString *label, NSString *domain, NSString *key) { return MSKeySwitchDefault(target, label, domain, key, NO); }   // (off unless switched on)
 static PSSpecifier *MSKeyGroup(NSString *title, NSString *footer) {
     PSSpecifier *g = [PSSpecifier groupSpecifierWithName:title];
     if (footer) [g setProperty:footer forKey:@"footerText"];
@@ -68,14 +76,129 @@ static PSSpecifier *MSKeyGroup(NSString *title, NSString *footer) {
 //  - backlight keys (BrightnessKey.x): Shift + Option/Control (not remapped), and a keyboard with a backlight (Apple's page then shows its own
 //    "Keyboard Brightness" slider -- the same test Apple uses);
 //  - Top-Left Key as Escape and Tab mute have no condition (any keyboard with those keys).
-static BOOL MSKeyOn(NSString *domain, NSString *key) {
+static BOOL MSKeyOnDefault(NSString *domain, NSString *key, BOOL def) {   // (never set: def)
+    CFPreferencesAppSynchronize((__bridge CFStringRef)domain);
     CFPropertyListRef v = CFPreferencesCopyValue((__bridge CFStringRef)key, (__bridge CFStringRef)domain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-    BOOL on = v && CFGetTypeID(v) == CFBooleanGetTypeID() && CFBooleanGetValue(v);
+    BOOL on = v ? (CFGetTypeID(v) == CFBooleanGetTypeID() && CFBooleanGetValue(v)) : def;
     if (v) CFRelease(v);
     return on;
 }
+static BOOL MSKeyOn(NSString *domain, NSString *key) { return MSKeyOnDefault(domain, key, NO); }
 NSDictionary *MSModifierMapping(void);   // (below: Apple's Modifier Keys choices for the attached keyboard, source usage -> destination usage)
 static void MSKeysSetFooter(PSSpecifier *g, NSArray *native, id linkTarget);
+
+// ---- Keys two features claim (1.8.7, KT 11 Nov): which has them, said in the footers (common/KeyboardChords.h) ----
+// Your own shortcut wins over a built-in one with the same keys (the built-in one is off for those keys); a tap (volume, backlight) and a shortcut
+// that starts with it both work, the tap then only when pressed and let go alone. The footers say it where it happens now.
+void MSCSYoursNow(MSBDKCYoursSet *y);   // (CustomShortcuts.x: your own shortcuts now -- Custom Shortcuts' taken, KeyPilot's while installed)
+static BOOL MSKCWindowKeysOn(void) { return MSKeyOnDefault(@kMSBDWindowKeysDomain, @kMSBDWindowKeysKey, YES); }   // (never set: on, 1.8.7)
+static BOOL MSKCMacSwitcherOn(void) { return MSKeyOn(@kMSBDWindowKeysDomain, @"macSwitcher"); }
+// The key left of 1 on the attached keyboard, as Top-Left Key as Escape reads it (its layout state, set by SpringBoard): 0 on a JIS keyboard.
+static long MSKCTopLeftUsage(void) {
+    int t = 0; uint64_t v = 0;
+    if (notify_register_check("com.besiktasliseba.graveescapetweak.layout", &t) != NOTIFY_STATUS_OK) return kMSBDKCTopLeftANSI;
+    BOOL ok = notify_get_state(t, &v) == NOTIFY_STATUS_OK;
+    notify_cancel(t);
+    return ok && v == 2 ? kMSBDKCTopLeftISO : ok && v == 3 ? 0 : kMSBDKCTopLeftANSI;
+}
+// Whether Window Tiling Shortcuts can act now, as the volume and backlight taps read it: SpringBoard's offered state (the switch on and one of our
+// window engines running, or one of our own windows in front: statusbar/WindowKeys.h DMWinKeysWanted, common/ModifierTap.h). The taps wait for
+// their release only then (review 1.8.7: the footer said so whenever the switch was on, with no engine too). A state left by a SpringBoard that
+// has ended (its pid in the state's top half) is not.
+static BOOL MSKCWindowKeysOffered(void) {
+    int t = 0; uint64_t st = 0;
+    if (notify_register_check(kMSBDWindowKeysOfferedNote, &t) != NOTIFY_STATUS_OK) return NO;
+    BOOL ok = notify_get_state(t, &st) == NOTIFY_STATUS_OK;
+    notify_cancel(t);
+    pid_t pid = (pid_t)(st >> 32);
+    return ok && (st & 1ULL) && pid > 0 && (kill(pid, 0) == 0 || errno == EPERM);
+}
+// "A", "A and B", "A, B and C"; more than four: the first four and how many more.
+static NSString *MSKCList(NSArray<NSString *> *items) {
+    NSUInteger n = items.count;
+    if (!n) return @"";
+    if (n == 1) return items[0];
+    if (n <= 4) return [NSString stringWithFormat:@"%@ and %@", [[items subarrayWithRange:NSMakeRange(0, n - 1)] componentsJoinedByString:@", "], items[n - 1]];
+    return [NSString stringWithFormat:@"%@ and %lu more", [[items subarrayWithRange:NSMakeRange(0, 4)] componentsJoinedByString:@", "], (unsigned long)(n - 4)];
+}
+static NSString *MSKCYoursText(const MSBDKCYoursSet *y, unsigned i) {
+    return MSBDCSShortcutText(y->usage[i], @(y->key[i]), y->mods[i]);
+}
+// Window Tiling's row as a Mac menu shows it (its key on a US layout).
+static NSString *MSKCWinRowText(int row) {
+    if (row < 0 || row >= (int)kMSBDWinKeyRowCount) return @"";
+    static const long usages[kMSBDWinKeyCount] = { kMSBDCSHIDLeft, kMSBDCSHIDRight, kMSBDCSHIDUp, kMSBDCSHIDDown, 0x09, 0x06, 0x15 };
+    static NSString *const keys[kMSBDWinKeyCount] = { @"", @"", @"", @"", @"f", @"c", @"r" };
+    int k = kMSBDWinKeyRows[row].key;
+    return MSBDCSShortcutText(usages[k], keys[k], kMSBDWinKeyRows[row].mods);
+}
+static NSString *MSKCTapKeys(BOOL volume, BOOL backlight) { return volume && backlight ? @"volume and backlight" : volume ? @"volume" : @"backlight"; }
+// The footers' sentences about keys two features claim, for each group: 0 the Mac keys, 1 Window Tiling Shortcuts, 2 Custom Shortcuts.
+static NSString *MSKCFooterLines(int group) {
+    MSBDKCYoursSet *y = (MSBDKCYoursSet *)calloc(1, sizeof(MSBDKCYoursSet));
+    if (!y) return @"";
+    MSCSYoursNow(y);
+    NSMutableArray *out = [NSMutableArray array];
+    BOOL volume = MSKeyOn(@"com.besiktasliseba.volumeglobetweak", @"enabled"), backlight = MSKeyOn(@"com.besiktasliseba.brightnesskeytweak", @"backlightKeysEnabled");
+    BOOL tiling = MSKCWindowKeysOn();
+    if (group == 0) {
+        unsigned taps = MSBDKCYoursTaps(y);
+        BOOL v = volume && (taps & (1u << kMSBDKCVolume)), b = backlight && (taps & (1u << kMSBDKCBacklight));
+        if (v || b) [out addObject:[NSString stringWithFormat:@"Some of your own shortcuts start with the %@ keys, so those keys act only when pressed and let go alone.", MSKCTapKeys(v, b)]];
+        long tl = MSKCTopLeftUsage();
+        if (tl && MSKeyOn(@"com.besiktasliseba.graveescapetweak", @"enabled")) {
+            NSMutableArray *mine = [NSMutableArray array];
+            for (unsigned i = 0; i < y->n; i++) {
+                int t = MSBDKCTopLeftIndex(y->mods[i]);
+                if (y->usage[i] == tl && t >= 0 && MSBDKCYoursRuleStatic(y, i)) [mine addObject:MSKCYoursText(y, i)];   // (as the state: KeyboardChords.h)
+            }
+            if (mine.count) [out addObject:[NSString stringWithFormat:@"The key left of 1 stays itself in your own shortcut%@ %@.", mine.count == 1 ? @"" : @"s", MSKCList(mine)]];
+        }
+        uint64_t st = MSBDKCYoursState(y);
+        if ((st & kMSBDKCYoursTab) && MSKeyOn(@"com.besiktasliseba.tabmutetweak", @"enabled")) [out addObject:@"Tab is one of your own shortcuts, so it does not mute."];
+        if ((st & (kMSBDKCYoursScreenUp | kMSBDKCYoursScreenDown)) && MSKeyOn(@"com.besiktasliseba.brightnesskeytweak", @"screenKeysEnabled"))
+            [out addObject:@"Shift + = or - is one of your own shortcuts, so it does not change the brightness."];
+    } else if (group == 1 && tiling) {
+        if ((volume || backlight) && MSKCWindowKeysOffered())   // (as the taps: only while its keys can act)
+            [out addObject:[NSString stringWithFormat:@"Window Tiling's Globe-Control keys start with the %@ keys, so those act only when pressed and let go alone.", MSKCTapKeys(volume, backlight)]];
+        NSMutableArray *rows = [NSMutableArray array];
+        for (int r = 0; r < (int)kMSBDWinKeyRowCount; r++) if (MSBDKCYoursTakesWinRow(y, r)) [rows addObject:MSKCWinRowText(r)];
+        if (rows.count) [out addObject:[NSString stringWithFormat:@"Your own shortcuts take %@ instead.", MSKCList(rows)]];
+    } else if (group == 2) {
+        [out addObject:@"A shortcut of yours wins over a built-in one with the same keys, which is then off for those keys."];
+        if (MSKCMacSwitcherOn()) {
+            NSMutableArray *mine = [NSMutableArray array];
+            static const long arrows[3] = { kMSBDCSHIDLeft, kMSBDCSHIDRight, kMSBDCSHIDUp };
+            for (int i = 0; i < 3; i++) if (MSBDKCYoursTakes(y, arrows[i], kMSBDModControl)) [mine addObject:MSBDCSShortcutText(arrows[i], @"", kMSBDModControl)];
+            if (mine.count) [out addObject:[NSString stringWithFormat:@"Yours take %@ from the Mac Switcher.", MSKCList(mine)]];
+        }
+    }
+    free(y);
+    return [out componentsJoinedByString:@" "];
+}
+static NSString *MSKCAppend(NSString *base, NSString *more) { return more.length ? [base stringByAppendingFormat:@" %@", more] : base; }
+// What a shortcut being recorded shares with a built-in one that is on, as the recorder says it (CustomShortcuts.x), or nil. Yours wins on a
+// key shortcut; a tap it starts with then acts only alone.
+NSString *MSKeysBuiltinNote(long usage, NSString *key, unsigned long long mods) {
+    NSString *keys = MSBDCSShortcutText(usage, key, mods);
+    NSMutableArray *out = [NSMutableArray array];
+    int row = -1, owner = MSBDKCKeyOwner(usage, key.UTF8String, mods, MSKCTopLeftUsage(), &row);
+    if (owner == kMSBDKCWindowTiling && MSKCWindowKeysOn() && row >= 0)
+        [out addObject:[NSString stringWithFormat:@"%@ is also Window Tiling's %s. Your shortcut takes its place.", keys, kMSBDWinKeyRows[row].act.title]];
+    else if (owner == kMSBDKCMacSwitcher && MSKCMacSwitcherOn())
+        [out addObject:[NSString stringWithFormat:usage == kMSBDCSHIDUp ? @"%@ also opens the Mac Switcher. Your shortcut takes its place." : @"%@ also switches desktops in the Mac Switcher. Your shortcut takes its place.", keys]];
+    else if (owner == kMSBDKCTopLeftEscape && MSKeyOn(@"com.besiktasliseba.graveescapetweak", @"enabled"))
+        [out addObject:[NSString stringWithFormat:@"%@ is Escape while Top-Left Key as Escape is on. Your shortcut keeps the key as it is.", keys]];
+    unsigned taps = MSBDKCTapsIn(mods);
+    BOOL v = (taps & (1u << kMSBDKCVolume)) && MSKeyOn(@"com.besiktasliseba.volumeglobetweak", @"enabled");
+    BOOL b = (taps & (1u << kMSBDKCBacklight)) && MSKeyOn(@"com.besiktasliseba.brightnesskeytweak", @"backlightKeysEnabled");
+    if (v || b) [out addObject:[NSString stringWithFormat:@"It starts with the %@ keys, which then act only when pressed and let go alone.", MSKCTapKeys(v, b)]];
+    return out.count ? [out componentsJoinedByString:@" "] : nil;
+}
+// What the footers say about shared keys now, on every group (the page is built again when it changes: MSKeyboardListController).
+static NSString *MSKCSignature(void) {
+    return [NSString stringWithFormat:@"%@|%@|%@|%d", MSKCFooterLines(0), MSKCFooterLines(1), MSKCFooterLines(2), MSKCWindowKeysOn()];
+}
 void MSKeysOpenModifierKeysOn(PSListController *page);
 // Our keys' group and its five switches (target: whatever reads and writes the switches' preferences -- our page, or on iPadOS 18 a helper on
 // Apple's Hardware Keyboard page, AppleGroups18.x). title: the group's header (none on our page). native: Apple's Hardware Keyboard rows, for the
@@ -244,23 +367,8 @@ static Class MSKeyPilotCellClass(void) {
     return c;
 }
 PSSpecifier *MSCustomShortcutsRowSpecifier(void);   // (CustomShortcuts.x: the row to the Custom Shortcuts page)
-// Window Tiling Keys (the Mac's own Globe-Control shortcuts: statusbar/WindowKeysRule.h) and, below them, keys of your own: Custom Shortcuts (1.8.5,
-// based on KeyPilot), with KeyPilot's own row while it is installed (OPEN; ours wait then: CustomShortcuts.x).
-NSArray *MSKeysShortcutSpecifiers(id target) {
-    NSMutableArray *s = [NSMutableArray array];
-    PSSpecifier *g = MSKeyGroup(nil, @"Tile the front window as on a Mac: Globe-Control and an arrow key for half the screen, F to fill it, C to center it, R for its size before. Add Shift to arrange it with the window behind it, or Option-Shift for three windows.");
-    [g setIdentifier:@"MAC_WINDOW_KEYS_GROUP"];
-    [s addObject:g];
-    PSSpecifier *keys = MSKeySwitch(target, @"Window Tiling Shortcuts", @kMSBDWindowKeysDomain, @kMSBDWindowKeysKey);
-    [keys setIdentifier:@"MAC_WINDOW_KEYS"];
-    [s addObject:keys];
-    BOOL kpInstalled = MSKeyPilotInstalled();
-    PSSpecifier *cg = MSKeyGroup(nil, kpInstalled ? @"Make your own keyboard shortcuts for apps, URLs, window layouts and Home. While KeyPilot is installed, its shortcuts work and Custom Shortcuts waits."
-                                                  : @"Make your own keyboard shortcuts for apps, URLs, window layouts and Home.");
-    [cg setIdentifier:@"MAC_CUSTOM_SHORTCUTS_GROUP"];
-    [s addObject:cg];
-    [s addObject:MSCustomShortcutsRowSpecifier()];
-    if (!kpInstalled) return s;
+// KeyPilot's own row (OPEN): shown only while it is installed (ours wait then: CustomShortcuts.x).
+static PSSpecifier *MSKeyPilotRowSpecifier(id target) {
     // (a title-value row: a static text row is drawn disabled -- its name grey -- and takes no touch, so its button did nothing: iPad 2, 16.7.7)
     PSSpecifier *kp = [PSSpecifier preferenceSpecifierNamed:@"KeyPilot" target:target set:nil get:nil detail:nil cell:kCellTitleValue edit:nil];
     [kp setProperty:@YES forKey:@"enabled"];
@@ -268,11 +376,32 @@ NSArray *MSKeysShortcutSpecifiers(id target) {
     Class cell = MSKeyPilotCellClass();
     if (cell) [kp setProperty:cell forKey:@"cellClass"];
     [kp setProperty:@58.0 forKey:@"height"];   // (two lines: its name and its developer)
-    [s addObject:kp];
+    return kp;
+}
+// Keys of your own first: KeyPilot's own row while it is installed, the more complete of the two, then Custom Shortcuts (1.8.5, based on KeyPilot);
+// below them Window Tiling Keys (the Mac's own Globe-Control shortcuts: statusbar/WindowKeysRule.h). (KT 12 Nov; until then these came after the
+// Mac keys and Apple's rows, Window Tiling first, KeyPilot last.)
+NSArray *MSKeysShortcutSpecifiers(id target) {
+    NSMutableArray *s = [NSMutableArray array];
+    BOOL kpInstalled = MSKeyPilotInstalled();
+    PSSpecifier *cg = MSKeyGroup(nil, MSKCAppend(kpInstalled ? @"Make your own keyboard shortcuts for apps, URLs, window layouts and Home. While KeyPilot is installed, its shortcuts work and Custom Shortcuts waits."
+                                                             : @"Make your own keyboard shortcuts for apps, URLs, window layouts and Home.", MSKCFooterLines(2)));
+    [cg setIdentifier:@"MAC_CUSTOM_SHORTCUTS_GROUP"];
+    [s addObject:cg];
+    if (kpInstalled) [s addObject:MSKeyPilotRowSpecifier(target)];
+    [s addObject:MSCustomShortcutsRowSpecifier()];
+    PSSpecifier *g = MSKeyGroup(nil, MSKCAppend(@"Tile the front window as on a Mac: Globe-Control and an arrow key for half the screen, F to fill it, C to center it, R for its size before. Add Shift to arrange it with the window behind it, or Option-Shift for three windows.", MSKCFooterLines(1)));
+    [g setIdentifier:@"MAC_WINDOW_KEYS_GROUP"];
+    [s addObject:g];
+    PSSpecifier *keys = MSKeySwitchDefault(target, @"Window Tiling Shortcuts", @kMSBDWindowKeysDomain, @kMSBDWindowKeysKey, YES);   // (on unless switched off: 1.8.7)
+    [keys setIdentifier:@"MAC_WINDOW_KEYS"];
+    [s addObject:keys];
     return s;
 }
 @implementation MSKeyboardListController {
     NSMutableArray *_msNativePages;   // Apple's Hardware Keyboard page (never shown), whose rows are on this page
+    NSString *_msShared;              // what the footers said about keys two features claim (MSKCSignature)
+    BOOL _msSharedPending;
 }
 - (NSMutableArray *)specifiers {
     if (!_specifiers) {
@@ -280,9 +409,10 @@ NSArray *MSKeysShortcutSpecifiers(id target) {
         // Brightness, Modifier Keys, Keyboard Type. They start with their own group.
         _msNativePages = [NSMutableArray array];
         NSArray *hw = MSNESpecifiers(self, @"TIHardwareKeyboardController", @[@"/System/Library/PreferenceBundles/KeyboardSettings.bundle"], @"Hardware Keyboard", _msNativePages, nil);
-        NSMutableArray *s = [NSMutableArray arrayWithArray:MSKeysGroupSpecifiers(self, nil, hw, self)];
+        // (KT 12 Nov: your own shortcuts -- KeyPilot first -- and Window Tiling at the top, then the Mac keys, Apple's rows at the page's end)
+        NSMutableArray *s = [NSMutableArray arrayWithArray:MSKeysShortcutSpecifiers(self)];
+        [s addObjectsFromArray:MSKeysGroupSpecifiers(self, nil, hw, self)];
         if (hw.count) [s addObjectsFromArray:hw];
-        [s addObjectsFromArray:MSKeysShortcutSpecifiers(self)];   // (1.8.3: Window Tiling Keys, then Custom Shortcuts -- KeyPilot -- at the page's end)
         _specifiers = s;
     }
     return _specifiers;
@@ -291,9 +421,38 @@ NSArray *MSKeysShortcutSpecifiers(id target) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"Keyboard";
+    // (1.8.7: a switch on this page that changes which feature has some keys -- Window Tiling Shortcuts on, the volume keys on -- says so in the
+    //  footers at once: looked at once the switch has finished moving, 0.4 s, and the page built again only when what they say changed)
+    __weak typeof(self) weakSelf = self;
+    for (NSString *n in @[@kMSBDWindowKeysChanged, @"com.besiktasliseba.volumeglobetweak/prefsChanged", @"com.besiktasliseba.brightnesskeytweak/prefsChanged",
+                          @"com.besiktasliseba.graveescapetweak/prefsChanged", @"com.besiktasliseba.tabmutetweak/prefsChanged", @kMSBDCSChanged,
+                          @kMSBDWindowKeysOfferedNote]) {   // (SpringBoard's offered state: Window Tiling's footer follows it)
+        int t = 0;
+        notify_register_dispatch(n.UTF8String, &t, dispatch_get_main_queue(), ^(int token) {
+            typeof(self) me = weakSelf;
+            if (!me) { notify_cancel(token); return; }
+            [me msSharedMaybeChanged];
+        });
+    }
+}
+- (void)msSharedMaybeChanged {
+    if (_msSharedPending) return;
+    _msSharedPending = YES;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        typeof(self) me = weakSelf;
+        if (!me) return;
+        me->_msSharedPending = NO;
+        if (!me.viewIfLoaded.window) return;
+        NSString *now = MSKCSignature();
+        if ([now isEqualToString:me->_msShared]) return;
+        me->_msShared = now;
+        [me reloadSpecifiers];
+    });
 }
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    _msShared = MSKCSignature();
     [self reloadSpecifiers];   // back from Modifier Keys or a layout page: the footer's hint and Apple's rows are read again
 }
 @end
@@ -317,6 +476,7 @@ static void MSKeysSetFooter(PSSpecifier *g, NSArray *native, id linkTarget) {
     NSString *text = base;
     // The screen brightness keys reach whichever app has the keyboard, except a package manager or TrollStore, which never load our part.
     if (MSKeyOn(@"com.besiktasliseba.brightnesskeytweak", @"screenKeysEnabled")) text = [text stringByAppendingString:@" Shift + =/- does not change the brightness while Sileo, Zebra, Filza or TrollStore is in front."];
+    text = MSKCAppend(text, MSKCFooterLines(0));   // (keys these share with your own shortcuts: 1.8.7)
     if (hint) text = [text stringByAppendingFormat:@" %@", hint];
     [g setProperty:text forKey:@"footerText"];
     if (modifierHint && linkTarget) {   // "Modifier Keys" in the hint opens Apple's Modifier Keys page

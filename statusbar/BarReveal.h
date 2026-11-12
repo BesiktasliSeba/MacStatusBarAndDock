@@ -62,7 +62,8 @@ static void DMBarRevealPollPointer(void) {
         CGPoint p = known ? ((CGPoint (*)(id, SEL))objc_msgSend)(svc, sel) : CGPointMake(-1, -1);
         dispatch_async(dispatch_get_main_queue(), ^{
             busy = NO;
-            int z = (p.x < 0 || p.y < 0) ? 0 : MSBDRevealZone(DMAutoHidePointerY(p), DMMenuBarHeight());
+            CGPoint n;   // (1.8.7: in the iPad's own region of backboardd's space, PointerRegion.h -- not at its origin while another display shares it)
+            int z = known && DMPtrIPadNative(p, &n) > 0 ? MSBDRevealZone(DMAutoHidePointerY(n), DMMenuBarHeight()) : 0;
             if (z != gBarRevealZone && (z == 3 || z == 0)) gBarRevealLeftAt = CACurrentMediaTime();
             // (a pointer that was already resting at the edge when the app came to the front is no push: M1, 10 Nov, the bar showed as a game
             //  opened. Only a pointer seen somewhere else first and then at the edge counts)

@@ -86,6 +86,7 @@ void DMLogWrite(NSString *line) {
     fclose(f);
 }
 #endif
+#include "DisplayPrefs.h"   // (1.8.7: the per-display settings, the Dock part's own cache and getters -- a TV's Dock size, magnification and Trash)
 
 static CGFloat gInfluence = 0.0;     // 0...1: how much of the magnification is applied right now
 static CFTimeInterval gDMDockTouchAt = -1.0;   // (the last touch SpringBoard saw begin: a hover cancel just after it is the touch's, common/DockHover.h)
@@ -99,7 +100,10 @@ static CGFloat DMBell(CGFloat offset) {
     if (fabs(offset) >= kRange) return 0.0;
     return 0.5 * (cos(M_PI * offset / kRange) + 1.0);
 }
-static CGFloat DMScale(CGFloat offset) { return 1.0 + (gMagnification - 1.0) * DMBell(offset) * gInfluence; }
+// The magnification of the Dock under the pointer (1.8.7: each display's own, taken when its hover begins -- DMDockHoverTake)
+static BOOL gHoverMagOn = YES;          // (that Dock magnifies: Magnification's switch for its display)
+static CGFloat gHoverMag = 1.22;        // (its amount)
+static CGFloat DMScale(CGFloat offset) { return 1.0 + (gHoverMag - 1.0) * DMBell(offset) * gInfluence; }
 
 // ===== state =============================================================
 static CGFloat gFocusX = 0.0;        // where the cursor is (target)
@@ -286,7 +290,16 @@ static void DMLoadPrefs(void) {
     }
 
     DMLog([NSString stringWithFormat:@"[prefs] enabled=%d magnification=%.3f iconSize=%.2f bottomGap=%.1f blockSwipeUp=%d downloads=%d trash=%d launchpad=%d swipeDownOpensLibrary=%d lastPageOpensLibrary=%d", enabled, mag, gIconSize, gBottomGap, blockUp, downloads, gShowTrash, launchpad, swipeDown, gLastPageOpensLibrary]);
+    DMDispReload();   // (1.8.7: each display's own Dock settings, DisplayPrefs.h)
 }
+// ---- the Dock's settings for one display (1.8.7, plans/design-1.8.7-displays.md section 5) ------------------------------------------------------
+// Each reader asks with its own Dock's screen; the iPad's own screen (or none: a Dock not in a window yet) gets the iPad's value at once (DMDispBool /
+// DMDispNum, DisplayPrefs.h). With the Dock part off every display has the Dock as iPadOS draws it, as the iPad's.
+static CGFloat DMDockIconSizeOn(UIScreen *s) { return gTweakOn ? DMDispNum(s, "dock", "dockIconSize", gIconSize, 0.4, 1.5) : gIconSize; }
+static BOOL DMDockMagOn(UIScreen *s) { return gTweakOn && DMDispBool(s, "dock", "enabled", gEnabled); }
+static CGFloat DMDockMagOf(UIScreen *s) { return DMDispNum(s, "dock", "magnification", gMagnification, 1.0, 3.0); }
+// (DockAutoHide.m: Automatically Hide and Show the Dock for one display, with the Dock part on -- commit 6)
+BOOL DMDispDockBool(UIScreen *s, const char *key, BOOL ipad) { return gTweakOn && DMDispBool(s, "dock", key, ipad); }
 
 @interface SBFloatingDockView : UIView
 - (void)setIconContentScale:(CGFloat)scale;
@@ -491,14 +504,15 @@ static void DMDockMirrorMetrics(DMDockMetrics *m) {
 // Apple. The App Library is not in the host and stays upright. On the bottom nothing of this runs: no hook is installed until Left or Right is chosen.
 static __weak UIWindow *gDockWindow;
 static BOOL DMDockOnMainScreen(UIWindow *w);
-// The Trash on a given Dock (1.8.6, KT 10 Nov): the iPad's Dock follows Show Trash in Dock; an external display's Dock (a TV) shows it by default even
-// with the switch off, as a Mac's desktop always has it (the per-display switch comes with 1.8.7's Display Settings). Only while Finder runs (the
-// Trash is Finder's). A Dock not in a window yet counts as the iPad's.
+// The Trash on a given Dock (1.8.6, KT 10 Nov; 1.8.7 per display): the iPad's Dock follows Show Trash in Dock; an external display's Dock (a TV)
+// follows its own Show Trash in Dock, whose display default is ON (a Mac's desktop always has it: common/DisplayPrefs.h MSBDDispDisplayDefault), so
+// it shows the Trash with the iPad's switch off until it is switched off for that display. Only while Finder runs (the Trash is Finder's). A Dock not
+// in a window yet counts as the iPad's.
+static UIScreen *DMDockScreenOf(UIWindow *w);
 static BOOL DMDockShowsTrash(UIView *dockView) {
-    if (gShowTrash) return YES;
     if (!gTrashFinderRuns) return NO;
     UIWindow *w = dockView.window;
-    return w && !DMDockOnMainScreen(w);
+    return DMDispBool(w ? DMDockScreenOf(w) : nil, "dock", "showTrash", gShowTrash);
 }
 static BOOL DMIsDockIcon(UIView *icon);
 static __weak UIView *gDockSideHost = nil;
@@ -520,6 +534,18 @@ static double DMDockSideBar(void) {   // (the menu bar's height: MacStatusBar's,
     if (!f && tries < 40) { tries++; f = (double (*)(void))dlsym(RTLD_DEFAULT, "MSBDMenuBarHeightNow"); }
     double h = f ? f() : 24.0;
     return isfinite(h) && h > 0 ? h : 24.0;
+}
+// 1.8.7: backboardd's pointer position in the iPad's own region (MacStatusBar's statusbar/PointerRegion.h, MSBDPointerOnIPad): with another display
+// sharing the pointer the iPad's region is not at the space's origin (the TV above the iPad put it at negative x), so a position was read off the iPad.
+// 1 on the iPad (n: its own native point), 0 on another display, -1 not known yet; MacStatusBar not running: as read, the iPad's (as before).
+static int DMDockPointerOnIPad(CGPoint g, CGPoint *n) {
+    static int (*f)(double, double, double *, double *) = NULL; static int tries = 0;
+    if (!f && tries < 40) { tries++; f = (int (*)(double, double, double *, double *))dlsym(RTLD_DEFAULT, "MSBDPointerOnIPad"); }
+    if (!f) { *n = g; return 1; }
+    double x = NAN, y = NAN;
+    int r = f(g.x, g.y, &x, &y);
+    *n = CGPointMake(x, y);
+    return r;
 }
 static CATransform3D DMDockSideIconTurn(int side) { return CATransform3DMakeAffineTransform(MSBDDockSideIconTransform(side)); }
 // An icon's turn is ours alone (common/DockSide.h MSBDDockSideIconTurnStep): it goes on top of what the layer has -- another tweak's value, Atria's icon scale --,
@@ -1058,7 +1084,12 @@ static void DMDockSidePointerLook(void) {
         Method m = svc ? class_getInstanceMethod(object_getClass(svc), gp) : NULL;
         BOOL known = m && !strcmp(method_getTypeEncoding(m) ?: "", "{CGPoint=dd}16@0:8");
         CGPoint n = known ? ((CGPoint (*)(id, SEL))objc_msgSend)(svc, gp) : CGPointMake(NAN, NAN);
-        dispatch_async(dispatch_get_main_queue(), ^{ if (known) DMDockSidePointerSeen(n); else DMDockSidePointerArm(5.0); });
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!known) { DMDockSidePointerArm(5.0); return; }
+            CGPoint m;   // (1.8.7: on another display, or not known yet: away from the iPad's sides -- its middle)
+            if (DMDockPointerOnIPad(n, &m) <= 0) { CGSize f = [UIScreen mainScreen].fixedCoordinateSpace.bounds.size; m = CGPointMake(f.width / 2.0, f.height / 2.0); }
+            DMDockSidePointerSeen(m);
+        });
     });
 }
 static void DMDockSidePointerArm(double seconds) {
@@ -1251,7 +1282,9 @@ __attribute__((visibility("default"))) UITargetedPreview *MSBDDockSideIconPrevie
         m->platter.size.width += extra;
         m->platter.origin.x -= extra / 2.0;
     }
-    CGFloat f = gIconSize;
+    UIScreen *dockScreen = ((UIView *)self).window.windowScene.screen ?: [UIScreen mainScreen];   // (this Dock's screen: its size, magnification and turn)
+    CGFloat iconSize = DMDockIconSizeOn(dockScreen);
+    CGFloat f = iconSize;
     if (dockSide) {
         // (Settings > Dock > Position: the host's short width gets Apple's smaller Dock, A12Z 46 pt icons against 62 at the long width. Icon Size means the same icon as at
         //  the bottom: Apple's answer for the long width gives the share, and the fit below takes over when a Dock that big doesn't fit)
@@ -1265,14 +1298,13 @@ __attribute__((visibility("default"))) UITargetedPreview *MSBDDockSideIconPrevie
     // Library) would not fit the screen minus the side margins, it gets just small enough to fit -- in both orientations, re-worked out at every
     // layout (apps or recents added or removed, a turn). Room is kept at both ends for the magnification: the end icons grow in place by
     // (magnification - 1) x their width, half on each side, and must stay on the screen.
-    CGFloat headroom = gEnabled ? MAX(0.0, gMagnification - 1.0) * (slot.size.width >= 1.0 ? slot.size.width : hiddenSide) : 0.0;   // (no end icon: the icon size)
+    CGFloat headroom = DMDockMagOn(dockScreen) ? MAX(0.0, DMDockMagOf(dockScreen) - 1.0) * (slot.size.width >= 1.0 ? slot.size.width : hiddenSide) : 0.0;   // (no end icon: the icon size)
     CGFloat room = (dockSide ? MSBDDockSideLength(bounds.size.width, DMDockSideBar()) : bounds.size.width - 50.0) / (m->platter.size.width + headroom);
     // Portrait: the screen is narrower, so a Dock this tweak has shrunk looks small. It grows to the widest size that still fits (at most
     // 1.2 times the stock size). Only while the tweak is shrinking the Dock at all; a size of 1.0 or more is left alone.
     // Portrait is read from the bounds asked about (the Dock spans its screen's width: narrower than the screen's long side = portrait), never from
     // the screen's current orientation: during a turn SpringBoard lays the Dock out for the new bounds while the screen still reports the old side,
     // and the same bounds must always get the same answer (K-2: the portrait size stayed on in landscape after a turn, iPad 2: 974 pt instead of 831).
-    UIScreen *dockScreen = ((UIView *)self).window.windowScene.screen ?: [UIScreen mainScreen];
     BOOL portraitBounds = bounds.size.width < MAX(dockScreen.bounds.size.width, dockScreen.bounds.size.height) - 1.0;
     if (dockSide) portraitBounds = NO;   // (the short side of a landscape screen is no portrait Dock)
     if (gPortraitLarger && f < 1.0 && portraitBounds) f = MIN(room, 1.2);
@@ -1280,7 +1312,7 @@ __attribute__((visibility("default"))) UITargetedPreview *MSBDDockSideIconPrevie
     static CGFloat lastF = -1; static CGFloat lastW = -1;
     if (fabs(f - lastF) > 0.001 || fabs(bounds.size.width - lastW) > 0.5) {
         lastF = f; lastW = bounds.size.width;
-        DMLog([NSString stringWithFormat:@"[fit] screen %.0f, dock %.0f + %.0f magnification room at size 1: icon size %.3f (setting %.2f, fits up to %.3f)", bounds.size.width, m->platter.size.width, headroom, f, gIconSize, room]);
+        DMLog([NSString stringWithFormat:@"[fit] screen %.0f, dock %.0f + %.0f magnification room at size 1: icon size %.3f (setting %.2f, fits up to %.3f)", bounds.size.width, m->platter.size.width, headroom, f, iconSize, room]);
     }
     gFinderSlot = CGRectMake(finderSlot.origin.x * f, finderSlot.origin.y * f, finderSlot.size.width * f, finderSlot.size.height * f);
     if (!endOn && fabs(f - 1.0) < 0.001) {
@@ -1443,6 +1475,13 @@ static BOOL DMDockOnMainScreen(UIWindow *w) {
     UIScreen *s = DMDockScreenOf(w);
     return !s || s == [UIScreen mainScreen];
 }
+// The magnification of the Dock the pointer is over (1.8.7): its display's own switch and amount, taken when its hover begins (and again when the
+// settings change during it, DMPrefsChanged), so each frame of the link reads two globals -- the iPad's Dock, or none, the iPad's settings.
+static __weak UIView *gHoverTaken = nil;
+static void DMDockHoverTake(UIView *platter) {
+    UIScreen *s = platter.window ? DMDockScreenOf(platter.window) : nil;
+    gHoverMagOn = DMDockMagOn(s); gHoverMag = DMDockMagOf(s); gHoverTaken = platter;
+}
 // Where the Dock is drawn, in the screen's coordinate space: its platter (SBFloatingDockPlatterView), where it is right now (mid-slide too).
 // The Dock WINDOW covers the whole screen (iPad 2, iOS 16: {{0, 0}, {1024, 768}}), so testing windows against the window's frame said "overlaps"
 // for any window anywhere, and the Dock stayed raised to 1034 as long as any window was open (iPad 2, 26 Sep). CGRectNull: no Dock on the screen.
@@ -1473,7 +1512,7 @@ static BOOL DMDockNeedsFloat(UIView *dockWindow) {
     UIScreen *dockScreen = [dockWindow isKindOfClass:[UIWindow class]] ? DMDockScreenOf((UIWindow *)dockWindow) : nil;
     {   // (room above the platter for the magnified icons, M1 26 Sep; with magnification off, only a small margin)
         int side = gDockSideApplied && [dockWindow isKindOfClass:[UIWindow class]] && DMDockOnMainScreen((UIWindow *)dockWindow) ? gDockSideApplied : 0;   // (a Dock at a side: on the screen's side of it)
-        CGFloat lift = gEnabled ? MAX(12.0, (side ? dock.size.width : dock.size.height) * (MAX(gMagnification, 1.0) - 1.0) + 6.0) : 4.0;
+        CGFloat lift = DMDockMagOn(dockScreen) ? MAX(12.0, (side ? dock.size.width : dock.size.height) * (MAX(DMDockMagOf(dockScreen), 1.0) - 1.0) + 6.0) : 4.0;   // (this Dock's display's magnification)
         if (side == MSBDDockRight) { dock.origin.x -= lift; dock.size.width += lift; }
         else if (side == MSBDDockLeft) dock.size.width += lift;
         else { dock.origin.y -= lift; dock.size.height += lift; }
@@ -1653,6 +1692,7 @@ static void DMPrefsChanged(CFNotificationCenterRef c, void *o, CFNotificationNam
 #endif
     DM_PREFS_STEP("load");
     DMLoadPrefs();
+    if (gHoverTaken) DMDockHoverTake(gHoverTaken);   // (1.8.7: a hover going on takes its Dock's new settings)
     DM_PREFS_STEP("side");
     DMDockSideChoose();
     DM_PREFS_STEP("relayout");
@@ -1663,6 +1703,13 @@ static void DMPrefsChanged(CFNotificationCenterRef c, void *o, CFNotificationNam
     DMRefreshLaunchpadIcons();
     DM_PREFS_STEP("done");
     if (lastPage != gLastPageOpensLibrary) DMLastPageApply(@"switched in Settings");
+}
+// 1.8.7: the displays domain's note. The status bar part's registry posts it too, at every connect and disconnect and with SpringBoard's names: the Dock
+// is read and laid out again only when a Dock override or the master switch changed (review of 1.8.7: each unplug reloaded and relaid out every Dock while
+// UIKit took the TV's Dock and scene down, and cancelled a hover going on, with no Dock setting changed).
+static void DMDockDisplaysChanged(CFNotificationCenterRef c, void *o, CFNotificationName n, const void *obj, CFDictionaryRef info) {
+    if (!DMDispReloadChanged()) return;
+    DMPrefsChanged(c, o, n, obj, info);
 }
 
 static void DMCollectIcons(UIView *root, Class iconClass, NSMutableArray *out) {
@@ -1766,7 +1813,10 @@ static void DMDockHoverLook(unsigned gen) {
             UIView *pl = gHoverHoldPlatter;
             if (!gHoverHeld || gen != gHoverHoldGen || pl != platter || !pl.window) return;
             CGPoint p = CGPointMake(NAN, NAN);
-            if (known) p = [pl convertPoint:MSBDDockPointerOnScreen(n, o, native) fromCoordinateSpace:(pl.window.screen ?: [UIScreen mainScreen]).coordinateSpace];
+            CGPoint m = n;   // (1.8.7: a Dock on the iPad reads the pointer in the iPad's own region; off the iPad, it is not over that Dock)
+            BOOL onIPad = !pl.window.screen || pl.window.screen == [UIScreen mainScreen];
+            if (known && onIPad && DMDockPointerOnIPad(n, &m) <= 0) m = CGPointMake(NAN, NAN);
+            if (known) p = [pl convertPoint:MSBDDockPointerOnScreen(m, o, native) fromCoordinateSpace:(pl.window.screen ?: [UIScreen mainScreen]).coordinateSpace];
             switch (MSBDHoverHoldStep(DMDockHoverTracking(pl), known, attached, MSBDHoverInside(p, pl.bounds))) {
                 case MSBDHoverHoldUIKit: gHoverHeld = NO; DMLog(@"[hover] UIKit has the pointer again"); break;
                 case MSBDHoverHoldKeep: {
@@ -1788,7 +1838,7 @@ static void DMDockHoverLook(unsigned gen) {
 static void DMDockHoverTouchBegan(void) {
     gDMDockTouchAt = CACurrentMediaTime();
     if (gHoverHeld) { gHoverEasedByTouch = YES; DMDockHoverHoldEnd(gHoverHoldPlatter, @"a touch or a click"); return; }
-    if (gHovering && gEnabled && gLinkPlatter) {
+    if (gHovering && gHoverMagOn && gLinkPlatter) {
         DMLog(@"[hover] a touch or a click with the magnification on: eases out");
         gHovering = NO;
         gHoverEasedByTouch = YES;
@@ -1797,7 +1847,7 @@ static void DMDockHoverTouchBegan(void) {
 }
 // UIKit ended the platter's hover: YES when that is held (a cancel with no touch just before it, with the magnification on, on the iPad's own screen -- backboardd's place is the iPad's).
 static BOOL DMDockHoverHold(UIView *platter, UIGestureRecognizer *g) {
-    if (!MSBDHoverHoldsAfter((long)g.state, gHovering && gEnabled, gDMDockTouchAt < 0 ? -1.0 : CACurrentMediaTime() - gDMDockTouchAt) || !platter.window) return NO;
+    if (!MSBDHoverHoldsAfter((long)g.state, gHovering && gHoverMagOn, gDMDockTouchAt < 0 ? -1.0 : CACurrentMediaTime() - gDMDockTouchAt) || !platter.window) return NO;
     if (platter.window.screen && platter.window.screen != [UIScreen mainScreen]) return NO;
     gHoverHeld = YES; gHoverHoldLooks = 0; gHoverHoldPlatter = platter; gHoverHoldGen++;
     DMLog([NSString stringWithFormat:@"[hover] cancelled by UIKit with the magnification on, %.3f s after the last touch: held while the pointer is over the Dock", gDMDockTouchAt < 0 ? -1.0 : CACurrentMediaTime() - gDMDockTouchAt]);
@@ -1848,6 +1898,7 @@ void DMDockHoverReapply(void) {
             if (gesture.state == UIGestureRecognizerStateBegan) DMHoverDebugLine(self, gesture);
 #endif
             CGFloat x = [gesture locationInView:self].x;
+            if (!gHovering || gHoverTaken != self) DMDockHoverTake(self);   // (1.8.7: this Dock's display's magnification, at the hover's start)
             gHoverHeld = NO;   // (UIKit has the pointer again: a hold after its cancel ends here)
             gHoverEasedByTouch = NO;
             if (!gHovering) {
@@ -1900,7 +1951,7 @@ void DMDockHoverReapply(void) {
     if (dt < 1.0 / 240.0) dt = 1.0 / 240.0;
     if (dt > 1.0 / 20.0) dt = 1.0 / 20.0;     // a hitch must not make the icons jump
 
-    BOOL want = gEnabled && gHovering;
+    BOOL want = gHoverMagOn && gHovering;
     gSmoothX += (gFocusX - gSmoothX) * (1.0 - exp(-dt / kFocusTau));
     gInfluence += ((want ? 1.0 : 0.0) - gInfluence) * (1.0 - exp(-dt / (want ? kInTau : kOutTau)));
 
@@ -3711,12 +3762,16 @@ extern void DMBounceTapped(UIView *iconView, NSString *bid);
     });   // test helpers only when this flag file exists
 #endif
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ %init(SwipeUpFix); });
+    DMDispInit();   // (1.8.7: the per-display settings' cache, DisplayPrefs.h; DMLoadPrefs reads it again)
     DMLoadPrefs();
     if (gDockPosition != MSBDDockBottom) DMDockSideChoose();   // (Position: its hooks before the Dock is laid out)
     DMLastPageInit();   // (after the switch is read: the App Library's last page, KT 1.7.8)
     DMStartRunningIndicatorPoll();   // periodic dot resync (RunningIndicator.m) -- catches Force Quit All / 3D-Touch quit / App Switcher, not just layoutSubviews
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
                                     DMPrefsChanged, DM_NOTIFY, NULL,
+                                    CFNotificationSuspensionBehaviorCoalesce);
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,   // (1.8.7: a display's own Dock settings changed -- Display Settings,
+                                    DMDockDisplaysChanged, CFSTR(MSBD_DISP_NOTIFY), NULL,     //  Settings' Displays page, the crash guard: every Dock laid out again)
                                     CFNotificationSuspensionBehaviorCoalesce);
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,   // (Apple's App Library switch on our Dock page: 1.8.4.1 item 2)
                                     DMAppLibraryInDockChanged, CFSTR(kMSBDDockAppLibraryNote), NULL,

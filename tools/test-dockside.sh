@@ -17,7 +17,7 @@ check "one usable area: DMUsableArea asks the side first, on the bottom nothing 
 check "Stage Manager's area asks the same desktop, whole width during a title-bar drag as the bottom's rule" \
   "grep -q 'CGRect u = DMDockSideDesktopOf(b.size, dockSide);' $S && grep -q 'CGFloat x0 = dragging ? CGRectGetMinX(b) : CGRectGetMinX(u)' $S"
 check "the 18.5 height limit: Apple's bottom insets are [0] with the Dock at a side, shape-checked, left alone at the bottom" \
-  "grep -q 'return DMSMFree() && (DMDockSideNow(\[UIScreen mainScreen\].bounds.size) || DMDockAutoHides()) ? @\[@0.0\] : v;' $S && grep -q 'if (mb && \[DMSMSigOfMethod(mb) isEqualToString:list\]) MSHookMessageEx(c, bot, (IMP)DMSMBottomInsets17, (IMP \*)&o_SMBottomInsets17);' $S"
+  "grep -q 'return DMSMFree() && (DMDockSideNow(\[UIScreen mainScreen\].bounds.size) || hides) ? @\[@0.0\] : v;' $S && grep -q 'if (mb && \[DMSMSigOfMethod(mb) isEqualToString:list\]) MSHookMessageEx(c, bot, (IMP)DMSMBottomInsets17, (IMP \*)&o_SMBottomInsets17);' $S"
 check "the drop on every engine: moves and resizes, also with snapping off, keep out of the Dock (common/DockSide.h)" \
   "grep -q 'return DMDockSideKept(DMSnapFrameFor(DMStageBundle(st), window, how, others, n, DMUsableArea()), how);' $S && grep -q 'if (!st || (DMSnapOff() && !DMDockSideKeepsOut())) return;' $S && grep -q 'CGRect kept = DMDockSideKept(w.frame, MSBDSnapMove);' $S"
 check "the Dock's menus: beside it, the arrow on the facing edge, reaching the icon's middle at the Dock's ends (1.8.2.2, iPad 2 F2)" \
@@ -113,7 +113,7 @@ check "the pointer's look never stops for good: a look it can't make now is made
 check "the host's bounds are hooked on its class itself, never on the isa of the moment (a key-value observing subclass goes again; code review 1.8.2, 11)" \
   "grep -q 'MSHookMessageEx(\[host class\], @selector(setBounds:), (IMP)DMDockSideHostSetBounds, (IMP \*)&o_DockSideHostSetBounds);' $D && ! grep -q 'MSHookMessageEx(object_getClass(host)' $D"
 check "no hooks at the bottom (code review 1.8.2, 12): Apple's bottom limit for a window is hooked from the first Left or Right on, once the 17 / 18 hooks are in" \
-  "fn 'static void DMSMHookBottomInsets17(void) {' $S | grep -q 'if (done || !gSMEdgeReach17In || (gDMDockPosition != MSBDDockLeft && gDMDockPosition != MSBDDockRight && gDMDockAutoHideTaken <= 0)) return;' \
+  "fn 'static void DMSMHookBottomInsets17(void) {' $S | grep -q 'if (done || !gSMEdgeReach17In || (gDMDockPosition != MSBDDockLeft && gDMDockPosition != MSBDDockRight && gDMDockAutoHideTaken <= 0 && !DMDockAutoHideAnyTakenOn())) return;' \
    && [ \$(grep -c 'MSHookMessageEx(c, bot, (IMP)DMSMBottomInsets17' $S) = 1 ] && fn 'static void DMSMHookBottomInsets17(void) {' $S | grep -q 'MSHookMessageEx(c, bot, (IMP)DMSMBottomInsets17' \
    && fn 'static void DMSMHookEdgeReach17(void) {' $S | grep -q '^    gSMEdgeReach17In = YES;' && fn 'static void DMSMHookEdgeReach17(void) {' $S | grep -q '^    DMSMHookBottomInsets17();' \
    && fn 'static int DMDockSideNow(CGSize screen) {' $S | grep -q 'DMSMHookBottomInsets17();' && fn 'static void DMDockChangedRelayout(NSString \*why) {' $S | grep -q 'gDMDockPosition = position; DMSMHookBottomInsets17();'"
@@ -169,7 +169,7 @@ check "1.8.2.2 17.5 F3 / A12Z F5: the strip is the Dock's real thickness (DockSi
   "strip2 | grep -qF 'double use = MSBDDockSideStripStep(st, measured, CACurrentMediaTime(), MAX(DMSpringBoardDockHeight(), 60.0), &event, &was);' \
    && strip2 | grep -qF 'if (event == MSBDStripCandidate) DMLayoutNoteHold(1.0);' && strip2 | grep -qF 'DMDockSideThicknessChanged(was, now, s);' \
    && strip2 | grep -qF 'if (gDMDockSideStripHeld > 0) return gDMDockSideStripHeld;' && ! strip2 | grep -qF 'measured > gDMDockSideStrip + 0.25' \
-   && thick | awk '/gDMDockSideStripHeld = was;/{a=NR} /NSDictionary \*layouts = DMSMEngine\(\) \? DMSMLayoutsNow\(\) : nil;/{b=NR} /gDMDockSideStripHeld = -1.0;/{c=NR} /if \(DMSMEngine\(\)\) \{ if \(layouts.count\) DMSMApplyLayouts\(layouts\); \}/{d=NR} /DMDockPositionMoved\(layouts\);/{e=NR} END{exit !(a && b == a + 1 && c == b + 1 && d > c && e > d)}'"
+   && thick | awk '/gDMDockSideStripHeld = was;/{a=NR} /NSDictionary \*layouts = DMSMEngine\(\) \? DMSMLayoutsNow\(\) : nil;/{b=NR} /gDMDockSideStripHeld = -1.0;/{c=NR} /if \(DMSMEngine\(\)\) \{ if \(layouts.count\) DMSMApplyLayouts\(layouts\); \}/{d=NR} /DMDockPositionMoved\(layouts\);/{e=NR} END{exit !(a && b == a + 2 && c == b + 1 && d > c && e > d)}'"
 check "1.8.2.2 M1 F5: a Dock icon's running dot goes where its content stands upright, by the turn itself (Dock.x MSBDDockSideIconTurnSide), apps' and Finder's; the turn first in a layout and on arriving in the side Dock, the dot following every change of the turn" \
   "grep -qF 'int dockSide = MSBDDockSideIconTurnSide(iconView);' ../dock/RunningIndicator.m && grep -qF 'int dockSide = MSBDDockSideIconTurnSide(self);' ../dock/FinderIcon.m \
    && ! grep -q 'gDockSideApplied' ../dock/RunningIndicator.m ../dock/FinderIcon.m \
@@ -183,7 +183,7 @@ relay() { fn 'static void DMDockChangedRelayout(NSString \*why) {' $S; }
 check "1.8.2.2 (code review 3): a Dock setting of ours or a change of its own apps beside a side Dock is followed through its strip as the Dock's own changes are: the windows are placed only when the thickness really changed and settled, once, on every engine; nothing for a setting that leaves it as it was or at each step of a slider" \
   "relay | grep -qF 'BOOL side = !moved && gDMDockPosition >= 0 && MSBDDockSideFor(position, scrNow.width, scrNow.height) != MSBDDockBottom;' \
    && relay | grep -qF 'if (moved || ahChanged) DMLayoutNoteHold(2.4);' && ! relay | grep -qF 'moved || side' \
-   && relay | awk '/\(void\)DMUsableArea\(\);/{n++; if (n == 2) a=NR} /if \(side && !ahChanged\) return;/{b=NR} /if \(DMSMEngine\(\)\) \{ if \(layouts.count\) DMSMApplyLayouts\(layouts\); else if \(ahChanged\) DMDockAutoHideSMPass\(\); \}/{c=NR} /if \(moved \|\| ahChanged\) DMDockPositionMoved\(layouts\);/{d=NR} END{exit !(a && b == a + 1 && c == b + 1 && d > c)}' \
+   && relay | awk '/\(void\)DMUsableArea\(\);/{n++; if (n == 2) a=NR} /if \(side && !ahChanged\) return;/{b=NR} /if \(DMSMEngine\(\)\) \{ if \(layouts.count\) DMSMApplyLayouts\(layouts\); else if \(ahChanged\) DMDockAutoHideSMPass\(\); \}/{c=NR} /if \(moved \|\| ahChanged\) DMDockPositionMoved\(layouts\);/{d=NR} END{exit !(a && b == a + 1 && c == b + 2 && d > c)}' \
    && relay | awk '/if \(gDMDockPosition >= 0 && position != gDMDockPosition\) gDMDockPlaceGen\+\+;/{a=NR} /if \(gDMDockPosition >= 0\) \{ gDMDockPosition = position;/{b=NR} END{exit !(a && b == a + 1)}' \
    && strip2 | grep -qF 'if (seenPlace != gDMDockPlaceGen || seenSide != side) { seenPlace = gDMDockPlaceGen; seenSide = side; gDMDockSideStrip = 0; st->settled = 0; st->cand = -1.0; st->placed = 0; }' \
    && ! strip2 | grep -qF 'seenGen != gDMDockGen' && [ \$(grep -c 'gDMDockPlaceGen' $S) = 3 ]"
