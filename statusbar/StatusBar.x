@@ -17749,8 +17749,25 @@ static BOOL DMWindowedLaunch(NSString *bundleID) {
 // once it is in front and has drawn it goes home and Aerial opens its window (the same steps as the status bar's green light), and the
 // picture fades once the window's veil is gone. A running app (in the background) opens straight into its window as before. Aerial 5.0 only
 // (the engine it was found and verified on). Kill switch /tmp/msb-a5-nowarmstart (debug builds).
+// 1.8.7.1 (KT 13 Nov, M1 15.6.1 with Aerial 5.1): with Aerial 5.1 the detour only cost: WhatsApp opened from the Dock about 1.6 s late, the Home
+// Screen moved as if the home bar were pulled (the way from full screen into the window, our own Home since 1.8.4 F3, showed around the picture),
+// and the picture hid the Dock icon's bounce. Aerial 5.1 starts it straight into a window that draws: five cold starts with the detour off, each
+// with 1 or 2 scenes and the content drawn in about 0.5 s, although SpringBoard keeps 137 saved WhatsApp scenes there. 5.0 is where the 7 scenes and
+// the black window were seen (25 Sep, the scene veto already in), and no 5.0 is here to retest, so the detour stays for Aerial 5.0 and for a build
+// we have not tested (its label unknown); every tested later build (5.1) opens it straight into its window, as every other app.
+static BOOL DMAerialBuildNeedsWarmStart(void) {
+    static int known = -1;
+    if (known < 0) {
+        NSString *uuid = DMAerialImageUUID();
+        NSString *label = uuid ? MSBDEngineBuildLabel(@"Aerial", uuid) : nil;
+        known = (!label || [label hasPrefix:@"5.0"]) ? 1 : 0;
+        DMLog([NSString stringWithFormat:@"[windowed] Aerial build %@: WhatsApp's cold start %@", label ?: @"(not a tested build)", known ? @"full screen first, then the window" : @"straight into its window"]);
+    }
+    return known == 1;
+}
 static BOOL DMAerialNeedsWarmStart(NSString *bundleID) {
     if (!bundleID.length || DMActiveEngine() != DMEngineAerial || gAerialFlavor != 5 || DMTestFlag("/tmp/msb-a5-nowarmstart")) return NO;
+    if (!DMAerialBuildNeedsWarmStart()) return NO;
     static NSSet<NSString *> *known;
     if (!known) known = [NSSet setWithObjects:@"net.whatsapp.WhatsApp", @"net.whatsapp.WhatsAppSMB", nil];
     if (![known containsObject:bundleID] || !DMAppSupportsMultipleScenes(bundleID) || DMAppNeedsFullScreen(bundleID)) return NO;

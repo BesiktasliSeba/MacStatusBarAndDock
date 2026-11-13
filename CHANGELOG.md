@@ -2,6 +2,11 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.7.1
+
+### Fixes
+- With Aerial 5.1, a messaging app that used to open full screen first now opens from the Dock straight into its window, quickly and with its Dock icon bouncing, and the Home Screen no longer moves while it opens.
+
 ## 1.8.7
 
 ### New

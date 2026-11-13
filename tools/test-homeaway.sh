@@ -53,6 +53,11 @@ check "F3 (regression 1.8.4, A12Z, engine parity): Aerial's way into a window go
    && [ \"\$(grep -c 'objc_msgSend)(ui, goHome, ^{})' $X)\" = 2 ] && [ \"\$(grep -c 'DMMSWQuietTransition(nil, @\"green' $X)\" = 1 ] \
    && fn $X 'BOOL DMAerialWarmStartIfNeeded(NSString *bundleID) {' | grep -q 'else DMOwnHome(^{ ((void (\\*)(id, SEL, id))objc_msgSend)(ui, goHome, ^{}); });' \
    && fn $X 'static void DMSendToWindow(NSString *bundleID) {' | grep -c 'DMMinimize();' | grep -q '^2$'"
+check "1.8.7.1 (KT 13 Nov, WhatsApp from the Dock with Aerial 5.1): the full-screen-first cold start (DMAerialWarmStartIfNeeded) only for Aerial 5.0 and a build we have not tested; a tested later build (5.1) opens it straight into its window" \
+  "fn $X 'static BOOL DMAerialNeedsWarmStart(NSString *bundleID) {' | grep -q 'if (!DMAerialBuildNeedsWarmStart()) return NO;' \
+   && fn $X 'static BOOL DMAerialBuildNeedsWarmStart(void) {' | grep -q 'known = (!label || \[label hasPrefix:@\"5.0\"\]) ? 1 : 0;' \
+   && fn $X 'static BOOL DMAerialBuildNeedsWarmStart(void) {' | grep -q 'MSBDEngineBuildLabel(@\"Aerial\", uuid)' \
+   && grep -q '\"Aerial\", \"5.1 arm64e\"' ../common/EngineBuilds.h && grep -q '\"Aerial\", \"5.0 arm64e\"' ../common/EngineBuilds.h"
 check "the gesture's lift: whatever destination SpringBoard is finally given (after the takeover's stay), a 4 is a Home" \
   "grep -q 'static id DMMSWActOrig(id self, SEL _cmd, long long dest) { if (dest == 4) DMHomeAwayLift(); return o_MSWActivate(self, _cmd, dest); }' $M \
    && grep -q 'static id DMMSWActOrigRM(id self, SEL _cmd, long long dest) { if (dest == 4) DMHomeAwayLift(); return o_MSWActivateRM(self, _cmd, dest); }' $M \
