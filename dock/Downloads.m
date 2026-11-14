@@ -1365,6 +1365,7 @@ static BOOL DMDLHardwareKeyboard(void) {
 
 @interface DMDownloadsIconView : UIView <UIPointerInteractionDelegate>
 @property (nonatomic, strong) UIImageView *image;
+@property (nonatomic) CGSize drawnSize;          // (the size the drawn folder was made for: an image's own size is rounded to whole pixels, 1.8.7.2)
 @property (nonatomic) CGSize themeSize;          // (the size and theme-engine generation the shown app-icon picture was asked for)
 @property (nonatomic) NSUInteger themeGeneration;
 - (void)tapped;
@@ -1399,9 +1400,11 @@ static BOOL DMDLHardwareKeyboard(void) {
     if (!CGSizeEqualToSize(self.themeSize, self.bounds.size) || self.themeGeneration != DMIconThemeGeneration() || !self.image.image) {
         UIImage *pic = DMIconThemePicture(MSBDIconDownloads, self.bounds.size, NULL);
         self.themeSize = pic ? self.bounds.size : CGSizeZero; self.themeGeneration = DMIconThemeGeneration();
-        if (pic) { self.image.image = pic; return; }
+        if (pic) { self.image.image = pic; self.drawnSize = CGSizeZero; return; }   // (the folder drawn again when the theme gives none -- review of 1.8.7.2)
     } else return;
-    if (!self.image.image || !CGSizeEqualToSize(self.image.image.size, self.bounds.size)) self.image.image = DMFolderImage(self.bounds.size);
+    // (the size it was drawn for, not the image's own whole-pixel size: at a fractional Dock size every layout drew it again and called it a new
+    //  picture, a layout loop in Edit Home Screen -- 1.8.7.2, as Finder's)
+    if (!self.image.image || !CGSizeEqualToSize(self.drawnSize, self.bounds.size)) { self.image.image = DMFolderImage(self.bounds.size); self.drawnSize = self.bounds.size; }
 }
 - (void)tapped { [[DMDownloadsPanel shared] toggleFromIcon:self]; }
 // A drop target for Finder's drag (statusbar/Finder.h finds this view by its class): the folder a drop goes into -- the stack's first folder that

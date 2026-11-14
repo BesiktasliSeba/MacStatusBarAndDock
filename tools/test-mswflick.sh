@@ -22,7 +22,8 @@ if echo "$body" | grep -qF 'return p.x > CGRectGetMaxX([gMSWDeskRects.lastObject
 else echo "FAIL  $f: the \"+\" target changed"; rc=1; fi
 if grep -qF 'static const CGFloat kMSWStripGap = kMSBDMSWStripGap, kMSWStripLabelH = kMSBDMSWStripLabelH;' "$f" \
    && grep -qF 'dl.frame = CGRectMake(CGRectGetMinX(r) - 20, CGRectGetMaxY(r) + kMSBDMSWStripLabelTop, r.size.width + 40, labelH);' "$f" \
-   && grep -qF 'MSBDMSWFlickOverStrip(p.x, p.y, CGRectGetMinX(first), MSBDMSWNamesMaxY(CGRectGetMaxY(last)), kMSWStripGap)' "$f"; then
+   && grep -qF 'return !CGRectIsNull(plus) && MSBDMSWDropOnDesk(p.x, p.y, CGRectGetMinX(plus), CGRectGetMinY(plus), CGRectGetMaxX(plus), CGRectGetMaxY(plus));' "$f" \
+   && ! grep -q 'MSBDMSWFlickOverStrip' "$f" ../statusbar/MSWFlick.h; then
   echo "PASS  the strip's names, the flick's strip and the drop share MSWFlick.h's layout (gap, name height, name offset)"
 else echo "FAIL  $f: the strip's layout is not MSWFlick.h's in one of the names, the flick or the drop"; rc=1; fi
 grep -q 'kMSBDMSWDropReach      6.0' ../statusbar/MSWFlick.h && echo "PASS  a desktop's reach is 6 pt, as its tile's (DMMSWDeskAt)" || { echo "FAIL  MSWFlick.h: the drop reach is not 6 pt"; rc=1; }

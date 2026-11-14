@@ -3,8 +3,9 @@
 //
 // A finger: the App Switcher's quit is a flick with no hold; the Mac Switcher's move is a press, maybe a pause, then a deliberate drag. So a quit is
 // a finger that went up quickly from the moment it touched -- no hold before it moved, a short gesture, fast and mostly upward at the lift, gone up
-// far enough -- and was not let go over the desktops in the strip: a drag that ends on a desktop always moves the window there, however fast, and
-// one let go a little off it (its name, a gap, the strip's end where "+" stands) is never a quit (MSBDMSWFlickOverStrip).
+// far enough -- and was not let go on a desktop or "+" in the strip: a drag that ends on one always moves the window there, however fast
+// (MSBDMSWDropOnDesk, the drop's own target). 1.8.7.2 (KT 14 Nov, A12Z): no wider band round the strip -- it reached from the first desktop to the
+// screen's right edge, so on the A12Z, whose windows sit just under the strip, a flick up of the right-hand window always ended in it and never quit.
 // The pointer's click-and-drag is never a quit (a pointer moves windows; its quit is the trackpad's two-finger swipe, below).
 // The trackpad: as in the App Switcher, two fingers swiped up over a thumbnail carry it up with them, and it goes when let go far enough up or
 // flicked up; otherwise it springs back. (A scroll has no hold and no finger-down; only the travel and the speed at the end count. Only a continuous
@@ -17,7 +18,7 @@ typedef struct {
     double duration;   // seconds from the touch-down to the lift
     double vx, vy;     // the speed at the lift, points per second (y grows downward: up is negative)
     double dx, dy;     // the travel from the touch-down to the lift, points
-    int overDesk;      // let go over the desktops in the strip: a desktop, "+", or round them (MSBDMSWFlickOverStrip)
+    int overDesk;      // let go on a desktop in the strip (its tile, 6 pt round it, its name) or on "+": the drop's own targets (MSBDMSWDropOnDesk)
     int pointer;       // the pointer's click-and-drag
 } MSBDMSWFlick;
 
@@ -48,7 +49,7 @@ static inline double MSBDMSWNamesMaxY(double tileMaxY) { return tileMaxY + kMSBD
 
 // A window dragged onto the strip (1.8.6, iPad 2 i04 row 4c: a slow drag let go on a desktop's name went back to its place): a desktop's drop
 // target is its tile, kMSBDMSWDropReach round it, and its name under it, as wide as the tile's reach (so two desktops' targets never touch and
-// "+", right of the last desktop's reach, keeps its own). Everywhere in it is over the desktops for a flick too (MSBDMSWFlickOverStrip): never a quit.
+// "+", right of the last desktop's reach, keeps its own). A flick let go on one of them is the move too, never a quit.
 #define kMSBDMSWDropReach      6.0
 // 1: a window let go at (x, y) goes to the desktop whose tile is minX..maxX, minY..maxY.
 static inline int MSBDMSWDropOnDesk(double x, double y, double minX, double minY, double maxX, double maxY) {
@@ -58,12 +59,6 @@ static inline int MSBDMSWDropOnDesk(double x, double y, double minX, double minY
     return y <= bottom;
 }
 
-// 1: a flick let go at (x, y) is over the desktops in the strip, so never a quit: from half a gap left of the first desktop to the strip's right end
-// (the desktops, their names, the gaps between them, "+" or its place when the most desktops are open), from the top down to the bottom of the names
-// (namesMaxY, MSBDMSWNamesMaxY). Not the whole strip: left of the first desktop and below the names a top-row thumbnail flicked up still quits.
-static inline int MSBDMSWFlickOverStrip(double x, double y, double firstMinX, double namesMaxY, double gap) {
-    return x >= firstMinX - gap / 2.0 && y <= namesMaxY;
-}
 
 #define kMSBDMSWScrollMinShare    0.30   // let go after carrying the thumbnail up this share of its height (at least kMSBDMSWScrollMinRise)
 #define kMSBDMSWScrollMinRise     80.0

@@ -37985,7 +37985,38 @@ static double DMBarSizeGrabberShift(UIView *v) {
 }
 %end
 %end
+// The Lock Screen's padlock (Face ID iPads: SBUIProudLockIconView, the coversheet's top) has its place from the same fixed per-device top as the
+// grabber, made for iOS's own bar: at Large the 37 pt bar covered its shackle (KT 14 Nov, A12Z 18.5, 1.8.7.2). Its picture goes down by what the size
+// added to the bar (MSBDMenuBarGrabberShift: 13 pt at Large, 6 at Medium, nothing at Small) on the iPad's own screen -- drawn lower through its
+// layer's sublayer transform, so iPadOS's own layout, its Face ID animations (the pearl glyph, the camera-covered glyph, the coaching view, all inside
+// it) and its frames stay as iOS made them; set again at each of its layouts, idempotent.
+static void DMBarSizeProudLockApply(UIView *v) {
+    double shift = (v.window && v.window.screen != [UIScreen mainScreen]) ? 0.0 : MSBDMenuBarGrabberShift(gDMBarSize, gDMMenuBarH, gDMMenuBarStockH);
+    CATransform3D want = shift > 0.25 ? CATransform3DMakeTranslation(0, shift, 0) : CATransform3DIdentity;
+    if (CATransform3DEqualToTransform(v.layer.sublayerTransform, want)) return;
+    v.layer.sublayerTransform = want;
+    DMLog([NSString stringWithFormat:@"[barsize] the Lock Screen's padlock: %.1f pt lower for the bar", shift]);
+}
+%group MenuBarSizeProudLock
+%hook SBUIProudLockIconView
+- (void)layoutSubviews {
+    %orig;
+    DMBarSizeProudLockApply((UIView *)self);
+}
+%end
+%end
 static BOOL DMBarSizeOwns(Class c, BOOL classMethod, const char *name, const char *types);
+static void DMBarSizeProudLockInit(void) {   // (the padlock's class, SpringBoardUI's: looked for once a second, up to 30 s, as the grabber's; iPadOS 15-18)
+    static int tries = 0;
+    Class pl = objc_getClass("SBUIProudLockIconView");
+    if (pl) {
+        if (DMBarSizeOwns(pl, NO, "layoutSubviews", "v16@0:8")) { %init(MenuBarSizeProudLock, SBUIProudLockIconView = pl); DMLog(@"[barsize] the Lock Screen's padlock follows the bar's height"); }
+        else DMLog(@"[barsize] the Lock Screen's padlock: no -layoutSubviews of its own here -- left where iOS puts it");
+        return;
+    }
+    if (++tries < 30) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{ DMBarSizeProudLockInit(); });
+    else DMLog(@"[barsize] the Lock Screen's padlock: no SBUIProudLockIconView here (no Face ID) -- nothing to move");
+}
 static void DMBarSizeGrabberInit(void) {   // (CoverSheet's class may load after us: looked for once a second, up to 30 s, as LockStatusBar.x does)
     static int tries = 0;
     Class c = objc_getClass("CSTeachableMomentsContainerView");
@@ -38157,6 +38188,7 @@ static void DMBarSizeInstall(int want, BOOL late) {
     } else DMLog(@"[barsize] windows' scenes NOT kept at iOS's own status bar height: -_modifyApplicationSceneSettings:fromRequestContext:entity: is not as read");
     DMBarSizeSceneFramesInit(NO);
     DMBarSizeGrabberInit();
+    DMBarSizeProudLockInit();
     Class sbmc = objc_getClass("UIStatusBarManager");   // (a TV's bar at the TV's own size: the height its scene's manager answers, R6)
     if (DMBarSizeOwns(sbmc, NO, "defaultStatusBarHeight", "d16@0:8") && DMBarSizeOwns(sbmc, NO, "defaultStatusBarHeightInOrientation:", "d24@0:8q16")) {
         %init(MenuBarSizeManager, UIStatusBarManager = sbmc);

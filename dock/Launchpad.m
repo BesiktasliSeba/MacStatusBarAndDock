@@ -160,6 +160,7 @@ static UIView *DMIconImageView(UIView *iconView) {
 }
 
 static const void *kSavedShapeKey = &kSavedShapeKey;
+static const void *kDrawnSizeKey = &kDrawnSizeKey;   // (on the overlay: the size its picture was drawn for, 1.8.7.2)
 static const void *kHiddenKey = &kHiddenKey;     // the App Library picture's own views we hid under an app-icon picture (1.7.5)
 static const void *kAskedKey = &kAskedKey;       // what the overlay's app-icon picture was asked for: size, style, theme generation
 
@@ -290,9 +291,13 @@ static void DMLaunchpadDraw(UIView *imageView, UIImageView *overlay, BOOL enable
     overlay.layer.cornerCurve = classic ? kCACornerCurveCircular : kCACornerCurveContinuous;
     overlay.layer.cornerRadius = classic ? bounds.size.width / 2.0 : bounds.size.width * 0.2237;
     NSNumber *shown = objc_getAssociatedObject(overlay, kSavedShapeKey);   // which style the current image is
-    if (hadAppPicture || !overlay.image || !CGSizeEqualToSize(overlay.image.size, bounds.size) || shown.boolValue != classic) {
+    // (the size it was drawn for, not the image's own whole-pixel size: at a fractional Dock size every layout drew it again and called it a new
+    //  picture, a layout loop in Edit Home Screen -- 1.8.7.2, as Finder's)
+    NSValue *drawnFor = objc_getAssociatedObject(overlay, kDrawnSizeKey);
+    if (hadAppPicture || !overlay.image || !drawnFor || !CGSizeEqualToSize(drawnFor.CGSizeValue, bounds.size) || shown.boolValue != classic) {
         overlay.image = classic ? DMLaunchpadRocketImage(bounds.size) : DMLaunchpadImage(bounds.size);
         objc_setAssociatedObject(overlay, kSavedShapeKey, @(classic), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(overlay, kDrawnSizeKey, [NSValue valueWithCGSize:bounds.size], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     if (overlay.superview != imageView) [imageView addSubview:overlay];
     [imageView bringSubviewToFront:overlay];

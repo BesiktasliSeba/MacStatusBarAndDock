@@ -127,6 +127,7 @@ extern UITargetedPreview *MSBDDockSideIconPreview(UIView *icon, UIImage *picture
 @interface DMFinderIconView : UIView <UIPointerInteractionDelegate, UIContextMenuInteractionDelegate>
 @property (nonatomic, strong) UIImageView *image;
 @property (nonatomic, strong) UIView *dot;
+@property (nonatomic) CGSize drawnSize;          // (the size the drawn face was made for: an image's own size is rounded to whole pixels, 1.8.7.2)
 @property (nonatomic) CGSize themeSize;          // (the size and theme-engine generation the shown app-icon picture was asked for)
 @property (nonatomic) NSUInteger themeGeneration;
 - (void)tapped;
@@ -175,6 +176,7 @@ extern UITargetedPreview *MSBDDockSideIconPreview(UIView *icon, UIImage *picture
             self.image.layer.cornerRadius = 0; self.image.layer.masksToBounds = NO;
             self.image.contentMode = UIViewContentModeScaleAspectFit;
             self.image.image = pic;
+            self.drawnSize = CGSizeZero;   // (a theme's picture shows: the face is drawn again when the theme gives none -- review of 1.8.7.2)
         }
     }
     if (!CGSizeEqualToSize(self.themeSize, CGSizeZero)) { [self updateDot]; return; }
@@ -186,9 +188,14 @@ extern UITargetedPreview *MSBDDockSideIconPreview(UIView *icon, UIImage *picture
     UIImage *themed = DMFinderThemedImage();
     if (themed) {
         if (self.image.image != themed) { self.image.contentMode = UIViewContentModeScaleAspectFill; self.image.image = themed; }
-    } else if (!self.image.image || self.image.contentMode != UIViewContentModeScaleAspectFit || !CGSizeEqualToSize(self.image.image.size, self.bounds.size)) {
+    } else if (!self.image.image || self.image.contentMode != UIViewContentModeScaleAspectFit || !CGSizeEqualToSize(self.drawnSize, self.bounds.size)) {
+        // (1.8.7.2, KT 14 Nov, A12Z: moving a Dock icon froze SpringBoard until its watchdog. The face was drawn again whenever ITS size was not the
+        //  view's -- but an image's size is whole pixels (47.6 pt draws a 48 pt image at 2x), so at a fractional Dock size every layout drew a new
+        //  face and called it a new picture; in Edit Home Screen a new picture lays the Dock out again (DMDockItemPictureChanged), which laid this
+        //  view out again: a layout loop on the main thread. The size the face was drawn for is kept and compared instead.)
         self.image.contentMode = UIViewContentModeScaleAspectFit;
         self.image.image = DMFinderFaceImage(self.bounds.size);
+        self.drawnSize = self.bounds.size;
     }
     [self updateDot];
 }

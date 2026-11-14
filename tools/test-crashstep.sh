@@ -122,7 +122,7 @@ check(by_sym('_MSBDCC18MacLayoutFrom') is None and by_sym('_MSBDCC18GridPlace') 
 # Swipe Up to Quit (review 1.8.6, gestures): both halves are its switch's -- the finger's flick and the trackpad's two-finger swipe, their blocks, the
 # two-finger pan's forwarder and the rule's own functions --; the rest of the Mac Switcher (its drag among them) stays the Mac Switcher's
 msw = open('../statusbar/MacSwitcher.h', errors='replace').read() + open('../statusbar/MSWFlick.h', errors='replace').read()
-quit = ['DMMSWFlickEnd', 'DMMSWFlickQuit', 'DMMSWFlickable', 'DMMSWFlickOverDesks', 'DMMSWScrollPan', 'DMMSWScrollMayBegin', 'MSBDMSWFlickQuits', 'MSBDMSWFlickOverStrip', 'MSBDMSWScrollQuits']
+quit = ['DMMSWFlickEnd', 'DMMSWFlickQuit', 'DMMSWFlickable', 'DMMSWFlickOverDesks', 'DMMSWScrollPan', 'DMMSWScrollMayBegin', 'MSBDMSWFlickQuits', 'MSBDMSWScrollQuits']
 gone = [n for n in quit if not re.search(r'^(?:__attribute__\(\(noinline\)\) )?static [^(=;]*?\b' + n + r'\(', msw, re.M)]
 # (kept out of line in a release build, so the map has them by name: the swipe's own functions in MacSwitcher.h)
 inl = [n for n in ('DMMSWFlickEnd', 'DMMSWFlickQuit', 'DMMSWFlickable', 'DMMSWScrollPan', 'DMMSWScrollMayBegin') if not re.search(r'^__attribute__\(\(noinline\)\) static [^(=;]*?\b' + n + r'\([^;]*\{', msw, re.M)]

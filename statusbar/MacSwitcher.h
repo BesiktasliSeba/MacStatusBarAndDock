@@ -4182,14 +4182,17 @@ __attribute__((noinline)) static void DMMSWFlickQuit(DMMSWTile *t, NSString *how
     DMLog([NSString stringWithFormat:@"[macswitcher] swipe up to quit: %@ (%@)%@", b, how, others.count ? [NSString stringWithFormat:@", its %lu other window(s) in the view too", (unsigned long)others.count] : @""]);
     DMForceQuitBundle(b);
 }
-// A flick let go at p is over the desktops in the strip (MSWFlick.h MSBDMSWFlickOverStrip): a desktop or "+" (a drag let go there moves), or the
-// strip round them -- a desktop's name, the gaps between the desktops, the strip's end right of the last one (where "+" stands, also when the most
-// desktops are open and it is gone). Thrown at a desktop and let go a little off it is never a quit (the drag's way back, as before 1.8.6).
+// A flick let go at p is on a desktop or on "+" in the strip (a drag let go there moves): each desktop's drop target (MSWFlick.h MSBDMSWDropOnDesk:
+// its tile, 6 pt round it, its name) and "+"'s tile the same way. Nothing wider: the drop's own "+" target runs on to the screen's right edge, and so
+// did the band this used before (1.8.7.2, KT 14 Nov, A12Z: a flick up of the right-hand window never quit -- "it works on the M1", where the windows
+// sit lower and the same flick ends under the strip).
 static BOOL DMMSWFlickOverDesks(CGPoint p) {
-    if (DMMSWDropTargetAt(p) != kMSWDropNone) return YES;
-    if (!gMSWDeskRects.count) return NO;
-    CGRect first = [gMSWDeskRects.firstObject CGRectValue], last = [gMSWDeskRects.lastObject CGRectValue];
-    return MSBDMSWFlickOverStrip(p.x, p.y, CGRectGetMinX(first), MSBDMSWNamesMaxY(CGRectGetMaxY(last)), kMSWStripGap);
+    for (NSValue *v in gMSWDeskRects) {
+        CGRect r = v.CGRectValue;
+        if (MSBDMSWDropOnDesk(p.x, p.y, CGRectGetMinX(r), CGRectGetMinY(r), CGRectGetMaxX(r), CGRectGetMaxY(r))) return YES;
+    }
+    CGRect plus = gMSWPlusRect;
+    return !CGRectIsNull(plus) && MSBDMSWDropOnDesk(p.x, p.y, CGRectGetMinX(plus), CGRectGetMinY(plus), CGRectGetMaxX(plus), CGRectGetMaxY(plus));
 }
 // The drag's lift: YES when it was a flick that quit (MSWFlick.h), NO for today's drop or way back.
 __attribute__((noinline)) static BOOL DMMSWFlickEnd(UIPanGestureRecognizer *g) {
@@ -4212,6 +4215,14 @@ __attribute__((noinline)) static BOOL DMMSWFlickEnd(UIPanGestureRecognizer *g) {
     return YES;
 }
 // The trackpad: two fingers swiped up over a thumbnail carry it up (the App Switcher's way); far enough or flicked: quit; else back to its place.
+// Its movement in the screen's own up and across (1.8.7.2, KT 14 Nov, A12Z 18.5 in landscape: Swipe Up to Quit by trackpad never quit -- an up swipe
+// read -263,-13 pt in the view, across, so it went back to its place). A scroll's translation and velocity come already in the screen's orientation
+// (read on the A12Z in landscape: in the window 13,-263 for an up swipe, though this layer's window stays portrait on 16 and later); asked for in the
+// view, UIKit turns them once more by the turn DMMSWTurnIn gives the view. So they are read in the window, as they come. On 15 (the window turns with
+// the screen, the view is not turned), in portrait and on another display's layer (never turned) both readings are the same.
+static CGPoint DMMSWScrollVector(UIPanGestureRecognizer *g, BOOL velocity) {
+    return velocity ? [g velocityInView:nil] : [g translationInView:nil];
+}
 __attribute__((noinline)) static BOOL DMMSWScrollMayBegin(UIPanGestureRecognizer *g) {
     if (!gMSWRoot || !gMSWOpen || gMSWClosing || gMSWSwitching || gMSWDropping || gMSWDragTile || gMSWScrollTile || gMSWTurnAt > 0) return NO;
     return DMMSWFlickable(DMMSWTileAt([g locationInView:gMSWRoot]));
@@ -4231,7 +4242,7 @@ __attribute__((noinline)) static void DMMSWScrollPan(UIPanGestureRecognizer *g) 
         case UIGestureRecognizerStateChanged: {
             DMMSWTile *t = gMSWScrollTile;
             if (!t) return;
-            CGFloat dy = MIN(0.0, [g translationInView:gMSWRoot].y);
+            CGFloat dy = MIN(0.0, DMMSWScrollVector(g, NO).y);
             t.transform = CGAffineTransformMakeTranslation(0, dy);
             t.label.alpha = MAX(0.0, 1.0 + dy / 60.0);
             break;
@@ -4242,7 +4253,10 @@ __attribute__((noinline)) static void DMMSWScrollPan(UIPanGestureRecognizer *g) 
             DMMSWTile *t = gMSWScrollTile;
             gMSWScrollTile = nil;
             if (!t) return;
-            CGPoint tr = [g translationInView:gMSWRoot], v = [g velocityInView:gMSWRoot];
+            CGPoint tr = DMMSWScrollVector(g, NO), v = DMMSWScrollVector(g, YES);
+#if DEBUG
+            { CGPoint rw = [g translationInView:nil], rr = [g translationInView:gMSWRoot]; DMLog([NSString stringWithFormat:@"[macswitcher] two-finger swipe read: window %.0f,%.0f (used), the view's (UIKit) %.0f,%.0f", rw.x, rw.y, rr.x, rr.y]); }
+#endif
             if (g.state == UIGestureRecognizerStateEnded && [gMSWTiles indexOfObjectIdenticalTo:t] != NSNotFound && MSBDMSWScrollQuits(tr.x, tr.y, v.y, t.layoutRect.size.height)) {
                 DMMSWFlickQuit(t, [NSString stringWithFormat:@"the trackpad's two-finger swipe: up %.0f pt, %.0f pt/s", -tr.y, -v.y]);
                 return;

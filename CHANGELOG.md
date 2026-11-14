@@ -2,6 +2,13 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.7.2
+
+### Fixes
+- Moving an app icon in the Dock no longer freezes the iPad until SpringBoard restarts.
+- Swipe Up to Quit in the Mac Switcher now works in landscape: a window flicked up quits its app wherever you let go, unless it is on a desktop or +, and so does a two-finger swipe up on a trackpad.
+- With Menu Bar Size at Medium or Large, the lock icon on the Lock Screen now sits below the menu bar instead of under it.
+
 ## 1.8.7.1
 
 ### Fixes
