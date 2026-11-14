@@ -1464,7 +1464,12 @@ static void DMPrewarmQuitClear(NSString *bundleID) {   // the user opened this a
 // the front because the one in front was quit came there by itself. (SpringBoard's exit callback, DMAppJustExited, comes only after that change.)
 static NSMutableDictionary<NSString *, NSNumber *> *gAppQuitAt;
 static BOOL DMAppQuitRecently(NSString *b) { NSNumber *t = b.length ? gAppQuitAt[b] : nil; return t && CACurrentMediaTime() - t.doubleValue < 3.0; }
+#include "SMWindowKey.h"   // (DMSMKeyBundle: a Stage Manager window's key names its app, just below)
 static void DMForceQuitBundle(NSString *bundleID) {
+    // (a force quit ends an app, every window of it: handed a Stage Manager window's key, "<bundle>|<scene>", it is that window's app. The key
+    //  itself named no app -- the terminate request and the switcher's clean-up found none, the app ran on -- and the quit records went under it:
+    //  audit M8 of 1.8.7.2, Swipe Up to Quit. A bundle identifier has no "|": every other caller's comes as it was)
+    bundleID = DMSMKeyBundle(bundleID);
     if (!bundleID.length) return;
     if (DMGARefuses([@"force quit " stringByAppendingString:bundleID])) return;   // (the app Guided Access keeps the iPad in, or any other)
     if (DMWaitForContextMenu([@"force quit " stringByAppendingString:bundleID], ^{ DMForceQuitBundle(bundleID); })) return;
@@ -12981,11 +12986,20 @@ static void DMAerialMinimizeBody(UIView *stage) {   // replaces Aerial's minimiz
     DMMinimizeStage(stage);
 }
 // A drag by hand. NO: the drag was cancelled here and the original must not run.
+// (audit M5 of 1.8.7.2) The mark on Aerial's recogniser, written at each start: this drag or resize was taken, so its end is a move or a resize by
+// hand. A drag refused at its start (one inside the window: a page scrolled) is cancelled, and that Cancelled call comes to the hook as well; with no
+// mark it moved nothing, and the window keeps its tile, its place and the title bar's way back.
+static const void *kAerialHandStartKey = &kAerialHandStartKey;
+static void DMAerialHandStart(UIView *stage, UIGestureRecognizer *g) {
+    objc_setAssociatedObject(stage, kStageGestureKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(g, kAerialHandStartKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
 static BOOL DMAerialPanBefore(UIView *stage, UIPanGestureRecognizer *g) {
     UIGestureRecognizerState s = g.state;
     // A window is moved by its title bar only. Aerial's window drag recogniser also starts from a finger dragging inside the app (scrolling a page moved the
     // whole window first): a drag that did not start in the title bar is cancelled before it reaches the drag code.
     if (s == UIGestureRecognizerStateBegan) {
+        objc_setAssociatedObject(g, kAerialHandStartKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (a new drag: not an earlier one's mark; cleared before the cancel below)
         if ([g respondsToSelector:@selector(setAllowedScrollTypesMask:)]) g.allowedScrollTypesMask = 0;   // (two-finger scrolling on a trackpad must not drag a window)
         CGPoint here = [g locationInView:stage], moved = [g translationInView:stage];
         BOOL byScroll = g.numberOfTouches == 0;   // a trackpad scroll: no touch, the pointer stays where it is
@@ -12997,13 +13011,15 @@ static BOOL DMAerialPanBefore(UIView *stage, UIPanGestureRecognizer *g) {
             static int logged = 0; if (logged++ < 6) DMLog([NSString stringWithFormat:@"[aerial] a drag that started inside the window (y %.0f, scroll %d) does not move it", start.y, byScroll]);
             return NO;
         }
-        objc_setAssociatedObject(stage, kStageGestureKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        DMAerialHandStart(stage, g);
     }
     return YES;
 }
-// After a drag (pan) or a resize by hand: remember the place it ends up in.
-static void DMAerialGestureAfter(UIView *stage, UIGestureRecognizerState s, BOOL wasPan) {
+// After a drag (pan) or a resize by hand: remember the place it ends up in. Only the end of one taken at its start (DMAerialHandStart).
+static void DMAerialGestureAfter(UIView *stage, UIGestureRecognizer *g, BOOL wasPan) {
+    UIGestureRecognizerState s = g.state;
     if (s == UIGestureRecognizerStateEnded || s == UIGestureRecognizerStateCancelled || s == UIGestureRecognizerStateFailed) {
+        if (![objc_getAssociatedObject(g, kAerialHandStartKey) boolValue]) return;   // (a drag refused at its start: not moved by hand, M5)
         objc_setAssociatedObject(stage, kStageGestureKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         DMTitleRecordHandEnded(stage, s);   // (a move or a resize by hand: the title bar's frame from before is older, P4-1; also one cut short, L2)
         if (wasPan && s == UIGestureRecognizerStateEnded) {   // (1.7.3 item 3: let go, it lines up with what is near -- the desktop's edges, the windows around)
@@ -13045,12 +13061,12 @@ static void DMAerialGestureAfter(UIView *stage, UIGestureRecognizerState s, BOOL
 - (void)handlePan:(id)gesture {
     if (!DMAerialPanBefore((UIView *)self, gesture)) return;
     %orig;
-    DMAerialGestureAfter((UIView *)self, [(UIGestureRecognizer *)gesture state], YES);
+    DMAerialGestureAfter((UIView *)self, gesture, YES);
 }
 - (void)handleResizeBR:(id)gesture {
-    if ([(UIGestureRecognizer *)gesture state] == UIGestureRecognizerStateBegan) objc_setAssociatedObject(self, kStageGestureKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if ([(UIGestureRecognizer *)gesture state] == UIGestureRecognizerStateBegan) DMAerialHandStart((UIView *)self, gesture);
     %orig;
-    DMAerialGestureAfter((UIView *)self, [(UIGestureRecognizer *)gesture state], NO);
+    DMAerialGestureAfter((UIView *)self, gesture, NO);
 }
 %end
 %hook AerialCore
@@ -13094,12 +13110,12 @@ static void h5_flex(id self, SEL _cmd, CGRect bounds) {
 static void h5_pan(id self, SEL _cmd, id gesture) {
     if (!DMAerialPanBefore((UIView *)self, gesture)) return;
     if (o5_pan) o5_pan(self, _cmd, gesture);
-    DMAerialGestureAfter((UIView *)self, [(UIGestureRecognizer *)gesture state], YES);
+    DMAerialGestureAfter((UIView *)self, gesture, YES);
 }
 static void h5_resizeBR(id self, SEL _cmd, id gesture) {
-    if ([(UIGestureRecognizer *)gesture state] == UIGestureRecognizerStateBegan) objc_setAssociatedObject(self, kStageGestureKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if ([(UIGestureRecognizer *)gesture state] == UIGestureRecognizerStateBegan) DMAerialHandStart((UIView *)self, gesture);
     if (o5_resizeBR) o5_resizeBR(self, _cmd, gesture);
-    DMAerialGestureAfter((UIView *)self, [(UIGestureRecognizer *)gesture state], NO);
+    DMAerialGestureAfter((UIView *)self, gesture, NO);
 }
 static void h5_setFg(id self, SEL _cmd, id app, BOOL value) {
     if (!value && DMKeepWindowedApp(app, @"foreground off")) return;
@@ -18682,30 +18698,38 @@ static void DMDesktopAreaChanged(void) { [gDesktop setNeedsLayout]; }
 #include "ActMonProbe.h"    // (debug only: the read-only process table for the Activity Monitor feature, 1.7.0 research)
 #endif
 static void DMNativeMenuBarChanged(void) { for (UIView *fg in gCopies.allObjects) [fg setNeedsLayout]; }
-static DMRow *DMFinderRow(NSString *title, NSString *keys, BOOL enabled, void (^h)(DMFinderWindow *f)) {
-    DMRow *r = [[DMRow alloc] initWithTitle:title enabled:enabled handler:DMCloseThen(^{ DMFinderWindow *f = DMFinderFront(); if (f) h(f); })];
+// A row of the bar's Finder menus: it acts on f, the Finder window the menu was opened for (Finder.h DMFinderMenuWindow), while that is still open
+// and not minimized -- never on a Finder window looked up when it fires, which could be one minimized behind TextEdit (audit M7 of 1.8.7.2). No
+// window: greyed.
+static DMRow *DMFinderRow(NSString *title, NSString *keys, DMFinderWindow *f, BOOL enabled, void (^h)(DMFinderWindow *f)) {
+    __weak DMFinderWindow *wf = f;
+    DMRow *r = [[DMRow alloc] initWithTitle:title enabled:enabled && f != nil handler:DMCloseThen(^{
+        DMFinderWindow *w = wf;
+        if (DMFinderMenuCanAct(w)) h(w);
+        else DMLog([NSString stringWithFormat:@"[finder] %@: its Finder window was closed or minimized meanwhile, nothing done", title]);
+    })];
     r.hint = keys;
     return r;
 }
 static void DMOpenFinderFileMenu(UIButton *btn) {
     if (DMTitleTapWithMenuOpen(btn)) return;
-    DMFinderWindow *f = DMFinderFront(); BOOL sel = [f dm_selectedItem] != nil;
+    DMFinderWindow *f = DMFinderMenuWindow(); BOOL sel = [f dm_selectedItem] != nil;
     BOOL change = sel && [f dm_canChangeSelection], here = f && [f dm_canWriteHere], inTrash = f && DMFinderInOwnTrash(f.path);   // (read-only places: greyed, as on a Mac)
     NSArray *items = @[
         [[DMRow alloc] initWithTitle:@"New Finder Window" enabled:YES handler:DMCloseThen(^{ DMFinderOpen(nil, YES); })],
-        DMFinderRow(@"New Folder", @"⇧⌘N", here, ^(DMFinderWindow *w) { [w dm_newFolder]; }),
-        DMFinderRow(@"New Text File", nil, here, ^(DMFinderWindow *w) { [w dm_newTextFile]; }),
+        DMFinderRow(@"New Folder", @"⇧⌘N", f, here, ^(DMFinderWindow *w) { [w dm_newFolder]; }),
+        DMFinderRow(@"New Text File", nil, f, here, ^(DMFinderWindow *w) { [w dm_newTextFile]; }),
         [NSNull null],
-        DMFinderRow(@"Open", @"⌘O", sel, ^(DMFinderWindow *w) { [w dm_openSelected]; }),
-        DMFinderRow(@"Quick Look", @"Space", sel, ^(DMFinderWindow *w) { [w dm_quickLookSelected]; }),
-        DMFinderRow(@"Get Info", @"⌘I", sel, ^(DMFinderWindow *w) { [w dm_infoSelected]; }),
-        DMFinderRow(@"Rename", @"\u21A9\uFE0E", change && [f dm_selectedItems].count == 1, ^(DMFinderWindow *w) { [w dm_renameSelected]; }),
-        DMFinderRow(@"Duplicate", @"⌘D", sel && here, ^(DMFinderWindow *w) { [w dm_duplicateSelected]; }),
+        DMFinderRow(@"Open", @"⌘O", f, sel, ^(DMFinderWindow *w) { [w dm_openSelected]; }),
+        DMFinderRow(@"Quick Look", @"Space", f, sel, ^(DMFinderWindow *w) { [w dm_quickLookSelected]; }),
+        DMFinderRow(@"Get Info", @"⌘I", f, sel, ^(DMFinderWindow *w) { [w dm_infoSelected]; }),
+        DMFinderRow(@"Rename", @"\u21A9\uFE0E", f, change && [f dm_selectedItems].count == 1, ^(DMFinderWindow *w) { [w dm_renameSelected]; }),
+        DMFinderRow(@"Duplicate", @"⌘D", f, sel && here, ^(DMFinderWindow *w) { [w dm_duplicateSelected]; }),
         [NSNull null],
-        inTrash ? DMFinderRow(@"Put Back", @"⌘⌫", sel, ^(DMFinderWindow *w) { [w dm_trashSelected]; })
-                : DMFinderRow(@"Move to Trash", @"⌘⌫", change, ^(DMFinderWindow *w) { [w dm_trashSelected]; }),
+        inTrash ? DMFinderRow(@"Put Back", @"⌘⌫", f, sel, ^(DMFinderWindow *w) { [w dm_trashSelected]; })
+                : DMFinderRow(@"Move to Trash", @"⌘⌫", f, change, ^(DMFinderWindow *w) { [w dm_trashSelected]; }),
         [NSNull null],
-        DMFinderRow(@"Close Window", @"⌘W", f != nil, ^(DMFinderWindow *w) { [w close]; }),
+        DMFinderRow(@"Close Window", @"⌘W", f, f != nil, ^(DMFinderWindow *w) { [w close]; }),
     ];
     items = DMDriveEjectMenuWith(items, f);   // (1.7.3: Eject after Move to Trash, where this iPadOS can eject -- DriveEject.h)
     DMPresentMenu(btn, kFileLabelKey, kFilePillKey, items);
@@ -18749,10 +18773,10 @@ static void DMOpenNativeWindowMenu(UIButton *btn) {
 }
 static void DMOpenFinderViewMenu(UIButton *btn) {
     if (DMTitleTapWithMenuOpen(btn)) return;
-    DMFinderWindow *f = DMFinderFront();
+    DMFinderWindow *f = DMFinderMenuWindow();
     NSMutableArray *items = [NSMutableArray arrayWithArray:@[
-        DMFinderRow(@"as Icons", @"⌘1", f != nil, ^(DMFinderWindow *w) { [w dm_setIcons:YES]; }),
-        DMFinderRow(@"as List", @"⌘2", f != nil, ^(DMFinderWindow *w) { [w dm_setIcons:NO]; }),
+        DMFinderRow(@"as Icons", @"⌘1", f, f != nil, ^(DMFinderWindow *w) { [w dm_setIcons:YES]; }),
+        DMFinderRow(@"as List", @"⌘2", f, f != nil, ^(DMFinderWindow *w) { [w dm_setIcons:NO]; }),
         [NSNull null],
     ]];
     // Sort By (1.8.4.2 item 4): the front window's folder, its choice ticked; the list's and the icons' alike. Our bar menus have no submenus, so
@@ -18761,12 +18785,12 @@ static void DMOpenFinderViewMenu(UIButton *btn) {
     MSBDSortChoice now = f ? [f dm_sort] : kMSBDSortDefault;
     for (int k = 0; k < MSBD_SORT_MENU_COUNT; k++) {
         int key = kMSBDSortMenuKeys[k];
-        DMRow *r = DMFinderRow(@(MSBDSortTitle(key)), nil, f != nil, ^(DMFinderWindow *w) { [w dm_sortBy:key]; });
+        DMRow *r = DMFinderRow(@(MSBDSortTitle(key)), nil, f, f != nil, ^(DMFinderWindow *w) { [w dm_sortBy:key]; });
         r.checked = f != nil && now.key == key;
         [items addObject:r];
     }
     [items addObject:[NSNull null]];
-    [items addObject:DMFinderRow([f dm_showsHidden] ? @"Hide Hidden Files" : @"Show Hidden Files", @"⇧⌘.", f != nil, ^(DMFinderWindow *w) { [w dm_toggleHidden]; })];
+    [items addObject:DMFinderRow([f dm_showsHidden] ? @"Hide Hidden Files" : @"Show Hidden Files", @"⇧⌘.", f, f != nil, ^(DMFinderWindow *w) { [w dm_toggleHidden]; })];
     DMPresentMenu(btn, kViewLabelKey, kViewPillKey, items);
 }
 static NSString *DMNativeActiveAppName(void) { return DMNativeActiveApp().appName; }
@@ -18925,14 +18949,14 @@ static DMRow *DMShortcutRow(NSString *title, NSString *hint, BOOL enabled, uint3
 // The Edit menu while a Finder window is active: Finder's own Undo, Copy and Paste of files (a Mac Finder's Edit menu), not the app behind it.
 static void DMOpenFinderEditMenu(UIButton *btn, DMFinderWindow *f) {
     NSArray *items = @[
-        DMFinderRow([f dm_undoTitle], @"⌘Z", [f dm_canUndo], ^(DMFinderWindow *w) { [w dm_undo]; }),
+        DMFinderRow([f dm_undoTitle], @"⌘Z", f, [f dm_canUndo], ^(DMFinderWindow *w) { [w dm_undo]; }),
         [[DMRow alloc] initWithTitle:@"Redo" enabled:NO handler:nil],
         [NSNull null],
         [[DMRow alloc] initWithTitle:@"Cut" enabled:NO handler:nil],
-        DMFinderRow(@"Copy", @"⌘C", [f dm_selectedItem] != nil, ^(DMFinderWindow *w) { [w dm_keyCopy:nil]; }),
-        DMFinderRow(gFinderClipboard.count > 1 ? [NSString stringWithFormat:@"Paste %lu Items", (unsigned long)gFinderClipboard.count] : @"Paste Item", @"⌘V", gFinderClipboard.count && [f dm_canWriteHere], ^(DMFinderWindow *w) { [w dm_keyPaste:nil]; }),
+        DMFinderRow(@"Copy", @"⌘C", f, [f dm_selectedItem] != nil, ^(DMFinderWindow *w) { [w dm_keyCopy:nil]; }),
+        DMFinderRow(gFinderClipboard.count > 1 ? [NSString stringWithFormat:@"Paste %lu Items", (unsigned long)gFinderClipboard.count] : @"Paste Item", @"⌘V", f, gFinderClipboard.count && [f dm_canWriteHere], ^(DMFinderWindow *w) { [w dm_keyPaste:nil]; }),
         [NSNull null],
-        DMFinderRow(@"Find…", @"⌘F", YES, ^(DMFinderWindow *w) { [w dm_keyFind:nil]; }),
+        DMFinderRow(@"Find…", @"⌘F", f, YES, ^(DMFinderWindow *w) { [w dm_keyFind:nil]; }),
     ];
     DMPresentMenu(btn, kEditLabelKey, kEditPillKey, items);
     DMLog(@"[edit] Finder's Edit menu opened");
@@ -19072,12 +19096,13 @@ static void DMOpenGoMenu(UIButton *btn) {
         [places addObject:row];
     }
     NSMutableArray *items = [NSMutableArray array];
-    if (DMNativeActiveApp()) {
-        [items addObject:DMFinderRow(@"Back", @"⌘[", YES, ^(DMFinderWindow *w) { [w goBack]; })];
-        [items addObject:DMFinderRow(@"Forward", @"⌘]", YES, ^(DMFinderWindow *w) { [w goForward]; })];
-        [items addObject:DMFinderRow(@"Enclosing Folder", @"⌘↑", YES, ^(DMFinderWindow *w) { [w goUp]; })];
+    if (DMFinderNamedInBar()) {   // (Finder's own rows: not for TextEdit, Activity Monitor or Display Settings -- audit M7 of 1.8.7.2)
+        DMFinderWindow *f = DMFinderMenuWindow();
+        [items addObject:DMFinderRow(@"Back", @"⌘[", f, YES, ^(DMFinderWindow *w) { [w goBack]; })];
+        [items addObject:DMFinderRow(@"Forward", @"⌘]", f, YES, ^(DMFinderWindow *w) { [w goForward]; })];
+        [items addObject:DMFinderRow(@"Enclosing Folder", @"⌘↑", f, YES, ^(DMFinderWindow *w) { [w goUp]; })];
         [items addObject:[NSNull null]];
-        [items addObject:DMFinderRow(@"Go to Folder…", @"⇧⌘G", YES, ^(DMFinderWindow *w) { [w dm_goToFolder]; })];
+        [items addObject:DMFinderRow(@"Go to Folder…", @"⇧⌘G", f, YES, ^(DMFinderWindow *w) { [w dm_goToFolder]; })];
         [items addObject:[NSNull null]];
     }
     [items addObjectsFromArray:places];
@@ -19447,7 +19472,9 @@ static BOOL DMHalfQuarterPlan(UIView **halfStage, NSString **halfSlot, NSArray<U
 }
 static BOOL DMHalfQuarterAvailable(void) {
     if (DMSMEngine()) return DMSMHalfQuarterPlan(NULL, NULL, NULL, NULL);
-    return (DMActiveEngine() == DMEngineAerial || DMActiveEngine() == DMEngineZetsu) && DMHalfQuarterPlan(NULL, NULL, NULL, NULL);
+    // (every engine of ours, as the Swap rows above: the plan and the move take MilkyWay4's windows as they take Aerial's and Zetsu's, and the row
+    //  was left greyed on MilkyWay4 by naming the other two here -- audit L30 of 1.8.7.2; Mac test tools/test-swaphalfquarter.sh)
+    return DMActiveEngine() != DMEngineNone && DMHalfQuarterPlan(NULL, NULL, NULL, NULL);
 }
 static void DMApplyHalfQuarterSwap(UIView *half, NSString *halfSlot, UIView *quarter, NSString *quarterSlot) {
     if (!half || !quarter) return;
@@ -20486,10 +20513,14 @@ static void DMMinimizeActiveApp(void) {
         return;
     }
     BOOL windowsInFront = DMWindowsInFront();
-    DMLog([NSString stringWithFormat:@"[action] minimize active app: windows in front %d, front app %@, top stage %@", windowsInFront, [DMFrontApp() bundleIdentifier], DMTopStage() ? DMStageBundle(DMTopStage()) : @"none"]);
+    // The window that minimizes is the active one, the window of the app the menu bar names, by DMActiveApp's own rule: with Keep Covered Windows in
+    // Front, the window that came forward while only the windows it kept are above it, not the top one (1.8.7.3, audit M10 of 1.8.7.2: the App menu
+    // named Notes and minimized the small Calculator window kept above Notes' big one).
+    UIView *topStage = DMTopStage(), *activeStage = DMKeepCoveredActive(topStage);
+    DMLog([NSString stringWithFormat:@"[action] minimize active app: windows in front %d, front app %@, top stage %@, active window %@", windowsInFront, [DMFrontApp() bundleIdentifier], topStage ? DMStageBundle(topStage) : @"none", activeStage ? DMStageBundle(activeStage) : @"none"]);
     if (!windowsInFront) { DMMinimize(); return; }
-    if ((DMActiveEngine() == DMEngineAerial || DMActiveEngine() == DMEngineZetsu) && DMTopStage()) { DMMinimizeStage(DMTopStage()); return; }
-    UIView *top = DMTopWindow();
+    if ((DMActiveEngine() == DMEngineAerial || DMActiveEngine() == DMEngineZetsu) && activeStage) { DMMinimizeStage(activeStage); return; }
+    UIView *top = DMKeepCoveredActive(DMTopWindow());   // (MilkyWay4, as above)
     if (top) DMMinimizeWindow(top); else DMMinimize();
 }
 static void DMOpenAppMenu(UIButton *btn) {
@@ -24035,7 +24066,8 @@ static BOOL DMBarCopyIsCCDuplicate(UIView *fg) {
     CGFloat appRight = DMLayoutTitle(fg, rtl, kAppLabelKey, kAppButtonKey, kAppPillKey, appName, UIFontWeightBold, timeFont,
                                      timeCentre.y, titlesStart, titleMaxRight,
                                      ^(UIButton *b) { DMLog(@"[appbutton] tapped"); DMOpenAppMenu(b); });
-    BOOL finderTitles = DMNativeActiveApp() != nil && appRight > 0;   // (our Finder in front: File and View too, like a Mac's Finder)
+    BOOL finderTitles = DMFinderNamedInBar() && appRight > 0;   // (our Finder in front, a Finder window or its Quick Look: File and View too, like a Mac's Finder;
+                                                                  //  not for TextEdit, Activity Monitor or Display Settings, our other windows -- audit M7 of 1.8.7.2)
     if (!finderTitles) for (NSValue *k in @[[NSValue valueWithPointer:kFileLabelKey], [NSValue valueWithPointer:kFileButtonKey], [NSValue valueWithPointer:kViewLabelKey], [NSValue valueWithPointer:kViewButtonKey]])
         ((UIView *)objc_getAssociatedObject(fg, k.pointerValue)).hidden = YES;
     // The app's own menus (1.8.5 item 3, AppMenus.h): File before Edit, the others after it, in the room our own titles after them leave (Go,
@@ -42504,23 +42536,27 @@ static BOOL DMSMSnapMoveTarget(NSString *key, UIView *card, CGPoint t, CGPoint *
     if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) {
         gSMDragUntil = CACurrentMediaTime() + 1.0;
         DMTitleRecordMovedSM(w);   // (a move by hand: the title bar's frame from before is older, P4-1)
-        {   // (put behind the Dock by hand, or not: recorded now, not guessed later from sizes -- logic review R2)
-            UIScreen *scn = card.window.screen ?: [UIScreen mainScreen];
-            CGRect onScreen = [card convertRect:card.bounds toCoordinateSpace:scn.coordinateSpace];
+        // (the dropped card, read once: the card drawn where the drag ends, in its superview and on its screen; both the place and "behind the
+        //  Dock" below come from it. The place asked for is its MIDDLE -- 1.7.4 item 13: not card.center + t, which is its anchor's point: while
+        //  Stage Manager lifts a window (16.7.7) the card's anchor is at the finger, on our title bar, so a drop in open space asked for the
+        //  window's middle there, half a window too high, and Stage Manager's constraint put it back near its start -- "springs back". The snap
+        //  path has read it so since 528ef53. The card itself goes in place at once by its anchor, as before.)
+        UIScreen *scn = card.window.screen ?: [UIScreen mainScreen];
+        CGAffineTransform was = card.transform;
+        card.transform = CGAffineTransformMakeTranslation(t.x, t.y);
+        CGRect dropped = [card convertRect:card.bounds toView:sup];
+        CGRect droppedOnScreen = [card convertRect:card.bounds toCoordinateSpace:scn.coordinateSpace];
+        card.transform = was;
+        {   // (put behind the Dock by hand, or not: recorded now, not guessed later from sizes -- logic review R2. From the dropped card's bottom,
+            //  nothing added: the card read as it was already carried the drag (the transform of its last move), and adding the drag again counted
+            //  it twice -- a window let go 300 pt lower, its bottom well above the Dock, was taken for one put behind it and later fitted under it;
+            //  one behind the Dock nudged up a little was pulled above it. Audit M4 of 1.8.7.2, tools/test-smdropdock.sh)
             NSNumber *dock = gSMDockHeightBySize[NSStringFromCGSize(scn.bounds.size)];
             CGFloat line = scn.bounds.size.height - (dock ? dock.doubleValue : 117.0) - 2.0;
             if (!gSMBehindDock) gSMBehindDock = [NSMutableSet set];
             if (DMDockSideNow(scn.bounds.size)) line = scn.bounds.size.height + 1000.0;   // (Settings > Dock > Position: no Dock at the bottom to lie behind)
-            if (w.length) { if (CGRectGetMaxY(onScreen) + t.y > line + 4.0) [gSMBehindDock addObject:w]; else DMSMKeySetRemove(gSMBehindDock, w); }
+            if (w.length) { if (CGRectGetMaxY(droppedOnScreen) > line + 4.0) [gSMBehindDock addObject:w]; else DMSMKeySetRemove(gSMBehindDock, w); }
         }
-        // (the place asked for is the dropped card's MIDDLE, read from the card drawn where the drag ends -- 1.7.4 item 13: not card.center + t,
-        //  which is its anchor's point: while Stage Manager lifts a window (16.7.7) the card's anchor is at the finger, on our title bar, so a drop
-        //  in open space asked for the window's middle there, half a window too high, and Stage Manager's constraint put it back near its start --
-        //  "springs back". The snap path has read it so since 528ef53. The card itself goes in place at once by its anchor, as before.)
-        CGAffineTransform was = card.transform;
-        card.transform = CGAffineTransformMakeTranslation(t.x, t.y);
-        CGRect dropped = [card convertRect:card.bounds toView:sup];
-        card.transform = was;
         CGPoint c = CGPointMake(card.center.x + t.x, card.center.y + t.y), mid = CGPointMake(CGRectGetMidX(dropped), CGRectGetMidY(dropped)), at = CGPointZero;
         BOOL snapped = DMSMSnapMoveTarget(w, card, t, &at);   // (1.7.3 item 3: let go, it lines up with what is near -- 16, 17 and 18 alike)
         CGSize b = sup.bounds.size;
@@ -45775,14 +45811,23 @@ static __thread int gSM17Depth = 0;   // (_performAutoLayout... runs itself agai
 // The user quitting an app -- the App Switcher's swipe-up, and (since the quit fix) our own red light and Force Quit -- ends it as a graceful
 // "User Initiated Quit" (reason 1, 0xDEADFA11). That is exactly the set that must not be prewarmed again, so it is recorded here, at the one place
 // every one of them passes (FrontBoard runs in SpringBoard). Only reason 1 is taken (a crash, a jetsam, a background kill or a relaunch is not the
-// user quitting), and nothing else is changed. The set itself is only ever changed on the main thread (FrontBoard may call these on its own queue,
-// while a tap or an open clears an app on the main thread: external logic test C3, 25 Oct).
+// user quitting). The set itself is only ever changed on the main thread (FrontBoard may call these on its own queue, while a tap or an open
+// clears an app on the main thread: external logic test C3, 25 Oct).
+// A quit also forgets the app's Mac Switcher desktop records (DMMSWForgetApp), whichever way it came: only our Force Quit did, so an app quit with
+// the App Switcher's swipe-up while its window was on another desktop was opened again at its old place when that desktop came (DMMSWRelaunchClosed
+// takes a record without its window for an app iPadOS closed), and one full screen there came back too (audit M9 of 1.8.7.2). Not inside
+// DMPrewarmQuitAdd, which returns early for an app already on the set. Our Force Quit still forgets first, before it closes the windows; its kill
+// then passes here and finds nothing left. MilkyWay4 keeps the window of a killed app, so its window on another desktop closes too, as our Force
+// Quit closes it (DMMSWMWCloseQuitAway), once the kill itself is through: MilkyWay's close never runs inside FrontBoard's kill, and the quitting
+// mark keeps the window away meanwhile.
 static void DMPrewarmQuitAddFromKill(id process, long long reason) {
     if (reason != 1) return;
     NSString *b = DMCall(process, @"bundleIdentifier");
     if (![b isKindOfClass:[NSString class]]) return;
-    if ([NSThread isMainThread]) DMPrewarmQuitAdd(b);
-    else { NSString *bid = [b copy]; dispatch_async(dispatch_get_main_queue(), ^{ DMPrewarmQuitAdd(bid); }); }
+    NSString *bid = [b copy];
+    dispatch_block_t quit = ^{ DMPrewarmQuitAdd(bid); DMMSWForgetApp(bid); dispatch_async(dispatch_get_main_queue(), ^{ DMMSWMWCloseQuitAway(bid); }); };
+    if ([NSThread isMainThread]) quit();
+    else dispatch_async(dispatch_get_main_queue(), quit);
 }
 %hook FBApplicationProcess
 - (void)killForReason:(long long)reason andReport:(BOOL)report withDescription:(id)desc completion:(id)completion {

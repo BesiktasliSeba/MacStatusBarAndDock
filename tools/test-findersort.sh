@@ -42,7 +42,7 @@ check "the choice is kept per folder (Name A to Z not stored), every window show
 check "View > Sort By in the menu bar: every key, the folder's ticked, for the icons too" \
   "fn $X 'static void DMOpenFinderViewMenu(UIButton *btn) {' | grep -q 'initWithTitle:@\"Sort By\" enabled:NO handler:nil' \
    && fn $X 'static void DMOpenFinderViewMenu(UIButton *btn) {' | grep -q 'for (int k = 0; k < MSBD_SORT_MENU_COUNT; k++) {' \
-   && fn $X 'static void DMOpenFinderViewMenu(UIButton *btn) {' | grep -q 'DMFinderRow(@(MSBDSortTitle(key)), nil, f != nil, ^(DMFinderWindow \*w) { \[w dm_sortBy:key\]; });' \
+   && fn $X 'static void DMOpenFinderViewMenu(UIButton *btn) {' | grep -q 'DMFinderRow(@(MSBDSortTitle(key)), nil, f, f != nil, ^(DMFinderWindow \*w) { \[w dm_sortBy:key\]; });' \
    && fn $X 'static void DMOpenFinderViewMenu(UIButton *btn) {' | grep -q 'r.checked = f != nil && now.key == key;' \
    && fn $X 'static void DMOpenFinderViewMenu(UIButton *btn) {' | grep -q 'Hide Hidden Files' \
    && m $H '- (void)dm_sortBy:(int)key {' | grep -q 'dm_setSort:MSBDSortPick(_sort, key)'"

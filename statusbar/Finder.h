@@ -4817,6 +4817,22 @@ static DMFinderWindow *DMFinderFront(void) {
     for (DMNativeWindow *w in [gNativeWindows reverseObjectEnumerator]) if ([w isKindOfClass:[DMFinderWindow class]]) return (DMFinderWindow *)w;
     return nil;
 }
+// The menu bar's Finder menus (File, View, Go's Finder rows; StatusBar.x) are Finder's own: there while Finder is the app the bar names, a Finder
+// window or Finder's Quick Look active -- TextEdit, Activity Monitor and Display Settings are native windows too, but none of Finder's. They act
+// on the Finder window they were opened for while it is still open and not minimized, never on one behind another app's window: with TextEdit
+// active, File > Close Window closed the Finder window behind it, even a minimized one, and Go > Back moved a hidden one (audit M7 of 1.8.7.2).
+static BOOL DMFinderNamedInBar(void) {
+    DMNativeWindow *a = DMNativeActiveApp();
+    return [a isKindOfClass:[DMFinderWindow class]] || [a isKindOfClass:[DMQuickLookWindow class]];
+}
+static BOOL DMFinderMenuCanAct(DMFinderWindow *f) { return f && !f.hidden && [gNativeWindows indexOfObjectIdenticalTo:f] != NSNotFound; }   // (away on another desktop: out of the list)
+// The Finder window those menus act on: the active one, or the one the active Quick Look window was opened from; nil for anything else (Quick Look
+// from the desktop, another native window, none) -- their rows are greyed then.
+static DMFinderWindow *DMFinderMenuWindow(void) {
+    DMNativeWindow *a = DMNativeActiveApp();
+    id w = [a isKindOfClass:[DMQuickLookWindow class]] ? (id)((DMQuickLookWindow *)a).browser : a;
+    return [w isKindOfClass:[DMFinderWindow class]] && DMFinderMenuCanAct((DMFinderWindow *)w) ? (DMFinderWindow *)w : nil;
+}
 static void DMFinderOpen(NSString *path, BOOL newWindow) {
     DM_FEATURE_MARK("finder-window");
     if (!gFinderOn) { DMLog(@"[finder] Finder is switched off in Settings: no window"); return; }

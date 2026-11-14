@@ -142,7 +142,8 @@ static void DMDriveEjectFromWindow(DMFinderWindow *f) {
 static NSArray *DMDriveEjectMenuWith(NSArray *items, DMFinderWindow *f) {
     if (!DMDriveCanEject()) return items;
     NSArray<NSDictionary *> *targets = DMDriveEjectTargets(f);
-    DMRow *r = [[DMRow alloc] initWithTitle:DMDriveEjectTitle(targets) enabled:targets.count > 0 handler:DMCloseThen(^{ DMFinderWindow *w = DMFinderFront(); if (w) DMDriveEjectFromWindow(w); })];
+    __weak DMFinderWindow *wf = f;   // (the window the File menu was opened for, still open and not minimized: never another one looked up when the row fires, audit M7 of 1.8.7.2)
+    DMRow *r = [[DMRow alloc] initWithTitle:DMDriveEjectTitle(targets) enabled:targets.count > 0 handler:DMCloseThen(^{ DMFinderWindow *w = wf; if (DMFinderMenuCanAct(w)) DMDriveEjectFromWindow(w); })];
     r.hint = @"⌘E";
     NSUInteger sep = [items indexOfObjectWithOptions:NSEnumerationReverse passingTest:^BOOL(id x, NSUInteger i, BOOL *stop) { return x == [NSNull null]; }];
     NSMutableArray *m = [items mutableCopy];

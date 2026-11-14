@@ -2,6 +2,21 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.7.3
+
+### Fixes
+- Turning off the Mac Switcher while a desktop was sliding in no longer crashes SpringBoard.
+- The crash protection now also catches SpringBoard freezing again shortly after every start, instead of leaving the iPad stuck until a reboot.
+- With the Stage Manager engine, Swipe Up to Quit now quits the whole app, not only the window you flicked, when the app has more than one window.
+- An app you quit from the App Switcher no longer opens again when you go back to the desktop its window was on.
+- With Magnify Icons off, Remove from Dock is back in a Dock app's menu.
+- With the Stage Manager engine, a window dragged down by its title bar and let go above the Dock no longer slips under the Dock later.
+- With Keep Covered Windows in Front on, Minimize in the App menu now minimizes the app the menu bar shows, not the small window kept in front of it.
+- With TextEdit, Activity Monitor or Display Settings in front, the menu bar no longer shows Finder's File, View and Go items, which acted on a Finder window in the background.
+- Holding the tweak at its current version (ignoring its updates) no longer lets other window engines load next to the chosen one, and switching it or its parts off works again.
+- With MilkyWay4, Swap Half and Quarter in the Window menu is no longer always greyed out.
+- With Aerial 3.0, scrolling inside a window tiled by Fit to Window no longer takes it out of the tiles.
+
 ## 1.8.7.2
 
 ### Fixes

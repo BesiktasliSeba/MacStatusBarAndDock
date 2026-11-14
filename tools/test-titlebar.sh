@@ -95,7 +95,7 @@ check "  ... and a move or a resize by hand drops it (a frame from before is nev
    && grep -A1 -F 'DMTitleRecordHandEnded(w, g.state);   // (a resize by hand' $S | grep -qF 'f = DMSnapEngineWindow(w, f, (self.left' \
    && grep -A1 -F 'DMTitleRecordHandEnded(win, g.state);   // (a resize by hand' $S | grep -qF \"the handle's two sides\" \
    && grep -A1 -F 'DMTitleRecordHandEnded(stage, s);   // (a resize by hand' $S | grep -qF 'if (s == UIGestureRecognizerStateEnded && !DMSnapOff()) {' \
-   && fn 'static void DMAerialGestureAfter(UIView *stage, UIGestureRecognizerState s, BOOL wasPan) {' $S && has 'DMTitleRecordHandEnded(stage, s);' \
+   && fn 'static void DMAerialGestureAfter(UIView *stage, UIGestureRecognizer *g, BOOL wasPan) {' $S && has 'DMTitleRecordHandEnded(stage, s);' \
    && grep -A1 -F 'gSMDragUntil = CACurrentMediaTime() + 1.0;' $S | grep -qF 'DMTitleRecordMovedSM(w);' \
    && fn 'static void DMSMRADropTitleRecord(unsigned long long edge, CGRect start) {' $R && has 'if (MSBDSnapHeldSidesMatch(c, start, how)) DMTitleRecordMovedSM(k);' \
    && [ \$(grep -c 'self.restoreFrame = CGRectNull; self.layoutName = nil; DMTitleRecordMovedView(self);' $N) = 2 ]"

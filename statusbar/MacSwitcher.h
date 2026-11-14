@@ -1437,6 +1437,20 @@ static void DMMSWMWCloseGone(UIView *st) {
     SEL close = NSSelectorFromString(@"closeButtonAction:");
     if ([st respondsToSelector:close]) ((void (*)(id, SEL, id))objc_msgSend)(st, close, nil);
 }
+// A user quit that was not our Force Quit (the App Switcher's swipe-up: StatusBar.x's reason-1 kill hook, after DMMSWForgetApp): MilkyWay4's window of
+// the app on another desktop closes now, with MilkyWay's own close, as our Force Quit closes it. With its record forgotten only the quitting mark (4 s)
+// kept it away, and when MilkyWay's dead-window check (StatusBar.x DMMilkyWayCloseDeadWindows) had not closed it by then -- the iPad locked right
+// after the swipe, a desktop switch, the Mac Switcher's view open -- the tick took it for a new window of the desktop on screen and showed it there
+// empty (review of 1.8.7.3's M9 fix). One already closing (our Force Quit's: its kill passes the hook too) is left as it is, and so is a window on
+// the desktop on screen (MilkyWay's dead-window check closes it, as before).
+static void DMMSWMWCloseQuitAway(NSString *b) {
+    if (DMActiveEngine() != DMEngineMilkyWay || !b.length) return;
+    for (UIView *st in DMAerialStagesAll()) {
+        if (![DMStageBundle(st) isEqualToString:b] || ![objc_getAssociatedObject(st, kMSWAwayKey) boolValue] || [objc_getAssociatedObject(st, kStageClosingKey) boolValue]) continue;
+        DMLog([NSString stringWithFormat:@"[macswitcher] %@ quit: its MilkyWay window on another desktop closes (no record keeps it away now)", b]);
+        DMMSWMWCloseGone(st);
+    }
+}
 // A window of the desktop on screen whose app iPadOS closed (b's record is there, its window is not): opened again as a window at its place (a
 // normal launch, never an empty frame). afterMWClose: MilkyWay's own close of its grey window is on its way (DMMSWMWCloseGone).
 static void DMMSWRelaunchAt(NSString *b, BOOL afterMWClose) {
@@ -2061,6 +2075,7 @@ static void DMMSWWhenDrawn(NSString *wantFront, BOOL (^landed)(void), BOOL (^gon
 // The switch to the desktop at place `to`: the slide (begun by the fingers -- the tracker --, or here from rest) goes there at speed v; a frame
 // later the windows change under it (after the Mac Switcher's view has faded, when it was open); once the slide has landed and the live screen
 // is drawn still, the slide fades to it. The left desktop's picture becomes its thumbnail.
+static NSUInteger gMSWSwRun = 0;   // (the switch from rest: counted at its start and when it is given up -- a left picture still on its way then brings nothing, DMMSWGiveUpSwitch)
 static void DMMSWSwitchRun(NSUInteger to, NSString *why, CGFloat v, void (^done)(void));
 static void DMMSWSwitchGo(NSUInteger to, NSString *why, CGFloat v, void (^done)(void), BOOL fromGesture, CFTimeInterval t0, UIView *old);
 static void DMMSWSwitchTo(NSUInteger to, NSString *why, void (^done)(void)) { DMMSWSwitchRun(to, why, 0, done); }
@@ -2074,6 +2089,7 @@ static void DMMSWSwitchRun(NSUInteger to, NSString *why, CGFloat v, void (^done)
         return;
     }
     gMSWSwitching = YES;
+    NSUInteger run = ++gMSWSwRun;
     CFTimeInterval t0 = CACurrentMediaTime();
     DMMSWRecBegin([NSString stringWithFormat:@"switch (%@)", why]);
     DMMSWMark(@"switch");
@@ -2100,6 +2116,7 @@ static void DMMSWSwitchRun(NSUInteger to, NSString *why, CGFloat v, void (^done)
         void (^go)(UIView *, NSString *) = ^(UIView *fsPic, NSString *how) {
             if (went) return;
             went = YES;
+            if (run != gMSWSwRun) return;   // (given up meanwhile: the Mac Switcher went off)
             DMMSWMark([NSString stringWithFormat:@"left picture: drawn from its parts (the view is open; %@)", how]);
             DMMSWSwitchGo(to, whyCopy, v, done, NO, t0, DMMSWLeftFromParts(fsPic, fsPic ? fsv : nil));
         };
@@ -2116,6 +2133,7 @@ static void DMMSWSwitchRun(NSUInteger to, NSString *why, CGFloat v, void (^done)
         void (^go)(UIView *, NSString *) = ^(UIView *pic, NSString *how) {
             if (went) return;
             went = YES;
+            if (run != gMSWSwRun) return;   // (given up meanwhile: the Mac Switcher went off)
             if (!pic) pic = DMMSWDeskPicture(gMSWCur, [UIScreen mainScreen].bounds);   // (its wallpaper and what every desktop shows: drawn from its parts)
             DMMSWMark([NSString stringWithFormat:@"left picture: %@", how]);
             DMMSWSwitchGo(to, whyCopy, v, done, NO, t0, pic);
@@ -2298,7 +2316,7 @@ static void DMMSWSwWait(NSUInteger gen, NSString *fs, NSString *quiet, BOOL retr
             return;
         }
         gMSWSwRevealing = YES;
-        DMMSWSlReveal(kMSWRevealFade, ^{ DMMSWSwEnd(); });
+        DMMSWSlReveal(kMSWRevealFade, ^{ if (gen == gMSWSwGen) DMMSWSwEnd(); });   // (given up while it fades -- the Mac Switcher went off --: it ended there)
         DMLog([NSString stringWithFormat:@"%@: %@ %.0f ms after the windows%@", head, how, (CACurrentMediaTime() - t3) * 1000, retry ? @" (after the animated way)" : @""]);
     });
 }
@@ -2728,8 +2746,9 @@ static void DMMSWBringBack(void) {
     else for (UIView *s in DMAerialStagesAll()) { NSString *b = DMStageBundle(s); if (b.length && ![windowApps containsObject:b]) [windowApps addObject:b]; }
     if (sm) told = DMMSWSMAlive(aliveKeys, aliveApps);
     else if (gWindowSaveOn && !gRestoringWindows) { [aliveApps addObjectsFromArray:windowApps]; told = YES; }
-    // (what the user quit meanwhile, by what records a quit: the prewarm quit set -- our red light, Force Quit and the App Switcher's swipe-up,
-    //  which DMMSWKeptForget does not see; kept across a respring -- together with the app not running now. Not running alone is no quit: a
+    // (what the user quit meanwhile, by what records a quit: the prewarm quit set -- our red light, Force Quit and the App Switcher's swipe-up;
+    //  kept across a respring; each of those quits also takes the app out of the kept copy as it happens, DMMSWKeptForget, the swipe-up since
+    //  audit M9 of 1.8.7.2 -- together with the app not running now. Not running alone is no quit: a
     //  respring, a reboot or memory pressure while off end apps too, and those come back as before. Logic test L1, recheck R1)
     NSSet<NSString *> *running = told ? DMLiveRunningBundleIDs() : nil;
     NSSet<NSString *> *quit = gPrewarmQuitSet ? [NSSet setWithArray:gPrewarmQuitSet] : nil;
@@ -3256,6 +3275,23 @@ static void DMMSWEndOtherDisplay(NSString *why) {
     gMSWSwitching = NO; gMSWTrack = 0;
     if (gMSWWindow) gMSWWindow.hidden = YES;
     gMSWModel = gMSWMain; gMSWWindow = gMSWMainWindow;
+}
+// The Mac Switcher went off: the iPad's running switch ends at once, before its desktops become one (1.8.7.3, audit L81). The slide goes and its
+// aim is given up -- the other engines' (gMSWSwGen; a left picture still on its way, gMSWSwRun) and Stage Manager's (DMMSWSMAbort) --, so its
+// change, its wait and its reveal's end do nothing; what it was to do after it (its follow-up, a side request made on the way) goes with it; an
+// app opened on the way opens now. Left running, its change read the desktop places it began with in the one desktop left: gMSWDesks[1] raised
+// NSRangeException in DMMSWChangeDesktop (DMMSWSMAimChange with Stage Manager) and SpringBoard crashed.
+static void DMMSWGiveUpSwitch(NSString *why) {
+    if (gMSWSwitching) {
+        DMLog([NSString stringWithFormat:@"[macswitcher] %@ during a switch: the switch ends here", why]);
+        DMMSWSlDrop();
+        gMSWSwRun++; gMSWSwGen++;
+        DMMSWSMAbort();
+        gMSWSwOld = nil; gMSWSwDone = nil; gMSWSwRedirectable = gMSWSwRevealing = NO; DMMSWCutLetGo();
+        gMSWSwitching = NO;
+    }
+    gMSWPendingSide = 0; gMSWSwQueued = 0;
+    DMMSWRunPendingLaunch(why);
 }
 // Another display's layer window went with its display: a session on it ends at once (nothing of it can be seen or finished there).
 static void DMMSWTVLayerGone(NSArray<UIWindow *> *gone) {
@@ -4162,10 +4198,12 @@ __attribute__((noinline)) static BOOL DMMSWFlickable(DMMSWTile *t) { return gMSW
 // The thumbnail flies off the top from where it is now; the app's other thumbnails in the view fade; the others close up; then the quit.
 __attribute__((noinline)) static void DMMSWFlickQuit(DMMSWTile *t, NSString *how) {
     if (!t || !gMSWRoot) return;
-    NSString *b = [t.bundle copy];
+    // (its app: a Stage Manager thumbnail names its window by its key, "<bundle>|<scene>" (MacSwitcherSM.h), and that key quit no app -- only the
+    //  flicked window closed, the app ran on, its other thumbnails stayed and the quit records were filed under the key: audit M8 of 1.8.7.2)
+    NSString *b = DMSMKeyBundle(t.bundle);
     [gMSWTiles removeObjectIdenticalTo:t];
     NSMutableArray<DMMSWTile *> *others = [NSMutableArray array];
-    for (DMMSWTile *o in [gMSWTiles copy]) if (o.kind != DMMSWKindNative && [o.bundle isEqualToString:b]) { [others addObject:o]; [gMSWTiles removeObjectIdenticalTo:o]; }
+    for (DMMSWTile *o in [gMSWTiles copy]) if (o.kind != DMMSWKindNative && [DMSMKeyBundle(o.bundle) isEqualToString:b]) { [others addObject:o]; [gMSWTiles removeObjectIdenticalTo:o]; }
     CGRect at = [t.inner convertRect:t.inner.bounds toView:gMSWRoot];
     CGFloat up = CGRectGetMaxY(at) + 60.0;
     UIView *label = t.label;
@@ -5393,8 +5431,9 @@ static void DMMSWApplyPref(BOOL want) {
         if (gMSWOn) return;   // (on again before this ran: nothing to take down -- collapsed now, the desktops just loaded would go)
         DMMSWDropFinishNow();
         DMMSWEndOtherDisplay(@"the Mac Switcher went off");   // (1.8.7: a session on another display ends at once; the iPad's model in use)
+        DMMSWGiveUpSwitch(@"the Mac Switcher went off");      // (the iPad's running switch ends too, before its desktops become one: audit L81)
         if (DMMSWIsOpen()) DMMSWClose(nil, NO);
-        if (gMSWTrack && !gMSWSwitching) { DMMSWSlDrop(); gMSWTrack = 0; gMSWTrackPic = nil; }   // (a slide following the fingers goes with the switch)
+        if (gMSWTrack) { DMMSWSlDrop(); gMSWTrack = 0; gMSWTrackPic = nil; }   // (a slide following the fingers goes with the switch)
         gMSWLiftPic = nil; DMMSWOpenShotDrop();
         DMMSWKeepForLater();   // (what it has, kept for when it is on again: 1.5.2 item 14)
         DMMSWCollapse();

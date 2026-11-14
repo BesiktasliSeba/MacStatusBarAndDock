@@ -1,7 +1,8 @@
 // CrashGuard.h -- the crash guard (MacStatusBar&Dock, 2026-09-25; armed on every iPadOS version since 2026-09-26).
 //
-// SpringBoard's loader writes a small state file at every start, before any part loads, and removes it once SpringBoard has run 60 s. Found at the
-// next start, the previous SpringBoard ended early. That alone is no crash (a respring, Aerial 5.0's own respring after its license check, an
+// SpringBoard's loader writes a small state file at every start, before any part loads, and removes it once SpringBoard has run 60 s with its main
+// thread alive (the removal runs on the main queue: a SpringBoard stuck then keeps it, so the watchdog's kill counts). Found at the next start,
+// the previous SpringBoard ended early. That alone is no crash (a respring, Aerial 5.0's own respring after its license check, an
 // installer's): only SpringBoard crash reports count (CrashReporter/SpringBoard-<date>.ips, a folder mobile can list; never cpu_resource/wakeups
 // reports). Two crashes while SpringBoard never ran a full minute in between (the crash just before the first early start counts too), and:
 //  1. the feature switches turned on within 2 min before (the Status Bar and Dock pages note them, see LineSwitch.h) are switched off again;
@@ -18,8 +19,8 @@
 // Since 2026-09-26 it explains itself: when it acts it writes a small record (MSBD_GUARD_RECORD: what it did, the switches by their row titles, the
 // part of ours that was blamed, iPadOS and build, the top frames of our image only), which the pages' footer and the Report a Problem text use
 // (CrashExplain.h), and which the one-time notice on the Home Screen shows (loader/CrashNotice.m, loaded only while the record is unshown).
-// Cost per SpringBoard start: one small file write, and 60 s later one read and an unlink; the crash-report folder is only listed after an early
-// start. The mark has to be written before a crash can happen, so it cannot wait for a crash report to exist.
+// Cost per SpringBoard start: one small file write, and 60 s later one read and an unlink (on the main thread); the crash-report folder is only
+// listed after an early start. The mark has to be written before a crash can happen, so it cannot wait for a crash report to exist.
 // Plain C (loader/Loader.c); CoreFoundation is looked up at run time, as in VersionGate.h.
 #pragma once
 #include <stdio.h>
@@ -384,7 +385,10 @@ static inline void MSBDGuardNoticeLoad(void) {
     dlopen(MSBD_GUARD_NOTICE_LIB, RTLD_NOW);
 }
 
-// 60 s: this SpringBoard is running stably -- the row of early starts is over.
+// 60 s, on the main queue: this SpringBoard is running stably -- the row of early starts is over. Only a main thread that runs then gets here
+// (1.8.7.3, audit M1 of 1.8.7.2): a hang that starts 6 to 60 s after a start (a deadlock, a layout loop) is killed by the watchdog about a minute
+// later, after the 60 s mark; on a background queue the mark was gone by then and every start of a hang loop looked like a first one. The mark
+// now stays, and the watchdog's report counts at the next start like a crash's (CrashBlame.h judges it on the stuck main thread).
 static inline void MSBDGuardStable(void *ctx) {
     MSBDGuardState s;
     if (MSBDGuardFake() || MSBDGuardFakeReportExists() || !MSBDGuardRead(&s) || s.pid != getpid()) return;
@@ -419,7 +423,7 @@ static inline void MSBDCrashGuardStart(void) {
     gMSBDGuardAtStart = 0;
     MSBDGuardSave(&s);
     if (s.stage == 2) return;
-    dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
-    if (early && !acted) dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, 8 * NSEC_PER_SEC), q, NULL, MSBDGuardLook);
-    dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC), q, NULL, MSBDGuardStable);
+    // (the 8 s look on a background queue: it acts with the main thread stuck too; the 60 s clear on the main queue: proof the main thread runs)
+    if (early && !acted) dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, 8 * NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), NULL, MSBDGuardLook);
+    dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC), dispatch_get_main_queue(), NULL, MSBDGuardStable);
 }

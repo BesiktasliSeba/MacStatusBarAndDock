@@ -3001,13 +3001,17 @@ static BOOL DMRemoveFromDock(id icon) {   // (YES: it left the Dock for the Home
 // Our own apps kept in the Dock (1.7.3: Activity Monitor, MacStatusBar's ActMonDock.h): an icon of SpringBoard's with our identifier and no
 // app; it leaves the Dock through MacStatusBar (back to the App Library, nothing on the Home Screen), found with dlsym.
 static BOOL DMIsOwnAppIcon(id icon) { return [DMObj(icon, @"leafIdentifier") isEqual:@"com.besiktasliseba.macstatusbar.activitymonitor"]; }
+// An app kept in the Dock can leave it (Remove from Dock in its menu, a drop on the Trash) while the Dock part is on: its own switch, not Magnify Icons
+// (1.8.7.3, audit M6 of 1.8.7.2: both asked for magnification, a leftover from when that switch was the Dock's main one, so with Magnify Icons off the
+// menu had no Remove from Dock and the Trash took the app, then left it in the Dock). The Trash's drop side asks the same (TrashIcon.m).
+BOOL DMDockAppsCanLeave(void) { return gTweakOn; }
 // The Trash (TrashIcon.m): an app dragged off the Dock and dropped on the bin leaves the Dock the same way, once SpringBoard's drag has ended.
 BOOL DMTrashRemoveIconFromDock(id icon) {
-    if (gEnabled && DMIsOwnAppIcon(icon)) {
+    if (DMDockAppsCanLeave() && DMIsOwnAppIcon(icon)) {
         static BOOL (*own)(void) = NULL; if (!own) own = (BOOL (*)(void))dlsym(RTLD_DEFAULT, "MSBDActMonDockRemove");
         return own && own();
     }
-    if (!gEnabled || !DMIconKeptInDock(icon) || ![DMObj(icon, @"applicationBundleID") isKindOfClass:[NSString class]]) return NO;
+    if (!DMDockAppsCanLeave() || !DMIconKeptInDock(icon) || ![DMObj(icon, @"applicationBundleID") isKindOfClass:[NSString class]]) return NO;
     return DMRemoveFromDock(icon);
 }
 // What one of SpringBoard's own icon drags carries, for a drop on the bin (common/DockTrash.h MSBDTrashRemovesFromDock): SpringBoard's icon drag
@@ -3045,7 +3049,7 @@ BOOL DMTrashIconDragInfo(id session, MSBDTrashIconDrag *info, id *iconOut) {
     Class itemClass = objc_getClass("SBSApplicationShortcutItem");
     id icon = DMObj(self, @"icon");
     NSString *location = DMObj(self, @"location");
-    if (!gEnabled || !itemClass || ![location isKindOfClass:[NSString class]] || ![location containsString:@"Dock"] || [location containsString:@"Suggestions"]) return orig;
+    if (!DMDockAppsCanLeave() || !itemClass || ![location isKindOfClass:[NSString class]] || ![location containsString:@"Dock"] || [location containsString:@"Suggestions"]) return orig;
     if (!DMIconKeptInDock(icon) || ![DMObj(icon, @"applicationBundleID") isKindOfClass:[NSString class]]) return orig;
     id item = [[itemClass alloc] init];
     [item setValue:kDMRemoveFromDockType forKey:@"type"];

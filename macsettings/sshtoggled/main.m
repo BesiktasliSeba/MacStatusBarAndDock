@@ -283,16 +283,18 @@ static BOOL DpkgBusy(void) {
     }
     return NO;
 }
-static BOOL PackageInstalled(NSString *status, NSString *pkg) {
+// Our own package is asked with MSBDPackageInstalled (DpkgState.h: installed, held or not), only once DpkgBusy says no dpkg run is in progress;
+// other packages with MSBDPackageOnDisk. (A rule of our own here, "install ok installed", took a held MacStatusBar&Dock for not installed: M11.)
+#if DEBUG   // (--dry-run-engines --old: the rule before 1.4.1, "install ok installed" only -- the device comparison of M-1)
+static BOOL gDryOldRule = NO;
+static BOOL PackageInstalledBefore141(NSString *status, NSString *pkg) {
     NSRange r = [status rangeOfString:[NSString stringWithFormat:@"Package: %@\n", pkg]];
     if (r.location == NSNotFound) return NO;
     NSRange end = [status rangeOfString:@"\n\n" options:0 range:NSMakeRange(r.location, status.length - r.location)];
     NSString *block = [status substringWithRange:NSMakeRange(r.location, (end.location == NSNotFound ? status.length : end.location) - r.location)];
     return [block containsString:@"Status: install ok installed"];
 }
-#if DEBUG   // (--dry-run-engines --old: the rule before 1.4.1, "install ok installed" only -- the device comparison of M-1)
-static BOOL gDryOldRule = NO;
-#define MSBDPackageOnDisk(s, p) (gDryOldRule ? PackageInstalled((s), (p)) : MSBDPackageOnDisk((s), (p)))
+#define MSBDPackageOnDisk(s, p) (gDryOldRule ? PackageInstalledBefore141((s), (p)) : MSBDPackageOnDisk((s), (p)))
 #endif
 static BOOL ChoicyInstalled(NSString *status) {
 #if DEBUG   // (test switch: never in a release build)
@@ -541,7 +543,7 @@ static void ApplyEngines(NSString *reason) {
     logged = NO;
     if (asked) gPendingWork &= ~kWorkEngines;
     NSString *status = DpkgStatus();
-    if (!PackageInstalled(status, @"com.besiktasliseba.macstatusbaranddock")) { GiveBackAll(@"Mac Status Bar is not installed"); ELog(@"%@: Mac Status Bar not installed -- nothing to do", reason); return; }
+    if (!MSBDPackageInstalled(status, @"com.besiktasliseba.macstatusbaranddock")) { GiveBackAll(@"Mac Status Bar is not installed"); ELog(@"%@: Mac Status Bar not installed -- nothing to do", reason); return; }
     if (!TweakMeantToRun()) {   // (nothing of the table kept from loading while ours does not run: the renames, and our Choicy entries -- every library's,
                                 //  the engines' too, the record kept for the next start's apply; 1.8.0 review 7: Choicy's stayed, BigSurCenter and Destra denied)
         NSString *off = @"MacStatusBar&Dock is off (untested iPadOS or safe mode)";
@@ -1006,7 +1008,7 @@ static void PrepareForOn(NSString *why) {
 static void CheckMacStatusBarOff(NSString *reason) {
     if (DpkgBusy()) return;
     NSString *status = DpkgStatus();
-    if (!PackageInstalled(status, @"com.besiktasliseba.macstatusbaranddock")) return;
+    if (!MSBDPackageInstalled(status, @"com.besiktasliseba.macstatusbaranddock")) return;
     time_t started = 0; int sbpid = SpringBoardPid(&started);
     if (!sbpid || time(NULL) - started < 20) return;   // SpringBoard (re)starting: too early to tell (the configuration check below is what decides)
     if (Exists(@"/var/mobile/.eksafemode")) return;   // Safe Mode: no tweak runs, that says nothing about Mac Status Bar
@@ -1044,7 +1046,7 @@ static void EvaluateMacStatusBarConfig(NSString *source) {
         if (!ConfigMayHaveChanged()) return;   // (nothing it reads changed since the last look: a few stat calls)
         static BOOL installed = NO; static __unsafe_unretained NSString *seen;
         NSString *statusCache = DpkgStatus();
-        if (statusCache != seen) { seen = statusCache; installed = PackageInstalled(statusCache, @"com.besiktasliseba.macstatusbaranddock"); }
+        if (statusCache != seen) { seen = statusCache; installed = MSBDPackageInstalled(statusCache, @"com.besiktasliseba.macstatusbaranddock"); }
         if (!installed || Exists(@"/var/mobile/.eksafemode")) return;
         NSString *how = nil;
         BOOL off = MacStatusBarSwitchedOff(statusCache, &how);
@@ -1162,7 +1164,7 @@ static void ApplyLines(NSString *why) {
     gPendingWork &= ~kWorkLines;
     if (DpkgBusy()) { ELog(@"lines (%@): a package transaction is running -- nothing done", why); return; }
     NSString *status = DpkgStatus();
-    if (!PackageInstalled(status, OURPKG) || ChoicyInstalled(status) || !ICleanerInstalled(status)) return;   // (with Choicy, Settings edits Choicy itself)
+    if (!MSBDPackageInstalled(status, OURPKG) || ChoicyInstalled(status) || !ICleanerInstalled(status)) return;   // (with Choicy, Settings edits Choicy itself)
     if (!TweakFolderIsSane()) { ELog(@"lines (%@): unexpected tweak folder -- nothing done", why); return; }
     for (NSString *line in OurLines()) {
         int want = LineWanted(line);

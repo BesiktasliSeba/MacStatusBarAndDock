@@ -236,6 +236,7 @@ extern UITargetedPreview *MSBDDockSideIconPreview(UIView *icon, UIImage *picture
 
 extern BOOL DMTrashRemoveIconFromDock(id icon);           // (Dock.x: Remove from Dock, the app to the Home Screen)
 extern BOOL DMTrashIconDragInfo(id session, MSBDTrashIconDrag *info, id *icon);   // (Dock.x: what SpringBoard's icon drag carries)
+extern BOOL DMDockAppsCanLeave(void);   // (Dock.x: the Dock part on, so an app can leave it -- the removal's own test, so the bin takes no drop it refuses)
 
 static NSUInteger DMTrashPublishedCount(void) {
     static int token = 0;
@@ -362,7 +363,7 @@ static NSUInteger DMTrashPublishedCount(void) {
 // ---- SpringBoard's own icon drag: an app off the Dock onto the bin ----
 - (BOOL)dropInteraction:(UIDropInteraction *)interaction canHandleSession:(id<UIDropSession>)session {
     MSBDTrashIconDrag info = {0}; id icon = nil;
-    BOOL yes = DMTrashIconDragInfo(session, &info, &icon) && MSBDTrashRemovesFromDock(info);
+    BOOL yes = DMTrashIconDragInfo(session, &info, &icon) && MSBDTrashRemovesFromDock(info) && DMDockAppsCanLeave();
     DMLog([NSString stringWithFormat:@"[trash] an icon drag over the bin: %lu icon(s), app %d, folder %d, from the Dock %d, kept in the Dock %d -> %@",
            (unsigned long)info.count, info.isApp, info.isFolder, info.fromDock, info.keptInDock, yes ? @"it can leave the Dock here" : @"not taken"]);
     return yes;
@@ -375,7 +376,7 @@ static NSUInteger DMTrashPublishedCount(void) {
 - (void)dropInteraction:(UIDropInteraction *)interaction performDrop:(id<UIDropSession>)session {
     DM_FEATURE_MARK("dock-trash-remove-from-dock");
     MSBDTrashIconDrag info = {0}; id icon = nil;
-    if (DMTrashIconDragInfo(session, &info, &icon) && MSBDTrashRemovesFromDock(info)) self.pendingIcon = icon;
+    if (DMTrashIconDragInfo(session, &info, &icon) && MSBDTrashRemovesFromDock(info) && DMDockAppsCanLeave()) self.pendingIcon = icon;
     DMLog([NSString stringWithFormat:@"[trash] an app was dropped on the bin: %@", self.pendingIcon ? @"it leaves the Dock when SpringBoard's drag has ended" : @"not one that can leave the Dock"]);
 }
 // (the app's picture goes into the bin: it shrinks into it -- a fade with Reduce Motion)

@@ -769,8 +769,8 @@ static void DMMSWSMSwitchEnd(NSInteger toId) {
         }
     }
 }
-// (MacSwitcher.h DMMSWEndOtherDisplay: a switch on a display that went, or the Mac Switcher going off meanwhile -- its aim given up, so its change,
-//  its wait and its reveal do nothing; the slide is gone already)
+// (MacSwitcher.h DMMSWEndOtherDisplay and DMMSWGiveUpSwitch: a switch on a display that went, or the Mac Switcher going off meanwhile -- its aim
+//  given up, so its change, its wait and its reveal's end do nothing; the slide is gone already)
 static void DMMSWSMAbort(void) {
     gMSWSMAimGen++; gMSWSMAimRedirectable = NO; gMSWSMSwOld = nil; gMSWSMSwDone = nil; gMSWSMSwLaunching = nil; gMSWSMQueued = 0;
     gMSWSMQuietUntil = CACurrentMediaTime() + 1.0;
@@ -837,8 +837,9 @@ static void DMMSWSMAimChange(NSUInteger gen) {
         gMSWSMAimRedirectable = NO;   // (the reveal begins: a side swipe from now on brings the next desktop right after)
         CFTimeInterval t4 = CACurrentMediaTime();
         DMMSWMark([NSString stringWithFormat:@"cards drawn (%d frames)", frames]);
-        if (hasPic) DMMSWSlReveal(kMSWRevealFade, ^{ DMMSWSMSwitchEnd(toId); });   // (the picture has slid in: the live screen shows through)
-        else DMMSWSlLive(to > from ? 1 : -1, gMSWSMSwV, ^{ DMMSWSMSwitchEnd(toId); });   // (no picture of it: the live desktop, drawn now, slides in)
+        void (^end)(void) = ^{ if (gen == gMSWSMAimGen) DMMSWSMSwitchEnd(toId); };   // (given up on the way -- DMMSWSMAbort --: it ended there)
+        if (hasPic) DMMSWSlReveal(kMSWRevealFade, end);   // (the picture has slid in: the live screen shows through)
+        else DMMSWSlLive(to > from ? 1 : -1, gMSWSMSwV, end);   // (no picture of it: the live desktop, drawn now, slides in)
         DMLog([NSString stringWithFormat:@"[macswitcher] %@ -> %@ (%@, Stage Manager, %@%@): cover%@ %.1f ms, stage asked %.1f ms (%.0f ms after the start), drawn after %d frames (%.0f ms%@); drawn: %@",
             DMMSWDeskName(from), DMMSWDeskName(to), gMSWSMSwWhy, hasPic ? @"picture slide" : @"live slide", gMSWSMSwRedirects ? [NSString stringWithFormat:@", %lu redirect(s)", (unsigned long)gMSWSMSwRedirects] : @"",
             hasPic ? @" + slide" : @"", (gMSWSMSwT1 - gMSWSMSwT0) * 1000, (t3 - t2) * 1000, (t3 - gMSWSMSwT0) * 1000, frames, (t4 - t3) * 1000,

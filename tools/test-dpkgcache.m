@@ -1,6 +1,7 @@
 // test-dpkgcache.m -- Mac test of dpkg's status lookups in common/CrashExplain.h (S-2, 1.3.3): the block search (MSBDPackageFieldIn), the cache keyed
 // on the status file's modification time and size (read once per change), and the main-thread lookup that never reads the file
-// (MSBDPackageVersionNoWait). Run: tools/test-dpkgcache.sh
+// (MSBDPackageVersionNoWait); and DpkgState.h's state rules: a package on the device (MSBDPackageOnDisk) and our own package installed, held
+// or not (MSBDPackageInstalled, the root helper's check; 1.8.7.3, audit M11). Run: tools/test-dpkgcache.sh
 #import <Foundation/Foundation.h>
 #include <utime.h>
 #import "../common/CrashExplain.h"
@@ -83,6 +84,35 @@ int main(void) {
         Check(@"want unknown does not count", !MSBDPackageOnDisk(q, @"e.unknown"), @"YES");
         Check(@"a want word that only starts with hold does not count", !MSBDPackageOnDisk(q, @"e.holdx"), @"YES");
         Check(@"held in the file's last block (no line end after it) counts", MSBDPackageOnDisk(q, @"e.heldlast"), @"NO");
+
+        // ---- our own package for the root helper: installed and set up, held or not (DpkgState.h MSBDPackageInstalled; 1.8.7.3, audit M11) ----
+        Check(@"own: installed counts", MSBDPackageInstalled(q, @"e.inst"), @"NO");
+        Check(@"own: held and installed counts (apt-mark hold: \"hold ok installed\")", MSBDPackageInstalled(q, @"e.held"), @"NO");
+        Check(@"own: held in the file's last block (no line end after it) counts", MSBDPackageInstalled(q, @"e.heldlast"), @"NO");
+        Check(@"own: the Status field's own line, not one inside another field", MSBDPackageInstalled(q, @"e.inst2"), @"NO");
+        Check(@"own: unpacked (its setup not finished) does not count", !MSBDPackageInstalled(q, @"e.unp"), @"YES");
+        Check(@"own: held and unpacked does not count", !MSBDPackageInstalled(q, @"e.heldunp"), @"YES");
+        Check(@"own: half-configured does not count", !MSBDPackageInstalled(q, @"e.half"), @"YES");
+        Check(@"own: triggers-pending does not count", !MSBDPackageInstalled(q, @"e.trp"), @"YES");
+        Check(@"own: triggers-awaited does not count", !MSBDPackageInstalled(q, @"e.tra"), @"YES");
+        Check(@"own: config-files (removed) does not count", !MSBDPackageInstalled(q, @"e.cfg"), @"YES");
+        Check(@"own: held with only its config files does not count", !MSBDPackageInstalled(q, @"e.heldcfg"), @"YES");
+        Check(@"own: marked for removal does not count", !MSBDPackageInstalled(q, @"e.goes"), @"YES");
+        Check(@"own: purged does not count", !MSBDPackageInstalled(q, @"e.purge"), @"YES");
+        Check(@"own: reinstreq does not count", !MSBDPackageInstalled(q, @"e.broken"), @"YES");
+        Check(@"own: held and reinstreq does not count", !MSBDPackageInstalled(q, @"e.heldbroken"), @"YES");
+        Check(@"own: half-installed does not count", !MSBDPackageInstalled(q, @"e.hinst"), @"YES");
+        Check(@"own: held but not installed does not count", !MSBDPackageInstalled(q, @"e.heldnot"), @"YES");
+        Check(@"own: want unknown does not count", !MSBDPackageInstalled(q, @"e.unknown"), @"YES");
+        Check(@"own: a want word that only starts with hold does not count", !MSBDPackageInstalled(q, @"e.holdx"), @"YES");
+        Check(@"own: not in the file does not count", !MSBDPackageInstalled(q, @"e.none"), @"YES");
+        Check(@"own: a name that starts another's does not count for it", !MSBDPackageInstalled(q, @"e.in"), @"YES");
+        Check(@"own: nil text does not count", !MSBDPackageInstalled(nil, @"e.inst"), @"YES");
+        NSString *own = @"Package: com.besiktasliseba.macstatusbaranddock\nStatus: hold ok installed\nVersion: 1.8.7.3\n\n"
+                         "Package: com.x.other\nStatus: install ok installed\nDescription: a tool\n Status: install ok installed\n";
+        Check(@"own: a held MacStatusBar&Dock counts", MSBDPackageInstalled(own, @"com.besiktasliseba.macstatusbaranddock"), @"NO");
+        NSString *gone = @"Package: com.besiktasliseba.macstatusbaranddock\nStatus: deinstall ok config-files\nDescription: x\n Status: install ok installed\n";
+        Check(@"own: a Status line inside the description is not the package's state", !MSBDPackageInstalled(gone, @"com.besiktasliseba.macstatusbaranddock"), @"YES");
         // ---- the cache: read once per change of the file ----
         time_t base = time(NULL) - 1000;
         WriteStatus(@"Package: com.besiktasliseba.macstatusbaranddock\nVersion: 1.3.2\n\nPackage: ellekit\nVersion: 1.1.3\n", base);
