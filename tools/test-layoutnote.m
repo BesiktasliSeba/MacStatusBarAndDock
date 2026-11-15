@@ -37,6 +37,7 @@ static BOOL gMinOnMain = YES;   // (DMSMMinimizedSet asked on the main thread: w
 static NSMutableSet<NSString *> *DMSMMinimizedSetOnMain(void) { if (![NSThread isMainThread]) gMinOnMain = NO; return gMin; }
 #define DMSMMinimizedSet DMSMMinimizedSetOnMain
 static NSMutableDictionary<NSString *, id> *gSMPreZoom;   // (DMSMForgetApp's own: the attributes before full screen)
+static NSMutableDictionary<NSString *, UIView *> *gSMMinPictures;   // (DMSMForgetApp drops the app's minimized windows' pictures too, 1.8.7.5)
 static NSMutableArray<NSString *> *gUnminimized;
 static void DMSMSetMinimized(NSString *key, BOOL on) { if (!on) [gUnminimized addObject:key]; }
 #define DM_FEATURE_MARK(name) do { } while (0)

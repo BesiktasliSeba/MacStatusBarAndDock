@@ -79,9 +79,16 @@ static void DMWinPrevNoteActive(NSString *bundleID, NSString *smKey) {
 // ---- the title bar's frame from before (Fill's and Zoom's way back, TitleBarTap.h): in step with every placement of ours (TitleBarRule.h,
 // review 1.8.3 P4-1) ----
 // On an engine's window or one of ours (kWinZoomKey), and in gSMWinZoom by window key: @[the frame from before, the Fill frame it was kept with], in
-// the frames the window's engine has (Aerial 5.x: its stage).
+// the frames the window's engine has (Aerial 5.x: its stage) -- and a third @YES when the window was behind the Dock then, as the user left it
+// (gSMBehindDock, gBehindDock): Fill and Zoom take that mark as every place of ours does, and Back gives it back with the frame, so the window is
+// behind the Dock as before, also at the next turn (1.8.7.5: Stage Manager's Back put it back lifted above the Dock, DMSMPlanFitted fitting it there).
 static char kWinZoomKey;
-static NSArray<NSValue *> *DMTitleRecordPair(CGRect before, CGRect fill) { return @[[NSValue valueWithCGRect:before], [NSValue valueWithCGRect:fill]]; }
+static NSArray<NSValue *> *DMTitleRecordPair(CGRect before, CGRect fill, BOOL behindDock) {
+    NSArray<NSValue *> *r = @[[NSValue valueWithCGRect:before], [NSValue valueWithCGRect:fill]];
+    return behindDock ? [r arrayByAddingObject:@YES] : r;
+}
+static BOOL DMTitleRecordIs(id r) { return [r isKindOfClass:[NSArray class]] && ([(NSArray *)r count] == 2 || [(NSArray *)r count] == 3); }
+static BOOL DMTitleRecordBehind(NSArray *r) { return DMTitleRecordIs(r) && r.count == 3 && [r[2] isKindOfClass:[NSNumber class]] && [(NSNumber *)r[2] boolValue]; }
 // A move or a resize by hand has ended: the frame from before is from before that move (dropped).
 static void DMTitleRecordMovedView(UIView *v) { if (v) objc_setAssociatedObject(v, &kWinZoomKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
 static BOOL DMTitleRecordSMAny(void) { return gSMWinZoom.count > 0; }
@@ -93,24 +100,28 @@ static void DMTitleRecordMovedSM(NSString *key) {
 // A placement of ours is about to move this window from now to `to`; fill: the Fill frame where it is (the title bar's own Zoom: the zoomed frame,
 // the one its record is kept with -- TitleBarRule.h, 1.8.4.1 item 1). (A setting that keeps no frames: dropped, and nothing read -- every placement
 // of ours passes here.) Placed again at the very frame its record was kept with, while it is there (Center on a zoomed window): kept.
-static void DMTitleRecordView(UIView *v, CGRect now, CGRect to, CGRect fill) {
+// behindDock: the window is behind the Dock now, as the user left it (kept with a record taken now).
+static void DMTitleRecordView(UIView *v, CGRect now, CGRect to, CGRect fill, BOOL behindDock) {
     if (!v) return;
     NSArray<NSValue *> *had = objc_getAssociatedObject(v, &kWinZoomKey);
-    BOOL stays = [had isKindOfClass:[NSArray class]] && had.count == 2 && MSBDWinNear(to, had[1].CGRectValue) && MSBDWinNear(now, had[1].CGRectValue);
+    BOOL stays = DMTitleRecordIs(had) && MSBDWinNear(to, had[1].CGRectValue) && MSBDWinNear(now, had[1].CGRectValue);
     int r = (CGRectIsNull(fill) || CGRectIsNull(to)) ? kMSBDTitleRecordDrop
           : MSBDTitleRecordOnPlaceAt(MSBDTitleKeepsFrames(gTitleDoubleTap), MSBDWinNear(to, fill), MSBDWinNear(now, fill), stays);
-    if (r == kMSBDTitleRecordTake) objc_setAssociatedObject(v, &kWinZoomKey, DMTitleRecordPair(now, fill), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (r == kMSBDTitleRecordTake) objc_setAssociatedObject(v, &kWinZoomKey, DMTitleRecordPair(now, fill, behindDock), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     else if (r == kMSBDTitleRecordDrop) DMTitleRecordMovedView(v);
 }
+// (every placement of ours also takes the window's behind-the-Dock mark, as Stage Manager's places do -- StatusBar.x gBehindDock, 1.8.7.5 --, after its
+//  record has kept it; the green light's way back to where the window was is the user's place: the mark stays)
 static void DMTitleRecordEngineTo(UIView *v, CGRect to) {   // (Aerial, Zetsu, MilkyWay4: the engine's frames)
     if (!v) return;
-    if (!MSBDTitleKeepsFrames(gTitleDoubleTap)) { DMTitleRecordMovedView(v); return; }
-    DMTitleRecordView(v, v.frame, to, DMLayoutFrame(@"fill"));
+    if (!MSBDTitleKeepsFrames(gTitleDoubleTap)) DMTitleRecordMovedView(v);
+    else DMTitleRecordView(v, v.frame, to, DMLayoutFrame(@"fill"), DMBehindDockHas(DMStageBundle(v)));
+    if (!gPreferRememberedFrame) DMBehindDockPlacedByUs(v, @"placed by a layout or a place of ours");
 }
 static void DMTitleRecordNativeTo(DMNativeWindow *w, CGRect to) {   // (our own windows: their Fill in the desktop above the Dock)
     if (!w) return;
     if (!MSBDTitleKeepsFrames(gTitleDoubleTap)) { DMTitleRecordMovedView(w); return; }
-    DMTitleRecordView(w, w.frame, to, DMLayoutFrameInArea(@"fill", DMNativeDesktop(), [UIScreen mainScreen].bounds.size));
+    DMTitleRecordView(w, w.frame, to, DMLayoutFrameInArea(@"fill", DMNativeDesktop(), [UIScreen mainScreen].bounds.size), NO);
 }
 // (Stage Manager: the whole window, title bar included. fill: the stage's Fill, or -- the title bar's own Zoom -- the zoomed frame, as above;
 //  CGRectNull: the stage's Fill)
@@ -122,14 +133,14 @@ static void DMTitleRecordSMAt(NSString *key, id stage, CGRect to, CGRect fill) {
     if (!stage) stage = DMSMStageOf(key);
     if (CGRectIsNull(fill)) { CGSize scr = CGSizeZero; CGRect u = DMSMUsableAreaForStage(stage, &scr); fill = DMSMLayoutFrameIn(@"fill", u, scr); }
     NSArray<NSValue *> *had = gSMWinZoom[key];
-    BOOL stays = now && [had isKindOfClass:[NSArray class]] && had.count == 2 && MSBDWinNear(to, had[1].CGRectValue) && MSBDWinNear(now.CGRectValue, had[1].CGRectValue);
+    BOOL stays = now && DMTitleRecordIs(had) && MSBDWinNear(to, had[1].CGRectValue) && MSBDWinNear(now.CGRectValue, had[1].CGRectValue);
     int r = (!now || CGRectIsNull(to) || CGRectIsNull(fill)) ? kMSBDTitleRecordDrop
           : MSBDTitleRecordOnPlaceAt(YES, MSBDWinNear(to, fill), MSBDWinNear(now.CGRectValue, fill), stays);
     if (r == kMSBDTitleRecordDrop) { [gSMWinZoom removeObjectForKey:key]; return; }
     if (r != kMSBDTitleRecordTake) return;
     DMSMRecordsPrune(gSMWinZoom);
     if (!gSMWinZoom) gSMWinZoom = [NSMutableDictionary dictionary];
-    gSMWinZoom[key] = DMTitleRecordPair(now.CGRectValue, fill);
+    gSMWinZoom[key] = DMTitleRecordPair(now.CGRectValue, fill, DMSMKeySetHas(gSMBehindDock, key));   // (behind the Dock then: Back gives the mark back)
 }
 static void DMTitleRecordSMTo(NSString *key, id stage, CGRect to) { DMTitleRecordSMAt(key, stage, to, CGRectNull); }   // (every placement of ours: the stage's Fill)
 // Stage Manager: a plan of layouts (key -> layout name) or places (key -> frame) about to be applied in a stage, each window as above.
@@ -146,7 +157,7 @@ static void DMTitleRecordSMPlan(NSDictionary *plan, id stage) {
 // and dropped.
 static NSValue *DMTitleRecordHeldView(UIView *v, CGRect now, NSString *who) {
     NSArray<NSValue *> *rec = objc_getAssociatedObject(v, &kWinZoomKey);
-    if (![rec isKindOfClass:[NSArray class]] || rec.count != 2) rec = nil;
+    if (!DMTitleRecordIs(rec)) rec = nil;
     if (MSBDTitleRecordHolds(rec != nil, rec && MSBDWinNear(now, rec[1].CGRectValue))) return rec[0];
     if (rec) {
         objc_setAssociatedObject(v, &kWinZoomKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -156,7 +167,7 @@ static NSValue *DMTitleRecordHeldView(UIView *v, CGRect now, NSString *who) {
 }
 static NSValue *DMTitleRecordHeldSM(NSString *key, CGRect now) {
     NSArray<NSValue *> *rec = key ? gSMWinZoom[key] : nil;
-    if (![rec isKindOfClass:[NSArray class]] || rec.count != 2) rec = nil;
+    if (!DMTitleRecordIs(rec)) rec = nil;
     if (MSBDTitleRecordHolds(rec != nil, rec && MSBDWinNear(now, rec[1].CGRectValue))) return rec[0];
     if (key && gSMWinZoom[key]) {
         [gSMWinZoom removeObjectForKey:key];
@@ -164,6 +175,9 @@ static NSValue *DMTitleRecordHeldSM(NSString *key, CGRect now) {
     }
     return nil;
 }
+// The record a double tap's Back goes with (read before Back drops it): was the window behind the Dock when it was taken?
+static BOOL DMTitleRecordBehindView(UIView *v) { return v && DMTitleRecordBehind(objc_getAssociatedObject(v, &kWinZoomKey)); }
+static BOOL DMTitleRecordBehindSM(NSString *key) { return key.length && DMTitleRecordBehind(gSMWinZoom[key]); }
 
 // ---- Return to Previous Size: the front window back to its frame before it was tiled ----
 static void DMWindowBackFromTile(NSString *why) {

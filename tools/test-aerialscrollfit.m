@@ -26,6 +26,7 @@ static int gKMovedRec, gKCovered, gKSnaps, gKRemembered, gKSaved;
 static void DMTitleRecordMovedView(UIView *v) { gKMovedRec++; }   // (the title bar's frame from before is dropped: no way back by Fill / Zoom)
 static void DMKeepCoveredByHand(UIView *v) { gKCovered++; }
 static void DMSnapMoveEnded(UIView *st) { gKSnaps++; }
+static void DMBehindDockMoveEnded(UIView *st) { (void)st; }   // (a move cut short: behind the Dock or not, 1.8.7.5 -- test-engineturnbehind.sh)
 static void DMRememberStageFrame(UIView *stage) { gKRemembered++; }
 static void DMSaveWindowState(void) { gKSaved++; }
 

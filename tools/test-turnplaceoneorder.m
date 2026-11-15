@@ -25,7 +25,7 @@ static id DMSMWorkingStage(void) { return @"stage"; }
 static NSString *DMSMKeyText(NSString *k) { return k; }
 static id DMSMKeyLookup(NSDictionary *d, NSString *k) { return d[k]; }
 static BOOL DMSMKeySetHas(NSSet *s, NSString *k) { return [s containsObject:k]; }
-static NSMutableDictionary *gSMTurnPlaced; static NSDictionary *gSMFitSlots; static NSSet *gSMFreeWindows;
+static NSMutableDictionary *gSMTurnPlaced; static NSDictionary *gSMFitSlots; static NSSet *gSMFreeWindows; static NSMutableSet *gSMBehindDock;
 static BOOL gFit; static BOOL DMFitEnabled(void) { return gFit; }
 static void Run(NSDictionary<NSString *, NSValue *> *frames, NSDictionary<NSString *, NSString *> *layouts, NSDictionary<NSString *, NSDictionary *> *places, CGSize scr, NSArray **outBack) {
     gFront = @"inuse"; gOneByOne = gWhole = 0; gPlaces = nil; gUsers = nil;
@@ -52,6 +52,12 @@ int main(void) { @autoreleasepool {
     Expect(gWhole == 0 && gOneByOne == 0, @"nothing to move: no request at all");
     Run(@{ @"full": R(0, -24, 1366, 1048), @"tile": R(0, 24, 683, 900) }, @{ @"tile": @"left" }, @{}, scr, NULL);
     Expect(gPlaces[@"full"] == nil && gWhole == 1, @"a full-screen window is not moved");
+    gSMBehindDock = [NSMutableSet setWithObject:@"low"];   // (1.8.7.4 round 2: put behind the Dock by the user, test-smturnbehind)
+    Run(@{ @"low": R(300, 700, 700, 300) }, @{}, @{}, scr, NULL);
+    Expect(gWhole == 0, @"a window the user put behind the Dock, inside the screen, is not moved: its desktop reaches the screen's bottom");
+    gSMBehindDock = nil;
+    Run(@{ @"low": R(300, 700, 700, 300) }, @{}, @{}, scr, NULL);
+    Expect(gWhole == 1 && CGRectGetMaxY([gPlaces[@"low"] CGRectValue]) == CGRectGetMaxY(gArea), @"  ... the same window not behind the Dock is moved above it");
     printf("%s: %d checks, %d failed\n", fails ? "test-turnplaceoneorder FAILED" : "test-turnplaceoneorder: all pass", checks, fails);
     return fails ? 1 : 0;
 } }

@@ -12,6 +12,11 @@ cat > "$R/usr/libexec/sshtoggled" <<EOF
 echo "helper \$*" >> "$W/calls"
 [ "\$1" = "--is-ipad" ] && exit \$(cat "$W/ipad-rc")
 [ "\$1" = "--quit-set-kept" ] && exit \$(cat "$W/kept-rc" 2>/dev/null || echo 0)
+if [ "\$1" = "--quit-set-copy" ]; then   # (the helper's CopyQuitSetForDasd, as tools/test-mobilereads.sh runs it: a plain file only, one there kept)
+    QS="$R/var/mobile/Library/Preferences/MacStatusBarAndDock-PrewarmQuitSet.plist"; QP="$R/var/mobile/Library/Preferences/com.besiktasliseba.macstatusbar.prewarm.plist"
+    [ -e "$W/copy-nothing" ] || [ -e "\$QS" ] || [ -L "\$QS" ] || { [ -f "\$QP" ] && [ ! -L "\$QP" ] && cp "\$QP" "\$QS"; }
+    exit 0
+fi
 [ "\$1" = "--dasd-part-current" ] && exit \$(cat "$W/dasd-rc" 2>/dev/null || echo 1)
 exit 0
 EOF
@@ -90,6 +95,17 @@ rm -f "$QS"; echo 0 > "$W/kept-rc"; chmod -x "$R/usr/libexec/sshtoggled"; "$W/po
 qs "quit set: no helper to ask: no file made" '[ ! -e "$QS" ]'
 : > "$W/calls"; "$W/postinst" configure 1.7.0 >/dev/null 2>&1
 qs "quit set: the helper says a set is kept: the file made" 'cmp -s "$QP" "$QS" && grep -q -- "--quit-set-kept" "$W/calls"'
+# (1.8.7.5, audit L22 of 1.8.7.2: the postinst's own cp ran as root, so a link planted at the set's file was followed and the file it named copied
+#  where mobile reads it. The copy is the helper's now, as mobile, a plain file only: the postinst reads nothing of mobile's itself)
+SECRET="$W/root-only.txt"; printf 'not for mobile' > "$SECRET"; chmod 600 "$SECRET"
+rm -f "$QS" "$QP"; ln -s "$SECRET" "$QP"; : > "$W/copy-nothing"; echo 0 > "$W/kept-rc"; : > "$W/calls"; "$W/postinst" configure 1.7.0 >/dev/null 2>&1
+qs "quit set: the set's file a link to a root-only file: the postinst copies nothing itself" '[ ! -e "$QS" ] && [ ! -L "$QS" ]'
+qs "  ... the helper is asked to copy, once, after it said a set is kept, before dasd's check" \
+  '[ "$(grep -c -- "^helper --quit-set-copy$" "$W/calls")" = 1 ] && awk "/--quit-set-kept/{k=NR} /--quit-set-copy/{c=NR} /--dasd-part-current/{d=NR} END{exit !(k && c > k && d > c)}" "$W/calls"'
+rm -f "$W/copy-nothing" "$QP"
+for rc in 1 139; do echo $rc > "$W/kept-rc"; : > "$W/calls"; "$W/postinst" configure 1.7.0 >/dev/null 2>&1; grep -q -- "--quit-set-copy" "$W/calls" && break; done
+qs "  ... never asked where no set is kept or the helper could not answer" '! grep -q -- "--quit-set-copy" "$W/calls"'
+qs "  ... the postinst has no copy of mobile's file of its own (no cp, no read of the set's file)" '! grep -q "cp \"\$QP\"\|com.besiktasliseba.macstatusbar.prewarm.plist" layout/DEBIAN/postinst'
 # dasd (1.7.2 item 8): restarted only when it lacks the prewarm block just installed -- the helper answers from the block's start stamp; any other
 # answer, or no helper, restarts it as every install did before. The pointer process is restarted every time (unchanged).
 echo 0 > "$W/ipad-rc"; echo 0 > "$W/kept-rc"

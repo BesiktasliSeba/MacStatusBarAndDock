@@ -5,7 +5,11 @@
 // that name. With --name <folder> / --da <disk> <mount point> it reads a mounted image's name / runs ejecthelper/DAEject.h's eject against it
 // (tools/test-driveeject.sh, MSBD_LIVE_DA=1).
 #import <Foundation/Foundation.h>
+#ifdef DE_HEADER   // (test-driveeject.sh: another copy of DriveEject.h -- a made-to-fail copy, or the code before a fix)
+#include DE_HEADER
+#else
 #include "../common/DriveEject.h"
+#endif
 #include "../ejecthelper/DAEject.h"
 
 static int fails = 0, checks = 0;
@@ -16,8 +20,23 @@ static NSString *const kRID = @"0123456789abcdef0123456789abcdef";
 static NSString *const kVol = @"/var/mobile/Library/LiveFiles/com.apple.filesystems.userfsd/5D3A6E1C-0B7F-4C2B-9E61-2A8F0C1D4E77";
 static NSDictionary *Req(id rid, id vol, id at) { NSMutableDictionary *d = [NSMutableDictionary dictionary]; if (rid) d[@"id"] = rid; if (vol) d[@"volume"] = vol; if (at) d[@"at"] = at; return d; }
 
+// The pipes a process started from here now (posix_spawn with no file actions: what an exec of this process would carry) has open above fd 2.
+static int InheritedPipes(const char *self) {
+    extern char **environ;
+    char *args[] = { (char *)self, "--count-pipes", NULL };
+    pid_t pid; int st = 0;
+    if (posix_spawn(&pid, self, NULL, NULL, args, environ) != 0) return -1;
+    while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+    return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+}
+
 int main(int argc, char **argv) {
     @autoreleasepool {
+        if (argc == 2 && !strcmp(argv[1], "--count-pipes")) {   // (the child of InheritedPipes: its pipes above fd 2, as its exit code)
+            int n = 0; struct stat st;
+            for (int fd = 3; fd < 256; fd++) if (fstat(fd, &st) == 0 && S_ISFIFO(st.st_mode)) n++;
+            return n;
+        }
         if (argc == 3 && !strcmp(argv[1], "--name")) {   // (the live run: what Finder would call the volume mounted there)
             struct statfs fs; if (statfs(argv[2], &fs) != 0) return 1;
             printf("%s\n", MSBDDriveName([NSString stringWithUTF8String:fs.f_mntonname], [NSString stringWithUTF8String:fs.f_mntfromname], MSBDDriveVolumeLabel(fs.f_mntonname)).UTF8String);
@@ -185,6 +204,34 @@ int main(int argc, char **argv) {
         rc = MSBDRunHelperTimed("/bin/sh", closer, 0.5, &out, &status, &late);
         took = CFAbsoluteTimeGetCurrent() - t0;
         ok([NSString stringWithFormat:@"one that closes its output but goes on running is stopped too (%.2f s)", took], rc == 0 && late && took < 3.0);
+        // the pipe's ends are close-on-exec here (audit L80 of 1.8.7.2): an exec of this process while a helper runs -- the root helper starting over
+        // after a cfprefsd restart -- carried the read end into its new image. Looked at from a process started meanwhile, which gets what an exec would.
+        int pipesBefore = InheritedPipes(argv[0]);
+        __block int pipesDuring = -2; __block NSString *during = nil;
+        dispatch_semaphore_t ran = dispatch_semaphore_create(0);
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+            char *wait[] = { "/bin/sh", "-c", "sleep 1; echo done", NULL };
+            NSData *o = nil; int s = -1; BOOL l = NO;
+            int r = MSBDRunHelperTimed("/bin/sh", wait, 5.0, &o, &s, &l);
+            during = MSBDEjectHelperAnswer(r, o, l);
+            dispatch_semaphore_signal(ran);
+        });
+        usleep(400000);
+        pipesDuring = InheritedPipes(argv[0]);
+        dispatch_semaphore_wait(ran, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC));
+        ok([NSString stringWithFormat:@"while a helper runs, a process started from here (as an exec would) gets none of its pipe (pipes: %d before, %d during)", pipesBefore, pipesDuring],
+           pipesBefore == 0 && pipesDuring == 0);
+        eqs(@"  ... and the helper's output still comes through the pipe", during, @"done");
+        pid_t fk = fork();   // (a caller with stdin and stdout closed: the pipe's ends would be fd 0 and 1, and a dup2 of fd 1 onto itself keeps close-on-exec)
+        if (fk == 0) {
+            close(0); close(1);
+            char *say[] = { "/bin/sh", "-c", "echo ok", NULL };
+            NSData *o = nil; int s = -1; BOOL l = NO;
+            int r = MSBDRunHelperTimed("/bin/sh", say, 5.0, &o, &s, &l);
+            _exit([MSBDEjectHelperAnswer(r, o, l) isEqualToString:@"ok"] ? 0 : 1);
+        }
+        int fst = -1; while (fk > 0 && waitpid(fk, &fst, 0) < 0 && errno == EINTR) {}
+        ok(@"  ... also for a caller whose stdin and stdout are closed: the helper's output comes through", fk > 0 && WIFEXITED(fst) && WEXITSTATUS(fst) == 0);
         rc = MSBDRunHelperTimed("/nonexistent/msbdeject", quick, 5.0, &out, &status, &late);
         ok(@"a helper that is not there: posix_spawn's error, no answer, no status", rc != 0 && out == nil && status == -1 && !late);
         eqs(@"  ... said as such", MSBDEjectHelperAnswer(rc, out, late), [NSString stringWithFormat:@"error: the eject helper couldn’t be started (%d)", rc]);

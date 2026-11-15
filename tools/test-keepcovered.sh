@@ -44,7 +44,7 @@ check "  ... a kept window handled by hand is an ordinary one again (review 1.8.
   "grep -qF 'static void DMKeepCoveredByHand(UIView *v);' $S && fn 'static void DMKeepCoveredByHand(UIView *v) {' $K && has 'if (!gKeepCoveredInFront || !gDMKeptAbove.count) return;' \
    && has 'for (; v; v = v.superview) if ([gDMKeptAbove containsObject:v]) { DMKeepCoveredForget(); return; }' \
    && fn 'static void DMTitleRecordHandEnded(UIView *v, UIGestureRecognizerState s) {' $S && has 'if (s == UIGestureRecognizerStateEnded || s == UIGestureRecognizerStateCancelled) { DMTitleRecordMovedView(v); DMKeepCoveredByHand(v); }' \
-   && fn 'static void DMSnapMoveEnded(UIView *st) {' $S && before 'DMTitleRecordMovedView(st);' 'DMKeepCoveredByHand(st);' && before 'DMKeepCoveredByHand(st);' 'if (!st ||' \
+   && fn 'static void DMSnapMoveEnded(UIView *st) {' $S && before 'DMTitleRecordMovedView(st);' 'DMKeepCoveredByHand(st);' && before 'DMKeepCoveredByHand(st);' 'if (!snaps ||' \
    && grep -A3 -F 'moved by hand %@ -> %@: remembered, no longer tiled' $S | grep -qF 'DMKeepCoveredByHand(w);' \
    && fn '- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldReceiveTouch:(UITouch *)touch {' $T && before 'if (!DMTitleTapOnBar(g, touch)) return NO;' 'DMKeepCoveredByHand(g.view);' \
    && before 'DMKeepCoveredByHand(g.view);' 'if ([v isKindOfClass:[UIControl class]]) return NO;' && sed -n '\$p' \$W/fn | grep -q '^}' \

@@ -1477,8 +1477,7 @@ static NSMutableArray *MSBComposeGroupFooters(NSArray *specs) {
 		// (the helper applies engine exclusivity for the new style before the respring: in stock mode the chosen engine loads even with windowing
 		// switched off in Mac mode, and back in Mac mode that switch counts again -- sshtoggled ChosenEngine)
 		if (MSBDGateWanted() && access("/var/jb/usr/libexec/sshtoggled", X_OK) == 0) notify_post("com.besiktasliseba.msb.engines.apply");
-		int guardAction = MSBDGuardAction();   // (back to Mac after the crash guard picked Stock: its note goes, as a switch change ends it; LineSwitch.h)
-		if (!on && !MSBDSafeMode() && ((MSBDVersionTested() && guardAction == 1) || (guardAction == 4 && !MSBDStepPartsOff(MSBDCrashRecord())))) {
+		if (!on && MSBDGuardNoteEndsOnChange()) {   // (back to Mac after the crash guard picked Stock: its note goes, as a switch change ends it; LineSwitch.h)
 			CFPreferencesSetValue(CFSTR(MSBD_GUARD_ACTION_KEY), NULL, MSBD_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
 			CFPreferencesSynchronize(MSBD_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
 		}
@@ -1486,8 +1485,14 @@ static NSMutableArray *MSBComposeGroupFooters(NSArray *specs) {
 		return;
 	}
 	if ([[specifier propertyForKey:@"key"] isEqual:@(kMSBDMenuBarSizeKey)]) {   // Small / Medium / Large from the picker page: 0 / 1 / 2
-		int size = [value respondsToSelector:@selector(doubleValue)] ? MSBDMenuBarSizeFrom(1, [value doubleValue]) : MSBDMenuBarSmall;
-		if (size == MSBMenuBarSizeStored()) return;   // the size in force tapped again
+		int size = [value respondsToSelector:@selector(doubleValue)] ? MSBDMenuBarSizeFrom(1, [value doubleValue]) : MSBDMenuBarSmall, before = MSBMenuBarSizeStored();
+		if (size == before) return;   // the size in force tapped again
+		// (the crash guard, 1.8.7.5, audit L62 of 1.8.7.2: a larger size is noted as the size's "on", so a bar that crashes SpringBoard right after the
+		//  pick is set back to Small -- step 1 writes false, read as Small, common/CrashGuard.h; before, nothing was noted and the guard went to safe
+		//  mode. Back to Small takes the note out; a smaller size that is not Small keeps it)
+		if (size > before) MSBDNoteSwitch(@"com.besiktasliseba.macstatusbar", @kMSBDMenuBarSizeKey, @"Menu Bar Size", NO, YES);
+		else if (size == MSBDMenuBarSmall) MSBDNoteSwitch(@"com.besiktasliseba.macstatusbar", @kMSBDMenuBarSizeKey, @"Menu Bar Size", YES, NO);
+		[self msbd_guardNoteMaybeGone];   // (a note that ended so takes its footer and button off the page, as for a switch: LineSwitch.h)
 		[super setPreferenceValue:@(size) specifier:specifier];
 		[self msb_menuBarSizeChanged:size];
 		return;

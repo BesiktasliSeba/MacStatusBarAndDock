@@ -2,7 +2,7 @@
 
 Every switch MacStatusBar&Dock adds, where to find it, what it does, and how it starts on a new install. An update keeps the values you had. "Respring" means the change takes effect after a respring, and Settings offers one.
 
-On an iPadOS version that hasn't been tested, the top of the Status Bar and Dock pages shows **Enable Anyway** (off), which lets the tweak run at your own risk. After Automatic Crash Recovery has acted, the same place says what it turned off, with **Turn Back On** and **Report a Problem**.
+On an iPadOS version that hasn't been tested, the top of the Status Bar and Dock pages shows **Enable Anyway** (off), which lets the tweak run at your own risk. After Automatic Crash Recovery has acted, the same place says what it turned off or set back, with **Turn Back On** and **Report a Problem**.
 
 On iPadOS 18, Settings has no room for tweak rows in its sidebar, so Status Bar, Desktop, Windows & Multitasking and Dock are in a MacStatusBar&Dock group at the top of Settings > General, together with the sidebar rows further down this page.
 
@@ -29,7 +29,7 @@ On iPadOS 18, Settings has no room for tweak rows in its sidebar, so Status Bar,
 | Activity Monitor > Show in App Library | Activity Monitor as an app in the App Library, in its Utilities category and its search. A tap opens the Activity Monitor window, and Add to Dock in its menu puts it in the Dock. Off also takes it out of the Dock, and on puts it back. | On |
 | Report a Problem | Opens a filled-in GitHub issue in your browser. The report is part of the link, so GitHub receives it when the page opens. It is only posted if you submit it. | |
 | Background | Automatic: a color behind the menu bar, unless ColorBar15 already colors it. Also Always On or Off. | Automatic |
-| Color and opacity | The background color, used while the menu bar text is light. | 70% |
+| Color and opacity | The background color. A light color turns the menu bar's text and icons dark, as on a Mac, unless its opacity is too low to make the bar light. A dark color is used while the text is light, and a light background goes behind dark text. | 70% |
 | Control Center Style | Which Control Center opens. Mac: a Control Center like the Mac's, with Airplane Mode, Wi-Fi and Bluetooth (with pages for networks and devices), Display and Sound sliders (Sound's page has a volume for each app) and Now Playing above your other controls. On iPadOS 18, + and the power button sit at its top, Display's page has Dark Mode, Night Shift and True Tone, and Mac has its own list of controls, made once from yours, so iPadOS's own list isn't changed. Mac needs Status Bar Style Mac, and with it the menu bar's Control Center icon shows also while Battery Menu is off. iPadOS: Apple's own. BigSurCenter: while it's installed, with a GET button on iPadOS 15 and 16 while it isn't. Only the chosen one loads, and a switch to or from BigSurCenter takes a respring. | BigSurCenter if it's installed, else iPadOS |
 | Hide Grabber (with Control Center Style iPadOS) | Hides the short line at the top right of Control Center. | On |
 | Control Center size (with Mac or BigSurCenter) | How large Control Center opens. With Mac on iPadOS 18 it doesn't resize it yet. Not shown with Status Bar Style Stock. | 100% with Mac, 82% with BigSurCenter |

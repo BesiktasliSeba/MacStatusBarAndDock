@@ -179,13 +179,21 @@ static NSString *MSBDSafeModeFooter(void) {
 	if (action == 1 || action == 4) return MSBDGuardExplanation(action, NO, NO);   // (4: step 1b, only what crashed went off, CrashStep.h)
 	return nil;
 }
+// Does a change on the pages end the crash guard's note? Step 1's on 15/16, step 1b's on any version (it names the switch, not Enable Anyway); never
+// in safe mode, and never while a part is no longer loaded (its record names it, CrashExplain.h: that note has "Turn Back On", and ending it would
+// load the part again at the next start unannounced -- for step 1's note too since 1.8.7.5, audit L104 of 1.8.7.2). The switches' rule here and
+// the Mac / Stock picker's (MSBRootListController.m).
+static BOOL MSBDGuardNoteEndsOnChange(void) {
+	int guardAction = MSBDGuardAction();
+	if (MSBDSafeMode() || !((MSBDVersionTested() && guardAction == 1) || guardAction == 4)) return NO;
+	return !MSBDGuardPartsOffFor(guardAction);
+}
 // The crash guard's note of a feature switch turned on on this page: the time, its domain, key and row title (what the guard's explanation names).
 // Turned off, it is taken out; entries older than 10 min go (the guard only looks 2 min back). On 15/16 a change also ends the guard's "features
 // turned off" note (step 1).
 static void MSBDNoteSwitch(NSString *domain, NSString *key, NSString *title, BOOL was, BOOL on) {
 	if (on == was || ![domain isKindOfClass:[NSString class]] || ![key isKindOfClass:[NSString class]] || ![domain hasPrefix:@"com.besiktasliseba."] || !key.length) return;
-	int guardAction = MSBDGuardAction();   // (step 1b's note goes the same way, unless a part is no longer loaded: that one has "Turn Back On")
-	if (!MSBDSafeMode() && ((MSBDVersionTested() && guardAction == 1) || (guardAction == 4 && !MSBDStepPartsOff(MSBDCrashRecord())))) {   // (step 1b's note on any version: it names the switch, not Enable Anyway)
+	if (MSBDGuardNoteEndsOnChange()) {   // (step 1b's note goes the same way, unless a part is no longer loaded: that one has "Turn Back On")
 		CFPreferencesSetValue(CFSTR(MSBD_GUARD_ACTION_KEY), NULL, MSBD_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
 		CFPreferencesSynchronize(MSBD_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
 	}
@@ -263,7 +271,7 @@ static void MSBDOpenReport(NSURL *url) {
 		PSSpecifier *button = [PSSpecifier preferenceSpecifierNamed:@"Turn Back On" target:self set:NULL get:NULL detail:Nil cell:PSButtonCell edit:Nil]; \
 		button.identifier = @"MSBD_SAFE_ON"; \
 		button.buttonAction = @selector(msbd_leaveSafeMode:); \
-		if (!MSBDSafeMode()) return MSBDStepPartsOff(MSBDCrashRecord()) && MSBDGuardAction() == 4 ? @[group, button, [self msbd_reportButton]] : @[group, [self msbd_reportButton]];   /* (step 1b: a part is no longer loaded) */ \
+		if (!MSBDSafeMode()) return MSBDGuardPartsOffFor(MSBDGuardAction()) ? @[group, button, [self msbd_reportButton]] : @[group, [self msbd_reportButton]];   /* (a part is no longer loaded: step 1b's note, or step 1's after it) */ \
 		return @[group, button, [self msbd_reportButton]]; \
 	} \
 	PSSpecifier *group = [PSSpecifier groupSpecifierWithID:@"MSBD_UNTESTED_GROUP"]; \
@@ -309,6 +317,11 @@ static void MSBDOpenReport(NSURL *url) {
 	if (specifier.cellType != PSSwitchCell) return; \
 	NSString *noteTitle = [specifier propertyForKey:@"msbGuardTitle"] ?: specifier.name;   /* (a row whose title alone says little, "Safari": the plist names it fully) */ \
 	MSBDNoteSwitch([specifier propertyForKey:@"defaults"], [specifier propertyForKey:@"key"], [[specifier propertyForKey:@"msbInvert"] boolValue] ? nil : noteTitle, [[self readPreferenceValue:specifier] boolValue], [value boolValue]); \
+	[self msbd_guardNoteMaybeGone]; \
+} \
+/* After MSBDNoteSwitch (a switch cell's above, or a row noted as one: Menu Bar Size, MSBRootListController.m -- 1.8.7.5, review of audit L62): */ \
+/* a crash guard note the change ended takes its footer and Report a Problem off the page at once. */ \
+- (void)msbd_guardNoteMaybeGone { \
 	__weak typeof(self) weakSelf = self;   /* (the guard's note just went: its footer and button go too) */ \
 	if (MSBDVersionTested() && [self specifierForID:@"MSBD_SAFE_GROUP"] && !MSBDSafeModeFooter()) \
 		dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf removeSpecifierID:@"MSBD_GUARD_REPORT" animated:YES]; [weakSelf removeSpecifierID:@"MSBD_SAFE_GROUP" animated:YES]; }); \

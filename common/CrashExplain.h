@@ -82,13 +82,22 @@ static inline NSString *MSBDQuotedList(NSArray<NSString *> *names) {
     if (q.count < 2) return q.firstObject ?: @"";
     return [NSString stringWithFormat:@"%@ and %@", [[q subarrayWithRange:NSMakeRange(0, q.count - 1)] componentsJoinedByString:@", "], q.lastObject];
 }
-// The row titles of the switches the guard turned off (its record, when it matches `action`).
+// Menu Bar Size (a domain and key of the record: a step 1 "switch" line, noted since 1.8.7.5, audit L62; a step 1b "feature" line): no switch, a
+// size -- the guard set it back to Small (false, read as Small: common/MenuBarSize.h), and its words say so, not "turned on ... turned off" (the
+// review of 1.8.7.5).
+static inline BOOL MSBDGuardIsMenuBarSize(NSArray *line) { return line.count > 1 && [line[0] isEqual:@MSBD_DISP_MSB_DOMAIN] && [line[1] isEqual:@kMSBDMenuBarSizeKey]; }
+static inline BOOL MSBDGuardSetSizeBack(NSDictionary *record, int action) {
+    if ([record[@"action"] intValue] != action) return NO;
+    for (NSArray *s in record[action == 4 ? @"features" : @"switches"]) if (MSBDGuardIsMenuBarSize(s)) return YES;
+    return NO;
+}
+// The row titles of the switches the guard turned off (its record, when it matches `action`); Menu Bar Size is not one (MSBDGuardSetSizeBack).
 static inline NSArray<NSString *> *MSBDGuardSwitchTitles(NSDictionary *record, int action) {
     NSMutableArray *titles = [NSMutableArray array];
     if ([record[@"action"] intValue] != action) return titles;
     for (NSArray *s in record[@"switches"]) {
         NSString *t = s[2];
-        if (t.length && ![titles containsObject:t]) [titles addObject:t];
+        if (t.length && !MSBDGuardIsMenuBarSize(s) && ![titles containsObject:t]) [titles addObject:t];
     }
     return titles;
 }
@@ -110,6 +119,7 @@ static inline NSString *MSBDStepSentence(NSDictionary *record) {
     for (NSArray *f in record[@"features"]) {
         if (![wheres containsObject:f[4]]) [wheres addObject:f[4]];
         [clauses addObject:MSBDStepIsStockBar(f) ? @"the stock status bar is used for now" : MSBDStepIsStockCC(f) ? @"iPadOS's Control Center is used for now"
+            : MSBDGuardIsMenuBarSize(f) ? @"Menu Bar Size was set back to Small"
             : [NSString stringWithFormat:@"“%@” was turned %@", f[3], [f[2] intValue] ? @"on" : @"off"]];
     }
     for (NSArray *p in record[@"parts"]) {
@@ -123,7 +133,16 @@ static inline NSString *MSBDStepSentence(NSDictionary *record) {
     };
     return [NSString stringWithFormat:@"SpringBoard crashed %@ in %@, so %@.", [record[@"again"] boolValue] ? @"again" : @"twice", and(wheres), and(clauses)];
 }
-static inline BOOL MSBDStepPartsOff(NSDictionary *record) { return [record[@"action"] intValue] == 4 && [record[@"parts"] count] > 0; }
+// A part is no longer loaded: the record's "part" lines, whatever the action (1.8.7.5, audit L104 of 1.8.7.2: step 1's record names the parts an
+// earlier step 1b left unloaded). MSBDGuardPartsOffFor: so for the guard's note `action` now (its record is that note's).
+static inline BOOL MSBDStepPartsOff(NSDictionary *record) { return [record[@"parts"] count] > 0; }
+static inline BOOL MSBDGuardPartsOffFor(int action) { NSDictionary *r = MSBDCrashRecord(); return action && [r[@"action"] intValue] == action && MSBDStepPartsOff(r); }
+// What those parts are, in the record's words, each once: "the Dock", "audio mixing".
+static inline NSArray<NSString *> *MSBDStepPartsWhat(NSDictionary *record) {
+    NSMutableArray *whats = [NSMutableArray array];
+    for (NSArray *p in record[@"parts"]) if (![whats containsObject:p[2]]) [whats addObject:p[2]];
+    return whats;
+}
 static inline BOOL MSBDStepOnlyStockBar(NSDictionary *record) {
     if ([record[@"parts"] count] || ![record[@"features"] count]) return NO;
     for (NSArray *f in record[@"features"]) if (!MSBDStepIsStockBar(f)) return NO;
@@ -146,11 +165,25 @@ static inline NSString *MSBDGuardExplanation(int action, BOOL untested, BOOL for
         return [what stringByAppendingString:next];
     }
     if (action == 1) {
-        NSArray *titles = MSBDGuardSwitchTitles(MSBDCrashRecord(), 1);
-        NSString *what = MSBDGuardUntitledSwitch(MSBDCrashRecord(), 1) ? @"The settings you changed last were undone after SpringBoard crashed twice."
+        NSDictionary *r = MSBDCrashRecord();
+        NSArray *titles = MSBDGuardSwitchTitles(r, 1);
+        BOOL size = MSBDGuardSetSizeBack(r, 1);   // (a larger Menu Bar Size picked: set back to Small, said so)
+        NSString *what = MSBDGuardUntitledSwitch(r, 1) ? @"The settings you changed last were undone after SpringBoard crashed twice."
+            : titles.count && size
+            ? [NSString stringWithFormat:@"SpringBoard crashed twice after %@ %@ turned on and a larger Menu Bar Size was picked, so %@ %@ turned off and Menu Bar Size was set back to Small.",
+               MSBDQuotedList(titles), titles.count > 1 ? @"were" : @"was", MSBDQuotedList(titles), titles.count > 1 ? @"were" : @"was"]
+            : size ? @"SpringBoard crashed twice after a larger Menu Bar Size was picked, so it was set back to Small."
             : titles.count
             ? [NSString stringWithFormat:@"SpringBoard crashed twice after %@ %@ turned on, so %@ turned off.", MSBDQuotedList(titles), titles.count > 1 ? @"were" : @"was", titles.count > 1 ? @"they were" : @"it was"]
             : @"The features you turned on last were turned off after SpringBoard crashed twice.";
+        // (1.8.7.5, audit L104: a part an earlier step 1b stopped loading stays off under this note: said, with step 1b's way back)
+        if ([r[@"action"] intValue] == 1 && MSBDStepPartsOff(r)) {
+            NSArray *whats = MSBDStepPartsWhat(r);
+            NSString *list = whats.count < 2 ? whats.firstObject : [NSString stringWithFormat:@"%@ and %@", [[whats subarrayWithRange:NSMakeRange(0, whats.count - 1)] componentsJoinedByString:@", "], whats.lastObject];
+            what = [what stringByAppendingFormat:@" After an earlier crash, %@ %@ still turned off.", list, whats.count > 1 ? @"are" : @"is"];
+            return [what stringByAppendingString:untested ? (forAlert ? @" To try again, turn Enable Anyway off and on in Settings." : @" Turn Enable Anyway off and on to try again, or tap Report a Problem.")
+                                                          : (forAlert ? @" To try again, tap Turn Back On in Settings." : @" Tap Turn Back On to try again, or Report a Problem.")];
+        }
         return [what stringByAppendingString:forAlert ? @" If this keeps happening, tap Report a Problem in Settings." : @" If this keeps happening, tap Report a Problem."];
     }
     NSString *what = action == 3 ? @"MacStatusBar&Dock was turned off because SpringBoard kept crashing." : @"MacStatusBar&Dock was turned off after SpringBoard crashed twice.";
@@ -161,11 +194,15 @@ static inline NSString *MSBDGuardAlertTitle(int action) {
     if (action == 4) {
         NSDictionary *r = MSBDCrashRecord();
         if (MSBDStepOnlyStockBar(r)) return @"Stock Status Bar in Use";
+        if ([r[@"features"] count] + [r[@"parts"] count] == 1 && MSBDGuardSetSizeBack(r, 4)) return @"Menu Bar Size Set Back";
         return [r[@"features"] count] + [r[@"parts"] count] > 1 ? @"Features Turned Off" : @"Feature Turned Off";
     }
     if (action != 1) return @"MacStatusBar&Dock Turned Off";
     if (MSBDGuardUntitledSwitch(MSBDCrashRecord(), 1)) return @"Settings Undone";
-    return MSBDGuardSwitchTitles(MSBDCrashRecord(), 1).count > 1 ? @"Features Turned Off" : @"Feature Turned Off";
+    NSDictionary *r = MSBDCrashRecord();   // (a part still off from an earlier crash counts too: L104; Menu Bar Size set back is one thing too)
+    NSUInteger things = MSBDGuardSwitchTitles(r, 1).count + ([r[@"action"] intValue] == 1 ? [r[@"parts"] count] : 0);
+    if (MSBDGuardSetSizeBack(r, 1)) return things ? @"Features Turned Off" : @"Menu Bar Size Set Back";
+    return things > 1 ? @"Features Turned Off" : @"Feature Turned Off";
 }
 
 // ---- Report a Problem --------------------------------------------------------------------------------------------------------------------------
@@ -298,12 +335,17 @@ static inline NSString *MSBDGuardActionWords(NSDictionary *record) {
     int action = [record[@"action"] intValue];
     if (action == 1) {
         NSArray *titles = MSBDGuardSwitchTitles(record, 1);
-        return titles.count ? [NSString stringWithFormat:@"turned off %@", MSBDQuotedList(titles)] : @"turned off the switches turned on last";
+        BOOL size = MSBDGuardSetSizeBack(record, 1);
+        NSMutableString *words = [(titles.count ? [NSString stringWithFormat:@"turned off %@%@", MSBDQuotedList(titles), size ? @", set Menu Bar Size back to Small" : @""]
+                                   : size ? @"set Menu Bar Size back to Small" : @"turned off the switches turned on last") mutableCopy];
+        for (NSArray *p in record[@"parts"]) [words appendFormat:@", still not loading %@ (%@)", p[2], p[0]];   // (from an earlier step 1b: L104)
+        return words;
     }
     if (action == 4) {   // (step 1b: "turned off “Mac-Style Banners”", "switched to the stock status bar", "stopped loading the Dock (DockMagnification)")
         NSMutableArray *done = [NSMutableArray array];
         for (NSArray *f in record[@"features"])
             [done addObject:MSBDStepIsStockBar(f) ? @"switched to the stock status bar" : MSBDStepIsStockCC(f) ? @"switched to iPadOS's Control Center"
+                : MSBDGuardIsMenuBarSize(f) ? @"set Menu Bar Size back to Small"
                 : [NSString stringWithFormat:@"turned %@ “%@”", [f[2] intValue] ? @"on" : @"off", f[3]]];
         for (NSArray *p in record[@"parts"]) [done addObject:[NSString stringWithFormat:@"stopped loading %@ (%@)", p[2], p[0]]];
         return [NSString stringWithFormat:@"%@ (only what crashed)", done.count ? [done componentsJoinedByString:@", "] : @"turned off what crashed"];

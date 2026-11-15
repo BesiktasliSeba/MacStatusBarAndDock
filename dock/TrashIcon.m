@@ -229,6 +229,7 @@ extern UITargetedPreview *MSBDDockSideIconPreview(UIView *icon, UIImage *picture
 @property (nonatomic) NSUInteger count;      // items in Finder's Trash (its published state)
 @property (nonatomic) BOOL eject, hover;     // a drag of drives under way / a drag over the bin
 @property (nonatomic, strong) id pendingIcon;   // an app dropped on the bin by SpringBoard's own icon drag: leaves the Dock once that drag has ended
+@property (nonatomic) BOOL pendingEndsEditing;   // (1.8.7.5) that drag turned Edit Home Screen on: it ends after the removal
 @property (nonatomic, strong) NSMutableDictionary *themePics;   // (1.7.5) the app-icon pictures asked for: "w|h|generation|full" -> picture
 - (void)tapped;
 - (void)dm_refreshLook:(BOOL)animated;
@@ -237,6 +238,8 @@ extern UITargetedPreview *MSBDDockSideIconPreview(UIView *icon, UIImage *picture
 extern BOOL DMTrashRemoveIconFromDock(id icon);           // (Dock.x: Remove from Dock, the app to the Home Screen)
 extern BOOL DMTrashIconDragInfo(id session, MSBDTrashIconDrag *info, id *icon);   // (Dock.x: what SpringBoard's icon drag carries)
 extern BOOL DMDockAppsCanLeave(void);   // (Dock.x: the Dock part on, so an app can leave it -- the removal's own test, so the bin takes no drop it refuses)
+extern BOOL DMTrashDragTurnedEditingOn(id session);   // (Dock.x, 1.8.7.5: the drag behind this drop turned Edit Home Screen on)
+extern void DMTrashEndDragEditing(void);              // (Dock.x, 1.8.7.5: Edit Home Screen off, SpringBoard's own switch)
 
 static NSUInteger DMTrashPublishedCount(void) {
     static int token = 0;
@@ -377,6 +380,7 @@ static NSUInteger DMTrashPublishedCount(void) {
     DM_FEATURE_MARK("dock-trash-remove-from-dock");
     MSBDTrashIconDrag info = {0}; id icon = nil;
     if (DMTrashIconDragInfo(session, &info, &icon) && MSBDTrashRemovesFromDock(info) && DMDockAppsCanLeave()) self.pendingIcon = icon;
+    self.pendingEndsEditing = self.pendingIcon && DMTrashDragTurnedEditingOn(session);   // (read now: the drag session goes with the drop)
     DMLog([NSString stringWithFormat:@"[trash] an app was dropped on the bin: %@", self.pendingIcon ? @"it leaves the Dock when SpringBoard's drag has ended" : @"not one that can leave the Dock"]);
 }
 // (the app's picture goes into the bin: it shrinks into it -- a fade with Reduce Motion)
@@ -389,12 +393,14 @@ static NSUInteger DMTrashPublishedCount(void) {
 - (void)dropInteraction:(UIDropInteraction *)interaction sessionDidEnd:(id<UIDropSession>)session {
     [self dm_setDropHover:NO];
     id icon = self.pendingIcon; self.pendingIcon = nil;
+    BOOL endEditing = self.pendingEndsEditing; self.pendingEndsEditing = NO;
     if (!icon) return;
     // (after SpringBoard has finished its own drag -- the app's place in the Dock settled -- it leaves the Dock through the icon model, as Remove
     //  from Dock in its menu does; nothing is ever uninstalled)
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         BOOL ok = DMTrashRemoveIconFromDock(icon);
         DMLog([NSString stringWithFormat:@"[trash] the app dropped on the bin %@", ok ? @"left the Dock (to the Home Screen)" : @"stayed in the Dock (no free place on the Home Screen, or not in the Dock any more)"]);
+        if (endEditing) DMTrashEndDragEditing();   // (the drop is over either way: Edit Home Screen that its drag turned on ends with it)
     });
 }
 @end

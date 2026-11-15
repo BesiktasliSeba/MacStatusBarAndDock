@@ -7,7 +7,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <CoreFoundation/CoreFoundation.h>
-#include "../common/CrashGuard.h"
+#ifndef MSBD_TEST_GUARD_H   // (another copy of the guard: CRASHSTEP_GUARD_DIR in tools/test-crashstep.sh, e.g. the code before a fix)
+#define MSBD_TEST_GUARD_H "../common/CrashGuard.h"
+#endif
+#include MSBD_TEST_GUARD_H
 static int fails = 0;
 static void Expect(const char *what, long got, long want) { printf("%s  %-66s got %ld, want %ld\n", got == want ? "PASS" : "FAIL", what, got, want); if (got != want) fails++; }
 static long At(int h, int m) { struct tm tm = {0}; tm.tm_year = 126; tm.tm_mon = 8; tm.tm_mday = 26; tm.tm_hour = h; tm.tm_min = m; tm.tm_isdst = -1; return (long)mktime(&tm); }
@@ -68,7 +71,7 @@ int main(int argc, char **argv) {
         Expect("  ... the same name in another part kept (dock/macBanners)", Num(TDD, "u-4C2D0372-0000-0000-0120-0103808E5078/dock/macBanners"), 1);
         Expect("  ... the registry, the master switch and a longer key kept", Num(TDD, "u-4C2D0372-0000-0000-0120-0103808E5078/info") == 1 && Num(TDD, "displaySettings") == 1 && Num(TDD, "any/msb/macBannersX") == 1, 1);
         Expect("  no skip list entries", FileHas(MSBD_STEP_FILE, "skip "), 0);
-        Expect("  step 1b is not repeated in the same row", MSBDGuardStepFeature(s.t0, s.t0 - 30, 0, NULL, 0), 0);
+        Expect("  step 1b is not repeated in the same row", MSBDGuardStepFeature(s.t0, s.t0 - 30, 0, 0, NULL, 0), 0);
         s.ta = At(10, 4);   // (as if 1b acted at 10:04; the script adds a crash at 10:05)
         system("cp \"$FIX/step1b-core-menu.ips\" \"$REPORTS/SpringBoard-2026-09-26-100500.ips\"");
         Expect("one more crash after step 1b: the guard acts again", MSBDGuardEvaluate(&s), 1);
@@ -90,6 +93,24 @@ int main(int argc, char **argv) {
         Expect("  record: still names the Dock part (its Turn Back On)", FileHas(MSBD_GUARD_RECORD, "part DockMagnification the Dock|the Dock\n"), 1);
         Expect("  record: still names the MixAudio part", FileHas(MSBD_GUARD_RECORD, "part MixAudio its part MixAudio|MixAudio\n"), 1);
         Expect("  skip list keeps both parts", FileHas(MSBD_STEP_FILE, "skip DockMagnification the Dock|the Dock\n") && FileHas(MSBD_STEP_FILE, "skip MixAudio its part MixAudio|MixAudio\n"), 1);
+    } else if (!strcmp(scenario, "l104")) {   // reports: 10:00 + 10:01 Dock crashes; later 10:20 + 10:21 crashes after a switch was turned on
+        // (1.8.7.5, audit L104 of 1.8.7.2: step 1's record left out the part step 1b had stopped loading, which stays skipped under its note)
+        Expect("row 1, two Dock crashes: step 1b", MSBDGuardEvaluate(&s) ? Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY) : 0, 4);
+        Expect("  record: the Dock part", FileHas(MSBD_GUARD_RECORD, "part DockMagnification the Dock|the Dock\n"), 1);
+        Expect("  skip list names DockMagnification", FileHas(MSBD_STEP_FILE, "skip DockMagnification the Dock|the Dock\n"), 1);
+        // That SpringBoard ran 60 s (the row is over; the note and the skip list stay). Later a switch is turned on, and SpringBoard crashes twice.
+        MSBDGuardState s2 = { .pid = 2, .stage = 0, .fakes = 0, .t0 = At(10, 20) + 10, .ta = 0 };
+        FILE *rf = fopen(MSBD_GUARD_RECENT, "w");
+        if (rf) { fprintf(rf, "%ld " TD " recentSwitch Recent Switch\n", At(10, 19) + 30); fclose(rf); }
+        system("cp \"$FIX/step1b-core-banners.ips\" \"$REPORTS/SpringBoard-2026-09-26-102000.ips\"; cp \"$FIX/step1b-core-banners.ips\" \"$REPORTS/SpringBoard-2026-09-26-102100.ips\"");
+        Expect("row 2, a switch turned on just before two crashes: step 1 (action 1)", MSBDGuardEvaluate(&s2) ? Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY) : 0, 1);
+        Expect("  that switch off", Num(TD, "recentSwitch"), 0);
+        Expect("  banners untouched (no step 1b in this row)", Num(TD, "macBanners"), -1);
+        Expect("  record: action 1 with the switch's line", FileHas(MSBD_GUARD_RECORD, "\naction 1\n") && FileHas(MSBD_GUARD_RECORD, "switch " TD " recentSwitch Recent Switch\n"), 1);
+        Expect("  record: still names the Dock part, which stays skipped (L104)", FileHas(MSBD_GUARD_RECORD, "part DockMagnification the Dock|the Dock\n"), 1);
+        Expect("  record: no step 1b line of this row", FileHas(MSBD_GUARD_RECORD, "\nfeature ") || FileHas(MSBD_GUARD_RECORD, "\nagain "), 0);
+        Expect("  skip list unchanged (row 1's, the Dock on it)", FileHas(MSBD_STEP_FILE, "skip DockMagnification the Dock|the Dock\n"), 1);
+        Expect("  safe mode not on", Num(MSBD_GATE_DOMAIN, MSBD_SAFE_KEY), -1);
     } else if (!strcmp(scenario, "apple")) {   // reports: 10:00 + 10:01 Apple-only
         Expect("two Apple-only crashes: the guard acts", MSBDGuardEvaluate(&s), 1);
         Expect("  straight to the whole tweak (action 2)", Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY), 2);
@@ -103,6 +124,7 @@ int main(int argc, char **argv) {
         Expect("a switch turned on just before: step 1 first", MSBDGuardEvaluate(&s) ? Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY) : 0, 1);
         Expect("  that switch off", Num(TD, "recentSwitch"), 0);
         Expect("  banners untouched by step 1", Num(TD, "macBanners"), -1);
+        Expect("  record: no part line (no part skipped before)", FileHas(MSBD_GUARD_RECORD, "\npart "), 0);
         s.ta = At(10, 4);
         system("cp \"$FIX/step1b-core-banners.ips\" \"$REPORTS/SpringBoard-2026-09-26-100500.ips\"");
         Expect("crash again: now step 1b", MSBDGuardEvaluate(&s) ? Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY) : 0, 4);

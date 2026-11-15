@@ -994,6 +994,9 @@ static void DMCC18ApplyStyle(NSString *why) {
 static void DMCC18PrefsChanged(void) { if (gCC18Supported) DMCC18ApplyStyle(@"the preference changed"); }
 // Control Center's own status bar copies are not dressed as our menu bar while the panel shows: its header is hidden then, our bar shows.
 static BOOL DMCC18OwnsCCBars(void) { return gCC18On && !gCC18Editing && gCC18Material.superview != nil; }
+// The panel leaves the desktop behind the menu bar (CCPanel.h DMCCPanelLeavesDesktop): Apple's backdrop is hidden while it shows; it comes back
+// behind a module opened expanded and in edit mode (Apple's whole look).
+static BOOL DMCC18LeavesDesktop(void) { return DMCC18OwnsCCBars() && !gCC18Expanded; }
 
 // ---- the start -----------------------------------------------------------------------------------------------------------------------------
 // %ctor, before Apple builds Control Center (7 s after the start on the A12Z): the check on 18 (its verdict for Settings whatever the style), then

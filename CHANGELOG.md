@@ -2,6 +2,31 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.7.5
+
+### Improvements
+- A light Status Bar Background color now turns the menu bar's text and icons dark, so a white bar stays readable, also with the Mac Control Center open.
+- The Mac Switcher now shows your Desktop Picture as its background and in the desktop thumbnails, as the Home Screen does.
+- A window you move partly behind the Dock now stays there when the iPad turns, and goes back there when you double-tap its title bar to undo Fill or Zoom, with every window engine.
+- The crash protection now turns off less: a larger Menu Bar Size that makes SpringBoard crash is set back to Small, and when it stops one part, the whole tweak no longer turns off right after. Settings keeps offering Turn Back On for every part it turned off.
+- Tint Resize Handles, Dark Mode and an app's own tint now recolor the resize handles of open windows at once, with every window engine.
+
+### Fixes
+- Run on Power Adapter and Charge Limit no longer stop working until switched off and on again.
+- On iPadOS 15, an app dragged from the Dock onto the Trash now leaves the Dock, and the icons stop jiggling right after the drop. The app shows up on the Home Screen only once, also after Remove from Dock.
+- With the Stage Manager engine, the red light on an app's last open window now quits the app, as Force Quit does, so its Dock dot goes at once, also when the app has a minimized window.
+- With the Stage Manager engine, the resize handles no longer disappear when another window comes to the front, and a Resize Handles change shows on open windows at once.
+- With the Stage Manager engine, an app quit from the App Switcher no longer shows its old picture when opened again, and minimized windows use less memory.
+- With the Stage Manager engine, minimizing a window right after restoring it no longer shows an empty window or leaves its picture on screen.
+- With the Stage Manager engine and Home Minimizes Windows on, one Home press now also closes an open folder, as with the other engines.
+- With Zetsu and MilkyWay4, making a tiled window full screen no longer makes the other window jump to fill the screen and back.
+- With MilkyWay4, windows on other Mac Switcher desktops no longer count as open on the one you see, and Launch As Window no longer opens a second window of an app that has one.
+- In Activity Monitor, sorting by CPU Time now really sorts by CPU time.
+- A damaged Choicy setting can no longer stop the tweak's background helper (SSH, engines, Sleep Guard) from running.
+- Updating from the old separate packages no longer leaves a part switched off while Settings shows it on. If an earlier update left one that way, this update fixes it.
+- Cleaning with iCleaner Pro from Finder now always shows its result, also when other packages are installed meanwhile.
+- Removing the tweak now also removes all of its diagnostic files and the Finder iCleaner panel's last answer.
+
 ## 1.8.7.4
 
 ### Improvements

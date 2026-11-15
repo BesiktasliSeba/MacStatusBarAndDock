@@ -352,7 +352,16 @@ __attribute__((noinline)) static void DMSMHomeKeepsDesktop(id ctx) {   // (noinl
         for (NSString *ident in plan[@"hide"]) { NSString *k = DMSMItemKey(byId[ident]); if (k.length) { DMSMSetMinimized(k, YES); [names addObject:DMSMKeyText(k)]; } }
         DM_FEATURE_MARK("sm-home-minimizes-windows");
         DMLog([NSString stringWithFormat:@"[smhome] Home (%@): the windows go with it -- %@ (%@ minimized)", what, why, [names componentsJoinedByString:@", "]]);
-        dispatch_async(dispatch_get_main_queue(), ^{ DMSMHomeAfterKeep(NO); });   // (our open menu and the Downloads panel close, as at every Home)
+        // (our open menu and the Downloads panel close, as at every Home; a Home Screen folder the person was looking at behind the windows closes with
+        //  this one Home too, as with the other engines and with the switch off: the Home Screen's own press, only while that folder is still open --
+        //  with nothing of the Home Screen's open the press would go to the first page, which Apple's Home from an app does not. SMHomeRule.h
+        //  DMSMHomePressesAtHome, L43)
+        BOOL pressAtHome = DMSMHomePressesAtHome(plan, prevEnv, gHomeFolder.showing);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            BOOL press = pressAtHome && DMHomeFolderOpenNow();
+            if (pressAtHome) DMLog(press ? @"[smhome] Home: the folder open behind the windows closes with it (the Home Screen's own press)" : @"[smhome] Home: the folder behind the windows has closed already -- no press");
+            DMSMHomeAfterKeep(press);
+        });
         return;
     }
     // The plan in SpringBoard's terms: each window's own entity (its scene -- two windows of one app are two), its attributes as they are on screen.
@@ -413,10 +422,9 @@ __attribute__((noinline)) static void DMSMHomeKeepsDesktop(id ctx) {   // (noinl
         if (k.length) { DMSMSetMinimized(k, YES); [awayNames addObject:DMSMKeyText(k)]; }
     }
     DM_FEATURE_MARK("sm-home-keeps-windows");
-    BOOL atHome = [plan[@"atHome"] boolValue];
     DMLog([NSString stringWithFormat:@"[smhome] Home (%@): the windows stay over the Home Screen -- %@%@", what, why,
            awayNames.count ? [NSString stringWithFormat:@" (%@ to the background)", [awayNames componentsJoinedByString:@", "]] : @""]);
-    BOOL pressAtHome = atHome && prevEnv == 3;
+    BOOL pressAtHome = DMSMHomePressesAtHome(plan, prevEnv, gHomeFolder.showing);   // (SMHomeRule.h: the same rule as for the windows that go)
     dispatch_async(dispatch_get_main_queue(), ^{ DMSMHomeAfterKeep(pressAtHome); });
 }
 

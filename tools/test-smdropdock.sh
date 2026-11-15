@@ -41,10 +41,12 @@ run() {   # $1 StatusBar.x, $2 work dir, $3 quiet; the number of failed checks (
   # screen, with nothing added; the old reading (the card as it was, plus the drag) is gone
   local body; body=$(fn "$X" "$PAN")
   if echo "$body" | grep -qF 'CGRect droppedOnScreen = [card convertRect:card.bounds toCoordinateSpace:scn.coordinateSpace];' \
-     && echo "$body" | grep -qF 'if (CGRectGetMaxY(droppedOnScreen) > line + 4.0) [gSMBehindDock addObject:w];' \
+     && echo "$body" | grep -qF 'CGFloat endsAt = snapped ? at.y * scn.bounds.size.height + droppedOnScreen.size.height / 2.0 : CGRectGetMaxY(droppedOnScreen);' \
+     && echo "$body" | grep -qF 'if (endsAt > line + 4.0) [gSMBehindDock addObject:w];' \
+     && echo "$body" | awk '/BOOL snapped = DMSMSnapMoveTarget\(w, card, t, &at\);/{s=NR} /CGFloat endsAt = /{e=NR} END{exit !(s && s < e)}' \
      && ! echo "$body" | grep -qE '\+ *t\.y *> *line' \
      && echo "$body" | awk '/card.transform = CGAffineTransformMakeTranslation\(t.x, t.y\);/{a=NR} /CGRect droppedOnScreen = /{b=NR} /card.transform = was;/{c=NR} /CGRectGetMaxY\(droppedOnScreen\)/{e=NR} END{exit !(a && a < b && b < c && c < e)}'; then
-    [ -n "$q" ] || echo "PASS  StatusBar.x: the drop decides \"behind the Dock\" from the dropped card's bottom on the screen, read once at the drag's travel"
+    [ -n "$q" ] || echo "PASS  StatusBar.x: the drop decides \"behind the Dock\" from the dropped card's bottom on the screen, read once at the drag's travel, where it ends after its snap"
   else [ -n "$q" ] || echo "FAIL  StatusBar.x: the drop does not decide \"behind the Dock\" from the one dropped card"; n=$((n + 1)); fi
   return $n
 }
@@ -60,10 +62,12 @@ if [ -z "$SMD_SB_X" ]; then
     if [ $n -gt 0 ] && [ $n -lt 99 ]; then echo "PASS  caught: $1 ($n check(s) fail)"; else echo "FAIL  not caught: $1"; rc=1; fi
   }
   k=0
-  mtf "the drag added again (the audit's double count)" 's/if \(CGRectGetMaxY\(droppedOnScreen\) > line \+ 4\.0\)/if (CGRectGetMaxY(droppedOnScreen) + t.y > line + 4.0)/'
+  mtf "the drag added again (the audit's double count)" 's/: CGRectGetMaxY\(droppedOnScreen\);/: CGRectGetMaxY(droppedOnScreen) + t.y;/'
   mtf "the card read without the drag (where it started)" 's/^(\s*)CGRect droppedOnScreen = \[card convertRect:card.bounds toCoordinateSpace:scn.coordinateSpace\];/$1card.transform = CGAffineTransformIdentity; CGRect droppedOnScreen = [card convertRect:card.bounds toCoordinateSpace:scn.coordinateSpace];/'
-  mtf "the stage view's frame instead of the screen's" 's/if \(CGRectGetMaxY\(droppedOnScreen\) > line \+ 4\.0\)/if (CGRectGetMaxY(dropped) > line + 4.0)/'
-  mtf "no 4 pt allowance under the line" 's/if \(CGRectGetMaxY\(droppedOnScreen\) > line \+ 4\.0\)/if (CGRectGetMaxY(droppedOnScreen) > line)/'
+  mtf "the stage view's frame instead of the screen's" 's/: CGRectGetMaxY\(droppedOnScreen\);/: CGRectGetMaxY(dropped);/'
+  mtf "no 4 pt allowance under the line" 's/if \(endsAt > line \+ 4\.0\)/if (endsAt > line)/'
+  mtf "the mark from the card let go, before its snap (round 1)" 's/CGFloat endsAt = snapped \? /CGFloat endsAt = 0 ? /'
+  mtf "the snapped place read as the card's top" 's/at\.y \* scn\.bounds\.size\.height \+ droppedOnScreen\.size\.height \/ 2\.0/at.y * scn.bounds.size.height - droppedOnScreen.size.height \/ 2.0/'
   mtf "the Dock at a side not asked" 's/^\s*if \(DMDockSideNow\(scn.bounds.size\)\) line = scn.bounds.size.height \+ 1000\.0;.*$//'
   mtf "the place from the card's anchor again (1.7.4 item 13)" 's/mid = CGPointMake\(CGRectGetMidX\(dropped\), CGRectGetMidY\(dropped\)\)/mid = CGPointMake(card.center.x + t.x, card.center.y + t.y)/'
 fi

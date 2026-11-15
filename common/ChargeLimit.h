@@ -77,6 +77,12 @@ typedef struct {
     int cutIgnored;     // the cut has let charge in during this plug-in: above the limit held where it is, as with coming down off
     int holdOnTrial;    // the hold is up and charge still goes in (or it has just gone up): no cut for a level passing the band meanwhile, the
                         // check decides first (else a hold that does not take turns into a cut at the band's top and back, again and again)
+    int holdRetried;    // the hold is remembered as not taking with this adapter (MSBDChargeHoldKnownIgnored) and tried again in this plug-in: held
+                        // where the battery is above the limit (no cut), not kept awake on the way to the limit (charging as iPadOS would; only for
+                        // the check's minutes: holdChecked), until it is seen to take (forgotten then) or given up again
+    int holdChecked;    // charge goes in while the hold is up (MSBDChargeLeverCheck's stretch under way): kept awake while held, so that the check
+                        // can finish -- its few minutes, a look a minute. (1.8.7.5: without it an iPad asleep under a hold that does not take was looked
+                        // at once in 10 minutes, each look after a gap starts the check over, and it never gave up: the cut and back, kept awake for days)
 } MSBDChargeIn;
 typedef struct {
     int action;         // kMSBDChargeAllow / Hold / Down
@@ -85,6 +91,19 @@ typedef struct {
 } MSBDChargeOut;
 
 static inline MSBDChargeOut MSBDChargeDecide(MSBDChargeIn in) {
+    // (the hold's check under way: kept awake while the hold stays up -- a trial's too -- for the check's minutes)
+    if (in.holdChecked) { in.holdChecked = 0; MSBDChargeOut r = MSBDChargeDecide(in); if (r.action == kMSBDChargeHold) r.keepAwake = 1; return r; }
+    // (a hold tried again where it was remembered as not taking: decided as with a cut that does not take, and not kept awake -- where it does not
+    //  take, the cost is the check's few minutes of the charging iPadOS does anyway: no cut, no stay-awake but the check's, no Lock Screen lit.
+    //  At 95 % and over no charge goes in with or without a hold once the battery has topped up, so a hold there that lets none in shows nothing:
+    //  the trial is not started up there -- the give-up remembered stands, iPadOS's own charging -- only under 95 %, where it can be seen to take,
+    //  or kept up there while its check is under way (a level that passed 95 % meanwhile). Else a plug-in at 95 % or more, or a wake at 100 %,
+    //  showed "on hold" far over the limit for the whole plug-in, with no come-down where the hold works and nothing found out.)
+    if (in.holdRetried && !in.holdIgnored) {
+        in.holdRetried = 0; in.cutIgnored = 1; MSBDChargeOut r = MSBDChargeDecide(in); r.keepAwake = 0;
+        if (r.action == kMSBDChargeHold && in.soc >= 95 && !(in.prev == kMSBDChargeHold && in.holdOnTrial)) { r.action = kMSBDChargeAllow; r.state = kMSBDChargeStateCantHold; }
+        return r;
+    }
     MSBDChargeOut o = { kMSBDChargeAllow, 0, kMSBDChargeStateOff };
     if (!in.running) { o.state = kMSBDChargeStateStopped; return o; }
     if (!MSBDChargeLimitOn(in.limit) || !in.plugged) return o;                    // iPadOS's own charging
@@ -135,17 +154,28 @@ static inline int MSBDChargeNeedsPulse(int action, int plugged, int isCharging, 
     return action == kMSBDChargeAllow && plugged && !isCharging && !fullyCharged && soc < 95 && allowedFor >= 180 && sinceLastPulse >= 600;
 }
 // The hold and the cut checked against the battery. One takes when no charge goes in (Amperage at most 100 mA) once the battery has settled (holds
-// took within 20-30 s on the M1 and the iPad 2). Charge still going in 2 minutes after it went up: raised again once (a restarted powerd, a driver
-// that missed it); still going in 2 minutes after that, or the level 3 % above where it was when it went up: it does not take here, with this
-// adapter -- given up until the cable comes out (MSBDChargeIn holdIgnored / cutIgnored). Seen: the A12Z's hold on 18.5 (2.2-2.9 A in with powerd
+// took within 20-30 s on the M1 and the iPad 2). Each stretch of charge going in while one is up is checked from its own start: still going in 2
+// minutes into it, raised again (a restarted powerd, a driver that missed it, a hold that lapsed: powerd writes it to the battery anew); still going
+// in 2 minutes after that, or the level 3 % above where the stretch began: it does not take here, with this adapter -- given up until the cable
+// comes out (MSBDChargeIn holdIgnored / cutIgnored). A look with no charge going in ends the stretch (it takes again: the next one is raised again
+// first), and so does a gap in the helper's looks (the iPad asleep: what went on meanwhile was not seen); while a stretch is checked the iPad is kept
+// awake (MSBDChargeIn holdChecked), so the check finishes in its minutes. One that takes again after each raise-again but lets charge in again
+// soon is raised again 3 times in 6 hours at most: the next stretch gives it up (one that lapses now and then, once a night in sleep, is raised
+// again each time, for as long as the plug-in lasts: Run on Power Adapter is for an iPad left on the cable for weeks). (1.8.7.5, GitHub issue
+// #13: the check judged the whole hold. Once raised again, early on, any later look with charge going in gave it up at once, hours on; a level 3 %
+// above where the hold went up, after a lapse while the iPad slept, gave it up with no raise-again tried. Remembered for the adapter, the hold was
+// then never up again with it, so nothing could show that it takes: only a charge setting switched off and on brought it back.)
+// Seen: the A12Z's hold on 18.5 (2.2-2.9 A in with powerd
 // holding our ChargeInhibit, not-charging reasons 0, at every hold of the 72-hour run, which then went on to the cut at 83 % and back for two days,
 // the iPad kept awake) and the 17.5 on a 19 W adapter (93 % -> 100 % under our cut, 6 Nov), while both held on their 5-10 W bricks.
 enum { kMSBDLeverFine = 0, kMSBDLeverRaiseAgain = 1, kMSBDLeverIgnored = 2 };
-// A hold that did not take is remembered for that adapter (its kind and name) on that iPadOS build, by that build of the helper (a later one may
-// hold where it could not), for 7 days: the next plug-ins with it give it
-// up at once, rather than coming down from above the limit for hours, kept awake, only to find again that it does not hold at the bottom (the
-// A12Z is plugged in at 85-95 % most days). A change to a charge setting forgets it (tried again now: the limit, coming down, Run on Power Adapter,
-// by their values -- not the tweak's other settings, whose rows post the same note), as does a hold seen to take with that adapter.
+// A hold that did not take, and was not seen to take earlier in that plug-in, is remembered for that adapter (its kind and name) on that iPadOS
+// build, by that build of the helper (a later one may hold where it could not), for 7 days: the next plug-ins with it do not come down from above
+// the limit for hours, kept awake, nor are kept awake charging to it, only to find again that it does not hold at the bottom (the A12Z is plugged
+// in at 85-95 % most days). The hold is still tried with it when it is due, held where the battery is (MSBDChargeIn holdRetried): where it does not
+// take, given up again after the check's minutes and remembered anew; seen to take (MSBDChargeHoldSeenTaking), forgotten. A change to a charge
+// setting forgets it too (the limit, coming down, Run on Power Adapter, by their values -- not the tweak's other settings, whose rows post the same
+// note). One that gives up after it took in the plug-in (a hold that lapses again and again) is given up for that plug-in only.
 #define MSBD_CHARGE_REMEMBER_DAYS 7
 static inline int MSBDChargeHoldKnownIgnored(const char *remembered, double rememberedAt, const char *now_key, double now) {
     return remembered && now_key && *remembered && !strcmp(remembered, now_key) && rememberedAt > 0 && now >= rememberedAt &&
@@ -154,12 +184,30 @@ static inline int MSBDChargeHoldKnownIgnored(const char *remembered, double reme
 // chargingIn: 1 charge going in (an Amperage reading over 100 mA, or IsCharging 1); 0 none (an Amperage reading of at most 100 mA, IsCharging not
 // 1): it takes; -1 unknown (no Amperage reading, IsCharging not 1). Unknown is never "it takes": it is timed as charge going in (raised again, then
 // given up -- for the plug-in only, the helper remembers no adapter for it), as a hold that cannot be checked means iPadOS's own charging. The
-// level 3 % up counts only with charge seen going in: a gauge correction during a long hold (Run on Power Adapter, coming down off) is no charge.
-static inline int MSBDChargeLeverCheck(int chargingIn, double chargingFor, int raisedAgain, double sinceRaisedAgain, int risenBy) {
+// stretch: chargingFor how long it has gone on, raisedAgain whether it was raised again in it (sinceRaisedAgain: how long ago), risenBy the level's
+// rise since it began; raises: how many times it was raised again in the last 6 hours of this plug-in (MSBDChargeLeverRaisesSince). The level 3 % up
+// counts only with charge seen going in (a gauge correction during a long hold -- Run on Power Adapter, coming down off -- is no charge), and only
+// after the raise-again (it repairs a lapse).
+#define MSBD_CHARGE_LEVER_RAISES 3
+#define MSBD_CHARGE_LEVER_WINDOW (6 * 3600.0)   // (s: the raise-agains that count against the bound)
+#define MSBD_CHARGE_LEVER_GAP 150.0   // (s: the helper looks every minute while a hold or a cut is up; no look for longer: the iPad was asleep)
+// The raise-agains that count: those of the last 6 hours (at: when each was, 0 none; n of them)
+static inline int MSBDChargeLeverRaisesSince(const double *at, int n, double now) {
+    int c = 0;
+    for (int i = 0; i < n; i++) if (at[i] > 0 && now >= at[i] && now - at[i] < MSBD_CHARGE_LEVER_WINDOW) c++;
+    return c;
+}
+static inline int MSBDChargeLeverCheck(int chargingIn, double chargingFor, int raisedAgain, double sinceRaisedAgain, int risenBy, int raises) {
     if (!chargingIn) return kMSBDLeverFine;
+    if (!raisedAgain) return chargingFor < 120 ? kMSBDLeverFine : raises >= MSBD_CHARGE_LEVER_RAISES ? kMSBDLeverIgnored : kMSBDLeverRaiseAgain;
     if (chargingIn > 0 && risenBy >= 3) return kMSBDLeverIgnored;
-    if (!raisedAgain) return chargingFor >= 120 ? kMSBDLeverRaiseAgain : kMSBDLeverFine;
     return sinceRaisedAgain >= 120 ? kMSBDLeverIgnored : kMSBDLeverFine;
+}
+// The hold seen to take: up past the battery's settle (2 minutes), no charge going in, where iPadOS itself would charge (not full, under 95 %: plugged
+// in full, or near it, no charge goes in with or without a hold). What forgets a hold remembered as not taking, and what makes a later give-up in the
+// same plug-in one for that plug-in only.
+static inline int MSBDChargeHoldSeenTaking(int chargingIn, double upFor, int full, int soc) {
+    return chargingIn == 0 && upFor >= 120 && !full && soc >= 0 && soc < 95;
 }
 // An adapter cut showing in the battery service (one the helper does not hold: left by a powerd that restarted while one of ours was up; the
 // driver keeps it, the new powerd does not know it). PMU iPads: the cable in (AppleRawExternalConnected) but ExternalConnected false. SMC iPads

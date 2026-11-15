@@ -13,13 +13,14 @@ if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
     rm -f "$P/MacStatusBar-ChoicyBackup.plist" /var/jb/var/log/sshtoggled-engines.log /var/jb/var/log/sshtoggled-engines.log.old
     rm -f "$S/ssh-state" "$S"/.ssh-state.* /var/jb/var/mobile/.sshtoggle-state
     rm -f "$S/eject-answer" "$S"/.eject-answer.* "$S/eject-dryrun"   # (a drive's eject for Finder: the last answer, and the debug test switch)
+    rm -f "$S/iclean-answer" "$S"/.iclean-answer.* "$S/iclean-dryrun"   # (iCleaner in Finder, common/ICleaner.h: the last answer, and the debug test switch)
     rm -f /var/jb/var/lib/macstatusbaranddock/chargelimit.plist /var/jb/var/log/msbdcharge.log /var/jb/var/log/msbdcharge.log.old   # (the Charge Limit's job: its state and log)
     rm -f "$S/tailspin.plist"   # (Keep Tailspin Off's state for Settings: the prerm's helper has taken our false out of com.apple.da)
     rm -f "$S/sleepguard.plist" /var/jb/var/log/msbd-sleepguard.log /var/jb/var/log/msbd-sleepguard.log.old   # (Sleep Guard's state and log: since 1.7.8 the folder stayed for them)
     rm -f /var/mobile/Library/Caches/com.besiktasliseba.macsettings.landscapeicons.plist
     rmdir "$S" 2>/dev/null
     [ "$1" = "purge" ] && rm -rf /var/jb/var/lib/macstatusbaranddock
-    rm -f "$P/MacStatusBarAndDock-Diag-Hooks.txt" "$P/MacStatusBarAndDock-Diag-Dock.txt"   # (untested-iPadOS diagnostics, common/Diag.h)
+    rm -f "$P"/MacStatusBarAndDock-Diag-*.txt   # (the diagnostic records, common/Diag.h MSBD_DIAG_NAMES: every one, also those added later)
     rm -f /var/mobile/Library/ControlCenter/MacStatusBarAndDock-ControlsIconState.plist /var/mobile/Library/ControlCenter/MacStatusBarAndDock-ControlsDesiredIconState.plist   # (18: the Mac panel's own layout of tiles, common/CC18MacLayout.h; iPadOS's own was never touched)
     rm -f "$P/MacStatusBarAndDock-CCTile.plist" "$P/MacStatusBarAndDock-CCTile-SSH.plist"   # (18: where RAM & CPU's and SSH's tiles were in Control Center, common/CCTileKeep.h -- a reinstall starts afresh; the prerm's helper took both controls out of the 15-17 lists)
     rm -f /var/jb/Library/PreferenceLoader/Preferences/MacStatusBarAndDock-MacStatusBarPrefs.plist /var/jb/Library/PreferenceLoader/Preferences/MacStatusBarAndDock-DockMagnificationPrefs.plist   # (the iPadOS 17+ entries, postinst)

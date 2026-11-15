@@ -32,6 +32,28 @@ int main(int argc, char **argv) {
         s = MSBDGuardExplanation(1, NO, NO);
         Check(@"untitled (inverted) switch: neutral words", [s hasPrefix:@"The settings you changed last were undone after SpringBoard crashed twice."], s);
         Check(@"alert title, untitled switch", [MSBDGuardAlertTitle(1) isEqualToString:@"Settings Undone"], MSBDGuardAlertTitle(1));
+        // Menu Bar Size (a size, no switch: step 1 since 1.8.7.5, audit L62, and step 1b's own target) -- the review of 1.8.7.5
+        NSString *sizeLine = @"switch com.besiktasliseba.macstatusbar menuBarSize Menu Bar Size\n";
+        Write(MSBD_GUARD_RECORD, [NSString stringWithFormat:@"time %ld\naction 1\ntested 1\nverdict 2\nblamed Apple_code_only\n%@", now, sizeLine]);
+        s = MSBDGuardExplanation(1, NO, NO);
+        Check(@"footer, Menu Bar Size: set back to Small, no switch words", [s isEqualToString:@"SpringBoard crashed twice after a larger Menu Bar Size was picked, so it was set back to Small. If this keeps happening, tap Report a Problem."], s);
+        s = MSBDGuardExplanation(1, NO, YES);
+        Check(@"alert, Menu Bar Size", [s isEqualToString:@"SpringBoard crashed twice after a larger Menu Bar Size was picked, so it was set back to Small. If this keeps happening, tap Report a Problem in Settings."], s);
+        Check(@"alert title, Menu Bar Size", [MSBDGuardAlertTitle(1) isEqualToString:@"Menu Bar Size Set Back"], MSBDGuardAlertTitle(1));
+        Check(@"Report a Problem, Menu Bar Size", [MSBDGuardActionWords(MSBDCrashRecord()) isEqualToString:@"set Menu Bar Size back to Small"], MSBDGuardActionWords(MSBDCrashRecord()));
+        Write(MSBD_GUARD_RECORD, [NSString stringWithFormat:@"time %ld\naction 1\ntested 1\nverdict 2\nblamed x\nswitch com.besiktasliseba.macstatusbar wifiMenu Wi-Fi Menu\n%@", now, sizeLine]);
+        s = MSBDGuardExplanation(1, NO, NO);
+        Check(@"footer, a switch and Menu Bar Size", [s hasPrefix:@"SpringBoard crashed twice after “Wi-Fi Menu” was turned on and a larger Menu Bar Size was picked, so “Wi-Fi Menu” was turned off and Menu Bar Size was set back to Small."], s);
+        Check(@"alert title, a switch and Menu Bar Size", [MSBDGuardAlertTitle(1) isEqualToString:@"Features Turned Off"], MSBDGuardAlertTitle(1));
+        Check(@"Report a Problem, a switch and Menu Bar Size", [MSBDGuardActionWords(MSBDCrashRecord()) isEqualToString:@"turned off “Wi-Fi Menu”, set Menu Bar Size back to Small"], MSBDGuardActionWords(MSBDCrashRecord()));
+        Write(MSBD_GUARD_RECORD, [NSString stringWithFormat:@"time %ld\naction 4\ntested 1\nverdict 1\nblamed MacStatusBarCore.dylib_(faulting_thread)\nfeature com.besiktasliseba.macstatusbar menuBarSize 0 Menu Bar Size|the larger menu bar\n", now]);
+        s = MSBDGuardExplanation(4, NO, NO);
+        Check(@"step 1b, Menu Bar Size: set back to Small", [s hasPrefix:@"SpringBoard crashed twice in the larger menu bar, so Menu Bar Size was set back to Small."], s);
+        Check(@"step 1b alert title, Menu Bar Size", [MSBDGuardAlertTitle(4) isEqualToString:@"Menu Bar Size Set Back"], MSBDGuardAlertTitle(4));
+        Check(@"step 1b Report a Problem, Menu Bar Size", [MSBDGuardActionWords(MSBDCrashRecord()) isEqualToString:@"set Menu Bar Size back to Small (only what crashed)"], MSBDGuardActionWords(MSBDCrashRecord()));
+        Write(MSBD_GUARD_RECORD, [NSString stringWithFormat:@"time %ld\naction 4\ntested 1\nverdict 1\nblamed x\nfeature com.besiktasliseba.macstatusbar macBanners 0 Mac-Style Banners|the Mac-style banners\n", now]);
+        s = MSBDGuardExplanation(4, NO, NO);
+        Check(@"step 1b, a switch: as before", [s hasPrefix:@"SpringBoard crashed twice in the Mac-style banners, so “Mac-Style Banners” was turned off."] && [MSBDGuardAlertTitle(4) isEqualToString:@"Feature Turned Off"], s);
         Write(MSBD_GUARD_RECORD, [NSString stringWithFormat:@"time %ld\naction 2\ntested 1\nverdict 1\nblamed x\n", now]);
         s = MSBDGuardExplanation(1, NO, NO);
         Check(@"action 1 but the record is of another action: plain words", [s hasPrefix:@"The features you turned on last were turned off"], s);

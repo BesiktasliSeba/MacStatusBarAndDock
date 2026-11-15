@@ -768,10 +768,15 @@ static int gPrev = kMSBDChargeAllow, gRunning = 1;
 static double gActionSince, gLastPulse, gCutSeenSince, gFullSince, gLastLoggedFull;
 static BOOL gHoldPulsed, gCutPulsed;           // the self-checks' one raise-and-let-go per episode (a second would not help: something else is the cause)
 // The hold and the cut checked against the battery (common/ChargeLimit.h MSBDChargeLeverCheck), [0] the hold, [1] the cut: when it went up, since
-// when charge has gone in while it is up (0: none now), when it was raised again (0: not yet), the level when it went up. Given up for the plug-in:
-static double gLeverUp[2], gLeverIn[2], gLeverAgain[2];
+// when charge has gone in while it is up (this stretch; 0: none now), when it was raised again in this stretch (0: not yet), the level when the
+// stretch began, the last look at it (0: not up then), and when it was raised again in this plug-in (the last MSBD_CHARGE_LEVER_RAISES times: those
+// of the last 6 hours count, MSBDChargeLeverRaisesSince; the oldest slot taken for the next). Given up for the plug-in:
+static double gLeverUp[2], gLeverIn[2], gLeverAgain[2], gLeverLook[2], gLeverRaiseAt[2][MSBD_CHARGE_LEVER_RAISES];
 static int gLeverSoc[2];
 static BOOL gHoldIgnored, gCutIgnored;
+// In this plug-in: the hold was seen to take (MSBDChargeHoldSeenTaking: a give-up after it is for the plug-in only); a hold remembered as not
+// taking with this adapter is tried again (MSBDChargeIn holdRetried)
+static BOOL gHoldTook, gHoldRetried;
 // This job's own build: the UUID the linker gave its executable (another build of msbdcharge, another UUID); "?" when it cannot be read.
 static NSString *HelperBuild(void) {
     static NSString *build;
@@ -901,6 +906,7 @@ static void Evaluate(NSString *why) { @autoreleasepool {   // (run-loop callback
     if (!plugged && (gHoldIgnored || gCutIgnored)) {   // (what did not take is tried again at the next plug-in: another adapter, another level)
         gHoldIgnored = gCutIgnored = NO; Log(@"cable out: the hold and the cut will be tried again at the next plug-in");
     }
+    if (!plugged) { gHoldTook = gHoldRetried = NO; memset(gLeverRaiseAt, 0, sizeof gLeverRaiseAt); }   // (the plug-in's own: what it saw of the hold)
     ChargeSettings cs = SettingsRead(NO);   // (once per look: after a cfprefsd restart each read is a process of its own)
     BOOL comeDown = cs.comeDown;
     int limit = cs.limit;
@@ -915,18 +921,24 @@ static void Evaluate(NSString *why) { @autoreleasepool {   // (run-loop callback
         // A change made in Settings is planned again now, and may start a cut at once: the limit of one cut start per 30 minutes is against cuts
         // that come and go by themselves, not against the user's own change (17.5 load test, 10 Nov: Run on Power Adapter switched off at 98 %
         // with an 80 % limit stayed on hold, silently, until the job was restarted, because a cut had started 30 minutes before).
-        if (was) { gCutStarted = 0; Log(@"a charge setting changed (%@ -> %@, as limit|coming down|run on power adapter): planned again now", was, chargeSettings); }
+        if (was) {
+            gCutStarted = 0; gHoldTook = NO; memset(gLeverRaiseAt[0], 0, sizeof gLeverRaiseAt[0]);
+            Log(@"a charge setting changed (%@ -> %@, as limit|coming down|run on power adapter): planned again now", was, chargeSettings);
+        }
         if (was && (gHoldIgnored || gState[@"holdIgnored"])) {
-            gHoldIgnored = NO; [gState removeObjectForKey:@"holdIgnored"]; Log(@"a charge setting changed: the hold will be tried again");
+            gHoldIgnored = gHoldRetried = NO; [gState removeObjectForKey:@"holdIgnored"]; Log(@"a charge setting changed: the hold will be tried again");
         }
         gState[@"chargeSettings"] = chargeSettings; SaveState();
     }
+    // A hold remembered as not taking with this adapter is not skipped: tried again in this plug-in when it is due, held where the battery is (no
+    // cut, not kept awake: common/ChargeLimit.h MSBDChargeIn holdRetried) -- forgotten once it takes, given up and remembered anew where it does not.
+    // (1.8.7.3-1.8.7.4 gave it up at every plug-in and start for 7 days, the hold never up again, so nothing could show it takes: GitHub issue #13.)
     NSDictionary *known = Dict(gState[@"holdIgnored"]);
-    if (plugged && !gHoldIgnored && known && MSBDChargeHoldKnownIgnored([known[@"key"] isKindOfClass:[NSString class]] ? [known[@"key"] UTF8String] : "",
+    if (plugged && !gHoldIgnored && !gHoldRetried && known && MSBDChargeHoldKnownIgnored([known[@"key"] isKindOfClass:[NSString class]] ? [known[@"key"] UTF8String] : "",
                                                                          [known[@"at"] respondsToSelector:@selector(doubleValue)] ? [known[@"at"] doubleValue] : 0, HoldKey(b).UTF8String, now)) {
-        gHoldIgnored = YES;
-        Log(@"the hold did not take with this adapter %.1f days ago: given up for this plug-in too (tried again after %d days or a change to a charge setting)",
-            (now - [known[@"at"] doubleValue]) / 86400, MSBD_CHARGE_REMEMBER_DAYS);
+        gHoldRetried = YES;
+        Log(@"the hold did not take with this adapter %.1f days ago: it is tried again in this plug-in once it is due (held where the battery is, under 95 %%: no cut, kept awake only for its check)",
+            (now - [known[@"at"] doubleValue]) / 86400);
     }
     // full on power: remembered (the monthly full charge counts from it), and how long it has been full (the full charge's hour)
     if (plugged && soc >= 100 && full) {
@@ -955,9 +967,15 @@ static void Evaluate(NSString *why) { @autoreleasepool {   // (run-loop callback
     }
     int holdAt = MSBDChargeAdapterLimit(limit, onAdapter, gAdapterLevel);
     BOOL holdOn = MSBDChargeLimitOn(holdAt), comeDownTo = comeDown && holdAt == limit;
+    // Charge going in: an Amperage reading over 100 mA, or the battery saying it charges (IsCharging 1: the A12Z under its ignored hold). None: an
+    // Amperage reading of at most 100 mA, IsCharging not 1. No Amperage reading and IsCharging not 1: unknown, never "it takes" (common/
+    // ChargeLimit.h MSBDChargeLeverCheck). Charge going in under our hold: its check is under way, the iPad kept awake for it (MSBDChargeIn holdChecked).
+    BOOL ampRead = [b[@"Amperage"] respondsToSelector:@selector(intValue)];
+    int chargeIn = (ampRead && amp > 100) || isCharging ? 1 : ampRead ? 0 : -1;
     MSBDChargeIn in = { holdAt, soc, plugged, [gState[@"fullNow"] boolValue] || calibrating, gPrev, gRunning && MSBDIsIPad() && TweakMeantToRun(),
                         MSBDChargeCutAllowed(now, gCutStarted, gCutMisread), comeDownTo, gHoldIgnored, gCutIgnored,
-                        gPrev == kMSBDChargeHold && (gLeverIn[0] > 0 || (gLeverUp[0] > 0 && now - gLeverUp[0] < 120)) };
+                        gPrev == kMSBDChargeHold && (gLeverIn[0] > 0 || (gLeverUp[0] > 0 && now - gLeverUp[0] < 120)), gHoldRetried,
+                        gPrev == kMSBDChargeHold && chargeIn != 0 };
     MSBDChargeOut o = MSBDChargeDecide(in);
     if (o.action != gPrev) {
         Log(@"%@ (%@): battery %d %%, cable %d%@, limit %@%@%@, %@", kActionNames[o.action], why ?: @"check", soc, plugged, raw == plugged ? @"" : @" (read as out: our cut)",
@@ -1034,37 +1052,51 @@ static void Evaluate(NSString *why) { @autoreleasepool {   // (run-loop callback
     }
     // The hold and the cut checked against the battery: charge still going in, raised again once (old one first: powerd writes "inhibited" to the
     // battery anew; the cut's end is kept quiet as always), then given up for the plug-in -- and decided again at once without it. Charge going in:
-    // an Amperage reading over 100 mA, or the battery saying it charges (IsCharging 1: the A12Z under its ignored hold). None: an Amperage reading of
-    // at most 100 mA, IsCharging not 1. No Amperage reading and IsCharging not 1: unknown, never "it takes" (common/ChargeLimit.h MSBDChargeLeverCheck).
-    BOOL ampRead = [b[@"Amperage"] respondsToSelector:@selector(intValue)];
-    int chargeIn = (ampRead && amp > 100) || isCharging ? 1 : ampRead ? 0 : -1;
+    // chargeIn, read before the decision.
     NSString *inNow = ampRead ? [NSString stringWithFormat:@"%d mA in", amp] : isCharging ? @"charging (no current reading)" : @"no current reading";
     BOOL gaveUp = NO;
     for (int k = 0; k < 2; k++) {
         BOOL up = o.action == (k ? kMSBDChargeDown : kMSBDChargeHold);
-        if (!up) { gLeverUp[k] = gLeverIn[k] = gLeverAgain[k] = 0; continue; }
-        if (!gLeverUp[k]) { gLeverUp[k] = now; gLeverSoc[k] = soc; }
-        if (!chargeIn) gLeverIn[k] = 0; else if (!gLeverIn[k]) gLeverIn[k] = now;
-        if (!k && chargeIn == 0 && now - gLeverUp[0] >= 120 && gState[@"holdIgnored"] && [Dict(gState[@"holdIgnored"])[@"key"] isEqual:HoldKey(b)]) {
-            [gState removeObjectForKey:@"holdIgnored"]; SaveState(); Log(@"the hold takes with this adapter now: no longer remembered as not taking");
+        if (!up) { gLeverUp[k] = gLeverIn[k] = gLeverAgain[k] = gLeverLook[k] = 0; continue; }
+        if (!gLeverUp[k]) gLeverUp[k] = now;
+        // (no look for a while -- the iPad was asleep: the stretch under way is not one the job saw go on; checked anew from this look)
+        if (gLeverLook[k] > 0 && now - gLeverLook[k] > MSBD_CHARGE_LEVER_GAP && (gLeverIn[k] > 0 || gLeverAgain[k] > 0)) {
+            Log(@"self-check: no look %@ for %.0f s (asleep): checked anew from now", k ? @"at the cut" : @"at the hold", now - gLeverLook[k]);
+            gLeverIn[k] = gLeverAgain[k] = 0;
         }
+        gLeverLook[k] = now;
+        // A stretch of charge going in is checked from its own start (its level, raised again first); none going in ends it: it takes (again)
+        if (!chargeIn) gLeverIn[k] = gLeverAgain[k] = 0; else if (!gLeverIn[k]) { gLeverIn[k] = now; gLeverSoc[k] = soc; }
+        if (!k && MSBDChargeHoldSeenTaking(chargeIn, now - gLeverUp[0], full, soc)) {
+            gHoldTook = YES; gHoldRetried = NO;
+            if (gState[@"holdIgnored"] && [Dict(gState[@"holdIgnored"])[@"key"] isEqual:HoldKey(b)]) {
+                [gState removeObjectForKey:@"holdIgnored"]; SaveState(); Log(@"the hold takes with this adapter now: no longer remembered as not taking");
+            }
+        }
+        int raises = MSBDChargeLeverRaisesSince(gLeverRaiseAt[k], MSBD_CHARGE_LEVER_RAISES, now);
         int v = MSBDChargeLeverCheck(chargeIn, chargeIn ? now - MAX(gLeverIn[k], gLeverUp[k]) : 0, gLeverAgain[k] > 0, gLeverAgain[k] > 0 ? now - gLeverAgain[k] : 0,
-                                     soc - gLeverSoc[k]);
+                                     soc - gLeverSoc[k], raises);
         if (v == kMSBDLeverRaiseAgain) {
-            gLeverAgain[k] = now;
-            Log(@"self-check: %@ %@: raised again", inNow, k ? @"during the cut" : @"while on hold");
+            int slot = 0;
+            for (int i = 1; i < MSBD_CHARGE_LEVER_RAISES; i++) if (gLeverRaiseAt[k][i] < gLeverRaiseAt[k][slot]) slot = i;
+            gLeverAgain[k] = gLeverRaiseAt[k][slot] = now; raises++;
+            Log(@"self-check: %@ %@: raised again (%d of %d in 6 hours)", inNow, k ? @"during the cut" : @"while on hold", raises, MSBD_CHARGE_LEVER_RAISES);
             if (k) { CutOff(now); gDown = Raise(@"DisableInflow", @"MacStatusBar&Dock Charge Limit (coming down to the limit)"); }
             else { if (gPMU) { SetPredictiveInhibit(NO); gPCIOn = NO; } else Lower(&gHold); HoldOn(nil); }
         } else if (v == kMSBDLeverIgnored) {
+            // (remembered for the adapter only when charge was seen going in and the hold was never seen to take in this plug-in; unknown, or a hold
+            //  that took and then let charge in again and again: this plug-in only)
+            BOOL remember = !k && chargeIn > 0 && !gHoldTook;
             if (k) gCutIgnored = YES;
-            else { gHoldIgnored = YES; if (chargeIn > 0) { gState[@"holdIgnored"] = @{ @"key": HoldKey(b), @"at": @(now) }; SaveState(); } }   // (unknown: this plug-in only)
+            else { gHoldIgnored = YES; gHoldRetried = NO; if (remember) { gState[@"holdIgnored"] = @{ @"key": HoldKey(b), @"at": @(now) }; SaveState(); } }
             MSBDChargeAdapter ad = AdapterNow(b);
             NSDictionary *adDict = Dict(b[@"AdapterDetails"]);
-            Log(@"the %@ %@: %@, battery %d %% (%d %% when it went up %.0f s ago), adapter %lld W, kind %llx, \"%@\": %@ until the cable comes out",
-                k ? @"adapter cut" : @"hold", chargeIn > 0 ? @"does not take here" : @"cannot be checked here", inNow, soc, gLeverSoc[k], now - gLeverUp[k],
-                ad.watts, (unsigned long long)ad.familyCode, [adDict[@"Description"] isKindOfClass:[NSString class]] ? adDict[@"Description"] : @"",
-                k ? @"held where it is instead" : @"iPadOS charges as always");
-            gLeverUp[k] = gLeverIn[k] = gLeverAgain[k] = 0;
+            Log(@"the %@ %@: %@, battery %d %% (%d %% when charge began going in %.0f s ago; up %.0f s, %d of %d raise-agains in 6 hours used), adapter %lld W, kind %llx, \"%@\": %@ until the cable comes out%@",
+                k ? @"adapter cut" : @"hold", chargeIn > 0 ? @"does not take here" : @"cannot be checked here", inNow, soc, gLeverSoc[k], now - gLeverIn[k],
+                now - gLeverUp[k], raises, MSBD_CHARGE_LEVER_RAISES, ad.watts, (unsigned long long)ad.familyCode,
+                [adDict[@"Description"] isKindOfClass:[NSString class]] ? adDict[@"Description"] : @"", k ? @"held where it is instead" : @"iPadOS charges as always",
+                k ? @"" : remember ? @"; remembered for this adapter" : chargeIn > 0 ? @"; not remembered (it took earlier in this plug-in)" : @"");
+            gLeverUp[k] = gLeverIn[k] = gLeverAgain[k] = gLeverLook[k] = 0;
             gaveUp = YES;
         }
     }
@@ -1211,6 +1243,17 @@ int main(int argc, char **argv) {
             printf("iPadOS's charge limit: %s", socHere ? "offered here" : "not offered here");
             if (socHere) printf(", policies of ours %d", socOurs);
             printf("\n");
+            // the hold remembered as not taking (the job's state file), and this adapter's key (HoldKey, with the hold the job uses on this iPad)
+            int jobSoc = gSoc; gSoc = gBattery && !gPMU && socHere;
+            NSString *key = b ? HoldKey(b) : @"(no battery reading)";
+            gSoc = jobSoc;
+            NSDictionary *known = Dict([NSDictionary dictionaryWithContentsOfFile:@kStateFile][@"holdIgnored"]);
+            NSString *was = [known[@"key"] isKindOfClass:[NSString class]] ? known[@"key"] : nil;
+            double at = [known[@"at"] respondsToSelector:@selector(doubleValue)] ? [known[@"at"] doubleValue] : 0, nowT = [NSDate date].timeIntervalSince1970;
+            if (!was.length) printf("hold remembered as not taking: none (this adapter: %s)\n", key.UTF8String);
+            else printf("hold remembered as not taking: %s, %.1f days ago: %s (this adapter: %s)\n", was.UTF8String, (nowT - at) / 86400,
+                        MSBDChargeHoldKnownIgnored(was.UTF8String, at, key.UTF8String, nowT) ? "applies to this adapter (tried again when the hold is due)" : "not this adapter, or more than 7 days ago",
+                        key.UTF8String);
             return 0;
         }
         if (argc > 1) {   // (any other word: how to use it, and nothing touched -- an unknown one used to start a second job, A12Z 10 Nov)

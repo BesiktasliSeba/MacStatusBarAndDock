@@ -2968,13 +2968,34 @@ static BOOL DMIconKeptInDock(id icon) {   // (in the Dock list itself: a kept ap
     SEL has = NSSelectorFromString(@"directlyContainsIcon:");
     return icon && [dock respondsToSelector:has] && ((BOOL (*)(id, SEL, id))objc_msgSend)(dock, has, icon);
 }
-static BOOL DMRemoveFromDock(id icon) {   // (YES: it left the Dock for the Home Screen)
+// How many times the Home Screen's pages hold an icon (the root folder's -lists, IconState's iconLists; the Dock is not among them); -1 when they
+// can't be read. Remove from Dock decides from this whether it placed the app, not from what SpringBoard's insert returns (1.8.7.5, TRASH15B): on
+// iPadOS 15 -[SBFolder insertIcon:atGridPath:options:] places the app and returns nil (the M1's 15.6.1 trace, every drop), so the add after it
+// (-addIcon:options:listGridCellInfoOptions:, for "nowhere to put it") placed the app a second time. Where that add went to the page the first
+// had used, the page's own insert took the first copy out (one copy, as in the trace's 6 drops); where it went to another page, the app was on
+// the Home Screen twice (1.8.7.4's device check: [2][23] and the last page's end [3][3], SpringBoard's numberOfIcons 78 -> 79).
+static NSInteger DMIconHomePlaces(id root, id dock, id icon) {
+    NSArray *pages = DMObj(root, @"lists");
+    if (!icon || ![pages isKindOfClass:[NSArray class]]) return -1;
+    NSInteger n = 0;
+    for (id page in pages) {
+        NSArray *held = page == dock ? nil : DMObj(page, @"icons");
+        if ([held isKindOfClass:[NSArray class]]) for (id x in held) if (x == icon) n++;
+    }
+    return n;
+}
+static BOOL DMRemoveFromDock(id icon) {   // (YES: it left the Dock for one place on the Home Screen)
     DM_FEATURE_MARK("dock-remove-from-dock");
     id mgr = nil, model = nil;
     id root = DMIconModelRoot(&mgr, &model);
     id dock = DMObj(root, @"dock");
     NSArray *icons = DMObj(dock, @"icons");
     if (!root || !dock || ![icons isKindOfClass:[NSArray class]] || ![icons containsObject:icon]) return NO;
+    NSInteger before = DMIconHomePlaces(root, dock, icon);
+    if (before != 0) {   // (where it goes could not be read, or it is on a page already: nothing is moved)
+        DMLog(before < 0 ? @"[dock] Remove from Dock: the Home Screen's pages can't be read here, kept in the Dock" : @"[dock] Remove from Dock: already on the Home Screen, kept in the Dock");
+        return NO;
+    }
     NSUInteger oldIndex = [icons indexOfObject:icon];
     SEL optsSel = NSSelectorFromString(@"gridCellInfoOptions"), freeSel = NSSelectorFromString(@"gridPathForFirstFreeSlotAvoidingFirstList:listGridCellInfoOptions:");
     SEL insertSel = NSSelectorFromString(@"insertIcon:atGridPath:options:"), addSel = NSSelectorFromString(@"addIcon:options:listGridCellInfoOptions:");
@@ -2983,19 +3004,26 @@ static BOOL DMRemoveFromDock(id icon) {   // (YES: it left the Dock for the Home
     unsigned long long opts = [mgr respondsToSelector:optsSel] ? ((unsigned long long (*)(id, SEL))objc_msgSend)(mgr, optsSel) : 0;
     id path = [root respondsToSelector:freeSel] ? ((id (*)(id, SEL, BOOL, unsigned long long))objc_msgSend)(root, freeSel, NO, opts) : nil;
     ((void (*)(id, SEL, id))objc_msgSend)(dock, removeSel, @[icon]);
-    id placed = nil;
-    @try {
-        if (path && [root respondsToSelector:insertSel]) placed = ((id (*)(id, SEL, id, id, unsigned long long))objc_msgSend)(root, insertSel, icon, path, 0);
-        if (!placed && [root respondsToSelector:addSel]) placed = ((id (*)(id, SEL, id, unsigned long long, unsigned long long))objc_msgSend)(root, addSel, icon, 0, opts);
-    } @catch (NSException *e) { placed = nil; }
-    if (!placed) {   // (nowhere to put it: it stays in the Dock where it was, nothing lost)
+    NSInteger places = 0;
+    BOOL added = NO;
+    @try {   // (the first free place; SpringBoard's add only when the pages show the app nowhere after it)
+        if (path && [root respondsToSelector:insertSel]) ((id (*)(id, SEL, id, id, unsigned long long))objc_msgSend)(root, insertSel, icon, path, 0);
+        places = DMIconHomePlaces(root, dock, icon);
+        if (places == 0 && [root respondsToSelector:addSel]) {
+            added = YES;
+            ((id (*)(id, SEL, id, unsigned long long, unsigned long long))objc_msgSend)(root, addSel, icon, 0, opts);
+            places = DMIconHomePlaces(root, dock, icon);
+        }
+    } @catch (NSException *e) { places = DMIconHomePlaces(root, dock, icon); }   // (placed before it threw: it stays placed, never put back as well)
+    if (places <= 0) {   // (nowhere to put it: it stays in the Dock where it was, nothing lost)
         if ([dock respondsToSelector:putBackSel]) ((void (*)(id, SEL, id, NSUInteger, unsigned long long))objc_msgSend)(dock, putBackSel, @[icon], oldIndex, 0);
         DMLog(@"[dock] Remove from Dock: no free place on the Home Screen, kept in the Dock");
         return NO;
     }
     if ([model respondsToSelector:NSSelectorFromString(@"markIconStateDirty")]) ((void (*)(id, SEL))objc_msgSend)(model, NSSelectorFromString(@"markIconStateDirty"));
     if ([model respondsToSelector:NSSelectorFromString(@"saveIconStateIfNeeded")]) ((BOOL (*)(id, SEL))objc_msgSend)(model, NSSelectorFromString(@"saveIconStateIfNeeded"));
-    DMLog([NSString stringWithFormat:@"[dock] Remove from Dock: %@ moved to the Home Screen at %@", DMObj(icon, @"applicationBundleID"), path]);
+    DMLog([NSString stringWithFormat:@"[dock] Remove from Dock: %@ moved to the Home Screen at %@", DMObj(icon, @"applicationBundleID"), added ? @"the place SpringBoard adds an app to" : path]);
+    if (places > 1) DMLog([NSString stringWithFormat:@"[dock] Remove from Dock: %@ is on the Home Screen %ld times", DMObj(icon, @"applicationBundleID"), (long)places]);   // (never expected: names it)
     return YES;
 }
 // Our own apps kept in the Dock (1.7.3: Activity Monitor, MacStatusBar's ActMonDock.h): an icon of SpringBoard's with our identifier and no
@@ -3014,6 +3042,17 @@ BOOL DMTrashRemoveIconFromDock(id icon) {
     if (!DMDockAppsCanLeave() || !DMIconKeptInDock(icon) || ![DMObj(icon, @"applicationBundleID") isKindOfClass:[NSString class]]) return NO;
     return DMRemoveFromDock(icon);
 }
+// The icon a drag names, read through iPadOS 15's placeholder (1.8.7.4): 15's icon drag takes the icon out of its list and puts a placeholder in
+// its place (SBPlaceholderIcon, an SBIcon with no bundle identifier; -[SBIconDragManager _replaceDraggedIconViewWithPlaceholder:]), which leaves
+// the Dock's list once the drag is off it, and its drag context can name that placeholder instead of the app (15.5's SpringBoardHome; the M1's
+// 15.6.1 log: "app 0 ... kept in the Dock 0"). The icon it stands for is its -referencedIcon. Any other icon is itself (16 to 18 name the icon).
+// *standIn: a placeholder stood in for it, so the drag took the icon out of its list (15's drag manager has no -isManagingTemporarilyRemovedIcon:).
+static id DMTrashDraggedIcon(id icon, BOOL *standIn) {
+    Class placeholder = objc_getClass("SBPlaceholderIcon");
+    if (!placeholder || ![icon isKindOfClass:placeholder]) return icon;
+    if (standIn) *standIn = YES;
+    return DMObj(icon, @"referencedIcon");
+}
 // What one of SpringBoard's own icon drags carries, for a drop on the bin (common/DockTrash.h MSBDTrashRemovesFromDock): SpringBoard's icon drag
 // manager knows the drag by its session (-iconDragContextForDropSession:); its context names the icons and the icon view the drag began on (its
 // location: the Dock's own list, its recents, the Home Screen). NO when the session is not an icon drag of SpringBoard's.
@@ -3031,17 +3070,60 @@ BOOL DMTrashIconDragInfo(id session, MSBDTrashIconDrag *info, id *iconOut) {
     id dragged = DMObj(ctx, @"draggedIcons");
     info->count = [dragged respondsToSelector:@selector(count)] ? [dragged count] : 0;
     UIView *view = DMObj(ctx, @"primaryIconView");
-    id icon = DMObj(view, @"icon");
-    if (!icon && [dragged respondsToSelector:@selector(anyObject)]) icon = [dragged anyObject];
+    BOOL standIn = NO;
+    id icon = DMTrashDraggedIcon(DMObj(view, @"icon"), &standIn);
+    if (!icon && [dragged respondsToSelector:@selector(anyObject)]) icon = DMTrashDraggedIcon([dragged anyObject], &standIn);
+    if (standIn) DMLog([NSString stringWithFormat:@"[trash] the drag names SpringBoard's placeholder, not the icon (iPadOS 15): read as the icon it stands for (%@)", icon ? NSStringFromClass([icon class]) : @"none"]);
     info->isApp = [DMObj(icon, @"applicationBundleID") isKindOfClass:[NSString class]] || DMIsOwnAppIcon(icon);   // (Activity Monitor too, 1.7.3)
     SEL folderSel = NSSelectorFromString(@"isFolderIcon");
     info->isFolder = [icon respondsToSelector:folderSel] && ((BOOL (*)(id, SEL))objc_msgSend)(icon, folderSel);
     info->fromDock = MSBDTrashLocationIsDock(DMObj(view, @"location"));
-    SEL tempSel = NSSelectorFromString(@"isManagingTemporarilyRemovedIcon:");   // (an icon dragged out of its list is taken out of it while the drag lasts)
-    BOOL taken = icon && [drags respondsToSelector:tempSel] && ((BOOL (*)(id, SEL, id))objc_msgSend)(drags, tempSel, icon);
+    // (an icon dragged out of its list is out of it while the drag lasts: the drag manager's record where it has one; 15: a placeholder in its place)
+    SEL tempSel = NSSelectorFromString(@"isManagingTemporarilyRemovedIcon:");
+    BOOL taken = icon && (standIn || ([drags respondsToSelector:tempSel] && ((BOOL (*)(id, SEL, id))objc_msgSend)(drags, tempSel, icon)));
     info->keptInDock = DMIconKeptInDock(icon) || (taken && info->fromDock);
     if (iconOut) *iconOut = icon;
     return YES;
+}
+// ---- the Trash and Edit Home Screen (1.8.7.5, TRASH15B) ----
+// SpringBoard turns Edit Home Screen on as an icon drag begins (the M1's 15.6.1 trace, every Dock icon drag: -[SBIconView dragSessionWillBegin:] ->
+// -[SBIconDragManager iconViewWillBeginDrag:session:] -> -[SBHIconManager setEditing:fromIconView: YES]) and ends it with Done or its own timer,
+// 30 s later. A drop on our bin concludes no icon drop of SpringBoard's, so after the app had left the Dock the Home Screen kept jiggling for 30 s.
+// Each icon drag keeps whether Edit Home Screen was on as it began (on its drag session, read before SpringBoard's own begin); the bin ends it after
+// its drop only when that drag turned it on. Edit Home Screen the user turned on stays; a drag whose begin was not seen changes nothing.
+static const void *kDMDragEditKey = &kDMDragEditKey;
+static id DMHomeIconManager(void) { return DMObj(DMObj((id)objc_getClass("SBIconController"), @"sharedInstance"), @"iconManager"); }
+static BOOL DMHomeEditing(id mgr) { SEL s = NSSelectorFromString(@"isEditing"); return [mgr respondsToSelector:s] && ((BOOL (*)(id, SEL))objc_msgSend)(mgr, s); }
+%group DMDragEditNote   // (only where the icon view's drag begin has its 15-18 shape: see %ctor)
+%hook SBIconView
+- (void)dragInteraction:(id)interaction sessionWillBegin:(id)session {
+    BOOL was = DMHomeEditing(DMHomeIconManager());
+    %orig;
+    if (session) objc_setAssociatedObject(session, kDMDragEditKey, @(was), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+%end
+%end
+// The bin's drop (TrashIcon.m): YES when SpringBoard's icon drag behind this drop session turned Edit Home Screen on (off as it began, on now).
+BOOL DMTrashDragTurnedEditingOn(id session) {
+    id drag = DMObj(session, @"localDragSession");
+    NSNumber *was = drag ? objc_getAssociatedObject(drag, kDMDragEditKey) : nil;
+    BOOL seen = [was isKindOfClass:[NSNumber class]], now = DMHomeEditing(DMHomeIconManager());
+    DMLog([NSString stringWithFormat:@"[trash] Edit Home Screen as the drag began: %@; now %@", seen ? (was.boolValue ? @"on" : @"off") : @"not seen", now ? @"on" : @"off"]);
+    return seen && !was.boolValue && now;
+}
+// After the bin's removal: Edit Home Screen off through SpringBoard's own switch, as its timer ends it (-[SBHIconManager setEditing:], only with the
+// type read on 15-18, v20@0:8B16), unless an icon drag is under way again (ending editing cancels SpringBoard's drags).
+void DMTrashEndDragEditing(void) {
+    id mgr = DMHomeIconManager();
+    if (!DMHomeEditing(mgr)) return;
+    SEL set = NSSelectorFromString(@"setEditing:");
+    Method m = class_getInstanceMethod(object_getClass(mgr), set);
+    if (!m || strcmp(method_getTypeEncoding(m) ?: "", "v20@0:8B16")) { DMLog(@"[trash] Edit Home Screen's switch is not as read here: it stays on"); return; }
+    id drags = DMObj(mgr, @"iconDragManager");
+    SEL busy = NSSelectorFromString(@"isTrackingActiveOrDroppingIconDrags");
+    if ([drags respondsToSelector:busy] && ((BOOL (*)(id, SEL))objc_msgSend)(drags, busy)) { DMLog(@"[trash] another icon drag is under way: Edit Home Screen stays on"); return; }
+    ((void (*)(id, SEL, BOOL))objc_msgSend)(mgr, set, NO);
+    DMLog(@"[trash] Edit Home Screen, turned on by the drag, ended after the drop on the bin");
 }
 %hook SBIconView
 - (NSArray *)applicationShortcutItems {
@@ -3567,6 +3649,13 @@ extern void DMBounceTapped(UIView *iconView, NSString *bid);
         for (const char *e = m ? method_getTypeEncoding(m) : ""; e && *e && n + 1 < sizeof shape; e++) if (*e < '0' || *e > '9') shape[n++] = *e;
         if (!strcmp(shape, "v@:@")) %init(DMBounceTap);
         else DMLog([NSString stringWithFormat:@"[bounce] -[SBIconView tapGestureDidChange:] is %s here: Dock icons do not bounce", m ? shape : "missing"]);
+    }
+    {   // (the Trash and Edit Home Screen, 1.8.7.5: an icon drag's begin, the icon view's drag delegate method in its 15-18 shape -- v@:@@)
+        Method m = class_getInstanceMethod(objc_getClass("SBIconView"), NSSelectorFromString(@"dragInteraction:sessionWillBegin:"));
+        char shape[32] = {0}; size_t n = 0;
+        for (const char *e = m ? method_getTypeEncoding(m) : ""; e && *e && n + 1 < sizeof shape; e++) if (*e < '0' || *e > '9') shape[n++] = *e;
+        if (!strcmp(shape, "v@:@@")) %init(DMDragEditNote);
+        else DMLog([NSString stringWithFormat:@"[trash] -[SBIconView dragInteraction:sessionWillBegin:] is %s here: a drop on the Trash leaves Edit Home Screen as SpringBoard has it", m ? shape : "missing"]);
     }
     {   // (1.7.5 items 12 / 16: a pull from the top edge is never a swipe down -- where the tongue's pull start is as on 15-18)
         Method m = class_getInstanceMethod(objc_getClass("SBGrabberTongue"), NSSelectorFromString(@"_pullGestureBegan:"));

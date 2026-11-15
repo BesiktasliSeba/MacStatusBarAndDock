@@ -10,6 +10,17 @@ static void Expect(const char *what, int got, int want) { printf("%s  %-60s got 
 static long At(int h, int m) { struct tm tm = {0}; tm.tm_year = 126; tm.tm_mon = 8; tm.tm_mday = 26; tm.tm_hour = h; tm.tm_min = m; tm.tm_isdst = -1; return (long)mktime(&tm); }
 static int Count(const char *path, const char *prefix) { FILE *f = fopen(path, "r"); int n = 0; char l[512]; if (!f) return 0; while (fgets(l, sizeof(l), f)) if (strncmp(l, prefix, strlen(prefix)) == 0) n++; fclose(f); return n; }
 static int Lines(const char *path) { FILE *f = fopen(path, "r"); int n = 0, c; if (!f) return 0; while ((c = fgetc(f)) != EOF) if (c == '\n') n++; fclose(f); return n; }
+// 1.8.7.5 (review of round 2): reports of 10:06:00 and 10:06:05 naming SpringBoard 501 (the one before a start at 10:06:00) and one of 10:06:00
+// naming 502 (that start's own), copies of the "ours" fixture with a "pid" in the body, as the system's reports have.
+static void PidReports(int place) {
+    const char *names[3] = { "100600", "100600-2", "100605" }; int pids[3] = { 501, 502, 501 };
+    for (int i = 0; i < 3; i++) {
+        char cmd[1200];
+        if (place) snprintf(cmd, sizeof cmd, "sed '2s/^{$/{ \"pid\": %d,/' crash-fixtures/ours-in-faulting-thread.ips > " MSBD_GUARD_REPORTS "/SpringBoard-2026-09-26-%s.ips", pids[i], names[i]);
+        else snprintf(cmd, sizeof cmd, "rm -f " MSBD_GUARD_REPORTS "/SpringBoard-2026-09-26-%s.ips", names[i]);
+        system(cmd);
+    }
+}
 int main(void) {
     // Reports (set up by the script): 10:00 ours, 10:01 another tweak's, 10:02 Apple-only with our class in the reason, 10:03 garbage (old file),
     // plus a cpu_resource report that is never looked at.
@@ -102,9 +113,26 @@ int main(void) {
         CFRelease(k); CFRelease(d);
         Expect("  ... the list used up", access(MSBD_GUARD_RECENT, F_OK), -1);
     }
+    // 1.8.7.5 (review of round 2): a report's SpringBoard (MacCrashBlame MSBDCrashPid), and a count from a start leaves out the crash of the
+    // SpringBoard before it, whatever second its report names; the new SpringBoard's own crash in that second counts.
+    Expect("a report's pid: the body's (a watchdog report, before its reshaping)", MSBDGuardReportPid("crash-fixtures/watchdog-stuck-main.ips"), 4707);
+    Expect("  a report naming none: -1", MSBDGuardReportPid("crash-fixtures/ours-in-faulting-thread.ips"), -1);
+    Expect("  an unreadable one: -1", MSBDGuardReportPid(MSBD_GUARD_REPORTS "/SpringBoard-2026-09-26-100300.ips"), -1);
+    Expect("  a missing one: -1", MSBDGuardReportPid(MSBD_GUARD_REPORTS "/SpringBoard-none.ips"), -1);
+    PidReports(1);
+    Expect("from 10:06:00 after SpringBoard 501: only 502's crash (501's of that second and its late one not)", MSBDGuardCrashesFrom(At(10, 6), 501), 1);
+    Expect("  no SpringBoard before (prev 0): all three", MSBDGuardCrashesFrom(At(10, 6), 0), 3);
+    Expect("  MSBDGuardCrashes (the Aerial 5.0 probation): all three, as before", MSBDGuardCrashes(At(10, 6)), 3);
+    memset(&gMSBDLastCrash, 0, sizeof(gMSBDLastCrash));
+    MSBDGuardCrashesFrom(At(10, 6), 501);
+    Expect("  the record's crash: 502's, never one left out", strstr(gMSBDLastCrash.path, "100600-2") != NULL, 1);
+    PidReports(0);
 #else
     Expect("helper missing: every report counts (the old behaviour)", MSBDGuardCrashes(0), 4);
     Expect("helper missing: no verdicts kept (judged once it is there)", Lines(MSBD_GUARD_VERDICTS), 0);
+    PidReports(1);
+    Expect("helper missing: no report's SpringBoard can be told, so all count (as before)", MSBDGuardCrashesFrom(At(10, 6), 501), 3);
+    PidReports(0);
 #endif
     return fails ? 1 : 0;
 }

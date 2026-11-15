@@ -246,6 +246,10 @@ static dispatch_queue_t DMAMSampleQueue(void) {
         NSComparisonResult r;
         if (_sortCol == 0) r = [a.name localizedCaseInsensitiveCompare:b.name];
         else if (_sortCol == _colCount - 1) r = (a.pid < b.pid ? NSOrderedAscending : a.pid > b.pid ? NSOrderedDescending : NSOrderedSame);
+        // (CPU Time, the CPU tab's column 2: the process's CPU time -- 1.8.7.5, audit L77 of 1.8.7.2: it fell to the tab's metric, % CPU; a row
+        //  without figures, shown "–", below every row with them, as a missing figure reads in the other columns)
+        else if (_tab == DMAMTabCPU && _sortCol == 2) r = a.haveStats != b.haveStats ? (a.haveStats ? NSOrderedDescending : NSOrderedAscending)
+            : !a.haveStats ? NSOrderedSame : (a.cpuNs < b.cpuNs ? NSOrderedAscending : a.cpuNs > b.cpuNs ? NSOrderedDescending : NSOrderedSame);
         else if (_tab == DMAMTabCPU && _sortCol == 3) r = (a.threads < b.threads ? NSOrderedAscending : a.threads > b.threads ? NSOrderedDescending : NSOrderedSame);
         else if (_tab != DMAMTabCPU && _sortCol == 2) r = (a.threads < b.threads ? NSOrderedAscending : a.threads > b.threads ? NSOrderedDescending : NSOrderedSame);
         else { double x = [self dm_metric:a], y = [self dm_metric:b]; r = (x < y ? NSOrderedAscending : x > y ? NSOrderedDescending : NSOrderedSame); }

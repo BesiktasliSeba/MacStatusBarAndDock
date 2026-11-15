@@ -86,6 +86,13 @@ static inline BOOL MSBDExSetMembership(NSMutableArray *list, NSArray *add, NSArr
     for (NSString *n in remove) if ([list containsObject:n]) { while ([list containsObject:n]) [list removeObject:n]; changed = YES; MSBDExRecordChange(record, listKey, n, NO); }
     return changed;
 }
+// One of Choicy's switches (customTweakConfigurationEnabled, tweakInjectionDisabled, overwriteGlobalTweakConfiguration) as Choicy reads it: the
+// -boolValue of a number (Choicy's own) or a string (a hand edit's "1" or "YES"); anything else in that place is off. The file is another
+// package's: an array, a dictionary, data or a date there (a damaged or foreign file) does not answer -boolValue, which raised in the root helper
+// 3 s after each of its starts, so launchd restarted it in a loop and SSH, ejects, iCleaner, the engines, Sleep Guard all stopped (audit L23).
+static inline BOOL MSBDExChoicyBool(id v) {
+    return ([v isKindOfClass:[NSNumber class]] || [v isKindOfClass:[NSString class]]) && [v boolValue];
+}
 // Choicy's allow/deny mode for SpringBoard's own list: 1 (allow list) or 2 (deny list); missing = 1; anything else = 0 (unknown: left alone).
 static inline NSInteger MSBDExChoicyMode(NSDictionary *sb) {
     id m = [sb isKindOfClass:[NSDictionary class]] ? sb[@"allowDenyMode"] : nil;
@@ -111,13 +118,13 @@ static inline BOOL MSBDExChoicyApply(NSMutableDictionary *prefs, NSMutableDictio
     prefs[@"globalDeniedTweaks"] = global;
     NSMutableDictionary *apps = [prefs[@"appSettings"] isKindOfClass:[NSDictionary class]] ? [prefs[@"appSettings"] mutableCopy] : nil;
     NSMutableDictionary *sb = [apps[@"com.apple.springboard"] isKindOfClass:[NSDictionary class]] ? [apps[@"com.apple.springboard"] mutableCopy] : nil;
-    if (![sb[@"customTweakConfigurationEnabled"] boolValue]) return changed;
+    if (!MSBDExChoicyBool(sb[@"customTweakConfigurationEnabled"])) return changed;
     NSInteger mode = MSBDExChoicyMode(sb);
     if (!mode) { [log addObject:@"Choicy's SpringBoard mode is unknown -- its SpringBoard list left as it is"]; return changed; }
     NSString *listKey = mode == 2 ? @"deniedTweaks" : @"allowedTweaks";
     NSMutableArray *list = [sb[listKey] isKindOfClass:[NSArray class]] ? [sb[listKey] mutableCopy] : [NSMutableArray array];
     NSString *rk = [@"springboard." stringByAppendingString:listKey];
-    BOOL c = mode == 2 ? MSBDExSetMembership(list, [sb[@"overwriteGlobalTweakConfiguration"] boolValue] ? deny : @[], keep, rk, record)
+    BOOL c = mode == 2 ? MSBDExSetMembership(list, MSBDExChoicyBool(sb[@"overwriteGlobalTweakConfiguration"]) ? deny : @[], keep, rk, record)
                        : MSBDExSetMembership(list, keep, deny, rk, record);
     if (c) { sb[listKey] = list; apps[@"com.apple.springboard"] = sb; prefs[@"appSettings"] = apps; changed = YES; }
     return changed;
@@ -203,8 +210,7 @@ static inline BOOL MSBDExUserOff(NSString *lib, NSDictionary *choicy, NSDictiona
     if ([denied containsObject:lib] && ![ours[lib] isEqual:@"added"]) return YES;
     NSDictionary *apps = [choicy isKindOfClass:[NSDictionary class]] && [choicy[@"appSettings"] isKindOfClass:[NSDictionary class]] ? choicy[@"appSettings"] : nil;
     NSDictionary *sb = [apps[@"com.apple.springboard"] isKindOfClass:[NSDictionary class]] ? apps[@"com.apple.springboard"] : nil;
-    id custom = sb[@"customTweakConfigurationEnabled"];
-    NSInteger mode = [custom respondsToSelector:@selector(boolValue)] && [custom boolValue] ? MSBDExChoicyMode(sb) : 0;   // (SpringBoard reads this too: no exception on odd values)
+    NSInteger mode = MSBDExChoicyBool(sb[@"customTweakConfigurationEnabled"]) ? MSBDExChoicyMode(sb) : 0;   // (SpringBoard reads this too: no exception on odd values)
     if (mode) {
         NSString *listKey = mode == 2 ? @"deniedTweaks" : @"allowedTweaks";
         NSArray *list = [sb[listKey] isKindOfClass:[NSArray class]] ? sb[listKey] : @[];

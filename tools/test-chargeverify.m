@@ -6,7 +6,8 @@
 // held (run72-ipad17.log).
 // Charge going in is an Amperage reading over 100 mA or IsCharging 1; a level 3 % up counts only with it (a gauge correction is no charge), and a
 // missing Amperage reading is never "it takes".
-// A hold remembered as not taking is remembered for that build of the job too (newbuild-first, then newbuild-next in a second process).
+// A hold remembered as not taking is remembered for that build of the job too (newbuild-first, then newbuild-next in a second process), and tried
+// again there when it is due: given up again where it does not take (1.8.7.5).
 // Scenarios (one per run): a12z, pd17, m1, brick17, replug, remember, otherprefs, gauge, noamp, noreadings, newbuild-first, newbuild-next.
 #include "chargejob-sim.h"
 #ifndef SIM_BUILD
@@ -76,8 +77,8 @@ int main(int argc, char **argv) {
             B.soc = 90; B.loadMA = 120; B.cable = 1; SimPowerSourceChanged();
             gCutSeen = 0; gAwakeAfter = 0;
             Watch(120, 0);
-            Expect("plugged in again at 90 % with the same adapter: no cut and no stay-awake for a hold known not to take (remembered for 7 days)",
-                   gCutSeen == 0 && gAwakeAfter == 0 && SimPublishedState() == kTestCantHold);
+            Expect("plugged in again at 90 % with the same adapter: no cut, no stay-awake but the check's few minutes for a hold known not to take (remembered for 7 days)",
+                   gCutSeen == 0 && gAwakeAfter <= 5 && SimPublishedState() == kTestCantHold);
             gSimNow += 8 * 86400; B.cable = 0; SimPowerSourceChanged(); B.soc = 79.6; B.cable = 1; SimPowerSourceChanged(); SimMinutes(1);
             Expect("  ... 8 days later the hold is tried again", SimHeldBy(500, "ChargeInhibit"));
         } else if (!strcmp(s, "otherprefs")) {   // the memory and the tweak's other settings: about 50 rows of Status Bar, Windows and Live Activities
@@ -91,8 +92,8 @@ int main(int argc, char **argv) {
             B.soc = 90; B.loadMA = 120; B.cable = 1; SimPowerSourceChanged();
             gCutSeen = 0; gAwakeAfter = 0;
             Watch(60, 0);
-            Expect("a Status Bar setting changed, then plugged in again at 90 %: still remembered (no cut, no stay-awake)",
-                   gCutSeen == 0 && gAwakeAfter == 0 && SimPublishedState() == kTestCantHold);
+            Expect("a Status Bar setting changed, then plugged in again at 90 %: still remembered (no cut, no stay-awake but the check's few minutes)",
+                   gCutSeen == 0 && gAwakeAfter <= 5 && SimPublishedState() == kTestCantHold);
             gSimPrefs[@MSBD_CHARGE_LIMIT_KEY] = @85; notify_post(MSBD_CHARGE_PREFS_CHANGED);   // (the Charge Limit row)
             Expect("  ... the Charge Limit changed to 85 %: the hold is tried again (coming down to it), and said why", SimHeldBy(500, "DisableInflow") &&
                    SimPublishedState() == kMSBDChargeStateComingDown && SimLogHas("a charge setting changed: the hold will be tried again"));
@@ -132,7 +133,14 @@ int main(int argc, char **argv) {
             SimA12Z(); SimSettings(80, 1); B.soc = 79.6;
             SimStartJob(500);
             if (tried) Expect("another build of the job: the hold is tried again (a later build may hold where the last one could not)", SimHeldBy(500, "ChargeInhibit"));
-            else Expect("the same build: still remembered, nothing held", !SimHeldBy(500, "ChargeInhibit") && SimPublishedState() == kTestCantHold);
+            else {   // (1.8.7.5, issue #13: a remembered give-up is tried again when the hold is due -- no cut, no stay-awake but its check's -- not skipped)
+                double at = [[NSDictionary dictionaryWithContentsOfFile:@kStateFile][@"holdIgnored"][@"at"] doubleValue];
+                Expect("the same build: the remembered hold tried once more (held where it is), no cut, not kept awake", SimHeldBy(500, "ChargeInhibit") &&
+                       !SimHeldBy(500, "DisableInflow") && !SimHeldBy(500, "PreventUserIdleSystemSleep"));
+                Watch(5, 0);
+                Expect("  ... given up again within 5 minutes, remembered again (a new date), never cut, kept awake only for the check", SimPublishedState() == kTestCantHold &&
+                       [[NSDictionary dictionaryWithContentsOfFile:@kStateFile][@"holdIgnored"][@"at"] doubleValue] > at && gCutSeen == 0 && gAwakeAfter <= 5);
+            }
         } else { printf("unknown scenario %s\n", s); return 2; }
     }
     return SimDone();

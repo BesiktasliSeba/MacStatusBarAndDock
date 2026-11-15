@@ -13,8 +13,8 @@ S=../statusbar/StatusBar.x
 # item 5: Aerial, Zetsu, MilkyWay4
 check "item 5: each window's layout is noted while the screen keeps its shape (not while a hand moves it, not while it is not shown), held after a change" \
   "grep -q 'int i = MSBDTurnLayoutIndex(f, t, kMSBDTurnLayoutCount, kMSBDTurnLayoutTolerance);' $S && grep -q 'objc_setAssociatedObject(st, kStageLayoutNameKey, i >= 0 ? @(kMSBDTurnLayouts\[i\]) : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);' $S && grep -q 'if (t - lastNote >= 1.0 && DMActiveEngine() != DMEngineNone) { lastNote = t; DMNoteWindowLayouts(); }' $S && grep -q 'DMLayoutNoteHold(2.4);   // (the layouts noted are the old shape' $S"
-check "item 5: the turn puts a window into its layout of the new shape first, then where it was in that shape, then in proportion (fitted)" \
-  "grep -q 'CGRect f = MSBDTurnPlaceFor(lay.length ? DMLayoutFrame(lay) : CGRectNull, saved ? saved.CGRectValue : CGRectNull, DMScaleFrame(from, fromScreen, newSize), &why);' $S && grep -q 'if (why != MSBDTurnLayout) f = DMFitInto(f, usable);' $S"
+check "item 5: the turn puts a window into its layout of the new shape first, then where it was in that shape, then in proportion (fitted: into the desktop, one the user left behind the Dock down to the screen's bottom -- 1.8.7.5, test-engineturnbehind.sh)" \
+  "grep -q 'CGRect f = MSBDTurnPlaceFor(lay.length ? DMLayoutFrame(lay) : CGRectNull, saved ? saved.CGRectValue : CGRectNull, DMScaleFrame(from, fromScreen, newSize), &why);' $S && grep -qF 'if (why != MSBDTurnLayout) { BOOL marked = DMBehindDockHas(b); f = DMFitInto(f, DMBehindDockTurnArea(b, usable));' $S"
 check "item 5: a Mac Switcher desktop that comes back turned keeps the layouts its windows had (the hold before its turn)" \
   "grep -q 'DMLayoutNoteHold(2.4);   // (the layouts its windows had when it was left' ../statusbar/MacSwitcher.h"
 # items 7 and 11: Stage Manager

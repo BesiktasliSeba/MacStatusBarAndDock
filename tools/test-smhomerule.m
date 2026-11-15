@@ -6,7 +6,10 @@
 // bookkeeping (DMSMSwitcherNote) and the desktop choice (DMSMStageIsDesktop) of the 1.3.8 logic test fixes, the Home gesture's keep-still rule
 // (DMSMHGKeepStill, 1.3.9).
 #import <Foundation/Foundation.h>
-#include "../statusbar/SMHomeRule.h"
+#ifndef SMH_RULE_H   // (another copy of the rule: SMHOMERULE_H in tools/test-smhomerule.sh, e.g. the code before a fix)
+#define SMH_RULE_H "../statusbar/SMHomeRule.h"
+#endif
+#include SMH_RULE_H
 
 static int fails = 0, passes = 0;
 #define CHECK(cond, ...) do { if (cond) { passes++; } else { fails++; printf("FAIL: "); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -319,6 +322,82 @@ static void SwitcherDeskStage(void) {
     CHECK(DMSMSwitcherDeskStage(ab, @[a], nil) == NSNotFound && DMSMSwitcherDeskStage(ab, @[ab], nil) == 0, "no live set: the exact match only, as before 1.7.1");
 }
 
+// The Home Screen's own Home press after a Home (1.8.7.5, audit L43 of 1.8.7.2): with Home Minimizes Windows the windows go with Home, and a folder
+// the person was looking at behind them closes with that one Home too (its own press, as with the other engines and with the switch off); with
+// nothing of the Home Screen's open no press (it would go to the first page: the review of 1.8.7.5), nor for a folder left open behind an app.
+// The hide plan's atHome, the one rule for both branches (DMSMHomePressesAtHome) and SMHome.h's hide branch itself, cut out by the script
+// (SMH_HIDE_CUT), with stand-ins for what it calls: each window minimized, then DMSMHomeAfterKeep with the press or not; the folder's state as
+// StatusBar.x keeps it (gHomeFolder, common/HomeFolderRule.h) and SpringBoard's answer (DMHomeFolderOpenNow) when the press runs.
+#include "../common/HomeFolderRule.h"
+static MSBDHomeFolderState gHomeFolder; static BOOL gFolderOpen;
+static BOOL DMHomeFolderOpenNow(void) { return gFolderOpen; }
+static int gAfterKeepCalls; static BOOL gAfterKeepArg; static NSMutableArray<NSString *> *gMinimized;
+static void DMSMHomeAfterKeep(BOOL atHome) { gAfterKeepCalls++; gAfterKeepArg = atHome; }
+static NSString *DMSMItemKey(id item) { return [item isKindOfClass:[NSString class]] ? item : nil; }
+static void DMSMSetMinimized(NSString *key, BOOL on) { if (on) [gMinimized addObject:key]; }
+static NSString *DMSMKeyText(NSString *key) { return key; }
+static void DMLog(NSString *text) { (void)text; }
+#define DM_FEATURE_MARK(name) do { } while (0)
+#define dispatch_async(queue, ...) (__VA_ARGS__)()
+static void HideBranch(NSDictionary *plan, long long prevEnv, NSDictionary *byId, BOOL folderShown, BOOL folderOpen) {   // (SMHome.h's branch for plan[@"hide"])
+    NSString *what = @"test", *why = @"test";
+    (void)what; (void)why;
+    gAfterKeepCalls = 0; gAfterKeepArg = NO; gMinimized = [NSMutableArray array];
+    gHomeFolder = (MSBDHomeFolderState){ folderShown || folderOpen, folderShown, 0 }; gFolderOpen = folderOpen;
+#ifdef SMH_HIDE_CUT
+#include SMH_HIDE_CUT
+#endif
+}
+#undef dispatch_async
+static BOOL PressAtHome(NSDictionary *plan, long long prevEnv, BOOL folderShown) {   // (the rule; a copy from before 1.8.7.5 has none)
+#if SMH_PRESS_RULE == 3
+    return DMSMHomePressesAtHome(plan, prevEnv, folderShown);
+#elif SMH_PRESS_RULE == 2
+    (void)folderShown; return DMSMHomePressesAtHome(plan, prevEnv);   // (1.8.7.5 before its review: no folder asked about)
+#else
+    (void)folderShown; return [plan[@"atHome"] boolValue] && prevEnv == 3;   // (SMHome.h before 1.8.7.5: "BOOL pressAtHome = atHome && prevEnv == 3;")
+#endif
+}
+static void PressAtHomeAfter(const long long *roles, size_t n) {
+    @autoreleasepool {
+        printf("-- the Home Screen's own press after Home (%zu window roles)\n", n);
+#if SMH_PRESS_RULE != 3
+        CHECK(NO, "SMHomeRule.h has DMSMHomePressesAtHome(plan, prevEnv, folderShown) (the one rule for both branches)");
+#endif
+        NSString *why = nil;
+        NSArray *desk = @[W(@"sceneID:com.apple.Preferences-default", roles[0], 10, 0), W(@"sceneID:com.apple.mobilenotes-default", roles[1], 12, 0)];
+        NSArray *withFull = @[W(@"full", roles[0], 20, 2), W(@"a", roles[1], 5, 0)];
+        NSDictionary *byId = @{@"sceneID:com.apple.Preferences-default": @"key:Preferences", @"sceneID:com.apple.mobilenotes-default": @"key:Notes", @"full": @"key:full", @"a": @"key:a"};
+        // the rule itself, on keep plans (as before: the keep branch's atHome && from the desktop on screen, a folder or not)
+        NSDictionary *p = DMSMHomePlan(desk, roles, n, 0, 1, 3, YES, &why);
+        CHECK(PressAtHome(p, 3, NO) && PressAtHome(p, 3, YES), "keep: windows over the Home Screen: its own press, a folder or not (as before)");
+        CHECK(!PressAtHome(DMSMHomePlan(withFull, roles, n, 0, 1, 3, YES, &why), 3, YES), "keep: a full-screen window among them: no press (as before)");
+        CHECK(!PressAtHome(DMSMHomePlan(desk, roles, n, DMSMHomeSwitcherDesk, 1, 2, NO, &why), 2, YES), "keep: from the App Switcher: no press (as before)");
+        // the hide plan says it too
+        p = DMSMHomePlan(desk, roles, n, DMSMHomeHide, 1, 3, YES, &why);
+        CHECK(p[@"hide"] && [p[@"atHome"] boolValue], "hide: windows over the Home Screen: the plan says at Home (L43)");
+        CHECK(PressAtHome(p, 3, YES), "  ... a folder looked at behind the windows: the rule gives the Home Screen's own press");
+        HideBranch(p, 3, byId, YES, YES);
+        CHECK(gMinimized.count == 2 && [gMinimized containsObject:@"key:Preferences"] && [gMinimized containsObject:@"key:Notes"], "  ... SMHome.h's hide branch: each window minimized, as before");
+        CHECK(gAfterKeepCalls == 1 && gAfterKeepArg, "  ... and then the Home Screen's own press: the folder closes with this one Home");
+        CHECK(!PressAtHome(p, 3, NO), "  nothing of the Home Screen's open: no press (the Home Screen stays on its page, as Apple's Home from an app)");
+        HideBranch(p, 3, byId, NO, NO);
+        CHECK(gMinimized.count == 2 && gAfterKeepCalls == 1 && !gAfterKeepArg, "  ... the hide branch: both minimized, the menus closed, no press (no first page)");
+        HideBranch(p, 3, byId, NO, YES);
+        CHECK(gMinimized.count == 2 && gAfterKeepCalls == 1 && !gAfterKeepArg, "  a folder left open behind an app (not looked at): no press, it stays open as iPadOS keeps it");
+        HideBranch(p, 3, byId, YES, NO);
+        CHECK(gMinimized.count == 2 && gAfterKeepCalls == 1 && !gAfterKeepArg, "  the folder looked at has closed by the time the press would run: no press (no first page)");
+        p = DMSMHomePlan(withFull, roles, n, DMSMHomeHide, 1, 3, YES, &why);
+        CHECK(p[@"hide"] && ![p[@"atHome"] boolValue] && !PressAtHome(p, 3, YES), "hide: a full-screen window among them: not at Home, no press");
+        HideBranch(p, 3, byId, YES, YES);
+        CHECK(gMinimized.count == 2 && gAfterKeepCalls == 1 && !gAfterKeepArg, "  ... the hide branch: both minimized, the menus closed, no press (as before)");
+        p = DMSMHomePlan(desk, roles, n, DMSMHomeHide | DMSMHomeSwitcherDesk, 1, 2, NO, &why);
+        CHECK(p[@"hide"] && !PressAtHome(p, 2, YES), "hide: from the App Switcher opened from the desktop: no press");
+        HideBranch(p, 2, byId, YES, YES);
+        CHECK(gMinimized.count == 2 && gAfterKeepCalls == 1 && !gAfterKeepArg, "  ... the hide branch: both minimized, no press (as before)");
+    }
+}
+
 int main(void) {
     const long long four[] = {1, 2, 5, 6};
     const long long seven[] = {1, 2, 5, 6, 7, 8, 9};
@@ -329,6 +408,8 @@ int main(void) {
     StageIsDesktop();
     RuleEdges();
     SwitcherDeskStage();
+    PressAtHomeAfter(four, 4);
+    PressAtHomeAfter(seven, 7);
     printf("test-smhomerule: %d checks, %d failed\n", passes + fails, fails);
     return fails ? 1 : 0;
 }

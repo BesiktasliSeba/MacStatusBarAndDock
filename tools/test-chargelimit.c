@@ -68,17 +68,33 @@ int main(void) {
     Expect("  ... not when full", MSBDChargeNeedsPulse(kMSBDChargeAllow, 1, 0, 1, 60, 999, 9999), 0);
     Expect("  ... not while holding", MSBDChargeNeedsPulse(kMSBDChargeHold, 1, 0, 0, 60, 999, 9999), 0);
     Expect("  ... not twice in 10 minutes", MSBDChargeNeedsPulse(kMSBDChargeAllow, 1, 0, 0, 60, 999, 300), 0);
-    // the hold and the cut checked against the battery (MSBDChargeLeverCheck: charge in, for how long, raised again, since when, level risen by)
-    Expect("lever: charge going in for 2 minutes: raised again", MSBDChargeLeverCheck(1, 120, 0, 0, 1), kMSBDLeverRaiseAgain);
-    Expect("  ... for 100 s (the battery settling): wait", MSBDChargeLeverCheck(1, 100, 0, 0, 0), kMSBDLeverFine);
-    Expect("  ... raised again and still in 2 minutes later: it does not take here", MSBDChargeLeverCheck(1, 300, 1, 120, 2), kMSBDLeverIgnored);
-    Expect("  ... raised again, 1 minute later: wait", MSBDChargeLeverCheck(1, 200, 1, 60, 2), kMSBDLeverFine);
-    Expect("  ... the level 3 % above where it went up: it does not take, at once", MSBDChargeLeverCheck(1, 30, 0, 0, 3), kMSBDLeverIgnored);
-    Expect("  ... no charge in (a trickle or a load the adapter cannot carry): it takes", MSBDChargeLeverCheck(0, 0, 1, 500, 0), kMSBDLeverFine);
-    Expect("  ... the level 3 % up with no charge in (a gauge correction during a long hold): it takes", MSBDChargeLeverCheck(0, 0, 0, 0, 3), kMSBDLeverFine);
-    Expect("  ... no current reading (unknown) for 2 minutes: not \"it takes\", raised again", MSBDChargeLeverCheck(-1, 120, 0, 0, 0), kMSBDLeverRaiseAgain);
-    Expect("  ... unknown, raised again 2 minutes before: given up (iPadOS's own charging)", MSBDChargeLeverCheck(-1, 300, 1, 120, 0), kMSBDLeverIgnored);
-    Expect("  ... unknown, the level 3 % up after 30 s: no verdict from the level alone", MSBDChargeLeverCheck(-1, 30, 0, 0, 3), kMSBDLeverFine);
+    // the hold and the cut checked against the battery (MSBDChargeLeverCheck, for a stretch of charge going in: charge in, for how long, raised again
+    // in it, since when, the level's rise since it began, raise-agains earlier in the plug-in)
+    Expect("lever: charge going in for 2 minutes: raised again", MSBDChargeLeverCheck(1, 120, 0, 0, 1, 0), kMSBDLeverRaiseAgain);
+    Expect("  ... for 100 s (the battery settling): wait", MSBDChargeLeverCheck(1, 100, 0, 0, 0, 0), kMSBDLeverFine);
+    Expect("  ... raised again and still in 2 minutes later: it does not take here", MSBDChargeLeverCheck(1, 300, 1, 120, 2, 1), kMSBDLeverIgnored);
+    Expect("  ... raised again, 1 minute later: wait", MSBDChargeLeverCheck(1, 200, 1, 60, 2, 1), kMSBDLeverFine);
+    Expect("  ... the level 3 % above where the stretch began, not raised again yet: raised again first (a lapse, issue #13), not given up",
+           MSBDChargeLeverCheck(1, 30, 0, 0, 3, 0), kMSBDLeverFine);
+    Expect("  ... the same 2 minutes into the stretch: raised again", MSBDChargeLeverCheck(1, 120, 0, 0, 5, 0), kMSBDLeverRaiseAgain);
+    Expect("  ... the level 3 % up after the raise-again: it does not take, at once", MSBDChargeLeverCheck(1, 30, 1, 30, 3, 1), kMSBDLeverIgnored);
+    Expect("  ... raised again 3 times in the plug-in: a 4th stretch 2 minutes on gives it up", MSBDChargeLeverCheck(1, 120, 0, 0, 0, 3), kMSBDLeverIgnored);
+    Expect("  ... after 2: raised again", MSBDChargeLeverCheck(1, 120, 0, 0, 0, 2), kMSBDLeverRaiseAgain);
+    double raisedAt[3] = { 10000, 20000, 30000 }, h6 = 6 * 3600;
+    Expect("raise-agains that count: 3 in the last 6 hours", MSBDChargeLeverRaisesSince(raisedAt, 3, 30000 + 60), 3);
+    Expect("  ... the first 6 hours ago or more: given back (a lapse once a night is raised again every night)", MSBDChargeLeverRaisesSince(raisedAt, 3, 10000 + h6), 2);
+    Expect("  ... all of them over 6 hours ago: none", MSBDChargeLeverRaisesSince(raisedAt, 3, 30000 + h6 + 1), 0);
+    Expect("  ... an empty slot, or one after now (the clock set back), does not count", MSBDChargeLeverRaisesSince((double[3]){ 0, 40000, 20000 }, 3, 30000), 1);
+    Expect("  ... no charge in (a trickle or a load the adapter cannot carry): it takes", MSBDChargeLeverCheck(0, 0, 1, 500, 0, 1), kMSBDLeverFine);
+    Expect("  ... the level 3 % up with no charge in (a gauge correction during a long hold): it takes", MSBDChargeLeverCheck(0, 0, 0, 0, 3, 0), kMSBDLeverFine);
+    Expect("  ... no current reading (unknown) for 2 minutes: not \"it takes\", raised again", MSBDChargeLeverCheck(-1, 120, 0, 0, 0, 0), kMSBDLeverRaiseAgain);
+    Expect("  ... unknown, raised again 2 minutes before: given up (iPadOS's own charging)", MSBDChargeLeverCheck(-1, 300, 1, 120, 0, 1), kMSBDLeverIgnored);
+    Expect("  ... unknown, the level 3 % up after 30 s: no verdict from the level alone", MSBDChargeLeverCheck(-1, 30, 0, 0, 3, 0), kMSBDLeverFine);
+    Expect("  ... unknown, raised again, the level 3 % up after 30 s: no verdict from the level alone", MSBDChargeLeverCheck(-1, 30, 1, 30, 3, 1), kMSBDLeverFine);
+    Expect("hold seen to take: up 2 minutes, no charge in, at 60 %", MSBDChargeHoldSeenTaking(0, 120, 0, 60), 1);
+    Expect("  ... not 100 s up (settling), nor with charge in or unknown", MSBDChargeHoldSeenTaking(0, 100, 0, 60) || MSBDChargeHoldSeenTaking(1, 500, 0, 60) ||
+           MSBDChargeHoldSeenTaking(-1, 500, 0, 60), 0);
+    Expect("  ... nor full or at 95 % and over (iPadOS charges nothing there either)", MSBDChargeHoldSeenTaking(0, 500, 1, 100) || MSBDChargeHoldSeenTaking(0, 500, 0, 95), 0);
     Expect("can't-pause state's number in the state word (the bar and Settings read it)", kMSBDChargeStateCantHold, 7);
     Expect("a hold that did not take, remembered: the same adapter on the same build 6 days on", MSBDChargeHoldKnownIgnored("22F76|e0024005|", 1000, "22F76|e0024005|", 1000 + 6 * day), 1);
     Expect("  ... not after 7 days", MSBDChargeHoldKnownIgnored("22F76|e0024005|", 1000, "22F76|e0024005|", 1000 + 7 * day), 0);
@@ -92,6 +108,33 @@ int main(void) {
     MSBDChargeIn trial = { 80, 85, 1, 0, kMSBDChargeHold, 1, 1, 1, 0, 0, 1 };
     o = MSBDChargeDecide(trial); Expect("hold on trial (charge still going in), level 85: held, no cut while the check decides", o.action, kMSBDChargeHold);
     trial.holdOnTrial = 0; o = MSBDChargeDecide(trial); Expect("  ... a hold that took, the gauge at 85: coming down as before", o.action, kMSBDChargeDown);
+    MSBDChargeIn re = { 80, 90, 1, 0, kMSBDChargeAllow, 1, 1, 1, 0, 0, 0, 1 };
+    o = MSBDChargeDecide(re); Expect("a remembered hold tried again, plugged in at 90 %: held where it is (no cut), not kept awake",
+                                     o.action == kMSBDChargeHold && o.state == kMSBDChargeStateOnHold && !o.keepAwake, 1);
+    re.soc = 70; o = MSBDChargeDecide(re); Expect("  ... at 70 %: charging to the limit, not kept awake", o.action == kMSBDChargeAllow && o.state == kMSBDChargeStateCharging && !o.keepAwake, 1);
+    re.soc = 80; o = MSBDChargeDecide(re); Expect("  ... at the limit: held", o.action, kMSBDChargeHold);
+    re.soc = 90; re.holdIgnored = 1; o = MSBDChargeDecide(re); Expect("  ... given up again: \"can't pause charging\"", o.action == kMSBDChargeAllow && o.state == kMSBDChargeStateCantHold, 1);
+    re.holdIgnored = 0; re.holdRetried = 0; o = MSBDChargeDecide(re); Expect("  ... not tried (none remembered), at 90 %: coming down as always", o.action == kMSBDChargeDown && o.keepAwake, 1);
+    // the trial at 95 % and over: no charge goes in there with or without a hold once topped up, so nothing can show it takes
+    MSBDChargeIn top = { 80, 100, 1, 0, kMSBDChargeAllow, 1, 1, 1, 0, 0, 0, 1 };
+    o = MSBDChargeDecide(top); Expect("a remembered hold, plugged in (or woken) at 100 %: not tried up there (nothing held), \"can't pause\" as remembered",
+                                      o.action == kMSBDChargeAllow && o.state == kMSBDChargeStateCantHold && !o.keepAwake, 1);
+    top.soc = 95; o = MSBDChargeDecide(top); Expect("  ... at 95 % too", o.action == kMSBDChargeAllow && o.state == kMSBDChargeStateCantHold, 1);
+    top.soc = 94; o = MSBDChargeDecide(top); Expect("  ... at 94 % (iPadOS charges there): tried, held where it is", o.action == kMSBDChargeHold && o.state == kMSBDChargeStateOnHold, 1);
+    top.soc = 96; top.prev = kMSBDChargeHold; top.holdOnTrial = 1; o = MSBDChargeDecide(top);
+    Expect("  ... tried at 94 %, charge going in, the level at 96 % meanwhile: kept up until its check decides", o.action, kMSBDChargeHold);
+    top.holdOnTrial = 0; o = MSBDChargeDecide(top); Expect("  ... at 96 % with no charge going in: let go (it cannot be seen to take there)", o.action == kMSBDChargeAllow && o.state == kMSBDChargeStateCantHold, 1);
+    top.holdRetried = 0; top.prev = kMSBDChargeAllow; o = MSBDChargeDecide(top); Expect("  ... none remembered, at 96 %: coming down as always", o.action, kMSBDChargeDown);
+    // the hold's check under way (charge going in while it is up): kept awake while held, so that it can finish
+    MSBDChargeIn chk = { 80, 80, 1, 0, kMSBDChargeHold, 1, 1, 1, 0, 0, 0, 0, 1 };
+    o = MSBDChargeDecide(chk); Expect("charge going in while on hold at the limit: held, kept awake (the check's minutes: asleep it never finishes)",
+                                      o.action == kMSBDChargeHold && o.state == kMSBDChargeStateOnHold && o.keepAwake, 1);
+    chk.soc = 86; chk.holdOnTrial = 1; o = MSBDChargeDecide(chk); Expect("  ... the level passing the band meanwhile: held on trial, kept awake", o.action == kMSBDChargeHold && o.keepAwake, 1);
+    chk.holdRetried = 1; o = MSBDChargeDecide(chk); Expect("  ... a remembered hold tried again: kept awake for its check too, no cut", o.action == kMSBDChargeHold && o.keepAwake, 1);
+    chk.holdRetried = 0; chk.holdIgnored = 1; o = MSBDChargeDecide(chk); Expect("  ... given up: nothing held, not kept awake", o.action == kMSBDChargeAllow && !o.keepAwake, 1);
+    chk.holdIgnored = 0; chk.holdChecked = 0; o = MSBDChargeDecide(chk); Expect("  ... no charge going in (it takes): held, not kept awake (the hold stays in sleep)",
+                                                                                o.action == kMSBDChargeHold && !o.keepAwake, 1);
+    chk.soc = 70; chk.holdChecked = 1; o = MSBDChargeDecide(chk); Expect("  ... under the band (charging to the limit): kept awake as always", o.action == kMSBDChargeAllow && o.keepAwake, 1);
     MSBDChargeIn cutIg = { 80, 95, 1, 0, kMSBDChargeDown, 1, 1, 1, 0, 1, 0 };
     o = MSBDChargeDecide(cutIg); Expect("cut given up during a cut at 95 %: the cut ends, held where it is", o.action == kMSBDChargeHold && o.state == kMSBDChargeStateOnHold, 1);
     cutIg.prev = kMSBDChargeAllow; cutIg.soc = 100; o = MSBDChargeDecide(cutIg); Expect("  ... plugged in at 100 %: held, no cut", o.action, kMSBDChargeHold);

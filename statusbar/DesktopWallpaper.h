@@ -30,6 +30,8 @@
 // a 4K TV at @2x); gone with the TV, picture and all. Where no such controller exists (15/16 without Stage Manager's TV desktop), nothing is drawn.
 #include "../common/DesktopWallpaper.h"
 #import <ImageIO/ImageIO.h>
+typedef struct { double darkest[3], lightest[3]; } MSBDWPTop;
+#define DMWP_BAR_STRIP_PT 32.0   // (the top strip measured for the menu bar: its height and a little more, in points)
 
 @interface DMWPPlane : UIImageView
 @property (nonatomic, copy) NSString *shownPath;   // (the file decoded now)
@@ -38,8 +40,11 @@
 @property (nonatomic, copy) NSString *failedPath;  // (a picture that could not be read, for failedFor's shape: not tried again until the choice,
 @property (nonatomic) CGSize failedFor;            //  the file or the screen's shape changes -- review 1.8.6 M2)
 @property (nonatomic) BOOL sharedVariant;          // (15/16's shared view: also gated by the active variant)
+@property (nonatomic) BOOL topRead;                // (the picture's top strip, under the menu bar, as decoded: its darkest and lightest part, sRGB --
+@property (nonatomic) MSBDWPTop top;               //  common/BarBackground.h MSBDBarTopStrip; the bar's text over it, StatusBar.x DMBarTextDarkFor)
 @end
 static void DMWPPlaneLaidOut(DMWPPlane *p);
+static void DMMSWOurWallChanged(void);   // (MacSwitcher.h: our picture changed or went -- the switcher's copy of it let go, taken again where it shows)
 @implementation DMWPPlane
 - (void)layoutSubviews { [super layoutSubviews]; DMWPPlaneLaidOut(self); }
 - (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)e { return nil; }   // (a picture: touches go where they went before)
@@ -80,6 +85,7 @@ static void DMWPRemove(NSString *why) {
     gWPPlane.image = nil;
     gWPPlane = nil;
     gWPHostNote = nil;
+    DMMSWOurWallChanged();
     DMLog([NSString stringWithFormat:@"[wallpaper] desktop picture removed (%@)", why]);
 }
 static NSString *DMWPFileSig(NSString *p) {
@@ -360,20 +366,23 @@ static void DMWPDecodeIfNeeded(DMWPPlane *p) {
     CFTimeInterval t0 = CACurrentMediaTime();
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         CGImageRef img = DMWPDecode(path, pts, scale);
+        MSBDWPTop top = { { 0, 0, 0 }, { 0, 0, 0 } };
+        BOOL topRead = img && MSBDBarTopStrip(img, DMWP_BAR_STRIP_PT * scale, top.darkest, top.lightest);   // (what the menu bar is over: once per decode)
         dispatch_async(dispatch_get_main_queue(), ^{
             DMWPPlane *q = wp;
             if (q) {
                 q.decoding = NO;
                 if (img && (q == gWPPlane || q == gWPTVPlane) && [path isEqualToString:DMWPWantedPath(q)]) {
                     q.image = [UIImage imageWithCGImage:img scale:scale orientation:UIImageOrientationUp];
-                    q.shownPath = path; q.shownFor = pts;
+                    q.shownPath = path; q.shownFor = pts; q.top = top; q.topRead = topRead;
+                    if (q == gWPPlane) DMMSWOurWallChanged();
                     DMLog([NSString stringWithFormat:@"[wallpaper] %@ decoded for %@%.0fx%.0f pt at @%.2gx: %zux%zu px (%.0f ms)", path.lastPathComponent, q == gWPTVPlane ? @"the external display, " : @"", pts.width, pts.height, scale,
                            CGImageGetWidth(img), CGImageGetHeight(img), (CACurrentMediaTime() - t0) * 1000.0]);
                     DMWPUpdateAlpha();
                 } else if (!img && (q == gWPPlane || q == gWPTVPlane)) {
                     q.failedPath = path; q.failedFor = pts;   // (not tried again until the choice, the file or the screen's shape changes: M2)
                     BOOL darkFails = [path isEqualToString:gWPDark];
-                    if (!darkFails) { q.image = nil; q.shownPath = nil; DMWPUpdateAlpha(); }   // (no picture before it left on screen: iPadOS's shows, L1)
+                    if (!darkFails) { q.image = nil; q.shownPath = nil; DMWPUpdateAlpha(); if (q == gWPPlane) DMMSWOurWallChanged(); }   // (no picture before it left on screen: iPadOS's shows, L1)
                     DMLog([NSString stringWithFormat:@"[wallpaper] %@ could not be read: %@", path.lastPathComponent, darkFails ? @"the light picture is shown in Dark appearance" : @"nothing drawn"]);
                 }
             }
@@ -426,6 +435,56 @@ static void DMWPTVTick(void) {
     if (!CGAffineTransformIsIdentity(gWPTVPlane.transform)) gWPTVPlane.transform = CGAffineTransformIdentity;
     if (!CGRectEqualToRect(gWPTVPlane.frame, host.bounds)) gWPTVPlane.frame = host.bounds;   // (a TV doesn't turn: its desktop's own bounds)
     DMWPDecodeIfNeeded(gWPTVPlane);
+}
+
+// ---- the desktop the Mac Switcher shows (1.8.7.5 SWITCHERWALL) ----
+// The Mac Switcher's background and its desktops drawn from their parts take the desktop's wallpaper (MacSwitcher.h DMMSWWallpaperBackground,
+// DMMSWWallLazy). With our Desktop Picture drawn on the iPad's own screen, the desktop shows ours, not iPadOS's wallpaper under it: our picture
+// view, once its picture is decoded (the light or dark one in force, the part this screen shows). Otherwise (None, not decoded yet or unreadable,
+// no place found for it): nil, and iPadOS's wallpaper, which is then what the desktop shows. (Before, the switcher read iPadOS's wallpaper only,
+// since the Desktop Picture came in 1.8.6: the 17.5's Mac Switcher showed iPadOS's picture over a desktop showing ours, 15 Nov.)
+// Its alpha is not asked: the switcher shows desktops, and every desktop is the Home Screen's page 1 (MacSwitcher.h), which shows ours. Opened from
+// another page (ours faded out there, iPadOS's wallpaper on screen), its desktops are still page 1, with ours (1.8.7.5 round 1, the review's note).
+static UIImageView *DMWPDesktopPictureView(void) {
+    DMWPPlane *p = gWPPlane;
+    return p.image.CGImage && p.window && p.superview == gWPHost ? p : nil;   // (the view is there only while a picture is set: DMWPApplyPref, DMWPTick)
+}
+
+// ---- what the menu bar is over (1.8.7.5 round 1, the review of WHITEBAR) ----
+// Our Desktop Picture is what a bar is over: its screen's picture drawn now (decoded, in its place, its window showing, on page 1 -- alpha over
+// half), and on the iPad's own screen no full-screen app in front and nothing over the desktop (iPadOS's Control Center, the Cover Sheet, the App
+// Switcher: their own material is behind a bar there) -- the desktop is behind the bar: the Home Screen, or windows on it. Then iPadOS's text is
+// for its own wallpaper, which ours hides: the bar's text goes by the picture's top strip (StatusBar.x DMBarTextDarkFor). Else NO.
+// Our own Control Center (Control Center Style Mac) is a panel under the bar with nothing behind it: the desktop stays behind the bar while it is
+// open (CCPanel.h DMCCPanelLeavesDesktop); only a module of it opened expanded brings Control Center's material. Control Center counted whatever
+// showed it: the text turned iPadOS's white on KT's light bar while our panel was open (1.8.7.5, CCMAC, the iPad 2's check of 1.8.7.5~a01).
+static BOOL DMWPBarBackdrop(UIView *fg, MSBDWPTop *top) {
+    UIScreen *scr = fg.window.screen;
+    BOOL tv = scr && scr != [UIScreen mainScreen];
+    DMWPPlane *p = tv ? gWPTVPlane : gWPPlane;
+    UIView *host = tv ? gWPTVHost : gWPHost;
+    if (!p || !p.image || !p.topRead || !host || p.superview != host || !p.window || p.window.hidden || p.alpha < 0.5) return NO;
+    if (!tv && (DMSMEngine() ? DMSMFrontIsFullScreen() : DMFullScreenAppInFront())) return NO;
+    if (!tv && ((DMControlCenterActive() && !DMCCPanelLeavesDesktop()) || DMCoverSheetShown() || DMSwitcherVisible())) return NO;
+    if (top) *top = p.top;
+    return YES;
+}
+// The bars follow a change of it at once (a page turn, an app going full screen or back, another picture decoded, None), not at their next layout:
+// asked every tick (DMNativeTick, right after DMWPTick, whichever way that tick ended).
+static void DMWPBarBackdropTick(void) {
+    static int was = -1;
+    static const void *wasImage, *wasTVImage;
+    UIView *bar = nil, *tvBar = nil;
+    for (UIView *fg in gAllBarCopies.allObjects) {
+        UIScreen *scr = fg.window.screen;
+        if (!scr) continue;
+        if (scr == [UIScreen mainScreen]) { if (!bar) bar = fg; } else if (!tvBar) tvBar = fg;
+    }
+    int now = (bar && DMWPBarBackdrop(bar, NULL) ? 1 : 0) | (tvBar && DMWPBarBackdrop(tvBar, NULL) ? 2 : 0);
+    const void *image = (__bridge const void *)gWPPlane.image, *tvImage = (__bridge const void *)gWPTVPlane.image;
+    if (now == was && (!(now & 1) || image == wasImage) && (!(now & 2) || tvImage == wasTVImage)) return;
+    was = now; wasImage = image; wasTVImage = tvImage;
+    for (UIView *fg in gAllBarCopies.allObjects) [fg setNeedsLayout];
 }
 
 // ---- every tick (DMNativeTick, 0.2 s): in place while set, gone when not ----

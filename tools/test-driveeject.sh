@@ -31,8 +31,9 @@ check "  ... reads the request, takes it away before anything else, accepts only
   "awk '/^static void EjectRequest/,/^}/' $S | awk '/CFPreferencesCopyValue\(key/{c=1} c && /CFPreferencesSetValue\(key, NULL/{d=1} d && /MSBDEjectRequestFrom\(/{print \"ok\"; exit}' | grep -q ok"
 check "  ... checks the volume against the mount table itself and runs msbdeject with that one argument, with a time limit" \
   "grep -q 'NSString \*mp = good ? MSBDEjectVolumeAt(vol.fileSystemRepresentation, &from, &no) : nil;' $S && grep -q 'const char \*arg = mp ? mp.fileSystemRepresentation : \"/var/mobile\";' $S && grep -q 'char \*args\[\] = { \"msbdeject\", dry ? \"--check\" : (char \*)arg, dry ? (char \*)arg : NULL, NULL };' $S && grep -q 'if (!mp && !dry) line = ' $S && grep -q 'if (!good && !dry) {' $S && grep -q 'MSBDRunHelperTimed(kMSBDEjectHelperPath, args, kMSBDEjectHelperTimeout' $S"
-check "  ... one at a time, never starting over (a cfprefsd restart) while an eject runs" \
-  "grep -q 'if (gEjectBusy) { gEjectAgain = YES; return; }' $S && grep -q 'if (gEjectBusy) return;   // (an eject is under way' $S"
+check "  ... one at a time, never starting over (a cfprefsd restart) while an eject runs: what is asked meanwhile is done again after it, at the eject's end" \
+  "grep -q 'if (gEjectBusy) { gEjectAgain = YES; return; }' $S && grep -qF 'if (gEjectBusy) { gWorkWhileBusy |= work; return; }' $S \
+   && awk '/^static void EjectRequest/,/^}/' $S | awk '/gEjectBusy = 0;/{b=1} b && /if \(gEjectAgain\) \{ gEjectAgain = NO; EjectRequest\(/{a=1} a && /else StartOverIfPrefsDaemonRestarted\(0\);/{print \"ok\"; exit}' | grep -q ok"
 check "  ... answers in root's folder: a new file renamed in place, then the post" \
   "awk '/^static void EjectWriteAnswer/,/^}/' $S | awk '/mkstemp/{m=1} m && /rename\(tmp, kMSBDEjectAnswerFile\)/{r=1} r && /notify_post\(kMSBDEjectAnswerName\)/{print \"ok\"; exit}' | grep -q ok"
 check "  ... the test run (msbdeject --check, nothing ejected) only in debug builds, only with root's flag" \
@@ -49,6 +50,19 @@ check "  ... the label is never read on the main thread (a slow drive's server m
   "grep -q 'if (!\[NSThread isMainThread\]) return DMFinderDriveLabelRead(key, mountPoint, failed);' $F && awk '/^static NSString \*DMFinderDriveLabel\(const struct statfs/,/^}/' $F | awk '/dispatch_async\(dispatch_get_global_queue/{q=1} q && /DMFinderDriveLabelRead\(key, mountPoint, failed\);/{r=1} r && /DMFinderDrivesCheck\(@\"a drive.s name read\"\)/{print \"ok\"; exit}' | grep -q ok"
 check "a crash in the eject's code turns Finder off, not the whole status bar" "grep -q '^file MacStatusBarCore ^DriveEject\\\\.h\$ finder' crashmap-rules.txt"
 check "the answer file goes at removal" "grep -q 'rm -f \"\$S/eject-answer\" \"\$S\"/.eject-answer.\* \"\$S/eject-dryrun\"' ../layout/DEBIAN/postrm"
+# made-to-fail copies of the timed run's pipe (audit L80 of 1.8.7.2): each must fail the compiled checks
+H=../common/DriveEject.h; DUPF='for (int i = 0; i < 2; i++) { int f = fcntl(out[i], F_DUPFD_CLOEXEC, 3); close(out[i]); out[i] = f; }'
+check "the timed run's pipe: both ends close-on-exec and above fd 2, right after pipe()" "grep -A1 -F 'if (pipe(out) != 0) return -1;' $H | grep -qxF \"    \$DUPF\""
+mtf() {   # $1 name, $2 a filter on DriveEject.h (stdin to stdout) that takes one part of the fix out
+  "$2" < $H > "$W/de.h"
+  if cmp -s "$W/de.h" $H; then echo "FAIL  made-to-fail ($1): the copy did not change"; fails=1; return; fi
+  if clang -O2 -fobjc-arc -Wall -Wno-unused-function -DDE_HEADER="\"$W/de.h\"" -framework Foundation -framework CoreFoundation -o "$W/tdem" test-driveeject.m > /dev/null 2>&1 && ! "$W/tdem" > /dev/null 2>&1
+  then echo "PASS  made-to-fail ($1): caught"; else echo "FAIL  made-to-fail ($1): not caught"; fails=1; fi
+}
+no_cloexec() { grep -v -F "$DUPF"; }
+flag_only() { awk -v d="    $DUPF" '$0 == d {print "    fcntl(out[0], F_SETFD, FD_CLOEXEC); fcntl(out[1], F_SETFD, FD_CLOEXEC);"; next} {print}'; }
+mtf "the pipe's ends without close-on-exec" no_cloexec
+mtf "close-on-exec set in place (fd 1 onto itself keeps it: no output where stdout was closed)" flag_only
 if [ "${MSBD_LIVE_DA:-0}" = 1 ]; then   # (on this Mac: a FAT image of our own, attached hidden at a folder named like 18's UUID mounts -- macOS 15 mounts it with FSKit)
     # M: the folder as msbdeject is handed it (the /var spelling of a link, as Finder's /var/mobile/... on the iPad); MR: the kernel's (/private/var)
     M="$W/5D3A6E1C-0B7F-4C2B-9E61-2A8F0C1D4E77"; MR="$(cd "$W" && pwd -P)/5D3A6E1C-0B7F-4C2B-9E61-2A8F0C1D4E77"

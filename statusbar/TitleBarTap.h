@@ -48,7 +48,7 @@ static void DMTitleTapNative(DMNativeWindow *w, NSString *why) {
     }
     if (zoom) {
         w.restoreFrame = CGRectNull; w.layoutName = nil;   // (in no layout: a turn keeps it whole on the new desktop, as a window placed by hand)
-        DMTitleRecordView(w, w.frame, target, target);   // (its record kept with the zoomed frame: taken from elsewhere, kept there)
+        DMTitleRecordView(w, w.frame, target, target, NO);   // (its record kept with the zoomed frame: taken from elsewhere, kept there)
         MSBAnimate(0.2, 0, 0, UIViewAnimationOptionCurveEaseOut, ^{ w.frame = target; }, nil);
         DMLog([NSString stringWithFormat:@"[titlebar] %@: %@ zoomed to %@ (its shape kept)", why, w.title ?: @"our window", NSStringFromCGRect(target)]);
         return;
@@ -75,10 +75,16 @@ static void DMTitleTapSMWindow(NSString *key, NSString *why) {
     DMSMStripPresentationEnd([NSString stringWithFormat:@"%@ on %@", why, DMSMKeyText(key)]);   // (a strip a swipe brought out goes before the window's frame changes, as for a light: review 1.8.4.4 L3)
     for (NSString *k in [gSMTurnPlaced allKeys]) if (DMSMKeyCovers(key, k)) [gSMTurnPlaced removeObjectForKey:k];   // (placed now, as a layout)
     if (step == kMSBDTitleBack) {
+        // (a window that was behind the Dock, as the user left it, when Fill or Zoom took its record goes back there with its mark: Fill and Zoom took the
+        //  mark, and without it the request's own fit (DMSMPlanFitted) and the stage area put it back lifted above the Dock, where the other engines put
+        //  it back exactly -- 1.8.7.5. It is the user's place: named as such, the place applier keeps the mark)
+        BOOL behind = DMTitleRecordBehindSM(key);
         DMTitleRecordSMTo(key, stage, rec.CGRectValue);   // (back: dropped)
-        BOOL ok = DMSMApplyPlacesIn(@{key: rec}, stage);
+        if (behind) { if (!gSMBehindDock) gSMBehindDock = [NSMutableSet set]; [gSMBehindDock addObject:key]; }
+        BOOL ok = DMSMApplyPlacesMarkedIn(@{key: rec}, stage, behind ? [NSSet setWithObject:key] : nil);
+        if (!ok && behind) DMSMKeySetRemove(gSMBehindDock, key);   // (not placed: it stays where Fill or Zoom put it, above the Dock)
         if (ok) DMSMFitLetGo(key);   // (placed by the user: no longer one of Fit to Window's tiles, as with the other engines)
-        DMLog([NSString stringWithFormat:@"[titlebar] %@: %@ back to %@ (%@)", why, DMSMKeyText(key), NSStringFromCGRect(rec.CGRectValue), ok ? @"done" : @"not in the stage"]);
+        DMLog([NSString stringWithFormat:@"[titlebar] %@: %@ back to %@ (%@)%@", why, DMSMKeyText(key), NSStringFromCGRect(rec.CGRectValue), ok ? @"done" : @"not in the stage", behind && ok ? @", behind the Dock again as the user left it" : @""]);
         return;
     }
     if (zoom) {
@@ -115,8 +121,10 @@ static void DMTitleTapEngineWindow(NSString *bundleID, NSString *why) {
     NSValue *rec = DMTitleRecordHeldView(v, v.frame, bundleID);   // (Fill's and Zoom's: the frame it had just before -- a Fit tile too, regression F2 -- while it holds, P4-1)
     int step = MSBDTitleStep(action, atTarget, rec != nil);
     CGRect to = step == kMSBDTitleBack ? rec.CGRectValue : target;
-    if (step == kMSBDTitleToZoom) DMTitleRecordView(v, v.frame, to, to);   // (Zoom's record kept with the zoomed frame: taken from elsewhere, kept there)
+    BOOL behind = step == kMSBDTitleBack && DMTitleRecordBehindView(v);   // (behind the Dock, as the user left it, when Fill or Zoom took the record: read before Back drops it)
+    if (step == kMSBDTitleToZoom) { DMTitleRecordView(v, v.frame, to, to, DMBehindDockHas(bundleID)); DMBehindDockPlacedByUs(v, @"zoomed by its title bar"); }   // (Zoom's record kept with the zoomed frame: taken from elsewhere, kept there; the mark with it)
     else DMTitleRecordEngineTo(v, to);   // (to Fill: the frame now kept, MSBDTitleBackTakes; back: dropped -- as for every placement of ours)
+    if (behind) DMBehindDockSet(bundleID, YES, @"back from Fill or Zoom to where the user left it");   // (Back: the mark Fill or Zoom took, given back -- 1.8.7.5, as on Stage Manager)
     if (step != kMSBDTitleBack && !zoom) DMWinPrevNoteView(v, DMWinTiledEngine(v.frame), v.frame);   // (Fill: Return to Previous Size's record, as the Window menu's Fill)
     objc_setAssociatedObject(v, &kStageTurnPlacedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (placed now, as a layout)
     DMFitGroupForget(bundleID);   // (placed by the user: no longer one of Fit to Window's tiles, as a layout of its own)

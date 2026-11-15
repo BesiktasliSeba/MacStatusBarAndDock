@@ -3,7 +3,8 @@
 # Screen comes back as that window, no longer full screen (1.8.7.4, audit M13 of 1.8.7.2); an app with no minimized window opens full screen as
 # before. See test-smhometap.m. The real code is cut out of statusbar/StatusBar.x (SHT_SB_X: another copy, e.g. the code before the fix, which has
 # no DMSMHomeTapBringsWindow) and run on the Mac; then site checks on StatusBar.x (SpringBoard's own launch and the join that brings the window back);
-# then made-to-fail copies: each takes one part of the fix out and must fail.
+# then made-to-fail copies: each takes one part of the fix out and must fail. 1.8.7.5 (review of track f, finding 1): the tap looks for gone minimized
+# windows first (DMSMMinimizedLook; its stand-in in test-smhometap.m, the real one in test-smminpictures).
 cd "$(dirname "$0")" || exit 1
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 X0=${SHT_SB_X:-../statusbar/StatusBar.x}
@@ -87,6 +88,7 @@ if [ -z "$SHT_SB_X" ]; then
   mtf "no picture grows out of the Dock" 's/if \(DMSMHomeTapBringsWindow\(bundle\)\) \{ DMSMGrowFromDockAtTapForApp\(bundle\); /if (DMSMHomeTapBringsWindow(bundle)) { /'
   mtf "our full-screen stage made first (the question after it)" 's/(\n        if \(DMSMHomeTapBringsWindow\(bundle\)\) \{[^\n]*)(\n        return DMSMOpenFullScreenStage\([^\n]*)/$2$1/'
   mtf "the join from the Home Screen reads the mark after it was cleared" 's/(    if \(!map.count\) \{.*?        BOOL windowed = DMSMOpensAsWindow\(key, DMWindowedLaunchOn\(\), )wasMinimized\);/$1NO);/s'
+  mtf "the tap reads a gone window's mark and picture (no look first)" 's/\n    DMSMMinimizedLook\(\);   \/\/ \(a minimized window gone since the last look[^\n]*//'
   mtf "a tap not added no longer goes on as SpringBoard's launch (17)" 's/(        if \(added\) \{ if \(library\) DMSMLibraryLaunched\(bundle\); return; \}\n    \}\n    gSMInIconTap = YES;\n)    o_SMIconTapMods\(self, _cmd, flags\);/$1/'
 fi
 exit $rc

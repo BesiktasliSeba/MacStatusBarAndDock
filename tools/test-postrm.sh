@@ -25,6 +25,13 @@ setup() {
     rm -rf "$W/root"
     for f in $GONE $KEPT; do mkdir -p "$(dirname "$f")"; echo x > "$f"; done
 }
+# (1.8.7.5, audit L16 and L17 of 1.8.7.2: every diagnostic record, by the names common/Diag.h writes, and the iCleaner panel's answer, its
+#  temporary files and the debug test switch -- with them left, the helper's folder stayed; another tweak's file of a similar name stays)
+DIAG=$(sed -n 's/^#define MSBD_DIAG_NAMES @\[\(.*\)\].*/\1/p' common/Diag.h | tr -d '@" ' | tr ',' ' ')
+[ "$(echo $DIAG | wc -w | tr -d ' ')" = 6 ] || { echo "FAIL  the diagnostic records' names not read from common/Diag.h ($DIAG)"; exit 1; }
+for n in $DIAG; do GONE="$GONE $P/MacStatusBarAndDock-Diag-$n.txt"; done
+GONE="$GONE $S/iclean-answer $S/.iclean-answer.Qw56Er $S/iclean-dryrun"
+KEPT="$KEPT $P/OtherTweak-Diag-Hooks.txt $P/MacStatusBarAndDock-Diag-Notes.plist"
 # (18: the Mac panel's own layout of tiles goes with the package, iPadOS's own layout stays)
 GONE="$GONE $M/Library/ControlCenter/MacStatusBarAndDock-ControlsIconState.plist $M/Library/ControlCenter/MacStatusBarAndDock-ControlsDesiredIconState.plist"
 KEPT="$KEPT $M/Library/ControlCenter/ControlsIconState.plist $M/Library/ControlCenter/ModuleConfiguration.plist"
@@ -46,8 +53,8 @@ done
 setup; "$W/postrm" purge; [ ! -e "$J/var/lib/macstatusbaranddock" ] && ok "purge: migration record removed" || bad "purge: migration record kept"
 setup; echo Aerial > "$S/renamed"; "$W/postrm" remove
 [ -f "$S/renamed" ] && ok "remove: a record of engines still renamed is kept (folder stays)" || bad "remove: the renamed record was lost"
-setup; "$W/postrm" upgrade 1.0.1; [ -e "$S/ssh-state" ] && [ -e "$P/MacStatusBarAndDock-CrashRecord.txt" ] && ok "upgrade: nothing removed" || bad "upgrade removed files"
-setup; "$W/postrm" abort-install; [ -e "$S/ssh-state" ] && ok "abort-install: nothing removed" || bad "abort-install removed files"
+setup; "$W/postrm" upgrade 1.0.1; [ -e "$S/ssh-state" ] && [ -e "$P/MacStatusBarAndDock-CrashRecord.txt" ] && [ -e "$S/iclean-answer" ] && [ -e "$P/MacStatusBarAndDock-Diag-StatusBar.txt" ] && ok "upgrade: nothing removed" || bad "upgrade removed files"
+setup; "$W/postrm" abort-install; [ -e "$S/ssh-state" ] && [ -e "$S/iclean-answer" ] && [ -e "$P/MacStatusBarAndDock-Diag-Finder.txt" ] && ok "abort-install: nothing removed" || bad "abort-install removed files"
 # the prerm
 X="$W/prerm-root/var/jb"; mkdir -p "$X/usr/bin" "$X/usr/libexec"
 sed "s#/var/jb#$X#g" layout/DEBIAN/prerm > "$W/prerm"; chmod +x "$W/prerm"

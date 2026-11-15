@@ -19,7 +19,7 @@ check "Stage Manager's area asks the same desktop, whole width during a title-ba
 check "the 18.5 height limit: Apple's bottom insets are [0] with the Dock at a side, shape-checked, left alone at the bottom" \
   "grep -q 'return DMSMFree() && (DMDockSideNow(\[UIScreen mainScreen\].bounds.size) || hides) ? @\[@0.0\] : v;' $S && grep -q 'if (mb && \[DMSMSigOfMethod(mb) isEqualToString:list\]) MSHookMessageEx(c, bot, (IMP)DMSMBottomInsets17, (IMP \*)&o_SMBottomInsets17);' $S"
 check "the drop on every engine: moves and resizes, also with snapping off, keep out of the Dock (common/DockSide.h)" \
-  "grep -q 'return DMDockSideKept(DMSnapFrameFor(DMStageBundle(st), window, how, others, n, DMUsableArea()), how);' $S && grep -q 'if (!st || (DMSnapOff() && !DMDockSideKeepsOut())) return;' $S && grep -q 'CGRect kept = DMDockSideKept(w.frame, MSBDSnapMove);' $S"
+  "grep -q 'return DMDockSideKept(DMSnapFrameFor(DMStageBundle(st), window, how, others, n, DMUsableArea()), how);' $S && grep -q 'BOOL snaps = st && !(DMSnapOff() && !DMDockSideKeepsOut()) && !CGRectIsNull(w) && !CGRectIsEmpty(w);' $S && grep -q 'CGRect kept = DMDockSideKept(w.frame, MSBDSnapMove);' $S"
 check "the Dock's menus: beside it, the arrow on the facing edge, reaching the icon's middle at the Dock's ends (1.8.2.2, iPad 2 F2)" \
   "grep -q 'CGRect f = dockSide ? MSBDArrowSideMenuFrameReaching(menu, src, bounds, reach, kMSBDArrowHeight, kMSBDArrowTipGap, kCtxMenuCorner, kMSBDArrowWidth, dockSide == MSBDDockRight, &dir)' $S"
 check "the finger: Apple's y rule no longer holds the Dock out at a side, nor puts it away for a tap on its own icons: the rest of Apple's rule alone (code review 1.8.2, 9)" \

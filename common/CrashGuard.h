@@ -15,7 +15,8 @@
 // Only crashes that point at us count (2026-09-26): each report is judged once by MacCrashBlame.dylib (common/CrashBlame.h, loader/CrashBlameHelper.m;
 // Foundation's JSON reader, which the plain-C loader cannot use itself) and the verdict is kept in MSBD_GUARD_VERDICTS. A crash in another tweak's
 // library (on the crashing stack, nothing of ours there) is not counted; ours, Apple-only stacks and reports that cannot be read are (as before).
-// The helper is opened only when a report has to be judged (after an early start), so a normal start costs nothing more.
+// The helper is opened only when a report has to be judged or told from the SpringBoard before a start's count (MSBDGuardFrom), after an early
+// start, so a normal start costs nothing more.
 // Since 2026-09-26 it explains itself: when it acts it writes a small record (MSBD_GUARD_RECORD: what it did, the switches by their row titles, the
 // part of ours that was blamed, iPadOS and build, the top frames of our image only), which the pages' footer and the Report a Problem text use
 // (CrashExplain.h), and which the one-time notice on the Home Screen shows (loader/CrashNotice.m, loaded only while the record is unshown).
@@ -60,7 +61,11 @@
 #endif
 enum { kMSBDVerdictUnknown = 0, kMSBDVerdictOurs = 1, kMSBDVerdictApple = 2, kMSBDVerdictOther = 3 };   // (= kMSBDBlame..., CrashBlame.h)
 
-typedef struct { int pid, stage, fakes; long t0, ta; } MSBDGuardState;   // stage 0 nothing done, 1 switches off (at ta); t0 = first early start
+typedef struct { int pid, stage, fakes, next, prev; long t0, ta; } MSBDGuardState;   // stage 0 nothing done, 1 switches off (at ta); t0 = first early start
+// next (1.8.7.5): the crashes after step 1 or 1b count from the next start, not from ta (what it set at the 8 s look is in force from the next start
+// only: a part it stopped loading, a setting SpringBoard reads as it starts -- MSBDGuardSetAtNextStart; audit L103 of 1.8.7.2 and its review)
+// prev (1.8.7.5, review of round 2): when ta is a start's time, the SpringBoard that ended just before that start (the mark's pid then; else 0).
+// Its crash is before ta whatever second its report's name gives, so it never counts from ta (MSBDGuardFrom).
 
 #if DEBUG
 // Test builds only: while /tmp/msb-fakecrash exists, every SpringBoard start counts as coming after a crash (no crash needed), and the file is not
@@ -84,9 +89,11 @@ static inline int MSBDGuardFakeReportExists(void) { return 0; }
 static inline int MSBDGuardRead(MSBDGuardState *s) {
     FILE *f = fopen(MSBD_GUARD_FILE, "r");
     if (!f) return 0;
-    int ok = fscanf(f, "%d %ld %d %ld %d", &s->pid, &s->t0, &s->stage, &s->ta, &s->fakes) == 5;
+    int n = fscanf(f, "%d %ld %d %ld %d %d %d", &s->pid, &s->t0, &s->stage, &s->ta, &s->fakes, &s->next, &s->prev), ok = n >= 5;
     fclose(f);
-    if (!ok) { s->pid = 0; s->t0 = time(NULL); s->stage = 0; s->ta = 0; s->fakes = 0; }   // (unreadable: a new row of starts)
+    if (n == 5) s->next = 0;   // (a mark of 1.8.7.4 or before: five fields)
+    if (n < 7) s->prev = 0;    // (five or six fields: no start's count kept one)
+    if (!ok) { s->pid = 0; s->t0 = time(NULL); s->stage = 0; s->ta = 0; s->fakes = 0; s->next = 0; s->prev = 0; }   // (unreadable: a new row of starts)
     return 1;
 }
 // The mark was last written before this boot (a reboot or a dead battery within 60 s of a start leaves it behind): it is not a row of early
@@ -101,7 +108,7 @@ static inline int MSBDGuardMarkBeforeBoot(void) {
 static inline void MSBDGuardWrite(const MSBDGuardState *s) {
     FILE *f = fopen(MSBD_GUARD_FILE ".new", "w");
     if (!f) return;
-    fprintf(f, "%d %ld %d %ld %d\n", s->pid, s->t0, s->stage, s->ta, s->fakes);
+    fprintf(f, "%d %ld %d %ld %d %d %d\n", s->pid, s->t0, s->stage, s->ta, s->fakes, s->next, s->prev);   // (an older build reads the first five or six)
     fclose(f);
     rename(MSBD_GUARD_FILE ".new", MSBD_GUARD_FILE);
 }
@@ -151,6 +158,7 @@ static inline void MSBDGuardNoteCrash(MSBDGuardCrash *c, long t, int v, const ch
 // A report that could not be read and is new may still be being written. At SpringBoard's start (gMSBDGuardAtStart) it is "pending": not counted
 // then, and the guard does not act on it; the 8 s look decides with the finished report (there, and everywhere else, it counts as before).
 static int gMSBDGuardAtStart, gMSBDGuardPending;
+static int gMSBDGuardPrevPid;   // (at SpringBoard's start: the SpringBoard before this one, the mark's pid; 0 without a mark: MSBDGuardState.prev)
 // The verdict on one report: from the verdict file, else judged now (and kept, unless it could not be read and the report is new: it may still be
 // being written, so it is judged again next time). Returns 1 if the crash counts against us.
 static inline int MSBDGuardCounts(const char *name, const char *path, long mtime, long t) {
@@ -204,9 +212,24 @@ static inline int MSBDGuardFakeReport(void) { return -1; }
 static inline void MSBDGuardKeepFakeVerdict(void) { }
 #endif
 
-// SpringBoard crashes at or after `since` that count against us (MSBDGuardCounts), by the time in the report's name (the crash itself, not when
-// the report was written).
-static inline int MSBDGuardCrashes(long since) {
+// The pid of the SpringBoard a report tells about (its body's "pid", read by MacCrashBlame.dylib MSBDCrashPid); -1 if it cannot be told.
+static inline int MSBDGuardReportPid(const char *path) {
+    static int (*pidOf)(const char *);
+    if (!pidOf) pidOf = (int (*)(const char *))MSBDGuardHelper("MSBDCrashPid");
+    return pidOf ? pidOf(path) : -1;
+}
+// Is a report (t: the time in its name, whole seconds) one of the crashes from `since` on? `prev` (MSBDGuardState.prev; 0: none): when `since` is a
+// start's time, the SpringBoard that ended just before that start. Its crash is not one, whatever second its report names (1.8.7.5, review of
+// round 2): SpringBoard is often back within the second of its crash, so its report names the start's own second (and one named when it was
+// written, late, a later second). Only that SpringBoard's reports are told apart, by their pid; a report that cannot be told is one, as before.
+static inline int MSBDGuardFrom(const char *name, const char *path, long t, long since, int prev) {
+    if (t < since) return 0;
+    if (prev > 0 && MSBDGuardReportPid(path) == prev) { MSBDGuardLog("report %s: the crash of SpringBoard %d, which ended before %ld -- not counted from then", name, prev, since); return 0; }
+    return 1;
+}
+// SpringBoard crashes from `since` on (MSBDGuardFrom, `prev` as there) that count against us (MSBDGuardCounts), by the time in the report's name
+// (the crash itself, not when the report was written).
+static inline int MSBDGuardCrashesFrom(long since, int prev) {
     DIR *d = opendir(MSBD_GUARD_REPORTS);
     if (!d) return 0;
     int n = 0; struct dirent *e;
@@ -221,11 +244,14 @@ static inline int MSBDGuardCrashes(long since) {
             tm.tm_year -= 1900; tm.tm_mon -= 1; tm.tm_isdst = -1;
             t = (long)mktime(&tm);
         } else t = mtime;
-        if (t >= since && MSBDGuardCounts(e->d_name, p, mtime, t)) n++;
+        if (MSBDGuardFrom(e->d_name, p, t, since, prev) && MSBDGuardCounts(e->d_name, p, mtime, t)) n++;
     }
     closedir(d);
     return n;
 }
+// Every SpringBoard crash at or after `since` that counts against us, the previous SpringBoard's too (the Aerial 5.0 probation, StatusBar.x: it
+// looks for exactly that crash).
+static inline int MSBDGuardCrashes(long since) { return MSBDGuardCrashesFrom(since, 0); }
 
 // Writes a preference in the current user's domain: a boolean (0/1) or a number.
 enum { kMSBDBool, kMSBDNumber };
@@ -269,6 +295,17 @@ static inline void MSBDGuardSetPrefText(const char *domain, const char *key, con
     dlclose(cf);
 }
 
+// What step 1 or 1b sets that is in force from the next SpringBoard start only (1.8.7.5, review of audit L103 and L62 of 1.8.7.2): a part step 1b
+// stops loading (CrashStep.h), and a setting SpringBoard reads once, as it starts -- Menu Bar Size (StatusBar.x DMBarSizeInit: iOS's bar takes its
+// size then, common/MenuBarSize.h) and the stock status bar (Status Bar Style: StatusBar.x gStockBar, the whole run is one mode). Set at the 8 s
+// look, such a change cannot help the SpringBoard that is running, so the crashes after it count from the next start (MSBDGuardEvaluate). Every
+// other switch the guard sets applies at once (its prefsChanged).
+#include "DisplayPrefs.h"   // (MSBD_DISP_MSB_DOMAIN: Mac Status Bar's domain, a test one in the Mac tests)
+#include "MenuBarSize.h"    // (kMSBDMenuBarSizeKey)
+static int gMSBDGuardNextStartNow;   // (this evaluation's changes of that kind; MSBDGuardEvaluate clears it)
+static inline int MSBDGuardSetAtNextStart(const char *domain, const char *key) {
+    return domain && key && strcmp(domain, MSBD_DISP_MSB_DOMAIN) == 0 && (strcmp(key, kMSBDMenuBarSizeKey) == 0 || strcmp(key, "stockStatusBar") == 0);
+}
 // Step 1: the switches noted as turned on at or after `since` go off again (only our own domains); returns how many. The list is used up either way.
 // `record` (n bytes) gets a "switch <domain> <key> <row title>" line for each, for the guard's record.
 static inline int MSBDGuardSwitchOffRecent(long since, char *record, size_t rn) {
@@ -285,6 +322,7 @@ static inline int MSBDGuardSwitchOffRecent(long since, char *record, size_t rn) 
             title[strcspn(title, "\r\n")] = 0;
             if (record) { size_t l = strlen(record); snprintf(record + l, rn - l, "switch %s %s %s\n", domain, key, title); }
             MSBDGuardSetPref(domain, key, kMSBDBool, 0);
+            if (MSBDGuardSetAtNextStart(domain, key)) gMSBDGuardNextStartNow++;   // (Menu Bar Size: from the next start, above)
             snprintf(note, sizeof(note), "%s/prefsChanged", domain);   // (a part that is running applies it at once)
             notify_post(note);
             MSBDGuardLog("switched off %s %s (turned on at %ld)", domain, key, t);
@@ -301,7 +339,8 @@ static inline int MSBDGuardSwitchOffRecent(long since, char *record, size_t rn) 
 // Looks at the crashes of this row of early starts and acts on them; returns 1 if it did something.
 // The guard's record (only when it acts): what it did and why, for the Settings pages' footer and the Report a Problem text (LineSwitch.h,
 // CrashExplain.h). "<name> <value>" lines: time, action (as crashGuardAction), tested (0 untested iPadOS), ios, build, verdict (kMSBDVerdict...,
-// -1 simulated), blamed (the helper's word for it), then "switch" lines (step 1) and up to 5 "frame" lines (our image's frames only).
+// -1 simulated), blamed (the helper's word for it), then "switch" lines (step 1), step 1b's lines (CrashStep.h; a part still skipped is named in
+// step 1's record too) and up to 5 "frame" lines (our image's frames only).
 static inline void MSBDGuardWriteRecord(int action, int tested, const char *switches) {
     char ios[32] = "unknown"; size_t n = sizeof(ios);
     if (sysctlbyname("kern.osproductversion", ios, &n, NULL, 0) != 0) strlcpy(ios, "unknown", sizeof(ios));
@@ -351,21 +390,33 @@ static inline int MSBDGuardEvaluate(MSBDGuardState *s) {
     int action;
     char switches[1536] = "";
     memset(&gMSBDLastCrash, 0, sizeof(gMSBDLastCrash));
+    gMSBDGuardNextStartNow = 0;
     if (s->stage == 0) {
-        int crashes = MSBDGuardCrashes(s->t0 - 30) + s->fakes;
+        int crashes = MSBDGuardCrashesFrom(s->t0 - 30, 0) + s->fakes;
         MSBDGuardLog("row of early starts since %ld: %d crash(es) (%d simulated)", s->t0, crashes, s->fakes);
         if (crashes < 2) return 0;
         action = MSBDGuardSwitchOffRecent(s->t0 - 120, switches, sizeof(switches)) ? 1 : 2;
     } else {
-        int crashes = MSBDGuardCrashes(s->ta) + s->fakes;
+        int crashes = MSBDGuardCrashesFrom(s->ta, s->prev) + s->fakes;
         MSBDGuardLog("after switching features off at %ld: %d crash(es) (%d simulated)", s->ta, crashes, s->fakes);
         if (crashes < 1) return 0;
         action = 3;
     }
     // step 1b (CrashStep.h): before the whole tweak goes off, only what the crashes point at (once per row; else on to step 2 as before).
-    if (action != 1 && MSBDGuardStepFeature(s->t0, s->stage == 0 ? s->t0 - 30 : s->ta, s->stage != 0, switches, sizeof(switches))) action = MSBD_GUARD_ACTION_FEATURE;
+    if (action != 1 && MSBDGuardStepFeature(s->t0, s->stage == 0 ? s->t0 - 30 : s->ta, s->stage == 0 ? 0 : s->prev, s->stage != 0, switches, sizeof(switches))) action = MSBD_GUARD_ACTION_FEATURE;
+    // (step 1, 1.8.7.5, audit L104 of 1.8.7.2: a part step 1b stopped loading in an earlier row stays skipped under this note too, so its record
+    //  names it: the footer says so and Turn Back On stays; before, the record had the switches only and the part was off with nothing saying so)
+    if (action == 1) { MSBDStepList kept; MSBDStepReadList(&kept); MSBDStepRecordKept(&kept, kept.count, NULL, switches, sizeof(switches)); }
     s->stage = action == 1 || action == MSBD_GUARD_ACTION_FEATURE ? 1 : 2;
     s->ta = (long)time(NULL); s->fakes = 0;
+    s->prev = gMSBDGuardAtStart ? gMSBDGuardPrevPid : 0;   // (at a start, the crash just acted on can share its second: MSBDGuardFrom; at the look it is 8 s old)
+    // (1.8.7.5, audit L103 of 1.8.7.2: a part step 1b stops loading at the 8 s look stays loaded in this SpringBoard until it ends, so the crashes
+    //  after the skip count from the next start: this SpringBoard's own later crash is not held against the skip, which then gets its start. So
+    //  does a setting step 1 or 1b sets back that SpringBoard reads as it starts (review: Menu Bar Size, noted for step 1 since L62, and the stock
+    //  status bar: MSBDGuardSetAtNextStart). A switch that applies at once (prefsChanged), and anything set at the start (before any part loads),
+    //  counts from now, as before.)
+    s->next = !gMSBDGuardAtStart && (action == 1 || action == MSBD_GUARD_ACTION_FEATURE) && gMSBDGuardNextStartNow > 0;
+    if (s->next) MSBDGuardLog("at the 8 s look: %d change(s) in force from the next start only (a part not loaded, a setting read as SpringBoard starts) -- crashes count from the next start", gMSBDGuardNextStartNow);
     int tested = MSBDVersionTested();
     if (s->stage == 2) MSBDGuardSetPref(MSBD_GATE_DOMAIN, tested ? MSBD_SAFE_KEY : MSBD_GATE_KEY, kMSBDBool, tested ? 1 : 0);
     MSBDGuardWriteRecord(action, tested, switches);   // (before the note the pages read, so they find the record with it)
@@ -426,16 +477,20 @@ static inline void MSBDCrashGuardStart(void) {
     if (MSBDGuardOff()) return;
     MSBDGuardState s;
     int early = MSBDGuardRead(&s);
-    if (early && s.pid == getpid()) return;   // (both loaders run in SpringBoard: the first one did it)
+    // (the boot first, 1.8.7.5, audit L105 of 1.8.7.2: SpringBoard's pid can come round again after a reboot, and a mark of that pid from before
+    //  the boot made this start return at once -- no row, no 8 s look, no 60 s clear. The second loader reads the mark the first wrote now.)
     if (early && MSBDGuardMarkBeforeBoot()) { MSBDGuardLog("mark from before this boot: a new row"); early = 0; }
+    if (early && s.pid == getpid()) return;   // (both loaders run in SpringBoard: the first one did it)
     long now = (long)time(NULL);
-    if (!early) { s.t0 = now; s.stage = 0; s.ta = 0; s.fakes = 0; }
+    int prev = early ? s.pid : 0;   // (the SpringBoard before this one: MSBDGuardState.prev)
+    if (!early) { s.t0 = now; s.stage = 0; s.ta = 0; s.fakes = 0; s.next = 0; s.prev = 0; }
+    if (early && s.stage == 1 && s.next) { s.ta = now; s.next = 0; s.prev = prev; MSBDGuardLog("what the last 8 s look set is in force from this start: crashes count from it (not the crash of SpringBoard %d, before it)", prev); }   // (L103, above)
     if (MSBDGuardFake()) { s.fakes++; early = 1; }
     int fake = MSBDGuardFakeReport();   // (test builds: a crash report from a file, counted only if it points at us)
     MSBDGuardKeepFakeVerdict();
     if (fake >= 0) { early = 1; s.fakes += fake; }
     s.pid = getpid();
-    gMSBDGuardAtStart = 1; gMSBDGuardPending = 0;
+    gMSBDGuardAtStart = 1; gMSBDGuardPrevPid = prev; gMSBDGuardPending = 0;
     int acted = early && MSBDGuardEvaluate(&s);   // (a report still being written is left to the 8 s look, which runs whenever this did not act)
     gMSBDGuardAtStart = 0;
     MSBDGuardSave(&s);

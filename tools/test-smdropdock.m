@@ -178,6 +178,17 @@ int main(void) {
         Drag(Down(300), CGPointMake(0, 300), UIGestureRecognizerStateEnded);
         Check(gKPlaces == 1 && Near(gKPlace.x, 0.25) && Near(gKPlace.y, 0.5), @"a drop that snaps asks for the snapped place (unchanged)");
 
+        // -- where the window ends: a drop that snaps (1.8.7.5 round 1: decided before the snap, one snapped up onto the line was marked)
+        Setup(ipad, 117, full, CGRectMake(300, 100, 600, 400)); gKSnap = YES; gKSnapAt = CGPointMake(600.0 / 1366, (905.0 - 200.0) / 1024);
+        Drag(Down(425), CGPointMake(0, 425), UIGestureRecognizerStateEnded);
+        Check(!IsBehind() && gKPlaces == 1 && Near(gKPlace.y, 705.0 / 1024), @"let go 20 pt under the line (bottom 925), snapped up onto it (bottom 905): not behind the Dock");
+        Setup(ipad, 117, full, CGRectMake(300, 580, 600, 400)); Behind(kNotes); gKSnap = YES; gKSnapAt = CGPointMake(600.0 / 1366, (905.0 - 200.0) / 1024);
+        Drag(Down(-40), CGPointMake(0, -40), UIGestureRecognizerStateEnded);
+        Check(!IsBehind(), @"  ... one behind the Dock nudged up 40 pt (bottom 940) that snaps onto the line: out of the set");
+        Setup(ipad, 117, full, CGRectMake(300, 100, 600, 400)); gKSnap = YES; gKSnapAt = CGPointMake(600.0 / 1366, (960.0 - 200.0) / 1024);
+        Drag(Down(390), CGPointMake(0, 390), UIGestureRecognizerStateEnded);
+        Check(IsBehind(), @"let go above the line (bottom 890), snapped down to a window's edge under it (bottom 960): behind the Dock");
+
         // -- the card gone at the end: the area let go, nothing recorded (logic review L4, unchanged)
         Setup(ipad, 117, full, CGRectMake(300, 100, 600, 400));
         { KPan *g = [KPan new]; g.kState = UIGestureRecognizerStateBegan; [gBar dm_pan:g]; g.kState = UIGestureRecognizerStateChanged; g.kT = CGPointMake(0, 450); [gBar dm_pan:g];

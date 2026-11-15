@@ -546,12 +546,14 @@ static NSArray<UIWindow *> *DMMSWScreenWindows(void) {
 }
 
 // ---- the background: the Home Screen wallpaper as a still picture, lightly dimmed, like Mission Control on a Mac ----
-// Read from SpringBoard's own wallpaper objects: the wallpaper window's SBWWallpaperViewController -homescreenWallpaperView (or the view both
+// The desktop's picture as the desktop shows it: our Desktop Picture where we draw it (DesktopWallpaper.h DMWPDesktopPictureView: our picture
+// view, its decoded picture -- 1.8.7.5 SWITCHERWALL: before, iPadOS's wallpaper under it was read), else SpringBoard's own wallpaper objects:
+// the wallpaper window's SBWWallpaperViewController -homescreenWallpaperView (or the view both
 // variants share), and in it the image view the wallpaper is drawn with. Exact: its contents (the very image SpringBoard shows -- the current
-// light / dark variant -- shared, not copied), contents rectangle and place, converted into our view, used when that comes out upright and
+// light / dark variant -- shared, not copied; ours: the picture we decoded and gave our view), contents rectangle and place, converted into our view, used when that comes out upright and
 // covering the screen. Otherwise (the wallpaper window is hidden while an app is full screen and may not have followed a turn) the view's
-// -wallpaperImage, filling the screen from its centre. Nothing readable: the live blur, and the log says why. Kept between openings and taken
-// again when the wallpaper's image (its hash), our size or the screen's turn changes.
+// -wallpaperImage (ours: its picture), filling the screen from its centre. Nothing readable: the live blur, and the log says why. Kept between
+// openings and taken again when the wallpaper's image (its hash; ours: its picture), our size or the screen's turn changes.
 static NSInteger DMMSWTurnKey(void);
 static id gMSWWallContents;                // the picture (a CGImage or whatever SpringBoard's layer holds)
 static NSString *gMSWWallKey;              // what it was taken for
@@ -566,6 +568,44 @@ static void DMMSWApplyWall(CALayer *l) {   // (the wallpaper picture onto one of
     if (gMSWWallContentsTransform) { @try { [l setValue:gMSWWallContentsTransform forKey:@"contentsTransform"]; } @catch (NSException *e) {} }
 }
 static CGSize gMSWWallSize;                // the screen's size it was placed for
+static BOOL gMSWWallOurs;                  // (it is our Desktop Picture's: let go when that changes or goes, DMMSWOurWallChanged)
+static __weak UIView *gMSWBackWall;        // (the open switcher's background picture: taken again there when ours changes)
+// Every other view the switcher gives the picture -- a desktop drawn from its parts (in the strip, on a slide, kept as that desktop's picture; every
+// engine) and the strip's tile of a desktop that shows only its wallpaper -- is made here and remembered (weakly), so a change of our Desktop Picture
+// reaches each one at once (DMMSWOurWallChanged). Each was given its own copy when it was made, and only the background was taken again: with the
+// switcher open the other desktops' thumbnails kept the picture before, also after None, until it was opened again (1.8.7.5 SWTHUMBS, the iPad 2's
+// check of 1.8.7.5~a01 on 16.7.7, and the M1).
+static NSHashTable<UIView *> *gMSWWallViews;
+static const void *kMSWWallTileKey = &kMSWWallTileKey;   // (a strip tile's: the picture fills the tile)
+static void DMMSWWallPlace(UIView *wv) {   // (the picture taken now into wv: filling its tile, or placed as the screen shows it -- in a desktop picture
+    CALayer *l = wv.layer;                  //  of the screen's other shape, kept from before a turn, scaled to cover it: ours is decoded for the shape on screen)
+    if ([objc_getAssociatedObject(wv, kMSWWallTileKey) boolValue]) {
+        l.contents = gMSWWallContents; l.contentsRect = gMSWWallContentsRect; l.contentsGravity = kCAGravityResizeAspectFill;
+        return;
+    }
+    DMMSWApplyWall(l);
+    if (!gMSWWallContentsTransform) @try {   // (iPadOS 17's poster turned by its contentsTransform before: not the picture now)
+        id t = [l valueForKey:@"contentsTransform"];
+        if ([t isKindOfClass:[NSValue class]] && !CGAffineTransformIsIdentity([t CGAffineTransformValue])) [l setValue:[NSValue valueWithCGAffineTransform:CGAffineTransformIdentity] forKey:@"contentsTransform"];
+    } @catch (NSException *e) {}
+    CGSize box = wv.superview ? wv.superview.bounds.size : gMSWWallSize, w = gMSWWallSize;
+    CGFloat k = box.width > 0 && box.height > 0 && w.width > 0 && w.height > 0 ? MAX(box.width / w.width, box.height / w.height) : 1.0;
+    wv.transform = CGAffineTransformIdentity;
+    wv.bounds = gMSWWallBounds;
+    wv.center = CGPointMake(box.width / 2.0 + (gMSWWallCenter.x - w.width / 2.0) * k, box.height / 2.0 + (gMSWWallCenter.y - w.height / 2.0) * k);
+    wv.transform = CGAffineTransformScale(gMSWWallTransform, k, k);   // (k = 1 in a picture of the screen's size: exactly as the screen shows it)
+}
+static UIView *DMMSWWallView(UIView *into, BOOL tile) {   // (a view showing the picture taken, in `into`; nil while none is taken)
+    if (!gMSWWallContents) return nil;
+    UIView *wv = [[UIView alloc] initWithFrame:tile ? into.bounds : CGRectZero];
+    wv.userInteractionEnabled = NO;
+    if (tile) objc_setAssociatedObject(wv, kMSWWallTileKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [into addSubview:wv];
+    DMMSWWallPlace(wv);
+    if (!gMSWWallViews) gMSWWallViews = [NSHashTable weakObjectsHashTable];
+    [gMSWWallViews addObject:wv];
+    return wv;
+}
 static UIView *DMMSWWallpaperImageView(UIView *wall);   // (below: the view whose layer holds the picture)
 static UIView *DMMSWWallpaperView(void) {
     Class wvc = objc_getClass("SBWWallpaperViewController"), wv = objc_getClass("SBFWallpaperView");
@@ -610,25 +650,37 @@ static UIView *DMMSWWallpaperImageView(UIView *wall) {   // (the view whose laye
     }
     return nil;
 }
+static UIImage *DMMSWWallImage(UIView *wall) {   // (the wallpaper's whole picture: ours as decoded, or what iPadOS's view gives)
+    if (wall && wall == DMWPDesktopPictureView()) return ((UIImageView *)wall).image;
+    UIImage *img = nil;
+    @try { for (NSString *sel in @[@"wallpaperImage", @"_displayedImage"]) if (!img && wall && DMMSWHasMethod(object_getClass(wall), sel, @"@@:")) { id i = DMCall(wall, sel); if ([i isKindOfClass:[UIImage class]]) img = i; } } @catch (id e) { img = nil; }
+    return img;
+}
 static UIView *DMMSWWallpaperBackground(UIView *root, NSString **why) {
     if (DMTestFlag("/tmp/msw-liveblur")) { *why = @"debug: /tmp/msw-liveblur"; return nil; }   // (the live blur's fade checked on a device, L-3)
-    UIView *wall = DMMSWWallpaperView();
+    UIImageView *ours = DMWPDesktopPictureView();   // (our Desktop Picture, where the desktop shows it)
+    UIView *wall = ours ?: DMMSWWallpaperView();
     if (!wall) { *why = @"no Home Screen wallpaper view"; return nil; }
-    UIView *iv = DMMSWWallpaperImageView(wall);
-    id hash = DMMSWHasMethod(object_getClass(wall), @"displayedImageHashString", @"@@:") ? DMCall(wall, @"displayedImageHashString") : nil;
+    UIView *iv = ours ?: DMMSWWallpaperImageView(wall);
+    // (the picture: ours as we decoded it and gave it to our view; iPadOS's as its image view's layer holds it. Not ours from our view's layer:
+    //  UIKit fills that layer from the view's image in its own time, and on the M1 (15.6.1) it still held the picture before right after our
+    //  decode set the new one, which is when DesktopWallpaper.h tells the switcher (DMMSWOurWallChanged): another picture chosen while the
+    //  switcher was open put the old one back as its background until it was opened again -- 1.8.7.5, the M1's check of SWITCHERWALL)
+    id shown = ours ? (__bridge id)ours.image.CGImage : iv.layer.contents;
+    id hash = !ours && DMMSWHasMethod(object_getClass(wall), @"displayedImageHashString", @"@@:") ? DMCall(wall, @"displayedImageHashString") : nil;
     CGRect b = root.bounds;
-    NSString *key = [NSString stringWithFormat:@"%@ %p %@ %ld", [hash isKindOfClass:[NSString class]] ? hash : @"-", (__bridge void *)iv.layer.contents, NSStringFromCGSize(b.size), (long)DMMSWTurnKey()];
+    NSString *key = [NSString stringWithFormat:@"%@ %p %@ %ld", ours ? @"ours" : [hash isKindOfClass:[NSString class]] ? hash : @"-", (__bridge void *)shown, NSStringFromCGSize(b.size), (long)DMMSWTurnKey()];
     if (![key isEqualToString:gMSWWallKey]) {
         gMSWWallKey = nil; gMSWWallContents = nil;
         NSString *mode = nil;
-        if (iv && iv.layer.contents && iv.window) {   // exact: as SpringBoard shows it
+        if (iv && shown && iv.window) {   // exact: as SpringBoard shows it
             CGRect ib = iv.bounds;
             CGPoint o = [iv convertPoint:ib.origin toView:root], x = [iv convertPoint:CGPointMake(ib.origin.x + 100.0, ib.origin.y) toView:root];
             CGPoint c = [iv convertPoint:CGPointMake(CGRectGetMidX(ib), CGRectGetMidY(ib)) toView:root];
             CGFloat k = hypot(x.x - o.x, x.y - o.y) / 100.0, angle = atan2(x.y - o.y, x.x - o.x);
             CGRect r = CGRectMake(c.x - ib.size.width * k / 2.0, c.y - ib.size.height * k / 2.0, ib.size.width * k, ib.size.height * k);
             if (k > 0.01 && fabs(angle) < 0.01 && CGRectContainsRect(CGRectInset(r, -1.0, -1.0), b)) {
-                gMSWWallContents = iv.layer.contents; gMSWWallBounds = ib; gMSWWallCenter = c; gMSWWallTransform = CGAffineTransformMakeScale(k, k);
+                gMSWWallContents = shown; gMSWWallBounds = ib; gMSWWallCenter = c; gMSWWallTransform = CGAffineTransformMakeScale(k, k);
                 gMSWWallContentsRect = iv.layer.contentsRect; gMSWWallGravity = iv.layer.contentsGravity; gMSWWallSize = b.size;
                 gMSWWallContentsTransform = nil;
                 @try { id t = [iv.layer valueForKey:@"contentsTransform"]; if ([t isKindOfClass:[NSValue class]] && !CGAffineTransformIsIdentity([t CGAffineTransformValue])) gMSWWallContentsTransform = t; } @catch (NSException *e) {}
@@ -636,8 +688,7 @@ static UIView *DMMSWWallpaperBackground(UIView *root, NSString **why) {
             } else DMLog([NSString stringWithFormat:@"[macswitcher] wallpaper as shown does not fit (angle %.2f, %@ for %@): its picture fills the screen instead", angle, NSStringFromCGRect(r), NSStringFromCGSize(b.size)]);
         }
         if (!gMSWWallContents) {   // fill: the wallpaper's picture, from its centre
-            UIImage *img = nil;
-            @try { for (NSString *sel in @[@"wallpaperImage", @"_displayedImage"]) if (!img && DMMSWHasMethod(object_getClass(wall), sel, @"@@:")) { id i = DMCall(wall, sel); if ([i isKindOfClass:[UIImage class]]) img = i; } } @catch (id e) { img = nil; }
+            UIImage *img = DMMSWWallImage(wall);
             if (!img.CGImage || img.size.width < 1 || img.size.height < 1) { *why = @"the wallpaper view gave no picture"; return nil; }
             CGFloat s = MAX(b.size.width / img.size.width, b.size.height / img.size.height);
             gMSWWallContents = (__bridge id)img.CGImage; gMSWWallBounds = CGRectMake(0, 0, img.size.width, img.size.height);
@@ -645,8 +696,8 @@ static UIView *DMMSWWallpaperBackground(UIView *root, NSString **why) {
             gMSWWallContentsRect = CGRectMake(0, 0, 1, 1); gMSWWallGravity = kCAGravityResize; gMSWWallSize = b.size; gMSWWallContentsTransform = nil;
             mode = [NSString stringWithFormat:@"filling the screen (%@ picture)", NSStringFromCGSize(img.size)];
         }
-        gMSWWallKey = key;
-        DMLog([NSString stringWithFormat:@"[macswitcher] wallpaper taken %@", mode]);
+        gMSWWallKey = key; gMSWWallOurs = ours != nil;
+        DMLog([NSString stringWithFormat:@"[macswitcher] wallpaper taken %@%@", mode, ours ? @": our Desktop Picture" : @""]);
     }
     UIView *v = [UIView new];
     v.userInteractionEnabled = NO;
@@ -661,16 +712,53 @@ static UIView *DMMSWWallpaperBackground(UIView *root, NSString **why) {
 // SpringBoard's image, shared). The exact placement comes with the view's next opening (the key stays unset).
 static void DMMSWWallLazy(void) {
     if (gMSWWallContents && CGSizeEqualToSize(gMSWWallSize, [UIScreen mainScreen].bounds.size)) return;
-    UIView *wall = DMMSWWallpaperView();
-    UIImage *img = nil;
-    @try { for (NSString *sel in @[@"wallpaperImage", @"_displayedImage"]) if (!img && wall && DMMSWHasMethod(object_getClass(wall), sel, @"@@:")) { id i = DMCall(wall, sel); if ([i isKindOfClass:[UIImage class]]) img = i; } } @catch (id e) { img = nil; }
+    UIView *wall = DMWPDesktopPictureView() ?: DMMSWWallpaperView();   // (our Desktop Picture where the desktop shows it, as the background takes it)
+    UIImage *img = DMMSWWallImage(wall);
     if (!img.CGImage || img.size.width < 1 || img.size.height < 1) return;
     CGRect b = [UIScreen mainScreen].bounds;
     CGFloat s = MAX(b.size.width / img.size.width, b.size.height / img.size.height);
     gMSWWallContents = (__bridge id)img.CGImage; gMSWWallBounds = CGRectMake(0, 0, img.size.width, img.size.height);
     gMSWWallCenter = CGPointMake(CGRectGetMidX(b), CGRectGetMidY(b)); gMSWWallTransform = CGAffineTransformMakeScale(s, s);
     gMSWWallContentsRect = CGRectMake(0, 0, 1, 1); gMSWWallGravity = kCAGravityResize; gMSWWallKey = nil; gMSWWallSize = b.size; gMSWWallContentsTransform = nil;
-    DMLog([NSString stringWithFormat:@"[macswitcher] wallpaper taken for a desktop drawn from its parts (filling the screen %@, %@ picture)", NSStringFromCGSize(b.size), NSStringFromCGSize(img.size)]);
+    gMSWWallOurs = wall && wall == DMWPDesktopPictureView();
+    DMLog([NSString stringWithFormat:@"[macswitcher] wallpaper taken for a desktop drawn from its parts (filling the screen %@, %@ picture%@)", NSStringFromCGSize(b.size), NSStringFromCGSize(img.size), gMSWWallOurs ? @", our Desktop Picture" : @""]);
+}
+// Our Desktop Picture's picture changed (another shape after a turn, its dark version, another picture), went (None) or came (a picture chosen
+// while iPadOS's wallpaper was taken): the copy taken before is let go -- the next desktop drawn from its parts, or the next opening, takes the
+// picture shown now (DMMSWWallLazy kept the old one for as long as the screen kept its size: slides showed the old picture, and a full-screen decode
+// stayed in memory) --, an open switcher's background is taken again at once (a turn with the switcher open took ours before it had followed the
+// turn: the other shape's part, kept until it was opened again), and every other view given the picture (DMMSWWallView: the other desktops'
+// thumbnails, desktops kept drawn from their parts) gets the one taken now. (1.8.7.5 round 1, the review of SWITCHERWALL.) Told right after our
+// view was given the new picture: taken from that picture, not from the view's layer, which UIKit may not have filled yet (DMMSWWallpaperBackground;
+// the M1's check of 1.8.7.5~a01). 1.8.7.5 SWTHUMBS (the iPad 2's check of a01, and the M1): with the switcher open the other desktops' thumbnails
+// kept the picture before, also after None, and a picture chosen from None left iPadOS's wallpaper as the background and in those thumbnails, until
+// it was opened again -- the thumbnails had their own copy, and only a copy of ours was let go.
+static void DMMSWOurWallChanged(void) {
+    BOOL wasOurs = gMSWWallOurs;
+    if (!wasOurs && !DMWPDesktopPictureView()) return;   // (iPadOS's wallpaper taken, and it is still what the desktop shows: kept)
+    id was = gMSWWallContents;   // (the picture taken before: the log below says whether our view's layer still holds it)
+    gMSWWallContents = nil; gMSWWallKey = nil; gMSWWallOurs = NO;
+    NSString *what = wasOurs ? @"our Desktop Picture changed" : @"our Desktop Picture chosen over iPadOS's wallpaper", *back = nil;
+    UIView *old = gMSWBackWall, *root = gMSWRoot;
+    if (old.superview && root && old.window == root.window && DMMSWIsMain()) {   // (the open switcher's background)
+        NSString *why = nil;
+        UIView *wall = DMMSWWallpaperBackground(root, &why);
+        if (!wall) { DMLog([NSString stringWithFormat:@"[macswitcher] %@ while shown: kept as it was (%@)", what, why]); return; }
+        [old.superview insertSubview:wall aboveSubview:old];
+        [old removeFromSuperview];
+        gMSWBackWall = wall;
+        UIImageView *ours = DMWPDesktopPictureView();
+        id layer = ours.layer.contents;
+        back = !ours ? @"iPadOS's wallpaper" : layer == (__bridge id)ours.image.CGImage ? @"our picture as decoded; its view's layer has it too"
+             : was && layer == was ? @"our picture as decoded; its view's layer still has the one before" : @"our picture as decoded; its view's layer has another";
+    }
+    NSArray<UIView *> *views = gMSWWallViews.allObjects;   // (the other views given the picture, still there)
+    if (views.count && !gMSWWallContents) DMMSWWallLazy();   // (no open background on the iPad's screen: taken as a desktop drawn from its parts takes it)
+    NSUInteger n = 0;
+    if (gMSWWallContents) for (UIView *wv in views) if (wv.superview) { DMMSWWallPlace(wv); n++; }
+    NSString *others = n ? [NSString stringWithFormat:@"%lu desktop thumbnail(s) or picture(s) drawn from their parts", (unsigned long)n] : nil;
+    if (back) DMLog([NSString stringWithFormat:@"[macswitcher] %@ while shown: the background taken again (%@)%@", what, back, others ? [NSString stringWithFormat:@", and %@ with it", others] : @""]);
+    else if (others) DMLog([NSString stringWithFormat:@"[macswitcher] %@: %@ given the picture shown now (%@)", what, others, gMSWWallOurs ? @"ours" : @"iPadOS's wallpaper"]);
 }
 
 // How the screen is turned now: SpringBoard's interface orientation (1-4), or -1.
@@ -697,6 +785,7 @@ static UIView *DMMSWBuildRoot(void) {
     // (another display: the live blur of what it shows -- the wallpaper read here is the iPad's, laid out for the iPad's screen)
     UIView *wall = DMMSWIsMain() ? DMMSWWallpaperBackground(root, &why) : nil;
     if (!DMMSWIsMain()) why = @"another display";
+    gMSWBackWall = wall;
     UIView *back = nil;
     if (wall) {
         back = [[UIView alloc] initWithFrame:b];
@@ -2584,6 +2673,7 @@ static void DMMSWFitTurned(UIView *st, NSInteger fromId) {
     if (CGRectIsNull(usable)) return;
     NSValue *saved = [objc_getAssociatedObject(st, kStageByOrientKey) objectForKey:DMOrientKey()];
     NSValue *was = objc_getAssociatedObject(st, kStageIntentKey), *fromSize = objc_getAssociatedObject(st, kStageIntentSizeKey);
+    usable = DMBehindDockTurnArea(DMStageBundle(st), usable);   // (a window the user left behind the Dock: down to the screen's bottom, as a turn keeps it -- 1.8.7.5)
     CGRect f = DMFitInto(saved ? saved.CGRectValue : DMScaleFrame(was ? was.CGRectValue : st.frame, fromSize ? fromSize.CGSizeValue : CGSizeFromString(leftAt), screen), usable);
     DMLog([NSString stringWithFormat:@"[macswitcher] %@'s desktop was left at %@, the screen is %@ now: its window is placed at %@", DMStageBundle(st), leftAt, NSStringFromCGSize(screen), NSStringFromCGRect(f)]);
     gStageFrameBypass = YES; st.frame = f; gStageFrameBypass = NO;
@@ -2810,12 +2900,7 @@ static UIView *DMMSWComposedDesktop(NSInteger did, CGRect b) {
     UIView *c = [[UIView alloc] initWithFrame:b];
     c.backgroundColor = [UIColor blackColor];
     c.clipsToBounds = YES;
-    if (gMSWWallContents) {
-        UIView *wv = [UIView new];
-        DMMSWApplyWall(wv.layer);
-        wv.bounds = gMSWWallBounds; wv.center = gMSWWallCenter; wv.transform = gMSWWallTransform;
-        [c addSubview:wv];
-    }
+    DMMSWWallView(c, NO);   // (the wallpaper, following a change of our Desktop Picture while it shows)
     NSUInteger n = 0, icons = 0;
     for (UIView *st in DMAerialStagesAll()) {
         NSString *b2 = DMStageBundle(st);
@@ -2866,13 +2951,7 @@ static UIView *DMMSWDeskPicture(NSUInteger i, CGRect b) {
     DMMSWWallLazy();
     UIView *c = [[UIView alloc] initWithFrame:b];
     c.backgroundColor = [UIColor blackColor]; c.clipsToBounds = YES; c.userInteractionEnabled = NO;
-    if (gMSWWallContents) {
-        UIView *wv = [UIView new];
-        wv.userInteractionEnabled = NO;
-        DMMSWApplyWall(wv.layer);
-        wv.bounds = gMSWWallBounds; wv.center = gMSWWallCenter; wv.transform = gMSWWallTransform;
-        [c addSubview:wv];
-    }
+    DMMSWWallView(c, NO);
     objc_setAssociatedObject(c, kMSWSharedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     NSUInteger n = 0, cards = 0;
     if (sameShape && !DMSMEngine())
@@ -2905,13 +2984,7 @@ static UIView *DMMSWLeftFromParts(UIView *fsPic, UIView *fsSrc) {
     DMMSWWallLazy();
     UIView *c = [[UIView alloc] initWithFrame:b];
     c.backgroundColor = [UIColor blackColor]; c.clipsToBounds = YES; c.userInteractionEnabled = NO;
-    if (gMSWWallContents) {
-        UIView *wv = [UIView new];
-        wv.userInteractionEnabled = NO;
-        DMMSWApplyWall(wv.layer);
-        wv.bounds = gMSWWallBounds; wv.center = gMSWWallCenter; wv.transform = gMSWWallTransform;
-        [c addSubview:wv];
-    }
+    DMMSWWallView(c, NO);
     objc_setAssociatedObject(c, kMSWSharedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(c, kMSWNotKeptKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (fsPic && fsSrc) {   // (where its scene view is on the screen, turned as it is; over the Home Screen: the shared windows go under it)
@@ -3075,11 +3148,7 @@ static UIView *DMMSWBuildStrip(UIView *root, CGRect b) {
                 shot.transform = CGAffineTransformMakeScale(k, k);
                 shot.center = CGPointMake(r.size.width / 2.0, r.size.height / 2.0);
                 [clip addSubview:shot];
-            } else if (gMSWWallContents) {   // (not seen since the respring: its wallpaper)
-                UIView *wv = [[UIView alloc] initWithFrame:clip.bounds];
-                wv.layer.contents = gMSWWallContents; wv.layer.contentsRect = gMSWWallContentsRect; wv.layer.contentsGravity = kCAGravityResizeAspectFill;
-                [clip addSubview:wv];
-            }
+            } else DMMSWWallView(clip, YES);   // (not seen since the respring: its wallpaper, filling the tile)
         }
         [strip addSubview:clip];
         [gMSWDeskClips addObject:clip];
@@ -6057,7 +6126,8 @@ static BOOL DMMSWTrigger(NSString *cmd) {
         DMLog(o);
     }
     else if ([cmd isEqualToString:@"mswwall"]) {   // mswwall: the wallpaper view the Mac Switcher takes its picture from, and that picture's layer (debug)
-        UIView *wall = DMMSWWallpaperView(), *iv = wall ? DMMSWWallpaperImageView(wall) : nil;
+        UIImageView *ours = DMWPDesktopPictureView();   // (our Desktop Picture first, as the switcher takes it)
+        UIView *wall = ours ?: DMMSWWallpaperView(), *iv = ours ?: (wall ? DMMSWWallpaperImageView(wall) : nil);
         id c = iv.layer.contents;
         NSString *kind = !c ? @"none" : (CFGetTypeID((__bridge CFTypeRef)c) == CGImageGetTypeID() ? [NSString stringWithFormat:@"CGImage %zux%zu", CGImageGetWidth((__bridge CGImageRef)c), CGImageGetHeight((__bridge CGImageRef)c)] : NSStringFromClass([c class]));
         NSMutableString *m = [NSMutableString stringWithFormat:@"[mswwall] wall %@ image view %@ %@ bounds %@ contents %@ rect %@ gravity %@ scale %.1f", NSStringFromClass([wall class]), NSStringFromClass([iv class]),

@@ -438,7 +438,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>The color is used while the status bar text is light.</string>
+			<string>A light color turns the status bar text and icons dark, as on a Mac, unless its opacity is too low to make the bar light. A dark color is used while the text is light, and a light background goes behind dark text.</string>
 			<key>label</key>
 			<string>Status Bar Background</string>
 			<key>stockHides</key>

@@ -63,10 +63,11 @@ PLIST
     # only when SpringBoard keeps a set (the helper answers from Mac Status Bar's old on/off, Use Stock Status Bar and the version gate, as SpringBoard
     # decides at its start), and one there for a SpringBoard that keeps none goes now (1.7.0 left it with the old on/off switched off): the dasd
     # started below refused those apps until that SpringBoard's start removed it (code review, 30 Oct). A helper that cannot answer: as it is.
-    QS=/var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-PrewarmQuitSet.plist; QP=/var/jb/var/mobile/Library/Preferences/com.besiktasliseba.macstatusbar.prewarm.plist
+    # The copy is the helper's (--quit-set-copy: as mobile, a plain file only, one there already kept): a cp here ran as root and followed a link
+    # planted at the set's file, copying what it named where mobile reads it (audit L22).
+    QS=/var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-PrewarmQuitSet.plist
     kept=2; [ -x "$H" ] && { "$H" --quit-set-kept; kept=$?; }
-    if [ "$kept" = 0 ]; then
-        if [ ! -e "$QS" ] && [ -f "$QP" ]; then cp "$QP" "$QS" && chmod 644 "$QS"; chown 501:501 "$QS" 2>/dev/null; fi
+    if [ "$kept" = 0 ]; then "$H" --quit-set-copy
     elif [ "$kept" = 1 ]; then rm -f "$QS"; fi
     # Only when it lacks the block just installed (common/PrewarmPartID.h, 1.7.2): the block in dasd writes a start stamp (dasd's pid and start
     # time, the block's build ID), and the helper answers 0 only when that stamp is the running dasd's and names the build ID of the part installed

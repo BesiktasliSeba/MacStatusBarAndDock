@@ -1576,12 +1576,8 @@ static UIView *DMMSWSMComposedDesktop(NSInteger did, CGRect b) {
     UIView *home = DMMSWSMHomeBackdrop(b);
     if (home) { [c addSubview:home]; DM_FEATURE_MARK("mac-switcher-sm-home-behind"); }
     else {
-        if (gMSWWallContents) {
-            UIView *wv = [UIView new];
-            wv.layer.contents = gMSWWallContents; wv.layer.contentsRect = gMSWWallContentsRect; wv.layer.contentsGravity = gMSWWallGravity ?: kCAGravityResize;
-            wv.bounds = gMSWWallBounds; wv.center = gMSWWallCenter; wv.transform = gMSWWallTransform;
-            [c addSubview:wv];
-        }
+        DMMSWWallView(c, NO);   // (the wallpaper as the other engines' desktops drawn from their parts take it, MacSwitcher.h: it follows a change of
+                                //  our Desktop Picture while it shows, and iPadOS 17's poster is turned as shown, contentsTransform)
         // (no picture of the Home Screen to put behind the windows -- since a respring, or let go under memory pressure --: the Home Screen, the
         //  Dock and the menu bar come in live on the slide, under the windows' pictures (MacSwitcher.h DMMSWSlShared, tag 0x4D53 below), as on an
         //  empty desktop without that picture and on the other engines' desktops drawn from their parts (DMMSWDeskPicture). They were missing in

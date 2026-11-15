@@ -37,9 +37,9 @@ enum {
 // @"front": id (the window in front: keyboard focus), @"away": @[ids] (full-screen windows that leave), @"atHome": @YES when nothing leaves -- the
 // person was on the Home Screen already, behind the windows (the Home Screen's own Home press applies: close a folder, the App Library...)}.
 // With DMSMHomeHide (Settings > Windows & Multitasking > Home Minimizes Windows, 1.7.9) a Home the rule would keep the windows for leaves them
-// instead: @{@"hide": @[every window of the desktop, full-screen ones too]} -- Home as SpringBoard built it (the stage goes, as Stage Manager has
-// it), and SMHome.h marks each of them minimized, so each comes back with its own app and the others stay away. Everything left as SpringBoard
-// built it without the switch is left the same with it (a desktop of a full-screen window alone among them).
+// instead: @{@"hide": @[every window of the desktop, full-screen ones too], @"atHome": as above (1.8.7.5)} -- Home as SpringBoard built it (the
+// stage goes, as Stage Manager has it), and SMHome.h marks each of them minimized, so each comes back with its own app and the others stay away.
+// Everything left as SpringBoard built it without the switch is left the same with it (a desktop of a full-screen window alone among them).
 // (noinline: its own range in the release crash map, tools/test-crashstep.sh)
 // (the one refusal SMHome.h acts on besides leaving it: a desktop of full-screen windows alone -- with Mac Switcher desktops they go to the background)
 static NSString *const kDMSMHomeOnlyFullScreen = @"only a full-screen window: it goes Home as Apple has it";
@@ -76,7 +76,7 @@ __attribute__((noinline)) static NSDictionary *DMSMHomePlan(NSArray<NSDictionary
         NSMutableArray<NSString *> *all = [NSMutableArray array];
         for (NSDictionary *w in desk) [all addObject:w[@"id"]];
         if (why) *why = [NSString stringWithFormat:@"Home Minimizes Windows: %lu window(s) go with Home", (unsigned long)all.count];
-        return @{@"hide": all};
+        return @{@"hide": all, @"atHome": @(away.count == 0)};   // (the Home Screen's own press, for a folder looked at: DMSMHomePressesAtHome, L43)
     }
     if (kept.count > nRoles) DMSM_HOME_LEAVE(@"more windows than window roles");
     // The roles: nothing leaves -- each window keeps its own role (the same layout as on screen: no window moves); a full-screen window leaves --
@@ -115,6 +115,19 @@ __attribute__((noinline)) static NSDictionary *DMSMHomePlan(NSArray<NSDictionary
                      own ? @" in their own roles" : @" (roles closed up)"];
     return @{@"keep": keep, @"empty": empty, @"front": front[@"id"], @"away": away, @"atHome": @(away.count == 0)};
     #undef DMSM_HOME_LEAVE
+}
+// After a Home the plan acted on, the Home Screen's own Home press (SMHome.h DMSMHomeAfterKeep: an open folder, the App Library, jiggle mode,
+// Spotlight or the Today View close; with nothing open, the first page) is for a person on the Home Screen already, behind the windows -- the
+// plan's atHome (no full-screen window among them) and the desktop on screen (application mode: not a Home from the App Switcher). For the kept
+// windows, as before. With Home Minimizes Windows (the hide plan) the windows go with SpringBoard's own Home from application mode, Apple's Home
+// from an app, which leaves the Home Screen as it is (its page; a folder left open behind an app stays open, as iPadOS keeps it) and never gives
+// the Home Screen its press: a folder opened behind the windows stayed open and a second Home was needed, where the other engines and this one
+// with the switch off need one (1.8.7.5, audit L43 of 1.8.7.2). There the press follows only for a folder the person was looking at behind the
+// windows (folderShown: the windows stepped aside for it, common/HomeFolderRule.h), which it closes; with nothing of the Home Screen's open it
+// would go to the first page (the review of 1.8.7.5: not with this Home).
+static BOOL DMSMHomePressesAtHome(NSDictionary *plan, long long prevEnv, BOOL folderShown) {
+    if (![plan[@"atHome"] boolValue] || prevEnv != 3) return NO;
+    return plan[@"hide"] ? folderShown : YES;
 }
 
 // The App Switcher's bookkeeping after SpringBoard finalized a transition (SMHome.h DMSMHomeNoteResult), decided by where SpringBoard WENT (the

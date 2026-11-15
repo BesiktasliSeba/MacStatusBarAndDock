@@ -37,3 +37,15 @@ __attribute__((visibility("default"))) int MSBDCrashFrames(const char *path, cha
         return (int)clean.count;
     }
 }
+
+// The crash guard (CrashGuard.h MSBDGuardReportPid, 1.8.7.5): the pid of the SpringBoard a report tells about, its body's "pid" (a watchdog report
+// has it too, before its stackshot is reshaped); -1 if the report cannot be read or names none.
+__attribute__((visibility("default"))) int MSBDCrashPid(const char *path) {
+    @autoreleasepool {
+        NSString *p = path ? [NSString stringWithUTF8String:path] : nil;
+        NSDictionary *attrs = p ? [[NSFileManager defaultManager] attributesOfItemAtPath:p error:nil] : nil;
+        if (!attrs || [attrs fileSize] == 0 || [attrs fileSize] > MSBD_BLAME_MAX_BYTES) return -1;
+        id pid = MSBDBlameBodyFromDataRaw([NSData dataWithContentsOfFile:p options:NSDataReadingUncached error:nil])[@"pid"];
+        return [pid isKindOfClass:[NSNumber class]] && [pid intValue] > 0 ? [pid intValue] : -1;
+    }
+}

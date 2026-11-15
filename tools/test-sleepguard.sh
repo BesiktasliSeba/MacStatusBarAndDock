@@ -131,6 +131,67 @@ mkdir -p "$W/state"
 clang -O0 -fobjc-arc -Wall -Wno-unused-function -Wno-unused-variable -I"$W" -I. -DSG_TEST_DIR="\"$W/state\"" -framework Foundation -o "$W/tsgstate" "$W/tsgstate.m" \
   && "$W/tsgstate" || fails=1
 
+# ---- the powerd restart with a time limit (audit L72 of 1.8.7.2): the helper's own SGRestartPowerd (SG_DAEMON_H: another copy of the header,
+# e.g. the code before the fix) with a stand-in launchctl, its limit made 2 s here (the real one, 15 s, by a site check). It runs on the helper's
+# main queue: a launchctl that never returned held SSH, the engines, ejects, iCleaner and every later look for good. Bounded here by the test
+# itself (20 s; bash 3.2 has no timeout): the code before the fix waits for the stand-in's 60 s.
+fn() { awk -v h="$2" 'index($0, h) == 1 {f=1} f {print} f && /^[}]/ {exit}' "$1"; }   # one function of a file, from its first line
+mkdir -p "$W/lc"
+printf '#!/bin/sh\necho "$@" > "%s/args"; echo $$ > "%s/pid"\ncase "$(cat "%s/mode")" in hang) exec sleep 60;; ok) exit 0;; *) exit 1;; esac\n' "$W/lc" "$W/lc" "$W/lc" > "$W/lc/launchctl"
+chmod +x "$W/lc/launchctl"
+cat > "$W/tsgr.m" <<'EOF'
+#import <Foundation/Foundation.h>
+#include "common/DriveEject.h"
+extern char **environ;
+static void SGLog(NSString *fmt, ...) NS_FORMAT_FUNCTION(1, 2);
+static void SGLog(NSString *fmt, ...) { va_list ap; va_start(ap, fmt); NSString *l = [[NSString alloc] initWithFormat:fmt arguments:ap]; va_end(ap); printf("LOG %s\n", l.UTF8String); }
+#include "restart.inc"
+int main(void) { @autoreleasepool { CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent(); BOOL ok = SGRestartPowerd(); printf("RESULT %d %.1f\n", ok, CFAbsoluteTimeGetCurrent() - t0); } return 0; }
+EOF
+sgbuild() {   # $1 SleepGuardDaemon.h: its SGRestartPowerd, launchctl the stand-in, the limit 2 s, built into $W/tsgr
+  { grep -F 'static const double kSGPowerdRestartLimit = ' "$1" | sed 's/= [0-9.]*;/= 2.0;/' || true
+    fn "$1" 'static BOOL SGRestartPowerd(void) {' | sed -e "s#\"/var/jb/usr/bin/launchctl\"#\"$W/lc/launchctl\"#g" -e "s#\"/bin/launchctl\"#\"$W/lc/launchctl\"#g"; } > "$W/restart.inc"
+  rm -f "$W/tsgr"; clang -O0 -fobjc-arc -Wall -Wno-unused-function -I"$W" -I.. -framework Foundation -o "$W/tsgr" "$W/tsgr.m" > "$W/tsgr-build.txt" 2>&1
+}
+sgrun() {   # $1 what the stand-in does (ok, fail, hang): "RESULT <ok> <seconds>" (and the log), or BLOCKED; then "STANDIN gone" or "STANDIN running"
+  echo "$1" > "$W/lc/mode"; rm -f "$W/lc/args" "$W/lc/pid" "$W/lc/out"
+  "$W/tsgr" > "$W/lc/out" 2>&1 &
+  local p=$! i=0
+  while kill -0 $p 2>/dev/null && [ $i -lt 200 ]; do sleep 0.1; i=$((i + 1)); done
+  if kill -0 $p 2>/dev/null; then kill -9 $p 2>/dev/null; wait $p 2>/dev/null || true; echo BLOCKED; else wait $p 2>/dev/null || true; cat "$W/lc/out"; fi
+  local s=""; [ -f "$W/lc/pid" ] && s=$(cat "$W/lc/pid")
+  if [ -n "$s" ] && kill -0 "$s" 2>/dev/null; then echo "STANDIN running"; kill -9 "$s" 2>/dev/null || true; else echo "STANDIN gone"; fi
+}
+sgrestart() {   # $1 header, $2 quiet: the three cases; 0 when all pass
+  local H=$1 q=$2 bad=0 o
+  r() { if eval "$2"; then [ -n "$q" ] || echo "PASS  $1"; else [ -n "$q" ] || echo "FAIL  $1"; bad=1; fi; }
+  if ! sgbuild "$H"; then [ -n "$q" ] || { echo "FAIL  the powerd restart does not build from $H:"; grep -m 3 'error:' "$W/tsgr-build.txt"; }; return 1; fi
+  o=$(sgrun ok)
+  r "the powerd restart: launchctl kickstart -k system/com.apple.powerd exits 0: started over" \
+    "echo \"\$o\" | grep -q '^RESULT 1 ' && [ \"\$(cat '$W/lc/args')\" = 'kickstart -k system/com.apple.powerd' ]"
+  o=$(sgrun fail)
+  r "  ... launchctl exits 1: not started over" "echo \"\$o\" | grep -q '^RESULT 0 '"
+  o=$(sgrun hang)
+  r "  ... a launchctl that never returns: not started over, within the limit (not blocked), stopped" \
+    "! echo \"\$o\" | grep -q '^BLOCKED' && echo \"\$o\" | awk '/^RESULT 0 /{ok = \$3 < 4.0} END{exit !ok}' && echo \"\$o\" | grep -qx 'STANDIN gone'"
+  r "  ... said in the Sleep Guard's log" "echo \"\$o\" | grep -qx 'LOG the powerd restart: launchctl did not finish in 2 s -- stopped'"
+  [ -n "$q" ] || [ $bad = 0 ] || echo "$o" | sed 's/^/        /'
+  return $bad
+}
+SG_D=${SG_DAEMON_H:-$D}
+sgrestart "$SG_D" || fails=1
+if [ -z "$SG_DAEMON_H" ]; then
+  mtfsg() {   # $1 name, $2 a filter on SleepGuardDaemon.h that takes one part of the fix out
+    "$2" < "$D" > "$W/sgd.h"
+    if cmp -s "$W/sgd.h" "$D"; then echo "FAIL  made-to-fail ($1): the copy did not change"; fails=1; return; fi
+    if sgrestart "$W/sgd.h" quiet; then echo "FAIL  made-to-fail ($1): still passes"; fails=1; else echo "PASS  made-to-fail ($1): caught"; fi
+  }
+  sg_nolimit() { sed -e 's/if (MSBDRunHelperTimed(lc, argv, kSGPowerdRestartLimit, &out, &st, &late) != 0) return NO;/if (MSBDRunHelperTimed(lc, argv, 0, \&out, \&st, \&late) != 0) return NO;/'; }
+  sg_nolog() { grep -vF '    if (late) { SGLog(@"the powerd restart: launchctl did not finish in %.0f s -- stopped", kSGPowerdRestartLimit); return NO; }'; }
+  mtfsg "launchctl run with no limit" sg_nolimit
+  mtfsg "the time-out not said in the log" sg_nolog
+fi
+
 check() { if eval "$2"; then echo "PASS  $1"; else echo "FAIL  $1"; fails=1; fi; }
 CK="awk '/^static void SGCheck\\(NSString \\*why\\) \\{/,/^}/' $D"
 check "the screen going off asks for one look 5 s later; the only other planned look is the rules' own" \
@@ -146,8 +207,11 @@ check "nothing stuck: the state written, nothing more" \
 check "the decision is MSBDSGDecide's: the screen, what else keeps the iPad awake, the switch, the limits (the oldest clear of the day)" \
   "$CK | grep -q 'MSBDSGAction a = MSBDSGDecide(gSGStuckSince, now, gSGScreenOff, s.live, SGOn(), gSGLastClear, (int)gSGClears.count,' && $CK | grep -q 'gSGClears.count ? gSGClears.firstObject.doubleValue : 0, &reason, &again);'"
 check "  ... only kMSBDSGClear clears" "$CK | grep -q 'if (a != kMSBDSGClear) {'"
-check "the clear: launchd starts powerd over (kickstart -k system/com.apple.powerd), the only call that runs a program" \
-  "grep -q '(char \\*)\"kickstart\", (char \\*)\"-k\", (char \\*)\"system/com.apple.powerd\"' $D && [ \$(grep -c 'posix_spawn(' $D) = 1 ]"
+check "the clear: launchd starts powerd over (kickstart -k system/com.apple.powerd), the only program run (with a time limit; no wait of its own)" \
+  "grep -q '(char \\*)\"kickstart\", (char \\*)\"-k\", (char \\*)\"system/com.apple.powerd\"' $D && [ \$(grep -c 'MSBDRunHelperTimed(' $D) = 1 ] && ! grep -q 'posix_spawn(\\|waitpid(' $D"
+check "  ... its limit is 15 s, through common/DriveEject.h's MSBDRunHelperTimed (main.m includes DriveEject.h before this file)" \
+  "grep -qxF 'static const double kSGPowerdRestartLimit = 15.0;' $D && fn $D 'static BOOL SGRestartPowerd(void) {' | grep -qF 'if (MSBDRunHelperTimed(lc, argv, kSGPowerdRestartLimit, &out, &st, &late) != 0) return NO;' \
+   && awk '/^#include \"..\\/..\\/common\\/DriveEject.h\"/{a=NR} /^#include \"SleepGuardDaemon.h\"/{b=NR} END{exit !(a && b > a)}' $M"
 check "  ... counted and written to the state file before powerd goes (the limits hold if the helper starts over)" \
   "$CK | awk '/gSGLastClear = now; \\[gSGClears addObject:@\\(now\\)\\];/{a=NR} /SGWriteState\\(s, \"clearing\"\\);/{b=NR} /BOOL ok = SGRestartPowerd\\(\\);/{c=NR} END{exit !(a && b > a && c > b)}'"
 check "  ... the scheduled wakes copied before powerd goes; 3 s later the ones still ahead and not back scheduled again, then the look" \

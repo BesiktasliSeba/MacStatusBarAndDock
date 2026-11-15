@@ -5,6 +5,9 @@
 // join asks too), DMSMIsMinimized, DMSMGrowFromDockAtTapForApp, DMSMStageOf, DMSMFrontStageOnDisplay, DMSMFrontStage and DMSMItemFor, with the real
 // window keys (SMWindowKey.h). SpringBoard's stages, the full-screen stage request, the join's request and the picture's grow are stand-ins that
 // record what was asked. Run against the code before the fix (no DMSMHomeTapBringsWindow) the Home Screen cases of a minimized window fail.
+// 1.8.7.5 (review of audit track f, finding 1): the tap first looks for minimized windows that are gone (DMSMMinimizedLook, tested on its own in
+// test-smminpictures: here a stand-in that drops the marks and pictures of windows in no stage, as it does), so a window quit from the App Switcher
+// a moment ago -- its Dock icon tapped there, before the watch's next look -- is not taken for the app's new window: no old picture grows over it.
 #import <Foundation/Foundation.h>
 #include "SMWindowKey.h"
 
@@ -107,6 +110,19 @@ static BOOL DMSMRequestOnKeeping(id identity, NSString *label, NSArray<NSArray *
 }
 static void DMSMDismissOtherFullScreen(id stage, NSString *keep) { (void)stage; (void)keep; }
 static void DMSMAfterGesture(NSString *what, dispatch_block_t block) { (void)what; block(); }
+// The look for minimized windows that are gone (the real one: DMSMMinimizedLook -> DMSMMinimizedForgetClosed, test-smminpictures): a window key in
+// no stage loses its mark and its picture; nothing when no stage is on record.
+static int gLooks;
+static void DMSMMinimizedLook(void) {
+    gLooks++;
+    if (!gStages.count) return;
+    NSMutableSet<NSString *> *present = [NSMutableSet set], *keys = [gMin mutableCopy];
+    for (TStage *st in gStages) for (id it in st.items) { NSString *k = DMSMItemKey(it); if (k) [present addObject:k]; }
+    [keys addObjectsFromArray:gSMMinPictures.allKeys];
+    NSSet<NSString *> *gone = DMSMKeysGone(keys, present);
+    [gMin minusSet:gone];
+    for (NSString *k in gone) [gSMMinPictures removeObjectForKey:k];
+}
 
 // the real code's own declarations (StatusBar.x declares them ahead the same way)
 static id DMSMStageOf(NSString *key);
@@ -130,7 +146,7 @@ static void Reset(void) {
     gStages = [NSMutableArray array]; gShown = nil; gMin = [NSMutableSet set]; gSMMinPictures = [NSMutableDictionary dictionary];
     gSMFitSlots = nil; gSMFreeWindows = nil; gSMFitLoose = nil; gWindowed = NO; gFront = nil; gNewEntityKey = nil;
     gFullStages = [NSMutableArray array]; gGrown = [NSMutableArray array]; gBrought = [NSMutableArray array]; gRequests = [NSMutableArray array];
-    gLog = [NSMutableArray array]; gJoinAsWindow = -1;
+    gLog = [NSMutableArray array]; gJoinAsWindow = -1; gLooks = 0;
 }
 static void Minimized(NSString *key, BOOL picture) { [gMin addObject:key]; if (picture) gSMMinPictures[key] = [UIView new]; }
 static int fails = 0, checks = 0;
@@ -237,6 +253,29 @@ int main(void) {
         [gStages addObject:deskS]; gShown = deskS; gFront = [SBApplication new]; gFront.bundleIdentifier = kNotes;
         r = Tap(kSafari);
         Check(r && [J(gBrought) isEqualToString:kSafari] && gRequests.count == 0, [NSString stringWithFormat:@"Safari already in the stage on screen: brought forward (added %d, forward [%@])", r, J(gBrought)]);
+
+        printf("-- a minimized window quit from the App Switcher a moment ago, its Dock icon tapped there (1.8.7.5, review of track f, finding 1)\n");
+        // 15. Open Apps as Windows on, nothing in front: Safari minimized (its picture kept), its card swiped away -- its stage gone, the watch's
+        //     look not run yet (the App Switcher is up). The tap opens the app's new window on the same scene (the same key).
+        Reset(); gWindowed = YES; gNewEntityKey = saf;
+        [gStages addObject:Stage(@{notes: Win(20)})]; Minimized(saf, YES);
+        r = Tap(kSafari);
+        Check(NormalLaunch(r) && gGrown.count == 0, [NSString stringWithFormat:@"its window gone, tapped with nothing in front: SpringBoard's own launch and no old picture grows over the new window (added %d, grown [%@])", r, J(gGrown)]);
+        Check(![gMin containsObject:saf] && !gSMMinPictures[saf] && gLooks == 1, @"  ... the tap looked first: the gone window's mark and picture are gone before anything reads them");
+        // 16. The same with a desktop in front (Notes): the new window joins it as a new window, not as "the minimized one", no picture grows.
+        Reset(); gWindowed = YES; gNewEntityKey = saf;
+        deskS = Stage(@{notes: Win(20)});
+        [gStages addObject:deskS]; Minimized(saf, YES);
+        gShown = deskS; gFront = [SBApplication new]; gFront.bundleIdentifier = kNotes;
+        r = Tap(kSafari);
+        Check(r && gRequests.count == 1 && gGrown.count == 0 && ![gMin containsObject:saf], [NSString stringWithFormat:@"its window gone, tapped over a desktop: added as a window, no old picture grows over it, no stale mark (added %d, grown [%@])", r, J(gGrown)]);
+        // 17. As before: the minimized window is still there (its hidden stage): it comes back as that window and its picture grows.
+        Reset(); gWindowed = YES; gNewEntityKey = saf;
+        deskS = Stage(@{notes: Win(20)});
+        [gStages addObject:deskS]; [gStages addObject:Stage(@{saf: Win(10)})]; Minimized(saf, YES);
+        gShown = deskS; gFront = [SBApplication new]; gFront.bundleIdentifier = kNotes;
+        r = Tap(kSafari);
+        Check(r && [J(gGrown) isEqualToString:saf] && gJoinAsWindow == 1, [NSString stringWithFormat:@"its window still in its hidden stage: it comes back as that window and its picture grows (as before; grown [%@])", J(gGrown)]);
         printf("test-smhometap: %d of %d checks pass\n", checks - fails, checks);
     }
     return fails;

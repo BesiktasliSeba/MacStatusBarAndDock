@@ -200,7 +200,7 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 
 ### Built to be safe
 
-- If SpringBoard crashes twice in a row because of this tweak, Automatic Crash Recovery turns off what crashed, tells you in Settings and offers Report a Problem. A crash in another tweak doesn't count.
+- If SpringBoard crashes twice in a row because of this tweak, or freezes again shortly after every start, Automatic Crash Recovery turns off what crashed (a larger Menu Bar Size goes back to Small), tells you in Settings and offers Report a Problem. A crash in another tweak doesn't count.
 - On an iPadOS version it hasn't been tested on, it stays off until you choose Enable Anyway.
 - Package managers, the jailbreak apps and Filza never get its app parts, so they keep working and you can always remove it.
 - It has no network code. See [Privacy](#privacy).

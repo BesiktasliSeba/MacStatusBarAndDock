@@ -23,7 +23,10 @@ clang -fobjc-arc -Wall -Wno-unused-function -framework Foundation "${TDISP[@]}" 
 clang -fobjc-arc -Wall -Wno-unused-function -framework Foundation -o "$W/tcf" test-crashfeature.m   # (the real domains: a built map's cases below)
 echo "== guard order"
 clang -fobjc-arc -dynamiclib -framework Foundation -framework CoreFoundation -DMSBD_CRASHMAP="\"$FIXDIR/test-crashmap.txt\"" "${TDISP[@]}" -o "$W/MacCrashBlame.dylib" ../loader/CrashBlameHelper.m ../loader/CrashFeatureHelper.m
-clang -Wall -Wno-unused-function -framework CoreFoundation -DMSBD_GUARD_REPORTS="\"$REPORTS\"" -DMSBD_GUARD_VERDICTS="\"$W/verdicts.txt\"" \
+# (CRASHSTEP_GUARD_DIR=<folder>: CrashGuard.h, CrashStep.h, CrashExplain.h and LineSwitch.h from there, e.g. the code before a fix; CRASHSTEP_PREFS_M=<file>:
+#  another MSBRootListController.m for the L104 pages' check. The other common headers come from ../common.)
+GD=${CRASHSTEP_GUARD_DIR:-$PWD/../common}; PM=${CRASHSTEP_PREFS_M:-$PWD/../statusbar/macstatusbarprefs/MSBRootListController.m}
+clang -Wall -Wno-unused-function -framework CoreFoundation -iquote ../common -DMSBD_TEST_GUARD_H="\"$GD/CrashGuard.h\"" -DMSBD_GUARD_REPORTS="\"$REPORTS\"" -DMSBD_GUARD_VERDICTS="\"$W/verdicts.txt\"" \
   -DMSBD_GUARD_BLAME_LIB="\"$W/MacCrashBlame.dylib\"" -DMSBD_STEP_FILE="\"$W/step.txt\"" -DMSBD_CRASHMAP="\"$FIXDIR/test-crashmap.txt\"" \
   -DMSBD_GUARD_RECORD="\"$W/record.txt\"" -DMSBD_GUARD_RECENT="\"$W/recent.txt\"" \
   -DMSBD_DISP_DOMAIN="\"com.besiktasliseba.test-crashstep.displays\"" -DMSBD_DISP_MSB_DOMAIN="\"com.besiktasliseba.test-crashstep\"" \
@@ -62,6 +65,20 @@ run cclookup step1b-core-cc-lookup.ips step1b-core-cc-lookup.ips
 run dockstyle step1b-dock-style.ips step1b-dock-style.ips
 run dispon step1b-core-banners.ips step1b-core-banners-exception.ips
 run dispdefault step1b-core-banners.ips
+# 1.8.7.5, audit L104 of 1.8.7.2: step 1 after an earlier step 1b. The guard's side (test-crashstep.c "l104"), then the loaders' skip list under that
+# note, then the pages' (test-crashsteppages.m: the real CrashExplain.h with LineSwitch.h's footers, note rule and Turn Back On condition and the
+# Mac / Stock picker's lines cut out of the real files, by crashstep-pagescut.py) on the record and the note the guard left.
+run l104 step1b-dock.ips step1b-dock.ips
+"$W/tcs" skip DockMagnification && r=0 || r=$?
+[ $r = 10 ] && [ "$(defaults read com.besiktasliseba.macstatusbaranddock crashGuardAction 2>/dev/null)" = 1 ] && echo "PASS  under step 1's note the Dock is still not loaded (the skip list kept)" || { echo "FAIL  the Dock under step 1's note ($r)"; fails=1; }
+if python3 -I crashstep-pagescut.py "$GD/LineSwitch.h" "$PM" "$W/pages-cut.h" "$W/picker-cut.h"; then
+  for v in tested untested; do
+    o=-O0; a=; [ $v = untested ] && o=-DDEBUG=1 && a=untested
+    clang -fobjc-arc -Wall -Wno-unused-function -framework Foundation $o -iquote ../common -DMSBD_TEST_EXPLAIN_H="\"$GD/CrashExplain.h\"" \
+      -DMSBD_TEST_LINESWITCH_CUT="\"$W/pages-cut.h\"" -DMSBD_TEST_PICKER_CUT="\"$W/picker-cut.h\"" -DMSBD_GUARD_RECORD="\"$W/record.txt\"" \
+      -DMSBD_GUARD_RECENT="\"$W/recent.txt\"" -o "$W/tsp-$v" test-crashsteppages.m && "$W/tsp-$v" $a || fails=1
+  done
+else echo "FAIL  the pages' lines not found in LineSwitch.h / MSBRootListController.m"; fails=1; fi
 echo "== Fit to Window in the rules (no build needed): every function of it window code, Resize Apps to Fit Windows only its own two"
 # (1.8.0 engine parity pass: ^_?DMFit took Fit's own functions to Resize Apps to Fit Windows, and the sections holding its tiles and the turn had no
 #  rule, so DMAssignDefaultSlots, DMSlotFrame, the closure watcher and DMRelayoutForOrientation fell to Stock status bar mode)

@@ -54,6 +54,7 @@
 #import "../common/AXText.h"         // (the words VoiceOver and the other assistive features get for our UI: menu shortcuts, Wi-Fi, items)
 #import "../common/FocusLock.h"      // (MSBDFocusLock: SpringBoard holds the keyboard focus for our windows, 15-18 -- the 18 call takes a typed reason)
 #import "../common/MenuKeys.h"       // (an open menu's keys: left with the app when its MacAppBridge reads them, the lease and the key rule -- Mac-tested, 1.7.9)
+#import "../common/BarBackground.h"  // (Status Bar Background: a light colour's bar takes dark text, a dark one follows iPadOS's text -- Mac-tested, 1.8.7.5)
 #import "../common/DesktopCheck.h"   // (MSBD_FOCUSLOCK_CHECK_KEY: the 18 focus lock verdict for Settings, DMFocusLock18OK)
 #import "../common/Relaunch.h"       // (MSBDRelaunchLikeSbreload: our Respring where SpringBoard may not start sbreload -- iPadOS 18)
 #import "StartupAssertion.h"         // (MSBDGiveBackStartupAssertion: SpringBoard's start-up power assertion given back once it is up, 1.7.8)
@@ -198,8 +199,12 @@ static const CFTimeInterval kAudioIdleWindow = 20.0;   // an app counts as "play
 // Status bar background (Settings > Mac Status Bar > Status Bar Background)
 typedef NS_ENUM(int, DMBackgroundMode) { DMBackgroundAuto = 0, DMBackgroundOn = 1, DMBackgroundOff = 2 };
 static int gBgMode = DMBackgroundAuto;
-static UIColor *gBgColor = nil;          // used when the status bar text is light
+static UIColor *gBgColor = nil;          // the chosen colour: always the background when light, else while the status bar text is light (BarBackground.h)
 static CGFloat gBgOpacity = 0.70;
+static BOOL gBgColorLight = NO;          // (the chosen colour is light: MSBDBarColorIsLight, read with the colour)
+static BOOL gBgTextDark = NO;            // (its bar at this opacity is light even over black: black text and icons wherever iPadOS's text is for what is
+                                         //  behind -- MSBDBarTextDarkAnywhere; over our Desktop Picture its strip decides, DMBarTextDarkFor)
+static double gBgRGB[3];                 // (the chosen colour's sRGB, read with it)
 
 // "#RGB" or "#RRGGBB" (the # is optional); nil if it isn't a colour.
 static UIColor *DMParseHexColor(NSString *text) {
@@ -668,7 +673,7 @@ static BOOL DMSMApplyLayouts(NSDictionary<NSString *, NSString *> *keyToLayout);
 static BOOL DMSMApplyLayoutsIn(NSDictionary<NSString *, NSString *> *keyToLayout, id stage);
 static BOOL DMSMApplyPlacesIn(NSDictionary<NSString *, id> *bundleToLayout, id stage);   // (... each place a layout's name, or the whole window's frame)
 static BOOL DMSMApplyPlacesIn(NSDictionary<NSString *, id> *keyToPlace, id stage);   // (... a layout's name, or a frame of the whole window)
-static BOOL DMSMApplyPlacesMarkedIn(NSDictionary<NSString *, id> *keyToPlace, id stage, NSSet<NSString *> *placedByUser);   // (the same; the windows named in the set as the user's, DMSMAttrPlacedByUser)
+static BOOL DMSMApplyPlacesMarkedIn(NSDictionary<NSString *, id> *keyToPlace, id stage, NSSet<NSString *> *placedByUser);   // (the same; the windows named in the set as the user's, DMSMAttrPlacedByUser, and they keep their behind-the-Dock mark)
 static id DMSMNoFitPlace(id stage);   // (No Fit's free window: the middle place with room around it, or Window Size's window)
 static id DMSMAttrsForLayoutIn(id attrs, NSString *name, id stage);   // (a window at a layout slot on its stage's screen)
 static id DMSMAttrsForFrameIn(id attrs, CGRect w, id stage);   // (... at a frame of the whole window, our title bar included)
@@ -836,6 +841,7 @@ static void DMTitleTapSettingChanged(void);   // (TitleBarTap.h: the setting cha
 static BOOL DMSnapOff(void);
 static CGRect DMSnapEngineWindow(UIView *st, CGRect window, unsigned how);
 static void DMSnapMoveEnded(UIView *st);
+static void DMBehindDockMoveEnded(UIView *st);   // (a window the user left behind the Dock, Aerial / Zetsu / MilkyWay4: 1.8.7.5, with snapping)
 #include "A5FitPass.h"   // (Aerial 5.x's fit-to-screen pass as it shows from outside: 1.7.2 -- plain C, tools/test-a5fitpass.sh)
 #include "A5WakeFollow.h"   // (the steps after Aerial 5's round-icon minimize, each when Aerial's animation has run out: 1.7.4 -- plain C, tools/test-a5wake.sh)
 #include "LightMagnify.h"   // (Magnify Traffic Lights: a finger on the lights grows them into a pill to pick from, 1.8.6 -- the rule plain C, tools/test-lightmagnify.sh)
@@ -1683,6 +1689,7 @@ static void DMLAMenuGone(NSString *why);             // (LiveActivities.h, 1.8.4
 static BOOL DMCCPanelWanted(void);          // the style in force is ours (Mac), or will be once Control Center has closed
 static BOOL DMCC18PanelWanted(void);        // (the same on iPadOS 18: CC18Shape.h, Apple's 18 grid re-shaped into the Mac panel)
 static BOOL DMCCPanelOn(void);              // Control Center shows our panel now (Apple's grid emptied into it)
+static BOOL DMCCPanelLeavesDesktop(void);   // ... and leaves the desktop behind the menu bar (no full-screen material of Control Center's: 15-18)
 static BOOL DMCCPanelOwnView(UIView *v);    // a view of ours in Control Center (a Mac tile, a page): walks over its views leave it alone
 static BOOL DMCCPanelRoomForModule(NSString *mid, int w, int h, BOOL *room, NSString **why);   // room for one more module in it (CCAutoAdd)
 static BOOL gMSWOpen;   // the Mac Switcher is showing (MacSwitcher.h)
@@ -2550,10 +2557,19 @@ static const void *kStageHiddenKey = &kStageHiddenKey;   // an Aerial stage we m
 static const void *kMSWAwayKey = &kMSWAwayKey;
 static NSUInteger gMSWAwayCount = 0;   // (how many stages are away: 0 = DMAerialStages() is the plain list)
 static NSArray<UIView *> *DMAerialStagesAll(void);
-static NSUInteger DMMilkyWayWindowCount(void) {   // windows on screen, not the minimized ones
+// MilkyWay4's windows on screen: shown, not minimized, not on another Mac Switcher desktop (kMSWAwayKey) and not on their way out (our closing mark,
+// which MilkyWay's own close sets too: -closeButtonAction:, below; MilkyWay keeps a closed window in its layer for its animation). Every window on
+// MilkyWay's layer that was not minimized counted, so with Mac Switcher desktops the other desktops' windows and closing ones did too: Minimize All
+// stayed enabled and did nothing, a Dock tap on the full-screen app passed the "no windows" test, Home Minimizes counted windows not on screen
+// (1.8.7.5, audit L33 of 1.8.7.2). Now as the Aerial branch of DMVisibleWindowCount reads its stages and as DMFindMilkyWayWindow skips closing ones.
+static NSUInteger DMMilkyWayWindowCount(void) {
     Class viewClass = objc_getClass("AXWindowView");
     NSUInteger n = 0;
-    for (UIView *v in DMMilkyWayLayer().subviews) if (viewClass && [v isKindOfClass:viewClass] && !DMWindowMinimized(v)) n++;
+    for (UIView *v in DMMilkyWayLayer().subviews) {
+        if (!viewClass || ![v isKindOfClass:viewClass] || v.hidden || DMWindowMinimized(v)) continue;
+        if ([objc_getAssociatedObject(v, kMSWAwayKey) boolValue] || [objc_getAssociatedObject(v, kStageClosingKey) boolValue]) continue;
+        n++;
+    }
     return n;
 }
 static NSUInteger DMVisibleWindowCount(void) {   // windowed apps on screen (not minimized), whichever engine, PLUS any Zetsu windows (a
@@ -3260,6 +3276,7 @@ static BOOL DMStageManagerHeldNow(void) {
 static void DMWatchGuidedAccess(void);   // (Guided Access: our UI steps aside while a session runs -- defined with DMNativeTick)
 static void DMWinCardsTick(void);   // (WindowCards.h: every window's app has its App Switcher card, the front window's first)
 static void DMAMCmdTabTick(void);   // (ActMonDock.h: the apps seen in front since Activity Monitor was, for Command-Tab's order, 1.7.8)
+static void DMWindowedGripsFollow(void);   // (every engine's resize grips in the colour their inputs give now -- with the Stage Manager engine's grips, below)
 static void DMSyncWindowsForLibraryBody(void) {
     DM_PERF("guided", DMWatchGuidedAccess());
     DM_PERF("stagemgr", DMStageManagerWatch());
@@ -3288,6 +3305,7 @@ static void DMSyncWindowsForLibraryBody(void) {
     DM_PERF("kbbehind", DMKeyboardFocusBehindWindows());
     DM_PERF("wincards", DMWinCardsTick());
     DM_PERF("zetsu", DMWatchZetsu());
+    DM_PERF("grips", DMWindowedGripsFollow());   // (Tint Resize Handles, light or dark, an app's tint: every engine's grips at once, 1.8.7.5)
     DM_PERF("gamebar", DMWatchBarOverHidingApp());
     DM_PERF("fade", DMSyncWindowFade());
 }
@@ -4370,6 +4388,7 @@ static const void *kZetsuBarPanKey = &kZetsuBarPanKey, *kZetsuBarStartKey = &kZe
         objc_setAssociatedObject(w, kZetsuBarStartKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         if (g.state == UIGestureRecognizerStateEnded) DMSnapMoveEnded(w);   // (1.7.3 item 3: let go, it lines up with what is near)
         else DMTitleRecordHandEnded(w, g.state);   // (a move by hand cut short: moved all the same, review 1.8.3 L2)
+        if (g.state == UIGestureRecognizerStateCancelled) DMBehindDockMoveEnded(w);   // (... and left behind the Dock or not, as one let go: 1.8.7.5)
         DMZetsuFixScale(w);
         DMRememberStageFrame(w);
         DMFitGroupForget(DMZetsuWindowBundle(w));   // moved by hand: no longer tiled
@@ -7243,17 +7262,58 @@ static CGRect DMSnapEngineWindow(UIView *st, CGRect window, unsigned how) {
     int n = DMSnapOthers(st, others, 32);
     return DMDockSideKept(DMSnapFrameFor(DMStageBundle(st), window, how, others, n, DMUsableArea()), how);
 }
+// A window the user left behind the Dock, on Aerial (3.0 and 5.x), Zetsu and MilkyWay4 (1.8.7.5, engine parity with Stage Manager's gSMBehindDock).
+// With the Dock at the bottom a window may be moved partly behind it (DMDockSideKept keeps one out of a side Dock only). A turn fitted every window into
+// the desktop above the Dock, so such a window came back lifted above it after a turn and back, where the Stage Manager engine keeps it (DMSMWatchTurn).
+// Recorded at the end of each move by hand (DMBehindDockMoveEnded: let go -- DMSnapMoveEnded -- or cut short), from where the window ends -- after its
+// snap: a window let go up to 45 pt under the Dock's line snaps up onto it and is not behind the Dock (1.8.7.5 round 1) --, as Stage Manager's title
+// bar records it at its drop: its bottom more than 4 pt under the desktop's (DMUsableArea: 2 pt above the Dock's top, the line Stage Manager's drop
+// measures) is behind the Dock; any other drop, or a Dock at a side, takes the mark. Taken by a placement of ours, as on Stage
+// Manager (DMBehindDockPlacedByUs: every one passes DMTitleRecordEngineTo -- a layout, Fill, Zoom, Centre, Fit's tiles and spread, a swap, Return to
+// Previous Size --, a window the Dock's move or room takes out from under it, a turn putting it into a layout); kept by the places that are the user's:
+// the turn's own, the green light's way back to where the window was, and the title bar's Back, which gives back the mark its record kept
+// (WindowKeys.h). A turn keeps a marked window inside the screen down to its bottom edge (DMBehindDockTurnArea). By app, as these engines keep their
+// windows (gLastWindowFrames): it stays while the app is full screen and goes when the app exits.
+static NSMutableSet<NSString *> *gBehindDock;
+static BOOL DMBehindDockHas(NSString *bundle) { return bundle.length && [gBehindDock containsObject:bundle]; }
+static void DMBehindDockSet(NSString *bundle, BOOL behind, NSString *why) {
+    if (!bundle.length || behind == DMBehindDockHas(bundle)) return;
+    if (behind) { if (!gBehindDock) gBehindDock = [NSMutableSet set]; [gBehindDock addObject:bundle]; }
+    else [gBehindDock removeObject:bundle];
+    DMLog([NSString stringWithFormat:@"[behind] %@ %@ (%@)", bundle, behind ? @"is behind the Dock as the user left it: a turn keeps it there" : @"is no longer behind the Dock", why]);
+}
+// A move by hand of an engine's window has ended at w (the window as drawn, where it ends: snapped, or where a move cut short left it): behind the
+// Dock there, or not.
+static void DMBehindDockMoveEndedAt(UIView *st, CGRect w) {
+    NSString *b = st ? DMStageBundle(st) : nil;
+    if (!b.length || CGRectIsNull(w) || CGRectIsEmpty(w)) return;
+    CGFloat line = CGRectGetMaxY(DMUsableArea());
+    BOOL behind = !DMDockSideKeepsOut() && CGRectGetMaxY(w) > line + 4.0;
+    if (behind != DMBehindDockHas(b)) DMBehindDockSet(b, behind, [NSString stringWithFormat:@"left at %@, the desktop ends at %.1f", NSStringFromCGRect(w), line]);
+}
+static void DMBehindDockMoveEnded(UIView *st) { DMBehindDockMoveEndedAt(st, DMSnapWindowOf(st)); }   // (a move cut short: where it is)
+static void DMBehindDockPlacedByUs(UIView *v, NSString *why) { if (gBehindDock.count && v) DMBehindDockSet(DMStageBundle(v), NO, why); }
+// The area a turn keeps a window inside, in the engine's frames (usable: DMLayoutFrame(@"fill"), the desktop above the Dock -- Aerial 5.x: its stage):
+// for a window the user left behind the Dock, the same desktop down to the screen's bottom edge, as Stage Manager's turn keeps one (DMSMWatchTurn).
+static CGRect DMBehindDockTurnArea(NSString *bundle, CGRect usable) {
+    if (!DMBehindDockHas(bundle) || CGRectIsNull(usable) || CGRectIsEmpty(usable)) return usable;
+    CGRect u = DMA5WindowFromStage(usable);
+    CGFloat bottom = [UIScreen mainScreen].bounds.size.height;
+    if (bottom <= CGRectGetMaxY(u) + 0.5) return usable;   // (no Dock at the bottom to lie behind: it hides itself, or stands at a side)
+    u.size.height = bottom - CGRectGetMinY(u);
+    return DMA5StageFromWindow(u);
+}
 // A move by hand of an Aerial, Zetsu or MilkyWay4 window has ended: it goes to its snapped place, as our own moves go (DMAerialMoveStage: animated,
 // the app's place updated, then remembered), and the windows' state is saved again.
 static void DMSnapMoveEngineTo(UIView *st, CGRect s);
 static void DMSnapMoveEnded(UIView *st) {
     DMTitleRecordMovedView(st);   // (a move by hand: the title bar's frame from before is older, P4-1)
     DMKeepCoveredByHand(st);   // (a window Keep Covered Windows in Front kept above another: an ordinary one again, review 1.8.4.1 M1)
-    if (!st || (DMSnapOff() && !DMDockSideKeepsOut())) return;
-    CGRect w = DMSnapWindowOf(st);
-    if (CGRectIsNull(w) || CGRectIsEmpty(w)) return;
-    CGRect s = DMSnapEngineWindow(st, w, MSBDSnapMove);
-    if (CGRectEqualToRect(s, w)) return;
+    CGRect w = st ? DMSnapWindowOf(st) : CGRectNull;
+    BOOL snaps = st && !(DMSnapOff() && !DMDockSideKeepsOut()) && !CGRectIsNull(w) && !CGRectIsEmpty(w);
+    CGRect s = snaps ? DMSnapEngineWindow(st, w, MSBDSnapMove) : w;
+    DMBehindDockMoveEndedAt(st, s);   // (behind the Dock where it ends, after its snap, or not -- 1.8.7.5; a snap up onto the Dock's line is not behind it)
+    if (!snaps || CGRectEqualToRect(s, w)) return;
     DMSnapMoveEngineTo(st, s);
 }
 static void DMSnapMoveEngineTo(UIView *st, CGRect s) {   // (a window, as drawn on the screen, to that place on its engine)
@@ -7606,6 +7666,7 @@ static void DMDockChangedRelayout(NSString *why) {
 // as Stage Manager leaves Spotlight up over a turn. (A request the user makes -- a Window menu row -- is the user's.)
 static BOOL DMSMSpotlightHolds(void) { return DMSMEngine() && DMSpotlightShown(); }
 static BOOL DMSMWorkspaceBusy(void);
+static void DMSMMinimizedLook(void);   // (below, with the minimized marks: a gone window's mark and picture go -- the App Switcher up or not)
 // The iPad turned (Stage Manager engine): Stage Manager keeps each window's size in proportion to the old shape, so a window in the right half of
 // portrait (917 pt tall) stood 274 pt taller than landscape's desktop, its title bar above the screen, out of reach (iPad 2, 29 Sep). Fit to Window
 // only re-tiles two or more windows. Now each window goes back into the layout it was in (the layouts as they were, taken while the iPad was
@@ -7624,6 +7685,7 @@ static void DMSMWatchTurn(void) {
         //  with the Home Screen in front, where no stage is shown: the records stay as they were)
         if (!turnPending && now - lastSnap >= 1.0 && !(gSidePromptCtx && ![gSidePromptCtx[@"decided"] boolValue]) && !DMSwitcherVisible() && !gMSWSwitching && DMFrontApp() && !DMSMWorkspaceBusy()) { lastSnap = now; DMSMTurnNote(); }
         if (!turnPending && !DMSwitcherVisible() && !gMSWSwitching && !DMSMGestureLive() && !DMSMWorkspaceBusy()) DMSMTurnForgetClosed();   // (also with no app in front: a closed window's records go, 1.8.2.1)
+        if (!turnPending) DMSMMinimizedLook();   // (a gone window's minimized mark and picture, 1.8.7.5: also under the App Switcher, DMSMMinimizedLook)
         return;
     }
     BOOL first = CGSizeEqualToSize(lastScreen, CGSizeZero);
@@ -7660,11 +7722,17 @@ static void DMSMWatchTurn(void) {
         NSMutableDictionary<NSString *, id> *allPlaces = [put mutableCopy];
         NSMutableSet<NSString *> *movedByTurn = [NSMutableSet set];
         CGRect area = DMSMUsableAreaForIdentity(nil, NULL);   // (the iPad's desktop as Stage Manager's stage area has it: under the menu bar at 24)
-        NSMutableArray<NSString *> *back = [NSMutableArray array];
+        NSMutableArray<NSString *> *back = [NSMutableArray array], *behind = [NSMutableArray array];
         for (NSString *b in frames) {
             if (layouts[b] || (fitRetiles && DMSMKeyLookup(gSMFitSlots, b) && !DMSMKeySetHas(gSMFreeWindows, b))) continue;   // (a Fit tile: Fit's own)
             CGRect f = frames[b].CGRectValue;   // (the whole window: our title bar and the card below it)
             if (CGRectEqualToRect(CGRectIntegral(f), CGRectIntegral(CGRectMake(0, -kSMBarH, scr.width, scr.height + kSMBarH)))) continue;   // (full screen)
+            // (a window the user put behind the Dock -- gSMBehindDock, recorded at the drag's end -- is kept inside the screen down to its bottom edge, as
+            //  its stage area and every fit have it, DMSMCardDesk; any other window above the Dock. Kept above it, a window put back where it was in this
+            //  shape came back lifted out from under the Dock: 601..1024 -> 525..948, A12Z 18.5, the 1.8.7.3 device check)
+            BOOL userBehind = DMSMKeySetHas(gSMBehindDock, b);
+            CGRect desk = userBehind && scr.height > CGRectGetMaxY(area) ? CGRectMake(CGRectGetMinX(area), CGRectGetMinY(area), CGRectGetWidth(area), scr.height - CGRectGetMinY(area)) : area;
+            if (userBehind) [behind addObject:b];
             NSValue *was = places[b][shape];
             int why = MSBDTurnNone;
             CGRect t = MSBDTurnPlaceFor(CGRectNull, was ? was.CGRectValue : CGRectNull, CGRectNull, &why);   // (in proportion: Stage Manager's own)
@@ -7672,16 +7740,21 @@ static void DMSMWatchTurn(void) {
                 if (!gSMTurnPlaced) gSMTurnPlaced = [NSMutableDictionary dictionary];
                 if (fabs(t.origin.x - f.origin.x) < 1.0 && fabs(t.origin.y - f.origin.y) < 1.0 && fabs(t.size.width - f.size.width) < 1.0 && fabs(t.size.height - f.size.height) < 1.0) { gSMTurnPlaced[b] = [NSValue valueWithCGRect:f]; continue; }
                 f = t; [back addObject:[NSString stringWithFormat:@"%@ %@", DMSMKeyText(b), NSStringFromCGRect(t)]];
-            } else if (CGRectContainsRect(CGRectInset(area, -1.0, -1.0), f)) continue;
-            CGFloat w = MIN(f.size.width, area.size.width), h = MIN(f.size.height, area.size.height);
-            CGFloat x = MIN(MAX(f.origin.x, CGRectGetMinX(area)), CGRectGetMaxX(area) - w), y = MIN(MAX(f.origin.y, CGRectGetMinY(area)), CGRectGetMaxY(area) - h);
+            } else if (CGRectContainsRect(CGRectInset(desk, -1.0, -1.0), f)) continue;
+            CGFloat w = MIN(f.size.width, desk.size.width), h = MIN(f.size.height, desk.size.height);
+            CGFloat x = MIN(MAX(f.origin.x, CGRectGetMinX(desk)), CGRectGetMaxX(desk) - w), y = MIN(MAX(f.origin.y, CGRectGetMinY(desk)), CGRectGetMaxY(desk) - h);
             if (why == MSBDTurnRemembered) gSMTurnPlaced[b] = [NSValue valueWithCGRect:CGRectMake(x, y, w, h)];   // (1.7.5 item 14: in no layout while it stays there)
             allPlaces[b] = [NSValue valueWithCGRect:CGRectMake(x, y, w, h)];   // (the whole window, our title bar included)
-            [movedByTurn addObject:b];   // (the user's place on iPadOS 17 and later, as a move by hand has it: DMSMAttrPlacedByUser)
+            [movedByTurn addObject:b];   // (the user's place on iPadOS 17 and later, as a move by hand has it: DMSMAttrPlacedByUser; and its behind-the-Dock mark stays)
         }
         BOOL placed = !allPlaces.count || DMSMApplyPlacesMarkedIn(allPlaces, DMSMWorkingStage(), movedByTurn);   // (refused: the wait for the Dock's room stays, review 1.8.4.1 pass 2 L2)
         if (back.count) DM_FEATURE_MARK("sm-turn-remembered-place");
         DMLog([NSString stringWithFormat:@"[sm] the iPad turned: windows back in their layouts %@, back where they were in this shape: %@; the others kept inside the desktop", put, back.count ? [back componentsJoinedByString:@", "] : @"none"]);
+        if (behind.count) {   // (the windows the user left behind the Dock: their place and their mark kept)
+            NSMutableArray<NSString *> *where = [NSMutableArray array];
+            for (NSString *b in behind) [where addObject:[NSString stringWithFormat:@"%@ %@", DMSMKeyText(b), NSStringFromCGRect([(NSValue *)(allPlaces[b] ?: frames[b]) CGRectValue])]];
+            DMLog([NSString stringWithFormat:@"[sm] the iPad turned: behind the Dock as the user left them (down to the screen's bottom): %@", [where componentsJoinedByString:@", "]]);
+        }
         DMSMFitHiddenStages(frames.count ? DMSMWorkingStage() : nil, layouts, places);   // (and every stage not on screen, in the model)
         if (placed && roomWait && frames.count && DMDockRoomChangedSinceSave()) { DMSMRoomWaitLift(); DMSMStateWrite(); DMLog(@"[autohide] a turn placed the windows for the Dock's room as it is: the wait is over"); }
     };
@@ -8432,6 +8505,10 @@ static void DMWindowLayout(NSString *name) {
         CGRect c = CGRectMake(w.origin.x, w.origin.y + kSMBarH, w.size.width, w.size.height - kSMBarH);
         DMTitleRecordSMTo(smKey, DMSMStageOf(smKey), w);   // (a placement of ours: the title bar's frame from before follows it, P4-1)
         BOOL ok = DMSMSetWindowGeometry(smKey, CGPointMake(CGRectGetMidX(c) / scr.width, CGRectGetMidY(c) / scr.height), CGSizeMake(c.size.width / scr.width, c.size.height / scr.height));
+        // (placed: the window is no longer behind the Dock, as every other place of ours takes it, DMSMApplyPlacesMarkedIn: kept, the turn put a window
+        //  centred from the Window menu back behind the Dock in the other shape, and its stage area reached the screen's bottom meanwhile -- 1.8.7.5. A
+        //  layout not placed, "not in the stage", leaves the window where it is and keeps the mark: round 1)
+        if (ok) DMSMKeySetRemove(gSMBehindDock, DMSMWindowKeyOf(smKey));
         if (ok) DMSMFitLetGo(smKey);   // (placed by a layout of its own: no longer part of the tiling, as below)
         DMLog([NSString stringWithFormat:@"[sm] layout %@ for %@ -> window %@ (%@)", name, bundleID, NSStringFromCGRect(w), ok ? @"done" : @"not in the stage"]);
         return;
@@ -8441,6 +8518,9 @@ static void DMWindowLayout(NSString *name) {
     // on a full-screen Reddit came out as a big window and was put back into its half 0.1 s later, M1 27 Sep). Only the green light's "back to the
     // window" (gPreferRememberedFrame) returns it to its tile.
     if (!gPreferRememberedFrame) DMFitForgetFullScreenTile(bundleID);
+    // (a layout is a place of ours: the window is no longer behind the Dock -- taken by DMTitleRecordEngineTo below, after the title bar's record has
+    //  kept the mark for Back, and when it opens from full screen into the layout; a layout that moves nothing keeps it. The green light's way back
+    //  to where it was is the user's place, the mark stays. 1.8.7.5, as Stage Manager's branch above; round 1: taken before the record, Back lost it)
     // (the green light: where the window last was, else where a new window opens -- Window Size, DMNewWindowFrame: the middle place at Default)
     if (gPreferRememberedFrame) target = gLastWindowFrames[bundleID] ? gLastWindowFrames[bundleID].CGRectValue : DMOpeningWindowFrame();   // (or Fill: New Windows Open at Fill)
     if (DMActiveEngine() == DMEngineZetsu) {   // a Zetsu window slides there; a full-screen app is turned into a window that opens there
@@ -8456,6 +8536,7 @@ static void DMWindowLayout(NSString *name) {
             //  green light's middle frame is only a default, so its window opens as any new one does, cascaded or, with Fit to Window on, tiled.
             //  Asked at the middle, it was kept there and left out of the tiles -- 17.5, 1.6.0 parity re-check: Stocks opened full screen, green)
             if (!gPreferRememberedFrame || gLastWindowFrames[bundleID]) DMZetsuAskFrame(bundleID, target);
+            if (!gPreferRememberedFrame) DMBehindDockSet(bundleID, NO, @"placed by a layout of the Window menu");   // (its window opens there)
             DMSendToWindow(bundleID);
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMFitRejoinAfterFullScreen(bundleID); });
         }
@@ -8472,6 +8553,7 @@ static void DMWindowLayout(NSString *name) {
         }
         else if ([[DMFrontApp() bundleIdentifier] isEqualToString:bundleID]) {
             DMStageCoverPrepare(YES);
+            if (!gPreferRememberedFrame) DMBehindDockSet(bundleID, NO, @"placed by a layout of the Window menu");   // (its window opens there)
             // (asked for -- the window flies there and stays, out of the cascade and of Fit to Window's tiles -- only at a place that is the user's: a
             //  layout picked from the Window menu, or the green light's way back to where the window was. A window that has no such place opens as any
             //  new window does, tiled or kept off the others, and flies there: DMAerialGreenOpensNew, as on Zetsu and MilkyWay4 below)
@@ -8545,6 +8627,7 @@ static void DMWindowLayout(NSString *name) {
         //  that is the user's, as on Zetsu: a layout picked from the Window menu, or the green light's way back to where the window was. An app that
         //  never had a window has no such place: it opens as any new window does, cascaded or, with Fit to Window on, tiled)
         if (!gPreferRememberedFrame || gLastWindowFrames[bundleID]) DMMilkyWayAskFrame(bundleID, target);
+        if (!gPreferRememberedFrame) DMBehindDockSet(bundleID, NO, @"placed by a layout of the Window menu");   // (its window opens there)
         DMSendToWindow(bundleID);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ gPendingWindowFrame = CGRectNull; });
     }
@@ -8604,16 +8687,18 @@ static NSString *DMNativeLightsToken(void);   // (NativeWindow.h)
 static NSString *DMActiveBundleForLights(void) { return DMNativeLightsToken() ?: (DMSMEngine() ? DMSMFrontWindowKey() : nil) ?: [DMActiveApp() bundleIdentifier]; }
 static BOOL DMSMWindowAction(NSString *bundleID, NSString *name);   // (Stage Manager engine, below)
 static BOOL DMSMToggleZoom(NSString *bundle);
+static BOOL DMSMRedLight(NSString *key);   // (Stage Manager engine: the red light, below -- the app quits with its last window on screen)
 static void DMLightAction(NSInteger which) {
     if (DMGARefuses(@"traffic light")) return;
     SBApplication *app = DMActiveApp() ?: DMFrontApp();
     NSString *bundleID = [app bundleIdentifier];
     DMLog([NSString stringWithFormat:@"[lights] tap %ld, front app %@", (long)which, bundleID]);
     if (!bundleID.length) return;
-    // Stage Manager as the engine: the window's own actions (its "..." menu): red Close, yellow Minimize, green Enter Full Screen
+    // Stage Manager as the engine: red quits the app as on every engine, or closes only that window while another of the app is on screen
+    // (DMSMRedLight); yellow and green are the window's own actions (its "..." menu): Minimize, Enter Full Screen
     NSString *smKey = DMSMEngine() ? DMSMFrontWindowKey() : nil;   // (the front window when it is the active app's: that window, M-2)
     if (![DMSMKeyBundle(smKey) isEqualToString:bundleID]) smKey = bundleID;
-    if (DMSMEngine() && (which == 2 ? DMSMToggleZoom(smKey) : DMSMWindowAction(smKey, which == 0 ? @"close" : @"removeFromSet"))) return;
+    if (DMSMEngine() && (which == 2 ? DMSMToggleZoom(smKey) : (which == 0 ? DMSMRedLight(smKey) : DMSMWindowAction(smKey, @"removeFromSet")))) return;
     if (which == 0) DMForceQuit(app);
     else if (which == 1) DMMinimize();
     else if (DMAppNeedsFullScreen(bundleID)) DMLog([NSString stringWithFormat:@"[fullscreenonly] green on %@: it cannot live in a window (the button is greyed out)", bundleID]);
@@ -8853,6 +8938,7 @@ static char kMWDownKey, kMWWatchedKey, kMWOffsetKey;
     if (g.state != UIGestureRecognizerStateChanged && g.state != UIGestureRecognizerStateBegan) objc_setAssociatedObject(g, &kMWOffsetKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (g.state == UIGestureRecognizerStateEnded) DMSnapMoveEnded(win);   // (1.7.3 item 3: let go, it lines up with what is near)
     else DMTitleRecordHandEnded(win, g.state);   // (a move by hand cut short: moved all the same, review 1.8.3 L2)
+    if (g.state == UIGestureRecognizerStateCancelled) DMBehindDockMoveEnded(win);   // (... and left behind the Dock or not, as one let go: 1.8.7.5)
     if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) DMMWRememberSoon(win);   // (moved by hand: kept as its place)
 }
 + (void)watchTitleBar:(UIView *)bar {
@@ -9126,6 +9212,7 @@ static UIMenu *DMFFMenuWithRow(UIMenu *m, id folderIcon);
 static void DMFFDebugMenu(UIMenu *m, UIView *iconView);
 #endif
 #include "MilkyWayRow.h"   // (MilkyWay4's Launch As Window row, by where it works: plain Foundation, Mac test tools/test-milkywayrow.sh)
+static NSString *DMIconViewApp(id iconView);   // (below, with the icon tap: the app an icon view stands for)
 %group ZetsuIconItems
 %hook SBIconView
 - (id)contextMenuInteraction:(id)interaction configurationForMenuAtLocation:(CGPoint)location {
@@ -9156,14 +9243,18 @@ static void DMFFDebugMenu(UIMenu *m, UIView *iconView);
     @try { [cfg setValue:wrapped forKey:@"actionProvider"]; objc_setAssociatedObject(cfg, kZetsuMenuWrappedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC); } @catch (id e) {}
     return cfg;
 }
-// MilkyWay4's "Launch As Window" row while it is our engine: kept where it opens a window, gone where it doesn't (MilkyWayRow.h). Here, on the list
-// both menu styles are built from, so the Mac look and iPadOS's show the same rows. (debug: /tmp/msb-mw-keeprow keeps it everywhere, to compare)
+// MilkyWay4's "Launch As Window" row while it is our engine: kept where it opens a window, gone where it doesn't, and gone for an app that has a
+// window already -- here, on another desktop or minimized: MilkyWay4 made a second one (MilkyWayRow.h DMMilkyRowKept). Here, on the list both menu
+// styles are built from, so the Mac look and iPadOS's show the same rows. (debug: /tmp/msb-mw-keeprow keeps it everywhere, to compare)
 - (NSArray *)effectiveApplicationShortcutItems {
     NSArray *items = %orig;
     if (DMActiveEngine() != DMEngineMilkyWay) return items;
     id location = DMCall(self, @"location");
-    NSArray *kept = DMMilkyRowOpensWindowAt(location) || DMTestFlag("/tmp/msb-mw-keeprow") ? items : DMMilkyRowsWithoutLaunch(items);
-    if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[mwrow] %@ at %@: %lu rows -> %lu", NSStringFromClass([self class]), location, (unsigned long)[items count], (unsigned long)[kept count]]);
+    NSString *app = DMIconViewApp(self);
+    BOOL hasWindow = app.length && DMFindMilkyWayWindow(app) != nil;
+    NSArray *kept = DMMilkyRowKept(location, hasWindow) || DMTestFlag("/tmp/msb-mw-keeprow") ? items : DMMilkyRowsWithoutLaunch(items);
+    if (hasWindow && kept != items) DM_FEATURE_MARK("mw-row-app-has-window");
+    if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[mwrow] %@ at %@ (%@ %@): %lu rows -> %lu", NSStringFromClass([self class]), location, app ?: @"?", hasWindow ? @"has a window" : @"no window", (unsigned long)[items count], (unsigned long)[kept count]]);
     return kept;
 }
 %end
@@ -9572,9 +9663,11 @@ static void DMResetSceneFrameForBundle(NSString *bundleID) {
 static void DMApplyGroupSlots(UIView *fresh);
 static const void *kStageEnteringKey;
 static NSString *gFSFitBundle; static NSArray<NSString *> *gFSFitGroup; static NSDictionary<NSString *, NSString *> *gFSFitSlots;
+static BOOL gFSFitLeft = NO;   // (that green's window has left the tiles for full screen: DMWatchFitClosures takes it so once per green)
 static void DMRememberFitForFullScreen(NSString *bundleID) {
     BOOL tiled = bundleID.length && [gFitGroup containsObject:bundleID];
     gFSFitBundle = tiled ? [bundleID copy] : nil; gFSFitGroup = tiled ? [gFitGroup copy] : nil; gFSFitSlots = tiled ? [gFitSlots copy] : nil;
+    gFSFitLeft = NO;
 }
 static void DMFitForgetFullScreenTile(NSString *bundleID) {
     if (!bundleID.length || ![gFSFitBundle isEqualToString:bundleID]) return;
@@ -10611,7 +10704,7 @@ static void DMDockPositionMoved(NSDictionary<NSString *, NSString *> *layouts) {
             CGRect w = DMSnapWindowOf(st);
             if (CGRectIsNull(w) || CGRectIsEmpty(w)) continue;
             CGRect t = name ? DMLayoutFrameWindow(name) : MSBDDockSideKeepOut(w, DMUsableArea(), MSBDDockKeepMove);   // (kept inside the new desktop, as a turn keeps windows inside: back at the bottom, above the Dock)
-            if (!CGRectIsNull(t) && !CGRectEqualToRect(t, w)) DMSnapMoveEngineTo(st, t);
+            if (!CGRectIsNull(t) && !CGRectEqualToRect(t, w)) { DMBehindDockPlacedByUs(st, @"the Dock moved or its room changed: out from under it"); DMSnapMoveEngineTo(st, t); }   // (as Stage Manager's, which takes the mark there: 1.8.7.5)
             continue;
         }
         if (!st.hidden) continue;   // (the engine's own minimized form, Aerial's round icon or Zetsu's pill, or on its way into the Dock: the engine brings it back)
@@ -10818,10 +10911,19 @@ static void DMWatchFitClosures(void) {
         // takes its tile back when it returns (DMRememberFitForFullScreen / DMFitRejoinAfterFullScreen). Taken for a close, the window left was
         // tiled again to fill the screen -- behind the app going full screen, and over it until the window layer went behind the apps, a flash of
         // the wrong app (frame by frame, iPad 2, Aerial 5.0 / 5.1, 24 Oct 2026).
+        // (1.8.7.5, audit L28 of 1.8.7.2: Zetsu's and MilkyWay4's green close the window itself, so no stage is left to carry that mark: the tile was
+        //  taken for a closed one, and the window left slid to Fill -- mostly under the green's cover -- and back when the app returned. One rule for
+        //  every engine: the app the green named (DMRememberFitForFullScreen, every engine's green on a tiled window) whose window is gone or closing has
+        //  gone full screen too -- once per green, so a later real close of its window still closes its tile up. The record goes when the app is
+        //  back as a window, is placed from the Window menu, or quits while full screen (which closes its tile up then: DMFitFullScreenAppGone).)
         BOOL leftForFull = NO;
         for (NSString *b in before) {
             UIView *st = DMStageForBundle(b);
-            if (st && [objc_getAssociatedObject(st, kStageGoingFullKey) boolValue] && [gFitGroup containsObject:b]) {
+            BOOL named = !gFSFitLeft && [b isEqualToString:gFSFitBundle];
+            BOOL going = st && [objc_getAssociatedObject(st, kStageGoingFullKey) boolValue];
+            if (!going && named && (!st || [objc_getAssociatedObject(st, kStageClosingKey) boolValue])) going = YES;
+            if (going && [gFitGroup containsObject:b]) {
+                if (named) gFSFitLeft = YES;
                 DMFitGroupForget(b); leftForFull = YES;
                 DM_FEATURE_MARK("fit-full-screen-keeps-tiles");
                 DMLog([NSString stringWithFormat:@"[fit] %@ goes full screen: the other %lu window(s) keep their tiles", b, (unsigned long)gFitGroup.count]);
@@ -10868,6 +10970,7 @@ static void DMRelayoutStageWhenLanded(UIView *stage, CGSize oldSize, CGSize newS
     if ([gFitGroup containsObject:b]) f = DMSlotFrame(b);
     else {   // (layering audit #8: the frame it had in this orientation before, as the normal turn uses; else the landing frame scaled with ONE factor
              //  around its centre -- scaling each axis on its own stretched a landscape frame to 455 x 1093 in portrait on the M1)
+        usable = DMBehindDockTurnArea(b, usable);   // (a window the user left behind the Dock: down to the screen's bottom, as the turn keeps it -- 1.8.7.5)
         NSValue *saved = [objc_getAssociatedObject(stage, kStageByOrientKey) objectForKey:DMOrientKey()];
         if (saved) f = DMFitInto(saved.CGRectValue, usable);
         else {
@@ -10935,7 +11038,7 @@ static void DMRelayoutForOrientation(CGSize oldSize, CGSize newSize) {
         gMoveKeepsOrder = NO;
     });
     // every other window
-    NSMutableArray<NSString *> *laidOut = [NSMutableArray array];
+    NSMutableArray<NSString *> *laidOut = [NSMutableArray array], *behind = [NSMutableArray array];
     for (UIView *s in DMAerialStages()) {
         NSString *b = DMStageBundle(s);
         if (!b.length || [done containsObject:b]) continue;
@@ -10951,14 +11054,18 @@ static void DMRelayoutForOrientation(CGSize oldSize, CGSize newSize) {
         NSString *lay = objc_getAssociatedObject(s, kStageLayoutNameKey);
         int why = MSBDTurnNone;
         CGRect f = MSBDTurnPlaceFor(lay.length ? DMLayoutFrame(lay) : CGRectNull, saved ? saved.CGRectValue : CGRectNull, DMScaleFrame(from, fromScreen, newSize), &why);
-        if (why != MSBDTurnLayout) f = DMFitInto(f, usable);
-        else { [laidOut addObject:[NSString stringWithFormat:@"%@ %@", b, lay]]; DM_FEATURE_MARK("turn-layout-again"); }
+        // (a window the user left behind the Dock -- gBehindDock, recorded at the drag's end -- is kept inside the screen down to its bottom edge, any other
+        //  above the Dock, as Stage Manager's turn keeps them: kept above it, a window put back where it was in this shape came back lifted out from under
+        //  the Dock, 1.8.7.5 engine parity. Put back into a layout, it is no longer behind the Dock: a layout is above it)
+        if (why != MSBDTurnLayout) { BOOL marked = DMBehindDockHas(b); f = DMFitInto(f, DMBehindDockTurnArea(b, usable)); if (marked) [behind addObject:[NSString stringWithFormat:@"%@ %@", b, NSStringFromCGRect(f)]]; }
+        else { [laidOut addObject:[NSString stringWithFormat:@"%@ %@", b, lay]]; DM_FEATURE_MARK("turn-layout-again"); DMBehindDockSet(b, NO, @"a turn put it back into its layout"); }
         if (s.hidden || DMStageMinimized(s)) { gStageFrameBypass = YES; s.frame = f; gStageFrameBypass = NO; DMSetStageIntent(s, f); }
         else { DMAerialMoveStage(s, f, nil); targets[b] = [NSValue valueWithCGRect:f]; }
         objc_setAssociatedObject(s, &kStageTurnPlacedKey, why == MSBDTurnRemembered ? [NSValue valueWithCGRect:f] : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (1.7.5 item 14)
     }
     gMoveKeepsOrder = NO;
     if (laidOut.count) DMLog([NSString stringWithFormat:@"[orient] back in their layouts for the new shape: %@", [laidOut componentsJoinedByString:@", "]]);
+    if (behind.count) { DM_FEATURE_MARK("turn-behind-dock-kept"); DMLog([NSString stringWithFormat:@"[orient] behind the Dock as the user left them (down to the screen's bottom): %@", [behind componentsJoinedByString:@", "]]); }
     // Aerial 3.0 (M1, iOS 15, full-screen app in front) keeps a frame per orientation of its own: right after our arrangement its layout pass put every
     // window back to that remembered frame -- once squeezed (its _adjustStageToFitScreenIfNeeded shrinks a portrait-tall window to fit a landscape
     // screen, keeping the shape: 293 x 794, centred, all windows on top of each other), squeezed again in that orientation until it learns our frame
@@ -10974,9 +11081,9 @@ static void DMRelayoutForOrientation(CGSize oldSize, CGSize newSize) {
             gMoveKeepsOrder = YES; DMAerialMoveStage(s, want, nil); gMoveKeepsOrder = NO;
         }
     });
-    for (NSString *b in [gLastWindowFrames allKeys]) {   // the places remembered for the green button
+    for (NSString *b in [gLastWindowFrames allKeys]) {   // the places remembered for the green button (one left behind the Dock: down to the screen's bottom, 1.8.7.5)
         CGRect f = gLastWindowFrames[b].CGRectValue;
-        gLastWindowFrames[b] = [NSValue valueWithCGRect:DMFitInto(DMScaleFrame(f, oldSize, newSize), usable)];
+        gLastWindowFrames[b] = [NSValue valueWithCGRect:DMFitInto(DMScaleFrame(f, oldSize, newSize), DMBehindDockTurnArea(b, usable))];
     }
     // the saved window state follows the turn (it kept the old shape's frames: after a respring in the other shape the tiles came back scaled)
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMSaveWindowState(); });
@@ -13040,6 +13147,7 @@ static void DMAerialGestureAfter(UIView *stage, UIGestureRecognizer *g, BOOL was
         if (![objc_getAssociatedObject(g, kAerialHandStartKey) boolValue]) return;   // (a drag refused at its start: not moved by hand, M5)
         objc_setAssociatedObject(stage, kStageGestureKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         DMTitleRecordHandEnded(stage, s);   // (a move or a resize by hand: the title bar's frame from before is older, P4-1; also one cut short, L2)
+        if (wasPan && s == UIGestureRecognizerStateCancelled) DMBehindDockMoveEnded(stage);   // (a move cut short: left behind the Dock or not, as one let go -- 1.8.7.5)
         if (wasPan && s == UIGestureRecognizerStateEnded) {   // (1.7.3 item 3: let go, it lines up with what is near -- the desktop's edges, the windows around)
             if (DMA5MacGeometry() && stage.frame.origin.y < DMTopLimit()) { CGRect f = stage.frame; f.origin.y = DMTopLimit(); stage.frame = f; }   // (under the bar first, as -dragTrace: keeps it)
             DMSnapMoveEnded(stage);
@@ -13377,6 +13485,7 @@ static BOOL DMAppJustExited(NSString *b) { NSNumber *t = b.length ? gAppExitedAt
         DMLog([NSString stringWithFormat:@"[exit] %@ exited: where its window was (%@) is forgotten", bundleID, NSStringFromCGRect(gLastWindowFrames[bundleID].CGRectValue)]);
         [gLastWindowFrames removeObjectForKey:bundleID];
     }
+    DMBehindDockSet(bundleID, NO, @"its app exited: its next window opens at a place of its own");   // (with where its window was: 1.8.7.5)
     { extern BOOL gFitClosureCheckDue; gFitClosureCheckDue = YES; }
     DMFitFullScreenAppGone(bundleID);   // (it had gone full screen out of a Fit pair: the tile it kept is closed up now)
     %orig;
@@ -18868,6 +18977,7 @@ static NSString *DMNativeActiveAppName(void) { return DMNativeActiveApp().appNam
 static void DMNativeTick(void) {
     DMDesktopTick();   // (the desktop: on page 1 while wanted, out of the way in jiggle mode)
     DMWPTick();        // (the desktop picture: behind page 1 while one is chosen -- DesktopWallpaper.h)
+    DMWPBarBackdropTick();   // (what the menu bar is over: the bars laid out again when it changes -- DesktopWallpaper.h, 1.8.7.5)
     if (gNativeFocusLock && !DMNativeActiveApp()) DMNativeFocus(NO);   // (safety net: the keyboard lock is only ever held while a native window is active)
     if (!gNativeLayer || gNativeLayer.hidden) return;
     {   // (the App Library, a Home Screen icon menu or the App Switcher takes over the screen: the native windows fade out of its way, like the
@@ -21127,15 +21237,21 @@ static BOOL DMBackgroundWanted(void) {
     return !DMColorBarActive();
 }
 
-// A solid background behind the status bar's contents. It follows the text: iPadOS decides whether the
-// bar's text is light or dark, so the chosen colour is used when the text is light and a light colour when
-// the text is dark, which keeps it readable whatever the system picks. A switch between the two cross-fades
-// (0.3 s, like the text); otherwise the colour is only written when it changes.
+// A solid background behind the status bar's contents, and the text on it (1.8.7.5 WHITEBAR, KT 14 Nov: "if I make the status bar white, the
+// text doesnt go black so it becomes a white bar"; the rule: common/BarBackground.h). A light chosen colour is always the background, and when
+// the bar it makes is light over what is behind it its text and icons are black: the bar's own foreground colour (DMBarDarkText), iPadOS's
+// items and ours alike. A dark colour follows iPadOS's text as before: the chosen colour when the text is light, a light colour when it is dark,
+// which keeps it readable whatever the system picks; a switch between the two cross-fades (0.3 s, like the text). Otherwise the colour is only
+// written when it changes. (Before, a light colour followed iPadOS's text too: under light text, white on white.) Returns whether the background
+// shows.
 static const void *kBackgroundLightKey = &kBackgroundLightKey;
-static void DMApplyBackground(UIView *fg, UIColor *textColor) {
+static BOOL DMBarDarkTextOn(UIView *fg);   // (below: our black text is in force on this bar)
+static BOOL DMApplyBackground(UIView *fg, UIColor *textColor) {
     UIView *bar = fg.superview;   // _UIStatusBar
     UIView *bg = objc_getAssociatedObject(fg, kBackgroundKey);
-    if (!bar || !DMBackgroundWanted()) { bg.hidden = YES; return; }
+    // (a copy collapsed under 300 pt -- an app card being dismissed -- has none, as our layout's narrow branch hides it: a restyle of its time
+    //  label put it back, with the dark text on it -- 1.8.7.5 round 1)
+    if (!bar || !DMBackgroundWanted() || fg.bounds.size.width < 300.0) { bg.hidden = YES; return NO; }
     if (!bg) {
         bg = [UIView new];
         bg.userInteractionEnabled = NO;
@@ -21145,23 +21261,27 @@ static void DMApplyBackground(UIView *fg, UIColor *textColor) {
     }
     CGFloat r = 1, g = 1, b = 1;
     BOOL lightText = ![textColor getRed:&r green:&g blue:&b alpha:NULL] || (0.299 * r + 0.587 * g + 0.114 * b) > 0.5;
+    // (while our black text is in force the text colour is ours, not iPadOS's -- on a light colour, whose background does not follow the text: not
+    //  kept as iPadOS's, or the end of ours looked like a flip of iPadOS's text and faded -- 1.8.7.5 round 1)
+    BOOL ours = DMBarDarkTextOn(fg);
     if (!CGRectEqualToRect(bg.frame, bar.bounds)) bg.frame = bar.bounds;
-    UIColor *want = lightText ? [(gBgColor ?: [UIColor blackColor]) colorWithAlphaComponent:gBgOpacity]
-                              : [UIColor colorWithWhite:0.96 alpha:gBgOpacity];
+    UIColor *want = MSBDBarBackgroundChosen(gBgColorLight, lightText) ? [(gBgColor ?: [UIColor blackColor]) colorWithAlphaComponent:gBgOpacity]
+                                                                      : [UIColor colorWithWhite:0.96 alpha:gBgOpacity];
     if (![bg.backgroundColor isEqual:want]) {
         NSNumber *was = objc_getAssociatedObject(bg, kBackgroundLightKey);
-        BOOL flip = was && was.boolValue != lightText && !bg.hidden && bg.window;
+        BOOL flip = !ours && was && was.boolValue != lightText && !bg.hidden && bg.window;
         if (flip) [UIView animateWithDuration:0.3 delay:0 options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
                                    animations:^{ bg.backgroundColor = want; } completion:nil];
         else bg.backgroundColor = want;
     }
-    objc_setAssociatedObject(bg, kBackgroundLightKey, @(lightText), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!ours) objc_setAssociatedObject(bg, kBackgroundLightKey, @(lightText), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     bg.hidden = NO;
     // Right under the bar's contents, NOT at index 0: PeepReborn's _UIStatusBar layout hook takes out whatever view is at the bottom (its own
     // slot), so a background there was removed on every layout and never showed (M1, iPadOS 15). If anything still takes it out, it goes back.
     NSArray *subs = bar.subviews;
     NSUInteger fi = [subs indexOfObjectIdenticalTo:fg];
     if (bg.superview != bar || (fi != NSNotFound && (fi == 0 || subs[fi - 1] != bg))) [bar insertSubview:bg belowSubview:fg];
+    return YES;
 }
 
 // The trailing region container: a plain UIView in the trailing half (the right half; the left one in a right-to-left language) holding the status icons.
@@ -21205,9 +21325,73 @@ static UIColor *DMBarItemColor(UIView *fg, UIView *timeLabel) {
     if (!c) { UIView *trailing = DMTrailingContainer(fg); if (trailing) c = DMTrailingIconColor(trailing); }
     return c ?: (gStatusTextColor ?: [UIColor whiteColor]);
 }
-// background: our bar's background follows too (not on the Lock Screen's layout, which never drew one)
+// ---- a light background's dark text: the bar's own foreground colour (1.8.7.5 WHITEBAR) ----
+// The status bar has one colour that overrides its style for every item it draws, text and icons, the battery among them: its -foregroundColor
+// (UIKit's _UIStatusBar on 15/16, SystemStatusUI's STUIStatusBar on 17/18 -- DMSBClass). iPadOS's status bar style requests carry it, and the
+// bar's style attributes take it as their text and image tint colour (+[_UIStatusBarStyleAttributes styleAttributesForStatusBar:style:] reads
+// -foregroundColor: UIKit's own code, run on the Mac, tools/test-barbackground.sh). While our light background is drawn on a bar and its bar is
+// light over what is behind it (DMBarTextDarkFor), the bar's foreground colour is black: every write of it goes through -setForegroundColor:, which keeps what iPadOS (or
+// anyone) asked for and passes ours on instead; when ours ends, theirs goes back. Our own items follow the bar's time label as before
+// (DMBarItemColor), and Battery Percentage in Icon's inks follow the battery's own colour (BatteryMenu.h DMBattInsideOne) at the bar's next
+// layout. Nothing else of the bar is changed. Only a bar of ours with our background (DMApplyBackground); not the Lock Screen's own copy,
+// which draws none; never with Status Bar Style Stock (not hooked there). Methods not as read: not hooked, iPadOS's text as before, logged.
+static BOOL gBarFgHooked = NO;
+static UIColor *gBarDarkInk = nil;   // (our black, one object: told apart from a colour someone else writes)
+static const void *kBarDarkTextKey = &kBarDarkTextKey;   // (on the bar: @YES while its foreground colour is ours)
+static const void *kBarTheirFgKey = &kBarTheirFgKey;     // (on the bar: the foreground colour it was asked for, NSNull for none, kept while ours is in force)
+static NSString *DMBarColorText(UIColor *c) {   // (for the log: r g b a, or the colour's own description)
+    CGFloat r = 0, g = 0, b = 0, a = 0;
+    return [c getRed:&r green:&g blue:&b alpha:&a] ? [NSString stringWithFormat:@"%.2f %.2f %.2f a %.2f", r, g, b, a] : (c.description ?: @"-");
+}
+static UIColor *DMBarForegroundFor(UIView *bar, UIColor *asked) {   // (-setForegroundColor:'s hook: what the bar takes)
+    if (asked != gBarDarkInk) objc_setAssociatedObject(bar, kBarTheirFgKey, asked ?: (id)[NSNull null], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return [objc_getAssociatedObject(bar, kBarDarkTextKey) boolValue] ? gBarDarkInk : asked;
+}
+// Black text on this bar (with our light background on it): over our Desktop Picture, its top strip decides (iPadOS's text is for its own wallpaper,
+// which ours hides there: DesktopWallpaper.h DMWPBarBackdrop); anywhere else iPadOS's text is for what is behind (an app's own style, iPadOS's
+// wallpaper) and stays, unless the bar is light even over black (gBgTextDark). (1.8.7.5 round 1: one guess for every place, black to a mid grey,
+// gave KT's white at 0.36 black text on the dark grey it makes over a dark app, 3.1:1 where iPadOS's white read 6.7:1.) common/BarBackground.h.
+static BOOL DMBarTextDarkFor(UIView *fg) {
+    if (!gBgColorLight) return NO;
+    MSBDWPTop top;
+    if (DMWPBarBackdrop(fg, &top)) return MSBDBarTextDarkOver(gBgRGB[0], gBgRGB[1], gBgRGB[2], gBgOpacity, top.darkest, top.lightest);
+    return gBgTextDark;
+}
+static BOOL DMBarDarkTextOn(UIView *fg) { return [objc_getAssociatedObject(fg.superview, kBarDarkTextKey) boolValue]; }
+static void DMBarDarkText(UIView *fg, BOOL dark) {
+    UIView *bar = fg.superview;
+    if (!gBarFgHooked || ![bar isKindOfClass:DMSBClass("_UIStatusBar")]) return;
+    if ([objc_getAssociatedObject(bar, kBarDarkTextKey) boolValue] == dark) return;
+    id theirs = objc_getAssociatedObject(bar, kBarTheirFgKey);
+    if (!theirs) theirs = ((id (*)(id, SEL))objc_msgSend)(bar, @selector(foregroundColor)) ?: [NSNull null];   // (the bar's own until now: never ours yet)
+    objc_setAssociatedObject(bar, kBarDarkTextKey, dark ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (first: the bar's restyle comes back here)
+    ((void (*)(id, SEL, id))objc_msgSend)(bar, @selector(setForegroundColor:), theirs == [NSNull null] ? nil : theirs);   // (through the hook: ours, or theirs again)
+    DMLog([NSString stringWithFormat:@"[barcolor] %p: %@ (background %@ at %.2f)", bar, dark ? @"text and icons black on our light background" : @"the bar's own text colour again",
+           DMBarColorText(gBgColor), gBgOpacity]);
+    [fg setNeedsLayout];   // (our items and the battery's number take the bar's new colour at its next layout)
+    __weak UIView *weakFg = fg;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UIView *f = weakFg; if (!f) return;
+        [f setNeedsLayout];   // (the bar may restyle its items after this run loop: once more)
+        UIView *container = DMLeadingContainer(f), *time = container ? DMFirstStringView(container) : nil;
+        UIColor *drawn = [time isKindOfClass:[UILabel class]] ? DMLabelDrawnColor((UILabel *)time) : nil;
+        DMLog([NSString stringWithFormat:@"[barcolor] %p: the time is drawn in %@", f.superview, drawn ? DMBarColorText(drawn) : @"(no time label)"]);
+    });
+}
+// background: our bar's background follows too (not on the Lock Screen's layout, which never drew one), and the bar's text on it. The bar's black
+// text is ours only while our light background shows on it (the Lock Screen's layout too: a copy that keeps our background keeps it, one without
+// none). Our black text no longer wanted is ended first: c is our black while it is in force, and the background is decided from iPadOS's own
+// colour (a light colour changed to a dark one put the light grey under white text, then faded to the dark colour: 1.8.7.5 round 1). Ending it
+// restyles the bar, whose time label brings iPadOS's colour back here; this call goes on with the bar's colour as it is then.
 static void DMApplyBarItemColor(UIView *fg, UIColor *c, BOOL background) {
     if (!fg || !c) return;
+    UIView *bgView = objc_getAssociatedObject(fg, kBackgroundKey);
+    BOOL dark = DMBackgroundWanted() && (background ? fg.superview && fg.bounds.size.width >= 300.0 : bgView && !bgView.hidden) && DMBarTextDarkFor(fg);
+    if (!dark && DMBarDarkTextOn(fg)) {
+        DMBarDarkText(fg, NO);
+        UIView *container = DMLeadingContainer(fg), *time = container ? DMFirstStringView(container) : nil;
+        c = DMBarItemColor(fg, time) ?: c;
+    }
     const void *labels[] = { kLogoKey, kAppLabelKey, kFileLabelKey, kEditLabelKey, kViewLabelKey, kGoLabelKey, kWinLabelKey, kDispLabelKey, kAudioLabelKey, kDateProxyKey, DM_AM_LABELS };
     const void *icons[] = { kSpotIconKey, kWiFiIconKey, kVPNIconKey, kMuteIconKey, kSSHIconKey, kCCIconKey };
     for (size_t i = 0; i < sizeof labels / sizeof labels[0]; i++) {
@@ -21218,8 +21402,9 @@ static void DMApplyBarItemColor(UIView *fg, UIColor *c, BOOL background) {
         UIView *v = objc_getAssociatedObject(fg, icons[i]);
         if ([v isKindOfClass:[UIView class]] && ![v.tintColor isEqual:c]) v.tintColor = c;
     }
-    if (background) DMApplyBackground(fg, c);
+    BOOL shown = background ? DMApplyBackground(fg, c) : bgView && !bgView.hidden;
     if (fg.window && !fg.window.hidden && fg.bounds.size.width > 300.0) gStatusTextColor = c;   // (the bar on screen: the keyboard pill's colour, DMPlaceKeyboardPillIn)
+    DMBarDarkText(fg, shown && dark);   // (last: a change restyles the bar, whose time label brings it back here in its new colour)
 }
 
 
@@ -23097,8 +23282,16 @@ static void DMLoadPrefs(void) {
     CFPropertyListRef opacityRef = CFPreferencesCopyValue(CFSTR("backgroundOpacity"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     id opacityValue = opacityRef ? CFBridgingRelease(opacityRef) : nil;
     gBgOpacity = [opacityValue isKindOfClass:[NSNumber class]] ? MIN(1.0, MAX(0.0, [opacityValue doubleValue])) : 0.70;
-    DMLog([NSString stringWithFormat:@"[prefs] blockPointerPull=%d showSeconds=%d spotlight=%d background=%@ color=%@ opacity=%.2f", gBlockPointerPull, show, showSpot,
-           gBgMode == DMBackgroundOn ? @"on" : (gBgMode == DMBackgroundOff ? @"off" : @"auto"), colorText ?: @"(default)", gBgOpacity]);
+    {   // (the text on a bar of this colour: the bars follow at their next layout, DMPrefsChanged -- BarBackground.h)
+        CGFloat r = 0, g = 0, b = 0;
+        BOOL rgb = [gBgColor getRed:&r green:&g blue:&b alpha:NULL];
+        gBgColorLight = rgb && MSBDBarColorIsLight(r, g, b);
+        gBgTextDark = rgb && MSBDBarTextDarkAnywhere(r, g, b, gBgOpacity);
+        gBgRGB[0] = rgb ? r : 0; gBgRGB[1] = rgb ? g : 0; gBgRGB[2] = rgb ? b : 0;
+    }
+    DMLog([NSString stringWithFormat:@"[prefs] blockPointerPull=%d showSeconds=%d spotlight=%d background=%@ color=%@ opacity=%.2f (%@ colour, %@ text)", gBlockPointerPull, show, showSpot,
+           gBgMode == DMBackgroundOn ? @"on" : (gBgMode == DMBackgroundOff ? @"off" : @"auto"), colorText ?: @"(default)", gBgOpacity, gBgColorLight ? @"light" : @"dark",
+           gBgTextDark ? @"black" : gBgColorLight ? @"by what is behind" : @"iPadOS's"]);
 
     // The picker in Settings (AltList) stores the choice as an ARRAY of bundle ids. First run: pre-tick the apps the
     // Go menu has always shown, so the picker matches the menu. An older build saved a dictionary, which crashes the
@@ -23792,6 +23985,25 @@ static void DMStockVPNInit(void) {
     else if (DMSBUseSTUI() && pill && [pill instancesRespondToSelector:@selector(pillSize)] && [pill instancesRespondToSelector:NSSelectorFromString(@"_backgroundColorForActivityWithIdentifier:")]) { %init(StockPillItem17, _UIStatusBarPillBackgroundActivityItem = pill); gSBItemHooks |= 8; }   // (17+: the colour is asked per activity identifier)
     else DMLog(@"[activity] iOS's background activity pill item not found: it stays in the status icons");
 }
+// A light Status Bar Background's dark text (DMBarDarkText): every write of the bar's foreground colour, iPadOS's and ours, goes through here.
+%group BarForeground
+%hook _UIStatusBar
+- (void)setForegroundColor:(UIColor *)color {
+    %orig(DMBarForegroundFor((UIView *)self, color));
+}
+%end
+%end
+static void DMBarForegroundInit(void) {
+    Class bar = DMSBClass("_UIStatusBar");
+    Method set = bar ? class_getInstanceMethod(bar, @selector(setForegroundColor:)) : NULL, get = bar ? class_getInstanceMethod(bar, @selector(foregroundColor)) : NULL;
+    const char *se = set ? method_getTypeEncoding(set) : NULL, *ge = get ? method_getTypeEncoding(get) : NULL;
+    if (se && ge && !strcmp(se, "v24@0:8@16") && !strcmp(ge, "@16@0:8")) {
+        gBarDarkInk = [UIColor colorWithRed:0 green:0 blue:0 alpha:1];
+        %init(BarForeground, _UIStatusBar = bar);
+        gBarFgHooked = YES;
+    } else DMLog([NSString stringWithFormat:@"[barcolor] %@ has no foreground colour as read (%s / %s): a light Status Bar Background keeps iPadOS's text colour",
+                  bar ? NSStringFromClass(bar) : @"(no status bar class)", se ?: "-", ge ?: "-"]);
+}
 
 #if DEBUG
 // (debug: a full-size window card's status bar strip hidden as not the top bar, and why -- the 1.5.2 top-bar item; read-only)
@@ -23926,6 +24138,7 @@ static BOOL DMBarCopyIsCCDuplicate(UIView *fg) {
         for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
             ((UIView *)objc_getAssociatedObject(fg, keys[i])).hidden = YES;
         DMLAHidePills(fg);   // (the Live Activities' pills too)
+        DMBarDarkText(fg, NO);   // (and our dark text with our background: iPadOS's again -- 1.8.7.5 round 1)
         return;
     }
     UIView *container = DMLeadingContainer(fg);
@@ -30227,9 +30440,9 @@ static void DMRunTrigger(NSString *cmd) {
         if (u.location != NSNotFound) { NSString *b = [rest substringToIndex:u.location]; float v = [[rest substringFromIndex:u.location + 1] floatValue];
             DMSetAudioVolumeAndNotify(b, v, YES); DMLog([NSString stringWithFormat:@"[appvol] %@ -> %.2f", b, v]); }
     }
-    else if ([cmd hasPrefix:@"smwin_"]) {   // smwin_<bundle>_<close|removeFromSet>: OUR window action, as a traffic-light tap runs it (DMSMWindowAction)
+    else if ([cmd hasPrefix:@"smwin_"]) {   // smwin_<bundle>_<close|removeFromSet|red>: OUR window action (DMSMWindowAction); red: the red light's (DMSMRedLight)
         NSArray *q = [[cmd substringFromIndex:6] componentsSeparatedByString:@"_"];
-        if (q.count >= 2) { NSString *k = DMSMDebugKey(q[0]); DMLog([NSString stringWithFormat:@"[smwin] %@ %@: %@", DMSMKeyText(k), q[1], DMSMWindowAction(k, q[1]) ? @"done" : @"not available"]); }
+        if (q.count >= 2) { NSString *k = DMSMDebugKey(q[0]); BOOL red = [q[1] isEqualToString:@"red"]; DMLog([NSString stringWithFormat:@"[smwin] %@ %@: %@", DMSMKeyText(k), q[1], (red ? DMSMRedLight(k) : DMSMWindowAction(k, q[1])) ? @"done" : @"not available"]); }
     }
     else if ([cmd hasPrefix:@"smaction_"]) {   // smaction_<bundle>_<close|fullScreen|maximization|removeFromSet|addToSet|moveToDisplay>: Stage Manager study -- run that window's own "..." menu action
         NSArray *q = [[cmd substringFromIndex:9] componentsSeparatedByString:@"_"];
@@ -34520,6 +34733,7 @@ static void DMA5DragFollow(UIView *stage, UIPanGestureRecognizer *g, BOOL began)
     //  its drag ends here, in our target after its own; 3.0's ends in DMAerialGestureAfter. A drag already snapped there finds nothing left to do.)
     if (g.state == UIGestureRecognizerStateEnded && stage.superview) DMSnapMoveEnded(stage);
     else if (g.state == UIGestureRecognizerStateCancelled) DMTitleRecordHandEnded(stage, g.state);   // (a move by hand cut short: review 1.8.3 L2)
+    if (g.state == UIGestureRecognizerStateCancelled && stage.superview) DMBehindDockMoveEnded(stage);   // (... and left behind the Dock or not, as one let go: 1.8.7.5)
     if (!DMTestFlag("/tmp/msb-a5-dragtrace")) return;
     DMLog([NSString stringWithFormat:@"[a5drag] trace state %ld location %@ translation %@ stage origin %@", (long)g.state, NSStringFromCGPoint([g locationInView:stage.superview]), NSStringFromCGPoint([g translationInView:stage.superview]), NSStringFromCGPoint(stage.frame.origin)]);
 }
@@ -34533,6 +34747,7 @@ static void DMA5DragFollow(UIView *stage, UIPanGestureRecognizer *g, BOOL began)
     if (g.state == UIGestureRecognizerStateEnded) DMA5DragFollow(stage, g, NO);
     objc_setAssociatedObject(g, &kA5DragDownKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (g.state == UIGestureRecognizerStateCancelled) DMTitleRecordHandEnded(stage, g.state);   // (a move by hand cut short: review 1.8.3 L2)
+    if (g.state == UIGestureRecognizerStateCancelled) DMBehindDockMoveEnded(stage);   // (... and left behind the Dock or not, as one let go: 1.8.7.5)
     if (g.state != UIGestureRecognizerStateEnded) return;
     if (stage.frame.origin.y < DMTopLimit() && DMA5MacGeometry()) { CGRect f = stage.frame; f.origin.y = DMTopLimit(); stage.frame = f; }
     DMSnapMoveEnded(stage);
@@ -40975,8 +41190,11 @@ static void DMSMStateWrite(void) {   // (the minimized set, the places before fu
 }
 static BOOL DMSMIsMinimized(NSString *key) { return DMSMKeySetHas(DMSMMinimizedSet(), key); }
 static BOOL DMSMOpensAsWindow(NSString *key, BOOL windowed, BOOL minimized);   // (below DMSMAddToStage: a minimized window comes back as that window)
-// Takes exactly these entries out of the saved minimized set (no app-wide removal: an older version's entry for an app stays) and saves it.
+// Takes exactly these entries out of the saved minimized set (no app-wide removal: an older version's entry for an app stays) and saves it. Their
+// pictures for the grow back out of the Dock go with them (1.8.7.5, audit L37 of 1.8.7.2: the marks went, the pictures stayed). A picture growing
+// right now is not among them: DMSMGrowFromDock takes it out of the store before it grows, and it ends with its card.
 static void DMSMMinimizedDrop(NSSet<NSString *> *keys) {
+    for (NSString *k in keys) [gSMMinPictures removeObjectForKey:k];
     NSMutableSet *s = DMSMMinimizedSet();
     NSUInteger before = s.count;
     [s minusSet:keys];
@@ -40992,6 +41210,45 @@ static void DMSMSetMinimized(NSString *key, BOOL on) {
     if (!changed) return;
     DMSMStateWrite();
     if (!on && gSMMinPictures[key] && [NSThread isMainThread]) DMSMGrowFromDock(key, 0);   // (opened again: out of its Dock icon)
+}
+// A minimized window that is gone -- its stage removed: the app quit from the App Switcher (a window's scene ends with it), or the window closed
+// some other way -- loses its mark and its picture at the next look (DMSMMinimizedLook, below: the stages changed, or once a second, and at an
+// icon tap), not only at the next start (SMHome.h). The mark stayed for the rest of this SpringBoard: opened
+// again, the app's new window (its default scene: the same key) was taken for that window, and its old picture grew out of the Dock over the
+// fresh window for 0.4 to 1.6 s; the mark also gave the app a running dot (1.8.7.5, audit L37 of 1.8.7.2). Every recent stage counts, the hidden
+// ones too (a minimized window waits in one, as one on another Mac Switcher desktop does); stages not read whole drop nothing (DMSMWindowKeysIn).
+// Window keys only (SMWindowKey.h DMSMKeysGone, as at the start): an app's key -- an older version's entry, windows told apart by app -- stays.
+static void DMSMMinimizedForgetClosed(void) {
+    if (!gSMTurnStartSettled || !DMSMPerWindow() || (!gSMMinPictures.count && !DMSMMinimizedSet().count)) return;
+    NSArray *stages = DMSMRecentStages();
+    static NSArray *last = nil; static CFTimeInterval lastAt = 0;
+    CFTimeInterval now = CACurrentMediaTime();
+    BOOL same = last.count == stages.count && now - lastAt < 1.0;
+    for (NSUInteger i = 0; same && i < stages.count; i++) if (last[i] != stages[i]) same = NO;
+    if (same) return;
+    last = [stages copy]; lastAt = now;
+    NSSet<NSString *> *present = DMSMWindowKeysIn(stages);
+    if (!present) return;
+    NSMutableSet<NSString *> *keys = [DMSMMinimizedSet() mutableCopy];
+    if (gSMMinPictures.count) [keys addObjectsFromArray:gSMMinPictures.allKeys];   // (a picture whose mark went another way: of no use once its window is gone)
+    NSSet<NSString *> *gone = DMSMKeysGone(keys, present);
+    if (!gone.count) return;
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    NSUInteger marks = 0, pictures = 0;
+    for (NSString *k in gone) { if ([DMSMMinimizedSet() containsObject:k]) marks++; if (gSMMinPictures[k]) pictures++; [names addObject:DMSMKeyText(k)]; }
+    DMSMMinimizedDrop(gone);
+    DM_FEATURE_MARK("sm-minimized-gone-dropped");
+    DMLog([NSString stringWithFormat:@"[smengine] windows that are gone (in no stage): %lu minimized mark(s) and %lu picture(s) dropped -- %@", (unsigned long)marks, (unsigned long)pictures, [[names sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@", "]]);
+}
+// When that look runs: from DMSMWatchTurn (the stages changed, or once a second) and at an icon tap, before the tap reads a mark or a picture
+// (DMSMAddToStage) -- whenever no Mac Switcher slide, switcher gesture or workspace transaction is under way (inside one a window can be in no
+// stage for a moment), the App Switcher up or not. It waited for the App Switcher to close, as the layout notes do (its cards are drawn small),
+// but which stages hold which windows does not change with the cards' size, a card swiped away there is a window gone, and the app's Dock icon
+// can be tapped while the App Switcher is still up: the stale mark and picture were read then, and the old picture grew over the fresh window
+// as before (1.8.7.5, review of audit track f, finding 1).
+static void DMSMMinimizedLook(void) {
+    if (gMSWSwitching || DMSMGestureLive() || DMSMWorkspaceBusy()) return;
+    DMSMMinimizedForgetClosed();
 }
 // A switcher gesture's own end showed these windows' stage as SpringBoard built it (SMDesktop.h: a swipe along the bottom edge to the previous
 // app, Apple's way since 1.5.2): they are on screen again, so none of them is a minimized window any more -- quietly, without the grow out of the
@@ -41124,10 +41381,42 @@ static UIView *DMSMScreenRootOf(UIView *card) {
 // came from the hidden strip on 16. A few at most; dropped once used, or when the window does not show up in time. With it: the place it was
 // minimized from (card and title bar, in the screen root's space), that screen root and the interface orientation then, so the grow back can
 // start before Stage Manager's card is there (DMSMGrowFromDock).
-static char kSMMinPlaceKey, kSMMinCardKey, kSMMinRootKey, kSMMinOrientKey;
+// (1.8.7.5, audit L38 / O6 of 1.8.7.2: each is a window-sized picture pair held by the render server, 5-80 MB for eight. None is taken under Reduce
+//  Motion, where the restore is Stage Manager's own appearance and DMSMGrowFromDock drops it unused; they are let go when the system warns of
+//  memory pressure; a window's goes when its app is force quit (DMSMForgetApp) or the window is gone (DMSMMinimizedForgetClosed); a ninth window
+//  pushes out the oldest picture -- it was whichever the dictionary listed first, a window minimized a moment ago as likely as any.)
+static char kSMMinPlaceKey, kSMMinCardKey, kSMMinRootKey, kSMMinOrientKey, kSMMinTakenKey;
+// The kept pictures let go under memory pressure (UIKit's memory warning, and the kernel's level through a dispatch memory-pressure source: warning
+// or critical, as the Mac Switcher's own, MacSwitcher.h DMMSWWatchMemory): those windows come back with Stage Manager's own appearance. A picture
+// growing out of the Dock right now is on screen, out of the store (DMSMGrowFromDock): it stays until its window takes over.
+static void DMSMFreeMinPictures(NSString *why) {
+    NSUInteger n = gSMMinPictures.count;
+    if (!n) return;
+    [gSMMinPictures removeAllObjects];
+    DM_FEATURE_MARK("sm-min-pictures-memory-pressure");
+    DMLog([NSString stringWithFormat:@"[smengine] %@: %lu minimized window picture(s) let go -- those windows come back with Stage Manager's own appearance", why, (unsigned long)n]);
+}
+static void DMSMWatchMemoryForPictures(void) {   // (once, with the first picture kept)
+    static BOOL done = NO;
+    if (done) return;
+    done = YES;
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidReceiveMemoryWarningNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) { DMSMFreeMinPictures(@"UIKit's memory warning"); }];
+    static dispatch_source_t src;
+    src = dispatch_source_create(DISPATCH_SOURCE_TYPE_MEMORYPRESSURE, 0, DISPATCH_MEMORYPRESSURE_WARN | DISPATCH_MEMORYPRESSURE_CRITICAL, dispatch_get_main_queue());
+    if (!src) { DMLog(@"[smengine] no memory-pressure source here: minimized windows' pictures go at UIKit's memory warning only"); return; }
+    dispatch_source_set_event_handler(src, ^{ unsigned long level = dispatch_source_get_data(src); DMSMFreeMinPictures((level & DISPATCH_MEMORYPRESSURE_CRITICAL) ? @"memory pressure (critical)" : @"memory pressure (warning)"); });
+    dispatch_resume(src);
+}
 static void DMSMKeepMinPicture(NSString *key, UIView *card, UIView *bar, CGRect cardR, CGRect barR, CGRect full, UIView *root) {
+    if (!key.length) return;
+    if (MSBReduceMotion()) {   // (no grow under Reduce Motion: no picture taken, and an older one of this window goes -- it would be the wrong one)
+        BOOL had = gSMMinPictures[key] != nil;
+        [gSMMinPictures removeObjectForKey:key];
+        DMLog([NSString stringWithFormat:@"[smengine] minimize %@: Reduce Motion -- no picture kept for the restore (Stage Manager's own appearance)%@", DMSMKeyText(key), had ? @", its older one dropped" : @""]);
+        return;
+    }
     UIView *pic = [card snapshotViewAfterScreenUpdates:NO], *barPic = bar ? [bar snapshotViewAfterScreenUpdates:NO] : nil;
-    if (!pic || !key.length) return;
+    if (!pic) return;
     UIView *keep = [[UIView alloc] initWithFrame:CGRectMake(0, 0, full.size.width, full.size.height)];
     keep.userInteractionEnabled = NO;
     pic.frame = CGRectOffset(cardR, -full.origin.x, -full.origin.y);
@@ -41139,8 +41428,18 @@ static void DMSMKeepMinPicture(NSString *key, UIView *card, UIView *bar, CGRect 
     objc_setAssociatedObject(keep, &kSMMinCardKey, [NSValue valueWithCGRect:cardR], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(keep, &kSMMinRootKey, rootBox, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(keep, &kSMMinOrientKey, @(DMRealInterfaceOrientation()), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    static unsigned long long taken = 0;   // (the order the pictures were taken in: the oldest goes first)
+    objc_setAssociatedObject(keep, &kSMMinTakenKey, @(++taken), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (!gSMMinPictures) gSMMinPictures = [NSMutableDictionary dictionary];
-    if (gSMMinPictures.count >= 8 && !gSMMinPictures[key]) [gSMMinPictures removeObjectForKey:gSMMinPictures.allKeys.firstObject];
+    DMSMWatchMemoryForPictures();
+    if (gSMMinPictures.count >= 8 && !gSMMinPictures[key]) {
+        NSString *oldest = nil; unsigned long long oldestAt = 0;
+        for (NSString *k in gSMMinPictures) {
+            unsigned long long at = [objc_getAssociatedObject(gSMMinPictures[k], &kSMMinTakenKey) unsignedLongLongValue];
+            if (!oldest || at < oldestAt) { oldest = k; oldestAt = at; }
+        }
+        if (oldest) [gSMMinPictures removeObjectForKey:oldest];
+    }
     gSMMinPictures[key] = keep;
 }
 // The window, opened again: its kept picture grows out of its Dock icon (the Dock's middle when the app has none) from the moment the window is
@@ -41345,7 +41644,27 @@ static void DMSMGrowFromDockAtTapForApp(NSString *bundle) {
 // stays where it is in Stage Manager's order, out of sight until Stage Manager's own transition is over. (A window behind another first had its
 // picture right above its own card, under the front window's: it slid behind the front window and was gone before it reached the Dock -- 17.5.1,
 // port agent, 25 Oct.)
+// A window minimized again while it still grows out of its Dock icon (the menu bar's lights, the Window menu or the shortcut: its own yellow light
+// is hidden then): its page and title bar were held out of sight for the grow (DMSMGrowWatch, DMSMHoldGrowingCard), so the picture taken below --
+// the one that flies into the Dock and the one kept for the next restore -- was empty, without its title bar, and the growing picture stayed over
+// the stage until its watch gave up (about 0.8 s). That grow ends first, at once, as its own hand-over without the fade: its picture taken away,
+// the views it held shown, its entry gone (DMSMGrowWatch finds its picture out of the view tree and stops); pushed to the screen before the
+// picture is taken, which shows what is on screen (1.8.7.5, audit L39 of 1.8.7.2). The same when it is the desktop's last window, whose minimize
+// is the Home Screen with no picture of ours (DMSMWindowActionAs): the grow's picture stayed over the Home Screen and the card left empty, its
+// page and title bar still held out of sight (review of audit track f, finding 2).
+static void DMSMEndGrowNow(NSString *key) {
+    UIView *keep = key.length ? gSMGrowing[key] : nil;
+    if (!keep) return;
+    [gSMGrowing removeObjectForKey:key];
+    NSHashTable *held = objc_getAssociatedObject(keep, &kSMHeldKey);
+    [keep removeFromSuperview];
+    for (UIView *v in held.allObjects) v.alpha = 1.0;
+    [CATransaction flush];
+    DM_FEATURE_MARK("sm-minimize-during-restore");
+    DMLog([NSString stringWithFormat:@"[smengine] minimize %@ during its restore: the grow ends first (its picture gone, the window shown)", DMSMKeyText(key)]);
+}
 static void DMSMFlyToDock(NSString *key) {
+    DMSMEndGrowNow(key);
     UIView *card = DMSMCardFor(key);
     if (!card.window || card.hidden) return;
     UIView *root = DMSMScreenRootOf(card);   // (the topmost ancestor as big as the screen: interface orientation, as the Dock's own window lies)
@@ -41431,6 +41750,7 @@ static BOOL DMSMWindowActionAs(NSString *key, NSString *name, BOOL users) {
     // and the closed window stayed a hidden one (logic test SM-7 / F2b). Minimizing the last window IS going Home (its stage stays, hidden); a
     // close runs once the Home Screen is up, on a stage no longer shown, so Stage Manager has nothing to bring up.
     if (last && minimize) {
+        DMSMEndGrowNow(wk);   // (minimized during its restore: the grow ends first, as in DMSMFlyToDock -- the Home's own animation takes the window as it is shown)
         DMSMSetMinimized(wk, YES);
         DMLog([NSString stringWithFormat:@"[smengine] %@: the desktop's last window minimized -- the Home Screen", DMSMKeyText(wk)]);
         DMSMGoHomeForReal(@"the desktop's last window minimized");   // (a real Home: the Home rule keeps windows on screen, this one goes -- SMHome.h)
@@ -41585,6 +41905,46 @@ static double DMSMForceQuitWindows(NSString *bundleID, BOOL *windowed) {
     if (!closed) return 0;
     if (windowed) *windowed = YES;
     return (double)(keys.count - 1) * 0.35;
+}
+// The red light with the Stage Manager engine (the window's title bar and the menu bar's): the app quits once this is its last window on screen,
+// as the red light quits it on every other engine and as Force Quit does, the same way: DMForceQuitBundle (this window closes as before, the app's
+// windows that are not on screen leave their stages, its minimized marks and desktop records go, it goes on the prewarm quit set, and the app is
+// ended 0.45 s later as the App Switcher's swipe-up ends it). With another window of the app on screen (the iPad's desktop, or the TV's), only
+// this window closes, as on a Mac (1.3.6 H-1, M-2).
+// The red light only ran the window's own Close, and whether the app ended was left to SpringBoard, which ends an app only once no stage holds it:
+// an app with a window minimized, on another desktop or in a stage not shown ran on, its Dock dot with it; one that ended, ended 0.8-1.25 s after
+// the press, where Force Quit ends it at 0.45 s (KT 15 Nov, A12Z 18.5: "the red traffic light sometimes leaves a dot under the app"; c11: Files
+// with a minimized window, alive with its dot at 1, 5 and 15 s). Windows are told apart by their items, not their keys (windows by app share one
+// key). The window not found in a stage on screen (the screen's stage can't be read): its own Close, as before. NO: nothing done (DMLightAction then
+// quits the app).
+static BOOL DMSMRedLight(NSString *key) {
+    NSString *bundle = DMSMKeyBundle(key);
+    if (!bundle.length) return NO;
+    id ipad = DMSMIPadStageShown();
+    id mine = nil;
+    NSMutableArray *others = [NSMutableArray array];
+    for (id al in DMSMRecentStages()) {
+        id identity = DMSMStageDisplayIdentity(al);
+        if (DMSMIsMainIdentity(identity) ? !(ipad && [al isEqual:ipad]) : !DMSMStageShownOnDisplay(al, identity)) continue;
+        id own = mine ? nil : DMSMItemFor(al, key, nil);   // (the window the key names there; an app key: the app's newest)
+        for (id it in DMSMStageItemsMap(al)) {
+            if (![DMSMItemBundle(it) isEqualToString:bundle]) continue;
+            if (own && [it isEqual:own]) mine = it;
+            else if (![others containsObject:it]) [others addObject:it];
+        }
+    }
+    if (!mine) {
+        DMLog([NSString stringWithFormat:@"[smengine] red light on %@: not in a stage on screen -- its own Close", DMSMKeyText(key)]);
+        return DMSMWindowAction(key, @"close");
+    }
+    if (others.count) {
+        DMLog([NSString stringWithFormat:@"[smengine] red light on %@: %lu other window(s) of the app on screen -- only this window closes", DMSMKeyText(key), (unsigned long)others.count]);
+        return DMSMWindowAction(key, @"close");
+    }
+    DM_FEATURE_MARK("sm-red-quits-app");
+    DMLog([NSString stringWithFormat:@"[smengine] red light on %@: the app's last window on screen -- the app quits (as Force Quit)", DMSMKeyText(key)]);
+    DMForceQuitBundle(bundle);
+    return YES;
 }
 static id DMSMStageOf(NSString *key) {   // (the most recent stage holding that window -- an app key: one of the app's windows -- on whichever display)
     if (key.length) for (id al in DMSMRecentStages()) if (DMSMItemFor(al, key, nil)) return al;
@@ -41941,6 +42301,7 @@ static BOOL DMSMHomeTapBringsWindow(NSString *bundle) {
 static BOOL DMSMAddToStage(NSString *bundle, UIView *from) {   // from: the icon tapped (its display: the iPad or the TV)
     DM_FEATURE_MARK("sm-add-to-stage");
     if (!DMSMEngine() || !bundle.length || DMTestFlag("/tmp/msb-sm-noadd")) return NO;
+    DMSMMinimizedLook();   // (a minimized window gone since the last look -- its card swiped away, the Dock tapped in the App Switcher -- is not read below as the app's new window: no old picture over it)
     BOOL windowed = DMWindowedLaunchOn();   // (Window menu > Open Apps as Windows: off = the app opens full screen, in front of the windows)
     id identity = DMSMIdentityOfScreen(from.window.screen ?: [UIScreen mainScreen]);
     // (Mac Switcher: its window is on another desktop of that display -- the launch brings that desktop, DMMSWSMJoin / DMMSWSMJoinOn; 1.8.7: the TV's own
@@ -42126,6 +42487,10 @@ static void DMSMForgetApp(NSString *bundle) {   // (the app quit: its windows' p
     BOOL placesGone = NO;
     for (NSString *k in [DMSMPreZoomPlaces() allKeys]) if ([DMSMKeyBundle(k) isEqualToString:bundle]) { [gSMPreZoomPlaces removeObjectForKey:k]; placesGone = YES; }
     if (placesGone) DMSMStateWrite();
+    // (and its minimized windows' pictures, first: none of its windows comes back. They stayed until eight others pushed them out, and with windows
+    //  told apart by app -- the picture kept under the app's key -- the mark taken below could grow the closed window's picture out of the Dock: 1.8.7.5,
+    //  audit L38 of 1.8.7.2. A picture growing now is not in the store: it ends with its card.)
+    for (NSString *k in [gSMMinPictures allKeys]) if ([DMSMKeyBundle(k) isEqualToString:bundle]) [gSMMinPictures removeObjectForKey:k];
     // (and its minimized marks: none of its windows is left anywhere. With windows told apart, a minimized window's mark is that window's scene, and
     //  the app's next launch may open another scene -- the old mark stayed in the saved set for good, 1.3.9 device pass)
     DMSMSetMinimized(bundle, NO);
@@ -42615,6 +42980,15 @@ static BOOL DMSMSnapMoveTarget(NSString *key, UIView *card, CGPoint t, CGPoint *
     for (UIButton *b in _lights) b.frame = CGRectMake(8.0 + b.tag * 20.0, (kSMBarH - 20.0) / 2.0, 20.0, 20.0);
     _title.frame = CGRectMake(72.0, 0, MAX(0, w - 144.0), kSMBarH);   // (no light refresh here: every frame of a resize, logic review P1 -- the
 }                                                                     //  lights follow front changes and card changes, DMSMChrome)
+// (Dark Mode switched: our resize grips have a colour of their own, DMResizeGripColorFor, not one that follows the style. The card is laid out
+//  again, where the grips' look is compared (DMSMChrome), and Stage Manager's own grabbers draw their tint again: 1.8.7.5, audit L41)
+- (void)traitCollectionDidChange:(UITraitCollection *)previous {
+    [super traitCollectionDidChange:previous];
+    UIView *card = _card;
+    if (!card || (previous && previous.userInterfaceStyle == self.traitCollection.userInterfaceStyle)) return;
+    [card setNeedsLayout];
+    DMSMReapplyGrabbers(card);
+}
 - (void)dm_updateLights {
     BOOL front = [(_key ?: _bundle) isEqualToString:DMSMFrontWindowKey()];
     [objc_getAssociatedObject(self, kLightGroupKey) apply];
@@ -42624,7 +42998,7 @@ static BOOL DMSMSnapMoveTarget(NSString *key, UIView *card, CGPoint t, CGPoint *
     if (DMGARefuses(@"window traffic light")) return;   // (Guided Access: see DMGALightsContainerInert -- also when an assistive feature presses it)
     NSString *w = _key ?: _bundle;
     DMLog([NSString stringWithFormat:@"[smchrome] %@ light %ld", DMSMKeyText(w), (long)b.tag]);
-    if (b.tag == 0) DMSMWindowAction(w, @"close");
+    if (b.tag == 0) DMSMRedLight(w);   // (the app quits with its last window on screen, as on every engine)
     else if (b.tag == 1) DMSMWindowAction(w, @"removeFromSet");
     else DMSMToggleZoom(w);
 }
@@ -42677,18 +43051,21 @@ static BOOL DMSMSnapMoveTarget(NSString *key, UIView *card, CGPoint t, CGPoint *
         CGRect dropped = [card convertRect:card.bounds toView:sup];
         CGRect droppedOnScreen = [card convertRect:card.bounds toCoordinateSpace:scn.coordinateSpace];
         card.transform = was;
+        CGPoint c = CGPointMake(card.center.x + t.x, card.center.y + t.y), mid = CGPointMake(CGRectGetMidX(dropped), CGRectGetMidY(dropped)), at = CGPointZero;
+        BOOL snapped = DMSMSnapMoveTarget(w, card, t, &at);   // (1.7.3 item 3: let go, it lines up with what is near -- 16, 17 and 18 alike)
         {   // (put behind the Dock by hand, or not: recorded now, not guessed later from sizes -- logic review R2. From the dropped card's bottom,
             //  nothing added: the card read as it was already carried the drag (the transform of its last move), and adding the drag again counted
             //  it twice -- a window let go 300 pt lower, its bottom well above the Dock, was taken for one put behind it and later fitted under it;
-            //  one behind the Dock nudged up a little was pulled above it. Audit M4 of 1.8.7.2, tools/test-smdropdock.sh)
+            //  one behind the Dock nudged up a little was pulled above it. Audit M4 of 1.8.7.2, tools/test-smdropdock.sh. Where the window ends: a
+            //  snap moves the card, its size kept, its middle to the snapped place -- one let go up to 45 pt under the line snaps up onto it and is
+            //  not behind the Dock, 1.8.7.5 round 1)
             NSNumber *dock = gSMDockHeightBySize[NSStringFromCGSize(scn.bounds.size)];
             CGFloat line = scn.bounds.size.height - (dock ? dock.doubleValue : 117.0) - 2.0;
             if (!gSMBehindDock) gSMBehindDock = [NSMutableSet set];
             if (DMDockSideNow(scn.bounds.size)) line = scn.bounds.size.height + 1000.0;   // (Settings > Dock > Position: no Dock at the bottom to lie behind)
-            if (w.length) { if (CGRectGetMaxY(droppedOnScreen) > line + 4.0) [gSMBehindDock addObject:w]; else DMSMKeySetRemove(gSMBehindDock, w); }
+            CGFloat endsAt = snapped ? at.y * scn.bounds.size.height + droppedOnScreen.size.height / 2.0 : CGRectGetMaxY(droppedOnScreen);
+            if (w.length) { if (endsAt > line + 4.0) [gSMBehindDock addObject:w]; else DMSMKeySetRemove(gSMBehindDock, w); }
         }
-        CGPoint c = CGPointMake(card.center.x + t.x, card.center.y + t.y), mid = CGPointMake(CGRectGetMidX(dropped), CGRectGetMidY(dropped)), at = CGPointZero;
-        BOOL snapped = DMSMSnapMoveTarget(w, card, t, &at);   // (1.7.3 item 3: let go, it lines up with what is near -- 16, 17 and 18 alike)
         CGSize b = sup.bounds.size;
         card.transform = CGAffineTransformIdentity;
         card.center = c;   // (in place at once; the stage then lays itself out there)
@@ -43369,7 +43746,10 @@ static BOOL DMSMApplyPlacesMarkedIn(NSDictionary<NSString *, id> *bundleToLayout
         id it = DMSMItemFor(stage, k, nil);
         if (it && !layoutOf[it]) layoutOf[it] = bundleToLayout[k];
         if (it && [placedByUser containsObject:k]) [usersItems addObject:it];
-        if (it) DMSMKeySetRemove(gSMBehindDock, DMSMItemKey(it));   // (placed by a layout: no longer behind the Dock)
+        // (placed by a layout or a place of ours -- a tile, Fill, Centre, Zoom, a swap --: no longer behind the Dock. A window put back where the user
+        //  had it -- placedByUser, the turn's: where it was in this shape, or kept inside the screen -- keeps its mark, which is the user's as that place
+        //  is: taken here, a window pushed behind the Dock came back above it after a turn and back, A12Z 18.5, the 1.8.7.3 device check)
+        if (it && ![placedByUser containsObject:k]) DMSMKeySetRemove(gSMBehindDock, DMSMItemKey(it));
     }
     NSMutableArray *plan = [NSMutableArray array];   // [entity, role, attrs]
     id frontEntity = nil; long long newest = LLONG_MIN;
@@ -43956,6 +44336,99 @@ static void DMSMPlaceGrips(UIView *card, NSString *bundle, BOOL show) {
         [card bringSubviewToFront:grip];
     }
 }
+// Our title bar and our grips over SpringBoard's own views of the card, at every layout of the card. SpringBoard puts its own views back on top
+// when it updates a card: on iPadOS 16.7.7 (the iPad 2, read with its view tree, 15 Nov) a window's card had its content -- the swipe-to-close
+// scroll view holding the window's page -- moved over ours at its launch and, on every card, at each change of the front window (a minimize, a
+// restore from the Dock, a window back from its hidden stage did the same in the device check). Only the bar was raised again at the card's next
+// layout; the grips were raised only when they were placed again (a size, window, scale or look change: DMSMChrome's change check), so from the
+// first front change on they stayed under the window's content, there but unseen, on every window, until a Resize Handles, Tint Resize Handles or
+// Dark Mode change placed them again (KT's grips gone, the iPad 2's check of 1.8.7.5~a02; so since the per-frame work was cut down, 29 Sep:
+// before, every layout placed them). The views ours are in are read, not the card's: the card hands the views added to it to an inner clipping
+// view (_SBFActualClippingView) and its own -subviews is that view. Nothing is moved while ours are the last of them already, in DMSMPlaceGrips's
+// order (the bar, then the two grips).
+static void DMSMChromeOnTop(UIView *card, UIView *bar) {
+    UIView *box = bar.superview;
+    if (!box) return;
+    UIView *ours[3]; int k = 0;
+    ours[k++] = bar;
+    for (int side = 0; side < 2; side++) {
+        UIView *g = objc_getAssociatedObject(card, side == 0 ? &kSMGripLKey : &kSMGripRKey);
+        if (g && g.superview == box) ours[k++] = g;
+    }
+    NSArray<UIView *> *subs = box.subviews;
+    NSUInteger n = subs.count;
+    BOOL onTop = n >= (NSUInteger)k;
+    for (int i = 0; onTop && i < k; i++) if (subs[n - k + i] != ours[i]) onTop = NO;
+    if (onTop) return;
+    BOOL gripsUnder = NO;   // (a view of SpringBoard's above a shown grip: what the user saw -- logged)
+    for (int i = 1; i < k && !gripsUnder; i++) {
+        if (ours[i].hidden) continue;
+        for (NSUInteger j = [subs indexOfObjectIdenticalTo:ours[i]] + 1; j < n; j++) {
+            UIView *v = subs[j];
+            if (v != ours[0] && v != ours[1] && v != ours[k - 1]) { gripsUnder = YES; break; }
+        }
+    }
+    for (int i = 0; i < k; i++) [box bringSubviewToFront:ours[i]];
+    if (!gripsUnder) return;
+    DM_FEATURE_MARK("sm-grips-over-content");
+    DMLog([NSString stringWithFormat:@"[grips] %@: SpringBoard's own views were over its resize grips -- the title bar and grips on top again", DMSMCardBundle(card) ?: @"?"]);
+}
+// Every engine's resize grips follow their colour's inputs at once. A window's grips take their colour from Tint Resize Handles, light or dark,
+// and the tint its app reports (DMResizeGripColorFor; MacAppBridge sets the app's tint as a notify state when the app becomes active and every
+// 4 s while it is, with no post). Each engine set that colour only in a pass of its own: Zetsu's every tick (DMZetsuMacShape), Aerial 5's theme
+// tick (light or dark at the next tick, the rest within a second), Aerial 3's and MilkyWay4's only at their window's next layout (DMStyleStage,
+// DMRestyleWindowButtons), the Stage Manager engine's at its card's layout (a setting or a style change lays the cards out since 1.8.7.5, audit
+// L41; an app's tint coming in late waited for the next one). So the same switch reached the open windows at once on one engine and only after a
+// move or a resize on another (1.8.7.5, review of audit track f, finding 3). Now the 0.2 s watcher gives every shown grip of every engine the
+// colour its own pass gives it -- the same function, the same light or dark, the same app -- when it has another; nothing else of the window is
+// touched. A window's grips as its engine's pass keeps them, the shown ones:
+static NSArray<UIView *> *DMWindowedGripsOf(UIView *w) {
+    NSMutableArray<UIView *> *out = [NSMutableArray array];
+    for (int side = 0; side < 2; side++) {
+        UIView *g = objc_getAssociatedObject(w, side == 0 ? kStageGripBLKey : kStageGripBRKey);   // (Aerial 3.0: on the stage, DMStyleStage)
+        if (g && !g.hidden) [out addObject:g];
+        for (int e = 0; e < 2; e++) {   // (Aerial 5: DMAerial5Theme; Zetsu: DMZetsuMacShape -- the grip in a box of ours)
+            UIView *box = objc_getAssociatedObject(w, e == 0 ? (side == 0 ? kA5GripBLKey : kA5GripBRKey) : (side == 0 ? kZetsuGripLKey : kZetsuGripRKey));
+            UIView *in = box && !box.hidden ? box.subviews.firstObject : nil;
+            if (in && !in.hidden) [out addObject:in];
+        }
+    }
+    Class mw = objc_getClass("AXWindowView");   // (MilkyWay4: on its size changer, DMRestyleWindowButtons)
+    if (mw && [w isKindOfClass:mw]) {
+        UIView *sc = nil; @try { sc = [w valueForKey:@"sizeChanger"]; } @catch (id e) {}
+        UIView *g = [sc isKindOfClass:[UIView class]] ? objc_getAssociatedObject(sc, kMWGripKey) : nil;
+        if (g && !g.hidden) [out addObject:g];
+    }
+    return out;
+}
+static void DMWindowedGripsFollow(void) {
+    NSUInteger n = 0;
+    if (DMSMEngine()) {   // (our Stage Manager engine: the cards' grips, coloured as DMSMPlaceGrips does -- the card's own light or dark)
+        for (UIView *card in gSMCards.allObjects) {
+            if (!card.window) continue;
+            NSMutableArray<UIView *> *gs = [NSMutableArray array];
+            for (int side = 0; side < 2; side++) { UIView *g = objc_getAssociatedObject(card, side == 0 ? &kSMGripLKey : &kSMGripRKey); if (g && !g.hidden) [gs addObject:g]; }
+            if (!gs.count) continue;
+            UIColor *c = DMResizeGripColorFor(DMSMCardBundle(card), card.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
+            BOOL took = NO;
+            for (UIView *g in gs) if (![g.backgroundColor isEqual:c]) { g.backgroundColor = c; took = YES; }
+            if (took) n++;
+        }
+    } else if (DMActiveEngine() != DMEngineNone && DMWindowWorkNeeded()) {   // (Aerial 3 and 5, Zetsu, MilkyWay4: every desktop's windows)
+        BOOL dark = DMSystemInterfaceStyle() == UIUserInterfaceStyleDark;   // (as each of their passes reads it)
+        for (UIView *w in DMAerialStagesAll()) {
+            NSArray<UIView *> *gs = DMWindowedGripsOf(w);
+            if (!gs.count) continue;
+            UIColor *c = DMResizeGripColorFor(DMStageBundle(w), dark);
+            BOOL took = NO;
+            for (UIView *g in gs) if (![g.backgroundColor isEqual:c]) { g.backgroundColor = c; took = YES; }
+            if (took) n++;
+        }
+    }
+    if (!n) return;
+    DM_FEATURE_MARK("grips-follow-colour");
+    DMLog([NSString stringWithFormat:@"[grips] %lu window(s): resize grips in the colour Tint Resize Handles, light or dark and the app's tint give now", (unsigned long)n]);
+}
 // Our title bar's place on a window card. iPadOS 17 and 18 put the window's content (its SBAppSwitcherPageView) inside the card's swipe-to-close
 // scroll view (SBFluidSwitcherTouchPassThroughScrollView): SpringBoard rounds that scroll view's frame to half a point but keeps the page's exact
 // offset inside it, so the content starts up to 0.25 pt below or above the card's top edge, depending on the window's height (measured 26 Oct:
@@ -44040,11 +44513,19 @@ static void DMSMChrome(UIView *card) {
     static char kSMCardScaledKey;
     BOOL scaledChanged = [objc_getAssociatedObject(card, &kSMCardScaledKey) boolValue] != scaled;
     if (scaledChanged) objc_setAssociatedObject(card, &kSMCardScaledKey, scaled ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    if (!wasShown || sizeChanged || bundleChanged || scaledChanged) DMSMPlaceGrips(card, bundle, !scaled);
+    // (and the grips' look as they are drawn -- Settings > Resize Handles, Tint Resize Handles, the app's tint once it comes in, Dark Mode: the colour
+    //  they get, or none with Stage Manager's own handles or on a card in the App Switcher. Only the size, the window and the scale were compared,
+    //  so the layout a settings change asks for (DMSMRefreshBars) left both sets of handles, or none, until a resize: 1.8.7.5, audit L41)
+    static char kSMGripLookKey;
+    id look = gSMAppleHandles ? @"stagemanager" : (scaled ? @"none" : DMResizeGripColorFor(bundle, card.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark));
+    id lookWas = objc_getAssociatedObject(card, &kSMGripLookKey);
+    BOOL lookChanged = !(look == lookWas || [look isEqual:lookWas]);
+    if (lookChanged) objc_setAssociatedObject(card, &kSMGripLookKey, look, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!wasShown || sizeChanged || bundleChanged || scaledChanged || lookChanged) DMSMPlaceGrips(card, bundle, !scaled);
     if (bar.userInteractionEnabled == scaled) { bar.userInteractionEnabled = !scaled; if (scaled) DM_FEATURE_MARK("sm-switcher-card-bar"); }
     CGRect f = DMSMBarFrame(card);   // (17/18: on the window content's own top edge -- above)
     if (!CGRectEqualToRect(bar.frame, f)) bar.frame = f;
-    if (card.subviews.lastObject != bar && card.subviews.lastObject != objc_getAssociatedObject(card, &kSMGripRKey)) [card bringSubviewToFront:bar];
+    DMSMChromeOnTop(card, bar);   // (the bar and the grips over SpringBoard's own views of the card: it puts its content back on top, above)
     if (!wasShown || bundleChanged) [bar dm_updateLights];
 }
 __attribute__((noinline)) static void DMSMJoinStageAsked(id ctx, NSArray<NSArray *> *asked);   // (SMDesktop.h: SpringBoard's own transitions with roles set)
@@ -45191,12 +45672,23 @@ static CGRect DMSMOurStageArea(CGRect r, CGRect b, double dock, BOOL strip, BOOL
 @end
 static char kSMGrabberTintKey;
 static char kSMGrabberAppleAlphaKey;
+// Our own writes to a grabber's alpha (hiding it for our handles, putting Apple's back) are not Apple's wish: the hook below records only Apple's.
+// It recorded ours too -- a grabber Apple had shown, hidden by us for our handles, was noted as "Apple wants 0", and switching to Stage Manager's
+// own handles left it invisible until Apple set its alpha again (1.8.7.5, audit L42 of 1.8.7.2). Before our first write, a grabber Apple never
+// set through the hook keeps the alpha it has as Apple's.
+static int gSMGrabberOwnAlpha = 0;
+static void DMSMGrabberAlphaOurs(UIView *g, CGFloat a) {
+    if (!objc_getAssociatedObject(g, &kSMGrabberAppleAlphaKey)) objc_setAssociatedObject(g, &kSMGrabberAppleAlphaKey, @(g.alpha), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    gSMGrabberOwnAlpha++;
+    g.alpha = a;   // (through the hook: 0 with our handles)
+    gSMGrabberOwnAlpha--;
+}
 static void DMSMReapplyGrabbers(UIView *card) {   // (Settings > Resize Handles changed: each grabber shown as Apple last asked, or hidden)
     UIView *page = DMSMPageViewOf(card);
     for (UIView *g in page.subviews) {
         if (![NSStringFromClass([g class]) isEqualToString:@"SBAppResizeGrabberView"]) continue;
         NSNumber *a = objc_getAssociatedObject(g, &kSMGrabberAppleAlphaKey);
-        g.alpha = a ? a.doubleValue : g.alpha;   // (through the hook: 0 with our handles)
+        DMSMGrabberAlphaOurs(g, a ? a.doubleValue : g.alpha);
         [g setNeedsLayout];
     }
 }
@@ -45245,14 +45737,14 @@ static void DMSMReapplyGrabbers(UIView *card) {   // (Settings > Resize Handles 
 %end
 %hook SBAppResizeGrabberView
 - (void)setAlpha:(CGFloat)a {
-    objc_setAssociatedObject(self, &kSMGrabberAppleAlphaKey, @(a), OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (what Apple wants: back when the style changes)
+    if (!gSMGrabberOwnAlpha) objc_setAssociatedObject(self, &kSMGrabberAppleAlphaKey, @(a), OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (what Apple wants: back when the style changes -- never our own write)
     %orig((DMSMEngine() && !gSMAppleHandles) ? 0.0 : a);
 }
 - (void)layoutSubviews {
     %orig;
     if (!DMSMEngine()) return;
     UIView *me = (UIView *)self;
-    if (!gSMAppleHandles && me.alpha > 0) me.alpha = 0;
+    if (!gSMAppleHandles && me.alpha > 0) DMSMGrabberAlphaOurs(me, 0);
     UIView *pill = nil;
     for (UIView *v in me.subviews) if ([NSStringFromClass([v class]) containsString:@"Pill"]) pill = v;
     // (iPadOS 18.2: the MTLumaDodgePillView sits inside a container view, _pillViewContainerView -- looked for one level down, 17+ only; on 16 and 17.0.3
@@ -46531,6 +47023,7 @@ void DMSMRunAction(UIAction *action, id sender) {
     if (!DMCtorSkip("ccregion")) DMCCRegionInit();   // (Control Center's pull region takes in our status icons: 1.7.2 item 12)
     if (!DMCtorSkip("idlewindow")) DMIdleWindowFrontInit();   // (Auto-Lock: Apple's Home Screen half not while an engine's window is in front: 1.7.3 item 8)
     if (!DMCtorSkip("stockvpn")) DMStockVPNInit();
+    if (!DMCtorSkip("barfg")) DMBarForegroundInit();   // (a light Status Bar Background's dark text: the bar's own foreground colour, 1.8.7.5)
     if (!DMCtorSkip("stockwifi")) DMStockWiFiInit();   // (the Wi-Fi Menu: iOS's own Wi-Fi item can be left out of our bars; before the prefs are read)
     if (!DMCtorSkip("smengine")) DMSMEngineInit();
     if (!DMCtorSkip("applibgallery")) DMALGalleryIconInit();   // (18: Activity Monitor's section in Control Center's gallery, before Control Center is made)

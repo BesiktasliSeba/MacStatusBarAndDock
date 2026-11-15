@@ -201,6 +201,9 @@ static inline BOOL MSBDEjectHelperRunning(void) {
 // blocked (spawned from a queue's thread, which blocks them). Without POSIX_SPAWN_CLOEXEC_DEFAULT a child got every descriptor its parent had open
 // (1.7.0 review: a second eject's answer waited for the first helper to end too). After `timeout` seconds it is stopped (SIGKILL) and *timedOut
 // set. Returns posix_spawn's result (0: it ran), -1 without a pipe; *status: its wait status, -1 when there is none.
+// The pipe's ends are close-on-exec in the caller too, and never 0-2: an exec of the caller while a helper runs (the root helper starting over
+// after a cfprefsd restart) carried the read end into its new image (audit L80); the child still gets the write end as its stdout through the
+// dup2 below, which clears the flag on fd 1 -- a dup2 of fd 1 onto itself would not (the write end landed there where the caller's stdout was closed).
 static inline int MSBDRunHelperTimed(const char *path, char *const argv[], double timeout, NSData **output, int *status, BOOL *timedOut) {
     extern char **environ;
     if (output) *output = nil;
@@ -208,6 +211,8 @@ static inline int MSBDRunHelperTimed(const char *path, char *const argv[], doubl
     if (timedOut) *timedOut = NO;
     int out[2] = { -1, -1 };
     if (pipe(out) != 0) return -1;
+    for (int i = 0; i < 2; i++) { int f = fcntl(out[i], F_DUPFD_CLOEXEC, 3); close(out[i]); out[i] = f; }
+    if (out[0] < 0 || out[1] < 0) { if (out[0] >= 0) close(out[0]); if (out[1] >= 0) close(out[1]); return -1; }
     posix_spawnattr_t at; posix_spawnattr_init(&at);
     posix_spawnattr_setflags(&at, POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGMASK);
     sigset_t none; sigemptyset(&none); posix_spawnattr_setsigmask(&at, &none);

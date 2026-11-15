@@ -204,23 +204,39 @@ static NSString *gPrefsDaemons = nil;   // (the cfprefsd processes this helper's
 static char gSelfPath[PATH_MAX] = "/var/jb/usr/libexec/sshtoggled";
 // The work that can be asked for, and is still to be done (a request waiting out its 2 s burst limit, or a package transaction): it is done again
 // after starting over too, whoever notices the restart first (the 10 s check included).
-enum { kWorkEngines = 1, kWorkLines = 2, kWorkSSH = 4, kWorkEject = 8 };
+enum { kWorkEngines = 1, kWorkLines = 2, kWorkSSH = 4, kWorkEject = 8, kWorkIClean = 16 };
 static unsigned gPendingWork = 0;
 static volatile int gEjectBusy = 0;   // (an eject is under way on its own queue, section 5: never started over meanwhile -- the eject and its answer would be lost)
+// (an iCleaner clean is under way, section 6: it runs in a process of its own, which answers by itself, so it never holds a start-over back -- it has
+//  no time limit, and requests read meanwhile from this process's old settings were lost or applied stale until it ended, for good if it hung. The
+//  fresh process is told which process runs it (--iclean-running) and waits for it as this one would: one clean at a time. Before, this process
+//  waited for the clean and wrote its answer: started over meanwhile, the answer was lost -- Finder ended with "still cleaning" -- and a second tap ran
+//  a second clean beside the first, which went on orphaned; audit L80 and its review)
+static volatile int gICleanBusy = 0;
+static volatile pid_t gICleanPid = 0;   // (the clean's process while it runs: a child of this process, which an exec keeps)
+// (what was asked while a start-over waited for an eject: read from the settings this process has, so done again after the start-over -- a request
+//  read meanwhile is not lost, and a switch made meanwhile is applied from mobile's settings as they are)
+static unsigned gWorkWhileBusy = 0;
 static void StartOverIfPrefsDaemonRestarted(unsigned work) {
     if (!gPrefsDaemons.length) return;   // (not the daemon, or its start could not read the process list)
-    if (gEjectBusy) return;   // (an eject is under way: looked at again by the next request or the 10 s check, once it is done)
     NSString *now = PrefsDaemonSignature();
     if (!now.length || [now isEqualToString:gPrefsDaemons]) return;
-    work |= gPendingWork;
+    // (an eject is under way: started over once it is done -- its end asks again, and so do the next request and the 10 s check)
+    if (gEjectBusy) { gWorkWhileBusy |= work; return; }
+    work |= gPendingWork | gWorkWhileBusy;
+    gWorkWhileBusy = 0;
     NSMutableArray *kinds = [NSMutableArray array];
     if (work & kWorkEngines) [kinds addObject:@"engines"];
     if (work & kWorkLines) [kinds addObject:@"lines"];
     if (work & kWorkSSH) [kinds addObject:@"ssh"];
     if (work & kWorkEject) [kinds addObject:@"eject"];
+    if (work & kWorkIClean) [kinds addObject:@"iclean"];
     NSString *resume = kinds.count ? [kinds componentsJoinedByString:@","] : @"none";
-    ELog(@"settings: cfprefsd restarted since this helper started (%@ -> %@) -- starting over as a fresh process so mobile's settings are read anew, then: %@", gPrefsDaemons, now, resume);
-    char *args[] = { gSelfPath, "--resume", (char *)resume.UTF8String, NULL };
+    pid_t clean = gICleanBusy ? gICleanPid : 0;   // (a clean under way goes on in its own process: the fresh process waits for it)
+    char cleanPid[16]; snprintf(cleanPid, sizeof cleanPid, "%d", (int)clean);
+    ELog(@"settings: cfprefsd restarted since this helper started (%@ -> %@) -- starting over as a fresh process so mobile's settings are read anew, then: %@%@", gPrefsDaemons, now, resume,
+         clean > 0 ? [NSString stringWithFormat:@" (the clean under way goes on in its own process, %d, and answers by itself)", (int)clean] : @"");
+    char *args[] = { gSelfPath, "--resume", (char *)resume.UTF8String, clean > 0 ? "--iclean-running" : NULL, cleanPid, NULL };
     execv(gSelfPath, args);
     ELog(@"settings: starting over failed (%s) -- carrying on with the settings as this process has them", strerror(errno));
     gPrefsDaemons = now;   // (not tried again for this restart)
@@ -657,8 +673,8 @@ static BOOL MacStatusBarSwitchedOff(NSString *status, NSString **how) {
     NSDictionary *c = [NSDictionary dictionaryWithContentsOfFile:@PREFSDIR "/com.opa334.choicyprefs.plist"];
     if ([c[@"globalDeniedTweaks"] isKindOfClass:[NSArray class]] && [c[@"globalDeniedTweaks"] containsObject:@"MacStatusBar"]) { *how = @"Choicy (all processes)"; return YES; }
     NSDictionary *sb = [c[@"appSettings"] isKindOfClass:[NSDictionary class]] ? c[@"appSettings"][@"com.apple.springboard"] : nil;
-    if ([sb isKindOfClass:[NSDictionary class]] && [sb[@"customTweakConfigurationEnabled"] boolValue]) {
-        if ([sb[@"tweakInjectionDisabled"] boolValue]) return NO;   // (all tweaks off in SpringBoard: not a Mac Status Bar switch-off)
+    if ([sb isKindOfClass:[NSDictionary class]] && MSBDExChoicyBool(sb[@"customTweakConfigurationEnabled"])) {   // (ExclusiveChoice.h: a value that is no switch is off, never an exception)
+        if (MSBDExChoicyBool(sb[@"tweakInjectionDisabled"])) return NO;   // (all tweaks off in SpringBoard: not a Mac Status Bar switch-off)
         NSInteger mode = ChoicyMode(sb);
         if (!mode) return NO;   // (an unknown mode: not a switch-off we can read, so nothing is done)
         NSArray *list = mode == 2 ? sb[@"deniedTweaks"] : sb[@"allowedTweaks"];
@@ -679,6 +695,55 @@ static BOOL AsMobile(BOOL (^work)(void)) {
     return ok;
 }
 #pragma clang diagnostic pop
+// The reads of mobile's files whose contents are written back where mobile can read them (Choicy's settings and our records of our changes in
+// them, the engines' saved settings, the old packages' preference files, Control Center's lists, the prewarm quit set): as mobile too, and only a
+// plain file (audit L22). As root they followed a link planted by a hostile process running as mobile to a file only root may read, and the write
+// that followed published it. Opened with O_NOFOLLOW (a link is refused, never followed) and O_NONBLOCK (a fifo can't hold the helper), then
+// fstat: a regular file only, read from that descriptor; inside AsMobile, so the kernel applies mobile's permissions (a hard link to a root-only
+// file can't be read either). nil for no file, a link or another kind of file, or one it can't read -- what each site does for "unreadable"
+// already. Reads that only decide something are left as they were (EngineToKeep's, MacStatusBarSwitchedOff's: what they tell, mobile
+// could say with a file of its own; nothing read there is written anywhere).
+#define kMobileFileLimit (32 * 1024 * 1024)
+static NSData *MobileFileData(NSString *path) {
+    __block NSData *data = nil; __block int err = 0; __block BOOL odd = NO;
+    AsMobile(^BOOL{
+        int fd = open(path.fileSystemRepresentation, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+        if (fd < 0) { err = errno; return NO; }
+        struct stat st;
+        if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size > kMobileFileLimit) { odd = YES; close(fd); return NO; }
+        NSMutableData *d = [NSMutableData dataWithLength:(NSUInteger)st.st_size];
+        size_t have = 0;
+        while (have < d.length) {
+            ssize_t n = read(fd, (char *)d.mutableBytes + have, d.length - have);
+            if (n < 0 && errno == EINTR) continue;
+            if (n <= 0) break;
+            have += (size_t)n;
+        }
+        close(fd);
+        d.length = have;   // (the file got shorter while it was read: what was there)
+        data = d;
+        return YES;
+    });
+    if (odd || err == ELOOP) ELog(@"%@: not a plain file (%@) -- not read", path.lastPathComponent, err == ELOOP ? @"a link" : @"another kind of file");
+    return data;
+}
+static NSDictionary *MobilePlist(NSString *path) {   // (as NSDictionary's dictionaryWithContentsOfFile: reads it: a property list whose top is a dictionary)
+    NSData *d = MobileFileData(path);
+    id p = d ? [NSPropertyListSerialization propertyListWithData:d options:NSPropertyListImmutable format:NULL error:NULL] : nil;
+    return [p isKindOfClass:[NSDictionary class]] ? p : nil;
+}
+// dasd's quit-set file (common/PrewarmQuitSet.h), started on the first update to a version that has it as cfprefsd's file of the set, where
+// SpringBoard keeps one (the postinst: --quit-set-kept, then --quit-set-copy): a byte copy, read and written as mobile, a plain file only. The
+// postinst's own cp ran as root, so a link planted at the set's file was followed and the file it named copied where mobile reads it (audit L22).
+// 0 copied; 1 nothing to do (dasd's file is there already -- SpringBoard's own, or anything at its name, a link too, is left alone --, or there is
+// no plain file of the set); 2 not written.
+#define QUITSETPREFS PREFSDIR "/com.besiktasliseba.macstatusbar.prewarm.plist"
+static int CopyQuitSetForDasd(void) {
+    if (Exists(@kMSBDPrewarmQuitSetFile)) return 1;
+    NSData *d = MobileFileData(@QUITSETPREFS);
+    if (!d) return 1;
+    return AsMobile(^BOOL{ return [d writeToFile:@kMSBDPrewarmQuitSetFile atomically:YES] && chmod(kMSBDPrewarmQuitSetFile, 0644) == 0; }) ? 0 : 2;
+}
 static void SetMobilePrefs(NSString *domain, NSDictionary *user) {   // the domain exactly as `user`, through cfprefsd (as mobile) and on disk
     CFStringRef d = (__bridge CFStringRef)domain;
     CFPreferencesSynchronize(d, CFSTR("mobile"), kCFPreferencesAnyHost);
@@ -693,7 +758,7 @@ static void SetMobilePrefs(NSString *domain, NSDictionary *user) {   // the doma
 static BOOL GiveBackDomain(NSString *dir, NSString *domain, NSString *notifyName) {
     NSString *backup = [dir stringByAppendingPathComponent:[domain stringByAppendingPathExtension:@"plist"]];
     if (!IsRegular(backup)) return NO;
-    NSDictionary *user = [NSDictionary dictionaryWithContentsOfFile:backup];
+    NSDictionary *user = MobilePlist(backup);
     if (!user) { ELog(@"MSB off: the copy of %@ is unreadable -- left as it is", domain); return NO; }
     SetMobilePrefs(domain, user);
     if (notifyName) notify_post(notifyName.UTF8String);
@@ -701,7 +766,7 @@ static BOOL GiveBackDomain(NSString *dir, NSString *domain, NSString *notifyName
     return YES;
 }
 static void CopyAsMobile(NSString *from, NSString *to) {
-    NSData *d = [NSData dataWithContentsOfFile:from];
+    NSData *d = MobileFileData(from);
     if (d) AsMobile(^BOOL{ return [d writeToFile:to atomically:YES]; });
 }
 static void GiveBackEngineSettings(void) {
@@ -729,9 +794,9 @@ static void GiveBackEngineSettings(void) {
 //  Destra's: 1.8.0, so a switch-off or the removal never leaves BigSurCenter kept out of SpringBoard by us)
 static NSArray *UndoOurChoicyChanges(NSMutableDictionary *prefs, NSDictionary *record) { return MSBDExChoicyUndo(prefs, record); }   // (what was undone, and what was left as the user has it)
 static void GiveBackChoicyEngines(void) {
-    NSDictionary *record = [NSDictionary dictionaryWithContentsOfFile:@CHOICYRECORD];
+    NSDictionary *record = MobilePlist(@CHOICYRECORD);
     if (!record) { ELog(@"MSB off: no record of our Choicy changes -- Choicy left as it is"); return; }
-    NSMutableDictionary *cur = [[NSDictionary dictionaryWithContentsOfFile:@CHOICYPREFS] mutableCopy];
+    NSMutableDictionary *cur = [MobilePlist(@CHOICYPREFS) mutableCopy];
     if (!cur) { ELog(@"MSB off: Choicy's settings unreadable -- left as they are"); return; }
     NSDictionary *before = [cur copy];
     NSArray *log = UndoOurChoicyChanges(cur, record);
@@ -747,9 +812,9 @@ static void GiveBackChoicyEngines(void) {
 // iPadOS (every library of the table, ApplyEngines). The record is written back, never deleted: without one, Settings makes a new one from its copy
 // of Choicy's settings from before our first change (MSBRootListController.m MSBLoadChoicyRecord).
 static void GiveBackChoicyEntriesOf(NSArray<NSString *> *libs, NSString *why) {
-    NSMutableDictionary *record = [[NSDictionary dictionaryWithContentsOfFile:@CHOICYRECORD] mutableCopy];
+    NSMutableDictionary *record = [MobilePlist(@CHOICYRECORD) mutableCopy];
     if (!record) return;   // (no record: nothing of ours in Choicy)
-    NSMutableDictionary *cur = [[NSDictionary dictionaryWithContentsOfFile:@CHOICYPREFS] mutableCopy];
+    NSMutableDictionary *cur = [MobilePlist(@CHOICYPREFS) mutableCopy];
     if (!cur) { ELog(@"%@: Choicy's settings unreadable -- left as they are", why); return; }
     NSDictionary *before = [cur copy], *recordBefore = [record copy];
     NSArray *log = MSBDExChoicyUndoOnly(cur, record, libs);
@@ -805,7 +870,7 @@ static void ChoicyApplyChoices(NSString *why) {
     else if (!picked) ELog(@"MSB on (%@): no engine picked -- %@ is the default, as in SpringBoard", why, chosen);
     NSString *bsc = nil, *destra = nil;
     int style = ChosenCCStyle(status, &bsc), banners = ChosenBannerStyle(status, &destra);
-    NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:@CHOICYPREFS] mutableCopy];
+    NSMutableDictionary *prefs = [MobilePlist(@CHOICYPREFS) mutableCopy];
     // (no settings file yet -- Choicy installed but never configured: it starts with our list, as Settings' engine pick and the line switches
     //  already did. Only a file that is there but can't be read is left alone. With none, nothing was kept from loading: KT installed Zetsu and
     //  Aerial with Stage Manager as the engine and both loaded next to it, 24 Oct, "Choicy's settings unreadable -- left as they are")
@@ -814,7 +879,7 @@ static void ChoicyApplyChoices(NSString *why) {
         prefs = [NSMutableDictionary dictionaryWithObject:@1 forKey:@"preferenceVersion"];
         ELog(@"MSB on (%@): Choicy has no settings file yet -- it starts with our list", why);
     }
-    NSMutableDictionary *record = [[NSDictionary dictionaryWithContentsOfFile:@CHOICYRECORD] mutableCopy] ?: [NSMutableDictionary dictionary];
+    NSMutableDictionary *record = [MobilePlist(@CHOICYRECORD) mutableCopy] ?: [NSMutableDictionary dictionary];
     NSArray *engineLibs = MSBDExLibs(@"windowEngine", nil);
     // (what loads before the change, from Choicy's lists themselves -- ExclusiveChoice.h MSBDExChoicyEntriesOf: what SpringBoard is told changed)
     NSDictionary *prefsBefore = (__bridge_transfer NSDictionary *)CFPropertyListCreateDeepCopy(NULL, (__bridge CFDictionaryRef)prefs, kCFPropertyListImmutable);
@@ -1237,7 +1302,7 @@ static void MigratePrefFiles(void) {
             NSString *from = [dir stringByAppendingPathComponent:name];
             NSString *to = [dir stringByAppendingPathComponent:[@"com.besiktasliseba." stringByAppendingString:[name substringFromIndex:old.length]]];
             if (!IsRegular(from) || Exists(to)) { if (Exists(to)) ELog(@"migrate: %@ exists already -- kept", to.lastPathComponent); continue; }
-            NSData *data = [NSData dataWithContentsOfFile:from];
+            NSData *data = MobileFileData(from);
             if (!data) continue;
             BOOL ok = AsMobile(^BOOL{ return [data writeToFile:to atomically:YES]; });
             ELog(@"migrate: %@ -> %@ %@", name, to.lastPathComponent, ok ? @"copied" : @"NOT copied");
@@ -1267,9 +1332,9 @@ static void RecordLineChange(NSMutableDictionary *record, NSString *listKey, NSS
 static NSSet<NSString *> *MigrateChoicy(void) {   // returns the old small-feature libraries denied for every process
     NSMutableSet *globallyOff = [NSMutableSet set];
     if (!ChoicyInstalled(DpkgStatus())) return globallyOff;
-    NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:@CHOICYPREFS] mutableCopy];
+    NSMutableDictionary *prefs = [MobilePlist(@CHOICYPREFS) mutableCopy];
     if (!prefs) { ELog(@"migrate: Choicy's settings unreadable -- left as they are"); return globallyOff; }
-    NSMutableDictionary *record = [[NSDictionary dictionaryWithContentsOfFile:@LINERECORD] mutableCopy] ?: [NSMutableDictionary dictionary];
+    NSMutableDictionary *record = [MobilePlist(@LINERECORD) mutableCopy] ?: [NSMutableDictionary dictionary];
     NSArray *small = [MigSmallFeatures() allKeys], *others = MigOtherOldLibraries();
     __block BOOL changed = NO;
     // one list: DockMagnification -> MacDock added; old parts logged
@@ -1320,9 +1385,10 @@ static NSSet<NSString *> *MigrateICleaner(void) {   // returns the old small-fea
     }
     return off;
 }
+static void MigrateOldOnOff(void);
 static void Migrate(void) {
     mkdir(MIGDIR, 0755);
-    if (Exists(@MIGDIR "/migrated")) { ELog(@"migrate: done before -- nothing to do"); return; }
+    if (Exists(@MIGDIR "/migrated")) { MigrateOldOnOff(); ELog(@"migrate: done before -- nothing else to do"); return; }   // (the old on/off: also after the move, below)
     MigratePrefFiles();
     NSMutableSet *off = [NSMutableSet setWithSet:MigrateChoicy()];
     [off unionSet:MigrateICleaner()];
@@ -1340,7 +1406,16 @@ static void Migrate(void) {
             }
         }
     }
-    // the old separate on/off entries (MacStatusBarToggle / DockMagnificationToggle) wrote tweakEnabled = NO; the lines replace them
+    MigrateOldOnOff();
+    [@"1" writeToFile:@MIGDIR "/migrated" atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    ELog(@"migrate: finished");
+}
+// The old separate on/off entries (MacStatusBarToggle / DockMagnificationToggle) wrote tweakEnabled = NO; the lines replace them: a part switched off so
+// is switched off the way Choicy / iCleaner Pro do it, where the switch at the top of its page shows it, and tweakEnabled is cleared. Part of the move
+// from the old packages, and looked at again at every later install (Migrate's "done before"): up to 1.8.7.4 the move was left undone where Choicy had
+// no settings file yet (audit L106) -- the part stayed off the old way, which only the parts read and no Settings page shows, while Settings showed it
+// on, and the "migrated" marker kept it so; the next install moves it. Nothing is done where no tweakEnabled = NO is left (no Settings page writes one).
+static void MigrateOldOnOff(void) {
     for (NSArray *p in @[@[@"com.besiktasliseba.macstatusbar", @"MacStatusBar"], @[@"com.besiktasliseba.dockmagnification", @"MacDock"]]) {
         CFStringRef d = (__bridge CFStringRef)p[0];
         CFPreferencesSynchronize(d, CFSTR("mobile"), kCFPreferencesAnyHost);
@@ -1352,8 +1427,15 @@ static void Migrate(void) {
         NSString *line = p[1];
         BOOL done = NO;
         if (ChoicyInstalled(DpkgStatus())) {
-            NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:@CHOICYPREFS] mutableCopy];
-            NSMutableDictionary *record = [[NSDictionary dictionaryWithContentsOfFile:@LINERECORD] mutableCopy] ?: [NSMutableDictionary dictionary];
+            NSMutableDictionary *prefs = [MobilePlist(@CHOICYPREFS) mutableCopy];
+            NSMutableDictionary *record = [MobilePlist(@LINERECORD) mutableCopy] ?: [NSMutableDictionary dictionary];
+            // (no settings file yet -- Choicy installed but never configured: it starts with this line switched off, as ChoicyApplyChoices starts
+            //  it with our list. It stayed switched off the old way, which only the parts read: off for good while Settings showed it on, audit
+            //  L106. Only a file that is there but can't be read is left alone)
+            if (!prefs && access(CHOICYPREFS, F_OK) != 0) {
+                prefs = [NSMutableDictionary dictionaryWithObject:@1 forKey:@"preferenceVersion"];
+                ELog(@"migrate: Choicy has no settings file yet -- it starts with %@ switched off", line);
+            }
             if (prefs) {
                 NSMutableArray *global = [prefs[@"globalDeniedTweaks"] isKindOfClass:[NSArray class]] ? [prefs[@"globalDeniedTweaks"] mutableCopy] : [NSMutableArray array];
                 if (![global containsObject:line]) { [global addObject:line]; RecordLineChange(record, @"globalDeniedTweaks", line); }
@@ -1368,8 +1450,6 @@ static void Migrate(void) {
         if (done) WriteMobilePrefsKey(p[0], @"tweakEnabled", nil, NO);
         ELog(@"migrate: %@ was switched off with the old on/off entry -> %@ %@", p[0], line, done ? @"switched off in Choicy / iCleaner Pro instead" : @"left switched off the old way");
     }
-    [@"1" writeToFile:@MIGDIR "/migrated" atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    ELog(@"migrate: finished");
 }
 // The one-time welcome alert (2026-09-25), decided here before anything of ours is written (the postinst runs this first): only a FIRST install gets
 // MIGDIR/welcome-pending, which Mac Status Bar's SpringBoard part needs to show it. Anything that shows the package or its settings were here before
@@ -1555,7 +1635,7 @@ static void TakeOurControlsOut(void) {
     for (NSString *path in @[kMSBDCCAppleListFile, kMSBDCCCCSupportListFile]) {
         struct stat st;
         if (lstat(path.fileSystemRepresentation, &st) != 0 || !S_ISREG(st.st_mode)) continue;   // (not there, or not a plain file: left alone)
-        NSData *data = [NSData dataWithContentsOfFile:path];
+        NSData *data = MobileFileData(path);
         NSPropertyListFormat format = NSPropertyListXMLFormat_v1_0;
         id list = data ? [NSPropertyListSerialization propertyListWithData:data options:NSPropertyListImmutable format:&format error:NULL] : nil;
         NSDictionary *kept = MSBDCCListWithoutOurs(list);
@@ -1614,8 +1694,8 @@ static void Uninstall(void) {
     NSString *status = DpkgStatus();
     if (MSBDPackageOnDisk(status, @"com.opa334.choicy")) {
         GiveBackChoicyEngines();
-        NSDictionary *record = [NSDictionary dictionaryWithContentsOfFile:@LINERECORD];
-        NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:@CHOICYPREFS] mutableCopy];
+        NSDictionary *record = MobilePlist(@LINERECORD);
+        NSMutableDictionary *prefs = [MobilePlist(@CHOICYPREFS) mutableCopy];
         if (record && prefs) {
             BOOL changed = NO;
             for (NSString *listKey in record) {
@@ -1734,7 +1814,8 @@ static void EjectRequest(NSString *why) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 ELog(@"eject (%@): %@ (%@) -> %@", why, mp ?: vol, from ?: @"-", line);
                 gEjectBusy = 0;
-                if (gEjectAgain) { gEjectAgain = NO; EjectRequest(@"a request that came meanwhile"); }
+                if (gEjectAgain) { gEjectAgain = NO; EjectRequest(@"a request that came meanwhile"); }   // (it starts over first itself where one waited)
+                else StartOverIfPrefsDaemonRestarted(0);   // (a start-over that waited for the eject: now, with what was asked meanwhile)
             });
         }
     });
@@ -1742,23 +1823,25 @@ static void EjectRequest(NSString *why) {
 
 // ---- 6. iCleaner in Finder (1.8.5) ---------------------------------------------------------------------------------------------------------------
 // Finder's iCleaner panel asks for a clean (common/ICleaner.h has the channel and its rules); this job runs the official iCleaner Pro's own command
-// line -- exactly `iCleaner -clean -printresults`, with the user's own iCleaner settings -- one clean at a time, on a queue of its own, and answers
-// with the space freed. It is never stopped (kMSBDICleanTimeout 0): a clean may be removing packages through dpkg, and a kill halfway could leave
-// dpkg half-configured; Finder stops waiting on its own (kMSBDICleanWait). Only the official package (com.exile90.icleanerpro), only its own binary: a regular file of root's, at
+// line -- exactly `iCleaner -clean -printresults`, with the user's own iCleaner settings -- one clean at a time, and answers with the space freed.
+// It is never stopped (kMSBDICleanTimeout 0): a clean may be removing packages through dpkg, and a kill halfway could leave dpkg half-configured;
+// Finder stops waiting on its own (kMSBDICleanWait). Only the official package (com.exile90.icleanerpro), only its own binary: a regular file of root's, at
 // the path its package lists. Nothing else is ever run from here for it, and nothing of iCleaner's is changed.
+// The request is read here (mobile's settings, read anew after a cfprefsd restart: section 1); the clean runs in a process of its own (this helper
+// again, --iclean-run, ICleanRun), which checks iCleaner, runs it, writes the answer and logs it. This process only waits for it, on a queue of its
+// own: it can start over meanwhile and the clean is still answered (audit L80 and its review, section 1).
 static dispatch_queue_t gICleanQueue;
-static volatile int gICleanBusy = 0;
-static BOOL gICleanAgain = NO;
-static void ICleanWriteAnswer(NSString *rid, NSString *line) {
+static BOOL gICleanAgain = NO;   // (a request posted while a clean ran: read when that one is done. gICleanBusy and gICleanPid are with the start-over, section 1)
+static void ICleanWriteAnswer(NSString *rid, NSString *line) {   // (on a main thread: this process's for a refusal, the clean's process for its answer)
     mkdir(ESTATEDIR, 0755);
     NSData *d = MSBDEjectAnswerData(rid, line);
     char tmp[] = ESTATEDIR "/.iclean-answer.XXXXXX";
     int fd = mkstemp(tmp);
-    if (fd < 0) { dispatch_async(dispatch_get_main_queue(), ^{ ELog(@"iclean: the answer could not be written (%s)", strerror(errno)); }); return; }
+    if (fd < 0) { ELog(@"iclean: the answer could not be written (%s)", strerror(errno)); return; }
     BOOL ok = write(fd, d.bytes, d.length) == (ssize_t)d.length;
     fchmod(fd, 0644);
     close(fd);
-    if (!ok || rename(tmp, kMSBDICleanAnswerFile) != 0) { unlink(tmp); dispatch_async(dispatch_get_main_queue(), ^{ ELog(@"iclean: the answer could not be written"); }); return; }
+    if (!ok || rename(tmp, kMSBDICleanAnswerFile) != 0) { unlink(tmp); ELog(@"iclean: the answer could not be written"); return; }
     notify_post(kMSBDICleanAnswerName);
 }
 // The official iCleaner Pro is installed and the binary is its own: listed in its package's file list, a regular file (not a link) of root's.
@@ -1781,8 +1864,54 @@ static NSData *ICleanDryRunOutput(void) {
 #else
 static NSData *ICleanDryRunOutput(void) { return nil; }
 #endif
+// The clean's own process (sshtoggled --iclean-run <id> <why>, started by ICleanRequest with nothing of this helper's open but /dev/null on 0-2):
+// the checks, the run, the answer and its log line. It reads no preferences.
+static int ICleanRun(const char *rid, const char *why) {
+    NSString *r = rid ? [NSString stringWithUTF8String:rid] : nil, *w = (why ? [NSString stringWithUTF8String:why] : nil) ?: @"?";
+    if (!MSBDEjectIsRequestID(r)) return 2;
+    NSData *dry = ICleanDryRunOutput();
+    NSString *no = dry ? nil : ICleanUnusable();
+    if (no) { ELog(@"iclean (%@): refused -- %@", w, no); ICleanWriteAnswer(r, [@"error: " stringByAppendingString:no]); return 0; }
+    NSString *line = nil;
+    if (dry) { sleep(3); line = MSBDICleanAnswerFromOutput(0, dry, NO, 0); line = [line hasPrefix:@"ok "] ? [line stringByAppendingString:@" test=1"] : line; }
+    else {
+        char *args[] = { "iCleaner", "-clean", "-printresults", NULL };
+        NSData *out = nil; int status = -1; BOOL late = NO;
+        int rc = MSBDRunHelperTimed(kMSBDICleanBinary, args, kMSBDICleanTimeout, &out, &status, &late);
+        line = MSBDICleanAnswerFromOutput(rc, out, late, status);
+    }
+    ICleanWriteAnswer(r, line);
+    ELog(@"iclean (%@)%@: %@", w, dry ? @" (test run: iCleaner not run)" : @"", line);
+    return 0;
+}
+static void ICleanRequest(NSString *why);
+static void ICleanWatch(pid_t pid) {   // (the clean's process, waited for on the clean's queue; then a request that came meanwhile)
+    gICleanBusy = 1; gICleanPid = pid;
+    dispatch_async(gICleanQueue, ^{
+        int st = 0; pid_t w;
+        do { w = waitpid(pid, &st, 0); } while (w < 0 && errno == EINTR);
+        gICleanPid = 0;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (w == pid && !(WIFEXITED(st) && WEXITSTATUS(st) == 0)) ELog(@"iclean: the clean's process %d ended without finishing (wait status %d)", (int)pid, st);
+            gICleanBusy = 0;
+            if (gICleanAgain) { gICleanAgain = NO; ICleanRequest(@"a request that came meanwhile"); }
+        });
+    });
+}
+// (--resume <what> --iclean-running <pid>: a clean was under way when the process before this one started over. Its process goes on and is still
+//  this process's child -- an exec keeps the pid --: waited for here, so a request meanwhile waits for it, one clean at a time. Not a child of this
+//  process -- it ended and was waited for before the start-over --: waitpid says so at once, and nothing waits)
+static void ICleanCarriedOver(int argc, char **argv) {
+    if (argc < 5 || strcmp(argv[1], "--resume") != 0 || strcmp(argv[3], "--iclean-running") != 0) return;
+    char *end = NULL; long pid = strtol(argv[4], &end, 10);
+    if (!end || *end || pid <= 0 || pid > INT_MAX) return;
+    ELog(@"iclean: the clean under way before starting over goes on in its own process (%ld) -- waited for here", pid);
+    ICleanWatch((pid_t)pid);
+}
 static void ICleanRequest(NSString *why) {
     if (gICleanBusy) { gICleanAgain = YES; return; }
+    StartOverIfPrefsDaemonRestarted(kWorkIClean);   // (cfprefsd restarted: the request is read by the fresh process, --resume iclean -- this one may not see it)
+    gPendingWork &= ~kWorkIClean;
     CFStringRef key = CFSTR(kMSBDICleanRequestKey), dom = CFSTR(kMSBDEjectDomain);
     CFPreferencesSynchronize(dom, CFSTR("mobile"), kCFPreferencesAnyHost);
     CFPropertyListRef v = CFPreferencesCopyValue(key, dom, CFSTR("mobile"), kCFPreferencesAnyHost);
@@ -1794,28 +1923,21 @@ static void ICleanRequest(NSString *why) {
     CFRelease(v);
     if (!rid) { ELog(@"iclean (%@): a request that isn't one of Finder's -- ignored", why); return; }
     if (!good) { ELog(@"iclean (%@): refused -- %@", why, bad); ICleanWriteAnswer(rid, [@"error: " stringByAppendingString:bad]); return; }
-    NSData *dry = ICleanDryRunOutput();
-    NSString *no = dry ? nil : ICleanUnusable();
-    if (no) { ELog(@"iclean (%@): refused -- %@", why, no); ICleanWriteAnswer(rid, [@"error: " stringByAppendingString:no]); return; }
-    gICleanBusy = 1;
-    dispatch_async(gICleanQueue, ^{
-        @autoreleasepool {
-            NSString *line = nil;
-            if (dry) { sleep(3); line = MSBDICleanAnswerFromOutput(0, dry, NO, 0); line = [line hasPrefix:@"ok "] ? [line stringByAppendingString:@" test=1"] : line; }
-            else {
-                char *args[] = { "iCleaner", "-clean", "-printresults", NULL };
-                NSData *out = nil; int status = -1; BOOL late = NO;
-                int rc = MSBDRunHelperTimed(kMSBDICleanBinary, args, kMSBDICleanTimeout, &out, &status, &late);
-                line = MSBDICleanAnswerFromOutput(rc, out, late, status);
-            }
-            ICleanWriteAnswer(rid, line);
-            dispatch_async(dispatch_get_main_queue(), ^{
-                ELog(@"iclean (%@)%@: %@", why, dry ? @" (test run: iCleaner not run)" : @"", line);
-                gICleanBusy = 0;
-                if (gICleanAgain) { gICleanAgain = NO; ICleanRequest(@"a request that came meanwhile"); }
-            });
-        }
-    });
+    // (the clean in its own process, ICleanRun: it answers by itself, also when this one starts over meanwhile; it gets none of this process's
+    //  descriptors -- an eject's pipe among them would make that eject wait for the clean, as in the 1.7.0 review -- and no signal blocked)
+    char *args[] = { gSelfPath, "--iclean-run", (char *)rid.UTF8String, (char *)why.UTF8String, NULL };
+    posix_spawnattr_t at; posix_spawnattr_init(&at);
+    posix_spawnattr_setflags(&at, POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGMASK);
+    sigset_t none; sigemptyset(&none); posix_spawnattr_setsigmask(&at, &none);
+    posix_spawn_file_actions_t fa; posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
+    pid_t pid = 0;
+    int rc = posix_spawn(&pid, gSelfPath, &fa, &at, args, environ);
+    posix_spawn_file_actions_destroy(&fa); posix_spawnattr_destroy(&at);
+    if (rc != 0) { NSString *line = MSBDICleanAnswerFromOutput(rc, nil, NO, 0); ELog(@"iclean (%@): %@ -- the clean's process could not start (%s)", why, line, strerror(rc)); ICleanWriteAnswer(rid, line); return; }
+    ICleanWatch(pid);
 }
 
 #if DEBUG
@@ -1883,11 +2005,13 @@ int main(int argc, char **argv) {
         if (argc > 1 && strcmp(argv[1], "--os-major") == 0) { printf("%ld\n", (long)[NSProcessInfo processInfo].operatingSystemVersion.majorVersion); return 0; }   // (postinst: the iPadOS 17+ Settings entries)
         if (argc > 1 && strcmp(argv[1], "--is-ipad") == 0) return MSBDIsIPad() ? 0 : 2;   // (postinst: 2, not 1, so a failed start never reads as "not an iPad")
         if (argc > 1 && strcmp(argv[1], "--quit-set-kept") == 0) return MSBDIsIPad() && QuitSetKept() ? 0 : 1;   // (postinst: dasd's quit-set file made only for a SpringBoard that keeps one)
+        if (argc > 1 && strcmp(argv[1], "--quit-set-copy") == 0) return CopyQuitSetForDasd();   // (postinst, after --quit-set-kept said one is kept: the copy, as mobile)
         if (argc > 1 && strcmp(argv[1], "--dasd-part-current") == 0) return DasdPartCurrent() ? 0 : 1;   // (postinst: dasd restarted only when it lacks the prewarm block just installed)
         if (!MSBDIsIPad()) {
             if (argc < 2) dispatch_main();
             if (strcmp(argv[1], "--uninstall") != 0 && strcmp(argv[1], "--restore-engines") != 0 && strcmp(argv[1], "--restore-msb-off") != 0 && strcmp(argv[1], "--giveback-styles") != 0) return 0;
         }
+        if (argc > 3 && strcmp(argv[1], "--iclean-run") == 0) return ICleanRun(argv[2], argv[3]);   // (the daemon's own child: one clean, section 6)
         if (argc > 1 && strcmp(argv[1], "--restore-engines") == 0) { GiveBackAll(@"package removed"); return 0; }
         if (argc > 1 && strcmp(argv[1], "--apply-engines") == 0) { ApplyEngines(@"manual"); return 0; }
         if (argc > 1 && strcmp(argv[1], "--check-msb-off") == 0) { CheckMacStatusBarOff(@"manual"); return 0; }
@@ -1920,6 +2044,7 @@ int main(int argc, char **argv) {
         notify_register_dispatch(kMSBDEjectRequestName, &t6, dispatch_get_main_queue(), ^(int t) { EjectRequest(@"Finder"); });   // (section 5)
         int t7;
         gICleanQueue = dispatch_queue_create("msbd.iclean", DISPATCH_QUEUE_SERIAL);
+        ICleanCarriedOver(argc, argv);   // (a clean under way when the process before this one started over: waited for, before any request is read)
         notify_register_dispatch(kMSBDICleanRequestName, &t7, dispatch_get_main_queue(), ^(int t) { ICleanRequest(@"Finder"); });   // (section 6)
         if (notify_register_check(kMSBDEjectHelperState, &alive) == NOTIFY_STATUS_OK) notify_set_state(alive, (uint64_t)getpid());   // (kept for the daemon's life)
         notify_register_dispatch("com.besiktasliseba.sshtoggle.changed", &t4, dispatch_get_main_queue(), ^(int t) { SSHRequest(-1); });
@@ -1937,6 +2062,7 @@ int main(int argc, char **argv) {
         if (resume && strstr(resume, "lines")) ApplyLines(@"Settings");
         if (resume && strstr(resume, "ssh")) SSHRequest(-1);
         if (resume && strstr(resume, "eject")) EjectRequest(@"Finder (after starting over)");
+        if (resume && strstr(resume, "iclean")) ICleanRequest(@"Finder (after starting over)");   // (the "daemon start" one below waits for it, then finds no request)
         int t8;   // (section 7: every row of the tweak posts this note; the charge rows among them)
         notify_register_dispatch(MSBD_CHARGE_PREFS_CHANGED, &t8, dispatch_get_main_queue(), ^(int t) {
             static CFAbsoluteTime last = 0; static BOOL pending = NO;

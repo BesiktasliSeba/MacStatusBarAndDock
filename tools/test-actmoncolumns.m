@@ -7,8 +7,89 @@
 static int fails = 0, checks = 0;
 #define CHECK(cond, ...) do { checks++; if (!(cond)) { fails++; printf("FAIL: "); printf(__VA_ARGS__); printf("\n"); } } while (0)
 static double W(NSString *s, NSFont *f) { return [s sizeWithAttributes:@{NSFontAttributeName: f}].width; }
+
+#ifdef AM_SORT
+// The rows' sort (1.8.7.5, audit L77 of 1.8.7.2: sorting by CPU Time sorted by % CPU): the real comparator of -[DMActivityMonitor dm_rowsNow], the
+// tab's metric (-dm_metric:), the tabs and the process record, cut out of ActivityMonitor.h and ProcList.h by actmonsort-cut.py, run on a stand-in
+// window holding the four ivars they read. In every tab, for every column and both directions, the order must follow what that column shows: its
+// figure (a missing one, shown "–", below every figure), equal figures by name, then pid.
+#include "amsort-procinfo.h"
+#include "amsort-tab.h"
+@interface AMSortWindow : NSObject { @public DMAMTab _tab; NSInteger _sortCol, _colCount; BOOL _sortDesc; }
+@end
+@implementation AMSortWindow
+#include "amsort-metric.h"
+- (void)sortRows:(NSMutableArray<DMProcInfo *> *)rows {
+#include "amsort-sort.h"
+}
+@end
+static DMProcInfo *Proc(NSString *name, int pid, double cpu, uint64_t ns, int threads, uint64_t mem, uint64_t disk, BOOL stats) {
+    DMProcInfo *p = [DMProcInfo new];
+    p.name = name; p.pid = pid; p.cpuPercent = cpu; p.cpuNs = ns; p.threads = threads; p.footprint = mem; p.disk = disk; p.haveStats = stats;
+    return p;
+}
+// What a column shows, as a number to order by (NAN: the name); a missing figure as -1 (below 0).
+static double Shown(DMProcInfo *p, int tab, int col, int n) {
+    if (col == 0) return NAN;
+    if (col == n - 1) return p.pid;
+    if (tab == MSBD_AM_CPU) return col == 1 ? p.cpuPercent : col == 2 ? (p.haveStats ? (double)p.cpuNs : -1) : p.threads;
+    if (col == 2) return p.threads;
+    return tab == MSBD_AM_MEMORY ? (double)p.footprint : tab == MSBD_AM_DISK ? (double)p.disk : 0;   // (Energy, Network: no per-process figure)
+}
+static NSArray<NSString *> *Names(NSArray<DMProcInfo *> *rows) { NSMutableArray *a = [NSMutableArray array]; for (DMProcInfo *p in rows) [a addObject:[NSString stringWithFormat:@"%@/%d", p.name, p.pid]]; return a; }
+static void SortChecks(void) {
+    const char *names[] = { "CPU", "Memory", "Energy", "Disk", "Network" };
+    NSArray<DMProcInfo *> *all = @[
+        Proc(@"Delta", 50, 5.0, 300000000ULL, 3, 400ULL << 20, 20ULL << 20, YES), Proc(@"alpha", 10, 1.0, 900000000ULL, 9, 100ULL << 20, 50ULL << 20, YES),
+        Proc(@"Charlie", 30, 9.0, 100000000ULL, 1, 300ULL << 20, 40ULL << 20, YES), Proc(@"bravo", 20, 3.0, 500000000ULL, 7, 500ULL << 20, 10ULL << 20, YES),
+        Proc(@"echo", 45, 7.0, 700000000ULL, 5, 200ULL << 20, 30ULL << 20, YES), Proc(@"echo", 40, 7.0, 700000000ULL, 5, 200ULL << 20, 30ULL << 20, YES),
+        Proc(@"zebra", 60, 0.0, 0, 1, 50ULL << 20, 0, YES),            // (just started: 0 CPU time, a figure)
+        Proc(@"aardvark", 70, -1.0, 0, -1, 0, 0, NO),                 // (no figures: "–" everywhere but its name and pid)
+    ];
+    AMSortWindow *win = [AMSortWindow new];
+    for (int tab = MSBD_AM_CPU; tab <= MSBD_AM_NETWORK; tab++) {
+        const char *t[MSBD_AM_MAX_COLUMNS]; int n = MSBDActMonTitles(tab, t);
+        for (int col = 0; col < n; col++) for (int desc = 0; desc < 2; desc++) {
+            win->_tab = (DMAMTab)tab; win->_colCount = n; win->_sortCol = col; win->_sortDesc = desc;
+            NSMutableArray<DMProcInfo *> *rows = [all mutableCopy];
+            [win sortRows:rows];
+            BOOL ok = rows.count == all.count;
+            for (NSUInteger i = 0; ok && i + 1 < rows.count; i++) {
+                DMProcInfo *x = rows[i], *y = rows[i + 1];
+                double kx = Shown(x, tab, col, n), ky = Shown(y, tab, col, n);
+                NSComparisonResult c = col == 0 ? [x.name localizedCaseInsensitiveCompare:y.name] : (kx < ky ? NSOrderedAscending : kx > ky ? NSOrderedDescending : NSOrderedSame);
+                if (c == (desc ? NSOrderedAscending : NSOrderedDescending)) ok = NO;   // (out of the column's order)
+                else if (c == NSOrderedSame) {   // (equal: by name, then pid, whichever way the column goes)
+                    NSComparisonResult nm = [x.name localizedCaseInsensitiveCompare:y.name];
+                    if (nm == NSOrderedDescending || (nm == NSOrderedSame && x.pid > y.pid)) ok = NO;
+                }
+            }
+            CHECK(ok, "%s tab, sorted by \"%s\" %s: the rows follow that column (%s)", names[tab], t[col], desc ? "largest first" : "smallest first",
+                  [[Names(rows) componentsJoinedByString:@" "] UTF8String]);
+        }
+    }
+    // The audit's case, as the device row has it: the CPU tab, the CPU Time title tapped (largest first), then again (smallest first).
+    win->_tab = DMAMTabCPU; win->_colCount = 5; win->_sortCol = 2; win->_sortDesc = YES;
+    NSMutableArray<DMProcInfo *> *rows = [all mutableCopy]; [win sortRows:rows];
+    CHECK([[Names(rows) componentsJoinedByString:@" "] isEqualToString:@"alpha/10 echo/40 echo/45 bravo/20 Delta/50 Charlie/30 zebra/60 aardvark/70"],
+          "CPU Time, largest first: by CPU time, the row without figures last (%s)", [[Names(rows) componentsJoinedByString:@" "] UTF8String]);
+    BOOL cpuInOrder = YES;
+    for (NSUInteger i = 0; i + 1 < rows.count; i++) if (rows[i].cpuPercent < rows[i + 1].cpuPercent) cpuInOrder = NO;
+    CHECK(!cpuInOrder, "  ... the %% CPU column is not in order there (the rows' %% CPU and CPU Time orders differ)");
+    win->_sortDesc = NO; rows = [all mutableCopy]; [win sortRows:rows];
+    CHECK([[Names(rows) componentsJoinedByString:@" "] isEqualToString:@"aardvark/70 zebra/60 Charlie/30 Delta/50 bravo/20 echo/40 echo/45 alpha/10"],
+          "CPU Time, smallest first: the row without figures first, then 0 (%s)", [[Names(rows) componentsJoinedByString:@" "] UTF8String]);
+    win->_sortCol = 1; win->_sortDesc = YES; rows = [all mutableCopy]; [win sortRows:rows];
+    CHECK([[Names(rows) componentsJoinedByString:@" "] isEqualToString:@"Charlie/30 echo/40 echo/45 Delta/50 bravo/20 alpha/10 zebra/60 aardvark/70"],
+          "%% CPU, largest first: as before (%s)", [[Names(rows) componentsJoinedByString:@" "] UTF8String]);
+}
+#endif
+
 int main(void) {
     @autoreleasepool {
+#ifdef AM_SORT
+        SortChecks();
+#endif
         NSFont *head = [NSFont systemFontOfSize:11.0 weight:NSFontWeightSemibold], *headBold = [NSFont systemFontOfSize:11.0 weight:NSFontWeightBold];
         NSFont *cell = [NSFont monospacedDigitSystemFontOfSize:12.0 weight:NSFontWeightRegular];
         const double margin = 2.0;   // (room left over: iPadOS's system font is not exactly the Mac's)

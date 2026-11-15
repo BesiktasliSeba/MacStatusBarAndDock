@@ -163,13 +163,17 @@ static int SGRescheduleWakes(NSArray *before, int *refused) {
     if (refused) *refused = bad;
     return n;
 }
-// powerd started over by launchd: every assertion and scheduled wake it held goes (see the top).
+// powerd started over by launchd: every assertion and scheduled wake it held goes (see the top). launchctl runs with a time limit, stopped after
+// it (common/DriveEject.h MSBDRunHelperTimed, which main.m includes before this file): this runs on the helper's main queue, and a launchctl that
+// never returned held it for good -- SSH, the engines, ejects, iCleaner, the charge job's kick and every later look stopped (audit L72). A time-out
+// is a failed restart (the caller's "NOT started over").
+static const double kSGPowerdRestartLimit = 15.0;
 static BOOL SGRestartPowerd(void) {
     const char *lc = access("/var/jb/usr/bin/launchctl", X_OK) == 0 ? "/var/jb/usr/bin/launchctl" : "/bin/launchctl";
     char *argv[] = { (char *)"launchctl", (char *)"kickstart", (char *)"-k", (char *)"system/com.apple.powerd", NULL };
-    pid_t pid; int st = -1;
-    if (posix_spawn(&pid, lc, NULL, NULL, argv, environ) != 0) return NO;
-    waitpid(pid, &st, 0);
+    NSData *out = nil; int st = -1; BOOL late = NO;
+    if (MSBDRunHelperTimed(lc, argv, kSGPowerdRestartLimit, &out, &st, &late) != 0) return NO;
+    if (late) { SGLog(@"the powerd restart: launchctl did not finish in %.0f s -- stopped", kSGPowerdRestartLimit); return NO; }
     return WIFEXITED(st) && WEXITSTATUS(st) == 0;
 }
 static void SGCheck(NSString *why);

@@ -1611,6 +1611,13 @@ static BOOL DMCCPanelEscape(NSSet<UIPress *> *presses) {
 // ---- for the rest of SpringBoard (StatusBar.x's declarations) ----
 static BOOL DMCCPanelWanted(void) { return gCCPWant || DMCC18PanelWanted(); }   // (18: CC18Shape.h)
 static BOOL DMCCPanelOn(void) { return DMCCPanelOwnsCCBars(); }
+// Control Center up with our panel leaves the desktop behind the menu bar: Apple's full-screen backdrop is hidden while the panel shows, ours of
+// Apple's material (DMCCPMakeDim) only shows behind a module opened expanded, and the panel covers neither the bar nor the desktop under it. So
+// the bar's text still goes by what is behind it (DesktopWallpaper.h DMWPBarBackdrop): only iPadOS's own Control Center, or a module opened
+// expanded, hands it to iPadOS (1.8.7.5, CCMAC: KT's white at 0.36 over a light Desktop Picture took iPadOS's white text, for Control Center's
+// dark material, while our panel was open). iPadOS 18: CC18Shape.h.
+static BOOL DMCC18LeavesDesktop(void);
+static BOOL DMCCPanelLeavesDesktop(void) { return (DMCCPanelOwnsCCBars() && !gCCPExpanded) || DMCC18LeavesDesktop(); }
 // RAM & CPU put in Control Center by itself (StatusBar.x DMCCAutoAddMeasureNow, 1.7.7 item 8) while the panel is Control Center: the room by the
 // panel's own rules (CCLayout.h MSBDCCRoomForOne; Apple's grid under the panel is empty). NO (with why) when it cannot be told; *room the answer.
 static BOOL DMCCPanelRoomForModule(NSString *mid, int w, int h, BOOL *room, NSString **why) {
