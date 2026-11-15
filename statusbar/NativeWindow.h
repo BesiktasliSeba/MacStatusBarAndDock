@@ -21,6 +21,23 @@ static const CGFloat kNWBackLevel = -1.5;   // above the Home Screen (-2), below
 
 static void DMNativeApplyLevel(void);
 static CGRect DMNativeDesktop(void);
+static void DMNativeHooksInit(void);   // (StatusBar.x, after its hook groups: the touch and key hooks every native window needs, installed by -show)
+// The crash guard turned Finder off for crashes in the native windows' code, and its note is still up: the crash map counts that code as Finder's
+// (tools/crashmap-rules.txt: NativeWindow.h, the DMNative... functions, the DMNativeHooks group), so the guard's step for it is Finder's switch. Its
+// record names that switch: a step 1b "feature" line, or a step 1 "switch" line (Finder turned on just before the crashes). The note goes with Turn
+// Back On or a later change on the pages (CrashStep.h).
+static BOOL DMNativeGuardTookFinder(void) {
+    CFPreferencesAppSynchronize(CFSTR(MSBD_GATE_DOMAIN));   // (the note is written by the loader and cleared by Settings: other processes)
+    return MSBDStepGuardAction() != 0 && MSBDGuardRecordNames(MSBD_GUARD_RECORD, "com.besiktasliseba.macstatusbar", "finderEnabled");
+}
+// A native window that is not Finder's (Activity Monitor, Display Settings) may be made. Not while the crash guard has Finder off for the native
+// windows' code (above): showing one installs that code's hooks (DMNativeHooksInit), and a crash there again would find Finder's switch already off,
+// so the guard's next step would take the whole status bar. Finder switched back on lifts it (1.8.7.4, audit M12 of 1.8.7.2).
+static BOOL DMNativeMayOpen(NSString *what) {
+    if (gFinderOn || !DMNativeGuardTookFinder()) return YES;
+    DMLog([NSString stringWithFormat:@"[native] %@ not opened: the crash guard turned Finder off for a crash in the native windows' code", what]);
+    return NO;
+}
 @interface UIResponder (DMNativeFirst)
 + (BOOL)dm_currentFirstResponderIsIn:(UIWindow *)w;
 @end
@@ -678,6 +695,7 @@ static CGRect DMNativeResized(CGRect start, CGPoint d, int tag, CGSize minSize, 
 - (void)show {
     UIView *host = DMNativeHost();
     if (!host) return;
+    DMNativeHooksInit();   // (its touches and keys, before it takes the keyboard -- whichever native window comes first, Finder on or off: audit M12)
     if (!gNativeWindows) gNativeWindows = [NSMutableArray array];
     if (![gNativeWindows containsObject:self]) [gNativeWindows addObject:self];
     if (self.superview != host) [host addSubview:self];

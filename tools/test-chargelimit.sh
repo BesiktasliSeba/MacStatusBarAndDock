@@ -44,7 +44,7 @@ rules() {
   has "$e" 'MSBDChargeOut o = MSBDChargeDecide(in);' && has "$e" 'MSBDChargeCalibrationDue(' && has "$e" 'MSBDChargeNeedsPulse(' &&
   has "$e" 'limitOn && comeDown)) {' && has "$e" 'if (calibrating && !comeDown) {' && has "$e" 'MSBDChargeCutAllowed(now, gCutStarted, gCutMisread), comeDownTo, gHoldIgnored, gCutIgnored,' &&
   has "$e" 'comeDownTo = comeDown && holdAt == limit;' &&
-  has 'static int SettingsNow(BOOL *comeDown) {' ': kMSBDChargeComeDownDefault;' &&
+  has 'static ChargeSettings SettingsHere(BOOL gate) {' ': kMSBDChargeComeDownDefault;' &&
   has "$e" 'MSBDChargeLeverCheck(' && has "$e" 'MSBDChargeCutAllowed(now, gCutStarted, gCutMisread)' && has "$e" 'CutShown(b)' &&
   grep -q 'if (MSBDChargeStartLoop(times, n, now)) { gRunning = 0;' "$M" && grep -q 'return MSBDChargeCutShown(' "$M"
 }

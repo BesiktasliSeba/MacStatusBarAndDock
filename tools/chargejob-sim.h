@@ -14,6 +14,7 @@ static void SimJobIdleEnd(void);   // (the job's clean end when nothing is set: 
 #define MSBD_CHARGE_IDLE_EXIT() do { SimJobIdleEnd(); return; } while (0)
 #define MSBD_CHARGE_SOC_SIM   // (powerd's SOC-limit service is played below)
 #define MSBD_CHARGE_LOCK_SIM  // (the job's one-at-a-time lock is played below: every simulated process is this one real process)
+#define MSBD_CHARGE_PREFSD_SIM   // (cfprefsd's processes are played below: SimPrefsdRestart)
 #define main msbdcharge_main
 #include "../chargehelper/main.m"
 #undef main
@@ -43,9 +44,12 @@ static void SimProcStart(int pid, const char *name) {
 static int SimProcAlive(int pid) { for (int i = 0; i < gSimProcN; i++) if (gSimProcs[i].pid == pid) return gSimProcs[i].alive; return 0; }
 static const char *SimProcName(int pid) { for (int i = 0; i < gSimProcN; i++) if (gSimProcs[i].pid == pid) return gSimProcs[i].name; return ""; }
 // launchctl as spawned (pid 4242): running until gSimSpawnDoneAt (it hangs gSimLaunchctlHangs seconds when set), or killed
-static double gSimSpawnDoneAt; static int gSimSpawnKilled, gSimLaunchctlHangs;
+static double gSimSpawnDoneAt; static int gSimSpawnKilled, gSimLaunchctlHangs, gSimSpawnIsSettings, gSimSettingsKills;
 int kill(pid_t pid, int sig) {
-    if (pid == 4242 && gSimNow < gSimSpawnDoneAt) { if (sig == SIGKILL) { gSimSpawnKilled = 1; gSimSpawnDoneAt = gSimNow; } return 0; }
+    if (pid == 4242 && gSimNow < gSimSpawnDoneAt) {
+        if (sig == SIGKILL) { gSimSpawnKilled = 1; gSimSpawnDoneAt = gSimNow; if (gSimSpawnIsSettings) gSimSettingsKills++; }
+        return 0;
+    }
     if (SimProcAlive(pid)) return 0;
     errno = ESRCH; return -1;
 }
@@ -216,9 +220,30 @@ static void SimPowerdRestart(void) {   // (the driver keeps what it had; the SOC
 // launchctl, as the job and the prerm start it: only "kickstart -k system/com.apple.powerd" does something here. gSimKickstartFails: that many
 // kickstarts fail first (launchctl exits 1, powerd left as it is); gSimLaunchctlHangs: launchctl hangs that long first, doing nothing.
 static int gSimSpawns, gSimKickstartFails, gSimSpawnExit;
+// The job's own fresh process for the settings (msbdcharge --settings, chargehelper/main.m SettingsRead): a process of its own (pid 9001 each
+// time: none outlives its read), which reads the settings as cfprefsd has them now and writes its line where the job's file actions put its
+// stdout. gSimSettingsHangs: that many such processes hang (nothing written; the job kills them). gSimSettingsReads: how many were started.
+static int gSimSettingsReads, gSimSettingsHangs, gSimStdoutTo = -1;
+int posix_spawn_file_actions_adddup2(posix_spawn_file_actions_t *fa, int fd, int newfd) { if (newfd == 1) gSimStdoutTo = fd; return 0; }
 int posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_actions_t *fa, const posix_spawnattr_t *attr, char *const argv[], char *const envp[]) {
     gSimSpawns++; gSimSpawnExit = 0; gSimSpawnKilled = 0; gSimSpawnDoneAt = gSimNow + gSimLaunchctlHangs;
     int n = 0; while (argv[n]) n++;
+    gSimSpawnIsSettings = n >= 2 && !strcmp(argv[1], "--settings");
+    if (gSimSpawnIsSettings) {
+        gSimSettingsReads++;
+        if (gSimSettingsHangs > 0) { gSimSettingsHangs--; gSimSpawnDoneAt = gSimNow + 60; }
+        else {
+            int was = gSimPid; gSimPid = 9001; SimProcStart(gSimPid, "msbdcharge");
+            fflush(stdout); int saved = dup(1); if (gSimStdoutTo >= 0) dup2(gSimStdoutTo, 1);
+            gSimSpawnExit = msbdcharge_main(n, (char **)argv);
+            fflush(stdout); dup2(saved, 1); close(saved);
+            SimKill(gSimPid); gSimPid = was;
+            gSimSpawnDoneAt = gSimNow;
+        }
+        gSimStdoutTo = -1;
+        if (pid) *pid = 4242;
+        return 0;
+    }
     if (n >= 4 && !strcmp(argv[1], "kickstart") && !strcmp(argv[2], "-k") && !strcmp(argv[3], "system/com.apple.powerd") && !gSimLaunchctlHangs) {
         if (gSimKickstartFails > 0) { gSimKickstartFails--; gSimSpawnExit = 1; } else SimPowerdRestart();
     }
@@ -297,11 +322,69 @@ static uint64_t SimWord(void) { return [gSimState[@MSBD_CHARGE_STATE] unsignedLo
 static void SimProcExit(int pid) { for (int i = 1; i < gTokN; i++) if (gTok[i].pid == pid) gTok[i].live = 0; }
 
 // ---- the settings as mobile reads them, and the device
+// gSimPrefs: the settings as cfprefsd has them (what Settings writes). A process that reads keeps its own copy, as of its last read; after
+// cfprefsd starts over (SimPrefsdRestart: killall cfprefsd) the copy of each process that had read is never refreshed again (CoreFoundation, for
+// another user's settings in a long-running process: 1.3.3, sshtoggled on the iPad 2), while a process started since reads them as they are.
 static NSMutableDictionary *gSimPrefs;
-Boolean CFPreferencesSynchronize(CFStringRef applicationID, CFStringRef userName, CFStringRef hostName) { return true; }
+static NSMutableDictionary *gSimPrefsSeen;   // pid -> the settings as that process last read them
+static NSMutableSet *gSimPrefsOld;           // the pids whose copy a cfprefsd restart left old for good
+static int gSimPrefsdPid = 88, gSimPrefsdDown;   // cfprefsd's pid; gSimPrefsdDown: not running (started again by the next read)
+static double gSimPrefsdSince = 1799990000;
+// Mobile's own cfprefsd (uid 501), played when a scenario asks: gSimAgentPid 0 = not running. gSimAgentServes: the job's reads go to it (a read
+// starts it when it is not running), so its restart alone leaves the copy of every process that had read old; else the daemon serves them and
+// the agent has no part in any copy (it starting or starting over changes nothing). gSimPrefsdListFailAt: that process list fails (nil, as
+// sysctl's can); gSimPrefsdRestartAtList: killall cfprefsd runs right before that process list; gSimAgentRestartAtList: mobile's own alone
+// starts over right before it (SimAgentRestart) -- all counted from 1, the job's lists (0: none).
+static int gSimAgentPid, gSimAgentServes, gSimAgentNext = 700, gSimPrefsdListFailAt, gSimPrefsdRestartAtList, gSimAgentRestartAtList;
+static double gSimAgentSince;
+static void SimAgentStart(void) { gSimAgentPid = gSimAgentNext++; gSimAgentSince = gSimNow; }
+static void SimPrefsdServe(void) {   // (a read starts the cfprefsd that serves it when it is not running, as launchd does)
+    if (gSimAgentServes) { if (!gSimAgentPid) SimAgentStart(); }
+    else gSimPrefsdDown = 0;
+}
+Boolean CFPreferencesSynchronize(CFStringRef applicationID, CFStringRef userName, CFStringRef hostName) { SimPrefsdServe(); return true; }
 CFPropertyListRef CFPreferencesCopyValue(CFStringRef key, CFStringRef applicationID, CFStringRef userName, CFStringRef hostName) {
-    id v = gSimPrefs[(__bridge NSString *)key];
+    SimPrefsdServe();
+    if (!gSimPrefsSeen) { gSimPrefsSeen = [NSMutableDictionary dictionary]; gSimPrefsOld = [NSMutableSet set]; }
+    NSDictionary *view = gSimPrefs;
+    if ([gSimPrefsOld containsObject:@(gSimPid)]) view = gSimPrefsSeen[@(gSimPid)];
+    else gSimPrefsSeen[@(gSimPid)] = [gSimPrefs copy] ?: @{};
+    id v = view[(__bridge NSString *)key];
     return v ? CFBridgingRetain(v) : NULL;
+}
+static int gSimPrefsdLooks;
+static void SimPrefsdRestart(int down);
+static void SimAgentRestart(void);
+static NSString *PrefsDaemonSignature(void) {   // (chargehelper/main.m's: every running cfprefsd as "pid@start/uid", sorted)
+    if (++gSimPrefsdLooks == gSimPrefsdRestartAtList) SimPrefsdRestart(0);
+    if (gSimPrefsdLooks == gSimAgentRestartAtList) SimAgentRestart();
+    if (gSimPrefsdLooks == gSimPrefsdListFailAt) return nil;
+    NSMutableArray<NSString *> *a = [NSMutableArray array];
+    if (!gSimPrefsdDown) [a addObject:[NSString stringWithFormat:@"%d@%ld/0", gSimPrefsdPid, (long)gSimPrefsdSince]];
+    if (gSimAgentPid) [a addObject:[NSString stringWithFormat:@"%d@%ld/501", gSimAgentPid, (long)gSimAgentSince]];
+    [a sortUsingSelector:@selector(compare:)];
+    return [a componentsJoinedByString:@","];
+}
+static void SimPrefsOldForAll(void) { for (NSNumber *p in gSimPrefsSeen) if (SimProcAlive(p.intValue)) [gSimPrefsOld addObject:p]; }
+// killall cfprefsd: it starts again at the next read (down: not until then), mobile's own too when it ran; the copy of every live process that
+// has read is old from now on
+static void SimPrefsdRestart(int down) {
+    SimPrefsOldForAll();
+    gSimPrefsdPid++; gSimPrefsdSince = gSimNow; gSimPrefsdDown = down;
+    if (gSimAgentPid) { if (down) gSimAgentPid = 0; else SimAgentStart(); }
+}
+// Mobile's own cfprefsd alone starts over (iPadOS ended it, or `killall -u mobile cfprefsd`): the copies are old only when it serves the reads
+static void SimAgentRestart(void) {
+    if (gSimAgentServes) SimPrefsOldForAll();
+    SimAgentStart();
+}
+// Settings (as mobile, its own process) writes one of the charge settings through cfprefsd (nil: removed), and posts the settings notification
+// when `note` (as its rows do; `defaults write` does not)
+static void SimSettingsWrite(NSString *key, id value, int note) {
+    if (!gSimPrefs) gSimPrefs = [NSMutableDictionary dictionary];
+    SimPrefsdServe();
+    if (value) gSimPrefs[key] = value; else [gSimPrefs removeObjectForKey:key];
+    if (note) { SimProcStart(300, "Preferences"); int was = gSimPid; gSimPid = 300; notify_post(MSBD_CHARGE_PREFS_CHANGED); gSimPid = was; }
 }
 static const char *gSimOS = "15.6.1";
 int sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {

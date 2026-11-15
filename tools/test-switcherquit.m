@@ -124,6 +124,7 @@ static void DMMSWZetsuReopen(UIWindow *w) {}
 static void DMNativeSetActive(DMNativeWindow *w) {}
 static UIView *DMNativeHost(void) { return nil; }
 static void DMNativeApplyLevel(void) {}
+static void DMNoteAppQuitting(NSString *b) {}   // (the kill hook's note of the quit for the App Switcher clean-up: test-switcherstale runs it)
 
 #include "sq-real.inc"   // (the real DMPrewarmQuitAdd, DMPrewarmQuitAddFromKill, DMMSWFitWithout, DMMSWForgetApp, DMMSWMWAppGone, DMMSWMWCloseGone,
                          //  DMMSWMWCloseQuitAway, DMMSWRelaunchAt, DMMSWRelaunchClosed, DMMSWApply)

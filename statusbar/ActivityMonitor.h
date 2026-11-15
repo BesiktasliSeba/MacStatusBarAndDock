@@ -490,9 +490,11 @@ static dispatch_queue_t DMAMSampleQueue(void) {
 - (void)dealloc { [_timer invalidate]; }
 @end
 
-// The one window (brought forward if it is already open).
+// The one window (brought forward if it is already open). Every way in comes here (the Go menu, Spotlight, Control Center's panel, the Dock, the
+// App Library, Command-Tab); with Finder off too: it is a native window of its own (NativeWindow.h DMNativeMayOpen, audit M12 of 1.8.7.2).
 static void DMActivityMonitorOpen(void) {
     for (DMNativeWindow *w in gNativeWindows) if ([w isKindOfClass:[DMActivityMonitorWindow class]]) { [w show]; return; }
+    if (!DMNativeMayOpen(@"Activity Monitor")) return;
     CGRect d = DMNativeDesktop();
     CGFloat w = MIN(900.0, d.size.width - 40.0), h = MIN(560.0, d.size.height - 40.0);
     DMActivityMonitorWindow *win = [[DMActivityMonitorWindow alloc] initWithFrame:CGRectMake(CGRectGetMidX(d) - w / 2.0, CGRectGetMidY(d) - h / 2.0, w, h)];

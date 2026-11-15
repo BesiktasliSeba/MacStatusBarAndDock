@@ -329,6 +329,23 @@ static inline void MSBDGuardWriteRecord(int action, int tested, const char *swit
     fclose(f);
     rename(MSBD_GUARD_RECORD ".new", MSBD_GUARD_RECORD);
 }
+// Does the guard's record (`record`: MSBD_GUARD_RECORD) name this switch: a step 1 "switch <domain> <key> ..." or a step 1b "feature <domain> <key>
+// <value> ..." line? For code the crash map counts under a switch that can also run with that switch off (statusbar/NativeWindow.h
+// DMNativeGuardTookFinder: Activity Monitor's and Display Settings' native windows, Finder's in the map). Whole lines only (the rest of a long line
+// is never read as one); no record: no.
+static inline int MSBDGuardRecordNames(const char *record, const char *domain, const char *key) {
+    FILE *f = record ? fopen(record, "r") : NULL;
+    if (!f) return 0;
+    char line[512], kind[16], d[128], k[128];
+    int found = 0, start = 1;
+    while (!found && fgets(line, sizeof(line), f)) {
+        int whole = start;
+        start = strchr(line, '\n') != NULL;   // (the next piece starts a line)
+        if (whole && sscanf(line, "%15s %127s %127s", kind, d, k) == 3 && (!strcmp(kind, "switch") || !strcmp(kind, "feature")) && !strcmp(d, domain) && !strcmp(k, key)) found = 1;
+    }
+    fclose(f);
+    return found;
+}
 
 static inline int MSBDGuardEvaluate(MSBDGuardState *s) {
     int action;

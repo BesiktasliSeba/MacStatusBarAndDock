@@ -29,6 +29,7 @@
 //                         to 3 s for it to say so. For the package's prerm, before it stops the job.
 //   msbdcharge --status   what it reads and would do now (read only)
 //   msbdcharge --poke     the job looks again now (posts our settings notification, as Settings does after a change)
+//   msbdcharge --settings the charge settings as a fresh process reads them, one line (the job's own reader once cfprefsd has started over)
 #import <Foundation/Foundation.h>
 #import <IOKit/IOKitLib.h>
 #import <notify.h>
@@ -586,45 +587,172 @@ static void ResetCharging(NSString *why, BOOL cuts, BOOL jobRuns) {
             cleared.count ? [@": left with powerd after its owner was gone: " stringByAppendingString:[cleared componentsJoinedByString:@"; then "]] : @"");
 }
 
-// ---- what the tweak's settings say (read as mobile: this job runs as root): the limit, and whether to come down to it
-static int SettingsNow(BOOL *comeDown) {
+// ---- what the tweak's settings say (read as mobile: this job runs as root): the limit, whether to come down to it, Run on Power Adapter, and the
+// tweak's own switches (only asked when SpringBoard has not said whether it runs: TweakMeantToRun)
+typedef struct { int limit; BOOL comeDown, runOnAdapter, meantToRun; } ChargeSettings;
+// Read by this process. gate: the tweak's switches too (meantToRun; else left NO).
+static ChargeSettings SettingsHere(BOOL gate) {
+    ChargeSettings s = { kMSBDChargeLimitOff, kMSBDChargeComeDownDefault, NO, NO };
     CFStringRef d = CFSTR(MSBD_CHARGE_DOMAIN);
     CFPreferencesSynchronize(d, CFSTR("mobile"), kCFPreferencesAnyHost);
-    int limit = kMSBDChargeLimitOff;
     CFPropertyListRef v = CFPreferencesCopyValue(CFSTR(MSBD_CHARGE_LIMIT_KEY), d, CFSTR("mobile"), kCFPreferencesAnyHost);
-    if (v && CFGetTypeID(v) == CFNumberGetTypeID()) { int n = 0; CFNumberGetValue((CFNumberRef)v, kCFNumberIntType, &n); limit = MSBDChargeLimitFromPref(n); }
+    if (v && CFGetTypeID(v) == CFNumberGetTypeID()) { int n = 0; CFNumberGetValue((CFNumberRef)v, kCFNumberIntType, &n); s.limit = MSBDChargeLimitFromPref(n); }
     if (v) CFRelease(v);
 #if DEBUG
     v = CFPreferencesCopyValue(CFSTR(MSBD_CHARGE_TEST_LIMIT_KEY), d, CFSTR("mobile"), kCFPreferencesAnyHost);
-    if (v && CFGetTypeID(v) == CFNumberGetTypeID()) { int n = 0; CFNumberGetValue((CFNumberRef)v, kCFNumberIntType, &n); if (MSBDChargeTestLimit(n)) limit = n; }
+    if (v && CFGetTypeID(v) == CFNumberGetTypeID()) { int n = 0; CFNumberGetValue((CFNumberRef)v, kCFNumberIntType, &n); if (MSBDChargeTestLimit(n)) s.limit = n; }
     if (v) CFRelease(v);
 #endif
-    if (comeDown) {
-        v = CFPreferencesCopyValue(CFSTR(MSBD_CHARGE_COMEDOWN_KEY), d, CFSTR("mobile"), kCFPreferencesAnyHost);
-        *comeDown = v && CFGetTypeID(v) == CFBooleanGetTypeID() ? CFBooleanGetValue((CFBooleanRef)v) : kMSBDChargeComeDownDefault;
-        if (v) CFRelease(v);
-    }
-    return limit;
-}
-// Run on Power Adapter (common/ChargeLimit.h MSBDChargeAdapterLimit): on only when set (missing = off).
-static BOOL RunOnAdapterNow(void) {
-    CFStringRef d = CFSTR(MSBD_CHARGE_DOMAIN);
-    CFPropertyListRef v = CFPreferencesCopyValue(CFSTR(MSBD_CHARGE_ADAPTER_KEY), d, CFSTR("mobile"), kCFPreferencesAnyHost);
-    BOOL on = v && CFGetTypeID(v) == CFBooleanGetTypeID() && CFBooleanGetValue((CFBooleanRef)v);
+    v = CFPreferencesCopyValue(CFSTR(MSBD_CHARGE_COMEDOWN_KEY), d, CFSTR("mobile"), kCFPreferencesAnyHost);
+    s.comeDown = v && CFGetTypeID(v) == CFBooleanGetTypeID() ? CFBooleanGetValue((CFBooleanRef)v) : kMSBDChargeComeDownDefault;
     if (v) CFRelease(v);
-    return on;
+    // Run on Power Adapter (common/ChargeLimit.h MSBDChargeAdapterLimit): on only when set (missing = off)
+    v = CFPreferencesCopyValue(CFSTR(MSBD_CHARGE_ADAPTER_KEY), d, CFSTR("mobile"), kCFPreferencesAnyHost);
+    s.runOnAdapter = v && CFGetTypeID(v) == CFBooleanGetTypeID() && CFBooleanGetValue((CFBooleanRef)v);
+    if (v) CFRelease(v);
+    if (gate) {   // (the root helper's TweakMeantToRun: a tested iPadOS on unless in the crash guard's safe mode, an untested one only with Enable Anyway)
+        CFStringRef domain = CFSTR(MSBD_GATE_DOMAIN);
+        CFPreferencesSynchronize(domain, CFSTR("mobile"), kCFPreferencesAnyHost);
+        CFStringRef key = MSBDVersionTested() ? CFSTR(MSBD_SAFE_KEY) : CFSTR(MSBD_GATE_KEY);
+        v = CFPreferencesCopyValue(key, domain, CFSTR("mobile"), kCFPreferencesAnyHost);
+        BOOL on = v && CFGetTypeID(v) == CFBooleanGetTypeID() && CFBooleanGetValue(v);
+        if (v) CFRelease(v);
+        s.meantToRun = MSBDVersionTested() ? !on : on;
+    }
+    return s;
+}
+// After cfprefsd starts over (killall cfprefsd, which many package scripts run: installing another tweak is enough; or iPadOS ending it), a
+// long-running process's copy of another user's settings is never refreshed again: CoreFoundation keeps it as it was (1.3.3: the root helper
+// sshtoggled went on applying the window engine picked before such a restart, iPad 2 16.7.7). The job read on from that copy, so a Charge Limit
+// switched off or changed in Settings, Run on Power Adapter switched off, or the tweak's safe mode, was ignored until a reboot: the iPad still
+// stopped at the old limit, and the job never ended (audit M2 of 1.8.7.2). sshtoggled starts over as a fresh process then; the job can't (its
+// hold, its cut and its stay-awake are powerd's assertions of this process, which a new process image lets go of: charging would come on for a
+// moment, and the end of a cut lights the Lock Screen). So the job notes the cfprefsd processes its copy may belong to (each as pid@start/uid,
+// sshtoggled's way of telling a restart: below), and once one of them is gone it reads the settings through a fresh process of its own
+// (msbdcharge --settings), which reads them as cfprefsd has them now -- at every look from then on, as the copy here stays old for good. (This
+// works around CoreFoundation's behaviour, as sshtoggled's start over does. cfprefsd's files are no answer: it writes a change there only seconds
+// later.)
+#ifndef MSBD_CHARGE_PREFSD_SIM   // (tools/chargejob-sim.h plays cfprefsd)
+static NSString *PrefsDaemonSignature(void) {   // every running cfprefsd as "pid@start/uid", sorted (sshtoggled's own); nil when the process list cannot be read
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0 };
+    size_t len = 0;
+    if (sysctl(mib, 3, NULL, &len, NULL, 0) != 0 || len == 0) return nil;
+    len += 32 * sizeof(struct kinfo_proc);   // (room for processes started in between)
+    struct kinfo_proc *procs = malloc(len);
+    if (!procs) return nil;
+    NSMutableArray<NSString *> *found = [NSMutableArray array];
+    BOOL ok = sysctl(mib, 3, procs, &len, NULL, 0) == 0;
+    if (ok) for (size_t i = 0; i < len / sizeof(struct kinfo_proc); i++) {
+        if (strcmp(procs[i].kp_proc.p_comm, "cfprefsd") != 0) continue;
+        [found addObject:[NSString stringWithFormat:@"%d@%ld/%u", procs[i].kp_proc.p_pid, (long)procs[i].kp_proc.p_starttime.tv_sec, procs[i].kp_eproc.e_pcred.p_ruid]];
+    }
+    free(procs);
+    if (!ok) return nil;
+    [found sortUsingSelector:@selector(compare:)];
+    return [found componentsJoinedByString:@","];
+}
+#else
+static NSString *PrefsDaemonSignature(void);
+#endif
+// (Review of the M2 fix: the job noted the cfprefsd processes once, before its first read, and took any later difference for a restart. A
+//  cfprefsd that only appears -- mobile's own, started after the job at boot -- made the copy old for the job's whole life: a process started
+//  at every look. And with none listed before the first read (none running yet, or no process list) nothing was noted until a later read, which
+//  then took a cfprefsd started over in between for the copy's own: the restart was never seen.)
+// The copy is live while every cfprefsd it may belong to still runs: the ones listed before the job's first read and after each of its reads
+// (one a read starts is listed after it). One of them gone (ended, or started over: a new pid) makes it old; one that only appears is added, as
+// it may serve a later read. When that cannot be known -- nothing listed before the first read, or no process list after a read -- the copy
+// counts as old: that costs a short process per look, a copy taken for live when it is old leaves charging at the wrong level.
+static BOOL gIsJob;                 // (this process is the job; a command -- --status, --settings -- is a fresh process: its copy is new)
+static NSMutableSet<NSString *> *gPrefsDaemons;   // the cfprefsd processes the job's copy may belong to, as "pid@start/uid" (nil: no read yet)
+static BOOL gPrefsCopyOld;          // one of them is gone (or that could not be known): the copy here is old for good
+static NSSet<NSString *> *PrefsDaemonSet(NSString *list) { return list.length ? [NSSet setWithArray:[list componentsSeparatedByString:@","]] : [NSSet set]; }
+static void PrefsCopyIsOld(NSString *why) {
+    gPrefsCopyOld = YES;
+    Log(@"%@: the settings are read by a fresh process from now on (this one's copy is not refreshed any more)", why);
+}
+// Before a read: is the copy old? The job's first read lists the cfprefsd processes first (one that starts over during the read is gone after it).
+static BOOL PrefsCopyOld(void) {
+    if (gPrefsCopyOld || !gIsJob || gPrefsDaemons) return gPrefsCopyOld;
+    NSString *before = PrefsDaemonSignature();
+    if (before.length) gPrefsDaemons = [PrefsDaemonSet(before) mutableCopy];
+    else PrefsCopyIsOld([NSString stringWithFormat:@"no cfprefsd could be listed before the job's first read (%@)", before ? @"none running" : @"no process list"]);
+    return gPrefsCopyOld;
+}
+// After a read here: the cfprefsd processes listed again. YES: the copy is old (now or before): the read is done again by a fresh process.
+static BOOL PrefsGoneAfterRead(void) {
+    if (gPrefsCopyOld || !gIsJob) return gPrefsCopyOld;
+    NSString *now = PrefsDaemonSignature();
+    NSSet<NSString *> *running = PrefsDaemonSet(now);
+    if (now && [gPrefsDaemons isSubsetOfSet:running]) { [gPrefsDaemons unionSet:running]; return NO; }
+    if (!now) PrefsCopyIsOld(@"no process list after a read of the job's (a cfprefsd it started is not known)");
+    else PrefsCopyIsOld([NSString stringWithFormat:@"cfprefsd started over since the job began (%@ -> %@)",
+                         [[gPrefsDaemons.allObjects sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@","], now.length ? now : @"none running"]);
+    return YES;
+}
+// The settings as a fresh process of the job's own reads them (msbdcharge --settings: one line), waited for 5 s at most (looked at every 10 ms:
+// it takes some milliseconds); one that hangs is killed. NO: no answer.
+static BOOL SettingsFromFreshProcess(ChargeSettings *out) {
+    char path[PATH_MAX]; uint32_t size = sizeof path;
+    if (_NSGetExecutablePath(path, &size) != 0) snprintf(path, sizeof path, "%s", "/var/jb/usr/libexec/msbdcharge");
+    int p[2];
+    if (pipe(p) != 0) return NO;
+    fcntl(p[0], F_SETFD, FD_CLOEXEC); fcntl(p[1], F_SETFD, FD_CLOEXEC);
+    posix_spawn_file_actions_t fa; posix_spawnattr_t at;
+    posix_spawn_file_actions_init(&fa); posix_spawnattr_init(&at);
+    posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_adddup2(&fa, p[1], 1);
+    posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
+    posix_spawnattr_setflags(&at, POSIX_SPAWN_CLOEXEC_DEFAULT);   // (nothing else of the job's is handed down)
+    char *argv[] = { (char *)"msbdcharge", (char *)"--settings", NULL };
+    pid_t pid = 0;
+    int r = posix_spawn(&pid, path, &fa, &at, argv, environ);
+    posix_spawn_file_actions_destroy(&fa); posix_spawnattr_destroy(&at);
+    close(p[1]);
+    if (r != 0) { close(p[0]); return NO; }
+    int st = -1, ended = 0;
+    for (int i = 0; i < 500 && !ended; i++) {
+        pid_t w = waitpid(pid, &st, WNOHANG);
+        if (w == pid) ended = 1;
+        else if (w < 0 && errno != EINTR) break;
+        else usleep(10000);
+    }
+    if (!ended) {
+        kill(pid, SIGKILL);
+        for (int i = 0; i < 20 && waitpid(pid, &st, WNOHANG) == 0; i++) usleep(100000);   // (reaped once it is gone)
+    }
+    char line[128] = "";   // (its one line is in the pipe once it has ended)
+    ssize_t n = ended && WIFEXITED(st) && WEXITSTATUS(st) == 0 ? read(p[0], line, sizeof line - 1) : -1;
+    close(p[0]);
+    int l = -1, c = -1, a = -1, m = -1;
+    if (n <= 0 || sscanf(line, "msbdcharge-settings %d %d %d %d", &l, &c, &a, &m) != 4 || l < 1 || l > kMSBDChargeLimitOff || ((c | a | m) & ~1)) return NO;
+    *out = (ChargeSettings){ l, c, a, m };
+    return YES;
+}
+// The settings now: read here while the copy is live, then by a fresh process (no answer: the last ones it gave, else this copy).
+static ChargeSettings gFresh;
+static BOOL gFreshGot, gFreshFailing;
+static ChargeSettings SettingsRead(BOOL gate) {
+    if (!PrefsCopyOld()) {
+        ChargeSettings here = SettingsHere(gate);
+        if (!PrefsGoneAfterRead()) return here;   // (else a cfprefsd of the copy's went before this read or during it: read anew below)
+    }
+    ChargeSettings s;
+    if (SettingsFromFreshProcess(&s)) {
+        if (gFreshFailing) { gFreshFailing = NO; Log(@"the settings are read by a fresh process again"); }
+        gFresh = s; gFreshGot = YES;
+        return s;
+    }
+    if (!gFreshFailing) {
+        gFreshFailing = YES;
+        Log(@"the settings could not be read by a fresh process: %@ (tried again at each look)", gFreshGot ? @"the last ones it read are used" : @"this process's own copy is used");
+    }
+    return gFreshGot ? gFresh : SettingsHere(gate);
 }
 // The tweak meant to run (the root helper's TweakMeantToRun): SpringBoard's decision at its start when it has made one, else the switches as mobile.
 static BOOL TweakMeantToRun(void) {
     uint64_t sb = MSBDGateReadState(MSBD_GATE_STATE);
     if (sb) return sb == 2;
-    CFStringRef domain = CFSTR(MSBD_GATE_DOMAIN);
-    CFPreferencesSynchronize(domain, CFSTR("mobile"), kCFPreferencesAnyHost);
-    CFStringRef key = MSBDVersionTested() ? CFSTR(MSBD_SAFE_KEY) : CFSTR(MSBD_GATE_KEY);
-    CFPropertyListRef v = CFPreferencesCopyValue(key, domain, CFSTR("mobile"), kCFPreferencesAnyHost);
-    BOOL on = v && CFGetTypeID(v) == CFBooleanGetTypeID() && CFBooleanGetValue(v);
-    if (v) CFRelease(v);
-    return MSBDVersionTested() ? !on : on;
+    return SettingsRead(YES).meantToRun;
 }
 
 // ---- our own state across runs
@@ -773,9 +901,10 @@ static void Evaluate(NSString *why) { @autoreleasepool {   // (run-loop callback
     if (!plugged && (gHoldIgnored || gCutIgnored)) {   // (what did not take is tried again at the next plug-in: another adapter, another level)
         gHoldIgnored = gCutIgnored = NO; Log(@"cable out: the hold and the cut will be tried again at the next plug-in");
     }
-    BOOL comeDown = NO;
-    int limit = SettingsNow(&comeDown);
-    BOOL limitOn = MSBDChargeLimitOn(limit), runOnAdapterSet = RunOnAdapterNow();
+    ChargeSettings cs = SettingsRead(NO);   // (once per look: after a cfprefsd restart each read is a process of its own)
+    BOOL comeDown = cs.comeDown;
+    int limit = cs.limit;
+    BOOL limitOn = MSBDChargeLimitOn(limit), runOnAdapterSet = cs.runOnAdapter;
     // A hold given up (for this plug-in, and remembered: MSBDChargeHoldKnownIgnored) is tried again when a charge setting changes -- the Charge
     // Limit, coming down, Run on Power Adapter -- as compared with what the job last saw (kept in the state file across starts). Not at every note
     // of the tweak's settings: about 50 rows of Status Bar, Windows and Live Activities post the same one, and each would have taken the A12Z
@@ -991,7 +1120,11 @@ static void JobLockRelease(void) {}   // (the process ends right after: its lock
 static BOOL JobLockTake(void);
 static void JobLockRelease(void);
 #endif
-static BOOL ChargeWanted(void) { return MSBDIsIPad() && (MSBDChargeLimitOn(SettingsNow(NULL)) || RunOnAdapterNow()); }
+static BOOL ChargeWanted(void) {
+    if (!MSBDIsIPad()) return NO;
+    ChargeSettings s = SettingsRead(NO);
+    return MSBDChargeLimitOn(s.limit) || s.runOnAdapter;
+}
 static void EndIdle(NSString *why) {
     // only once nothing of ours is raised (a cut ending is given its 30 s to settle, as Evaluate does) and no kept policy of iPadOS's charge limit
     // is left to remove (it would keep charging stopped at its level with the job gone): else the next tick looks again
@@ -1037,6 +1170,11 @@ int main(int argc, char **argv) {
             printf(jobRuns ? "charging reset (a job is running: its own hold left to it)\n" : "charging reset\n"); return 0;
         }
         if (argc > 1 && !strcmp(argv[1], "--poke")) { notify_post(MSBD_CHARGE_PREFS_CHANGED); return 0; }
+        if (argc > 1 && !strcmp(argv[1], "--settings")) {   // (the job's reader after a cfprefsd restart, SettingsRead: a fresh process, a fresh copy)
+            ChargeSettings s = SettingsHere(YES);
+            printf("msbdcharge-settings %d %d %d %d\n", s.limit, s.comeDown ? 1 : 0, s.runOnAdapter ? 1 : 0, s.meantToRun ? 1 : 0);
+            return 0;
+        }
         if (argc > 1 && !strcmp(argv[1], "--stop")) {
             // (the prerm, right before it stops the job: see LetGoForStop. A job that is not running has published nothing, or "no job" since the
             // last --reset: no wait then. One that does not answer in 3 s: the prerm goes on, and its --reset looks at what is left.)
@@ -1051,12 +1189,12 @@ int main(int argc, char **argv) {
         if (argc > 1 && !strcmp(argv[1], "--status")) {   // (one line each: the battery, the job's published state, powerd's view of ours)
             NSDictionary *b = BatteryProps(), *cd = Dict(b[@"ChargerData"]);
             MSBDChargeAdapter a = AdapterNow(b);
-            BOOL comeDown = NO; int limit = SettingsNow(&comeDown);
+            ChargeSettings cs = SettingsRead(NO); BOOL comeDown = cs.comeDown; int limit = cs.limit;
             printf("battery %s (%s): %d %%, cable %d, connected %d, charging %d, full %d, %d mA, adapter %lld W, cut showing %d, reasons 0x%llx / 0x%llx; limit %d, coming down %d, run on power adapter %d; tweak meant to run %d\n",
                    gBattery ? "found" : "not found", gPMU ? "PMU" : "SMC", Int(b, @"CurrentCapacity"), Int(b, @"AppleRawExternalConnected"), Int(b, @"ExternalConnected"),
                    Int(b, @"IsCharging"), Int(b, @"FullyCharged"), Int(b, @"Amperage"), a.watts, b ? CutShown(b) : -1,
                    [cd[@"NotChargingReason"] respondsToSelector:@selector(unsignedLongLongValue)] ? [cd[@"NotChargingReason"] unsignedLongLongValue] : 0ULL,
-                   (unsigned long long)(cd[@"ChargerInhibitReason"] ? LL(cd[@"ChargerInhibitReason"]) : 0), limit, comeDown, RunOnAdapterNow(), TweakMeantToRun());
+                   (unsigned long long)(cd[@"ChargerInhibitReason"] ? LL(cd[@"ChargerInhibitReason"]) : 0), limit, comeDown, cs.runOnAdapter, TweakMeantToRun());
             int t = 0; uint64_t w = 0;
             if (notify_register_check(MSBD_CHARGE_STATE, &t) == NOTIFY_STATUS_OK) { notify_get_state(t, &w); notify_cancel(t); }
             printf("published state %d, limit %d, on power %d, job running %d\n", MSBDChargeWordState(w), MSBDChargeWordLimit(w), MSBDChargeWordPlugged(w), (int)((w >> 17) & 1));
@@ -1086,6 +1224,7 @@ int main(int argc, char **argv) {
             fprintf(stderr, "msbdcharge: another Charge Limit job is running\n");
             return 3;
         }
+        gIsJob = YES;   // (its reads of the settings follow cfprefsd's restarts: PrefsCopyOld)
         // First of all, before anything that could fail: what an earlier run can have left (the PMU key, a hold in the driver) is let go.
         ResetCharging(nil, NO, NO);
         // (nothing set: nothing to hold. "No job" published, as --reset does, and no start counted. Unless a kept policy of iPadOS's charge limit

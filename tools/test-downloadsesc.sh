@@ -13,5 +13,5 @@ check "only with a hardware keyboard, through the shared focus lock (15-18)" "gr
 check "the panel's Esc is exported for SpringBoard's key handling" "grep -q 'BOOL MSBDDownloadsPanelEscape(void)' $D"
 check "with text in the search field that Esc clears it first (as the field's own Esc)" "awk '/BOOL MSBDDownloadsPanelEscape\\(void\\)/,/^}/' $D | grep -q 'if (p.searchField.text.length) { \\[p searchEscape\\]; return YES; }'"
 check "SpringBoard's always-installed Esc hook asks the panel first" "awk '/^static void DMOverlayPressesBegan/,/^}/' $S | head -5 | grep -q 'DMDownloadsPanelTakesEsc(presses)'"
-check "and the native windows' key hook still does (Finder on)" "awk '/^%group DMNativeHooks/,/^%end/' $S | grep -q 'if (DMDownloadsPanelTakesEsc(presses)) return;'"
+check "and the native windows' key hook still does (Finder on, or any native window shown)" "awk '/^%group DMNativeHooks/,/^%end/' $S | grep -q 'if (DMDownloadsPanelTakesEsc(presses)) return;'"
 [ $fails = 0 ] && echo "test-downloadsesc: all wiring checks pass" || { echo "test-downloadsesc: wiring checks FAILED"; exit 1; }

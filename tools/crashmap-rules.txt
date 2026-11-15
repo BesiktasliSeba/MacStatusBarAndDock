@@ -236,6 +236,10 @@ file MacStatusBarCore ^IconTheme\.h$ actmonLibrary
 sym MacStatusBarCore ^_?DMWP[A-Z] desktopWallpaper
 file MacStatusBarCore ^DesktopWallpaper\.h$ desktopWallpaper
 file MacStatusBarCore ^LightMagnify\.h$ magnifyTrafficLights
+# the macOS folder (MacFolder.h, 1.8.7.4 round 2: its painter DMDesktopDrawFolder, kept out of line, and its fill, moved out of Desktop.h) is the
+# picture of the desktop's folders and of Finder's: a crash in it is its caller's -- the desktop's (Desktop Icons) or Finder's (Finder) --, so
+# transparent, before the desktop's own rule takes it by its name
+sym MacStatusBarCore ^_*DMDesktop(DrawFolder|FolderFill)$ transparent
 sym MacStatusBarCore ^_?DMDesktop[A-Z] desktopIcons
 file MacStatusBarCore ^Desktop(Names|Corner)?\.h$ desktopIcons
 file MacStatusBarCore ^DesktopPlace\.h$ desktopIcons

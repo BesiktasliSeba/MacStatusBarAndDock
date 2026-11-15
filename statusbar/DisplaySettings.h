@@ -385,6 +385,7 @@ static void DMDispSettingsOpenIPad(NSString *display) {
     DMDispSettingsWindow *w = gDMDispSettingsWindow;
     if (w && ![w.settings.display isEqualToString:display]) { [w close]; w = nil; }
     if (!w) {
+        if (!DMNativeMayOpen(@"Display Settings")) return;   // (a native window of its own, with Finder off too: NativeWindow.h, audit M12 of 1.8.7.2)
         CGRect d = DMNativeDesktop();
         CGFloat width = 460, height = MIN(MAX(320.0, d.size.height - 60.0), 640.0);
         w = [[DMDispSettingsWindow alloc] initWithTitle:@"Display Settings" frame:CGRectMake(round(CGRectGetMidX(d) - width / 2.0), round(CGRectGetMidY(d) - height / 2.0), width, height)];

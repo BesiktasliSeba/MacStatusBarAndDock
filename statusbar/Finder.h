@@ -685,22 +685,36 @@ static UIImage *DMFinderAppIcon(DMFinderItem *it, CGFloat side) {
     DMFinderItem *a = [DMFinderItem new]; a.path = it.app; a.name = it.app.lastPathComponent; a.dir = YES;
     return DMFinderIcon(a, side);
 }
+// A folder's picture: the macOS folder of the desktop's folders (MacFolder.h DMDesktopDrawFolder), at the icon's side and the screen's scale (the
+// renderer's own format, as the desktop's -dm_folderImage: the same pixels), made once per side -- the list and the icons ask for it for every row
+// and icon they lay out. (iPadOS's folder.fill before: its tab is cut off from the front by a clear line across the top, KT 14 Nov.)
+static UIImage *DMFinderFolderPicture(CGFloat side) {
+    static NSCache *pictures; static dispatch_once_t once;
+    dispatch_once(&once, ^{ pictures = [NSCache new]; });
+    UIImage *hit = [pictures objectForKey:@(side)]; if (hit) return hit;
+    UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(side, side)];
+    UIImage *made = [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) { DMDesktopDrawFolder(ctx.CGContext, side); }];
+    if (made) [pictures setObject:made forKey:@(side)];
+    DMLog([NSString stringWithFormat:@"[finder] folder picture made: %.1f pt at %.0fx, the desktop's macOS folder", side, made.scale]);
+    return made;
+}
 static UIImage *DMFinderIcon(DMFinderItem *it, CGFloat side) {
     if (it.app) { UIImage *ai = DMFinderAppIcon(it, side); if (ai) return ai; }
     UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:side * 0.8 weight:UIImageSymbolWeightRegular];
-    if (it.appFolder.length && !it.locked) {   // (an app's folder in On My iPad: the folder with the app's icon on it, as the Files app draws it; made once per app and size)
+    if (it.appFolder.length && !it.locked) {   // (an app's folder in On My iPad: the folder with the app's icon on its front, as the Files app draws it; made once per app and size)
         static NSCache *appFolderIcons; if (!appFolderIcons) appFolderIcons = [NSCache new];
         NSString *ck = [NSString stringWithFormat:@"%@|%.0f", it.appFolder, side];
         UIImage *hit = [appFolderIcons objectForKey:ck]; if (hit) return hit;
-        UIImage *folder = [[UIImage systemImageNamed:@"folder.fill" withConfiguration:cfg] imageWithTintColor:[UIColor colorWithRed:0.33 green:0.66 blue:0.96 alpha:1] renderingMode:UIImageRenderingModeAlwaysOriginal];
+        UIImage *folder = DMFinderFolderPicture(side);
         SEL s = NSSelectorFromString(@"_applicationIconImageForBundleIdentifier:format:scale:");
         UIImage *app = [UIImage respondsToSelector:s] ? ((id (*)(id, SEL, id, int, CGFloat))objc_msgSend)([UIImage class], s, it.appFolder, 2, [UIScreen mainScreen].scale) : nil;
         if (folder && app) {
             UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:folder.size];
             UIImage *both = [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
                 [folder drawAtPoint:CGPointZero];
-                CGFloat a = MIN(folder.size.width, folder.size.height) * 0.46;
-                CGRect box = CGRectMake((folder.size.width - a) / 2.0, folder.size.height * 0.58 - a / 2.0, a, a);
+                // (centred on the folder's front -- 26..235 x 68..213.5 of MacFolder.h's 256 grid --, 92 of 256 wide: clear of its edges and folds)
+                CGFloat k = folder.size.width / 256.0, a = 92.0 * k;
+                CGRect box = CGRectMake(130.5 * k - a / 2.0, 140.75 * k - a / 2.0, a, a);
                 [[UIBezierPath bezierPathWithRoundedRect:box cornerRadius:a * 0.225] addClip];
                 [app drawInRect:box];
             }];
@@ -708,9 +722,9 @@ static UIImage *DMFinderIcon(DMFinderItem *it, CGFloat side) {
             return both;
         }
     }
-    if (it.dir && ![it.name hasSuffix:@".app"]) {
-        UIImage *f = [UIImage systemImageNamed:it.locked ? @"lock.fill" : @"folder.fill" withConfiguration:cfg];
-        return [f imageWithTintColor:it.locked ? [UIColor systemGrayColor] : [UIColor colorWithRed:0.33 green:0.66 blue:0.96 alpha:1] renderingMode:UIImageRenderingModeAlwaysOriginal];
+    if (it.dir && ![it.name hasSuffix:@".app"]) {   // (a folder: the macOS folder, as on the desktop; one Finder can't open: the lock)
+        if (!it.locked) return DMFinderFolderPicture(side);
+        return [[UIImage systemImageNamed:@"lock.fill" withConfiguration:cfg] imageWithTintColor:[UIColor systemGrayColor] renderingMode:UIImageRenderingModeAlwaysOriginal];
     }
     if ([it.name hasSuffix:@".app"]) {   // an app: its own icon (read once per app and size: the Applications folder asked for each row, every scroll)
         static NSCache *appIcons; if (!appIcons) appIcons = [NSCache new];

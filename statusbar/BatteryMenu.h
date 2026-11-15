@@ -435,8 +435,12 @@ static void DMBattCoverAX(UIView *fg, NSArray<UIView *> *views, BOOL cover) {
 // Our number on top of the battery view, on every iPadOS: iPadOS's own showsPercentage drew nothing on the static battery view of 17.5.1 and 18.5, and on 16.7.7 the bar's own
 // update took it back after a Low Power Mode change or a respring (device pass, 9 Nov). Read at each bar layout and when the power state changes. The inline charging bolt, which sits
 // where the number goes, is switched off while the number shows wherever the view has that switch; where it hasn't, the bolt wins while charging.
+// Two-tone, split exactly at the fill's edge, as iPadOS draws its own number in the icon (1.8.7.4 round 2, KT 14 Nov: one colour for all of it
+// left part of the number unreadable at most levels): two copies of the number, the same font, text and frame so their glyphs fall on the same
+// pixels, the one on top masked to the fill's rect as the battery view draws it now (its own fill layer) and the other to the rest; their
+// colours: common/BatteryInside.h MSBDBattInsideInksFor, from the icon's colour and the fill's as iPadOS draws it (red, green, yellow).
 static BOOL gBattInsideOn = NO;
-static const void *kBattInsideLabelKey = &kBattInsideLabelKey, *kBattInsideBoltKey = &kBattInsideBoltKey;
+static const void *kBattInsideLabelKey = &kBattInsideLabelKey, *kBattInsideBoltKey = &kBattInsideBoltKey, *kBattInsideFillLabelKey = &kBattInsideFillLabelKey, *kBattInsideToldKey = &kBattInsideToldKey;
 static CFTimeInterval gBattInsideReadAt = -100;   // (set back by the power state's changes, DMBattInsideApplyPref)
 static DMBattInfo DMBattInsideNow(void) {   // (a bar is laid out often: asked once every 5 s, or when the power state says so)
     static DMBattInfo cached;
@@ -444,35 +448,167 @@ static DMBattInfo DMBattInsideNow(void) {   // (a bar is laid out often: asked o
     if (now - gBattInsideReadAt > 5.0) { cached = DMBattNow(); gBattInsideReadAt = now; }
     return cached;
 }
+static UILabel *DMBattInsideLabel(UIView *v) {   // (one copy of the number, masked to its side of the fill's edge: DMBattInsideOne)
+    UILabel *label = [UILabel new]; label.textAlignment = NSTextAlignmentCenter; label.adjustsFontSizeToFitWidth = YES; label.minimumScaleFactor = 0.7; label.baselineAdjustment = UIBaselineAdjustmentAlignCenters;
+    label.userInteractionEnabled = NO; label.isAccessibilityElement = NO;
+    [v addSubview:label];
+    return label;
+}
+static CAShapeLayer *DMBattInsideSide(UILabel *label, CGPathRef path) {   // (its mask: the fill's rect, or the rest -- the label's bounds less that rect)
+    CAShapeLayer *m = (CAShapeLayer *)label.layer.mask;
+    if (![m isKindOfClass:[CAShapeLayer class]]) { m = [CAShapeLayer layer]; m.fillRule = kCAFillRuleEvenOdd; label.layer.mask = m; }
+    m.frame = label.layer.bounds; m.path = path;
+    return m;
+}
+// iPadOS's fill of this battery as drawn now (_UIBatteryView's -fillLayer, both kinds: the shape layers' and the static battery's image; its frame
+// is the body's inner left .. inner left + inner width x the level), its types read and in this battery's own layers; nil where it isn't.
+static CALayer *DMBattInsideFillLayer(UIView *v) {
+    if (!DMBattTypes(v, @"fillLayer", "@16@0:8")) return nil;
+    CALayer *fill = ((CALayer *(*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"fillLayer"));
+    if (![fill isKindOfClass:[CALayer class]]) return nil;
+    for (CALayer *l = fill.superlayer; l; l = l.superlayer) if (l == v.layer) return fill;
+    return nil;
+}
+static void DMBattInsideRGBA(UIColor *c, UITraitCollection *traits, double rgba[4]) {   // (a colour as drawn in this battery: for its traits; none: white)
+    CGFloat r = 1, g = 1, b = 1, a = 1, w = 1;
+    UIColor *k = c && traits ? [c resolvedColorWithTraitCollection:traits] : c;
+    if (![k getRed:&r green:&g blue:&b alpha:&a] && [k getWhite:&w alpha:&a]) r = g = b = w;
+    rgba[0] = r; rgba[1] = g; rgba[2] = b; rgba[3] = a;
+}
 __attribute__((noinline)) static void DMBattInsideOne(UIView *v, BOOL shown, DMBattInfo b) {
     static NSString *const boltSet = @"setShowsInlineChargingIndicator:", *const boltGet = @"showsInlineChargingIndicator";
-    UILabel *label = objc_getAssociatedObject(v, kBattInsideLabelKey);
+    UILabel *label = objc_getAssociatedObject(v, kBattInsideLabelKey), *onFill = objc_getAssociatedObject(v, kBattInsideFillLabelKey);
     BOOL canHideBolt = DMBattTypes(v, boltSet, "v20@0:8B16") && DMBattTypes(v, boltGet, "B16@0:8");
-    BOOL show = b.known && MSBDBattInsideShows(shown, 0, 1, b.charging && !canHideBolt);
+    BOOL show = b.known && MSBDBattInsideShows(shown, 0, 0, 1, b.charging && !canHideBolt);
     if (canHideBolt) {   // (the bolt back as it was once the number goes; off while it shows, again at each read: the bar's own updates may put it back)
         NSNumber *was = objc_getAssociatedObject(v, kBattInsideBoltKey);
         BOOL now = ((BOOL (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(boltGet));
         if (show && now) { if (!was) objc_setAssociatedObject(v, kBattInsideBoltKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC); ((void (*)(id, SEL, BOOL))objc_msgSend)(v, NSSelectorFromString(boltSet), NO); }
         else if (!show && was) { objc_setAssociatedObject(v, kBattInsideBoltKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); ((void (*)(id, SEL, BOOL))objc_msgSend)(v, NSSelectorFromString(boltSet), YES); }
     }
-    if (!show) { label.hidden = YES; return; }
-    if (!label) {
-        label = [UILabel new]; label.textAlignment = NSTextAlignmentCenter; label.adjustsFontSizeToFitWidth = YES; label.minimumScaleFactor = 0.7; label.baselineAdjustment = UIBaselineAdjustmentAlignCenters;
-        label.userInteractionEnabled = NO; label.isAccessibilityElement = NO;
+    if (!show) { label.hidden = YES; onFill.hidden = YES; return; }
+    if (!label || !onFill) {
+        [label removeFromSuperview];
+        label = DMBattInsideLabel(v); onFill = DMBattInsideLabel(v);   // (the copy over the fill on top)
         objc_setAssociatedObject(v, kBattInsideLabelKey, label, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [v addSubview:label];
+        objc_setAssociatedObject(v, kBattInsideFillLabelKey, onFill, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         DMLog([NSString stringWithFormat:@"[battinside] %@: our number on top of it", NSStringFromClass([v class])]);
     }
     CGSize size = v.bounds.size;
     double level = b.percent / 100.0;
     char text[8]; MSBDBattInsideText(level, text, sizeof text);
     UIColor *icon = DMBattTypes(v, @"fillColor", "@16@0:8") ? ((UIColor *(*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"fillColor")) : v.tintColor;
-    CGFloat white = 1, alpha = 1; if (![icon getWhite:&white alpha:&alpha]) { CGFloat r = 1, g = 1, bl = 1; [icon getRed:&r green:&g blue:&bl alpha:&alpha]; white = 0.299 * r + 0.587 * g + 0.114 * bl; }
-    label.font = [UIFont systemFontOfSize:MAX(6.0, size.height * MSBD_BATT_INSIDE_FONT_SHARE) weight:UIFontWeightBold];
-    label.text = [NSString stringWithUTF8String:text];
-    label.textColor = MSBDBattInsideTextIsDark(level, white > 0.5) ? [UIColor blackColor] : [UIColor whiteColor];
-    label.frame = CGRectMake(0, 0, size.width * MSBD_BATT_INSIDE_BODY_SHARE, size.height);
-    label.hidden = NO;
+    UIColor *fillColour = DMBattTypes(v, @"_batteryFillColor", "@16@0:8") ? ((UIColor *(*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"_batteryFillColor")) : nil;   // (the fill's, as iPadOS draws it)
+    double ic[4], fc[4];
+    DMBattInsideRGBA(icon, v.traitCollection, ic); DMBattInsideRGBA(fillColour ?: icon, v.traitCollection, fc);
+    MSBDBattInsideInks inks = MSBDBattInsideInksFor(ic[0], ic[1], ic[2], fc[0], fc[1], fc[2], fc[3]);
+    UIFont *font = [UIFont systemFontOfSize:MAX(6.0, size.height * MSBD_BATT_INSIDE_FONT_SHARE) weight:UIFontWeightBold];
+    NSString *number = [NSString stringWithUTF8String:text];
+    CGRect frame = CGRectMake(0, 0, size.width * MSBD_BATT_INSIDE_BODY_SHARE, size.height);
+    for (UILabel *l in @[label, onFill]) { l.font = font; l.text = number; l.frame = frame; }
+    // the fill's rect in the number's coordinates (right to left too: the battery draws its fill from the right there), its corners as the battery
+    // rounds them (on the static battery they are drawn into its image, not set on the layer)
+    CALayer *fill = DMBattInsideFillLayer(v);
+    MSBDBattInsideBox part = { 0, 0, 0, 0, 0 };
+    if (fill && !fill.hidden) {
+        CGRect r = [label.layer convertRect:fill.bounds fromLayer:fill], own = CGRectZero;
+        double radius = fill.cornerRadius;
+        if (DMBattTypes(v, @"_fillLayerFrame:cornerRadius:", "v32@0:8^{CGRect={CGPoint=dd}{CGSize=dd}}16^d24")) ((void (*)(id, SEL, CGRect *, double *))objc_msgSend)(v, NSSelectorFromString(@"_fillLayerFrame:cornerRadius:"), &own, &radius);
+        part = MSBDBattInsideFillPart((MSBDBattInsideBox){ r.origin.x, r.origin.y, r.size.width, r.size.height, radius }, frame.size.width, frame.size.height);
+    }
+    BOOL split = part.w > 0, restDark = fill ? inks.emptyDark : MSBDBattInsideOneInk(level, inks);   // (no fill to read: one colour, by the level)
+    label.textColor = restDark ? [UIColor blackColor] : [UIColor whiteColor];
+    onFill.textColor = inks.fillDark ? [UIColor blackColor] : [UIColor whiteColor];
+    CGPathRef over = split ? CGPathCreateWithRoundedRect(CGRectMake(part.x, part.y, part.w, part.h), part.r, part.r, NULL) : NULL;
+    CGMutablePathRef rest = CGPathCreateMutable();
+    CGPathAddRect(rest, NULL, CGRectMake(0, 0, frame.size.width, frame.size.height));
+    if (over) CGPathAddPath(rest, NULL, over);   // (even-odd: the fill's rect left out)
+    [CATransaction begin]; [CATransaction setDisableActions:YES];   // (the masks are layers of their own: no animation of theirs)
+    DMBattInsideSide(label, rest); DMBattInsideSide(onFill, over);
+    [CATransaction commit];
+    CGPathRelease(rest); if (over) CGPathRelease(over);
+    label.hidden = NO; onFill.hidden = !split;
+    int told = (fill ? 1 : 0) | (split ? 2 : 0) | (inks.fillDark ? 4 : 0) | (restDark ? 8 : 0);   // (each change of how it is drawn, once)
+    NSNumber *was = objc_getAssociatedObject(v, kBattInsideToldKey);
+    if (was && was.intValue == told) return;
+    objc_setAssociatedObject(v, kBattInsideToldKey, @(told), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!fill) DMLog([NSString stringWithFormat:@"[battinside] %@ at %d %%: no fill layer as read (-fillLayer %s): the number in one colour, %@", NSStringFromClass([v class]), b.percent, DMBattTypesOf(v, @"fillLayer"), restDark ? @"black" : @"white"]);
+    else DMLog([NSString stringWithFormat:@"[battinside] %@ at %d %%: %@ over the fill (%.2f %.2f %.2f), %@ over the rest, split at %.1f of %.1f pt", NSStringFromClass([v class]), b.percent,
+                inks.fillDark ? @"black" : @"white", fc[0], fc[1], fc[2], inks.emptyDark ? @"black" : @"white", split ? part.x + part.w : 0.0, frame.size.width]);
+}
+// One switch (1.8.7.4 round 2, KT 14 Nov: "currently I have to toggle it on first and then turn off the battery percentage in the battery
+// settings"): while it is on, iPadOS's own number beside the icon (Settings > Battery > Battery Percentage, and the one Low Power Mode shows) is
+// left out of our bars and ours is inside the icon whatever iPadOS's setting says (common/BatteryInside.h MSBDBattInsideOwnLeftOut). At its
+// source, as iOS's own Wi-Fi item is (StatusBar.x DMHideStockWiFi): at every data update a bar asks each item whether each of its display items
+// may show (-canEnableDisplayItem:fromData:; the display item's state takes its data enability from the answer), and for the battery item's
+// percentage (+percentDisplayIdentifier) in a bar of ours the answer is no, so the bar lays the battery out alone and the items beside it close
+// up, with no gap. The battery item does not answer that itself (its methods as read in 15.5's and 16.4's UIKit and 17.6.1's and 18.2's
+// SystemStatusUI: its superclass answers, from its data entries; the 17.6.1 and 18.2 code shows its own -applyUpdate:toDisplayItem: only ever
+// turning the percentage off, when iPadOS's setting is off), so the method is added to it, calling the superclass's, as for the Wi-Fi item. Added the first time the switch is on; iPadOS's setting is never written. A change of the
+// switch asks our bars again at once (DMStockVPNRecheck): switched off, the item's own answer stands again and the number beside the icon is
+// back exactly as iPadOS's setting says. Our bars: dressed (kLogoKey), being set up (kHoldKey) -- as for iOS's VPN badge and Wi-Fi item -- and
+// laid out the Lock Screen's way while that is their layout (StatusBar.x kNoClockLayoutKey: a copy that comes up on the Lock Screen, after a
+// respring, never has the clock layout until an unlock; held while iPadOS fills it, it had iPadOS's number left out and no layout of ours put our
+// number in) -- the copies the hold itself takes for ours (released as ours by their layout pass). Not a copy laid out without its clock while
+// unlocked (one still being built, held, ours only while held: Control Center's header copy with iPadOS's own Control Center) nor one the hold
+// gave up on (left to iOS from now on, DMBattInsideLeftToIOS). Kill switch /tmp/msb-stockbattpercent.
+static BOOL gBattInsideOwnHook = NO;   // (the method went on: our bars leave iPadOS's number out while the switch is on)
+static Class gBattInsideOwnItem = Nil;   // (the battery item's class it went on)
+static id gBattInsideOwnID = nil;   // (that class's +percentDisplayIdentifier)
+static BOOL DMBattInsideOwnCan(void) { return gBattInsideOwnHook && !DMTestFlag("/tmp/msb-stockbattpercent"); }   // (the bar's rule and the item's answer alike)
+static BOOL DMBattInsideBarOurs(UIView *fg) {   // (a bar of ours: dressed, being set up, or laid out the Lock Screen's way now)
+    return objc_getAssociatedObject(fg, kLogoKey) || [objc_getAssociatedObject(fg, kHoldKey) boolValue] || objc_getAssociatedObject(fg, kNoClockLayoutKey);
+}
+static BOOL DMBattInsideOwnOut(id item, id displayItem) {   // (iPadOS's number beside the icon: left out of this item's bar now)
+    if (!gBattInsideOn || !DMBattInsideOwnCan()) return NO;
+    id ident = DMBattTypes(displayItem, @"identifier", "@16@0:8") ? ((id (*)(id, SEL))objc_msgSend)(displayItem, NSSelectorFromString(@"identifier")) : nil;
+    if (!ident || !(ident == gBattInsideOwnID || [ident isEqual:gBattInsideOwnID])) return NO;
+    UIView *fg = DMCall(DMCall(item, @"statusBar"), @"foregroundView");
+    return [fg isKindOfClass:[UIView class]] && MSBDBattInsideOwnLeftOut(gBattInsideOn, DMBattInsideOwnCan(), DMBattInsideBarOurs(fg));
+}
+static BOOL DMBattInsideCanEnable(id self, SEL _cmd, id displayItem, id data) {
+    if (DMBattInsideOwnOut(self, displayItem)) return NO;
+    BOOL (*orig)(id, SEL, id, id) = (BOOL (*)(id, SEL, id, id))class_getMethodImplementation(class_getSuperclass(gBattInsideOwnItem), _cmd);
+    return orig ? orig(self, _cmd, displayItem, data) : YES;
+}
+static void DMBattInsideOwnHookInit(void) {   // (the first time the switch is on)
+    static BOOL done = NO;
+    if (done) return;
+    done = YES;
+    Class c = DMBattItemClass();
+    SEL sel = NSSelectorFromString(@"canEnableDisplayItem:fromData:");
+    Method m = c ? class_getInstanceMethod(c, sel) : NULL;
+    id ident = c && DMBattTypes(c, @"percentDisplayIdentifier", "@16@0:8") ? ((id (*)(id, SEL))objc_msgSend)(c, NSSelectorFromString(@"percentDisplayIdentifier")) : nil;
+    BOOL asRead = m && ident && !strcmp(method_getTypeEncoding(m) ?: "", "B32@0:8@16@24");
+    if (asRead) { gBattInsideOwnItem = c; gBattInsideOwnID = ident; }   // (before the method goes on: it reads them)
+    if (!asRead || !class_addMethod(c, sel, (IMP)DMBattInsideCanEnable, method_getTypeEncoding(m))) {   // (not added where the class answers it itself)
+        DMLog([NSString stringWithFormat:@"[battinside] %s: -canEnableDisplayItem:fromData: %s, +percentDisplayIdentifier %s, not added: iPadOS's own number stays beside the icon where its setting is on, and ours is not shown there",
+               c ? class_getName(c) : "no battery item", m ? (method_getTypeEncoding(m) ?: "?") : "none", ident ? "read" : "none"]);
+        return;
+    }
+    gBattInsideOwnHook = YES;
+    DMLog([NSString stringWithFormat:@"[battinside] iPadOS's own number beside the icon is left out of our bars while the switch is on (%s -canEnableDisplayItem:fromData: added)", class_getName(c)]);
+}
+static void DMBattInsideOwnAskAgain(void) {   // (the switch changed: our bars' items asked again now -- iPadOS's number beside the icon out, or back)
+    if (!gBattInsideOwnHook) return;   // (a held copy is asked again at its release: DMReleaseStatusBarCopy)
+    for (UIView *fg in gAllBarCopies.allObjects) {
+        if (!objc_getAssociatedObject(fg, kLogoKey) && !objc_getAssociatedObject(fg, kNoClockLayoutKey)) continue;
+        DMStockVPNRecheck(fg);
+        [fg setNeedsLayout];
+    }
+}
+__attribute__((noinline)) static void DMBattInsideBar(UIView *fg);
+// Our layout of a copy without its clock (StatusBar.x -dm_layoutLogoBody, after its record kNoClockLayoutKey: the Lock Screen's way, or a copy
+// still being built): our number goes in the icon at this layout (DMBattInsideBar; the full layout places it at its own pass). Whether the bar is
+// ours comes from that record with the rest (DMBattInsideBarOurs); one that this layout made ours, or not ours, without a hold to release (a copy
+// the hold gave up on, laid out on the Lock Screen) has its items asked again after this layout -- iPadOS's number beside the icon out, or back
+// -- and the number follows.
+__attribute__((noinline)) static void DMBattInsideLockLayout(UIView *fg, BOOL wasOurs) {
+    if (DMBattInsideBarOurs(fg) != wasOurs && gBattInsideOn && DMBattInsideOwnCan()) {
+        __weak UIView *weakFg = fg;
+        dispatch_async(dispatch_get_main_queue(), ^{ UIView *f = weakFg; if (f) { DMStockVPNRecheck(f); DMBattInsideBar(f); } });
+    }
+    DMBattInsideBar(fg);
 }
 __attribute__((noinline)) static void DMBattInsideBar(UIView *fg) {
     static BOOL everOn = NO;
@@ -482,11 +618,38 @@ __attribute__((noinline)) static void DMBattInsideBar(UIView *fg) {
     BOOL iosOwn = NO;
     for (UIView *v in views) if ([v isKindOfClass:[UILabel class]]) iosOwn = YES;
     DMBattInfo b = DMBattInsideNow();
-    BOOL shown = MSBDBattInsideShows(gBattInsideOn, iosOwn, 0, b.charging);
+    BOOL shown = MSBDBattInsideShows(gBattInsideOn, iosOwn, MSBDBattInsideOwnLeftOut(gBattInsideOn, DMBattInsideOwnCan(), DMBattInsideBarOurs(fg)), 0, b.charging);
     for (UIView *v in views) if (![v isKindOfClass:[UILabel class]]) DMBattInsideOne(v, shown, b);
 }
 static void DMBattInsideEveryBar(void) {
     for (NSHashTable *copies in @[gCopies ?: [NSHashTable weakObjectsHashTable], gAllBarCopies ?: [NSHashTable weakObjectsHashTable]]) for (UIView *fg in copies.allObjects) DMBattInsideBar(fg);
+}
+// The hold gave up on this copy (StatusBar.x DMHoldSafetyCheck: left to iOS from now on): no longer ours (no hold, no record of our layouts), so
+// iPadOS's number beside the icon is back where its setting is on -- the release asks the items again (DMReleaseStatusBarCopy, queued first) --
+// and our number in the icon follows after that, as in any bar not ours: then, and at the layout that places iPadOS's number.
+static void DMBattInsideLeftToIOS(UIView *fg) {
+    if (!gBattInsideOwnHook) return;   // (iPadOS's number never left out of a bar: nothing to follow)
+    __weak UIView *weakFg = fg;
+    dispatch_async(dispatch_get_main_queue(), ^{ UIView *f = weakFg; if (!f) return; DMBattInsideBar(f); [f setNeedsLayout]; });
+}
+// Our number shown in a battery of this bar while the switch leaves iPadOS's out (StatusBar.x DMCopyHasStockText: it stands for the battery
+// percentage, iPadOS's text item that a copy being set up no longer has -- the only one of a copy without its time, the Lock Screen's or Control
+// Center's header copy -- so the hold still sees that iPadOS has filled the copy).
+static BOOL DMBattInsideNumberIn(UIView *fg) {
+    if (!gBattInsideOn || !DMBattInsideOwnCan()) return NO;
+    for (UIView *v in DMBattItemViews(fg)) {
+        UILabel *l = objc_getAssociatedObject(v, kBattInsideLabelKey);
+        if (l && !l.hidden && l.superview == v && l.text.length) return YES;
+    }
+    return NO;
+}
+// The power state changed (the level, charging, Low Power Mode): every bar's number now, and once more 1 s later. iPadOS's bars take the same
+// change from SpringBoard and redraw their batteries (the fill's width and colour) on their own, with no layout of a bar, and that may come after
+// us: the number's split and colours follow the fill then (a level change: the fill's edge moves; Low Power Mode on a light bar: the fill turns
+// from black to yellow, the number over it from white to black).
+static void DMBattInsidePowerChanged(void) {
+    gBattInsideReadAt = -100; DMBattInsideEveryBar();
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ gBattInsideReadAt = -100; DMBattInsideEveryBar(); });
 }
 static void DMBattInsideApplyPref(BOOL on) {
     static BOOL first = YES, observing = NO;
@@ -494,13 +657,14 @@ static void DMBattInsideApplyPref(BOOL on) {
     BOOL logIt = !first || on;
     first = NO; gBattInsideOn = on;
     if (logIt) DMLog([NSString stringWithFormat:@"[battinside] Battery Percentage in Icon %@", on ? @"on" : @"off"]);
+    if (on) DMBattInsideOwnHookInit();
     if (on && !observing) {
         observing = YES;
         int t = 0;
-        notify_register_dispatch("com.apple.system.powersources", &t, dispatch_get_main_queue(), ^(int tok) { gBattInsideReadAt = -100; DMBattInsideEveryBar(); });
-        [[NSNotificationCenter defaultCenter] addObserverForName:NSProcessInfoPowerStateDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *note) { dispatch_async(dispatch_get_main_queue(), ^{ gBattInsideReadAt = -100; DMBattInsideEveryBar(); }); }];
+        notify_register_dispatch("com.apple.system.powersources", &t, dispatch_get_main_queue(), ^(int tok) { DMBattInsidePowerChanged(); });
+        [[NSNotificationCenter defaultCenter] addObserverForName:NSProcessInfoPowerStateDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *note) { dispatch_async(dispatch_get_main_queue(), ^{ DMBattInsidePowerChanged(); }); }];
     }
-    dispatch_async(dispatch_get_main_queue(), ^{ DMBattInsideEveryBar(); });
+    dispatch_async(dispatch_get_main_queue(), ^{ DMBattInsideOwnAskAgain(); DMBattInsideEveryBar(); });
 }
 
 // ---- the battery glyph during a charge hold (1.8.6; the rule: common/BatteryMenu.h MSBDBattHoldPlug) ------------------------------------------------
@@ -538,34 +702,39 @@ static void DMBattHoldUnmask(UIView *v) {
     CAShapeLayer *plug = objc_getAssociatedObject(v, kBattHoldPlugKey);
     plug.hidden = YES;
 }
-__attribute__((noinline)) static void DMBattHoldOne(UIView *v, BOOL hold) {
+// YES: it changed the battery's charging state -- and so the fill's colour, which iPadOS draws from it (green while charging, the icon's colour at
+// state 0): the number inside the icon takes its inks from that colour (DMBattInsideOne), so the bar's number is placed again (DMBattHoldBar).
+__attribute__((noinline)) static BOOL DMBattHoldOne(UIView *v, BOOL hold) {
     if (!DMBattHoldCan(v)) {
         static BOOL told = NO;
         if (hold && !told) { told = YES; DMLog([NSString stringWithFormat:@"[battplug] %@: -chargingState / -setChargingState: are %s / %s here, not as read: iOS's bolt stays", NSStringFromClass([v class]), DMBattTypesOf(v, @"chargingState"), DMBattTypesOf(v, @"setChargingState:")]); }
-        return;
+        return NO;
     }
     SEL get = NSSelectorFromString(@"chargingState"), set = NSSelectorFromString(@"setChargingState:");
     BOOL marked = objc_getAssociatedObject(v, kBattHoldMarkKey) != nil;
     if (!hold) {
-        if (!marked) return;
+        if (!marked) return NO;
         NSNumber *own = objc_getAssociatedObject(v, kBattHoldOwnKey);
         objc_setAssociatedObject(v, kBattHoldMarkKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(v, kBattHoldOwnKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         DMBattHoldUnmask(v);
-        ((void (*)(id, SEL, long long))objc_msgSend)(v, set, own ? own.longLongValue : 0);   // (iOS's state back: its bolt, if it charges now)
+        long long back = own ? own.longLongValue : 0;
+        BOOL changed = ((long long (*)(id, SEL))objc_msgSend)(v, get) != back;
+        ((void (*)(id, SEL, long long))objc_msgSend)(v, set, back);   // (iOS's state back: its bolt, if it charges now)
         [v setNeedsLayout];
-        return;
+        return changed;
     }
     if (!marked) {
         DMBattHoldHookInit();
         objc_setAssociatedObject(v, kBattHoldOwnKey, @(((long long (*)(id, SEL))objc_msgSend)(v, get)), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(v, kBattHoldMarkKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    if (((long long (*)(id, SEL))objc_msgSend)(v, get) != 0) { long long s = 0; ((void (*)(id, SEL, long long))objc_msgSend)(v, set, s); [v layoutIfNeeded]; }
+    BOOL changed = NO;
+    if (((long long (*)(id, SEL))objc_msgSend)(v, get) != 0) { long long s = 0; ((void (*)(id, SEL, long long))objc_msgSend)(v, set, s); [v layoutIfNeeded]; changed = YES; }
     UILabel *number = objc_getAssociatedObject(v, kBattInsideLabelKey);
     CGSize size = v.bounds.size;
     MSBDBattPlugBox b = MSBDBattPlugPlace(size.width, size.height);
-    if ((number && !number.hidden) || b.w <= 0) { DMBattHoldUnmask(v); return; }   // (the number inside the icon takes the plug's place)
+    if ((number && !number.hidden) || b.w <= 0) { DMBattHoldUnmask(v); return changed; }   // (the number inside the icon takes the plug's place)
     CGRect plugRect = CGRectMake(b.x, b.y, b.w, b.h);
     UIBezierPath *path = DMBattPlugPath(plugRect);
     CAShapeLayer *plug = objc_getAssociatedObject(v, kBattHoldPlugKey);
@@ -581,7 +750,7 @@ __attribute__((noinline)) static void DMBattHoldOne(UIView *v, BOOL hold) {
     // the gap: one mask on the battery view's own layer -- everything shown but a band around the plug, the plug itself kept -- so it outlives iOS's
     // redraws of its own layers (a level change dropped masks set on them: the plug, the fill's colour, disappeared into the fill at 83 %, iPad 2)
     CALayer *m = objc_getAssociatedObject(v, kBattHoldMaskKey);
-    if (v.layer.mask && v.layer.mask != m) { DMBattHoldUnmask(v); return; }   // (a mask of iOS's own on the view: left as it is, no plug)
+    if (v.layer.mask && v.layer.mask != m) { DMBattHoldUnmask(v); return changed; }   // (a mask of iOS's own on the view: left as it is, no plug)
     CGFloat scale = plug.contentsScale;
     UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat preferredFormat]; fmt.scale = scale; fmt.opaque = NO;
     UIImage *img = [[[UIGraphicsImageRenderer alloc] initWithSize:size format:fmt] imageWithActions:^(UIGraphicsImageRendererContext *c) {
@@ -596,6 +765,7 @@ __attribute__((noinline)) static void DMBattHoldOne(UIView *v, BOOL hold) {
     if (!m) { m = [CALayer layer]; objc_setAssociatedObject(v, kBattHoldMaskKey, m, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
     m.frame = v.layer.bounds; m.contents = (__bridge id)img.CGImage; m.contentsScale = scale;
     if (v.layer.mask != m) v.layer.mask = m;
+    return changed;
 }
 static void DMBattHoldWatch(void);
 static CFTimeInterval gBattHoldJobAt = -100; static BOOL gBattHoldJob = NO;
@@ -616,7 +786,11 @@ __attribute__((noinline)) static void DMBattHoldBar(UIView *fg) {
     static BOOL everOn = NO;
     if (hold) everOn = YES;
     if (!everOn) return;   // (no hold since this start: nothing of ours on any battery)
-    for (UIView *v in DMBattItemViews(fg)) if (![v isKindOfClass:[UILabel class]]) DMBattHoldOne(v, hold);
+    BOOL changed = NO;
+    for (UIView *v in DMBattItemViews(fg)) if (![v isKindOfClass:[UILabel class]]) changed |= DMBattHoldOne(v, hold);
+    // (the hold changed a battery's state, so its fill's colour: the number inside the icon placed again, its inks for that fill -- whether this
+    //  runs from the job's notification or from the bar's layout, where the number's own pass came first)
+    if (changed) DMBattInsideBar(fg);
 }
 static void DMBattHoldEveryBar(void) {
     for (NSHashTable *copies in @[gCopies ?: [NSHashTable weakObjectsHashTable], gAllBarCopies ?: [NSHashTable weakObjectsHashTable]]) for (UIView *fg in copies.allObjects) DMBattHoldBar(fg);
@@ -661,7 +835,8 @@ static void DMBattLayoutButton(UIView *fg, CGFloat left, CGFloat k) {
 }
 
 // The Lock Screen's layout of a copy (StatusBar.x DMLayoutWithoutClock: only passive icons there): the battery is iOS's own -- no menu on the Lock
-// Screen -- and the Control Center icon goes, as the Spotlight icon does; both come back with the unlocked look's layout.
+// Screen -- and the Control Center icon goes, as the Spotlight icon does; both come back with the unlocked look's layout. (Battery Percentage in
+// Icon's part comes after the layout's record of what it was: DMBattInsideLockLayout, from -dm_layoutLogoBody.)
 static void DMBattLockLayout(UIView *fg) {
     for (NSValue *k in @[[NSValue valueWithPointer:kCCIconKey], [NSValue valueWithPointer:kCCButtonKey], [NSValue valueWithPointer:kCCPillKey], [NSValue valueWithPointer:kBattButtonKey]])
         ((UIView *)objc_getAssociatedObject(fg, k.pointerValue)).hidden = YES;

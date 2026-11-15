@@ -2,6 +2,24 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.7.4
+
+### Improvements
+- Battery Percentage in Icon now works with one switch: there is no need to turn off Battery Percentage in Settings > Battery first.
+- Folders in Finder now look like macOS folders, the same as on the desktop.
+- After a respring onto the Lock Screen, the menu bar there is no longer redrawn on every frame for the first 12 seconds.
+- With no hardware keyboard attached, the iPad does less background work while windows are open.
+- Scrolling with a trackpad or mouse while a Finder window is open now takes the iPad less work.
+- The Dock does less work when you open or switch apps.
+
+### Fixes
+- The battery number inside the battery icon is now readable at every charge level.
+- Apps that iPadOS closed in the background to free memory keep their App Switcher card again, as on a stock iPad.
+- With Finder switched off, Activity Monitor and Display Settings no longer keep the keyboard from your apps, and their window shortcuts work.
+- With the Stage Manager engine and Open Apps as Windows off, a minimized window opened from the Dock at the Home Screen comes back as its window instead of full screen.
+- An app brought to the front no longer pops up its on-screen keyboard by itself after a hardware keyboard was disconnected.
+- Turning Charge Limit or Run on Power Adapter off, or changing the limit, now works right away after installing other packages, instead of only after a restart.
+
 ## 1.8.7.3
 
 ### Fixes

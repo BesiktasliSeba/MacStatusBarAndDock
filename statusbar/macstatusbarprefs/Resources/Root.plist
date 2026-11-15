@@ -868,7 +868,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>Shows the battery level as a number inside the battery icon. If Battery Percentage is on in Settings &gt; Battery, the number stays beside the icon instead.</string>
+			<string>Shows the battery level as a number inside the battery icon. It replaces the number beside the icon, whatever Battery Percentage in Settings &gt; Battery is set to.</string>
 			<key>id</key>
 			<string>BATTERY_INSIDE_GROUP</string>
 			<key>stockHides</key>

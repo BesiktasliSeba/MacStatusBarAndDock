@@ -75,7 +75,8 @@ static BOOL RIProcessState(id app, int *pid, int *foreground) {
     return YES;
 }
 // Each running app's process that has been on screen: app -> its pid (RunningDotRule.h MSBDDotSeenPid). Looked at with every read of the running
-// apps (the 0.75 s poll while the screen is on, and each Dock icon's layout); an app that is no longer running is forgotten. Main thread only.
+// apps (the 0.75 s poll while the screen is on, and the Dock's icon layouts: RIRunningForStep); an app that is no longer running is forgotten. Main
+// thread only.
 static NSMutableDictionary<NSString *, NSNumber *> *gRISeenPid;
 
 static NSSet<NSString *> *RIRunningBundleIDs(void) {
@@ -122,6 +123,30 @@ static NSSet<NSString *> *RIRunningBundleIDs(void) {
     if (own.count) [ids unionSet:own];
     return ids;
 }
+// The running set the Dock's icons are laid out with: read once per step of the main run loop (1.8.7.4, audit O5 of 1.8.7.2). Each Dock icon's
+// layout read it for itself (the running apps and their process states, and the windows of every engine), 12-15 times for the same answer when the
+// Dock laid out its icons together (an app switch, a recents change, edit mode), twice per icon with a side Dock (the turn's dot, then the layout's).
+// The first layout of a step reads it and the others use that read. It is forgotten at the run loop's next activity, first among its observers:
+// before the commit lays out (what an event changed is read again there), after a sleep, before the next pass over timers and sources. Within one
+// step (two blocks of one main-queue drain) a later layout of an icon uses the step's read; the commit or the next poll shows a change made between.
+// fresh (the 0.75 s poll, a Dock Style change): always read anew, and what is laid out after it in the step uses this read.
+static NSSet<NSString *> *gRIStepRunning;   // (nil: not read in this step)
+static NSSet<NSString *> *RIRunningForStep(BOOL fresh) {
+    if (gRIStepRunning && !fresh) return gRIStepRunning;
+    NSSet<NSString *> *running = RIRunningBundleIDs() ?: [NSSet set];
+    if (!gRIStepRunning) {
+        CFRunLoopRef main = CFRunLoopGetMain();
+        CFRunLoopObserverRef next = CFRunLoopObserverCreateWithHandler(kCFAllocatorDefault, kCFRunLoopAllActivities, false, 0,
+                                                                       ^(CFRunLoopObserverRef o, CFRunLoopActivity a) { gRIStepRunning = nil; });
+        if (!next) return running;   // (not kept: each layout reads, as before)
+        CFRunLoopAddObserver(main, next, kCFRunLoopCommonModes);
+        CFStringRef mode = CFRunLoopCopyCurrentMode(main);   // (the run loop in a mode of its own, not a common one: forgotten there too)
+        if (mode) { CFRunLoopAddObserver(main, next, mode); CFRelease(mode); }
+        CFRelease(next);   // (one activity, then it is gone)
+    }
+    gRIStepRunning = running;
+    return running;
+}
 
 static const void *kDotKey = &kDotKey;
 UIView *DMRunningDotOf(UIView *iconView) { return iconView ? objc_getAssociatedObject(iconView, kDotKey) : nil; }   // (Bounce.m: the dot holds still while its icon bounces)
@@ -135,7 +160,7 @@ CGFloat gDMDotGapBelowImage = 3.0;
 // very likely collide at link time. One shared call site in Tweak.x avoids that entirely.
 static void RIUpdate(UIView *iconView, NSSet<NSString *> *running);
 void DMUpdateRunningIndicator(UIView *iconView) { RIUpdate(iconView, nil); }
-static void RIUpdate(UIView *iconView, NSSet<NSString *> *running) {   // (running: the set read once for the whole Dock, or nil = read it here)
+static void RIUpdate(UIView *iconView, NSSet<NSString *> *running) {   // (running: the set read once for the whole Dock, or nil = this step's)
     if (!RIWanted() || !RIIsDockIcon(iconView)) {
         UIView *dot = objc_getAssociatedObject(iconView, kDotKey);
         dot.hidden = YES;
@@ -149,7 +174,7 @@ static void RIUpdate(UIView *iconView, NSSet<NSString *> *running) {   // (runni
     for (NSString *key in @[@"bundleIdentifier", @"applicationBundleID", @"leafIdentifier"]) {
         if ([icon respondsToSelector:NSSelectorFromString(key)]) { bundleID = [icon valueForKey:key]; if (bundleID.length) break; }
     }
-    if (!running) running = RIRunningBundleIDs();
+    if (!running) running = RIRunningForStep(NO);
     BOOL isRunning = bundleID.length && [running containsObject:bundleID];
 
     UIView *dot = objc_getAssociatedObject(iconView, kDotKey);
@@ -251,7 +276,7 @@ static void RIResyncDock(void) {
         if (![NSStringFromClass([w class]) isEqualToString:@"SBFloatingDockWindow"]) continue;
         DMCollectDockIconViews(w, icons);
     }
-    NSSet *running = RIWanted() ? RIRunningBundleIDs() ?: [NSSet set] : nil;   // (once per pass, not once per icon)
+    NSSet *running = RIWanted() ? RIRunningForStep(YES) : nil;   // (read anew, once per pass, not once per icon)
     for (UIView *iconView in icons) RIUpdate(iconView, running);
 }
 void DMRunningIndicatorResyncAll(void) { RIResyncDock(); }   // (DockStyle.m: a Dock Style change draws every dot again at once)

@@ -407,6 +407,7 @@ static const void *kSpotIconKey = &kSpotIconKey;
 static const void *kSpotLockHidKey = &kSpotLockHidKey;   // (hidden by the Lock Screen layout: DMLayoutWithoutClock)
 static const void *kHoldKey = &kHoldKey;   // a status bar copy kept invisible until our layout has been applied to it
 static const void *kHoldWantAlphaKey = &kHoldWantAlphaKey;   // the opacity iOS asked for while a copy was held (put back at its release; DMSMMainBarShown reads it)
+static const void *kNoClockLayoutKey = &kNoClockLayoutKey;  // (our Lock Screen layout -- no clock, the icons closed up -- is on this copy; BatteryMenu.h reads it too)
 static const void *kClockSuppressedKey = &kClockSuppressedKey;   // set on a status bar copy that must not draw the clock right now
 static void DMStartClockBalanceIfNeeded(void);
 static void DMHoldStatusBarCopy(UIView *fg);
@@ -12770,6 +12771,11 @@ static id DMKBSceneForApp(NSString *app) {
     return app.length ? (DMSceneForBundle(app) ?: DMFrontBoardSceneForBundle(app)) : nil;
 }
 static void DMKBGiveBack(NSString *app) {   // (main thread) the app in front gets back the keys its field kept: SpringBoard's own focus request for its scene, as a tap
+    // (only with a hardware keyboard, the one the gate is for. Without one, the request put the app's on-screen keyboard up when it came to the
+    //  front without a tap in its field, which an iPad does not do: after a keyboard had been attached and removed, an app whose field keeps the
+    //  keyboard (Amazon's search), or one the gate held back while the keyboard was there -- 1.8.7.4, audit L52 of 1.8.7.2. Asked when the
+    //  request is made: the arbiter's answer comes a moment after the pass)
+    if (!DMHardwareKeyboardAttached()) return;
     if (!DMKBUserFocusRequest(DMKeyboardFocusController(), DMKBSceneForApp(app), @"MacStatusBar: the window in front gets back the keyboard it had")) return;
     DMLog([NSString stringWithFormat:@"[kbbehind] %@ is in front again: the keyboard it had is given back", app]);
 }
@@ -12789,6 +12795,17 @@ static void DMKeyboardFocusBehindWindows(void) {
     //  taken only for a scene with an identifier and an identity token whose prevent call gave one; the pass below empties it, or the arbiter went
     //  on dropping those apps' keyboard requests after the engine changed, until a respring -- code review, 30 Oct)
     if (!can && !gKBBehind.count && !DMKBGateHolds()) return;
+    // (no hardware keyboard: no window is kept from the keys (MSBDKeyboardBehind), so with nothing to undo there is nothing to do either. The
+    //  windows are not walked -- the tick did it 5 times a second for nothing, ~0.34 ms each on the M1; 1.8.7.4, audit O3 of 1.8.7.2 --; only the
+    //  active app is noted, as the pass below does (a keyboard attached later compares with it: an app in front all along did not come to the
+    //  front), and the gate keeps its empty list)
+    BOOL keyboard = DMHardwareKeyboardAttached();
+    if (!keyboard && !gKBBehind.count && !DMKBGateHolds()) {
+        NSString *active = DMNativeActiveApp() ? nil : [DMActiveApp() bundleIdentifier];
+        DMKBSetGateList(nil, [active copy]);
+        gKBBehindLastActive = [active copy];
+        return;
+    }
     NSMutableArray<NSString *> *bundles = [NSMutableArray array];
     NSMutableDictionary<NSString *, NSMutableArray *> *scenesOf = [NSMutableDictionary dictionary];
     if (can) for (UIView *st in DMAerialStagesAll()) {   // (every desktop's windows: one on another desktop types no more than one behind)
@@ -12800,7 +12817,7 @@ static void DMKeyboardFocusBehindWindows(void) {
         [scenesOf[b] addObject:scene];
     }
     NSString *active = DMNativeActiveApp() ? nil : [DMActiveApp() bundleIdentifier];   // (a window of ours in front -- Finder: none of the apps types)
-    NSSet<NSString *> *behind = MSBDKeyboardBehind(bundles, active, DMHardwareKeyboardAttached(), can);
+    NSSet<NSString *> *behind = MSBDKeyboardBehind(bundles, active, keyboard, can);
     {   // (the gate's list first: our own focus request below for an app coming to the front must not meet the list of before -- device check,
         //  M1 30 Oct: Settings made full screen over Maps had its keyboard request of ours dropped as "from behind" once)
         NSMutableSet *gate = [NSMutableSet set];
@@ -12818,7 +12835,8 @@ static void DMKeyboardFocusBehindWindows(void) {
     }
     // (an app at the front again whose field is still typing behind -- the gate held its keyboard back, or its keyboard client still wants the keys
     //  without being the arbiter's active one --: it gets the keys back the way a tap in it would give them, SpringBoard's own focus request for
-    //  its scene; its keyboard comes back on screen. Device check, M1 30 Oct: Amazon brought back stayed "wants YES, active NO" without it)
+    //  its scene; its keyboard comes back on screen. Device check, M1 30 Oct: Amazon brought back stayed "wants YES, active NO" without it.
+    //  Only with a hardware keyboard (DMKBGiveBack), and with none the apps held back while one was attached are let go: 1.8.7.4, audit L52)
     BOOL inFront = active.length && ![behind containsObject:active], cameToFront = inFront && ![gKBBehindLastActive isEqualToString:active];
     gKBBehindLastActive = [active copy];
     if (inFront && DMKBTakeHeldBack(active)) DMKBGiveBack(active);
@@ -12834,7 +12852,7 @@ static void DMKeyboardFocusBehindWindows(void) {
             });
         });
     }
-    if (!can) DMKBClearHeldBack();
+    if (!can || !keyboard) DMKBClearHeldBack();
     for (NSString *sid in want) if (!gKBBehind[sid]) {
         id scene = want[sid], token = [scene respondsToSelector:NSSelectorFromString(@"identityToken")] ? DMCall(scene, @"identityToken") : nil, a = nil;
         if (!token) continue;
@@ -16630,7 +16648,8 @@ static void DMShowForceQuitList(UIView *host) {
 // This periodically reconciles the switcher's own card list against SBApplicationController's live
 // -runningApplications (the same ground truth DMUserRunningApps() already trusts) and deletes the card of
 // an app that went away while this SpringBoard ran (in front since the start, not running now:
-// SwitcherStale.h -- never a card iPadOS brought back from before the respring, which is the user's), via
+// SwitcherStale.h -- never a card iPadOS brought back from before the respring, which is the user's) because
+// the user quit it or it crashed (never one iPadOS ended for memory: audit M3 of 1.8.7.2), via
 // the exact same already-shipped, already-safe call our
 // own force-quit path uses. No alloc/init of anything: SBMainSwitcherViewController's sharedInstance is
 // a singleton the OS already owns, and every other object read here (app layouts, display items) comes
@@ -16706,12 +16725,60 @@ static void DMNoteAppInFront(NSString *bid) {
     if (!gAppsInFrontSinceStart) gAppsInFrontSinceStart = [NSMutableSet set];
     [gAppsInFrontSinceStart addObject:bid];
 }
+// (1.8.7.4, audit M3 of 1.8.7.2: "in front once, not running now" was taken for the user's quit, but iPadOS also ends apps in the background -- for
+//  memory, at a background time-out, for an update, at the watchdog -- and keeps their cards, so with Aerial, Zetsu, MilkyWay4 and no engine the
+//  clean-up took the card of Safari ended behind a game 15 to 30 s later. A card now goes only for an app whose last end was the user's quit
+//  (below) or a crash, as before (KT decides about crashes). How each app last ended is noted here, at
+//  SpringBoard's exit callback, which every end passes: with every engine and none (SwitcherExitKind is installed with the switcher's hooks, not
+//  with an engine's), and each end replaces the last, so a crash, then a relaunch and an end for memory, is no crash any more.)
+// (Review of the M3 fix: the user's quits were the prewarm quit set, which an app leaves only when the user opens it in ways we see (an icon tap,
+//  our launches, DMOpenApp, in front as the active app). An app quit, then running again without that -- dragged from the Dock into Slide Over or
+//  as Split View's second app -- was still on it when iPadOS ended it for memory, and lost its card. So the quit is an end too: a kill for the
+//  user's quit (DMPrewarmQuitAddFromKill: the App Switcher's swipe-up, our Force Quit and red light, each a kill of the app's running process) is
+//  noted for the app (DMNoteAppQuitting), and the app's next end is that quit; any other end is not, as with a crash.)
+static NSMutableSet<NSString *> *gAppsEndedInCrash;   // (the apps whose last end since SpringBoard started was a crash; main thread only)
+static NSMutableSet<NSString *> *gAppsEndedByQuit;    // (the apps whose last end since SpringBoard started was the user's quit; main thread only)
+static NSMutableSet<NSString *> *gAppsQuitting;       // (killed for the user's quit, not ended yet: its next end is the quit; main thread only)
+static void DMNoteAppExit(NSString *bid, id context) {
+    if (!bid.length) return;
+    BOOL crash = MSBDExitContextIsCrash(context);
+    NSString *b = [bid copy];
+    id status = DMCall(DMCall(context, @"underlyingContext"), @"status");
+    dispatch_block_t note = ^{
+        if (!gAppsEndedInCrash) gAppsEndedInCrash = [NSMutableSet set];
+        if (!gAppsEndedByQuit) gAppsEndedByQuit = [NSMutableSet set];
+        BOOL quit = [gAppsQuitting containsObject:b];
+        [gAppsQuitting removeObject:b];
+        if (crash) [gAppsEndedInCrash addObject:b]; else [gAppsEndedInCrash removeObject:b];
+        if (quit) [gAppsEndedByQuit addObject:b]; else [gAppsEndedByQuit removeObject:b];
+        DMLog([NSString stringWithFormat:@"[switchergc] %@ ended%@%@ (%@)", b, crash ? @" in a crash" : @", not in a crash", quit ? @", the user's quit" : @"", status ?: @"no exit status"]);
+    };
+    if ([NSThread isMainThread]) note(); else dispatch_async(dispatch_get_main_queue(), note);
+}
+static void DMNoteAppQuitting(NSString *bid) {   // (the kill for the user's quit, DMPrewarmQuitAddFromKill: before the end it brings)
+    if (!bid.length) return;
+    NSString *b = [bid copy];
+    dispatch_block_t note = ^{ if (!gAppsQuitting) gAppsQuitting = [NSMutableSet set]; [gAppsQuitting addObject:b]; };
+    if ([NSThread isMainThread]) note();
+    else dispatch_async(dispatch_get_main_queue(), note);   // (in order with the exit's own note, which comes after the kill)
+}
+%group SwitcherExitKind
+%hook SBApplication
+- (void)_didExitWithContext:(id)context {
+    DMNoteAppExit([(SBApplication *)self bundleIdentifier], context);
+    %orig;
+}
+%end
+%end
 static void DMCleanStaleSwitcherCards(id sw, NSString *reason) {
     SEL deleteSel = @selector(_deleteAppLayoutsMatchingBundleIdentifier:);
     if (!sw || ![sw respondsToSelector:deleteSel] || DMTestFlag("/tmp/msb-noswitchergc")) return;
     if (DMSMEngine()) return;   // (Stage Manager as the engine: a minimized window's app can be suspended while its window -- its card -- is valid; Stage Manager keeps its own cards)
     NSString *frontBid = [DMFrontApp() bundleIdentifier];   // (the app in front is never "stale", even while its process is still starting)
-    NSArray<NSString *> *stale = MSBDStaleCards(DMSwitcherBundleIDs(sw), DMLiveRunningBundleIDs(), gAppsInFrontSinceStart, frontBid, DMStaleCandidates(), CACurrentMediaTime());
+    NSMutableSet<NSString *> *quit = [NSMutableSet set];   // (the only cards that may go: the app's last end was the user's quit, or a crash)
+    if (gAppsEndedByQuit) [quit unionSet:gAppsEndedByQuit];
+    if (gAppsEndedInCrash) [quit unionSet:gAppsEndedInCrash];
+    NSArray<NSString *> *stale = MSBDStaleCards(DMSwitcherBundleIDs(sw), DMLiveRunningBundleIDs(), gAppsInFrontSinceStart, quit, frontBid, DMStaleCandidates(), CACurrentMediaTime());
     if (!stale.count) return;
     DMLog([NSString stringWithFormat:@"[switchergc] (%@) removing %lu stale switcher card(s) after %.0fs grace: %@",
            reason, (unsigned long)stale.count, kMSBDStaleCardGrace, [stale componentsJoinedByString:@", "]]);
@@ -16783,6 +16850,7 @@ static void DMCleanStaleSwitcherCardsSoon(void) {
 %end
 %end
 static void DMSwitcherHooksInit(void) {
+    %init(SwitcherExitKind);   // (how each app last ended, for the clean-up: every engine and none, DMNoteAppExit)
     if (!objc_getClass("SBMainSwitcherViewController") && objc_getClass("SBMainSwitcherControllerCoordinator")) %init(SwitcherCoordinator16);
     if ([objc_getClass("SBMainSwitcherControllerCoordinator") instancesRespondToSelector:NSSelectorFromString(@"switcherControllerViewWillAppear:animated:")]) %init(SwitcherCoordinator18);
 }
@@ -18656,9 +18724,11 @@ static void DMPresentMenu(UIButton *btn, const void *labelKey, const void *pillK
 static BOOL gNativeAway = NO;   // (the native windows are faded out for the App Library / App Switcher, DMNativeTick)
 // Finder's switch (com.besiktasliseba.macstatusbar finderEnabled, on unless set; Settings > Mac Status Bar > Finder): DMFinderApplyPref. Off -- by
 // the user, or by the crash guard after a crash in Finder's code (tools/crashmap-rules.txt, target finder) --: no Finder windows, and Finder's rows
-// leave the menus; its hooks are only installed once it is on.
+// leave the menus; its hooks are only installed once it is on. The native windows' own touch and key hooks are not Finder's: Activity Monitor and
+// Display Settings, native windows too, install them as they open (DMNativeHooksInit, 1.8.7.4, audit M12 of 1.8.7.2).
 static BOOL gFinderOn = NO;
 #include "NativeWindow.h"   // (our own Mac windows in SpringBoard, 2026-09-30)
+#include "MacFolder.h"      // (the macOS folder: the picture of a folder in Finder and on the desktop, 1.8.7.4 round 2)
 #include "Finder.h"         // (the first one: Finder)
 #include "AppMenus.h"       // (the app's own menus in the menu bar: File, View, History... as the app in front offers them -- 1.8.5 item 3)
 // Our own code opens an app or a link for the user (a menu row, a notice's button, Take Me There, Choose Engine, Edit Go Menu…, Finder or Spotlight
@@ -23452,7 +23522,6 @@ static BOOL DMIsTimeLabel(UIView *v) {
 // shows (after a respring the copy could otherwise sit there for seconds until a retry found it). A safety release makes sure a copy
 // our layout cannot handle is never left invisible.
 static void DMHoldSafetyCheck(UIView *fg, int checks);
-static const void *kNoClockLayoutKey = &kNoClockLayoutKey;  // (our Lock Screen layout -- no clock, the icons closed up -- is on this copy)
 // The items the locked look takes away and the unlocked look brings back. When a copy on screen goes from the locked look to the unlocked one (an
 // unlock, Notification Center pushed up), those that come back fade in together, once (0.25 s, with the status icons' slide); before 1.7.1 they
 // came in one frame, the Spotlight icon alone faded (item 11).
@@ -23514,14 +23583,15 @@ static void DMHoldStatusBarCopy(UIView *fg) {
 }
 // iOS has filled this copy with its text items (the time, the date, the battery percentage), whichever region they are in and whatever our layout
 // makes of them. (Not our own clock lookup: before 1.3.3 the check used the same lookup that had failed -- with a right-to-left language it found
-// no clock and kept each new copy invisible for 30 s.)
+// no clock and kept each new copy invisible for 30 s.) With Battery Percentage in Icon on, the battery percentage is our number inside the icon:
+// iPadOS's is left out of a copy being set up, and for a copy without its time it was the one text item (BatteryMenu.h DMBattInsideNumberIn).
 static BOOL DMCopyHasStockText(UIView *fg) {
     Class stringView = DMSBClass("_UIStatusBarStringView");
     for (UIView *region in fg.subviews) {
         if (![NSStringFromClass([region class]) isEqualToString:@"UIView"]) continue;
         for (UIView *s in region.subviews) if ([s isKindOfClass:stringView] && s.bounds.size.width > 0.5) return YES;
     }
-    return NO;
+    return DMBattInsideNumberIn(fg);
 }
 // An empty copy (SpringBoard fills the real bar seconds after launch) has nothing to flash, so it is simply kept hidden. Only when the
 // stock items exist but our layout still cannot attach (or after a long time) is the copy released, so it can never stay invisible; such a copy
@@ -23544,6 +23614,7 @@ static void DMHoldSafetyCheck(UIView *fg, int checks) {
             DMSBDiagStep(@"z-hold-gave-up");
             objc_setAssociatedObject(v, kHoldGaveUpKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             DMReleaseStatusBarCopy(v);
+            DMBattInsideLeftToIOS(v);   // (Battery Percentage in Icon: not ours now -- the number in the icon follows iPadOS's, BatteryMenu.h)
         } else DMHoldSafetyCheck(v, checks + 1);
     });
 }
@@ -23867,9 +23938,13 @@ static BOOL DMBarCopyIsCCDuplicate(UIView *fg) {
         // copy (not ours yet: it never had a clock) its clock ~0.2 s after the Cover Sheet starts to leave; held meanwhile, the bar was empty for
         // that time (1.7.2 item 7, A12Z). The items then fade in together with the clock (DMBarFadeBack).
         BOOL lockedNow = DMBarLockedNow();
+        BOOL battWasOurs = DMBattInsideBarOurs(fg);   // (Battery Percentage in Icon: whether the bar was ours before this layout)
         BOOL laidOut = DMLayoutWithoutClock(fg);
         BOOL keepsLockedLook = laidOut && !lockedNow && [objc_getAssociatedObject(fg, kBarLookLockedKey) boolValue];
         objc_setAssociatedObject(fg, kNoClockLayoutKey, (laidOut && (lockedNow || keepsLockedLook)) ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        // (Battery Percentage in Icon: the number at this layout, after its record -- the Lock Screen's bar is ours, a copy still being built only
+        //  while it is held -- BatteryMenu.h DMBattInsideLockLayout)
+        if (laidOut) DMBattInsideLockLayout(fg, battWasOurs);
         // (K-5: locked, this layout itself hides the copy's lights and titles -- before, only the reported lock did, so a lock the watcher did not see
         //  left them on the Lock Screen -- and the watcher checks the record)
         if (laidOut && lockedNow) DMHideAppBarItemsOf(fg);
@@ -25046,6 +25121,20 @@ static UIView *DMFindForegroundView(UIView *v) {
 // The foreground view only lays out when something changes, which can be long
 // after a respring, so go and look for it instead of waiting.
 // Right after launch look for the status bar every frame (instead of every second) and lay it out the moment its stock items exist.
+// Laid out = the clock layout (the logo), or the Lock Screen's layout with its status icons there (1.8.7.4, audit O2 of 1.8.7.2). The Lock Screen's
+// bar has no clock (the big clock shows the time), so its copy never gets the logo there: the watcher took it for a copy still being built and laid
+// it out again every frame for all of its 12 s (720 lock-path layouts at 60 Hz, 1440 at 120 Hz) after each boot or respring onto the Lock Screen,
+// at SpringBoard's busiest moment. A copy laid out the Lock Screen's way (ours, kNoClockLayoutKey, and locked as it was laid out,
+// kBarLaidOutLockedKey) is released as its own layout pass releases it, and the watcher stops; an empty one (iOS fills the bar after launch) is
+// watched on as before. The clock layout at the unlock is not the watcher's: the unlock lays the bars out (iOS's own pass on 15/16;
+// DMBarCoverLeaving, DMWatchLock's DMRelayoutUnattachedBars and the labels' attach on 17+), as for any unlock after the watcher's 12 s, and
+// DMEnsureLogo still looks once a second until 42 s after the start.
+static BOOL DMStartupLockScreenDressed(UIView *fg) {
+    if (!objc_getAssociatedObject(fg, kNoClockLayoutKey) || ![objc_getAssociatedObject(fg, kBarLaidOutLockedKey) boolValue]) return NO;
+    for (UIView *sub in DMTrailingContainer(fg).subviews)   // (a status icon shown, as DMLayoutWithoutClock reads them)
+        if (!sub.hidden && sub.alpha >= 0.05 && sub.bounds.size.width >= 1.0) return YES;
+    return NO;
+}
 @interface DMStartupWatcher : NSObject
 - (void)frame:(CADisplayLink *)link;
 @end
@@ -25054,17 +25143,18 @@ static CFTimeInterval gStartupBegan = 0.0;
 @implementation DMStartupWatcher
 - (void)frame:(CADisplayLink *)link {
     if (!gStartupBegan) gStartupBegan = link.timestamp;
-    BOOL done = NO;
+    BOOL attached = NO, lockScreen = NO;
     for (UIWindow *w in DMAllWindows()) {
         if (!DMSBIs(NSStringFromClass([w class]), "UIStatusBarWindow")) continue;
         UIView *fg = DMFindForegroundView(w);
         if (!fg) continue;
         DMHoldStatusBarCopy(fg);
         [(_UIStatusBarForegroundView *)fg dm_layoutLogo];
-        if (objc_getAssociatedObject(fg, kLogoKey)) { DMReleaseStatusBarCopy(fg); done = YES; }
+        if (objc_getAssociatedObject(fg, kLogoKey)) { DMReleaseStatusBarCopy(fg); attached = YES; }
+        else if (DMStartupLockScreenDressed(fg)) { DMReleaseStatusBarCopy(fg); lockScreen = YES; }
     }
-    if (done || link.timestamp - gStartupBegan > 12.0) {
-        DMLog([NSString stringWithFormat:@"[startup] status bar %@ %.2f s after the watcher started", done ? @"attached" : @"NOT found; watcher stopped", link.timestamp - gStartupBegan]);
+    if (attached || lockScreen || link.timestamp - gStartupBegan > 12.0) {
+        DMLog([NSString stringWithFormat:@"[startup] status bar %@ %.2f s after the watcher started", attached ? @"attached" : lockScreen ? @"laid out the Lock Screen's way (its clock comes at the unlock); watcher stopped" : @"NOT found; watcher stopped", link.timestamp - gStartupBegan]);
         [gStartupLink invalidate];
         gStartupLink = nil;
     }
@@ -40301,10 +40391,12 @@ static BOOL DMNativeScrollIsOurs(UIEvent *event, UIWindow *named) {
     if (named && ![NSStringFromClass([named class]) isEqualToString:@"_UISystemGestureWindow"]) return NO;
     if (!DMScrollOldPath() && DMScrollAlsoToLayer(event, layer)) return NO;   // (the layer's own copy is UIKit's; tests: 1.7.1 took every global copy)
     CGPoint p = ((CGPoint (*)(id, SEL, id))objc_msgSend)(event, locSel, layer);
-    CGPoint sp = [layer convertPoint:p toCoordinateSpace:layer.screen.coordinateSpace];
-    if (DMNativeWindowTaking(sp, layer.windowLevel)) return NO;   // (a window of SpringBoard's above the layer takes that point: the Dock, a menu, an alert)
+    // (our own windows first, as a touch's test asks them, DMNativeWindowAtScreenPoint: most scrolls are over an app, where the layer answers nothing
+    //  at once; only a point on a native window walks the windows above the layer, each hit-tested -- before, every scroll did, 60-120 a second)
     UIView *hit = DMNativeLayerHitTest(layer, @selector(hitTest:withEvent:), p, nil);
     if (!hit) return NO;
+    CGPoint sp = [layer convertPoint:p toCoordinateSpace:layer.screen.coordinateSpace];
+    if (DMNativeWindowTaking(sp, layer.windowLevel)) return NO;   // (a window of SpringBoard's above the layer takes that point: the Dock, a menu, an alert)
     BOOL inWindow = NO;
     for (UIView *v = hit; v && v != layer; v = v.superview) if ([v isKindOfClass:[DMNativeWindow class]]) { inWindow = YES; break; }
     return inWindow || (gOverlay && [gOverlay isDescendantOfView:layer]) || layer.rootViewController.presentedViewController;   // (a Finder item menu in the layer, or its modal)
@@ -40467,7 +40559,8 @@ static BOOL DMNativeScrollMove(UIEvent *event) {
 static BOOL DMNativeScrollEvent(UIEvent *event) { return (!gDMScrollRouted || DMScrollOldPath()) && !DMScrollNone() && DMNativeScrollMove(event); }   // (the old path: only without the hook)
 // Esc while the Dock's Downloads panel is open and SpringBoard has the keys (the panel holds them while it is open, also over an app's window):
 // the panel closes first, whatever window of ours is active (dock/Downloads.m MSBDDownloadsPanelEscape; found once with dlsym -- without the Dock
-// tweak, nothing changes). Asked from both of SpringBoard's key hooks: the native windows' (Finder on) and the menus' Esc (always there).
+// tweak, nothing changes). Asked from both of SpringBoard's key hooks: the native windows' (Finder on, or a native window shown) and the menus' Esc
+// (always there).
 static BOOL DMDownloadsPanelTakesEsc(NSSet<UIPress *> *presses) {
     static BOOL (*esc)(void); static BOOL looked = NO;
     UIKeyModifierFlags mods = UIKeyModifierCommand | UIKeyModifierAlternate | UIKeyModifierControl | UIKeyModifierShift;
@@ -40718,8 +40811,8 @@ static BOOL DMSMWindowDragLeavesTouch(id manager, UIGestureRecognizer *g, UITouc
 %end
 %end
 // Settings > Mac Status Bar > Finder: on, Finder's windows, menus, Go menu places and Dock icon are there and its hooks are installed (once, at
-// the start or when switched on -- no respring either way); off, every Finder window closes and nothing opens one (the hooks, if installed, only
-// look at native windows: with none they do nothing). The Dock hides its Finder icon itself (it reads the same switch).
+// the start or when switched on -- no respring either way); off, Finder's windows close (its folders, Quick Look, TextEdit) and nothing opens one
+// (the hooks, if installed, only look at native windows: with none they do nothing). The Dock hides its Finder icon itself (it reads the same switch).
 static BOOL DMFinderPrefOn(void) {
     CFPreferencesAppSynchronize(MSB_DOMAIN);
     CFPropertyListRef v = CFPreferencesCopyValue(CFSTR("finderEnabled"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
@@ -40727,22 +40820,41 @@ static BOOL DMFinderPrefOn(void) {
     if (v) CFRelease(v);
     return on;
 }
-// Stage Manager's window gestures, told to leave the touches that are ours (DMNativeSysGestures): with Finder on (its native windows, our own
-// keyboard), and with the Stage Manager engine (our title bar's drag, 1.7.4 item 13) -- installed once, by whichever comes first.
+// Stage Manager's window gestures, told to leave the touches that are ours (DMNativeSysGestures): with the native windows (DMNativeHooksInit: Finder
+// on, or the first native window shown; our own keyboard), and with the Stage Manager engine (our title bar's drag, 1.7.4 item 13) -- installed once,
+// by whichever comes first.
 static void DMNativeSysGesturesInit(void) {
     static BOOL done = NO;
     if (done) return;
     done = YES;
     if ([objc_getClass("SBFluidSwitcherGestureManager") instancesRespondToSelector:@selector(gestureRecognizer:shouldReceiveTouch:)]) %init(DMNativeSysGestures);
 }
+// The touch and key hooks every native window needs (NativeWindow.h: a touch in an app makes the native windows inactive and gives the keyboard back,
+// their keys -- Command-W, Command-M, Esc -- and a trackpad's scroll over them), installed once: at the start or when switched on with Finder (its
+// windows, and its desktop, which uses the same hooks), else the first time any native window comes on screen (-[DMNativeWindow show]). They were
+// Finder's switch's alone, so with Finder off at the start Activity Monitor and Display Settings took SpringBoard's keyboard lock and nothing gave it
+// back: typing in the app tapped next went nowhere, and the window's keys did nothing (1.8.7.4, audit M12 of 1.8.7.2). Once in, they stay (with no
+// native window they do nothing).
+static void DMNativeHooksInit(void) {
+    static BOOL done = NO;
+    if (done) return;
+    done = YES;
+    %init(DMNativeHooks);   // (native windows: touches and keys, NativeWindow.h)
+    if (!DMCtorSkip("scrollroute")) DMScrollRoutingInit();   // (a trackpad's or wheel's scroll over a native window: UIKit scrolls it, DMScrollWSWindow)
+    DMNativeSysGesturesInit();
+    DMLog(@"[native] the native windows' touch and key hooks installed");
+}
+// Finder's own native windows (its folders, Quick Look, TextEdit): they go when Finder is switched off. Activity Monitor and Display Settings are
+// native windows of their own and stay.
+static BOOL DMNativeIsFinders(DMNativeWindow *w) {
+    return [w isKindOfClass:[DMFinderWindow class]] || [w isKindOfClass:[DMQuickLookWindow class]] || [w isKindOfClass:[DMTextWindow class]];
+}
 static void DMFinderApplyPref(void) {
     static BOOL hooked = NO;
     BOOL on = DMFinderPrefOn() && !DMCtorSkip("finder");
+    if (on) DMNativeHooksInit();   // (at once: the desktop uses them before any window opens)
     if (on && !hooked) {
         hooked = YES;
-        %init(DMNativeHooks);   // (native windows: touches and keys, NativeWindow.h)
-        if (!DMCtorSkip("scrollroute")) DMScrollRoutingInit();   // (a trackpad's or wheel's scroll over a native window: UIKit scrolls it, DMScrollWSWindow)
-        DMNativeSysGesturesInit();
         DMFinderDockInit();     // (the Dock's Finder icon: its taps, and Finder's window count for its dot)
     }
     DMDesktopApplyPref();   // (Show Desktop Icons: the same notification -- the tick puts the desktop up or takes it away)
@@ -40751,8 +40863,13 @@ static void DMFinderApplyPref(void) {
     gFinderOn = on;
     DMDockTrashApplyPref();   // (the Dock's Trash follows Finder: DockTrash.h)
     DMLog([NSString stringWithFormat:@"[finder] Finder %@", on ? @"on" : @"off: its windows close"]);
-    if (!on) for (DMNativeWindow *w in [gNativeWindows copy]) { [w close]; [gNativeWindows removeObjectIdenticalTo:w]; }
-    if (!on) DMNativeApplyLevel();
+    if (on) return;
+    // (a close makes the last native window active, so one that was not -- Activity Monitor behind the apps while Finder is switched off in
+    //  Settings -- would come forward with the keyboard: the active window stays so, else none is active)
+    DMNativeWindow *keep = gNativeActive && !DMNativeIsFinders(gNativeActive) ? gNativeActive : nil;
+    for (DMNativeWindow *w in [gNativeWindows copy]) if (DMNativeIsFinders(w)) { [w close]; [gNativeWindows removeObjectIdenticalTo:w]; }
+    if (gNativeActive != keep) DMNativeSetActive(keep);
+    DMNativeApplyLevel();
 }
 #include "StockBar.h"   // "Use Stock Status Bar": the start that runs instead of everything below
 // Untested iPadOS (17+ with Enable Anyway, common/Diag.h): which of our hooked methods do not exist on this iOS -- a hook on a missing method is
@@ -41810,6 +41927,17 @@ static void DMSMFitAskThen(NSString *bundle, NSString *leftB, NSString *rightB, 
 }
 // (debug: why an icon tap was not added to the stage -- the normal launch then, joined by DMSMJoinDesktop. Release: just NO)
 static BOOL DMSMAddNo(NSString *bundle, NSString *why) { DMLog([NSString stringWithFormat:@"[smtap] %@: not added to the stage (%@) -- the normal launch", bundle, why]); return NO; }
+// A tap on an app's icon at the Home Screen while apps open full screen (Open Apps as Windows off): has the app a minimized WINDOW, one that comes
+// back as that window (DMSMOpensAsWindow, 1.4.5: minimized at a window size of its own, by its yellow light or by Home with Home Minimizes Windows)?
+// Then the tap is SpringBoard's own launch, which opens it, and the join brings it back as that window (DMSMJoinDesktop), as with Open Apps as
+// Windows on, from the Dock with a stage on screen, and on the other engines. The Home Screen's branch made a full-screen stage of the app at once
+// (DMSMOpenFullScreenStage) without asking, so the window came back full screen (1.8.7.4, audit M13 of 1.8.7.2). Each minimized window of the app by
+// its own key (an older version's entry by app: the app's newest window); a full-screen app sent to the background answers NO, and its app opens full
+// screen as before.
+static BOOL DMSMHomeTapBringsWindow(NSString *bundle) {
+    for (NSString *k in [DMSMMinimizedSet() allObjects]) if ([DMSMKeyBundle(k) isEqualToString:bundle] && DMSMOpensAsWindow(k, NO, YES)) return YES;
+    return NO;
+}
 static BOOL DMSMAddToStage(NSString *bundle, UIView *from) {   // from: the icon tapped (its display: the iPad or the TV)
     DM_FEATURE_MARK("sm-add-to-stage");
     if (!DMSMEngine() || !bundle.length || DMTestFlag("/tmp/msb-sm-noadd")) return NO;
@@ -41837,8 +41965,9 @@ static BOOL DMSMAddToStage(NSString *bundle, UIView *from) {   // from: the icon
         // (1.8.7: with Mac Switcher desktops of its own, only the stage the TV shows -- its current desktop's; at its empty desktop the launch makes one)
         if (DMMSWSMTVDesktops(identity) && al != DMMSWSMShownOn(identity) && ![al isEqual:DMMSWSMShownOn(identity)]) return DMSMAddNo(bundle, @"the TV shows no stage of its current desktop");
     }
-    if (main && !front) {   // (the Home Screen: a new stage, as usual -- full screen when apps do not open as windows)
+    if (main && !front) {   // (the Home Screen: a new stage, as usual -- full screen when apps do not open as windows, a minimized window as that window)
         if (windowed || !map.count) { DMSMGrowFromDockAtTapForApp(bundle); return DMSMAddNo(bundle, @"from the Home Screen (no app in front)"); }
+        if (DMSMHomeTapBringsWindow(bundle)) { DMSMGrowFromDockAtTapForApp(bundle); return DMSMAddNo(bundle, @"from the Home Screen: its minimized window comes back as that window"); }
         return DMSMOpenFullScreenStage(bundle, map[map.allKeys.firstObject], identity);
     }
     if (main && ![inStage containsObject:[front bundleIdentifier]]) return DMSMAddNo(bundle, [NSString stringWithFormat:@"the app in front (%@) is not in the front stage (%@)", [front bundleIdentifier], [[inStage allObjects] componentsJoinedByString:@", "]]);
@@ -42057,7 +42186,8 @@ static void DMSMOpenRequestInstall(void) {   // (optional: without it the questi
 // windows by the engines' one rule (1.8.0) --, kept ABOVE the Dock (new windows reached under it, SM-2); full screen when apps do not open as
 // windows. newest: the stage's newest interaction time (the window goes in front).
 // A minimized WINDOW opened again comes back as that window, also when apps open full screen (Open Apps as Windows off), as a minimized window does
-// with Aerial, Zetsu and MilkyWay4 (DMSurfaceWindowForApp). From the Dock it came back full screen (1.4.5). A full-screen app sent to the background
+// with Aerial, Zetsu and MilkyWay4 (DMSurfaceWindowForApp). From the Dock it came back full screen (1.4.5); from the Home Screen too, until its tap
+// asked as well (DMSMHomeTapBringsWindow: 1.8.7.4, audit M13 of 1.8.7.2). A full-screen app sent to the background
 // (Home marks it minimized) has full-screen attributes of its own and comes back full screen, as before. minimized: its mark before this launch.
 static BOOL DMSMOpensAsWindow(NSString *key, BOOL windowed, BOOL minimized) {
     if (windowed || !minimized || !key.length) return windowed;
@@ -45825,6 +45955,7 @@ static void DMPrewarmQuitAddFromKill(id process, long long reason) {
     NSString *b = DMCall(process, @"bundleIdentifier");
     if (![b isKindOfClass:[NSString class]]) return;
     NSString *bid = [b copy];
+    DMNoteAppQuitting(bid);   // (the App Switcher clean-up: the app's next end is this quit)
     dispatch_block_t quit = ^{ DMPrewarmQuitAdd(bid); DMMSWForgetApp(bid); dispatch_async(dispatch_get_main_queue(), ^{ DMMSWMWCloseQuitAway(bid); }); };
     if ([NSThread isMainThread]) quit();
     else dispatch_async(dispatch_get_main_queue(), quit);

@@ -49,14 +49,15 @@ for o, h in [('o_KBArbiterRequest', 'DMKBArbiterRequest'), ('o_KBArbiterStatus',
     check(0 <= i < j, f'{o} is set before {h} is hooked (the arbiter\'s queue may call it meanwhile)')
 # 4. the gate off (the engine changed, Stage Manager, the debug switch): the pass stops early only when nothing of it is left -- no assertion, no
 #    list, no app held back (code review, 30 Oct: a list set with no assertion taken stayed, and the arbiter dropped those apps' requests until a
-#    respring); otherwise it runs through, which empties the list and the held-back set
+#    respring); otherwise it runs through, which empties the list and the held-back set (with no hardware keyboard too: 1.8.7.4, audit L52;
+#    the no-keyboard early return itself: test-kbnokeyboard.sh)
 early = [l.strip() for l in policy.split('\n') if l.strip().startswith('if (!can') and l.strip().endswith('return;')]
 check(len(early) == 1 and all(x in early[0] for x in ('!gKBBehind.count', '!DMKBGateHolds()')),
       'with the gate off the pass stops early only when no assertion, list or held-back app is left ' + (f'({early})' if len(early) != 1 else ''))
 holds = body('static BOOL DMKBGateHolds(void) {')
 check(bool(holds) and 'gKBBehindBundles.count' in holds and 'gKBHeldBack.count' in holds, 'DMKBGateHolds asks for both the list and the held-back set')
 check('if (can) for (NSString *b in behind) if (scenesOf[b].count) [gate addObject:b];' in policy and 'DMKBSetGateList(gate.count ? [gate copy] : nil, [active copy]);' in policy
-      and 'if (!can) DMKBClearHeldBack();' in policy, 'a pass with the gate off sets an empty list and empties the held-back set')
+      and 'if (!can || !keyboard) DMKBClearHeldBack();' in policy, 'a pass with the gate off, or with no hardware keyboard, sets an empty list and empties the held-back set')
 # 5. 1.7.4 item 2: the policy runs on iPadOS 15-18 (every call it makes is there with the same types on 16.7.7, 17.5.1 and 18.5), never with the
 #    Stage Manager engine; the app at the front gets its keys back with SpringBoard's own focus request as 15 has it or as 16-18 have it (the
 #    2-argument call is gone there: before 1.7.4 the give-back did nothing on 16)
