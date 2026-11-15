@@ -226,7 +226,7 @@ Which one? On an iPad with Stage Manager (or TrollPad) on iPadOS 16.1 to 18, a n
 |---|---|---|---|---|
 | iPad Pro 11" (M1, 2021) | 15.6.1 | Dopamine | Aerial 5.0 and 5.1, Zetsu, MilkyWay4 | Tested by the developer |
 | iPad Pro 9.7" | 16.7.7 | palera1n | Aerial 5.0 and 5.1, Zetsu, Stage Manager (with TrollPad) | Tested by the developer |
-| iPad Pro 12.9" (2nd generation) | 17.5.1 | palera1n | Stage Manager (with TrollPad), Aerial 5.1, Zetsu 1.6.6 | Tested by the developer |
+| iPad Pro 12.9" (2nd generation) | 17.5.1 | Dopamine | Stage Manager (with TrollPad), Aerial 5.1, Zetsu 1.6.6 | Tested by the developer |
 | iPad Pro 12.9" (4th generation) | 18.5 | Dopamine | Stage Manager (the iPad's own), Aerial 5.1, Zetsu 1.6.6 | Tested by the developer |
 | iPad Pro 10.5" | 16.6.1 | rootless | not reported | Reported working by a user |
 | iPad (5th generation) | 16.7.16 | rootless | not reported | Reported working by a user |
