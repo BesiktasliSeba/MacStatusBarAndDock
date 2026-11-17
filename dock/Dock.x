@@ -3544,6 +3544,10 @@ static void DMDockSideHookFadeIn(void) {
     if (!m || strcmp(method_getTypeEncoding(m) ?: "", "v36@0:8@16B24@?28")) { DMLog(@"[dockside] the recents' fade-in is not as read here: a recents icon is turned at its next layout"); return; }
     MSHookMessageEx(c, sel, (IMP)DMDockFadeIn, (IMP *)&o_DockFadeIn);
 }
+// SpringBoard's start: YES while this part's constructor runs (%ctor, below), inside dyld's loading of this part, before SpringBoard's main.
+// Nothing reached from it asks UIKit for its screens or windows: UIKit's first set-up there can wait on FrontBoard's listener thread, which waits
+// on dyld (GitHub #16, statusbar/StatusBar.x gDMInCtor). Mac test: tools/test-ctornouikit.sh.
+static BOOL gDMInCtor = NO;
 static void DMDockSideChoose(void) {
     if (gDockPosition != MSBDDockBottom) {
         static BOOL installed = NO;
@@ -3594,6 +3598,7 @@ static void DMDockSideChoose(void) {
 #endif
         }
     }
+    if (gDMInCtor) return;   // (the constructor: no Dock window exists yet -- the hooks above lay the Dock out at its side as SpringBoard makes it)
     if (gDockPosition != MSBDDockBottom || gDockSideApplied) DMDockSideRefresh();
 }
 // ---- Edit Home Screen (1.8.3 item 5): our items as Apple's Dock icons while the Home Screen is in edit mode (EditProxy.m, EditProxyRule.h) ----
@@ -3640,7 +3645,9 @@ extern void DMBounceTapped(UIView *iconView, NSString *bid);
 }
 %end
 %end
+static void DMCtorOver(BOOL *inCtor) { gDMInCtor = NO; }   // (every way out of %ctor: the cleanup of its first line)
 %ctor {
+    BOOL inCtor __attribute__((cleanup(DMCtorOver), unused)) = gDMInCtor = YES;   // (SpringBoard's start: no UIKit screens or windows from here, gDMInCtor)
     %init;
     DMEditHook();
     {   // (Animate Opening Applications: the icon tap's recognizer action, in its 15-18 shape -- v@:@ with any frame sizes)

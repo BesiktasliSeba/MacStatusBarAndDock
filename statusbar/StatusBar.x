@@ -127,6 +127,12 @@ static BOOL DMDockAutoHideAnyTakenOn(void);   // (another display's room stands 
 // TV window inside the iPad's desktop, 1366 x 963 pt on the 2560 x 1440 TV (A12Z 18.5, 11 Nov; since 1.8.2's DMDockPositionMoved). Each display's own Dock change
 // is DMDockAutoHideDisplaysFollow's.
 static int gSMIPadDesktopScope = 0;
+// SpringBoard's start: YES while this part's constructor runs (%ctor, at the end of this file). It runs inside dyld's loading of this part, dyld's
+// loader lock held, before SpringBoard's main: nothing reached from it asks UIKit for its screens or makes or lists its windows. UIKit's first
+// screen set-up there waited on FrontBoard's listener thread, which waited on that lock, and SpringBoard hung at every start until the watchdog
+// (GitHub #16, 1.8.6 to 1.8.7.5: Finder's Trash asked for the displays). DMDispScreens answers none meanwhile; what needs the screens at the
+// start asks once the main queue runs, after every initializer (DockTrash.h, MacSwitcher.h). Mac test: tools/test-ctornouikit.sh.
+static BOOL gDMInCtor = NO;
 #include "../common/DisplayPrefs.h"   // (1.8.7: the per-display rule and names, plain C; the layer itself, DisplayPrefs.h, is included further down)
 static NSString *DMDispKeyOfScreen(UIScreen *s);   // (the per-display layer, DisplayPrefs.h, included further down)
 static NSArray<UIScreen *> *DMDispScreens(void);
@@ -417,7 +423,7 @@ static const void *kClockSuppressedKey = &kClockSuppressedKey;   // set on a sta
 static void DMStartClockBalanceIfNeeded(void);
 static void DMHoldStatusBarCopy(UIView *fg);
 static void DMReleaseStatusBarCopy(UIView *fg);
-static void DMStockVPNRecheck(UIView *fg);
+static BOOL DMStockVPNRecheck(UIView *fg);
 static BOOL DMBarCopyIsCCDuplicate(UIView *fg);
 static const void *kSpotButtonKey = &kSpotButtonKey;
 static const void *kEditLabelKey = &kEditLabelKey;
@@ -2177,6 +2183,13 @@ static void DMSMMainBarChanged(UIView *fg) {
     dispatch_async(dispatch_get_main_queue(), ^{ DMSMRefreshBars(); });
 }
 static BOOL DMSMStripIsMenuBar(UIView *strip) { return DMSMInFullScreenCard(strip) && !DMSMMainBarShown(strip); }
+// A window card's strip that is not the top bar: held hidden (our layout, the alpha hook), and nothing of ours is on it then -- our background
+// hides with it, so our black text ends too (DMApplyBarItemColor): the strip keeps iPadOS's colour for its app, which the screen's own bar reads
+// over that window (DMBarWindowTextOn). (1.8.7.6 FULLBAR round 1: our black stayed on a strip that stopped being the top bar, and with Background
+// Off the screen's bar over it found no text of the window's: iPadOS's white on Settings' white.)
+static BOOL DMSMStripHidden(UIView *strip) {
+    return DMSMEngine() && [NSStringFromClass([strip.window class]) isEqualToString:@"SBMainSwitcherWindow"] && !DMSMStripIsMenuBar(strip);
+}
 void DMSMRefreshBars(void);
 #if DEBUG
 // (debug test, the 1.5.2 top-bar item: a bar refresh at a chosen moment -- the file holds how many ms after the moment named; one refresh)
@@ -6501,12 +6514,14 @@ static void DMBarCoverLeaving(void) {
         if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog(@"[lock] the Cover Sheet starts to leave: the status bars laid out unlocked now");
     });
 }
-// Every live status bar copy that is in a window but not ours yet (no logo, not laid out the Lock Screen's way) is laid out again: after an unlock, the
-// Cover Sheet going up, the end of the start-up, and when its leading region gets its time label. iPadOS 17 fills the leading region at the unlock
-// without a layout pass of the foreground view (15/16 laid it out: our layout ran there), so a copy that was not ours stayed stock (17.5.1; 18.5 the
-// same, plans/ipados18-compat.md). setNeedsLayout: our layout runs in this run loop's layout pass, before the frame is drawn -- no stock frame.
+// Every live status bar copy that is in a window but not ours yet (no logo) is laid out again: after an unlock, the Cover Sheet going up or coming
+// down, the end of the start-up (17+), and when its leading region gets its time label (17+). iPadOS fills the leading region at the unlock without
+// a layout pass of the foreground view, so a copy that was not ours stayed stock (17.5.1; 18.5 the same, plans/ipados18-compat.md). 15/16 too: the
+// time label comes back with no layout pass there either (iPad 2 16.7.7 frame bursts, 30 Oct: DMBarLayoutAgainBeforeDraw's note); until 1.8.7.7 this
+// returned on 15/16, taking the unlock's own pass for granted, and the Lock Screen's copy after a respring (never ours: no clock there) stayed stock
+// after any unlock past DMEnsureLogo's last look, ~42 s (GitHub issue #14, 16.3.1). setNeedsLayout: our layout runs in this run loop's layout pass,
+// before the frame is drawn -- no stock frame; held by it (its -layoutSubviews hook) and released as ours, iOS's items asked then.
 static void DMRelayoutUnattachedBars(NSString *why) {
-    if (!DMSBUseSTUI()) return;   // (15/16: the unlock's own layout pass does it, as before)
     int n = 0;
     for (UIView *fg in gAllBarCopies.allObjects) {
         if (!fg.window || objc_getAssociatedObject(fg, kLogoKey)) continue;
@@ -21244,6 +21259,14 @@ static BOOL DMBackgroundWanted(void) {
 // which keeps it readable whatever the system picks; a switch between the two cross-fades (0.3 s, like the text). Otherwise the colour is only
 // written when it changes. (Before, a light colour followed iPadOS's text too: under light text, white on white.) Returns whether the background
 // shows.
+// The background is a view of the copy itself (the bar's contents view, fg), under everything in it: it shows, hides, fades and goes with that
+// copy. (Before, 1.8.7.6 FULLBAR, the 17.5's trace of 16 Nov: it was the copy's but put in the bar, beside the copy. iPadOS gives a bar a new
+// contents view after its bar was faded out -- back from a full screen whose window's own bar showed, and every open and close of our Control
+// Center --, and each one got a background of its own while the old one stayed in the bar: shown, never coloured again, never hidden, one more
+// white layer at 0.36 each time, 204 -> 216 -> 231 -> 242 -> 246 -> 249 over the sky, opaque white in the end; Background Off hid only the
+// newest, so a near-white bar with iPadOS's white text, and the grey under a full screen with Off. And a copy we hold hidden by its opacity -- a
+// window card's strip that is not the top bar, a copy being set up -- kept its background showing: one more layer under the screen's bar over
+// Clock's full screen, 195 where Clock's own strip showed 107.)
 static const void *kBackgroundLightKey = &kBackgroundLightKey;
 static BOOL DMBarDarkTextOn(UIView *fg);   // (below: our black text is in force on this bar)
 static BOOL DMApplyBackground(UIView *fg, UIColor *textColor) {
@@ -21256,7 +21279,7 @@ static BOOL DMApplyBackground(UIView *fg, UIColor *textColor) {
         bg = [UIView new];
         bg.userInteractionEnabled = NO;
         bg.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        [bar insertSubview:bg belowSubview:fg];
+        [fg insertSubview:bg atIndex:0];
         objc_setAssociatedObject(fg, kBackgroundKey, bg, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     CGFloat r = 1, g = 1, b = 1;
@@ -21264,7 +21287,8 @@ static BOOL DMApplyBackground(UIView *fg, UIColor *textColor) {
     // (while our black text is in force the text colour is ours, not iPadOS's -- on a light colour, whose background does not follow the text: not
     //  kept as iPadOS's, or the end of ours looked like a flip of iPadOS's text and faded -- 1.8.7.5 round 1)
     BOOL ours = DMBarDarkTextOn(fg);
-    if (!CGRectEqualToRect(bg.frame, bar.bounds)) bg.frame = bar.bounds;
+    CGRect whole = [fg convertRect:bar.bounds fromView:bar];   // (the whole bar, as before, in the copy's own place)
+    if (!CGRectEqualToRect(bg.frame, whole)) bg.frame = whole;
     UIColor *want = MSBDBarBackgroundChosen(gBgColorLight, lightText) ? [(gBgColor ?: [UIColor blackColor]) colorWithAlphaComponent:gBgOpacity]
                                                                       : [UIColor colorWithWhite:0.96 alpha:gBgOpacity];
     if (![bg.backgroundColor isEqual:want]) {
@@ -21276,11 +21300,10 @@ static BOOL DMApplyBackground(UIView *fg, UIColor *textColor) {
     }
     if (!ours) objc_setAssociatedObject(bg, kBackgroundLightKey, @(lightText), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     bg.hidden = NO;
-    // Right under the bar's contents, NOT at index 0: PeepReborn's _UIStatusBar layout hook takes out whatever view is at the bottom (its own
-    // slot), so a background there was removed on every layout and never showed (M1, iPadOS 15). If anything still takes it out, it goes back.
-    NSArray *subs = bar.subviews;
-    NSUInteger fi = [subs indexOfObjectIdenticalTo:fg];
-    if (bg.superview != bar || (fi != NSNotFound && (fi == 0 || subs[fi - 1] != bg))) [bar insertSubview:bg belowSubview:fg];
+    // Under everything of the copy, inside it -- not in the bar itself: PeepReborn's _UIStatusBar layout hook takes out whatever view is at the
+    // bar's bottom (its own slot), so a background there was removed on every layout and never showed (M1, iPadOS 15). If anything still moves
+    // it, it goes back.
+    if (bg.superview != fg || fg.subviews.firstObject != bg) [fg insertSubview:bg atIndex:0];
     return YES;
 }
 
@@ -21343,16 +21366,115 @@ static NSString *DMBarColorText(UIColor *c) {   // (for the log: r g b a, or the
     CGFloat r = 0, g = 0, b = 0, a = 0;
     return [c getRed:&r green:&g blue:&b alpha:&a] ? [NSString stringWithFormat:@"%.2f %.2f %.2f a %.2f", r, g, b, a] : (c.description ?: @"-");
 }
+// No colour of ours is written while a bar is in its own constraint pass (1.8.7.6, the 17.5's crash at a Notification Center pull). The bar's
+// -updateConstraints (SystemStatusUI's STUIStatusBar on 17/18, UIKit's _UIStatusBar on 15/16) places its region items (_updateRegionItems): the
+// time label goes into its region again and takes its colour there, and our hooks of that label (-setTextColor:, -tintColorDidChange) decide the
+// bar's colour again (DMApplyBarItemColor). A write of the bar's foreground colour restyles the bar, which asks for its constraints again; inside
+// that bar's own -updateConstraints UIKit raised "The layout constraints still need update after sending -updateConstraints" and SpringBoard
+// crashed (KT's white at 0.36 on the 17.5: our black ending as the Cover Sheet came down; the same can happen at Control Center, the App
+// Switcher or a full screen, since 1.8.7.5). gDMBarConstraintDepth: a bar of that class is inside its -updateConstraints (the hook beside
+// -setForegroundColor:'s, BarForeground). Meanwhile our writers (DMBarDarkText, DMBarWindowText) write nothing and keep their state: the copy
+// is laid out again at the next turn of the main queue, once per copy, and that layout decides again, outside the pass (the old colour stays
+// for that frame). Mac test: tools/test-barbackground.sh (ncpull, ncpullfull, ncpullclosedup, ncpullinlayout).
+static int gDMBarConstraintDepth = 0;
+static const void *kBarDecideNextTurnKey = &kBarDecideNextTurnKey;   // (on a copy: its layout asked for at the next turn, DMBarDecideNextTurn)
+static BOOL DMBarLayingOut(UIView *fg);   // (below: this copy's own layout pass is running)
+static void DMBarDecideNextTurn(UIView *fg, NSString *what) {
+    // (its layout asked for now as well, for a layout after this pass in the same frame -- but not from the copy's own layout: run inside the
+    //  bar's pass, that layout would be run again at once, defer again and ask again, without end (Mac test ncpullinlayout))
+    if (!DMBarLayingOut(fg)) [fg setNeedsLayout];
+    if (objc_getAssociatedObject(fg, kBarDecideNextTurnKey)) return;   // (one per copy)
+    objc_setAssociatedObject(fg, kBarDecideNextTurnKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    DMLog([NSString stringWithFormat:@"[barcolor] %p: %@ deferred: its bar %p is in its own constraint pass (laid out again at the next turn)", fg, what, fg.superview]);
+    __weak UIView *weakFg = fg;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIView *f = weakFg; if (!f) return;
+        objc_setAssociatedObject(f, kBarDecideNextTurnKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (!f.window) return;   // (out of its window: its next layout there decides)
+        [f setNeedsLayout];
+        [f layoutIfNeeded];
+    });
+}
+static const void *kBarWindowInkKey = &kBarWindowInkKey;   // (on the screen's own bar over a full-screen window: that window's own text, DMBarWindowText)
 static UIColor *DMBarForegroundFor(UIView *bar, UIColor *asked) {   // (-setForegroundColor:'s hook: what the bar takes)
     if (asked != gBarDarkInk) objc_setAssociatedObject(bar, kBarTheirFgKey, asked ?: (id)[NSNull null], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    return [objc_getAssociatedObject(bar, kBarDarkTextKey) boolValue] ? gBarDarkInk : asked;
+    if ([objc_getAssociatedObject(bar, kBarDarkTextKey) boolValue]) return gBarDarkInk;
+    return objc_getAssociatedObject(bar, kBarWindowInkKey) ?: asked;   // (iPadOS's own, or the full-screen window's text in its place)
+}
+// ---- the screen's own bar over a full-screen window: that window's text (1.8.7.6 FULLBAR, the 17.5's trace of 16 Nov) ----
+// The Stage Manager engine on iPadOS 17 and 18: our full screen in a stage that has other windows leaves SpringBoard's own bar on top (iPadOS
+// fades it out only for a window alone in its stage), and the window's own status bar strip, in its card, is held hidden (one top bar per
+// screen: DMSMStripIsMenuBar). To iPadOS that stage is windows over its wallpaper, so it styles its bar for the wallpaper (the 17.5: light
+// content with white, for KT's dark wallpaper, every time), while what is behind the bar is the window. Settings in full screen with Clock's
+// window beside it: iPadOS's white on Settings' white under KT's white at 0.36, unreadable, 3 of 3 times; alone, iPadOS's model -- the strip
+// on top, styled for Settings -- black. The window's own text is the one iPadOS gives its strip: the strip's time as drawn (else its status
+// icons'). The screen's bar takes it in place of iPadOS's (DMBarForegroundFor), whatever the background: with Background Off too, iPadOS's white
+// was for the wallpaper there. nil: no full-screen window behind that screen's bar (or something over it on that screen: see below), or its
+// text not known (our black left on the strip: iPadOS's colour asked for the strip if it asked for one; no item of the strip shows yet). Not
+// on iPadOS 15 and 16, where the top bar rule never counts the screen's own bar over a full-screen card (DMSMMainBarOn: nil there), nor with
+// the other engines, whose full screen is iPadOS's own.
+// The window is a card that shows (not hidden, not faded out, on its screen) and stays: not while its display's switcher goes Home, where the
+// windows zoom into their icons and the Home Screen comes behind the bar (DMSMCardGoesHome, as the title bars leave). What is over it is
+// asked for that screen only (1.8.7.6 FULLBAR round 1, the review: the iPad's states were asked for the TV's bar too, so the TV's bar over a
+// full-screen window lost its text while the iPad showed its App Switcher, Control Center or the Cover Sheet, and the TV's App Switcher took
+// it off the iPad's bar): that display's own App Switcher (DMSMScreenInSwitcher, not the last event of any switcher), our Mac Switcher where
+// it shows (DMMSWScreen), and on the iPad's screen iPadOS's Control Center and the Cover Sheet, which are the iPad's alone -- their material,
+// not the window, is behind the bar there, as DMWPBarBackdrop has it.
+static BOOL DMSMScreenInSwitcher(UIScreen *screen);   // (below, with the title bars: that screen's App Switcher is up)
+static BOOL DMSMCardGoesHome(UIView *card);           // (below, with the title bars: its display's switcher goes Home, or is there)
+static UIColor *DMBarWindowTextOn(UIScreen *scr, UIView **stripOut) {
+    if (!scr || !DMSBUseSTUI() || !DMSMEngine()) return nil;
+    BOOL iPad = scr == [UIScreen mainScreen];
+    for (UIView *s in gAllBarCopies.allObjects) {
+        UIWindow *w = s.window;
+        if (!w || w.hidden || w.screen != scr || s.bounds.size.width <= 300.0 || ![NSStringFromClass([w class]) isEqualToString:@"SBMainSwitcherWindow"] || !DMSMInFullScreenCard(s)) continue;
+        UIView *card = DMSMCardOfView(s);
+        BOOL shows = card && CGRectIntersectsRect([card convertRect:card.bounds toView:nil], w.bounds);
+        for (UIView *x = card; x && x != w && shows; x = x.superview) if (x.hidden || x.alpha < 0.01) shows = NO;
+        if (!shows) continue;   // (a card left in the tree that does not show: not the window behind the bar)
+        if (!DMSMMainBarOn(scr, s)) return nil;   // (the screen's own bar faded out: this strip is the top bar, styled for its window: iPadOS's model)
+        if (DMSMScreenInSwitcher(scr) || DMSMCardGoesHome(card) || (gMSWOpen && DMMSWScreen() == scr)
+            || (iPad && ((DMControlCenterActive() && !DMCCPanelLeavesDesktop()) || DMCoverSheetShown()))) return nil;
+        if (stripOut) *stripOut = s;
+        if (DMBarDarkTextOn(s)) { id theirs = objc_getAssociatedObject(s.superview, kBarTheirFgKey); return [theirs isKindOfClass:[UIColor class]] ? theirs : nil; }
+        UIView *lead = DMLeadingContainer(s), *time = lead ? DMFirstStringView(lead) : nil;
+        UIColor *c = [time isKindOfClass:[UILabel class]] ? DMLabelDrawnColor((UILabel *)time) : nil;
+        if (!c) { UIView *trailing = DMTrailingContainer(s); if (trailing) c = DMTrailingIconColor(trailing); }
+        return [c resolvedColorWithTraitCollection:(time ?: s).traitCollection];   // (as drawn there, not a colour that follows the screen's bar's traits)
+    }
+    return nil;
+}
+static UIColor *DMBarWindowTextUnder(UIView *fg, UIView **stripOut) {   // (fg is the screen's own bar: the full-screen window's text behind it)
+    UIWindow *w = fg.window;
+    if (!w || w.hidden || fg.bounds.size.width <= 300.0 || ![NSStringFromClass([w class]) isEqualToString:@"SBStatusBarWindow"]) return nil;
+    return DMBarWindowTextOn(w.screen, stripOut);
+}
+// The window's text on the screen's bar, or nil for iPadOS's own again (written as iPadOS's colour through the hook, which takes the window's in
+// its place, or our black while that is in force). Returns whether it changed. The state first: the bar's restyle comes back here.
+static BOOL DMBarWindowText(UIView *fg, UIColor *ink, UIView *strip) {
+    UIView *bar = fg.superview;
+    if (!gBarFgHooked || ![bar isKindOfClass:DMSBClass("_UIStatusBar")]) return NO;
+    UIColor *was = objc_getAssociatedObject(bar, kBarWindowInkKey);
+    if (was == ink || [was isEqual:ink]) return NO;
+    if (gDMBarConstraintDepth > 0) { DMBarDecideNextTurn(fg, ink ? @"the full-screen window's text" : @"iPadOS's text for the bar again"); return NO; }   // (nothing written inside a bar's own constraint pass)
+    id theirs = objc_getAssociatedObject(bar, kBarTheirFgKey);
+    if (!theirs) theirs = ((id (*)(id, SEL))objc_msgSend)(bar, @selector(foregroundColor)) ?: [NSNull null];   // (the bar's own until now: never ours yet)
+    objc_setAssociatedObject(bar, kBarWindowInkKey, ink, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ((void (*)(id, SEL, id))objc_msgSend)(bar, @selector(setForegroundColor:), theirs == [NSNull null] ? nil : theirs);
+    DMLog(ink ? [NSString stringWithFormat:@"[barcolor] %p: the text of the full-screen window behind it, %@ (its own bar %p; iPadOS asked %@)", bar, DMBarColorText(ink), strip.superview,
+                 theirs == [NSNull null] ? @"its style's" : DMBarColorText(theirs)]
+              : [NSString stringWithFormat:@"[barcolor] %p: no full-screen window behind it now: iPadOS's text for it again", bar]);
+    [fg setNeedsLayout];   // (the battery's number and our items in the bar's new colour, at its next layout)
+    return YES;
 }
 // Black text on this bar (with our light background on it): over our Desktop Picture, its top strip decides (iPadOS's text is for its own wallpaper,
-// which ours hides there: DesktopWallpaper.h DMWPBarBackdrop); anywhere else iPadOS's text is for what is behind (an app's own style, iPadOS's
-// wallpaper) and stays, unless the bar is light even over black (gBgTextDark). (1.8.7.5 round 1: one guess for every place, black to a mid grey,
-// gave KT's white at 0.36 black text on the dark grey it makes over a dark app, 3.1:1 where iPadOS's white read 6.7:1.) common/BarBackground.h.
-static BOOL DMBarTextDarkFor(UIView *fg) {
+// which ours hides there: DesktopWallpaper.h DMWPBarBackdrop); over a full-screen window, the screen's own bar takes that window's text (under:
+// DMBarWindowTextUnder), as does a window's own bar; anywhere else iPadOS's text is for what is behind (an app's own style, iPadOS's wallpaper)
+// and stays, unless the bar is light even over black (gBgTextDark). (1.8.7.5 round 1: one guess for every place, black to a mid grey, gave KT's
+// white at 0.36 black text on the dark grey it makes over a dark app, 3.1:1 where iPadOS's white read 6.7:1.) common/BarBackground.h.
+static BOOL DMBarTextDarkFor(UIView *fg, UIColor *under) {
     if (!gBgColorLight) return NO;
+    if (under) return gBgTextDark;   // (the window hides our picture, if one is set)
     MSBDWPTop top;
     if (DMWPBarBackdrop(fg, &top)) return MSBDBarTextDarkOver(gBgRGB[0], gBgRGB[1], gBgRGB[2], gBgOpacity, top.darkest, top.lightest);
     return gBgTextDark;
@@ -21362,12 +21484,13 @@ static void DMBarDarkText(UIView *fg, BOOL dark) {
     UIView *bar = fg.superview;
     if (!gBarFgHooked || ![bar isKindOfClass:DMSBClass("_UIStatusBar")]) return;
     if ([objc_getAssociatedObject(bar, kBarDarkTextKey) boolValue] == dark) return;
+    if (gDMBarConstraintDepth > 0) { DMBarDecideNextTurn(fg, dark ? @"our black text" : @"iPadOS's own text back (our black ends)"); return; }   // (nothing written inside a bar's own constraint pass)
     id theirs = objc_getAssociatedObject(bar, kBarTheirFgKey);
     if (!theirs) theirs = ((id (*)(id, SEL))objc_msgSend)(bar, @selector(foregroundColor)) ?: [NSNull null];   // (the bar's own until now: never ours yet)
     objc_setAssociatedObject(bar, kBarDarkTextKey, dark ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (first: the bar's restyle comes back here)
     ((void (*)(id, SEL, id))objc_msgSend)(bar, @selector(setForegroundColor:), theirs == [NSNull null] ? nil : theirs);   // (through the hook: ours, or theirs again)
-    DMLog([NSString stringWithFormat:@"[barcolor] %p: %@ (background %@ at %.2f)", bar, dark ? @"text and icons black on our light background" : @"the bar's own text colour again",
-           DMBarColorText(gBgColor), gBgOpacity]);
+    DMLog([NSString stringWithFormat:@"[barcolor] %p: %@ (background %@ at %.2f)", bar, dark ? @"text and icons black on our light background"
+           : objc_getAssociatedObject(bar, kBarWindowInkKey) ? @"the full-screen window's text again" : @"the bar's own text colour again", DMBarColorText(gBgColor), gBgOpacity]);
     [fg setNeedsLayout];   // (our items and the battery's number take the bar's new colour at its next layout)
     __weak UIView *weakFg = fg;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -21380,15 +21503,20 @@ static void DMBarDarkText(UIView *fg, BOOL dark) {
 }
 // background: our bar's background follows too (not on the Lock Screen's layout, which never drew one), and the bar's text on it. The bar's black
 // text is ours only while our light background shows on it (the Lock Screen's layout too: a copy that keeps our background keeps it, one without
-// none). Our black text no longer wanted is ended first: c is our black while it is in force, and the background is decided from iPadOS's own
-// colour (a light colour changed to a dark one put the light grey under white text, then faded to the dark colour: 1.8.7.5 round 1). Ending it
-// restyles the bar, whose time label brings iPadOS's colour back here; this call goes on with the bar's colour as it is then.
+// none; a window card's strip held hidden shows none, DMSMStripHidden: a restyle of it brought our black back). Our black text no longer wanted
+// is ended first: c is our black while it is in force, and the background is decided from iPadOS's own colour (a light colour changed to a
+// dark one put the light grey under white text, then faded to the dark colour: 1.8.7.5 round 1). Ending it restyles the bar, whose time label
+// brings iPadOS's colour back here; this call goes on with the bar's colour as it is then. The screen's own bar over a full-screen window takes
+// that window's text first, the same way (DMBarWindowText: in place of iPadOS's, so before our items and the background are given the bar's
+// colour).
 static void DMApplyBarItemColor(UIView *fg, UIColor *c, BOOL background) {
     if (!fg || !c) return;
-    UIView *bgView = objc_getAssociatedObject(fg, kBackgroundKey);
-    BOOL dark = DMBackgroundWanted() && (background ? fg.superview && fg.bounds.size.width >= 300.0 : bgView && !bgView.hidden) && DMBarTextDarkFor(fg);
-    if (!dark && DMBarDarkTextOn(fg)) {
-        DMBarDarkText(fg, NO);
+    UIView *bgView = objc_getAssociatedObject(fg, kBackgroundKey), *strip = nil;
+    UIColor *under = DMBarWindowTextUnder(fg, &strip);
+    BOOL dark = DMBackgroundWanted() && (background ? fg.superview && fg.bounds.size.width >= 300.0 : bgView && !bgView.hidden) && !DMSMStripHidden(fg) && DMBarTextDarkFor(fg, under);
+    BOOL again = DMBarWindowText(fg, under, strip);
+    if (!dark && DMBarDarkTextOn(fg)) { DMBarDarkText(fg, NO); again = YES; }
+    if (again) {
         UIView *container = DMLeadingContainer(fg), *time = container ? DMFirstStringView(container) : nil;
         c = DMBarItemColor(fg, time) ?: c;
     }
@@ -23546,7 +23674,9 @@ static UIImageView *DMMuteIcon(UIView *fg, CGFloat k) {   // (k: our items' scal
     if (glyph && icon.image != glyph) icon.image = glyph;
     return icon;
 }
-// The colour the status icons are drawn in, for a status bar copy that has no time label to take it from (the Lock Screen's).
+// The colour the status icons are drawn in, for a status bar copy that has no time label to take it from (the Lock Screen's). nil while none of
+// them shows (DMBarItemColor then takes the colour last seen on screen). (Before, 1.8.7.6 FULLBAR round 1: that colour came from here, so the
+// screen's own bar asking a full-screen window's strip still being built for its text took its own last colour back as the window's.)
 static UIColor *DMTrailingIconColor(UIView *trailing) {
     NSMutableArray *pending = [NSMutableArray arrayWithObject:trailing];
     while (pending.count) {
@@ -23557,7 +23687,7 @@ static UIColor *DMTrailingIconColor(UIView *trailing) {
         }
         [pending addObjectsFromArray:v.subviews];
     }
-    return gStatusTextColor;
+    return nil;
 }
 
 %hook SBRingerControl
@@ -23648,7 +23778,7 @@ static BOOL DMLayoutWithoutClock(UIView *fg) {
     return YES;
 }
 // iPadOS 17+ (SystemStatusUI): a copy that is not ours yet is laid out in this run loop's layout pass (before the frame is drawn) when its labels arrive or
-// change -- iOS fills a copy's leading region without a layout pass of the foreground view there (DMRelayoutUnattachedBars). 15/16: nothing.
+// change -- iOS fills a copy's leading region without a layout pass of the foreground view there (DMRelayoutUnattachedBars). 15/16: DMClockBackNow.
 static UIView *DMLeadingContainer(UIView *fg);
 static UIView *DMFirstStringView(UIView *container);
 static int gDMBarLayoutDepth = 0;   // (a status bar copy's layout pass is running, iOS's part or ours: DMAttachIfFilledNow)
@@ -23656,6 +23786,7 @@ static const void *kAttachNextTurnKey = &kAttachNextTurnKey;   // (a copy's layo
 static const void *kHoldGaveUpKey = &kHoldGaveUpKey;      // (the safety release let this copy go: never held again, see DMHoldSafetyCheck)
 static __unsafe_unretained UIView *gDMBarLayingOut = nil;   // (the copy that pass is for: identity only, never messaged)
 static int gDMBarUpdateDepth = 0;   // (STUIStatusBar is placing its region items -- inside iOS's own constraint / layout pass: SBAttach17Regions)
+static BOOL DMBarLayingOut(UIView *fg) { return gDMBarLayoutDepth > 0 && fg == gDMBarLayingOut; }   // (that copy's own layout pass is running)
 static void DMHoldStatusBarCopy(UIView *fg);
 static const void *kBarClosedUpKey = &kBarClosedUpKey;   // @YES: the copy's last layout had no clock, the icons closed up (DMLayoutWithoutClock); the full layout ends it
 static void DMClosedUpClockBack(UIView *fg);
@@ -23811,6 +23942,31 @@ static void DMHoldSafetyCheck(UIView *fg, int checks) {
         } else DMHoldSafetyCheck(v, checks + 1);
     });
 }
+// iOS's items in a copy (its Wi-Fi item while the Wi-Fi Menu is on, the VPN badge, the activity spinner and pill) say whether they show only when
+// they are asked: at iOS's own data updates (only the items whose data changed) and when we ask again (DMStockVPNRecheck). Their answer follows
+// whether the copy is ours (kLogoKey) or being set up (kHoldKey), so they are asked again whenever that changes, whoever laid the copy out: at the
+// end of a hold (DMReleaseStatusBarCopy), and when a copy with no hold becomes ours (-dm_layoutLogoBody, newlyOurs). Before 1.8.7.7 only a hold's
+// end asked (and, since 1.8.1.1, a copy the safety release gave up on): a copy made ours with no hold kept iOS's Wi-Fi icon beside ours until
+// iOS's next Wi-Fi update -- after a respring onto the Lock Screen, the unlock's clock layout came from DMEnsureLogo's look, with no hold, on 15/16
+// (GitHub issue #14, 16.3.1; since 1.8.7.4's start-up watcher stops at the Lock Screen's layout, every quick unlock). One ask per copy at a time,
+// after this layout pass; one that found no bar above the copy or no data yet is owed, and made at the copy's next layout (-dm_layoutLogo).
+static const void *kItemsAskKey = &kItemsAskKey;   // @1: an ask is on its way; @2: owed (the last one found no bar or no data)
+static void DMBarItemsAskAgain(UIView *fg) {
+    if ([objc_getAssociatedObject(fg, kItemsAskKey) intValue] == 1) return;
+    objc_setAssociatedObject(fg, kItemsAskKey, @1, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak UIView *weakFg = fg;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIView *f = weakFg; if (!f) return;
+        BOOL wasOurs = objc_getAssociatedObject(f, kLogoKey) != nil;
+        BOOL asked = DMStockVPNRecheck(f);
+        objc_setAssociatedObject(f, kItemsAskKey, asked ? nil : @2, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        // (this very update made the copy ours, after its items had answered: it placed the time label, whose layout is synchronous (DMClockBackNow,
+        //  DMAttachIfFilledNow), and that layout's own ask was dropped while this one was on its way: iOS's Wi-Fi icon stayed beside ours. Asked once
+        //  more; once per copy, kLogoKey is never taken off. Regressions review of WIFI2, F1)
+        if (asked && !wasOurs && objc_getAssociatedObject(f, kLogoKey)) DMBarItemsAskAgain(f);
+        if (!asked && DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[items] copy %p: no bar or no data to ask its items with yet: asked at its next layout (in %@)", f, NSStringFromClass([f.window class])]);
+    });
+}
 static void DMReleaseStatusBarCopy(UIView *fg) {
     if (![objc_getAssociatedObject(fg, kHoldKey) boolValue]) return;
     NSNumber *want = objc_getAssociatedObject(fg, kHoldWantAlphaKey);
@@ -23819,17 +23975,15 @@ static void DMReleaseStatusBarCopy(UIView *fg) {
     fg.alpha = want ? want.doubleValue : 1.0;   // (the opacity iOS last asked for while it was held)
     DMSMMainBarChanged(fg);   // (the screen's own bar released: a full-screen card's strip decides again, F1)
     if (want && want.doubleValue < 0.99) DMLog([NSString stringWithFormat:@"[hold] released at the opacity iOS asked for: %.2f (%@)", want.doubleValue, NSStringFromClass([fg.window class])]);
-    {   // (now ours: iOS's items are asked again, after this layout pass -- the VPN badge, the activity spinner and the background-activity pill
-        //  that were already showing; a copy made during a FaceTime call kept the full capsule, logic test 1.2.3)
-        __weak UIView *weakFg = fg;
-        dispatch_async(dispatch_get_main_queue(), ^{ if (weakFg) DMStockVPNRecheck(weakFg); });
-    }
+    // (now ours, or not ours: iOS's items are asked again, after this layout pass -- the VPN badge, the activity spinner and the background-activity
+    //  pill that were already showing; a copy made during a FaceTime call kept the full capsule, logic test 1.2.3)
+    DMBarItemsAskAgain(fg);
 }
 
 // iOS's own VPN badge sits inside the status icons group, which opens Control Center. In our bars (every copy the Mac look lays out) it is left
 // out, and our VPN icon is its own item next to the group instead. The stock item is asked whether its badge may show; for our copies
 // the answer is no, so the group closes up with no gap. A copy becomes ours at its first layout (kHoldKey at once, kLogoKey after): the items are
-// asked again then (DMStockVPNRecheck). Control Center's own status bar and the stock-bar mode keep iOS's badge. Kill switch /tmp/msb-stockvpn.
+// asked again then (DMBarItemsAskAgain). Control Center's own status bar and the stock-bar mode keep iOS's badge. Kill switch /tmp/msb-stockvpn.
 static BOOL DMHideStockVPN(id item) {
     UIView *fg = DMCall(DMCall(item, @"statusBar"), @"foregroundView");
     if (![fg isKindOfClass:[UIView class]] || DMTestFlag("/tmp/msb-stockvpn")) return NO;
@@ -23879,12 +24033,14 @@ static void DMStockWiFiInit(void) {
     class_addMethod(c, sel, (IMP)DMWiFiItemCanEnable, method_getTypeEncoding(m));
     gSBItemHooks |= 16;
 }
-static void DMStockVPNRecheck(UIView *fg) {   // (a copy that has just become ours: its items are asked again -- VPN badge, spinner, activity pill)
-    id bar = fg.superview;
+static BOOL DMStockVPNRecheck(UIView *fg) {   // (a copy that has just become ours: its items are asked again -- VPN badge, spinner, activity pill, Wi-Fi.
+    id bar = fg.superview;                     //  NO: nothing was asked, no bar above the copy or no data yet -- DMBarItemsAskAgain asks again later)
     while (bar && ![bar isKindOfClass:DMSBClass("_UIStatusBar")]) bar = [bar superview];
     SEL upd = NSSelectorFromString(@"_updateWithAggregatedData:");
     id data = DMCall(bar, @"currentAggregatedData");
-    if (data && [bar respondsToSelector:upd]) ((void (*)(id, SEL, id))objc_msgSend)(bar, upd, data);
+    if (!data || ![bar respondsToSelector:upd]) return NO;
+    ((void (*)(id, SEL, id))objc_msgSend)(bar, upd, data);
+    return YES;
 }
 // Our icons beside the status icons (VPN, mute, SSH) are placed from where the status icons start, in our layout pass. iOS updates its icons without
 // one (the Wi-Fi icon coming back seconds after a VPN connects moved the Airplane icon under our VPN badge for about a second, 28 Sep), so right
@@ -23986,23 +24142,33 @@ static void DMStockVPNInit(void) {
     else DMLog(@"[activity] iOS's background activity pill item not found: it stays in the status icons");
 }
 // A light Status Bar Background's dark text (DMBarDarkText): every write of the bar's foreground colour, iPadOS's and ours, goes through here.
+// And the bar's own constraint pass is counted (gDMBarConstraintDepth): no colour of ours is written inside it (1.8.7.6). Never left raised.
 %group BarForeground
 %hook _UIStatusBar
 - (void)setForegroundColor:(UIColor *)color {
     %orig(DMBarForegroundFor((UIView *)self, color));
+}
+- (void)updateConstraints {
+    gDMBarConstraintDepth++;
+    @try {
+        %orig;
+    } @finally {
+        gDMBarConstraintDepth--;
+    }
 }
 %end
 %end
 static void DMBarForegroundInit(void) {
     Class bar = DMSBClass("_UIStatusBar");
     Method set = bar ? class_getInstanceMethod(bar, @selector(setForegroundColor:)) : NULL, get = bar ? class_getInstanceMethod(bar, @selector(foregroundColor)) : NULL;
-    const char *se = set ? method_getTypeEncoding(set) : NULL, *ge = get ? method_getTypeEncoding(get) : NULL;
-    if (se && ge && !strcmp(se, "v24@0:8@16") && !strcmp(ge, "@16@0:8")) {
+    Method uc = bar ? class_getInstanceMethod(bar, @selector(updateConstraints)) : NULL;   // (the pass our writes wait out: without it, no dark text)
+    const char *se = set ? method_getTypeEncoding(set) : NULL, *ge = get ? method_getTypeEncoding(get) : NULL, *ue = uc ? method_getTypeEncoding(uc) : NULL;
+    if (se && ge && ue && !strcmp(se, "v24@0:8@16") && !strcmp(ge, "@16@0:8") && !strcmp(ue, "v16@0:8")) {
         gBarDarkInk = [UIColor colorWithRed:0 green:0 blue:0 alpha:1];
         %init(BarForeground, _UIStatusBar = bar);
         gBarFgHooked = YES;
-    } else DMLog([NSString stringWithFormat:@"[barcolor] %@ has no foreground colour as read (%s / %s): a light Status Bar Background keeps iPadOS's text colour",
-                  bar ? NSStringFromClass(bar) : @"(no status bar class)", se ?: "-", ge ?: "-"]);
+    } else DMLog([NSString stringWithFormat:@"[barcolor] %@ has no foreground colour as read (%s / %s, its constraint pass %s): a light Status Bar Background keeps iPadOS's text colour",
+                  bar ? NSStringFromClass(bar) : @"(no status bar class)", se ?: "-", ge ?: "-", ue ?: "-"]);
 }
 
 #if DEBUG
@@ -24047,7 +24213,7 @@ static BOOL DMBarCopyIsCCDuplicate(UIView *fg) {
         if (!gDMHoldOwnAlpha) objc_setAssociatedObject(self, kHoldWantAlphaKey, @(a), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         a = 0.0;
     }
-    if (DMSMEngine() && [NSStringFromClass([((UIView *)self).window class]) isEqualToString:@"SBMainSwitcherWindow"] && !DMSMStripIsMenuBar((UIView *)self)) {   // (Stage Manager engine: no menu bar inside a window card unless it is the screen's top bar, see dm_layoutLogo)
+    if (DMSMStripHidden((UIView *)self)) {   // (Stage Manager engine: no menu bar inside a window card unless it is the screen's top bar, see dm_layoutLogo)
         if (a > 0.0 && DMSMInFullScreenCard((UIView *)self)) {   // (held off only because the screen's own bar still shows: asked again once SpringBoard's change is done)
             __weak UIView *weakFG = (UIView *)self;
             dispatch_async(dispatch_get_main_queue(), ^{ UIView *fg = weakFG; if (fg && DMSMStripIsMenuBar(fg) && fg.alpha < 1.0) { gDMHoldOwnAlpha = YES; fg.alpha = 1.0; gDMHoldOwnAlpha = NO; [fg setNeedsLayout]; } });
@@ -24110,6 +24276,8 @@ static BOOL DMBarCopyIsCCDuplicate(UIView *fg) {
     } @finally {
         gDMBarLayingOut = prev; gDMBarLayoutDepth--;
     }
+    // (an ask of iOS's items that found no bar or no data is made now -- held, its release asks: DMBarItemsAskAgain)
+    if ([objc_getAssociatedObject(self, kItemsAskKey) intValue] == 2 && ![objc_getAssociatedObject(self, kHoldKey) boolValue]) DMBarItemsAskAgain((UIView *)self);
 }
 %new
 - (void)dm_layoutLogoBody {
@@ -24119,13 +24287,14 @@ static BOOL DMBarCopyIsCCDuplicate(UIView *fg) {
     // bar strip) is not ours to dress -- a Mac window has no menu bar of its own; the one menu bar is at the top of the screen. Hidden.
     // (A window in native full screen is the exception: SpringBoard then fades the main bar out and this strip IS the top bar -- it gets our menu
     //  bar with the traffic lights, whose green takes it back to a window, as with every engine.)
-    if (DMSMEngine() && [NSStringFromClass([fg.window class]) isEqualToString:@"SBMainSwitcherWindow"] && !DMSMStripIsMenuBar(fg)) {   // (and a full-screen card's strip while the screen's own bar shows, iPadOS 17: DMSMMainBarShown)
+    if (DMSMStripHidden(fg)) {   // (and a full-screen card's strip while the screen's own bar shows, iPadOS 17: DMSMMainBarShown)
         if (fg.alpha > 0.0) {
 #if DEBUG
             DMSMDebugStripHidden(fg, @"our layout", 0.0);
 #endif
             gDMHoldOwnAlpha = YES; fg.alpha = 0.0; gDMHoldOwnAlpha = NO;   // (ours, not iOS's wish: a hold keeps iOS's own)
         }
+        DMBarDarkText(fg, NO);   // (and our dark text with it: iPadOS's colour for its app again, which the screen's bar reads -- DMSMStripHidden)
         return;
     }
     // While a status bar copy is being created (e.g. when an app opens) it can briefly be
@@ -24298,11 +24467,11 @@ static BOOL DMBarCopyIsCCDuplicate(UIView *fg) {
     BOOL newlyOurs = ![gCopies containsObject:fg];
     [gCopies addObject:fg];
     if (newlyOurs) DMSMMainBarChanged(fg);   // (the screen's own bar just became ours: a full-screen card's strip decides again, F1)
-    if (newlyOurs && objc_getAssociatedObject(fg, kHoldGaveUpKey)) {   // (a copy the safety release let go has no hold left to release, and that release is what asks the items again:
-        //  iOS's own Wi-Fi item stayed beside ours after a green tap on a window plain for 30 s or more, 18.5, v1811 note 1. Asked once: newlyOurs holds only for this pass)
-        __weak UIView *weakFg = fg;
-        dispatch_async(dispatch_get_main_queue(), ^{ if (weakFg) DMStockVPNRecheck(weakFg); });
-    }
+    // (ours now with no hold to end: iOS's items are asked again here -- a held copy is asked at its release, DMBarItemsAskAgain. Every layout of a
+    //  copy that is not held: one the safety release gave up on -- iOS's own Wi-Fi item stayed beside ours after a green tap on a window plain for 30 s
+    //  or more, 18.5, v1811 note 1 --, DMEnsureLogo's look, Stage Manager's strips (DMSMRefreshBars, DMSMChrome), a 17+ copy in a hidden window.
+    //  Asked once: newlyOurs holds only for this pass)
+    if (newlyOurs && ![objc_getAssociatedObject(fg, kHoldKey) boolValue]) DMBarItemsAskAgain(fg);
     DMStartClockBalanceIfNeeded();   // a second status bar copy has just appeared (an app opening over another)
     SBApplication *frontApp = DMNativeActiveApp() ? nil : DMActiveApp();   // whichever app is frontmost, windowed or full screen (a native window: none)
     BOOL activeIsWindow = DMWindowsOwnStatusBar() || (frontApp && !DMFrontApp() && DMA5ComingBackTop());   // (a window on its way back after the unlock: still a window -- no lights in the bar)
@@ -24895,8 +25064,8 @@ static void DMCoverSheetLeavingInit(void) {
     else DMLog([NSString stringWithFormat:@"[lock] the Cover Sheet's dismissal start: %s (the watcher alone)", enc ?: "not there"]);
 }
 
-// iPadOS 17+ (SystemStatusUI): the leading region gets its time and date at an unlock without a layout pass of the foreground view (15/16 laid it
-// out), so a copy that was not ours yet stayed stock until something else laid it out (17.5.1). When a string view arrives in a copy that is not ours,
+// iPadOS 17+ (SystemStatusUI): the leading region gets its time and date at an unlock without a layout pass of the foreground view (15/16 the same:
+// DMClockBackNow), so a copy that was not ours yet stayed stock until something else laid it out (17.5.1). When a string view arrives in a copy that is not ours,
 // or the bar has placed its region items, that copy is laid out in this run loop's layout pass (setNeedsLayout: before the frame is drawn).
 %group SBAttach17
 %hook _UIStatusBarStringView
@@ -24934,6 +25103,10 @@ static void DMCoverSheetLeavingInit(void) {
 // Cover Sheet's slide. A copy of ours still in the locked look (no clock, the status icons closed up to the trailing end -- only the full layout ends
 // it, kBarLookLockedKey) showed iOS's time drawn over those icons until a later relayout: 0.1-0.25 s, iPad 2 16.7.7 (1.7.0 the same, frame bursts
 // 30 Oct). Such a copy is laid out when its time label arrives while the bar is not locked: the full layout ends the locked look in that frame.
+// The same for the screen's own copy that is not ours yet but was laid out by us without a clock (kBarClosedUpKey): the Lock Screen's after a
+// respring, which only the clock layout makes ours. Nothing laid it out at the unlock on 15/16 but DMEnsureLogo's look, once a second and with no
+// hold (iOS's Wi-Fi item stayed beside ours), and after its last look, ~42 s, nothing: iPadOS's stock bar over the Home Screen (GitHub issue #14,
+// 16.3.1, 1.8.7.4-1.8.7.6). Held first, as the 17+ attach holds it (DMAttachIfFilledNow): invisible until that layout, which makes it ours, ends.
 // ...and laid out once more when this frame's layout pass is over, still before the frame is drawn (Core Animation's pre-commit phase): the label
 // that just arrived is placed by its region only in that pass, and our items take their line from it (timeCentre). Laid out at its arrival alone,
 // the titles, the date and our icons stood 3 pt low -- the label's place from before the lock -- until the next layout of the copy, 150-220 ms
@@ -24964,17 +25137,30 @@ static void DMBarLayoutAgainBeforeDraw(UIView *fg) {
     else if (!((BOOL (*)(id, SEL, id, unsigned long))objc_msgSend)([CATransaction class], add, again, 1ul))                //  after the layout pass, before the commit)
         objc_setAssociatedObject(fg, kAgainKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // (that phase is over for this frame: not taken)
 }
+// A copy of ours laid out without a clock while unlocked (closed up, not the locked look) gets its layout again here too, as on 17+ (DMClosedUpClockBack):
+// a Notification Center pull let go. The Cover Sheet takes the time label as the pull begins, the pull's going back lays the copy out without it
+// (DMBarCoverLeaving), and the label comes back after the slide. Until 1.8.7.6 only the locked look counted here, so that copy stayed closed up -- the
+// status icons over iPadOS's time, no date, no Search or Control Center icon -- until the clock's next minute, unless a layout pass of the copy came
+// with the label: the M1 (15.6.1) had one, the iPad 2 (16.7.7) none, 3 of 3 pulls let go (1.8.7.6~f03 pass; there since 1.7.4's pull rule).
 static void DMClockBackLayout(UIView *fg);
 static void DMClockBackNow(UIView *fg) {
-    if (!fg || !fg.window || ![objc_getAssociatedObject(fg, kBarLookLockedKey) boolValue] || !objc_getAssociatedObject(fg, kLogoKey)) return;
+    if (!fg || !fg.window) return;
+    BOOL ours = objc_getAssociatedObject(fg, kLogoKey) != nil;
+    if (ours && ![objc_getAssociatedObject(fg, kBarLookLockedKey) boolValue]) {   // (ours, not in the locked look: closed up while unlocked, 17+'s rule)
+        if ([fg isKindOfClass:DMSBClass("_UIStatusBarForegroundView")]) DMClosedUpClockBack(fg);
+        return;
+    }
+    // (ours from here: one in the locked look; not ours yet: the screen's own copy, last laid out by us without a clock)
+    if (!ours && (!objc_getAssociatedObject(fg, kBarClosedUpKey) || !DMSBIsBarWindowName(NSStringFromClass([fg.window class])))) return;
     if (gDMBarLayoutDepth > 0 && fg == gDMBarLayingOut) return;   // (inside that copy's own layout pass: the pass lays it out)
     if (![fg isKindOfClass:DMSBClass("_UIStatusBarForegroundView")]) return;
     UIView *c = DMLeadingContainer(fg);
     if (!c || !DMFirstStringView(c) || DMBarLockedNow()) return;   // (the Lock Screen's copy has no time there; locked, the locked look stays)
+    if (!ours) DMHoldStatusBarCopy(fg);   // (released by the layout that makes it ours: iOS's items asked then, DMBarItemsAskAgain)
     DMClockBackLayout(fg);
 }
-// iPadOS 17+ (the time label's arrivals, DMAttachIfFilledNow; BarUnlock.h MSBDClosedUpBarLaidOutAgain): a copy of ours laid out without a clock, its time
-// back. Debug /tmp/msb-noclosedupback: as before, for comparison.
+// The time label's arrivals (17+: DMAttachIfFilledNow; 15/16: DMClockBackNow, since 1.8.7.6; BarUnlock.h MSBDClosedUpBarLaidOutAgain): a copy of ours laid out
+// without a clock, its time back. Debug /tmp/msb-noclosedupback: as before, for comparison.
 static void DMClosedUpClockBack(UIView *fg) {
     if (!objc_getAssociatedObject(fg, kBarClosedUpKey) || (gDMBarLayoutDepth > 0 && fg == gDMBarLayingOut)) return;
     UIView *c = DMLeadingContainer(fg);
@@ -24984,9 +25170,14 @@ static void DMClosedUpClockBack(UIView *fg) {
 static void DMClockBackLayout(UIView *fg) {
     [fg setNeedsLayout];
     BOOL now = gDMBarLayoutDepth == 0 && gDMBarUpdateDepth == 0 && !fg.window.hidden;   // (the bar still placing its items, 17+: a half-filled region, DMAttachIfFilledNow)
-    if (now) [fg layoutIfNeeded];   // (outside any layout pass: now, before the frame is drawn; inside one, that pass lays it out)
+    // (still inside the bar's own -updateConstraints -- the time label placed by it, then this from the _updateRegionItems hook's DMAttachIfFilled
+    //  after that call: not now either, our layout would decide the bar's colour inside the pass; at the next turn, as the colour's writers wait)
+    BOOL later = now && gDMBarConstraintDepth > 0;
+    if (later) DMBarDecideNextTurn(fg, @"the layout for its time label");
+    else if (now) [fg layoutIfNeeded];   // (outside any layout pass: now, before the frame is drawn; inside one, that pass lays it out)
     if (!DMTestFlag("/tmp/msb-noclockagain")) DMBarLayoutAgainBeforeDraw(fg);   // (debug: /tmp/msb-noclockagain = without the second layout, for comparison)
-    if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[lock] %p: its time label is back: laid out %@ (its look without a clock ends)", fg, now ? @"now" : @"in this layout pass"]);
+    if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[lock] %p: its time label is back: laid out %@ (its look without a clock ends)", fg,
+                                                      later ? @"at the next turn (its bar is in its constraint pass)" : now ? @"now" : @"in this layout pass"]);
 }
 %group SBClockBack
 %hook _UIStatusBarStringView
@@ -25339,9 +25530,10 @@ static UIView *DMFindForegroundView(UIView *v) {
 // it out again every frame for all of its 12 s (720 lock-path layouts at 60 Hz, 1440 at 120 Hz) after each boot or respring onto the Lock Screen,
 // at SpringBoard's busiest moment. A copy laid out the Lock Screen's way (ours, kNoClockLayoutKey, and locked as it was laid out,
 // kBarLaidOutLockedKey) is released as its own layout pass releases it, and the watcher stops; an empty one (iOS fills the bar after launch) is
-// watched on as before. The clock layout at the unlock is not the watcher's: the unlock lays the bars out (iOS's own pass on 15/16;
-// DMBarCoverLeaving, DMWatchLock's DMRelayoutUnattachedBars and the labels' attach on 17+), as for any unlock after the watcher's 12 s, and
-// DMEnsureLogo still looks once a second until 42 s after the start.
+// watched on as before. The clock layout at the unlock is not the watcher's: the unlock lays the bars out (the time label's arrival, DMClockBackNow
+// on 15/16 and DMAttachIfFilledNow on 17+; DMBarCoverLeaving and DMWatchLock's DMRelayoutUnattachedBars), held, as for any unlock after the
+// watcher's 12 s, and DMEnsureLogo still looks once a second until 42 s after the start. (Until 1.8.7.7 this read "iOS's own pass on 15/16": there is
+// none, and DMEnsureLogo's look, with no hold, was the only layout at a 15/16 unlock -- GitHub issue #14.)
 static BOOL DMStartupLockScreenDressed(UIView *fg) {
     if (!objc_getAssociatedObject(fg, kNoClockLayoutKey) || ![objc_getAssociatedObject(fg, kBarLaidOutLockedKey) boolValue]) return NO;
     for (UIView *sub in DMTrailingContainer(fg).subviews)   // (a status icon shown, as DMLayoutWithoutClock reads them)
@@ -46959,7 +47151,9 @@ void DMSMRunAction(UIAction *action, id sender) {
     void (^h)(UIAction *) = nil; @try { h = [action valueForKey:@"handler"]; } @catch (id e) {}
     if (h) h(action);
 }
+static void DMCtorOver(BOOL *inCtor) { gDMInCtor = NO; }   // (every way out of %ctor, its returns too: the cleanup of its first line)
 %ctor {
+    BOOL inCtor __attribute__((cleanup(DMCtorOver), unused)) = gDMInCtor = YES;   // (SpringBoard's start: no UIKit screens or windows from here, gDMInCtor)
 #if DEBUG
     {   // (debug /tmp/msb-slowstart, its seconds: this constructor runs that much later, as in a SpringBoard whose tweaks load late -- 1.8.0.1)
         double late = [[NSString stringWithContentsOfFile:@"/tmp/msb-slowstart" encoding:NSUTF8StringEncoding error:nil] doubleValue];

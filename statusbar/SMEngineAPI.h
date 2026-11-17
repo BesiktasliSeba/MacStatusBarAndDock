@@ -610,13 +610,15 @@ static id DMSMEntityNew(id app, id provider, id identity) {
     Class c = objc_getClass("SBDeviceApplicationSceneEntity");
     if (!c || !app) return nil;
     id e = nil;
+    // (Apple's init called through objc_msgSend, typed as an init: it takes alloc's +1 and gives back its own. Typed as a plain call, ARC released
+    //  the alloc once more after the call: freed twice when the init fails and frees it itself, the Cocoa way. tools/test-smentitynew.sh)
     @try {
         if (provider && identity) {
             SEL init = NSSelectorFromString(@"initWithApplication:sceneHandleProvider:displayIdentity:");
-            if ([c instancesRespondToSelector:init]) e = ((id (*)(id, SEL, id, id, id))objc_msgSend)([c alloc], init, app, provider, identity);
+            if ([c instancesRespondToSelector:init]) e = ((id __attribute__((ns_returns_retained)) (*)(id __attribute__((ns_consumed)), SEL, id, id, id))objc_msgSend)([c alloc], init, app, provider, identity);
         } else {
             SEL init = NSSelectorFromString(@"initWithApplicationForMainDisplay:");
-            if ([c instancesRespondToSelector:init] && [DMSMSigOfMethod(class_getInstanceMethod(c, init)) isEqualToString:DMSMSigObjObj()]) e = ((id (*)(id, SEL, id))objc_msgSend)([c alloc], init, app);
+            if ([c instancesRespondToSelector:init] && [DMSMSigOfMethod(class_getInstanceMethod(c, init)) isEqualToString:DMSMSigObjObj()]) e = ((id __attribute__((ns_returns_retained)) (*)(id __attribute__((ns_consumed)), SEL, id))objc_msgSend)([c alloc], init, app);
             else DMSMAPIFail(@"initWithApplicationForMainDisplay:", @"missing or another signature");
         }
     } @catch (NSException *x) { DMSMAPIFail(@"SBDeviceApplicationSceneEntity init", x.reason ?: @"exception"); e = nil; }

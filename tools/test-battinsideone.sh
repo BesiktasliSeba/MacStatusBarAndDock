@@ -25,7 +25,9 @@ build() {   # $1 BatteryMenu.h, $2 BatteryInside.h, $3 dir, $4 quiet, $5 StatusB
   local d=$3 fam X=${5:-$S0}
   mkdir -p "$d"; cp "$2" "$d/BatteryInside.h"
   fndef "$X" DMCall > "$d/one-call.inc"; fndef "$X" DMStockVPNRecheck > "$d/one-recheck.inc"
-  { fndef "$X" DMHoldStatusBarCopy; fndef "$X" DMCopyHasStockText; fndef "$X" DMHoldSafetyCheck; fndef "$X" DMReleaseStatusBarCopy; } > "$d/one-hold.inc"
+  # (with the ask of iOS's items a hold's release makes, 1.8.7.7: DMBarItemsAskAgain and its mark -- none in the code before it)
+  { fndef "$X" DMHoldStatusBarCopy; fndef "$X" DMCopyHasStockText; fndef "$X" DMHoldSafetyCheck; grep -E '^static const void \*kItemsAskKey = &kItemsAskKey;' "$X"
+    fndef "$X" DMBarItemsAskAgain; fndef "$X" DMReleaseStatusBarCopy; } > "$d/one-hold.inc"
   # the no-clock part of the copy's layout: from the leading region's lookup to the end of its branch (as test-startupwatch.sh cuts it)
   awk 'index($0, "- (void)dm_layoutLogoBody {") == 1 { b = 1 } b && index($0, "    UIView *container = DMLeadingContainer(fg);") == 1 { f = 1 } f { print } f && /^    [}]$/ { exit }' "$X" > "$d/one-noclock.inc"
   fndef "$1" DMBattLockLayout > "$d/one-locklayout.inc"

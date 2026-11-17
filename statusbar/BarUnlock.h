@@ -31,8 +31,9 @@ static inline int MSBDBackCueAtCoverLeave(int offSinceBack, int screenOff, int u
 // until the next switcher transition (A12Z 18.5, published 1.8.0.1 too; the Cover Sheet's start itself is too early, the screen's bar still shows then).
 static inline int MSBDScreenBarWentOff(double before, double now) { return (before >= 0.01 && now < 0.01) ? 1 : 0; }
 // A status bar copy of ours whose last layout had no clock (the icons closed up, no date, no search or Control Center icon: the Cover Sheet took its time
-// label, in a Notification Center pull too) gets its layout again when its time label is back and the bar is not locked: 17+ fills the region without a layout
-// pass of the copy, and after a pull let go it stayed so with the time over the battery until the next minute (17.5.1; 15/16: StatusBar.x DMClockBackNow).
+// label, in a Notification Center pull too) gets its layout again when its time label is back and the bar is not locked: iPadOS fills the region without a
+// layout pass of the copy, and after a pull let go it stayed so with the time over the battery until the next minute (17.5.1; on 15/16 the same until
+// 1.8.7.6, iPad 2 16.7.7: StatusBar.x DMClockBackNow keyed on the locked look alone).
 static inline int MSBDClosedUpBarLaidOutAgain(int closedUp, int hasTimeLabel, int locked) { return (closedUp && hasTimeLabel && !locked) ? 1 : 0; }
 // The time's width in our layout: as its region laid it out, or what its text takes when that is more. A label that has just arrived has iOS's width, without
 // seconds (40 pt), and our text with seconds (66 pt) gets its width only in the region's next pass: laid out by the 40, the date, the icons and the time stood

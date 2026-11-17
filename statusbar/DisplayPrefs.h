@@ -46,7 +46,14 @@ __attribute__((unused)) static NSString *DMDispKeyOfView(UIView *v) {
 }
 // A stage's display (SBAppLayout -preferredDisplayIdentity, an FBSDisplayIdentity): the screen whose configuration has that identity. The iPad's
 // identity, or none, has no key.
+// UIKit's screens: none while this part's constructor runs (StatusBar.x gDMInCtor, SpringBoard's start inside dyld's loading of this part) --
+// UIKit is not asked then: its first screen set-up there can wait on FrontBoard's listener, which waits on dyld, and SpringBoard hangs (GitHub
+// #16). What needs the displays at the start asks once the main queue runs (DockTrash.h, MacSwitcher.h); anything else asking then gets none.
 static NSArray<UIScreen *> *DMDispScreens(void) {
+    if (gDMInCtor) {
+        DMLog(@"[dispprefs] the screens were asked while SpringBoard starts (this part's constructor): none answered, UIKit not asked");
+        return @[];
+    }
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
     NSArray *all = [UIScreen screens];

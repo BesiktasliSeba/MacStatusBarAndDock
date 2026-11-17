@@ -470,10 +470,14 @@ static BOOL DMWPBarBackdrop(UIView *fg, MSBDWPTop *top) {
     return YES;
 }
 // The bars follow a change of it at once (a page turn, an app going full screen or back, another picture decoded, None), not at their next layout:
-// asked every tick (DMNativeTick, right after DMWPTick, whichever way that tick ended).
+// asked every tick (DMNativeTick, right after DMWPTick, whichever way that tick ended). So does the screen's own bar over a full-screen window of
+// the Stage Manager engine, for that window's text (StatusBar.x DMBarWindowTextOn: a window going full screen in a stage with others or back, its
+// app's other style), with our picture or without one (1.8.7.6 FULLBAR).
+static UIColor *DMBarWindowTextOn(UIScreen *scr, UIView **stripOut);   // (StatusBar.x, with the bar's colour)
 static void DMWPBarBackdropTick(void) {
     static int was = -1;
     static const void *wasImage, *wasTVImage;
+    static UIColor *wasInk, *wasTVInk;
     UIView *bar = nil, *tvBar = nil;
     for (UIView *fg in gAllBarCopies.allObjects) {
         UIScreen *scr = fg.window.screen;
@@ -482,8 +486,9 @@ static void DMWPBarBackdropTick(void) {
     }
     int now = (bar && DMWPBarBackdrop(bar, NULL) ? 1 : 0) | (tvBar && DMWPBarBackdrop(tvBar, NULL) ? 2 : 0);
     const void *image = (__bridge const void *)gWPPlane.image, *tvImage = (__bridge const void *)gWPTVPlane.image;
-    if (now == was && (!(now & 1) || image == wasImage) && (!(now & 2) || tvImage == wasTVImage)) return;
-    was = now; wasImage = image; wasTVImage = tvImage;
+    UIColor *ink = bar ? DMBarWindowTextOn(bar.window.screen, NULL) : nil, *tvInk = tvBar ? DMBarWindowTextOn(tvBar.window.screen, NULL) : nil;
+    if (now == was && (!(now & 1) || image == wasImage) && (!(now & 2) || tvImage == wasTVImage) && (ink == wasInk || [ink isEqual:wasInk]) && (tvInk == wasTVInk || [tvInk isEqual:wasTVInk])) return;
+    was = now; wasImage = image; wasTVImage = tvImage; wasInk = ink; wasTVInk = tvInk;
     for (UIView *fg in gAllBarCopies.allObjects) [fg setNeedsLayout];
 }
 

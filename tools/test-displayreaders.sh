@@ -63,10 +63,11 @@ c_dock_trash() {   # <Dock.x>: a Dock's Trash by its own screen's Show Trash in 
     && grep -qF 'return DMDispBool(w ? DMDockScreenOf(w) : nil, "dock", "showTrash", gShowTrash);' "$W/t" && ! grep -q 'DMDockOnMainScreen' "$W/t"
 }
 c_finder_trash() {   # <DockTrash.h>: Finder serves the bin while the iPad's or any connected display's Dock shows it; a display's change applies at once
+                     # (the displays asked once SpringBoard's start is over, 1.8.7.6: tools/test-ctornouikit.sh)
   fn 'static BOOL DMDockTrashExternalDisplay(void) {' "$1" > "$W/f" && grep -qF 'BOOL ipad = DMDockTrashPrefOn();' "$W/f" \
     && grep -qF 'for (UIScreen *s in DMDispScreens()) if (s != [UIScreen mainScreen] && DMDispBool(s, "dock", "showTrash", ipad)) return YES;' "$W/f" \
     && grep -qF 'notify_register_dispatch(MSBD_DISP_NOTIFY, &t4, dispatch_get_main_queue(), ^(int t) { DMDispReload(); DMDockTrashApplyPref(); });' "$1" \
-    && grep -qF 'BOOL on = gFinderOn && (DMDockTrashPrefOn() || DMDockTrashExternalDisplay());' "$1"
+    && grep -qF 'BOOL on = gFinderOn && (DMDockTrashPrefOn() || (!gDMInCtor && DMDockTrashExternalDisplay()));' "$1"
 }
 check "the Dock part's getters: the iPad's own screen (or none) returns the iPad's value at once; a display by the shared rule" "c_dock_getters $DP"
 check "the Dock part's own cache (every display's dock overrides, the master switch) and its own display key (no registry: Mac Status Bar may be off), read with the Dock's settings and the displays domain's note" "c_dock_cache $DP $D"

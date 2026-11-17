@@ -232,6 +232,7 @@ Which one? On an iPad with Stage Manager (or TrollPad) on iPadOS 16.1 to 18, a n
 | iPad (5th generation) | 16.7.16 | rootless | not reported | Reported working by a user |
 | iPad mini 4 | 15.8.8 | rootless | not reported | Reported running by a user |
 | iPad (6th generation) | 15.7 | rootless | not reported | Reported running by a user |
+| iPad (6th generation) | 17.7.11 | palera1n | Stage Manager | Reported running by a user |
 | iPad Pro (M2, 2022) | 16.0 to 16.6 | Dopamine | Zetsu, Aerial | Reported by users with Zetsu or Aerial. Stage Manager engine: see below |
 | iPad Pro 12.9" (M1, 2021) | 17.0 | rootless | Zetsu 1.6.6 | Reported working since 1.2.4 |
 | iPad Pro 12.9" (M1, 2021) | 16.1.1 | Dopamine | Stage Manager, Zetsu | Reported by a user |

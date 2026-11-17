@@ -2,6 +2,18 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.7.6
+
+### Fixes
+- After a respring, SpringBoard no longer freezes on some iPads with Finder on and Show Trash in Dock off.
+- With a light Status Bar Background color, SpringBoard no longer crashes now and then when you pull down Notification Center, open Control Center or the App Switcher, or switch to a full-screen app.
+- With the Stage Manager engine, SpringBoard no longer crashes in the rare case that iPadOS fails to set up an app's window.
+- The battery menu, the number inside the battery icon and what VoiceOver says for the battery no longer get stuck on an old level or power source until a respring.
+- After a respring, the menu bar no longer shows two Wi-Fi icons for a while, and on iPadOS 15 and 16, iPadOS's own status bar no longer appears instead of the menu bar when you unlock after waiting on the Lock Screen.
+- On iPadOS 15 and 16, starting to pull down Notification Center and letting go no longer leaves the right side of the menu bar broken until the next minute.
+- The Status Bar Background color no longer gets lighter each time you leave full screen or close Control Center, and with Background set to Off, none of it stays behind.
+- With the Stage Manager engine on iPadOS 17 and 18, the menu bar's text over a full-screen app that shares its desktop with other windows is now readable.
+
 ## 1.8.7.5
 
 ### Improvements

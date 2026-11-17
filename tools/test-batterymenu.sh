@@ -64,8 +64,13 @@ check "every way a menu closes stops the battery menu's refresh (DMBattMenuGone)
 check "another title tapped with a menu open: the battery opens its menu, the icon Control Center (DMTitleTapSwitch, both paths)" \
   "[ \$(grep -c 'else if (b == objc_getAssociatedObject(bfg, kBattButtonKey)) DMOpenBatteryMenu(b);\\|else if (b == objc_getAssociatedObject(fg, kBattButtonKey)) DMOpenBatteryMenu(b);' $X) -ge 2 ] \
    && [ \$(grep -c 'kCCButtonKey)) DMBattOpenControlCenter(b);' $X) = 2 ]"
-check "the menu's level and power source are the bar's own (SpringBoard's SBUIController, the types read), iPadOS's power sources only without them" \
-  "fn $B 'static DMBattInfo DMBattNow(' | awk '/DMBattTypes\(ui, @\"batteryCapacityAsPercentage\", \"i16@0:8\"\)/{a=NR} /if \(b.known\) return b;/{b=NR} /IOPSCopyPowerSourcesInfo|copyInfo\(\)/{c=NR} END{exit !(a && b > a && c > b)}'"
+check "the menu's level and power source from the battery service (issue #15), looked up once more after a failed read, then iPadOS's power sources, SBUIController last" \
+  "fn $B 'static DMBattInfo DMBattNow(' | awk '/if \(!DMBattServiceRead\(DMBattService\(NULL\), &b, &why\)\) \{/{n++; if (n == 1) a=NR; else c=NR} /DMBattServiceForget\(\);/{b=NR} /b = DMBattPowerSources\(\);/{d=NR} /b = DMBattSBUI\(\);/{e=NR} END{exit !(a && b > a && c > b && d > c && e > d)}' \
+   && fn $B 'static DMBattInfo DMBattPowerSources(' | grep -q 'IOPSCopyPowerSourcesInfo' && fn $B 'static DMBattInfo DMBattSBUI(' | grep -q 'DMBattTypes(ui, @\"batteryCapacityAsPercentage\", \"i16@0:8\")'"
+check "  ... the keys SBUIController is fed with, each with its type: CurrentCapacity, MaxCapacity (numbers), ExternalConnected (not the cable: our adapter cut reads Battery, as before), IsCharging" \
+  "fn $B 'static BOOL DMBattServiceRead(' | grep -q 'DMBattReadKey(s, @\"CurrentCapacity\", NO, &cur)' && fn $B 'static BOOL DMBattServiceRead(' | grep -q 'DMBattReadKey(s, @\"MaxCapacity\", NO, &max)' \
+   && fn $B 'static BOOL DMBattServiceRead(' | grep -q 'DMBattReadKey(s, @\"ExternalConnected\", YES, &ext)' && fn $B 'static BOOL DMBattServiceRead(' | grep -q 'DMBattReadKey(s, @\"IsCharging\", YES, &chg)' \
+   && ! fn $B 'static BOOL DMBattServiceRead(' | grep -q 'AppleRawExternalConnected' && fn $B 'static BOOL DMBattReadKey(' | grep -q 'CFNumberGetTypeID()' && fn $B 'static BOOL DMBattReadKey(' | grep -q 'CFBooleanGetTypeID()'"
 check "Low Power Mode as Control Center's toggle: _PMLowPowerMode -setPowerMode:fromSource:withCompletion: with kPMLPMSourceControlCenter, the types read" \
   "fn $B 'static DMBattLPMWay DMBattLPMHow(' | grep -q 'dlsym(RTLD_DEFAULT, \"kPMLPMSourceControlCenter\")' && fn $B 'static DMBattLPMWay DMBattLPMHow(' | grep -q 'DMBattTypes(lpm, @\"setPowerMode:fromSource:withCompletion:\", \"v40@0:8q16@24@?32\")'"
 check "  ... off the main thread; the switch shows what iPadOS says (NSProcessInfo), the open menu follows its notification" \

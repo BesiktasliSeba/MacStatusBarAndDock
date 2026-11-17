@@ -294,6 +294,8 @@ static const char *const kMSBDHookList[][4] = {   // class, selector, +/-, sourc
     {"_UIStatusBarPillBackgroundActivityItem", "pillSize", "-", "statusbar/StatusBar.x"},
     {"_UIStatusBarPillBackgroundActivityItem", "_backgroundColorForActivityType:", "-", "statusbar/StatusBar.x"},
     {"_UIStatusBarPillBackgroundActivityItem", "_backgroundColorForActivityWithIdentifier:", "-", "statusbar/StatusBar.x"},
+    {"_UIStatusBar", "setForegroundColor:", "-", "statusbar/StatusBar.x"},
+    {"_UIStatusBar", "updateConstraints", "-", "statusbar/StatusBar.x"},
     {"_UIStatusBarForegroundView", "setAlpha:", "-", "statusbar/StatusBar.x"},
     {"_UIStatusBarForegroundView", "didMoveToWindow", "-", "statusbar/StatusBar.x"},
     {"_UIStatusBarForegroundView", "setHidden:", "-", "statusbar/StatusBar.x"},

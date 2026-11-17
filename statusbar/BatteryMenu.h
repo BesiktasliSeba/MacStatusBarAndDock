@@ -13,6 +13,7 @@
 // Not in it: a Mac's "Using Significant Energy". iPadOS keeps the apps' energy only in powerlog's database (root's, summed per hour for Settings'
 // Battery page); a live list from here would be a CPU sample called energy.
 
+#import <IOKit/IOKitLib.h>   // (the battery read from the battery service, DMBattNow; IOKit is linked)
 static UIView *DMTrailingContainer(UIView *fg);   // (StatusBar.x: the status icons' region of a bar copy)
 static const void *kBattMenuLabelKey = &kBattMenuLabelKey, *kBattMenuPillKey = &kBattMenuPillKey;   // (DMPresentMenu: no title label or pill, as the Wi-Fi menu)
 static const void *kBattAXWasKey = &kBattAXWasKey;   // (an iOS battery view under our button: its own accessibility element setting, given back)
@@ -36,13 +37,67 @@ static const char *DMBattTypesOf(id obj, NSString *sel) {   // (what a method's 
     return m ? (method_getTypeEncoding(m) ?: "?") : "none";
 }
 
-// ---- the battery: what the menu bar's own battery shows -- SpringBoard's SBUIController, -batteryCapacityAsPercentage, -isOnAC (the adapter
-// powering the iPad now: not during the Charge Limit job's adapter cut) and -isBatteryCharging, its cached state, which the bar's battery item is
-// drawn from (16.7.7, 17.5.1). Where those are not there with those types: IOKit's power sources (IOPSCopyPowerSourcesInfo), whose level is
-// rounded another way -- 80 % there, 79 % in the bar and the battery service's CurrentCapacity (17.5.1, 2 Nov). Asked when the menu is built and
-// read aloud, never on a timer of its own.
+// ---- the battery: its level, on the power adapter or not, charging or not -- for the menu, the battery's VoiceOver value (DMBattAXValue) and the
+// number in the icon (DMBattInsideNow). Read from the battery service itself (IOPMPowerSource: AppleSmartBattery, else AppleARMPMUCharger, found as
+// the Charge Limit's job and ChargeQuiet.x find it), one key at a time, each only with its type: CurrentCapacity and MaxCapacity (numbers),
+// ExternalConnected and IsCharging (flags). These are the keys SpringBoard's SBUIController is fed with (-batteryCapacityAsPercentage, -isOnAC,
+// -isBatteryCharging: what the menu read up to 1.8.7.5), so they say what it said. Its feed is UIKit's battery monitoring, one switch for the whole
+// process with no count (UIDevice batteryMonitoringEnabled): code in SpringBoard that switches it off -- another tweak reading the level, say --
+// stops it, and SBUIController kept its level and "Battery" until a respring, while the bar's battery, drawn from BatteryCenter's own feed, not
+// from SBUIController, moved on (issue #15). The level is CurrentCapacity, the bar's own number (79 there and in the bar while IOKit's power sources
+// said 80, 17.5.1, 2 Nov), scaled where MaxCapacity is not 100 (100 on all four iPads). On the adapter is ExternalConnected, not the cable: 0
+// during the Charge Limit job's adapter cut on every iPad (the PMU iPads keep AppleRawExternalConnected 1), so the menu says "Power Source:
+// Battery" there, as -isOnAC did ("Using Battery Until 80%" under it, the 17.5, 1.8.7), and "Power Adapter" during its hold. A read that fails (a
+// key missing, or not of its type) looks the service up once more; then IOKit's power sources (IOPSCopyPowerSourcesInfo, whose level can be a
+// point off the bar's: 80 there, 79 in the bar, 17.5.1); SBUIController's stored state last, with the types it was read with. Asked when the
+// menu is built (opened, its 3 s refresh, the power sources note), when the battery is read aloud, and by the number in the icon (every 5 s at
+// most): never on a timer of its own.
 typedef struct { int percent; BOOL onAC, charging, known; } DMBattInfo;
-static DMBattInfo DMBattNow(void) {
+typedef enum { kDMBattFromNone = 0, kDMBattFromService, kDMBattFromPowerSources, kDMBattFromSBUI } DMBattFrom;
+static DMBattFrom gBattFrom = kDMBattFromNone;   // (where DMBattNow's last answer came from: the probe, the debug log)
+static io_service_t gBattService = MACH_PORT_NULL;
+static BOOL gBattServiceLooked = NO, gBattServicePMU = NO;
+static io_service_t DMBattService(BOOL *pmu) {   // (looked up once; again after a read that failed: DMBattServiceForget)
+    if (!gBattServiceLooked) {
+        gBattServiceLooked = YES;
+        gBattService = IOServiceGetMatchingService(MACH_PORT_NULL, IOServiceMatching("AppleSmartBattery"));
+        gBattServicePMU = NO;
+        if (!gBattService) { gBattService = IOServiceGetMatchingService(MACH_PORT_NULL, IOServiceMatching("AppleARMPMUCharger")); gBattServicePMU = gBattService != MACH_PORT_NULL; }
+        static int told = -1; int found = gBattService ? (gBattServicePMU ? 2 : 1) : 0;   // (said when what is found changes, not at each look)
+        if (found != told) { told = found; DMLog([NSString stringWithFormat:@"[battmenu] the battery service: %@", @[@"none found", @"AppleSmartBattery", @"AppleARMPMUCharger"][found]]); }
+    }
+    if (pmu) *pmu = gBattServicePMU;
+    return gBattService;
+}
+static void DMBattServiceForget(void) {
+    if (gBattService) IOObjectRelease(gBattService);
+    gBattService = MACH_PORT_NULL; gBattServiceLooked = NO;
+}
+static id DMBattProp(io_service_t s, NSString *key) { return s ? (__bridge_transfer id)IORegistryEntryCreateCFProperty(s, (__bridge CFStringRef)key, kCFAllocatorDefault, 0) : nil; }
+// One key of the service, only with its type: a number is a CFNumber with an integer value (not a flag); a flag a CFBoolean, or a CFNumber.
+static BOOL DMBattReadKey(io_service_t s, NSString *key, BOOL flag, int *out) {
+    id v = DMBattProp(s, key);
+    CFTypeID t = v ? CFGetTypeID((__bridge CFTypeRef)v) : 0;
+    if (flag && t == CFBooleanGetTypeID()) { *out = CFBooleanGetValue((__bridge CFBooleanRef)v) ? 1 : 0; return YES; }
+    long long n = 0;
+    if (!v || t != CFNumberGetTypeID() || !CFNumberGetValue((__bridge CFNumberRef)v, kCFNumberLongLongType, &n)) return NO;
+    if (flag) { *out = n != 0; return YES; }
+    if (n < -1000000 || n > 1000000) return NO;
+    *out = (int)n;
+    return YES;
+}
+// The battery as the service says it now. NO: a key not read (*why says which).
+static BOOL DMBattServiceRead(io_service_t s, DMBattInfo *b, NSString **why) {
+    int cur = 0, max = 0, ext = 0, chg = 0;
+    NSString *bad = !s ? @"no service" : !DMBattReadKey(s, @"CurrentCapacity", NO, &cur) ? @"CurrentCapacity" : !DMBattReadKey(s, @"MaxCapacity", NO, &max) ? @"MaxCapacity"
+                  : !DMBattReadKey(s, @"ExternalConnected", YES, &ext) ? @"ExternalConnected" : !DMBattReadKey(s, @"IsCharging", YES, &chg) ? @"IsCharging" : nil;
+    int p = max > 0 && max != 100 ? (int)MIN(100L, lround(100.0 * cur / max)) : cur;
+    if (!bad && (cur < 0 || p < 0 || p > 100)) bad = [NSString stringWithFormat:@"CurrentCapacity %d of %d", cur, max];
+    if (bad) { if (why) *why = bad; return NO; }
+    *b = (DMBattInfo){ p, ext != 0, chg != 0, YES };
+    return YES;
+}
+static DMBattInfo DMBattSBUI(void) {   // (SBUIController's stored state, with the types it was read with: 16.7.7, 17.5.1)
     DMBattInfo b = { -1, NO, NO, NO };
     id ui = DMSBManager("SBUIController");
     if (DMBattTypes(ui, @"batteryCapacityAsPercentage", "i16@0:8") && DMBattTypes(ui, @"isOnAC", "B16@0:8") && DMBattTypes(ui, @"isBatteryCharging", "B16@0:8")) {
@@ -50,8 +105,11 @@ static DMBattInfo DMBattNow(void) {
         b.onAC = ((BOOL (*)(id, SEL))objc_msgSend)(ui, NSSelectorFromString(@"isOnAC"));
         b.charging = ((BOOL (*)(id, SEL))objc_msgSend)(ui, NSSelectorFromString(@"isBatteryCharging"));
         b.known = b.percent >= 0 && b.percent <= 100;
-        if (b.known) return b;
     }
+    return b;
+}
+static DMBattInfo DMBattPowerSources(void) {   // (IOKit's power sources: the internal battery's description)
+    DMBattInfo b = { -1, NO, NO, NO };
     static CFTypeRef (*copyInfo)(void); static CFArrayRef (*copyList)(CFTypeRef); static CFDictionaryRef (*describe)(CFTypeRef, CFTypeRef);
     static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -74,6 +132,49 @@ static DMBattInfo DMBattNow(void) {
     }
     if (list) CFRelease(list);
     if (info) CFRelease(info);
+    return b;
+}
+#if DEBUG
+// (debug) Where the battery was read from, said when that changes; and SBUIController's stored state apart from the service's for more than 60 s
+// -- its feed stopped (issue #15) --, said once until the two agree again.
+static void DMBattFromSaid(DMBattFrom from, NSString *why, DMBattInfo b) {
+    static int told = -1;
+    if ((int)from == told) return;
+    told = from;
+    NSString *what = [NSString stringWithFormat:@"%d%%, on AC %d, charging %d", b.percent, b.onAC, b.charging];
+    if (from == kDMBattFromService) DMLog([NSString stringWithFormat:@"[battmenu] the battery read from the battery service (%@): %@", gBattServicePMU ? @"AppleARMPMUCharger" : @"AppleSmartBattery", what]);
+    else if (from == kDMBattFromPowerSources) DMLog([NSString stringWithFormat:@"[battmenu] the battery read from iPadOS's power sources (the battery service: %@): %@", why ?: @"?", what]);
+    else if (from == kDMBattFromSBUI) DMLog([NSString stringWithFormat:@"[battmenu] the battery read from SBUIController's stored state (the battery service: %@; no power sources): %@", why ?: @"?", what]);
+    else DMLog([NSString stringWithFormat:@"[battmenu] the battery could not be read (the battery service: %@; no power sources; no SBUIController)", why ?: @"?"]);
+}
+static void DMBattSBUIApart(DMBattInfo svc) {
+    static CFTimeInterval apartSince = 0; static BOOL told = NO;
+    DMBattInfo ui = DMBattSBUI();
+    if (!ui.known || (ui.percent == svc.percent && ui.onAC == svc.onAC && ui.charging == svc.charging)) { apartSince = 0; told = NO; return; }
+    CFTimeInterval now = CACurrentMediaTime();
+    if (apartSince <= 0) { apartSince = now; return; }
+    if (told || now - apartSince <= 60.0) return;
+    told = YES;
+    DMLog([NSString stringWithFormat:@"[battmenu] SBUIController's stored battery has differed from the battery service for %.0f s: %d%%, on AC %d, charging %d there; %d%%, on AC %d, charging %d in the service (its feed stopped: UIDevice battery monitoring switched off in SpringBoard?)",
+           now - apartSince, ui.percent, ui.onAC, ui.charging, svc.percent, svc.onAC, svc.charging]);
+}
+#endif
+static DMBattInfo DMBattNow(void) {
+    DMBattInfo b = { -1, NO, NO, NO };
+    NSString *why = nil;
+    DMBattFrom from = kDMBattFromService;
+    if (!DMBattServiceRead(DMBattService(NULL), &b, &why)) {
+        DMBattServiceForget();   // (once more: a service that went away and came back is another object)
+        if (!DMBattServiceRead(DMBattService(NULL), &b, &why)) {
+            b = DMBattPowerSources(); from = kDMBattFromPowerSources;
+            if (!b.known) { b = DMBattSBUI(); from = b.known ? kDMBattFromSBUI : kDMBattFromNone; }
+        }
+    }
+    gBattFrom = from;
+#if DEBUG
+    DMBattFromSaid(from, why, b);
+    if (from == kDMBattFromService) DMBattSBUIApart(b);
+#endif
     return b;
 }
 static NSString *DMBattPercentText(DMBattInfo b) { return b.known ? [NSString stringWithFormat:@"%d%%", b.percent] : @""; }   // (our menus are English: "82%")
@@ -970,7 +1071,7 @@ static void DMBattApplyPref(BOOL on) {
 
 #if DEBUG
 // ---- debug triggers (battmenu, battmenu_cc, battmenu_pref_<on|off>, battmenu_probe, battmenu_lpm_<0|1>, battmenu_lpmwatch, battmenu_word_<hex>,
-// battmenu_size_<0|1|2>, battmenu_ax, battmenu_ccstack_<0|1>) ----
+// battmenu_size_<0|1|2>, battmenu_ax, battmenu_ccstack_<0|1>, battmenu_monitor_<0|1>) ----
 static BOOL gBattLPMWatch = NO;
 static void (*o_BattPMSet)(id, SEL, long long, id, id);
 static void DMBattPMSet(id self, SEL _cmd, long long mode, id source, id done) {
@@ -1033,6 +1134,13 @@ static BOOL DMBattTrigger(NSString *cmd) {
         return YES;
     }
     if ([cmd hasPrefix:@"battmenu_lpm_"]) { DMBattSetLowPower([[cmd substringFromIndex:13] boolValue]); return YES; }   // battmenu_lpm_<0|1>: as the menu's switch
+    if ([cmd hasPrefix:@"battmenu_monitor_"]) {   // battmenu_monitor_<0|1>: UIDevice battery monitoring in SpringBoard switched as another tweak would (0: SBUIController's feed stops, issue #15; 1 or a respring: back)
+        BOOL on = [[cmd substringFromIndex:17] boolValue];
+        [UIDevice currentDevice].batteryMonitoringEnabled = on;
+        DMLog([NSString stringWithFormat:@"[battmenu] UIDevice battery monitoring switched %@ in SpringBoard (now %d): SBUIController's feed %@", on ? @"on" : @"off",
+               [UIDevice currentDevice].batteryMonitoringEnabled, on ? @"back" : @"stops"]);
+        return YES;
+    }
     if ([cmd hasPrefix:@"battmenu_lpmraw_"]) {   // battmenu_lpmraw_<0|1>: Low Power Mode switched as Settings' switch does, nothing of the menu's own (an open menu follows by itself)
         Class pm = objc_getClass("_PMLowPowerMode");
         id lpm = [pm respondsToSelector:@selector(sharedInstance)] ? ((id (*)(id, SEL))objc_msgSend)(pm, @selector(sharedInstance)) : nil;
@@ -1107,7 +1215,17 @@ static BOOL DMBattTrigger(NSString *cmd) {
             [o appendFormat:@"\n  %@ = %@", sym, p && *p ? (__bridge NSString *)*p : @"(no symbol)"];
         }
         DMBattInfo b = DMBattNow();
-        [o appendFormat:@"\n  the menu's battery: known %d, %d%%, on AC %d, charging %d;", b.known, b.percent, b.onAC, b.charging];
+        [o appendFormat:@"\n  the menu's battery: known %d, %d%%, on AC %d, charging %d, from %@;", b.known, b.percent, b.onAC, b.charging,
+            @[@"nothing", @"the battery service", @"iPadOS's power sources", @"SBUIController"][gBattFrom]];
+        {   // (the battery service's keys as SpringBoard reads them here, raw)
+            BOOL pmu = NO; io_service_t s = DMBattService(&pmu);
+            [o appendFormat:@" service %@:", s ? (pmu ? @"AppleARMPMUCharger" : @"AppleSmartBattery") : @"none"];
+            for (NSString *k in @[@"CurrentCapacity", @"MaxCapacity", @"ExternalConnected", @"IsCharging", @"AppleRawExternalConnected"]) {
+                id v = DMBattProp(s, k);
+                [o appendFormat:@" %@ %@ (%@);", k, v ?: @"-", v ? NSStringFromClass([v class]) : @"not read"];
+            }
+            [o appendFormat:@" UIDevice battery monitoring %d;", [UIDevice currentDevice].batteryMonitoringEnabled];
+        }
         id ui = DMSBManager("SBUIController");
         for (NSString *s in @[@"batteryCapacityAsPercentage", @"isOnAC", @"isBatteryCharging", @"batteryCapacity"]) {
             SEL sel = NSSelectorFromString(s); Method m = ui ? class_getInstanceMethod(object_getClass(ui), sel) : NULL;

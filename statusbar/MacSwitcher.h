@@ -2809,7 +2809,23 @@ static void DMMSWKeepForLater(void) {
 // On again: the kept desktops come back (read once, the file goes) -- what of them, MSWKept.h MSWKeptBringBack; gathered here: what is there now.
 // A quit through the tweak already went from the kept file (DMMSWKeptForget); the check here catches every other way a window went. The desktops
 // file already holding several desktops (written meanwhile) wins: the kept copy goes.
+// On at SpringBoard's start (DMMSWApplyPref from its constructor, gDMInCtor): once the main queue runs -- this asks for the screen, which is never
+// done from a constructor (StatusBar.x gDMInCtor, GitHub #16) --, and as the start it is (start): the engine as the constructor read it, nothing
+// told and no stage or window read, as in the constructor (none was there yet). So every kept window comes back and the tick applies the desktops,
+// as when this ran in the constructor (1.8.7.5), and SpringBoard's stages are not asked while it starts (review of the #16 fix, F1: at the first
+// main-queue turn they can be half restored). The engine is read in the constructor only where it was read before: a kept copy, one desktop.
+// Mac test: tools/test-ctornouikit.sh (c).
+static void DMMSWBringBackAt(BOOL start, BOOL startSM);
 static void DMMSWBringBack(void) {
+    if (gDMInCtor) {
+        NSDictionary *st = gMSWKept ?: [NSDictionary dictionaryWithContentsOfFile:DMMSWKeptPath()];
+        BOOL sm = [st isKindOfClass:[NSDictionary class]] && gMSWDesks.count <= 1 && DMSMEngine();
+        DMMSWAsync(^{ if (gMSWOn) DMMSWBringBackAt(YES, sm); });
+        return;
+    }
+    DMMSWBringBackAt(NO, NO);
+}
+static void DMMSWBringBackAt(BOOL start, BOOL startSM) {
     if (!DMMSWForMain()) return;   // (the iPad's, at the switch's on: no session runs then)
     NSString *path = DMMSWKeptPath();
     NSDictionary *st = gMSWKept;
@@ -2827,15 +2843,17 @@ static void DMMSWBringBack(void) {
     //  once the restore has finished or found nothing to bring back -- an engine that comes up late keeps it off meanwhile, up to ~39 s). Not
     //  told: every kept window and full-screen app comes back, and the usual rules forget a closed one later -- Stage Manager's tick, a window in
     //  no stage; the other engines, one of the current desktop without a window. Logic test L2)
-    BOOL sm = DMSMEngine(), told = NO;
+    BOOL sm = start ? startSM : DMSMEngine(), told = NO;
     NSMutableSet<NSString *> *aliveKeys = [NSMutableSet set], *aliveApps = [NSMutableSet set];
     NSMutableArray<NSArray<NSString *> *> *stages = [NSMutableArray array];
     NSMutableArray<NSString *> *windowApps = [NSMutableArray array];
     NSUInteger front = NSNotFound;
-    if (sm) front = DMMSWSMStagesNow(stages);
-    else for (UIView *s in DMAerialStagesAll()) { NSString *b = DMStageBundle(s); if (b.length && ![windowApps containsObject:b]) [windowApps addObject:b]; }
-    if (sm) told = DMMSWSMAlive(aliveKeys, aliveApps);
-    else if (gWindowSaveOn && !gRestoringWindows) { [aliveApps addObjectsFromArray:windowApps]; told = YES; }
+    if (!start) {   // (SpringBoard's start: nothing read, not told -- DMMSWBringBack)
+        if (sm) front = DMMSWSMStagesNow(stages);
+        else for (UIView *s in DMAerialStagesAll()) { NSString *b = DMStageBundle(s); if (b.length && ![windowApps containsObject:b]) [windowApps addObject:b]; }
+        if (sm) told = DMMSWSMAlive(aliveKeys, aliveApps);
+        else if (gWindowSaveOn && !gRestoringWindows) { [aliveApps addObjectsFromArray:windowApps]; told = YES; }
+    }
     // (what the user quit meanwhile, by what records a quit: the prewarm quit set -- our red light, Force Quit and the App Switcher's swipe-up;
     //  kept across a respring; each of those quits also takes the app out of the kept copy as it happens, DMMSWKeptForget, the swipe-up since
     //  audit M9 of 1.8.7.2 -- together with the app not running now. Not running alone is no quit: a

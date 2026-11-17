@@ -264,6 +264,10 @@ sym MacStatusBarCore ^_*DMHardwareKeyboardAttached(_block_invoke(_[0-9]+)?)?$ tr
 # the tick (DMTick, DMTickBody and their blocks, every 0.25 s; one of the lookups' callers): the Mac status bar's own, which Stock status bar mode
 # does not start -- not the Stage Manager engine notice's section it sits in (Windowing, which does not stop it)
 sym MacStatusBarCore ^_*DMTick(Body)?(_block_invoke(_[0-9]+)?(\.[0-9]+)?)?$ stock
+# the count of a status bar's own constraint pass (1.8.7.6, the 17.5's crash at a Notification Center pull: StatusBar.x %group BarForeground,
+# -updateConstraints), which every constraint pass of SpringBoard's bars runs through: it counts and passes the call on, so a crash in Apple's code
+# under it is decided by the frame below, as before, never pinned on the status bar by it (as the Dock's pass-through hooks, review 1.8.4 P2-L1)
+sym MacStatusBarCore \$BarForeground\$_UIStatusBar\$updateConstraints$ transparent
 # our own Control Center (CCPanel.h, 1.8.0): its functions, hooks and blocks (DMCCP...) and its classes' methods -- Control Center Style back to
 # iPadOS's; with the layout (common/CCLayout.h): mostly inlined into DMCCPLayout, but not MSBDCCLayout and MSBDCCTake in a release build (they fell to
 # Stock status bar mode), nothing in a debug build; and what it hands back to Apple's (common/CCGiveBack.h: inlined into DMCCP... in a release build,

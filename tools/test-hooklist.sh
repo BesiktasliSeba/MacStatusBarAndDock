@@ -63,4 +63,6 @@ check "the real list: the side Dock's zoom fix is listed, its debug read-outs ar
 check "the real list: the 16 / 17 zoom hook is listed too" "grep -qF '{\"SBFluidSwitcherViewController\", \"_performModifierMatchMoveToIconViewResponse:\", \"-\", \"dock/Dock.x\"},' $R"
 check "the real list: other debug-only read-outs are out too (the keyboard brightness client's log, MixAudio's play traces)" \
   "! grep -qF 'KeyboardBrightnessClient' $R && ! grep -qF '{\"AVPlayer\", \"play\",' $R && grep -qF '{\"AVPlayer\", \"setVolume:\",' $R"
+check "the real list: the status bar's foreground colour and constraint pass hooks (BarForeground: 1.8.7.5's dark text, 1.8.7.6's count of the pass)" \
+  "grep -qF '{\"_UIStatusBar\", \"setForegroundColor:\", \"-\", \"statusbar/StatusBar.x\"},' $R && grep -qF '{\"_UIStatusBar\", \"updateConstraints\", \"-\", \"statusbar/StatusBar.x\"},' $R"
 [ $fails = 0 ] && echo "test-hooklist: pass" || { echo "test-hooklist: FAILED"; exit 1; }

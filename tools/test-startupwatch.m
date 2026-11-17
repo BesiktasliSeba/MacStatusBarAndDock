@@ -105,7 +105,7 @@ static BOOL DMSMEngine(void) { return NO; }
 static BOOL DMSMInFullScreenCard(UIView *v) { (void)v; return NO; }
 static void DMSMMainBarChanged(UIView *fg) { (void)fg; }
 static void DMHoldSafetyCheck(UIView *fg, int checks) { (void)fg; (void)checks; gSafetyChecks++; }   // (its release 2 s later is iOS-side: left out)
-static void DMStockVPNRecheck(UIView *fg) { (void)fg; }
+static BOOL DMStockVPNRecheck(UIView *fg) { (void)fg; return YES; }   // (iOS's items asked again: nothing of the watcher's -- test-wifirecheck.sh)
 static BOOL DMBarLockedNow(void) { return gLocked; }
 static UIView *DMLeadingContainer(UIView *fg) { (void)fg; return gLeading; }
 static UIView *DMFirstStringView(UIView *container) { return container && gClock ? gTimeLabel : nil; }
@@ -277,7 +277,8 @@ int main(void) {
             check(gLayouts == 0 && stoppedAt > 12.0 && stoppedAt < 12.02 && logHas(@"[startup] status bar NOT found; watcher stopped 12.0"), @"no status bar: the watcher gives up after 12 s, NOT found (as before)");
         }
         // 8. the Lock Screen, unlocked 5.5 s after the start (the clock comes with it), and no other layout pass at all (the worst case: on the iPad the
-        //    unlock lays the bar out itself, iOS's own pass on 15/16, DMBarCoverLeaving / DMRelayoutUnattachedBars and the labels' attach on 17+)
+        //    unlock lays the bar out itself -- the time label's arrival, DMBarCoverLeaving and DMRelayoutUnattachedBars, every iPadOS since 1.8.7.7: no pass
+        //    of iOS's own on 15/16 either; test-wifirecheck.sh runs those)
         {
             gLocked = YES; gClock = NO;
             world(YES, YES, YES);

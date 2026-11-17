@@ -24,7 +24,8 @@ sites() {   # $1 StatusBar.x, $2 quiet: the number of site checks that fail
   if grep -qF '    if (objc_getAssociatedObject(self, kLogoKey) || objc_getAssociatedObject(self, kNoClockLayoutKey)) DMReleaseStatusBarCopy((UIView *)self);' "$X"; then
     [ -n "$q" ] || echo "PASS  StatusBar.x: the copy's own layout pass releases it after the clock layout or the Lock Screen's (kNoClockLayoutKey)"
   else [ -n "$q" ] || echo "FAIL  StatusBar.x: the copy's own layout pass no longer releases the Lock Screen's layout"; n=$((n + 1)); fi
-  # the unlock lays out every copy not ours yet (17+; 15/16: iOS's own pass), the Lock Screen's included (only the logo skips it)
+  # the unlock lays out every copy not ours yet (every iPadOS since 1.8.7.7: there is no pass of iOS's own on 15/16 either -- test-wifirecheck.sh),
+  # the Lock Screen's included (only the logo skips it)
   if fn "$X" 'static void DMRelayoutUnattachedBars(NSString *why) {' | grep -qF '        if (!fg.window || objc_getAssociatedObject(fg, kLogoKey)) continue;' &&
      fn "$X" 'static void DMBarCoverLeaving(void) {' | grep -qF 'DMRelayoutUnattachedBars(@"the Cover Sheet starts to leave");' &&
      fn "$X" 'static void DMWatchLock(void) {' | grep -qF '    DMRelayoutUnattachedBars(locked ? @"locked" : @"unlocked");'; then
@@ -48,7 +49,9 @@ run() {   # $1 StatusBar.x, $2 work dir, $3 quiet: the number of failed checks (
   done
   [ -n "$(fn "$X" "$SW_NEW")" ] || { [ -n "$q" ] || echo "   (no DMStartupLockScreenDressed: the code before the fix)"; }
   {
-    fn "$X" 'static void DMHoldStatusBarCopy(UIView *fg) {'; fn "$X" 'static void DMReleaseStatusBarCopy(UIView *fg) {'; fn "$X" 'static UIView *DMFindForegroundView(UIView *v) {'
+    # (the ask of iOS's items that a hold's release makes, 1.8.7.7: DMBarItemsAskAgain and its mark -- none in the code before it)
+    fn "$X" 'static void DMHoldStatusBarCopy(UIView *fg) {'; awk 'index($0, "static const void *kItemsAskKey = &kItemsAskKey;") == 1 { print; exit }' "$X"
+    fn "$X" 'static void DMBarItemsAskAgain(UIView *fg) {'; fn "$X" 'static void DMReleaseStatusBarCopy(UIView *fg) {'; fn "$X" 'static UIView *DMFindForegroundView(UIView *v) {'
     fn "$X" "$SW_NEW"
     awk 'index($0, "@interface DMStartupWatcher : NSObject") == 1 { f = 1 } f { print } index($0, "static void DMStartStartupWatcher(void) {") == 1 { s = 1 } s && /^[}]/ { exit }' "$X"
     fn "$X" 'static void DMEnsureLogo(int attempt) {'

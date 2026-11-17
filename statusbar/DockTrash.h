@@ -110,8 +110,18 @@ static BOOL DMDockTrashExternalDisplay(void) {
     return NO;
 }
 // The Dock's switch (its settings post the Dock's change), Finder's own, or a display coming or going: the watch runs only while a bin is wanted.
+// At SpringBoard's start (StatusBar.x %ctor, gDMInCtor) the Dock's switch alone decides: a display's own needs UIKit's screens, and asking for
+// them from the constructor, inside dyld's loading of this part, hung SpringBoard at every start on some iPads, with Finder on and Show Trash in
+// Dock off (GitHub #16, 1.8.6 to 1.8.7.5: UIKit's first screen set-up waited on FrontBoard's listener thread, which waited on dyld). The displays
+// are asked once the main queue runs, after every initializer: this applies once more then. The connect, display and prefs observers
+// (DMDockTrashInit) are as before.
 static void DMDockTrashApplyPref(void) {
-    BOOL on = gFinderOn && (DMDockTrashPrefOn() || DMDockTrashExternalDisplay());
+    BOOL on = gFinderOn && (DMDockTrashPrefOn() || (!gDMInCtor && DMDockTrashExternalDisplay()));
+    if (gFinderOn && !on && gDMInCtor) {
+        static BOOL queued = NO;
+        if (!queued) { queued = YES; dispatch_async(dispatch_get_main_queue(), ^{ DMDockTrashApplyPref(); }); }
+        DMLog(@"[trash] SpringBoard's start: the iPad's Show Trash in Dock is off; a display's own is asked once the start is over");
+    }
     if (on == gDockTrashOn) { if (on) DMDockTrashRecount(@"settings"); return; }
     gDockTrashOn = on;
     DMLog([NSString stringWithFormat:@"[trash] the Dock's Trash is %@", on ? @"on: Finder watches its Trash for the bin" : @"off"]);
