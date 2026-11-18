@@ -21377,6 +21377,7 @@ static NSString *DMBarColorText(UIColor *c) {   // (for the log: r g b a, or the
 // is laid out again at the next turn of the main queue, once per copy, and that layout decides again, outside the pass (the old colour stays
 // for that frame). Mac test: tools/test-barbackground.sh (ncpull, ncpullfull, ncpullclosedup, ncpullinlayout).
 static int gDMBarConstraintDepth = 0;
+static BOOL DMBarItemsAskBeforeOurs(UIView *fg);   // (below: iOS's items of a held copy asked before the layout that makes it ours)
 static const void *kBarDecideNextTurnKey = &kBarDecideNextTurnKey;   // (on a copy: its layout asked for at the next turn, DMBarDecideNextTurn)
 static BOOL DMBarLayingOut(UIView *fg);   // (below: this copy's own layout pass is running)
 static void DMBarDecideNextTurn(UIView *fg, NSString *what) {
@@ -21391,6 +21392,7 @@ static void DMBarDecideNextTurn(UIView *fg, NSString *what) {
         UIView *f = weakFg; if (!f) return;
         objc_setAssociatedObject(f, kBarDecideNextTurnKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         if (!f.window) return;   // (out of its window: its next layout there decides)
+        DMBarItemsAskBeforeOurs(f);
         [f setNeedsLayout];
         [f layoutIfNeeded];
     });
@@ -23826,6 +23828,7 @@ static void DMAttachIfFilledNow(UIView *fg, const char *why, BOOL now) {
                 UIView *f = weakFg; if (!f) return;
                 objc_setAssociatedObject(f, kAttachNextTurnKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 if (!f.window || objc_getAssociatedObject(f, kLogoKey)) return;
+                DMBarItemsAskBeforeOurs(f);
                 [f setNeedsLayout]; [f layoutIfNeeded];
                 if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[attach] copy %p laid out at the next turn: %@", f, objc_getAssociatedObject(f, kLogoKey) ? @"ours now" : @"still not ours"]);
             });
@@ -23979,6 +23982,32 @@ static void DMReleaseStatusBarCopy(UIView *fg) {
     //  pill that were already showing; a copy made during a FaceTime call kept the full capsule, logic test 1.2.3)
     DMBarItemsAskAgain(fg);
 }
+// iOS's items answer for a held copy as for one of ours (DMHideStockWiFi, DMHideStockVPN, DMHideStockActivity: kHoldKey), but only when asked: a
+// copy held on its way to becoming ours keeps the answers it gave as not ours until then. They are asked here, before the layout that makes it
+// ours places them, outside the bar's own constraint pass and the copy's layout pass (an ask inside them updates the bar there: the 1.8.7.6
+// NC-pull crash's way). Until 1.8.7.8 the first ask came at the release, after that layout pass (DMBarItemsAskAgain): at the unlock after a
+// respring on 15/16 the Lock Screen's copy was laid out ours and released in Core Animation's pre-commit phase (DMBarLayoutAgainBeforeDraw) with
+// iOS's Wi-Fi item still in its status icons, drawn beside ours in that frame (iPad 2 16.7.7, 1.8.7.6~f04 r1 / r2a / r2c: the copy's own layout
+// dumps 16-24 ms apart). Only a copy that layout makes ours (its time label there: the clock layout); one laid out without a clock stays not
+// ours and keeps its items' answer. The release still asks (the same answer then). Returns whether it asked.
+static BOOL gDMItemsAskingHeld = NO;   // (this ask is running: an update that places the time label lays the copy out inside it -- not asked again there)
+static int gDMBarDataUpdateDepth = 0;   // (a bar's -_updateWithAggregatedData: is running, iOS's or ours: StockVPNItem. The ask is such an update: none is made
+                                        //  inside one -- an update that places the time label lays the copy out inside it; its release asks. Review of 1.8.7.8's W, F1)
+static BOOL DMBarItemsAskBeforeOurs(UIView *fg) {
+    if (gDMBarDataUpdateDepth > 0 || gDMItemsAskingHeld || !fg.window || fg.window.hidden || objc_getAssociatedObject(fg, kLogoKey) || ![objc_getAssociatedObject(fg, kHoldKey) boolValue]) return NO;
+    if (gDMBarLayoutDepth > 0 || gDMBarConstraintDepth > 0 || gDMBarUpdateDepth > 0 || fg.bounds.size.width < 300.0) return NO;
+    UIView *c = DMLeadingContainer(fg);
+    if (!c || !DMFirstStringView(c)) return NO;
+#if DEBUG
+    if (DMTestFlag("/tmp/msb-noheldask")) return NO;   // (debug: asked only at the release, as before -- for the before/after rows)
+#endif
+    __block BOOL asked = NO;
+    gDMItemsAskingHeld = YES;
+    // (with no animation: the copy is invisible now, and an item fading out would still be fading when the release shows it in this frame)
+    @try { [UIView performWithoutAnimation:^{ asked = DMStockVPNRecheck(fg); }]; } @finally { gDMItemsAskingHeld = NO; }
+    if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[items] copy %p: iOS's items asked while held, before the layout that makes it ours%@ (in %@)", fg, asked ? @"" : @": no bar or no data yet (its release asks)", NSStringFromClass([fg.window class])]);
+    return asked;
+}
 
 // iOS's own VPN badge sits inside the status icons group, which opens Control Center. In our bars (every copy the Mac look lays out) it is left
 // out, and our VPN icon is its own item next to the group instead. The stock item is asked whether its badge may show; for our copies
@@ -24080,7 +24109,12 @@ static BOOL gRestartGateOpen = NO;
 %group StockVPNItem
 %hook _UIStatusBar
 - (void)_updateWithAggregatedData:(id)data {
-    %orig;
+    gDMBarDataUpdateDepth++;   // (counted: no held copy's ask inside it, DMBarItemsAskBeforeOurs. Never left raised)
+    @try {
+        %orig;
+    } @finally {
+        gDMBarDataUpdateDepth--;
+    }
     DMStatusIconsUpdated(self);
 }
 %end
@@ -25128,6 +25162,7 @@ static void DMBarLayoutAgainBeforeDraw(UIView *fg) {
     __weak UIView *weakFG = fg;
     void (^again)(void) = [^{
         UIView *f = weakFG; if (!f) return;
+        DMBarItemsAskBeforeOurs(f);   // (before its mark goes: an update that places the time label asks for this layout once more, kAgainKey)
         objc_setAssociatedObject(f, kAgainKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         if (!f.window || f.window.hidden) return;
         [f setNeedsLayout];
@@ -25174,7 +25209,7 @@ static void DMClockBackLayout(UIView *fg) {
     //  after that call: not now either, our layout would decide the bar's colour inside the pass; at the next turn, as the colour's writers wait)
     BOOL later = now && gDMBarConstraintDepth > 0;
     if (later) DMBarDecideNextTurn(fg, @"the layout for its time label");
-    else if (now) [fg layoutIfNeeded];   // (outside any layout pass: now, before the frame is drawn; inside one, that pass lays it out)
+    else if (now) { DMBarItemsAskBeforeOurs(fg); [fg layoutIfNeeded]; }   // (outside any layout pass: now, before the frame is drawn; inside one, that pass lays it out)
     if (!DMTestFlag("/tmp/msb-noclockagain")) DMBarLayoutAgainBeforeDraw(fg);   // (debug: /tmp/msb-noclockagain = without the second layout, for comparison)
     if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[lock] %p: its time label is back: laid out %@ (its look without a clock ends)", fg,
                                                       later ? @"at the next turn (its bar is in its constraint pass)" : now ? @"now" : @"in this layout pass"]);
@@ -47161,6 +47196,7 @@ void DMSMRunAction(UIAction *action, id sender) {
     if (h) h(action);
 }
 static void DMCtorOver(BOOL *inCtor) { gDMInCtor = NO; }   // (every way out of %ctor, its returns too: the cleanup of its first line)
+#include "../common/DndSwitchShim.h"   // (a WORKAROUND for another tweak's Do Not Disturb listener, GitHub #14 crash 4: see there)
 %ctor {
     BOOL inCtor __attribute__((cleanup(DMCtorOver), unused)) = gDMInCtor = YES;   // (SpringBoard's start: no UIKit screens or windows from here, gDMInCtor)
 #if DEBUG
@@ -47194,6 +47230,9 @@ static void DMCtorOver(BOOL *inCtor) { gDMInCtor = NO; }   // (every way out of 
             return;
         }
     }
+    // Another tweak's class named DndSwitch, a Do Not Disturb listener without the listener's method (common/DndSwitchShim.h, a WORKAROUND): given an
+    // empty one once, at the first turn of the main queue, when SpringBoard has loaded its libraries (never from here: dyld's loading). Either bar style.
+    if (!DMCtorSkip("dndswitch")) dispatch_async(dispatch_get_main_queue(), ^{ MSBDDndShimResult r = MSBDDndSwitchShim(); DMLog([NSString stringWithFormat:@"[dndswitch] %s", MSBDDndShimText(r)]); });
     gStockStored = gStockBar = DMStockBarSwitch();   // "Use Stock Status Bar": decided once, before anything is hooked
     DMStockPublish();
     if (!DMCtorSkip("chargequiet")) MSBDChargeQuietInit();   // (the end of the Charge Limit's adapter cut kept quiet, with either bar style: ChargeQuiet.x)

@@ -9,6 +9,7 @@
 # checks on StatusBar.x (what the model wires as SpringBoard does); then made-to-fail copies: each takes one part of the fix out and must fail.
 # Rows 20-24 (1.8.7.6, the iPad 2's f03 pass): a Notification Center pull let go and a full pull, the time label back inside the bar's own constraint
 # pass (DMBarDecideNextTurn cut out too) or outside it: the copy laid out with its clock in that frame, never inside the pass.
+# Every row (1.8.7.8, the review of the held ask): no data update of the bar starts inside another one (StockVPNItem's hook, cut out, counts them).
 cd "$(dirname "$0")" || exit 1
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 X0=${WR_SB_X:-../statusbar/StatusBar.x}
@@ -68,6 +69,14 @@ sites() {   # $1 StatusBar.x, $2 quiet: the number of site checks that fail
      /usr/bin/grep -qF 'NSTimer *libraryWatch = [NSTimer timerWithTimeInterval:0.2 repeats:YES block:^(NSTimer *timer) { DMSyncWindowsForLibrary(); }];' "$X"; then
     [ -n "$q" ] || echo "PASS  StatusBar.x: SpringBoard's calls as the model makes them (the label's arrival 15/16 and 17+, data updates, the Cover Sheet leaving, DMWatchLock)"
   else [ -n "$q" ] || echo "FAIL  StatusBar.x: a call the model makes is not wired so in StatusBar.x"; n=$((n + 1)); fi
+  # (1.8.7.8 review of W, F1) StockVPNItem's hook counts the bar's data updates around iOS's own (never left raised), and the held ask is not made in one
+  if awk '/^%group StockVPNItem/ { g = 1 } g && /^%end/ { exit } g && index($0, "- (void)_updateWithAggregatedData:(id)data {") == 1 { a = 1 }
+          a == 1 && index($0, "    gDMBarDataUpdateDepth++;") == 1 { a = 2 } a == 2 && $0 == "    @try {" { a = 3 } a == 3 && $0 == "        %orig;" { a = 4 }
+          a == 4 && $0 == "    } @finally {" { a = 5 } a == 5 && $0 == "        gDMBarDataUpdateDepth--;" { a = 6 } a == 6 && $0 == "    DMStatusIconsUpdated(self);" { ok = 1; exit }
+          END { exit !ok }' "$X" &&
+     fndef "$X" DMBarItemsAskBeforeOurs | head -n 2 | /usr/bin/grep -qF '    if (gDMBarDataUpdateDepth > 0 || '; then
+    [ -n "$q" ] || echo "PASS  StatusBar.x: StockVPNItem's hook counts the bar's data updates (gDMBarDataUpdateDepth, @finally), and DMBarItemsAskBeforeOurs asks nothing inside one"
+  else [ -n "$q" ] || echo "FAIL  StatusBar.x: the bar's data updates are not counted by StockVPNItem's hook, or the held ask does not wait for them to end"; n=$((n + 1)); fi
   # the unlock reaches a copy not ours yet on every iPadOS: no OS return in DMRelayoutUnattachedBars (until 1.8.7.7: 17+ only)
   if ! fndef "$X" DMRelayoutUnattachedBars | /usr/bin/grep -q 'DMSBUseSTUI'; then
     [ -n "$q" ] || echo "PASS  StatusBar.x: DMRelayoutUnattachedBars lays out the copies not ours yet on 15/16 too (no OS return)"
@@ -87,7 +96,17 @@ run() {   # $1 StatusBar.x, $2 work dir, $3 quiet: the number of failed checks (
   # (the ask of iOS's items, 1.8.7.7: DMBarItemsAskAgain and its mark -- none in the code before it)
   { fndef "$X" DMBarCopyPooled; fndef "$X" DMHoldStatusBarCopy; fndef "$X" DMHoldSafetyCheck
     ln1 "$X" 'static const void *kItemsAskKey = &kItemsAskKey;'; fndef "$X" DMBarItemsAskAgain
-    fndef "$X" DMReleaseStatusBarCopy; fndef "$X" DMStockVPNRecheck; fndef "$X" DMStatusIconsUpdated; } > "$d/wr-hold.inc"
+    fndef "$X" DMReleaseStatusBarCopy; fndef "$X" DMStockVPNRecheck; fndef "$X" DMStatusIconsUpdated
+    # (1.8.7.8: the ask of a held copy's items before the layout that makes it ours -- none in the code before: a stand-in that asks nothing)
+    # (its review fix: StockVPNItem's hook counts the bar's data updates, and no held ask is made inside one -- the code before: no count)
+    dep=$(ln1 "$X" 'static int gDMBarDataUpdateDepth = 0;'); [ -n "$dep" ] && echo "$dep" || echo 'static int gDMBarDataUpdateDepth = 0;   /* (the code before the review fix: not counted) */'
+    if [ -n "$(fndef "$X" DMBarItemsAskBeforeOurs)" ]; then ln1 "$X" 'static BOOL gDMItemsAskingHeld = NO;'; fndef "$X" DMBarItemsAskBeforeOurs
+    else echo 'static BOOL DMBarItemsAskBeforeOurs(UIView *fg) { (void)fg; return NO; }   /* (the code before 1.8.7.8: none) */'; fi; } > "$d/wr-hold.inc"
+  # StockVPNItem's hook of the bar's data update, as it is: %orig is iOS's part (TIOSUpdatePart)
+  body "$X" '- (void)_updateWithAggregatedData:(id)data {' 'DMStatusIconsUpdated(self);' 'TIOSUpdatePart(self, data);' > "$d/wr-update.inc"
+  /usr/bin/grep -qF 'TIOSUpdatePart(self, data);' "$d/wr-update.inc" || { echo "FAIL  $X: StockVPNItem's hook of the data update was not found"; return 99; }
+  fndef "$X" DMBarLayoutAgainBeforeDraw > "$d/wr-again.inc"
+  /usr/bin/grep -q 'addCommitHandler:forPhase:' "$d/wr-again.inc" || { echo "FAIL  $X: DMBarLayoutAgainBeforeDraw was not found"; return 99; }
   { fndef "$X" DMSkipLockAfterRespring; fndef "$X" DMBarCoverLeaving; fndef "$X" DMRelayoutUnattachedBars; fndef "$X" DMHideAppBarItemsNow; fndef "$X" DMWatchLock; } > "$d/wr-lock.inc"
   { fndef "$X" DMAttachIfFilledNow; fndef "$X" DMAttachIfFilled; fndef "$X" DMClockBackNow; fndef "$X" DMClosedUpClockBack; fndef "$X" DMClockBackLayout; } > "$d/wr-attach.inc"
   # (1.8.7.6: a copy's layout asked for inside its bar's own constraint pass waits for the next turn, DMBarDecideNextTurn as it is; the code before has none)
@@ -153,6 +172,11 @@ if [ -z "$WR_SB_X" ]; then
   mtf "15/16: the closed-up copy laid out at once at its time label's return, not through DMClockBackLayout (inside its bar's constraint pass)" "s/$CLOSEDUP/    if (ours \&\& ![objc_getAssociatedObject(fg, kBarLookLockedKey) boolValue]) { [fg setNeedsLayout]; [fg layoutIfNeeded]; return; }\n/"
   mtf "the closed-up copy laid out inside its bar's own constraint pass (DMClockBackLayout's wait out: the NC-pull crash's way)" 's/    BOOL later = now && gDMBarConstraintDepth > 0;\n/    BOOL later = NO;\n/'
   mtf "the Wi-Fi item left out only of a held bar" 's/(static BOOL DMHideStockWiFi\(id item\) \{\n(?:[^\n]*\n)*?)    return objc_getAssociatedObject\(fg, kLogoKey\) \|\| /$1    return /'
+  # (1.8.7.8: the iPad 2's unlock after a respring, rows 25-27)
+  mtf "the pre-commit layout without the held copy's ask before it (1.8.7.7's way)" 's/\n        DMBarItemsAskBeforeOurs\(f\);   \/\/ \(before its mark goes[^\n]*//'
   mtf "an ask whose own update made the copy ours not made again (that layout's ask dropped)" 's/\n        if \(asked && !wasOurs && objc_getAssociatedObject\(f, kLogoKey\)\) DMBarItemsAskAgain\(f\);//'
+  # (its review, F1: no held ask inside a data update of the bar -- row 19's label is placed inside one)
+  mtf "the held ask made inside a data update of the bar (no depth test, as in 59e7afc2)" 's/    if \(gDMBarDataUpdateDepth > 0 \|\| gDMItemsAskingHeld \|\| /    if (gDMItemsAskingHeld || /'
+  mtf "the bar's data updates not counted by StockVPNItem's hook" 's/    gDMBarDataUpdateDepth\+\+;[^\n]*\n    \@try \{\n        %orig;\n    \} \@finally \{\n        gDMBarDataUpdateDepth--;\n    \}\n/    %orig;\n/'
 fi
 exit $rc

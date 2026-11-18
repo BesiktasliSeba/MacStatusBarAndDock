@@ -10,10 +10,15 @@
 // every change of ours-ness (DMBarItemsAskAgain: at a hold's release and when a copy with no hold becomes ours; owed when it found no bar or no data)
 // and 15/16 lays the copy out, held, when its time label comes back (DMClockBackNow) and at the unlock's cues (DMRelayoutUnattachedBars), as 17+ does.
 // An update that itself makes the copy ours (it places the time label, laid out at once) drops that layout's ask when it is our own ask: the update
-// asks once more (the regressions review's race, row 19).
+// asks once more (the regressions review's race, row 19). The held copy's ask (1.8.7.8, below) is itself such an update: never made inside one
+// (StockVPNItem's hook counts them, run here as it is); every row checks that no update of the bar starts inside another.
 // A Notification Center pull let go (1.8.7.6, the iPad 2's f03 pass, rows 20-24): the Cover Sheet takes the time label of a copy that is ours, the pull's
 // going back lays it out without its clock (closed up, unlocked), and the label comes back with no layout pass of the copy, inside the bar's own
 // constraint pass or outside it. 17+ laid it out again (DMClosedUpClockBack); 15/16 left it closed up, the icons over the time, until the next minute.
+// The unlock after a respring as the iPad 2 (16.7.7) does it (1.8.7.8, rows 25-27; 1.8.7.6~f04 r1 / r2a / r2c): the time label comes back inside the
+// bar's own constraint pass, in Core Animation's commit, after the copy's layout ran there; the copy is laid out ours by the pre-commit layout
+// (DMBarLayoutAgainBeforeDraw, real, with Core Animation's commit handlers stood in) and released there: iOS's items must have answered as ours
+// before that layout, or iOS's Wi-Fi item is drawn beside ours in that frame (before 1.8.7.8: their ask came after the layout pass).
 // The real code is cut out of statusbar/StatusBar.x by test-wifirecheck.sh (see there). Stand-ins: UIKit's views and their layout (setNeedsLayout:
 // laid out at the turn's commit), the bar and its Wi-Fi item, the display link, SpringBoard's lock manager and Cover Sheet, the time label, and the main
 // queue on the test's own clock -- the awake clock (dispatch_after and CACurrentMediaTime stop while the iPad sleeps; the screen's frames too). A turn
@@ -51,6 +56,7 @@ static void TAfter(double delay, dispatch_block_t b) { [gQueue addObject:@[@(gNo
 - (void)setNeedsLayout;
 - (void)layoutIfNeeded;
 - (CGRect)convertRect:(CGRect)r toView:(UIView *)v;
++ (void)performWithoutAnimation:(void (^)(void))b;
 @end
 @interface UIWindow : UIView
 @end
@@ -106,7 +112,6 @@ static BOOL gUnlockAsked;        // (DMTryUnlock was called: the unlock follows)
 static NSMutableArray<NSString *> *gLog;
 static int gLayoutsBy[4], gOursBy = -1, gOursHeld = -1;
 static int gLayoutsInPass;       // (layouts of ours run inside the bar's own constraint pass: the NC-pull crash's way, 1.8.7.6)
-static __unsafe_unretained UIView *gAgainFG = nil;   // (DMBarLayoutAgainBeforeDraw: laid out once more at this commit)
 
 // what StatusBar.x keeps, as the cut code reads it
 static NSHashTable *gCopies = nil, *gAllBarCopies = nil;
@@ -163,7 +168,16 @@ static void DMSnapBegin(void) {}
 static void DMSnapEnd(void) {}
 static BOOL DMPerfOn(void) { return NO; }
 static DMPerfSlot *DMPerfSlotFor(const char *name) { (void)name; return NULL; }
-static void DMBarLayoutAgainBeforeDraw(UIView *fg) { gAgainFG = fg; }   // (Core Animation's pre-commit phase: once more before this frame is drawn)
+#define CATransaction TCATransaction   // (macOS has a CATransaction of its own: the stand-in under another name, the real code's word kept)
+@interface CATransaction : NSObject   // (Core Animation's commit handlers: the pre-commit phase runs after the commit's layout pass, before the frame)
++ (void)addCommitHandler:(void (^)(void))block forPhase:(unsigned long)phase;
+@end
+static NSMutableArray *gPreCommit;   // (this commit's pre-commit handlers)
+static BOOL gInPreCommit; static int gLateHandlers;   // (a handler added while that phase runs: not taken -- counted)
+@implementation CATransaction
++ (void)addCommitHandler:(void (^)(void))block forPhase:(unsigned long)phase { if (phase != 1) return; if (gInPreCommit) { gLateHandlers++; return; } if (!gPreCommit) gPreCommit = [NSMutableArray array]; [gPreCommit addObject:[block copy]]; }
+@end
+static BOOL DMBarItemsAskBeforeOurs(UIView *fg);   // (1.8.7.8: before the layout that makes a held copy ours -- a stand-in doing nothing in the code before)
 static BOOL DMLockUp(id mgr);
 static BOOL DMBarLockedNow(void) { return MSBDBarLockedLook(DMLockUp(gLockMgr), gCover); }   // (15/16's: BarUnlock.h's rule on the manager and the Cover Sheet)
 
@@ -186,10 +200,12 @@ static _UIStatusBar *gBar;
 static _UIStatusBarWifiItem *gItem;
 static BOOL gItemShown;          // (iOS's Wi-Fi item shows: its answer when last asked)
 static int gAsks, gAsksAsOurs;   // (our asks that reached the bar; those while the copy was ours)
+static int gNoAnimAsks;          // (1.8.7.8: asks made with no animation -- the held copy's, before the layout that makes it ours)
 @implementation _UIStatusBarWifiItem
 - (id)statusBar { return gBar; }
 @end
 
+#include "wr-again.inc"    // (StatusBar.x DMBarLayoutAgainBeforeDraw, real)
 #include "wr-decide.inc"   // (StatusBar.x DMBarLayingOut, DMBarDecideNextTurn: the copy's layout at the next turn, outside its bar's constraint pass)
 #include "wr-base.inc"
 static void DMHoldStatusBarCopy(UIView *fg);
@@ -206,17 +222,24 @@ static BOOL gLabelInData;   // (row 19: the data has the time back, the bar has 
 static int gLabelInAsk = -1;   // (row 19: the update that placed it was our own ask (1) or iOS's (0))
 static void TLabelBack(BOOL hook, BOOL iosPass);
 static BOOL ours(void) { return objc_getAssociatedObject(gFG, kLogoKey) != nil; }
+static int gUpdDepth, gNestedUpdates;   // (1.8.7.8 review of W, F1: data updates of the bar started inside another one -- never: UIKit's is not run inside itself)
+static void TIOSUpdatePart(id self, NSDictionary *data) {   // (iOS's own part, %orig: the items whose data the update has are asked; ours passes the whole data)
+    (void)self;
+    if (gUpdDepth > 0) gNestedUpdates++;
+    gUpdDepth++;
+    if (data[@"wifi"]) gItemShown = ((BOOL (*)(id, SEL, id, id))objc_msgSend)(gItem, @selector(canEnableDisplayItem:fromData:), nil, data);
+    if (data[@"whole"]) { gAsks++; if (ours()) gAsksAsOurs++; }
+    if (gLabelInData && data[@"time"]) {   // (row 19: this update places the label, after the items have answered)
+        gLabelInData = NO; gLabelInAsk = data[@"whole"] != nil;
+        TLabelBack(YES, NO);
+    }
+    gUpdDepth--;
+}
 @implementation _UIStatusBar
 - (id)foregroundView { return gFG; }
 - (id)currentAggregatedData { return gNoData ? nil : @{ @"wifi": @YES, @"time": @YES, @"whole": @YES }; }
-- (void)_updateWithAggregatedData:(id)data {   // (iOS: the items whose data the update has are asked; ours passes the whole data)
-    if (((NSDictionary *)data)[@"wifi"]) gItemShown = ((BOOL (*)(id, SEL, id, id))objc_msgSend)(gItem, @selector(canEnableDisplayItem:fromData:), nil, data);
-    if (((NSDictionary *)data)[@"whole"]) { gAsks++; if (ours()) gAsksAsOurs++; }
-    if (gLabelInData && ((NSDictionary *)data)[@"time"]) {   // (row 19: this update places the label, after the items have answered)
-        gLabelInData = NO; gLabelInAsk = ((NSDictionary *)data)[@"whole"] != nil;
-        TLabelBack(YES, NO);
-    }
-    DMStatusIconsUpdated(self);   // (our hook of it, StockVPNItem: after iOS's own)
+- (void)_updateWithAggregatedData:(id)data {   // (our hook of it as it is, StockVPNItem: its %orig is iOS's part above)
+#include "wr-update.inc"
 }
 @end
 static void TIOSUpdate(NSDictionary *d) { [gBar _updateWithAggregatedData:d]; }   // (iOS's own data update: the time each minute, ...)
@@ -260,6 +283,7 @@ static void TDidMoveToWindow(_UIStatusBarForegroundView *self) {   // (the -didM
 - (void)setNeedsLayout { _needsLayout = YES; }
 - (void)layoutIfNeeded { if (_needsLayout && [self isKindOfClass:[_UIStatusBarForegroundView class]]) TLayoutSubviews((_UIStatusBarForegroundView *)self); }
 - (CGRect)convertRect:(CGRect)r toView:(UIView *)v { (void)v; return r; }
++ (void)performWithoutAnimation:(void (^)(void))b { gNoAnimAsks++; b(); }   // (counted: the held ask's)
 @end
 @implementation UIWindow
 - (UIWindow *)window { return self; }
@@ -288,9 +312,19 @@ static int gClosedFrames;        // (... ours, still closed up: its status icons
 // ---- the run loop ----
 static BOOL gLibOn; static double gNextLib, gNextMinute;
 static BOOL TDue(void) { for (NSArray *e in gQueue) if ([e[0] doubleValue] <= gNow + 1e-9) return YES; return NO; }
+static double gLabelInCommitAt = -1;   // (rows 25-27: the label back inside the bar's constraint pass in this commit, the iPad 2's unlock)
+static void TLabelBack(BOOL hook, BOOL iosPass);
 static void TCommit(void) {   // (the commit's layout pass, then Core Animation's pre-commit phase)
     if (gFG.needsLayout && gFG.window) TLayoutSubviews(gFG);
-    if (gAgainFG) { UIView *f = gAgainFG; gAgainFG = nil; void (^again)(void) = ^{ [f setNeedsLayout]; [f layoutIfNeeded]; }; again(); }
+    if (gLabelInCommitAt >= 0 && gWall + 1e-9 >= gLabelInCommitAt) {   // (the bar's own pass, after the copy's: its region places the label)
+        gLabelInCommitAt = -1;
+        gDMBarConstraintDepth++; if (gSTUI) gDMBarUpdateDepth++;
+        TLabelBack(YES, NO);
+        if (gSTUI) gDMBarUpdateDepth--; gDMBarConstraintDepth--;
+        gFG.needsLayout = NO;   // (UIKit drops a setNeedsLayout made inside that pass: 18.5's frame bursts; 16.7.7: the pre-commit layout made it ours)
+    }
+    NSArray *h = gPreCommit ?: @[]; gPreCommit = [NSMutableArray array];
+    gInPreCommit = YES; for (void (^b)(void) in h) b(); gInPreCommit = NO;
 }
 static void TTurn(BOOL frame) {
     NSMutableArray *due = [NSMutableArray array];
@@ -587,6 +621,27 @@ static void RowPull(BOOL stui, int order) {
     TRow(name, 0, YES);
 }
 
+// 1.8.7.8: the iPad 2's unlock after a respring (1.8.7.6~f04 r1 / r2a / r2c: Home press at 6.7 s / 60.9 s / 180.8 s on the Lock Screen; the Cover
+// Sheet starts to leave, the label back 0.24 s later inside the bar's constraint pass, "the layout for its time label deferred", the copy laid out
+// ours and released by the pre-commit layout). Both Wi-Fi icons in no frame: iOS's items answered as ours before that layout.
+static void RowLockInCommit(BOOL stui, NSString *name, double unlockAt, double sleepFrom, double sleepTo) {
+    gSleepFrom = sleepFrom; gSleepTo = sleepTo;
+    TWorld(stui, YES);
+    __block BOOL u = NO;
+    gLabelAt = unlockAt + 0.24;
+    TRun(0, unlockAt + 10.0, ^(double w) {
+        if (!u && w >= unlockAt - 1e-9) { u = YES; TUnlockStart(); gLabelInCommitAt = gLabelAt; }
+        TProbe(w);
+    });
+    int deferred = 0; for (NSString *s in gLog) if ([s containsString:@"the layout for its time label deferred"]) deferred++;
+    printf("-- %s %s: the label inside the bar's pass in the commit; deferred %d, late pre-commit handlers %d\n", fam().UTF8String, name.UTF8String, deferred, gLateHandlers);
+    if (!stui) check(deferred == 1, [NSString stringWithFormat:@"%@ %@: the log says the layout for its time label waited for the next turn, once, as on the iPad 2 (%d)", fam(), name, deferred]);
+    check(gTwoFrames == 0, [NSString stringWithFormat:@"%@ %@: both Wi-Fi icons in no frame (%d of %d): iOS's items answered as ours before the layout that made the copy ours", fam(), name, gTwoFrames, gFrames]);
+    if (!stui) check(gNoAnimAsks == 1, [NSString stringWithFormat:@"%@ %@: iOS's items asked once while held, with no animation, before that layout (%d)", fam(), name, gNoAnimAsks]);
+    check(gLateHandlers == 0, [NSString stringWithFormat:@"%@ %@: no pre-commit layout asked for inside the pre-commit phase (%d)", fam(), name, gLateHandlers]);
+    TRow(name, 0, YES);
+}
+
 static int RunRow(int r) {
     BOOL s = r >= 100; int k = r % 100;
     DMStockWiFiInit();
@@ -614,15 +669,21 @@ static int RunRow(int r) {
         case 18: RowMenuOff(s); break;
         case 19: RowLabelInAsk(s); break;
         case 20: case 21: case 22: case 23: case 24: RowPull(s, k - 20); break;
+        case 25: RowLockInCommit(s, @"Lock Screen start, unlock at 6.7 s, the label back in the bar's pass in the commit (f04 r1)", 6.7, -1, -1); break;
+        case 26: RowLockInCommit(s, @"Lock Screen start, unlock at 60.9 s, the screen on, the label in the commit (f04 r2a)", 60.9, -1, -1); break;
+        case 27: RowLockInCommit(s, @"Lock Screen start, unlock at 180.8 s, asleep from 20 s to 178 s, the label in the commit (f04 r2c)", 180.8, 20.0, 178.0); break;
         default: return -1;
     }
+    // (every row, 1.8.7.8 review of W, F1: the held copy's ask, an update of the bar, never inside one -- row 19's label is placed inside an update)
+    check(gNestedUpdates == 0 && gDMBarDataUpdateDepth == 0, [NSString stringWithFormat:@"%@ row %d: no data update of the bar started inside another one (%d), the hook's count back at 0 (%d)",
+                                                             fam(), k, gNestedUpdates, gDMBarDataUpdateDepth]);
     return gFails;
 }
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     int fails = 0, rows = 0;
     for (int f = 0; f < 2; f++)
-        for (int k = 0; k < 25; k++) {
+        for (int k = 0; k < 28; k++) {
             int r = f * 100 + k;
             fflush(stdout);
             pid_t pid = fork();

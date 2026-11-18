@@ -179,6 +179,7 @@ static void TLayoutCopy(UIView *fg);   // (below: -dm_layoutLogoBody as the test
 }
 @end
 
+__attribute__((unused)) static BOOL DMBarItemsAskBeforeOurs(UIView *fg) { (void)fg; return NO; }   // (StatusBar.x 1.8.7.8: a held copy's items asked before the layout that makes it ours -- the copies here are ours: it asks nothing)
 #include "bb-real.inc"        // (StatusBar.x: DMBackgroundWanted, DMApplyBackground, DMLabelDrawnColor, DMBarItemColor, the dark text, DMApplyBarItemColor)
 #include "bb-trailing.inc"    // (StatusBar.x: DMTrailingIconColor)
 static void TNarrowLayout(UIView *fg) {   // (StatusBar.x -dm_layoutLogoBody: its branch for a copy under 300 pt, as it is)

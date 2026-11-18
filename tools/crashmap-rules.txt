@@ -350,6 +350,9 @@ sym MacStatusBarCore \$CCAutoAddWatch\$ part
 file MacStatusBarCore ^CCAutoAdd\.h$ part
 sec MacStatusBarCore ^//\s-+\sWelcome part
 file MacStatusBarCore ^StockBar\.h$ part
+# the empty Do Not Disturb listener method given to another tweak's DndSwitch (common/DndSwitchShim.h, 1.8.7.8, a workaround): it runs with
+# either bar style, so Stock mode would not stop it -- the part
+file MacStatusBarCore ^DndSwitchShim\.h$ part
 # banners
 sym MacStatusBarCore \$MacBanners\$ macBanners
 sym MacStatusBarCore ^_?DMBanner macBanners

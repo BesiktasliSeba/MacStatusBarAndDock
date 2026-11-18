@@ -2,6 +2,12 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.7.8
+
+### Fixes
+- Fixed a rare SpringBoard crash with another tweak that turns on Do Not Disturb when an app opens (#14).
+- After a respring, iPadOS's own Wi-Fi icon no longer appears for a moment next to the menu bar's when you unlock, and with Airplane Mode on, the airplane icon no longer slides over the Wi-Fi icon (#14).
+
 ## 1.8.7.7
 
 ### Fixes
