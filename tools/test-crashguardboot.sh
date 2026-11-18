@@ -22,7 +22,7 @@ build() {   # $1 the guard's header (as the test includes it), $2 the program
 }
 scenarios() {   # $1 program, $2 quiet; returns the number of failed scenarios
   local n=0 sc out
-  for sc in oldsame now oldother early; do
+  for sc in oldsame now oldother early classearly classsafe classnolook; do   # (class*: review of 1.8.7.7)
     rm -rf "$W/reports" "$W"/guard.txt* "$W"/verdicts.txt "$W"/record.txt "$W"/step.txt; mkdir -p "$W/reports"
     out=$("$1" "$sc" 2>&1) || n=$((n + 1))
     [ -n "$2" ] || echo "$out"
@@ -43,6 +43,8 @@ if [ -z "$CRASHGUARD_H" ]; then
   mtf "the same-pid return before the boot check (the code before the fix)" -e '/mark from before this boot: a new row/{h;d;}' -e '/s\.pid == getpid()) return;/G'
   mtf "no boot check" -e '/mark from before this boot: a new row/d'
   mtf "no same-pid return (the second loader would look again)" -e '/s\.pid == getpid()) return;/d'
+  mtf "no class look when the tweak is left off (review of 1.8.7.7)" -e 's/        if (classLater) dispatch_after_f/        if (0) dispatch_after_f/'
+  mtf "no class look after a start without an 8 s look" -e 's/    else if (classLater) dispatch_after_f/    else if (0) dispatch_after_f/'
 fi
 [ $rc = 0 ] && echo "test-crashguardboot: all pass" || echo "test-crashguardboot: FAILED"
 exit $rc

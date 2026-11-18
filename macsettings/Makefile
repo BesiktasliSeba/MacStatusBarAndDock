@@ -28,37 +28,40 @@ MacSettings_PRIVATE_FRAMEWORKS = Preferences
 MacSettings_FRAMEWORKS = CoreSpotlight
 
 MacSettingsBadge_FILES = Badge.x AutoLockTimer.x
-MacSettingsBadge_CFLAGS = -fobjc-arc
+# (1.8.7.7, GitHub #14: every hook keeps its own stack frame while the original runs -- no tail calls -- so a crash under one of our hooks shows
+#  our code on the crashing stack, and the crash guard pins it on us and on the feature, CrashBlame.h / CrashFeature.h. Code generation only;
+#  the parts below, which run in SpringBoard, not MacSettings and MacEthernetFix, which run in Settings only.)
+MacSettingsBadge_CFLAGS = -fobjc-arc -fno-optimize-sibling-calls
 
 MacLargeTitles_FILES = LargeTitles.x
-MacLargeTitles_CFLAGS = -fobjc-arc
+MacLargeTitles_CFLAGS = -fobjc-arc -fno-optimize-sibling-calls
 
 MacHomeBar_FILES = HomeBar.x
-MacHomeBar_CFLAGS = -fobjc-arc
+MacHomeBar_CFLAGS = -fobjc-arc -fno-optimize-sibling-calls
 
 MacPageDots_FILES = PageDots.x IconLayout.x
-MacPageDots_CFLAGS = -fobjc-arc
+MacPageDots_CFLAGS = -fobjc-arc -fno-optimize-sibling-calls
 
 MacIconLabels_FILES = IconLabels.x
-MacIconLabels_CFLAGS = -fobjc-arc
+MacIconLabels_CFLAGS = -fobjc-arc -fno-optimize-sibling-calls
 
 MacEthernetFix_FILES = EthernetFix.x
 MacEthernetFix_CFLAGS = -fobjc-arc
 
 MacAppSizeMenu_FILES = AppSizeMenu.x
-MacAppSizeMenu_CFLAGS = -fobjc-arc
+MacAppSizeMenu_CFLAGS = -fobjc-arc -fno-optimize-sibling-calls
 
 MacLockStatusBar_FILES = LockStatusBar.x
-MacLockStatusBar_CFLAGS = -fobjc-arc
+MacLockStatusBar_CFLAGS = -fobjc-arc -fno-optimize-sibling-calls
 
 MacFolderMenu_FILES = FolderMenu.x
-MacFolderMenu_CFLAGS = -fobjc-arc
+MacFolderMenu_CFLAGS = -fobjc-arc -fno-optimize-sibling-calls
 
 MacCCGrabber_FILES = CCGrabber.x
-MacCCGrabber_CFLAGS = -fobjc-arc
+MacCCGrabber_CFLAGS = -fobjc-arc -fno-optimize-sibling-calls
 
 MacAddToFolder_FILES = AddToFolder.x
-MacAddToFolder_CFLAGS = -fobjc-arc
+MacAddToFolder_CFLAGS = -fobjc-arc -fno-optimize-sibling-calls
 
 SUBPROJECTS += sshtoggled
 

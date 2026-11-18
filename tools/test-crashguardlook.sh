@@ -30,14 +30,17 @@ cleanup() {
 trap cleanup EXIT
 G0=${CRASHGUARD_H:-$PWD/../common/CrashGuard.h}
 TDISP=(-DMSBD_DISP_DOMAIN="\"$DISP\"" -DMSBD_DISP_MSB_DOMAIN="\"$TD\"" -DMSBD_DISP_DOCK_DOMAIN="\"$TD.dock\"")
+mkdir -p "$W/tweaks"   # (1.8.7.7: no tweak installed, no Choicy, an empty death record: the Mac's own are never read)
+HR=${CRASHGUARD_HELPER_ROOT:-$PWD/..}
 clang -fobjc-arc -dynamiclib -framework Foundation -framework CoreFoundation -DMSBD_CRASHMAP="\"$FIX/test-crashmap.txt\"" "${TDISP[@]}" \
-  -o "$W/MacCrashBlame.dylib" ../loader/CrashBlameHelper.m ../loader/CrashFeatureHelper.m || exit 1
+  -DMSBD_CAUSE_FILE="\"$W/causes.txt\"" -DMSBD_CHOICY_PREFS="\"$W/choicy.plist\"" -DMSBD_BLAME_TWEAK_DIR="\"$W/tweaks\"" \
+  -o "$W/MacCrashBlame.dylib" "$HR/loader/CrashBlameHelper.m" "$HR/loader/CrashFeatureHelper.m" || exit 1
 build() {   # $1 the guard's header (as the test includes it), $2 the program
   clang -Wall -Wno-unused-function -framework CoreFoundation -iquote ../common -DMSBD_TEST_GUARD_H="\"$1\"" \
     -DMSBD_GUARD_FILE="\"$W/guard.txt\"" -DMSBD_GUARD_REPORTS="\"$R\"" -DMSBD_GUARD_VERDICTS="\"$W/verdicts.txt\"" \
     -DMSBD_GUARD_RECORD="\"$W/record.txt\"" -DMSBD_GUARD_RECENT="\"$W/recent.txt\"" -DMSBD_GUARD_NOTICE_LIB="\"$W/missing-notice.dylib\"" \
     -DMSBD_GUARD_BLAME_LIB="\"$W/MacCrashBlame.dylib\"" -DMSBD_STEP_FILE="\"$W/step.txt\"" -DMSBD_CRASHMAP="\"$FIX/test-crashmap.txt\"" \
-    "${TDISP[@]}" -o "$2" test-crashguardlook.c
+    -DMSBD_CAUSE_FILE="\"$W/causes.txt\"" "${TDISP[@]}" -o "$2" test-crashguardlook.c
 }
 fresh() {
   rm -rf "$R" "$W"/guard.txt* "$W"/verdicts.txt* "$W"/record.txt* "$W"/recent.txt "$W"/step.txt*; mkdir -p "$R"
@@ -171,6 +174,33 @@ scenarios() {   # $1 program, $2 quiet; the number of failed checks
   start "$T" $((W1 + 23)) 0
   c "  start 2, after start 1's Apple-only crash: the Dock not blamed for the crash before step 1: step 2, safe mode on" \
     "[ \"\$(note)\" = 3 ] && [ \"\$(safe)\" = 1 ] && ! grep -q '^skip DockMagnification ' '$W/step.txt' 2>/dev/null"
+  # 1.8.7.7 (GitHub #14), with the REAL reports (trimmed): crashes with only Apple code on their stacks while other tweaks are loaded are not pinned
+  # on us any more. J. the reporter's row: two popover aborts, the second reported late (found at the look), then the wallpaper tweak's crash,
+  #    then the Do Not Disturb listener's: nothing at any start or look (before: safe mode at the first look, "turned off after SpringBoard crashed
+  #    twice")
+  local P14=real-issue14-popover-1.ips Q14=real-issue14-popover-2.ips
+  fresh; echo "1 $T0 0 0 0" > "$W/guard.txt"; place $((T0 + 10)) $P14
+  start "$T" $W1 30 "4:$((W1 - 2)):$FIX/$Q14" "30:$((W1 + 30)):$FIX/real-issue14-wallpaper-tweak.ips"
+  c "J. #14: two popover aborts, the second found at the look: no action, no safe mode, no record (the row goes on)" \
+    "[ -z \"\$(note)\" ] && [ -z \"\$(safe)\" ] && [ ! -e '$W/record.txt' ] && [ \"\$(fld 3)\" = 0 ] && [ \"\$(fld 2)\" = $T0 ]"
+  c "  ... the verdicts kept as not pinned (4), with what crashed" "grep -q '4 Apple_code_only;_3_other_tweaks_loaded	' '$W/verdicts.txt' && grep -q 'presentationTransitionWillBegin' '$W/verdicts.txt'"
+  start "$T" $W2 20 "20:$((W2 + 20)):$FIX/real-issue14-dnd-listener.ips"
+  c "  start 2, after the wallpaper tweak's crash: no action, no safe mode" "[ -z \"\$(note)\" ] && [ -z \"\$(safe)\" ] && [ ! -e '$W/record.txt' ]"
+  start "$T" $W3 0
+  c "  start 3, after the Do Not Disturb listener's crash (another tweak's crash in the row): no action, no safe mode, the row over at 60 s" \
+    "[ -z \"\$(note)\" ] && [ -z \"\$(safe)\" ] && [ ! -e '$W/record.txt' ] && [ ! -e '$W/guard.txt' ]"
+  # K. the same two right after a switch was turned on: step 1 only (that switch), at the look; one more not pinned on anyone: nothing more
+  fresh; echo "1 $T0 0 0 0" > "$W/guard.txt"; place $((T0 + 10)) $P14; recent $((T0 - 60)) macBanners "Mac-Style Banners"
+  start "$T" $W1 30 "4:$((W1 - 2)):$FIX/$Q14" "30:$((W1 + 30)):$FIX/$P14"
+  c "K. a switch noted, then two crashes not pinned on anyone: step 1 at the look, only that switch (no step 1b, no safe mode)" \
+    "[ \"\$(note)\" = 1 ] && [ \"\$(defaults read $TD macBanners)\" = 0 ] && grep -qx 'unknown 2' '$W/record.txt' && [ -z \"\$(safe)\" ] && [ ! -e '$W/step.txt' ]"
+  start "$T" $W2 0
+  c "  start 2, after one more such crash: no further step, no safe mode" "[ \"\$(note)\" = 1 ] && [ -z \"\$(safe)\" ]"
+  # L. one of ours (the 17.5's Notification Center crash, ours through our hooks) seconded by a popover abort found at the look: the guard acts
+  fresh; echo "1 $T0 0 0 0" > "$W/guard.txt"; place $((T0 + 10)) real-175-nc-pull-ours.ips
+  start "$T" $W1 0 "4:$((W1 - 2)):$FIX/$P14"
+  c "L. a crash of ours and one not pinned on anyone, the second found at the look: step 1b (the status bar's fallback), no safe mode" \
+    "[ \"\$(note)\" = 4 ] && [ \"\$(defaults read $TD stockStatusBar)\" = 1 ] && grep -qx 'verdict 1' '$W/record.txt' && [ -z \"\$(safe)\" ]"
   return $n
 }
 
@@ -202,8 +232,11 @@ if [ -z "$CRASHGUARD_H" ]; then
   mtf "the next start does not keep the SpringBoard before it" CrashGuard.h -e 's/s.ta = now; s.next = 0; s.prev = prev;/s.ta = now; s.next = 0;/'
   mtf "a start that acts does not keep the SpringBoard before it" CrashGuard.h -e 's/s->prev = gMSBDGuardAtStart ? gMSBDGuardPrevPid : 0;/s->prev = 0;/'
   mtf "step 1b counts the crash of the SpringBoard before a start's count" CrashStep.h -e 's/if (MSBDGuardFrom(e->d_name, p, t, since, prev) \&\& /if (t >= since \&\& /'
-  mtf "the mark's seventh field not written" CrashGuard.h -e 's/, s->next, s->prev);/, s->next, 0);/'
+  mtf "the mark's seventh field not written" CrashGuard.h -e 's/, s->next, s->prev, s->wfakes);/, s->next, 0, s->wfakes);/'
   mtf "a seven-field mark not read" CrashGuard.h -e 's/ok = n >= 5;/ok = n >= 5 \&\& n < 7;/'
+  mtf "an Apple-only crash with other tweaks loaded is strong (the code before 1.8.7.7)" CrashGuard.h -e 's/{ return v == kMSBDVerdictUnpinned; }/{ return 0; }/'
+  mtf "no rule 2 (a weak crash cannot second one of ours)" CrashGuard.h -e 's/if (S >= 2 || (S == 1 \&\& W >= 1))/if (S >= 2)/'
+  mtf "no rule 3 (no step 1 for crashes right after a switch)" CrashGuard.h -e 's/else if (S == 0 \&\& W >= 2 \&\& recent) {/else if (0) {/'
 fi
 [ $rc = 0 ] && echo "test-crashguardlook: all pass" || echo "test-crashguardlook: FAILED"
 exit $rc

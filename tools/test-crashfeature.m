@@ -140,6 +140,20 @@ int main(int argc, char **argv) {
         Expect(@"  ... that display's own off -> the part", fx(@"step1b-dock-downloads.ips"), trashMap, dockPart);
         SetIn(DD, [TV stringByAppendingString:@"/dock/showTrash"], nil); SetIn(DD, [TV stringByAppendingString:@"/info"], nil); SetIn(DK, @"showTrash", nil);
         SetPref(@"macBanners", nil); SetPref(@"stockStatusBar", nil); SetPref(@"controlCenterStyle", nil); SetPref(@"dockStyle", nil);
+        // 1.8.7.7 (GitHub #14): the REAL reports. Ours on the stack through our hooks (the 17.5's Notification Center crash): step 1b finds our frame
+        // (its build is not in the test map: the status bar's own fallback, Stock status bar); #16's watchdog report with our UUID named: the same;
+        // the reporter's popover abort (only Apple code, other tweaks loaded): not pinned on us, nothing to turn off -- and the guard does not count
+        // it as ours any more (CrashGuard.h)
+        NSString *stockSet = [NSString stringWithFormat:@"pref MacStatusBarCore %@ stockStatusBar 1 Status Bar Style|the status bar", D];
+        Expect(@"real: the 17.5 NC crash (ours through our hooks) -> its part's switch", fx(@"real-175-nc-pull-ours.ips"), map, stockSet);
+        Expect(@"real: #14's popover abort -> not pinned on us", fx(@"real-issue14-popover-1.ips"), map, @"NO: not pinned on us (Apple code only; 3 other tweaks loaded)");
+        Expect(@"real: #14's Do Not Disturb crash -> not pinned on us", fx(@"real-issue14-dnd-listener.ips"), map, @"NO: not pinned on us (Apple code only; 7 other tweaks loaded)");
+        gMSBDBlameUUIDOverride = @{@"0c9f9299-b5ee-334d-b59e-0105d845aa36": @"/var/jb/usr/lib/MacStatusBarAndDock/MacStatusBarCore.dylib"};
+        Expect(@"real: #16's watchdog report (our UUID named) -> its part's switch", fx(@"real-issue16-watchdog.ips"), map, stockSet);
+        gMSBDBlameUUIDOverride = @{};
+        Expect(@"real: #16's watchdog report, our image not named -> not pinned (counted, strong)", fx(@"real-issue16-watchdog.ips"), map, @"NO: not pinned on us (watchdog:Apple code only)");
+        gMSBDBlameUUIDOverride = nil;
+        SetPref(@"stockStatusBar", nil);
     }
     return fails ? 1 : 0;
 }

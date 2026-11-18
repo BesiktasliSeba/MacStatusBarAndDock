@@ -27663,6 +27663,15 @@ static void DMRunTrigger(NSString *cmd) {
                 DMLog([NSString stringWithFormat:@"[sbregions] state %@: %@", k, [d stringByReplacingOccurrencesOfString:@"\n" withString:@" "]]);
         }
     }
+#if DEBUG
+    else if ([cmd isEqualToString:@"crashothers"]) {   // crashothers (1.8.7.7, GitHub #14, device row D2): the tweaks the crash guard's helper finds installed for SpringBoard, Choicy applied (CrashBlame.h MSBDBlameOthersInstalled); no crash
+        void *h = dlopen("/var/jb/usr/lib/MacStatusBarAndDock/MacCrashBlame.dylib", RTLD_NOW | RTLD_LOCAL);
+        int (*others)(char *, size_t) = h ? (int (*)(char *, size_t))dlsym(h, "MSBDCrashOthers") : NULL;
+        char list[4096] = "";
+        int n = others ? others(list, sizeof list) : -1;
+        DMLog([NSString stringWithFormat:@"[crashothers] %@", n < 0 ? @"helper not available" : [NSString stringWithFormat:@"%d installed for SpringBoard: %s", n, list]]);
+    }
+#endif
     else if ([cmd isEqualToString:@"rtlinfo"]) {   // rtlinfo: right-to-left evidence (1.3.3, H-1) -- the layout direction, each status bar copy's regions, the Home Screen's icon lists and the Dock's icons (read-only)
         UIApplication *app = [UIApplication sharedApplication];
         DMLog([NSString stringWithFormat:@"[rtlinfo] app direction %ld (1 = right-to-left), languages %@, locale %@", (long)app.userInterfaceLayoutDirection,

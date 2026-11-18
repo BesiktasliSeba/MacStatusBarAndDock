@@ -22,23 +22,37 @@ clang -fobjc-arc -Wall -Wno-unused-function -framework Foundation "${TDISP[@]}" 
 "$W/tcf-synthetic" "$FIXDIR" || fails=1
 clang -fobjc-arc -Wall -Wno-unused-function -framework Foundation -o "$W/tcf" test-crashfeature.m   # (the real domains: a built map's cases below)
 echo "== guard order"
-clang -fobjc-arc -dynamiclib -framework Foundation -framework CoreFoundation -DMSBD_CRASHMAP="\"$FIXDIR/test-crashmap.txt\"" "${TDISP[@]}" -o "$W/MacCrashBlame.dylib" ../loader/CrashBlameHelper.m ../loader/CrashFeatureHelper.m
+# (1.8.7.7: the helper's death record, #16's UUID named, no tweak installed and no Choicy on the Mac; CRASHSTEP_HELPER_ROOT=<tree>: the helper from
+#  there, e.g. the code before the fix, with CRASHSTEP_GUARD_DIR=<tree>/common)
+HR=${CRASHSTEP_HELPER_ROOT:-$PWD/..}; mkdir -p "$W/tweaks"
+echo "0c9f9299-b5ee-334d-b59e-0105d845aa36 /var/jb/usr/lib/MacStatusBarAndDock/MacStatusBarCore.dylib" > "$W/uuidmap.txt"
+helper() {   # $1 the tree whose loader/ and common/ it is built from, $2 the library
+  clang -fobjc-arc -dynamiclib -framework Foundation -framework CoreFoundation -DMSBD_CRASHMAP="\"$FIXDIR/test-crashmap.txt\"" "${TDISP[@]}" -DMSBD_CAUSE_FILE="\"$W/causes.txt\"" \
+    -DMSBD_BLAME_UUID_MAP_FILE="\"$W/uuidmap.txt\"" -DMSBD_CHOICY_PREFS="\"$W/choicy.plist\"" -DMSBD_BLAME_TWEAK_DIR="\"$W/tweaks\"" -o "$2" "$1/loader/CrashBlameHelper.m" "$1/loader/CrashFeatureHelper.m"
+}
+helper "$HR" "$W/MacCrashBlame.dylib"
 # (CRASHSTEP_GUARD_DIR=<folder>: CrashGuard.h, CrashStep.h, CrashExplain.h and LineSwitch.h from there, e.g. the code before a fix; CRASHSTEP_PREFS_M=<file>:
 #  another MSBRootListController.m for the L104 pages' check. The other common headers come from ../common.)
 GD=${CRASHSTEP_GUARD_DIR:-$PWD/../common}; PM=${CRASHSTEP_PREFS_M:-$PWD/../statusbar/macstatusbarprefs/MSBRootListController.m}
-clang -Wall -Wno-unused-function -framework CoreFoundation -iquote ../common -DMSBD_TEST_GUARD_H="\"$GD/CrashGuard.h\"" -DMSBD_GUARD_REPORTS="\"$REPORTS\"" -DMSBD_GUARD_VERDICTS="\"$W/verdicts.txt\"" \
-  -DMSBD_GUARD_BLAME_LIB="\"$W/MacCrashBlame.dylib\"" -DMSBD_STEP_FILE="\"$W/step.txt\"" -DMSBD_CRASHMAP="\"$FIXDIR/test-crashmap.txt\"" \
-  -DMSBD_GUARD_RECORD="\"$W/record.txt\"" -DMSBD_GUARD_RECENT="\"$W/recent.txt\"" \
-  -DMSBD_DISP_DOMAIN="\"com.besiktasliseba.test-crashstep.displays\"" -DMSBD_DISP_MSB_DOMAIN="\"com.besiktasliseba.test-crashstep\"" \
-  -o "$W/tcs" test-crashstep.c
+tcs() {   # $1 the guard's header, $2 the helper library, $3 the program
+  clang -Wall -Wno-unused-function -framework CoreFoundation -iquote ../common -DMSBD_TEST_GUARD_H="\"$1\"" -DMSBD_GUARD_REPORTS="\"$REPORTS\"" -DMSBD_GUARD_VERDICTS="\"$W/verdicts.txt\"" \
+    -DMSBD_GUARD_BLAME_LIB="\"$2\"" -DMSBD_STEP_FILE="\"$W/step.txt\"" -DMSBD_CRASHMAP="\"$FIXDIR/test-crashmap.txt\"" \
+    -DMSBD_GUARD_RECORD="\"$W/record.txt\"" -DMSBD_GUARD_RECENT="\"$W/recent.txt\"" \
+    -DMSBD_DISP_DOMAIN="\"com.besiktasliseba.test-crashstep.displays\"" -DMSBD_DISP_MSB_DOMAIN="\"com.besiktasliseba.test-crashstep\"" \
+    -o "$3" test-crashstep.c
+}
+tcs "$GD/CrashGuard.h" "$W/MacCrashBlame.dylib" "$W/tcs"
 run() {   # run <scenario> <fixture for 10:00> [<fixture for 10:01>]
   rm -rf "$REPORTS" "$W/verdicts.txt" "$W/step.txt" "$W/record.txt" "$W/recent.txt"; mkdir -p "$REPORTS"
-  [ "$1" = recent ] && echo "$(date -j -f '%Y-%m-%d %H:%M:%S' '2026-09-26 09:59:30' +%s) com.besiktasliseba.test-crashstep recentSwitch Recent Switch" > "$W/recent.txt"
+  case "$1" in recent|issue14recent) echo "$(date -j -f '%Y-%m-%d %H:%M:%S' '2026-09-26 09:59:30' +%s) com.besiktasliseba.test-crashstep recentSwitch Recent Switch" > "$W/recent.txt";; esac
+  # (1.8.7.7: our death record's line for the SpringBoard of real-issue14-popover-1.ips -- pid 24198, captured 2026-11-16 16:30:49 +0800)
+  printf '24198\t1794817849\tmain\tNSGenericException\tUIPopoverPresentationController (<UIPopoverPresentationController: 0x10a1b2c00>) should have a non-nil sourceView or barButtonItem set before the presentation occurs.\tNSException\n' > "$W/causes.txt"
   defaults delete com.besiktasliseba.macstatusbaranddock >/dev/null 2>&1 || true; defaults delete com.besiktasliseba.test-crashstep >/dev/null 2>&1 || true
   defaults delete com.besiktasliseba.test-crashstep.displays >/dev/null 2>&1 || true
   cp "$FIXDIR/$2" "$REPORTS/SpringBoard-2026-09-26-100000.ips"
   [ -n "$3" ] && cp "$FIXDIR/$3" "$REPORTS/SpringBoard-2026-09-26-100100.ips"
-  echo "-- $1"; "$W/tcs" "$1" || fails=1
+  if [ -n "$QUIET" ]; then "${TCS:-$W/tcs}" "$1" >/dev/null 2>&1; return; fi   # (a made-to-fail copy: its status only)
+  echo "-- $1"; "${TCS:-$W/tcs}" "$1" || fails=1
 }
 run banners step1b-core-banners.ips step1b-core-banners-exception.ips
 run parts step1b-dock.ips step1b-small-part.ips
@@ -79,6 +93,49 @@ if python3 -I crashstep-pagescut.py "$GD/LineSwitch.h" "$PM" "$W/pages-cut.h" "$
       -DMSBD_GUARD_RECENT="\"$W/recent.txt\"" -o "$W/tsp-$v" test-crashsteppages.m && "$W/tsp-$v" $a || fails=1
   done
 else echo "FAIL  the pages' lines not found in LineSwitch.h / MSBRootListController.m"; fails=1; fi
+# 1.8.7.7 (GitHub #14): the guard's rows with REAL reports (tools/crash-fixtures/real-*, trimmed): crashes not pinned on anyone (only Apple code on
+# their stacks, other tweaks loaded) no longer switch MacStatusBar&Dock off; ours still do, and step 1b still turns off what crashed.
+run issue14 real-issue14-popover-1.ips real-issue14-popover-2.ips
+run issue14recent real-issue14-popover-1.ips real-issue14-popover-2.ips
+run oursweak real-175-nc-pull-ours.ips real-issue14-popover-1.ips
+run ourspair real-175-nc-pull-ours.ips real-175-nc-pull-ours.ips
+run issue16 real-issue16-watchdog.ips real-issue16-watchdog.ips
+run loop real-issue14-popover-1.ips real-issue14-popover-2.ips
+run loopother real-issue14-popover-1.ips real-issue14-popover-2.ips
+run stage1weak step1b-core-banners.ips step1b-core-banners-exception.ips
+# (review of 1.8.7.7: another tweak's crash first or in the middle of the row only resets the loop breaker's count, it does not switch it off)
+run otherfirst real-issue14-wallpaper-tweak.ips real-issue14-popover-1.ips
+run othermiddle real-issue14-popover-1.ips real-issue14-popover-2.ips
+run stage1otherfirst step1b-core-banners.ips step1b-core-banners-exception.ips
+rows() {   # the rows above, quiet: 0 if all pass
+  QUIET=1 run issue14 real-issue14-popover-1.ips real-issue14-popover-2.ips && QUIET=1 run issue14recent real-issue14-popover-1.ips real-issue14-popover-2.ips &&
+  QUIET=1 run oursweak real-175-nc-pull-ours.ips real-issue14-popover-1.ips && QUIET=1 run ourspair real-175-nc-pull-ours.ips real-175-nc-pull-ours.ips &&
+  QUIET=1 run issue16 real-issue16-watchdog.ips real-issue16-watchdog.ips && QUIET=1 run loop real-issue14-popover-1.ips real-issue14-popover-2.ips &&
+  QUIET=1 run loopother real-issue14-popover-1.ips real-issue14-popover-2.ips && QUIET=1 run stage1weak step1b-core-banners.ips step1b-core-banners-exception.ips &&
+  QUIET=1 run otherfirst real-issue14-wallpaper-tweak.ips real-issue14-popover-1.ips && QUIET=1 run othermiddle real-issue14-popover-1.ips real-issue14-popover-2.ips &&
+  QUIET=1 run stage1otherfirst step1b-core-banners.ips step1b-core-banners-exception.ips
+}
+if [ -z "$CRASHSTEP_GUARD_DIR$CRASHSTEP_HELPER_ROOT" ]; then   # made-to-fail copies: each takes one part of the fix out, and the rows must fail
+  mtfrow() {   # $1 name, $2 file (common/CrashGuard.h, common/CrashBlame.h, loader/CrashBlameHelper.m), $3.. sed arguments
+    local name=$1 file=$2; shift 2
+    rm -rf "$W/mtf"; mkdir -p "$W/mtf"; cp -R ../common ../loader "$W/mtf/"
+    sed -i '' "$@" "$W/mtf/$file"
+    if cmp -s "$W/mtf/$file" "../$file"; then echo "FAIL  made to fail ($name): the copy did not change"; fails=1; return; fi
+    helper "$W/mtf" "$W/mtf/MacCrashBlame.dylib" 2>/dev/null && tcs "$W/mtf/common/CrashGuard.h" "$W/mtf/MacCrashBlame.dylib" "$W/mtf/tcs" 2>/dev/null || { echo "FAIL  made to fail ($name): did not build"; fails=1; return; }
+    if TCS="$W/mtf/tcs" rows; then echo "FAIL  made to fail ($name): the rows still pass"; fails=1; else echo "PASS  made to fail ($name): caught"; fi
+  }
+  mtfrow "an Apple-only crash with other tweaks loaded is strong (the code before the fix)" common/CrashGuard.h -e 's/{ return v == kMSBDVerdictUnpinned; }/{ return 0; }/'
+  mtfrow "no UNPINNED verdict" common/CrashBlame.h -e 's/        if (found.count) {/        if (0) {/'
+  mtfrow "a weak crash cannot second one of ours (no rule 2)" common/CrashGuard.h -e 's/if (S >= 2 || (S == 1 \&\& W >= 1))/if (S >= 2)/'
+  mtfrow "no step 1 for crashes right after a switch (no rule 3)" common/CrashGuard.h -e 's/else if (S == 0 \&\& W >= 2 \&\& recent)/else if (0)/'
+  mtfrow "no loop breaker (no rule 4)" common/CrashGuard.h -e 's/} else if (SA + WA >= 4) {/} else if (0) {/'
+  mtfrow "the loop breaker with another tweak's crash in the row" common/CrashGuard.h -e 's/} else if (SA + WA >= 4) {/} else if (S + W >= 4) {/'
+  mtfrow "the loop breaker off for the whole row after another tweak's crash (review of 1.8.7.7)" common/CrashGuard.h -e 's/} else if (SA + WA >= 4) {/} else if (S + W >= 4 \&\& O == 0) {/'
+  mtfrow "after step 1b the loop breaker off for the whole row after another tweak's crash" common/CrashGuard.h -e 's/if (rSA + rWA < 4) {/if (rS + rW < 4 || rO > 0) {/'
+  mtfrow "the count after the newest other tweak's crash takes the whole row" common/CrashGuard.h -e 's/if (!o || ts\[i\] > newestOther)/if (1)/'
+  mtfrow "after step 1b a weak crash goes on to step 2" common/CrashGuard.h -e 's/        if (S < 1) {   \/\/ (only weak/        if (0) {   \/\/ (only weak/'
+  mtfrow "no death record read" common/CrashBlame.h -e 's/    if (pid <= 0 || !capture) return nil;/    return nil;/'
+fi
 echo "== Fit to Window in the rules (no build needed): every function of it window code, Resize Apps to Fit Windows only its own two"
 # (1.8.0 engine parity pass: ^_?DMFit took Fit's own functions to Resize Apps to Fit Windows, and the sections holding its tiles and the turn had no
 #  rule, so DMAssignDefaultSlots, DMSlotFrame, the closure watcher and DMRelayoutForOrientation fell to Stock status bar mode)

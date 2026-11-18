@@ -281,7 +281,7 @@ Window engines are separate tweaks with their own behaviour. For example, Aerial
 
 ## Report a bug
 
-The easiest way is on the iPad: Settings > Status Bar > Report a Problem. It opens a new GitHub issue with your iPad model, iPadOS version, window engine and tweak version filled in, plus a short crash summary when crash recovery acted in the last 7 days. You see the whole text first and can change any of it.
+The easiest way is on the iPad: Settings > Status Bar > Report a Problem. It opens a new GitHub issue with your iPad model, iPadOS version, window engine and tweak version filled in, plus a short crash summary when crash recovery acted in the last 7 days, and what caused SpringBoard's crashes in the last 24 hours. You see the whole text first and can change any of it.
 
 You can also [open an issue](https://github.com/BesiktasliSeba/MacStatusBarAndDock/issues/new/choose) from a computer. The form asks for the same details, the steps, and a screenshot or screen recording if you have one.
 

@@ -186,6 +186,103 @@ int main(int argc, char **argv) {
         Expect("a row with no display default (Show Downloads): its overrides cleared, no display given one", (SetBool(TDD, "any/dock/showDownloads", 1), MSBDGuardDispClear(MSBD_DISP_DOCK_DOMAIN, "showDownloads", 0)), 1);
         snprintf(k, sizeof k, "%s/dock/showDownloads", a);
         Expect("  ... cleared, none written", Num(TDD, "any/dock/showDownloads") == -1 && Num(TDD, k) == -1, 1);
+    } else if (!strcmp(scenario, "issue14")) {   // 1.8.7.7, GitHub #14 -- reports: 10:00 + 10:01 the reporter's two popover aborts (REAL, trimmed)
+        // Only Apple code on their stacks, three other tweaks loaded: two WEAK crashes, nothing of ours to blame. Before, both counted as ours and
+        // step 2 turned MacStatusBar&Dock off (safe mode) with "turned off after SpringBoard crashed twice".
+        Expect("#14: two popover aborts (not pinned on anyone): the guard does nothing", MSBDGuardEvaluate(&s), 0);
+        Expect("  no note (crashGuardAction)", Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY), -1);
+        Expect("  safe mode NOT on", Num(MSBD_GATE_DOMAIN, MSBD_SAFE_KEY), -1);
+        Expect("  no record, no step 1b list", access(MSBD_GUARD_RECORD, F_OK) == 0 || access(MSBD_STEP_FILE, F_OK) == 0, 0);
+        Expect("  stage still 0 (nothing done)", s.stage, 0);
+        Expect("  the verdicts kept, with what crashed (for the page's note and Report a Problem)", FileHas(MSBD_GUARD_VERDICTS, "100000.ips 4 Apple_code_only;_3_other_tweaks_loaded\t") && FileHas(MSBD_GUARD_VERDICTS, "-[UIPopoverPresentationController presentationTransitionWillBegin] (UIKitCore)"), 1);
+        Expect("  the reason our death record kept for the first one's SpringBoard", FileHas(MSBD_GUARD_VERDICTS, "\tNSGenericException: UIPopoverPresentationController (<UIPopoverPresentationController: 0x10a1b2c00>) should have a non-nil sourceView"), 1);
+        system("cp \"$FIX/real-issue14-wallpaper-tweak.ips\" \"$REPORTS/SpringBoard-2026-09-26-100130.ips\"");
+        Expect("  + the wallpaper tweak's crash (another tweak's): still nothing", MSBDGuardEvaluate(&s), 0);
+        system("cp \"$FIX/real-issue14-dnd-listener.ips\" \"$REPORTS/SpringBoard-2026-09-26-100200.ips\"");
+        Expect("  + the Do Not Disturb listener's crash (weak): still nothing (another tweak crashed in this row: no loop breaker)", MSBDGuardEvaluate(&s), 0);
+        Expect("  ... no note, no safe mode", Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY) == -1 && Num(MSBD_GATE_DOMAIN, MSBD_SAFE_KEY) == -1, 1);
+    } else if (!strcmp(scenario, "issue14recent")) {   // reports: 10:00 + 10:01 the popover aborts; a switch turned on at 09:59:30 (the script writes it)
+        Expect("#14's two crashes right after a switch was turned on: step 1 only", MSBDGuardEvaluate(&s) ? Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY) : 0, 1);
+        Expect("  that switch off", Num(TD, "recentSwitch"), 0);
+        Expect("  safe mode NOT on, no step 1b", Num(MSBD_GATE_DOMAIN, MSBD_SAFE_KEY) == -1 && access(MSBD_STEP_FILE, F_OK) != 0, 1);
+        Expect("  record: action 1, the switch, \"unknown 2\", the cause and the other tweaks", FileHas(MSBD_GUARD_RECORD, "\naction 1\n") && FileHas(MSBD_GUARD_RECORD, "switch " TD " recentSwitch Recent Switch\n")
+               && FileHas(MSBD_GUARD_RECORD, "\nunknown 2\n") && FileHas(MSBD_GUARD_RECORD, "\ncause ") && FileHas(MSBD_GUARD_RECORD, "\nothers 3 OtherTweakA.dylib"), 1);
+        s.ta = At(10, 4);
+        system("cp \"$FIX/real-issue14-popover-2.ips\" \"$REPORTS/SpringBoard-2026-09-26-100500.ips\"");
+        Expect("  one more crash not pinned on anyone after step 1: no further step", MSBDGuardEvaluate(&s), 0);
+        Expect("  ... safe mode still off", Num(MSBD_GATE_DOMAIN, MSBD_SAFE_KEY), -1);
+    } else if (!strcmp(scenario, "oursweak")) {   // reports: 10:00 the 17.5's Notification Center crash (ours, REAL) + 10:01 a popover abort (weak)
+        Expect("a crash of ours seconded by one not pinned on anyone: the guard acts (rule 2)", MSBDGuardEvaluate(&s), 1);
+        Expect("  step 1b on ours (action 4; its build is not in the test map: the status bar's fallback)", Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY), 4);
+        Expect("  the stock status bar for now", Num(TD, "stockStatusBar"), 1);
+        Expect("  safe mode not on", Num(MSBD_GATE_DOMAIN, MSBD_SAFE_KEY), -1);
+        Expect("  record: ours (the crash it names), our frames", FileHas(MSBD_GUARD_RECORD, "\nverdict 1\n") && FileHas(MSBD_GUARD_RECORD, "\nframe MacStatusBarCore.dylib"), 1);
+    } else if (!strcmp(scenario, "ourspair")) {   // reports: 10:00 + 10:01 the 17.5's Notification Center crash (ours on the stack through our hooks, REAL)
+        Expect("two crashes of ours (real): the guard acts", MSBDGuardEvaluate(&s), 1);
+        Expect("  step 1b turns off what crashed (action 4)", Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY), 4);
+        Expect("  ... the status bar's fallback: the stock status bar", Num(TD, "stockStatusBar"), 1);
+        Expect("  safe mode not on", Num(MSBD_GATE_DOMAIN, MSBD_SAFE_KEY), -1);
+    } else if (!strcmp(scenario, "issue16")) {   // reports: 10:00 + 10:01 #16's watchdog report (REAL: SpringBoard stuck in our code, our UUID mapped)
+        Expect("#16's watchdog report twice (our code on the stuck main thread): the guard acts", MSBDGuardEvaluate(&s), 1);
+        Expect("  step 1b (action 4)", Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY), 4);
+        Expect("  record: ours, stuck (watchdog)", FileHas(MSBD_GUARD_RECORD, "\nverdict 1\n") && FileHas(MSBD_GUARD_RECORD, "\nblamed watchdog:MacStatusBarCore.dylib"), 1);
+        Expect("  record: the cause names the watchdog", FileHas(MSBD_GUARD_RECORD, "\ncause stuck, ended by the watchdog"), 1);
+    } else if (!strcmp(scenario, "loop")) {   // reports: 10:00 + 10:01 popover aborts; the scenario adds two more crashes not pinned on anyone
+        Expect("two crashes not pinned on anyone: nothing", MSBDGuardEvaluate(&s), 0);
+        system("cp \"$FIX/real-issue14-dnd-listener.ips\" \"$REPORTS/SpringBoard-2026-09-26-100200.ips\"");
+        Expect("three: nothing", MSBDGuardEvaluate(&s), 0);
+        system("cp \"$FIX/real-175-cc-spike-apple-only.ips\" \"$REPORTS/SpringBoard-2026-09-26-100300.ips\"");
+        Expect("four in a row, none another tweak's: the loop breaker acts", MSBDGuardEvaluate(&s), 1);
+        Expect("  the whole tweak (action 2), safe mode on", Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY) == 2 && Num(MSBD_GATE_DOMAIN, MSBD_SAFE_KEY) == 1, 1);
+        Expect("  record: loop 1, unknown 4", FileHas(MSBD_GUARD_RECORD, "\nloop 1\n") && FileHas(MSBD_GUARD_RECORD, "\nunknown 4\n"), 1);
+    } else if (!strcmp(scenario, "loopother")) {   // reports: 10:00 + 10:01 popover aborts; the scenario adds two more and another tweak's crash
+        system("cp \"$FIX/real-issue14-dnd-listener.ips\" \"$REPORTS/SpringBoard-2026-09-26-100200.ips\"; cp \"$FIX/real-175-cc-spike-apple-only.ips\" \"$REPORTS/SpringBoard-2026-09-26-100300.ips\"; cp \"$FIX/real-issue14-wallpaper-tweak.ips\" \"$REPORTS/SpringBoard-2026-09-26-100400.ips\"");
+        Expect("four not pinned plus another tweak's crash in the row: nothing (that tweak may be the loop)", MSBDGuardEvaluate(&s), 0);
+        Expect("  no note, no safe mode", Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY) == -1 && Num(MSBD_GATE_DOMAIN, MSBD_SAFE_KEY) == -1, 1);
+    } else if (!strcmp(scenario, "otherfirst")) {   // (review of 1.8.7.7) reports: 10:00 the wallpaper tweak's crash (another tweak's), 10:01 a popover abort;
+        // then more crashes not pinned on anyone, among them KT's two REAL crashes of ours that left no frame of ours (the 17.5's CC spike, the 16.7.7
+        // Zetsu yield). Before, one other tweak's crash anywhere in the row switched the loop breaker off for the whole row: a loop of ours that began
+        // right after it was never stopped (1.8.7.6 acted at the second crash). Now the loop breaker counts the crashes since that crash.
+        const char *more[] = {"real-issue14-popover-2.ips", "real-issue14-dnd-listener.ips", "real-175-cc-spike-apple-only.ips", "real-167-zetsu-yield-apple-only.ips"};
+        char cmd[512], what[200];
+        for (int i = 0; i < 4; i++) {
+            snprintf(cmd, sizeof cmd, "cp \"$FIX/%s\" \"$REPORTS/SpringBoard-2026-09-26-10%02d00.ips\"", more[i], i + 2);
+            system(cmd);
+            snprintf(what, sizeof what, "another tweak's crash, then %d not pinned on anyone: %s", i + 2, i + 2 >= 4 ? "the loop breaker acts" : "nothing yet");
+            int acted = MSBDGuardEvaluate(&s);
+            Expect(what, acted, i + 2 >= 4);
+            if (acted) break;
+        }
+        Expect("  the whole tweak (action 2), safe mode on", Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY) == 2 && Num(MSBD_GATE_DOMAIN, MSBD_SAFE_KEY) == 1, 1);
+        Expect("  record: loop 1, unknown 4", FileHas(MSBD_GUARD_RECORD, "\nloop 1\n") && FileHas(MSBD_GUARD_RECORD, "\nunknown 4\n"), 1);
+    } else if (!strcmp(scenario, "othermiddle")) {   // (review of 1.8.7.7) reports: 10:00 + 10:01 popover aborts, 10:02 the wallpaper tweak's crash, then three more
+        system("cp \"$FIX/real-issue14-wallpaper-tweak.ips\" \"$REPORTS/SpringBoard-2026-09-26-100200.ips\"; cp \"$FIX/real-issue14-dnd-listener.ips\" \"$REPORTS/SpringBoard-2026-09-26-100300.ips\";"
+               "cp \"$FIX/real-175-cc-spike-apple-only.ips\" \"$REPORTS/SpringBoard-2026-09-26-100400.ips\"; cp \"$FIX/real-167-zetsu-yield-apple-only.ips\" \"$REPORTS/SpringBoard-2026-09-26-100500.ips\"");
+        Expect("five not pinned, another tweak's crash third: three since it, nothing", MSBDGuardEvaluate(&s), 0);
+        system("cp \"$FIX/real-issue14-popover-1.ips\" \"$REPORTS/SpringBoard-2026-09-26-100600.ips\"");
+        Expect("  one more: four since it, the loop breaker acts", MSBDGuardEvaluate(&s), 1);
+        Expect("  ... action 2, safe mode on, loop 1", Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY) == 2 && Num(MSBD_GATE_DOMAIN, MSBD_SAFE_KEY) == 1 && FileHas(MSBD_GUARD_RECORD, "\nloop 1\n"), 1);
+    } else if (!strcmp(scenario, "stage1otherfirst")) {   // (review of 1.8.7.7) reports: 10:00 + 10:01 banners crashes (ours): step 1b; then another tweak's
+        // crash and crashes not pinned on anyone after it: the loop breaker after step 1b counts those since that crash too
+        Expect("two banners crashes: step 1b", MSBDGuardEvaluate(&s) ? Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY) : 0, 4);
+        s.ta = At(10, 4);
+        system("cp \"$FIX/real-issue14-wallpaper-tweak.ips\" \"$REPORTS/SpringBoard-2026-09-26-100500.ips\"; cp \"$FIX/real-issue14-popover-1.ips\" \"$REPORTS/SpringBoard-2026-09-26-100600.ips\";"
+               "cp \"$FIX/real-issue14-popover-2.ips\" \"$REPORTS/SpringBoard-2026-09-26-100700.ips\"; cp \"$FIX/real-issue14-dnd-listener.ips\" \"$REPORTS/SpringBoard-2026-09-26-100800.ips\"");
+        Expect("another tweak's crash, then three not pinned: no further step", MSBDGuardEvaluate(&s), 0);
+        Expect("  ... the note still step 1b's", Num(MSBD_GATE_DOMAIN, MSBD_SAFE_KEY) == -1 && Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY) == 4, 1);
+        system("cp \"$FIX/real-175-cc-spike-apple-only.ips\" \"$REPORTS/SpringBoard-2026-09-26-100900.ips\"");
+        Expect("  a fourth since it: the loop breaker goes on (action 3)", MSBDGuardEvaluate(&s) ? Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY) : 0, 3);
+        Expect("  safe mode on, record: loop 1", Num(MSBD_GATE_DOMAIN, MSBD_SAFE_KEY) == 1 && FileHas(MSBD_GUARD_RECORD, "\nloop 1\n"), 1);
+    } else if (!strcmp(scenario, "stage1weak")) {   // reports: 10:00 + 10:01 banners crashes (ours, synthetic): step 1b; then crashes not pinned on anyone
+        Expect("two banners crashes: step 1b", MSBDGuardEvaluate(&s) ? Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY) : 0, 4);
+        s.ta = At(10, 4);
+        Expect("no crash since: nothing", MSBDGuardEvaluate(&s), 0);
+        system("cp \"$FIX/real-issue14-popover-1.ips\" \"$REPORTS/SpringBoard-2026-09-26-100500.ips\"");
+        Expect("one crash not pinned on anyone after step 1b: no further step (1.8.7.7)", MSBDGuardEvaluate(&s), 0);
+        Expect("  ... safe mode off, the note still step 1b's", Num(MSBD_GATE_DOMAIN, MSBD_SAFE_KEY) == -1 && Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY) == 4, 1);
+        system("cp \"$FIX/real-issue14-popover-2.ips\" \"$REPORTS/SpringBoard-2026-09-26-100600.ips\"");
+        Expect("a second one: the row has four crashes, none another tweak's: the loop breaker goes on (action 3)", MSBDGuardEvaluate(&s) ? Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY) : 0, 3);
+        Expect("  safe mode on, record: loop 1", Num(MSBD_GATE_DOMAIN, MSBD_SAFE_KEY) == 1 && FileHas(MSBD_GUARD_RECORD, "\nloop 1\n"), 1);
     } else { fprintf(stderr, "unknown scenario\n"); return 2; }
     return fails ? 1 : 0;
 }

@@ -78,6 +78,27 @@ int main(int argc, char **argv) {
         MSBDCrashGuardStart();
         Expect("a mark of another pid from this boot: an early start of that row (t0 kept, this pid)", MSBDGuardRead(&m) && m.pid == getpid() && m.t0 == t0this && m.stage == 0, 1);
         Expect("  ... no crash reports: nothing done, the 8 s look and the 60 s clear set", HasTimer(8, 0, MSBDGuardLook) && HasTimer(60, 1, MSBDGuardStable) && gTimerCount == 2, 1);
+    } else if (!strncmp(sc, "class", 5)) {   // (review of 1.8.7.7) a cause naming a class judged at this start: asked again at 8 s (MSBDGuardClassLook)
+#ifdef MSBD_GUARD_CLASS_LATER
+        MSBDGuardClassNote("SpringBoard-2026-11-16-170131.ips", "NSInvalidArgumentException: -[OtherTweakLateListener x:]: unrecognized selector\twhere\t1 OtherTweakLate.dylib");
+        MSBDGuardClassNote("SpringBoard-2026-11-16-170200.ips", "EXC_CRASH (SIGABRT)\twhere\t0 ");   // (no class named: not noted)
+        Expect("  (one report noted)", MSBDGuardClassNoted(), 1);
+        if (!strcmp(sc, "classearly")) {   // an early start that did not act: its 8 s look asks (no timer of its own)
+            WriteMark(1, t0this, 0, 0, now - 5);
+            MSBDCrashGuardStart();
+            Expect("class noted, an early start that did not act: the 8 s look (it asks) and the 60 s clear, nothing more", HasTimer(8, 0, MSBDGuardLook) && HasTimer(60, 1, MSBDGuardStable) && gTimerCount == 2, 1);
+        } else if (!strcmp(sc, "classsafe")) {   // a start that left the tweak off (stage 2): no 8 s look, the class asked by a timer of its own
+            WriteMark(1, t0this, 2, now - 10, now - 5);
+            MSBDCrashGuardStart();
+            Expect("class noted, the tweak off: only the 8 s class look, on a background queue", HasTimer(8, 0, MSBDGuardClassLookAt) && gTimerCount == 1, 1);
+        } else {   // a start with no 8 s look (as one that acted): the class look and the 60 s clear
+            WriteMark(1, t0old, 1, t0old + 30, before);
+            MSBDCrashGuardStart();
+            Expect("class noted, no 8 s look: the 8 s class look and the 60 s clear", HasTimer(8, 0, MSBDGuardClassLookAt) && HasTimer(60, 1, MSBDGuardStable) && gTimerCount == 2, 1);
+        }
+#else
+        Expect("a cause naming a class asked again at 8 s (review of 1.8.7.7)", 0, 1);
+#endif
     } else { fprintf(stderr, "unknown scenario %s\n", sc); return 2; }
     return fails ? 1 : 0;
 }

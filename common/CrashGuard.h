@@ -15,13 +15,25 @@
 // Only crashes that point at us count (2026-09-26): each report is judged once by MacCrashBlame.dylib (common/CrashBlame.h, loader/CrashBlameHelper.m;
 // Foundation's JSON reader, which the plain-C loader cannot use itself) and the verdict is kept in MSBD_GUARD_VERDICTS. A crash in another tweak's
 // library (on the crashing stack, nothing of ours there) is not counted; ours, Apple-only stacks and reports that cannot be read are (as before).
+// 1.8.7.7 (GitHub #14, and #9/#10 on 1.6.1): an Apple-only crash while another tweak is loaded (verdict UNPINNED) could be anyone's -- the reporter's
+// popover aborts and a Do Not Disturb listener of other tweaks switched MacStatusBar&Dock off. It is a WEAK crash now: S = strong crashes (ours,
+// Apple-only with no other tweak, unreadable), W = weak, O = other tweaks' crashes, in the row (MSBDGuardEvaluate):
+//  1. S >= 2, or 2. S == 1 and W >= 1: as before (step 1, else 1b, else 2) -- a weak crash can second one of ours, never start an action;
+//  3. S == 0, W >= 2 and switches turned on in the 2 min before the row: step 1 only (what was just turned on goes off again), nothing more;
+//  4. four or more (strong or weak) since the newest other tweak's crash of the row, if there is one: the loop breaker -- SpringBoard keeps crashing
+//     and nothing else is to blame: as before, "loop 1" in the record (review of 1.8.7.7: an other tweak's crash anywhere in the row turned it off
+//     for the whole row, so a loop of ours that began right after one never stopped; it only resets the count now -- that tweak may be the loop);
+//  5. else nothing: the verdicts and causes are kept for the page's note and Report a Problem.
+// After step 1 or 1b one more strong crash, or a row that meets rule 4, goes on to step 2 (action 3). Each judged report also gets its cause (the
+// exception's reason our death record kept, common/CrashCause.h, or what the report says), where it crashed and the other tweaks loaded.
 // The helper is opened only when a report has to be judged or told from the SpringBoard before a start's count (MSBDGuardFrom), after an early
 // start, so a normal start costs nothing more.
 // Since 2026-09-26 it explains itself: when it acts it writes a small record (MSBD_GUARD_RECORD: what it did, the switches by their row titles, the
 // part of ours that was blamed, iPadOS and build, the top frames of our image only), which the pages' footer and the Report a Problem text use
 // (CrashExplain.h), and which the one-time notice on the Home Screen shows (loader/CrashNotice.m, loaded only while the record is unshown).
 // Cost per SpringBoard start: one small file write, and 60 s later one read and an unlink (on the main thread); the crash-report folder is only
-// listed after an early start. The mark has to be written before a crash can happen, so it cannot wait for a crash report to exist.
+// listed after an early start. The mark has to be written before a crash can happen, so it cannot wait for a crash report to exist. 1.8.7.7: plus
+// our death record's handler installed (CrashCause.h: a few dlsym calls and two function calls; it only runs when SpringBoard dies of an exception).
 // Plain C (loader/Loader.c); CoreFoundation is looked up at run time, as in VersionGate.h.
 #pragma once
 #include <stdio.h>
@@ -32,6 +44,8 @@
 #include <dispatch/dispatch.h>
 #include <dlfcn.h>
 #include <pthread.h>
+#include <stdlib.h>
+#include <string.h>
 #include "VersionGate.h"
 
 #ifndef MSBD_GUARD_FILE   // (overridable for the Mac test)
@@ -45,7 +59,9 @@
 #define MSBD_GUARD_REPORTS "/var/mobile/Library/Logs/CrashReporter"
 #endif
 #ifndef MSBD_GUARD_VERDICTS   // (overridable for the Mac test, tools/test-crashguard.c)
-#define MSBD_GUARD_VERDICTS "/var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-CrashVerdicts.txt"   // "<report> <verdict> <blamed>" lines
+#define MSBD_GUARD_VERDICTS "/var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-CrashVerdicts2.txt"   // "<report> <verdict> <blamed>\t<cause>\t<where>\t<others>" lines
+// (1.8.7.7: a new name -- the old file's Apple-only verdicts were judged without looking for other tweaks, so they are not reused; a build before
+// reads its own file, MacStatusBarAndDock-CrashVerdicts.txt, which this one leaves alone)
 #endif
 #ifndef MSBD_GUARD_RECORD   // (overridable for the Mac test, tools/test-crashguard.c)
 #define MSBD_GUARD_RECORD "/var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-CrashRecord.txt"   // what the guard did and why (see below)
@@ -59,13 +75,16 @@
 #ifndef MSBD_GUARD_BLAME_LIB   // (overridable for the Mac test, tools/test-crashguard.c)
 #define MSBD_GUARD_BLAME_LIB "/var/jb/usr/lib/MacStatusBarAndDock/MacCrashBlame.dylib"
 #endif
-enum { kMSBDVerdictUnknown = 0, kMSBDVerdictOurs = 1, kMSBDVerdictApple = 2, kMSBDVerdictOther = 3 };   // (= kMSBDBlame..., CrashBlame.h)
+enum { kMSBDVerdictUnknown = 0, kMSBDVerdictOurs = 1, kMSBDVerdictApple = 2, kMSBDVerdictOther = 3, kMSBDVerdictUnpinned = 4 };   // (= kMSBDBlame..., CrashBlame.h)
+#define MSBD_GUARD_WEAK_CRASHES 1   // (1.8.7.7: strong and weak crashes -- the Mac tests run on the code before it too)
+#include "CrashCause.h"   // (1.8.7.7: our death record, installed at the guard's start)
 
-typedef struct { int pid, stage, fakes, next, prev; long t0, ta; } MSBDGuardState;   // stage 0 nothing done, 1 switches off (at ta); t0 = first early start
+typedef struct { int pid, stage, fakes, next, prev, wfakes; long t0, ta; } MSBDGuardState;   // stage 0 nothing done, 1 switches off (at ta); t0 = first early start
 // next (1.8.7.5): the crashes after step 1 or 1b count from the next start, not from ta (what it set at the 8 s look is in force from the next start
 // only: a part it stopped loading, a setting SpringBoard reads as it starts -- MSBDGuardSetAtNextStart; audit L103 of 1.8.7.2 and its review)
 // prev (1.8.7.5, review of round 2): when ta is a start's time, the SpringBoard that ended just before that start (the mark's pid then; else 0).
 // Its crash is before ta whatever second its report's name gives, so it never counts from ta (MSBDGuardFrom).
+// wfakes (1.8.7.7, test builds): simulated WEAK crashes (a test report judged UNPINNED); fakes are the strong ones. An older build reads 7 fields.
 
 #if DEBUG
 // Test builds only: while /tmp/msb-fakecrash exists, every SpringBoard start counts as coming after a crash (no crash needed), and the file is not
@@ -89,11 +108,12 @@ static inline int MSBDGuardFakeReportExists(void) { return 0; }
 static inline int MSBDGuardRead(MSBDGuardState *s) {
     FILE *f = fopen(MSBD_GUARD_FILE, "r");
     if (!f) return 0;
-    int n = fscanf(f, "%d %ld %d %ld %d %d %d", &s->pid, &s->t0, &s->stage, &s->ta, &s->fakes, &s->next, &s->prev), ok = n >= 5;
+    int n = fscanf(f, "%d %ld %d %ld %d %d %d %d", &s->pid, &s->t0, &s->stage, &s->ta, &s->fakes, &s->next, &s->prev, &s->wfakes), ok = n >= 5;
     fclose(f);
     if (n == 5) s->next = 0;   // (a mark of 1.8.7.4 or before: five fields)
     if (n < 7) s->prev = 0;    // (five or six fields: no start's count kept one)
-    if (!ok) { s->pid = 0; s->t0 = time(NULL); s->stage = 0; s->ta = 0; s->fakes = 0; s->next = 0; s->prev = 0; }   // (unreadable: a new row of starts)
+    if (n < 8) s->wfakes = 0;  // (seven fields: 1.8.7.5 to 1.8.7.6)
+    if (!ok) { s->pid = 0; s->t0 = time(NULL); s->stage = 0; s->ta = 0; s->fakes = 0; s->next = 0; s->prev = 0; s->wfakes = 0; }   // (unreadable: a new row of starts)
     return 1;
 }
 // The mark was last written before this boot (a reboot or a dead battery within 60 s of a start leaves it behind): it is not a row of early
@@ -108,7 +128,7 @@ static inline int MSBDGuardMarkBeforeBoot(void) {
 static inline void MSBDGuardWrite(const MSBDGuardState *s) {
     FILE *f = fopen(MSBD_GUARD_FILE ".new", "w");
     if (!f) return;
-    fprintf(f, "%d %ld %d %ld %d %d %d\n", s->pid, s->t0, s->stage, s->ta, s->fakes, s->next, s->prev);   // (an older build reads the first five or six)
+    fprintf(f, "%d %ld %d %ld %d %d %d %d\n", s->pid, s->t0, s->stage, s->ta, s->fakes, s->next, s->prev, s->wfakes);   // (an older build reads the first five to seven)
     fclose(f);
     rename(MSBD_GUARD_FILE ".new", MSBD_GUARD_FILE);
 }
@@ -118,94 +138,171 @@ static inline void *MSBDGuardHelper(const char *symbol) {
     void *h = dlopen(MSBD_GUARD_BLAME_LIB, RTLD_NOW | RTLD_LOCAL);
     return h ? dlsym(h, symbol) : NULL;
 }
-// Asks MacCrashBlame.dylib about one report: kMSBDVerdict..., or -1 if the helper is missing (the crash then counts, as before).
-static inline int MSBDGuardJudge(const char *path, char *blamed, size_t n) {
-    static int (*judge)(const char *, char *, size_t);
-    if (!judge) judge = (int (*)(const char *, char *, size_t))MSBDGuardHelper("MSBDCrashBlame");
-    snprintf(blamed, n, "(helper not available)");
-    if (!judge) return -1;
-    int v = judge(path, blamed, n);
-    for (char *c = blamed; *c; c++) if (*c == ' ' || *c == '\n' || *c == '\r' || *c == '\t') *c = '_';   // (one word in the verdict file)
-    return v >= kMSBDVerdictUnknown && v <= kMSBDVerdictOther ? v : kMSBDVerdictUnknown;
+// A text cut to a buffer ends on a whole UTF-8 character (1.8.7.7: a cause in another language cut mid-character made the verdict file and the
+// record unreadable for Settings, whose readers want UTF-8): a last character left incomplete is taken off.
+static inline void MSBDGuardUTF8Whole(char *s) {
+    size_t n = strlen(s), k = n, cont = 0;
+    while (k > 0 && ((unsigned char)s[k - 1] & 0xC0) == 0x80 && cont < 4) { k--; cont++; }
+    if (k == 0) return;
+    unsigned char lead = (unsigned char)s[k - 1];
+    size_t need = lead >= 0xF0 ? 3 : lead >= 0xE0 ? 2 : lead >= 0xC0 ? 1 : 0;
+    if (lead < 0x80) { if (cont) s[k] = 0; return; }   // (stray continuation bytes after an ASCII character)
+    if (cont < need) s[k - 1] = 0;
 }
+// Asks MacCrashBlame.dylib about one report: kMSBDVerdict..., or -1 if the helper is missing (the crash then counts, as before). `cause` (cn bytes;
+// NULL: not wanted) gets "<cause>\t<where>\t<n> <other tweaks>" (1.8.7.7, CrashBlameHelper.m MSBDCrashJudge; "" if the helper cannot say).
+static inline int MSBDGuardJudgeFull(const char *path, char *blamed, size_t n, char *cause, size_t cn) {
+    static int (*judge)(const char *, char *, size_t, char *, size_t);
+    static int (*blame)(const char *, char *, size_t);
+    if (!judge && !blame) {
+        judge = (int (*)(const char *, char *, size_t, char *, size_t))MSBDGuardHelper("MSBDCrashJudge");
+        if (!judge) blame = (int (*)(const char *, char *, size_t))MSBDGuardHelper("MSBDCrashBlame");
+    }
+    snprintf(blamed, n, "(helper not available)");
+    if (cause && cn) cause[0] = 0;
+    if (!judge && !blame) return -1;
+    int v = judge ? judge(path, blamed, n, cause, cn) : blame(path, blamed, n);
+    for (char *c = blamed; *c; c++) if (*c == ' ' || *c == '\n' || *c == '\r' || *c == '\t') *c = '_';   // (one word in the verdict file)
+    if (cause) for (char *c = cause; *c; c++) if (*c == '\n' || *c == '\r') *c = ' ';   // (one line; its tabs part it)
+    MSBDGuardUTF8Whole(blamed);
+    if (cause) MSBDGuardUTF8Whole(cause);
+    return v >= kMSBDVerdictUnknown && v <= kMSBDVerdictUnpinned ? v : kMSBDVerdictUnknown;
+}
+static inline int MSBDGuardJudge(const char *path, char *blamed, size_t n) { return MSBDGuardJudgeFull(path, blamed, n, NULL, 0); }
+// Strong or weak (1.8.7.7, #14): UNPINNED -- only Apple code on the stacks, another tweak loaded -- is weak; every other counted verdict (ours,
+// Apple code alone, unreadable, the helper missing) is strong.
+static inline int MSBDGuardWeak(int v) { return v == kMSBDVerdictUnpinned; }
+// The helper's cause line (review of 1.8.7.7: 640 bytes cut the other tweaks off the end of a long one): the cause at most 420 bytes, where 200, the
+// other tweaks 300 and their count (CrashBlame.h MSBD_CAUSE_BYTES, MSBD_WHERE_BYTES, MSBD_OTHERS_BYTES: bytes, not characters), two tabs.
+#define MSBD_GUARD_CAUSE_MAX 1024
+#define MSBD_GUARD_LINE_MAX (600 + MSBD_GUARD_CAUSE_MAX)   // (a verdict line: report, verdict, blamed (< 256), then the cause line)
 // Kept: the last 40 verdicts plus this one (written whole and renamed; a name per thread, as the 8 s look and the Aerial check may overlap).
-static inline void MSBDGuardKeepVerdict(const char *name, int v, const char *blamed) {
-    char line[400], keep[40][400]; int k = 0;
+// `cause`: the helper's "<cause>\t<where>\t<others>" (NULL or "": none).
+static inline void MSBDGuardKeepVerdict(const char *name, int v, const char *blamed, const char *cause) {
+    char line[MSBD_GUARD_LINE_MAX], *keep = (char *)calloc(40, MSBD_GUARD_LINE_MAX); int k = 0;
+    if (!keep) return;
     FILE *f;
     if ((f = fopen(MSBD_GUARD_VERDICTS, "r"))) {
-        while (fgets(line, sizeof(line), f)) if (strchr(line, '\n')) { strlcpy(keep[k % 40], line, sizeof(keep[0])); k++; }
+        while (fgets(line, sizeof(line), f)) if (strchr(line, '\n')) { strlcpy(keep + (k % 40) * MSBD_GUARD_LINE_MAX, line, MSBD_GUARD_LINE_MAX); k++; }
         fclose(f);
     }
     char tmp[300];
     snprintf(tmp, sizeof(tmp), "%s.%d.%lx", MSBD_GUARD_VERDICTS, getpid(), (unsigned long)pthread_mach_thread_np(pthread_self()));
     if ((f = fopen(tmp, "w"))) {
-        for (int i = k > 40 ? k - 40 : 0; i < k; i++) fputs(keep[i % 40], f);
-        fprintf(f, "%s %d %s\n", name, v, blamed);
+        for (int i = k > 40 ? k - 40 : 0; i < k; i++) fputs(keep + (i % 40) * MSBD_GUARD_LINE_MAX, f);
+        snprintf(line, sizeof line - 1, "%s %d %s\t%s", name, v, blamed, cause ? cause : "");   // (with its line break, whole in a read of MSBD_GUARD_LINE_MAX)
+        line[strcspn(line, "\r\n")] = 0;
+        MSBDGuardUTF8Whole(line);
+        fprintf(f, "%s\n", line);
         fclose(f);
         rename(tmp, MSBD_GUARD_VERDICTS);
     }
+    free(keep);
 }
-// The crash the guard's record tells about (only used when it acts): the latest counted crash of a look, one of ours before any other; and, in
-// test builds, the test report's.
-typedef struct { long t; int verdict; char path[512], blamed[256]; } MSBDGuardCrash;
+// The crash the guard's record tells about (only used when it acts): the latest counted crash of a look, one of ours before any other, a strong
+// one before a weak one; and, in test builds, the test report's. cause: the helper's cause line for it ("" if none).
+typedef struct { long t; int verdict; char path[512], blamed[256], cause[MSBD_GUARD_CAUSE_MAX]; } MSBDGuardCrash;
 static MSBDGuardCrash gMSBDLastCrash, gMSBDFakeCrash;
-static inline void MSBDGuardNoteCrash(MSBDGuardCrash *c, long t, int v, const char *path, const char *blamed) {
-    int better = !c->path[0] || (v == kMSBDVerdictOurs) > (c->verdict == kMSBDVerdictOurs) || ((v == kMSBDVerdictOurs) == (c->verdict == kMSBDVerdictOurs) && t >= c->t);
+static inline int MSBDGuardCrashRank(int v) { return v == kMSBDVerdictOurs ? 3 : MSBDGuardWeak(v) ? 1 : 2; }
+static inline void MSBDGuardNoteCrash(MSBDGuardCrash *c, long t, int v, const char *path, const char *blamed, const char *cause) {
+    int better = !c->path[0] || MSBDGuardCrashRank(v) > MSBDGuardCrashRank(c->verdict) || (MSBDGuardCrashRank(v) == MSBDGuardCrashRank(c->verdict) && t >= c->t);
     if (!better) return;
     c->t = t; c->verdict = v;
-    strlcpy(c->path, path, sizeof(c->path)); strlcpy(c->blamed, blamed, sizeof(c->blamed));
+    strlcpy(c->path, path, sizeof(c->path)); strlcpy(c->blamed, blamed, sizeof(c->blamed)); strlcpy(c->cause, cause ? cause : "", sizeof(c->cause));
+    MSBDGuardUTF8Whole(c->blamed); MSBDGuardUTF8Whole(c->cause);
 }
 // A report that could not be read and is new may still be being written. At SpringBoard's start (gMSBDGuardAtStart) it is "pending": not counted
 // then, and the guard does not act on it; the 8 s look decides with the finished report (there, and everywhere else, it counts as before).
 static int gMSBDGuardAtStart, gMSBDGuardPending;
 static int gMSBDGuardPrevPid;   // (at SpringBoard's start: the SpringBoard before this one, the mark's pid; 0 without a mark: MSBDGuardState.prev)
-// The verdict on one report: from the verdict file, else judged now (and kept, unless it could not be read and the report is new: it may still be
-// being written, so it is judged again next time). Returns 1 if the crash counts against us.
-static inline int MSBDGuardCounts(const char *name, const char *path, long mtime, long t) {
-    char line[400], rname[256], blamed[256], found[256] = ""; int v = -1;
+#define kMSBDGuardPending (-2)
+// A report's verdict line in the verdict file (its last one): the verdict, `blamed` (bn bytes) and the cause line after the first tab (`cause`, cn
+// bytes); -1 and both "" if there is none.
+static inline int MSBDGuardVerdictLine(const char *name, char *blamed, size_t bn, char *cause, size_t cn) {
+    char line[MSBD_GUARD_LINE_MAX], rname[256], b[256], found[256] = "", foundCause[MSBD_GUARD_CAUSE_MAX] = ""; int v = -1;
     FILE *f = fopen(MSBD_GUARD_VERDICTS, "r");
     if (f) {
         while (fgets(line, sizeof(line), f)) {
             int rv;
-            if (sscanf(line, "%255s %d %255s", rname, &rv, blamed) == 3 && strcmp(rname, name) == 0) { v = rv; strlcpy(found, blamed, sizeof(found)); }
+            if (sscanf(line, "%255s %d %255s", rname, &rv, b) == 3 && strcmp(rname, name) == 0) {
+                v = rv; strlcpy(found, b, sizeof(found));
+                char *tab = strchr(line, '\t');
+                strlcpy(foundCause, tab ? tab + 1 : "", sizeof(foundCause)); foundCause[strcspn(foundCause, "\r\n")] = 0; MSBDGuardUTF8Whole(foundCause);
+            }
         }
         fclose(f);
     }
-    strlcpy(blamed, found, sizeof(blamed));
-    if (v < kMSBDVerdictUnknown || v > kMSBDVerdictOther) {
-        v = MSBDGuardJudge(path, blamed, sizeof(blamed));
-        if (v > kMSBDVerdictUnknown || (v == kMSBDVerdictUnknown && (long)time(NULL) - mtime > 20))   // (helper missing: nothing kept)
-            MSBDGuardKeepVerdict(name, v, blamed);
-        else if (v == kMSBDVerdictUnknown && gMSBDGuardAtStart) {
+    strlcpy(blamed, found, bn); strlcpy(cause, foundCause, cn);
+    return v;
+}
+// The class an "-[Class selector]: ..." cause names can be another tweak's that loads after ours (alphabetically): not there yet when the start judges,
+// so the cause went without "(that class is in <library>)" and was kept so (review of 1.8.7.7). Such reports, judged in this process, are noted here
+// and asked again 8 s after an early start, when every tweak has loaded (MSBDGuardClassLook): the verdict again with the library, and the record's
+// cause line if it is that crash's. A normal start judges nothing, so it notes nothing and asks nothing.
+#define MSBD_GUARD_CLASS_LATER 8
+static char gMSBDGuardClassLater[MSBD_GUARD_CLASS_LATER][256];
+static int gMSBDGuardClassLaterN;
+static pthread_mutex_t gMSBDGuardClassLock = PTHREAD_MUTEX_INITIALIZER;
+static inline int MSBDGuardClassAsked(const char *causeLine) {   // (its first part names a class, and no library yet)
+    char first[MSBD_GUARD_CAUSE_MAX];
+    strlcpy(first, causeLine ? causeLine : "", sizeof first); first[strcspn(first, "\t")] = 0;
+    return (strstr(first, "-[") || strstr(first, "+[")) && !strstr(first, "(that class is in ");
+}
+static inline void MSBDGuardClassNote(const char *name, const char *causeLine) {
+    if (!MSBDGuardClassAsked(causeLine)) return;
+    pthread_mutex_lock(&gMSBDGuardClassLock);
+    int known = 0;
+    for (int i = 0; i < gMSBDGuardClassLaterN; i++) known |= strcmp(gMSBDGuardClassLater[i], name) == 0;
+    if (!known && gMSBDGuardClassLaterN < MSBD_GUARD_CLASS_LATER) strlcpy(gMSBDGuardClassLater[gMSBDGuardClassLaterN++], name, sizeof(gMSBDGuardClassLater[0]));
+    pthread_mutex_unlock(&gMSBDGuardClassLock);
+}
+static inline int MSBDGuardClassNoted(void) { pthread_mutex_lock(&gMSBDGuardClassLock); int n = gMSBDGuardClassLaterN; pthread_mutex_unlock(&gMSBDGuardClassLock); return n; }
+// The verdict on one report: from the verdict file, else judged now (and kept, unless it could not be read and the report is new: it may still be
+// being written, so it is judged again next time -- kMSBDGuardPending at a start). -1: the helper is missing (counted, strong, as before).
+static inline int MSBDGuardVerdictOf(const char *name, const char *path, long mtime, long t) {
+    char blamed[256], cause[MSBD_GUARD_CAUSE_MAX];
+    int v = MSBDGuardVerdictLine(name, blamed, sizeof(blamed), cause, sizeof(cause));
+    if (v < kMSBDVerdictUnknown || v > kMSBDVerdictUnpinned) {
+        v = MSBDGuardJudgeFull(path, blamed, sizeof(blamed), cause, sizeof(cause));
+        if (v > kMSBDVerdictUnknown || (v == kMSBDVerdictUnknown && (long)time(NULL) - mtime > 20)) {   // (helper missing: nothing kept)
+            MSBDGuardKeepVerdict(name, v, blamed, cause);
+            MSBDGuardClassNote(name, cause);   // (review of 1.8.7.7: its class's library asked again at 8 s)
+        } else if (v == kMSBDVerdictUnknown && gMSBDGuardAtStart) {
             gMSBDGuardPending++;
             MSBDGuardLog("report %s: could not be read yet (new, may still be being written) -- decided at the 8 s look", name);
-            return 0;
+            return kMSBDGuardPending;
         }
-        MSBDGuardLog("report %s: %s (%s) -- %s", name, v == kMSBDVerdictOurs ? "ours" : v == kMSBDVerdictApple ? "Apple code only" : v == kMSBDVerdictOther ? "another tweak's" : "could not be judged",
-                     blamed, v == kMSBDVerdictOther ? "not counted" : "counted");
+        MSBDGuardLog("report %s: %s (%s) -- %s; %s", name, v == kMSBDVerdictOurs ? "ours" : v == kMSBDVerdictApple ? "Apple code only" : v == kMSBDVerdictOther ? "another tweak's"
+                     : v == kMSBDVerdictUnpinned ? "Apple code only, other tweaks loaded" : "could not be judged",
+                     blamed, v == kMSBDVerdictOther ? "not counted" : MSBDGuardWeak(v) ? "counted as weak (not pinned)" : "counted", cause);
     }
-    if (v != kMSBDVerdictOther) MSBDGuardNoteCrash(&gMSBDLastCrash, t, v, path, blamed);
-    return v != kMSBDVerdictOther;
+    if (v != kMSBDVerdictOther) MSBDGuardNoteCrash(&gMSBDLastCrash, t, v, path, blamed, cause);
+    return v;
+}
+// Does one report count against us? 0 no (another tweak's, or pending at a start), 1 strong, 2 weak (1.8.7.7).
+static inline int MSBDGuardCounts(const char *name, const char *path, long mtime, long t) {
+    int v = MSBDGuardVerdictOf(name, path, mtime, t);
+    return v == kMSBDGuardPending || v == kMSBDVerdictOther ? 0 : MSBDGuardWeak(v) ? 2 : 1;
 }
 #if DEBUG
-// The test report (/tmp/msb-fakecrash-report): -1 if there is none, else 1 if it counts against us.
+// The test report (/tmp/msb-fakecrash-report): -1 if there is none, else 0 (another tweak's: not counted), 1 strong or 2 weak (1.8.7.7).
 static inline int MSBDGuardFakeReport(void) {
     if (!MSBDGuardFakeReportExists()) return -1;
-    char blamed[256];
-    int v = MSBDGuardJudge(MSBD_GUARD_FAKE_REPORT, blamed, sizeof(blamed));
-    MSBDGuardLog("test report %s: verdict %d (%s) -- %s", MSBD_GUARD_FAKE_REPORT, v, blamed, v == kMSBDVerdictOther ? "not counted" : "counted");
-    if (v != kMSBDVerdictOther) MSBDGuardNoteCrash(&gMSBDFakeCrash, (long)time(NULL), v, MSBD_GUARD_FAKE_REPORT, blamed);
-    return v != kMSBDVerdictOther;
+    char blamed[256], cause[MSBD_GUARD_CAUSE_MAX];
+    int v = MSBDGuardJudgeFull(MSBD_GUARD_FAKE_REPORT, blamed, sizeof(blamed), cause, sizeof(cause));
+    MSBDGuardLog("test report %s: verdict %d (%s) -- %s; %s", MSBD_GUARD_FAKE_REPORT, v, blamed, v == kMSBDVerdictOther ? "not counted" : MSBDGuardWeak(v) ? "counted as weak" : "counted", cause);
+    if (v != kMSBDVerdictOther) MSBDGuardNoteCrash(&gMSBDFakeCrash, (long)time(NULL), v, MSBD_GUARD_FAKE_REPORT, blamed, cause);
+    return v == kMSBDVerdictOther ? 0 : MSBDGuardWeak(v) ? 2 : 1;
 }
 // The test report as the latest SpringBoard crash in the verdict file (the loader only, once per start), so Settings sees it like a real one
 // (the note about another tweak's crash).
 static inline void MSBDGuardKeepFakeVerdict(void) {
     if (!MSBDGuardFakeReportExists()) return;
-    char blamed[256], name[64];
-    int v = MSBDGuardJudge(MSBD_GUARD_FAKE_REPORT, blamed, sizeof(blamed));
+    char blamed[256], cause[MSBD_GUARD_CAUSE_MAX], name[64];
+    int v = MSBDGuardJudgeFull(MSBD_GUARD_FAKE_REPORT, blamed, sizeof(blamed), cause, sizeof(cause));
     time_t now = time(NULL); struct tm tm; localtime_r(&now, &tm);
     strftime(name, sizeof(name), "SpringBoard-%Y-%m-%d-%H%M%S.test.ips", &tm);
-    if (v >= kMSBDVerdictUnknown) MSBDGuardKeepVerdict(name, v, blamed);
+    if (v >= kMSBDVerdictUnknown) MSBDGuardKeepVerdict(name, v, blamed, cause);
 }
 #else
 static inline int MSBDGuardFakeReport(void) { return -1; }
@@ -227,13 +324,17 @@ static inline int MSBDGuardFrom(const char *name, const char *path, long t, long
     if (prev > 0 && MSBDGuardReportPid(path) == prev) { MSBDGuardLog("report %s: the crash of SpringBoard %d, which ended before %ld -- not counted from then", name, prev, since); return 0; }
     return 1;
 }
-// SpringBoard crashes from `since` on (MSBDGuardFrom, `prev` as there) that count against us (MSBDGuardCounts), by the time in the report's name
-// (the crash itself, not when the report was written).
-static inline int MSBDGuardCrashesFrom(long since, int prev) {
+// SpringBoard crashes from `since` on (MSBDGuardFrom, `prev` as there), by the time in the report's name (the crash itself, not when the report was
+// written): `S` strong and `W` weak crashes that count against us (MSBDGuardCounts), `O` other tweaks' crashes (1.8.7.7: the loop breaker needs
+// them); `SA` and `WA` (review of 1.8.7.7): the strong and weak ones after the newest of those other tweaks' crashes (all of them if there is none),
+// which the loop breaker counts. Any pointer may be NULL.
+#define MSBD_GUARD_TALLY_KEEP 256   // (the times kept to tell what came after the newest other tweak's crash; more counts as after it)
+static inline void MSBDGuardTallyRow(long since, int prev, int *S, int *W, int *O, int *SA, int *WA) {
+    int s = 0, w = 0, o = 0, n = 0, sa = 0, wa = 0;
+    long newestOther = 0, ts[MSBD_GUARD_TALLY_KEEP]; char weak[MSBD_GUARD_TALLY_KEEP];
     DIR *d = opendir(MSBD_GUARD_REPORTS);
-    if (!d) return 0;
-    int n = 0; struct dirent *e;
-    while ((e = readdir(d))) {
+    struct dirent *e;
+    while (d && (e = readdir(d))) {
         if (strncmp(e->d_name, "SpringBoard-", 12) != 0 || !strstr(e->d_name, ".ips")) continue;   // (not SpringBoard.cpu_resource-... and the like)
         struct tm tm; memset(&tm, 0, sizeof(tm));
         long t = 0;
@@ -244,13 +345,29 @@ static inline int MSBDGuardCrashesFrom(long since, int prev) {
             tm.tm_year -= 1900; tm.tm_mon -= 1; tm.tm_isdst = -1;
             t = (long)mktime(&tm);
         } else t = mtime;
-        if (MSBDGuardFrom(e->d_name, p, t, since, prev) && MSBDGuardCounts(e->d_name, p, mtime, t)) n++;
+        if (!MSBDGuardFrom(e->d_name, p, t, since, prev)) continue;
+        int v = MSBDGuardVerdictOf(e->d_name, p, mtime, t);
+        if (v == kMSBDGuardPending) continue;
+        if (v == kMSBDVerdictOther) { o++; if (o == 1 || t > newestOther) newestOther = t; continue; }
+        if (MSBDGuardWeak(v)) w++;
+        else s++;
+        if (n < MSBD_GUARD_TALLY_KEEP) { ts[n] = t; weak[n] = (char)MSBDGuardWeak(v); n++; }
+        else if (MSBDGuardWeak(v)) wa++;   // (past the kept times: counted as after)
+        else sa++;
     }
-    closedir(d);
-    return n;
+    if (d) closedir(d);
+    for (int i = 0; i < n; i++) if (!o || ts[i] > newestOther) { if (weak[i]) wa++; else sa++; }
+    if (S) *S = s;
+    if (W) *W = w;
+    if (O) *O = o;
+    if (SA) *SA = sa;
+    if (WA) *WA = wa;
 }
+static inline void MSBDGuardTallyFrom(long since, int prev, int *S, int *W, int *O) { MSBDGuardTallyRow(since, prev, S, W, O, NULL, NULL); }
+// SpringBoard crashes from `since` on that count against us, strong or weak (MSBDGuardTallyFrom: S + W; the count before 1.8.7.7 had them all).
+static inline int MSBDGuardCrashesFrom(long since, int prev) { int s = 0, w = 0; MSBDGuardTallyFrom(since, prev, &s, &w, NULL); return s + w; }
 // Every SpringBoard crash at or after `since` that counts against us, the previous SpringBoard's too (the Aerial 5.0 probation, StatusBar.x: it
-// looks for exactly that crash).
+// looks for exactly that crash; weak ones too, as before 1.8.7.7).
 static inline int MSBDGuardCrashes(long since) { return MSBDGuardCrashesFrom(since, 0); }
 
 // Writes a preference in the current user's domain: a boolean (0/1) or a number.
@@ -341,6 +458,10 @@ static inline int MSBDGuardSwitchOffRecent(long since, char *record, size_t rn) 
 // CrashExplain.h). "<name> <value>" lines: time, action (as crashGuardAction), tested (0 untested iPadOS), ios, build, verdict (kMSBDVerdict...,
 // -1 simulated), blamed (the helper's word for it), then "switch" lines (step 1), step 1b's lines (CrashStep.h; a part still skipped is named in
 // step 1's record too) and up to 5 "frame" lines (our image's frames only).
+// 1.8.7.7 (#14): what crashed, for that crash -- "cause <text>", "where <frame (image)>", "others <n> <library names>" (CrashBlame.h, the helper's
+// cause line) --, "unknown <n>" (weak crashes in the row: not pinned on us or anyone) and "loop 1" (rule 4, the loop breaker, acted). A build
+// before reads only the names it knows.
+static int gMSBDGuardRowWeak, gMSBDGuardRowLoop;   // (this evaluation's: MSBDGuardEvaluate sets them)
 static inline void MSBDGuardWriteRecord(int action, int tested, const char *switches) {
     char ios[32] = "unknown"; size_t n = sizeof(ios);
     if (sysctlbyname("kern.osproductversion", ios, &n, NULL, 0) != 0) strlcpy(ios, "unknown", sizeof(ios));
@@ -359,6 +480,17 @@ static inline void MSBDGuardWriteRecord(int action, int tested, const char *swit
     const char *kind = "";
 #endif
     fprintf(f, "time %ld\naction %d\ntested %d\nios %s\nbuild %s%s\nverdict %d\nblamed %s\n", (long)time(NULL), action, tested, ios, MSBD_BUILD_VERSION, kind, c.path[0] ? c.verdict : -1, c.path[0] ? c.blamed : "(simulated)");
+    if (c.path[0] && c.cause[0]) {   // ("<cause>\t<where>\t<n> <names>")
+        char cause[MSBD_GUARD_CAUSE_MAX]; strlcpy(cause, c.cause, sizeof cause);
+        char *where = strchr(cause, '\t'), *others = where ? strchr(where + 1, '\t') : NULL;
+        if (where) *where++ = 0;
+        if (others) *others++ = 0;
+        if (cause[0]) fprintf(f, "cause %s\n", cause);
+        if (where && *where) fprintf(f, "where %s\n", where);
+        if (others && atoi(others) > 0) fprintf(f, "others %s\n", others);
+    }
+    if (gMSBDGuardRowWeak > 0) fprintf(f, "unknown %d\n", gMSBDGuardRowWeak);
+    if (gMSBDGuardRowLoop) fprintf(f, "loop 1\n");
     if (switches) fputs(switches, f);
     for (char *line = frames, *next; line && *line; line = next) {
         next = strchr(line, '\n');
@@ -368,6 +500,43 @@ static inline void MSBDGuardWriteRecord(int action, int tested, const char *swit
     fclose(f);
     rename(MSBD_GUARD_RECORD ".new", MSBD_GUARD_RECORD);
 }
+// The library of a class a cause names, asked again 8 s after an early start (MSBDGuardClassNote above; the helper's MSBDCrashCauseClass, when every
+// tweak has loaded): each noted report's verdict line again, the cause now ending "(that class is in <library>)" (readers take a report's last line),
+// and, when the guard's record tells that cause, one more "cause" line (its readers take the last one; appended, as the notice appends its lines).
+// The list is used up either way.
+static inline void MSBDGuardClassLook(void) {
+    char names[MSBD_GUARD_CLASS_LATER][256]; int n;
+    pthread_mutex_lock(&gMSBDGuardClassLock);
+    n = gMSBDGuardClassLaterN; memcpy(names, gMSBDGuardClassLater, sizeof(names)); gMSBDGuardClassLaterN = 0;
+    pthread_mutex_unlock(&gMSBDGuardClassLock);
+    if (!n) return;
+    int (*again)(const char *, char *, size_t) = (int (*)(const char *, char *, size_t))MSBDGuardHelper("MSBDCrashCauseClass");
+    if (!again) return;   // (a helper of 1.8.7.7 before this review: nothing to ask)
+    for (int i = 0; i < n; i++) {
+        char blamed[256], line[MSBD_GUARD_CAUSE_MAX], first[MSBD_GUARD_CAUSE_MAX], now[MSBD_GUARD_CAUSE_MAX], next[MSBD_GUARD_CAUSE_MAX];
+        int v = MSBDGuardVerdictLine(names[i], blamed, sizeof(blamed), line, sizeof(line));
+        if (v < kMSBDVerdictUnknown || !MSBDGuardClassAsked(line)) continue;
+        strlcpy(first, line, sizeof(first)); first[strcspn(first, "\t")] = 0;
+        if (again(first, now, sizeof(now)) != 1 || !now[0]) { MSBDGuardLog("report %s: the class its cause names still not found in a tweak's library", names[i]); continue; }
+        for (char *c = now; *c; c++) if (*c == '\t' || *c == '\n' || *c == '\r') *c = ' ';
+        MSBDGuardUTF8Whole(now);
+        const char *rest = strchr(line, '\t');
+        snprintf(next, sizeof(next), "%s%s", now, rest ? rest : "");
+        MSBDGuardUTF8Whole(next);
+        MSBDGuardKeepVerdict(names[i], v, blamed, next);
+        MSBDGuardLog("report %s: %s", names[i], now);
+        FILE *f = fopen(MSBD_GUARD_RECORD, "r");   // (the record's last "cause" line, whole lines only)
+        char rl[MSBD_GUARD_CAUSE_MAX + 16], last[MSBD_GUARD_CAUSE_MAX + 16] = ""; int start = 1, has = 0;
+        while (f && fgets(rl, sizeof(rl), f)) {
+            int whole = start;
+            start = strchr(rl, '\n') != NULL;
+            if (whole && start && strncmp(rl, "cause ", 6) == 0) { strlcpy(last, rl + 6, sizeof(last)); last[strcspn(last, "\r\n")] = 0; has = 1; }
+        }
+        if (f) fclose(f);
+        if (has && strcmp(last, first) == 0 && (f = fopen(MSBD_GUARD_RECORD, "a"))) { fprintf(f, "cause %s\n", now); fclose(f); }
+    }
+}
+static inline void MSBDGuardClassLookAt(void *ctx) { (void)ctx; MSBDGuardClassLook(); }
 // Does the guard's record (`record`: MSBD_GUARD_RECORD) name this switch: a step 1 "switch <domain> <key> ..." or a step 1b "feature <domain> <key>
 // <value> ..." line? For code the crash map counts under a switch that can also run with that switch off (statusbar/NativeWindow.h
 // DMNativeGuardTookFinder: Activity Monitor's and Display Settings' native windows, Finder's in the map). Whole lines only (the rest of a long line
@@ -386,20 +555,55 @@ static inline int MSBDGuardRecordNames(const char *record, const char *domain, c
     return found;
 }
 
+// The switches noted as turned on at or after `since` (only our own domains), without using the list up (rule 3 asks before it acts).
+static inline int MSBDGuardRecentCount(long since) {
+    FILE *f = fopen(MSBD_GUARD_RECENT, "r");
+    int n = 0; long t; char line[512], domain[128], key[128];
+    while (f && fgets(line, sizeof(line), f)) if (sscanf(line, "%ld %127s %127s", &t, domain, key) == 3 && t >= since && strncmp(domain, "com.besiktasliseba.", 19) == 0) n++;
+    if (f) fclose(f);
+    return n;
+}
 static inline int MSBDGuardEvaluate(MSBDGuardState *s) {
     int action;
     char switches[1536] = "";
     memset(&gMSBDLastCrash, 0, sizeof(gMSBDLastCrash));
-    gMSBDGuardNextStartNow = 0;
+    gMSBDGuardNextStartNow = 0; gMSBDGuardRowWeak = 0; gMSBDGuardRowLoop = 0;
     if (s->stage == 0) {
-        int crashes = MSBDGuardCrashesFrom(s->t0 - 30, 0) + s->fakes;
-        MSBDGuardLog("row of early starts since %ld: %d crash(es) (%d simulated)", s->t0, crashes, s->fakes);
-        if (crashes < 2) return 0;
-        action = MSBDGuardSwitchOffRecent(s->t0 - 120, switches, sizeof(switches)) ? 1 : 2;
+        // (1.8.7.7, #14: strong S, weak W and other tweaks' O crashes of the row -- the rules at the top of this file)
+        int S = 0, W = 0, O = 0, SA = 0, WA = 0;   // (SA, WA: after the newest other tweak's crash of the row, rule 4)
+        MSBDGuardTallyRow(s->t0 - 30, 0, &S, &W, &O, &SA, &WA);
+        S += s->fakes; W += s->wfakes; SA += s->fakes; WA += s->wfakes;   // (simulated crashes are this start's: after any report)
+        int recent = MSBDGuardRecentCount(s->t0 - 120);
+        MSBDGuardLog("row of early starts since %ld: %d strong, %d weak (not pinned), %d other tweaks' crash(es) (%d + %d simulated), %d since the newest of those; %d switch(es) turned on just before", s->t0, S, W, O, s->fakes, s->wfakes, SA + WA, recent);
+        gMSBDGuardRowWeak = W;
+        if (S >= 2 || (S == 1 && W >= 1)) action = MSBDGuardSwitchOffRecent(s->t0 - 120, switches, sizeof(switches)) ? 1 : 2;   // (rules 1 and 2: as before)
+        else if (S == 0 && W >= 2 && recent) {   // (rule 3: what was just turned on goes off again, nothing more)
+            if (!MSBDGuardSwitchOffRecent(s->t0 - 120, switches, sizeof(switches))) return 0;
+            action = 1;
+            MSBDGuardLog("crashes not pinned on anyone, right after switches were turned on: only those switches off");
+        } else if (SA + WA >= 4) {   // (rule 4: the loop breaker -- the crashes since the newest other tweak's crash of the row, if any)
+            gMSBDGuardRowLoop = 1;
+            action = MSBDGuardSwitchOffRecent(s->t0 - 120, switches, sizeof(switches)) ? 1 : 2;
+            MSBDGuardLog("SpringBoard keeps crashing (%d) and no other tweak's crash among them%s: the loop breaker acts", SA + WA, O ? " (since the newest one)" : "");
+        } else {
+            if (S + W) MSBDGuardLog("not enough to act on: %s", S ? "one crash of ours or not judged, nothing seconding it" : "the crashes could not be pinned on MacStatusBar&Dock");
+            return 0;
+        }
     } else {
-        int crashes = MSBDGuardCrashesFrom(s->ta, s->prev) + s->fakes;
-        MSBDGuardLog("after switching features off at %ld: %d crash(es) (%d simulated)", s->ta, crashes, s->fakes);
-        if (crashes < 1) return 0;
+        int S = 0, W = 0, O = 0;
+        MSBDGuardTallyFrom(s->ta, s->prev, &S, &W, &O);
+        S += s->fakes; W += s->wfakes;
+        MSBDGuardLog("after switching features off at %ld: %d strong, %d weak (not pinned), %d other tweaks' crash(es) (%d + %d simulated)", s->ta, S, W, O, s->fakes, s->wfakes);
+        if (S + W < 1) return 0;
+        gMSBDGuardRowWeak = W;
+        if (S < 1) {   // (only weak crashes since: on only when the row meets the loop breaker, rule 4 -- since its newest other tweak's crash, if any)
+            int rS = 0, rW = 0, rO = 0, rSA = 0, rWA = 0;
+            MSBDGuardTallyRow(s->t0 - 30, 0, &rS, &rW, &rO, &rSA, &rWA);
+            rS += s->fakes; rW += s->wfakes; rSA += s->fakes; rWA += s->wfakes;
+            if (rSA + rWA < 4) { MSBDGuardLog("only crashes not pinned on anyone since: no further step (row: %d strong, %d weak, %d other; %d since the newest other)", rS, rW, rO, rSA + rWA); return 0; }
+            gMSBDGuardRowLoop = 1; gMSBDGuardRowWeak = rW;
+            MSBDGuardLog("SpringBoard keeps crashing (%d in the row) and no other tweak's crash among them%s: the loop breaker acts", rSA + rWA, rO ? " (since the newest one)" : "");
+        }
         action = 3;
     }
     // step 1b (CrashStep.h): before the whole tweak goes off, only what the crashes point at (once per row; else on to step 2 as before).
@@ -408,7 +612,7 @@ static inline int MSBDGuardEvaluate(MSBDGuardState *s) {
     //  names it: the footer says so and Turn Back On stays; before, the record had the switches only and the part was off with nothing saying so)
     if (action == 1) { MSBDStepList kept; MSBDStepReadList(&kept); MSBDStepRecordKept(&kept, kept.count, NULL, switches, sizeof(switches)); }
     s->stage = action == 1 || action == MSBD_GUARD_ACTION_FEATURE ? 1 : 2;
-    s->ta = (long)time(NULL); s->fakes = 0;
+    s->ta = (long)time(NULL); s->fakes = 0; s->wfakes = 0;
     s->prev = gMSBDGuardAtStart ? gMSBDGuardPrevPid : 0;   // (at a start, the crash just acted on can share its second: MSBDGuardFrom; at the look it is 8 s old)
     // (1.8.7.5, audit L103 of 1.8.7.2: a part step 1b stops loading at the 8 s look stays loaded in this SpringBoard until it ends, so the crashes
     //  after the skip count from the next start: this SpringBoard's own later crash is not held against the skip, which then gets its start. So
@@ -459,17 +663,27 @@ static inline void MSBDGuardNoticeLoad(void) {
 // now stays, and the watchdog's report counts at the next start like a crash's (CrashBlame.h judges it on the stuck main thread).
 static inline void MSBDGuardStable(void *ctx) {
     MSBDGuardState s;
+#if DEBUG
+    {   // (1.8.7.7, device row D1: is our death record's handler still the one in force, or who replaced it)
+        MSBDCauseHandlerFn (*get)(void) = (MSBDCauseHandlerFn (*)(void))dlsym(RTLD_DEFAULT, "NSGetUncaughtExceptionHandler");
+        MSBDCauseHandlerFn now = get ? get() : NULL;
+        Dl_info di; memset(&di, 0, sizeof di);
+        if (now && now != MSBDCauseHandler) dladdr((const void *)now, &di);
+        MSBDGuardLog("uncaught handler: %s%s", now == MSBDCauseHandler ? "ours" : now ? "replaced by " : "none", now && now != MSBDCauseHandler ? (di.dli_fname ? di.dli_fname : "(unknown image)") : "");
+    }
+#endif
     if (MSBDGuardFake() || MSBDGuardFakeReportExists() || !MSBDGuardRead(&s) || s.pid != getpid()) return;
     unlink(MSBD_GUARD_FILE);
     MSBDGuardLog("ran 60 s: cleared");
 }
-// 8 s: a crash report written late may be there now.
+// 8 s: a crash report written late may be there now. Then (review of 1.8.7.7) the class a judged cause names, asked again: every tweak has loaded.
 static inline void MSBDGuardLook(void *ctx) {
     MSBDGuardState s;
-    if (!MSBDGuardRead(&s) || s.pid != getpid() || s.stage == 2) return;
-    if (!MSBDGuardEvaluate(&s)) return;
-    MSBDGuardSave(&s);
-    if (s.stage == 1) MSBDGuardNoticeLoad();   // (switches turned off now: say so now; the tweak going off takes a respring, and so does its notice)
+    if (MSBDGuardRead(&s) && s.pid == getpid() && s.stage != 2 && MSBDGuardEvaluate(&s)) {
+        MSBDGuardSave(&s);
+        if (s.stage == 1) MSBDGuardNoticeLoad();   // (switches turned off now: say so now; the tweak going off takes a respring, and so does its notice)
+    }
+    MSBDGuardClassLook();
 }
 
 // SpringBoard's loader, before any part loads, whenever the parts are meant to run (MSBDGateWanted). May switch "Enable Anyway" off / safe mode on.
@@ -481,21 +695,32 @@ static inline void MSBDCrashGuardStart(void) {
     //  the boot made this start return at once -- no row, no 8 s look, no 60 s clear. The second loader reads the mark the first wrote now.)
     if (early && MSBDGuardMarkBeforeBoot()) { MSBDGuardLog("mark from before this boot: a new row"); early = 0; }
     if (early && s.pid == getpid()) return;   // (both loaders run in SpringBoard: the first one did it)
+    // (1.8.7.7, #14: our death record -- one line naming the exception if this SpringBoard dies of one; once per process, as here; CrashCause.h)
+    int causeInstalled = MSBDCauseInstall();
+    (void)causeInstalled;
+    MSBDGuardLog("uncaught exception handler: %s", causeInstalled ? (gMSBDCausePrev ? "ours, before the one installed earlier" : "ours") : "not installed (Foundation's functions not found)");
     long now = (long)time(NULL);
     int prev = early ? s.pid : 0;   // (the SpringBoard before this one: MSBDGuardState.prev)
-    if (!early) { s.t0 = now; s.stage = 0; s.ta = 0; s.fakes = 0; s.next = 0; s.prev = 0; }
+    if (!early) { s.t0 = now; s.stage = 0; s.ta = 0; s.fakes = 0; s.next = 0; s.prev = 0; s.wfakes = 0; }
     if (early && s.stage == 1 && s.next) { s.ta = now; s.next = 0; s.prev = prev; MSBDGuardLog("what the last 8 s look set is in force from this start: crashes count from it (not the crash of SpringBoard %d, before it)", prev); }   // (L103, above)
     if (MSBDGuardFake()) { s.fakes++; early = 1; }
-    int fake = MSBDGuardFakeReport();   // (test builds: a crash report from a file, counted only if it points at us)
+    int fake = MSBDGuardFakeReport();   // (test builds: a crash report from a file, counted only if it points at us; 1.8.7.7: weak if not pinned)
     MSBDGuardKeepFakeVerdict();
-    if (fake >= 0) { early = 1; s.fakes += fake; }
+    if (fake >= 0) { early = 1; if (fake == 1) s.fakes++; else if (fake == 2) s.wfakes++; }
     s.pid = getpid();
     gMSBDGuardAtStart = 1; gMSBDGuardPrevPid = prev; gMSBDGuardPending = 0;
     int acted = early && MSBDGuardEvaluate(&s);   // (a report still being written is left to the 8 s look, which runs whenever this did not act)
     gMSBDGuardAtStart = 0;
     MSBDGuardSave(&s);
-    if (s.stage == 2) return;
+    // (review of 1.8.7.7: a cause naming a class judged now is asked again at 8 s, MSBDGuardClassLook -- by the 8 s look when there is one; only after
+    //  an early start, as nothing is judged at a normal one)
+    int classLater = MSBDGuardClassNoted() > 0;
+    if (s.stage == 2) {
+        if (classLater) dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, 8 * NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), NULL, MSBDGuardClassLookAt);
+        return;
+    }
     // (the 8 s look on a background queue: it acts with the main thread stuck too; the 60 s clear on the main queue: proof the main thread runs)
     if (early && !acted) dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, 8 * NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), NULL, MSBDGuardLook);
+    else if (classLater) dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, 8 * NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), NULL, MSBDGuardClassLookAt);
     dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC), dispatch_get_main_queue(), NULL, MSBDGuardStable);
 }

@@ -6,6 +6,7 @@ if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
     rm -f /var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-CrashGuard.txt /var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-RecentlyOn.txt   # (crash guard)
     P=/var/jb/var/mobile/Library/Preferences
     rm -f "$P/MacStatusBarAndDock-CrashRecord.txt" "$P/MacStatusBarAndDock-CrashTweakName.txt" "$P/MacStatusBarAndDock-CrashVerdicts.txt" "$P/MacStatusBarAndDock-CrashStep.txt"   # (its record, the other-tweak note's name, the verdicts, step 1b's skip list)
+    rm -f "$P/MacStatusBarAndDock-CrashVerdicts2.txt" "$P/MacStatusBarAndDock-CrashCauses.txt"   # (1.8.7.7: the verdicts with their causes, our death record)
     # what the helper and the Settings pages left behind (the prerm's --uninstall has already given everything back from them): the copy of Choicy's
     # settings from before our first change (only ever used to rebuild our change record: stale once we are gone), the helper's log, its SSH state
     # (also the old copy in mobile's folder), the landscape icon-layout cache. The helper's folder goes if nothing else is left in it (a "renamed"

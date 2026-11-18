@@ -8,7 +8,9 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = MixAudio
 
 MixAudio_FILES = MixAudio.x
-MixAudio_CFLAGS = -fobjc-arc
+# (1.8.7.7, GitHub #14: every hook keeps its own stack frame while the original runs -- no tail calls -- so a crash under one of our hooks shows
+#  our code on the crashing stack, and the crash guard pins it on us and on the feature, CrashBlame.h / CrashFeature.h. Code generation only.)
+MixAudio_CFLAGS = -fobjc-arc -fno-optimize-sibling-calls
 MixAudio_FRAMEWORKS = AudioToolbox
 
 include $(THEOS_MAKE_PATH)/tweak.mk

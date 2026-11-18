@@ -143,6 +143,8 @@ static void NoticeShow(void) {
     gNoticeDone = YES;
     NoticeMarkShown();   // (as it appears: whatever happens next, it is never shown again)
     if (!message) { NoticeLog(@"not shown: the guard's note was already cleared in Settings"); return; }
+    NSString *cause = MSBDGuardNoticeCause();   // (1.8.7.7, GitHub #14: what crashed, when the record names it)
+    if (cause) message = [message stringByAppendingFormat:@"\n\n%@", cause];
     UIWindow *w = MSBDMakeAlertWindow(UIWindowLevelAlert + 10.0);   // (marked: other alerts of ours wait for it)
     gNoticeWindow = w;
     UIAlertController *a = [UIAlertController alertControllerWithTitle:MSBDGuardAlertTitle(action) message:message preferredStyle:UIAlertControllerStyleAlert];

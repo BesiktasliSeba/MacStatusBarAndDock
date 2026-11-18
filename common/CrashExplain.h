@@ -5,7 +5,12 @@
 //    (which part of ours was on the crashing stack, the versions, what the guard did, the top frames of OUR image only), plus, on an untested
 //    iPadOS version, the exact version, "Enable Anyway" and the names of our switches that are on. Nothing leaves the device unless the user
 //    submits the issue on GitHub;
-//  - the quiet note on the Status Bar page when the last SpringBoard crash (24 h) was another tweak's: its package's name from dpkg's lists.
+//  - the quiet note on the Status Bar page when the last SpringBoard crash (24 h) was another tweak's: its package's name from dpkg's lists; and
+//    (1.8.7.7, GitHub #14) when it could not be pinned on us or anyone (only Apple code on its stacks, other tweaks loaded): its cause;
+//  - (1.8.7.7) what crashed -- the cause (the exception's reason our death record kept, common/CrashCause.h, or what the report says), where, the
+//    other tweaks loaded -- in the record's words, the notice's "Cause:" line and Report a Problem, which also lists the SpringBoard crashes of the
+//    last 24 h with their causes, also when the guard did nothing (review of 1.8.7.7: and those it never judged, crashes on their own, that our
+//    death record names). Paths in a reason become "<path>"; other tweaks are named by library only.
 // Cost: none unless a guard record or a verdict of another tweak's crash exists (a failed open of a small file).
 #pragma once
 #include "Diag.h"
@@ -14,6 +19,7 @@
 #include "CrashGuard.h"
 #include "StageManagerAvailable.h"
 #include "DpkgState.h"
+#include "CrashBlame.h"   // (1.8.7.7: MSBDCauseTrim, the death record kept short)
 #include <sys/stat.h>
 
 #ifndef MSBD_DPKG_DIR   // (overridable for the Mac test, tools/test-crashexplain.m)
@@ -26,13 +32,21 @@
 #define MSBD_TWEAKNAME_CACHE "/var/jb/var/mobile/Library/Preferences/MacStatusBarAndDock-CrashTweakName.txt"
 #endif
 #define MSBD_REPORT_URL @"https://github.com/BesiktasliSeba/MacStatusBarAndDock/issues/new"
+#define MSBD_EXPLAIN_CAUSES 1   // (1.8.7.7: what crashed, in words -- the Mac test runs on the code before it too, tools/test-crashexplain.sh)
 #define MSBD_EXPLAIN_DOMAIN CFSTR("com.besiktasliseba.macstatusbaranddock")
 
 // ---- The guard's record ------------------------------------------------------------------------------------------------------------------------
 // Keys: time, action, tested, verdict (NSNumber); ios, build, blamed (NSString); switches (array of @[domain, key, title]); frames (NSString array);
-// shown (the notice was shown), loads (times the notice was loaded). nil if there is none.
+// shown (the notice was shown), loads (times the notice was loaded). 1.8.7.7: cause, where (NSString), others (NSString "<n> <names>"), unknown
+// (NSNumber: crashes not pinned on anyone in the row), loop (the loop breaker acted). nil if there is none.
+// (1.8.7.7: a file of the guard's read as UTF-8, else byte for byte -- a record or verdict cut inside a character must not hide all of it)
+static inline NSString *MSBDGuardFileText(const char *path) {
+    NSData *d = [NSData dataWithContentsOfFile:@(path)];
+    if (!d.length) return nil;
+    return [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding] ?: [[NSString alloc] initWithData:d encoding:NSISOLatin1StringEncoding];
+}
 static inline NSDictionary *MSBDCrashRecord(void) {
-    NSString *text = [NSString stringWithContentsOfFile:@MSBD_GUARD_RECORD encoding:NSUTF8StringEncoding error:nil];
+    NSString *text = MSBDGuardFileText(MSBD_GUARD_RECORD);
     if (!text.length) return nil;
     NSMutableDictionary *r = [NSMutableDictionary dictionary];
     NSMutableArray *switches = [NSMutableArray array], *frames = [NSMutableArray array], *features = [NSMutableArray array], *parts = [NSMutableArray array];
@@ -43,6 +57,9 @@ static inline NSDictionary *MSBDCrashRecord(void) {
         NSString *value = sp.location == NSNotFound ? @"" : [line substringFromIndex:sp.location + 1];
         if ([name isEqualToString:@"time"] || [name isEqualToString:@"action"] || [name isEqualToString:@"tested"] || [name isEqualToString:@"verdict"]) r[name] = @([value longLongValue]);
         else if ([name isEqualToString:@"ios"] || [name isEqualToString:@"build"] || [name isEqualToString:@"blamed"]) r[name] = value;
+        else if ([name isEqualToString:@"cause"] || [name isEqualToString:@"where"] || [name isEqualToString:@"others"]) { if (value.length) r[name] = value; }
+        else if ([name isEqualToString:@"unknown"]) r[name] = @([value intValue]);
+        else if ([name isEqualToString:@"loop"]) r[@"loop"] = @([value intValue] != 0);
         else if ([name isEqualToString:@"frame"] && value.length) [frames addObject:value];
         else if ([name isEqualToString:@"shown"]) r[@"shown"] = @YES;
         else if ([name isEqualToString:@"load"]) loads++;
@@ -186,6 +203,13 @@ static inline NSString *MSBDGuardExplanation(int action, BOOL untested, BOOL for
         }
         return [what stringByAppendingString:forAlert ? @" If this keeps happening, tap Report a Problem in Settings." : @" If this keeps happening, tap Report a Problem."];
     }
+    // (1.8.7.7, #14: the loop breaker -- SpringBoard kept crashing, nothing pinned on anyone: said so, and what tells whose it was)
+    NSDictionary *loopRecord = MSBDCrashRecord();
+    if ([loopRecord[@"action"] intValue] == action && [loopRecord[@"loop"] boolValue]) {
+        NSString *what = @"SpringBoard kept crashing and the crashes could not be pinned on MacStatusBar&Dock or another tweak, so MacStatusBar&Dock was turned off to stop the loop. If SpringBoard still crashes with it off, it was not MacStatusBar&Dock: ";
+        if (untested) return [what stringByAppendingString:forAlert ? @"turn on Enable Anyway in Settings." : @"turn on Enable Anyway."];
+        return [what stringByAppendingString:forAlert ? @"tap Turn Back On in Settings." : @"tap Turn Back On."];
+    }
     NSString *what = action == 3 ? @"MacStatusBar&Dock was turned off because SpringBoard kept crashing." : @"MacStatusBar&Dock was turned off after SpringBoard crashed twice.";
     if (untested) return [what stringByAppendingString:forAlert ? @" To try again, turn on Enable Anyway in Settings." : @" Turn on Enable Anyway to try again, or tap Report a Problem."];
     return [what stringByAppendingString:forAlert ? @" To try again, tap Turn Back On in Settings." : @" Tap Turn Back On to try again, or Report a Problem."];
@@ -203,6 +227,13 @@ static inline NSString *MSBDGuardAlertTitle(int action) {
     NSUInteger things = MSBDGuardSwitchTitles(r, 1).count + ([r[@"action"] intValue] == 1 ? [r[@"parts"] count] : 0);
     if (MSBDGuardSetSizeBack(r, 1)) return things ? @"Features Turned Off" : @"Menu Bar Size Set Back";
     return things > 1 ? @"Features Turned Off" : @"Feature Turned Off";
+}
+
+static inline NSString *MSBDReportSanitize(NSString *text, NSUInteger max);
+// The notice's last line (1.8.7.7, #14): "Cause: <the cause>" (at most 120 characters), when the guard's record names one; else nil.
+static inline NSString *MSBDGuardNoticeCause(void) {
+    NSString *c = MSBDReportSanitize(MSBDCrashRecord()[@"cause"], 120);
+    return c.length ? [@"Cause: " stringByAppendingString:c] : nil;
 }
 
 // ---- Report a Problem --------------------------------------------------------------------------------------------------------------------------
@@ -314,7 +345,10 @@ static inline NSString *MSBDCrashPartName(NSDictionary *record) {
     if (verdict == -1) return @"none (a simulated crash)";
     // (a watchdog report: SpringBoard did not crash but stopped answering, and the system restarted it -- its stuck main thread is what was judged)
     BOOL watchdog = [blamed hasPrefix:@"watchdog"];
-    if (verdict == kMSBDVerdictApple) return watchdog ? @"none of ours: SpringBoard was stuck in Apple code and the system restarted it" : @"none of ours on the crashing stack (Apple code only)";
+    // (1.8.7.7, #14: only Apple code on the stacks does not clear us -- 36 of our hooks tail-called before, our code can act without a frame -- nor
+    //  anyone else: "not known", and whether other tweaks were loaded)
+    if (verdict == kMSBDVerdictApple) return watchdog ? @"not known: SpringBoard was stuck in Apple code and the system restarted it" : @"not known: only Apple code on the crashing stack";
+    if (verdict == kMSBDVerdictUnpinned) return watchdog ? @"not known: SpringBoard was stuck in Apple code and the system restarted it, other tweaks loaded" : @"not known: only Apple code on the crashing stack, other tweaks loaded";
     if (verdict != kMSBDVerdictOurs) {   // (the words for what the report did not tell -- "could not be read" was shown for all of them before)
         if (watchdog) return @"not known: SpringBoard was stuck and the system restarted it (the report shows no stacks)";
         if ([blamed hasPrefix:@"no_crash_stacks"] || [blamed hasPrefix:@"no_named_images"]) return @"not known (the crash report has no crash details)";
@@ -339,6 +373,7 @@ static inline NSString *MSBDGuardActionWords(NSDictionary *record) {
         NSMutableString *words = [(titles.count ? [NSString stringWithFormat:@"turned off %@%@", MSBDQuotedList(titles), size ? @", set Menu Bar Size back to Small" : @""]
                                    : size ? @"set Menu Bar Size back to Small" : @"turned off the switches turned on last") mutableCopy];
         for (NSArray *p in record[@"parts"]) [words appendFormat:@", still not loading %@ (%@)", p[2], p[0]];   // (from an earlier step 1b: L104)
+        if ([record[@"loop"] boolValue]) [words appendString:@" (SpringBoard kept crashing, nothing pinned on anyone)"];
         return words;
     }
     if (action == 4) {   // (step 1b: "turned off “Mac-Style Banners”", "switched to the stock status bar", "stopped loading the Dock (DockMagnification)")
@@ -351,7 +386,29 @@ static inline NSString *MSBDGuardActionWords(NSDictionary *record) {
         return [NSString stringWithFormat:@"%@ (only what crashed)", done.count ? [done componentsJoinedByString:@", "] : @"turned off what crashed"];
     }
     NSString *off = [record[@"tested"] intValue] ? @"turned MacStatusBar&Dock off (safe mode)" : @"switched Enable Anyway off";
+    if ([record[@"loop"] boolValue]) return [off stringByAppendingString:@" to stop a crash loop nothing could be pinned on"];   // (1.8.7.7: the loop breaker)
     return action == 3 ? [off stringByAppendingString:@" after more crashes"] : off;
+}
+// A crash's words for Report a Problem (1.8.7.7, #14): one line, paths of the user's files ("/var/mobile/...", "/private/var/mobile/...", app
+// folders, file:// links) as "<path>", at most `max` characters.
+static inline NSString *MSBDReportSanitize(NSString *text, NSUInteger max) {
+    if (![text isKindOfClass:[NSString class]] || !text.length) return @"";
+    NSString *t = [[text componentsSeparatedByCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"\t\r\n"]] componentsJoinedByString:@" "];
+    static NSRegularExpression *paths; static dispatch_once_t once;
+    dispatch_once(&once, ^{ paths = [NSRegularExpression regularExpressionWithPattern:@"(file://[^\\s'\"]*|(/private)?/var/(mobile|containers|jb/var/mobile)(/[^\\s'\",;)]*)?)" options:NSRegularExpressionCaseInsensitive error:nil]; });
+    t = [paths stringByReplacingMatchesInString:t options:0 range:NSMakeRange(0, t.length) withTemplate:@"<path>"];
+    t = [t stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    if (t.length > max) t = [[t substringToIndex:[t rangeOfComposedCharacterSequenceAtIndex:max > 0 ? max - 1 : 0].location] stringByAppendingString:@"…"];
+    return t;
+}
+// "<n> <name>, <name>, ..." (the record's "others", a verdict's): "<n> (<names>)", the names cut at `max` characters; nil when none.
+static inline NSString *MSBDReportOthers(NSString *others, NSUInteger max) {
+    if (![others isKindOfClass:[NSString class]]) return nil;
+    NSRange sp = [others rangeOfString:@" "];
+    int n = [others intValue];
+    if (n <= 0) return nil;
+    NSString *names = sp.location == NSNotFound ? @"" : MSBDReportSanitize([others substringFromIndex:sp.location + 1], max);
+    return names.length ? [NSString stringWithFormat:@"%d (%@)", n, names] : [NSString stringWithFormat:@"%d", n];
 }
 // The crash summary, while a guard record is under 7 days old (nil otherwise). maxFrames: how many of our frames to list.
 static inline NSString *MSBDReportCrashSummary(NSUInteger maxFrames) {
@@ -362,6 +419,12 @@ static inline NSString *MSBDReportCrashSummary(NSUInteger maxFrames) {
     NSString *when = age < 3600 ? @"less than an hour ago" : age < 86400 ? [NSString stringWithFormat:@"%ld h ago", age / 3600] : [NSString stringWithFormat:@"%ld day%@ ago", age / 86400, age / 86400 == 1 ? @"" : @"s"];
     [s appendFormat:@"- Guard: %@, %@\n", MSBDGuardActionWords(r), when];
     [s appendFormat:@"- Our part involved: %@\n", MSBDCrashPartName(r)];
+    // (1.8.7.7, #14: what crashed -- the reason, where, the other tweaks loaded; a short form when the link must shrink)
+    NSUInteger room = maxFrames >= 5 ? 200 : maxFrames >= 3 ? 120 : 60;
+    NSString *cause = MSBDReportSanitize(r[@"cause"], room), *where = MSBDReportSanitize(r[@"where"], room), *others = MSBDReportOthers(r[@"others"], room);
+    if (cause.length) [s appendFormat:@"- Cause: %@\n", cause];
+    if (where.length) [s appendFormat:@"- Where: %@\n", where];
+    if (others.length) [s appendFormat:@"- Other tweaks loaded: %@\n", others];
     [s appendFormat:@"- At the time: iPadOS %@%@, %@, build %@\n", r[@"ios"] ?: @"?", [r[@"tested"] intValue] ? @"" : @" (untested)", MSBDExplainMachine(), r[@"build"] ?: @"?"];
     NSArray *frames = r[@"frames"];
     if (frames.count && maxFrames) {
@@ -369,6 +432,95 @@ static inline NSString *MSBDReportCrashSummary(NSUInteger maxFrames) {
         for (NSUInteger i = 0; i < frames.count && i < maxFrames; i++) [s appendFormat:@"%@\n", frames[i]];
         [s appendString:@"```\n"];
     }
+    return s;
+}
+// The SpringBoard crashes the guard judged (its verdict file, 1.8.7.7): newest first, each report once (its last line), those under `maxAge` s
+// old. Each: stamp (yyyy-MM-dd-HHmmss, from the report's name), age, verdict, blamed (one word), cause, where, others ("<n> <names>").
+static inline NSArray<NSDictionary *> *MSBDJudgedCrashes(NSTimeInterval maxAge) {
+    NSString *text = MSBDGuardFileText(MSBD_GUARD_VERDICTS);
+    if (!text.length) return @[];
+    NSDateFormatter *df = [NSDateFormatter new];
+    df.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"]; df.dateFormat = @"yyyy-MM-dd-HHmmss";
+    NSMutableDictionary<NSString *, NSDictionary *> *byReport = [NSMutableDictionary dictionary];
+    for (NSString *line in [text componentsSeparatedByString:@"\n"]) {
+        NSArray *tabs = [line componentsSeparatedByString:@"\t"];
+        NSArray *p = [tabs[0] componentsSeparatedByString:@" "];
+        if (p.count < 3 || ![p[0] hasPrefix:@"SpringBoard-"] || [p[0] length] < 29) continue;
+        NSString *stamp = [p[0] substringWithRange:NSMakeRange(12, 17)];
+        NSDate *when = [df dateFromString:stamp];
+        NSTimeInterval age = when ? -[when timeIntervalSinceNow] : 1e9;
+        if (age < -300 || age > maxAge) continue;
+        byReport[p[0]] = @{@"stamp": stamp, @"age": @(age), @"verdict": @([p[1] intValue]), @"blamed": [[p subarrayWithRange:NSMakeRange(2, p.count - 2)] componentsJoinedByString:@" "],
+                           @"cause": tabs.count > 1 ? tabs[1] : @"", @"where": tabs.count > 2 ? tabs[2] : @"", @"others": tabs.count > 3 ? tabs[3] : @""};
+    }
+    return [byReport.allValues sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) { return [b[@"stamp"] compare:a[@"stamp"]]; }];
+}
+// What a judged crash was, in a few words (Report a Problem's list): never a path.
+static inline NSString *MSBDJudgedCrashWords(NSDictionary *c) {
+    int v = [c[@"verdict"] intValue];
+    NSString *blamed = c[@"blamed"] ?: @"";
+    BOOL stuck = [blamed hasPrefix:@"watchdog:"];
+    if (stuck) blamed = [blamed substringFromIndex:9];
+    NSString *words;
+    if (v == kMSBDVerdictOurs) words = @"MacStatusBar&Dock";
+    else if (v == kMSBDVerdictOther) {
+        NSRange r = [blamed rangeOfString:@"_(" options:NSBackwardsSearch];
+        NSString *lib = (r.location == NSNotFound ? blamed : [blamed substringToIndex:r.location]).lastPathComponent;
+        words = [NSString stringWithFormat:@"another tweak (%@)", lib.length ? lib : @"?"];
+    } else if (v == kMSBDVerdictUnpinned) words = @"not pinned (only Apple code on the stack, other tweaks loaded)";
+    else if (v == kMSBDVerdictApple) words = @"not pinned (only Apple code on the stack)";
+    else if (v == -1) words = @"not judged (not in a row of crashes)";   // (review of 1.8.7.7: only our death record names it, MSBDUnjudgedDeaths)
+    else words = @"not known (the report could not be read)";
+    return stuck ? [@"stuck: " stringByAppendingString:words] : words;
+}
+// Our death record's crashes of the last `maxAge` s that the guard never judged (review of 1.8.7.7): it judges only the crashes of a row of early
+// starts, so a crash on its own -- SpringBoard had run a minute, and the next start did not crash early -- has no verdict, and on 15/16 our death
+// record (common/CrashCause.h) is the only place its reason exists (#14's crash 4). Read only, as Settings reads the guard's other files. The last
+// line of each SpringBoard (pid); a line from 10 s before to 60 s after a judged report's time is that report's and is left out. Each: stamp
+// (yyyy-MM-dd-HHmmss, local, as a report's name), age, verdict -1, cause ("<name>: <reason>").
+static inline NSArray<NSDictionary *> *MSBDUnjudgedDeaths(NSTimeInterval maxAge, NSArray<NSDictionary *> *judged) {
+    NSString *text = MSBDGuardFileText(MSBD_CAUSE_FILE);
+    if (!text.length) return @[];
+    NSDateFormatter *df = [NSDateFormatter new];
+    df.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"]; df.dateFormat = @"yyyy-MM-dd-HHmmss";
+    NSMutableArray<NSNumber *> *judgedAt = [NSMutableArray array];
+    for (NSDictionary *c in judged) { NSDate *d = [c[@"stamp"] isKindOfClass:[NSString class]] ? [df dateFromString:c[@"stamp"]] : nil; if (d) [judgedAt addObject:@((long)d.timeIntervalSince1970)]; }
+    NSMutableDictionary<NSNumber *, NSDictionary *> *byPid = [NSMutableDictionary dictionary];
+    long now = (long)time(NULL);
+    for (NSString *line in [text componentsSeparatedByString:@"\n"]) {
+        NSArray<NSString *> *f = [line componentsSeparatedByString:@"\t"];
+        if (f.count < 6) continue;
+        long pid = (long)[f[0] longLongValue], t = (long)[f[1] longLongValue];
+        if (pid <= 0 || t <= 0 || now - t < -300 || now - t > maxAge) continue;
+        NSString *name = [f[3] isEqualToString:@"-"] ? @"" : f[3], *reason = [f[4] isEqualToString:@"-"] ? @"" : f[4];
+        NSString *cause = name.length && reason.length ? [NSString stringWithFormat:@"%@: %@", name, reason] : name.length ? name : reason;
+        byPid[@(pid)] = @{@"t": @(t), @"cause": cause ?: @""};
+    }
+    NSMutableArray<NSDictionary *> *out = [NSMutableArray array];
+    for (NSDictionary *d in byPid.allValues) {
+        long t = [d[@"t"] longValue];
+        BOOL covered = NO;
+        for (NSNumber *j in judgedAt) covered |= j.longValue >= t - 10 && j.longValue <= t + 60;
+        if (covered) continue;
+        [out addObject:@{@"stamp": [df stringFromDate:[NSDate dateWithTimeIntervalSince1970:t]], @"age": @(now - t), @"verdict": @(-1), @"blamed": @"", @"cause": d[@"cause"], @"where": @"", @"others": @""}];
+    }
+    return out;
+}
+// Report a Problem's list of the SpringBoard crashes of the last 24 h (1.8.7.7, #14), also when the guard did nothing: time, whose, cause. nil if none.
+// (Review of 1.8.7.7: with the crashes the guard never judged that our death record names, MSBDUnjudgedDeaths.)
+static inline NSString *MSBDReportRecentCrashes(NSUInteger maxItems, NSUInteger causeChars) {
+    NSArray<NSDictionary *> *judged = MSBDJudgedCrashes(86400);
+    NSArray<NSDictionary *> *list = [[judged arrayByAddingObjectsFromArray:MSBDUnjudgedDeaths(86400, judged)] sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) { return [b[@"stamp"] compare:a[@"stamp"]]; }];
+    if (!list.count || !maxItems) return nil;
+    NSMutableString *s = [NSMutableString stringWithString:@"\n**Recent SpringBoard crashes** (24 h)\n"];
+    for (NSUInteger i = 0; i < list.count && i < maxItems; i++) {
+        NSDictionary *c = list[i];
+        NSString *st = c[@"stamp"], *cause = MSBDReportSanitize(c[@"cause"], causeChars);
+        NSString *when = st.length == 17 ? [NSString stringWithFormat:@"%@-%@ %@:%@:%@", [st substringWithRange:NSMakeRange(5, 2)], [st substringWithRange:NSMakeRange(8, 2)],
+                                            [st substringWithRange:NSMakeRange(11, 2)], [st substringWithRange:NSMakeRange(13, 2)], [st substringWithRange:NSMakeRange(15, 2)]] : st;
+        [s appendFormat:@"- %@: %@%@\n", when, MSBDJudgedCrashWords(c), cause.length ? [@" -- " stringByAppendingString:cause] : @""];
+    }
+    if (list.count > maxItems) [s appendFormat:@"- and %lu more\n", (unsigned long)(list.count - maxItems)];
     return s;
 }
 // Our switches on the Status Bar, Desktop, Windows & Multitasking and Dock pages that are on (their row titles), read from the pages' own lists.
@@ -410,6 +562,7 @@ static inline NSURL *MSBDReportProblemURL(NSString *engine) {
     // GitHub's new-issue link must stay a few KB: the longest parts shrink until it fits.
     NSURL *url = nil;
     NSUInteger frames[] = {5, 3, 3, 0}, chars[] = {900, 600, 300, 80};   // (a middle step: the diagnostics no longer drop straight to 300, logic test 1.2.2)
+    NSUInteger recent[] = {5, 3, 2, 0}, recentChars[] = {200, 120, 60, 0};   // (1.8.7.7: the crashes of the last 24 h)
     for (int i = 0; i < 4; i++) {
         NSMutableString *body = [base mutableCopy];
         // (Stage Manager on every iPadOS 16+ iPad, whatever the engine: whether this iPad has it and, if so, the engine's check on this build with the
@@ -420,6 +573,8 @@ static inline NSURL *MSBDReportProblemURL(NSString *engine) {
         if (tester) [body appendString:tester];
         NSString *summary = MSBDReportCrashSummary(frames[i]);
         if (summary) [body appendString:summary];
+        NSString *crashes = MSBDReportRecentCrashes(recent[i], recentChars[i]);
+        if (crashes) [body appendString:crashes];
         NSString *diag = MSBDDiagText(chars[i]);   // (untested iPadOS only: what our parts found on this iOS, common/Diag.h)
         if (diag) [body appendString:diag];
         NSURLComponents *c = [NSURLComponents componentsWithString:MSBD_REPORT_URL];
@@ -432,27 +587,13 @@ static inline NSURL *MSBDReportProblemURL(NSString *engine) {
     return url;
 }
 
-// ---- The note about another tweak's crash ------------------------------------------------------------------------------------------------------
+// ---- The note about the last SpringBoard crash ---------------------------------------------------------------------------------------------------
 // The latest SpringBoard crash the guard judged (its verdict file); if it is under 24 h old and was another tweak's, that tweak's name.
 static inline NSString *MSBDOtherTweakCrashName(BOOL *stuck) {
     if (stuck) *stuck = NO;
-    NSString *text = [NSString stringWithContentsOfFile:@MSBD_GUARD_VERDICTS encoding:NSUTF8StringEncoding error:nil];
-    if (!text.length) return nil;
-    NSString *latest = nil, *latestLine = nil;
-    for (NSString *line in [text componentsSeparatedByString:@"\n"]) {
-        NSArray *p = [line componentsSeparatedByString:@" "];
-        if (p.count < 3 || ![p[0] hasPrefix:@"SpringBoard-"] || [p[0] length] < 29) continue;
-        NSString *stamp = [p[0] substringWithRange:NSMakeRange(12, 17)];   // yyyy-MM-dd-HHmmss
-        if (!latest || [stamp compare:latest] != NSOrderedAscending) { latest = stamp; latestLine = line; }
-    }
-    if (!latestLine) return nil;
-    NSDateFormatter *df = [NSDateFormatter new];
-    df.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"]; df.dateFormat = @"yyyy-MM-dd-HHmmss";
-    NSDate *when = [df dateFromString:latest];
-    NSTimeInterval age = when ? -[when timeIntervalSinceNow] : 1e9;
-    NSArray *p = [latestLine componentsSeparatedByString:@" "];
-    if (age < -300 || age > 86400 || [p[1] intValue] != kMSBDVerdictOther) return nil;
-    NSString *blamed = [[p subarrayWithRange:NSMakeRange(2, p.count - 2)] componentsJoinedByString:@" "];
+    NSDictionary *latest = MSBDJudgedCrashes(86400).firstObject;
+    if ([latest[@"verdict"] intValue] != kMSBDVerdictOther) return nil;
+    NSString *blamed = latest[@"blamed"];
     if (stuck) *stuck = [blamed hasPrefix:@"watchdog:"];   // (SpringBoard stuck in that tweak's code, restarted by the system -- not a crash)
     if ([blamed hasPrefix:@"watchdog:"]) blamed = [blamed substringFromIndex:9];
     NSRange r = [blamed rangeOfString:@"_(" options:NSBackwardsSearch];
@@ -468,9 +609,20 @@ static inline NSString *MSBDOtherTweakCrashName(BOOL *stuck) {
     [[NSString stringWithFormat:@"%@\t%@\n", path, name] writeToFile:@MSBD_TWEAKNAME_CACHE atomically:YES encoding:NSUTF8StringEncoding error:nil];
     return name;
 }
+// The quiet line at the bottom of the Status Bar page, for the last SpringBoard crash (24 h): another tweak's (its name), or (1.8.7.7, #14) one that
+// could not be pinned on us or anyone -- only Apple code on its stacks, other tweaks loaded -- with its cause. nil: nothing to say.
 static inline NSString *MSBDOtherTweakCrashNote(void) {
+    MSBDCauseTrim();   // (the death record kept short: Settings' turn, CrashBlame.h)
     BOOL stuck = NO;
     NSString *name = MSBDOtherTweakCrashName(&stuck);
-    if (!name.length) return nil;
-    return stuck ? [NSString stringWithFormat:@"SpringBoard last got stuck in “%@” and was restarted by the system.", name] : [NSString stringWithFormat:@"The last SpringBoard crash came from “%@”.", name];
+    if (name.length) return stuck ? [NSString stringWithFormat:@"SpringBoard last got stuck in “%@” and was restarted by the system.", name] : [NSString stringWithFormat:@"The last SpringBoard crash came from “%@”.", name];
+    NSDictionary *latest = MSBDJudgedCrashes(86400).firstObject;
+    if ([latest[@"verdict"] intValue] != kMSBDVerdictUnpinned) return nil;
+    NSString *cause = MSBDReportSanitize(latest[@"cause"], 200);
+    while ([cause hasSuffix:@"."]) cause = [cause substringToIndex:cause.length - 1];   // (the sentence ends with its own full stop)
+    NSString *stop = [cause hasSuffix:@"…"] ? @"" : @".";
+    if ([latest[@"blamed"] hasPrefix:@"watchdog:"]) return cause.length ? [NSString stringWithFormat:@"SpringBoard last got stuck and the system restarted it; that could not be pinned on MacStatusBar&Dock or another tweak: %@%@", cause, stop]
+                                                                         : @"SpringBoard last got stuck and the system restarted it; that could not be pinned on MacStatusBar&Dock or another tweak.";
+    return cause.length ? [NSString stringWithFormat:@"The last SpringBoard crash could not be pinned on MacStatusBar&Dock or another tweak: %@%@", cause, stop]
+                        : @"The last SpringBoard crash could not be pinned on MacStatusBar&Dock or another tweak.";
 }

@@ -24,7 +24,11 @@ int main(void) {
                 return MSBDCrashPartName(MSBDCrashRecord());
             };
             Expect(@"watchdog, no stacks", Part(0, @"watchdog:no_crash_stacks_in_the_report"), @"not known: SpringBoard was stuck and the system restarted it (the report shows no stacks)");
-            Expect(@"watchdog, Apple code", Part(2, @"watchdog:Apple_code_only"), @"none of ours: SpringBoard was stuck in Apple code and the system restarted it");
+            // (1.8.7.7, GitHub #14: only Apple code on the stacks does not clear us -- our hooks could act without a frame -- nor pin it on anyone)
+            Expect(@"watchdog, Apple code", Part(2, @"watchdog:Apple_code_only"), @"not known: SpringBoard was stuck in Apple code and the system restarted it");
+            Expect(@"watchdog, Apple code, other tweaks loaded", Part(4, @"watchdog:Apple_code_only;_2_other_tweaks_loaded"), @"not known: SpringBoard was stuck in Apple code and the system restarted it, other tweaks loaded");
+            Expect(@"crash, Apple code only", Part(2, @"Apple_code_only"), @"not known: only Apple code on the crashing stack");
+            Expect(@"crash, Apple code only, other tweaks loaded", Part(4, @"Apple_code_only;_3_other_tweaks_loaded"), @"not known: only Apple code on the crashing stack, other tweaks loaded");
             Expect(@"watchdog, ours", Part(1, @"watchdog:MacStatusBarCore.dylib_(stuck_main_thread)"), @"MacStatusBarCore");
             Expect(@"crash without stacks", Part(0, @"no_crash_stacks_in_the_report"), @"not known (the crash report has no crash details)");
             Expect(@"unreadable report", Part(0, @"unreadable"), @"not known (the crash report could not be read)");

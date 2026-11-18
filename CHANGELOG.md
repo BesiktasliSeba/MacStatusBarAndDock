@@ -2,6 +2,14 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.7.7
+
+### Fixes
+- Automatic Crash Recovery no longer turns MacStatusBar&Dock off after SpringBoard crashes that show only iPadOS's own code while other tweaks run in SpringBoard (#14). If SpringBoard keeps crashing, it still steps in to stop the loop.
+- Report a Problem now says what caused SpringBoard's recent crashes, including those Automatic Crash Recovery didn't act on, as far as it can tell. Automatic Crash Recovery's notice shows the cause too.
+- When SpringBoard crashes in one of MacStatusBar&Dock's features, Automatic Crash Recovery now more often turns off only that feature instead of the whole tweak.
+- Fixed some apps' badges (like an update count) going missing from the Dock or the Home Screen after a respring.
+
 ## 1.8.7.6
 
 ### Fixes
