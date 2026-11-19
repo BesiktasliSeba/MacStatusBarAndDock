@@ -19,6 +19,14 @@
 // bar's own constraint pass, in Core Animation's commit, after the copy's layout ran there; the copy is laid out ours by the pre-commit layout
 // (DMBarLayoutAgainBeforeDraw, real, with Core Animation's commit handlers stood in) and released there: iOS's items must have answered as ours
 // before that layout, or iOS's Wi-Fi item is drawn beside ours in that frame (before 1.8.7.8: their ask came after the layout pass).
+// The bar places the rest of its trailing region only at its own layout (1.8.7.9 W2; 1.8.7.8~h01 D1, iPad 2 and M1): an answer that takes iOS's Wi-Fi
+// item out removes its view at once, but the airplane icon stays at its old place, and our icons with it (18 pt left), until the region is laid out.
+// UIKit's order, as the review of W2 found it (17 decompile; a Mac Catalyst probe of the real UIKit): an update with no animation (the held ask) only
+// asks for the bar's constraint pass, and marks nothing for layout; -layoutIfNeeded on a view with nothing marked at or below it runs nothing; one
+// that lays something out runs that pass first (17+: SystemStatusUI's -_updateRegionItems, our hook as it is), which gives the region its new places;
+// the region's items take them in the region's own layout, after the copy's (a view is laid out before its subviews). Every row with a held ask: the
+// copy's first layout after that ask (outside the ask: one inside it is laid out again right after, in the same turn) already has the final icons
+// start, and the region's placement after it is made with no animation.
 // The real code is cut out of statusbar/StatusBar.x by test-wifirecheck.sh (see there). Stand-ins: UIKit's views and their layout (setNeedsLayout:
 // laid out at the turn's commit), the bar and its Wi-Fi item, the display link, SpringBoard's lock manager and Cover Sheet, the time label, and the main
 // queue on the test's own clock -- the awake clock (dispatch_after and CACurrentMediaTime stop while the iPad sleeps; the screen's frames too). A turn
@@ -195,12 +203,26 @@ static BOOL DMBarLockedNow(void) { return MSBDBarLockedLook(DMLockUp(gLockMgr), 
 - (id)foregroundView;
 - (id)currentAggregatedData;
 - (void)_updateWithAggregatedData:(id)data;
+- (void)_updateRegionItems;
 @end
 static _UIStatusBar *gBar;
 static _UIStatusBarWifiItem *gItem;
 static BOOL gItemShown;          // (iOS's Wi-Fi item shows: its answer when last asked)
 static int gAsks, gAsksAsOurs;   // (our asks that reached the bar; those while the copy was ours)
 static int gNoAnimAsks;          // (1.8.7.8: asks made with no animation -- the held copy's, before the layout that makes it ours)
+static BOOL gInNoAnim;           // (inside +performWithoutAnimation:)
+static BOOL gConstraintsDue;     // (W2 review: the bar's constraint pass is due -- an update that changed its items asks only for that; nothing is marked)
+static BOOL gRegionPlan;         // (... the trailing region as that pass last set it -- with iOS's Wi-Fi item)
+static BOOL gRegionItem;         // (W2: the trailing region as its items last took their places -- in the region's own layout, after the copy's)
+static int gHeldAsked;           // (W2: held asks that reached the bar: our whole-data update with no animation)
+static double gFirstStartAfterAsk = -1;   // (W2: our icons start at the copy's first layout after the held ask, outside the ask)
+static int gPlacedAfterAskNoAnim = -1;    // (W2: the region's first placement after the held ask: with no animation 1, animated 0, none -1)
+static double gLastStart = -1;           // (W2 review: our icons start at the copy's last layout -- what a frame shows)
+static int gOldPlaceFrames;              // (... frames drawn after the held ask, the copy ours and shown, our icons at the old place)
+static double TIconsStart(void) { return gRegionItem ? 646.0 : 664.0; }   // (our icons follow the region: iPad 2 16.7.7's numbers, h01 D1)
+static void TConstraintPass(void);
+static void TRegionPart(id self);
+static void DMAttachIfFilled(UIView *fg, const char *why);
 @implementation _UIStatusBarWifiItem
 - (id)statusBar { return gBar; }
 @end
@@ -228,7 +250,8 @@ static void TIOSUpdatePart(id self, NSDictionary *data) {   // (iOS's own part, 
     if (gUpdDepth > 0) gNestedUpdates++;
     gUpdDepth++;
     if (data[@"wifi"]) gItemShown = ((BOOL (*)(id, SEL, id, id))objc_msgSend)(gItem, @selector(canEnableDisplayItem:fromData:), nil, data);
-    if (data[@"whole"]) { gAsks++; if (ours()) gAsksAsOurs++; }
+    if (gItemShown != gRegionPlan) gConstraintsDue = YES;   // (W2: the item's view goes at once; the rest of the region: the bar's constraint pass, then its layout)
+    if (data[@"whole"]) { gAsks++; if (ours()) gAsksAsOurs++; if (gInNoAnim) gHeldAsked++; }
     if (gLabelInData && data[@"time"]) {   // (row 19: this update places the label, after the items have answered)
         gLabelInData = NO; gLabelInAsk = data[@"whole"] != nil;
         TLabelBack(YES, NO);
@@ -241,7 +264,26 @@ static void TIOSUpdatePart(id self, NSDictionary *data) {   // (iOS's own part, 
 - (void)_updateWithAggregatedData:(id)data {   // (our hook of it as it is, StockVPNItem: its %orig is iOS's part above)
 #include "wr-update.inc"
 }
+- (void)_updateRegionItems {   // (17+: our hook of it as it is, SBAttach17Regions: its %orig is iOS's part, TRegionPart)
+#include "wr-regions.inc"
+}
 @end
+static void TRegionPart(id self) {   // (iOS's part of the bar's constraint pass: the trailing region's new places, as the items last answered)
+    (void)self;
+    gRegionPlan = gItemShown;
+    if (gRegionPlan != gRegionItem) gTrailing.needsLayout = YES;   // (taken in the region's own layout)
+}
+static void TRegionLayout(void) {   // (the region's own layout, after the copy's: its items take their places)
+    gTrailing.needsLayout = NO;
+    if (gHeldAsked > 0 && gPlacedAfterAskNoAnim < 0 && gRegionItem != gRegionPlan) gPlacedAfterAskNoAnim = gInNoAnim;
+    gRegionItem = gRegionPlan;
+}
+static void TConstraintPass(void) {   // (the bar's -updateConstraints, our BarForeground hook's count around it -- 17+: -_updateRegionItems, our hook)
+    gConstraintsDue = NO;
+    gDMBarConstraintDepth++;
+    if (gSTUI) [gBar _updateRegionItems]; else TRegionPart(gBar);
+    gDMBarConstraintDepth--;
+}
 static void TIOSUpdate(NSDictionary *d) { [gBar _updateWithAggregatedData:d]; }   // (iOS's own data update: the time each minute, ...)
 
 #include "wr-lock.inc"
@@ -266,6 +308,8 @@ static void TDidMoveToWindow(_UIStatusBarForegroundView *self) {   // (the -didM
     UIView *fg = self;
     gLayoutsBy[gCaller]++;
     if (gDMBarConstraintDepth > 0) gLayoutsInPass++;
+    if (gHeldAsked > 0 && gFirstStartAfterAsk < 0 && !gInNoAnim) gFirstStartAfterAsk = TIconsStart();   // (W2: where this layout puts our icons)
+    gLastStart = TIconsStart();
 #include "wr-noclock.inc"
     // the clock layout: the logo, and our Wi-Fi icon with it (WiFiMenu.h), as it makes them; then its newlyOurs part as it is
     if (!objc_getAssociatedObject(fg, kLogoKey)) objc_setAssociatedObject(fg, kLogoKey, [UIView new], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -276,14 +320,28 @@ static void TDidMoveToWindow(_UIStatusBarForegroundView *self) {   // (the -didM
     objc_setAssociatedObject(fg, kBarLookLockedKey, @(locked), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 @end
+static BOOL TMarked(UIView *v) { if (v.needsLayout) return YES; for (UIView *s in v.subs) if (TMarked(s)) return YES; return NO; }
+static void TLayoutTree(UIView *v) {   // (the marked views of a subtree, each before its subviews: the copy before its region)
+    if (v.needsLayout) {
+        if ([v isKindOfClass:[_UIStatusBarForegroundView class]]) TLayoutSubviews((_UIStatusBarForegroundView *)v);
+        else if (v == gTrailing) TRegionLayout();
+        else v.needsLayout = NO;   // (the bar's own -layoutSubviews, the rest: nothing the test reads)
+    }
+    for (UIView *s in [v.subs copy]) TLayoutTree(s);
+}
 @implementation UIView
 - (instancetype)init { if ((self = [super init])) { _alpha = 1.0; _subs = [NSMutableArray array]; } return self; }
 - (UIWindow *)window { UIView *v = self; while (v && ![v isKindOfClass:[UIWindow class]]) v = v.superview; return (UIWindow *)v; }
 - (NSArray<UIView *> *)subviews { return [_subs copy]; }
 - (void)setNeedsLayout { _needsLayout = YES; }
-- (void)layoutIfNeeded { if (_needsLayout && [self isKindOfClass:[_UIStatusBarForegroundView class]]) TLayoutSubviews((_UIStatusBarForegroundView *)self); }
+- (void)layoutIfNeeded {   // (UIKit, the review's probe: nothing marked at or below the receiver -- nothing, even with the bar's constraint pass due;
+                           //  else that pass first, then the marked views -- the bar, the copy, then its region)
+    if (!TMarked(self)) return;
+    if (gConstraintsDue && self.window) TConstraintPass();
+    TLayoutTree(self);
+}
 - (CGRect)convertRect:(CGRect)r toView:(UIView *)v { (void)v; return r; }
-+ (void)performWithoutAnimation:(void (^)(void))b { gNoAnimAsks++; b(); }   // (counted: the held ask's)
++ (void)performWithoutAnimation:(void (^)(void))b { gNoAnimAsks++; BOOL was = gInNoAnim; gInNoAnim = YES; b(); gInNoAnim = was; }   // (counted: the held ask's)
 @end
 @implementation UIWindow
 - (UIWindow *)window { return self; }
@@ -315,7 +373,10 @@ static BOOL TDue(void) { for (NSArray *e in gQueue) if ([e[0] doubleValue] <= gN
 static double gLabelInCommitAt = -1;   // (rows 25-27: the label back inside the bar's constraint pass in this commit, the iPad 2's unlock)
 static void TLabelBack(BOOL hook, BOOL iosPass);
 static void TCommit(void) {   // (the commit's layout pass, then Core Animation's pre-commit phase)
-    if (gFG.needsLayout && gFG.window) TLayoutSubviews(gFG);
+    if (gConstraintsDue || TMarked(gBarWindow)) {   // (the window's: a constraint pass due marks the window -- that pass first, then the marked views)
+        if (gConstraintsDue) TConstraintPass();
+        TLayoutTree(gBarWindow);
+    }
     if (gLabelInCommitAt >= 0 && gWall + 1e-9 >= gLabelInCommitAt) {   // (the bar's own pass, after the copy's: its region places the label)
         gLabelInCommitAt = -1;
         gDMBarConstraintDepth++; if (gSTUI) gDMBarUpdateDepth++;
@@ -341,6 +402,7 @@ static void TTurn(BOOL frame) {
     if (frame && gNow + 1e-9 >= gNextMinute) { gNextMinute += 60.0; TIOSUpdate(@{ @"time": @YES }); }   // (iOS's time, each minute)
     TCommit();
     if (!frame) return;
+    if (gHeldAsked > 0 && shown() && ours() && gLastStart != (gItemShown ? 646.0 : 664.0)) gOldPlaceFrames++;   // (W2 review: one frame in 1 of 6 on the iPad 2, h01 D1)
     if (gLabelAt >= 0 && gWall + 1e-9 >= gLabelAt) {
         gFrames++;
         if (shown() && gClock && !ours() && !DMBarLockedNow()) gStockFrames++;
@@ -673,6 +735,16 @@ static int RunRow(int r) {
         case 26: RowLockInCommit(s, @"Lock Screen start, unlock at 60.9 s, the screen on, the label in the commit (f04 r2a)", 60.9, -1, -1); break;
         case 27: RowLockInCommit(s, @"Lock Screen start, unlock at 180.8 s, asleep from 20 s to 178 s, the label in the commit (f04 r2c)", 180.8, 20.0, 178.0); break;
         default: return -1;
+    }
+    // (every row with a held ask, W2: the bar laid out right after it, with no animation -- our first layout after it has the final icons start, and
+    //  no frame shows our icons at the old place: the review of W2)
+    if (gHeldAsked > 0) {
+        printf("-- %s row %d: held asks %d; our icons start at the first layout after it %.1f, final %.1f; the region placed after it with no animation %d; frames at the old place %d\n",
+               fam().UTF8String, k, gHeldAsked, gFirstStartAfterAsk, TIconsStart(), gPlacedAfterAskNoAnim, gOldPlaceFrames);
+        check(gFirstStartAfterAsk == TIconsStart(), [NSString stringWithFormat:@"%@ row %d: the copy's first layout after the held ask has the final icons start (%.1f, final %.1f): the bar placed its region first",
+                                                     fam(), k, gFirstStartAfterAsk, TIconsStart()]);
+        check(gPlacedAfterAskNoAnim != 0, [NSString stringWithFormat:@"%@ row %d: the region placed after the held ask with no animation (%d; -1: unchanged)", fam(), k, gPlacedAfterAskNoAnim]);
+        check(gOldPlaceFrames == 0, [NSString stringWithFormat:@"%@ row %d: no frame drawn after the held ask with our icons at the old place, 18 pt left (%d)", fam(), k, gOldPlaceFrames]);
     }
     // (every row, 1.8.7.8 review of W, F1: the held copy's ask, an update of the bar, never inside one -- row 19's label is placed inside an update)
     check(gNestedUpdates == 0 && gDMBarDataUpdateDepth == 0, [NSString stringWithFormat:@"%@ row %d: no data update of the bar started inside another one (%d), the hook's count back at 0 (%d)",

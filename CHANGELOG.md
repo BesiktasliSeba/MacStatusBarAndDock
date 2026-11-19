@@ -2,6 +2,13 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.7.9
+
+### Fixes
+- A tap or click on iPadOS's own icons in the menu bar, such as the AirPods icon, no longer opens Control Center while the menu bar shows its Control Center icon. That icon and the swipe down from the top right still open it.
+- With Aerial 5, the window behind no longer flashes at its edges when a Finder window opens or closes, when you minimize or close a window, or when you use the Mac Switcher.
+- After a respring, the icons on the right of the menu bar no longer shift sideways for an instant when you unlock.
+
 ## 1.8.7.8
 
 ### Fixes

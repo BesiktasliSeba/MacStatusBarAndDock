@@ -2328,6 +2328,7 @@ static BOOL DMStageMinimized(UIView *stage);
 static UIView *DMStageForBundle(NSString *bundleID);
 static void DMRememberStageFrame(UIView *stage);
 static void DMEnforceStageFrame(UIView *stage, NSString *why);
+static void DMA5SyncHostMaskBy(UIView *stage, const char *by);   // (Aerial 5's corner mask set from the app holder now: defined with DMA5SyncHostMask)
 
 // Bug (reported): opening an app from the App Library as a window left the App Library up over everything; a windowed launch never goes through
 // SpringBoard's own path. So whenever a launch ends in a window (a new one, or an existing one shown again), the App Library is dismissed here,
@@ -10770,6 +10771,23 @@ static void DMRememberStageFrame(UIView *stage) {
     NSString *bundleID = DMStageBundle(stage);
     if (bundleID.length) { if (!gLastWindowFrames) gLastWindowFrames = [NSMutableDictionary dictionary]; gLastWindowFrames[bundleID] = [NSValue valueWithCGRect:own]; }
 }
+// A window put back at its frame before the commit that would draw Aerial's change of it: no animation, laid out, and on Aerial 5 our corner mask
+// set from the app holder in the same transaction (1.8.7.9). The mask was set only by the frame watcher, and its pass before a commit runs before
+// the put-backs: with the watcher idle, the mask kept the size Aerial's fit-to-screen pass gave the holder while the window was put back, and the
+// commit drew the app cut 52 x 32 pt along the right and bottom edges for one frame (KT's M1 recording, 18 Nov: a Finder open or close over a
+// Fill window; KT's report of a window behind that briefly shrinks). Used by every put-back of Aerial's moves: DMEnforceStageFrame and the entrance
+// hold (DMA5HoldEntranceFrame). Aerial 3.0, Zetsu, MilkyWay4 and Stage Manager have no such mask (DMA5MacGeometry NO).
+static BOOL DMA5MaskOld(void) {   // (debug: /tmp/msb-a5-maskold, 1.8.7.8's order -- the mask only from the frame watcher -- for before/after rows)
+#if DEBUG
+    return DMTestFlag("/tmp/msb-a5-maskold");
+#else
+    return NO;
+#endif
+}
+static void DMStagePutBack(UIView *stage, CGRect frame) {
+    [UIView performWithoutAnimation:^{ stage.frame = frame; [stage layoutIfNeeded]; }];
+    if (DMA5MacGeometry() && !DMA5MaskOld()) DMA5SyncHostMaskBy(stage, "the put-back");
+}
 static void DMEnforceStageFrame(UIView *stage, NSString *why) {
     NSValue *intent = objc_getAssociatedObject(stage, kStageIntentKey);
     if (!intent || [objc_getAssociatedObject(stage, kStageEnteringKey) boolValue] || [objc_getAssociatedObject(stage, kStageGestureKey) boolValue]) return;
@@ -10783,7 +10801,7 @@ static void DMEnforceStageFrame(UIView *stage, NSString *why) {
     DMLog([NSString stringWithFormat:@"[aerial] %@ moved %@ -> %@ by %@: put back", DMStageBundle(stage), NSStringFromCGRect(want), NSStringFromCGRect(cur), why]);
     CGRect vis = want; vis.origin.y += shift;
     gStageFrameBypass = YES;
-    [UIView performWithoutAnimation:^{ stage.frame = vis; [stage layoutIfNeeded]; }];
+    DMStagePutBack(stage, vis);
     gStageFrameBypass = NO;
     if (shift) DMAutoHideNoteFrame(stage);
 }
@@ -24004,7 +24022,20 @@ static BOOL DMBarItemsAskBeforeOurs(UIView *fg) {
     __block BOOL asked = NO;
     gDMItemsAskingHeld = YES;
     // (with no animation: the copy is invisible now, and an item fading out would still be fading when the release shows it in this frame)
-    @try { [UIView performWithoutAnimation:^{ asked = DMStockVPNRecheck(fg); }]; } @finally { gDMItemsAskingHeld = NO; }
+    // (then the bar itself is marked and laid out, also with no animation: iPadOS takes its Wi-Fi item out at the ask, but places the rest of the
+    //  trailing region only at the bar's next layout. Our layout right after the ask still found the airplane icon at its old place and put our
+    //  icons 18 pt left, until the bar's layout 3-27 ms later: one frame on screen in 1 of 6 iPad 2 respring unlocks (1.8.7.8~h01 D1). An update
+    //  with no animation only asks for the bar's constraint pass (17 decompile), and -layoutIfNeeded on a bar not marked runs nothing; a layout of
+    //  the copy runs that pass first, but the region's items take their places in the region's own layout, after the copy's (Mac Catalyst probe,
+    //  the review of W2). Marked, the bar's layout runs the pass and places the region. The copy is marked again: one marked already was laid out
+    //  inside the bar's layout, before its region; each call site lays it out right after, in this turn. Never inside the bar's own constraint
+    //  pass: the guards above, as for the ask)
+    @try {
+        [UIView performWithoutAnimation:^{
+            asked = DMStockVPNRecheck(fg);
+            if (asked) { UIView *bar = fg.superview; [bar setNeedsLayout]; [bar layoutIfNeeded]; [fg setNeedsLayout]; }
+        }];
+    } @finally { gDMItemsAskingHeld = NO; }
     if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[items] copy %p: iOS's items asked while held, before the layout that makes it ours%@ (in %@)", fg, asked ? @"" : @": no bar or no data yet (its release asks)", NSStringFromClass([fg.window class])]);
     return asked;
 }
@@ -25290,6 +25321,91 @@ static BOOL DMPointOverOurControl(UIView *bar, UIGestureRecognizer *g) {
     return NO;
 }
 
+// A click on iPadOS's own status icons in our bar (1.8.7.9, KT 18 Nov: Control Center opens only from our Control Center icon). The AirPods battery,
+// rotation lock, location, Focus, the Wi-Fi item with the Wi-Fi Menu off and every other iPadOS item sit in the status icons' region, and that
+// region's click action (+[_UIStatusBarHoverRegionAction trailingHoverAction]) runs -[SpringBoard handleStatusBarHoverActionForRegion:] 1, which
+// opens Control Center. The bar's action recognizer runs it for a pointer click, or for a finger touch while the pointer rests on the icons
+// (-hoveredActionable). YES when all of these hold, then that recognizer does not begin and the click does what a click on empty bar space does:
+//  (a) it is the bar's own action recognizer (not the pulls from the top edge, which are other recognizers, not another tweak's gesture or
+//      SpringBoard's scroll-to-top tap);
+//  (b) the bar is ours and our Control Center icon shows in it (not the Lock Screen look, Control Center's header copy, a Stage Manager strip, or
+//      Battery Menu off with iPadOS's own Control Center style: there iPadOS's icons keep their click);
+//  (c) the target is a region, not a display item's own action (a call or recording pill), and iPadOS's battery item is in it: the status icons'
+//      region, never the time's (Notification Center). +trailingHoverAction makes a new object on every call, so the action cannot tell it;
+//  (d) that region has an enabled action, the one -statusBarGesture: would run (hoverAction, else action);
+//  (e) the touch is inside it, as UIKit asks before it runs the action.
+// The target: the one UIKit picked in its -gestureRecognizerShouldBegin:, else the hovered one (where an iOS version picks it later).
+static BOOL DMIconsClickRefused(UIView *bar, UIGestureRecognizer *g) {
+    static SEL sAGR, sTarget, sHovered, sRegions, sItems, sItem, sHoverAction, sAction, sEnabled, sInside;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        sAGR = NSSelectorFromString(@"actionGestureRecognizer"); sTarget = NSSelectorFromString(@"targetActionable"); sHovered = NSSelectorFromString(@"hoveredActionable");
+        sRegions = NSSelectorFromString(@"regions"); sItems = NSSelectorFromString(@"displayItems"); sItem = NSSelectorFromString(@"item");
+        sHoverAction = NSSelectorFromString(@"hoverAction"); sAction = NSSelectorFromString(@"action"); sEnabled = NSSelectorFromString(@"isEnabled");
+        sInside = NSSelectorFromString(@"_gestureRecognizer:isInsideActionable:");
+    });
+    if (![bar respondsToSelector:sAGR] || ((id (*)(id, SEL))objc_msgSend)(bar, sAGR) != g) return NO;   // (a)
+    UIView *fg = nil; @try { fg = [bar valueForKey:@"foregroundView"]; } @catch (id e) {}
+    if (![fg isKindOfClass:[UIView class]] || !objc_getAssociatedObject(fg, kLogoKey)) return NO;   // (b) our bar
+    UIView *cc = objc_getAssociatedObject(fg, kCCButtonKey);
+    if (!cc || cc.hidden || cc.superview != fg) return NO;   // (b) our Control Center icon in it
+    id target = [bar respondsToSelector:sTarget] ? ((id (*)(id, SEL))objc_msgSend)(bar, sTarget) : nil;   // (c)
+    if (!target && [bar respondsToSelector:sHovered]) target = ((id (*)(id, SEL))objc_msgSend)(bar, sHovered);
+    id regions = target && [bar respondsToSelector:sRegions] ? ((id (*)(id, SEL))objc_msgSend)(bar, sRegions) : nil;
+    if (![regions isKindOfClass:[NSDictionary class]]) return NO;
+    BOOL region = NO;
+    for (id r in [(NSDictionary *)regions allValues]) if (r == target) { region = YES; break; }
+    Class ic = DMBattItemClass();
+    id list = region && ic && [target respondsToSelector:sItems] ? ((id (*)(id, SEL))objc_msgSend)(target, sItems) : nil;
+    BOOL icons = NO;
+    if ([list conformsToProtocol:@protocol(NSFastEnumeration)]) for (id di in list) {
+        id it = [di respondsToSelector:sItem] ? ((id (*)(id, SEL))objc_msgSend)(di, sItem) : nil;
+        if ([it isKindOfClass:ic]) { icons = YES; break; }
+    }
+    if (!icons) return NO;
+    id act = [target respondsToSelector:sHoverAction] ? ((id (*)(id, SEL))objc_msgSend)(target, sHoverAction) : nil;   // (d)
+    if (!act && [target respondsToSelector:sAction]) act = ((id (*)(id, SEL))objc_msgSend)(target, sAction);
+    if (![act respondsToSelector:sEnabled] || !((BOOL (*)(id, SEL))objc_msgSend)(act, sEnabled)) return NO;
+    return [bar respondsToSelector:sInside] && ((BOOL (*)(id, SEL, id, id))objc_msgSend)(bar, sInside, g, target);   // (e)
+}
+// After the bar's action recognizer was refused: the target UIKit picked for it is dropped (1.8.7.9, its own change). UIKit clears it only at the
+// end of a gesture that ran, and with no pointer resting on the bar it does not pick a new one over an old one: a later finger tap in that region
+// ran the old target's action (Control Center, after a click on our battery with the pointer resting on the icons), and one elsewhere in the bar
+// was taken and swallowed instead of reaching SpringBoard's scroll-to-top tap. Only for that recognizer: it does not run while it is asked to begin.
+static void DMBarDropTarget(UIView *bar, UIGestureRecognizer *g) {
+    static SEL sAGR, sSet;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ sAGR = NSSelectorFromString(@"actionGestureRecognizer"); sSet = NSSelectorFromString(@"setTargetActionable:"); });
+    if (![bar respondsToSelector:sAGR] || ![bar respondsToSelector:sSet] || ((id (*)(id, SEL))objc_msgSend)(bar, sAGR) != g) return;
+    ((void (*)(id, SEL, id))objc_msgSend)(bar, sSet, nil);
+}
+#if DEBUG
+// Row D0 (debug): for the bar's action recognizer, its target and hovered actionable right after iPadOS's answer, and which of the selectors the
+// rule uses this iOS has (once); the first refusals.
+static NSString *DMIconsActionableText(id a) {
+    if (!a) return @"none";
+    id ident = [a respondsToSelector:@selector(identifier)] ? DMCall(a, @"identifier") : nil;
+    return [NSString stringWithFormat:@"%@ %p %@", NSStringFromClass([a class]), a, ident ?: @""];
+}
+static void DMIconsLog(UIView *bar, UIGestureRecognizer *g, BOOL orig, BOOL over, BOOL icons, BOOL old) {
+    if (![bar respondsToSelector:NSSelectorFromString(@"actionGestureRecognizer")] || DMCall(bar, @"actionGestureRecognizer") != g) return;
+    static BOOL told = NO;
+    if (!told) {
+        told = YES;
+        NSMutableString *m = [NSMutableString stringWithFormat:@"[iconscc] %@:", NSStringFromClass([bar class])];
+        for (NSString *s in @[@"actionGestureRecognizer", @"targetActionable", @"setTargetActionable:", @"hoveredActionable", @"_gestureRecognizer:isInsideActionable:", @"regions"])
+            [m appendFormat:@" %@ %@", s, [bar respondsToSelector:NSSelectorFromString(s)] ? @"yes" : @"NO"];
+        DMLog(m);
+    }
+    static int n = 0;
+    if (n++ < 40) DMLog([NSString stringWithFormat:@"[iconscc] begin: orig %d, ours %d, icons %d%@; target %@; hovered %@", orig, over, icons, old ? @" (kill switch: 1.8.7.8's rule)" : @"",
+                         DMIconsActionableText([bar respondsToSelector:NSSelectorFromString(@"targetActionable")] ? DMCall(bar, @"targetActionable") : nil),
+                         DMIconsActionableText([bar respondsToSelector:NSSelectorFromString(@"hoveredActionable")] ? DMCall(bar, @"hoveredActionable") : nil)]);
+    static int refused = 0;
+    if (icons && refused++ < 5) DMLog(@"[iconscc] a click on iPadOS's status icons: Control Center only from our icon");
+}
+#endif
+
 // One of our menu bar's items at a point of the main screen (in points): the logo, a menu title, the window lights, an icon, the clock -- in a
 // copy of the bar on that screen that shows (its window up, not faded out). For the first touch after SpringBoard starts on iPadOS 16 (touchfix,
 // DMTouchFix: a tap held back from SpringBoard is sent again where it lifted, here even at the screen's top edge).
@@ -25499,14 +25615,25 @@ static BOOL DMPointOnMultitaskingDots(UIView *fromView, CGPoint point) {
 }
 
 // Stop the status bar's region action from starting when the touch is on one of our controls (DMPointOverOurControl: the logo, the menus,
-// the icons, the clock).
+// the icons, the clock), or when it is a click on iPadOS's status icons while our Control Center icon shows (DMIconsClickRefused); either way
+// the target UIKit picked for it is dropped (DMBarDropTarget).
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)g {
     BOOL orig = %orig;
     BOOL over = DMPointOverOurControl((UIView *)self, g);
+    BOOL old = NO;
+#if DEBUG
+    old = DMTestFlag("/tmp/msb-iconscc");   // (debug: 1.8.7.8's rule -- our controls only, no drop -- for before/after rows on one build)
+#endif
+    BOOL icons = orig && !over && !old && DMIconsClickRefused((UIView *)self, g);
+#if DEBUG
+    DMIconsLog((UIView *)self, g, orig, over, icons, old);   // (before the drop: the target as iPadOS picked it)
+#endif
     static int n = 0;
-    if (n++ < 30) DMLog([NSString stringWithFormat:@"[shouldBegin] %@ orig=%d overOurs=%d",
-                         NSStringFromClass([g class]), orig, over]);
-    return (orig && over) ? NO : orig;
+    if (n++ < 30) DMLog([NSString stringWithFormat:@"[shouldBegin] %@ orig=%d overOurs=%d icons=%d",
+                         NSStringFromClass([g class]), orig, over, icons]);
+    if (!orig || !(over || icons)) return orig;
+    if (!old) DMBarDropTarget((UIView *)self, g);
+    return NO;
 }
 
 // Belt and braces: if the action fires anyway, swallow it over our controls.
@@ -27613,6 +27740,49 @@ static void DMRunTrigger(NSString *cmd) {
         id hid = [h respondsToSelector:@selector(identifier)] ? DMCall(h, @"identifier") : nil;
         DMLog([NSString stringWithFormat:@"[sbhover] the bar's hovered actionable: %@ %@ (hover action %d, action %d)", h ? NSStringFromClass([h class]) : @"none", hid ?: @"",
             [h respondsToSelector:NSSelectorFromString(@"hoverAction")] && DMCall(h, @"hoverAction") != nil, [h respondsToSelector:@selector(action)] && DMCall(h, @"action") != nil]);
+    }
+    else if ([cmd hasPrefix:@"sbfakebt_"]) {   // sbfakebt_<state>_<percent> | sbfakebt_off (debug, 1.8.7.9 row D0): iPadOS's Bluetooth item (a headset's battery) in
+        // each bar of ours with no Bluetooth device: the bar's display data overlaid with a Bluetooth entry alone (-setOverlayData:; the data classes
+        // are the bar's own, from its -currentData); _off: the bar's own overlay back. No Bluetooth call, no setting; gone after a respring.
+        static const void *kFakeBTKey = &kFakeBTKey;
+        NSArray *q = [[cmd substringFromIndex:9] componentsSeparatedByString:@"_"];
+        BOOL off = [q.firstObject isEqualToString:@"off"];
+        if (!off && q.count < 2) { DMLog(@"[sbfakebt] sbfakebt_<state>_<percent> or sbfakebt_off"); return; }
+        SEL setOv = NSSelectorFromString(@"setOverlayData:"), sBT = NSSelectorFromString(@"setBluetoothEntry:"), sBatt = NSSelectorFromString(@"setBatteryEntry:");
+        int done = 0;
+        for (UIView *fg in gCopies.allObjects) {
+            UIView *bar = fg.superview;
+            if (!objc_getAssociatedObject(fg, kLogoKey) || ![bar respondsToSelector:setOv] || ![bar respondsToSelector:NSSelectorFromString(@"overlayData")] || ![bar respondsToSelector:NSSelectorFromString(@"currentData")]) continue;
+            NSArray *kept = objc_getAssociatedObject(bar, kFakeBTKey);   // (@[the bar's own overlay, or NSNull])
+            if (off) {
+                if (!kept) continue;
+                ((void (*)(id, SEL, id))objc_msgSend)(bar, setOv, kept.firstObject == [NSNull null] ? nil : kept.firstObject);
+                objc_setAssociatedObject(bar, kFakeBTKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                done++; continue;
+            }
+            id cur = DMCall(bar, @"currentData");
+            NSString *dn = NSStringFromClass([cur class]);
+            id curBT = [cur respondsToSelector:NSSelectorFromString(@"bluetoothEntry")] ? DMCall(cur, @"bluetoothEntry") : nil;
+            id curBatt = [cur respondsToSelector:NSSelectorFromString(@"mainBatteryEntry")] ? DMCall(cur, @"mainBatteryEntry") : nil;
+            Class E = curBT ? [curBT class] : NSClassFromString([dn stringByAppendingString:@"BluetoothEntry"]);
+            Class B = curBatt ? [curBatt class] : NSClassFromString([dn stringByAppendingString:@"BatteryEntry"]);
+            id data = cur ? [[cur class] new] : nil, e = [E new], b = [B new];
+            if (![data respondsToSelector:sBT] || ![e respondsToSelector:sBatt] || ![e respondsToSelector:@selector(setEnabled:)] || ![b respondsToSelector:@selector(setEnabled:)]
+                || ![e respondsToSelector:NSSelectorFromString(@"setState:")] || ![b respondsToSelector:NSSelectorFromString(@"setCapacity:")]) {
+                DMLog([NSString stringWithFormat:@"[sbfakebt] %@: data %@, entries %@ / %@ not as expected: nothing changed", NSStringFromClass([bar class]), dn, E, B]);
+                continue;
+            }
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(e, @selector(setEnabled:), YES);
+            ((void (*)(id, SEL, long long))objc_msgSend)(e, NSSelectorFromString(@"setState:"), [q[0] longLongValue]);
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(b, @selector(setEnabled:), YES);
+            ((void (*)(id, SEL, long long))objc_msgSend)(b, NSSelectorFromString(@"setCapacity:"), [q[1] longLongValue]);
+            ((void (*)(id, SEL, id))objc_msgSend)(e, sBatt, b);
+            ((void (*)(id, SEL, id))objc_msgSend)(data, sBT, e);
+            if (!kept) objc_setAssociatedObject(bar, kFakeBTKey, @[DMCall(bar, @"overlayData") ?: [NSNull null]], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            ((void (*)(id, SEL, id))objc_msgSend)(bar, setOv, data);
+            done++;
+        }
+        DMLog([NSString stringWithFormat:@"[sbfakebt] %@ on %d bar(s) of ours", off ? @"own overlay back" : [NSString stringWithFormat:@"Bluetooth entry state %@, battery %@ %%", q[0], q[1]], done]);
     }
     else if ([cmd isEqualToString:@"battinfo"] || [cmd hasPrefix:@"battcharge_"]) {   // battinfo: every battery view in every window -- its bar's provider, our mark,
         // iOS's size category, charging state, place on the screen, intrinsic size and layers (outline, pin, fill, bolt); battcharge_<state> / battcharge_back:
@@ -34451,7 +34621,7 @@ static void DMA5HoldEntranceFrame(UIView *stage) {
     for (NSString *k in stage.layer.animationKeys ?: @[]) [keys addObject:k];
     DMLog([NSString stringWithFormat:@"[aerial5] %@: Aerial %@ it %@ -> %@ while %@: put back before it is drawn (layer animations: %@)", DMStageBundle(stage),
            CGSizeEqualToSize(f.size, want.size) ? @"moved" : @"resized", NSStringFromCGRect(want), NSStringFromCGRect(f), entering ? @"flying in" : @"just placed", [keys componentsJoinedByString:@","]]);
-    [UIView performWithoutAnimation:^{ stage.frame = want; [stage layoutIfNeeded]; }];
+    DMStagePutBack(stage, want);
 }
 void DMA5HoldEntranceFrameNow(UIView *stage) { DMA5HoldEntranceFrame(stage); }
 static void DMA5HoldStageAt(UIView *stage, CGRect target, CFTimeInterval until) {
@@ -35370,6 +35540,20 @@ static const void *kA5MaskKey = &kA5MaskKey;
 static void DMA5SyncHostMaskFor(UIView *stage, UIView *holder);
 static int gA5FrameMutations = 0;   // (counts every change the frame watcher makes: its idle pause, DMA5FrameWatcher)
 static void DMA5SyncHostMask(UIView *stage) { DMA5SyncHostMaskFor(stage, nil); }
+#if DEBUG
+// The [a5mask] trace (debug, /tmp/msb-a5-masktrace; 1.8.7.9): every size our mask is given, by whom, and whether the frame watcher runs.
+static const char *gA5MaskBy = NULL;   // (who sets the mask now; NULL: the frame watcher's tick, or a new or young window)
+static void DMA5MaskTrace(UIView *stage, CGSize was, CGSize now);   // (defined after the frame watcher)
+#endif
+static void DMA5SyncHostMaskBy(UIView *stage, const char *by) {   // (DMA5SyncHostMask, named for the trace)
+#if DEBUG
+    const char *was = gA5MaskBy; gA5MaskBy = by;
+#endif
+    DMA5SyncHostMask(stage);
+#if DEBUG
+    gA5MaskBy = was;
+#endif
+}
 static void DMA5SyncHostMaskFor(UIView *stage, UIView *holder) {
     BOOL on = DMA5MacGeometry() && !DMStageMinimized(stage) && ![objc_getAssociatedObject(stage, kA5ChipHiddenKey) boolValue];
     CATransform3D want = on ? CATransform3DMakeTranslation(0, DMA5StageShift(), 0) : CATransform3DIdentity;
@@ -35395,6 +35579,9 @@ static void DMA5SyncHostMaskFor(UIView *stage, UIView *holder) {
     if (in.layer.mask != m) {
         static int told = 0;
         if (in.layer.mask && told++ < 5) DMLog([NSString stringWithFormat:@"[aerial5] %@: the app holder had another mask (%@): ours put back", DMStageBundle(stage), in.layer.mask]);
+#if DEBUG
+        DMA5MaskTrace(stage, m.bounds.size, b);
+#endif
         [CATransaction begin]; [CATransaction setDisableActions:YES];
         m.bounds = CGRectMake(0, 0, b.width, b.height);
         in.layer.mask = m;
@@ -35402,6 +35589,9 @@ static void DMA5SyncHostMaskFor(UIView *stage, UIView *holder) {
         gA5FrameMutations++;
     }
     if (fabs(m.bounds.size.width - b.width) > 0.01 || fabs(m.bounds.size.height - b.height) > 0.01) {
+#if DEBUG
+        DMA5MaskTrace(stage, m.bounds.size, b);
+#endif
         [CATransaction begin]; [CATransaction setDisableActions:YES];
         m.bounds = CGRectMake(0, 0, b.width, b.height);
         [CATransaction commit];
@@ -35487,6 +35677,13 @@ static BOOL DMA5NoteActivity(void) {   // YES when something changed since the l
 @end
 static CADisplayLink *gA5FrameLink = nil;
 static DMA5FrameWatcher *gA5FrameWatcher = nil;
+#if DEBUG
+static void DMA5MaskTrace(UIView *stage, CGSize was, CGSize now) {
+    if (!DMTestFlag("/tmp/msb-a5-masktrace")) return;
+    DMLog([NSString stringWithFormat:@"[a5mask] %@: mask %@ -> %@, the holder's (stage %@; by %s; watcher %@)", DMStageBundle(stage), NSStringFromCGSize(was), NSStringFromCGSize(now),
+           NSStringFromCGRect(stage.frame), gA5MaskBy ?: "the frame watcher's tick or a new window", !gA5FrameLink ? @"none" : gA5FrameLink.paused ? @"paused" : @"running"]);
+}
+#endif
 static void DMAerial5StartFrameWatcher(void) {
     if (gStockBar) return;   // (stock status bar: no per-frame watch)
     CADisplayLink *link = gA5FrameLink;
@@ -36047,7 +36244,13 @@ static void DMA5WakeFrameWatcher(void) {
     static BOOL keepOverlay = NO; static CFTimeInterval checkedAt = -10;   // (before every commit: the flag is read once a second)
     CFTimeInterval now = CACurrentMediaTime();
     if (now - checkedAt > 1.0) { checkedAt = now; keepOverlay = DMTestFlag("/tmp/msb-a5-keepoverlay"); }
+#if DEBUG
+    const char *by = gA5MaskBy; gA5MaskBy = "the paused watcher's pass before the commit";
+#endif
     [gA5FrameWatcher frameBody:link keep:keepOverlay];
+#if DEBUG
+    gA5MaskBy = by;
+#endif
     if (gA5IdlePaused) {   // (idle: a pass before this commit; the link runs again only when something moves or the pass changed something)
         if (!DMA5NoteActivity()) return;
         gA5IdlePaused = NO;
@@ -36082,7 +36285,7 @@ static void DMA5AnswerFitPass(UIView *stage, CFTimeInterval now) {
     DMEnforceStageFrame(stage, @"Aerial 5's fit-to-screen pass, before it is drawn");
     DMAerial5SyncState(stage, intent.CGRectValue);   // (its remembered frame for this orientation is the one the pass works from)
 }
-static void DMA5CatchNewStages(void) {
+static void DMA5CatchNewStagesPass(void) {
     DMA5WakeFrameWatcher();
     if (gA5PicStages.count) DMA5PictureCheck();   // (a corner drag that ended without its end reaching the handle's target)
     if (gA5HeldStages) {   // (nil when no window is held: nothing is allocated on the ordinary commit)
@@ -36140,6 +36343,98 @@ static void DMA5CatchNewStages(void) {
     }
     } @catch (NSException *e) { static int told = 0; if (told++ < 3) DMLog([NSString stringWithFormat:@"[a5catch] exception %@", e]); }
     if (debug) spent += CACurrentMediaTime() - began;
+}
+// ---- Aerial 5's corner masks as the commit draws them (1.8.7.9) ----
+// Before every Core Animation commit, after the pass above and its put-backs: the corner mask of each shown Aerial 5 window is set from its app
+// holder, so a mask and its holder are never committed at two sizes. The frame watcher keeps them in step on display frames only, and its pass
+// before a commit runs first in the pass above (DMA5WakeFrameWatcher), before the put-backs. Anything else that changes a holder between two ticks
+// -- a put-back, Aerial's own passes, our Fit re-tiles (KT 18 Nov: a window behind briefly smaller as another is minimized or closed) -- was
+// drawn for a frame with the mask of the size before. Only a mask whose size differs from its holder's is set (two compares per shown window
+// otherwise). When a shown window or a view above it still needs layout, the holder can change in the commit's own layout pass, after this
+// observer: then, and only then (never on every turn), one pre-commit handler sets those masks again after that layout. Aerial 5 with our theme
+// only (DMA5MacGeometry): Aerial 3.0, Zetsu, MilkyWay4 and Stage Manager have no such mask.
+static BOOL DMA5MaskStale(UIView *stage) {   // (our mask is on the holder, at another size)
+    UIView *in = DMStageInnerView(stage);
+    CALayer *m = in ? objc_getAssociatedObject(in, kA5MaskKey) : nil;
+    if (!m || in.layer.mask != m) return NO;
+    CGSize b = in.layer.bounds.size, s = m.bounds.size;
+    return fabs(s.width - b.width) > 0.01 || fabs(s.height - b.height) > 0.01;
+}
+static void DMA5MasksSync(const char *by) {
+    for (UIView *st in gA5StageCache.allObjects) if (!st.hidden && st.window && DMA5MaskStale(st)) DMA5SyncHostMaskBy(st, by);
+}
+#if DEBUG
+// The trace's check of what each commit carried (/tmp/msb-a5-masktrace): after the commit, a shown window whose holder and mask differ by more than
+// 0.5 pt was drawn with its app cut (a COMMITTED line, a count per minute); the key window's changes, whose order against the put-back lines names
+// what started Aerial's pass. And what this costs, every 30 s with /tmp/macstatusbar-debug.
+static void DMA5MaskDebugAtCommit(void) {
+    if (!DMTestFlag("/tmp/msb-a5-masktrace")) return;
+    static BOOL keyWatch = NO;
+    if (!keyWatch) {
+        keyWatch = YES;
+        [[NSNotificationCenter defaultCenter] addObserverForName:UIWindowDidBecomeKeyNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
+            if (DMTestFlag("/tmp/msb-a5-masktrace")) DMLog([NSString stringWithFormat:@"[a5mask] key window %@", NSStringFromClass([n.object class])]);
+        }];
+    }
+    if (![CATransaction respondsToSelector:NSSelectorFromString(@"addCommitHandler:forPhase:")]) return;
+    void (^check)(void) = ^{
+        static int bands = 0; static CFTimeInterval since = 0;
+        CFTimeInterval now = CACurrentMediaTime();
+        if (!since) since = now;
+        for (UIView *st in gA5StageCache.allObjects) {
+            if (st.hidden || !st.window) continue;
+            UIView *in = DMStageInnerView(st);
+            CALayer *m = in ? objc_getAssociatedObject(in, kA5MaskKey) : nil;
+            if (!m || in.layer.mask != m) continue;
+            CGSize b = in.layer.bounds.size, k = m.bounds.size;
+            if (fabs(k.width - b.width) <= 0.5 && fabs(k.height - b.height) <= 0.5) continue;
+            bands++;
+            DMLog([NSString stringWithFormat:@"[a5mask] COMMITTED %@: holder %@ mask %@ (the app cut %.1f x %.1f pt in this frame)", DMStageBundle(st), NSStringFromCGSize(b), NSStringFromCGSize(k), b.width - k.width, b.height - k.height]);
+        }
+        if (now - since > 60.0) { DMLog([NSString stringWithFormat:@"[a5mask] %d committed band(s) in the last minute", bands]); bands = 0; since = now; }
+    };
+    ((void (*)(id, SEL, id, int))objc_msgSend)([CATransaction class], NSSelectorFromString(@"addCommitHandler:forPhase:"), check, 2);   // 2 = kCATransactionPhasePostCommit
+}
+static void DMA5MaskCost(double spent, BOOL handler) {
+    static int passes = 0, handlers = 0; static double total = 0; static CFTimeInterval tallyAt = 0;
+    if (!DMTestFlag("/tmp/macstatusbar-debug")) return;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (!tallyAt) tallyAt = now;
+    passes++; total += spent; handlers += handler;
+    if (now - tallyAt > 30.0) {
+        DMLog([NSString stringWithFormat:@"[a5mask] cost: %d passes in %.0f s, %.2f ms in total (%.1f us each), %d after-layout handler(s)", passes, now - tallyAt, total * 1000.0, total * 1e6 / passes, handlers]);
+        passes = 0; handlers = 0; total = 0; tallyAt = now;
+    }
+}
+#endif
+static void DMA5MasksAtCommit(void) {
+    if (!DMA5MacGeometry() || gDMScreenOff || !gA5StageCache.count) return;
+#if DEBUG
+    DMA5MaskDebugAtCommit();
+#endif
+    if (DMA5MaskOld()) return;
+#if DEBUG
+    CFTimeInterval began = CACurrentMediaTime();
+#endif
+    BOOL layoutLater = NO;
+    for (UIView *st in gA5StageCache.allObjects) {
+        if (st.hidden || !st.window) continue;
+        if (DMA5MaskStale(st)) DMA5SyncHostMaskBy(st, "the end of the pass before the commit");
+        for (UIView *v = st; v && !layoutLater; v = v.superview) layoutLater = v.layer.needsLayout;
+    }
+    static int handlers = -1;
+    if (handlers < 0) handlers = [CATransaction respondsToSelector:NSSelectorFromString(@"addCommitHandler:forPhase:")];
+    if (layoutLater && handlers) {
+        void (^afterLayout)(void) = ^{ DMA5MasksSync("the commit's layout"); };
+        ((void (*)(id, SEL, id, int))objc_msgSend)([CATransaction class], NSSelectorFromString(@"addCommitHandler:forPhase:"), afterLayout, 1);   // 1 = kCATransactionPhasePreCommit
+    }
+#if DEBUG
+    DMA5MaskCost(CACurrentMediaTime() - began, layoutLater && handlers);
+#endif
+}
+static void DMA5CatchNewStages(void) {   // (before every commit: the pass, then the masks as that commit will draw them)
+    DMA5CatchNewStagesPass();
+    DMA5MasksAtCommit();
 }
 static void DMA5InstallCatcher(void) {
     static CFRunLoopObserverRef obs = NULL;

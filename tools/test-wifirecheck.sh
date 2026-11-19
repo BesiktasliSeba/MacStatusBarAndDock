@@ -10,6 +10,10 @@
 # Rows 20-24 (1.8.7.6, the iPad 2's f03 pass): a Notification Center pull let go and a full pull, the time label back inside the bar's own constraint
 # pass (DMBarDecideNextTurn cut out too) or outside it: the copy laid out with its clock in that frame, never inside the pass.
 # Every row (1.8.7.8, the review of the held ask): no data update of the bar starts inside another one (StockVPNItem's hook, cut out, counts them).
+# Every row with a held ask (1.8.7.9 W2): the bar places its trailing region only at its own layout (17+: SBAttach17Regions' hook, cut out), in UIKit's
+# order as the review of W2 found it (the ask leaves only a constraint pass due; -layoutIfNeeded with nothing marked runs nothing; the region's items take
+# their places after the copy's layout). The copy's first layout after the ask must already have the final icons start, that placement must come with
+# no animation, and no frame may show our icons at the old place.
 cd "$(dirname "$0")" || exit 1
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 X0=${WR_SB_X:-../statusbar/StatusBar.x}
@@ -105,6 +109,9 @@ run() {   # $1 StatusBar.x, $2 work dir, $3 quiet: the number of failed checks (
   # StockVPNItem's hook of the bar's data update, as it is: %orig is iOS's part (TIOSUpdatePart)
   body "$X" '- (void)_updateWithAggregatedData:(id)data {' 'DMStatusIconsUpdated(self);' 'TIOSUpdatePart(self, data);' > "$d/wr-update.inc"
   /usr/bin/grep -qF 'TIOSUpdatePart(self, data);' "$d/wr-update.inc" || { echo "FAIL  $X: StockVPNItem's hook of the data update was not found"; return 99; }
+  # (1.8.7.9 W2: the bar places its region items in its own layout -- 17+: SBAttach17Regions' hook of it, as it is; %orig is iOS's part, TRegionPart)
+  body "$X" '- (void)_updateRegionItems {' 'DMAttachIfFilled(fg, "the bar placed its region items");' 'TRegionPart(self);' > "$d/wr-regions.inc"
+  /usr/bin/grep -qF 'TRegionPart(self);' "$d/wr-regions.inc" || { echo "FAIL  $X: SBAttach17Regions' hook of the region items was not found"; return 99; }
   fndef "$X" DMBarLayoutAgainBeforeDraw > "$d/wr-again.inc"
   /usr/bin/grep -q 'addCommitHandler:forPhase:' "$d/wr-again.inc" || { echo "FAIL  $X: DMBarLayoutAgainBeforeDraw was not found"; return 99; }
   { fndef "$X" DMSkipLockAfterRespring; fndef "$X" DMBarCoverLeaving; fndef "$X" DMRelayoutUnattachedBars; fndef "$X" DMHideAppBarItemsNow; fndef "$X" DMWatchLock; } > "$d/wr-lock.inc"
@@ -178,5 +185,13 @@ if [ -z "$WR_SB_X" ]; then
   # (its review, F1: no held ask inside a data update of the bar -- row 19's label is placed inside one)
   mtf "the held ask made inside a data update of the bar (no depth test, as in 59e7afc2)" 's/    if \(gDMBarDataUpdateDepth > 0 \|\| gDMItemsAskingHeld \|\| /    if (gDMItemsAskingHeld || /'
   mtf "the bar's data updates not counted by StockVPNItem's hook" 's/    gDMBarDataUpdateDepth\+\+;[^\n]*\n    \@try \{\n        %orig;\n    \} \@finally \{\n        gDMBarDataUpdateDepth--;\n    \}\n/    %orig;\n/'
+  # (1.8.7.9 W2: the bar laid out right after the held ask, with no animation -- the D1 check of 1.8.7.8~h01)
+  ASKED='\n            if \(asked\) \{ UIView \*bar = fg\.superview; \[bar setNeedsLayout\]; \[bar layoutIfNeeded\]; \[fg setNeedsLayout\]; \}'
+  mtf "the bar not laid out after the held ask (1.8.7.8's way)" "s/$ASKED//"
+  mtf "the bar laid out after the held ask, but with animation" "s/$ASKED\n        \}\];\n/\n        }];\n        if (asked) { UIView *bar = fg.superview; [bar setNeedsLayout]; [bar layoutIfNeeded]; [fg setNeedsLayout]; }\n/"
+  # (its review: -layoutIfNeeded on a bar not marked runs nothing -- W2 as first built)
+  mtf "the bar laid out after the held ask without being marked first (W2 as first built)" "s/$ASKED/\n            if (asked) [fg.superview layoutIfNeeded];/"
+  # (the copy marked again after the bar's layout is not seen here: the pre-commit layout lays it out again before the frame. test-barlayoutorder.sh
+  #  checks it, and this order, on the real UIKit)
 fi
 exit $rc
