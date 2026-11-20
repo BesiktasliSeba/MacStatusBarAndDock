@@ -23,6 +23,7 @@ NEW_CLOSED='static void DMSMMinimizedForgetClosed(void) {'
 NEW_FREE='static void DMSMFreeMinPictures(NSString *why) {'
 NEW_WATCH='static void DMSMWatchMemoryForPictures(void) {'
 NEW_LOOK='static void DMSMMinimizedLook(void) {'
+NEW_PLACES='static BOOL DMSMForgetPlacesOf(NSString *bundle) {'   # (1.8.8: DMSMForgetApp's first lines, shared with App Window Sizes' forget)
 
 run() {   # $1 StatusBar.x, $2 work dir, $3 quiet; the number of failed checks (99: the code could not be cut out or built)
   local X=$1 d=$2 q=$3 n=0 h out dbg
@@ -38,7 +39,9 @@ run() {   # $1 StatusBar.x, $2 work dir, $3 quiet; the number of failed checks (
     else echo 'static void DMSMMinimizedLook(void) { if (!DMSwitcherVisible() && !gMSWSwitching && !DMSMGestureLive() && !DMSMWorkspaceBusy()) DMSMMinimizedForgetClosed(); }   // (not in this source: the turn gate)'; fi
     if has "$X" "$NEW_FREE"; then cutfn "$X" "$NEW_FREE"; fi
     if has "$X" "$NEW_WATCH"; then cutfn "$X" "$NEW_WATCH"; fi
-    cutfn "$X" "${FNS[4]}"; cutfn "$X" "${FNS[5]}"
+    cutfn "$X" "${FNS[4]}"
+    if has "$X" "$NEW_PLACES"; then cutfn "$X" "$NEW_PLACES"; fi
+    cutfn "$X" "${FNS[5]}"
   } > "$d/smp-real.inc"
   for dbg in 0 1; do
     clang -target "$(uname -m)-apple-ios14.0-macabi" -isysroot "$SDK" -iframework "$FW" -F "$FW" -L"$SDK/System/iOSSupport/usr/lib" \

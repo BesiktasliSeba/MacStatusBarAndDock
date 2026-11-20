@@ -28,12 +28,14 @@ check "  ... a window brought from another desktop: the same rule" \
   "fn $MS 'static BOOL DMMSWFitBringHere(NSString *b, NSInteger fromId, BOOL join, NSString **askLeft, NSString **askRight) {' && grep -q 'NSArray<NSString \*> \*joined = MSBDFitWhenOneOpens(b, group, loose);' \$W/fn \
    && grep -q 'for (UIView \*s in DMAerialStages().reverseObjectEnumerator) {' \$W/fn && grep -q 'for (NSString \*x in loose) \[gFitSlots removeObjectForKey:x\];' \$W/fn \
    && ! grep -q 'open.count >= 4' \$W/fn"
-check "  ... a tile closes: only the tiles close up (the closure watcher's group), a regular window is left where it is" \
-  "fn $S 'static void DMWatchFitClosures(void) {' && grep -q 'for (NSString \*b in before) if (!\[closed containsObject:b\] && \[gFitGroup containsObject:b\] && DMStageTakesPartInFit(DMStageForBundle(b))) \[left addObject:b\];' \$W/fn"
-check "Stage Manager, Fit's look: the windows that take part from the rule, the regular ones kept from look to look, then the plan for them alone (a window back from full screen counts with the tile it left)" \
-  "fn $S 'static void DMSMFitTick(BOOL force) {' && grep -q 'NSArray<NSString \*> \*part = DMSMFitTakingPart(bundles, slotsForPart ?: gSMFitSlots, gSMFitLoose, &looseNow);' \$W/fn \
+check "  ... a tile closes: only the tiles close up (the closure watcher's group, its minimized windows with their tiles: DMFitLeftAtCloseUp), a regular window is left where it is" \
+  "fn $S 'static void DMWatchFitClosures(void) {' && grep -q 'for (NSString \*b in before) if (!\[closed containsObject:b\] && \[gFitGroup containsObject:b\]) \[stay addObject:b\];' \$W/fn \
+   && grep -q 'NSMutableArray<NSString \*> \*left = DMFitLeftAtCloseUp(stay);' \$W/fn && fn $S 'static NSMutableArray<NSString *> *DMFitLeftAtCloseUp(NSArray<NSString *> *candidates) {' \
+   && grep -q 'if (keep ? DMFitKeepsTile(s) : DMStageTakesPartInFit(s)) \[left addObject:b\];' \$W/fn"
+check "Stage Manager, Fit's look: the windows that take part from the rule, the regular ones kept from look to look, then the plan for them alone (a window back from full screen counts with the tile it left; the minimized windows of the arrangement with theirs, 1.8.8 H2)" \
+  "fn $S 'static void DMSMFitTick(BOOL force) {' && grep -q 'NSArray<NSString \*> \*part = DMSMFitTakingPart(keptAway.count ? \[bundles arrayByAddingObjectsFromArray:keptAway\] : bundles, slotsForPart ?: gSMFitSlots, gSMFitLoose, &looseNow);' \$W/fn \
    && grep -q 'gSMFitLoose = looseNow.count ? \[looseNow mutableCopy\] : nil;' \$W/fn && grep -q 'slotsForPart\[b\] = gSMFitSlotsBeforeFull\[b\];' \$W/fn \
-   && awk '/bundles = \[part mutableCopy\];/{b=NR} /NSDictionary \*plan = DMSMFitPlanDecide\(gSMFitSlots, bundles,/{p=NR} /if \(bundles.count < 2\) \{/{o=NR} /if \(!returning && bundles.count == 3 && gSMFitSlots.count == 2 && !force\) \{/{q=NR} END{exit !(b && p > b && o > b && q > b)}' \$W/fn \
+   && awk '/bundles = \[part mutableCopy\];/{b=NR} /NSDictionary \*plan = DMSMFitPlanDecide\(gSMFitSlots, planned,/{p=NR} /if \(bundles.count < 2\) \{/{o=NR} /if \(!returning && bundles.count == 3 && gSMFitSlots.count == 2 && !force\) \{/{q=NR} END{exit !(b && p > b && o > b && q > b)}' \$W/fn \
    && grep -q 'if (!DMSMEngine() || !DMFitEnabled()) { lastSet = nil; gSMFitAdopt = nil; gSMFitLoose = nil; forceWaiting = NO; return; }' \$W/fn"
 check "  ... the set compared from look to look is every window on the desktop (a regular one coming or going is a change)" \
   "awk '/NSArray \*sorted = \[bundles sortedArrayUsingSelector:@selector\(compare:\)\];/{s=NR} /bundles = \[part mutableCopy\];/{b=NR} END{exit !(s && b > s)}' \$W/fn"

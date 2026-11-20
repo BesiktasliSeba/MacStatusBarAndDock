@@ -2627,12 +2627,25 @@ static BOOL DMMSWFitBringHere(NSString *b, NSInteger fromId, BOOL join, NSString
     if (wasFree) { if (!gFreeWindows) gFreeWindows = [NSMutableSet set]; [gFreeWindows addObject:b]; return NO; }
     if (!join) return NO;
     NSMutableArray<NSString *> *group = [NSMutableArray array], *loose = [NSMutableArray array];
-    for (NSString *x in gFitGroup) if (![x isEqualToString:b] && DMStageTakesPartInFit(DMStageForBundle(x))) [group addObject:x];
+    // (this desktop's minimized tiled windows keep their tiles and come back into them -- 1.8.8 H2, KT's decision A, as a window that opens here
+    //  meets them (DMCascadeStage) and as our Stage Manager engine's tick keeps them for a window joining its stage (DMSMFitKeptAway). They went at
+    //  every window brought here: the H2-H5 review, finding 3)
+    for (NSString *x in gFitGroup) if (![x isEqualToString:b] && DMFitKeepsTile(DMStageForBundle(x))) [group addObject:x];
     // (the regular windows over the tiles here, newest -- front -- first: they join with it while there is room, a No Fit one not counted -- the
     //  rule of a window that opens, FitPlan.h MSBDFitWhenOneOpens, as DMCascadeStage and the Stage Manager engine's Fit tick have it)
     for (UIView *s in DMAerialStages().reverseObjectEnumerator) {
         NSString *x = DMStageBundle(s);
         if (x.length && ![x isEqualToString:b] && ![group containsObject:x] && ![loose containsObject:x] && DMStageTakesPartInFit(s)) [loose addObject:x];
+    }
+    // (every tiled window here minimized: it keeps its size, on its own, and joins them when one comes back -- or a new set with the regular windows
+    //  on screen --, as a window that opens here: DMFitOpensBesideMinimized)
+    UIView *bst = nil;
+    for (UIView *s in DMAerialStagesAll()) if ([DMStageBundle(s) isEqualToString:b]) { bst = s; break; }
+    if (DMFitOpensBesideMinimized(bst, b, group, loose)) {
+        gFitGroup = group;
+        DMFitWatchSync();   // (the closure check: the group as it is now)
+        DMLog([NSString stringWithFormat:@"[fit] %@ came from another desktop: the tiled windows here are minimized, it keeps its size", b]);
+        return NO;
     }
     NSArray<NSString *> *joined = MSBDFitWhenOneOpens(b, group, loose);
     if (!joined) {
@@ -2644,7 +2657,9 @@ static BOOL DMMSWFitBringHere(NSString *b, NSInteger fromId, BOOL join, NSString
     [group removeObject:b];   // (the others: it goes in front of them below)
     for (NSString *x in loose) [gFitSlots removeObjectForKey:x];   // (a regular window joins as a new one)
     if (group.count == 2 && askLeft && askRight && !(gSidePromptCtx && ![gSidePromptCtx[@"decided"] boolValue])) {   // (as DMCascadeStage asks a third window)
-        NSString *s0 = DMSlotNameForFrame(DMStageForBundle(group[0]).frame), *s1 = DMSlotNameForFrame(DMStageForBundle(group[1]).frame);
+        // (both halves on screen, as DMCascadeStage counts them: with one minimized it takes the first tile, the others keep their places -- 1.8.8 H2)
+        BOOL both = DMStageTakesPartInFit(DMStageForBundle(group[0])) && DMStageTakesPartInFit(DMStageForBundle(group[1]));
+        NSString *s0 = both ? DMSlotNameForFrame(DMStageForBundle(group[0]).frame) : nil, *s1 = both ? DMSlotNameForFrame(DMStageForBundle(group[1]).frame) : nil;
         NSString *l = [s0 isEqualToString:@"left"] ? group[0] : ([s1 isEqualToString:@"left"] ? group[1] : nil);
         NSString *r = [s0 isEqualToString:@"right"] ? group[0] : ([s1 isEqualToString:@"right"] ? group[1] : nil);
         if (l && r) {
@@ -3901,8 +3916,9 @@ static BOOL DMMSWFitMove(NSString *b, NSInteger toId) {
     [gFreeWindows removeObject:b];
     if (wasTiled) {
         DMFitGroupForget(b);
-        NSMutableArray<NSString *> *left = [NSMutableArray array];
-        for (NSString *x in gFitGroup) { UIView *s = DMStageForBundle(x); if (s && DMStageTakesPartInFit(s)) [left addObject:x]; }
+        // (the windows on screen close the tiles up, and the minimized ones keep theirs for their return unless one window is left on screen -- the
+        //  rule of every close-up, StatusBar.x DMFitLeftAtCloseUp (FitPlan.h). The minimized ones went: the H2-H5 review, finding 3)
+        NSMutableArray<NSString *> *left = DMFitLeftAtCloseUp(gFitGroup);
         gFitGroup = left;
         if (DMFitEnabled() && left.count) {
             gFitSlots = [MSBDFitPlanKeepingPlaces(left, gFitSlots) mutableCopy];   // (one fills, the others keep their places -- the plan Stage Manager's drag takes too)

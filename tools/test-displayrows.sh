@@ -175,4 +175,6 @@ check "made to fail: a choice's number out of range taken (clamped)" "mutant cla
 check "made to fail: the mirror's words for a display gone" "mutant topnone 'return !layerOn ? MSBD_DISP_TEXT_OFF : !connected ? MSBD_DISP_TEXT_NONE : !extended ? MSBD_DISP_TEXT_MIRROR : MSBD_DISP_TEXT_TOP;' 'return !layerOn ? MSBD_DISP_TEXT_OFF : !extended ? MSBD_DISP_TEXT_MIRROR : !connected ? MSBD_DISP_TEXT_NONE : MSBD_DISP_TEXT_TOP;'"
 check "made to fail: a slider's value left off its range" "mutant slider '    if (v < r->lo) v = r->lo;' ''"
 check "made to fail: the Trash's footer without its display default" "mutant trash 'On for displays unless you switch it off here, even when it is off on the iPad.' 'Shows the Trash.'"
+check "made to fail: the iPadOS 15 note on 16-18 too" "mutant soon16 '    return osMajor == 15 ? MSBD_DISP_TEXT_EXTENDED_SOON : NULL;' '    return osMajor >= 15 ? MSBD_DISP_TEXT_EXTENDED_SOON : NULL;'"
+check "made to fail: no iPadOS 15 note" "mutant soon15 '    return osMajor == 15 ? MSBD_DISP_TEXT_EXTENDED_SOON : NULL;' '    return NULL;'"
 [ $fails = 0 ] && echo "test-displayrows: wiring checks pass" || { echo "test-displayrows: wiring checks FAILED"; exit 1; }

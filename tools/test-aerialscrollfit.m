@@ -38,6 +38,7 @@ static void DMSaveWindowState(void) { gKSaved++; }
 - (void)k_origResize:(id)g;
 @end
 static NSString *DMStageBundle(UIView *stage) { return [stage isKindOfClass:[KStage class]] ? ((KStage *)stage).bundle : nil; }
+static UIView *DMStageForBundle(NSString *bundleID) { return nil; }   // (1.8.8 H2: DMFitGroupForget takes the mark of a window that opened on its own from its stage -- none here)
 
 #include "asf-real.inc"   // (kStageBarHeight, gFitGroup, gFitSlots, DMFitGroupForget, DMTitleRecordHandEnded, then DMAerialPanBefore ... DMAerialGestureAfter)
 

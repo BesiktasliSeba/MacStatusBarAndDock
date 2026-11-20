@@ -1085,6 +1085,10 @@ static void DMMSWSMMoveFinish(NSString *b, NSInteger toId) {
         }];
         NSMutableArray<NSString *> *left = [NSMutableArray array];
         for (id it in items) [left addObject:DMSMItemKey(it)];
+        // (the arrangement's minimized windows keep their tiles for their return, unless one window is left on screen: FitPlan.h's close-up rule, as
+        //  the other engines' DMMSWFitMove. A minimized window waits in a hidden stage of its own, so the front stage's items left it out and its tile
+        //  went -- 1.8.8 H2, KT's decision A; the H2-H5 review, finding 3)
+        if (MSBDFitMinimizedStayAtCloseUp(items.count - full.count)) [left addObjectsFromArray:DMSMFitMinimizedIn(left, was)];
         NSMutableDictionary<NSString *, NSString *> *plan = left.count ? [MSBDFitPlanKeepingPlaces(left, was) mutableCopy] : nil;
         for (NSString *k in full) {   // (its own tile when the new arrangement has it -- a quarter it had counts as its half in two halves --, by a swap)
             NSString *want = was[k], *now = plan[k];

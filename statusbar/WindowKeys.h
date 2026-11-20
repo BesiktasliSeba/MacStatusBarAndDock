@@ -111,12 +111,14 @@ static void DMTitleRecordView(UIView *v, CGRect now, CGRect to, CGRect fill, BOO
     else if (r == kMSBDTitleRecordDrop) DMTitleRecordMovedView(v);
 }
 // (every placement of ours also takes the window's behind-the-Dock mark, as Stage Manager's places do -- StatusBar.x gBehindDock, 1.8.7.5 --, after its
-//  record has kept it; the green light's way back to where the window was is the user's place: the mark stays)
+//  record has kept it; the green light's way back to where the window was is the user's place: the mark stays. With no place of its own kept -- App
+//  Window Sizes' forget took it while the window was open, 1.8.8 -- the way back puts it where a new window opens, a place of ours: taken, review R1)
 static void DMTitleRecordEngineTo(UIView *v, CGRect to) {   // (Aerial, Zetsu, MilkyWay4: the engine's frames)
     if (!v) return;
     if (!MSBDTitleKeepsFrames(gTitleDoubleTap)) DMTitleRecordMovedView(v);
     else DMTitleRecordView(v, v.frame, to, DMLayoutFrame(@"fill"), DMBehindDockHas(DMStageBundle(v)));
     if (!gPreferRememberedFrame) DMBehindDockPlacedByUs(v, @"placed by a layout or a place of ours");
+    if (gPreferRememberedFrame && !gLastWindowFrames[DMStageBundle(v)]) DMBehindDockPlacedByUs(v, @"the green light's way back with no place of its own kept (App Window Sizes)");
 }
 static void DMTitleRecordNativeTo(DMNativeWindow *w, CGRect to) {   // (our own windows: their Fill in the desktop above the Dock)
     if (!w) return;

@@ -32,13 +32,13 @@ check "Fit's look asks it after a transaction in flight and BEFORE every other w
   "fn 'static void DMSMFitTick(BOOL force) {' && awk '/if \(DMSMWorkspaceBusy\(\)\) \{ if \(force\) forceWaiting = YES; return; \}/{b=NR} /^    DMSMFitForgetClosed\(nil\);/{c=NR} /if \(DMSMTurnSettling\(\)\)/{t=NR} /if \(!DMFrontApp\(\)\) return;/{h=NR} END{exit !(b && c == b + 1 && t > c && h > c)}' \$W/fn"
 check "  ... and lays the windows left out again when it forgot a tile, though the set on screen is the same" \
   "grep -q 'if (!force && !gSMFitLookAgain && \[set isEqualToArray:lastSet ?: @\[\]\]) return;' \$W/fn && grep -q '    gSMFitLookAgain = NO;' \$W/fn \
-   && grep -q 'NSDictionary \*slotsNow = DMSMFitSlotsFor(gSMFitSlots, gSMFitByDesk, bundles);' \$W/fn && ! grep -q 'static NSMutableDictionary<NSString \*, NSDictionary \*> \*byDesk;' \$W/fn"
+   && grep -q 'NSDictionary \*slotsNow = DMSMFitSlotsFor(gSMFitSlots, gSMFitByDesk, planned);' \$W/fn && ! grep -q 'static NSMutableDictionary<NSString \*, NSDictionary \*> \*byDesk;' \$W/fn"
 check "  ... and its one-window rule is the one the Mac test plays: the desktop's only window fills only when its arrangement says so" \
   "grep -q 'if (one && gSMFitSlots.count == 1 && \[gSMFitSlots\[one\] isEqualToString:@\"fill\"\]) {' \$W/fn"
 check "No Fit is no longer forgotten for a window only out of sight (minimized, another desktop): the not-on-screen rule is gone" \
   "! grep -q 'if (!\[onScreen containsObject:b\] && !gSMFitPending\[b\]) \[gSMFreeWindows removeObject:b\];' $S"
 check "every way a window opens asks it first: SpringBoard's launches (DMSMJoinDesktop, before the Mac Switcher's join) our icon taps (DMSMAddToStage, before Fit's question and the open-in-tile) and the opens from outside (DMSMOpenRequest, before Fit's question)" \
-  "fn 'static void DMSMJoinDesktop(id ctx) {' && awk '/NSString \*key = DMSMEntityKey\(act\) \?: bundle;/{k=NR} /DMSMFitForgetClosed\(key\);/{c=NR} /if \(!tv \&\& DMMSWForMain\(\) \&\& DMMSWSMJoin\(ctx, act, key\)\) return;/{j=NR} END{exit !(k && c == k + 1 && j == c + 1)}' \$W/fn \
+  "fn 'static void DMSMJoinDesktop(id ctx) {' && awk '/NSString \*key = DMSMEntityKey\(act\) \?: bundle;/{k=NR} /DMSMFitForgetClosed\(key\);/{c=NR} /DMSMTurnForgetOpening\(key\);/{t=NR} /if \(!tv \&\& DMMSWForMain\(\) \&\& DMMSWSMJoin\(ctx, act, key\)\) return;/{j=NR} END{exit !(k && c == k + 1 && (j == c + 1 || (t == c + 1 && j == c + 2)))}' \$W/fn \
    && fn 'static BOOL DMSMAddToStage(NSString *bundle, UIView *from) {' && awk '/DMSMFitForgetClosed\(bundle\);/{c=NR} /DMSMFitAsksAbout\(bundle, stageKeys, &leftB, &rightB\)/{q=NR} /NSMutableDictionary \*slotsNow = gSMFitSlots/{o=NR} END{exit !(c && q > c && o > c)}' \$W/fn \
    && fn 'static void DMSMOpenRequest(id self, SEL _cmd, id request, id options, id settings, id origin, id result) {' && awk '/DMSMFitForgetClosed\(bundle\);/{c=NR} /DMSMFitAsksAbout\(bundle, stageKeys, &leftB, &rightB\)/{q=NR} END{exit !(c && q > c)}' \$W/fn"
 check "the rule lives in SMFitPlan.h with the window keys (SMWindowKey.h), declared ahead of its callers" \

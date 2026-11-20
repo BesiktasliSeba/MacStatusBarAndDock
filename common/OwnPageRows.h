@@ -61,6 +61,9 @@ static inline BOOL MSBDStripSwipeOS(long major) { return major >= 16 && major <=
 #define kMSBDKeepCoveredRowID @"KEEP_COVERED"     // Keep Covered Windows in Front (1.8.4.1 item 7): the engines' windows, every engine's (none without one)
 #define kMSBDResizeHandlesKey @"resizeHandleStyle" // Resize Handles: ours or Stage Manager's (a choice with Stage Manager only)
 #define kMSBDWindowSizeRowKey @"windowSize"      // Window Size (1.8.0 item 4, common/WindowSize.h kMSBDWindowSizeKey): every engine's, Stage Manager's too
+#define kMSBDAppWindowSizesRowID @"APP_WINDOW_SIZES" // App Window Sizes (1.8.8): Window Size's list of apps with a size of their own, right under it.
+                                                 // No stored value of its own: the rules take it as Window Size's row (MSBDRowRuleKey), so it is
+                                                 // shown wherever Window Size is, on the page and in the search
 #define kMSBDTitleDoubleTapRowKey @"titleBarDoubleTap" // Double-Tap a Title Bar to (1.8.3 item 8, statusbar/TitleBarRule.h kMSBDTitleDoubleTapKey): every
                                                    // engine's, Stage Manager's too
 #define kMSBDCCScaleKey     @"controlCenterScale" // Control Center Size: BigSurCenter's panel and ours (1.8.0)
@@ -86,6 +89,8 @@ static inline BOOL MSBDDesktopCheckRow(NSString *key, NSString *ident) {
 // Double-Tap a Title Bar to (our title bar on its windows does what the row says, statusbar/TitleBarTap.h; until 1.8.3.1 the row was left out of the
 // page and the search, GitHub #11). The group's other row goes: Windows Behind Full-Screen Apps sets the other engines' window layer (StatusBar.x
 // DMDesiredWindowLevel); Stage Manager keeps its own order.
+// The key a row is ruled by: its own, but App Window Sizes goes with Window Size (1.8.8).
+static inline NSString *MSBDRowRuleKey(NSString *key, NSString *ident) { return [ident isEqualToString:kMSBDAppWindowSizesRowID] ? kMSBDWindowSizeRowKey : key; }
 static inline BOOL MSBDHandlesRow(NSString *key) { return [key isEqualToString:kMSBDResizeHandlesKey] || [key isEqualToString:@"tintResizeHandles"]; }
 static inline BOOL MSBDStageManagerKeepsRow(NSString *key) {
     return MSBDHandlesRow(key) || [key isEqualToString:kMSBDWindowSizeRowKey] || [key isEqualToString:kMSBDTitleDoubleTapRowKey];
@@ -101,6 +106,7 @@ static inline BOOL MSBDBarOffKeepsRow(NSString *ident) { return [ident isEqualTo
 // its group's identifier (nil: none); stockHides: that group's flag; key, ident: the row's own (nil: none); belowLine: it comes after the page's
 // line switch. Rows of other pages: NO (they show as their page shows them).
 static inline BOOL MSBDOwnRowHidden(MSBDOwnPages s, NSString *pane, NSString *group, BOOL stockHides, NSString *key, NSString *ident, BOOL belowLine) {
+    key = MSBDRowRuleKey(key, ident);   // (App Window Sizes: Window Size's rules)
     if ([pane isEqualToString:@"DOCK_MAGNIFICATION"])
         return (!s.dockLine && belowLine) || (!s.finder && ([ident isEqualToString:kMSBDDockFinderRowID] || [group isEqualToString:kMSBDDockFinderGroupID]));
     BOOL bar = [pane isEqualToString:@"MAC_STATUS_BAR"], windows = [pane isEqualToString:@"MAC_WINDOWS"], desk = [pane isEqualToString:@"MAC_DESKTOP"];

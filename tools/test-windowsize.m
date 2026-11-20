@@ -31,13 +31,15 @@ static CGRect oldMenuLarge(CGRect u) { CGFloat w = round(u.size.width * 0.86), h
 static CGRect oldSMDefaultCard(CGSize s) { return CGRectMake(0.5 * s.width - 0.3 * s.width, 0.48 * s.height - 0.36 * s.height, 0.6 * s.width, 0.72 * s.height); }
 // The other engines' cascade before 1.8.0 (DMCascadeStage, copied as it was): over another window by more than 45%, steps of 50 / 44 pt, down and
 // right then up and left, the top-left corner 34 pt clear of every other window's; the bottom could reach `slack` (30) pt past the desktop. own:
-// 1.7.5 item 13.
-static CGRect oldCascade(CGRect base, const CGRect *o, int n, CGRect usable, int own, double slack) {
+// 1.7.5 item 13. downFirst (1.8.8 F2): its 8 steps down and right all tried before any up and left; 0: each step down and right, then up and
+// left, as it was.
+static CGRect oldCascade(CGRect base, const CGRect *o, int n, CGRect usable, int own, double slack, int downFirst) {
     int overlaps = 0;
     for (int i = 0; i < n; i++) if (MSBDWindowOverlap(base, o[i]) > 0.45) overlaps = 1;
     if (!overlaps) return base;
     if (own) { int on = 0; for (int i = 0; i < n; i++) if (fabs(o[i].origin.x - base.origin.x) < 34.0 && fabs(o[i].origin.y - base.origin.y) < 34.0) on = 1; if (!on) return base; }
-    for (int k = 1; k <= 8; k++) for (int sign = 1; sign >= -1; sign -= 2) {
+    for (int a = 1; a <= 16; a++) {
+        int k = downFirst ? (a <= 8 ? a : a - 8) : (a + 1) / 2, sign = downFirst ? (a <= 8 ? 1 : -1) : (a % 2 ? 1 : -1);
         CGRect f = CGRectOffset(base, sign * k * 50.0, sign * k * 44.0);
         f.origin.x = fmax(usable.origin.x, fmin(f.origin.x, CGRectGetMaxX(usable) - f.size.width));
         f.origin.y = fmax(usable.origin.y, fmin(f.origin.y, CGRectGetMaxY(usable) + slack - f.size.height));
@@ -46,6 +48,24 @@ static CGRect oldCascade(CGRect base, const CGRect *o, int n, CGRect usable, int
         if (clear) return f;
     }
     return base;
+}
+// 1.8.8 F2: a window `front` opened after `back` (so in front of it) leaves back's title bar in sight at its left end, where its traffic lights are
+// (the close light at least): level with it or down and right of it, its corner 34 pt or more away across or down. Up and left of it, its body
+// covers them.
+static BOOL barInSight(CGRect back, CGRect front) {
+    double dx = front.origin.x - back.origin.x, dy = front.origin.y - back.origin.y;
+    return dx >= -0.01 && dy >= -0.01 && (dx >= 34.0 - 0.01 || dy >= 34.0 - 0.01);
+}
+// ... and whether any of the 8 steps down and right from base (lifted inside the desktop) has its corner 34 pt clear of every other window's.
+static BOOL downRightClear(CGRect base, const CGRect *o, int n, CGRect u) {
+    for (int k = 1; k <= 8; k++) {
+        CGRect f = CGRectOffset(base, k * 50.0, k * 44.0);
+        f.origin.x = fmax(u.origin.x, fmin(f.origin.x, CGRectGetMaxX(u) - f.size.width)); f.origin.y = fmax(u.origin.y, fmin(f.origin.y, CGRectGetMaxY(u) - f.size.height));
+        int clear = 1;
+        for (int i = 0; i < n; i++) if (fabs(o[i].origin.x - f.origin.x) < 34.0 && fabs(o[i].origin.y - f.origin.y) < 34.0) clear = 0;
+        if (clear) return YES;
+    }
+    return NO;
 }
 // No Fit's free window before 1.8.0 (DMNoFitFrame at Default, copied): the middle place no bigger than the desktop less 48 pt, centred in it.
 static CGRect oldNoFit(CGRect c, CGRect usable) { CGFloat w = fmin(c.size.width, usable.size.width - 48.0), h = fmin(c.size.height, usable.size.height - 48.0); return CGRectIntegral(CGRectMake(CGRectGetMidX(usable) - w / 2.0, CGRectGetMidY(usable) - h / 2.0, w, h)); }
@@ -132,24 +152,43 @@ int main(void) {
                 CGRect nf = MSBDWindowNoFitIn(d, u);
                 CHECK(same(nf, oldNoFit(d, u)) && inside(nf, u) && fabs(CGRectGetMidY(nf) - CGRectGetMidY(u)) <= 1.0 && !same(nf, d), "%s %s: No Fit's window %s centred, as before (the middle place %s)", pd->name, shape, S(nf), S(d));
                 // The cascade on this desktop, every engine: windows opened one after another at Default each go where the rule puts them -- the second 50 / 44 pt
-                // down and right, the third up and left (to the top), the rest further out -- inside the desktop, at the old rule's places wherever those were
-                // inside it too, never two corners together
+                // down and right, the third one step on from it (two from the opening place), up and left only once no step down and right is clear
+                // (1.8.8 F2: until then the third went up and left, to the top, over the first two's traffic lights) -- inside the desktop, at the old
+                // rule's places with its steps down and right tried first, never two corners together
                 {
                     CGRect open[8]; int n = 0;
                     open[n++] = d;
                     for (int w = 1; w < 8; w++) {
                         int how = 0;
-                        CGRect f = MSBDWindowCascadeIn(d, open, n, u, 0, &how), old = oldCascade(d, open, n, u, 0, 30.0);
+                        CGRect f = MSBDWindowCascadeIn(d, open, n, u, 0, &how), old = oldCascade(d, open, n, u, 0, 30.0, 0);
                         CHECK(inside(f, u), "%s %s: window %d %s inside the desktop", pd->name, shape, w + 1, S(f));
-                        CHECK(same(f, oldCascade(d, open, n, u, 0, 0.0)), "%s %s: window %d where the old rule put it with the desktop's bottom as its limit (%s)", pd->name, shape, w + 1, S(f));
-                        if (w <= 2 && inside(old, u)) CHECK(same(f, old), "%s %s: window %d where the old rule put it (%s, was %s)", pd->name, shape, w + 1, S(f), S(old));
+                        CHECK(same(f, oldCascade(d, open, n, u, 0, 0.0, 1)), "%s %s: window %d where the old rule put it with the desktop's bottom as its limit and its steps down and right first (%s)", pd->name, shape, w + 1, S(f));
+                        if (w == 1 && inside(old, u)) CHECK(same(f, old), "%s %s: window %d where the old rule put it (%s, was %s)", pd->name, shape, w + 1, S(f), S(old));
                         // (the second 50 / 44 pt on -- lifted where that would reach under the Dock: the small iPads' landscape desktops, where the old rule's
                         //  second window reached 17 pt under it)
                         if (w == 1) CHECK(how == 1 && near(f.origin.x, d.origin.x + 50) && near(f.origin.y, fmin(d.origin.y + 44, CGRectGetMaxY(u) - d.size.height)), "%s %s: the second window 50 / 44 pt on (%s)", pd->name, shape, S(f));
-                        if (w == 2) CHECK(how == -1 && near(f.origin.x, d.origin.x - 50) && near(f.origin.y, u.origin.y), "%s %s: the third up and left, at the top (%s)", pd->name, shape, S(f));
+                        if (w == 2) CHECK(how == 2 && near(f.origin.x, fmin(d.origin.x + 100, CGRectGetMaxX(u) - d.size.width)) && near(f.origin.y, fmin(d.origin.y + 88, CGRectGetMaxY(u) - d.size.height))
+                                          && barInSight(open[0], f) && barInSight(open[1], f), "%s %s: the third one step on from the second, down and right, the first two's title bars in sight (%s, how %d)", pd->name, shape, S(f), how);
+                        CHECK(how >= 0 || !downRightClear(d, open, n, u), "%s %s: window %d up and left (how %d) only with no step down and right clear", pd->name, shape, w + 1, how);
                         BOOL clear = how != MSBDCascadeNoRoom ? !MSBDWindowCornerTaken(f, open, n) : YES;
                         CHECK(clear, "%s %s: window %d's corner clear of the others", pd->name, shape, w + 1);
                         open[n++] = f;
+                    }
+                }
+                // 1.8.8 F2: a window that opens over a big one (a window at Fill, or Fit to Window's two tiles, which an app with its own size is left out
+                // of and cascaded over) is moved a step off it; a second one opening at the same place goes one step on from the first, down and right,
+                // never up and left in front of it (until 1.8.8 it did: the first's traffic lights hidden, the s01 passes' row A6 on three iPads)
+                {
+                    CGFloat halfW = floor((u.size.width - 6.0) / 2.0), rx = u.origin.x + halfW + 6.0;   // (the tiles as StatusBar.x DMLayoutFrameInArea cuts "left" / "right")
+                    const CGRect fill[1] = { u }, tiles[2] = { CGRectMake(u.origin.x, u.origin.y, halfW, u.size.height), CGRectMake(rx, u.origin.y, CGRectGetMaxX(u) - rx, u.size.height) };
+                    for (int under = 0; under < 2; under++) for (int z = 0; z < 2; z++) {
+                        CGRect base = z ? sm : d, o3[3]; int n = under ? 2 : 1, h1 = -7, h2 = -7;
+                        memcpy(o3, under ? tiles : fill, (size_t)n * sizeof(CGRect));
+                        CGRect first = MSBDWindowCascadeIn(base, o3, n, u, 0, &h1);
+                        o3[n++] = first;
+                        CGRect second = MSBDWindowCascadeIn(base, o3, n, u, 0, &h2);
+                        CHECK(h1 == 1 && h2 == 2 && inside(second, u) && barInSight(first, second), "%s %s, two windows at %s over %s: the first a step off it %s, the second one step on from it %s, down and right, the first's title bar in sight (how %d, %d)",
+                              pd->name, shape, z ? "Small" : "Default", under ? "Fit's two tiles" : "a window at Fill", S(first), S(second), h1, h2);
                     }
                 }
             }
@@ -200,10 +239,10 @@ int main(void) {
             CGRect onIt[1] = { CGRectMake(a.origin.x + 5, a.origin.y + 5, 700, 500) };
             CGRect f = MSBDWindowCascadeIn(a, onIt, 1, u, 1, &how);
             CHECK(how == 1 && same(f, CGRectOffset(a, 50, 44)), "own place on another window's corner: moved on (how %d, %s)", how, S(f));
-            CHECK(same(MSBDWindowCascadeIn(a, onIt, 1, u, 1, &how), oldCascade(a, onIt, 1, u, 1, 30.0)) && same(MSBDWindowCascadeIn(a, over, 1, u, 1, &how), oldCascade(a, over, 1, u, 1, 30.0)), "own place: as the old rule");
+            CHECK(same(MSBDWindowCascadeIn(a, onIt, 1, u, 1, &how), oldCascade(a, onIt, 1, u, 1, 30.0, 0)) && same(MSBDWindowCascadeIn(a, over, 1, u, 1, &how), oldCascade(a, over, 1, u, 1, 30.0, 0)), "own place: as the old rule");
             // a step that would reach under the Dock is lifted to the desktop's bottom (the old rule let it 30 pt past); one past the right edge pulled back
-            CGRect lows3[3] = { a, CGRectMake(163, 80, 799, 614), CGRectMake(63, 24, 799, 614) };   // (the first three, as they open)
-            CGRect g = MSBDWindowCascadeIn(a, lows3, 3, u, 0, &how), og = oldCascade(a, lows3, 3, u, 0, 30.0);
+            CGRect lows3[3] = { a, CGRectMake(163, 80, 799, 614), CGRectMake(63, 24, 799, 614) };   // (the first three as they opened until 1.8.8 F2: the third up and left)
+            CGRect g = MSBDWindowCascadeIn(a, lows3, 3, u, 0, &how), og = oldCascade(a, lows3, 3, u, 0, 30.0, 0);
             CHECK(how == 2 && inside(g, u) && near(CGRectGetMaxY(g), CGRectGetMaxY(u)) && near(g.origin.x, 213) && CGRectGetMaxY(og) > CGRectGetMaxY(u) + 1.0,
                   "the fourth window two steps down: at the desktop's bottom %s (the old rule %s, under the Dock)", S(g), S(og));
             CGRect rightEdge = CGRectMake(600, 36, 400, 300);
@@ -221,10 +260,26 @@ int main(void) {
                 if (n < 17) crowd[n++] = t;
             }
             CHECK(same(MSBDWindowCascadeIn(a, crowd, n, u, 0, &how), a) && how == MSBDCascadeNoRoom, "every place taken: where it opened (how %d)", how);
+            // up and left is kept for a window with no room down and right: one opening on another in the desktop's bottom-right corner (every step
+            // down and right is lifted back onto that corner) goes one step up and left (Stage Manager's three-windows-as-one trap, 1.3.x)
+            CGRect corner = CGRectMake(624, 297, 400, 400);
+            f = MSBDWindowCascadeIn(corner, (CGRect[]){ corner }, 1, u, 0, &how);
+            CHECK(how == -1 && same(f, CGRectOffset(corner, -50, -44)), "no room down and right (the bottom-right corner): one step up and left (how %d, %s)", how, S(f));
+            // 1.8.8 F2 on the iPad 2's own numbers (s01, row A6: Fit's two tiles, two windows at iPhone, Stage Manager and Aerial alike): the first a
+            // step off the tiles at {402, 47.07}; the second one step on from it, at {452, 47.07}, not up and left at {302, 20} over its traffic lights
+            {
+                CGRect u2 = CGRectMake(0, 20, 1024, 677.07), ph = CGRectMake(352, 34, 320, 650);
+                CGRect o3[3] = { CGRectMake(0, 20, 509, 677.07), CGRectMake(515, 20, 509, 677.07) };
+                int h1 = 0, h2 = 0;
+                CGRect first = MSBDWindowCascadeIn(ph, o3, 2, u2, 0, &h1); o3[2] = first;
+                CGRect second = MSBDWindowCascadeIn(ph, o3, 3, u2, 0, &h2);
+                CHECK(h1 == 1 && same(first, CGRectMake(402, 47.07, 320, 650)) && h2 == 2 && same(second, CGRectMake(452, 47.07, 320, 650)) && barInSight(first, second),
+                      "the iPad 2's row A6: the first iPhone window %s (how %d), the second %s (how %d), not {302, 20} over the first's lights", S(first), h1, S(second), h2);
+            }
             // the same windows whichever engine's frames it is handed: Aerial 5.x's stages (the windows grown by Aerial's margins) in the stage desktop
             // give the windows Zetsu's, MilkyWay4's and Stage Manager's frames give -- a random sweep of desktops of up to eight windows
             srand48(18003);
-            int sweeps = 0, moved = 0;
+            int sweeps = 0, moved = 0, upLeft = 0, upLeftEarly = 0, notOld = 0;
             for (int t = 0; t < 4000; t++) {
                 CGRect du = CGRectMake(0, 24 + 6 * (t % 2), 768 + drand48() * 600, 600 + drand48() * 500);
                 int k = 1 + (int)(drand48() * 7);
@@ -240,9 +295,12 @@ int main(void) {
                 int own = (int)(drand48() * 2), h1 = 0, h2 = 0;
                 CGRect byWindow = MSBDWindowCascadeIn(nw, ws, k, du, own, &h1), byStage = shrink(MSBDWindowCascadeIn(grow(nw), st, k, grow(du), own, &h2));
                 sweeps++; if (h1 != MSBDCascadeStays && h1 != MSBDCascadeOwnKept) moved++;
+                if (h1 < 0) { upLeft++; if (downRightClear(nw, ws, k, du)) upLeftEarly++; }   // (1.8.8 F2)
+                if (!same(byWindow, oldCascade(nw, ws, k, du, own, 0.0, 1))) notOld++;
                 if (!same(byWindow, byStage) || h1 != h2 || !inside(byWindow, du)) { CHECK(0, "sweep %d: by the windows %s (how %d), by Aerial's stages %s (how %d), desktop %s", t, S(byWindow), h1, S(byStage), h2, S(du)); break; }
             }
             CHECK(sweeps > 3000 && moved > 500, "sweep: %d desktops, %d new windows moved on -- the same place by any engine's frames, inside the desktop", sweeps, moved);
+            CHECK(!upLeftEarly && !notOld, "sweep: up and left (%d windows) only with no step down and right clear (%d were not), every window at the old rule's place with its steps down and right first (%d were not; 1.8.8 F2)", upLeft, upLeftEarly, notOld);
         }
         // ---- a tall Dock (the iPad 2 in landscape with a 130 pt Dock): Default reaches the desktop's bottom, so Large gets Default's height ----
         {

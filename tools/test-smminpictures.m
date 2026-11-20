@@ -57,6 +57,7 @@ static NSMutableDictionary<NSString *, NSDictionary *> *DMSMPreZoomPlaces(void) 
 static NSMutableDictionary<NSString *, NSString *> *gKLayouts;
 static NSMutableDictionary<NSString *, NSString *> *DMSMTurnLayouts(void) { return gKLayouts; }
 static NSMutableDictionary<NSString *, NSDictionary<NSString *, NSValue *> *> *gSMTurnFrames;
+static NSMutableSet<NSString *> *gSMBehindDock;   // (1.8.8 H5: DMSMForgetApp hands the app's behind-the-Dock marks to DMSMTurnForget too -- test-smturnclosed)
 static void DMSMTurnForget(NSSet<NSString *> *keys, NSString *why) { }
 // ---- a window card: its picture is a fresh view (counted)
 static int gKShots;

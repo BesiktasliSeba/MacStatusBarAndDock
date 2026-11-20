@@ -19,6 +19,7 @@
 #endif
 #include <notify.h>
 #include "MPDisplayGeometry.h"
+#include "../../common/PointerFade.h"   // (1.8.8, D48: the pointer's fade said to SpringBoard -- the traffic lights' hold ends at it)
 @interface PSPointerShape : NSObject
 - (long long)shapeType; - (CGRect)bounds; - (double)cornerRadius; - (CGPathRef)path;
 @end
@@ -638,6 +639,15 @@ static void MPApplyVisibility(void) {
             MPRemember(own);
             if (!gMPShapeView) gMPShapeView = own;
             MPUpdate(own);
+            // SpringBoard is told when iPadOS hides the pointer and when it shows again (common/PointerFade.h; 1.8.8, D48: Magnify Traffic Lights' hold
+            // under a resting pointer ends at the fade): the iPad's own display only (that hold is the iPad's; with another display each has its own
+            // controller and state), here, where this display's state changed, so only at a change. Whatever the Pointer Style, also standing down.
+            if (MPDisplayInfoFor(own).reason == 0) {
+                static int fadeToken = 0; static BOOL fadeTried = NO, fadeOK = NO; static uint64_t fadeSaid = MSBDPointerFadeUnsaid;
+                if (!fadeTried) { fadeTried = YES; fadeOK = notify_register_check(kMSBDPointerFadeNote, &fadeToken) == NOTIFY_STATUS_OK; }   // (once)
+                uint64_t fade = MSBDPointerFadeOf(gMPAutoHidden);
+                if (fadeOK && fade != fadeSaid) { fadeSaid = fade; notify_set_state(fadeToken, fade); notify_post(kMSBDPointerFadeNote); }
+            }
         }
     }
 #if DEBUG   // the turn of the client's coordinate space to the display (evidence for the external display: which way pointeruid thinks is up)

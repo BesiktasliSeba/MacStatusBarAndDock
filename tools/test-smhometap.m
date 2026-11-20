@@ -81,6 +81,7 @@ static void DMSMGrowFromDockAtTap(NSString *key) { if (gSMMinPictures[key] && DM
 static BOOL DMSMOpenFullScreenStage(NSString *bundle, id template, id identity) { (void)template; (void)identity; [gFullStages addObject:bundle]; return YES; }
 static void DMSMBringToFront(NSString *key) { [gBrought addObject:key]; }
 static void DMSMFitForgetClosed(NSString *opening) { (void)opening; }
+static void DMSMTurnForgetOpening(NSString *opening) { (void)opening; }   // (1.8.8 H5: a closed window's turn records go at the tap -- test-smturnclosed)
 static BOOL DMSMFitAsksAbout(NSString *bundle, NSArray<NSString *> *stageKeys, NSString **l, NSString **r) { (void)bundle; (void)stageKeys; (void)l; (void)r; return NO; }
 static void DMSMFitAskThen(NSString *bundle, NSString *l, NSString *r, void (^open)(void)) { (void)bundle; (void)l; (void)r; (void)open; }
 static void DMOpenApp(NSString *bundleID) { (void)bundleID; }
@@ -100,6 +101,7 @@ static id DMSMJoinAttributes(NSString *key, id frontAttrs, BOOL windowed, long n
 enum { DMSMFitDefault = 0, DMSMFitKept = 1, DMSMFitFourKept = 2 };
 static NSArray<NSString *> *DMSMFitTakingPart(NSArray<NSString *> *b, NSDictionary<NSString *, NSString *> *s, NSSet<NSString *> *l, NSSet<NSString *> **lo) { (void)s; (void)l; (void)lo; return b; }
 static NSDictionary<NSString *, NSString *> *DMSMFitPlanDecide(NSDictionary<NSString *, NSString *> *s, NSArray<NSString *> *b, NSArray<NSString *> *d, int *how) { (void)s; (void)b; (void)d; (void)how; return nil; }
+static NSArray<NSString *> *DMSMFitKeptAway(NSArray<NSString *> *keys, NSDictionary<NSString *, NSString *> *slots) { (void)keys; (void)slots; return @[]; }   // (1.8.8 H2's: Fit to Window is off here)
 static NSArray<NSString *> *DMDefaultSlotNames(NSUInteger n) { (void)n; return @[]; }
 static id DMSMAttrsForLayoutIn(id attrs, id place, id stage) { (void)place; (void)stage; return attrs; }
 static id DMSMEntityForStageItem(id stage, id item) { (void)stage; return item; }

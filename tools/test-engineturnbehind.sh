@@ -3,7 +3,8 @@
 # turns and turns back, as on the Stage Manager engine (1.8.7.5, engine parity with SMBEHIND, test-smturnbehind.sh); a place of ours takes the mark,
 # the title bar's Back gives it back. See test-engineturnbehind.m. The real code is cut out of statusbar/StatusBar.x, WindowKeys.h, TitleBarTap.h and
 # MacSwitcher.h (ETB_SB_X, ETB_WK_H, ETB_TB_H, ETB_MSW_H: other copies, e.g. the code before the change) and run on the Mac for each engine; then
-# site checks; then made-to-fail copies: each takes one part of the change out (or widens it) and must fail.
+# site checks; then made-to-fail copies: each takes one part of the change out (or widens it) and must fail. 1.8.8 (App Window Sizes, review R1 of its
+# port): the green light's way back of an open window whose place the forget took is a place of ours and takes the mark (scenario 14).
 cd "$(dirname "$0")" || exit 1
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 SB0=${ETB_SB_X:-../statusbar/StatusBar.x}; WK0=${ETB_WK_H:-../statusbar/WindowKeys.h}; TB0=${ETB_TB_H:-../statusbar/TitleBarTap.h}; MSW0=${ETB_MSW_H:-../statusbar/MacSwitcher.h}
@@ -134,6 +135,8 @@ if [ -z "$ETB_SB_X$ETB_WK_H$ETB_TB_H$ETB_MSW_H" ]; then
   mtf "the title bar's record keeps no mark" wk 's/return behindDock \? \[r arrayByAddingObject:\@YES\] : r;/return r;/'
   mtf "a record with the mark is no record" wk 's/\(\[\(NSArray \*\)r count\] == 2 \|\| \[\(NSArray \*\)r count\] == 3\)/([(NSArray *)r count] == 2)/'
   mtf "Back gives no mark back" tb 's/\n    if \(behind\) DMBehindDockSet\(bundleID, YES, @"back from Fill or Zoom[^\n]*//'
+  mtf "the green light's way back with no place of its own kept keeps the mark (App Window Sizes, review R1)" wk 's/\n    if \(gPreferRememberedFrame && !gLastWindowFrames\[DMStageBundle\(v\)\]\) DMBehindDockPlacedByUs\([^\n]*//'
+  mtf "the green light's way back takes the mark with its place held too (review R1 widened)" wk 's/if \(gPreferRememberedFrame && !gLastWindowFrames\[DMStageBundle\(v\)\]\) DMBehindDockPlacedByUs/if (gPreferRememberedFrame) DMBehindDockPlacedByUs/'
   mtf "Zoom keeps the mark" tb 's/ DMBehindDockPlacedByUs\(v, @"zoomed by its title bar"\);//'
 fi
 exit $rc

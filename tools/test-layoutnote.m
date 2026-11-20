@@ -169,8 +169,8 @@ int main(int argc, char **argv) {
         Expect([DMSMTurnLayouts()[mapsK] isEqual:@"right"], @"  ... one in a hidden stage only (minimized, another desktop's) is not closed");
         gStages = @[ @{clockK: @1}, [NSNull null] ]; DMSMTurnLayouts()[notesK] = @"top"; DMSMTurnForgetClosed();
         BOOL keptAll = [DMSMTurnLayouts()[notesK] isEqual:@"top"] && [DMSMTurnLayouts()[mapsK] isEqual:@"right"];
-        gStages = @[]; DMSMTurnForgetClosed();
-        Expect(keptAll && [DMSMTurnLayouts()[notesK] isEqual:@"top"], @"  ... none is taken for closed when a stage can't be read or none is (SpringBoard's model not there)");
+        gStages = nil; DMSMTurnForgetClosed();
+        Expect(keptAll && [DMSMTurnLayouts()[notesK] isEqual:@"top"], @"  ... none is taken for closed when a stage can't be read or there is no list (SpringBoard's model not there; an empty list once the start has settled is no window, 1.8.8 H5: test-smturnclosed)");
         gStages = @[ @{clockK: @1}, @{mapsK: @1}, @{notesK: @1} ];
         DMSMTurnLayouts()[tipsK] = @"fill"; DMSMStateWrite();
         DMSMForgetApp(@"com.apple.tips"); file = File();

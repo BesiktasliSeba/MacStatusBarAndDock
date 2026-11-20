@@ -54,10 +54,13 @@ has() { grep -qF "$2" "$1"; }
     echo 'static NSMutableDictionary<NSString *, NSString *> *DMSMTurnLayouts(void) { if (!gSMTurnLayout) gSMTurnLayout = [NSMutableDictionary dictionary]; return gSMTurnLayout; }   // (not in this source: in memory only)'
   fi
   fn "$SRC/SMFitPlan.h" 'static NSSet<NSString *> *DMSMFitClosedKeys(id<NSFastEnumeration> keys, NSSet<NSString *> *present, NSSet<NSString *> *pending) {'
+  if has "$S" 'static NSMutableSet<NSString *> *gSMBehindDock;'; then grep -F 'static NSMutableSet<NSString *> *gSMBehindDock;' "$S"   # (1.8.8 H5: the forget takes the marks too)
+  else echo 'static NSMutableSet<NSString *> *gSMBehindDock;   // (not in this source)'; fi
   if has "$S" 'static void DMSMTurnForget(NSSet<NSString *> *keys, NSString *why) {'; then
     fn "$S" 'static void DMSMTurnForget(NSSet<NSString *> *keys, NSString *why) {'
     fn "$S" 'static NSSet<NSString *> *DMSMWindowKeysIn(NSArray *stages) {'
     grep -F 'static BOOL gSMTurnStartSettled = NO;' "$S"
+    if has "$S" 'static NSSet<NSString *> *DMSMWindowKeysAfterStart(NSArray *stages) {'; then fn "$S" 'static NSSet<NSString *> *DMSMWindowKeysAfterStart(NSArray *stages) {'; fi   # (1.8.8 H5, test-smturnclosed)
     fn "$S" 'static void DMSMTurnForgetClosed(void) {'
   else
     echo 'static void DMSMTurnForget(NSSet<NSString *> *keys, NSString *why) { (void)keys; (void)why; }   // (not in this source: nothing forgotten)'
@@ -67,6 +70,7 @@ has() { grep -qF "$2" "$1"; }
   if has "$S" 'static dispatch_queue_t DMSMStateWriteQueue(void) {'; then fn "$S" 'static dispatch_queue_t DMSMStateWriteQueue(void) {'
   else echo 'static dispatch_queue_t DMSMStateWriteQueue(void) { static dispatch_queue_t q; static dispatch_once_t once; dispatch_once(&once, ^{ q = dispatch_queue_create("old", DISPATCH_QUEUE_SERIAL); }); return q; }   // (not in this source: written at once)'; fi
   fn "$S" 'static void DMSMStateWrite(void) {'
+  if has "$S" 'static BOOL DMSMForgetPlacesOf(NSString *bundle) {'; then fn "$S" 'static BOOL DMSMForgetPlacesOf(NSString *bundle) {'; fi   # (1.8.8: DMSMForgetApp's first lines, shared with App Window Sizes' forget)
   fn "$S" 'static void DMSMForgetApp(NSString *bundle) {'
   # (1.8.4 F2 and the review of its fixes, H1 and M1: the start's step for Stage Manager, and Stage Manager's start tick, as the source has them)
   if has "$S" 'static BOOL DMDockRoomChangedSinceSave(void) {'; then cutfn "$S" 'static BOOL DMDockRoomChangedSinceSave(void) {'

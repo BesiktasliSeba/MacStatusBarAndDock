@@ -16,8 +16,10 @@ line() { awk -v h="$2" 'index($0, h) == 1 {print; exit}' "$1"; }                
 # the drag's two steps and what lies between them: from the comment above DMAerialPanBefore to DMAerialGestureAfter's closing brace
 blockcut() { awk 'index($0, "// A drag by hand. NO: the drag was cancelled here") == 1 {f=1} f {print} f && index($0, "static void DMAerialGestureAfter(") == 1 {g=1} g && /^[}]/ {exit}' "$1"; }
 
-ONE=('static const CGFloat kStageBarHeight = ' 'static NSMutableArray<NSString *> *gFitGroup = nil;' 'static NSMutableDictionary<NSString *, NSString *> *gFitSlots = nil;'
-     'static void DMFitGroupForget(NSString *bundleID) {')
+ONE=('static const CGFloat kStageBarHeight = ' 'static NSMutableArray<NSString *> *gFitGroup = nil;' 'static NSMutableDictionary<NSString *, NSString *> *gFitSlots = nil;')
+FORGET='static void DMFitGroupForget(NSString *bundleID) {'   # (one line before 1.8.8 H2, a function since: cut by its braces)
+ALONE='static const void *kStageFitAloneKey = &kStageFitAloneKey;'   # (1.8.8 H2: the mark DMFitGroupForget takes)
+cutfn() { awk -v s="$2" '!f && index($0, s) == 1 {f=1} f {print; n += gsub(/\{/, "{"); n -= gsub(/\}/, "}"); if (n <= 0) exit}' "$1"; }   # one function, by its braces
 TRE='static void DMTitleRecordHandEnded(UIView *v, UIGestureRecognizerState s) {'
 PAN='- (void)handlePan:(id)gesture {'; RES='- (void)handleResizeBR:(id)gesture {'
 H5P='static void h5_pan(id self, SEL _cmd, id gesture) {'; H5R='static void h5_resizeBR(id self, SEL _cmd, id gesture) {'
@@ -27,9 +29,10 @@ run() {   # $1 StatusBar.x, $2 work dir, $3 quiet; the number of failed checks (
   mkdir -p "$d"
   for h in "${ONE[@]}"; do [ -n "$(line "$X" "$h")" ] || { echo "FAIL  $X: no line starting \"$h\""; return 99; }; done
   for h in "$TRE" "$H5P" "$H5R"; do [ -n "$(fn "$X" "$h")" ] || { echo "FAIL  $X: no \"$h\""; return 99; }; done
+  [ -n "$(cutfn "$X" "$FORGET")" ] || { echo "FAIL  $X: no \"$FORGET\""; return 99; }
   for h in "$PAN" "$RES"; do [ "$(grep -cF -e "$h" "$X")" = 1 ] || { echo "FAIL  $X: not one \"$h\""; return 99; }; done
   [ -n "$(blockcut "$X")" ] || { echo "FAIL  $X: no DMAerialPanBefore ... DMAerialGestureAfter"; return 99; }
-  { for h in "${ONE[@]}"; do line "$X" "$h"; done; fn "$X" "$TRE"; blockcut "$X"; } > "$d/asf-real.inc"
+  { for h in "${ONE[@]}"; do line "$X" "$h"; done; if /usr/bin/grep -qF -e "$ALONE" "$X"; then line "$X" "$ALONE"; fi; cutfn "$X" "$FORGET"; fn "$X" "$TRE"; blockcut "$X"; } > "$d/asf-real.inc"
   { fn "$X" "$H5P"; fn "$X" "$H5R"; } > "$d/asf-h5.inc"
   { mth "$X" "$PAN" | sed 's/^\( *\)%orig;/\1[self k_origPan:gesture];/'; mth "$X" "$RES" | sed 's/^\( *\)%orig;/\1[self k_origResize:gesture];/'; } > "$d/asf-hooks.inc"
   grep -q '%orig' "$d/asf-hooks.inc" && { echo "FAIL  $X: a %orig left in the hooks cut out"; return 99; }

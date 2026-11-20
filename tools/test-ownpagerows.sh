@@ -30,7 +30,7 @@ check "  ... and leave rows out by the same conditions and lists: Control Center
    && grep -q 'if ((desktopFailed && MSBDDesktopCheckRow(\\[spec propertyForKey:@\"key\"\\], spec.identifier))' $P && grep -q '(noFocus18 && \\[\\[spec propertyForKey:@\"key\"\\] isEqual:kMSBDMacSwitcherKey\\])' $P \
    && grep -q 'inGroup = \\[spec.identifier isEqualToString:kMSBDMacSwitcherGroupID\\];' $P && grep -q '^		if (MSBDFocusLock18Failed()) {' $P && grep -q 'hiding = \\[sp.identifier isEqualToString:kMSBDWiFiGroupID\\];' $P"
 check "  ... the engine's groups (the Windows group, the resize handles, Window Size and Double-Tap a Title Bar to kept with Stage Manager, Resize Handles, Resize Apps), Report a Problem, Keep Tailspin Off" \
-  "[ \$(grep -c 'hiding = \\[sp.identifier isEqualToString:kMSBDWindowsGroupID\\];' $P) = 2 ] && grep -q 'BOOL itsToo = MSBDStageManagerKeepsRow(\\[sp propertyForKey:@\"key\"\\]);' $P \
+  "[ \$(grep -c 'hiding = \\[sp.identifier isEqualToString:kMSBDWindowsGroupID\\];' $P) = 2 ] && grep -q 'BOOL itsToo = MSBDStageManagerKeepsRow(MSBDRowRuleKey(\\[sp propertyForKey:@\"key\"\\], sp.identifier));' $P \
    && grep -qF 'if (![sp.identifier isEqualToString:kMSBDStripSwipeRowID] && ![[sp propertyForKey:@\"key\"] isEqual:kMSBDResizeHandlesKey]) [kept addObject:sp];' $P && grep -qF 'if (![[sp propertyForKey:@\"key\"] isEqual:kMSBDResizeRowKey]) [kept addObject:sp];' $P \
    && grep -q 'if (\\[spec.identifier isEqualToString:kMSBDReportRowID\\]) report = spec;' $P && grep -qF 'if (MSBDBarOffKeepsRow(sp.identifier) || (sp.cellType == PSGroupCell && [sp.identifier isEqualToString:kMSBDAdvancedGroupID])) [kept addObject:sp];' $P"
 check "the Dock page: no Finder group with Finder off, Finder read the same way; the line switch's rows go with it (LineSwitch.h, the index's line)" \
@@ -49,7 +49,7 @@ check "Sleep Guard only where our Battery Use group is on Battery Health, as our
 check "Double-Tap a Title Bar to stays with Stage Manager as the engine, on the page and in the search (GitHub #11): the rule's key is the setting's and the page row's, and Stage Manager's windows have our title bar's double tap" \
   "grep -q '#define kMSBDTitleDoubleTapRowKey @\"titleBarDoubleTap\"' $R && grep -q '#define kMSBDTitleDoubleTapKey \"titleBarDoubleTap\"' ../statusbar/TitleBarRule.h \
    && awk '/^static inline BOOL MSBDStageManagerKeepsRow\\(NSString \\*key\\) \\{/,/^}/' $R | grep -q '\\[key isEqualToString:kMSBDTitleDoubleTapRowKey\\]' \
-   && grep -q '(s.stageManagerEngine && !MSBDStageManagerKeepsRow(key))' $R && grep -q 'BOOL itsToo = MSBDStageManagerKeepsRow(\\[sp propertyForKey:@\"key\"\\]);' $P \
+   && grep -q '(s.stageManagerEngine && !MSBDStageManagerKeepsRow(key))' $R && grep -q 'BOOL itsToo = MSBDStageManagerKeepsRow(MSBDRowRuleKey(\\[sp propertyForKey:@\"key\"\\], sp.identifier));' $P \
    && grep -q 'case kDMTitleSM: {' ../statusbar/TitleBarTap.h && grep -q 'act = ^(NSString \\*why) { DMTitleTapSMWindow(key, why); };' ../statusbar/TitleBarTap.h \
    && plutil -convert json -o - ../statusbar/macstatusbarprefs/Resources/Windows.plist | python3 -c 'import json,sys; it=json.load(sys.stdin)[\"items\"]; g=None; r=[]
 for x in it:
@@ -60,7 +60,7 @@ check "with no working engine Double-Tap a Title Bar to stays, as Finder's and T
   "grep -q 'static inline BOOL MSBDNoEngineKeepsRow(NSString \\*key) { return \\[key isEqualToString:kMSBDTitleDoubleTapRowKey\\]; }' $R \
    && grep -q '((!s.engineWorks && !MSBDNoEngineKeepsRow(key)) || (s.stageManagerEngine && !MSBDStageManagerKeepsRow(key)))' $R \
    && grep -q 'BOOL windowsGroup = sp.cellType == PSGroupCell && \\[sp.identifier isEqualToString:kMSBDWindowsGroupID\\];' $P \
-   && grep -q 'if (!hiding || windowsGroup || MSBDNoEngineKeepsRow(\\[sp propertyForKey:@\"key\"\\])) \\[kept addObject:sp\\];' $P \
+   && grep -q 'if (!hiding || windowsGroup || MSBDNoEngineKeepsRow(MSBDRowRuleKey(\\[sp propertyForKey:@\"key\"\\], sp.identifier))) \\[kept addObject:sp\\];' $P \
    && [ \$(grep -c 'Finder and TextEdit windows still use this setting.' $P) = 1 ] \
    && grep -q 'if (windowsGroup) \\[sp setProperty:@\"Finder and TextEdit windows still use this setting.\" forKey:@\"footerText\"\\];' $P \
    && grep -q 'DMTitleTapAttach(_titleBar, kDMTitleNative);' ../statusbar/NativeWindow.h && grep -q 'CGRect fill = DMLayoutFrameInArea(@\"fill\", DMNativeDesktop(), \\[UIScreen mainScreen\\].bounds.size);' ../statusbar/TitleBarTap.h"

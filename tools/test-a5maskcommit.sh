@@ -4,7 +4,8 @@
 # window behind that briefly shrinks as another is minimized or closed) -- see test-a5maskcommit.m. The real code is cut out of
 # statusbar/StatusBar.x (A5M_SB_X: another copy, e.g. 1.8.7.8's, where the new parts are missing: its catcher is then the pass alone) and run on
 # the Mac (Mac Catalyst) with real Core Animation commits, in a release and a DEBUG build; then the site checks; then made-to-fail copies, each
-# must fail.
+# must fail. T16-T21 (1.8.8, H2 row 3 on Aerial 5.1): the fit-pass answer counts only what it put back, so a window minimized at Fill that the pass
+# shrank out of sight is put back by the commit that shows it again (Z8, the counter, the turn), and a fight on screen is still left to Aerial.
 cd "$(dirname "$0")" || exit 1
 SDK=$(xcrun --show-sdk-path 2>/dev/null || echo /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk)
 FW="$SDK/System/iOSSupport/System/Library/Frameworks"
@@ -125,5 +126,8 @@ if [ -z "$A5M_SB_X" ]; then
   mtf "the commit pass without the DMA5MacGeometry guard" 's/    if \(!DMA5MacGeometry\(\) \|\| gDMScreenOff \|\| !gA5StageCache\.count\) return;/    if (gDMScreenOff || !gA5StageCache.count) return;/'
   mtf "the debug kill switch not read" 's/    return DMTestFlag\("\/tmp\/msb-a5-maskold"\);/    return NO;/'
   mtf "1.8.7.8's order (no mask at the put-back, none at the commit)" 's/\n    if \(DMA5MacGeometry\(\) && !DMA5MaskOld\(\)\) DMA5SyncHostMaskBy\(stage, "the put-back"\);//; s/    DMA5CatchNewStagesPass\(\);\n    DMA5MasksAtCommit\(\);/    DMA5CatchNewStagesPass();/'
+  # (1.8.8 H2 row 3 on Aerial 5.1: the fit-pass answer counts only what it put back)
+  mtf "p07's count (every answer counted, a minimized window's too)" 's/    CGRect was = stage\.frame;\n(    DMEnforceStageFrame\(stage, \@"Aerial 5.s fit-to-screen pass, before it is drawn"\);\n)    if \(CGRectEqualToRect\(stage\.frame, was\)\) return;[^\n]*\n(    \[times addObject:\@\(now\)\];\n)/$2$1/'
+  mtf "no count at all (a fight on screen never left to Aerial)" 's/(no fight to count\)\n)    \[times addObject:\@\(now\)\];\n/$1/'
 fi
 exit $rc

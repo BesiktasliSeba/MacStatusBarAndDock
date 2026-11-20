@@ -42,7 +42,8 @@ int main(void) {
     }
     EXPECT(r187 == 10, "1.8.7's rows: Menu Bar Size, auto-hide, Dock Size, Magnification and its amount, Dock auto-hide, Trash, Window Size, Open at Fill, Resolution");
     const char *texts[] = { MSBD_DISP_TEXT_GROUP, MSBD_DISP_TEXT_NONE, MSBD_DISP_TEXT_TOP, MSBD_DISP_TEXT_USE_IPAD, MSBD_DISP_TEXT_USE_IPAD_ASK, MSBD_DISP_TEXT_MIRROR,
-                            MSBD_DISP_TEXT_OFF, MSBD_DISP_TEXT_FORGET, MSBD_DISP_TEXT_FORGET_ASK, MSBD_DISP_TEXT_NOT_CONNECTED, MSBD_DISP_TEXT_OVERSCAN, MSBD_DISP_TEXT_RESET, MSBD_DISP_TEXT_DEFAULT_ON };
+                            MSBD_DISP_TEXT_OFF, MSBD_DISP_TEXT_FORGET, MSBD_DISP_TEXT_FORGET_ASK, MSBD_DISP_TEXT_NOT_CONNECTED, MSBD_DISP_TEXT_OVERSCAN, MSBD_DISP_TEXT_RESET, MSBD_DISP_TEXT_DEFAULT_ON,
+                            MSBD_DISP_TEXT_EXTENDED_SOON };
     for (size_t i = 0; i < sizeof texts / sizeof texts[0]; i++) EXPECT(MSBDDispTextPublicOK(texts[i]), "the page's and the window's texts are public text");
     EXPECT(!MSBDDispTextPublicOK("Menu Bar Size \xE2\x80\x94 Large.") && !MSBDDispTextPublicOK("a -- b.") && !MSBDDispTextPublicOK("a \xE2\x80\x93 b."), "an em dash, an en dash or -- is refused");
     EXPECT(strcmp(MSBDDispRowFor("msb", "menuBarSize")->footer, "Applies the next time this display connects.") == 0, "Menu Bar Size: applies at the next connect");
@@ -52,6 +53,10 @@ int main(void) {
     EXPECT(strcmp(MSBDDispTopText(1, 0, 1), MSBD_DISP_TEXT_NONE) == 0, "... also before its desktop is seen gone");
     EXPECT(strcmp(MSBDDispTopText(1, 1, 0), MSBD_DISP_TEXT_MIRROR) == 0, "connected, mirroring: the mirror's words");
     EXPECT(strcmp(MSBDDispTopText(1, 1, 1), MSBD_DISP_TEXT_TOP) == 0, "connected, its own desktop: this display only");
+    // ---- the Displays group's note on iPadOS 15 (1.8.8, KT 20 Nov ~01:40): there only, KT's words
+    EXPECT(MSBDDispSoonText(15) && strcmp(MSBDDispSoonText(15), "Full-screen extended display is coming soon.") == 0, "iPadOS 15: the note, Full-screen extended display is coming soon.");
+    EXPECT(!MSBDDispSoonText(16) && !MSBDDispSoonText(17) && !MSBDDispSoonText(18), "iPadOS 16, 17 and 18: no note");
+    EXPECT(!MSBDDispSoonText(19) && !MSBDDispSoonText(26) && !MSBDDispSoonText(14) && !MSBDDispSoonText(0), "... nor on a later iPadOS, nor on a version not read (0)");
     // ---- left out of a TV (KT 10 Nov ~19:40)
     const char *absentTitles[] = { "Home Minimizes Windows", "Dock Position", "Position on Screen", "Larger Dock in Portrait", "Open Apps as Windows", "Gap to Screen Edge" };
     const char *absentKeys[] = { "homeMinimizesWindows", "dockPosition", "portraitLargerDock", "openAsWindows", "gapToEdge", "windowGap" };

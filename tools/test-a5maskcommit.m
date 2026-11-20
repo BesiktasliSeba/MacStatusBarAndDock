@@ -11,6 +11,8 @@
 //    the watcher's tick (frameBody) on its own;
 //  - the windows in a UIWindow whose layer is attached to +[CAContext localContext], so a commit really lays out and runs its phases; a
 //    post-commit handler reads what the commit carried (the holder's and the mask's model sizes, and whether the mask has a bounds animation).
+// T16-T21 (1.8.8, H2 row 3 on Aerial 5.1, p07 on the M1): the same cut code with our minimize, H2's DMFitPlaceAway and the Dock icon's show
+// played as built (Minimize, PlaceAway, ShowFromDock below): the fit-pass answer counts only the put-backs it makes.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
@@ -104,7 +106,7 @@ static void Reset(CGSize screen) {
 }
 static CALayer *MaskOf(TStage *st) { return objc_getAssociatedObject(st.holder, kA5MaskKey); }
 // What a commit carried, read after it (a post-commit handler): the holder's and the mask's sizes, and whether the mask got a bounds animation.
-typedef struct { CGSize holder, mask; BOOL hasMask, maskAnimated; double holderAnim, maskAnim; } TCommitted;
+typedef struct { CGSize holder, mask; BOOL hasMask, maskAnimated; double holderAnim, maskAnim; CGRect frame; } TCommitted;
 static int gPhase1Adds;
 static void (*gOrigAdd)(id, SEL, id, int);
 static void TCountAdd(id cls, SEL sel, id block, int phase) { if (phase == 1) gPhase1Adds++; gOrigAdd(cls, sel, block, phase); }
@@ -124,7 +126,7 @@ static TCommitted Turn(TStage *st, BOOL observer, void (^during)(void)) {
     [CATransaction addCommitHandler:^{
         CALayer *m = MaskOf(st);
         c.holder = st.holder.layer.bounds.size; c.hasMask = m != nil && st.holder.layer.mask == m; c.mask = m.bounds.size;
-        c.holderAnim = AnimDur(st.holder.layer); c.maskAnim = AnimDur(m); c.maskAnimated = c.maskAnim > 0;
+        c.holderAnim = AnimDur(st.holder.layer); c.maskAnim = AnimDur(m); c.maskAnimated = c.maskAnim > 0; c.frame = st.frame;
     } forPhase:2];
     [CATransaction commit]; [CATransaction flush];
     return c;
@@ -138,6 +140,25 @@ static NSString *Band(TCommitted c) {
 static BOOL NoBand(TCommitted c) { return c.hasMask && fabs(c.holder.width - c.mask.width) <= 0.5 && fabs(c.holder.height - c.mask.height) <= 0.5; }
 static void Settle(TStage *st) { Turn(st, YES, nil); Turn(st, YES, ^{ WatcherTick(); }); }   // (the mask made and in step, as at rest)
 static void AerialPass(TStage *st) { st.frame = MSBDA5FitOf(st.frame, gScreen); }   // (its fit-to-screen pass: the holder resizes with the stage at once)
+// 1.8.8 H2 row 3: our minimize as it ends (DMMinimizeStage: hidden, our key), H2's DMFitPlaceAway (the frame set at once, its intended place for
+// this shape), and the Dock icon's show (DMRestoreStageNow + DMRestoreAnimate: the key cleared, shown from the Dock's scale, the model transform
+// identity at once, the grow in the presentation only).
+static void Minimize(TStage *st) { objc_setAssociatedObject(st, kTMinimizedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC); st.hidden = YES; }
+static void PlaceAway(TStage *st, CGRect f) {
+    [UIView performWithoutAnimation:^{ st.frame = f; [st layoutIfNeeded]; }];
+    objc_setAssociatedObject(st, kStageIntentKey, [NSValue valueWithCGRect:f], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(st, kStageIntentSizeKey, [NSValue valueWithCGSize:gScreen], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+static void ShowFromDock(TStage *st) {
+    objc_setAssociatedObject(st, kTMinimizedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    st.transform = CGAffineTransformScale(CGAffineTransformMakeTranslation(0, 380), 0.05, 0.05); st.alpha = 0.0; st.hidden = NO;
+    [UIView animateKeyframesWithDuration:0.36 delay:0 options:UIViewKeyframeAnimationOptionCalculationModeCubic animations:^{
+        [UIView addKeyframeWithRelativeStartTime:0.0 relativeDuration:1.0 animations:^{ st.transform = CGAffineTransformIdentity; }];
+        [UIView addKeyframeWithRelativeStartTime:0.0 relativeDuration:0.4 animations:^{ st.alpha = 1.0; }];
+    } completion:nil];
+}
+static int LogCount(NSString *part) { int n = 0; for (NSString *l in gLog) if ([l containsString:part]) n++; return n; }
+static NSString *const kLeftTo = @"keeps shrinking it: left to it for 10 s", *const kPutBack = @"by Aerial 5's fit-to-screen pass, before it is drawn: put back";
 
 int main(int argc, char **argv) {
     @autoreleasepool {
@@ -258,6 +279,92 @@ int main(int argc, char **argv) {
             TCommitted c = Turn(st, YES, ^{ [UIView performWithoutAnimation:^{ st.frame = kFillM1; [st layoutIfNeeded]; }];
                                             objc_setAssociatedObject(st, kStageIntentKey, [NSValue valueWithCGRect:kFillM1], OBJC_ASSOCIATION_RETAIN_NONATOMIC); });
             Check(NoBand(c), [NSString stringWithFormat:@"T13 a window behind grown by a re-tile between two ticks: %@", Band(c)]);
+        }
+        // ---- 1.8.8 H2 row 3 on Aerial 5.1 (p07 on the M1): the fit-pass answer counts only what it put back ----
+        const CGRect kLeftM1 = {{-6, 30}, {606, 736.4}};
+        CASE("T16") {   // Z8: Settings minimized in the left half, closed up to Fill out of sight, Aerial's pass (Clock opening) shrinks it while hidden
+            Reset(CGSizeMake(1194, 834));
+            TStage *st = MakeStage(kLeftM1, @"T16"); Settle(st);
+            Turn(st, YES, ^{ Minimize(st); });
+            Turn(st, YES, ^{ PlaceAway(st, kFillM1); });
+            [gLog removeAllObjects];
+            Turn(st, YES, ^{ AerialPass(st); });
+            for (int i = 0; i < 30; i++) Turn(st, YES, nil);   // (the commits while it stays minimized)
+            CGRect shrunk = MSBDA5FitOf(kFillM1, gScreen);
+            Check(CGRectEqualToRect(st.frame, shrunk) && LogCount(kPutBack) == 0 && LogCount(kLeftTo) == 0,
+                  [NSString stringWithFormat:@"T16 Z8: minimized at Fill and shrunk by Aerial's pass out of sight: left as it is, no put-back (%d), no \"left to it\" line (%d)", LogCount(kPutBack), LogCount(kLeftTo)]);
+            TCommitted c = Turn(st, YES, ^{ ShowFromDock(st); });
+            Check(CGRectEqualToRect(c.frame, kFillM1) && NoBand(c) && LogCount(kPutBack) == 1,
+                  [NSString stringWithFormat:@"T16 ... its Dock icon: the commit that shows it carries Fill (%@%@), put back before it is drawn: %@",
+                   NSStringFromCGRect(c.frame), CGRectEqualToRect(c.frame, shrunk) ? @", the pass's 96 %" : @"", Band(c)]);
+            c = Turn(st, YES, ^{ AerialPass(st); });   // (Aerial's own pass at the show, as on the M1)
+            for (int i = 0; i < 10; i++) c = Turn(st, YES, nil);
+            Check(CGRectEqualToRect(c.frame, kFillM1) && NoBand(c) && LogCount(kPutBack) == 2 && LogCount(kLeftTo) == 0,
+                  [NSString stringWithFormat:@"T16 ... Aerial's pass at the show put back too, at Fill after (%@), %d put-backs, %d \"left to it\"", NSStringFromCGRect(c.frame), LogCount(kPutBack), LogCount(kLeftTo)]);
+        }
+        CASE("T17") {   // the counter (H2-3c): Settings at Fill while shown, minimized, no pass while hidden; its Dock icon with Aerial's pass at the show
+            Reset(CGSizeMake(1194, 834));
+            TStage *st = MakeStage(kFillM1, @"T17"); Settle(st);
+            Turn(st, YES, ^{ Minimize(st); });
+            [gLog removeAllObjects];
+            for (int i = 0; i < 30; i++) Turn(st, YES, nil);
+            Check(CGRectEqualToRect(st.frame, kFillM1) && LogCount(kPutBack) == 0 && LogCount(kLeftTo) == 0, @"T17 the counter: minimized at Fill, no pass while hidden: at Fill, nothing put back");
+            TCommitted c = Turn(st, YES, ^{ ShowFromDock(st); AerialPass(st); });
+            Check(CGRectEqualToRect(c.frame, kFillM1) && NoBand(c) && LogCount(kPutBack) == 1,
+                  [NSString stringWithFormat:@"T17 ... its Dock icon, Aerial's pass at the show: the commit carries Fill (%@): %@", NSStringFromCGRect(c.frame), Band(c)]);
+            c = Turn(st, YES, ^{ AerialPass(st); });   // (the second pass, 88 ms later on the M1)
+            Check(CGRectEqualToRect(c.frame, kFillM1) && NoBand(c) && LogCount(kPutBack) == 2 && LogCount(kLeftTo) == 0, @"T17 ... the second pass put back as well, no \"left to it\"");
+        }
+        CASE("T18") {   // R6: Z8, then a turn to portrait while it is minimized (Fill in the new shape out of sight), Aerial's pass there; its Dock icon in portrait
+            Reset(CGSizeMake(1194, 834));
+            TStage *st = MakeStage(kLeftM1, @"T18"); Settle(st);
+            Turn(st, YES, ^{ Minimize(st); });
+            Turn(st, YES, ^{ PlaceAway(st, kFillM1); });
+            Turn(st, YES, ^{ AerialPass(st); });
+            for (int i = 0; i < 30; i++) Turn(st, YES, nil);
+            gScreen = CGSizeMake(834, 1194); gWindow.frame = CGRectMake(0, 0, 834, 1194);
+            const CGRect fillP = {{-6, 30}, {846, 1115.7}};   // (the M1's portrait Fill, R6 of p07)
+            Turn(st, YES, ^{ PlaceAway(st, fillP); });
+            [gLog removeAllObjects];
+            Turn(st, YES, ^{ AerialPass(st); });
+            for (int i = 0; i < 30; i++) Turn(st, YES, nil);
+            Check(CGRectEqualToRect(st.frame, MSBDA5FitOf(fillP, gScreen)) && LogCount(kLeftTo) == 0, @"T18 the turn: Fill in portrait out of sight, shrunk by the pass there: left as it is, no \"left to it\" line");
+            TCommitted c = Turn(st, YES, ^{ ShowFromDock(st); });
+            Check(CGRectEqualToRect(c.frame, fillP) && NoBand(c) && LogCount(kPutBack) == 1,
+                  [NSString stringWithFormat:@"T18 ... its Dock icon in portrait: the commit carries portrait Fill (%@): %@", NSStringFromCGRect(c.frame), Band(c)]);
+        }
+        CASE("T19") {   // the rule's purpose kept: a window on screen that Aerial shrinks again after every put-back: 6 put-backs, then left to it
+            Reset(CGSizeMake(1194, 834));
+            TStage *st = MakeStage(kFillM1, @"T19"); Settle(st);
+            [gLog removeAllObjects];
+            TCommitted c = {0};
+            for (int i = 0; i < 6; i++) c = Turn(st, YES, ^{ AerialPass(st); });
+            Check(CGRectEqualToRect(c.frame, kFillM1) && LogCount(kPutBack) == 6 && LogCount(kLeftTo) == 0, [NSString stringWithFormat:@"T19 a fight on screen: 6 passes, 6 put-backs (%d)", LogCount(kPutBack)]);
+            c = Turn(st, YES, ^{ AerialPass(st); });
+            CGRect shrunk = MSBDA5FitOf(kFillM1, gScreen);
+            Check(CGRectEqualToRect(c.frame, shrunk) && NoBand(c) && LogCount(kLeftTo) == 1 && LogCount(kPutBack) == 6,
+                  [NSString stringWithFormat:@"T19 ... the 7th in 2 s: left to it for 10 s (%d line), drawn as Aerial made it with its mask in step: %@", LogCount(kLeftTo), Band(c)]);
+            for (int i = 0; i < 5; i++) c = Turn(st, YES, nil);
+            Check(CGRectEqualToRect(c.frame, shrunk) && LogCount(kPutBack) == 6 && LogCount(kLeftTo) == 1, @"T19 ... and left alone after it (no put-back, no second line)");
+        }
+        CASE("T20") {   // a window on another desktop (hidden, not minimized: the Mac Switcher's away): put back out of sight and counted, as before
+            Reset(CGSizeMake(1194, 834));
+            TStage *st = MakeStage(kFillM1, @"T20"); Settle(st);
+            Turn(st, YES, ^{ st.hidden = YES; });
+            [gLog removeAllObjects];
+            Turn(st, YES, ^{ AerialPass(st); });
+            Check(CGRectEqualToRect(st.frame, kFillM1) && LogCount(kPutBack) == 1, @"T20 a window on another desktop (hidden, not minimized): put back as before");
+        }
+        CASE("T21") {   // a window flying in (DMEnforceStageFrame keeps nothing for it meanwhile), shrunk by the pass: put back at the first commit after its flight
+            Reset(CGSizeMake(1194, 834));
+            TStage *st = MakeStage(kFillM1, @"T21"); Settle(st);
+            objc_setAssociatedObject(st, kStageEnteringKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [gLog removeAllObjects];
+            Turn(st, YES, ^{ AerialPass(st); });
+            for (int i = 0; i < 30; i++) Turn(st, YES, nil);
+            Check(LogCount(kPutBack) == 0 && LogCount(kLeftTo) == 0, @"T21 flying in, shrunk by the pass: nothing put back, no \"left to it\" line");
+            TCommitted c = Turn(st, YES, ^{ objc_setAssociatedObject(st, kStageEnteringKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); });
+            Check(CGRectEqualToRect(c.frame, kFillM1) && NoBand(c) && LogCount(kPutBack) == 1, [NSString stringWithFormat:@"T21 ... landed: the next commit carries its place (%@)", NSStringFromCGRect(c.frame)]);
         }
         if (only && !strcmp(only, "T15")) {   // an iOS without pre-commit handlers (own process: the answer is read once): the end of the pass alone
             Method rs = class_getClassMethod([CATransaction class], @selector(respondsToSelector:));

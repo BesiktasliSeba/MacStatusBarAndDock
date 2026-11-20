@@ -99,12 +99,15 @@ static inline CGRect MSBDWindowOfCard(CGPoint centre, CGSize card, double bar) {
 // StatusBar.x DMCascadeStage (Aerial, Zetsu, MilkyWay4) and DMSMJoinAttributes (our Stage Manager engine) ask this with the engine's own frames
 // (Aerial 5.x: its stages, the window grown by Aerial's margins; the others: the whole window) and the desktop in the same space. As on a Mac,
 // each window keeps its title bar in sight: a window covering no other one by more than 45% (of the smaller window) stays where it opens; one
-// that does is moved on in steps of 50 pt right and 44 pt down -- each step tried down and right, then up and left, up to 8 steps out -- to the
-// first place where its top-left corner is 34 pt or more from every other window's, across or down, kept inside the desktop (never past the
-// Dock: a step that would reach under it is lifted, as Stage Manager's windows always were); no such place: where it opened. own: it opens where
-// it last was (1.7.5 item 13) -- it stays there over what it covers, moved on only when its corner sits on another window's (its title bar hidden
-// under the other's). Until 1.8.0 the other engines' steps could reach 30 pt past the desktop's bottom, under the Dock, and our Stage Manager
-// engine opened a joining window at the front window's size, cascaded 5% x 6% of the screen from the front window's centre.
+// that does is moved on in steps of 50 pt right and 44 pt down -- every step down and right first, up to 8 steps out, then, only when none of
+// those is clear, up and left, up to 8 -- to the first place where its top-left corner is 34 pt or more from every other window's, across or
+// down, kept inside the desktop (never past the Dock: a step that would reach under it is lifted, as Stage Manager's windows always were); no
+// such place: where it opened. own: it opens where it last was (1.7.5 item 13) -- it stays there over what it covers, moved on only when its
+// corner sits on another window's (its title bar hidden under the other's). Until 1.8.0 the other engines' steps could reach 30 pt past the
+// desktop's bottom, under the Dock, and our Stage Manager engine opened a joining window at the front window's size, cascaded 5% x 6% of the
+// screen from the front window's centre. Until 1.8.8 each step was tried down and right, then up and left, so a window whose first step was
+// taken went up and left before trying a second step down: in front of the windows it opened over, hiding their traffic lights (the third
+// window at Default; App Window Sizes' second iPhone window over Fit's tiles, where the first had taken step 1, 1.8.8 F2).
 // *how: MSBDCascadeStays (it covers no other window), MSBDCascadeOwnKept (own, its corner clear), MSBDCascadeNoRoom (no clear place), else the
 // step taken (1..8 down and right, -1..-8 up and left).
 #define kMSBDCascadeStepX 50.0
@@ -130,7 +133,7 @@ static inline CGRect MSBDWindowCascadeIn(CGRect base, const CGRect *others, int 
     for (int i = 0; i < n && !covers; i++) if (MSBDWindowOverlap(base, others[i]) > kMSBDCascadeCovers) covers = 1;
     if (!covers) return base;
     if (own && !MSBDWindowCornerTaken(base, others, n)) { if (how) *how = MSBDCascadeOwnKept; return base; }
-    for (int k = 1; k <= 8; k++) for (int sign = 1; sign >= -1; sign -= 2) {
+    for (int sign = 1; sign >= -1; sign -= 2) for (int k = 1; k <= 8; k++) {   // (down and right first: the windows it opens over keep their lights in sight)
         CGRect f = CGRectOffset(base, sign * k * kMSBDCascadeStepX, sign * k * kMSBDCascadeStepY);
         f.origin.x = fmax(desk.origin.x, fmin(f.origin.x, CGRectGetMaxX(desk) - f.size.width));   // (on the screen; a window wider than it keeps the left edge)
         f.origin.y = fmax(desk.origin.y, fmin(f.origin.y, CGRectGetMaxY(desk) - f.size.height));   // (under the menu bar, above the Dock; its top wins)

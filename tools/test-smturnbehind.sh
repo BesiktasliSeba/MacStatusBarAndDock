@@ -46,9 +46,13 @@ cutlist() {   # $1 file, $2 out, the rest: the heads (a "?" head: only if there;
 sites() {   # $1 StatusBar.x, $2 quiet, $3 TitleBarTap.h: the number of site checks that fail
   local X=$1 q=$2 B=$3 n=0 t
   # the mark is written in five places: the title-bar drop (put behind the Dock or not), the place applier (taken for a place of ours), the Window menu's
-  # places (taken: 1.8.7.5), the title bar's Back (given back with the record, taken again when not placed: 1.8.7.5)
-  if [ "$(grep -c '\[gSMBehindDock addObject:' "$X")" = 1 ] && [ "$(grep -c 'DMSMKeySetRemove(gSMBehindDock, ' "$X")" = 3 ] &&
+  # places (taken: 1.8.7.5), the title bar's Back (given back with the record, taken again when not placed: 1.8.7.5); App Window Sizes' forget takes
+  # it with each place before full screen it forgets (1.8.8, review R1 of its port: test-appwindowsize.sh c3_behind); a closed window's goes with its
+  # turn records (1.8.8 H5, DMSMTurnForget's one removeObject:, test-smturnclosed.sh)
+  if [ "$(grep -c '\[gSMBehindDock addObject:' "$X")" = 1 ] && [ "$(grep -c 'DMSMKeySetRemove(gSMBehindDock, ' "$X")" = 4 ] &&
+     { [ "$(grep -c '\[gSMBehindDock removeObject:' "$X")" = 0 ] || { [ "$(grep -c '\[gSMBehindDock removeObject:' "$X")" = 1 ] && fn "$X" 'static void DMSMTurnForget(NSSet<NSString *> *keys, NSString *why) {' | grep -qF '[gSMBehindDock removeObject:k];'; }; } &&
      fn "$X" 'static void DMWindowLayout(NSString *name) {' | grep -qF '        if (ok) DMSMKeySetRemove(gSMBehindDock, DMSMWindowKeyOf(smKey));' &&
+     fn "$X" 'static void DMSMAppSizeForgetPlace(NSString *bundle) {' | grep -qxF '    for (NSString *k in went) if (DMSMKeySetRemove(gSMBehindDock, k)) marks++;' &&
      [ "$(grep -c 'gSMBehindDock addObject:' "$B")" = 1 ] && [ "$(grep -c 'DMSMKeySetRemove(gSMBehindDock, ' "$B")" = 1 ] &&
      fn "$B" 'static void DMTitleTapSMWindow(NSString *key, NSString *why) {' | grep -qF 'if (behind) { if (!gSMBehindDock) gSMBehindDock = [NSMutableSet set]; [gSMBehindDock addObject:key]; }' &&
      grep -qF 'if (w.length) { if (endsAt > line + 4.0) [gSMBehindDock addObject:w]; else DMSMKeySetRemove(gSMBehindDock, w); }' "$X" &&

@@ -78,6 +78,42 @@ check "\"connected\" let go wherever SpringBoard's part does not keep it: Mac St
    && grep -q 'if (was && !gDMDispLayerOn) DMDispRegistryUpdate(@\"Display Settings switched off\");' \$W/fn \
    && fn '__attribute__((noinline)) static void DMDispRegistryUpdate(NSString *why) {' ../statusbar/DisplayPrefs.h \
    && awk '/if \(!gDMDispLayerOn\) \{/{a=NR} /BOOL dropped = MSBDDispStoreDropConnected\(\);/{b=NR} /^        return;$/{if(!c)c=NR} END{exit !(a && b > a && c > b)}' \$W/fn"
+# (1.8.8, KT 20 Nov ~01:40) the Displays group's note on iPadOS 15: the table's text for the iPadOS version read at the time, its own paragraph at
+# the very end of the group's footer (after the switch-off words take its place, so there with the switch off too), on Settings' page only (the
+# window is 16+'s). Its text on 15 and none on 16-18: test-displayrows.c.
+soonsite() { python3 -I - "$1" "$2" <<'PY2'
+import sys
+s = open(sys.argv[1]).read()
+i = s.find('static NSArray<PSSpecifier *> *MSBDisplaysGroup(PSListController *target, PSSpecifier *group) {')
+if i < 0: sys.exit(1)
+lines = [l.strip() for l in s[i:s.find('\n}\n', i)].split('\n')]
+def at(t):
+    k = [n for n, l in enumerate(lines) if l.startswith(t)]
+    return k[0] if len(k) == 1 else -1
+off = at('if (!layerOn) [footer setString:@MSBD_DISP_TEXT_OFF];')
+none = at('else if (!connected.count) [footer appendFormat:@" %s", MSBD_DISP_TEXT_NONE];')
+soon = at('const char *soon = MSBDDispSoonText((int)[NSProcessInfo processInfo].operatingSystemVersion.majorVersion);')
+add = at('if (soon) [footer appendFormat:@"\\n\\n%s", soon];')
+put = at('[group setProperty:footer forKey:@"footerText"];')
+ok = min(off, none, soon, add, put) >= 0 and off < none < soon and add == soon + 1 and put == add + 1 \
+     and s.count('MSBDDispSoonText(') == 1 and 'MSBDDispSoonText' not in open(sys.argv[2]).read()
+sys.exit(0 if ok else 1)
+PY2
+}
+check "the Displays group's note on iPadOS 15 (Full-screen extended display is coming soon.): by the iPadOS version, its own paragraph at the end of the footer, the switch on or off; Settings' page only" "soonsite $M $D"
+python3 -I - "$M" "$W" <<'PY2'
+import sys
+s = open(sys.argv[1]).read()
+a = '\tconst char *soon = MSBDDispSoonText((int)[NSProcessInfo processInfo].operatingSystemVersion.majorVersion);'
+i = s.find(a); j = s.find('\n', s.find('\n', i) + 1) + 1; two = s[i:j]
+assert i >= 0 and two.count('\n') == 2
+k = s.find('\tif (!layerOn) [footer setString:@MSBD_DISP_TEXT_OFF];')
+early = s[:i] + s[j:]; early = early[:k] + two + early[k:]
+open(sys.argv[2] + '/m-soon-early.m', 'w').write(early)
+open(sys.argv[2] + '/m-soon-15.m', 'w').write(s.replace('MSBDDispSoonText((int)[NSProcessInfo processInfo].operatingSystemVersion.majorVersion)', 'MSBDDispSoonText(15)'))
+PY2
+check "made to fail: the note before the switch-off words (gone with Display Settings off)" "! soonsite $W/m-soon-early.m $D"
+check "made to fail: the note on every iPadOS (15 taken for the version)" "! soonsite $W/m-soon-15.m $D"
 # Made to fail: the store with one thing broken must fail the ObjC test.
 mutant() {
   local M2="$W/m-$1"; mkdir -p "$M2"; cp ../common/*.h "$M2/"

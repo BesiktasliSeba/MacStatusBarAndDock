@@ -2,6 +2,21 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.8
+
+### New
+- App Window Sizes, right under Window Size in Settings > Windows & Multitasking, lets you give an app a window size of its own, so it opens the way that suits it: Small, Medium, Large, Fill or iPhone, a tall window where most apps show their iPhone layout. You can still resize the window.
+- Magnify Traffic Lights in Settings > Windows & Multitasking now works with a trackpad or mouse too: the window button under the pointer grows a little, less than under a finger, so you can see which one you're about to click. A click stays a plain click.
+
+### Improvements
+- A new window now opens a step down and to the right of the others when there's room, with every window engine, so the windows behind it keep their title bars and buttons in view.
+
+### Fixes
+- An app's own menus in the menu bar now appear right after the app opens, instead of up to a minute later.
+- A window you make full screen with the green button now comes back at the place and size it had, with every window engine.
+- With the Stage Manager engine and Fit to Window, the other windows now keep their tiles while a tiled window is full screen, as with the other engines, and that window goes back into its tile without asking where it goes.
+- With Fit to Window, a minimized window now keeps its tile when a new window joins the tiles, and going Home while a tiled window is full screen no longer loses the tiles: the windows go back into their tiles when you open them again, with every window engine.
+
 ## 1.8.7.9
 
 ### Fixes

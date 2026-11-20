@@ -12,6 +12,7 @@
 #import "MSBRootListController.h"
 #import "../../common/LineSwitch.h"
 #import "MSBAcknowledgementsController.h"   // (Acknowledgements, 1.8.5: KeyPilot)
+#import "MSBAppSizesController.h"   // (App Window Sizes, 1.8.8: the Windows & Multitasking row's value)
 #import "../../common/AppleMultitasking.h"   // (Apple's multitasking settings on the Windows & Multitasking page, 1.6.0: AppleMultitaskingTable.h)
 #import "../../common/EngineBuilds.h"
 #import "../../common/StageManagerAvailable.h"
@@ -37,7 +38,8 @@
 
 // The "Apps" row in the plist uses AltList's app picker (ATLApplicationListMultiSelectionController). That
 // class only exists once AltList's library is loaded, and this bundle is not linked against it, so load it
-// as soon as the bundle is loaded, before Settings looks the class up.
+// as soon as the bundle is loaded, before Settings looks the class up. App Window Sizes' Add App (1.8.8) looks up AltList's single-app picker
+// (ATLApplicationListSelectionController) the same way, by name, after this load (MSBAppSizesController.m).
 __attribute__((constructor)) static void MSBLoadAltList(void) {
 	dlopen("/var/jb/Library/Frameworks/AltList.framework/AltList", RTLD_NOW);
 }
@@ -1082,7 +1084,7 @@ static void MSBFitValueLabels(UIView *v) {
 				                                                                               : @"No tested window engine is installed, so the window features are off." forKey:@"footerText"];
 				BOOL windowsGroup = sp.cellType == PSGroupCell && [sp.identifier isEqualToString:kMSBDWindowsGroupID];
 				if (windowsGroup) [sp setProperty:@"Finder and TextEdit windows still use this setting." forKey:@"footerText"];
-				if (!hiding || windowsGroup || MSBDNoEngineKeepsRow([sp propertyForKey:@"key"])) [kept addObject:sp];
+				if (!hiding || windowsGroup || MSBDNoEngineKeepsRow(MSBDRowRuleKey([sp propertyForKey:@"key"], sp.identifier))) [kept addObject:sp];
 			}
 			_specifiers = kept;
 			break;
@@ -1103,7 +1105,7 @@ static void MSBFitValueLabels(UIView *v) {
 					                                               : @"Apple's Stage Manager does the windowing, with the Mac look on top. Other engines are not loaded." forKey:@"footerText"];
 				// (the window handles, Window Size and Double-Tap a Title Bar to are Stage Manager's own windows' too: their style and tint, the size new
 				//  windows open at and what a double tap on a title bar does stay -- the last was left out until 1.8.3.1, GitHub #11)
-				BOOL itsToo = MSBDStageManagerKeepsRow([sp propertyForKey:@"key"]);   // (common/OwnPageRows.h)
+				BOOL itsToo = MSBDStageManagerKeepsRow(MSBDRowRuleKey([sp propertyForKey:@"key"], sp.identifier));   // (common/OwnPageRows.h; App Window Sizes with Window Size)
 				if (!hiding || itsToo || (sp.cellType == PSGroupCell && [sp.identifier isEqualToString:kMSBDWindowsGroupID])) [kept addObject:sp];
 				// (Stage Manager off -- the user said Not Now, declined Apple's introduction, or switched it off: nothing is written for them; this button is
 				//  their yes, and SpringBoard turns it on -- 1.5.1, consent)
@@ -1296,13 +1298,13 @@ static NSString *MSBGroupedRowSentence(NSString *rowKey) {
 		@"goToAppDesktop": @"Go to the App's Desktop: opening an app whose window is on another desktop takes you there. When it's off, the window comes to the desktop you're on.",
 		@"mswSwipeUpQuit": @"Swipe Up to Quit: flicking a window up in the Mac Switcher, or swiping it up with two fingers on a trackpad, quits the app, as in the App Switcher. Drag a window to move it to another desktop.",
 		@"smStripSwipe": @"Recent Apps with Left-Edge Swipe: swiping in from the left edge shows Stage Manager's recent apps. With the Dock at Left, that swipe stays the Dock's.",
-		@"newWindowsFill": @"New Windows Open at Fill: new windows fill the desktop, and Fit to Window doesn't tile them.",
+		@"newWindowsFill": @"New Windows Open at Fill: new windows fill the desktop, and Fit to Window doesn't tile them. Apps with their own size open at that size.",
 		@"snapWindowsToEdges": @"Snap Windows to Edges: a window you move or resize lines up with the screen's edges, the menu bar, the Dock and the windows next to it. When it's off, a window stays where you let go.",
 		@"keepCoveredInFront": @"Keep Covered Windows in Front: when a window comes to the front, any smaller window it would cover completely stays in front of it, so it's never lost behind a bigger window.",
 		@"homeMinimizesWindows": @"Home Minimizes Windows: swiping up from the bottom or pressing the Home button minimizes the windows, so the Home Screen shows. Opening an app brings its window back.",
 		@"flexResizeWindows": @"Resize Apps to Fit Windows: apps lay themselves out to fit their window, like on a Mac. When it's off, an app keeps its full-screen layout and is scaled down to fit.",
 		@"hideTrafficLights": @"Turn Off Traffic Lights: hides the window buttons in the status bar for full-screen apps.",
-		@"magnifyTrafficLights": @"Magnify Traffic Lights: touching a window's buttons with a finger makes them bigger, so you can pick one. Slide to another, lift to use it, or lift away to cancel.",
+		@"magnifyTrafficLights": @"Magnify Traffic Lights: touching a window's buttons with a finger makes them bigger, so you can pick one. Slide to another, lift to use it, or lift away to cancel. With a trackpad or mouse, the button under the pointer grows a little.",
 		@"prewarmApps": @"Prewarm Apps: iPadOS starts some apps in the background before you open them, so they open faster. Turn this off to keep that memory free on an iPad with little RAM.",
 		@"keepTailspinOff": @"Keep Tailspin Off: iPadOS turns on tailspin, a performance trace for Apple's diagnostics, for a few days at a time. It holds tens of MB of memory and samples the whole system many times a second.",
 	}; });
@@ -1663,7 +1665,11 @@ static NSMutableArray *MSBComposeGroupFooters(NSArray *specs) {
 	[super viewWillAppear:animated];
 	[self msb_prewarmMaybeChanged];   // (Prewarm Apps where the prewarm block is armed now)
 	[self msb_tailspinMaybeChanged];   // (Keep Tailspin Off where the root helper found it doing something now)
+	PSSpecifier *sizes = [self specifierForID:@"APP_WINDOW_SIZES"];   // (1.8.8: back from App Window Sizes, its count as stored now)
+	if (sizes) [self reloadSpecifier:sizes animated:NO];
 }
+// App Window Sizes' value (Windows.plist's get): how many apps have a size of their own, "2 Apps", "1 App"; none: nothing (MSBAppSizesController.m).
+- (id)msb_appWindowSizesValue:(PSSpecifier *)spec { return MSBAppSizesRowValue(); }
 @end
 
 // ---- Settings > Desktop > Displays (1.8.7 commit 12; plans/design-1.8.7-displays.md section 6): the last group of the Desktop page lists every
@@ -1724,6 +1730,8 @@ static NSArray<PSSpecifier *> *MSBDisplaysGroup(PSListController *target, PSSpec
 	if (!layerOn) [footer setString:@MSBD_DISP_TEXT_OFF];
 	else if (os15) [footer appendFormat:@" %s", MSBD_DISP_TEXT_MIRROR];
 	else if (!connected.count) [footer appendFormat:@" %s", MSBD_DISP_TEXT_NONE];
+	const char *soon = MSBDDispSoonText((int)[NSProcessInfo processInfo].operatingSystemVersion.majorVersion);   // (1.8.8: iPadOS 15 only, its own paragraph, the switch on or off)
+	if (soon) [footer appendFormat:@"\n\n%s", soon];
 	[group setProperty:footer forKey:@"footerText"];
 	return rows;
 }

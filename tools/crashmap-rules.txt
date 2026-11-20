@@ -60,6 +60,10 @@ target batteryHoldPlug piece the battery icon|the plug in the battery icon durin
 # pointer's last sight on another display, from hovers on each display's system gestures window) has no Settings row: a piece; off, nothing of it runs
 # and the iPad's region is read as before 1.8.7
 target pointerRegion piece the pointer with another display|the pointer's place with another display
+# App Window Sizes (1.8.8, common/AppWindowSize.h; Settings > Windows & Multitasking > Window Size > App Window Sizes) has no switch: a piece. Off,
+# StatusBar.x DMAppSizeOf answers no app (MSBDCrashSkipped, read once) and DMAppSizesLoad reads and forgets nothing: every window opens as in
+# 1.8.7 (Window Size), nothing else goes off, and Turn Back On brings it back
+target appWindowSizes piece App Window Sizes|App Window Sizes
 target batteryPercentInside pref com.besiktasliseba.macstatusbar batteryPercentInside 0 0 Battery Percentage in Icon|the number inside the battery icon
 target desktopIcons pref com.besiktasliseba.macstatusbar desktopIcons 0 1 Show Desktop Icons|the desktop
 # Desktop Picture (1.8.6, statusbar/DesktopWallpaper.h): a path, not a switch -- the guard stores "none", which SpringBoard and Settings read as None
@@ -216,6 +220,13 @@ sym MacStatusBarCore ^_*DMMoreSpace[A-Z] displayScale
 file MacStatusBarCore ^(MoreSpace|DisplayScale)\.h$ displayScale
 file MacStatusBarCore ^(DisplayPrefs|DisplayIdentity|DisplayRows|DisplayRowStore|DisplaySettings)\.h$ displaySettings
 file MacStatusBarCore ^PointerRegion\.h$ pointerRegion
+# App Window Sizes' own code: the table and its lookup, the read with the preferences, the forget on change (A / Z / M's places, the saved window
+# state's lastFrames, Stage Manager's places before full screen and the tile one left for it, DMSMAppSizeForgetPlace, and the file's preZoom), the
+# crash piece's read, the debug triggers -- by name, their blocks too. The opening frame every window open runs (DMOpeningWindowFrameFor,
+# DMNewWindowFrameWindowAt, Stage Manager's DMSMOpeningFrameIn and DMSMNewWindowFrameAt), the join and the cascade stay window code (Windowing,
+# Stage Manager's DMSM rule below), as DMOpeningWindowFrame was: a crash in the shared opening path is not this piece's; so does DMSMForgetPlacesOf,
+# which an app's quit runs too (DMSMForgetApp)
+sym MacStatusBarCore ^_*(DMAppSize|DMSMAppSize|DMForgetSavedLastFrame) appWindowSizes
 # a drive's eject (DriveEject.h, 1.7.3: the sidebar's Eject button, File > Eject, the drives' menus, the bin's eject) is Finder's
 file MacStatusBarCore ^DriveEject\.h$ finder
 file MacStatusBarCore ^(Finder|NativeWindow)\.h$ finder
@@ -238,6 +249,10 @@ file MacStatusBarCore ^ChargeQuiet\.x$ part
 file MacStatusBarCore ^IconTheme\.h$ actmonLibrary
 sym MacStatusBarCore ^_?DMWP[A-Z] desktopWallpaper
 file MacStatusBarCore ^DesktopWallpaper\.h$ desktopWallpaper
+# Magnify Traffic Lights' pointer (1.8.8): its pass-through of -[SpringBoard sendEvent:] (DMLightMagnifySendEvent, hooked once at the first hover over a
+# set of lights, then on every touch stack) is transparent like the other sendEvent: hooks; what it calls to note the touch (DMLightMagnifyTouchNote) and
+# the rest of LightMagnify.h are Magnify Traffic Lights' by the file rule below
+sym MacStatusBarCore ^_*DMLightMagnifySendEvent$ transparent
 file MacStatusBarCore ^LightMagnify\.h$ magnifyTrafficLights
 # the macOS folder (MacFolder.h, 1.8.7.4 round 2: its painter DMDesktopDrawFolder, kept out of line, and its fill, moved out of Desktop.h) is the
 # picture of the desktop's folders and of Finder's: a crash in it is its caller's -- the desktop's (Desktop Icons) or Finder's (Finder) --, so
@@ -401,6 +416,8 @@ sym MacStatusBarCore ^_*(DMFit(?!IfNeeded|WindowContent)[A-Za-z]+|DMSetFitEnable
 sym MacStatusBarCore \$(Aerial\w*|Zetsu\w*|MilkyWay\w*|WindowLaunch|EngineMedusa|AppExitForget)\$ windowingEnabled
 # (AppExitForget: the app exit hook that forgets where a quit app's window was, out of the Aerial-only group since 1.4.2 so every engine has it)
 sym MacStatusBarCore ^_?(DMZetsu|DMAerial|DMMilky|DMMinimize|DMSwap|DMCascade|DMRestoreWindow|DMSaveWindow|DMRememberStage|DMWindowed|DMNewWindow|DMInstallAppExitForget) windowingEnabled
+# App Window Sizes' rule (common/AppWindowSize.h: the read rule, which size wins, the iPhone frame, the change list), any of it left out of line
+file MacStatusBarCore ^AppWindowSize\.h$ appWindowSizes
 # (the windows' App Switcher cards, 1.7.0: SpringBoard asked for each window's card and its picture -- window code, every function and block in it;
 #  the smallest window of the engines, 1.7.0, and the size a new window opens at, Window Size 1.8.0 (DMNewWindow...): plain functions, mostly inlined
 #  into the window code that calls them; where Fit to Window's windows go when its set changes, FitPlan.h 1.8.0: MSBDFit..., kept out of ^DMFit's

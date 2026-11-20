@@ -145,11 +145,24 @@ static NSArray<NSString *> *MSBDFitWhenOneOpens(NSString *fresh, NSArray<NSStrin
 // is on its way out (closing, to full screen) or was left out of Fit (No Fit) leaves the tiles, and the others close up, each keeping its place.
 // One rule for every engine (1.8.0 engine parity, KT 3 Nov): Aerial, Zetsu and MilkyWay4 in StatusBar.x DMRelayoutForOrientation; our Stage
 // Manager engine's Fit tick keeps the tiles of minimized windows while they are all that is missing from the screen. Before 1.8.0 a turn took a
-// minimized window out of Aerial's, Zetsu's and MilkyWay4's tiles: the others closed up and it came back as a regular window over them. (A window
-// that opens is another matter: a minimized window gives its tile up to it, on every engine.)
+// minimized window out of Aerial's, Zetsu's and MilkyWay4's tiles: the others closed up and it came back as a regular window over them. 1.8.8 H2
+// (KT's decision A, 19 Nov: minimized tiled windows keep their tiles on every engine): the same rule where a window opens, one comes back from full
+// screen and a tile closes with no window on screen (StatusBar.x DMFitKeepsTile; our Stage Manager engine's DMSMFitKeptAway). Before, a minimized
+// window gave its tile up to a window that opened.
 static inline BOOL MSBDFitTileStaysAtTurn(BOOL there, BOOL leaving, BOOL noFit, BOOL onScreen, BOOL minimized) {
     return there && !leaving && !noFit && (onScreen || minimized);
 }
+// The tiles close up because a window of the arrangement goes for good -- it closed, quit while full screen, came back from full screen as a free
+// window, or went to another desktop (1.8.8 H2, KT's decision A, 19 Nov: minimized tiled windows keep their tiles on every engine): the minimized
+// windows of the arrangement keep their tiles in the new plan and come back into them, except when exactly one window of it is left on screen,
+// which then fills the space alone and the minimized windows' tiles go (O1: Settings left, Safari and Clock quarters, Safari minimized, Clock
+// quits: Settings fills, as our Stage Manager engine showed on the A12Z). onScreen: how many windows of the arrangement are left on screen.
+// StatusBar.x DMFitLeftAtCloseUp for Aerial, Zetsu and MilkyWay4 (the closure watcher, the close-up of a window back free, MacSwitcher.h's move to
+// another desktop) and MacSwitcherSM.h's move for our Stage Manager engine, whose own close-ups keep them in the plan (SMFitPlan.h
+// DMSMFitLeftAfterClose). Before (H2), the other engines kept them only with no window on screen: four tiles, Clock minimized, Notes quits, and
+// Clock's tile went -- it came back over Safari's half (the H2-H5 review, finding 2). Stage Manager's own Close lays its plan out in the Close's
+// transition (StatusBar.x DMSMPlacesInClose), before Fit's look: it takes this rule too (R2 of p07: Clock's tile went there, on the iPad 2).
+static inline BOOL MSBDFitMinimizedStayAtCloseUp(NSUInteger onScreen) { return onScreen != 1; }
 
 // What waits for Fit's question for a third window, while it holds the app's launch (StatusBar.x DMPromptBeforeLaunch; ctx: the question's). An open's URL and actions (a link, a Spotlight
 // result) are handed to the window's scene, tried for 10 s: no scene exists until the question is answered, up to 12 s and more after a turn, so they start with the launch, not with the

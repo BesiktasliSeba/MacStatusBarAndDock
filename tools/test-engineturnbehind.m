@@ -4,7 +4,9 @@
 // so a Clock window at 601..1024 came back at 515..938 after a turn and back. Now the end of a move by hand records it (gBehindDock, DMSnapMoveEnded),
 // the turn, a window landing after it, the green light's places and a window from a desktop left in the other shape keep a marked window inside the
 // screen down to its bottom edge, every placement of ours takes the mark (DMTitleRecordEngineTo), and the title bar's Back gives back the mark Fill and
-// Zoom took (the record keeps it).
+// Zoom took (the record keeps it). App Window Sizes (1.8.8, review R1 of its port onto 1.8.7.7): its forget takes an app's place while its window
+// is open and leaves the mark with that window; the green light's way back with no place kept puts the window where a new window opens, a place of
+// ours, and takes the mark (WindowKeys.h DMTitleRecordEngineTo; a window that opens anew: test-appwindowsize.sh c_behind).
 // The real code is cut out by test-engineturnbehind.sh (engineturnbehind-*.inc): from StatusBar.x the record (gBehindDock and its functions),
 // DMSnapMoveEnded, DMSnapWindowOf(Frame), DMSnapScreenOf, DMDockSideKeepsOut, the turn (DMRelayoutForOrientation, DMRelayoutStageWhenLanded,
 // DMNoteWindowLayouts), DMFitInto, DMScaleFrame, DMRememberStageFrame, DMSetStageIntent, DMKeepStagePlace, DMOrientKey, DMLayoutFrame(Window),
@@ -24,6 +26,7 @@
 #include "WindowSnap.h"
 #include "FitPlan.h"
 #include "../common/DockSide.h"
+#include "../common/AppWindowSize.h"   // (MSBDOpensFree: DMWindowLayout's 1.8.8 G2 line)
 
 static int fails = 0, checks = 0;
 static void Expect(BOOL ok, NSString *what) { checks++; if (!ok) fails++; printf("%s  %s\n", ok ? "PASS" : "FAIL", what.UTF8String); }
@@ -203,8 +206,15 @@ static NSString *gA5EntranceBundle, *gAerialGreenNewBundle;
 static CGRect gA5EntranceFrame;
 static CFTimeInterval gA5EntranceAt, gAerialGreenNewAt;
 static NSMutableArray<NSString *> *gTOpened;   // (apps asked to open a window from full screen)
-static void DMFitForgetFullScreenTile(NSString *b) { (void)b; }
-static CGRect DMOpeningWindowFrame(void) { return CGRectMake(376, 200, 615, 423); }
+static void DMFitForgetFullScreenTile(NSString *b, NSString *why) { (void)b; (void)why; }
+// (1.8.8 G2: the green light's way back as a free window closes its old Fit tile up, DMWindowLayout's line before the engines' part -- the Fit
+//  record is test-fitgreen's, not played here: Fit off)
+static BOOL DMFitEnabled(void) { return NO; }
+static BOOL gNewWindowsFill = NO;
+static int DMAppSizeOf(NSString *b) { (void)b; return MSBDAppSizeNone; }
+static void DMFitFullScreenBackFree(NSString *b) { (void)b; }
+static CGRect gTOpening = {{376, 200}, {615, 423}};   // (where a new window opens, the engine's frame: Fresh sets it back)
+static CGRect DMOpeningWindowFrameFor(NSString *b) { (void)b; return gTOpening; }   // (App Window Sizes, 1.8.8: the app's own size, else Window Size)
 static void DMApplyWindowLevel(void) { }
 static void DMZetsuMove(UIWindow *w, CGRect target, BOOL animated, void (^done)(void)) { (void)animated; gMoves++; w.frame = target; DMRememberStageFrame(w); if (done) done(); }
 static void DMZetsuAskFrame(NSString *b, CGRect f) { (void)b; (void)f; }
@@ -283,7 +293,7 @@ static void Fresh(CGSize shape) {
     gQueue = [NSMutableArray array]; gLog = [NSMutableArray array];
     gDockSide = 0; gAutoHide = NO; gSnapOff = YES; gPreferRememberedFrame = NO; gTitleDoubleTap = kMSBDTitleFill; gTFront = nil; gTOpened = [NSMutableArray array];
     TForgetMarks();   // (the apps of the last scenario exited: their marks went with them, as at an app's exit)
-    gMoves = 0;
+    gMoves = 0; gTOpening = CGRectMake(376, 200, 615, 423);
 }
 static BOOL Near(CGRect a, CGRect b) { return fabs(a.origin.x - b.origin.x) < 1.0 && fabs(a.origin.y - b.origin.y) < 1.0 && fabs(a.size.width - b.size.width) < 1.0 && fabs(a.size.height - b.size.height) < 1.0; }
 static NSString *R(CGRect r) { return NSStringFromCGRect(r); }
@@ -537,6 +547,39 @@ static void Scenarios(void) {
     [gStages addObject:away];
     DMMSWFitTurned(away, 7);
     Expect(Near(Drawn(kClock), clockP), E([NSString stringWithFormat:@"portrait: where it was in portrait, behind the Dock (%@; before: lifted above %.0f)", R(Drawn(kClock)), kPortLine]));
+
+    printf("-- %s 14. App Window Sizes forgot the place of a window left behind the Dock (its size changed while it was open): the window keeps its mark; the green light's way back puts it where a new window opens and takes it (review R1)\n", gEngineName.UTF8String);
+    Fresh(kLand);
+    Window(kClock, CGRectMake(376, 200, 615, 423));
+    Still();
+    Drop(kClock, clockL);
+    Still();
+    [gLastWindowFrames removeObjectForKey:kClock];   // (DMAppSizeForgetPlace: the place goes, an open window is not moved)
+    Turn(kPort); Turn(kLand);
+    Expect(Near(Drawn(kClock), clockL), E([NSString stringWithFormat:@"the forget alone: the open window keeps its mark, behind the Dock after a turn and back (%@)", R(Drawn(kClock))]));
+    Fresh(kPort);
+    Window(kClock, CGRectMake(204, 300, 615, 423));
+    Still();
+    Drop(kClock, clockP);
+    Still();
+    [gLastWindowFrames removeObjectForKey:kClock];   // (the forget)
+    const CGRect fresh = CGRectMake(204, kPortLine - 423, 615, 423);   // (where a new window opens at the app's new size: down to the Dock's line, above it)
+    gTOpening = DMA5StageFromWindow(fresh);
+    [gLog removeAllObjects];
+    gPreferRememberedFrame = YES; TWindowLayoutEngines(@"center", kClock, DMLayoutFrame(@"center")); gPreferRememberedFrame = NO;   // (the green light's way back, DMLightAction)
+    Expect(Near(Drawn(kClock), fresh) && !DMBehindDockHas(kClock) && Has(LogWith(@"[behind] com.apple.mobiletimer"), @"is no longer behind the Dock (the green light's way back with no place of its own kept"),
+           E([NSString stringWithFormat:@"the way back with no place kept: where a new window opens (%@), the mark taken: %@", R(Drawn(kClock)), LogWith(@"[behind]") ?: @"(no line)"]));
+    Still();
+    Turn(kLand);
+    Expect(CGRectGetMaxY(Drawn(kClock)) <= kLandLine + 0.5, E([NSString stringWithFormat:@"  ... landscape: fitted above the Dock as any window (%@; marked, it stayed partly behind it)", R(Drawn(kClock))]));
+    Fresh(kPort);
+    Window(kClock, CGRectMake(204, 300, 615, 423));
+    Still();
+    Drop(kClock, clockP);
+    Still();
+    gTOpening = DMA5StageFromWindow(fresh);
+    gPreferRememberedFrame = YES; TWindowLayoutEngines(@"center", kClock, DMLayoutFrame(@"center")); gPreferRememberedFrame = NO;   // (no forget: its place is held)
+    Expect(Near(Drawn(kClock), clockP) && DMBehindDockHas(kClock), E([NSString stringWithFormat:@"  ... with its place held (no forget): back where the user left it, the mark kept (%@)", R(Drawn(kClock))]));
 }
 
 int main(int argc, char **argv) { @autoreleasepool {

@@ -102,19 +102,23 @@ c_win_rows() {   # <StatusBar.x>: Window Size and New Windows Open at Fill by th
 }
 c_win_join() {   # <StatusBar.x>: a window joining a stage with no size of its own opens by that stage's display's settings (SB:41293, 41310 of becbdeba)
   fn 'static id DMSMJoinAttributesOn(NSString *key, id frontAttrs, BOOL windowed, long newest, id stage, id identity) {' "$1" > "$W/j" \
-    && grep -qF 'id onDisplay = stage ? DMSMStageDisplayIdentity(stage) : identity;' "$W/j" && grep -qF 'BOOL atFill = MSBDNewWindowAtFill(DMNewWindowsFillFor(onDisplay), false, false);' "$W/j" \
-    && grep -qF 'CGRect opening = atFill ? DMSMLayoutFrameIn(@"fill", u, scr) : DMSMNewWindowFrameIn(u, scr, onDisplay);' "$W/j" \
-    && grep -qF 'MSBDWindowSizeName(DMWindowSizeChoiceFor(onDisplay))' "$W/j" && ! grep -qE '\b(gNewWindowsFill|gWindowSizeChoice)\b' "$W/j"
+    && grep -qF 'id onDisplay = stage ? DMSMStageDisplayIdentity(stage) : identity;' "$W/j" && grep -qF 'CGRect opening = DMSMOpeningFrameIn(bundle, u, scr, onDisplay, &atFill);' "$W/j" \
+    && grep -qF 'BOOL opensFree = MSBDOpensFree(app, DMNewWindowsFillFor(onDisplay), false, false);' "$W/j" \
+    && grep -qF 'MSBDWindowSizeName(DMWindowSizeChoiceFor(onDisplay))' "$W/j" && ! grep -qE '\b(gNewWindowsFill|gWindowSizeChoice)\b' "$W/j" \
+    && fn 'static CGRect DMSMOpeningFrameIn(NSString *bundle, CGRect u, CGSize scr, id identity, BOOL *atFill) {' "$1" > "$W/of" \
+    && grep -qF 'int app = DMAppSizeOf(bundle), s = MSBDOpeningSize(app, DMWindowSizeChoiceFor(identity), DMNewWindowsFillFor(identity));' "$W/of" \
+    && grep -qF 'return DMSMNewWindowFrameAt(s, u, scr);' "$W/of" && ! grep -qE '\b(gNewWindowsFill|gWindowSizeChoice)\b' "$W/of"
 }
 c_win_frame() {   # <StatusBar.x>: Window Size's window and No Fit's place by their display (SB:42265-42276 of becbdeba)
-  fn 'static CGRect DMSMNewWindowFrameIn(CGRect u, CGSize scr, id identity) {' "$1" > "$W/nw" && grep -qF 'int choice = DMWindowSizeChoiceFor(identity);' "$W/nw" \
+  grep -qF 'static CGRect DMSMNewWindowFrameIn(CGRect u, CGSize scr, id identity) { return DMSMNewWindowFrameAt(DMWindowSizeChoiceFor(identity), u, scr); }' "$1" \
+    && fn 'static CGRect DMSMNewWindowFrameAt(int choice, CGRect u, CGSize scr) {' "$1" > "$W/nw" \
     && grep -qF 'return MSBDWindowSizeFrameIn(choice, u, scr, DMCenterTopFor(scr), least);' "$W/nw" && ! grep -qE '\bgWindowSizeChoice\b' "$W/nw" \
     && fn 'static id DMSMNoFitPlace(id stage) {' "$1" > "$W/nofit" && grep -qF 'id identity = DMSMStageDisplayIdentity(stage);' "$W/nofit" \
     && grep -qF 'CGRect f = DMWindowSizeChoiceFor(identity) != MSBDWindowSizeDefault ? DMSMNewWindowFrameIn(u, scr, identity) :' "$W/nofit"
 }
 c_win_ipad() {   # <StatusBar.x>: Aerial, Zetsu, MilkyWay4 and Fit's question before a launch stay the iPad's (their windows never reach the TV)
-  fn 'static CGRect DMOpeningWindowFrame(void) {' "$1" | grep -qF 'if (!MSBDNewWindowAtFill(gNewWindowsFill, false, false)) return DMNewWindowFrame();' \
-    && fn 'static BOOL DMSMFitAsksAbout(NSString *bundle, NSArray<NSString *> *stageKeys, NSString **leftOut, NSString **rightOut) {' "$1" | grep -qF 'MSBDNewWindowAtFill(gNewWindowsFill, DMSMOpensAtOwnSize(bundle), NO)'
+  fn 'static CGRect DMOpeningWindowFrameFor(NSString *bundle) {' "$1" | grep -qF 'int app = DMAppSizeOf(bundle), s = MSBDOpeningSize(app, gWindowSizeChoice, gNewWindowsFill);' \
+    && fn 'static BOOL DMSMFitAsksAbout(NSString *bundle, NSArray<NSString *> *stageKeys, NSString **leftOut, NSString **rightOut) {' "$1" | grep -qF 'MSBDOpensFree(DMAppSizeOf(DMSMKeyBundle(bundle)), gNewWindowsFill, DMSMOpensAtOwnSize(bundle), NO)'
 }
 c_follow() {   # <StatusBar.x>: a display's Dock answer and its windows' layouts applied later only to that display as it is then (review: unplug in between)
   fn 'static UIScreen *DMDockAutoHideScreenStill(NSArray *c) {' "$1" | grep -qF 'return now && now == c[1] ? now : nil;' \
@@ -264,9 +268,10 @@ check "made to fail: the Dock's getter looking the iPad's screen up" "mutant mai
 c_dock_cache_one() { c_dock_cache "$1" $D; }
 check "made to fail: the Dock's cache taking another part's keys" "mutant cachepart $DP ' || strcmp(part, \"dock\") != 0) continue;' ') continue;' c_dock_cache_one"
 check "made to fail: Finder's bin only for the iPad's switch" "mutant finder $T '    for (UIScreen *s in DMDispScreens()) if (s != [UIScreen mainScreen] && DMDispBool(s, \"dock\", \"showTrash\", ipad)) return YES;' '    (void)ipad;' c_finder_trash"
-check "made to fail: a window joining a TV stage at Fill by the iPad's setting" "mutant joinfill $S 'BOOL atFill = MSBDNewWindowAtFill(DMNewWindowsFillFor(onDisplay), false, false);' 'BOOL atFill = MSBDNewWindowAtFill(gNewWindowsFill, false, false);' c_win_join"
-check "made to fail: the joining window's size asked for no display (the iPad's)" "mutant joinsize $S 'DMSMNewWindowFrameIn(u, scr, onDisplay);' 'DMSMNewWindowFrameIn(u, scr, nil);' c_win_join"
-check "made to fail: Window Size's window by the iPad's choice" "mutant frame $S 'int choice = DMWindowSizeChoiceFor(identity);' 'int choice = gWindowSizeChoice;' c_win_frame"
+check "made to fail: a window joining a TV stage at Fill by the iPad's setting" "mutant joinfill $S 'MSBDOpeningSize(app, DMWindowSizeChoiceFor(identity), DMNewWindowsFillFor(identity));' 'MSBDOpeningSize(app, DMWindowSizeChoiceFor(identity), gNewWindowsFill);' c_win_join"
+check "made to fail: a window joining a TV stage at the iPad's Window Size (App Window Sizes' opening frame)" "mutant joinws $S 'MSBDOpeningSize(app, DMWindowSizeChoiceFor(identity), DMNewWindowsFillFor(identity));' 'MSBDOpeningSize(app, gWindowSizeChoice, DMNewWindowsFillFor(identity));' c_win_join"
+check "made to fail: the joining window's size asked for no display (the iPad's)" "mutant joinsize $S 'DMSMOpeningFrameIn(bundle, u, scr, onDisplay, &atFill);' 'DMSMOpeningFrameIn(bundle, u, scr, nil, &atFill);' c_win_join"
+check "made to fail: Window Size's window by the iPad's choice" "mutant frame $S '{ return DMSMNewWindowFrameAt(DMWindowSizeChoiceFor(identity), u, scr); }' '{ return DMSMNewWindowFrameAt(gWindowSizeChoice, u, scr); }' c_win_frame"
 check "made to fail: the iPad's own display looked up (no pass-through)" "mutant winmain $S '    if (DMSMIsMainIdentity(identity)) return gWindowSizeChoice;
 ' '' c_win_rows"
 check "made to fail: a Window Size of the wrong type taken as Default (it reads as not set: the iPad's)" "mutant wintype $S ' : gWindowSizeChoice;

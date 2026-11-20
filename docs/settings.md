@@ -95,6 +95,7 @@ The window settings, on their own page between Desktop and Dock. After Enable Wi
 | Enable Windowing | Off: no window engine loads and every app opens full screen (respring). | On |
 | Window Engine | Which engine runs your windows. Only that one loads (respring). Apple's Stage Manager is listed under Native (not on iPadOS 15), Aerial, Zetsu and MilkyWay4 under Third-Party. With Stage Manager, MacStatusBar&Dock asks before it turns Stage Manager on, and if you say Not Now (or turn it off later), Turn On Stage Manager appears here. With another engine, Stage Manager stays off while it runs and comes back on as you had it when you turn off windowing. | Stage Manager where it runs (iPadOS 16.1 to 18), else Aerial |
 | Window Size | The size a new window opens at, with every engine: Small, Default or Large. A window that opens where it last was keeps its size. The Window menu's Small and Large are the same sizes. | Default |
+| App Window Sizes | Opens the page of apps that open at a size of their own instead of Window Size's (below). The row shows how many apps have one. Hidden while no window engine runs. | No apps |
 | Double-Tap a Title Bar to | What a double tap on a window's title bar does, as on a Mac, with every engine. Fill: the window fills the desktop. Zoom: the window becomes as large as it fits while keeping its shape, centred. After Fill or Zoom, a second double tap gives it its size from before. Minimize: the window goes into its app's icon in the Dock. With no window engine, it sets Finder and TextEdit windows. | Do Nothing (Finder and TextEdit windows zoom until you pick one) |
 | Windows Behind Full-Screen Apps | A full-screen app comes in front of your windows, and Window > Bring All to Front brings them back. Off: windows stay in front. | On |
 | Resize Handles (Stage Manager engine only) | Mac handles, or Stage Manager's own. | Mac |
@@ -109,10 +110,23 @@ The window settings, on their own page between Desktop and Dock. After Enable Wi
 | Home Minimizes Windows | Swiping up from the bottom or pressing the Home button minimizes the windows of the desktop you're on, so the Home Screen shows. Opening an app brings its window back. Keyboard shortcuts for Home, such as Command-H, leave the windows as they are. Off: the windows stay when you go Home. | On, also after an update |
 | Resize Apps to Fit Windows (MilkyWay4 only) | Apps lay themselves out for the window. Off: the full-screen layout, scaled down. | On |
 | Turn Off Traffic Lights | Hides the window buttons in the menu bar for full-screen apps. | Off |
-| Magnify Traffic Lights | Touching a window's red, yellow and green buttons with a finger grows them into a small pill with their symbols, the one under your finger the biggest. Slide to another, lift to use it, or lift away to cancel. A quick tap works as before, and a drag that starts on the buttons opens them instead of moving the window. With every window engine, on Finder and TextEdit windows and on the menu bar's buttons for a full-screen app. A trackpad or mouse keeps the Mac's hover, and its click is a plain click. | On |
+| Magnify Traffic Lights | Touching a window's red, yellow and green buttons with a finger grows them into a small pill with their symbols, the one under your finger the biggest. Slide to another, lift to use it, or lift away to cancel. A quick tap works as before, and a drag that starts on the buttons opens them instead of moving the window. With every window engine, on Finder and TextEdit windows and on the menu bar's buttons for a full-screen app. With a trackpad or mouse, the button under the pointer grows a little, less than under a finger, the symbols show as on a Mac, and a click is a plain click. The button stays grown while the pointer rests on it, until the pointer fades. | On |
 | Hide Multitasking Dots | Hides the three dots at the top of apps while windowing runs. | On |
 | Prewarm Apps | iPadOS starts some apps in the background before you open them, so they open faster. Off: no app is started before you open it, which keeps that memory free on an iPad with little RAM. Shown only where the tweak can control prewarming on that iPad. | On, Off on iPads with 2 GB of memory |
 | Keep Tailspin Off | iPadOS turns on tailspin, a performance trace for Apple's diagnostics, for a few days at a time. It holds tens of MB of memory and samples the whole system many times a second. On: iPadOS doesn't turn it on. Shown only where the tweak can control it on that iPad. | Off, On on iPads with 2 GB of memory |
+
+### App Window Sizes
+
+The page under Window Size in Settings > Windows & Multitasking. An app you add here opens its windows at a size of its own, with every window engine, on the iPad and on an external display, fitted to each. Its size wins over Window Size and New Windows Open at Fill. It applies when a window opens, so you can still resize the window, and a window that opens where it last was keeps its place and size. A change applies to the app's next window at once, and a window already open stays as it is.
+
+| Setting | What it does | New install |
+|---|---|---|
+| An app's row | One for each app with a size of its own, with its icon and its size. An app that's no longer installed shows Not Installed, and its page can still remove it. | |
+| Add App | The apps on your Home Screen, with a search field. Pick one and its page opens. Nothing is saved until you pick a size there. Up to 200 apps. | |
+| Opens At, on an app's page | Small, Medium, Large, Fill or iPhone. Small and Large are Window Size's, and Medium is the size between them, in the middle of the desktop. Fill: the window fills the desktop. iPhone: a tall window the shape of an iPhone, where most apps show their iPhone layout, made smaller to fit if the screen is too small. | Nothing picked |
+| Remove App, on an app's page | Takes the app off the list, so its windows open at Window Size again. | |
+
+With Fit to Window on, these apps open over the tiles without asking where they go, and the tiles stay as they are. If you give an app a size while its window is full screen, the window comes back at that size over the tiles, and the other windows fill its tile. With Open Apps as Windows off, the app still opens full screen and takes its size when you make it a window.
 
 ## Settings > Dock
 
@@ -224,7 +238,7 @@ These two live in the Window menu instead of Settings, so you can change them wh
 | Item | What it does | New install |
 |---|---|---|
 | Open Apps as Windows | Apps open as windows from anywhere: the Home Screen, the Dock, Spotlight, links, notifications and other tweaks' launchers. With Aerial it is Aerial's own Control Center toggle. | Off (Stage Manager engine: On) |
-| Fit to Window | Tiles your windows side by side, from edge to edge with 6 points between them. When a third app opens, you pick its side, or No Fit. Windows keep their places when one closes or another joins, a minimized window keeps its tile, and a fifth window opens over the tiles. Switched off, it spreads the windows back out at a normal size. | Off |
+| Fit to Window | Tiles your windows side by side, from edge to edge with 6 points between them. When a third app opens, you pick its side, or No Fit. Windows keep their places when one closes or another joins, a minimized window keeps its tile, and a fifth window opens over the tiles, as an app with its own size in App Window Sizes does. Switched off, it spreads the windows back out at a normal size. | Off |
 
 The Window menu also has Minimize All Windows, Bring All to Front or Send All to Back, the layouts (Fill Screen, Center, halves, quarters, Small, Large) and, with the Stage Manager engine and a display connected, Move to Other Display. At its end it lists the front app's windows, and a pick brings that window to the front. Fill Screen, the halves and the quarters reach the screen's edges, from right under the menu bar down to the Dock.
 

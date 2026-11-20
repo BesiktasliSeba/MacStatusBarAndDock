@@ -105,7 +105,7 @@
 			<key>label</key>
 			<string>Window Size</string>
 			<key>staticTextMessage</key>
-			<string>The size an app's window opens at. A window that opens where it last was keeps its size.</string>
+			<string>The size an app's window opens at. A window that opens where it last was keeps its size. Apps in App Window Sizes open at their own size.</string>
 			<key>validTitles</key>
 			<array>
 				<string>Small</string>
@@ -118,6 +118,18 @@
 				<string>default</string>
 				<string>large</string>
 			</array>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSLinkListCell</string>
+			<key>detail</key>
+			<string>MSBAppSizesController</string>
+			<key>get</key>
+			<string>msb_appWindowSizesValue:</string>
+			<key>id</key>
+			<string>APP_WINDOW_SIZES</string>
+			<key>label</key>
+			<string>App Window Sizes</string>
 		</dict>
 		<dict>
 			<key>PostNotification</key>
@@ -285,7 +297,7 @@ Recent Apps with Left-Edge Swipe: swiping in from the left edge shows Stage Mana
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>New Windows Open at Fill: new windows fill the desktop, and Fit to Window doesn't tile them.
+			<string>New Windows Open at Fill: new windows fill the desktop, and Fit to Window doesn't tile them. Apps with their own size open at that size.
 
 Snap Windows to Edges: a window you move or resize lines up with the screen's edges, the menu bar, the Dock and the windows next to it. When it's off, a window stays where you let go.
 
@@ -387,7 +399,7 @@ Resize Apps to Fit Windows: apps lay themselves out to fit their window, like on
 			<key>footerText</key>
 			<string>Turn Off Traffic Lights: hides the window buttons in the status bar for full-screen apps.
 
-Magnify Traffic Lights: touching a window's buttons with a finger makes them bigger, so you can pick one. Slide to another, lift to use it, or lift away to cancel.</string>
+Magnify Traffic Lights: touching a window's buttons with a finger makes them bigger, so you can pick one. Slide to another, lift to use it, or lift away to cancel. With a trackpad or mouse, the button under the pointer grows a little.</string>
 			<key>id</key>
 			<string>TRAFFIC_LIGHTS_GROUP</string>
 			<key>label</key>

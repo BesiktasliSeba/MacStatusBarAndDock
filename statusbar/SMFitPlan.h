@@ -134,6 +134,18 @@ static NSDictionary<NSString *, NSDictionary *> *DMSMFitMemoryWithout(NSDictiona
     }
     return out ?: memory;
 }
+// The windows back from full screen that Fit to Window does not tile (1.8.8 F3): of the windows that went full screen (wentFull: StatusBar.x
+// DMSMFitTick's gSMFitWentFull, window keys), those on screen as windows again (onScreen: in the desktop's stage, not full screen) that are not
+// among tiled. A No Fit window, one the green light opened again at Fill or at its app's own size (App Window Sizes: a free window), a regular
+// window over the tiles: back, with no tile to take. A window among tiled comes back into its tile (the tick's "back from full screen"); one still
+// full screen is on screen as no window. Keys as they are (a window's own: another window of its app is another window). Before, only a window
+// that takes part was ever seen coming back: the others stayed among the windows full screen until they closed (the smfit trigger listed the green
+// light's windows under "full screen", iPad 2 s01 row A12b), and one that joined the tiles later was taken for back from full screen then.
+static inline NSArray<NSString *> *DMSMFitBackUntiled(NSSet<NSString *> *wentFull, NSArray<NSString *> *onScreen, NSArray<NSString *> *tiled) {
+    NSMutableArray<NSString *> *back = [NSMutableArray array];
+    for (NSString *k in onScreen) if ([k isKindOfClass:[NSString class]] && [wentFull containsObject:k] && ![tiled containsObject:k] && ![back containsObject:k]) [back addObject:k];
+    return back;
+}
 // The desktop brought back after a respring, laid out for another screen shape (the iPad turned while SpringBoard restarted): its windows'
 // sizes are of the old shape, but where they sit against each other is kept, and that names their tiles -- one window: the whole space; two:
 // side by side (left / right) or one above the other (top / bottom), whichever way they are further apart; three: the side with one window is

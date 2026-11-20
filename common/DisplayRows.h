@@ -61,7 +61,7 @@ static const MSBDDispRow kMSBDDispRows[] = {
       kMSBDRowNeedsDock | kMSBDRowNeedsSM, 16, kMSBDRowAppliesNow, 187, 0, 0, 0, 0, 0, { NULL }, { NULL }, NULL },
     { "SHOW_TRASH", "Show Trash in Dock", "On for displays unless you switch it off here, even when it is off on the iPad.", kMSBDRowSwitch, "dock", "showTrash",
       kMSBDRowNeedsDock | kMSBDRowNeedsFinder, 16, kMSBDRowAppliesNow, 187, 1, 0, 0, 0, 0, { NULL }, { NULL }, NULL },
-    { "WINDOW_SIZE", "Window Size", "The size a new window on this display opens at.", kMSBDRowChoice, "msb", "windowSize",
+    { "WINDOW_SIZE", "Window Size", "The size a new window on this display opens at. Apps in App Window Sizes open at their own size.", kMSBDRowChoice, "msb", "windowSize",
       kMSBDRowNeedsSM, 16, kMSBDRowAppliesNextWindow, 187, 1, 0, 0, 0, 3, { "Small", "Default", "Large" }, { "small", "default", "large" }, NULL },
     { "NEW_WINDOWS_FILL", "New Windows Open at Fill", NULL, kMSBDRowSwitch, "msb", "newWindowsFill",
       kMSBDRowNeedsSM, 16, kMSBDRowAppliesNextWindow, 187, 0, 0, 0, 0, 0, { NULL }, { NULL }, NULL },
@@ -91,10 +91,17 @@ static const MSBDDispRow kMSBDDispRows[] = {
 #define MSBD_DISP_TEXT_DEFAULT_ON "Default: On"
 #define MSBD_DISP_TEXT_SWITCH     "Display Settings"   // (the master switch's row: the crash guard's displaySettings target, its row title in crashmap-rules.txt)
 #define MSBD_DISP_TEXT_SCALE_SWITCH "More Space"       // (More Space's own switch: the guard's displayScale target)
+#define MSBD_DISP_TEXT_EXTENDED_SOON "Full-screen extended display is coming soon."   // (1.8.8: the Displays group's note on iPadOS 15, MSBDDispSoonText)
 // The words on top of a display's rows, the same in the window and on Settings' page: Display Settings off; else the display gone (not connected:
 // before the mirror's words, which a display gone would read as, its desktop gone with it); else a mirror; else "this display only".
 static inline const char *MSBDDispTopText(int layerOn, int connected, int extended) {
     return !layerOn ? MSBD_DISP_TEXT_OFF : !connected ? MSBD_DISP_TEXT_NONE : !extended ? MSBD_DISP_TEXT_MIRROR : MSBD_DISP_TEXT_TOP;
+}
+// (1.8.8, KT 20 Nov ~01:40) The note at the end of Settings' Displays group (the Desktop page, under the Display Settings switch), on iPadOS 15 only:
+// a display there mirrors the iPad on every engine, and its full-screen extended desktop is still to come. 16+ (a display can be its own desktop):
+// none. Text only: it changes nothing else on the page. NULL: no note.
+static inline const char *MSBDDispSoonText(int osMajor) {
+    return osMajor == 15 ? MSBD_DISP_TEXT_EXTENDED_SOON : NULL;
 }
 
 // What the display has now, for "shown when".

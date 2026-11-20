@@ -28,10 +28,12 @@ check "a changed group keeps its places: DMAssignTilesKeepingPlaces gives the ru
    && grep -q 'if (fresh.length) \[was removeObjectForKey:fresh\];' \$W/fn && grep -q 'gFitSlots = \[MSBDFitPlanKeepingPlaces(gFitGroup, was) mutableCopy\];' \$W/fn"
 check "Aerial / Zetsu / MilkyWay4: a tiled window closed -- the windows left keep their places (one fills)" \
   "fn $S 'static void DMWatchFitClosures(void) {' && awk '/^    gFitGroup = left;\$/{g=NR} /^    DMAssignTilesKeepingPlaces\(nil\);\$/{a=NR} END{exit !(g && a == g + 1)}' \$W/fn && ! grep -q 'DMAssignDefaultSlots\|@\"fill\"' \$W/fn"
-check "  ... the app that went full screen out of the tiles quit: the same" \
-  "fn $S 'static void DMFitFullScreenAppGone(NSString *bundleID) {' && awk '/^    gFitGroup = g;\$/{g=NR} /^    DMAssignTilesKeepingPlaces\(nil\);\$/{a=NR} END{exit !(g && a == g + 1)}' \$W/fn"
+check "  ... the app that went full screen out of the tiles quit, or came back as a free window (1.8.8 G2, KT's decision c): the same, one close-up for both" \
+  "fn $S 'static void DMFitFullScreenTileGoes(NSString *bundleID, NSString *why) {' && awk '/^    gFitGroup = g;\$/{g=NR} /^    DMAssignTilesKeepingPlaces\(nil\);\$/{a=NR} END{exit !(g && a == g + 1)}' \$W/fn \
+   && grep -q '^static void DMFitFullScreenAppGone(NSString \*bundleID) { DMFitFullScreenTileGoes(bundleID, @\"quit while full screen\"); }' $S \
+   && fn $S 'static void DMFitFullScreenBackFree(NSString *bundleID) {' && grep -q '^    DMFitFullScreenTileGoes(bundleID, ' \$W/fn"
 check "  ... back from full screen with another window gone meanwhile: the arrangement it left, each keeping its place" \
-  "fn $S 'static void DMFitRejoinAfterFullScreen(NSString *bundleID) {' && grep -q 'gFitSlots = g.count == old.count ? \[oldSlots mutableCopy\] : \[MSBDFitPlanKeepingPlaces(g, oldSlots) mutableCopy\];' \$W/fn"
+  "fn $S 'static void DMFitRejoinAfterFullScreen(NSString *bundleID) {' && grep -q 'gFitSlots = \[\[NSSet setWithArray:g\] isEqualToSet:\[NSSet setWithArray:old\]\] ? \[oldSlots mutableCopy\] : \[MSBDFitPlanKeepingPlaces(g, oldSlots) mutableCopy\];' \$W/fn"
 check "  ... a window joins (DMCascadeStage): it takes the first tile, the others keep their places" \
   "fn $S 'static void DMCascadeStage(UIView *stage) {' && awk '/\[gFitGroup insertObject:me atIndex:0\];/{i=NR} /DMAssignTilesKeepingPlaces\(me\);/{a=NR} END{exit !(i && a == i + 2)}' \$W/fn && ! grep -q 'DMAssignDefaultSlots' \$W/fn"
 check "  ... the third window's question with no side chosen: the new one first, the two tiles kept as places (the Stage Manager engine's default too)" \
@@ -51,12 +53,15 @@ check "  ... a desktop's arrangement without a window (brought here, quit), and 
    && fn $MS 'static BOOL DMMSWFitBringHere(NSString *b, NSInteger fromId, BOOL join, NSString **askLeft, NSString **askRight) {' && grep -q 'DMAssignTilesKeepingPlaces(b);' \$W/fn && ! grep -q 'DMAssignDefaultSlots' \$W/fn"
 check "Stage Manager: a closed window forgotten -- the windows left keep their places (not the order of their last use)" \
   "fn $S 'static void DMSMFitForgetClosed(NSString *opening) {' && grep -q 'gSMFitSlots = left.count ? \[MSBDFitPlanKeepingPlaces(left, gSMFitSlots) mutableCopy\] : nil;' \$W/fn"
+check "  ... a window back from full screen as a free window gives its tile up the same way (1.8.8 G2, KT's decision c)" \
+  "fn $S 'static void DMSMFitBackFree(NSString *key) {' && grep -q 'NSArray<NSString \*> \*left = DMSMFitLeftAfterClose(gSMFitSlots, gone, times);' \$W/fn \
+   && grep -q 'gSMFitSlots = left.count ? \[MSBDFitPlanKeepingPlaces(left, gSMFitSlots) mutableCopy\] : nil;' \$W/fn"
 check "  ... Stage Manager's own Close lays out the same plan in its transition" \
   "fn $S 'static void DMSMPlacesInClose(id ctx) {' && grep -q 'plan = MSBDFitPlanKeepingPlaces(keys, gSMFitSlots);' \$W/fn"
 check "  ... the Fit tick's new set and the launch's open-in-tile decide with DMSMFitPlanDecide, whose new tiles are the rule's for the newest windows" \
   "fn $P 'static NSDictionary<NSString *, NSString *> *DMSMFitPlanDecide(' && grep -q 'NSUInteger n = MIN(bundles.count, defaults.count);' \$W/fn \
    && grep -q 'return n ? MSBDFitPlanKeepingPlaces(\[bundles subarrayWithRange:NSMakeRange(0, n)\], slots) : @{};' \$W/fn && ! grep -q 'plan\[bundles\[i\]\] = defaults\[i\]' \$W/fn \
-   && fn $S 'static void DMSMFitTick(BOOL force) {' && grep -q 'NSDictionary \*plan = DMSMFitPlanDecide(gSMFitSlots, bundles, DMDefaultSlotNames(MIN((NSUInteger)4, bundles.count)), &how);' \$W/fn \
+   && fn $S 'static void DMSMFitTick(BOOL force) {' && grep -q 'NSDictionary \*plan = DMSMFitPlanDecide(gSMFitSlots, planned, DMDefaultSlotNames(MIN((NSUInteger)4, planned.count)), &how);' \$W/fn \
    && fn $S 'static BOOL DMSMAddToStage(NSString *bundle, UIView *from) {' && grep -q 'DMSMFitPlanDecide(slotsNow, part, DMDefaultSlotNames(part.count), &how)' \$W/fn"
 check "  ... the third window's question with no side chosen, before the launch and at the Fit tick: the two tiles are kept as places (they were dropped: the last use decided)" \
   "[ \$(grep -c 'gSMFitSlots = \[@{leftB: @\"left\", rightB: @\"right\"} mutableCopy\];' $S) = 2 ] && ! grep -q 'gSMFitSlots = nil;   // (no choice' $S"

@@ -27,7 +27,7 @@ static BOOL MABMenusOn(void) {
 // What the app offers may have changed without a tap (SpringBoard's "touched"): a shortcut from a hardware keyboard (⌘T, ⌘W), Return in a field (a
 // page loading), another of its windows made key, one of its windows closed or brought forward from the bar. SpringBoard asks again once these have stopped for
 // 1 s, while the app is in front, as for a tap ("com.besiktasliseba.appbridge.menuschanged.<hash>"; only with the switch on; A12Z 18.5, 10 Nov: after
-// ⌘T on a keyboard the bar kept View over the empty tab).
+// ⌘T on a keyboard the bar kept View over the empty tab). Also when what it offers moved with nothing at all (B12's thin first answer: MABMenusLook).
 static void MABMenusChanged(void) {
     static char name[96]; static CFTimeInterval last = 0;
     if (!MABMenusOn()) return;
@@ -129,6 +129,138 @@ static void MABMenuWalk(UIMenu *m, NSString *topID, NSInteger *group, NSMutableA
     if (inlineGroup || depth > 1) (*group)++;
 }
 
+// The key commands of every responder from start up to the app, as UIKit reads them for a key; *chain: which responders those were (B12, below).
+static NSArray<UIKeyCommand *> *MABMenuKeyCommandsFrom(UIResponder *start, uint64_t *chain) {
+    NSMutableArray<UIKeyCommand *> *out = [NSMutableArray array];
+    uint64_t h = 1469598103934665603ull;
+    int depth = 0;   // (at most 64 responders: a nextResponder loop of an app's own must not hang it at every switch -- review L8)
+    for (UIResponder *x = start; x && depth < 64; x = x.nextResponder, depth++) {
+        h = (h ^ (uint64_t)(uintptr_t)(__bridge void *)x) * 1099511628211ull;
+        NSArray *kc = nil;
+        @try { kc = x.keyCommands; } @catch (id e) { kc = nil; }
+        for (UIKeyCommand *c in kc) if ([c isKindOfClass:[UIKeyCommand class]]) [out addObject:c];
+    }
+    if (chain) *chain = h;
+    return out;
+}
+
+// B12, a thin first answer (M1 15.6.1, iPad 2 16.7.7, A12Z 18.5, 20 Nov): what the app offers can grow after it has answered, and nothing says so.
+// Its responders' key commands are getters UIKit reads only when it needs them (a key, the Cmd overlay), and a change of them posts nothing; where
+// its commands start moves as its views come. Maps answers File, Edit, View about 1 s after it opens; its home card's Bookmarks and Actions come
+// with its library, 1-30 s later, and the bar kept the three until a tap. So once it has answered, the app looks again after its own activity (its
+// main run loop about to wait: at most once a second, and once more a second after the last of it, so an idle app is not woken again) at what the
+// bar's titles rest on besides its main menu: where its commands start, the responders from there up, their key commands (an action, a key and
+// modifiers each: not the titles, which an app changes with its state, Play and Pause, in the same menu). Nothing else of the app is asked (no
+// canPerformAction:, no validation, no pasteboard) and no file is written. When that differs from its answer's, it says "menuschanged" and
+// SpringBoard asks it again 1 s later, as after a shortcut. Its main menu: the app's own word that it changed, UIKit's
+// _UIMenuSystemShouldRebuildNotification (by its exported name, where there is one). Not a timer guessing when the app is ready: a check of what
+// it offers, and an ask only when that really moved. An app whose looks keep finding a move its next answer doesn't show (a carousel moving its
+// responders), or whose word no answer follows (not the bar's app: a window of another app is; or one of our menus or panels is open over it), is
+// looked at less often, every 2, 4, then 8 s, until an answer differs or something else asks it (a switch, a tap: B12 review, findings 1 and 5).
+// With Show Apps' Own Menus off since its answer, the next look stops them before it reads anything (finding 2).
+typedef struct { uintptr_t start; uint64_t chain, cmds; uint32_t count, gen; } MABMenuPrint;
+static uint32_t gMABMenuGen;   // (the times the app asked UIKit to rebuild its main menu)
+static MABMenuPrint MABMenuPrintOf(UIResponder *start, NSArray<UIKeyCommand *> *kcs, uint64_t chain) {
+    MABMenuPrint p = { (uintptr_t)(__bridge void *)start, chain, 0, 0, gMABMenuGen };
+    for (UIKeyCommand *c in kcs) {
+        if (!c.action || !(c.title.length || c.discoverabilityTitle.length)) continue;   // (never a row: as the snapshot)
+        uint64_t h = 1469598103934665603ull;
+        h = (h ^ (uint64_t)(uintptr_t)sel_getName(c.action)) * 1099511628211ull;
+        h = (h ^ (uint64_t)c.input.hash) * 1099511628211ull;
+        h = (h ^ (uint64_t)c.modifierFlags) * 1099511628211ull;
+        p.cmds += h; p.count++;   // (a sum: the same commands in another order are the same)
+    }
+    return p;
+}
+static BOOL MABMenuPrintSame(MABMenuPrint a, MABMenuPrint b) {
+    return a.start == b.start && a.chain == b.chain && a.cmds == b.cmds && a.count == b.count && a.gen == b.gen;
+}
+static MABMenuPrint gMABAnswerPrint, gMABSaidPrint;   // (the last answer's; the last one "menuschanged" was said for)
+static BOOL gMABLooking;              // (an answer is out; off once the switch is seen off, until the next answer)
+static uint64_t gMABAnswerSig;        // (what the last answer said: its menus, rows and their states)
+static CFTimeInterval gMABLookSaidAt; // (when a look last said "menuschanged")
+static CFTimeInterval gMABAnsweredAt; // (when the last answer was written)
+static int gMABLookIdle;              // (looks in a row whose word showed nothing new: 0-3; a look every 1 << it seconds)
+static void MABMenusLook(void) {
+    if (!MABMenusOn()) {   // (switched off since its answer: no looking, not even a walk, until the next answer, which needs it on)
+        gMABLooking = NO;
+#if DEBUG
+        MABLog([NSString stringWithFormat:@"appmenus: Show Apps' Own Menus off since its answer: no more looks (at %.3f)", [[NSDate date] timeIntervalSince1970]]);
+#endif
+        return;
+    }
+    UIWindow *win = MABMenuKeyWindow();
+    if (!win || win.windowScene.activationState != UISceneActivationStateForegroundActive) return;   // (no window of it in front)
+    uint64_t chain = 0;
+    UIResponder *start = MABMenuStart(win);
+    MABMenuPrint p = MABMenuPrintOf(start, MABMenuKeyCommandsFrom(start, &chain), chain);
+    if (MABMenuPrintSame(p, gMABAnswerPrint) || MABMenuPrintSame(p, gMABSaidPrint)) return;
+    // (its last word has no answer yet. SpringBoard asks 1 s after a word, and a busy app answers it late: younger than 2.5 s, that answer can
+    //  still come and will show this move too, so nothing is said now (one word out at a time, so an answer is the last word's); older, none will
+    //  come -- it is not the bar's app, or one of our menus or panels is open over it -- and that counts as an answer that showed nothing: the
+    //  next looks wait 2, 4, then 8 s. Before, a window beside the bar's app whose commands kept moving said it every second, without end: B12
+    //  review, finding 1)
+    if (gMABLookSaidAt > gMABAnsweredAt) {
+        if (CACurrentMediaTime() - gMABLookSaidAt < 2.5) return;
+        if (gMABLookIdle < 3) gMABLookIdle++;
+    }
+#if DEBUG
+    MABLog([NSString stringWithFormat:@"appmenus: what it offers moved since its answer (start %@ %@, responders %@, %u key commands, were %u, main menu rebuilt %u times since): menuschanged at %.3f; looks every %d s, %@",
+            NSStringFromClass([start class]), p.start == gMABAnswerPrint.start ? @"same" : @"moved", p.chain == gMABAnswerPrint.chain ? @"same" : @"moved",
+            p.count, gMABAnswerPrint.count, p.gen - gMABAnswerPrint.gen, [[NSDate date] timeIntervalSince1970], 1 << gMABLookIdle,
+            !gMABLookSaidAt ? @"its first word" : gMABLookSaidAt > gMABAnsweredAt ? @"its last word had no answer" : @"its last word was answered"]);
+#endif
+    gMABSaidPrint = p; gMABLookSaidAt = CACurrentMediaTime();
+    MABMenusChanged();
+}
+// Installed with the first answer (once per process; an app SpringBoard never asks has none): the look as the app's main run loop is about to wait,
+// after UIKit's layout of that turn; a timer that only wakes the run loop for the one look due after the last activity (a look never arms it).
+static void MABMenusWatch(void) {
+    static BOOL done;
+    if (done) return;
+    done = YES;
+    static CFRunLoopTimerRef wake; static CFTimeInterval last; static BOOL armed;
+    wake = CFRunLoopTimerCreateWithHandler(NULL, CFAbsoluteTimeGetCurrent() + 1e9, 1e9, 0, 0, ^(CFRunLoopTimerRef t) { armed = NO; });
+    CFRunLoopObserverRef obs = CFRunLoopObserverCreateWithHandler(NULL, kCFRunLoopBeforeWaiting, YES, 2147483000, ^(CFRunLoopObserverRef o, CFRunLoopActivity a) {
+        if (!gMABLooking || [UIApplication sharedApplication].applicationState == UIApplicationStateBackground) return;
+        CFTimeInterval now = CACurrentMediaTime(), due = last + (double)(1 << gMABLookIdle);
+        if (now >= due) {
+            last = now;
+            if (armed) { armed = NO; CFRunLoopTimerSetNextFireDate(wake, CFAbsoluteTimeGetCurrent() + 1e9); }
+            @autoreleasepool { MABMenusLook(); }
+        } else if (!armed) { armed = YES; CFRunLoopTimerSetNextFireDate(wake, CFAbsoluteTimeGetCurrent() + (due - now)); }
+    });
+    if (!wake || !obs) return;
+    CFRunLoopTimerSetTolerance(wake, 0.1);
+    CFRunLoopAddTimer(CFRunLoopGetMain(), wake, kCFRunLoopDefaultMode);
+    CFRunLoopAddObserver(CFRunLoopGetMain(), obs, kCFRunLoopDefaultMode);
+    NSString * __unsafe_unretained *rebuild = (NSString * __unsafe_unretained *)dlsym(RTLD_DEFAULT, "_UIMenuSystemShouldRebuildNotification");
+    id sys = [UIMenuSystem mainSystem];
+    if (rebuild && *rebuild && sys)
+        [[NSNotificationCenter defaultCenter] addObserverForName:*rebuild object:sys queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) { gMABMenuGen++; }];
+}
+// An answer written (MABMenuSnapshot): what it rests on, for the looks, which start with the first.
+static void MABMenusAnswered(UIResponder *start, NSArray<UIKeyCommand *> *kcs, uint64_t chain, NSArray<NSDictionary *> *ordered) {
+    uint64_t sig = 1469598103934665603ull;
+    for (NSDictionary *m in ordered) {
+        sig = (sig ^ (uint64_t)[m[@"t"] hash]) * 1099511628211ull;
+        for (NSDictionary *r in m[@"r"])
+            sig = (sig ^ (((uint64_t)[r[@"x"] unsignedIntValue] << 3) | (r[@"s"] ? 4 : 0) | ([r[@"e"] boolValue] ? 2 : 0) | ([r[@"k"] boolValue] ? 1 : 0))) * 1099511628211ull;
+    }
+    // (the answer to a look's word -- that word still unanswered and at most 3 s old -- saying what the last one said: the looks wait longer.
+    //  Any other answer puts them back to once a second: one that differs, or one something else asked for, a switch, a tap, the app brought
+    //  forward, a row picked. Before, only a different answer did, so a later growth could wait up to 8 s more: B12 review, finding 5)
+    CFTimeInterval now = CACurrentMediaTime();
+    BOOL lookAsked = gMABLookSaidAt > gMABAnsweredAt && now - gMABLookSaidAt < 3.0;
+    if (sig != gMABAnswerSig || !lookAsked) gMABLookIdle = 0;
+    else if (gMABLookIdle < 3) gMABLookIdle++;   // (a look's "menuschanged" that changed nothing)
+    gMABAnsweredAt = now;
+    gMABAnswerSig = sig;
+    gMABAnswerPrint = MABMenuPrintOf(start, kcs, chain);
+    gMABLooking = YES;
+    MABMenusWatch();
+}
+
 // Builds the snapshot and writes it (YES: written); the commands are kept, by key, for the rows picked from it.
 static BOOL MABMenuSnapshot(void) {
     NSString *bundle = [NSBundle mainBundle].bundleIdentifier;
@@ -138,17 +270,14 @@ static BOOL MABMenuSnapshot(void) {
     NSInteger group = 0;
     UIMenu *root = MABMenuRoot();
     if (root) MABMenuWalk(root, nil, &group, found, 0);
+    NSUInteger fromMenu = found.count;
     group += 1000;   // (the responders' own key commands: after the main menu's, as their own group)
-    int depth = 0;   // (at most 64 responders: a nextResponder loop of an app's own must not hang it at every switch -- review L8)
-    for (UIResponder *x = start; x && depth < 64; x = x.nextResponder, depth++) {
-        NSArray *kc = nil;
-        @try { kc = x.keyCommands; } @catch (id e) { kc = nil; }
-        for (UIKeyCommand *c in kc) {
-            if (![c isKindOfClass:[UIKeyCommand class]]) continue;
-            MABMenuFound *f = [MABMenuFound new];
-            f.cmd = c; f.topID = nil; f.group = group;
-            [found addObject:f];
-        }
+    uint64_t chain = 0;
+    NSArray<UIKeyCommand *> *keyCmds = MABMenuKeyCommandsFrom(start, &chain);
+    for (UIKeyCommand *c in keyCmds) {
+        MABMenuFound *f = [MABMenuFound new];
+        f.cmd = c; f.topID = nil; f.group = group;
+        [found addObject:f];
     }
     NSMutableDictionary<NSString *, NSMutableArray *> *menus = [NSMutableDictionary dictionary];
     NSMutableDictionary<NSString *, NSNumber *> *lastGroup = [NSMutableDictionary dictionary];
@@ -216,11 +345,18 @@ static BOOL MABMenuSnapshot(void) {
     MABLog([NSString stringWithFormat:@"appmenus: snapshot: %d kept, %d without a target, %d hidden, %d destructive with no key, %lu found (main menu %@), start %@, menus %@, written %d",
             kept, noTarget, hidden, destructive, (unsigned long)found.count, root ? @"yes" : @"none", NSStringFromClass([start class]),
             [[ordered valueForKey:@"t"] componentsJoinedByString:@","], wrote]);
+    {   // (B12 thin first answer, p08: where the commands found came from, what has keyboard focus, and when, to set against the looks' lines)
+        id focused = nil;
+        @try { focused = win ? [UIFocusSystem focusSystemForEnvironment:win].focusedItem : nil; } @catch (id e) { focused = nil; }
+        MABLog([NSString stringWithFormat:@"appmenus: snapshot: of them %lu from the main menu, %lu key commands; focused %@; at %.3f",
+                (unsigned long)fromMenu, (unsigned long)keyCmds.count, focused ? NSStringFromClass([focused class]) : @"nothing", [[NSDate date] timeIntervalSince1970]]);
+    }
     if (MSTestFlag("/tmp/macstatusbar-debug")) for (NSDictionary *m in ordered) for (NSDictionary *r in m[@"r"]) if (!r[@"s"])
         MABLog([NSString stringWithFormat:@"appmenus:   %@ > %08x %@%@%@", m[@"t"], [r[@"x"] unsignedIntValue], r[@"h"] ?: @"", [r[@"e"] boolValue] ? @"" : @" (disabled)", r[@"k"] ? @" (on)" : @""]);   // (a row's key, not its title: names in Open Recent, mailboxes -- review L9)
 #else
-    (void)kept; (void)noTarget; (void)hidden; (void)destructive;
+    (void)kept; (void)noTarget; (void)hidden; (void)destructive; (void)fromMenu;
 #endif
+    if (wrote) MABMenusAnswered(start, keyCmds, chain, ordered);   // (B12: what it rests on, for the looks)
     return wrote;
 }
 
@@ -281,4 +417,25 @@ static void MABRegisterMenus(void) {
     //  two Safari windows from the bar made no window key -- its scene went to the background and disconnected; A12Z 18.5, m05)
     for (NSNotificationName nn in @[UIWindowDidBecomeKeyNotification, UISceneDidActivateNotification, UISceneDidEnterBackgroundNotification, UISceneDidDisconnectNotification])
         [[NSNotificationCenter defaultCenter] addObserverForName:nn object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) { MABMenusChanged(); }];
+#if DEBUG
+    {   // (B12 thin first answer, p08: UIKit's word that a main menu is to be rebuilt or revalidated, and keyboard focus moving: logged only, to the ms)
+        NSMutableArray<NSNotificationName> *names = [NSMutableArray arrayWithObject:UIFocusDidUpdateNotification];
+        const char *syms[] = { "_UIMenuSystemShouldRebuildNotification", "_UIMenuSystemShouldRevalidateNotification" };
+        for (int i = 0; i < 2; i++) { NSString * __unsafe_unretained *p = (NSString * __unsafe_unretained *)dlsym(RTLD_DEFAULT, syms[i]); if (p && *p) [names addObject:*p]; }
+        for (NSNotificationName nn in names)
+            [[NSNotificationCenter defaultCenter] addObserverForName:nn object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) {
+                id next = [n.name isEqualToString:UIFocusDidUpdateNotification] ? [n.userInfo[UIFocusUpdateContextKey] nextFocusedItem] : n.object;
+                MABLog([NSString stringWithFormat:@"appmenus: heard %@ (%@) at %.3f", n.name, next ? NSStringFromClass([next class]) : @"nil", [[NSDate date] timeIntervalSince1970]]);
+            }];
+    }
+#endif
+    // (B12: it can answer from now on, and says so. An ask posted before the handlers above were registered was lost -- a Darwin notification is
+    //  not kept for a name nobody listens to --, and SpringBoard asks when the app comes to the front, 0.1-0.3 s after a cold launch, while this runs
+    //  only once UIApplicationMain does (Reynard ~1.1 s, after Gecko's start; its scene already active, so no menuschanged either): the titles
+    //  waited for the next minute's layout of the bar. SpringBoard asks again at once while it is the app in front. Once per process, after both
+    //  handlers (an ask SpringBoard sends for this reaches them), only with the switch on)
+    if (MABMenusOn()) {
+        char here[96]; snprintf(here, sizeof here, "com.besiktasliseba.appbridge.menushere.%08x", hash);
+        notify_post(here);
+    }
 }

@@ -137,7 +137,7 @@ int main(int argc, char **argv) {
             NSArray<MTIEntry *> *shown = MSBDOwnRowsShown(gAll, s);
             NSMutableArray<NSString *> *kept = [NSMutableArray array], *left = [NSMutableArray array];
             for (MTIEntry *r in gAll) if (r.ours && r.depth >= 2 && [r.paneTitle isEqualToString:W] && [r.groupID isEqualToString:@"WINDOWS_GROUP"]) [[shown containsObject:r] ? kept : left addObject:r.title];
-            Expect([kept isEqualToArray:@[@"Window Size", @"Double-Tap a Title Bar to", @"Resize Handles", @"Tint Resize Handles"]] && [left isEqualToArray:@[@"Windows Behind Full-Screen Apps"]],
+            Expect([kept isEqualToArray:@[@"Window Size", @"App Window Sizes", @"Double-Tap a Title Bar to", @"Resize Handles", @"Tint Resize Handles"]] && [left isEqualToArray:@[@"Windows Behind Full-Screen Apps"]],
                    [NSString stringWithFormat:@"Stage Manager engine: each row of the Windows group kept or left out on purpose (kept %@; left out %@)", [kept componentsJoinedByString:@", "], [left componentsJoinedByString:@", "]]);
         }
         s = base; s.engineWorks = NO;           // (no tested engine installed, or it runs on its own: the Windows group goes but for Double-Tap a Title Bar to,
@@ -148,11 +148,29 @@ int main(int argc, char **argv) {
             NSArray<MTIEntry *> *shown = MSBDOwnRowsShown(gAll, s);
             NSMutableArray<NSString *> *kept = [NSMutableArray array], *left = [NSMutableArray array];
             for (MTIEntry *r in gAll) if (r.ours && r.depth >= 2 && [r.paneTitle isEqualToString:W] && [r.groupID isEqualToString:@"WINDOWS_GROUP"]) [[shown containsObject:r] ? kept : left addObject:r.title];
-            Expect([kept isEqualToArray:@[@"Double-Tap a Title Bar to"]] && [left isEqualToArray:@[@"Window Size", @"Windows Behind Full-Screen Apps", @"Resize Handles", @"Tint Resize Handles"]],
+            Expect([kept isEqualToArray:@[@"Double-Tap a Title Bar to"]] && [left isEqualToArray:@[@"Window Size", @"App Window Sizes", @"Windows Behind Full-Screen Apps", @"Resize Handles", @"Tint Resize Handles"]],
                    [NSString stringWithFormat:@"no working engine: each row of the Windows group kept or left out on purpose (kept %@; left out %@)", [kept componentsJoinedByString:@", "], [left componentsJoinedByString:@", "]]);
         }
         s.stageManagerEngine = YES;             // (Stage Manager shown but not working: the same, our own windows' row stays)
         Shows(s, @"Stage Manager, not working", W, @[@"Double-Tap a Title Bar to"], @[@"Window Size", @"Windows Behind Full-Screen Apps", @"Tint Resize Handles", @"New Windows Open at Fill"]);
+        {   // (1.8.8: App Window Sizes, right under Window Size, is left out exactly where Window Size is: every state, the page's rule and the search's)
+            MTIEntry *ws = Row(W, @"Window Size"), *aws = Row(W, @"App Window Sizes");
+            Expect(aws && aws.opensPage && [aws.groupID isEqualToString:@"WINDOWS_GROUP"] && !aws.key && [aws.path.lastObject isEqualToString:kMSBDAppWindowSizesRowID]
+                   && [aws.uid isEqualToString:@"msbd-tweaksetting:root=MAC_WINDOWS&path=APP_WINDOW_SIZES"],
+                   [NSString stringWithFormat:@"index: App Window Sizes in the Windows group, a page of its own (%@)", aws.uid]);
+            int same = 0, states = 0;
+            for (int m = 0; m < 256; m++) {
+                MSBDOwnPages t = base;
+                t.stockBar = m & 1; t.barLine = !(m & 2); t.engineWorks = !(m & 4); t.stageManagerEngine = (m & 8) != 0; t.milkyWayEngine = (m & 16) != 0;
+                t.focus18Failed = (m & 32) != 0; t.desktopFailed = (m & 64) != 0; t.dockLine = !(m & 128);
+                BOOL a = MSBDOwnRowHidden(t, aws.paneID, aws.groupID, aws.stockHides, aws.key, aws.path.lastObject, aws.belowLine);
+                BOOL w = MSBDOwnRowHidden(t, ws.paneID, ws.groupID, ws.stockHides, ws.key, ws.path.lastObject, ws.belowLine);
+                states++; same += a == w;
+            }
+            Expect(ws && aws && same == states, [NSString stringWithFormat:@"App Window Sizes left out exactly where Window Size is (%d of %d states)", same, states]);
+            Expect([MSBDRowRuleKey(nil, kMSBDAppWindowSizesRowID) isEqualToString:kMSBDWindowSizeRowKey] && [MSBDRowRuleKey(@"x", @"OTHER") isEqualToString:@"x"] && !MSBDRowRuleKey(nil, nil),
+                   @"the rule's key: App Window Sizes by Window Size's, every other row by its own");
+        }
         s = base; s.milkyWayEngine = YES;       // (MilkyWay4, 15 only)
         Shows(s, @"MilkyWay4", W, @[@"Window Size", @"Double-Tap a Title Bar to", @"Resize Apps to Fit Windows", @"Windows Behind Full-Screen Apps"], @[@"Resize Handles"]);
 
