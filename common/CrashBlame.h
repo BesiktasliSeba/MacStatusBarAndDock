@@ -30,6 +30,7 @@
 #include <mach-o/dyld.h>
 #include <mach-o/loader.h>
 #include <objc/runtime.h>   // (class_getImageName: the library of a class an exception names, 1.8.7.7)
+#include "CauseHide.h"        // (MSBDCauseHideText: a cause never carries the user's own text, 1.8.8.1)
 
 enum { kMSBDBlameUnknown = 0, kMSBDBlameOurs = 1, kMSBDBlameApple = 2, kMSBDBlameOther = 3, kMSBDBlameUnpinned = 4 };
 #define MSBD_BLAME_UNPINNED 1   // (1.8.7.7: this classifier knows UNPINNED -- the Mac tests run on the code before it too, tools/test-crashblame.sh)
@@ -814,6 +815,7 @@ static inline NSString *MSBDBlameCauseText(NSDictionary *body, NSArray<NSString 
         for (NSString *a in asi) if (a.length && ![a isEqualToString:@"abort() called"]) { [m appendFormat:@" -- %@", a]; break; }
         cause = m.length ? m : @"not given in the report";
     }
+    cause = MSBDCauseHideText(cause);   // (no quoted text of a view, no sticky note's details: CauseHide.h, 1.8.8.1)
     NSString *lib = MSBDCauseClassLibrary(cause);
     return lib.length ? MSBDCauseWithLibrary(cause, lib) : MSBDCauseOneLine(cause, MSBD_CAUSE_BYTES);
 }

@@ -282,6 +282,14 @@ int main(int argc, char **argv) {
             Ok(@"death record: the line of that pid and time only", death.count == 6 && [death[4] isEqualToString:reason], [death componentsJoinedByString:@" | "]);
             c = MSBDBlameCauseText(pop, death);
             Ok(@"cause: the death record's reason", [c hasPrefix:@"NSGenericException: UIPopoverPresentationController"] && [c containsString:@"sourceView or barButtonItem"], c);
+            {   // (1.8.8.1, common/CauseHide.h: the guard's record keeps no view's quoted text and no sticky note's details)
+                NSArray *quoted = @[@"1", @"2", @"main", @"NSInternalInconsistencyException", @"<UITextView: 0x1; frame = (0 0; 9 9); text = 'MSB-TEST-PRIV words'; layer = <x>>", @"NSException"];
+                NSArray *noted = @[@"1", @"2", @"main", @"NSInvalidArgumentException", @"-[DMNoteTextView x]: unrecognized selector sent to instance 0x1 (MSB-TEST-PRIV)", @"NSException"];
+                c = MSBDBlameCauseText(pop, quoted);
+                Ok(@"cause: a view's quoted text hidden (1.8.8.1)", [c isEqualToString:@"NSInternalInconsistencyException: <UITextView: 0x1; frame = (0 0; 9 9); text hidden"], c);
+                c = MSBDBlameCauseText(pop, noted);
+                Ok(@"cause: a reason naming a sticky note's code: only the exception's name", [c isEqualToString:@"NSInvalidArgumentException: in sticky notes (details hidden)"], c);
+            }
             Ok(@"death record: another report's pid finds nothing", MSBDCauseLineFor(dnd) == nil, @"");
             // a reason naming our class makes it ours (the classifier reads it with the crash text)
             v = MSBDBlameReportBodyFull(pop, nil, @"-[DMStageLights update]: unrecognized selector sent to instance 0x1", nil, &b, NULL);   Check(@"death reason names DMStageLights: OURS", v, b, kMSBDBlameOurs);

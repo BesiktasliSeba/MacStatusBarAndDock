@@ -19,6 +19,7 @@
 #include "CrashGuard.h"
 #include "StageManagerAvailable.h"
 #include "DpkgState.h"
+#include "CauseHide.h"   // (MSBDCauseHideText: a cause never carries the user's own text, 1.8.8.1)
 #include "CrashBlame.h"   // (1.8.7.7: MSBDCauseTrim, the death record kept short)
 #include <sys/stat.h>
 
@@ -390,9 +391,11 @@ static inline NSString *MSBDGuardActionWords(NSDictionary *record) {
     return action == 3 ? [off stringByAppendingString:@" after more crashes"] : off;
 }
 // A crash's words for Report a Problem (1.8.7.7, #14): one line, paths of the user's files ("/var/mobile/...", "/private/var/mobile/...", app
-// folders, file:// links) as "<path>", at most `max` characters.
+// folders, file:// links) as "<path>", at most `max` characters. 1.8.8.1: first, no quoted text of a view and no sticky note's details (CauseHide.h:
+// a record written by an older build too).
 static inline NSString *MSBDReportSanitize(NSString *text, NSUInteger max) {
     if (![text isKindOfClass:[NSString class]] || !text.length) return @"";
+    text = MSBDCauseHideText(text);
     NSString *t = [[text componentsSeparatedByCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"\t\r\n"]] componentsJoinedByString:@" "];
     static NSRegularExpression *paths; static dispatch_once_t once;
     dispatch_once(&once, ^{ paths = [NSRegularExpression regularExpressionWithPattern:@"(file://[^\\s'\"]*|(/private)?/var/(mobile|containers|jb/var/mobile)(/[^\\s'\",;)]*)?)" options:NSRegularExpressionCaseInsensitive error:nil]; });

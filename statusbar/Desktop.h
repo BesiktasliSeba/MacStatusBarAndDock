@@ -15,6 +15,8 @@
 //  - Names: an icon's own Hide Name, or every name (Settings > Hide Desktop Icon Names) -- the icon keeps its place (DesktopNames.h).
 //  - Every file change is Finder's (DMFinderOps: the policy -- only the user's own places --, Undo); every drag is Finder's own drag (into
 //    Finder windows, onto folders here, the Dock's Downloads stack, app windows; and from them onto the desktop).
+//  - Sticky notes (1.8.8.1, DesktopNotes.h): New Sticky Note in the empty desktop's menu; a note lies on page 1 under the icons, a tap types in it.
+//    Every branch here is a one-line call into a -dm_note... method, so a crash in note code is the notes' own (Show Sticky Notes), not the desktop's.
 // One DMDesktop is one desktop -- its folder, its places, its view -- so a later Spaces feature can keep one per desktop.
 #define kDesktopDomain CFSTR("com.besiktasliseba.macstatusbar.desktop")
 #include "../common/DesktopCheck.h"   // (iPadOS 17+: the check's verdict, read by Settings -- DMDesktopNewOSReady)
@@ -106,6 +108,7 @@ static DMDesktop *gDesktop;
 static BOOL gDesktopOn = YES;   // (Settings > Desktop > Show Desktop Icons; with Finder on. On the Status Bar page until 1.7.5, same key)
 static BOOL gDesktopHideNames = NO;   // (Settings > Desktop > Hide Desktop Icon Names: every icon without its name, DesktopNames.h)
 static double gDesktopIconSize = 0;   // (Settings > Desktop > Icon Size, 1.7.5: points, 0 = never set -- the Home Screen's size, as always)
+static BOOL gDesktopNotesOn = YES;    // (Settings > Desktop > Show Sticky Notes, 1.8.8.1: on unless set; with the desktop on -- DesktopNotes.h)
 // (for the untested-iPadOS diagnostics, DMDesktopDiag: what the last measure read from the Home Screen -- 1 the names' font, 2 their colours,
 //  4 an app icon view to read them from, 8 the picture size from an icon view -- and where the folders' picture came from: 4 drawn, the folder
 //  icon of 1.4 (1-3 were the Files app's Home Screen icon, iOS's own Files icon, none, before it was drawn))
@@ -138,10 +141,46 @@ static int gDesktopLookRead, gDesktopFolderFrom;
 - (void)dm_axOpen:(DMDesktopItemView *)v;
 - (void)dm_foldersChanged:(NSSet<NSString *> *)folders;
 - (void)dm_followPage;   // (its frame: its page of the screen, wherever page 1's list lies -- DMDesktopPageFrameIn)
+- (BOOL)dm_typingNow;    // (1.8.8.1: a name is edited, or a sticky note is typed in -- DMDesktopTypingNow)
+- (void)dm_typingEnd:(NSString *)why;   // (... and that ends: a rename keeps the typed name, as a click elsewhere does -- DMDesktopTypingEnd)
 #if DEBUG
 - (void)dm_debug:(NSString *)spec;
 #endif
 @end
+// Sticky notes on the desktop (1.8.8.1): their state and every method of theirs, DesktopNotes.h (the crash map's stickyNotes target)
+@class DMNotesState;
+@interface DMDesktop (Notes) <UITextViewDelegate>
+- (void)dm_noteInit;
+- (void)dm_noteTick;
+- (void)dm_noteLayoutIn:(CGRect)area;
+- (void)dm_noteTakeInto:(DMPlacer *)pl;
+- (void)dm_noteStoreChanged;
+- (UIView *)dm_noteHitAt:(CGPoint)p;
+- (BOOL)dm_noteAtScreen:(CGPoint)sp;
+- (UIAction *)dm_noteNewRowAt:(CGPoint)sp;
+- (void)dm_noteTap:(UITapGestureRecognizer *)g;
+- (BOOL)dm_noteAXActivate:(UIView *)v;
+- (BOOL)dm_noteActive;
+- (void)dm_noteEnd:(NSString *)why;
+- (void)dm_noteFit;
+- (BOOL)dm_noteGripAt:(CGPoint)sp;
+- (BOOL)dm_noteKey:(UIKey *)key;
+- (void)dm_noteTouchBegan:(UITouch *)t;
+- (void)dm_notePrefChanged;
+- (BOOL)dm_noteTrackBegin:(UIView *)at;
+- (BOOL)dm_noteTracked;
+- (BOOL)dm_noteLiftAt:(CGPoint)sp;
+- (void)dm_noteDragTo:(CGPoint)sp;
+- (void)dm_noteDropAt:(CGPoint)sp;
+- (BOOL)dm_noteHoldMenuFor:(UITouch *)t;
+- (BOOL)dm_noteOwnsMenu:(UIContextMenuInteraction *)i;
+- (UIContextMenuConfiguration *)dm_noteConfigFor:(UIContextMenuInteraction *)i at:(CGPoint)loc;
+- (NSString *)dm_noteDiag;
+#if DEBUG
+- (void)dm_noteDebug:(NSString *)arg;
+#endif
+@end
+static BOOL DMStickyPref(void);   // (DesktopNotes.h: Show Sticky Notes, read with the desktop's other switches)
 // For the Dock (dock/Dock.x, found with dlsym): a gesture of the Home Screen's asks to begin -- is its touch the desktop's? (-dm_touchIsOursFor:)
 __attribute__((visibility("default"))) BOOL MSBDDesktopTouchIsOurs(UIGestureRecognizer *g) { return gDesktop && g && [gDesktop dm_touchIsOursFor:g]; }
 // For the native windows (NativeWindow.h, 1.7.8): the desktop is Finder's -- a touch on it keeps them active and in front, and it has the keys while
@@ -149,7 +188,9 @@ __attribute__((visibility("default"))) BOOL MSBDDesktopTouchIsOurs(UIGestureReco
 static BOOL DMDesktopShownAtScreen(CGPoint sp) { return gDesktop && [gDesktop dm_shownAt:sp]; }
 static CGFloat DMDesktopWindowLevel(void) { return gDesktop.window ? gDesktop.window.windowLevel : -2.0; }
 static BOOL DMDesktopHasKeysNow(void) { return gDesktop && [gDesktop dm_hasKeys]; }
-static void DMDesktopYieldKeys(void) { if (gDesktop && [gDesktop dm_ownsKeys]) [gDesktop dm_setHasKeys:NO]; }
+// (a sticky note being typed in ends then too, whether the desktop had the keys or not: with the keyboard's hide key it stays typed in without them,
+//  the check's item 7)
+static void DMDesktopYieldKeys(void) { [gDesktop dm_noteEnd:@"a native window was made active"]; if (gDesktop && [gDesktop dm_ownsKeys]) [gDesktop dm_setHasKeys:NO]; }
 // ... and the Dock's swipe down fired for that touch: the desktop lets it go (decided once per touch, DesktopHold.h -- 1.7.8).
 __attribute__((visibility("default"))) void MSBDDesktopTouchGivenAway(UIGestureRecognizer *g) { if (gDesktop && g) [gDesktop dm_touchGivenAwayFor:g]; }
 // ... and the Dock at a screen side moved the Home Screen's pages (Settings > Dock > Position, 1.8.2): the desktop stays on its page of the screen, in the same
@@ -338,7 +379,7 @@ static void DMKeyboardDockWatch(void) {
     });
 }
 
-// ---- the window a name is typed in (1.6.0) ----
+// ---- the window a name is typed in (1.6.0); the desktop's typing window, a name's or a sticky note's (1.8.8.1) ----
 // UIKit puts SpringBoard's keyboard windows just above the window that holds the field being typed in (DesktopRename.h). The desktop is in the
 // Home Screen's window (-2), under every app window and under the Dock, so a name edited there had its keyboard behind Stage Manager's windows
 // (iPad 2, 16.7.7: the text effects window at -1, the keyboard's at 0, the windows at 5) and a hardware keyboard's bar under the Dock, its keyboard
@@ -349,11 +390,16 @@ static void DMKeyboardDockWatch(void) {
 // Without that window (its class missing) the field stays in the desktop, as before 1.6.0.
 static UIWindow *gDesktopRenameWindow;
 static UIView *gDesktopRenameRotator;   // (the field's container, turned to how the window lies on the screen: its points are the screen's)
+// (1.8.8.1: every view of its own takes the touch -- the field and its parts, a sticky note being typed in and its grips, and what UIKit draws in
+//  this window for them: the edit menu (Select All, Paste), the loupe. Only the field took it before, so a tap on that menu fell through to the
+//  window below and ended the typing before the menu acted (sticky-notes.md Feasibility 2b). Never the window, its container, or a view about as
+//  big as the screen -- UIKit's menu containers stay until their close has played: one would take every touch on the screen while the window
+//  shows, the check's item 4 -- NativeWindow.h DMViewNearlyScreen)
 static UIView *DMDesktopRenameHitTest(UIWindow *self, SEL _cmd, CGPoint p, UIEvent *e) {
     struct objc_super sup = { self, [self superclass] };
     UIView *hit = ((id (*)(struct objc_super *, SEL, CGPoint, UIEvent *))objc_msgSendSuper)(&sup, _cmd, p, e);
-    for (UIView *v = hit; v && v != self; v = v.superview) if ([v isKindOfClass:[UITextField class]]) return hit;   // (the field and its parts)
-    return nil;
+    if (!hit || hit == self || hit == gDesktopRenameRotator || DMViewNearlyScreen(hit)) return nil;
+    return hit;
 }
 static BOOL DMDesktopRenameYes(id self, SEL _cmd) { return YES; }   // (it has to be able to become the key window, or the field never gets the keys)
 // SpringBoard's orientation window keeps its portrait bounds on iPadOS 16 while the scene is turned, and turns itself once it is the key window
@@ -392,16 +438,22 @@ static CGFloat DMDesktopRenameLevel(void) {
     }
     return MSBDRenameHostLevel(levels, n, kMenuWindowLevel);
 }
+// The typing window can be had here: made already, or its class and initializer are there (a sticky note needs it: New Sticky Note is greyed without).
+static BOOL DMDesktopTypingWindowCan(void) {
+#if DEBUG
+    if (DMTestFlag("/tmp/msb-rename-in-desktop")) return NO;   // (debug: the field in the desktop, as before 1.6.0 -- for comparisons)
+#endif
+    if (gDesktopRenameWindow) return YES;
+    Class base = objc_getClass("SBMainScreenActiveInterfaceOrientationWindow");
+    return base && [base instancesRespondToSelector:NSSelectorFromString(@"initWithRole:debugName:")];
+}
 // The container the field goes in, its window shown at its level; nil: no such window here (the field then stays in the desktop).
 static UIView *DMDesktopRenameHost(void) {
-#if DEBUG
-    if (DMTestFlag("/tmp/msb-rename-in-desktop")) return nil;   // (debug: the field in the desktop, as before 1.6.0 -- for comparisons)
-#endif
+    if (!DMDesktopTypingWindowCan()) { DMLog(@"[desktop] rename window: the window class or initializer is missing (the field stays in the desktop)"); return nil; }
     if (!gDesktopRenameWindow) {
         @try {
             Class base = objc_getClass("SBMainScreenActiveInterfaceOrientationWindow");
             SEL initRole = NSSelectorFromString(@"initWithRole:debugName:");
-            if (!base || ![base instancesRespondToSelector:initRole]) { DMLog(@"[desktop] rename window: the window class or initializer is missing (the field stays in the desktop)"); return nil; }
             Class sub = objc_getClass("MSBDesktopRenameWindow");
             if (!sub) {
                 sub = objc_allocateClassPair(base, "MSBDesktopRenameWindow", 0);
@@ -437,18 +489,44 @@ static void DMDesktopRenameHostDone(void) {
     UIWindow *w = gDesktopRenameWindow;
     if (w && !w.hidden) w.hidden = YES;
 }
-// A touch on the name being edited in that window. Stage Manager's window gestures see every touch through the system gesture window and only
-// ask what window card lies under the finger: a tap on the field brought the app window under it forward (iPad 2, 16.7.7, 1.6.0) -- they leave
-// such a touch alone, as one on a native window (StatusBar.x, DMNativeSysGestures).
-static BOOL DMDesktopRenameFieldTouch(UITouch *t) {
+// ---- the desktop's typing (1.8.8.1: a name edited on the desktop, or a sticky note typed in -- one or the other, in that one window) ----
+static BOOL DMDesktopTypingNow(void);   // (below: a name or a note is being typed)
+static BOOL DMStickyGripAt(CGPoint sp);   // (DesktopNotes.h: one of the note's resize grips is at that screen point)
+// Is this SCREEN point what the typing window shows: the name's field (4 pt around it too, as before 1.8.8.1), the note being typed in with its
+// grips, the edit menu or loupe UIKit draws in that window? Only on the iPad's screen, where that window is: a touch on the TV at the same numbers
+// is not the typing's (the check's item 6).
+__attribute__((noinline)) static BOOL DMDesktopTypingWindowTakes(CGPoint sp, UIScreen *screen) {
     UIWindow *w = gDesktopRenameWindow;
-    if (!t || !w || w.hidden) return NO;
-    UITextField *tf = nil;
-    for (UIView *v in gDesktopRenameRotator.subviews) if ([v isKindOfClass:[UITextField class]]) { tf = (UITextField *)v; break; }
-    if (!tf) return NO;
+    if (!w || w.hidden || w.alpha < 0.01 || (screen && screen != [UIScreen mainScreen]) || !DMDesktopTypingNow()) return NO;
+    id<UICoordinateSpace> scr = [UIScreen mainScreen].coordinateSpace;
+    for (UIView *v in gDesktopRenameRotator.subviews)
+        if ([v isKindOfClass:[UITextField class]] && !v.hidden && CGRectContainsPoint(CGRectInset([v convertRect:v.bounds toCoordinateSpace:scr], -4.0, -4.0), sp)) return YES;
+    UIView *hit = nil;
+    @try { hit = [w hitTest:[w convertPoint:sp fromCoordinateSpace:scr] withEvent:nil]; } @catch (NSException *e) { hit = nil; }
+    return hit != nil;   // (the window answers only for its own views: DMDesktopRenameHitTest)
+}
+// The touch at this SCREEN point is the desktop's typing: on what its window shows (above), or a key of our own on-screen keyboard and what the
+// keyboard's windows draw (its edit menu, dictation, emoji: NativeWindow.h DMPointOnOwnKeyboard). Asked where a touch begins: the desktop
+// (-dm_touchBegan:) and the native windows (DMNativeTouchBegan): there a caret tap or a key over an active Finder window made Finder active, which
+// took the keys and ended the typing (sticky-notes.md Feasibility 2a).
+__attribute__((noinline)) static BOOL DMDesktopTypingTakes(CGPoint sp, UIScreen *screen) {
+    if (!DMDesktopTypingNow() || (screen && screen != [UIScreen mainScreen])) return NO;
+    return DMDesktopTypingWindowTakes(sp, screen) || DMPointOnOwnKeyboard(sp);
+}
+// A touch on the typing window's views, for SpringBoard's system gestures (StatusBar.x, DMNativeSysGestures). Stage Manager's window gestures see
+// every touch through the system gesture window and only ask what window card lies under the finger: a tap on the field brought the app window
+// under it forward (iPad 2, 16.7.7, 1.6.0) -- they leave such a touch alone, as one on a native window; by the window's own hit test, so a tap on
+// the edit menu drawn there is spared too (the check's item 3). Our keyboard's keys are not counted here: only the tap-to-front gesture leaves
+// them (DMSMTapToFrontOnOwnKeyboard), the Home and App Switcher swipes from the bottom edge stay. *onGrip: on a sticky note's resize grip (the
+// screen-edge pulls leave that drag to the note).
+__attribute__((noinline)) static BOOL DMDesktopTypingTouch(UITouch *t, BOOL *onGrip) {
+    if (onGrip) *onGrip = NO;
+    if (!t || !DMDesktopTypingNow()) return NO;
     UIScreen *screen = t.window.screen ?: [UIScreen mainScreen];
     CGPoint p = t.window ? [t.window convertPoint:[t locationInView:t.window] toCoordinateSpace:screen.coordinateSpace] : [t locationInView:nil];
-    return CGRectContainsPoint(CGRectInset([tf convertRect:tf.bounds toCoordinateSpace:screen.coordinateSpace], -4.0, -4.0), p);
+    if (!DMDesktopTypingWindowTakes(p, screen)) return NO;
+    if (onGrip) *onGrip = DMStickyGripAt(p);
+    return YES;
 }
 @implementation DMDesktop {
     __weak UIView *_list;                                  // page 1's icon list (SBIconListView), our superview
@@ -494,6 +572,7 @@ static BOOL DMDesktopRenameFieldTouch(UITouch *t) {
     NSArray<NSString *> *_selectWhenListed; NSString *_renameWhenListed;
     UITextField *_renameField; NSString *_renamePath; __weak UIWindow *_keyBefore; CGRect _renameHome;   // (_renameHome: screen points)
     BOOL _renamePlaced;   // (the field had its first place: later moves are animated)
+    DMNotesState *_notes;   // (1.8.8.1: the sticky notes on this desktop -- DesktopNotes.h)
 }
 - (instancetype)initWithFolder:(NSString *)folder {
     if (!(self = [super initWithFrame:CGRectZero])) return nil;
@@ -519,6 +598,7 @@ static BOOL DMDesktopRenameFieldTouch(UITouch *t) {
     // the empty desktop (gestures on the icon list itself, only for touches on its empty space): the selection rectangle -- a pointer's drag, or a
     // finger held 0.35 s and moved (a quicker swipe still turns the page) -- and its Haptic Touch menu (a held finger, or a right click)
     _bgMenu = [[UIContextMenuInteraction alloc] initWithDelegate:self];
+    [self dm_noteInit];   // (its sticky notes' layer, under every icon; the store asked for)
     [self dm_watch];
     [self dm_list];
     return self;
@@ -583,6 +663,7 @@ static void DMDesktopEditHomeScreen(void) {
     ((void (*)(id, SEL, BOOL))objc_msgSend)(im, @selector(setEditing:), YES);
 }
 - (void)dm_detach {
+    [self dm_noteEnd:@"the desktop was taken off its page"];
     [self dm_endRename:NO];
     [self dm_setHasKeys:NO];
     if (_bgMenu.view) { [_menuOpen dismissMenu]; [_bgMenu.view removeInteraction:_bgMenu]; }
@@ -623,7 +704,7 @@ static void DMDesktopEditHomeScreen(void) {
             DMLog([NSString stringWithFormat:@"[desktop] on page 1 (%@ %@), %lu icons", NSStringFromClass([found class]), NSStringFromCGRect(found.bounds), (unsigned long)_items.count]);
             [self dm_placeAgain];
         }
-        if (!found) return;
+        if (!found) { [self dm_noteTick]; return; }   // (1.8.8.1: page 1 torn down -- a full-screen window under the Stage Manager engine: a note being typed in ends)
     }
     // (jiggle mode: the desktop steps aside, the Home Screen is being arranged; the same while a Guided Access session keeps the iPad in one app --
     //  the files would open in other apps, and Guided Access does not know our icons: 1.3.7, audit M-7)
@@ -658,6 +739,7 @@ static void DMDesktopEditHomeScreen(void) {
             _watchDev = st.st_dev; _watchIno = st.st_ino;   // (tried for this folder: not again every 2 s if it can't be watched)
         }
     }
+    [self dm_noteTick];   // (a note being typed in: the ways that end it, the window's level; a store not readable yet)
 }
 - (void)dm_followPage { if (_list && self.superview == _list) { CGRect f = DMDesktopPageFrameIn(_list); if (!CGRectEqualToRect(self.frame, f)) self.frame = f; } }
 - (NSArray<NSValue *> *)dm_occupied {   // page 1's app icons, folders and widgets (icon views), a little larger: never under a desktop icon
@@ -960,6 +1042,7 @@ static void DMDesktopEditHomeScreen(void) {
     // (a right-to-left language: placed as a Mac does then, new icons from the top left -- the Home Screen's own icons start at the right there)
     DMPlacerInitDir(pl, area, _cellW, _cellH, r, (int)occ.count, self.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft);
     free(r);
+    [self dm_noteTakeInto:pl];   // (icons keep clear of the sticky notes: soft rects, DesktopPlace.h nHard)
 }
 // A saved place is a share of this. With the Dock at a screen side (Settings > Dock > Position): the area as it would be with the Dock at the bottom, so the desktop's icons
 // stay where they are (KT 5 Nov), and one that would lie under the Dock goes to the nearest free spot (the placer keeps to -dm_area); back at the bottom it returns.
@@ -994,6 +1077,7 @@ static void DMDesktopEditHomeScreen(void) {
     if (!_placeDirty && CGRectEqualToRect(area, _placedArea) && _placedCell.width == _cellW && _placedCell.height == _cellH) return;
     if (_editing || ![self dm_pageShowing]) { _placeDirty = YES; return; }
     _placeDirty = NO; _placedArea = area; _placedCell = CGSizeMake(_cellW, _cellH);
+    [self dm_noteLayoutIn:area];   // (the sticky notes first: the icons keep clear of them)
     DMPlacer pl; [self dm_placer:&pl area:area];
     BOOL save = NO; NSInteger piled = 0;
     // (placed icons first, in name order -- the same result every time --, then the new ones: next to a drop, or the next free spot)
@@ -1075,7 +1159,7 @@ static void DMDesktopEditHomeScreen(void) {
     if (_renameField && _renameField.superview == self && CGRectContainsPoint(CGRectInset(_renameField.frame, -4, -4), p))   // (the field in the desktop: no window of its own)
         return [_renameField hitTest:[self convertPoint:p toView:_renameField] withEvent:e] ?: _renameField;
     for (UIView *v in [self.subviews reverseObjectEnumerator]) if ([v isKindOfClass:[DMDesktopItemView class]] && !v.hidden && v.alpha > 0.01 && CGRectContainsPoint(v.frame, p)) return v;
-    return nil;
+    return [self dm_noteHitAt:p];   // (a sticky note, under the icons)
 }
 - (DMDesktopItemView *)dm_viewAt:(CGPoint)p {
     for (UIView *v in [self.subviews reverseObjectEnumerator]) if ([v isKindOfClass:[DMDesktopItemView class]] && !v.hidden && CGRectContainsPoint(v.frame, p)) return (DMDesktopItemView *)v;
@@ -1106,7 +1190,7 @@ static void DMDesktopEditHomeScreen(void) {
 - (NSArray<DMFinderItem *> *)dm_selectedItems { NSMutableArray *a = [NSMutableArray array]; for (DMFinderItem *it in _items) if ([_sel containsObject:it.path]) [a addObject:it]; return a; }
 - (void)dm_tap:(UITapGestureRecognizer *)g {
     DMDesktopItemView *v = [self dm_viewAt:[g locationInView:self]];
-    if (!v) return;
+    if (!v) { [self dm_noteTap:g]; return; }   // (a sticky note: typed in)
     // (VoiceOver: a tap that reaches an icon is VoiceOver's double tap -- a finger's own touches are VoiceOver's -- and that means "open". It comes
     //  as a tap, not through accessibilityActivate, since SpringBoard's accessibility finds Home Screen icons through its icon model, which ours are
     //  not part of; read as a tap it only selected the icon: logic test 6 Oct, both iPads)
@@ -1260,6 +1344,7 @@ static void DMDesktopEditHomeScreen(void) {
 }
 - (void)dm_touchBegan:(UITouch *)t {   // (any touch elsewhere -- not on a desktop icon -- ends the desktop's selection and keys, as a click elsewhere does)
     if (t.type == UITouchTypeIndirect) return;
+    [self dm_noteTouchBegan:t];   // (a sticky note being typed in ends for a touch anywhere but on it -- an icon, another note too)
     UIView *v = t.view;
     if (v && ([v isDescendantOfView:self] || v == self)) return;
     if (_renameField && v && [v isDescendantOfView:_renameField]) return;   // (on the name being edited, in its own window: the caret, a selection)
@@ -1268,7 +1353,7 @@ static void DMDesktopEditHomeScreen(void) {
     // (judged by where it is on the screen: SpringBoard's system gesture window sees every touch first, with a view of its own -- a press on a
     //  selected icon cleared the selection before the press began, M1 3 Oct)
     CGPoint sp = t.window ? [t.window convertPoint:[t locationInView:nil] toCoordinateSpace:t.window.screen.coordinateSpace] : [t locationInView:nil];
-    if (_renameField && DMPointOnOwnKeyboard(sp)) return;   // (typing the new name on the on-screen keyboard)
+    if (_renameField && DMDesktopTypingTakes(sp, t.window.screen)) return;   // (typing the new name: the field, the edit menu over it, our on-screen keyboard)
     if ([NSStringFromClass([t.window class]) isEqualToString:@"_UISystemGestureWindow"] || (gOverlay && gOverlay.window == t.window)) {
         if ([self dm_shownAt:sp] && !DMDesktopCoveredAt(sp) && [self dm_itemViewAtScreen:sp]) return;   // (not an icon hidden under a window: a click into that window's
                                                                                                          //  app takes the keys from the desktop, review 1.8.4.2 pass 2 L2)
@@ -1357,6 +1442,8 @@ static void DMDesktopEditHomeScreen(void) {
         BOOL many = sel.count > 1, canChange = YES, dirs = YES;
         for (DMFinderItem *x in sel) { canChange = canChange && DMFinderCanChange(x.path); dirs = dirs && x.dir && !x.package && ![x.name hasSuffix:@".app"]; }
         [top addObject:A(@"Open", nil, ^{ [ws dm_openItems:sel newWindow:NO]; })];
+        UIMenu *openWith = many ? nil : DMFinderOpenWithMenu(v.item, ops, nil);   // (one file: the apps that open it, as Finder's menu, 1.8.8.1 B67)
+        if (openWith) [top addObject:openWith];
         if (dirs) [top addObject:A(@"Open in New Window", @"macwindow.badge.plus", ^{ [ws dm_openItems:sel newWindow:YES]; })];
         [top addObject:A(@"Quick Look", @"eye", ^{ DMQuickLookOpen(sel.firstObject.path); })];
         [top addObject:A(@"Get Info", @"info.circle", ^{ for (DMFinderItem *x in sel) [ops getInfo:x]; })];
@@ -1380,6 +1467,7 @@ static void DMDesktopEditHomeScreen(void) {
     } else {
         UIAction *nf = A(@"New Folder", @"folder.badge.plus", ^{ [ws dm_newFolderAt:sp]; }); if (!DMFinderCanWriteInto(folder)) nf.attributes = UIMenuElementAttributesDisabled; [top addObject:nf];
         UIAction *nt = A(@"New Text File", @"doc.badge.plus", ^{ [ws dm_newTextFileAt:sp]; }); if (!DMFinderCanWriteInto(folder)) nt.attributes = UIMenuElementAttributesDisabled; [top addObject:nt];
+        UIAction *sn = [self dm_noteNewRowAt:sp]; if (sn) [top addObject:sn];   // (New Sticky Note, 1.8.8.1: not there while Show Sticky Notes is off)
         [top addObject:A(@"Clean Up", @"square.grid.3x3", ^{ [ws dm_cleanUp]; })];
         [top addObject:A(@"Show in Finder", @"folder", ^{ DMFinderOpen(folder, NO); })];
         // (the Home Screen's own hold on its empty space started jiggle mode; on the desktop the hold opens this menu, so arranging the Home
@@ -1444,6 +1532,7 @@ static BOOL DMDesktopFingerOwnMenu(void) {
         DMLog([NSString stringWithFormat:@"[desktop] a finger held %.2f s within a drag's distance, never at rest: a hold all the same", now - at]);
     }
     _trackOwner = MSBDTouchDesktop;
+    if ([self dm_noteHoldMenuFor:t]) return;   // (a sticky note held still: its own menu)
     DMDesktopItemView *v = _trackView;
     if (v) {
         if (!v.window || !v.item) return;
@@ -1467,6 +1556,7 @@ static BOOL DMDesktopFingerOwnMenu(void) {
     // (a finger, or a pointer's primary click: held still, it opens our menu from our own hold check, -dm_holdCheck: -- UIKit asks here early in a
     //  click, long before a hold, kDMDesktopHoldMenu)
     if (_track && !_trackSecondary && DMDesktopFingerOwnMenu()) return nil;
+    if ([self dm_noteOwnsMenu:i]) return [self dm_noteConfigFor:i at:loc];   // (a sticky note's: a right click opens its menu of ours, UIKit's never)
     CGPoint sp = [i.view convertPoint:loc toCoordinateSpace:(self.window.screen ?: [UIScreen mainScreen]).coordinateSpace];
     DMDesktopItemView *v = nil;
     // A pointer's secondary click: the menu is ours, in the menu window over everything (DMFinderShowMenuIn, as Finder's windows show theirs), and
@@ -1603,6 +1693,7 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
                 if (reused || silent) {
                     int mode = _trackMode; _trackMode = 0; _trackView = nil; _track = nil;
                     if (mode == 1) { _armed = nil; DMFinderDragEnd(_trackLast, NO, NO); [self dm_dragEnded]; } else if (mode == 2) [self dm_bandEnd];
+                    else if (mode == 3) [self dm_noteDropAt:_trackLast];   // (a sticky note: let go where it was last seen)
                 }
             }
             if (_track || _trackMode || _lifted || _band || _editing || !self.userInteractionEnabled || t.window != self.window) continue;
@@ -1610,8 +1701,9 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
             // (by place, not only by the touch's view: a pointer's click on the empty page came with no view at all, M1 3 Oct)
             UIView *at = t.view ?: [self.window hitTest:[self.window convertPoint:sp fromCoordinateSpace:(self.window.screen ?: [UIScreen mainScreen]).coordinateSpace] withEvent:nil];
             BOOL onIcon = at && [at isKindOfClass:[DMDesktopItemView class]] && [at isDescendantOfView:self];
-            if (!onIcon && at != _list) continue;
-            if (!onIcon && ![self dm_shownAt:sp]) continue;
+            BOOL onNote = !onIcon && [self dm_noteTrackBegin:at];   // (a sticky note: followed as an icon is -- held then moved, it is dragged)
+            if (!onIcon && !onNote && at != _list) continue;
+            if (!onIcon && !onNote && ![self dm_shownAt:sp]) continue;
             _track = t; _trackView = onIcon ? (DMDesktopItemView *)at : nil; _trackDown = sp; _trackLast = sp; _trackAt = CACurrentMediaTime(); _trackMode = 0;
             _trackRest = sp; _trackRestAt = _trackAt;
             _trackFinger = DMDesktopTouchFinger(t); _trackStamp = t.timestamp;
@@ -1643,7 +1735,7 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
                     _track = nil; continue;
                 }
                 // (a finger that moved at once: a swipe -- the page turns. A pointer drags an icon or draws the rectangle at once, as on a Mac)
-                if (!_trackPointer && held < DMDesktopHoldToTake(_trackView != nil) && !_menuOpen) {
+                if (!_trackPointer && held < DMDesktopHoldToTake(_trackView != nil || [self dm_noteTracked]) && !_menuOpen) {
 #if DEBUG
                     if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[desktop] moved %.2f s after touching down, as a finger: a swipe, left to the page", held]);
 #endif
@@ -1659,7 +1751,10 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
                 if (!menuUp) [self dm_menuLetsGo:_trackView];   // (and the menu of this press, not open yet, is called off in UIKit itself)
                 for (UIView *v = self.superview; v; v = v.superview) if ([v isKindOfClass:[UIScrollView class]]) { UIPanGestureRecognizer *pan = ((UIScrollView *)v).panGestureRecognizer; pan.enabled = NO; pan.enabled = YES; }
                 DMDesktopItemView *v = _trackView;
-                if (v && v.window) {
+                if ([self dm_noteTracked]) {   // (a sticky note held, then moved: track mode 3, it follows the finger -- never Finder's file drag)
+                    if (![self dm_noteLiftAt:sp]) { _track = nil; continue; }
+                    _trackMode = 3;
+                } else if (v && v.window) {
                     _trackMode = 1; [self dm_setHasKeys:YES];
                     if (![_sel containsObject:v.item.path]) [self dm_select:@[v.item.path]];
                     DMLog([NSString stringWithFormat:@"[desktop] %@ on an icon%@: the icon lifts", _trackPointer ? @"a pointer drag" : [NSString stringWithFormat:@"a finger held %.2f s and moved", held], menuUp ? @" (its menu goes)" : @""]);
@@ -1680,11 +1775,13 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
 #endif
             }
             else if (_trackMode == 2) [self dm_bandTo:[self convertPoint:sp fromCoordinateSpace:(self.window.screen ?: [UIScreen mainScreen]).coordinateSpace]];
+            else if (_trackMode == 3) [self dm_noteDragTo:sp];
         } else if (t.phase == UITouchPhaseEnded || t.phase == UITouchPhaseCancelled) {
             int mode = _trackMode;
             _track = nil; _trackView = nil; _trackMode = 0; _holdMenu = NO;   // (a menu the hold opened stays: a row is tapped next)
             if (mode == 1) { _armed = nil; DMFinderDragEnd(sp, t.phase == UITouchPhaseEnded, option); [self dm_dragEnded]; }
             else if (mode == 2) [self dm_bandEnd];
+            else if (mode == 3) [self dm_noteDropAt:sp];
         }
     }
 }
@@ -1699,7 +1796,7 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
 - (BOOL)dm_touchIsOursFor:(UIGestureRecognizer *)g {
     UITouch *t = _track;
     if (!t || ![t.gestureRecognizers containsObject:g]) return NO;
-    return MSBDDesktopTouchOursAnswer(&_trackOwner, _trackMode != 0, _holdMenu, _trackPointer, CACurrentMediaTime() - _trackAt, DMDesktopHoldToTake(_trackView != nil));
+    return MSBDDesktopTouchOursAnswer(&_trackOwner, _trackMode != 0, _holdMenu, _trackPointer, CACurrentMediaTime() - _trackAt, DMDesktopHoldToTake(_trackView != nil || [self dm_noteTracked]));
 }
 - (void)dm_touchGivenAwayFor:(UIGestureRecognizer *)g {
     UITouch *t = _track;
@@ -1710,6 +1807,7 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
 // ---- rename in place ----
 - (void)dm_beginRename:(NSString *)path {
     DM_FEATURE_MARK("desktop-rename");
+    [self dm_noteEnd:@"a name is edited"];   // (1.8.8.1: one or the other in the typing window -- a new folder's name a moment after a tap on a note ends the note first)
     [self dm_endRename:YES];
     DMDesktopItemView *v = _views[path.lastPathComponent];
     if (!v || !DMFinderCanChange(path)) return;
@@ -1745,6 +1843,7 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
 // finger was) stood hidden under it (iPad 2, landscape). The field moves up above the keyboard while it is up, and back under its icon after.
 // Its place is worked out in screen points from its icon each time (the icons move with a turn) and put into whatever holds the field.
 - (void)dm_fitRenameField {
+    [self dm_noteFit];   // (a sticky note being typed in: lifted over the keyboard, fitted again after a turn)
     UITextField *tf = _renameField;
     UIView *host = tf.superview;
     if (!tf || !host) return;
@@ -1792,19 +1891,20 @@ static NSInteger DMDesktopTouchFinger(UITouch *t) {
 // App Library's search field selected every desktop item, the desktop having the keys with nothing in front of it).
 static BOOL DMSBTextFieldTyping(UIResponder *except) {
     if (DMTestFlag("/tmp/msb-desktop-textkeys")) return NO;   // (debug: as before 1.7.4)
-    SEL frSel = NSSelectorFromString(@"firstResponder");
-    for (UIWindow *w in DMAllWindows()) {
-        if (w.hidden || !w.isKeyWindow || ![w respondsToSelector:frSel]) continue;
-        id fr = ((id (*)(id, SEL))objc_msgSend)(w, frSel);
-        if (fr != except && [fr isKindOfClass:[UIResponder class]] && [fr isFirstResponder] && [fr conformsToProtocol:@protocol(UITextInput)]) return YES;
-    }
-    return NO;
+    return DMSBTextInputTypingBut(gDesktopRenameWindow, except);   // (StatusBar.x's walk; the desktop's own typing window never counts, 1.8.8.1)
 }
 // (the desktop has the keys when it was clicked last, or when nothing is in front of it: no Finder window active, no app in front -- and no text
 //  field of SpringBoard's typing, DMSBTextFieldTyping)
-- (BOOL)dm_hasKeys { return (_hasKeys || _renameField || (!gNativeActive && !DMActiveApp())) && self.window && self.userInteractionEnabled && !_editing && !DMSBTextFieldTyping(_renameField); }
+- (BOOL)dm_hasKeys { return (_hasKeys || _renameField || [self dm_noteActive] || (!gNativeActive && !DMActiveApp())) && self.window && self.userInteractionEnabled && !_editing && !DMSBTextFieldTyping(_renameField); }
 - (void)dm_setHasKeys:(BOOL)has { _hasKeys = has; DMDesktopKeysFocus(has); }   // (and SpringBoard's keyboard focus with them, DMDesktopKeysFocus)
 - (BOOL)dm_ownsKeys { return _hasKeys; }   // (clicked last: given back when a native window is made active, DMDesktopYieldKeys)
+- (BOOL)dm_typingNow { return _renameField != nil || [self dm_noteActive]; }
+- (void)dm_typingEnd:(NSString *)why {
+    [self dm_noteEnd:why];   // (a sticky note: saved)
+    if (!_renameField) return;
+    DMLog([NSString stringWithFormat:@"[desktop] the desktop's typing ends: %@", why]);
+    [self dm_endRename:YES];
+}
 // ---- the arrow keys and Quick Look on the desktop (1.8.4.2, KT 9 Nov; the rule: common/DesktopArrows.h) ------------------------------------
 - (NSArray<DMDesktopItemView *> *)dm_arrowViews {   // (the icons that are there to move to, in reading order: not one being dragged or hidden)
     NSMutableArray<DMDesktopItemView *> *shown = [NSMutableArray array];
@@ -1868,6 +1968,7 @@ static BOOL DMSBTextFieldTyping(UIResponder *except) {
     UIKeyModifierFlags m = key.modifierFlags & (UIKeyModifierCommand | UIKeyModifierShift | UIKeyModifierAlternate | UIKeyModifierControl);
     BOOL cmd = m == UIKeyModifierCommand, cmdShift = m == (UIKeyModifierCommand | UIKeyModifierShift), none = m == 0;
     long c = (long)key.keyCode;
+    if ([self dm_noteActive]) return [self dm_noteKey:key];   // (a sticky note being typed in: Esc, its Command editing keys; the rest is typed)
     if (_renameField) {
         if (c == UIKeyboardHIDUsageKeyboardEscape && none) { [self dm_endRename:NO]; return YES; }
         if (c == UIKeyboardHIDUsageKeyboardReturnOrEnter && none) { [self dm_endRename:YES]; return YES; }
@@ -1910,9 +2011,9 @@ static BOOL DMSBTextFieldTyping(UIResponder *except) {
         else if (fg && [v isKindOfClass:fg]) guides++;
     }
     NSUInteger occupied = [self dm_occupied].count;
-    return [NSString stringWithFormat:@"page1 %@ %.0fx%.0f shown %d editing %d alpha %.1f; items %lu; on page: icons %lu widgets %lu guides %lu, kept free %lu",
+    return [NSString stringWithFormat:@"page1 %@ %.0fx%.0f shown %d editing %d alpha %.1f; items %lu; on page: icons %lu widgets %lu guides %lu, kept free %lu%@",
             list ? NSStringFromClass([list class]) : @"none", list.bounds.size.width, list.bounds.size.height, [self dm_pageShowing], _editing, self.alpha,
-            (unsigned long)_items.count, (unsigned long)icons, (unsigned long)widgets, (unsigned long)guides, (unsigned long)occupied];
+            (unsigned long)_items.count, (unsigned long)icons, (unsigned long)widgets, (unsigned long)guides, (unsigned long)occupied, [self dm_noteDiag]];
 }
 
 #if DEBUG
@@ -1966,6 +2067,7 @@ static BOOL DMSBTextFieldTyping(UIResponder *except) {
                  if (fits) _places[x.item.name] = [self dm_fractionFor:c area:area];
                  [self dm_savePlaces]; [self dm_placeAgain]; } }
     else if ([act isEqualToString:@"folderimage"]) { _folderImage = nil; [self dm_list]; }
+    else if ([act isEqualToString:@"note"]) [self dm_noteDebug:arg ?: @"state"];   // note:<what>[,<args>]: the sticky notes (DesktopNotes.h)
     // ---- the app icons' corners (1.7.9 item 4, DesktopCorner.h) ----
     else if ([act isEqualToString:@"corner"]) {   // corner: the corner in force, the Home Screen's shape read and where from, each app icon's picture source
         DMLog([NSString stringWithFormat:@"[desktop] test corner: set %.4f, home %.4f custom %d (%@), info %.1f pt x%.0f r %.2f, gen %lu, force %d, side %.1f, engine: probe %d, Home Screen's icons %d",
@@ -2128,6 +2230,8 @@ static void DMDesktopCornerWatch(void) {
 }
 static void DMDesktopApplyPref(void) {
     gDesktopOn = DMDesktopPrefOn();
+    BOOL notes = DMStickyPref();   // (Show Sticky Notes, 1.8.8.1: hides them and their menu row; nothing is deleted)
+    if (notes != gDesktopNotesOn) { gDesktopNotesOn = notes; DMLog([NSString stringWithFormat:@"[desktop] Show Sticky Notes %@", notes ? @"on" : @"off"]); [gDesktop dm_notePrefChanged]; }
     BOOL hide = DMDesktopHideNamesPref();
     double size = DMDesktopIconSizePref();
     double corner = DMDesktopCornerPref();
@@ -2155,7 +2259,7 @@ static UIView *DMFocusGuideHitTest(id self, SEL _cmd, CGPoint p, UIEvent *e) {
         inside = YES;
         UIView *v = (UIView *)self;
         CGPoint sp = [v convertPoint:p toCoordinateSpace:(v.window.screen ?: [UIScreen mainScreen]).coordinateSpace];
-        BOOL over = [dk dm_itemViewAtScreen:sp] != nil;
+        BOOL over = [dk dm_itemViewAtScreen:sp] != nil || [dk dm_noteAtScreen:sp];   // (a sticky note too, 1.8.8.1)
         inside = NO;
         if (over) return nil;
     }
@@ -2313,6 +2417,13 @@ static void DMDesktopStartEarly(void) {
     [[NSRunLoop mainRunLoop] addTimer:gDeskEarlyTimer forMode:NSRunLoopCommonModes];
 }
 static void DMDesktopKeyboardMoved(void) { [gDesktop dm_fitRenameField]; }
+// The desktop types: a name is edited, or a sticky note is typed in (1.8.8.1). Asked by the window engines' keyboard gate (StatusBar.x: no app
+// window takes the keys meanwhile), Stage Manager's focus hand-off (SMSpotKeyboard.h: the stage's front window is not handed them), the touch tests
+// above. Kept out of line: their callers are Finder's and the engines' code, and inlined there a crash in them would turn those off.
+__attribute__((noinline)) static BOOL DMDesktopTypingNow(void) { return gDesktop && [gDesktop dm_typingNow]; }
+// ... and it ends now: the Mac Switcher opens or switches desktops (its layer is above the typing window: the keyboard would be under it).
+__attribute__((noinline)) static void DMDesktopTypingEnd(NSString *why) { if (gDesktop) [gDesktop dm_typingEnd:why]; }
 static void DMDesktopAXOpen(DMDesktopItemView *v) { DMDesktop *d = (DMDesktop *)v.superview; if ([d isKindOfClass:[DMDesktop class]]) [d dm_axOpen:v]; }
 static void DMDesktopFoldersChanged(NSSet<NSString *> *folders) { [gDesktop dm_foldersChanged:folders]; }   // (Finder.h DMFinderRefreshFolders)
 static NSString *DMDesktopPlaceFor(NSString *path) { return [gDesktop dm_placeStringFor:path]; }   // (Finder.h gFinderDesktopPlaceFor)
+#include "DesktopNotes.h"   // (Sticky Notes on the desktop, 1.8.8.1: the -dm_note... methods, their views and store)

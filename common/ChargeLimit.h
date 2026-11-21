@@ -16,6 +16,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "ChargeWhy.h"   // (why iPad is not charging on the adapter: the job publishes it in its state word, bits 18-31)
 
 #define MSBD_CHARGE_DOMAIN "com.besiktasliseba.macstatusbar"         // (Settings writes it as mobile; the helper reads it as mobile)
 #define MSBD_CHARGE_LIMIT_KEY "chargeLimit"                             // 80 / 85 / 90 / 95; 100 or missing = off
@@ -56,13 +57,26 @@ static inline int MSBDChargeLimitFromPref(int stored) {
 }
 static inline int MSBDChargeTestLimit(int stored) { return stored >= 1 && stored <= 99 ? stored : 0; }
 
-// The state word (notify state): bits 0-7 the state, 8-15 the limit (100 = off), bit 16 on power, bit 17 the helper is running.
+// The state word (notify state): bits 0-7 the state, 8-15 the limit (100 = off), bit 16 on power, bit 17 the helper is running; 1.8.8.1: bits
+// 18-21 why iPad is not charging on the adapter and 24-31 the adapter's watts with it (common/ChargeWhy.h MSBDChargeWhyBits, OR-ed in by the job).
 static inline uint64_t MSBDChargeStateWord(int state, int limit, int plugged) {
     return (uint64_t)(state & 0xff) | ((uint64_t)(limit & 0xff) << 8) | ((uint64_t)(plugged ? 1 : 0) << 16) | (1ULL << 17);
 }
 static inline int MSBDChargeWordState(uint64_t w) { return (w >> 17) & 1 ? (int)(w & 0xff) : kMSBDChargeStateOff; }
 static inline int MSBDChargeWordLimit(uint64_t w) { return (w >> 17) & 1 ? (int)((w >> 8) & 0xff) : kMSBDChargeLimitOff; }
 static inline int MSBDChargeWordPlugged(uint64_t w) { return (int)((w >> 16) & 1); }
+// The job's lines a reason why iPad is not charging takes the place of (the menu's and the footer's alike): what it says iPadOS does -- charging to
+// the limit or to full -- while the battery says it does not charge. Its own hold and cut ("Charging On Hold", "Using Battery Until") stay: the
+// reason is never decided for them (MSBDBattWhyIn ourHold).
+static inline int MSBDChargeWhyReplaces(int state) {
+    return state == kMSBDChargeStateCharging || state == kMSBDChargeStateToFull || state == kMSBDChargeStateMonthlyFull;
+}
+// The job's line a reason is said before, the line kept after it (1.8.8.1, review of the line): "Charging Can't Be Paused" says the Charge Limit
+// cannot hold the battery with this adapter. That stays so once the battery stops charging (full at 100 % with an 80 % limit, a stop at 95-99 %),
+// and it is the only word on why the battery is above the limit, so the reason says what the battery does now and this line follows it ("Fully
+// Charged", then "Charging Can't Be Paused"; in the footer the reason's sentence, then the can't-pause one).
+static inline int MSBDChargeWhyBefore(int state) { return state == kMSBDChargeStateCantHold; }
+#define MSBD_CHARGE_CANT_PAUSE_TEXT "iPad can't pause charging with this power adapter, so it charges as usual until it is unplugged."
 
 typedef struct {
     int limit;          // 1-99 on, 100 off (MSBDChargeLimitFromPref / MSBDChargeTestLimit)
@@ -246,13 +260,18 @@ static inline int MSBDChargeCutAllowed(double now, double lastCutStart, int misr
 // ---- Settings > Battery > Battery Health: our Charging group (macsettings/BatteryHealth.x), in place of Apple's iPhone-only groups
 // The group's footer: what the helper does now (from its state word; only on power, or when it is paused or not running) and what the limit and
 // Run on Power Adapter do (from the settings). "Charge to Full Now" is offered while either is on and the helper holds the battery below full on
-// power.
+// power. 1.8.8.1: while the battery does not charge though the helper lets it, why (the reason the helper publishes, MSBDChargeWordWhy) in place of
+// what the helper does ("Charging to 80%." with a 7 W adapter that gives less than iPad uses: "Not charging: the power adapter (7 W) ..."), or
+// before it where it stays (the can't-pause sentence: MSBDChargeWhyBefore).
 static inline void MSBDChargeFooterText(uint64_t word, int limitPref, int comeDown, int runOnAdapter, char *buf, size_t n) {
     int limit = MSBDChargeLimitFromPref(limitPref), on = MSBDChargeLimitOn(limit) || runOnAdapter, running = (int)((word >> 17) & 1);
     int state = MSBDChargeWordState(word), at = MSBDChargeWordLimit(word), plugged = MSBDChargeWordPlugged(word);
-    char now[200] = "";
+    char now[320] = "", why[160] = "";
     if (on && !running) snprintf(now, sizeof now, "Charge Limit is not running right now.\n\n");
     else if (on && state == kMSBDChargeStateStopped) snprintf(now, sizeof now, "Charge Limit is paused while MacStatusBar&Dock is off.\n\n");
+    else if (on && plugged && MSBDChargeLimitOn(at) && (MSBDChargeWhyReplaces(state) || MSBDChargeWhyBefore(state))
+             && MSBDBattWhyFooter(MSBDChargeWordWhy(word), MSBDChargeWordWatts(word), why, sizeof why))
+        snprintf(now, sizeof now, "%s%s\n\n", why, MSBDChargeWhyBefore(state) ? " " MSBD_CHARGE_CANT_PAUSE_TEXT : "");
     else if (on && plugged && MSBDChargeLimitOn(at)) {
         switch (state) {
             case kMSBDChargeStateCharging: snprintf(now, sizeof now, "Charging to %d%%.\n\n", at); break;
@@ -260,7 +279,7 @@ static inline void MSBDChargeFooterText(uint64_t word, int limitPref, int comeDo
             case kMSBDChargeStateComingDown: snprintf(now, sizeof now, "Using the battery until it is down to %d%%, then charging on hold.\n\n", at); break;
             case kMSBDChargeStateToFull: snprintf(now, sizeof now, "Charging to 100%% until iPad is unplugged.\n\n"); break;
             case kMSBDChargeStateMonthlyFull: snprintf(now, sizeof now, "Monthly full charge: charging to 100%%, then back to %d%%.\n\n", at); break;
-            case kMSBDChargeStateCantHold: snprintf(now, sizeof now, "iPad can't pause charging with this power adapter, so it charges as usual until it is unplugged.\n\n"); break;
+            case kMSBDChargeStateCantHold: snprintf(now, sizeof now, "%s\n\n", MSBD_CHARGE_CANT_PAUSE_TEXT); break;
             default: break;
         }
     }

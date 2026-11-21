@@ -9,11 +9,12 @@
 //
 // When the app is asked: when it comes to the front (DMAMFrontSeen, from the bar's layout), when MacAppBridge has just started in the app in front
 // (its "menushere": the ask sent at a cold launch comes before it can hear it, B12), after a row of it is picked, a second after a tap in it or
-// its "menuschanged" (a shortcut, another window made key, what it offers moving with no tap: B12's thin first answer; never under one of our
-// open menus), and again when one of its titles is opened (the menu then shows the fresh answer, or the last one if the app is slow to answer,
-// after 0.3 s). The titles fit in the room our own titles leave: ours (Go, Window, Audio) are laid out first, and an app title that doesn't fit
-// whole is left out, last ones first (DMAMFitTitles) -- the bar never gets more crowded than the room it has. While one of our menus or panels is
-// open, the bar keeps the app's titles it shows and lays out what came meanwhile once it is closed (DMAMTitlesToLay: no title moves under it, F-7).
+// its "menuschanged" (a shortcut, another window made key, what it offers moving with no tap: B12's thin first answer; never while one of our
+// menus, dialogs, questions or panels is open: gOverlay), and again when one of its titles is opened (the menu then shows the fresh answer, or the
+// last one if the app is slow to answer, after 0.3 s). The titles fit in the room our own titles leave: ours (Go, Window, Audio) are laid out
+// first, and an app title that doesn't fit whole is left out, last ones first (DMAMFitTitles) -- the bar never gets more crowded than the room it
+// has. While one of our menus or panels is open, the bar keeps the app's titles it shows and lays out what came meanwhile once it is closed
+// (DMAMTitlesToLay: no title moves under it, F-7); so it does while a finger is on one of its titles, until it lifts (F-7b).
 //
 // Settings > Status Bar > Show Apps' Own Menus, on unless switched off (1.8.6; gAMOn, DMAMApplyPref): off, no app is asked, no title shows, nothing is
 // added under our Edit menu's Find, and MacAppBridge makes no snapshot in any app -- the bar is as it was before the feature.
@@ -134,8 +135,8 @@ static void DMAMAsk(NSString *bundle, BOOL force) {
 }
 // Asked again a moment from now (a tap in the app, a row picked, a thin answer), once nothing else has asked for that in the meantime, and only
 // while it is still the app in front (review M5: before, the titles stayed as the first answer had them while the app stayed in front). Not while
-// one of our menus is open (B12: the app says what it offers moved with no tap now, Maps' home card filling in): the bar keeps its titles under
-// it anyway (DMAMTitlesToLay, F-7), so what moved meanwhile is asked once, when it is closed.
+// one of our menus, dialogs, questions or panels is open (gOverlay; B12: the app says what it offers moved with no tap now, Maps' home card filling
+// in): the bar keeps its titles under it anyway (DMAMTitlesToLay, F-7), so what moved meanwhile is asked once, at most a second after it is closed.
 static void DMAMAskSoon(NSString *bundle, double delay) {
     static NSUInteger seq = 0;
     NSUInteger mine = ++seq;
@@ -184,14 +185,24 @@ static NSArray<NSString *> *DMAMTitles(NSString *bundle) {
 // the minute's layout, a move asked for, a process gone, another app in front), until the last of ours is gone (DMAMOverlayGone). A menu on the
 // TV holds only the TV's bars, and one on the iPad only the iPad's: the other screen stays in use beside it (DMSMOurMenuOpenOn's rule).
 static const void *kAMLaidKey = &kAMLaidKey;   // (per copy: @[bundle, titles] as laid out with nothing of ours open)
-static BOOL gAMHeld;                           // (a copy kept its titles under one of ours: laid out again once it is gone)
+static BOOL gAMHeld;                           // (a copy kept its titles under one of ours or a finger: laid out again once it is gone or lifts)
+// A copy also keeps them while one of its titles is under a finger (UIKit tracks the touch on its button: the app's name, the app's own titles,
+// ours). A layout then moved the button from under the finger, UIKit ended the touch outside it, and the tap opened nothing (F-7b, p08's device
+// rows, 20 Nov: a tap on Go 23 ms before Maps' first answer re-laid the bar). The end of every title's touch, lifted inside or outside it or
+// taken by a system gesture, lays the bar out again (DMAMTitleTouchEnded, from each title's button: DMLayoutTitle).
+static const void *kAMTitleButtonsKey = &kAMTitleButtonsKey;   // (per copy: its titles' buttons, weak, added by DMLayoutTitle as it makes them)
+static BOOL DMAMTitleTouched(UIView *fg) {
+    for (UIControl *b in (NSHashTable *)objc_getAssociatedObject(fg, kAMTitleButtonsKey)) if (b.tracking) return YES;
+    return NO;
+}
 // (noinline: a function of its own in a release build too, so the crash map has it under the AppMenus.h rule, Show Apps' Own Menus; -Os put it
 //  inside the bar's layout, whose crash is Stock status bar mode's)
 __attribute__((noinline)) static NSArray<NSString *> *DMAMTitlesToLay(UIView *fg, NSString *bundle) {
     NSArray<NSString *> *want = bundle.length ? DMAMTitles(bundle) : @[];
     NSArray *laid = objc_getAssociatedObject(fg, kAMLaidKey);
     UIScreen *ms = [UIScreen mainScreen];
-    if (!gOverlay || (fg.window.screen ?: ms) != (gOverlay.window.screen ?: ms)) {
+    BOOL menu = gOverlay && (fg.window.screen ?: ms) == (gOverlay.window.screen ?: ms);   // (one of ours open on its screen)
+    if (!menu && !(bundle.length && DMAMTitleTouched(fg))) {
         if (!bundle.length) { if (laid) objc_setAssociatedObject(fg, kAMLaidKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
         else if (![laid[0] isEqual:bundle] || ![laid[1] isEqual:want]) objc_setAssociatedObject(fg, kAMLaidKey, @[[bundle copy], want], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return want;
@@ -199,10 +210,23 @@ __attribute__((noinline)) static NSArray<NSString *> *DMAMTitlesToLay(UIView *fg
     NSArray<NSString *> *held = bundle.length && [laid[0] isEqual:bundle] ? laid[1] : @[];
     if (!gAMHeld && ![held isEqualToArray:want]) {
         gAMHeld = YES;
-        DMLog([NSString stringWithFormat:@"[appmenus] %@: menus %@ wait for our menu or panel to close (the bar keeps %@)", bundle,
+        DMLog([NSString stringWithFormat:menu ? @"[appmenus] %@: menus %@ wait for our menu or panel to close (the bar keeps %@)"
+                                              : @"[appmenus] %@: menus %@ wait for the finger on a title to lift (the bar keeps %@)", bundle,
                want.count ? [want componentsJoinedByString:@", "] : @"none", held.count ? [held componentsJoinedByString:@", "] : @"none"]);
     }
     return held;
+}
+// The touch on one of the bar's titles ended (any copy's): a copy that kept its titles for it is laid out again, a turn later, once UIKit no longer
+// tracks it (its actions run inside that touch's end). What the tap opened is open by then, and keeps them still until it closes.
+// (noinline: called from the titles' buttons in StatusBar.x; its own crash-map place, Show Apps' Own Menus, as DMAMTitlesToLay's)
+__attribute__((noinline)) static void DMAMTitleTouchEnded(void) {
+    if (!gAMHeld) return;   // (nothing waited)
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!gAMHeld) return;
+        gAMHeld = NO;
+        DMLog(@"[appmenus] the finger on a title lifted: the bar is laid out again with the menus that waited");
+        for (UIView *fg in gCopies.allObjects) [fg setNeedsLayout];
+    });
 }
 // One of our menus or panels went (closed, or removed at once for the next one: DMCloseOverlay, DMRemoveOverlayNow): a copy that kept its titles
 // under it is laid out again. Removed for the next menu (a switch from one title to another), that layout comes after the next one is open and
@@ -304,12 +328,15 @@ static void DMOpenAppOwnMenu(UIButton *btn) {
 static NSArray *DMAMEditExtras(NSString *bundle) { return gAMOn && bundle.length ? DMAMRows(bundle, kMSBDAppMenuEdit) : @[]; }
 
 // Show Apps' Own Menus set (DMLoadPrefs: at the start, and after each change in Settings, which lays the bar out again): published for MacAppBridge,
-// whose ask and pick handlers do nothing with it off; off, what the apps answered is forgotten.
-static void DMAMApplyPref(BOOL on) {
+// whose ask and pick handlers do nothing with it off; off, what the apps answered is forgotten. Posted too, at every change (and at SpringBoard's
+// start): the apps read the state again only after a post (appbridge/AppMenus.h MABMenusOn).
+// (noinline: a function of its own in a release build, so the crash map has it under the AppMenus.h rule, Show Apps' Own Menus; -Os put it inside
+//  StatusBar.x's DMLoadPrefs, whose section is Clock Opens Today's)
+__attribute__((noinline)) static void DMAMApplyPref(BOOL on) {
     static int token = 0; static uint64_t published = 0;   // (the token is kept: notifyd forgets a name's state once nobody holds it)
     if (!token && notify_register_check(kDMAMSwitchName, &token) != NOTIFY_STATUS_OK) token = 0;
     uint64_t want = on ? 1 : 2;
-    if (token && want != published) { notify_set_state(token, want); published = want; }
+    if (token && want != published) { notify_set_state(token, want); notify_post(kDMAMSwitchName); published = want; }
     if (on == gAMOn) return;
     gAMOn = on;
     DMLog([NSString stringWithFormat:@"[appmenus] Show Apps' Own Menus %@", on ? @"on" : @"off"]);

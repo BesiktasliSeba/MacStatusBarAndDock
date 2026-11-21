@@ -79,10 +79,10 @@ static inline BOOL MSBDStripSwipeOS(long major) { return major >= 16 && major <=
 // which is not sized yet (statusbar/CC18Shape.h).
 static inline BOOL MSBDCCSizeRowShown(int ccStyle, BOOL stockBar) { return (ccStyle == kMSBDCCStyleBigSurCenter || ccStyle == kMSBDCCStyleMac) && !stockBar; }
 static inline BOOL MSBDCCSizeRowGreyed(int ccStyle, long major) { return ccStyle == kMSBDCCStyleMac && major >= 18; }
-// The desktop's rows, left out where its check failed (17+): Show Desktop Icons, Hide Desktop Icon Names, Icon Size and App Icon Corner Radius
+// The desktop's rows, left out where its check failed (17+): Show Desktop Icons, Hide Desktop Icon Names, Show Sticky Notes (1.8.8.1), Icon Size and App Icon Corner Radius
 // with their groups and Match Home Screen Icons (the page keeps DESKTOP_GROUP, whose footer says why). A row by its key or its own identifier.
 static inline BOOL MSBDDesktopCheckRow(NSString *key, NSString *ident) {
-    return (key && [@[@"desktopIcons", @"desktopHideNames", @"desktopIconSize"] containsObject:key])
+    return (key && [@[@"desktopIcons", @"desktopHideNames", @"desktopIconSize", @"stickyNotes"] containsObject:key])
         || (ident && [@[@"DESKTOP_SIZE_GROUP", @"DESKTOP_CORNER_GROUP", @"DESKTOP_APP_CORNER", @"DESKTOP_CORNER_MATCH"] containsObject:ident]);
 }
 // With Stage Manager as the engine the Windows group keeps the rows that are Stage Manager's own windows' too: the resize handles', Window Size and

@@ -82,6 +82,8 @@ The Mac look is on right after install, and most features have their own switch.
 - Tap the clock to drop down your Today View widgets, with your notifications above them.
 - The Wi-Fi icon opens a Wi-Fi menu, so you can join a network without Control Center. The Audio menu gives each app its own volume, and apps can play at the same time. While a VPN is connected, it gets its own menu with Disconnect.
 - The battery opens a battery menu, as on a Mac, with Low Power Mode, Charge Limit, Sleep Guard and Battery Settings, and a Control Center icon next to the clock opens Control Center. Battery Menu in Settings > Status Bar turns both off.
+- When the iPad is plugged in but not charging, the battery menu says why, such as a hold by iPadOS, a power adapter too weak for what the iPad is using, a battery too warm or too cold, or a full battery. Its Battery Settings row opens Battery Health.
+- Click or tap the AirPods icon in the menu bar for an AirPods menu, as on a Mac (iPadOS 15 and 16 for now): the battery of each AirPod and the case, Noise Control and Disconnect. AirPods Menu in Settings > Status Bar turns it off.
 - Right-to-left languages get a mirrored menu bar, as on a Mac. Status Bar Style switches back to the stock iPadOS bar.
 - Menu Bar Size in Settings > Status Bar: Medium and Large make the menu bar taller, with larger text, icons and menus that are easier to tap with a finger.
 - Live Activities in Menu Bar in Settings > Status Bar shows what's playing and your calls as small pills next to the status icons, as on a Mac. A tap on one opens a card to control it. On iPadOS 15.6.1, 16.7.7, 17.5.1 and 18.5, Clock timers show there too.
@@ -101,7 +103,7 @@ The Mac look is on right after install, and most features have their own switch.
 
 - Title bars, traffic lights, rounded corners and resize handles, on the engine you already use.
 - Magnify Traffic Lights in Settings > Windows & Multitasking: touch a window's red, yellow and green buttons with a finger and they grow, with their symbols, so the one you want is easy to hit. Slide to another, lift to use it, or lift away to cancel, and a finger drag that starts on the buttons opens them instead of moving the window. With a trackpad or mouse, the button under the pointer grows a little, and a click stays a plain click.
-- Swiping up from the bottom or pressing the Home button minimizes your windows so the Home Screen shows, and opening an app brings its window back. Home Minimizes Windows in Settings > Windows & Multitasking turns it off.
+- Swiping up from the bottom or pressing the Home button minimizes your windows so the Home Screen shows, and opening an app brings its window back. With a trackpad or mouse connected, going Home leaves your windows where they are, as on a Mac, unless you turn off Adapt to Trackpad & Mouse. Home Minimizes Windows in Settings > Windows & Multitasking turns it off.
 - The Window menu has layouts (halves, quarters, Fill Screen, Center) and Fit to Window, which tiles your windows side by side and keeps each one in its place when another closes or joins. Layouts and tiles reach the screen's edges, from right under the menu bar down to the Dock.
 - A window you move or resize lines up with the screen edges, the menu bar, the Dock and other windows when you let go of it near them. Snap Windows to Edges in Settings > Windows & Multitasking turns it off.
 - When you turn the iPad, a window in a layout (Fill Screen, a half or a quarter) takes the same layout in the new orientation, and any other window goes back to where it last was in that orientation.
@@ -144,9 +146,11 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 - The Trash has an Empty button at the top right, and emptying the Trash plays a sound unless the iPad is muted.
 - Drag files between Finder windows, the desktop and the Downloads stack, or into an app, which gets a copy.
 - Share on an app, in Applications or any .app in Finder or on the desktop, hands it over as an .ipa named after the app and its version. For an App Store app, a note says first that the copy only opens on iPads signed in with the same Apple ID. Nothing is decrypted.
+- Open With in a file's menu, in Finder and on the desktop, lists the apps that open the file, as on a Mac. The app gets a copy and opens as a window when apps open as windows, so an .ipa opens straight in TrollStore.
 - Files and folders from On My iPad > Desktop sit on the first Home Screen page, never over your apps. A long press or a right click opens their menus over your windows, and Hide Name hides an icon's name. In Settings > Desktop, Hide Desktop Icon Names hides them all and Icon Size sets their size. App Icon Corner Radius there sets how round the desktop's app icons are, from square to circle.
 - On the desktop, with an item selected, the arrow keys move the selection and Space opens Quick Look, as in Finder.
 - Desktop Picture in Settings > Desktop puts a picture behind the first Home Screen page, where the desktop is: one from Photos, one from On My iPad > MacStatusBar&Dock > Wallpapers (add your Mac's wallpapers there with the Files app, AirDrop or Add from Files), or one of iPadOS's own still wallpapers. The Lock Screen and the other pages keep your wallpaper.
+- Sticky notes on the desktop: hold the desktop and choose New Sticky Note. Tap a note to type in it, drag its bottom corners to resize it, and hold it to change its color or move it to the Trash, where Put Back brings it back. Show Sticky Notes in Settings > Desktop turns them off.
 - Text files open in a small TextEdit window and save by themselves.
 - USB drives and SD cards show up under Locations. exFAT and FAT32 work (FAT32 can't hold files over 4 GB). APFS and Mac OS Extended should work but haven't been tested, and iPadOS doesn't read NTFS. An SSD may need a powered hub.
 - On iPadOS 16 to 18, each drive has an Eject button in Finder's sidebar, as on a Mac, and File > Eject and the drive's menu eject it too.
@@ -158,9 +162,10 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 - Magnification, dots under open apps, recent apps, and Finder and Launchpad at its start, like on a Mac.
 - Position on Screen in Settings > Dock puts the Dock on the left or right in landscape, and in portrait it stays at the bottom. Windows, Home Screen icons, the clock's Today drop-down and Mac-style banners keep clear of a side Dock, and over a full-screen app the pointer brings it out at that edge.
 - Dock Style in Settings > Dock: Default, Glass Shelf (the glass Dock of Mac OS X 10.5 to 10.9, with its reflections) or Frosted (the flat Dock of 10.10 to 10.15).
+- Dock Background in Settings > Dock: any color and opacity for the Default or Frosted Dock, from see-through to solid. The dots and dividers turn dark or light to stay readable.
 - Automatically Hide and Show the Dock in Settings > Dock hides it until you swipe up from the bottom or move the pointer to its edge, with every window engine. It replaces Stage Manager's own Dock option.
 - An app's icon bounces in the Dock while the app opens, as on a Mac, except while Reduce Motion is on. Animate Opening Applications in Settings > Dock turns it off.
-- A Downloads stack with search, which you can drag files into and out of.
+- A Downloads stack with search, which you can drag files into and out of. Your newest download is at the bottom, and a hold or a two-finger click on an item opens its menu: Open, Open With, Quick Look, Show in Enclosing Folder, Get Info, Rename, Share and Move to Trash.
 - A Trash at its end, on for new installs (Show Trash in Dock in Settings > Dock). Drop files on it to move them to the Trash, a Dock app to take it out of the Dock, or a drive to eject it (iPadOS 16 to 18).
 - Haptic Touch menus get Force Quit, App Size and Add App to Folder on app icons, and a folder's menu lists its apps. Add App to Folder moves the app into a Home Screen folder or a new one, as a drag would, also from the App Library.
 - Menus that open from the Dock and the Downloads stack sit over their icon with the Mac's arrow pointing at it.
@@ -203,7 +208,7 @@ Off until you turn it on in Settings > Windows & Multitasking > Mac Switcher. It
 
 - If SpringBoard crashes twice in a row because of this tweak, or freezes again shortly after every start, Automatic Crash Recovery turns off what crashed (a larger Menu Bar Size goes back to Small), tells you in Settings and offers Report a Problem. A crash in another tweak doesn't count.
 - On an iPadOS version it hasn't been tested on, it stays off until you choose Enable Anyway.
-- Package managers, the jailbreak apps and Filza never get its app parts, so they keep working and you can always remove it.
+- Package managers, the jailbreak apps and Filza get none of its app parts (Sileo and Zebra get only a small fix that keeps their queue working in a window), so they keep working and you can always remove it.
 - It has no network code. See [Privacy](#privacy).
 
 ## Window engines
@@ -272,7 +277,7 @@ Tried it on another setup? A [compatibility report](https://github.com/Besiktasl
 | The Status Bar and Dock pages are gone | Both MacStatusBar and Mac-Style Dock were turned off. Turn the tweak's two entries back on in Choicy (or iCleaner Pro), then respring. |
 | Several window engines, Control Centers or banner tweaks installed | That's fine. Only the one picked in Window Engine, Control Center Style or Banner Style loads. Leave their entries in Choicy alone: MacStatusBar&Dock manages them. |
 
-To uninstall, remove MacStatusBar&Dock in Sileo. It gives the window engines their own settings back, undoes its Choicy or iCleaner Pro changes, and sets an Auto-Lock of 2 hours to 1 hour, the longest iPadOS keeps on its own. Finder's Trash isn't visible in the Files app and stays behind, so empty it in Finder first.
+To uninstall, remove MacStatusBar&Dock in Sileo. It gives the window engines their own settings back, undoes its Choicy or iCleaner Pro changes, and sets an Auto-Lock of 2 hours to 1 hour, the longest iPadOS keeps on its own. Finder's Trash isn't visible in the Files app and stays behind, so empty it in Finder first. Removing the package keeps your sticky notes, and purging it deletes them.
 
 ## Privacy
 

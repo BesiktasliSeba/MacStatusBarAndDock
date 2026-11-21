@@ -1,7 +1,7 @@
 # A synthetic crash map for the Mac tests (tools/test-crashstep.sh): the layout of CrashMap.txt (tools/make-crashmap.py) with made-up UUIDs,
 # offsets and a test preference domain. Fixtures: tools/crash-fixtures/step1b-*.ips. In the core's arm64e slice: 12000-127ff the shared Control Center
 # lookups (transparent), 12800-12fff our Control Center (step1b-core-cc-lookup*.ips). In the Dock's: a400-a7ff the platter's layout hook (transparent),
-# a800-abff Dock Style's code (step1b-dock-style*.ips, step1b-dock-hook*.ips).
+# a800-abff Dock Style's code (step1b-dock-style*.ips, step1b-dock-hook*.ips), ac00-adff Dock Background's (DockColor.m, step1b-dock-color.ips).
 T part part
 T transparent transparent
 T stock pref com.besiktasliseba.test-crashstep stockStatusBar 1 0 Status Bar Style|the status bar
@@ -10,6 +10,7 @@ T macBanners pref com.besiktasliseba.test-crashstep macBanners 0 1 Mac-Style Ban
 T showDownloads pref com.besiktasliseba.test-crashstep showDownloads 0 1 Show Downloads in Dock|the Dock's Downloads
 T forceQuitMenu pref com.besiktasliseba.test-crashstep forceQuitEnabled 0 1 Force Quit in App Menus|the Force Quit menu item
 T dockStyle pref com.besiktasliseba.test-crashstep dockStyle 0 0 offtext=default Dock Style|the older Dock style
+T dockBackground pref com.besiktasliseba.test-crashstep dockBackground 0 0 offtext=auto Dock Background|the Dock's color
 P DockMagnification part
 P ForceQuitMenu forceQuitMenu
 P MacStatusBarCore stock
@@ -22,7 +23,8 @@ R 9000 showDownloads
 R a000 part
 R a400 transparent
 R a800 dockStyle
-R ac00 part
+R ac00 dockBackground
+R ae00 part
 R b000 -
 U MacStatusBarCore 11111111-1111-1111-1111-111111111111 arm64
 R 8000 stock

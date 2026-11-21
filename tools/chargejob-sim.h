@@ -86,9 +86,24 @@ static int SimSocHolds(void) {
 }
 static int SimHoldTakes(void) { return (!B.allowCharge && B.holdObeyed) || (B.pci && B.pciObeyed) || SimSocHolds(); }
 static int SimCutTakes(void) { return !B.allowInflow && B.cutObeyed; }
-static int SimCharging(void) { return B.cable && !SimCutTakes() && !SimHoldTakes() && B.soc < 100; }
+// After a hold ends, as the iPads showed it (1.8.8.1, review of BATTWHY; 0 for the other tests: the end at once): the battery keeps the hold's
+// reason bit gSimHoldBitLinger s more (the A12Z's bit 24 went within 20 s of the policy, the cut's bits within 10 s) and charges again only
+// gSimPostHoldWait s after the end (the batteries' PostChargeWaitSeconds, 120). The end is seen at the battery's next reading or step.
+static int gSimHoldBitLinger, gSimPostHoldWait;
+static double gSimHoldEndedAt; static int gSimHoldWas, gSimHoldWasSoc;
+static void SimHoldSeen(void) {
+    int now = SimHoldTakes();
+    if (gSimHoldWas && !now) gSimHoldEndedAt = gSimNow;
+    if (now) gSimHoldWasSoc = SimSocHolds();
+    gSimHoldWas = now;
+}
+static int SimAfterHold(int seconds) { return seconds > 0 && gSimHoldEndedAt > 0 && gSimNow - gSimHoldEndedAt < seconds; }
+// An adapter that gives less than iPad uses (KT's A12Z on its 7 W adapter while tests ran, 15 Nov: cable 1, connected 1, charging 0, reasons
+// 0x0 / 0x0): nothing held, no reason bit, no charge going in; the battery gives this much (mA) while nothing holds it. 0: an adapter that charges.
+static int gSimWeakMA;
+static int SimCharging(void) { SimHoldSeen(); return B.cable && !SimCutTakes() && !SimHoldTakes() && !SimAfterHold(gSimPostHoldWait) && B.soc < 100 && !gSimWeakMA; }
 static int gSimShortMA;   // more load than the adapter carries: what the battery gives under a hold
-static int SimAmperage(void) { return SimCharging() ? B.chargeMA : (!B.cable || SimCutTakes()) ? -B.loadMA : -gSimShortMA; }
+static int SimAmperage(void) { return SimCharging() ? B.chargeMA : (!B.cable || SimCutTakes()) ? -B.loadMA : gSimWeakMA && !SimHoldTakes() ? -gSimWeakMA : -gSimShortMA; }
 static void SimAdvance(double seconds) {
     while (seconds > 0) {
         double dt = seconds > 10 ? 10 : seconds;
@@ -112,8 +127,12 @@ static NSDictionary *SimBatteryPropsAll(void) {
     int soc = (int)(B.soc + 0.5);
     int raw = B.smc ? (B.cable && B.allowInflow) : B.cable;   // (the SMC iPads read the cable as out during a cut)
     uint64_t reason = 0; long long inhibit = 0;
-    if (B.smc) { if (SimCutTakes()) { reason |= 1ULL << 54; inhibit = 0x10001; } else if (SimHoldTakes()) reason |= 0x4000; }
-    else { if (SimCutTakes()) reason |= 0x80; else if (SimHoldTakes()) reason |= 0x8000; }
+    // (a hold: powerd's ChargeInhibit 0x4000 on the M1, iPadOS's charge limit 0x1000000 on the A12Z (our policy at 92 % and 97 %),
+    //  PredictiveChargingInhibit 0x8000 on the PMU iPads; for gSimHoldBitLinger s after it ends too)
+    SimHoldSeen();
+    int hold = SimHoldTakes(), held = hold || SimAfterHold(gSimHoldBitLinger), policy = hold ? SimSocHolds() : gSimHoldWasSoc;
+    if (B.smc) { if (SimCutTakes()) { reason |= 1ULL << 54; inhibit = 0x10001; } else if (held) reason |= policy ? 1ULL << 24 : 0x4000; }
+    else { if (SimCutTakes()) reason |= 0x80; else if (held) reason |= 0x8000; }
     NSMutableDictionary *cd = [@{ @"NotChargingReason": @(reason), @"ChargingCurrent": @(SimCharging() ? B.chargeMA : 0) } mutableCopy];
     if (B.smc) cd[@"ChargerInhibitReason"] = @(inhibit);
     NSDictionary *ad = B.cable ? @{ @"Watts": @(B.watts), @"FamilyCode": @(B.family), @"AdapterID": @0, @"Description": @(B.desc) }

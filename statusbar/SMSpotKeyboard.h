@@ -51,16 +51,20 @@ static void DMSMSpotFocusNew(id self, SEL _cmd, id from, id to, id windowScene) 
     UIWindowScene *screen = [windowScene isKindOfClass:[UIWindowScene class]] ? windowScene : nil;
     BOOL spot = DMSMEngine() && !DMTestFlag("/tmp/msb-sm-nospotkb") && DMSpotlightShownOn(screen);   // (the cheap part first: most transitions have no Spotlight)
     BOOL keep = spot && !DMSMOverlayGoing() && DMSMSameStage(from, to);
+    // (1.8.8.1: the desktop types -- a name, a sticky note, in its own window over the stage -- and the stage stays as it was: the keys stay the
+    //  desktop's, on any screen's transition. A long note session meets window opens, closes and resizes; a touch elsewhere ends the typing first.)
+    BOOL typing = !keep && DMSMEngine() && DMDesktopTypingNow() && DMSMSameStage(from, to);
 #if DEBUG
-    if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[smspotkb] the stage's front window to be handed the focus? %@ -> %@ (Spotlight up on this screen %d, on any %d, dismissing %d; %@ screen): %@",
+    if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[smspotkb] the stage's front window to be handed the focus? %@ -> %@ (Spotlight up on this screen %d, on any %d, dismissing %d; %@ screen; the desktop types %d): %@",
         DMSWDescribe(DMCall(from, @"appLayout")), DMSWDescribe(DMCall(to, @"appLayout")), DMSpotlightShownOn(screen), DMSpotlightShown(), DMSMOverlayGoing(),
-        !screen ? @"no" : screen == MSBDMainWindowScene() ? @"the iPad's" : @"another", keep ? @"no, Spotlight keeps the keyboard" : @"Apple's way"]);
+        !screen ? @"no" : screen == MSBDMainWindowScene() ? @"the iPad's" : @"another", DMDesktopTypingNow(), keep ? @"no, Spotlight keeps the keyboard" : typing ? @"no, the desktop's typing keeps the keyboard" : @"Apple's way"]);
 #endif
     if (keep) {
         DM_FEATURE_MARK("sm-spotlight-keeps-keyboard");
         if (gSMSpotKept < 100000) gSMSpotKept++;
         return;
     }
+    if (typing) { DM_FEATURE_MARK("sm-desktop-typing-keeps-keyboard"); return; }
     o_SMSpotFocusNew(self, _cmd, from, to, windowScene);
 }
 static void DMSMSpotKeyboardInstall(void) {   // (optional: once, from the start-up self-check)

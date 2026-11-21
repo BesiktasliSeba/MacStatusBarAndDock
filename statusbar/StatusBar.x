@@ -619,8 +619,35 @@ static BOOL DMSMEngine(void);
 static void DMWatchDockChanges(void);
 @class DMNativeWindow;
 static DMNativeWindow *DMNativeActiveApp(void);           // (NativeWindow.h: a native window acting as the front app, or nil)
+static BOOL DMDesktopTypingNow(void);                     // (Desktop.h: a name edited on the desktop or a sticky note typed in, 1.8.8.1)
+static void DMStickyEnd(NSString *why);                    // (DesktopNotes.h: a sticky note being typed in ends, saved)
+static void DMStickyFlush(void);                           // (DesktopNotes.h: ... and the notes written, before our respring)
 static NSString *DMNativeActiveAppName(void);
 static void DMFinderOpen(NSString *path, BOOL newWindow);  // (Finder.h)
+// A text input has the typing: the first responder of a key window is one -- a sticky note's, a name edited on the desktop, Finder's fields,
+// SpringBoard's own (Spotlight, the App Library's search, the Wi-Fi sheet). skip: a window whose first responder does not count, except: a responder
+// that does not (nil: none). Desktop.h's DMSBTextFieldTyping asks it for the desktop's keys (1.7.4 item 19); the debug key loggers ask it so that
+// what is typed is never in the log (1.8.8.1, DMKeyLogHides). Kept a symbol of its own that the crash guard passes over, so its caller decides (the
+// desktop's keys, a sticky note's tick): under no rule of its own it fell to the image's, Use Stock Status Bar (tools/crashmap-rules.txt, F2 review).
+__attribute__((noinline)) static BOOL DMSBTextInputTypingBut(UIWindow *skip, UIResponder *except);
+static BOOL DMSBTextInputTypingBut(UIWindow *skip, UIResponder *except) {
+    SEL frSel = NSSelectorFromString(@"firstResponder");
+    for (UIWindow *w in DMAllWindows()) {
+        if (w.hidden || w == skip || !w.isKeyWindow || ![w respondsToSelector:frSel]) continue;
+        id fr = ((id (*)(id, SEL))objc_msgSend)(w, frSel);
+        if (fr != except && [fr isKindOfClass:[UIResponder class]] && [fr isFirstResponder] && [fr conformsToProtocol:@protocol(UITextInput)]) return YES;
+    }
+    return NO;
+}
+#if DEBUG
+// The debug key loggers ([keys], [keyrecv], [mswkey]) log a key typed into a text input -- held with neither Command nor Control, Esc aside -- only as
+// "a typed key": the text of a note, a name or a password must never be read back from /tmp/macstatusbar.log (sticky-notes.md Design v2 6).
+static BOOL DMKeyLogHides(UIPress *p) {
+    UIKeyModifierFlags m = p.key.modifierFlags;
+    if ((m & (UIKeyModifierCommand | UIKeyModifierControl)) || p.key.keyCode == UIKeyboardHIDUsageKeyboardEscape) return NO;
+    return DMSBTextInputTypingBut(nil, nil);
+}
+#endif
 static void DMNativeTick(void);
 static void DMOpenFinderFileMenu(UIButton *btn);
 static void DMOpenFinderViewMenu(UIButton *btn);
@@ -781,6 +808,7 @@ static void DMScreenPowerChanged(BOOL off) {
     if (off) { gDMOffSinceBack = YES; gDMScreenOffAt = CACurrentMediaTime(); }
     if (off) DMWelcomeDismissForLock();   // (the welcome alert never waits on the Lock Screen)
     if (off) DMCloseOverlaysForScreenOff();   // (menus and panels too: a quick Face ID unlock showed the old menu for a moment, layering audit F11)
+    if (off) DMStickyEnd(@"the screen went off");   // (a sticky note being typed in: saved, the focus lock given back before the Lock Screen, 1.8.8.1)
     for (NSTimer *t in gDMGatedTimers.allObjects) if (t.valid) t.fireDate = off ? [NSDate distantFuture] : [NSDate dateWithTimeIntervalSinceNow:0.05];
     if (!off) DMScreenPowerResume();
 }
@@ -1048,6 +1076,7 @@ static void DMGiveBackStartupAssertionNow(NSString *when) {
 static void DMRespring(void) {
     DMLog(@"[action] respring");
     DMSaveWindowState();   // the windows come back after the respring
+    DMStickyFlush();   // (1.8.8.1: a sticky note being typed in and the notes written first, waited for)
     DMGiveBackStartupAssertionNow(@"before our respring");   // (this SpringBoard's start-up assertion would outlive it: battery drain F1b)
     if (!DMTestFlag("/tmp/msb-sbreload")) {   // (debug: /tmp/msb-sbreload takes the old sbreload path, for comparing)
         DM_FEATURE_MARK("respring-relaunch-action");
@@ -1082,19 +1111,27 @@ static void DMNativeStepBackForOpen(NSString *what);   // (an app or link opened
 // so through the restart gate, is never held; a held one left the marker behind for whatever respring came next.)
 static BOOL DMRespringNeedsVPNWarning(void) { return access("/var/mobile/.eksafemode", F_OK) != 0 && MSBDVPNRisk() && MSBDAerial5WillLoad(); }
 static CFTimeInterval gOwnRespringAt = 0;   // (our own respring, already asked about: the restart request sbreload makes for it passes the gate)
-static void DMRespringWarnThen(dispatch_block_t go) {   // go: the respring itself (ours, or another's held one)
+// go: the respring itself (ours, or another's held one). otherwise (may be nil; 1.8.8.1, Clean and Respring's result): run when the respring is
+// not done after all: the warning's Cancel or VPN Settings, the warning put away by a lock, or another warning already up.
+static void DMRespringWarnThenOr(dispatch_block_t go, dispatch_block_t otherwise) {
     void (^close)(void) = ^{ gVPNWarnWindow.hidden = YES; gVPNWarnWindow = nil; };
     UIAlertController *a = gVPNWarnWindow ? nil : MSBDVPNRespringAlert(^{ close(); DMLog(@"[vpnwarn] respring anyway"); go(); },
-                                                                       ^{ close(); DMOpenURL(MSBD_VPN_SETTINGS_URL, @"vpn settings (respring warning)"); },
-                                                                       ^{ close(); DMLog(@"[vpnwarn] cancelled"); });
-    if (!a) { if (!gVPNWarnWindow) go(); return; }
+                                                                       ^{ close(); DMOpenURL(MSBD_VPN_SETTINGS_URL, @"vpn settings (respring warning)"); if (otherwise) otherwise(); },
+                                                                       ^{ close(); DMLog(@"[vpnwarn] cancelled"); if (otherwise) otherwise(); });
+    if (!a) { if (!gVPNWarnWindow) go(); else if (otherwise) otherwise(); return; }
     DMLog([NSString stringWithFormat:@"[vpnwarn] respring held: a VPN %@ and Aerial 5.0 loads", MSBDVPNRisk() == 1 ? @"is on" : @"just went off"]);
     UIWindow *w = MSBDMakeAlertWindow(UIWindowLevelAlert + 10.0);
     gVPNWarnWindow = w;
     [w.rootViewController presentViewController:a animated:YES completion:nil];
-    MSBDAlertCloseOnLock(w, ^{ if (gVPNWarnWindow == w) gVPNWarnWindow = nil; });
+    MSBDAlertCloseOnLock(w, ^{ if (gVPNWarnWindow == w) gVPNWarnWindow = nil; if (otherwise) otherwise(); });
 }
-static void DMRespringChecked(void) { DMRespringWarnThen(^{ gOwnRespringAt = CACurrentMediaTime(); DMRespring(); }); }
+static void DMRespringWarnThen(dispatch_block_t go) { DMRespringWarnThenOr(go, nil); }
+// Our Respring (the Apple menu's, the engine switch's, Finder's iCleaner panel's): first (may be nil) runs just before it is asked, otherwise (may be
+// nil) when the VPN warning's answer leaves it undone (DMRespringWarnThenOr).
+static void DMRespringCheckedOr(dispatch_block_t first, dispatch_block_t otherwise) {
+    DMRespringWarnThenOr(^{ if (first) first(); gOwnRespringAt = CACurrentMediaTime(); DMRespring(); }, otherwise);
+}
+static void DMRespringChecked(void) { DMRespringCheckedOr(nil, nil); }
 
 // Every private call below is checked with respondsToSelector on the CLASS as well as the instance: calling a
 // method that does not exist on this iPadOS makes SpringBoard abort (an unguarded +sharedUserAgent did exactly that).
@@ -1700,6 +1737,12 @@ static void DMOpenBatteryMenu(UIButton *btn);        // (defined in BatteryMenu.
 static void DMBattOpenControlCenter(UIButton *btn);  // (BatteryMenu.h: the Control Center icon's tap)
 static void DMBattMenuGone(NSString *why);           // (BatteryMenu.h: a menu closed -- its refresh stops if it was ours)
 static void DMBattCCLight(BOOL lit);                 // (BatteryMenu.h: the Control Center icon highlighted from Control Center's -_willPresent to its -_didDismiss)
+static BOOL gAirPodsMenuOn = NO;   // Settings > Status Bar > AirPods Menu (pref airpodsMenu, on unless switched off, 1.8.8.1): iPadOS's AirPods item opens our AirPods menu (AirPodsMenu.h)
+static const void *kAirPodsButtonKey = &kAirPodsButtonKey;
+__attribute__((noinline)) static void DMAirPodsMenuGone(NSString *why);   // (AirPodsMenu.h: a menu closed -- if it was the AirPods menu, its state goes)
+#if DEBUG
+static unsigned gDMIconsUpdatedCalls = 0, gDMIconsUpdatedLayouts = 0;   // (AirPodsMenu.h podmenu_probe: iPadOS's data updates of our bars, and the layouts they asked)
+#endif
 static void DMLAMenuGone(NSString *why);             // (LiveActivities.h, 1.8.4: a Live Activity's card closed -- its refresh stops, its pill is no longer lit)
 static void DMAMOverlayGone(void);                   // (AppMenus.h, 1.8.8: one of our menus or panels went -- the app's titles that waited under it are laid out, F-7)
 // Our own Control Center (CCPanel.h, 1.8.0) for the parts of SpringBoard that work with Control Center's views:
@@ -6614,6 +6657,7 @@ static void DMWatchLock(void) {
         BOOL cover = DMCoverSheetCoversBar();
         if (cover != wasCover) {
             wasCover = cover;
+            if (cover) DMStickyEnd(@"the Cover Sheet came down");   // (1.8.8.1: a sticky note's typing never goes on under it)
             if (cover) DMHideAppBarItemsNow(); else for (UIView *fg in gCopies.allObjects) [fg setNeedsLayout];
             DMRelayoutUnattachedBars(cover ? @"Cover Sheet down" : @"Cover Sheet up");
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ for (UIView *fg in gCopies.allObjects) [fg setNeedsLayout]; DMRelayoutUnattachedBars(@"Cover Sheet, 0.4 s later"); });
@@ -6647,6 +6691,7 @@ static void DMWatchLock(void) {
     if (locked == wasLocked) return;
     wasLocked = locked;
     DMLog([NSString stringWithFormat:@"[lock] screen %@", locked ? @"locked" : @"unlocked"]);
+    if (locked) DMStickyEnd(@"locked");   // (1.8.8.1: a sticky note being typed in ends, saved; no focus lock left for the passcode field)
     if (!locked) { gDMTouchWatchArm = 3; gDMTouchWatchWhy = @"unlock"; }
     // every status bar copy lays out again: locked, only the Apple menu (no traffic lights, no menu titles); unlocked, everything back
     if (locked) DMHideAppBarItemsNow(); else for (UIView *fg in gCopies.allObjects) [fg setNeedsLayout];
@@ -13405,7 +13450,7 @@ static void DMKeyboardFocusBehindWindows(void) {
     //  front), and the gate keeps its empty list)
     BOOL keyboard = DMHardwareKeyboardAttached();
     if (!keyboard && !gKBBehind.count && !DMKBGateHolds()) {
-        NSString *active = DMNativeActiveApp() ? nil : [DMActiveApp() bundleIdentifier];
+        NSString *active = (DMNativeActiveApp() || DMDesktopTypingNow()) ? nil : [DMActiveApp() bundleIdentifier];
         DMKBSetGateList(nil, [active copy]);
         gKBBehindLastActive = [active copy];
         return;
@@ -13420,7 +13465,9 @@ static void DMKeyboardFocusBehindWindows(void) {
         if (!scenesOf[b]) scenesOf[b] = [NSMutableArray array];
         [scenesOf[b] addObject:scene];
     }
-    NSString *active = DMNativeActiveApp() ? nil : [DMActiveApp() bundleIdentifier];   // (a window of ours in front -- Finder: none of the apps types)
+    // (a window of ours in front -- Finder: none of the apps types; nor while the desktop types, a name or a sticky note in its own window over them,
+    //  1.8.8.1: an app that keeps asking for the keys could pull them out of the note -- sticky-notes.md typing section 3)
+    NSString *active = (DMNativeActiveApp() || DMDesktopTypingNow()) ? nil : [DMActiveApp() bundleIdentifier];
     NSSet<NSString *> *behind = MSBDKeyboardBehind(bundles, active, keyboard, can);
     {   // (the gate's list first: our own focus request below for an app coming to the front must not meet the list of before -- device check,
         //  M1 30 Oct: Settings made full screen over Maps had its keyboard request of ours dropped as "from behind" once)
@@ -15210,7 +15257,9 @@ static NSURL *DMPayloadURL(id options) {
     return [u isKindOfClass:[NSURL class]] ? u : nil;
 }
 static void DMDeliverURLToWindow(NSString *bundleID, NSURL *url, int attempt) {
-    id scene = DMSceneForBundle(bundleID);
+    // (and FrontBoard's own list for an app whose scene our settings hook has not seen yet: a Stage Manager window just opened on 16, Finder's
+    //  Open With -- 1.8.8.1 B67 --, as DMSceneForBundle's other callers that wait for a starting app)
+    id scene = DMSceneForBundle(bundleID) ?: DMFrontBoardSceneForBundle(bundleID);
     id settings = scene ? DMCall(scene, @"settings") : nil;
     BOOL fg = [settings respondsToSelector:NSSelectorFromString(@"isForeground")] && ((BOOL (*)(id, SEL))objc_msgSend)(settings, NSSelectorFromString(@"isForeground"));
     long long content = [scene respondsToSelector:NSSelectorFromString(@"contentState")] ? ((long long (*)(id, SEL))objc_msgSend)(scene, NSSelectorFromString(@"contentState")) : 2;
@@ -15380,32 +15429,30 @@ static void DMCoverSheetPutAway(NSString *bundleID) {
     // that opened unasked for on their own (an iMessage arriving on the iPhone, an incoming call) — are excluded here, whatever opened them.
     // An app that IS a window already comes forward as that window regardless: opening it full screen would give the full-screen app its window's scene
     // size (the rest of the screen stays black).
-    // AirDrop (sharingd) does not just launch the app: the options/activationSettings this same call carries are how the app actually receives the file
-    // that was sent. Redirecting the request into our own path (which only knows the bundle id, nothing about a file) throws that away — the app opened
-    // as a window, but never got the file, confirmed by it opening fine (and the file arriving fine) when it goes full screen the normal way. So an
-    // AirDrop request is always let straight through untouched, even for an app that already has a window — better a moment behind a full-screen cover
-    // than the file silently lost.
+    // A request from sharingd -- AirDrop's "open with", the share sheet's Open in <App> -- is an open like any other (1.8.8.1 B67, SBLaunchRule.h): the
+    // file it hands the app is the request's URL, a copy in the app's own Inbox, and the window launch below hands that URL to the window's scene with
+    // the request's actions. Let through untouched since 0.26.20, when this path knew only the bundle id and an AirDropped file was lost, it opened
+    // every app the share sheet opened full screen (TrollStore with an .ipa from Reynard's share sheet, M1 Aerial, 21 Nov).
     NSString *originName = DMOriginName(origin);
-    BOOL isAirDrop = [originName isEqualToString:@"sharingd"] || [originName isEqualToString:@"com.apple.sharingd"];
     // A BACKGROUND launch (Background App Refresh from dasd, or any request asking to start suspended) is not an open: nothing may appear or come
     // forward. Seen on the iPad 2: dasd launched Reddit in the background during a respring's window restore; it became a window, and 10 s
     // later a second background request brought that window to the front.
-    BOOL background = [originName isEqualToString:@"dasd"] || [originName isEqualToString:@"com.apple.dasd"];
+    BOOL background = MSBDOpenRequesterIsBackground(originName.UTF8String);
     {
         id dict = [options respondsToSelector:NSSelectorFromString(@"dictionary")] ? ((id (*)(id, SEL))objc_msgSend)(options, NSSelectorFromString(@"dictionary")) : options;
         if ([dict isKindOfClass:[NSDictionary class]] && [[(NSDictionary *)dict objectForKey:@"__ActivateSuspended"] respondsToSelector:@selector(boolValue)] && [[(NSDictionary *)dict objectForKey:@"__ActivateSuspended"] boolValue]) background = YES;
         if (background) DMLog([NSString stringWithFormat:@"[workspace] background launch options: %@", [[[dict description] stringByReplacingOccurrencesOfString:@"\n" withString:@" "] substringToIndex:MIN([[dict description] length], (NSUInteger)300)]]);
     }
-    BOOL hasWindow = !isAirDrop && !background && bundleID.length && (DMHasWindowFor(bundleID) || DMMSWWindowElsewhere(bundleID));   // (a window on another desktop: its desktop comes, MacSwitcher.h)
-    BOOL windowable = !isAirDrop && !background && bundleID.length && !DMActivationNeedsIcon(bundleID) && DMWindowedLaunchEligible(bundleID);
+    BOOL hasWindow = !background && bundleID.length && (DMHasWindowFor(bundleID) || DMMSWWindowElsewhere(bundleID));   // (a window on another desktop: its desktop comes, MacSwitcher.h)
+    BOOL windowable = !background && bundleID.length && !DMActivationNeedsIcon(bundleID) && DMWindowedLaunchEligible(bundleID);
     BOOL locked = DMLockUp(DMSBManager("SBLockScreenManager"));   // (SpringBoard's own open asks for the unlock first, and makes this call again with the UI unlocked: SBLaunchRule.h)
 #if DEBUG
     if (DMTestFlag("/tmp/msb-open-locked-asbuilt")) locked = DMLockUp(DMSBManager("SBLockScreenManager")) || DMCoverSheetShown();   // (debug: as before the code review's finding, to compare)
     DMLog([NSString stringWithFormat:@"[workspace] at the request: %@ -> locked %d", DMLockRead(), locked]);
 #endif
     DMLog([NSString stringWithFormat:@"[workspace] open request for %@ (%@) from %@ (%@)", bundleID, NSStringFromClass([request class]), originName ?: NSStringFromClass([origin class]), background ? @"a background launch: left alone"
-        : ((hasWindow || windowable) && locked ? @"locked: SpringBoard's own open, for the unlock" : (hasWindow ? @"its window comes forward" : (windowable ? @"opens as a window" : (isAirDrop ? @"AirDrop: left untouched so the file is not lost" : @"left alone"))))]);
-    if (bundleID.length && MSBDSBOpenToWindow(isAirDrop, background, gForceFullScreenLaunch, locked, hasWindow, windowable) && DMCallCompletion(result)) {
+        : ((hasWindow || windowable) && locked ? @"locked: SpringBoard's own open, for the unlock" : (hasWindow ? @"its window comes forward" : (windowable ? @"opens as a window" : @"left alone")))]);
+    if (bundleID.length && MSBDSBOpenToWindow(background, gForceFullScreenLaunch, locked, hasWindow, windowable) && DMCallCompletion(result)) {
         DMWindowedLaunch(bundleID);   // an existing window is shown, otherwise the app opens as a window (Open Apps as Windows)
         DMCoverSheetPutAway(bundleID);
         // Keyboard Phase (iPad 2, iOS 16): a Spotlight result (Return with a hardware keyboard, or a tap) that opens an app with a window left Spotlight
@@ -16659,7 +16706,7 @@ static void DMOverlayPressesBegan(id self, SEL _cmd, NSSet<UIPress *> *presses, 
     //  windows' hook, which is there only while Finder is on)
     if (DMDownloadsPanelTakesEsc(presses)) return;
 #if DEBUG
-    if (DMTestFlag("/tmp/msb-ccint-keys")) for (UIPress *p in presses) DMLog([NSString stringWithFormat:@"[keys] SpringBoard -pressesBegan: key 0x%lx mods 0x%lx (menu %d, Control Center up %d)", (long)p.key.keyCode, (long)p.key.modifierFlags, gOverlay != nil, DMControlCenterActive()]);
+    if (DMTestFlag("/tmp/msb-ccint-keys")) for (UIPress *p in presses) DMLog(DMKeyLogHides(p) ? @"[keys] SpringBoard -pressesBegan: a typed key (a text input has the typing)" : [NSString stringWithFormat:@"[keys] SpringBoard -pressesBegan: key 0x%lx mods 0x%lx (menu %d, Control Center up %d)", (long)p.key.keyCode, (long)p.key.modifierFlags, gOverlay != nil, DMControlCenterActive()]);
 #endif
     if (gOverlay) for (UIPress *p in presses) if (p.key.keyCode == UIKeyboardHIDUsageKeyboardEscape) { DM_FEATURE_MARK("esc-closes-menus"); DMLog(@"[overlay] Esc: closed"); DMOverlayEscape(nil); return; }
     if (!gOverlay && DMDispPanelEscape(presses)) return;
@@ -16689,6 +16736,7 @@ static void DMRemoveOverlayNow(void) {
     DMTodayGiveBack(@"another menu or dialog");
     DMWiFiMenuGone(@"removed");   // (the Wi-Fi menu's scan stops with it)
     DMBattMenuGone(@"removed");   // (the battery menu's refresh too)
+    DMAirPodsMenuGone(@"removed");   // (and the AirPods menu's state)
     DMLAMenuGone(@"removed");     // (a Live Activity's card too)
     UIView *o = gOverlay;
     if (o) DMLog(@"[overlay] removed immediately");
@@ -16712,6 +16760,7 @@ static void DMCloseOverlay(void) {
     DMTodayGiveBack(@"closed");
     DMWiFiMenuGone(@"closed");   // (the Wi-Fi menu's scan stops with it; also the screen going off, DMCloseOverlaysForScreenOff)
     DMBattMenuGone(@"closed");
+    DMAirPodsMenuGone(@"closed");
     DMLAMenuGone(@"closed");
     UIView *o = gOverlay;
     DMLog([NSString stringWithFormat:@"[overlay] close requested (overlay %@)", o ? @"present" : @"already gone"]);
@@ -19370,6 +19419,7 @@ static void DMDesktopAreaChanged(void) { [gDesktop setNeedsLayout]; }
 #include "CCTiles.h"        // (its Mac tiles: Connectivity, Display, Sound, Now Playing and their pages -- 1.8.0 P3)
 #include "CC18Shape.h"      // (our own Control Center on iPadOS 18: Apple's own 18 grid re-shaped into the Mac panel -- 1.8.0 P5b)
 #include "CC18Tiles.h"      // (... and our Mac tiles there, as Control Center's own modules -- 1.8.1 item 1)
+#include "AirPodsMenu.h"    // (the AirPods menu: Settings > Status Bar > AirPods Menu, 1.8.8.1)
 #include "LiveActivities.h"   // (Live Activities in the menu bar: pills left of the status icons and their cards -- 1.8.4 item 1)
 #if DEBUG
 #include "CCProbe.h"        // (debug only: read-only Control Center walkers for tests -- no hooks)
@@ -20286,31 +20336,77 @@ static void DMMinimizeAllWindows(void) {
 // background). With Aerial, Zetsu and MilkyWay4 the windows float over the Home Screen, where SpringBoard often is already: such a Home makes no
 // transition, and these two are what there is to see. The Stage Manager engine's windows go with SpringBoard's Home transition itself (SMHome.h);
 // only our own windows are left for this there. The rule: HomeAway.h (Mac-tested, tools/test-homeaway.sh).
+// Crash map: every DMHomeAway... function and block is Home Minimizes Windows' (tools/crashmap-rules.txt homeMinimizes): a crash in them turns that
+// switch off, which stops all of them. The ones another part's code calls stay out of line (noinline), so -Os does not put them inside that
+// part's function and the crash with them (the Home button's hooks, the gesture's lift, the tick, the preferences' read: 1.8.8.1, B13).
 #include "HomeAway.h"
 static double gHomeAwayLiftAt = -100, gHomeAwayPressAt = -100;
+// Adapt to Trackpad & Mouse (1.8.8.1; HomeAway.h DMHomeAwayOn): Settings > Windows & Multitasking > Adapt to Trackpad & Mouse, under Home Minimizes
+// Windows (homeMinimizesAdapt, on unless switched off, for every user, updaters too: nothing stored changes meaning). With a trackpad or mouse
+// connected Home leaves the windows where they are, as on a Mac; used by hand Home minimizes them. Asked fresh at each Home that would minimize,
+// after every other answer (ours, the keyboard's, the Cover Sheet or Control Center, Guided Access, no window on screen), so the pointer is read only
+// for a Home it can change; with Adapt off (the crash guard's off for it) none of this runs and Home is 1.8.8's. The engines' Homes and our own
+// windows: DMHomeAwayRun below; the Stage Manager engine's: SMHome.h (its Home transition, and the Home gesture's look, once per gesture). The Home
+// hooks go in and the early outs keep reading the switch itself: this is always a subset of it, and the hooks must be in for the Homes by hand.
+static BOOL gHomeAdapt = NO;   // (DMLoadPrefs: on unless switched off)
+static BOOL gDMPointerAttached;   // (the MacPointer bridge's 2 s answer: a trackpad or mouse attached; defined there)
+// A trackpad or mouse connected now: the Haptic Touch menus' answer (DMCtxPointerNow), SpringBoard's pointer manager asked fresh (Smart Connector and
+// Bluetooth, keyboards with a built-in trackpad; a keyboard alone is not one), the 2 s poll only where the manager cannot be asked. Our test vmouse
+// (ptrtool) counts, as the device rows need. (When "Use iPad as Trackpad" lands, its own virtual mouse must not count here: the hands are on the
+// iPad then -- plans/virtual-pointer-design.md, the isHardwarePointingDeviceAttached audit.) Main thread. Debug builds only: /tmp/msb-noptr = none,
+// /tmp/msb-fakeptr = one (DMTestFlag: release builds read no flag). Out of line: the crash map's rule for it (tools/crashmap-rules.txt homeAdapt).
+__attribute__((noinline)) static int DMHomeAdaptPointer(void) {
+    if (DMTestFlag("/tmp/msb-noptr")) return 0;
+    if (DMTestFlag("/tmp/msb-fakeptr")) return 1;
+    static int sig = -1;   // (-[SBMousePointerManager isHardwarePointingDeviceAttached] as we call it, B@:, checked once)
+    id mgr = DMCall([UIApplication sharedApplication], @"mousePointerManager");
+    SEL s = NSSelectorFromString(@"isHardwarePointingDeviceAttached");
+    if (mgr && sig < 0) {
+        Method m = class_getInstanceMethod(object_getClass(mgr), s);
+        sig = m && [DMSMSigOfMethod(m) isEqualToString:DMSMExpect(@encode(BOOL), NULL)] ? 1 : 0;
+        if (!sig) DMLog(@"[homeaway] SpringBoard's pointer manager is not as expected here: Adapt to Trackpad & Mouse goes by the 2 s pointer check");
+    }
+    if (sig == 1 && [mgr respondsToSelector:s]) return ((BOOL (*)(id, SEL))objc_msgSend)(mgr, s) ? 1 : 0;
+    return gDMPointerAttached ? 1 : 0;
+}
+// Home Minimizes Windows as it applies to this Home (HomeAway.h DMHomeAwayOn): the switch, unless Adapt to Trackpad & Mouse is on and a trackpad or
+// mouse is connected. The pointer is read only with both on. *pointer (or NULL): what was read, -1 when nothing was (the debug lines). Out of line, as
+// DMHomeAdaptPointer.
+__attribute__((noinline)) static BOOL DMHomeAdaptMinimizes(int *pointer) {
+    int p = gHomeMinimizes && gHomeAdapt ? DMHomeAdaptPointer() : -1;
+    if (pointer) *pointer = p;
+    if (p == 1) DM_FEATURE_MARK("home-adapt-keeps-windows");
+    if (p >= 0 && DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[homeaway] Adapt to Trackpad & Mouse: %@", p ? @"a trackpad or mouse is connected (pointer 1): this Home leaves the windows"
+                                                                                                                 : @"no trackpad or mouse (pointer 0): this Home minimizes the windows"]);
+    return DMHomeAwayOn(gHomeMinimizes, gHomeAdapt, p == 1);
+}
 // (the Cover Sheet or Control Center over the screen: a Home press closes that, not the desktop -- read before SpringBoard handles the press, whose
 //  own handling starts their dismissal; for a lift, SpringBoard's switcher gesture ran, so neither was up)
 static BOOL DMHomeAwayCovered(void) { return DMCoverSheetShown() || DMControlCenterActive(); }
-static BOOL DMHomeAwayPressCovered(void) { return gHomeMinimizes && DMHomeAwayCovered(); }   // (MacSwitcherButton.h: nothing read with the switch off)
+__attribute__((noinline)) static BOOL DMHomeAwayPressCovered(void) { return gHomeMinimizes && DMHomeAwayCovered(); }   // (MacSwitcherButton.h: nothing read with the switch off)
 static void DMHomeAwayRun(NSString *how, BOOL ours, BOOL keys, BOOL coveredBefore) {   // (after SpringBoard's own handling of the lift or the press, on the next turn)
     dispatch_async(dispatch_get_main_queue(), ^{
         BOOL sm = DMSMEngine();
         unsigned engineWins = sm ? 0 : (unsigned)DMVisibleWindowCount(), ourWins = (unsigned)DMNativeVisibleWindowCount();
-        int what = DMHomeAwayWhat(gHomeMinimizes, ours, keys, coveredBefore || DMHomeAwayCovered(), MSBDGuidedAccessActive(), sm, engineWins, ourWins);
-        if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[homeaway] %@: %@ (ours %d, keyboard %d, %u engine windows, %u of ours%@)", how,
-            what == DMHomeAwayAll ? @"every window minimized" : what == DMHomeAwayOurs ? @"our own windows minimized (the engine's go with its Home)" : @"nothing",
-            ours, keys, engineWins, ourWins, sm ? @", Stage Manager engine" : @""]);
+        int what = DMHomeAwayWhat(gHomeMinimizes, ours, keys, coveredBefore || DMHomeAwayCovered(), MSBDGuidedAccessActive(), sm, engineWins, ourWins), pointer = -1;
+        // (Adapt to Trackpad & Mouse: asked last, only for a Home that would minimize -- never ours, the keyboard's, a covered one, Guided Access's
+        //  or one with no window on screen)
+        if (what != DMHomeAwayNone && !DMHomeAdaptMinimizes(&pointer)) what = DMHomeAwayNone;
+        if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[homeaway] %@: %@ (ours %d, keyboard %d, adapt %d, pointer %d, %u engine windows, %u of ours%@)", how,
+            what == DMHomeAwayAll ? @"every window minimized" : what == DMHomeAwayOurs ? @"our own windows minimized (the engine's go with its Home)"
+            : pointer == 1 ? @"nothing (a trackpad or mouse is connected: Adapt to Trackpad & Mouse)" : @"nothing",
+            ours, keys, gHomeAdapt, pointer, engineWins, ourWins, sm ? @", Stage Manager engine" : @""]);
         if (what == DMHomeAwayNone) return;
         DM_FEATURE_MARK("home-minimizes-windows");
         if (what == DMHomeAwayOurs) { for (DMNativeWindow *nw in [gNativeWindows copy]) if (!nw.hidden && nw.superview) [nw minimize]; return; }
         DMMinimizeAllWindows();
     });
 }
-static void DMHomeAwayLift(void) {   // (MacSwitcher.h: SpringBoard is given Home for the gesture's lift -- once per gesture, HomeAway.h)
+__attribute__((noinline)) static void DMHomeAwayLift(void) {   // (MacSwitcher.h: SpringBoard is given Home for the gesture's lift -- once per gesture, HomeAway.h)
     if (!gHomeMinimizes || !DMHomeAwayOnce(CACurrentMediaTime(), &gHomeAwayLiftAt)) return;
     DMHomeAwayRun(@"a Home gesture", DMHomeIsOurs(), NO, NO);
 }
-static void DMHomeAwayPress(BOOL handled, BOOL coveredBefore) {   // (MacSwitcherButton.h: SpringBoard has handled a single press -- once, whichever variant ran)
+__attribute__((noinline)) static void DMHomeAwayPress(BOOL handled, BOOL coveredBefore) {   // (MacSwitcherButton.h: SpringBoard has handled a single press -- once, whichever variant ran)
     if (!gHomeMinimizes || !DMHomeAwayOnce(CACurrentMediaTime(), &gHomeAwayPressAt)) return;
     DMHomeAwayRun([NSString stringWithFormat:@"a Home press (SpringBoard's answer %d%@)", handled, coveredBefore ? @", over the Cover Sheet or Control Center" : @""], DMHomeIsOurs(), DMHomeFromKeys(), coveredBefore);
 }
@@ -20324,7 +20420,7 @@ static void DMHomeAwayDismissTap(id self, SEL _cmd, id recognizer) {
     o_HomeAwayDismissTap(self, _cmd, recognizer);
     if (main) DMHomeAwayRun(@"a tap beside the App Switcher's cards", DMHomeIsOurs(), NO, NO);
 }
-static void DMHomeAwayHookDismissTap(void) {   // (once, when Home Minimizes Windows is first on; the exact type only)
+__attribute__((noinline)) static void DMHomeAwayHookDismissTap(void) {   // (once, when Home Minimizes Windows is first on; the exact type only)
     static BOOL done = NO;
     if (done) return;
     done = YES;
@@ -20343,7 +20439,7 @@ static void DMHomeAwayKeysHome(id self, SEL _cmd, id sender) {
     gDMKeysHomeDepth--;
     gDMKeysHomeAt = CACurrentMediaTime();
 }
-static void DMHomeAwayHookKeys(void) {   // (once, when Home Minimizes Windows is first on; the exact type only)
+__attribute__((noinline)) static void DMHomeAwayHookKeys(void) {   // (once, when Home Minimizes Windows is first on; the exact type only)
     static BOOL done = NO;
     if (done) return;
     done = YES;
@@ -20369,7 +20465,7 @@ static void DMHomeAwayKeysOther(id self, SEL _cmd, id sender) {
     gDMKeysHomeDepth--;
     gDMKeysHomeAt = CACurrentMediaTime();
 }
-static void DMHomeAwayScanKeys(void) {   // (once, with SpringBoard up and Home Minimizes Windows on: DMTickBody)
+__attribute__((noinline)) static void DMHomeAwayScanKeys(void) {   // (once, with SpringBoard up and Home Minimizes Windows on: DMTickBody)
     static BOOL done = NO;
     if (done || !gHomeMinimizes) return;
     done = YES;
@@ -21286,7 +21382,7 @@ static void DMOpenMenuForButton(UIButton *b) {
     UIView *fg = self.fg, *host = self.host;
     if (!fg || !host) return nil;
     const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kDispButtonKey, kAudioButtonKey, kSSHButtonKey, kVPNButtonKey, kWiFiButtonKey,
-                           kBattButtonKey, kCCButtonKey, DM_AM_BUTTONS };   // (the Control Center icon too: like a Mac's, a click on it with a menu open opens Control Center)
+                           kAirPodsButtonKey, kBattButtonKey, kCCButtonKey, DM_AM_BUTTONS };   // (the Control Center icon too: like a Mac's, a click on it with a menu open opens Control Center)
     for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
         UIButton *b = objc_getAssociatedObject(fg, keys[i]);
         if (!b || b.hidden || b == self.current || b.frame.size.width < 1.0) continue;
@@ -21314,6 +21410,7 @@ static void DMOpenMenuForButton(UIButton *b) {
         else if (b == objc_getAssociatedObject(bfg, kVPNButtonKey)) DMOpenVPNMenu(b);
         else if (b == objc_getAssociatedObject(bfg, kWiFiButtonKey)) DMOpenWiFiMenu(b);
         else if (b == objc_getAssociatedObject(bfg, kBattButtonKey)) DMOpenBatteryMenu(b);
+        else if (b == objc_getAssociatedObject(bfg, kAirPodsButtonKey)) DMOpenAirPodsMenu(b);
         else if (b == objc_getAssociatedObject(bfg, kCCButtonKey)) DMBattOpenControlCenter(b);
         else if ([b isKindOfClass:[DMLAPill class]]) DMLAOpenCard((DMLAPill *)b);
         else DMOpenMenuForButton(b);
@@ -21332,6 +21429,7 @@ static void DMOpenMenuForButton(UIButton *b) {
     else if (b == objc_getAssociatedObject(fg, kVPNButtonKey)) DMOpenVPNMenu(b);
     else if (b == objc_getAssociatedObject(fg, kWiFiButtonKey)) DMOpenWiFiMenu(b);
     else if (b == objc_getAssociatedObject(fg, kBattButtonKey)) DMOpenBatteryMenu(b);
+    else if (b == objc_getAssociatedObject(fg, kAirPodsButtonKey)) DMOpenAirPodsMenu(b);
     else if (b == objc_getAssociatedObject(fg, kCCButtonKey)) DMBattOpenControlCenter(b);
     else if ([b isKindOfClass:[DMLAPill class]]) DMLAOpenCard((DMLAPill *)b);
     else DMOpenMenuForButton(b);
@@ -21651,6 +21749,12 @@ static CGFloat DMLayoutTitle(UIView *fg, BOOL rtl, const void *labelKey, const v
         __weak UIButton *weakBtn = btn;
         [btn addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { if (weakBtn) onTap(weakBtn); }]
       forControlEvents:UIControlEventTouchUpInside];
+        // (while it is under a finger the app's titles stay where they are, and the bar is laid out again as the touch ends: F-7b, AppMenus.h)
+        NSHashTable *titles = objc_getAssociatedObject(fg, kAMTitleButtonsKey);
+        if (!titles) { titles = [NSHashTable weakObjectsHashTable]; objc_setAssociatedObject(fg, kAMTitleButtonsKey, titles, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
+        [titles addObject:btn];
+        [btn addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { DMAMTitleTouchEnded(); }]
+      forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel];
         [fg addSubview:btn];
         objc_setAssociatedObject(fg, buttonKey, btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
@@ -23752,6 +23856,12 @@ static void DMLoadPrefs(void) {
         DMBattApplyPref(MSBDBattMenuOn(isBool, isBool && CFBooleanGetValue(bmRef)));
         if (bmRef) CFRelease(bmRef);
     }
+    {   // AirPods Menu (1.8.8.1): on unless switched off, updaters too (AirPodsMenu.h DMAirPodsApplyPref; common/AirPodsMenu.h MSBDAirPodsMenuOn)
+        CFPropertyListRef apRef = CFPreferencesCopyValue(CFSTR(MSBD_AIRPODS_MENU_KEY), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        BOOL isBool = apRef && CFGetTypeID(apRef) == CFBooleanGetTypeID();
+        DMAirPodsApplyPref(MSBDAirPodsMenuOn(isBool, isBool && CFBooleanGetValue(apRef)));
+        if (apRef) CFRelease(apRef);
+    }
     {   // Battery Percentage in Icon (1.8.4.2): off unless switched on (BatteryMenu.h, common/BatteryInside.h)
         CFPropertyListRef bi = CFPreferencesCopyValue(CFSTR(kMSBDBatteryInsideKey), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
         DMBattInsideApplyPref(bi && CFGetTypeID(bi) == CFBooleanGetTypeID() && CFBooleanGetValue(bi));
@@ -23790,6 +23900,14 @@ static void DMLoadPrefs(void) {
         hm = hm && !DMCtorSkip("homeaway");
         if (hm != gHomeMinimizes) DMLog([NSString stringWithFormat:@"[homeaway] Home Minimizes Windows %@", hm ? @"on: going Home minimizes the windows" : @"off: the windows stay at Home"]);
         gHomeMinimizes = hm;
+        // Adapt to Trackpad & Mouse (1.8.8.1): on unless switched off, for every user, updaters too (no OldDefaults line in the root helper) -- with a
+        // trackpad or mouse connected Home leaves the windows (DMHomeAdaptMinimizes, above DMHomeAwayRun). Nothing of its own to hook: Home
+        // Minimizes Windows' hooks serve it
+        BOOL ha = YES;
+        CFPropertyListRef haRef = CFPreferencesCopyValue(CFSTR("homeMinimizesAdapt"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        if (haRef) { if (CFGetTypeID(haRef) == CFBooleanGetTypeID()) ha = CFBooleanGetValue(haRef); CFRelease(haRef); }
+        if (ha != gHomeAdapt) DMLog([NSString stringWithFormat:@"[homeaway] Adapt to Trackpad & Mouse %@", ha ? @"on: with a trackpad or mouse connected, Home leaves the windows" : @"off: Home Minimizes Windows alone decides"]);
+        gHomeAdapt = ha;
         if (hm) { DMMSWHookActivation(); DMHomeAwayHookDismissTap(); DMHomeAwayHookKeys(); }
     }
     {   // Snap Windows to Edges (1.8.6): on unless switched off (DMSnapOff)
@@ -24221,6 +24339,7 @@ static BOOL DMLayoutWithoutClock(UIView *fg) {
     // and the status icons close up to the right edge in its place. It comes back (fading in) with the clock after unlocking.
     if (spotIcon && !spotIcon.hidden) { spotIcon.hidden = YES; spotBtn.hidden = YES; objc_setAssociatedObject(fg, kSpotLockHidKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
     DMBattLockLayout(fg);   // (the Control Center icon goes the same way, and the battery is iOS's own there: BatteryMenu.h)
+    DMAirPodsLockLayout(fg);   // (and the AirPods item is iPadOS's own there too: AirPodsMenu.h)
     DMLAHidePills(fg);      // (and the Live Activities' pills: the Lock Screen shows the activities itself -- LiveActivities.h)
     UIView *prevTrail = objc_getAssociatedObject(fg, kTrailShiftKey);
     if (prevTrail && prevTrail != trailing) prevTrail.transform = CGAffineTransformIdentity;
@@ -24573,9 +24692,17 @@ static BOOL DMStockVPNRecheck(UIView *fg) {   // (a copy that has just become ou
 // one (the Wi-Fi icon coming back seconds after a VPN connects moved the Airplane icon under our VPN badge for about a second, 28 Sep), so right
 // after each of its data updates our copy is laid out again (and once more after its icon animations).
 static void DMStatusIconsUpdated(id bar) {
-    if (!(gVPNActive || gSSHActive || gMuteIconShown || gWiFiMenuOn)) return;   // (nothing of ours beside them; the Wi-Fi icon also follows the bars from here)
+#if DEBUG
+    gDMIconsUpdatedCalls++;   // (podmenu_probe: iPadOS's data updates of a bar)
+#endif
+    // (nothing of ours beside them; the Wi-Fi icon also follows the bars from here, and the AirPods button iPadOS's item: it comes, goes and moves
+    //  with the battery's percentage, 1.8.8.1)
+    if (!(gVPNActive || gSSHActive || gMuteIconShown || gWiFiMenuOn || gAirPodsMenuOn)) return;
     UIView *fg = DMCall(bar, @"foregroundView");
     if (![fg isKindOfClass:[UIView class]] || !objc_getAssociatedObject(fg, kLogoKey)) return;
+#if DEBUG
+    gDMIconsUpdatedLayouts++;   // (... and the layouts of ours they asked)
+#endif
     [fg setNeedsLayout];
     __weak UIView *weakFg = fg;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [weakFg setNeedsLayout]; });
@@ -24835,7 +24962,7 @@ static BOOL DMBarCopyIsCCDuplicate(UIView *fg) {
         DMSBDiagStep(@"b-narrow");
         // A copy that has collapsed (an app card being dismissed, say) must not leave our
         // views behind at their old positions, or a stale app name lingers that nobody updates.
-        const void *keys[] = { kSSHIconKey, kSSHButtonKey, kVPNIconKey, kVPNButtonKey, kWiFiIconKey, kWiFiButtonKey, kBattButtonKey, kCCIconKey, kCCButtonKey, kCCPillKey, kMuteIconKey, kLogoKey, kButtonKey, kPillKey, kAppLabelKey, kAppButtonKey, kAppPillKey, kDateProxyKey, kClockButtonKey, kSpotIconKey, kSpotButtonKey, kEditLabelKey, kEditButtonKey, kEditPillKey, kGoLabelKey, kGoButtonKey, kGoPillKey, kWinLabelKey, kWinButtonKey, kWinPillKey, kDispLabelKey, kDispButtonKey, kDispPillKey, kAudioLabelKey, kAudioButtonKey, kAudioPillKey, kBackgroundKey, kLightsKey , kFileLabelKey, kFileButtonKey, kFilePillKey, kViewLabelKey, kViewButtonKey, kViewPillKey, DM_AM_LABELS, DM_AM_BUTTONS, DM_AM_PILLS };
+        const void *keys[] = { kSSHIconKey, kSSHButtonKey, kVPNIconKey, kVPNButtonKey, kWiFiIconKey, kWiFiButtonKey, kBattButtonKey, kAirPodsButtonKey, kCCIconKey, kCCButtonKey, kCCPillKey, kMuteIconKey, kLogoKey, kButtonKey, kPillKey, kAppLabelKey, kAppButtonKey, kAppPillKey, kDateProxyKey, kClockButtonKey, kSpotIconKey, kSpotButtonKey, kEditLabelKey, kEditButtonKey, kEditPillKey, kGoLabelKey, kGoButtonKey, kGoPillKey, kWinLabelKey, kWinButtonKey, kWinPillKey, kDispLabelKey, kDispButtonKey, kDispPillKey, kAudioLabelKey, kAudioButtonKey, kAudioPillKey, kBackgroundKey, kLightsKey , kFileLabelKey, kFileButtonKey, kFilePillKey, kViewLabelKey, kViewButtonKey, kViewPillKey, DM_AM_LABELS, DM_AM_BUTTONS, DM_AM_PILLS };
         for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
             ((UIView *)objc_getAssociatedObject(fg, keys[i])).hidden = YES;
         DMLAHidePills(fg);   // (the Live Activities' pills too)
@@ -25358,6 +25485,8 @@ static BOOL DMBarCopyIsCCDuplicate(UIView *fg) {
                 });
             }
         }
+        // The AirPods button (Settings > Status Bar > AirPods Menu): over iPadOS's AirPods item while it shows a headset battery (AirPodsMenu.h)
+        DMAirPodsLayoutButton(fg, left, k);
         // The battery's button (Settings > Status Bar > Battery Menu): over iOS's own battery item, which then opens our battery menu (BatteryMenu.h)
         DMBattLayoutButton(fg, left, k);
         DMBattInsideBar(fg);   // (Battery Percentage in Icon: Settings > Status Bar, off by default)
@@ -25772,7 +25901,7 @@ static BOOL DMPointOverOurControl(UIView *bar, UIGestureRecognizer *g) {
     UIView *lightsView = objc_getAssociatedObject(fg, kLightsKey);
     if (lightsView && !lightsView.hidden && CGRectContainsPoint(lightsView.frame, p)) return YES;
     const void *keys[] = { kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kDispButtonKey, kAudioButtonKey, kSSHButtonKey,
-                           kVPNButtonKey, kWiFiButtonKey, kSpotButtonKey, kClockButtonKey, kBattButtonKey, kCCButtonKey, DM_AM_BUTTONS };   // (the battery: our menu, not Control Center, while Battery Menu is on)
+                           kVPNButtonKey, kWiFiButtonKey, kAirPodsButtonKey, kSpotButtonKey, kClockButtonKey, kBattButtonKey, kCCButtonKey, DM_AM_BUTTONS };   // (the battery: our menu, not Control Center, while Battery Menu is on)
 #if DEBUG
     if (DMTestFlag("/tmp/msb-bar-apple-actions")) {   // (tests: the set before 1.7.1 -- the clock and the icons left to iPadOS's region actions)
         const void *old[] = { kAppButtonKey, kEditButtonKey, kGoButtonKey, kSpotButtonKey };
@@ -25885,7 +26014,7 @@ static UIView *DMBarControlAtScreenPoint(CGPoint p) {
         if (!CGRectContainsPoint(fg.bounds, q)) continue;
         UIView *lightsView = objc_getAssociatedObject(fg, kLightsKey);
         if (lightsView && !lightsView.hidden && CGRectContainsPoint(lightsView.frame, q)) return lightsView;
-        const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kDispButtonKey, kAudioButtonKey, kSSHButtonKey,
+        const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kDispButtonKey, kAudioButtonKey, kSSHButtonKey, kAirPodsButtonKey,
                                kVPNButtonKey, kWiFiButtonKey, kSpotButtonKey, kClockButtonKey, kBattButtonKey, kCCButtonKey, DM_AM_BUTTONS };
         for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
             UIButton *b = objc_getAssociatedObject(fg, keys[i]);
@@ -25915,7 +26044,7 @@ static BOOL DMOurStatusIconsEdge(CGFloat *edge, BOOL *rtl) {
         CGRect bar = [fg convertRect:fg.bounds toCoordinateSpace:main.coordinateSpace];
         if (bar.origin.y > 1.0 || bar.size.width < W - 1.0) continue;   // (the menu bar at the top of the screen: not a window card's strip, not Control Center's copy)
         BOOL r = DMBarRTL(fg); BOOL any = NO; CGFloat best = r ? -CGFLOAT_MAX : CGFLOAT_MAX;
-        const void *keys[][2] = { {kSSHIconKey, kSSHButtonKey}, {kVPNIconKey, kVPNButtonKey}, {kMuteIconKey, NULL}, {kWiFiIconKey, kWiFiButtonKey} };
+        const void *keys[][2] = { {kSSHIconKey, kSSHButtonKey}, {kVPNIconKey, kVPNButtonKey}, {kMuteIconKey, NULL}, {kWiFiIconKey, kWiFiButtonKey}, {kAirPodsButtonKey, NULL} };
         for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
             UIView *icon = objc_getAssociatedObject(fg, keys[i][0]);
             if (!icon || icon.hidden || icon.alpha < 0.05 || icon.window != w) continue;
@@ -26900,7 +27029,7 @@ static void DMCornerWatch(UIEvent *event) {
 - (void)pressesBegan:(NSSet *)presses withEvent:(UIPressesEvent *)event {
     if (DMDebugOn()) {
         for (UIPress *p in presses)
-            DMLog([NSString stringWithFormat:@"[keyrecv] SpringBoard got key usage 0x%02lx modifiers 0x%lx", (long)p.key.keyCode, (long)p.key.modifierFlags]);
+            DMLog(DMKeyLogHides(p) ? @"[keyrecv] SpringBoard got a typed key (a text input has the typing)" : [NSString stringWithFormat:@"[keyrecv] SpringBoard got key usage 0x%02lx modifiers 0x%lx", (long)p.key.keyCode, (long)p.key.modifierFlags]);
     }
     %orig;
 }
@@ -28243,8 +28372,8 @@ static void DMRunTrigger(NSString *cmd) {
             }
             ((void (*)(id, SEL, BOOL))objc_msgSend)(e, @selector(setEnabled:), YES);
             ((void (*)(id, SEL, long long))objc_msgSend)(e, NSSelectorFromString(@"setState:"), [q[0] longLongValue]);
-            ((void (*)(id, SEL, BOOL))objc_msgSend)(b, @selector(setEnabled:), YES);
-            ((void (*)(id, SEL, long long))objc_msgSend)(b, NSSelectorFromString(@"setCapacity:"), [q[1] longLongValue]);
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(b, @selector(setEnabled:), [q[1] longLongValue] >= 0);   // (a percent below 0: the headset battery off, the bare glyph -- AirPodsMenu.h's D0.2)
+            ((void (*)(id, SEL, long long))objc_msgSend)(b, NSSelectorFromString(@"setCapacity:"), MAX(0LL, [q[1] longLongValue]));
             ((void (*)(id, SEL, id))objc_msgSend)(e, sBatt, b);
             ((void (*)(id, SEL, id))objc_msgSend)(data, sBT, e);
             if (!kept) objc_setAssociatedObject(bar, kFakeBTKey, @[DMCall(bar, @"overlayData") ?: [NSNull null]], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -28907,6 +29036,10 @@ static void DMRunTrigger(NSString *cmd) {
         DMLog([NSString stringWithFormat:@"[debug] respringPendTest = %d written, not synchronized: respring now", [[cmd substringFromIndex:13] intValue]]);
         DMRespringChecked();
     }
+    else if ([cmd isEqualToString:@"icleanafter_respring"]) {   // Clean and Respring after a clean that freed 2 MB (4 files), with no iCleaner and nothing
+        DMLog(@"[debug] iclean: Clean and Respring with a test answer");   // cleaned: the result kept, our respring, the result after it (1.8.8.1)
+        DMFinderICleanRespring(@"ok freed=2\u00a0MB deleted=4 respring=0 test=1");
+    }
 #endif
     else if ([cmd hasPrefix:@"prefbool_"]) {   // prefbool_<domain>|<key>|<0|1>: write a boolean preference through cfprefsd the way a Settings switch does
         NSArray *q = [[cmd substringFromIndex:9] componentsSeparatedByString:@"|"];
@@ -29192,7 +29325,7 @@ static void DMRunTrigger(NSString *cmd) {
             NSMutableString *out = [NSMutableString stringWithFormat:@"[ax] %lu elements%@", (unsigned long)found.count, DMAXRunning() ? @" (an assistive feature is running)" : @""];
             for (NSUInteger i = 0; i < found.count; i++) {
                 UIView *v = found[i];
-                [out appendFormat:@"\n  %@ | %@ | \"%@\" value \"%@\" hint \"%@\" [%@] %@%@", where[i], NSStringFromClass([v class]), v.accessibilityLabel ?: @"", v.accessibilityValue ?: @"", v.accessibilityHint ?: @"",
+                [out appendFormat:@"\n  %@ | %@ | \"%@\" value \"%@\" hint \"%@\" [%@] %@%@", where[i], NSStringFromClass([v class]), v.accessibilityLabel ?: @"", DMStickyAXDumpValue(v) ?: v.accessibilityValue ?: @"", v.accessibilityHint ?: @"",
                     traits(v), NSStringFromCGRect(v.accessibilityFrame), v.accessibilityCustomActions.count ? [NSString stringWithFormat:@" actions %@", [[v.accessibilityCustomActions valueForKey:@"name"] componentsJoinedByString:@"/"]] : @""];
             }
             if (gOverlay) [out appendFormat:@"\n  menu modal %d, group \"%@\"", gOverlay.accessibilityViewIsModal, gOverlay.subviews.lastObject.accessibilityLabel ?: @""];
@@ -32285,9 +32418,9 @@ static void DMRunTrigger(NSString *cmd) {
     else if ([cmd isEqualToString:@"menutitles"]) {   // menutitles: every menu title on the screen, as "name x y" centres in screen points (for finger-tap stress tests)
         NSMutableString *o = [NSMutableString stringWithString:@"[menutitles]"];
         const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kDispButtonKey, kAudioButtonKey, kSSHButtonKey, kVPNButtonKey, kWiFiButtonKey, kClockButtonKey,
-                               kBattButtonKey, kCCButtonKey, kSpotButtonKey, DM_AM_BUTTONS };
+                               kBattButtonKey, kAirPodsButtonKey, kCCButtonKey, kSpotButtonKey, DM_AM_BUTTONS };
         // (one name per key, in the same order: the list once had 9 names for 11 keys and read past its end -- an exception in SpringBoard)
-        static const char *names[] = { "apple", "app", "file", "edit", "view", "go", "window", "display", "audio", "ssh", "vpn", "wifi", "clock", "battery", "cc", "spotlight",
+        static const char *names[] = { "apple", "app", "file", "edit", "view", "go", "window", "display", "audio", "ssh", "vpn", "wifi", "clock", "battery", "airpods", "cc", "spotlight",
                                        "appmenu0", "appmenu1", "appmenu2", "appmenu3", "appmenu4", "appmenu5", "appmenu6" };
         _Static_assert(sizeof(names) / sizeof(names[0]) == sizeof(keys) / sizeof(keys[0]), "menutitles: one name per key");
         for (UIView *fg in gCopies.allObjects) {
@@ -32305,7 +32438,7 @@ static void DMRunTrigger(NSString *cmd) {
     else if ([cmd isEqualToString:@"menucheck"]) {   // menucheck: regression check -- opens every status bar menu from every visible status bar copy, one after another
         // (0.5 s apart), and [menugeo] asserts each menu hangs directly under its title on the screen; ends with a PASS/FAIL count and the menu closed.
         NSMutableArray *jobs = [NSMutableArray array];
-        const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kDispButtonKey, kAudioButtonKey, kSSHButtonKey, kVPNButtonKey, kWiFiButtonKey, kBattButtonKey, DM_AM_BUTTONS };
+        const void *keys[] = { kButtonKey, kAppButtonKey, kFileButtonKey, kEditButtonKey, kViewButtonKey, kGoButtonKey, kWinButtonKey, kDispButtonKey, kAudioButtonKey, kSSHButtonKey, kVPNButtonKey, kWiFiButtonKey, kBattButtonKey, kAirPodsButtonKey, DM_AM_BUTTONS };
         for (UIView *fg in gCopies.allObjects) {
             if (!fg.window || fg.window.hidden || fg.hidden || fg.alpha < 0.01) continue;
             for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
@@ -32325,6 +32458,7 @@ static void DMRunTrigger(NSString *cmd) {
                 else if (b == objc_getAssociatedObject(fg, kVPNButtonKey)) DMOpenVPNMenu(b);
                 else if (b == objc_getAssociatedObject(fg, kWiFiButtonKey)) DMOpenWiFiMenu(b);
                 else if (b == objc_getAssociatedObject(fg, kBattButtonKey)) DMOpenBatteryMenu(b);
+                else if (b == objc_getAssociatedObject(fg, kAirPodsButtonKey)) DMOpenAirPodsMenu(b);
                 else DMOpenMenuForButton(b);
             });
         }
@@ -32367,6 +32501,7 @@ static void DMRunTrigger(NSString *cmd) {
     }
     else if ([cmd hasPrefix:@"wifi"] && DMWiFiTrigger(cmd)) {}   // the Wi-Fi menu's tests (WiFiMenu.h)
     else if ([cmd hasPrefix:@"battmenu"] && DMBattTrigger(cmd)) {}   // the battery menu's and the Control Center icon's tests (BatteryMenu.h)
+    else if ([cmd hasPrefix:@"pod"] && DMAPTrigger(cmd)) {}   // the AirPods menu's tests: podfake_<kind>, podmenu, podmenu_rows, podmenu_probe, podmenu_pref_, podmenu_ax (AirPodsMenu.h)
     else if ([cmd hasPrefix:@"la_"] && DMLATrigger(cmd)) {}   // Live Activities in the menu bar: tests, made-up activities and the read-only probe (LiveActivities.h, LiveActivityApps.h)
     else if ([cmd hasPrefix:@"ff"] && DMFFTrigger(cmd)) {}   // the Finder menu's attached folders: ffstate, ffattach_, ffdetach_, ffopen_, ffmove_, ffrename_, ffmenu (FinderFolders.h)
     else if ([cmd hasPrefix:@"mswsm_"] && DMMSWSMTrigger(cmd)) {}   // the Mac Switcher's Stage Manager desktops (MacSwitcherSM.h)
@@ -37599,6 +37734,18 @@ static void DMCheckStageManagerNote(void) {
     MSBDAlertCloseOnLock(w, ^{ gStageNoteWindow = nil; DMLog(@"[stagemgr] note put away: locked (counts as shown)"); });
     DMLog(@"[stagemgr] one-time note shown: Stage Manager is off while windowing is on");
 }
+// Clean and Respring's result after the respring (ICleanerPanel.h DMFinderICleanAfterTick, 1.8.8.1): why it waits (nil: shown now). As the notes
+// above wait, and for what would close its panel at once (the tick closes a menu or panel for the App Switcher, Control Center, the Lock Screen,
+// Spotlight and Notification Center): a respring that lands on the Lock Screen shows it after the unlock, never over it.
+static NSString *DMFinderICleanAfterBlocker(void) {
+    if (DMProcessAge() < 10.0) return @"SpringBoard starting";
+    if (!DMScreenOnAndUnlocked() || DMCoverSheetShown() || MSBDAlertLockedOrCovered()) return @"locked or covered";
+    if (DMSwitcherVisible() || DMControlCenterActive() || DMSpotlightShown()) return @"App Switcher / Control Center / Spotlight";
+    if (gOverlay || (gMenuWindow && !gMenuWindow.hidden) || DMExtMenuVisible()) return @"a menu or panel";
+    if (gWelcomeWindow || gEngineWarningWindow || gExtNoticeWindow || gRestoringWindows || MSBDAlertBusy(nil)) return @"another alert / window restore";
+    if (!DMMenuHost()) return @"no place for the panel yet";
+    return nil;
+}
 static void DMTickBody(void);
 #if DEBUG
 static CFTimeInterval gIdleQuietUntil = 0;   // (debug, idleexp_quiet: the tick and the 0.2 s watcher skip their work until then)
@@ -37621,6 +37768,7 @@ static void DMTickBody(void) {
     DMCheckSMEngineNotice();
     DMCheckStageManagerNote();
     DMCheckAerialNote();
+    DMFinderICleanAfterTick();   // (Clean and Respring's result, shown once SpringBoard is back: ICleanerPanel.h, 1.8.8.1)
     DM_PERF("t-today", DMWatchTodayView());
     { static int n = 0; if (++n % 10 == 1 && DMProcessAge() > 8.0) DMApplyHomeScreenTodayPage(); }   // (~every 2 s once SpringBoard is up: the Home Screen may be rebuilt)
     if (gHomeMinimizes && DMProcessAge() > 8.0) DMHomeAwayScanKeys();   // (once: SpringBoard's other Home key commands, Globe-H's, marked as Cmd-H's)
@@ -41797,6 +41945,7 @@ static BOOL DMDownloadsPanelTakesEsc(NSSet<UIPress *> *presses) {
 %hook SpringBoard
 - (void)sendEvent:(UIEvent *)event {
     if ((long)event.type == 10 && gNativeLayer && !gNativeLayer.hidden && DMNativeScrollEvent(event)) return;   // (UIEventTypeScroll: a mouse wheel / trackpad over a native window)
+    if (event.type == UIEventTypeTouches && gNativeLayer && !gNativeLayer.hidden) DMNativeNotePress(event);   // (a press's buttons as it begins: a secondary click's menu, NativeWindow.h)
     if (event.type == UIEventTypeTouches && ((gNativeLayer && !gNativeLayer.hidden) || gDesktop))
         for (UITouch *t in event.allTouches) if (t.phase == UITouchPhaseBegan) {
             if (gNativeLayer && !gNativeLayer.hidden) DMNativeTouchBegan(t);
@@ -41963,22 +42112,23 @@ static BOOL DMSMWindowDragLeavesTouch(id manager, UIGestureRecognizer *g, UITouc
     }
     if (DMSMTitleBarDragTouch(self, g, touch)) return NO;   // (1.7.4 item 13: a drag on our Stage Manager title bar is the bar's own)
     if (DMSMWindowDragLeavesTouch(self, g, touch)) return NO;   // (1.8.1, GitHub #10: nor the menu bar's, nor a full-screen window's under windows)
-    DMNativeWindow *w = DMNativeWindowForTouch(touch, NULL);
-    BOOL onName = !w && DMDesktopRenameFieldTouch(touch);   // (the name being edited on the desktop, in its own window over the apps: Desktop.h)
-    if ((w || onName) && !DMNativeSystemGestureStays(self, g)) {
+    // (the desktop's typing -- a name, a sticky note -- in its own window over the apps, the edit menu UIKit draws there: Desktop.h, 1.8.8.1)
+    BOOL typing = DMDesktopTypingTouch(touch, NULL);
+    DMNativeWindow *w = typing ? nil : DMNativeWindowForTouch(touch, NULL);
+    if ((w || typing) && !DMNativeSystemGestureStays(self, g)) {
         static __weak UITouch *told;
-        if (told != touch && DMTestFlag("/tmp/macstatusbar-debug")) { told = touch; DMLog([NSString stringWithFormat:@"[native] a touch on %@: Stage Manager's window gestures (%@...) left out", w ? w.title : @"the name being edited", g.name ?: NSStringFromClass([g class])]); }
+        if (told != touch && DMTestFlag("/tmp/macstatusbar-debug")) { told = touch; DMLog([NSString stringWithFormat:@"[native] a touch on %@: Stage Manager's window gestures (%@...) left out", w ? w.title : @"the desktop's typing", g.name ?: NSStringFromClass([g class])]); }
         return NO;
     }
     return %orig;
 }
 // The screen-edge pulls (the Stage Manager strip on the left, Slide Over on the right, Home at the bottom) near a native window's title bar or
 // resize corner: that drag is the window's -- a zoomed Finder's left resize corner lies 10 pt from the screen edge, and the edge pull took the
-// drag (iPad 2 30 Sep). Elsewhere in a native window the edge pulls stay as they are.
+// drag (iPad 2 30 Sep). Elsewhere in a native window the edge pulls stay as they are. A sticky note's resize grips the same (1.8.8.1).
 - (BOOL)grabberTongue:(id)tongue shouldReceiveTouch:(UITouch *)touch {
     BOOL chrome = NO;
-    if (DMNativeWindowForTouch(touch, &chrome) && chrome) {
-        if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog(@"[native] a drag on a native window's title bar / corner: the screen-edge pull left out");
+    if ((DMNativeWindowForTouch(touch, &chrome) && chrome) || (DMDesktopTypingTouch(touch, &chrome) && chrome)) {
+        if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog(@"[native] a drag on a native window's title bar / corner or a note's grip: the screen-edge pull left out");
         return NO;
     }
     return %orig;
@@ -43537,16 +43687,16 @@ static void DMSMForgetApp(NSString *bundle) {   // (the app quit: its windows' p
 }
 // An open from outside SpringBoard -- a Spotlight pick, a link (SBMainWorkspace's -_handleOpenApplicationRequest:..., as the other engines' WindowLaunch
 // hook) -- that would make a third window next to two tiles: asked about first, as from the Dock or the App Library, and the request held for the answer
-// with everything it carries (the link is the app's when it opens). It asked once the window was up (DMSMFitTick, still there for what comes this way
-// only: AirDrop's requests, a request of a stage SpringBoard asks for). Debug /tmp/msb-sm-openasks-after: as before.
+// with everything it carries (the link, or the file AirDrop and the share sheet's Open in <App> hand over, is the app's when it opens: sharingd's
+// requests too since 1.8.8.1 B67, SBLaunchRule.h). It asked once the window was up (DMSMFitTick, still there for what comes this way only: a request
+// of a stage SpringBoard asks for). Debug /tmp/msb-sm-openasks-after: as before.
 static void (*o_SMOpenRequest)(id, SEL, id, id, id, id, id);
 static void DMSMOpenRequest(id self, SEL _cmd, id request, id options, id settings, id origin, id result) {
     @try {
         NSString *bundle = [request isKindOfClass:[NSString class]] ? request : ([request respondsToSelector:@selector(bundleIdentifier)] ? [request bundleIdentifier] : nil);
         if (DMSMEngine() && bundle.length && !gSMSkipFitAsk && DMWindowedLaunchOn() && !DMTestFlag("/tmp/msb-sm-openasks-after") && DMFrontApp()) {   // (the Home Screen in front: it opens alone, DMSMJoinDesktop)
             NSString *originName = DMOriginName(origin);
-            BOOL airDrop = [originName isEqualToString:@"sharingd"] || [originName isEqualToString:@"com.apple.sharingd"];
-            BOOL background = [originName isEqualToString:@"dasd"] || [originName isEqualToString:@"com.apple.dasd"];
+            BOOL background = MSBDOpenRequesterIsBackground(originName.UTF8String);
             id dict = [options respondsToSelector:NSSelectorFromString(@"dictionary")] ? ((id (*)(id, SEL))objc_msgSend)(options, NSSelectorFromString(@"dictionary")) : options;
             if ([dict isKindOfClass:[NSDictionary class]] && [[(NSDictionary *)dict objectForKey:@"__ActivateSuspended"] respondsToSelector:@selector(boolValue)] && [[(NSDictionary *)dict objectForKey:@"__ActivateSuspended"] boolValue]) background = YES;
             BOOL locked = DMLockUp(DMSBManager("SBLockScreenManager"));   // (SpringBoard's own open makes this call again with the UI unlocked: asked then, SBLaunchRule.h)
@@ -43556,7 +43706,7 @@ static void DMSMOpenRequest(id self, SEL _cmd, id request, id options, id settin
             NSMutableArray<NSString *> *stageKeys = [NSMutableArray array];
             for (id item in map) { NSString *b = DMSMItemBundle(item), *k = DMSMItemKey(item); if (b) [inStage addObject:b]; if (k) [stageKeys addObject:k]; }
             NSString *leftB = nil, *rightB = nil;
-            if (MSBDSMOpenMayAsk(airDrop, background, gForceFullScreenLaunch, locked, DMHasHomeIcon(bundle), DMAppNeedsFullScreen(bundle), [inStage containsObject:bundle], DMMSWSMElsewhere(bundle)) && [inStage containsObject:[DMFrontApp() bundleIdentifier]]) {
+            if (MSBDSMOpenMayAsk(background, gForceFullScreenLaunch, locked, DMHasHomeIcon(bundle), DMAppNeedsFullScreen(bundle), [inStage containsObject:bundle], DMMSWSMElsewhere(bundle)) && [inStage containsObject:[DMFrontApp() bundleIdentifier]]) {
                 DMSMFitForgetClosed(bundle);   // (as DMSMAddToStage: a window of the app that closed is forgotten before Fit's arrangement is read)
                 if (DMSMFitAsksAbout(bundle, stageKeys, &leftB, &rightB)) {
                     DM_FEATURE_MARK("sm-fit-ask-before-open");

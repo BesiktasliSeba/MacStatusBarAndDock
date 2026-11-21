@@ -24,10 +24,16 @@
 #include "../common/DockAutoHide.h" // (Settings > Dock > Automatically Hide and Show the Dock, 1.8.4 item 4 -- DockAutoHide.m)
 #include "../common/DockAppLibrary.h"   // (Apple's Show App Library in Dock from our Dock page, at once: 1.8.4.1 item 2)
 #include "../common/DockHover.h"   // (the hover magnification held through UIKit's cancel under a resting pointer: 1.8.4.1)
+#include "../common/DockColor.h"   // (Settings > Dock > Dock Background, 1.8.8.1 DOCKCOLOR -- DockColor.m draws it)
 extern void DMDockStyleApply(UIView *platter);
 extern void DMDockStyleFollow(UIView *platter);
 extern void DMDockStyleSetChoice(int style);
 extern void DMDockStyleRefreshAll(void);
+extern void DMDockColorApply(UIView *platter);
+extern void DMDockColorLoad(BOOL tweakOn);
+extern void DMDockColorChanged(void);
+extern void DMDockColorDividers(UIView *dockView);
+extern BOOL DMDockColorSecondLook(UIView *dockView, UIView *mine, BOOL shown);
 
 // The Dock's layout numbers, as SBFloatingDockView fills them in -[getMetrics:forBounds:] (found by dumping it on the device):
 // frames inside the platter for the user icons, the recents, the App Library icon and the divider, the platter itself in
@@ -288,6 +294,7 @@ static void DMLoadPrefs(void) {
         if (ds) CFRelease(ds);
         DMDockStyleSetChoice(tweakOn ? style : MSBDDockStyleDefault);
     }
+    DMDockColorLoad(tweakOn);   // (Dock Background, 1.8.8.1: Automatic or Color, its colour and opacity; Automatic with the Dock part off -- DockColor.m)
 
     DMLog([NSString stringWithFormat:@"[prefs] enabled=%d magnification=%.3f iconSize=%.2f bottomGap=%.1f blockSwipeUp=%d downloads=%d trash=%d launchpad=%d swipeDownOpensLibrary=%d lastPageOpensLibrary=%d", enabled, mag, gIconSize, gBottomGap, blockUp, downloads, gShowTrash, launchpad, swipeDown, gLastPageOpensLibrary]);
     DMDispReload();   // (1.8.7: each display's own Dock settings, DisplayPrefs.h)
@@ -365,6 +372,21 @@ static void DMCopyDividerLook(UIView *from, UIView *to) {
     @try { [to.layer setValue:[from.layer valueForKey:@"compositingFilter"] forKey:@"compositingFilter"]; } @catch (id e) {}
     to.overrideUserInterfaceStyle = from.overrideUserInterfaceStyle;
 }
+// The second divider's look, its one writer (each Dock layout, Apple's restyle, Dock Background's marks changing): a copy of the Dock's own divider,
+// or, while Dock Background's marks are ours on this Dock, our line's (DockColor.m DMDockColorSecondLook) -- never Apple's look copied and ours
+// written over it at each layout, which a layout inside an animation (an app added) showed as the line fading from Apple's look to ours.
+static void DMSecondDividerLookOf(UIView *dockView, UIView *native, UIView *mine) {
+    if (!mine || !native) return;
+    if (DMDockColorSecondLook(dockView, mine, gDivider2Alone || native.alpha >= 0.01)) return;   // (ours: shown as Apple's line is, or as the only one)
+    DMCopyDividerLook(native, mine);
+    if (gDivider2Alone && mine.alpha < 0.01) mine.alpha = 1.0;   // (the Dock's own line is hidden then; its colour and blending still apply)
+}
+// (Dock Background, 1.8.8.1 DockColor.m: the two dividers, and the second one's look again when our colour's marks change or give way to Apple's)
+UIView *DMDockNativeDivider(UIView *dockView) { return DMNativeDivider(dockView); }
+UIView *DMDockSecondDivider(UIView *dockView) { return objc_getAssociatedObject(dockView, kDivider2Key); }
+void DMDockSecondDividerLook(UIView *dockView) {
+    DMSecondDividerLookOf(dockView, DMNativeDivider(dockView), objc_getAssociatedObject(dockView, kDivider2Key));
+}
 static void DMSecondDividerAttach(UIView *dockView) {
     UIView *native = DMNativeDivider(dockView);
     UIView *mine = objc_getAssociatedObject(dockView, kDivider2Key);
@@ -376,8 +398,7 @@ static void DMSecondDividerAttach(UIView *dockView) {
         objc_setAssociatedObject(dockView, kDivider2Key, mine, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     if (mine.superview != native.superview) [native.superview insertSubview:mine aboveSubview:native];
-    DMCopyDividerLook(native, mine);
-    if (gDivider2Alone && mine.alpha < 0.01) mine.alpha = 1.0;   // (the Dock's own line is hidden then; its colour and blending still apply)
+    DMSecondDividerLookOf(dockView, native, mine);
     mine.hidden = NO;
     mine.transform = native.transform;
     mine.frame = CGRectMake(gDivider2Rect.origin.x, native.frame.origin.y, native.frame.size.width, native.frame.size.height);   // (the height, top and width of the Dock's own)
@@ -396,6 +417,7 @@ static void DMSecondDividerAttach(UIView *dockView) {
 // change (overriding a setter on a view we already safely hook elsewhere in this file) as everything else here, not a new kind of risk.
 BOOL gKeepDockVisible = NO;
 extern void DMDownloadsTouchBegan(UIView *view);
+extern void DMDownloadsNotePress(UIEvent *event);   // (Downloads.m: a press on the open panel, with its buttons -- an item's menu, 1.8.8.1)
 // With a trackpad or mouse, SpringBoard puts the Dock away as soon as the pointer leaves it (its "dismiss floating dock" hover gesture). While the
 // Downloads panel is open that took the Dock -- and with it the panel (they are one unit) -- away the moment the pointer moved off the Downloads
 // icon onto the panel (M1, 0.3.18-10). While the panel is open (gKeepDockVisible) that one hover dismissal is ignored; the Dock still leaves
@@ -1127,6 +1149,7 @@ __attribute__((visibility("default"))) UITargetedPreview *MSBDDockSideIconPrevie
     if (platter) DMFinderIconAttach(platter, gFinderSlot, gShowFinder && gFinderSlot.size.width > 0);
     if (platter && DMEditProxiesOn(platter)) DMEditProxiesApply(platter, YES, NO, gLaunchpadIcon, gLaunchpadClassic, NO);   // (Edit Home Screen: the items' icon views follow this layout)
     DMSecondDividerAttach((UIView *)self);
+    DMDockColorDividers((UIView *)self);   // (Dock Background: the dividers in our marks while they differ from Apple's; nothing read before our colour was ever on)
     if (platter && gDockSideEver) {   // (the icons' turn, and each one's share of the row: new icons and a changed Dock too)
         int side = DMDockSideOf((UIView *)self);
         DMDockSideStyleAll(platter, side);
@@ -1144,8 +1167,8 @@ __attribute__((visibility("default"))) UITargetedPreview *MSBDDockSideIconPrevie
 }
 - (void)updateDividerVisualStyling {   // (light / dark and material changes restyle the Dock's own divider: the second one follows)
     %orig;
-    UIView *mine = objc_getAssociatedObject(self, kDivider2Key), *native = DMNativeDivider((UIView *)self);
-    if (mine && native) { DMCopyDividerLook(native, mine); if (gDivider2Alone && mine.alpha < 0.01) mine.alpha = 1.0; }
+    DMSecondDividerLookOf((UIView *)self, DMNativeDivider((UIView *)self), objc_getAssociatedObject(self, kDivider2Key));
+    DMDockColorDividers((UIView *)self);   // (Dock Background: Apple's restyle never reaches our line, nor the second divider while it has ours)
 }
 - (void)setHidden:(BOOL)hidden {
     if (gKeepDockVisible && hidden) return;
@@ -1711,6 +1734,9 @@ static void DMDockDisplaysChanged(CFNotificationCenterRef c, void *o, CFNotifica
     if (!DMDispReloadChanged()) return;
     DMPrefsChanged(c, o, n, obj, info);
 }
+// Dock Background's light note (1.8.8.1, critique B4): the colour well or the opacity slider in Settings, up to about 7 times a second while dragged --
+// the colour's three keys only and the platters it is on (DockColor.m); never DMLoadPrefs, DMRelayoutDock or the Dock Style walk.
+static void DMDockColorNote(CFNotificationCenterRef c, void *o, CFNotificationName n, const void *obj, CFDictionaryRef info) { DMDockColorChanged(); }
 
 static void DMCollectIcons(UIView *root, Class iconClass, NSMutableArray *out) {
     for (UIView *v in root.subviews) {
@@ -1863,10 +1889,12 @@ void DMDockHoverReapply(void) {
 
 %hook SBFloatingDockPlatterView
 
-// Dock Style (1.8.4 item 3): our look at the back of the platter, laid out with it; Default: nothing of ours (DockStyle.m)
+// Dock Style (1.8.4 item 3): our look at the back of the platter, laid out with it; Default: nothing of ours (DockStyle.m). Dock Background
+// (1.8.8.1): our colour inside iPadOS's material or in Frosted's place, after the look; Automatic: nothing of ours (DockColor.m)
 - (void)layoutSubviews {
     %orig;
     DMDockStyleApply((UIView *)self);
+    DMDockColorApply((UIView *)self);
 }
 - (void)setHidden:(BOOL)hidden {
     if (gKeepDockVisible && hidden) return;
@@ -2321,6 +2349,9 @@ static void DMHandleEscapePresses(NSSet<UIPress *> *presses) {
 %hook UIApplication
 - (void)sendEvent:(UIEvent *)event {
     if (event.type == UIEventTypePresses) DMHandleEscapePresses([(UIPressesEvent *)event allPresses]);
+    // (a press on the open Downloads panel noted with its buttons as it begins, before UIKit handles it: a secondary click opens an item's menu,
+    //  Downloads.m DMDownloadsNotePress, 1.8.8.1)
+    if (event.type == UIEventTypeTouches) DMDownloadsNotePress(event);
     // (the Downloads panel closes on a touch anywhere else in SpringBoard's windows)
     if (event.type == UIEventTypeTouches) for (UITouch *t in event.allTouches) if (t.phase == UITouchPhaseBegan) { DMDownloadsTouchBegan(t.view); break; }
     // (a finger or Pencil on the screen, a click; never a finger on the trackpad or a scroll, UITouchTypeIndirect: the pointer stays where it is, review 1.8.4.1 pass 2 H1)
@@ -3730,6 +3761,9 @@ static void DMCtorOver(BOOL *inCtor) { gDMInCtor = NO; }   // (every way out of 
             } else if (!strcmp(word, "turns")) {   // debug (1.8.3 item 7): every icon view in the Dock window, where it is, and its turn
                 extern void DMDockTurnsDump(void);
                 DMDockTurnsDump();
+            } else if (!strncmp(word, "dockcolor", 9)) {   // debug (1.8.8.1 DOCKCOLOR): dockcolor -- each platter's material, our colour and the marks; dockcolorsibling / dockcolorinside -- the fallback way or B1's
+                extern void DMDockColorDebug(const char *word);
+                DMDockColorDebug(word);
             } else if (!strcmp(word, "stylepics")) {   // debug (1.8.4 device pass): each Dock icon's picture as Glass Shelf's reflections see it
                 extern void DMDockStylePicsDebug(void);
                 DMDockStylePicsDebug();
@@ -3872,6 +3906,9 @@ static void DMCtorOver(BOOL *inCtor) { gDMInCtor = NO; }   // (every way out of 
                                     CFNotificationSuspensionBehaviorCoalesce);
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,   // (1.8.7: a display's own Dock settings changed -- Display Settings,
                                     DMDockDisplaysChanged, CFSTR(MSBD_DISP_NOTIFY), NULL,     //  Settings' Displays page, the crash guard: every Dock laid out again)
+                                    CFNotificationSuspensionBehaviorCoalesce);
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,   // (Dock Background's colour well and opacity slider: 1.8.8.1)
+                                    DMDockColorNote, CFSTR(kMSBDDockColorNote), NULL,
                                     CFNotificationSuspensionBehaviorCoalesce);
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,   // (Apple's App Library switch on our Dock page: 1.8.4.1 item 2)
                                     DMAppLibraryInDockChanged, CFSTR(kMSBDDockAppLibraryNote), NULL,

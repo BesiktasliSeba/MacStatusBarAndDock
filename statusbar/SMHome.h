@@ -327,8 +327,9 @@ __attribute__((noinline)) static void DMSMHomeKeepsDesktop(id ctx) {   // (noinl
     NSString *what = [NSString stringWithFormat:@"%@ source %lld, from environment %lld, %lu window(s)", [label isKindOfClass:[NSString class]] ? label : @"no label", source, prevEnv, (unsigned long)windows.count];
     if (!windows) { DMLog([NSString stringWithFormat:@"[smhome] Home (%@): the desktop could not be read -- Home as SpringBoard built it", what]); return; }
     // (Home Minimizes Windows: the user's Home takes the windows with it -- never our own simulated press, DMMinimize, a full-screen app sent away,
-    //  nor Cmd-H's: a Home from the keyboard keeps the windows as before, StatusBar.x DMHomeFromKeys)
-    if (gHomeMinimizes && !DMHomeIsOurs() && !DMHomeFromKeys()) flags |= DMSMHomeHide;
+    //  nor Cmd-H's: a Home from the keyboard keeps the windows as before, StatusBar.x DMHomeFromKeys. As it applies to this Home: with Adapt to
+    //  Trackpad & Mouse and a trackpad or mouse connected, the windows stay -- asked last, never for our own Home or the keyboard's, 1.8.8.1)
+    if (!DMHomeIsOurs() && !DMHomeFromKeys() && DMHomeAdaptMinimizes(NULL)) flags |= DMSMHomeHide;
     NSString *why = nil;
     NSDictionary *plan = DMSMHomePlan(windows, roles, nRoles, flags, requested, prevEnv, showsDesk, &why);
     if (!plan) {
@@ -444,13 +445,15 @@ static char kSMHGDeskKey;
 // windows and none full screen, the Home Screen is shown behind windows (SMDesktop.h's floor answers on). Decided once per gesture.
 static BOOL DMSMHGOverDesk(id mod, Ivar start) {
     if (!gSMHomeGestureOn || !DMSMFree() || !gSMDeskHooked || gSMDeskOff) return NO;
-    if (gHomeMinimizes) return NO;   // (Home Minimizes Windows: the windows go with this Home -- Apple's look, the stage following the finger)
     NSNumber *cached = objc_getAssociatedObject(mod, &kSMHGDeskKey);
     if (cached) return cached.boolValue;
     long long env = 0;
     memcpy(&env, (const char *)(__bridge const void *)mod + ivar_getOffset(start), sizeof env);
-    BOOL yes = NO;
-    if (env == 3) {
+    // (Home Minimizes Windows as it applies to this gesture's Home, StatusBar.x DMHomeAdaptMinimizes: the windows go with it -- Apple's look, the
+    //  stage following the finger, and the stage is not read, as before Adapt to Trackpad & Mouse. Asked once, for a gesture from application mode
+    //  only, inside the one answer kept for the gesture, so no later frame of it answers half of it)
+    BOOL goes = env == 3 && DMHomeAdaptMinimizes(NULL), yes = NO;
+    if (env == 3 && !goes) {
         id stage = DMSMFrontStageOnDisplay(DMSMIdentityOfScreen([UIScreen mainScreen]));
         NSDictionary *m = DMSMStageItemsMap(stage);
         yes = m.count > 0;
@@ -459,7 +462,8 @@ static BOOL DMSMHGOverDesk(id mod, Ivar start) {
     objc_setAssociatedObject(mod, &kSMHGDeskKey, @(yes), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (yes) DM_FEATURE_MARK("sm-home-gesture-sharp");
     if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[smhome] Home gesture (%@, from environment %lld): %@", NSStringFromClass([mod class]), env,
-                                                      yes ? @"over the desktop's windows -- the Home Screen behind them keeps its look" : @"Apple's look"]);
+                                                      yes ? @"over the desktop's windows -- the Home Screen behind them keeps its look"
+                                                      : goes ? @"Apple's look (the windows go with this Home: Home Minimizes Windows)" : @"Apple's look"]);
     return yes;
 }
 static long long DMSMHGBlurType(id self, SEL _cmd) {

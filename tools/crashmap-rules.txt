@@ -53,6 +53,7 @@ target showFinder pref com.besiktasliseba.dockmagnification showFinder 0 1 Show 
 target showTrash pref com.besiktasliseba.dockmagnification showTrash 0 1 Show Trash in Dock|the Dock's Trash
 target wifiMenu pref com.besiktasliseba.macstatusbar wifiMenu 0 1 Wi-Fi Menu|the Wi-Fi menu
 target batteryMenu pref com.besiktasliseba.macstatusbar batteryMenu 0 1 Battery Menu|the battery menu
+target airpodsMenu pref com.besiktasliseba.macstatusbar airpodsMenu 0 1 AirPods Menu|the AirPods menu
 # the plug in the battery icon during a charge hold (1.8.6) has no Settings row: a piece, which Turn Back On brings back (review of 1.8.6: a hidden
 # switch stored off had no way back, and the guard's words pointed to a row that does not exist)
 target batteryHoldPlug piece the battery icon|the plug in the battery icon during a charge hold
@@ -66,6 +67,8 @@ target pointerRegion piece the pointer with another display|the pointer's place 
 target appWindowSizes piece App Window Sizes|App Window Sizes
 target batteryPercentInside pref com.besiktasliseba.macstatusbar batteryPercentInside 0 0 Battery Percentage in Icon|the number inside the battery icon
 target desktopIcons pref com.besiktasliseba.macstatusbar desktopIcons 0 1 Show Desktop Icons|the desktop
+# Sticky Notes on the desktop (1.8.8.1, statusbar/DesktopNotes.h): their own switch, so a crash in note code turns off the notes, never the desktop
+target stickyNotes pref com.besiktasliseba.macstatusbar stickyNotes 0 1 Show Sticky Notes|the sticky notes
 # Desktop Picture (1.8.6, statusbar/DesktopWallpaper.h): a path, not a switch -- the guard stores "none", which SpringBoard and Settings read as None
 target desktopWallpaper pref com.besiktasliseba.macstatusbar desktopWallpaperPath 0 0 offtext=none Desktop Picture|the desktop picture
 target runningIndicator pref com.besiktasliseba.dockrunningindicator enabled 0 1 Show Indicators for Open Apps|the open-app indicators
@@ -87,6 +90,10 @@ target liveActivitiesApps pref com.besiktasliseba.macstatusbar liveActivitiesApp
 # That text, or no value, reads as off -- a crash pinned there with Default is not Dock Style's (the part goes at once) --, and "glass" or
 # "frosted" reads as on (review 1.8.4 P2-L1)
 target dockStyle pref com.besiktasliseba.dockmagnification dockStyle 0 0 offtext=default Dock Style|the older Dock style
+# the Dock's colour (1.8.8.1 DOCKCOLOR, dock/DockColor.m): Dock Background back to Automatic -- the guard stores "auto", as Settings does for
+# Automatic. That text, or no value, reads as off (a crash pinned there with Automatic is not Dock Background's: the part goes at once), "color" as
+# on -- Dock Style's rule
+target dockBackground pref com.besiktasliseba.dockmagnification dockBackground 0 0 offtext=auto Dock Background|the Dock's color
 # the Dock's launch bounce (1.8.4 item 2, dock/Bounce.m): its switch, on unless switched off (KT 7 Nov): a crash in it sets it off (0)
 target animateOpening pref com.besiktasliseba.dockmagnification animateOpening 0 1 Animate Opening Applications|the Dock's launch bounce
 # the Dock hiding itself (1.8.4 item 4, dock/DockAutoHide.m): its switch, off unless switched on (with the Stage Manager engine, Apple's own Dock tick
@@ -103,6 +110,15 @@ target customShortcuts pref com.besiktasliseba.customshortcuts enabled 0 1 Custo
 # the apps' own menus in the menu bar (1.8.5 item 3: statusbar/AppMenus.h in SpringBoard; appbridge/AppMenus.h, whose snapshots run in the apps and
 # which in SpringBoard only registers): its switch, off unless switched on (owner's rule for new behaviour): a crash in it sets it off (0)
 target appOwnMenus pref com.besiktasliseba.macstatusbar appOwnMenus 0 1 Show Apps' Own Menus|the apps' own menus in the menu bar
+# Home Minimizes Windows (1.7.9, statusbar/StatusBar.x "Home Minimizes Windows" and HomeAway.h): its switch, on unless switched off: a crash in
+# its code sets it off (0), and off none of it runs (its hooks go in only while it is on; the Home button's, there for the Mac Switcher too,
+# then return at once). Up to 1.8.8 no rule named it, so a crash there took Stock status bar mode, the whole Mac menu bar (B13, found by the
+# F28 skeptic)
+target homeMinimizes pref com.besiktasliseba.macstatusbar homeMinimizesWindows 0 1 Home Minimizes Windows|Home Minimizes Windows
+# Adapt to Trackpad & Mouse (1.8.8.1, F28; StatusBar.x DMHomeAdaptPointer and DMHomeAdaptMinimizes, out of line): its switch under Home Minimizes
+# Windows, on unless switched off. A crash in them sets it off (0): Home Minimizes Windows alone decides, as in 1.8.8, and the pointer is read
+# no more (it is read only with both switches on)
+target homeAdapt pref com.besiktasliseba.macstatusbar homeMinimizesAdapt 0 1 Adapt to Trackpad & Mouse|Adapt to Trackpad & Mouse
 # the per-display settings (1.8.7, plans/design-1.8.7-displays.md section 8): the layer's master switch, in its own domain (absent or true: on;
 # off: every display takes the iPad's settings again, the display defaults stand, the overrides are kept). A switch turned on for one display is
 # in the guard's RecentlyOn list by its flat key (common/DisplayPrefs.h MSBDDispNoteRecent: step 1 sets that override off), and a switch step 1b
@@ -179,6 +195,12 @@ sym DockMagnification \$SBIconView\$tapGestureDidChange\$$ transparent
 # the call on, so the same
 sym DockMagnification \$SBIconView\$dragInteraction\$sessionWillBegin\$$ transparent
 file DockMagnification ^DockStyle\.m$ dockStyle
+# (1.8.8.1: Dock Background's code, DockColor.m -- what the platter's layout hook, Dock Style's walk and dot, and the dividers' calls reach of it)
+# The Dock's divider helpers in Dock.x that DockColor.m calls (the two dividers, the second one's one writer and what it copies, out of line in a
+# release build) are passed over: the frame that called them decides -- Dock Background's from DockColor.m, the Dock's own from its layout and
+# Apple's restyle, as before 1.8.8.1
+sym DockMagnification ^_*(DMNativeDivider|DMDockNativeDivider|DMDockSecondDivider|DMDockSecondDividerLook|DMSecondDividerLookOf|DMCopyDividerLook)$ transparent
+file DockMagnification ^DockColor\.m$ dockBackground
 file DockMagnification ^Bounce\.m$ animateOpening
 # (1.8.4 item 4: the Home Screen's Dock assertion's two getters, hooked only once the switch was on)
 file DockMagnification ^DockAutoHide\.m$ autoHideDock
@@ -199,6 +221,12 @@ sym MacStatusBarCore \$DMNativeHooks\$SpringBoard\$(sendEvent|pressesBegan) tran
 sym MacStatusBarCore \$DMNativeHooks\$ finder
 sym MacStatusBarCore \$DMNativeSysGestures\$ finder
 sym MacStatusBarCore ^_?DM(Finder|Native|OpenFinder|OpenNativeWindow)[A-Z] finder
+# iCleaner in Finder: Clean and Respring's result after the respring (1.8.8.1, ICleanerPanel.h DMFinderIClean..., its blocks too: the respring's
+# own before and otherwise blocks), the panel and the clean (DMIClean...) and the answer's words (common/ICleaner.h MSBDIClean..., which a release
+# build keeps out of line): Finder's. The result after the respring opens the panel by itself at a SpringBoard start, so a crash in the panel
+# turns Finder off, as for the rest of it (before 1.8.8.1 the panel and the answer fell to the status bar's own target); with Finder off none of
+# it runs (a result kept is dropped)
+sym MacStatusBarCore ^_*(DM(Finder)?IClean|MSBDIClean)[A-Z] finder
 file MacStatusBarCore ^DockTrash\.h$ showTrash
 # the per-display settings layer (1.8.7: the registry, the caches and the getters, the display key, and from later commits the rows, the Display
 # Settings window and the per-scene layer): its master switch, Display Settings. Its functions and blocks by name too (DMDisp...: a function of it
@@ -254,11 +282,22 @@ file MacStatusBarCore ^DesktopWallpaper\.h$ desktopWallpaper
 # the rest of LightMagnify.h are Magnify Traffic Lights' by the file rule below
 sym MacStatusBarCore ^_*DMLightMagnifySendEvent$ transparent
 file MacStatusBarCore ^LightMagnify\.h$ magnifyTrafficLights
+# Sticky Notes (1.8.8.1): every note function and method is the notes' -- DesktopNotes.h's C functions DMSticky..., all out of line and none named
+# DMDesktop...; common/StickyNotes.h's rules MSBDSticky..., static inline (inlined into those, or symbols of their own); the four classes; the
+# desktop's Notes category. Not "DMNote...": DMNoteAppExit, DMNoteAppInFront, MSBDNoteSwitch and others of that name are not the notes'. The shared
+# typing window's helpers (DMDesktopTyping*) stay the desktop's: a name is typed in it too. DMTextViewEditKey (TextWindow.h: TextEdit's and a
+# note's Command editing keys) is passed over, its caller decides.
+sym MacStatusBarCore ^(_*(DMSticky|MSBDSticky)[A-Z]|[-+]\[DMNote(View|TextView|Editor|sState)[\s(]|-\[DMDesktop\(Notes\)\sdm_note) stickyNotes
+sym MacStatusBarCore ^_*DMTextViewEditKey$ transparent
+# StatusBar.x's window walk "a text input has the typing" (1.8.8.1, out of line: the desktop's keys, a note's tick and the debug key loggers ask
+# it) is passed over too: under no rule it fell to the image's target, Use Stock Status Bar, for code that was the desktop's before
+sym MacStatusBarCore ^_*DMSBTextInputTypingBut$ transparent
 # the macOS folder (MacFolder.h, 1.8.7.4 round 2: its painter DMDesktopDrawFolder, kept out of line, and its fill, moved out of Desktop.h) is the
 # picture of the desktop's folders and of Finder's: a crash in it is its caller's -- the desktop's (Desktop Icons) or Finder's (Finder) --, so
 # transparent, before the desktop's own rule takes it by its name
 sym MacStatusBarCore ^_*DMDesktop(DrawFolder|FolderFill)$ transparent
 sym MacStatusBarCore ^_?DMDesktop[A-Z] desktopIcons
+file MacStatusBarCore ^DesktopNotes\.h$ stickyNotes
 file MacStatusBarCore ^Desktop(Names|Corner)?\.h$ desktopIcons
 file MacStatusBarCore ^DesktopPlace\.h$ desktopIcons
 sym MacStatusBarCore ^_?DMWiFi[A-Z] wifiMenu
@@ -301,11 +340,20 @@ sym MacStatusBarCore ^_*DMCC18[A-Z] controlcenter
 # release build fell to Stock status bar mode, as CCLayout.h's did: one rule for the two, since a rule that matches nothing stops the build)
 file MacStatusBarCore ^(CC18Shape|CC18MacLayout)\.h$ controlcenter
 file MacStatusBarCore ^CC18Tiles\.h$ controlcenter
+# the AirPods menu (1.8.8.1, statusbar/AirPodsMenu.h and its plain-C rules common/AirPodsMenu.h -- one file rule, the same base name): its functions
+# and blocks (DMAP..., DMAirPods..., MSBDAirPods...) and its classes' methods (the rows, BatteryCenter's observer) -- AirPods Menu's switch off: iPadOS's
+# AirPods item as it is. DMOpenAirPodsMenu is AirPodsMenu.h's by the file rule (noinline, as the other entry points StatusBar.x calls). The classes'
+# methods (-[DMAP...], their blocks and cold parts) by name too: in a release build a method's first line can be an inlined StatusBar.x helper's
+# (the rows' -dmRowHeight starts in DMMenuSize, StatusBar.x), and a cold part has no line at all, so the file rule alone missed them (S2 check build)
+sym MacStatusBarCore ^_*([0-9]*[-+]\[)?(DMAP|DMAirPods|MSBDAirPods)[A-Z] airpodsMenu
+file MacStatusBarCore ^AirPodsMenu\.h$ airpodsMenu
 # the battery menu and the Control Center icon (BatteryMenu.h, 1.7.9): Battery Menu's switch -- off, the battery is iOS's again and the icon goes
 sym MacStatusBarCore ^_*DMBattHold[A-Z] batteryHoldPlug
 sym MacStatusBarCore ^_*DMBattInside[A-Z] batteryPercentInside
 sym MacStatusBarCore ^_*DMBatt[A-Z] batteryMenu
-file MacStatusBarCore ^BatteryMenu\.h$ batteryMenu
+# (1.8.8.1 BATTWHY: why iPad is not charging, common/ChargeWhy.h -- its plain C rule, included into BatteryMenu.h; a release build keeps some of it
+#  out of line, MSBDBattWhyLine at -Os, whose first line is in ChargeWhy.h: Battery Menu's too, not the whole bar)
+file MacStatusBarCore ^(BatteryMenu|ChargeWhy)\.h$ batteryMenu
 # Live Activities in the menu bar (1.8.4): its functions and blocks (DMLA..., not DMLAApps...) and LiveActivities.h's methods (the pills, the cards, the
 # sources; common/LiveActivities.h's rules, inlined into them in a release build) -- Live Activities in Menu Bar off; other apps' activities
 # (LiveActivityApps.h: DMLAApps... and the observer's and host delegate's methods) -- only Apps off
@@ -353,6 +401,14 @@ sym MacStatusBarCore ^(_*(DMMSW|MSBDMSW)(Flick|Scroll)(able|[A-Z])|-\[DMMSWTarge
 sym MacStatusBarCore ^_*DMMSW[A-Z] macSwitcher
 # (MSWDisplays.h, 1.8.7: the Mac Switcher's desktops per display, the same switch)
 file MacStatusBarCore ^(MacSwitcher(SM|Button)?|MSWDisplays)\.h$ macSwitcher
+# Home Minimizes Windows (B13): every DMHomeAway... function and its blocks -- the run after SpringBoard's own Home, the gesture's lift, the
+# Home button's press and what was over the screen before it, the App Switcher's tap beside its cards, Cmd-H's and the other Home keys' marks and
+# their hooks' install. The ones other parts call are out of line (StatusBar.x: noinline), so -Os keeps them out of the Mac Switcher's
+# hooks, the tick and the preferences' read (tools/test-homeawaymap.sh)
+sym MacStatusBarCore ^_*DMHomeAway[A-Z] homeMinimizes
+# Adapt to Trackpad & Mouse (F28): the pointer's read at a Home and the rule that asks it, called from Home Minimizes Windows' run and the Stage
+# Manager engine's Home (SMHome.h), both out of line so -Os keeps them out of those (tools/test-homeawaymap.sh)
+sym MacStatusBarCore ^_*DMHomeAdapt[A-Z] homeAdapt
 # what Stock status bar mode keeps running (StockBar.h): no switch of its own, so the part
 sym MacStatusBarCore \$(MacContextMenus|MacContextMenus15|PreviewTargetGuard|StockCCTiles)\$ part
 sec MacStatusBarCore Haptic\sTouch\smenus part

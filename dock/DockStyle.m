@@ -42,6 +42,7 @@ static int DMStyleLookFor(UIView *platter) { return MSBDDockStyleLook(gDockStyle
 @interface DMDockStyleDraw : UIView
 @property (nonatomic) int look;
 @property (nonatomic) double picture;
+@property (nonatomic) BOOL noTint;   // (Frosted with a Dock Background colour: the colour's view is the tint, only the border is drawn -- DockColor.m)
 @end
 @implementation DMDockStyleDraw
 - (void)drawRect:(CGRect)rect {
@@ -50,7 +51,7 @@ static int DMStyleLookFor(UIView *platter) { return MSBDDockStyleLook(gDockStyle
     BOOL dark = self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark;
     if (self.look == MSBDDockLookShelf) MSBDDrawGlassShelf(c, b, MSBDShelfGeometry(b, self.picture));
     else if (self.look == MSBDDockLookDarkPanel) MSBDDrawDarkPanel(c, b);
-    else if (self.look == MSBDDockLookFrosted) MSBDDrawFrostedTint(c, b, dark);
+    else if (self.look == MSBDDockLookFrosted) MSBDDrawFrostedTintIn(c, b, dark, !self.noTint);
 }
 - (void)traitCollectionDidChange:(UITraitCollection *)previous { [super traitCollectionDidChange:previous]; [self setNeedsDisplay]; }   // (Frosted's tint: light or dark)
 @end
@@ -427,6 +428,29 @@ void DMDockStyleApply(UIView *platter) {
     }
     DMStyleSyncReflections(platter, sv, icons);
 }
+// Dock Background (1.8.8.1 DOCKCOLOR, dock/DockColor.m): the look this platter shows now (Default when nothing of ours is on it).
+int DMDockStyleLookOn(UIView *platter) {
+    DMDockStyleView *sv = platter ? objc_getAssociatedObject(platter, kStyleViewKey) : nil;
+    return sv.superview == platter ? sv.look : MSBDDockLookDefault;
+}
+// ... with Frosted: the colour's view takes the place of Frosted's tint, over the blur and under the border, at the look's size and corners (P5: a new
+// colour is the view's, at once, with no redraw); nil: Frosted's own tint again. NO: this platter does not show Frosted.
+BOOL DMDockStyleFrostedColor(UIView *platter, UIView *colorView) {
+    DMDockStyleView *sv = platter ? objc_getAssociatedObject(platter, kStyleViewKey) : nil;
+    BOOL frosted = sv && sv.superview == platter && sv.look == MSBDDockLookFrosted;
+    BOOL noTint = frosted && colorView != nil;
+    if (sv && sv.draw.noTint != noTint) { sv.draw.noTint = noTint; [sv.draw setNeedsDisplay]; }
+    if (!noTint) return frosted;
+    NSUInteger at = [sv.subviews indexOfObject:colorView], draw = [sv.subviews indexOfObject:sv.draw];
+    if (colorView.superview != sv || at == NSNotFound || at > draw || (sv.blur.superview == sv && at < [sv.subviews indexOfObject:sv.blur])) [sv insertSubview:colorView belowSubview:sv.draw];
+    [UIView performWithoutAnimation:^{ if (!CGRectEqualToRect(colorView.frame, sv.bounds)) colorView.frame = sv.bounds; }];   // (as the look's own views: no animation)
+    if (!CGAffineTransformIsIdentity(colorView.transform)) colorView.transform = CGAffineTransformIdentity;
+    if (colorView.alpha != 1.0) colorView.alpha = 1.0;
+    if (colorView.hidden) colorView.hidden = NO;
+    if (colorView.layer.cornerRadius != MSBD_FROSTED_CORNER) colorView.layer.cornerRadius = MSBD_FROSTED_CORNER;
+    if (![colorView.layer.cornerCurve isEqualToString:kCACornerCurveContinuous]) colorView.layer.cornerCurve = kCACornerCurveContinuous;
+    return YES;
+}
 // Every magnification frame (Dock.x dm_apply): the reflections follow the icons' scale.
 void DMDockStyleFollow(UIView *platter) {
     DMDockStyleView *sv = platter ? objc_getAssociatedObject(platter, kStyleViewKey) : nil;
@@ -472,11 +496,15 @@ void DMDockStyleDot(UIView *dot, UIView *iconView, CGFloat d) {
         if (dot.layer.contents != want) { dot.layer.contents = want; dot.layer.contentsGravity = kCAGravityResize; }
         return;
     }
+    BOOL reset = dot.layer.contents != nil;
     if (dot.layer.contents) { dot.layer.contents = nil; dot.backgroundColor = [UIColor labelColor]; }   // (Default and Frosted: today's dot)
+    extern void DMDockColorDot(UIView *dot, UIView *platter, BOOL reset);
+    DMDockColorDot(dot, platter, reset);   // (Dock Background, 1.8.8.1: black or white on our colour when iPadOS's own would not read best; labelColor again once)
 }
 
 // Settings changed: every Dock's platter takes the look now (its own layout may not come by itself).
 extern void DMRunningIndicatorResyncAll(void);   // (RunningIndicator.m: every app icon's dot placed and drawn again)
+extern void DMDockColorApply(UIView *platter);   // (DockColor.m: Dock Background on this platter, or given back)
 #if DEBUG
 // debug ("stylepics" in /tmp/dockmag-escape): every Dock icon's picture as Glass Shelf's reflections see it -- shown, real, settled (its layers as
 // committed), its contents and the committed ones, and whether the value recorded for its reflection is the picture's now.
@@ -513,6 +541,7 @@ void DMDockStyleRefreshAll(void) {
             UIView *v = todo.lastObject; [todo removeLastObject];
             if ([v isKindOfClass:pc]) {
                 DMDockStyleApply(v);
+                DMDockColorApply(v);   // (Dock Background, 1.8.8.1: after the look, which it goes on or gives way to)
                 for (UIView *sub in v.subviews) if (finder && [sub isKindOfClass:finder]) [finders addObject:sub];
                 continue;
             }

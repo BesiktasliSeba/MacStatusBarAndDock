@@ -171,6 +171,8 @@ check "made to fail: iPadOS 15 (mirroring) editable" "mutant os15 'return MSBDDi
 check "made to fail: an em dash let through" "mutant emdash 'strstr(t, \"\\xE2\\x80\\x94\") || ' ''"
 check "made to fail: Home Minimizes Windows listed for a TV" "mutant home '    { \"NEW_WINDOWS_FILL\", \"New Windows Open at Fill\", NULL,' '    { \"HOME_MIN\", \"Home Minimizes Windows\", NULL, kMSBDRowSwitch, \"msb\", \"homeMinimizesWindows\", 0, 16, 0, 190, 0, 0, 0, 0, 0, { NULL }, { NULL }, NULL },
     { \"NEW_WINDOWS_FILL\", \"New Windows Open at Fill\", NULL,'"
+check "made to fail: Adapt to Trackpad & Mouse listed for a TV" "mutant adapt '    { \"NEW_WINDOWS_FILL\", \"New Windows Open at Fill\", NULL,' '    { \"HOME_ADAPT\", \"Adapt to Trackpad & Mouse\", NULL, kMSBDRowSwitch, \"msb\", \"homeMinimizesAdapt\", 0, 16, 0, 190, 0, 0, 0, 0, 0, { NULL }, { NULL }, NULL },
+    { \"NEW_WINDOWS_FILL\", \"New Windows Open at Fill\", NULL,'"
 check "made to fail: a choice's number out of range taken (clamped)" "mutant clamp 'v != floor(v) || v < 0 || v >= r->choices) return -1;' 'v != floor(v)) return -1; if (v >= r->choices) v = r->choices - 1; if (v < 0) v = 0;'"
 check "made to fail: the mirror's words for a display gone" "mutant topnone 'return !layerOn ? MSBD_DISP_TEXT_OFF : !connected ? MSBD_DISP_TEXT_NONE : !extended ? MSBD_DISP_TEXT_MIRROR : MSBD_DISP_TEXT_TOP;' 'return !layerOn ? MSBD_DISP_TEXT_OFF : !extended ? MSBD_DISP_TEXT_MIRROR : !connected ? MSBD_DISP_TEXT_NONE : MSBD_DISP_TEXT_TOP;'"
 check "made to fail: a slider's value left off its range" "mutant slider '    if (v < r->lo) v = r->lo;' ''"

@@ -40,16 +40,26 @@ static inline const char *MSBDSBLaunchEngineCaller(void *const *callers, int n, 
 static inline int MSBDSBLaunchToWindow(int suspended, int ourFullScreen, int locked, int stageManagerEngine, int windowEngine, const char *callerImage) {
     return !suspended && !ourFullScreen && !locked && !stageManagerEngine && windowEngine && !MSBDSBLaunchCallerIsEngine(callerImage);
 }
+// Who asked for an open request (its requester's name, StatusBar.x DMOriginName) decides one thing only: a launch in the background (dasd: Background
+// App Refresh) is no open. Every other requester's request is an open like any other -- sharingd's too (1.8.8.1 B67): AirDrop's "open with" and the
+// share sheet's Open in <App> (on 15.6.1 its SUIOpenCopyAppActivity runs in sharingd, and SpringBoard's log says "Received request to open
+// com.opa334.TrollStore with url from lsd on behalf of sharingd") hand the app a copy of the file as the request's URL, and the window launch hands
+// that URL (and the request's actions) to the window's scene (StatusBar.x DMDeliverURLToWindow). Left to SpringBoard since 0.26.20 -- when the window
+// launch knew only the bundle id and an AirDropped file was lost --, such a request opened its app full screen on Aerial, Zetsu and MilkyWay4: an
+// .ipa from Reynard's share sheet put TrollStore full screen on the M1 (KT 21 Nov), any app the share sheet opened likewise. name: NULL when unknown.
+static inline int MSBDOpenRequesterIsBackground(const char *name) {
+    return name && (!strcmp(name, "dasd") || !strcmp(name, "com.apple.dasd"));
+}
 // An open request from outside SpringBoard (SBMainWorkspace's -_handleOpenApplicationRequest:..., StatusBar.x: LaunchServices, links, Spotlight,
-// notifications) becomes the window launch when the app has a window or may open as one -- not an AirDrop request (its options carry the file), not
-// a launch in the background, not our own full-screen launch, and not while the UI is locked (-isUILocked): there SpringBoard's own open
+// notifications, AirDrop, the share sheet's Open in <App>) becomes the window launch when the app has a window or may open as one -- not a launch in
+// the background, not our own full-screen launch, and not while the UI is locked (-isUILocked): there SpringBoard's own open
 // asks for the unlock first, where ours brought the window forward behind the Lock Screen and the app was not in front after the unlock -- the
 // launch call's gap above, closed there in 1.8.0 (code review 1.8.0, 6; 1.8.1 item 3). That is a first step only: once the Cover Sheet starts to leave SpringBoard makes the same call again
 // with the UI unlocked (read on 15.6.1 and 16.7.7, 7 to 12 ms later, -isUILocked NO, -isPresented NO, -isVisible YES), and that one becomes the window launch. Notification Center pulled down on an
 // unlocked iPad goes the same two steps (-isUILocked YES there too). With the Cover Sheet in the test, the second call went to SpringBoard as well: an app with no window opened full screen, one with
 // a window full screen at its window's size, the rest of the screen black (code review 1.8.1, 1).
-static inline int MSBDSBOpenToWindow(int airDrop, int background, int ourFullScreen, int locked, int hasWindow, int windowable) {
-    return !airDrop && !background && !ourFullScreen && !locked && (hasWindow || windowable);
+static inline int MSBDSBOpenToWindow(int background, int ourFullScreen, int locked, int hasWindow, int windowable) {
+    return !background && !ourFullScreen && !locked && (hasWindow || windowable);
 }
 // Fit's question for a third window holds the app's launch (heldLaunch). The screen going off closes the question and applies the default arrangement; the lock state is read again then, and the
 // launch waits for the user to be back rather than start behind the Lock Screen (the gap above) or run SpringBoard's own open, which asks for the unlock of an iPad just locked: screen off now, off
@@ -59,7 +69,8 @@ static inline int MSBDFitLaunchWaitsForBack(int heldLaunch, int screenOff, int o
 }
 // With the Stage Manager engine the request stays SpringBoard's (it joins the desktop, DMSMJoinDesktop), and Fit to Window's question for a third window
 // comes before it (StatusBar.x DMSMOpenRequest, 1.8.1, KT: the other engines' order, as the Dock and the App Library): the same requests may be held for
-// the answer, with their options, no others. The app: one with an icon that lives in a window, not the desktop's already, none of its windows elsewhere.
-static inline int MSBDSMOpenMayAsk(int airDrop, int background, int ourFullScreen, int locked, int hasIcon, int fullScreenOnly, int inDesktop, int elsewhere) {
-    return !airDrop && !background && !ourFullScreen && !locked && hasIcon && !fullScreenOnly && !inDesktop && !elsewhere;
+// the answer, with their options, no others (sharingd's too, as above: held, a request keeps the file it carries). The app: one with an icon that lives
+// in a window, not the desktop's already, none of its windows elsewhere.
+static inline int MSBDSMOpenMayAsk(int background, int ourFullScreen, int locked, int hasIcon, int fullScreenOnly, int inDesktop, int elsewhere) {
+    return !background && !ourFullScreen && !locked && hasIcon && !fullScreenOnly && !inDesktop && !elsewhere;
 }

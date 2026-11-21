@@ -77,9 +77,15 @@ sites() {   # $1 StatusBar.x, $2 quiet: the number of site checks that fail
   if [ "$(grep -c 'DMA5InstallCatcher();' "$X")" = 1 ] && [ "$(echo "$o" | sed -n 2p)" = "    if (gAerialFlavor != 5 || DMActiveEngine() != DMEngineAerial) { gA5CatchOn = NO; return; }" ] && echo "$o" | grep -qF '    DMA5InstallCatcher();'; then
     ok "StatusBar.x: the pre-commit catcher is installed only by DMAerial5Watch, after its Aerial 5 check"
   else no "StatusBar.x: the catcher is installed elsewhere"; fi
-  # nothing on Finder's, the native windows' or the keyboard hand-over's path: byte for byte as in 1.8.7.8 (7e0589ee)
-  if [ "$(shasum < ../statusbar/NativeWindow.h | cut -c1-16)" = 0bff62e6405d99da ] && [ "$(shasum < ../statusbar/Finder.h | cut -c1-16)" = 6fdf816e0e533b8a ] \
-     && [ "$(shasum < ../statusbar/KeyboardBehind.h | cut -c1-16)" = 38db8b74b23dde3c ]; then ok "NativeWindow.h, Finder.h, KeyboardBehind.h as in 1.8.7.8 (no focus, key window or level change)"
+  # nothing on Finder's, the native windows' or the keyboard hand-over's path: byte for byte as in 1.8.7.8 (7e0589ee), then as 1.8.8.1's Sticky Notes
+  # changed two of them, and its B67, B63 and B66 changed Finder.h (B63 NativeWindow.h too), none a focus, key window or level change on this
+  # path (NativeWindow.h: DMViewNearlyScreen, DMNativeTouchBegan's return for the desktop's typing, and DMNativeNotePress noting a press's
+  # buttons; Finder.h: a sticky note's Put Back, Undo and Get Info, B67's Open With: a submenu in the item menu, the apps' list, a copy and
+  # the app's launch, B63's -dm_secondaryClickIn:at: opening the menu a hold opens, and B66's Downloads stack item menu, B67's Open With in it
+  # too: its rows, drawn by DMFinderShowMenuIn, which reads the point on a menu window's own screen; Rename edits the name once the folder
+  # shows it)
+  if [ "$(shasum < ../statusbar/NativeWindow.h | cut -c1-16)" = 1d2aacde2cec6ddc ] && [ "$(shasum < ../statusbar/Finder.h | cut -c1-16)" = ea74eafced836848 ] \
+     && [ "$(shasum < ../statusbar/KeyboardBehind.h | cut -c1-16)" = 38db8b74b23dde3c ]; then ok "NativeWindow.h, Finder.h, KeyboardBehind.h as in 1.8.7.8 or 1.8.8.1 (no focus, key window or level change)"
   else no "NativeWindow.h, Finder.h or KeyboardBehind.h changed"; fi
   # the trace and the kill switch are debug only
   [ "$(ifdebug "$X" 'return DMTestFlag("/tmp/msb-a5-maskold");')" = yes ] && [ "$(ifdebug "$X" 'static void DMA5MaskDebugAtCommit(void) {')" = yes ] && [ "$(ifdebug "$X" 'static void DMA5MaskTrace(UIView *stage, CGSize was, CGSize now) {')" = yes ] \

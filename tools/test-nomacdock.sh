@@ -14,6 +14,11 @@ check "no plist of ours shows MacDock (labels, footers, titles, list titles; lin
   "git ls-files '*.plist' | grep -v -E '^(tools|packages)/' | python3 -I tools/test-nomacdock.py plists"
 check "no string in our code shows MacDock (the line's name \"MacDock\", file names and paths, log lines and focus-lock reasons may name it)" \
   "git ls-files '*.m' '*.x' '*.xm' '*.mm' '*.h' '*.c' | grep -v -E '^(tools|packages)/' | python3 -I tools/test-nomacdock.py code"
+# the checker's own line count: an apostrophe outside comments and strings (Downloads.m's "#pragma mark - an item's menu", 1.8.8.1) is no
+# character, so the lines after it keep their numbers (before, each later string was read with the line above it: a focus-lock reason looked shown)
+printf '%s\n' "#pragma mark - an item's menu" 'x = lockSel; y = @"MacDock reason";' 'z = @"MacDock shown";' > "$W/p.m"
+check "test-nomacdock.py keeps its line count past an apostrophe outside comments and strings (a #pragma mark): only the shown string, at its own line" \
+  "[ \"\$(echo '$W/p.m' | python3 -I tools/test-nomacdock.py code)\" = '    $W/p.m:3: MacDock shown' ]"
 
 # the line switch's alerts name a line by its title ("Mac-Style Dock" for the Dock's), never by its name
 L=common/LineSwitch.h

@@ -21,6 +21,8 @@ if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
     rm -f /var/mobile/Library/Caches/com.besiktasliseba.macsettings.landscapeicons.plist
     rmdir "$S" 2>/dev/null
     [ "$1" = "purge" ] && rm -rf /var/jb/var/lib/macstatusbaranddock
+    # (1.8.8.1: the sticky notes are the user's own writing: kept when the package is removed, deleted only on purge -- statusbar/DesktopNotes.h)
+    [ "$1" = "purge" ] && rm -rf "/var/mobile/Library/Application Support/MacStatusBarAndDock"
     rm -f "$P"/MacStatusBarAndDock-Diag-*.txt   # (the diagnostic records, common/Diag.h MSBD_DIAG_NAMES: every one, also those added later)
     rm -f /var/mobile/Library/ControlCenter/MacStatusBarAndDock-ControlsIconState.plist /var/mobile/Library/ControlCenter/MacStatusBarAndDock-ControlsDesiredIconState.plist   # (18: the Mac panel's own layout of tiles, common/CC18MacLayout.h; iPadOS's own was never touched)
     rm -f "$P/MacStatusBarAndDock-CCTile.plist" "$P/MacStatusBarAndDock-CCTile-SSH.plist"   # (18: where RAM & CPU's and SSH's tiles were in Control Center, common/CCTileKeep.h -- a reinstall starts afresh; the prerm's helper took both controls out of the 15-17 lists)

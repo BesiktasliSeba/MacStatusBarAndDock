@@ -150,6 +150,14 @@ int main(int argc, char **argv) {
         Expect("  Dock Style back to Default: \"default\" stored, as Settings stores it (never false: the row would show no choice)", StrIs(TD, "dockStyle", "default"), 1);
         Expect("  record: Dock Style and its words", FileHas(MSBD_GUARD_RECORD, "feature " TD " dockStyle 0 Dock Style|the older Dock style\n"), 1);
         Expect("  record: no part line", FileHas(MSBD_GUARD_RECORD, "\npart "), 0);
+    } else if (!strcmp(scenario, "dockcolor")) {   // reports: 10:00 + 10:01 crashes in Dock Background's code (DockColor.m), with Color chosen (review of DOCKCOLOR)
+        CFPreferencesSetValue(CFSTR("dockBackground"), CFSTR("color"), CFSTR(TD), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        CFPreferencesSynchronize(CFSTR(TD), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        Expect("two crashes in Dock Background's code: step 1b", MSBDGuardEvaluate(&s) ? Num(MSBD_GATE_DOMAIN, MSBD_GUARD_ACTION_KEY) : 0, 4);
+        Expect("  Dock Background back to Automatic: \"auto\" stored, as Settings stores it (never false: the row would show no choice)", StrIs(TD, "dockBackground", "auto"), 1);
+        Expect("  record: Dock Background and its words", FileHas(MSBD_GUARD_RECORD, "feature " TD " dockBackground 0 Dock Background|the Dock's color\n"), 1);
+        Expect("  record: no part line", FileHas(MSBD_GUARD_RECORD, "\npart "), 0);
+        Expect("  safe mode not on", Num(MSBD_GATE_DOMAIN, MSBD_SAFE_KEY), -1);
     } else if (!strcmp(scenario, "one")) {   // reports: 10:00 one banners crash only
         Expect("a single crash: nothing yet (two are needed)", MSBDGuardEvaluate(&s), 0);
         Expect("  banners untouched", Num(TD, "macBanners"), -1);

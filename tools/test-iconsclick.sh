@@ -77,8 +77,12 @@ sites() {   # $1 StatusBar.x, $2 BatteryMenu.h, $3 quiet: the number of site che
     eval "want=\$SUM_$g"
     [ "$s" = "$want" ] && ok "StatusBar.x: %group $g unchanged (the swipe down from the top right)" || no "StatusBar.x: %group $g changed ($s)"
   done
-  [ "$(fndef "$X" DMOurStatusIconsEdge | shasum | cut -c1-16)" = "$SUM_EDGE" ] && ok "StatusBar.x: DMOurStatusIconsEdge unchanged" || no "StatusBar.x: DMOurStatusIconsEdge changed"
-  [ "$(fndef "$X" DMPointOverOurControl | shasum | cut -c1-16)" = "$SUM_OVER" ] && ok "StatusBar.x: DMPointOverOurControl (our controls) unchanged" || no "StatusBar.x: DMPointOverOurControl changed"
+  # (1.8.8.1, the AirPods menu: its button is one of our controls and stands in as its own icon in the pull region -- exactly that key, once, in
+  #  each list; everything else as in 7e0589ee)
+  [ "$(fndef "$X" DMOurStatusIconsEdge | sed 's/, {kAirPodsButtonKey, NULL} };/ };/' | shasum | cut -c1-16)" = "$SUM_EDGE" ] && [ "$(fndef "$X" DMOurStatusIconsEdge | grep -o kAirPodsButtonKey | wc -l | tr -d ' ')" -le 1 ] \
+    && ok "StatusBar.x: DMOurStatusIconsEdge unchanged but for the AirPods button (1.8.8.1)" || no "StatusBar.x: DMOurStatusIconsEdge changed"
+  [ "$(fndef "$X" DMPointOverOurControl | sed 's/kWiFiButtonKey, kAirPodsButtonKey, kSpotButtonKey/kWiFiButtonKey, kSpotButtonKey/' | shasum | cut -c1-16)" = "$SUM_OVER" ] && [ "$(fndef "$X" DMPointOverOurControl | grep -o kAirPodsButtonKey | wc -l | tr -d ' ')" -le 1 ] \
+    && ok "StatusBar.x: DMPointOverOurControl (our controls) unchanged but for the AirPods button (1.8.8.1)" || no "StatusBar.x: DMPointOverOurControl changed"
   [ "$(fndef "$B" DMBattOpenControlCenter | shasum | cut -c1-16)" = "$SUM_OPEN" ] && ok "BatteryMenu.h: DMBattOpenControlCenter (our icon's call) unchanged" || no "BatteryMenu.h: DMBattOpenControlCenter changed"
   # nothing of ours hooks SpringBoard's region handler or Control Center's indirect action (our icon calls the latter)
   if ! cat "$X" ../statusbar/*.h ../common/*.h | grep -E '^- \([^)]*\)(handleStatusBarHoverActionForRegion:|handleIndirectStatusBarAction)' >/dev/null \
@@ -134,6 +138,7 @@ if [ -z "$IC_SB_X$IC_MENU_H" ]; then
   mtf "the target not dropped" 's/\n    if \(!old\) DMBarDropTarget\(\(UIView \*\)self, g\);//'
   mtf "the target dropped for any recognizer" 's/ \|\| \(\(id \(\*\)\(id, SEL\)\)objc_msgSend\)\(bar, sAGR\) != g\) return;\n    \(\(void \(\*\)\(id, SEL, id\)\)objc_msgSend\)\(bar, sSet, nil\);/) return;\n    ((void (*)(id, SEL, id))objc_msgSend)(bar, sSet, nil);/'
   mtf "1.8.7.8's hook (our controls only)" 's/\n    if \(!orig \|\| !\(over \|\| icons\)\) return orig;\n    if \(!old\) DMBarDropTarget\(\(UIView \*\)self, g\);\n    return NO;/\n    return (orig && over) ? NO : orig;/'
+  mtf "the AirPods button not one of our controls (1.8.8.1: a click on it would run iPadOS's region action, Control Center without our icon)" 's/kWiFiButtonKey, kAirPodsButtonKey, kSpotButtonKey/kWiFiButtonKey, kSpotButtonKey/'
   mtf "the debug kill switch not read" 's/\n    old = DMTestFlag\("\/tmp\/msb-iconscc"\);[^\n]*//'
 fi
 exit $rc

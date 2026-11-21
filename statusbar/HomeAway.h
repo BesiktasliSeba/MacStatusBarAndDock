@@ -17,6 +17,14 @@ static inline int DMHomeAwayWhat(int on, int ours, int keys, int covered, int gu
     if (sm) return ourWindows ? DMHomeAwayOurs : DMHomeAwayNone;
     return engineWindows + ourWindows ? DMHomeAwayAll : DMHomeAwayNone;
 }
+// Adapt to Trackpad & Mouse (1.8.8.1, KT 19 Nov: "When ipad is on magic keyboard/mouse the home minimizes windows option should be auto toggled
+// off, and auto toggled on when using ipad by hand, so it should adapt automatically the same way menu bars work adaptively"): whether Home
+// Minimizes Windows applies to this Home. on: its switch; adapt: Adapt to Trackpad & Mouse, under it; pointer: a trackpad or mouse is connected
+// at this Home (SpringBoard's pointer manager, the answer the Haptic Touch menus adapt to: the Magic Keyboard for iPad's trackpad, a mouse, a
+// Magic Trackpad; a keyboard alone is use by hand, as for the menus). With a trackpad or mouse Home leaves the windows, as on a Mac; by hand it
+// minimizes them. Neither switch is ever written for it: what Home does follows the input, the switches stay as the user set them. Every place
+// that read the switch for a Home's decision takes this instead (StatusBar.x DMHomeAdaptMinimizes); the pointer is read only with both on.
+static inline int DMHomeAwayOn(int on, int adapt, int pointer) { return on && !(adapt && pointer); }
 // One Home per gesture: SpringBoard activates the lift's destination once per root modifier that holds the gesture (two on 15.6.1, at the same
 // moment). 1 = this one counts (it is *last's new time); 0 = the same lift again.
 static inline int DMHomeAwayOnce(double now, double *last) {

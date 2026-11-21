@@ -48,7 +48,7 @@ static inline NSArray<NSString *> *MSBDWindowsPageRowIDs(void) {
 // 1.7.5: Show Desktop Icons and Hide Desktop Icon Names moved from the Status Bar page's Finder group to the Desktop page (MAC_DESKTOP, right after
 // Status Bar): links to them go there the same way.
 static inline NSArray<NSString *> *MSBDDesktopPageRowIDs(void) {
-    return @[@"DESKTOP_ICONS", @"Show Desktop Icons", @"DESKTOP_HIDE_NAMES", @"Hide Desktop Icon Names"];
+    return @[@"DESKTOP_ICONS", @"Show Desktop Icons", @"DESKTOP_HIDE_NAMES", @"Hide Desktop Icon Names", @"DESKTOP_STICKY_NOTES", @"Show Sticky Notes"];
 }
 static inline NSString *MSBDSettingsLinkMoved(NSString *link) {
     NSString *pre = @"prefs:root=MAC_STATUS_BAR";

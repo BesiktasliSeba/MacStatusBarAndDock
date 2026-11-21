@@ -134,6 +134,20 @@ int main(int argc, char **argv) {
         Write(MSBD_GUARD_VERDICTS, [NSString stringWithFormat:@"SpringBoard-%@.ips 4 Apple_code_only;_1_other_tweak_loaded\tNSInternalInconsistencyException: could not open /var/mobile/Library/Notes/private.txt for file:///var/mobile/Media/DCIM/x.jpg\t\t1 T.dylib\n", Stamp(60)]);
         s = MSBDOtherTweakCrashNote(); [said addObject:s ?: @""];
         Check(@"  ... the user's paths in a reason become <path>", [s containsString:@"could not open <path> for <path>"] && ![s containsString:@"/var/mobile"] && ![s containsString:@"file:"], s);
+        // (1.8.8.1, common/CauseHide.h: a view's quoted text and a sticky note's details never reach the note -- a verdict line of an older build too)
+        Write(MSBD_GUARD_VERDICTS, [NSString stringWithFormat:@"SpringBoard-%@.ips 4 Apple_code_only;_1_other_tweak_loaded\tNSInternalInconsistencyException: <UILabel: 0x1; frame = (0 0; 9 9); text = 'MSB-TEST-PRIV words'; layer = <x>>\t\t1 T.dylib\n", Stamp(60)]);
+        s = MSBDOtherTweakCrashNote(); [said addObject:s ?: @""];
+        Check(@"  ... a view's quoted text in a reason is hidden (1.8.8.1)", [s containsString:@"<UILabel: 0x1; frame = (0 0; 9 9); text hidden"] && ![s containsString:@"MSB-TEST-PRIV"], s);
+        Write(MSBD_GUARD_VERDICTS, [NSString stringWithFormat:@"SpringBoard-%@.ips 4 Apple_code_only;_1_other_tweak_loaded\tNSInvalidArgumentException: -[DMNoteTextView x]: unrecognized selector, MSB-TEST-PRIV words\t\t1 T.dylib\n", Stamp(60)]);
+        s = MSBDOtherTweakCrashNote(); [said addObject:s ?: @""];
+        Check(@"  ... a reason naming a sticky note's code keeps only the exception's name", [s containsString:@"NSInvalidArgumentException: in sticky notes (details hidden)"] && ![s containsString:@"MSB-TEST-PRIV"] && ![s containsString:@"DMNote"], s);
+        Check(@"  ... and the sanitizer itself, for every place a cause is shown", [MSBDReportSanitize(@"X: <UITextView: 0x2; text = 'MSB-TEST-PRIV'>", 200) isEqualToString:@"X: <UITextView: 0x2; text hidden"]
+              && [MSBDReportSanitize(@"MSBDStickyEntryRead MSB-TEST-PRIV", 200) isEqualToString:@"in sticky notes (details hidden)"] && [MSBDReportSanitize(@"DMNoteAppExit: plain", 200) isEqualToString:@"DMNoteAppExit: plain"] && [MSBDReportSanitize(@"plain words", 200) isEqualToString:@"plain words"], MSBDReportSanitize(@"X: <UITextView: 0x2; text = 'MSB-TEST-PRIV'>", 200));
+        // (the F2 review: a note method is named with the desktop's class; Activity Monitor's -dm_noteText is not the notes')
+        Check(@"  ... a sticky note method of the desktop's is hidden, another class's dm_note... is not (Activity Monitor's -dm_noteText)",
+              [MSBDReportSanitize(@"NSInvalidArgumentException: -[DMDesktop dm_noteTick]: unrecognized selector sent to instance 0x1 (MSB-TEST-PRIV)", 200) isEqualToString:@"NSInvalidArgumentException: in sticky notes (details hidden)"]
+              && [MSBDReportSanitize(@"NSRangeException: -[DMActivityMonitorWindow dm_noteText]: index 3 beyond bounds", 200) isEqualToString:@"NSRangeException: -[DMActivityMonitorWindow dm_noteText]: index 3 beyond bounds"],
+              MSBDReportSanitize(@"NSRangeException: -[DMActivityMonitorWindow dm_noteText]: index 3 beyond bounds", 200));
         Write(MSBD_GUARD_VERDICTS, [NSString stringWithFormat:@"SpringBoard-%@.ips 4 watchdog:Apple_code_only;_1_other_tweak_loaded\tstuck, ended by the watchdog: monitoring timed out for service\t\t1 T.dylib\n", Stamp(60)]);
         s = MSBDOtherTweakCrashNote(); [said addObject:s ?: @""];
         Check(@"  ... stuck, not pinned on anyone", [s hasPrefix:@"SpringBoard last got stuck and the system restarted it; that could not be pinned on MacStatusBar&Dock or another tweak: stuck, ended by the watchdog"], s);

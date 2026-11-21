@@ -7,7 +7,9 @@
 // data container, the bar's copies (two on one screen, as an app's own copy beside SpringBoard's: views that run the layout's lines at the end of the turn
 // after setNeedsLayout, as UIKit does, and keep the titles laid out; one in a window of its own, the other in none: both on the screen of the
 // menu, which is in a window of its own too), one of our menus (gOverlay: a view), the app's key window, first responder and main menu, DMLog, MABLog.
-// One scenario per process (argv[1]); no UIApplicationMain, no window on screen.
+// F-7b: a title of a copy is a real UIButton with the lines DMLayoutTitle adds for it (touch.inc: StatusBar.x's own); a finger on it is UIKit's
+// tracking (the button's isTracking), the end of its touch UIKit's sending of its actions. One scenario per process (argv[1]); no UIApplicationMain,
+// no window on screen.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/message.h>
@@ -82,6 +84,27 @@ static void TClose(void) {
 static void TRemoveNow(void) {
     [gOverlay removeFromSuperview]; gOverlay = nil;
 #include "remove.inc"
+}
+// A title of a copy, as DMLayoutTitle makes it: its tap's action (onTap: one of our menus opens), then what DMLayoutTitle adds for the hold
+// (touch.inc). A finger on it: down (UIKit tracks the touch); its end (TEnd): UIKit sends its actions while the button may still read as
+// tracking, and a layout may be forced in that same turn (some of ours force one); once the turn is over it no longer tracks
+@interface TButton : UIButton
+@property (nonatomic) BOOL down;
+@end
+@implementation TButton
+- (BOOL)isTracking { return self.down; }
+@end
+static TButton *TTitle(UIView *fg, void (^onTap)(void)) {
+    TButton *btn = [TButton buttonWithType:UIButtonTypeCustom];
+    if (onTap) [btn addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { onTap(); }] forControlEvents:UIControlEventTouchUpInside];
+#include "touch.inc"
+    [fg addSubview:btn];
+    return btn;
+}
+static void TEnd(TButton *b, UIControlEvents how) {
+    [b sendActionsForControlEvents:how];
+    for (TView *v in gCopies.allObjects) [v layoutIfNeeded];
+    b.down = NO;
 }
 
 // ---- the app's side (as test-appmenusready.m: its real snapshot on responders of the test's own) --------------------------------------------
@@ -177,7 +200,7 @@ int main(int argc, char **argv) {
         DMAMApplyPref(YES);
         TApp *app = App(gBundle);
         // (Maps cold: the bar sees it in front and lays out its copies; its ask is lost, MacAppBridge isn't in it yet)
-        BOOL cold = [sc isEqualToString:@"word"] || [sc isEqualToString:@"switch"] || [sc isEqualToString:@"nohold"];
+        BOOL cold = [sc isEqualToString:@"word"] || [sc isEqualToString:@"switch"] || [sc isEqualToString:@"nohold"] || [sc isEqualToString:@"touch"] || [sc isEqualToString:@"touchend"];
         if (cold || [sc isEqualToString:@"tap"] || [sc isEqualToString:@"front"]) {
             gFront = app; [bar setNeedsLayout]; [tv setNeedsLayout];
             Run(0.3);
@@ -213,7 +236,9 @@ int main(int argc, char **argv) {
                 Check(t1 >= 0 && t1 <= 0.2 && [tv.laid isEqualToArray:thin], [NSString stringWithFormat:@"word: closed, the answer that waited is laid out at once (%@ within %@; the second copy's %@)", Text(bar.laid), Took(t1), Text(tv.laid)]);
                 double t2 = WaitLaid(bar, full, 2.0);
                 t2 = t2 < 0 ? -1 : CACurrentMediaTime() - c;
-                Check(t2 >= 0 && t2 <= 1.3, [NSString stringWithFormat:@"word: and its card's titles within 1.3 s of the close (%@, %@)", Text(bar.laid), Took(t2)]);
+                // (asked by SpringBoard's wait under the menu, which looks again once a second: up to 1 s after the close, plus the answer and the
+                //  Mac's load, as test-appmenusready's openmenu)
+                Check(t2 >= 0 && t2 <= 1.6, [NSString stringWithFormat:@"word: and its card's titles within 1.6 s of the close (%@, %@)", Text(bar.laid), Took(t2)]);
                 Run(2.0);
                 Check(gAsks - asks0 == 1 && [bar.laid isEqualToArray:full], [NSString stringWithFormat:@"word: one ask after the close, no more (%d in 3.3 s; %@)", gAsks - asks0, Text(bar.laid)]);
                 Check(Lines(@"[appmenus] ", @": menus File, View wait for our menu or panel to close (the bar keeps none)") == 1 && Lines(@"[appmenus] our menu or panel is gone: the bar is laid out again", nil) == 1,
@@ -293,6 +318,48 @@ int main(int argc, char **argv) {
             TClose();
             double t = WaitLaid(bar, @[@"History"], 1.0);
             Check(t >= 0 && t <= 0.2, [NSString stringWithFormat:@"front: closed, its own titles at once (%@, %@)", Text(bar.laid), Took(t)]);
+        } else if ([sc isEqualToString:@"touch"]) {
+            // F-7b as p08's device rows had it: a finger on Go (UIKit tracking the touch) as Maps' first answer comes in, asked by its word. Before, the copy was
+            // laid out under the finger: Go moved from under it, the touch ended outside it and opened nothing
+            TButton *go = TTitle(bar, ^{ TOpen(); }), *tvGo = TTitle(tv, ^{ TOpen(); });
+            (void)tvGo;
+            Check([bar.laid isEqualToArray:none] && gAsks == 1, [NSString stringWithFormat:@"touch: Maps in front, nothing of its own on the bar yet (%@, %d asks)", Text(bar.laid), gAsks]);
+            int layouts0 = bar.layouts;
+            go.down = YES;   // (the finger on Go)
+            MABRegisterMenus();
+            Run(1.0);
+            Check([Snap() isEqualToArray:thin] && bar.layouts > layouts0, [NSString stringWithFormat:@"touch: its first answer came in while the finger was on Go, and the copy was laid out (%@, %d layouts)", Text(Snap()), bar.layouts - layouts0]);
+            Check([bar.laid isEqualToArray:none], [NSString stringWithFormat:@"touch: no title moved on the copy under the finger (it keeps %@)", Text(bar.laid)]);
+            Check([tv.laid isEqualToArray:thin], [NSString stringWithFormat:@"touch: the other copy, with no finger on any of its titles, laid it out (%@)", Text(tv.laid)]);
+            TEnd(go, UIControlEventTouchUpInside);   // (lifted on Go: its menu opens)
+            Run(0.3);
+            Check(gOverlay && [bar.laid isEqualToArray:none] && bar.movedUnder == 0, [NSString stringWithFormat:@"touch: lifted on Go, its menu opened, and still nothing moved under it (%@, %d changes)", Text(bar.laid), bar.movedUnder]);
+            TClose();
+            double t = WaitLaid(bar, thin, 1.0);
+            Check(t >= 0 && t <= 0.2, [NSString stringWithFormat:@"touch: its menu closed, what waited is laid out at once (%@ within %@)", Text(bar.laid), Took(t)]);
+            Check(Lines(@"[appmenus] ", @": menus File, View wait for the finger on a title to lift (the bar keeps none)") == 1 && Lines(@"[appmenus] the finger on a title lifted: the bar is laid out again", nil) == 1
+                  && Lines(@"[appmenus] ", @"wait for our menu or panel to close") == 1 && Lines(@"[appmenus] our menu or panel is gone", nil) == 1,
+                  [NSString stringWithFormat:@"touch: the finger's hold, its end, the menu's hold and its end are logged once each (%d, %d, %d, %d)", Lines(@"[appmenus] ", @"wait for the finger on a title to lift"),
+                   Lines(@"[appmenus] the finger on a title lifted", nil), Lines(@"[appmenus] ", @"wait for our menu or panel to close"), Lines(@"[appmenus] our menu or panel is gone", nil)]);
+        } else if ([sc isEqualToString:@"touchend"]) {
+            // F-7b: a finger on Go as the first answer comes in, then the touch taken by a system gesture (Notification Center pulled down from the
+            // bar: UIKit cancels it); then a finger on it again as its card's titles come (B12's look, asked a second later), lifted outside it
+            TButton *go = TTitle(bar, ^{ TOpen(); });
+            go.down = YES;
+            MABRegisterMenus();
+            Run(1.0);
+            Check([Snap() isEqualToArray:thin] && [bar.laid isEqualToArray:none], [NSString stringWithFormat:@"touchend: the first answer in under the finger, held (%@, the bar keeps %@)", Text(Snap()), Text(bar.laid)]);
+            TEnd(go, UIControlEventTouchCancel);
+            double t = WaitLaid(bar, thin, 1.0);
+            Check(t >= 0 && t <= 0.2 && !gOverlay, [NSString stringWithFormat:@"touchend: the touch taken by a system gesture: laid out at once, nothing opened (%@ within %@)", Text(bar.laid), Took(t)]);
+            Run(1.0);
+            go.down = YES;
+            chrome.kc = MapsCard();
+            Busy(0.1, 3.0);
+            Check([Snap() isEqualToArray:full] && [bar.laid isEqualToArray:thin], [NSString stringWithFormat:@"touchend: its card's titles came in under the finger again, held (%@, the bar keeps %@)", Text(Snap()), Text(bar.laid)]);
+            TEnd(go, UIControlEventTouchUpOutside);
+            t = WaitLaid(bar, full, 1.0);
+            Check(t >= 0 && t <= 0.2 && !gOverlay, [NSString stringWithFormat:@"touchend: lifted outside it: laid out at once, nothing opened (%@ within %@)", Text(bar.laid), Took(t)]);
         } else if ([sc isEqualToString:@"nohold"]) {
             // nothing of ours open: as before, the first answer and the card's titles reach the bar as they come (B12's thin first answer)
             CFTimeInterval c = CACurrentMediaTime();
@@ -311,6 +378,12 @@ int main(int argc, char **argv) {
             TOpen(); Run(0.3); TRemoveNow(); TOpen(); Run(0.3); TClose(); Run(0.5);   // (and a switch)
             Check(bar.layouts == layouts0 && gAsks == asks0 && bar.movedUnder == 0, [NSString stringWithFormat:@"nohold: menus opened and closed with nothing new: no layout, no ask for them (%d, %d)", bar.layouts - layouts0, gAsks - asks0]);
             Check(Lines(@"[appmenus] ", @"wait for our menu or panel") == 0 && Lines(@"[appmenus] our menu or panel is gone", nil) == 0, @"nohold: no hold logged");
+            // (F-7b) and a finger on a title, lifted inside it, outside it, or taken by a system gesture, with nothing new meanwhile: no layout for it
+            TButton *go = TTitle(bar, nil);
+            layouts0 = bar.layouts;
+            UIControlEvents ends[3] = { UIControlEventTouchUpInside, UIControlEventTouchUpOutside, UIControlEventTouchCancel };
+            for (int i = 0; i < 3; i++) { go.down = YES; Run(0.3); TEnd(go, ends[i]); Run(0.3); }
+            Check(bar.layouts == layouts0 && Lines(@"[appmenus] ", @"finger") == 0, [NSString stringWithFormat:@"nohold: a finger on a title and its end with nothing new: no layout, nothing logged (%d)", bar.layouts - layouts0]);
         } else return 2;
         [[NSFileManager defaultManager] removeItemAtPath:gContainer error:nil];
         printf("%s: %d checks, %d failed\n", argv[1], gChecks, gFails);

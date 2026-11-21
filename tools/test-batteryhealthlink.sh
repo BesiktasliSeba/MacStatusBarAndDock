@@ -1,19 +1,23 @@
 #!/bin/bash
-# Mac test of the link to Settings' Battery Health page at our groups (1.7.9: the battery menu's Charge Limit and Sleep Guard rows): the link and the
-# path (common/BatteryHealthLink.h, test-batteryhealthlink.m), the battery menu's rows, and Settings' side (macsettings/BatteryHealthLink.x).
+# Mac test of the link to Settings' Battery Health page at our groups (1.7.9: the battery menu's Charge Limit and Sleep Guard rows; 1.8.8.1
+# BATTSETTINGS: Battery Settings… opens the page itself): the link and the path (common/BatteryHealthLink.h, test-batteryhealthlink.m, with the
+# menu's real DMBattOpenSettings cut out of statusbar/BatteryMenu.h -- BHL_MENU_H: another copy, e.g. the code before), the battery menu's rows, and
+# Settings' side (macsettings/BatteryHealthLink.x).
 set -e
 cd "$(dirname "$0")"
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 fails=0
-clang -O0 -fobjc-arc -Wall -framework Foundation -o "$W/tbhl" test-batteryhealthlink.m && "$W/tbhl" || fails=1
+B=${BHL_MENU_H:-../statusbar/BatteryMenu.h}; L=../macsettings/BatteryHealthLink.x
+grep -E '^static void DMBattOpenSettings\(NSString \*group, NSString \*why\) \{.*\}$' "$B" > "$W/bhl-open.inc" && [ "$(grep -c '' "$W/bhl-open.inc")" = 1 ] \
+  || { echo "FAIL  the menu's DMBattOpenSettings (one line) not found in $B"; fails=1; }
+clang -O0 -fobjc-arc -Wall -framework Foundation -DBHL_MENU_OPEN -I"$W" -o "$W/tbhl" test-batteryhealthlink.m && "$W/tbhl" || fails=1
 check() { if eval "$2"; then echo "PASS  $1"; else echo "FAIL  $1"; fails=1; fi; }
 fn() { awk -v h="$2" '!p && index($0, h) == 1 && /\{ *(\/\/.*)?$/ {p=1} p {print} p && /^}/ {exit}' "$1"; }   # one function of a file, from its first line
-B=../statusbar/BatteryMenu.h; L=../macsettings/BatteryHealthLink.x
-check "the battery menu: Charge Limit opens the page at the Charging group, Sleep Guard and iPad Can't Sleep at Battery Use, Battery Settings… Battery" \
+check "the battery menu: Charge Limit opens the page at the Charging group, Sleep Guard and iPad Can't Sleep at Battery Use, Battery Settings… the page's top (1.8.8.1; it was Battery)" \
   "fn $B 'static NSArray *DMBattMenuItems(' | grep -q 'DMBattOpenSettings(@MSBD_BH_CHARGING_GROUP, @\"battery settings (charge limit)\")' \
    && [ \$(fn $B 'static NSArray *DMBattMenuItems(' | grep -c 'DMBattOpenSettings(@MSBD_BH_BATTERY_USE_GROUP, ') = 2 ] \
    && fn $B 'static NSArray *DMBattMenuItems(' | grep -q 'DMBattOpenSettings(nil, @\"battery settings\")' \
-   && grep -q 'DMOpenURL(group ? MSBDBatteryHealthLink(group) : @\"prefs:root=BATTERY_USAGE\", why);' $B"
+   && grep -qF 'DMOpenURL(MSBDBatteryHealthLink(group), why);' $B && ! grep -q 'prefs:root=BATTERY_USAGE' $B"
 check "the groups the link names are the ones the page has (BatteryUse.x's Battery Use group; BatteryHealth.x's Charging group where the job is in the tree)" \
   "grep -q 'groupSpecifierWithName:@\"Battery Use\"\\];' ../macsettings/BatteryUse.x && grep -q '\\[g setIdentifier:@\"MSBD_BATTERY_USE_GROUP\"\\];' ../macsettings/BatteryUse.x \
    && grep -q '#define MSBD_BH_BATTERY_USE_GROUP \"MSBD_BATTERY_USE_GROUP\"' ../common/BatteryHealthLink.h \

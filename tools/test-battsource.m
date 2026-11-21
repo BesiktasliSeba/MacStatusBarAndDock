@@ -1,7 +1,8 @@
 // test-battsource.m -- see test-battsource.sh. Where the battery menu, the battery's VoiceOver value and the number in the icon read the battery
 // (issue #15): the real code cut out of statusbar/BatteryMenu.h -- the battery's read (from its DMBattInfo to DMBattAXValue: bs-read.inc), the
-// menu's rows and DMBattMenuItems (bs-rows.inc, bs-items.inc), the number in the icon (from gBattInsideOn to DMBattInsideApplyPref: bs-block.inc)
-// -- with common/BatteryMenu.h, common/ChargeLimit.h, common/BatteryInside.h and common/AXText.h, on stand-ins: the battery service (IOKit's
+// menu's rows and DMBattMenuItems (bs-rows.inc, bs-items.inc), the number in the icon (from gBattInsideOn to DMBattInsideApplyPref: bs-block.inc),
+// why iPad is not charging (1.8.8.1 BATTWHY: its section, bs-why.inc, empty in a copy from before it)
+// -- with common/BatteryMenu.h, common/ChargeLimit.h, common/ChargeWhy.h, common/BatteryInside.h and common/AXText.h, on stand-ins: the battery service (IOKit's
 // matching and registry calls: AppleSmartBattery and/or AppleARMPMUCharger with their keys, an object that goes away), IOKit's power sources (the
 // internal battery's description, through dlopen/dlsym as the code asks for it), SpringBoard's SBUIController (its stored state, in the iPad's
 // types), the Charge Limit's job (installed, its state word), the clock (CACurrentMediaTime) and UIKit's own battery view in a bar. One scenario
@@ -132,6 +133,7 @@ static BOOL gJob = NO; static uint64_t gWord = 0;
 static BOOL DMBattChargeJob(void) { return gJob; }
 static uint64_t DMBattChargeWord(void) { return gWord; }
 static int DMBattChargeLimitPref(void) { return 80; }
+static BOOL gBattMenuOn __attribute__((unused)) = YES;   // (StatusBar.x's: Battery Menu on -- the power sources note's stamps, DMBattWhyNote)
 
 // ---- the number in the icon's surroundings (as test-battinsideink.m has them): the bar's batteries, our bars' keys, no battery item to add to
 static NSHashTable *gCopies, *gAllBarCopies;
@@ -158,6 +160,7 @@ static uint32_t TRegister(const char *name, int *token, dispatch_queue_t q, noti
 #define CACurrentMediaTime TNow
 #define notify_register_dispatch TRegister
 #include "bs-read.inc"
+#include "bs-why.inc"
 #include "bs-rows.inc"
 #include "bs-items.inc"
 #include "bs-block.inc"
@@ -330,6 +333,30 @@ static void Scenario(NSString *name) {
         gJob = YES; gWord = MSBDChargeStateWord(kMSBDChargeStateComingDown, 80, 1);
         gSmart = Service(88, 100, NO, NO, NO); gIOPS = PowerSource(88, NO, NO); SBUI(88, NO, NO);
         Sees(@"SMC, our cut (coming down from 88 %)", @"88%", @"Battery", @"Using Battery Until 80%", @"88%", @"88");
+    } else if ([name isEqualToString:@"why"]) {   // 1.8.8.1 BATTWHY: why iPad is not charging, read from the service the level is read from (one lookup)
+        NSMutableDictionary *weak = [Service(45, 100, YES, NO, YES) mutableCopy];   // (KT's A12Z on 7 W: connected, not charging, the battery giving 800 mA)
+        weak[@"Amperage"] = @(-800); weak[@"AdapterDetails"] = @{ @"Watts": @7 }; weak[@"ChargerData"] = @{ @"NotChargingReason": @0, @"ChargerInhibitReason": @0 }; weak[@"Temperature"] = @3000;
+        gSmart = weak; gIOPS = PowerSource(45, YES, NO); SBUI(45, YES, YES);
+        gNow = 1000;
+        Same(MenuRow(2), @"--", @"on 7 W, not charging: nothing said in the first 3 minutes");
+        gNow = 1181;
+        Same(MenuRow(2), @"Not Charging: Power Adapter Too Weak (7 W)", @"  ... after 3 minutes: the reason, from the battery service's own readings");
+        TServiceGone();
+        int l = gLookups;
+        Same(MenuRow(2), @"Not Charging: Power Adapter Too Weak (7 W)", @"the service went away and came back as another object: the reason read from the new one");
+        Check(gLookups - l == 1, [NSString stringWithFormat:@"  ... one lookup for the level and the reason together (%d)", gLookups - l]);
+        gSmart = Service(45, 100, NO, NO, NO);
+        int r = gReads;
+        Same(MenuRow(2), @"--", @"unplugged: no reason");
+        Check(gReads - r == 4, [NSString stringWithFormat:@"  ... and off the adapter nothing read for it: the level's 4 keys only (%d reads)", gReads - r]);
+        NSMutableDictionary *charging = [Service(46, 100, YES, YES, YES) mutableCopy]; charging[@"Amperage"] = @1500;
+        gSmart = charging; r = gReads;
+        Same(MenuRow(2), @"--", @"plugged in, charging: no reason");
+        Check(gReads - r == 5, [NSString stringWithFormat:@"  ... and only the current read for it (%d reads: the level's 4 and Amperage)", gReads - r]);
+        NSMutableDictionary *odd = [weak mutableCopy]; odd[@"CurrentCapacity"] = @"45";   // (the level's read fails: the power sources' level)
+        gSmart = odd; gNow = 1400; Menu(); gNow = 1600; r = gReads;
+        Same(MenuRow(2), @"Not Charging", @"the service's level not readable: after 3 minutes \"Not Charging\", never a reason from that service");
+        Check(gReads - r == 2, [NSString stringWithFormat:@"  ... nothing read from it for the reason (%d reads: CurrentCapacity, once more after the second lookup)", gReads - r]);
     } else if ([name isEqualToString:@"apart"]) {   // (debug) SBUIController apart from the service for more than 60 s: said once, again after they agreed
         gSmart = Service(47, 100, YES, YES, YES); gIOPS = PowerSource(46, YES, YES); SBUI(43, NO, NO);
         NSString *line = @"SBUIController's stored battery has differed from the battery service";
@@ -358,7 +385,7 @@ static void Scenario(NSString *name) {
 
 int main(int argc, char **argv) {
     @autoreleasepool {
-        NSArray *all = @[@"user", @"pmu", @"rounding", @"scaled", @"flagnumber", @"badtype", @"relookup", @"noservice", @"iopsonly", @"sbuionly", @"nothing", @"hold", @"cutpmu", @"cutsmc", @"apart"];
+        NSArray *all = @[@"user", @"pmu", @"rounding", @"scaled", @"flagnumber", @"badtype", @"relookup", @"noservice", @"iopsonly", @"sbuionly", @"nothing", @"hold", @"cutpmu", @"cutsmc", @"why", @"apart"];
         if (argc < 2 || !strcmp(argv[1], "list")) { for (NSString *s in all) printf("%s\n", s.UTF8String); return 0; }
         Scenario(@(argv[1]));
         if (gFails && getenv("BS_LOG") == NULL) for (NSString *l in gLog) printf("   log: %s\n", l.UTF8String);

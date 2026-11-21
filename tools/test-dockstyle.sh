@@ -25,8 +25,8 @@ pos=[k for k,x in enumerate(it) if x.get('key')=='dockPosition'][0]
 sys.exit(0 if s['key']=='dockStyle' and s['default']=='default' and s['cell']=='PSLinkListCell' and s['validValues']==['default','glass','frosted'] and s['validTitles']==['Default','Glass Shelf','Frosted'] and s['label']=='Dock Style' and s['defaults']=='com.besiktasliseba.dockmagnification' and s['PostNotification']=='com.besiktasliseba.dockmagnification/prefsChanged' and i==pos+2 and it[i-1]['cell']=='PSGroupCell' else 1)\""
 check "the Dock reads it (MSBDDockStyleFromString), Default with the Dock part off; a change re-styles every platter at once" \
   "fn $D 'static void DMLoadPrefs(' | grep -q 'DMDockStyleSetChoice(tweakOn ? style : MSBDDockStyleDefault);' && awk '/^static void DMPrefsChanged\(/,/^}/' $D | grep -q 'DMDockStyleRefreshAll();'"
-check "our look lives at the back of the platter, laid out with it (its -layoutSubviews); Default: nothing of ours, iPadOS's background and shadow given back" \
-  "awk '/^%hook SBFloatingDockPlatterView/,/^%end/' $D | tr -d '\n' | grep -q -- '- (void)layoutSubviews {    %orig;    DMDockStyleApply((UIView \*)self);}' \
+check "our look lives at the back of the platter, laid out with it (its -layoutSubviews, then Dock Background's colour, 1.8.8.1); Default: nothing of ours, iPadOS's background and shadow given back" \
+  "awk '/^%hook SBFloatingDockPlatterView/,/^%end/' $D | tr -d '\n' | grep -q -- '- (void)layoutSubviews {    %orig;    DMDockStyleApply((UIView \*)self);    DMDockColorApply((UIView \*)self);}' \
    && fn $S 'void DMDockStyleApply(' | grep -q 'if (sv.superview != platter) \[platter insertSubview:sv atIndex:0\];' && fn $S 'void DMDockStyleApply(' | grep -q 'DMStyleHideApple(platter, NO);'"
 check "  ... iPadOS's background and shadow read only in their getter's shape, hidden by our mask and given back exactly (L3)" \
   "fn $S 'static UIView *DMStyleGet(' | grep -q 'if (!DMStyleShape(o, sel, \"@16@0:8\")) return nil;' && fn $S 'static void DMStyleHideApple(' | grep -q 'view.layer.mask = ours;'"
@@ -38,8 +38,9 @@ check "nothing of ours takes a touch, moves an icon or changes a transform of Ap
 check "the reflections follow the magnification frame by frame (Dock.x dm_apply), and are taken again only when the Dock lays out" \
   "grep -q '    DMDockStyleFollow(self);   // (Glass Shelf: the reflections follow' $D && fn $S 'void DMDockStyleFollow(' | grep -q 'DMStylePlaceReflections(sv);' \
    && fn $S 'void DMDockStyleApply(' | grep -q 'DMStyleSyncReflections(platter, sv, icons);'"
-check "the open apps' lights: each running dot drawn as its Dock's look draws it (apps' and Finder's), today's dot back with Default and Frosted" \
-  "grep -q '    DMDockStyleDot(dot, iconView, d);' $R && grep -q '    DMDockStyleDot(self.dot, self, d);' $F && fn $S 'void DMDockStyleDot(' | grep -q 'if (dot.layer.contents) { dot.layer.contents = nil; dot.backgroundColor = \[UIColor labelColor\]; }'"
+check "the open apps' lights: each running dot drawn as its Dock's look draws it (apps' and Finder's), today's dot back with Default and Frosted, then Dock Background's marks on it (1.8.8.1)" \
+  "grep -q '    DMDockStyleDot(dot, iconView, d);' $R && grep -q '    DMDockStyleDot(self.dot, self, d);' $F && fn $S 'void DMDockStyleDot(' | grep -q 'if (dot.layer.contents) { dot.layer.contents = nil; dot.backgroundColor = \[UIColor labelColor\]; }' \
+   && fn $S 'void DMDockStyleDot(' | grep -A3 -F 'if (dot.layer.contents) { dot.layer.contents = nil;' | grep -q '    DMDockColorDot(dot, platter, reset);'"
 check "L1 (review 1.8.4): a crash in Dock Style's code (DockStyle.m) sets only Dock Style back to Default -- not the whole Dock" \
   "grep -q '^file DockMagnification ^DockStyle\\\\.m\$ dockStyle\$' crashmap-rules.txt"
 check "P2-L1 (review 1.8.4): with Default stored (\"default\") or nothing stored, Dock Style counts as off (offtext=default): such a crash is not pinned on it" \

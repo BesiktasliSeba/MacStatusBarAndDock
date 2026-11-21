@@ -212,6 +212,25 @@ int main(void) { @autoreleasepool {
         CHECK(firstLeft, "%s, empty page: the first new icon is not at the left (right-to-left)", s.name);
         DMPlacerFree(&a); DMPlacerFree(&b); free(ra); free(rb);
     }
+    // sticky notes (1.8.8.1): taken after the page's own rects, they are soft -- new icons keep clear of them while there is room, and with no room
+    // the pile's spot is the one the page's own rects (app icons) cover least, never one under an app icon because notes covered the rest
+    for (int si = 0; si < 4; si++) {
+        Screen s = screens[si]; CGRect area; occupied(s, 0, &area);
+        CGRect right = CGRectMake(CGRectGetMidX(area), area.origin.y - 10, area.size.width, area.size.height + 20);   // (app icons over the right half)
+        CGRect left = CGRectMake(area.origin.x - 10, area.origin.y - 10, area.size.width / 2.0 + 10, area.size.height + 20);   // (notes over the left half)
+        DMPlacer p; DMPlacerInit(&p, area, cw, ch, &right, 1);
+        DMPlacerTake(&p, left);
+        int fits = 1; CGPoint c = DMPlacerPlaceNext(&p, &fits);
+        CHECK(!fits && !CGRectIntersectsRect(cell(c), right), "%s: no room, the pile at (%.0f, %.0f) lies under the app icons instead of on a note", s.name, c.x, c.y);
+        CHECK(p.nHard == 1 && p.nRects == 2, "%s: the page's own rect is hard, the note's soft (%d of %d)", s.name, p.nHard, p.nRects);
+        DMPlacerFree(&p);
+        DMPlacer q; DMPlacerInit(&q, area, cw, ch, NULL, 0);
+        CGRect note = CGRectMake(CGRectGetMaxX(area) - 300, area.origin.y, 300, 240);   // (a note at the top right, where new icons start)
+        DMPlacerTake(&q, note);
+        int all = 1; for (int k = 0; k < 12; k++) { int f = 1; CGPoint d = DMPlacerPlaceNext(&q, &f); if (!f || CGRectIntersectsRect(cell(d), note)) all = 0; }
+        CHECK(all, "%s: new icons keep clear of a note while there is room", s.name);
+        DMPlacerFree(&q);
+    }
     // the old search on the worst case, for the record
     {
         Screen s = screens[0]; CGRect area; NSMutableArray *taken = occupied(s, 24, &area);

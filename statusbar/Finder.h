@@ -21,6 +21,7 @@
 #import "../common/DriveEject.h"        // (a drive's name, MSBDDriveName: its volume's label, not the folder it is mounted on -- 1.7.3)
 #include "FinderApps.h"   // (Applications: each row is the app's .app, not its bundle container -- Foundation only, tools/test-finderapps.sh; 1.7.6)
 #include "FinderIPA.h"    // (an app shared or handed over goes as an .ipa: its name, Payload layout, FairPlay check -- tools/test-finderipa.sh; 1.7.7)
+#include "FinderOpenWith.h"   // (Open With: which apps open a file, the copy's place -- Foundation only, tools/test-finderopenwith.sh; 1.8.8.1 B67)
 #include "../common/FolderSize.h"   // (a folder's size: the walk, its caps, kept or not, what the list shows -- tools/test-foldersize.sh; 1.8.4.2)
 #include "../common/PreviewPick.h"  // (Quick Look: our own viewer or iPadOS's for a file -- tools/test-previewpick.sh; 1.8.4.2)
 #include "../common/PreviewStep.h"  // (Quick Look: the arrows and swipes move through the Finder window's items -- tools/test-previewstep.sh; 1.8.4.2)
@@ -1507,6 +1508,7 @@ static NSUInteger DMDockTrashCountNow(void);   // (DockTrash.h: what Finder's Tr
 - (NSArray<DMFinderItem *> *)dm_selectedItems;              // the selection (every selected item, in the folder's order)
 - (void)dm_goToFolder;                                      // (Go > Go to Folder…, Shift-Command-G)
 - (void)dm_selectPathsWhenListed:(NSArray<NSString *> *)paths;   // (these items become the selection once the folder shows them)
+- (void)dm_renameWhenListed:(NSString *)path;                     // (... and this one's name is edited in place then)
 - (void)dm_newFolder; - (void)dm_openSelected; - (void)dm_quickLookSelected; - (void)dm_infoSelected;
 - (void)open:(DMFinderItem *)it; - (void)getInfo:(DMFinderItem *)it; - (void)newFolder; - (void)dm_newTextFile;   // (one item; New Folder in this window's folder)
 - (void)dm_renameSelected; - (void)dm_duplicateSelected; - (void)dm_trashSelected;
@@ -1528,6 +1530,7 @@ static NSUInteger DMDockTrashCountNow(void);   // (DockTrash.h: what Finder's Tr
 - (void)dm_duplicateItems:(NSArray<NSString *> *)paths;
 - (void)dm_putBackItems:(NSArray<NSString *> *)paths;
 - (void)dm_deleteItems:(NSArray<NSString *> *)paths;        // (in the Trash: Delete Immediately, asked first)
+- (void)fail:(NSError *)e what:(NSString *)what;            // (an operation's error, as a sheet: also a sticky note's Put Back, DesktopNotes.h)
 - (void)dm_renameItem:(NSString *)path to:(NSString *)name;
 - (void)dm_pasteInto:(NSString *)dir;
 - (BOOL)dm_canUndo; - (NSString *)dm_undoTitle; - (void)dm_undo;
@@ -2449,6 +2452,146 @@ static void DMFinderShareTo(NSArray<DMFinderItem *> *items, NSString *bundle, DM
         DMFDFinish(d, NO);
     });
 }
+// ---- Open With (1.8.8.1 B67) ----------------------------------------------------------------------------------------------------------------
+// KT 21 Nov: "ipa's etc should be able to be opened in trollstore". A Mac's Open With: the apps that open the file, from their own Info.plists
+// (FinderOpenWith.h); the one picked gets a copy as iOS's own Open In gives one (in its Documents/Inbox) and opens as its Dock icon opens it -- a
+// window when apps open as windows, on every engine (DMOpenApp) --, and the copy's URL is handed to its window's scene as SpringBoard hands an app a
+// link (DMDeliverURLToWindow: a UIOpenURLAction, the app's own way in for a file it opens: TrollStore's install question for an .ipa or .tipa). Share
+// can't do it: its drop needs an app that takes drops (TrollStore takes none), and the system share sheet can't open from SpringBoard (-getInfo:).
+static os_unfair_lock gFinderOpenWithLock = OS_UNFAIR_LOCK_INIT;
+static NSArray<NSDictionary *> *gFinderOpenWithApps; static CFTimeInterval gFinderOpenWithAt = -100; static BOOL gFinderOpenWithBusy;
+static dispatch_group_t gFinderOpenWithGroup;   // (the read in progress, for the first menu to wait on)
+// The installed apps that have document types: @{b: bundle id, t: name, d: their CFBundleDocumentTypes}, read from each app's Info.plist on disk
+// (SpringBoard reads every bundle), off the main thread (DMFinderOpenWithIndex): each app's plist let go before the next is read.
+static NSArray<NSDictionary *> *DMFinderOpenWithScan(void) {
+    NSMutableArray *out = [NSMutableArray array];
+    NSArray *proxies = DMCall(DMCall(objc_getClass("LSApplicationWorkspace"), @"defaultWorkspace"), @"allInstalledApplications");
+    if (![proxies isKindOfClass:[NSArray class]]) return out;
+    for (id proxy in proxies) @autoreleasepool {
+        NSString *bid = DMCall(proxy, @"bundleIdentifier");
+        id url = nil; @try { url = [proxy valueForKey:@"bundleURL"]; } @catch (NSException *e) {}
+        if (![bid isKindOfClass:[NSString class]] || !bid.length || ![url isKindOfClass:[NSURL class]]) continue;
+        NSDictionary *info = [NSDictionary dictionaryWithContentsOfURL:[(NSURL *)url URLByAppendingPathComponent:@"Info.plist"]];
+        id docs = [info isKindOfClass:[NSDictionary class]] ? info[@"CFBundleDocumentTypes"] : nil;
+        if (![docs isKindOfClass:[NSArray class]] || ![(NSArray *)docs count]) continue;
+        id n = DMCall(proxy, @"localizedName");
+        [out addObject:@{@"b": bid, @"t": [n isKindOfClass:[NSString class]] && [(NSString *)n length] ? n : bid, @"d": docs}];
+    }
+    return out;
+}
+// What is kept, at most 30 s old: an older one is made again in the background while the menus go on with it. The read itself never runs on the
+// main thread: the first menu (none made yet: after a respring, before any Finder window opened) waits for the one in progress at most 0.5 s and,
+// later than that, goes without Open With this once -- a whole read on the main thread froze SpringBoard as long as LaunchServices took (79 ms on
+// the M1 for 230 apps, seconds on an iPad short of memory: 1.7.3 item 12, ActMonDock.h), plus every app's Info.plist. A Finder window opening makes
+// it ahead (DMFinderOpen), so a menu rarely waits.
+static NSArray<NSDictionary *> *DMFinderOpenWithIndex(BOOL wait) {
+    os_unfair_lock_lock(&gFinderOpenWithLock);
+    if (!gFinderOpenWithGroup) gFinderOpenWithGroup = dispatch_group_create();
+    dispatch_group_t group = gFinderOpenWithGroup;
+    NSArray *have = gFinderOpenWithApps;
+    BOOL start = (!have || CACurrentMediaTime() - gFinderOpenWithAt > 30.0) && !gFinderOpenWithBusy;
+    if (start) gFinderOpenWithBusy = YES;
+    os_unfair_lock_unlock(&gFinderOpenWithLock);
+    if (start) dispatch_group_async(group, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSArray *now = DMFinderOpenWithScan();
+        os_unfair_lock_lock(&gFinderOpenWithLock); gFinderOpenWithApps = now; gFinderOpenWithAt = CACurrentMediaTime(); gFinderOpenWithBusy = NO; os_unfair_lock_unlock(&gFinderOpenWithLock);
+    });
+    if (!have && wait) {
+        if (dispatch_group_wait(group, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC))) != 0) {
+            DMLog(@"[finder] open with: the apps' document types are still being read (0.5 s): this menu goes without Open With");
+            return @[];
+        }
+        os_unfair_lock_lock(&gFinderOpenWithLock); have = gFinderOpenWithApps; os_unfair_lock_unlock(&gFinderOpenWithLock);
+    }
+    return have ?: @[];
+}
+// Every type this iPad declares with the extension, and each one's parents (FinderOpenWith.h: .ipa is Apple's type and, on the iPad 2, Filza's too).
+static NSArray<NSString *> *DMFinderOpenWithTypes(NSString *ext) {
+    NSMutableOrderedSet<NSString *> *out = [NSMutableOrderedSet orderedSet];
+    if (!ext.length) return @[];
+    NSArray<UTType *> *all = [UTType typesWithTag:ext tagClass:UTTagClassFilenameExtension conformingToType:nil];
+    for (UTType *t in all) { if (t.identifier) [out addObject:t.identifier]; for (UTType *s in t.supertypes) if (s.identifier) [out addObject:s.identifier]; }
+    return out.array;
+}
+// The apps that open a file (main thread): those whose document types claim it, by FinderOpenWith.h's order; never one hidden with AppHider, one
+// without a Home Screen icon (a system service), SpringBoard, or Safari (a file handed to it opens as a page it can't show: DMFinderAppRefusesFiles).
+static NSArray<NSDictionary *> *DMFinderOpenWithAppsFor(NSString *path) {
+    NSString *ext = path.pathExtension;
+    if (!ext.length) return @[];
+    NSArray<NSString *> *types = DMFinderOpenWithTypes(ext);
+    NSSet *hidden = DMFinderHiddenApps();
+    NSMutableArray *found = [NSMutableArray array];
+    for (NSDictionary *a in DMFinderOpenWithIndex(YES)) {
+        NSString *b = a[@"b"];
+        if ([hidden containsObject:b] || DMFinderAppRefusesFiles(b) || [b isEqualToString:@"com.apple.springboard"]) continue;
+        int r = DMFinderOpenWithRank(@{@"CFBundleDocumentTypes": a[@"d"]}, ext, types);
+        if (r > 0 && DMHasHomeIcon(b)) [found addObject:@{@"b": b, @"t": a[@"t"], @"r": @(r)}];
+    }
+    return DMFinderOpenWithOrder(found);
+}
+// The copy's URL to the app once it is up in front (DMDeliverURLToWindow then hands it to its window's scene when its content is there): waited for
+// up to 60 s, every 0.25 s -- Fit to Window's question for a third window holds the app's launch until it is answered, on every engine, longer than
+// that call's own 10 s. Never up: our copy goes again, nothing is handed over.
+static void DMFinderOpenWithHandTo(NSString *bundle, NSString *dst, int attempt) {
+    id scene = DMSceneForBundle(bundle) ?: DMFrontBoardSceneForBundle(bundle);
+    id settings = scene ? DMCall(scene, @"settings") : nil;
+    BOOL fg = [settings respondsToSelector:NSSelectorFromString(@"isForeground")] && ((BOOL (*)(id, SEL))objc_msgSend)(settings, NSSelectorFromString(@"isForeground"));
+    if (fg) { DMDeliverURLToWindow(bundle, [NSURL fileURLWithPath:dst], 0); return; }
+    if (attempt >= 240) {
+        DMLog([NSString stringWithFormat:@"[finder] open with %@: the app never came up in front (60 s): its copy removed, nothing handed over", bundle]);
+        [[NSFileManager defaultManager] removeItemAtPath:dst error:nil];
+        return;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMFinderOpenWithHandTo(bundle, dst, attempt + 1); });
+}
+// The hand-over: a copy of the file in the app's Documents/Inbox (FinderOpenWith.h; a clone on the same volume, else a real copy within Share's cap,
+// the iPad never filled), then the app opened as its Dock icon opens it and the copy's URL handed to its window's scene once it is up. A copy that
+// can't be made says why in a sheet (over `w`: the window, or Finder's operations host for the desktop and the Dock), and nothing opens.
+static void DMFinderOpenWith(NSString *path, NSString *bundle, DMFinderWindow *w) {
+    DM_FEATURE_MARK("finder-open-with");
+    if (!path.length || !bundle.length) return;
+    NSString *src = DMFinderReal(path), *name = path.lastPathComponent, *container = DMFDContainer(bundle).path;
+    __weak DMFinderWindow *ws = w;
+    dispatch_async(DMFDStageQueue(), ^{
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSString *fallback = [[NSTemporaryDirectory() stringByAppendingPathComponent:@"msb-finder-openwith"] stringByAppendingPathComponent:bundle];
+        NSString *dir = DMFinderOpenWithInbox(container, fallback), *why = nil;
+        [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+        NSString *dst = DMFinderStagedPath(dir, name);
+        BOOL ok = clonefile(src.fileSystemRepresentation, dst.fileSystemRepresentation, 0) == 0;
+        if (!ok) {   // (another volume -- a drive, the jailbreak's files --, or no clone support: a real copy, within the cap, 200 MB kept free)
+            struct stat st; unsigned long long size = stat(src.fileSystemRepresentation, &st) == 0 ? (unsigned long long)st.st_size : 0;
+            if (size > kFDCopyCap) why = [NSString stringWithFormat:@"It is too large to hand over (%@).", [NSByteCountFormatter stringFromByteCount:(long long)size countStyle:NSByteCountFormatterCountStyleFile]];
+            else if (size + 200ULL * 1024 * 1024 > DMFinderFreeSpace(dir)) why = @"There isn't enough free space to hand it over.";
+            else { NSError *e = nil; ok = [fm copyItemAtPath:src toPath:dst error:&e]; if (!ok) why = e.localizedDescription ?: @"The copy failed."; }
+        }
+        if (ok) chmod(dst.fileSystemRepresentation, 0644);
+        BOOL inbox = ![dir isEqualToString:fallback];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSString *app = DMCall(DMProxyForBundle(bundle), @"localizedName") ?: bundle;
+            if (!ok) {
+                DMLog([NSString stringWithFormat:@"[finder] open with %@: no copy (%@)", bundle, why]);
+                [ws sheetTitle:[NSString stringWithFormat:@"“%@” couldn't be opened in %@", name, app] message:why field:nil action:@"OK" destructive:NO then:^(NSString *t) {}];
+                return;
+            }
+            DMLog([NSString stringWithFormat:@"[finder] open with %@: a copy in its %@, the app opens as from its Dock icon", bundle, inbox ? @"Documents/Inbox" : @"folder in SpringBoard's tmp (no data container of its own)"]);
+            DMOpenApp(bundle);
+            DMFinderOpenWithHandTo(bundle, dst, 0);
+        });
+    });
+}
+// The Open With submenu for one file (not a folder, not an iCloud file still to download), the apps as above; nil when none opens it. before: what
+// a row does first (the Dock's Downloads stack closes itself, as its other rows do), or nil. Finder's menu, the desktop's, the stack's item menu.
+static UIMenu *DMFinderOpenWithMenu(DMFinderItem *it, DMFinderWindow *w, dispatch_block_t before) {
+    if (!it || it.dir || it.cloud) return nil;
+    NSArray<NSDictionary *> *apps = DMFinderOpenWithAppsFor(it.path);
+    if (!apps.count) return nil;
+    NSString *path = it.path; __weak DMFinderWindow *ws = w;
+    dispatch_block_t first = [before copy];
+    NSMutableArray *rows = [NSMutableArray array];
+    for (NSDictionary *a in apps) { NSString *b = a[@"b"]; [rows addObject:[UIAction actionWithTitle:a[@"t"] image:nil identifier:nil handler:^(UIAction *x) { if (first) first(); DMFinderOpenWith(path, b, ws ?: DMFinderOps()); }]]; }
+    return [UIMenu menuWithTitle:@"Open With" image:[UIImage systemImageNamed:@"arrow.up.forward.app"] identifier:nil options:0 children:rows];
+}
 // ---- a Mac context menu in the native layer -----------------------------------------------------------------------------------------------
 // A UIMenu drawn as our menus are (DMMakePanel rows over a catch-all that closes it): inline groups between divider lines, a submenu (Share) as a
 // row with › that opens beside it, disabled actions greyed. An action runs after the menu has closed, as a menu bar row does.
@@ -2509,7 +2652,10 @@ static void DMFinderShowMenuIn(UIView *host, UIMenu *menu, CGPoint screenPoint) 
     [o addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { DMCloseOverlay(); }] forControlEvents:UIControlEventTouchUpInside];
     NSArray *rows = DMFinderMenuRows(menu, o);
     if (!rows.count) { DMCloseOverlay(); return; }
-    CGPoint p = host == gMenuRotator ? screenPoint : [host convertPoint:screenPoint fromCoordinateSpace:(host.window.screen ?: [UIScreen mainScreen]).coordinateSpace];
+    // (the point is on the host's own screen: a window's -window is nil, so a window host is asked for its own -- the iPad's menu window is on the
+    //  iPad's, a TV's menu window on the TV, where the Dock's Downloads stack opens its items' menus, 1.8.8.1; it read the iPad's for every window)
+    UIScreen *scr = ([host isKindOfClass:[UIWindow class]] ? ((UIWindow *)host).screen : host.window.screen) ?: [UIScreen mainScreen];
+    CGPoint p = host == gMenuRotator ? screenPoint : [host convertPoint:screenPoint fromCoordinateSpace:scr.coordinateSpace];
     DMFinderMenuPanel(o, rows, CGRectMake(p.x, p.y, 0, 0), NO, 1);
 }
 static void DMFinderShowMenu(UIMenu *menu, CGPoint screenPoint) { DMFinderShowMenuIn(gNativeRotator, menu, screenPoint); }
@@ -2647,6 +2793,11 @@ static void DMFinderRefreshFolders(NSSet<NSString *> *dirs) {
 // Undo (Command-Z): the last operations, each with what undoes it -- moves, renames, Move to Trash and Put Back go back; copies, duplicates and
 // new folders go to the Trash (as on a Mac). Delete Immediately and Empty Trash can't be undone (they say so first).
 static NSMutableArray<NSDictionary *> *gFinderUndo;
+// A sticky note in the Trash (1.8.8.1, DesktopNotes.h): its file's origin is a marker, never a path. Put Back and Undo make it a note again there --
+// a Finder before 1.8.8.1 finds no folder for it and says so ("The folder ... is no longer there"), nothing moves.
+#include "../common/StickyNotes.h"   // (MSBD_NOTE_TRASH_ORIGIN)
+static void DMStickyPutBack(NSString *path, void (^done)(NSError *e));
+static void DMStickyUndoTrash(NSArray<NSArray<NSString *> *> *pairs, DMFinderWindow *window);
 static void DMFinderPushUndo(NSString *kind, NSString *what, NSArray<NSArray<NSString *> *> *pairs) {
     if (!pairs.count) return;
     if (!gFinderUndo) gFinderUndo = [NSMutableArray array];
@@ -2810,13 +2961,9 @@ static void DMFinderDrivesCheck(NSString *why);
         band.name = @"dm.finder.band"; band.delegate = self; band.allowedTouchTypes = @[@(UITouchTypeIndirectPointer)];
         [v addGestureRecognizer:band];
     }
-    for (UIView *v in @[_list, _grid]) {
-        [v addInteraction:[[UIContextMenuInteraction alloc] initWithDelegate:self]];   // (the menu's items: -dm_menuIn:at:; shown by DMFinderShowMenu)
-        UITapGestureRecognizer *rc = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(dm_secondaryClick:)];
-        rc.buttonMaskRequired = UIEventButtonMaskSecondary;   // (a pointer's right click -- only a pointer's: for a finger the mask is not
-        rc.allowedTouchTypes = @[@(UITouchTypeIndirectPointer)];   //  checked, and the release of a held finger fired it, closing the hold's menu)
-        [v addGestureRecognizer:rc];
-    }
+    // (the menu's items: -dm_menuIn:at:; shown by DMFinderShowMenu. A pointer's secondary click opens it through this interaction too, as UIKit
+    //  gives that click to a context menu interaction only: -dm_secondaryClickIn:at:, 1.8.8.1)
+    for (UIView *v in @[_list, _grid]) [v addInteraction:[[UIContextMenuInteraction alloc] initWithDelegate:self]];
     // Drag and drop: our own (DMFinderDrag, below). The system's drag service never delivered a drag that started in this SpringBoard window to
     // anything else -- not to another Finder window, not to an app (iPad 2 and M1, 30 Sep: the session began and ended, no drop target was ever
     // asked) -- so, like a Mac's window server, we carry the file: a long press lifts it, it follows the finger / pointer above every window,
@@ -2837,12 +2984,9 @@ static void DMFinderDrivesCheck(NSString *why);
         lp.minimumPressDuration = 0.3; lp.allowableMovement = CGFLOAT_MAX; lp.delegate = self;
         lp.name = @"dm.finder.sidedrag";
         [_sidebar addGestureRecognizer:lp];
-        // (1.7.3: a drive's menu -- Open, Open in New Window, Get Info, Eject -- for a pointer's right click on its row too; a finger's hold that
-        //  stays still opens it from -dm_sideDragPress:)
-        UITapGestureRecognizer *rc = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(dm_sideSecondaryClick:)];
-        rc.buttonMaskRequired = UIEventButtonMaskSecondary; rc.allowedTouchTypes = @[@(UITouchTypeIndirectPointer)];
-        rc.name = @"dm.finder.sidemenu";
-        [_sidebar addGestureRecognizer:rc];
+        // (1.7.3: a drive's menu -- Open, Open in New Window, Get Info, Eject -- for a pointer's secondary click on its row too, through this
+        //  context menu interaction, -dm_secondaryClickIn:at:; a finger's hold that stays still opens it from -dm_sideDragPress:)
+        [_sidebar addInteraction:[[UIContextMenuInteraction alloc] initWithDelegate:self]];
     }
     [self updateViewSwitch];
     return self;
@@ -3056,6 +3200,7 @@ static void DMFinderDrivesCheck(NSString *why);
     if (_renameWhenListed && [here containsObject:_renameWhenListed]) { NSString *r = _renameWhenListed; _renameWhenListed = nil; [self dm_beginInlineRename:r]; }
 }
 - (void)dm_selectPathsWhenListed:(NSArray<NSString *> *)paths { _selectWhenListed = [paths copy]; }
+- (void)dm_renameWhenListed:(NSString *)path { _renameWhenListed = [path copy]; }   // (its name edited in place once the folder shows it: the Downloads stack's Rename, 1.8.8.1)
 - (void)applySearch {
     NSString *q = _search.text;
     if (q.length) {
@@ -3917,6 +4062,7 @@ static void DMFinderDrivesCheck(NSString *why);
     if ([kind isEqualToString:@"trash"] && gFinderDesktopPlaceFor) for (NSString *src in paths) { NSString *pl = gFinderDesktopPlaceFor(src); if (pl) deskPlaces[src] = pl; }
     dispatch_async(DMFinderFileQueue(), ^{
         NSMutableArray *pairs = [NSMutableArray array]; NSMutableSet *touched = [NSMutableSet set]; NSError *first = nil;
+        NSMutableArray<NSString *> *notes = [NSMutableArray array];   // (sticky notes to put back as notes, after the loop)
         NSFileManager *fm = [NSFileManager defaultManager];
         for (NSString *src in paths) {
             NSString *dst = nil, *name = src.lastPathComponent; BOOL copy = NO; NSError *e = nil;
@@ -3932,6 +4078,7 @@ static void DMFinderDrivesCheck(NSString *why);
             } else if ([kind isEqualToString:@"putback"]) {
                 NSString *origin = DMFinderOrigin(src);
                 if (!DMFinderCanChange(src)) e = DMFinderError([NSString stringWithFormat:@"“%@” can't be moved: it is outside your own files.", name]);   // (reached through an alias in the Trash)
+                else if ([origin isEqualToString:MSBD_NOTE_TRASH_ORIGIN]) { [notes addObject:src]; continue; }   // (a sticky note: a note again, DesktopNotes.h)
                 else if (!origin.length) e = DMFinderError([NSString stringWithFormat:@"Where “%@” came from isn't known.", name]);
                 else if (![fm fileExistsAtPath:origin.stringByDeletingLastPathComponent]) e = DMFinderError([NSString stringWithFormat:@"The folder “%@” it came from is no longer there.", origin.stringByDeletingLastPathComponent.lastPathComponent]);
                 else dst = DMFinderFreeName(origin.stringByDeletingLastPathComponent, origin.lastPathComponent, @"");
@@ -3976,6 +4123,7 @@ static void DMFinderDrivesCheck(NSString *why);
             if (made.count && ![kind isEqualToString:@"trash"]) [s dm_selectPathsWhenListed:made];
             DMFinderRefreshFolders(touched);
             if (first) [s fail:first what:what];
+            for (NSString *p in notes) DMStickyPutBack(p, ^(NSError *e) { if (e) [ws fail:e what:what]; });
         });
     });
 }
@@ -4060,6 +4208,7 @@ static void DMFinderDrivesCheck(NSString *why);
     [gFinderUndo removeLastObject];
     DM_FEATURE_MARK("finder-undo");
     NSString *kind = u[@"kind"]; NSArray *pairs = u[@"pairs"];
+    if ([kind isEqualToString:@"notetrash"]) { DMStickyUndoTrash(pairs, self); return; }   // (a sticky note's Move to Trash: put back as a note, DesktopNotes.h)
     BOOL back = [@[@"move", @"rename", @"trash", @"putback"] containsObject:kind];
     __weak DMFinderWindow *ws = self;
     NSString *here = self.path;
@@ -4296,7 +4445,7 @@ static NSString *DMFinderResolveTyped(NSString *p) {
     NSString *t = [NSString stringWithFormat:@"Kind: %@\nSize: \x01\nWhere: %@\nModified: %@\nOwner: %@ (%@)%@%@", it.kind,
                    DMFinderNorm(it.path.stringByDeletingLastPathComponent),
                    DMFinderDate(it.date), attrs[NSFileOwnerAccountName] ?: @"?", [NSString stringWithFormat:@"%lo", [attrs[NSFilePosixPermissions] unsignedLongValue]],
-                   it.cloud ? @"\nIn iCloud, not downloaded" : @"", origin ? [@"\nFrom: " stringByAppendingString:origin.stringByDeletingLastPathComponent] : @""];
+                   it.cloud ? @"\nIn iCloud, not downloaded" : @"", origin ? [@"\nFrom: " stringByAppendingString:[origin isEqualToString:MSBD_NOTE_TRASH_ORIGIN] ? @"the desktop (sticky note)" : origin.stringByDeletingLastPathComponent] : @""];
     NSString *m = [t stringByReplacingOccurrencesOfString:@"\x01" withString:sizeText ?: @"--"];
     [self alertTitle:it.display message:m field:nil action:@"Copy Path" destructive:NO then:^(NSString *x) { [UIPasteboard generalPasteboard].string = it.path; }];
     if (!MSBDFolderSizeWanted(it.dir, it.alias, it.locked, it.cloud)) return;
@@ -4320,8 +4469,10 @@ static NSString *DMFinderResolveTyped(NSString *p) {
 - (UIContextMenuConfiguration *)contextMenuInteraction:(UIContextMenuInteraction *)cmi configurationForMenuAtLocation:(CGPoint)loc {
     // (a finger's press: the menu is opened by our own hold (-dm_dragPress:), never by the menu's own press -- that one starts at the touch-down and,
     //  while it runs, no other press in the list may begin: a still hold never armed the drag, the menu opened at ~0.85 s instead, and a hold that
-    //  then moved slid through the menu's rows, iPad 2 + M1 30 Sep. The menu is ours (DMFinderShowMenu), for a pointer's secondary click too.)
-    if (!_menuByHold) return nil;
+    //  then moved slid through the menu's rows, iPad 2 + M1 30 Sep. The menu is ours (DMFinderShowMenu), for a pointer's secondary click too: UIKit
+    //  asks here as its button goes down, and our menu opens from that ask, -dm_secondaryClickIn:at:, 1.8.8.1.)
+    if (!_menuByHold) { [self dm_secondaryClickIn:cmi.view at:loc]; return nil; }
+    if (cmi.view == _sidebar) return nil;   // (the sidebar's menus are a drive's, -dm_sideMenuForDrive:at:)
     DMFinderItem *it = [self itemAt:loc in:cmi.view];
     (void)0;
     __weak DMFinderWindow *ws = self;
@@ -4351,6 +4502,8 @@ static NSString *DMFinderResolveTyped(NSString *p) {
             [end addObject:t];
         } else if (it) {
             [top addObject:A(@"Open", nil, ^{ [w open:it]; })];
+            UIMenu *openWith = DMFinderOpenWithMenu(it, w, nil);   // (the apps that open this file, as a Mac's Open With: an .ipa in TrollStore, 1.8.8.1 B67)
+            if (openWith) [top addObject:openWith];
             if (it.app || [it.name hasSuffix:@".app"]) [top addObject:A(@"Show Package Contents", @"shippingbox", ^{ [w go:it.app ?: it.path]; })];
             if (!it.dir) [top addObject:A(@"Quick Look", @"eye", ^{ [w quickLook:it]; })];
             BOOL canChange = DMFinderCanChange(it.path), canCopyHere = DMFinderCanWriteInto(it.path.stringByDeletingLastPathComponent);   // (read-only places: greyed, as on a Mac)
@@ -4596,12 +4749,6 @@ static NSString *DMFinderResolveTyped(NSString *p) {
     DMFinderShowMenu([UIMenu menuWithTitle:@"" children:groups], sp);
     DMLog([NSString stringWithFormat:@"[finder] a drive's menu in the sidebar: %@", name]);
 }
-- (void)dm_sideSecondaryClick:(UITapGestureRecognizer *)g {
-    NSIndexPath *ip = [_sidebar indexPathForRowAtPoint:[g locationInView:_sidebar]];
-    NSDictionary *row = ip && ip.section < (NSInteger)_places.count && ip.row < (NSInteger)[_places[ip.section][@"rows"] count] ? _places[ip.section][@"rows"][ip.row] : nil;
-    if (![row[@"drive"] boolValue]) return;   // (the other places have no menu of their own)
-    [self dm_sideMenuForDrive:row[@"p"] at:[g.view convertPoint:[g locationInView:g.view] toCoordinateSpace:g.view.window.screen.coordinateSpace]];
-}
 - (void)dm_reloadSidebar { [_sidebar reloadData]; }
 // The menu of a hold that stayed still, or of a pointer's secondary click: a Mac menu of our own at the finger / pointer, with the same items the
 // long-press menu had (the menu interaction's own UIMenu). UIKit's menu took the finger over the moment it opened -- our press was cancelled,
@@ -4628,12 +4775,33 @@ static NSString *DMFinderResolveTyped(NSString *p) {
     DMFinderShowMenu(m, [v convertPoint:loc toCoordinateSpace:v.window.screen.coordinateSpace]);
     DMLog(@"[finder] held still: the menu opened");
 }
-- (void)dm_secondaryClick:(UITapGestureRecognizer *)g {
-    CGPoint loc = [g locationInView:g.view];
-    DMFinderItem *clicked = [self itemAt:loc in:g.view];
-    if (clicked && ![self dm_isSelected:clicked]) [self dm_setSelection:@[clicked.path] anchor:clicked.path];
-    UIMenu *m = [self dm_menuIn:g.view at:loc];
-    if (m) DMFinderShowMenu(m, [g.view convertPoint:loc toCoordinateSpace:g.view.window.screen.coordinateSpace]);
+// A pointer's secondary click (1.8.8.1, B63): the menu a hold opens there, at the pointer, as a Mac's right click opens it -- an item's (the item
+// selected first, unless it is part of the selection), the folder's on its empty space, a drive's in the sidebar. UIKit asks the window's context
+// menu interaction for a configuration as the button goes down (-contextMenuInteraction:configurationForMenuAtLocation:, which answers nil, so
+// UIKit's own menu never opens); DMNativeTakeSecondaryPress tells that press from a finger's or a primary click's, once. Ours opens right after,
+// when UIKit is done with the press, as the desktop's does.
+- (void)dm_secondaryClickIn:(UIView *)v at:(CGPoint)loc {
+    if (!DMNativeTakeSecondaryPress(v)) return;   // (a finger's press, a primary click: their menus come from our hold, -dm_dragPress:)
+    DM_FEATURE_MARK("finder-secondary-click");
+    CGPoint sp = [v convertPoint:loc toCoordinateSpace:v.window.screen.coordinateSpace];
+    __weak DMFinderWindow *ws = self;
+    if (v == _sidebar) {
+        NSIndexPath *ip = [_sidebar indexPathForRowAtPoint:loc];
+        NSDictionary *row = ip && ip.section < (NSInteger)_places.count && ip.row < (NSInteger)[_places[ip.section][@"rows"] count] ? _places[ip.section][@"rows"][ip.row] : nil;
+        if (![row[@"drive"] boolValue]) return;   // (the other places have no menu of their own, as with a hold)
+        NSString *root = row[@"p"];
+        dispatch_async(dispatch_get_main_queue(), ^{ DMFinderWindow *s = ws; if (s && !s.hidden && s.window) [s dm_sideMenuForDrive:root at:sp]; });
+        return;
+    }
+    if ((v != _list && v != _grid) || _dragLifted) return;
+    if (_renameField && CGRectContainsPoint(_renameField.frame, loc)) return;   // (in the name being edited: the field's own menu, as a click there is the field's)
+    [self dm_endRename:YES];   // (elsewhere: the new name is kept, as a hold or a click elsewhere keeps it)
+    DMFinderItem *it = [self itemAt:loc in:v];
+    if (it && ![self dm_isSelected:it]) [self dm_setSelection:@[it.path] anchor:it.path];
+    UIMenu *m = [self dm_menuIn:v at:loc];
+    if (!m) return;
+    DMLog([NSString stringWithFormat:@"[finder] secondary click: %@ menu", it ? @"an item's" : @"the folder's"]);
+    dispatch_async(dispatch_get_main_queue(), ^{ DMFinderWindow *s = ws; if (s && !s.hidden && s.window) DMFinderShowMenu(m, sp); });
 }
 // The long-press menu's preview: the item's own row or icon, not the whole list (the default lifted the whole Finder page)
 - (UITargetedPreview *)dm_previewFor:(UIContextMenuInteraction *)i config:(UIContextMenuConfiguration *)c {
@@ -4748,6 +4916,112 @@ __attribute__((visibility("default"))) BOOL MSBDFinderDragBeginPaths(NSArray<NSS
 __attribute__((visibility("default"))) void MSBDFinderDragMoveTo(CGPoint sp, BOOL option) { DMFinderDragMove(sp, option); }
 __attribute__((visibility("default"))) void MSBDFinderDragEndAt(CGPoint sp, BOOL drop, BOOL option) { DMFinderDragEnd(sp, drop, option); }
 
+// ---- an item's menu in the Dock's Downloads stack (dock/Downloads.m: it finds these with dlsym) ---------------------------------------------
+// 1.8.8.1 (KT 21 Nov: "the items should be able to be shared easily etc by the long press finger or the trackpad menu"): a stack item's menu, as a
+// Mac's Downloads stack has one, with Finder's own rows for one item -- Open (the stack's own, as its tap), Quick Look, Show in Enclosing Folder; Get
+// Info, Rename, Share; Move to Trash --, drawn as Finder's menus are (DMFinderShowMenuIn), in the menu window over everything on the stack's own
+// display, at the finger or the pointer. Every row but Open closes the stack first. Share is Finder's (the apps that take files, the way a drop on
+// their window hands them over): the system share sheet cannot be shown from SpringBoard's windows (the note at -showInfo:sizeText:).
+// Which rows, and which are greyed: plain C (tools/test-downloadsstack.sh runs it), Finder's rules for one item in its window's menu -- Quick Look for
+// a file (none for a folder), Share for a file or an app that is not an iCloud placeholder (greyed with no app that takes files, as the
+// desktop's), Rename and Move to Trash greyed where Finder may not change the item.
+enum { kDMFSMDivider = 0, kDMFSMOpen, kDMFSMQuickLook, kDMFSMEnclosing, kDMFSMInfo, kDMFSMRename, kDMFSMShare, kDMFSMTrash };
+enum { kDMFSMDir = 1, kDMFSMApp = 2, kDMFSMCloud = 4, kDMFSMCanChange = 8, kDMFSMShareApps = 16 };
+// (rows / usable: at most cap of them are written; the count of rows is returned, kDMFSMDivider between the groups)
+static int DMFinderStackMenuRows(unsigned what, int *rows, int *usable, int cap) {
+    int n = 0;
+#define DMFSM_ROW(r, u) do { if (rows && usable && n < cap) { rows[n] = (r); usable[n] = (u) ? 1 : 0; } n++; } while (0)
+    DMFSM_ROW(kDMFSMOpen, 1);
+    if (!(what & kDMFSMDir)) DMFSM_ROW(kDMFSMQuickLook, 1);
+    DMFSM_ROW(kDMFSMEnclosing, 1);
+    DMFSM_ROW(kDMFSMDivider, 0);
+    DMFSM_ROW(kDMFSMInfo, 1);
+    DMFSM_ROW(kDMFSMRename, what & kDMFSMCanChange);
+    if ((!(what & kDMFSMDir) || (what & kDMFSMApp)) && !(what & kDMFSMCloud)) DMFSM_ROW(kDMFSMShare, what & kDMFSMShareApps);
+    DMFSM_ROW(kDMFSMDivider, 0);
+    DMFSM_ROW(kDMFSMTrash, what & kDMFSMCanChange);
+#undef DMFSM_ROW
+    return n;
+}
+static const char *DMFinderStackMenuTitle(int row) {
+    switch (row) {
+        case kDMFSMOpen: return "Open";
+        case kDMFSMQuickLook: return "Quick Look";
+        case kDMFSMEnclosing: return "Show in Enclosing Folder";
+        case kDMFSMInfo: return "Get Info";
+        case kDMFSMRename: return "Rename";
+        case kDMFSMShare: return "Share";
+        case kDMFSMTrash: return "Move to Trash";
+        default: return "";
+    }
+}
+// Show in Enclosing Folder, and Rename: a Finder window on the item's folder -- one that shows it already (listed again), else a new one --, the item
+// selected once the folder is listed; for Rename its name is then edited in place, as Finder's Rename does (-dm_beginInlineRename:).
+static void DMFinderStackReveal(NSString *path, BOOL rename) {
+    if (!gFinderOn || DMGARefuses(@"Finder window")) return;
+    DMFinderItem *it = DMFinderItemFor(path);
+    if (!it) { DMLog(@"[finder] Downloads stack: the item is gone, no window"); return; }
+    NSString *folder = it.path.stringByDeletingLastPathComponent;
+    DMFinderWindow *f = nil;
+    for (DMNativeWindow *w in [gNativeWindows reverseObjectEnumerator]) if ([w isKindOfClass:[DMFinderWindow class]] && [((DMFinderWindow *)w).path isEqualToString:folder]) { f = (DMFinderWindow *)w; break; }
+    if (f) { [f show]; [f dm_selectPathsWhenListed:@[it.path]]; [f refresh]; }
+    else { DMFinderOpen(folder, YES); f = DMFinderFront(); if (![f.path isEqualToString:folder]) f = nil; [f dm_selectPathsWhenListed:@[it.path]]; }
+    if (rename && f) [f dm_renameWhenListed:it.path];
+    DMLog([NSString stringWithFormat:@"[finder] Downloads stack: %@ in %@ Finder window", rename ? @"Rename" : @"Show in Enclosing Folder", f ? @"a" : @"no"]);
+}
+static __weak UIView *gFinderStackMenu;   // (that menu's catch-all, while it is open)
+// The menu for the item at path, at sp on from's screen. open: the stack's own Open; closeStack: closes the stack (every other row runs it first).
+// NO: Finder is off, Guided Access runs, the item is gone, or there is no place for a menu -- the stack then does what it did.
+__attribute__((visibility("default"))) BOOL MSBDFinderStackItemMenu(NSString *path, CGPoint sp, UIView *from, dispatch_block_t open, dispatch_block_t closeStack) {
+    if (!gFinderOn || ![path isKindOfClass:[NSString class]] || !path.length || DMGARefuses(@"a Downloads stack item's menu")) return NO;
+    DMFinderItem *it = DMFinderItemFor(path);
+    if (!it) return NO;
+    UIView *host = (UIView *)DMExtMenuWindowFor(from) ?: DMMenuHost();   // (the stack on a TV's Dock: the TV's menu window)
+    if (!host) return NO;
+    DM_FEATURE_MARK("finder-downloads-stack-menu");
+    NSString *folder = it.path.stringByDeletingLastPathComponent;
+    NSArray<NSString *> *apps = DMFinderShareApps();
+    unsigned what = (it.dir ? kDMFSMDir : 0) | (DMFDIsApp(it) ? kDMFSMApp : 0) | (it.cloud ? kDMFSMCloud : 0) | (DMFinderCanChange(it.path) ? kDMFSMCanChange : 0) | (apps.count ? kDMFSMShareApps : 0);
+    int rows[16] = {0}, usable[16] = {0};
+    int n = MIN(DMFinderStackMenuRows(what, rows, usable, 16), 16);
+    dispatch_block_t close = closeStack ?: ^{};
+    UIAction *(^A)(int, NSString *, void (^)(void)) = ^UIAction *(int row, NSString *img, void (^h)(void)) {
+        return [UIAction actionWithTitle:@(DMFinderStackMenuTitle(row)) image:img ? [UIImage systemImageNamed:img] : nil identifier:nil handler:^(UIAction *a) { h(); }];
+    };
+    NSMutableArray *groups = [NSMutableArray array], *group = [NSMutableArray array];
+    for (int k = 0; k <= n; k++) {
+        if (k == n || rows[k] == kDMFSMDivider) {
+            if (group.count) [groups addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:group]];
+            group = [NSMutableArray array];
+            continue;
+        }
+        UIMenuElement *e = nil;
+        int r = rows[k];
+        if (r == kDMFSMOpen) e = A(r, nil, ^{ if (open) open(); });   // (the stack's own: it closes the stack as it opens the item)
+        else if (r == kDMFSMQuickLook) e = A(r, @"eye", ^{ close(); DMQuickLookOpen(it.path); });
+        else if (r == kDMFSMEnclosing) e = A(r, @"folder", ^{ close(); DMFinderStackReveal(it.path, NO); });
+        else if (r == kDMFSMInfo) e = A(r, @"info.circle", ^{ close(); DMFinderWindow *ops = DMFinderOps(); ops.path = folder; [ops getInfo:it]; });
+        else if (r == kDMFSMRename) e = A(r, @"pencil", ^{ close(); DMFinderStackReveal(it.path, YES); });
+        else if (r == kDMFSMShare) {
+            NSMutableArray *targets = [NSMutableArray array];
+            if (usable[k]) for (NSString *b in apps)
+                [targets addObject:[UIAction actionWithTitle:DMCall(DMProxyForBundle(b), @"localizedName") ?: b image:nil identifier:nil handler:^(UIAction *x) { close(); DMFinderShareTo(@[it], b, DMFinderOps()); }]];
+            e = targets.count ? [UIMenu menuWithTitle:@(DMFinderStackMenuTitle(r)) image:[UIImage systemImageNamed:@"square.and.arrow.up"] identifier:nil options:0 children:targets]
+                              : A(r, @"square.and.arrow.up", ^{});
+        } else if (r == kDMFSMTrash) e = A(r, @"trash", ^{ close(); DMFinderWindow *ops = DMFinderOps(); ops.path = folder; [ops dm_trashItems:@[it.path]]; });
+        if (!e) continue;
+        if ([e isKindOfClass:[UIAction class]]) ((UIAction *)e).attributes = !usable[k] ? UIMenuElementAttributesDisabled : r == kDMFSMTrash ? UIMenuElementAttributesDestructive : 0;
+        [group addObject:e];
+        if (r == kDMFSMOpen) { UIMenu *ow = DMFinderOpenWithMenu(it, DMFinderOps(), close); if (ow) [group addObject:ow]; }   // (B67: the apps that open the file, after Open, as in Finder's own menu; its rows close the stack first)
+    }
+    DMFinderShowMenuIn(host, [UIMenu menuWithTitle:@"" children:groups], sp);
+    gFinderStackMenu = gOverlay;
+    DMLog([NSString stringWithFormat:@"[finder] Downloads stack: an item's menu (%d rows, %@)", n, gOverlay ? @"open" : @"not shown"]);
+    return gOverlay != nil;
+}
+__attribute__((visibility("default"))) BOOL MSBDFinderStackMenuIsOpen(void) { UIView *o = gFinderStackMenu; return o && o == gOverlay && o.superview; }
+__attribute__((visibility("default"))) void MSBDFinderStackMenuClose(void) { if (MSBDFinderStackMenuIsOpen()) DMCloseOverlay(); }
+
 // ---- opening Finder -------------------------------------------------------------------------------------------------------------------------
 // A new Finder window (File > New Finder Window, the Go menu with nothing open), or the front one showing `path`.
 // Drives plugged in or out: the kernel's file system events (a kqueue EVFILT_FS: VQ_MOUNT / VQ_UNMOUNT, what the Mac's disk arbitration listens
@@ -4860,6 +5134,7 @@ static void DMFinderOpen(NSString *path, BOOL newWindow) {
     }
     [f show];
     [f go:path.length ? path : (DMFinderOnMyIPad() ?: @"/var/mobile/Documents")];
+    DMFinderOpenWithIndex(NO);   // (Open With's apps read ahead, in the background: the window's first menu does not wait for them)
     DMLog([NSString stringWithFormat:@"[finder] window for %@ (%lu native windows)", path, (unsigned long)gNativeWindows.count]);
 }
 

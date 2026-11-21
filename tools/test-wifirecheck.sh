@@ -10,6 +10,7 @@
 # Rows 20-24 (1.8.7.6, the iPad 2's f03 pass): a Notification Center pull let go and a full pull, the time label back inside the bar's own constraint
 # pass (DMBarDecideNextTurn cut out too) or outside it: the copy laid out with its clock in that frame, never inside the pass.
 # Every row (1.8.7.8, the review of the held ask): no data update of the bar starts inside another one (StockVPNItem's hook, cut out, counts them).
+# Row 28 (1.8.8.1): the AirPods Menu alone opens DMStatusIconsUpdated's gate (its button follows iPadOS's AirPods item).
 # Every row with a held ask (1.8.7.9 W2): the bar places its trailing region only at its own layout (17+: SBAttach17Regions' hook, cut out), in UIKit's
 # order as the review of W2 found it (the ask leaves only a constraint pass due; -layoutIfNeeded with nothing marked runs nothing; the region's items take
 # their places after the copy's layout). The copy's first layout after the ask must already have the final icons start, that placement must come with
@@ -184,6 +185,8 @@ if [ -z "$WR_SB_X" ]; then
   mtf "an ask whose own update made the copy ours not made again (that layout's ask dropped)" 's/\n        if \(asked && !wasOurs && objc_getAssociatedObject\(f, kLogoKey\)\) DMBarItemsAskAgain\(f\);//'
   # (its review, F1: no held ask inside a data update of the bar -- row 19's label is placed inside one)
   mtf "the held ask made inside a data update of the bar (no depth test, as in 59e7afc2)" 's/    if \(gDMBarDataUpdateDepth > 0 \|\| gDMItemsAskingHeld \|\| /    if (gDMItemsAskingHeld || /'
+  # (1.8.8.1: the AirPods Menu opens DMStatusIconsUpdated's gate, row 28)
+  mtf "the data updates' gate without the AirPods Menu (its button behind iPadOS's item until our next layout)" 's/ \|\| gWiFiMenuOn \|\| gAirPodsMenuOn\)\) return;/ || gWiFiMenuOn)) return;/'
   mtf "the bar's data updates not counted by StockVPNItem's hook" 's/    gDMBarDataUpdateDepth\+\+;[^\n]*\n    \@try \{\n        %orig;\n    \} \@finally \{\n        gDMBarDataUpdateDepth--;\n    \}\n/    %orig;\n/'
   # (1.8.7.9 W2: the bar laid out right after the held ask, with no animation -- the D1 check of 1.8.7.8~h01)
   ASKED='\n            if \(asked\) \{ UIView \*bar = fg\.superview; \[bar setNeedsLayout\]; \[bar layoutIfNeeded\]; \[fg setNeedsLayout\]; \}'

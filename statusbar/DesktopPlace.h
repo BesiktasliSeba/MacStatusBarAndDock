@@ -10,6 +10,9 @@
 //    ground, never under an app icon: its top icon can be pressed or dragged away (the next one shows), all of them selected with the rectangle
 //    or Command-A. With no free spot on the whole page the pile is on the grid spot the Home Screen's own icons cover least. Icons in the pile
 //    keep their place (a new one gets none): they come out as soon as there is room.
+//  - Sticky notes (1.8.8.1, DesktopNotes.h) are taken after the page's own rects, as "soft" ones: icons keep clear of them like of an app icon, but
+//    the pile's spot looks at the page's own rects only (nHard) -- notes lie under the icons, so a pile on a note stays in reach, while one under
+//    an app icon would not.
 // (Before: an icon that found no room searched every 8 pt ring up to the area's longer side against every rect -- 200 files on a full page took
 //  13M rect tests, over 1 s on SpringBoard's main thread, at every layout -- and was then left under the app icons, out of reach.)
 #ifndef MSBD_DESKTOP_PLACE_H
@@ -23,6 +26,7 @@
 typedef struct {
     CGRect area; CGFloat cw, ch;                  // the free area, an icon's cell
     CGRect *rects; int nRects, capRects;          // everything taken so far
+    int nHard;                                    // (the first nHard are the page's own -- app icons, widgets, page dots: DMPlacerPile counts only those)
     CGFloat fx0, fy0; int fcols, frows;           // the 4 pt raster of icon centres: free[] 1 where an icon there would be free
     unsigned char *free; long freeLeft;
     CGFloat gx0, gy0, gdx, gdy; int gcols, grows; // the grid: x = gx0 - i * gdx (columns from the right), y = gy0 + j * gdy
@@ -86,6 +90,7 @@ static void DMPlacerInitDir(DMPlacer *p, CGRect area, CGFloat cw, CGFloat ch, co
     p->cellTaken = calloc((size_t)MAX(1, p->gcols * p->grows), 1);
     for (int k = 0; k < p->gcols * p->grows; k++) if (!CGRectContainsRect(area, DMPlacerCellRect(p, DMPlacerCell(p, k)))) p->cellTaken[k] = 1;
     for (int k = 0; k < n; k++) DMPlacerTake(p, occupied[k]);
+    p->nHard = p->nRects;   // (what is taken after this -- sticky notes, icons that stay put -- is soft for the pile)
 }
 __attribute__((unused)) static void DMPlacerInit(DMPlacer *p, CGRect area, CGFloat cw, CGFloat ch, const CGRect *occupied, int n) { DMPlacerInitDir(p, area, cw, ch, occupied, n, 0); }
 static void DMPlacerFree(DMPlacer *p) { free(p->rects); free(p->free); free(p->cellTaken); free(p->corner); memset(p, 0, sizeof *p); }
@@ -121,7 +126,7 @@ static int DMPlacerNearest(DMPlacer *p, CGPoint c, CGPoint *out) {
     *out = DMPlacerRasterPoint(p, best);
     return 1;
 }
-// The pile's spot (no room): the last free spot handed out; else the grid spot least covered by what is there.
+// The pile's spot (no room): the last free spot handed out; else the grid spot least covered by the page's own rects (nHard: not by the notes).
 static CGPoint DMPlacerPile(DMPlacer *p) {
     if (p->hasLast) return p->last;
     if (p->hasPile) return p->pile;
@@ -130,7 +135,7 @@ static CGPoint DMPlacerPile(DMPlacer *p) {
         CGPoint q = DMPlacerCell(p, k); CGRect r = DMPlacerCellRect(p, q);
         if (!CGRectContainsRect(CGRectInset(p->area, -0.5, -0.5), r)) continue;
         CGFloat cover = 0;
-        for (int m = 0; m < p->nRects; m++) { CGRect x = CGRectIntersection(p->rects[m], r); if (!CGRectIsNull(x)) cover += x.size.width * x.size.height; }
+        for (int m = 0; m < p->nHard; m++) { CGRect x = CGRectIntersection(p->rects[m], r); if (!CGRectIsNull(x)) cover += x.size.width * x.size.height; }
         if (cover < least) { least = cover; at = q; }
     }
     p->pile = at; p->hasPile = 1;

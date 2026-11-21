@@ -177,6 +177,7 @@ static void DMMSWRecBegin(NSString *why) {}
 static int gEnds;   // (a switch's end ran: DMMSWSwEnd and DMMSWSMSwitchEnd end its recording)
 static void DMMSWRecEndAfter(double seconds) { gEnds++; }
 static void DMMSWDropFinishNow(void) {}
+static void DMDesktopTypingEnd(NSString *why) {}   // (1.8.8.1, Desktop.h: a name or a sticky note being typed ends before a switch; nothing types here)
 static void DMMSWCloseUnderSlide(void) {}
 static void DMMSWEndOtherDisplay(NSString *why) {}   // (no other display's session runs: the iPad's model in use)
 static BOOL DMMSWIsOpen(void) { return gMSWOpen; }

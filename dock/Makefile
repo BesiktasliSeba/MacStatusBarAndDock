@@ -7,7 +7,7 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = DockMagnification
 
-DockMagnification_FILES = Dock.x Downloads.m Launchpad.m RunningIndicator.m FinderIcon.m TrashIcon.m IconTheme.m EditProxy.m Bounce.m DockStyle.m DockAutoHide.m
+DockMagnification_FILES = Dock.x Downloads.m Launchpad.m RunningIndicator.m FinderIcon.m TrashIcon.m IconTheme.m EditProxy.m Bounce.m DockStyle.m DockColor.m DockAutoHide.m
 DockMagnification_FRAMEWORKS = UIKit AVFoundation ImageIO
 # (1.8.7.7, GitHub #14: every hook keeps its own stack frame while the original runs -- no tail calls -- so a crash under one of our hooks shows
 #  our code on the crashing stack, and the crash guard pins it on us and on the feature, CrashBlame.h / CrashFeature.h. Code generation only.)

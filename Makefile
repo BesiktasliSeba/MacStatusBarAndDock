@@ -53,6 +53,8 @@ SUBPROJECTS += statusbar macsettings dock appbridge mixaudio forcequitmenu grave
 SUBPROJECTS += ejecthelper
 # The Charge Limit's job (launchd com.besiktasliseba.chargelimit, root): holds the battery at the limit set in Settings: chargehelper/.
 SUBPROJECTS += chargehelper
+# The LNPopupController race guard alone, for the package managers built on that library (Sileo, Zebra), which get no other part: popupguard/.
+SUBPROJECTS += popupguard
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 include $(THEOS_MAKE_PATH)/library.mk
@@ -60,7 +62,7 @@ include $(THEOS_MAKE_PATH)/aggregate.mk
 
 PAYLOADS = BrightnessKeyTweak DockMagnification DockMagnificationSettings ForceQuitMenu GraveEscapeTweak MacAddToFolder MacAppBridge MacAppSizeMenu MacCCGrabber \
            MacEthernetFix MacFolderMenu MacHomeBar MacIconLabels MacLargeTitles MacLockStatusBar MacPageDots MacPointer MacSettings MacSettingsBadge \
-           MacSpotlight MacStatusBarCore MacStatusBarSettings MixAudio TabMuteTweak VolumeGlobeTweak PrewarmBlockTweak
+           MacSpotlight MacStatusBarCore MacStatusBarSettings MixAudio TabMuteTweak VolumeGlobeTweak PrewarmBlockTweak MacPopupGuard
 
 # BuildInfo.txt (next to the parts): the commit this package was built from, whether the tree had uncommitted changes, whether it is a debug build.
 # tools/verify-release.sh compares it with the tree, so a stale or debug package is never published by mistake.

@@ -41,6 +41,7 @@ static const void *kAppButtonKey = &kAppButtonKey, *kFileButtonKey = &kFileButto
 static const void *kGoButtonKey = &kGoButtonKey, *kWinButtonKey = &kWinButtonKey, *kDispButtonKey = &kDispButtonKey, *kAudioButtonKey = &kAudioButtonKey;
 static const void *kSSHButtonKey = &kSSHButtonKey, *kVPNButtonKey = &kVPNButtonKey, *kWiFiButtonKey = &kWiFiButtonKey, *kSpotButtonKey = &kSpotButtonKey;
 static const void *kClockButtonKey = &kClockButtonKey, *kBattButtonKey = &kBattButtonKey, *kCCButtonKey = &kCCButtonKey;
+static const void *kAirPodsButtonKey = &kAirPodsButtonKey;   // (1.8.8.1: the AirPods menu's button over iPadOS's AirPods item, one of our controls)
 static char gAMButtonKeys[7];
 #define DM_AM_BUTTONS (const void *)&gAMButtonKeys[0], (const void *)&gAMButtonKeys[1], (const void *)&gAMButtonKeys[2], (const void *)&gAMButtonKeys[3], (const void *)&gAMButtonKeys[4], (const void *)&gAMButtonKeys[5], (const void *)&gAMButtonKeys[6]
 static id DMLAPillAt(UIView *fg, CGPoint p) { return nil; }   // (no Live Activity pill of ours here)
@@ -165,7 +166,7 @@ static BOOL gLateTarget;
 // Control Center button 1088-1104 lie inside its frame, as on 15/16) and the time (1110-1194, under our clock's button). Our logo button at 8-38.
 static const CGPoint kAirPods = {900, 12}, kWiFi = {932, 12}, kPill = {970, 12}, kMute = {1006, 12}, kStrip = {1034, 12}, kBattery = {1060, 12},
                      kCC = {1096, 12}, kTime = {1150, 12}, kLogo = {20, 12}, kEmpty = {500, 12};
-typedef struct { BOOL ours, ccIcon, battMenu, clockButton; } TSetup;
+typedef struct { BOOL ours, ccIcon, battMenu, clockButton, airPods; } TSetup;
 static const TSetup kUsual = {YES, YES, YES, YES};
 static TDisplayItem *Item(NSString *ident, CGFloat x, CGFloat w, id item, id action) {
     TDisplayItem *d = [TDisplayItem new]; d.identifier = ident; d.frame = CGRectMake(x, 0, w, 24); d.item = item; d.action = action; d.enabled = YES; return d;
@@ -190,6 +191,7 @@ static TBarBase *MakeBarOf(Class cls, TSetup s, id trailing) {
         Button(fg, kBattButtonKey, 1036, 48, s.battMenu);
         Button(fg, kCCButtonKey, 1088, 16, s.ccIcon);
         Button(fg, kClockButtonKey, 1110, 84, s.clockButton);
+        Button(fg, kAirPodsButtonKey, 881, 38, s.airPods);   // (AirPods Menu on, iPadOS's AirPods item showing its battery: 4 pt past it)
     }
     return bar;
 }
@@ -318,6 +320,15 @@ int main(int argc, char **argv) {
         CASE("C10") {
             TStatusBar *bar = MakeBar(kUsual);
             Expect(Touch(bar, kAirPods, kLift), kRefusedTap, @"C10 finger tap on the AirPods item with no pointer: nothing, as on a stock iPad");
+        }
+        CASE("C12") {   // 1.8.8.1: the AirPods menu's button over the AirPods item is one of our controls: our menu, never iPadOS's region action
+            TSetup s = kUsual; s.ccIcon = NO; s.battMenu = NO; s.airPods = YES;   // (no Control Center icon of ours: 1.8.7.9's rule does not apply there)
+            Expect(Click(MakeBar(s), kAirPods), kRefusedTap, @"C12 click on the AirPods button (AirPods Menu on, no Control Center icon of ours): not the bar's -- our menu, not Control Center");
+            Expect(Touch(MakeBar(s), kAirPods, kLift), kRefusedTap, @"C12 ... a finger tap on it: the same");
+            TSetup u = kUsual; u.airPods = YES;
+            Expect(Click(MakeBar(u), kAirPods), kRefusedTap, @"C12 ... with our Control Center icon: the same (our control, before 1.8.7.9's rule)");
+            s.airPods = NO;
+            Expect(Click(MakeBar(s), kAirPods), @"taken, runs Control Center", @"C12 ... AirPods Menu off (no button), no icon of ours: Control Center as before (C8)");
         }
         CASE("C11") {   // other recognizers asked through the same method: iPadOS's answer, the target as iPadOS left it
             for (int over = 0; over < 2; over++) {

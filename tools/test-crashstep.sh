@@ -77,6 +77,7 @@ run recent step1b-core-banners.ips step1b-core-banners.ips
 run one step1b-core-banners.ips
 run cclookup step1b-core-cc-lookup.ips step1b-core-cc-lookup.ips
 run dockstyle step1b-dock-style.ips step1b-dock-style.ips
+run dockcolor step1b-dock-color.ips step1b-dock-color.ips
 run dispon step1b-core-banners.ips step1b-core-banners-exception.ips
 run dispdefault step1b-core-banners.ips
 # 1.8.7.5, audit L104 of 1.8.7.2: step 1 after an earlier step 1b. The guard's side (test-crashstep.c "l104"), then the loaders' skip list under that

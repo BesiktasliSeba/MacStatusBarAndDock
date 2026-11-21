@@ -58,8 +58,8 @@ int main(void) {
     EXPECT(!MSBDDispSoonText(16) && !MSBDDispSoonText(17) && !MSBDDispSoonText(18), "iPadOS 16, 17 and 18: no note");
     EXPECT(!MSBDDispSoonText(19) && !MSBDDispSoonText(26) && !MSBDDispSoonText(14) && !MSBDDispSoonText(0), "... nor on a later iPadOS, nor on a version not read (0)");
     // ---- left out of a TV (KT 10 Nov ~19:40)
-    const char *absentTitles[] = { "Home Minimizes Windows", "Dock Position", "Position on Screen", "Larger Dock in Portrait", "Open Apps as Windows", "Gap to Screen Edge" };
-    const char *absentKeys[] = { "homeMinimizesWindows", "dockPosition", "portraitLargerDock", "openAsWindows", "gapToEdge", "windowGap" };
+    const char *absentTitles[] = { "Home Minimizes Windows", "Adapt to Trackpad & Mouse", "Dock Position", "Position on Screen", "Larger Dock in Portrait", "Open Apps as Windows", "Gap to Screen Edge" };
+    const char *absentKeys[] = { "homeMinimizesWindows", "homeMinimizesAdapt", "dockPosition", "portraitLargerDock", "openAsWindows", "gapToEdge", "windowGap" };   // (Adapt to Trackpad & Mouse, 1.8.8.1: Home Minimizes Windows' own)
     for (int i = 0; i < MSBD_DISP_ROW_COUNT; i++) {
         for (size_t j = 0; j < sizeof absentTitles / sizeof absentTitles[0]; j++) EXPECT(strcmp(kMSBDDispRows[i].title, absentTitles[j]) != 0, "a row that means nothing on a TV is not in the table");
         for (size_t j = 0; j < sizeof absentKeys / sizeof absentKeys[0]; j++) EXPECT(strcmp(kMSBDDispRows[i].key, absentKeys[j]) != 0, "... nor its key");

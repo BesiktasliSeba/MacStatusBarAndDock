@@ -305,6 +305,8 @@ Keep Covered Windows in Front: when a window comes to the front, any smaller win
 
 Home Minimizes Windows: swiping up from the bottom or pressing the Home button minimizes the windows, so the Home Screen shows. Opening an app brings its window back.
 
+Adapt to Trackpad &amp; Mouse: while a trackpad or mouse is connected, such as the Magic Keyboard for iPad, going Home leaves the windows where they are, as on a Mac. Without one, Home minimizes them. A keyboard alone doesn't count.
+
 Resize Apps to Fit Windows: apps lay themselves out to fit their window, like on a Mac. When it's off, an app keeps its full-screen layout and is scaled down to fit.</string>
 			<key>id</key>
 			<string>WINDOW_BEHAVIOR_GROUP</string>
@@ -376,6 +378,22 @@ Resize Apps to Fit Windows: apps lay themselves out to fit their window, like on
 			<string>homeMinimizesWindows</string>
 			<key>label</key>
 			<string>Home Minimizes Windows</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>HOME_MINIMIZES_ADAPT</string>
+			<key>key</key>
+			<string>homeMinimizesAdapt</string>
+			<key>label</key>
+			<string>Adapt to Trackpad &amp; Mouse</string>
 		</dict>
 		<dict>
 			<key>PostNotification</key>

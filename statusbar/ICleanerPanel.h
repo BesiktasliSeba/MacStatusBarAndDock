@@ -78,6 +78,7 @@ static NSString *DMICleanAsk(void) {
 // buttons stacked as in a Mac's alert. Its states: ready (Clean, Clean and Respring, Respring, Close), working (a spinner, nothing to press: a
 // clean isn't stopped halfway), done (the result; Respring when iCleaner says one is needed, and Done) or failed (iCleaner's own words; OK).
 static void DMICleanShowPanel(int state, NSString *text, BOOL offerRespring);
+__attribute__((noinline)) static void DMFinderICleanRespring(NSString *line);   // (Clean and Respring: the result kept, then our respring; below)
 static void DMICleanRun(BOOL thenRespring) {
     if (gICleanBusy) return;
     gICleanBusy = YES;
@@ -95,7 +96,7 @@ static void DMICleanRun(BOOL thenRespring) {
                 DMICleanShowPanel([line isEqualToString:kMSBDICleanNoAnswerLine] ? 2 : 3, err, NO);
                 return;
             }
-            if (thenRespring) { DMCloseOverlay(); DMRespringChecked(); return; }
+            if (thenRespring) { DMCloseOverlay(); DMFinderICleanRespring(line); return; }   // (the result shown once SpringBoard is back, 1.8.8.1)
             DMICleanShowPanel(2, MSBDICleanResultText(freed, deleted), respring);
         });
     });
@@ -158,4 +159,97 @@ static void DMICleanShowPanel(int state, NSString *text, BOOL offerRespring) {
 static void DMICleanOpenPanel(void) {
     if (!DMICleanAvailable()) return;
     DMICleanShowPanel(gICleanBusy ? 1 : 0, nil, NO);
+}
+
+// ---- Clean and Respring: the result after the respring (1.8.8.1, common/ICleaner.h) -----------------------------------------------------------
+// Clean and Respring resprang as soon as iCleaner answered: what it freed was never seen. The answer is kept in our preferences just before our
+// respring is asked (DMFinderICleanKeep), taken by the SpringBoard that respring starts at its first tick (DMFinderICleanLook: the record removed at
+// once, never seen twice), and shown in this panel as after a Clean, once: when the iPad is unlocked with nothing else up (DMFinderICleanAfterTick,
+// StatusBar.x DMFinderICleanAfterBlocker), never over the Lock Screen, on the iPad's own screen (DMMenuHost) whatever is on a TV. Not shown: after
+// 10 min, with Finder off (nothing of this runs then), or after a SpringBoard crash since the respring (MSBDICleanCrashSince). A respring that is
+// not done after all (the VPN warning's Cancel) shows it here instead, with the panel's Respring button when iCleaner says one is needed.
+// Only DMFinderICleanStoreRead / StoreWrite, the clocks, the crash look and the blocker reach outside: the Mac test (tools/test-icleanafter.sh) runs
+// the rest as it is, with those stood in for.
+static NSString *gICleanAfterLine = nil;   // the answer line to show, once (taken from our preferences, or held when no respring was done)
+static double gICleanAfterAt = 0;          // when its respring was asked (seconds since 1970)
+static BOOL gICleanAfterResprung = NO;     // it is the result of the respring that started this SpringBoard (no Respring offered with it)
+static BOOL gICleanAfterLooked = NO;       // this SpringBoard took its look at the kept record (its first tick)
+static double gICleanAfterAskedAt = 0;     // this SpringBoard kept a record for its own respring then: looked at again if that respring is late
+static NSString *DMFinderICleanAfterBlocker(void);   // (StatusBar.x, with the notices: why not now -- locked, covered, a menu, another alert...; nil: now)
+static id DMFinderICleanStoreRead(void) {
+    CFStringRef dom = CFSTR(kMSBDEjectDomain);
+    CFPreferencesSynchronize(dom, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    return CFBridgingRelease(CFPreferencesCopyValue(CFSTR(kMSBDICleanAfterKey), dom, kCFPreferencesCurrentUser, kCFPreferencesAnyHost));
+}
+static void DMFinderICleanStoreWrite(NSDictionary *rec) {   // (nil: removed)
+    CFStringRef dom = CFSTR(kMSBDEjectDomain);
+    CFPreferencesSetValue(CFSTR(kMSBDICleanAfterKey), (__bridge CFPropertyListRef)rec, dom, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    CFPreferencesSynchronize(dom, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+}
+static double DMFinderICleanNow(void) { return [[NSDate date] timeIntervalSince1970]; }
+static double DMFinderICleanStarted(void) { return DMFinderICleanNow() - DMProcessAge(); }   // (when this SpringBoard started)
+static BOOL DMFinderICleanCrashSince(double since) {   // (debug builds: /tmp/msb-iclean-fakecrash stands for a crash report, with no crash)
+    char name[256];
+    if (DMTestFlag("/tmp/msb-iclean-fakecrash")) { DMLog(@"[iclean] debug: /tmp/msb-iclean-fakecrash read as a SpringBoard crash"); return YES; }
+    if (!MSBDICleanCrashSince(MSBD_GUARD_REPORTS, since, name, sizeof(name))) return NO;
+    DMLog([NSString stringWithFormat:@"[iclean] after the respring: crash report %s", name]);
+    return YES;
+}
+// Just before our respring is asked: the answer kept for the SpringBoard it starts.
+__attribute__((noinline)) static void DMFinderICleanKeep(NSString *line) {
+    double now = DMFinderICleanNow();
+    NSDictionary *rec = MSBDICleanAfterRecord(line, now, getpid());
+    if (!rec) return;
+    DMFinderICleanStoreWrite(rec);
+    gICleanAfterAskedAt = now;
+    DMLog(@"[iclean] the result kept for after the respring");
+}
+// The respring not done after all: the result shown here, once it can be.
+__attribute__((noinline)) static void DMFinderICleanHold(NSString *line) {
+    gICleanAfterLine = line; gICleanAfterAt = DMFinderICleanNow(); gICleanAfterResprung = NO;
+    DMLog(@"[iclean] no respring after all: the result is shown here");
+}
+// Clean and Respring after a clean that worked: our respring, as Respring in the Apple menu does it (its VPN warning first), the answer kept just
+// before it is asked.
+__attribute__((noinline)) static void DMFinderICleanRespring(NSString *line) {
+    NSString *l = [line copy];
+    DMRespringCheckedOr(^{ DMFinderICleanKeep(l); }, ^{ DMFinderICleanHold(l); });
+}
+// A look at the kept record: at this SpringBoard's first tick, and once more in the SpringBoard that kept one when its respring is late.
+__attribute__((noinline)) static void DMFinderICleanLook(NSString *when) {
+    id rec = DMFinderICleanStoreRead();
+    if (!rec) return;
+    NSString *line = nil, *why = nil; double at = 0;
+    MSBDICleanAfter what = MSBDICleanAfterLook(rec, getpid(), DMFinderICleanStarted(), DMFinderICleanNow(), &line, &at, &why);
+    if (what == kMSBDICleanAfterNone || what == kMSBDICleanAfterWait) return;
+    DMFinderICleanStoreWrite(nil);   // (taken or dropped: gone at once, so no SpringBoard sees it again)
+    if (what == kMSBDICleanAfterDrop) { DMLog([NSString stringWithFormat:@"[iclean] after the respring (%@): the kept result dropped, %@", when, why]); return; }
+    gICleanAfterLine = line; gICleanAfterAt = at; gICleanAfterResprung = what == kMSBDICleanAfterShow;
+    DMLog([NSString stringWithFormat:@"[iclean] after the respring (%@): the kept result taken%@, shown when it can be", when, why ? [@", " stringByAppendingString:why] : @""]);
+}
+// The tick's part (StatusBar.x DMTickBody, every 0.25 s): the looks, then the result shown once it can be, once a second.
+__attribute__((noinline)) static void DMFinderICleanAfterTick(void) {
+    if (!gFinderOn) {   // (Finder's own: nothing of it runs with Finder off, by the user or by the crash guard; a result held is dropped)
+        if (gICleanAfterLine) { gICleanAfterLine = nil; DMLog(@"[iclean] after the respring: the result dropped, Finder is off"); }
+        return;
+    }
+    if (!gICleanAfterLooked) { gICleanAfterLooked = YES; DMFinderICleanLook(@"SpringBoard up"); }
+    else if (gICleanAfterAskedAt > 0 && DMFinderICleanNow() - gICleanAfterAskedAt >= kMSBDICleanAfterLate) { gICleanAfterAskedAt = 0; DMFinderICleanLook(@"the respring is late"); }
+    if (!gICleanAfterLine) return;
+    static int n = 0;
+    if (++n % 4) return;
+    if (!MSBDICleanAfterDue(DMFinderICleanNow(), gICleanAfterAt)) { gICleanAfterLine = nil; DMLog(@"[iclean] after the respring: the result dropped, not shown within 10 minutes"); return; }
+    NSString *blocker = DMFinderICleanAfterBlocker();
+    static NSString *logged = nil;
+    if (blocker) { if (![blocker isEqualToString:logged]) { logged = blocker; DMLog([NSString stringWithFormat:@"[iclean] after the respring: waiting, %@", blocker]); } return; }
+    logged = nil;
+    NSString *line = gICleanAfterLine;
+    BOOL resprung = gICleanAfterResprung;
+    gICleanAfterLine = nil;   // (let go as it is shown: never twice)
+    if (resprung && DMFinderICleanCrashSince(gICleanAfterAt)) { DMLog(@"[iclean] after the respring: the result dropped, SpringBoard crashed since the respring"); return; }
+    DM_FEATURE_MARK("finder-icleaner-after-respring");
+    NSString *freed = nil, *err = nil; long long deleted = -1; BOOL respring = NO;
+    if (MSBDICleanParseAnswer(line, &freed, &deleted, &respring, &err)) DMICleanShowPanel(2, MSBDICleanResultText(freed, deleted), respring && !resprung);
+    else DMICleanShowPanel(3, err, NO);
+    DMLog([NSString stringWithFormat:@"[iclean] after the respring: the result shown%@", resprung ? @"" : @" (no respring was done)"]);
 }

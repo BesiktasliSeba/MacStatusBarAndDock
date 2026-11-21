@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "ChargeWhy.h"   // (why iPad is not charging on the adapter: the menu says it with or without the job, 1.8.8.1)
 // The Charge Limit's job (common/ChargeLimit.h, chargehelper/) is not in every build: where it is, the menu has its rows while the job is installed,
 // from the state the job publishes; where it is not, the menu has none (and nothing of them is compiled).
 #if __has_include("ChargeLimit.h")
@@ -120,3 +121,40 @@ static inline void MSBDBattChargeLimitValue(uint64_t word, int limitPref, char *
     snprintf(buf, n, "%d%%", limit);
 }
 #endif
+
+// ---- the line under the power source (1.8.8.1 BATTWHY): the job's line (word: its state word, 0 without the job), or why iPad is not charging on
+// the adapter (common/ChargeWhy.h MSBDBattWhyDecide: why, with the adapter's watts) in place of the job's lines that say iPadOS charges
+// (ChargeLimit.h MSBDChargeWhyReplaces; KT's 7 W case: "Charging to 80%" while the battery powered part of iPad), or before the one that stays
+// ("Charging Can't Be Paused": MSBDChargeWhyBefore, the line after it MSBDBattMenuLineAfter). The job's own hold and cut keep their lines (the
+// reason is never decided for them: MSBDBattOurHold). 0: no line.
+static inline int MSBDBattOurHold(uint64_t word) {
+#if MSBD_BATT_CHARGE
+    return MSBDBattHoldPlug(word);
+#else
+    (void)word; return 0;
+#endif
+}
+static inline int MSBDBattMenuLine(uint64_t word, int soc, int why, int watts, char *buf, size_t n) {
+#if MSBD_BATT_CHARGE
+    char job[96] = "";
+    int jobLine = MSBDBattChargeLine(word, soc, job, sizeof job), state = MSBDChargeWordState(word);
+    if (jobLine && !MSBDChargeWhyReplaces(state) && !MSBDChargeWhyBefore(state)) { snprintf(buf, n, "%s", job); return 1; }
+    if (MSBDBattWhyLine(why, watts, buf, n)) return 1;
+    if (jobLine) { snprintf(buf, n, "%s", job); return 1; }
+    return 0;
+#else
+    (void)word; (void)soc;
+    return MSBDBattWhyLine(why, watts, buf, n);
+#endif
+}
+// The line after it: the job's line a reason was said before ("Fully Charged", then "Charging Can't Be Paused": MSBDChargeWhyBefore). 0: none.
+static inline int MSBDBattMenuLineAfter(uint64_t word, int soc, int why, int watts, char *buf, size_t n) {
+#if MSBD_BATT_CHARGE
+    char said[96];
+    if (!MSBDChargeWhyBefore(MSBDChargeWordState(word)) || !MSBDBattWhyLine(why, watts, said, sizeof said)) return 0;
+    return MSBDBattChargeLine(word, soc, buf, n);
+#else
+    (void)word; (void)soc; (void)why; (void)watts; (void)buf; (void)n;
+    return 0;
+#endif
+}

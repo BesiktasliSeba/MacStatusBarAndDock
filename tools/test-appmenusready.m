@@ -313,7 +313,9 @@ int main(int argc, char **argv) {
                     c = CACurrentMediaTime(); gOverlay = nil;   // (closed)
                     Run(2.5);
                     double t = gLaidAt > 0 ? gLaidAt - c : -1;
-                    Check([Titles() isEqualToArray:kMapsFull] && t >= 0 && t <= 1.3, [NSString stringWithFormat:@"openmenu: once it is closed, the full set within 1.3 s (%@, %@)", TitlesText(), Took(t)]);
+                    // (SpringBoard's wait under one of our menus looks again once a second, so the ask after a close comes up to 1 s after it, plus
+                    //  the answer and the Mac's load: 1.6 s, not 1.3 -- the B12 review fixes' review, note 4)
+                    Check([Titles() isEqualToArray:kMapsFull] && t >= 0 && t <= 1.6, [NSString stringWithFormat:@"openmenu: once it is closed, the full set within 1.6 s (%@, %@)", TitlesText(), Took(t)]);
                     Check(gAsks - asks0 == 1, [NSString stringWithFormat:@"openmenu: one ask for it (%d)", gAsks - asks0]);
                 } else if ([sc isEqualToString:@"away"]) {
                     Busy(0.1, 3.0);
@@ -356,10 +358,12 @@ int main(int argc, char **argv) {
                 Check(gAsks - asks0 == 1, [NSString stringWithFormat:@"%@: one ask for it (%d)", sc, gAsks - asks0]);
             } else if ([sc isEqualToString:@"steady"]) {
                 Check([first isEqualToArray:@[@"File", @"View", @"Tabs", @"Actions"]], [NSString stringWithFormat:@"steady: its whole set at once (%@)", TitlesText()]);
-                int looks0 = Looks();
+                int looks0 = Looks(), reads0 = gSwitchReads;
                 Busy(0.1, 5.0);
                 Check(gAsks == asks0 && gChanged == changed0, [NSString stringWithFormat:@"steady: busy for 5 s with nothing it offers moving (new key command objects at every read, a title Play / Pause): no menuschanged, no ask (%d, %d)", gChanged - changed0, gAsks - asks0]);
                 Check(Looks() - looks0 >= 3 && Looks() - looks0 <= 7, [NSString stringWithFormat:@"steady: it looks about once a second while busy (%d looks in 5 s)", Looks() - looks0]);
+                // (each look reads the switch first, but its state only after SpringBoard posted it: no round trip to notifyd per look, review note 3)
+                Check(gSwitchReads - reads0 <= 1, [NSString stringWithFormat:@"steady: and reads the switch's state at most once in those 5 s, not at every look (%d reads)", gSwitchReads - reads0]);
             } else if ([sc isEqualToString:@"idle"]) {
                 int looks0 = Looks();
                 Run(6.0);
@@ -412,7 +416,7 @@ int main(int argc, char **argv) {
                     CFTimeInterval c = CACurrentMediaTime(); gOverlay = nil;   // (closed)
                     double t = -1;
                     while (CACurrentMediaTime() - c < 2.5) { if (t < 0 && gAsks > asks0) t = CACurrentMediaTime() - c; CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, false); }
-                    Check(gAsks - asks0 == 1 && t >= 0 && t <= 1.3, [NSString stringWithFormat:@"flapmenu: once it is closed, asked once, within 1.3 s (%d, %@)", gAsks - asks0, Took(t)]);
+                    Check(gAsks - asks0 == 1 && t >= 0 && t <= 1.6, [NSString stringWithFormat:@"flapmenu: once it is closed, asked once, within 1.6 s (%d, %@)", gAsks - asks0, Took(t)]);   // (as openmenu's)
                 }
             } else if ([sc isEqualToString:@"offstill"]) {
                 // B12 review, finding 2: switched off after its answer, busy, nothing it offers moving: before, it walked its responders' key commands
@@ -465,6 +469,86 @@ int main(int argc, char **argv) {
                 for (NSString *l in gMABLines) if ([l hasPrefix:@"appmenus: what it offers moved since its answer ("]) lastLook = l;
                 Check([lastLook hasSuffix:@"; looks every 1 s, its last word was answered"], [NSString stringWithFormat:@"%@ (debug): the growth's look line says the looks are back to once a second (%@)", sc, lastLook]);
 #endif
+            } else if ([sc isEqualToString:@"frontafterword"] || [sc isEqualToString:@"frontlate"] || [sc isEqualToString:@"fronttap"]) {
+                // the review fixes' review, finding 1: a window beside the bar's app keeps moving where its commands start (as flapnotfront) until
+                // its looks wait 8 s; then it becomes the bar's app (the bar's forced ask at a front change) 0.5 s (frontafterword: Cmd-Tab, its
+                // Dock icon, the App Switcher, with no tap in it) or 3.5 s (frontlate) after its last word, or by a tap in it (fronttap: its own
+                // "touched" too); its moves stop and its card's commands come. Before, frontafterword's answer counted as that word's and the
+                // card's titles came ~8 s later, not ~2 s
+                Check([first isEqualToArray:kMapsThin], [NSString stringWithFormat:@"%@: its first answer: File, Edit, View (%@)", sc, TitlesText()]);
+                Busy(0.05, 0.3);
+                TApp *other = App(@"test.b12.other"); gFront = other; DMAMFrontSeen(other); Run(0.3);
+                Flap(chrome);
+                Run(10.0);   // (its words at ~0, 3, 7 and 11 s: the looks wait 8 s from the fourth)
+                int c0 = gChanged; CFTimeInterval w0 = CACurrentMediaTime();
+                while (gChanged == c0 && CACurrentMediaTime() - w0 < 10.0) CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, false);
+                CFTimeInterval word = CACurrentMediaTime();
+                gFlapStop = YES;
+                BOOL tap = [sc isEqualToString:@"fronttap"];
+                Busy(0.1, [sc isEqualToString:@"frontlate"] ? 3.5 : 0.5);
+                int asks1 = gAsks;
+                CFTimeInterval front = CACurrentMediaTime();
+                gFront = app; DMAMFrontSeen(app);     // (the bar's app now)
+                if (tap) Post("touched");             // (the tap itself, heard once it is the bar's app)
+                Busy(0.1, tap ? 1.5 : 0.5);
+                int asks2 = gAsks;
+                CFTimeInterval c = CACurrentMediaTime(); gLaidAt = 0;
+                chrome.kc = MapsCard();   // (its card's commands came)
+                while (![Titles() isEqualToArray:kMapsFull] && CACurrentMediaTime() - c < 4.0) CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, false);
+                double t = [Titles() isEqualToArray:kMapsFull] && gLaidAt > 0 ? gLaidAt - c : -1;
+                printf("INFO %s: its last word %.3f s before it came forward; %d asks for that; the full set %s after its card\n", sc.UTF8String, front - word, asks2 - asks1, Took(t).UTF8String);
+                Check(asks2 - asks1 >= 1 && c0 >= 2, [NSString stringWithFormat:@"%@: its words beside the bar's app, then asked as it came forward (%d words before, %d asks)", sc, c0, asks2 - asks1]);
+                Check([Titles() isEqualToArray:kMapsFull] && t >= 0 && t <= 2.5, [NSString stringWithFormat:@"%@: then its card: the full set within 2.5 s, as for grows, not ~8 s later (%@, %@)", sc, TitlesText(), Took(t)]);
+#if DEBUG
+                NSString *lastLook = nil;
+                for (NSString *l in gMABLines) if ([l hasPrefix:@"appmenus: what it offers moved since its answer ("]) lastLook = l;
+                Check([lastLook hasSuffix:@"; looks every 1 s, its last word was answered"], [NSString stringWithFormat:@"%@ (debug): the growth's look line says the looks are back to once a second (%@)", sc, lastLook]);
+#endif
+                if ([sc isEqualToString:@"frontafterword"]) {
+                    // then, the bar's app now, it keeps moving with nothing new: the looks back off again (2, 4, 8 s), as for flap: the answers
+                    // after that first one count as their words' again
+                    Run(0.5);
+                    int asks3 = gAsks; gFlapStop = NO;
+                    Flap(chrome);
+                    Run(14.0);
+                    gFlapStop = YES;
+                    double after3 = gAsks - asks3 >= 4 ? gAskedAt[asks3 + 3].doubleValue - gAskedAt[asks3 + 2].doubleValue : 99;
+                    printf("INFO frontafterword: then %d asks in 14 s as the bar's app, the 4th %s after the 3rd\n", gAsks - asks3, after3 > 90 ? "none" : [NSString stringWithFormat:@"%.3f s", after3].UTF8String);
+                    Check(gAsks - asks3 >= 2 && gAsks - asks3 <= 4 && after3 >= 6.0, [NSString stringWithFormat:@"frontafterword: then moving every 0.5 s for 14 s as the bar's app with nothing new: it backs off again, 2-4 asks and after the third none within 6 s, not one every 2 s (%d, %@)", gAsks - asks3, after3 > 90 ? @"none" : [NSString stringWithFormat:@"%.3f s", after3]]);
+                }
+            } else if ([sc isEqualToString:@"focustap"] || [sc isEqualToString:@"plaintap"]) {
+                // three taps 2.5 s apart in the bar's app, each moving where its commands start (focustap: a field focused) or not (plaintap), with
+                // nothing new to show; then its card's commands come with no input: the taps' answers did not leave the looks backed off to 8 s
+                // (a tap whose move a look also said, answered once for both, counts as that look's: the looks may wait 2 s after them, so its
+                // card can take ~2-3 s, not 8)
+                Check([first isEqualToArray:kMapsThin], [NSString stringWithFormat:@"%@: its first answer: File, Edit, View (%@)", sc, TitlesText()]);
+                Busy(0.05, 0.3);
+                asks0 = gAsks; changed0 = gChanged;
+                for (int i = 0; i < 3; i++) {
+                    if ([sc isEqualToString:@"focustap"]) gStart = Resp(chrome, nil, nil);
+                    Post("touched");
+                    Busy(0.1, 2.5);
+                }
+                int asks1 = gAsks;
+                CFTimeInterval c = CACurrentMediaTime(); gLaidAt = 0;
+                chrome.kc = MapsCard();
+                while (![Titles() isEqualToArray:kMapsFull] && CACurrentMediaTime() - c < 5.0) CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, false);
+                double t = [Titles() isEqualToArray:kMapsFull] && gLaidAt > 0 ? gLaidAt - c : -1;
+                printf("INFO %s: 3 taps: %d asks, %d menuschanged; then the full set %s after its card\n", sc.UTF8String, asks1 - asks0, gChanged - changed0, Took(t).UTF8String);
+                Check(asks1 - asks0 >= 3, [NSString stringWithFormat:@"%@: each tap asked it (%d asks)", sc, asks1 - asks0]);
+                Check([Titles() isEqualToArray:kMapsFull] && t >= 0 && t <= 3.5, [NSString stringWithFormat:@"%@: after 3 taps, its card: the full set within 3.5 s, not 8 (%@, %@)", sc, TitlesText(), Took(t)]);
+            } else if ([sc isEqualToString:@"menuopenclose"]) {
+                // the bar's app moving every 0.5 s with nothing new while one of our menus opens and closes every 4 s for 24 s: every close may let
+                // an answer come (and the first after a word no answer followed puts the looks back), but the asks stay bounded
+                Check([first isEqualToArray:kMapsThin], [NSString stringWithFormat:@"%@: its first answer: File, Edit, View (%@)", sc, TitlesText()]);
+                Busy(0.05, 0.3);
+                asks0 = gAsks; changed0 = gChanged;
+                CFTimeInterval from = CACurrentMediaTime();
+                Flap(chrome);
+                for (int i = 0; i < 6; i++) { gOverlay = [UIView new]; Run(2.0); gOverlay = nil; Run(2.0); }
+                gFlapStop = YES;
+                printf("INFO %s: %d asks, %d menuschanged in 24 s, the shortest gap %.3f s\n", sc.UTF8String, gAsks - asks0, gChanged - changed0, MinGap(from));
+                Check(gAsks - asks0 >= 1 && gAsks - asks0 <= 8, [NSString stringWithFormat:@"%@: our menu opened and closed 6 times over it: asked 1-8 times in 24 s, not at every close and every word (%d)", sc, gAsks - asks0]);
             } else return 2;
         }
         [[NSFileManager defaultManager] removeItemAtPath:gContainer error:nil];

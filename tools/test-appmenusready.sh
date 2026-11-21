@@ -8,7 +8,8 @@
 # titles rest on moved (where its commands start, the responders from there, their key commands, its main menu's rebuild); SpringBoard asks it
 # 1 s later, not while one of our menus is open. Its independent review: a word no answer follows (not the bar's app, or one of our menus
 # open over it) backs the looks off as an answer that showed nothing does, one word out at a time; with the switch off a look stops before it
-# reads anything; and any answer no look asked for (a switch, a tap) puts the looks back to once a second. The real code of both sides (AMR_SB = statusbar/AppMenus.h, AMR_APP = appbridge/AppMenus.h:
+# reads anything; and any answer no look asked for (a switch, a tap) puts the looks back to once a second. Its review (1.8.8.1): so does the first
+# answer after a word no answer followed (brought forward with no tap within 3 s of that word, it kept the 8 s back-off: frontafterword). The real code of both sides (AMR_SB = statusbar/AppMenus.h, AMR_APP = appbridge/AppMenus.h:
 # another copy, e.g. 1.8.8 RC 2's) on real Darwin notifications and the real main run loop, one scenario per process (test-appmenusready.m), the
 # app's snapshot the real one; release and (for the lines p08 reads) DEBUG; then site checks and made-to-fail copies, each must fail.
 cd "$(dirname "$0")" || exit 1
@@ -17,9 +18,9 @@ FW="$SDK/System/iOSSupport/System/Library/Frameworks"
 [ -d "$FW/UIKit.framework" ] || { echo "FAIL  no Mac Catalyst UIKit in $SDK"; exit 1; }
 if [ -n "$AMR_KEEP" ]; then W=$AMR_KEEP; mkdir -p "$W"; else W=$(mktemp -d); trap 'rm -rf "$W"' EXIT; fi   # (AMR_KEEP=<dir>: the builds kept there)
 SB0=${AMR_SB:-../statusbar/AppMenus.h}; APP0=${AMR_APP:-../appbridge/AppMenus.h}; RULES=${AMR_RULES:-../common/AppMenuRules.h}
-fnst() { awk -v n="$2(" 'index($0, "static ") == 1 && index($0, n) {f=1} f {print} f && /^[}]/ {exit}' "$1"; }   # a static function by its name
-SCEN="cold warm early notfront off once partial relaunch grows moves filesrebuild filesstart steady idle nomenus flap openmenu away offlater flapnotfront flapmenu offstill backswitch backtap"
-DSCEN="grows flapnotfront offstill backswitch"   # (DEBUG: the lines p08 and p10 read)
+fnst() { awk -v n="$2(" '(index($0, "static ") == 1 || index($0, "__attribute__((noinline)) static ") == 1) && index($0, n) {f=1} f {print} f && /^[}]/ {exit}' "$1"; }   # a static function by its name
+SCEN="cold warm early notfront off once partial relaunch grows moves filesrebuild filesstart steady idle nomenus flap openmenu away offlater flapnotfront flapmenu offstill backswitch backtap frontafterword frontlate fronttap focustap plaintap menuopenclose"
+DSCEN="grows flapnotfront offstill backswitch frontafterword"   # (DEBUG: the lines p08 and p10 read)
 
 build() {   # $1 SpringBoard's AppMenus.h, $2 the app's, $3 dir, $4 quiet
   local d=$3 fl; mkdir -p "$d"; cp "$RULES" "$d/AppMenuRules.h"
@@ -65,8 +66,8 @@ check "one name on both sides: menushere.<hash>" \
   "[ \$(grep -cF '\"com.besiktasliseba.appbridge.menushere.%08x\"' $APP0) = 1 ] && [ \$(grep -cF '\"com.besiktasliseba.appbridge.menushere.%08x\"' $SB0) = 1 ]"
 check "SpringBoard listens for it with the app's other names (once per app, when it first asks it), and asks at once, forced, only while it is the app in front" \
   "awk '/if \\(!gAMReadyTokens\\[bundle\\]\\) \\{/{f=1} f && /\\^\\(int t\\) \\{ if \\(gAMOn && \\[\\[DMActiveApp\\(\\) bundleIdentifier\\] isEqualToString:b\\]\\) DMAMAsk\\(b, YES\\); \\}\\);/{ok=1} f && /^    \\}/{exit !ok} END{exit !ok}' $SB0"
-check "the crash guard: both new blocks are in AppMenus.h, whose crash turns Show Apps' Own Menus off" \
-  "grep -qxF 'file MacStatusBarCore ^AppMenus\\.h\$ appOwnMenus' crashmap-rules.txt && grep -qxF 'file MacAppBridge ^AppMenus\\.h\$ appOwnMenus' crashmap-rules.txt"
+check "the crash guard: both new blocks are in AppMenus.h, whose crash turns Show Apps' Own Menus off (the switch's publishing kept out of line: -Os put it in DMLoadPrefs)" \
+  "grep -qxF 'file MacStatusBarCore ^AppMenus\\.h\$ appOwnMenus' crashmap-rules.txt && grep -qxF 'file MacAppBridge ^AppMenus\\.h\$ appOwnMenus' crashmap-rules.txt && grep -qxF '__attribute__((noinline)) static void DMAMApplyPref(BOOL on) {' $SB0"
 check "the looks start only with an answer written (once per process), never at the registration or from a constructor" \
   "fnst $APP0 MABMenuSnapshot | grep -qxF '    if (wrote) MABMenusAnswered(start, keyCmds, chain, ordered);   // (B12: what it rests on, for the looks)' && [ \$(grep -c 'MABMenusAnswered(' $APP0) = 2 ] && [ \$(grep -c 'MABMenusWatch()' $APP0) = 1 ] && fnst $APP0 MABMenusAnswered | grep -qF '    MABMenusWatch();' && ! fnst $APP0 MABRegisterMenus | grep -qE 'MABMenusWatch|MABMenusLook|CFRunLoop' && ! grep -qE 'MABMenusWatch|MABMenusLook|MABMenusAnswered' ../appbridge/AppBridge.x"
 check "a look reads only where the commands start and their key commands: no canPerformAction:, no validation, no pasteboard, no file, no snapshot" \
@@ -81,10 +82,12 @@ check "SpringBoard never asks under one of our open menus after a tap, a menusch
   "awk '/^static void DMAMAskSoon\\(NSString \\*bundle, double delay\\) \\{/{f=1} f{print} f && /^[}]/{exit}' $SB0 | grep -qxF '        if (gOverlay) { DMAMAskSoon(b, 1.0); return; }'"
 check "a look reads the switch before anything else (off: no walk of the responders, no key window), and stops the looks there" \
   "fnst $APP0 MABMenusLook | sed -n 2,3p | tr -d '\\n' | grep -qF '    if (!MABMenusOn()) {   // (switched off since its answer: no looking, not even a walk, until the next answer, which needs it on)        gMABLooking = NO;'"
-check "one word out at a time: held while the answer to the last can still come (SpringBoard asks 1 s after a word; held under 2.5 s, within the 3 s an answer counts as the word's), counted toward the back-off after" \
-  "fnst $APP0 MABMenusLook | grep -qxF '        if (CACurrentMediaTime() - gMABLookSaidAt < 2.5) return;' && fnst $APP0 MABMenusAnswered | grep -qxF '    BOOL lookAsked = gMABLookSaidAt > gMABAnsweredAt && now - gMABLookSaidAt < 3.0;' && fnst $APP0 MABMenusLook | grep -qxF '    if (gMABLookSaidAt > gMABAnsweredAt) {' && grep -F 'notify_register_dispatch(changed, &changedToken' $SB0 | grep -qF 'DMAMAskSoon(b, 1.0); });' && fnst $APP0 MABMenusAnswered | grep -qxF '    gMABAnsweredAt = now;'"
+check "one word out at a time: held while the answer to the last can still come (SpringBoard asks 1 s after a word; held under 2.5 s, within the 3 s an answer counts as the word's), counted toward the back-off after, and the next answer then puts the looks back" \
+  "fnst $APP0 MABMenusLook | grep -qxF '        if (CACurrentMediaTime() - gMABLookSaidAt < 2.5) return;' && fnst $APP0 MABMenusAnswered | grep -qxF '    BOOL lookAsked = !gMABLookUnheard && gMABLookSaidAt > gMABAnsweredAt && now - gMABLookSaidAt < 3.0;' && fnst $APP0 MABMenusLook | grep -qxF '    if (gMABLookSaidAt > gMABAnsweredAt) {' && fnst $APP0 MABMenusLook | grep -qxF '        gMABLookUnheard = YES;' && grep -F 'notify_register_dispatch(changed, &changedToken' $SB0 | grep -qF 'DMAMAskSoon(b, 1.0); });' && fnst $APP0 MABMenusAnswered | grep -qxF '    gMABAnsweredAt = now; gMABLookUnheard = NO;' && [ \$(grep -c 'gMABLookUnheard' $APP0) = 4 ]"
 check "the lines p08 and p10 read are debug only (the look's, the snapshot's sources, UIKit's words and focus, the looks stopped by the switch)" \
   "awk '/^#if DEBUG/{d=1} /^#endif/{d=0} /^#else/{d=0} /what it offers moved since its answer|appmenus: snapshot: of them|appmenus: heard %@|no more looks \\(at /{ if (!d) bad=1; n++ } END{exit !(n == 4 && !bad)}' $APP0"
+check "the switch: SpringBoard posts it as it publishes it, and the app reads its state only after a post (notify_check), the first time and when the check cannot tell (review note 3)" \
+  "fnst $SB0 DMAMApplyPref | grep -qF '{ notify_set_state(token, want); notify_post(kDMAMSwitchName); published = want; }' && fnst $APP0 MABMenusOn | grep -qxF '    else if (notify_check(token, &moved) != NOTIFY_STATUS_OK) moved = 1;' && fnst $APP0 MABMenusOn | grep -qxF '    if (token && moved) notify_get_state(token, &state);' && [ \$(grep -c 'notify_post(kDMAMSwitchName)' $SB0) = 1 ]"
 check "no em dash in the test" "! grep -q \$'\\xe2\\x80\\x94' test-appmenusready.m test-appmenusready.sh"
 
 # made-to-fail copies: each must make at least one scenario fail
@@ -120,10 +123,14 @@ mtf "no back-off for looks whose answers said the same" app 's/due = last \+ \(d
 mtf "it looks with no window of it in front" app 's/^    if \(!win \|\| win\.windowScene\.activationState != UISceneActivationStateForegroundActive\) return;   \/\/ \(no window of it in front\)$/    (void)0;/'
 mtf "the switch read only after a move (8cd44f8a: off, it walked its responders once a second)" app 's/^    if \(!MABMenusOn\(\)\) \{   \/\/ \(switched off since.*$/    if (0) {/; s/^(    if \(MABMenuPrintSame\(p, gMABAnswerPrint\) \|\| MABMenuPrintSame\(p, gMABSaidPrint\)\) return;)$/\1 if (!MABMenusOn()) { gMABLooking = NO; return; }/'
 mtf "it goes on looking after the switch is seen off" app '/^        gMABLooking = NO;$/d'
+mtf "the app reads the switch's state at every look (1.8.8: a round trip to notifyd each)" app 's/^    if \(token && moved\) notify_get_state\(token, &state\);$/    if (token) notify_get_state(token, \&state);/'
+mtf "SpringBoard sets the switch without posting it (the apps never see it go off)" sb 's/ notify_post\(kDMAMSwitchName\);//'
 mtf "the answer's print not kept" app '/^    gMABAnswerPrint = MABMenuPrintOf\(start, kcs, chain\);$/d'
 mtf "a word no answer follows does not back the looks off (8cd44f8a: a window beside the bar's app said it every second)" app '/^        if \(gMABLookIdle < 3\) gMABLookIdle\+\+;$/d'
 mtf "two words out at once (a look says it again before the last one's answer can have come)" app '/^        if \(CACurrentMediaTime\(\) - gMABLookSaidAt < 2\.5\) return;$/d'
 mtf "an answer no look asked for leaves the looks backed off (8cd44f8a)" app 's/^    if \(sig != gMABAnswerSig \|\| !lookAsked\) gMABLookIdle = 0;$/    if (sig != gMABAnswerSig) gMABLookIdle = 0; else if (!lookAsked) {}/'
-mtf "every answer puts the looks back to once a second (no back-off)" app 's/^    BOOL lookAsked = gMABLookSaidAt > gMABAnsweredAt && now - gMABLookSaidAt < 3\.0;$/    BOOL lookAsked = NO;/'
+mtf "every answer puts the looks back to once a second (no back-off)" app 's/^    BOOL lookAsked = !gMABLookUnheard && gMABLookSaidAt > gMABAnsweredAt && now - gMABLookSaidAt < 3\.0;$/    BOOL lookAsked = NO;/'
+mtf "an answer after a word no answer followed counts as that word's (1.8.8: brought forward with no tap, the looks stayed at 8 s)" app '/^        gMABLookUnheard = YES;$/d'
+mtf "a word no answer followed, once, puts the looks back at every answer after it (its mark never cleared)" app 's/^    gMABAnsweredAt = now; gMABLookUnheard = NO;$/    gMABAnsweredAt = now;/'
 mtf "SpringBoard asks under one of our open menus" sb '/^        if \(gOverlay\) \{ DMAMAskSoon\(b, 1\.0\); return; \}$/d'
 [ "$fails" = 0 ] && echo "test-appmenusready: all pass" || { echo "test-appmenusready: FAILED"; exit 1; }

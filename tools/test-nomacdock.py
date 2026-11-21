@@ -43,16 +43,18 @@ def literals(text):
         elif text.startswith("/*", i):
             j = text.find("*/", i + 2); j = n if j < 0 else j + 2
             line += text.count("\n", i, j); i = j
-        elif c == "'":
-            j = i + 1
-            while j < n and text[j] != "'" and text[j] != "\n":
-                j += 2 if text[j] == "\\" else 1
-            i = j + 1
-        elif c == '"':
+        elif c == "'" or c == '"':
+            # (a quote not closed on its line -- an apostrophe outside comments and strings, as in "#pragma mark - an item's menu",
+            #  Downloads.m, 1.8.8.1 -- ends at the line's end and leaves the newline to be counted: it took the newline with it, and every
+            #  later string was read with the line above it, so a focus-lock reason there looked shown; a backslash-newline inside counts too)
             j, start = i + 1, line
-            while j < n and text[j] != '"' and text[j] != "\n":
+            while j < n and text[j] != c and text[j] != "\n":
                 j += 2 if text[j] == "\\" else 1
-            out.append((start, text[i + 1:j])); i = j + 1
+            e = j + 1 if j < n and text[j] == c else min(j, n)
+            line += text.count("\n", i, e)
+            if c == '"':
+                out.append((start, text[i + 1:j]))
+            i = e
         else:
             i += 1
     return out

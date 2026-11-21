@@ -3,8 +3,9 @@
 # see test-battsource.m. Up to 1.8.7.5 they read SpringBoard's SBUIController, whose feed (UIKit's battery monitoring, one switch for the whole
 # process) stops when code in SpringBoard switches it off: the menu said 43 % and "Power Source: Battery" while the bar said 47 % charging, until a
 # respring. Now the battery service itself (CurrentCapacity, MaxCapacity, ExternalConnected, IsCharging, each with its type), looked up once more
-# after a read that failed, then iPadOS's power sources, SBUIController last. The real code is cut out of statusbar/BatteryMenu.h (BS_MENU_H:
-# another copy, e.g. the code before the change) with common/BatteryMenu.h, ChargeLimit.h, BatteryInside.h and AXText.h, and run on the Mac (Mac
+# after a read that failed, then iPadOS's power sources, SBUIController last. Why iPad is not charging (1.8.8.1 BATTWHY) reads the same service
+# through the same lookup, only where the level's read worked. The real code is cut out of statusbar/BatteryMenu.h (BS_MENU_H: another copy, e.g.
+# the code before the change) with common/BatteryMenu.h, ChargeLimit.h, ChargeWhy.h, BatteryInside.h and AXText.h, and run on the Mac (Mac
 # Catalyst) on stand-ins of the battery service, the power sources, SBUIController, the Charge Limit's job and UIKit's own battery view, one
 # scenario per process, release and DEBUG; then site checks; then made-to-fail copies, each must fail.
 cd "$(dirname "$0")" || exit 1
@@ -18,10 +19,13 @@ fnst() { awk -v n="$2(" 'index($0, "static ") == 1 && index($0, n) {f=1} f {prin
 build() {   # $1 BatteryMenu.h, $2 dir, $3 quiet: the test built on that code, release (t) and DEBUG (td)
   local d=$2 fl
   mkdir -p "$d"; cp ../common/BatteryMenu.h ../common/ChargeLimit.h ../common/BatteryInside.h ../common/AXText.h "$d/"
+  [ -f ../common/ChargeWhy.h ] && cp ../common/ChargeWhy.h "$d/"   # (1.8.8.1: why iPad is not charging, included by the two above)
   { fnst "$1" DMBattTypes; fnst "$1" DMBattTypesOf; } > "$d/bs-types.inc"
   # the battery's read: from its DMBattInfo to DMBattAXValue (the read, the level's text, the VoiceOver value)
   awk '/^typedef struct \{ int percent; BOOL onAC, charging, known; \} DMBattInfo;/ {f=1} f {print} f && /^static NSString \*DMBattAXValue\(void\) \{/ {g=1} g && /^[}]/ {exit}' "$1" > "$d/bs-read.inc"
   awk '/^\/\/ ---- the menu.s own rows ----/ {f=1} /^\/\/ ---- the menu ----$/ {exit} f {print}' "$1" > "$d/bs-rows.inc"
+  # why iPad is not charging (1.8.8.1 BATTWHY: the section, from its header to Sleep Guard's; none in a copy from before it)
+  awk '/^\/\/ ---- why iPad is not charging on the adapter/ {f=1} /^\/\/ ---- Sleep Guard/ {exit} f {print}' "$1" > "$d/bs-why.inc"
   fnst "$1" DMBattMenuItems > "$d/bs-items.inc"
   awk '/^static BOOL gBattInsideOn = NO;/ {f=1} f {print} f && /^static void DMBattInsideApplyPref\(BOOL on\) \{/ {g=1} g && /^[}]/ {exit}' "$1" > "$d/bs-block.inc"
   grep -q '^static DMBattInfo DMBattNow(void) {' "$d/bs-read.inc" && grep -q '^static NSString \*DMBattAXValue(void) {' "$d/bs-read.inc" && grep -q '@implementation DMBattHeaderRow' "$d/bs-rows.inc" \
@@ -47,9 +51,11 @@ sites() {   # $1 BatteryMenu.h, $2 rules, $3 quiet: the number of site checks th
      && [ "$(grep -c 'NSSelectorFromString(@"batteryCapacityAsPercentage")' "$B")" = 1 ] && fnst "$B" DMBattSBUI | grep -q 'NSSelectorFromString(@"batteryCapacityAsPercentage")'; then
     [ -n "$q" ] || echo "PASS  BatteryMenu.h: the menu, the VoiceOver value and the number in the icon read DMBattNow; SBUIController's level only in DMBattSBUI (its last source)"
   else [ -n "$q" ] || echo "FAIL  BatteryMenu.h: a reader of the battery not through DMBattNow, or SBUIController's level read elsewhere"; n=$((n + 1)); fi
-  # the menu's refresh paths as they were: opened, its 3 s refresh, the power sources' note; the number's: the note, every 5 s at most
+  # the menu's refresh paths as they were: opened, its 3 s refresh, the power sources' note (1.8.8.1: which also stamps how long it has not charged,
+  # DMBattWhyNote, before the menu is rebuilt); the number's: the note, every 5 s at most
   if fnst "$B" DMOpenBatteryMenu | grep -q 'scheduledTimerWithTimeInterval:3.0 repeats:YES block:^(NSTimer \*t) { if (!gBattPanel) { \[t invalidate\]; if (gBattTimer == t) gBattTimer = nil; return; } DMBattMenuChanged(); }' \
-     && fnst "$B" DMBattApplyPref | grep -qF 'notify_register_dispatch("com.apple.system.powersources", &t, dispatch_get_main_queue(), ^(int tok) { DMBattMenuChanged(); });' \
+     && { fnst "$B" DMBattApplyPref | grep -qF 'notify_register_dispatch("com.apple.system.powersources", &t, dispatch_get_main_queue(), ^(int tok) { DMBattMenuChanged(); });' \
+          || { grep -q '^static void DMBattWhyNote(void) {' "$B" && fnst "$B" DMBattApplyPref | grep -qF 'notify_register_dispatch("com.apple.system.powersources", &t, dispatch_get_main_queue(), ^(int tok) { DMBattWhyNote(); DMBattMenuChanged(); });'; }; } \
      && fnst "$B" DMBattInsideApplyPref | grep -qF 'notify_register_dispatch("com.apple.system.powersources", &t, dispatch_get_main_queue(), ^(int tok) { DMBattInsidePowerChanged(); });' \
      && fnst "$B" DMBattInsideNow | grep -qF 'if (now - gBattInsideReadAt > 5.0) { cached = DMBattNow(); gBattInsideReadAt = now; }'; then
     [ -n "$q" ] || echo "PASS  BatteryMenu.h: the refresh paths as they were (the open menu's 3 s refresh and the power sources' note; the number's note and 5 s read)"
@@ -121,5 +127,9 @@ if [ -z "$BS_MENU_H" ]; then
   mtf "(debug) SBUIController apart: said every time" 's/    if \(told \|\| now - apartSince <= 60\.0\) return;/    if (now - apartSince <= 60.0) return;/'
   mtf "(debug) SBUIController apart: said at once" 's/now - apartSince <= 60\.0\) return;/now - apartSince < 0) return;/'
   mtf "(debug) SBUIController apart: not said again after they agreed" 's/\{ apartSince = 0; told = NO; return; \}/{ apartSince = 0; return; }/'
+  # (1.8.8.1 BATTWHY) the reason's read: the level's service, through its lookup, only where the level's read worked
+  mtf "the reason read from a service of its own, looked up once for good (the old line's copy)" 's/io_service_t s = gBattFrom == kDMBattFromService \? DMBattService\(&pmu\) : MACH_PORT_NULL;/static io_service_t own = 0; if (!own) own = IOServiceGetMatchingService(MACH_PORT_NULL, IOServiceMatching("AppleSmartBattery")); io_service_t s = own;/'
+  mtf "the reason read from the service where the level's read failed" 's/io_service_t s = gBattFrom == kDMBattFromService \? DMBattService\(&pmu\) : MACH_PORT_NULL;/io_service_t s = DMBattService(\&pmu);/'
+  mtf "charging read again, and SBUIController's where it was not read (the old line)" 's/in\.charging = b\.charging \? 1 : 0;   \/\/[^\n]*/in.charging = DMBattPropInt(DMBattProp(s, \@"IsCharging"), \&k) ? 1 : 0;\n    if (!k) in.charging = DMBattSBUI().charging ? 1 : 0;/'
 fi
 exit $rc

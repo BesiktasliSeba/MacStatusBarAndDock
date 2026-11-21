@@ -223,6 +223,57 @@ int main(void) {
     Expect("  ... not while charging can't be paused (it charges as usual anyway)", MSBDChargeOffersFullNow(MSBDChargeStateWord(kMSBDChargeStateCantHold, 80, 1), 80), 0);
     MSBDChargeFooterText(MSBDChargeStateWord(kMSBDChargeStateCantHold, 80, 1), 80, 1, 0, t, sizeof t);
     Expect("footer: can't pause charging with this adapter, said first", strstr(t, "iPad can't pause charging with this power adapter, so it charges as usual until it is unplugged.") == t, 1);
+    // 1.8.8.1 BATTWHY: why iPad is not charging on the adapter, in the state word (bits 18-21, the adapter's watts 24-31: common/ChargeWhy.h) and the footer
+    uint64_t weak = MSBDChargeStateWord(kMSBDChargeStateCharging, 80, 1) | MSBDChargeWhyBits(kMSBDWhyTooWeak, 7);
+    Expect("state word with a reason: too weak and 7 W read back", MSBDChargeWordWhy(weak) == kMSBDWhyTooWeak && MSBDChargeWordWatts(weak) == 7, 1);
+    Expect("  ... the state, limit, on power and running bits as without it", MSBDChargeWordState(weak) == kMSBDChargeStateCharging && MSBDChargeWordLimit(weak) == 80
+           && MSBDChargeWordPlugged(weak) == 1 && ((weak >> 17) & 1) == 1, 1);
+    uint64_t all = MSBDChargeStateWord(kMSBDChargeStateOnHold, 80, 1) | 0xfffc0000ULL;   // (bits 18-31 all set: what a reader before 1.8.8.1 must not see)
+    Expect("  ... bits 18-31 all set: every reader before 1.8.8.1 (state, limit, on power, Charge to Full Now, the footer) reads the word as before",
+           MSBDChargeWordState(all) == kMSBDChargeStateOnHold && MSBDChargeWordLimit(all) == 80 && MSBDChargeWordPlugged(all) == 1 && MSBDChargeOffersFullNow(all, 80) == MSBDChargeOffersFullNow(MSBDChargeStateWord(kMSBDChargeStateOnHold, 80, 1), 80), 1);
+    Expect("  ... watts only with \"too weak\" (the word changes only when what is shown does), at most 255; none and unknown reasons: no bits",
+           MSBDChargeWordWatts(MSBDChargeStateWord(1, 80, 1) | MSBDChargeWhyBits(kMSBDWhyNotCharging, 7)) == 0 && MSBDChargeWordWatts(MSBDChargeStateWord(1, 80, 1) | MSBDChargeWhyBits(kMSBDWhyTooWeak, 300)) == 255
+           && MSBDChargeWhyBits(kMSBDWhyNone, 7) == 0 && MSBDChargeWhyBits(9, 7) == 0 && MSBDChargeWhyBits(-1, 7) == 0, 1);
+    Expect("  ... no job running (bit 17 off): no reason, no watts", MSBDChargeWordWhy(weak & ~(1ULL << 17)) == kMSBDWhyNone && MSBDChargeWordWatts(weak & ~(1ULL << 17)) == 0, 1);
+    for (int r = kMSBDWhyNotCharging; r <= kMSBDWhyFull; r++)
+        if (MSBDChargeWordWhy(MSBDChargeStateWord(kMSBDChargeStateCharging, 80, 1) | MSBDChargeWhyBits(r, 0)) != r) Expect("  ... every reason round-trips", r, -1);
+    Expect("which job states a reason takes the place of: charging to the limit, to full, the monthly full charge; never can't be paused, on hold, coming down, off, stopped",
+           MSBDChargeWhyReplaces(kMSBDChargeStateCharging) && MSBDChargeWhyReplaces(kMSBDChargeStateToFull) && MSBDChargeWhyReplaces(kMSBDChargeStateMonthlyFull) && !MSBDChargeWhyReplaces(kMSBDChargeStateCantHold)
+           && !MSBDChargeWhyReplaces(kMSBDChargeStateOnHold) && !MSBDChargeWhyReplaces(kMSBDChargeStateComingDown) && !MSBDChargeWhyReplaces(kMSBDChargeStateOff) && !MSBDChargeWhyReplaces(kMSBDChargeStateStopped), 1);
+    // (1.8.8.1, review of the line) can't be paused is the only word on why the battery is above the limit: a reason is said before it, it stays
+    int before = 1;
+    for (int s = kMSBDChargeStateOff; s <= kMSBDChargeStateCantHold; s++) if (MSBDChargeWhyBefore(s) != (s == kMSBDChargeStateCantHold)) before = 0;
+    Expect("  ... the one a reason is said before, the line kept after it: can't be paused, no other", before, 1);
+    MSBDChargeFooterText(weak, 80, 1, 0, t, sizeof t);
+    Expect("footer, KT's 7 W case after 3 minutes: the reason in place of \"Charging to 80%.\", then what the limit does",
+           strstr(t, "Not charging: the power adapter (7 W) gives less power than iPad is using.\n\nWhile iPad is plugged in, charging stops at 80%") == t && !strstr(t, "Charging to 80%"), 1);
+    MSBDChargeFooterText(MSBDChargeStateWord(kMSBDChargeStateCharging, 80, 1) | MSBDChargeWhyBits(kMSBDWhyTooWeak, 0), 80, 1, 0, t, sizeof t);
+    Expect("  ... no watts known: \"Not charging: the power adapter gives less power than iPad is using.\"", strstr(t, "Not charging: the power adapter gives less power than iPad is using.\n\n") == t, 1);
+    struct { int state, why; const char *line; } fw[] = {
+        { kMSBDChargeStateCharging, kMSBDWhyTooWarm, "Not charging: the battery is too warm.\n\n" },
+        { kMSBDChargeStateCharging, kMSBDWhyTooCold, "Not charging: the battery is too cold.\n\n" },
+        { kMSBDChargeStateCharging, kMSBDWhyHeldByIPadOS, "Charging is on hold by iPadOS.\n\n" },
+        { kMSBDChargeStateCharging, kMSBDWhyOnHold, "Charging is on hold.\n\n" },
+        { kMSBDChargeStateToFull, kMSBDWhyFull, "Fully charged.\n\n" },
+        { kMSBDChargeStateMonthlyFull, kMSBDWhyFull, "Fully charged.\n\n" },
+        { kMSBDChargeStateCantHold, kMSBDWhyNotCharging, "Not charging. iPad can't pause charging with this power adapter, so it charges as usual until it is unplugged.\n\n" },
+        { kMSBDChargeStateCantHold, kMSBDWhyFull, "Fully charged. iPad can't pause charging with this power adapter, so it charges as usual until it is unplugged.\n\n" },
+        { kMSBDChargeStateCantHold, kMSBDWhyOnHold, "Charging is on hold. iPad can't pause charging with this power adapter, so it charges as usual until it is unplugged.\n\n" },
+        { kMSBDChargeStateOnHold, kMSBDWhyNotCharging, "Charging on hold. iPad is using the power adapter.\n\n" },
+        { kMSBDChargeStateComingDown, kMSBDWhyTooWeak, "Using the battery until it is down to 80%, then charging on hold.\n\n" },
+        { kMSBDChargeStateCharging, kMSBDWhyNone, "Charging to 80%.\n\n" } };
+    int fwOK = 1;
+    for (unsigned i = 0; i < sizeof fw / sizeof fw[0]; i++) {
+        MSBDChargeFooterText(MSBDChargeStateWord(fw[i].state, 80, 1) | MSBDChargeWhyBits(fw[i].why, 0), 80, 1, 0, t, sizeof t);
+        if (strstr(t, fw[i].line) != t) { fwOK = 0; printf("      (state %d, reason %d: \"%.60s\")\n", fw[i].state, fw[i].why, t); }
+    }
+    Expect("  ... each reason's sentence (warm, cold, on hold by iPadOS, on hold, fully charged, not charging); can't be paused after its reason; our own hold and coming down keep theirs; no reason, as before", fwOK, 1);
+    MSBDChargeFooterText(MSBDChargeStateWord(kMSBDChargeStateCantHold, 80, 1) | MSBDChargeWhyBits(kMSBDWhyTooWeak, 255), 80, 1, 1, t, sizeof t);
+    Expect("  ... the longest: too weak at 255 W before can't pause, with Run on Power Adapter's text after it, whole (Settings' 600 bytes, the status's 320)",
+           strstr(t, "Not charging: the power adapter (255 W) gives less power than iPad is using. " MSBD_CHARGE_CANT_PAUSE_TEXT "\n\nWhile iPad is plugged in, it runs on the power adapter") == t
+           && strlen(t) > 26 && !strcmp(t + strlen(t) - 26, "iPad charges to 20% first."), 1);
+    MSBDChargeFooterText(MSBDChargeStateWord(kMSBDChargeStateCharging, 80, 0) | MSBDChargeWhyBits(kMSBDWhyTooWeak, 7), 80, 1, 0, t, sizeof t);
+    Expect("  ... off the cable: no status line, reason or not", strncmp(t, "While iPad is plugged in", 24) == 0, 1);
     // Run on Power Adapter: the level each plug-in holds (MSBDChargeAdapterLimit(limit, on, level at plug-in))
     Expect("Run on Power Adapter off: the Charge Limit as it is", MSBDChargeAdapterLimit(80, 0, 55), 80);
     Expect("  ... on, no limit, plugged in at 55 %: 55", MSBDChargeAdapterLimit(kMSBDChargeLimitOff, 1, 55), 55);

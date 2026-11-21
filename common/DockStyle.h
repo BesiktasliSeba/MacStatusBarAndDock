@@ -132,19 +132,23 @@ static inline void MSBDDrawDarkPanel(CGContextRef c, CGRect b) {
     CGPathRelease(p);
 }
 // Frosted: over the system's blur (the Dock draws it under this), a light tint (Dark Mode: a dark one) and a thin border; corners of 6 pt.
+// tint 0: the border only (Dock Background's colour is the tint then, a view of its own under this: dock/DockColor.m, 1.8.8.1).
 #define MSBD_FROSTED_CORNER 6.0
-static inline void MSBDDrawFrostedTint(CGContextRef c, CGRect b, int dark) {
+static inline void MSBDDrawFrostedTintIn(CGContextRef c, CGRect b, int dark, int tint) {
     CGRect r = CGRectInset(b, 0.25, 0.25);
     CGPathRef p = MSBDRoundRectPath(r, MSBD_FROSTED_CORNER);
-    CGContextAddPath(c, p);
-    if (dark) CGContextSetRGBFillColor(c, 0.12, 0.12, 0.13, 0.42); else CGContextSetRGBFillColor(c, 0.97, 0.97, 0.98, 0.38);
-    CGContextFillPath(c);
+    if (tint) {
+        CGContextAddPath(c, p);
+        if (dark) CGContextSetRGBFillColor(c, 0.12, 0.12, 0.13, 0.42); else CGContextSetRGBFillColor(c, 0.97, 0.97, 0.98, 0.38);
+        CGContextFillPath(c);
+    }
     CGContextAddPath(c, p);
     if (dark) CGContextSetRGBStrokeColor(c, 1, 1, 1, 0.16); else CGContextSetRGBStrokeColor(c, 1, 1, 1, 0.55);
     CGContextSetLineWidth(c, 0.5);
     CGContextStrokePath(c);
     CGPathRelease(p);
 }
+static inline void MSBDDrawFrostedTint(CGContextRef c, CGRect b, int dark) { MSBDDrawFrostedTintIn(c, b, dark, 1); }
 
 // ---- the open apps' lights ----
 // Glass Shelf: a glowing blue-white light on the lip (an ellipse, white at its heart, blue around, fading out), dot: today's dot's size.

@@ -31,6 +31,7 @@ int main(int argc, char **argv) {
         NSString *(^fx)(NSString *) = ^(NSString *n) { return [dir stringByAppendingPathComponent:n]; };
         NSString *D = @"com.besiktasliseba.test-crashstep";
         SetPref(@"macBanners", nil); SetPref(@"stockStatusBar", nil); SetPref(@"showDownloads", nil); SetPref(@"forceQuitEnabled", nil); SetPref(@"controlCenterStyle", nil); SetPref(@"dockStyle", nil);
+        SetPref(@"dockBackground", nil);
         Expect(@"the Dock part as a whole", fx(@"step1b-dock.ips"), map, @"part DockMagnification - - 0 the Dock|the Dock");
         Expect(@"the Dock: Downloads code -> Show Downloads off", fx(@"step1b-dock-downloads.ips"), map, [NSString stringWithFormat:@"pref DockMagnification %@ showDownloads 0 Show Downloads in Dock|the Dock's Downloads", D]);
         // Dock Style (1.8.4, review P2-L1): Settings stores "default" for Default, read as off (the rule's offtext=default) -- a crash in its code with
@@ -46,7 +47,19 @@ int main(int argc, char **argv) {
         Expect(@"  ... Frosted -> the same", fx(@"step1b-dock-style.ips"), map, dockStyle);
         SetPref(@"dockStyle", @NO);
         Expect(@"  ... set back by the guard before (false) -> the part", fx(@"step1b-dock-style.ips"), map, dockPart);
+        // Dock Background (1.8.8.1, the review of DOCKCOLOR: the fixture its design listed): Settings stores "auto" for Automatic, read as off (the rule's
+        // offtext=auto) -- a crash in DockColor.m with Automatic is not Dock Background's, the part goes; "color" reads as on, set back to Automatic
+        NSString *dockColor = [NSString stringWithFormat:@"pref DockMagnification %@ dockBackground 0 text=auto Dock Background|the Dock's color", D];
+        Expect(@"Dock Background's code, never set (Automatic) -> the part", fx(@"step1b-dock-color.ips"), map, dockPart);
+        SetPref(@"dockBackground", @"auto");
+        Expect(@"  ... Automatic as Settings stores it (\"auto\") -> the part", fx(@"step1b-dock-color.ips"), map, dockPart);
+        SetPref(@"dockBackground", @"color");
+        Expect(@"  ... Color -> Dock Background back to Automatic (\"auto\" stored, as Settings stores it)", fx(@"step1b-dock-color.ips"), map, dockColor);
+        SetPref(@"dockBackground", @NO);
+        Expect(@"  ... set back by the guard's step 1 before (false) -> the part", fx(@"step1b-dock-color.ips"), map, dockPart);
         SetPref(@"dockStyle", @"glass");
+        Expect(@"  ... with Dock Style Glass Shelf on too: DockColor.m's frame decides, not Dock Style's", fx(@"step1b-dock-color.ips"), map, dockPart);
+        SetPref(@"dockBackground", nil);
         Expect(@"the platter's layout hook alone under Apple's crash -> the part, never a style", fx(@"step1b-dock-hook.ips"), map, dockPart);
         SetPref(@"dockStyle", nil);
         Expect(@"  ... over Downloads' code -> Show Downloads (the frame below decides)", fx(@"step1b-dock-hook-downloads.ips"), map, [NSString stringWithFormat:@"pref DockMagnification %@ showDownloads 0 Show Downloads in Dock|the Dock's Downloads", D]);

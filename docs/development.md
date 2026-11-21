@@ -9,7 +9,7 @@ iOS injects only two small loaders, the two entries Choicy and iCleaner Pro show
 - On an iPhone nothing is loaded.
 - On an iPadOS version that hasn't been tested, only the Settings pages are loaded, unless you choose Enable Anyway.
 - A part that Automatic Crash Recovery turned off is skipped.
-- Package managers, the jailbreak apps, TrollStore and Filza never get the app parts, so they keep working if an app part ever breaks.
+- Package managers, the jailbreak apps, TrollStore and Filza get none of the app parts, so they keep working if an app part ever breaks. The one exception is MacPopupGuard, which a package manager with a popup bar (Sileo, Zebra) gets alone: it only keeps their queue bar working in a window.
 
 ```
 MacStatusBar&Dock
@@ -28,6 +28,9 @@ MacStatusBar&Dock
 │   ├── MixAudio            per-app volume and audio mixing
 │   ├── GraveEscapeTweak, BrightnessKeyTweak, TabMuteTweak   keyboard keys
 │   └── MacLargeTitles
+│
+├── Sileo and Zebra (package managers with a popup bar; every other app part stays out of them)
+│   └── MacPopupGuard       keeps their queue bar working in a window: one popup bar change at a time
 │
 ├── Settings app
 │   └── MacSettings, MacEthernetFix, the Status Bar, Desktop, Windows & Multitasking and Dock pages, and the Battery Health page with its Charging and Battery Use groups

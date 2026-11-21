@@ -25,9 +25,9 @@ check "  ... a native window's shortcuts are offered to UIKit only while the des
   "awk '/^- \\(NSArray<UIKeyCommand \\*> \\*\\)keyCommands \\{/{f=1} f&&/if \\(DMDesktopHasKeysNow\\(\\)\\) return @\\[\\];/{print \"ok\"; exit} f&&/^}/{exit}' $N | grep -q ok"
 check "  ... a native window made active (touched, opened, brought forward) takes the keys back from the desktop, also the one already active" \
   "fnn 'static void DMNativeSetActive(DMNativeWindow *w) {' | awk '/if \\(w\\) DMDesktopYieldKeys\\(\\);/{a=NR} /if \\(w == gNativeActive\\) \\{ if \\(w\\) DMNativeTakeKeys\\(w\\); DMNativeApplyLevel\\(\\); return; \\}/{b=NR} END{exit !(a && b > a)}' \
-   && grep -q '^static void DMDesktopYieldKeys(void) { if (gDesktop && \\[gDesktop dm_ownsKeys\\]) \\[gDesktop dm_setHasKeys:NO\\]; }' $D"
+   && grep -q '^static void DMDesktopYieldKeys(void) { \\[gDesktop dm_noteEnd:@\"a native window was made active\"\\]; if (gDesktop && \\[gDesktop dm_ownsKeys\\]) \\[gDesktop dm_setHasKeys:NO\\]; }' $D"
 check "a name edited on the desktop no longer makes the native windows inactive; its own window is key, and the desktop's keys (Return, Esc) come first" \
   "! fnd '- (void)dm_beginRename:(NSString *)path {' | grep -q 'DMNativeSetActive(nil)' && fnd '- (void)dm_beginRename:(NSString *)path {' | grep -q 'if (!typeIn.isKeyWindow) \\[typeIn makeKeyWindow\\];' \
-   && grep -q '^- (BOOL)dm_hasKeys { return (_hasKeys || _renameField || (!gNativeActive && !DMActiveApp()))' $D \
+   && grep -q '^- (BOOL)dm_hasKeys { return (_hasKeys || _renameField || \\[self dm_noteActive\\] || (!gNativeActive && !DMActiveApp()))' $D \
    && fnd '- (BOOL)dm_handleKey:(UIKey *)key {' | grep -q 'if (c == UIKeyboardHIDUsageKeyboardReturnOrEnter && none) { \\[self dm_endRename:YES\\]; return YES; }'"
 [ $fails = 0 ] && echo "test-desktopfinder: all checks pass" || { echo "test-desktopfinder: checks FAILED"; exit 1; }

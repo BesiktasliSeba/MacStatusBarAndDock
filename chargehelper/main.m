@@ -767,6 +767,11 @@ static double StateDouble(NSString *k) { return [gState[k] respondsToSelector:@s
 static int gPrev = kMSBDChargeAllow, gRunning = 1;
 static double gActionSince, gLastPulse, gCutSeenSince, gFullSince, gLastLoggedFull;
 static BOOL gHoldPulsed, gCutPulsed;           // the self-checks' one raise-and-let-go per episode (a second would not help: something else is the cause)
+// Why iPad is not charging on the adapter (1.8.8.1 BATTWHY, common/ChargeWhy.h), published with the state for Settings' footer: how long the
+// battery has not charged with the cable in and no adapter cut, how long it has given 100 mA or more then, when the job's own hold or cut last
+// ended (MSBDBattWhyClock, as the battery menu keeps it), and the reason the log last said.
+static MSBDBattWhyClock gWhyClock;
+static int gWhyLogged;
 // The hold and the cut checked against the battery (common/ChargeLimit.h MSBDChargeLeverCheck), [0] the hold, [1] the cut: when it went up, since
 // when charge has gone in while it is up (this stretch; 0: none now), when it was raised again in this stretch (0: not yet), the level when the
 // stretch began, the last look at it (0: not up then), and when it was raised again in this plug-in (the last MSBD_CHARGE_LEVER_RAISES times: those
@@ -867,6 +872,20 @@ static void LetGoForStop(BOOL first) {
     gPrev = kMSBDChargeAllow;
     Publish(0);
     if (first) Log(@"letting go of everything: the package stops the job (msbdcharge --stop)");
+}
+
+// What the battery service says about why it does not charge (common/ChargeWhy.h MSBDBattWhyIn), from the look's own reading: the battery menu
+// reads the same keys from SpringBoard. iPadOS's Optimized Battery Charging is not read here (false on all four iPads: PowerUI's unsupported
+// manager on iPad; the menu reads it).
+static MSBDBattWhyIn WhyIn(NSDictionary *b, int onAdapter) {
+    NSDictionary *cd = Dict(b[@"ChargerData"]);
+    id ncr = cd[@"NotChargingReason"], inhibit = cd[@"ChargerInhibitReason"];
+    MSBDBattWhyIn in = { .onAdapter = onAdapter, .charging = Int(b, @"IsCharging"), .ampKnown = [b[@"Amperage"] isKindOfClass:[NSNumber class]], .amp = Int(b, @"Amperage"),
+                         .full = Int(b, @"FullyCharged"), .soc = Int(b, @"CurrentCapacity"), .ext = Int(b, @"ExternalConnected"), .raw = Int(b, @"AppleRawExternalConnected"),
+                         .watts = (int)AdapterNow(b).watts, .ncrKnown = [ncr isKindOfClass:[NSNumber class]], .ncr = [ncr isKindOfClass:[NSNumber class]] ? [ncr unsignedLongLongValue] : 0,
+                         .inhibit = [inhibit isKindOfClass:[NSNumber class]] ? [inhibit longLongValue] : -1, .tempKnown = [b[@"Temperature"] isKindOfClass:[NSNumber class]],
+                         .tempCC = Int(b, @"Temperature"), .pmu = gPMU, .obc = -1 };
+    return in;
 }
 
 static void Evaluate(NSString *why) { @autoreleasepool {   // (run-loop callbacks have no pool of their own, and the job runs for weeks)
@@ -1100,13 +1119,30 @@ static void Evaluate(NSString *why) { @autoreleasepool {   // (run-loop callback
             gaveUp = YES;
         }
     }
+    // Why the battery does not charge on the adapter (common/ChargeWhy.h; the battery menu decides the same in SpringBoard), timed from the first
+    // look that saw it not charging with the cable in and no cut, published with the state for Settings' footer. The job's own hold and cut, and
+    // the 3 minutes after one ends (this look's reading was taken before it let go: its bit, the battery's wait after it): none.
+    int st = o.state == kMSBDChargeStateToFull && calibrating && ![gState[@"fullNow"] boolValue] ? kMSBDChargeStateMonthlyFull : o.state;
+    int onAdapterNow = plugged && !ourCut && !CutShown(b);
+    MSBDBattWhyOurs(&gWhyClock, now, st == kMSBDChargeStateOnHold || st == kMSBDChargeStateComingDown);
+    MSBDBattWhyIn wi = WhyIn(b, onAdapterNow);
+    MSBDBattWhyTick(&gWhyClock, now, onAdapterNow && wi.charging == 0 && !MSBDBattWhyCharging(wi), wi.ampKnown ? wi.amp <= MSBD_WHY_DRAIN_MA : -1);
+    MSBDBattWhyTimes(&gWhyClock, now, &wi);
+    int whyNot = MSBDBattWhyDecide(wi);
+    NSString *current = wi.ampKnown ? [NSString stringWithFormat:@"%d mA", wi.amp] : @"no current reading";
+    if (whyNot != gWhyLogged) {
+        gWhyLogged = whyNot;
+        if (!whyNot) Log(@"not charging on the adapter: nothing to say now (charging, off the adapter, the job's own hold or cut or the 3 minutes after one, or under 3 minutes)");
+        else Log(@"not charging on the adapter: %s (battery %d %%, %@, adapter %d W, reasons 0x%llx / %lld, %@ C, not charging for %.0f s, the battery giving 100 mA or more for %.0f s)", MSBDBattWhyName(whyNot), soc,
+                 current, wi.watts, wi.ncr, wi.inhibit, wi.tempKnown ? [NSString stringWithFormat:@"%.2f", wi.tempCC / 100.0] : @"-", wi.notChargingFor, wi.drainingFor > 0 ? wi.drainingFor : 0);
+    }
     // self-checks. Allowed but not charging well under full (a hold left in the driver): raised and let go, once while it lasts.
     if (MSBDChargeNeedsPulse(o.action, plugged, isCharging, full, soc, now - gActionSince, now - gLastPulse)) {
         if (!gHoldPulsed) {
             gHoldPulsed = YES; gLastPulse = now;
             if (gPMU) SetPredictiveInhibit(NO);
             Pulse(@"ChargeInhibit");
-            Log(@"self-check: not charging at %d %% though allowed: hold raised and let go", soc);
+            Log(@"self-check: not charging at %d %% though allowed (adapter %d W, %@, reasons 0x%llx; why: %s): hold raised and let go", soc, wi.watts, current, wi.ncr, MSBDBattWhyName(whyNot));
         }
     } else if (o.action != kMSBDChargeAllow || isCharging || !plugged) gHoldPulsed = NO;
     // A cut showing that is not ours (left by a powerd that restarted while ours was up): let go once it has shown for a minute (ours takes some
@@ -1120,7 +1156,7 @@ static void Evaluate(NSString *why) { @autoreleasepool {   // (run-loop callback
     SocRemoveLeftovers();   // (a kept policy that is not the hold now: removed, looked at every minute until it is)
     gPrev = o.action;
     SetTimer((plugged && holdOn) || gCutSeenSince > 0 || gLeftoverInWaySince > 0 || gSocLeft > 0);
-    Publish(MSBDChargeStateWord(o.state == kMSBDChargeStateToFull && calibrating && ![gState[@"fullNow"] boolValue] ? kMSBDChargeStateMonthlyFull : o.state, holdAt, plugged));
+    Publish(MSBDChargeStateWord(st, holdAt, plugged) | MSBDChargeWhyBits(whyNot, wi.watts));
     if (gaveUp) Evaluate(@"given up");   // (without what does not take, at once)
 } }
 
@@ -1229,7 +1265,10 @@ int main(int argc, char **argv) {
                    (unsigned long long)(cd[@"ChargerInhibitReason"] ? LL(cd[@"ChargerInhibitReason"]) : 0), limit, comeDown, cs.runOnAdapter, TweakMeantToRun());
             int t = 0; uint64_t w = 0;
             if (notify_register_check(MSBD_CHARGE_STATE, &t) == NOTIFY_STATUS_OK) { notify_get_state(t, &w); notify_cancel(t); }
-            printf("published state %d, limit %d, on power %d, job running %d\n", MSBDChargeWordState(w), MSBDChargeWordLimit(w), MSBDChargeWordPlugged(w), (int)((w >> 17) & 1));
+            printf("published state %d, limit %d, on power %d, job running %d; not charging on the adapter: %s", MSBDChargeWordState(w), MSBDChargeWordLimit(w), MSBDChargeWordPlugged(w),
+                   (int)((w >> 17) & 1), MSBDBattWhyName(MSBDChargeWordWhy(w)));
+            if (MSBDChargeWordWatts(w)) printf(" (adapter %d W)", MSBDChargeWordWatts(w));
+            printf("\n");
             CFDictionaryRef all = NULL; NSMutableArray *ours = [NSMutableArray array];
             if (IOPMCopyAssertionsByProcess(&all) == kIOReturnSuccess && all) {
                 NSDictionary *byPID = (__bridge_transfer NSDictionary *)all;

@@ -389,14 +389,18 @@ static DMNativeWindow *DMNativeWindowForTouch(UITouch *t, BOOL *onChrome) {
 // and clear, and a touch on its clear part goes on to the window below (M1: a tap at {30, 800} reached the Home Screen), so a hit that wide is no
 // answer without a docked keyboard.
 static CGRect gOwnKeyboardFrame;           // (our own keyboard on the screen, screen points; zero when none -- Desktop.h's keyboard watch)
+// A view about as big as the screen is a container, never a keyboard or a menu: none of them is 90% of the screen's width and 75% of its height.
+// (The keyboard windows' hits here; the desktop's typing window's own hit test too, Desktop.h DMDesktopRenameHitTest: UIKit's menu containers there.)
+static BOOL DMViewNearlyScreen(UIView *v) {
+    CGSize b = v.bounds.size, s = [UIScreen mainScreen].bounds.size;
+    CGFloat sw = MAX(s.width, s.height), sh = MIN(s.width, s.height);
+    return (b.width >= sw * 0.9 && b.height >= sh * 0.75) || (b.height >= sw * 0.9 && b.width >= sh * 0.75);
+}
 static UIView *DMKeyboardWindowHit(UIWindow *w, CGPoint wp) {   // (what a keyboard window shows at that point of its own: a view of its own there, else nil)
     UIView *hit = nil;
     @try { hit = [w hitTest:wp withEvent:nil]; } @catch (NSException *e) { hit = nil; }
     if (!hit || hit == w || hit.hidden || hit.alpha < 0.01 || DMKeyboardHostIsContainer(hit) || hit.bounds.size.height <= 1.0 || hit.bounds.size.width <= 1.0) return nil;
-    // (nearly the whole screen is a container too -- no keyboard or menu of it is 90% of the screen's width and 75% of its height)
-    CGSize b = hit.bounds.size, s = [UIScreen mainScreen].bounds.size;
-    CGFloat sw = MAX(s.width, s.height), sh = MIN(s.width, s.height);
-    if ((b.width >= sw * 0.9 && b.height >= sh * 0.75) || (b.height >= sw * 0.9 && b.width >= sh * 0.75)) return nil;
+    if (DMViewNearlyScreen(hit)) return nil;   // (nearly the whole screen is a container too)
     return hit;
 }
 static BOOL DMPointOnOwnKeyboard(CGPoint p) {
@@ -443,7 +447,40 @@ static BOOL DMNativeUndoRaise(DMNativeWindow *source) {
     DMNativeSetActive(back);
     return YES;
 }
+// A pointer's secondary click on a native window (1.8.8.1, B63): a mouse's right button, a trackpad's two-finger click, or its two-finger tap with
+// Tap to Click. It reaches SpringBoard as a DIRECT touch (type 0: SpringBoard does not opt into indirect input) whose event has the secondary
+// button, and UIKit gives that touch to one kind of recognizer only, a context menu interaction's own: every other recognizer allows the primary
+// button alone, whatever its buttonMaskRequired says (UIKit 18.7, the Mac's copy: -[UIGestureRecognizer _defaultAllowedMouseButtons] is 1, and 3
+// only for its contextual menu recognizer). Finder's own secondary-click taps (Indirect Pointer touches only, the secondary button) so never saw
+// one, and its menus did not open.
+// A window's menu opens from its context menu interaction's ask for a configuration instead, which comes as the button goes down; a finger's
+// press and a primary click are asked about too, so SpringBoard's -sendEvent: notes here each press that begins on the layer, with its buttons.
+static __weak UITouch *gNativePressTouch;
+static NSInteger gNativePressButtons;
+static BOOL gNativePressTaken;
+__attribute__((noinline)) static void DMNativeNotePress(UIEvent *e) {   // (a symbol of its own, as DMNativeTouchBegan: a crash here is Finder's)
+    for (UITouch *t in e.allTouches) {
+        if (t.phase != UITouchPhaseBegan || !gNativeLayer || t.window != gNativeLayer) continue;   // (not the system gestures' copy of it)
+        NSInteger b = 0;
+        if (@available(iOS 13.4, *)) b = (NSInteger)e.buttonMask;
+        gNativePressTouch = t; gNativePressButtons = b; gNativePressTaken = NO;
+        return;
+    }
+}
+// YES, once, when the press now down in that view (or a view in it) began with the secondary button: its menu is the caller's to open. A finger
+// (no button), a primary click, a press that has ended, or one elsewhere: NO.
+static BOOL DMNativeTakeSecondaryPress(UIView *in) {
+    UITouch *t = gNativePressTouch;
+    if (!t || !in || gNativePressTaken || !(gNativePressButtons & UIEventButtonMaskSecondary)) return NO;
+    if (t.phase == UITouchPhaseEnded || t.phase == UITouchPhaseCancelled) return NO;
+    UIView *hit = t.view;   // (the view it came down on; a pointer's press can come with none: then by its place)
+    BOOL inside = hit ? [hit isDescendantOfView:in] : (t.window && t.window == in.window && [in pointInside:[t locationInView:in] withEvent:nil]);
+    if (!inside) return NO;
+    gNativePressTaken = YES;
+    return YES;
+}
 static BOOL DMDesktopShownAtScreen(CGPoint sp);   // (Desktop.h: the desktop shows at that screen point -- Finder's, on the Home Screen's first page)
+static BOOL DMDesktopTypingTakes(CGPoint sp, UIScreen *screen);   // (Desktop.h: the desktop types -- a name, a sticky note -- and the point is its typing's)
 static CGFloat DMDesktopWindowLevel(void);          // (Desktop.h: the level of the Home Screen's window the desktop is in)
 __attribute__((noinline)) static void DMNativeTouchBegan(UITouch *t) {   // (kept a symbol of its own: the crash guard names it -- tools/test-crashstep.sh)
     if (!gNativeLayer || gNativeLayer.hidden || !gNativeWindows.count) return;
@@ -462,6 +499,10 @@ __attribute__((noinline)) static void DMNativeTouchBegan(UITouch *t) {   // (kep
     //  window is still portrait, and a tap on Finder's sidebar came as {640, 1091}: it missed Finder and went through to the window behind, M1 30 Sep)
     CGPoint wp = [t locationInView:nil];
     CGPoint p = t.window ? [t.window convertPoint:wp toCoordinateSpace:t.window.screen.coordinateSpace] : wp;
+    // (1.8.8.1: the desktop types -- a name, a sticky note -- and the touch is its typing's: what its typing window shows there (the field, the note
+    //  with its grips, UIKit's edit menu) or our own keyboard. Nothing is made active: a caret tap or a grip's pull over an active Finder window made
+    //  that window active, which took the keys and ended the typing -- sticky-notes.md Feasibility 2a, a key of our keyboard over Finder too)
+    if (DMDesktopTypingTakes(p, t.window.screen)) return;
     CGPoint lp = [gNativeLayer convertPoint:p fromCoordinateSpace:gNativeLayer.screen.coordinateSpace];
     UIView *hit = DMNativeLayerHitTest(gNativeLayer, @selector(hitTest:withEvent:), lp, nil);
 #if DEBUG

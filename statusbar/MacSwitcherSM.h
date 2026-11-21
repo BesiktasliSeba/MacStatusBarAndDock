@@ -689,6 +689,7 @@ static void DMMSWSMAimChange(NSUInteger gen);
 static void DMMSWSMSwitch(NSUInteger to, NSString *why, NSString *launching, CGFloat v, void (^done)(void)) {
     BOOL fromGesture = gMSWTrackCommit && gMSWSlRoot != nil;
     if (to >= gMSWDesks.count || to == gMSWCur || gMSWSwitching || gMSWTrack == 2 || (gMSWTrack == 3 && !fromGesture)) { if (done) done(); return; }
+    DMDesktopTypingEnd(@"a desktop switch");   // (1.8.8.1: a name or a sticky note being typed ends first, also for a switch not made from the view)
     DMSMStripPresentationEnd(@"a desktop slides in");   // (a strip a swipe brought out goes before the stages change: StatusBar.x)
     gMSWSwitching = YES;
     gMSWSMQuietUntil = CACurrentMediaTime() + 5.0;   // (DMMSWSMApply stays out of it until the slide is over)

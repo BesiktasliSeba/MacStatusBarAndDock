@@ -2046,65 +2046,12 @@ __attribute__((unused)) static void MABInstallIdiom(void) {
     if (m) { gOrigTraitIdiom = (NSInteger (*)(id, SEL))method_getImplementation(m); method_setImplementation(m, (IMP)MABTraitIdiom); }
 }
 
-// ===== LNPopupController race guard (M1 pipeline 2026-09-24, Sileo "queue gets stuck in a window") =====================================================
-// Sileo (and other apps built on the LNPopupController library) show a popup bar (Sileo: the "Queued" bar in the tab bar) only when the app is wider than
-// a threshold (Sileo: 768 pt) and remove it when narrower. When a window changes size quickly across that threshold (full screen -> window goes through
-// a short in-between size; a fast resize does the same), the app asks LNPopupController to dismiss the bar and, before that animation is over, to present
-// it again. The library does not handle the overlap: the late "dismiss finished" step hides the bar AFTER it was presented again, so the app believes the
-// bar is up while it is hidden, and the next Queue tap opens an invisible popup over a dimmed window (stuck). Fix: present/dismiss calls on one controller
-// are run one at a time; a call that arrives while the opposite one is still animating waits for it, and only the latest request runs. Every completion
-// block the app passed is still called exactly once. A 2 s safety net runs the waiting call if a completion never comes.
-#import <objc/runtime.h>
-static char kMABPopupBusy, kMABPopupPending;
-static void (*oMABPresentBar)(id, SEL, id, BOOL, id);
-static void (*oMABDismissBar)(id, SEL, BOOL, id);
-static void MABPopupRun(id vc, int op, id content, BOOL animated, void (^completion)(void));
-static void MABPopupFinished(id vc, NSNumber *token) {
-    if (![objc_getAssociatedObject(vc, &kMABPopupBusy) isEqual:token]) return;   // already finished (completion or safety net)
-    objc_setAssociatedObject(vc, &kMABPopupBusy, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    void (^next)(void) = objc_getAssociatedObject(vc, &kMABPopupPending);
-    objc_setAssociatedObject(vc, &kMABPopupPending, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
-    if (next) next();
-}
-static void MABPopupRun(id vc, int op, id content, BOOL animated, void (^completion)(void)) {
-    NSNumber *busy = objc_getAssociatedObject(vc, &kMABPopupBusy);
-    if (busy) {   // one is still animating: remember only the latest request (its completion, and any replaced request's completion, run after it)
-        void (^oldCompletion)(void) = objc_getAssociatedObject(vc, "mabPendingCompletion");
-        void (^merged)(void) = ^{ if (oldCompletion) oldCompletion(); if (completion) completion(); };
-        objc_setAssociatedObject(vc, "mabPendingCompletion", merged, OBJC_ASSOCIATION_COPY_NONATOMIC);
-        __weak id weakVC = vc;
-        objc_setAssociatedObject(vc, &kMABPopupPending, ^{
-            id strong = weakVC; if (!strong) return;
-            void (^c)(void) = objc_getAssociatedObject(strong, "mabPendingCompletion");
-            objc_setAssociatedObject(strong, "mabPendingCompletion", nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
-            MABPopupRun(strong, op, content, animated, c);
-        }, OBJC_ASSOCIATION_COPY_NONATOMIC);
-        return;
-    }
-    static long counter = 0;
-    NSNumber *token = @(++counter);
-    objc_setAssociatedObject(vc, &kMABPopupBusy, token, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    __weak id weakVC = vc;
-    void (^done)(void) = ^{ if (completion) completion(); id strong = weakVC; if (strong) MABPopupFinished(strong, token); };
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ id strong = weakVC; if (strong) MABPopupFinished(strong, token); });
-    if (op == 1) oMABPresentBar(vc, @selector(presentPopupBarWithContentViewController:animated:completion:), content, animated, done);
-    else oMABDismissBar(vc, @selector(dismissPopupBarAnimated:completion:), animated, done);
-}
-static void hMABPresentBar(id self, SEL _cmd, id content, BOOL animated, void (^completion)(void)) {
-    if (![NSThread isMainThread]) { oMABPresentBar(self, _cmd, content, animated, completion); return; }
-    MABPopupRun(self, 1, content, animated, completion);
-}
-static void hMABDismissBar(id self, SEL _cmd, BOOL animated, void (^completion)(void)) {
-    if (![NSThread isMainThread]) { oMABDismissBar(self, _cmd, animated, completion); return; }
-    MABPopupRun(self, 2, nil, animated, completion);
-}
+// ===== LNPopupController race guard (M1 pipeline 2026-09-24, Sileo "queue gets stuck in a window"; 1.8.8.1 B68: the designated present too) ========
+// The guard itself: common/PopupGuard.h (present/dismiss of the library's popup bar one at a time per controller; why, and which present it takes).
+#include "../common/PopupGuard.h"
 static void MABInstallPopupGuard(void) {
     if (!NSClassFromString(@"LNPopupBar")) return;   // only apps that contain LNPopupController
-    Class vc = [UIViewController class];
-    SEL ps = @selector(presentPopupBarWithContentViewController:animated:completion:), ds = @selector(dismissPopupBarAnimated:completion:);
-    if (!class_getInstanceMethod(vc, ps) || !class_getInstanceMethod(vc, ds)) return;
-    MSHookMessageEx(vc, ps, (IMP)hMABPresentBar, (IMP *)&oMABPresentBar);
-    MSHookMessageEx(vc, ds, (IMP)hMABDismissBar, (IMP *)&oMABDismissBar);
+    MSBDPopupGuardInstall([UIViewController class]);
 }
 // ===== Messages entry bar in a short window (M1 2026-09-27, "Send does nothing in a small Messages tile") =============================================
 // Root cause (ChatKit, read from its code): the message bar's height is -[CKChatController _maxEntryViewHeight], which updateEntryViewHeightIncludingAppStrip:

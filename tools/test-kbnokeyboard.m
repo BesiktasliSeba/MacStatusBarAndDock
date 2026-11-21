@@ -75,6 +75,7 @@ static id DMStageScene(UIView *st, NSString *b) { gSceneLooks++; return b.length
 @end
 static DMNativeWindow *gNative;
 static DMNativeWindow *DMNativeActiveApp(void) { return gNativeFront ? gNative : nil; }
+static BOOL DMDesktopTypingNow(void) { return NO; }   // (1.8.8.1, Desktop.h: the desktop's typing counts as no app active; nothing types in these runs)
 @interface SBApplication : NSObject
 @property (copy) NSString *bundleIdentifier;
 @end

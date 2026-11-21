@@ -7,7 +7,10 @@
 # in, and once the last of ours is gone the bar is laid out again (DMAMOverlayGone, from DMCloseOverlay and DMRemoveOverlayNow). The real code of
 # both sides on real Darwin notifications and the real main run loop (test-appmenushold.m), one scenario per process: AMH_SB = statusbar/AppMenus.h,
 # AMH_SBX = statusbar/StatusBar.x (the layout's lines and the two ends of a menu), AMH_APP = appbridge/AppMenus.h (another copy, e.g. before the
-# fix); then site checks and made-to-fail copies, each must fail.
+# fix); then site checks and made-to-fail copies, each must fail. F-7b (1.8.8.1; p08's device rows: a finger tap on Go 23 ms before Maps' first
+# answer re-laid the bar opened nothing, Go had moved from under the finger): a copy keeps the app's titles too while one of its titles is under a
+# finger (UIKit tracking the touch on its button), and the end of every title's touch lays it out again (DMLayoutTitle's lines for each title:
+# touch.inc; DMAMTitleTouched, DMAMTitleTouchEnded).
 cd "$(dirname "$0")" || exit 1
 SDK=$(xcrun --show-sdk-path 2>/dev/null || echo /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk)
 FW="$SDK/System/iOSSupport/System/Library/Frameworks"
@@ -16,7 +19,7 @@ if [ -n "$AMH_KEEP" ]; then W=$AMH_KEEP; mkdir -p "$W"; else W=$(mktemp -d); tra
 SB0=${AMH_SB:-../statusbar/AppMenus.h}; SBX0=${AMH_SBX:-../statusbar/StatusBar.x}; APP0=${AMH_APP:-../appbridge/AppMenus.h}; RULES=../common/AppMenuRules.h
 fnst() { awk -v n="$2(" '(index($0, "static ") == 1 || index($0, "__attribute__((noinline)) static ") == 1) && index($0, n) {f=1} f {print} f && /^[}]/ {exit}' "$1"; }   # a static function by its name
 fnx() { awk -v h="$2" 'index($0, h) == 1 {f=1} f {print} f && /^[}]/ {exit}' "$1"; }                             # a function by its first line
-SCEN="word switch tap minute gone front nohold"
+SCEN="word switch tap minute gone front nohold touch touchend"
 
 build() {   # $1 SpringBoard's AppMenus.h, $2 its StatusBar.x, $3 the app's AppMenus.h, $4 dir, $5 quiet
   local d=$4; mkdir -p "$d"; cp "$RULES" "$d/AppMenuRules.h"
@@ -32,12 +35,15 @@ build() {   # $1 SpringBoard's AppMenus.h, $2 its StatusBar.x, $3 the app's AppM
   # (what the two ends of one of our menus or panels do for the app's titles)
   fnx "$2" 'static void DMCloseOverlay(void) {' | grep -E '^    DMAM[A-Za-z]+\(\);' > "$d/close.inc"
   fnx "$2" 'static void DMRemoveOverlayNow(void) {' | grep -E '^    DMAM[A-Za-z]+\(\);' > "$d/remove.inc"
+  # (what DMLayoutTitle adds to each title's button for the hold, F-7b: none before 1.8.8.1)
+  awk 'index($0, "        NSHashTable *titles = objc_getAssociatedObject(fg, kAMTitleButtonsKey);") == 1 {f=1} f {print} f && index($0, "UIControlEventTouchCancel];") {exit}' "$2" > "$d/touch.inc"
   awk 'BEGIN { n = split("MABMenuKeyWindow MABMenuStart MABMenuRoot MABMenuPerform", a, " ") }
        !skip && index($0, "static ") == 1 && /\{$/ { for (i = 1; i <= n; i++) if (index($0, "*" a[i] "(") || index($0, " " a[i] "(")) skip = 1 }
        skip { if ($0 ~ /^[}]/) skip = 0; next } { print }' "$3" \
     | sed -E "$sub"'; s#^\#include "\.\./common/AppMenuRules\.h"#\#include "AppMenuRules.h"#; s/NSTemporaryDirectory\(\)/TTmp()/g' > "$d/app-block.inc"
   [ "$(wc -l < "$d/layout.inc" | tr -d ' ')" = 4 ] && grep -q 'amWant' "$d/layout.inc" && grep -q 'static NSArray<NSString \*> \*DMAMTitles(NSString \*bundle) {' "$d/sb-block.inc" \
     && grep -q 'DMAMFrontSeen' "$d/sb-block.inc" && grep -q 'static void MABRegisterMenus(void) {' "$d/app-block.inc" && ! grep -q 'static UIWindow \*MABMenuKeyWindow(void) {' "$d/app-block.inc" \
+    && { ! grep -q 'kAMTitleButtonsKey' "$2" || [ "$(wc -l < "$d/touch.inc" | tr -d ' ')" = 5 ]; } \
     || { echo "FAIL  the code was not found in $1 / $2 / $3"; return 99; }
   clang -target "$(uname -m)-apple-ios14.0-macabi" -isysroot "$SDK" -iframework "$FW" -F "$FW" -L"$SDK/System/iOSSupport/usr/lib" \
         -fobjc-arc -Wall -Wno-unused-function -Werror=implicit-function-declaration -DTPFX="\"test.f7.$$.$RANDOM.\"" -I"$d" \
@@ -65,9 +71,13 @@ check "both ends of one of our menus or panels lay the waiting titles out, after
 check "the hold is only in those two and the layout (nothing from a constructor; one forward declaration)" \
   "[ \$(cat ../statusbar/*.x ../statusbar/*.h | grep -c 'DMAMOverlayGone();') = 2 ] && [ \$(grep -c 'static void DMAMOverlayGone(void);' $SBX0) = 1 ] && ! grep -qE 'DMAMTitlesToLay|DMAMOverlayGone|gAMHeld|kAMLaidKey' ../appbridge/*.h ../appbridge/*.x"
 check "a menu or panel holds only the copies on its own screen (a menu on the TV, the TV's bars; the iPad stays in use beside it: DMSMOurMenuOpenOn's rule)" \
-  "fnst $SB0 DMAMTitlesToLay | grep -qxF '    if (!gOverlay || (fg.window.screen ?: ms) != (gOverlay.window.screen ?: ms)) {' && fnst $SB0 DMAMTitlesToLay | grep -qxF '    UIScreen *ms = [UIScreen mainScreen];'"
-check "the crash guard: the new functions are in AppMenus.h, whose crash turns Show Apps' Own Menus off (the hold kept out of line: -Os put it in the bar's layout)" \
-  "grep -qxF 'file MacStatusBarCore ^AppMenus\\.h\$ appOwnMenus' crashmap-rules.txt && grep -q '^__attribute__((noinline)) static NSArray<NSString \\*> \\*DMAMTitlesToLay(UIView \\*fg, NSString \\*bundle) {' $SB0 && grep -q '^static void DMAMOverlayGone(void) {' $SB0"
+  "fnst $SB0 DMAMTitlesToLay | grep -qxF '    BOOL menu = gOverlay && (fg.window.screen ?: ms) == (gOverlay.window.screen ?: ms);   // (one of ours open on its screen)' && fnst $SB0 DMAMTitlesToLay | grep -qxF '    UIScreen *ms = [UIScreen mainScreen];'"
+check "F-7b: a copy holds while one of its own titles is under a finger (only with an app's titles to hold: off, nothing of it is read); every title of the bar is kept for that as DMLayoutTitle makes it, and lays the bar out again at the end of each of its touches (inside, outside, cancelled); nothing else calls them" \
+  "fnst $SB0 DMAMTitlesToLay | grep -qxF '    if (!menu && !(bundle.length && DMAMTitleTouched(fg))) {' && fnst $SB0 DMAMTitleTouched | grep -qF 'if (b.tracking) return YES;' && [ \$(cat ../statusbar/*.x ../statusbar/*.h | grep -c 'DMAMTitleTouched(') = 2 ] && [ \$(cat ../statusbar/*.x ../statusbar/*.h | grep -c 'DMAMTitleTouchEnded()') = 1 ] && [ \$(cat ../statusbar/*.x ../statusbar/*.h | grep -c 'kAMTitleButtonsKey') = 4 ] && fnx $SBX0 'static CGFloat DMLayoutTitle(UIView *fg, BOOL rtl, const void *labelKey, const void *buttonKey, const void *pillKey,' | grep -qxF '        [btn addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { DMAMTitleTouchEnded(); }]' && fnx $SBX0 'static CGFloat DMLayoutTitle(UIView *fg, BOOL rtl, const void *labelKey, const void *buttonKey, const void *pillKey,' | grep -qxF '      forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel];' && fnx $SBX0 'static CGFloat DMLayoutTitle(UIView *fg, BOOL rtl, const void *labelKey, const void *buttonKey, const void *pillKey,' | grep -qxF '        [titles addObject:btn];' && ! grep -qE 'DMAMTitleTouch|kAMTitleButtonsKey' ../appbridge/*.h ../appbridge/*.x"
+check "F-7b: the finger's end lays the bar out a turn later (UIKit may still track the touch while its actions run), and only when something waited" \
+  "fnst $SB0 DMAMTitleTouchEnded | sed -n 2,3p | tr -d '\\n' | grep -qF '    if (!gAMHeld) return;   // (nothing waited)    dispatch_async(dispatch_get_main_queue(), ^{'"
+check "the crash guard: the new functions are in AppMenus.h, whose crash turns Show Apps' Own Menus off (the hold kept out of line: -Os put it in the bar's layout; the finger's end too, called from StatusBar.x)" \
+  "grep -qxF 'file MacStatusBarCore ^AppMenus\\.h\$ appOwnMenus' crashmap-rules.txt && grep -q '^__attribute__((noinline)) static NSArray<NSString \\*> \\*DMAMTitlesToLay(UIView \\*fg, NSString \\*bundle) {' $SB0 && grep -q '^static void DMAMOverlayGone(void) {' $SB0 && grep -q '^__attribute__((noinline)) static void DMAMTitleTouchEnded(void) {' $SB0 && grep -q '^static BOOL DMAMTitleTouched(UIView \\*fg) {' $SB0"
 check "no em dash in the test" "! grep -q \$'\\xe2\\x80\\x94' test-appmenushold.m test-appmenushold.sh"
 
 # made-to-fail copies: each must make at least one scenario fail
@@ -82,8 +92,8 @@ mtf() {   # $1 what, $2 file (sb|sbx|app), $3 sed
 }
 mi=0
 mtf "the layout takes the answer as it comes (1.8.8 RC 2, p08)" sbx 's/DMAMTitlesToLay\(fg, amBundle\);/amBundle ? DMAMTitles(amBundle) : @[];/'
-mtf "the hold never holds" sb 's/^    if \(!gOverlay \|\| \(fg\.window\.screen \?: ms\) != \(gOverlay\.window\.screen \?: ms\)\) \{$/    if (1) {/'
-mtf "a menu holds the copies on every other screen instead of its own" sb 's/\(fg\.window\.screen \?: ms\) != \(gOverlay\.window\.screen \?: ms\)/(fg.window.screen ?: ms) == (gOverlay.window.screen ?: ms)/'
+mtf "the hold never holds" sb 's/^    if \(!menu && !\(bundle\.length && DMAMTitleTouched\(fg\)\)\) \{$/    if (1) {/'
+mtf "a menu holds the copies on every other screen instead of its own" sb 's/\(fg\.window\.screen \?: ms\) == \(gOverlay\.window\.screen \?: ms\)/(fg.window.screen ?: ms) != (gOverlay.window.screen ?: ms)/'
 mtf "nothing laid out again once ours is gone" sb '/^    for \(UIView \*fg in gCopies\.allObjects\) \[fg setNeedsLayout\];$/d'
 mtf "the hold not noted" sb '/^        gAMHeld = YES;$/d'
 mtf "the hold keeps another app's titles for the app in front" sb 's/bundle\.length && \[laid\[0\] isEqual:bundle\] \? laid\[1\] : @\[\];/laid ? laid[1] : @[];/'
@@ -92,4 +102,10 @@ mtf "DMRemoveOverlayNow lays nothing out again" sbx '/^    DMAMOverlayGone\(\); 
 mtf "laid out again at once, before the next menu of a switch is open" sb 's/^    for \(UIView \*fg in gCopies\.allObjects\) \[fg setNeedsLayout\];$/    for (UIView *fg in gCopies.allObjects) { [fg setNeedsLayout]; [fg layoutIfNeeded]; }/'
 mtf "the bar laid out again at every close, with nothing that waited" sb 's/^    if \(!gAMHeld\) return;$/    (void)0;/'
 mtf "SpringBoard asks a move under one of our open menus" sb '/^        if \(gOverlay\) \{ DMAMAskSoon\(b, 1\.0\); return; \}$/d'
+# (F-7b)
+mtf "no hold for a title under a finger (1.8.8)" sb 's/^    if \(!menu && !\(bundle\.length && DMAMTitleTouched\(fg\)\)\) \{$/    if (!menu) {/'
+mtf "the titles' buttons not kept for the hold" sbx 's/^        \[titles addObject:btn\];$/        (void)titles;/'
+mtf "nothing laid out again as the finger lifts" sbx 's/\{ DMAMTitleTouchEnded\(\); \}/{ }/'
+mtf "laid out again in the touch's own turn (UIKit still tracking it)" sb 's/^    dispatch_async\(dispatch_get_main_queue\(\), \^\{$/    ({/'
+mtf "the end of every touch lays the bar out, with nothing that waited" sb 's/^    if \(!gAMHeld\) return;   \/\/ \(nothing waited\)$/    (void)0;/; s/^        if \(!gAMHeld\) return;$/        (void)0;/'
 [ "$fails" = 0 ] && echo "test-appmenushold: all pass" || { echo "test-appmenushold: FAILED"; exit 1; }

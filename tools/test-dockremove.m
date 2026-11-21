@@ -48,6 +48,7 @@ static CFPropertyListRef DRCopyValue(CFStringRef key, CFStringRef domain) {
 void DMBounceSetOn(BOOL on) {}
 void DMDockAutoHideSetOn(BOOL on) {}
 void DMDockStyleSetChoice(int style) {}
+void DMDockColorLoad(BOOL tweakOn) {}   // (Dock Background, 1.8.8.1: DMLoadPrefs reads its keys in DockColor.m)
 static void DMDispReload(void) {}
 
 // ---- SpringBoard's icon model: the Dock's own list and the Home Screen

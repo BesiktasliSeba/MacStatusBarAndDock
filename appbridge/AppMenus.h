@@ -17,10 +17,15 @@
 // Esc Ends Typing. Off, an ask or a pick does nothing at all: no snapshot, no file, no answer.
 #include "../common/AppMenuRules.h"
 
+// (SpringBoard posts the name each time it publishes it, so the state is read again only after a post: notify_check looks at notifyd's shared
+//  memory, where notify_get_state is a round trip to notifyd -- ~70 us, which every look made, at most once a second per answered app in front
+//  while it is busy: the B12 review fixes' review, note 3)
 static BOOL MABMenusOn(void) {
-    static int token = 0; uint64_t state = 0;
-    if (!token && notify_register_check("com.besiktasliseba.appbridge.appmenus", &token) != NOTIFY_STATUS_OK) token = 0;
-    if (token) notify_get_state(token, &state);
+    static int token = 0; static uint64_t state = 0;
+    int moved = 1;   // (the first read, and whenever the check cannot tell)
+    if (!token) { if (notify_register_check("com.besiktasliseba.appbridge.appmenus", &token) != NOTIFY_STATUS_OK) token = 0; }
+    else if (notify_check(token, &moved) != NOTIFY_STATUS_OK) moved = 1;
+    if (token && moved) notify_get_state(token, &state);
     return state != 2;   // (only a published off is off: the switch's default is on)
 }
 
@@ -156,7 +161,8 @@ static NSArray<UIKeyCommand *> *MABMenuKeyCommandsFrom(UIResponder *start, uint6
 // _UIMenuSystemShouldRebuildNotification (by its exported name, where there is one). Not a timer guessing when the app is ready: a check of what
 // it offers, and an ask only when that really moved. An app whose looks keep finding a move its next answer doesn't show (a carousel moving its
 // responders), or whose word no answer follows (not the bar's app: a window of another app is; or one of our menus or panels is open over it), is
-// looked at less often, every 2, 4, then 8 s, until an answer differs or something else asks it (a switch, a tap: B12 review, findings 1 and 5).
+// looked at less often, every 2, 4, then 8 s, until an answer differs or something else asks it (a switch, a tap: B12 review, findings 1 and 5),
+// or an answer comes after a word no answer followed (someone listens again: brought forward with no tap, our menu closed).
 // With Show Apps' Own Menus off since its answer, the next look stops them before it reads anything (finding 2).
 typedef struct { uintptr_t start; uint64_t chain, cmds; uint32_t count, gen; } MABMenuPrint;
 static uint32_t gMABMenuGen;   // (the times the app asked UIKit to rebuild its main menu)
@@ -181,6 +187,7 @@ static uint64_t gMABAnswerSig;        // (what the last answer said: its menus, 
 static CFTimeInterval gMABLookSaidAt; // (when a look last said "menuschanged")
 static CFTimeInterval gMABAnsweredAt; // (when the last answer was written)
 static int gMABLookIdle;              // (looks in a row whose word showed nothing new: 0-3; a look every 1 << it seconds)
+static BOOL gMABLookUnheard;          // (a look counted a word as one no answer followed: the next answer, whoever asked it, puts the looks back)
 static void MABMenusLook(void) {
     if (!MABMenusOn()) {   // (switched off since its answer: no looking, not even a walk, until the next answer, which needs it on)
         gMABLooking = NO;
@@ -203,6 +210,7 @@ static void MABMenusLook(void) {
     if (gMABLookSaidAt > gMABAnsweredAt) {
         if (CACurrentMediaTime() - gMABLookSaidAt < 2.5) return;
         if (gMABLookIdle < 3) gMABLookIdle++;
+        gMABLookUnheard = YES;
     }
 #if DEBUG
     MABLog([NSString stringWithFormat:@"appmenus: what it offers moved since its answer (start %@ %@, responders %@, %u key commands, were %u, main menu rebuilt %u times since): menuschanged at %.3f; looks every %d s, %@",
@@ -249,12 +257,15 @@ static void MABMenusAnswered(UIResponder *start, NSArray<UIKeyCommand *> *kcs, u
     }
     // (the answer to a look's word -- that word still unanswered and at most 3 s old -- saying what the last one said: the looks wait longer.
     //  Any other answer puts them back to once a second: one that differs, or one something else asked for, a switch, a tap, the app brought
-    //  forward, a row picked. Before, only a different answer did, so a later growth could wait up to 8 s more: B12 review, finding 5)
+    //  forward, a row picked. Before, only a different answer did, so a later growth could wait up to 8 s more: B12 review, finding 5. And the
+    //  first answer after a word no answer followed, whoever asked it: someone listens again -- the app brought forward with no tap (Cmd-Tab, its
+    //  Dock icon, the App Switcher, the bar's app closed beside it) or one of our menus closed over it, within 3 s of its last word. Before, that
+    //  answer counted as the word's and the looks stayed at 8 s, so its card's titles came ~8 s late, not ~2 s: review fixes review, finding 1)
     CFTimeInterval now = CACurrentMediaTime();
-    BOOL lookAsked = gMABLookSaidAt > gMABAnsweredAt && now - gMABLookSaidAt < 3.0;
+    BOOL lookAsked = !gMABLookUnheard && gMABLookSaidAt > gMABAnsweredAt && now - gMABLookSaidAt < 3.0;
     if (sig != gMABAnswerSig || !lookAsked) gMABLookIdle = 0;
     else if (gMABLookIdle < 3) gMABLookIdle++;   // (a look's "menuschanged" that changed nothing)
-    gMABAnsweredAt = now;
+    gMABAnsweredAt = now; gMABLookUnheard = NO;
     gMABAnswerSig = sig;
     gMABAnswerPrint = MABMenuPrintOf(start, kcs, chain);
     gMABLooking = YES;

@@ -6,14 +6,15 @@
 //  - a Control Center icon left of the clock (two switches, a Mac's; DMBattCCLayout) opens Control Center, as a click on the status icons does.
 // Off: the battery is iOS's again (a click on it opens Control Center; a finger's tap there does nothing, as on a stock iPad) and there is no icon.
 // The pull from the top-right edge opens Control Center either way (a system gesture, not the bar's). The menu, in a Mac's order: Battery with the
-// level; the power source; what the Charge Limit's job does now; Low Power Mode, iPadOS's own, switched as Control Center's toggle switches it
+// level; the power source; what the Charge Limit's job does now, or why iPad is not charging on the adapter (1.8.8.1: DMBattWhyRead); Low Power
+// Mode, iPadOS's own, switched as Control Center's toggle switches it
 // (DMBattSetLowPower); our battery settings -- Charge Limit and Charge to Full Now where the job is installed (common/ChargeLimit.h), Sleep Guard's
 // state (common/SleepGuard.h) --; Battery Settings….
 // Where the two items go and the job's words: common/BatteryMenu.h (plain C, tools/test-batterymenu.sh).
 // Not in it: a Mac's "Using Significant Energy". iPadOS keeps the apps' energy only in powerlog's database (root's, summed per hour for Settings'
 // Battery page); a live list from here would be a CPU sample called energy.
 
-#import <IOKit/IOKitLib.h>   // (the battery read from the battery service, DMBattNow; IOKit is linked)
+#import <IOKit/IOKitLib.h>   // (the battery read from the battery service, DMBattNow and DMBattWhyRead; IOKit is linked)
 static UIView *DMTrailingContainer(UIView *fg);   // (StatusBar.x: the status icons' region of a bar copy)
 static const void *kBattMenuLabelKey = &kBattMenuLabelKey, *kBattMenuPillKey = &kBattMenuPillKey;   // (DMPresentMenu: no title label or pill, as the Wi-Fi menu)
 static const void *kBattAXWasKey = &kBattAXWasKey;   // (an iOS battery view under our button: its own accessibility element setting, given back)
@@ -266,6 +267,106 @@ static int DMBattChargeLimitPref(void) {
 }
 #endif
 
+// ---- why iPad is not charging on the adapter (1.8.8.1 BATTWHY, KT 15 Nov; the rule: common/ChargeWhy.h MSBDBattWhyDecide, the line: common/
+// BatteryMenu.h MSBDBattMenuLine). SBUIController's charging flag cannot say it (iPadOS draws its bolt on a hold too: DMBattHoldBar), so the battery
+// service itself is read: the one DMBattNow reads the level from (DMBattService, looked up again after a read that failed), one key at a time
+// (never its whole dictionary). Charging or not is DMBattNow's (the service's IsCharging; where the service cannot be read, iPadOS's power sources'
+// or SBUIController's); the rest only on the adapter while it does not charge, and only when the menu is built (and on the open menu's 3 s
+// refresh). How long it has not charged, and has given 100 mA or more: stamped by the power sources note the menu already listens to
+// (DMBattApplyPref: DMBattNow's read, and one key more -- the current -- only while it does not charge under 95 % with no hold of the job's; no
+// timer, no new note) and by the menu's own read; after a respring not known until then (nothing said meanwhile). When the job's own hold or cut
+// ends: its state note (also DMBattApplyPref's) and the menu's read of its word (common/ChargeWhy.h MSBDBattWhyClock, as the job keeps it). Where
+// SpringBoard cannot read the service: "Not Charging" after 3 minutes, or iPadOS's own hold where its power sources say so; never a guessed reason.
+static MSBDBattWhyClock gBattWhyClock;   // (CACurrentMediaTime)
+#if DEBUG
+static BOOL gBattFakeWhyOn = NO;   // (tests: battmenu_why_... -- the battery service read as given, and how long it has not charged at that current)
+static MSBDBattWhyIn gBattFakeWhy, gBattWhyLast;   // (... and what the menu read last, for its log)
+#endif
+static int DMBattPropInt(id v, int *known) {   // (a number of the service: its value, *known 1; anything else: 0, *known 0)
+    BOOL k = [v isKindOfClass:[NSNumber class]];
+    if (known) *known = k;
+    return k ? [v intValue] : 0;
+}
+// IOPS's "Optimized Battery Charging Engaged" of the internal battery: 1, 0, -1 not there (read only when the battery's own statements say nothing).
+static int DMBattOBC(void) {
+    static CFTypeRef (*copyInfo)(void); static CFArrayRef (*copyList)(CFTypeRef); static CFDictionaryRef (*describe)(CFTypeRef, CFTypeRef);
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        void *h = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY);
+        if (h) { copyInfo = dlsym(h, "IOPSCopyPowerSourcesInfo"); copyList = dlsym(h, "IOPSCopyPowerSourcesList"); describe = dlsym(h, "IOPSGetPowerSourceDescription"); }
+    });
+    CFTypeRef info = copyInfo && copyList && describe ? copyInfo() : NULL;
+    CFArrayRef list = info ? copyList(info) : NULL;
+    int obc = -1;
+    for (CFIndex i = 0; list && i < CFArrayGetCount(list); i++) {
+        NSDictionary *d = (__bridge NSDictionary *)describe(info, CFArrayGetValueAtIndex(list, i));
+        if (![d isKindOfClass:[NSDictionary class]] || ![d[@"Type"] isEqual:@"InternalBattery"]) continue;
+        id v = d[@"Optimized Battery Charging Engaged"];
+        if ([v isKindOfClass:[NSNumber class]]) obc = [v boolValue] ? 1 : 0;
+        break;
+    }
+    if (list) CFRelease(list);
+    if (info) CFRelease(info);
+    return obc;
+}
+// The power sources changed (DMBattApplyPref's note, Battery Menu on): the stamps, from DMBattNow's read, the current too only where it can give
+// a reason (read from the battery service, not charging, under 95 %, no hold of the job's); nothing more read off the adapter.
+static void DMBattWhyNote(void) {
+    if (!gBattMenuOn) { gBattWhyClock.notChargingSince = gBattWhyClock.drainingSince = 0; return; }
+    DMBattInfo b = DMBattNow();
+    if (!b.known || !b.onAC) { MSBDBattWhyTick(&gBattWhyClock, CACurrentMediaTime(), 0, 0); return; }
+    int notCharging = !b.charging, draining = -1;
+    if (gBattFrom == kDMBattFromService && notCharging && b.percent < 95 && !gBattWhyClock.ours) { int k = 0, amp = DMBattPropInt(DMBattProp(DMBattService(NULL), @"Amperage"), &k); draining = k ? amp <= MSBD_WHY_DRAIN_MA : -1; }
+    MSBDBattWhyTick(&gBattWhyClock, CACurrentMediaTime(), notCharging, draining);
+}
+// What the menu decides from (b: DMBattNow; the job's own hold, now or just ended: gBattWhyClock, MSBDBattWhyOurs before this).
+static MSBDBattWhyIn DMBattWhyRead(DMBattInfo b) {
+    double now = CACurrentMediaTime();
+    MSBDBattWhyIn in = { .onAdapter = b.known && b.onAC, .charging = -1, .full = -1, .soc = b.known ? b.percent : -1, .ext = -1, .raw = -1,
+                         .inhibit = -1, .obc = -1, .notChargingFor = -1, .drainingFor = -1 };
+#if DEBUG
+    if (gBattFakeWhyOn) {
+        MSBDBattWhyIn f = gBattFakeWhy;
+        MSBDBattWhyTimes(&gBattWhyClock, now, &f);
+        f.onAdapter = in.onAdapter; f.soc = in.soc; f.notChargingFor = gBattFakeWhy.notChargingFor; f.drainingFor = gBattFakeWhy.drainingFor;   // (how long: as given)
+        gBattWhyLast = f;
+        return f;
+    }
+#endif
+    if (!in.onAdapter) {
+        MSBDBattWhyTick(&gBattWhyClock, now, 0, 0);
+        MSBDBattWhyTimes(&gBattWhyClock, now, &in);
+#if DEBUG
+        gBattWhyLast = in;
+#endif
+        return in;
+    }
+    BOOL pmu = NO; io_service_t s = gBattFrom == kDMBattFromService ? DMBattService(&pmu) : MACH_PORT_NULL;   // (nothing more where the service was not read)
+    int k = 0;
+    in.charging = b.charging ? 1 : 0;   // (DMBattNow's: the service's IsCharging, read just now)
+    in.amp = DMBattPropInt(DMBattProp(s, @"Amperage"), &in.ampKnown);
+    MSBDBattWhyTick(&gBattWhyClock, now, MSBDBattWhyCharging(in) ? 0 : 1, in.ampKnown ? in.amp <= MSBD_WHY_DRAIN_MA : -1);
+    MSBDBattWhyTimes(&gBattWhyClock, now, &in);
+    if (!MSBDBattWhyCharging(in)) {   // (charging: nothing more to read)
+        in.pmu = pmu;
+        in.full = DMBattPropInt(DMBattProp(s, @"FullyCharged"), &k); if (!k) in.full = -1;
+        in.ext = DMBattPropInt(DMBattProp(s, @"ExternalConnected"), &k); if (!k) in.ext = -1;
+        in.raw = DMBattPropInt(DMBattProp(s, @"AppleRawExternalConnected"), &k); if (!k) in.raw = -1;
+        NSDictionary *ad = DMBattProp(s, @"AdapterDetails"), *cd = DMBattProp(s, @"ChargerData");
+        in.watts = [ad isKindOfClass:[NSDictionary class]] ? DMBattPropInt(ad[@"Watts"], NULL) : 0;
+        if (in.watts < 0) in.watts = 0;
+        id ncr = [cd isKindOfClass:[NSDictionary class]] ? cd[@"NotChargingReason"] : nil, inhibit = [cd isKindOfClass:[NSDictionary class]] ? cd[@"ChargerInhibitReason"] : nil;
+        if ([ncr isKindOfClass:[NSNumber class]]) { in.ncrKnown = 1; in.ncr = [ncr unsignedLongLongValue]; }
+        in.inhibit = [inhibit isKindOfClass:[NSNumber class]] ? [inhibit longLongValue] : -1;
+        in.tempCC = DMBattPropInt(DMBattProp(s, @"Temperature"), &in.tempKnown);
+        if (MSBDBattWhyFirst(in) < 0) in.obc = DMBattOBC();
+    }
+#if DEBUG
+    gBattWhyLast = in;
+#endif
+    return in;
+}
+
 // ---- Sleep Guard (sshtoggled, common/SleepGuard.h): its switch (sleepGuard, on unless switched off) and the helper's state file, as Settings'
 // Battery Use group shows them: "iPad Can't Sleep" only while something is stuck and the guard will not or could not clear it.
 static BOOL DMBattSleepGuardOn(void) {
@@ -288,8 +389,12 @@ static NSString *DMBattCantSleep(void) {   // (nil: nothing stuck; else the row'
 }
 // Our battery settings live on Settings > Battery > Battery Health (Battery Health & Charging from 16; macsettings/BatteryHealth.x's Charging
 // group, BatteryUse.x's Battery Use group), an iPhone page our Settings part opens on iPad: their rows open it at their group, by the link our
-// Settings part takes to the page's row (common/BatteryHealthLink.h, macsettings/BatteryHealthLink.x). Battery Settings… opens Battery.
-static void DMBattOpenSettings(NSString *group, NSString *why) { DMOpenURL(group ? MSBDBatteryHealthLink(group) : @"prefs:root=BATTERY_USAGE", why); }
+// Settings part takes to the page's row (common/BatteryHealthLink.h, macsettings/BatteryHealthLink.x). Battery Settings… opens the page itself, at
+// its top (1.8.8.1 BATTSETTINGS, KT 15 Nov: "clicking battery settings in the menu should launch into the battery health settings directly"; it
+// opened Settings > Battery): Battery Health on 15, Battery Health & Charging on 16-18 (where the Charge Limit is, and on 18 iPadOS's own charging
+// options), the same link on all, as the rows' without a group. Where Settings has no Battery Health row (our page not built there), the link stays
+// on Battery, as before.
+static void DMBattOpenSettings(NSString *group, NSString *why) { DMOpenURL(MSBDBatteryHealthLink(group), why); }
 
 // ---- the menu's own rows ----
 // "Battery" and the level, a Mac menu's heading: not a tap target.
@@ -369,14 +474,20 @@ static NSArray *DMBattMenuItems(NSString **signatureOut) {
     [items addObject:[[DMBattHeaderRow alloc] initWithLevel:DMBattPercentText(b)]];
     [items addObject:[[DMBattInfoRow alloc] initWithText:b.onAC ? @"Power Source: Power Adapter" : @"Power Source: Battery"]];
     [sig appendFormat:@"%d%d%d|", b.percent, b.onAC, b.known];
+    BOOL job = NO; uint64_t word = 0;
 #if MSBD_BATT_CHARGE
-    BOOL job = DMBattChargeJob();
-    uint64_t word = job ? DMBattChargeWord() : 0;
+    job = DMBattChargeJob();
+    word = job ? DMBattChargeWord() : 0;
     int limitPref = job ? DMBattChargeLimitPref() : kMSBDChargeLimitOff;
-    char line[96] = "";
-    if (job && MSBDBattChargeLine(word, b.percent, line, sizeof line)) [items addObject:[[DMBattInfoRow alloc] initWithText:@(line)]];
-    [sig appendFormat:@"%d%s|", job, line];
 #endif
+    // the job's line, or why iPad is not charging in its place (1.8.8.1), with or without the job; none under its hold and for 3 minutes after it
+    MSBDBattWhyOurs(&gBattWhyClock, CACurrentMediaTime(), MSBDBattOurHold(word));
+    MSBDBattWhyIn why = DMBattWhyRead(b);
+    char line[96] = "", after[96] = "";
+    int whyNow = MSBDBattWhyDecide(why);
+    if (MSBDBattMenuLine(word, b.percent, whyNow, why.watts, line, sizeof line)) [items addObject:[[DMBattInfoRow alloc] initWithText:@(line)]];
+    if (MSBDBattMenuLineAfter(word, b.percent, whyNow, why.watts, after, sizeof after)) [items addObject:[[DMBattInfoRow alloc] initWithText:@(after)]];   // ("Charging Can't Be Paused" after its reason)
+    [sig appendFormat:@"%d%s|%s|", job, line, after];
     if (DMBattLPMHow(NULL, NULL) != kDMBattLPMNone) {
         BOOL lpm = DMBattLowPowerOn();
         [items addObject:[NSNull null]];
@@ -416,7 +527,11 @@ static void DMBattLogMenu(NSString *what, NSArray *items) {
         DMRow *r = it;
         [rows addObject:r.hint.length ? [NSString stringWithFormat:@"%@ = %@", r.label.text, r.hint] : r.label.text];
     }
-    DMLog([NSString stringWithFormat:@"[battmenu] menu %@: %@", what, [rows componentsJoinedByString:@" | "]]);
+    MSBDBattWhyIn w = gBattWhyLast;   // (why it is not charging, from what was read: -1 unknown)
+    DMLog([NSString stringWithFormat:@"[battmenu] menu %@: %@ (not charging: %s%@; on the adapter %d, charging %d, %@ mA, full %d, %d %%, connected %d / %d, %d W, reasons %@ / %lld, %@ C, %@, iPadOS's optimized charging %d, ours %d, not charging for %.0f s, the battery giving 100 mA or more for %.0f s)",
+           what, [rows componentsJoinedByString:@" | "], MSBDBattWhyName(MSBDBattWhyDecide(w)), gBattFakeWhyOn ? @" (test readings)" : @"", w.onAdapter, w.charging, w.ampKnown ? (id)@(w.amp) : @"-", w.full, w.soc, w.ext, w.raw,
+           w.watts, w.ncrKnown ? [NSString stringWithFormat:@"0x%llx", w.ncr] : @"-", w.inhibit, w.tempKnown ? [NSString stringWithFormat:@"%.2f", w.tempCC / 100.0] : @"-", w.pmu ? @"PMU" : @"SMC",
+           w.obc, w.ourHold, w.notChargingFor, w.drainingFor]);
 #endif
 }
 // The open menu is rebuilt in place when what it shows changes (the level, the source, Low Power Mode, the job, the guard: at most once per 0.3 s).
@@ -1057,10 +1172,16 @@ static void DMBattApplyPref(BOOL on) {
             dispatch_async(dispatch_get_main_queue(), ^{ DMBattMenuChanged(); });
         }];
         int t = 0;
-        notify_register_dispatch("com.apple.system.powersources", &t, dispatch_get_main_queue(), ^(int tok) { DMBattMenuChanged(); });
+        // (and how long the battery has not charged on the adapter: DMBattWhyNote, one key read per note on the adapter -- what the menu says why from)
+        notify_register_dispatch("com.apple.system.powersources", &t, dispatch_get_main_queue(), ^(int tok) { DMBattWhyNote(); DMBattMenuChanged(); });
         notify_register_dispatch(MSBD_SG_UPDATED, &t, dispatch_get_main_queue(), ^(int tok) { DMBattMenuChanged(); });
 #if MSBD_BATT_CHARGE
-        notify_register_dispatch(MSBD_CHARGE_STATE, &t, dispatch_get_main_queue(), ^(int tok) { DMBattMenuChanged(); });
+        // (and when the job's own hold or cut ends: no reason decided for 3 minutes after it, MSBDBattWhyOursEnded -- seen as its word changes)
+        MSBDBattWhyOurs(&gBattWhyClock, CACurrentMediaTime(), MSBDBattOurHold(DMBattChargeWord()));
+        notify_register_dispatch(MSBD_CHARGE_STATE, &t, dispatch_get_main_queue(), ^(int tok) {
+            MSBDBattWhyOurs(&gBattWhyClock, CACurrentMediaTime(), MSBDBattOurHold(DMBattChargeWord()));
+            DMBattMenuChanged();
+        });
 #endif
     }
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -1071,7 +1192,7 @@ static void DMBattApplyPref(BOOL on) {
 
 #if DEBUG
 // ---- debug triggers (battmenu, battmenu_cc, battmenu_pref_<on|off>, battmenu_probe, battmenu_lpm_<0|1>, battmenu_lpmwatch, battmenu_word_<hex>,
-// battmenu_size_<0|1|2>, battmenu_ax, battmenu_ccstack_<0|1>, battmenu_monitor_<0|1>) ----
+// battmenu_why_<ncr hex>_<mA>_<W>_<centi-C>_<s>[_<full>] / battmenu_why_off, battmenu_size_<0|1|2>, battmenu_ax, battmenu_ccstack_<0|1>, battmenu_monitor_<0|1>) ----
 static BOOL gBattLPMWatch = NO;
 static void (*o_BattPMSet)(id, SEL, long long, id, id);
 static void DMBattPMSet(id self, SEL _cmd, long long mode, id source, id done) {
@@ -1168,6 +1289,22 @@ static BOOL DMBattTrigger(NSString *cmd) {
 #endif
         return YES;
     }
+    if ([cmd hasPrefix:@"battmenu_why_"]) {   // battmenu_why_<NotChargingReason hex>_<Amperage mA>_<Watts>_<Temperature, centi-C>_<s not charging>[_<FullyCharged>]: the battery
+                                              // service read as these (connected, not charging, no inhibit, that current for as long; the bar's level and power source real);
+                                              // battmenu_why_off: as read
+        NSArray<NSString *> *p = [[cmd substringFromIndex:13] componentsSeparatedByString:@"_"];
+        gBattFakeWhyOn = p.count >= 5;
+        if (gBattFakeWhyOn) {
+            BOOL pmu = NO; DMBattService(&pmu);
+            gBattFakeWhy = (MSBDBattWhyIn){ .charging = 0, .ampKnown = 1, .amp = p[1].intValue, .full = p.count > 5 ? p[5].intValue : 0, .ext = 1, .raw = 1, .watts = p[2].intValue,
+                                            .ncrKnown = 1, .ncr = strtoull(p[0].UTF8String, NULL, 16), .inhibit = 0, .tempKnown = 1, .tempCC = p[3].intValue, .pmu = pmu, .obc = 0,
+                                            .notChargingFor = p[4].doubleValue, .drainingFor = p[4].doubleValue };
+        }
+        DMLog(gBattFakeWhyOn ? [NSString stringWithFormat:@"[battmenu] test readings: reasons 0x%llx, %d mA, %d W, %.2f C, not charging for %.0f s, full %d (%@)", gBattFakeWhy.ncr, gBattFakeWhy.amp,
+                                gBattFakeWhy.watts, gBattFakeWhy.tempCC / 100.0, gBattFakeWhy.notChargingFor, gBattFakeWhy.full, gBattFakeWhy.pmu ? @"PMU" : @"SMC"] : @"[battmenu] the battery service as read again");
+        DMBattMenuChanged();
+        return YES;
+    }
     if ([cmd isEqualToString:@"battmenu_rows"]) { DMBattLogMenu(@"now", DMBattMenuItems(NULL)); return YES; }   // what the menu would show now
     if ([cmd hasPrefix:@"battmenu_ccstack_"]) {   // battmenu_ccstack_<0|1>: log who presents Control Center (StatusBar.x's -_willPresent hook)
         BOOL on = [[cmd substringFromIndex:17] boolValue];
@@ -1223,6 +1360,14 @@ static BOOL DMBattTrigger(NSString *cmd) {
             for (NSString *k in @[@"CurrentCapacity", @"MaxCapacity", @"ExternalConnected", @"IsCharging", @"AppleRawExternalConnected"]) {
                 id v = DMBattProp(s, k);
                 [o appendFormat:@" %@ %@ (%@);", k, v ?: @"-", v ? NSStringFromClass([v class]) : @"not read"];
+            }
+            // (1.8.8.1 BATTWHY: the keys why iPad is not charging is read from, whether SpringBoard may read them -- on battery too, A-B1 on 18.5)
+            for (NSString *k in @[@"Amperage", @"FullyCharged", @"Temperature", @"AdapterDetails", @"ChargerData"]) {
+                id v = DMBattProp(s, k);
+                NSString *shown = ![v isKindOfClass:[NSDictionary class]] ? [NSString stringWithFormat:@"%@", v ?: @"-"]
+                                : [NSString stringWithFormat:@"%lu keys, Watts %@, NotChargingReason %@, ChargerInhibitReason %@", (unsigned long)[v count], v[@"Watts"] ?: @"-",
+                                   v[@"NotChargingReason"] ?: @"-", v[@"ChargerInhibitReason"] ?: @"-"];
+                [o appendFormat:@" %@ %@ (%@);", k, shown, v ? NSStringFromClass([v class]) : @"not read"];
             }
             [o appendFormat:@" UIDevice battery monitoring %d;", [UIDevice currentDevice].batteryMonitoringEnabled];
         }

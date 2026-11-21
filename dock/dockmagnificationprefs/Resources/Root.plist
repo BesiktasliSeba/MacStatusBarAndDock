@@ -102,6 +102,72 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
+			<string>Color puts your color on the Dock, from see-through to solid. It starts as your Status Bar Background color. The dots under open apps and the dividers turn dark or light to stay readable. Glass Shelf keeps its own glass.</string>
+			<key>id</key>
+			<string>DOCK_BACKGROUND_GROUP</string>
+			<key>label</key>
+			<string>Dock Background</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.dockmagnification/prefsChanged</string>
+			<key>cell</key>
+			<string>PSLinkListCell</string>
+			<key>default</key>
+			<string>auto</string>
+			<key>defaults</key>
+			<string>com.besiktasliseba.dockmagnification</string>
+			<key>detail</key>
+			<string>PSListItemsController</string>
+			<key>id</key>
+			<string>DOCK_BACKGROUND</string>
+			<key>key</key>
+			<string>dockBackground</string>
+			<key>label</key>
+			<string>Background</string>
+			<key>validTitles</key>
+			<array>
+				<string>Automatic</string>
+				<string>Color</string>
+			</array>
+			<key>validValues</key>
+			<array>
+				<string>auto</string>
+				<string>color</string>
+			</array>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSStaticTextCell</string>
+			<key>cellClass</key>
+			<string>DMDockColorCell</string>
+			<key>id</key>
+			<string>DOCK_BACKGROUND_COLOR</string>
+			<key>label</key>
+			<string>Color</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSliderCell</string>
+			<key>default</key>
+			<real>0.7</real>
+			<key>defaults</key>
+			<string>com.besiktasliseba.dockmagnification</string>
+			<key>id</key>
+			<string>DOCK_BACKGROUND_OPACITY</string>
+			<key>key</key>
+			<string>dockBackgroundOpacity</string>
+			<key>max</key>
+			<real>1.0</real>
+			<key>min</key>
+			<real>0.0</real>
+			<key>showValue</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
 			<string>Magnification shows with a trackpad or mouse.</string>
 			<key>label</key>
 			<string>Magnification</string>

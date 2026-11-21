@@ -7,8 +7,8 @@ cd "$(dirname "$0")"
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 fails=0
 clang -O2 -Wall -o "$W/tbm" test-batterymenu.c && "$W/tbm" || fails=1
-if [ -f ../common/ChargeLimit.h ]; then   # (the same, as a tree without the job compiles it: BatteryMenu.h alone, no ChargeLimit.h beside it)
-  mkdir -p "$W/nojob/common" "$W/nojob/tools"; cp ../common/BatteryMenu.h "$W/nojob/common/"; cp test-batterymenu.c "$W/nojob/tools/"
+if [ -f ../common/ChargeLimit.h ]; then   # (the same, as a tree without the job compiles it: BatteryMenu.h and ChargeWhy.h, no ChargeLimit.h beside them)
+  mkdir -p "$W/nojob/common" "$W/nojob/tools"; cp ../common/BatteryMenu.h ../common/ChargeWhy.h "$W/nojob/common/"; cp test-batterymenu.c "$W/nojob/tools/"
   clang -O2 -Wall -o "$W/tbm2" "$W/nojob/tools/test-batterymenu.c" && "$W/tbm2" | grep -q 'no Charge Limit job in this tree' \
     && echo "PASS  without the job's header: no charge rows compiled, the rest as above" || { echo "FAIL  without the job's header"; fails=1; }
 fi
@@ -43,7 +43,16 @@ check "the switch: Settings' Battery Menu (batteryMenu, on by default, hidden wi
   "python3 -I -c \"import plistlib,sys; it=plistlib.load(open('$P','rb'))['items']; i=[x.get('id') for x in it].index('BATTERY_MENU'); s=it[i]; g=it[i-1]; sys.exit(0 if s['key']=='batteryMenu' and s['default'] is True and s['cell']=='PSSwitchCell' and s['label']=='Battery Menu' and s['PostNotification']=='com.besiktasliseba.macstatusbar/prefsChanged' and g['cell']=='PSGroupCell' and g.get('stockHides') is True else 1)\" \
    && grep -q 'CFPreferencesCopyValue(CFSTR(MSBD_BATT_MENU_KEY), MSB_DOMAIN' $X && grep -q 'DMBattApplyPref(MSBDBattMenuOn(isBool, isBool && CFBooleanGetValue(bmRef)));' $X"
 check "the crash guard: a crash in the menu's code turns Battery Menu off" \
-  "grep -q '^target batteryMenu pref com.besiktasliseba.macstatusbar batteryMenu 0 1 Battery Menu|the battery menu$' crashmap-rules.txt && grep -q '^file MacStatusBarCore ^BatteryMenu\\\\.h\$ batteryMenu$' crashmap-rules.txt"
+  "grep -q '^target batteryMenu pref com.besiktasliseba.macstatusbar batteryMenu 0 1 Battery Menu|the battery menu$' crashmap-rules.txt && grep -q '^file MacStatusBarCore ^(BatteryMenu|ChargeWhy)\\\\.h\$ batteryMenu$' crashmap-rules.txt"
+check "  ... (1.8.8.1) why iPad is not charging too: common/ChargeWhy.h's functions a release build keeps out of line (MSBDBattWhyLine at -Os) are Battery Menu's, not the whole bar's (make-crashmap.py's own code)" \
+  "[ \"\$(python3 -I - crashmap-rules.txt <<'PYEOF'
+import sys
+src = open('make-crashmap.py').read().rstrip()
+assert src.endswith('main()'); g = {'__name__': 'bm'}; exec(compile(src[:-len('main()')], 'make-crashmap.py', 'exec'), g)
+targets, images, rules, titles = g['load_rules'](sys.argv[1]); hits = [0] * len(rules); im = images['MacStatusBarCore']['target']
+print(' '.join(g['classify']('MacStatusBarCore', n, f, '', rules, im, hits) for n, f in [('_MSBDBattWhyLine', 'ChargeWhy.h'), ('_MSBDBattWhyDecide', 'ChargeWhy.h'), ('_MSBDBattChargeLine', 'BatteryMenu.h'), ('_MSBDChargeQuietAfterCut', 'ChargeQuiet.x')]))
+PYEOF
+)\" = 'batteryMenu batteryMenu batteryMenu part' ]"
 check "the battery and the icon are our controls: the status bar's own region action (Control Center for a click) is not run on them" \
   "fn $X 'static BOOL DMPointOverOurControl(' | grep -q 'kSpotButtonKey, kClockButtonKey, kBattButtonKey, kCCButtonKey, DM_AM_BUTTONS };'"
 check "the right end from MSBDBattRightSideLayout: the icon left of the clock, then Spotlight's icon and touch area, then the status icons" \
@@ -80,7 +89,7 @@ check "the icon opens Control Center as a click on the status icons does (-handl
 check "  ... not on the Lock Screen, the Cover Sheet or in Guided Access" \
   "fn $B 'static void DMBattOpenControlCenter(' | grep -q 'if (DMLockUp(lm) || DMCoverSheetShown())' && fn $B 'static void DMBattOpenControlCenter(' | grep -q 'DMGARefuses(@\"Control Center\")'"
 check "the Charge Limit job's rows only where it is part of the build and installed; Charge to Full Now as Settings' button (the job's notification)" \
-  "fn $B 'static NSArray *DMBattMenuItems(' | grep -q 'BOOL job = DMBattChargeJob();' && fn $B 'static NSArray *DMBattMenuItems(' | grep -q 'notify_post(MSBD_CHARGE_FULL_NOW);' \
+  "fn $B 'static NSArray *DMBattMenuItems(' | grep -q '    job = DMBattChargeJob();' && fn $B 'static NSArray *DMBattMenuItems(' | grep -q 'notify_post(MSBD_CHARGE_FULL_NOW);' \
    && fn $B 'static NSArray *DMBattMenuItems(' | grep -q 'BOOL full = MSBDChargeOffersFullNow(word, limitPref);' && grep -q '^#if MSBD_BATT_CHARGE' $B"
 check "  ... the job found from its file's mode (stat), never asked with access(X_OK): SpringBoard's sandbox answers that check with EPERM on 18.5" \
   "grep -q 'static BOOL DMBattChargeJob(void) { struct stat st; return stat(MSBD_BATT_CHARGE_JOB, &st) == 0 && S_ISREG(st.st_mode) && (st.st_mode & S_IXUSR); }' $B \
@@ -98,6 +107,37 @@ check "  ... -setChargingState: hooked only where its types are as read, on each
   "grep -qF 'MSHookMessageEx(c, sel, imps[i], (IMP *)&o_BattHoldSet[i]);' $X && grep -qF 'strcmp(method_getTypeEncoding(m) ?: \"\", \"v24@0:8q16\")' $X && grep -qF 'DMBattHoldHookInit();' $B"
 check "  ... the crash guard turns it off by itself (batteryHoldPlug, a piece: no Settings row, Turn Back On brings it back), not Battery Menu" \
   "grep -qx 'target batteryHoldPlug piece the battery icon|the plug in the battery icon during a charge hold' ../tools/crashmap-rules.txt && grep -q '^sym MacStatusBarCore ^_\\*DMBattHold\\[A-Z\\] batteryHoldPlug' ../tools/crashmap-rules.txt && grep -qF 'skipped = MSBDCrashSkipped(MSBD_BATT_HOLD_PIECE);' $B && grep -qF '#define MSBD_BATT_HOLD_PIECE \"batteryHoldPlug\"' ../common/BatteryMenu.h && ! grep -q 'batteryHoldPlug pref\\|MSBD_BATT_HOLD_PLUG_KEY' ../tools/crashmap-rules.txt $B ../common/BatteryMenu.h"
+check "1.8.8.1 BATTWHY: the menu's line is MSBDBattMenuLine's, from MSBDBattWhyDecide on what DMBattWhyRead read, with or without the job (no line outside it)" \
+  "fn $B 'static NSArray *DMBattMenuItems(' | grep -qF 'MSBDBattWhyIn why = DMBattWhyRead(b);' && fn $B 'static NSArray *DMBattMenuItems(' | grep -qF 'int whyNow = MSBDBattWhyDecide(why);' \
+   && fn $B 'static NSArray *DMBattMenuItems(' | grep -qF 'if (MSBDBattMenuLine(word, b.percent, whyNow, why.watts, line, sizeof line)) [items addObject:[[DMBattInfoRow alloc] initWithText:@(line)]];' \
+   && ! grep -q 'MSBDBattChargeLine(' $B && [ \$(grep -c 'MSBDBattWhyDecide(' $B) = 2 ] && fn $B 'static void DMBattLogMenu(' | grep -qF 'MSBDBattWhyName(MSBDBattWhyDecide(w))' \
+   && awk '/^static NSArray \\*DMBattMenuItems\\(/{f=1} f && /MSBDBattWhyRead|DMBattWhyRead/ {r=NR} f && /^#if MSBD_BATT_CHARGE/ && !a {a=NR} f && /^#endif/ && a && !e {e=NR} f && /^}/ {exit} END{exit !(r && e && r > e)}' $B"
+check "  ... (review of the line) \"Charging Can't Be Paused\" kept after its reason: MSBDBattMenuLineAfter's row right after the line's, on the same reading, in the menu's signature" \
+  "fn $B 'static NSArray *DMBattMenuItems(' | awk '/if \\(MSBDBattMenuLine\\(word, b.percent, whyNow, why.watts, line, sizeof line\\)\\)/{a=NR} /if \\(MSBDBattMenuLineAfter\\(word, b.percent, whyNow, why.watts, after, sizeof after\\)\\) \\[items addObject:\\[\\[DMBattInfoRow alloc\\] initWithText:@\\(after\\)\\]\\];/{b=NR} END{exit !(a && b == a + 1)}' \
+   && fn $B 'static NSArray *DMBattMenuItems(' | grep -qF '[sig appendFormat:@\"%d%s|%s|\", job, line, after];' && [ \$(grep -c 'MSBDBattMenuLineAfter(' $B) = 1 ]"
+check "  ... no new cost with the menu closed: the stamps only in the power sources note DMBattApplyPref already registers (still 3 such registrations, one timer), from DMBattNow's read; the current read there only while not charging under 95 % with no hold of the job's, from the battery service DMBattNow read" \
+  "[ \$(grep -c '\"com.apple.system.powersources\"' $B) = 3 ] && fn $B 'static void DMBattApplyPref(' | grep -qF '^(int tok) { DMBattWhyNote(); DMBattMenuChanged(); });' \
+   && [ \$(grep -c 'DMBattWhyNote();' $B) = 1 ] && [ \$(grep -c 'scheduledTimerWithTimeInterval' $B) = 1 ] && fn $B 'static void DMBattWhyNote(' | grep -qF 'if (!gBattMenuOn) { gBattWhyClock.notChargingSince = gBattWhyClock.drainingSince = 0; return; }' \
+   && fn $B 'static void DMBattWhyNote(' | grep -qF 'if (!b.known || !b.onAC) { MSBDBattWhyTick(&gBattWhyClock, CACurrentMediaTime(), 0, 0); return; }' && [ \$(fn $B 'static void DMBattWhyNote(' | grep -c 'DMBattProp(') = 1 ] \
+   && fn $B 'static void DMBattWhyNote(' | grep -qF 'int notCharging = !b.charging, draining = -1;' \
+   && fn $B 'static void DMBattWhyNote(' | grep -F 'DMBattProp(DMBattService(NULL), @\"Amperage\")' | grep -qF 'if (gBattFrom == kDMBattFromService && notCharging && b.percent < 95 && !gBattWhyClock.ours) {'"
+check "  ... the battery service read one key at a time (never its whole dictionary) through the level's own lookup (1.8.8, one DMBattService, looked up again after a read that failed): the level's read (DMBattReadKey), why it is not charging only by the note and the menu's own read (DMBattMenuItems' alone), the debug probe; nothing more where the level's read could not read it, nothing off the adapter" \
+  "[ \$(grep -c 'IORegistryEntryCreateCFProperty(' $B) = 1 ] && ! grep -q 'IORegistryEntryCreateCFProperties\\|BatteryData' $B \
+   && [ \$(grep -c '^static io_service_t DMBattService(' $B) = 1 ] && [ \$(grep -c 'IOServiceGetMatchingService(' $B) = 2 ] && [ \$(grep -c '^static id DMBattProp(' $B) = 1 ] \
+   && [ \$(grep -c 'DMBattWhyRead(' $B) = 2 ] && [ \"\$(grep -n 'DMBattProp(' $B | awk -F: '{print \$1}' | while read n; do awk -v n=\$n 'NR<=n && /^static /{h=\$0} NR==n{print h}' $B; done | sort -u | sed 's/^static [^(]*[ *]\\(DM[A-Za-z]*\\)(.*/\\1/' | tr '\\n' ' ')\" = 'DMBattReadKey DMBattTrigger DMBattWhyRead DMBattProp DMBattWhyNote ' ] \
+   && awk '/^#if/{n++; d[n] = (\$0 ~ /^#if DEBUG/)} /^#endif/{d[n]=0; n--} /^static BOOL DMBattTrigger\\(NSString \\*cmd\\) \\{/{for (i = 1; i <= n; i++) if (d[i]) ok=1; seen=1; exit} END{exit !(seen && ok)}' $B \
+   && fn $B 'static MSBDBattWhyIn DMBattWhyRead(' | awk '/if \\(!in.onAdapter\\) \\{/{a=NR} /io_service_t s = gBattFrom == kDMBattFromService \\? DMBattService\\(&pmu\\) : MACH_PORT_NULL;/{b=NR} END{exit !(a && b > a)}' \
+   && fn $B 'static MSBDBattWhyIn DMBattWhyRead(' | grep -qF 'if (MSBDBattWhyFirst(in) < 0) in.obc = DMBattOBC();' && fn $B 'static MSBDBattWhyIn DMBattWhyRead(' | grep -qF 'in.charging = b.charging ? 1 : 0;' \
+   && ! fn $B 'static MSBDBattWhyIn DMBattWhyRead(' | grep -qF '@\"IsCharging\"'"
+check "  ... (review) the job's own hold ending seen by its state note DMBattApplyPref already registers (no new one) and by the menu's read of its word, before the read: no reason for 3 minutes after it; the clocks common/ChargeWhy.h's (MSBDBattWhyClock), the job's way" \
+  "[ \$(grep -c 'notify_register_dispatch(MSBD_CHARGE_STATE' $B) = 2 ] && [ \$(fn $B 'static void DMBattApplyPref(' | grep -c 'MSBDBattWhyOurs(&gBattWhyClock, CACurrentMediaTime(), MSBDBattOurHold(DMBattChargeWord()));') = 2 ] \
+   && fn $B 'static void DMBattApplyPref(' | awk '/notify_register_dispatch\(MSBD_CHARGE_STATE/{a=NR} /MSBDBattOurHold\(DMBattChargeWord\(\)\)/{b=NR} END{exit !(a && b == a + 1)}' \
+   && fn $B 'static NSArray *DMBattMenuItems(' | awk '/MSBDBattWhyOurs\(&gBattWhyClock, CACurrentMediaTime\(\), MSBDBattOurHold\(word\)\);/{a=NR} /DMBattWhyRead\(b\)/{b=NR} END{exit !(a && b == a + 1)}' \
+   && fn $B 'static MSBDBattWhyIn DMBattWhyRead(' | awk '/MSBDBattWhyTick\(&gBattWhyClock, now, MSBDBattWhyCharging\(in\) \? 0 : 1, in.ampKnown \? in.amp <= MSBD_WHY_DRAIN_MA : -1\);/{a=NR} /MSBDBattWhyTimes\(&gBattWhyClock, now, &in\);/{b=NR} /MSBDBattWhyFirst\(in\) < 0/{c=NR} END{exit !(a && b == a + 1 && c > b)}' \
+   && ! grep -q 'gBattNotChargingSince\|DMBattWhyStamp' $B"
+check "  ... debug builds only: battmenu_why_ fakes the readings (as battmenu_word_ fakes the job's word)" \
+  "awk '/^#if/{n++; d[n] = (\$0 ~ /^#if DEBUG/)} /^#endif/{d[n]=0; n--} /gBattFakeWhyOn = p.count >= 5;/{seen=1; for (i = 1; i <= n; i++) if (d[i]) ok=1} END{exit !(seen && ok)}' $B && grep -q '^static BOOL gBattFakeWhyOn = NO;' $B \
+   && awk '/^static BOOL gBattFakeWhyOn = NO;/{exit !(prev ~ /^#if DEBUG/)} {prev=\$0}' $B"
 check "no Mac's \"Using Significant Energy\" (nothing honest to read live) and no em dash in the menu's code" \
-  "! grep -q '@\"Using Significant Energy' $B && ! grep -q \$'\\xe2\\x80\\x94' $B ../common/BatteryMenu.h test-batterymenu.c"
+  "! grep -q '@\"Using Significant Energy' $B && ! grep -q \$'\\xe2\\x80\\x94' $B ../common/BatteryMenu.h ../common/ChargeWhy.h test-batterymenu.c"
 [ $fails = 0 ] && echo "test-batterymenu: all checks pass" || { echo "test-batterymenu: checks FAILED"; exit 1; }

@@ -54,6 +54,10 @@ def uuids(binary):   # {arch: uuid}
         out[m.group(2)] = m.group(1).lower()
     return out
 
+# A sequence's end_sequence row is not code: its address is just past the sequence's last instruction, which is often the next file's first
+# function (arm64 code is packed), and it carries that last line. Read as a row, it gave such a function the file before it -- in 1.8.8's map
+# DMRunningDotOf was Launchpad.m's (Launchpad Icon's), DMTrashIconView's -initWithFrame: FinderIcon.m's, DMBounceSetOn EditProxy.m's (the Dock part),
+# MSBDChargeQuietInit VersionGate.h's (Stock status bar mode) -- so those rows are passed over (1.8.8.1, from Dock Background's link order).
 def line_rows(dsym):   # {address: (file name, line)} for the first row at each address
     rows, files = {}, {}
     for l in run(['dwarfdump', '--debug-line', dsym]).splitlines():
@@ -67,7 +71,7 @@ def line_rows(dsym):   # {address: (file name, line)} for the first row at each 
         if m and cur is not None:
             files[cur] = os.path.basename(m.group(1)); cur = None; continue
         m = re.match(r'0x([0-9a-f]{16})\s+(\d+)\s+\d+\s+(\d+)', l)
-        if m:
+        if m and not l.rstrip().endswith('end_sequence'):
             a = int(m.group(1), 16)
             if a not in rows and int(m.group(2)) > 0:
                 rows[a] = (files.get(int(m.group(3)), '?'), int(m.group(2)))

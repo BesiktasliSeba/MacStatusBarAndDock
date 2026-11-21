@@ -7,6 +7,16 @@
 #include "../common/BatteryHealthLink.h"
 static int fails = 0;
 static void check(const char *what, BOOL ok) { printf("%s  %s\n", ok ? "PASS" : "FAIL", what); if (!ok) fails = 1; }
+#ifdef BHL_MENU_OPEN   // (the battery menu's own DMBattOpenSettings, cut out of statusbar/BatteryMenu.h by test-batteryhealthlink.sh; DMOpenURL: what it opens)
+static NSString *gOpened;
+static void DMOpenURL(NSString *url, NSString *why) { gOpened = url; }
+#include "bhl-open.inc"
+// The path Settings' Battery page gets from a link (prefs:root=BATTERY_USAGE&path=<path>): nil when the link is not for the Battery page.
+static NSString *BatteryPath(NSString *url) {
+    NSArray<NSString *> *p = [url componentsSeparatedByString:@"&path="];
+    return p.count == 2 && [p[0] isEqualToString:@"prefs:root=BATTERY_USAGE"] ? p[1] : nil;
+}
+#endif
 int main(void) {
     @autoreleasepool {
         // ---- the link
@@ -53,6 +63,34 @@ int main(void) {
         check("  ... near the page's end: stops at the end (2000 + 20 - 700 = 1320)", fabs(MSBDScrollOffsetForGroup(1900, 64, 20, 2000, 700) - 1320) < 0.001);
         check("  ... a page that fits: stays at its top (-inset)", fabs(MSBDScrollOffsetForGroup(400, 64, 20, 500, 700) + 64) < 0.001);
         check("  ... the first group: the top", fabs(MSBDScrollOffsetForGroup(0, 64, 20, 2000, 700) + 64) < 0.001);
+
+#ifdef BHL_MENU_OPEN
+        // ---- 1.8.8.1 BATTSETTINGS (KT 15 Nov: "clicking battery settings in the menu should launch into the battery health settings directly"): the
+        // menu's real DMBattOpenSettings. It opened prefs:root=BATTERY_USAGE, Settings > Battery.
+        DMBattOpenSettings(nil, @"battery settings");
+        NSString *top = gOpened;
+        check("Battery Settings…: prefs:root=BATTERY_USAGE&path=BATTERY_HEALTH, the top of Battery Health (& Charging), not Settings > Battery",
+              [top isEqualToString:@"prefs:root=BATTERY_USAGE&path=BATTERY_HEALTH"] && [top isEqualToString:MSBDBatteryHealthLink(nil)]);
+        DMBattOpenSettings(@MSBD_BH_CHARGING_GROUP, @"battery settings (charge limit)");
+        BOOL charging = [gOpened isEqualToString:@"prefs:root=BATTERY_USAGE&path=BATTERY_HEALTH/MSBD_CHARGING_GROUP"];
+        DMBattOpenSettings(@MSBD_BH_BATTERY_USE_GROUP, @"battery settings (sleep guard)");
+        check("  ... Charge Limit and Sleep Guard as before: the same page at their groups", charging && [gOpened isEqualToString:@"prefs:root=BATTERY_USAGE&path=BATTERY_HEALTH/MSBD_BATTERY_USE_GROUP"]);
+        // per iPadOS, as Settings gets the link on our four iPads (one link: the page is Battery Health on 15, Battery Health & Charging on 16-18, the same
+        // class with Apple's title; on 18 iPadOS's own charging options are on it too): Shuffle's copy taken back where Shuffle is (15.6.1 on the M1,
+        // 17.5.1), then the Battery page's row by its identifier, whichever it is (BATTERY_HEALTH_TITLE read on 18.5; BATTERY_HEALTH, Apple's iPhone
+        // name), with no group: the page's top, nothing scrolled (MSBHLAwait runs only with a group).
+        struct { const char *os; BOOL shuffle; } v[] = { { "15.6.1 (M1, Shuffle)", YES }, { "16.7.7 (iPad 2)", NO }, { "17.5.1 (Shuffle)", YES }, { "18.5 (A12Z)", NO } };
+        for (unsigned i = 0; i < sizeof v / sizeof v[0]; i++) {
+            NSString *got = v[i].shuffle ? MSBDBatteryHealthLinkAsSent([top stringByReplacingOccurrencesOfString:@"prefs:root=" withString:@"prefs:root=System%20Apps&path="]) : top;
+            NSString *path = BatteryPath(got), *group = @"x", *group2 = @"x";
+            NSString *row = MSBDBatteryHealthPathForRow(path, @"BATTERY_HEALTH_TITLE", &group), *row2 = MSBDBatteryHealthPathForRow(path, @"BATTERY_HEALTH", &group2);
+            char what[200];
+            snprintf(what, sizeof what, "  ... iPadOS %s: %sthe Battery page's Battery Health row, at its top (no group)", v[i].os, v[i].shuffle ? "Shuffle's copy taken back, then " : "");
+            check(what, [got isEqualToString:top] && [path isEqualToString:@"BATTERY_HEALTH"] && [row isEqualToString:@"BATTERY_HEALTH_TITLE"] && [row2 isEqualToString:@"BATTERY_HEALTH"] && !group && !group2);
+        }
+        check("  ... no Battery Health row in Settings (our page not built): the link goes on as it came, Settings stays on Battery (as before)",
+              !MSBDBatteryHealthPathForRow(BatteryPath(top), nil, NULL));
+#endif
     }
     if (fails) { printf("test-batteryhealthlink (compiled): FAILED\n"); return 1; }
     printf("test-batteryhealthlink (compiled): all checks pass\n"); return 0;

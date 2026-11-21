@@ -2,6 +2,26 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.8.1
+
+### New
+- Sticky notes on the desktop: hold the desktop and choose New Sticky Note, tap a note to type in it, drag its bottom corners to resize it, and hold it to change its color or move it to the Trash (Settings > Desktop > Show Sticky Notes).
+- AirPods menu (iPadOS 15 and 16 for now): click or tap the AirPods icon in the menu bar to see the battery of each AirPod and the case, change Noise Control or disconnect, as on a Mac (on by default: Settings > Status Bar > AirPods Menu).
+- Dock Background in Settings > Dock gives the Default or Frosted Dock your color at any opacity, from see-through to solid.
+- Home Minimizes Windows adapts: with a trackpad or mouse connected, going Home leaves your windows where they are, as on a Mac, and by hand it still minimizes them (Settings > Windows & Multitasking > Adapt to Trackpad & Mouse).
+- Open With in Finder and on the desktop: a file's menu lists the apps that open it, as on a Mac, so an .ipa opens straight in TrollStore.
+- Dock Downloads stack: your newest download is now always at the bottom, and every item has a menu (hold it, or click it with two fingers) with Open, Open With, Quick Look, Share, Rename, Get Info and Move to Trash.
+
+### Improvements
+- When your iPad is plugged in but not charging, the battery menu now says why, and its Battery Settings opens Battery Health.
+- Clean and Respring in Finder now shows how much space was freed once your iPad is back.
+
+### Fixes
+- An app's own menus in the menu bar now show up within about 2 seconds after you switch to it with Command-Tab or the Dock, and a tap on a title as they appear opens it the first time.
+- In Finder, a right click (a two-finger click or tap on the trackpad, or a mouse's right button) now opens the menu of a file, a folder, the empty space or a drive, as a long press does.
+- An app opened from the share sheet or by AirDrop now opens as a window when apps open as windows, as from its Dock icon, with every window engine.
+- Fixed Sileo's and Zebra's queue in a window: the queue bar could disappear, and tapping Queue then only dimmed the window.
+
 ## 1.8.8
 
 ### New

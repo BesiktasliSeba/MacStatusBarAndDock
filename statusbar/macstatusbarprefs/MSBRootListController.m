@@ -11,6 +11,7 @@
 #import <Preferences/PSTableCell.h>
 #import "MSBRootListController.h"
 #import "../../common/LineSwitch.h"
+#import "../../common/SliderCells.h"   // (our slider rows: value labels that fit, live sliders; shared with the Dock page)
 #import "MSBAcknowledgementsController.h"   // (Acknowledgements, 1.8.5: KeyPilot)
 #import "MSBAppSizesController.h"   // (App Window Sizes, 1.8.8: the Windows & Multitasking row's value)
 #import "../../common/AppleMultitasking.h"   // (Apple's multitasking settings on the Windows & Multitasking page, 1.6.0: AppleMultitaskingTable.h)
@@ -859,20 +860,6 @@ static void MSBURLLog(NSString *line) {   // (debug builds: how a link reached t
 	if (path.length && [page respondsToSelector:@selector(handleURL:withCompletion:)]) [(PSListController *)page handleURL:@{@"path": path} withCompletion:nil];
 }
 
-// The stock slider cell's value label is a little too narrow for two decimals on iPadOS 16: "0.70" showed as "0.7C" (iPad 2 cross-test, both
-// sliders). The label keeps its place and size; its text shrinks a touch when it would not fit.
-static void MSBFitValueLabels(UIView *v) {
-	for (UIView *sub in v.subviews) {
-		if ([sub isKindOfClass:[UILabel class]]) {
-			UILabel *l = (UILabel *)sub;
-			NSString *t = l.text ?: @"";
-			if (t.length && [t rangeOfCharacterFromSet:[[NSCharacterSet characterSetWithCharactersInString:@"0123456789.,-"] invertedSet]].location == NSNotFound) {
-				l.adjustsFontSizeToFitWidth = YES; l.minimumScaleFactor = 0.6;
-			}
-		}
-		MSBFitValueLabels(sub);
-	}
-}
 // A link row to one of Apple's pages (17: Multitasking & Gestures by Apple's own link, AppleMultitasking.h): Settings opens it, as a search result.
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
 	NSInteger i = [self indexForIndexPath:ip];
@@ -889,14 +876,12 @@ static void MSBFitValueLabels(UIView *v) {
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
 	UITableViewCell *cell = [super tableView:tv cellForRowAtIndexPath:ip];
 	if ([NSStringFromClass([cell class]) containsString:@"Slider"]) {
-		MSBFitValueLabels(cell);
-		dispatch_async(dispatch_get_main_queue(), ^{ MSBFitValueLabels(cell); });   // (the value label may be made during the first layout)
+		MSBDFitValueLabels(cell);   // (common/SliderCells.h, shared with the Dock page)
+		dispatch_async(dispatch_get_main_queue(), ^{ MSBDFitValueLabels(cell); });   // (the value label may be made during the first layout)
 		// (the desktop's Icon Size, 1.7.5: its value goes out while it is dragged -- the icons follow live -- whatever the cell's own default)
 		PSSpecifier *sp = [cell respondsToSelector:@selector(specifier)] ? [(PSTableCell *)cell specifier] : nil;
-		if ([[sp propertyForKey:@"key"] isEqual:@MSBD_DESKTOP_ICON_KEY] || [[sp propertyForKey:@"key"] isEqual:@MSBD_DESKTOP_CORNER_KEY]) {   // (and App Icon Corner Radius, 1.7.9)
-			NSMutableArray *views = [NSMutableArray arrayWithObject:cell];
-			for (NSUInteger k = 0; k < views.count && k < 80; k++) { UIView *v = views[k]; if ([v isKindOfClass:[UISlider class]]) ((UISlider *)v).continuous = YES; else [views addObjectsFromArray:v.subviews]; }
-		}
+		BOOL live = [[sp propertyForKey:@"key"] isEqual:@MSBD_DESKTOP_ICON_KEY] || [[sp propertyForKey:@"key"] isEqual:@MSBD_DESKTOP_CORNER_KEY];   // (and App Icon Corner Radius, 1.7.9)
+		MSBDSliderCellContinuous(cell, live);   // (any other slider row: as Settings made it)
 	}
 	return cell;
 }
@@ -1284,6 +1269,7 @@ static void MSBFitValueLabels(UIView *v) {
 		}
 		[self msb_updateSearchTweaksRow:NO];
 		[self msb_updateGoToDesktopRow:NO];
+		[self msb_updateHomeAdaptRow:NO];
 		[self msb_updateDesktopNamesRow:NO];
 	}
 	return _specifiers;
@@ -1302,6 +1288,7 @@ static NSString *MSBGroupedRowSentence(NSString *rowKey) {
 		@"snapWindowsToEdges": @"Snap Windows to Edges: a window you move or resize lines up with the screen's edges, the menu bar, the Dock and the windows next to it. When it's off, a window stays where you let go.",
 		@"keepCoveredInFront": @"Keep Covered Windows in Front: when a window comes to the front, any smaller window it would cover completely stays in front of it, so it's never lost behind a bigger window.",
 		@"homeMinimizesWindows": @"Home Minimizes Windows: swiping up from the bottom or pressing the Home button minimizes the windows, so the Home Screen shows. Opening an app brings its window back.",
+		@"homeMinimizesAdapt": @"Adapt to Trackpad & Mouse: while a trackpad or mouse is connected, such as the Magic Keyboard for iPad, going Home leaves the windows where they are, as on a Mac. Without one, Home minimizes them. A keyboard alone doesn't count.",
 		@"flexResizeWindows": @"Resize Apps to Fit Windows: apps lay themselves out to fit their window, like on a Mac. When it's off, an app keeps its full-screen layout and is scaled down to fit.",
 		@"hideTrafficLights": @"Turn Off Traffic Lights: hides the window buttons in the status bar for full-screen apps.",
 		@"magnifyTrafficLights": @"Magnify Traffic Lights: touching a window's buttons with a finger makes them bigger, so you can pick one. Slide to another, lift to use it, or lift away to cancel. With a trackpad or mouse, the button under the pointer grows a little.",
@@ -1395,7 +1382,23 @@ static NSMutableArray *MSBComposeGroupFooters(NSArray *specs) {
 	}
 }
 
-// "Hide Desktop Icon Names" (1.7.2) and Icon Size (1.7.5) are the desktop's: greyed while Finder or Show Desktop Icons is off (both on unless set),
+// "Adapt to Trackpad & Mouse" (1.8.8.1) is Home Minimizes Windows': greyed while that switch is off (on unless set, as SpringBoard reads it), live
+// when it changes -- as Go to the App's Desktop above. Greyed, not hidden: the page does not jump, and the search lists what the page shows.
+- (void)msb_updateHomeAdaptRow:(BOOL)reload {
+	CFPreferencesAppSynchronize(kMSBBarDomain);
+	CFPropertyListRef v = CFPreferencesCopyAppValue(CFSTR("homeMinimizesWindows"), kMSBBarDomain);
+	BOOL on = !(v && CFGetTypeID(v) == CFBooleanGetTypeID() && !CFBooleanGetValue(v));   // (never set: on)
+	if (v) CFRelease(v);
+	if (!MSBDGateWanted()) on = NO;   // (untested iPadOS / safe mode: every row greyed, LineSwitch.h -- this one stays so)
+	for (PSSpecifier *spec in _specifiers) {
+		if (![spec.identifier isEqualToString:@"HOME_MINIMIZES_ADAPT"]) continue;
+		[spec setProperty:@(on) forKey:@"enabled"];
+		if (reload) [self reloadSpecifier:spec animated:YES];
+		break;
+	}
+}
+
+// "Hide Desktop Icon Names" (1.7.2), Icon Size (1.7.5) and Show Sticky Notes (1.8.8.1) are the desktop's: greyed while Finder or Show Desktop Icons is off (both on unless set),
 // live when either changes -- as Go to the App's Desktop above. On the Desktop page (1.7.5) Show Desktop Icons itself is greyed while Finder is off
 // (the page's note says why: Finder is on the Status Bar page).
 - (void)msb_updateDesktopNamesRow:(BOOL)reload {
@@ -1408,7 +1411,7 @@ static NSMutableArray *MSBComposeGroupFooters(NSArray *specs) {
 	for (PSSpecifier *spec in _specifiers) {
 		BOOL icons = [spec.identifier isEqualToString:@"DESKTOP_ICONS"];
 		if (!icons && ![spec.identifier isEqualToString:@"DESKTOP_HIDE_NAMES"] && ![spec.identifier isEqualToString:@"DESKTOP_ICON_SIZE"]
-		    && ![spec.identifier isEqualToString:@"DESKTOP_APP_CORNER"]) continue;
+		    && ![spec.identifier isEqualToString:@"DESKTOP_APP_CORNER"] && ![spec.identifier isEqualToString:@"DESKTOP_STICKY_NOTES"]) continue;   // (Show Sticky Notes, 1.8.8.1: the notes live on the desktop)
 		if (icons && ![self msb_desktopPage]) continue;
 		[spec setProperty:@(icons ? finder : on) forKey:@"enabled"];
 		if (reload) [self reloadSpecifier:spec animated:YES];
@@ -1562,6 +1565,7 @@ static NSMutableArray *MSBComposeGroupFooters(NSArray *specs) {
 	if ([[specifier propertyForKey:@"key"] isEqual:@"desktopIcons"]) { [self msb_updateDesktopNamesRow:YES]; return; }
 	if ([[specifier propertyForKey:@"key"] isEqual:@"sidebarSearch"]) { [self msb_updateSearchTweaksRow:YES]; return; }
 	if ([[specifier propertyForKey:@"key"] isEqual:@"macSwitcher"]) { [self msb_updateGoToDesktopRow:YES]; return; }
+	if ([[specifier propertyForKey:@"key"] isEqual:@"homeMinimizesWindows"]) { [self msb_updateHomeAdaptRow:YES]; return; }   // (Adapt to Trackpad & Mouse greyed or not)
 	// Enable Windowing off = no window engine loads at all (MacSettings' root helper denies them all in Choicy / renames them for iCleaner Pro; on
 	// again, only the chosen one comes back). Its footer says it takes effect after a respring. An engine picked while windowing is off is only
 	// saved; the helper applies it when windowing is on again.

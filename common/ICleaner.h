@@ -15,7 +15,8 @@
 //  - The helper takes it away at once (no replay), accepts only what MSBDICleanRequestFrom does, checks that the official package is installed
 //    and that the binary is its own (a regular root file, not a link), runs it with exactly the two arguments above, never stopping it, and writes
 //    the answer line (MSBDICleanAnswerFromOutput) with the request's id into a root-owned file, then posts kMSBDICleanAnswerName.
-//  - The respring is ours (Finder asks SpringBoard's relaunch, as Respring in the Apple menu does), never iCleaner's -respring.
+//  - The respring is ours (Finder asks SpringBoard's relaunch, as Respring in the Apple menu does), never iCleaner's -respring. With Clean and
+//    Respring the result is kept across it and shown once SpringBoard is back (1.8.8.1, at the end of this file).
 #pragma once
 #import <Foundation/Foundation.h>
 #include "DriveEject.h"
@@ -118,4 +119,100 @@ static inline NSString *MSBDICleanResultText(NSString *freed, long long deleted)
     if (freed.length) return [NSString stringWithFormat:@"Freed %@.", freed];
     if (files) return [NSString stringWithFormat:@"Removed %@.", files];
     return @"Done.";
+}
+
+// ---- Clean and Respring: the result after the respring (1.8.8.1) ------------------------------------------------------------------------------
+// Clean and Respring resprang as soon as iCleaner answered, so what it freed was never seen. Now the answer line is kept in our own preferences
+// (kMSBDICleanAfterKey in kMSBDEjectDomain: the line, when the respring was asked and the pid of the SpringBoard that asked it; nothing else) just
+// before our respring is asked, and the SpringBoard that respring starts takes it at its first look: the key is removed then, so no SpringBoard
+// ever sees it again. It is shown once, in the panel as after a Clean, when the iPad is unlocked and nothing else is up (statusbar/ICleanerPanel.h).
+// A kept line is dropped, never shown, when it is not the result of that respring any more:
+//  - kept more than kMSBDICleanAfterKeep ago (10 min): the iPad stayed locked all that while;
+//  - read by a SpringBoard that started more than kMSBDICleanAfterStart after the respring was asked: a later start (a crash or a restart after a
+//    respring that never came), not the respring's own;
+//  - a SpringBoard crash report from the respring on (MSBDICleanCrashSince, looked at as it is about to be shown): SpringBoard went down again in
+//    between, so it is not shown as if nothing had happened.
+// The SpringBoard that asked looks once more kMSBDICleanAfterLate after asking: still running then, its respring never came, and it shows the result
+// itself (with the panel's Respring button when iCleaner says one is needed, as after a Clean).
+#include <dirent.h>
+#include <sys/stat.h>
+#include <time.h>
+#define kMSBDICleanAfterKey "icleanAfterRespring"     // @{line: the answer line, at: when the respring was asked, pid: the SpringBoard that asked}
+static const double kMSBDICleanAfterKeep = 600.0;    // shown within 10 min of the respring, or never
+static const double kMSBDICleanAfterStart = 90.0;    // the respring's SpringBoard starts within this of the ask; one that starts later is another start
+static const double kMSBDICleanAfterLate = 60.0;     // the SpringBoard that asked still runs this long after: the respring never came
+typedef NS_ENUM(int, MSBDICleanAfter) {
+    kMSBDICleanAfterNone = 0,   // nothing kept
+    kMSBDICleanAfterWait,       // kept by this SpringBoard for its respring, which is on its way: left where it is
+    kMSBDICleanAfterShow,       // the result of the respring that started this SpringBoard: taken, to be shown (no Respring offered)
+    kMSBDICleanAfterShowHere,   // kept by this SpringBoard, whose respring never came: taken, to be shown here
+    kMSBDICleanAfterDrop,       // not shown (*why): removed
+};
+
+// The record kept just before the respring is asked (nil: nothing to keep).
+static inline NSDictionary *MSBDICleanAfterRecord(NSString *line, double now, int pid) {
+    if (![line isKindOfClass:[NSString class]] || !line.length || line.length > 400 || !isfinite(now) || pid <= 0) return nil;
+    return @{ @"line": line, @"at": @(now), @"pid": @(pid) };
+}
+// A SpringBoard's look at the kept record `rec` (nil: none): `pid` and `started` (seconds since 1970) are its own, `now` the time. *line: the line
+// to show (Show, ShowHere); *at: when the respring was asked; *why: why it is dropped or shown here. Anything but Wait and None removes the record.
+static inline MSBDICleanAfter MSBDICleanAfterLook(id rec, int pid, double started, double now, NSString **line, double *at, NSString **why) {
+    if (line) *line = nil;
+    if (at) *at = 0;
+    if (why) *why = nil;
+    if (!rec) return kMSBDICleanAfterNone;
+    NSDictionary *d = [rec isKindOfClass:[NSDictionary class]] ? rec : nil;
+    id l = d[@"line"], t = d[@"at"], p = d[@"pid"];
+    if (!d || d.count != 3 || ![l isKindOfClass:[NSString class]] || ![(NSString *)l length] || [(NSString *)l length] > 400
+        || ![t isKindOfClass:[NSNumber class]] || !isfinite([t doubleValue]) || ![p isKindOfClass:[NSNumber class]] || [p intValue] <= 0) {
+        if (why) *why = @"not a result Finder keeps";
+        return kMSBDICleanAfterDrop;
+    }
+    double when = [t doubleValue], age = now - when;
+    if (at) *at = when;
+    if (!isfinite(age) || age < -5.0) { if (why) *why = @"kept later than now (the clock went back)"; return kMSBDICleanAfterDrop; }
+    if (age > kMSBDICleanAfterKeep) { if (why) *why = @"kept more than 10 minutes ago"; return kMSBDICleanAfterDrop; }
+    if ([p intValue] == pid && started <= when + 1.0) {   // (kept by this very SpringBoard: its respring has not come)
+        if (age < kMSBDICleanAfterLate) return kMSBDICleanAfterWait;
+        if (line) *line = l;
+        if (why) *why = [NSString stringWithFormat:@"the respring never came (%.0f s)", age];
+        return kMSBDICleanAfterShowHere;
+    }
+    double after = started - when;
+    if (!isfinite(after) || after < -1.0) { if (why) *why = @"this SpringBoard started before the respring was asked"; return kMSBDICleanAfterDrop; }
+    if (after > kMSBDICleanAfterStart) { if (why) *why = [NSString stringWithFormat:@"this SpringBoard started %.0f s after the respring was asked: another start, not the respring's", after]; return kMSBDICleanAfterDrop; }
+    if (line) *line = l;
+    return kMSBDICleanAfterShow;
+}
+// A result taken or held is still to be shown at `now` (kept at `at`): within kMSBDICleanAfterKeep.
+static inline BOOL MSBDICleanAfterDue(double now, double at) {
+    double age = now - at;
+    return isfinite(age) && age >= -5.0 && age <= kMSBDICleanAfterKeep;
+}
+// A SpringBoard crash report in `dir` (CrashReporter: SpringBoard-<date>.ips, the crash guard's kind; never SpringBoard.cpu_resource-... and the
+// like) for a crash at or after `since` (seconds since 1970), by the time in its name (the crash itself), else by when it was written. *name: the
+// first one found (may be NULL).
+static inline BOOL MSBDICleanCrashSince(const char *dir, double since, char *name, size_t n) {
+    if (name && n) name[0] = 0;
+    if (!dir || !isfinite(since)) return NO;
+    DIR *dd = opendir(dir);
+    if (!dd) return NO;
+    BOOL found = NO;
+    struct dirent *e;
+    while (!found && (e = readdir(dd))) {
+        if (strncmp(e->d_name, "SpringBoard-", 12) != 0 || !strstr(e->d_name, ".ips")) continue;
+        struct tm tm; memset(&tm, 0, sizeof(tm));
+        long t = 0;
+        if (sscanf(e->d_name + 12, "%4d-%2d-%2d-%2d%2d%2d", &tm.tm_year, &tm.tm_mon, &tm.tm_mday, &tm.tm_hour, &tm.tm_min, &tm.tm_sec) == 6) {
+            tm.tm_year -= 1900; tm.tm_mon -= 1; tm.tm_isdst = -1;
+            t = (long)mktime(&tm);
+        } else {
+            char p[1024]; struct stat st;
+            snprintf(p, sizeof(p), "%s/%s", dir, e->d_name);
+            t = stat(p, &st) == 0 ? (long)st.st_mtime : 0;
+        }
+        if (t >= (long)floor(since)) { found = YES; if (name && n) snprintf(name, n, "%s", e->d_name); }
+    }
+    closedir(dd);
+    return found;
 }

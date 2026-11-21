@@ -2177,6 +2177,7 @@ static void DMMSWSwitchRun(NSUInteger to, NSString *why, CGFloat v, void (^done)
         if (done) done();
         return;
     }
+    DMDesktopTypingEnd(@"a desktop switch");   // (1.8.8.1: a name or a sticky note being typed ends first, its typing kept)
     gMSWSwitching = YES;
     NSUInteger run = ++gMSWSwRun;
     CFTimeInterval t0 = CACurrentMediaTime();
@@ -3488,6 +3489,8 @@ static void DMMSWOpenNow(NSString *why) {
     if ((DMSwitcherVisible() && !DMMSWGestureGrace()) || DMCoverSheetShown() || gMSWSwitching || gMSWTrack >= 2) { DMLog(@"[macswitcher] not opened: the App Switcher or the Lock Screen is up, or a desktop is sliding in"); return; }
     UIWindow *w = DMMSWLayer();
     if (!w) return;
+    // (1.8.8.1: a name or a sticky note being typed ends first, its typing kept: the view's layer is above the typing window, its keyboard would be under it)
+    DMDesktopTypingEnd(@"the Mac Switcher opens");
     // (a strip a swipe brought out goes first: the view shows the desktops' windows, StatusBar.x. No picture of the desktop is kept from a moment the
     //  strip was out, the gesture's start included: it would show the strip and the stage pushed aside for it, review 1.8.4.4 L7. A switch from the
     //  view takes the screen under the view then, as when no picture is kept)
@@ -4682,7 +4685,7 @@ static void (*o_MSWPressesBegan)(id, SEL, NSSet *, UIPressesEvent *);
 static void DMMSWPressesBegan(id self, SEL _cmd, NSSet<UIPress *> *presses, UIPressesEvent *event) {
     static BOOL inside = NO;
 #if DEBUG
-    if (DMTestFlag("/tmp/msw-keylog")) for (UIPress *p in presses) DMLog([NSString stringWithFormat:@"[mswkey] SpringBoard press: key 0x%lx modifiers 0x%llx \"%@\" (view open %d)", (long)p.key.keyCode, (unsigned long long)p.key.modifierFlags, p.key.charactersIgnoringModifiers, gMSWOpen]);
+    if (DMTestFlag("/tmp/msw-keylog")) for (UIPress *p in presses) DMLog(DMKeyLogHides(p) ? @"[mswkey] SpringBoard press: a typed key (a text input has the typing)" : [NSString stringWithFormat:@"[mswkey] SpringBoard press: key 0x%lx modifiers 0x%llx \"%@\" (view open %d)", (long)p.key.keyCode, (unsigned long long)p.key.modifierFlags, p.key.charactersIgnoringModifiers, gMSWOpen]);
 #endif
     if (!inside && gMSWOpen && !gMSWClosing) {
         inside = YES;

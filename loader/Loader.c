@@ -30,8 +30,9 @@
 
 #define MSBD_PAYLOAD_DIR "/var/jb/usr/lib/MacStatusBarAndDock/"
 
-enum { kSpringBoard = 1, kSettings = 2, kUIKit = 4, kPointerUID = 8, kRow = 16, kSpotlight = 32, kDasd = 64 };   // kRow: a Settings row, loaded on untested versions too
+enum { kSpringBoard = 1, kSettings = 2, kUIKit = 4, kPointerUID = 8, kRow = 16, kSpotlight = 32, kDasd = 64, kPopupGuard = 128 };   // kRow: a Settings row, loaded on untested versions too
                                                                                                     // kSpotlight: the Spotlight app (com.apple.Spotlight) only; kDasd: the Duet Activity Scheduler (prewarm) only
+                                                                                                    // kPopupGuard: a recovery app that contains LNPopupController (Sileo, Zebra): the popup guard only
 typedef struct { const char *name; unsigned where; } Payload;
 
 #if MSBD_LINE_DOCK
@@ -63,6 +64,7 @@ static const Payload kPayloads[] = {
     { "MacLockStatusBar", kSpringBoard },
     { "MacPageDots", kSpringBoard },
     { "MacPointer", kPointerUID },
+    { "MacPopupGuard", kPopupGuard },   // (1.8.8.1 B68: only there; every other app has the same guard in MacAppBridge)
     { "MacSettings", kSettings },
     { "MacSettingsBadge", kSpringBoard },
     { "MacSpotlight", kSpotlight },
@@ -110,6 +112,23 @@ static int MSBDRecoveryApp(const char *path) {
     for (size_t i = 0; i < sizeof(apps) / sizeof(apps[0]); i++) if (strstr(path, apps[i])) return 1;
     return 0;
 }
+#if !MSBD_LINE_DOCK
+// The one exception (1.8.8.1 B68): a recovery app built on the LNPopupController library -- Sileo, Zebra -- gets the library's race guard alone
+// (MacPopupGuard, common/PopupGuard.h), so its queue still opens in a window: without it the queue bar ended up hidden while the app believed it was
+// shown, and a Queue tap opened an invisible popup over a dimmed window. Nothing else of ours goes there; on an untested iPadOS or in the crash
+// guard's safe mode not even that (rows only). The library is looked for in the app's own classes (the runtime's list, read by name: no UIKit
+// code runs and no class is initialized; the loader links no Objective-C itself).
+static int MSBDHasPopupLibrary(void) {
+    void *(*getClass)(const char *) = (void *(*)(const char *))dlsym(RTLD_DEFAULT, "objc_getClass");
+    return getClass && getClass("LNPopupBar") != NULL;
+}
+#endif
+// What a process gets once it is known to be a recovery app: an app (the app-side parts) gets nothing, or with the library (askLibrary says
+// whether that is looked for) the guard alone; any other kind of process is not changed. The library is looked for only in a recovery app.
+static unsigned MSBDRecoveryKind(unsigned kind, int recoveryApp, int (*askLibrary)(void)) {
+    if ((kind & ~kSpotlight) != kUIKit || !recoveryApp) return kind;
+    return askLibrary && askLibrary() ? kPopupGuard : 0;
+}
 
 __attribute__((constructor)) static void MSBDLoad(void) {
 #if DEBUG
@@ -131,7 +150,11 @@ __attribute__((constructor)) static void MSBDLoad(void) {
     // audit, 1 Nov 2026).
     void *uikit = dlopen("/System/Library/Frameworks/UIKit.framework/UIKit", RTLD_LAZY | RTLD_NOLOAD);
     if (uikit) { if (MSBDBundledProcess(path)) kind |= kUIKit; dlclose(uikit); }
-    if ((kind & ~kSpotlight) == kUIKit && MSBDRecoveryApp(path)) kind = 0;   // (nothing of ours in the recovery apps)
+#if !MSBD_LINE_DOCK
+    if ((kind & ~kSpotlight) == kUIKit) kind = MSBDRecoveryKind(kind, MSBDRecoveryApp(path), MSBDHasPopupLibrary);   // (nothing of ours in the recovery apps but that guard)
+#else
+    if ((kind & ~kSpotlight) == kUIKit) kind = MSBDRecoveryKind(kind, MSBDRecoveryApp(path), NULL);   // (nothing of ours in the recovery apps)
+#endif
     int noIPad = kind && !MSBDIsIPad();   // (an iPhone made to look like an iPad: nothing at all, not even the rows)
     if (noIPad) kind = 0;
 #if DEBUG

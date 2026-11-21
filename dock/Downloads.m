@@ -50,7 +50,8 @@ static BOOL DMDockIconLift(void) { return MSBDIPadPointerEffects(); }
 @interface DMDownload : NSObject
 @property (nonatomic, strong) NSURL *url;
 @property (nonatomic, copy) NSString *source;
-@property (nonatomic, strong) NSDate *date;
+@property (nonatomic, strong) NSDate *date;      // (Date Added, else Date Created, else Date Modified: DMDownloadDate -- the order and the age shown)
+@property (nonatomic, strong) NSDate *modified;  // (Date Modified: a thumbnail is of the content, so it is kept by this one)
 @property (nonatomic) long long size;
 @property (nonatomic) BOOL directory;
 @property (nonatomic) BOOL viaFiles;   // open with Files (Safari) rather than Filza
@@ -66,6 +67,29 @@ static BOOL DMDockIconLift(void) { return MSBDIPadPointerEffects(); }
 @end
 @implementation DMDownloadSource
 @end
+
+// The order (1.8.8.1, KT 21 Nov: "the newest downloaded item should come to the bottom"): a Mac's Downloads stack is sorted by Date Added, its
+// default -- when the item came into the folder --, so what came last sits next to the stack, whatever dates the file itself carries. The stack read
+// the Date Modified (else Date Created), and an item that keeps an older date went in among the old ones, not to the bottom: AirDropped or saved to
+// Files, moved in from Finder or dropped on the stack (a move keeps the file's dates), a browser that dates a file as its server does. APFS keeps
+// the date an item came into its folder (NSURLAddedToDirectoryDateKey; a rename in place keeps it, as on a Mac); a volume that has none gives the
+// Date Created, then the Date Modified. Read by every listing here (DMScan, DMSearchIndex); tools/test-downloadsstack.sh runs them on the Mac.
+static NSArray<NSURLResourceKey> *DMDownloadKeys(NSArray<NSURLResourceKey> *more) {
+    return [@[NSURLAddedToDirectoryDateKey, NSURLCreationDateKey, NSURLContentModificationDateKey] arrayByAddingObjectsFromArray:more ?: @[]];
+}
+static NSDate *DMDownloadDate(NSDictionary<NSURLResourceKey, id> *v) {
+    for (NSURLResourceKey k in @[NSURLAddedToDirectoryDateKey, NSURLCreationDateKey, NSURLContentModificationDateKey]) { id d = v[k]; if ([d isKindOfClass:[NSDate class]]) return d; }
+    return [NSDate distantPast];
+}
+// Newest first (the panel shows the first one at the bottom, next to the stack: DMDownloadRowTop); the same date by name, so the order never
+// depends on the order a folder lists its items in.
+static NSComparisonResult DMDownloadNewerFirst(DMDownload *a, DMDownload *b) {
+    NSComparisonResult r = [b.date compare:a.date];
+    return r != NSOrderedSame ? r : [a.url.lastPathComponent localizedStandardCompare:b.url.lastPathComponent];
+}
+// Where item k of n (k 0 the newest) sits in the panel's list, from its top: the newest at the bottom, next to the stack, the older ones above it, as a
+// Mac's Downloads stack fans out of the Dock.
+static CGFloat DMDownloadRowTop(NSUInteger k, NSUInteger n, CGFloat rowH) { return k < n ? (CGFloat)(n - 1 - k) * rowH : 0.0; }
 
 // Browsers that keep their downloads in Documents/Downloads of their own container. Only the ones that are installed count.
 static NSArray<NSArray<NSString *> *> *DMBrowserList(void) {
@@ -168,10 +192,10 @@ static NSArray<DMDownloadSource *> *DMSources(void) {
     return sources;
 }
 
-// The newest items of every source, newest first.
+// The newest items of every source, newest first (by Date Added, DMDownloadDate).
 static NSArray<DMDownload *> *DMScan(NSArray<DMDownloadSource *> *sources, NSUInteger limit) {
     NSMutableArray<DMDownload *> *all = [NSMutableArray array];
-    NSArray *keys = @[NSURLContentModificationDateKey, NSURLCreationDateKey, NSURLFileSizeKey, NSURLIsDirectoryKey];
+    NSArray *keys = DMDownloadKeys(@[NSURLFileSizeKey, NSURLIsDirectoryKey]);
     for (DMDownloadSource *src in sources) {
         NSArray<NSURL *> *urls = [[NSFileManager defaultManager] contentsOfDirectoryAtURL:src.folder includingPropertiesForKeys:keys
                                                                                   options:NSDirectoryEnumerationSkipsHiddenFiles error:nil];
@@ -182,16 +206,16 @@ static NSArray<DMDownload *> *DMScan(NSArray<DMDownloadSource *> *sources, NSUIn
             NSDictionary *v = [u resourceValuesForKeys:keys error:nil];
             DMDownload *d = [DMDownload new];
             d.url = u; d.source = src.name; d.viaFiles = src.viaFiles;
-            d.date = v[NSURLContentModificationDateKey] ?: v[NSURLCreationDateKey] ?: [NSDate distantPast];
+            d.date = DMDownloadDate(v); d.modified = v[NSURLContentModificationDateKey];
             d.size = [v[NSURLFileSizeKey] longLongValue];
             d.directory = [v[NSURLIsDirectoryKey] boolValue];
             [mine addObject:d];
         }
-        [mine sortUsingComparator:^NSComparisonResult(DMDownload *a, DMDownload *b) { return [b.date compare:a.date]; }];
+        [mine sortUsingComparator:^NSComparisonResult(DMDownload *a, DMDownload *b) { return DMDownloadNewerFirst(a, b); }];
         if (mine.count > limit) [mine removeObjectsInRange:NSMakeRange(limit, mine.count - limit)];
         [all addObjectsFromArray:mine];
     }
-    [all sortUsingComparator:^NSComparisonResult(DMDownload *a, DMDownload *b) { return [b.date compare:a.date]; }];
+    [all sortUsingComparator:^NSComparisonResult(DMDownload *a, DMDownload *b) { return DMDownloadNewerFirst(a, b); }];
     if (all.count > limit) [all removeObjectsInRange:NSMakeRange(limit, all.count - limit)];
     return all;
 }
@@ -207,7 +231,7 @@ static NSString *DMFold(NSString *s) {
 }
 static NSArray<DMDownload *> *DMSearchIndex(NSArray<DMDownloadSource *> *sources) {
     NSMutableArray<DMDownload *> *all = [NSMutableArray array];
-    NSArray *keys = @[NSURLContentModificationDateKey, NSURLCreationDateKey, NSURLFileSizeKey, NSURLIsDirectoryKey, NSURLIsPackageKey];
+    NSArray *keys = DMDownloadKeys(@[NSURLFileSizeKey, NSURLIsDirectoryKey, NSURLIsPackageKey]);
     NSArray *partial = @[@"icloud", @"part", @"crdownload", @"download", @"tmp"];
     // one folder's items, the newest `cap` of them (the listing brings the dates along, so reading them all before choosing costs little)
     NSArray<DMDownload *> *(^read)(NSURL *, DMDownloadSource *, NSString *, NSUInteger) = ^NSArray<DMDownload *> *(NSURL *folder, DMDownloadSource *src, NSString *where, NSUInteger cap) {
@@ -220,12 +244,12 @@ static NSArray<DMDownload *> *DMSearchIndex(NSArray<DMDownloadSource *> *sources
             NSDictionary *v = [u resourceValuesForKeys:keys error:nil];
             DMDownload *d = [DMDownload new];
             d.url = u; d.source = where; d.viaFiles = src.viaFiles;
-            d.date = v[NSURLContentModificationDateKey] ?: v[NSURLCreationDateKey] ?: [NSDate distantPast];
+            d.date = DMDownloadDate(v); d.modified = v[NSURLContentModificationDateKey];
             d.size = [v[NSURLFileSizeKey] longLongValue];
             d.directory = [v[NSURLIsDirectoryKey] boolValue] && ![v[NSURLIsPackageKey] boolValue];
             [mine addObject:d];
         }
-        [mine sortUsingComparator:^NSComparisonResult(DMDownload *x, DMDownload *y) { return [y.date compare:x.date]; }];
+        [mine sortUsingComparator:^NSComparisonResult(DMDownload *x, DMDownload *y) { return DMDownloadNewerFirst(x, y); }];
         if (mine.count > cap) [mine removeObjectsInRange:NSMakeRange(cap, mine.count - cap)];
         for (DMDownload *d in mine) d.folded = DMFold(d.url.lastPathComponent);
         return mine;
@@ -239,7 +263,7 @@ static NSArray<DMDownload *> *DMSearchIndex(NSArray<DMDownloadSource *> *sources
             [all addObjectsFromArray:read(dir.url, src, [NSString stringWithFormat:@"%@ \u203A %@", src.name, dir.url.lastPathComponent], kSearchPerFolderCap)];
         }
     }
-    [all sortUsingComparator:^NSComparisonResult(DMDownload *x, DMDownload *y) { return [y.date compare:x.date]; }];
+    [all sortUsingComparator:^NSComparisonResult(DMDownload *x, DMDownload *y) { return DMDownloadNewerFirst(x, y); }];
     if (all.count > kSearchCap) [all removeObjectsInRange:NSMakeRange(kSearchCap, all.count - kSearchCap)];
     return all;
 }
@@ -356,7 +380,7 @@ static NSCache *DMThumbCache(void) {
     return c;
 }
 static void DMLoadThumbnail(DMDownload *d, void (^done)(UIImage *image)) {
-    NSString *key = [NSString stringWithFormat:@"%@|%f", d.url.path, d.date.timeIntervalSince1970];
+    NSString *key = [NSString stringWithFormat:@"%@|%f", d.url.path, (d.modified ?: d.date).timeIntervalSince1970];   // (the content's date: a file changed in place gets a new one)
     UIImage *cached = [DMThumbCache() objectForKey:key];
     if (cached) { done(cached); return; }
     if (d.directory) return;
@@ -416,6 +440,56 @@ static NSString *DMAgeText(NSDate *date) {
     return [f localizedStringForDate:date relativeToDate:[NSDate date]];
 }
 
+#pragma mark - an item's menu
+
+// 1.8.8.1 (KT 21 Nov: "the items should be able to be shared easily etc by the long press finger or the trackpad menu"): every item of the stack has
+// a menu, as a Mac's Downloads stack has: Finder's rows for one item (statusbar/Finder.h MSBDFinderStackItemMenu: Open -- the stack's own, as a tap --,
+// Quick Look, Show in Enclosing Folder; Get Info, Rename, Share; Move to Trash), drawn as Finder's menus are, over the panel, at the finger or the pointer.
+// A row closes the panel, then does what it says.
+// - A finger, or a primary click, held still on an item: the menu opens kDMDLHoldMenu after the press holds the item (-rowPress:), as Finder's hold
+//   opens its menu. Moved after that, the menu closes and the item comes out of the stack, as before; let go, the menu stays. Let go before, the press
+//   opens the item, as before; a tap opens it.
+// - A pointer's secondary click (a mouse's right button, a trackpad's two-finger click, or its two-finger tap with Tap to Click): it reaches SpringBoard
+//   as a DIRECT touch whose event has the secondary button, and UIKit gives that touch to a context menu interaction's recognizer only (the root B63
+//   found for Finder's windows, statusbar/NativeWindow.h). The list's context menu interaction is asked for a configuration as the button goes down; it
+//   answers nil (UIKit's own menu never opens: it would take the finger over and the hold would no longer drag) and ours opens from that ask. The
+//   press's buttons are noted as the Dock's -[UIApplication sendEvent:] gets it (DMDownloadsNotePress, Dock.x); its release never opens the item.
+// No Finder (switched off, or Mac Status Bar not in this SpringBoard): no menu, and the stack does what it did.
+// The rules are plain C, run by tools/test-downloadsstack.sh.
+static const double kDMDLHoldMenu = 0.45;   // (after the press holds the item at 0.25 s: Finder's own, 0.45 s after its hold)
+static const long kDMDLSecondaryButton = 2;   // (UIEventButtonMaskSecondary)
+// UIKit's ask for the press now down: YES once, for a press that began with the secondary button, is still down and began in the list.
+static int DMDLPressTake(long buttons, int *taken, int down, int inList) {
+    if (!taken || *taken || !(buttons & kDMDLSecondaryButton) || !down || !inList) return 0;
+    *taken = 1;
+    return 1;
+}
+// An item let go (a tap's release): it opens, unless the press was a secondary click -- its release is the menu's. (An assistive feature's use comes
+// with no event: it opens.)
+static int DMDLReleaseOpens(long buttons, int withEvent) { return !withEvent || !(buttons & kDMDLSecondaryButton); }
+// A hold's end that carried nothing out: the item opens when the press was let go (not cancelled) before its menu opened.
+static int DMDLHoldEndOpens(int menuOpened, int letGo) { return letGo && !menuOpened; }
+// The press on the panel, as -[UIApplication sendEvent:] gets it: the last one that began in the panel's window, its event's buttons, taken by an ask.
+static __weak UITouch *gDLPressTouch;
+static long gDLPressButtons;
+static int gDLPressTaken;
+// Finder's side (MacStatusBar's Finder.h; found with dlsym -- without it nothing here changes): its menu for an item, and whether that menu is open.
+// (looked up once, on the main thread, where all of these are asked: no dispatch_once, whose slow path the release build moves out to a function
+//  without lines, which the crash map gives the whole Dock part)
+typedef BOOL (*DMDLItemMenuCall)(NSString *path, CGPoint screenPoint, UIView *from, dispatch_block_t open, dispatch_block_t closeStack);
+static DMDLItemMenuCall gDLItemMenu; static BOOL (*gDLItemMenuIsOpen)(void); static void (*gDLItemMenuClose)(void); static BOOL gDLItemMenuLooked;
+static void DMDLItemMenuLook(void) {
+    if (gDLItemMenuLooked) return;
+    gDLItemMenuLooked = YES;
+    gDLItemMenu = (DMDLItemMenuCall)dlsym(RTLD_DEFAULT, "MSBDFinderStackItemMenu");
+    gDLItemMenuIsOpen = (BOOL (*)(void))dlsym(RTLD_DEFAULT, "MSBDFinderStackMenuIsOpen");
+    gDLItemMenuClose = (void (*)(void))dlsym(RTLD_DEFAULT, "MSBDFinderStackMenuClose");
+}
+static DMDLItemMenuCall DMDLItemMenuFn(void) { DMDLItemMenuLook(); return gDLItemMenu; }
+// (the item's menu is open over the panel: touches anywhere are the menu's -- its catch-all covers the screen --, and Esc is its own)
+static BOOL DMDLItemMenuOpen(void) { DMDLItemMenuLook(); return gDLItemMenuIsOpen && gDLItemMenuIsOpen(); }
+static void DMDLItemMenuClose(void) { DMDLItemMenuLook(); if (gDLItemMenuClose) gDLItemMenuClose(); }
+
 #pragma mark - panel
 
 @interface DMDownloadRow : UIControl
@@ -474,7 +548,7 @@ static NSString *DMAgeText(NSDate *date) {
 @interface DMDownloadsSearchField : UISearchTextField
 @end
 
-@interface DMDownloadsPanel : NSObject <UIGestureRecognizerDelegate, UITextFieldDelegate>
+@interface DMDownloadsPanel : NSObject <UIGestureRecognizerDelegate, UITextFieldDelegate, UIContextMenuInteractionDelegate>
 + (instancetype)shared;
 @property (nonatomic, strong) UIView *shield;
 @property (nonatomic, strong) UITapGestureRecognizer *outsideTap;
@@ -516,6 +590,11 @@ static NSString *DMAgeText(NSDate *date) {
 @property (nonatomic) CGPoint dragStart;
 @property (nonatomic) BOOL dragLifted;                // the item is on the finger: the panel waits, faded out, until it is dropped
 @property (nonatomic) BOOL dismissAfterDrag;
+// an item's menu (1.8.8.1: see "an item's menu" above)
+@property (nonatomic) NSUInteger holdSerial;            // (each press that holds an item: its menu opens only for that press)
+@property (nonatomic) BOOL holdMenuOpened;               // (the press held now opened its item's menu: its release opens nothing)
+- (void)openDownload:(DMDownload *)d;
+- (BOOL)openItemMenu:(DMDownloadRow *)row at:(CGPoint)sp how:(NSString *)how;
 @end
 
 @implementation DMDownloadsSearchField
@@ -779,6 +858,8 @@ static BOOL DMDownloadsSwitcherVisible(void) {
 - (void)dismissAnimated:(BOOL)animated {
     // (an item being dragged out: the panel's row carries the touch, so the panel stays -- faded out -- until the drop, then goes)
     if (self.dragLifted) { self.dismissAfterDrag = YES; return; }
+    // (an item's menu still open over it goes with it -- the Dock left, another app came forward: 1.8.8.1; a row of the menu closed it already)
+    if (DMDLItemMenuOpen()) { DMLog(@"[downloads] the panel closes with an item's menu open: the menu goes too"); DMDLItemMenuClose(); }
     // (search: the keyboard goes and SpringBoard's keyboard focus goes back first; the search is gone with the panel, the next one opens empty)
     DMDownloadsSearchField *field = self.searchField;
     if (field.isFirstResponder) [field resignFirstResponder];
@@ -810,6 +891,12 @@ static BOOL DMDownloadsSwitcherVisible(void) {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
         NSArray<DMDownloadSource *> *sources = DMSources();
+#if DEBUG
+        {   // (test: the stack shows only a folder of the test's own made-up files, never the user's downloads: /tmp/dockmag-dlfolder holds its path, 1.8.8.1)
+            NSString *f = [[NSString stringWithContentsOfFile:@"/tmp/dockmag-dlfolder" encoding:NSUTF8StringEncoding error:nil] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            if (f.length) { DMDownloadSource *t = [DMDownloadSource new]; t.name = @"Test"; t.folder = [NSURL fileURLWithPath:f isDirectory:YES]; sources = @[t]; DMLog(@"[downloads] debug: the test folder only"); }
+        }
+#endif
         NSArray<DMDownload *> *items = DMScan(sources, 40);
 #if DEBUG
         if (access("/tmp/dockmag-empty", F_OK) == 0) items = @[];   // (test: the panel as it looks with no downloads)
@@ -924,6 +1011,9 @@ static BOOL DMDownloadsSwitcherVisible(void) {
     scroll.hidden = !items.count;
     [content addSubview:scroll];
     self.list = scroll;
+    // (a pointer's secondary click on an item: its menu, from UIKit's ask -- -dm_secondaryClickIn:at:, 1.8.8.1; only with Finder's menu here)
+    gDLPressTouch = nil; gDLPressButtons = 0; gDLPressTaken = 0; self.holdMenuOpened = NO;
+    if (DMDLItemMenuFn()) [scroll addInteraction:[[UIContextMenuInteraction alloc] initWithDelegate:self]];
     NSArray<UIView *> *built = [self fillList:items];
     NSArray<UIView *> *rows = [built subarrayWithRange:NSMakeRange(0, visible)];   // (the ones on the screen pop up below)
 
@@ -1039,6 +1129,7 @@ static BOOL DMIsTypingInKeyboard(UIWindow *w) {
 - (void)touchBeganOnView:(UIView *)v {   // any touch in SpringBoard's own windows (Home Screen, other windows): outside the panel and its icon = close
     if (![self isOpen] || !v) return;
     if ([v isDescendantOfView:self.panel]) return;
+    if (DMDLItemMenuOpen()) return;   // (an item's menu over the panel: the touch is the menu's -- a row, or its catch-all closing it --, 1.8.8.1)
     // SpringBoard's system-gesture window sees EVERY touch -- a finger anywhere, and a finger on the trackpad too -- alongside the window the
     // touch is really for: it said nothing about where the touch was, and closed the panel on a scroll inside it or a trackpad touch (M1).
     // Only touches in SpringBoard's own content windows count; touches in apps are reported by MacAppBridge.
@@ -1053,23 +1144,80 @@ static BOOL DMIsTypingInKeyboard(UIWindow *w) {
     CGPoint p = [touch locationInView:self.panel];
     return !CGRectContainsPoint(self.panel.bounds, p);
 }
-- (void)rowTapped:(DMDownloadRow *)row {
+// A row let go (its tap; `event` nil: an assistive feature used it, or a hold let go before its menu): the item opens -- not on a secondary click's
+// release, which is its menu's (DMDLReleaseOpens; 1.8.8.1).
+- (void)rowTapped:(DMDownloadRow *)row event:(UIEvent *)event {
+    if (!DMDLReleaseOpens(gDLPressButtons, event != nil)) { DMLog(@"[downloads] a secondary click let go on an item: not opened (its menu opens)"); return; }
+    [self openDownload:row.download];
+}
+// An item opened: by its tap, a hold let go before its menu, its menu's Open, an assistive feature.
+- (void)openDownload:(DMDownload *)d {
+    if (!d) return;
     DMLog(@"[downloads] closes: a file was picked");
     [self dismissAnimated:YES];
     // (a plain text file opens in Mac Status Bar's TextEdit-style window, statusbar/TextWindow.h, found with dlsym; anything else as before)
     // (the file is read off the main thread there; not plain text, it opens as before)
     BOOL (*openText)(NSString *, dispatch_block_t) = (BOOL (*)(NSString *, dispatch_block_t))dlsym(RTLD_DEFAULT, "MSBDOpenTextFileElse");
-    NSURL *url = row.download.url; BOOL viaFiles = row.download.viaFiles;
+    NSURL *url = d.url; BOOL viaFiles = d.viaFiles;
     BOOL taken = NO;
-    @try { taken = openText && !row.download.directory && openText(url.path, ^{ DMOpenPath(url, viaFiles); }); } @catch (NSException *e) {}
+    @try { taken = openText && !d.directory && openText(url.path, ^{ DMOpenPath(url, viaFiles); }); } @catch (NSException *e) {}
     if (taken) { DMLog(@"[downloads] handed to the text window"); return; }
     DMOpenPath(url, viaFiles);
+}
+// An item's menu (1.8.8.1: "an item's menu" above), at sp on the screen the panel is on: Finder's, over the panel. Its Open is the stack's own
+// (-openDownload:); every other row closes the panel first. NO: no Finder here, or it gave none (Finder off, the item gone).
+- (BOOL)openItemMenu:(DMDownloadRow *)row at:(CGPoint)sp how:(NSString *)how {
+    DMDLItemMenuCall menu = DMDLItemMenuFn();
+    DMDownload *d = row.download;
+    if (!menu || !d.url.path.length || ![self isOpen] || !row.window) { DMLog([NSString stringWithFormat:@"[downloads] %@ on an item: no menu (no Finder here)", how]); return NO; }
+    DM_FEATURE_MARK("downloads-item-menu");
+    dispatch_block_t open = ^{ [[DMDownloadsPanel shared] openDownload:d]; };
+    dispatch_block_t close = ^{
+        DMDownloadsPanel *p = [DMDownloadsPanel shared];
+        if (![p isOpen]) return;
+        DMLog(@"[downloads] closes: a row of an item's menu was picked");
+        [p dismissAnimated:YES];
+    };
+    BOOL ok = NO;
+    @try { ok = menu(d.url.path, sp, row, open, close); } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[downloads] an item's menu: %@", e.reason]); }
+    DMLog([NSString stringWithFormat:@"[downloads] %@ on an item: %@", how, ok ? @"its menu opened" : @"no menu (Finder off, or the item is gone)"]);
+    return ok;
+}
+// UIKit's ask for a menu on the list (its context menu interaction): for a pointer's secondary click it comes as the button goes down, and ours opens
+// from it; a finger's press and a primary click are asked about too, and their menu comes from the hold (-rowPress:). Always nil: UIKit's own menu
+// never opens (1.8.8.1).
+- (UIContextMenuConfiguration *)contextMenuInteraction:(UIContextMenuInteraction *)i configurationForMenuAtLocation:(CGPoint)loc {
+    [self dm_secondaryClickIn:i.view at:loc];
+    return nil;
+}
+- (void)dm_secondaryClickIn:(UIView *)v at:(CGPoint)loc {
+    if (!v || v != self.list || ![self isOpen] || self.dragLifted) return;
+    UITouch *t = gDLPressTouch;
+    BOOL down = t && t.phase != UITouchPhaseEnded && t.phase != UITouchPhaseCancelled;
+    BOOL inList = t && (t.view ? [t.view isDescendantOfView:v] : (t.window == v.window && [v pointInside:[t locationInView:v] withEvent:nil]));
+    int taken = gDLPressTaken;
+    BOOL mine = DMDLPressTake(gDLPressButtons, &taken, down, inList);
+    gDLPressTaken = taken;
+    if (!mine) return;   // (a finger's press, a primary click, a press already taken or over)
+    DMDownloadRow *row = nil;
+    for (UIView *x in v.subviews) if ([x isKindOfClass:[DMDownloadRow class]] && !x.hidden && CGRectContainsPoint(x.frame, loc)) row = (DMDownloadRow *)x;
+    if (!row) return;   // (between the rows: no menu, as a Mac's stack has none there)
+    DM_FEATURE_MARK("downloads-secondary-click");
+    CGPoint sp = [v convertPoint:loc toCoordinateSpace:(v.window.screen ?: [UIScreen mainScreen]).coordinateSpace];
+    __weak DMDownloadRow *wr = row; UIView *panel = self.panel;
+    dispatch_async(dispatch_get_main_queue(), ^{   // (once UIKit is done with the press, as Finder's)
+        DMDownloadsPanel *p = [DMDownloadsPanel shared]; DMDownloadRow *r = wr;
+        if (!r || !panel || p.panel != panel || p.dragLifted) return;
+        [p openItemMenu:r at:sp how:@"secondary click"];
+    });
 }
 
 // Dragging an item out of the stack (2026-10-03): press a row and move -- the item rides on Finder's own drag (Mac Status Bar's Finder.h, found
 // with dlsym: MSBDFinderDragBeginPaths and friends) into a Finder window, onto the desktop or onto an app's window, by Finder's rules (moved within
 // your own places, Option copies, an app gets a copy, Undo). The panel fades while the item is on the finger (its row carries the touch) and
 // closes at the drop. A press that never moves opens the item, as a tap does. Finder switched off: the press does nothing more than a tap.
+// 1.8.8.1: held still for kDMDLHoldMenu, the press opens the item's menu instead (-openItemMenu:at:how:); moved after that, the menu closes and the
+// item comes out; let go, the menu stays and nothing opens.
 - (void)rowPress:(UILongPressGestureRecognizer *)g {
     DMDownloadRow *row = (DMDownloadRow *)g.view;
     UIWindow *w = row.window;
@@ -1082,16 +1230,29 @@ static BOOL DMIsTypingInKeyboard(UIWindow *w) {
     if (g.state == UIGestureRecognizerStateBegan) {
         UIScrollView *sv = self.list;
         if (sv.isDecelerating || sv.isDragging) { self.dragRow = nil; DMLog(@"[downloads] press during a scroll: no drag"); return; }
-        self.dragRow = row; self.dragStart = sp; self.dragLifted = NO;
+        self.dragRow = row; self.dragStart = sp; self.dragLifted = NO; self.holdMenuOpened = NO;
         sv.panGestureRecognizer.enabled = NO; sv.panGestureRecognizer.enabled = YES;   // (the item is held: moving now drags it, the list stays)
         row.highlighted = YES;
         [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
+        {   // (held on without moving: the item's menu, as Finder's hold opens it -- from here, so a hold that moves later still drags: 1.8.8.1)
+            NSUInteger serial = ++self.holdSerial; __weak DMDownloadRow *wr = row; CGPoint at = sp;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kDMDLHoldMenu * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                DMDownloadsPanel *p = [DMDownloadsPanel shared]; DMDownloadRow *r = wr;
+                if (!r || p.holdSerial != serial || p.dragRow != r || p.dragLifted || ![p isOpen]) return;   // (let go, moved out, or another press)
+                p.holdMenuOpened = [p openItemMenu:r at:at how:@"held still"];
+            });
+        }
         return;
     }
     if (g.state == UIGestureRecognizerStateChanged) {
         if (!self.dragRow) return;
         if (!self.dragLifted && hypot(sp.x - self.dragStart.x, sp.y - self.dragStart.y) > 10.0) {
             DM_FEATURE_MARK("downloads-drag-out");
+            if (self.holdMenuOpened) {   // (moved with its menu open: the menu closes, the item comes out, as Finder's)
+                self.holdMenuOpened = NO;
+                DMDLItemMenuClose();
+                DMLog(@"[downloads] moved with the item's menu open: the menu closes, the item comes out");
+            }
             BOOL (*begin)(NSArray *, CGPoint, CGRect) = (BOOL (*)(NSArray *, CGPoint, CGRect))dlsym(RTLD_DEFAULT, "MSBDFinderDragBeginPaths");
             CGRect from = [row convertRect:row.bounds toCoordinateSpace:scr];
             BOOL ok = NO;
@@ -1109,16 +1270,16 @@ static BOOL DMIsTypingInKeyboard(UIWindow *w) {
         }
         return;
     }
-    BOOL lifted = self.dragLifted, drop = g.state == UIGestureRecognizerStateEnded;
+    BOOL lifted = self.dragLifted, drop = g.state == UIGestureRecognizerStateEnded, menu = self.holdMenuOpened;
     DMDownloadRow *held = self.dragRow;
-    self.dragRow = nil; held.highlighted = NO;
+    self.dragRow = nil; held.highlighted = NO; self.holdMenuOpened = NO;
     if (lifted) {
         void (*end)(CGPoint, BOOL, BOOL) = (void (*)(CGPoint, BOOL, BOOL))dlsym(RTLD_DEFAULT, "MSBDFinderDragEndAt");
         if (end) end(sp, drop, option);
         self.dragLifted = NO; self.dismissAfterDrag = NO;
         DMLog([NSString stringWithFormat:@"[downloads] the dragged item was %@: the panel closes", drop ? @"dropped" : @"let go"]);
         [self dismissAnimated:NO];
-    } else if (held && drop) [self rowTapped:held];   // (held without moving: opened, as a tap)
+    } else if (held && DMDLHoldEndOpens(menu, drop)) [self rowTapped:held event:nil];   // (held without moving, let go before its menu: opened, as a tap)
 }
 
 #pragma mark search
@@ -1131,8 +1292,8 @@ static BOOL DMIsTypingInKeyboard(UIWindow *w) {
     NSMutableArray<UIView *> *rows = [NSMutableArray array];
     for (NSUInteger k = 0; k < items.count; k++) {
         DMDownloadRow *row = [[DMDownloadRow alloc] initWithDownload:items[k] width:rowW];
-        row.frame = CGRectMake(0, (items.count - 1 - k) * rowH, rowW, rowH);
-        [row addTarget:self action:@selector(rowTapped:) forControlEvents:UIControlEventTouchUpInside];
+        row.frame = CGRectMake(0, DMDownloadRowTop(k, items.count, rowH), rowW, rowH);   // (the newest at the bottom, next to the stack)
+        [row addTarget:self action:@selector(rowTapped:event:) forControlEvents:UIControlEventTouchUpInside];
         UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(rowPress:)];
         lp.minimumPressDuration = 0.25; lp.allowableMovement = CGFLOAT_MAX;   // (press and move: the item comes out of the stack, as on a Mac)
         [row addGestureRecognizer:lp];
@@ -1534,7 +1695,8 @@ void DMDownloadsStartDebugPolling(void) {
         [[DMDownloadsPanel shared] debugTapFolder:n];
     });
     dispatch_resume(folderTimer);
-    // `echo <cmd> > /tmp/dockmag-search` drives the search of the open panel: focus, q:<text>, return, esc, resign, state (counts only, no names)
+    // `echo <cmd> > /tmp/dockmag-search` drives the search of the open panel: focus, q:<text>, return, esc, resign, state (counts only, no names);
+    // 1.8.8.1: order (the rows' order from the top), menu:<k> (item k's menu)
     static dispatch_source_t searchTimer;
     static struct timespec lastSearch;
     searchTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
@@ -1552,6 +1714,22 @@ void DMDownloadsStartDebugPolling(void) {
         else if ([cmd isEqualToString:@"return"]) [p textFieldShouldReturn:f];
         else if ([cmd isEqualToString:@"esc"]) [p searchEscape];
         else if ([cmd isEqualToString:@"resign"]) [f resignFirstResponder];
+        else if ([cmd isEqualToString:@"order"]) {   // (1.8.8.1: the rows from the list's top down, each by its place in the order -- 0 the newest --, names only of the test folder's own)
+            NSString *tf = [[[NSString stringWithContentsOfFile:@"/tmp/dockmag-dlfolder" encoding:NSUTF8StringEncoding error:nil] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] stringByStandardizingPath], *inside = tf.length > 1 ? [tf stringByAppendingString:@"/"] : nil;   // (a name only for an item in the test folder: never the user's, also with that file empty)
+            NSMutableArray *rows = [NSMutableArray array];
+            for (UIView *v in p.list.subviews) if ([v isKindOfClass:[DMDownloadRow class]]) [rows addObject:v];
+            [rows sortUsingComparator:^NSComparisonResult(UIView *a, UIView *b) { return a.frame.origin.y < b.frame.origin.y ? NSOrderedAscending : a.frame.origin.y > b.frame.origin.y ? NSOrderedDescending : NSOrderedSame; }];
+            NSMutableArray *out = [NSMutableArray array];
+            for (DMDownloadRow *r in rows) { NSUInteger k = [p.results indexOfObjectIdenticalTo:r.download]; BOOL own = inside && [r.download.url.path.stringByStandardizingPath hasPrefix:inside]; [out addObject:own ? [NSString stringWithFormat:@"%lu %@", (unsigned long)k, r.download.url.lastPathComponent] : [NSString stringWithFormat:@"%lu", (unsigned long)k]]; }
+            DMLog([NSString stringWithFormat:@"[downloads] debug order, the list's top down: %@", [out componentsJoinedByString:@" | "]]);
+        }
+        else if ([cmd hasPrefix:@"menu:"]) {   // (1.8.8.1: item k's menu -- 0 the newest, at the bottom -- at its row's middle, as a hold opens it)
+            NSUInteger k = (NSUInteger)[[cmd substringFromIndex:5] integerValue];
+            DMDownloadRow *row = nil;
+            for (UIView *v in p.list.subviews) if ([v isKindOfClass:[DMDownloadRow class]] && k < p.results.count && ((DMDownloadRow *)v).download == p.results[k]) row = (DMDownloadRow *)v;
+            CGPoint mid = row ? [row convertPoint:CGPointMake(CGRectGetMidX(row.bounds), CGRectGetMidY(row.bounds)) toCoordinateSpace:(row.window.screen ?: [UIScreen mainScreen]).coordinateSpace] : CGPointZero;
+            DMLog([NSString stringWithFormat:@"[downloads] debug menu %lu: %@", (unsigned long)k, row ? ([p openItemMenu:row at:mid how:@"debug"] ? @"open" : @"none") : @"no such row"]);
+        }
         else if ([cmd isEqualToString:@"light"] || [cmd isEqualToString:@"dark"] || [cmd isEqualToString:@"system"])   // (the panel's look in the other mode, no setting changed)
             p.panel.overrideUserInterfaceStyle = [cmd isEqualToString:@"light"] ? UIUserInterfaceStyleLight : [cmd isEqualToString:@"dark"] ? UIUserInterfaceStyleDark : UIUserInterfaceStyleUnspecified;
         else if ([cmd isEqualToString:@"hit"]) {   // where a tap on the field goes: the Dock window's own hit test, and the render server's context there
@@ -1600,6 +1778,7 @@ void DMDownloadsStartDebugPolling(void) {
 __attribute__((visibility("default"))) BOOL MSBDDownloadsPanelEscape(void) {
     DMDownloadsPanel *p = [DMDownloadsPanel shared];
     if (![p isOpen]) return NO;
+    if (DMDLItemMenuOpen()) return NO;   // (an item's menu over the panel: Esc closes that menu, as it closes any of our menus -- 1.8.8.1)
     // (text in the search field: Esc clears it first, as the field's own Esc does -- the key comes this way, not to the field's key command, while
     //  SpringBoard holds the keys, which is always while the panel is open with a hardware keyboard: "zzqx" typed, one Esc closed the panel, M1 29 Oct)
     if (p.searchField.text.length) { [p searchEscape]; return YES; }
@@ -1610,6 +1789,7 @@ __attribute__((visibility("default"))) BOOL MSBDDownloadsPanelEscape(void) {
 BOOL DMDownloadsPanelContainsTouch(UITouch *touch) {
     DMDownloadsPanel *p = [DMDownloadsPanel shared];
     if (![p isOpen] || !touch) return NO;
+    if (DMDLItemMenuOpen()) return YES;   // (an item's menu over the panel: the touch is the menu's -- the Dock and the window under it stay, 1.8.8.1)
     UIView *panel = p.panel;
     if (DMIsTypingInKeyboard(touch.window)) return YES;   // (typing into the search field: the Dock does not go, and the panel with it)
     CGPoint s = [touch locationInView:nil];   // (the touch's own window coordinates)
@@ -1620,3 +1800,18 @@ BOOL DMDownloadsPanelContainsTouch(UITouch *touch) {
     return CGRectContainsPoint(CGRectInset(panel.bounds, -8.0, -8.0), inPanel);
 }
 void DMDownloadsTouchBegan(UIView *view) { [[DMDownloadsPanel shared] touchBeganOnView:view]; }
+// Every touch event SpringBoard gets (Dock.x, -[UIApplication sendEvent:], before UIKit handles it): while the panel is open, a press that begins in
+// its window is noted with its event's buttons -- a secondary click's menu comes from UIKit's ask for it (-dm_secondaryClickIn:at:), and its release
+// opens nothing (-rowTapped:event:). Not the system gestures' copy of a touch (another window). 1.8.8.1.
+void DMDownloadsNotePress(UIEvent *event) {
+    DMDownloadsPanel *p = [DMDownloadsPanel shared];
+    if (![p isOpen]) return;
+    UIWindow *w = p.panel.window;
+    for (UITouch *t in event.allTouches) {
+        if (t.phase != UITouchPhaseBegan || !w || t.window != w) continue;
+        long b = 0;
+        if (@available(iOS 13.4, *)) b = (long)event.buttonMask;
+        gDLPressTouch = t; gDLPressButtons = b; gDLPressTaken = 0;
+        return;
+    }
+}

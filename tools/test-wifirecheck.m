@@ -137,6 +137,7 @@ static int gDMBarLayoutDepth = 0, gDMBarUpdateDepth = 0;
 static int gDMBarConstraintDepth = 0;   // (1.8.7.6: a bar inside its own -updateConstraints -- the pull rows' label inside it; tools/test-barbackground.sh plays the pass)
 static __unsafe_unretained UIView *gDMBarLayingOut = nil;
 static BOOL gWiFiMenuOn = YES, gVPNActive = NO, gSSHActive = NO, gMuteIconShown = NO;
+static BOOL gAirPodsMenuOn = NO;   // (1.8.8.1: the AirPods Menu, which opens DMStatusIconsUpdated's gate too -- row 28)
 static unsigned gSBItemHooks;
 static BOOL gDMScreenOff = NO, gDMOffSinceBack = NO;
 static int gDMTouchWatchArm = 5;
@@ -286,6 +287,7 @@ static void TConstraintPass(void) {   // (the bar's -updateConstraints, our BarF
 }
 static void TIOSUpdate(NSDictionary *d) { [gBar _updateWithAggregatedData:d]; }   // (iOS's own data update: the time each minute, ...)
 
+static void DMStickyEnd(NSString *why) {}   // (1.8.8.1, DesktopNotes.h: a sticky note being typed in ends at a lock or the Cover Sheet; none types here)
 #include "wr-lock.inc"
 #include "wr-attach.inc"
 #include "wr-watch.inc"
@@ -606,6 +608,28 @@ static void RowMenuOff(BOOL stui) {
     TRun(0, 15.0, ^(double w) { if (!u && w >= 5.0 - 1e-9) { u = YES; TUnlockStart(); } if (!l && w >= 5.35 - 1e-9) { l = YES; TLabelBack(YES, NO); } });
     check(ours() && gItemShown && wifiIcons() == 1, [NSString stringWithFormat:@"%@ Wi-Fi Menu off: iOS's Wi-Fi item alone after the unlock (as before)", fam()]);
 }
+// 1.8.8.1 (the AirPods menu): iPadOS's data updates lay our copy out again with only the AirPods Menu on -- at once and 0.35 s later, as with the
+// Wi-Fi Menu -- since its button follows iPadOS's AirPods item (it comes, goes and moves with the battery's percentage); with it off too and nothing
+// else of ours beside the icons, an update lays nothing of ours out (as before)
+static void RowAirPodsGate(BOOL stui) {
+    gSkip = YES; gPass = 1; gWiFiMenuOn = NO;
+    TWorld(stui, NO);
+    gLabelAt = 0;
+    TRun(0, 12.0, ^(double w) { TProbe(w); });
+    BOOL wasOurs = ours();
+    int asked[2];
+    for (int on = 0; on < 2; on++) {
+        gAirPodsMenuOn = on;
+        TRun(gWall + 1.0 / 60.0, gWall + 2.0, nil);
+        gFG.needsLayout = NO;
+        NSUInteger queued = gQueue.count;
+        DMStatusIconsUpdated(gBar);
+        asked[on] = (gFG.needsLayout ? 1 : 0) + (gQueue.count > queued ? 1 : 0);
+    }
+    gAirPodsMenuOn = NO;
+    check(wasOurs && asked[0] == 0, [NSString stringWithFormat:@"%@ AirPods Menu off, Wi-Fi Menu off, nothing of ours by the icons: an update of iPadOS's data lays nothing out (%d, ours %d)", fam(), asked[0], wasOurs]);
+    check(wasOurs && asked[1] == 2, [NSString stringWithFormat:@"%@ AirPods Menu on alone: the copy laid out at once and again 0.35 s later (%d of 2)", fam(), asked[1]]);
+}
 // the time label placed by the first data update after the unlock, inside it (the label's arrival hook runs there, its layout at once): our own ask
 // when one is on its way (the copy's release or newlyOurs asked it), else iOS's next update. Its items answered as not ours first; the layout's ask
 // inside it found ours on its way and was dropped (regressions review of WIFI2, F1: two Wi-Fi icons until iOS's next Wi-Fi update)
@@ -734,6 +758,7 @@ static int RunRow(int r) {
         case 25: RowLockInCommit(s, @"Lock Screen start, unlock at 6.7 s, the label back in the bar's pass in the commit (f04 r1)", 6.7, -1, -1); break;
         case 26: RowLockInCommit(s, @"Lock Screen start, unlock at 60.9 s, the screen on, the label in the commit (f04 r2a)", 60.9, -1, -1); break;
         case 27: RowLockInCommit(s, @"Lock Screen start, unlock at 180.8 s, asleep from 20 s to 178 s, the label in the commit (f04 r2c)", 180.8, 20.0, 178.0); break;
+        case 28: RowAirPodsGate(s); break;
         default: return -1;
     }
     // (every row with a held ask, W2: the bar laid out right after it, with no animation -- our first layout after it has the final icons start, and
@@ -755,7 +780,7 @@ int main(int argc, char **argv) {
     (void)argc; (void)argv;
     int fails = 0, rows = 0;
     for (int f = 0; f < 2; f++)
-        for (int k = 0; k < 28; k++) {
+        for (int k = 0; k < 29; k++) {
             int r = f * 100 + k;
             fflush(stdout);
             pid_t pid = fork();

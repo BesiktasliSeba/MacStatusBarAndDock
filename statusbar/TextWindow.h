@@ -13,6 +13,27 @@
 //    writes nothing --, so a file that went is never made again at its old place. Put Back from the Trash: followed back, editable again.
 //  - Keys (the native layer's -dm_handleKey:, SpringBoard's key handling): Command-S, Command-W, Command-Z / Shift-Command-Z, Command-C / V / X / A;
 //    Esc ends the typing. Everything else is the text view's own typing.
+// The Command editing keys of a text view of ours, for SpringBoard's own key handling (UIKeyCommands in its windows never fire, MacSwitcher.h):
+// Command-Z / Shift-Command-Z, Command-C / V / X / A. This window's text and a sticky note being typed in (DesktopNotes.h) both: one rule, the
+// note's keys never reach an active Finder or TextEdit window. YES: the key was the text view's (Command-Z with nothing to undo too, as TextEdit).
+// Kept a function of its own: the crash guard passes over it (tools/crashmap-rules.txt, transparent) and decides by its caller.
+__attribute__((noinline)) static BOOL DMTextViewEditKey(UITextView *text, UIKey *key, BOOL editable) {
+    if (!text || !key) return NO;
+    UIKeyModifierFlags m = key.modifierFlags & (UIKeyModifierCommand | UIKeyModifierShift | UIKeyModifierAlternate | UIKeyModifierControl);
+    BOOL cmd = m == UIKeyModifierCommand, cmdShift = m == (UIKeyModifierCommand | UIKeyModifierShift);
+    switch ((long)key.keyCode) {
+        case UIKeyboardHIDUsageKeyboardZ:
+            if (cmd && text.undoManager.canUndo) { [text.undoManager undo]; return YES; }
+            if (cmdShift && text.undoManager.canRedo) { [text.undoManager redo]; return YES; }
+            return cmd || cmdShift;
+        case UIKeyboardHIDUsageKeyboardC: if (cmd) { [text copy:nil]; return YES; } break;
+        case UIKeyboardHIDUsageKeyboardV: if (cmd && editable) { [text paste:nil]; return YES; } break;
+        case UIKeyboardHIDUsageKeyboardX: if (cmd && editable) { [text cut:nil]; return YES; } break;
+        case UIKeyboardHIDUsageKeyboardA: if (cmd) { [text selectAll:nil]; return YES; } break;
+        default: break;
+    }
+    return NO;
+}
 @interface DMTextWindow : DMNativeWindow <UITextViewDelegate>
 @property (nonatomic, copy) NSString *file;
 - (instancetype)initWithFile:(NSString *)path text:(NSString *)text encoding:(NSStringEncoding)enc bom:(BOOL)bom editable:(BOOL)editable;
@@ -223,19 +244,12 @@ static NSString *DMTextRead(NSString *path, NSStringEncoding *enc, BOOL *bom) {
 }
 - (BOOL)dm_handleKey:(UIKey *)key {
     UIKeyModifierFlags m = key.modifierFlags & (UIKeyModifierCommand | UIKeyModifierShift | UIKeyModifierAlternate | UIKeyModifierControl);
-    BOOL cmd = m == UIKeyModifierCommand, cmdShift = m == (UIKeyModifierCommand | UIKeyModifierShift);
+    BOOL cmd = m == UIKeyModifierCommand;
+    if (DMTextViewEditKey(_text, key, _editable)) return YES;   // (Undo, Redo, Copy, Paste, Cut, Select All: the text view's, as a note's)
     switch ((long)key.keyCode) {
         case UIKeyboardHIDUsageKeyboardS: if (cmd) { [self dm_save]; return YES; } break;
         case UIKeyboardHIDUsageKeyboardW: if (cmd) { [self close]; return YES; } break;
         case UIKeyboardHIDUsageKeyboardM: if (cmd) { [self minimize]; return YES; } break;
-        case UIKeyboardHIDUsageKeyboardZ:
-            if (cmd && _text.undoManager.canUndo) { [_text.undoManager undo]; return YES; }
-            if (cmdShift && _text.undoManager.canRedo) { [_text.undoManager redo]; return YES; }
-            return cmd || cmdShift;
-        case UIKeyboardHIDUsageKeyboardC: if (cmd) { [_text copy:nil]; return YES; } break;
-        case UIKeyboardHIDUsageKeyboardV: if (cmd && _editable) { [_text paste:nil]; return YES; } break;
-        case UIKeyboardHIDUsageKeyboardX: if (cmd && _editable) { [_text cut:nil]; return YES; } break;
-        case UIKeyboardHIDUsageKeyboardA: if (cmd) { [_text selectAll:nil]; return YES; } break;
         case UIKeyboardHIDUsageKeyboardEscape: if (m == 0 && _text.isFirstResponder) { [_text resignFirstResponder]; return YES; } break;
         default: break;
     }
