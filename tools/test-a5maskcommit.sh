@@ -83,9 +83,12 @@ sites() {   # $1 StatusBar.x, $2 quiet: the number of site checks that fail
   # buttons; Finder.h: a sticky note's Put Back, Undo and Get Info, B67's Open With: a submenu in the item menu, the apps' list, a copy and
   # the app's launch, B63's -dm_secondaryClickIn:at: opening the menu a hold opens, and B66's Downloads stack item menu, B67's Open With in it
   # too: its rows, drawn by DMFinderShowMenuIn, which reads the point on a menu window's own screen; Rename edits the name once the folder
-  # shows it)
-  if [ "$(shasum < ../statusbar/NativeWindow.h | cut -c1-16)" = 1d2aacde2cec6ddc ] && [ "$(shasum < ../statusbar/Finder.h | cut -c1-16)" = ea74eafced836848 ] \
-     && [ "$(shasum < ../statusbar/KeyboardBehind.h | cut -c1-16)" = 38db8b74b23dde3c ]; then ok "NativeWindow.h, Finder.h, KeyboardBehind.h as in 1.8.7.8 or 1.8.8.1 (no focus, key window or level change)"
+  # shows it); 1.8.8.2's B73 changed Finder.h again, none a focus, key window or level change either: a listing is shown after the window's
+  # layout, and every reload of its list or icons shows the selection again; 1.8.8.2's B72 changed NativeWindow.h's resize maths only
+  # (DMNativeResized's inside argument: a sticky note's moving side stops at its area's side; a window passes NO and keeps its maths), no
+  # focus, key window or level change either)
+  if [ "$(shasum < ../statusbar/NativeWindow.h | cut -c1-16)" = 6e880c0b9beb2068 ] && [ "$(shasum < ../statusbar/Finder.h | cut -c1-16)" = 75f2a400732e9efb ] \
+     && [ "$(shasum < ../statusbar/KeyboardBehind.h | cut -c1-16)" = 38db8b74b23dde3c ]; then ok "NativeWindow.h, Finder.h, KeyboardBehind.h as in 1.8.7.8, 1.8.8.1 or 1.8.8.2 (no focus, key window or level change)"
   else no "NativeWindow.h, Finder.h or KeyboardBehind.h changed"; fi
   # the trace and the kill switch are debug only
   [ "$(ifdebug "$X" 'return DMTestFlag("/tmp/msb-a5-maskold");')" = yes ] && [ "$(ifdebug "$X" 'static void DMA5MaskDebugAtCommit(void) {')" = yes ] && [ "$(ifdebug "$X" 'static void DMA5MaskTrace(UIView *stage, CGSize was, CGSize now) {')" = yes ] \

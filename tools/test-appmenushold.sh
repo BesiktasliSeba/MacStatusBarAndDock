@@ -24,7 +24,7 @@ SCEN="word switch tap minute gone front nohold touch touchend"
 build() {   # $1 SpringBoard's AppMenus.h, $2 its StatusBar.x, $3 the app's AppMenus.h, $4 dir, $5 quiet
   local d=$4; mkdir -p "$d"; cp "$RULES" "$d/AppMenuRules.h"
   local sub='s/"com\.besiktasliseba\.appbridge\.appmenus"/TSwitchName()/g; s/"com\.besiktasliseba\.appbridge\./TPFX "/g; s/\[NSBundle mainBundle\]\.bundleIdentifier/TBundle()/g'
-  { awk '/^static BOOL gAMOn = YES;/ {f=1} f {print} f && /^static void DMAMFrontSeen\(SBApplication \*app\) \{/ {g=1} g && /^[}]/ {exit}' "$1"
+  { awk '/^static BOOL gAMOn = YES;/ {f=1} f {print} f && /^static void DMAMFrontSeen(On)?\(SBApplication \*app(, int display)?\) \{/ {g=1} g && /^[}]/ {exit}' "$1"
     fnst "$1" DMAMApplyPref
     if grep -q '^static void DMAMOverlayGone(void) {' "$1"; then   # (DMAMTitles and the hold after it, to the end of DMAMOverlayGone)
       awk '/^static NSArray<NSString \*> \*DMAMTitles\(NSString \*bundle\) \{/ {f=1} f {print} f && /^static void DMAMOverlayGone\(void\) \{/ {g=1} g && /^[}]/ {exit}' "$1"

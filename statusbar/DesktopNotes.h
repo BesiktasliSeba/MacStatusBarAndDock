@@ -488,6 +488,8 @@ __attribute__((noinline)) static BOOL DMStickyCanType(void) { return DMDesktopTy
 }
 // A bottom corner's grip: the windows' maths (NativeWindow.h DMNativeResized: the left grip keeps the right edge, the minimum, never wider than the
 // free area or past its bottom), then kept inside the area (the check's item 14). Kept as the note's own size and place when the finger lifts.
+// (inside YES: the moving side stops at the area's side, so the other side stays where it is; 1.8.8.2 B72, the left grip pulled past the area's
+//  left side grew the note to the right)
 - (void)dm_noteResize:(UIPanGestureRecognizer *)g {
     DMNoteEditor *ed = _notes.editor;
     UIView *host = ed.superview;
@@ -495,7 +497,7 @@ __attribute__((noinline)) static BOOL DMStickyCanType(void) { return DMDesktopTy
     id<UICoordinateSpace> scr = (host.window.screen ?: [UIScreen mainScreen]).coordinateSpace;
     if (g.state == UIGestureRecognizerStateBegan) { _notes.resizeStart = ed.frame; _notes.resizing = YES; DM_FEATURE_MARK("sticky-note-resize"); }
     CGRect desk = [host convertRect:[self convertRect:[self dm_area] toCoordinateSpace:(self.window.screen ?: [UIScreen mainScreen]).coordinateSpace] fromCoordinateSpace:scr];
-    CGRect f = MSBDStickyClampInside(DMNativeResized(_notes.resizeStart, [g translationInView:host], (int)g.view.tag, CGSizeMake(MSBD_NOTE_MIN_W, MSBD_NOTE_MIN_H), desk), desk);
+    CGRect f = MSBDStickyClampInside(DMNativeResized(_notes.resizeStart, [g translationInView:host], (int)g.view.tag, CGSizeMake(MSBD_NOTE_MIN_W, MSBD_NOTE_MIN_H), desk, YES), desk);
     ed.frame = f;
     if (g.state != UIGestureRecognizerStateEnded && g.state != UIGestureRecognizerStateCancelled && g.state != UIGestureRecognizerStateFailed) return;
     _notes.resizing = NO;

@@ -2,6 +2,17 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.8.1.1
+
+### Fixes
+- The AirPods menu now works with real AirPods on iPadOS 17 and 18: click or tap the AirPods icon in the menu bar.
+- With an external display connected, each screen's menu bar now shows its own app, menus and traffic lights, instead of the same app showing on both.
+- On smaller iPads in portrait, the menu bar's menus no longer run into the icons and clock on the right. When space is short, the date hides first.
+- Opening the Mac Switcher now closes any open menu and the Downloads stack, instead of leaving them on top of it and open after it.
+- Typing in a sticky note now ends, with your text kept, when an app goes full screen or you open Spotlight from the keyboard.
+- In landscape on iPadOS 16, the Cut, Copy and Paste menu in sticky notes, desktop renames, Finder and TextEdit now appears next to the text instead of behind the menu bar.
+- In Finder, Show in Enclosing Folder from the Downloads stack now selects the item in a new window too, and a selected item stays highlighted when you resize the window or its thumbnail appears.
+
 ## 1.8.8.1
 
 ### New

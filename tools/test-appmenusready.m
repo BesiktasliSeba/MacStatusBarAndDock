@@ -46,7 +46,12 @@ static TApp *gFront;
 static SBApplication *DMActiveApp(void) { return gFront; }
 static id DMCall(id obj, NSString *name) { SEL s = NSSelectorFromString(name); return obj && [obj respondsToSelector:s] ? ((id (*)(id, SEL))objc_msgSend)(obj, s) : nil; }
 static NSURL *DMFDContainer(NSString *bundle) { return [bundle isEqualToString:gBundle] ? [NSURL fileURLWithPath:gContainer] : nil; }
+static UIScreen *gTVUp;   // (1.8.8.2, B69 review: another display's bar is up -- the scenarios otherbar and otherbargone; nil in every other one)
+__attribute__((unused)) static UIScreen *DMBarFrontTV(void) { return gTVUp; }
 #include "sb-block.inc"
+#if AM_FRONT_ON   // (1.8.8.2, B69 E: one "last" per display -- the iPad's bars are display 0)
+#define DMAMFrontSeen(app) DMAMFrontSeenOn((app), 0)
+#endif
 
 // ---- the app's side --------------------------------------------------------------------------------------------------------------------------
 // A responder of the app: its next responder, its key commands (made anew at every read, as most apps' getters do; a title can change at every
@@ -224,6 +229,24 @@ int main(int argc, char **argv) {
             MABRegisterMenus();
             Run(2.5);
             Check(gHellos == 1 && gSnapshots == 0 && !HasMenus(), [NSString stringWithFormat:@"notfront: not the app in front: no ask after its word, no snapshot (%d words, %d snapshots)", gHellos, gSnapshots]);
+        } else if ([sc isEqualToString:@"otherbar"] || [sc isEqualToString:@"otherbargone"]) {
+#if AM_FRONT_ON
+            // B69 review: each display's bar names its own display's front, so the app the TV's bar shows need not be the active one (another app on
+            // the iPad's bar). Its word after a cold launch asks it again as for the active app (B12), or its titles waited for a layout there; once
+            // no bar shows it (otherbargone: the TV's bar names another app), its word asks nothing, as notfront.
+            BOOL gone = [sc isEqualToString:@"otherbargone"];
+            gTVUp = [UIScreen mainScreen];
+            DMAMFrontSeenOn(app, 1);   // (the TV's bar: this app -- asked, lost: nobody registered yet)
+            TApp *other = App(@"test.b12.other"); gFront = other; DMAMFrontSeenOn(other, 0);   // (the iPad's bar: the active app)
+            Run(1.0);
+            if (gone) { DMAMFrontSeenOn(App(@"test.b12.third"), 1); Run(0.2); }
+            MABRegisterMenus();
+            double t = WaitMenus(3.0);
+            if (gone) Check(t < 0 && gSnapshots == 0, [NSString stringWithFormat:@"otherbargone: on no bar: no ask after its word, no snapshot (%d words, %d snapshots)", gHellos, gSnapshots]);
+            else Check(t >= 0 && t <= 0.5, [NSString stringWithFormat:@"otherbar: the app the other display's bar shows (not the active one): its titles within 0.5 s of its word (took %@)", t < 0 ? @"never, 3 s" : [NSString stringWithFormat:@"%.3f s", t]]);
+#else
+            Check(YES, [NSString stringWithFormat:@"%@: no per-display bars in this copy", sc]);
+#endif
         } else if ([sc isEqualToString:@"off"]) {
             DMAMApplyPref(NO);   // (Show Apps' Own Menus off: published as 2)
             gFront = app; DMAMFrontSeen(app);

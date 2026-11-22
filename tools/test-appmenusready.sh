@@ -19,7 +19,7 @@ FW="$SDK/System/iOSSupport/System/Library/Frameworks"
 if [ -n "$AMR_KEEP" ]; then W=$AMR_KEEP; mkdir -p "$W"; else W=$(mktemp -d); trap 'rm -rf "$W"' EXIT; fi   # (AMR_KEEP=<dir>: the builds kept there)
 SB0=${AMR_SB:-../statusbar/AppMenus.h}; APP0=${AMR_APP:-../appbridge/AppMenus.h}; RULES=${AMR_RULES:-../common/AppMenuRules.h}
 fnst() { awk -v n="$2(" '(index($0, "static ") == 1 || index($0, "__attribute__((noinline)) static ") == 1) && index($0, n) {f=1} f {print} f && /^[}]/ {exit}' "$1"; }   # a static function by its name
-SCEN="cold warm early notfront off once partial relaunch grows moves filesrebuild filesstart steady idle nomenus flap openmenu away offlater flapnotfront flapmenu offstill backswitch backtap frontafterword frontlate fronttap focustap plaintap menuopenclose"
+SCEN="cold warm early notfront otherbar otherbargone off once partial relaunch grows moves filesrebuild filesstart steady idle nomenus flap openmenu away offlater flapnotfront flapmenu offstill backswitch backtap frontafterword frontlate fronttap focustap plaintap menuopenclose"
 DSCEN="grows flapnotfront offstill backswitch frontafterword"   # (DEBUG: the lines p08 and p10 read)
 
 build() {   # $1 SpringBoard's AppMenus.h, $2 the app's, $3 dir, $4 quiet
@@ -27,7 +27,7 @@ build() {   # $1 SpringBoard's AppMenus.h, $2 the app's, $3 dir, $4 quiet
   # (the names under this run's prefix; the app's bundle id and its tmp folder are the test's)
   # (the switch's name per process: the scenarios run side by side, and one of them publishes it off)
   local sub='s/"com\.besiktasliseba\.appbridge\.appmenus"/TSwitchName()/g; s/"com\.besiktasliseba\.appbridge\./TPFX "/g; s/\[NSBundle mainBundle\]\.bundleIdentifier/TBundle()/g'
-  awk '/^static BOOL gAMOn = YES;/ {f=1} f {print} f && /^static void DMAMFrontSeen\(SBApplication \*app\) \{/ {g=1} g && /^[}]/ {exit}' "$1" | sed -E "$sub" > "$d/sb-block.inc"
+  awk '/^static BOOL gAMOn = YES;/ {f=1} f {print} f && /^static void DMAMFrontSeen(On)?\(SBApplication \*app(, int display)?\) \{/ {g=1} g && /^[}]/ {exit}' "$1" | sed -E "$sub" > "$d/sb-block.inc"
   fnst "$1" DMAMApplyPref | sed -E "$sub" >> "$d/sb-block.inc"
   # (the app's whole file but for the four stand-ins: where it finds its key window, its first responder, its main menu, and the pick)
   awk 'BEGIN { n = split("MABMenuKeyWindow MABMenuStart MABMenuRoot MABMenuPerform", a, " ") }
@@ -39,7 +39,7 @@ build() {   # $1 SpringBoard's AppMenus.h, $2 the app's, $3 dir, $4 quiet
     || { echo "FAIL  the code was not found in $1 / $2"; return 99; }
   for fl in t td; do
     clang -target "$(uname -m)-apple-ios14.0-macabi" -isysroot "$SDK" -iframework "$FW" -F "$FW" -L"$SDK/System/iOSSupport/usr/lib" \
-          -fobjc-arc -Wall -Wno-unused-function -Werror=implicit-function-declaration -DTPFX="\"test.b12.$$.$RANDOM.\"" -I"$d" $([ $fl = td ] && echo -DDEBUG=1) \
+          -fobjc-arc -Wall -Wno-unused-function -Werror=implicit-function-declaration -DTPFX="\"test.b12.$$.$RANDOM.\"" -I"$d" $([ $fl = td ] && echo -DDEBUG=1) $(grep -q '^static void DMAMFrontSeenOn(' "$d/sb-block.inc" && echo -DAM_FRONT_ON=1) \
           -framework UIKit -framework QuartzCore -o "$d/$fl" test-appmenusready.m 2> "$d/cc-$fl.txt" || { [ -n "$4" ] || cat "$d/cc-$fl.txt"; echo "FAIL  the real code did not build ($fl)"; return 99; }
     [ -s "$d/cc-$fl.txt" ] && [ -z "$4" ] && { echo "FAIL  warnings ($fl):"; cat "$d/cc-$fl.txt"; return 1; }
   done
@@ -64,8 +64,8 @@ check "the app's word comes after both of its handlers are registered (an ask se
   "fnst $APP0 MABRegisterMenus | awk '/notify_register_dispatch\\(name, &tokenAsk/{a=NR} /notify_register_dispatch\\(name, &tokenAct/{b=NR} /if \\(MABMenusOn\\(\\)\\) \\{/{c=NR} /notify_post\\(here\\);/{p=NR} END{exit !(a && b && c && p && a < p && b < p && c < p && p == c + 2)}'"
 check "one name on both sides: menushere.<hash>" \
   "[ \$(grep -cF '\"com.besiktasliseba.appbridge.menushere.%08x\"' $APP0) = 1 ] && [ \$(grep -cF '\"com.besiktasliseba.appbridge.menushere.%08x\"' $SB0) = 1 ]"
-check "SpringBoard listens for it with the app's other names (once per app, when it first asks it), and asks at once, forced, only while it is the app in front" \
-  "awk '/if \\(!gAMReadyTokens\\[bundle\\]\\) \\{/{f=1} f && /\\^\\(int t\\) \\{ if \\(gAMOn && \\[\\[DMActiveApp\\(\\) bundleIdentifier\\] isEqualToString:b\\]\\) DMAMAsk\\(b, YES\\); \\}\\);/{ok=1} f && /^    \\}/{exit !ok} END{exit !ok}' $SB0"
+check "SpringBoard listens for it with the app's other names (once per app, when it first asks it), and asks at once, forced, only while it is the app in front (1.8.8.2: or on a display's bar, DMAMInFront)" \
+  "awk '/if \\(!gAMReadyTokens\\[bundle\\]\\) \\{/{f=1} f && /\\^\\(int t\\) \\{ if \\(gAMOn && (\\[\\[DMActiveApp\\(\\) bundleIdentifier\\] isEqualToString:b\\]|DMAMInFront\\(b\\))\\) DMAMAsk\\(b, YES\\); \\}\\);/{ok=1} f && /^    \\}/{exit !ok} END{exit !ok}' $SB0"
 check "the crash guard: both new blocks are in AppMenus.h, whose crash turns Show Apps' Own Menus off (the switch's publishing kept out of line: -Os put it in DMLoadPrefs)" \
   "grep -qxF 'file MacStatusBarCore ^AppMenus\\.h\$ appOwnMenus' crashmap-rules.txt && grep -qxF 'file MacAppBridge ^AppMenus\\.h\$ appOwnMenus' crashmap-rules.txt && grep -qxF '__attribute__((noinline)) static void DMAMApplyPref(BOOL on) {' $SB0"
 check "the looks start only with an answer written (once per process), never at the registration or from a constructor" \
@@ -101,13 +101,14 @@ mtf() {   # $1 what, $2 file (sb|app), $3 sed
   if [ "$k" -gt 0 ]; then echo "PASS  made-to-fail ($1): caught ($k scenarios fail)"; else echo "FAIL  made-to-fail ($1): not caught"; fails=1; fi
 }
 mi=0
+mtf "SpringBoard asks only for the active app, not for another display's bar's (1.8.8.2, B69 review)" sb 's/    return b\.length && DMBarFrontTV\(\) && /    return NO \&\& b.length \&\& DMBarFrontTV() \&\& /'
 mtf "the app says nothing at its registration (1.8.7.9)" app '/^        notify_post\(here\);$/d'
 mtf "SpringBoard doesn't listen for the app's word" sb '/notify_register_dispatch\(here, &hereToken/d'
-mtf "SpringBoard asks after the word whatever app is in front" sb 's/\^\(int t\) \{ if \(gAMOn && \[\[DMActiveApp\(\) bundleIdentifier\] isEqualToString:b\]\) DMAMAsk\(b, YES\); \}/^(int t) { if (gAMOn) DMAMAsk(b, YES); }/'
-mtf "SpringBoard's ask after the word is not forced (within 2 s of the front change: skipped)" sb 's/isEqualToString:b\]\) DMAMAsk\(b, YES\); \}\);$/isEqualToString:b]) DMAMAsk(b, NO); });/'
+mtf "SpringBoard asks after the word whatever app is in front" sb 's/\^\(int t\) \{ if \(gAMOn && (\[\[DMActiveApp\(\) bundleIdentifier\] isEqualToString:b\]|DMAMInFront\(b\))\) DMAMAsk\(b, YES\); \}/^(int t) { if (gAMOn) DMAMAsk(b, YES); }/'
+mtf "SpringBoard's ask after the word is not forced (within 2 s of the front change: skipped)" sb 's/(isEqualToString:b\]|DMAMInFront\(b\))\) DMAMAsk\(b, YES\); \}\);$/\1) DMAMAsk(b, NO); });/'
 mtf "the word is posted with the switch off" app 's/^    if \(MABMenusOn\(\)\) \{$/    if (1) {/'
 mtf "the word on every window or scene change too" app 's/usingBlock:\^\(NSNotification \*n\) \{ MABMenusChanged\(\); \}\];/usingBlock:^(NSNotification *n) { MABMenusChanged(); char h2[96]; snprintf(h2, sizeof h2, "com.besiktasliseba.appbridge.menushere.%08x", hash); notify_post(h2); }];/'
-mtf "SpringBoard waits 1 s after the word, as for a tap" sb 's/isEqualToString:b\]\) DMAMAsk\(b, YES\); \}\);$/isEqualToString:b]) DMAMAskSoon(b, 1.0); });/'
+mtf "SpringBoard waits 1 s after the word, as for a tap" sb 's/(isEqualToString:b\]|DMAMInFront\(b\))\) DMAMAsk\(b, YES\); \}\);$/\1) DMAMAskSoon(b, 1.0); });/'
 mtf "the two sides' names differ" app 's/appbridge\.menushere\.%08x/appbridge.menuhere.%08x/'
 # (B12's thin first answer)
 mtf "the app never looks again after its answer (1.8.8 RC 2)" app 's/^    if \(wrote\) MABMenusAnswered\(start, keyCmds, chain, ordered\);/    if (0) MABMenusAnswered(start, keyCmds, chain, ordered);/'

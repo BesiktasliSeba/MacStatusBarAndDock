@@ -206,4 +206,20 @@ static inline BOOL MSBDStickyPlaceRead(id s, double *fx, double *fy) {
     if (fy) *fy = MSBDStickyClamp(b, 0, 1);
     return YES;
 }
+// ---- the desktop's typing at a layout transition (1.8.8.2, B74; statusbar/Desktop.h DMDesktopTypingAtTransition reads SpringBoard's side) ----
+// A note (or a name: they share the one typing window) being typed in ends when SpringBoard begins a transition that presents Spotlight, on any
+// display (its search field gets the keys from then on: Design v2 2k, "another SpringBoard text field taking the typing"), or that takes the iPad's
+// own display to a full-screen app or window: SpringBoard's application mode (3) there, with our Stage Manager engine only when the stage holds a
+// full-screen window (its windows are a stage in that mode, the desktop behind them), with Aerial, Zetsu, MilkyWay4 and no windowing always (their
+// windows lie over the Home Screen, so that mode is an app full screen). Home (1), the App Switcher (2), another display, a state that could not be
+// read: the typing goes on, and the tick's and the touches' rules decide as before.
+typedef enum { MSBDStickyTypingGoesOn = 0, MSBDStickyTypingSpotlight = 1, MSBDStickyTypingFullScreen = 2 } MSBDStickyTypingEnd;
+static inline MSBDStickyTypingEnd MSBDStickyTypingAt(BOOL spotlight, BOOL stateRead, BOOL onIPad, long long mode, BOOL smEngine, BOOL stageFull) {
+    if (spotlight) return MSBDStickyTypingSpotlight;
+    if (!stateRead || !onIPad || mode != 3) return MSBDStickyTypingGoesOn;
+    return (!smEngine || stageFull) ? MSBDStickyTypingFullScreen : MSBDStickyTypingGoesOn;
+}
+static inline NSString *MSBDStickyTypingWhy(MSBDStickyTypingEnd e) {
+    return e == MSBDStickyTypingSpotlight ? @"Spotlight opens" : e == MSBDStickyTypingFullScreen ? @"a window or app went full screen" : nil;
+}
 #endif

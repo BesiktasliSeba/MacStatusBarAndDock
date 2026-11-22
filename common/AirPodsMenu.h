@@ -2,7 +2,8 @@
 // tools/test-airpodsmenu.sh with test-airpodsmenu.c).
 //
 // Settings > Status Bar > AirPods Menu (MSBD_AIRPODS_MENU_KEY, on unless switched off, updaters too): a click or a finger tap on iPadOS's own
-// AirPods item in the status bar (its Bluetooth item while it shows a headset's battery) opens a Mac-style menu under it: the headphones' name,
+// AirPods item in the status bar (its Bluetooth item while it shows headphones: their glyph, alone or with their level) opens a Mac-style menu
+// under it: the headphones' name,
 // their battery as BatteryCenter gives it (Left and Right as one level when it merges them, apart when it splits them, and the Case), Noise
 // Control with only the modes they offer while they are the audio output, Disconnect, and Bluetooth Settings…. Everything here is the rules the
 // menu follows, with no Apple call: where its button goes in the bar, which battery records belong to which headphones, the cells, the modes,
@@ -18,9 +19,21 @@
 // The switch as stored: a boolean, else on (never set: new installs and updaters alike, as Battery Menu).
 static inline int MSBDAirPodsMenuOn(int isBool, int value) { return isBool ? value != 0 : 1; }
 
+// ---- when there is a button: whenever iPadOS shows its Bluetooth item for headphones (1.8.8.1.1) ----
+// The item has two display items: the glyph and the headphones' level beside it. iPadOS shows the glyph for connected headphones (the bar data's
+// Bluetooth state 2), with the level only where SpringBoard has it drawn: on 18.5 (_updateBluetoothHeadphonesItem) only for headphones that are
+// not Apple's, so AirPods show the glyph ALONE there (their level is in the Batteries widget; 1.8.8.1 asked for the level, so AirPods on 17/18 got
+// no button). In some regions iPadOS also shows the item as a plain Bluetooth indicator (its other states): no headphones, no button. So: a button
+// while any of the item's views shows and either its level shows (only headphones have one) or the bar's data says headphones; where the data
+// cannot be read (another shape), the shown item is taken as the headphones'.
+#define MSBD_AP_BT_HEADPHONES 2
+static inline int MSBDAirPodsItemIsHeadphones(int viewsShown, int levelShown, int stateRead, long long state) {
+    return viewsShown > 0 && (levelShown || !stateRead || state == MSBD_AP_BT_HEADPHONES);
+}
+
 // ---- the button's place (leading coordinates: x from the leading edge, the bar turns it for a right-to-left language) ----
-// lead..trail: iPadOS's AirPods item's shown views (its glyph and its headset battery), `pad` more on each side. It never starts before `floor`
-// (where our Wi-Fi icon's touch area ends, as for the battery's button) or the middle of the gap to the shown view before it (prev), and never
+// lead..trail: iPadOS's AirPods item's shown views (its glyph, and its headset battery when it shows), `pad` more on each side. It never starts
+// before `floor` (where our Wi-Fi icon's touch area ends, as for the battery's button) or the middle of the gap to the shown view before it (prev), and never
 // ends past the middle of the gap to the shown view after it (next). The battery's own button (batt, while Battery Menu is on) is never
 // overlapped: the AirPods button stops where it starts, on whichever side it is. An empty item, or no room left: no area (0).
 typedef struct { int has; double lead, trail; } MSBDAPSide;
@@ -46,10 +59,19 @@ static inline int MSBDAirPodsButtonSpan(double lead, double trail, double pad, d
 #define MSBD_AP_MAX_PARTS 16
 #define MSBD_AP_MAX_ROUTE 8
 #define MSBD_AP_MAX_ROWS 64
-// A connected Bluetooth device whose battery iPadOS reports (connectedDevices with supportsBatteryLevel, the bar's own rule). name: its real
-// name (matching only); shown: what the menu shows (screenshot mode's name in a debug build); level: its one battery level (-1 unknown);
-// connected: 0 for one the open menu listed that has gone since (Not Connected, Connect).
+// A connected Bluetooth device the menu lists (MSBDAirPodsListsDevice). name: its real name (matching only); shown: what the menu shows
+// (screenshot mode's name in a debug build); level: its one battery level from Bluetooth (-1 unknown: none reported; BatteryCenter's records
+// give the strip either way); connected: 0 for one the open menu listed that has gone since (Not Connected, Connect).
 typedef struct { char name[MSBD_AP_NAME]; char shown[MSBD_AP_NAME]; char address[24]; long long productId; int level; int connected; } MSBDAPHeadset;
+// Which connected devices the menu lists: headphones by iPadOS's own rule (BluetoothDevice -type 16 or 20, the types SpringBoard 18.5's
+// _updateBluetoothHeadphonesItem shows the headphones glyph for), with or without a battery level, and, as in 1.8.8.1, any device that reports
+// a battery level (supportsBatteryLevel). typeRead 0: the type could not be asked here (only the level counts then).
+#define MSBD_AP_BT_TYPE_HEADSET 16
+#define MSBD_AP_BT_TYPE_HEADPHONES 20
+static inline int MSBDAirPodsIsHeadphonesType(int typeRead, int type) { return typeRead && (type == MSBD_AP_BT_TYPE_HEADSET || type == MSBD_AP_BT_TYPE_HEADPHONES); }
+static inline int MSBDAirPodsListsDevice(int connected, int reportsLevel, int typeRead, int type) {
+    return connected && (reportsLevel || MSBDAirPodsIsHeadphonesType(typeRead, type));
+}
 // One BatteryCenter record (a BCBatteryDevice, copied): parts is a bitmask -- 1 Left, 2 Right, 4 Case, 0 a single battery. BatteryCenter merges
 // both buds into one record (parts 3, the lower level, the group's name) when they are close and charge alike, and keeps them apart otherwise.
 typedef struct { unsigned long long parts; int percent; int charging; int internal; long long productId; char groupName[MSBD_AP_NAME]; char matchId[MSBD_AP_NAME]; } MSBDAPPart;

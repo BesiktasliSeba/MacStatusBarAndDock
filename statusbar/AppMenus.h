@@ -30,6 +30,15 @@ static NSMutableDictionary<NSString *, NSNumber *> *gAMFailedAt;      // bundle 
 static NSMutableDictionary<NSString *, NSString *> *gAMContainer;     // bundle -> its data container's path (looked up again after a failed read)
 static NSString *gAMPendingBundle;                                     // a title was opened: its menu waits for this app's fresh answer
 static dispatch_block_t gAMPendingOpen;
+// (1.8.8.2, B69: each display's bar names its own display's front, so the app a bar shows the menus of may not be the active one. The app each display's
+//  bar last laid out -- 0 the iPad's bars, 1 another display's: DMAMFrontSeenOn --; an app on a bar is "in front" for the asks below, as the active app
+//  is, so a bar's app that isn't the active one still gets its menus asked again after its "menushere", its thin first answer or its "menuschanged"
+//  (B69 review: B12's late titles again on the other display's bar). The iPad alone: the active app only, as before)
+static NSString *gAMBarLast[2];
+static BOOL DMAMInFront(NSString *b) {
+    if ([[DMActiveApp() bundleIdentifier] isEqualToString:b]) return YES;
+    return b.length && DMBarFrontTV() && ([gAMBarLast[0] isEqualToString:b] || [gAMBarLast[1] isEqualToString:b]);
+}
 
 static uint32_t DMAMHash(NSString *b) { uint32_t h = 2166136261u; for (const char *c = b.UTF8String; *c; c++) { h ^= (uint8_t)*c; h *= 16777619u; } return h; }
 static NSArray<NSString *> *DMAMTitlesIn(NSDictionary *snap) {
@@ -118,17 +127,17 @@ static void DMAMAsk(NSString *bundle, BOOL force) {
         //  another of its windows forward; asked again once its taps have stopped for 1 s, while it is the app in front -- review M5)
         char touched[96]; snprintf(touched, sizeof touched, "com.besiktasliseba.appbridge.touched.%08x", h);
         int tapToken = 0;
-        notify_register_dispatch(touched, &tapToken, dispatch_get_main_queue(), ^(int t) { if (gAMOn && [[DMActiveApp() bundleIdentifier] isEqualToString:b]) DMAMAskSoon(b, 1.0); });
+        notify_register_dispatch(touched, &tapToken, dispatch_get_main_queue(), ^(int t) { if (gAMOn && DMAMInFront(b)) DMAMAskSoon(b, 1.0); });
         // (... and a shortcut from a keyboard, Return, another of its windows made key: MacAppBridge's "menuschanged", the same way)
         char changed[96]; snprintf(changed, sizeof changed, "com.besiktasliseba.appbridge.menuschanged.%08x", h);
         int changedToken = 0;
-        notify_register_dispatch(changed, &changedToken, dispatch_get_main_queue(), ^(int t) { if (gAMOn && [[DMActiveApp() bundleIdentifier] isEqualToString:b]) DMAMAskSoon(b, 1.0); });
+        notify_register_dispatch(changed, &changedToken, dispatch_get_main_queue(), ^(int t) { if (gAMOn && DMAMInFront(b)) DMAMAskSoon(b, 1.0); });
         // (... and MacAppBridge has just registered in it (its "menushere", once per process): an ask sent before that was lost -- at a cold launch
         //  the one sent when it came to the front always is (B12: Reynard, Maps, Clock on the M1, 20 Nov; the titles waited up to a minute) --, so it
         //  is asked again at once, while it is the app in front)
         char here[96]; snprintf(here, sizeof here, "com.besiktasliseba.appbridge.menushere.%08x", h);
         int hereToken = 0;
-        notify_register_dispatch(here, &hereToken, dispatch_get_main_queue(), ^(int t) { if (gAMOn && [[DMActiveApp() bundleIdentifier] isEqualToString:b]) DMAMAsk(b, YES); });
+        notify_register_dispatch(here, &hereToken, dispatch_get_main_queue(), ^(int t) { if (gAMOn && DMAMInFront(b)) DMAMAsk(b, YES); });
     }
     char name[96]; snprintf(name, sizeof name, "com.besiktasliseba.appbridge.menus.%08x", h);
     notify_post(name);
@@ -142,7 +151,7 @@ static void DMAMAskSoon(NSString *bundle, double delay) {
     NSUInteger mine = ++seq;
     NSString *b = [bundle copy];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (mine != seq || !gAMOn || ![[DMActiveApp() bundleIdentifier] isEqualToString:b]) return;
+        if (mine != seq || !gAMOn || !DMAMInFront(b)) return;
         if (gOverlay) { DMAMAskSoon(b, 1.0); return; }
         DMAMAsk(b, YES);
     });
@@ -155,11 +164,13 @@ static int DMAMPid(SBApplication *app) {   // (the app's process now; 0: none, o
 // The bar's layout saw this app in front (nil: none -- the Home Screen, our Finder window --, so the same app coming back is asked again): asked
 // when it is a new one in front, else only while no answer from its process is in (at most every 2 s). An answer from a process that has gone
 // (the app was relaunched: its titles may differ) is dropped. The layout runs often; the app is not asked again for each one.
-static void DMAMFrontSeen(SBApplication *app) {
-    static NSString *last;
+// (1.8.8.2, B69 E: each display's bar names its own display's front, so each has its own "last" -- display 0 the iPad's bars, 1 another display's;
+//  with one "last", two bars with two apps asked both apps again at every layout)
+static void DMAMFrontSeenOn(SBApplication *app, int display) {
+    NSString * __strong *last = &gAMBarLast[display ? 1 : 0];
     NSString *bundle = [app bundleIdentifier];
-    if (!bundle.length) { last = nil; return; }
-    if (![bundle isEqualToString:last]) { last = [bundle copy]; DMAMAsk(bundle, YES); return; }
+    if (!bundle.length) { *last = nil; return; }
+    if (![bundle isEqualToString:*last]) { *last = [bundle copy]; DMAMAsk(bundle, YES); return; }
     int pid = DMAMPid(app);
     if (gAMSnap[bundle] && pid > 0 && [gAMSnap[bundle][@"p"] intValue] != pid) {
         DMLog([NSString stringWithFormat:@"[appmenus] %@: its answer was from a process that has gone", bundle]);
@@ -298,7 +309,9 @@ static void DMOpenAppOwnMenu(UIButton *btn) {
     NSArray<NSString *> *shown = objc_getAssociatedObject(fg, kAMShownKey);
     if (slot < 0 || slot >= (NSInteger)shown.count) return;
     NSString *menu = shown[slot];
-    NSString *bundle = [DMActiveApp() bundleIdentifier];
+    NSString *barKey = nil; BOOL otherBar = NO;   // (B69: the app of this bar's own display -- its own menus; the iPad alone: the active app, as before)
+    SBApplication *barApp = DMExternalScreenOf(btn) || DMBarFrontTV() ? DMBarFrontOfTitle(btn, &barKey, &otherBar) : nil;
+    NSString *bundle = [(otherBar ? barApp : DMActiveApp()) bundleIdentifier];
     if (!bundle.length || !gAMOn) return;
     __weak UIView *weakFg = fg;
     dispatch_block_t open = ^{

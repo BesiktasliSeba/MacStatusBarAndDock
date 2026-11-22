@@ -3,9 +3,11 @@
 # item in the menu bar opens a Mac-style AirPods menu (statusbar/AirPodsMenu.h; its rules in plain C, common/AirPodsMenu.h).
 #  (1) the rules (test-airpodsmenu.c, -Wall -Wextra -Werror): the button's place beside the battery's, which battery records are which
 #      headphones', the cells, the levels, the modes, the route device, every menu kind's rows, the signature, the switch, the glyphs, VoiceOver;
+#      since 1.8.8.1.1 when iPadOS's item is the headphones' (the glyph alone too) and which Bluetooth devices the menu lists;
 #  (2) the Objective-C side that decides what the bar gets (test-airpodsmenu.m, Mac Catalyst, headless; the real code cut out of
 #      statusbar/AirPodsMenu.h, statusbar/BatteryMenu.h and StatusBar.x), both families, release and DEBUG, and an item class with no
-#      +batteryDisplayIdentifier;
+#      +batteryDisplayIdentifier; in DEBUG also the made-up Bluetooth item (sbfakebt_, 1.8.8.1.1) on stand-ins of both families' data: 15/16's
+#      with setters, 17/18's immutable ones (a mutable data class, entries with instance variables only);
 #  (3) the type table (kDMAPNeeds) against this Mac's own frameworks: every class and selector there with the table's types (x86_64's BOOL c read
 #      as B). It catches misspellings; the iPads' arm64 types are read by podmenu_probe (D0);
 #  (4) the wiring in StatusBar.x, Settings' row, the crash guard's rules (and what they resolve AirPodsMenu.h's functions to), the calls never
@@ -53,12 +55,15 @@ harness() {   # $1 StatusBar.x, $2 statusbar/AirPodsMenu.h, $3 statusbar/Battery
   { grep -E '^static inline BOOL DMBarRTL\(' "$X"; fndef "$X" DMBarRect; grep -E '^static inline CGFloat (DMBarLead|DMBarTrail)\(' "$X"; } > "$d/ap-bar.inc"
   { fndef "$B" DMBattItemClass; fndef "$B" DMBattViewShown; fndef "$B" DMBattItemViews; fndef "$B" DMBattItemRect; fndef "$B" DMBattCoverAX; fndef "$B" DMBattLayoutButton; } > "$d/ap-batt.inc"
   { fndef "$A" DMAPTypes; fndef "$A" DMAPObj; fndef "$A" DMAPStr; fndef "$A" DMAPCopyStr; classdef "$A" DMAPHeadsetRec; } > "$d/ap-types.inc"
-  { fndef "$A" DMAPItemClass; fndef "$A" DMAPItemViews; fndef "$A" DMAPCoverAX; fndef "$A" DMAPUnion; fndef "$A" DMAPHideButton; fndef "$A" DMAirPodsLayoutButton; fndef "$A" DMAirPodsLockLayout; } > "$d/ap-button.inc"
+  { fndef "$A" DMAPItemClass; fndef "$A" DMAPItemViews; fndef "$A" DMAPBluetoothState; fndef "$A" DMAPCoverAX; fndef "$A" DMAPUnion; fndef "$A" DMAPHideButton; fndef "$A" DMAirPodsLayoutButton; fndef "$A" DMAirPodsLockLayout; } > "$d/ap-button.inc"
   { fndef "$A" DMAPMergeHeadsets; fndef "$A" DMAPPartsCopy; fndef "$A" DMAPReadHeadsets; } > "$d/ap-data.inc"
+  { fndef "$A" DMAPFakeSet; fndef "$A" DMAPFakeFlag; fndef "$A" DMAPFakeClass; grep -E '^static (const void \*kAPFakeBTKey|NSString \*gAPFakeBarArgs) = ' "$A"
+    fndef "$A" DMAPFakeMerged; fndef "$A" DMAPFakeReadBack; fndef "$A" DMAPFakeApply; fndef "$A" DMAPFakeBarItem; fndef "$A" DMAPFakeBarRecheck; fndef "$A" DMAPFakeShowItem; } > "$d/ap-fake.inc"
   # (the Mac's Catalyst UIKit loads the real BluetoothManager framework: the stand-ins' class names are the test's own, the code otherwise as it is)
   sed -i '' 's/objc_getClass("BluetoothManager")/objc_getClass("TBluetoothManager")/; s/objc_getClass("BluetoothDevice")/objc_getClass("TBluetoothDevice")/; s/objc_getClass("BCBatteryDevice")/objc_getClass("TBCBatteryDevice")/' "$d/ap-data.inc"
   [ "$(grep -c 'objc_getClass("TB' "$d/ap-data.inc")" = 3 ] || { [ -n "$q" ] || echo "FAIL  the class names to stand in for were not found"; return 99; }
-  for f in DMBarRect:ap-bar DMBattLayoutButton:ap-batt DMAPTypes:ap-types DMAPHeadsetRec:ap-types DMAirPodsLayoutButton:ap-button DMAirPodsLockLayout:ap-button DMAPItemViews:ap-button DMAPMergeHeadsets:ap-data DMAPPartsCopy:ap-data DMAPReadHeadsets:ap-data; do
+  for f in DMBarRect:ap-bar DMBattLayoutButton:ap-batt DMAPTypes:ap-types DMAPHeadsetRec:ap-types DMAirPodsLayoutButton:ap-button DMAirPodsLockLayout:ap-button DMAPItemViews:ap-button DMAPMergeHeadsets:ap-data DMAPPartsCopy:ap-data DMAPReadHeadsets:ap-data \
+           DMAPFakeSet:ap-fake DMAPFakeFlag:ap-fake DMAPFakeClass:ap-fake DMAPFakeBarItem:ap-fake DMAPFakeShowItem:ap-fake DMAPBluetoothState:ap-button; do
     grep -q "${f%%:*}" "$d/${f#*:}.inc" || { [ -n "$q" ] || echo "FAIL  ${f%%:*} was not found"; return 99; }
   done
   for fl in $6; do
@@ -155,6 +160,11 @@ pins() {   # $1 StatusBar.x, $2 statusbar/AirPodsMenu.h, $3 common/AirPodsMenu.h
   ck "debug only: every podfake_ and podmenu trigger, DMAPTrigger and its dispatch, and sbfakebt_" \
      "[ \"\$(ifdebug $A '@\"podfake_')\" = yes ] && [ \"\$(ifdebug $A '@\"podmenu')\" = yes ] && [ \"\$(ifdebug $A 'static BOOL DMAPTrigger(NSString *cmd) {')\" = yes ] \
       && [ \"\$(ifdebug $X 'else if ([cmd hasPrefix:@\"pod\"] && DMAPTrigger(cmd)) {}')\" = yes ] && [ \"\$(ifdebug $X 'else if ([cmd hasPrefix:@\"sbfakebt_\"]) {')\" = yes ]"
+  ck "  ... the made-up Bluetooth item (1.8.8.1.1) and its writes into iPadOS's data objects, debug only: DMAPFakeBarItem, DMAPFakeSet, the instance variable writes" \
+     "[ \"\$(ifdebug $A 'static void DMAPFakeBarItem(NSString *args) {')\" = yes ] && [ \"\$(ifdebug $A 'static NSString *DMAPFakeSet(id o, NSString *key, id obj, long long num, char kind) {')\" = yes ] \
+      && [ \"\$(ifdebug $A 'object_setIvarWithStrongDefault(')\" = yes ] && [ \"\$(ifdebug $A 'ivar_getOffset(')\" = yes ] && [ \"\$(ifdebug $A '@\"setOverlayData:\"')\" = yes ] \
+      && [ \"\$(ifdebug $X 'DMAPFakeBarItem([cmd substringFromIndex:9]);')\" = yes ] && [ \"\$(ifdebug $A 'static void DMAPFakeBarRecheck(UIView *bar) {')\" = yes ] \
+      && [ \"\$(ifdebug $X 'DMAPFakeBarRecheck((UIView *)bar);')\" = yes ]"
   ck "logs never name a device: names, addresses and uids in a log line only through DMWiFiTag or the uid's shape" \
      "! nocomments $A | grep -E 'DMLog\\(|appendFormat:' | grep -E '\\.(name|address|uid)\\b|groupName|matchId' | grep -vE 'DMWiFiTag\\(|DMAPUIDShape\\(|strcmp\\(|[^A-Za-z]e\\.name\\b' | grep -q . \
       && fn $A 'static NSString *DMAPRowsLog(' | grep -qF 'DMWiFiTag(@(r[i].text))'"
@@ -275,16 +285,37 @@ if [ -z "$AP_ROOT" ]; then
   mc "rows: the strip shown when they dropped" 's/            continue;\n        \}\n        if \(b->ncells/        }\n        if (b->ncells/'
   mc "signature: the cells' levels left out" 's/ MSBD_AP_MIX\(r->cells\[c\]\.percent\);//'
   mc "switch: never set reads off" 's/return isBool \? value != 0 : 1;/return isBool ? value != 0 : 0;/'
+  mc "item: the glyph alone taken for a Bluetooth indicator (1.8.8.1's rule: the level asked)" 's/return viewsShown > 0 && \(levelShown \|\| !stateRead \|\| state == MSBD_AP_BT_HEADPHONES\);/return viewsShown > 0 \&\& levelShown;/'
+  mc "item: any Bluetooth indicator taken for headphones" 's/ \|\| !stateRead \|\| state == MSBD_AP_BT_HEADPHONES\);/ || 1);/'
+  mc "list: headphones with no battery level left out (1.8.8.1's rule)" 's/return connected && \(reportsLevel \|\| MSBDAirPodsIsHeadphonesType\(typeRead, type\)\);/return connected \&\& reportsLevel;/'
+  mc "list: any type taken" 's/return typeRead && \(type == MSBD_AP_BT_TYPE_HEADSET \|\| type == MSBD_AP_BT_TYPE_HEADPHONES\);/return 1;/'
   # the Objective-C side
-  mh "a button for a bare Bluetooth glyph (the battery display item not asked)" 's/ \|\| !battShown \|\| !views\.count\)/ || !views.count)/'
+  mh "a button for any Bluetooth glyph (the bar's state not asked)" 's/DMAPBluetoothState\(fg, &stateRead\) : MSBD_AP_BT_HEADPHONES;/MSBD_AP_BT_HEADPHONES : MSBD_AP_BT_HEADPHONES;/'
+  mh "the glyph alone given no button (1.8.8.1's gate: the level asked)" 's/if \(!MSBDAirPodsItemIsHeadphones\(\(int\)views\.count, battShown, stateRead, state\)\)/if (!battShown || !views.count)/'
+  mh "the bar's own data not read (the state from the wrong object)" 's/id e = DMAPObj\(DMAPObj\(fg\.superview, sData\), sEntry\);/id e = DMAPObj(DMAPObj(fg, sData), sEntry);/'
   mh "the battery's covered set used for the AirPods views (DMBattCoverAX)" 's/    DMAPCoverAX\(fg, views, YES\);/    DMBattCoverAX(fg, views, YES);/'
   mh "neighbours from every region, not the item's own" 's/        if \(mine\) \[others addObjectsFromArray:rest\];/        [others addObjectsFromArray:rest];/'
   mh "the battery's button not stood clear of" 's/if \(gBattMenuOn && battViews\.count\) \{/if (0) {/'
   mh "a set that went dropped from the open menu (no Not Connected)" 's/        else was\.connected = NO;/        else { [gAPMenuHeadsets removeObjectAtIndex:i]; i--; }/'
   mh "BatteryCenter's level read without its type" 's/ \|\| !DMAPTypes\(x, sPct, "q16\@0:8"\)//'
-  mh "Bluetooth devices with no battery level taken" 's/if \(!\(\(BOOL \(\*\)\(id, SEL\)\)objc_msgSend\)\(d, sSupports\) \|\| /if (/'
+  mh "Bluetooth devices that are neither headphones nor report a level taken" 's/if \(!MSBDAirPodsListsDevice\(\(\(BOOL \(\*\)\(id, SEL\)\)objc_msgSend\)\(d, sIsConn\), level, typeRead, type\)\) continue;/if (!((BOOL (*)(id, SEL))objc_msgSend)(d, sIsConn)) continue;/'
+  mh "headphones by type left out (the type not asked)" 's/BOOL typeRead = DMAPTypes\(d, sType, "i16\@0:8"\) \|\| DMAPTypes\(d, sType, "I16\@0:8"\);/BOOL typeRead = NO;/'
+  mh "a level read for a device that reports none" 's/h\.level = level \? \(\(int \(\*\)\(id, SEL\)\)objc_msgSend\)\(d, sLevel\) : -1;/h.level = ((int (*)(id, SEL))objc_msgSend)(d, sLevel);/'
   mh "the iPad's own battery kept" 's/if \(\(\(BOOL \(\*\)\(id, SEL\)\)objc_msgSend\)\(x, sInt\)\) \{ \(\*internal\)\+\+; continue; \}/if (((BOOL (*)(id, SEL))objc_msgSend)(x, sInt)) (*internal)++;/'
   mh "the switch not asked by the layout" 's/if \(!gAirPodsMenuOn \|\| !\(left < CGFLOAT_MAX\)/if (!(left < CGFLOAT_MAX)/'
+  mhd() {   # $1 what, $2 perl expression on statusbar/AirPodsMenu.h: the DEBUG side (the made-up Bluetooth item, 1.8.8.1.1) must fail
+    local d="$W/mh$((++k))"; mkdir -p "$d"; perl -0777 -pe "$2" "$A0" > "$d/AirPodsMenu.h"
+    cmp -s "$d/AirPodsMenu.h" "$A0" && { echo "FAIL  made-to-fail copy \"$1\": nothing changed"; fails=1; return; }
+    harness "$X0" "$d/AirPodsMenu.h" "$B0" "$d/w" q "t17-1"; local r=$?
+    if [ $r = 0 ]; then echo "FAIL  not caught: $1"; fails=1; elif [ $r = 99 ]; then echo "FAIL  made-to-fail copy \"$1\": did not build"; fails=1; else echo "PASS  caught: $1"; fi
+  }
+  mhd "the fake: 17/18's immutable data class taken for the overlay (no mutable sibling)" 's/return m && \[m isSubclassOfClass:c\] && \[m instancesRespondToSelector:needs\] \? m : c;/return c;/'
+  mhd "the fake: the glyph alone given a level" 's/DMAPFakeFlag\(b, \@"enabled", level\)/DMAPFakeFlag(b, \@"enabled", YES)/'
+  mhd "the fake: the bar's own overlay not given back" 's/kept\.firstObject == \[NSNull null\] \? nil : kept\.firstObject/nil/'
+  mhd "the fake: 17/18's entries left without their values (no instance variable writes)" 's/    Ivar iv = class_getInstanceVariable\(object_getClass\(o\), \[\@"_" stringByAppendingString:key\]\.UTF8String\);/    Ivar iv = NULL;/'
+  mhd "the fake: the made-up headphones' shape not followed" 's/DMAPFakeBarItem\(gAPFakeGlyphOnly \? \@"2_-1" :/DMAPFakeBarItem(0 ? \@"2_-1" :/'
+  mhd "the fake: not put back where iPadOS replaced the bar's overlay" 's/if \(DMAPFakeMerged\(bar, &st, &batt\) && st == want && batt == \(pct >= 0\)\) return;/return;/'
+  mhd "the fake: put back over a fresh overlay (iPadOS's own entries lost)" 's/id data = \[base respondsToSelector:sBT\] \? base : \[D new\]/id data = [D new]/'
   # the wiring and the rest
   mp "the key out of DMPointOverOurControl" X 's/kWiFiButtonKey, kAirPodsButtonKey, kSpotButtonKey, kClockButtonKey/kWiFiButtonKey, kSpotButtonKey, kClockButtonKey/'
   mp "the key out of DMBarControlAtScreenPoint" X 's/kAudioButtonKey, kSSHButtonKey, kAirPodsButtonKey,/kAudioButtonKey, kSSHButtonKey,/'

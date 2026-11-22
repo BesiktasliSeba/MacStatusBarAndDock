@@ -1,9 +1,10 @@
 // AirPodsMenu.h -- the AirPods menu (MacStatusBar&Dock 1.8.8.1; plans/airpods-menu.md, design v2 and its check), included into StatusBar.x right
 // after CC18Tiles.h. Settings > Status Bar > AirPods Menu (pref airpodsMenu, on unless switched off, updaters too: DMAirPodsApplyPref).
-//  - An invisible button of ours sits over iPadOS's own AirPods item in the menu bar (its Bluetooth item, while it shows a headset's battery),
-//    found through the bar's own regions as the battery's views are (DMAPItemViews). iPadOS keeps drawing the item. A pointer click or a finger
-//    tap on it opens a Mac-style menu under it instead of the status icons' region action (StatusBar.x DMPointOverOurControl). A bare Bluetooth
-//    glyph gets no button. The button never overlaps the battery's own (common/AirPodsMenu.h MSBDAirPodsButtonSpan).
+//  - An invisible button of ours sits over iPadOS's own AirPods item in the menu bar (its Bluetooth item, whenever it shows headphones: their
+//    glyph alone, as iPadOS 17/18 show AirPods, or the glyph with their level; 1.8.8.1.1), found through the bar's own regions as the battery's
+//    views are (DMAPItemViews). iPadOS keeps drawing the item. A pointer click or a finger tap on it opens a Mac-style menu under it instead of
+//    the status icons' region action (StatusBar.x DMPointOverOurControl). A Bluetooth indicator that is not headphones' gets no button
+//    (common/AirPodsMenu.h MSBDAirPodsItemIsHeadphones). The button never overlaps the battery's own (MSBDAirPodsButtonSpan).
 //  - The menu, in macOS's order: the headphones' name; their battery as BatteryCenter gives it (Left and Right as one level when it merges them,
 //    apart when it splits them, and the Case), or one level at the heading's right; Noise Control with only the modes they offer, while they are
 //    the audio output; Disconnect; Bluetooth Settings…. Two sets: a block each. They drop while it is open: Not Connected and Connect.
@@ -147,10 +148,11 @@ static NSData *gAPFakeParts;
 static NSMutableArray<DMAPRouteRec *> *gAPFakeRoute;
 static BOOL gAPFakeErr = NO;   // (podfake_err: the next mode change fails)
 static unsigned gAPFakePartsOff = 0;   // (podfake_part_<h|p|n>_<0|1>: a part shown as missing, for the rows of each part off)
-static void DMRunTrigger(NSString *cmd);   // (StatusBar.x: sbfakebt_ shows iPadOS's item through the bar's own overlay data)
+static BOOL gAPFakeGlyphOnly = NO;   // (podfake_bar_<glyph|level>: iPadOS's item for the made-up headphones as the glyph alone, or with their level)
+static void DMAPFakeShowItem(void);   // (below: iPadOS's item comes or goes with the made-up headphones, through sbfakebt_)
 #endif
-static unsigned gAPReadCount = 0;   // (what the probe shows: how many connected devices report a battery, and of those how many are Apple's audio)
-static unsigned gAPBattDevices = 0, gAPAppleAudio = 0;
+static unsigned gAPReadCount = 0;   // (what the probe shows: how many devices are listed, how many of them report a battery level, are headphones
+static unsigned gAPBattDevices = 0, gAPAppleAudio = 0, gAPHeadphoneTypes = 0;   //  by iPadOS's type, are Apple's audio)
 static NSArray<DMAPHeadsetRec *> *DMAPReadHeadsets(void) {
 #if DEBUG
     if (gAPFake) { NSMutableArray *o = [NSMutableArray array]; for (DMAPHeadsetRec *h in gAPFakeHeadsets) if (h.connected) [o addObject:h]; return o; }
@@ -158,32 +160,38 @@ static NSArray<DMAPHeadsetRec *> *DMAPReadHeadsets(void) {
     if (!gAPPart[kDMAPPartHeadset]) return @[];
     NSMutableArray<DMAPHeadsetRec *> *out = [NSMutableArray array];
     @try {
-        static SEL sShared, sConnected, sName, sAddr, sIsConn, sSupports, sLevel, sPid, sApple;
+        static SEL sShared, sConnected, sName, sAddr, sIsConn, sSupports, sLevel, sPid, sApple, sType;
         static dispatch_once_t once;
         dispatch_once(&once, ^{
             sShared = NSSelectorFromString(@"sharedInstance"); sConnected = NSSelectorFromString(@"connectedDevices"); sName = NSSelectorFromString(@"name");
             sAddr = NSSelectorFromString(@"address"); sIsConn = NSSelectorFromString(@"connected"); sSupports = NSSelectorFromString(@"supportsBatteryLevel");
             sLevel = NSSelectorFromString(@"batteryLevel"); sPid = NSSelectorFromString(@"productId"); sApple = NSSelectorFromString(@"isAppleAudioDevice");
+            sType = NSSelectorFromString(@"type");
         });
         id bt = ((id (*)(id, SEL))objc_msgSend)((id)objc_getClass("BluetoothManager"), sShared);
         NSArray *list = DMAPObj(bt, sConnected);
         if (![list isKindOfClass:[NSArray class]]) return @[];
         Class dc = objc_getClass("BluetoothDevice");
-        unsigned batt = 0, apple = 0;
+        unsigned batt = 0, apple = 0, phones = 0;
         for (id d in list) {
             if (![d isKindOfClass:dc] || out.count >= MSBD_AP_MAX_HEADSETS) continue;
             if (!DMAPTypes(d, sSupports, "B16@0:8") || !DMAPTypes(d, sIsConn, "B16@0:8") || !DMAPTypes(d, sLevel, "i16@0:8") || !DMAPTypes(d, sPid, "I16@0:8") || !DMAPTypes(d, sApple, "B16@0:8")) continue;
-            if (!((BOOL (*)(id, SEL))objc_msgSend)(d, sSupports) || !((BOOL (*)(id, SEL))objc_msgSend)(d, sIsConn)) continue;   // (the bar's own rule: a level, connected)
+            BOOL typeRead = DMAPTypes(d, sType, "i16@0:8") || DMAPTypes(d, sType, "I16@0:8");   // (iPadOS's headphones rule; not asked where it has another type)
+            int type = typeRead ? ((int (*)(id, SEL))objc_msgSend)(d, sType) : 0;
+            BOOL level = ((BOOL (*)(id, SEL))objc_msgSend)(d, sSupports);
+            if (!MSBDAirPodsListsDevice(((BOOL (*)(id, SEL))objc_msgSend)(d, sIsConn), level, typeRead, type)) continue;   // (connected: headphones, or a level)
             DMAPHeadsetRec *h = [DMAPHeadsetRec new];
             h.name = DMAPStr(d, sName) ?: @""; h.address = DMAPStr(d, sAddr) ?: @"";
-            h.level = ((int (*)(id, SEL))objc_msgSend)(d, sLevel);
+            h.level = level ? ((int (*)(id, SEL))objc_msgSend)(d, sLevel) : -1;   // (no level reported: BatteryCenter's records, else "--")
             h.productId = ((unsigned (*)(id, SEL))objc_msgSend)(d, sPid);
             h.apple = ((BOOL (*)(id, SEL))objc_msgSend)(d, sApple);
             h.connected = YES; h.device = d;
-            batt++; if (h.apple) apple++;
+            if (level) batt++;
+            if (MSBDAirPodsIsHeadphonesType(typeRead, type)) phones++;
+            if (h.apple) apple++;
             [out addObject:h];
         }
-        gAPBattDevices = batt; gAPAppleAudio = apple; gAPReadCount++;
+        gAPBattDevices = batt; gAPAppleAudio = apple; gAPHeadphoneTypes = phones; gAPReadCount++;
     } @catch (NSException *e) { DMAPPartFailed(kDMAPPartHeadset, e); return @[]; }
     return out;
 }
@@ -635,8 +643,7 @@ static void DMAPConnect(DMAPHeadsetRec *h, BOOL connect) {
     if (h.fake) {
         h.connected = connect;
         DMLog([NSString stringWithFormat:@"[podmenu] test device %@ %@: nothing sent", DMWiFiTag(h.name), connect ? @"connected" : @"disconnected"]);
-        BOOL any = NO; int level = 50; for (DMAPHeadsetRec *f in gAPFakeHeadsets) if (f.connected) { any = YES; level = f.level >= 0 ? f.level : 50; break; }
-        DMRunTrigger(any ? [NSString stringWithFormat:@"sbfakebt_2_%d", level] : @"sbfakebt_off");   // (iPadOS's item comes or goes with it, as for real headphones)
+        DMAPFakeShowItem();   // (iPadOS's item comes or goes with it, as for real headphones)
         DMAPSourceSaid(YES, YES);
         return;
     }
@@ -664,9 +671,9 @@ static void DMAPStartSources(void) {
 }
 
 // ---- the button over iPadOS's AirPods item in a bar copy ----
-// The Bluetooth item's shown views (its glyph and its headset battery: two display items on 17/18, SystemStatusUI's; the same shape is inferred
-// for 15/16, UIKit's), whether its battery display item shows (its -identifier is the item class's +batteryDisplayIdentifier), the other shown
-// views of its region (its neighbours) and the battery item's views. NO: no such item, or the class does not answer (no button).
+// The Bluetooth item's shown views (its glyph and its headset battery: two display items, SystemStatusUI's on 17/18, UIKit's on 15/16, read on all
+// four iPads), whether its battery display item shows (its -identifier is the item class's +batteryDisplayIdentifier), the other shown views of
+// its region (its neighbours) and the battery item's views. NO: no such item, or the class does not answer (no button).
 static Class DMAPItemClass(void) { return objc_getClass(DMSBUseSTUI() ? "STUIStatusBarBluetoothItem" : "_UIStatusBarBluetoothItem"); }
 static BOOL DMAPItemViews(UIView *fg, NSMutableArray<UIView *> *views, NSMutableArray<UIView *> *others, NSMutableArray<UIView *> *battViews, BOOL *battShown) {
     static SEL sRegions, sItems, sItem, sView, sIdent, sBattID;
@@ -705,6 +712,16 @@ static BOOL DMAPItemViews(UIView *fg, NSMutableArray<UIView *> *views, NSMutable
         if (mine) [others addObjectsFromArray:rest];
     }
     return YES;
+}
+// The Bluetooth state in the bar's own data, as it draws the item (its merged data: -currentAggregatedData's -bluetoothEntry's -state; 2 is
+// connected headphones), each call asked with its type first. *read NO: not readable here.
+static long long DMAPBluetoothState(UIView *fg, BOOL *read) {
+    static SEL sData, sEntry, sState;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ sData = NSSelectorFromString(@"currentAggregatedData"); sEntry = NSSelectorFromString(@"bluetoothEntry"); sState = NSSelectorFromString(@"state"); });
+    id e = DMAPObj(DMAPObj(fg.superview, sData), sEntry);
+    *read = DMAPTypes(e, sState, "q16@0:8") || DMAPTypes(e, sState, "Q16@0:8");
+    return *read ? ((long long (*)(id, SEL))objc_msgSend)(e, sState) : -1;
 }
 // iPadOS's views under our button are not read a second time by VoiceOver: their own setting kept and given back when the button goes -- in a
 // set of its own, never the battery's (BatteryMenu.h DMBattCoverAX gives back every view not in the list it is called with).
@@ -746,13 +763,16 @@ static void DMAPHideButton(UIView *fg) {
     DMAPCoverAX(fg, @[], NO);
     if ([objc_getAssociatedObject(fg, kAPShownKey) boolValue]) { objc_setAssociatedObject(fg, kAPShownKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); DMLog(@"[podmenu] button hidden"); }
 }
-// Places the AirPods button over iPadOS's item in a status bar copy (AirPods Menu on and the item showing a headset battery; hidden otherwise,
-// iPadOS's item then as before). `left`: where the status icons start (leading coordinates); the full bar's height, as our other buttons; 4 pt (x k)
-// past the item at each side, cut at the middle of the gaps to its neighbours and where the battery's own button starts.
+// Places the AirPods button over iPadOS's item in a status bar copy (AirPods Menu on and the item showing headphones, with or without their
+// level: MSBDAirPodsItemIsHeadphones; hidden otherwise, iPadOS's item then as before). `left`: where the status icons start (leading
+// coordinates); the full bar's height, as our other buttons; 4 pt (x k) past the item at each side, cut at the middle of the gaps to its
+// neighbours and where the battery's own button starts.
 __attribute__((noinline)) static void DMAirPodsLayoutButton(UIView *fg, CGFloat left, CGFloat k) {
     NSMutableArray<UIView *> *views = [NSMutableArray array], *others = [NSMutableArray array], *battViews = [NSMutableArray array];
-    BOOL battShown = NO;
-    if (!gAirPodsMenuOn || !(left < CGFLOAT_MAX) || !DMAPItemViews(fg, views, others, battViews, &battShown) || !battShown || !views.count) { DMAPHideButton(fg); return; }
+    BOOL battShown = NO, stateRead = NO;
+    if (!gAirPodsMenuOn || !(left < CGFLOAT_MAX) || !DMAPItemViews(fg, views, others, battViews, &battShown)) { DMAPHideButton(fg); return; }
+    long long state = views.count && !battShown ? DMAPBluetoothState(fg, &stateRead) : MSBD_AP_BT_HEADPHONES;   // (the data only for the glyph alone)
+    if (!MSBDAirPodsItemIsHeadphones((int)views.count, battShown, stateRead, state)) { DMAPHideButton(fg); return; }
     BOOL rtl = DMBarRTL(fg);
     CGRect u = DMAPUnion(fg, views);
     double lead = DMBarLead(fg, rtl, u), trail = DMBarTrail(fg, rtl, u), mid = (lead + trail) / 2.0;
@@ -789,7 +809,8 @@ __attribute__((noinline)) static void DMAirPodsLayoutButton(UIView *fg, CGFloat 
     DMAPCoverAX(fg, views, YES);
     if (![objc_getAssociatedObject(fg, kAPShownKey) boolValue]) {
         objc_setAssociatedObject(fg, kAPShownKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        DMLog([NSString stringWithFormat:@"[podmenu] button over iPadOS's AirPods item: %.1f..%.1f (item %.1f..%.1f, battery button %@)", a, b, lead, trail,
+        DMLog([NSString stringWithFormat:@"[podmenu] button over iPadOS's AirPods item: %.1f..%.1f (item %.1f..%.1f, %@, battery button %@)", a, b, lead, trail,
+            battShown ? @"the glyph and their level" : stateRead ? @"the glyph alone" : @"the glyph alone, the state not readable",
             batt.has ? [NSString stringWithFormat:@"%.1f..%.1f", batt.lead, batt.trail] : @"none"]);
     }
     if (!gAPSourcesStarted) {   // (the first placement: the type check, the sources and BatteryCenter's observer, outside the layout pass)
@@ -813,8 +834,156 @@ __attribute__((noinline)) static void DMAirPodsApplyPref(BOOL on) {
 }
 
 #if DEBUG
-// ---- debug triggers: podfake_<pro|pro2|ap2|caseonly|max|other|unknown|two|err|drop|off>, podfake_part_<h|p|n>_<0|1>, podmenu, podmenu_rows,
-// podmenu_probe, podmenu_pref_<on|off|delete>, podmenu_ax ----
+// ---- iPadOS's own Bluetooth item in our bars with no Bluetooth device (sbfakebt_<state>_<percent>, sbfakebt_off; the made-up headphones show
+// it through DMAPFakeShowItem). Each bar of ours gets overlay data that holds a Bluetooth entry alone (-setOverlayData:): the bar merges it over
+// iPadOS's own data in its own data update, so what shows is iPadOS's Bluetooth item, drawn and placed by iPadOS's code as for real headphones
+// (the bar's own overlay is kept and given back by _off). <state> 2 is connected headphones (the headphones glyph); a <percent> of 0 to 100 adds
+// their level (the item's battery display item), below 0 leaves it off: the glyph alone, as iPadOS 17/18 show AirPods. The data and entries are
+// of the bar's own classes: UIKit's on 15/16, with setters; SystemStatus's on 17/18, which are immutable: the overlay is the data's mutable class
+// (STMutableStatusBarData) and each entry gets its values through its setter where it has one, else through its own instance variable, by name
+// and exact type. Nothing else is guessed: a value that fits neither changes nothing and is logged. No Bluetooth call, no setting; gone after a
+// respring. ----
+static NSString *DMAPFakeSet(id o, NSString *key, id obj, long long num, char kind) {   // ('@' an object, 'q' an integer, 'B' a boolean; "set", "ivar" or nil)
+    if (!o || !key.length) return nil;
+    SEL s = NSSelectorFromString([NSString stringWithFormat:@"set%@%@:", [[key substringToIndex:1] uppercaseString], [key substringFromIndex:1]]);
+    Method m = class_getInstanceMethod(object_getClass(o), s);
+    char a[32] = "";
+    if (m && method_getNumberOfArguments(m) == 3) method_getArgumentType(m, 2, a, sizeof a);
+    BOOL wide = !strcmp(a, "q") || !strcmp(a, "Q"), narrow = !strcmp(a, "i") || !strcmp(a, "I") || !strcmp(a, "l") || !strcmp(a, "L");   // (an integer of 64 or 32 bits)
+    if (kind == '@' && a[0] == '@') { ((void (*)(id, SEL, id))objc_msgSend)(o, s, obj); return @"set"; }
+    if (kind == 'q' && wide) { ((void (*)(id, SEL, long long))objc_msgSend)(o, s, num); return @"set"; }
+    if (kind == 'q' && narrow) { ((void (*)(id, SEL, int))objc_msgSend)(o, s, (int)num); return @"set"; }
+    if (kind == 'B' && (!strcmp(a, "B") || !strcmp(a, "c"))) { ((void (*)(id, SEL, BOOL))objc_msgSend)(o, s, (BOOL)num); return @"set"; }
+    if (m) return nil;   // (a setter of another type: not guessed)
+    Ivar iv = class_getInstanceVariable(object_getClass(o), [@"_" stringByAppendingString:key].UTF8String);
+    const char *t = iv ? ivar_getTypeEncoding(iv) : NULL;
+    if (!t) return nil;
+    uint8_t *p = (uint8_t *)(__bridge void *)o + ivar_getOffset(iv);
+    if (kind == '@' && t[0] == '@') { object_setIvarWithStrongDefault(o, iv, obj); return @"ivar"; }
+    if (kind == 'q' && (!strcmp(t, "q") || !strcmp(t, "Q"))) { *(long long *)p = num; return @"ivar"; }
+    if (kind == 'q' && (!strcmp(t, "i") || !strcmp(t, "I") || !strcmp(t, "l") || !strcmp(t, "L"))) { *(int *)p = (int)num; return @"ivar"; }
+    if (kind == 'B' && (!strcmp(t, "B") || !strcmp(t, "c"))) { *(BOOL *)p = (BOOL)num; return @"ivar"; }
+    return nil;
+}
+static NSString *DMAPFakeFlag(id o, NSString *key, BOOL want) {   // (a boolean: set as above, or already so by its own getter -is<Key>; nil: neither)
+    NSString *how = DMAPFakeSet(o, key, nil, want, 'B');
+    SEL g = NSSelectorFromString([NSString stringWithFormat:@"is%@%@", [[key substringToIndex:1] uppercaseString], [key substringFromIndex:1]]);
+    if (!how && (DMAPTypes(o, g, "B16@0:8") || DMAPTypes(o, g, "c16@0:8")) && ((BOOL (*)(id, SEL))objc_msgSend)(o, g) == want) how = @"already";
+    return how;
+}
+static Class DMAPFakeClass(Class c, SEL needs) {   // (the class itself when it has that setter, else its mutable sibling STMutable... with it, else itself)
+    if (!c || [c instancesRespondToSelector:needs]) return c;
+    NSString *n = NSStringFromClass(c);
+    Class m = [n hasPrefix:@"ST"] && ![n hasPrefix:@"STMutable"] ? NSClassFromString([@"STMutable" stringByAppendingString:[n substringFromIndex:2]]) : Nil;
+    return m && [m isSubclassOfClass:c] && [m instancesRespondToSelector:needs] ? m : c;
+}
+static const void *kAPFakeBTKey = &kAPFakeBTKey;   // (per bar: @[iPadOS's own overlay, or NSNull; ours, as the bar holds it])
+static NSString *gAPFakeBarArgs = nil;   // (the made-up item while it is on: "<state>_<percent>"; nil: off)
+static BOOL DMAPFakeMerged(id bar, long long *state, BOOL *battOn) {   // (the bar's merged data: the Bluetooth entry's state, its battery entry on; NO: not readable)
+    id d = DMAPObj(bar, NSSelectorFromString(@"currentAggregatedData")), e = DMAPObj(d, NSSelectorFromString(@"bluetoothEntry")), b = DMAPObj(e, NSSelectorFromString(@"batteryEntry"));
+    SEL en = NSSelectorFromString(@"isEnabled"), st = NSSelectorFromString(@"state");
+    if (!DMAPTypes(e, st, "q16@0:8")) return NO;
+    *state = ((long long (*)(id, SEL))objc_msgSend)(e, st);
+    *battOn = b && (DMAPTypes(b, en, "B16@0:8") || DMAPTypes(b, en, "c16@0:8")) && ((BOOL (*)(id, SEL))objc_msgSend)(b, en);
+    return YES;
+}
+static NSString *DMAPFakeReadBack(id bar) {   // (what the bar's merged data says now: the Bluetooth entry's enabled, state, battery enabled and capacity)
+    id d = DMAPObj(bar, NSSelectorFromString(@"currentAggregatedData")), e = DMAPObj(d, NSSelectorFromString(@"bluetoothEntry")), b = DMAPObj(e, NSSelectorFromString(@"batteryEntry"));
+    SEL en = NSSelectorFromString(@"isEnabled"), st = NSSelectorFromString(@"state"), cap = NSSelectorFromString(@"capacity");
+    int ee = DMAPTypes(e, en, "B16@0:8") ? ((BOOL (*)(id, SEL))objc_msgSend)(e, en) : -1, be = DMAPTypes(b, en, "B16@0:8") ? ((BOOL (*)(id, SEL))objc_msgSend)(b, en) : -1;
+    long long s = DMAPTypes(e, st, "q16@0:8") ? ((long long (*)(id, SEL))objc_msgSend)(e, st) : -9, c = DMAPTypes(b, cap, "q16@0:8") ? ((long long (*)(id, SEL))objc_msgSend)(b, cap) : -9;
+    return [NSString stringWithFormat:@"merged data %@: bluetooth entry %@ enabled %d state %lld, battery %@ enabled %d capacity %lld", d ? NSStringFromClass([d class]) : @"-",
+        e ? NSStringFromClass([e class]) : @"-", ee, s, b ? NSStringFromClass([b class]) : @"-", be, c];
+}
+// One bar: overlay data with the made-up Bluetooth entry, over iPadOS's own overlay where the bar has one (a mutable copy of it, so what iPadOS
+// overlays there stays; _off gives its own back). NO: not such a bar, or nothing changed (*how says why).
+static BOOL DMAPFakeApply(UIView *bar, long long state, long long pct, NSString **how) {
+    SEL setOv = NSSelectorFromString(@"setOverlayData:"), sBT = NSSelectorFromString(@"setBluetoothEntry:");
+    if (![bar respondsToSelector:setOv] || ![bar respondsToSelector:NSSelectorFromString(@"overlayData")] || ![bar respondsToSelector:NSSelectorFromString(@"currentData")]) return NO;
+    NSArray *kept = objc_getAssociatedObject(bar, kAPFakeBTKey);
+    id now = DMCall(bar, @"overlayData");
+    id own = kept.count > 1 && now == kept[1] ? kept[0] : (now ?: [NSNull null]);   // (iPadOS's own: the one found at the first change, or the one it set since)
+    id cur = DMCall(bar, @"currentData");
+    NSString *dn = NSStringFromClass([cur class]);
+    id curBT = [cur respondsToSelector:NSSelectorFromString(@"bluetoothEntry")] ? DMCall(cur, @"bluetoothEntry") : nil;
+    id curBatt = [cur respondsToSelector:NSSelectorFromString(@"mainBatteryEntry")] ? DMCall(cur, @"mainBatteryEntry") : nil;
+    Class D = cur ? DMAPFakeClass([cur class], sBT) : Nil;
+    Class E = DMAPFakeClass(curBT ? [curBT class] : NSClassFromString([dn stringByAppendingString:@"BluetoothEntry"]), NSSelectorFromString(@"setState:"));
+    Class B = DMAPFakeClass(curBatt ? [curBatt class] : NSClassFromString([dn stringByAppendingString:@"BatteryEntry"]), NSSelectorFromString(@"setCapacity:"));
+    id base = own != [NSNull null] && [own conformsToProtocol:@protocol(NSMutableCopying)] ? [own mutableCopy] : nil;
+    id data = [base respondsToSelector:sBT] ? base : [D new], e = [E new], b = [B new];
+    BOOL level = pct >= 0;   // (below 0: no level, the glyph alone: a battery entry that is off, or none where it cannot be made off)
+    NSString *h1 = DMAPFakeFlag(e, @"enabled", YES), *h2 = DMAPFakeSet(e, @"state", nil, state, 'q');
+    NSString *h3 = DMAPFakeFlag(b, @"enabled", level), *h4 = level ? DMAPFakeSet(b, @"capacity", nil, MIN(100LL, pct), 'q') : @"-";
+    if (!level && !h3) { b = nil; h3 = @"no entry"; }
+    NSString *h5 = b ? DMAPFakeSet(e, @"batteryEntry", b, 0, '@') : @"-", *h6 = DMAPFakeSet(data, @"bluetoothEntry", e, 0, '@');
+    *how = [NSString stringWithFormat:@"data %@%@, entries %@ / %@: enabled %@, state %@, battery enabled %@, capacity %@, its battery %@, the data's entry %@", [data class],
+        data == base && base ? @" (over iPadOS's own overlay)" : @"", E, B, h1 ?: @"NO", h2 ?: @"NO", h3 ?: @"NO", h4 ?: @"NO", h5 ?: @"NO", h6 ?: @"NO"];
+    if (!data || !e || (level && !b) || !h1 || !h2 || !h3 || !h4 || !h5 || !h6) { *how = [*how stringByAppendingFormat:@" (the bar's data %@): not as expected, nothing changed", dn]; return NO; }
+    ((void (*)(id, SEL, id))objc_msgSend)(bar, setOv, data);
+    objc_setAssociatedObject(bar, kAPFakeBTKey, @[own, DMCall(bar, @"overlayData") ?: data], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    *how = [*how stringByAppendingFormat:@"; %@", DMAPFakeReadBack(bar)];
+    return YES;
+}
+static void DMAPFakeBarItem(NSString *args) {   // (<state>_<percent> or off)
+    NSArray *q = [args componentsSeparatedByString:@"_"];
+    BOOL off = [q.firstObject isEqualToString:@"off"];
+    if (!off && q.count < 2) { DMLog(@"[sbfakebt] sbfakebt_<state>_<percent> or sbfakebt_off"); return; }
+    long long state = off ? 0 : [q[0] longLongValue], pct = off ? -1 : [q[1] longLongValue];
+    gAPFakeBarArgs = off ? nil : [NSString stringWithFormat:@"%lld_%lld", state, pct];
+    int done = 0;
+    for (UIView *fg in gCopies.allObjects) {
+        UIView *bar = fg.superview;
+        if (!objc_getAssociatedObject(fg, kLogoKey)) continue;
+        NSArray *kept = objc_getAssociatedObject(bar, kAPFakeBTKey);   // (@[iPadOS's own overlay or NSNull, ours])
+        if (off) {
+            if (!kept || ![bar respondsToSelector:NSSelectorFromString(@"setOverlayData:")]) continue;
+            ((void (*)(id, SEL, id))objc_msgSend)(bar, NSSelectorFromString(@"setOverlayData:"), kept.firstObject == [NSNull null] ? nil : kept.firstObject);
+            objc_setAssociatedObject(bar, kAPFakeBTKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            done++; continue;
+        }
+        NSString *how = nil;
+        if (DMAPFakeApply(bar, state, pct, &how)) done++;
+        if (how) DMLog([NSString stringWithFormat:@"[sbfakebt] %@: %@", NSStringFromClass([bar class]), how]);
+    }
+    DMLog([NSString stringWithFormat:@"[sbfakebt] %@ on %d bar(s) of ours", off ? @"own overlay back" : [NSString stringWithFormat:@"Bluetooth entry state %lld, %@", state,
+        pct >= 0 ? [NSString stringWithFormat:@"their level %lld %%", MIN(100LL, pct)] : @"no level (the glyph alone)"], done]);
+}
+// While the made-up item is on, a bar whose merged data no longer says it gets it again: iPadOS sets a bar's overlay itself (the Cover Sheet
+// coming and going) and makes new bars (a change of the Control Center style), and either dropped it on the A12Z (18.5). Asked after each data
+// update of a bar (StatusBar.x DMStatusIconsUpdated), only for bars of ours, once per 0.5 s per bar, done at the next main-queue turn, over
+// whatever overlay iPadOS set (which _off then gives back).
+static void DMAPFakeBarRecheck(UIView *bar) {
+    static const void *kAtKey = &kAtKey;
+    if (!gAPFakeBarArgs || ![bar isKindOfClass:[UIView class]]) return;
+    id fg = [bar respondsToSelector:NSSelectorFromString(@"foregroundView")] ? DMCall(bar, @"foregroundView") : nil;
+    if (![fg isKindOfClass:[UIView class]] || !objc_getAssociatedObject(fg, kLogoKey)) return;
+    NSArray *q = [gAPFakeBarArgs componentsSeparatedByString:@"_"];
+    long long want = [q.firstObject longLongValue], pct = q.count > 1 ? [q[1] longLongValue] : -1, st = 0;
+    BOOL batt = NO;
+    if (DMAPFakeMerged(bar, &st, &batt) && st == want && batt == (pct >= 0)) return;   // (as asked: nothing to do)
+    NSNumber *at = objc_getAssociatedObject(bar, kAtKey);
+    if (at && CACurrentMediaTime() - at.doubleValue < 0.5) return;
+    objc_setAssociatedObject(bar, kAtKey, @(CACurrentMediaTime()), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak UIView *weakBar = bar;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIView *b = weakBar;
+        if (!b || !gAPFakeBarArgs) return;
+        NSArray *q2 = [gAPFakeBarArgs componentsSeparatedByString:@"_"];
+        NSString *how = nil;
+        BOOL ok = q2.count > 1 && DMAPFakeApply(b, [q2[0] longLongValue], [q2[1] longLongValue], &how);
+        DMLog([NSString stringWithFormat:@"[sbfakebt] %@: %@ (iPadOS replaced its overlay, or a new bar): %@", NSStringFromClass([b class]), ok ? @"put back" : @"not put back", how ?: @"-"]);
+    });
+}
+static void DMAPFakeShowItem(void) {   // (iPadOS's item for the made-up headphones: shown while one of them is connected, in the shape podfake_bar_ asked)
+    DMAPHeadsetRec *on = nil;
+    for (DMAPHeadsetRec *f in gAPFakeHeadsets) if (f.connected) { on = f; break; }
+    if (!on || !gAPFake) { DMAPFakeBarItem(@"off"); return; }
+    DMAPFakeBarItem(gAPFakeGlyphOnly ? @"2_-1" : [NSString stringWithFormat:@"2_%d", on.level >= 0 && on.level <= 100 ? on.level : 50]);
+}
+
+// ---- debug triggers: podfake_<pro|pro2|ap2|caseonly|max|other|unknown|two|err|drop|off>, podfake_bar_<glyph|level>, podfake_part_<h|p|n>_<0|1>,
+// podmenu, podmenu_rows, podmenu_probe, podmenu_pref_<on|off|delete>, podmenu_ax ----
 static DMAPHeadsetRec *DMAPFakeHeadset(NSString *name, NSString *address, long long pid, int level) {
     DMAPHeadsetRec *h = [DMAPHeadsetRec new];
     h.name = name; h.address = address; h.productId = pid; h.level = level; h.apple = pid != 0; h.connected = YES; h.fake = YES;
@@ -907,27 +1076,36 @@ static void DMAPProbe(void) {   // (read only: D0 and the real-headphones check 
             for (id di in list) {
                 id it = DMCall(di, @"item"), v = DMCall(di, @"view"), ident = DMAPObj(di, NSSelectorFromString(@"identifier"));
                 if (!(ic && [it isKindOfClass:ic])) continue;
-                [o appendFormat:@" %@ %@ %@ shown=%d battery=%d samePointer=%d;", ident, v ? NSStringFromClass([v class]) : @"-",
+                NSString *img = [v isKindOfClass:[UIImageView class]] ? [((UIImageView *)v).image description] : nil;   // (iPadOS's glyph: its symbol's or image's name)
+                NSRange nm = img ? [img rangeOfString:@"named("] : NSMakeRange(NSNotFound, 0);
+                NSString *glyph = nm.location != NSNotFound ? [img substringFromIndex:nm.location] : img ?: @"-";
+                [o appendFormat:@" %@ %@ %@ shown=%d battery=%d samePointer=%d image %@;", ident, v ? NSStringFromClass([v class]) : @"-",
                     [v isKindOfClass:[UIView class]] ? NSStringFromCGRect([(UIView *)v convertRect:((UIView *)v).bounds toView:fg]) : @"-",
-                    [v isKindOfClass:[UIView class]] && DMBattViewShown(v, fg), ident && battID && [ident isEqual:battID], ident && ident == battID];
+                    [v isKindOfClass:[UIView class]] && DMBattViewShown(v, fg), ident && battID && [ident isEqual:battID], ident && ident == battID,
+                    [[glyph componentsSeparatedByString:@")"].firstObject stringByAppendingString:@")"]];
             }
         }
         NSMutableArray *views = [NSMutableArray array], *others = [NSMutableArray array], *battViews = [NSMutableArray array];
-        BOOL battShown = NO, found = DMAPItemViews(fg, views, others, battViews, &battShown);
+        BOOL battShown = NO, found = DMAPItemViews(fg, views, others, battViews, &battShown), stateRead = NO;
+        long long btState = DMAPBluetoothState(fg, &stateRead);
+        SEL reg = NSSelectorFromString(@"alwaysShowRegulatoryBluetoothIndicator");
+        int regulatory = ic && [(id)ic respondsToSelector:reg] && DMAPTypes((id)ic, reg, "B16@0:8") ? ((BOOL (*)(id, SEL))objc_msgSend)((id)ic, reg) : -1;
         CGRect u = DMAPUnion(fg, views), br = DMAPUnion(fg, battViews);
         UIButton *btn = objc_getAssociatedObject(fg, kAirPodsButtonKey), *bbtn = objc_getAssociatedObject(fg, kBattButtonKey);
         BOOL rtl = DMBarRTL(fg);
         double gap = CGRectIsNull(u) || CGRectIsNull(br) ? -1 : (DMBarLead(fg, rtl, br) > DMBarLead(fg, rtl, u) ? DMBarLead(fg, rtl, br) - DMBarTrail(fg, rtl, u) : DMBarLead(fg, rtl, u) - DMBarTrail(fg, rtl, br));
         CGRect ov = btn && bbtn && !btn.hidden && !bbtn.hidden ? CGRectIntersection(btn.frame, bbtn.frame) : CGRectNull;
         CGRect onScreen = btn && !btn.hidden ? [fg convertRect:btn.frame toCoordinateSpace:(fg.window.screen ?: [UIScreen mainScreen]).coordinateSpace] : CGRectNull;
-        [o appendFormat:@"\n  copy %p: walk %d, views %lu (shown battery display %d), neighbours %lu, battery views %@ gap %.1f; spans airpods %@ battery %@ overlap %.1f; button on screen %@ hidden %d",
-            fg, found, (unsigned long)views.count, battShown, (unsigned long)others.count, NSStringFromCGRect(br), gap, btn ? NSStringFromCGRect(btn.frame) : @"-",
+        [o appendFormat:@"\n  copy %p: walk %d, views %lu (shown battery display %d), bluetooth state %lld (read %d, regulatory indicator %d), headphones item %d (1.8.8.1's rule %d), neighbours %lu, battery views %@ gap %.1f; spans airpods %@ battery %@ overlap %.1f; button on screen %@ hidden %d",
+            fg, found, (unsigned long)views.count, battShown, btState, stateRead, regulatory, MSBDAirPodsItemIsHeadphones((int)views.count, battShown, stateRead, btState),
+            battShown && views.count > 0, (unsigned long)others.count, NSStringFromCGRect(br), gap, btn ? NSStringFromCGRect(btn.frame) : @"-",
             bbtn ? NSStringFromCGRect(bbtn.frame) : @"-", CGRectIsNull(ov) ? 0.0 : ov.size.width, NSStringFromCGRect(onScreen), btn ? btn.hidden : 1];
         break;
     }
     // (fix 8, D0.5-D0.6, K1, K2: the data, counts and shapes only)
     NSArray<DMAPHeadsetRec *> *heads = DMAPReadHeadsets();
-    [o appendFormat:@"\n  headphones: %lu connected with a battery level (%u counted, of them Apple audio %u); reads %u", (unsigned long)heads.count, gAPBattDevices, gAPAppleAudio, gAPReadCount];
+    [o appendFormat:@"\n  headphones: %lu listed (with a battery level %u, headphones by iPadOS's type %u, Apple audio %u); reads %u", (unsigned long)heads.count, gAPBattDevices,
+        gAPHeadphoneTypes, gAPAppleAudio, gAPReadCount];
     for (DMAPHeadsetRec *h in heads) [o appendFormat:@" [%@ level %d pid 0x%llx]", DMWiFiTag(h.name), h.level, h.productId];
     NSData *pd = DMAPPartsNow();
     int np = (int)(pd.length / sizeof(MSBDAPPart));
@@ -973,11 +1151,17 @@ static BOOL DMAPTrigger(NSString *cmd) {
         DMAPSourceSaid(YES, YES);
         return YES;
     }
+    if ([cmd hasPrefix:@"podfake_bar_"]) {   // podfake_bar_glyph / _level: iPadOS's item for the made-up headphones as the glyph alone (AirPods on 17/18),
+        gAPFakeGlyphOnly = [[cmd substringFromIndex:12] isEqualToString:@"glyph"];   // or with their level (the default); at once if they are on
+        DMLog([NSString stringWithFormat:@"[podmenu] test: iPadOS's item %@", gAPFakeGlyphOnly ? @"the glyph alone" : @"the glyph and their level"]);
+        if (gAPFake) DMAPFakeShowItem();
+        return YES;
+    }
     if ([cmd hasPrefix:@"podfake_"]) {   // podfake_<kind> / _err / _drop / _off: made-up headphones in the three caches, iPadOS's item shown
         NSString *k = [cmd substringFromIndex:8];
         if ([k isEqualToString:@"off"]) {
             gAPFake = 0; gAPFakeHeadsets = nil; gAPFakeParts = nil; gAPFakeRoute = nil; gAPFakeErr = NO; gAPFakePartsOff = 0;
-            DMRunTrigger(@"sbfakebt_off");
+            DMAPFakeBarItem(@"off");
             DMLog(@"[podmenu] test device off: the real state");
             DMAPSourceSaid(YES, YES);
             return YES;
@@ -985,22 +1169,21 @@ static BOOL DMAPTrigger(NSString *cmd) {
         if ([k isEqualToString:@"err"]) { gAPFakeErr = YES; DMLog(@"[podmenu] test: the next noise change fails"); return YES; }
         if ([k isEqualToString:@"drop"]) {
             for (DMAPHeadsetRec *h in gAPFakeHeadsets) h.connected = NO;
-            DMRunTrigger(@"sbfakebt_off");
+            DMAPFakeBarItem(@"off");
             DMLog(@"[podmenu] test: the headphones dropped");
             DMAPSourceSaid(YES, YES);
             return YES;
         }
         if (!DMAPFakeKind(k)) { DMLog([NSString stringWithFormat:@"[podmenu] podfake_%@: no such kind", k]); return YES; }
         gAPFake = 1;
-        int level = gAPFakeHeadsets.firstObject.level;
-        DMRunTrigger([NSString stringWithFormat:@"sbfakebt_2_%d", level >= 0 && level <= 100 ? level : 50]);
-        DMLog([NSString stringWithFormat:@"[podmenu] test device: %@", k]);
+        DMAPFakeShowItem();
+        DMLog([NSString stringWithFormat:@"[podmenu] test device: %@ (iPadOS's item: %@)", k, gAPFakeGlyphOnly ? @"the glyph alone" : @"the glyph and their level"]);
         DMAPSourceSaid(YES, YES);
         return YES;
     }
     if ([cmd isEqualToString:@"podmenu"]) {   // open the AirPods menu from the visible status bar
         UIButton *b = DMAPVisibleButton();
-        if (b) DMOpenAirPodsMenu(b); else DMLog(@"[podmenu] podmenu: no AirPods button on the screen (switch off, or no headset battery shown)");
+        if (b) DMOpenAirPodsMenu(b); else DMLog(@"[podmenu] podmenu: no AirPods button on the screen (switch off, or iPadOS shows no headphones item)");
         return YES;
     }
     if ([cmd isEqualToString:@"podmenu_rows"]) {   // what the menu would show now

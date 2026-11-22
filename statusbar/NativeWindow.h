@@ -717,11 +717,17 @@ static CGRect DMNativeClamp(CGRect f, CGSize minSize) {
 }
 // A resize by a bottom corner (tag 0 left: the right edge stays; 1 right): never below the minimum size, never wider than the desktop, never past
 // its bottom (a window dragged low got 40 pt tall -- its content laid out with negative heights; the left grip made it 4760 pt wide).
-static CGRect DMNativeResized(CGRect start, CGPoint d, int tag, CGSize minSize, CGRect desk) {
+// inside (a sticky note, DesktopNotes.h): the moving side also stops at the desktop's side it goes to, before the left grip sets origin.x, so the
+// other side never moves (1.8.8.2 B72: a note's left grip pulled past its free area's left side grew the note to the right once it was moved back
+// inside the area; its right grip the same way to the left). A window passes NO: its moving side may pass a side while it is dragged, as an engine's
+// window's may, and comes out from under a side Dock at let go (-dm_keepOutOfSideDock:, the engines' DMDockSideKept); its other side never moves.
+static CGRect DMNativeResized(CGRect start, CGPoint d, int tag, CGSize minSize, CGRect desk, BOOL inside) {
     CGRect f = start;
     CGFloat right = CGRectGetMaxX(start);
     if (tag == 0) f.size.width -= d.x; else f.size.width += d.x;
-    f.size.width = MAX(minSize.width, MIN(f.size.width, desk.size.width));
+    CGFloat most = desk.size.width;
+    if (inside) most = MIN(most, tag == 0 ? right - CGRectGetMinX(desk) : CGRectGetMaxX(desk) - CGRectGetMinX(start));
+    f.size.width = MAX(minSize.width, MIN(f.size.width, most));
     if (tag == 0) f.origin.x = right - f.size.width;
     f.size.height = MAX(minSize.height, MIN(start.size.height + d.y, CGRectGetMaxY(desk) - f.origin.y));
     if (CGRectGetMaxY(f) > CGRectGetMaxY(desk)) f.origin.y = MAX(CGRectGetMinY(desk), CGRectGetMaxY(desk) - f.size.height);   // (too low for the minimum: it moves up)
@@ -730,7 +736,7 @@ static CGRect DMNativeResized(CGRect start, CGPoint d, int tag, CGSize minSize, 
 - (void)dm_resize:(UIPanGestureRecognizer *)g {
     if (g.state == UIGestureRecognizerStateBegan) { _panStart = self.frame; DMNativeSetActive(self); }
     CGPoint d = [g translationInView:self.superview];
-    self.frame = DMNativeResized(_panStart, d, (int)g.view.tag, self.minSize, DMNativeDesktop());
+    self.frame = DMNativeResized(_panStart, d, (int)g.view.tag, self.minSize, DMNativeDesktop(), NO);
     if (g.state == UIGestureRecognizerStateEnded) { self.restoreFrame = CGRectNull; self.layoutName = nil; DMTitleRecordMovedView(self); [self dm_keepOutOfSideDock:(g.view.tag == 0 ? MSBDSnapLeft : MSBDSnapRight) | MSBDSnapBottom]; }   // (as a move)
 }
 - (void)show {

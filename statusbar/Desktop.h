@@ -29,6 +29,7 @@
 #include "../common/DesktopSettle.h"   // (an item still arriving is listed again until it has settled, 1.8.4.2)
 #include "../common/DesktopIconSize.h"   // (Settings > Desktop > Icon Size, 1.7.5: the side in force and the cell -- plain C, tools/test-desktopiconsize.sh)
 #include "DesktopCorner.h"  // (Settings > Desktop > App Icon Corner Radius, 1.7.9: the app icons' corners, the Home Screen's shape -- tools/test-desktopcorner.sh)
+#include "../common/StickyNotes.h"   // (1.8.8.2 B74: MSBDStickyTypingAt, when the desktop's typing ends at a layout transition; tools/test-typingends.sh)
 
 @interface DMDesktopItemView : UIView
 @property (nonatomic, strong) DMFinderItem *item;
@@ -201,8 +202,9 @@ __attribute__((visibility("default"))) void MSBDDesktopFollowPage(void) { [gDesk
 // takes it: given back when the editing ends.
 static id gDesktopFocusLock;
 static void DMKeyboardDockWatch(void);
+static void DMDesktopTypingWatch(void);   // (below: SpringBoard's layout transitions end the typing for Spotlight and full screen, 1.8.8.2 B74)
 static void DMDesktopFocus(BOOL take) {
-    if (take) DMKeyboardDockWatch();
+    if (take) { DMKeyboardDockWatch(); DMDesktopTypingWatch(); }
     if (!take) { id l = gDesktopFocusLock; gDesktopFocusLock = nil; MSBDFocusUnlock(l); return; }
     if (gDesktopFocusLock) return;
     NSString *how = nil;
@@ -2423,6 +2425,74 @@ static void DMDesktopKeyboardMoved(void) { [gDesktop dm_fitRenameField]; }
 __attribute__((noinline)) static BOOL DMDesktopTypingNow(void) { return gDesktop && [gDesktop dm_typingNow]; }
 // ... and it ends now: the Mac Switcher opens or switches desktops (its layer is above the typing window: the keyboard would be under it).
 __attribute__((noinline)) static void DMDesktopTypingEnd(NSString *why) { if (gDesktop) [gDesktop dm_typingEnd:why]; }
+// ... and it ends at a layout transition SpringBoard begins (1.8.8.2, B74): Spotlight being presented, or the iPad's own display going to a
+// full-screen window or app (common/StickyNotes.h MSBDStickyTypingAt has the rule and why). Neither has a touch of its own when it comes from the
+// keyboard (Cmd-Space, Globe-F, a shortcut) or from a request, and neither changes the app in front, so the tick never saw them: the editor and
+// the keyboard stayed over a full-screen app until Home, and Spotlight got the keys while the note stayed typed in (17.5 q01 run 2, F2-F6 and
+// F2-F8). Every such change begins in -[SBLayoutStateTransitionCoordinator beginTransitionForWorkspaceTransaction:] on iPadOS 15 to 18 (18.5:
+// the overlay's presentation asks it before the overlay is shown; Zetsu hooks it too, seen on 15.6.1). Each read of SpringBoard's objects is checked,
+// selector and type encoding: one missing or of another shape reads as nothing, and the typing goes on as in 1.8.8.1 (the tick, the touches).
+static id DMDesktopTypingGet(id o, const char *name) {
+    SEL s = sel_registerName(name);
+    if (!o || ![o respondsToSelector:s] || ![DMSMSigOfMethod(class_getInstanceMethod(object_getClass(o), s)) isEqualToString:DMSMSigObj()]) return nil;
+    return ((id (*)(id, SEL))objc_msgSend)(o, s);
+}
+// The decision, out of line (the desktop's, as the other DMDesktopTyping helpers): asked only while the desktop types, after SpringBoard's own begin.
+__attribute__((noinline)) static void DMDesktopTypingAtTransition(id tx) {
+#if DEBUG
+    if (DMTestFlag("/tmp/msb-typing-notransition")) return;   // (debug: as 1.8.8.1, for a before and after on the device)
+#endif
+    id req = DMDesktopTypingGet(tx, "transitionRequest");
+    // (Spotlight being presented: the overlay presentation's transaction, its overlay Spotlight's; the dismissal is another class and ends nothing)
+    Class present = objc_getClass("SBTransientOverlayPresentWorkspaceTransaction"), spotlight = objc_getClass("SBSpotlightTransientOverlayViewController");
+    BOOL spot = NO;
+    if (present && spotlight && [tx isKindOfClass:present])
+        spot = [DMDesktopTypingGet(DMDesktopTypingGet(DMDesktopTypingGet(req, "transientOverlayContext"), "transientOverlay"), "viewController") isKindOfClass:spotlight];
+    // (where the request takes its display: SpringBoard's mode there, and with our Stage Manager engine whether its stage holds a full-screen window)
+    id state = DMDesktopTypingGet(DMDesktopTypingGet(req, "applicationContext"), "layoutState");
+    SEL em = sel_registerName("unlockedEnvironmentMode");
+    BOOL read = state && [state respondsToSelector:em] && [DMSMSigOfMethod(class_getInstanceMethod(object_getClass(state), em)) isEqualToString:DMSMSigTime()];
+    long long mode = read ? ((long long (*)(id, SEL))objc_msgSend)(state, em) : 0;
+    // (the iPad's own display: the request names none, or the iPad's own cannot be read; iPadOS 15 has no other display's transitions)
+    id where = DMDesktopTypingGet(req, "displayIdentity"), mine = where ? DMSMIdentityOfScreen([UIScreen mainScreen]) : nil;
+    BOOL onIPad = !where || !mine || [where isEqual:mine];
+    BOOL sm = DMSMEngine(), full = NO;
+    if (read && mode == 3 && onIPad && sm) {
+        NSDictionary *map = DMSMStageItemsMap(DMDesktopTypingGet(state, "appLayout"));
+        for (id it in map) if (DMSMAttrsFullScreen(map[it])) { full = YES; break; }
+    }
+    MSBDStickyTypingEnd end = MSBDStickyTypingAt(spot, read, onIPad, mode, sm, full);
+    DMLog([NSString stringWithFormat:@"[desktop] a layout transition begins while the desktop types (%@): Spotlight %d, mode %@, the iPad's %d, Stage Manager %d, a full-screen window %d: %@",
+           tx ? NSStringFromClass([tx class]) : @"no transaction", spot, read ? [NSString stringWithFormat:@"%lld", mode] : @"not read", onIPad, sm, full, end ? MSBDStickyTypingWhy(end) : @"the typing goes on"]);
+    if (end == MSBDStickyTypingGoesOn) return;
+    DM_FEATURE_MARK("desktop-typing-ends-at-transition");
+    DMDesktopTypingEnd(MSBDStickyTypingWhy(end));
+}
+// The pass-through: SpringBoard's own begin first, then the decision, only while the desktop types. Transparent for the crash guard
+// (tools/crashmap-rules.txt): once in, it is on every layout transition's stack, and a crash in SpringBoard's or another tweak's code under it
+// (Zetsu posts from its own hook of this method) is not the desktop's.
+static void (*o_DMDesktopTypingPass)(id, SEL, id);
+static void DMDesktopTypingPass(id self, SEL _cmd, id tx) {
+    o_DMDesktopTypingPass(self, _cmd, tx);
+    if (DMDesktopTypingNow()) DMDesktopTypingAtTransition(tx);
+}
+// Put in with the first typing (DMDesktopFocus taking the lock, for a note or a name): nobody who never types gets the hook. Once, kept.
+static void DMDesktopTypingWatch(void) {
+    static BOOL done = NO;
+    if (done) return;
+    done = YES;
+    Class c = objc_getClass("SBLayoutStateTransitionCoordinator");
+    SEL s = sel_registerName("beginTransitionForWorkspaceTransaction:");
+    Method m = c ? class_getInstanceMethod(c, s) : NULL;
+    if (!m || ![DMSMSigOfMethod(m) isEqualToString:DMSMExpect(@encode(void), @encode(id), NULL)]) {
+        DMLog([NSString stringWithFormat:@"[desktop] SpringBoard's layout transitions begin with %s here: the typing ends by the touches and the tick only (not for Spotlight or full screen with no touch)", m ? method_getTypeEncoding(m) : "no such method"]);
+        return;
+    }
+    MSHookMessageEx(c, s, (IMP)DMDesktopTypingPass, (IMP *)&o_DMDesktopTypingPass);
+    DM_FEATURE_MARK("desktop-typing-transition-watch");
+    DMLog(o_DMDesktopTypingPass ? @"[desktop] the typing ends when Spotlight opens or the iPad's display goes full screen: SpringBoard's layout transitions are watched"
+                                : @"[desktop] the layout transition hook did not go in: the typing ends by the touches and the tick only");
+}
 static void DMDesktopAXOpen(DMDesktopItemView *v) { DMDesktop *d = (DMDesktop *)v.superview; if ([d isKindOfClass:[DMDesktop class]]) [d dm_axOpen:v]; }
 static void DMDesktopFoldersChanged(NSSet<NSString *> *folders) { [gDesktop dm_foldersChanged:folders]; }   // (Finder.h DMFinderRefreshFolders)
 static NSString *DMDesktopPlaceFor(NSString *path) { return [gDesktop dm_placeStringFor:path]; }   // (Finder.h gFinderDesktopPlaceFor)

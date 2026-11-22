@@ -172,19 +172,21 @@ int main(void) { @autoreleasepool {
     {
         CGRect desk = CGRectMake(6, 30, 1182, 716); CGSize mn = CGSizeMake(MSBD_NOTE_MIN_W, MSBD_NOTE_MIN_H);
         CGRect st = CGRectMake(500, 300, 220, 180);
-        CGRect f = DMNativeResized(st, CGPointMake(60, 40), 1, mn, desk);
+        CGRect f = DMNativeResized(st, CGPointMake(60, 40), 1, mn, desk, YES);
         CHECK(CGRectEqualToRect(f, CGRectMake(500, 300, 280, 220)), "the right grip grows it to the right and down");
-        f = DMNativeResized(st, CGPointMake(-60, 40), 0, mn, desk);
+        f = DMNativeResized(st, CGPointMake(-60, 40), 0, mn, desk, YES);
         CHECK(fabs(CGRectGetMaxX(f) - CGRectGetMaxX(st)) < 0.01 && fabs(f.size.width - 280) < 0.01, "the left grip keeps the right edge");
-        f = DMNativeResized(st, CGPointMake(-500, -500), 1, mn, desk);
+        f = DMNativeResized(st, CGPointMake(-500, -500), 1, mn, desk, YES);
         CHECK(f.size.width == MSBD_NOTE_MIN_W && f.size.height == MSBD_NOTE_MIN_H, "never under the minimum");
-        f = DMNativeResized(st, CGPointMake(5000, 5000), 1, mn, desk);
+        f = DMNativeResized(st, CGPointMake(5000, 5000), 1, mn, desk, YES);
         CHECK(f.size.width <= desk.size.width && CGRectGetMaxY(f) <= CGRectGetMaxY(desk) + 0.01, "never wider than the area, never past its bottom");
-        f = DMNativeResized(CGRectMake(1000, 300, 150, 100), CGPointMake(400, 0), 1, mn, desk);
-        CHECK(CGRectGetMaxX(f) > CGRectGetMaxX(desk) && inside(MSBDStickyClampInside(f, desk), desk), "the right grip past the area's right edge: kept inside after (check item 14)");
-        f = DMNativeResized(CGRectMake(20, 300, 150, 100), CGPointMake(-400, 0), 0, mn, desk);
-        CHECK(CGRectGetMinX(f) < CGRectGetMinX(desk) && inside(MSBDStickyClampInside(f, desk), desk), "the left grip past the area's left edge: kept inside after");
-        f = DMNativeResized(CGRectMake(500, 700, 220, 40), CGPointMake(0, 0), 1, mn, desk);
+        f = DMNativeResized(CGRectMake(1000, 300, 150, 100), CGPointMake(400, 0), 1, mn, desk, YES);
+        CHECK(fabs(CGRectGetMaxX(f) - CGRectGetMaxX(desk)) < 0.01 && f.origin.x == 1000 && inside(f, desk) && CGRectEqualToRect(MSBDStickyClampInside(f, desk), f),
+              "the right grip past the area's right edge stops at it, the left edge stays (check item 14; 1.8.8.2 B72, test-stickygrip)");
+        f = DMNativeResized(CGRectMake(20, 300, 150, 100), CGPointMake(-400, 0), 0, mn, desk, YES);
+        CHECK(fabs(CGRectGetMinX(f) - CGRectGetMinX(desk)) < 0.01 && fabs(CGRectGetMaxX(f) - 170) < 0.01 && inside(f, desk) && CGRectEqualToRect(MSBDStickyClampInside(f, desk), f),
+              "the left grip past the area's left edge stops at it, the right edge stays");
+        f = DMNativeResized(CGRectMake(500, 700, 220, 40), CGPointMake(0, 0), 1, mn, desk, YES);
         CHECK(CGRectGetMaxY(f) <= CGRectGetMaxY(desk) + 0.01 && f.size.height == MSBD_NOTE_MIN_H, "too low for the minimum: it moves up");
     }
     printf("test-stickynotes: %d passed, %d failed\n", passes, fails);

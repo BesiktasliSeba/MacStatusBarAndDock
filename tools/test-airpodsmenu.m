@@ -4,13 +4,18 @@
 // button: DMBattLayoutButton, DMBattItemViews, DMBattCoverAX, DMBattItemClass, DMBattViewShown) and StatusBar.x (the leading-coordinate helpers),
 // on a stand-in of iPadOS's bar as read in the 17.6.1 / 18.2 SystemStatusUI decompiles (regions, display items with an item, a view and an
 // identifier; the Bluetooth item's +batteryDisplayIdentifier), both families' class names (15/16 UIKit's, 17+ SystemStatusUI's):
-//  - the button only while the Bluetooth item's battery display item shows; none for a bare glyph, a class that does not answer, the switch off,
-//    the Lock Screen's layout;
+//  - the button while the Bluetooth item shows headphones (1.8.8.1.1): the glyph with their level, or the glyph alone with the bar's data saying
+//    headphones (state 2: AirPods on 17/18), or the glyph alone where that data cannot be read; none for a Bluetooth indicator that is not
+//    headphones' (state 0 or 1), a class that does not answer, the switch off, the Lock Screen's layout;
 //  - with the battery's button laid out after it, as in the bar's layout pass: the two never overlap, at gaps of 0, 3, 8 and 20 pt (x k), left to
 //    right and right to left; from 8 pt x k the AirPods button covers its whole item; neighbours only from the item's own region cut it;
 //  - VoiceOver: iPadOS's views under each button are out of VoiceOver, each button's set apart -- the AirPods button going gives back only its own;
 //  - the headphones the open menu lists (gone: kept, Not Connected; back; new ones); BatteryCenter's records copied with their types only, the
-//    iPad's own battery dropped; Bluetooth's devices with a battery level only, their types asked.
+//    iPad's own battery dropped; Bluetooth's connected headphones (iPadOS's types 16 and 20) and devices with a battery level, their types
+//    asked;
+//  - DEBUG: the made-up Bluetooth item (sbfakebt_, podfake_bar_; 1.8.8.1.1) on stand-ins of both families' data: 15/16's with setters, 17/18's
+//    immutable ones (an STMutable... data class, entries with instance variables only), the glyph alone and with a level, the bar's own overlay
+//    back, nothing changed where no value fits.
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -42,10 +47,14 @@ static void DMAPPartFailed(int part, NSException *e) { (void)part; (void)e; gAPF
 static void DMAPCheck(void) {}
 static void DMAPStartSources(void) { gAPStarts++; }
 static NSString *DMAPAXValue(void) { return @"(value)"; }
-static unsigned gAPReadCount = 0, gAPBattDevices = 0, gAPAppleAudio = 0;
+static unsigned gAPReadCount = 0, gAPBattDevices = 0, gAPAppleAudio = 0, gAPHeadphoneTypes = 0;
 #if DEBUG
 static int gAPFake = 0;
 static NSMutableArray *gAPFakeHeadsets;
+static BOOL gAPFakeGlyphOnly = NO;
+static NSHashTable *gCopies;
+static const void *kLogoKey = &kLogoKey;
+static id DMCall(id obj, NSString *name) { SEL s = NSSelectorFromString(name); return [obj respondsToSelector:s] ? ((id (*)(id, SEL))objc_msgSend)(obj, s) : nil; }
 #endif
 static CGFloat DMBarCopyHeight(UIView *fg) { return fg.bounds.size.height; }
 static BOOL DMButtonPointerEffects(void) { return NO; }
@@ -65,6 +74,9 @@ static NSMutableArray *gAPMenuHeadsets = nil;
 static void DMOpenAirPodsMenu(UIButton *btn) { (void)btn; gAPOpens++; }
 #include "ap-button.inc"     // (AirPodsMenu.h: DMAPItemClass, DMAPItemViews, DMAPCoverAX, DMAPUnion, DMAPHideButton, DMAirPodsLayoutButton, DMAirPodsLockLayout)
 #include "ap-data.inc"       // (AirPodsMenu.h: DMAPMergeHeadsets, DMAPPartsCopy, DMAPReadHeadsets)
+#if DEBUG
+#include "ap-fake.inc"       // (AirPodsMenu.h: DMAPFakeSet, DMAPFakeFlag, DMAPFakeClass, DMAPFakeReadBack, DMAPFakeBarItem, DMAPFakeShowItem)
+#endif
 
 static int gFails, gChecks;
 static void Check(BOOL ok, NSString *what) { gChecks++; if (!ok) gFails++; printf("%s  %s\n", ok ? "PASS" : "FAIL", what.UTF8String); }
@@ -99,10 +111,26 @@ static NSString *gBattIDString;
 @end
 @implementation TRegion
 @end
+@interface TBTEntry : NSObject   // (the bar's merged data, as read: -currentAggregatedData's -bluetoothEntry's -state)
+@property (nonatomic) long long state;
+@end
+@implementation TBTEntry
+@end
+@interface TBarData : NSObject
+@property (nonatomic, strong) TBTEntry *bluetoothEntry;
+@end
+@implementation TBarData
+@end
+static long long gBTState = 2;   // (connected headphones, as iPadOS gives them; 0 or 1: its plain Bluetooth indicator)
+static BOOL gBTNoData = NO;      // (a bar whose data cannot be read)
 @interface TBar : UIView
 @property (nonatomic, strong) NSDictionary *regions;
 @end
 @implementation TBar
+- (id)currentAggregatedData {
+    if (gBTNoData) return nil;
+    TBarData *d = [TBarData new]; d.bluetoothEntry = [TBTEntry new]; d.bluetoothEntry.state = gBTState; return d;
+}
 @end
 typedef struct { CGFloat gap, k; BOOL rtl, battShown, glyphShown, otherRegionNeighbour, sameIDObject; } TSetup;
 static UIView *View(UIView *fg, CGFloat lead, CGFloat w, BOOL rtl) {
@@ -180,10 +208,47 @@ static void Geometry(void) {
     [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];   // (the main queue's turn: the first placement's block)
     Check(gAPStarts == 1, [NSString stringWithFormat:@"  ... the sources started once, at the first placement, outside the layout (%d)", gAPStarts]);
 }
+static void GlyphAlone(void) {   // (1.8.8.1.1: iPadOS 17/18 show AirPods as the glyph alone; 1.8.8.1 gave that no button: KT's AirPods on 18.5)
+    const CGFloat ks[] = { 1.0, 1.25 };
+    int bad = 0, cases = 0;
+    for (int ki = 0; ki < 2; ki++) for (int rtl = 0; rtl < 2; rtl++) for (int battOn = 0; battOn < 2; battOn++) {
+        TSetup s = { 6.3, ks[ki], (BOOL)rtl, NO, YES, NO, YES };   // (18.5's gap: 6.3 pt from the glyph to the battery)
+        gBattMenuOn = battOn;
+        TWorld w = MakeWorld(s);
+        Layout(w, s.k);
+        UIButton *a = APButton(w), *b = BattButton(w);
+        CGRect fa = Lead(w.fg, a.frame), fb = b && !b.hidden ? Lead(w.fg, b.frame) : CGRectNull, fg = Lead(w.fg, w.glyph.frame);
+        BOOL ok = a && !a.hidden && fa.size.height == 24 && CGRectGetMinX(fa) <= CGRectGetMinX(fg) + 1e-6 && CGRectGetMaxX(fa) >= CGRectGetMaxX(fg) - 1e-6;   // (the whole glyph)
+        ok = ok && CGRectGetMinX(fa) >= MAX(w.left - 2 * s.k, (884 + w.itemLead) / 2.0) - 1e-6;
+        if (battOn) ok = ok && b && !b.hidden && CGRectGetMaxX(fa) <= CGRectGetMinX(fb) + 1e-6;
+        ok = ok && !w.glyph.isAccessibilityElement;
+        cases++;
+        if (!ok) { bad++; printf("   glyph alone k %.2f rtl %d battery menu %d: airpods %s battery %s glyph %s\n", s.k, rtl, battOn, NSStringFromCGRect(fa).UTF8String, NSStringFromCGRect(fb).UTF8String, NSStringFromCGRect(fg).UTF8String); }
+    }
+    gBattMenuOn = YES;
+    Check(!bad, [NSString stringWithFormat:@"%@: the headphones glyph alone (state 2, no level: AirPods on 17/18) gets the button over the whole glyph, never over the battery's button or our Wi-Fi area, the glyph out of VoiceOver (%d cases)", gSTUI ? @"17+" : @"15/16", cases]);
+    TSetup s = { 20, 1, NO, NO, YES, NO, YES };
+    gBTState = 0; TWorld w = MakeWorld(s); Layout(w, 1);
+    BOOL off0 = !APButton(w) || APButton(w).hidden;
+    gBTState = 1; Layout(w, 1);
+    BOOL off1 = !APButton(w) || APButton(w).hidden;
+    Check(off0 && off1 && w.glyph.isAccessibilityElement, @"  ... a Bluetooth indicator that is not headphones' (state 0 or 1, the regions' regulatory one): no button, iPadOS's view as it is");
+    gBTState = 2; Layout(w, 1);
+    BOOL back = APButton(w) && !APButton(w).hidden;
+    gBTState = 0; Layout(w, 1);
+    Check(back && APButton(w).hidden && w.glyph.isAccessibilityElement, @"  ... the state going 2 then 0 with no other change: the button comes, then goes (each layout reads the data)");
+    gBTState = 2; gBTNoData = YES; w = MakeWorld(s); Layout(w, 1);
+    Check(APButton(w) && !APButton(w).hidden, @"  ... the glyph alone where the bar's data cannot be read: the button (the shown item taken as the headphones')");
+    gBTNoData = NO;
+    BOOL logged = NO; for (NSString *l in gLog) if ([l containsString:@"the glyph alone"]) logged = YES;
+    Check(logged, @"  ... the log says it is the glyph alone");
+}
 static void WhenNot(void) {
-    TSetup s = { 20, 1, NO, NO, YES, NO, YES };   // (a bare Bluetooth glyph: no headset battery)
+    TSetup s = { 20, 1, NO, NO, YES, NO, YES };   // (the glyph alone, not headphones' by the data: a plain Bluetooth indicator)
+    gBTState = 1;
     TWorld w = MakeWorld(s); Layout(w, 1);
-    Check(!APButton(w) || APButton(w).hidden, @"a bare Bluetooth glyph (the battery display item not shown): no button");
+    gBTState = 2;
+    Check(!APButton(w) || APButton(w).hidden, @"a Bluetooth glyph that is not headphones' (the battery display item not shown, state 1): no button");
     TSetup t = { 20, 1, NO, YES, NO, NO, YES };   // (the headset battery alone, the glyph faded)
     w = MakeWorld(t); Layout(w, 1);
     Check(APButton(w) && !APButton(w).hidden && CGRectGetMinX(Lead(w.fg, APButton(w).frame)) >= w.itemLead + 18 - 4 - 1e-6, @"the headset battery shown, its glyph not: the button over the shown view only");
@@ -205,13 +270,13 @@ static void VoiceOver(void) {
     TSetup s = { 20, 1, NO, YES, YES, NO, YES };
     TWorld w = MakeWorld(s); Layout(w, 1);
     BOOL both = !w.glyph.isAccessibilityElement && !w.hbatt.isAccessibilityElement && !w.pct.isAccessibilityElement && !w.batt.isAccessibilityElement && w.wifi.isAccessibilityElement;
-    w.hbatt.hidden = YES;   // (AirPods gone: iPadOS takes its battery display item off)
+    w.hbatt.hidden = YES; w.glyph.hidden = YES;   // (AirPods gone: iPadOS takes its item off, the glyph and its battery display item)
     Layout(w, 1);
     BOOL apBack = APButton(w).hidden && w.glyph.isAccessibilityElement && w.hbatt.isAccessibilityElement;
     BOOL battStays = !w.pct.isAccessibilityElement && !w.batt.isAccessibilityElement && BattButton(w) && !BattButton(w).hidden;
     Check(both, @"VoiceOver: iPadOS's AirPods views and battery views both out of VoiceOver under their buttons (Wi-Fi's stays)");
     Check(apBack && battStays, @"  ... the AirPods going gives back its own views only: the battery's stay covered (its own set, not DMBattCoverAX's)");
-    w.hbatt.hidden = NO; Layout(w, 1);
+    w.hbatt.hidden = NO; w.glyph.hidden = NO; Layout(w, 1);
     gBattMenuOn = NO; Layout(w, 1);
     Check(w.pct.isAccessibilityElement && w.batt.isAccessibilityElement && !w.glyph.isAccessibilityElement && !w.hbatt.isAccessibilityElement,
           @"  ... Battery Menu off: the battery's views back, the AirPods' still covered");
@@ -275,7 +340,7 @@ static void Parts(void) {
 @interface TBluetoothDevice : NSObject   // (BluetoothManager.framework's BluetoothDevice, as read: the Mac's own is loaded with UIKit)
 @property (nonatomic, copy) NSString *name, *address;
 @property (nonatomic) bool connected, supportsBatteryLevel, isAppleAudioDevice;
-@property (nonatomic) int batteryLevel;
+@property (nonatomic) int batteryLevel, type;
 @property (nonatomic) unsigned productId;
 @end
 @implementation TBluetoothDevice
@@ -307,11 +372,180 @@ static void Headsets(void) {
     NSArray *got = DMAPReadHeadsets();
     DMAPHeadsetRec *a = got.firstObject, *s = got.lastObject;
     Check(got.count == 2 && [a.name isEqualToString:@"AirPods"] && a.level == 80 && a.productId == 0x200e && a.apple && a.device && [s.name isEqualToString:@"Studio"] && !s.apple && gAPBattDevices == 2 && gAPAppleAudio == 1,
-          [NSString stringWithFormat:@"Bluetooth's connected devices with a battery level only (%lu: no level, other types, not connected left out), counted for the probe", (unsigned long)got.count]);
+          [NSString stringWithFormat:@"Bluetooth's connected devices with a battery level (%lu: no level and not headphones, other types, not connected left out), counted for the probe", (unsigned long)got.count]);
+    TBluetoothDevice *cheap = BT(D, @"Cheap", false, 0, false); cheap.type = 16;   // (headphones that report no level: listed, level unknown)
+    TBluetoothDevice *pods = BT(D, @"Pods", false, 0, true); pods.type = 20;
+    TBluetoothDevice *kb = BT(D, @"Keys", false, 0, false); kb.type = 0;
+    gConnected = @[cheap, kb, pods];
+    got = DMAPReadHeadsets();
+    a = got.firstObject; s = got.lastObject;
+    Check(got.count == 2 && [a.name isEqualToString:@"Cheap"] && a.level == -1 && [s.name isEqualToString:@"Pods"] && s.level == -1 && s.apple && gAPHeadphoneTypes == 2 && gAPBattDevices == 0,
+          [NSString stringWithFormat:@"  ... connected headphones by iPadOS's type (16, 20) that report no battery level: listed, level unknown; a keyboard with none: not (%lu)", (unsigned long)got.count]);
     gAPPart[kDMAPPartHeadset] = NO;
     Check(DMAPReadHeadsets().count == 0, @"  ... the Bluetooth part off here: nothing asked");
     gAPPart[kDMAPPartHeadset] = YES;
 }
+
+#if DEBUG
+// ---- the made-up Bluetooth item: the bar's data as each family has it ----
+@interface STTestEntry : NSObject { @public BOOL _enabled; }   // (17/18: SystemStatus's entries, immutable: getters, instance variables)
+- (BOOL)isEnabled;
+@end
+@implementation STTestEntry
+- (BOOL)isEnabled { return _enabled; }
+@end
+@interface STTestBatteryEntry : STTestEntry { @public long long _capacity; }
+- (long long)capacity;
+@end
+@implementation STTestBatteryEntry
+- (long long)capacity { return _capacity; }
+@end
+@interface STTestBluetoothEntry : STTestEntry { @public long long _state; STTestBatteryEntry *_batteryEntry; }
+- (long long)state;
+- (STTestBatteryEntry *)batteryEntry;
+@end
+@implementation STTestBluetoothEntry
+- (long long)state { return _state; }
+- (STTestBatteryEntry *)batteryEntry { return _batteryEntry; }
+@end
+@interface STTestData : NSObject <NSMutableCopying> { @public STTestBluetoothEntry *_bluetoothEntry; STTestBatteryEntry *_mainBatteryEntry; }
+- (STTestBluetoothEntry *)bluetoothEntry;
+- (STTestBatteryEntry *)mainBatteryEntry;
+@end
+@interface STMutableTestData : STTestData   // (STMutableStatusBarData: the setters)
+- (void)setBluetoothEntry:(STTestBluetoothEntry *)e;
+@end
+@implementation STTestData
+- (STTestBluetoothEntry *)bluetoothEntry { return _bluetoothEntry; }
+- (STTestBatteryEntry *)mainBatteryEntry { return _mainBatteryEntry; }
+- (id)mutableCopyWithZone:(NSZone *)zone { (void)zone; STMutableTestData *m = [STMutableTestData new]; m->_bluetoothEntry = _bluetoothEntry; m->_mainBatteryEntry = _mainBatteryEntry; return m; }
+@end
+@implementation STMutableTestData
+- (void)setBluetoothEntry:(STTestBluetoothEntry *)e { _bluetoothEntry = e; }
+@end
+@interface TUIEntry : NSObject   // (15/16: UIKit's entries, with setters)
+@property (nonatomic, getter=isEnabled) BOOL enabled;
+@end
+@implementation TUIEntry
+@end
+@interface TUIBatteryEntry : TUIEntry
+@property (nonatomic) long long capacity;
+@end
+@implementation TUIBatteryEntry
+@end
+@interface TUIBluetoothEntry : TUIEntry
+@property (nonatomic) long long state;
+@property (nonatomic, strong) TUIBatteryEntry *batteryEntry;
+@end
+@implementation TUIBluetoothEntry
+@end
+@interface TUIData : NSObject
+@property (nonatomic, strong) TUIBluetoothEntry *bluetoothEntry;
+@property (nonatomic, strong) TUIBatteryEntry *mainBatteryEntry;
+@end
+@implementation TUIData
+@end
+@interface TOddEntry : NSObject   // (an entry with neither a setter nor an instance variable for the state: nothing is guessed)
+- (BOOL)isEnabled;
+@end
+@implementation TOddEntry
+- (BOOL)isEnabled { return YES; }
+@end
+@interface TOddData : NSObject
+@property (nonatomic, strong) TOddEntry *bluetoothEntry;
+@property (nonatomic, strong) TOddEntry *mainBatteryEntry;
+@end
+@implementation TOddData
+@end
+@interface TDataBar : UIView   // (the bar: its data, its overlay, the two merged as the bar draws them)
+@property (nonatomic, strong) id currentData, overlayData;
+@property (nonatomic, weak) UIView *foregroundView;
+@end
+@implementation TDataBar
+- (id)currentAggregatedData {
+    id o = self.overlayData, e = [o respondsToSelector:@selector(bluetoothEntry)] ? [o bluetoothEntry] : nil;
+    if (!e) return self.currentData;
+    STMutableTestData *m = [STMutableTestData new]; m->_bluetoothEntry = e; return m;   // (only the Bluetooth entry is read back)
+}
+@end
+static TDataBar *DataBar(id data) {
+    TDataBar *bar = [[TDataBar alloc] initWithFrame:CGRectMake(0, 0, 1194, 24)];
+    UIView *fg = [[UIView alloc] initWithFrame:bar.bounds]; [bar addSubview:fg];
+    objc_setAssociatedObject(fg, kLogoKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    bar.currentData = data; bar.foregroundView = fg;
+    gCopies = [NSHashTable weakObjectsHashTable]; [gCopies addObject:fg];
+    return bar;
+}
+static void FakeItem(void) {
+    // 17/18: STStatusBarData has no setters, its entries none either
+    STTestData *d = [STTestData new]; d->_bluetoothEntry = [STTestBluetoothEntry new]; d->_mainBatteryEntry = [STTestBatteryEntry new];
+    TDataBar *bar = DataBar(d); id own = [NSObject new]; bar.overlayData = own;
+    [gLog removeAllObjects];
+    DMAPFakeBarItem(@"2_-1");
+    STMutableTestData *o = bar.overlayData; STTestBluetoothEntry *e = [o isKindOfClass:[STMutableTestData class]] ? o.bluetoothEntry : nil;
+    Check([o isKindOfClass:[STMutableTestData class]] && [e isKindOfClass:[STTestBluetoothEntry class]] && e.state == 2 && e.isEnabled && (!e.batteryEntry || !e.batteryEntry.isEnabled)
+          && [[gLog componentsJoinedByString:@"\n"] containsString:@"state ivar"],
+          @"17/18 data (immutable): sbfakebt_2_-1 gives the bar overlay data of the mutable class, a Bluetooth entry of the bar's own class, state 2, enabled, no level (the glyph alone), through its instance variables");
+    DMAPFakeBarItem(@"2_80");
+    o = bar.overlayData; e = o.bluetoothEntry;
+    Check(e.state == 2 && e.isEnabled && e.batteryEntry.isEnabled && e.batteryEntry.capacity == 80 && [e.batteryEntry isKindOfClass:[STTestBatteryEntry class]],
+          @"  ... sbfakebt_2_80: the glyph and their level, 80 %, a battery entry of the bar's own class");
+    DMAPFakeBarItem(@"2_150");
+    Check(((STMutableTestData *)bar.overlayData).bluetoothEntry.batteryEntry.capacity == 100, @"  ... a level over 100 given as 100");
+    DMAPFakeBarItem(@"off");
+    Check(bar.overlayData == own, @"  ... sbfakebt_off: the bar's own overlay back");
+    // 15/16: UIKit's data and entries with setters
+    TUIData *u = [TUIData new]; u.bluetoothEntry = [TUIBluetoothEntry new]; u.mainBatteryEntry = [TUIBatteryEntry new];
+    bar = DataBar(u); bar.overlayData = nil;
+    [gLog removeAllObjects];
+    DMAPFakeBarItem(@"2_55");
+    TUIData *uo = bar.overlayData;
+    Check([uo isKindOfClass:[TUIData class]] && uo.bluetoothEntry.state == 2 && uo.bluetoothEntry.isEnabled && uo.bluetoothEntry.batteryEntry.isEnabled && uo.bluetoothEntry.batteryEntry.capacity == 55
+          && [[gLog componentsJoinedByString:@"\n"] containsString:@"state set"], @"15/16 data (setters): sbfakebt_2_55 through the setters, as 1.8.8.1");
+    DMAPFakeBarItem(@"2_-1");
+    uo = bar.overlayData;
+    Check(uo.bluetoothEntry.state == 2 && uo.bluetoothEntry.batteryEntry && !uo.bluetoothEntry.batteryEntry.isEnabled, @"  ... sbfakebt_2_-1: a battery entry that is off (the glyph alone), as 1.8.8.1");
+    DMAPFakeBarItem(@"off");
+    Check(bar.overlayData == nil, @"  ... sbfakebt_off: no overlay again");
+    // neither fits: nothing changes
+    TOddData *x = [TOddData new]; x.bluetoothEntry = [TOddEntry new]; x.mainBatteryEntry = [TOddEntry new];
+    bar = DataBar(x); bar.overlayData = own;
+    [gLog removeAllObjects];
+    DMAPFakeBarItem(@"2_80");
+    Check(bar.overlayData == own && [[gLog componentsJoinedByString:@"\n"] containsString:@"not as expected, nothing changed"], @"data whose entries take neither a setter nor an instance variable: nothing changed, said");
+    // the made-up headphones choose the shape (podfake_bar_)
+    bar = DataBar(d); bar.overlayData = nil;
+    DMAPHeadsetRec *h = [DMAPHeadsetRec new]; h.level = 75; h.connected = YES;
+    gAPFakeHeadsets = [NSMutableArray arrayWithObject:h]; gAPFake = 1;
+    gAPFakeGlyphOnly = YES; DMAPFakeShowItem();
+    e = ((STMutableTestData *)bar.overlayData).bluetoothEntry;
+    BOOL glyph = e.state == 2 && (!e.batteryEntry || !e.batteryEntry.isEnabled);
+    gAPFakeGlyphOnly = NO; DMAPFakeShowItem();
+    e = ((STMutableTestData *)bar.overlayData).bluetoothEntry;
+    BOOL lvl = e.state == 2 && e.batteryEntry.isEnabled && e.batteryEntry.capacity == 75;
+    h.connected = NO; DMAPFakeShowItem();
+    Check(glyph && lvl && bar.overlayData == nil, @"the made-up headphones: the glyph alone (podfake_bar_glyph), with their level 75 % (podfake_bar_level), gone when they disconnect");
+    gAPFakeHeadsets = nil; gAPFake = 0;
+    // iPadOS replaces the bar's overlay with its own (the Cover Sheet's) while the item is on: put back at the next turn, over iPadOS's
+    bar = DataBar(d); bar.overlayData = nil;
+    DMAPFakeBarItem(@"2_-1");
+    STTestData *theirs = [STTestData new]; theirs->_mainBatteryEntry = [STTestBatteryEntry new]; theirs->_mainBatteryEntry->_capacity = 33;
+    bar.overlayData = theirs;
+    DMAPFakeBarRecheck(bar);
+    [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+    STMutableTestData *back = bar.overlayData;
+    Check([back isKindOfClass:[STMutableTestData class]] && back != theirs && back.bluetoothEntry.state == 2 && (!back.bluetoothEntry.batteryEntry || !back.bluetoothEntry.batteryEntry.isEnabled)
+          && back.mainBatteryEntry.capacity == 33, @"iPadOS's own overlay set over the made-up item (the Cover Sheet's): the item put back at the next turn, over iPadOS's overlay (its entries kept)");
+    DMAPFakeBarRecheck(bar);
+    [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+    Check(bar.overlayData == back, @"  ... the merged data as asked: nothing done again");
+    DMAPFakeBarItem(@"off");
+    Check(bar.overlayData == theirs, @"  ... sbfakebt_off gives iPadOS's own overlay back (the one it set)");
+    bar.overlayData = nil; DMAPFakeBarRecheck(bar);
+    [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+    Check(bar.overlayData == nil, @"  ... off: never put back");
+}
+#endif
 
 int main(int argc, char **argv) {
     @autoreleasepool {
@@ -323,11 +557,15 @@ int main(int argc, char **argv) {
         Check(!APButton(w) || APButton(w).hidden, @"an item class with no +batteryDisplayIdentifier (unknown on 15/16 until D0): no button");
 #else
         Geometry();
+        GlyphAlone();
         WhenNot();
         VoiceOver();
         Merge();
         Parts();
         Headsets();
+#if DEBUG
+        FakeItem();
+#endif
 #endif
         printf("test-airpodsmenu (%s%s, %s): %d checks, %d fail\n", gSTUI ? "17+" : "15/16",
 #ifdef T_NOBATTID

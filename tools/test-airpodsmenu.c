@@ -1,6 +1,7 @@
 // test-airpodsmenu.c -- the AirPods menu's rules (common/AirPodsMenu.h, MacStatusBar&Dock 1.8.8.1), plain C: the button's place beside the
 // battery's, which battery records are which headphones', the cells, the levels, the modes, the route device, every menu kind's rows, the
-// signature, the switch, the glyphs and what VoiceOver reads. Built by tools/test-airpodsmenu.sh with -Wall -Wextra -Werror.
+// signature, the switch, the glyphs and what VoiceOver reads; since 1.8.8.1.1 when iPadOS's item is the headphones' (the glyph alone too) and
+// which Bluetooth devices the menu lists. Built by tools/test-airpodsmenu.sh with -Wall -Wextra -Werror.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -355,8 +356,24 @@ static void rest(void) {
     check(ok, "words: no em or en dash in any row's title, the error line or what VoiceOver reads");
 }
 
+// ---- when there is a button, which devices are listed (1.8.8.1.1: the glyph alone is headphones too) ----
+static void headphones(void) {
+    check(MSBDAirPodsItemIsHeadphones(1, 0, 1, 2), "item: the headphones glyph alone (state 2, no level: AirPods on 17/18): a button");
+    check(MSBDAirPodsItemIsHeadphones(2, 1, 1, 2) && MSBDAirPodsItemIsHeadphones(2, 1, 0, -1) && MSBDAirPodsItemIsHeadphones(1, 1, 1, 0),
+          "item: the glyph with their level: a button, whatever the data says (only headphones have a level)");
+    check(!MSBDAirPodsItemIsHeadphones(1, 0, 1, 0) && !MSBDAirPodsItemIsHeadphones(1, 0, 1, 1),
+          "item: a Bluetooth indicator that is not headphones' (state 0 or 1, the regions' regulatory indicator): no button");
+    check(MSBDAirPodsItemIsHeadphones(1, 0, 0, -1), "item: the glyph alone where the data cannot be read: taken as the headphones' (a button)");
+    check(!MSBDAirPodsItemIsHeadphones(0, 0, 1, 2) && !MSBDAirPodsItemIsHeadphones(0, 1, 0, -1), "item: none of its views shown: no button");
+    check(MSBDAirPodsListsDevice(1, 1, 1, 0) && MSBDAirPodsListsDevice(1, 1, 0, 0), "list: a connected device with a battery level (1.8.8.1's rule, kept)");
+    check(MSBDAirPodsListsDevice(1, 0, 1, 16) && MSBDAirPodsListsDevice(1, 0, 1, 20), "list: connected headphones by iPadOS's type (16, 20) with no battery level reported");
+    check(!MSBDAirPodsListsDevice(1, 0, 1, 0) && !MSBDAirPodsListsDevice(1, 0, 1, 19) && !MSBDAirPodsListsDevice(1, 0, 0, 16),
+          "list: neither (a keyboard, another type, the type not readable with no level): not listed");
+    check(!MSBDAirPodsListsDevice(0, 1, 1, 16), "list: not connected: never");
+}
+
 int main(void) {
-    spans(); kinds(); matching(); cells(); words(); signatures(); rest();
+    spans(); kinds(); matching(); cells(); words(); signatures(); rest(); headphones();
     printf("test-airpodsmenu (plain C): %d checks, %d fail\n", checks, fails);
     return fails ? 1 : 0;
 }

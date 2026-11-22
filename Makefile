@@ -72,7 +72,9 @@ PAYLOADS = BrightnessKeyTweak DockMagnification DockMagnificationSettings ForceQ
 # The prewarm block's build ID in the part packaged must be the one its sources and this build kind make (common/PrewarmPartID.h): an install
 # leaves dasd running when the ID is the one dasd's block was built with, so a wrong ID would keep an old block there.
 # The window API V1 (statusbar/WindowAPI.h, 1.8.3: KeyPilot's bridge) must stay exported from MacStatusBarCore under its names, in both slices:
-# KeyPilot finds the three functions by name (dlopen RTLD_NOLOAD + dlsym), so a build without them fails here.
+# KeyPilot finds the three functions by name (dlopen RTLD_NOLOAD + dlsym), so a build without them fails here. grep reads nm's whole output
+# (no -q): Theos runs a recipe under set -o pipefail when it shows the commands (messages=yes), and a grep -q that left at the first match made
+# nm's next write die of SIGPIPE, so the check failed at random with the names there (B79). No reader in these pipes may leave early.
 internal-stage::
 	$(ECHO_NOTHING)set -e; T="$(THEOS_STAGING_DIR)"; D="$$T/Library/MobileSubstrate/DynamicLibraries"; P="$$T/usr/lib/MacStatusBarAndDock"; \
 	mkdir -p "$$P"; \
@@ -84,7 +86,7 @@ internal-stage::
 	got=$$(strings -a "$$P/PrewarmBlockTweak.dylib" | sed -n 's/^.*msbd-dasd-part:\([0-9a-f]\{16\}\).*$$/\1/p' | sort -u); \
 	[ -n "$$want" ] && [ "$$got" = "$$want" ] || { echo "the prewarm block's build ID is '$$got', this tree and build kind make '$$want' (common/PrewarmPartID.h)"; exit 1; }; \
 	for s in MSBDKeyPilotLayoutV1 MSBDKeyPilotHomeV1 MSBDKeyPilotHomeEnvironmentV1; do for a in arm64 arm64e; do \
-	  nm -gU -arch $$a "$$P/MacStatusBarCore.dylib" | grep -q " T _$$s$$" || { echo "the window API's $$s is not exported from MacStatusBarCore ($$a): KeyPilot finds it by that name (statusbar/WindowAPI.h)"; exit 1; }; \
+	  nm -gU -arch $$a "$$P/MacStatusBarCore.dylib" | grep " T _$$s$$" > /dev/null || { echo "the window API's $$s is not exported from MacStatusBarCore ($$a): KeyPilot finds it by that name (statusbar/WindowAPI.h)"; exit 1; }; \
 	done; done; \
 	{ echo "commit $$(git rev-parse HEAD 2>/dev/null || echo unknown)"; \
 	  echo "dirty $$(if [ -n "$$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then echo 1; else echo 0; fi)"; \

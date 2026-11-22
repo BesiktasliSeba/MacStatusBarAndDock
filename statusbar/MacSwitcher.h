@@ -1639,6 +1639,7 @@ static NSUInteger gMSWTrackPicGen = 0;   // (which gesture a picture on its way 
 static NSUInteger gMSWLiftPicGen = 0; // (which gesture it belongs to: gMSWTrackPicGen then)
 static BOOL DMMSWGestureAlive(id gesture);   // (the gestures section: still held)
 static __weak id gMSWLiftPicGesture;  // (that gesture: kept while it is still held -- a hold that opens the view may last more than 2.5 s)
+static BOOL gMSWLiftPicMenu = NO;     // (a menu of ours was on the screen as it was asked for: it is in it, StatusBar.x DMMenusOfOursShown; 1.8.8.2 B71 review)
 static int gMSWTrack = 0;             // the tracker (gestures section): 0 idle, 1 armed (a gesture began), 2 the slide follows the fingers, 3 lifted
 static BOOL gMSWTrackCommit = NO;     // (the tracker hands its slide to the switch it starts: DMMSWSwitchRun / DMMSWSMSwitch take that slide)
 static NSInteger gMSWPendingSide = 0; // a side swipe that ended while a switch was still on its way: its desktop comes right after
@@ -3491,6 +3492,10 @@ static void DMMSWOpenNow(NSString *why) {
     if (!w) return;
     // (1.8.8.1: a name or a sticky note being typed ends first, its typing kept: the view's layer is above the typing window, its keyboard would be under it)
     DMDesktopTypingEnd(@"the Mac Switcher opens");
+    // (1.8.8.2 B71: every menu of ours goes as the view opens, as Mission Control closes an open menu on a Mac: a menu, panel or question, and the
+    //  Downloads stack's panel. Before, nothing closed them: opened by keys or the Home button, the view came under the menu, which stayed open after
+    //  it. One that was open is still fading in a picture of the screen taken now: the view keeps none then, as with the strip, below)
+    BOOL menuOut = DMCloseMenusForSwitcher(@"the Mac Switcher");
     // (a strip a swipe brought out goes first: the view shows the desktops' windows, StatusBar.x. No picture of the desktop is kept from a moment the
     //  strip was out, the gesture's start included: it would show the strip and the stage pushed aside for it, review 1.8.4.4 L7. A switch from the
     //  view takes the screen under the view then, as when no picture is kept)
@@ -3504,17 +3509,23 @@ static void DMMSWOpenNow(NSString *why) {
     //  picture -- the screen before the gesture --, and since K-1 that picture exists with one desktop too; 1.4.1 logic test L-4. Debug
     //  /tmp/msw-liftany = before.)
     BOOL byGesture = DMMSWGestureGrace() || DMTestFlag("/tmp/msw-liftany");
-    BOOL lift = !stripOut && byGesture && gMSWLiftPic && gMSWLiftPicId == DMMSWCurId() && (CACurrentMediaTime() - gMSWLiftPicAt < 2.0 || (DMMSWGestureGrace() && gMSWLiftPicGen == gMSWTrackPicGen));
+    BOOL liftable = byGesture && gMSWLiftPic && gMSWLiftPicId == DMMSWCurId() && (CACurrentMediaTime() - gMSWLiftPicAt < 2.0 || (DMMSWGestureGrace() && gMSWLiftPicGen == gMSWTrackPicGen));
+    // (1.8.8.2 B71 review: nor the gesture's start picture when a menu of ours was on the screen at that start: it is in that picture, closed since
+    //  or not. The tick closes it for iPadOS's App Switcher, which comes up during the hold on iPadOS 15, and the stack's own watch the panel. The
+    //  screen now is SpringBoard's return from the hold there (K-1): none then either)
+    BOOL liftMenu = liftable && gMSWLiftPicMenu;
+    BOOL noPicture = stripOut || menuOut || liftMenu;   // (1.8.8.2 B71: as with the strip, none from the moment a menu of ours was open: it fades in that picture)
+    BOOL lift = !noPicture && liftable;
     DMMSWOpenShotDrop();
     gMSWOpenShotId = DMMSWCurId();
     // (opened by the hold: the picture from the gesture's start, taken before SpringBoard moved anything (DMMSWTrackBegin / DMMSWStartPicture) --
     //  the screen now is SpringBoard's own return from the hold still on screen (the Home Screen zoomed, K-1). It belongs to the gesture that opened
     //  the view whatever its age: a hold may last more than 2 s.)
 #if DEBUG
-    if (DMMSWGestureGrace()) DMLog([NSString stringWithFormat:@"[macswitcher] opened by the hold: the desktop's picture %@", lift ? @"from the gesture's start" : (stripOut ? @"none, the strip was out" : @"none from its start: the screen now")]);
+    if (DMMSWGestureGrace()) DMLog([NSString stringWithFormat:@"[macswitcher] opened by the hold: the desktop's picture %@", lift ? @"from the gesture's start" : (stripOut ? @"none, the strip was out" : menuOut ? @"none, a menu of ours was open" : liftMenu ? @"none, a menu of ours was open at its start" : @"none from its start: the screen now")]);
 #endif
     if (lift) gMSWOpenShot = gMSWLiftPic;
-    else if (!stripOut) {
+    else if (!noPicture) {
         NSUInteger gen = gMSWOpenShotGen;
         NSInteger did = DMMSWCurId();
         BOOL asked = DMMSWAsyncScreenOn() && DMMSWIsMain() && DMMSWScreenPictureAsync(gMSWWindow ? @[gMSWWindow] : @[], ^(UIView *pic, double ms) {
@@ -5085,9 +5096,10 @@ static void DMMSWStartPicture(id gesture) {
     NSInteger did = DMMSWCurId();
     CFTimeInterval t = CACurrentMediaTime();
     __weak id g = gesture;
+    BOOL ours = DMMenusOfOursShown();   // (1.8.8.2 B71 review: a menu of ours on the screen now is in the picture asked for now)
     DMMSWScreenPictureAsync(gMSWWindow ? @[gMSWWindow] : @[], ^(UIView *pic, double ms) {
         if (!pic || tgen != gMSWTrackPicGen || DMMSWCurId() != did || gMSWOpen) return;   // (a later gesture's, another desktop now, or the view opened at once)
-        gMSWLiftPic = pic; gMSWLiftPicAt = t; gMSWLiftPicId = did; gMSWLiftPicGen = tgen; gMSWLiftPicGesture = g;
+        gMSWLiftPic = pic; gMSWLiftPicAt = t; gMSWLiftPicId = did; gMSWLiftPicGen = tgen; gMSWLiftPicGesture = g; gMSWLiftPicMenu = ours;
     });
 }
 static void DMMSWTrackBegin(id gesture) {
@@ -5114,10 +5126,11 @@ static void DMMSWTrackBegin(id gesture) {
     gMSWTrackPic = nil;
     NSUInteger tgen = ++gMSWTrackPicGen;
     NSInteger did = DMMSWCurId();
+    BOOL ours = DMMenusOfOursShown();   // (1.8.8.2 B71 review: a menu of ours on the screen now is in the picture asked for now)
     BOOL asked = DMMSWAsyncScreenOn() && DMMSWScreenPictureAsync(gMSWWindow ? @[gMSWWindow] : @[], ^(UIView *pic, double ms) {
         if (!pic || tgen != gMSWTrackPicGen) return;   // (a later gesture's, or none)
         if (gMSWTrack == 1) gMSWTrackPic = pic;
-        if (DMMSWCurId() == did) { gMSWLiftPic = pic; gMSWLiftPicAt = t; gMSWLiftPicId = did; gMSWLiftPicGen = tgen; gMSWLiftPicGesture = gesture; }
+        if (DMMSWCurId() == did) { gMSWLiftPic = pic; gMSWLiftPicAt = t; gMSWLiftPicId = did; gMSWLiftPicGen = tgen; gMSWLiftPicGesture = gesture; gMSWLiftPicMenu = ours; }
         gMSWTrackArmMs = ms;
         DMMSWMark([NSString stringWithFormat:@"the gesture's picture is in (%.1f ms, asked without waiting)", ms]);
     });
@@ -5127,7 +5140,7 @@ static void DMMSWTrackBegin(id gesture) {
         DMMSWSpanEnd(@"the gesture's start picture (the screen now)");
         gMSWTrackArmMs = (CACurrentMediaTime() - t) * 1000.0;
         if (!gMSWTrackPic) return;
-        gMSWLiftPic = gMSWTrackPic; gMSWLiftPicAt = t; gMSWLiftPicId = DMMSWCurId(); gMSWLiftPicGen = tgen; gMSWLiftPicGesture = gesture;
+        gMSWLiftPic = gMSWTrackPic; gMSWLiftPicAt = t; gMSWLiftPicId = DMMSWCurId(); gMSWLiftPicGen = tgen; gMSWLiftPicGesture = gesture; gMSWLiftPicMenu = ours;
     }
     gMSWTrack = 1; gMSWTrackGesture = gesture; gMSWTrackStart = tr; gMSWTrackAt = t;
     gMSWTrackLastX = NAN; DMMSWTrackMoved(tr);

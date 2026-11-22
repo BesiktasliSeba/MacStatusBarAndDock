@@ -59,12 +59,14 @@ static TApp *gFront;
 static SBApplication *DMActiveApp(void) { return gFront; }
 static id DMCall(id obj, NSString *name) { SEL s = NSSelectorFromString(name); return obj && [obj respondsToSelector:s] ? ((id (*)(id, SEL))objc_msgSend)(obj, s) : nil; }
 static NSURL *DMFDContainer(NSString *bundle) { return [bundle isEqualToString:gBundle] ? [NSURL fileURLWithPath:gContainer] : nil; }
+__attribute__((unused)) static UIScreen *DMBarFrontTV(void) { return nil; }   // (1.8.8.2, B69: no other display here -- the asks for the active app only, as before)
 #include "sb-block.inc"
 // The bar's layout of a copy, as -dm_layoutLogoBody runs it for the app's titles: its app in front, not our Finder window, room for the app's name;
 // then its own lines (layout.inc) to the titles it lays out
 static void TLayout(UIView *fgv) {
     TView *fg = (TView *)fgv;
     SBApplication *frontApp = DMActiveApp(); BOOL finderTitles = NO; CGFloat appRight = 40.0;
+    id barTV = nil; (void)barTV;   // (the iPad's copy: 1.8.8.2's layout asks for the apps' own menus per display, B69)
 #include "layout.inc"
     fg.layouts++;
     if (![fg.laid isEqualToArray:amWant]) {

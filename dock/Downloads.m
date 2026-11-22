@@ -1786,6 +1786,23 @@ __attribute__((visibility("default"))) BOOL MSBDDownloadsPanelEscape(void) {
     [p dismissAnimated:YES];
     return YES;
 }
+// A switcher opens: MacStatusBar's Mac Switcher, or iPadOS's App Switcher its tick saw while one of its menus was open (StatusBar.x
+// DMCloseMenusForSwitcher, found with dlsym: nothing calls this without that tweak). The panel closes, an item's menu over it with it, as a Dock
+// stack closes when Mission Control opens on a Mac. Before (1.8.8.2 B71) it stayed open under the Mac Switcher's view and was still there after it:
+// the watch above sees iPadOS's App Switcher only. YES: it was open and goes.
+__attribute__((visibility("default"))) BOOL MSBDDownloadsPanelSwitcherClose(const char *which) {
+    DMDownloadsPanel *p = [DMDownloadsPanel shared];
+    if (![p isOpen]) return NO;
+    DM_FEATURE_MARK("switcher-closes-stack");
+    DMLog([NSString stringWithFormat:@"[downloads] closes: %s came up", which ?: "a switcher"]);
+    [p dismissAnimated:YES];
+    return YES;
+}
+// The panel is on the screen now (StatusBar.x DMMenusOfOursShown, found with dlsym: nothing calls this without that tweak). A picture of the screen
+// taken now has it in it: the Mac Switcher's gesture's start picture is not kept for its view then (1.8.8.2 B71 review). Nothing changes.
+__attribute__((visibility("default"))) BOOL MSBDDownloadsPanelShown(void) {
+    return [[DMDownloadsPanel shared] isOpen];
+}
 BOOL DMDownloadsPanelContainsTouch(UITouch *touch) {
     DMDownloadsPanel *p = [DMDownloadsPanel shared];
     if (![p isOpen] || !touch) return NO;

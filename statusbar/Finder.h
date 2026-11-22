@@ -3030,7 +3030,7 @@ static void DMFinderDrivesCheck(NSString *why);
     CGRect area = CGRectMake(x, tb + hh, b.size.width - x, b.size.height - tb - hh - st);
     BOOL widthChanged = fabs(_list.frame.size.width - area.size.width) > 0.5;
     _list.frame = area;
-    if (widthChanged) [_list reloadData];   // (the columns follow the width: cells laid out for the old one re-made)
+    if (widthChanged) [self dm_reload:_list rows:nil];   // (the columns follow the width: cells laid out for the old one re-made, the selection shown again)
     _grid.frame = CGRectMake(x, tb, b.size.width - x, b.size.height - tb - st);
     _list.hidden = _icons; _grid.hidden = !_icons;
     _status.frame = CGRectMake(x, b.size.height - st, b.size.width - x, st);
@@ -3174,6 +3174,10 @@ static void DMFinderDrivesCheck(NSString *why);
 }
 - (void)close { [self dm_endRename:NO]; DMFinderSizeCancel(self, nil); if (_watch) { dispatch_source_cancel(_watch); _watch = nil; } for (dispatch_source_t m in _watchMore) dispatch_source_cancel(m); _watchMore = nil; [super close]; }
 - (void)setItems:(NSArray *)items error:(NSError *)err {
+    // (the window has its size before a listing is shown in it: a new window's first listing can land before its first layout, when another native
+    //  window is on the screen and -show laid nothing out, and the selection, the scroll to it and a pending rename were made in a list of no size,
+    //  then the first layout's reload took the selection's highlight away: B73, 1.8.8.2)
+    [self layoutIfNeeded];
     _all = DMFinderSorted(items ?: @[], _sort);   // (listed by name; shown in this folder's order, 1.8.4.2 item 4)
     if (!_sizeChecked) _sizeChecked = [NSMutableSet set];
     _sizeListing++;
@@ -3284,8 +3288,8 @@ static void DMFinderDrivesCheck(NSString *why);
     }
     CGFloat h = tv.rowHeight;
     iv.frame = CGRectMake(20, (h - 18) / 2.0, 18, 18);
-    __weak UITableView *wtv = tv;
-    iv.image = DMFinderThumb(it, 18.0, ^{ UITableView *t = wtv; if (t && ip.row < [t numberOfRowsInSection:0]) [t reloadRowsAtIndexPaths:@[ip] withRowAnimation:UITableViewRowAnimationNone]; }) ?: DMFinderIconWithAlias(it, 18.0);
+    __weak UITableView *wtv = tv; __weak DMFinderWindow *ws = self;
+    iv.image = DMFinderThumb(it, 18.0, ^{ UITableView *t = wtv; if (t && ip.row < [t numberOfRowsInSection:0]) [ws dm_reload:t rows:@[ip]]; }) ?: DMFinderIconWithAlias(it, 18.0);
     UILabel *n = [cell.contentView viewWithTag:11], *d = [cell.contentView viewWithTag:12], *z = [cell.contentView viewWithTag:13], *k = [cell.contentView viewWithTag:14];
     DMFinderCols cols = DMFinderColumns(w);
     n.frame = CGRectMake(44, 0, cols.nameW, h);
@@ -3345,8 +3349,8 @@ static void DMFinderDrivesCheck(NSString *why);
         UIView *sel = [UIView new]; sel.backgroundColor = [[UIColor systemBlueColor] colorWithAlphaComponent:0.25]; sel.layer.cornerRadius = 8.0; cell.selectedBackgroundView = sel;
     }
     DMFinderItem *it = _items[ip.item];
-    __weak UICollectionView *wcv = cv;
-    iv.image = DMFinderThumb(it, 56.0, ^{ if (ip.item < [wcv numberOfItemsInSection:0]) [wcv reloadItemsAtIndexPaths:@[ip]]; }) ?: DMFinderIconWithAlias(it, 56.0); l.text = it.display;
+    __weak UICollectionView *wcv = cv; __weak DMFinderWindow *ws = self;
+    iv.image = DMFinderThumb(it, 56.0, ^{ UICollectionView *c = wcv; if (c && ip.item < [c numberOfItemsInSection:0]) [ws dm_reload:c rows:@[ip]]; }) ?: DMFinderIconWithAlias(it, 56.0); l.text = it.display;
     l.textColor = it.locked ? [UIColor secondaryLabelColor] : [UIColor labelColor];
     [self dm_axItemCell:cell item:it];
     return cell;
@@ -3378,15 +3382,34 @@ static void DMFinderDrivesCheck(NSString *why);
 }
 - (BOOL)dm_isSelected:(DMFinderItem *)it { return it && [_sel containsObject:it.path]; }
 - (void)dm_showSelection {
-    for (NSInteger i = 0; i < (NSInteger)_items.count; i++) {
-        BOOL on = [_sel containsObject:_items[i].path];
-        NSIndexPath *r = [NSIndexPath indexPathForRow:i inSection:0], *c = [NSIndexPath indexPathForItem:i inSection:0];
-        if (i < [_list numberOfRowsInSection:0]) { if (on) [_list selectRowAtIndexPath:r animated:NO scrollPosition:UITableViewScrollPositionNone]; else [_list deselectRowAtIndexPath:r animated:NO]; }
-        if (i < [_grid numberOfItemsInSection:0]) { if (on) [_grid selectItemAtIndexPath:c animated:NO scrollPosition:UICollectionViewScrollPositionNone]; else [_grid deselectItemAtIndexPath:c animated:NO]; }
-    }
+    for (NSInteger i = 0; i < (NSInteger)_items.count; i++) { [self dm_showSelectionAt:i in:_list]; [self dm_showSelectionAt:i in:_grid]; }
     NSUInteger n = [self dm_selectedItems].count;
     _status.text = n > 1 ? [NSString stringWithFormat:@"%lu of %lu selected", (unsigned long)n, (unsigned long)_items.count] : _statusBase;
     if (n == 1) [[self dm_quickLookWindow] dm_follow:[self dm_selectedItem].path];   // (Quick Look open: it shows the item now selected, 1.8.4.2 item 3)
+}
+// What the list and the icons show as selected is UIKit's own selection, a copy of _sel, and UIKit drops it for every row it reloads (reloadData, a
+// row's or an icon's reload). So each reload of them outside -reload goes through here: the whole view (rows nil) or those rows, then _sel shown
+// again in what was reloaded. Before, a resize of the list and a thumbnail coming in left a selected item without its highlight, still selected
+// for the keys and the menus (B73, 1.8.8.2).
+- (void)dm_reload:(UIScrollView *)v rows:(NSArray<NSIndexPath *> *)rows {
+    if (v == _list) { if (rows) [_list reloadRowsAtIndexPaths:rows withRowAnimation:UITableViewRowAnimationNone]; else [_list reloadData]; }
+    else if (v == _grid) { if (rows) [_grid reloadItemsAtIndexPaths:rows]; else [_grid reloadData]; }
+    else return;
+    if (!_sel.count) return;   // (nothing selected: what was reloaded shows nothing selected, as it should)
+    if (rows) { for (NSIndexPath *ip in rows) [self dm_showSelectionAt:ip.item in:v]; return; }
+    for (NSInteger i = 0; i < (NSInteger)_items.count; i++) if ([_sel containsObject:_items[i].path]) [self dm_showSelectionAt:i in:v];   // (all of it reloaded: only the selected rows to show)
+}
+// Row i of the list, or icon i of the icons, shown selected or not as _sel says.
+- (void)dm_showSelectionAt:(NSInteger)i in:(UIScrollView *)v {
+    if (i < 0 || i >= (NSInteger)_items.count) return;
+    BOOL on = [_sel containsObject:_items[i].path];
+    if (v == _list && i < [_list numberOfRowsInSection:0]) {
+        NSIndexPath *r = [NSIndexPath indexPathForRow:i inSection:0];
+        if (on) [_list selectRowAtIndexPath:r animated:NO scrollPosition:UITableViewScrollPositionNone]; else [_list deselectRowAtIndexPath:r animated:NO];
+    } else if (v == _grid && i < [_grid numberOfItemsInSection:0]) {
+        NSIndexPath *c = [NSIndexPath indexPathForItem:i inSection:0];
+        if (on) [_grid selectItemAtIndexPath:c animated:NO scrollPosition:UICollectionViewScrollPositionNone]; else [_grid deselectItemAtIndexPath:c animated:NO];
+    }
 }
 // ---- Quick Look moving with the selection (1.8.4.2 item 3) ------------------------------------------------------------------------------------
 // As Space-preview on a Mac: this window's Quick Look window shows the selected item, whatever moved the selection -- an arrow in Quick Look

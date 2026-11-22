@@ -65,6 +65,14 @@ target pointerRegion piece the pointer with another display|the pointer's place 
 # StatusBar.x DMAppSizeOf answers no app (MSBDCrashSkipped, read once) and DMAppSizesLoad reads and forgets nothing: every window opens as in
 # 1.8.7 (Window Size), nothing else goes off, and Turn Back On brings it back
 target appWindowSizes piece App Window Sizes|App Window Sizes
+# each display's own menu bar (1.8.8.2, B69: StatusBar.x DMBarFront..., common/BarFront.h -- the front, the menus and the lights of every copy of the bar
+# by its own display) has no Settings row: a piece. Off, every copy takes 1.8.8's one answer for all displays (DMBarFrontSkipped, read once), nothing
+# else goes off, and Turn Back On brings it back
+target barPerDisplay piece the menu bar with another display|each display's own menu bar
+# the edit menu's keyboard room in a turned SpringBoard (1.8.8.2, statusbar/EditMenuRoom.h: UIKit's own formula with the keyboard taken into the
+# menu's container) has no Settings row: a piece. Off, it is not hooked at the next start and SpringBoard's edit menus are placed by UIKit's own
+# answer, as in 1.8.8.1; nothing else goes off, and Turn Back On brings it back
+target editMenuRoom piece the edit menu's place|the edit menu's place above the keyboard in landscape
 target batteryPercentInside pref com.besiktasliseba.macstatusbar batteryPercentInside 0 0 Battery Percentage in Icon|the number inside the battery icon
 target desktopIcons pref com.besiktasliseba.macstatusbar desktopIcons 0 1 Show Desktop Icons|the desktop
 # Sticky Notes on the desktop (1.8.8.1, statusbar/DesktopNotes.h): their own switch, so a crash in note code turns off the notes, never the desktop
@@ -248,6 +256,16 @@ sym MacStatusBarCore ^_*DMMoreSpace[A-Z] displayScale
 file MacStatusBarCore ^(MoreSpace|DisplayScale)\.h$ displayScale
 file MacStatusBarCore ^(DisplayPrefs|DisplayIdentity|DisplayRows|DisplayRowStore|DisplaySettings)\.h$ displaySettings
 file MacStatusBarCore ^PointerRegion\.h$ pointerRegion
+# (1.8.8.2, B69: each display's own menu bar -- its functions by name, their blocks too, and common/BarFront.h's rule where it is not inlined; not
+#  DMBarFrontBundle, the bar's reveal's, which stays with the status bar)
+sym MacStatusBarCore ^_*(DMBarFront(On|Today|TV|SwitcherOn|StageHas|OfTitle|sSig|Forget|Skipped|Activate|WhenActive|WhenActiveStep|KeysTo|Ready|LightTap|Minimize)|MSBDBarFrontWay|MSBDBarLightsFor)(_block_invoke(_[0-9]+)?(\.[0-9]+)?)?$ barPerDisplay
+# the edit menu's keyboard room (1.8.8.2, statusbar/EditMenuRoom.h and its rule common/EditMenuRoom.h): its two pass-throughs of UIKit's
+# insets method (DMEditMenuInsets16 and 18, UIKit's method first, then the decision) are on every SpringBoard edit menu's layout once in, so they are
+# transparent: a crash in UIKit's method under them is decided by the frame below them (another tweak's hook of it: that tweak's, not counted; our
+# code: that code's; nothing but Apple code: the part, as for every pass-through hook), never pinned on the piece by them; the decision and the
+# start-up check (and the rule's functions if a build keeps them out of line) are the piece's
+sym MacStatusBarCore ^_*DMEditMenuInsets(16|18)$ transparent
+file MacStatusBarCore ^EditMenuRoom\.h$ editMenuRoom
 # App Window Sizes' own code: the table and its lookup, the read with the preferences, the forget on change (A / Z / M's places, the saved window
 # state's lastFrames, Stage Manager's places before full screen and the tile one left for it, DMSMAppSizeForgetPlace, and the file's preZoom), the
 # crash piece's read, the debug triggers -- by name, their blocks too. The opening frame every window open runs (DMOpeningWindowFrameFor,
@@ -292,6 +310,12 @@ sym MacStatusBarCore ^_*DMTextViewEditKey$ transparent
 # StatusBar.x's window walk "a text input has the typing" (1.8.8.1, out of line: the desktop's keys, a note's tick and the debug key loggers ask
 # it) is passed over too: under no rule it fell to the image's target, Use Stock Status Bar, for code that was the desktop's before
 sym MacStatusBarCore ^_*DMSBTextInputTypingBut$ transparent
+# the desktop's typing ends at a layout transition (1.8.8.2, B74, Desktop.h): the pass-through of -[SBLayoutStateTransitionCoordinator
+# beginTransitionForWorkspaceTransaction:], DMDesktopTypingPass, is on every layout transition's stack once a note or a name has been typed in, so
+# it is transparent (a crash under it is SpringBoard's or another tweak's: Zetsu hooks the same method); the decision it asks while the desktop
+# types, DMDesktopTypingAtTransition, is the desktop's, as the other DMDesktopTyping helpers, by the desktop's rule below (after the painter's,
+# which must stay right before it)
+sym MacStatusBarCore ^_*DMDesktopTypingPass$ transparent
 # the macOS folder (MacFolder.h, 1.8.7.4 round 2: its painter DMDesktopDrawFolder, kept out of line, and its fill, moved out of Desktop.h) is the
 # picture of the desktop's folders and of Finder's: a crash in it is its caller's -- the desktop's (Desktop Icons) or Finder's (Finder) --, so
 # transparent, before the desktop's own rule takes it by its name

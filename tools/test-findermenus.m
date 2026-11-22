@@ -141,6 +141,7 @@ static id DMProxyForBundle(NSString *b) { return nil; }
 static id DMCall(id o, NSString *n) { return nil; }
 static void DMOpenApp(NSString *b) {}
 static void DMOpenStatusBarSettings(uint32_t t) {}
+static UIScreen *DMExternalScreenOf(UIView *v) { return nil; }   // (1.8.8.2, B69: Finder's rows and titles on the iPad's bar only -- these are the iPad's)
 
 #include "fm-real.inc"
 

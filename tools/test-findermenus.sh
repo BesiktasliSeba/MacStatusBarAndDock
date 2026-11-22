@@ -36,7 +36,7 @@ run() {   # $1 StatusBar.x, $2 Finder.h, $3 DriveEject.h, $4 NativeWindow.h, $5 
     fn "$F" "${F_NEW_FN[0]}"; line "$F" "$F_NEW_ONE"; fn "$F" "${F_NEW_FN[1]}"   # (the fix's helpers: not in the code before it)
     line "$D" "$D_ONE"; fn "$D" "$D_FN"
     for h in "${X_FN[@]}"; do fn "$X" "$h"; done
-    printf 'static BOOL KFinderTitles(CGFloat appRight) {\n%s\n    return finderTitles;\n}\n' "$(line "$X" "$X_TITLES")"
+    printf 'static BOOL KFinderTitles(CGFloat appRight) {\n    UIScreen *barTV = nil; (void)barTV;   // (the iPad bar copy: 1.8.8.2 lays the Finder titles out there only, B69)\n%s\n    return finderTitles;\n}\n' "$(line "$X" "$X_TITLES")"
   } > "$d/fm-real.inc"
   clang -target "$(uname -m)-apple-ios14.0-macabi" -isysroot "$SDK" -iframework "$FW" -F "$FW" -L"$SDK/System/iOSSupport/usr/lib" \
         -fobjc-arc -Wall -Wno-unused-function -Werror=implicit-function-declaration -I"$d" \
@@ -59,8 +59,8 @@ if [ -z "$FM_SB_X$FM_FINDER_H$FM_DRIVE_H$FM_NATIVE_H" ]; then
     if [ $n -gt 0 ] && [ $n -lt 99 ]; then echo "PASS  caught: $1 ($n check(s) fail)"; else echo "FAIL  not caught: $1"; rc=1; fi
   }
   k=0
-  mtf "the bar's File and View for any native window again" sbx 's/BOOL finderTitles = DMFinderNamedInBar\(\) && appRight > 0;/BOOL finderTitles = DMNativeActiveApp() != nil && appRight > 0;/'
-  mtf "Go's Finder rows for any native window again" sbx 's/if \(DMFinderNamedInBar\(\)\) \{   \/\/ \(Finder.s own rows/if (DMNativeActiveApp()) {   \/\/ (Finder own rows/'
+  mtf "the bar's File and View for any native window again" sbx 's/BOOL finderTitles = (!barTV && )?DMFinderNamedInBar\(\) && appRight > 0;/BOOL finderTitles = DMNativeActiveApp() != nil && appRight > 0;/'
+  mtf "Go's Finder rows for any native window again" sbx 's/if \(DMFinderNamedInBar\(\)( && !DMExternalScreenOf\(btn\))?\) \{   \/\/ \(Finder.s own rows/if (DMNativeActiveApp()) {   \/\/ (Finder own rows/'
   mtf "the File menu's window: the front Finder window, hidden or not" sbx 's/DMFinderWindow \*f = DMFinderMenuWindow\(\); BOOL sel/DMFinderWindow *f = DMFinderFront(); BOOL sel/'
   mtf "Go's window: the front Finder window, hidden or not" sbx 's/^        DMFinderWindow \*f = DMFinderMenuWindow\(\);$/        DMFinderWindow *f = DMFinderFront();/'
   mtf "a row looks its window up when it fires" sbx 's/^        DMFinderWindow \*w = wf;$/        DMFinderWindow *w = DMFinderFront();/'

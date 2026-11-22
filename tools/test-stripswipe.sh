@@ -37,7 +37,8 @@ check "  ... a touch with no window or in Stage Manager's own window leaves it" 
 # (review 1.8.4.4 L7) The Mac Switcher puts the strip away before its pictures, and keeps none from a moment the strip was out.
 check "the Mac Switcher: the strip goes before the desktop's picture, and no picture is kept from a moment it was out" \
   "grep -B 10 'BOOL byGesture = DMMSWGestureGrace()' ../statusbar/MacSwitcher.h | grep -qF 'BOOL stripOut = DMSMStripPresentationEnd(@\"the Mac Switcher opens\");' \
-   && grep -qF 'BOOL lift = !stripOut && byGesture && gMSWLiftPic' ../statusbar/MacSwitcher.h && grep -qF 'else if (!stripOut) {' ../statusbar/MacSwitcher.h \
+   && grep -qF 'BOOL noPicture = stripOut || menuOut || liftMenu;' ../statusbar/MacSwitcher.h && grep -qF 'BOOL liftable = byGesture && gMSWLiftPic' ../statusbar/MacSwitcher.h \
+   && grep -qF 'BOOL lift = !noPicture && liftable;' ../statusbar/MacSwitcher.h && grep -qF 'else if (!noPicture) {' ../statusbar/MacSwitcher.h \
    && [ \$(grep -c 'DMSMStripPresentationEnd(' ../statusbar/MacSwitcher.h) = 1 ]"
 # (review 1.8.4.4 M1) No strip a swipe brings out where nothing of ours can put it away (17, 18; 16 as it ran), and an action SpringBoard lays out
 # waits while Stage Manager still presents the strip, a quarter second at a time, and is left after a second: never under it.
