@@ -89,26 +89,26 @@ ck "Window > Show Recent Windows with Aerial, Zetsu and MilkyWay4 (the engines' 
    "fn $S 'static void DMOpenWindowMenu(UIButton *btn) {' > \"$W/menu\"; awk '/if \\(DMActiveEngine\\(\\) != DMEngineNone\\) \\{   \\/\\/ \"Open Apps as Windows\"/,/\\} else if \\(DMSMEngine\\(\\)\\) \\{/' \"$W/menu\" \
     | grep -qF 'if (DMRStripMenuOffered()) [items addObject:[[DMRow alloc] initWithTitle:@\"Show Recent Windows\" enabled:YES handler:DMCloseThen(^{ DMRStripMenuReveal(); })]];' \
     && grep -qF 'static BOOL DMRStripMenuOffered(void) { return DMRStripOn() && gRStripMayRevealNow && gRStripItems.count > 0; }' $H"
-ck "the switch: recentStrip, on unless switched off, a boolean only, read with the preferences" \
+ck "the switch: recentStrip, off unless switched on (1.8.8.2.1), a boolean only, read with the preferences" \
    "grep -qF 'CFPropertyListRef rs = CFPreferencesCopyValue(CFSTR(\"recentStrip\"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);' $S \
-    && grep -qF 'BOOL recentStrip = !(rs && CFGetTypeID(rs) == CFBooleanGetTypeID() && !CFBooleanGetValue(rs));' $S && grep -qF 'gRStripPref = recentStrip;' $S \
-    && grep -qF 'static BOOL gRStripPref = YES; ' $H"
-ck "  ... one default in all four places, on: SpringBoard before and after reading the preferences, the Settings row and the crash guard's target" \
+    && grep -qF 'BOOL recentStrip = (rs && CFGetTypeID(rs) == CFBooleanGetTypeID() && CFBooleanGetValue(rs));' $S && grep -qF 'gRStripPref = recentStrip;' $S \
+    && grep -qF 'static BOOL gRStripPref = NO; ' $H"
+ck "  ... one default in all four places, off (1.8.8.2.1): SpringBoard before and after reading the preferences, the Settings row and the crash guard's target" \
    "python3 -I -c 'import re,sys,plistlib
 h=open(\"$H\").read(); s=open(\"$S\").read(); c=open(\"$C\").read()
 it=plistlib.load(open(\"$PL\",\"rb\"))[\"items\"]; row=[x for x in it if x.get(\"key\")==\"recentStrip\"]
 a=re.findall(r\"^static BOOL gRStripPref = (YES|NO);\", h, re.M)
 b=re.findall(r\"BOOL recentStrip = (.*);\", s)
 t=re.findall(r\"^target recentStrip pref com.besiktasliseba.macstatusbar recentStrip 0 ([01]) \", c, re.M)
-ok = a==[\"YES\"] and len(b)==1 and b[0].startswith(\"!(\") and \"!CFBooleanGetValue(rs)\" in b[0] and len(row)==1 and row[0][\"default\"] is True and t==[\"1\"]
+ok = a==[\"NO\"] and len(b)==1 and b[0].startswith(\"(rs\") and \"!CFBooleanGetValue\" not in b[0] and len(row)==1 and row[0][\"default\"] is False and t==[\"0\"]
 sys.exit(0 if ok else 1)'"
 ck "the include: after the window cards (their calm check, the Mac Switcher's pictures)" \
    "grep -A1 -F '#include \"WindowCards.h\"' $S | grep -qF '#include \"RecentStrip.h\"' && grep -qF '#include \"../common/RecentStripRule.h\"' $H"
-ck "Settings: Recent Windows Strip right after Recent Apps with Left-Edge Swipe in the Mac Switcher's group, on by default, its sentence in the footer and the page's words" \
+ck "Settings: Recent Windows Strip right after Recent Apps with Left-Edge Swipe in the Mac Switcher's group, off by default (1.8.8.2.1), its sentence in the footer and the page's words" \
    "plutil -convert json -o - $PL | python3 -I -c 'import json,sys; it=json.load(sys.stdin)[\"items\"]; ids=[x.get(\"id\") for x in it]; i=ids.index(\"RECENT_STRIP\"); s=it[i]
 g=[x for x in it[:i] if x.get(\"cell\")==\"PSGroupCell\"][-1]
 f=g[\"footerText\"]
-ok = ids[i-1]==\"STRIP_SWIPE\" and s[\"key\"]==\"recentStrip\" and s[\"default\"] is True and s[\"cell\"]==\"PSSwitchCell\" and s[\"label\"]==\"Recent Windows Strip\" and g.get(\"id\")==\"MSW_GROUP\"
+ok = ids[i-1]==\"STRIP_SWIPE\" and s[\"key\"]==\"recentStrip\" and s[\"default\"] is False and s[\"cell\"]==\"PSSwitchCell\" and s[\"label\"]==\"Recent Windows Strip\" and g.get(\"id\")==\"MSW_GROUP\"
 p=[x for x in f.split(\"\\n\\n\") if x.startswith(\"Recent Windows Strip:\")]
 w=open(\"$P\").read()
 ok = ok and len(p)==1 and (\"@\\\"recentStrip\\\": @\\\"\" + p[0] + \"\\\",\") in w and all(c not in f for c in \"\\u2014\\u2013\")
@@ -122,7 +122,7 @@ ck "  ... shown only with a working Aerial, Zetsu or MilkyWay4 on the rules' iPa
     && grep -qF 'if (sm || !MSBDRecentStripOS([NSProcessInfo processInfo].operatingSystemVersion.majorVersion)) {' $P \
     && grep -qF 'for (PSSpecifier *sp in _specifiers) if (![sp.identifier isEqualToString:kMSBDRecentStripRowID]) [kept addObject:sp];' $P"
 ck "the crash guard: its own switch, the whole strip and its rules (a crash there turns the strip off, nothing else)" \
-   "grep -qxF 'target recentStrip pref com.besiktasliseba.macstatusbar recentStrip 0 1 Recent Windows Strip|the recent windows strip' $C \
+   "grep -qxF 'target recentStrip pref com.besiktasliseba.macstatusbar recentStrip 0 0 Recent Windows Strip|the recent windows strip' $C \
     && grep -qxF 'file MacStatusBarCore ^RecentStrip(Rule)?\\.h\$ recentStrip' $C \\
     && grep -qxF 'sym MacStatusBarCore ([-+]\\[DMRStrip(Card|Target)\\s|^_*DMRStrip[A-Z]|^_*MSBDR(Strip|ecentStrip|MaxX|MaxY)) recentStrip' $C"
 ck "  ... no section of the strip's files names a section rule (they would take its functions first)" \

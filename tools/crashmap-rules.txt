@@ -83,7 +83,7 @@ target runningIndicator pref com.besiktasliseba.dockrunningindicator enabled 0 1
 target macSwitcher pref com.besiktasliseba.macstatusbar macSwitcher 0 0 Mac Switcher|the Mac Switcher
 target mswSwipeUpQuit pref com.besiktasliseba.macstatusbar mswSwipeUpQuit 0 1 Swipe Up to Quit|the Mac Switcher's swipe up to quit
 # the recent windows strip (1.8.8.2 F29, statusbar/RecentStrip.h and its rules common/RecentStripRule.h): its own switch, on unless switched off
-target recentStrip pref com.besiktasliseba.macstatusbar recentStrip 0 1 Recent Windows Strip|the recent windows strip
+target recentStrip pref com.besiktasliseba.macstatusbar recentStrip 0 0 Recent Windows Strip|the recent windows strip
 target spotlightFiles pref com.besiktasliseba.macstatusbar spotlightFiles 0 0 Desktop and Downloads|Spotlight's Desktop and Downloads
 target spotlightTweakSettings pref com.besiktasliseba.macstatusbar spotlightTweakSettings 0 0 Tweak Settings|Spotlight's tweak settings
 target spotlightActions pref com.besiktasliseba.macstatusbar spotlightActions 0 0 Actions|our actions in Spotlight

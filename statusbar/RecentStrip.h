@@ -3,7 +3,7 @@
 // or click on one brings it forward and the one that was in front takes its slot; the strip steps aside when a window covers it and comes back with
 // the pointer at the edge. Aerial, Zetsu and MilkyWay4 (their windows are our engine code's stages, DMAerialStages, one per app), on iPadOS 15
 // (common/RecentStripRule.h MSBDRecentStripOS: the pictures without SpringBoard waiting are read there only). Settings > Windows & Multitasking >
-// Recent Windows Strip (recentStrip, on unless switched off). The rules are common/RecentStripRule.h (Mac test tools/test-recentstrip.sh).
+// Recent Windows Strip (recentStrip, off unless switched on since 1.8.8.2.1). The rules are common/RecentStripRule.h (Mac test tools/test-recentstrip.sh).
 //  - No timer and no poll of its own: DMRStripTick rides the 0.2 s window watcher (DMSyncWindowsForLibraryBody). The pointer comes from one hover
 //    recognizer on SpringBoard's system gestures window of the iPad (PointerRegion.h's DMPtrHoverRecognizer: it only watches), there only while the
 //    strip has stepped aside with a trackpad or mouse attached.
@@ -14,7 +14,7 @@
 //  - A crash in this file or its rules turns the switch off (tools/crashmap-rules.txt, recentStrip).
 #include "../common/RecentStripRule.h"
 
-static BOOL gRStripPref = YES;   // Settings > Windows & Multitasking > Recent Windows Strip (recentStrip): on unless switched off (DMLoadPrefs)
+static BOOL gRStripPref = NO;   // Settings > Windows & Multitasking > Recent Windows Strip (recentStrip): off unless switched on (DMLoadPrefs; 1.8.8.2.1)
 static BOOL gDMPointerAttached;  // (a trackpad or mouse attached: StatusBar.x, DMPointerDeviceCheck)
 @class DMRStripCard;
 static UIWindow *gRStripWindow;                                  // our window, made the first time the strip shows; hidden while it is

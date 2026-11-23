@@ -23929,10 +23929,10 @@ static void DMLoadPrefs(void) {
         }
         gKeepCoveredInFront = keepCovered;
     }
-    {   // Recent Windows Strip (Aerial, Zetsu and MilkyWay4, 1.8.8.2 F29): on unless switched off, a boolean only (RecentStrip.h; it runs where
+    {   // Recent Windows Strip (Aerial, Zetsu and MilkyWay4, 1.8.8.2 F29): off unless switched on (1.8.8.2.1), a boolean only (RecentStrip.h; it runs where
         // common/RecentStripRule.h MSBDRecentStripOS says, the row's own rule)
         CFPropertyListRef rs = CFPreferencesCopyValue(CFSTR("recentStrip"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-        BOOL recentStrip = !(rs && CFGetTypeID(rs) == CFBooleanGetTypeID() && !CFBooleanGetValue(rs));
+        BOOL recentStrip = (rs && CFGetTypeID(rs) == CFBooleanGetTypeID() && CFBooleanGetValue(rs));
         if (rs) CFRelease(rs);
         if (recentStrip != gRStripPref) DMLog([NSString stringWithFormat:@"[recentstrip] Recent Windows Strip %@", recentStrip ? @"on" : @"off"]);
         gRStripPref = recentStrip;

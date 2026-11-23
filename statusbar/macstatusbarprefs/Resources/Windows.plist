@@ -301,7 +301,7 @@ Recent Windows Strip: your recent windows wait at the side of the desktop as sma
 			<key>cell</key>
 			<string>PSSwitchCell</string>
 			<key>default</key>
-			<true/>
+			<false/>
 			<key>defaults</key>
 			<string>com.besiktasliseba.macstatusbar</string>
 			<key>id</key>

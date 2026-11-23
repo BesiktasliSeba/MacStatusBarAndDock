@@ -2,6 +2,11 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.8.2.1
+
+### Changes
+- The Recent Windows Strip is now off by default, so your desktop stays as you know it. To use it on iPadOS 15 with Aerial, Zetsu or MilkyWay4, turn it on in Settings > Windows & Multitasking > Recent Windows Strip.
+
 ## 1.8.8.2
 
 ### New
