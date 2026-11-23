@@ -45,6 +45,7 @@ static const void *kAirPodsButtonKey = &kAirPodsButtonKey;   // (1.8.8.1: the Ai
 static char gAMButtonKeys[7];
 #define DM_AM_BUTTONS (const void *)&gAMButtonKeys[0], (const void *)&gAMButtonKeys[1], (const void *)&gAMButtonKeys[2], (const void *)&gAMButtonKeys[3], (const void *)&gAMButtonKeys[4], (const void *)&gAMButtonKeys[5], (const void *)&gAMButtonKeys[6]
 static id DMLAPillAt(UIView *fg, CGPoint p) { return nil; }   // (no Live Activity pill of ours here)
+static BOOL DMStripInRoom(UIView *fg, CGPoint p) { return NO; }   // (1.8.8.2: no scrolling titles' strip here, statusbar/MenuStrip.h)
 #include "one-call.inc"
 #include "one-battclass.inc"
 #include "one-over.inc"

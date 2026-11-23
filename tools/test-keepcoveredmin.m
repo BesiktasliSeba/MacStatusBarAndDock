@@ -37,6 +37,15 @@ typedef enum { DMEngineNone = 0, DMEngineMilkyWay, DMEngineAerial, DMEngineZetsu
 static DMEngine gKEngine; static BOOL gKSM;
 static DMEngine DMActiveEngine(void) { return gKEngine; }
 static BOOL DMSMEngine(void) { return gKSM; }
+// (1.8.8.2: iPadOS's own Stage Manager with no engine -- Enable Windowing off: the stage the iPad shows, its windows by app and its newest one)
+static BOOL gSMCheckOK = NO, gKStageManagerOn = NO;
+static NSDictionary *gKShownStage; static NSString *gKNewestKey;
+static BOOL DMSMStageManagerOnNow(void) { return gKStageManagerOn; }
+static id DMSMShownMainStage(void) { return gKShownStage; }
+static NSString *DMSMNewestKeyIn(id stage) { return stage ? gKNewestKey : nil; }
+static NSDictionary *DMSMStageItemsMap(id stage) { return stage; }
+static NSString *DMSMItemBundle(id item) { return item; }
+static NSString *DMSMKeyBundle(NSString *key) { NSRange r = [key rangeOfString:@"|"]; return r.location == NSNotFound ? key : [key substringToIndex:r.location]; }
 static BOOL gKeepCoveredInFront = NO, gMSWOpen = NO;
 static UIView *gKLayer;
 static const void *kKBundleKey = &kKBundleKey, *kKMinKey = &kKMinKey;
@@ -112,6 +121,7 @@ static void Fresh(DMEngine e, BOOL keepCovered) {
     gKApps = [NSMutableDictionary dictionary];
     gKEngine = e; gKSM = NO; gKSMFront = nil; gKeepCoveredInFront = keepCovered; gMSWOpen = NO;
     gKLevel = 1000; gKFrontApp = nil; gFullScreenActivatedBundle = nil; gPendingFrontBundle = nil;
+    gSMCheckOK = gKStageManagerOn = NO; gKShownStage = nil; gKNewestKey = nil;
     gDMKeptUnder = nil; [gDMKeptAbove removeAllObjects]; gDMKeepLastTop = nil; gDMKeepCoveredBusy = NO;
     gKLayer = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 1180, 820)];
 }
@@ -209,6 +219,20 @@ int main(void) {
         DMMinimizeActiveApp();
         Check(@"Stage Manager (unchanged): Minimize minimizes the front window, that very one",
               [gKSMActions isEqualToArray:@[@"removeFromSet com.apple.mobilenotes|scene-2"]] && gKMinimized.count == 0, Names(gKSMActions));
+        // (8) Enable Windowing off, iPadOS's own Stage Manager (iPadOS 18.5): Settings on top of Clock in one stage; SpringBoard's front app is
+        //     the stage's first app (Clock): the menu bar names the window in front, Settings
+        Fresh(DMEngineNone, NO);
+        gSMCheckOK = gKStageManagerOn = YES; gKFrontApp = DMAppForBundle(@"com.apple.mobiletimer");
+        gKShownStage = @{@"com.apple.mobiletimer": @1, @"com.apple.Preferences": @2}; gKNewestKey = @"com.apple.Preferences|sceneID:com.apple.Preferences-default";
+        Check(@"windowing off: windowing off, iPadOS's Stage Manager: Settings on top of Clock in one stage: the menu bar names Settings", [Named() isEqualToString:@"com.apple.Preferences"], Named());
+        gKShownStage = @{@"com.apple.Preferences": @2}; gKNewestKey = @"com.apple.Preferences|sceneID:com.apple.Preferences-default";
+        Check(@"windowing off: ... SpringBoard's front app not in the stage the iPad shows (the TV's app): that app, as before", [Named() isEqualToString:@"com.apple.mobiletimer"], Named());
+        gKShownStage = @{@"com.apple.mobiletimer": @1, @"com.apple.Preferences": @2}; gKStageManagerOn = NO;
+        Check(@"windowing off: ... Stage Manager off: SpringBoard's front app, as before", [Named() isEqualToString:@"com.apple.mobiletimer"], Named());
+        gKStageManagerOn = YES; gSMCheckOK = NO;
+        Check(@"windowing off: ... the Stage Manager reader's check not passed: SpringBoard's front app, as before", [Named() isEqualToString:@"com.apple.mobiletimer"], Named());
+        gSMCheckOK = YES; gKShownStage = nil;
+        Check(@"windowing off: ... no stage shown (the Home Screen, the App Switcher): SpringBoard's front app, as before", [Named() isEqualToString:@"com.apple.mobiletimer"], Named());
     }
     printf("%s: %d check(s) failed\n", gFails ? "FAIL" : "PASS", gFails);
     return gFails;

@@ -18,6 +18,9 @@
 #include "../common/DeviceGate.h"
 #include "../common/PrewarmQuitSet.h"   // (only its path in C: the prewarm block's quit set, below)
 #include "../common/BundledPath.h"      // (MSBDBundledProcess / MSBDAppExtension: which processes get the app-side parts, Mac-tested)
+#include "../common/MacPointerStatus.h"   // (1.8.8.2, GitHub #17: in pointeruid, the word that MacPointer is not loaded there, and why)
+#include <os/log.h>
+#include <unistd.h>
 #if MSBD_PERFPROBE
 #include <unistd.h>
 #endif
@@ -130,6 +133,18 @@ static unsigned MSBDRecoveryKind(unsigned kind, int recoveryApp, int (*askLibrar
     return askLibrary && askLibrary() ? kPopupGuard : 0;
 }
 
+#if !MSBD_LINE_DOCK
+// pointeruid (1.8.8.2, GitHub #17): when the Mac pointer's part is not loaded there, Settings > Pointer and Report a Problem say why: held back by
+// the version gate or the crash guard (rows only), or its file did not open. MacPointer says its own word once it loads (common/MacPointerStatus.h);
+// nothing at all from this process means our loader is not in it. The token is kept: the word lives as long as this pointeruid.
+static void MSBDPointerProcessWord(unsigned verdict) {
+    static int token = 0;
+    if (!token && notify_register_check(MSBD_MP_STATUS, &token) != NOTIFY_STATUS_OK) { token = 0; return; }
+    notify_set_state(token, MSBDMPPack((uint32_t)getpid(), verdict, 0, 0, 0));
+    notify_post(MSBD_MP_STATUS);
+}
+#endif
+
 __attribute__((constructor)) static void MSBDLoad(void) {
 #if DEBUG
     uint64_t t0 = mach_absolute_time();
@@ -180,13 +195,24 @@ __attribute__((constructor)) static void MSBDLoad(void) {
         strlcat(lib, kPayloads[i].name, sizeof(lib));
         strlcat(lib, ".dylib", sizeof(lib));
         if (dlopen(lib, RTLD_NOW)) { loaded++; if (strcmp(kPayloads[i].name, "MacStatusBarCore") == 0) coreLoaded = 1; }
-#if DEBUG
-        else if (access("/tmp/msbd-loader-debug", F_OK) == 0) {
-            FILE *f = fopen("/tmp/msbd-loader.log", "a");
-            if (f) { fprintf(f, "%s: %s NOT loaded: %s\n", getprogname(), kPayloads[i].name, dlerror()); fclose(f); }
-        }
+        else {
+            // (1.8.8.2: in release builds too, one line in the system log: a part that does not open on a user's jailbreak is no longer silent)
+            const char *why = dlerror();
+            os_log_error(OS_LOG_DEFAULT, "MacStatusBar&Dock: %{public}s did not load: %{public}s", kPayloads[i].name, why ? why : "?");
+#if !MSBD_LINE_DOCK
+            if (kind & kPointerUID) MSBDPointerProcessWord(MSBD_MP_V_LOADFAIL);   // (MacPointer, the only part there)
 #endif
+#if DEBUG
+            if (access("/tmp/msbd-loader-debug", F_OK) == 0) {
+                FILE *f = fopen("/tmp/msbd-loader.log", "a");
+                if (f) { fprintf(f, "%s: %s NOT loaded: %s\n", getprogname(), kPayloads[i].name, why ? why : "?"); fclose(f); }
+            }
+#endif
+        }
     }
+#if !MSBD_LINE_DOCK
+    if ((kind & kPointerUID) && rowsOnly) MSBDPointerProcessWord(MSBD_MP_V_HELD);   // (untested iPadOS without Enable Anyway, or the crash guard's safe mode)
+#endif
 #if MSBD_PERFPROBE
     // (the smoothness audit's frame/stall probe, loader/PerfProbe.m, debug builds and measurement builds: only while /tmp/msb-perfprobe exists,
     // in SpringBoard and UIKit apps, also when every part is skipped -- so a measurement with and without our parts uses the same probe)

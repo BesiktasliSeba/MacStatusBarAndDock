@@ -11,6 +11,7 @@
 #import <Foundation/Foundation.h>
 #include "CCStyle.h"   // (the Control Center Style's values: the rows that go with a style, 1.8.0)
 #include "LiveActivities.h"   // (Live Activities' Timers row: its key, and the versions where timers run -- 1.8.4, plain C)
+#include "RecentStripRule.h"   // (the recent windows strip's iPadOS: MSBDRecentStripOS, 1.8.8.2 F29)
 // (no TweakIndex.h here: the pages include this, and its helpers are plain static functions; MSBDOwnRowsShown below is there for an includer that
 //  has the index already -- common/TweakSpotlight.h, the Mac test)
 
@@ -32,6 +33,8 @@ typedef struct {
     BOOL laTimersListed;      // this iPadOS version is in Live Activities' timers list (LiveActivities.h kMSBDLATimersChecked): else the Activities
                               // page has no Timers row -- a switch that would do nothing (review 1.8.4 P2-L3)
     BOOL laAppsListed;        // ... in the other apps' listing's list (kMSBDLAAppsListChecked, 17 and later only): else no Apps row
+    BOOL recentStripOS;       // this iPadOS runs the recent windows strip (RecentStripRule.h MSBDRecentStripOS): else no Recent Windows Strip row
+                              //  (a fact of the state, as the two above: the rule never reads the running system's version itself)
 } MSBDOwnPages;
 
 // The rows each condition takes, by the identifiers and keys in our plists (the pages and the rule below ask these).
@@ -58,6 +61,8 @@ typedef struct {
 // presented by a touch or action on our surfaces, is fixed at the source (StatusBar.x DMSMStripPresentationEnd, 1.8.4.4). Elsewhere the switch is
 // neither shown nor read (StatusBar.x DMLoadPrefs).
 static inline BOOL MSBDStripSwipeOS(long major) { return major >= 16 && major <= 18; }
+#define kMSBDRecentStripRowID @"RECENT_STRIP"     // Recent Windows Strip (1.8.8.2 F29): Aerial's, Zetsu's and MilkyWay4's windows (never Stage Manager's: its
+                                                 // strip is Recent Apps with Left-Edge Swipe's), on the iPadOS where it runs (RecentStripRule.h MSBDRecentStripOS)
 #define kMSBDKeepCoveredRowID @"KEEP_COVERED"     // Keep Covered Windows in Front (1.8.4.1 item 7): the engines' windows, every engine's (none without one)
 #define kMSBDResizeHandlesKey @"resizeHandleStyle" // Resize Handles: ours or Stage Manager's (a choice with Stage Manager only)
 #define kMSBDWindowSizeRowKey @"windowSize"      // Window Size (1.8.0 item 4, common/WindowSize.h kMSBDWindowSizeKey): every engine's, Stage Manager's too
@@ -126,6 +131,7 @@ static inline BOOL MSBDOwnRowHidden(MSBDOwnPages s, NSString *pane, NSString *gr
     if ([group isEqualToString:kMSBDWindowsGroupID] && ((!s.engineWorks && !MSBDNoEngineKeepsRow(key)) || (s.stageManagerEngine && !MSBDStageManagerKeepsRow(key)))) return YES;
     if (([ident isEqualToString:kMSBDNewWindowsFillRowID] || [ident isEqualToString:kMSBDSnapRowID]) && !s.engineWorks) return YES;   // (every window they size or snap is an engine's: StatusBar.x DMOpeningWindowFrame, DMSnapOff's ends)
     if ([ident isEqualToString:kMSBDStripSwipeRowID] && (!s.engineWorks || !s.stageManagerEngine || !MSBDStripSwipeOS([NSProcessInfo processInfo].operatingSystemVersion.majorVersion))) return YES;   // (Stage Manager's own strip: statusbar/StatusBar.x DMSMStripRevealBegin)
+    if ([ident isEqualToString:kMSBDRecentStripRowID] && (!s.engineWorks || s.stageManagerEngine || !s.recentStripOS)) return YES;   // (statusbar/RecentStrip.h)
     if ([ident isEqualToString:kMSBDKeepCoveredRowID] && (!s.engineWorks || s.stageManagerEngine)) return YES;   // (every window it keeps in front is an engine's: statusbar/KeepCovered.h; not Stage Manager for now, kDMKeepCoveredOnStageManager says why)
     if ([key isEqualToString:kMSBDResizeHandlesKey] && !s.stageManagerEngine) return YES;
     if ([key isEqualToString:kMSBDResizeRowKey] && !s.milkyWayEngine) return YES;

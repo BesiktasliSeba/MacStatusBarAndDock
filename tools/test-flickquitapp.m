@@ -104,6 +104,7 @@ static void DMMSWKeptForget(NSString *b) { [gFQKeptForget addObject:b ?: @"(nil)
 static NSDictionary *DMMSWFitWithout(NSDictionary *fit, NSString *b) { return nil; }
 static void DMMSWSave(void) { gFQSaves++; }
 static NSMutableDictionary<NSString *, NSNumber *> *gAppQuitAt;   // (StatusBar.x's, just above DMForceQuitBundle)
+static BOOL DMSMAfterTVEmptyHolds(NSString *bundle, dispatch_block_t block) { return NO; }   // (1.8.8.2, B86: nothing waits for a TV's empty desktop here)
 static void DMForceQuitBundle(NSString *bundleID);
 static void DMMSWForgetApp(NSString *b);
 static double DMSMForceQuitWindows(NSString *bundleID, BOOL *windowed);

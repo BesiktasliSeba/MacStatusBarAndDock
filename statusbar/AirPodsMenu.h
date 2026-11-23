@@ -5,6 +5,9 @@
 //    views are (DMAPItemViews). iPadOS keeps drawing the item. A pointer click or a finger tap on it opens a Mac-style menu under it instead of
 //    the status icons' region action (StatusBar.x DMPointOverOurControl). A Bluetooth indicator that is not headphones' gets no button
 //    (common/AirPodsMenu.h MSBDAirPodsItemIsHeadphones). The button never overlaps the battery's own (MSBDAirPodsButtonSpan).
+//  - Where iPadOS draws no item for connected headphones (15.6.1 with real AirPods; 1.8.8.2), the bar draws a headphones icon of its own where
+//    the status icons start, the same button over it (MSBDAirPodsOwnIcon, DMAirPodsLayoutOwnIcon): never two icons. On 15/16 only, a moment
+//    after the headphones come (17/18 draw their own glyph for them).
 //  - The menu, in macOS's order: the headphones' name; their battery as BatteryCenter gives it (Left and Right as one level when it merges them,
 //    apart when it splits them, and the Case), or one level at the heading's right; Noise Control with only the modes they offer, while they are
 //    the audio output; Disconnect; Bluetooth Settings…. Two sets: a block each. They drop while it is open: Not Connected and Connect.
@@ -129,6 +132,7 @@ static void DMAPCopyStr(char *dst, size_t n, NSString *s) {   // (cut, if it mus
 @property (nonatomic) long long productId;
 @property (nonatomic) int level;
 @property (nonatomic) BOOL apple, connected, fake;
+@property (nonatomic) BOOL phones;   // (headphones: common/AirPodsMenu.h MSBDAirPodsCountsAsHeadphones -- our own icon's, 1.8.8.2)
 @property (nonatomic, strong) id device;   // (the BluetoothDevice: Connect and Disconnect; nil for a test device)
 @end
 @implementation DMAPHeadsetRec
@@ -149,6 +153,7 @@ static NSMutableArray<DMAPRouteRec *> *gAPFakeRoute;
 static BOOL gAPFakeErr = NO;   // (podfake_err: the next mode change fails)
 static unsigned gAPFakePartsOff = 0;   // (podfake_part_<h|p|n>_<0|1>: a part shown as missing, for the rows of each part off)
 static BOOL gAPFakeGlyphOnly = NO;   // (podfake_bar_<glyph|level>: iPadOS's item for the made-up headphones as the glyph alone, or with their level)
+static BOOL gAPFakeNoItem = NO;   // (podfake_bar_none, 1.8.8.2: no item for them at all, as iPadOS 15.6.1 shows real AirPods: our own icon's case)
 static void DMAPFakeShowItem(void);   // (below: iPadOS's item comes or goes with the made-up headphones, through sbfakebt_)
 #endif
 static unsigned gAPReadCount = 0;   // (what the probe shows: how many devices are listed, how many of them report a battery level, are headphones
@@ -185,6 +190,7 @@ static NSArray<DMAPHeadsetRec *> *DMAPReadHeadsets(void) {
             h.level = level ? ((int (*)(id, SEL))objc_msgSend)(d, sLevel) : -1;   // (no level reported: BatteryCenter's records, else "--")
             h.productId = ((unsigned (*)(id, SEL))objc_msgSend)(d, sPid);
             h.apple = ((BOOL (*)(id, SEL))objc_msgSend)(d, sApple);
+            h.phones = MSBDAirPodsCountsAsHeadphones(typeRead, type, h.apple);
             h.connected = YES; h.device = d;
             if (level) batt++;
             if (MSBDAirPodsIsHeadphonesType(typeRead, type)) phones++;
@@ -596,9 +602,30 @@ __attribute__((noinline)) static void DMOpenAirPodsMenu(UIButton *btn) {
     DMLog([NSString stringWithFormat:@"[podmenu] menu opened: %@", log]);
 #endif
 }
+// Our own headphones icon's data (1.8.8.2): how many connected headphones there are (MSBDAirPodsCountsAsHeadphones), read once when the bars
+// first lay out with the AirPods Menu on and again at each of Bluetooth's events (and the made-up headphones' changes); the bars are laid out
+// again when it changes. No timer, no read in a layout pass. When the count rises from none, our icon waits MSBD_AP_OWN_SETTLE seconds (common/
+// AirPodsMenu.h MSBDAirPodsOwnIcon: iPadOS's own item first, where it draws one): one layout of the bars after it, no repeating timer.
+static BOOL gAPWatchStarted = NO;
+static int gAPHeadphonesOn = 0;
+static CFTimeInterval gAPHeadphonesSince = 0;   // (when the count last rose from none)
+static void DMAPOwnRefresh(void) {   // (main thread)
+    if (!gAPWatchStarted) return;
+    int n = 0;
+    for (DMAPHeadsetRec *h in DMAPReadHeadsets()) if (h.connected && h.phones) n++;
+    if (n == gAPHeadphonesOn) return;
+    if (!gAPHeadphonesOn) {
+        gAPHeadphonesSince = CACurrentMediaTime();
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((MSBD_AP_OWN_SETTLE + 0.1) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ for (UIView *fg in gCopies.allObjects) [fg setNeedsLayout]; });
+    }
+    gAPHeadphonesOn = n;
+    DMLog([NSString stringWithFormat:@"[podmenu] headphones connected: %d (our own icon where iPadOS shows no item for them)", n]);
+    for (UIView *fg in gCopies.allObjects) [fg setNeedsLayout];
+}
 // What changed while it is open: Bluetooth's notifications (the headphones read again; a set gone stays listed as Not Connected), the route's
 // (and the accessory settings', a mode changed elsewhere: the route read again), BatteryCenter's list (already stored).
 static void DMAPSourceSaid(BOOL headsets, BOOL route) {
+    if (headsets) DMAPOwnRefresh();   // (our own icon follows the headphones, menu open or not)
     if (!gAPMenuOpen) return;
     if (headsets) DMAPMergeHeadsets(DMAPReadHeadsets());
     if (route) gAPRoute = DMAPReadRoute();
@@ -654,15 +681,27 @@ static void DMAPConnect(DMAPHeadsetRec *h, BOOL connect) {
     @try { ((void (*)(id, SEL))objc_msgSend)(h.device, sel); } @catch (NSException *e) { DMAPPartFailed(kDMAPPartHeadset, e); }
 }
 
-// ---- the sources that keep an open menu current (once, the first time a button is placed; each returns at once unless the menu is open) ----
-static void DMAPStartSources(void) {
+// ---- Bluetooth's events (once: the first time the bars lay out with the AirPods Menu on, on the next main-queue turn, or with the other
+// sources; 1.8.8.2: our own icon follows the headphones from the start, not only once a button was placed) ----
+static void DMAPWatchStart(void) {
+    if (gAPWatchStarted) return;
+    gAPWatchStarted = YES;
+    DMAPCheck();
     NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
     if (gAPPart[kDMAPPartHeadset]) {
+        // (and, for our own icon's count, BluetoothManager's own "the list may have changed" events: Bluetooth turned off or on, and the manager
+        //  attached to Bluetooth, which can come after the first count at a respring -- the review of 1.8.8.2)
         for (NSString *n in @[@"BluetoothDeviceBatteryChangedNotification", @"BluetoothDeviceConnectSuccessNotification", @"BluetoothDeviceDisconnectSuccessNotification",
-                              @"BluetoothConnectionStatusChangedNotification"])
+                              @"BluetoothConnectionStatusChangedNotification", @"BluetoothPowerChangedNotification", @"BluetoothAvailabilityChangedNotification"])
             [nc addObserverForName:n object:nil queue:nil usingBlock:^(NSNotification *note) { dispatch_async(dispatch_get_main_queue(), ^{ DMAPSourceSaid(YES, NO); }); }];
         [nc addObserverForName:@"BluetoothAccessorySettingsChanged" object:nil queue:nil usingBlock:^(NSNotification *note) { dispatch_async(dispatch_get_main_queue(), ^{ DMAPSourceSaid(YES, YES); }); }];
     }
+    DMAPOwnRefresh();
+}
+// ---- the sources that keep an open menu current (once, the first time a button is placed; each returns at once unless the menu is open) ----
+static void DMAPStartSources(void) {
+    NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
+    DMAPWatchStart();   // (Bluetooth's events, if the bars have not started them yet)
     id route = DMAPSystemRoute();
     if (gAPRouteNote && route) [nc addObserverForName:gAPRouteNote object:route queue:nil usingBlock:^(NSNotification *note) { dispatch_async(dispatch_get_main_queue(), ^{ DMAPSourceSaid(NO, YES); }); }];
     DMAPPartsStart();
@@ -763,6 +802,62 @@ static void DMAPHideButton(UIView *fg) {
     DMAPCoverAX(fg, @[], NO);
     if ([objc_getAssociatedObject(fg, kAPShownKey) boolValue]) { objc_setAssociatedObject(fg, kAPShownKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); DMLog(@"[podmenu] button hidden"); }
 }
+// The AirPods button of a copy, made the first time: over iPadOS's item, or over our own icon (1.8.8.2).
+static UIButton *DMAPButton(UIView *fg) {
+    UIButton *btn = objc_getAssociatedObject(fg, kAirPodsButtonKey);
+    if (btn) return btn;
+    DMAXButton *bb = [DMAXButton buttonWithType:UIButtonTypeCustom];
+    bb.pointerInteractionEnabled = DMButtonPointerEffects();   // (iPadOS's highlight and pull only with its own pointer, StatusBar.x)
+    bb.accessibilityLabel = @"Headphones";
+    bb.axValue = ^NSString *{ return DMAPAXValue(); };
+    bb.accessibilityHint = @"Opens the headphones menu.";
+    btn = bb;
+    __weak UIButton *weakBtn = btn;
+    [btn addAction:[UIAction actionWithHandler:^(__kindof UIAction *x) { if (weakBtn) DMOpenAirPodsMenu(weakBtn); }] forControlEvents:UIControlEventTouchUpInside];
+    [fg addSubview:btn];
+    objc_setAssociatedObject(fg, kAirPodsButtonKey, btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return btn;
+}
+// ---- our own headphones icon where iPadOS shows no item (1.8.8.2; common/AirPodsMenu.h MSBDAirPodsOwnIcon) ----
+// Per copy: what iPadOS's Bluetooth item showed at this layout (the number of its shown views; nil: not readable, or the switch off), and
+// whether our own icon holds the AirPods button now.
+static const void *kAPItemSeenKey = &kAPItemSeenKey, *kAPOwnKey = &kAPOwnKey;
+static void DMAPItemSeen(UIView *fg, NSNumber *shown) { objc_setAssociatedObject(fg, kAPItemSeenKey, shown, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
+static BOOL DMAPOwnHolds(UIView *fg) { return [objc_getAssociatedObject(fg, kAPOwnKey) boolValue]; }
+// Our icon goes; the button with it unless iPadOS's item has it now (hideButton NO: DMAirPodsLayoutButton places it over that item).
+static void DMAPOwnLetGo(UIView *fg, BOOL hideButton) {
+    UIView *icon = objc_getAssociatedObject(fg, kAirPodsIconKey);
+    if (icon && !icon.hidden) icon.hidden = YES;
+    if (!DMAPOwnHolds(fg)) return;
+    objc_setAssociatedObject(fg, kAPOwnKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (hideButton) DMAPHideButton(fg);
+    DMLog([NSString stringWithFormat:@"[podmenu] our own headphones icon hidden (%@)", hideButton ? @"no headphones, or iPadOS's item shows, or the switch is off" : @"iPadOS's item for them shows now: the button goes over it"]);
+}
+static CGRect DMImageInkRect(UIImage *img);   // (StatusBar.x: the drawn part of a picture, in points)
+// The headphones symbol at the Wi-Fi fan's height on that bar, its ink as tall as the fan's, as the mute icon's picture is made (StatusBar.x
+// DMMuteGlyph): one picture per height. nil: no such symbol here (then no icon).
+static UIImage *DMAPOwnGlyph(CGFloat iconH) {
+    static NSMutableDictionary<NSNumber *, UIImage *> *glyphs;
+    if (!glyphs) glyphs = [NSMutableDictionary dictionary];
+    UIImage *glyph = glyphs[@(iconH)];
+    if (glyph) return glyph;
+    UIImage *(^symbol)(CGFloat) = ^UIImage *(CGFloat pt) {
+        return [UIImage systemImageNamed:@"headphones" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:pt weight:UIImageSymbolWeightSemibold]];
+    };
+    const CGFloat probe = 40.0, inkH = iconH - 1.0;
+    CGRect big = DMImageInkRect(symbol(probe));
+    if (CGRectIsNull(big) || big.size.height < 1.0 || inkH < 1.0) return nil;
+    UIImage *g = symbol(probe * inkH / big.size.height);
+    CGRect ink = DMImageInkRect(g);   // (again at the size drawn: small sizes round)
+    if (!g || CGRectIsNull(ink)) return nil;
+    CGSize size = CGSizeMake(ceil(ink.size.width) + 2.0, iconH);
+    UIImage *out = [[[UIGraphicsImageRenderer alloc] initWithSize:size] imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        [g drawAtPoint:CGPointMake((size.width - ink.size.width) / 2.0 - ink.origin.x, (size.height - ink.size.height) / 2.0 - ink.origin.y)];
+    }];
+    glyph = [out imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    glyphs[@(iconH)] = glyph;
+    return glyph;
+}
 // Places the AirPods button over iPadOS's item in a status bar copy (AirPods Menu on and the item showing headphones, with or without their
 // level: MSBDAirPodsItemIsHeadphones; hidden otherwise, iPadOS's item then as before). `left`: where the status icons start (leading
 // coordinates); the full bar's height, as our other buttons; 4 pt (x k) past the item at each side, cut at the middle of the gaps to its
@@ -770,9 +865,10 @@ static void DMAPHideButton(UIView *fg) {
 __attribute__((noinline)) static void DMAirPodsLayoutButton(UIView *fg, CGFloat left, CGFloat k) {
     NSMutableArray<UIView *> *views = [NSMutableArray array], *others = [NSMutableArray array], *battViews = [NSMutableArray array];
     BOOL battShown = NO, stateRead = NO;
-    if (!gAirPodsMenuOn || !(left < CGFLOAT_MAX) || !DMAPItemViews(fg, views, others, battViews, &battShown)) { DMAPHideButton(fg); return; }
+    if (!gAirPodsMenuOn || !(left < CGFLOAT_MAX) || !DMAPItemViews(fg, views, others, battViews, &battShown)) { DMAPItemSeen(fg, nil); DMAPHideButton(fg); return; }
+    DMAPItemSeen(fg, @(views.count));   // (for our own icon, DMAirPodsLayoutOwnIcon: iPadOS's item read here, and how many of its views show)
     long long state = views.count && !battShown ? DMAPBluetoothState(fg, &stateRead) : MSBD_AP_BT_HEADPHONES;   // (the data only for the glyph alone)
-    if (!MSBDAirPodsItemIsHeadphones((int)views.count, battShown, stateRead, state)) { DMAPHideButton(fg); return; }
+    if (!MSBDAirPodsItemIsHeadphones((int)views.count, battShown, stateRead, state)) { if (!views.count && DMAPOwnHolds(fg)) return; DMAPHideButton(fg); return; }
     BOOL rtl = DMBarRTL(fg);
     CGRect u = DMAPUnion(fg, views);
     double lead = DMBarLead(fg, rtl, u), trail = DMBarTrail(fg, rtl, u), mid = (lead + trail) / 2.0;
@@ -790,19 +886,8 @@ __attribute__((noinline)) static void DMAirPodsLayoutButton(UIView *fg, CGFloat 
     }
     double a = 0, b = 0;
     if (!MSBDAirPodsButtonSpan(lead, trail, 4.0 * k, left - 2.0 * k, prev, next, batt, &a, &b)) { DMAPHideButton(fg); return; }
-    UIButton *btn = objc_getAssociatedObject(fg, kAirPodsButtonKey);
-    if (!btn) {
-        DMAXButton *bb = [DMAXButton buttonWithType:UIButtonTypeCustom];
-        bb.pointerInteractionEnabled = DMButtonPointerEffects();   // (iPadOS's highlight and pull only with its own pointer, StatusBar.x)
-        bb.accessibilityLabel = @"Headphones";
-        bb.axValue = ^NSString *{ return DMAPAXValue(); };
-        bb.accessibilityHint = @"Opens the headphones menu.";
-        btn = bb;
-        __weak UIButton *weakBtn = btn;
-        [btn addAction:[UIAction actionWithHandler:^(__kindof UIAction *x) { if (weakBtn) DMOpenAirPodsMenu(weakBtn); }] forControlEvents:UIControlEventTouchUpInside];
-        [fg addSubview:btn];
-        objc_setAssociatedObject(fg, kAirPodsButtonKey, btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
+    if (DMAPOwnHolds(fg)) DMAPOwnLetGo(fg, NO);   // (iPadOS's item shows now: never two icons)
+    UIButton *btn = DMAPButton(fg);
     btn.frame = DMBarRect(fg, rtl, CGRectMake(a, 0, b - a, DMBarCopyHeight(fg)));
     btn.hidden = NO;
     [fg bringSubviewToFront:btn];
@@ -818,8 +903,55 @@ __attribute__((noinline)) static void DMAirPodsLayoutButton(UIView *fg, CGFloat 
         dispatch_async(dispatch_get_main_queue(), ^{ DMAPCheck(); DMAPStartSources(); });
     }
 }
+// Our own headphones icon (1.8.8.2): where the status icons start (`left`, leading coordinates), when the AirPods Menu is on, this copy's
+// layout just read iPadOS's Bluetooth item and found none of its views shown, and headphones are connected (MSBDAirPodsOwnIcon): the
+// headphones symbol at the Wi-Fi fan's height, 8 pt (x k) before the status icons, the AirPods button over it as wide as our other icons'
+// (6 pt x k each side), the full bar's height. Returns the new left edge (our Wi-Fi, VPN, mute and SSH icons follow it), unchanged without it.
+// Called right after DMAirPodsLayoutButton and the battery's button, in the same layout pass; Bluetooth's events are first watched from here
+// (on the next main-queue turn, never in the layout pass). Never on SystemStatusUI's bar (17/18: iPadOS's own glyph there), where nothing of it
+// starts: Bluetooth's events are watched there, as in 1.8.8.1.1, only once a button is placed over iPadOS's item (DMAPStartSources).
+__attribute__((noinline)) static CGFloat DMAirPodsLayoutOwnIcon(UIView *fg, CGFloat left, CGFloat midY, CGFloat k) {
+    BOOL drawsOwn = DMSBUseSTUI();
+    if (gAirPodsMenuOn && !drawsOwn && !gAPWatchStarted) {
+        static BOOL asked = NO;
+        if (!asked) { asked = YES; dispatch_async(dispatch_get_main_queue(), ^{ DMAPWatchStart(); }); }
+    }
+    NSNumber *seen = objc_getAssociatedObject(fg, kAPItemSeenKey);
+    UIImage *g = left < CGFLOAT_MAX && MSBDAirPodsOwnIcon(gAirPodsMenuOn, drawsOwn, seen != nil, seen.intValue, gAPHeadphonesOn, CACurrentMediaTime() - gAPHeadphonesSince)
+        ? DMAPOwnGlyph(DMWiFiIconHeight(k)) : nil;
+    if (!g) { DMAPOwnLetGo(fg, YES); return left; }
+    UIImageView *icon = objc_getAssociatedObject(fg, kAirPodsIconKey);
+    if (!icon) {
+        icon = [UIImageView new];
+        icon.contentMode = UIViewContentModeScaleAspectFit;
+        icon.userInteractionEnabled = NO;
+        icon.isAccessibilityElement = NO;   // (the button over it is read: Headphones, their battery, Opens the headphones menu.)
+        icon.hidden = YES;
+        [fg addSubview:icon];
+        objc_setAssociatedObject(fg, kAirPodsIconKey, icon, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (icon.image != g) icon.image = g;
+    CGFloat w = ceil(g.size.width), h = ceil(g.size.height);
+    left -= 8.0 * k + w;
+    BOOL rtl = DMBarRTL(fg);
+    icon.frame = DMBarRect(fg, rtl, CGRectMake(left, round(midY - h / 2.0), w, h));
+    UIButton *btn = DMAPButton(fg);
+    btn.frame = DMBarRect(fg, rtl, CGRectMake(left - 6.0 * k, 0, w + 12.0 * k, DMBarCopyHeight(fg)));
+    icon.hidden = btn.hidden = NO;
+    [fg bringSubviewToFront:icon]; [fg bringSubviewToFront:btn];
+    if (!DMAPOwnHolds(fg)) {
+        objc_setAssociatedObject(fg, kAPOwnKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        DMLog([NSString stringWithFormat:@"[podmenu] our own headphones icon: iPadOS shows no item for the connected headphones (%d): icon %.1f..%.1f, button %.1f..%.1f",
+            gAPHeadphonesOn, left, left + w, left - 6.0 * k, left + w + 6.0 * k]);
+    }
+    if (!gAPSourcesStarted) {   // (the first placement: the type check, the sources and BatteryCenter's observer, outside the layout pass)
+        gAPSourcesStarted = YES;
+        dispatch_async(dispatch_get_main_queue(), ^{ DMAPStartSources(); });
+    }
+    return left;
+}
 // The Lock Screen's layout of a copy (StatusBar.x DMLayoutWithoutClock) and copies with no clock: no button, iPadOS's item as it is.
-__attribute__((noinline)) static void DMAirPodsLockLayout(UIView *fg) { DMAPHideButton(fg); }
+__attribute__((noinline)) static void DMAirPodsLockLayout(UIView *fg) { DMAPHideButton(fg); DMAPItemSeen(fg, nil); DMAPOwnLetGo(fg, YES); }
 
 // ---- the switch (StatusBar.x DMLoadPrefs, a constructor too: everything that touches UIKit or BatteryCenter waits for the next main-queue turn) ----
 __attribute__((noinline)) static void DMAirPodsApplyPref(BOOL on) {
@@ -978,15 +1110,15 @@ static void DMAPFakeBarRecheck(UIView *bar) {
 static void DMAPFakeShowItem(void) {   // (iPadOS's item for the made-up headphones: shown while one of them is connected, in the shape podfake_bar_ asked)
     DMAPHeadsetRec *on = nil;
     for (DMAPHeadsetRec *f in gAPFakeHeadsets) if (f.connected) { on = f; break; }
-    if (!on || !gAPFake) { DMAPFakeBarItem(@"off"); return; }
+    if (!on || !gAPFake || gAPFakeNoItem) { DMAPFakeBarItem(@"off"); return; }   // (none: iPadOS's own data again, which shows no item for them)
     DMAPFakeBarItem(gAPFakeGlyphOnly ? @"2_-1" : [NSString stringWithFormat:@"2_%d", on.level >= 0 && on.level <= 100 ? on.level : 50]);
 }
 
-// ---- debug triggers: podfake_<pro|pro2|ap2|caseonly|max|other|unknown|two|err|drop|off>, podfake_bar_<glyph|level>, podfake_part_<h|p|n>_<0|1>,
+// ---- debug triggers: podfake_<pro|pro2|ap2|caseonly|max|other|unknown|two|err|drop|off>, podfake_bar_<glyph|level|none>, podfake_part_<h|p|n>_<0|1>,
 // podmenu, podmenu_rows, podmenu_probe, podmenu_pref_<on|off|delete>, podmenu_ax ----
 static DMAPHeadsetRec *DMAPFakeHeadset(NSString *name, NSString *address, long long pid, int level) {
     DMAPHeadsetRec *h = [DMAPHeadsetRec new];
-    h.name = name; h.address = address; h.productId = pid; h.level = level; h.apple = pid != 0; h.connected = YES; h.fake = YES;
+    h.name = name; h.address = address; h.productId = pid; h.level = level; h.apple = pid != 0; h.connected = YES; h.fake = YES; h.phones = YES;
     return h;
 }
 static DMAPRouteRec *DMAPFakeRoute(NSString *uid, unsigned modes, int current) {
@@ -1153,7 +1285,8 @@ static BOOL DMAPTrigger(NSString *cmd) {
     }
     if ([cmd hasPrefix:@"podfake_bar_"]) {   // podfake_bar_glyph / _level: iPadOS's item for the made-up headphones as the glyph alone (AirPods on 17/18),
         gAPFakeGlyphOnly = [[cmd substringFromIndex:12] isEqualToString:@"glyph"];   // or with their level (the default); at once if they are on
-        DMLog([NSString stringWithFormat:@"[podmenu] test: iPadOS's item %@", gAPFakeGlyphOnly ? @"the glyph alone" : @"the glyph and their level"]);
+        gAPFakeNoItem = [[cmd substringFromIndex:12] isEqualToString:@"none"];   // (_none, 1.8.8.2: no item for them at all, iPadOS 15.6.1's real case)
+        DMLog([NSString stringWithFormat:@"[podmenu] test: iPadOS's item %@", gAPFakeNoItem ? @"not shown (our own icon's case)" : gAPFakeGlyphOnly ? @"the glyph alone" : @"the glyph and their level"]);
         if (gAPFake) DMAPFakeShowItem();
         return YES;
     }
@@ -1177,13 +1310,13 @@ static BOOL DMAPTrigger(NSString *cmd) {
         if (!DMAPFakeKind(k)) { DMLog([NSString stringWithFormat:@"[podmenu] podfake_%@: no such kind", k]); return YES; }
         gAPFake = 1;
         DMAPFakeShowItem();
-        DMLog([NSString stringWithFormat:@"[podmenu] test device: %@ (iPadOS's item: %@)", k, gAPFakeGlyphOnly ? @"the glyph alone" : @"the glyph and their level"]);
+        DMLog([NSString stringWithFormat:@"[podmenu] test device: %@ (iPadOS's item: %@)", k, gAPFakeNoItem ? @"none" : gAPFakeGlyphOnly ? @"the glyph alone" : @"the glyph and their level"]);
         DMAPSourceSaid(YES, YES);
         return YES;
     }
     if ([cmd isEqualToString:@"podmenu"]) {   // open the AirPods menu from the visible status bar
         UIButton *b = DMAPVisibleButton();
-        if (b) DMOpenAirPodsMenu(b); else DMLog(@"[podmenu] podmenu: no AirPods button on the screen (switch off, or iPadOS shows no headphones item)");
+        if (b) DMOpenAirPodsMenu(b); else DMLog(@"[podmenu] podmenu: no AirPods button on the screen (switch off, or no headphones)");
         return YES;
     }
     if ([cmd isEqualToString:@"podmenu_rows"]) {   // what the menu would show now

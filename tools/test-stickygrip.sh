@@ -19,14 +19,14 @@ check "DMNativeResized is in NativeWindow.h as one function (the test builds it 
 fnf '- (void)dm_noteResize:(UIPanGestureRecognizer *)g {' "$DN" > "$W/noteresize.txt"
 grep -F 'DMNativeResized(' "$W/noteresize.txt" > "$W/noteline.txt" || true
 check "-dm_noteResize: makes the note's frame in one line from DMNativeResized and the free area, shows it and keeps it when the finger lifts" \
-  "[ \$(wc -l < '$W/noteline.txt') -eq 1 ] && grep -q '^    CGRect f = ' '$W/noteline.txt' && grep -qx '    ed.frame = f;' '$W/noteresize.txt' && grep -qF 'CGRect mine = [self convertRect:[host convertRect:f toCoordinateSpace:scr]' '$W/noteresize.txt'"
+  "[ \$(wc -l < '$W/noteline.txt') -eq 1 ] && grep -q '^    CGRect f = ' '$W/noteline.txt' && grep -qx '    DMStickySetFrame(ed, f, \"the editor resized\");' '$W/noteresize.txt' && grep -qF 'CGRect mine = [lay convertRect:[host convertRect:f toCoordinateSpace:scr]' '$W/noteresize.txt'"
 { echo 'static CGRect TNoteResized(CGRect start, CGPoint tr, int tag, CGRect desk) {'
   sed -e 's/_notes\.resizeStart/start/g' -e 's/\[g translationInView:host\]/tr/g' -e 's/(int)g\.view\.tag/tag/g' "$W/noteline.txt"
   echo '    return f;'; echo '}'; } > "$W/noteresize.h"
 check "  ... that line takes only the grip's start, its translation, its tag and the area (nothing else of the method's)" \
   "! grep -qE '_notes|\\[g |g\\.view|self|ed\\.|host' '$W/noteresize.h' && grep -qF 'MSBD_NOTE_MIN_W, MSBD_NOTE_MIN_H' '$W/noteresize.h'"
 check "  ... and the area is the desktop's free area (-dm_area) in the note's own space" \
-  "grep -qF 'CGRect desk = [host convertRect:[self convertRect:[self dm_area] toCoordinateSpace:' '$W/noteresize.txt'"
+  "grep -qF 'CGRect desk = [host convertRect:[lay convertRect:[self dm_area] toCoordinateSpace:' '$W/noteresize.txt'"
 
 # a native window (Finder, TextEdit): -dm_resize:'s frame line, over the native desktop, and its let go
 fnf '- (void)dm_resize:(UIPanGestureRecognizer *)g {' "$NW" > "$W/winresize.txt"

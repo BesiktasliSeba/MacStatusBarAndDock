@@ -11,19 +11,26 @@
 # DMAPBluetoothState), a fifth right end with that glyph alone first (TB_AP_GLYPH) and a made-to-fail copy for it. BE_SB_X: another StatusBar.x (e.g.
 # 1.8.8's, which must fail); BE_ENDS: another BarEnds.h; BE_BEFORE_X: 1.8.8's StatusBar.x for C3 (wherever 1.8.8's titles end a title gap or
 # more before its right end, every frame as 1.8.8 lays it out); BE_TABLE=1: the numbers, per width and size. Then site checks and made-to-fail copies.
+# 1.8.8.2 (Scroll Menus That Don't Fit): statusbar/MenuStrip.h and common/MenuStrip.h are the real code too, and every bar runs with the switch off
+# and on (test-barends.m S0-S8: where the two ends' rule left the app's menus out, the strip). With BE_SB_X a StatusBar.x without the strip's call
+# (1.8.8.1.1's) fails S0: the app's menus left out with the switch on.
 cd "$(dirname "$0")" || exit 1
 SDK=$(xcrun --show-sdk-path 2>/dev/null || echo /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk)
 FW="$SDK/System/iOSSupport/System/Library/Frameworks"
 [ -d "$FW/UIKit.framework" ] || { echo "FAIL  no Mac Catalyst UIKit in $SDK"; exit 1; }
 if [ -n "$BE_KEEP" ]; then W=$BE_KEEP; mkdir -p "$W"; else W=$(mktemp -d); trap 'rm -rf "$W"' EXIT; fi
-X0=${BE_SB_X:-../statusbar/StatusBar.x}; E0=${BE_ENDS:-../common/BarEnds.h}; AP0=../statusbar/AirPodsMenu.h
+X0=${BE_SB_X:-../statusbar/StatusBar.x}; E0=${BE_ENDS:-../common/BarEnds.h}; AP0=../statusbar/AirPodsMenu.h; MS0=../statusbar/MenuStrip.h; MC0=../common/MenuStrip.h
 AM=../statusbar/AppMenus.h; BM=../statusbar/BatteryMenu.h; WM=../statusbar/WiFiMenu.h; BU=../statusbar/BarUnlock.h
 fn() { awk -v h="$2" 'f == 0 && index($0, h) == 1 { f = 1 } f { print; n = gsub(/[{]/, "{"); m = gsub(/[}]/, "}"); d += n - m; if (n > 0) o = 1; if (o && d <= 0) exit }' "$1"; }   # a function by its first line
 line() { awk -v h="$2" 'index($0, h) == 1 { print; exit }' "$1"; }
 
-build() {   # $1 StatusBar.x, $2 BarEnds.h, $3 dir, $4 quiet, $5 statusbar/AirPodsMenu.h (default the tree's)
-  local X=$1 d=$3 AP=${5:-$AP0}; mkdir -p "$d"
+build() {   # $1 StatusBar.x, $2 BarEnds.h, $3 dir, $4 quiet, $5 statusbar/AirPodsMenu.h, $6 statusbar/MenuStrip.h, $7 common/MenuStrip.h (default the tree's)
+  local X=$1 d=$3 AP=${5:-$AP0} MS=${6:-$MS0} MC=${7:-$MC0}; mkdir -p "$d"
   if [ -f "$2" ]; then cp "$2" "$d/BarEnds.h"; else : > "$d/BarEnds.h"; fi
+  # (the strip's two files: statusbar/MenuStrip.h whole, its include of the common one pointed at the copy beside it)
+  cp "$MC" "$d/MenuStripC.h" 2>/dev/null || { echo "FAIL  no $MC"; return 99; }
+  sed 's#"../common/MenuStrip.h"#"MenuStripC.h"#' "$MS" > "$d/menustrip.inc" 2>/dev/null && grep -q '^__attribute__((noinline)) static BOOL DMStripLayout(' "$d/menustrip.inc" \
+    || { echo "FAIL  no strip layout in $MS"; return 99; }
   awk 'index($0, "static const CGFloat kAppGap = ") == 1 { f = 1 } f { print } f && index($0, "static const CGFloat kSpotHitSlop = ") == 1 { exit }' "$X" > "$d/consts.inc"
   { awk 'index($0, "static inline BOOL DMBarRTL(") == 1 { f = 1 } f { print } f && index($0, "static inline CGFloat DMBarShiftOf(") == 1 { exit }' "$X"
     fn "$X" 'static inline CGRect DMBarUntransformed(UIView *v) {'
@@ -72,7 +79,17 @@ build() {   # $1 StatusBar.x, $2 BarEnds.h, $3 dir, $4 quiet, $5 statusbar/AirPo
     fn "$AP" 'static void DMAPCoverAX(UIView *fg, NSArray<UIView *> *views, BOOL cover) {'
     fn "$AP" 'static CGRect DMAPUnion(UIView *fg, NSArray<UIView *> *views) {'
     fn "$AP" 'static void DMAPHideButton(UIView *fg) {'
-    fn "$AP" '__attribute__((noinline)) static void DMAirPodsLayoutButton(UIView *fg, CGFloat left, CGFloat k) {'; } > "$d/buttons.inc"
+    # (1.8.8.2: the button made in one place, and our own headphones icon where iPadOS shows no item -- laid out by the region's code too)
+    if grep -q '^static UIButton \*DMAPButton(UIView \*fg) {' "$AP"; then
+      fn "$AP" 'static UIButton *DMAPButton(UIView *fg) {'
+      line "$AP" 'static const void *kAPItemSeenKey = '
+      fn "$AP" 'static void DMAPItemSeen(UIView *fg, NSNumber *shown) {'
+      fn "$AP" 'static BOOL DMAPOwnHolds(UIView *fg) {'
+      fn "$AP" 'static void DMAPOwnLetGo(UIView *fg, BOOL hideButton) {'
+      fn "$AP" 'static UIImage *DMAPOwnGlyph(CGFloat iconH) {'
+    fi
+    fn "$AP" '__attribute__((noinline)) static void DMAirPodsLayoutButton(UIView *fg, CGFloat left, CGFloat k) {'
+    grep -q '^__attribute__((noinline)) static CGFloat DMAirPodsLayoutOwnIcon(' "$AP" && fn "$AP" '__attribute__((noinline)) static CGFloat DMAirPodsLayoutOwnIcon(UIView *fg, CGFloat left, CGFloat midY, CGFloat k) {'; } > "$d/buttons.inc"
   awk 'index($0, "- (void)dm_layoutLogoBody {") == 1 { b = 1 } b && s == 0 && index($0, "        lights.hidden = YES;") == 1 { s = 1; next }
        s == 1 && index($0, "    }") == 1 { s = 2; next } s == 2 && index($0, "    DMApplyBarItemColor(fg, barColor, YES);") == 1 { exit } s == 2 { print }' "$X" > "$d/region.inc"
   local n; n=$(wc -l < "$d/region.inc" | tr -d ' ')
@@ -147,20 +164,26 @@ check "at the turn the status icons move at once (a slide went over the date), e
   "grep -qF '        if (gDMBarDateTurn) [trailing.layer removeAnimationForKey:@\"transform\"];' $S && grep -qF '        if (!gDMBarDateTurn && fabs(DMBarShiftOf(rtl, trailing.transform) - want) > 20.0 && fg.window && !fg.window.hidden && !lookWasLocked && ![trailing.layer animationForKey:@\"transform\"])' $S"
 check "F3's AirPods button, then the battery's, placed after the status icons' move and before the right end's start is read, in every layout (the date's turn too): one call each" \
   "fnb | awk '/^        else trailing.transform = DMBarShift\\(rtl, want\\);/{a=NR} /^        DMAirPodsLayoutButton\\(fg, left, k\\);/{b=NR} /^        DMBattLayoutButton\\(fg, left, k\\);/{c=NR} /^            rightLead = MSBDBarEndLead\\(iconsEnd, trailLead, regionLead, ours, 0\\.0\\);/{e=NR} END{exit !(a && a < b && b < c && c < e)}' && [ \$(grep -c 'DMAirPodsLayoutButton(fg, ' $S) = 1 ] && [ \$(grep -c 'DMBattLayoutButton(fg, ' $S) = 1 ]"
+check "Scroll Menus That Don't Fit: the strip is laid out once, after the titles and before the app's titles' slots are recorded, in the room left before ours (titleMaxRight less the room kept for them)" \
+  "fnb | awk '/^    \\/\\/ \\(Scroll Menus That Don.t Fit, 1\\.8\\.8\\.2:/{a=NR} /^    DMStripLayout\\(fg, rtl, timeFont, timeCentre\\.y, k, amBundle, barTV \\? 1 : 0, amWant, amShown, appRight, titleMaxRight - amReserve, titleMaxRight, &leftEnd\\);$/{b=NR} /^    objc_setAssociatedObject\\(fg, kAMShownKey, \\[amShown copy\\]/{c=NR} /^    if \\(MSBDBarDateShows\\(/{e=NR} END{exit !(a && a < b && b < c && c < e)}' && [ \$(grep -c 'DMStripLayout(fg, ' $S) = 1 ]"
+check "  ... statusbar/MenuStrip.h included before the bar's layout hook, common/MenuStrip.h plain C" \
+  "awk '/^#include \"MenuStrip.h\"/{a=NR} /^- \\(void\\)dm_layoutLogoBody \\{/{b=NR} END{exit !(a && a < b)}' $S && ! grep -qE '@|UIKit|UIView|NSString' $MC0 && grep -qF '#include \"../common/MenuStrip.h\"' $MS0"
 check "BarEnds.h is plain C (the Mac test runs its numbers) and StatusBar.x includes it" \
   "! grep -qE '@|UIKit|UIView|NSString' $E && grep -qF '#include \"../common/BarEnds.h\"' $S"
-check "no em or en dash in the test or BarEnds.h" "! grep -q \$'\\xe2\\x80\\x94\\|\\xe2\\x80\\x93' test-barends.m test-barends.sh $E"
+check "no em or en dash in the test or BarEnds.h" "! grep -q \$'\\xe2\\x80\\x94\\|\\xe2\\x80\\x93' test-barends.m test-barends.sh $E $MS0 $MC0"
 
 # made-to-fail copies: each must fail (a bar check, or not build)
-mtf() {   # $1 what, $2 file (sbx|ends|ap: statusbar/AirPodsMenu.h), $3 sed
-  local d="$W/m$((++mi))" x=$X0 e=$E0 a=$AP0
+mtf() {   # $1 what, $2 file (sbx|ends|ap: statusbar/AirPodsMenu.h|strip: statusbar/MenuStrip.h|stripc: common/MenuStrip.h), $3 sed
+  local d="$W/m$((++mi))" x=$X0 e=$E0 a=$AP0 ms=$MS0 mc=$MC0
   mkdir -p "$d"
   if [ "$2" = sbx ]; then x="$d/StatusBar.x"; sed -E "$3" "$X0" > "$x"; cmp -s "$x" "$X0" && { echo "FAIL  made-to-fail ($1): the change did not apply"; fails=1; return; }
+  elif [ "$2" = strip ]; then ms="$d/MenuStrip.h"; sed -E "$3" "$MS0" > "$ms"; cmp -s "$ms" "$MS0" && { echo "FAIL  made-to-fail ($1): the change did not apply"; fails=1; return; }
+  elif [ "$2" = stripc ]; then mc="$d/MenuStripC.h"; sed -E "$3" "$MC0" > "$mc"; cmp -s "$mc" "$MC0" && { echo "FAIL  made-to-fail ($1): the change did not apply"; fails=1; return; }
   elif [ "$2" = ap ]; then a="$d/AirPodsMenu.h"; sed -E "$3" "$AP0" > "$a"; cmp -s "$a" "$AP0" && { echo "FAIL  made-to-fail ($1): the change did not apply"; fails=1; return; }
   else e="$d/BarEnds.h"; sed -E "$3" "$E0" > "$e"; cmp -s "$e" "$E0" && { echo "FAIL  made-to-fail ($1): the change did not apply"; fails=1; return; }; fi
-  build "$x" "$e" "$d/b" q "$a" || { echo "PASS  made-to-fail ($1): caught (does not build)"; return; }
+  build "$x" "$e" "$d/b" q "$a" "$ms" "$mc" || { echo "PASS  made-to-fail ($1): caught (does not build)"; return; }
   local out; out=$(TB_FIRST=1 "$d/b/t" check 2>&1)
-  if [ $? != 0 ]; then echo "PASS  made-to-fail ($1): caught ($(echo "$out" | grep -o '^FAIL  C[0-9]*' | sort | uniq -c | awk '{printf "%s%s x%s", s, $3, $1; s=", "}'))"
+  if [ $? != 0 ]; then echo "PASS  made-to-fail ($1): caught ($(echo "$out" | grep -o '^FAIL  [CS][0-9]*' | sort | uniq -c | awk '{printf "%s%s x%s", s, $3, $1; s=", "}'))"
   else echo "FAIL  made-to-fail ($1): not caught"; fails=1; fi
 }
 mi=0
@@ -176,6 +199,26 @@ mtf "the left half wider (D62 is the owner's)" sbx 's|^    CGFloat titleMaxRight
 mtf "the date hidden but still taking its room" sbx 's/^    CGFloat dw = dateOff \? 0\.0 : needProxy/    CGFloat dw = 0 ? 0.0 : needProxy/'
 mtf "the AirPods button not placed again in the date's turn layout (F3's button left where the icons were)" sbx 's/^        DMAirPodsLayoutButton\(fg, left, k\);$/        if (!gDMBarDateTurn) DMAirPodsLayoutButton(fg, left, k);/'
 mtf "the AirPods button reaching 12 pt x k before its item (into a title's touch area)" ap 's/MSBDAirPodsButtonSpan\(lead, trail, 4\.0 \* k, left - 2\.0 \* k, /MSBDAirPodsButtonSpan(lead, trail, 12.0 * k, left - 12.0 * k, /'
+# (Scroll Menus That Don't Fit: each of these must be caught by S0-S8 or the two ends' checks)
+mtf "the strip never laid out (the app's menus left out with the switch on)" sbx '/^    DMStripLayout\(fg, rtl, timeFont, timeCentre\.y, k, amBundle, barTV \? 1 : 0, amWant, amShown, appRight, titleMaxRight - amReserve, titleMaxRight, &leftEnd\);$/d'
+mtf "the strip's room up to the titles' end (no room kept for ours)" sbx 's/^    DMStripLayout\(fg, rtl, timeFont, timeCentre\.y, k, amBundle, barTV \? 1 : 0, amWant, amShown, appRight, titleMaxRight - amReserve, titleMaxRight, &leftEnd\);$/    DMStripLayout(fg, rtl, timeFont, timeCentre.y, k, amBundle, barTV ? 1 : 0, amWant, amShown, appRight, titleMaxRight, titleMaxRight, \&leftEnd);/'
+mtf "ours right after the strip's last item (they move as it scrolls)" strip 's/^        CGFloat x = in\.end \+ in\.gap;$/        CGFloat x = end + in.gap;/'
+mtf "no chevron after the titles" stripc 's/^    if \(o\.count > 0\) \{ o\.next = first \+ o\.count < s->n; o\.nextX = x; \}$/    if (o.count > 0) { o.next = 0; o.nextX = x; }/'
+mtf "no room kept for the chevron after the titles" stripc 's/^    double limit = s->end - s->gap - s->chev;(.*)$/    double limit = s->end;\1/'
+mtf "another app keeps the strip's place" strip 's/^    if \(bundle\.length && display >= 0 && display <= 1 && !\[gStripBundle\[display\] isEqualToString:bundle\]\) \{ gStripBundle\[display\] = \[bundle copy\]; gStripFirst\[display\] = nil; \}$/    if (bundle.length \&\& display >= 0 \&\& display <= 1 \&\& !gStripBundle[display]) gStripBundle[display] = [bundle copy];/'
+mtf "the place reset only where a strip is laid out (an app with no strip keeps the one before, seen on iPadOS 17.5.1)" strip 's/^    if \(bundle\.length && display >= 0 && display <= 1 && !\[gStripBundle\[display\] isEqualToString:bundle\]\) \{ gStripBundle\[display\] = \[bundle copy\]; gStripFirst\[display\] = nil; \}$//; s/^    DM_FEATURE_MARK\("scroll-menus"\);$/    DM_FEATURE_MARK("scroll-menus"); if (![gStripBundle[display] isEqualToString:bundle]) { gStripBundle[display] = [bundle copy]; gStripFirst[display] = nil; }/'
+mtf "a scroll's place where UIKit's pan has moved it (a scroll over Go moved the strip; up and down never did, seen on iPadOS 17.5.1)" strip 's/^    CGPoint t = \[g translationInView:fg\];$/    CGPoint t = CGPointZero;/'
+mtf "a mouse wheel's place taken less its translation, as the continuous scroll's (its notches up and down over the strip never begin)" strip 's/DMStripBeganAt\(fg, \(UIPanGestureRecognizer \*\)g, g == self\.swipe\)/DMStripBeganAt(fg, (UIPanGestureRecognizer *)g, !finger)/'
+mtf "a scroll begun in the chevrons' touch areas past the strip's room (Go's button)" strip 's/^        if \(lead < st->in\.start \|\| lead > st->in\.end\) return NO;$//'
+mtf "the strip's room not ours (iPadOS's region actions in it)" strip 's/^    return lead >= st->in\.start - 8\.0 \* st->k && lead <= st->in\.end \+ 8\.0 \* st->k;$/    return NO;/'
+mtf "no room beside ours: still the two ends' rule (ours never join the strip)" strip 's/^        if \(!MSBDStripRoomOK\(&in\)\) \{ MSBD_STRIP_REFUSED\(fg, &in\); DMStripOff\(fg\); return NO; \}   \/\/ \(too little room even for that(.*)$/        MSBD_STRIP_REFUSED(fg, \&in); DMStripOff(fg); return NO;   \/\/ (\1/'
+mtf "ours in the strip, the titles' end from the page shown (the date comes and goes as it moves)" strip 's/^    if \(leftEnd\) \*leftEnd = withOurs \? in\.end : end;(.*)$/    if (leftEnd) *leftEnd = end;\1/'
+mtf "a page on by one title" stripc 's/^    int f = o\.first \+ \(o\.count > 0 \? o\.count : 1\), last = MSBDStripLastFirst\(s\);$/    int f = o.first + 1, last = MSBDStripLastFirst(s);/'
+# (review: no move under one of our menus open on its screen, F-7 -- each of these is the code before the review's fix, and must be caught by S9)
+mtf "a chevron used with a menu open moves the strip under it" strip 's/^    if \(gOverlay\) \{ DMLog\(@"\[menustrip\] a chevron used while a menu is open: the menu closes, the strip stays"\); DMCloseOverlay\(\); return; \}$//'
+mtf "a swipe, the wheel or a reveal move the strip under an open menu" strip 's/^    if \(gOverlay && \(fg\.window\.screen \?: ms\) == \(gOverlay\.window\.screen \?: ms\)\) \{   \/\/ \(F-7: no title moves under one of our menus open on its screen, whatever asks\)$/    if (0) {/'
+# (review: a whole title shown however close to the titles' end it ends -- the code before the fix hid Go, the last title with no window engine: S10)
+mtf "a whole title narrower than the least room hidden at the titles' end (Go unreachable)" strip 's/ : MAX\(titleMaxRight, x \+ kTitleMinShown\);$/ : titleMaxRight;/'
 # (the tree's F3 covers the glyph alone: the bars with it first are built and checked -- its button taken away there must be caught)
 grep -q '^static long long DMAPBluetoothState(' "$AP0" && mtf "the AirPods glyph alone left without its button (F3's glyph-alone bars)" ap 's/long long state = views\.count && !battShown \? DMAPBluetoothState\(fg, &stateRead\) : MSBD_AP_BT_HEADPHONES;/long long state = views.count \&\& !battShown ? 0 : MSBD_AP_BT_HEADPHONES; stateRead = views.count \&\& !battShown;/'
 [ "$fails" = 0 ] && echo "test-barends: all pass" || { echo "test-barends: FAILED"; exit 1; }

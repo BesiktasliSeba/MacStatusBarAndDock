@@ -72,6 +72,27 @@ static inline int MSBDAirPodsIsHeadphonesType(int typeRead, int type) { return t
 static inline int MSBDAirPodsListsDevice(int connected, int reportsLevel, int typeRead, int type) {
     return connected && (reportsLevel || MSBDAirPodsIsHeadphonesType(typeRead, type));
 }
+// ---- our own headphones icon where iPadOS draws no item (1.8.8.2) ----
+// iPadOS 15.6.1 draws no Bluetooth item at all for real AirPods (its bar data says Bluetooth state 1), so the button over iPadOS's item had
+// nothing to sit on there (16 not proven either way). So while the AirPods Menu is on, a bar that can read iPadOS's Bluetooth item (its class
+// answers: itemReadable) and finds none of its views shown, with headphones connected, draws a headphones icon of its own where the status
+// icons start, the AirPods button over it. Never two icons: any shown view of iPadOS's item (headphones, or a plain Bluetooth indicator) means
+// none of ours, and an item that cannot be read means none either. Headphones: iPadOS's own type rule above; where the type cannot be asked,
+// Apple's audio devices (AirPods, Beats). A device listed only for its battery level (a keyboard) is not headphones.
+static inline int MSBDAirPodsCountsAsHeadphones(int typeRead, int type, int appleAudio) {
+    return typeRead ? MSBDAirPodsIsHeadphonesType(typeRead, type) : appleAudio != 0;
+}
+// Never where iPadOS shows its own item for them (the review of 1.8.8.2):
+//  - SystemStatusUI's bar (iPadOS 17/18, barDrawsHeadphones): SpringBoard draws its own headphones glyph there for every connected headphones
+//    of the types above (18.5's -[SBStatusBarStateAggregator _updateBluetoothHeadphonesItem]; real AirPods on 18.5), so ours would only show
+//    in the moment before iPadOS's own item comes (at a connection, after a respring), then make way for it: none of ours there;
+//  - 15/16 (UIKit's bar): our icon waits MSBD_AP_OWN_SETTLE seconds after the headphones come (connectedFor: since the count last rose from
+//    none, at a connection or at the first count after a respring), so that iPadOS's own item, which follows the same connection through
+//    SpringBoard's bar data, shows first where iPadOS draws one. A named wait: no event says that iPadOS chose to draw no item.
+#define MSBD_AP_OWN_SETTLE 2.0
+static inline int MSBDAirPodsOwnIcon(int menuOn, int barDrawsHeadphones, int itemReadable, int itemViewsShown, int headphones, double connectedFor) {
+    return menuOn && !barDrawsHeadphones && itemReadable && itemViewsShown == 0 && headphones > 0 && connectedFor >= MSBD_AP_OWN_SETTLE;
+}
 // One BatteryCenter record (a BCBatteryDevice, copied): parts is a bitmask -- 1 Left, 2 Right, 4 Case, 0 a single battery. BatteryCenter merges
 // both buds into one record (parts 3, the lower level, the group's name) when they are close and charge alike, and keeps them apart otherwise.
 typedef struct { unsigned long long parts; int percent; int charging; int internal; long long productId; char groupName[MSBD_AP_NAME]; char matchId[MSBD_AP_NAME]; } MSBDAPPart;

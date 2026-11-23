@@ -41,6 +41,7 @@ static void RQLog(NSString *s) { [gRQLog addObject:s ?: @""]; }
 @end
 @implementation RQStage
 - (NSDictionary *)itemsToLayoutAttributesMap { return [self.items copy]; }
+- (NSArray *)allItems { return [self.items allKeys]; }
 @end
 static NSMutableArray<RQStage *> *gRQStages;   // the switcher's recent stages, most recent first
 static RQStage *gRQShown;   // the stage the iPad shows (nil: the Home Screen, or not readable)
@@ -52,6 +53,7 @@ static NSMutableDictionary<NSString *, NSNumber *> *gRQDesk;   // the Mac Switch
 static CFTimeInterval gRQT0;
 static BOOL gRQSM, gRQPerWindow;
 static int gRQGen;   // (a scenario's own: SpringBoard's late end of an app never reaches the next scenario)
+static BOOL gRQWholeLayout;   // (SpringBoard's clean-up deletes each layout holding the app whole and quits every app in it: iPadOS's own stages, Split View)
 static NSString *gRQFrontBundle, *gRQFrontKey;
 
 static BOOL RQShown(RQStage *s) { return s && (s == gRQShown || (s.identity && s.onTV)); }
@@ -80,6 +82,12 @@ void BKSTerminateApplicationForReasonAndReportWithDescription(NSString *bundleID
 @implementation RQSwitcher
 - (void)_deleteAppLayoutsMatchingBundleIdentifier:(NSString *)bundleID {   // (every stage holding a window of the app goes, and the app ends)
     [gRQDeleted addObject:bundleID ?: @"(nil)"];
+    if (gRQWholeLayout) for (RQStage *s in [gRQStages copy]) {
+        BOOL has = NO; for (RQItem *it in s.items) if ([it.bundleIdentifier isEqualToString:bundleID]) has = YES;
+        if (!has) continue;
+        for (RQItem *it in [s.items allKeys]) RQEnd(it.bundleIdentifier, @"SpringBoard: its layout deleted");
+        [s.items removeAllObjects];
+    }
     for (RQStage *s in [gRQStages copy]) for (RQItem *it in [s.items allKeys]) if ([it.bundleIdentifier isEqualToString:bundleID]) [s.items removeObjectForKey:it];
     RQDropEmpty();
     RQEnd(bundleID, @"SpringBoard's switcher clean-up");
@@ -113,6 +121,7 @@ static BOOL DMGARefuses(NSString *what) { return NO; }
 static BOOL DMWaitForContextMenu(NSString *key, dispatch_block_t again) { return NO; }
 static BOOL DMSMStripHoldsBack(NSString *what, dispatch_block_t act) { return NO; }
 static void DMPrewarmQuitAdd(NSString *bundleID) { [gRQPrewarm addObject:bundleID ?: @"(nil)"]; }
+static BOOL DMSMAfterTVEmptyHolds(NSString *bundle, dispatch_block_t block) { return NO; }   // (1.8.8.2, B86: nothing waits for a TV's empty desktop here)
 static NSString *gRQAerialBundle; static UIView *gRQAerialStage;
 static UIView *DMStageForBundle(NSString *bundleID) { return gRQAerialBundle && [bundleID isEqualToString:gRQAerialBundle] ? gRQAerialStage : nil; }
 static BOOL DMMSWBundleAway(NSString *b) { return NO; }
@@ -200,7 +209,7 @@ static void reset(BOOL sm, BOOL perWindow) {
     gRQPrewarm = [NSMutableArray array]; gRQTakenOut = [NSMutableArray array]; gRQForgot = [NSMutableArray array]; gRQMSWForgot = [NSMutableArray array];
     gRQOther = [NSMutableArray array]; gRQAerialClosed = [NSMutableArray array];
     gRQMinimized = [NSMutableSet set]; gRQDesk = [NSMutableDictionary dictionary];
-    gRQSM = sm; gRQPerWindow = perWindow; gRQEngine = DMEngineNone; gRQFrontBundle = nil; gRQFrontKey = nil;
+    gRQSM = sm; gRQPerWindow = perWindow; gRQEngine = DMEngineNone; gRQFrontBundle = nil; gRQFrontKey = nil; gRQWholeLayout = NO;
     gRQAerialBundle = nil; gRQAerialStage = nil; gRQSwitcher = [RQSwitcher new]; gAppQuitAt = nil;
 }
 static int gRQPid = 4000;
@@ -258,6 +267,18 @@ static NSString *const kMapsB = @"com.apple.Maps|sceneID:com.apple.Maps-2C3D4E5F
 static NSString *const kNotesW = @"com.apple.mobilenotes|sceneID:com.apple.mobilenotes-default";
 
 int main(void) { @autoreleasepool {
+    // 0. iPadOS 18.5, Enable Windowing off, iPadOS's own Stage Manager: Clock and Settings in one stage; Force Quit Clock (the Apple menu, Spotlight)
+    reset(NO, NO);
+    gRQWholeLayout = YES;
+    gRQShown = stage(nil, @[kClockW, kSettingsW]);
+    gRQT0 = CACurrentMediaTime();
+    DMForceQuitBundle(kClock);
+    runFor(1.2);
+    printf("-- windowing off, iPadOS's own Stage Manager: Force Quit Clock, Settings in its stage\n");
+    ok(ended(kClock) != nil, [NSString stringWithFormat:@"windowing off: Clock quits (got: %@)", endText(kClock)]);
+    ok(gRQRunning[kSettings] && !ended(kSettings), [NSString stringWithFormat:@"windowing off: Settings, its stage's other window, runs on: the stage is not deleted (Settings: %@)", endText(kSettings)]);
+    ok(logHas(@"its stage holds other windows -- left alone"), @"windowing off: ... the log says why");
+
     // 1. The A12Z's c11: Files with two windows, one minimized (its own stage, not on screen), the other alone on the desktop; its red light.
     reset(YES, YES);
     gRQShown = stage(nil, @[kFilesA]); stage(nil, @[kFilesB]); stage(nil, @[kSettingsW]);

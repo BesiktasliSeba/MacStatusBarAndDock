@@ -81,8 +81,10 @@ sites() {   # $1 StatusBar.x, $2 BatteryMenu.h, $3 quiet: the number of site che
   #  each list; everything else as in 7e0589ee)
   [ "$(fndef "$X" DMOurStatusIconsEdge | sed 's/, {kAirPodsButtonKey, NULL} };/ };/' | shasum | cut -c1-16)" = "$SUM_EDGE" ] && [ "$(fndef "$X" DMOurStatusIconsEdge | grep -o kAirPodsButtonKey | wc -l | tr -d ' ')" -le 1 ] \
     && ok "StatusBar.x: DMOurStatusIconsEdge unchanged but for the AirPods button (1.8.8.1)" || no "StatusBar.x: DMOurStatusIconsEdge changed"
-  [ "$(fndef "$X" DMPointOverOurControl | sed 's/kWiFiButtonKey, kAirPodsButtonKey, kSpotButtonKey/kWiFiButtonKey, kSpotButtonKey/' | shasum | cut -c1-16)" = "$SUM_OVER" ] && [ "$(fndef "$X" DMPointOverOurControl | grep -o kAirPodsButtonKey | wc -l | tr -d ' ')" -le 1 ] \
-    && ok "StatusBar.x: DMPointOverOurControl (our controls) unchanged but for the AirPods button (1.8.8.1)" || no "StatusBar.x: DMPointOverOurControl changed"
+  # (1.8.8.2, Scroll Menus That Don't Fit: the scrolling titles' room is ours too -- exactly that line, once, after the Live Activities' pills)
+  [ "$(fndef "$X" DMPointOverOurControl | sed -e 's/kWiFiButtonKey, kAirPodsButtonKey, kSpotButtonKey/kWiFiButtonKey, kSpotButtonKey/' -e '/^    if (DMStripInRoom(fg, p)) return YES;   \/\/ (the scrolling titles/d' | shasum | cut -c1-16)" = "$SUM_OVER" ] && [ "$(fndef "$X" DMPointOverOurControl | grep -o kAirPodsButtonKey | wc -l | tr -d ' ')" -le 1 ] \
+       && [ "$(fndef "$X" DMPointOverOurControl | grep -c 'DMStripInRoom')" -le 1 ] \
+    && ok "StatusBar.x: DMPointOverOurControl (our controls) unchanged but for the AirPods button (1.8.8.1) and the scrolling titles' room (1.8.8.2)" || no "StatusBar.x: DMPointOverOurControl changed"
   [ "$(fndef "$B" DMBattOpenControlCenter | shasum | cut -c1-16)" = "$SUM_OPEN" ] && ok "BatteryMenu.h: DMBattOpenControlCenter (our icon's call) unchanged" || no "BatteryMenu.h: DMBattOpenControlCenter changed"
   # nothing of ours hooks SpringBoard's region handler or Control Center's indirect action (our icon calls the latter)
   if ! cat "$X" ../statusbar/*.h ../common/*.h | grep -E '^- \([^)]*\)(handleStatusBarHoverActionForRegion:|handleIndirectStatusBarAction)' >/dev/null \

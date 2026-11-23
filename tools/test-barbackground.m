@@ -28,6 +28,7 @@ static int gAMLabelKeys[7], gAMButtonKeys[7], gAMPillKeys[7];
 #define DM_AM_PILLS (const void *)&gAMPillKeys[0], (const void *)&gAMPillKeys[1], (const void *)&gAMPillKeys[2], (const void *)&gAMPillKeys[3], (const void *)&gAMPillKeys[4], (const void *)&gAMPillKeys[5], (const void *)&gAMPillKeys[6]
 static void DMSBDiagStep(NSString *step) {}
 static void DMLAHidePills(UIView *fg) {}
+static void DMStripOff(UIView *fg) {}   // (1.8.8.2: the scrolling titles' chevrons in a collapsed copy, statusbar/MenuStrip.h: none here)
 // What is behind the bar: DesktopWallpaper.h's DMWPBarBackdrop (cut out, bb-wp*.inc) on its state as its tick leaves it -- our picture view in the
 // Home Screen variant's view, in the wallpaper's window, its picture decoded and its top strip read -- and what covers the desktop
 #include "bb-wptop.inc"       // (DesktopWallpaper.h: MSBDWPTop)

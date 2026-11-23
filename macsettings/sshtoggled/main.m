@@ -58,6 +58,7 @@
 #include "../../common/PrefsForget.h"       // (MSBDForgetPrefsDomain: a domain emptied through cfprefsd, at a removal -- Mac-tested)
 #include "../../statusbar/SMSwitchOn.h"     // (DMSMConsentFrom: the Stage Manager consent values)
 #include "../../common/DriveEject.h"       // (a drive ejected for Finder: the request, its checks, msbdeject's run and the answer, Mac-tested)
+#include "../../common/MacPointerStatus.h"   // (1.8.8.2: Settings > Pointer's Restart Pointer: which process, how often; Mac-tested)
 #include "../../common/ICleaner.h"         // (iCleaner in Finder, 1.8.5: the request, iCleaner's run and the answer, Mac-tested)
 #include "../AutoLockLongest.h"            // (MS_AUTOLOCK_CHECK: removal and switch-off tell SpringBoard to look at the stored Auto-Lock)
 #include "../../common/SSHSwitch.h"        // (the SSH state every switch reads, and its notification, 1.7.6; Mac-tested)
@@ -1198,6 +1199,42 @@ static void WatchScreen(void) {
     if (notify_register_dispatch("com.apple.springboard.hasBlankedScreen", &token, dispatch_get_main_queue(), ^(int t) { apply(t); }) == NOTIFY_STATUS_OK) apply(token);
 }
 
+// Restart Pointer (1.8.8.2, B70; Settings > Pointer, with the notes that the Mac pointer is not running in iPadOS's pointer process or could not
+// start there): pointeruid stopped as our package's install stops it (SIGKILL: a plain kill is ignored); launchd starts it again at once, and the
+// Mac pointer loads into the new one, with no respring. The request carries nothing (MSBD_MP_RESTART); at most one is taken every 5 s, and only a
+// process whose short name is pointeruid and whose executable is the system's is stopped (common/MacPointerStatus.h MSBDMPRestartTarget/Now).
+// (1.8.8.2 review: and only while MacPointer's and SpringBoard's words say what the row is offered for, MSBDMPRestartWanted: anyone can post the
+// request, so one posted at any other time is left; a burst of requests writes one log line per 5 s.)
+extern int proc_pidpath(int pid, void *buffer, uint32_t buffersize);
+static void PointerRestartRequest(void) {
+    static double last = 0; static int toldAgain = 0;
+    if (!MSBDMPRestartNow(CFAbsoluteTimeGetCurrent(), &last)) { if (!toldAgain++) ELog(@"pointer: Restart Pointer asked again within 5 s: left"); return; }
+    toldAgain = 0;
+    uint64_t status = MSBDMPReadState(MSBD_MP_STATUS), process = MSBDMPReadState(MSBD_MP_PROCESS);
+    if (!MSBDMPRestartWanted(status, process)) {
+        ELog(@"pointer: Restart Pointer: left, the Mac pointer's words do not ask for it (status 0x%llx, process %llu)", (unsigned long long)status, (unsigned long long)process);
+        return;
+    }
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0 }; size_t len = 0;
+    if (sysctl(mib, 4, NULL, &len, NULL, 0) != 0 || !len) { ELog(@"pointer: Restart Pointer: the process list could not be read"); return; }
+    len += len / 8;
+    struct kinfo_proc *procs = malloc(len);
+    if (!procs || sysctl(mib, 4, procs, &len, NULL, 0) != 0) { free(procs); ELog(@"pointer: Restart Pointer: the process list could not be read"); return; }
+    int stopped = 0;
+    for (size_t i = 0; i < len / sizeof *procs; i++) {
+        int pid = procs[i].kp_proc.p_pid; char comm[sizeof procs[i].kp_proc.p_comm + 1]; char path[1024];
+        if (pid <= 1) continue;
+        memcpy(comm, procs[i].kp_proc.p_comm, sizeof procs[i].kp_proc.p_comm); comm[sizeof procs[i].kp_proc.p_comm] = 0;
+        if (strcmp(comm, "pointeruid") != 0) continue;
+        if (proc_pidpath(pid, path, sizeof path) <= 0) path[0] = 0;
+        if (!MSBDMPRestartTarget(comm, path)) { ELog(@"pointer: Restart Pointer: pid %d (%s) left: not the system's pointer process", pid, path[0] ? path : "no path"); continue; }
+        if (kill(pid, SIGKILL) == 0) { stopped++; ELog(@"pointer: Restart Pointer: stopped pid %d (%s); launchd starts it again", pid, path); }
+        else ELog(@"pointer: Restart Pointer: pid %d could not be stopped (errno %d)", pid, errno);
+    }
+    free(procs);
+    if (!stopped) ELog(@"pointer: Restart Pointer: no pointer process running");
+}
+
 // ---- 4. MacStatusBar&Dock's two lines, the move from the old separate packages, and removal --------------------------------------------------------
 // The package shows two lines in Choicy / iCleaner Pro: MacStatusBar (everything except the Dock) and MacDock (the Dock). Settings has one switch for
 // each at the top of its page. With Choicy, Settings edits Choicy's own list itself (as mobile, recorded in LINERECORD). With iCleaner Pro only, the
@@ -2048,6 +2085,8 @@ int main(int argc, char **argv) {
         notify_register_dispatch(kMSBDICleanRequestName, &t7, dispatch_get_main_queue(), ^(int t) { ICleanRequest(@"Finder"); });   // (section 6)
         if (notify_register_check(kMSBDEjectHelperState, &alive) == NOTIFY_STATUS_OK) notify_set_state(alive, (uint64_t)getpid());   // (kept for the daemon's life)
         notify_register_dispatch("com.besiktasliseba.sshtoggle.changed", &t4, dispatch_get_main_queue(), ^(int t) { SSHRequest(-1); });
+        int t9;   // (1.8.8.2: Settings > Pointer's Restart Pointer)
+        notify_register_dispatch(MSBD_MP_RESTART, &t9, dispatch_get_main_queue(), ^(int t) { PointerRestartRequest(); });
         notify_register_dispatch("com.besiktasliseba.msb.engines.apply", &t3, dispatch_get_main_queue(), ^(int t) {
             static CFAbsoluteTime last = 0; static BOOL pending = NO;
             gPendingWork |= kWorkEngines;

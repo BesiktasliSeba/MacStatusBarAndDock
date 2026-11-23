@@ -201,7 +201,7 @@ sites() {   # sites <StatusBar.x> <AppMenus.h> <crashmap-rules.txt> [quiet]: 0 w
      && awk '/BOOL ownNow = DMWindowsOwnStatusBar\(\), ownChanged = ownNow != lastOwn;/{a=NR} /NSString \*bars = DMBarFrontsSig\(\);/{b=NR} /if \(\(frontChanged \|\| ownChanged\) && fg.window\)/{c=NR} END{exit !(a && b > a && c > b)}' '$S'"
   ck "the snapshot: each display's switcher read once per tick scope, dropped with the front window" \
     "grep -qF 'gDMSnapSMShownKnown = NO; gDMSnapSMShown = nil; DMBarFrontForget(); }' '$S' && fn '$S' 'static BOOL DMBarFrontSwitcherOn(UIScreen *screen, long long *env, id *stage) {' | grep -qF 'if (gDMSnapDepth && gDMSnapBarKnown[i] && gDMSnapBarScreen[i] == screen)' \
-     && fn '$S' 'static BOOL DMBarFrontSwitcherOn(UIScreen *screen, long long *env, id *stage) {' | grep -qF 'id state = DMSwitcherObjCall(lc, @\"transitioningToLayoutState\") ?: DMSwitcherObjCall(lc, @\"layoutState\");' \
+     && fn '$S' 'static BOOL DMBarFrontSwitcherOn(UIScreen *screen, long long *env, id *stage) {' | grep -qF -e 'id state = DMSwitcherObjCall(lc, @\"transitioningToLayoutState\") ?: DMSwitcherObjCall(lc, @\"layoutState\");' -e 'id state = going ?: DMSwitcherObjCall(lc, @\"layoutState\");' \
      && fn '$S' 'static BOOL DMBarFrontSwitcherOn(UIScreen *screen, long long *env, id *stage) {' | grep -qF 'DMSMSigOK(c, forScene, DMSMSigObjObj(), \"switcherControllerForWindowScene:\")'"
   ck "the iPad alone or the piece off: 1.8.8's answer (DMBarFrontOn, the titles' menus)" \
     "fn '$S' '__attribute__((noinline)) static int DMBarFrontOn(UIScreen *tv, SBApplication **app, NSString **key, BOOL *noLights, BOOL *native) {' | grep -qF 'if ((!tv && !DMBarFrontTV()) || DMBarFrontSkipped()) return DMBarFrontToday(app, noLights, native);' \
@@ -245,8 +245,8 @@ sites() {   # sites <StatusBar.x> <AppMenus.h> <crashmap-rules.txt> [quiet]: 0 w
   ck "  ... asked again (its word, a thin answer, menuschanged, a tap) while it is the active app or, with another display up, on a display's bar (its review: B12's late titles there)" \
     "fn '$M' 'static BOOL DMAMInFront(NSString *b) {' | grep -qF 'return b.length && DMBarFrontTV() && ([gAMBarLast[0] isEqualToString:b] || [gAMBarLast[1] isEqualToString:b]);' \
      && [ \$(grep -cF 'DMAMInFront(b)' '$M') = 4 ] && [ \$(grep -cF '[[DMActiveApp() bundleIdentifier] isEqualToString:b]' '$M') = 1 ]"
-  ck "the crash guard: the piece barPerDisplay, a rule naming the functions" \
-    "grep -qxF \"target barPerDisplay piece the menu bar with another display|each display's own menu bar\" '$R' && grep -qxF 'sym MacStatusBarCore ^_*(DMBarFront(On|Today|TV|SwitcherOn|StageHas|OfTitle|sSig|Forget|Skipped|Activate|WhenActive|WhenActiveStep|KeysTo|Ready|LightTap|Minimize)|MSBDBarFrontWay|MSBDBarLightsFor)(_block_invoke(_[0-9]+)?(\\.[0-9]+)?)?\$ barPerDisplay' '$R'"
+  ck "the crash guard: the piece barPerDisplay, a rule naming the functions (with the display in use's, B81)" \
+    "grep -qxF \"target barPerDisplay piece the menu bar with another display|each display's own menu bar\" '$R' && grep -qxF 'sym MacStatusBarCore ^_*(DMBarFront(On|Today|TV|SwitcherOn|StageHas|OfTitle|sSig|Forget|Skipped|Activate|WhenActive|WhenActiveStep|KeysTo|KeysHolder|Ready|LightTap|Minimize|InUse[A-Za-z]+)|MSBDBarFrontWay|MSBDBarLightsFor|MSBDInUse[A-Za-z]+|MSBDShownStageGone)(_block_invoke(_[0-9]+)?(\\.[0-9]+)?)?\$ barPerDisplay' '$R'"
   return $f
 }
 sites "$X0" "$M0" "$R0"; s=$?

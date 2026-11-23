@@ -763,7 +763,12 @@ static void DMFloatingDockDismiss(void) {
 }
 - (void)restoreHostWindowIfIdle {
     if (self.panel || !self.hostWindow) return;   // a newer panel is open, or nothing was raised
-    self.hostWindow.windowLevel = self.savedLevel;
+    // (one owner for the Dock window's level, 1.8.8.2: while MacStatusBar's keyboard rule holds the Dock under the Home Screen -- Rename from an
+    //  item's menu here types in Finder with our on-screen keyboard --, the saved level is the one the rule puts back when the keyboard goes:
+    //  set here at once, it put the Dock over the keyboard, its bottom row covered, on iPadOS 16.7.7. Without MacStatusBar: as before)
+    static BOOL (*afterKeyboard)(UIWindow *, CGFloat) = NULL; static BOOL looked = NO;
+    if (!looked) { looked = YES; afterKeyboard = (BOOL (*)(UIWindow *, CGFloat))dlsym(RTLD_DEFAULT, "MSBDDockLevelAfterKeyboard"); }
+    if (!(afterKeyboard && afterKeyboard(self.hostWindow, self.savedLevel))) self.hostWindow.windowLevel = self.savedLevel;
     self.hostWindow = nil;
     extern BOOL gKeepDockVisible; gKeepDockVisible = NO;
     extern BOOL gDockHoverDismissBlocked; extern BOOL DMDockPointerHovering(void);

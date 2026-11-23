@@ -14,6 +14,7 @@
 #import "../common/NativeEmbed.h"
 #import "../common/Hypervisor.h"   // (MSBDHypervisorCapable: Hide in Virtual Mac only where VirtualMac can run)
 #import "../common/InputDevices.h"   // (MSBDPointerAttached: read the same way by the Ethernet row's rule, EthernetFix.x -- 1.7.5)
+#import "../common/MacPointerStatus.h"   // (1.8.8.2, GitHub #17: what the Mac pointer is doing, in plain words under Pointer Style)
 #import <dlfcn.h>
 
 @interface PSSpecifier : NSObject
@@ -23,6 +24,7 @@
 - (void)setIdentifier:(NSString *)identifier;
 - (void)setProperty:(id)value forKey:(NSString *)key;
 - (void)setValues:(NSArray *)values titles:(NSArray *)titles shortTitles:(NSArray *)shortTitles;
+- (void)setButtonAction:(SEL)action;
 @end
 @interface PSListController : UIViewController { NSMutableArray *_specifiers; }
 - (NSMutableArray *)specifiers;
@@ -34,7 +36,7 @@
 #define MP_DOMAIN @"com.besiktasliseba.macstatusbar"
 #define MP_NOTIFY @"com.besiktasliseba.macstatusbar/prefsChanged"
 #define kPointerRowID @"MAC_POINTER"
-enum { kCellGroup = 0, kCellLinkList = 2, kCellSwitch = 6, kCellSlider = 5 };
+enum { kCellGroup = 0, kCellLinkList = 2, kCellSwitch = 6, kCellSlider = 5, kCellButton = 13 };
 
 BOOL MSPointerDeviceAttached(void) { return MSBDPointerAttached(); }   // (common/InputDevices.h; its debug flags /tmp/msb-fakeptr and /tmp/msb-noptr)
 // Pointer Style: "ipados" or "mac" (the default). Older versions stored "arrow" for Mac: it is read as Mac and rewritten as "mac" once, so the choice
@@ -49,6 +51,24 @@ static NSString *MSPointerStyle(void) {
     }
     return [s isEqualToString:@"ipados"] ? @"ipados" : @"mac";
 }
+// (1.8.8.2, GitHub #17) When the Mac pointer is not drawn as Pointer Style asks, why, in plain words, and what can be done (common/MacPointerStatus.h):
+// it stands aside for another tweak's pointer, it is not running in iPadOS's pointer process, it could not start there, or it does not fit this
+// iPadOS's pointer. Read from MacPointer's word and SpringBoard's (which pointeruid runs). nil: nothing to say. Another tweak is never named here.
+static NSString *MSPointerStatusNoteIs(int *note) {
+    int n = MSBDMPNoteFor(YES, MSBDMPReadState(MSBD_MP_STATUS), MSBDMPReadState(MSBD_MP_PROCESS));
+    if (note) *note = n;
+    return MSBDMPNoteText(n, [UIDevice currentDevice].systemVersion);
+}
+static NSString *MSPointerStatusNote(void) { return MSPointerStatusNoteIs(NULL); }
+// Restart Pointer (1.8.8.2, B70; with the not-running and could-not-start notes): our root helper stops iPadOS's pointer process as our install does,
+// launchd starts it again at once and the Mac pointer loads into it, no respring (common/MacPointerStatus.h MSBD_MP_RESTART). The row's own target, so
+// it works on our page and on iPadOS 18's Trackpad page alike; the page's note follows the new process's word by itself.
+@interface MSPointerRestartButton : NSObject
+@end
+@implementation MSPointerRestartButton
+- (void)msRestartPointer:(id)specifier { notify_post(MSBD_MP_RESTART); }
+@end
+static MSPointerRestartButton *gMSPointerRestart;
 // A 29 pt rounded square with the pointer glyph, like the icons of the other Settings rows.
 static UIImage *MSPointerIcon(void) {
     UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(29, 29)];
@@ -88,6 +108,21 @@ NSArray *MSPointerOwnSpecifiers(id target, BOOL onApplePage) {
         [style setValues:@[@"ipados", @"mac"] titles:@[@"iPadOS", @"Mac"] shortTitles:@[@"iPadOS", @"Mac"]];
         [s addObject:style];
         if ([MSPointerStyle() isEqualToString:@"mac"]) {   // (the Mac pointer's size is Apple's Pointer Size below: MacPointer follows it)
+            int noteKind = MSBD_MP_NOTE_NONE;
+            NSString *note = MSPointerStatusNoteIs(&noteKind);   // (1.8.8.2: right under Pointer Style, only when there is something to say)
+            if (note) {
+                PSSpecifier *gn = [PSSpecifier groupSpecifierWithName:nil];
+                [gn setIdentifier:@"MAC_POINTER_STATUS"];
+                [gn setProperty:note forKey:@"footerText"];
+                [s addObject:gn];
+                if (MSBDMPNoteHasRestart(noteKind)) {   // (the button in the note's group: the note under it)
+                    if (!gMSPointerRestart) gMSPointerRestart = [MSPointerRestartButton new];
+                    PSSpecifier *rb = [PSSpecifier preferenceSpecifierNamed:@"Restart Pointer" target:gMSPointerRestart set:NULL get:NULL detail:Nil cell:kCellButton edit:Nil];
+                    [rb setIdentifier:@"MAC_POINTER_RESTART"];
+                    [rb setButtonAction:@selector(msRestartPointer:)];
+                    [s addObject:rb];
+                }
+            }
             if (MSBDHypervisorCapable()) {   // (only where VirtualMac can run at all -- M1/M2 up to 16.3.1, common/Hypervisor.h; the stored switch is kept)
                 PSSpecifier *gv = [PSSpecifier groupSpecifierWithName:nil];
                 [gv setProperty:@"Virtual Mac draws its own pointer." forKey:@"footerText"];
@@ -124,9 +159,12 @@ NSArray *MSPointerOwnSpecifiers(id target, BOOL onApplePage) {
 }
 @implementation MSPointerListController {
     NSMutableArray *_msNativePages;   // Apple's Pointer Control and Trackpad pages (never shown), whose rows are on this page
+    NSString *_msNote;                // the Mac pointer's note as shown (1.8.8.2)
+    int _msStatusToken, _msProcessToken;
 }
 - (NSMutableArray *)specifiers {
     if (!_specifiers) {
+        _msNote = [MSPointerStyle() isEqualToString:@"mac"] ? MSPointerStatusNote() : nil;
         NSMutableArray *s = [NSMutableArray arrayWithArray:MSPointerOwnSpecifiers(self, NO)];
         // Apple's own pointer settings, live (see common/NativeEmbed.h): Accessibility > Pointer Control, then General > Trackpad & Mouse. Each
         // starts with its own group, so they follow as Apple shows them.
@@ -146,6 +184,26 @@ NSArray *MSPointerOwnSpecifiers(id target, BOOL onApplePage) {
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self reloadSpecifiers];   // back from Pointer Style (show or hide the Mac options) or from one of Apple's sub-pages (Color, Double-Tap to Drag)
+}
+// (1.8.8.2) While the page is open, the Mac pointer's note follows MacPointer's and SpringBoard's words: the other pointer turned off, the note goes.
+// The page is built again only when the note's text changes.
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    __weak MSPointerListController *weakSelf = self;
+    void (^changed)(int) = ^(int t) { [weakSelf msPointerStatusChanged]; };
+    if (!_msStatusToken) notify_register_dispatch(MSBD_MP_STATUS, &_msStatusToken, dispatch_get_main_queue(), changed);
+    if (!_msProcessToken) notify_register_dispatch(MSBD_MP_PROCESS, &_msProcessToken, dispatch_get_main_queue(), changed);
+}
+- (void)msStopPointerStatus {
+    if (_msStatusToken) { notify_cancel(_msStatusToken); _msStatusToken = 0; }
+    if (_msProcessToken) { notify_cancel(_msProcessToken); _msProcessToken = 0; }
+}
+- (void)viewDidDisappear:(BOOL)animated { [super viewDidDisappear:animated]; [self msStopPointerStatus]; }
+- (void)dealloc { [self msStopPointerStatus]; }
+- (void)msPointerStatusChanged {
+    NSString *now = [MSPointerStyle() isEqualToString:@"mac"] ? MSPointerStatusNote() : nil;
+    if (now == _msNote || [now isEqualToString:_msNote]) return;
+    [self reloadSpecifiers];
 }
 @end
 

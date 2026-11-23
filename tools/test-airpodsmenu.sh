@@ -52,10 +52,12 @@ harness() {   # $1 StatusBar.x, $2 statusbar/AirPodsMenu.h, $3 statusbar/Battery
   local X=$1 A=$2 B=$3 d=$4 q=$5 fl r=0 f
   mkdir -p "$d"
   [ -d "$FW/UIKit.framework" ] || { echo "FAIL  no Mac Catalyst UIKit in $SDK"; return 1; }
-  { grep -E '^static inline BOOL DMBarRTL\(' "$X"; fndef "$X" DMBarRect; grep -E '^static inline CGFloat (DMBarLead|DMBarTrail)\(' "$X"; } > "$d/ap-bar.inc"
+  { grep -E '^static inline BOOL DMBarRTL\(' "$X"; fndef "$X" DMBarRect; grep -E '^static inline CGFloat (DMBarLead|DMBarTrail)\(' "$X"; fndef "$X" DMImageInkRect; } > "$d/ap-bar.inc"
   { fndef "$B" DMBattItemClass; fndef "$B" DMBattViewShown; fndef "$B" DMBattItemViews; fndef "$B" DMBattItemRect; fndef "$B" DMBattCoverAX; fndef "$B" DMBattLayoutButton; } > "$d/ap-batt.inc"
   { fndef "$A" DMAPTypes; fndef "$A" DMAPObj; fndef "$A" DMAPStr; fndef "$A" DMAPCopyStr; classdef "$A" DMAPHeadsetRec; } > "$d/ap-types.inc"
-  { fndef "$A" DMAPItemClass; fndef "$A" DMAPItemViews; fndef "$A" DMAPBluetoothState; fndef "$A" DMAPCoverAX; fndef "$A" DMAPUnion; fndef "$A" DMAPHideButton; fndef "$A" DMAirPodsLayoutButton; fndef "$A" DMAirPodsLockLayout; } > "$d/ap-button.inc"
+  { fndef "$A" DMAPItemClass; fndef "$A" DMAPItemViews; fndef "$A" DMAPBluetoothState; fndef "$A" DMAPCoverAX; fndef "$A" DMAPUnion; fndef "$A" DMAPHideButton; fndef "$A" DMAPButton
+    grep -E '^static const void \*kAPItemSeenKey = ' "$A"; fndef "$A" DMAPItemSeen; fndef "$A" DMAPOwnHolds; fndef "$A" DMAPOwnLetGo; fndef "$A" DMAPOwnGlyph
+    fndef "$A" DMAirPodsLayoutButton; fndef "$A" DMAirPodsLayoutOwnIcon; fndef "$A" DMAirPodsLockLayout; } > "$d/ap-button.inc"
   { fndef "$A" DMAPMergeHeadsets; fndef "$A" DMAPPartsCopy; fndef "$A" DMAPReadHeadsets; } > "$d/ap-data.inc"
   { fndef "$A" DMAPFakeSet; fndef "$A" DMAPFakeFlag; fndef "$A" DMAPFakeClass; grep -E '^static (const void \*kAPFakeBTKey|NSString \*gAPFakeBarArgs) = ' "$A"
     fndef "$A" DMAPFakeMerged; fndef "$A" DMAPFakeReadBack; fndef "$A" DMAPFakeApply; fndef "$A" DMAPFakeBarItem; fndef "$A" DMAPFakeBarRecheck; fndef "$A" DMAPFakeShowItem; } > "$d/ap-fake.inc"
@@ -63,7 +65,7 @@ harness() {   # $1 StatusBar.x, $2 statusbar/AirPodsMenu.h, $3 statusbar/Battery
   sed -i '' 's/objc_getClass("BluetoothManager")/objc_getClass("TBluetoothManager")/; s/objc_getClass("BluetoothDevice")/objc_getClass("TBluetoothDevice")/; s/objc_getClass("BCBatteryDevice")/objc_getClass("TBCBatteryDevice")/' "$d/ap-data.inc"
   [ "$(grep -c 'objc_getClass("TB' "$d/ap-data.inc")" = 3 ] || { [ -n "$q" ] || echo "FAIL  the class names to stand in for were not found"; return 99; }
   for f in DMBarRect:ap-bar DMBattLayoutButton:ap-batt DMAPTypes:ap-types DMAPHeadsetRec:ap-types DMAirPodsLayoutButton:ap-button DMAirPodsLockLayout:ap-button DMAPItemViews:ap-button DMAPMergeHeadsets:ap-data DMAPPartsCopy:ap-data DMAPReadHeadsets:ap-data \
-           DMAPFakeSet:ap-fake DMAPFakeFlag:ap-fake DMAPFakeClass:ap-fake DMAPFakeBarItem:ap-fake DMAPFakeShowItem:ap-fake DMAPBluetoothState:ap-button; do
+           DMAPFakeSet:ap-fake DMAPFakeFlag:ap-fake DMAPFakeClass:ap-fake DMAPFakeBarItem:ap-fake DMAPFakeShowItem:ap-fake DMAPBluetoothState:ap-button DMAPButton:ap-button DMAPOwnLetGo:ap-button DMAPOwnGlyph:ap-button DMAirPodsLayoutOwnIcon:ap-button DMImageInkRect:ap-bar kAPItemSeenKey:ap-button; do
     grep -q "${f%%:*}" "$d/${f#*:}.inc" || { [ -n "$q" ] || echo "FAIL  ${f%%:*} was not found"; return 99; }
   done
   for fl in $6; do

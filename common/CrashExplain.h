@@ -21,6 +21,7 @@
 #include "DpkgState.h"
 #include "CauseHide.h"   // (MSBDCauseHideText: a cause never carries the user's own text, 1.8.8.1)
 #include "CrashBlame.h"   // (1.8.7.7: MSBDCauseTrim, the death record kept short)
+#include "MacPointerStatus.h"   // (1.8.8.2, GitHub #17: the Mac pointer's state in Report a Problem)
 #include <sys/stat.h>
 
 #ifndef MSBD_DPKG_DIR   // (overridable for the Mac test, tools/test-crashexplain.m)
@@ -559,9 +560,13 @@ static inline NSURL *MSBDReportProblemURL(NSString *engine) {
     NSString *name = names[engine] ?: engine ?: @"none";
     NSString *enginePkg = names[engine] ? MSBDPackageOwning([NSString stringWithFormat:@"/var/jb/Library/MobileSubstrate/DynamicLibraries/%@.dylib", name]) : nil;
     NSString *engineVersion = enginePkg ? MSBDPackageVersion(enginePkg) : nil;
-    NSString *base = [NSString stringWithFormat:@"**What happened** (which app, and what it did):\n\n\n**Steps to reproduce:**\n1. \n\n---\n- Device: %@\n- iPadOS: %@\n- Window engine: %@ %@\n- MacStatusBar&Dock: %@\n",
+    // (1.8.8.2, GitHub #17: the Mac pointer's state as MacPointer in pointeruid and SpringBoard said it, in a few words: drawing, standing aside for
+    //  another pointer with the file name of the library that changes the pointer, not running, parts of this iPadOS's pointer not found;
+    //  common/MacPointerStatus.h)
+    NSString *pointer = MSBDMPReportWords(MSBDMPStyleMac(), MSBDMPReadState(MSBD_MP_STATUS), MSBDMPReadState(MSBD_MP_PROCESS), MSBDMPOtherName());
+    NSString *base = [NSString stringWithFormat:@"**What happened** (which app, and what it did):\n\n\n**Steps to reproduce:**\n1. \n\n---\n- Device: %@\n- iPadOS: %@\n- Window engine: %@ %@\n- MacStatusBar&Dock: %@\n- Mac pointer: %@\n",
         MSBDExplainMachine(), MSBDExplainOSVersion(), name, engineVersion ?: ([engine isEqualToString:@"stagemanager"] ? [NSString stringWithFormat:@"(build %@)", MSBDOSBuild() ?: @"?"] : @"(version unknown)"),
-        MSBDPackageVersion(@"com.besiktasliseba.macstatusbaranddock") ?: @"(unknown)"];
+        MSBDPackageVersion(@"com.besiktasliseba.macstatusbaranddock") ?: @"(unknown)", pointer];
     // GitHub's new-issue link must stay a few KB: the longest parts shrink until it fits.
     NSURL *url = nil;
     NSUInteger frames[] = {5, 3, 3, 0}, chars[] = {900, 600, 300, 80};   // (a middle step: the diagnostics no longer drop straight to 300, logic test 1.2.2)

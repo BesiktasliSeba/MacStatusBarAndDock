@@ -225,7 +225,9 @@
 
 Swipe Up to Quit: flicking a window up in the Mac Switcher, or swiping it up with two fingers on a trackpad, quits the app, as in the App Switcher. Drag a window to move it to another desktop.
 
-Recent Apps with Left-Edge Swipe: swiping in from the left edge shows Stage Manager's recent apps. With the Dock at Left, that swipe stays the Dock's.</string>
+Recent Apps with Left-Edge Swipe: swiping in from the left edge shows Stage Manager's recent apps. With the Dock at Left, that swipe stays the Dock's.
+
+Recent Windows Strip: your recent windows wait at the side of the desktop as small pictures, as with Stage Manager on a Mac. Tap or click one to bring it forward. When a window covers that side the strip steps aside: move the pointer to the edge, or choose Window &gt; Show Recent Windows, to bring it back.</string>
 			<key>id</key>
 			<string>MSW_GROUP</string>
 			<key>stockHides</key>
@@ -292,6 +294,22 @@ Recent Apps with Left-Edge Swipe: swiping in from the left edge shows Stage Mana
 			<string>smStripSwipe</string>
 			<key>label</key>
 			<string>Recent Apps with Left-Edge Swipe</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.besiktasliseba.macstatusbar/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.besiktasliseba.macstatusbar</string>
+			<key>id</key>
+			<string>RECENT_STRIP</string>
+			<key>key</key>
+			<string>recentStrip</string>
+			<key>label</key>
+			<string>Recent Windows Strip</string>
 		</dict>
 		<dict>
 			<key>cell</key>

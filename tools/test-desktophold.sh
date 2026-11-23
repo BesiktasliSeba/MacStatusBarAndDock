@@ -15,7 +15,7 @@ check "the hold check follows the shared rule: wait (the press is the desktop's,
 check "  ... no menu from a touch the swipe down took" \
   "awk '/^- \(void\)dm_holdCheck:\(UITouch \*\)t since:\(CFTimeInterval\)at \{/{f=1} f&&/if \(_trackOwner == MSBDTouchGivenAway\) return;/{print \"ok\"; exit} f&&/MSBDDesktopHoldStep/{exit}' $D | grep -q ok"
 check "whose a touch is: one answer per touch, reset at each touch-down, the desktop's once it takes a move" \
-  "grep -q 'return MSBDDesktopTouchOursAnswer(&_trackOwner, _trackMode != 0, _holdMenu, _trackPointer, CACurrentMediaTime() - _trackAt, DMDesktopHoldToTake(_trackView != nil || \\[self dm_noteTracked\\]));' $D \
+  "grep -q 'return MSBDDesktopTouchOursAnswer(&_trackOwner, _trackMode != 0, _holdMenu, _trackPointer, CACurrentMediaTime() - _trackAt, \\[self dm_noteTracked\\] ? \\[self dm_noteHoldToMove\\] : DMDesktopHoldToTake(_trackView != nil));' $D \
    && grep -q '_trackPointer = pointer; _trackOwner = MSBDTouchUndecided;' $D && grep -q '_trackOwner = MSBDTouchDesktop;   // (the desktop.s from here' $D"
 check "  ... a move of a touch the swipe down took is left to it (no rectangle, no drag)" \
   "awk '/if \(_trackOwner == MSBDTouchGivenAway\) \{   \/\/ \(the Dock.s swipe down fired/{f=1} f&&/_track = nil; continue;/{print \"ok\"; exit}' $D | grep -q ok"

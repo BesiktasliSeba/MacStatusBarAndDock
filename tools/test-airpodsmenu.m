@@ -15,7 +15,11 @@
 //    asked;
 //  - DEBUG: the made-up Bluetooth item (sbfakebt_, podfake_bar_; 1.8.8.1.1) on stand-ins of both families' data: 15/16's with setters, 17/18's
 //    immutable ones (an STMutable... data class, entries with instance variables only), the glyph alone and with a level, the bar's own overlay
-//    back, nothing changed where no value fits.
+//    back, nothing changed where no value fits; and (1.8.8.2) no item at all for the made-up headphones (podfake_bar_none);
+//  - our own headphones icon where iPadOS shows no item for connected headphones (1.8.8.2, DMAirPodsLayoutOwnIcon, laid out after the battery's
+//    button as in the bar): placed where the status icons start, the button over it, never two icons, the switch, the Lock Screen, right to
+//    left, one line per showing; which connected devices count as headphones for it; the review: none on 17/18 (SpringBoard draws its own
+//    glyph there), and on 15/16 not in the moment the headphones come.
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -37,7 +41,7 @@ static NSMutableArray<NSString *> *gLog;
 static void DMLog(NSString *s) { if (!gLog) gLog = [NSMutableArray array]; [gLog addObject:s]; }
 static BOOL DMSBUseSTUI(void) { return gSTUI; }
 static BOOL gBattMenuOn = YES, gAirPodsMenuOn = YES;
-static const void *kBattButtonKey = &kBattButtonKey, *kAirPodsButtonKey = &kAirPodsButtonKey;
+static const void *kBattButtonKey = &kBattButtonKey, *kAirPodsButtonKey = &kAirPodsButtonKey, *kAirPodsIconKey = &kAirPodsIconKey;
 static const void *kBattAXWasKey = &kBattAXWasKey;
 static const void *kAPAXWasKey = &kAPAXWasKey, *kAPCoveredKey = &kAPCoveredKey, *kAPShownKey = &kAPShownKey;
 static BOOL gAPSourcesStarted = NO, gAPPart[3] = { YES, YES, YES };
@@ -46,12 +50,20 @@ enum { kDMAPPartHeadset = 0, kDMAPPartParts, kDMAPPartNoise };
 static void DMAPPartFailed(int part, NSException *e) { (void)part; (void)e; gAPFailed++; }
 static void DMAPCheck(void) {}
 static void DMAPStartSources(void) { gAPStarts++; }
+static BOOL gAPWatchStarted = NO;
+static int gAPHeadphonesOn = 0, gAPWatchAsks = 0;
+static CFTimeInterval gAPHeadphonesSince = 0;   // (when the count rose from none: 0, long ago -- the wait over)
+#ifndef MSBD_AP_OWN_SETTLE
+#define MSBD_AP_OWN_SETTLE 2.0   // (the code before the review's wait has none: the harness still builds there, and its rows say what is missing)
+#endif
+static void DMAPWatchStart(void) { gAPWatchAsks++; }
+static CGFloat DMWiFiIconHeight(CGFloat k) { return round(2.0 * 10.0 * k) / 2.0; }   // (WiFiMenu.h: kWiFiIconH 10 x k)
 static NSString *DMAPAXValue(void) { return @"(value)"; }
 static unsigned gAPReadCount = 0, gAPBattDevices = 0, gAPAppleAudio = 0, gAPHeadphoneTypes = 0;
 #if DEBUG
 static int gAPFake = 0;
 static NSMutableArray *gAPFakeHeadsets;
-static BOOL gAPFakeGlyphOnly = NO;
+static BOOL gAPFakeGlyphOnly = NO, gAPFakeNoItem = NO;
 static NSHashTable *gCopies;
 static const void *kLogoKey = &kLogoKey;
 static id DMCall(id obj, NSString *name) { SEL s = NSSelectorFromString(name); return [obj respondsToSelector:s] ? ((id (*)(id, SEL))objc_msgSend)(obj, s) : nil; }
@@ -172,7 +184,12 @@ static TWorld MakeWorld(TSetup s) {
     return w;
 }
 static CGRect Lead(UIView *fg, CGRect r) { return DMBarRect(fg, DMBarRTL(fg), r); }   // (a frame in leading coordinates)
-static void Layout(TWorld w, CGFloat k) { DMAirPodsLayoutButton(w.fg, w.left, k); DMBattLayoutButton(w.fg, w.left, k); }   // (the bar's order: the AirPods button, then the battery's)
+static CGFloat gOwnLeft;   // (what our own icon's layout returned: where our next icon goes)
+static void Layout(TWorld w, CGFloat k) {   // (the bar's order: the AirPods button, then the battery's, then our own headphones icon, 1.8.8.2)
+    DMAirPodsLayoutButton(w.fg, w.left, k); DMBattLayoutButton(w.fg, w.left, k); gOwnLeft = DMAirPodsLayoutOwnIcon(w.fg, w.left, 12.0, k);
+}
+static UIImageView *OwnIcon(TWorld w) { return objc_getAssociatedObject(w.fg, kAirPodsIconKey); }
+static BOOL OwnShown(TWorld w) { return OwnIcon(w) && !OwnIcon(w).hidden; }
 static UIButton *APButton(TWorld w) { return objc_getAssociatedObject(w.fg, kAirPodsButtonKey); }
 static UIButton *BattButton(TWorld w) { return objc_getAssociatedObject(w.fg, kBattButtonKey); }
 
@@ -283,6 +300,83 @@ static void VoiceOver(void) {
     gBattMenuOn = YES;
 }
 
+// ---- our own headphones icon (1.8.8.2): no item of iPadOS's for connected headphones ----
+static int LogCount(NSString *part) { int n = 0; for (NSString *l in gLog) if ([l containsString:part]) n++; return n; }
+static void OwnIconRows(void) {
+    gAPHeadphonesSince = 0;
+    if (gSTUI) {   // (17/18, the review of 1.8.8.2: SpringBoard draws its own glyph for them there -- never ours, nothing of it started from the layout)
+        BOOL none = YES;
+        for (int r = 0; r < 2; r++) {
+            TSetup s = { 20, 1, r == 1, NO, NO, NO, YES };   // (iPadOS's item: neither its glyph nor its level shown, as 15.6.1 shows real AirPods)
+            gAPHeadphonesOn = 1; gBTState = 1;
+            TWorld w = MakeWorld(s); Layout(w, 1); Layout(w, 1);
+            none = none && !OwnShown(w) && (!APButton(w) || APButton(w).hidden) && fabs(gOwnLeft - w.left) < 0.01;
+        }
+        [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+        Check(none && gAPWatchAsks == 0, [NSString stringWithFormat:@"own icon, 17/18: headphones connected long since and no item view shown: none of ours (iPadOS draws its own glyph there), the next icon's left at the status icons, Bluetooth's events not asked from the layout (%d)", gAPWatchAsks]);
+        gAPHeadphonesOn = 0; gBTState = 2;
+        return;
+    }
+    {   // (15/16, the review: not at once when the headphones come -- iPadOS's own item first, where it draws one --, then after the wait)
+        TSetup s = { 20, 1, NO, NO, NO, NO, YES };
+        gAPHeadphonesOn = 1; gBTState = 1; gAPHeadphonesSince = CACurrentMediaTime();
+        TWorld w = MakeWorld(s); Layout(w, 1);
+        BOOL early = !OwnShown(w) && (!APButton(w) || APButton(w).hidden) && fabs(gOwnLeft - w.left) < 0.01;
+        gAPHeadphonesSince = CACurrentMediaTime() - MSBD_AP_OWN_SETTLE - 0.01; Layout(w, 1);
+        Check(early && OwnShown(w) && !APButton(w).hidden, @"own icon, 15/16: none in the moment the headphones come (the count just rose), then ours after the wait, the button over it");
+        gAPHeadphonesSince = 0;
+    }
+    const CGFloat ks[] = { 1.0, 1.25 };
+    for (int r = 0; r < 2; r++) for (int ki = 0; ki < 2; ki++) {
+        CGFloat k = ks[ki];
+        TSetup s = { 20, k, r == 1, NO, NO, NO, YES };   // (iPadOS's item: neither its glyph nor its level shown)
+        gAPHeadphonesOn = 1; gBTState = 1;
+        TWorld w = MakeWorld(s); Layout(w, k);
+        UIImageView *icon = OwnIcon(w); UIButton *b = APButton(w), *bb = BattButton(w);
+        CGRect ic = Lead(w.fg, icon.frame), bf = Lead(w.fg, b.frame), bat = Lead(w.fg, bb.frame);
+        CGFloat iw = icon.image.size.width;
+        BOOL place = OwnShown(w) && icon.image && fabs(ic.size.height - ceil(DMWiFiIconHeight(k))) < 0.01 && fabs(icon.image.size.height - DMWiFiIconHeight(k)) < 0.01 && fabs(CGRectGetMaxX(ic) - (w.left - 8.0 * k)) < 0.01 && fabs(ic.size.width - ceil(iw)) < 0.01
+            && fabs(gOwnLeft - CGRectGetMinX(ic)) < 0.01 && fabs(CGRectGetMidY(icon.frame) - 12.0) < 0.51;
+        BOOL button = b && !b.hidden && fabs(CGRectGetMinX(bf) - (CGRectGetMinX(ic) - 6.0 * k)) < 0.01 && fabs(CGRectGetMaxX(bf) - (CGRectGetMaxX(ic) + 6.0 * k)) < 0.01
+            && fabs(bf.size.height - w.fg.bounds.size.height) < 0.01 && (!bb || bb.hidden || CGRectGetMaxX(bf) <= CGRectGetMinX(bat) + 1e-6);
+        Check(place && button && w.glyph.isAccessibilityElement && !icon.isAccessibilityElement,
+              [NSString stringWithFormat:@"own icon (%@, k %.2f): iPadOS shows no item for connected headphones: the headphones icon %.1f..%.1f, 8 pt x k before the status icons, at the Wi-Fi fan's height, the bar's middle; the button over it (6 pt x k each side, the full height), clear of the battery's; the next icon's left %.1f",
+               r ? @"right to left" : @"left to right", k, CGRectGetMinX(ic), CGRectGetMaxX(ic), gOwnLeft]);
+        if (r || ki) continue;
+        int shownLines = LogCount(@"our own headphones icon:"), hidLines = LogCount(@"button hidden") + LogCount(@"own headphones icon hidden");
+        Layout(w, k); Layout(w, k);
+        Check(OwnShown(w) && !APButton(w).hidden && LogCount(@"our own headphones icon:") == shownLines && LogCount(@"button hidden") + LogCount(@"own headphones icon hidden") == hidLines,
+              @"  ... laid out again and again: it stays, the button with it, no line again (no hide and show at each layout)");
+        w.glyph.alpha = 1; gBTState = 2; Layout(w, k);
+        CGRect bf2 = Lead(w.fg, APButton(w).frame);
+        int buttons = 0; for (UIView *v in w.fg.subviews) if ([v isKindOfClass:[DMAXButton class]] && !v.hidden && v == APButton(w)) buttons++;
+        Check(!OwnShown(w) && !APButton(w).hidden && CGRectGetMinX(bf2) >= w.left - 2.0 - 1e-6 && CGRectGetMaxX(bf2) > w.itemLead && fabs(gOwnLeft - w.left) < 0.01 && buttons == 1 && !w.glyph.isAccessibilityElement
+              && LogCount(@"iPadOS's item for them shows now") == 1,
+              @"  ... iPadOS's item comes (the glyph, state 2): our icon goes and the one button moves over iPadOS's item; the next icon's left back at the status icons (never two icons)");
+        w.glyph.alpha = 0; Layout(w, k);
+        Check(OwnShown(w) && !APButton(w).hidden && w.glyph.isAccessibilityElement, @"  ... iPadOS's item goes again: our icon and its button back, iPadOS's view back in VoiceOver");
+        w.glyph.alpha = 1; gBTState = 1; Layout(w, k);
+        Check(!OwnShown(w) && (!APButton(w) || APButton(w).hidden) && fabs(gOwnLeft - w.left) < 0.01,
+              @"  ... a plain Bluetooth indicator shows (state 1): neither our icon nor a button (never two icons, never over a Bluetooth sign)");
+        w.glyph.alpha = 0; Layout(w, k);
+        gAPHeadphonesOn = 0; Layout(w, k);
+        Check(!OwnShown(w) && APButton(w).hidden && fabs(gOwnLeft - w.left) < 0.01, @"  ... the headphones gone: our icon and its button go");
+        gAPHeadphonesOn = 1; Layout(w, k);
+        gAirPodsMenuOn = NO; Layout(w, k);
+        BOOL offOK = !OwnShown(w) && APButton(w).hidden;
+        gAirPodsMenuOn = YES; Layout(w, k);
+        Check(offOK && OwnShown(w), @"  ... AirPods Menu off: none; on again: back at the next layout");
+        DMAirPodsLockLayout(w.fg);
+        Check(!OwnShown(w) && APButton(w).hidden, @"  ... the Lock Screen's layout: none (iPadOS's own Lock Screen bar)");
+        Layout(w, k);
+        gOwnLeft = DMAirPodsLayoutOwnIcon(w.fg, CGFLOAT_MAX, 12.0, k);
+        Check(!OwnShown(w) && APButton(w).hidden && gOwnLeft == CGFLOAT_MAX, @"  ... where the status icons start unknown: none");
+        [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+        Check(gAPWatchAsks == 1 && gAPStarts >= 1, [NSString stringWithFormat:@"  ... Bluetooth's events asked to be watched once, on the next main-queue turn (%d), the menu's sources at the first showing", gAPWatchAsks]);
+    }
+    gAPHeadphonesOn = 0; gBTState = 2;
+}
+
 // ---- the data ----
 static DMAPHeadsetRec *H(NSString *name, NSString *addr, int level) {
     DMAPHeadsetRec *h = [DMAPHeadsetRec new]; h.name = name; h.address = addr; h.level = level; h.connected = YES; return h;
@@ -381,6 +475,11 @@ static void Headsets(void) {
     a = got.firstObject; s = got.lastObject;
     Check(got.count == 2 && [a.name isEqualToString:@"Cheap"] && a.level == -1 && [s.name isEqualToString:@"Pods"] && s.level == -1 && s.apple && gAPHeadphoneTypes == 2 && gAPBattDevices == 0,
           [NSString stringWithFormat:@"  ... connected headphones by iPadOS's type (16, 20) that report no battery level: listed, level unknown; a keyboard with none: not (%lu)", (unsigned long)got.count]);
+    TBluetoothDevice *lvkb = BT(D, @"LevelKeys", true, 70, false); lvkb.type = 0;
+    gConnected = @[cheap, lvkb, pods];
+    got = DMAPReadHeadsets();
+    Check(got.count == 3 && ((DMAPHeadsetRec *)got[0]).phones && !((DMAPHeadsetRec *)got[1]).phones && ((DMAPHeadsetRec *)got[2]).phones,
+          @"  ... our own icon's headphones (1.8.8.2): by iPadOS's type; a keyboard listed for its level is not headphones");
     gAPPart[kDMAPPartHeadset] = NO;
     Check(DMAPReadHeadsets().count == 0, @"  ... the Bluetooth part off here: nothing asked");
     gAPPart[kDMAPPartHeadset] = YES;
@@ -523,8 +622,13 @@ static void FakeItem(void) {
     gAPFakeGlyphOnly = NO; DMAPFakeShowItem();
     e = ((STMutableTestData *)bar.overlayData).bluetoothEntry;
     BOOL lvl = e.state == 2 && e.batteryEntry.isEnabled && e.batteryEntry.capacity == 75;
+    gAPFakeNoItem = YES; DMAPFakeShowItem();
+    BOOL none = bar.overlayData == nil;
+    gAPFakeNoItem = NO; DMAPFakeShowItem();
+    BOOL again = ((STMutableTestData *)bar.overlayData).bluetoothEntry.state == 2;
     h.connected = NO; DMAPFakeShowItem();
     Check(glyph && lvl && bar.overlayData == nil, @"the made-up headphones: the glyph alone (podfake_bar_glyph), with their level 75 % (podfake_bar_level), gone when they disconnect");
+    Check(none && again, @"  ... no item at all for them (podfake_bar_none, 1.8.8.2: our own icon's case): iPadOS's own data back; the item again after _level");
     gAPFakeHeadsets = nil; gAPFake = 0;
     // iPadOS replaces the bar's overlay with its own (the Cover Sheet's) while the item is on: put back at the next turn, over iPadOS's
     bar = DataBar(d); bar.overlayData = nil;
@@ -555,11 +659,16 @@ int main(int argc, char **argv) {
         TSetup s = { 20, 1, NO, YES, YES, NO, YES };
         TWorld w = MakeWorld(s); Layout(w, 1);
         Check(!APButton(w) || APButton(w).hidden, @"an item class with no +batteryDisplayIdentifier (unknown on 15/16 until D0): no button");
+        TSetup n = { 20, 1, NO, NO, NO, NO, YES };
+        gAPHeadphonesOn = 1; w = MakeWorld(n); Layout(w, 1);
+        Check(!OwnShown(w) && (!APButton(w) || APButton(w).hidden), @"  ... and with headphones connected and no item view shown: no icon of ours either (iPadOS's item cannot be read: never two icons)");
+        gAPHeadphonesOn = 0;
 #else
         Geometry();
         GlyphAlone();
         WhenNot();
         VoiceOver();
+        OwnIconRows();
         Merge();
         Parts();
         Headsets();

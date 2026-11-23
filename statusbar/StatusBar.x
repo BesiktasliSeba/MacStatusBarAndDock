@@ -39,6 +39,7 @@
 #import "../common/CrashGuard.h"    // (MSBDGuardCrashes: real SpringBoard crash reports, for the Aerial 5.0 probation)
 #import "../common/EngineBuilds.h"  // (the tested engine builds: one list with Settings and the root helper)
 #import "../common/MacPointerActive.h"   // (MSBDIPadPointerEffects: iPadOS's pointer effects on our buttons and icons, only without the Mac arrow)
+#import "../common/MacPointerStatus.h"   // (1.8.8.2: which pointeruid runs, for Settings > Pointer's word on the Mac pointer: DMMacPointerProcessCheck)
 #import "../common/PointerAnim.h"   // (DMPtrAnimDecide: Pointer Animations with the Mac pointer, Mac-tested)
 #import "../common/StageManagerAvailable.h"   // (MSBDStageManagerAvailable: the 1.1.0 Stage Manager engine notice; one test with Settings and the root helper)
 #import "../common/SettingsRoot.h"   // (MSBDSettingsLink: links into our Settings pages where Settings' root list has them -- iPadOS 18: in General)
@@ -422,6 +423,11 @@ static const void *kIntendedAlphaKey = &kIntendedAlphaKey;
 static const void *kDateProxyKey = &kDateProxyKey;
 static const void *kBarDateOffKey = &kBarDateOffKey;   // (a copy whose date gave way to the menu titles: common/BarEnds.h, -dm_layoutLogoBody)
 static BOOL gDMBarDateTurn = NO;   // (while a copy is laid out again for its date going or coming back: its icons move at once)
+// Scroll Menus That Don't Fit (1.8.8.2, statusbar/MenuStrip.h): the switch, a copy's strip record and gestures, its two chevrons' pictures and buttons
+static BOOL gScrollMenus = YES;   // (Settings > Status Bar > Scroll Menus That Don't Fit: on unless switched off, DMLoadPrefs)
+static const void *kStripStateKey = &kStripStateKey, *kStripHandlerKey = &kStripHandlerKey;
+static const void *kStripPrevIconKey = &kStripPrevIconKey, *kStripPrevButtonKey = &kStripPrevButtonKey;
+static const void *kStripNextIconKey = &kStripNextIconKey, *kStripNextButtonKey = &kStripNextButtonKey;
 static const void *kClockButtonKey = &kClockButtonKey;   // the clock's own button (opens the Today View)
 static const void *kSpotIconKey = &kSpotIconKey;
 static const void *kSpotLockHidKey = &kSpotLockHidKey;   // (hidden by the Lock Screen layout: DMLayoutWithoutClock)
@@ -684,6 +690,7 @@ static int gDMDockHideTVTest = 0;   // (1.8.7 spike S5, dockhide_tv_<n>: the in-
 #endif   // (SMHome.h: the same for the TV's desktop, 1.8.6)
 static void DMSMAfterOurHome(NSString *what, id item, dispatch_block_t block);   // (SMAfterHome.h: the last window's removal once that Home is over)
 static BOOL DMSMAfterHomeEnded(void);   // (SMAfterHome.h: inside that removal -- it runs because the Home transition was seen to end)
+static BOOL DMSMAfterTVEmptyHolds(NSString *bundle, dispatch_block_t block);   // (SMAfterHome.h: an app's switcher clean-up waits for the TV's empty desktop)
 static BOOL DMSMPointerOnResizeEdge(UIView *card);   // (SMResizeEdges.h: the pointer marks a resize band of that window)
 static void DMSMHomeKeepsDesktop(id ctx);      // (SMHome.h: SpringBoard's Home keeps the desktop's windows on screen)
 __attribute__((noinline)) static void DMSMHomeNoteResult(id ctx);        // (SMHome.h: the App Switcher's bookkeeping, from where SpringBoard went)
@@ -773,6 +780,17 @@ static SBApplication *DMBarFrontOfTitle(UIView *title, NSString **key, BOOL *oth
 static UIScreen *DMBarFrontTV(void);
 static void DMBarFrontWhenActive(NSString *key, BOOL keys, dispatch_block_t action);
 static void DMBarFrontLightTap(NSInteger which, NSString *key);
+// (1.8.8.2, B81: the display in use with another display up -- set by the user's touch, click or bring-forward of a window there, held against
+//  the transition an action from the other display's bar asks; below, with the displays' switchers, and common/DisplayInUse.h)
+#include "../common/DisplayInUse.h"
+static MSBDInUseState gDMInUse;
+static id gDMInUseOther;   // (the other display the state is about: its identity; nil with the iPad alone)
+static void DMBarFrontInUseUser(id identity, NSString *why);
+static void DMBarFrontInUseFollow(void);
+static void DMBarFrontInUseBarAction(NSString *key);
+static void DMBarFrontInUseKeysBack(NSString *acted, int left);
+static id DMBarFrontInUseStage(id first, int *way);
+static id DMBarFrontInUseIdentity(void);
 static void DMBarFrontMinimize(NSString *key);
 static NSString *DMBarFrontsSig(void);
 static void DMBarFrontForget(void);
@@ -1599,20 +1617,24 @@ static void DMForceQuitBundle(NSString *bundleID) {
     // (The card goes too -- deleted again 0.6 s later, to catch SpringBoard re-adding it.)
     void (^remove)(void) = ^{
         id sw = DMSwitcherController();
-        if (sm) {   // (a stage that still holds other windows is never deleted: only layouts where the app is alone)
-            for (id al in DMCall(DMCall(objc_getClass("SBMainSwitcherControllerCoordinator"), @"sharedInstance"), @"recentAppLayouts")) {
-                NSDictionary *m = DMCall(al, @"itemsToLayoutAttributesMap");
-                BOOL has = NO; for (id it in m) if ([DMCall(it, @"bundleIdentifier") isEqual:bundleID]) has = YES;
-                if (has && m.count > 1) { DMLog([NSString stringWithFormat:@"[action] force quit %@: its stage holds other windows -- left alone", bundleID]); return; }
-            }
+        // (a stage that still holds other windows is never deleted: only layouts where the app is alone -- SpringBoard quits every app of a deleted
+        //  layout. With any engine or none (1.8.8.2): with Enable Windowing off iPadOS's own Stage Manager stages had no such check, and Force Quit
+        //  of Clock quit Settings, its stage's other window, which crashed in its own teardown (iPadOS 18.5); a Split View pair the same)
+        for (id al in DMCall(DMCall(objc_getClass("SBMainSwitcherControllerCoordinator"), @"sharedInstance"), @"recentAppLayouts")) {
+            id m = sm ? DMCall(al, @"itemsToLayoutAttributesMap") : DMCall(al, @"allItems");   // (the stage's windows: the map 16-18, the items 15-18)
+            if (![m isKindOfClass:[NSDictionary class]] && ![m isKindOfClass:[NSArray class]]) continue;
+            BOOL has = NO; for (id it in m) if ([DMCall(it, @"bundleIdentifier") isEqual:bundleID]) has = YES;
+            if (has && [m count] > 1) { DMLog([NSString stringWithFormat:@"[action] force quit %@: its stage holds other windows -- left alone", bundleID]); return; }
         }
         if ([sw respondsToSelector:@selector(_deleteAppLayoutsMatchingBundleIdentifier:)])
             ((void (*)(id, SEL, id))objc_msgSend)(sw, @selector(_deleteAppLayoutsMatchingBundleIdentifier:), bundleID);
     };
     DM_FEATURE_MARK("force-quit-as-user-quit");
-    remove();   // (SpringBoard's own swipe-up kill, where the app has a card of its own)
+    // (the TV desktop's last window of the app: its stages leave the switcher once the TV's empty desktop came -- a stage taken out before that
+    //  transition began made SpringBoard raise inside it and hold every later launch, 1.8.8.2 B86; SMAfterHome.h DMSMAfterTVEmptyHolds)
+    if (!DMSMAfterTVEmptyHolds(bundleID, remove)) remove();   // (SpringBoard's own swipe-up kill, where the app has a card of its own)
     BKSTerminateApplicationForReasonAndReportWithDescription(bundleID, 1, false, @"killed from app switcher");   // (the same request: 0xDEADFA11, graceful)
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), remove);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ if (!DMSMAfterTVEmptyHolds(bundleID, remove)) remove(); });
     };
     if (windowed) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((sm ? 0.45 + smWait : MAX(0.15, closeAnim)) * NSEC_PER_SEC)), dispatch_get_main_queue(), kill); else kill();
 }
@@ -1753,12 +1775,14 @@ static void DMBattMenuGone(NSString *why);           // (BatteryMenu.h: a menu c
 static void DMBattCCLight(BOOL lit);                 // (BatteryMenu.h: the Control Center icon highlighted from Control Center's -_willPresent to its -_didDismiss)
 static BOOL gAirPodsMenuOn = NO;   // Settings > Status Bar > AirPods Menu (pref airpodsMenu, on unless switched off, 1.8.8.1): iPadOS's AirPods item opens our AirPods menu (AirPodsMenu.h)
 static const void *kAirPodsButtonKey = &kAirPodsButtonKey;
+static const void *kAirPodsIconKey = &kAirPodsIconKey;   // (our own headphones icon where iPadOS shows no item for them, 1.8.8.2: AirPodsMenu.h DMAirPodsLayoutOwnIcon)
 __attribute__((noinline)) static void DMAirPodsMenuGone(NSString *why);   // (AirPodsMenu.h: a menu closed -- if it was the AirPods menu, its state goes)
 #if DEBUG
 static unsigned gDMIconsUpdatedCalls = 0, gDMIconsUpdatedLayouts = 0;   // (AirPodsMenu.h podmenu_probe: iPadOS's data updates of our bars, and the layouts they asked)
 #endif
 static void DMLAMenuGone(NSString *why);             // (LiveActivities.h, 1.8.4: a Live Activity's card closed -- its refresh stops, its pill is no longer lit)
 static void DMAMOverlayGone(void);                   // (AppMenus.h, 1.8.8: one of our menus or panels went -- the app's titles that waited under it are laid out, F-7)
+static BOOL DMStripReveal(UIView *fg, NSString *title);   // (MenuStrip.h, 1.8.8.2: the scrolling titles move to show that one -- a menu asked to open)
 // Our own Control Center (CCPanel.h, 1.8.0) for the parts of SpringBoard that work with Control Center's views:
 static BOOL DMCCPanelWanted(void);          // the style in force is ours (Mac), or will be once Control Center has closed
 static BOOL DMCC18PanelWanted(void);        // (the same on iPadOS 18: CC18Shape.h, Apple's 18 grid re-shaped into the Mac panel)
@@ -3359,6 +3383,7 @@ static void DMWatchGuidedAccess(void);   // (Guided Access: our UI steps aside w
 static void DMWinCardsTick(void);   // (WindowCards.h: every window's app has its App Switcher card, the front window's first)
 static void DMAMCmdTabTick(void);   // (ActMonDock.h: the apps seen in front since Activity Monitor was, for Command-Tab's order, 1.7.8)
 static void DMWindowedGripsFollow(void);   // (every engine's resize grips in the colour their inputs give now -- with the Stage Manager engine's grips, below)
+static void DMRStripTick(void);   // (RecentStrip.h: the recent windows strip, 1.8.8.2 F29)
 static void DMSyncWindowsForLibraryBody(void) {
     DM_PERF("guided", DMWatchGuidedAccess());
     DM_PERF("stagemgr", DMStageManagerWatch());
@@ -3386,6 +3411,7 @@ static void DMSyncWindowsForLibraryBody(void) {
     DM_PERF("kbfollow", DMKeyboardFocusFollowsFrontWindow());
     DM_PERF("kbbehind", DMKeyboardFocusBehindWindows());
     DM_PERF("wincards", DMWinCardsTick());
+    DM_PERF("rstrip", DMRStripTick());   // (the recent windows strip, RecentStrip.h: returns at once while it is off or no window exists)
     DM_PERF("zetsu", DMWatchZetsu());
     DM_PERF("grips", DMWindowedGripsFollow());   // (Tint Resize Handles, light or dark, an app's tint: every engine's grips at once, 1.8.7.5)
     DM_PERF("gamebar", DMWatchBarOverHidingApp());
@@ -3516,9 +3542,11 @@ static void DMRestoreAnimate(UIView *window) {
     }
     MSBAnimate(0.26, 0, 0.95, 0, ^{ window.transform = CGAffineTransformIdentity; window.alpha = 1.0; }, nil);
 }
+static void DMRStripWillMinimize(UIView *stage);   // (RecentStrip.h: the recent windows strip's picture of a window before it is minimized, 1.8.8.2 F29)
 static void DMMinimizeWindow(UIView *window) {
     if (DMWindowMinimized(window)) return;
     if (DMWaitForContextMenu([NSString stringWithFormat:@"minimize %p", window], ^{ DMMinimizeWindow(window); })) return;
+    DMRStripWillMinimize(window);
     objc_setAssociatedObject(window, kMinimizedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     DMLog([NSString stringWithFormat:@"[lights] window of %@ minimized", [(AXWindowView *)window bundleIdentifier]]);
     DMMinimizeAnimate(window, DMMinimizedTransform(window), ^(BOOL finished) {
@@ -3534,6 +3562,7 @@ static void DMMinimizeWindow(UIView *window) {
 static void DMMinimizeStage(UIView *stage) {
     if ([objc_getAssociatedObject(stage, kStageHiddenKey) boolValue]) return;
     if (DMWaitForContextMenu([NSString stringWithFormat:@"minimize %p", stage], ^{ DMMinimizeStage(stage); })) return;
+    DMRStripWillMinimize(stage);
     objc_setAssociatedObject(stage, kStageHiddenKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     CGAffineTransform away = DMMinimizedTransform(stage);
     DMLog([NSString stringWithFormat:@"[lights] Aerial stage minimized (%@)", DMMinimizeFlies(away) ? @"into the Dock" : @"a fade where it is"]);
@@ -5008,6 +5037,8 @@ static void DMWatchZetsu(void) {
     if (all.count != lastCount) { lastCount = all.count; DMSaveWindowState(); }
 }
 static UIView *DMA5ComingBackTop(void);   // (the front one of the windows the lock hid, on their way back after the unlock: Aerial 5, below)
+static id DMSMShownMainStage(void);       // (below: the stage the iPad shows, nil at its Home Screen)
+static NSString *DMSMNewestKeyIn(id stage);   // (below: a stage's newest window by its last interaction)
 static SBApplication *DMActiveApp(void) {
     if (DMSMEngine()) {   // (Stage Manager as the engine: the front window of the stage on screen -- the newest interaction)
         NSString *b = DMSMFrontWindowBundle();
@@ -5040,7 +5071,20 @@ static SBApplication *DMActiveApp(void) {
         SBApplication *windowed = DMAppForBundle([(AXWindowView *)top bundleIdentifier]);
         if (windowed) return windowed;
     }
-    return DMFrontApp();
+    SBApplication *front = DMFrontApp();
+    // (no engine of ours or another -- Enable Windowing off -- with iPadOS's own Stage Manager on: SpringBoard's front app is the stage's FIRST app,
+    //  not its window in front (1.4.3's finding for the Apple menu's Force Quit). iPadOS 18.5: Settings on top of Clock in one stage, the bar said
+    //  Clock. The window in front of the stage the iPad shows -- the newest interaction, as our engine's rule -- when SpringBoard's front app is in
+    //  that stage (the TV's app in front: as before); iPadOS 15 has no Stage Manager)
+    if (front && DMActiveEngine() == DMEngineNone && gSMCheckOK && DMSMStageManagerOnNow()) {
+        id stage = DMSMShownMainStage();
+        BOOL has = NO;
+        for (id it in DMSMStageItemsMap(stage)) if ([DMSMItemBundle(it) isEqualToString:[front bundleIdentifier]]) { has = YES; break; }
+        NSString *nb = has ? DMSMKeyBundle(DMSMNewestKeyIn(stage)) : nil;
+        SBApplication *newest = nb.length ? DMAppForBundle(nb) : nil;
+        if (newest) return newest;
+    }
+    return front;
 }
 // The app "Force Quit <app>" means (the Apple menu, Spotlight's Force Quit row): the one the menu bar names (DMActiveApp: on the Stage Manager
 // engine the front window's, on Aerial / Zetsu / MilkyWay4 the top window's while the windows own the bar, else the full-screen app), never
@@ -6620,7 +6664,8 @@ static void DMRelayoutUnattachedBars(NSString *why) {
 static void DMHideAppBarItemsOf(UIView *fg) {   // (one copy: its traffic lights and menu titles hidden)
     static const void *keys[] = { &kLightsKey, &kAppLabelKey, &kAppButtonKey, &kAppPillKey, &kEditLabelKey, &kEditButtonKey, &kEditPillKey,
         &kGoLabelKey, &kGoButtonKey, &kGoPillKey, &kWinLabelKey, &kWinButtonKey, &kWinPillKey, &kDispLabelKey, &kDispButtonKey, &kDispPillKey, &kAudioLabelKey, &kAudioButtonKey, &kAudioPillKey,
-        &kFileLabelKey, &kFileButtonKey, &kFilePillKey, &kViewLabelKey, &kViewButtonKey, &kViewPillKey };
+        &kFileLabelKey, &kFileButtonKey, &kFilePillKey, &kViewLabelKey, &kViewButtonKey, &kViewPillKey,
+        &kStripPrevIconKey, &kStripPrevButtonKey, &kStripNextIconKey, &kStripNextButtonKey };   // (the strip's chevrons: MenuStrip.h)
     for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) ((UIView *)objc_getAssociatedObject(fg, *(const void **)keys[i])).hidden = YES;
     const void *am[] = { DM_AM_LABELS, DM_AM_BUTTONS, DM_AM_PILLS };   // (the app's own menus' titles: AppMenus.h)
     for (size_t i = 0; i < sizeof(am) / sizeof(am[0]); i++) ((UIView *)objc_getAssociatedObject(fg, am[i])).hidden = YES;
@@ -18368,7 +18413,7 @@ static void DMOpenMenu(UIButton *btn) {
         [[DMRow alloc] initWithTitle:@"App Store…" enabled:YES handler:DMCloseThen(^{ DMAppStoreUpdates(); })],
         [NSNull null],
         [[DMRow alloc] initWithTitle:fqTitle enabled:(front != nil)
-                             handler:DMCloseThen(^{ if (front) DMForceQuit(front); })],
+                             handler:DMCloseThen(^{ if (front && frontOther && frontKey.length) DMBarFrontInUseBarAction(frontKey); if (front) DMForceQuit(front); })],   // (B81: another display's bar -- the display in use stays)
         [[DMRow alloc] initWithTitle:@"Force Quit Apps…" enabled:YES handler:^{ DMShowForceQuitList(host); }],
         [[DMRow alloc] initWithTitle:@"Force Quit All Apps…" enabled:(runningApps.count > 0) handler:^{
             DMShowConfirm(host, runningApps.count == 1 ? @"Force quit the open app?" : [NSString stringWithFormat:@"Force quit all %lu apps?", (unsigned long)runningApps.count],
@@ -19461,6 +19506,7 @@ static void DMDesktopAreaChanged(void) { [gDesktop setNeedsLayout]; }
 #include "EditMenuRoom.h"   // (1.8.8.2: UIKit's edit menu over the keyboard in a turned SpringBoard: the keyboard's room in one space)
 #include "MacSwitcher.h"    // (Mac Switcher: our Mission Control, 1.4)
 #include "WindowCards.h"    // (iPadOS's App Switcher cards for the engines' windows, as Stage Manager's: 1.7.0, engine parity)
+#include "RecentStrip.h"    // (the recent windows strip at the side of the desktop, as with Stage Manager on a Mac: 1.8.8.2 F29)
 #include "MacSwitcherButton.h"   // (the Home button with the Mac Switcher on: double press = the Mac Switcher, never iPadOS's App Switcher)
 #include "AppLibraryApps.h"  // (Activity Monitor in the App Library: its Utilities category and its search, 1.7.2)
 #include "CCPanel.h"        // (our own Control Center, Control Center Style Mac: the panel in Apple's overlay, iPadOS 15-17 -- 1.8.0)
@@ -20603,6 +20649,8 @@ static void DMOpenWindowMenu(UIButton *btn) {
         if (aboutActive && DMVisibleWindowCount() > 0) [items addObject:[[DMRow alloc] initWithTitle:@"Bring All to Front" enabled:YES handler:DMCloseThen(^{ DMBringAllToFrontNow(); })]];
         if ((gWindowsBehindApps || gFullScreenRaised) && gWindowsPinnedForward && DMVisibleWindowCount() > 0)
             [items addObject:[[DMRow alloc] initWithTitle:@"Send All to Back" enabled:YES handler:DMCloseThen(^{ DMToggleWindowsForward(); })]];
+        // (the recent windows strip, stepped aside under a window: out over the windows, as the pointer at the edge brings it, 1.8.8.2 F29)
+        if (DMRStripMenuOffered()) [items addObject:[[DMRow alloc] initWithTitle:@"Show Recent Windows" enabled:YES handler:DMCloseThen(^{ DMRStripMenuReveal(); })]];
     } else if (DMSMEngine()) {   // (the same rows as with our other engines)
         DMRow *openRow = [[DMRow alloc] initWithTitle:@"Open Apps as Windows" enabled:YES handler:DMCloseThen(^{
             BOOL now = !DMWindowedLaunchOn();
@@ -21418,8 +21466,11 @@ static void DMOpenAppMenu(UIButton *btn) {
     [items addObject:[[DMRow alloc] initWithTitle:@"Print…" enabled:YES handler:DMCloseThen(^{ DMPostAppBridgeAction([app bundleIdentifier], @"print"); })]];
     [items addObject:[[DMRow alloc] initWithTitle:@"Share…" enabled:YES handler:DMCloseThen(^{ DMPostAppBridgeAction([app bundleIdentifier], @"share"); })]];
     [items addObject:[NSNull null]];
-    [items addObject:[[DMRow alloc] initWithTitle:[NSString stringWithFormat:@"Force Quit %@", name] enabled:YES
-                                          handler:DMCloseThen(^{ DMForceQuit(app); })]];
+    {   // (another display's bar: its app quits there, the display in use stays as it is -- B81, as Minimize)
+        NSString *own = otherBar ? barKey : nil;
+        [items addObject:[[DMRow alloc] initWithTitle:[NSString stringWithFormat:@"Force Quit %@", name] enabled:YES
+                                              handler:DMCloseThen(^{ if (own.length) DMBarFrontInUseBarAction(own); DMForceQuit(app); })]];
+    }
 
     DMPresentMenu(btn, kAppLabelKey, kAppPillKey, items);
     DMLog([NSString stringWithFormat:@"[appmenu] opened for %@", [app bundleIdentifier]]);
@@ -22195,13 +22246,17 @@ static void DMApplyBarItemColor(UIView *fg, UIColor *c, BOOL background) {
         c = DMBarItemColor(fg, time) ?: c;
     }
     const void *labels[] = { kLogoKey, kAppLabelKey, kFileLabelKey, kEditLabelKey, kViewLabelKey, kGoLabelKey, kWinLabelKey, kDispLabelKey, kAudioLabelKey, kDateProxyKey, DM_AM_LABELS };
-    const void *icons[] = { kSpotIconKey, kWiFiIconKey, kVPNIconKey, kMuteIconKey, kSSHIconKey, kCCIconKey };
+    const void *icons[] = { kSpotIconKey, kWiFiIconKey, kVPNIconKey, kMuteIconKey, kSSHIconKey, kCCIconKey, kStripPrevIconKey, kStripNextIconKey };
     for (size_t i = 0; i < sizeof labels / sizeof labels[0]; i++) {
         UILabel *l = objc_getAssociatedObject(fg, labels[i]);
         if ([l isKindOfClass:[UILabel class]] && ![l.textColor isEqual:c]) l.textColor = c;
     }
     for (size_t i = 0; i < sizeof icons / sizeof icons[0]; i++) {
         UIView *v = objc_getAssociatedObject(fg, icons[i]);
+        if ([v isKindOfClass:[UIView class]] && ![v.tintColor isEqual:c]) v.tintColor = c;
+    }
+    {   // (our own headphones icon, as our other icons: AirPodsMenu.h, 1.8.8.2)
+        UIView *v = objc_getAssociatedObject(fg, kAirPodsIconKey);
         if ([v isKindOfClass:[UIView class]] && ![v.tintColor isEqual:c]) v.tintColor = c;
     }
     BOOL shown = background ? DMApplyBackground(fg, c) : bgView && !bgView.hidden;
@@ -23874,6 +23929,14 @@ static void DMLoadPrefs(void) {
         }
         gKeepCoveredInFront = keepCovered;
     }
+    {   // Recent Windows Strip (Aerial, Zetsu and MilkyWay4, 1.8.8.2 F29): on unless switched off, a boolean only (RecentStrip.h; it runs where
+        // common/RecentStripRule.h MSBDRecentStripOS says, the row's own rule)
+        CFPropertyListRef rs = CFPreferencesCopyValue(CFSTR("recentStrip"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        BOOL recentStrip = !(rs && CFGetTypeID(rs) == CFBooleanGetTypeID() && !CFBooleanGetValue(rs));
+        if (rs) CFRelease(rs);
+        if (recentStrip != gRStripPref) DMLog([NSString stringWithFormat:@"[recentstrip] Recent Windows Strip %@", recentStrip ? @"on" : @"off"]);
+        gRStripPref = recentStrip;
+    }
     {   // Recent Apps with Left-Edge Swipe (Stage Manager engine, 1.8.4.2): off unless switched on (DMSMStripRevealBegin)
         static BOOL stripLoaded = NO;
         CFPropertyListRef sw = CFPreferencesCopyValue(CFSTR("smStripSwipe"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
@@ -23920,6 +23983,13 @@ static void DMLoadPrefs(void) {
         CFPropertyListRef amRef = CFPreferencesCopyValue(CFSTR("appOwnMenus"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
         if (amRef) { if (CFGetTypeID(amRef) == CFBooleanGetTypeID()) amOn = CFBooleanGetValue(amRef); CFRelease(amRef); }
         DMAMApplyPref(amOn);
+    }
+    {   // Scroll Menus That Don't Fit (1.8.8.2, MenuStrip.h): on unless switched off
+        BOOL scroll = YES;
+        CFPropertyListRef scrollRef = CFPreferencesCopyValue(CFSTR("scrollMenus"), MSB_DOMAIN, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        if (scrollRef) { if (CFGetTypeID(scrollRef) == CFBooleanGetTypeID()) scroll = CFBooleanGetValue(scrollRef); CFRelease(scrollRef); }
+        if (scroll != gScrollMenus) DMLog([NSString stringWithFormat:@"[menustrip] Scroll Menus That Don't Fit %@", scroll ? @"on" : @"off"]);
+        gScrollMenus = scroll;
     }
     {
         BOOL mute = YES;   // Show Mute Icon: on unless switched off
@@ -24548,7 +24618,7 @@ static NSArray<NSValue *> *DMBarFadeBackKeys(void) {
         [NSValue valueWithPointer:kDateProxyKey], [NSValue valueWithPointer:kSpotIconKey], [NSValue valueWithPointer:kCCIconKey],
         [NSValue valueWithPointer:&gAMLabelKeys[0]], [NSValue valueWithPointer:&gAMLabelKeys[1]], [NSValue valueWithPointer:&gAMLabelKeys[2]],
         [NSValue valueWithPointer:&gAMLabelKeys[3]], [NSValue valueWithPointer:&gAMLabelKeys[4]], [NSValue valueWithPointer:&gAMLabelKeys[5]],
-        [NSValue valueWithPointer:&gAMLabelKeys[6]]]; });
+        [NSValue valueWithPointer:&gAMLabelKeys[6]], [NSValue valueWithPointer:kStripPrevIconKey], [NSValue valueWithPointer:kStripNextIconKey]]; });
     return keys;
 }
 static NSSet<NSValue *> *DMBarShownItems(UIView *fg) {   // (which of those show now)
@@ -24914,6 +24984,7 @@ static void DMBarForegroundInit(void) {
     } else DMLog([NSString stringWithFormat:@"[barcolor] %@ has no foreground colour as read (%s / %s, its constraint pass %s): a light Status Bar Background keeps iPadOS's text colour",
                   bar ? NSStringFromClass(bar) : @"(no status bar class)", se ?: "-", ge ?: "-", ue ?: "-"]);
 }
+#include "MenuStrip.h"   // (Scroll Menus That Don't Fit, 1.8.8.2: the titles between the app's name and our Go scroll when they do not all fit)
 
 #if DEBUG
 // (debug: a full-size window card's status bar strip hidden as not the top bar, and why -- the 1.5.2 top-bar item; read-only)
@@ -25051,6 +25122,8 @@ static BOOL DMBarCopyIsCCDuplicate(UIView *fg) {
         for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
             ((UIView *)objc_getAssociatedObject(fg, keys[i])).hidden = YES;
         DMLAHidePills(fg);   // (the Live Activities' pills too)
+        ((UIView *)objc_getAssociatedObject(fg, kAirPodsIconKey)).hidden = YES;   // (and our own headphones icon: AirPodsMenu.h, 1.8.8.2)
+        DMStripOff(fg);   // (and the scrolling titles' chevrons, the strip's record with them: MenuStrip.h)
         DMBarDarkText(fg, NO);   // (and our dark text with our background: iPadOS's again -- 1.8.7.5 round 1)
         return;
     }
@@ -25468,6 +25541,8 @@ static BOOL DMBarCopyIsCCDuplicate(UIView *fg) {
 #if MSBD_BATT_CHARGE
         DMBattHoldBar(fg);     // (a plug in the battery while the Charge Limit's job holds it: BatteryMenu.h, 1.8.6)
 #endif
+        // Our own headphones icon, nearest the status icons, where iPadOS shows no item for connected headphones (AirPods Menu on: AirPodsMenu.h, 1.8.8.2)
+        left = DMAirPodsLayoutOwnIcon(fg, left, timeCentre.y, k);
         // Wi-Fi icon (Settings > Status Bar > Wi-Fi Menu): our own item nearest the status icons, like a Mac's Wi-Fi menu extra beside Control
         // Center; iOS's own Wi-Fi item is left out of our bars then (DMHideStockWiFi). It stays with Wi-Fi off (the empty fan). Tapping it opens its menu.
         left = DMWiFiLayoutIcon(fg, left, timeCentre.y, k);
@@ -25689,6 +25764,9 @@ static BOOL DMBarCopyIsCCDuplicate(UIView *fg) {
         ((UIView *)objc_getAssociatedObject(fg, kAudioLabelKey)).hidden = YES;
         ((UIView *)objc_getAssociatedObject(fg, kAudioButtonKey)).hidden = YES;
     }
+    // (Scroll Menus That Don't Fit, 1.8.8.2: where the rule above left the app's last menus out, the titles between its name and our Go are a strip
+    //  that scrolls instead, ours at the place kept for them -- statusbar/MenuStrip.h; anywhere else it changes nothing)
+    DMStripLayout(fg, rtl, timeFont, timeCentre.y, k, amBundle, barTV ? 1 : 0, amWant, amShown, appRight, titleMaxRight - amReserve, titleMaxRight, &leftEnd);
     objc_setAssociatedObject(fg, kAMShownKey, [amShown copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     DMAMHideSlots(fg, amShown.count);   // (the slots not used now: an app with fewer menus, another app, no room)
     if (clockW <= 0) container.transform = DMBarShift(rtl, leftEnd + kLeftGroupGap * k - baseLeft);   // (no clock: the region parked after the titles, as before)
@@ -26036,6 +26114,7 @@ static BOOL DMPointOverOurControl(UIView *bar, UIGestureRecognizer *g) {
         if (b && !b.hidden && CGRectContainsPoint(b.frame, p)) return YES;
     }
     if (DMLAPillAt(fg, p)) return YES;   // (a Live Activity's pill: its card, 1.8.4)
+    if (DMStripInRoom(fg, p)) return YES;   // (the scrolling titles' room, its chevrons and the space between: ours, 1.8.8.2 MenuStrip.h)
     return NO;
 }
 
@@ -32589,6 +32668,7 @@ static void DMRunTrigger(NSString *cmd) {
     else if ([cmd hasPrefix:@"mswsm_"] && DMMSWSMTrigger(cmd)) {}   // the Mac Switcher's Stage Manager desktops (MacSwitcherSM.h)
     else if ([cmd hasPrefix:@"msw"] && DMMSWTrigger(cmd)) {}     // the Mac Switcher's tests and probes (MacSwitcher.h)
     else if ([cmd hasPrefix:@"wincard"] && DMWinCardTrigger(cmd)) {}   // the windows' App Switcher cards (WindowCards.h)
+    else if ([cmd hasPrefix:@"rstrip"] && DMRStripTrigger(cmd)) {}   // the recent windows strip: rstrip, rstrip_reveal, rstrip_edge, rstrip_pick_<n> (RecentStrip.h)
     else if ([cmd hasPrefix:@"smcards"] && DMSMCardsTrigger(cmd)) {}   // the App Switcher's cards with the Stage Manager engine (SMCards.h)
     else if ([cmd hasPrefix:@"dset_"] && DMDispSettingsTrigger(cmd)) {}   // Display Settings: dset_open_ipad / _tv, dset_state, dset_set_<ROW>_<v>, dset_reset_<ROW>, dset_useipad_ask / _ok, dset_close (DisplaySettings.h)
     else if ([cmd isEqualToString:@"ptrinfo"]) DMPtrInfo();   // ptrinfo: the pointer's place with another display -- the iPad's region, the hovers (PointerRegion.h; read-only)
@@ -34282,6 +34362,9 @@ static void DMRunTrigger(NSString *cmd) {
                     way, fk ? DMSMKeyText(fk) : ([fa bundleIdentifier] ?: @"none"), [lights isKindOfClass:[DMLights class]] ? (((DMLights *)lights).barKey ?: @"-") : @"-"];
             }
         }
+        if (DMSMEngine())   // (B81: the display in use and the active window, the per-display rows of 1.8.8.2)
+            [o appendFormat:@" | in use: %@, active window %@, held %.1f s more", DMSMIsMainIdentity(DMBarFrontInUseIdentity()) ? @"the iPad" : @"the other display", DMSMKeyText(DMSMFrontWindowKey()) ?: @"none",
+                MAX(0.0, gDMInUse.holdUntil - CACurrentMediaTime())];
         DMLog(o);
     }
 #endif
@@ -38888,6 +38971,55 @@ static void DMPointerAnimTick(void) {
     DMPointerAnimSync(DMPtrAnimIsMacPointer(gDMPtrStyleMac, state, offOrRemoved), offOrRemoved ? (gDMPtrAnimRemoving ? @"removal" : @"switched off or removed")
                       : !gDMPtrStyleMac ? @"Pointer Style iPadOS" : state == 2 ? @"the Mac pointer stands down for another pointer tweak" : @"Pointer Style Mac");
 }
+// Settings > Pointer and Report a Problem say what the Mac pointer is doing (1.8.8.2, GitHub #17; common/MacPointerStatus.h). MacPointer says its
+// pid as it loads in pointeruid; SpringBoard says which pointeruid runs (MSBD_MP_PROCESS): with a trackpad or mouse attached, a pointeruid that has
+// run for 5 s without MacPointer's word is one it is not running in (tweaks turned off for pointeruid, or not put into it). With the 2 s device check,
+// only while a pointer is attached: one read of the kernel's process table for the pid MacPointer said; the whole table searched only when that is
+// not a running pointeruid, at most every 10 s. Debug builds log MacPointer's word whenever it changes.
+static BOOL DMPointerProcRead(int pid, double *startedAgo) {   // (a running pointeruid at that pid; how long ago it started)
+    if (pid <= 0) return NO;
+    struct kinfo_proc kp; size_t len = sizeof kp; int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, pid };
+    memset(&kp, 0, sizeof kp);
+    if (sysctl(mib, 4, &kp, &len, NULL, 0) != 0 || len < sizeof kp || kp.kp_proc.p_pid != pid) return NO;
+    if (strncmp(kp.kp_proc.p_comm, "pointeruid", sizeof kp.kp_proc.p_comm) != 0) return NO;
+    if (startedAgo) { struct timeval now; gettimeofday(&now, NULL); *startedAgo = (double)(now.tv_sec - kp.kp_proc.p_starttime.tv_sec) + (now.tv_usec - kp.kp_proc.p_starttime.tv_usec) / 1e6; }
+    return YES;
+}
+static int DMPointerProcFind(void) {   // (the pid of the pointeruid that runs; 0: none)
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0 }; size_t len = 0;
+    if (sysctl(mib, 4, NULL, &len, NULL, 0) != 0 || !len) return 0;
+    len += len / 8;   // (room for processes started in between)
+    struct kinfo_proc *procs = malloc(len);
+    int found = 0;
+    if (procs && sysctl(mib, 4, procs, &len, NULL, 0) == 0)
+        for (size_t i = 0; i < len / sizeof *procs; i++)
+            if (procs[i].kp_proc.p_pid > 0 && strncmp(procs[i].kp_proc.p_comm, "pointeruid", sizeof procs[i].kp_proc.p_comm) == 0) { found = procs[i].kp_proc.p_pid; break; }
+    free(procs);
+    return found;
+}
+static void DMMacPointerProcessCheck(void) {
+    static int token = 0, procPid = 0; static uint64_t said = 0, lastStatus = UINT64_MAX; static CFTimeInterval lastFind = -100;
+    if (!gDMPointerAttached && !said) return;   // (1.8.8.2 review: no trackpad or mouse and the word already 0, most iPads at rest: nothing read)
+    if (!token && notify_register_check(MSBD_MP_PROCESS, &token) != NOTIFY_STATUS_OK) token = 0;
+    uint64_t status = MSBDMPReadState(MSBD_MP_STATUS);
+    uint32_t mp = MSBDMPPid(status);
+    BOOL mpRuns = gDMPointerAttached && mp > 0 && DMPointerProcRead((int)mp, NULL);
+    double age = 0;
+    if (gDMPointerAttached && !mpRuns && !DMPointerProcRead(procPid, &age)) {
+        procPid = 0;
+        if (CACurrentMediaTime() - lastFind >= 10.0) { lastFind = CACurrentMediaTime(); procPid = DMPointerProcFind(); if (!DMPointerProcRead(procPid, &age)) procPid = 0; }
+    }
+    uint64_t want = MSBDMPProcessWord(gDMPointerAttached, mp, mpRuns, mpRuns ? 0 : procPid, age, said);
+    if (token && want != said) {
+        said = want; notify_set_state(token, want); notify_post(MSBD_MP_PROCESS);
+        DMLog([NSString stringWithFormat:@"[pointer] pointer process: %llu (MacPointer's pid %u: %@)", want, mp, !want ? @"no pointeruid seen" : want == mp ? @"running in it" : @"NOT running in it"]);
+    }
+    if (status != lastStatus) {
+        lastStatus = status;
+        DMLog([NSString stringWithFormat:@"[pointer] MacPointer says: pid %u, verdict %u, seen %u, missing 0x%x, now %u (%@)", mp, MSBDMPVerdict(status), MSBDMPSeen(status), MSBDMPMissing(status), MSBDMPNow(status),
+               MSBDMPReportWords(gDMPtrStyleMac, status, want, MSBDMPOtherName())]);
+    }
+}
 static BOOL gDMPointerPrefsStale = YES;
 static void DMPointerBridgeTick(void) {
     static int tConfig, tOrient, tHide; static uint64_t lastConfig = UINT64_MAX, lastOrient = UINT64_MAX, lastHide = UINT64_MAX;
@@ -38921,7 +39053,7 @@ static void DMPointerBridgeTick(void) {
     if (hide != lastHide) { lastHide = hide; notify_set_state(tHide, hide); changed = YES; }
     if (changed) notify_post("com.besiktasliseba.macpointer.changed");
     static CFTimeInterval lastDeviceCheck = -10;
-    if (CACurrentMediaTime() - lastDeviceCheck > 1.9) { lastDeviceCheck = CACurrentMediaTime(); DMPointerDeviceCheck(); DMPointerAnimTick(); }   // every 2 s, at either pace
+    if (CACurrentMediaTime() - lastDeviceCheck > 1.9) { lastDeviceCheck = CACurrentMediaTime(); DMPointerDeviceCheck(); DMPointerAnimTick(); DMMacPointerProcessCheck(); }   // every 2 s, at either pace
 }
 // The bridge's pace (performance audit P4): every 0.25 s while a trackpad or mouse is attached (or the auto-hiding status bar is on), otherwise
 // once a second -- its per-tick work (orientation, front app, settings for MacPointer) matters only with a pointer, and the 2 s device check still
@@ -40328,6 +40460,31 @@ static void DMAutoHideTVPointer(BOOL inside, CGPoint at, CGSize bar) {
     if (gDMTVBarAH.pointerIn && DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[autohide] the TV's bar: the pointer left it (last seen at %@ of %@)", NSStringFromCGPoint(at), NSStringFromCGSize(bar)]);
     gDMTVFaded = NO;
     MSBDBarAHPointer(&gDMTVBarAH, 0, now);
+}
+// 1.8.8.2 (B86): the pointer on the TV from the TV's system gestures window (PointerRegion.h: its hover sees every move on that display, over a
+// full-screen app too), in the TV's points: from the top edge to the bar's bottom it is on the bar, below it off the bar. The bar's own copies take
+// no hover over a full-screen TV app (its window's strip is in its card, where the app's own pointer region and iPadOS's top control are), so the
+// TV's bar hid 1.1 s after the pointer at the top edge brought it, with the pointer still there (iPadOS 18.5, B69). A hover's end says nothing (the
+// pointer left the TV, or iPadOS hid it where it rests): the copies' hovers and the fade rule above decide then, as before. (noinline, as the next: a
+// function of its own, the auto-hiding bar's in the crash map, not inlined into PointerRegion.h's hover)
+__attribute__((noinline)) static void DMAutoHideTVSystemHover(UIHoverGestureRecognizer *g, BOOL inside) {
+    if (!inside || !gDMTVBarAH.on) return;
+    UIView *v = g.view;
+    UIWindow *w = [v isKindOfClass:[UIWindow class]] ? (UIWindow *)v : v.window;
+    UIScreen *s = w.screen;
+    if (!s || s == [UIScreen mainScreen] || s != DMAutoHideTVScreen()) return;
+    CGPoint p = [v convertPoint:[g locationInView:v] toCoordinateSpace:s.coordinateSpace];
+    BOOL onBar = p.y >= -1.0 && p.y <= DMTVBarHeight();
+    if (onBar == (gDMTVBarAH.pointerIn != 0) && !(onBar && gDMTVFaded)) return;
+    if (onBar) { gDMTVLastIn = p; gDMTVMovedPolls = 0; }
+    gDMTVFaded = NO;
+    MSBDBarAHPointer(&gDMTVBarAH, onBar, CACurrentMediaTime());
+    if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[autohide] the TV's bar: the pointer %@ it (the TV's system gestures window, at %@)", onBar ? @"is on" : @"left", NSStringFromCGPoint(p)]);
+}
+__attribute__((noinline)) static void DMAutoHideTVPointerOnIPad(void) {   // (the pointer moved on the iPad: not on the TV's bar, however its last TV hover ended)
+    if (!gDMTVBarAH.on || !gDMTVBarAH.pointerIn) return;
+    gDMTVFaded = NO;
+    MSBDBarAHPointer(&gDMTVBarAH, 0, CACurrentMediaTime());
 }
 // Every auto-hide tick (it runs while the iPad's setting or the TV's is on): the TV's switch, its copies watched for hover (also for the iPad's zone), a
 // new copy hidden like its display's others, and the hide once the pointer has left it.
@@ -42977,6 +43134,58 @@ static void DMSMFlyToDock(NSString *key) {
 }
 static BOOL DMSMWindowActionAs(NSString *key, NSString *name, BOOL users);
 static BOOL DMSMWindowAction(NSString *key, NSString *name) { return DMSMWindowActionAs(key, name, YES); }   // (the user's: lights, menus, Force Quit)
+// B86: the TV desktop's last window taken out of Stage Manager's model (below) left iPadOS's layout state for the TV naming that stage until its next
+// transition: over a full-screen window the TV kept only its wallpaper, no menu bar and no Dock, until an app opened there, and over a window the TV's
+// bar went on naming the quit app (iPadOS 18.5, B69). So the TV goes to its own empty desktop FIRST -- the transition the Mac Switcher asks for an
+// empty desktop of the TV (DMMSWSMRequestEmpty: every window role emptied, environment 1: its wallpaper, bar and Dock), asked while the window's stage
+// is still Stage Manager's and on screen there -- and the stage is taken out once that transition is over (SMAfterHome.h DMSMAfterTVEmpty), as the
+// iPad's last window goes Home first. The first version took the stage out first and asked after: SpringBoard then began the TV's transition from a
+// state naming a stage no longer in its switcher's model and raised inside it ("Trying to add an icon overlay but the item container for this app
+// layout doesn't exist"); the transition it had begun never finished, and every app launch anywhere waited behind it until a SpringBoard restart
+// (iPadOS 18.5, twice). NO: nothing was asked and nothing is pending (the request refused, or the per-display bar's piece off: its functions read the
+// TV's state; a piece that is off stays off for every caller) -- the caller's 1.8.6 close.
+static BOOL DMMSWSMRequestEmpty(id identity, NSString *why);
+static BOOL gMSWSMEmptyTaken;   // (MacSwitcherSM.h: SpringBoard took that request, its transition maybe still to come)
+static void DMSnapForgetSMFront(void);
+static BOOL DMBarFrontSkipped(void);
+static void DMSMAfterTVEmpty(NSString *what, id identity, id item, void (^block)(BOOL ended));
+static BOOL DMSMTVStageStillShown(id identity, id item);   // (SMAfterHome.h: that window's stage still on screen, the TV's or the iPad's)
+__attribute__((noinline)) static void DMSMTVTakeOut(id identity, id item, NSString *wk, BOOL ended);
+__attribute__((noinline)) static BOOL DMSMTVEmptyFirst(id identity, id item, NSString *wk) {
+    if (DMBarFrontSkipped()) return NO;
+    BOOL asked = DMMSWSMRequestEmpty(identity, [NSString stringWithFormat:@"%@: the TV desktop's last window closes", DMSMKeyText(wk)]);
+    if (!asked && !gMSWSMEmptyTaken) return NO;
+    DM_FEATURE_MARK("sm-tv-close-last-empty");
+    DMLog([NSString stringWithFormat:@"[smengine] %@: the TV desktop's last window closes -- the TV's empty desktop first (%@), its stage taken out after", DMSMKeyText(wk), asked ? @"asked" : @"taken, still to come"]);
+    DMSnapForgetSMFront();
+    NSString *k = [wk copy];
+    DMSMAfterTVEmpty([NSString stringWithFormat:@"%@'s removal from the TV", DMSMKeyText(k)], identity, item, ^(BOOL ended) { DMSMTVTakeOut(identity, item, k, ended); });
+    return YES;
+}
+// The TV desktop's last window, once the TV's empty desktop came (ended) or no end was seen in time: its stage taken out of the model the way the App
+// Switcher closes one window (-[SBMainSwitcherControllerCoordinator deleteAppLayoutForDisplayItem:]), on a stage no longer shown there. A window the
+// user opened there again meanwhile is left open; one whose stage holds another window now, or that is gone already (its app's quit took it), too;
+// and a stage still on screen, the TV's or the iPad's, is never taken out (review 1.8.8.2: SMAfterHome.h DMSMTVStageStillShown).
+__attribute__((noinline)) static void DMSMTVTakeOut(id identity, id item, NSString *wk, BOOL ended) {
+    DMSMSetMinimized(wk, NO);
+    id st = nil;
+    for (id al in DMSMRecentStages()) if (DMSMStageItemsMap(al)[item]) { st = al; break; }
+    BOOL shown = st && DMSMTVStageStillShown(identity, item);   // (SMAfterHome.h: on screen, the TV's or the iPad's -- never taken out then)
+    if (!st || shown || [DMSMStageItemsMap(st) count] != 1) {
+        DMLog([NSString stringWithFormat:@"[smengine] %@: left in the model (%@)", DMSMKeyText(wk), !st ? @"no stage holds it any more" : (shown ? (ended ? @"on screen there again: opened again" : @"still on screen") : @"its stage holds other windows now")]);
+        DMSnapForgetSMFront();
+        return;
+    }
+    id coord = DMSMCoordinator();
+    SEL del = NSSelectorFromString(@"deleteAppLayoutForDisplayItem:");
+    BOOL done = NO;
+    if ([coord respondsToSelector:del] && DMSMSigOK(coord, del, DMSMExpect(@encode(BOOL), @encode(id), NULL), "deleteAppLayoutForDisplayItem:")) {
+        @try { done = ((BOOL (*)(id, SEL, id))objc_msgSend)(coord, del, item); } @catch (NSException *x) { DMSMAPIFail(@"deleteAppLayoutForDisplayItem:", x.reason ?: @"exception"); }
+    }
+    if (done) DM_FEATURE_MARK("sm-tv-close-last-window");
+    DMLog([NSString stringWithFormat:@"[smengine] %@: the TV desktop's last window %@%@", DMSMKeyText(wk), done ? @"taken out" : @"NOT taken out", ended ? @" (the TV at its empty desktop)" : @" (off screen, the TV's end not seen)"]);
+    DMSnapForgetSMFront();
+}
 static BOOL DMSMWindowActionAs(NSString *key, NSString *name, BOOL users) {
     // (Stage Manager's own window actions take the window out of its stage, or move it: on a stage a switcher gesture holds, once its transition
     //  is over -- SMGestureHold.h; e.g. the full-screen window a gesture's join sends away 0.35 s later, DMSMDismissOtherFullScreen. The user's own
@@ -43030,8 +43239,11 @@ static BOOL DMSMWindowActionAs(NSString *key, NSString *name, BOOL users) {
     // Screen first leaves the iPad. The window's own Close did nothing there (A12Z 18.5, 4K TV: Clock stayed), and a Close that took brought Stage
     // Manager's previous TV stage forward (an old hidden window). The TV has no Home of its own to go to first: a transition on the TV's display
     // naming the Home Screen's or the empty workspace's entity changed nothing on it (tvhome trigger, 10 Nov). Not taken: the window's Close as before.
+    // (1.8.8.2, B86: the Mac Switcher's request for an empty desktop of the TV does take it there -- environment 1, its wallpaper, bar and Dock: the TV's
+    //  empty desktop first, the stage taken out once it is there, DMSMTVEmptyFirst above; not asked: taken out at once, as 1.8.6)
     id ownIdentity = own ? DMSMStageDisplayIdentity(own) : nil;
     if (close && ownItem && !DMSMIsMainIdentity(ownIdentity) && [DMSMStageItemsMap(own) count] == 1 && DMSMStageShownOnDisplay(own, ownIdentity)) {
+        if (DMSMTVEmptyFirst(ownIdentity, ownItem, wk)) return YES;
         id coord = DMSMCoordinator();
         SEL del = NSSelectorFromString(@"deleteAppLayoutForDisplayItem:");
         BOOL done = NO;
@@ -43576,6 +43788,7 @@ static BOOL DMSMAddToStage(NSString *bundle, UIView *from) {   // from: the icon
     DMSMTurnForgetOpening(bundle);   // (and a closed window's turn records: the app's next window is a new one -- 1.8.8 H5)
     BOOL windowed = DMWindowedLaunchOn();   // (Window menu > Open Apps as Windows: off = the app opens full screen, in front of the windows)
     id identity = DMSMIdentityOfScreen(from.window.screen ?: [UIScreen mainScreen]);
+    DMBarFrontInUseFollow();   // (B81: the transition this tap asks is the user's, on whichever display the window comes)
     // (Mac Switcher: its window is on another desktop of that display -- the launch brings that desktop, DMMSWSMJoin / DMMSWSMJoinOn; 1.8.7: the TV's own
     //  desktops too)
     if (DMMSWSMElsewhereFor(identity, bundle)) return DMSMAddNo(bundle, @"its window is on another desktop");
@@ -43586,6 +43799,9 @@ static BOOL DMSMAddToStage(NSString *bundle, UIView *from) {   // from: the icon
     NSMutableSet *inStage = [NSMutableSet set];   // (its apps)
     NSMutableArray<NSString *> *stageKeys = [NSMutableArray array];   // (its windows: two of one app are two)
     for (id item in map) { NSString *b = DMSMItemBundle(item), *k = DMSMItemKey(item); if (b) [inStage addObject:b]; if (k) [stageKeys addObject:k]; }
+    // (B81: its window is in the stage that display shows -- the tap asks no transition when it is in front there, and SpringBoard's front app may be
+    //  the other display's, below: that display is the one in use now)
+    if ([inStage containsObject:bundle] && (main ? (al && [al isEqual:DMSMShownMainStage()]) : DMSMStageShownOnDisplay(al, identity))) DMBarFrontInUseUser(identity, @"its app's icon tapped there");
     if (!main && !al) return DMSMAddNo(bundle, @"nothing on the TV yet");   // (nothing on the TV yet: Stage Manager opens the app there itself)
     if (!main) {   // (the TV's stage only when it is on the TV now -- after a respring the TV desktop is empty while the old stage is still on record, and an
                    //  app added to that stage never appeared: then Stage Manager opens the app on the TV itself)
@@ -44183,6 +44399,9 @@ static void DMSMBringToFront(NSString *key) {   // (newest interaction time in t
     id stage = DMSMStageOf(key), attrs = nil;   // (its own stage, on whichever display)
     id item = DMSMItemFor(stage, key, &attrs);
     if (!item) return;
+    // (B81: the user's bring-forward -- a tap, a click, its title bar, its Dock icon, Command-Tab, the Mac Switcher, Spotlight, the Window menu --
+    //  makes its display the one in use, also for a window already in front there, which asks no transition: the other display's app stayed active)
+    DMBarFrontInUseUser(DMSMStageDisplayIdentity(stage), @"a window brought forward");
     NSDictionary *map = DMSMStageItemsMap(stage);
     long long newest = 0, mine = 0;
     if (!DMSMAttrLastInteractionTime(attrs, &mine) || DMSMItemInFront(map, item, &newest)) return;   // (in front already, alone)
@@ -44678,7 +44897,7 @@ static BOOL DMBarFrontSwitcherOn(UIScreen *screen, long long *env, id *stage) {
     if (!screen) return NO;
     int i = screen == [UIScreen mainScreen] ? 0 : 1;
     if (gDMSnapDepth && gDMSnapBarKnown[i] && gDMSnapBarScreen[i] == screen) { *env = gDMSnapBarEnv[i]; *stage = gDMSnapBarStage[i]; return gDMSnapBarRead[i]; }
-    BOOL read = NO; long long e = 0; id st = nil;
+    BOOL read = NO, settled = NO; long long e = 0; id st = nil;
     id c = DMSwitcherController();
     SEL forScene = NSSelectorFromString(@"switcherControllerForWindowScene:");
     if ([c respondsToSelector:forScene] && DMSMSigOK(c, forScene, DMSMSigObjObj(), "switcherControllerForWindowScene:")) {
@@ -44686,13 +44905,21 @@ static BOOL DMBarFrontSwitcherOn(UIScreen *screen, long long *env, id *stage) {
             for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
                 if (![sc isKindOfClass:[UIWindowScene class]] || (((UIWindowScene *)sc).screen ?: [UIScreen mainScreen]) != screen) continue;
                 id lc = DMSwitcherObjCall(DMSwitcherObjCall(((id (*)(id, SEL, id))objc_msgSend)(c, forScene, sc), @"contentViewController"), @"layoutContext");
-                id state = DMSwitcherObjCall(lc, @"transitioningToLayoutState") ?: DMSwitcherObjCall(lc, @"layoutState");
-                if (DMSMHomeStateOf(state, &e, &st)) { read = YES; break; }
+                id going = DMSwitcherObjCall(lc, @"transitioningToLayoutState");
+                id state = going ?: DMSwitcherObjCall(lc, @"layoutState");
+                if (DMSMHomeStateOf(state, &e, &st)) { read = YES; settled = going == nil; break; }
                 e = 0; st = nil;
             }
         } @catch (NSException *x) { read = NO; e = 0; st = nil; }
     }
-    if (read && st) for (id al in DMSMRecentStages()) if (al == st || [al isEqual:st]) { st = al; break; }
+    if (read && st) {
+        BOOL inModel = NO;
+        for (id al in DMSMRecentStages()) if (al == st || [al isEqual:st]) { st = al; inModel = YES; break; }
+        // (B86: a stage taken out of Stage Manager's model -- the TV desktop's last window closed, DMSMWindowActionAs -- stayed named by that display's
+        //  settled layout state until its next transition, and its bar named the quit app for minutes: none of its windows left on that display, it is
+        //  shown nowhere, its empty desktop is. A stage still on its way in is the transition's: as it is)
+        if (MSBDShownStageGone(settled, inModel, !inModel && DMSMStageShownOnDisplay(st, DMSMIdentityOfScreen(screen)))) st = nil;
+    }
     if (gDMSnapDepth) { gDMSnapBarScreen[i] = screen; gDMSnapBarKnown[i] = YES; gDMSnapBarRead[i] = read; gDMSnapBarEnv[i] = e; gDMSnapBarStage[i] = st; if (!gDMSMModelChanged) gDMSMModelChanged = DMSnapForgetSMFront; }
     *env = e; *stage = st;
     return read;
@@ -44715,12 +44942,13 @@ __attribute__((noinline)) static int DMBarFrontOn(UIScreen *tv, SBApplication **
     long long env = 0; id shown = nil;
     BOOL read = DMBarFrontSwitcherOn(onTV ? tv : [UIScreen mainScreen], &env, &shown);
     BOOL shows = read && env == 3 && shown != nil;
-    // The active window's display: the Stage Manager engine's is the most recent stage's (as DMSMFrontWindowKeyNow takes it); the other engines' is the
-    // TV's when SpringBoard's front app -- not one of their windows, which are the iPad's -- is in the stage the TV shows.
+    // The active window's display: the Stage Manager engine's is the display in use (as DMSMFrontWindowKeyNow takes it: B81, DMBarFrontInUseIdentity --
+    // the most recent stage's until the user touches or clicks a window on the other display); the other engines' is the TV's when SpringBoard's front
+    // app -- not one of their windows, which are the iPad's -- is in the stage the TV shows.
     NSString *activeKey = nil; SBApplication *activeApp = nil; BOOL activeHere = NO, activeInShown = NO;
     if (sm) {
         activeKey = DMSMFrontWindowKey();
-        id first = [DMSMRecentStages() firstObject], at = first ? DMSMStageDisplayIdentity(first) : nil;
+        id at = DMBarFrontInUseIdentity();
         activeHere = onTV ? (at && [at isEqual:DMSMIdentityOfScreen(tv)]) : DMSMIsMainIdentity(at);
         activeInShown = shows && activeKey.length && DMSMItemFor(shown, activeKey, nil) != nil;
     } else {
@@ -44795,6 +45023,7 @@ static BOOL DMBarFrontActivate(NSString *key) {
     BOOL ok = DMSMRequestStageOrderAs(stage, @{item: @(newest + 1)}, item, YES);
     DM_FEATURE_MARK("bar-front-activate");
     DMLog([NSString stringWithFormat:@"[barfront] %@ made the active window from its display's menu bar: %@", DMSMKeyText(key), ok ? @"asked" : @"refused"]);
+    if (ok) DMBarFrontInUseUser(DMSMStageDisplayIdentity(stage), @"a window made active from its display's menu bar");   // (B81: its display in use, also when its stage was the most recent already)
     return ok;
 }
 // Where the hardware keyboard's keys go now (SpringBoard's focus controller, the 15-18 call -externalSceneWithFocus, read as DMMenuKeysReader reads
@@ -44831,11 +45060,183 @@ static void DMBarFrontLightTap(NSInteger which, NSString *key) {
     if (!key.length || !DMSMEngine()) { DMLightAction(which); return; }
     if (DMGARefuses(@"traffic light")) return;
     DMLog([NSString stringWithFormat:@"[lights] tap %ld on another display's bar: %@", (long)which, DMSMKeyText(key)]);
+    DMBarFrontInUseBarAction(key);   // (B81: the transition it asks there does not make that display the one in use)
     if (which == 2 ? DMSMToggleZoom(key) : (which == 0 ? DMSMRedLight(key) : DMSMWindowAction(key, @"removeFromSet"))) return;
     if (which == 0) DMForceQuitBundle(DMSMKeyBundle(key));
 }
 static void DMBarFrontMinimize(NSString *key) {   // (the App menu's Minimize from another display's bar: its own window)
+    DMBarFrontInUseBarAction(key);   // (B81: as the lights above)
     if (!DMSMWindowAction(key, @"removeFromSet")) DMLog([NSString stringWithFormat:@"[barfront] minimize %@: refused", DMSMKeyText(key)]);
+}
+// ---- the display in use (1.8.8.2, B81; KT: "as on a Mac with two displays: the app you last touched or clicked is the active one") -----------------
+// The Stage Manager engine's active window was the front window of SpringBoard's most recent stage, on any display (DMSMFrontWindowKeyNow). That
+// order changes only with a workspace transition: a click or a tap on a window already in front on its display, or on its Dock icon, made none, so
+// the other display's app stayed the active one (SpringBoard's keys went to the touched app, its window lights stayed grey); and an action from a
+// display's own bar on its window -- its traffic lights, the App menu's Minimize, Force Quit -- is a transition there, which made that display's app
+// the active one, a minimized window's app too (iPadOS 18.5 with a TV, B69). The display in use is now a state of its own
+// (common/DisplayInUse.h): the user's touch, click or bring-forward of a window makes its display the one in use; SpringBoard's most recent stage
+// becoming another one makes its display the one in use unless that is held (a moment after a touch, and after an action from the other display's
+// bar); the active window is the front window of the stage that display shows (none at the iPad's Home Screen or the TV's empty desktop). With the
+// iPad alone -- no stage of another display ever seen -- or the crash guard's piece off (barPerDisplay), 1.8.8.1's rule by the same calls.
+static void DMSnapForgetSMFront(void);
+// A connected display's screen by its identity (nil: the iPad's, or not connected).
+static UIScreen *DMBarFrontInUseScreen(id identity) {
+    if (!identity || DMSMIsMainIdentity(identity)) return nil;
+    for (UIScreen *sc in DMDispScreens()) if (sc != [UIScreen mainScreen] && [DMSMIdentityOfScreen(sc) isEqual:identity]) return sc;
+    return nil;
+}
+// SpringBoard's most recent stage for the state: one number for each display, front window and shown-or-not it has been (0: no stage), so a stage
+// that comes back first after another is the same as before, and one that comes on screen is a new one; *d its display.
+static unsigned long long DMBarFrontInUseSig(id first, BOOL shown, int *d) {
+    static NSMutableDictionary<NSString *, NSNumber *> *seen; static unsigned long long n = 0;
+    *d = 0;
+    if (!first) return 0;
+    *d = DMSMIsMainIdentity(DMSMStageDisplayIdentity(first)) ? 0 : 1;
+    NSString *now = [NSString stringWithFormat:@"%d|%@|%d", *d, DMSMNewestKeyIn(first) ?: @"-", shown];
+    if (!seen || seen.count > 256) seen = [NSMutableDictionary dictionary];
+    NSNumber *had = seen[now];
+    if (!had) { had = @(++n); seen[now] = had; }
+    return had.unsignedLongLongValue;
+}
+// That stage is shown on its display now: its display's own switcher names it (where its transition goes, else where it is), or, that switcher not
+// read, the iPad's stage on screen / a TV stage with a window drawn on the TV.
+static BOOL DMBarFrontInUseShown(id stage) {
+    id identity = DMSMStageDisplayIdentity(stage);
+    BOOL main = DMSMIsMainIdentity(identity);
+    UIScreen *sc = main ? [UIScreen mainScreen] : DMBarFrontInUseScreen(identity);
+    long long env = 0; id st = nil;
+    if (sc && DMBarFrontSwitcherOn(sc, &env, &st)) return env == 3 && st && (st == stage || [st isEqual:stage]);
+    return main ? [DMSMIPadStageShown() isEqual:stage] : DMSMStageShownOnDisplay(stage, identity);
+}
+// The state about this other display (nil: the one connected, if any), afresh when it is another one. NO with none connected.
+static BOOL DMBarFrontInUseAbout(id identity) {
+    if (!identity) {
+        if (gDMInUseOther && DMBarFrontInUseScreen(gDMInUseOther)) return YES;
+        for (UIScreen *sc in DMDispScreens()) if (sc != [UIScreen mainScreen] && DMSMIdentityOfScreen(sc)) { identity = DMSMIdentityOfScreen(sc); break; }
+    }
+    if (!identity || !DMBarFrontInUseScreen(identity)) return NO;
+    if (![identity isEqual:gDMInUseOther]) { MSBDInUseForget(&gDMInUse); gDMInUseOther = identity; }
+    return YES;
+}
+// The display in use now, SpringBoard's most recent stage (first) read into the state: 0 the iPad, 1 the other display (*other its identity), -1 the
+// iPad alone or the piece off (1.8.8.1's rule).
+__attribute__((noinline)) static int DMBarFrontInUseRead(id first, id *other) {
+    *other = nil;
+    if (DMBarFrontSkipped()) return -1;
+    id fid = first ? DMSMStageDisplayIdentity(first) : nil;
+    if (first && !DMSMIsMainIdentity(fid) && ![fid isEqual:gDMInUseOther]) { MSBDInUseForget(&gDMInUse); gDMInUseOther = fid; }   // (another display's stage: the state is about it)
+    if (!gDMInUseOther) return -1;
+    if (!DMBarFrontInUseScreen(gDMInUseOther)) { MSBDInUseForget(&gDMInUse); gDMInUseOther = nil; return -1; }   // (that display went)
+    int d = 0;
+    BOOL shown = first && DMBarFrontInUseShown(first);
+    unsigned long long sig = DMBarFrontInUseSig(first, shown, &d);
+    double now = CACurrentMediaTime();
+    BOOL held = MSBDInUseHeld(&gDMInUse, sig, d, shown, now);
+    if (MSBDInUseFirst(&gDMInUse, sig, d, shown, now)) {
+        DM_FEATURE_MARK("display-in-use");
+        DMLog([NSString stringWithFormat:@"[inuse] the display in use: %@ (SpringBoard's most recent stage, %@)", gDMInUse.inUse ? @"the other display" : @"the iPad", DMSMKeyText(DMSMNewestKeyIn(first)) ?: @"no window"]);
+    } else if (held) {   // (a transition the hold keeps from taking the display in use: it may have given its app the keys -- they go back, below)
+        NSString *k = DMSMNewestKeyIn(first);
+        DMLog([NSString stringWithFormat:@"[inuse] %@ came first on %@ while the display in use is held: it stays %@", DMSMKeyText(k) ?: @"no window", d ? @"the other display" : @"the iPad", gDMInUse.inUse ? @"the other display" : @"the iPad"]);
+        if (k.length) DMBarFrontInUseKeysBack(k, 3);
+    }
+    *other = gDMInUseOther;
+    return gDMInUse.inUse;
+}
+// The display in use (nil: the iPad): the bars' "in use" (DMBarFrontOn). 1.8.8.1: the most recent stage's display.
+static id DMBarFrontInUseIdentity(void) {
+    id first = [DMSMRecentStages() firstObject], other = nil;
+    int inUse = DMBarFrontInUseRead(first, &other);
+    if (inUse < 0) return first ? DMSMStageDisplayIdentity(first) : nil;
+    return inUse ? other : nil;
+}
+// The stage the active window is in (*way, common/DisplayInUse.h): kMSBDInUseWayRecent -- 1.8.8.1's rule, the caller's own lines --, the stage the iPad
+// shows (none at its Home Screen or App Switcher), or the stage the other display shows: its own switcher's (where its transition goes, else where
+// it is; none at its empty desktop), its most recent stage there when that can't be read.
+__attribute__((noinline)) static id DMBarFrontInUseStage(id first, int *way) {
+    id other = nil;
+    int inUse = DMBarFrontInUseRead(first, &other);
+    *way = MSBDInUseWay(inUse >= 0, inUse > 0, first && !DMSMIsMainIdentity(DMSMStageDisplayIdentity(first)));
+    if (*way == kMSBDInUseWayIPad) return DMSMIPadStageShown();
+    if (*way != kMSBDInUseWayOther) return nil;
+    long long env = 0; id shown = nil;
+    UIScreen *sc = DMBarFrontInUseScreen(other);
+    if (sc && DMBarFrontSwitcherOn(sc, &env, &shown)) return env == 3 ? shown : nil;
+    if (first && [DMSMStageDisplayIdentity(first) isEqual:other]) return first;
+    id al = DMSMFrontStageOnDisplay(other);
+    return al && DMSMStageShownOnDisplay(al, other) ? al : nil;
+}
+// The user's touch, click or bring-forward of a window on that display (nil: the iPad): the display in use now.
+__attribute__((noinline)) static void DMBarFrontInUseUser(id identity, NSString *why) {
+    if (DMBarFrontSkipped() || !DMSMEngine()) return;
+    BOOL onOther = identity && !DMSMIsMainIdentity(identity);
+    if (onOther ? !DMBarFrontInUseAbout(identity) : !DMBarFrontInUseAbout(nil)) return;   // (no other display: the iPad is the one in use anyway)
+    id first = [DMSMRecentStages() firstObject], other = nil;
+    if (DMBarFrontInUseRead(first, &other) < 0) return;   // (the state as SpringBoard's order has it until now)
+    int d = 0;
+    unsigned long long sig = DMBarFrontInUseSig(first, first && DMBarFrontInUseShown(first), &d);
+    BOOL changed = MSBDInUseUser(&gDMInUse, onOther ? 1 : 0, sig, CACurrentMediaTime());
+    // (the keys go with the window made active, as on a Mac: where they are is read, not the window active before -- the transition this activation
+    //  asked may have made SpringBoard's order name this display already (the Window menu's pick: the state read it first, the window before it was
+    //  not known any more, and nothing was asked), and SpringBoard does not always move them itself (a click in the window or on its title bar while
+    //  the other display's app had them: they stayed there, iPadOS 18.5). Any other app keeping them is asked to give them up; up to 10 s while
+    //  SpringBoard itself holds them (one of our menus open, the Mac Switcher, Spotlight). Only with a hardware keyboard: DMBarFrontInUseKeysBack)
+    DMBarFrontInUseKeysBack(nil, 20);
+    if (!changed) return;
+    DM_FEATURE_MARK("display-in-use-touch");
+    DMLog([NSString stringWithFormat:@"[inuse] the display in use: %@ (%@)", onOther ? @"the other display" : @"the iPad", why]);
+    DMSnapForgetSMFront();
+    dispatch_async(dispatch_get_main_queue(), ^{ DMSMRefreshBars(); for (UIView *fg in gCopies.allObjects) if (fg.window && !fg.window.hidden) [fg setNeedsLayout]; });
+}
+static void DMBarFrontInUseFollow(void) { MSBDInUseFollow(&gDMInUse); }   // (an app's icon tapped: its transition is followed, DMSMAddToStage)
+// The keys go with the active window: after an action from the other display's bar (below) SpringBoard may hand them to the window the transition
+// named there, after a transition the hold kept from taking the display in use (DMBarFrontInUseRead) to that stage's app, and after the user made a
+// window on a display the active one (DMBarFrontInUseUser) they may stay with the app that was active. Asked for the active window, as a tap in it
+// asks, only while they sit with that other app (acted: its window; nil: any app but the active window's), and only with a hardware keyboard (as
+// DMKBGiveBack: without one, the ask brought an app's on-screen keyboard up). Read every 0.5 s, left times: with the active window's app, done;
+// with SpringBoard itself (one of our menus, the Mac Switcher, Spotlight: it gives them back where they were when it closes), while one of our menus
+// or dialogs is open (its keys: the menu bar's menus leave them with the app, as on a Mac) or with another app than acted's, read again; with that app, asked -- and read again, asked again while they stay there, 3 asks at most (one ask did not always move them:
+// iPadOS 18.5, a click in Settings' window while Tips on the TV had them, 1.8.8.2).
+static void DMBarFrontInUseKeysStep(NSString *acted, int left, int asks);
+static void DMBarFrontInUseKeysBack(NSString *acted, int left) {
+    DMBarFrontInUseKeysStep(acted, left, 3);
+}
+// The app the keyboard's keys go to now (SpringBoard's focus controller, -externalSceneWithFocus as DMBarFrontKeysTo reads it): its bundle, @"" when
+// SpringBoard has them itself, nil when it can't be read.
+static NSString *DMBarFrontKeysHolder(void) {
+    id kfc = DMKeyboardFocusController();
+    SEL s = NSSelectorFromString(@"externalSceneWithFocus");
+    if (!MSBDFocusHas(kfc, s, @"@@:")) return nil;
+    id scene = ((id (*)(id, SEL))objc_msgSend)(kfc, s);
+    return scene ? DMBundleOfSceneID(scene) : @"";
+}
+static void DMBarFrontInUseKeysStep(NSString *acted, int left, int asks) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        NSString *active = DMSMFrontWindowKey(), *ab = DMSMKeyBundle(active), *xb = DMSMKeyBundle(acted), *holder = DMBarFrontKeysHolder();
+        if (!ab.length || !holder || [holder isEqualToString:ab] || !DMHardwareKeyboardAttached()) return;
+        if (!holder.length || gOverlay || (xb.length && ![holder isEqualToString:xb])) { if (left > 1) DMBarFrontInUseKeysStep(acted, left - 1, asks); return; }   // (gOverlay: our menu or dialog open: its keys)
+        if (asks <= 0) { DMLog([NSString stringWithFormat:@"[inuse] the keys stayed with %@ after 3 asks for %@", holder, DMSMKeyText(active)]); return; }
+        NSString *uid = DMSMKeyUid(active);
+        id mgr = DMCall(objc_getClass("FBSceneManager"), @"sharedInstance"), scene = nil;
+        SEL byID = NSSelectorFromString(@"sceneWithIdentifier:");
+        if ([uid hasPrefix:@"sceneID:"] && [mgr respondsToSelector:byID]) scene = ((id (*)(id, SEL, id))objc_msgSend)(mgr, byID, uid);   // (that window's own scene, M-2)
+        BOOL asked = DMKBUserFocusRequest(DMKeyboardFocusController(), scene ?: DMKBSceneForApp(ab), @"MacStatusBar: the keys stay with the active window");
+        DMLog([NSString stringWithFormat:@"[inuse] the keys went to %@, not the active window's app: %@ for %@", holder, asked ? @"asked back" : @"could not be asked back", DMSMKeyText(active)]);
+        if (asked && left > 1) DMBarFrontInUseKeysStep(acted, left - 1, asks - 1);
+    });
+}
+// An action from a display's own bar on its own window, that display not the one in use (B69's lights, the App menu's Minimize, Force Quit): the
+// transition it asks there is not the user's activation of that display -- held (common/DisplayInUse.h), and the keys asked back if they went.
+__attribute__((noinline)) static void DMBarFrontInUseBarAction(NSString *key) {
+    if (!key.length || DMBarFrontSkipped() || !DMSMEngine()) return;
+    id ident = DMSMStageDisplayIdentity(DMSMStageOf(key));
+    BOOL onOther = ident && !DMSMIsMainIdentity(ident);
+    id first = [DMSMRecentStages() firstObject], other = nil;
+    if (!DMBarFrontInUseAbout(onOther ? ident : nil) || DMBarFrontInUseRead(first, &other) < 0 || gDMInUse.inUse == (onOther ? 1 : 0)) return;   // (the state about that display, from SpringBoard's order now)
+    MSBDInUseBarAction(&gDMInUse, onOther ? 1 : 0, CACurrentMediaTime());
+    DM_FEATURE_MARK("display-in-use-held");
+    DMLog([NSString stringWithFormat:@"[inuse] %@: an action from its display's bar -- the display in use stays %@", DMSMKeyText(key), gDMInUse.inUse ? @"the other display" : @"the iPad"]);
+    DMBarFrontInUseKeysBack([key copy], 3);
 }
 // ---- one piece: our title bar and Apple's window card --------------------------------------------------------------------------------------------
 // The card's page view rounds all four corners (its content clip, SBAsymmetricalCornerRadiusWrapperView, and its shadow follow its maskedCorners),
@@ -44975,6 +45376,7 @@ static BOOL DMKBUserFocusRequest(id kfc, id scene, NSString *why);
 static id DMKBSceneForApp(NSString *app);
 // The full-screen window tapped behind the windows becomes the active one, where it is.
 static void DMSMFullScreenActivate(NSString *key) {
+    DMBarFrontInUseUser(DMSMStageDisplayIdentity(DMSMStageOf(key)), @"a full-screen window tapped behind the windows");   // (B81: its display in use first: the window in front there is read below)
     gSMFullActive = [key copy]; gSMFullActiveOver = [DMSMNewestKeyNow() copy];
     DMSnapForgetSMFront();
     DM_FEATURE_MARK("sm-full-screen-active-behind");
@@ -45069,6 +45471,26 @@ static void DMSMActivateOnTouch(UIEvent *event) {
             if (what == kMSBDSMTouchActiveInPlace) { NSString *k = [bundle copy]; dispatch_async(dispatch_get_main_queue(), ^{ DMSMFullScreenActivate(k); }); continue; }   // (it stays behind them: above)
             dispatch_async(dispatch_get_main_queue(), ^{ DMSMBringToFront(bundle); DMLog([NSString stringWithFormat:@"[smengine] %@ brought forward by a touch in it", DMSMKeyText(bundle)]); });
         }
+    }
+}
+// B81: a pointer's click in a window makes its display the one in use, as a click does on a Mac -- also in a window already in front there, which
+// Stage Manager's own click leaves as it is (no transition: the other display's app stayed the active one, B69). A click in a window behind
+// is Stage Manager's own as before (its transition makes that display's stage the most recent); a finger's tap does it as it lifts (above:
+// DMSMBringToFront). Not on the menu bar (a full-screen window's strip is the bar there), not on our title bar (its tap and drag bring the window
+// forward themselves, and its lights act without making the window active, as a Mac's on a window behind), not in an App Switcher or the Mac
+// Switcher. Nothing with the iPad alone.
+__attribute__((noinline)) static void DMBarFrontInUsePress(UIEvent *event) {
+    for (UITouch *x in event.allTouches) {
+        if (x.type != UITouchTypeIndirectPointer || x.phase != UITouchPhaseBegan || !x.window) continue;
+        if (DMBarFrontSkipped() || DMDispScreens().count < 2) return;
+        UIScreen *screen = x.window.screen ?: [UIScreen mainScreen];
+        CGPoint p = [x.window convertPoint:[x locationInView:x.window] toCoordinateSpace:screen.coordinateSpace];
+        if (DMSwitcherVisible() || gMSWOpen || gMSWSwitching || DMSMScreenPointOnMenuBar(p, screen)) return;
+        UIView *hit = DMSMTouchTarget(x, event, screen, p);
+        for (UIView *v = hit; v; v = v.superview) if ([v isKindOfClass:[DMSMTitleBar class]]) return;
+        if (!DMSMCardKey(DMSMCardOfView(hit)).length) return;
+        DMBarFrontInUseUser(DMSMIdentityOfScreen(screen), @"a click in a window there");
+        return;
     }
 }
 // ---- several windows at once: the Window menu's Fit to Window and Swap rows, with Stage Manager as the engine ----------------------------------------
@@ -46618,7 +47040,7 @@ static void DMSMLogIconTap(NSString *bundle, UIView *icon, NSString *how) {
 // build's own sendEvent: hook, so the feature never shipped in 1.1.0/1.1.1 (logic test K1).
 %hook SpringBoard
 - (void)sendEvent:(UIEvent *)event {
-    if (event.type == UIEventTypeTouches && DMSMEngine()) { DMSMActivateOnTouch(event); DMSMStripTouch(event); }
+    if (event.type == UIEventTypeTouches && DMSMEngine()) { DMSMActivateOnTouch(event); DMSMStripTouch(event); DMBarFrontInUsePress(event); }
     %orig;
 }
 %end
@@ -48587,12 +49009,21 @@ NSString *DMSMFrontWindowKey(void) {
     return k;
 }
 NSString *DMSMFrontWindowBundle(void) { return DMSMKeyBundle(DMSMFrontWindowKey()); }
+// The stage the active window is in: the most recent stage, the iPad's the one it shows (nil at the iPad's Home Screen with no TV stage in use);
+// with another display up, the stage the display in use shows (B81, DMBarFrontInUseStage: nil at the iPad's Home Screen or the TV's empty desktop).
+static id DMSMInUseStageNow(void) {
+    id stage = [DMSMRecentStages() firstObject];
+    int way = kMSBDInUseWayRecent;
+    id inUse = DMBarFrontInUseStage(stage, &way);
+    if (way != kMSBDInUseWayRecent) return inUse;
+    if (!stage || DMSMIsMainIdentity(DMSMStageDisplayIdentity(stage))) { id shown = DMSMShownMainStage(); if (shown) stage = shown; }   // (the stage on screen, not the one a quick switch left first: DMSMShownMainStage)
+    if (DMSMIsMainIdentity(DMSMStageDisplayIdentity(stage)) && !DMFrontApp()) return nil;   // (the iPad's Home Screen, no TV stage in use)
+    return stage;
+}
 // (the window in front by interaction order -- the newest -- of the stage on screen: DMSMFrontWindowKeyNow's, without a full-screen window made
 //  active behind the windows)
 static NSString *DMSMNewestKeyNow(void) {
-    id stage = [DMSMRecentStages() firstObject];
-    if (!stage || DMSMIsMainIdentity(DMSMStageDisplayIdentity(stage))) { id shown = DMSMShownMainStage(); if (shown) stage = shown; }
-    if (DMSMIsMainIdentity(DMSMStageDisplayIdentity(stage)) && !DMFrontApp()) return nil;
+    id stage = DMSMInUseStageNow();
     NSDictionary *map = DMSMStageItemsMap(stage);
     id best = nil; long newest = LONG_MIN;
     for (id item in map) { long t = DMSMAttrTimeOr(map[item], 0); if (t > newest) { newest = t; best = item; } }
@@ -48608,17 +49039,16 @@ static void DMSMFullScreenActiveEnd(void) {
     dispatch_async(dispatch_get_main_queue(), ^{ DMSMRefreshBars(); for (UIView *fg in gCopies.allObjects) if (fg.window && !fg.window.hidden) [fg setNeedsLayout]; });
 }
 static NSString *DMSMFrontWindowKeyNow(void) {
-    // (the ACTIVE window: the most recently used stage on any screen -- a window clicked on the TV is the active app, as on a Mac, where every
-    //  display's menu bar shows the one active app; iPad-only checks -- Dock, full screen -- use DMSMFrontStage, the iPad's own stage)
+    // (the ACTIVE window: the most recently used stage on any screen -- a window clicked on the TV is the active app, as on a Mac; with another display
+    //  up, the front window of the display in use, B81: the one last touched or clicked; iPad-only checks -- Dock, full screen -- use DMSMFrontStage,
+    //  the iPad's own stage)
     if (gSMFullActive) {   // (a full-screen window made active behind the windows: while it is still that)
         NSString *newest = DMSMNewestKeyNow();
         if ([gSMFullActiveOver isEqualToString:newest] && [gSMFullActive isEqualToString:DMSMFullScreenUnderWindows()]) return gSMFullActive;
         DMSMFullScreenActiveEnd();
         return newest;
     }
-    id stage = [DMSMRecentStages() firstObject];
-    if (!stage || DMSMIsMainIdentity(DMSMStageDisplayIdentity(stage))) { id shown = DMSMShownMainStage(); if (shown) stage = shown; }   // (the stage on screen, not the one a quick switch left first: DMSMShownMainStage)
-    if (DMSMIsMainIdentity(DMSMStageDisplayIdentity(stage)) && !DMFrontApp()) return nil;   // (the iPad's Home Screen, no TV stage in use)
+    id stage = DMSMInUseStageNow();   // (the most recent stage on any display, the iPad's the one it shows; with another display up the display in use's, B81)
     NSDictionary *map = DMSMStageItemsMap(stage);
     id best = nil; long newest = LONG_MIN;
     for (id item in map) {

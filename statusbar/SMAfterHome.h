@@ -35,16 +35,125 @@ static void DMSMAfterHomeRun(NSArray *w, NSString *why, BOOL ended) {
         gSMAfterHomeEnded = NO;
     });
 }
+// The TV desktop's last window (1.8.8.2, B86): the TV's own empty desktop is asked for FIRST, while the window's stage is still Stage Manager's and
+// on screen there (StatusBar.x DMSMTVEmptyFirst), and the stage leaves the model once that transition is over -- as the iPad's last window goes Home
+// first. B86's first version took the stage out first and asked after: SpringBoard began the TV's transition from a layout state naming a stage no
+// longer in its switcher's model and raised inside it ("Trying to add an icon overlay but the item container for this app layout doesn't exist");
+// the transition it had begun never finished, and every later transition -- every app launch, anywhere -- waited behind it until a SpringBoard
+// restart (iPadOS 18.5, twice). The end that counts: one on that display of our request (its event label) or one that ended at its empty desktop;
+// none seen in 4 s: the removal runs once the stage is off screen, never while it is on screen (DMSMAfterTVEmptyCap). Meanwhile the app's own
+// switcher clean-up after a force quit waits with it
+// (DMSMAfterTVEmptyHolds): no stage of the app leaves the model while that transition may still have to begin.
+static NSMutableArray<NSArray *> *gSMAfterTVEmpty;   // (@[what, the display's identity, the window's display item, block(ended), when, blocks held])
+static NSString *const kSMTVEmptyLabel = @"MSBDDisplayEmptyDesktop";   // (MacSwitcherSM.h DMMSWSMRequestEmpty's event label)
+#ifndef MSBD_TV_EMPTY_LONGEST
+#define MSBD_TV_EMPTY_LONGEST 30.0   // (tools/test-tvemptyfirst builds with a shorter one)
+#endif
+static const CFTimeInterval kSMAfterTVEmptyLongest = MSBD_TV_EMPTY_LONGEST;
+static id DMMSWSMStateStage(id identity);   // (MacSwitcherSM.h: the stage another display's settled layout state names, nil at its empty desktop)
+static id DMSMShownMainStage(void);         // (StatusBar.x: the stage the iPad shows)
+// (review 1.8.8.2) The window's stage still on screen: the TV's state still names it or its window is still there (the TV's transition to its empty
+// desktop has not begun yet -- queued behind another -- or is still running), or the iPad shows it (the TV unplugged meanwhile: SpringBoard moved
+// its stage there). A stage on screen is never taken out: a state naming a stage the model no longer has is the very state SpringBoard raised in,
+// inside a transition it then never finished. NO: no stage holds the window, or none of that.
+static BOOL DMSMTVStageStillShown(id identity, id item) {
+    id st = nil;
+    for (id al in DMSMRecentStages()) if (DMSMStageItemsMap(al)[item]) { st = al; break; }
+    if (!st) return NO;
+    id named = DMMSWSMStateStage(identity), ipad = DMSMShownMainStage();
+    return (named && (named == st || [named isEqual:st])) || DMSMStageShownOnDisplay(st, identity) || (ipad && (ipad == st || [ipad isEqual:st]));
+}
+static void DMSMAfterTVEmptyRun(NSArray *w, NSString *why, BOOL ended) {
+    if ([gSMAfterTVEmpty indexOfObjectIdenticalTo:w] == NSNotFound) return;
+    [gSMAfterTVEmpty removeObjectIdenticalTo:w];
+    dispatch_async(dispatch_get_main_queue(), ^{   // (never inside SpringBoard's own call: the next turn of the main queue)
+        DMLog([NSString stringWithFormat:@"[smengine] %@: %@", w[0], why]);
+        @try { ((void (^)(BOOL))w[3])(ended); }
+        @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[smengine] %@ failed: %@", w[0], e.reason]); }
+        // (the app's held switcher clean-up deletes its stages: not while one is on screen again -- opened again meanwhile)
+        if ([(NSArray *)w[5] count] && DMSMTVStageStillShown(w[1], w[2])) {
+            DMLog([NSString stringWithFormat:@"[smengine] %@: its stage is on screen again: the app's switcher clean-up is not run", w[0]]);
+            return;
+        }
+        for (dispatch_block_t b in (NSArray *)w[5]) {
+            @try { b(); } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[smengine] %@: a held clean-up failed: %@", w[0], e.reason]); }
+        }
+    });
+}
+// (review 1.8.8.2) No end seen in 4 s: the removal runs only once the window's stage is off screen (the TV's transition over, its end not seen here);
+// while it is still on screen that transition may still be to come or running -- read again every second, the end still awaited; after 30 s still on
+// screen: left in the model with nothing run (the app was ended all the same; SpringBoard's own clean-up of it then begins from a state it knows).
+static void DMSMAfterTVEmptyCap(NSArray *w) {
+    if ([gSMAfterTVEmpty indexOfObjectIdenticalTo:w] == NSNotFound) return;
+    double waited = CACurrentMediaTime() - [w[4] doubleValue];
+    if (DMSMTVStageStillShown(w[1], w[2])) {
+        if (waited < kSMAfterTVEmptyLongest) {
+            if (waited < kSMAfterHomeMaxWait + 0.5) DMLog([NSString stringWithFormat:@"[smengine] %@: no end of the TV's empty desktop seen in 4 s and its stage is still on screen: not taken out, it waits on", w[0]]);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMSMAfterTVEmptyCap(w); });
+            return;
+        }
+        [gSMAfterTVEmpty removeObjectIdenticalTo:w];
+        DMLog([NSString stringWithFormat:@"[smengine] %@: still on screen after %.0f s: left in the model, nothing run", w[0], waited]);
+        return;
+    }
+    DMSMAfterTVEmptyRun(w, gSMAfterHomeHooked ? @"no end of the TV's empty desktop seen, its stage off screen: now" : @"its stage off screen (the end of SpringBoard's transitions is not seen here): now", NO);
+}
+// A transition on another display ended: the TV's empty desktop we asked for there, or one that ended at its empty desktop.
+static void DMSMAfterTVEmptyEnded(id did, id ac, BOOL toRead, long long env) {
+    if (!gSMAfterTVEmpty.count) return;
+    SEL rq = NSSelectorFromString(@"request"), lb = NSSelectorFromString(@"eventLabel");
+    id req = [ac respondsToSelector:rq] && DMSMSigOK(ac, rq, DMSMSigObj(), "request") ? ((id (*)(id, SEL))objc_msgSend)(ac, rq) : nil;
+    id label = [req respondsToSelector:lb] && DMSMSigOK(req, lb, DMSMSigObj(), "eventLabel") ? ((id (*)(id, SEL))objc_msgSend)(req, lb) : nil;
+    BOOL ours = [label isKindOfClass:[NSString class]] && [label isEqualToString:kSMTVEmptyLabel];
+    for (NSArray *w in [gSMAfterTVEmpty copy]) {
+        if (![w[1] isEqual:did]) continue;
+        if (!ours && !(toRead && env == 1)) {
+            DMLog([NSString stringWithFormat:@"[smengine] %@: a transition ended there that is not its empty desktop (its end state %@): it waits on", w[0], toRead ? [NSString stringWithFormat:@"environment %lld", env] : @"not readable"]);
+            continue;
+        }
+        DMSMAfterTVEmptyRun(w, ours ? @"the TV's empty desktop we asked for is there" : @"that display is at its empty desktop", YES);
+    }
+}
+// The TV desktop's last window: block(ended) once that display's empty desktop transition is over (ended YES), or with no end seen in 4 s once its
+// stage is off screen (NO; above).
+static void DMSMAfterTVEmpty(NSString *what, id identity, id item, void (^block)(BOOL ended)) {
+    if (!block || !identity || !item) return;
+    if (!gSMAfterTVEmpty) gSMAfterTVEmpty = [NSMutableArray array];
+    NSArray *w = @[what ?: @"a TV window's removal", identity, item, [block copy], @(CACurrentMediaTime()), [NSMutableArray array]];
+    [gSMAfterTVEmpty addObject:w];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kSMAfterHomeMaxWait * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ DMSMAfterTVEmptyCap(w); });
+}
+// An app's switcher clean-up (DMForceQuitBundle) while the TV's empty desktop for its window there is still to come: held, and run right after
+// that window's removal. NO: nothing waits for that app (run it now).
+static BOOL DMSMAfterTVEmptyHolds(NSString *bundle, dispatch_block_t block) {
+    if (!bundle.length || !block) return NO;
+    for (NSArray *w in gSMAfterTVEmpty) {
+        if (![DMSMItemBundle(w[2]) isEqualToString:bundle]) continue;
+        [(NSMutableArray *)w[5] addObject:[block copy]];
+        DMLog([NSString stringWithFormat:@"[smengine] %@: the app's switcher clean-up waits for it", w[0]]);
+        return YES;
+    }
+    return NO;
+}
 static void (*o_SMTransitionDidEnd)(id, SEL, id, id);
 static void DMSMTransitionDidEnd(id self, SEL _cmd, id coordinator, id ctx) {
     o_SMTransitionDidEnd(self, _cmd, coordinator, ctx);   // (SpringBoard first: its end puts the stage it left at the front of the list)
-    if (!gSMAfterHome.count) return;
+    if (!gSMAfterHome.count && !gSMAfterTVEmpty.count) return;
     SEL toSel = NSSelectorFromString(@"toLayoutState"), appCtx = NSSelectorFromString(@"applicationTransitionContext");
     id to = ctx && [ctx respondsToSelector:toSel] && DMSMSigOK(ctx, toSel, DMSMSigObj(), "toLayoutState") ? ((id (*)(id, SEL))objc_msgSend)(ctx, toSel) : nil;
     id ac = ctx && [ctx respondsToSelector:appCtx] && DMSMSigOK(ctx, appCtx, DMSMSigObj(), "applicationTransitionContext") ? ((id (*)(id, SEL))objc_msgSend)(ctx, appCtx) : nil;
     if (!ac) return;   // (which transition this is can't be told: not ours -- the removal waits, at most 4 s)
-    // (another display's transition -- the TV's -- is not the iPad's Home: left waiting)
-    if ([ac respondsToSelector:NSSelectorFromString(@"displayIdentity")] && !DMSMIsMainIdentity(DMCall(ac, @"displayIdentity"))) return;
+    // (another display's transition -- the TV's -- is not the iPad's Home: left waiting; it may be the TV's empty desktop, above)
+    if ([ac respondsToSelector:NSSelectorFromString(@"displayIdentity")]) {
+        id did = DMCall(ac, @"displayIdentity");
+        if (!DMSMIsMainIdentity(did)) {
+            long long tenv = 0; id tstage = nil;
+            BOOL tRead = to && DMSMHomeStateOf(to, &tenv, &tstage);
+            DMSMAfterTVEmptyEnded(did, ac, tRead, tenv);
+            return;
+        }
+    }
+    if (!gSMAfterHome.count) return;
     NSUInteger gen = DMSMRealHomeGenOf(ac);   // (our real Home's number on this transition's context; 0: not a Home of ours)
     long long env = 0; id stage = nil;
     BOOL toRead = to && DMSMHomeStateOf(to, &env, &stage);

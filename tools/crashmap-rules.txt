@@ -82,6 +82,8 @@ target desktopWallpaper pref com.besiktasliseba.macstatusbar desktopWallpaperPat
 target runningIndicator pref com.besiktasliseba.dockrunningindicator enabled 0 1 Show Indicators for Open Apps|the open-app indicators
 target macSwitcher pref com.besiktasliseba.macstatusbar macSwitcher 0 0 Mac Switcher|the Mac Switcher
 target mswSwipeUpQuit pref com.besiktasliseba.macstatusbar mswSwipeUpQuit 0 1 Swipe Up to Quit|the Mac Switcher's swipe up to quit
+# the recent windows strip (1.8.8.2 F29, statusbar/RecentStrip.h and its rules common/RecentStripRule.h): its own switch, on unless switched off
+target recentStrip pref com.besiktasliseba.macstatusbar recentStrip 0 1 Recent Windows Strip|the recent windows strip
 target spotlightFiles pref com.besiktasliseba.macstatusbar spotlightFiles 0 0 Desktop and Downloads|Spotlight's Desktop and Downloads
 target spotlightTweakSettings pref com.besiktasliseba.macstatusbar spotlightTweakSettings 0 0 Tweak Settings|Spotlight's tweak settings
 target spotlightActions pref com.besiktasliseba.macstatusbar spotlightActions 0 0 Actions|our actions in Spotlight
@@ -118,6 +120,9 @@ target customShortcuts pref com.besiktasliseba.customshortcuts enabled 0 1 Custo
 # the apps' own menus in the menu bar (1.8.5 item 3: statusbar/AppMenus.h in SpringBoard; appbridge/AppMenus.h, whose snapshots run in the apps and
 # which in SpringBoard only registers): its switch, off unless switched on (owner's rule for new behaviour): a crash in it sets it off (0)
 target appOwnMenus pref com.besiktasliseba.macstatusbar appOwnMenus 0 1 Show Apps' Own Menus|the apps' own menus in the menu bar
+# the menu titles that scroll when they do not all fit (1.8.8.2, statusbar/MenuStrip.h): its switch, on unless switched off: a crash in it sets it
+# off (0), and off the bar is as the rule of its two ends lays it out (the app's last menus left out, as before)
+target scrollMenus pref com.besiktasliseba.macstatusbar scrollMenus 0 1 Scroll Menus That Don't Fit|the scrolling menus in the menu bar
 # Home Minimizes Windows (1.7.9, statusbar/StatusBar.x "Home Minimizes Windows" and HomeAway.h): its switch, on unless switched off: a crash in
 # its code sets it off (0), and off none of it runs (its hooks go in only while it is on; the Home button's, there for the Mac Switcher too,
 # then return at once). Up to 1.8.8 no rule named it, so a crash there took Stock status bar mode, the whole Mac menu bar (B13, found by the
@@ -256,9 +261,14 @@ sym MacStatusBarCore ^_*DMMoreSpace[A-Z] displayScale
 file MacStatusBarCore ^(MoreSpace|DisplayScale)\.h$ displayScale
 file MacStatusBarCore ^(DisplayPrefs|DisplayIdentity|DisplayRows|DisplayRowStore|DisplaySettings)\.h$ displaySettings
 file MacStatusBarCore ^PointerRegion\.h$ pointerRegion
+# the recent windows strip (1.8.8.2 F29): its functions and methods by name (their compiler-split .cold parts have no line to go by), then all of
+# RecentStrip.h, and its rules where they are not inlined (no section of either file matches a sec rule)
+sym MacStatusBarCore ([-+]\[DMRStrip(Card|Target)\s|^_*DMRStrip[A-Z]|^_*MSBDR(Strip|ecentStrip|MaxX|MaxY)) recentStrip
+file MacStatusBarCore ^RecentStrip(Rule)?\.h$ recentStrip
 # (1.8.8.2, B69: each display's own menu bar -- its functions by name, their blocks too, and common/BarFront.h's rule where it is not inlined; not
-#  DMBarFrontBundle, the bar's reveal's, which stays with the status bar)
-sym MacStatusBarCore ^_*(DMBarFront(On|Today|TV|SwitcherOn|StageHas|OfTitle|sSig|Forget|Skipped|Activate|WhenActive|WhenActiveStep|KeysTo|Ready|LightTap|Minimize)|MSBDBarFrontWay|MSBDBarLightsFor)(_block_invoke(_[0-9]+)?(\.[0-9]+)?)?$ barPerDisplay
+#  DMBarFrontBundle, the bar's reveal's, which stays with the status bar. B81: the display in use with another display up, DMBarFrontInUse..., and
+#  common/DisplayInUse.h's rules where they are not inlined)
+sym MacStatusBarCore ^_*(DMBarFront(On|Today|TV|SwitcherOn|StageHas|OfTitle|sSig|Forget|Skipped|Activate|WhenActive|WhenActiveStep|KeysTo|KeysHolder|Ready|LightTap|Minimize|InUse[A-Za-z]+)|MSBDBarFrontWay|MSBDBarLightsFor|MSBDInUse[A-Za-z]+|MSBDShownStageGone)(_block_invoke(_[0-9]+)?(\.[0-9]+)?)?$ barPerDisplay
 # the edit menu's keyboard room (1.8.8.2, statusbar/EditMenuRoom.h and its rule common/EditMenuRoom.h): its two pass-throughs of UIKit's
 # insets method (DMEditMenuInsets16 and 18, UIKit's method first, then the decision) are on every SpringBoard edit menu's layout once in, so they are
 # transparent: a crash in UIKit's method under them is decided by the frame below them (another tweak's hook of it: that tweak's, not counted; our
@@ -301,11 +311,12 @@ file MacStatusBarCore ^DesktopWallpaper\.h$ desktopWallpaper
 sym MacStatusBarCore ^_*DMLightMagnifySendEvent$ transparent
 file MacStatusBarCore ^LightMagnify\.h$ magnifyTrafficLights
 # Sticky Notes (1.8.8.1): every note function and method is the notes' -- DesktopNotes.h's C functions DMSticky..., all out of line and none named
-# DMDesktop...; common/StickyNotes.h's rules MSBDSticky..., static inline (inlined into those, or symbols of their own); the four classes; the
+# DMDesktop...; common/StickyNotes.h's rules MSBDSticky..., static inline (inlined into those, or symbols of their own); the notes' classes (1.8.8.2
+# F37: the editor's bar DMNoteBar and the name's field DMNoteNameField too; F36: another Home Screen page's layer of notes, DMNotesPageView); the
 # desktop's Notes category. Not "DMNote...": DMNoteAppExit, DMNoteAppInFront, MSBDNoteSwitch and others of that name are not the notes'. The shared
 # typing window's helpers (DMDesktopTyping*) stay the desktop's: a name is typed in it too. DMTextViewEditKey (TextWindow.h: TextEdit's and a
 # note's Command editing keys) is passed over, its caller decides.
-sym MacStatusBarCore ^(_*(DMSticky|MSBDSticky)[A-Z]|[-+]\[DMNote(View|TextView|Editor|sState)[\s(]|-\[DMDesktop\(Notes\)\sdm_note) stickyNotes
+sym MacStatusBarCore ^(_*(DMSticky|MSBDSticky)[A-Z]|[-+]\[DMNote(View|TextView|Editor|sState|Bar|NameField|sPageView)[\s(]|-\[DMDesktop\(Notes\)\sdm_note) stickyNotes
 sym MacStatusBarCore ^_*DMTextViewEditKey$ transparent
 # StatusBar.x's window walk "a text input has the typing" (1.8.8.1, out of line: the desktop's keys, a note's tick and the debug key loggers ask
 # it) is passed over too: under no rule it fell to the image's target, Use Stock Status Bar, for code that was the desktop's before
@@ -387,6 +398,10 @@ file MacStatusBarCore ^LiveActivities\.h$ liveActivities
 # the apps' own menus in the menu bar (AppMenus.h, 1.8.5 item 3: the app's answers, its titles' slots, its menus and rows): Show Apps' Own Menus off,
 # not Stock status bar mode (their glue in StatusBar.x's layout and Edit menu stays the status bar's)
 file MacStatusBarCore ^AppMenus\.h$ appOwnMenus
+# the scrolling menu titles (MenuStrip.h, 1.8.8.2: the strip's layout, its chevrons, its gestures; common/MenuStrip.h's numbers, which a release build
+# keeps partly out of line, MSBDStripAt at -Os): Scroll Menus That Don't Fit off, not Stock status bar mode (the call in StatusBar.x's layout stays
+# the status bar's)
+file MacStatusBarCore ^MenuStrip\.h$ scrollMenus
 # Spotlight (statusbar/SpotlightFiles.x): the tweak settings part (its own functions, its PreferenceLoader watcher, the shared index / donation headers), then the files part
 sym MacStatusBarCore ^_*SF(Tweak|WatchTweaks) spotlightTweakSettings
 file MacStatusBarCore ^Tweak(Index|Spotlight)\.h$ spotlightTweakSettings

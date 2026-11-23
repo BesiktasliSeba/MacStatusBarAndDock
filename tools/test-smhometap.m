@@ -80,6 +80,10 @@ static UIView *DMSMCardFor(NSString *key) { (void)key; return nil; }
 static void DMSMGrowFromDockAtTap(NSString *key) { if (gSMMinPictures[key] && DMSMIsMinimized(key)) [gGrown addObject:key]; }   // (the real one: the picture grows when there and still minimized)
 static BOOL DMSMOpenFullScreenStage(NSString *bundle, id template, id identity) { (void)template; (void)identity; [gFullStages addObject:bundle]; return YES; }
 static void DMSMBringToFront(NSString *key) { [gBrought addObject:key]; }
+// (1.8.8.2, B81: the display in use with another display up -- tools/test-displayinuse.sh; here one display, nothing to keep)
+static BOOL DMSMStageShownOnDisplay(id al, id identity) { (void)al; (void)identity; return NO; }
+static void DMBarFrontInUseFollow(void) {}
+static void DMBarFrontInUseUser(id identity, NSString *why) { (void)identity; (void)why; }
 static void DMSMFitForgetClosed(NSString *opening) { (void)opening; }
 static void DMSMTurnForgetOpening(NSString *opening) { (void)opening; }   // (1.8.8 H5: a closed window's turn records go at the tap -- test-smturnclosed)
 static BOOL DMSMFitAsksAbout(NSString *bundle, NSArray<NSString *> *stageKeys, NSString **l, NSString **r) { (void)bundle; (void)stageKeys; (void)l; (void)r; return NO; }

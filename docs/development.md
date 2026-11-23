@@ -55,6 +55,7 @@ MacStatusBar&Dock
     ├── Sleep Guard: with the screen off, has launchd start powerd over when a power assertion of a process that's gone is the only one keeping the iPad awake
     ├── starts the charge helper when Settings sets a Charge Limit or Run on Power Adapter
     ├── Keep Tailspin Off: keeps PDSEPrefAllowEnableTailspin false in com.apple.da, so perfdiagsselfenabled doesn't turn tailspin on, and takes that value away when switched off or removed
+    ├── Restart Pointer: stops the system's pointeruid when Settings > Pointer asks (at most once every 5 s), and launchd starts it again with MacPointer
     └── gives the engines' settings back when the tweak is removed or switched off, and has SpringBoard lower a stored Auto-Lock of 2 hours then
 ```
 

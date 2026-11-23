@@ -65,6 +65,7 @@ int main(int argc, char **argv) {
         base.ccStyle = kMSBDCCStyleStock;   // (Control Center Style: iPadOS's -- Hide Grabber, no size slider)
         base.laTimersListed = YES;          // (Live Activities' timers proven on this iPadOS: the Activities page has its Timers row)
         base.laAppsListed = YES;            // (... and other apps' activities: its Apps row)
+        base.recentStripOS = YES;           // (15: the recent windows strip's iPadOS, whatever the Mac running this test is)
         Shows(base, @"as installed", B, @[@"MacStatusBar", @"Show Seconds", @"Wi-Fi Menu", @"Battery Menu", @"Control Center Style", @"Hide Grabber", @"Report a Problem…", @"Banner Style"], @[@"Control Center"]);
         Shows(base, @"as installed", W, @[@"Window Size", @"Double-Tap a Title Bar to", @"New Windows Open at Fill", @"Windows Behind Full-Screen Apps", @"Tint Resize Handles", @"Home Minimizes Windows", @"Mac Switcher", @"Keep Tailspin Off", @"Prewarm Apps"],
               @[@"Resize Handles", @"Resize Apps to Fit Windows"]);
@@ -198,6 +199,21 @@ int main(int argc, char **argv) {
         Expect(appsRow && ![MSBDOwnRowsShown(gAll, s) containsObject:appsRow] && [MSBDOwnRowsShown(gAll, base) containsObject:appsRow], @"apps not listed: the Activities page's Apps left out (listed: shown)");
         Expect(MSBDOwnRowsShown(gAll, s).count == MSBDOwnRowsShown(gAll, base).count - 1, @"apps not listed: only that row goes (the Go menu's Apps stays)");
 
+        {   // (1.8.8.2 F29: Recent Windows Strip, in the Mac Switcher's group: Aerial's, Zetsu's and MilkyWay4's windows on the strip's iPadOS only)
+            MTIEntry *rs = Row(W, @"Recent Windows Strip");
+            Expect(rs && [rs.key isEqualToString:@"recentStrip"] && [rs.path.lastObject isEqualToString:kMSBDRecentStripRowID] && [rs.groupID isEqualToString:kMSBDMacSwitcherGroupID],
+                   @"index: Recent Windows Strip in the Mac Switcher's group, by its key and id");
+            Shows(base, @"the strip's iPadOS, Aerial", W, @[@"Recent Windows Strip", @"Mac Switcher"], @[]);
+            s = base; s.milkyWayEngine = YES;
+            Shows(s, @"the strip's iPadOS, MilkyWay4", W, @[@"Recent Windows Strip"], @[]);
+            s = base; s.recentStripOS = NO;
+            Shows(s, @"another iPadOS", W, @[@"Mac Switcher"], @[@"Recent Windows Strip"]);
+            Expect(MSBDOwnRowsShown(gAll, s).count == MSBDOwnRowsShown(gAll, base).count - 1, @"another iPadOS: only the strip's row goes");
+            s = base; s.stageManagerEngine = YES;
+            Shows(s, @"Stage Manager as the engine", W, @[@"Mac Switcher"], @[@"Recent Windows Strip"]);
+            s = base; s.engineWorks = NO;
+            Shows(s, @"no working engine", W, @[@"Mac Switcher"], @[@"Recent Windows Strip"]);
+        }
         s = base; s.batteryUseOff = YES;
         Expect(!Listed(s, @"Battery", @"Sleep Guard") && Listed(s, B, @"Battery Menu"), @"our Battery Use group not on Battery Health: Sleep Guard left out, nothing else");
 

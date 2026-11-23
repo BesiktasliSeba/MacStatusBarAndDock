@@ -2,6 +2,30 @@
 
 All notable changes to MacStatusBar&Dock. Install or update from the Sileo repo: https://besiktasliseba.github.io/repo/
 
+## 1.8.8.2
+
+### New
+- When an app's menus don't all fit in the menu bar, as in portrait, swipe or scroll them sideways, or tap the arrow at their end, to reach the rest instead of losing the last ones. Settings > Status Bar > Scroll Menus That Don't Fit (on by default).
+- Recent Windows Strip: your recent windows wait at the side of the desktop as small pictures, as with Stage Manager on a Mac. Tap or click one to bring it forward. On iPadOS 15 with Aerial, Zetsu or MilkyWay4: Settings > Windows & Multitasking > Recent Windows Strip (on by default).
+- Sticky notes on any Home Screen page. Drag a note to the side of the screen and hold it there to take it to the page on that side, or choose Move to Page in its menu. Notes on a hidden page hide with it.
+- Each sticky note shows its name in its top bar (its first line, until you name it). Double-click or double-tap the bar, or choose Rename in its menu, to change it. A note moved to the Trash keeps its name.
+
+### Improvements
+- Sticky notes are easier to move. Drag the new top bar to move a note at once, even while typing in it. A short hold anywhere else lifts it with a finger, and a mouse or trackpad drag never starts typing.
+
+### Fixes
+- On iPadOS 15 and 16, where iPadOS shows no icon for connected AirPods, the menu bar now shows a headphones icon that opens the AirPods menu.
+- Choosing a menu bar item that lies over a Finder window no longer brings that Finder window to the front.
+- With Enable Windowing off and Stage Manager on, the menu bar now names the window in front, not the first app of its stage.
+- With Enable Windowing off and Stage Manager on, Force Quit of one app no longer quits the other apps in its stage.
+- With an external display connected, tapping or clicking a window on the iPad or on the display now makes that app the active one, also after you use the display's menu bar, as on a Mac.
+- Closing an external display's last app from its menu bar no longer leaves the display without its menu bar and Dock, and its menu bar no longer keeps showing an app that was closed.
+- On an external display with Automatically Hide and Show the Menu Bar, the menu bar now stays while the pointer is on it over a full-screen app.
+- The Mac pointer no longer stays off, showing iPadOS's round pointer, when another tweak only touches the pointer. Settings > Pointer now says when the Mac pointer isn't shown, why, and what to do.
+- Resizing a sticky note next to app icons, widgets or the page dots no longer moves or shifts the note when you let go. It now stops at them.
+- A sticky note or a desktop rename being typed is no longer drawn sideways after you turn the iPad.
+- After Rename from the Downloads stack, the Dock no longer covers the bottom row of the on-screen keyboard.
+
 ## 1.8.8.1.1
 
 ### Fixes

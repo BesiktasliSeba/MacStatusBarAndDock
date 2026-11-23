@@ -270,12 +270,49 @@ static id DMMSWSMShownOn(id identity) {
     } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[smengine] another display's shown stage: %@", e.reason]); }
     return nil;
 }
+// (1.8.8.2) Another display's settled layout state names a stage that is no longer one of Stage Manager's (taken out of the model while shown there).
+// SpringBoard cannot begin a transition from that state: it raised inside its own transition ("Trying to add an icon overlay but the item container for
+// this app layout doesn't exist"), and the transition it had begun never finished -- every later transition, every app launch anywhere, waited behind
+// it until a SpringBoard restart (the TV desktop's last window, iPadOS 18.5, twice). YES: so named; NO: not, or not readable.
+// DMMSWSMStateStage: the stage that state names in an application environment (nil: at its empty desktop, none, or not readable).
+static id DMMSWSMStateStage(id identity) {
+    id coord = DMSMCoordinator();
+    SEL forScene = NSSelectorFromString(@"switcherControllerForWindowScene:");
+    if (!identity || !coord || ![coord respondsToSelector:forScene] || !DMSMSigOK(coord, forScene, DMSMSigObjObj(), "switcherControllerForWindowScene:")) return nil;
+    @try {
+        for (UIScene *sc in [UIApplication sharedApplication].connectedScenes) {
+            if (![sc isKindOfClass:[UIWindowScene class]] || ![DMSMIdentityOfScreen(((UIWindowScene *)sc).screen) isEqual:identity]) continue;
+            id ctl = ((id (*)(id, SEL, id))objc_msgSend)(coord, forScene, sc);
+            id cvc = [ctl respondsToSelector:NSSelectorFromString(@"contentViewController")] ? DMCall(ctl, @"contentViewController") : nil;
+            id lc = [cvc respondsToSelector:NSSelectorFromString(@"layoutContext")] ? DMCall(cvc, @"layoutContext") : nil;
+            id state = [lc respondsToSelector:NSSelectorFromString(@"layoutState")] ? DMCall(lc, @"layoutState") : nil;
+            long long env = 0; id named = nil;
+            if (!state || !DMSMHomeStateOf(state, &env, &named) || env == 1) return nil;
+            return named;
+        }
+    } @catch (NSException *e) { DMLog([NSString stringWithFormat:@"[smengine] another display's state: %@", e.reason]); }
+    return nil;
+}
+static BOOL DMMSWSMStateNamesGone(id identity) {
+    id named = DMMSWSMStateStage(identity);
+    if (!named) return NO;
+    for (id al in DMSMRecentStages()) if (al == named || [al isEqual:named]) return NO;
+    return YES;
+}
 // 1.8.7 (the Mac Switcher on the TV): another display's empty desktop -- a transition on THAT display with every window role it has set to the empty
 // workspace entity (role 1 too; the S3 reading, tvdesk_empty_a): the display's switcher goes to environment 1, its own empty desktop (its wallpaper,
 // bar and Dock), and every stage of it stays whole in Stage Manager's model, for the desktop it belongs to. Ours (marked: our own join leaves it as
-// written). NO when nothing could be asked.
+// written). NO when nothing could be asked. Never from a state that names a stage no longer in the model (above: nothing is asked then).
+// gMSWSMEmptyTaken: SpringBoard took the last request (also when NO came back because its context was not written yet: a transition in flight
+// before it, so it is still to come -- 1.8.8.2: the TV desktop's last window keeps its stage until that transition is over, DMSMTVEmptyFirst).
+static BOOL gMSWSMEmptyTaken = NO;
 static BOOL DMMSWSMRequestEmpty(id identity, NSString *why) {
+    gMSWSMEmptyTaken = NO;
     if (!identity || DMSMIsMainIdentity(identity)) return NO;
+    if (DMMSWSMStateNamesGone(identity)) {
+        DMLog([NSString stringWithFormat:@"[smhome] another display's empty desktop (%@): not asked (that display's state names a stage no longer in the model)", why ?: @"?"]);
+        return NO;
+    }
     id empty = DMSMEmptyEntity();
     id cfg = nil;
     for (UIScreen *sc in DMDispScreens()) {
@@ -310,6 +347,7 @@ static BOOL DMMSWSMRequestEmpty(id identity, NSString *why) {
     };
     @try {
         BOOL taken = ((BOOL (*)(id, SEL, unsigned long long, id, id))objc_msgSend)(ws, sel, 0ULL, cfg, builder);
+        gMSWSMEmptyTaken = taken;
         DMLog([NSString stringWithFormat:@"[smhome] another display's empty desktop (%@): taken %d, built %d, written %d (roles %@ empty)", why ?: @"?", taken, built, wrote, [roles componentsJoinedByString:@","]]);
         if (taken) DM_FEATURE_MARK("msw-tv-empty-desktop");
         return taken && (!built || wrote);

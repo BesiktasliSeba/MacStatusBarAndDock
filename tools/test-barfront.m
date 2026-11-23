@@ -112,6 +112,9 @@ static NSString *DMSMFrontWindowKey(void) {
     if (DMSMIsMainIdentity(stage.ident) && !DMFrontApp()) return nil;
     return stage ? Newest(stage) : nil;
 }
+// The display in use (1.8.8.2, B81: StatusBar.x's DMBarFrontInUseIdentity, a state of its own -- tools/test-displayinuse.sh): here the model's rule
+// above, the most recent stage's display, as DMSMFrontWindowKey has it
+static id DMBarFrontInUseIdentity(void) { TStage *f = gRecent.firstObject; return f ? f.ident : nil; }
 static NSString *FullIn(TStage *s) { for (NSString *k in s.items) if (DMSMAttrsFullScreen(s.items[k])) return k; return nil; }
 static BOOL DMWindowsOwnStatusBar(void) {
     if (gSM) { NSString *f = DMSMFrontWindowKey(), *full = FullIn(DMSMFrontStage()); return DMSMKeyBundle(f).length > 0 && !(f.length && [f isEqualToString:full]); }

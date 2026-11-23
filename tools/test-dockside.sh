@@ -48,7 +48,7 @@ check "  ... in portrait and at the bottom iPadOS's own frames: decided by the p
 check "  ... the room is the Dock's at rest, measured where the side Dock lays out (never the magnified icons), and moves the pages at once" \
   "grep -q 'DMDockSideHomeLaidOut(DMDockSideRestingRoom((UIView \*)self, platter));' $D && grep -q 'if (DMDockSidePresentedNow() || !(gDockSideHomeRoom > 0.0))' $D && grep -q 'DMDockSideHomeDockBack();' $D && grep -q 'DMDockSideHomeRelayout(@\"the Dock.s size\");' $D && grep -q 'DMDockSideHomeRelayout(side ? @\"the Dock at a side\" : @\"the Dock at the bottom\");' $D"
 check "  ... the desktop's files stay on their page of the screen when page 1's list moves" \
-  "grep -q 'self.frame = DMDesktopPageFrameIn(found);' ../statusbar/Desktop.h && grep -q 'void MSBDDesktopFollowPage(void)' ../statusbar/Desktop.h && grep -q 'CGRectInset(\[_list convertRect:v.frame toView:self\], -4.0, -4.0)' ../statusbar/Desktop.h"
+  "grep -q 'self.frame = DMDesktopPageFrameIn(found);' ../statusbar/Desktop.h && grep -q 'void MSBDDesktopFollowPage(void)' ../statusbar/Desktop.h && grep -q 'CGRectInset(\[list convertRect:v.frame toView:space\], -4.0, -4.0)' ../statusbar/Desktop.h && grep -qF -e '- (NSArray<NSValue *> *)dm_occupied { return [self dm_occupiedIn:_list into:self]; }' ../statusbar/Desktop.h"
 check "  ... MacSettings' portrait places are never learnt from a list laid out again beside the Dock" \
   "grep -q 'fabs(list.bounds.size.width - page.bounds.size.width) > 0.5) return;' ../macsettings/IconLayout.x"
 check "  ... the safety check after a Home Screen layout is in debug builds only" \

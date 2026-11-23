@@ -322,6 +322,10 @@ static void DMOpenAppOwnMenu(UIButton *btn) {
         [f layoutIfNeeded];
         NSUInteger i = [(NSArray *)objc_getAssociatedObject(f, kAMShownKey) indexOfObject:menu];
         UIButton *b = i < kMSBDAppMenuSlots ? objc_getAssociatedObject(f, &gAMButtonKeys[i]) : nil;   // (NSNotFound: not shown)
+        if ((!b || b.hidden) && DMStripReveal(f, menu)) {   // (put past the titles the scrolling strip shows: it moves to show it, 1.8.8.2 MenuStrip.h)
+            i = [(NSArray *)objc_getAssociatedObject(f, kAMShownKey) indexOfObject:menu];
+            b = i < kMSBDAppMenuSlots ? objc_getAssociatedObject(f, &gAMButtonKeys[i]) : nil;
+        }
         if (!b || b.hidden) { DMLog([NSString stringWithFormat:@"[appmenus] %@ menu of %@ not shown any more: not opened", menu, bundle]); return; }
         NSArray *items = DMAMRows(bundle, menu);
         if (!items.count) items = @[[[DMRow alloc] initWithTitle:@"Nothing here right now" enabled:NO handler:nil]];

@@ -78,6 +78,8 @@ static void DMSMGoHomeForReal(NSString *why);   // (below the real code: it read
 static id DMSMStageDisplayIdentity(id stage) { return @"main"; }
 static BOOL DMSMIsMainIdentity(id identity) { return YES; }
 static BOOL DMSMStageShownOnDisplay(id al, id identity) { return NO; }
+static void DMSMTVEmptyAfterLastWindow(id identity, NSString *what) { }   // (1.8.8.2, B86's first version: the TV's empty desktop after its last window; never reached here, the iPad alone)
+static BOOL DMSMTVEmptyFirst(id identity, id item, NSString *wk) { return NO; }   // (1.8.8.2, B86: the TV's empty desktop first; never reached here, the iPad alone)
 static id DMSMCoordinator(void) { return nil; }
 static NSString *DMSMExpect(const char *ret, ...) { return @""; }
 static BOOL DMSMSigOK(id obj, SEL sel, NSString *want, const char *what) { return NO; }

@@ -128,6 +128,7 @@ static inline MSBDOwnPages MSBDOwnPagesNow(void) {
     s.batteryUseOff = gMSBDOwnBatteryUseOff ? gMSBDOwnBatteryUseOff() : NO;
     s.laTimersListed = MSBDLATimersRowShown();
     s.laAppsListed = MSBDLAAppsRowShown();
+    s.recentStripOS = MSBDRecentStripOS([NSProcessInfo processInfo].operatingSystemVersion.majorVersion);   // (RecentStripRule.h, through OwnPageRows.h)
     os_unfair_lock_lock(&lock);
     last = s; at = now;
     os_unfair_lock_unlock(&lock);

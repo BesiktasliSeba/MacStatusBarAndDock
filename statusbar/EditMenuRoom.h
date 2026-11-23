@@ -55,6 +55,35 @@ static BOOL DMEditMenuAsk(id o, const char *name) {
     return ((BOOL (*)(id, SEL))objc_msgSend)(o, s);
 }
 #if DEBUG
+// How the container lies on the iPad's screen (1.8.8.2, B75 on iPadOS 17): on 17.5.1 in landscape the container lies in SpringBoard's fixed
+// portrait space like its scene ({1024, 1366}: "the scene's space is the container's") and UIKit's bottom inset, 1372, puts the menu off the
+// screen. 17's insets method is 16's formula (read in the 17.6.1 decompile, -[_UIEditMenuContentPresentation _preferredContentInsetsForContainerView],
+// hooked there): the keyboard's frame is already in the container's space, so the room is not this fault's. Whether that container is drawn
+// turned on the screen (its window turned by a layer above its view, unseen by view conversions) or upright for portrait decides the 17 fix,
+// read on the device from this line: its frame in the screen's turned space and in the fixed one, the turn of its x axis there, its window's
+// bounds, interface orientation and the two layers above the window's own, SpringBoard's orientation (the keyboard's frame on the screen: the
+// [kbdock] lines).
+static NSString *DMEditMenuLie(UIView *c) {
+    UIWindow *w = c.window; UIScreen *s = [UIScreen mainScreen];
+    if (!w || w.screen != s) return @"";
+    id<UICoordinateSpace> scr = s.coordinateSpace;
+    CGPoint o = [c convertPoint:CGPointZero toCoordinateSpace:scr], x = [c convertPoint:CGPointMake(100, 0) toCoordinateSpace:scr];
+    long (^orient)(id) = ^long (id obj) {
+        SEL io = sel_registerName([obj isKindOfClass:[UIWindow class]] ? "interfaceOrientation" : "activeInterfaceOrientation");
+        Method m = obj ? class_getInstanceMethod(object_getClass(obj), io) : NULL;
+        const char *t = m ? method_getTypeEncoding(m) : NULL;
+        return t && (t[0] == 'q' || t[0] == 'l') ? ((long (*)(id, SEL))objc_msgSend)(obj, io) : -1;
+    };
+    NSString *(^tf)(CALayer *) = ^NSString *(CALayer *l) {
+        if (!l) return @"-";
+        CATransform3D t = l.transform;
+        return [NSString stringWithFormat:@"[%.2f %.2f %.2f %.2f | %.1f %.1f]", t.m11, t.m12, t.m21, t.m22, t.m41, t.m42];
+    };
+    CALayer *above = w.layer.superlayer;
+    return [NSString stringWithFormat:@"; on the screen %@ (its x axis at %.0f deg), in the fixed space %@; window %@ orientation %ld, layers above it %@ %@; SpringBoard's orientation %ld, screen %@",
+        NSStringFromCGRect([c convertRect:c.bounds toCoordinateSpace:scr]), atan2(x.y - o.y, x.x - o.x) * 180.0 / M_PI, NSStringFromCGRect([c convertRect:c.bounds toCoordinateSpace:s.fixedCoordinateSpace]),
+        NSStringFromCGSize(w.bounds.size), orient(w), tf(above), tf(above.superlayer), orient([UIApplication sharedApplication]), NSStringFromCGSize(s.bounds.size)];
+}
 // One line per container and case (and bottom inset): the method runs on every layout pass of a menu.
 static void DMEditMenuNote(UIView *c, MSBDEditMenuCase why, UIEdgeInsets uikit, UIEdgeInsets mine, CGRect kb, CGRect kbIn) {
     static __weak UIView *lastC; static int lastWhy = -1; static double lastBottom = NAN;
@@ -65,6 +94,7 @@ static void DMEditMenuNote(UIView *c, MSBDEditMenuCase why, UIEdgeInsets uikit, 
                                                 NSStringFromCGRect(kb), NSStringFromCGRect(kbIn), mine.bottom, uikit.bottom]
                    : why == MSBDEditMenuNotUIKits ? [NSString stringWithFormat:@": keyboard %@ in the scene's space; UIKit's formula on it %.1f, its answer %.1f", NSStringFromCGRect(kb),
                                                      MSBDEditMenuBottom(c.safeAreaInsets.bottom, CGRectGetMaxY(c.bounds), CGRectGetMinY(kb)), uikit.bottom] : @"";
+    if (why == MSBDEditMenuSpacesSame || why == MSBDEditMenuRedo || why == MSBDEditMenuKept) more = [more stringByAppendingString:DMEditMenuLie(c)];
     DMLog([NSString stringWithFormat:@"[editmenu] %s; container %@ in %@ at level %.1f, scene space %@, insets %@%@", MSBDEditMenuCaseText(why), c ? NSStringFromCGRect(c.bounds) : @"-",
            w ? NSStringFromClass([w class]) : @"no window", w.windowLevel, w.windowScene ? NSStringFromCGRect(w.windowScene.coordinateSpace.bounds) : @"-", NSStringFromUIEdgeInsets(uikit), more]);
 }

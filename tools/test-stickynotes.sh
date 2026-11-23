@@ -83,8 +83,8 @@ check "  ... New Sticky Note right after New Text File, the row's own rule (none
   "fnf '- (UIMenu *)dm_menuFor:(DMDesktopItemView *)v at:(CGPoint)sp {' $D | awk '/A\\(@\"New Text File\"/{a=NR} /UIAction \\*sn = \\[self dm_noteNewRowAt:sp\\]; if \\(sn\\) \\[top addObject:sn\\];/{b=NR} END{exit !(a && b == a + 1)}' \
    && fnf '- (UIAction *)dm_noteNewRowAt:(CGPoint)sp {' $DN | grep -qF 'if (!gDesktopNotesOn) return nil;' && fnf '- (UIAction *)dm_noteNewRowAt:(CGPoint)sp {' $DN | grep -qF 'if (!gNotesRead || !MSBDStickyWritable(gNotesStatus) || gNotes.count >= MSBD_NOTES_MAX || !DMStickyCanType()) a.attributes = UIMenuElementAttributesDisabled;'"
 check "  ... a note is followed as an icon: held then moved (or a pointer) it is track mode 3 -- dragged, never Finder's file drag -- and let go at the end, also when the finger was lost" \
-  "grep -qF 'BOOL onNote = !onIcon && [self dm_noteTrackBegin:at];' $D && grep -qF 'if (!onIcon && !onNote && at != _list) continue;' $D && grep -qF 'if (!onIcon && !onNote && ![self dm_shownAt:sp]) continue;' $D \
-   && [ \$(grep -cF 'DMDesktopHoldToTake(_trackView != nil || [self dm_noteTracked])' $D) = 2 ] && ! grep -qF 'DMDesktopHoldToTake(_trackView != nil)' $D \
+  "grep -qF 'BOOL onNote = !onIcon && [self dm_noteTrackBegin:at at:sp];' $D && grep -qF 'if (!onIcon && !onNote && at != _list) continue;' $D && grep -qF 'if (!onIcon && !onNote && ![self dm_shownAt:sp]) continue;' $D \
+   && [ \$(grep -cF '[self dm_noteTracked] ? [self dm_noteHoldToMove] : DMDesktopHoldToTake(_trackView != nil)' $D) = 2 ] && [ \$(grep -cF 'DMDesktopHoldToTake(' $D) = 3 ] \
    && fnf '- (void)dm_event:(UIEvent *)e {' $D | awk '/if \\(\\[self dm_noteTracked\\]\\) \\{/{a=NR} /if \\(!\\[self dm_noteLiftAt:sp\\]\\) \\{ _track = nil; continue; \\}/{b=NR} /_trackMode = 3;/{c=NR} /\\} else if \\(v && v.window\\) \\{/{d=NR} END{exit !(a && b == a + 1 && c == b + 1 && d == c + 1)}' \
    && [ \$(grep -cF '[self dm_noteDropAt:' $D) = 2 ] && grep -qF 'else if (_trackMode == 3) [self dm_noteDragTo:sp];' $D"
 check "  ... a native window made active ends a note being typed in whether the desktop had the keys or not (the check's item 7); the switch is read with the desktop's" \
@@ -98,8 +98,8 @@ check "every C function of DesktopNotes.h is out of line and the notes' own (DMS
    && ! grep -nE '^__attribute__\\(\\(noinline\\)\\) static [^(]* \\**DM' $DN | grep -vE 'static [^(]* \\**DMSticky[A-Z][A-Za-z]*\\(' | grep -q . && [ \$(grep -cE '^__attribute__\\(\\(noinline\\)\\) static ' $DN) -ge 20 ] \
    && ! grep -nE '^static inline [^(]* \\**[A-Za-z]+\\(' $N | grep -vE 'static inline [^(]* \\**MSBDSticky[A-Z][A-Za-z]*\\(' | grep -q ."
 check "  ... the views never print a note's text: the text view's and the editor's descriptions give lengths; the idle view keeps it in an ivar, no method named text" \
-  "ok=1; for c in DMNoteTextView DMNoteView DMNoteEditor; do awk -v c=\"@implementation \$c\" 'index(\$0, c) == 1 {f=1} f && /^@end/ {exit} f' $DN | grep -q 'description { return \\[NSString stringWithFormat:@\"<%@: %p; %lu characters>\"' || ok=0; done; [ \$ok = 1 ] \
-   && ! grep -nE '^- \\(NSString \\*\\)text\\b|@property[^;]*\\*text;|accessibilityIdentifier' $DN && grep -qF '@implementation DMNoteView { NSString *_body; }' $DN"
+  "ok=1; for c in DMNoteTextView DMNoteView DMNoteEditor DMNoteBar DMNoteNameField; do awk -v c=\"@implementation \$c\" 'index(\$0, c) == 1 {f=1} f && /^@end/ {exit} f' $DN | grep -q 'description { return \\[NSString stringWithFormat:@\"<%@: %p; %lu characters>\"' || ok=0; done; [ \$ok = 1 ] \
+   && ! grep -nE '^- \\(NSString \\*\\)text\\b|@property[^;]*\\*text;|accessibilityIdentifier' $DN && grep -qF '@implementation DMNoteView { NSString *_body, *_name; }' $DN && grep -qF '@implementation DMNoteBar { NSString *_name; }' $DN"
 check "  ... no CFPreferences write in the notes' code (the store is its own file), only the switch read" \
   "! grep -nE 'CFPreferencesSet|CFPreferencesSynchronize|CFPreferencesAppSynchronize|NSUserDefaults' $DN && [ \$(grep -c 'CFPreferencesCopyValue' $DN) = 1 ]"
 python3 - "$DN" > "$W/lint.txt" 2>&1 <<'EOF' || true
@@ -134,7 +134,7 @@ for raw in open(sys.argv[1]):
 want = {'_DMStickyLoad': 'stickyNotes', '_DMStickyColor': 'stickyNotes', '_MSBDStickyFrameAt': 'stickyNotes', '_DMStickyGripAt': 'stickyNotes', '_DMStickyPutBack': 'stickyNotes',
         '___DMStickyLoad_block_invoke': 'stickyNotes', '_DMNoteAppExit': None, '_DMNoteAppInFront': None, '_DMNoteWindowLayouts': None, '_MSBDNoteSwitch': None, '_DMNoteTopEdgeBarTouch': None,
         '-[DMNoteView drawRect:]': 'stickyNotes', '-[DMNoteTextView description]': 'stickyNotes', '-[DMNoteEditor layoutSubviews]': 'stickyNotes', '-[DMNotesState views]': 'stickyNotes',
-        '-[DMDesktop(Notes) dm_noteTap:]': 'stickyNotes', '_DMTextViewEditKey': 'transparent', '_DMDesktopTypingNow': 'desktopIcons', '_DMDesktopTypingWindowCan': 'desktopIcons',
+        '-[DMDesktop(Notes) dm_noteTap:]': 'stickyNotes', '-[DMNoteBar drawRect:]': 'stickyNotes', '-[DMNoteNameField description]': 'stickyNotes', '-[DMNoteBarView x]': None, '-[DMNotesState textFieldShouldReturn:]': 'stickyNotes', '-[DMNotesPageView hitTest:withEvent:]': 'stickyNotes', '-[DMDesktop(Notes) dm_notePagesTick]': 'stickyNotes', '_DMStickyRootFolder': 'stickyNotes', '_DMTextViewEditKey': 'transparent', '_DMDesktopTypingNow': 'desktopIcons', '_DMDesktopTypingWindowCan': 'desktopIcons',
         '_DMNativeTouchBegan': 'finder', '_DMDesktopTick': 'desktopIcons', '_DMSBTextInputTypingBut': 'transparent'}
 bad = []
 for name, t in want.items():
@@ -152,8 +152,8 @@ check "the keys while a note is typed in: Esc ends it; the Command editing keys 
 check "  ... a touch ends it unless it is the typing's (its window's views, the edit menu, our keyboard), our menu's or a context menu's; the hide key never ends it" \
   "fnf '- (void)dm_noteTouchBegan:(UITouch *)t {' $DN | grep -qF 'if (DMDesktopTypingTakes(sp, screen)) return;' && fnf '- (void)dm_noteTouchBegan:(UITouch *)t {' $DN | grep -qF 'if (gOverlay && v && [v isDescendantOfView:gOverlay]) return;' \
    && fnf '- (void)dm_noteTouchBegan:(UITouch *)t {' $DN | grep -qF 'if (DMAnyContextMenuVC(NULL)) return;' && ! fnf '- (void)textViewDidEndEditing:(UITextView *)tv {' $DN | grep -q 'dm_noteEnd'"
-check "  ... the tick ends it for jiggle mode or Guided Access, the switch, page 1 going, another app in front, another text field typing; the window's level checked again (item 11)" \
-  "fnf '- (void)dm_noteTick {' $DN | grep -qF 'if (_editing) why =' && fnf '- (void)dm_noteTick {' $DN | grep -qF 'else if (!DMStickyShown()) why =' && fnf '- (void)dm_noteTick {' $DN | grep -qF 'else if (![self dm_pageShowing]) why =' \
+check "  ... the tick ends it for jiggle mode or Guided Access, the switch, its page going (1.8.8.2 F36: page 1's or another's), another app in front, another text field typing; the window's level checked again (item 11)" \
+  "fnf '- (void)dm_noteTick {' $DN | grep -qF 'if (_editing) why =' && fnf '- (void)dm_noteTick {' $DN | grep -qF 'else if (!DMStickyShown()) why =' && fnf '- (void)dm_noteTick {' $DN | grep -qF 'else if (![self dm_notePageShowing:[self dm_notePageOfLayer:[self dm_noteLayerOfEditor]]]) why = @\"its page no longer shows\";' \
    && fnf '- (void)dm_noteTick {' $DN | grep -qF 'isEqualToString:_notes.editFront ?: @\"\"]) why =' && fnf '- (void)dm_noteTick {' $DN | grep -qF 'else if (DMSBTextInputTypingBut(gDesktopRenameWindow, nil)) why =' \
    && fnf '- (void)dm_noteTick {' $DN | grep -qF 'CGFloat level = DMDesktopRenameLevel();'"
 check "  ... the screen going off, a lock and the Cover Sheet coming down end it (StatusBar.x); our Respring writes the notes first" \
@@ -172,9 +172,9 @@ check "the store is never written before a read worked, never over an unread or 
    && fnf '__attribute__((noinline)) static NSString *DMStickyFolder(void) {' $DN | grep -qF '[NSHomeDirectory() stringByAppendingPathComponent:@\"Library/Application Support/MacStatusBarAndDock\"]' && ! grep -q '@\"/var/jb' $DN"
 check "  ... a store that is not one goes aside (never over another), and one that could not be moved aside is never written" \
   "fnf '__attribute__((noinline)) static void DMStickyLoad(void (^done)(void)) {' $DN | grep -qF 'if (st == MSBDStickyAside && !DMStickyPutAside(path)) st = MSBDStickyUnread;' && fnf '__attribute__((noinline)) static BOOL DMStickyPutAside(NSString *path) {' $DN | grep -qF 'if (lstat(to.fileSystemRepresentation, &st) == 0) continue;'"
-check "  ... Move to Trash: Sticky Note.txt in Finder's Trash, 0600 class C, the origin a marker, the look and place attributes; the note leaves only once the file is there" \
+check "  ... Move to Trash: <its name>.txt in Finder's Trash (1.8.8.2 F37), 0600 class C, the origin a marker, the look and place attributes; the note leaves only once the file is there" \
   "fnf '__attribute__((noinline)) static void DMStickyTrash(NSMutableDictionary *e) {' $DN | grep -qF 'NSFilePosixPermissions: @0600, NSFileProtectionKey: NSFileProtectionCompleteUntilFirstUserAuthentication' \
-   && fnf '__attribute__((noinline)) static void DMStickyTrash(NSMutableDictionary *e) {' $DN | grep -qF 'DMFinderSetOrigin(tmp, MSBD_NOTE_TRASH_ORIGIN);' && fnf '__attribute__((noinline)) static void DMStickyTrash(NSMutableDictionary *e) {' $DN | grep -qF 'DMFinderFreeName(kFinderTrash, MSBD_NOTE_TRASH_NAME, @\"\")' \
+   && fnf '__attribute__((noinline)) static void DMStickyTrash(NSMutableDictionary *e) {' $DN | grep -qF 'DMFinderSetOrigin(tmp, MSBD_NOTE_TRASH_ORIGIN);' && fnf '__attribute__((noinline)) static void DMStickyTrash(NSMutableDictionary *e) {' $DN | grep -qF 'DMFinderFreeName(kFinderTrash, fileName, @\"\")' && fnf '__attribute__((noinline)) static void DMStickyTrash(NSMutableDictionary *e) {' $DN | grep -qF 'NSString *fileName = MSBDStickyTrashFileName(MSBDStickyNameShown(e[@\"name\"], text))' \
    && fnf '__attribute__((noinline)) static void DMStickyTrash(NSMutableDictionary *e) {' $DN | awk '/if \\(err\\) \\{ DMLog/{a=NR} /\\[gNotes removeObjectIdenticalTo:now\\]/{b=NR} /DMFinderPushUndo\\(@\"notetrash\"/{c=NR} END{exit !(a && b > a && c > b)}'"
 check "  ... Put Back and Undo make it a note again (refused while Show Sticky Notes is off: item 13; at 30 notes); the Trash file goes only after the store is written" \
   "fnf '__attribute__((noinline)) static void DMStickyPutBack(NSString *path, void (^done)(NSError *e)) {' $DN | sed -n 3p | grep -qF 'if (!gDesktopNotesOn) {' \

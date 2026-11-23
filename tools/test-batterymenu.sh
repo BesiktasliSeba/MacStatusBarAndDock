@@ -59,8 +59,8 @@ check "the right end from MSBDBattRightSideLayout: the icon left of the clock, t
   "grep -q 'MSBDBattRightSide side = DMBattCCLayout(fg, rtl, clockEdge, timeCentre.y, timeFont, k, gShowSpotlight, spotW, kSpotHitSlop \\* k, kSpotClockGap \\* k);' $X \
    && grep -q 'spotBtn.frame = DMBarRect(fg, rtl, CGRectMake(side.spotBtnLead, 0, side.spotBtnTrail - side.spotBtnLead, barH));' $X \
    && grep -q 'CGFloat iconsEnd = side.iconsEnd;' $X && fn $B 'static MSBDBattRightSide DMBattCCLayout(' | grep -q 'MSBDBattRightSideLayout(clockEdge, show, w, spot, spotW, gap, spotSlop);'"
-check "the battery's button laid out where the status icons start, before our Wi-Fi icon takes its place; its area from MSBDBattButtonSpan" \
-  "awk '/DMBattLayoutButton\\(fg, left, k\\);/{a=NR} /left = DMWiFiLayoutIcon\\(fg, left, timeCentre.y, k\\);/{b=NR} END{exit !(a && b == a + 7)}' $X \
+check "the battery's button laid out where the status icons start, before our own headphones icon (1.8.8.2) and our Wi-Fi icon take their place; its area from MSBDBattButtonSpan" \
+  "awk '/DMBattLayoutButton\\(fg, left, k\\);/{a=NR} /left = DMAirPodsLayoutOwnIcon\\(fg, left, timeCentre.y, k\\);/{o=NR} /left = DMWiFiLayoutIcon\\(fg, left, timeCentre.y, k\\);/{b=NR} END{exit !(a && o == a + 6 && b == a + 9)}' $X \
    && fn $B 'static void DMBattLayoutButton(' | grep -q 'MSBDBattButtonSpan(DMBarLead(fg, rtl, r), DMBarTrail(fg, rtl, r), 4.0 \\* k, left - 2.0 \\* k, &a, &b)'"
 check "  ... the battery's views are its item's own (each region's display items whose item is the battery item), shown ones only" \
   "fn $B 'static NSArray<UIView *> *DMBattItemViews(' | grep -q 'if (!\\[it isKindOfClass:ic\\]) continue;' && grep -q 'static Class DMBattItemClass(void) { return objc_getClass(DMSBUseSTUI() ? \"STUIStatusBarBatteryItem\" : \"_UIStatusBarBatteryItem\"); }' $B"

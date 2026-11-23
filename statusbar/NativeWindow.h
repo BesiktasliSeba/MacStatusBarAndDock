@@ -503,6 +503,16 @@ __attribute__((noinline)) static void DMNativeTouchBegan(UITouch *t) {   // (kep
     //  with its grips, UIKit's edit menu) or our own keyboard. Nothing is made active: a caret tap or a grip's pull over an active Finder window made
     //  that window active, which took the keys and ended the typing -- sticky-notes.md Feasibility 2a, a key of our keyboard over Finder too)
     if (DMDesktopTypingTakes(p, t.window.screen)) return;
+    // (1.8.8.2: a menu or dialog of ours open on this screen takes the touch -- a row picked, or the menu closed --, also where it lies over a Finder
+    //  window: that window was made active first, by the hit test below, before the "a menu or dialog is open" check further down (a tap on Window >
+    //  Left Half over a second Finder window brought that window forward). Finder's own menus and sheets in the native layer are its windows'.)
+    UIWindow *overlayHost = gOverlay.window;
+    if (overlayHost && overlayHost != gNativeLayer && (overlayHost.screen ?: [UIScreen mainScreen]) == (t.window.screen ?: [UIScreen mainScreen])) {
+#if DEBUG
+        if (DMTestFlag("/tmp/macstatusbar-debug")) DMLog([NSString stringWithFormat:@"[native] touch at %@: a menu or dialog is open over the native windows (%@ in %@), nothing changes", NSStringFromCGPoint(p), NSStringFromClass([gOverlay class]), NSStringFromClass([overlayHost class])]);
+#endif
+        return;
+    }
     CGPoint lp = [gNativeLayer convertPoint:p fromCoordinateSpace:gNativeLayer.screen.coordinateSpace];
     UIView *hit = DMNativeLayerHitTest(gNativeLayer, @selector(hitTest:withEvent:), lp, nil);
 #if DEBUG

@@ -1065,6 +1065,7 @@ static void MSBURLLog(NSString *line) {   // (debug builds: how a link reached t
 				// (New Windows Open at Fill: the windows an engine opens -- audit 1.8.3 M4; Snap Windows to Edges: an engine's windows -- 1.8.6; Keep Covered
 				//  Windows in Front: the engines' windows -- 1.8.4.1 item 7. Rows of Window Behavior since 1.8.6: the row goes, its group stays)
 				if ([sp.identifier isEqualToString:kMSBDNewWindowsFillRowID] || [sp.identifier isEqualToString:kMSBDSnapRowID] || [sp.identifier isEqualToString:kMSBDKeepCoveredRowID]) continue;
+				if ([sp.identifier isEqualToString:kMSBDRecentStripRowID]) continue;   // (Recent Windows Strip: the engines' windows, 1.8.8.2 F29)
 				if ([sp.identifier isEqualToString:@"ENGINE_GROUP"]) [sp setProperty:onItsOwn ? [NSString stringWithFormat:@"%@ hasn't been tested with MacStatusBar&Dock yet, so it runs on its own and the window features are off.", MSBEngineNameVersion(engine)]
 				                                                                               : @"No tested window engine is installed, so the window features are off." forKey:@"footerText"];
 				BOOL windowsGroup = sp.cellType == PSGroupCell && [sp.identifier isEqualToString:kMSBDWindowsGroupID];
@@ -1143,6 +1144,19 @@ static void MSBURLLog(NSString *line) {   // (debug builds: how a link reached t
 			for (PSSpecifier *sp in _specifiers)   // (Recent Apps with Left-Edge Swipe: Stage Manager's strip, as Resize Handles)
 				if (![sp.identifier isEqualToString:kMSBDStripSwipeRowID] && ![[sp propertyForKey:@"key"] isEqual:kMSBDResizeHandlesKey]) [kept addObject:sp];
 			_specifiers = kept;
+			break;
+		}
+		// Recent Windows Strip (1.8.8.2 F29): Aerial's, Zetsu's and MilkyWay4's windows, on the iPadOS where it runs (common/RecentStripRule.h
+		// MSBDRecentStripOS, the rule of common/OwnPageRows.h too); never with Stage Manager as the engine (its strip: Recent Apps with Left-Edge Swipe)
+		for (PSSpecifier *spec in [_specifiers copy]) {
+			if (![[spec propertyForKey:@"key"] isEqual:@"windowEngine"]) continue;
+			NSString *engine = [self readPreferenceValue:spec];
+			BOOL sm = [engine isKindOfClass:[NSString class]] && [engine isEqualToString:@"stagemanager"];
+			if (sm || !MSBDRecentStripOS([NSProcessInfo processInfo].operatingSystemVersion.majorVersion)) {
+				NSMutableArray *kept = [NSMutableArray array];
+				for (PSSpecifier *sp in _specifiers) if (![sp.identifier isEqualToString:kMSBDRecentStripRowID]) [kept addObject:sp];
+				_specifiers = kept;
+			}
 			break;
 		}
 				// "Resize Apps to Fit Windows" only works with MilkyWay4 (Zetsu always fits apps to its windows itself, Aerial never does): with any
@@ -1284,6 +1298,7 @@ static NSString *MSBGroupedRowSentence(NSString *rowKey) {
 		@"goToAppDesktop": @"Go to the App's Desktop: opening an app whose window is on another desktop takes you there. When it's off, the window comes to the desktop you're on.",
 		@"mswSwipeUpQuit": @"Swipe Up to Quit: flicking a window up in the Mac Switcher, or swiping it up with two fingers on a trackpad, quits the app, as in the App Switcher. Drag a window to move it to another desktop.",
 		@"smStripSwipe": @"Recent Apps with Left-Edge Swipe: swiping in from the left edge shows Stage Manager's recent apps. With the Dock at Left, that swipe stays the Dock's.",
+		@"recentStrip": @"Recent Windows Strip: your recent windows wait at the side of the desktop as small pictures, as with Stage Manager on a Mac. Tap or click one to bring it forward. When a window covers that side the strip steps aside: move the pointer to the edge, or choose Window > Show Recent Windows, to bring it back.",
 		@"newWindowsFill": @"New Windows Open at Fill: new windows fill the desktop, and Fit to Window doesn't tile them. Apps with their own size open at that size.",
 		@"snapWindowsToEdges": @"Snap Windows to Edges: a window you move or resize lines up with the screen's edges, the menu bar, the Dock and the windows next to it. When it's off, a window stays where you let go.",
 		@"keepCoveredInFront": @"Keep Covered Windows in Front: when a window comes to the front, any smaller window it would cover completely stays in front of it, so it's never lost behind a bigger window.",

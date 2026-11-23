@@ -15,6 +15,8 @@ static CGPoint gDMPtrIPadLast = {NAN, NAN};   // the iPad's own hover: its last 
 static CFTimeInterval gDMPtrIPadLastAt = 0;   // ... and when
 static CFTimeInterval gDMPtrAnyAt = 0;   // the last hover on any display (a reading counts only with none since: the pointer did not move)
 static void DMAutoHideIPadHover(CGPoint n, BOOL inside);   // (StatusBar.x: the iPad's auto-hide zone from its own hover while the region is not known)
+static void DMAutoHideTVSystemHover(UIHoverGestureRecognizer *g, BOOL inside);   // (StatusBar.x, 1.8.8.2: the TV's auto-hide from its system gestures window)
+static void DMAutoHideTVPointerOnIPad(void);   // (StatusBar.x, 1.8.8.2: the pointer seen on the iPad is not on the TV's bar)
 static BOOL DMPtrSkipped(void) { static int s = -1; if (s < 0) s = MSBDCrashSkipped(MSBD_PTR_REGION_PIECE); return s != 0; }
 static CGSize DMPtrIPadNativeSize(void) { return [UIScreen mainScreen].fixedCoordinateSpace.bounds.size; }
 // backboardd's position as the iPad's own native point: 1 on the iPad (n), 0 elsewhere, -1 not known yet (another display attached, not learned).
@@ -75,9 +77,14 @@ static void DMPtrHoverSeen(UIHoverGestureRecognizer *g, BOOL learn) {
     BOOL inside = g.state == UIGestureRecognizerStateBegan || g.state == UIGestureRecognizerStateChanged;
     CFTimeInterval now = CACurrentMediaTime();
     gDMPtrAnyAt = now;
-    if (s != [UIScreen mainScreen]) { gDMPtrSeen[1]++; gDMPtrOtherAt = now; return; }   // (another display's: the pointer there until now, its leaving included)
+    if (s != [UIScreen mainScreen]) {   // (another display's: the pointer there until now, its leaving included)
+        gDMPtrSeen[1]++; gDMPtrOtherAt = now;
+        if (learn) DMAutoHideTVSystemHover(g, inside);   // (its system gestures window sees every move there, over a full-screen app too: the TV's bar reads it)
+        return;
+    }
     if (!gDMPtrRegion.other) return;   // (the iPad alone: its region is the origin, nothing to learn or stand in for)
     gDMPtrSeen[0]++;
+    if (inside) DMAutoHideTVPointerOnIPad();
     if (!inside) { gDMPtrIPadLastAt = now; DMAutoHideIPadHover(CGPointZero, NO); return; }
     CGPoint n = [v convertPoint:[g locationInView:v] toCoordinateSpace:s.fixedCoordinateSpace];
     DMAutoHideIPadHover(n, YES);

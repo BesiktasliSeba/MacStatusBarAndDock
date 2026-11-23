@@ -8,7 +8,7 @@
 //  - pointeruid draws in the display's native portrait space; the Mac pointer is turned for the current interface orientation, which SpringBoard (Mac
 //    Status Bar) publishes with the settings as Darwin notification states (pointeruid is sandboxed: no files, no preferences of ours).
 //  - Settings > Pointer: Pointer Style (Mac/iPadOS) and Hide in Virtual Mac; the size is the system's own Pointer Size.
-//  - Stands down entirely when another tweak also changes pointeruid's pointer (two custom pointers would fight): MPOtherPointerTweak.
+//  - Stands aside while another tweak draws its own pointer in pointeruid (two pointers would fight): MPAsideLook, MPAside.h.
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -20,6 +20,7 @@
 #include <notify.h>
 #include "MPDisplayGeometry.h"
 #include "../../common/PointerFade.h"   // (1.8.8, D48: the pointer's fade said to SpringBoard -- the traffic lights' hold ends at it)
+#include "MPAside.h"   // (1.8.8.2, GitHub #17: does another library draw the pointer; what the Mac pointer is doing, said: common/MacPointerStatus.h)
 @interface PSPointerShape : NSObject
 - (long long)shapeType; - (CGRect)bounds; - (double)cornerRadius; - (CGPathRef)path;
 @end
@@ -169,7 +170,7 @@ static void __attribute__((unused)) MPProbePaths(void) {
 @interface PUIDPointerShapeView : UIView @end
 #endif
 static int gMPConfigToken, gMPOrientToken, gMPHideToken;
-static BOOL gMPStandDown = NO;          // another tweak changes the pointer in this process (MPOtherPointerTweak)
+static BOOL gMPStandDown = NO;          // the Mac pointer does not draw: another pointer is drawn, or not looked at yet (gMPAside)
 static BOOL gMPHovering = NO;           // the renderer's state has content (a hover effect is showing)
 #if !DEBUG
 static __weak PUIDPointerShapeView *gMPShapeView;
@@ -187,40 +188,81 @@ static const void *kMPCursorKey = &kMPCursorKey, *kMPHidNativeKey = &kMPHidNativ
 static uint64_t MPState(int token) { uint64_t v = 0; if (token) notify_get_state(token, &v); return v; }
 // 0 = Mac Status Bar's bridge in SpringBoard is not publishing (not started yet, or Mac Status Bar switched off in Choicy/iCleaner): the stock pointer.
 // (Its orientation comes from the same bridge; without it the Mac pointer would be drawn sideways -- seen with Mac Status Bar switched off in Choicy.)
-// Another tweak that also changes pointeruid's pointer would fight the Mac pointer: found by where pointeruid's own pointer classes' methods lead --
-// into a jailbreak library other than this one (a hook) -> the Mac pointer stands down and the other tweak has the pointer. Checked once, at the
-// first pointer update (every tweak is loaded by then).
-static BOOL MPOtherPointerTweak(void) {
-    Dl_info me; if (!dladdr((const void *)&MPOtherPointerTweak, &me)) return NO;
-    for (NSString *cn in @[@"PUIDPointerShapeView", @"PUIDPointerRenderingRootViewController", @"PUIDPointerController"]) {
-        Class c = objc_getClass(cn.UTF8String); if (!c) continue;
-        unsigned n = 0; Method *ms = class_copyMethodList(c, &n);
-        for (unsigned i = 0; i < n; i++) {
-            const void *imp = (const void *)method_getImplementation(ms[i]);
-#if __has_feature(ptrauth_calls)
-            imp = ptrauth_strip(imp, ptrauth_key_function_pointer);
-#endif
-            Dl_info di;
-            if (dladdr(imp, &di) && di.dli_fname && di.dli_fbase != me.dli_fbase && (strstr(di.dli_fname, "/var/jb/") || strstr(di.dli_fname, "/private/preboot/"))) {
-#if DEBUG
-                MPLog([NSString stringWithFormat:@"stand down: -[%@ %@] is changed by %s", cn, NSStringFromSelector(method_getName(ms[i])), di.dli_fname]);
-#endif
-                free(ms); return YES;
-            }
-        }
-        free(ms);
+// Another pointer drawn in pointeruid would fight the Mac pointer (two pointers at once). pointeruid's pointer classes are read once, at the first
+// pointer update or 2 s after the start (every tweak is loaded by then). No other jailbreak library changes them, the usual case: the Mac pointer
+// draws, decided for the run (ALONE). One does: until 1.8.8.1.1 that alone made the Mac pointer stand down for the run, also for a hook that draws
+// nothing, and nothing said so (GitHub #17). Now it only means the pointer is looked at (MPAsideLook): standing aside while another pointer shows
+// (ASIDE), drawing while nothing of the other library's does (SHARED); the round pointer is left as it is until the first look (WAITING).
+// The verdict, what was seen and the parts of iPadOS's pointer not found go to SpringBoard and Settings (MPPublishStatus, common/MacPointerStatus.h).
+static unsigned gMPAside = MSBD_MP_V_NONE, gMPAsideSeen = 0, gMPMissing = 0, gMPNow = MSBD_MP_NOW_NONE;
+static int gMPAsideClean = 0;   // (clean looks in a row while standing aside, MSBDMPAsideNext)
+static char gMPOtherPath[512];  // the first other library found changing the pointer's classes
+static void MPPublishPresence(void);
+// The word for SpringBoard and Settings (MSBD_MP_STATUS): this pointeruid's pid, the verdict, what was seen, the parts not found, why the arrow is
+// not shown on the iPad's display; set and posted only when it changes. The token is kept: the word lives as long as this pointeruid.
+static void MPPublishStatus(void) {
+    static int token = 0; static uint64_t said = 0;
+    if (!token && notify_register_check(MSBD_MP_STATUS, &token) != NOTIFY_STATUS_OK) token = 0;
+    uint64_t w = MSBDMPPack((uint32_t)getpid(), gMPAside, gMPAsideSeen, gMPMissing, gMPNow);
+    if (!token || w == said) return;
+    said = w; notify_set_state(token, w); notify_post(MSBD_MP_STATUS);
+}
+// The other library's file name for Report a Problem (32 bytes in four states; MSBDMPOtherName reads them). Tokens kept, as the status's.
+static void MPSayOtherName(const char *path) {
+    static int tokens[4];
+    const char *base = strrchr(path, '/'); base = base ? base + 1 : path;
+    char bytes[32]; memset(bytes, 0, sizeof bytes); strlcpy(bytes, base, sizeof bytes);
+    for (int i = 0; i < 4; i++) {
+        char nm[64]; snprintf(nm, sizeof nm, MSBD_MP_OTHER_FMT, i);
+        if (!tokens[i] && notify_register_check(nm, &tokens[i]) != NOTIFY_STATUS_OK) { tokens[i] = 0; continue; }
+        uint64_t v = 0; memcpy(&v, bytes + i * 8, 8); notify_set_state(tokens[i], v);
     }
-    return NO;
+}
+static void MPAsideTimerFollow(void);
+static void MPSetAside(unsigned verdict, unsigned seen) {
+    if (verdict == gMPAside && seen == gMPAsideSeen) return;
+    unsigned was = gMPAside;
+    gMPAside = verdict; gMPAsideSeen = seen;
+    gMPStandDown = !MSBDMPVerdictDraws(verdict);
+    const char *base = strrchr(gMPOtherPath, '/'); base = base ? base + 1 : gMPOtherPath;
+    // (release builds too: one line at each change of the verdict, for a report; nothing while the pointer simply moves)
+    if (verdict == MSBD_MP_V_ASIDE && was != MSBD_MP_V_ASIDE)
+        NSLog(@"[MacPointer] standing aside: another pointer is drawn (seen: %s%s%s; the other library changing the pointer: %s)", (seen & MSBD_MP_SEEN_CLASS) ? "its class " : "",
+              (seen & MSBD_MP_SEEN_LAYER) ? "a layer on the pointer " : "", (seen & MSBD_MP_SEEN_ROUND_HIDDEN) ? "the round pointer hidden" : "", base);
+    else if (verdict == MSBD_MP_V_SHARED && was == MSBD_MP_V_ASIDE) NSLog(@"[MacPointer] drawing again: the other pointer is no longer shown");
+    else if (verdict == MSBD_MP_V_SHARED && was == MSBD_MP_V_WAITING) NSLog(@"[MacPointer] another library changes the pointer (%s) but draws no pointer: the Mac pointer draws", base);
+#if DEBUG
+    MPLog([NSString stringWithFormat:@"%.3f aside: verdict %u -> %u, seen %u", CACurrentMediaTime(), was, verdict, seen]);
+#endif
+    MPPublishStatus();
+    if (was != MSBD_MP_V_NONE) MPPublishPresence();   // (SpringBoard's icons and Pointer Animations follow at once; the first verdict: as before, at 2 s)
+    MPAsideTimerFollow();   // (standing aside: its own look every 2 s while the pointer is in use; any other verdict: none)
 }
 static BOOL gMPStandDownChecked = NO;
-static void MPCheckStandDown(void) { if (!gMPStandDownChecked) { gMPStandDownChecked = YES; gMPStandDown = MPOtherPointerTweak(); } }
+static void MPCheckStandDown(void) {
+    if (gMPStandDownChecked) return;
+    gMPStandDownChecked = YES;
+    gMPMissing = MPAsideMissing();
+    if (gMPMissing) NSLog(@"[MacPointer] parts of iPadOS's pointer not found on this version: 0x%x", gMPMissing);
+    unsigned hooks = MPAsideOtherHooks(gMPOtherPath, sizeof gMPOtherPath,
+#if DEBUG
+        ^(const char *cls, SEL sel, const char *path) { MPLog([NSString stringWithFormat:@"other library: -[%s %@] is changed by %s", cls, NSStringFromSelector(sel), path]); }
+#else
+        nil
+#endif
+    );
+    if (hooks) MPSayOtherName(gMPOtherPath);
+    MPSetAside(hooks ? MSBD_MP_V_WAITING : MSBD_MP_V_ALONE, 0);
+}
 // SpringBoard's buttons and icons drop iPadOS's pointer effects only while this pointer is the Mac arrow: it is told whether we stand down for another
 // pointer tweak (common/MacPointerActive.h: 1 present, 2 standing down; logic test W5, 25 Oct). The token is kept, so the state lives with pointeruid.
+// Not said while the pointer was not looked at yet (WAITING): SpringBoard keeps what it has (MSBDMacPointerStateKept) until the first look.
 static void MPPublishPresence(void) {
     static int token = 0;
     if (!token && notify_register_check("com.besiktasliseba.macpointer.active", &token) != NOTIFY_STATUS_OK) token = 0;
     if (!token) return;
     MPCheckStandDown();
+    if (gMPAside == MSBD_MP_V_WAITING) return;
     uint64_t want = gMPStandDown ? 2 : 1, cur = 0;
     notify_get_state(token, &cur);
     if (cur != want) { notify_set_state(token, want); notify_post("com.besiktasliseba.macpointer.active"); }
@@ -454,6 +496,116 @@ static NSArray<UIView *> *MPNativeViews(UIView *view) {
     for (int i = 0; i < 3; i++) { UIView *v = MPIvar(view, names[i]); if (!v) { @try { v = [view valueForKey:@(names[i])]; } @catch (id e) {} } if ([v isKindOfClass:[UIView class]]) [m addObject:v]; }
     return m;
 }
+// Why the arrow is not shown on the iPad's own display (1.8.8.2, MSBD_MP_NOW_*, for Report a Problem): from the reads MPUpdate made (enabled is
+// MPEnabled()); the config and orientation read again only when the Mac pointer is not enabled. Only for the pointer view on the iPad's display (kept
+// per view and window); said only when it changes.
+static const void *kMPOwnDisplayKey = &kMPOwnDisplayKey;
+static BOOL MPOnOwnDisplay(UIView *view) {
+    UIWindow *w = view.window; if (!w) return NO;
+    NSArray *k = objc_getAssociatedObject(view, kMPOwnDisplayKey);
+    if (k.count == 2 && [k[0] unsignedLongValue] == (uintptr_t)w) return [k[1] boolValue];   // (the window by its address only, as MPCursorTransform)
+    BOOL own = MPDisplayInfoFor(view).reason == 0;
+    objc_setAssociatedObject(view, kMPOwnDisplayKey, @[@((uintptr_t)w), @(own)], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return own;
+}
+static void MPSayNow(UIView *view, BOOL enabled, BOOL sysHid, BOOL vmHid) {
+    unsigned now;
+    if (enabled) now = sysHid ? MSBD_MP_NOW_SYSTEM_HID : vmHid ? MSBD_MP_NOW_VIRTUAL_MAC : MSBD_MP_NOW_SHOWN;   // (the arrow, or the system's text beam)
+    else if (gMPStandDown) now = MSBD_MP_NOW_ASIDE;
+    else { uint64_t c = MPState(gMPConfigToken); now = (c == 0 || ((c & 1) && MPState(gMPOrientToken) == 0)) ? MSBD_MP_NOW_NO_BRIDGE : MSBD_MP_NOW_STYLE; }
+    if (now == gMPNow || !MPOnOwnDisplay(view)) return;
+    gMPNow = now;
+    MPPublishStatus();
+}
+// The look at the pointer while another library changes its classes (WAITING, SHARED, ASIDE; never for ALONE), only at a plain pointer the user can
+// see whose shape iPadOS has left alone for a moment: the other pointer, if there is one, shows then (common/MacPointerStatus.h MSBDMPAsideCanLook).
+// When (1.8.8.2, after a device pass on iPadOS 17.5.1, where the Mac pointer never came back): after a pointer update, a main-queue turn later at the
+// earliest, so the other library's own update of the pointer has run by then wherever its hook sits around ours -- at once while waiting, else 2 s
+// after the last look that looked, a request inside that time kept for its end, never dropped; and while standing aside, every 2 s on a timer of its
+// own while the pointer is in use (plain moves give pointeruid no update on 17.5.1), stopped at rest. Nothing of this runs for ALONE.
+static void MPApplyVisibility(void);
+static CFTimeInterval gMPShapeAt = -10;   // (when iPadOS last changed the pointer view's shape: a look waits until it has settled)
+static CFTimeInterval gMPLookedAt = -10;  // (when a look last looked)
+static BOOL gMPLooking = NO;              // (a look is running: the updates it makes ask for no other look)
+static dispatch_source_t gMPAsideTimer;   // (standing aside, while the pointer is in use: a look every 2 s)
+// The pointer is not in use: auto-hidden, hidden by iPadOS (another display has it, no trackpad or mouse), in Virtual Mac, or no pointer view shown.
+static BOOL MPAtRest(void) {
+    PUIDPointerShapeView *view = gMPShapeView;
+    return !view || !view.window || gMPAutoHidden || MPHiddenBySystem(view) || MPState(gMPHideToken) == 1;
+}
+// One look. -1: it looked; 0: not a plain pointer now (its next update asks again); > 0: its shape is settling, ask again in that many seconds.
+static double MPAsideLook(void) {
+    PUIDPointerShapeView *view = gMPShapeView;
+    if (!view || !view.window) return 0.0;
+    PSPointerShape *shape = MPIvar(view, "_pointerShape");
+    if (!shape) { @try { shape = [(id)view valueForKey:@"pointerShape"]; } @catch (id e) {} }
+    BOOL plain = !(shape && shape.shapeType != 1) && !gMPHovering && !MPAtRest();
+    double can = MSBDMPAsideCanLook(plain, CACurrentMediaTime(), gMPShapeAt);
+    if (can >= 0.0) return can;
+    gMPLookedAt = CACurrentMediaTime();
+    UIViewController *c = MPControllerOf(view);
+    UIView *root = MPIvar(c, "_pointerRootView");
+    unsigned seen = MPAsideSeen(view, c, [root isKindOfClass:[UIView class]] ? root : nil, objc_getAssociatedObject(view, kMPCursorKey), objc_getAssociatedObject(view, kMPHidNativeKey));
+    unsigned next = MSBDMPAsideNext(gMPAside, seen != 0, &gMPAsideClean);
+#if DEBUG
+    static unsigned lastSeen = UINT_MAX; if (seen != lastSeen || next != gMPAside || (next == MSBD_MP_V_ASIDE && !seen)) { lastSeen = seen; MPLog([NSString stringWithFormat:@"%.3f aside look: seen %u, verdict %u -> %u (clean looks %d)", CACurrentMediaTime(), seen, gMPAside, next, gMPAsideClean]); }
+#endif
+    if (next == gMPAside && (next != MSBD_MP_V_ASIDE || !seen || seen == gMPAsideSeen)) return -1.0;
+    gMPLooking = YES;
+    MPSetAside(next, next == MSBD_MP_V_ASIDE ? seen : 0);
+    MPUpdateAll();
+    MPApplyVisibility();
+    gMPLooking = NO;
+    return -1.0;
+}
+// One look queued at a time, in delay seconds (0: the main queue's next turn); one whose pointer is settling asks again once it has.
+static void MPAsideLookIn(double delay) {
+    static BOOL queued = NO;
+    if (queued) return;
+    queued = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        queued = NO;
+        if (gMPAside != MSBD_MP_V_WAITING && gMPAside != MSBD_MP_V_SHARED && gMPAside != MSBD_MP_V_ASIDE) return;
+        double r = MPAsideLook();
+        if (r > 0.0) MPAsideLookIn(r);
+    });
+}
+static void MPAsideTimerSet(BOOL on);
+static void MPAsideTick(void) {
+    if (!MSBDMPAsideTimerWanted(gMPAside, MPAtRest())) { MPAsideTimerSet(NO); return; }   // (at rest, or no longer aside: the next update starts it again)
+    double r = MPAsideLook();
+    if (r > 0.0 && r < MSBD_MP_LOOK_EVERY) MPAsideLookIn(r);   // (settling: once it has, not 2 s later)
+}
+static void MPAsideTimerSet(BOOL on) {
+    if (on == (gMPAsideTimer != nil)) return;
+    if (!on) {
+        dispatch_source_t t = gMPAsideTimer; gMPAsideTimer = nil;
+        dispatch_source_cancel(t);
+#if DEBUG
+        MPLog([NSString stringWithFormat:@"%.3f aside timer stopped (verdict %u, at rest %d)", CACurrentMediaTime(), gMPAside, MPAtRest()]);
+#endif
+        return;
+    }
+    dispatch_source_t t = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    if (!t) return;
+    uint64_t every = (uint64_t)(MSBD_MP_LOOK_EVERY * NSEC_PER_SEC);
+    dispatch_source_set_timer(t, dispatch_time(DISPATCH_TIME_NOW, (int64_t)every), every, NSEC_PER_SEC / 5);
+    dispatch_source_set_event_handler(t, ^{ MPAsideTick(); });
+    gMPAsideTimer = t;
+    dispatch_resume(t);
+#if DEBUG
+    MPLog([NSString stringWithFormat:@"%.3f aside timer started", CACurrentMediaTime()]);
+#endif
+}
+// The timer follows the verdict and the pointer's use (MPSetAside, and every pointer update while standing aside).
+static void MPAsideTimerFollow(void) { MPAsideTimerSet(MSBDMPAsideTimerWanted(gMPAside, MPAtRest())); }
+// After a pointer update.
+static void MPAsideMaybeLook(void) {
+    if (gMPLooking) return;
+    if (gMPAside == MSBD_MP_V_ASIDE) { MPAsideTimerFollow(); return; }   // (standing aside: the timer looks)
+    if (gMPAside != MSBD_MP_V_WAITING && gMPAside != MSBD_MP_V_SHARED) return;
+    MPAsideLookIn(MSBDMPAsideLookDelay(gMPAside, CACurrentMediaTime(), gMPLookedAt));
+}
 #if DEBUG
 static int gMPUpdates = 0; static double gMPUpdateMs = 0, gMPUpdateMax = 0; static CFTimeInterval gMPUpdateSince = 0;
 #endif
@@ -480,7 +632,13 @@ static void MPUpdate(PUIDPointerShapeView *view) {
     BOOL thin = !CGRectIsEmpty(sb) && MIN(sb.size.width, sb.size.height) <= 4.0;
     BOOL systemShape = thin || type == 4;   // (only the text beam: iPadOS 17/18's type 4, 15/16's thin type 3 -- every other style gets the arrow)
     // (Hide in Virtual Mac hides the pointer's root view, MPApplyVisibility; the arrow in the top window is not under it, so it goes too)
-    BOOL want = MPEnabled() && !systemShape && !MPHiddenBySystem(view) && MPState(gMPHideToken) != 1;
+    // (1.8.8.2: the same reads in the same order as one line before, kept apart for the word on why the arrow is not shown, MPSayNow)
+    BOOL enabled = MPEnabled();
+    BOOL sysHid = enabled && !systemShape && MPHiddenBySystem(view);
+    BOOL vmHid = enabled && !systemShape && !sysHid && MPState(gMPHideToken) == 1;
+    BOOL want = enabled && !systemShape && !sysHid && !vmHid;
+    MPSayNow(view, enabled, sysHid, vmHid);
+    MPAsideMaybeLook();
     CAShapeLayer *a = want ? MPCursorLayer(view) : objc_getAssociatedObject(view, kMPCursorKey);
     CALayer *host = view.layer;   // (the arrow rides the pointer view itself: its origin is the pointer's position)
     NSArray<UIView *> *natives = MPNativeViews(view);
@@ -545,10 +703,11 @@ static void MPUpdate(PUIDPointerShapeView *view) {
     }
 #endif
 }
-// Hide in Virtual Mac: never write the root view's hidden unless we hid it (the system fades the pointer out with it).
+// Hide in Virtual Mac: never write the root view's hidden unless we hid it (the system fades the pointer out with it). Standing aside (1.8.8.2: that
+// can now begin while the pointer runs): never hidden by us, and given back if we had hidden it.
 static void MPApplyVisibility(void) {
-    UIViewController *c = gMPController; if (!c || gMPStandDown) return;
-    BOOL hide = MPState(gMPHideToken) == 1;
+    UIViewController *c = gMPController; if (!c) return;
+    BOOL hide = !gMPStandDown && MPState(gMPHideToken) == 1;
     if (!hide && !gMPWeHidRoot) return;   // (the usual case, with the pointer's updates: nothing to read)
     UIView *root = MPIvar(c, "_pointerRootView");
     if (!root) { @try { root = [c valueForKey:@"_pointerRootView"]; } @catch (id e) {} }
@@ -588,6 +747,7 @@ static void MPApplyVisibility(void) {
     gMPShapeView = (PUIDPointerShapeView *)self;
     MPRemember((PUIDPointerShapeView *)self);
     if (before && [before isEqual:shapeObj]) return;   // (the same shape again -- 17 sets it every frame while a control is hovered: nothing to do)
+    gMPShapeAt = CACurrentMediaTime();   // (1.8.8.2: a look at another pointer waits until the shape has settled, MSBDMPAsideCanLook)
     MPUpdate((PUIDPointerShapeView *)self);
 }
 %end
@@ -704,11 +864,11 @@ static NSData *MPPointerCapture(BOOL stateOnly) {
     }
     if (stateOnly || !win) {
         CGAffineTransform t = a.affineTransform;
-        NSString *st = [NSString stringWithFormat:@"view %@ at %@ top %@ | other display %d (window screen %@, main %@) | shape %lld %@ | hovering %d autohidden %d opacity %.2f | enabled %d size %.2f rot %.2f | cursor %@ hidden %d in view %d transform [%.2f %.2f %.2f %.2f] | native hidden %d weHid %d views | root hidden %d weHidRoot %d | stand down %d",
+        NSString *st = [NSString stringWithFormat:@"view %@ at %@ top %@ | other display %d (window screen %@, main %@) | shape %lld %@ | hovering %d autohidden %d opacity %.2f | enabled %d size %.2f rot %.2f | cursor %@ hidden %d in view %d transform [%.2f %.2f %.2f %.2f] | native hidden %d weHid %d views | root hidden %d weHidRoot %d | stand down %d (aside verdict %u seen %u, missing 0x%x, now %u)",
             sv ? NSStringFromClass([sv class]) : @"-", NSStringFromCGRect(sv.frame), win ? [NSString stringWithFormat:@"%@ %@ window %p", NSStringFromClass([win class]), NSStringFromCGRect(win.frame), sv.window] : @"-",
             sv ? MPDisplayInfoFor(sv).reason != 0 : 0, sv.window.screen ? NSStringFromCGRect(sv.window.screen.bounds) : @"-", NSStringFromCGRect([UIScreen mainScreen].bounds),
             shape.shapeType, NSStringFromCGRect(shape.bounds), gMPHovering, gMPAutoHidden, a ? a.opacity : -1, MPEnabled(), MPSize(sv), sv ? MPRotationFor(sv) : MPRotation(),
-            a ? @"yes" : @"no", a.hidden, a.superlayer == sv.layer, t.a, t.b, t.c, t.d, native.layer.hidden, (int)[objc_getAssociatedObject(sv, kMPHidNativeKey) count], [[gMPController valueForKey:@"_pointerRootView"] isHidden], gMPWeHidRoot, gMPStandDown];
+            a ? @"yes" : @"no", a.hidden, a.superlayer == sv.layer, t.a, t.b, t.c, t.d, native.layer.hidden, (int)[objc_getAssociatedObject(sv, kMPHidNativeKey) count], [[gMPController valueForKey:@"_pointerRootView"] isHidden], gMPWeHidRoot, gMPStandDown, gMPAside, gMPAsideSeen, gMPMissing, gMPNow];
         // one line per pointer view (per display): which display and why, the turns between the pointer and that display, the final turn
         NSMutableString *all = [st mutableCopy];
         for (PUIDPointerShapeView *v in [gMPShapeViews allObjects]) {
@@ -738,6 +898,7 @@ static NSData *MPPointerCapture(BOOL stateOnly) {
 }
 #endif
 %ctor {
+    MPPublishStatus();   // (1.8.8.2: "loaded in this pointeruid" at once, its pid; SpringBoard compares it with the pointeruid that runs)
     MPInstallNoMagnetism();
     notify_register_check("com.besiktasliseba.macpointer.config", &gMPConfigToken);
     notify_register_check("com.besiktasliseba.macpointer.orient", &gMPOrientToken);
